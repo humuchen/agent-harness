@@ -154,7 +154,82 @@ export class HarnessClient {
     return deepGet(data, this.statusPath) as string | undefined;
   }
 
+  /**
+   * 触发 Pipeline 并流式返回执行状态。
+   * `onStage` 在每次轮询得到新状态时回调（例如 'RUNNING' / 'SUCCESS' / 'FAILED'），
+   * 供可视化环境流水线使用。dry-run 模式下模拟 PENDING→RUNNING→READY 过程。
+   */
+  async createEphemeralEnvironmentWithEvents(
+    input: EphemeralEnvInput,
+    onStage: (status: string) => void
+  ): Promise<EnvHandle> {
+    const envId = `env-${Date.now()}`;
+    const vars: Record<string, string | number> = {
+      env_type: input.envType,
+      branch: input.branch,
+      ttl_hours: input.ttlHours ?? 8,
+    };
+    if (input.region) vars.region = input.region;
+    if (input.owner) vars.owner = input.owner;
+    const yaml = buildRuntimeYaml(this.provisionPipelineId, vars);
+
+    if (this.dryRun) {
+      onStage('PROVISIONING');
+      await sleep(700);
+      onStage('RUNNING');
+      await sleep(900);
+      onStage('READY');
+      return {
+        envId,
+        envUrl: `https://${envId}.preview.internal`,
+        status: 'ready',
+        executionId: 'dryrun',
+      };
+    }
+
+    const executionId = await this.trigger(this.provisionPipelineId, yaml);
+    onStage('RUNNING');
+    const status = await this.pollUntilDone(executionId, onStage);
+    return {
+      envId,
+      envUrl: `https://${envId}.preview.internal`,
+      status: this.successStatuses.includes(status) ? 'ready' : 'failed',
+      executionId,
+    };
+  }
+
+  /** 与上面对称：销毁 Pipeline 的流式版本。 */
+  async destroyEnvironmentWithEvents(
+    input: { envId: string },
+    onStage: (status: string) => void
+  ): Promise<EnvHandle> {
+    const vars: Record<string, string | number> = { env_id: input.envId };
+    const yaml = buildRuntimeYaml(this.destroyPipelineId, vars);
+
+    if (this.dryRun) {
+      onStage('DESTROYING');
+      await sleep(800);
+      onStage('DESTROYED');
+      return { envId: input.envId, envUrl: '', status: 'destroyed', executionId: 'dryrun' };
+    }
+
+    const executionId = await this.trigger(this.destroyPipelineId, yaml);
+    onStage('DESTROYING');
+    const status = await this.pollUntilDone(executionId, onStage);
+    return {
+      envId: input.envId,
+      envUrl: '',
+      status: this.successStatuses.includes(status) ? 'destroyed' : 'failed',
+      executionId,
+    };
+  }
+
   // --- 内部 HTTP 辅助方法 ------------------------------------------------
+
+  /** 触发 Pipeline，返回真实 executionId。 */
+  async trigger(pipelineId: string, runtimeYaml: string): Promise<string> {
+    return this.triggerPipeline(pipelineId, runtimeYaml);
+  }
 
   private async triggerPipeline(pipelineId: string, runtimeYaml: string): Promise<string> {
     const url = `${this.apiBase}/pipeline/api/pipelines/v2/execute/${pipelineId}`;
@@ -206,11 +281,19 @@ export class HarnessClient {
     return data;
   }
 
-  private async pollUntilDone(executionId: string): Promise<string> {
+  private async pollUntilDone(
+    executionId: string,
+    onPoll?: (status: string) => void
+  ): Promise<string> {
+    let lastStatus = '';
     for (let i = 0; i < this.maxPolls; i++) {
       try {
         const data = await this.fetchExecution(executionId);
         const status = deepGet(data, this.statusPath) as string | undefined;
+        if (status && status !== lastStatus) {
+          lastStatus = status;
+          onPoll?.(status.toUpperCase());
+        }
         if (status && this.doneStatuses.includes(status.toUpperCase())) {
           return status.toUpperCase();
         }

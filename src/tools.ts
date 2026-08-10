@@ -14,10 +14,11 @@ export class ToolRegistry {
     name: string,
     description: string,
     parameters: Record<string, unknown>,
-    fn: ToolFn
+    fn: ToolFn,
+    source?: string
   ): void {
     this.tools.set(name, {
-      schema: { name, description, parameters },
+      schema: { name, description, parameters, source },
       fn,
     });
   }
@@ -36,6 +37,13 @@ export class ToolRegistry {
       throw new Error(`Unknown tool: ${name}`);
     }
     return t.fn(args);
+  }
+
+  /** 将另一个注册表的全部工具合并进当前注册表（用于共享 MCP 工具到各次运行）。 */
+  mergeFrom(other: ToolRegistry): void {
+    for (const [name, entry] of other.tools) {
+      if (!this.tools.has(name)) this.tools.set(name, entry);
+    }
   }
 }
 

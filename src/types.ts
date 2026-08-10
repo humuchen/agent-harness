@@ -25,6 +25,9 @@ export interface ToolSchema {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  // 工具来源标注：'harness'（内置环境工具）/ 'mcp:<serverName>'（来自某 MCP 服务）/ 'mock' 等。
+  // 仅用于可视化与可观测，不参与业务逻辑。
+  source?: string;
 }
 
 export interface LLMResponse {

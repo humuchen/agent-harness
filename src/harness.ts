@@ -4,6 +4,23 @@ import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs } from './guardrails';
 import { withSpan } from './telemetry';
 
+/**
+ * Harness 在跑一轮 `run()` 期间发出的事件。
+ * 这些事件让外部（CLI 进度条、Web UI、测试探针）无需侵入核心循环即可
+ * 实时观察 LLM ↔ 工具 ↔ 记忆 的每一步。纯可选，不影响任何既有行为。
+ */
+export type HarnessEvent =
+  | { type: 'run:start'; runId: string; input: string }
+  | { type: 'run:tools'; tools: { name: string; description: string }[] }
+  | { type: 'guardrail:blocked'; phase: 'input' | 'output' | 'tool'; reason: string; tool?: string }
+  | { type: 'step:start'; step: number; maxSteps: number }
+  | { type: 'llm:call'; step: number; messageCount: number; toolCount: number }
+  | { type: 'llm:response'; step: number; content: string; toolCalls: ToolCall[] }
+  | { type: 'tool:start'; step: number; call: ToolCall }
+  | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
+  | { type: 'run:end'; runId: string; final: string; steps: number }
+  | { type: 'error'; message: string };
+
 export interface HarnessOptions {
   llm: LLM;
   tools: ToolRegistry;
@@ -11,6 +28,19 @@ export interface HarnessOptions {
   systemPrompt?: string;
   // 对 Agent 循环步数的安全上限（工具调用 -> LLM -> 工具调用 ...）。
   maxSteps?: number;
+  // 可选的事件回调：在循环每一步（LLM 调用 / 工具调用 / 护栏拦截）发生时触发。
+  // 用于进度展示、可视化与测试断言，不修改任何业务逻辑。
+  onEvent?: (e: HarnessEvent) => void;
+}
+
+// 经默认值填充后的解析结果类型：onEvent 永不为空。
+interface ResolvedHarnessOptions {
+  llm: LLM;
+  tools: ToolRegistry;
+  memory: Memory;
+  systemPrompt: string;
+  maxSteps: number;
+  onEvent: (e: HarnessEvent) => void;
 }
 
 let idCounter = 0;
@@ -20,21 +50,30 @@ function nextId(prefix: string): string {
 }
 
 export class AgentHarness {
-  private opts: Required<HarnessOptions>;
+  private opts: ResolvedHarnessOptions;
 
   constructor(opts: HarnessOptions) {
     this.opts = {
       maxSteps: 12,
       memory: new Memory(),
       systemPrompt: 'You are a helpful assistant with access to tools.',
+      onEvent: () => {},
       ...opts,
     };
   }
 
   async run(userInput: string): Promise<string> {
+    const runId = nextId('run');
+    const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
+
+    emit({ type: 'run:start', runId, input: userInput });
+
     const guard = checkInput(userInput);
     if (!guard.ok) {
-      return `[guardrail] blocked: ${guard.reason}`;
+      emit({ type: 'guardrail:blocked', phase: 'input', reason: guard.reason ?? 'unknown' });
+      const msg = `[guardrail] blocked: ${guard.reason}`;
+      emit({ type: 'run:end', runId, final: msg, steps: 0 });
+      return msg;
     }
 
     const memory = this.opts.memory;
@@ -46,53 +85,87 @@ export class AgentHarness {
     }
     memory.add({ role: 'user', content: userInput });
 
-    return withSpan('agent.run', async () => {
-      for (let step = 0; step < this.opts.maxSteps; step++) {
-        const messages = memory.history();
-        const resp = await withSpan('llm.call', () =>
-          this.opts.llm(messages, this.opts.tools.schemas())
-        );
+    let final = '[agent] reached max steps without a final answer';
+    let steps = 0;
+    try {
+      final = await withSpan('agent.run', async () => {
+        for (let step = 0; step < this.opts.maxSteps; step++) {
+          steps = step + 1;
+          emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
 
-        const outGuard = checkOutput(resp.content);
-        if (!outGuard.ok) {
-          return `[guardrail] blocked: ${outGuard.reason}`;
-        }
+          const messages = memory.history();
+          emit({
+            type: 'llm:call',
+            step: steps,
+            messageCount: messages.length,
+            toolCount: this.opts.tools.schemas().length,
+          });
 
-        memory.add({
-          role: 'assistant',
-          content: resp.content,
-          tool_calls: resp.tool_calls,
-        });
+          const resp = await withSpan('llm.call', () =>
+            this.opts.llm(messages, this.opts.tools.schemas())
+          );
 
-        if (!resp.tool_calls || resp.tool_calls.length === 0) {
-          return resp.content;
-        }
+          const outGuard = checkOutput(resp.content);
+          if (!outGuard.ok) {
+            emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
+            return `[guardrail] blocked: ${outGuard.reason}`;
+          }
 
-        // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
-        for (const call of resp.tool_calls) {
-          const argGuard = checkToolArgs(call.name, call.arguments);
-          let result: unknown;
-          if (!argGuard.ok) {
-            result = `guardrail blocked: ${argGuard.reason}`;
-          } else {
-            result = await withSpan(`tool.${call.name}`, async () => {
+          emit({ type: 'llm:response', step: steps, content: resp.content, toolCalls: resp.tool_calls });
+          memory.add({
+            role: 'assistant',
+            content: resp.content,
+            tool_calls: resp.tool_calls,
+          });
+
+          if (!resp.tool_calls || resp.tool_calls.length === 0) {
+            return resp.content;
+          }
+
+          // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
+          for (const call of resp.tool_calls) {
+            const argGuard = checkToolArgs(call.name, call.arguments);
+            let result: unknown;
+            let errored = false;
+            if (!argGuard.ok) {
+              result = `guardrail blocked: ${argGuard.reason}`;
+              errored = true;
+              emit({
+                type: 'guardrail:blocked',
+                phase: 'tool',
+                tool: call.name,
+                reason: argGuard.reason ?? 'unknown',
+              });
+            } else {
+              emit({ type: 'tool:start', step: steps, call });
               try {
-                return await this.opts.tools.call(call.name, call.arguments);
+                result = await withSpan(`tool.${call.name}`, async () =>
+                  this.opts.tools.call(call.name, call.arguments)
+                );
               } catch (e: any) {
                 // 将错误作为工具结果返回，以便模型自行修复。
-                return `tool error: ${e?.message ?? String(e)}`;
+                result = `tool error: ${e?.message ?? String(e)}`;
+                errored = true;
               }
+            }
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+            emit({ type: 'tool:result', step: steps, call, result: resultStr, errored });
+            memory.add({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: resultStr,
             });
           }
-          memory.add({
-            role: 'tool',
-            tool_call_id: call.id,
-            name: call.name,
-            content: typeof result === 'string' ? result : JSON.stringify(result),
-          });
         }
-      }
-      return '[agent] reached max steps without a final answer';
-    });
+        return '[agent] reached max steps without a final answer';
+      });
+    } catch (e: any) {
+      emit({ type: 'error', message: e?.message ?? String(e) });
+      final = `[error] ${e?.message ?? String(e)}`;
+    }
+
+    emit({ type: 'run:end', runId, final, steps });
+    return final;
   }
 }

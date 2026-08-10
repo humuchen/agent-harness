@@ -13,7 +13,8 @@ export interface OpenRouterConfig {
   appName?: string;
   // 可注入的 fetch（便于测试或代理）。默认使用全局 fetch。
   fetchImpl?: typeof fetch;
-  // 对退化响应（内容为空且没有工具调用）进行重试，某些免费/弱模型会间歇性返回。
+  // 对退化响应（内容为空且没有工具调用）以及限流/瞬时故障（HTTP 429/5xx）
+  // 进行重试，某些免费/弱模型会间歇性返回空响应或撞上速率限制。
   // 默认重试 2 次。
   retries?: number;
 }
@@ -44,7 +45,7 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
   const siteUrl =
     config.siteUrl ?? process.env.OPENROUTER_SITE_URL ?? 'https://workbuddy.app';
   const appName =
-    config.appName ?? process.env.OPENROUTER_APP_NAME ?? 'agent-harness-ts';
+    config.appName ?? process.env.OPENROUTER_APP_NAME ?? 'agent-harness';
   const fetchImpl = config.fetchImpl ?? fetch;
   const retries = config.retries ?? 2;
 
@@ -90,6 +91,9 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     };
 
     let last: LLMResponse = { content: '', tool_calls: [] };
+    // 这些 HTTP 状态视为限流/瞬时故障，可重试（免费档常遇 429）。
+    const retryableStatus = new Set([429, 500, 502, 503, 529]);
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -99,6 +103,14 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
 
       if (!resp.ok) {
         const text = await resp.text();
+        if (retryableStatus.has(resp.status) && attempt < retries) {
+          const waitMs = 800 * (attempt + 1);
+          console.warn(
+            `[openrouter] ${resp.status} (retryable), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
+          );
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
         throw new Error(`OpenRouter API error ${resp.status}: ${text}`);
       }
 
@@ -114,6 +126,7 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       // 退化响应（无文本、无工具调用）—— 若仍有重试次数则重试。
       const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;
       if (!degenerate || attempt === retries) return last;
+      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
     return last;
   };

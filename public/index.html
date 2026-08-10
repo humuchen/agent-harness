@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Harness · 可视化验证 Playground</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2230;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #11161f, #0d1117);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 .accent { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12px; }
+  .modes { display: flex; gap: 8px; margin-left: auto; }
+  .mode-btn {
+    background: var(--panel); color: var(--muted); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; transition: .15s;
+  }
+  .mode-btn:hover { color: var(--text); border-color: var(--accent); }
+  .mode-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+
+  .chips { display: flex; gap: 8px; padding: 8px 20px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+  .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.ok { color: var(--green); border-color: var(--green); }
+  .chip.warn { color: var(--yellow); border-color: var(--yellow); }
+  .chip b { color: var(--text); font-weight: 600; }
+
+  .controls { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
+  textarea {
+    flex: 1; min-width: 260px; resize: vertical; min-height: 46px; max-height: 140px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-family: inherit; font-size: 13px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .model-input {
+    width: 240px; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0 12px; font-family: var(--mono); font-size: 12px;
+  }
+  .model-input:focus { outline: none; border-color: var(--accent); }
+  .btn {
+    border: 1px solid var(--accent); background: var(--accent); color: #04101f; font-weight: 600;
+    padding: 0 18px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.ghost { background: var(--panel); color: var(--text); border-color: var(--border); }
+  .btn.ghost:hover { border-color: var(--accent); }
+
+  .layout { display: grid; grid-template-columns: 320px 1fr 320px; gap: 14px; padding: 14px 20px; align-items: start; }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 14px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel > h2 {
+    margin: 0; padding: 10px 14px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--border); background: var(--panel-2);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel .body { padding: 12px 14px; max-height: 56vh; overflow: auto; }
+  .panel .body.tall { max-height: 74vh; }
+
+  /* Tool registry */
+  .tool { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); }
+  .tool .name { color: var(--accent); font-family: var(--mono); font-size: 12px; }
+  .tool .desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tool .params { margin-top: 4px; font-size: 11px; color: var(--purple); font-family: var(--mono); }
+  .src-badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 6px; margin-left: 6px; vertical-align: middle; }
+  .src-badge.harness { color: var(--accent); border: 1px solid var(--accent); }
+  .src-badge.mcp { color: var(--purple); border: 1px solid var(--purple); }
+  .src-badge.mock { color: var(--yellow); border: 1px solid var(--yellow); }
+  .src-group-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 6px; }
+  .src-group-title:first-child { margin-top: 0; }
+
+  /* MCP servers */
+  .mcp-server { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); }
+  .mcp-server .ms-head { display: flex; align-items: center; gap: 8px; }
+  .mcp-server .ms-name { font-family: var(--mono); font-size: 12px; color: var(--purple); font-weight: 600; }
+  .mcp-server .ms-url { color: var(--muted); font-size: 11px; margin-top: 2px; word-break: break-all; }
+  .mcp-server .ms-tools { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .mcp-server .ms-err { color: var(--red); font-size: 11px; margin-top: 4px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border); flex: 0 0 auto; }
+  .dot.run { background: var(--yellow); animation: pulse 1s infinite; }
+  .dot.pass, .dot.connected { background: var(--green); }
+  .dot.fail, .dot.error { background: var(--red); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .add-mcp { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
+  .add-mcp input { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
+  .add-mcp input:focus { outline: none; border-color: var(--accent); }
+  .add-mcp .row { display: flex; gap: 6px; }
+  .add-mcp .btn { padding: 0 12px; font-size: 12px; }
+
+  /* Timeline */
+  .step { border-left: 2px solid var(--border); padding: 0 0 14px 14px; position: relative; }
+  .step:last-child { border-left-color: transparent; }
+  .step::before {
+    content: ""; position: absolute; left: -6px; top: 4px; width: 10px; height: 10px;
+    background: var(--border); border-radius: 50%; border: 2px solid var(--bg);
+  }
+  .step.done::before { background: var(--green); }
+  .step.err::before { background: var(--red); }
+  .step-head { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .step-head b { color: var(--text); }
+  .llm-box { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .llm-box .label { font-size: 11px; color: var(--accent); margin-bottom: 4px; }
+  .assistant-text { font-size: 13px; white-space: pre-wrap; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .tchip {
+    font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 8px; background: var(--panel); max-width: 100%;
+  }
+  .tchip .tname { color: var(--purple); }
+  .tchip .tsrc { color: var(--accent); font-size: 10px; }
+  .tchip.running { border-color: var(--yellow); }
+  .tchip.ok { border-color: var(--green); }
+  .tchip.err { border-color: var(--red); }
+  .tchip .tresult { color: var(--muted); display: block; margin-top: 3px; white-space: pre-wrap; max-height: 120px; overflow: auto; }
+  .empty { color: var(--muted); font-size: 12px; text-align: center; padding: 30px 0; }
+
+  /* Conversation / memory */
+  .msg { margin-bottom: 10px; }
+  .msg .who { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .msg.user .who { color: var(--accent); }
+  .msg.assistant .who { color: var(--green); }
+  .msg.tool .who { color: var(--purple); }
+  .msg.system .who, .msg.guardrail .who { color: var(--red); }
+  .bubble { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; white-space: pre-wrap; }
+  .msg.tool .bubble { font-family: var(--mono); font-size: 12px; }
+
+  /* Verification */
+  .vrow { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .vrow .vhead { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel-2); cursor: default; }
+  .vrow .vtitle { font-size: 12px; flex: 1; }
+  .vrow .vsummary { font-size: 11px; color: var(--muted); }
+  .vdetail { padding: 6px 12px 10px; display: none; }
+  .vrow.open .vdetail { display: block; }
+  .vdetail .chk { font-size: 11px; font-family: var(--mono); color: var(--muted); padding: 2px 0; }
+  .vdetail .chk.ok { color: var(--green); }
+  .vdetail .chk.no { color: var(--red); }
+
+  /* Guardrails + events */
+  .glog { font-size: 12px; }
+  .glog .g { border-left: 3px solid var(--red); padding: 6px 8px; margin-bottom: 6px; background: var(--panel-2); border-radius: 0 6px 6px 0; }
+  .glog .g .ph { color: var(--red); font-weight: 600; font-size: 11px; }
+  .glog .g .rs { color: var(--muted); font-size: 11px; }
+  .eventlog { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; max-height: 200px; overflow: auto; }
+
+  /* Env pipeline */
+  .env-section { padding: 0 20px 24px; }
+  .env-grid { display: grid; grid-template-columns: 320px 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .env-grid { grid-template-columns: 1fr; } }
+  .env-form { display: flex; flex-direction: column; gap: 8px; }
+  .env-form input { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 13px; font-family: var(--mono); }
+  .env-form input:focus { outline: none; border-color: var(--accent); }
+  .env-form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .env-cards { display: flex; flex-direction: column; gap: 12px; }
+  .env-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-2); }
+  .env-card .ec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .env-card .ec-id { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .env-card .ec-branch { font-size: 12px; color: var(--muted); }
+  .env-card .ec-url { font-size: 11px; color: var(--purple); margin-top: 4px; word-break: break-all; }
+  .env-badge { font-size: 11px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border); font-weight: 600; }
+  .env-badge.PENDING, .env-badge.PROVISIONING, .env-badge.RUNNING, .env-badge.DESTROYING { color: var(--yellow); border-color: var(--yellow); animation: pulse 1.2s infinite; }
+  .env-badge.READY { color: var(--green); border-color: var(--green); }
+  .env-badge.DESTROYED { color: var(--muted); border-color: var(--muted); animation: none; }
+  .env-badge.FAILED { color: var(--red); border-color: var(--red); }
+  .env-stages { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .env-stage { font-size: 11px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); color: var(--muted); }
+  .env-stage.RUNNING, .env-stage.PROVISIONING, .env-stage.DESTROYING, .env-stage.PENDING { border-color: var(--yellow); color: var(--yellow); }
+  .env-stage.READY, .env-stage.DESTROYED { border-color: var(--green); color: var(--green); }
+  .env-stage.FAILED { border-color: var(--red); color: var(--red); }
+  .env-card .ec-actions { margin-top: 10px; }
+  .env-feed { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow: auto; }
+
+  .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; white-space: pre-wrap; }
+  .banner.final { background: rgba(63,185,80,.12); border: 1px solid var(--green); }
+  .banner.error { background: rgba(248,81,73,.12); border: 1px solid var(--red); }
+  .meta-line { font-size: 11px; color: var(--muted); margin-bottom: 10px; white-space: pre-wrap; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .running-tag { color: var(--yellow); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Agent <span class="accent">Harness</span> · 可视化验证 Playground</h1>
+    <div class="sub">实时观察 LLM ↔ 工具 ↔ 记忆 闭环，验证三大能力，并可视化多 MCP 接入与 Harness 环境流水线。</div>
+  </div>
+  <div class="modes">
+    <button class="mode-btn active" data-mode="mock">Mock（离线）</button>
+    <button class="mode-btn" data-mode="real">真实 LLM</button>
+    <button class="mode-btn" data-mode="real-mcp">真实 + MCP</button>
+  </div>
+</header>
+
+<div class="chips" id="chips">
+  <span class="chip" id="chip-or">OpenRouter: …</span>
+  <span class="chip" id="chip-harness">Harness: …</span>
+  <span class="chip" id="chip-mcp">MCP: …</span>
+</div>
+
+<div class="controls">
+  <textarea id="prompt" placeholder="输入用户请求…"></textarea>
+  <input id="modelInput" class="model-input" placeholder="模型（真实模式，留空=默认）" style="display:none" />
+  <button class="btn" id="runBtn">▶ 运行 Agent</button>
+  <button class="btn ghost" id="verifyBtn">✓ 运行验证</button>
+</div>
+
+<div class="layout">
+  <!-- LEFT -->
+  <div class="col">
+    <div class="panel">
+      <h2>工具注册表 · Tool Registry</h2>
+      <div class="body" id="toolsPanel"><div class="empty">运行后展示当前模式接入的工具</div></div>
+    </div>
+    <div class="panel">
+      <h2>MCP 服务 · Servers</h2>
+      <div class="body" id="mcpPanel"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="panel">
+      <h2>验证 · Verification</h2>
+      <div class="body" id="verifyList">
+        <div class="vrow" data-id="1"><div class="vhead"><span class="dot"></span><span class="vtitle">#1 Agent 闭环</span><span class="vsummary"></span></div><div class="vdetail"></div></div>
+        <div class="vrow" data-id="2"><div class="vhead"><span class="dot"></span><span class="vtitle">#2 Harness 轮询</span><span class="vsummary"></span></div><div class="vdetail"></div></div>
+        <div class="vrow" data-id="3"><div class="vhead"><span class="dot"></span><span class="vtitle">#3 MCP 接入</span><span class="vsummary"></span></div><div class="vdetail"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="col">
+    <div id="finalBanner"></div>
+    <div class="meta-line" id="metaLine"></div>
+    <div class="panel">
+      <h2>Agent 闭环 · 实时时间线 <span class="running-tag" id="runTag"></span></h2>
+      <div class="body tall" id="timeline"><div class="empty">点击「运行 Agent」开始 —— 每一步 LLM 调用与工具执行都会实时出现在这里。</div></div>
+    </div>
+    <div class="panel">
+      <h2>记忆 / 对话 · Memory</h2>
+      <div class="body tall" id="conversation"><div class="empty">对话历史会随运行实时同步。</div></div>
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="col">
+    <div class="panel">
+      <h2>护栏日志 · Guardrails</h2>
+      <div class="body" id="guardrails"><div class="empty">输入 / 输出 / 工具参数被拦截时会出现在这里。</div></div>
+    </div>
+    <div class="panel">
+      <h2>原始事件流 · Events</h2>
+      <div class="body"><div class="eventlog" id="eventsLog"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ENV PIPELINE -->
+<div class="env-section">
+  <div class="panel">
+    <h2>Harness 环境流水线 · Ephemeral Environments <span class="running-tag" id="envTag"></span></h2>
+    <div class="body tall">
+      <div class="env-grid">
+        <div>
+          <div class="env-form">
+            <input id="envType" placeholder="env_type（默认 ephemeral）" value="ephemeral" />
+            <input id="envBranch" placeholder="branch（默认 feature/login）" value="feature/login" />
+            <div class="row2">
+              <input id="envTtl" placeholder="ttl_hours" value="8" />
+              <input id="envRegion" placeholder="region（可选）" />
+            </div>
+            <button class="btn" id="envCreateBtn">🚀 拉起环境</button>
+            <div class="env-feed" id="envFeed" style="margin-top:8px"><div class="empty" style="padding:10px 0">环境状态变化会实时出现在这里。</div></div>
+          </div>
+        </div>
+        <div class="env-cards" id="envCards"><div class="empty">还没有环境。点击「🚀 拉起环境」开始（无 Harness 密钥时走 dry-run 演示）。</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {} };
+  var $ = function (id) { return document.getElementById(id); };
+
+  var PROMPTS = {
+    mock: "帮我在测试环境基于 feature/login 分支拉起一个临时环境，跑完回归后帮我销毁",
+    real: "帮我在测试环境基于 feature/login 分支拉起一个临时环境",
+    "real-mcp": "用 Context7 查一下 typescript 这个库的文档，告诉我怎么用 tsc 把 ts 编译成 js"
+  };
+
+  // ---- chips / mode ----
+  function refreshState() {
+    fetch("/api/state").then(function (r) { return r.json(); }).then(function (s) {
+      setChip("chip-or", "OpenRouter", s.openrouter ? "已配置 (" + (s.model || "") + ")" : "未配置", s.openrouter);
+      setChip("chip-harness", "Harness", s.harnessKey ? "真实密钥" : "dry-run", s.harnessKey);
+      var mcpOk = (s.mcpServers || []).some(function (x) { return x.status === "connected"; });
+      var cnt = (s.mcpServers || []).filter(function (x) { return x.status === "connected"; }).length;
+      setChip("chip-mcp", "MCP", cnt ? (cnt + " 个服务已连") : (s.mcpUrl ? "配置中…" : "未配置"), mcpOk || !!s.mcpUrl);
+    }).catch(function () {});
+  }
+  function setChip(id, label, val, ok) {
+    var el = $(id);
+    el.className = "chip " + (ok ? "ok" : "warn");
+    el.innerHTML = label + ": <b>" + val + "</b>";
+  }
+
+  document.querySelectorAll(".mode-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll(".mode-btn").forEach(function (x) { x.classList.remove("active"); });
+      b.classList.add("active");
+      state.mode = b.getAttribute("data-mode");
+      var showModel = state.mode !== "mock";
+      $("modelInput").style.display = showModel ? "" : "none";
+      var ta = $("prompt");
+      if (!ta.value.trim()) ta.value = PROMPTS[state.mode] || "";
+      ta.placeholder = PROMPTS[state.mode] || "输入用户请求…";
+    });
+  });
+
+  $("prompt").value = PROMPTS.mock;
+
+  // ---- run / verify ----
+  $("runBtn").addEventListener("click", runAgent);
+  $("verifyBtn").addEventListener("click", runVerification);
+
+  function runAgent() {
+    if (state.running) return;
+    state.running = true;
+    $("runBtn").disabled = true;
+    $("runTag").innerHTML = '<span class="spinner"></span> 运行中…';
+    clearTimeline(); clearConversation(); clearGuardrails();
+    $("finalBanner").innerHTML = ""; $("metaLine").textContent = "";
+
+    var prompt = $("prompt").value;
+    var model = $("modelInput").value.trim();
+    streamPost("/api/run", { mode: state.mode, prompt: prompt, model: model }, dispatchHarness);
+  }
+
+  function runVerification() {
+    if (state.verifying) return;
+    state.verifying = true;
+    $("verifyBtn").disabled = true;
+    document.querySelectorAll("#verifyList .vrow").forEach(function (row) {
+      row.className = "vrow";
+      row.querySelector(".dot").className = "dot run";
+      row.querySelector(".vsummary").textContent = "运行中…";
+      row.querySelector(".vdetail").innerHTML = "";
+    });
+    streamPost("/api/verify", {}, dispatchVerify);
+  }
+
+  // ---- SSE-over-fetch streaming ----
+  function streamPost(url, body, onEvent) {
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (resp) {
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) { finish(); return; }
+          buf += decoder.decode(r.value, { stream: true });
+          var idx;
+          while ((idx = buf.indexOf("\n\n")) >= 0) {
+            var chunk = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            var line = chunk.split("\n").filter(function (l) { return l.indexOf("data:") === 0; })[0];
+            if (line) {
+              var json = line.slice(5).trim();
+              if (json) { try { onEvent(JSON.parse(json)); } catch (e) {} }
+            }
+          }
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function (e) {
+      appendBanner("error", "请求失败：" + (e && e.message ? e.message : e));
+      finish();
+    });
+    function finish() {
+      if (state.running) { state.running = false; $("runBtn").disabled = false; $("runTag").textContent = ""; }
+      if (state.verifying) { state.verifying = false; $("verifyBtn").disabled = false; }
+    }
+  }
+
+  // ---- harness event dispatch ----
+  function dispatchHarness(e) {
+    logEvent(e.type);
+    switch (e.type) {
+      case "run:meta":
+        $("metaLine").textContent = (e.notes || []).join("\n");
+        break;
+      case "run:tools":
+        renderTools(e.tools || []);
+        break;
+      case "run:start":
+        addMessage("user", e.input);
+        break;
+      case "step:start":
+        addStep(e.step, e.maxSteps);
+        break;
+      case "llm:call":
+        break;
+      case "llm:response":
+        fillLlm(e.step, e.content, e.toolCalls || []);
+        addAssistantMessage(e.content, e.toolCalls || []);
+        break;
+      case "tool:start":
+        markToolRunning(e.call.id);
+        break;
+      case "tool:result":
+        fillTool(e.call, e.result, e.errored);
+        break;
+      case "guardrail:blocked":
+        addGuardrail(e);
+        addMessage("guardrail", "🚫 护栏拦截[" + e.phase + (e.tool ? ":" + e.tool : "") + "]: " + e.reason);
+        break;
+      case "run:end":
+        markRunEnd(e.final, e.steps);
+        break;
+      case "error":
+        appendBanner("error", "运行错误：" + e.message);
+        break;
+      case "_done":
+        if (e.error) appendBanner("error", "运行被中断。");
+        break;
+    }
+  }
+
+  // ---- timeline rendering ----
+  function clearTimeline() { $("timeline").innerHTML = ""; state.toolRefs = {}; }
+  function addStep(step, maxSteps) {
+    var tl = $("timeline");
+    if (tl.querySelector(".empty")) tl.innerHTML = "";
+    var el = document.createElement("div");
+    el.className = "step"; el.id = "step-" + step;
+    el.innerHTML = '<div class="step-head">Step <b>' + step + '</b> / ' + maxSteps +
+      ' <span class="spinner"></span></div><div class="llm-box" id="llm-' + step + '"></div>';
+    tl.appendChild(el); tl.scrollTop = tl.scrollHeight;
+  }
+  function fillLlm(step, content, toolCalls) {
+    var box = $("llm-" + step); if (!box) return;
+    var html = '<div class="label">🧠 LLM 调用</div>';
+    if (content && content.trim()) html += '<div class="assistant-text">' + esc(content) + '</div>';
+    else if (toolCalls.length) html += '<div class="assistant-text" style="color:var(--muted)">（仅发起工具调用）</div>';
+    else html += '<div class="assistant-text" style="color:var(--muted)">（空响应）</div>';
+    if (toolCalls.length) {
+      html += '<div class="chip-row">';
+      toolCalls.forEach(function (tc) {
+        state.toolRefs[tc.id] = true;
+        var src = (tc.name && tc.name.indexOf("__") > 0) ? '<span class="tsrc">' + esc(tc.name.split("__")[0]) + '</span> · ' : "";
+        html += '<div class="tchip running" id="tc-' + tc.id + '">' +
+          '<span class="tname">🔧 ' + src + esc(tc.name) + '</span>' +
+          '<span class="tresult">参数: ' + esc(JSON.stringify(tc.arguments)) + '</span></div>';
+      });
+      html += '</div>';
+    }
+    box.innerHTML = html;
+    var stepEl = box.closest(".step");
+    if (stepEl) stepEl.classList.add("done");
+    var sp = stepEl && stepEl.querySelector(".spinner");
+    if (sp) sp.remove();
+  }
+  function markToolRunning(id) { var el = $("tc-" + id); if (el) el.className = "tchip running"; }
+  function fillTool(call, result, errored) {
+    var el = $("tc-" + call.id); if (!el) return;
+    el.className = "tchip " + (errored ? "err" : "ok");
+    el.innerHTML = '<span class="tname">🔧 ' + esc(call.name) + '</span>' +
+      '<span class="tresult">' + (errored ? "✗ " : "✓ ") + esc(result) + '</span>';
+    addMessage("tool", "🔧 " + call.name + "\n" + result, call.name);
+  }
+  function markRunEnd(finalText, steps) {
+    $("runTag").textContent = "";
+    appendBanner("final", "✅ 运行结束（" + steps + " 步）\n" + finalText);
+  }
+
+  // ---- conversation / memory ----
+  function clearConversation() { $("conversation").innerHTML = ""; }
+  function addMessage(role, text, who) {
+    var c = $("conversation");
+    if (c.querySelector(".empty")) c.innerHTML = "";
+    var el = document.createElement("div");
+    el.className = "msg " + role;
+    var label = who || ({ user: "You", assistant: "Agent", tool: "Tool", system: "System", guardrail: "Guardrail" })[role] || role;
+    el.innerHTML = '<div class="who">' + label + '</div><div class="bubble">' + esc(text) + '</div>';
+    c.appendChild(el); c.scrollTop = c.scrollHeight;
+  }
+  function addAssistantMessage(content, toolCalls) {
+    var t = content && content.trim() ? content : "(发起 " + toolCalls.length + " 个工具调用)";
+    addMessage("assistant", t);
+  }
+
+  // ---- tools panel (grouped by source) ----
+  function renderTools(tools) {
+    var p = $("toolsPanel");
+    if (!tools.length) { p.innerHTML = '<div class="empty">无工具</div>'; return; }
+    var groups = { harness: [], mcp: [], mock: [], other: [] };
+    tools.forEach(function (t) {
+      var s = t.source || "harness";
+      if (s === "harness") groups.harness.push(t);
+      else if (s.indexOf("mcp") === 0) groups.mcp.push(t);
+      else if (s === "mock") groups.mock.push(t);
+      else groups.other.push(t);
+    });
+    var html = "";
+    var titles = { harness: "Harness 环境工具", mcp: "MCP 工具", mock: "Mock 工具", other: "其他工具" };
+    Object.keys(groups).forEach(function (g) {
+      if (!groups[g].length) return;
+      html += '<div class="src-group-title">' + titles[g] + ' (' + groups[g].length + ')</div>';
+      groups[g].forEach(function (t) {
+        var props = (t.parameters && t.parameters.properties) ? Object.keys(t.parameters.properties) : [];
+        var req = (t.parameters && t.parameters.required) || [];
+        var badge = "";
+        if (g === "harness") badge = '<span class="src-badge harness">harness</span>';
+        else if (g === "mcp") badge = '<span class="src-badge mcp">' + esc((t.source || "mcp").replace("mcp:", "")) + '</span>';
+        else if (g === "mock") badge = '<span class="src-badge mock">mock</span>';
+        html += '<div class="tool"><div class="name">' + esc(t.name) + badge + '</div>' +
+          '<div class="desc">' + esc(t.description || "") + '</div>' +
+          (props.length ? '<div class="params">参数: ' + props.map(function (k) {
+            return req.indexOf(k) >= 0 ? k + "*" : k;
+          }).join(", ") + '</div>' : '') + '</div>';
+      });
+    });
+    p.innerHTML = html;
+  }
+
+  // ---- MCP servers panel ----
+  function refreshMcp() {
+    fetch("/api/mcp/list").then(function (r) { return r.json(); }).then(function (data) {
+      var servers = data.servers || [];
+      var p = $("mcpPanel");
+      if (!servers.length) { p.innerHTML = '<div class="empty">暂无 MCP 服务。</div>'; }
+      else {
+        p.innerHTML = servers.map(function (s) {
+          var dotCls = s.status === "connected" ? "dot connected" : (s.status === "error" ? "dot error" : "dot run");
+          var tools = s.tools && s.tools.length
+            ? s.tools.map(function (t) { return esc(t.originalName); }).join(", ")
+            : "（无工具）";
+          return '<div class="mcp-server"><div class="ms-head"><span class="' + dotCls + '"></span>' +
+            '<span class="ms-name">' + esc(s.name) + '</span></div>' +
+            (s.url ? '<div class="ms-url">' + esc(s.url) + '</div>' : '') +
+            '<div class="ms-tools">工具 ' + (s.tools ? s.tools.length : 0) + ': ' + tools + '</div>' +
+            (s.error ? '<div class="ms-err">⚠ ' + esc(s.error) + '</div>' : '') + '</div>';
+        }).join("") + mcpAddForm();
+      }
+      // 仍有服务在连接中则继续轮询
+      if (servers.some(function (x) { return x.status === "connecting"; })) {
+        setTimeout(refreshMcp, 2000);
+      }
+    }).catch(function () { p.innerHTML = '<div class="empty">MCP 列表加载失败</div>'; });
+  }
+  function mcpAddForm() {
+    return '<div class="add-mcp">' +
+      '<input id="mcpName" placeholder="服务名（如 github）" />' +
+      '<input id="mcpUrl" placeholder="服务地址（如 https://mcp.xxx.com/mcp）" />' +
+      '<div class="row"><button class="btn" id="mcpAddBtn">+ 添加 MCP 服务</button></div></div>';
+  }
+  function bindMcpAdd() {
+    var btn = $("mcpAddBtn");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var name = $("mcpName").value.trim();
+      var url = $("mcpUrl").value.trim();
+      if (!name || !url) { alert("请填写服务名与地址"); return; }
+      btn.disabled = true;
+      fetch("/api/mcp/add", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name, url: url })
+      }).then(function (r) { return r.json(); }).then(function () {
+        btn.disabled = false; $("mcpName").value = ""; $("mcpUrl").value = "";
+        refreshMcp();
+      }).catch(function (e) {
+        btn.disabled = false;
+        alert("添加失败：" + (e && e.message ? e.message : e));
+      });
+    });
+  }
+
+  // ---- guardrails ----
+  function clearGuardrails() { $("guardrails").innerHTML = ""; }
+  function addGuardrail(e) {
+    var g = $("guardrails");
+    if (g.querySelector(".empty")) g.innerHTML = "";
+    var el = document.createElement("div");
+    el.className = "g";
+    el.innerHTML = '<div class="ph">拦截环节: ' + e.phase + (e.tool ? " · " + esc(e.tool) : "") + '</div>' +
+      '<div class="rs">' + esc(e.reason) + '</div>';
+    g.appendChild(el);
+  }
+
+  // ---- banner ----
+  function appendBanner(kind, text) {
+    $("finalBanner").innerHTML = '<div class="banner ' + kind + '">' + esc(text) + '</div>';
+  }
+
+  // ---- verification dispatch ----
+  function dispatchVerify(e) {
+    logEvent(e.type);
+    if (e.type === "_verify_done") return;
+    var row = document.querySelector('#verifyList .vrow[data-id="' + e.id + '"]');
+    if (!row) return;
+    var dot = row.querySelector(".dot");
+    var sum = row.querySelector(".vsummary");
+    var detail = row.querySelector(".vdetail");
+    if (e.type === "verify:start") {
+      row.className = "vrow open"; dot.className = "dot run"; sum.textContent = "运行中…"; detail.innerHTML = "";
+    } else if (e.type === "verify:check") {
+      var c = document.createElement("div");
+      c.className = "chk " + (e.ok ? "ok" : "no");
+      c.textContent = (e.ok ? "✓ " : "✗ ") + e.msg;
+      detail.appendChild(c);
+    } else if (e.type === "verify:done") {
+      dot.className = "dot " + (e.pass ? "pass" : "fail");
+      sum.textContent = e.pass ? "通过 · " + e.summary : "失败 · " + e.summary;
+    } else if (e.type === "verify:error") {
+      dot.className = "dot fail"; sum.textContent = "异常";
+      var ce = document.createElement("div"); ce.className = "chk no"; ce.textContent = "✗ " + e.message;
+      detail.appendChild(ce);
+    }
+  }
+
+  // ---- ENV pipeline ----
+  var envCards = {};
+  function refreshEnvs() {
+    fetch("/api/env").then(function (r) { return r.json(); }).then(function (data) {
+      (data.envs || []).forEach(function (env) { upsertEnvCard(env, false); });
+    }).catch(function () {});
+  }
+  function upsertEnvCard(env, isLive) {
+    var wrap = $("envCards");
+    if (wrap.querySelector(".empty")) wrap.innerHTML = "";
+    var el = envCards[env.envId];
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "env-card";
+      el.id = "env-" + env.envId;
+      wrap.insertBefore(el, wrap.firstChild);
+      envCards[env.envId] = el;
+    }
+    var stages = (env.stages || []).map(function (s) {
+      return '<span class="env-stage ' + s.status + '">' + esc(s.status) + '</span>';
+    }).join("");
+    el.innerHTML = '<div class="ec-head"><span class="env-badge ' + env.status + '">' + env.status + '</span>' +
+      '<span class="ec-id">' + esc(env.envId) + '</span>' +
+      '<span class="ec-branch">branch: ' + esc(env.branch) + '</span></div>' +
+      (env.url ? '<div class="ec-url">' + esc(env.url) + '</div>' : '') +
+      '<div class="env-stages">' + stages + '</div>' +
+      '<div class="ec-actions"><button class="btn ghost" data-env="' + esc(env.envId) + '">🗑 销毁</button></div>';
+    el.querySelector("button[data-env]").addEventListener("click", function () {
+      destroyEnv(env.envId);
+    });
+  }
+  function appendEnvFeed(text, isErr) {
+    var f = $("envFeed");
+    if (f.querySelector(".empty")) f.innerHTML = "";
+    var line = document.createElement("div");
+    line.style.color = isErr ? "var(--red)" : "var(--muted)";
+    line.textContent = (new Date().toLocaleTimeString()) + "  " + text;
+    f.insertBefore(line, f.firstChild);
+  }
+  function createEnv() {
+    if (state.envRunning) return;
+    state.envRunning = true;
+    $("envCreateBtn").disabled = true;
+    $("envTag").innerHTML = '<span class="spinner"></span> 拉起中…';
+    var body = {
+      action: "create",
+      env_type: $("envType").value.trim() || "ephemeral",
+      branch: $("envBranch").value.trim() || "main",
+      ttl_hours: Number($("envTtl").value) || 8,
+      region: $("envRegion").value.trim() || undefined
+    };
+    streamPost("/api/env", body, dispatchEnv);
+  }
+  function destroyEnv(envId) {
+    if (state.envRunning) return;
+    state.envRunning = true;
+    $("envTag").innerHTML = '<span class="spinner"></span> 销毁中…';
+    streamPost("/api/env", { action: "destroy", env_id: envId }, dispatchEnv);
+  }
+  function dispatchEnv(e) {
+    logEvent(e.type);
+    if (e.type === "env:status") {
+      upsertEnvCard(e.env, true);
+      appendEnvFeed("[" + e.env.envId + "] → " + e.env.status);
+    } else if (e.type === "env:error") {
+      appendEnvFeed("⚠ " + e.message, true);
+    } else if (e.type === "_env_done") {
+      state.envRunning = false;
+      $("envCreateBtn").disabled = false;
+      $("envTag").textContent = "";
+    }
+  }
+  $("envCreateBtn").addEventListener("click", createEnv);
+
+  // ---- event log ----
+  function logEvent(type) {
+    var el = $("eventsLog");
+    el.textContent = (new Date().toLocaleTimeString()) + "  " + type + "\n" + el.textContent;
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  refreshState();
+  refreshMcp();
+  refreshEnvs();
+  // 绑定动态生成的 MCP 添加按钮（首轮渲染后）
+  setTimeout(bindMcpAdd, 300);
+  // 监听 MCP 面板变化以便重新绑定添加按钮
+  var mcpObserver = new MutationObserver(function () { bindMcpAdd(); });
+  mcpObserver.observe($("mcpPanel"), { childList: true });
+})();
+</script>
+</body>
+</html>
