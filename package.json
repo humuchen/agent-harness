@@ -1,0 +1,36 @@
+{
+  "name": "agent-harness-ts",
+  "version": "0.1.0",
+  "description": "A minimal, runnable TypeScript harness for LLM agents (tool loop, memory, guardrails, telemetry).",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/examples/basic.js",
+    "dev": "tsc -p tsconfig.json && node dist/examples/basic.js",
+    "demo:env": "tsc -p tsconfig.json && node dist/examples/self-serve-env.js",
+    "chat": "tsc -p tsconfig.json && node dist/examples/chat.js",
+    "real-loop": "tsc -p tsconfig.json && node dist/examples/real-loop.js",
+    "verify:harness": "tsc -p tsconfig.json && node dist/examples/verify-harness.js",
+    "verify:mcp": "tsc -p tsconfig.json && node dist/examples/verify-mcp.js",
+    "verify": "tsc -p tsconfig.json && node dist/examples/verify-harness.js && node dist/examples/verify-mcp.js"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "harness",
+    "tools",
+    "guardrails"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  },
+  "optionalDependencies": {
+    "@opentelemetry/api": "^1.7.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  }
+}
