@@ -77,9 +77,13 @@
     margin: 0; padding: 10px 14px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
     color: var(--muted); border-bottom: 1px solid var(--border); background: var(--panel-2);
     display: flex; align-items: center; gap: 8px;
+    cursor: pointer; user-select: none;
   }
   .panel .body { padding: 12px 14px; max-height: 56vh; overflow: auto; }
   .panel .body.tall { max-height: 74vh; }
+  .panel > h2 .collapse-icon { margin-left: auto; transition: transform .2s; font-size: 10px; }
+  .panel.collapsed .body { display: none; }
+  .panel.collapsed > h2 .collapse-icon { transform: rotate(-90deg); }
 
   /* Tool registry */
   .tool { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); }
@@ -140,13 +144,16 @@
 
   /* Conversation / memory */
   .msg { margin-bottom: 10px; }
-  .msg .who { font-size: 11px; font-weight: 600; margin-bottom: 2px; }
+  .msg .who { font-size: 11px; font-weight: 600; margin-bottom: 2px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
   .msg.user .who { color: var(--accent); }
   .msg.assistant .who { color: var(--green); }
   .msg.tool .who { color: var(--purple); }
   .msg.system .who, .msg.guardrail .who { color: var(--red); }
   .bubble { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; white-space: pre-wrap; }
   .msg.tool .bubble { font-family: var(--mono); font-size: 12px; }
+  .msg .who .collapse-icon { transition: transform .2s; font-size: 9px; }
+  .msg.collapsed .bubble { display: none; }
+  .msg.collapsed .who .collapse-icon { transform: rotate(-90deg); }
 
   /* Verification */
   .vrow { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
@@ -510,7 +517,10 @@
     var el = document.createElement("div");
     el.className = "msg " + role;
     var label = who || ({ user: "You", assistant: "Agent", tool: "Tool", system: "System", guardrail: "Guardrail" })[role] || role;
-    el.innerHTML = '<div class="who">' + label + '</div><div class="bubble">' + esc(text) + '</div>';
+    el.innerHTML = '<div class="who">' + label + '<span class="collapse-icon">▼</span></div><div class="bubble">' + esc(text) + '</div>';
+    el.querySelector(".who").addEventListener("click", function () {
+      el.classList.toggle("collapsed");
+    });
     c.appendChild(el); c.scrollTop = c.scrollHeight;
   }
   function addAssistantMessage(content, toolCalls) {
@@ -731,6 +741,17 @@
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+
+  // ---- panel 展开收起 ----
+  document.querySelectorAll(".panel > h2").forEach(function (h2) {
+    var icon = document.createElement("span");
+    icon.className = "collapse-icon";
+    icon.textContent = "▼";
+    h2.appendChild(icon);
+    h2.addEventListener("click", function () {
+      h2.parentElement.classList.toggle("collapsed");
+    });
+  });
 
   refreshState();
   refreshMcp();
