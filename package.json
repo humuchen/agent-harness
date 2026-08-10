@@ -1,5 +1,5 @@
 {
-  "name": "agent-harness-ts",
+  "name": "agent-harness",
   "version": "0.1.0",
   "description": "A minimal, runnable TypeScript harness for LLM agents (tool loop, memory, guardrails, telemetry).",
   "main": "dist/src/index.js",
@@ -13,7 +13,10 @@
     "real-loop": "tsc -p tsconfig.json && node dist/examples/real-loop.js",
     "verify:harness": "tsc -p tsconfig.json && node dist/examples/verify-harness.js",
     "verify:mcp": "tsc -p tsconfig.json && node dist/examples/verify-mcp.js",
-    "verify": "tsc -p tsconfig.json && node dist/examples/verify-harness.js && node dist/examples/verify-mcp.js"
+    "verify:context7": "tsc -p tsconfig.json && node dist/examples/verify-context7.js",
+    "use:context7": "tsc -p tsconfig.json && node dist/examples/use-context7.js",
+    "ui": "tsc -p tsconfig.json && node dist/src/ui/server.js",
+    "verify": "tsc -p tsconfig.json && node dist/examples/verify-harness.js && node dist/examples/verify-mcp.js && node dist/examples/verify-context7.js"
   },
   "keywords": [
     "agent",

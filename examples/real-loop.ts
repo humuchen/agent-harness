@@ -25,7 +25,12 @@ async function main(): Promise<void> {
   const tools = new ToolRegistry();
   const harness = new HarnessClient(); // dry-run unless HARNESS_API_KEY set
   registerHarnessTools(tools, harness);
-  await registerMcpTools(tools);
+  // MCP 接入为 best-effort：连不上（如 context7 抖动）也不影响环境闭环。
+  try {
+    await registerMcpTools(tools);
+  } catch (e) {
+    console.error('[real-loop] MCP integration skipped (best-effort):', (e as Error).message);
+  }
 
   const llm: LLM = createOpenRouterLLM();
   const agent = new AgentHarness({

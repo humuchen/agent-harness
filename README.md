@@ -21,8 +21,16 @@ agent-harness-ts/
 │  ├─ memory.ts       // 滑动窗口 + 长期记忆 + 可选持久化
 │  ├─ tools.ts        // 工具注册表 + JSON Schema 生成
 │  ├─ guardrails.ts   // 输入/输出/工具参数三层护栏
-│  ├─ harness.ts      // 编排循环（LLM ↔ 工具 ↔ 记忆）
-│  └─ index.ts        // 统一导出
+│  ├─ harness.ts      // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
+│  ├─ index.ts        // 统一导出
+│  └─ ui/             // 可视化验证 Playground（零依赖 HTTP + SSE 服务 + 前端）
+│     ├─ runner.ts    // 按模式组装 agent（mock / real / real-mcp）
+│     ├─ verification.ts // 三大能力的可视化验证（流式事件）
+│     ├─ mcp-manager.ts  // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
+│     ├─ env-pipeline.ts // 环境生命周期状态机（PENDING→…→READY/RUNNING）+ 流式状态
+│     └─ server.ts    // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
+├─ public/
+│  └─ index.html      // 单文件暗色仪表盘前端
 ├─ examples/
 │  └─ basic.ts        // MockLLM 示例，无需 API key 即可跑
 ├─ package.json
@@ -124,32 +132,102 @@ npm run real-loop
 ## MCP 接入（已实现，配即激活）
 
 `src/integrations/mcp/placeholder.ts` 已基于 `@modelcontextprotocol/sdk` 实现
-**真实 MCP 客户端**。你目前还没有自己的 MCP server，所以它默认是 no-op；
-一旦你有了 server，二选一配置即可自动把 MCP 工具接进 `ToolRegistry`：
+**真实 MCP 客户端**，支持三种传输：
 
-- 远程（SSE/HTTP）：`MCP_SERVER_URL=https://your-mcp.example.com/sse`
-- 本地（stdio）：`MCP_COMMAND=npx`（可配 `MCP_ARGS` / `MCP_HEADERS`）
+- 远程 **Streamable HTTP**（默认，URL 不以 `/sse` 结尾时自动选）
+- 远程 **SSE**（`MCP_SERVER_URL` 以 `/sse` 结尾，或显式 `transportType: 'sse'`）
+- 本地 **stdio**（`MCP_COMMAND` + `MCP_ARGS`）
+
+配置其一即可自动把 MCP 工具接进 `ToolRegistry`，护栏 / 记忆 / 追踪对它们
+**自动生效**，无需改 harness 主循环。远程认证头通过 `MCP_HEADERS`
+（`KEY=VALUE` 逗号分隔，如 `MCP_HEADERS=CONTEXT7_API_KEY=xxx`）注入。
+
+### 已接入：Context7（库文档/代码片段 MCP）
+
+首个真实 MCP 已接上 **Context7**（`https://mcp.context7.com/mcp`，Streamable HTTP，
+基础使用免 key）。`.env` 已激活：
 
 ```bash
-export MCP_SERVER_URL=https://your-mcp.example.com/sse
-npm run demo:env   # 启动时自动连接 MCP、拉取工具列表并注册
+MCP_SERVER_URL=https://mcp.context7.com/mcp
+# 高配额才需要：MCP_HEADERS=CONTEXT7_API_KEY=你的key
 ```
 
-MCP 工具注册后，护栏 / 记忆 / 追踪对它们**自动生效**，无需改 harness 主循环。
+它提供两个工具：`resolve-library-id`（把库名解析成 Context7 库 ID）和
+`query-docs`（按库 ID + 问题拉取最新官方文档片段）。
+
+```bash
+npm run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
+```
+
+> 你之前没有自己的 MCP，所以这块是「预留 → 激活」。接下来按同样方式逐步
+> 添加更多 MCP（改 `MCP_SERVER_URL` 或加多个 `registerMcpTools` 调用即可，
+> 主循环零改动）。
 
 > 把「环境治理」与「Agent harness」串起来的关键：
 > `harness-env-platform` 负责环境定义与流水线，
 > `agent-harness-ts` 通过 Harness API 在对话中按需供给/回收环境，
 > 两者仅通过流水线 identifier 与环境变量耦合，互不入侵。
 
-## 自包含验证（无需真实凭据/服务）
+## 可视化验证 Playground（Web UI）
 
-三项核心能力都配了**零外部依赖**的验证脚本，CI 或本地可直接跑：
+除了 CLI 示例，还提供了一个**零依赖的网页仪表盘**，把 Agent 闭环与三大验证
+**可视化、可交互**地跑出来：
 
 ```bash
-npm run verify            # 依次跑 #2 + #3 验证
+npm run ui            # 编译并启动，默认 http://localhost:4173 （可用 UI_PORT 改端口）
+```
+
+打开后你会看到三栏布局：
+
+- **左栏**：当前模式的工具注册表（Tool Registry，按来源 `harness` / `mcp` 分组）
+  + **MCP 服务面板**（每个已接 server 的状态灯、工具数、工具列表，并可填
+  URL 实时「添加 MCP」）+ 三大验证（Agent 闭环 / Harness 轮询 / MCP 接入）
+  的实时状态灯。
+- **中栏**：Agent 闭环的**实时时间线**（每一步 LLM 调用、工具调用的参数与
+  结果都流式出现）+ 同步的「记忆 / 对话」视图 + 顶部**环境流水线**视图。
+- **右栏**：护栏拦截日志（输入 / 输出 / 工具参数被拦截时高亮）+ 原始事件流。
+
+三种运行模式（顶部切换）+ 可选模型覆盖输入框：
+
+- **Mock（离线）**：内置 mock LLM + Harness dry-run 工具，**无需任何密钥**
+  即可可视化跑通「创建 → 销毁」闭环，最适合离线验证。
+- **真实 LLM**：走 OpenRouter 真实模型（需 `OPENROUTER_API_KEY`）。
+- **真实 + Context7 MCP**：在真实 LLM 基础上接入已配置的 Context7 MCP，
+  可视化看到 agent 自主调用远程 MCP 工具。
+
+点「▶ 运行 Agent」开始一轮运行；点「✓ 运行验证」则把三大能力按流式事件
+在左栏验证面板里逐个点亮 ✅ / ❌（与 `npm run verify:*` 同一套逻辑，只是
+实时可视化）。环境流水线区可点「拉起环境 / 销毁环境」触发
+`PENDING → PROVISIONING → RUNNING → READY` 状态机的可视化（无
+`HARNESS_API_KEY` 时走 dry-run 演示同样的状态流转）。
+
+实现要点：
+
+- `src/ui/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
+  通过 SSE（`text/event-stream`）把 `HarnessEvent`、验证事件、MCP/Env 事件推给前端。
+  端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
+  `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
+  `/api/env`（create/destroy 流式推状态机）、`/api/state`（全局状态快照）。
+- `src/ui/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVER_URL`
+  （逗号分隔可配多个）自动连接，并支持运行时通过 `/api/mcp/add` 逐步添加；
+  每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
+- `src/ui/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
+  Harness 流水线各阶段；有 `HARNESS_API_KEY` 时可切换为调用真实 `HarnessClient`
+  轮询真实状态。
+- `src/harness.ts` 新增可选 `onEvent` 回调（类型 `HarnessEvent`），在循环每一步
+  发出事件，**不修改任何业务逻辑**，CLI 与测试完全不受影响。
+- 前端 `public/index.html` 是单文件（内联 CSS/JS，无 CDN 依赖），暗色主题，
+  通过 `fetch` + `ReadableStream` 解析 SSE，断网可用。
+
+## 自包含验证（无需真实凭据/服务）
+
+三项核心能力都配了验证脚本：
+
+```bash
+npm run verify            # 依次跑 #2 Harness + #3 内存 MCP + #3 Context7（真实端点）
 npm run verify:harness    # #2：用 Mock fetch 验证 Harness 轮询/终态映射
 npm run verify:mcp        # #3：进程内起真实 MCP Server 验证接入链路
+npm run verify:context7   # #3：连真实 Context7 端点，端到端验证（需联网）
 npm run real-loop         # #1：真实 OpenRouter 两轮 create→destroy 闭环
 ```
 
@@ -157,5 +235,6 @@ npm run real-loop         # #1：真实 OpenRouter 两轮 create→destroy 闭�
   两条终态路径，并验证自定义 `statusPath` 生效。
 - `examples/verify-mcp.ts`：用 SDK `InMemoryTransport` 在进程内起 MCP Server，
   经 `registerMcpTools` 注入 transport，完整跑通「连接→list→注册→调用」。
+- `examples/verify-context7.ts`：连真实 Context7 端点，列工具并实调 `resolve-library-id`。
 - `examples/real-loop.ts`：需 `OPENROUTER_API_KEY`（见 `.env`）才走真实模型；
-  无 key 时退回内置 mock。
+  MCP 接入为 best-effort——`registerMcpTools` 失败只告警不中断环境闭环。
