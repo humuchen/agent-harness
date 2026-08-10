@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build-and-deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -23,6 +23,34 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 质量门禁：未通过类型检查与构建的产物不得发布到 Pages。
+      # 注意：CI 只把静态 public/ 推到 Pages（GitHub Pages 不提供后端），
+      # 因此前端会在探测不到 /api/* 时自动切到「静态演示模式」。
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check & build (quality gate)
+        run: npm run build
+
+      # 额外校验内嵌在 public/index.html 里的演示脚本（tsc 不会覆盖到 HTML 内联 JS）。
+      - name: Validate frontend demo script
+        run: |
+          node -e '
+          const fs = require("fs"), vm = require("vm");
+          const html = fs.readFileSync("public/index.html", "utf8");
+          const re = /<script>([\s\S]*?)<\/script>/g;
+          let m, ok = true, n = 0;
+          while ((m = re.exec(html))) { n++; try { new vm.Script(m[1]); } catch (e) { ok = false; console.error("inline script #" + n + " syntax error:", e.message); } }
+          if (!ok) process.exit(1);
+          console.log("frontend inline scripts OK (" + n + " blocks)");
+          '
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
