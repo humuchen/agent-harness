@@ -1,4 +1,4 @@
-# agent-harness-ts
+# agent-harness
 
 一个**最小化、可直接运行**的 TypeScript AI Agent harness 骨架：工具调用循环、短期/长期记忆、三层护栏、可选的 OpenTelemetry 追踪。设计目标与 Python 版 `agent-harness` 一致，但用 TS 重写。
 
@@ -14,7 +14,7 @@
 ## 目录结构
 
 ```
-agent-harness-ts/
+agent-harness/
 ├─ src/
 │  ├─ types.ts        // 核心契约：Message / ToolCall / ToolSchema / LLM
 │  ├─ telemetry.ts    // 可选 OTel 追踪（无依赖降级）

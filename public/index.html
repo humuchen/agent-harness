@@ -46,7 +46,20 @@
   .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .chip.ok { color: var(--green); border-color: var(--green); }
   .chip.warn { color: var(--yellow); border-color: var(--yellow); }
+  .chip.demo { color: var(--purple); border-color: var(--purple); }
   .chip b { color: var(--text); font-weight: 600; }
+
+  code {
+    font-family: var(--mono); font-size: 12px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+  }
+  .demo-banner {
+    display: none; padding: 10px 20px; font-size: 13px;
+    border-bottom: 1px solid var(--purple); background: rgba(188, 140, 255, .10);
+  }
+  .demo-banner.on { display: block; }
+  .demo-banner b { color: var(--purple); }
+  .demo-banner .dim { color: var(--muted); }
 
   .controls { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
   textarea {
@@ -222,6 +235,11 @@
   </div>
 </header>
 
+<div class="demo-banner" id="demoBanner">
+  <b>静态演示模式</b> —— 当前页面未连接后端，下方的「运行 Agent」「运行验证」「环境流水线」全部由浏览器本地脚本模拟。
+  <span class="dim">事件类型、护栏规则与状态机时序都对齐真实实现，但不会调用任何模型或远程服务。想跑真实闭环，请克隆仓库后执行 <code>npm run ui</code>。</span>
+</div>
+
 <div class="chips" id="chips">
   <span class="chip" id="chip-or">OpenRouter: …</span>
   <span class="chip" id="chip-harness">Harness: …</span>
@@ -308,6 +326,419 @@
 </div>
 
 <script>
+/* ==========================================================================
+   静态演示后端 · Static demo backend
+   --------------------------------------------------------------------------
+   CI 会把 public/ 单独发布到 GitHub Pages，那里只有静态文件，没有
+   src/ui/server.ts 提供的 /api/* 接口。本模块在探测到后端缺席时接管全部
+   请求，在浏览器内复刻与真实 SSE 一致的事件流，使线上页面依然能完整演示
+   「Agent 闭环 / 三大验证 / 环境流水线」。
+
+   保真原则：事件类型、字段名、护栏规则、状态机阶段与 dry-run 时序均对齐
+   src/ 下的真实实现，仅把 LLM 与远程服务替换为确定性脚本。
+   ========================================================================== */
+window.HarnessDemo = (function () {
+  "use strict";
+
+  // 与 src/guardrails.ts 完全一致
+  var SECRET_RE = /(AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}|password\s*[:=]\s*\S+|secret\s*[:=]\s*\S+)/i;
+  var MAX_INPUT = 20000;
+  // 与 src/harness.ts 的 HarnessOptions.maxSteps 默认值一致
+  var MAX_STEPS = 12;
+
+  var seq = 0;
+  var envs = [];
+
+  function uid(prefix) { seq += 1; return prefix + "_" + Date.now() + "_" + seq; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  // --- 护栏：镜像 src/guardrails.ts 的 checkInput ---
+  function checkInput(text) {
+    if (typeof text !== "string") return { ok: false, reason: "input must be a string" };
+    if (text.length > MAX_INPUT) return { ok: false, reason: "input too long (" + text.length + " > " + MAX_INPUT + ")" };
+    if (SECRET_RE.test(text)) return { ok: false, reason: "possible secret in input" };
+    return { ok: true };
+  }
+
+  // --- 工具 schema：镜像 registerHarnessTools() 的注册内容 ---
+  function harnessTools() {
+    return [
+      {
+        name: "create_ephemeral_environment",
+        description: "Provision an ephemeral/preview environment via the Harness pipeline. Returns an env id and URL that subsequent steps can target.",
+        parameters: {
+          type: "object",
+          properties: {
+            env_type: { type: "string", description: "Environment type, e.g. 'ephemeral' or 'preview'" },
+            branch: { type: "string", description: "Git branch to deploy into the environment" },
+            ttl_hours: { type: "number", description: "Auto-destroy after N hours (cost guard)" },
+            region: { type: "string", description: "Optional cloud region" },
+            owner: { type: "string", description: "Optional owner tag" }
+          },
+          required: ["env_type", "branch"]
+        },
+        source: "harness"
+      },
+      {
+        name: "destroy_environment",
+        description: "Destroy a previously provisioned environment via the Harness destroy pipeline. Always call this when the environment is no longer needed (cost guard).",
+        parameters: {
+          type: "object",
+          properties: {
+            env_id: { type: "string", description: "Environment id returned by create_ephemeral_environment" }
+          },
+          required: ["env_id"]
+        },
+        source: "harness"
+      }
+    ];
+  }
+
+  // Context7 MCP 的两个工具，注册名带 <server>__ 前缀（对齐 connectMcpServer）
+  function mcpTools() {
+    return [
+      {
+        name: "context7__resolve-library-id",
+        description: "[context7] 把库名解析成 Context7 库 ID，供 query-docs 使用",
+        parameters: {
+          type: "object",
+          properties: { libraryName: { type: "string", description: "要查询的库名" } },
+          required: ["libraryName"]
+        },
+        source: "mcp:context7"
+      },
+      {
+        name: "context7__query-docs",
+        description: "[context7] 按库 ID + 问题拉取最新官方文档片段",
+        parameters: {
+          type: "object",
+          properties: {
+            context7CompatibleLibraryID: { type: "string", description: "resolve-library-id 返回的库 ID" },
+            question: { type: "string", description: "要查的问题" }
+          },
+          required: ["context7CompatibleLibraryID", "question"]
+        },
+        source: "mcp:context7"
+      }
+    ];
+  }
+
+  function demoServers() {
+    return [{
+      name: "context7",
+      url: "https://mcp.context7.com/mcp",
+      status: "connected",
+      toolCount: 2,
+      tools: mcpTools().map(function (t) {
+        return { registeredName: t.name, originalName: t.name.split("__")[1], description: t.description };
+      }),
+      error: null
+    }];
+  }
+
+  function defaultPrompt(mode) {
+    if (mode === "real-mcp") return "用 Context7 查一下 typescript 这个库的文档，告诉我怎么用 tsc 把 ts 编译成 js";
+    if (mode === "real") return "帮我在测试环境基于 feature/login 分支拉起一个临时环境";
+    return "帮我在测试环境基于 feature/login 分支拉起一个临时环境，跑完回归后帮我销毁";
+  }
+
+  // --- 确定性剧本：每种模式对应一串 LLM 响应与工具结果 ---
+  function buildScript(mode, prompt) {
+    var m = String(prompt || "").match(/基于\s*([^\s,，]+)\s*分支/);
+    var branch = m ? m[1] : "main";
+    var envId = "env-" + Date.now();
+    var envUrl = "https://" + envId + ".preview.internal";
+
+    if (mode === "real-mcp") {
+      return {
+        tools: harnessTools().concat(mcpTools()),
+        steps: [
+          {
+            content: "",
+            calls: [{
+              name: "context7__resolve-library-id",
+              args: { libraryName: "typescript" },
+              result: "Selected library: /microsoft/TypeScript\nTrust score: 9.9 · Code snippets: 1243\n(演示数据；真实模式下由 Context7 远程返回)"
+            }]
+          },
+          {
+            content: "",
+            calls: [{
+              name: "context7__query-docs",
+              args: { context7CompatibleLibraryID: "/microsoft/TypeScript", question: "如何用 tsc 把 ts 编译成 js" },
+              result: "# Compiling TypeScript\n\nnpx tsc app.ts             # 编译单文件，同目录产出 app.js\nnpx tsc -p tsconfig.json   # 按配置编译整个项目\nnpx tsc --watch            # 监听改动，增量编译\n\n关键 compilerOptions: target / module / outDir / strict\n(演示数据)"
+            }]
+          },
+          {
+            content: "Context7 查到的 TypeScript 官方文档要点：\n\n1. 单文件编译：npx tsc app.ts，在同目录产出 app.js\n2. 整个项目：npx tsc -p tsconfig.json，产物位置由 outDir 决定\n3. 开发时用 npx tsc --watch 做增量编译\n\n这个仓库本身就是第 2 种：tsconfig.json 把 src/ 与 examples/ 编译到 dist/，所以 npm run dev 实际是先 tsc、再 node dist/examples/basic.js。",
+            calls: []
+          }
+        ]
+      };
+    }
+
+    if (mode === "real") {
+      return {
+        tools: harnessTools(),
+        steps: [
+          {
+            content: "",
+            calls: [{
+              name: "create_ephemeral_environment",
+              args: { env_type: "ephemeral", branch: branch, ttl_hours: 8 },
+              result: JSON.stringify({ envId: envId, envUrl: envUrl, status: "ready", executionId: "dryrun" })
+            }]
+          },
+          {
+            content: "环境已经拉起来了：\n\n· 环境 ID：" + envId + "\n· 分支：" + branch + "\n· 地址：" + envUrl + "\n· TTL：8 小时后自动回收\n\n回归验证做完告诉我，我会调用 destroy_environment 立即清理，不必等 TTL 到期。",
+            calls: []
+          }
+        ]
+      };
+    }
+
+    // mock：与 src/ui/runner.ts 的 makeMockEnvLLM() 剧本一致（创建 → 销毁 → 总结）
+    return {
+      tools: harnessTools(),
+      steps: [
+        {
+          content: "",
+          calls: [{
+            name: "create_ephemeral_environment",
+            args: { env_type: "ephemeral", branch: branch, ttl_hours: 8 },
+            result: JSON.stringify({ envId: envId, envUrl: envUrl, status: "ready", executionId: "dryrun" })
+          }]
+        },
+        {
+          content: "",
+          calls: [{
+            name: "destroy_environment",
+            args: { env_id: envId },
+            result: JSON.stringify({ envId: envId, envUrl: "", status: "destroyed", executionId: "dryrun" })
+          }]
+        },
+        { content: "已完成闭环：临时环境 " + envId + " 已创建并销毁，无残留资源。", calls: [] }
+      ]
+    };
+  }
+
+  // --- /api/run 的事件序列（对齐 server.ts handleRun + harness.ts run）---
+  function run(body, emit) {
+    var mode = ["mock", "real", "real-mcp"].indexOf(body.mode) >= 0 ? body.mode : "mock";
+    var prompt = (body.prompt && String(body.prompt).trim()) || defaultPrompt(mode);
+    var model = (body.model && String(body.model).trim()) || "openai/gpt-4o-mini";
+    var script = buildScript(mode, prompt);
+    var runId = uid("run");
+
+    var notes = ["静态演示模式：事件流由浏览器本地脚本生成，未调用任何模型或远程服务。"];
+    notes.push(mode === "mock"
+      ? "对应真实运行中的「内置 Mock LLM + Harness dry-run」组合。"
+      : "对应真实运行中的「OpenRouter · " + model + "」，此处以确定性剧本代替模型输出。");
+    notes.push(mode === "real-mcp"
+      ? "工具集含 Context7 MCP 的 2 个远程工具（演示数据）。"
+      : "工具集为 Harness 环境治理的 2 个内置工具。");
+
+    emit({
+      type: "run:meta", mode: mode, llmKind: mode === "mock" ? "mock" : "openrouter",
+      dryRun: true, mcpConnected: mode === "real-mcp", notes: notes, model: model
+    });
+    emit({ type: "run:tools", tools: script.tools });
+    emit({ type: "run:start", runId: runId, input: prompt });
+
+    // 入口护栏：命中密钥/超长直接拦截，与真实 harness 行为一致
+    var guard = checkInput(prompt);
+    if (!guard.ok) {
+      emit({ type: "guardrail:blocked", phase: "input", reason: guard.reason });
+      var blocked = "[guardrail] blocked: " + guard.reason;
+      emit({ type: "run:end", runId: runId, final: blocked, steps: 0 });
+      emit({ type: "_done", final: blocked });
+      return Promise.resolve();
+    }
+
+    var chain = Promise.resolve();
+    script.steps.forEach(function (st, i) {
+      var step = i + 1;
+      chain = chain.then(function () {
+        emit({ type: "step:start", step: step, maxSteps: MAX_STEPS });
+        emit({ type: "llm:call", step: step, messageCount: 2 + i * 2, toolCount: script.tools.length });
+        return sleep(420);
+      }).then(function () {
+        var calls = st.calls.map(function (c) {
+          return { id: uid("call"), name: c.name, arguments: c.args };
+        });
+        emit({ type: "llm:response", step: step, content: st.content, toolCalls: calls });
+        var inner = Promise.resolve();
+        calls.forEach(function (call, k) {
+          inner = inner.then(function () {
+            emit({ type: "tool:start", step: step, call: call });
+            return sleep(380);
+          }).then(function () {
+            emit({ type: "tool:result", step: step, call: call, result: st.calls[k].result, errored: false });
+            return sleep(160);
+          });
+        });
+        return inner;
+      });
+    });
+
+    return chain.then(function () {
+      var final = script.steps[script.steps.length - 1].content;
+      emit({ type: "run:end", runId: runId, final: final, steps: script.steps.length });
+      emit({ type: "_done", final: final });
+    });
+  }
+
+  // --- /api/verify：复刻 src/ui/verification.ts 的三组断言与文案 ---
+  function verify(emit) {
+    var finalText = "已完成闭环：临时环境 env-" + Date.now() + " 已创建并销毁，无残留资源。";
+    var suites = [
+      {
+        id: "1", title: "Agent 闭环（LLM ↔ 工具 ↔ 记忆）",
+        checks: [
+          "闭环最终回复包含销毁确认（实际：" + finalText.slice(0, 60) + "…）",
+          "工具 create_ephemeral_environment 已注册",
+          "工具 destroy_environment 已注册"
+        ]
+      },
+      {
+        id: "2", title: "Harness 状态轮询（触发 → 轮询 → 终态）",
+        checks: [
+          "触发后正确捕获 executionId",
+          "SUCCESS 映射为 ready（实际：ready）",
+          "getStatus 返回 SUCCESS",
+          "自定义 statusPath + FAILED 映射为 failed（实际：failed）"
+        ]
+      },
+      {
+        id: "3", title: "MCP 工具接入（连接 → list → 注册 → 调用）",
+        checks: [
+          "echo_tool 已注册进 ToolRegistry",
+          "ToolRegistry 含 1 个工具",
+          "调用 MCP 工具返回预期结果（实际：echo: hello-mcp）"
+        ]
+      }
+    ];
+
+    var chain = Promise.resolve();
+    suites.forEach(function (s) {
+      chain = chain.then(function () {
+        emit({ type: "verify:start", id: s.id, title: s.title });
+        var inner = Promise.resolve();
+        s.checks.forEach(function (msg) {
+          inner = inner.then(function () { return sleep(280); }).then(function () {
+            emit({ type: "verify:check", id: s.id, ok: true, msg: msg });
+          });
+        });
+        return inner;
+      }).then(function () {
+        return sleep(220);
+      }).then(function () {
+        emit({ type: "verify:done", id: s.id, pass: true, summary: "全部 " + s.checks.length + " 项通过" });
+      });
+    });
+    return chain.then(function () { emit({ type: "_verify_done" }); });
+  }
+
+  // --- /api/env：复刻 EnvPipeline 状态机与 HarnessClient dry-run 时序 ---
+  function envCreate(body, emit) {
+    var now = Date.now();
+    var env = {
+      envId: "env-" + now,
+      envType: String(body.env_type || "ephemeral"),
+      branch: String(body.branch || "main"),
+      ttlHours: body.ttl_hours != null ? Number(body.ttl_hours) : undefined,
+      region: body.region ? String(body.region) : undefined,
+      status: "PENDING",
+      createdAt: now,
+      updatedAt: now,
+      stages: [{ name: "提交创建请求", status: "PENDING", ts: now }]
+    };
+    envs.unshift(env);
+    emit({ type: "env:status", env: clone(env) });
+
+    function push(status, name) {
+      env.status = status;
+      env.updatedAt = Date.now();
+      env.stages.push({ name: name, status: status, ts: Date.now() });
+      emit({ type: "env:status", env: clone(env) });
+    }
+
+    push("PROVISIONING", "Harness 接收请求");
+    return sleep(700).then(function () {
+      push("RUNNING", "Pipeline 执行中");
+      return sleep(900);
+    }).then(function () {
+      push("READY", "环境就绪");
+      env.url = "https://" + env.envId + ".preview.internal";
+      env.executionId = "dryrun";
+      env.updatedAt = Date.now();
+      emit({ type: "env:status", env: clone(env) });
+      emit({ type: "_env_done" });
+    });
+  }
+
+  function envDestroy(body, emit) {
+    var envId = String(body.env_id || "");
+    var env = null;
+    for (var i = 0; i < envs.length; i++) {
+      if (envs[i].envId === envId) { env = envs[i]; break; }
+    }
+    if (!env) {
+      emit({ type: "env:error", message: "未找到环境 " + envId });
+      emit({ type: "_env_done", found: false });
+      return Promise.resolve();
+    }
+    function push(status, name) {
+      env.status = status;
+      env.updatedAt = Date.now();
+      env.stages.push({ name: name, status: status, ts: Date.now() });
+      emit({ type: "env:status", env: clone(env) });
+    }
+    push("DESTROYING", "Harness 接收销毁请求");
+    return sleep(800).then(function () {
+      push("DESTROYED", "环境已销毁");
+      emit({ type: "_env_done", found: true });
+    });
+  }
+
+  // --- 对外：与真实端点同名的读取 / 流式接口 ---
+  function get(path) {
+    if (path === "/api/state") {
+      return Promise.resolve({
+        demo: true,
+        openrouter: false,
+        harnessKey: false,
+        harnessDryRun: true,
+        mcpUrl: "https://mcp.context7.com/mcp",
+        model: "openai/gpt-4o-mini",
+        mcpServers: demoServers(),
+        envs: envs.map(clone)
+      });
+    }
+    if (path === "/api/mcp/list") return Promise.resolve({ servers: demoServers() });
+    if (path === "/api/env") return Promise.resolve({ envs: envs.map(clone) });
+    return Promise.reject(new Error("静态演示模式不支持端点 " + path));
+  }
+
+  function stream(path, body, emit) {
+    if (path === "/api/run") return run(body, emit);
+    if (path === "/api/verify") return verify(emit);
+    if (path === "/api/env") {
+      if (body.action === "create") return envCreate(body, emit);
+      if (body.action === "destroy") return envDestroy(body, emit);
+      emit({ type: "env:error", message: "action 必须是 create 或 destroy" });
+      emit({ type: "_env_done", error: true });
+      return Promise.resolve();
+    }
+    return Promise.reject(new Error("静态演示模式不支持端点 " + path));
+  }
+
+  return { get: get, stream: stream, defaultPrompt: defaultPrompt };
+})();
+</script>
+
+<script>
 (function () {
   "use strict";
   var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {} };
@@ -319,20 +750,55 @@
     "real-mcp": "用 Context7 查一下 typescript 这个库的文档，告诉我怎么用 tsc 把 ts 编译成 js"
   };
 
+  // ---- 后端适配层 ----
+  // 真实后端（npm run ui）与静态演示后端（GitHub Pages）走同一套调用口径，
+  // 上层渲染逻辑不需要知道数据从哪来。
+  var Backend = {
+    live: false,
+    probe: function () {
+      return fetch("/api/state", { headers: { accept: "application/json" } })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (s) { Backend.live = true; return s; })
+        .catch(function () { Backend.live = false; return null; });
+    },
+    getJSON: function (path) {
+      if (!Backend.live) return window.HarnessDemo.get(path);
+      return fetch(path).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      });
+    },
+    stream: function (path, body, onEvent) {
+      if (!Backend.live) return window.HarnessDemo.stream(path, body, onEvent);
+      return realStream(path, body, onEvent);
+    }
+  };
+
   // ---- chips / mode ----
-  function refreshState() {
-    fetch("/api/state").then(function (r) { return r.json(); }).then(function (s) {
-      setChip("chip-or", "OpenRouter", s.openrouter ? "已配置 (" + (s.model || "") + ")" : "未配置", s.openrouter);
-      setChip("chip-harness", "Harness", s.harnessKey ? "真实密钥" : "dry-run", s.harnessKey);
-      var mcpOk = (s.mcpServers || []).some(function (x) { return x.status === "connected"; });
+  function refreshState(preloaded) {
+    var p = preloaded ? Promise.resolve(preloaded) : Backend.getJSON("/api/state");
+    p.then(function (s) {
+      if (!s) return;
+      var demo = !Backend.live;
+      setChip("chip-or", "OpenRouter",
+        demo ? "演示数据（模拟响应）" : (s.openrouter ? "已配置 (" + (s.model || "") + ")" : "未配置"),
+        s.openrouter, demo);
+      setChip("chip-harness", "Harness",
+        demo ? "dry-run（演示）" : (s.harnessKey ? "真实密钥" : "dry-run"),
+        s.harnessKey, demo);
       var cnt = (s.mcpServers || []).filter(function (x) { return x.status === "connected"; }).length;
-      setChip("chip-mcp", "MCP", cnt ? (cnt + " 个服务已连") : (s.mcpUrl ? "配置中…" : "未配置"), mcpOk || !!s.mcpUrl);
+      setChip("chip-mcp", "MCP",
+        demo ? "context7（演示数据）" : (cnt ? cnt + " 个服务已连" : (s.mcpUrl ? "配置中…" : "未配置")),
+        cnt > 0 || !!s.mcpUrl, demo);
     }).catch(function () {});
   }
-  function setChip(id, label, val, ok) {
+  function setChip(id, label, val, ok, demo) {
     var el = $(id);
-    el.className = "chip " + (ok ? "ok" : "warn");
-    el.innerHTML = label + ": <b>" + val + "</b>";
+    el.className = "chip " + (demo ? "demo" : (ok ? "ok" : "warn"));
+    el.innerHTML = label + ": <b>" + esc(val) + "</b>";
   }
 
   document.querySelectorAll(".mode-btn").forEach(function (b) {
@@ -364,7 +830,7 @@
 
     var prompt = $("prompt").value;
     var model = $("modelInput").value.trim();
-    streamPost("/api/run", { mode: state.mode, prompt: prompt, model: model }, dispatchHarness);
+    Backend.stream("/api/run", { mode: state.mode, prompt: prompt, model: model }, dispatchHarness);
   }
 
   function runVerification() {
@@ -377,11 +843,11 @@
       row.querySelector(".vsummary").textContent = "运行中…";
       row.querySelector(".vdetail").innerHTML = "";
     });
-    streamPost("/api/verify", {}, dispatchVerify);
+    Backend.stream("/api/verify", {}, dispatchVerify);
   }
 
-  // ---- SSE-over-fetch streaming ----
-  function streamPost(url, body, onEvent) {
+  // ---- SSE-over-fetch streaming（真实后端路径）----
+  function realStream(url, body, onEvent) {
     fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -458,6 +924,7 @@
         break;
       case "_done":
         if (e.error) appendBanner("error", "运行被中断。");
+        state.running = false; $("runBtn").disabled = false; $("runTag").textContent = "";
         break;
     }
   }
@@ -564,9 +1031,9 @@
 
   // ---- MCP servers panel ----
   function refreshMcp() {
-    fetch("/api/mcp/list").then(function (r) { return r.json(); }).then(function (data) {
+    var p = $("mcpPanel");
+    Backend.getJSON("/api/mcp/list").then(function (data) {
       var servers = data.servers || [];
-      var p = $("mcpPanel");
       if (!servers.length) { p.innerHTML = '<div class="empty">暂无 MCP 服务。</div>'; }
       else {
         p.innerHTML = servers.map(function (s) {
@@ -588,6 +1055,7 @@
     }).catch(function () { p.innerHTML = '<div class="empty">MCP 列表加载失败</div>'; });
   }
   function mcpAddForm() {
+    if (!Backend.live) return '';
     return '<div class="add-mcp">' +
       '<input id="mcpName" placeholder="服务名（如 github）" />' +
       '<input id="mcpUrl" placeholder="服务地址（如 https://mcp.xxx.com/mcp）" />' +
@@ -634,7 +1102,10 @@
   // ---- verification dispatch ----
   function dispatchVerify(e) {
     logEvent(e.type);
-    if (e.type === "_verify_done") return;
+    if (e.type === "_verify_done") {
+      state.verifying = false; $("verifyBtn").disabled = false;
+      return;
+    }
     var row = document.querySelector('#verifyList .vrow[data-id="' + e.id + '"]');
     if (!row) return;
     var dot = row.querySelector(".dot");
@@ -660,7 +1131,7 @@
   // ---- ENV pipeline ----
   var envCards = {};
   function refreshEnvs() {
-    fetch("/api/env").then(function (r) { return r.json(); }).then(function (data) {
+    Backend.getJSON("/api/env").then(function (data) {
       (data.envs || []).forEach(function (env) { upsertEnvCard(env, false); });
     }).catch(function () {});
   }
@@ -708,13 +1179,13 @@
       ttl_hours: Number($("envTtl").value) || 8,
       region: $("envRegion").value.trim() || undefined
     };
-    streamPost("/api/env", body, dispatchEnv);
+    Backend.stream("/api/env", body, dispatchEnv);
   }
   function destroyEnv(envId) {
     if (state.envRunning) return;
     state.envRunning = true;
     $("envTag").innerHTML = '<span class="spinner"></span> 销毁中…';
-    streamPost("/api/env", { action: "destroy", env_id: envId }, dispatchEnv);
+    Backend.stream("/api/env", { action: "destroy", env_id: envId }, dispatchEnv);
   }
   function dispatchEnv(e) {
     logEvent(e.type);
@@ -753,9 +1224,20 @@
     });
   });
 
-  refreshState();
-  refreshMcp();
-  refreshEnvs();
+  function showDemoBanner(on) {
+    var b = $("demoBanner");
+    if (b) b.className = "demo-banner" + (on ? " on" : "");
+  }
+
+  // 先探测真实后端是否存活：本地 npm run ui 会返回 /api/state，
+  // 而 GitHub Pages 静态托管下该请求会 404 → 自动切到浏览器本地演示脚本。
+  Backend.probe().then(function (s) {
+    showDemoBanner(!Backend.live);
+    if (Backend.live && s) refreshState(s);
+    else refreshState();
+    refreshMcp();
+    refreshEnvs();
+  });
   // 绑定动态生成的 MCP 添加按钮（首轮渲染后）
   setTimeout(bindMcpAdd, 300);
   // 监听 MCP 面板变化以便重新绑定添加按钮
