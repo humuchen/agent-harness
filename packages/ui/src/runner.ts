@@ -6,6 +6,10 @@ import {
   HarnessClient,
   registerHarnessTools,
   registerBuiltinTools,
+  SkillRegistry,
+  defaultSkills,
+  registerSkillTools,
+  skillBoostPrompt,
   loadEnv,
   type LLM,
   type HarnessEvent,
@@ -36,7 +40,8 @@ export async function assembleAgent(
   mode: RunMode,
   onEvent?: (e: HarnessEvent) => void,
   systemPrompt: string = SYSTEM_PROMPT,
-  modelOverride?: string
+  modelOverride?: string,
+  userInput?: string
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
@@ -53,6 +58,13 @@ export async function assembleAgent(
     calcEnabled: process.env.BUILTINS_CALC !== 'false',
     datetimeEnabled: process.env.BUILTINS_DT !== 'false',
   });
+
+  // 技能编排层：把基础工具打包成模型可一键选用的复合能力。
+  // 注册表 + 元工具（builtin__use_skill）均为新增，不修改 Agent 主循环；
+  // 技能目录与触发词自动预激活的指引会注入系统提示词。
+  const skillRegistry = new SkillRegistry();
+  skillRegistry.registerMany(defaultSkills());
+  registerSkillTools(tools, skillRegistry);
 
   // 合并运行时已接入的 MCP 工具（共享注册表）。
   tools.mergeFrom(mcpManager.liveRegistry());
@@ -96,12 +108,19 @@ export async function assembleAgent(
     '已内置基础工具：calculator / datetime / web_fetch / filesystem（默认常开，可被模型自动调用）。'
   );
 
+  // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
+  const skillCatalog = skillRegistry.describeForPrompt();
+  const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
+  const finalSystemPrompt = [systemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
+  const skillTitles = skillRegistry.enabledList().map((s) => s.id).join(' / ');
+  notes.push(`已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`);
+
   const memory = new Memory();
   const harness = new AgentHarness({
     llm,
     tools,
     memory,
-    systemPrompt,
+    systemPrompt: finalSystemPrompt,
     onEvent,
   });
 

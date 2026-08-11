@@ -178,10 +178,16 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   try {
     let stepCount = 0;
-    const assembled = await assembleAgent(mode, (e: HarnessEvent) => {
-      if (e.type === 'step:start') stepCount = Math.max(stepCount, e.step);
-      if (!closed) send(e);
-    }, undefined, model);
+    const assembled = await assembleAgent(
+      mode,
+      (e: HarnessEvent) => {
+        if (e.type === 'step:start') stepCount = Math.max(stepCount, e.step);
+        if (!closed) send(e);
+      },
+      undefined,
+      model,
+      prompt
+    );
     send({
       type: 'run:meta',
       mode,

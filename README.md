@@ -199,6 +199,37 @@ UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 `BUILTINS_FS` / `BUILTINS_WEB` / `BUILTINS_CALC` / `BUILTINS_DT` 设为 `false`；
 `HARNESS_FS_ROOT` 限定文件沙箱根目录（默认 `process.cwd()`）。
 
+## 技能编排层（Skill）
+
+在工具之上再包一层「**可组合能力**」：每个技能 = 一组工具 + 一段执行指引 + 触发词，
+打包成模型可一键选用的复合能力。模型不必裸调工具，而是先激活技能、拿到工作流提示，
+再使用其关联工具——从「能用工具」升级为「会办事」。
+
+**落地方式（主循环零改动）**：技能层不修改 Agent 主循环，只做两件事——
+1. 把「技能目录」注入系统提示词，让模型知道有哪些能力可用；
+2. 提供一个元工具 `builtin__use_skill`，模型调用它传入技能 `id` 即取回执行指引。
+
+此外，运行时按用户消息的**触发词自动预激活**对应技能（其指引直接并入当次系统提示词），
+让模型在无需显式调用工具的情况下也按既定流程工作。
+
+| 默认技能 id | 关联工具 | 触发词示例 |
+|---|---|---|
+| `web-research` | `builtin__web_fetch` | 搜索 / 查一下 / 最新 / 官网 / fetch |
+| `math` | `builtin__calculator` | 算 / 计算 / 多少 / 百分比 / calculate |
+| `files` | `builtin__fs_read`·`_list`·`_search` | 读文件 / 看文件 / 搜索文件 / file |
+| `current-time` | `builtin__datetime_*` | 现在几点 / 时间 / 时区 / time |
+
+接入点（`packages/core/src/skills`）：
+
+- `SkillRegistry` — 注册 / 查询 / 触发匹配（`matchTriggers`）/ 生成提示词（`describeForPrompt`）。
+- `defaultSkills()` — 上述 4 个默认技能。
+- `registerSkillTools(tools, registry)` — 注册 `builtin__use_skill` 元工具。
+- `skillBoostPrompt(text, registry)` — 按触发词生成「自动启用技能」段落。
+- UI 在 `assembleAgent` 中默认构建注册表、注册元工具，并把目录 + 触发预激活注入系统提示词；
+  也支持自定义技能：在 `assembleAgent` 前 `skillRegistry.register({...})` 即可。
+
+
+
 ## 可视化验证 Playground（Web UI）
 
 除了 CLI 示例，还提供了一个**零依赖的网页仪表盘**，把 Agent 闭环与三大验证

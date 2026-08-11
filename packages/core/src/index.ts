@@ -3,6 +3,7 @@ export * from './telemetry';
 export * from './memory';
 export * from './tools';
 export * from './builtins';
+export * from './skills';
 export * from './guardrails';
 export * from './harness';
 export * from './loadEnv';
