@@ -7,7 +7,7 @@ import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { envPipeline } from './env-pipeline';
-import type { HarnessEvent } from '@agent-harness/core';
+import type { HarnessEvent, McpTransportType } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -224,18 +224,30 @@ async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<
   }
 }
 
+// 合法的传输类型（与 core 的 McpTransportType 保持一致）。
+const MCP_TRANSPORT_TYPES = new Set(['auto', 'sse', 'streamable-http']);
+
 async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
   const name = String(body.name ?? '').trim();
-  const url = String(body.url ?? '').trim();
-  const headers = body.headers && typeof body.headers === 'object' ? body.headers : undefined;
-  if (!name || !url) {
+  // 兼容旧字段 `url`，同时接受标准字段 `serverUrl`。
+  const serverUrl = String(body.url ?? body.serverUrl ?? '').trim();
+  const command = body.command != null ? String(body.command) : undefined;
+  const args = Array.isArray(body.args) ? body.args.map(String) : undefined;
+  const env = body.env && typeof body.env === 'object' ? (body.env as Record<string, string>) : undefined;
+  const headers = body.headers && typeof body.headers === 'object' ? (body.headers as Record<string, string>) : undefined;
+  // 仅接受合法的传输类型，其余忽略（回退 core 的 'auto' 自动判定）。
+  let transportType: McpTransportType | undefined;
+  if (typeof body.transportType === 'string' && MCP_TRANSPORT_TYPES.has(body.transportType)) {
+    transportType = body.transportType as McpTransportType;
+  }
+  if (!name && !serverUrl && !command) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'name 与 url 均为必填' }));
+    res.end(JSON.stringify({ error: 'name 与（serverUrl/url 或 command）至少需提供其一' }));
     return;
   }
   try {
-    const meta = await mcpManager.addServer(name, url, headers);
+    const meta = await mcpManager.addServer({ name, serverUrl, command, args, env, headers, transportType });
     sendJson(res, { server: meta, servers: mcpManager.list() });
   } catch (e: any) {
     res.writeHead(500, { 'content-type': 'application/json' });

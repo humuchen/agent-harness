@@ -13,11 +13,23 @@
 
 **方式 B — HTTP 接口**
 ```bash
+# 远程 Streamable HTTP（默认，无需指定 transportType）
 curl -X POST https://<你的服务>/api/mcp/add \
   -H "Content-Type: application/json" \
   -d '{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{}}'
+
+# 远程 SSE（强制指定 transportType，适用于只提供 SSE 且 URL 不以 /sse 结尾的服务）
+curl -X POST https://<你的服务>/api/mcp/add \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-sse","url":"https://example.com/mcp","transportType":"sse","headers":{"Authorization":"Bearer <TOKEN>"}}'
+
+# 本地 stdio（command + args 启动子进程；可选 env 注入环境变量）
+curl -X POST https://<你的服务>/api/mcp/add \
+  -H "Content-Type: application/json" \
+  -d '{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/data"]}'
 ```
-接口字段：`{ name: string, url: string, headers?: Record<string,string> }`
+接口字段：`{ name?: string, url?: string, serverUrl?: string, command?: string, args?: string[], env?: Record<string,string>, headers?: Record<string,string>, transportType?: 'auto' | 'sse' | 'streamable-http' }`
+- `url` 与 `serverUrl` 等价（兼容旧字段）；`transportType` 缺省时按 URL 自动判定（非 `/sse` 结尾走 Streamable HTTP）。
 
 **方式 C — 环境变量预置（启动即连）**
 在 Render 环境变量加：
@@ -25,12 +37,6 @@ curl -X POST https://<你的服务>/api/mcp/add \
 MCP_SERVERS=[{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{}}]
 ```
 支持数组，多个服务逗号分隔。
-
-> ⚠️ **传输方式限制**：当前 `/api/mcp/add` 只接受 `name/url/headers`，
-> 传输类型靠 URL 自动判定（非 `/sse` 一律当 Streamable HTTP）。
-> 若某服务**只提供 SSE 且 URL 不以 `/sse` 结尾**，自动判定会出错。
-> 下面清单里的服务均为 Streamable HTTP（或不以 `/sse` 结尾的兼容端点），可直接用。
-> 如需强制指定 SSE，可在 `packages/ui/src/mcp-manager.ts` 的 `addServer` 增加 `transportType` 透传——需要我改可以告诉我。
 
 ---
 

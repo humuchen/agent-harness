@@ -34,6 +34,14 @@
 7. **MCP 连接生命周期**：`placeholder.ts` 维护 `liveClients` 注册表，`connectMcpServer`/`registerMcpTools` 存引用，新增 `disconnectMcpServer`/`disconnectAllMcp`；`ToolRegistry.unregister` 配合清理。
 8. **测试套件**：`packages/core/test/*.test.cjs`（node:test + node:assert，零依赖，require 编译后的 dist 叶子模块避免触碰 MCP SDK），27 用例全过；core `package.json` 增 `test` 脚本。
 
+## 多 MCP server 支持（commit `63ff19e` 推送 dev）
+- `placeholder.ts` 新增 `McpServerConfig` / `parseMcpServersEnv(env?)`（MCP_SERVERS JSON 数组优先、MCP_SERVER_URL 兜底、每 server 独立 transport/command/args/env/headers）/ `connectMcpServers(registry, configs)` 顺序批量接入（单失败不影响其余）。
+- UI `mcp-manager.ts` 复用 `parseMcpServersEnv`；`addServer(name,url,headers)` 仍只透传 name/url/headers（不强制 transportType），`/api/mcp/add` 同理。
+- 新增 `examples/multi-mcp.ts` 演练多 server 接入 + `disconnectAllMcp()` 清理；脚本 `pnpm --filter @agent-harness/examples run mcp:multi`。
+- 测试新增 `mcp-config.test.cjs`（7 用例），core 套件 27 → 34 全过。
+- 新增 `MCP_SERVICES.md` 远程 MCP 服务接入清单；`render.yaml` 服务名 `agent-harness-ts → agent-harness`。
+- 踩坑：本地 `node_modules/@agent-harness/core` 是早期 install 残留的**真实目录**（含陈旧 dist），`ln -sfn ../../packages/core node_modules/@agent-harness/core` 会把它塞成目录内的子符号链接而非替换；验证前需先 `rm -rf node_modules/@agent-harness/core` 再建符号链接，否则 require 到旧 dist 缺导出。
+
 ## 验证命令（沙箱本地）
 - 构建：`tsc -p packages/core/tsconfig.json && tsc -p packages/ui/tsconfig.json && tsc -p examples/tsconfig.json`
 - 测试：`cd packages/core && node --test test/*.test.cjs`（注意：`node --test test/` 会把目录当模块报错，必须用显式文件通配）

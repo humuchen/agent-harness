@@ -46,10 +46,23 @@ class McpManager {
     })().catch((e) => console.error('[mcp-manager] init error:', e));
   }
 
-  /** 运行时新增一个 MCP 服务，返回其连接元数据。 */
-  async addServer(name: string, url: string, headers?: Record<string, string>): Promise<McpServerMeta> {
-    const clean = name.trim() || this.slug(url);
-    const meta = await connectMcpServer(this.registry, { name: clean, serverUrl: url, headers });
+  /**
+   * 运行时新增一个 MCP 服务，返回其连接元数据。
+   * 入参与 `parseMcpServersEnv` 同构（McpServerConfig），完整透传
+   * serverUrl / command / args / env / headers / transportType，
+   * 与启动期从环境变量加载的服务保持一致的配置能力。
+   */
+  async addServer(config: McpServerConfig): Promise<McpServerMeta> {
+    const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
+    const meta = await connectMcpServer(this.registry, {
+      name: clean,
+      serverUrl: config.serverUrl,
+      command: config.command,
+      args: config.args,
+      env: config.env,
+      headers: config.headers,
+      transportType: config.transportType,
+    });
     // 同名服务则覆盖旧条目。
     const idx = this.servers.findIndex((s) => s.name === clean);
     if (idx >= 0) this.servers[idx] = meta;
