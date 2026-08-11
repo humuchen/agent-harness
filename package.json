@@ -6,7 +6,7 @@
   "types": "dist/src/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/examples/basic.js",
+    "start": "node dist/src/ui/server.js",
     "dev": "tsc -p tsconfig.json && node dist/examples/basic.js",
     "demo:env": "tsc -p tsconfig.json && node dist/examples/self-serve-env.js",
     "chat": "tsc -p tsconfig.json && node dist/examples/chat.js",

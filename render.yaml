@@ -19,7 +19,7 @@ services:
     runtime: node
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: node dist/src/ui/server.js
     healthCheckPath: /api/state
     envVars:
