@@ -115,12 +115,14 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
         if (retryableStatus.has(resp.status) && attempt < retries) {
           const waitMs = 800 * (attempt + 1);
           console.warn(
-            `[openrouter] ${resp.status} (retryable), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
+            `[openrouter] ${resp.status} (retryable, model=${model}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
           );
           await new Promise((r) => setTimeout(r, waitMs));
           continue;
         }
-        throw new Error(`OpenRouter API error ${resp.status}: ${text}`);
+        throw new Error(
+          `OpenRouter API error ${resp.status} (model=${model}): ${text}`
+        );
       }
 
       const data: any = await resp.json();
