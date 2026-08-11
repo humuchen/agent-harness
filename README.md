@@ -26,8 +26,9 @@ agent-harness/                # 根：private 包 + pnpm workspace
 │  │  │  ├─ harness.ts        // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
 │  │  │  ├─ loadEnv.ts         // 零依赖 .env 加载器
 │  │  │  ├─ index.ts          // 统一导出（barrel）
-│  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器（同一 LLM 契约）
-│  │  │  └─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
+│  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器 + shared.ts（共用请求/解析逻辑）
+│  │  │  ├─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
+│  │  │  └─ test/             // node:test 最小测试套件（护栏/记忆/工具/循环/适配器）
 │  │  └─ tsconfig.json
 │  └─ ui/                     # @agent-harness/ui —— Web Playground（依赖 core）
 │     ├─ src/
@@ -246,3 +247,36 @@ pnpm --filter @agent-harness/examples run real-loop         # #1：真实 OpenRo
 - `examples/verify-context7.ts`：连真实 Context7 端点，列工具并实调 `resolve-library-id`。
 - `examples/real-loop.ts`：需 `OPENROUTER_API_KEY`（见 `.env`）才走真实模型；
   MCP 接入为 best-effort——`registerMcpTools` 失败只告警不中断环境闭环。
+
+## 接口鉴权（Web Playground）
+
+Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`、`/api/mcp/list`）
+默认开放。**部署到公网前请设置 `UI_AUTH_TOKEN`**，此后这些端点需携带令牌：
+
+```bash
+UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
+# 请求时：Authorization: Bearer your-secret   或   ?token=your-secret
+```
+
+未设置 `UI_AUTH_TOKEN` 时服务照常启动，但会在日志给出开放模式告警。
+`/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。
+
+## 测试
+
+核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏、记忆、
+工具注册表、Agent 循环（含超时/外部取消/长期记忆注入）与 LLM 适配器（mock fetch）：
+
+```bash
+pnpm --filter @agent-harness/core run build   # 先构建
+pnpm --filter @agent-harness/core run test    # 跑测试
+```
+
+## 健壮性增强
+
+- **超时与取消**：`new AgentHarness({ timeoutMs, signal })` 可对整个运行设超时或外部中止；
+  取消信号已透传到 LLM 适配器（fetch 层）与工具循环阶段。
+- **长期记忆接入**：`memory.remember(note)` 写入的笔记会注入系统提示词；配置
+  `persistencePath` 时跨运行自动 `load`/`save`。
+- **MCP 连接生命周期**：`connectMcpServer` 维护活跃客户端，进程退出（SIGINT/SIGTERM）
+  时由 UI 统一 `disconnectAllMcp()` 清理，避免 stdio 子进程 / SSE 长连接泄漏。
+- **Harness 环境地址可配置**：`envUrlTemplate`（或 `HARNESS_ENV_URL_TEMPLATE`）替换原硬编码占位符。

@@ -35,7 +35,14 @@ export interface LLMResponse {
   tool_calls: ToolCall[];
 }
 
+/** 每次 LLM 调用可选的附带信息（如取消信号）。第三个参数，调用方可忽略。 */
+export interface LLMCallOptions {
+  // 超时 / 用户主动取消时触发；适配器应将其透传给底层 fetch 以尽早中止请求。
+  signal?: AbortSignal;
+}
+
 export type LLM = (
   messages: Message[],
-  tools: ToolSchema[]
+  tools: ToolSchema[],
+  options?: LLMCallOptions
 ) => Promise<LLMResponse>;

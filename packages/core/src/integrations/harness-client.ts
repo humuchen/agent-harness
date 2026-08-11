@@ -8,6 +8,10 @@ export interface HarnessClientConfig {
   apiBase?: string; // 默认 https://app.harness.io
   provisionPipelineId?: string; // 默认 'provision-environment'
   destroyPipelineId?: string; // 默认 'destroy-ephemeral'
+  // 生成环境访问地址的模板。支持 {envId} 占位符，可扩展 {region}/{owner} 等。
+  // 默认 'https://{envId}.preview.internal'。真实接入时改为你的入口域名模板，
+  // 例如 'https://{envId}.env.my-company.com'。
+  envUrlTemplate?: string;
   // 干跑模式模拟调用（不发起真实 HTTP），无需 Harness 账户即可演示闭环。
   // 未提供 apiKey 时自动启用。
   dryRun?: boolean;
@@ -52,6 +56,7 @@ export class HarnessClient {
   private apiBase: string;
   private provisionPipelineId: string;
   private destroyPipelineId: string;
+  private envUrlTemplate: string;
   private dryRun: boolean;
   private fetchImpl: typeof fetch;
   private pollIntervalMs: number;
@@ -76,6 +81,10 @@ export class HarnessClient {
       config.destroyPipelineId ??
       process.env.HARNESS_DESTROY_PIPELINE_ID ??
       'destroy-ephemeral';
+    this.envUrlTemplate =
+      config.envUrlTemplate ??
+      process.env.HARNESS_ENV_URL_TEMPLATE ??
+      'https://{envId}.preview.internal';
     this.dryRun = config.dryRun ?? !this.apiKey;
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.pollIntervalMs = config.pollIntervalMs ?? 5000;
@@ -110,7 +119,7 @@ export class HarnessClient {
       );
       return {
         envId,
-        envUrl: `https://${envId}.preview.internal`,
+        envUrl: this.renderEnvUrl(envId),
         status: 'ready',
         executionId: 'dryrun',
       };
@@ -120,7 +129,7 @@ export class HarnessClient {
     const status = await this.pollUntilDone(executionId);
     return {
       envId,
-      envUrl: `https://${envId}.preview.internal`, // replace with real ingress from outputs
+      envUrl: this.renderEnvUrl(envId),
       status: this.successStatuses.includes(status) ? 'ready' : 'failed',
       executionId,
     };
@@ -146,6 +155,11 @@ export class HarnessClient {
       status: this.successStatuses.includes(status) ? 'destroyed' : 'failed',
       executionId,
     };
+  }
+
+  /** 根据模板渲染环境访问地址（替换 {envId} 等占位符）。 */
+  private renderEnvUrl(envId: string): string {
+    return this.envUrlTemplate.replace(/\{envId\}/g, envId);
   }
 
   /** 获取某次执行的当前状态字符串（便于调试）。 */
@@ -181,7 +195,7 @@ export class HarnessClient {
       onStage('READY');
       return {
         envId,
-        envUrl: `https://${envId}.preview.internal`,
+        envUrl: this.renderEnvUrl(envId),
         status: 'ready',
         executionId: 'dryrun',
       };
@@ -192,7 +206,7 @@ export class HarnessClient {
     const status = await this.pollUntilDone(executionId, onStage);
     return {
       envId,
-      envUrl: `https://${envId}.preview.internal`,
+      envUrl: this.renderEnvUrl(envId),
       status: this.successStatuses.includes(status) ? 'ready' : 'failed',
       executionId,
     };

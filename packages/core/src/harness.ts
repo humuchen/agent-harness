@@ -1,4 +1,4 @@
-import { LLM, Message, ToolCall } from './types';
+import { LLM, Message, ToolCall, LLMResponse } from './types';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs } from './guardrails';
@@ -28,6 +28,10 @@ export interface HarnessOptions {
   systemPrompt?: string;
   // 对 Agent 循环步数的安全上限（工具调用 -> LLM -> 工具调用 ...）。
   maxSteps?: number;
+  // 整体运行超时（毫秒）。超时后中止循环并返回超时提示，避免长时间挂起。
+  timeoutMs?: number;
+  // 外部取消信号；触发后中止运行（例如用户关闭 UI、进程收到 SIGTERM）。
+  signal?: AbortSignal;
   // 可选的事件回调：在循环每一步（LLM 调用 / 工具调用 / 护栏拦截）发生时触发。
   // 用于进度展示、可视化与测试断言，不修改任何业务逻辑。
   onEvent?: (e: HarnessEvent) => void;
@@ -40,6 +44,8 @@ interface ResolvedHarnessOptions {
   memory: Memory;
   systemPrompt: string;
   maxSteps: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
   onEvent: (e: HarnessEvent) => void;
 }
 
@@ -62,9 +68,36 @@ export class AgentHarness {
     };
   }
 
+  /** 向长期记忆追加一条笔记（会随下次运行的系统提示词注入给模型）。 */
+  remember(note: string): void {
+    this.opts.memory.remember(note);
+  }
+
+  /** 读取当前长期记忆笔记列表。 */
+  notes(): string[] {
+    return this.opts.memory.notes();
+  }
+
   async run(userInput: string): Promise<string> {
     const runId = nextId('run');
     const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
+
+    // 组合「超时」与「外部取消」为单一信号：任一触发即中止本次运行。
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort('external');
+    if (this.opts.signal) {
+      if (this.opts.signal.aborted) controller.abort('external');
+      else this.opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+    const timeout =
+      this.opts.timeoutMs && this.opts.timeoutMs > 0
+        ? setTimeout(() => controller.abort('timeout'), this.opts.timeoutMs)
+        : null;
+    const signal = controller.signal;
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      if (this.opts.signal) this.opts.signal.removeEventListener('abort', onExternalAbort);
+    };
 
     emit({ type: 'run:start', runId, input: userInput });
 
@@ -72,16 +105,30 @@ export class AgentHarness {
     if (!guard.ok) {
       emit({ type: 'guardrail:blocked', phase: 'input', reason: guard.reason ?? 'unknown' });
       const msg = `[guardrail] blocked: ${guard.reason}`;
+      cleanup();
       emit({ type: 'run:end', runId, final: msg, steps: 0 });
       return msg;
     }
 
     const memory = this.opts.memory;
-    if (
-      this.opts.systemPrompt &&
-      !memory.history().some((m) => m.role === 'system')
-    ) {
-      memory.add({ role: 'system', content: this.opts.systemPrompt });
+
+    // 若配置了持久化路径，先载入历史记忆（窗口 + 长期笔记）。
+    if (memory.hasPersistence) {
+      try {
+        await memory.load();
+      } catch {
+        /* 首次运行无存档，忽略 */
+      }
+    }
+
+    // 将长期记忆注入系统提示词，使模型能看到跨运行的上下文。
+    const ctx = memory.systemContext();
+    const sysContent =
+      ctx && this.opts.systemPrompt
+        ? `${this.opts.systemPrompt}\n\n${ctx}`
+        : this.opts.systemPrompt;
+    if (sysContent && !memory.history().some((m) => m.role === 'system')) {
+      memory.add({ role: 'system', content: sysContent });
     }
     memory.add({ role: 'user', content: userInput });
 
@@ -90,6 +137,10 @@ export class AgentHarness {
     try {
       final = await withSpan('agent.run', async () => {
         for (let step = 0; step < this.opts.maxSteps; step++) {
+          // 进入下一步前先检查取消信号，避免对已中止的运行继续消耗工具/LLM。
+          if (signal.aborted) {
+            return abortedMessage(signal);
+          }
           steps = step + 1;
           emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
 
@@ -101,9 +152,18 @@ export class AgentHarness {
             toolCount: this.opts.tools.schemas().length,
           });
 
-          const resp = await withSpan('llm.call', () =>
-            this.opts.llm(messages, this.opts.tools.schemas())
-          );
+          // 用 Promise.race 让「中止」能打断一个永不 settles 的 LLM 调用，
+          // 即使底层适配器未尊重 signal 也能及时退出。
+          const llmPromise = this.opts.llm(messages, this.opts.tools.schemas(), { signal });
+          const abortedFlag = new Promise<'__aborted__'>((resolve) => {
+            if (signal.aborted) return resolve('__aborted__');
+            signal.addEventListener('abort', () => resolve('__aborted__'), { once: true });
+          });
+          const raceResult = await withSpan('llm.call', () => Promise.race([llmPromise, abortedFlag]));
+          if (raceResult === '__aborted__') {
+            return abortedMessage(signal);
+          }
+          const resp: LLMResponse = raceResult;
 
           const outGuard = checkOutput(resp.content);
           if (!outGuard.ok) {
@@ -124,6 +184,9 @@ export class AgentHarness {
 
           // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
           for (const call of resp.tool_calls) {
+            if (signal.aborted) {
+              return abortedMessage(signal);
+            }
             const argGuard = checkToolArgs(call.name, call.arguments);
             let result: unknown;
             let errored = false;
@@ -165,7 +228,25 @@ export class AgentHarness {
       final = `[error] ${e?.message ?? String(e)}`;
     }
 
+    // 运行结束，若有持久化路径则落盘（best-effort）。
+    if (memory.hasPersistence) {
+      try {
+        await memory.save();
+      } catch {
+        /* 存档失败不应影响已产出的结果 */
+      }
+    }
+
+    cleanup();
     emit({ type: 'run:end', runId, final, steps });
     return final;
   }
+}
+
+/** 根据中止原因生成人类可读的结果提示。 */
+function abortedMessage(signal: AbortSignal): string {
+  const reason = (signal as { reason?: unknown }).reason;
+  if (reason === 'timeout') return '[timeout] run exceeded time limit';
+  if (reason === 'external') return '[aborted] run cancelled by caller';
+  return '[aborted] run cancelled';
 }

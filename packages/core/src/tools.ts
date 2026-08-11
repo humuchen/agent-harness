@@ -31,6 +31,11 @@ export class ToolRegistry {
     return this.tools.has(name);
   }
 
+  /** 从注册表中移除某个工具（用于断开 MCP 服务时清理其工具）。 */
+  unregister(name: string): void {
+    this.tools.delete(name);
+  }
+
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
     const t = this.tools.get(name);
     if (!t) {

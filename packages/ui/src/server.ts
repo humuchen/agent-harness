@@ -13,6 +13,28 @@ import type { HarnessEvent } from '@agent-harness/core';
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
 const HOST = process.env.UI_HOST ?? '0.0.0.0';
 
+// 接口鉴权：设置 UI_AUTH_TOKEN 后，除健康检查与静态页外的所有 API 都需
+// `Authorization: Bearer <token>`（或 `?token=<token>`）。未设置则保持开放
+//（仅建议本地 / 演示使用，启动时会给出告警）。
+const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
+const REQUIRE_AUTH = !!UI_AUTH_TOKEN;
+
+function authorized(req: IncomingMessage, url: URL): boolean {
+  if (!REQUIRE_AUTH) return true;
+  const auth = req.headers['authorization'];
+  if (auth && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim() === UI_AUTH_TOKEN;
+  }
+  const t = url.searchParams.get('token');
+  if (t) return t === UI_AUTH_TOKEN;
+  return false;
+}
+
+function unauthorized(res: ServerResponse): void {
+  res.writeHead(401, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ error: 'unauthorized: missing or invalid token' }));
+}
+
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
 
@@ -36,7 +58,19 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return await serveHtml(res);
     }
     if (req.method === 'GET' && path === '/api/state') {
+      // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
+    }
+    // 受保护端点：需通过 UI_AUTH_TOKEN 校验（未配置则开放）。
+    const PROTECTED: string[] = [
+      '/api/mcp/list',
+      '/api/env',
+      '/api/run',
+      '/api/verify',
+      '/api/mcp/add',
+    ];
+    if (PROTECTED.includes(path) && !authorized(req, url)) {
+      return unauthorized(res);
     }
     if (req.method === 'GET' && path === '/api/mcp/list') {
       return sendJson(res, { servers: mcpManager.list() });
@@ -265,9 +299,25 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
 server.listen(PORT, HOST, () => {
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
+  if (REQUIRE_AUTH) {
+    console.log(`   🔒 接口鉴权已启用（UI_AUTH_TOKEN）`);
+  } else {
+    console.warn(`   ⚠️  未设置 UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
+  }
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`);
   console.log(`   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`);
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}\n`);
 });
+
+// 进程退出时关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
+async function shutdown(): Promise<void> {
+  console.log('\n[ui] 正在关闭，清理 MCP 连接…');
+  await mcpManager.shutdown().catch(() => {});
+  server.close(() => process.exit(0));
+  // 兜底：若 server.close 因长连接迟迟不结束，3 秒后强制退出。
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+process.on('SIGINT', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
 
 export {};

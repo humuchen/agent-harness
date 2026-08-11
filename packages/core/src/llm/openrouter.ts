@@ -1,4 +1,5 @@
-import type { LLM, Message, ToolCall, ToolSchema, LLMResponse } from '../types';
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
+import { toOpenAIMessage, callOpenAIChat } from './shared';
 
 export interface OpenRouterConfig {
   apiKey?: string;
@@ -33,6 +34,7 @@ export interface OpenRouterConfig {
  * 保证 Harness 在运行时零强制依赖。
  *
  * 实现单一的 `LLM` 契约；直接传入 `new AgentHarness({ llm })` 即可使用。
+ * 第三个可选参数携带取消信号（超时 / 用户中止），会被透传给 fetch。
  */
 export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
   const apiKey = config.apiKey ?? process.env.OPENROUTER_API_KEY;
@@ -60,7 +62,8 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
 
   return async function openRouterLLM(
     messages: Message[],
-    tools: ToolSchema[]
+    tools: ToolSchema[],
+    options?: LLMCallOptions
   ): Promise<LLMResponse> {
     if (!apiKey) {
       throw new Error(
@@ -99,79 +102,14 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       'X-Title': appName,
     };
 
-    let last: LLMResponse = { content: '', tool_calls: [] };
-    // 这些 HTTP 状态视为限流/瞬时故障，可重试（免费档常遇 429）。
-    const retryableStatus = new Set([429, 500, 502, 503, 529]);
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text();
-        if (retryableStatus.has(resp.status) && attempt < retries) {
-          const waitMs = 800 * (attempt + 1);
-          console.warn(
-            `[openrouter] ${resp.status} (retryable, model=${model}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
-          );
-          await new Promise((r) => setTimeout(r, waitMs));
-          continue;
-        }
-        throw new Error(
-          `OpenRouter API error ${resp.status} (model=${model}): ${text}`
-        );
-      }
-
-      const data: any = await resp.json();
-      const msg = data?.choices?.[0]?.message ?? {};
-      const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((c: any) => ({
-        id: c.id,
-        name: c.function.name,
-        arguments: safeParse(c.function.arguments),
-      }));
-      last = { content: msg.content ?? '', tool_calls: toolCalls };
-
-      // 退化响应（无文本、无工具调用）—— 若仍有重试次数则重试。
-      const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;
-      if (!degenerate || attempt === retries) return last;
-      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
-    }
-    return last;
+    return callOpenAIChat({
+      baseUrl,
+      headers,
+      body,
+      fetchImpl,
+      retries,
+      modelLabel: model,
+      signal: options?.signal,
+    });
   };
-}
-
-function toOpenAIMessage(m: Message): Record<string, unknown> {
-  if (m.role === 'tool') {
-    return {
-      role: 'tool',
-      tool_call_id: m.tool_call_id,
-      content: m.content ?? '',
-    };
-  }
-  const out: Record<string, unknown> = {
-    role: m.role,
-    content: m.content ?? '',
-  };
-  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length) {
-    out.tool_calls = m.tool_calls.map((tc) => ({
-      id: tc.id,
-      type: 'function',
-      function: {
-        name: tc.name,
-        arguments: JSON.stringify(tc.arguments ?? {}),
-      },
-    }));
-  }
-  return out;
-}
-
-function safeParse(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s || '{}');
-  } catch {
-    return {};
-  }
 }

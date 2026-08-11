@@ -14,7 +14,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/"
   },
   "license": "MIT",
   "engines": {

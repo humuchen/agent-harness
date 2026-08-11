@@ -1,5 +1,5 @@
 import { ToolRegistry } from '@agent-harness/core';
-import { connectMcpServer, type McpServerMeta } from '@agent-harness/core';
+import { connectMcpServer, disconnectAllMcp, type McpServerMeta } from '@agent-harness/core';
 
 /**
  * MCP 服务的运行时管理器（单例）。
@@ -52,6 +52,12 @@ class McpManager {
   /** 当前所有 MCP 工具所在的共享注册表（供 Agent 运行合并）。 */
   liveRegistry(): ToolRegistry {
     return this.registry;
+  }
+
+  /** 关闭所有已接入的 MCP 连接（进程退出时调用）。 */
+  async shutdown(): Promise<void> {
+    await disconnectAllMcp().catch(() => {});
+    this.servers = [];
   }
 
   private envServers(): { name: string; url: string; headers?: Record<string, string> }[] {

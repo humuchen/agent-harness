@@ -19,6 +19,11 @@ export class Memory {
     };
   }
 
+  /** 是否配置了跨运行持久化路径（save/load 因此生效）。 */
+  get hasPersistence(): boolean {
+    return !!this.opts.persistencePath;
+  }
+
   add(msg: Message): void {
     this.window.push(msg);
     if (this.window.length > this.opts.maxWindow) {

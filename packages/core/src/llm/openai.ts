@@ -1,4 +1,5 @@
-import type { LLM, Message, ToolCall, ToolSchema, LLMResponse } from '../types';
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
+import { toOpenAIMessage, callOpenAIChat } from './shared';
 
 export interface OpenAIConfig {
   apiKey?: string;
@@ -16,6 +17,7 @@ export interface OpenAIConfig {
  * 保证 Harness 在运行时零强制依赖。
  *
  * 实现单一的 `LLM` 契约；直接传入 `new AgentHarness({ llm })` 即可使用。
+ * 第三个可选参数携带取消信号（超时 / 用户中止），会被透传给 fetch。
  */
 export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
   const apiKey = config.apiKey ?? process.env.OPENAI_API_KEY;
@@ -31,7 +33,8 @@ export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
 
   return async function openaiLLM(
     messages: Message[],
-    tools: ToolSchema[]
+    tools: ToolSchema[],
+    options?: LLMCallOptions
   ): Promise<LLMResponse> {
     if (!apiKey) {
       throw new Error(
@@ -56,61 +59,19 @@ export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
       body.tool_choice = 'auto';
     }
 
-    const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`OpenAI API error ${resp.status}: ${text}`);
-    }
-
-    const data: any = await resp.json();
-    const msg = data?.choices?.[0]?.message ?? {};
-    const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((c: any) => ({
-      id: c.id,
-      name: c.function.name,
-      arguments: safeParse(c.function.arguments),
-    }));
-
-    return { content: msg.content ?? '', tool_calls: toolCalls };
-  };
-}
-
-function toOpenAIMessage(m: Message): Record<string, unknown> {
-  if (m.role === 'tool') {
-    return {
-      role: 'tool',
-      tool_call_id: m.tool_call_id,
-      content: m.content ?? '',
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
     };
-  }
-  const out: Record<string, unknown> = {
-    role: m.role,
-    content: m.content ?? '',
-  };
-  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length) {
-    out.tool_calls = m.tool_calls.map((tc) => ({
-      id: tc.id,
-      type: 'function',
-      function: {
-        name: tc.name,
-        arguments: JSON.stringify(tc.arguments ?? {}),
-      },
-    }));
-  }
-  return out;
-}
 
-function safeParse(s: string): Record<string, unknown> {
-  try {
-    return JSON.parse(s || '{}');
-  } catch {
-    return {};
-  }
+    return callOpenAIChat({
+      baseUrl,
+      headers,
+      body,
+      fetchImpl,
+      retries: 0,
+      modelLabel: model,
+      signal: options?.signal,
+    });
+  };
 }

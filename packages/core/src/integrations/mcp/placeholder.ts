@@ -7,6 +7,50 @@ import { ToolRegistry } from '../../tools';
 
 export type McpTransportType = 'auto' | 'sse' | 'streamable-http';
 
+/**
+ * 已连接 MCP 客户端的存活注册表。
+ * 之前 connectMcpServer / registerMcpTools 创建 Client 后从不关闭，会泄漏连接
+ *（尤其是 stdio 子进程与 SSE 长连接）。这里按服务名将 client + 其注册的工具名
+ * 记录下来，供 disconnectMcpServer / disconnectAllMcp 在关闭或进程退出时清理。
+ */
+interface LiveMcp {
+  client: Client;
+  registry: ToolRegistry;
+  names: string[];
+}
+const liveClients = new Map<string, LiveMcp>();
+
+function storeClient(key: string, client: Client, registry: ToolRegistry, names: string[]): void {
+  const prev = liveClients.get(key);
+  if (prev) {
+    // 同名重连：先 best-effort 关闭旧连接，避免残留。
+    prev.client.close().catch(() => {});
+  }
+  liveClients.set(key, { client, registry, names });
+}
+
+/** 关闭指定 MCP 服务：移除其工具并断开底层传输。返回是否真的有关闭动作。 */
+export async function disconnectMcpServer(name: string): Promise<boolean> {
+  const entry = liveClients.get(name);
+  if (!entry) return false;
+  for (const n of entry.names) entry.registry.unregister(n);
+  liveClients.delete(name);
+  try {
+    await entry.client.close();
+  } catch {
+    /* 关闭失败不应抛出 */
+  }
+  return true;
+}
+
+/** 关闭所有已接入的 MCP 服务（进程退出时调用）。 */
+export async function disconnectAllMcp(): Promise<void> {
+  const names = [...liveClients.keys()];
+  for (const n of names) {
+    await disconnectMcpServer(n).catch(() => {});
+  }
+}
+
 export interface McpOptions {
   // 远程 MCP 服务器（SSE / Streamable HTTP）。优先级高于 `command`。
   serverUrl?: string;
@@ -93,6 +137,7 @@ export async function registerMcpTools(
       }, 'mcp');
     }
     console.log(`[mcp] registered ${tools.length} tool(s) from MCP server`);
+    storeClient('__default__', connected, registry, tools.map((t) => t.name));
   } catch (e) {
     console.error(`[mcp] failed to connect to MCP server: ${(e as Error).message}`);
     throw e;
@@ -150,6 +195,7 @@ export async function connectMcpServer(
       meta.tools.push({ registeredName, originalName: tool.name, description });
     }
     meta.status = 'connected';
+    storeClient(opts.name, connected, registry, meta.tools.map((t) => t.registeredName));
     console.log(`[mcp] server '${opts.name}' connected with ${meta.tools.length} tool(s)`);
   } catch (e: any) {
     meta.status = 'error';
