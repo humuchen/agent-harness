@@ -93,6 +93,97 @@ export interface McpServerMeta {
  * 未配置服务器时为空操作 —— 集成点保持预留但永远不会抛出异常，
  * 因此即使尚未接入 MCP，Harness 也能正常运行。
  */
+/**
+ * 单个 MCP 服务的声明式配置（来自环境变量或调用方）。
+ * 支持远程（serverUrl + 可选 headers/transportType）与本地 stdio
+ * （command + args + env）两种形态，每个 server 独立携带自己的传输选项。
+ */
+export interface McpServerConfig {
+  name: string;
+  serverUrl?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  transportType?: McpTransportType;
+}
+
+/**
+ * 从环境变量解析 MCP 服务清单，供 UI 与示例共用同一份解析逻辑。
+ *
+ * 优先级：
+ *   1. `MCP_SERVERS`：JSON 数组，每项形如
+ *      {"name":"context7","serverUrl":"https://mcp.context7.com/mcp","headers":{"X":"Y"},
+ *       "transportType":"streamable-http"}
+ *      或本地 stdio：
+ *      {"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/data"]}
+ *   2. `MCP_SERVER_URL`：单服务快捷配置，默认命名 "context7"（保持向后兼容）。
+ *
+ * 传 `env` 可避免污染 process.env，便于单元测试。
+ */
+export function parseMcpServersEnv(env: Record<string, string | undefined> = process.env): McpServerConfig[] {
+  const out: McpServerConfig[] = [];
+  const raw = env.MCP_SERVERS?.trim();
+  if (raw) {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        for (const s of arr) {
+          if (!s || (typeof s.serverUrl !== 'string' && typeof s.command !== 'string')) continue;
+          const serverUrl = typeof s.serverUrl === 'string' ? s.serverUrl : undefined;
+          const command = typeof s.command === 'string' ? s.command : undefined;
+          out.push({
+            name: typeof s.name === 'string' && s.name ? s.name : slugFromUrl(serverUrl ?? command ?? ''),
+            serverUrl,
+            command,
+            args: Array.isArray(s.args) ? s.args.map(String) : undefined,
+            env: s.env,
+            headers: s.headers,
+            transportType: (typeof s.transportType === 'string' ? s.transportType : undefined) as McpTransportType | undefined,
+          });
+        }
+      }
+    } catch {
+      /* 损坏的 JSON 忽略，继续走单 URL 兜底 */
+    }
+  }
+  const single = env.MCP_SERVER_URL?.trim();
+  if (single && !out.some((c) => c.serverUrl === single)) {
+    out.push({ name: 'context7', serverUrl: single });
+  }
+  return out;
+}
+
+/** 顺序接入一组 MCP 服务（单个失败不影响其余），返回各自的连接元数据。 */
+export async function connectMcpServers(
+  registry: ToolRegistry,
+  configs: McpServerConfig[]
+): Promise<McpServerMeta[]> {
+  const metas: McpServerMeta[] = [];
+  for (const c of configs) {
+    metas.push(
+      await connectMcpServer(registry, {
+        name: c.name,
+        serverUrl: c.serverUrl,
+        command: c.command,
+        args: c.args,
+        env: c.env,
+        headers: c.headers,
+        transportType: c.transportType,
+      })
+    );
+  }
+  return metas;
+}
+
+function slugFromUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/[^a-zA-Z0-9]/g, '_');
+  } catch {
+    return 'mcp';
+  }
+}
+
 export async function registerMcpTools(
   registry: ToolRegistry,
   opts: McpOptions = {}

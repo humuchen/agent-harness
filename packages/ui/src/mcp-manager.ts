@@ -1,5 +1,11 @@
 import { ToolRegistry } from '@agent-harness/core';
-import { connectMcpServer, disconnectAllMcp, type McpServerMeta } from '@agent-harness/core';
+import {
+  connectMcpServer,
+  disconnectAllMcp,
+  parseMcpServersEnv,
+  type McpServerMeta,
+  type McpServerConfig,
+} from '@agent-harness/core';
 
 /**
  * MCP 服务的运行时管理器（单例）。
@@ -20,14 +26,20 @@ class McpManager {
   init(): void {
     if (this.initialized) return;
     this.initialized = true;
-    const list = this.envServers();
+    // 共用 core 的解析入口（MCP_SERVERS JSON 与 MCP_SERVER_URL 兜底），
+    // 每个 server 可独立携带 transport / command / args / headers。
+    const list = parseMcpServersEnv();
     // 顺序连接，避免并发握手压垮免费服务；连接进度实时反映到 servers 列表。
     (async () => {
       for (const s of list) {
         const meta = await connectMcpServer(this.registry, {
           name: s.name,
-          serverUrl: s.url,
+          serverUrl: s.serverUrl,
+          command: s.command,
+          args: s.args,
+          env: s.env,
           headers: s.headers,
+          transportType: s.transportType,
         });
         this.servers.push(meta);
       }
@@ -60,29 +72,7 @@ class McpManager {
     this.servers = [];
   }
 
-  private envServers(): { name: string; url: string; headers?: Record<string, string> }[] {
-    const out: { name: string; url: string; headers?: Record<string, string> }[] = [];
-    const raw = process.env.MCP_SERVERS;
-    if (raw) {
-      try {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) {
-          for (const s of arr) {
-            if (s && s.url) {
-              out.push({ name: s.name || this.slug(s.url), url: s.url, headers: s.headers });
-            }
-          }
-        }
-      } catch {
-        /* 忽略损坏的 JSON */
-      }
-    }
-    const single = process.env.MCP_SERVER_URL;
-    if (single && !out.some((s) => s.url === single)) {
-      out.push({ name: 'context7', url: single });
-    }
-    return out;
-  }
+  // 环境变量的解析已统一到 core 的 parseMcpServersEnv()，本类不再重复实现。
 
   private slug(url: string): string {
     try {

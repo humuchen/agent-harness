@@ -1,4 +1,4 @@
-# Render Blueprint for agent-harness-ts (pnpm monorepo)
+# Render Blueprint for agent-harness (pnpm monorepo)
 #
 # How to deploy:
 #   1. Push this repo to GitHub (branch: dev).
@@ -13,7 +13,7 @@
 
 services:
   - type: web
-    name: agent-harness-ts
+    name: agent-harness
     runtime: node
     nodeVersion: "22"        # pin Node 22 (engines: 22.x); Render installs the latest 22.x
     plan: free
