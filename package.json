@@ -26,6 +26,9 @@
     "guardrails"
   ],
   "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
   "devDependencies": {
     "@types/node": "^20.19.43",
     "typescript": "^5.4.5"
