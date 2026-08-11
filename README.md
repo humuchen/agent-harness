@@ -177,6 +177,28 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 > `agent-harness-ts` 通过 Harness API 在对话中按需供给/回收环境，
 > 两者仅通过流水线 identifier 与环境变量耦合，互不入侵。
 
+## 内置基础工具（Built-in tools）
+
+补齐「模型自身做不到」的基础能力——**零依赖、默认常开、自动被模型调用**。
+所有内置工具以 `builtin__` 前缀注册进 `ToolRegistry`，与 MCP 工具（`<server>__` 前缀）
+共用同一注册表，因此护栏 / 记忆 / 追踪对它们自动覆盖，主循环零改动。
+
+| 工具 | 能力 | 说明 |
+|---|---|---|
+| `builtin__calculator` | 精确数学求值 | 自研 tokenizer + shunting-yard + RPN，**绝不 `eval`**；支持 `+-*/%^`、括号、一元负号、常量 `pi/e`、函数 `sqrt/abs/floor/ceil/round/exp/ln/log/sin/cos/tan/pow/atan2/min/max` |
+| `builtin__datetime_now` | 当前时间 | 返回 ISO-8601 与指定 IANA 时区的可读时间 |
+| `builtin__datetime_convert` | 时区转换 | ISO 时间戳在时区间转换 |
+| `builtin__datetime_add` | 时间偏移 | 对时间加减 seconds…years（负数即减） |
+| `builtin__web_fetch` | 抓取网页 | 仅允许 http/https，HTML 轻量清洗为文本，带超时与大小上限 |
+| `builtin__fs_read` | 读文件 | UTF-8 文本读取（限 root 内） |
+| `builtin__fs_list` | 列目录 | 列出目录条目 |
+| `builtin__fs_search` | 搜文件 | 按文件名/内容在 root 内递归搜索 |
+
+接入点：`registerBuiltinTools(registry, options)`（`packages/core/src/builtins`）。
+UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
+`BUILTINS_FS` / `BUILTINS_WEB` / `BUILTINS_CALC` / `BUILTINS_DT` 设为 `false`；
+`HARNESS_FS_ROOT` 限定文件沙箱根目录（默认 `process.cwd()`）。
+
 ## 可视化验证 Playground（Web UI）
 
 除了 CLI 示例，还提供了一个**零依赖的网页仪表盘**，把 Agent 闭环与三大验证

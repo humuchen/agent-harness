@@ -5,6 +5,7 @@ import {
   createOpenRouterLLM,
   HarnessClient,
   registerHarnessTools,
+  registerBuiltinTools,
   loadEnv,
   type LLM,
   type HarnessEvent,
@@ -41,6 +42,17 @@ export async function assembleAgent(
   const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
   const dryRun = !process.env.HARNESS_API_KEY;
   registerHarnessTools(tools, harnessClient);
+
+  // 注册零依赖的内置基础工具（calculator / datetime / web_fetch / filesystem），
+  // 默认常开，可用环境变量 BUILTINS_FS / BUILTINS_WEB / BUILTINS_CALC / BUILTINS_DT
+  // 设为 'false' 关闭；HARNESS_FS_ROOT 可限定文件沙箱根目录。
+  registerBuiltinTools(tools, {
+    fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
+    fsEnabled: process.env.BUILTINS_FS !== 'false',
+    webEnabled: process.env.BUILTINS_WEB !== 'false',
+    calcEnabled: process.env.BUILTINS_CALC !== 'false',
+    datetimeEnabled: process.env.BUILTINS_DT !== 'false',
+  });
 
   // 合并运行时已接入的 MCP 工具（共享注册表）。
   tools.mergeFrom(mcpManager.liveRegistry());
@@ -79,6 +91,10 @@ export async function assembleAgent(
   } else {
     notes.push('未检测到已连接的 MCP 服务（可在「MCP 服务」面板添加）。');
   }
+
+  notes.push(
+    '已内置基础工具：calculator / datetime / web_fetch / filesystem（默认常开，可被模型自动调用）。'
+  );
 
   const memory = new Memory();
   const harness = new AgentHarness({
