@@ -9,7 +9,7 @@
  *
  * 运行：npm run verify:context7
  */
-import { ToolRegistry, registerMcpTools } from '../src/index';
+import { ToolRegistry, registerMcpTools } from '@agent-harness/core';
 
 const CONTEXT7_URL = 'https://mcp.context7.com/mcp';
 

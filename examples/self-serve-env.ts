@@ -7,8 +7,8 @@ import {
   registerHarnessTools,
   registerMcpTools,
   loadEnv,
-} from '../src/index';
-import type { LLM, ToolCall } from '../src/index';
+} from '@agent-harness/core';
+import type { LLM, ToolCall } from '@agent-harness/core';
 
 loadEnv(); // load .env (git-ignored) if present; explicit env wins
 

@@ -1,5 +1,5 @@
-import { HarnessClient } from '../integrations/harness-client';
-import { loadEnv } from '../index';
+import { HarnessClient } from '@agent-harness/core';
+import { loadEnv } from '@agent-harness/core';
 
 loadEnv();
 

@@ -1,0 +1,26 @@
+{
+  "name": "@agent-harness/examples",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI examples for @agent-harness/core.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && node dist/basic.js",
+    "chat": "tsc -p tsconfig.json && node dist/chat.js",
+    "real-loop": "tsc -p tsconfig.json && node dist/real-loop.js",
+    "demo:env": "tsc -p tsconfig.json && node dist/self-serve-env.js",
+    "verify:harness": "tsc -p tsconfig.json && node dist/verify-harness.js",
+    "verify:mcp": "tsc -p tsconfig.json && node dist/verify-mcp.js",
+    "verify:context7": "tsc -p tsconfig.json && node dist/verify-context7.js",
+    "use:context7": "tsc -p tsconfig.json && node dist/use-context7.js",
+    "verify": "tsc -p tsconfig.json && node dist/verify-harness.js && node dist/verify-mcp.js && node dist/verify-context7.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@agent-harness/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

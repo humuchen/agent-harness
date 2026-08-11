@@ -6,8 +6,8 @@
  * 把状态从 RUNNING 切到 SUCCESS（或 FAILED），从而证明
  * 触发→抓取 executionId→状态轮询→终态判定 全链路正确。
  */
-import { HarnessClient } from '../src/index';
-import type { EphemeralEnvInput } from '../src/index';
+import { HarnessClient } from '@agent-harness/core';
+import type { EphemeralEnvInput } from '@agent-harness/core';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

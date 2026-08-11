@@ -13,8 +13,8 @@ import {
   createOpenRouterLLM,
   registerMcpTools,
   loadEnv,
-} from '../src/index';
-import type { LLM } from '../src/index';
+} from '@agent-harness/core';
+import type { LLM } from '@agent-harness/core';
 
 loadEnv();
 

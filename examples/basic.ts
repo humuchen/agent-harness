@@ -3,8 +3,8 @@ import {
   ToolRegistry,
   Memory,
   objectParams,
-} from '../src/index';
-import type { LLM, ToolCall } from '../src/index';
+} from '@agent-harness/core';
+import type { LLM, ToolCall } from '@agent-harness/core';
 
 // --- 1. 注册工具 -----------------------------------------------------------
 const tools = new ToolRegistry();
