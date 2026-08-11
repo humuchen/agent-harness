@@ -1,0 +1,33 @@
+{
+  "name": "@agent-harness/core",
+  "version": "0.1.0",
+  "description": "Minimal, runnable TypeScript LLM agent harness core (tool loop, memory, guardrails, telemetry, MCP).",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "optionalDependencies": {
+    "@opentelemetry/api": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

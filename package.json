@@ -1,42 +1,16 @@
 {
-  "name": "agent-harness",
+  "name": "agent-harness-monorepo",
+  "private": true,
   "version": "0.1.0",
-  "description": "A minimal, runnable TypeScript harness for LLM agents (tool loop, memory, guardrails, telemetry).",
-  "main": "dist/src/index.js",
-  "types": "dist/src/index.d.ts",
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/ui/server.js",
-    "dev": "tsc -p tsconfig.json && node dist/examples/basic.js",
-    "demo:env": "tsc -p tsconfig.json && node dist/examples/self-serve-env.js",
-    "chat": "tsc -p tsconfig.json && node dist/examples/chat.js",
-    "real-loop": "tsc -p tsconfig.json && node dist/examples/real-loop.js",
-    "verify:harness": "tsc -p tsconfig.json && node dist/examples/verify-harness.js",
-    "verify:mcp": "tsc -p tsconfig.json && node dist/examples/verify-mcp.js",
-    "verify:context7": "tsc -p tsconfig.json && node dist/examples/verify-context7.js",
-    "use:context7": "tsc -p tsconfig.json && node dist/examples/use-context7.js",
-    "ui": "tsc -p tsconfig.json && node dist/src/ui/server.js",
-    "verify": "tsc -p tsconfig.json && node dist/examples/verify-harness.js && node dist/examples/verify-mcp.js && node dist/examples/verify-context7.js"
-  },
-  "keywords": [
-    "agent",
-    "llm",
-    "harness",
-    "tools",
-    "guardrails"
-  ],
-  "license": "MIT",
+  "description": "Monorepo for agent-harness: @agent-harness/core (framework) + @agent-harness/ui (web playground).",
+  "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": "22.x"
   },
-  "devDependencies": {
-    "@types/node": "^20.19.43",
-    "typescript": "^5.4.5"
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "ui": "pnpm --filter @agent-harness/ui run start"
   },
-  "optionalDependencies": {
-    "@opentelemetry/api": "^1.7.0"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1"
-  }
+  "license": "MIT"
 }

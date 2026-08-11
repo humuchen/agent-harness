@@ -1,5 +1,5 @@
-import { ToolRegistry } from '../tools';
-import { connectMcpServer, type McpServerMeta } from '../integrations/mcp/placeholder';
+import { ToolRegistry } from '@agent-harness/core';
+import { connectMcpServer, type McpServerMeta } from '@agent-harness/core';
 
 /**
  * MCP 服务的运行时管理器（单例）。

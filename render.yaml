@@ -1,15 +1,13 @@
-# Render Blueprint for agent-harness-ts
+# Render Blueprint for agent-harness-ts (pnpm monorepo)
 #
 # How to deploy:
 #   1. Push this repo to GitHub (branch: dev).
 #   2. In Render Dashboard → "New" → "Blueprint" → connect the repo → pick render.yaml.
-#      (Or use the Render CLI: `render blueprint launch`)
-#   3. When prompted, select the branch you want to deploy from (dev).
-#   4. The only REQUIRED var is already set (NODE_ENV). Everything else is optional:
-#      leave OPENROUTER_API_KEY empty to run the dashboard in Mock (offline) mode.
+#   3. Select the branch you want to deploy from (dev).
 #
 # Notes:
-#   - dist/ is gitignored, so Render runs `npm run build` (tsc) at build time.
+#   - This is a pnpm workspace: packages/core (framework) + packages/ui (web playground).
+#   - dist/ is gitignored, so Render builds each package via `pnpm -r build`.
 #   - The SSE dashboard binds 0.0.0.0:$PORT (Render injects PORT automatically).
 #   - Free plan spins the service down after 15 min of inactivity (cold start on next visit).
 
@@ -19,8 +17,8 @@ services:
     runtime: node
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
-    buildCommand: pnpm install --no-production && pnpm build
-    startCommand: node dist/src/ui/server.js
+    buildCommand: pnpm install && pnpm -r build
+    startCommand: node packages/ui/dist/server.js
     healthCheckPath: /api/state
     envVars:
       - key: NODE_ENV
@@ -31,7 +29,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: nvidia/nemotron-3-ultra-550b-a55b:free
+        value: openai/gpt-4o-mini
       # Context7 MCP docs integration (works without a key).
       - key: MCP_SERVER_URL
         value: https://mcp.context7.com/mcp

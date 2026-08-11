@@ -11,42 +11,50 @@
 - **工具错误即自愈**：工具抛错会作为 tool result 回灌模型，模型可重试或换路。
 - **护栏先行**：输入 / 输出 / 工具参数三层检查，默认拦截密钥与超长输入。
 
-## 目录结构
+## 目录结构（pnpm monorepo）
 
 ```
-agent-harness/
-├─ src/
-│  ├─ types.ts        // 核心契约：Message / ToolCall / ToolSchema / LLM
-│  ├─ telemetry.ts    // 可选 OTel 追踪（无依赖降级）
-│  ├─ memory.ts       // 滑动窗口 + 长期记忆 + 可选持久化
-│  ├─ tools.ts        // 工具注册表 + JSON Schema 生成
-│  ├─ guardrails.ts   // 输入/输出/工具参数三层护栏
-│  ├─ harness.ts      // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
-│  ├─ index.ts        // 统一导出
-│  └─ ui/             // 可视化验证 Playground（零依赖 HTTP + SSE 服务 + 前端）
-│     ├─ runner.ts    // 按模式组装 agent（mock / real / real-mcp）
-│     ├─ verification.ts // 三大能力的可视化验证（流式事件）
-│     ├─ mcp-manager.ts  // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
-│     ├─ env-pipeline.ts // 环境生命周期状态机（PENDING→…→READY/RUNNING）+ 流式状态
-│     └─ server.ts    // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
-├─ public/
-│  └─ index.html      // 单文件暗色仪表盘前端
-├─ examples/
-│  └─ basic.ts        // MockLLM 示例，无需 API key 即可跑
+agent-harness/                # 根：private 包 + pnpm workspace
+├─ packages/
+│  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖）
+│  │  ├─ src/
+│  │  │  ├─ types.ts          // 核心契约：Message / ToolCall / ToolSchema / LLM
+│  │  │  ├─ telemetry.ts       // 可选 OTel 追踪（无依赖降级）
+│  │  │  ├─ memory.ts         // 滑动窗口 + 长期记忆 + 可选持久化
+│  │  │  ├─ tools.ts          // 工具注册表 + JSON Schema 生成
+│  │  │  ├─ guardrails.ts     // 输入/输出/工具参数三层护栏
+│  │  │  ├─ harness.ts        // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
+│  │  │  ├─ loadEnv.ts         // 零依赖 .env 加载器
+│  │  │  ├─ index.ts          // 统一导出（barrel）
+│  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器（同一 LLM 契约）
+│  │  │  └─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
+│  │  └─ tsconfig.json
+│  └─ ui/                     # @agent-harness/ui —— Web Playground（依赖 core）
+│     ├─ src/
+│     │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
+│     │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
+│     │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
+│     │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
+│     │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
+│     ├─ public/index.html    // 单文件暗色仪表盘前端
+│     └─ tsconfig.json
+├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
+├─ pnpm-workspace.yaml
+├─ tsconfig.base.json
 ├─ package.json
-└─ tsconfig.json
+└─ render.yaml                # Render 部署 Blueprint（部署 packages/ui）
 ```
 
 ## 快速开始
 
 ```bash
 # 安装 dev 依赖（仅 typescript，用于编译）
-npm install
+pnpm install
 
 # 编译并运行示例
-npm run dev
+pnpm --filter @agent-harness/examples run dev
 # 或：先 build 再 start
-npm run build && npm start
+pnpm -r build
 ```
 
 预期输出：
@@ -77,7 +85,7 @@ npm run build && npm start
 通几乎所有主流模型（OpenAI / Anthropic / Google / 国产模型等）：
 
 ```ts
-import { AgentHarness, createOpenRouterLLM } from './src/index';
+import { AgentHarness, createOpenRouterLLM } from '@agent-harness/core';
 
 // 读 OPENROUTER_API_KEY / OPENROUTER_MODEL / OPENROUTER_BASE_URL
 const llm = createOpenRouterLLM();
@@ -108,19 +116,19 @@ const agent = new AgentHarness({ llm, tools });
 - `src/integrations/harness-tools.ts` — 把上面两个能力注册成 agent 工具
   `create_ephemeral_environment` / `destroy_environment`。
 - 示例：
-  - `examples/self-serve-env.ts` — `npm run demo:env`（无 key 用 mock；有
+  - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`（无 key 用 mock；有
     `OPENROUTER_API_KEY` 则真跑；harness 始终 dry-run 直到你填 `HARNESS_API_KEY`）
-  - `examples/real-loop.ts` — `npm run real-loop`：真实两轮对话闭环
+  - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环
     （Turn1 拉起环境 → Turn2 销毁环境），已用 OpenRouter 实测跑通
-  - `examples/chat.ts` — `npm run chat`：单轮真实对话（需 `OPENROUTER_API_KEY`）
+  - `examples/chat.ts` — `pnpm --filter @agent-harness/examples run chat`：单轮真实对话（需 `OPENROUTER_API_KEY`）
 
 ```bash
 # 零凭据演示（dry-run，打印真实会发出的 Harness API 调用）
-npm run demo:env
+pnpm --filter @agent-harness/examples run demo:env
 
 # 真实 LLM + dry-run Harness：会真正调用 OpenRouter 驱动 create→destroy 循环
 export OPENROUTER_API_KEY=sk-or-...
-npm run real-loop
+pnpm --filter @agent-harness/examples run real-loop
 
 # 真实接入 Harness：在 .env 填入 HARNESS_API_KEY / ACCOUNT / ORG / PROJECT 后重跑
 ```
@@ -156,7 +164,7 @@ MCP_SERVER_URL=https://mcp.context7.com/mcp
 `query-docs`（按库 ID + 问题拉取最新官方文档片段）。
 
 ```bash
-npm run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
+pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
 ```
 
 > 你之前没有自己的 MCP，所以这块是「预留 → 激活」。接下来按同样方式逐步
@@ -174,7 +182,7 @@ npm run verify:context7   # 连真实端点、列工具、并实打实调一次 
 **可视化、可交互**地跑出来：
 
 ```bash
-npm run ui            # 编译并启动，默认 http://localhost:4173 （可用 UI_PORT 改端口）
+pnpm --filter @agent-harness/ui run start            # 编译并启动，默认 http://localhost:4173 （可用 UI_PORT 改端口）
 ```
 
 打开后你会看到三栏布局：
@@ -196,14 +204,14 @@ npm run ui            # 编译并启动，默认 http://localhost:4173 （可用
   可视化看到 agent 自主调用远程 MCP 工具。
 
 点「▶ 运行 Agent」开始一轮运行；点「✓ 运行验证」则把三大能力按流式事件
-在左栏验证面板里逐个点亮 ✅ / ❌（与 `npm run verify:*` 同一套逻辑，只是
+在左栏验证面板里逐个点亮 ✅ / ❌（与 `pnpm --filter @agent-harness/examples run verify:*` 同一套逻辑，只是
 实时可视化）。环境流水线区可点「拉起环境 / 销毁环境」触发
 `PENDING → PROVISIONING → RUNNING → READY` 状态机的可视化（无
 `HARNESS_API_KEY` 时走 dry-run 演示同样的状态流转）。
 
 实现要点：
 
-- `src/ui/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
+- `packages/ui/src/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
   通过 SSE（`text/event-stream`）把 `HarnessEvent`、验证事件、MCP/Env 事件推给前端。
   端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
   `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
@@ -216,7 +224,7 @@ npm run ui            # 编译并启动，默认 http://localhost:4173 （可用
   轮询真实状态。
 - `src/harness.ts` 新增可选 `onEvent` 回调（类型 `HarnessEvent`），在循环每一步
   发出事件，**不修改任何业务逻辑**，CLI 与测试完全不受影响。
-- 前端 `public/index.html` 是单文件（内联 CSS/JS，无 CDN 依赖），暗色主题，
+- 前端 `packages/ui/public/index.html` 是单文件（内联 CSS/JS，无 CDN 依赖），暗色主题，
   通过 `fetch` + `ReadableStream` 解析 SSE，断网可用。
 
 ## 自包含验证（无需真实凭据/服务）
@@ -224,11 +232,11 @@ npm run ui            # 编译并启动，默认 http://localhost:4173 （可用
 三项核心能力都配了验证脚本：
 
 ```bash
-npm run verify            # 依次跑 #2 Harness + #3 内存 MCP + #3 Context7（真实端点）
-npm run verify:harness    # #2：用 Mock fetch 验证 Harness 轮询/终态映射
-npm run verify:mcp        # #3：进程内起真实 MCP Server 验证接入链路
-npm run verify:context7   # #3：连真实 Context7 端点，端到端验证（需联网）
-npm run real-loop         # #1：真实 OpenRouter 两轮 create→destroy 闭环
+pnpm --filter @agent-harness/examples run verify            # 依次跑 #2 Harness + #3 内存 MCP + #3 Context7（真实端点）
+pnpm --filter @agent-harness/examples run verify:harness    # #2：用 Mock fetch 验证 Harness 轮询/终态映射
+pnpm --filter @agent-harness/examples run verify:mcp        # #3：进程内起真实 MCP Server 验证接入链路
+pnpm --filter @agent-harness/examples run verify:context7   # #3：连真实 Context7 端点，端到端验证（需联网）
+pnpm --filter @agent-harness/examples run real-loop         # #1：真实 OpenRouter 两轮 create→destroy 闭环
 ```
 
 - `examples/verify-harness.ts`：注入模拟 Harness 后端，覆盖 SUCCESS / FAILED

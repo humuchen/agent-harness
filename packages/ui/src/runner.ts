@@ -9,7 +9,7 @@ import {
   type LLM,
   type HarnessEvent,
   type ToolCall,
-} from '../index';
+} from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先

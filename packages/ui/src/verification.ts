@@ -14,7 +14,7 @@ import {
   loadEnv,
   type EphemeralEnvInput,
   type HarnessEvent,
-} from '../index';
+} from '@agent-harness/core';
 import { makeMockEnvLLM } from './runner';
 
 loadEnv();

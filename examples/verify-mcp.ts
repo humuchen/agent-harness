@@ -12,7 +12,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { registerMcpTools, ToolRegistry } from '../src/index';
+import { registerMcpTools, ToolRegistry } from '@agent-harness/core';
 
 function assert(cond: boolean, msg: string) {
   if (!cond) {

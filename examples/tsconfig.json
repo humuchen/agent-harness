@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@agent-harness/core": ["../packages/core/dist/index.d.ts"]
+    }
+  },
+  "include": ["*.ts"]
+}

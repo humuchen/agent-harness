@@ -7,7 +7,7 @@ import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { envPipeline } from './env-pipeline';
-import type { HarnessEvent } from '../index';
+import type { HarnessEvent } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -23,7 +23,7 @@ function publicDir(): string {
     accessSync(fromCwd);
     return fromCwd;
   } catch {
-    return resolve(__dirname, '..', '..', '..', 'public');
+    return resolve(__dirname, '..', 'public');
   }
 }
 
