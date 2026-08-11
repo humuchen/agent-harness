@@ -13,6 +13,9 @@ importers:
       '@agent-harness/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.1
+        version: 1.30.0(zod@4.4.3)
     devDependencies:
       '@types/node':
         specifier: ^20.19.43
