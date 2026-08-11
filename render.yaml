@@ -15,9 +15,14 @@ services:
   - type: web
     name: agent-harness-ts
     runtime: node
+    nodeVersion: "22"        # pin Node 22 (engines: 22.x); Render installs the latest 22.x
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
-    buildCommand: pnpm install && pnpm -r build
+    # IMPORTANT: this is a pnpm monorepo. The build MUST run `pnpm -r build` so each
+    # workspace package (packages/core, packages/ui, examples) emits its dist/.
+    # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
+    # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
+    buildCommand: pnpm install --frozen-lockfile && pnpm -r build
     startCommand: node packages/ui/dist/server.js
     healthCheckPath: /api/state
     envVars:
