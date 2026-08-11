@@ -12,3 +12,4 @@ export * from './integrations/harness-client.types';
 export * from './integrations/harness-client';
 export * from './integrations/harness-tools';
 export * from './integrations/mcp/placeholder';
+export * from './integrations/mcp/presets';

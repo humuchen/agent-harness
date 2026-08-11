@@ -4,6 +4,7 @@
     "rootDir": ".",
     "outDir": "dist",
     "baseUrl": ".",
+    "types": ["node"],
     "paths": {
       "@agent-harness/core": ["../packages/core/dist/index.d.ts"]
     }

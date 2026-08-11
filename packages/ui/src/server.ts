@@ -7,6 +7,7 @@ import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { envPipeline } from './env-pipeline';
+import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { HarnessEvent, McpTransportType } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
@@ -64,16 +65,23 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // 受保护端点：需通过 UI_AUTH_TOKEN 校验（未配置则开放）。
     const PROTECTED: string[] = [
       '/api/mcp/list',
+      '/api/mcp/presets',
       '/api/env',
       '/api/run',
       '/api/verify',
       '/api/mcp/add',
+      '/api/mcp/preset',
+      '/api/shell/approve',
     ];
     if (PROTECTED.includes(path) && !authorized(req, url)) {
       return unauthorized(res);
     }
     if (req.method === 'GET' && path === '/api/mcp/list') {
       return sendJson(res, { servers: mcpManager.list() });
+    }
+    if (req.method === 'GET' && path === '/api/mcp/presets') {
+      // 开箱预设清单（Context7 / GitHub / Composio 等），供前端「预设市场」一键接入。
+      return sendJson(res, { presets: mcpManager.presets() });
     }
     if (req.method === 'GET' && path === '/api/env') {
       return sendJson(res, { envs: envPipeline.list() });
@@ -86,6 +94,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/mcp/add') {
       return await handleMcpAdd(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/mcp/preset') {
+      return await handleMcpPreset(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/shell/approve') {
+      return await handleShellApprove(req, res);
     }
     if (req.method === 'POST' && path === '/api/env') {
       return await handleEnv(req, res);
@@ -116,6 +130,7 @@ function buildState() {
       tools: s.tools.map((t) => ({ registeredName: t.registeredName, originalName: t.originalName })),
       error: s.error ?? null,
     })),
+    mcpPresets: mcpManager.presets().map((p) => ({ id: p.id, name: p.name, authType: p.authType })),
     envs: envPipeline.list(),
   };
 }
@@ -259,6 +274,47 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
   }
+}
+
+/** 一键接入预设 MCP 服务（Context7 / GitHub / Composio 等）。 */
+async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const id = String(body.id ?? '').trim();
+  const token = body.token != null ? String(body.token) : undefined;
+  if (!id) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: '缺少预设 id（如 context7 / github / composio）' }));
+    return;
+  }
+  try {
+    const meta = await mcpManager.connectPreset(id, token);
+    sendJson(res, { server: meta, servers: mcpManager.list() });
+  } catch (e: any) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: e?.message ?? String(e) }));
+  }
+}
+
+/**
+ * 审批一次待执行的 shell 命令（配合 SHELL_REQUIRE_CONFIRM=true）。
+ * body: { command, args, preapprove? }。preapprove=true 时仅登记永久批准、不等待。
+ * 返回被放行的等待项数量（waitingReleased）或预批准结果（preapproved）。
+ */
+async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const command = String(body.command ?? '');
+  const args = Array.isArray(body.args) ? body.args.map(String) : [];
+  if (!command) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: '缺少 command' }));
+    return;
+  }
+  if (body.preapprove === true) {
+    preapproveShell(shellSignature(command, args));
+    return sendJson(res, { preapproved: true });
+  }
+  const released = approveShell(command, args);
+  sendJson(res, { waitingReleased: released });
 }
 
 async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<void> {

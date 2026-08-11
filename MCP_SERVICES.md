@@ -40,6 +40,37 @@ MCP_SERVERS=[{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{
 
 ---
 
+## 一（补）、开箱预设 · 一键接入（recommended）
+
+代码里已内置一组**预设清单**（`packages/core/src/integrations/mcp/presets.ts`，
+单一事实来源，UI 直接消费），覆盖最常用公共 MCP，无需手查 URL / 拼 headers：
+
+| 预设 id | 服务 | 鉴权 | 说明 |
+|---|---|---|---|
+| `context7` | Context7（Upstash） | 可选 Bearer（免 key 也能用） | 拉取任意库最新文档，零配置首选 |
+| `github` | GitHub Copilot MCP | Bearer（PAT） | 仓库 / Issue / PR |
+| `composio` | Composio | Bearer（`ck_...`） | 单端点覆盖 1000+ 集成 |
+| `zapier` | Zapier | 无（secret URL） | 需从 mcp.zapier.com 复制专属 URL 后走「自定义添加」 |
+| `playwright` | Playwright（自托管） | 无 | 需 `npx @playwright/mcp@latest --port 8931` 自起 |
+
+**UI 面板**：左侧「MCP 预设市场 · Presets」列出上述预设，带能力 chip 与（如需）token 输入框，
+点「⚡ 一键接入」即连。
+
+**HTTP 接口**：
+```bash
+# 列出全部预设
+curl https://<你的服务>/api/mcp/presets
+
+# 一键接入某个预设（token 仅 authType!=none 时需要）
+curl -X POST https://<你的服务>/api/mcp/preset \
+  -H "Content-Type: application/json" \
+  -d '{"id":"context7","token":"ctx7_你的key（可留空）"}'
+```
+
+**代码**：`mcpManager.connectPreset(id, token?)`；core 侧 `listPresets() / getPreset(id) / headersForPreset(preset, token)`。
+
+---
+
 ## 二、已核实的公共远程 MCP 服务
 
 | 名称 | URL | 传输 | 鉴权 | 能力 | 备注 |

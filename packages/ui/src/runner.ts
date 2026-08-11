@@ -16,6 +16,7 @@ import {
   type ToolCall,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
+import { waitApproval } from './shell-approval';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
 
@@ -51,12 +52,24 @@ export async function assembleAgent(
   // 注册零依赖的内置基础工具（calculator / datetime / web_fetch / filesystem），
   // 默认常开，可用环境变量 BUILTINS_FS / BUILTINS_WEB / BUILTINS_CALC / BUILTINS_DT
   // 设为 'false' 关闭；HARNESS_FS_ROOT 可限定文件沙箱根目录。
+  // 沙箱 shell 能力默认关闭，需 SHELL_ENABLED=true 开启；开启后受白名单 + 作用域管控，
+  // 若再设 SHELL_REQUIRE_CONFIRM=true 则每次执行前需经 /api/shell/approve 审批。
+  const shellEnabled = process.env.SHELL_ENABLED === 'true';
+  const shellRequireConfirm = process.env.SHELL_REQUIRE_CONFIRM === 'true';
   registerBuiltinTools(tools, {
     fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
     fsEnabled: process.env.BUILTINS_FS !== 'false',
     webEnabled: process.env.BUILTINS_WEB !== 'false',
     calcEnabled: process.env.BUILTINS_CALC !== 'false',
     datetimeEnabled: process.env.BUILTINS_DT !== 'false',
+    shellEnabled,
+    shellRoot: process.env.SHELL_ROOT || process.cwd(),
+    shellWhitelist: process.env.SHELL_WHITELIST
+      ? process.env.SHELL_WHITELIST.split(',').map((s) => s.trim()).filter(Boolean)
+      : [],
+    shellRequireConfirmation: shellRequireConfirm,
+    shellConfirm: shellRequireConfirm ? (req) => waitApproval(req.command, req.args) : undefined,
+    shellAllowOperators: process.env.SHELL_ALLOW_OPERATORS === 'true',
   });
 
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。
@@ -107,6 +120,19 @@ export async function assembleAgent(
   notes.push(
     '已内置基础工具：calculator / datetime / web_fetch / filesystem（默认常开，可被模型自动调用）。'
   );
+
+  if (shellEnabled) {
+    const wl = process.env.SHELL_WHITELIST
+      ? process.env.SHELL_WHITELIST.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    notes.push(
+      `已启用沙箱 shell 执行（builtin__shell_exec）：白名单 ${wl.length ? '[' + wl.join(', ') + ']' : '（空→不执行任何命令）'}` +
+        `，作用域锁定 ${process.env.SHELL_ROOT || process.cwd()}` +
+        (shellRequireConfirm ? '，每次执行需经 /api/shell/approve 审批。' : '。')
+    );
+  } else {
+    notes.push('沙箱 shell 执行未启用（设 SHELL_ENABLED=true 开启，受白名单 + 作用域管控）。');
+  }
 
   // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
   const skillCatalog = skillRegistry.describeForPrompt();
