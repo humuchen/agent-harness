@@ -19,7 +19,7 @@ services:
     runtime: node
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
-    buildCommand: npm install && npm run build
+    buildCommand: pnpm install --include=dev && pnpm build
     startCommand: node dist/src/ui/server.js
     healthCheckPath: /api/state
     envVars:
@@ -31,7 +31,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: openai/gpt-4o-mini
+        value: nvidia/nemotron-3-ultra-550b-a55b:free
       # Context7 MCP docs integration (works without a key).
       - key: MCP_SERVER_URL
         value: https://mcp.context7.com/mcp
