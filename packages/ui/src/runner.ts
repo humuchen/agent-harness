@@ -61,7 +61,10 @@ export async function assembleAgent(
         '真实模式需要 OPENROUTER_API_KEY（在 .env 中配置）。可切换到 Mock 模式离线验证。'
       );
     }
-    const model = modelOverride ?? process.env.OPENROUTER_MODEL;
+    const model =
+      (modelOverride && modelOverride.trim()) ||
+      (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
+      undefined;
     llm = createOpenRouterLLM(model ? { model } : {});
     llmKind = 'openrouter';
     notes.push(`使用真实 OpenRouter LLM（model=${model ?? '默认'}）。`);

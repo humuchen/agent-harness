@@ -19,9 +19,14 @@ export interface OpenAIConfig {
  */
 export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
   const apiKey = config.apiKey ?? process.env.OPENAI_API_KEY;
-  const model = config.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+  const model =
+    (config.model && config.model.trim()) ||
+    (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
+    'gpt-4o-mini';
   const baseUrl =
-    config.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
+    (config.baseUrl && config.baseUrl.trim()) ||
+    (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.trim()) ||
+    'https://api.openai.com/v1';
   const fetchImpl = config.fetchImpl ?? fetch;
 
   return async function openaiLLM(

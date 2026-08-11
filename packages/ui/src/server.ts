@@ -73,7 +73,7 @@ function buildState() {
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     mcpUrl: process.env.MCP_SERVER_URL ?? null,
-    model: process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini',
+    model: (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) || 'openai/gpt-4o-mini',
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,
       url: s.url ?? null,
@@ -155,7 +155,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       dryRun: assembled.dryRun,
       mcpConnected: assembled.mcpConnected,
       notes: assembled.notes,
-      model: model ?? process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini',
+      model: (model && model.trim()) || (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) || 'openai/gpt-4o-mini',
     });
     send({ type: 'run:tools', tools: assembled.tools.schemas() });
 

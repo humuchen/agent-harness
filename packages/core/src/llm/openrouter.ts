@@ -36,16 +36,25 @@ export interface OpenRouterConfig {
  */
 export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
   const apiKey = config.apiKey ?? process.env.OPENROUTER_API_KEY;
+  // 注意：用 `||` + trim 而非 `??`，因为环境变量可能被配置成空字符串
+  // （例如在 Render 里加了 OPENROUTER_MODEL 但留空），`??` 不会把空串当作
+  // "未设置" 而回落到默认值，导致把 model:"" 直接发给 OpenRouter 被拒。
   const model =
-    config.model ?? process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini';
+    (config.model && config.model.trim()) ||
+    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
+    'openai/gpt-4o-mini';
   const baseUrl =
-    config.baseUrl ??
-    process.env.OPENROUTER_BASE_URL ??
+    (config.baseUrl && config.baseUrl.trim()) ||
+    (process.env.OPENROUTER_BASE_URL && process.env.OPENROUTER_BASE_URL.trim()) ||
     'https://openrouter.ai/api/v1';
   const siteUrl =
-    config.siteUrl ?? process.env.OPENROUTER_SITE_URL ?? 'https://workbuddy.app';
+    (config.siteUrl && config.siteUrl.trim()) ||
+    (process.env.OPENROUTER_SITE_URL && process.env.OPENROUTER_SITE_URL.trim()) ||
+    'https://workbuddy.app';
   const appName =
-    config.appName ?? process.env.OPENROUTER_APP_NAME ?? 'agent-harness';
+    (config.appName && config.appName.trim()) ||
+    (process.env.OPENROUTER_APP_NAME && process.env.OPENROUTER_APP_NAME.trim()) ||
+    'agent-harness';
   const fetchImpl = config.fetchImpl ?? fetch;
   const retries = config.retries ?? 2;
 
