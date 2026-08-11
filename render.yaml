@@ -19,7 +19,7 @@ services:
     runtime: node
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
-    buildCommand: pnpm install --include=dev && pnpm build
+    buildCommand: pnpm install --no-production && pnpm build
     startCommand: node dist/src/ui/server.js
     healthCheckPath: /api/state
     envVars:
