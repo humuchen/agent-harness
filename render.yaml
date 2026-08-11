@@ -1,0 +1,37 @@
+# Render Blueprint for agent-harness-ts
+#
+# How to deploy:
+#   1. Push this repo to GitHub (branch: dev).
+#   2. In Render Dashboard → "New" → "Blueprint" → connect the repo → pick render.yaml.
+#      (Or use the Render CLI: `render blueprint launch`)
+#   3. When prompted, select the branch you want to deploy from (dev).
+#   4. The only REQUIRED var is already set (NODE_ENV). Everything else is optional:
+#      leave OPENROUTER_API_KEY empty to run the dashboard in Mock (offline) mode.
+#
+# Notes:
+#   - dist/ is gitignored, so Render runs `npm run build` (tsc) at build time.
+#   - The SSE dashboard binds 0.0.0.0:$PORT (Render injects PORT automatically).
+#   - Free plan spins the service down after 15 min of inactivity (cold start on next visit).
+
+services:
+  - type: web
+    name: agent-harness-ts
+    runtime: node
+    plan: free
+    region: oregon            # oregon | frankfurt | singapore | ohio | virginia
+    buildCommand: npm install && npm run build
+    startCommand: node dist/src/ui/server.js
+    healthCheckPath: /api/state
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: UI_HOST
+        value: 0.0.0.0
+      # Real LLM mode — fill in the dashboard to enable (otherwise Mock mode is used).
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openai/gpt-4o-mini
+      # Context7 MCP docs integration (works without a key).
+      - key: MCP_SERVER_URL
+        value: https://mcp.context7.com/mcp

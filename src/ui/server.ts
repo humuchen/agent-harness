@@ -9,7 +9,8 @@ import { mcpManager } from './mcp-manager';
 import { envPipeline } from './env-pipeline';
 import type { HarnessEvent } from '../index';
 
-const PORT = Number(process.env.UI_PORT ?? 4173);
+// Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
+const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
 const HOST = process.env.UI_HOST ?? '0.0.0.0';
 
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
