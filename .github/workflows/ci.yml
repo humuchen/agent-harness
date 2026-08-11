@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+# 取消同一分支上正在进行的旧构建，避免资源浪费。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # frozen-lockfile 保证 CI 与本地依赖树一致；失败即说明 lockfile 未同步。
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tsc 在 emit 时已做类型检查，build 即等同于 typecheck 门禁。
+      - name: Build all packages
+        run: pnpm -r build
+
+      - name: Run tests
+        run: pnpm -r test
+
+  # 依赖安全扫描（不阻塞主流程，仅报告）。企业落地时建议转为门禁。
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit
+        run: pnpm audit --severity high || true

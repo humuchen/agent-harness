@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { accessSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
@@ -15,10 +15,83 @@ const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
 const HOST = process.env.UI_HOST ?? '0.0.0.0';
 
 // 接口鉴权：设置 UI_AUTH_TOKEN 后，除健康检查与静态页外的所有 API 都需
-// `Authorization: Bearer <token>`（或 `?token=<token>`）。未设置则保持开放
-//（仅建议本地 / 演示使用，启动时会给出告警）。
+// `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
+// 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
 const REQUIRE_AUTH = !!UI_AUTH_TOKEN;
+
+// 安全加固配置（均可在 .env / 环境变量中调整）。
+// 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
+const UI_CORS_ORIGIN = (process.env.UI_CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+// 请求体上限（字节），防大报文 DoS。默认 1MB。
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES ?? 1_048_576);
+// 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
+const RATE_LIMIT = Number(process.env.RATE_LIMIT ?? 120);
+const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+// 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
+const AUDIT_LOG = process.env.AUDIT_LOG || '';
+
+// ---------------------------------------------------------------------------
+// 安全 / 可观测辅助
+// ---------------------------------------------------------------------------
+
+/** 取客户端真实 IP（兼容反向代理 X-Forwarded-For）。 */
+function clientIp(req: IncomingMessage): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+/** 内存态固定窗口限流；超过阈值返回 true（应拒绝）。 */
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimited(ip: string): boolean {
+  if (!(RATE_LIMIT > 0)) return false;
+  const now = Date.now();
+  let b = rateBuckets.get(ip);
+  if (!b || now > b.resetAt) {
+    b = { count: 0, resetAt: now + RATE_WINDOW_MS };
+    rateBuckets.set(ip, b);
+  }
+  b.count += 1;
+  return b.count > RATE_LIMIT;
+}
+
+/** 依据配置解析本次响应应回的 CORS 头；未配置则返回空（仅同源）。 */
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin;
+  if (!origin || UI_CORS_ORIGIN.length === 0) return {};
+  if (UI_CORS_ORIGIN.includes('*')) return { 'access-control-allow-origin': '*' };
+  if (UI_CORS_ORIGIN.includes(origin)) return { 'access-control-allow-origin': origin };
+  return {};
+}
+
+/** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。 */
+function audit(rec: Record<string, unknown>): void {
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
+  if (AUDIT_LOG) {
+    appendFile(AUDIT_LOG, line + '\n').catch(() => {});
+  }
+  console.log('[audit] ' + line);
+}
+
+/** 高危动作审计（已脱敏，绝不记录密钥/token/headers）。 */
+function auditAction(action: string, fields: Record<string, unknown>): void {
+  audit({ kind: 'action', action, ...fields });
+}
+
+/** 去掉 URL 中的查询串，避免把内嵌 token 写进审计日志。 */
+function redactUrl(url?: string): string {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch {
+    return url.split('?')[0];
+  }
+}
 
 function authorized(req: IncomingMessage, url: URL): boolean {
   if (!REQUIRE_AUTH) return true;
@@ -55,6 +128,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const path = url.pathname;
 
   try {
+    // CORS 预检：仅当配置了跨域白名单时才需处理。
+    if (req.method === 'OPTIONS') {
+      const h: Record<string, string> = {
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-headers': 'content-type,authorization',
+        ...corsHeaders(req),
+      };
+      res.writeHead(204, h);
+      res.end();
+      return;
+    }
+
     if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
       return await serveHtml(res);
     }
@@ -73,8 +158,19 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       '/api/mcp/preset',
       '/api/shell/approve',
     ];
-    if (PROTECTED.includes(path) && !authorized(req, url)) {
-      return unauthorized(res);
+    if (PROTECTED.includes(path)) {
+      const ip = clientIp(req);
+      if (!authorized(req, url)) {
+        audit({ kind: 'request', method: req.method, path, ip, authed: false, status: 401 });
+        return unauthorized(res);
+      }
+      if (rateLimited(ip)) {
+        audit({ kind: 'rate-limit', method: req.method, path, ip });
+        res.writeHead(429, { 'content-type': 'application/json', ...corsHeaders(req) });
+        res.end(JSON.stringify({ error: 'rate limit exceeded' }));
+        return;
+      }
+      audit({ kind: 'request', method: req.method, path, ip, authed: true });
     }
     if (req.method === 'GET' && path === '/api/mcp/list') {
       return sendJson(res, { servers: mcpManager.list() });
@@ -108,8 +204,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     res.end(JSON.stringify({ error: 'not found' }));
   } catch (e: any) {
     console.error('[ui] request error:', e?.message ?? e);
+    const code = typeof e?.status === 'number' ? e.status : 500;
     if (!res.headersSent) {
-      res.writeHead(500, { 'content-type': 'application/json' });
+      res.writeHead(code, { 'content-type': 'application/json' });
     }
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
   }
@@ -147,20 +244,20 @@ function serveHtml(res: ServerResponse): void {
     });
 }
 
-function sendJson(res: ServerResponse, obj: unknown): void {
+function sendJson(res: ServerResponse, obj: unknown, req?: IncomingMessage): void {
   res.writeHead(200, {
     'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
   });
   res.end(JSON.stringify(obj));
 }
 
-function startSse(res: ServerResponse): (obj: unknown) => void {
+function startSse(res: ServerResponse, req?: IncomingMessage): (obj: unknown) => void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
-    'access-control-allow-origin': '*',
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
   });
   let closed = false;
   res.on('close', () => {
@@ -174,22 +271,38 @@ function startSse(res: ServerResponse): (obj: unknown) => void {
 
 async function readBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).length;
+    if (total > MAX_BODY_BYTES) {
+      const err: any = new Error('request body too large');
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(c as Buffer);
+  }
   const raw = Buffer.concat(chunks).toString('utf-8');
-  return raw ? JSON.parse(raw) : {};
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    const err: any = new Error('invalid JSON body');
+    err.status = 400;
+    throw err;
+  }
 }
 
 async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const send = startSse(res);
   let closed = false;
   res.on('close', () => {
     closed = true;
   });
 
   const body = await readBody(req);
+  const send = startSse(res, req);
   const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode) ? body.mode : 'mock';
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
+  auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null });
 
   try {
     let stepCount = 0;
@@ -226,12 +339,12 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 }
 
 async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const send = startSse(res);
   let closed = false;
   res.on('close', () => {
     closed = true;
   });
   await readBody(req);
+  const send = startSse(res, req);
   try {
     await runVerification((e: VerifyEvent) => {
       if (!closed) send(e);
@@ -267,9 +380,10 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
     res.end(JSON.stringify({ error: 'name 与（serverUrl/url 或 command）至少需提供其一' }));
     return;
   }
+  auditAction('mcp.add', { name, url: redactUrl(serverUrl), command: command ?? null });
   try {
     const meta = await mcpManager.addServer({ name, serverUrl, command, args, env, headers, transportType });
-    sendJson(res, { server: meta, servers: mcpManager.list() });
+    sendJson(res, { server: meta, servers: mcpManager.list() }, req);
   } catch (e: any) {
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
@@ -286,9 +400,10 @@ async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promi
     res.end(JSON.stringify({ error: '缺少预设 id（如 context7 / github / composio）' }));
     return;
   }
+  auditAction('mcp.preset', { id });
   try {
     const meta = await mcpManager.connectPreset(id, token);
-    sendJson(res, { server: meta, servers: mcpManager.list() });
+    sendJson(res, { server: meta, servers: mcpManager.list() }, req);
   } catch (e: any) {
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
@@ -309,21 +424,22 @@ async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Pr
     res.end(JSON.stringify({ error: '缺少 command' }));
     return;
   }
+  auditAction('shell.approve', { command, preapprove: body.preapprove === true });
   if (body.preapprove === true) {
     preapproveShell(shellSignature(command, args));
-    return sendJson(res, { preapproved: true });
+    return sendJson(res, { preapproved: true }, req);
   }
   const released = approveShell(command, args);
-  sendJson(res, { waitingReleased: released });
+  sendJson(res, { waitingReleased: released }, req);
 }
 
 async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const send = startSse(res);
   let closed = false;
   res.on('close', () => {
     closed = true;
   });
   const body = await readBody(req);
+  const send = startSse(res, req);
   const action = body.action;
 
   if (action === 'create') {
@@ -334,6 +450,7 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
       region: body.region ? String(body.region) : undefined,
       owner: body.owner ? String(body.owner) : undefined,
     };
+    auditAction('env.create', { envType: input.envType, branch: input.branch, region: input.region ?? null, owner: input.owner ?? null });
     try {
       await envPipeline.create(input, (env) => {
         if (!closed) send({ type: 'env:status', env });
@@ -350,6 +467,7 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   if (action === 'destroy') {
     const envId = String(body.env_id ?? '');
+    auditAction('env.destroy', { envId });
     try {
       const env = await envPipeline.destroy(envId, (e) => {
         if (!closed) send({ type: 'env:status', env: e });
@@ -374,10 +492,17 @@ server.listen(PORT, HOST, () => {
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
-    console.log(`   🔒 接口鉴权已启用（UI_AUTH_TOKEN）`);
+    console.log(`   🔒 接口鉴权已启用（UI_AUTH_TOKEN）：请求需 Authorization: Bearer <token>`);
   } else {
     console.warn(`   ⚠️  未设置 UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
   }
+  if (UI_CORS_ORIGIN.length === 0) {
+    console.log(`   🔒 CORS 仅同源（未配置 UI_CORS_ORIGIN）。跨域调用需显式设置白名单。`);
+  } else {
+    console.log(`   🔒 CORS 白名单：${UI_CORS_ORIGIN.join(', ')}`);
+  }
+  console.log(`   🔒 限流：${RATE_LIMIT > 0 ? `每 IP ${RATE_LIMIT} 次 / ${RATE_WINDOW_MS / 1000}s` : '关闭'}；请求体上限：${MAX_BODY_BYTES} 字节`);
+  if (AUDIT_LOG) console.log(`   📝 审计日志落盘：${AUDIT_LOG}`);
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`);
   console.log(`   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`);
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}\n`);

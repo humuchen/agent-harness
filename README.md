@@ -303,16 +303,38 @@ pnpm --filter @agent-harness/examples run real-loop         # #1：真实 OpenRo
 
 ## 接口鉴权（Web Playground）
 
-Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`、`/api/mcp/list`）
+Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`、`/api/mcp/list`、…）
 默认开放。**部署到公网前请设置 `UI_AUTH_TOKEN`**，此后这些端点需携带令牌：
 
 ```bash
 UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
-# 请求时：Authorization: Bearer your-secret   或   ?token=your-secret
+# 请求时：Authorization: Bearer your-secret
 ```
 
-未设置 `UI_AUTH_TOKEN` 时服务照常启动，但会在日志给出开放模式告警。
-`/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。
+- 前端：右上角「访问令牌」输入框填写 `UI_AUTH_TOKEN`，请求自动以
+  `Authorization: Bearer <token>` 发送（不再依赖会泄露在日志/历史里的 `?token=`）。
+  （`?token=` 仍保留为兼容写法，但建议迁移到 Bearer。）
+- 未设置 `UI_AUTH_TOKEN` 时服务照常启动，但会在日志给出开放模式告警。
+- `/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。
+
+### 部署公网前的安全加固（必做）
+
+除了令牌，还提供以下开箱即用开关（详见 `.env.example`）：
+
+| 环境变量 | 作用 | 默认 |
+|---|---|---|
+| `UI_AUTH_TOKEN` | 接口 Bearer 鉴权；未设置则开放 | 空（开放） |
+| `UI_CORS_ORIGIN` | 跨域白名单（逗号分隔）；留空=仅同源（不再回 `*`） | 空（仅同源） |
+| `MAX_BODY_BYTES` | 请求体上限，防大报文 DoS | 1048576（1MB） |
+| `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭 | 120 / 60000 |
+| `AUDIT_LOG` | 审计日志落盘路径；留空则仅输出 stdout（JSON 行） | 空（stdout） |
+
+审计日志会记录 时间 / 方法 / 路径 / 客户端 IP / 是否鉴权 / 状态码，并对高危动作
+（`agent.run`、`env.create`/`env.destroy`、`mcp.add`/`mcp.preset`、`shell.approve`）
+写入**脱敏**后的关键参数；**绝不记录密钥、令牌或 MCP 认证头**。
+
+> 企业落地还需补充：语义级护栏与 PII 脱敏、可观测性（OTel + 指标 + 告警）、
+> MCP 重连、会话/多租户隔离、RBAC 与审批流、成本记账与配额（见仓库规划任务清单）。
 
 ## 测试
 

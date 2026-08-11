@@ -41,6 +41,8 @@
   }
   .mode-btn:hover { color: var(--text); border-color: var(--accent); }
   .mode-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .token-input { width: 220px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
+  .token-input:focus { outline: none; border-color: var(--accent); }
 
   .chips { display: flex; gap: 8px; padding: 8px 20px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
   .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
@@ -247,6 +249,7 @@
     <button class="mode-btn active" data-mode="mock">Mock（离线）</button>
     <button class="mode-btn" data-mode="real">真实 LLM</button>
     <button class="mode-btn" data-mode="real-mcp">真实 + MCP</button>
+    <input id="tokenInput" class="token-input" type="password" placeholder="访问令牌（UI_AUTH_TOKEN，留空=开放）" />
   </div>
 </header>
 
@@ -795,7 +798,7 @@ window.HarnessDemo = (function () {
 <script>
 (function () {
   "use strict";
-  var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {} };
+  var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {}, token: "" };
   var $ = function (id) { return document.getElementById(id); };
 
   var PROMPTS = {
@@ -820,7 +823,7 @@ window.HarnessDemo = (function () {
     },
     getJSON: function (path) {
       if (!Backend.live) return window.HarnessDemo.get(path);
-      return fetch(path).then(function (r) {
+      return fetch(path, { headers: authHeaders() }).then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       });
@@ -868,6 +871,18 @@ window.HarnessDemo = (function () {
     });
   });
 
+  // ---- 访问令牌（UI_AUTH_TOKEN）----
+  var tokenEl = $("tokenInput");
+  if (tokenEl) {
+    tokenEl.addEventListener("input", function () { state.token = tokenEl.value.trim(); });
+    state.token = tokenEl.value.trim();
+  }
+  function authHeaders() {
+    var h = { "content-type": "application/json" };
+    if (state.token) h["Authorization"] = "Bearer " + state.token;
+    return h;
+  }
+
   $("prompt").value = PROMPTS.mock;
 
   // ---- run / verify ----
@@ -904,7 +919,7 @@ window.HarnessDemo = (function () {
   function realStream(url, body, onEvent) {
     fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: authHeaders(),
       body: JSON.stringify(body)
     }).then(function (resp) {
       var reader = resp.body.getReader();
@@ -1124,7 +1139,7 @@ window.HarnessDemo = (function () {
       if (!name || !url) { alert("请填写服务名与地址"); return; }
       btn.disabled = true;
       fetch("/api/mcp/add", {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: authHeaders(),
         body: JSON.stringify({ name: name, url: url })
       }).then(function (r) { return r.json(); }).then(function () {
         btn.disabled = false; $("mcpName").value = ""; $("mcpUrl").value = "";
@@ -1167,7 +1182,7 @@ window.HarnessDemo = (function () {
           var token = input ? input.value.trim() : "";
           btn.disabled = true;
           fetch("/api/mcp/preset", {
-            method: "POST", headers: { "content-type": "application/json" },
+            method: "POST", headers: authHeaders(),
             body: JSON.stringify({ id: id, token: token })
           }).then(function (r) { return r.json(); }).then(function () {
             btn.disabled = false;
