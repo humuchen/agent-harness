@@ -6,7 +6,22 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  examples:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../packages/core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  packages/core:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
@@ -22,6 +37,22 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.7.0
         version: 1.9.1
+
+  packages/ui:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.1
+        version: 1.30.0(zod@4.4.3)
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
 
 packages:
 
