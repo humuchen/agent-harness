@@ -1,6 +1,6 @@
 /**
  * agent-harness /api/v1 共享类型（客户端视图）。
- * 与 packages/ui/src/server.ts 的实际响应形状保持一致；SSE 事件采用
+ * 与 packages/server/src/server.ts 的实际响应形状保持一致；SSE 事件采用
  * 「已知形状 + 泛型兜底」策略，避免对 harness 内部事件做过度约束。
  */
 

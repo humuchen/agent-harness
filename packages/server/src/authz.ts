@@ -2,7 +2,7 @@
  * 业务层 · 基于角色的访问控制（RBAC）。
  *
  * 设计原则（与核心 framework 隔离）：
- * - 本文件属于「业务编排层」（packages/ui），核心 `@agent-harness/core` 不感知任何
+ * - 本文件属于「业务编排层」（packages/server），核心 `@agent-harness/core` 不感知任何
  *   角色 / 权限 / 令牌概念。核心只提供 AgentHarness 等框架原语。
  * - 一切以「接口 + 默认实现 + 组合工厂」形式存在，便于替换为 OIDC / LDAP /
  *   SPIFFE 等外部身份源，而无需改动 server 其它代码（即插即用、可组合）。

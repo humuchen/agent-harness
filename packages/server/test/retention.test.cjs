@@ -1,5 +1,5 @@
 // 数据留存/出境策略 + OpenAPI 单元测试（业务层，零依赖 node:test）。
-// 需在 pnpm --filter @agent-harness/ui build 之后运行：node --test test/*.test.cjs
+// 需在 pnpm --filter @agent-harness/server build 之后运行：node --test test/*.test.cjs
 const test = require('node:test');
 const assert = require('node:assert');
 const { DefaultRetentionPolicy, createRetentionPolicy } = require('../dist/retention.js');

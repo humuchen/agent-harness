@@ -203,16 +203,7 @@ function unauthorized(res: ServerResponse): void {
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
 
-// 解析 public 目录：优先进程工作目录下的 public，回退到源码相对路径。
-function publicDir(): string {
-  const fromCwd = resolve(process.cwd(), 'public');
-  try {
-    accessSync(fromCwd);
-    return fromCwd;
-  } catch {
-    return resolve(__dirname, '..', 'public');
-  }
-}
+// 前端统一由 packages/webapp/dist 托管（见 webappDir）；项目不再包含 public 兜底目录。
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -234,7 +225,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
-      // 优先托管 Web SPA 构建产物（packages/webapp/dist）；不存在则回退单文件 playground。
+      // 优先托管 Web SPA 构建产物（packages/webapp/dist）；webapp 未构建则返回 500。
       const wd = webappDir();
       if (wd) {
         try {
@@ -243,7 +234,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           res.end(buf);
           return;
         } catch {
-          /* 回退到单文件前端 */
+          /* webapp 未构建，交给 serveHtml 返回 500 */
         }
       }
       return await serveHtml(res);
@@ -517,15 +508,9 @@ function buildState() {
 }
 
 function serveHtml(res: ServerResponse): void {
-  readFile(join(publicDir(), 'index.html'))
-    .then((buf) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(buf);
-    })
-    .catch((e) => {
-      res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end('UI 文件未找到，请先构建：npm run ui\n' + (e?.message ?? ''));
-    });
+  // webapp 未构建时的兜底：直接返回 500 并提示先构建前端。
+  res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+  res.end('Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build');
 }
 
 /** Web SPA 构建产物目录（packages/webapp/dist）；未构建则返回 null。 */

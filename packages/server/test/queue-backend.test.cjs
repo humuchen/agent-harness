@@ -1,7 +1,7 @@
 'use strict';
 // 运行队列持久化后端测试（业务层，零依赖）：覆盖 Memory / File 后端的
 // append/list/ack/clear 语义，以及 RunQueue + File 后端的启动重放。
-// 仅依赖 node 内置模块；运行前需 `pnpm --filter @agent-harness/ui run build` 产 dist。
+// 仅依赖 node 内置模块；运行前需 `pnpm --filter @agent-harness/server run build` 产 dist。
 //
 // 用「dist 不存在则跳过并显式 fail」的方式，避免静默跳过掩盖构建缺失。
 
@@ -92,7 +92,7 @@ test('RunQueue + FileQueueBackend: 启动重放未开始任务并清空持久层
 
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。
 test('dist 未构建时显式提示', { skip: RUN }, () => {
-  assert.fail('packages/ui/dist/queue-backend.js 不存在：请先 `pnpm --filter @agent-harness/ui run build` 再跑本测试');
+  assert.fail('packages/server/dist/queue-backend.js 不存在：请先 `pnpm --filter @agent-harness/server run build` 再跑本测试');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

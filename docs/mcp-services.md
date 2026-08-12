@@ -1,6 +1,6 @@
 # 可直接通过 URL 访问的远程 MCP 服务清单
 
-> 适用对象：本仓库的 agent-harness（`packages/core` + `packages/ui`）。
+> 适用对象：本仓库的 agent-harness（`packages/core` + `packages/server`）。
 > 你的 harness 已支持远程 MCP：通过 `serverUrl` 连接，传输方式自动判定
 > （URL 以 `/sse` 结尾走 SSE，否则走 Streamable HTTP）。
 

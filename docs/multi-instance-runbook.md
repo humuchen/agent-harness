@@ -52,8 +52,8 @@ client ───► │  Load      │ ─────────────�
 
 ```bash
 # 默认后端 = memory，单进程即可
-pnpm --filter @agent-harness/ui run build
-node packages/ui/dist/server.js
+pnpm --filter @agent-harness/server run build
+node packages/server/dist/server.js
 ```
 适用：试点、低流量、开发。任务在进程内队列，进程重启会丢失在飞任务（可接受，客户端会重投）。
 
@@ -79,7 +79,7 @@ node packages/ui/dist/server.js
    UI_AUTH_TOKEN=__from_secrets__
    ```
 
-3. **部署 N 个副本**（≥2 推荐）。每个副本 `node packages/ui/dist/server.js`，
+3. **部署 N 个副本**（≥2 推荐）。每个副本 `node packages/server/dist/server.js`，
    `RUN_QUEUE_BACKEND=redis` + `REDIS_URL` 一致即自动组成共享队列集群。
 
 4. **负载均衡开启 sticky session**（关键）：

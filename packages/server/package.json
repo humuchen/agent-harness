@@ -1,8 +1,8 @@
 {
-  "name": "@agent-harness/ui",
+  "name": "@agent-harness/server",
   "version": "0.1.0",
   "private": true,
-  "description": "Web Playground (zero-dependency SSE dashboard) for @agent-harness/core.",
+  "description": "HTTP+SSE server / dashboard for @agent-harness/core (deploys the agent harness and hosts the webapp).",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -1,7 +1,7 @@
 /**
  * 端到端 smoke：用 @agent-harness/client 打一套真实运行中的 /api/v1 server。
  * 验证：state / mcp / approvals 的 REST 读，以及 run 的 SSE 事件流（job:accepted → ... → _done）。
- * 用法：先 `node packages/ui/dist/server.js`（或任意已构建 server），再 `node test/smoke.mjs`。
+ * 用法：先 `node packages/server/dist/server.js`（或任意已构建 server），再 `node test/smoke.mjs`。
  */
 import { AgentClient } from '../dist/index.js';
 

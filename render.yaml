@@ -6,7 +6,7 @@
 #   3. Select the branch you want to deploy from (dev).
 #
 # Notes:
-#   - This is a pnpm workspace: packages/core (framework) + packages/ui (web playground).
+#   - This is a pnpm workspace: packages/core (framework) + packages/server (web playground).
 #   - dist/ is gitignored, so Render builds each package via `pnpm -r build`.
 #   - The SSE dashboard binds 0.0.0.0:$PORT (Render injects PORT automatically).
 #   - Free plan spins the service down after 15 min of inactivity (cold start on next visit).
@@ -19,7 +19,7 @@ services:
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
     # IMPORTANT: this is a pnpm monorepo. The build MUST run `pnpm -r build` so each
-    # workspace package (packages/core, packages/ui, examples) emits its dist/.
+    # workspace package (packages/core, packages/server, examples) emits its dist/.
     # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
     # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
     # 注意：显式 --no-frozen-lockfile 是为了自愈——CI 环境(pnpm 检测到 CI=true)默认会
@@ -27,7 +27,7 @@ services:
     # 用 --no-frozen-lockfile 让 Render 在 lockfile 轻微漂移时自动校正，避免部署卡死。
     # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
     buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
-    startCommand: node packages/ui/dist/server.js
+    startCommand: node packages/server/dist/server.js
     healthCheckPath: /api/state
     envVars:
       - key: NODE_ENV

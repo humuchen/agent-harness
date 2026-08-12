@@ -2,7 +2,7 @@
 // UI server 集成测试：启动真实构建产物 dist/server.js 子进程，验证
 // 鉴权(P0-3)、请求体上限(413)、审计(P0-4)、/api/metrics(P1-6)、SSE /api/run 等端点。
 // 仅依赖 node 内置模块；测试 runner 不直接 require server（避免拉入 MCP SDK）。
-// 运行前需 `pnpm --filter @agent-harness/ui run build` 产 dist。
+// 运行前需 `pnpm --filter @agent-harness/server run build` 产 dist。
 //
 // 用单个测试串行执行 setup → 断言 → teardown，避免 node:test 默认并发导致的时序问题。
 
@@ -153,5 +153,5 @@ test('UI server 集成：鉴权 / 体上限 / metrics / SSE', { skip: !RUN }, as
 
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。
 test('dist 未构建时显式提示', { skip: RUN }, () => {
-  assert.fail('packages/ui/dist/server.js 不存在：请先 `pnpm --filter @agent-harness/ui run build` 再跑本测试');
+  assert.fail('packages/server/dist/server.js 不存在：请先 `pnpm --filter @agent-harness/server run build` 再跑本测试');
 });
