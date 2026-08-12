@@ -1,0 +1,49 @@
+# 本地自托管 agent-harness（单实例）。
+#   docker compose up --build            # 内存模式（无 Redis，单副本）
+#   docker compose --profile redis up    # 带 Redis 运行队列（支持多副本水平扩展）
+#
+# 镜像从仓库根目录的 Dockerfile 构建（pnpm monorepo 多阶段构建）。
+
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-harness:local
+    ports:
+      - "4173:4173"
+    environment:
+      NODE_ENV: production
+      PORT: "4173"
+      UI_HOST: "0.0.0.0"
+      # 接口鉴权：请改成强随机值；留空则开放（仅本地演示）。
+      UI_AUTH_TOKEN: "${UI_AUTH_TOKEN:-}"
+      # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openai/gpt-4o-mini}"
+      # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
+      REDIS_URL: "${REDIS_URL:-}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/v1/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # 可选：运行队列后端（多副本共享队列 / 跨实例事件桥）。
+  # 启用：docker compose --profile redis up
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

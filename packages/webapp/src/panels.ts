@@ -1,6 +1,7 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { client, ApprovalRequiredError } from './api';
+import { client } from './api';
+import { ApprovalRequiredError } from '@agent-harness/client';
 import type {
   RunMode,
   StreamEvent,

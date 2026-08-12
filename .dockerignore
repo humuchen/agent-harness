@@ -1,0 +1,33 @@
+# 依赖与构建产物（构建阶段会重新 install/build）
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+
+# 本地环境 / 密钥 / 日志
+.env
+.env.*
+!.env.example
+*.log
+logs/
+
+# 版本控制 / CI / 编辑器
+.git
+.gitignore
+.github
+.vscode
+.idea
+*.tsbuildinfo
+
+# 文档与无关资源（可酌情放开）
+docs/
+README.md
+LICENSE
+
+# 测试与示例（镜像仅含运行所需的 server）
+**/test
+**/*.test.*
+examples/
+
+# OS
+.DS_Store

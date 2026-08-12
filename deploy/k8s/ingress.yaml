@@ -1,0 +1,31 @@
+# Ingress 模板。把 host 改为你的真实域名，并按集群 Ingress Controller 调整
+# ingressClassName / TLS 配置（示例使用 cert-manager 的 cluster-issuer）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+  annotations:
+    # 示例：cert-manager + Let's Encrypt；按你的集群替换。
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # SSE 流需长超时
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - harness.example.com
+      secretName: agent-harness-tls
+  rules:
+    - host: harness.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-harness
+                port:
+                  name: http

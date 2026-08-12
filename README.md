@@ -514,6 +514,11 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 > 测试+SBOM/架构解耦/多租户记忆（P1）→ RBAC+审批/评估+版本化/留存+版本化API（P2）。
 > 贯穿原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 UI 业务层以「接口 + 默认实现 + 组合工厂」
 > 形式存在，核心 `@agent-harness/core` 始终零业务耦合、可插拔、可组合。**
+>
+> 另：**生产级交付物缺口已闭环**——新增 `Dockerfile` / `docker-compose.yml` / `deploy/k8s/`（kustomize）/ GHCR
+> 镜像 CI（`.github/workflows/docker.yml`），可脱离 Render 自托管（多副本需 `REDIS_URL` 运行队列）。
+> 仍待补齐的企业级能力：SSO/OIDC/LDAP（当前为静态令牌级 RBAC，未接用户目录）、多租户运营面（开通/配额/账单）、
+> 正式合规模块（SOC2/GDPR 数据主权分区）；这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
 
 ### 健壮性增强（与核心隔离的运行时加固）
 
@@ -660,3 +665,17 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → test`，并�
   primary 连续失败/限流（达 `LLM_FAILOVER_THRESHOLD`）即打开电路转走 secondary，冷却后 half-open 探活恢复。
   对 harness 主循环透明；`LLM_FAILOVER=false` 可关闭。
 - **Harness 环境地址可配置**：`envUrlTemplate`（或 `HARNESS_ENV_URL_TEMPLATE`）替换原硬编码占位符。
+
+## 部署（自托管）
+
+仓库现已提供生产级交付物，可脱离 Render 独立部署：
+
+- **`Dockerfile`**（多阶段 pnpm 构建，基础镜像锁定 Node 22，非 root 运行 + HEALTHCHECK）
+- **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
+- **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
+- **`.github/workflows/docker.yml`**（推送 `dev`/`main` 或 tag 时构建并推送镜像到 GHCR）
+- **`DEPLOY.md`** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入）
+
+> 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。
+> K8s 清单中的 `image`、`ingress.host`、Secret 占位值部署前必须替换为真实值（建议改用 Sealed/External Secrets）。
+> 默认 `ENV_PLATFORM=harness`（无 key 即 dry-run）；要真正拉起/销毁环境，设 `ENV_PLATFORM=local`（零依赖真跑）或 `k8s`（生产级）。

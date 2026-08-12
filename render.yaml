@@ -38,7 +38,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: openai/gpt-4o-mini
+        value: agnes-2.5-flash
       # Context7 MCP docs integration (works without a key).
       - key: MCP_SERVER_URL
         value: https://mcp.context7.com/mcp
