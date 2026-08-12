@@ -1,6 +1,7 @@
 import type { HarnessEvent } from '@agent-harness/core';
 import { incCounter, recordLatency } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
+import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
 
 /**
  * 运行任务队列（解耦「提交」与「执行」）。
@@ -13,9 +14,11 @@ import { assembleAgent, type RunMode } from './runner';
  * 设计要点：
  * - 每个 Job 持有事件重放缓冲（上限 RUN_QUEUE_BUFFER，防内存泄漏），SSE 订阅时先重放
  *   已发生事件、再转发后续事件。因此即使客户端中途断线，也能凭 jobId 重新订阅续上——
- *   这一步把「Web 进程被长连接绑死」彻底解开，也为将来把 worker 抽到独立进程 /
- *   消息队列（Redis/BullMQ 等）留好接口（替换 RunQueue 实现即可，handler 不变）。
+ *   这一步把「Web 进程被长连接绑死」彻底解开。
  * - 并发上限避免无限制扇出；超出上限的任务排队，pump() 在 worker 空闲时自动续跑。
+ * - 持久化后端（见 queue-backend.ts 的 QueueBackend）：提交意图异步落盘，进程崩溃/重启后
+ *   自动重放「未开始」的任务（默认内存、零行为变更；RUN_QUEUE_BACKEND=file 开启 JSONL 落盘；
+ *   Redis/BullMQ 等分布式后端只需实现同一接口并在工厂切换，RunQueue/handler 零改动）。
  *
  * 健壮性增强（与核心 framework 隔离，仅本业务层）：
  * - 每个 Job 自带 AbortController + 看门狗（JOB_TIMEOUT_MS）：即使底层工具/LLM 调用
@@ -59,9 +62,40 @@ export class RunQueue {
   private concurrency = CONCURRENCY;
   /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
   private runningSessions = new Set<string>();
+  /** 持久化后端：默认内存（重启即丢）；RUN_QUEUE_BACKEND=file 时落盘可重放。 */
+  private backend: QueueBackend;
 
-  /** 提交一次 agent 运行任务，立即返回 Job（不等待执行）。 */
+  constructor(backend?: QueueBackend) {
+    this.backend = backend ?? createQueueBackend();
+    // 启动期重放：仅 file 后端存在「未开始」任务；重放后清空持久层，避免二次重放。
+    if (this.backend.kind === 'file') {
+      void this.replayPending();
+    }
+  }
+
+  /**
+   * 提交一次 agent 运行任务，立即返回 Job（不等待执行）。
+   * 提交意图会异步落盘（file 后端），进程崩溃/重启后可重放尚未开始的任务。
+   */
   submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
+    const job = this.enqueue(input);
+    const descriptor: JobDescriptor = {
+      id: job.id,
+      mode: job.mode,
+      prompt: job.prompt,
+      model: job.model,
+      sessionKey: job.sessionKey,
+      enqueuedAt: job.enqueuedAt,
+    };
+    // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
+    void this.backend.append(descriptor).catch((e) => {
+      console.error('[run-queue] persist failed:', (e as Error)?.message);
+    });
+    return job;
+  }
+
+  /** 仅入队（不持久化）：供启动重放复用——重放的任务已在持久层、不应再次落盘。 */
+  private enqueue(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job: RunJob = {
       id,
@@ -79,6 +113,31 @@ export class RunQueue {
     this.queue.push(job);
     this.pump();
     return job;
+  }
+
+  /**
+   * 启动重放：把持久层中「未开始」的任务重新入队（生成新 job，原 id 不沿用避免歧义）。
+   * 重放后立即清空持久层，防止下次重启重复执行。任何异常都不应阻断进程启动。
+   */
+  private async replayPending(): Promise<void> {
+    try {
+      const pending = await this.backend.list();
+      await this.backend.clear();
+      for (const d of pending) {
+        const job = this.enqueue({
+          mode: d.mode,
+          prompt: d.prompt,
+          model: d.model,
+          sessionKey: d.sessionKey,
+        });
+        job.enqueuedAt = d.enqueuedAt; // 保留原入队时刻，维持大致顺序
+      }
+      if (pending.length) {
+        console.log(`[run-queue] replayed ${pending.length} pending job(s) from durable backend`);
+      }
+    } catch (e) {
+      console.error('[run-queue] replay pending failed:', (e as Error)?.message);
+    }
   }
 
   /**
@@ -144,6 +203,8 @@ export class RunQueue {
       if (j.status === 'queued') {
         j.status = 'cancelled';
         j.finishedAt = Date.now();
+        // 取消的排队任务也移出持久层，避免重启后被重放。
+        void this.backend.ack(j.id).catch(() => {});
         return false;
       }
       return true;
@@ -203,6 +264,9 @@ export class RunQueue {
   }
 
   private async execute(job: RunJob): Promise<void> {
+    // 任务正式开始执行：从持久层移除，重启后不再重放（在飞任务的 controller 不可恢复，
+    // 客户端会自行重投）。失败仅记录。
+    void this.backend.ack(job.id).catch(() => {});
     let stepCount = 0;
     const emit = (e: unknown) => {
       job.events.push(e);

@@ -392,9 +392,14 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
   （防重连风暴）。
 - **运维可见**：受保护的 `GET /api/jobs` 返回排队/执行数与最近若干 Job 的脱敏概要；
   `/api/metrics` 也合并了队列快照（`queue` 字段）。
-- **为独立 Worker 留接口**：当前是进程内内存队列（`packages/ui/src/run-queue.ts`），
-  将来要横向扩展，只需把 `RunQueue` 实现替换为消息队列（Redis/BullMQ 等），
-  handler 与前端协议不变。
+- **队列持久化（崩溃可恢复）**：提交意图默认在内存，进程重启会丢未完成任务；
+  设 `RUN_QUEUE_BACKEND=file` 后，已提交但还没开始的任务会落盘到 JSONL
+  （`RUN_QUEUE_FILE`，默认 `./data/queue/run-queue.jsonl`），进程崩溃 / 重启后**自动重放**，
+  避免丢活（在飞任务因携带进程内状态不可恢复，客户端会自行重投）。零 npm 依赖。
+- **可插拔后端（水平扩展接口）**：持久化由 `QueueBackend` 接口
+  （`packages/ui/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend`；
+  要横向扩展只需实现同一接口接入 Redis / BullMQ 并在 `createQueueBackend()` 工厂切换，
+  `RunQueue`、handler 与前端协议都不变。
 
 ### 会话 / 多租户记忆存储（P1-9 DB 化）
 
@@ -484,8 +489,9 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ### 健壮性增强（与核心隔离的运行时加固）
 
-在 14 项功能落地之后，又对「系统不裸崩、任务不挂死、资源不泄漏」做了进一步加固，全部位于 UI
-业务/运行时层，核心 framework 零改动：
+在 14 项功能落地之后，又对「系统不裸崩、任务不挂死、资源不泄漏、重启不丢活」做了进一步加固，
+绝大部分位于 UI 业务/运行时层；唯一一次对核心 `packages/core` 的改动是 `FileMemoryStore` 的
+**原子写加固**（纯 I/O 安全，不引入任何业务策略），已在下方明示：
 
 - **运行队列防挂死**：每个 Job 自带 `AbortController` + 看门狗（`JOB_TIMEOUT_MS`，默认 5 分钟）。
   即使底层工具/LLM 调用意外卡住，超时后也会中止并**释放 worker 槽位**，避免任务永久占坑拖垮并发。
@@ -500,6 +506,12 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 - **进程级崩溃防护**：注册 `uncaughtException`/`unhandledRejection` 兜底日志——未捕获异常记录后安全退出
   （交由 k8s/Render 重启），未处理拒绝仅记录不退出，避免单点拒绝拖垮在线服务；SSE 写操作对
   客户端断连（EPIPE）做了容错。
+- **队列持久化与重启重放**：`RunQueue` 接入 `QueueBackend` 抽象（`packages/ui/src/queue-backend.ts`），
+  设 `RUN_QUEUE_BACKEND=file` 后，未开始的任务落盘到 JSONL，进程崩溃 / 重启自动重放，避免丢活
+  （详见上文「运行队列」）；Redis / BullMQ 只需实现同一接口即可作为分布式后端接入。
+- **核心记忆文件原子写**：`FileMemoryStore.save` 改为「写临时文件 + 同 FS 原子 rename」——进程在写入途中
+  崩溃时旧文件完好、仅残留可清理的 `.tmp`，既不丢数据也不产生半截 JSON。这是本轮**唯一一次核心改动**，
+  且仅为 I/O 安全加固，未触碰任何业务语义；其余加固均在 UI 层。
 
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
@@ -512,7 +524,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ```bash
 pnpm --filter @agent-harness/core run build   # 先构建
-pnpm --filter @agent-harness/core run test    # 跑测试（100 用例）
+pnpm --filter @agent-harness/core run test    # 跑测试（101 用例）
 ```
 
 Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` 子进程，验证鉴权(P0-3)、

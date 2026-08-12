@@ -127,3 +127,17 @@ test('SqliteMemoryStore: 运行期可用时 round-trip（不可用则跳过）',
   await s.delete('s1');
   assert.strictEqual(await s.load('s1'), null);
 });
+
+test('FileMemoryStore: 原子写——崩溃安全且不残留临时文件', async () => {
+  const dir = tmpDir();
+  const s = new FileMemoryStore({ dir });
+  await s.save('atom', { window: [{ role: 'user', content: 'v1' }], longTerm: ['n1'] });
+  // 第二次覆盖写入，验证 rename 替换语义（不残留旧 .tmp，不产生半截文件）
+  await s.save('atom', { window: [{ role: 'user', content: 'v2' }], longTerm: ['n2'] });
+  const got = await s.load('atom');
+  assert.deepStrictEqual(got.window, [{ role: 'user', content: 'v2' }]);
+  assert.deepStrictEqual(got.longTerm, ['n2']);
+  // 崩溃安全：目录下不应有任何 .tmp 残留（中断只会留下 .tmp，正常路径应已 rename 清理）
+  const leftovers = fs.readdirSync(dir).filter((f) => f.includes('.tmp'));
+  assert.strictEqual(leftovers.length, 0, 'save 后不应残留 .tmp 临时文件: ' + leftovers.join(','));
+});

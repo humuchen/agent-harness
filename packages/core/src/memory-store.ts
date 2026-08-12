@@ -103,11 +103,27 @@ export class FileMemoryStore implements MemoryStore {
   async save(key: string, data: PersistedMemory): Promise<void> {
     const fs = await import('node:fs/promises');
     const path = this.filePath(key);
-    if (!this.legacyPath) {
-      const pathMod = await import('node:path');
-      await fs.mkdir(pathMod.dirname(path), { recursive: true });
+    // 崩溃安全写入：先写临时文件，再在同文件系统内 rename 原子替换目标。
+    // 进程在 writeFile/rename 之间崩溃时，旧文件完好、仅残留一个 .tmp，不会丢数据也不会产生半截 JSON。
+    const tmp = `${path}.tmp.${process.pid}.${Date.now().toString(36)}.${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    try {
+      if (!this.legacyPath) {
+        const pathMod = await import('node:path');
+        await fs.mkdir(pathMod.dirname(path), { recursive: true });
+      }
+      await fs.writeFile(tmp, JSON.stringify(data), 'utf-8');
+      await fs.rename(tmp, path); // 同 FS 内 rename 不可中断，视为原子操作
+    } catch (e) {
+      // 清理半成品临时文件，避免残留堆积
+      try {
+        await fs.unlink(tmp);
+      } catch {
+        /* 临时文件本就不存在，忽略 */
+      }
+      throw e;
     }
-    await fs.writeFile(path, JSON.stringify(data), 'utf-8');
   }
 
   async delete(key: string): Promise<void> {
