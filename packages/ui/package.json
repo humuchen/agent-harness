@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "dev": "tsc -p tsconfig.json && node dist/server.js"
+    "dev": "tsc -p tsconfig.json && node dist/server.js",
+    "test": "node --test test/*.test.cjs"
   },
   "license": "MIT",
   "engines": {
