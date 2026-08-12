@@ -6,9 +6,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
+import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
-import type { HarnessEvent, McpTransportType } from '@agent-harness/core';
+import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
@@ -160,6 +161,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       '/api/mcp/reconnect',
       '/api/shell/approve',
       '/api/metrics',
+      '/api/jobs',
     ];
     if (PROTECTED.includes(path)) {
       const ip = clientIp(req);
@@ -183,8 +185,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return sendJson(res, { presets: mcpManager.presets() });
     }
     if (req.method === 'GET' && path === '/api/metrics') {
-      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本）。受保护，需令牌。
-      return sendJson(res, getMetricsSnapshot(), req);
+      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列）。受保护，需令牌。
+      return sendJson(res, { ...getMetricsSnapshot(), queue: runQueue.stats() }, req);
+    }
+    if (req.method === 'GET' && path === '/api/jobs') {
+      // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
+      return sendJson(res, { queue: runQueue.stats(), jobs: runQueue.list() }, req);
     }
     if (req.method === 'GET' && path === '/api/env') {
       return sendJson(res, { envs: envPipeline.list() });
@@ -325,43 +331,39 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode) ? body.mode : 'mock';
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
-  auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null });
 
-  try {
-    let stepCount = 0;
-    const assembled = await assembleAgent(
-      mode,
-      (e: HarnessEvent) => {
-        if (e.type === 'step:start') stepCount = Math.max(stepCount, e.step);
-        if (!closed) send(e);
-      },
-      undefined,
-      model,
-      prompt
-    );
-    send({
-      type: 'run:meta',
-      mode,
-      llmKind: assembled.llmKind,
-      dryRun: assembled.dryRun,
-      mcpConnected: assembled.mcpConnected,
-      notes: assembled.notes,
-      model: (model && model.trim()) || (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) || 'openai/gpt-4o-mini',
-      tokenBudget: assembled.tokenBudget ?? null,
-      costBudget: assembled.costBudget ?? null,
-      failover: assembled.failover,
-    });
-    send({ type: 'run:tools', tools: assembled.tools.schemas() });
+  // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
+  const reconnectId = body.jobId ? String(body.jobId) : '';
+  const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
-    const finalText = await assembled.harness.run(prompt);
-    if (!closed) send({ type: 'run:end', final: finalText, steps: stepCount });
-    if (!closed) send({ type: '_done', final: finalText });
-  } catch (e: any) {
-    send({ type: 'error', message: e?.message ?? String(e) });
-    send({ type: '_done', final: '', error: true });
-  } finally {
-    if (!closed) res.end();
+  let jobId: string;
+  if (!targetId) {
+    const job = runQueue.submit({ mode, prompt, model });
+    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id });
+    send({ type: 'job:accepted', jobId: job.id });
+    jobId = job.id;
+  } else {
+    auditAction('agent.run.reconnect', { jobId: targetId });
+    jobId = targetId;
   }
+
+  // 订阅事件流：先重放已发生事件，再转发后续；遇到终结事件 _done 主动关闭连接。
+  const unsub = runQueue.subscribe(jobId, (e) => {
+    if (closed) return;
+    send(e);
+    if ((e as { type?: string }).type === '_done') {
+      try {
+        res.end();
+      } catch {
+        /* 连接可能已关闭 */
+      }
+    }
+  });
+  // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
+  res.on('close', () => {
+    unsub();
+  });
+  return;
 }
 
 async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<void> {

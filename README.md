@@ -378,18 +378,48 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 - Web Playground 暴露受保护的 `GET /api/metrics`（需 `UI_AUTH_TOKEN`），返回上述快照 JSON，
   可直接接入 Grafana / Prometheus。
 
-> 企业落地仍待补充：会话/多租户隔离、RBAC 与审批流、
-> 集成/安全/负载测试 + 依赖扫描 + SBOM（见仓库规划任务清单）。
+### 运行队列与水平扩展（P1-8 架构解耦）
+
+原先 `/api/run` 在 Web 进程内 `await harness.run()` 同步跑完整个 agent 循环，既无并发上限、
+也无法横向扩展。现已把「一次 run」抽象为 Job，提交与执行彻底解耦：
+
+- **提交即返回**：`POST /api/run` 立即入队并返回 `jobId`，真正的执行由 worker 池
+  （并发上限 `RUN_CONCURRENCY`，默认 4）异步完成；超出并发的任务在队列中排队，
+  worker 空闲时自动续跑。
+- **事件重放 + 断线可恢复**：每个 Job 持有一个带上限（`RUN_QUEUE_BUFFER`，默认 500）
+  的事件缓冲。SSE 订阅时**先重放已发生事件、再转发后续**；因此客户端中途断线可凭
+  `jobId` 重新订阅续上，前端无感。前端 `realStream()` 已内置「最多 2 次」的自动重连
+  （防重连风暴）。
+- **运维可见**：受保护的 `GET /api/jobs` 返回排队/执行数与最近若干 Job 的脱敏概要；
+  `/api/metrics` 也合并了队列快照（`queue` 字段）。
+- **为独立 Worker 留接口**：当前是进程内内存队列（`packages/ui/src/run-queue.ts`），
+  将来要横向扩展，只需把 `RunQueue` 实现替换为消息队列（Redis/BullMQ 等），
+  handler 与前端协议不变。
+
+> 企业落地仍待补充：会话/多租户隔离、RBAC 与审批流（见仓库规划任务清单）。
 
 ## 测试
 
-核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏、记忆、
-工具注册表、Agent 循环（含超时/外部取消/长期记忆注入）与 LLM 适配器（mock fetch）：
+核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、
+记忆、工具注册表、Agent 循环（含超时/外部取消/长期记忆注入/预算熔断）、LLM 适配器（mock fetch）、
+成本记账与故障转移、可观测性指标快照、内置工具与技能编排：
 
 ```bash
 pnpm --filter @agent-harness/core run build   # 先构建
-pnpm --filter @agent-harness/core run test    # 跑测试
+pnpm --filter @agent-harness/core run test    # 跑测试（92 用例）
 ```
+
+Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` 子进程，验证鉴权(P0-3)、
+请求体上限(413)、`/api/metrics`、SSE `/api/run` 等端点：
+
+```bash
+pnpm --filter @agent-harness/ui run build     # 先构建
+pnpm --filter @agent-harness/ui run test      # 跑集成测试
+```
+
+CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → test`，并附两个安全作业：
+`Dependency Audit & SBOM`（`pnpm audit --severity high` + CycloneDX SBOM 产物归档，不阻塞）
+与 PR 的 `Dependency Review`（新增/升级依赖的已知漏洞与许可证合规，high 即失败）。
 
 ## 健壮性增强
 

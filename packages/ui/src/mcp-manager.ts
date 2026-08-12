@@ -28,6 +28,23 @@ class McpManager {
   private initialized = false;
   /** 防止 shutdown 与 init 并发造成状态错乱的互斥锁。 */
   private initPromise: Promise<void> | null = null;
+  /**
+   * 变更串行化链：addServer / reconnect / connectPreset / init 的连接循环 / shutdown
+   * 都通过 withLock 串行执行，确保同一时刻只有一个变更在改 `this.servers` 与共享
+   * `registry`（消除并发 push / 重复注册竞态）。读操作（list / liveRegistry /
+   * presets）不加锁，返回副本即可安全并发读。
+   */
+  private chain: Promise<unknown> = Promise.resolve();
+
+  /** 把一次变更排入串行链；无论前序成败都接着执行，且链本身不会因异常断掉。 */
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
 
   /** 启动连接：从环境变量加载并接入所有已配置服务（不阻塞调用方）。 */
   init(): Promise<void> {
@@ -38,7 +55,8 @@ class McpManager {
     const list = parseMcpServersEnv();
     this.initialized = true;
     // 顺序连接，避免并发握手压垮免费服务；连接进度实时反映到 servers 列表。
-    this.initPromise = (async () => {
+    // 整个启动连接过程纳入串行链，确保后续运行时变更排在它之后。
+    this.initPromise = this.withLock(async () => {
       for (const s of list) {
         const meta = await connectMcpServer(this.registry, {
           name: s.name,
@@ -51,7 +69,7 @@ class McpManager {
         });
         this.servers.push(meta);
       }
-    })().catch((e) => console.error('[mcp-manager] init error:', e));
+    }).catch((e) => console.error('[mcp-manager] init error:', e));
     return this.initPromise;
   }
 
@@ -62,29 +80,29 @@ class McpManager {
    * 与启动期从环境变量加载的服务保持一致的配置能力。
    */
   async addServer(config: McpServerConfig): Promise<McpServerMeta> {
-    // 先等待启动期连接完成，避免并发 push 与共享 registry 重复注册。
-    await this.init();
     // 必填项校验：至少需要一个可识别的连接目标。
     if (!config.serverUrl && !config.command) {
       throw new Error(
         `[mcp-manager] addServer 需要至少一个连接目标 (serverUrl 或 command)，收到: ${JSON.stringify(config)}`
       );
     }
-    const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
-    const meta = await connectMcpServer(this.registry, {
-      name: clean,
-      serverUrl: config.serverUrl,
-      command: config.command,
-      args: config.args,
-      env: config.env,
-      headers: config.headers,
-      transportType: config.transportType,
+    return this.withLock(async () => {
+      const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
+      const meta = await connectMcpServer(this.registry, {
+        name: clean,
+        serverUrl: config.serverUrl,
+        command: config.command,
+        args: config.args,
+        env: config.env,
+        headers: config.headers,
+        transportType: config.transportType,
+      });
+      // 同名服务则覆盖旧条目。
+      const idx = this.servers.findIndex((s) => s.name === clean);
+      if (idx >= 0) this.servers[idx] = meta;
+      else this.servers.push(meta);
+      return meta;
     });
-    // 同名服务则覆盖旧条目。
-    const idx = this.servers.findIndex((s) => s.name === clean);
-    if (idx >= 0) this.servers[idx] = meta;
-    else this.servers.push(meta);
-    return meta;
   }
 
   list(): McpServerMeta[] {
@@ -104,18 +122,20 @@ class McpManager {
    *             按预设的 authType 拼装请求头，无 token 时返回空头（由服务决定是否可连）。
    */
   async connectPreset(id: string, token?: string): Promise<McpServerMeta> {
-    await this.init();
-    const preset = getPreset(id);
-    if (!preset) {
-      throw new Error(`[mcp-manager] 未知预设: ${id}`);
-    }
-    const headers = headersForPreset(preset, token);
-    // 复用与 addServer 完全一致的连接路径（connectMcpServer），保持工具前缀等行为统一。
-    return this.addServer({
-      name: preset.id,
-      serverUrl: preset.url,
-      headers,
-      transportType: preset.transportType,
+    return this.withLock(async () => {
+      const preset = getPreset(id);
+      if (!preset) {
+        throw new Error(`[mcp-manager] 未知预设: ${id}`);
+      }
+      const headers = headersForPreset(preset, token);
+      // 复用与 addServer 完全一致的连接路径（connectMcpServer），保持工具前缀等行为统一；
+      // 直接内联调用以避免在 withLock 内再嵌套一层 withLock。
+      return this.addServerUnguarded({
+        name: preset.id,
+        serverUrl: preset.url,
+        headers,
+        transportType: preset.transportType,
+      });
     });
   }
 
@@ -130,26 +150,55 @@ class McpManager {
    * list() 即刻反映最新状态。返回重连后的元数据；服务未知时抛错。
    */
   async reconnect(name: string): Promise<McpServerMeta> {
-    await this.init();
-    const meta = await reconnectMcpServer(name);
-    if (!meta) {
-      throw new Error(`[mcp-manager] 未知 MCP 服务: ${name}`);
-    }
-    const idx = this.servers.findIndex((s) => s.name === name);
-    if (idx >= 0) this.servers[idx] = meta;
-    else this.servers.push(meta);
-    return meta;
+    return this.withLock(async () => {
+      const meta = await reconnectMcpServer(name);
+      if (!meta) {
+        throw new Error(`[mcp-manager] 未知 MCP 服务: ${name}`);
+      }
+      const idx = this.servers.findIndex((s) => s.name === name);
+      if (idx >= 0) this.servers[idx] = meta;
+      else this.servers.push(meta);
+      return meta;
+    });
   }
 
   /** 关闭所有已接入的 MCP 连接（进程退出时调用）。 */
   async shutdown(): Promise<void> {
-    // 等待可能的启动/接入流程结束，避免并发修改共享 registry / servers。
-    await this.initPromise?.catch(() => {});
-    await disconnectAllMcp().catch(() => {});
-    this.servers = [];
-    // 重置初始化标记，使单例在后续可重新 init（如测试或重启场景）。
-    this.initialized = false;
-    this.initPromise = null;
+    await this.withLock(async () => {
+      // 等待可能的启动/接入流程结束，避免并发修改共享 registry / servers。
+      await this.initPromise?.catch(() => {});
+      await disconnectAllMcp().catch(() => {});
+      this.servers = [];
+      // 重置初始化标记，使单例在后续可重新 init（如测试或重启场景）。
+      this.initialized = false;
+      this.initPromise = null;
+    });
+  }
+
+  /**
+   * 不加锁的连接写入（仅内部调用）：供 connectPreset 在已加锁的上下文里复用 addServer 逻辑，
+   * 避免 withLock 嵌套。
+   */
+  private async addServerUnguarded(config: McpServerConfig): Promise<McpServerMeta> {
+    if (!config.serverUrl && !config.command) {
+      throw new Error(
+        `[mcp-manager] addServer 需要至少一个连接目标 (serverUrl 或 command)，收到: ${JSON.stringify(config)}`
+      );
+    }
+    const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
+    const meta = await connectMcpServer(this.registry, {
+      name: clean,
+      serverUrl: config.serverUrl,
+      command: config.command,
+      args: config.args,
+      env: config.env,
+      headers: config.headers,
+      transportType: config.transportType,
+    });
+    const idx = this.servers.findIndex((s) => s.name === clean);
+    if (idx >= 0) this.servers[idx] = meta;
+    else this.servers.push(meta);
+    return meta;
   }
 
   // 环境变量的解析已统一到 core 的 parseMcpServersEnv()，本类不再重复实现。
