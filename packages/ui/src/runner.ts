@@ -3,6 +3,8 @@ import {
   ToolRegistry,
   Memory,
   createOpenRouterLLM,
+  createOpenAILLM,
+  createFailoverLLM,
   HarnessClient,
   registerHarnessTools,
   registerBuiltinTools,
@@ -30,6 +32,14 @@ export interface AssembledAgent {
   dryRun: boolean;
   mcpConnected: boolean;
   notes: string[];
+  /** 单次 run 的 token 预算（未配置则 undefined）。 */
+  tokenBudget?: number;
+  /** 单次 run 的成本预算（美元，未配置则 undefined）。 */
+  costBudget?: number;
+  /** 用于成本计价的模型标识。 */
+  accountModel?: string;
+  /** 是否启用了 provider 故障转移。 */
+  failover: boolean;
 }
 
 const SYSTEM_PROMPT =
@@ -85,6 +95,7 @@ export async function assembleAgent(
   const notes: string[] = [];
   let llm: LLM;
   let llmKind: 'mock' | 'openrouter' = 'mock';
+  let failover = false;
   const mcpConnected = mcpManager.list().some((s) => s.status === 'connected');
 
   if (mode === 'mock') {
@@ -102,9 +113,33 @@ export async function assembleAgent(
       (modelOverride && modelOverride.trim()) ||
       (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
       undefined;
-    llm = createOpenRouterLLM(model ? { model } : {});
+    const primary = createOpenRouterLLM(model ? { model } : {});
     llmKind = 'openrouter';
-    notes.push(`使用真实 OpenRouter LLM（model=${model ?? '默认'}）。`);
+
+    // 故障转移：若同时配置了原生 OpenAI（或兼容端点）密钥，则用熔断器把 OpenRouter
+    // 作为 primary、OpenAI 作为 secondary；primary 连续失败或限流时自动回落，对主循环透明。
+    // 设 LLM_FAILOVER=false 可关闭（仅用 OpenRouter）。
+    const openaiKey = process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim();
+    if (openaiKey && process.env.LLM_FAILOVER !== 'false') {
+      const secondary = createOpenAILLM({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) || undefined,
+        baseUrl: (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.trim()) || undefined,
+      });
+      llm = createFailoverLLM(primary, secondary, {
+        failThreshold: Number(process.env.LLM_FAILOVER_THRESHOLD ?? 3) || 3,
+        cooldownMs: Number(process.env.LLM_FAILOVER_COOLDOWN_MS ?? 60_000) || 60_000,
+        primaryLabel: 'openrouter',
+        secondaryLabel: 'openai',
+      });
+      failover = true;
+      notes.push(
+        `使用真实 OpenRouter LLM（model=${model ?? '默认'}），并已启用 OpenAI 故障转移（熔断阈值 ${process.env.LLM_FAILOVER_THRESHOLD ?? 3}）。`
+      );
+    } else {
+      llm = primary;
+      notes.push(`使用真实 OpenRouter LLM（model=${model ?? '默认'}）。`);
+    }
   }
 
   if (mcpConnected) {
@@ -142,15 +177,25 @@ export async function assembleAgent(
   notes.push(`已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`);
 
   const memory = new Memory();
+  // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
+  const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
+  const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
+  const accountModel =
+    (modelOverride && modelOverride.trim()) ||
+    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
+    undefined;
   const harness = new AgentHarness({
     llm,
     tools,
     memory,
     systemPrompt: finalSystemPrompt,
     onEvent,
+    model: accountModel,
+    tokenBudget,
+    costBudget,
   });
 
-  return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes };
+  return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };
 }
 
 /** 各模式对应的默认提示词（用户在 UI 留空时使用）。 */

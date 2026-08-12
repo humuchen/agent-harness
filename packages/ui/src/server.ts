@@ -9,6 +9,7 @@ import { mcpManager } from './mcp-manager';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { HarnessEvent, McpTransportType } from '@agent-harness/core';
+import { getMetricsSnapshot } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -156,7 +157,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       '/api/verify',
       '/api/mcp/add',
       '/api/mcp/preset',
+      '/api/mcp/reconnect',
       '/api/shell/approve',
+      '/api/metrics',
     ];
     if (PROTECTED.includes(path)) {
       const ip = clientIp(req);
@@ -179,6 +182,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // 开箱预设清单（Context7 / GitHub / Composio 等），供前端「预设市场」一键接入。
       return sendJson(res, { presets: mcpManager.presets() });
     }
+    if (req.method === 'GET' && path === '/api/metrics') {
+      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本）。受保护，需令牌。
+      return sendJson(res, getMetricsSnapshot(), req);
+    }
     if (req.method === 'GET' && path === '/api/env') {
       return sendJson(res, { envs: envPipeline.list() });
     }
@@ -193,6 +200,20 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/mcp/preset') {
       return await handleMcpPreset(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/mcp/reconnect') {
+      const body = await readBody(req);
+      const name = String(body.name ?? '');
+      if (!name) {
+        return sendJson(res, { error: '缺少 name' }, req);
+      }
+      auditAction('mcp.reconnect', { name });
+      try {
+        const meta = await mcpManager.reconnect(name);
+        return sendJson(res, { server: meta }, req);
+      } catch (e: any) {
+        return sendJson(res, { error: e?.message ?? String(e) }, req);
+      }
     }
     if (req.method === 'POST' && path === '/api/shell/approve') {
       return await handleShellApprove(req, res);
@@ -223,6 +244,8 @@ function buildState() {
       name: s.name,
       url: s.url ?? null,
       status: s.status,
+      health: s.health ?? null,
+      reconnectAttempts: s.reconnectAttempts ?? 0,
       toolCount: s.tools.length,
       tools: s.tools.map((t) => ({ registeredName: t.registeredName, originalName: t.originalName })),
       error: s.error ?? null,
@@ -324,6 +347,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       mcpConnected: assembled.mcpConnected,
       notes: assembled.notes,
       model: (model && model.trim()) || (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) || 'openai/gpt-4o-mini',
+      tokenBudget: assembled.tokenBudget ?? null,
+      costBudget: assembled.costBudget ?? null,
+      failover: assembled.failover,
     });
     send({ type: 'run:tools', tools: assembled.tools.schemas() });
 

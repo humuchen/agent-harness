@@ -123,6 +123,10 @@
   .dot.run { background: var(--yellow); animation: pulse 1s infinite; }
   .dot.pass, .dot.connected { background: var(--green); }
   .dot.fail, .dot.error { background: var(--red); }
+  .mcp-server .ms-badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+  .mcp-server .ms-badge.ok { color: var(--green); border-color: var(--green); }
+  .mcp-server .ms-badge.bad { color: var(--red); border-color: var(--red); }
+  .mcp-server .btn.small { margin-left: auto; padding: 2px 8px; font-size: 11px; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   .add-mcp { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
   .add-mcp input { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
@@ -985,6 +989,14 @@ window.HarnessDemo = (function () {
         addGuardrail(e);
         addMessage("guardrail", "🚫 护栏拦截[" + e.phase + (e.tool ? ":" + e.tool : "") + "]: " + e.reason);
         break;
+      case "run:cost":
+        addMessage("system", "💰 step " + e.step + ": +" + (e.stepCost ? "$" + e.stepCost.toFixed(6) : "$0") +
+          "（累计 " + e.cumulativeTokens + " tokens / $" + e.cumulativeCost.toFixed(6) +
+          (e.model ? " · " + esc(e.model) : "") + "）");
+        break;
+      case "budget:exceeded":
+        addMessage("guardrail", "⚠️ 预算超限[" + e.kind + "]：已用 " + e.used + " / 上限 " + e.limit + "，运行已中止。");
+        break;
       case "run:end":
         markRunEnd(e.final, e.steps);
         break;
@@ -1107,11 +1119,16 @@ window.HarnessDemo = (function () {
       else {
         p.innerHTML = servers.map(function (s) {
           var dotCls = s.status === "connected" ? "dot connected" : (s.status === "error" ? "dot error" : "dot run");
+          var healthBadge = s.health === "healthy"
+            ? '<span class="ms-badge ok">健康</span>'
+            : (s.health === "unhealthy" ? '<span class="ms-badge bad">失活</span>' : '<span class="ms-badge">未探测</span>');
+          var reconnectBtn = (s.status === "error" || s.health === "unhealthy")
+            ? '<button class="btn small" data-reconnect="' + esc(s.name) + '">↻ 重连</button>' : '';
           var tools = s.tools && s.tools.length
             ? s.tools.map(function (t) { return esc(t.originalName); }).join(", ")
             : "（无工具）";
           return '<div class="mcp-server"><div class="ms-head"><span class="' + dotCls + '"></span>' +
-            '<span class="ms-name">' + esc(s.name) + '</span></div>' +
+            '<span class="ms-name">' + esc(s.name) + '</span>' + healthBadge + reconnectBtn + '</div>' +
             (s.url ? '<div class="ms-url">' + esc(s.url) + '</div>' : '') +
             '<div class="ms-tools">工具 ' + (s.tools ? s.tools.length : 0) + ': ' + tools + '</div>' +
             (s.error ? '<div class="ms-err">⚠ ' + esc(s.error) + '</div>' : '') + '</div>';
@@ -1359,6 +1376,25 @@ window.HarnessDemo = (function () {
   // 监听 MCP 面板变化以便重新绑定添加按钮
   var mcpObserver = new MutationObserver(function () { bindMcpAdd(); });
   mcpObserver.observe($("mcpPanel"), { childList: true });
+
+  // 重连按钮采用事件委托（面板每次重渲染，无需逐按钮绑定）
+  $("mcpPanel").addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("[data-reconnect]") : null;
+    if (!btn) return;
+    var name = btn.getAttribute("data-reconnect");
+    if (!name) return;
+    btn.disabled = true;
+    btn.textContent = "↻ 重连中…";
+    fetch("/api/mcp/reconnect", {
+      method: "POST", headers: authHeaders(),
+      body: JSON.stringify({ name: name })
+    }).then(function (r) { return r.json(); }).then(function () {
+      refreshMcp();
+    }).catch(function (e) {
+      btn.disabled = false;
+      alert("重连失败：" + (e && e.message ? e.message : e));
+    });
+  });
 })();
 </script>
 </body>

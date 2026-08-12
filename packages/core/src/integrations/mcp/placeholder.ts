@@ -4,35 +4,80 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { ToolRegistry } from '../../tools';
+import { incCounter, structLog } from '../../telemetry';
 
 export type McpTransportType = 'auto' | 'sse' | 'streamable-http';
+
+/** MCP 服务健康状态（供 UI 可视化与运行时决策）。 */
+export type McpHealth = 'unknown' | 'healthy' | 'unhealthy';
 
 /**
  * 已连接 MCP 客户端的存活注册表。
  * 之前 connectMcpServer / registerMcpTools 创建 Client 后从不关闭，会泄漏连接
  *（尤其是 stdio 子进程与 SSE 长连接）。这里按服务名将 client + 其注册的工具名
  * 记录下来，供 disconnectMcpServer / disconnectAllMcp 在关闭或进程退出时清理。
+ *
+ * 升级：除连接生命周期外，这里还承载 **自动重连与健康探测**——
+ * 远端 server 重启 / 网络抖动导致的静默失败会被自愈：工具调用失败时懒重连一次并重试，
+ * 后台周期 ping 探测到失活则按指数退避自动重连，状态实时回写到 meta。
  */
+interface ToolInfo {
+  registeredName: string;
+  originalName: string;
+  description: string;
+}
+
+interface McpConnectionConfig {
+  name: string;
+  serverUrl?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  transportType?: McpTransportType;
+  /** 是否由调用方提供现成 transport（如内存传输测试）。此情形下不可重连，仅保活。 */
+  transportProvided: boolean;
+}
+
 interface LiveMcp {
   client: Client;
   registry: ToolRegistry;
   names: string[];
+  tools: ToolInfo[];
+  config: McpConnectionConfig;
+  /** 与调用方（UI）共享的元数据对象，状态变更原地写回即被 UI 读取到。 */
+  meta: McpServerMeta;
+  reconnectAttempts: number;
+  reconnecting: boolean;
+  closed: boolean;
+  probeTimer?: ReturnType<typeof setInterval>;
 }
+
 const liveClients = new Map<string, LiveMcp>();
 
-function storeClient(key: string, client: Client, registry: ToolRegistry, names: string[]): void {
+// ---- 重连 / 健康探测的环境配置（企业可按需收紧） ----
+const RECONNECT_ENABLED = (process.env.MCP_RECONNECT ?? 'true').toLowerCase() !== 'false';
+const RECONNECT_MAX = Math.max(0, Number(process.env.MCP_RECONNECT_MAX ?? '5') || 0);
+const RECONNECT_DELAY_MS = Math.max(200, Number(process.env.MCP_RECONNECT_DELAY_MS ?? '2000') || 200);
+const HEALTH_INTERVAL_MS = Math.max(0, Number(process.env.MCP_HEALTH_INTERVAL_MS ?? '60000') || 0);
+const HEALTH_TIMEOUT_MS = Math.max(500, Number(process.env.MCP_HEALTH_TIMEOUT_MS ?? '5000') || 500);
+
+function storeEntry(key: string, entry: LiveMcp): void {
   const prev = liveClients.get(key);
   if (prev) {
-    // 同名重连：先 best-effort 关闭旧连接，避免残留。
+    // 同名重连：先 best-effort 关闭旧连接与探测，避免残留。
+    stopProbe(prev);
     prev.client.close().catch(() => {});
   }
-  liveClients.set(key, { client, registry, names });
+  liveClients.set(key, entry);
 }
 
-/** 关闭指定 MCP 服务：移除其工具并断开底层传输。返回是否真的有关闭动作。 */
+/** 关闭指定 MCP 服务：移除其工具、停止探测并断开底层传输。返回是否真的有关闭动作。 */
 export async function disconnectMcpServer(name: string): Promise<boolean> {
   const entry = liveClients.get(name);
   if (!entry) return false;
+  entry.closed = true;
+  stopProbe(entry);
   for (const n of entry.names) entry.registry.unregister(n);
   liveClients.delete(name);
   try {
@@ -75,10 +120,16 @@ export interface McpServerMeta {
   name: string;
   url?: string;
   command?: string;
-  status: 'connecting' | 'connected' | 'error';
+  status: 'connecting' | 'connected' | 'reconnecting' | 'error';
   tools: { registeredName: string; originalName: string; description: string }[];
   error?: string;
   transportType?: McpTransportType;
+  /** 最近一次健康探测结果（unknown=尚未探测）。 */
+  health?: McpHealth;
+  /** 最近一次探测到健康的 Unix 毫秒时间戳，未探测过为 null。 */
+  lastHealthyAt?: number | null;
+  /** 累计自动重连尝试次数。 */
+  reconnectAttempts?: number;
 }
 
 /**
@@ -184,6 +235,212 @@ function slugFromUrl(url: string): string {
   }
 }
 
+/**
+ * 建立一次 MCP 连接并将工具注册到 registry（不含存储 / 探测 / 重连状态）。
+ * 注册的工具执行器具备「调用失败懒重连一次并重试」的韧性。
+ * 返回重连所需的全部上下文（client / 注册名 / 工具信息）。
+ */
+async function establishConnection(
+  registry: ToolRegistry,
+  config: McpConnectionConfig,
+  initialTransport?: Transport
+): Promise<{ client: Client; names: string[]; toolsInfo: ToolInfo[] }> {
+  const client = new Client({ name: 'agent-harness-ts', version: '0.1.0' });
+  const conn = await connectMcpClient({
+    serverUrl: config.serverUrl,
+    command: config.command,
+    useStdio: !config.serverUrl && !config.transportProvided && !!config.command,
+    headers: config.headers,
+    transport: initialTransport,
+    transportType: config.transportType,
+    args: config.args,
+    env: config.env,
+    client,
+  });
+  const toolsInfo: ToolInfo[] = [];
+  const names: string[] = [];
+  for (const tool of conn.tools) {
+    // 内存传输（测试）或旧的 registerMcpTools 路径不加前缀；多服务路径统一加 <server>__ 前缀。
+    const registeredName = config.transportProvided ? tool.name : `${config.name}__${tool.name}`;
+    const description = tool.description ?? '';
+    const parameters = (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>;
+    registry.register(
+      registeredName,
+      config.transportProvided ? description : `[${config.name}] ${description}`,
+      parameters,
+      makeResilientExecutor(config, tool.name),
+      `mcp:${config.name}`
+    );
+    toolsInfo.push({ registeredName, originalName: tool.name, description });
+    names.push(registeredName);
+  }
+  return { client: conn.client, names, toolsInfo };
+}
+
+/**
+ * 生成 MCP 工具执行器：调用失败时先尝试一次自动重连，成功则重试，
+ * 使远端 server 重启 / 连接抖动对运行中的 agent 透明自愈。
+ */
+function makeResilientExecutor(config: McpConnectionConfig, originalName: string): (args: any) => Promise<string> {
+  const key = config.name;
+  return async (args) => {
+    const live = liveClients.get(key);
+    if (!live || live.closed) throw new Error(`MCP server '${key}' not connected`);
+    try {
+      return await callAndStringify(live.client, originalName, args);
+    } catch (e) {
+      const recovered = await performReconnect(key);
+      if (recovered) {
+        const live2 = liveClients.get(key);
+        if (live2 && !live2.closed) return await callAndStringify(live2.client, originalName, args);
+      }
+      throw e;
+    }
+  };
+}
+
+async function callAndStringify(client: Client, originalName: string, args: any): Promise<string> {
+  const res = await client.callTool({ name: originalName, arguments: args });
+  if ((res as any).isError) {
+    throw new Error('MCP tool error: ' + JSON.stringify(res.content));
+  }
+  return mcpContentToString(res.content);
+}
+
+/**
+ * 手动触发某 MCP 服务的重连（UI 按钮 / 运维脚本调用）。
+ * 返回该服务最新的元数据（含重连后的状态）；服务不存在时返回 null。
+ */
+export async function reconnectMcpServer(name: string): Promise<McpServerMeta | null> {
+  const entry = liveClients.get(name);
+  if (!entry) return null;
+  await performReconnect(name);
+  return entry.meta;
+}
+
+/** 实际执行重连：关闭旧连接、重建客户端、重新注册工具、重启探测；失败按指数退避重试。 */
+async function performReconnect(key: string): Promise<boolean> {
+  const entry = liveClients.get(key);
+  if (!entry || entry.closed || entry.reconnecting) return false;
+  // 内存传输不可重连（无法重建传输层）。
+  if (entry.config.transportProvided) return false;
+
+  entry.reconnecting = true;
+  entry.status = 'reconnecting';
+  entry.meta.status = 'reconnecting';
+  stopProbe(entry);
+
+  try {
+    try {
+      await entry.client.close().catch(() => {});
+    } catch {
+      /* 旧连接可能已死，忽略关闭错误 */
+    }
+    for (const n of entry.names) entry.registry.unregister(n);
+
+    const est = await establishConnection(entry.registry, entry.config);
+    entry.client = est.client;
+    entry.names = est.names;
+    entry.tools = est.toolsInfo;
+    entry.meta.tools = est.toolsInfo;
+    entry.status = 'connected';
+    entry.meta.status = 'connected';
+    entry.health = 'healthy';
+    entry.meta.health = 'healthy';
+    entry.lastHealthyAt = Date.now();
+    entry.meta.lastHealthyAt = Date.now();
+    entry.lastError = undefined;
+    entry.meta.error = undefined;
+    entry.reconnectAttempts = 0;
+    entry.meta.reconnectAttempts = 0;
+    startProbe(entry, key);
+    incCounter('mcp.reconnect.success');
+    structLog('info', 'mcp server reconnected', { server: key, tools: est.tools.length });
+    return true;
+  } catch (e: any) {
+    entry.status = 'error';
+    entry.meta.status = 'error';
+    entry.health = 'unhealthy';
+    entry.meta.health = 'unhealthy';
+    entry.lastError = e?.message ?? String(e);
+    entry.meta.error = entry.lastError;
+    entry.reconnectAttempts += 1;
+    entry.meta.reconnectAttempts = entry.reconnectAttempts;
+    incCounter('mcp.reconnect.fail');
+    structLog('warn', 'mcp server reconnect failed', {
+      server: key,
+      attempt: entry.reconnectAttempts,
+      error: entry.lastError,
+    });
+    // 未达上限则按指数退避（封顶 16x）后台重试。
+    if (RECONNECT_ENABLED && entry.reconnectAttempts < RECONNECT_MAX) {
+      const delay = RECONNECT_DELAY_MS * Math.pow(2, Math.min(entry.reconnectAttempts, 4));
+      setTimeout(() => {
+        void performReconnect(key);
+      }, delay).unref?.();
+    }
+    return false;
+  } finally {
+    entry.reconnecting = false;
+  }
+}
+
+/** 周期健康探测：ping（或 listTools 兜底）超时即判定失活并触发重连。 */
+function startProbe(entry: LiveMcp, key: string): void {
+  stopProbe(entry);
+  // 内存传输或关闭探测时不挂定时器。
+  if (HEALTH_INTERVAL_MS <= 0 || entry.config.transportProvided) return;
+  entry.probeTimer = setInterval(() => {
+    void probeOnce(entry, key);
+  }, HEALTH_INTERVAL_MS);
+  entry.probeTimer.unref?.();
+}
+
+function stopProbe(entry: LiveMcp): void {
+  if (entry.probeTimer) {
+    clearInterval(entry.probeTimer);
+    entry.probeTimer = undefined;
+  }
+}
+
+async function probeOnce(entry: LiveMcp, key: string): Promise<void> {
+  if (entry.closed || entry.reconnecting) return;
+  const client = entry.client as any;
+  const pingFn = typeof client.ping === 'function' ? client.ping.bind(client) : null;
+  const probe = pingFn ? pingFn() : entry.client.listTools();
+  try {
+    await withTimeout(probe, HEALTH_TIMEOUT_MS);
+    entry.health = 'healthy';
+    entry.meta.health = 'healthy';
+    entry.lastHealthyAt = Date.now();
+    entry.meta.lastHealthyAt = entry.lastHealthyAt;
+    entry.reconnectAttempts = 0;
+    entry.meta.reconnectAttempts = 0;
+  } catch {
+    entry.health = 'unhealthy';
+    entry.meta.health = 'unhealthy';
+    incCounter('mcp.health.fail');
+    structLog('warn', 'mcp health check failed, triggering reconnect', { server: key });
+    await performReconnect(key);
+  }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('health check timeout')), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+
 export async function registerMcpTools(
   registry: ToolRegistry,
   opts: McpOptions = {}
@@ -200,35 +457,44 @@ export async function registerMcpTools(
     return;
   }
 
-  const client = new Client({
-    name: opts.name ?? 'agent-harness-ts',
-    version: opts.version ?? '0.1.0',
-  });
+  const config: McpConnectionConfig = {
+    name: '__default__',
+    serverUrl,
+    command,
+    args: opts.args,
+    env: opts.env,
+    headers,
+    transportType: opts.transportType,
+    transportProvided: !!opts.transport,
+  };
 
   try {
-    const { client: connected, tools } = await connectMcpClient({
-      serverUrl,
-      command,
-      useStdio,
-      headers,
-      transport: opts.transport,
-      transportType: opts.transportType,
-      client,
+    const est = await establishConnection(registry, config, opts.transport);
+    storeEntry('__default__', {
+      client: est.client,
+      registry,
+      names: est.names,
+      tools: est.toolsInfo,
+      config,
+      meta: {
+        name: '__default__',
+        url: serverUrl,
+        command,
+        status: 'connected',
+        tools: est.toolsInfo,
+        transportType: opts.transportType ?? 'auto',
+        health: 'healthy',
+        lastHealthyAt: Date.now(),
+        reconnectAttempts: 0,
+      },
+      reconnectAttempts: 0,
+      reconnecting: false,
+      closed: false,
     });
-    for (const tool of tools) {
-      const name = tool.name;
-      const description = tool.description ?? '';
-      const parameters = (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>;
-      registry.register(name, description, parameters, async (args) => {
-        const res = await connected.callTool({ name, arguments: args });
-        if ((res as any).isError) {
-          throw new Error('MCP tool error: ' + JSON.stringify(res.content));
-        }
-        return mcpContentToString(res.content);
-      }, 'mcp');
-    }
-    console.log(`[mcp] registered ${tools.length} tool(s) from MCP server`);
-    storeClient('__default__', connected, registry, tools.map((t) => t.name));
+    // 内存传输（测试）不探测；远端/stdio 挂健康探测以自愈。
+    const entry = liveClients.get('__default__');
+    if (entry) startProbe(entry, '__default__');
+    console.log(`[mcp] registered ${est.tools.length} tool(s) from MCP server`);
   } catch (e) {
     console.error(`[mcp] failed to connect to MCP server: ${(e as Error).message}`);
     throw e;
@@ -239,11 +505,22 @@ export async function registerMcpTools(
  * 接入一个具名 MCP 服务，并将其工具注册到共享 ToolRegistry。
  * 工具名会加上 `<serverName>__` 前缀以避免多服务之间的命名冲突。
  * 返回元数据（状态、工具列表），不抛异常 —— 由调用方决定如何处理失败。
+ * 接入成功后自动挂载健康探测与自动重连。
  */
 export async function connectMcpServer(
   registry: ToolRegistry,
   opts: { name: string; serverUrl?: string; command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string>; transportType?: McpTransportType; transport?: Transport }
 ): Promise<McpServerMeta> {
+  const config: McpConnectionConfig = {
+    name: opts.name,
+    serverUrl: opts.serverUrl,
+    command: opts.command,
+    args: opts.args,
+    env: opts.env,
+    headers: opts.headers,
+    transportType: opts.transportType,
+    transportProvided: !!opts.transport,
+  };
   const meta: McpServerMeta = {
     name: opts.name,
     url: opts.serverUrl,
@@ -251,47 +528,35 @@ export async function connectMcpServer(
     status: 'connecting',
     tools: [],
     transportType: opts.transportType ?? 'auto',
+    health: 'unknown',
+    lastHealthyAt: null,
+    reconnectAttempts: 0,
   };
-  const serverUrl = opts.serverUrl;
-  const command = opts.command;
-  const useStdio = !serverUrl && !opts.transport && !!command;
   try {
-    const client = new Client({ name: 'agent-harness-ts', version: '0.1.0' });
-    const { client: connected, tools } = await connectMcpClient({
-      serverUrl,
-      command,
-      useStdio,
-      headers: opts.headers,
-      transport: opts.transport,
-      transportType: opts.transportType,
-      client,
+    const est = await establishConnection(registry, config, opts.transport);
+    storeEntry(opts.name, {
+      client: est.client,
+      registry,
+      names: est.names,
+      tools: est.toolsInfo,
+      config,
+      meta,
+      reconnectAttempts: 0,
+      reconnecting: false,
+      closed: false,
     });
-    for (const tool of tools) {
-      const registeredName = `${opts.name}__${tool.name}`;
-      const description = tool.description ?? '';
-      const parameters = (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>;
-      registry.register(
-        registeredName,
-        `[${opts.name}] ${description}`,
-        parameters,
-        async (args) => {
-          const res = await connected.callTool({ name: tool.name, arguments: args });
-          if ((res as any).isError) {
-            throw new Error('MCP tool error: ' + JSON.stringify(res.content));
-          }
-          return mcpContentToString(res.content);
-        },
-        `mcp:${opts.name}`
-      );
-      meta.tools.push({ registeredName, originalName: tool.name, description });
-    }
     meta.status = 'connected';
-    storeClient(opts.name, connected, registry, meta.tools.map((t) => t.registeredName));
-    console.log(`[mcp] server '${opts.name}' connected with ${meta.tools.length} tool(s)`);
+    meta.health = 'healthy';
+    meta.lastHealthyAt = Date.now();
+    meta.tools = est.toolsInfo;
+    const entry = liveClients.get(opts.name);
+    if (entry) startProbe(entry, opts.name);
+    structLog('info', 'mcp server connected', { server: opts.name, tools: est.tools.length });
   } catch (e: any) {
     meta.status = 'error';
+    meta.health = 'unhealthy';
     meta.error = e?.message ?? String(e);
-    console.error(`[mcp] server '${opts.name}' failed: ${meta.error}`);
+    structLog('error', 'mcp server connect failed', { server: opts.name, error: meta.error });
   }
   return meta;
 }

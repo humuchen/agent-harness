@@ -1,4 +1,4 @@
-import type { LLMResponse, Message, ToolCall, ToolSchema } from '../types';
+import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types';
 
 /**
  * OpenAI 兼容 Chat Completions 适配器之间共享的纯函数。
@@ -92,7 +92,18 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
       name: c.function.name,
       arguments: safeParseArgs(c.function.arguments),
     }));
-    last = { content: msg.content ?? '', tool_calls: toolCalls };
+    // 提取 token 用量（OpenAI / OpenRouter 均返回 usage 字段），供成本记账与配额使用。
+    const u = data?.usage;
+    const usage: TokenUsage | undefined = u
+      ? {
+          prompt_tokens: u.prompt_tokens ?? 0,
+          completion_tokens: u.completion_tokens ?? 0,
+          total_tokens: u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0),
+        }
+      : undefined;
+    // 实际使用的模型（OpenRouter 多模型降级时会与请求模型不同）；用于按模型计价与可观测。
+    const usedModel: string | undefined = typeof data?.model === 'string' ? data.model : undefined;
+    last = { content: msg.content ?? '', tool_calls: toolCalls, usage, model: usedModel };
 
     // 退化响应（无文本且无工具调用）—— 若仍有重试次数则重试。
     const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;

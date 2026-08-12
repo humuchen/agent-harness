@@ -172,6 +172,19 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 > 添加更多 MCP（改 `MCP_SERVER_URL` 或加多个 `registerMcpTools` 调用即可，
 > 主循环零改动）。
 
+### 连接可靠性：自动重连 + 健康探测
+
+远端 MCP server 重启、网络抖动等导致的静默失败现已可自愈，无需重启 UI：
+
+- **懒重连**：工具调用抛错时，自动重连一次并重试该调用，对运行中的 agent 透明。
+- **健康探测**：后台周期 `ping`（或 `listTools` 兜底）远端，超时即判定失活并触发重连。
+- **指数退避**：重连失败按 `基础 * 2^min(尝试,4)` 后台重试（封顶 16x），达 `MCP_RECONNECT_MAX` 后停止。
+- **状态可见**：`/api/mcp/list` 与 UI 面板实时展示 `status`（含 `reconnecting`）/ `health`（健康·失活·未探测）/ `reconnectAttempts`；失活时面板出现「↻ 重连」按钮可手动触发（`POST /api/mcp/reconnect`）。
+- **指标**：重连成功/失败、健康探测失败计入可观测性指标（`mcp.reconnect.success` / `mcp.reconnect.fail` / `mcp.health.fail`）。
+
+可调环境变量：`MCP_RECONNECT`、`MCP_RECONNECT_MAX`、`MCP_RECONNECT_DELAY_MS`、`MCP_HEALTH_INTERVAL_MS`、`MCP_HEALTH_TIMEOUT_MS`（详见 `.env.example`）。
+内存传输（测试）不可重连，仅保活不探测。
+
 > 把「环境治理」与「Agent harness」串起来的关键：
 > `harness-env-platform` 负责环境定义与流水线，
 > `agent-harness-ts` 通过 Harness API 在对话中按需供给/回收环境，
@@ -333,8 +346,40 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 （`agent.run`、`env.create`/`env.destroy`、`mcp.add`/`mcp.preset`、`shell.approve`）
 写入**脱敏**后的关键参数；**绝不记录密钥、令牌或 MCP 认证头**。
 
-> 企业落地还需补充：语义级护栏与 PII 脱敏、可观测性（OTel + 指标 + 告警）、
-> MCP 重连、会话/多租户隔离、RBAC 与审批流、成本记账与配额（见仓库规划任务清单）。
+### 内容安全护栏（guardrails）
+
+三层防护（输入 / 输出 / 工具参数）已升级为可配置策略引擎，可通过环境变量或
+`configureGuardrails()` 在运行时调整（详见 `.env.example`）：
+
+| 环境变量 | 作用 | 默认 |
+|---|---|---|
+| `GUARDRAIL_SENSITIVITY` | 注入检测敏感度 `low`/`medium`/`high` | `medium` |
+| `GUARDRAIL_MAX_INPUT` | 输入最大字符数，超过即拦截 | `20000` |
+| `GUARDRAIL_SECRET_SCAN` | 是否扫描密钥类敏感串 | `true` |
+| `GUARDRAIL_INJECTION_SCAN` | 是否做提示词注入检测 | `true` |
+| `GUARDRAIL_PII` | 是否在输出侧做 PII 脱敏 | `true` |
+| `GUARDRAIL_ALLOWLIST` | 命中即跳过注入拦截的关键词（逗号分隔） | 空 |
+
+关键能力：
+
+- **归一化注入检测**：先去零宽字符、折叠空白、去标点后做子串匹配，对大小写变形、
+  字符间插空格、`IGNORE␣ALL␣INSTRUCTIONS` 等常见绕过显著更鲁棒；
+  并预留 `registerInjectionScorer()` 可接语义级分类模型。
+- **输出侧 PII 脱敏**：`redactOutput()` 自动识别并打码邮箱、手机号、身份证、银行卡、
+  IPv4、常见 API Key；模型最终返回内容在 harness 出口统一脱敏。
+- 向后兼容：`checkInput`/`checkOutput`/`checkToolArgs`/`registerInputRule` 签名不变。
+
+### 可观测性（telemetry）
+
+- `telemetry.ts` 在 `withSpan` 基础上新增**进程内指标聚合**：token 用量、各阶段延迟、
+  错误率、工具调用数、累计成本；可通过 `getMetricsSnapshot()` 拉取。
+- 若进程中已安装 `@opentelemetry/api` 并注册了 Tracer/Meter，则自动发出 Span 与指标；
+  也可调用 `bindOtelMeter(meter)` 把指标导出到真实 Collector。无 Collector 时退化为内存快照。
+- Web Playground 暴露受保护的 `GET /api/metrics`（需 `UI_AUTH_TOKEN`），返回上述快照 JSON，
+  可直接接入 Grafana / Prometheus。
+
+> 企业落地仍待补充：会话/多租户隔离、RBAC 与审批流、
+> 集成/安全/负载测试 + 依赖扫描 + SBOM（见仓库规划任务清单）。
 
 ## 测试
 
@@ -354,4 +399,13 @@ pnpm --filter @agent-harness/core run test    # 跑测试
   `persistencePath` 时跨运行自动 `load`/`save`。
 - **MCP 连接生命周期**：`connectMcpServer` 维护活跃客户端，进程退出（SIGINT/SIGTERM）
   时由 UI 统一 `disconnectAllMcp()` 清理，避免 stdio 子进程 / SSE 长连接泄漏。
+- **MCP 自动重连与健康探测**：远端 server 重启/网络抖动时三层自愈——工具调用失败懒重连一次、
+  后台周期 `ping` 探测、指数退避自动重连；状态实时回写 UI 并可手动「↻ 重连」（见前文「连接可靠性」）。
+- **成本记账与配额**：每次 LLM 调用按模型单价表（`packages/core/src/llm/pricing.ts`）估算美元成本，
+  累加进可观测指标（`/api/metrics` 含 `cost` 与 `costByModel`），并发出 `run:cost` 事件供 UI 实时展示。
+  可设单次 run 的 `tokenBudget` / `costBudget`（`MAX_TOKENS_PER_RUN` / `MAX_COST_PER_RUN`），超限即熔断中止。
+  未知模型默认不计费（保守），可用 `registerModelPrice()` 按合同价覆盖。
+- **Provider 故障转移**：同时配置 `OPENAI_API_KEY` 时，自动用熔断器把 OpenRouter 作 primary、OpenAI 作 secondary；
+  primary 连续失败/限流（达 `LLM_FAILOVER_THRESHOLD`）即打开电路转走 secondary，冷却后 half-open 探活恢复。
+  对 harness 主循环透明；`LLM_FAILOVER=false` 可关闭。
 - **Harness 环境地址可配置**：`envUrlTemplate`（或 `HARNESS_ENV_URL_TEMPLATE`）替换原硬编码占位符。

@@ -2,6 +2,7 @@ import { ToolRegistry } from '@agent-harness/core';
 import {
   connectMcpServer,
   disconnectAllMcp,
+  reconnectMcpServer,
   parseMcpServersEnv,
   getPreset,
   listPresets,
@@ -121,6 +122,23 @@ class McpManager {
   /** 当前所有 MCP 工具所在的共享注册表（供 Agent 运行合并）。 */
   liveRegistry(): ToolRegistry {
     return this.registry;
+  }
+
+  /**
+   * 手动触发某 MCP 服务的重连（远端 server 重启 / 网络抖动后运维介入）。
+   * 调用 core 的 reconnectMcpServer，重连后状态原地写回共享 meta，
+   * list() 即刻反映最新状态。返回重连后的元数据；服务未知时抛错。
+   */
+  async reconnect(name: string): Promise<McpServerMeta> {
+    await this.init();
+    const meta = await reconnectMcpServer(name);
+    if (!meta) {
+      throw new Error(`[mcp-manager] 未知 MCP 服务: ${name}`);
+    }
+    const idx = this.servers.findIndex((s) => s.name === name);
+    if (idx >= 0) this.servers[idx] = meta;
+    else this.servers.push(meta);
+    return meta;
   }
 
   /** 关闭所有已接入的 MCP 连接（进程退出时调用）。 */

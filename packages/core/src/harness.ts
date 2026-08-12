@@ -1,8 +1,9 @@
-import { LLM, Message, ToolCall, LLMResponse } from './types';
+import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
-import { checkInput, checkOutput, checkToolArgs } from './guardrails';
-import { withSpan } from './telemetry';
+import { checkInput, checkOutput, checkToolArgs, redactOutput } from './guardrails';
+import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog } from './telemetry';
+import { estimateCost } from './llm/pricing';
 
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
@@ -18,6 +19,8 @@ export type HarnessEvent =
   | { type: 'llm:response'; step: number; content: string; toolCalls: ToolCall[] }
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
+  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number }
+  | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
   | { type: 'run:end'; runId: string; final: string; steps: number }
   | { type: 'error'; message: string };
 
@@ -35,6 +38,13 @@ export interface HarnessOptions {
   // 可选的事件回调：在循环每一步（LLM 调用 / 工具调用 / 护栏拦截）发生时触发。
   // 用于进度展示、可视化与测试断言，不修改任何业务逻辑。
   onEvent?: (e: HarnessEvent) => void;
+  // 用于成本计价的模型标识（harness 不直接调 LLM 配置，需调用方传入用于查单价表）。
+  // 缺省时仍会按响应里的 resp.model 计价；两者都无则按未知模型默认价（默认 0）。
+  model?: string;
+  // 单次 run 的 token 预算上限（累计 total_tokens）。超出即中止并返回预算超限提示。
+  tokenBudget?: number;
+  // 单次 run 的成本预算上限（美元，按模型单价估算）。超出即中止。
+  costBudget?: number;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -47,6 +57,9 @@ interface ResolvedHarnessOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   onEvent: (e: HarnessEvent) => void;
+  model?: string;
+  tokenBudget?: number;
+  costBudget?: number;
 }
 
 let idCounter = 0;
@@ -100,9 +113,12 @@ export class AgentHarness {
     };
 
     emit({ type: 'run:start', runId, input: userInput });
+    incCounter('agent.run.start');
 
     const guard = checkInput(userInput);
     if (!guard.ok) {
+      recordError('guardrail.input');
+      structLog('warn', 'guardrail blocked', { phase: 'input', reason: guard.reason, runId });
       emit({ type: 'guardrail:blocked', phase: 'input', reason: guard.reason ?? 'unknown' });
       const msg = `[guardrail] blocked: ${guard.reason}`;
       cleanup();
@@ -134,6 +150,19 @@ export class AgentHarness {
 
     let final = '[agent] reached max steps without a final answer';
     let steps = 0;
+    // 本次 run 累计的 token 用量与成本（用于预算熔断与 run:cost 事件）。
+    let runTokens = 0;
+    let runCost = 0;
+    const tokenBudget = this.opts.tokenBudget;
+    const costBudget = this.opts.costBudget;
+    const budgetExceeded = (kind: 'tokens' | 'cost'): string => {
+      const limit = kind === 'tokens' ? tokenBudget! : costBudget!;
+      const used = kind === 'tokens' ? runTokens : runCost;
+      incCounter('budget.exceeded');
+      structLog('warn', 'budget exceeded, aborting run', { kind, limit, used, runId });
+      emit({ type: 'budget:exceeded', kind, limit, used });
+      return `[budget] ${kind} exceeded: used ${used} / limit ${limit}`;
+    };
     try {
       final = await withSpan('agent.run', async () => {
         for (let step = 0; step < this.opts.maxSteps; step++) {
@@ -141,6 +170,9 @@ export class AgentHarness {
           if (signal.aborted) {
             return abortedMessage(signal);
           }
+          // 预算熔断：token / cost 任一超限即中止（在发起下一次 LLM 调用前）。
+          if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
+          if (costBudget && runCost > costBudget) return budgetExceeded('cost');
           steps = step + 1;
           emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
 
@@ -164,9 +196,35 @@ export class AgentHarness {
             return abortedMessage(signal);
           }
           const resp: LLMResponse = raceResult;
+          recordTokens(resp.usage);
+
+          // 成本记账：按实际使用模型（响应优先，回落配置 model）查单价表估算，
+          // 累加进 per-run 与全局指标，并发出 run:cost 事件供 UI 实时展示。
+          const costModel = resp.model ?? this.opts.model;
+          const stepCost = estimateCost(costModel, resp.usage);
+          runCost += stepCost;
+          runTokens += resp.usage?.total_tokens ?? 0;
+          recordCost(stepCost, costModel);
+          // 仅在拿到 usage 时发出 run:cost（mock / 不返回用量的响应不刷屏）。
+          if (resp.usage) {
+            emit({
+              type: 'run:cost',
+              step: steps,
+              model: costModel,
+              usage: resp.usage,
+              stepCost,
+              cumulativeTokens: runTokens,
+              cumulativeCost: runCost,
+            });
+          }
+          // 累加后立即检查预算：超限则中止，不再进入工具执行 / 下一轮。
+          if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
+          if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
           const outGuard = checkOutput(resp.content);
           if (!outGuard.ok) {
+            recordError('guardrail.output');
+            structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
             emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
             return `[guardrail] blocked: ${outGuard.reason}`;
           }
@@ -193,6 +251,8 @@ export class AgentHarness {
             if (!argGuard.ok) {
               result = `guardrail blocked: ${argGuard.reason}`;
               errored = true;
+              recordError('guardrail.tool');
+              structLog('warn', 'guardrail blocked', { phase: 'tool', tool: call.name, reason: argGuard.reason, runId });
               emit({
                 type: 'guardrail:blocked',
                 phase: 'tool',
@@ -211,6 +271,8 @@ export class AgentHarness {
                 errored = true;
               }
             }
+            incCounter('tool.call');
+            if (errored) recordError(`tool.${call.name}`);
             const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
             emit({ type: 'tool:result', step: steps, call, result: resultStr, errored });
             memory.add({
@@ -224,6 +286,8 @@ export class AgentHarness {
         return '[agent] reached max steps without a final answer';
       });
     } catch (e: any) {
+      recordError('agent.run');
+      structLog('error', 'agent run failed', { runId, message: e?.message ?? String(e) });
       emit({ type: 'error', message: e?.message ?? String(e) });
       final = `[error] ${e?.message ?? String(e)}`;
     }
@@ -237,6 +301,9 @@ export class AgentHarness {
       }
     }
 
+    // 输出侧 PII 脱敏：无论正常结束、超时还是异常，最终返回给用户的内容都经过打码。
+    final = redactOutput(final);
+    incCounter('agent.run.end');
     cleanup();
     emit({ type: 'run:end', runId, final, steps });
     return final;
