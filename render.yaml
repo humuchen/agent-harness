@@ -22,7 +22,11 @@ services:
     # workspace package (packages/core, packages/ui, examples) emits its dist/.
     # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
     # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
-    buildCommand: pnpm install --frozen-lockfile && pnpm -r build
+    # 注意：显式 --no-frozen-lockfile 是为了自愈——CI 环境(pnpm 检测到 CI=true)默认会
+    # 强制 --frozen-lockfile，一旦有人提交新依赖却忘记同步 pnpm-lock.yaml，构建即 exit 1。
+    # 用 --no-frozen-lockfile 让 Render 在 lockfile 轻微漂移时自动校正，避免部署卡死。
+    # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
     startCommand: node packages/ui/dist/server.js
     healthCheckPath: /api/state
     envVars:
