@@ -527,6 +527,27 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
 
+## 密钥管理（外部化）
+
+服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`packages/ui/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。
+
+**三种来源（优先级从高到低，且均不覆盖平台注入的 env）：**
+
+1. **平台注入 env（推荐，最高优先级）** — Render / K8s / Docker / systemd 直接注入环境变量，进程启动即就绪，无需任何文件。
+2. **`SECRETS_FILE`（JSON）** — 指向一个密钥文件，适配 K8s Secret 挂载、Docker secret、Render Secret Files。例如：
+   ```bash
+   export SECRETS_FILE=/run/secrets/app.json
+   # 文件内容：{"OPENROUTER_API_KEY":"sk-...","UI_AUTH_TOKEN":"tok-...","REDIS_URL":"redis://..."}
+   ```
+3. **本地 `.env`** — 仅开发便利，已被 `.gitignore` 忽略；生产环境无此文件即跳过。
+
+**落地要点：**
+
+- 加载在 `server.ts` 模块顶部、任何 `process.env.X` 顶层读取之前调用（`loadSecrets()` 幂等，仅首次生效）。
+- 任何来源解析失败只告警不中断（`[secrets]` 日志），保证降级可用。
+- `.env.example` 是本地模板，真实密钥请走来源 1/2，切勿提交 `.env`。
+- 多实例部署下每个副本各自装配密钥，无共享密钥存储依赖。
+
 ## 已知问题与设计权衡
 
 UI 端实测反馈过两类现象，经排查均为**设计层面的真实问题**（非偶发），现将根因与本仓库已落地的优化记录如下，便于后续评估与演进决策。

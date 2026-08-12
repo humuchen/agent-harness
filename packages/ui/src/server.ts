@@ -17,6 +17,11 @@ import { createApprovalPolicy, type ApprovalPolicy } from './approval';
 import { createEvaluator, createRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
+// 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
+import { loadSecrets } from './secrets';
+
+// 必须在下方任何 `process.env.X` 顶层读取前执行（幂等，仅首次生效）。
+loadSecrets();
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
