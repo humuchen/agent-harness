@@ -206,8 +206,8 @@ function publicDir(): string {
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   let path = url.pathname;
-  // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径（向后兼容别名）。
-  if (path.startsWith('/api/v1/')) path = path.slice('/api/v1'.length) || '/';
+  // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
+  if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
 
   try {
     // CORS 预检：仅当配置了跨域白名单时才需处理。
@@ -223,7 +223,38 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
+      // 优先托管 Web SPA 构建产物（packages/webapp/dist）；不存在则回退单文件 playground。
+      const wd = webappDir();
+      if (wd) {
+        try {
+          const buf = await readFile(join(wd, 'index.html'));
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(buf);
+          return;
+        } catch {
+          /* 回退到单文件前端 */
+        }
+      }
       return await serveHtml(res);
+    }
+    // 托管 Web SPA 的静态资源（/assets/*）。仅当 webapp 已构建时生效。
+    if (req.method === 'GET' && path.startsWith('/assets/')) {
+      const wd = webappDir();
+      if (wd) {
+        const rel = decodeURIComponent(path.slice('/assets/'.length).split('?')[0]);
+        const assetRoot = join(wd, 'assets');
+        const fp = resolve(assetRoot, rel);
+        if (fp.startsWith(assetRoot)) {
+          try {
+            const buf = await readFile(fp);
+            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.end(buf);
+            return;
+          } catch {
+            /* 文件不存在，落到 404 */
+          }
+        }
+      }
     }
     if (req.method === 'GET' && path === '/api/state') {
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
@@ -479,6 +510,39 @@ function serveHtml(res: ServerResponse): void {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('UI 文件未找到，请先构建：npm run ui\n' + (e?.message ?? ''));
     });
+}
+
+/** Web SPA 构建产物目录（packages/webapp/dist）；未构建则返回 null。 */
+function webappDir(): string | null {
+  const dir = resolve(__dirname, '..', '..', 'webapp', 'dist');
+  try {
+    accessSync(dir);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+/** 按扩展名推断静态资源 Content-Type（SPA 资源托管用）。 */
+function contentTypeFor(fp: string): string {
+  const ext = fp.slice(fp.lastIndexOf('.') + 1).toLowerCase();
+  const map: Record<string, string> = {
+    js: 'text/javascript; charset=utf-8',
+    mjs: 'text/javascript; charset=utf-8',
+    css: 'text/css; charset=utf-8',
+    html: 'text/html; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    svg: 'image/svg+xml',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    ico: 'image/x-icon',
+    woff2: 'font/woff2',
+    woff: 'font/woff',
+    ttf: 'font/ttf',
+  };
+  return map[ext] ?? 'application/octet-stream';
 }
 
 function sendJson(res: ServerResponse, obj: unknown, req?: IncomingMessage): void {
