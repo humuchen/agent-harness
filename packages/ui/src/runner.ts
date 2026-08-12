@@ -101,7 +101,9 @@ export async function assembleAgent(
   /** 外部取消信号（来自运行队列的 job 级 AbortController / 进程优雅停机）。 */
   signal?: AbortSignal,
   /** 单次 run 的整体超时（毫秒）；超时后 harness 中止循环并返回超时提示。 */
-  timeoutMs?: number
+  timeoutMs?: number,
+  /** 单次 run 的循环步数上限；未传则取 env MAX_STEPS（默认 24）。复杂任务可调大。 */
+  maxSteps?: number
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
@@ -227,10 +229,17 @@ export async function assembleAgent(
 
   // 记忆后端：按会话隔离（P1-9）。未指定 sessionKey 时归入 'anonymous'，
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
-  const memory = new Memory({ store: getMemoryStore(), sessionKey });
+  // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
+  const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
+  const memory = new Memory({ store: getMemoryStore(), sessionKey, maxWindow });
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
+  // 闭环步数上限：显式 maxSteps 优先 > env MAX_STEPS > 默认 24（原为硬编码 12，
+  // 复杂任务常被提前截断）。工具结果截断降低每步重发的 token 成本。
+  const effectiveMaxSteps = maxSteps ?? Number(process.env.MAX_STEPS ?? 24) || 24;
+  const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
+  const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
   const accountModel =
     (modelOverride && modelOverride.trim()) ||
     (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
@@ -244,10 +253,19 @@ export async function assembleAgent(
     model: accountModel,
     tokenBudget,
     costBudget,
+    maxSteps: effectiveMaxSteps,
+    maxToolResultChars,
+    requireCompletion,
     // 透传运行队列下发的取消信号与整体超时（harness 已原生支持，UI 此前未接线）。
     ...(signal ? { signal } : {}),
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
   });
+
+  notes.push(
+    `闭环步数上限 MAX_STEPS=${effectiveMaxSteps}` +
+      (requireCompletion ? '，已启用完成自检（空响应即继续循环）' : '') +
+      `；工具结果截断 ${maxToolResultChars} 字符；记忆窗口 ${maxWindow}。`
+  );
 
   return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };
 }

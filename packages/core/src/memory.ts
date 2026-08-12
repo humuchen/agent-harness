@@ -62,7 +62,13 @@ export class Memory {
   add(msg: Message): void {
     this.window.push(msg);
     if (this.window.length > this.opts.maxWindow) {
-      this.window = this.window.slice(this.window.length - this.opts.maxWindow);
+      // 滑动窗口截断时始终保留 system 消息（固定在最前），既避免系统提示词被
+      // 丢出上下文，也避免 harness 的「无 system 则重新注入」守卫造成重复。
+      const sys = this.window.filter((m) => m.role === 'system');
+      const rest = this.window.filter((m) => m.role !== 'system');
+      const overflow = rest.length - (this.opts.maxWindow - sys.length);
+      const keptRest = overflow > 0 ? rest.slice(overflow) : rest;
+      this.window = [...sys, ...keptRest];
     }
   }
 

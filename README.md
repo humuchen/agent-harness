@@ -516,6 +516,53 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
 
+## 已知问题与设计权衡
+
+UI 端实测反馈过两类现象，经排查均为**设计层面的真实问题**（非偶发），现将根因与本仓库已落地的优化记录如下，便于后续评估与演进决策。
+
+### 问题 A：复杂任务时 Agent 闭环「提前结束」
+
+闭环主循环在 `packages/core/src/harness.ts` 的 `run()` 中，有两处会导致复杂任务在中途收尾：
+
+1. **硬上限 `maxSteps` 偏低导致中途截断**。循环以 `for (step < this.opts.maxSteps)`（`harness.ts:178`）驱动；框架默认 `maxSteps: 12`（`harness.ts:84`），早期 UI 未显式覆盖时即沿用此值。任务若需要 >12 步（多轮工具调用 / 反复试错）就会在 `reached max steps without a final answer`（`harness.ts:317`）处被强制收尾，表现就是「闭环直接结束、没拿到结果」。
+2. **空响应即终止**。唯一终止条件是 `if (!resp.tool_calls || resp.tool_calls.length === 0) return resp.content;`（`harness.ts:249`）。弱 / 免费模型偶尔回空内容且无 `tool_calls`，主循环会把这段空回复当成「最终答案」直接返回，同样表现为提前结束。
+
+**已落地优化**（均在核心层，业务层零改动）：
+
+- 闭环步数上限从硬编码 12 提到 **默认 24**，且可在 `runner.ts:240` 经 `MAX_STEPS` 环境变量或前端「步数上限」输入框（`index.html` 的 `maxStepsInput`）按任务复杂度覆盖；`server.ts` 的 `handleRun` → `runQueue.submit` → `run-queue.ts` 的 `execute()` → `assembleAgent` 已全链路透传 `maxSteps`。
+- 新增**可选完成自检** `requireCompletion`（`harness.ts:253-263`）：开启后，若模型以「空内容 + 无工具调用」收尾且未达 `maxSteps`，注入系统提示让其继续，直到产出实质结果或步数耗尽；非空回复一律视为真实最终答案，避免干扰正常收尾与额外成本。默认关闭（`AGENT_COMPLETION_CHECK` 开启）。
+
+> 权衡：`maxSteps` 同时是防「模型死循环刷工具」的安全阀，不能无上限放开；默认值 24 是「覆盖率 / 成本 / 安全性」的折中，复杂任务建议显式调大而非全局拉满。
+
+### 问题 B：每次对话 token 消耗偏大
+
+token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非单一 bug：
+
+1. **全量历史每步重发**。每一步都把整个对话窗口（所有 `user` / `assistant` / `tool` 消息）重新拼进请求体，`steps` 步累计 prompts 为 O(steps²) 增长（`harness.ts` 主循环逐轮 `callLLM`）。
+2. **工具结果原文逐字重发**。工具返回（网页正文、文件内容、MCP 响应等）被原样存入 `tool` 消息并随后续每步重发，长结果迅速撑大上下文（`harness.ts:300-314` 原逻辑）。
+3. **system 提示词 + 技能目录每步重发**。系统提示词、技能编排目录、触发预激活段落等长文本每段调用都带。
+4. **跨运行记忆加载（若启用持久化）**。开启 `MEMORY_BACKEND` 后，`run()` 会从后端 `load()` 长期笔记并注入系统提示词，进一步加厚首步 prompt。
+5. **重试放大成本**。弱模型空响应时适配器按 `retries` 自动重试；重试的 prompt 与原调用同等体量，且原实现未累计重试间的 token 用量，导致「单次 run 的用量」被低估、实际计费更高。
+
+**已落地优化**（默认保守、可经环境变量调优，避免破坏默认行为）：
+
+- **工具结果截断** `maxToolResultChars`（默认 16000，`runner.ts:241`，`harness.ts:300-307`）：超过阈值的工具结果截断并标注「原长 N 字符」，显著压低后续步骤的上下文体积与重发成本。复杂任务可调大，机密/长文本场景建议调小。
+- **滑动窗口保留 system 消息**（`memory.ts:64-71`）：窗口溢出（`maxWindow`，默认 20，可经 `MEMORY_WINDOW` 调整，`runner.ts:232-234`）时只淘汰非 system 的历史，保留 system 提示词，避免「截断后重新注入 system」带来的重复开销与行为漂移。
+- **重试 token 用量累计**（`llm/shared.ts:68-134`）：`callOpenAIChat` 跨重试累加 `usageAcc`，单次 run 的「真实总成本」不再被低估，可在 `/api/metrics` 看到准确数字。
+- **提示词缓存（可选）** `PROMPT_CACHE`（`llm/shared.ts:72-76`）：设为 `true`/`1` 时给首条 system 消息打 `cache_control: { type: 'ephemeral' }`，使「每步重发的 system + 技能目录」可命中提供方缓存、不计重复输入费。默认关闭，避免个别严格校验未知字段的 provider 报错。
+
+> 权衡：未做「早期对话摘要压缩」（context compaction）——它会引入摘要质量风险且改动偏业务语义，留作后续 P2 项；当前以「截断 + 窗口 + 缓存 + 可观测」四件套在不牺牲信息完整性的前提下把成本压到可控区间。
+
+### 相关环境变量（新增，详见 `.env.example`）
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `MAX_STEPS` | 单次闭环步数上限（前端也可按任务覆盖） | `24`（核心框架默认 12） |
+| `MAX_TOOL_RESULT_CHARS` | 工具结果截断阈值，压低上下文重发成本 | `16000` |
+| `AGENT_COMPLETION_CHECK` | 开启空响应完成自检，避免空回复提前终止 | 关闭 |
+| `MEMORY_WINDOW` | 滑动窗口容量（`memory.ts` 溢出淘汰非 system 历史） | `20` |
+| `PROMPT_CACHE` | 给 system 打 `cache_control`，命中提示词缓存降输入费 | 关闭 |
+
 ## 测试
 
 核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、

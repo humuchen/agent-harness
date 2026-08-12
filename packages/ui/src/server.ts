@@ -547,6 +547,11 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const send = startSse(res, req);
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
+  // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
+  const maxSteps: number | undefined =
+    typeof body.maxSteps === 'number' && Number.isFinite(body.maxSteps) && body.maxSteps > 0
+      ? Math.floor(body.maxSteps)
+      : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
   // 记忆按此 key 在所选后端（file/sqlite）隔离持久化，实现多租户。
   const sessionKey = sanitizeKey(
@@ -561,7 +566,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model, sessionKey });
+    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps });
     auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, role: ctx.role, sub: ctx.sub });
     send({ type: 'job:accepted', jobId: job.id });
     jobId = job.id;

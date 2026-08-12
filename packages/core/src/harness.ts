@@ -45,6 +45,12 @@ export interface HarnessOptions {
   tokenBudget?: number;
   // 单次 run 的成本预算上限（美元，按模型单价估算）。超出即中止。
   costBudget?: number;
+  // 单次 run 的工具结果字符上限（超出截断并标注）。降低「工具原文逐字重发」带来的
+  // 上下文膨胀与 token 成本。未配置（undefined）则不截断；UI 默认 16000。
+  maxToolResultChars?: number;
+  // 可选「完成自检」：开启后，若模型以空响应（疑似放弃）收尾，注入提示继续循环
+  // 直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。默认关闭（避免额外成本）。
+  requireCompletion?: boolean;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -52,7 +58,7 @@ interface ResolvedHarnessOptions {
   llm: LLM;
   tools: ToolRegistry;
   memory: Memory;
-  systemPrompt: string;
+  systemPrompt: string;  // 注意：systemPrompt 实际不经过 Memory 持久化窗口，见下
   maxSteps: number;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -60,6 +66,8 @@ interface ResolvedHarnessOptions {
   model?: string;
   tokenBudget?: number;
   costBudget?: number;
+  maxToolResultChars?: number;
+  requireCompletion: boolean;
 }
 
 let idCounter = 0;
@@ -77,6 +85,8 @@ export class AgentHarness {
       memory: new Memory(),
       systemPrompt: 'You are a helpful assistant with access to tools.',
       onEvent: () => {},
+      maxToolResultChars: opts.maxToolResultChars,
+      requireCompletion: opts.requireCompletion ?? false,
       ...opts,
     };
   }
@@ -237,6 +247,20 @@ export class AgentHarness {
           });
 
           if (!resp.tool_calls || resp.tool_calls.length === 0) {
+            // 可选「完成自检」：开启且模型以空响应（疑似放弃）收尾时，注入提示继续
+            // 循环直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。非空回复
+            // 一律视为真实最终答案，不二次质疑（避免干扰正常收尾、也避免额外成本）。
+            if (
+              this.opts.requireCompletion &&
+              (!resp.content || !resp.content.trim()) &&
+              steps < this.opts.maxSteps
+            ) {
+              memory.add({
+                role: 'user',
+                content: '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。',
+              });
+              continue;
+            }
             return resp.content;
           }
 
@@ -273,7 +297,14 @@ export class AgentHarness {
             }
             incCounter('tool.call');
             if (errored) recordError(`tool.${call.name}`);
-            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+            let resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+            // 工具结果截断：降低「工具原文逐字重发」带来的上下文膨胀与 token 成本。
+            const cap = this.opts.maxToolResultChars;
+            if (cap && cap > 0 && resultStr.length > cap) {
+              resultStr =
+                resultStr.slice(0, cap) +
+                `\n…[工具结果已截断：原长 ${resultStr.length} 字符，仅保留前 ${cap} 字符]`;
+            }
             emit({ type: 'tool:result', step: steps, call, result: resultStr, errored });
             memory.add({
               role: 'tool',

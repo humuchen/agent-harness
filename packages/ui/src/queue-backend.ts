@@ -24,6 +24,7 @@ export interface JobDescriptor {
   prompt: string;
   model?: string;
   sessionKey?: string;
+  maxSteps?: number;
   enqueuedAt: number;
 }
 

@@ -289,6 +289,7 @@
 <div class="controls">
   <textarea id="prompt" placeholder="输入用户请求…"></textarea>
   <input id="modelInput" class="model-input" placeholder="模型（真实模式，留空=默认）" style="display:none" />
+  <input id="maxStepsInput" class="model-input" type="number" min="1" max="200" placeholder="步数上限（留空=默认24）" style="width:160px;display:none" title="单次闭环最大步数；复杂任务可调大，避免提前终止" />
   <button class="btn" id="runBtn">▶ 运行 Agent</button>
   <button class="btn ghost" id="verifyBtn">✓ 运行验证</button>
   <button class="btn ghost" id="evalBtn">📊 评估</button>
@@ -889,6 +890,7 @@ window.HarnessDemo = (function () {
       state.mode = b.getAttribute("data-mode");
       var showModel = state.mode !== "mock";
       $("modelInput").style.display = showModel ? "" : "none";
+      $("maxStepsInput").style.display = showModel ? "" : "none";
       var ta = $("prompt");
       if (!ta.value.trim()) ta.value = PROMPTS[state.mode] || "";
       ta.placeholder = PROMPTS[state.mode] || "输入用户请求…";
@@ -999,7 +1001,10 @@ window.HarnessDemo = (function () {
 
     var prompt = $("prompt").value;
     var model = $("modelInput").value.trim();
-    Backend.stream("/api/run", { mode: state.mode, prompt: prompt, model: model }, dispatchHarness);
+    var maxStepsRaw = $("maxStepsInput").value.trim();
+    var maxSteps = maxStepsRaw ? Number(maxStepsRaw) : undefined;
+    if (!(maxSteps >= 1)) maxSteps = undefined; // 非法/空 → 服务端默认 24
+    Backend.stream("/api/run", { mode: state.mode, prompt: prompt, model: model, maxSteps: maxSteps }, dispatchHarness);
   }
 
   function runVerification() {

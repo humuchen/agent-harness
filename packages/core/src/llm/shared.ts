@@ -63,6 +63,18 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal } = opts;
   let last: LLMResponse = { content: '', tool_calls: [] };
+  // 跨重试累计 token 用量：每次重试都重发全量 prompt，provider 对每次都计费，
+  // 但旧实现只取最后一次响应的 usage → 重试成本被低估。这里把各次 usage 累加。
+  const usageAcc = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+  // 可选 prompt caching：把系统提示词标记为可缓存（provider 不支持时忽略该字段）。
+  // 默认关闭，避免个别严格校验未知字段的 provider 报错；设 PROMPT_CACHE=true 开启。
+  if (process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1') {
+    const msgs = (body as any).messages;
+    if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
+      msgs[0].cache_control = { type: 'ephemeral' };
+    }
+  }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -94,6 +106,12 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     }));
     // 提取 token 用量（OpenAI / OpenRouter 均返回 usage 字段），供成本记账与配额使用。
     const u = data?.usage;
+    if (u) {
+      usageAcc.prompt_tokens += u.prompt_tokens ?? 0;
+      usageAcc.completion_tokens += u.completion_tokens ?? 0;
+      usageAcc.total_tokens +=
+        u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
+    }
     const usage: TokenUsage | undefined = u
       ? {
           prompt_tokens: u.prompt_tokens ?? 0,
@@ -107,8 +125,11 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
 
     // 退化响应（无文本且无工具调用）—— 若仍有重试次数则重试。
     const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;
-    if (!degenerate || attempt === retries) return last;
+    if (!degenerate || attempt === retries) {
+      // 返回累加后的用量，避免重试成本被低估。
+      return { ...last, usage: u ? { ...usageAcc } : undefined };
+    }
     await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
   }
-  return last;
+  return { ...last, usage: last.usage ? { ...usageAcc } : undefined };
 }

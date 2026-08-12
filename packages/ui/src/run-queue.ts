@@ -37,6 +37,8 @@ export interface RunJob {
   model?: string;
   /** 会话/租户标识（P1-9）：记忆按 key 隔离并持久化到所选后端。 */
   sessionKey?: string;
+  /** 单次 run 的循环步数上限（来自 UI 输入 / env MAX_STEPS）。 */
+  maxSteps?: number;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -77,7 +79,7 @@ export class RunQueue {
    * 提交一次 agent 运行任务，立即返回 Job（不等待执行）。
    * 提交意图会异步落盘（file 后端），进程崩溃/重启后可重放尚未开始的任务。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
     const job = this.enqueue(input);
     const descriptor: JobDescriptor = {
       id: job.id,
@@ -85,6 +87,7 @@ export class RunQueue {
       prompt: job.prompt,
       model: job.model,
       sessionKey: job.sessionKey,
+      maxSteps: job.maxSteps,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -95,7 +98,7 @@ export class RunQueue {
   }
 
   /** 仅入队（不持久化）：供启动重放复用——重放的任务已在持久层、不应再次落盘。 */
-  private enqueue(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
+  private enqueue(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job: RunJob = {
       id,
@@ -104,6 +107,7 @@ export class RunQueue {
       prompt: input.prompt,
       model: input.model,
       sessionKey: input.sessionKey,
+      maxSteps: input.maxSteps,
       events: [],
       subscribers: new Set(),
       controller: new AbortController(),
@@ -129,6 +133,7 @@ export class RunQueue {
           prompt: d.prompt,
           model: d.model,
           sessionKey: d.sessionKey,
+          maxSteps: d.maxSteps,
         });
         job.enqueuedAt = d.enqueuedAt; // 保留原入队时刻，维持大致顺序
       }
@@ -303,7 +308,8 @@ export class RunQueue {
         job.prompt,
         job.sessionKey,
         signal,
-        JOB_TIMEOUT_MS
+        JOB_TIMEOUT_MS,
+        job.maxSteps
       );
       const model =
         (job.model && job.model.trim()) ||
