@@ -448,7 +448,7 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 `GET /api/memory?session=<key>` 查看长期笔记与窗口长度；
 `DELETE /api/memory?session=<key>` 清空某会话记忆；`/api/metrics` 暴露 `memory.backend`。
 
-> 企业落地仍待补充：RBAC 与审批流（见仓库规划任务清单）。
+> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 `DEPLOY.md` 第 7 节。
 
 ### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
 
@@ -468,7 +468,8 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
   - 可绕过审批的角色由 `UI_APPROVAL_BYPASS_ROLES`（默认 `admin`）控制；要接入外部审批系统
     （工单平台 / Slack / ITSM），只需替换 `createApprovalPolicy()` 工厂返回的 `ApprovalPolicy` 实现。
 - **可插拔 / 可组合的关键约束点**：`createAuthorizer()` 与 `createApprovalPolicy()` 是两个组合工厂。
-  替换身份源（OIDC / LDAP / SPIFFE）或审批后端时，**仅改这两个工厂，server 其余代码零改动**。
+  身份源由 `AUTH_PROVIDER` 切换：`token`（静态令牌，默认）/ `oidc`（Bearer JWT，零依赖验签）/ `proxy`
+  （LDAP/SSO 网关头注入）；OIDC/LDAP 与审批后端均**仅改这两个工厂，server 其余代码零改动**。
 
 运维端点（均受 RBAC 保护）：
 - `GET /api/roles`：当前权限矩阵概览（不含令牌明文）。
@@ -517,8 +518,11 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 >
 > 另：**生产级交付物缺口已闭环**——新增 `Dockerfile` / `docker-compose.yml` / `deploy/k8s/`（kustomize）/ GHCR
 > 镜像 CI（`.github/workflows/docker.yml`），可脱离 Render 自托管（多副本需 `REDIS_URL` 运行队列）。
-> 仍待补齐的企业级能力：SSO/OIDC/LDAP（当前为静态令牌级 RBAC，未接用户目录）、多租户运营面（开通/配额/账单）、
-> 正式合规模块（SOC2/GDPR 数据主权分区）；这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
+> **企业身份源缺口也已闭环**：`AUTH_PROVIDER` 现支持 `token`（静态令牌，默认）/ `oidc`（Bearer JWT 资源服务器，
+> 零依赖验签 RS*/PS*/ES*/HS*）/ `proxy`（LDAP/SSO 网关头注入，企业接入 LDAP 的最低成本路径），三者均可与静态令牌
+> break-glass 逃生通道并存。详见 `DEPLOY.md` 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
+> 仍待补齐的企业级能力：多租户运营面（开通/配额/账单）、正式合规模块（SOC2/GDPR 数据主权分区）；
+> 这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
 
 ### 健壮性增强（与核心隔离的运行时加固）
 

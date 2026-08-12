@@ -123,3 +123,76 @@ GitHub Actions 的 `GITHUB_TOKEN` 自动获得 GHCR 推送权限，无需额外�
 - **Web（Vite+Lit）**：`packages/webapp`（生产构建产物被 ui server 同源托管）
 - **Node CLI（运维/CI）**：`packages/cli`，命令如 `ah run --mode mock`、`ah env --action create`
 - **自定义平台**：直接 `new AgentClient({ baseUrl, token })` 调 `streamRun/streamVerify/streamEnv/getMcpServers/...`
+
+---
+
+## 7. SSO / 外部身份源（OIDC 与 LDAP/SSO 网关）
+
+本服务把鉴权抽象为可插拔的 `Authorizer` 接口，身份源由 `AUTH_PROVIDER` 切换，**server 其余代码（准入网关 / 审批 / 权限矩阵）完全不变**。三种模式：
+
+| `AUTH_PROVIDER` | 适用场景 | 令牌形态 | 角色来源 |
+|---|---|---|---|
+| `token`（默认） | 本地 / 演示 / break-glass | 静态 `UI_TOKENS` / `UI_AUTH_TOKEN` | 令牌→角色映射 |
+| `oidc` | IdP 直接向客户端签发 JWT（Keycloak/Okta/Azure AD/Auth0） | `Authorization: Bearer <JWT>` | JWT 的 groups/roles claim |
+| `proxy` | **企业接入 LDAP/SSO 的最低成本路径**：把服务部署在 SSO 网关之后 | 网关注入的请求头 | 头里的 X-Forwarded-Groups |
+
+### 7.1 推荐路径：部署在 SSO/LDAP 网关后（AUTH_PROVIDER=proxy）
+
+绝大多数企业的 LDAP / AD 认证由网关层（Authelia / OAuth2 Proxy / Keycloak / nginx `auth_request` / Traefik forward-auth）完成。
+把它们放在本服务之前，认证通过后注入标准头，本服务据头映射角色即可，**无需实现任何 LDAP 协议**：
+
+```bash
+# docker-compose.yml / k8s deployment env
+AUTH_PROVIDER=proxy
+SSO_OPERATOR_GROUPS=agent-harness-ops        # 命中即 operator
+SSO_ADMIN_GROUPS=agent-harness-admins        # 命中即 admin（优先级最高）
+# 可选但强烈建议：网关用共享密钥对用户名头做 HMAC，防非受信网络伪造
+PROXY_HMAC_SECRET=<与网关一致的密钥>
+```
+
+反向代理需转发的头（以 nginx 为例）：
+
+```nginx
+proxy_set_header X-Forwarded-User      $remote_user;
+proxy_set_header X-Forwarded-Email     $remote_user_email;
+proxy_set_header X-Forwarded-Groups    $remote_user_groups;   # 逗号分隔
+proxy_set_header X-Forwarded-Signature $http_x_signature;    # 网关计算的 HMAC
+```
+
+### 7.2 直接对接 OIDC（AUTH_PROVIDER=oidc，Bearer JWT 资源服务器）
+
+客户端（Web/CLI/SDK）拿 IdP 签发的 JWT，直接以 `Authorization: Bearer <JWT>` 调用本服务；服务端用 IdP 的 JWKS 验签，零会话状态。
+
+```bash
+AUTH_PROVIDER=oidc
+OIDC_ISSUER=https://idp.example.com/realms/agent
+OIDC_AUDIENCE=agent-harness
+# JWKS 三选一：内联 JSON（最稳）/ 远端 URI（推荐，自动轮换）/ 仅给 issuer 触发发现
+OIDC_JWKS_URI=https://idp.example.com/realms/agent/protocol/openid-connect/certs
+SSO_ADMIN_GROUPS=agent-harness-admins
+SSO_OPERATOR_GROUPS=agent-harness-ops
+```
+
+验签支持 RS256/384/512、PS256/384/512、ES256/384/512、HS256/384/512；自动校验 `iss` / `aud` / `exp`，并兼容 IdP 密钥轮换（多 JWKS 逐把尝试验签）。
+前端可用 `GET /api/auth/config` 取回 OIDC 元数据（授权端点 / clientId / scopes），自行实现授权码流 + PKCE 后拿 token 调接口。
+
+### 7.3 break-glass 逃生通道
+
+即使启用 `oidc` / `proxy`，仍可同时设置 `UI_TOKENS` / `UI_AUTH_TOKEN`。当 IdP 不可用时，运维可用静态令牌直接鉴权（默认映射 operator），避免被身份源故障锁死。
+
+### 7.4 环境变量速查（SSO 相关）
+
+| 变量 | 说明 |
+|---|---|
+| `AUTH_PROVIDER` | `token`(默认) / `oidc` / `proxy` |
+| `OIDC_ISSUER` / `OIDC_JWKS_URI` / `OIDC_JWKS` | OIDC 发行方 / JWKS 来源（三者取其一即可） |
+| `OIDC_AUDIENCE` / `OIDC_CLIENT_ID` | 受众校验 |
+| `OIDC_CLIENT_SECRET` | 仅 HS* 对称签名需要 |
+| `OIDC_ROLE_CLAIM` | groups/roles 所在 claim（默认 `groups`） |
+| `SSO_ADMIN_GROUPS` / `SSO_OPERATOR_GROUPS` / `SSO_VIEWER_GROUPS` | 组→角色映射（OIDC 与 proxy 共用） |
+| `SSO_DEFAULT_ROLE` | 无匹配组时的兜底角色（不设则严格拒绝） |
+| `PROXY_USER_HEADER` / `PROXY_GROUPS_HEADER` / `PROXY_EMAIL_HEADER` | 网关注入头名 |
+| `PROXY_HMAC_SECRET` / `PROXY_HMAC_HEADER` | 头 HMAC 防伪造 |
+
+完整可注入变量见 `.env.example` 的「身份源 / SSO」小节。
+

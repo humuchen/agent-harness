@@ -13,6 +13,8 @@ import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError } from '@agent-harness/core';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
+// 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
+import { warmJwks, getAuthConfig } from './sso';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
 import { createEvaluator, createRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
@@ -34,8 +36,10 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
-// 多令牌（UI_TOKENS）或单令牌（UI_AUTH_TOKEN）任一存在即开启鉴权。
-const REQUIRE_AUTH = !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
+// 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。
+const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
+// 非 token 模式即视为需要鉴权；token 模式仅在有静态令牌时才开启（向后兼容）。
+const REQUIRE_AUTH = AUTH_PROVIDER !== 'token' || !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -54,6 +58,13 @@ const AUDIT_LOG = process.env.AUDIT_LOG || '';
 // 业务策略装配（组合根）：RBAC 鉴权器 + 审批策略。二者均为可插拔接口实现，
 // 核心 framework 不感知任何角色/权限/审批概念。替换身份源或审批后端只需改这两个工厂。
 const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
+
+// OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。
+if (AUTH_PROVIDER === 'oidc') {
+  void warmJwks();
+  const jwksTimer = setInterval(() => void warmJwks(), 3_600_000);
+  if (typeof jwksTimer.unref === 'function') jwksTimer.unref();
+}
 const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 // 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
 const evaluator: Evaluator = createEvaluator();
@@ -259,6 +270,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (req.method === 'GET' && path === '/api/state') {
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
+    }
+    if (req.method === 'GET' && path === '/api/auth/config') {
+      // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
+      // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
+      return sendJson(res, getAuthConfig(), req);
     }
     if (req.method === 'GET' && path === '/api/openapi.json') {
       // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。
@@ -833,8 +849,17 @@ server.listen(PORT, HOST, () => {
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
-    console.log(`   🔒 RBAC 鉴权已启用（UI_TOKENS / UI_AUTH_TOKEN）：请求需 Authorization: Bearer <token>`);
+    const prov =
+      AUTH_PROVIDER === 'oidc'
+        ? 'OIDC (Bearer JWT)'
+        : AUTH_PROVIDER === 'proxy'
+          ? 'SSO 网关头注入 (proxy)'
+          : '静态令牌 (token)';
+    console.log(`   🔒 RBAC 鉴权已启用（身份源：${prov}）：请求需 Authorization: Bearer <token>`);
     console.log(`   🔒 敏感动作（real 运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需审批：POST 返回 202 + ticketId`);
+    if ((AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') && (process.env.UI_TOKENS || UI_AUTH_TOKEN)) {
+      console.log(`   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_AUTH_TOKEN 直接鉴权（运维逃生通道）`);
+    }
   } else {
     console.warn(`   ⚠️  未设置 UI_TOKENS / UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
   }

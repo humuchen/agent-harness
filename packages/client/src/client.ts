@@ -64,7 +64,10 @@ export class AgentClient {
     this.token = opts.token;
     const f = opts.fetchImpl ?? (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     if (!f) throw new Error('global fetch unavailable; pass fetchImpl explicitly');
-    this.fetchImpl = f;
+    // 浏览器里 window.fetch 是原生方法：若直接保存为属性再以 this.fetchImpl(...) 调用，
+    // this 不再是 Window 会抛 "Failed to execute 'fetch' on 'Window': Illegal invocation"。
+    // 绑定到全局对象即可在浏览器 / Node 18+ / Edge 全运行时安全调用。
+    this.fetchImpl = f.bind(globalThis as unknown as typeof globalThis) as typeof fetch;
   }
 
   setToken(token: string | undefined): void {

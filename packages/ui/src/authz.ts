@@ -8,6 +8,8 @@
  *   SPIFFE 等外部身份源，而无需改动 server 其它代码（即插即用、可组合）。
  */
 import type { IncomingMessage } from 'node:http';
+// 外部身份源实现（OIDC Bearer JWT / proxy 头注入）。authz 单向依赖 sso，sso 仅 import type 引用本文件类型。
+import { OidcAuthorizer, ProxyAuthorizer, loadRoleMapping } from './sso';
 
 export type Role = 'admin' | 'operator' | 'viewer';
 
@@ -36,11 +38,25 @@ export type Action =
   | 'approvals:review';
 
 export interface AuthContext {
-  /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。 */
+  /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
   token: string;
-  /** 主体标识（令牌哈希前 8 位），避免把明文令牌写进日志/响应。 */
+  /** 主体标识：静态令牌模式为令牌哈希前 8 位；SSO 模式为 IdP 用户名 / 邮箱 / 头注入用户名。 */
   sub: string;
   role: Role;
+  /** SSO 模式下的扩展身份字段（静态令牌模式不填）。 */
+  email?: string;
+  name?: string;
+  groups?: string[];
+}
+
+/** 鉴权配置概览（供 /api/roles、/api/auth/config 运维展示，不泄露令牌）。 */
+export interface AuthDescribe {
+  mode: 'off' | 'on';
+  /** 身份源：token（静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。 */
+  provider: 'token' | 'oidc' | 'proxy';
+  roles: Role[];
+  permissions: Record<Role, Action[]>;
+  idp?: { kind: 'oidc' | 'proxy'; issuer?: string; groupsClaim?: string; userHeader?: string; groupsHeader?: string; hmac?: boolean };
 }
 
 export interface Authorizer {
@@ -49,7 +65,7 @@ export interface Authorizer {
   /** 该角色是否允许执行动作。 */
   can(ctx: AuthContext, action: Action): boolean;
   /** 当前授权配置概览（供 /api/roles 运维展示，不泄露令牌）。 */
-  describe(): { mode: 'off' | 'on'; roles: Role[]; permissions: Record<Role, Action[]> };
+  describe(): AuthDescribe;
 }
 
 // 默认角色-权限矩阵。可被 UI_ROLE_PERMISSIONS 覆盖（JSON：
@@ -127,28 +143,36 @@ export class RoleBasedAuthorizer implements Authorizer {
     return this.matrix[ctx.role]?.includes(action) ?? false;
   }
 
-  describe(): { mode: 'off' | 'on'; roles: Role[]; permissions: Record<Role, Action[]> } {
-    return { mode: this.tokens.size > 0 ? 'on' : 'off', roles: ['admin', 'operator', 'viewer'], permissions: this.matrix };
+  describe(): AuthDescribe {
+    return {
+      mode: this.tokens.size > 0 ? 'on' : 'off',
+      provider: 'token',
+      roles: ['admin', 'operator', 'viewer'],
+      permissions: this.matrix,
+    };
   }
 }
 
 /**
  * 组合工厂：从环境变量装配 Authorizer。
+ * - AUTH_PROVIDER：身份源，默认 `token`（静态令牌）/ `oidc`（Bearer JWT）/ `proxy`（SSO 网关头注入）。
  * - UI_TOKENS：JSON `{ "<token>": "admin" }`，支持多令牌多角色（企业典型用法）。
  * - UI_AUTH_TOKEN：兼容旧版单令牌，默认映射为 operator。
  * - requireAuth=false 时返回「全放行」实现，保持本地/演示的开放语义（向后兼容）。
  *
- * 要接入外部身份源（如 OIDC）：只需在此返回一个实现了 Authorizer 的对象，
- * server 其余代码无需任何改动 —— 这就是可插拔/可组合的关键约束点。
+ * 身份源可插拔：oidc / proxy 模式下，仍可用 UI_TOKENS / UI_AUTH_TOKEN 作为 break-glass
+ * 静态令牌（IdP 不可用时运维逃生通道）。无论选哪种 provider，server 其余代码（guard/can）
+ * 均不变 —— 这就是可插拔/可组合的关键约束点。
  */
 export function createAuthorizer(requireAuth: boolean): Authorizer {
   if (!requireAuth) {
     return {
       authenticate: () => ({ token: '', sub: 'anon', role: 'admin' }),
       can: () => true,
-      describe: () => ({ mode: 'off', roles: [], permissions: {} as Record<Role, Action[]> }),
+      describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
     };
   }
+
   const tokens: Record<string, Role> = {};
   const tokensRaw = process.env.UI_TOKENS;
   if (tokensRaw) {
@@ -158,6 +182,35 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
       /* 忽略错误配置，回退到单令牌 */
     }
   }
-  const fallback = process.env.UI_AUTH_TOKEN;
-  return new RoleBasedAuthorizer({ tokens, fallbackToken: fallback, fallbackRole: 'operator' });
+  const fallback = process.env.UI_AUTH_TOKEN || undefined;
+  const hasStatic = Object.keys(tokens).length > 0 || !!fallback;
+  // break-glass：静态令牌鉴权器，仅在配置了 UI_TOKENS / UI_AUTH_TOKEN 时才有意义。
+  const staticAuth: RoleBasedAuthorizer | undefined = hasStatic
+    ? new RoleBasedAuthorizer({ tokens, fallbackToken: fallback, fallbackRole: 'operator' })
+    : undefined;
+
+  const provider = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
+
+  if (provider === 'oidc') {
+    // policy 持有 RBAC 权限矩阵（can/describe 委托给它）；fallback 提供静态令牌逃生通道。
+    return new OidcAuthorizer({
+      mapping: loadRoleMapping(),
+      policy: staticAuth ?? new RoleBasedAuthorizer({}),
+      fallback: staticAuth,
+    });
+  }
+  if (provider === 'proxy') {
+    return new ProxyAuthorizer({
+      mapping: loadRoleMapping(),
+      policy: staticAuth ?? new RoleBasedAuthorizer({}),
+      fallback: staticAuth,
+    });
+  }
+
+  // token 模式（默认）：必须有静态令牌，否则全拒绝（fail-closed）。
+  return staticAuth ?? {
+    authenticate: () => null,
+    can: () => false,
+    describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
+  };
 }
