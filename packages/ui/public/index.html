@@ -277,11 +277,22 @@
   <div class="dim" style="margin-top:6px">敏感动作（真实运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需在此审批。令牌角色需具备审批权限。</div>
 </div>
 
+<div class="panel" id="recipeCard" style="display:none">
+  <div class="card-head">
+    <span>📦 运行配方版本 <span class="dim" id="recipeCount"></span></span>
+    <button class="btn ghost" id="recipeRefresh">刷新</button>
+  </div>
+  <div class="panel" id="recipeList"><span class="dim">—— 暂无保存的配方 ——</span></div>
+  <div class="dim" style="margin-top:6px">「存配方」会把当前运行的 prompt / 模型 / 工具集快照为命名版本，便于回归比对（P2-13）。</div>
+</div>
+
 <div class="controls">
   <textarea id="prompt" placeholder="输入用户请求…"></textarea>
   <input id="modelInput" class="model-input" placeholder="模型（真实模式，留空=默认）" style="display:none" />
   <button class="btn" id="runBtn">▶ 运行 Agent</button>
   <button class="btn ghost" id="verifyBtn">✓ 运行验证</button>
+  <button class="btn ghost" id="evalBtn">📊 评估</button>
+  <button class="btn ghost" id="recipeBtn">💾 存配方</button>
 </div>
 
 <div class="layout">
@@ -929,6 +940,49 @@ window.HarnessDemo = (function () {
   });
   if (tokenEl) tokenEl.addEventListener("input", function () { setTimeout(loadApprovals, 50); });
 
+  // ---- 评估 & 配方版本（P2-13）----
+  function loadRecipes() {
+    if (!Backend.live || !state.token) { $("recipeCard").style.display = "none"; return; }
+    Backend.getJSON("/api/recipes").then(function (j) {
+      var rs = (j && j.recipes) || [];
+      $("recipeCard").style.display = rs.length ? "" : "none";
+      $("recipeCount").textContent = rs.length ? "(" + rs.length + ")" : "";
+      if (!rs.length) { $("recipeList").innerHTML = '<span class="dim">—— 暂无保存的配方 ——</span>'; return; }
+      $("recipeList").innerHTML = rs.map(function (r) {
+        var rec = r.record || {};
+        return '<div class="arow"><div><b>' + esc(r.name) + '</b> <span class="dim">' +
+          esc((rec.mode || "") + " · " + (rec.tools || []).length + " 工具 · " + (rec.steps || 0) + " 步") +
+          '</span></div><div class="act"><span class="dim">' + esc(new Date(r.createdAt).toLocaleString()) + '</span></div></div>';
+      }).join("");
+    }).catch(function () { $("recipeCard").style.display = "none"; });
+  }
+  function postJSON(path, body) {
+    return fetch(path, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+  }
+  $("evalBtn").addEventListener("click", function () {
+    if (!state.jobId) { appendBanner("warn", "请先运行一次 Agent，再点评估（需要 jobId）"); return; }
+    postJSON("/api/eval", { jobId: state.jobId }).then(function (j) {
+      if (j.error) { appendBanner("error", "评估失败：" + j.error); return; }
+      var res = j.result || {};
+      appendBanner(res.passed ? "ok" : "warn",
+        "📊 评估得分 " + (res.score * 100).toFixed(0) + "% · " + (res.passed ? "通过" : "未通过") +
+        (res.reasons ? " ｜ " + (res.reasons || []).join("；") : ""));
+    }).catch(function (e) { appendBanner("error", "评估请求失败：" + (e && e.message ? e.message : e)); });
+  });
+  $("recipeBtn").addEventListener("click", function () {
+    if (!state.jobId) { appendBanner("warn", "请先运行一次 Agent，再点存配方（需要 jobId）"); return; }
+    var name = prompt("配方名称（便于回归比对）：", "recipe-" + state.jobId);
+    if (name === null) return;
+    postJSON("/api/recipes", { jobId: state.jobId, name: name }).then(function (j) {
+      if (j.error) { appendBanner("error", "保存配方失败：" + j.error); return; }
+      appendBanner("ok", "💾 已保存配方：" + (j.recipe && j.recipe.name));
+      loadRecipes();
+    }).catch(function (e) { appendBanner("error", "保存配方失败：" + (e && e.message ? e.message : e)); });
+  });
+  var recipeRefreshEl = $("recipeRefresh");
+  if (recipeRefreshEl) recipeRefreshEl.addEventListener("click", loadRecipes);
+  if (tokenEl) tokenEl.addEventListener("input", function () { setTimeout(loadRecipes, 50); });
+
   $("prompt").value = PROMPTS.mock;
 
   // ---- run / verify ----
@@ -1473,6 +1527,7 @@ window.HarnessDemo = (function () {
     refreshPresets();
     refreshEnvs();
     loadApprovals();
+    loadRecipes();
   });
   // 绑定动态生成的 MCP 添加按钮（首轮渲染后）
   setTimeout(bindMcpAdd, 300);

@@ -47,6 +47,14 @@ interface LiveMcp {
   config: McpConnectionConfig;
   /** 与调用方（UI）共享的元数据对象，状态变更原地写回即被 UI 读取到。 */
   meta: McpServerMeta;
+  /** 运行时连接状态（与 meta.status 同步写回）。 */
+  status: 'connecting' | 'connected' | 'reconnecting' | 'error';
+  /** 最近一次健康探测结果。 */
+  health: McpHealth;
+  /** 最近一次探测到健康的 Unix 毫秒时间戳。 */
+  lastHealthyAt?: number | null;
+  /** 最近一次错误信息。 */
+  lastError?: string;
   reconnectAttempts: number;
   reconnecting: boolean;
   closed: boolean;
@@ -355,7 +363,7 @@ async function performReconnect(key: string): Promise<boolean> {
     entry.meta.reconnectAttempts = 0;
     startProbe(entry, key);
     incCounter('mcp.reconnect.success');
-    structLog('info', 'mcp server reconnected', { server: key, tools: est.tools.length });
+    structLog('info', 'mcp server reconnected', { server: key, tools: est.toolsInfo.length });
     return true;
   } catch (e: any) {
     entry.status = 'error';
@@ -487,6 +495,10 @@ export async function registerMcpTools(
         lastHealthyAt: Date.now(),
         reconnectAttempts: 0,
       },
+      status: 'connected',
+      health: 'healthy',
+      lastHealthyAt: Date.now(),
+      lastError: undefined,
       reconnectAttempts: 0,
       reconnecting: false,
       closed: false,
@@ -494,7 +506,7 @@ export async function registerMcpTools(
     // 内存传输（测试）不探测；远端/stdio 挂健康探测以自愈。
     const entry = liveClients.get('__default__');
     if (entry) startProbe(entry, '__default__');
-    console.log(`[mcp] registered ${est.tools.length} tool(s) from MCP server`);
+    console.log(`[mcp] registered ${est.toolsInfo.length} tool(s) from MCP server`);
   } catch (e) {
     console.error(`[mcp] failed to connect to MCP server: ${(e as Error).message}`);
     throw e;
@@ -541,6 +553,10 @@ export async function connectMcpServer(
       tools: est.toolsInfo,
       config,
       meta,
+      status: 'connecting',
+      health: 'unknown',
+      lastHealthyAt: null,
+      lastError: undefined,
       reconnectAttempts: 0,
       reconnecting: false,
       closed: false,
@@ -551,7 +567,7 @@ export async function connectMcpServer(
     meta.tools = est.toolsInfo;
     const entry = liveClients.get(opts.name);
     if (entry) startProbe(entry, opts.name);
-    structLog('info', 'mcp server connected', { server: opts.name, tools: est.tools.length });
+    structLog('info', 'mcp server connected', { server: opts.name, tools: est.toolsInfo.length });
   } catch (e: any) {
     meta.status = 'error';
     meta.health = 'unhealthy';

@@ -440,8 +440,26 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 运维端点（均受 RBAC 保护）：
 - `GET /api/roles`：当前权限矩阵概览（不含令牌明文）。
 - `GET /api/approvals` / `GET|POST /api/approvals/:id`：工单列表 / 查看 / 裁决（approve|reject）。
-- 前端 Playground 在令牌具备审批权限时显示「🛡 审批队列」面板，可一键批准 / 拒绝；
+-   前端 Playground 在令牌具备审批权限时显示「🛡 审批队列」面板，可一键批准 / 拒绝；
   提交敏感动作若进入审批，前端自动轮询并在批准后继续执行。
+
+### 运行评估与配方版本化（P2-13，业务质量策略与核心隔离）
+
+同样是**纯业务层**能力（`packages/ui/src/eval.ts`），核心不产出任何「评分 / 版本」概念：
+核心只产出事件流，本模块负责把事件流还原为「运行配方快照（RunRecord）」再交给可替换的评估器。
+
+- **RunRecord（运行配方快照）**：从运行队列累积的 harness 事件还原出 `prompt / model / tools / steps /
+  guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就是一次运行的「版本化配方」，
+  天然支持回归比对（同一 recipe 多次跑，对比得分）。
+- **Evaluator（可插拔评估器）**：`Evaluator` 接口 + 默认 `RuleBasedEvaluator`（可解释、零依赖）：
+  护栏未被拦截、预算未超限、有非空最终回答为硬性通过项；再综合「是否调用工具 / 步骤数 / 成本」加权出 0~1 分。
+  要接 **LLM-as-judge**，只需改 `createEvaluator()` 工厂返回实现了 `Evaluator` 的对象，**server 其余代码零改动**。
+- **RecipeStore（配方版本化）**：`RecipeStore` 接口 + `VolatileRecipeStore`（内存）/ `FileRecipeStore`（按 `<id>.json`
+  落盘，零依赖）。`createRecipeStore()` 按 `RECIPE_DIR` 选文件库，否则内存库。同样可替换为数据库实现。
+- **端点（均受 RBAC 保护）**：
+  - `POST /api/eval { jobId }`：服务端从 job 事件还原 RunRecord 并打分，返回 `{ record, result }`。
+  - `POST /api/recipes { jobId, name }` 存为命名版本；`GET /api/recipes` 列表；`GET /api/recipes/:id` 查看。
+- **前端**：运行面板新增「📊 评估」「💾 存配方」按钮；令牌具备权限时显示「📦 运行配方版本」面板。
 
 ## 测试
 

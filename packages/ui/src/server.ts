@@ -14,6 +14,7 @@ import { getMetricsSnapshot, Memory, sanitizeKey } from '@agent-harness/core';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
+import { createEvaluator, createRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -44,6 +45,9 @@ const AUDIT_LOG = process.env.AUDIT_LOG || '';
 // 核心 framework 不感知任何角色/权限/审批概念。替换身份源或审批后端只需改这两个工厂。
 const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
 const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
+// 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
+const evaluator: Evaluator = createEvaluator();
+const recipeStore: RecipeStore = createRecipeStore();
 
 // ---------------------------------------------------------------------------
 // 安全 / 可观测辅助
@@ -307,6 +311,61 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (!t) return sendJson(res, { error: 'ticket not found or already decided' }, req);
         auditAction('approval.decide', { id, decision, by: ctx.sub });
         return sendJson(res, { ticket: t }, req);
+      }
+      res.writeHead(405, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    // ---- 评估与配方版本化（P2-13，业务质量策略）----
+    if (req.method === 'POST' && path === '/api/eval') {
+      const body = await readBody(req);
+      const ctx = await guard(req, res, 'eval:run', body);
+      if (!ctx) return;
+      const jobId = String(body.jobId ?? '');
+      const job = runQueue.get(jobId);
+      if (!job) return sendJson(res, { error: 'job not found' }, req);
+      const rec = runRecordFromEvents(jobId, job.events);
+      const result = evaluator.evaluate(rec);
+      auditAction('eval.run', { jobId, score: result.score, passed: result.passed, role: ctx.role, sub: ctx.sub });
+      return sendJson(res, { jobId, record: rec, result }, req);
+    }
+    if (path === '/api/recipes') {
+      if (req.method === 'GET') {
+        const ctx = await guard(req, res, 'recipe:read');
+        if (!ctx) return;
+        return sendJson(res, { recipes: recipeStore.list() }, req);
+      }
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        const ctx = await guard(req, res, 'recipe:save', body);
+        if (!ctx) return;
+        const jobId = String(body.jobId ?? '');
+        const job = runQueue.get(jobId);
+        if (!job) return sendJson(res, { error: 'job not found' }, req);
+        const rec = runRecordFromEvents(jobId, job.events);
+        const id = `rcp_${Date.now().toString(36)}`;
+        const recipe = {
+          id,
+          name: String(body.name ?? id),
+          createdAt: Date.now(),
+          record: rec,
+          notes: body.notes ? String(body.notes) : undefined,
+        };
+        recipeStore.save(recipe);
+        auditAction('recipe.save', { id, name: recipe.name, role: ctx.role, sub: ctx.sub });
+        return sendJson(res, { recipe }, req);
+      }
+      res.writeHead(405, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    if (path.startsWith('/api/recipes/')) {
+      const id = path.slice('/api/recipes/'.length).replace(/\/$/, '');
+      if (req.method === 'GET') {
+        const ctx = await guard(req, res, 'recipe:read');
+        if (!ctx) return;
+        const r = recipeStore.get(id);
+        return sendJson(res, r ? { recipe: r } : { error: 'not found' }, req);
       }
       res.writeHead(405, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'method not allowed' }));
