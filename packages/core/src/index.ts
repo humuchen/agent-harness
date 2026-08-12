@@ -1,6 +1,7 @@
 export * from './types';
 export * from './telemetry';
 export * from './memory';
+export * from './memory-store';
 export * from './tools';
 export * from './builtins';
 export * from './skills';

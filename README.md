@@ -396,7 +396,26 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
   将来要横向扩展，只需把 `RunQueue` 实现替换为消息队列（Redis/BullMQ 等），
   handler 与前端协议不变。
 
-> 企业落地仍待补充：会话/多租户隔离、RBAC 与审批流（见仓库规划任务清单）。
+### 会话 / 多租户记忆存储（P1-9 DB 化）
+
+记忆的「存在哪」与「怎么用」已彻底解耦：运行时只认一个 `sessionKey`，后端负责按 key
+隔离读写。内置三类 `MemoryStore`，均零 npm 依赖：
+
+- **VolatileMemoryStore**（默认）：纯内存，无持久化，适合本地 / Mock。
+- **FileMemoryStore**：按会话分桶的 JSON 文件目录（`MEMORY_DIR`，每个 `<key>.json` 一份），
+  单节点落地零依赖；旧版单文件 `persistencePath` 模式仍向后兼容。
+- **SqliteMemoryStore**：基于 Node 22+ 内置的 `node:sqlite`（无需任何 npm 包、无需启动 flag），
+  多租户生产推荐；运行期 Node 不支持时自动回退到 File 并告警。
+
+配置：设 `MEMORY_BACKEND=file|sqlite|volatile`（默认配了 `MEMORY_DIR` 用 file，否则 volatile）。
+隔离维度由调用方决定：前端 / API 携带 `x-session-id` 头或 `body.sessionId`，
+记忆即按该 key 在所选后端隔离持久化；未带则归入 `anonymous`。
+
+运维可见：受保护的 `GET /api/sessions` 列出所有已落盘会话 key 与后端类型；
+`GET /api/memory?session=<key>` 查看长期笔记与窗口长度；
+`DELETE /api/memory?session=<key>` 清空某会话记忆；`/api/metrics` 暴露 `memory.backend`。
+
+> 企业落地仍待补充：RBAC 与审批流（见仓库规划任务清单）。
 
 ## 测试
 
@@ -406,7 +425,7 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 
 ```bash
 pnpm --filter @agent-harness/core run build   # 先构建
-pnpm --filter @agent-harness/core run test    # 跑测试（92 用例）
+pnpm --filter @agent-harness/core run test    # 跑测试（100 用例）
 ```
 
 Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` 子进程，验证鉴权(P0-3)、

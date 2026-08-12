@@ -3,14 +3,14 @@ import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { assembleAgent, defaultPromptFor, type RunMode } from './runner';
+import { assembleAgent, defaultPromptFor, getMemoryStore, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey } from '@agent-harness/core';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -162,6 +162,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       '/api/shell/approve',
       '/api/metrics',
       '/api/jobs',
+      '/api/sessions',
+      '/api/memory',
     ];
     if (PROTECTED.includes(path)) {
       const ip = clientIp(req);
@@ -186,11 +188,46 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'GET' && path === '/api/metrics') {
       // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列）。受保护，需令牌。
-      return sendJson(res, { ...getMetricsSnapshot(), queue: runQueue.stats() }, req);
+      const store = getMemoryStore();
+      return sendJson(
+        res,
+        { ...getMetricsSnapshot(), queue: runQueue.stats(), memory: { backend: store.kind } },
+        req
+      );
     }
     if (req.method === 'GET' && path === '/api/jobs') {
       // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
       return sendJson(res, { queue: runQueue.stats(), jobs: runQueue.list() }, req);
+    }
+    if (req.method === 'GET' && path === '/api/sessions') {
+      // 多租户记忆视图（P1-9）：列出所有已落盘记忆的会话 key 及后端类型。
+      const store = getMemoryStore();
+      const keys = await store.list();
+      return sendJson(res, { backend: store.kind, sessions: keys }, req);
+    }
+    if (path === '/api/memory') {
+      // 查看 / 清空某个会话（按 session key）的记忆。仅供运维，已受保护。
+      const sessionKey = sanitizeKey(url.searchParams.get('session') || 'anonymous');
+      const store = getMemoryStore();
+      if (req.method === 'DELETE') {
+        const memory = new Memory({ store, sessionKey });
+        await memory.clear();
+        auditAction('memory.clear', { sessionKey });
+        return sendJson(res, { ok: true, sessionKey }, req);
+      }
+      // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
+      const memory = new Memory({ store, sessionKey });
+      await memory.load();
+      return sendJson(
+        res,
+        {
+          sessionKey,
+          backend: store.kind,
+          notes: memory.notes(),
+          windowLen: memory.history().length,
+        },
+        req
+      );
     }
     if (req.method === 'GET' && path === '/api/env') {
       return sendJson(res, { envs: envPipeline.list() });
@@ -331,6 +368,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode) ? body.mode : 'mock';
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
+  // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
+  // 记忆按此 key 在所选后端（file/sqlite）隔离持久化，实现多租户。
+  const sessionKey = sanitizeKey(
+    (body.sessionId && String(body.sessionId)) ||
+      (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
+      'anonymous'
+  );
 
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
   const reconnectId = body.jobId ? String(body.jobId) : '';
@@ -338,8 +382,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model });
-    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id });
+    const job = runQueue.submit({ mode, prompt, model, sessionKey });
+    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey });
     send({ type: 'job:accepted', jobId: job.id });
     jobId = job.id;
   } else {

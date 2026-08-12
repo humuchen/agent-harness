@@ -2,6 +2,10 @@ import {
   AgentHarness,
   ToolRegistry,
   Memory,
+  MemoryStore,
+  FileMemoryStore,
+  SqliteMemoryStore,
+  VolatileMemoryStore,
   createOpenRouterLLM,
   createOpenAILLM,
   createFailoverLLM,
@@ -13,6 +17,7 @@ import {
   registerSkillTools,
   skillBoostPrompt,
   loadEnv,
+  structLog,
   type LLM,
   type HarnessEvent,
   type ToolCall,
@@ -46,13 +51,53 @@ const SYSTEM_PROMPT =
   '你是基础设施助手。用户需要临时/预览环境时，调用 create_ephemeral_environment；' +
   '用户确认回归/验证完成后，务必调用 destroy_environment 清理，避免资源浪费。';
 
+/**
+ * 记忆存储后端单例（P1-9：多租户 / DB 化）。
+ *
+ * 按环境变量在进程内构建一次并缓存，供 assembleAgent 与运维端点（/api/sessions、
+ * /api/memory）共享同一后端：
+ * - MEMORY_BACKEND=sqlite：node:sqlite（零 npm 依赖，Node 22+ 内置，多租户推荐）
+ * - MEMORY_BACKEND=file （或配置了 MEMORY_DIR）：按会话分桶的 JSON 文件目录
+ * - MEMORY_BACKEND=volatile / 未配置：纯内存（无持久化，默认）
+ * sqlite 在运行期不可用时（老 Node）自动回退到 file 并告警。
+ */
+let _memoryStore: MemoryStore | null = null;
+export function getMemoryStore(): MemoryStore {
+  if (_memoryStore) return _memoryStore;
+  const backend = (process.env.MEMORY_BACKEND || '').toLowerCase();
+  if (backend === 'volatile') {
+    _memoryStore = new VolatileMemoryStore();
+  } else if (backend === 'sqlite') {
+    const file = process.env.MEMORY_SQLITE_FILE || './data/memory.db';
+    try {
+      _memoryStore = new SqliteMemoryStore({ file });
+      structLog('info', 'memory store', { backend: 'sqlite', file });
+    } catch (e: any) {
+      const dir = process.env.MEMORY_DIR || './data/memory';
+      _memoryStore = new FileMemoryStore({ dir });
+      structLog('warn', 'sqlite backend unavailable, fall back to file', {
+        error: e?.message ?? String(e),
+        dir,
+      });
+    }
+  } else if (backend === 'file' || process.env.MEMORY_DIR) {
+    const dir = process.env.MEMORY_DIR || './data/memory';
+    _memoryStore = new FileMemoryStore({ dir });
+    structLog('info', 'memory store', { backend: 'file', dir });
+  } else {
+    _memoryStore = new VolatileMemoryStore();
+  }
+  return _memoryStore;
+}
+
 /** 根据运行模式组装一个带事件回调的 Agent。 */
 export async function assembleAgent(
   mode: RunMode,
   onEvent?: (e: HarnessEvent) => void,
   systemPrompt: string = SYSTEM_PROMPT,
   modelOverride?: string,
-  userInput?: string
+  userInput?: string,
+  sessionKey?: string
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
@@ -176,7 +221,9 @@ export async function assembleAgent(
   const skillTitles = skillRegistry.enabledList().map((s) => s.id).join(' / ');
   notes.push(`已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`);
 
-  const memory = new Memory();
+  // 记忆后端：按会话隔离（P1-9）。未指定 sessionKey 时归入 'anonymous'，
+  // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
+  const memory = new Memory({ store: getMemoryStore(), sessionKey });
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;

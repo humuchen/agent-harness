@@ -26,6 +26,8 @@ export interface RunJob {
   mode: RunMode;
   prompt: string;
   model?: string;
+  /** 会话/租户标识（P1-9）：记忆按 key 隔离并持久化到所选后端。 */
+  sessionKey?: string;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -45,7 +47,7 @@ export class RunQueue {
   private concurrency = CONCURRENCY;
 
   /** 提交一次 agent 运行任务，立即返回 Job（不等待执行）。 */
-  submit(input: { mode: RunMode; prompt: string; model?: string }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job: RunJob = {
       id,
@@ -53,6 +55,7 @@ export class RunQueue {
       mode: input.mode,
       prompt: input.prompt,
       model: input.model,
+      sessionKey: input.sessionKey,
       events: [],
       subscribers: new Set(),
       enqueuedAt: Date.now(),
@@ -147,7 +150,7 @@ export class RunQueue {
     };
     const t0 = Date.now();
     try {
-      const assembled = await assembleAgent(job.mode, onEvent, undefined, job.model, job.prompt);
+      const assembled = await assembleAgent(job.mode, onEvent, undefined, job.model, job.prompt, job.sessionKey);
       const model =
         (job.model && job.model.trim()) ||
         (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
