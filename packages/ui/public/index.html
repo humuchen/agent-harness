@@ -268,6 +268,15 @@
   <span class="chip" id="chip-mcp">MCP: …</span>
 </div>
 
+<div class="panel" id="approvalCard" style="display:none">
+  <div class="card-head">
+    <span>🛡 审批队列 <span class="dim" id="approvalCount"></span></span>
+    <button class="btn ghost" id="approvalRefresh">刷新</button>
+  </div>
+  <div class="panel" id="approvalList"><span class="dim">—— 暂无待审批工单 ——</span></div>
+  <div class="dim" style="margin-top:6px">敏感动作（真实运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需在此审批。令牌角色需具备审批权限。</div>
+</div>
+
 <div class="controls">
   <textarea id="prompt" placeholder="输入用户请求…"></textarea>
   <input id="modelInput" class="model-input" placeholder="模型（真实模式，留空=默认）" style="display:none" />
@@ -887,6 +896,39 @@ window.HarnessDemo = (function () {
     return h;
   }
 
+  // ---- 审批队列（管理员面板）----
+  function loadApprovals() {
+    if (!Backend.live || !state.token) { $("approvalCard").style.display = "none"; return; }
+    Backend.getJSON("/api/approvals").then(function (j) {
+      var tickets = (j && j.tickets) || [];
+      $("approvalCard").style.display = tickets.length ? "" : "none";
+      $("approvalCount").textContent = tickets.length ? "(" + tickets.length + ")" : "";
+      if (!tickets.length) { $("approvalList").innerHTML = '<span class="dim">—— 暂无待审批工单 ——</span>'; return; }
+      $("approvalList").innerHTML = tickets.map(function (t) {
+        var badge = t.status === "pending" ? "warn" : (t.status === "approved" ? "ok" : "err");
+        var ctrl = t.status === "pending"
+          ? '<button class="btn" data-apr="approve" data-id="' + esc(t.id) + '">批准</button>'
+            + ' <button class="btn ghost" data-apr="reject" data-id="' + esc(t.id) + '">拒绝</button>'
+          : '<span class="dim">' + esc(t.status) + (t.decidedBy ? " by " + esc(t.decidedBy) : "") + '</span>';
+        return '<div class="arow ' + badge + '"><div><b>' + esc(t.action) + '</b> <span class="dim">' + esc(t.summary || "") + '</span></div><div class="act">' + ctrl + '</div></div>';
+      }).join("");
+    }).catch(function () { $("approvalCard").style.display = "none"; });
+  }
+  var approvalRefreshEl = $("approvalRefresh");
+  if (approvalRefreshEl) approvalRefreshEl.addEventListener("click", loadApprovals);
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest ? ev.target.closest("[data-apr]") : null;
+    if (!b) return;
+    var decision = b.getAttribute("data-apr");
+    var id = b.getAttribute("data-id");
+    fetch("/api/approvals/" + id, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ decision: decision })
+    }).then(function () { loadApprovals(); }).catch(function () {});
+  });
+  if (tokenEl) tokenEl.addEventListener("input", function () { setTimeout(loadApprovals, 50); });
+
   $("prompt").value = PROMPTS.mock;
 
   // ---- run / verify ----
@@ -927,6 +969,20 @@ window.HarnessDemo = (function () {
         headers: authHeaders(),
         body: JSON.stringify(payload)
       }).then(function (resp) {
+        // 审批闸门：敏感动作返回 202 + ticketId，前端轮询裁决后自动重发继续。
+        if (resp.status === 202) {
+          return resp.json().then(function (j) {
+            if (j && j.ticketId) handleApproval(url, body, j.ticketId);
+            else finish();
+          }).catch(function () { finish(); });
+        }
+        if (!resp.ok || !resp.body) {
+          return resp.json().then(function (j) {
+            appendBanner("error", "请求失败：" + (j && j.error ? j.error : "HTTP " + resp.status));
+          }).catch(function () {
+            appendBanner("error", "请求失败：HTTP " + resp.status);
+          }).then(function () { finish(); });
+        }
         var reader = resp.body.getReader();
         var decoder = new TextDecoder();
         var buf = "";
@@ -962,6 +1018,34 @@ window.HarnessDemo = (function () {
         appendBanner("error", "请求失败：" + (e && e.message ? e.message : e));
         finish();
       });
+    }
+    function handleApproval(urlPath, payload, ticketId) {
+      appendBanner("warn", "⏳ 已提交审批（工单 " + ticketId + "），等待管理员批准后将自动继续…");
+      var tries = 0;
+      function poll() {
+        fetch("/api/approvals/" + ticketId, { headers: authHeaders() })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var t = j.ticket;
+            if (!t) { appendBanner("error", "审批工单不存在或已失效：" + ticketId); finish(); return; }
+            if (t.status === "approved") {
+              appendBanner("ok", "✅ 审批通过（" + ticketId + "），继续执行…");
+              start(Object.assign({}, payload, { approvalTicket: ticketId }));
+            } else if (t.status === "rejected") {
+              appendBanner("error", "❌ 审批被拒绝（" + ticketId + "）：" + (t.summary || ""));
+              finish();
+            } else if (tries++ < 30) {
+              setTimeout(poll, 2000);
+            } else {
+              appendBanner("error", "审批超时（" + ticketId + "）"); finish();
+            }
+          })
+          .catch(function () {
+            if (tries++ < 30) setTimeout(poll, 2000);
+            else { appendBanner("error", "审批轮询失败（" + ticketId + "）"); finish(); }
+          });
+      }
+      poll();
     }
     start(body);
     function finish() {
@@ -1388,6 +1472,7 @@ window.HarnessDemo = (function () {
     refreshMcp();
     refreshPresets();
     refreshEnvs();
+    loadApprovals();
   });
   // 绑定动态生成的 MCP 添加按钮（首轮渲染后）
   setTimeout(bindMcpAdd, 300);

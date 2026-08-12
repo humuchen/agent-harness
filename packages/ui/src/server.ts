@@ -11,6 +11,9 @@ import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot, Memory, sanitizeKey } from '@agent-harness/core';
+// 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
+import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
+import { createApprovalPolicy, type ApprovalPolicy } from './approval';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -20,7 +23,8 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
-const REQUIRE_AUTH = !!UI_AUTH_TOKEN;
+// 多令牌（UI_TOKENS）或单令牌（UI_AUTH_TOKEN）任一存在即开启鉴权。
+const REQUIRE_AUTH = !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -35,6 +39,11 @@ const RATE_LIMIT = Number(process.env.RATE_LIMIT ?? 120);
 const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG || '';
+
+// 业务策略装配（组合根）：RBAC 鉴权器 + 审批策略。二者均为可插拔接口实现，
+// 核心 framework 不感知任何角色/权限/审批概念。替换身份源或审批后端只需改这两个工厂。
+const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
+const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 
 // ---------------------------------------------------------------------------
 // 安全 / 可观测辅助
@@ -95,15 +104,67 @@ function redactUrl(url?: string): string {
   }
 }
 
-function authorized(req: IncomingMessage, url: URL): boolean {
-  if (!REQUIRE_AUTH) return true;
-  const auth = req.headers['authorization'];
-  if (auth && auth.toLowerCase().startsWith('bearer ')) {
-    return auth.slice(7).trim() === UI_AUTH_TOKEN;
+/**
+ * 统一准入网关（组合点）：鉴权 → 限流 → 角色授权 → 审批闸门。
+ * 失败时已写出响应并返回 null；成功返回 AuthContext，调用方可继续执行业务动作。
+ *
+ * - body：POST 动作已解析的请求体（用于读取随请求的 approvalTicket，避免二次读流）。
+ * - 需审批且未持有效票据时，创建 ticket 并回 202 { ticketId }；调用方据此轮询/重发。
+ */
+async function guard(req: IncomingMessage, res: ServerResponse, action: Action, body?: any): Promise<AuthContext | null> {
+  const ip = clientIp(req);
+  const ctx = authorizer.authenticate(req);
+  if (!ctx) {
+    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: false, status: 401 });
+    unauthorized(res);
+    return null;
   }
-  const t = url.searchParams.get('token');
-  if (t) return t === UI_AUTH_TOKEN;
-  return false;
+  if (rateLimited(ip)) {
+    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, status: 429 });
+    res.writeHead(429, { 'content-type': 'application/json', ...corsHeaders(req) });
+    res.end(JSON.stringify({ error: 'rate limit exceeded' }));
+    return null;
+  }
+  if (!authorizer.can(ctx, action)) {
+    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, status: 403, action });
+    res.writeHead(403, { 'content-type': 'application/json', ...corsHeaders(req) });
+    res.end(JSON.stringify({ error: 'forbidden', action }));
+    return null;
+  }
+  audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, action });
+
+  // 审批闸门：敏感动作需先获批。已携带有效票据（动作一致且已批准）则放行。
+  if (approvalPolicy.requiresApproval(action, ctx)) {
+    const ticketId: string | null =
+      (body && typeof body.approvalTicket === 'string' && body.approvalTicket) ||
+      new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.get('approvalTicket');
+    if (ticketId) {
+      const t = approvalPolicy.consume(ticketId, action, ctx);
+      if (t) return ctx; // 已批准，放行执行
+    }
+    const ticket = approvalPolicy.create(action, ctx, `${action} · by ${ctx.sub}/${ctx.role}`);
+    res.writeHead(202, { 'content-type': 'application/json; charset=utf-8', ...corsHeaders(req) });
+    res.end(JSON.stringify({ ticketId: ticket.id, status: 'pending', message: '需要审批', poll: `/api/approvals/${ticket.id}` }));
+    return null;
+  }
+  return ctx;
+}
+
+/** 只读 GET 端点的动作映射（POST 动作由各 handler 自行 guard，需先读 body 判定 mode）。 */
+function readAction(path: string): Action | null {
+  switch (path) {
+    case '/api/mcp/list':
+    case '/api/mcp/presets':
+      return 'mcp:read';
+    case '/api/metrics':
+      return 'metrics:read';
+    case '/api/jobs':
+      return 'jobs:read';
+    case '/api/sessions':
+      return 'sessions:read';
+    default:
+      return null;
+  }
 }
 
 function unauthorized(res: ServerResponse): void {
@@ -149,35 +210,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
     }
-    // 受保护端点：需通过 UI_AUTH_TOKEN 校验（未配置则开放）。
-    const PROTECTED: string[] = [
-      '/api/mcp/list',
-      '/api/mcp/presets',
-      '/api/env',
-      '/api/run',
-      '/api/verify',
-      '/api/mcp/add',
-      '/api/mcp/preset',
-      '/api/mcp/reconnect',
-      '/api/shell/approve',
-      '/api/metrics',
-      '/api/jobs',
-      '/api/sessions',
-      '/api/memory',
-    ];
-    if (PROTECTED.includes(path)) {
-      const ip = clientIp(req);
-      if (!authorized(req, url)) {
-        audit({ kind: 'request', method: req.method, path, ip, authed: false, status: 401 });
-        return unauthorized(res);
-      }
-      if (rateLimited(ip)) {
-        audit({ kind: 'rate-limit', method: req.method, path, ip });
-        res.writeHead(429, { 'content-type': 'application/json', ...corsHeaders(req) });
-        res.end(JSON.stringify({ error: 'rate limit exceeded' }));
-        return;
-      }
-      audit({ kind: 'request', method: req.method, path, ip, authed: true });
+    // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
+    // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
+    const readAct = readAction(path);
+    if (readAct && req.method === 'GET') {
+      const ctx = await guard(req, res, readAct);
+      if (!ctx) return;
     }
     if (req.method === 'GET' && path === '/api/mcp/list') {
       return sendJson(res, { servers: mcpManager.list() });
@@ -206,16 +244,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return sendJson(res, { backend: store.kind, sessions: keys }, req);
     }
     if (path === '/api/memory') {
-      // 查看 / 清空某个会话（按 session key）的记忆。仅供运维，已受保护。
+      // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
       const sessionKey = sanitizeKey(url.searchParams.get('session') || 'anonymous');
-      const store = getMemoryStore();
       if (req.method === 'DELETE') {
+        const body = await readBody(req);
+        const ctx = await guard(req, res, 'memory:clear', body);
+        if (!ctx) return;
+        const store = getMemoryStore();
         const memory = new Memory({ store, sessionKey });
         await memory.clear();
-        auditAction('memory.clear', { sessionKey });
+        auditAction('memory.clear', { sessionKey, role: ctx.role, sub: ctx.sub });
         return sendJson(res, { ok: true, sessionKey }, req);
       }
       // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
+      const ctx = await guard(req, res, 'memory:read');
+      if (!ctx) return;
+      const store = getMemoryStore();
       const memory = new Memory({ store, sessionKey });
       await memory.load();
       return sendJson(
@@ -228,6 +272,45 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         },
         req
       );
+    }
+    if (req.method === 'GET' && path === '/api/roles') {
+      // 当前授权配置概览（不含令牌明文），便于运维核对角色权限矩阵。
+      return sendJson(res, authorizer.describe(), req);
+    }
+    if (path === '/api/approvals') {
+      // 审批工单列表（admin / 审批人角色可读）。
+      if (req.method === 'GET') {
+        const ctx = await guard(req, res, 'approvals:review');
+        if (!ctx) return;
+        const status = url.searchParams.get('status');
+        return sendJson(res, { tickets: approvalPolicy.list(status ? { status: status as any } : undefined) }, req);
+      }
+      res.writeHead(405, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    if (path.startsWith('/api/approvals/')) {
+      // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
+      const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
+      if (req.method === 'GET') {
+        const ctx = await guard(req, res, 'approvals:review');
+        if (!ctx) return;
+        const t = approvalPolicy.list().find((x) => x.id === id);
+        return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
+      }
+      if (req.method === 'POST') {
+        const ctx = await guard(req, res, 'approvals:review');
+        if (!ctx) return;
+        const body = await readBody(req);
+        const decision = body.decision === 'reject' ? 'reject' : 'approve';
+        const t = approvalPolicy.decide(id, decision, ctx.sub);
+        if (!t) return sendJson(res, { error: 'ticket not found or already decided' }, req);
+        auditAction('approval.decide', { id, decision, by: ctx.sub });
+        return sendJson(res, { ticket: t }, req);
+      }
+      res.writeHead(405, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
     }
     if (req.method === 'GET' && path === '/api/env') {
       return sendJson(res, { envs: envPipeline.list() });
@@ -246,11 +329,13 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/mcp/reconnect') {
       const body = await readBody(req);
+      const ctx = await guard(req, res, 'mcp:reconnect', body);
+      if (!ctx) return;
       const name = String(body.name ?? '');
       if (!name) {
         return sendJson(res, { error: '缺少 name' }, req);
       }
-      auditAction('mcp.reconnect', { name });
+      auditAction('mcp.reconnect', { name, role: ctx.role, sub: ctx.sub });
       try {
         const meta = await mcpManager.reconnect(name);
         return sendJson(res, { server: meta }, req);
@@ -364,8 +449,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   });
 
   const body = await readBody(req);
-  const send = startSse(res, req);
   const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode) ? body.mode : 'mock';
+  // 按运行模式映射为细分动作，做角色授权 + 审批判定（real / real-mcp 需审批）。
+  const runAction: Action =
+    mode === 'real-mcp' ? 'agent:run:real-mcp' : mode === 'real' ? 'agent:run:real' : 'agent:run:mock';
+  const ctx = await guard(req, res, runAction, body);
+  if (!ctx) return;
+  const send = startSse(res, req);
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
@@ -383,11 +473,11 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   let jobId: string;
   if (!targetId) {
     const job = runQueue.submit({ mode, prompt, model, sessionKey });
-    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey });
+    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, role: ctx.role, sub: ctx.sub });
     send({ type: 'job:accepted', jobId: job.id });
     jobId = job.id;
   } else {
-    auditAction('agent.run.reconnect', { jobId: targetId });
+    auditAction('agent.run.reconnect', { jobId: targetId, role: ctx.role, sub: ctx.sub });
     jobId = targetId;
   }
 
@@ -415,9 +505,12 @@ async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<
   res.on('close', () => {
     closed = true;
   });
-  await readBody(req);
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'verify', body);
+  if (!ctx) return;
   const send = startSse(res, req);
   try {
+    auditAction('verify', { role: ctx.role, sub: ctx.sub });
     await runVerification((e: VerifyEvent) => {
       if (!closed) send(e);
     });
@@ -435,6 +528,8 @@ const MCP_TRANSPORT_TYPES = new Set(['auto', 'sse', 'streamable-http']);
 
 async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
+  const ctx = await guard(req, res, 'mcp:add', body);
+  if (!ctx) return;
   const name = String(body.name ?? '').trim();
   // 兼容旧字段 `url`，同时接受标准字段 `serverUrl`。
   const serverUrl = String(body.url ?? body.serverUrl ?? '').trim();
@@ -452,7 +547,7 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
     res.end(JSON.stringify({ error: 'name 与（serverUrl/url 或 command）至少需提供其一' }));
     return;
   }
-  auditAction('mcp.add', { name, url: redactUrl(serverUrl), command: command ?? null });
+  auditAction('mcp.add', { name, url: redactUrl(serverUrl), command: command ?? null, role: ctx.role, sub: ctx.sub });
   try {
     const meta = await mcpManager.addServer({ name, serverUrl, command, args, env, headers, transportType });
     sendJson(res, { server: meta, servers: mcpManager.list() }, req);
@@ -465,6 +560,8 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
 /** 一键接入预设 MCP 服务（Context7 / GitHub / Composio 等）。 */
 async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
+  const ctx = await guard(req, res, 'mcp:preset', body);
+  if (!ctx) return;
   const id = String(body.id ?? '').trim();
   const token = body.token != null ? String(body.token) : undefined;
   if (!id) {
@@ -472,7 +569,7 @@ async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promi
     res.end(JSON.stringify({ error: '缺少预设 id（如 context7 / github / composio）' }));
     return;
   }
-  auditAction('mcp.preset', { id });
+  auditAction('mcp.preset', { id, role: ctx.role, sub: ctx.sub });
   try {
     const meta = await mcpManager.connectPreset(id, token);
     sendJson(res, { server: meta, servers: mcpManager.list() }, req);
@@ -489,6 +586,8 @@ async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promi
  */
 async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readBody(req);
+  const ctx = await guard(req, res, 'shell:approve', body);
+  if (!ctx) return;
   const command = String(body.command ?? '');
   const args = Array.isArray(body.args) ? body.args.map(String) : [];
   if (!command) {
@@ -496,7 +595,7 @@ async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Pr
     res.end(JSON.stringify({ error: '缺少 command' }));
     return;
   }
-  auditAction('shell.approve', { command, preapprove: body.preapprove === true });
+  auditAction('shell.approve', { command, preapprove: body.preapprove === true, role: ctx.role, sub: ctx.sub });
   if (body.preapprove === true) {
     preapproveShell(shellSignature(command, args));
     return sendJson(res, { preapproved: true }, req);
@@ -511,6 +610,10 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
     closed = true;
   });
   const body = await readBody(req);
+  // 按动作类型映射为细分动作，做角色授权 + 审批判定（create/destroy 需审批）。
+  const envAction: Action = body.action === 'destroy' ? 'env:destroy' : 'env:create';
+  const ctx = await guard(req, res, envAction, body);
+  if (!ctx) return;
   const send = startSse(res, req);
   const action = body.action;
 
@@ -522,7 +625,7 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
       region: body.region ? String(body.region) : undefined,
       owner: body.owner ? String(body.owner) : undefined,
     };
-    auditAction('env.create', { envType: input.envType, branch: input.branch, region: input.region ?? null, owner: input.owner ?? null });
+    auditAction('env.create', { envType: input.envType, branch: input.branch, region: input.region ?? null, owner: input.owner ?? null, role: ctx.role, sub: ctx.sub });
     try {
       await envPipeline.create(input, (env) => {
         if (!closed) send({ type: 'env:status', env });
@@ -539,7 +642,7 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   if (action === 'destroy') {
     const envId = String(body.env_id ?? '');
-    auditAction('env.destroy', { envId });
+    auditAction('env.destroy', { envId, role: ctx.role, sub: ctx.sub });
     try {
       const env = await envPipeline.destroy(envId, (e) => {
         if (!closed) send({ type: 'env:status', env: e });
@@ -564,9 +667,10 @@ server.listen(PORT, HOST, () => {
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
-    console.log(`   🔒 接口鉴权已启用（UI_AUTH_TOKEN）：请求需 Authorization: Bearer <token>`);
+    console.log(`   🔒 RBAC 鉴权已启用（UI_TOKENS / UI_AUTH_TOKEN）：请求需 Authorization: Bearer <token>`);
+    console.log(`   🔒 敏感动作（real 运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需审批：POST 返回 202 + ticketId`);
   } else {
-    console.warn(`   ⚠️  未设置 UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
+    console.warn(`   ⚠️  未设置 UI_TOKENS / UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
   }
   if (UI_CORS_ORIGIN.length === 0) {
     console.log(`   🔒 CORS 仅同源（未配置 UI_CORS_ORIGIN）。跨域调用需显式设置白名单。`);

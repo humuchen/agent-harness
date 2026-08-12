@@ -417,6 +417,32 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 
 > 企业落地仍待补充：RBAC 与审批流（见仓库规划任务清单）。
 
+### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
+
+鉴权与审批是**纯业务层**能力（`packages/ui/src/authz.ts` + `approval.ts`），核心
+`@agent-harness/core` 不感知任何角色 / 权限 / 票据概念 —— 这是刻意的分层：核心只提供
+AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都是业务策略，可插拔、可组合。
+
+- **RBAC**：`Authorizer` 接口 + 默认 `RoleBasedAuthorizer`。角色 `admin / operator / viewer`，
+  动作粒度到 `agent:run:real`、`env:create`、`mcp:add`、`memory:clear` 等（见 `.env.example`）。
+  - 配置：`UI_TOKENS={"<token>":"admin",...}` 支持多令牌多角色；`UI_AUTH_TOKEN` 为兼容旧版单令牌
+    （默认 `operator`）；`UI_ROLE_PERMISSIONS` 可覆盖角色-权限矩阵。
+  - 统一准入网关 `guard()` = 鉴权 → 限流 → 角色授权；失败即 401/403/429，不污染业务逻辑。
+- **审批工作流**：`ApprovalPolicy` 接口 + 默认 `InMemoryApprovalPolicy`（gate + re-submit 模型）。
+  - 敏感动作（real 运行 / 环境创建销毁 / MCP 接入 / 记忆清空 / 验证 / shell 审批）被策略判定为需审批时，
+    服务端创建工单并返回 **202 + `{ticketId}`**；审批人经 `POST /api/approvals/:id` 裁决后，原请求方
+    携带 `approvalTicket` 重发同一请求即可执行（执行始终在同步调用内完成，无需挂等待回调）。
+  - 可绕过审批的角色由 `UI_APPROVAL_BYPASS_ROLES`（默认 `admin`）控制；要接入外部审批系统
+    （工单平台 / Slack / ITSM），只需替换 `createApprovalPolicy()` 工厂返回的 `ApprovalPolicy` 实现。
+- **可插拔 / 可组合的关键约束点**：`createAuthorizer()` 与 `createApprovalPolicy()` 是两个组合工厂。
+  替换身份源（OIDC / LDAP / SPIFFE）或审批后端时，**仅改这两个工厂，server 其余代码零改动**。
+
+运维端点（均受 RBAC 保护）：
+- `GET /api/roles`：当前权限矩阵概览（不含令牌明文）。
+- `GET /api/approvals` / `GET|POST /api/approvals/:id`：工单列表 / 查看 / 裁决（approve|reject）。
+- 前端 Playground 在令牌具备审批权限时显示「🛡 审批队列」面板，可一键批准 / 拒绝；
+  提交敏感动作若进入审批，前端自动轮询并在批准后继续执行。
+
 ## 测试
 
 核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、
