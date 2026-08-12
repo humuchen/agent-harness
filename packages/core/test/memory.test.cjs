@@ -209,3 +209,82 @@ test('Memory: 压缩摘要随持久化保存与恢复', async () => {
   assert.ok(m2.history().some((x) => x.content && x.content.includes('【历史摘要】')));
 });
 
+test('Memory: 异步（LLM）摘要器通过 flushSummary 落地，且汇总节点唯一', async () => {
+  let calls = 0;
+  const summarizer = async () => {
+    calls += 1;
+    return `async(${calls})`;
+  };
+  const m = new Memory({ maxWindow: 5, summarizer });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+
+  // add() 不阻塞：此时 pending 为真，summary 尚为 null，窗口无摘要节点
+  assert.strictEqual(m.summaryPending, true, '应存在 pending 异步摘要');
+  assert.strictEqual(m.summary, null, 'flush 前 summary 应为 null');
+  assert.strictEqual(m.history().some((x) => x.content && x.content.includes('【历史摘要】')), false);
+
+  // flush 后摘要落地，且窗口仍保持一条摘要节点
+  await m.flushSummary();
+  assert.strictEqual(m.summaryPending, false);
+  assert.strictEqual(m.summary, 'async(1)');
+  const hist = m.history();
+  const summaries = hist.filter((x) => x.content && x.content.includes('【历史摘要】'));
+  assert.strictEqual(summaries.length, 1, '应仅一条摘要节点');
+  assert.strictEqual(hist[0].content, 'SYS', '真实 system 仍最前');
+  assert.strictEqual(hist.length, 5);
+
+  // 再次溢出：pending 再次触发，flush 后摘要更新且唯一
+  m.add({ role: 'user', content: 'u5' });
+  assert.strictEqual(m.summaryPending, true);
+  await m.flushSummary();
+  assert.strictEqual(m.summary, 'async(2)');
+  const summaries2 = m.history().filter((x) => x.content && x.content.includes('【历史摘要】'));
+  assert.strictEqual(summaries2.length, 1, '多次压缩后摘要仍唯一');
+});
+
+test('Memory: 异步摘要器失败时回退到上一轮摘要（不破坏窗口）', async () => {
+  let n = 0;
+  const summarizer = async () => {
+    n += 1;
+    if (n === 1) throw new Error('llm down');
+    return `ok(${n})`;
+  };
+  const m = new Memory({ maxWindow: 5, summarizer });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+  await m.flushSummary();
+  // 第一次失败 → 回退为空串 → 无摘要节点；窗口因预留 1 个摘要槽位而为 4（而非 5），
+  // 这是有意的：摘要槽始终保留，避免摘要落地后窗口超出 maxWindow。
+  assert.strictEqual(m.summary, null);
+  assert.strictEqual(m.history().length, 4);
+  assert.strictEqual(m.history().some((x) => x.content && x.content.includes('【历史摘要】')), false);
+
+  // 继续追加触发第二次溢出（长度 5 时不溢出，6 时溢出），本次成功 → 正常落地
+  m.add({ role: 'user', content: 'u5' });
+  m.add({ role: 'user', content: 'u6' });
+  assert.strictEqual(m.summaryPending, true);
+  await m.flushSummary();
+  assert.strictEqual(m.summary, 'ok(2)');
+  const hist = m.history();
+  assert.strictEqual(hist.length, 5);
+  assert.strictEqual(hist.filter((x) => x.content && x.content.includes('【历史摘要】')).length, 1);
+});
+
+test('Memory: save() 自动 flush 异步摘要（无需手动 flush）', async () => {
+  const dir = tmpDir();
+  const store = new FileMemoryStore({ dir });
+  const summarizer = async () => 'auto-flushed';
+  const m = new Memory({ store, sessionKey: 'af', maxWindow: 5, summarizer });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+  assert.strictEqual(m.summaryPending, true);
+  await m.save(); // save 内部应 flush
+  assert.strictEqual(m.summaryPending, false);
+  assert.strictEqual(m.summary, 'auto-flushed');
+
+  const m2 = new Memory({ store, sessionKey: 'af', maxWindow: 5, summarizer });
+  await m2.load();
+  assert.strictEqual(m2.summary, 'auto-flushed', '落地后的摘要应随记忆恢复');
+});
+

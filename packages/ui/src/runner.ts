@@ -18,9 +18,11 @@ import {
   skillBoostPrompt,
   loadEnv,
   structLog,
+  recordError,
   type LLM,
   type HarnessEvent,
   type ToolCall,
+  type Message,
   type MemorySummarizer,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
@@ -232,11 +234,21 @@ export async function assembleAgent(
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
   // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
   const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
+  // 当前 run 的计价/标识模型（modelOverride > env OPENROUTER_MODEL），供 LLM 摘要器标注与成本明细。
+  const accountModel =
+    (modelOverride && modelOverride.trim()) ||
+    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
+    undefined;
   // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
   // 根治「每步重发全部历史」导致的 token 平方增长（原问题 B 的根因）。
   // 默认关闭；CONTEXT_COMPRESSION=true 开启。摘要器必须同步、返回有界字符串。
   const enableCompression =
     process.env.CONTEXT_COMPRESSION === 'true' || process.env.CONTEXT_COMPRESSION === '1';
+  // 压缩模式：heuristic（默认，零额外调用，仅统计工具调用）| llm（调用 LLM 做高质量摘要）。
+  // llm 仅可在 real 模式（真实 LLM 可用）下启用；mock 模式即便设了 llm 也会安全回退启发式。
+  const compressionMode = (process.env.COMPRESSION_MODE || 'heuristic').toLowerCase();
+  const useLlmSummarizer =
+    enableCompression && compressionMode === 'llm' && llmKind === 'openrouter';
   const heuristicSummarizer: MemorySummarizer = ({ previous, evicted }) => {
     let userReqs = 0;
     let toolCalls = 0;
@@ -259,11 +271,17 @@ export async function assembleAgent(
     const base = previous ? previous.slice(-220) : '';
     return (base ? base + ' ' : '') + line;
   };
+  let summarizer: MemorySummarizer | undefined;
+  if (enableCompression) {
+    summarizer = useLlmSummarizer
+      ? createLLMSummarizer(llm, accountModel ?? 'openrouter')
+      : heuristicSummarizer;
+  }
   const memory = new Memory({
     store: getMemoryStore(),
     sessionKey,
     maxWindow,
-    ...(enableCompression ? { summarizer: heuristicSummarizer } : {}),
+    ...(summarizer ? { summarizer } : {}),
   });
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
@@ -279,10 +297,6 @@ export async function assembleAgent(
         : 24;
   const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
   const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
-  const accountModel =
-    (modelOverride && modelOverride.trim()) ||
-    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
-    undefined;
   const harness = new AgentHarness({
     llm,
     tools,
@@ -304,9 +318,16 @@ export async function assembleAgent(
     `闭环步数上限 MAX_STEPS=${effectiveMaxSteps}` +
       (requireCompletion ? '，已启用完成自检（空响应即继续循环）' : '') +
       `；工具结果截断 ${maxToolResultChars} 字符；记忆窗口 ${maxWindow}` +
-      (enableCompression ? '；已启用上下文压缩（淘汰轮次摘要为系统消息）' : '') +
+      (enableCompression
+        ? `；已启用上下文压缩（${
+            useLlmSummarizer ? 'LLM 摘要（调用模型压缩淘汰轮次）' : '启发式摘要（零额外调用）'
+          }：淘汰轮次摘要为系统消息）`
+        : '') +
       '。'
   );
+  if (enableCompression && compressionMode === 'llm' && !useLlmSummarizer) {
+    notes.push('上下文压缩已设为 LLM 模式，但当前为 Mock/离线模式，已安全回退为启发式摘要。');
+  }
 
   return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };
 }
@@ -317,6 +338,48 @@ export function defaultPromptFor(mode: RunMode): string {
     return '帮我在测试环境基于 feature/login 分支拉起一个临时环境，跑完回归后帮我销毁';
   }
   return '帮我在测试环境基于 feature/login 分支拉起一个临时环境';
+}
+
+/**
+ * LLM 摘要器（上下文压缩升级项）：把被淘汰的对话轮次交给同一个 LLM 做高质量压缩，
+ * 生成 ≤400 字摘要。相比启发式（仅统计工具调用次数）更保真，但每次压缩会产生一次
+ * 额外的 LLM 调用（有成本，建议用较便宜的模型或仅在长对话启用）。
+ * 失败（限流 / 异常）时回退到「保留上一轮摘要」，绝不让压缩失败中断主运行。
+ */
+function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
+  const SYSTEM =
+    '你是上下文压缩器。把用户提供的「被淘汰对话轮次」压缩成一条简洁中文摘要（≤300 字），' +
+    '保留：关键决策与结论、工具调用及其结果、用户约束与偏好、尚未完成的待办。' +
+    '不要编造新内容，不要输出 JSON，只输出纯文本摘要。';
+  return async ({ previous, evicted }) => {
+    const transcript = evicted
+      .map((m) => {
+        const c = typeof m.content === 'string' ? m.content : '[非文本 / 工具结果对象]';
+        return `${m.role}: ${c}`;
+      })
+      .join('\n');
+    const userContent =
+      `此前已有摘要（需延续，勿重复）：\n${previous ?? '（无）'}\n\n` +
+      `待压缩的对话轮次：\n${transcript}`;
+    const messages: Message[] = [
+      { role: 'system', content: SYSTEM },
+      { role: 'user', content: userContent },
+    ];
+    try {
+      const resp = await llm(messages, []);
+      let s = (resp?.content ?? '').trim();
+      if (!s) return previous ?? '';
+      if (s.length > 400) s = s.slice(0, 400) + '…';
+      return s;
+    } catch (e: any) {
+      structLog('warn', 'llm summarizer failed, keep previous', {
+        model: modelLabel,
+        error: e?.message ?? String(e),
+      });
+      recordError('compression.llm');
+      return previous ?? '';
+    }
+  };
 }
 
 /** Mock LLM：无需密钥即可驱动 创建 → 销毁 闭环（与 examples/self-serve-env.ts 一致）。 */

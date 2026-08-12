@@ -11,13 +11,15 @@ import {
  * 上下文压缩摘要器：当滑动窗口溢出、需要淘汰旧轮次时调用。
  * - `evicted`：本次被淘汰的轮次（user/assistant/tool 消息序列）。
  * - `previous`：上一次压缩得到的摘要（首次为 null），可用于增量合并。
- * 约定：必须同步、无副作用，且返回**有界**字符串（建议 < 400 字符），
- * 否则压缩本身会变成新的 token 负担。返回空串表示放弃本次摘要。
+ * 约定：返回**有界**字符串（建议 < 400 字符），否则压缩本身会变成新的 token 负担；
+ * 返回空串表示放弃本次摘要。允许返回 `Promise<string>`（如调用 LLM 做高质量摘要），
+ * 此时 `Memory.add()` 不会阻塞，摘要会在下一轮 `flushSummary()`（harness 循环顶部）
+ * 调用前落地，从而在不改动主循环同步结构的前提下支持异步摘要器。
  */
 export type MemorySummarizer = (ctx: {
   previous: string | null;
   evicted: Message[];
-}) => string;
+}) => string | Promise<string>;
 
 export interface MemoryOptions {
   // 发送给 LLM 的对话历史滚动窗口大小。
@@ -44,6 +46,10 @@ export class Memory {
   private sessionKey: string;
   // 上下文压缩摘要（有界字符串）；为 null 表示尚未发生压缩。
   private summaryText: string | null = null;
+  // 异步摘要器（如 LLM）返回的待落地摘要；hasPendingSummary=true 时窗口暂不含摘要节点，
+  // 待 flushSummary() 后再补入，保证下一轮 history() 已包含压缩结果。
+  private pendingSummary: Promise<string> | null = null;
+  private hasPendingSummary = false;
 
   constructor(opts: MemoryOptions = {}) {
     this.opts = {
@@ -97,12 +103,24 @@ export class Memory {
         const evicted = rest.slice(0, rest.length - budget);
         const keptRest = rest.slice(rest.length - budget);
         if (this.opts.summarizer) {
-          this.summaryText = this.opts.summarizer({ previous: this.summaryText, evicted });
+          const result = this.opts.summarizer({ previous: this.summaryText, evicted });
+          if (result instanceof Promise) {
+            // 异步摘要器：暂存 pending，窗口先不含摘要节点；flushSummary() 落地后补入。
+            this.hasPendingSummary = true;
+            this.pendingSummary = Promise.resolve(result)
+              .then((s) => (s && typeof s === 'string' ? s : ''))
+              .catch(() => this.summaryText ?? '');
+            this.window = [...sys, ...keptRest];
+          } else {
+            this.summaryText = result;
+            const summaryNode = this.summaryText
+              ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+              : [];
+            this.window = [...sys, ...summaryNode, ...keptRest];
+          }
+        } else {
+          this.window = [...sys, ...keptRest];
         }
-        const summaryNode = this.summaryText
-          ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
-          : [];
-        this.window = [...sys, ...summaryNode, ...keptRest];
       } else {
         // 仅 system + 摘要占位导致窗口看似溢出，无需淘汰。
         this.window = [...sys, ...rest];
@@ -113,6 +131,34 @@ export class Memory {
   /** 当前上下文压缩摘要（无则 null），供运维视图与测试观测。 */
   get summary(): string | null {
     return this.summaryText;
+  }
+
+  /** 是否存在尚未落地的异步摘要（测试/运维观测用）。 */
+  get summaryPending(): boolean {
+    return this.hasPendingSummary;
+  }
+
+  /**
+   * 落地待处理的异步（LLM）摘要：等待 pendingSummary 完成后写入 summaryText 并重建
+   * 窗口里的摘要节点。同步摘要器不会触发 pending，此步为 no-op。必须在下一次
+   * `history()` 读取之前调用（harness 循环顶部已接入），以保证喂给模型的上下文已压缩。
+   */
+  async flushSummary(): Promise<void> {
+    if (!this.hasPendingSummary || !this.pendingSummary) return;
+    const s = await this.pendingSummary;
+    this.summaryText = s || null;
+    this.pendingSummary = null;
+    this.hasPendingSummary = false;
+    const isSummary = (m: Message): boolean =>
+      m.role === 'system' &&
+      typeof m.content === 'string' &&
+      m.content.startsWith('【历史摘要】');
+    const sys = this.window.filter((m) => m.role === 'system' && !isSummary(m));
+    const rest = this.window.filter((m) => !(m.role === 'system' && !isSummary(m)));
+    const summaryNode = this.summaryText
+      ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+      : [];
+    this.window = [...sys, ...summaryNode, ...rest];
   }
 
   history(): Message[] {
@@ -136,6 +182,7 @@ export class Memory {
 
   /** 持久化当前记忆到后端（按 sessionKey）。 */
   async save(): Promise<void> {
+    await this.flushSummary();
     const data: PersistedMemory = {
       window: this.window,
       longTerm: this.longTerm,
@@ -159,6 +206,8 @@ export class Memory {
     this.window = [];
     this.longTerm = [];
     this.summaryText = null;
+    this.pendingSummary = null;
+    this.hasPendingSummary = false;
     await this.store.delete(this.sessionKey);
   }
 }

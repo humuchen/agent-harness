@@ -2,7 +2,7 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs, redactOutput } from './guardrails';
-import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog } from './telemetry';
+import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert } from './telemetry';
 import { estimateCost } from './llm/pricing';
 
 /**
@@ -180,6 +180,9 @@ export class AgentHarness {
           if (signal.aborted) {
             return abortedMessage(signal);
           }
+          // 若上一步溢出触发了异步（LLM）摘要，先落地摘要节点，保证本轮喂给模型的
+          // 历史已包含压缩结果（同步摘要器此步为 no-op，无额外开销）。
+          await memory.flushSummary();
           // 预算熔断：token / cost 任一超限即中止（在发起下一次 LLM 调用前）。
           if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
@@ -317,8 +320,8 @@ export class AgentHarness {
         return '[agent] reached max steps without a final answer';
       });
     } catch (e: any) {
-      recordError('agent.run');
-      structLog('error', 'agent run failed', { runId, message: e?.message ?? String(e) });
+      logError('agent.run', e, { runId });
+      emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
       emit({ type: 'error', message: e?.message ?? String(e) });
       final = `[error] ${e?.message ?? String(e)}`;
     }

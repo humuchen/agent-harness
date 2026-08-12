@@ -10,7 +10,7 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError } from '@agent-harness/core';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
@@ -22,6 +22,9 @@ import { loadSecrets } from './secrets';
 
 // 必须在下方任何 `process.env.X` 顶层读取前执行（幂等，仅首次生效）。
 loadSecrets();
+
+// 告警通道：根据环境变量装配（Webhook / 日志文件），在捕获任何错误之前就位。
+setupAlerting();
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -435,7 +438,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
   } catch (e: any) {
-    console.error('[ui] request error:', e?.message ?? e);
+    logError('http.request', e, { path: req.url });
     const code = typeof e?.status === 'number' ? e.status : 500;
     if (!res.headersSent) {
       res.writeHead(code, { 'content-type': 'application/json' });
@@ -786,10 +789,59 @@ server.listen(PORT, HOST, () => {
 // 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
 // - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
 // - unhandledRejection：仅记录，不退出，避免单个被拒 Promise 拖垮在线服务。
+
+/**
+ * 告警接收器工厂。告警下沉是可插拔的：默认关闭，按环境变量装配。
+ * - ALERT_WEBHOOK_URL：将告警 JSON POST 到该地址（如 Slack/飞书/钉钉 入站 Webhook、自研告警网关）。
+ * - ALERT_LOG_PATH：将告警以 JSON 逐行追加到指定文件（便于被 Filebeat/Loki 采集）。
+ * 多个 sink 会依次触发；单个 sink 失败仅告警日志，不影响其它 sink 与主流程。
+ */
+function createWebhookAlertSink(url: string) {
+  return async (a: unknown) => {
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(a),
+      });
+    } catch (e: any) {
+      structLog('warn', 'alert webhook failed', { error: e?.message ?? String(e) });
+    }
+  };
+}
+function createFileAlertSink(filePath: string) {
+  return async (a: unknown) => {
+    try {
+      await appendFile(filePath, JSON.stringify(a) + '\n');
+    } catch {
+      /* 告警落盘失败不向上传播 */
+    }
+  };
+}
+function setupAlerting(): void {
+  const url = process.env.ALERT_WEBHOOK_URL;
+  const file = process.env.ALERT_LOG_PATH;
+  const sinks: Array<(a: unknown) => void | Promise<void>> = [];
+  if (url) {
+    sinks.push(createWebhookAlertSink(url));
+    structLog('info', 'alerting enabled', { sink: 'webhook', url });
+  }
+  if (file) {
+    sinks.push(createFileAlertSink(file));
+    structLog('info', 'alerting enabled', { sink: 'file', path: file });
+  }
+  if (sinks.length) {
+    setAlertSink(async (a) => {
+      for (const s of sinks) await s(a);
+    });
+  }
+}
+
 function installCrashGuard(): void {
   const fatal = (where: string, err: unknown) => {
     const e = err as { message?: string; stack?: string };
-    structLog('fatal', `${where}: ${e?.message ?? String(err)}`, { stack: e?.stack });
+    logError('crash.guard', err, { where });
+    emitAlert('fatal', 'crash.guard', `${where}: ${e?.message ?? String(err)}`, { where, stack: e?.stack });
     console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
   };
   process.on('uncaughtException', (err) => {

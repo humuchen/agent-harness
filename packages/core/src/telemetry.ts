@@ -125,6 +125,27 @@ export function recordError(name: string): void {
   incCounter('errors');
 }
 
+/**
+ * 统一错误记录：累加错误计数器 + 输出结构化日志。
+ * `err` 可传 Error（自动提取 message/stack）或任意字段对象；`fields` 用于补充上下文
+ * （如 runId、sessionKey）。替代散落各处的 `recordError + 手动 structLog` 写法，
+ * 让所有业务错误拥有一致的日志形态与计数维度。
+ */
+export function logError(name: string, err?: unknown, fields?: Record<string, unknown>): void {
+  incCounter(`error.${name}`);
+  incCounter('errors');
+  const merged: Record<string, unknown> = { ...(fields ?? {}) };
+  if (err instanceof Error) {
+    merged.message = err.message;
+    merged.stack = err.stack;
+  } else if (err && typeof err === 'object') {
+    Object.assign(merged, err as Record<string, unknown>);
+  } else if (err !== undefined) {
+    merged.detail = String(err);
+  }
+  structLog('error', `error: ${name}`, merged);
+}
+
 export interface MetricsSnapshot {
   since: number;
   uptimeMs: number;
@@ -171,6 +192,55 @@ export function structLog(level: LogLevel, message: string, fields?: Record<stri
   if (level === 'error' || level === 'fatal') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
+}
+
+// ---------------------------------------------------------------------------
+// 告警下沉（可插拔：Webhook / 日志文件 / 外部 APM）
+// ---------------------------------------------------------------------------
+
+export type AlertLevel = 'warn' | 'error' | 'fatal';
+
+/** 一条告警。severity 决定计数维度（alerts.warn/error/fatal）。 */
+export interface Alert {
+  level: AlertLevel;
+  name: string;
+  message: string;
+  fields?: Record<string, unknown>;
+  ts: string;
+}
+
+type AlertSink = (alert: Alert) => void | Promise<void>;
+let alertSink: AlertSink | null = null;
+
+/**
+ * 注册告警接收器（如 Webhook / 日志文件）。传 null 关闭（默认关闭）。
+ * 接收器异常被吞掉，绝不影响主业务流程。
+ */
+export function setAlertSink(sink: AlertSink | null): void {
+  alertSink = sink;
+}
+
+/**
+ * 触发一条告警：始终留一条结构化日志（级别按 level 映射），若已注册 sink 则异步转发。
+ * 即使 sink 抛错也只记一条 warn 日志，不向上传播。返回 Promise 便于调用方 `await`，
+ * 但也可 fire-and-forget（内部已兜底，不会成为 unhandled rejection）。
+ */
+export async function emitAlert(
+  level: AlertLevel,
+  name: string,
+  message: string,
+  fields?: Record<string, unknown>
+): Promise<void> {
+  incCounter('alerts');
+  incCounter(`alerts.${level}`);
+  structLog(level === 'warn' ? 'warn' : 'error', `[alert] ${name}: ${message}`, fields);
+  if (alertSink) {
+    try {
+      await alertSink({ level, name, message, fields, ts: new Date().toISOString() });
+    } catch (e: any) {
+      structLog('warn', 'alert sink failed', { error: e?.message ?? String(e), name });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

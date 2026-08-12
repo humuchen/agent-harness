@@ -377,6 +377,14 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
   也可调用 `bindOtelMeter(meter)` 把指标导出到真实 Collector。无 Collector 时退化为内存快照。
 - Web Playground 暴露受保护的 `GET /api/metrics`（需 `UI_AUTH_TOKEN`），返回上述快照 JSON，
   可直接接入 Grafana / Prometheus。
+- **统一错误日志与告警收口**：所有业务错误统一经 `logError(scope, err, fields)` 留结构化日志
+  + 计数；`emitAlert(level, name, message, fields)` 在记录日志的同时，把错误/致命事件推送到
+  可插拔的告警接收器（`setAlertSink`）。默认无接收器（仅本地日志）；可经环境变量装配：
+  - `ALERT_WEBHOOK_URL`：把告警 JSON（`{level,name,message,fields,ts}`）POST 到 Webhook
+    （Slack / 飞书 / 钉钉 入站 Webhook 或自研告警网关）；
+  - `ALERT_LOG_PATH`：把告警以 JSON 逐行追加到文件，便于 Filebeat / Loki 采集。
+  - 多个 sink 可同时启用；sink 异常被吞掉，绝不影响主流程。`/api/metrics` 含 `alerts`、
+    `alerts.error`、`alerts.fatal` 等计数器。
 
 ### 运行队列与水平扩展（P1-8 架构解耦）
 
@@ -580,11 +588,13 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 
 - **工具结果截断** `maxToolResultChars`（默认 16000，`runner.ts:241`，`harness.ts:300-307`）：超过阈值的工具结果截断并标注「原长 N 字符」，显著压低后续步骤的上下文体积与重发成本。复杂任务可调大，机密/长文本场景建议调小。
 - **滑动窗口保留 system 消息**（`memory.ts` `add()`，约 62–101 行）：窗口溢出（`maxWindow`，默认 20，可经 `MEMORY_WINDOW` 调整，`runner.ts:232-234`）时只淘汰非 system 的历史，保留 system 提示词，避免「截断后重新注入 system」带来的重复开销与行为漂移。
-- **上下文压缩（可选，根治 token 平方增长）** `CONTEXT_COMPRESSION`（`memory.ts` `MemorySummarizer` + `runner.ts` 启发式摘要器）：开启后，滑动窗口溢出淘汰的旧轮次不再直接丢弃，而是被压缩为**一条 `system` 摘要消息固定保留**。模型仍保有早期上下文（已完成的交互数、工具调用清单），但每步重发的量从「全部历史」降为「一条有界摘要」。当前为**启发式**摘要器（统计用户请求/工具调用，**零额外 LLM 调用**，有界 ~400 字符），默认关闭（简单任务关闭时行为与改造前完全一致）。后续可替换为 LLM 摘要器做更高质量压缩（契约已预留 `MemorySummarizer`）。
+- **上下文压缩（可选，根治 token 平方增长）** `CONTEXT_COMPRESSION`（`memory.ts` `MemorySummarizer` + `runner.ts` 摘要器）：开启后，滑动窗口溢出淘汰的旧轮次不再直接丢弃，而是被压缩为**一条 `system` 摘要消息固定保留**。模型仍保有早期上下文（已完成的交互数、工具调用清单），但每步重发的量从「全部历史」降为「一条有界摘要」。`MemorySummarizer` 契约已支持**异步**返回（`Promise<string>`，用于调用 LLM 做摘要），`Memory.add()` 不阻塞，摘要在 harness 循环顶部 `flushSummary()` 落地，因此对主循环同步结构零侵入。
+  - **启发式摘要器**（默认，`COMPRESSION_MODE=heuristic`）：统计用户请求/工具调用，**零额外 LLM 调用**，有界 ~400 字符，行为确定。
+  - **LLM 摘要器**（可选，`COMPRESSION_MODE=llm`）：把被淘汰轮次交给同一 LLM 做高质量中文压缩（≤400 字），更保真；每次压缩有一次额外 LLM 调用成本，**仅 real 模式生效**（mock/离线模式即便设为 `llm` 也自动回退启发式）。失败（限流/异常）时回退上一轮摘要，绝不会中断主运行。
 - **重试 token 用量累计**（`llm/shared.ts`）：`callOpenAIChat` 跨重试累加 `usageAcc`，单次 run 的「真实总成本」不再被低估，可在 `/api/metrics` 看到准确数字。
 - **提示词缓存（可选）** `PROMPT_CACHE`：设为 `true`/`1` 时给首条 system 消息打 `cache_control: { type: 'ephemeral' }`，使「每步重发的 system + 技能目录」可命中提供方缓存、不计重复输入费。默认关闭，避免个别严格校验未知字段的 provider 报错。
 
-> 权衡：问题 B 的根因（全量历史每步重发）已通过「截断 + 窗口 + 压缩摘要 + 缓存 + 可观测」五件套在不牺牲信息完整性的前提下把成本压到可控区间；其中压缩目前是**启发式**而非 LLM 生成摘要，换取零额外调用成本与确定性行为。若追求更高质量的早期上下文压缩，可后续接入 LLM 摘要器（核心已预留 `MemorySummarizer` 同步契约）。
+> 权衡：问题 B 的根因（全量历史每步重发）已通过「截断 + 窗口 + 压缩摘要 + 缓存 + 可观测」五件套在不牺牲信息完整性的前提下把成本压到可控区间。压缩摘要提供两档：`heuristic`（默认，零额外调用、行为确定）与 `llm`（调用模型做更高质量压缩，有额外成本，仅 real 模式生效）。长对话追求保真时可切 `llm`；对成本/确定性敏感时保持 `heuristic`。
 
 ### 相关环境变量（新增，详见 `.env.example`）
 
@@ -595,7 +605,10 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | `AGENT_COMPLETION_CHECK` | 开启空响应完成自检，避免空回复提前终止 | 关闭 |
 | `MEMORY_WINDOW` | 滑动窗口容量（`memory.ts` 溢出淘汰非 system 历史） | `20` |
 | `PROMPT_CACHE` | 给 system 打 `cache_control`，命中提示词缓存降输入费 | 关闭 |
-| `CONTEXT_COMPRESSION` | 滑动窗口溢出时把淘汰轮次压缩为 system 摘要固定保留，根治 token 平方增长 | 关闭（启发式摘要器，零额外调用） |
+| `CONTEXT_COMPRESSION` | 滑动窗口溢出时把淘汰轮次压缩为 system 摘要固定保留，根治 token 平方增长 | 关闭 |
+| `COMPRESSION_MODE` | 压缩摘要器：`heuristic`（零额外调用）/ `llm`（调用模型做高质量压缩，仅 real 模式生效，mock 自动回退） | `heuristic` |
+| `ALERT_WEBHOOK_URL` | 告警接收器：把告警 JSON POST 到该 Webhook（Slack/飞书/钉钉/自研网关） | 未设置（仅本地日志） |
+| `ALERT_LOG_PATH` | 告警接收器：把告警以 JSON 逐行追加到该文件，便于采集 | 未设置（仅本地日志） |
 
 ## 测试
 
