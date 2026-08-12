@@ -101,42 +101,51 @@ const agent = new AgentHarness({ llm, tools });
 设置环境变量即可（见 `.env.example`）；不填 `OPENROUTER_API_KEY` 时示例会
 自动退回内置 mock LLM，保证零配置可运行。
 
-## 自助环境治理闭环（agent × harness-env-platform）
+## 自助环境治理闭环（可插拔 EnvPlatform）
 
-把 agent 接到前面 `harness-env-platform/` 的 Harness 流水线，让 agent
-**自助拉起 / 销毁 ephemeral 环境**：
+把 agent 接入一个**可替换的环境平台后端**，让它自助拉起 / 销毁临时或预览环境。
+核心只依赖 `EnvPlatform` 接口（`packages/core/src/integrations/env-platform.ts`），
+具体后端由 `ENV_PLATFORM` 选择——**后端可换、主循环零改动**：
 
-- `src/integrations/harness-client.ts` — Harness NG 流水线 API 客户端，
-  把「我要个环境」「拆掉它」映射为 `provision-environment` / `destroy-ephemeral`
-  流水线触发 + **状态轮询**。**默认 dry-run**：无 `HARNESS_API_KEY` 时只打印
-  它将发出的 API 调用并返回占位 handle，整条闭环可零凭据跑通。
-  - 接真实 Harness 时，状态字段路径可配置：`statusPath`（默认
-    `pipelineExecution.summary.status`）、`doneStatuses`、`successStatuses`。
-    设 `HARNESS_DEBUG=1` 会打印原始 trigger / status 响应，方便对照你的实例
-    调整字段映射。
-- `src/integrations/harness-tools.ts` — 把上面两个能力注册成 agent 工具
-  `create_ephemeral_environment` / `destroy_environment`。
+| 后端 (`ENV_PLATFORM`) | 说明 | 依赖 | 是否真建环境 |
+|---|---|---|---|
+| `harness`（默认） | Harness NG Pipeline 客户端，把"我要环境/拆掉它"映射为 `provision-environment` / `destroy-ephemeral` 流水线触发 + 状态轮询 | 零依赖 | 无 `HARNESS_API_KEY` 时 **dry-run**（只打印将发出的 API 调用），填 key 后真建 |
+| `local` | **零依赖本地后端**：真正起一个 `node:http` 预览服务（按 envId 分配端口 + TTL 自动销毁） | 零依赖 | 是，开箱即真实可跑（适合本地验证 / 小团队 / 演示） |
+| `k8s` | Kubernetes 后端：把分支部署成真实 Deployment/Service/可选 Ingress，轮询就绪 | 可选依赖 `@kubernetes/client-node` + 可用 kubeconfig | 是，生产级（企业落地推荐） |
+
+- `EnvPlatform` 契约（`env-platform.ts`）：`createEphemeralEnvironment` / `destroyEnvironment` /
+  `*WithEvents`（流式状态机供 UI 可视化）/ `getStatus`。`createEnvPlatform()` 按
+  `ENV_PLATFORM` 装配；默认 `harness` 保持历史零凭据 dry-run 行为。
+- `HarnessClient`（`harness-client.ts`）现在是 `EnvPlatform` 的默认实现：状态字段路径可配置
+  （`statusPath` 默认 `pipelineExecution.summary.status`、`doneStatuses`、`successStatuses`），
+  设 `HARNESS_DEBUG=1` 打印原始 trigger/status 响应以便对齐你的实例。
+- `LocalEnvPlatform`（`local-env-platform.ts`）：每个 env 独立目录 `ENV_LOCAL_ROOT/<envId>`
+  + 一张预览页；`ENV_LOCAL_HOST`（默认 `localhost`）决定暴露的 URL；`ttlHours` 到期自动销毁。
+  闭环真实可跑——`create` 拿到可访问 URL、用户可打开、`destroy` 后 URL 下线。
+- `KubernetesEnvPlatform`（`k8s-env-platform.ts`）：镜像来自 `K8S_IMAGE`（或 `create` 工具传入
+  `image`），资源名 `K8S_NAME_PREFIX+envId`；设 `K8S_INGRESS_HOST_TEMPLATE` 才建 Ingress（否则返回
+  集群内 Service DNS）。依赖缺失或无可用的 kubeconfig 时**构造即抛清晰错误**，不静默降级。
+- `src/integrations/harness-tools.ts` — 把"拉起/销毁"注册成 agent 工具
+  `create_ephemeral_environment` / `destroy_environment`（参数类型已放宽为 `EnvPlatform`）。
 - 示例：
-  - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`（无 key 用 mock；有
-    `OPENROUTER_API_KEY` 则真跑；harness 始终 dry-run 直到你填 `HARNESS_API_KEY`）
-  - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环
-    （Turn1 拉起环境 → Turn2 销毁环境），已用 OpenRouter 实测跑通
+  - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`
+  - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环（拉起 → 销毁）
   - `examples/chat.ts` — `pnpm --filter @agent-harness/examples run chat`：单轮真实对话（需 `OPENROUTER_API_KEY`）
 
 ```bash
-# 零凭据演示（dry-run，打印真实会发出的 Harness API 调用）
+# 零凭据演示（harness dry-run，打印将发出的 Harness API 调用）
 pnpm --filter @agent-harness/examples run demo:env
 
-# 真实 LLM + dry-run Harness：会真正调用 OpenRouter 驱动 create→destroy 循环
-export OPENROUTER_API_KEY=sk-or-...
-pnpm --filter @agent-harness/examples run real-loop
+# 本地后端：真正起预览服务，无需任何外部平台（ENV_PLATFORM=local）
+ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 
-# 真实接入 Harness：在 .env 填入 HARNESS_API_KEY / ACCOUNT / ORG / PROJECT 后重跑
+# 真实接入 Harness：在 .env 填入 HARNESS_API_KEY / ACCOUNT / ORG / PROJECT
+# 真实接入 K8s：先 `pnpm --filter @agent-harness/core add -D @kubernetes/client-node` 并配置 KUBECONFIG，再 ENV_PLATFORM=k8s
 ```
 
-运行示例时你会看到：用户一句话 → agent 调用 `create_ephemeral_environment`
-（打印触发的流水线 YAML）→ 用完后调用 `destroy_environment` 清理 → 闭环完成。
-护栏对含密钥输入依旧在入口拦截。
+> 设计要点：原 `harness-env-platform`（外部 Harness 账号里的两条 Pipeline）只是 `EnvPlatform`
+> 的一个实现。**不绑定 Harness 也能把"自助环境"跑起来**——用 `local` 验证、用 `k8s` 上生产，
+> 或把 `createEnvPlatform()` 工厂换成你自己的后端（实现 `EnvPlatform` 接口即可）。护栏对含密钥输入依旧在入口拦截。
 
 ## MCP 接入（已实现，配即激活）
 

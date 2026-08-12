@@ -9,8 +9,9 @@ import {
   createOpenRouterLLM,
   createOpenAILLM,
   createFailoverLLM,
-  HarnessClient,
+  createEnvPlatform,
   registerHarnessTools,
+  type EnvPlatform,
   registerBuiltinTools,
   SkillRegistry,
   defaultSkills,
@@ -109,9 +110,9 @@ export async function assembleAgent(
   maxSteps?: number
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
-  const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
-  const dryRun = !process.env.HARNESS_API_KEY;
-  registerHarnessTools(tools, harnessClient);
+  const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
+  const dryRun = envPlatform.dryRun;
+  registerHarnessTools(tools, envPlatform);
 
   // 注册零依赖的内置基础工具（calculator / datetime / web_fetch / filesystem），
   // 默认常开，可用环境变量 BUILTINS_FS / BUILTINS_WEB / BUILTINS_CALC / BUILTINS_DT
@@ -147,6 +148,10 @@ export async function assembleAgent(
   tools.mergeFrom(mcpManager.liveRegistry());
 
   const notes: string[] = [];
+  notes.push(
+    `环境平台后端：${envPlatform.kind}${dryRun ? '（dry-run，未连接真实平台）' : '（真实后端）'}；` +
+      `通过 create_ephemeral_environment / destroy_environment 工具在对话中自助拉起/销毁环境。`
+  );
   let llm: LLM;
   let llmKind: 'mock' | 'openrouter' = 'mock';
   let failover = false;

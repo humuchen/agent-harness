@@ -1,14 +1,14 @@
 import { ToolRegistry, objectParams } from '../tools';
-import { HarnessClient } from './harness-client';
+import type { EnvPlatform } from './env-platform';
 
 /**
- * 将 Harness 环境自助服务工具注册到 Agent 的 ToolRegistry。
- * 这些工具使 Agent 能够与 `harness-env-platform` 完成闭环：
- * 创建临时环境、使用环境、销毁环境。
+ * 将环境自助服务工具注册到 Agent 的 ToolRegistry。
+ * 这些工具使 Agent 能够与任意 EnvPlatform 后端（Harness / Kubernetes / 本地）完成闭环：
+ * 创建临时环境、使用环境、销毁环境。后端通过 `client: EnvPlatform` 注入，主循环零改动。
  */
 export function registerHarnessTools(
   registry: ToolRegistry,
-  client: HarnessClient
+  client: EnvPlatform
 ): void {
   registry.register(
     'create_ephemeral_environment',

@@ -1,4 +1,4 @@
-import { HarnessClient } from '@agent-harness/core';
+import { createEnvPlatform, type EnvPlatform } from '@agent-harness/core';
 import { loadEnv } from '@agent-harness/core';
 
 loadEnv();
@@ -46,12 +46,12 @@ export type EnvEventListener = (env: EnvState) => void;
  * 并把 HarnessClient 打印的真实 API 调用作为凭证，因此无需密钥即可演示闭环。
  */
 class EnvPipeline {
-  private client: HarnessClient;
+  private client: EnvPlatform;
   private envs: EnvState[] = [];
   private listeners = new Set<EnvEventListener>();
 
   constructor() {
-    this.client = new HarnessClient();
+    this.client = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
   }
 
   /** 订阅环境状态变化（用于 SSE 推送）。 */
