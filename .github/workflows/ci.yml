@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+# 取消同一分支上正在进行的旧构建，避免资源浪费。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # frozen-lockfile 保证 CI 与本地依赖树一致；失败即说明 lockfile 未同步。
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tsc 在 emit 时已做类型检查，build 即等同于 typecheck 门禁。
+      - name: Build all packages
+        run: pnpm -r build
+
+      - name: Run tests
+        run: pnpm -r test
+
+  # 依赖安全扫描（不阻塞主流程，仅报告）。企业落地时建议转为门禁。
+  audit:
+    name: Dependency Audit & SBOM
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit (high severity)
+        run: pnpm audit --severity high || true
+      # 生成 CycloneDX SBOM（npm 钻取 manifest）。失败不阻塞（仅作产物归档）。
+      - name: Generate SBOM (CycloneDX)
+        continue-on-error: true
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm --output-file sbom.json --output-format JSON || true
+          test -f sbom.json && echo "SBOM generated: $(wc -c < sbom.json) bytes" || echo "SBOM generation skipped"
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # PR 依赖变更审查（新增/升级依赖的已知漏洞与许可证合规）。
+  dependency-review:
+    name: Dependency Review (PR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+

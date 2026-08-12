@@ -10,6 +10,14 @@ interface RegisteredTool {
 export class ToolRegistry {
   private tools = new Map<string, RegisteredTool>();
 
+  /**
+   * 注册一个工具到工具注册表中
+   * @param name - 工具的唯一标识名称
+   * @param description - 工具的功能描述
+   * @param parameters - 工具的参数定义，采用 JSON Schema 格式
+   * @param fn - 工具的执行函数，接收参数并返回执行结果
+   * @param source - 可选，工具的来源标识（如 MCP 服务名称）
+   */
   register(
     name: string,
     description: string,
@@ -29,6 +37,11 @@ export class ToolRegistry {
 
   has(name: string): boolean {
     return this.tools.has(name);
+  }
+
+  /** 从注册表中移除某个工具（用于断开 MCP 服务时清理其工具）。 */
+  unregister(name: string): void {
+    this.tools.delete(name);
   }
 
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {

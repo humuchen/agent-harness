@@ -41,6 +41,8 @@
   }
   .mode-btn:hover { color: var(--text); border-color: var(--accent); }
   .mode-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .token-input { width: 220px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
+  .token-input:focus { outline: none; border-color: var(--accent); }
 
   .chips { display: flex; gap: 8px; padding: 8px 20px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
   .chip { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
@@ -121,12 +123,31 @@
   .dot.run { background: var(--yellow); animation: pulse 1s infinite; }
   .dot.pass, .dot.connected { background: var(--green); }
   .dot.fail, .dot.error { background: var(--red); }
+  .mcp-server .ms-badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+  .mcp-server .ms-badge.ok { color: var(--green); border-color: var(--green); }
+  .mcp-server .ms-badge.bad { color: var(--red); border-color: var(--red); }
+  .mcp-server .btn.small { margin-left: auto; padding: 2px 8px; font-size: 11px; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   .add-mcp { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border); }
   .add-mcp input { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
   .add-mcp input:focus { outline: none; border-color: var(--accent); }
   .add-mcp .row { display: flex; gap: 6px; }
   .add-mcp .btn { padding: 0 12px; font-size: 12px; }
+
+  /* MCP presets marketplace */
+  .preset { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel-2); }
+  .preset.rec { border-color: var(--accent); }
+  .preset .p-head { display: flex; align-items: center; gap: 8px; }
+  .preset .p-name { font-family: var(--mono); font-size: 12px; color: var(--purple); font-weight: 600; }
+  .preset .p-url { color: var(--muted); font-size: 11px; margin-top: 2px; word-break: break-all; }
+  .preset .p-caps { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .preset .p-cap { font-size: 10px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .preset .p-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .preset .p-recmd { font-size: 10px; color: var(--green); border: 1px solid var(--green); border-radius: 6px; padding: 0 6px; }
+  .preset .p-token { margin-top: 6px; }
+  .preset .p-token input { width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); }
+  .preset .p-token input:focus { outline: none; border-color: var(--accent); }
+  .preset .p-connect { margin-top: 6px; display: flex; gap: 6px; }
 
   /* Timeline */
   .step { border-left: 2px solid var(--border); padding: 0 0 14px 14px; position: relative; }
@@ -232,6 +253,7 @@
     <button class="mode-btn active" data-mode="mock">Mock（离线）</button>
     <button class="mode-btn" data-mode="real">真实 LLM</button>
     <button class="mode-btn" data-mode="real-mcp">真实 + MCP</button>
+    <input id="tokenInput" class="token-input" type="password" placeholder="访问令牌（UI_AUTH_TOKEN，留空=开放）" />
   </div>
 </header>
 
@@ -246,11 +268,32 @@
   <span class="chip" id="chip-mcp">MCP: …</span>
 </div>
 
+<div class="panel" id="approvalCard" style="display:none">
+  <div class="card-head">
+    <span>🛡 审批队列 <span class="dim" id="approvalCount"></span></span>
+    <button class="btn ghost" id="approvalRefresh">刷新</button>
+  </div>
+  <div class="panel" id="approvalList"><span class="dim">—— 暂无待审批工单 ——</span></div>
+  <div class="dim" style="margin-top:6px">敏感动作（真实运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需在此审批。令牌角色需具备审批权限。</div>
+</div>
+
+<div class="panel" id="recipeCard" style="display:none">
+  <div class="card-head">
+    <span>📦 运行配方版本 <span class="dim" id="recipeCount"></span></span>
+    <button class="btn ghost" id="recipeRefresh">刷新</button>
+  </div>
+  <div class="panel" id="recipeList"><span class="dim">—— 暂无保存的配方 ——</span></div>
+  <div class="dim" style="margin-top:6px">「存配方」会把当前运行的 prompt / 模型 / 工具集快照为命名版本，便于回归比对（P2-13）。</div>
+</div>
+
 <div class="controls">
   <textarea id="prompt" placeholder="输入用户请求…"></textarea>
   <input id="modelInput" class="model-input" placeholder="模型（真实模式，留空=默认）" style="display:none" />
+  <input id="maxStepsInput" class="model-input" type="number" min="1" max="200" placeholder="步数上限（留空=默认24）" style="width:160px;display:none" title="单次闭环最大步数；复杂任务可调大，避免提前终止" />
   <button class="btn" id="runBtn">▶ 运行 Agent</button>
   <button class="btn ghost" id="verifyBtn">✓ 运行验证</button>
+  <button class="btn ghost" id="evalBtn">📊 评估</button>
+  <button class="btn ghost" id="recipeBtn">💾 存配方</button>
 </div>
 
 <div class="layout">
@@ -263,6 +306,10 @@
     <div class="panel">
       <h2>MCP 服务 · Servers</h2>
       <div class="body" id="mcpPanel"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="panel">
+      <h2>MCP 预设市场 · Presets</h2>
+      <div class="body" id="presetPanel"><div class="empty">加载中…</div></div>
     </div>
     <div class="panel">
       <h2>验证 · Verification</h2>
@@ -424,17 +471,33 @@ window.HarnessDemo = (function () {
     ];
   }
 
+  var demoServersArr = null;
   function demoServers() {
-    return [{
-      name: "context7",
-      url: "https://mcp.context7.com/mcp",
-      status: "connected",
-      toolCount: 2,
-      tools: mcpTools().map(function (t) {
-        return { registeredName: t.name, originalName: t.name.split("__")[1], description: t.description };
-      }),
-      error: null
-    }];
+    if (!demoServersArr) {
+      demoServersArr = [{
+        name: "context7",
+        url: "https://mcp.context7.com/mcp",
+        status: "connected",
+        toolCount: 2,
+        tools: mcpTools().map(function (t) {
+          return { registeredName: t.name, originalName: t.name.split("__")[1], description: t.description };
+        }),
+        error: null
+      }];
+    }
+    return demoServersArr;
+  }
+  function demoServersPush(s) { demoServers(); demoServersArr.push(s); }
+
+  // 开箱预设清单（对齐 core 的 MCP_PRESETS，供静态演示的「预设市场」展示）
+  function presetList() {
+    return [
+      { id: "context7", name: "Context7", url: "https://mcp.context7.com/mcp", transportType: "streamable-http", authType: "bearer", authLabel: "Context7 API Key（可选）", capabilities: ["库文档", "API 最新片段", "TS/Python/Rust"], recommended: true, note: "零配置即可用，免 key 时直接接入。" },
+      { id: "github", name: "GitHub", url: "https://api.githubcopilot.com/mcp/", transportType: "streamable-http", authType: "bearer", authLabel: "GitHub PAT", capabilities: ["仓库", "Issue", "PR", "Copilot Spaces"], recommended: true, note: "需 GitHub Copilot 订阅。" },
+      { id: "composio", name: "Composio", url: "https://connect.composio.dev/mcp", transportType: "streamable-http", authType: "bearer", authLabel: "Composio API Key", capabilities: ["Gmail", "Slack", "Notion", "Linear", "1000+ 集成"], recommended: true, note: "单端点覆盖 1000+ 集成。" },
+      { id: "zapier", name: "Zapier", url: "https://mcp.zapier.com/api/v1/connect", transportType: "streamable-http", authType: "none", capabilities: ["9000+ App", "30000+ 动作"], note: "在 mcp.zapier.com 复制专属 secret URL 后粘贴到自定义添加。" },
+      { id: "playwright", name: "Playwright（自托管）", url: "http://localhost:8931/mcp", transportType: "streamable-http", authType: "none", capabilities: ["浏览器自动化", "网页抓取", "填表"], note: "需自托管：npx @playwright/mcp@latest --port 8931。" }
+    ];
   }
 
   function defaultPrompt(mode) {
@@ -717,6 +780,7 @@ window.HarnessDemo = (function () {
       });
     }
     if (path === "/api/mcp/list") return Promise.resolve({ servers: demoServers() });
+    if (path === "/api/mcp/presets") return Promise.resolve({ presets: presetList() });
     if (path === "/api/env") return Promise.resolve({ envs: envs.map(clone) });
     return Promise.reject(new Error("静态演示模式不支持端点 " + path));
   }
@@ -731,6 +795,24 @@ window.HarnessDemo = (function () {
       emit({ type: "_env_done", error: true });
       return Promise.resolve();
     }
+    if (path === "/api/mcp/preset") {
+      var pid = String(body.id || "");
+      var pp = presetList().filter(function (x) { return x.id === pid; })[0];
+      if (pp) {
+        demoServersPush({
+          name: pp.name,
+          url: pp.url,
+          status: "connected",
+          toolCount: 2,
+          tools: mcpTools().map(function (t) {
+            return { registeredName: t.name, originalName: t.name.split("__")[1], description: t.description };
+          }),
+          error: null
+        });
+      }
+      emit({ type: "_preset_done", id: pid, ok: !!pp });
+      return Promise.resolve();
+    }
     return Promise.reject(new Error("静态演示模式不支持端点 " + path));
   }
 
@@ -741,7 +823,7 @@ window.HarnessDemo = (function () {
 <script>
 (function () {
   "use strict";
-  var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {} };
+  var state = { mode: "mock", running: false, verifying: false, envRunning: false, toolRefs: {}, token: "", jobId: null };
   var $ = function (id) { return document.getElementById(id); };
 
   var PROMPTS = {
@@ -766,7 +848,7 @@ window.HarnessDemo = (function () {
     },
     getJSON: function (path) {
       if (!Backend.live) return window.HarnessDemo.get(path);
-      return fetch(path).then(function (r) {
+      return fetch(path, { headers: authHeaders() }).then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       });
@@ -808,11 +890,100 @@ window.HarnessDemo = (function () {
       state.mode = b.getAttribute("data-mode");
       var showModel = state.mode !== "mock";
       $("modelInput").style.display = showModel ? "" : "none";
+      $("maxStepsInput").style.display = showModel ? "" : "none";
       var ta = $("prompt");
       if (!ta.value.trim()) ta.value = PROMPTS[state.mode] || "";
       ta.placeholder = PROMPTS[state.mode] || "输入用户请求…";
     });
   });
+
+  // ---- 访问令牌（UI_AUTH_TOKEN）----
+  var tokenEl = $("tokenInput");
+  if (tokenEl) {
+    tokenEl.addEventListener("input", function () { state.token = tokenEl.value.trim(); });
+    state.token = tokenEl.value.trim();
+  }
+  function authHeaders() {
+    var h = { "content-type": "application/json" };
+    if (state.token) h["Authorization"] = "Bearer " + state.token;
+    return h;
+  }
+
+  // ---- 审批队列（管理员面板）----
+  function loadApprovals() {
+    if (!Backend.live || !state.token) { $("approvalCard").style.display = "none"; return; }
+    Backend.getJSON("/api/approvals").then(function (j) {
+      var tickets = (j && j.tickets) || [];
+      $("approvalCard").style.display = tickets.length ? "" : "none";
+      $("approvalCount").textContent = tickets.length ? "(" + tickets.length + ")" : "";
+      if (!tickets.length) { $("approvalList").innerHTML = '<span class="dim">—— 暂无待审批工单 ——</span>'; return; }
+      $("approvalList").innerHTML = tickets.map(function (t) {
+        var badge = t.status === "pending" ? "warn" : (t.status === "approved" ? "ok" : "err");
+        var ctrl = t.status === "pending"
+          ? '<button class="btn" data-apr="approve" data-id="' + esc(t.id) + '">批准</button>'
+            + ' <button class="btn ghost" data-apr="reject" data-id="' + esc(t.id) + '">拒绝</button>'
+          : '<span class="dim">' + esc(t.status) + (t.decidedBy ? " by " + esc(t.decidedBy) : "") + '</span>';
+        return '<div class="arow ' + badge + '"><div><b>' + esc(t.action) + '</b> <span class="dim">' + esc(t.summary || "") + '</span></div><div class="act">' + ctrl + '</div></div>';
+      }).join("");
+    }).catch(function () { $("approvalCard").style.display = "none"; });
+  }
+  var approvalRefreshEl = $("approvalRefresh");
+  if (approvalRefreshEl) approvalRefreshEl.addEventListener("click", loadApprovals);
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest ? ev.target.closest("[data-apr]") : null;
+    if (!b) return;
+    var decision = b.getAttribute("data-apr");
+    var id = b.getAttribute("data-id");
+    fetch("/api/approvals/" + id, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ decision: decision })
+    }).then(function () { loadApprovals(); }).catch(function () {});
+  });
+  if (tokenEl) tokenEl.addEventListener("input", function () { setTimeout(loadApprovals, 50); });
+
+  // ---- 评估 & 配方版本（P2-13）----
+  function loadRecipes() {
+    if (!Backend.live || !state.token) { $("recipeCard").style.display = "none"; return; }
+    Backend.getJSON("/api/recipes").then(function (j) {
+      var rs = (j && j.recipes) || [];
+      $("recipeCard").style.display = rs.length ? "" : "none";
+      $("recipeCount").textContent = rs.length ? "(" + rs.length + ")" : "";
+      if (!rs.length) { $("recipeList").innerHTML = '<span class="dim">—— 暂无保存的配方 ——</span>'; return; }
+      $("recipeList").innerHTML = rs.map(function (r) {
+        var rec = r.record || {};
+        return '<div class="arow"><div><b>' + esc(r.name) + '</b> <span class="dim">' +
+          esc((rec.mode || "") + " · " + (rec.tools || []).length + " 工具 · " + (rec.steps || 0) + " 步") +
+          '</span></div><div class="act"><span class="dim">' + esc(new Date(r.createdAt).toLocaleString()) + '</span></div></div>';
+      }).join("");
+    }).catch(function () { $("recipeCard").style.display = "none"; });
+  }
+  function postJSON(path, body) {
+    return fetch(path, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+  }
+  $("evalBtn").addEventListener("click", function () {
+    if (!state.jobId) { appendBanner("warn", "请先运行一次 Agent，再点评估（需要 jobId）"); return; }
+    postJSON("/api/eval", { jobId: state.jobId }).then(function (j) {
+      if (j.error) { appendBanner("error", "评估失败：" + j.error); return; }
+      var res = j.result || {};
+      appendBanner(res.passed ? "ok" : "warn",
+        "📊 评估得分 " + (res.score * 100).toFixed(0) + "% · " + (res.passed ? "通过" : "未通过") +
+        (res.reasons ? " ｜ " + (res.reasons || []).join("；") : ""));
+    }).catch(function (e) { appendBanner("error", "评估请求失败：" + (e && e.message ? e.message : e)); });
+  });
+  $("recipeBtn").addEventListener("click", function () {
+    if (!state.jobId) { appendBanner("warn", "请先运行一次 Agent，再点存配方（需要 jobId）"); return; }
+    var name = prompt("配方名称（便于回归比对）：", "recipe-" + state.jobId);
+    if (name === null) return;
+    postJSON("/api/recipes", { jobId: state.jobId, name: name }).then(function (j) {
+      if (j.error) { appendBanner("error", "保存配方失败：" + j.error); return; }
+      appendBanner("ok", "💾 已保存配方：" + (j.recipe && j.recipe.name));
+      loadRecipes();
+    }).catch(function (e) { appendBanner("error", "保存配方失败：" + (e && e.message ? e.message : e)); });
+  });
+  var recipeRefreshEl = $("recipeRefresh");
+  if (recipeRefreshEl) recipeRefreshEl.addEventListener("click", loadRecipes);
+  if (tokenEl) tokenEl.addEventListener("input", function () { setTimeout(loadRecipes, 50); });
 
   $("prompt").value = PROMPTS.mock;
 
@@ -830,7 +1001,10 @@ window.HarnessDemo = (function () {
 
     var prompt = $("prompt").value;
     var model = $("modelInput").value.trim();
-    Backend.stream("/api/run", { mode: state.mode, prompt: prompt, model: model }, dispatchHarness);
+    var maxStepsRaw = $("maxStepsInput").value.trim();
+    var maxSteps = maxStepsRaw ? Number(maxStepsRaw) : undefined;
+    if (!(maxSteps >= 1)) maxSteps = undefined; // 非法/空 → 服务端默认 24
+    Backend.stream("/api/run", { mode: state.mode, prompt: prompt, model: model, maxSteps: maxSteps }, dispatchHarness);
   }
 
   function runVerification() {
@@ -848,36 +1022,91 @@ window.HarnessDemo = (function () {
 
   // ---- SSE-over-fetch streaming（真实后端路径）----
   function realStream(url, body, onEvent) {
-    fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
-    }).then(function (resp) {
-      var reader = resp.body.getReader();
-      var decoder = new TextDecoder();
-      var buf = "";
-      function pump() {
-        return reader.read().then(function (r) {
-          if (r.done) { finish(); return; }
-          buf += decoder.decode(r.value, { stream: true });
-          var idx;
-          while ((idx = buf.indexOf("\n\n")) >= 0) {
-            var chunk = buf.slice(0, idx);
-            buf = buf.slice(idx + 2);
-            var line = chunk.split("\n").filter(function (l) { return l.indexOf("data:") === 0; })[0];
-            if (line) {
-              var json = line.slice(5).trim();
-              if (json) { try { onEvent(JSON.parse(json)); } catch (e) {} }
+    function start(payload) {
+      fetch(url, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(payload)
+      }).then(function (resp) {
+        // 审批闸门：敏感动作返回 202 + ticketId，前端轮询裁决后自动重发继续。
+        if (resp.status === 202) {
+          return resp.json().then(function (j) {
+            if (j && j.ticketId) handleApproval(url, body, j.ticketId);
+            else finish();
+          }).catch(function () { finish(); });
+        }
+        if (!resp.ok || !resp.body) {
+          return resp.json().then(function (j) {
+            appendBanner("error", "请求失败：" + (j && j.error ? j.error : "HTTP " + resp.status));
+          }).catch(function () {
+            appendBanner("error", "请求失败：HTTP " + resp.status);
+          }).then(function () { finish(); });
+        }
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buf = "";
+        function pump() {
+          return reader.read().then(function (r) {
+            if (r.done) { finish(); return; }
+            buf += decoder.decode(r.value, { stream: true });
+            var idx;
+            while ((idx = buf.indexOf("\n\n")) >= 0) {
+              var chunk = buf.slice(0, idx);
+              buf = buf.slice(idx + 2);
+              var line = chunk.split("\n").filter(function (l) { return l.indexOf("data:") === 0; })[0];
+              if (line) {
+                var json = line.slice(5).trim();
+                if (json) { try { onEvent(JSON.parse(json)); } catch (e2) {} }
+              }
             }
-          }
-          return pump();
-        });
+            return pump();
+          });
+        }
+        return pump();
+      }).catch(function (e) {
+        // 异常断线：若本次是 agent 运行且仍有未完成任务，凭 jobId 自动续订事件流
+        // （最多 2 次，避免重连风暴）。服务器会重放已发生事件，前端无感续上。
+        var tries = (payload && payload.__tries) || 0;
+        if (url === "/api/run" && state.jobId && state.running && tries < 2) {
+          appendBanner("warn", "连接中断，正在尝试恢复运行进度…");
+          setTimeout(function () {
+            start({ jobId: state.jobId, __tries: tries + 1 });
+          }, 800);
+          return;
+        }
+        appendBanner("error", "请求失败：" + (e && e.message ? e.message : e));
+        finish();
+      });
+    }
+    function handleApproval(urlPath, payload, ticketId) {
+      appendBanner("warn", "⏳ 已提交审批（工单 " + ticketId + "），等待管理员批准后将自动继续…");
+      var tries = 0;
+      function poll() {
+        fetch("/api/approvals/" + ticketId, { headers: authHeaders() })
+          .then(function (r) { return r.json(); })
+          .then(function (j) {
+            var t = j.ticket;
+            if (!t) { appendBanner("error", "审批工单不存在或已失效：" + ticketId); finish(); return; }
+            if (t.status === "approved") {
+              appendBanner("ok", "✅ 审批通过（" + ticketId + "），继续执行…");
+              start(Object.assign({}, payload, { approvalTicket: ticketId }));
+            } else if (t.status === "rejected") {
+              appendBanner("error", "❌ 审批被拒绝（" + ticketId + "）：" + (t.summary || ""));
+              finish();
+            } else if (tries++ < 30) {
+              setTimeout(poll, 2000);
+            } else {
+              appendBanner("error", "审批超时（" + ticketId + "）"); finish();
+            }
+          })
+          .catch(function () {
+            if (tries++ < 30) setTimeout(poll, 2000);
+            else { appendBanner("error", "审批轮询失败（" + ticketId + "）"); finish(); }
+          });
       }
-      return pump();
-    }).catch(function (e) {
-      appendBanner("error", "请求失败：" + (e && e.message ? e.message : e));
-      finish();
-    });
+      poll();
+    }
+    start(body);
     function finish() {
       if (state.running) { state.running = false; $("runBtn").disabled = false; $("runTag").textContent = ""; }
       if (state.verifying) { state.verifying = false; $("verifyBtn").disabled = false; }
@@ -888,6 +1117,10 @@ window.HarnessDemo = (function () {
   function dispatchHarness(e) {
     logEvent(e.type);
     switch (e.type) {
+      case "job:accepted":
+        // 记录本次运行的 jobId，供断线后凭它续订事件流（架构解耦后的可恢复能力）。
+        state.jobId = e.jobId;
+        break;
       case "run:meta":
         $("metaLine").textContent = (e.notes || []).join("\n");
         break;
@@ -916,6 +1149,14 @@ window.HarnessDemo = (function () {
         addGuardrail(e);
         addMessage("guardrail", "🚫 护栏拦截[" + e.phase + (e.tool ? ":" + e.tool : "") + "]: " + e.reason);
         break;
+      case "run:cost":
+        addMessage("system", "💰 step " + e.step + ": +" + (e.stepCost ? "$" + e.stepCost.toFixed(6) : "$0") +
+          "（累计 " + e.cumulativeTokens + " tokens / $" + e.cumulativeCost.toFixed(6) +
+          (e.model ? " · " + esc(e.model) : "") + "）");
+        break;
+      case "budget:exceeded":
+        addMessage("guardrail", "⚠️ 预算超限[" + e.kind + "]：已用 " + e.used + " / 上限 " + e.limit + "，运行已中止。");
+        break;
       case "run:end":
         markRunEnd(e.final, e.steps);
         break;
@@ -924,6 +1165,7 @@ window.HarnessDemo = (function () {
         break;
       case "_done":
         if (e.error) appendBanner("error", "运行被中断。");
+        state.jobId = null;
         state.running = false; $("runBtn").disabled = false; $("runTag").textContent = "";
         break;
     }
@@ -1038,11 +1280,16 @@ window.HarnessDemo = (function () {
       else {
         p.innerHTML = servers.map(function (s) {
           var dotCls = s.status === "connected" ? "dot connected" : (s.status === "error" ? "dot error" : "dot run");
+          var healthBadge = s.health === "healthy"
+            ? '<span class="ms-badge ok">健康</span>'
+            : (s.health === "unhealthy" ? '<span class="ms-badge bad">失活</span>' : '<span class="ms-badge">未探测</span>');
+          var reconnectBtn = (s.status === "error" || s.health === "unhealthy")
+            ? '<button class="btn small" data-reconnect="' + esc(s.name) + '">↻ 重连</button>' : '';
           var tools = s.tools && s.tools.length
             ? s.tools.map(function (t) { return esc(t.originalName); }).join(", ")
             : "（无工具）";
           return '<div class="mcp-server"><div class="ms-head"><span class="' + dotCls + '"></span>' +
-            '<span class="ms-name">' + esc(s.name) + '</span></div>' +
+            '<span class="ms-name">' + esc(s.name) + '</span>' + healthBadge + reconnectBtn + '</div>' +
             (s.url ? '<div class="ms-url">' + esc(s.url) + '</div>' : '') +
             '<div class="ms-tools">工具 ' + (s.tools ? s.tools.length : 0) + ': ' + tools + '</div>' +
             (s.error ? '<div class="ms-err">⚠ ' + esc(s.error) + '</div>' : '') + '</div>';
@@ -1070,7 +1317,7 @@ window.HarnessDemo = (function () {
       if (!name || !url) { alert("请填写服务名与地址"); return; }
       btn.disabled = true;
       fetch("/api/mcp/add", {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: authHeaders(),
         body: JSON.stringify({ name: name, url: url })
       }).then(function (r) { return r.json(); }).then(function () {
         btn.disabled = false; $("mcpName").value = ""; $("mcpUrl").value = "";
@@ -1081,6 +1328,52 @@ window.HarnessDemo = (function () {
       });
     });
   }
+
+  // ---- MCP presets marketplace ----
+  function refreshPresets() {
+    var p = $("presetPanel");
+    Backend.getJSON("/api/mcp/presets").then(function (data) {
+      var presets = data.presets || [];
+      if (!presets.length) { p.innerHTML = '<div class="empty">暂无预设。</div>'; return; }
+      p.innerHTML = presets.map(function (pr) {
+        var caps = (pr.capabilities || []).map(function (c) {
+          return '<span class="p-cap">' + esc(c) + "</span>";
+        }).join("");
+        var rec = pr.recommended ? '<span class="p-recmd">推荐</span>' : "";
+        var tokenInput = pr.authType && pr.authType !== "none"
+          ? '<div class="p-token"><input class="p-token-input" data-id="' + esc(pr.id) + '" placeholder="' +
+            esc(pr.authLabel || "token") + (pr.authPlaceholder ? "（" + esc(pr.authPlaceholder) + "）" : "") + '" /></div>'
+          : "";
+        return '<div class="preset' + (pr.recommended ? " rec" : "") + '">' +
+          '<div class="p-head"><span class="p-name">' + esc(pr.name) + "</span>" + rec + "</div>" +
+          '<div class="p-url">' + esc(pr.url) + "</div>" +
+          '<div class="p-caps">' + caps + "</div>" +
+          (pr.note ? '<div class="p-note">ℹ ' + esc(pr.note) + "</div>" : "") +
+          tokenInput +
+          '<div class="p-connect"><button class="btn p-connect-btn" data-id="' + esc(pr.id) + '">⚡ 一键接入</button></div></div>';
+      }).join("");
+      // 绑定一键接入按钮
+      p.querySelectorAll(".p-connect-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var id = btn.getAttribute("data-id");
+          var input = p.querySelector('.p-token-input[data-id="' + cssEsc(id) + '"]');
+          var token = input ? input.value.trim() : "";
+          btn.disabled = true;
+          fetch("/api/mcp/preset", {
+            method: "POST", headers: authHeaders(),
+            body: JSON.stringify({ id: id, token: token })
+          }).then(function (r) { return r.json(); }).then(function () {
+            btn.disabled = false;
+            refreshMcp();
+          }).catch(function (e) {
+            btn.disabled = false;
+            alert("接入失败：" + (e && e.message ? e.message : e));
+          });
+        });
+      });
+    }).catch(function () { p.innerHTML = '<div class="empty">预设加载失败</div>'; });
+  }
+  function cssEsc(s) { return String(s).replace(/["\\]/g, "\\$&"); }
 
   // ---- guardrails ----
   function clearGuardrails() { $("guardrails").innerHTML = ""; }
@@ -1236,13 +1529,35 @@ window.HarnessDemo = (function () {
     if (Backend.live && s) refreshState(s);
     else refreshState();
     refreshMcp();
+    refreshPresets();
     refreshEnvs();
+    loadApprovals();
+    loadRecipes();
   });
   // 绑定动态生成的 MCP 添加按钮（首轮渲染后）
   setTimeout(bindMcpAdd, 300);
   // 监听 MCP 面板变化以便重新绑定添加按钮
   var mcpObserver = new MutationObserver(function () { bindMcpAdd(); });
   mcpObserver.observe($("mcpPanel"), { childList: true });
+
+  // 重连按钮采用事件委托（面板每次重渲染，无需逐按钮绑定）
+  $("mcpPanel").addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("[data-reconnect]") : null;
+    if (!btn) return;
+    var name = btn.getAttribute("data-reconnect");
+    if (!name) return;
+    btn.disabled = true;
+    btn.textContent = "↻ 重连中…";
+    fetch("/api/mcp/reconnect", {
+      method: "POST", headers: authHeaders(),
+      body: JSON.stringify({ name: name })
+    }).then(function (r) { return r.json(); }).then(function () {
+      refreshMcp();
+    }).catch(function (e) {
+      btn.disabled = false;
+      alert("重连失败：" + (e && e.message ? e.message : e));
+    });
+  });
 })();
 </script>
 </body>

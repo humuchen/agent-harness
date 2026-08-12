@@ -2,13 +2,16 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Minimal zero-dependency .env loader (CommonJS-safe).
+ * 最小化的零依赖 .env 加载器（兼容 CommonJS）。
  *
- * Reads KEY=VALUE lines from `file` (default `.env` at the project root) and
- * populates `process.env` — but only for keys that are not already set, so an
- * explicit `export OPENROUTER_API_KEY=...` always wins. Missing file = no-op.
+ * 从 `file`（默认为项目根目录下的 `.env`）读取 KEY=VALUE 格式的行，
+ * 并填充到 `process.env` 中——但仅填充尚未设置的键，因此显式设置的
+ * 环境变量（如 `export OPENROUTER_API_KEY=...`）始终优先。文件不存在时不执行任何操作。
  *
- * Keep real secrets in `.env` (git-ignored); `.env.example` stays a template.
+ * 将真实密钥保存在 `.env` 文件中（已添加到 gitignore）；`.env.example` 仅作为模板。
+ *
+ * @param file - .env 文件路径（相对于当前工作目录），默认为 '.env'
+ * @returns void - 直接修改 process.env 对象，无返回值
  */
 export function loadEnv(file = '.env'): void {
   let txt: string;

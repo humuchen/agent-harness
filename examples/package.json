@@ -13,11 +13,14 @@
     "verify:mcp": "tsc -p tsconfig.json && node dist/verify-mcp.js",
     "verify:context7": "tsc -p tsconfig.json && node dist/verify-context7.js",
     "use:context7": "tsc -p tsconfig.json && node dist/use-context7.js",
+    "mcp:multi": "tsc -p tsconfig.json && node dist/multi-mcp.js",
+    "shell": "tsc -p tsconfig.json && node dist/shell.js",
     "verify": "tsc -p tsconfig.json && node dist/verify-harness.js && node dist/verify-mcp.js && node dist/verify-context7.js"
   },
   "license": "MIT",
   "dependencies": {
-    "@agent-harness/core": "workspace:*"
+    "@agent-harness/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.12.1"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

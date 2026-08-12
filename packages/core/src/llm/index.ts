@@ -3,3 +3,6 @@
 // 以支持 OpenAI / Azure / 本地 vLLM 等端点。
 export * from './openrouter';
 export * from './openai';
+// 成本记账（模型单价表 + 估算）与故障转移（熔断 + provider 切换）。
+export * from './pricing';
+export * from './failover';
