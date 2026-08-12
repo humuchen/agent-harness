@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const { Memory, VolatileMemoryStore, FileMemoryStore, SqliteMemoryStore, sanitizeKey } =
+const { Memory } = require('../dist/memory.js');
+const { VolatileMemoryStore, FileMemoryStore, SqliteMemoryStore, sanitizeKey } =
   require('../dist/memory-store.js');
 
 function tmpDir() {
