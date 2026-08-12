@@ -121,10 +121,12 @@ test('UI server 集成：鉴权 / 体上限 / metrics / SSE', { skip: !RUN }, as
     r = await request('POST', '/api/run', { body: { mode: 'mock', prompt: 'hi' } });
     assert.equal(r.status, 401, '无令牌 /api/run 应 401');
 
-    // 8) POST /api/run 带令牌(mock) → 200 SSE。
+    // 8) POST /api/run 带令牌(mock) → 200 SSE；事件流含 job:accepted 与终结节点 _done。
     r = await request('POST', '/api/run', { headers: auth(), body: { mode: 'mock', prompt: '帮我在 feature/x 分支拉起临时环境' } });
     assert.equal(r.status, 200, '/api/run mock 应 200');
     assert.match(r.headers['content-type'] || '', /text\/event-stream/, '/api/run 应返回 SSE');
+    assert.ok(r.body.includes('job:accepted'), 'SSE 应首先下发 job:accepted（运行队列提交模式）');
+    assert.ok(r.body.includes('_done'), 'SSE 应以 _done 终结节点的（验证队列执行 + 事件重放闭环）');
 
     // 9) 请求体超限 → 413（MAX_BODY_BYTES=1024）。
     const big = { mode: 'mock', prompt: 'p'.repeat(2000) };
@@ -134,6 +136,14 @@ test('UI server 集成：鉴权 / 体上限 / metrics / SSE', { skip: !RUN }, as
     // 10) 未知路径 → 404。
     r = await request('GET', '/api/does-not-exist');
     assert.equal(r.status, 404, '未知路径应 404');
+
+    // 11) /api/jobs 带令牌 → 200，返回运行队列快照（并发配置 + jobs 数组，验证有界化/统计）。
+    r = await request('GET', '/api/jobs', { headers: auth() });
+    assert.equal(r.status, 200, '/api/jobs 应 200');
+    const jobsView = JSON.parse(r.body);
+    assert.ok(Array.isArray(jobsView.jobs), 'jobs.jobs 应为数组');
+    assert.ok(typeof jobsView.queue.concurrency === 'number', 'jobs.queue 应含并发上限');
+    assert.ok(typeof jobsView.queue.sessionsRunning === 'number', 'jobs.queue 应含在飞会话数');
   } finally {
     if (child) {
       try { child.kill('SIGTERM'); } catch {}

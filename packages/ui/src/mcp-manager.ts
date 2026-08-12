@@ -25,6 +25,8 @@ import {
 class McpManager {
   private registry = new ToolRegistry();
   private servers: McpServerMeta[] = [];
+  /** 各服务的原始连接配置，便于「引导期从未连上」时经 /api/mcp/reconnect 重新发起连接。 */
+  private configs = new Map<string, McpServerConfig>();
   private initialized = false;
   /** 防止 shutdown 与 init 并发造成状态错乱的互斥锁。 */
   private initPromise: Promise<void> | null = null;
@@ -58,16 +60,39 @@ class McpManager {
     // 整个启动连接过程纳入串行链，确保后续运行时变更排在它之后。
     this.initPromise = this.withLock(async () => {
       for (const s of list) {
-        const meta = await connectMcpServer(this.registry, {
+        this.configs.set(s.name, s);
+        // 先放一个占位 meta（connecting），无论成败都保留可见状态，
+        // 避免「单个服务连接失败」中断其余服务的接入。
+        const placeholder: McpServerMeta = {
           name: s.name,
-          serverUrl: s.serverUrl,
-          command: s.command,
-          args: s.args,
-          env: s.env,
-          headers: s.headers,
-          transportType: s.transportType,
-        });
-        this.servers.push(meta);
+          status: 'connecting',
+          health: 'unknown',
+          tools: [],
+          reconnectAttempts: 0,
+          reconnecting: false,
+        };
+        this.servers.push(placeholder);
+        try {
+          const meta = await connectMcpServer(this.registry, {
+            name: s.name,
+            serverUrl: s.serverUrl,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+            headers: s.headers,
+            transportType: s.transportType,
+          });
+          Object.assign(placeholder, meta);
+        } catch (e: any) {
+          const msg = e?.message ?? String(e);
+          placeholder.status = 'error';
+          placeholder.health = 'unhealthy';
+          placeholder.error = msg;
+          console.error(
+            `[mcp-manager] 启动连接 MCP 服务 ${s.name} 失败（已跳过，其余服务继续）：`,
+            msg
+          );
+        }
       }
     }).catch((e) => console.error('[mcp-manager] init error:', e));
     return this.initPromise;
@@ -88,6 +113,7 @@ class McpManager {
     }
     return this.withLock(async () => {
       const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
+      this.configs.set(clean, config);
       const meta = await connectMcpServer(this.registry, {
         name: clean,
         serverUrl: config.serverUrl,
@@ -130,12 +156,14 @@ class McpManager {
       const headers = headersForPreset(preset, token);
       // 复用与 addServer 完全一致的连接路径（connectMcpServer），保持工具前缀等行为统一；
       // 直接内联调用以避免在 withLock 内再嵌套一层 withLock。
-      return this.addServerUnguarded({
+      const cfg: McpServerConfig = {
         name: preset.id,
         serverUrl: preset.url,
         headers,
         transportType: preset.transportType,
-      });
+      };
+      this.configs.set(preset.id, cfg);
+      return this.addServerUnguarded(cfg);
     });
   }
 
@@ -151,14 +179,20 @@ class McpManager {
    */
   async reconnect(name: string): Promise<McpServerMeta> {
     return this.withLock(async () => {
-      const meta = await reconnectMcpServer(name);
-      if (!meta) {
+      // 优先走 core 的 live-connection 重连（已连上过、探测失活的服务）。
+      const coreMeta = await reconnectMcpServer(name);
+      if (coreMeta) {
+        const idx = this.servers.findIndex((s) => s.name === name);
+        if (idx >= 0) this.servers[idx] = coreMeta;
+        else this.servers.push(coreMeta);
+        return coreMeta;
+      }
+      // 兜底：引导期从未连上（不在 liveClients 中）的服务，用保存的配置重新发起连接。
+      const cfg = this.configs.get(name);
+      if (!cfg) {
         throw new Error(`[mcp-manager] 未知 MCP 服务: ${name}`);
       }
-      const idx = this.servers.findIndex((s) => s.name === name);
-      if (idx >= 0) this.servers[idx] = meta;
-      else this.servers.push(meta);
-      return meta;
+      return await this.addServerUnguarded(cfg);
     });
   }
 

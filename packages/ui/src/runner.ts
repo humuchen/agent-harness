@@ -97,7 +97,11 @@ export async function assembleAgent(
   systemPrompt: string = SYSTEM_PROMPT,
   modelOverride?: string,
   userInput?: string,
-  sessionKey?: string
+  sessionKey?: string,
+  /** 外部取消信号（来自运行队列的 job 级 AbortController / 进程优雅停机）。 */
+  signal?: AbortSignal,
+  /** 单次 run 的整体超时（毫秒）；超时后 harness 中止循环并返回超时提示。 */
+  timeoutMs?: number
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const harnessClient = new HarnessClient(); // 未设置 HARNESS_API_KEY 时自动 dry-run
@@ -240,6 +244,9 @@ export async function assembleAgent(
     model: accountModel,
     tokenBudget,
     costBudget,
+    // 透传运行队列下发的取消信号与整体超时（harness 已原生支持，UI 此前未接线）。
+    ...(signal ? { signal } : {}),
+    ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
   });
 
   return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };

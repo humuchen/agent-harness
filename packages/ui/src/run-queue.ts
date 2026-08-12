@@ -16,6 +16,12 @@ import { assembleAgent, type RunMode } from './runner';
  *   这一步把「Web 进程被长连接绑死」彻底解开，也为将来把 worker 抽到独立进程 /
  *   消息队列（Redis/BullMQ 等）留好接口（替换 RunQueue 实现即可，handler 不变）。
  * - 并发上限避免无限制扇出；超出上限的任务排队，pump() 在 worker 空闲时自动续跑。
+ *
+ * 健壮性增强（与核心 framework 隔离，仅本业务层）：
+ * - 每个 Job 自带 AbortController + 看门狗（JOB_TIMEOUT_MS）：即使底层工具/LLM 调用
+ *   意外挂死，也能在超时后中止并释放 worker 槽位，避免任务永久占坑。
+ * - jobs 表有界（RUN_JOBS_MAX）：已结束且无活跃订阅者的 job 会被惰性淘汰，防止内存膨胀。
+ * - 同会话串行化：共享 sessionKey 的并发 Job 错开执行，避免并发写记忆后端互相覆盖。
  */
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -31,6 +37,8 @@ export interface RunJob {
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
+  /** job 级取消信号（超时 / 优雅停机触发）。 */
+  controller: AbortController;
   enqueuedAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -38,6 +46,10 @@ export interface RunJob {
 
 const MAX_BUFFER = Number(process.env.RUN_QUEUE_BUFFER ?? 500) || 500;
 const CONCURRENCY = Number(process.env.RUN_CONCURRENCY ?? 4) || 4;
+// 单次运行整体超时；超时后中止循环并释放 worker 槽位（默认 5 分钟）。
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
+// jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
+const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
 
 export class RunQueue {
   private jobs = new Map<string, RunJob>();
@@ -45,6 +57,8 @@ export class RunQueue {
   private running = 0;
   private seq = 0;
   private concurrency = CONCURRENCY;
+  /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
+  private runningSessions = new Set<string>();
 
   /** 提交一次 agent 运行任务，立即返回 Job（不等待执行）。 */
   submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string }): RunJob {
@@ -58,6 +72,7 @@ export class RunQueue {
       sessionKey: input.sessionKey,
       events: [],
       subscribers: new Set(),
+      controller: new AbortController(),
       enqueuedAt: Date.now(),
     };
     this.jobs.set(id, job);
@@ -98,6 +113,7 @@ export class RunQueue {
       queued: this.queue.length,
       running: this.running,
       jobs: this.jobs.size,
+      sessionsRunning: this.runningSessions.size,
     };
   }
 
@@ -110,6 +126,7 @@ export class RunQueue {
         id: j.id,
         status: j.status,
         mode: j.mode,
+        sessionKey: j.sessionKey ?? null,
         promptLen: j.prompt.length,
         enqueuedAt: j.enqueuedAt,
         startedAt: j.startedAt ?? null,
@@ -117,16 +134,71 @@ export class RunQueue {
       }));
   }
 
+  /**
+   * 优雅停机：取消所有在飞/排队任务。
+   * - 排队中（尚未执行）的 job 直接标记 cancelled 并移出队列，不再执行。
+   * - 执行中（running）的 job 通过各自 controller 中止（harness 会在下一检查点退出）。
+   */
+  abortAll(reason: string = 'shutdown'): void {
+    this.queue = this.queue.filter((j) => {
+      if (j.status === 'queued') {
+        j.status = 'cancelled';
+        j.finishedAt = Date.now();
+        return false;
+      }
+      return true;
+    });
+    for (const j of this.jobs.values()) {
+      if (j.status === 'running') {
+        try {
+          j.controller.abort(reason);
+        } catch {
+          /* 忽略重复 abort */
+        }
+      }
+    }
+  }
+
   private pump(): void {
-    while (this.running < this.concurrency && this.queue.length) {
-      const job = this.queue.shift()!;
+    while (this.running < this.concurrency) {
+      // 找下一个「会话未被占用」的待执行 job；找不到则停（等会话释放或 worker 空闲后再触发）。
+      let idx = -1;
+      for (let i = 0; i < this.queue.length; i++) {
+        const cand = this.queue[i];
+        if (!cand.sessionKey || !this.runningSessions.has(cand.sessionKey)) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) break;
+      const job = this.queue.splice(idx, 1)[0];
       this.running += 1;
+      if (job.sessionKey) this.runningSessions.add(job.sessionKey);
       job.status = 'running';
       job.startedAt = Date.now();
       void this.execute(job).finally(() => {
         this.running -= 1;
         this.pump();
+        this.evictIfNeeded();
       });
+    }
+  }
+
+  /** 惰性淘汰：jobs 表超过上限时，删除最旧的「已结束且无人订阅」job，防止内存膨胀。 */
+  private evictIfNeeded(): void {
+    if (this.jobs.size <= JOBS_MAX) return;
+    const finished = [...this.jobs.values()]
+      .filter(
+        (j) =>
+          (j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') &&
+          j.subscribers.size === 0
+      )
+      .sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
+    let over = this.jobs.size - JOBS_MAX;
+    for (const j of finished) {
+      if (over <= 0) break;
+      this.jobs.delete(j.id);
+      over -= 1;
     }
   }
 
@@ -148,9 +220,27 @@ export class RunQueue {
       if (e.type === 'step:start') stepCount = Math.max(stepCount, e.step);
       emit(e);
     };
+    // 看门狗：整体超时后中止 controller，harness 在下一检查点退出，worker 槽位必然释放。
+    const watchdog = setTimeout(() => {
+      try {
+        job.controller.abort('timeout');
+      } catch {
+        /* 忽略 */
+      }
+    }, JOB_TIMEOUT_MS);
     const t0 = Date.now();
     try {
-      const assembled = await assembleAgent(job.mode, onEvent, undefined, job.model, job.prompt, job.sessionKey);
+      const signal = job.controller.signal;
+      const assembled = await assembleAgent(
+        job.mode,
+        onEvent,
+        undefined,
+        job.model,
+        job.prompt,
+        job.sessionKey,
+        signal,
+        JOB_TIMEOUT_MS
+      );
       const model =
         (job.model && job.model.trim()) ||
         (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
@@ -179,6 +269,8 @@ export class RunQueue {
       job.status = 'failed';
       incCounter('run.failed');
     } finally {
+      clearTimeout(watchdog);
+      if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
       job.finishedAt = Date.now();
       recordLatency('run.totalMs', job.finishedAt - (job.startedAt ?? job.finishedAt));
     }

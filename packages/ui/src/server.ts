@@ -10,7 +10,7 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog } from '@agent-harness/core';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
@@ -494,7 +494,12 @@ function startSse(res: ServerResponse, req?: IncomingMessage): (obj: unknown) =>
   });
   return (obj: unknown) => {
     if (closed) return;
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    try {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    } catch {
+      // 客户端已断开（EPIPE 等）：标记 closed，避免对已死连接继续写。
+      closed = true;
+    }
   };
 }
 
@@ -533,6 +538,12 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     mode === 'real-mcp' ? 'agent:run:real-mcp' : mode === 'real' ? 'agent:run:real' : 'agent:run:mock';
   const ctx = await guard(req, res, runAction, body);
   if (!ctx) return;
+  // 优雅停机期间不再接受新运行，避免任务在进程退出时被强杀。
+  if (shuttingDown) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'server is shutting down' }));
+    return;
+  }
   const send = startSse(res, req);
   const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
@@ -762,12 +773,45 @@ server.listen(PORT, HOST, () => {
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}\n`);
 });
 
-// 进程退出时关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
+// 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
+// - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
+// - unhandledRejection：仅记录，不退出，避免单个被拒 Promise 拖垮在线服务。
+function installCrashGuard(): void {
+  const fatal = (where: string, err: unknown) => {
+    const e = err as { message?: string; stack?: string };
+    structLog('fatal', `${where}: ${e?.message ?? String(err)}`, { stack: e?.stack });
+    console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
+  };
+  process.on('uncaughtException', (err) => {
+    fatal('uncaughtException', err);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    fatal('unhandledRejection', reason);
+  });
+}
+installCrashGuard();
+
+// 停机宽限：先中止在飞任务，给其最多该时长退出，再关 MCP 与监听。
+const SHUTDOWN_GRACE_MS = Number(process.env.RUN_SHUTDOWN_GRACE_MS ?? 5000) || 5000;
+let shuttingDown = false;
+
 async function shutdown(): Promise<void> {
-  console.log('\n[ui] 正在关闭，清理 MCP 连接…');
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('\n[ui] 收到停机信号，开始优雅停机…');
+  // 1) 中止所有在飞/排队任务（job 级 AbortController），释放 worker 与 LLM/MCP 占用。
+  runQueue.abortAll('shutdown');
+  // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
+  await new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
+  // 3) 关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
   await mcpManager.shutdown().catch(() => {});
-  server.close(() => process.exit(0));
-  // 兜底：若 server.close 因长连接迟迟不结束，3 秒后强制退出。
+  // 4) 停止接受新连接，等待已建立的连接（如健康检查）关闭。
+  server.close(() => {
+    console.log('[ui] 已停止接受新连接。');
+    process.exit(0);
+  });
+  // 兜底：若 server.close 因长连接迟迟不结束，强制退出。
   setTimeout(() => process.exit(0), 3000).unref();
 }
 process.on('SIGINT', () => void shutdown());
