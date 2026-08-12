@@ -142,3 +142,70 @@ test('FileMemoryStore: 原子写——崩溃安全且不残留临时文件', asy
   const leftovers = fs.readdirSync(dir).filter((f) => f.includes('.tmp'));
   assert.strictEqual(leftovers.length, 0, 'save 后不应残留 .tmp 临时文件: ' + leftovers.join(','));
 });
+
+// ===== 上下文压缩（CONTEXT_COMPRESSION / MemorySummarizer）=====
+test('Memory: summarizer 将溢出淘汰的轮次压缩为 system 摘要固定保留', () => {
+  let calls = 0;
+  const summarizer = () => {
+    calls += 1;
+    return `compressed(${calls})`;
+  };
+  const m = new Memory({ maxWindow: 5, summarizer });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+
+  const hist = m.history();
+  // 真实 system 提示词始终在最前
+  assert.strictEqual(hist[0].role, 'system');
+  assert.strictEqual(hist[0].content, 'SYS');
+  // 仅有一条摘要节点，且为 system 角色
+  const summaries = hist.filter((x) => x.content && x.content.includes('【历史摘要】'));
+  assert.strictEqual(summaries.length, 1, '应恰好一条历史摘要');
+  assert.strictEqual(summaries[0].role, 'system');
+  assert.ok(summaries[0].content.includes('compressed(1)'));
+  assert.strictEqual(m.summary, 'compressed(1)');
+  // 窗口长度恒等于 maxWindow
+  assert.strictEqual(hist.length, 5);
+
+  // 继续追加，摘要被「更新」而非「重复」（仍仅一条）
+  m.add({ role: 'user', content: 'u5' });
+  const hist2 = m.history();
+  const summaries2 = hist2.filter((x) => x.content && x.content.includes('【历史摘要】'));
+  assert.strictEqual(summaries2.length, 1, '多次压缩后摘要仍应唯一');
+  assert.ok(summaries2[0].content.includes('compressed(2)'));
+  assert.strictEqual(m.summary, 'compressed(2)');
+  assert.strictEqual(hist2.length, 5);
+});
+
+test('Memory: 无 summarizer 时溢出直接丢弃（行为不变，无摘要）', () => {
+  const m = new Memory({ maxWindow: 5 });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+  m.add({ role: 'user', content: 'u5' });
+  const hist = m.history();
+  assert.strictEqual(m.summary, null);
+  assert.strictEqual(hist.filter((x) => x.content && x.content.includes('【历史摘要】')).length, 0);
+  assert.strictEqual(hist.length, 5);
+  assert.strictEqual(hist[1].content, 'u2', '最旧轮次 u0/u1 应被丢弃');
+});
+
+test('Memory: 压缩摘要随持久化保存与恢复', async () => {
+  const dir = tmpDir();
+  const store = new FileMemoryStore({ dir });
+  let calls = 0;
+  const summarizer = () => {
+    calls += 1;
+    return `compressed(${calls})`;
+  };
+  const m = new Memory({ store, sessionKey: 'c1', maxWindow: 5, summarizer });
+  m.add({ role: 'system', content: 'SYS' });
+  for (let i = 0; i < 5; i++) m.add({ role: 'user', content: 'u' + i });
+  assert.ok(m.summary, '应已产生摘要');
+  await m.save();
+
+  const m2 = new Memory({ store, sessionKey: 'c1', maxWindow: 5, summarizer });
+  await m2.load();
+  assert.strictEqual(m2.summary, m.summary, '摘要应随记忆恢复');
+  assert.ok(m2.history().some((x) => x.content && x.content.includes('【历史摘要】')));
+});
+

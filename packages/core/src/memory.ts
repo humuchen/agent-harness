@@ -7,6 +7,18 @@ import {
   sanitizeKey,
 } from './memory-store';
 
+/**
+ * 上下文压缩摘要器：当滑动窗口溢出、需要淘汰旧轮次时调用。
+ * - `evicted`：本次被淘汰的轮次（user/assistant/tool 消息序列）。
+ * - `previous`：上一次压缩得到的摘要（首次为 null），可用于增量合并。
+ * 约定：必须同步、无副作用，且返回**有界**字符串（建议 < 400 字符），
+ * 否则压缩本身会变成新的 token 负担。返回空串表示放弃本次摘要。
+ */
+export type MemorySummarizer = (ctx: {
+  previous: string | null;
+  evicted: Message[];
+}) => string;
+
 export interface MemoryOptions {
   // 发送给 LLM 的对话历史滚动窗口大小。
   maxWindow?: number;
@@ -18,18 +30,25 @@ export interface MemoryOptions {
   // 租户/会话标识：记忆按 key 隔离。不传则归到 'anonymous'。
   // 配合 FileMemoryStore/ SqliteMemoryStore 即可实现多租户记忆持久化。
   sessionKey?: string;
+  // 可选上下文压缩：滑动窗口溢出淘汰旧轮次时，用它将 evicted 轮次压缩为一条
+  // system 摘要固定保留，根治「每步重发全部历史」导致的 token 平方增长。
+  // 未提供则沿用原有「直接丢弃」行为。必须同步、返回有界字符串。
+  summarizer?: MemorySummarizer;
 }
 
 export class Memory {
   private window: Message[] = [];
   private longTerm: string[] = [];
-  private opts: { maxWindow: number };
+  private opts: { maxWindow: number; summarizer?: MemorySummarizer };
   private store: MemoryStore;
   private sessionKey: string;
+  // 上下文压缩摘要（有界字符串）；为 null 表示尚未发生压缩。
+  private summaryText: string | null = null;
 
   constructor(opts: MemoryOptions = {}) {
     this.opts = {
       maxWindow: opts.maxWindow ?? 20,
+      summarizer: opts.summarizer,
     };
     // 解析后端：显式 store > 旧版 persistencePath（单文件）> 纯内存（默认）。
     if (opts.store) {
@@ -62,14 +81,38 @@ export class Memory {
   add(msg: Message): void {
     this.window.push(msg);
     if (this.window.length > this.opts.maxWindow) {
-      // 滑动窗口截断时始终保留 system 消息（固定在最前），既避免系统提示词被
-      // 丢出上下文，也避免 harness 的「无 system 则重新注入」守卫造成重复。
-      const sys = this.window.filter((m) => m.role === 'system');
-      const rest = this.window.filter((m) => m.role !== 'system');
-      const overflow = rest.length - (this.opts.maxWindow - sys.length);
-      const keptRest = overflow > 0 ? rest.slice(overflow) : rest;
-      this.window = [...sys, ...keptRest];
+      // 区分「真实 system 提示词」与「历史摘要」（摘要也是 role:'system'）：前者始终
+      // 保留在最前，后者随压缩回收、只保留最新生成的一条，避免多次压缩堆积多条摘要。
+      const isSummary = (m: Message): boolean =>
+        m.role === 'system' &&
+        typeof m.content === 'string' &&
+        m.content.startsWith('【历史摘要】');
+      const sys = this.window.filter((m) => m.role === 'system' && !isSummary(m));
+      const rest = this.window.filter((m) => !(m.role === 'system' && !isSummary(m)));
+      // 若配置了 summarizer，为其预留 1 个槽位（压缩摘要一旦产生便长期固定保留）。
+      const g = this.opts.summarizer ? 1 : 0;
+      const budget = Math.max(0, this.opts.maxWindow - sys.length - g);
+      if (rest.length > budget) {
+        // 仅淘汰超出预算的最旧轮次（含旧的过期摘要），并将其压缩为最新摘要。
+        const evicted = rest.slice(0, rest.length - budget);
+        const keptRest = rest.slice(rest.length - budget);
+        if (this.opts.summarizer) {
+          this.summaryText = this.opts.summarizer({ previous: this.summaryText, evicted });
+        }
+        const summaryNode = this.summaryText
+          ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+          : [];
+        this.window = [...sys, ...summaryNode, ...keptRest];
+      } else {
+        // 仅 system + 摘要占位导致窗口看似溢出，无需淘汰。
+        this.window = [...sys, ...rest];
+      }
     }
+  }
+
+  /** 当前上下文压缩摘要（无则 null），供运维视图与测试观测。 */
+  get summary(): string | null {
+    return this.summaryText;
   }
 
   history(): Message[] {
@@ -93,7 +136,11 @@ export class Memory {
 
   /** 持久化当前记忆到后端（按 sessionKey）。 */
   async save(): Promise<void> {
-    const data: PersistedMemory = { window: this.window, longTerm: this.longTerm };
+    const data: PersistedMemory = {
+      window: this.window,
+      longTerm: this.longTerm,
+      ...(this.summaryText ? { summary: this.summaryText } : {}),
+    };
     await this.store.save(this.sessionKey, data);
   }
 
@@ -103,6 +150,7 @@ export class Memory {
     if (data) {
       this.window = Array.isArray(data.window) ? data.window : [];
       this.longTerm = Array.isArray(data.longTerm) ? data.longTerm : [];
+      this.summaryText = typeof data.summary === 'string' ? data.summary : null;
     }
   }
 
@@ -110,6 +158,7 @@ export class Memory {
   async clear(): Promise<void> {
     this.window = [];
     this.longTerm = [];
+    this.summaryText = null;
     await this.store.delete(this.sessionKey);
   }
 }

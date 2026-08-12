@@ -21,6 +21,7 @@ import {
   type LLM,
   type HarnessEvent,
   type ToolCall,
+  type MemorySummarizer,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -231,7 +232,39 @@ export async function assembleAgent(
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
   // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
   const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
-  const memory = new Memory({ store: getMemoryStore(), sessionKey, maxWindow });
+  // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
+  // 根治「每步重发全部历史」导致的 token 平方增长（原问题 B 的根因）。
+  // 默认关闭；CONTEXT_COMPRESSION=true 开启。摘要器必须同步、返回有界字符串。
+  const enableCompression =
+    process.env.CONTEXT_COMPRESSION === 'true' || process.env.CONTEXT_COMPRESSION === '1';
+  const heuristicSummarizer: MemorySummarizer = ({ previous, evicted }) => {
+    let userReqs = 0;
+    let toolCalls = 0;
+    const toolCounts = new Map<string, number>();
+    for (const m of evicted) {
+      if (m.role === 'user') userReqs++;
+      const tcs = (m as { tool_calls?: Array<{ function?: { name?: string } }> }).tool_calls;
+      if (m.role === 'assistant' && Array.isArray(tcs)) {
+        for (const tc of tcs) {
+          const name = tc?.function?.name || 'unknown';
+          toolCalls++;
+          toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+        }
+      }
+    }
+    const toolList =
+      [...toolCounts.entries()].map(([n, c]) => `${n}×${c}`).join(', ') || '无';
+    const line = `已完成 ${userReqs} 次用户交互、${toolCalls} 次工具调用（${toolList}），早期细节已压缩。`;
+    // 增量合并：保留前次摘要尾部有界长度，避免跨多次压缩无限膨胀。
+    const base = previous ? previous.slice(-220) : '';
+    return (base ? base + ' ' : '') + line;
+  };
+  const memory = new Memory({
+    store: getMemoryStore(),
+    sessionKey,
+    maxWindow,
+    ...(enableCompression ? { summarizer: heuristicSummarizer } : {}),
+  });
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
@@ -270,7 +303,9 @@ export async function assembleAgent(
   notes.push(
     `闭环步数上限 MAX_STEPS=${effectiveMaxSteps}` +
       (requireCompletion ? '，已启用完成自检（空响应即继续循环）' : '') +
-      `；工具结果截断 ${maxToolResultChars} 字符；记忆窗口 ${maxWindow}。`
+      `；工具结果截断 ${maxToolResultChars} 字符；记忆窗口 ${maxWindow}` +
+      (enableCompression ? '；已启用上下文压缩（淘汰轮次摘要为系统消息）' : '') +
+      '。'
   );
 
   return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };

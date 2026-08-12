@@ -7,6 +7,9 @@ import { Message } from './types';
 export interface PersistedMemory {
   window: Message[];
   longTerm: string[];
+  // 上下文压缩产生的摘要（可选）。启用 summarizer 后，被滑动窗口淘汰的旧轮次
+  // 会被压缩成一条 system 摘要固定保留，此处持久化该摘要以便跨运行恢复。
+  summary?: string;
 }
 
 /**
@@ -94,6 +97,7 @@ export class FileMemoryStore implements MemoryStore {
       return {
         window: Array.isArray(data.window) ? (data.window as Message[]) : [],
         longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
+        ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
       };
     } catch {
       return null; // 无存档，视为空
@@ -191,8 +195,15 @@ export class SqliteMemoryStore implements MemoryStore {
         'CREATE TABLE IF NOT EXISTS memory (' +
           'key TEXT PRIMARY KEY, ' +
           'window TEXT NOT NULL, ' +
-          'long_term TEXT NOT NULL)'
+          'long_term TEXT NOT NULL, ' +
+          'summary TEXT)'
       );
+      // 兼容旧库：缺列时补上（已存在则忽略报错）。
+      try {
+        this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
+      } catch {
+        /* 列已存在 */
+      }
     })();
     return this.ready;
   }
@@ -200,21 +211,30 @@ export class SqliteMemoryStore implements MemoryStore {
   async load(key: string): Promise<PersistedMemory | null> {
     await this.ensure();
     const row = this.db
-      .prepare('SELECT window, long_term FROM memory WHERE key = ?')
+      .prepare('SELECT window, long_term, summary FROM memory WHERE key = ?')
       .get(key);
     if (!row) return null;
     const window = safeParseArray<Message>(row.window);
     const longTerm = safeParseArray<string>(row.long_term);
-    return { window, longTerm };
+    return {
+      window,
+      longTerm,
+      ...(typeof row.summary === 'string' ? { summary: row.summary } : {}),
+    };
   }
 
   async save(key: string, data: PersistedMemory): Promise<void> {
     await this.ensure();
     this.db
       .prepare(
-        'INSERT OR REPLACE INTO memory (key, window, long_term) VALUES (?, ?, ?)'
+        'INSERT OR REPLACE INTO memory (key, window, long_term, summary) VALUES (?, ?, ?, ?)'
       )
-      .run(key, JSON.stringify(data.window), JSON.stringify(data.longTerm));
+      .run(
+        key,
+        JSON.stringify(data.window),
+        JSON.stringify(data.longTerm),
+        typeof data.summary === 'string' ? data.summary : null
+      );
   }
 
   async delete(key: string): Promise<void> {

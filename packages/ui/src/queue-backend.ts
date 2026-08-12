@@ -28,17 +28,35 @@ export interface JobDescriptor {
   enqueuedAt: number;
 }
 
-/** 持久化后端契约：追加 / 列举 / 消费确认 / 清空。 */
+/** 持久化后端契约：追加 / 列举 / 原子领取 / 消费确认 / 清空 + 可选跨实例事件桥。 */
 export interface QueueBackend {
   readonly kind: 'memory' | 'file' | 'redis' | 'bullmq';
   /** 追加一条待持久化任务（提交时调用）。 */
   append(d: JobDescriptor): Promise<void>;
-  /** 列出所有已持久化任务（启动时重放用）。 */
+  /** 列出所有已持久化任务（启动重放 / 运维快照用）。 */
   list(): Promise<JobDescriptor[]>;
+  /**
+   * 原子领取：把「最旧的一条待执行任务」从 pending 取出并返回（多实例安全）。
+   * 共享后端（redis）会把它先迁到 processing 列表并记录领取时刻，便于崩溃回收；
+   * 返回 null 表示当前无任务。单实例后端（memory/file）直接弹出本地首条。
+   */
+  claim(): Promise<JobDescriptor | null>;
   /** 标记某任务已消费（开始执行或被取消），从持久层移除。 */
   ack(id: string): Promise<void>;
   /** 清空整个持久层（启动重放后立即调用，避免二次重放）。 */
   clear(): Promise<void>;
+  /**
+   * 崩溃回收：把 processing 中「领取时刻距今超过 leaseMs」的任务迁回 pending，
+   * 使被崩溃实例占住的任务能被其它实例重新领取。仅共享后端实现；返回回收条数。
+   */
+  reclaimStale?(leaseMs: number): Promise<number>;
+  /**
+   * 跨实例事件桥（仅共享后端实现）。执行实例把每个事件 publish 到 `runq:events:<jobId>`，
+   * 持有 SSE 订阅的任意实例 subscribeEvents 后即可转发，使 SSE 不受「提交/执行在不同实例」
+   * 影响。单实例后端（memory/file）不实现，事件走进程内直发（见 run-queue.ts）。
+   */
+  publishEvent?(jobId: string, event: unknown): Promise<void>;
+  subscribeEvents?(jobId: string, fn: (e: unknown) => void): Promise<() => void>;
 }
 
 /** 默认后端：纯内存，不落盘。与改造前 RunQueue 行为完全一致（重启即丢）。 */
@@ -51,6 +69,10 @@ export class MemoryQueueBackend implements QueueBackend {
   }
   async list(): Promise<JobDescriptor[]> {
     return [...this.items];
+  }
+  async claim(): Promise<JobDescriptor | null> {
+    const it = this.items.shift();
+    return it ?? null;
   }
   async ack(id: string): Promise<void> {
     this.items = this.items.filter((it) => it.id !== id);
@@ -113,6 +135,15 @@ export class FileQueueBackend implements QueueBackend {
     return [...this.cache];
   }
 
+  async claim(): Promise<JobDescriptor | null> {
+    await this.ensureLoaded();
+    const it = this.cache.shift();
+    if (!it) return null;
+    // 单实例：claim 即视为已领取，重写持久层。多实例安全由 redis 后端保证。
+    await this.rewrite();
+    return it;
+  }
+
   async ack(id: string): Promise<void> {
     await this.ensureLoaded();
     const next = this.cache.filter((it) => it.id !== id);
@@ -145,14 +176,222 @@ export class FileQueueBackend implements QueueBackend {
 }
 
 /**
- * 组合工厂：按环境变量选择后端。
- * - RUN_QUEUE_BACKEND=file  → FileQueueBackend（崩溃可恢复）
- * - 其余 / 未设置          → MemoryQueueBackend（默认，零行为变更）
+ * Redis 客户端最小契约（存储命令 + 发布订阅）。真实实现为 ioredis；测试用 FakeRedis 注入，
+ * 从而在不依赖真实 Redis 服务的情况下验证后端逻辑。
+ */
+export interface RedisLike {
+  rpush(key: string, value: string): Promise<unknown>;
+  lrange(key: string, start: number, stop: number): Promise<string[]>;
+  lrem(key: string, count: number, value: string): Promise<unknown>;
+  lmove(
+    source: string,
+    destination: string,
+    from: 'LEFT' | 'RIGHT',
+    to: 'LEFT' | 'RIGHT'
+  ): Promise<string | null>;
+  hset(key: string, field: string, value: string): Promise<unknown>;
+  hget(key: string, field: string): Promise<string | null>;
+  hmget(key: string, ...fields: string[]): Promise<(string | null)[]>;
+  hdel(key: string, ...fields: string[]): Promise<unknown>;
+  del(...keys: string[]): Promise<unknown>;
+  publish(channel: string, message: string): Promise<unknown>;
+}
+export interface RedisPubSubLike {
+  duplicate(): RedisPubSubLike;
+  subscribe(channel: string): void;
+  on(event: 'message', cb: (channel: string, message: string) => void): void;
+  unsubscribe(channel: string): void;
+}
+export type RedisClient = RedisLike & RedisPubSubLike & { quit(): Promise<void> };
+
+/**
+ * Redis 后端：把「可插拔接口」变成真正的共享、多实例队列。
  *
- * 接入 Redis/BullMQ 时，只需在此加一个分支（见下方注释示例），RunQueue 无需改动。
+ * 数据结构（统一前缀 `runq:`）：
+ * - `runq:pending`    LIST  —— 待领取任务（仅存 id）
+ * - `runq:processing` LIST  —— 已被某实例领取、正在执行（仅存 id）
+ * - `runq:jobs`       HASH  —— id → JobDescriptor(JSON)，claim/list/ack 的内容源
+ * - `runq:claimedAt`  HASH  —— id → 领取时刻(ms)，供 reclaimStale 判定租约过期
+ *
+ * 多实例安全性来自 `claim()` 的原子 `RPOPLPUSH pending→processing`：无论多少实例并发领取，
+ * 同一任务只会被一个实例拿到。该实例执行中崩溃 → 任务留在 processing；其它实例周期性
+ * `reclaimStale(leaseMs)` 把超租约的任务迁回 pending 重新领取（崩溃恢复）。
+ *
+ * 事件桥：`publishEvent/subscribeEvents` 用独立 sub 连接做 pub/sub，使 SSE 不受「提交实例 ≠
+ * 执行实例」影响（配合负载均衡的 sticky session 即可无缝多实例部署）。
+ */
+export class RedisQueueBackend implements QueueBackend {
+  readonly kind = 'redis' as const;
+  private pending = 'runq:pending';
+  private processing = 'runq:processing';
+  private jobsKey = 'runq:jobs';
+  private claimedAt = 'runq:claimedAt';
+  private client: RedisClient;
+  private sub: RedisPubSubLike;
+  private listeners = new Map<string, Set<(msg: string) => void>>();
+
+  constructor(client: RedisClient) {
+    this.client = client;
+    this.sub = client.duplicate();
+    this.sub.on('message', (channel, message) => {
+      const set = this.listeners.get(channel);
+      if (!set) return;
+      for (const fn of [...set]) {
+        try {
+          fn(message);
+        } catch {
+          /* 单订阅者异常不应影响其他 */
+        }
+      }
+    });
+  }
+
+  private chan(jobId: string): string {
+    return `runq:events:${jobId}`;
+  }
+
+  async append(d: JobDescriptor): Promise<void> {
+    await this.client.hset(this.jobsKey, d.id, JSON.stringify(d));
+    await this.client.rpush(this.pending, d.id);
+  }
+
+  async list(): Promise<JobDescriptor[]> {
+    const pending = await this.client.lrange(this.pending, 0, -1);
+    const proc = await this.client.lrange(this.processing, 0, -1);
+    const ids = [...pending, ...proc];
+    if (ids.length === 0) return [];
+    const raws = await this.client.hmget(this.jobsKey, ...ids);
+    const out: JobDescriptor[] = [];
+    for (const raw of raws) {
+      if (raw) {
+        try {
+          out.push(JSON.parse(raw) as JobDescriptor);
+        } catch {
+          /* 坏数据跳过 */
+        }
+      }
+    }
+    return out;
+  }
+
+  async claim(): Promise<JobDescriptor | null> {
+    // FIFO：从 pending 左端（最旧）原子弹出并追加到 processing 右端，保证多实例下
+    // 同一任务只被一个实例领取，且领取顺序与提交顺序一致；processing 保持领取顺序
+    // 以便 reclaimStale 按原 FIFO 重新入队。
+    const id = await this.client.lmove(this.pending, this.processing, 'LEFT', 'RIGHT');
+    if (!id) return null;
+    const raw = await this.client.hget(this.jobsKey, id);
+    if (!raw) {
+      await this.client.lrem(this.processing, 1, id);
+      return null;
+    }
+    await this.client.hset(this.claimedAt, id, String(Date.now()));
+    try {
+      return JSON.parse(raw) as JobDescriptor;
+    } catch {
+      await this.client.lrem(this.processing, 1, id);
+      return null;
+    }
+  }
+
+  async ack(id: string): Promise<void> {
+    await this.client.lrem(this.processing, 1, id);
+    await this.client.hdel(this.jobsKey, id);
+    await this.client.hdel(this.claimedAt, id);
+  }
+
+  async clear(): Promise<void> {
+    await this.client.del(this.pending, this.processing, this.jobsKey, this.claimedAt);
+  }
+
+  async reclaimStale(leaseMs: number): Promise<number> {
+    const proc = await this.client.lrange(this.processing, 0, -1);
+    const now = Date.now();
+    let moved = 0;
+    for (const id of proc) {
+      const t = Number(await this.client.hget(this.claimedAt, id));
+      // 租赁已到期（含恰好到期边界）：now - t >= leaseMs 即视为陈旧，迁回 pending 重新领取。
+      if (!t || now - t >= leaseMs) {
+        await this.client.lrem(this.processing, 1, id);
+        await this.client.rpush(this.pending, id);
+        moved += 1;
+      }
+    }
+    return moved;
+  }
+
+  async publishEvent(jobId: string, event: unknown): Promise<void> {
+    await this.client.publish(this.chan(jobId), JSON.stringify(event));
+  }
+
+  async subscribeEvents(jobId: string, fn: (e: unknown) => void): Promise<() => void> {
+    const ch = this.chan(jobId);
+    const wrapped = (msg: string) => {
+      try {
+        fn(JSON.parse(msg));
+      } catch {
+        /* 坏消息跳过 */
+      }
+    };
+    let set = this.listeners.get(ch);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(ch, set);
+      this.sub.subscribe(ch);
+    }
+    set.add(wrapped);
+    return () => {
+      const s = this.listeners.get(ch);
+      if (!s) return;
+      s.delete(wrapped);
+      if (s.size === 0) {
+        this.listeners.delete(ch);
+        this.sub.unsubscribe(ch);
+      }
+    };
+  }
+
+  /** 关闭底层连接（优雅停机调用）。 */
+  async close(): Promise<void> {
+    await this.client.quit().catch(() => {});
+  }
+}
+
+/**
+ * 组合工厂：按环境变量选择后端。
+ * - REDIS_URL 设置 或 RUN_QUEUE_BACKEND=redis → RedisQueueBackend（共享、多实例、崩溃可恢复）
+ *   · ioredis 为可选依赖：未安装时自动降级 MemoryQueueBackend 并打印告警（保持「一切降级可用」）。
+ * - RUN_QUEUE_BACKEND=file                        → FileQueueBackend（单实例、崩溃可恢复）
+ * - 其余 / 未设置                                 → MemoryQueueBackend（默认，零行为变更）
  */
 export function createQueueBackend(): QueueBackend {
-  const kind = (process.env.RUN_QUEUE_BACKEND || 'memory').toLowerCase();
+  const kind = (process.env.RUN_QUEUE_BACKEND || '').toLowerCase();
+  const redisUrl = process.env.REDIS_URL;
+  if (kind === 'redis' || (kind !== 'file' && redisUrl)) {
+    try {
+      // ioredis 可选依赖：动态 require，未安装则回退 memory。
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const RedisMod = require('ioredis');
+      const RedisCtor = (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+      const client = new RedisCtor(redisUrl || 'redis://localhost:6379', {
+        maxRetriesPerRequest: 3,
+        lazyConnect: true,
+      }) as RedisClient;
+      if (typeof (client as any).on === 'function') {
+        (client as any).on('error', (e: Error) =>
+          console.error('[queue-backend] redis error:', e?.message)
+        );
+      }
+      console.log(`[queue-backend] using Redis backend${redisUrl ? ` (${redisUrl})` : ''}`);
+      return new RedisQueueBackend(client);
+    } catch (e) {
+      console.error(
+        '[queue-backend] ioredis 不可用，回退 memory 后端:',
+        (e as Error)?.message
+      );
+      return new MemoryQueueBackend();
+    }
+  }
   if (kind === 'file') {
     const file =
       process.env.RUN_QUEUE_FILE || `${process.cwd()}/data/queue/run-queue.jsonl`;
@@ -160,28 +399,3 @@ export function createQueueBackend(): QueueBackend {
   }
   return new MemoryQueueBackend();
 }
-
-/*
- * ── 分布式扩展示例（不引入 npm 依赖，按需实现）──
- * 只要实现 QueueBackend 接口，即可替换工厂中的分支，RunQueue/handler 零改动：
- *
- * class RedisQueueBackend implements QueueBackend {
- *   readonly kind = 'redis' as const;
- *   constructor(private client: RedisLike) {}
- *   async append(d: JobDescriptor) { await this.client.rpush('runq', JSON.stringify(d)); }
- *   async list() {
- *     const raw = await this.client.lrange('runq', 0, -1);
- *     return raw.map((l) => JSON.parse(l) as JobDescriptor);
- *   }
- *   async ack(id: string) {  // 用 zset/lua 按 id 精确剔除；此处示意
- *     const all = await this.list();
- *     const kept = all.filter((d) => d.id !== id);
- *     await this.client.del('runq');
- *     if (kept.length) await this.client.rpush('runq', ...kept.map((d) => JSON.stringify(d)));
- *   }
- *   async clear() { await this.client.del('runq'); }
- * }
- *
- * 然后在 createQueueBackend 中：
- *   if (kind === 'redis') return new RedisQueueBackend(await createRedisClient());
- */

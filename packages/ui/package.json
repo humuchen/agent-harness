@@ -18,6 +18,9 @@
     "@agent-harness/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1"
   },
+  "optionalDependencies": {
+    "ioredis": "^5.4.1"
+  },
   "devDependencies": {
     "@types/node": "^20.19.43",
     "typescript": "^5.4.5"

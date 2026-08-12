@@ -396,10 +396,21 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
   设 `RUN_QUEUE_BACKEND=file` 后，已提交但还没开始的任务会落盘到 JSONL
   （`RUN_QUEUE_FILE`，默认 `./data/queue/run-queue.jsonl`），进程崩溃 / 重启后**自动重放**，
   避免丢活（在飞任务因携带进程内状态不可恢复，客户端会自行重投）。零 npm 依赖。
-- **可插拔后端（水平扩展接口）**：持久化由 `QueueBackend` 接口
-  （`packages/ui/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend`；
-  要横向扩展只需实现同一接口接入 Redis / BullMQ 并在 `createQueueBackend()` 工厂切换，
-  `RunQueue`、handler 与前端协议都不变。
+- **可插拔后端（水平扩展已落地）**：持久化由 `QueueBackend` 接口
+  （`packages/ui/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend` /
+  `RedisQueueBackend`。**Redis 后端已实装**，把「可插拔接口」变成真水平扩展：
+  - 数据结构：`runq:pending` / `runq:processing` 双列表 + `runq:jobs` / `runq:claimedAt` 哈希。
+  - **原子领取**：`claim()` 用 `LMOVE pending processing LEFT RIGHT` 原子迁移，多实例并发下
+    同一任务只会被一个实例拿到——天然无重复执行，无需分布式锁。
+  - **崩溃恢复**：领取时记录 `claimedAt`；实例崩溃后，其它实例周期性 `reclaimStale(QUEUE_LEASE_MS)`
+    把超租约的 processing 任务迁回 pending 重新领取（`QUEUE_LEASE_MS` 默认 5 分钟）。
+  - **跨实例 SSE**：执行实例经 `publishEvent` 把每个事件发到 `runq:events:<jobId>` 的 pub/sub
+    通道，持有 SSE 订阅的任意实例 `subscribeEvents` 即可转发，提交/执行分处不同实例时事件不丢。
+  - 多实例部署只需设 `REDIS_URL`（或 `RUN_QUEUE_BACKEND=redis`），`RunQueue` / handler / 前端协议
+    均不变；`ioredis` 为可选依赖，缺失时自动降级 `memory` 并打印告警（保持「一切降级可用」）。
+  - **部署提示**：多实例下建议负载均衡开启 **sticky session**（按连接把同一客户端的提交与 SSE
+    固定到同一实例），以获得最低延迟与最顺滑的 SSE；即便实例崩溃，任务也会由其它实例
+    领取重跑、客户端重连后续上。
 
 ### 会话 / 多租户记忆存储（P1-9 DB 化）
 
@@ -547,11 +558,12 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 **已落地优化**（默认保守、可经环境变量调优，避免破坏默认行为）：
 
 - **工具结果截断** `maxToolResultChars`（默认 16000，`runner.ts:241`，`harness.ts:300-307`）：超过阈值的工具结果截断并标注「原长 N 字符」，显著压低后续步骤的上下文体积与重发成本。复杂任务可调大，机密/长文本场景建议调小。
-- **滑动窗口保留 system 消息**（`memory.ts:64-71`）：窗口溢出（`maxWindow`，默认 20，可经 `MEMORY_WINDOW` 调整，`runner.ts:232-234`）时只淘汰非 system 的历史，保留 system 提示词，避免「截断后重新注入 system」带来的重复开销与行为漂移。
-- **重试 token 用量累计**（`llm/shared.ts:68-134`）：`callOpenAIChat` 跨重试累加 `usageAcc`，单次 run 的「真实总成本」不再被低估，可在 `/api/metrics` 看到准确数字。
-- **提示词缓存（可选）** `PROMPT_CACHE`（`llm/shared.ts:72-76`）：设为 `true`/`1` 时给首条 system 消息打 `cache_control: { type: 'ephemeral' }`，使「每步重发的 system + 技能目录」可命中提供方缓存、不计重复输入费。默认关闭，避免个别严格校验未知字段的 provider 报错。
+- **滑动窗口保留 system 消息**（`memory.ts` `add()`，约 62–101 行）：窗口溢出（`maxWindow`，默认 20，可经 `MEMORY_WINDOW` 调整，`runner.ts:232-234`）时只淘汰非 system 的历史，保留 system 提示词，避免「截断后重新注入 system」带来的重复开销与行为漂移。
+- **上下文压缩（可选，根治 token 平方增长）** `CONTEXT_COMPRESSION`（`memory.ts` `MemorySummarizer` + `runner.ts` 启发式摘要器）：开启后，滑动窗口溢出淘汰的旧轮次不再直接丢弃，而是被压缩为**一条 `system` 摘要消息固定保留**。模型仍保有早期上下文（已完成的交互数、工具调用清单），但每步重发的量从「全部历史」降为「一条有界摘要」。当前为**启发式**摘要器（统计用户请求/工具调用，**零额外 LLM 调用**，有界 ~400 字符），默认关闭（简单任务关闭时行为与改造前完全一致）。后续可替换为 LLM 摘要器做更高质量压缩（契约已预留 `MemorySummarizer`）。
+- **重试 token 用量累计**（`llm/shared.ts`）：`callOpenAIChat` 跨重试累加 `usageAcc`，单次 run 的「真实总成本」不再被低估，可在 `/api/metrics` 看到准确数字。
+- **提示词缓存（可选）** `PROMPT_CACHE`：设为 `true`/`1` 时给首条 system 消息打 `cache_control: { type: 'ephemeral' }`，使「每步重发的 system + 技能目录」可命中提供方缓存、不计重复输入费。默认关闭，避免个别严格校验未知字段的 provider 报错。
 
-> 权衡：未做「早期对话摘要压缩」（context compaction）——它会引入摘要质量风险且改动偏业务语义，留作后续 P2 项；当前以「截断 + 窗口 + 缓存 + 可观测」四件套在不牺牲信息完整性的前提下把成本压到可控区间。
+> 权衡：问题 B 的根因（全量历史每步重发）已通过「截断 + 窗口 + 压缩摘要 + 缓存 + 可观测」五件套在不牺牲信息完整性的前提下把成本压到可控区间；其中压缩目前是**启发式**而非 LLM 生成摘要，换取零额外调用成本与确定性行为。若追求更高质量的早期上下文压缩，可后续接入 LLM 摘要器（核心已预留 `MemorySummarizer` 同步契约）。
 
 ### 相关环境变量（新增，详见 `.env.example`）
 
@@ -562,6 +574,7 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | `AGENT_COMPLETION_CHECK` | 开启空响应完成自检，避免空回复提前终止 | 关闭 |
 | `MEMORY_WINDOW` | 滑动窗口容量（`memory.ts` 溢出淘汰非 system 历史） | `20` |
 | `PROMPT_CACHE` | 给 system 打 `cache_control`，命中提示词缓存降输入费 | 关闭 |
+| `CONTEXT_COMPRESSION` | 滑动窗口溢出时把淘汰轮次压缩为 system 摘要固定保留，根治 token 平方增长 | 关闭（启发式摘要器，零额外调用） |
 
 ## 测试
 

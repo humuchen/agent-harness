@@ -64,25 +64,35 @@ export class RunQueue {
   private concurrency = CONCURRENCY;
   /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
   private runningSessions = new Set<string>();
-  /** 持久化后端：默认内存（重启即丢）；RUN_QUEUE_BACKEND=file 时落盘可重放。 */
+  /** 持久化后端：默认内存（重启即丢）；RUN_QUEUE_BACKEND=file 时落盘可重放；redis 时共享多实例。 */
   private backend: QueueBackend;
+  /** 是否共享后端（redis/bullmq）：执行由 claim 驱动、事件走 pub/sub 桥；否则走进程内 this.queue。 */
+  private shared: boolean;
+  /** 共享模式下领取任务的定时器（setInterval）。 */
+  private claimTimer?: ReturnType<typeof setInterval>;
 
   constructor(backend?: QueueBackend) {
     this.backend = backend ?? createQueueBackend();
-    // 启动期重放：仅 file 后端存在「未开始」任务；重放后清空持久层，避免二次重放。
-    if (this.backend.kind === 'file') {
+    this.shared = this.backend.kind === 'redis' || this.backend.kind === 'bullmq';
+    if (this.shared) {
+      // 共享后端：启动回收被崩溃实例占住的任务，并开启领取轮询。
+      void this.startShared();
+    } else if (this.backend.kind === 'file') {
+      // 单实例文件后端：启动期重放未开始任务（重放后清空，避免二次重放）。
       void this.replayPending();
     }
   }
 
   /**
    * 提交一次 agent 运行任务，立即返回 Job（不等待执行）。
-   * 提交意图会异步落盘（file 后端），进程崩溃/重启后可重放尚未开始的任务。
+   * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
+   * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
   submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
-    const job = this.enqueue(input);
+    const id = `job_${++this.seq}_${Date.now().toString(36)}`;
+    const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
-      id: job.id,
+      id,
       mode: job.mode,
       prompt: job.prompt,
       model: job.model,
@@ -94,12 +104,21 @@ export class RunQueue {
     void this.backend.append(descriptor).catch((e) => {
       console.error('[run-queue] persist failed:', (e as Error)?.message);
     });
+    if (this.shared) {
+      // 执行由 claim 驱动；立即触发一次领取以减少首任务延迟（并发满则跳过，待 worker 空闲再扫）。
+      void this.sweepOnce();
+    } else {
+      this.queue.push(job);
+      this.pump();
+    }
     return job;
   }
 
-  /** 仅入队（不持久化）：供启动重放复用——重放的任务已在持久层、不应再次落盘。 */
-  private enqueue(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
-    const id = `job_${++this.seq}_${Date.now().toString(36)}`;
+  /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
+  private makeJob(
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number },
+    id: string
+  ): RunJob {
     const job: RunJob = {
       id,
       status: 'queued',
@@ -114,13 +133,64 @@ export class RunQueue {
       enqueuedAt: Date.now(),
     };
     this.jobs.set(id, job);
-    this.queue.push(job);
-    this.pump();
     return job;
   }
 
   /**
-   * 启动重放：把持久层中「未开始」的任务重新入队（生成新 job，原 id 不沿用避免歧义）。
+   * 启动共享后端：回收崩溃实例占住的任务，并开启领取轮询。
+   * 领取到的任务由 execute() 执行；跨实例事件经 publishEvent/subscribeEvents 桥接回订阅方。
+   */
+  private async startShared(): Promise<void> {
+    const leaseMs = Number(process.env.QUEUE_LEASE_MS ?? 300_000) || 300_000;
+    try {
+      const moved = this.backend.reclaimStale ? await this.backend.reclaimStale(leaseMs) : 0;
+      if (moved > 0) console.log(`[run-queue] reclaimed ${moved} stale job(s) from crashed instance`);
+    } catch (e) {
+      console.error('[run-queue] reclaim stale failed:', (e as Error)?.message);
+    }
+    const intervalMs = Number(process.env.QUEUE_CLAIM_INTERVAL_MS ?? 3000) || 3000;
+    this.claimTimer = setInterval(() => {
+      void this.sweepOnce();
+    }, intervalMs);
+    // 立即扫一次，缩短启动后首任务延迟。
+    void this.sweepOnce();
+  }
+
+  /**
+   * 领取并执行一条任务（共享后端 worker）。原子 claim 保证同一任务只被一个实例领取，
+   * 故不存在重复执行；本实例已提交的任務被自己领取时复用本地 RunJob（SSE 缓冲连续）。
+   */
+  private async sweepOnce(): Promise<void> {
+    if (this.running >= this.concurrency) return;
+    let d: JobDescriptor | null = null;
+    try {
+      d = await this.backend.claim();
+    } catch (e) {
+      console.error('[run-queue] claim failed:', (e as Error)?.message);
+      return;
+    }
+    if (!d) return;
+    let job = this.jobs.get(d.id);
+    if (!job) {
+      job = this.makeJob(
+        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+        d.id
+      );
+    }
+    this.running += 1;
+    if (job.sessionKey) this.runningSessions.add(job.sessionKey);
+    job.status = 'running';
+    job.startedAt = Date.now();
+    void this.execute(job).finally(() => {
+      this.running -= 1;
+      this.pump();
+      this.sweepOnce();
+      this.evictIfNeeded();
+    });
+  }
+
+  /**
+   * 启动重放（仅 file 后端）：把持久层「未开始」任务重新入队（沿用原 id，避免歧义）。
    * 重放后立即清空持久层，防止下次重启重复执行。任何异常都不应阻断进程启动。
    */
   private async replayPending(): Promise<void> {
@@ -128,18 +198,17 @@ export class RunQueue {
       const pending = await this.backend.list();
       await this.backend.clear();
       for (const d of pending) {
-        const job = this.enqueue({
-          mode: d.mode,
-          prompt: d.prompt,
-          model: d.model,
-          sessionKey: d.sessionKey,
-          maxSteps: d.maxSteps,
-        });
+        const job = this.makeJob(
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+          d.id
+        );
+        this.queue.push(job);
         job.enqueuedAt = d.enqueuedAt; // 保留原入队时刻，维持大致顺序
       }
       if (pending.length) {
         console.log(`[run-queue] replayed ${pending.length} pending job(s) from durable backend`);
       }
+      this.pump();
     } catch (e) {
       console.error('[run-queue] replay pending failed:', (e as Error)?.message);
     }
@@ -160,10 +229,26 @@ export class RunQueue {
         /* 单个订阅者异常不应影响其他订阅者 */
       }
     }
+    // 跨实例事件桥：执行实例若在别处，事件经 Redis pub/sub 转发到本订阅方，SSE 不受影响。
+    let unsubBus: (() => void) | null = null;
+    if (this.backend.subscribeEvents && job.status !== 'done' && job.status !== 'failed' && job.status !== 'cancelled') {
+      void this.backend.subscribeEvents(id, (e) => {
+        try {
+          fn(e);
+        } catch {
+          /* 忽略桥接异常 */
+        }
+      }).then((u) => {
+        unsubBus = u;
+      }).catch(() => {});
+    }
     if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
       job.subscribers.delete(fn);
     }
-    return () => job.subscribers.delete(fn);
+    return () => {
+      job.subscribers.delete(fn);
+      if (unsubBus) unsubBus();
+    };
   }
 
   get(id: string): RunJob | undefined {
@@ -225,6 +310,18 @@ export class RunQueue {
     }
   }
 
+  /** 停止领取轮询并关闭后端连接（测试与进程退出前调用）。 */
+  stop(): void {
+    if (this.claimTimer) {
+      clearInterval(this.claimTimer);
+      this.claimTimer = undefined;
+    }
+    const backend = this.backend as unknown as { close?: () => Promise<void> };
+    if (typeof backend.close === 'function') {
+      void backend.close().catch(() => {});
+    }
+  }
+
   private pump(): void {
     while (this.running < this.concurrency) {
       // 找下一个「会话未被占用」的待执行 job；找不到则停（等会话释放或 worker 空闲后再触发）。
@@ -283,6 +380,10 @@ export class RunQueue {
         } catch {
           /* 忽略单订阅者异常 */
         }
+      }
+      // 跨实例事件桥：把事件广播给持有该 job SSE 订阅的其它实例（共享后端才实现）。
+      if (this.backend.publishEvent) {
+        void this.backend.publishEvent(job.id, e).catch(() => {});
       }
     };
     const onEvent = (e: HarnessEvent) => {
