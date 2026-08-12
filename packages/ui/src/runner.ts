@@ -237,7 +237,13 @@ export async function assembleAgent(
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
   // 闭环步数上限：显式 maxSteps 优先 > env MAX_STEPS > 默认 24（原为硬编码 12，
   // 复杂任务常被提前截断）。工具结果截断降低每步重发的 token 成本。
-  const effectiveMaxSteps = maxSteps ?? Number(process.env.MAX_STEPS ?? 24) || 24;
+  const envMaxSteps = Number(process.env.MAX_STEPS);
+  const effectiveMaxSteps =
+    typeof maxSteps === 'number' && maxSteps > 0
+      ? maxSteps
+      : Number.isFinite(envMaxSteps) && envMaxSteps > 0
+        ? envMaxSteps
+        : 24;
   const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
   const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
   const accountModel =

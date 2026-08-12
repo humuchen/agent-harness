@@ -162,13 +162,13 @@ export function getMetricsSnapshot(): MetricsSnapshot {
 // 结构化日志（贯穿 runId，便于关联一次运行的全部事件）
 // ---------------------------------------------------------------------------
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 /** 输出一条结构化 JSON 日志（时间戳 + 级别 + 消息 + 任意字段）。 */
 export function structLog(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
   const entry = { ts: new Date().toISOString(), level, msg: message, ...(fields ?? {}) };
   const line = JSON.stringify(entry);
-  if (level === 'error') console.error(line);
+  if (level === 'error' || level === 'fatal') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
 }

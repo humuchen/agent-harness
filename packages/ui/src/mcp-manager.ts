@@ -69,7 +69,6 @@ class McpManager {
           health: 'unknown',
           tools: [],
           reconnectAttempts: 0,
-          reconnecting: false,
         };
         this.servers.push(placeholder);
         try {
