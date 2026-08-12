@@ -461,6 +461,27 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
   - `POST /api/recipes { jobId, name }` 存为命名版本；`GET /api/recipes` 列表；`GET /api/recipes/:id` 查看。
 - **前端**：运行面板新增「📊 评估」「💾 存配方」按钮；令牌具备权限时显示「📦 运行配方版本」面板。
 
+### 数据留存/出境策略、版本化 API 与 OpenAPI（P2-14，业务合规层与核心隔离）
+
+依旧是**纯业务层**能力（`packages/ui/src/retention.ts` + `openapi.ts`），核心不感知任何合规/契约概念：
+
+- **留存与出境策略（RetentionPolicy）**：`RetentionPolicy` 接口 + `DefaultRetentionPolicy`。
+  - 留存窗口按记录类型分化：`RETENTION_DAYS_AUDIT`(默认 90) / `RETENTION_DAYS_MEMORY`(默认 30) /
+    `RETENTION_DAYS_RECIPE`(默认 365)，`<=0` 表示永久；超期记录在导出/聚合时剔除。
+  - 出境/导出前 `scrubForExport()` 做 PII 脱敏（邮箱/手机号/身份证等替换为占位符），满足数据出境合规。
+  - `createRetentionPolicy()` 组合工厂：要按数据主权区域差异化合规规则，**只改这一个工厂**。
+- **版本化 API（/api/v1）**：所有 JSON/SSE 端点同时挂在稳定前缀 `/api/v1/*`
+  （如 `/api/v1/metrics`、`/api/v1/run`、`/api/v1/approvals/{id}`），未带前缀的等价路径保留为
+  向后兼容别名。服务端在路由入口把 `/api/v1/*` 重写为等价路径，**业务/前端零改造即可获得版本化契约**。
+- **OpenAPI 契约**：`buildOpenApiSpec()` 在运行时拼装 OpenAPI 3.0 文档（覆盖全部版本化 JSON 端点，
+  SSE 端点标注 `text/event-stream`），由 `GET /api/v1/openapi.json`（受 `policy:read` 保护）暴露，
+  便于接入网关 / 客户端代码生成 / 合规审查。当前留存策略快照见 `GET /api/v1/retention`。
+
+> 至此，原「企业落地 14 项缺口」已全部落地：安全加固（P0）→ 内容安全/可观测/MCP 可靠性/成本/
+> 测试+SBOM/架构解耦/多租户记忆（P1）→ RBAC+审批/评估+版本化/留存+版本化API（P2）。
+> 贯穿原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 UI 业务层以「接口 + 默认实现 + 组合工厂」
+> 形式存在，核心 `@agent-harness/core` 始终零业务耦合、可插拔、可组合。**
+
 ## 测试
 
 核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、

@@ -15,6 +15,8 @@ import { getMetricsSnapshot, Memory, sanitizeKey } from '@agent-harness/core';
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
 import { createEvaluator, createRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
+import { createRetentionPolicy, type RetentionPolicy } from './retention';
+import { buildOpenApiSpec } from './openapi';
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
@@ -48,6 +50,9 @@ const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 // 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
 const evaluator: Evaluator = createEvaluator();
 const recipeStore: RecipeStore = createRecipeStore();
+// 数据留存/出境策略与 OpenAPI 契约（业务合规层），同样由组合工厂装配，核心不感知。
+const retentionPolicy: RetentionPolicy = createRetentionPolicy();
+const openApiSpec = buildOpenApiSpec();
 
 // ---------------------------------------------------------------------------
 // 安全 / 可观测辅助
@@ -192,7 +197,9 @@ function publicDir(): string {
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-  const path = url.pathname;
+  let path = url.pathname;
+  // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径（向后兼容别名）。
+  if (path.startsWith('/api/v1/')) path = path.slice('/api/v1'.length) || '/';
 
   try {
     // CORS 预检：仅当配置了跨域白名单时才需处理。
@@ -213,6 +220,18 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (req.method === 'GET' && path === '/api/state') {
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
+    }
+    if (req.method === 'GET' && path === '/api/openapi.json') {
+      // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。
+      const ctx = await guard(req, res, 'policy:read');
+      if (!ctx) return;
+      return sendJson(res, openApiSpec, req);
+    }
+    if (req.method === 'GET' && path === '/api/retention') {
+      // 数据留存 / 出境策略快照（合规查阅）。
+      const ctx = await guard(req, res, 'policy:read');
+      if (!ctx) return;
+      return sendJson(res, retentionPolicy.describe(), req);
     }
     // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
     // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。

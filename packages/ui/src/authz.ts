@@ -32,6 +32,7 @@ export type Action =
   | 'eval:run'
   | 'recipe:save'
   | 'recipe:read'
+  | 'policy:read'
   | 'approvals:review';
 
 export interface AuthContext {
@@ -58,17 +59,18 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
     'shell:approve', 'memory:read', 'memory:clear', 'metrics:read',
-    'jobs:read', 'sessions:read', 'eval:run', 'recipe:save', 'recipe:read', 'approvals:review',
+    'jobs:read', 'sessions:read', 'eval:run', 'recipe:save', 'recipe:read',
+    'policy:read', 'approvals:review',
   ],
   operator: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
     'shell:approve', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
-    'eval:run', 'recipe:save', 'recipe:read',
+    'eval:run', 'recipe:save', 'recipe:read', 'policy:read',
   ],
   viewer: [
     'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
-    'recipe:read',
+    'recipe:read', 'policy:read',
   ],
 };
 
