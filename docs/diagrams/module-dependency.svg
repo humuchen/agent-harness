@@ -69,8 +69,8 @@
   <path d="M360,174 L240,210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
   <path d="M410,174 L360,210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
   <path d="M460,174 L490,210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
-  <path d="M380,174 L140,260" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
-  <path d="M410,174 L580,210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
+  <!-- <path d="M380,174 L140,260" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/> -->
+  <!-- <path d="M410,174 L580,210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/> -->
   <!-- tools -> types -->
   <path d="M140,270 L300,430" stroke="#16a34a" stroke-width="1.6" fill="none" marker-end="url(#ah3)"/>
   <!-- memory -> types, memory-store -->

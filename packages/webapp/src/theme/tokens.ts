@@ -38,6 +38,7 @@ const darkTokens = `
   --ah-font-display: 'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --ah-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --ah-shadow: 0 1px 2px rgba(0, 0, 0, 0.40), 0 8px 24px rgba(0, 0, 0, 0.28);
+  color-scheme: dark;
 `;
 
 // light：同一定义、浅色映射，便于后续多主题适配
@@ -67,6 +68,7 @@ const lightTokens = `
   --ah-font-display: 'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --ah-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --ah-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 8px 24px rgba(16, 24, 40, 0.10);
+  color-scheme: light;
 `;
 
 /** 注入 <head> 的全局主题样式：默认兜底 dark，dark/light 显式可切换。 */
@@ -79,6 +81,13 @@ ${darkTokens}
 }
 :root[data-theme="light"] {
 ${lightTokens}
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--ah-canvas);
+  color: var(--ah-text);
 }
 `;
 

@@ -70,56 +70,65 @@ export class AhApp extends LitElement {
 
   render() {
     return html`
-      <header class="topbar">
-        <div class="brand"><span class="logo"></span> Agent Harness</div>
-        <div class="state">
-          ${this.state
-            ? html`
-                <span class="pill ${this.state.openrouter ? 'ok' : ''}">
-                  LLM ${this.state.openrouter ? 'live' : 'mock'}
-                </span>
-                <span class="pill">model: ${this.state.model}</span>
-                <span class="pill">env: ${this.state.envs.length}</span>
-                <span class="pill">mcp: ${this.state.mcpServers.length}</span>
+      <div class="shell">
+        <aside class="sidebar">
+          <div class="brand"><span class="logo"></span> Agent Harness</div>
+          <nav class="nav">
+            ${TABS.map(
+              (t) => html`
+                <button
+                  class="nav-item ${this.tab === t.id ? 'active' : ''}"
+                  @click=${() => (this.tab = t.id)}
+                >
+                  ${t.label}
+                </button>
               `
-            : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
-        </div>
-        <input
-          class="token"
-          placeholder="Bearer 令牌（可选）"
-          .value=${this.token}
-          @input=${this.onTokenInput}
-        />
-        <button class="theme-toggle" @click=${() => this.onToggleTheme()}>
-          ${this.theme === 'dark' ? '暗色' : '亮色'}
-        </button>
-      </header>
-
-      <nav class="tabs">
-        ${TABS.map(
-          (t) => html`
-            <button
-              class="tab ${this.tab === t.id ? 'active' : ''}"
-              @click=${() => (this.tab = t.id)}
-            >
-              ${t.label}
+            )}
+          </nav>
+          <div class="nav-spacer"></div>
+          <div class="sidebar-foot">
+            <button class="theme-toggle" @click=${() => this.onToggleTheme()}>
+              ${this.theme === 'dark' ? '暗色主题' : '亮色主题'}
             </button>
-          `
-        )}
-        <button class="tab ghost" @click=${() => this.refreshState()}>
-          刷新状态
-        </button>
-      </nav>
+          </div>
+        </aside>
 
-      <main class="content">
-        ${this.tab === 'dashboard' ? html`<ah-dashboard></ah-dashboard>` : ''}
-        ${this.tab === 'run' ? html`<ah-run></ah-run>` : ''}
-        ${this.tab === 'verify' ? html`<ah-verify></ah-verify>` : ''}
-        ${this.tab === 'env' ? html`<ah-env></ah-env>` : ''}
-        ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
-        ${this.tab === 'approvals' ? html`<ah-approvals></ah-approvals>` : ''}
-        ${this.tab === 'observability' ? html`<ah-observability></ah-observability>` : ''}
-      </main>
+        <div class="main">
+          <header class="topbar">
+            <div class="state">
+              ${this.state
+                ? html`
+                    <span class="pill ${this.state.openrouter ? 'ok' : ''}">
+                      LLM ${this.state.openrouter ? 'live' : 'mock'}
+                    </span>
+                    <span class="pill">model: ${this.state.model}</span>
+                    <span class="pill">env: ${this.state.envs.length}</span>
+                    <span class="pill">mcp: ${this.state.mcpServers.length}</span>
+                  `
+                : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
+            </div>
+            <input
+              class="token"
+              placeholder="Bearer 令牌（可选）"
+              .value=${this.token}
+              @input=${this.onTokenInput}
+            />
+            <button class="ghost" @click=${() => this.refreshState()}>
+              刷新状态
+            </button>
+          </header>
+
+          <main class="content">
+            ${this.tab === 'dashboard' ? html`<ah-dashboard></ah-dashboard>` : ''}
+            ${this.tab === 'run' ? html`<ah-run></ah-run>` : ''}
+            ${this.tab === 'verify' ? html`<ah-verify></ah-verify>` : ''}
+            ${this.tab === 'env' ? html`<ah-env></ah-env>` : ''}
+            ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
+            ${this.tab === 'approvals' ? html`<ah-approvals></ah-approvals>` : ''}
+            ${this.tab === 'observability' ? html`<ah-observability></ah-observability>` : ''}
+          </main>
+        </div>
+      </div>
     `;
   }
 }

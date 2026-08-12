@@ -173,7 +173,7 @@ export class AhObservability extends LitElement {
               鉴权模式 <span class="role-badge">${this.roles?.mode ?? '—'}</span> ·
               身份源 <span class="role-badge">${this.roles?.provider ?? '—'}</span>
             </span>
-            <button class="ghost" @click=${() => this.refresh()}>↻ 刷新</button>
+            <button class="ghost" @click=${() => this.refresh()}>刷新</button>
           </div>
           <table class="matrix">
             <thead>

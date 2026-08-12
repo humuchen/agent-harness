@@ -24,7 +24,7 @@ function EventRow(ev: StreamEvent) {
 }
 
 function ErrorBox(msg: string | null) {
-  return msg ? html`<div class="error">⚠️ ${msg}</div>` : nothing;
+  return msg ? html`<div class="error">${msg}</div>` : nothing;
 }
 
 /** 把流式事件追加进 @state 数组的便捷闭包。 */
@@ -113,9 +113,9 @@ export class AhRun extends LitElement {
         </label>
         <div class="row">
           <button ?disabled=${this.running} @click=${() => this.run()}>
-            ${this.running ? '运行中…' : '▶ 运行'}
+            ${this.running ? '运行中…' : '运行'}
           </button>
-          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>■ 停止</button>
+          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>停止</button>
         </div>
         ${ErrorBox(this.error)}
         ${this.ticket ? html`<div class="warn">${this.ticket}</div>` : nothing}
@@ -160,9 +160,9 @@ export class AhVerify extends LitElement {
         <p class="muted">对服务端能力做三组断言（MCP 连接 / 护栏 / 环境流水线时序）。</p>
         <div class="row">
           <button ?disabled=${this.running} @click=${() => this.run()}>
-            ${this.running ? '验证中…' : '▶ 运行验证'}
+            ${this.running ? '验证中…' : '运行验证'}
           </button>
-          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>■ 停止</button>
+          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>停止</button>
         </div>
         ${ErrorBox(this.error)}
         <div class="stream">${this.events.map(EventRow)}</div>
@@ -231,7 +231,7 @@ export class AhEnv extends LitElement {
         </div>
         <div class="row">
           <button ?disabled=${this.running} @click=${() => this.submit()}>
-            ${this.running ? '处理中…' : isCreate ? '➕ 创建环境' : '🗑 销毁环境'}
+            ${this.running ? '处理中…' : isCreate ? '创建环境' : '销毁环境'}
           </button>
         </div>
         ${ErrorBox(this.error)}
@@ -295,28 +295,46 @@ export class AhMcp extends LitElement {
 
   render() {
     return html`
-      <section>
+      <div class="mcp-layout">
         <h2>MCP 服务</h2>
-        <div class="row">
-          <label>名称<input .value=${this.name} @input=${(e: Event) => (this.name = (e.target as HTMLInputElement).value)} /></label>
-          <label class="grow">URL<input .value=${this.url} @input=${(e: Event) => (this.url = (e.target as HTMLInputElement).value)} placeholder="https://... 或留空用 command" /></label>
-          <button @click=${() => this.add()}>＋ 添加</button>
-          <button class="ghost" @click=${() => this.refresh()}>↻ 刷新</button>
+        <div class="two">
+          <!-- 左栏：添加表单卡片 + 已接入列表 -->
+          <div class="stack">
+            <div class="card">
+              <div class="section-title">添加服务</div>
+              <div class="row">
+                <label>名称<input .value=${this.name} @input=${(e: Event) => (this.name = (e.target as HTMLInputElement).value)} /></label>
+                <label class="grow">URL<input .value=${this.url} @input=${(e: Event) => (this.url = (e.target as HTMLInputElement).value)} placeholder="https://... 或留空用 command" /></label>
+              </div>
+              <div class="row" style="margin-top:12px">
+                <button @click=${() => this.add()}>添加</button>
+                <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+              </div>
+            </div>
+            ${ErrorBox(this.error)}
+            <div class="card">
+              <div class="section-title">已接入</div>
+              <ul class="list">
+                ${this.servers.map(
+                  (s) => html`<li><b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具</li>`
+                )}
+              </ul>
+              ${this.servers.length === 0 ? html`<p class="muted">暂无已接入服务</p>` : nothing}
+            </div>
+          </div>
+
+          <!-- 右栏：预设市场卡片 -->
+          <div class="card">
+            <div class="section-title">预设市场</div>
+            <ul class="list">
+              ${this.presets.map(
+                (p) => html`<li>${p.name}（${p.authType}） <button @click=${() => this.preset(p.id)}>一键接入</button></li>`
+              )}
+            </ul>
+            ${this.presets.length === 0 ? html`<p class="muted">暂无预设</p>` : nothing}
+          </div>
         </div>
-        ${ErrorBox(this.error)}
-        <h3>已接入</h3>
-        <ul class="list">
-          ${this.servers.map(
-            (s) => html`<li><b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具</li>`
-          )}
-        </ul>
-        <h3>预设市场</h3>
-        <ul class="list">
-          ${this.presets.map(
-            (p) => html`<li>${p.name}（${p.authType}） <button @click=${() => this.preset(p.id)}>一键接入</button></li>`
-          )}
-        </ul>
-      </section>
+      </div>
     `;
   }
 }
@@ -359,7 +377,7 @@ export class AhApprovals extends LitElement {
       <section>
         <h2>审批工单</h2>
         <div class="row">
-          <button class="ghost" @click=${() => this.refresh()}>↻ 刷新</button>
+          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
         ${ErrorBox(this.error)}
         <ul class="list">
@@ -370,8 +388,8 @@ export class AhApprovals extends LitElement {
                   <li>
                     <b>${a.id}</b> · ${a.action} · ${a.status}<br />
                     <span class="muted">decision: ${a.decision ?? '-'}${a.note ? ' / ' + a.note : ''}</span><br />
-                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'approve')}>✅ 通过</button>
-                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'reject')}>❌ 拒绝</button>
+                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'approve')}>通过</button>
+                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'reject')}>拒绝</button>
                   </li>
                 `
               )}

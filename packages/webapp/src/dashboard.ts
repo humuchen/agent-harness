@@ -140,55 +140,51 @@ export class AhDashboard extends LitElement {
         ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
 
         <div class="two">
-          <div class="stack">
-            <div>
-              <div class="row-between">
-                <div class="section-title">实时活动</div>
-                <button class="link" @click=${() => this.goto('observability')}>查看队列 →</button>
-              </div>
-              <ul class="list">
-                ${(j?.jobs ?? []).slice(0, 6).map(
-                  (job) => html`
-                    <li>
-                      <span class="meta">${job.id}</span>
-                      <span class="pill ${job.status}">${job.status}</span>
-                      <span class="muted-sm">· ${job.mode} · ${fmtAge(job.enqueuedAt)}前</span>
-                    </li>
-                  `
-                )}
-                ${(j?.jobs ?? []).length === 0 ? html`<li class="muted">暂无任务</li>` : nothing}
-              </ul>
+          <section>
+            <div class="row-between">
+              <div class="section-title">实时活动</div>
+              <button class="link" @click=${() => this.goto('observability')}>查看队列 →</button>
             </div>
-          </div>
+            <ul class="list">
+              ${(j?.jobs ?? []).slice(0, 6).map(
+                (job) => html`
+                  <li>
+                    <span class="meta">${job.id}</span>
+                    <span class="pill ${job.status}">${job.status}</span>
+                    <span class="muted-sm">· ${job.mode} · ${fmtAge(job.enqueuedAt)}前</span>
+                  </li>
+                `
+              )}
+              ${(j?.jobs ?? []).length === 0 ? html`<li class="muted">暂无任务</li>` : nothing}
+            </ul>
+          </section>
 
-          <div class="stack">
-            <div>
-              <div class="row-between">
-                <div class="section-title">最近环境</div>
-                <button class="link" @click=${() => this.goto('env')}>管理环境 →</button>
-              </div>
-              <ul class="list">
-                ${(s?.envs ?? []).slice(0, 4).map(
-                  (e) => html`
-                    <li>
-                      <b>${e.envId}</b>
-                      <span class="pill ${e.status}">${e.status}</span><br />
-                      <span class="muted-sm">${e.branch ?? '—'}${e.owner ? ' · ' + e.owner : ''}</span>
-                    </li>
-                  `
-                )}
-                ${(s?.envs ?? []).length === 0 ? html`<li class="muted">暂无环境</li>` : nothing}
-              </ul>
+          <section>
+            <div class="row-between">
+              <div class="section-title">最近环境</div>
+              <button class="link" @click=${() => this.goto('env')}>管理环境 →</button>
             </div>
-          </div>
+            <ul class="list">
+              ${(s?.envs ?? []).slice(0, 4).map(
+                (e) => html`
+                  <li>
+                    <b>${e.envId}</b>
+                    <span class="pill ${e.status}">${e.status}</span><br />
+                    <span class="muted-sm">${e.branch ?? '—'}${e.owner ? ' · ' + e.owner : ''}</span>
+                  </li>
+                `
+              )}
+              ${(s?.envs ?? []).length === 0 ? html`<li class="muted">暂无环境</li>` : nothing}
+            </ul>
+          </section>
         </div>
 
         <div class="row">
-          <button @click=${() => this.goto('run')}>▶ 快速运行</button>
+          <button @click=${() => this.goto('run')}>快速运行</button>
           <button class="ghost" @click=${() => this.goto('approvals')}>
             待审 ${this.pending.length} 项
           </button>
-          <button class="ghost" @click=${() => this.refresh()}>↻ 刷新</button>
+          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
       </section>
     `;

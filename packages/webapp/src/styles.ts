@@ -9,10 +9,13 @@ import { css } from 'lit';
  */
 export const sharedStyles = css`
   :host {
+    display: block;
+    background: var(--ah-canvas);
     color: var(--ah-text);
     font-family: var(--ah-font-sans);
     font-size: 14px;
     line-height: 1.5;
+    min-height: 100vh;
   }
   .topbar {
     display: flex;
@@ -48,21 +51,26 @@ export const sharedStyles = css`
     flex: 1;
   }
   .pill {
-    padding: 2px 10px;
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
     border-radius: var(--ah-radius-pill);
     background: var(--ah-surface-2);
     border: 1px solid var(--ah-border);
     font-size: 12px;
     color: var(--ah-text-muted);
     white-space: nowrap;
+    font-family: var(--ah-font-mono);
   }
   .pill.ok {
     color: var(--ah-success);
-    border-color: var(--ah-success);
+    background: var(--ah-success-soft);
+    border-color: transparent;
   }
   .pill.err {
     color: var(--ah-danger);
-    border-color: var(--ah-danger);
+    background: var(--ah-danger-soft);
+    border-color: transparent;
   }
   .token {
     background: var(--ah-surface-2);
@@ -88,48 +96,95 @@ export const sharedStyles = css`
     color: var(--ah-text);
     border-color: var(--ah-accent);
   }
-  .tabs {
+  /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿 */
+  .shell {
     display: flex;
-    gap: 4px;
-    padding: 8px 20px 0;
-    background: var(--ah-surface-1);
-    border-bottom: 1px solid var(--ah-border);
-    position: sticky;
-    top: 53px;
-    z-index: 9;
+    min-height: 100vh;
   }
-  .tab {
+  .sidebar {
+    flex: 0 0 240px;
+    width: 240px;
+    background: var(--ah-surface-1);
+    border-right: 1px solid var(--ah-border);
+    padding: 20px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    box-sizing: border-box;
+  }
+  .nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-radius: 10px;
     color: var(--ah-text-muted);
-    padding: 8px 14px;
+    padding: 9px 12px;
     cursor: pointer;
     font-size: 14px;
     font-family: inherit;
   }
-  .tab:hover {
+  .nav-item:hover {
+    background: var(--ah-surface-2);
     color: var(--ah-text);
   }
-  .tab.active {
+  .nav-item.active {
+    background: var(--ah-accent-soft);
     color: var(--ah-accent);
-    border-bottom-color: var(--ah-accent);
+    font-weight: 600;
+    border-left: 3px solid var(--ah-accent);
+    border-radius: 0 10px 10px 0;
+    padding-left: 9px;
   }
-  .tab.ghost {
-    margin-left: auto;
-    color: var(--ah-text-muted);
+  .nav-spacer {
+    flex: 1;
+  }
+  .sidebar-foot {
+    border-top: 1px solid var(--ah-border);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
   }
   .content {
-    padding: 20px;
+    padding: 24px 32px;
     max-width: 1200px;
+    width: 100%;
     margin: 0 auto;
+    box-sizing: border-box;
   }
   section {
     background: var(--ah-surface-1);
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-lg);
-    padding: 18px 20px;
+    padding: 24px 24px;
     box-shadow: var(--ah-shadow);
+  }
+  .card {
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+    padding: 16px 18px;
+  }
+  .mcp-layout {
+    /* MCP 页面专用：标题 + 两栏独立卡片，无外层 section 卡片包裹 */
   }
   h2 {
     margin: 0 0 12px;
@@ -185,9 +240,10 @@ export const sharedStyles = css`
     background: var(--ah-accent);
     color: #fff;
     border: none;
-    border-radius: var(--ah-radius-sm);
-    padding: 8px 16px;
+    border-radius: var(--ah-radius-pill);
+    padding: 8px 18px;
     font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
     font-family: inherit;
   }
@@ -196,9 +252,20 @@ export const sharedStyles = css`
     cursor: not-allowed;
   }
   button.ghost {
-    background: transparent;
+    background: var(--ah-surface-2);
     border: 1px solid var(--ah-border);
     color: var(--ah-text-muted);
+    border-radius: var(--ah-radius-pill);
+    font-weight: 500;
+  }
+  button.ghost:hover {
+    color: var(--ah-text);
+    border-color: var(--ah-accent);
+  }
+  button.danger {
+    background: var(--ah-danger-soft);
+    color: var(--ah-danger);
+    border-radius: var(--ah-radius-sm);
   }
   .muted {
     color: var(--ah-text-muted);
@@ -318,8 +385,8 @@ export const sharedStyles = css`
   /* KPI 卡片网格 */
   .cards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
     margin-bottom: 16px;
   }
   .kpi {
@@ -352,21 +419,25 @@ export const sharedStyles = css`
   /* 状态 pill（job / session / env） */
   .pill.running {
     color: var(--ah-accent);
-    border-color: var(--ah-accent);
+    background: var(--ah-accent-soft);
+    border-color: transparent;
   }
   .pill.queued {
     color: var(--ah-warning);
-    border-color: var(--ah-warning);
+    background: var(--ah-warning-soft);
+    border-color: transparent;
   }
   .pill.done,
   .pill.ready {
     color: var(--ah-success);
-    border-color: var(--ah-success);
+    background: var(--ah-success-soft);
+    border-color: transparent;
   }
   .pill.error,
   .pill.cancelled {
     color: var(--ah-danger);
-    border-color: var(--ah-danger);
+    background: var(--ah-danger-soft);
+    border-color: transparent;
   }
   .meta {
     font-family: var(--ah-font-mono);
