@@ -38,8 +38,16 @@ jobs:
       - name: Build all packages
         run: pnpm -r build
 
-      - name: Run tests
+      # 各包单测：纯离线、无外部依赖（client 用注入 fetch 替身，不打真实网络）。
+      - name: Run unit tests
         run: pnpm -r test
+
+      # 端到端：smoke 自己在随机端口拉起 packages/server/dist/server.js，跑完回收。
+      # 上一步 build 已产出 server dist，故 STRICT=1 下不允许静默跳过。
+      - name: Run client e2e smoke (self-hosted server)
+        run: pnpm --filter @agent-harness/client run test:e2e
+        env:
+          AH_SMOKE_STRICT: '1'
 
   # 依赖安全扫描（不阻塞主流程，仅报告）。企业落地时建议转为门禁。
   audit:

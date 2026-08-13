@@ -648,7 +648,21 @@ pnpm --filter @agent-harness/server run build     # 先构建
 pnpm --filter @agent-harness/server run test      # 跑集成测试
 ```
 
-CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → test`，并附两个安全作业：
+多平台客户端 `@agent-harness/client` 分两层验证——**离线契约测试**（注入 fetch 替身，零网络，
+覆盖 URL 拼装 / Bearer 鉴权 / 错误映射 / 202 审批工单 / SSE 分帧健壮性）与**端到端 smoke**
+（自己在随机空闲端口拉起 `packages/server/dist/server.js`，跑完自动回收，不依赖外部已运行实例）：
+
+```bash
+pnpm --filter @agent-harness/client run build      # 先构建
+pnpm --filter @agent-harness/client run test       # 离线契约测试（14 用例，任何环境可跑）
+pnpm -r build && \
+  pnpm --filter @agent-harness/client run test:e2e # 端到端 smoke（自举 server）
+```
+
+e2e 的三种运行姿态：设 `AH_BASE_URL` 直连既有实例（不 spawn）；未设则自举 server；
+server 未构建时默认跳过（exit 0），设 `AH_SMOKE_STRICT=1` 则升级为失败（CI 采用后者）。
+
+CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test → client e2e`，并附两个安全作业：
 `Dependency Audit & SBOM`（`pnpm audit --severity high` + CycloneDX SBOM 产物归档，不阻塞）
 与 PR 的 `Dependency Review`（新增/升级依赖的已知漏洞与许可证合规，high 即失败）。
 

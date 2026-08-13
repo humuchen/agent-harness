@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node test/smoke.mjs"
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node test/smoke.mjs"
   },
   "license": "MIT",
   "engines": {
