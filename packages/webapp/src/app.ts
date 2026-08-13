@@ -7,14 +7,16 @@ import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 
 type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability';
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'dashboard', label: '总览' },
-  { id: 'run', label: '运行' },
-  { id: 'verify', label: '验证' },
-  { id: 'env', label: '环境' },
-  { id: 'mcp', label: 'MCP' },
-  { id: 'approvals', label: '审批' },
-  { id: 'observability', label: '可观测' },
+const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
+
+const TABS: Array<{ id: Tab; label: string; short: string }> = [
+  { id: 'dashboard', label: '总览', short: '览' },
+  { id: 'run', label: '运行', short: '运' },
+  { id: 'verify', label: '验证', short: '验' },
+  { id: 'env', label: '环境', short: '环' },
+  { id: 'mcp', label: 'MCP', short: 'M' },
+  { id: 'approvals', label: '审批', short: '审' },
+  { id: 'observability', label: '可观测', short: '观' },
 ];
 
 /**
@@ -30,6 +32,8 @@ export class AhApp extends LitElement {
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
+  @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  @state() private drawerOpen = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -68,33 +72,89 @@ export class AhApp extends LitElement {
     this.theme = toggleTheme();
   }
 
+  private onToggleSidebar() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(this.sidebarCollapsed));
+  }
+
+  private onToggleDrawer() {
+    this.drawerOpen = !this.drawerOpen;
+    this.syncBodyScroll();
+  }
+
+  private closeDrawer() {
+    if (!this.drawerOpen) return;
+    this.drawerOpen = false;
+    this.syncBodyScroll();
+  }
+
+  /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */
+  private syncBodyScroll() {
+    document.body.style.overflow = this.drawerOpen ? 'hidden' : '';
+  }
+
   render() {
     return html`
       <div class="shell">
-        <aside class="sidebar">
-          <div class="brand"><span class="logo"></span> Agent Harness</div>
+        <aside class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''} ${this.drawerOpen ? 'open' : ''}">
+          <div class="brand">
+            <svg class="logo" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
+              <path d="M50 6 L84 20 L50 34 L16 20 Z" />
+              <path d="M50 36 L84 50 L50 64 L16 50 Z" />
+              <path d="M50 66 L84 80 L50 94 L16 80 Z" />
+            </svg>
+            <span class="brand-text">Agent Harness</span>
+            <button
+              class="sidebar-toggle"
+              title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+              @click=${() => this.onToggleSidebar()}
+              aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            >
+              ${this.sidebarCollapsed ? '›' : '‹'}
+            </button>
+          </div>
           <nav class="nav">
             ${TABS.map(
               (t) => html`
                 <button
                   class="nav-item ${this.tab === t.id ? 'active' : ''}"
-                  @click=${() => (this.tab = t.id)}
+                  data-short=${t.short}
+                  title=${t.label}
+                  @click=${() => {
+                    this.tab = t.id;
+                    this.closeDrawer();
+                  }}
                 >
-                  ${t.label}
+                  <span class="nav-text">${t.label}</span>
                 </button>
               `
             )}
           </nav>
           <div class="nav-spacer"></div>
           <div class="sidebar-foot">
-            <button class="theme-toggle" @click=${() => this.onToggleTheme()}>
-              ${this.theme === 'dark' ? '暗色主题' : '亮色主题'}
+            <button
+              class="theme-toggle"
+              title=${this.theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}
+              @click=${() => this.onToggleTheme()}
+            >
+              <span class="theme-text">${this.theme === 'dark' ? '暗色主题' : '亮色主题'}</span>
+              <span class="theme-icon">${this.theme === 'dark' ? '☾' : '☀'}</span>
             </button>
           </div>
         </aside>
 
+        <div class="scrim ${this.drawerOpen ? 'show' : ''}" @click=${() => this.closeDrawer()}></div>
+
         <div class="main">
           <header class="topbar">
+            <button
+              class="menu-btn"
+              title="打开导航"
+              @click=${() => this.onToggleDrawer()}
+              aria-label="打开导航"
+            >
+              ☰
+            </button>
             <div class="state">
               ${this.state
                 ? html`
