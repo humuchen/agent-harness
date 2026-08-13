@@ -1,9 +1,7 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
-import { ApprovalRequiredError } from '@agent-harness/client';
 import type {
-  RunMode,
   StreamEvent,
   EnvAction,
   McpServerMeta,
@@ -27,103 +25,9 @@ function ErrorBox(msg: string | null) {
   return msg ? html`<div class="error">${msg}</div>` : nothing;
 }
 
-/** 把流式事件追加进 @state 数组的便捷闭包。 */
-function appendEvent(getEvents: () => StreamEvent[], setEvents: (v: StreamEvent[]) => void) {
-  return (ev: StreamEvent) => setEvents([...getEvents(), ev]);
-}
-
-/* ------------------------------ Run ------------------------------ */
-
-@customElement('ah-run')
-export class AhRun extends LitElement {
-  static styles = [sharedStyles];
-
-  @state() mode: RunMode = 'mock';
-  @state() prompt = '列出当前目录的 .ts 文件';
-  @state() model = '';
-  @state() maxSteps = '';
-  @state() sessionId = '';
-  @state() reconnect = '';
-  @state() events: StreamEvent[] = [];
-  @state() running = false;
-  @state() error: string | null = null;
-  @state() ticket: string | null = null;
-  private abort?: AbortController;
-
-  private async run() {
-    this.error = null;
-    this.ticket = null;
-    this.events = [];
-    this.running = true;
-    const ac = new AbortController();
-    this.abort = ac;
-    const push = appendEvent(
-      () => this.events,
-      (v) => (this.events = v)
-    );
-    try {
-      for await (const ev of client.streamRun(
-        {
-          mode: this.mode,
-          prompt: this.prompt,
-          model: this.model || undefined,
-          maxSteps: this.maxSteps ? Number(this.maxSteps) : undefined,
-          sessionId: this.sessionId || undefined,
-          jobId: this.reconnect || undefined,
-        },
-        { signal: ac.signal }
-      )) {
-        push(ev);
-        if (ev.type === 'env:status' || ev.type === '_env_done') {
-          this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
-        }
-      }
-    } catch (e: any) {
-      if (e instanceof ApprovalRequiredError) {
-        this.ticket = `需要审批：ticket ${e.ticketId}（在「审批」页裁决后重投）`;
-      } else {
-        this.error = String(e?.message ?? e);
-      }
-    } finally {
-      this.running = false;
-    }
-  }
-
-  render() {
-    return html`
-      <section>
-        <h2>运行 Agent</h2>
-        <div class="grid">
-          <label>
-            模式
-            <select @change=${(e: Event) => (this.mode = (e.target as HTMLSelectElement).value as RunMode)}>
-              <option value="mock">mock（离线）</option>
-              <option value="real">real（真实 LLM）</option>
-              <option value="real-mcp">real-mcp</option>
-            </select>
-          </label>
-          <label>模型<input .value=${this.model} @input=${(e: Event) => (this.model = (e.target as HTMLInputElement).value)} placeholder="留空用服务端默认" /></label>
-          <label>最大步数<input .value=${this.maxSteps} @input=${(e: Event) => (this.maxSteps = (e.target as HTMLInputElement).value)} placeholder="留空用默认 24" /></label>
-          <label>会话 ID<input .value=${this.sessionId} @input=${(e: Event) => (this.sessionId = (e.target as HTMLInputElement).value)} placeholder="多租户隔离 key" /></label>
-          <label>重连 jobId<input .value=${this.reconnect} @input=${(e: Event) => (this.reconnect = (e.target as HTMLInputElement).value)} placeholder="断线重连用，可留空" /></label>
-        </div>
-        <label class="block">
-          提示词
-          <textarea rows="3" .value=${this.prompt} @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}></textarea>
-        </label>
-        <div class="row">
-          <button ?disabled=${this.running} @click=${() => this.run()}>
-            ${this.running ? '运行中…' : '运行'}
-          </button>
-          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>停止</button>
-        </div>
-        ${ErrorBox(this.error)}
-        ${this.ticket ? html`<div class="warn">${this.ticket}</div>` : nothing}
-        <div class="stream">${this.events.map(EventRow)}</div>
-      </section>
-    `;
-  }
-}
+/* ------------------------------ Run ------------------------------
+ * 运行时面板已迁移到独立文件 ./run.ts（思考 Trace + 最终结果 双栏交互）。
+ * 保留 verify / env / mcp / approvals 在此文件。 */
 
 /* ------------------------------ Verify ------------------------------ */
 
