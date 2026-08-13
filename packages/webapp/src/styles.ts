@@ -37,6 +37,27 @@ export const sharedStyles = css`
     font-size: 16px;
     white-space: nowrap;
   }
+  .sidebar-toggle {
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--ah-radius-sm);
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .sidebar-toggle:hover {
+    color: var(--ah-text);
+    border-color: var(--ah-accent);
+  }
   .logo {
     width: 22px;
     height: 22px;
@@ -91,10 +112,28 @@ export const sharedStyles = css`
     cursor: pointer;
     font-family: inherit;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
   }
   .theme-toggle:hover {
     color: var(--ah-text);
     border-color: var(--ah-accent);
+  }
+  .theme-icon {
+    display: none;
+  }
+  .sidebar.collapsed .theme-text {
+    display: none;
+  }
+  .sidebar.collapsed .theme-icon {
+    display: inline;
+    font-size: 14px;
+  }
+  .sidebar.collapsed .theme-toggle {
+    padding: 6px;
+    border-radius: var(--ah-radius-md);
   }
   /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿 */
   .shell {
@@ -114,6 +153,19 @@ export const sharedStyles = css`
     top: 0;
     height: 100vh;
     box-sizing: border-box;
+    transition: width 180ms ease, padding 180ms ease;
+    overflow: hidden;
+  }
+  .sidebar.collapsed {
+    flex: 0 0 64px;
+    width: 64px;
+    padding: 20px 10px;
+  }
+  .sidebar.collapsed .brand-text {
+    display: none;
+  }
+  .sidebar.collapsed .sidebar-toggle {
+    margin-left: 0;
   }
   .nav {
     display: flex;
@@ -134,6 +186,7 @@ export const sharedStyles = css`
     cursor: pointer;
     font-size: 14px;
     font-family: inherit;
+    position: relative;
   }
   .nav-item:hover {
     background: var(--ah-surface-2);
@@ -146,6 +199,36 @@ export const sharedStyles = css`
     border-left: 3px solid var(--ah-accent);
     border-radius: 0 10px 10px 0;
     padding-left: 9px;
+  }
+  .sidebar.collapsed .nav-text {
+    display: none;
+  }
+  .sidebar.collapsed .nav-item {
+    justify-content: center;
+    padding: 9px 4px;
+    border-left: none;
+    border-radius: 10px;
+  }
+  .sidebar.collapsed .nav-item.active {
+    border-left: none;
+    border-radius: 10px;
+    padding-left: 4px;
+  }
+  .sidebar.collapsed .nav-item.active::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 18px;
+    border-radius: 0 2px 2px 0;
+    background: var(--ah-accent);
+  }
+  .sidebar.collapsed .nav-item::before {
+    content: attr(data-short);
+    font-size: 14px;
+    font-weight: 500;
   }
   .nav-spacer {
     flex: 1;
@@ -280,12 +363,12 @@ export const sharedStyles = css`
     font-size: 13px;
   }
   .warn {
-    background: var(--ah-warning-soft);
-    border: 1px solid var(--ah-warning);
-    color: var(--ah-warning);
+    // background: var(--ah-warning-soft);
+    // border: 1px solid var(--ah-warning);
+    color: var(--ah-warning) !important;
     border-radius: var(--ah-radius-sm);
-    padding: 8px 12px;
-    margin: 10px 0;
+    // padding: 8px 12px;
+    // margin: 10px 0;
     font-size: 13px;
   }
   .stream {
