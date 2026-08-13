@@ -1,9 +1,11 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client } from './api';
 import { ApprovalRequiredError } from '@agent-harness/client';
 import type { RunMode, StreamEvent } from '@agent-harness/client';
 import { sharedStyles } from './styles';
+import { toRichHtml, escapeHtml } from './markdown';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -229,29 +231,52 @@ export class AhRun extends LitElement {
   }
 
   private exportRun() {
-    const md = [
-      '# Agent 运行结果',
-      '',
-      '## 任务',
-      this.prompt,
-      '',
-      '## 思考轨迹',
-      ...this.trace.map((b) => `- [${TAG_LABEL[b.kind]}] ${b.text}${b.detail ? '\n  ' + b.detail : ''}`),
-      '',
-      '## 最终结果',
-      this.final || '（暂无结果）',
-      '',
-      '---',
-      `jobId: ${this.jobId ?? '-'} · 步数: ${this.steps} · 花费: $${this.cost.toFixed(4)} · 工具: ${this.toolsCount}`,
-    ].join('\n');
-    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const blocks = this.trace
+      .map(
+        (b) =>
+          `<div class="tb"><span class="tb-tag">${escapeHtml(TAG_LABEL[b.kind])}</span>${toRichHtml(b.text)}</div>`
+      )
+      .join('\n');
+    const htmlDoc = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 运行结果</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 860px; margin: 28px auto; padding: 0 18px; line-height: 1.7; color: #1d1d1f; }
+  h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 28px; border-bottom: 1px solid #e5e5ea; padding-bottom: 6px; }
+  pre { background: #f5f5f7; padding: 12px 14px; border-radius: 10px; overflow: auto; }
+  code { background: #f0f0f2; padding: 1px 5px; border-radius: 5px; font-size: 0.92em; }
+  pre code { background: none; padding: 0; }
+  blockquote { border-left: 3px solid #2997ff; margin: 12px 0; padding: 4px 14px; color: #555; background: #f7faff; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; } th, td { border: 1px solid #d2d2d7; padding: 6px 10px; text-align: left; } th { background: #f5f5f7; }
+  .tb { margin: 8px 0; padding: 8px 12px; border-left: 3px solid #2997ff; background: #fafafa; border-radius: 6px; }
+  .tb-tag { font-size: 12px; color: #2997ff; font-weight: 600; margin-right: 8px; }
+  .meta { color: #86868b; font-size: 13px; border-top: 1px solid #e5e5ea; margin-top: 20px; padding-top: 10px; }
+  a { color: #2997ff; }
+</style>
+</head>
+<body>
+  <h1>Agent 运行结果</h1>
+  <h2>任务</h2>
+  <p>${escapeHtml(this.prompt)}</p>
+  <h2>思考轨迹</h2>
+  ${blocks}
+  <h2>最终结果</h2>
+  ${toRichHtml(this.final)}
+  <div class="meta">jobId: ${escapeHtml(String(this.jobId ?? '-'))} · 步数: ${this.steps} · 花费: $${this.cost.toFixed(4)} · 工具: ${this.toolsCount}</div>
+</body>
+</html>`;
+    const blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `agent-run-${this.jobId ?? Date.now()}.md`;
+    a.download = `agent-run-${this.jobId ?? Date.now()}.html`;
     a.click();
     URL.revokeObjectURL(url);
-    this.showToast('已导出运行记录');
+    this.showToast('已导出运行记录（HTML）');
   }
 
   private showToast(msg: string) {
@@ -281,7 +306,7 @@ export class AhRun extends LitElement {
       (b) => html`
         <div class="trace-block ${b.kind}">
           <div class="tb-head"><span class="tb-tag">${TAG_LABEL[b.kind]}</span>${b.step != null ? html`<span class="sub">step ${b.step}</span>` : nothing}</div>
-          <div class="tb-body">${b.text}</div>
+          <div class="tb-body">${unsafeHTML(toRichHtml(b.text))}</div>
           ${b.detail ? html`<div class="tb-detail">${b.detail}</div>` : nothing}
         </div>
       `
@@ -318,7 +343,7 @@ export class AhRun extends LitElement {
       <div class="deliverable">
         <span class="k">调用工具</span><span class="v ok">${this.toolsCount} 个</span>
       </div>
-      <div class="codeblock">${this.final || '（模型未返回最终文本）'}</div>
+      <div class="codeblock rich">${this.final ? unsafeHTML(toRichHtml(this.final)) : '（模型未返回最终文本）'}</div>
       <div class="run-actions">
         <button @click=${() => this.copyFinal()}>复制</button>
         <button @click=${() => this.exportRun()}>导出</button>
