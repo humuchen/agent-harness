@@ -1,0 +1,23 @@
+# 本地验证 overlay：复用 base 全部清单，仅做本地化覆盖。
+#
+# 适用场景：本机已有 agent-harness:local 镜像（Docker Desktop / kind / minikube）。
+#   - Docker Desktop 内置 k8s：镜像在其镜像仓库中，imagePullPolicy: Never 直接可用。
+#   - kind：先 `kind load docker-image agent-harness:local`。
+#   - minikube：先 `minikube cache add agent-harness:local`（或 `minikube image load`）。
+#
+# 部署：
+#   kubectl apply -k deploy/k8s/overlays/local
+# 访问：http://localhost:31473  （Service 已暴露 NodePort 31473）
+#   或：kubectl -n agent-harness port-forward svc/agent-harness 4173:4173
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-harness
+
+resources:
+  - ../../
+
+patches:
+  - path: deployment-patch.yaml
+  - path: service-patch.yaml
+  - path: hpa-patch.yaml

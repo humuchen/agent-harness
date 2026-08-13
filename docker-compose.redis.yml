@@ -1,19 +1,24 @@
-# docker-compose.redis.yml —— Redis 运行队列 overlay
+# docker-compose.redis.yml —— Redis 运行队列 overlay（内部多人试用推荐）
 #
-# 与 docker-compose.yml 叠加使用；仅当启用 `redis` profile 时才生效，
+# 与 docker-compose.yml 叠加使用；仅当启用 `redis` profile 时生效，
 # 不会破坏默认的内存模式（无 Redis 单副本）。
 #
 # 用法：
+#   cp .env.example .env          # 先填入 UI_AUTH_TOKEN（openssl rand -base64 32）
 #   docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up -d
 #
 # 作用：
 #   1. 自动把 REDIS_URL 注入 ui 服务（原 docker-compose.yml 读宿主机变量、默认空 → 应用回退内存队列）
 #   2. 让 ui 等待 redis 健康后再启动，避免队列后端连不上
+#   3. 强制要求 UI_AUTH_TOKEN（多人访问必须鉴权；未设置则 compose 启动直接报错退出，
+#      避免 UI 在无人值守下对全网开放）
 
 services:
   ui:
     environment:
       REDIS_URL: "redis://redis:6379"
+      # 内部多人试用必须设强随机令牌；未设置则拒绝启动
+      UI_AUTH_TOKEN: "${UI_AUTH_TOKEN:?UI_AUTH_TOKEN 未设置！请先 cp .env.example .env 并填入 openssl rand -base64 32 生成的令牌}"
     depends_on:
       redis:
         condition: service_healthy

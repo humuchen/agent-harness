@@ -1,0 +1,14 @@
+# 本地化 Deployment：用本机镜像、单副本（HPA 也压到 1，避免本地频繁扩缩）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: ui
+          image: agent-harness:local
+          imagePullPolicy: Never

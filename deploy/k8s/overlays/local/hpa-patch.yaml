@@ -1,0 +1,9 @@
+# 本地压平 HPA：min=max=1，配合 deployment 单副本，避免本地资源抖动触发扩缩。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+spec:
+  minReplicas: 1
+  maxReplicas: 1
