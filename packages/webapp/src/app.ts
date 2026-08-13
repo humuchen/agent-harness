@@ -33,6 +33,7 @@ export class AhApp extends LitElement {
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
   @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  @state() private drawerOpen = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -76,12 +77,32 @@ export class AhApp extends LitElement {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(this.sidebarCollapsed));
   }
 
+  private onToggleDrawer() {
+    this.drawerOpen = !this.drawerOpen;
+    this.syncBodyScroll();
+  }
+
+  private closeDrawer() {
+    if (!this.drawerOpen) return;
+    this.drawerOpen = false;
+    this.syncBodyScroll();
+  }
+
+  /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */
+  private syncBodyScroll() {
+    document.body.style.overflow = this.drawerOpen ? 'hidden' : '';
+  }
+
   render() {
     return html`
       <div class="shell">
-        <aside class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''}">
+        <aside class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''} ${this.drawerOpen ? 'open' : ''}">
           <div class="brand">
-            <span class="logo"></span>
+            <svg class="logo" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
+              <path d="M50 6 L84 20 L50 34 L16 20 Z" />
+              <path d="M50 36 L84 50 L50 64 L16 50 Z" />
+              <path d="M50 66 L84 80 L50 94 L16 80 Z" />
+            </svg>
             <span class="brand-text">Agent Harness</span>
             <button
               class="sidebar-toggle"
@@ -99,7 +120,10 @@ export class AhApp extends LitElement {
                   class="nav-item ${this.tab === t.id ? 'active' : ''}"
                   data-short=${t.short}
                   title=${t.label}
-                  @click=${() => (this.tab = t.id)}
+                  @click=${() => {
+                    this.tab = t.id;
+                    this.closeDrawer();
+                  }}
                 >
                   <span class="nav-text">${t.label}</span>
                 </button>
@@ -119,8 +143,18 @@ export class AhApp extends LitElement {
           </div>
         </aside>
 
+        <div class="scrim ${this.drawerOpen ? 'show' : ''}" @click=${() => this.closeDrawer()}></div>
+
         <div class="main">
           <header class="topbar">
+            <button
+              class="menu-btn"
+              title="打开导航"
+              @click=${() => this.onToggleDrawer()}
+              aria-label="打开导航"
+            >
+              ☰
+            </button>
             <div class="state">
               ${this.state
                 ? html`

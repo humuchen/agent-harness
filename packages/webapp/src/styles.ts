@@ -15,7 +15,24 @@ export const sharedStyles = css`
     font-family: var(--ah-font-sans);
     font-size: 14px;
     line-height: 1.5;
-    min-height: 100vh;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  /* 滚动条：细轨道、圆角滑块，hover 才高亮，保持界面干净 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--ah-border);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ah-text-muted);
   }
   .topbar {
     display: flex;
@@ -24,9 +41,7 @@ export const sharedStyles = css`
     padding: 12px 20px;
     background: var(--ah-surface-1);
     border-bottom: 1px solid var(--ah-border);
-    position: sticky;
-    top: 0;
-    z-index: 10;
+    flex: 0 0 auto;
   }
   .brand {
     display: flex;
@@ -61,9 +76,9 @@ export const sharedStyles = css`
   .logo {
     width: 22px;
     height: 22px;
-    border-radius: 6px;
-    background: var(--ah-accent);
     flex: 0 0 auto;
+    display: block;
+    color: var(--ah-text);
   }
   .state {
     display: flex;
@@ -135,10 +150,12 @@ export const sharedStyles = css`
     padding: 6px;
     border-radius: var(--ah-radius-md);
   }
-  /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿 */
+  /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿。
+     整个 shell 占满视口；主内容区 (.content) 内部滚动，避免 body 全局滚动条。 */
   .shell {
     display: flex;
-    min-height: 100vh;
+    height: 100%;
+    overflow: hidden;
   }
   .sidebar {
     flex: 0 0 240px;
@@ -149,12 +166,12 @@ export const sharedStyles = css`
     display: flex;
     flex-direction: column;
     gap: 6px;
-    position: sticky;
-    top: 0;
-    height: 100vh;
+    height: 100%;
     box-sizing: border-box;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ah-border) transparent;
     transition: width 180ms ease, padding 180ms ease;
-    overflow: hidden;
   }
   .sidebar.collapsed {
     flex: 0 0 64px;
@@ -245,8 +262,15 @@ export const sharedStyles = css`
     min-width: 0;
     display: flex;
     flex-direction: column;
+    height: 100%;
+    overflow: hidden;
   }
   .content {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ah-border) transparent;
     padding: 24px 32px;
     max-width: 1200px;
     width: 100%;
@@ -606,5 +630,113 @@ export const sharedStyles = css`
     font-size: 13px;
     padding: 0;
     font-family: inherit;
+  }
+  /* 移动端抽屉相关：桌面端默认隐藏，窄屏下由媒体查询启用 */
+  .menu-btn {
+    display: none;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+    border-radius: var(--ah-radius-sm);
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text);
+    cursor: pointer;
+  }
+  .menu-btn:hover {
+    border-color: var(--ah-accent);
+  }
+  .scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 40;
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+  .scrim.show {
+    opacity: 1;
+  }
+
+  /* ------------------- 移动端适配（≤760px） ------------------- */
+  @media (max-width: 760px) {
+    /* 侧边栏改为离屏抽屉：默认滑出屏幕，.open 时滑入，覆盖在内容之上 */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 100dvh;
+      width: 240px;
+      max-width: 82vw;
+      transform: translateX(-100%);
+      transition: transform 200ms ease;
+      z-index: 50;
+      box-shadow: 2px 0 16px rgba(0, 0, 0, 0.45);
+      padding: 20px 14px;
+      overflow-y: auto;
+    }
+    .sidebar.open {
+      transform: none;
+    }
+    /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
+    .sidebar.collapsed {
+      width: 240px;
+      max-width: 82vw;
+    }
+    .sidebar.collapsed .brand-text,
+    .sidebar.collapsed .nav-text,
+    .sidebar.collapsed .theme-text {
+      display: inline;
+    }
+    .sidebar.collapsed .theme-icon {
+      display: none;
+    }
+    .sidebar.collapsed .nav-item::before {
+      content: none;
+    }
+    .sidebar.collapsed .nav-item {
+      justify-content: flex-start;
+      padding: 9px 12px;
+    }
+    .sidebar.collapsed .nav-item.active {
+      border-left: 3px solid var(--ah-accent);
+      border-radius: 0 10px 10px 0;
+      padding-left: 9px;
+    }
+    .sidebar.collapsed .nav-item.active::after {
+      content: none;
+    }
+    .sidebar-toggle {
+      display: none;
+    }
+    .menu-btn {
+      display: inline-flex;
+    }
+    .scrim.show {
+      display: block;
+    }
+    /* 顶栏状态行换行、令牌框与按钮占满宽度 */
+    .topbar {
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .token {
+      order: 3;
+      width: 100%;
+      flex: 1 1 100%;
+    }
+    .topbar .ghost {
+      order: 4;
+    }
+    /* 内容区留白收窄 */
+    .content {
+      padding: 16px 14px;
+    }
   }
 `;
