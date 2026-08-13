@@ -25,11 +25,11 @@ interface TraceBlock {
 }
 
 const PHASES: Phase[] = [
-  { key: 'understand', label: '理解', sub: '解析任务意图' },
-  { key: 'plan', label: '规划', sub: '拟定执行步骤' },
-  { key: 'tool', label: '调用工具', sub: '执行外部动作' },
-  { key: 'reason', label: '推理', sub: '模型思考与决策' },
-  { key: 'summarize', label: '总结', sub: '整合最终结果' },
+  { key: 'understand', label: '理解', sub: '解析任务意图', status: 'pending' },
+  { key: 'plan', label: '规划', sub: '拟定执行步骤', status: 'pending' },
+  { key: 'tool', label: '调用工具', sub: '执行外部动作', status: 'pending' },
+  { key: 'reason', label: '推理', sub: '模型思考与决策', status: 'pending' },
+  { key: 'summarize', label: '总结', sub: '整合最终结果', status: 'pending' },
 ];
 
 const TAG_LABEL: Record<BlockKind, string> = {
