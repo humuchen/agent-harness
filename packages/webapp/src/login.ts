@@ -1,11 +1,11 @@
 /**
  * 登录 / 注册页（ah-login）
  * ----------------------------------------------------------------
- * 设计还原自 Ardot 设计稿：
- *  - 左侧品牌面板：动画「智能体网络」mesh（节点呼吸 + 连线流动 + 数据脉冲沿线游走）
- *    + 极光渐变背景 + 漂浮粒子 + 「实时编排中」状态徽标。
- *  - 右侧认证卡片：登录 / 注册双视图（底部链接切换，无分段控件），
- *    统一 336×42 对齐输入框，密码框显隐（眼睛图标），GitHub SSO。
+ * 严格还原 Ardot 原型（fileId 714449633680012，登录页·深色 3:1）：
+ *  - 左侧品牌面板：45° 极光渐变背景 + 动画「智能体网络」mesh（节点呼吸 + 连线流动 +
+ *    数据脉冲沿线游走）+ 漂浮发光粒子 + 右上角「实时编排中」脉冲徽标。
+ *  - 右侧认证卡片：发光描边（内描边 + 外发光）+ 登录/注册双视图（底部链接切换，无分段控件）+
+ *    统一 336×42 对齐输入框（密码框眼睛显隐）+ 发光 CTA + GitHub SSO。
  *
  * 所有视觉只引用 --ah-* 语义令牌，随 dark/light 主题自动切换；
  * 动画命名沿用项目 ah-* 约定（组件内作用域，避免与 sharedStyles 冲突）。
@@ -105,7 +105,7 @@ export class AhLogin extends LitElement {
     css`
       :host {
         display: grid;
-        grid-template-columns: 1.05fr 1fr;
+        grid-template-columns: 560px 1fr;
         height: 100vh;
         height: 100dvh;
         overflow: hidden;
@@ -116,50 +116,27 @@ export class AhLogin extends LitElement {
       .brand-panel {
         position: relative;
         overflow: hidden;
-        background: var(--ah-surface-1);
+        /* 原型 3:2：45° 极光线性渐变 accent(28%) → 深蓝(50%) → surface-1 */
+        background: linear-gradient(
+          135deg,
+          color-mix(in srgb, var(--ah-accent) 28%, transparent) 0%,
+          color-mix(in srgb, var(--ah-surface-3) 50%, transparent) 55%,
+          var(--ah-surface-1) 100%
+        );
         border-right: 1px solid var(--ah-border);
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
-        padding: 40px 44px;
+        padding: 48px;
         isolation: isolate;
       }
-      /* 极光渐变层：多块缓慢漂移的彩色光斑，营造科技氛围 */
-      .aurora {
-        position: absolute;
-        inset: -25%;
-        z-index: 0;
-        filter: blur(56px);
-        opacity: 0.5;
-        pointer-events: none;
-      }
-      .aurora.a1 {
-        background: radial-gradient(40% 40% at 30% 30%, var(--ah-accent) 0%, transparent 70%);
-        animation: ah-login-aurora 19s ease-in-out infinite;
-      }
-      .aurora.a2 {
-        background: radial-gradient(38% 38% at 72% 64%, var(--ah-accent-strong) 0%, transparent 70%);
-        opacity: 0.38;
-        animation: ah-login-aurora 24s ease-in-out infinite reverse;
-      }
-      .aurora.a3 {
-        background: radial-gradient(34% 34% at 55% 88%, var(--ah-success) 0%, transparent 72%);
-        opacity: 0.22;
-        animation: ah-login-aurora 28s ease-in-out infinite;
-      }
-      @keyframes ah-login-aurora {
-        0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-        50% { transform: translate3d(5%, -4%, 0) scale(1.12); }
-      }
-
-      /* mesh 铺满面板，垫在文字之下 */
+      /* mesh 铺满面板，垫在文字之下，居中区域最密 */
       .mesh {
         position: absolute;
         inset: 0;
         width: 100%;
         height: 100%;
         z-index: 1;
-        opacity: 0.92;
+        opacity: 0.95;
         pointer-events: none;
       }
       .edge {
@@ -193,7 +170,7 @@ export class AhLogin extends LitElement {
         50% { opacity: 0.6; transform: scale(1.28); }
       }
 
-      /* 漂浮粒子 */
+      /* 漂浮粒子（原型 3:211 / 3:212：accent 实心 + accent 发光） */
       .particles {
         position: absolute;
         inset: 0;
@@ -204,128 +181,140 @@ export class AhLogin extends LitElement {
       .particle {
         position: absolute;
         bottom: -10px;
-        width: 4px;
-        height: 4px;
         border-radius: 50%;
         background: var(--ah-accent);
+        box-shadow: 0 0 9px 1px var(--ah-accent);
         opacity: 0;
         animation: ah-login-float linear infinite;
       }
       @keyframes ah-login-float {
         0% { transform: translateY(0); opacity: 0; }
-        12% { opacity: 0.7; }
-        88% { opacity: 0.7; }
-        100% { transform: translateY(-130px); opacity: 0; }
+        12% { opacity: 0.85; }
+        88% { opacity: 0.85; }
+        100% { transform: translateY(-150px); opacity: 0; }
       }
 
-      /* 底部暗化，保证品牌文字可读 */
-      .brand-panel::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        z-index: 2;
-        background: radial-gradient(120% 80% at 20% 90%, rgba(0, 0, 0, 0.45), transparent 60%),
-          linear-gradient(180deg, rgba(0, 0, 0, 0.15), transparent 30%);
-        pointer-events: none;
-      }
-
-      .brand-top,
-      .brand-bottom {
+      /* 顶部行：左 logo+名称+版本，右 状态徽标（原型 3:38 + 3:213 置于右上） */
+      .brand-top {
         position: relative;
         z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
       }
       .brand-mark {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         font-family: var(--ah-font-display);
-        font-weight: 700;
+        font-weight: 600;
         font-size: 18px;
+        color: var(--ah-text);
       }
       .brand-mark .logo {
-        width: 26px;
-        height: 26px;
+        width: 34px;
+        height: 34px;
         object-fit: contain;
         display: block;
+        /* 原型 3:39：双层 accent 发光 */
+        filter: drop-shadow(0 0 10px color-mix(in srgb, var(--ah-accent) 60%, transparent))
+          drop-shadow(0 0 22px color-mix(in srgb, var(--ah-accent) 35%, transparent));
       }
       .brand-ver {
-        margin-left: auto;
         font-family: var(--ah-font-mono);
         font-size: 11px;
-        color: var(--ah-text-faint);
+        font-weight: 500;
+        color: var(--ah-text-muted);
+        background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
         border-radius: var(--ah-radius-pill);
-        padding: 2px 10px;
+        padding: 4px 10px;
+      }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--ah-font-mono);
+        font-size: 11px;
+        color: var(--ah-text-muted);
+        white-space: nowrap;
+      }
+      .chip-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--ah-accent);
+        /* 原型 3:214：accent 强发光 + 脉冲 */
+        box-shadow: 0 0 8px 1px var(--ah-accent);
+        animation: ah-login-chip 1.6s ease-in-out infinite;
+      }
+      @keyframes ah-login-chip {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
+
+      /* 顶部文案簇：标题（34px 发光）+ 副标题 */
+      .brand-head {
+        position: relative;
+        z-index: 3;
+        margin-top: 24px;
       }
       .brand-title {
         font-family: var(--ah-font-display);
-        font-size: 30px;
-        font-weight: 700;
+        font-size: 34px;
+        font-weight: 600;
         line-height: 1.25;
-        margin: 26px 0 10px;
-        max-width: 12ch;
+        margin: 0;
+        white-space: pre-line;
+        color: var(--ah-text);
+        /* 原型 3:46：三层 accent 发光 */
+        text-shadow: 0 0 6px color-mix(in srgb, var(--ah-accent) 55%, transparent),
+          0 0 16px color-mix(in srgb, var(--ah-accent) 35%, transparent),
+          0 0 32px color-mix(in srgb, var(--ah-accent) 20%, transparent);
       }
       .brand-sub {
         color: var(--ah-text-muted);
-        font-size: 14px;
-        max-width: 30ch;
+        font-size: 15px;
         line-height: 1.6;
+        margin: 14px 0 0;
+        max-width: 30ch;
+      }
+
+      .spacer {
+        flex: 1 1 auto;
+        min-height: 40px;
+      }
+
+      /* 底部簇：特性清单 + 页脚 */
+      .brand-bottom {
+        position: relative;
+        z-index: 3;
       }
       .feature-list {
         list-style: none;
-        margin: 22px 0 0;
+        margin: 0 0 28px;
         padding: 0;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 14px;
       }
       .feature-list li {
         display: flex;
         align-items: center;
-        gap: 10px;
-        font-size: 13px;
-        color: var(--ah-text-muted);
+        gap: 12px;
+        font-size: 14px;
+        color: var(--ah-text);
       }
       .feature-list .tick {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
         flex: 0 0 auto;
-        border-radius: 50%;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--ah-accent-soft);
         color: var(--ah-accent);
-        font-size: 11px;
       }
       .brand-foot {
         font-size: 12px;
         color: var(--ah-text-faint);
         font-family: var(--ah-font-mono);
-      }
-      /* 「实时编排中」状态徽标 */
-      .status-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 12px;
-        border-radius: var(--ah-radius-pill);
-        background: var(--ah-surface-2);
-        border: 1px solid var(--ah-border);
-        font-size: 12px;
-        color: var(--ah-text-muted);
-        margin-bottom: 26px;
-      }
-      .chip-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--ah-success);
-        animation: ah-login-chip 1.6s ease-in-out infinite;
-      }
-      @keyframes ah-login-chip {
-        0%, 100% { opacity: 1; box-shadow: 0 0 0 3px var(--ah-success-soft); }
-        50% { opacity: 0.5; box-shadow: 0 0 0 0 var(--ah-success-soft); }
       }
 
       /* ---------------------- 右：认证卡片 ---------------------- */
@@ -334,8 +323,9 @@ export class AhLogin extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 32px;
-        background: var(--ah-canvas);
+        padding: 48px;
+        /* 原型 3:3：中心 surface-2 径向微光 → canvas 暗边 */
+        background: radial-gradient(circle at 50% 42%, var(--ah-surface-2) 0%, var(--ah-canvas) 72%);
         overflow: auto;
       }
       .auth-card {
@@ -343,14 +333,19 @@ export class AhLogin extends LitElement {
         max-width: 100%;
         background: var(--ah-surface-1);
         border: 1px solid var(--ah-border);
-        border-radius: var(--ah-radius-lg);
-        padding: 32px 30px;
-        box-shadow: var(--ah-shadow);
+        border-radius: 16px;
+        padding: 32px;
+        /* 原型 3:4：双层黑阴影 + 内 accent 描边 + 外 accent 发光 */
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28),
+          inset 0 0 0 1px color-mix(in srgb, var(--ah-accent) 55%, transparent),
+          0 0 22px color-mix(in srgb, var(--ah-accent) 38%, transparent);
       }
       .auth-card h1 {
         font-family: var(--ah-font-display);
         font-size: 24px;
+        font-weight: 600;
         margin: 0 0 6px;
+        color: var(--ah-text);
       }
       .auth-sub {
         color: var(--ah-text-muted);
@@ -372,11 +367,11 @@ export class AhLogin extends LitElement {
         box-sizing: border-box;
         height: 42px;
         padding: 0 14px;
-        background: var(--ah-surface-2);
+        background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
-        border-radius: var(--ah-radius-md);
+        border-radius: 8px;
         color: var(--ah-text);
-        font-size: 14px;
+        font-size: 13px;
         font-family: inherit;
         transition: border-color 140ms ease, box-shadow 140ms ease;
       }
@@ -388,7 +383,6 @@ export class AhLogin extends LitElement {
         border-color: var(--ah-accent);
         box-shadow: 0 0 0 3px var(--ah-accent-soft);
       }
-      /* 密码框右侧留出眼睛按钮空间 */
       .field.has-eye input {
         padding-right: 42px;
       }
@@ -405,11 +399,11 @@ export class AhLogin extends LitElement {
         border: none;
         color: var(--ah-text-faint);
         cursor: pointer;
-        border-radius: var(--ah-radius-sm);
+        border-radius: 8px;
       }
       .eye-btn:hover {
         color: var(--ah-text);
-        background: var(--ah-surface-3);
+        background: var(--ah-surface-2);
       }
       .row-between {
         display: flex;
@@ -428,17 +422,28 @@ export class AhLogin extends LitElement {
       .remember input {
         accent-color: var(--ah-accent);
       }
+      .forge {
+        background: none;
+        border: none;
+        color: var(--ah-accent);
+        cursor: pointer;
+        font-size: 13px;
+        padding: 0;
+        font-family: inherit;
+      }
       .btn-primary {
         width: 100%;
-        height: 44px;
+        height: 46px;
         background: var(--ah-accent);
         color: #fff;
         border: none;
-        border-radius: var(--ah-radius-md);
+        border-radius: var(--ah-radius-pill);
         font-size: 14px;
         font-weight: 600;
         cursor: pointer;
         font-family: inherit;
+        /* 原型 3:25：accent 外发光（y4, r16） */
+        box-shadow: 0 4px 16px color-mix(in srgb, var(--ah-accent) 55%, transparent);
         transition: filter 140ms ease, transform 80ms ease;
       }
       .btn-primary:hover {
@@ -451,7 +456,7 @@ export class AhLogin extends LitElement {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin: 20px 0;
+        margin: 16px 0;
         color: var(--ah-text-faint);
         font-size: 12px;
       }
@@ -464,14 +469,14 @@ export class AhLogin extends LitElement {
       }
       .btn-sso {
         width: 100%;
-        height: 44px;
+        height: 46px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 10px;
-        background: var(--ah-surface-2);
+        background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
-        border-radius: var(--ah-radius-md);
+        border-radius: var(--ah-radius-pill);
         color: var(--ah-text);
         font-size: 14px;
         font-weight: 500;
@@ -517,11 +522,12 @@ export class AhLogin extends LitElement {
         font-size: 13px;
         padding: 0 2px;
         font-family: inherit;
+        font-weight: 600;
       }
       .notice {
         margin-top: 14px;
         padding: 8px 12px;
-        border-radius: var(--ah-radius-sm);
+        border-radius: 8px;
         background: var(--ah-accent-soft);
         color: var(--ah-accent);
         font-size: 12.5px;
@@ -540,11 +546,10 @@ export class AhLogin extends LitElement {
         .brand-panel {
           border-right: none;
           border-bottom: 1px solid var(--ah-border);
-          min-height: 320px;
-          padding: 28px 24px;
+          min-height: 360px;
         }
-        .brand-title {
-          font-size: 24px;
+        .spacer {
+          display: none;
         }
         .feature-list {
           display: none;
@@ -601,7 +606,15 @@ export class AhLogin extends LitElement {
     hasEye = false
   ) {
     const isPw = hasEye;
-    const inputType = isPw ? (valueKey === 'password' ? (this.showPassword ? 'text' : 'password') : this.showConfirm ? 'text' : 'password') : type;
+    const inputType = isPw
+      ? valueKey === 'password'
+        ? this.showPassword
+          ? 'text'
+          : 'password'
+        : this.showConfirm
+          ? 'text'
+          : 'password'
+      : type;
     return html`
       <div class="field ${hasEye ? 'has-eye' : ''}">
         <label>${label}</label>
@@ -621,15 +634,12 @@ export class AhLogin extends LitElement {
   }
 
   render() {
-    const particles = [12, 26, 41, 58, 70, 83, 92].map(
-      (left, i) => html`<span class="particle" style=${`left:${left}%;animation-duration:${5 + (i % 4)}s;animation-delay:${i * 0.7}s`}></span>`
+    const particles = [10, 24, 39, 55, 70, 84, 93].map(
+      (left, i) => html`<span class="particle" style=${`left:${left}%;width:${4 + (i % 2)}px;height:${4 + (i % 2)}px;animation-duration:${5 + (i % 4)}s;animation-delay:${i * 0.7}s`}></span>`
     );
 
     return html`
       <section class="brand-panel">
-        <div class="aurora a1"></div>
-        <div class="aurora a2"></div>
-        <div class="aurora a3"></div>
         ${meshSvg()}
         <div class="particles">${particles}</div>
 
@@ -641,19 +651,39 @@ export class AhLogin extends LitElement {
               alt="Agent Harness"
             />
             <span>Agent Harness</span>
-            <span class="brand-ver">v1.0 · 控制台</span>
+            <span class="brand-ver">v2.0</span>
           </div>
-          <h2 class="brand-title">编排你的智能体网络</h2>
-          <p class="brand-sub">统一接入 LLM · MCP · 工具与记忆，让多智能体协同运行、实时可观测。</p>
-          <ul class="feature-list">
-            <li><span class="tick">✓</span> 实时编排引擎，低延迟调度</li>
-            <li><span class="tick">✓</span> 多智能体协同与护栏校验</li>
-            <li><span class="tick">✓</span> 全链路可观测 · 可审计</li>
-          </ul>
+          <div class="status-chip"><span class="chip-dot"></span>实时编排中</div>
         </div>
 
+        <div class="brand-head">
+          <h2 class="brand-title">编排、运行、观测\n你的每一个 AI Agent</h2>
+          <p class="brand-sub">统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。</p>
+        </div>
+
+        <div class="spacer"></div>
+
         <div class="brand-bottom">
-          <div class="status-chip"><span class="chip-dot"></span>实时编排中</div>
+          <ul class="feature-list">
+            <li>
+              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              多 Agent 编排与并行调度
+            </li>
+            <li>
+              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              一键接入 40+ MCP 服务
+            </li>
+            <li>
+              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              全链路可观测与事件回放
+            </li>
+          </ul>
           <div class="brand-foot">© 2026 Agent Harness · 隐私优先</div>
         </div>
       </section>
@@ -663,31 +693,31 @@ export class AhLogin extends LitElement {
           ${this.mode === 'login'
             ? html`
                 <h1>欢迎回来</h1>
-                <p class="auth-sub">登录以继续管理你的智能体运行时。</p>
+                <p class="auth-sub">登录以进入你的 Agent 工作台</p>
                 <form @submit=${this.onSubmit}>
-                  ${this.field('邮箱', 'email', 'you@example.com', 'email')}
+                  ${this.field('邮箱', 'email', 'you@company.com', 'email')}
                   ${this.field('密码', 'password', '请输入密码', 'password', true)}
                   <div class="row-between">
                     <label class="remember"><input type="checkbox" ?checked=${this.remember} @change=${(e: Event) => (this.remember = (e.target as HTMLInputElement).checked)} /> 记住我</label>
-                    <button class="link" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
+                    <button class="forge" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
                   </div>
                   <button class="btn-primary" type="submit">登录</button>
                 </form>
-                <div class="divider">或使用</div>
+                <div class="divider">或</div>
                 <button class="btn-sso" type="button" @click=${() => (this.notice = '演示页面：GitHub OAuth 待接入。')}>
                   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z" />
                   </svg>
-                  GitHub 继续
+                  使用 GitHub 继续
                 </button>
                 ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
-                <div class="auth-foot">还没有账号？<button class="link" type="button" @click=${this.toggleMode}>去注册</button></div>
+                <div class="auth-foot">还没有账号？<button class="link" type="button" @click=${this.toggleMode}>立即注册</button></div>
               `
             : html`
                 <h1>创建账号</h1>
-                <p class="auth-sub">注册以解锁完整的智能体编排能力。</p>
+                <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
                 <form @submit=${this.onSubmit}>
-                  ${this.field('邮箱', 'email', 'you@example.com', 'email')}
+                  ${this.field('邮箱', 'email', 'you@company.com', 'email')}
                   ${this.field('用户名', 'text', '设置用户名', 'username')}
                   ${this.field('密码', 'password', '至少 8 位', 'password', true)}
                   ${this.field('确认密码', 'password', '再次输入密码', 'confirm', true)}
