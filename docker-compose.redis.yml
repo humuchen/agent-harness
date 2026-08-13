@@ -1,0 +1,19 @@
+# docker-compose.redis.yml —— Redis 运行队列 overlay
+#
+# 与 docker-compose.yml 叠加使用；仅当启用 `redis` profile 时才生效，
+# 不会破坏默认的内存模式（无 Redis 单副本）。
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up -d
+#
+# 作用：
+#   1. 自动把 REDIS_URL 注入 ui 服务（原 docker-compose.yml 读宿主机变量、默认空 → 应用回退内存队列）
+#   2. 让 ui 等待 redis 健康后再启动，避免队列后端连不上
+
+services:
+  ui:
+    environment:
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
