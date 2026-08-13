@@ -16,10 +16,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - yanghu8.dpdns.org
+        - yanghu88.dpdns.org
       secretName: agent-harness-tls
   rules:
-    - host: yanghu8.dpdns.org
+    - host: yanghu88.dpdns.org
       http:
         paths:
           - path: /
