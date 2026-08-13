@@ -151,7 +151,7 @@ export const sharedStyles = css`
     border-radius: var(--ah-radius-md);
   }
   /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿。
-     整个 shell 占满视口；主内容区 (.content) 内部滚动，避免 body 全局滚动条。 */
+     整个 shell 占满视口；内容区按内容自然高度，超出可视区时内部滚动，避免 body 全局滚动条。 */
   .shell {
     display: flex;
     height: 100%;
@@ -266,15 +266,13 @@ export const sharedStyles = css`
     overflow: hidden;
   }
   .content {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--ah-border) transparent;
     padding: 24px 32px;
-    max-width: 1200px;
     width: 100%;
-    margin: 0 auto;
     box-sizing: border-box;
   }
   section {
