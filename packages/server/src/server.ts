@@ -261,7 +261,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // 托管 dist 根目录下的零散静态文件（favicon.ico / favicon.svg / robots.txt 等）。
     // vite 会把 public/ 内容原样复制到 dist/ 根，但这些文件不在 /assets/ 前缀下，
     // 需单独放行（仅允许无子目录的根级文件，避免路径穿越）。
-    if (req.method === 'GET' && !path.includes('/') && !path.startsWith('/api')) {
+    // 注意：path 带前导 '/'（如 /favicon.ico），故用 slice(1) 去掉首斜杠后再判断是否含 '/'，
+    // 以区分「根级文件」与「含子目录的路径」。
+    if (req.method === 'GET' && !path.slice(1).includes('/') && !path.startsWith('/api')) {
       const wd = webappDir();
       if (wd) {
         const rel = decodeURIComponent(path.slice(1).split('?')[0]);
