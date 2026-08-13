@@ -2,6 +2,8 @@
 
 一个**最小化、可直接运行**的 TypeScript AI Agent harness 骨架：工具调用循环、短期/长期记忆、三层护栏、可选的 OpenTelemetry 追踪。设计目标与 Python 版 `agent-harness` 一致，但用 TS 重写。
 
+> 📚 完整文档（架构图 / 执行流 / 模块依赖 / 部署 / MCP 服务 / 多实例 Runbook）已统一整理至 **[`docs/`](./docs/README.md)**。本文件为仓库入口。
+
 ## 设计原则
 
 - **单一可替换契约**：任何 LLM 后端只要实现 `LLM` 类型即可接入
@@ -30,20 +32,19 @@ agent-harness/                # 根：private 包 + pnpm workspace
 │  │  │  ├─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
 │  │  │  └─ test/             // node:test 最小测试套件（护栏/记忆/工具/循环/适配器）
 │  │  └─ tsconfig.json
-│  └─ ui/                     # @agent-harness/ui —— Web Playground（依赖 core）
+│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
 │     ├─ src/
 │     │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
 │     │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
 │     │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
 │     │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
 │     │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
-│     ├─ public/index.html    // 单文件暗色仪表盘前端
 │     └─ tsconfig.json
 ├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
 ├─ pnpm-workspace.yaml
 ├─ tsconfig.base.json
 ├─ package.json
-└─ render.yaml                # Render 部署 Blueprint（部署 packages/ui）
+└─ render.yaml                # Render 部署 Blueprint（部署 packages/server）
 ```
 
 ## 快速开始
@@ -101,42 +102,51 @@ const agent = new AgentHarness({ llm, tools });
 设置环境变量即可（见 `.env.example`）；不填 `OPENROUTER_API_KEY` 时示例会
 自动退回内置 mock LLM，保证零配置可运行。
 
-## 自助环境治理闭环（agent × harness-env-platform）
+## 自助环境治理闭环（可插拔 EnvPlatform）
 
-把 agent 接到前面 `harness-env-platform/` 的 Harness 流水线，让 agent
-**自助拉起 / 销毁 ephemeral 环境**：
+把 agent 接入一个**可替换的环境平台后端**，让它自助拉起 / 销毁临时或预览环境。
+核心只依赖 `EnvPlatform` 接口（`packages/core/src/integrations/env-platform.ts`），
+具体后端由 `ENV_PLATFORM` 选择——**后端可换、主循环零改动**：
 
-- `src/integrations/harness-client.ts` — Harness NG 流水线 API 客户端，
-  把「我要个环境」「拆掉它」映射为 `provision-environment` / `destroy-ephemeral`
-  流水线触发 + **状态轮询**。**默认 dry-run**：无 `HARNESS_API_KEY` 时只打印
-  它将发出的 API 调用并返回占位 handle，整条闭环可零凭据跑通。
-  - 接真实 Harness 时，状态字段路径可配置：`statusPath`（默认
-    `pipelineExecution.summary.status`）、`doneStatuses`、`successStatuses`。
-    设 `HARNESS_DEBUG=1` 会打印原始 trigger / status 响应，方便对照你的实例
-    调整字段映射。
-- `src/integrations/harness-tools.ts` — 把上面两个能力注册成 agent 工具
-  `create_ephemeral_environment` / `destroy_environment`。
+| 后端 (`ENV_PLATFORM`) | 说明 | 依赖 | 是否真建环境 |
+|---|---|---|---|
+| `harness`（默认） | Harness NG Pipeline 客户端，把"我要环境/拆掉它"映射为 `provision-environment` / `destroy-ephemeral` 流水线触发 + 状态轮询 | 零依赖 | 无 `HARNESS_API_KEY` 时 **dry-run**（只打印将发出的 API 调用），填 key 后真建 |
+| `local` | **零依赖本地后端**：真正起一个 `node:http` 预览服务（按 envId 分配端口 + TTL 自动销毁） | 零依赖 | 是，开箱即真实可跑（适合本地验证 / 小团队 / 演示） |
+| `k8s` | Kubernetes 后端：把分支部署成真实 Deployment/Service/可选 Ingress，轮询就绪 | 可选依赖 `@kubernetes/client-node` + 可用 kubeconfig | 是，生产级（企业落地推荐） |
+
+- `EnvPlatform` 契约（`env-platform.ts`）：`createEphemeralEnvironment` / `destroyEnvironment` /
+  `*WithEvents`（流式状态机供 UI 可视化）/ `getStatus`。`createEnvPlatform()` 按
+  `ENV_PLATFORM` 装配；默认 `harness` 保持历史零凭据 dry-run 行为。
+- `HarnessClient`（`harness-client.ts`）现在是 `EnvPlatform` 的默认实现：状态字段路径可配置
+  （`statusPath` 默认 `pipelineExecution.summary.status`、`doneStatuses`、`successStatuses`），
+  设 `HARNESS_DEBUG=1` 打印原始 trigger/status 响应以便对齐你的实例。
+- `LocalEnvPlatform`（`local-env-platform.ts`）：每个 env 独立目录 `ENV_LOCAL_ROOT/<envId>`
+  + 一张预览页；`ENV_LOCAL_HOST`（默认 `localhost`）决定暴露的 URL；`ttlHours` 到期自动销毁。
+  闭环真实可跑——`create` 拿到可访问 URL、用户可打开、`destroy` 后 URL 下线。
+- `KubernetesEnvPlatform`（`k8s-env-platform.ts`）：镜像来自 `K8S_IMAGE`（或 `create` 工具传入
+  `image`），资源名 `K8S_NAME_PREFIX+envId`；设 `K8S_INGRESS_HOST_TEMPLATE` 才建 Ingress（否则返回
+  集群内 Service DNS）。依赖缺失或无可用的 kubeconfig 时**构造即抛清晰错误**，不静默降级。
+- `src/integrations/harness-tools.ts` — 把"拉起/销毁"注册成 agent 工具
+  `create_ephemeral_environment` / `destroy_environment`（参数类型已放宽为 `EnvPlatform`）。
 - 示例：
-  - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`（无 key 用 mock；有
-    `OPENROUTER_API_KEY` 则真跑；harness 始终 dry-run 直到你填 `HARNESS_API_KEY`）
-  - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环
-    （Turn1 拉起环境 → Turn2 销毁环境），已用 OpenRouter 实测跑通
+  - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`
+  - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环（拉起 → 销毁）
   - `examples/chat.ts` — `pnpm --filter @agent-harness/examples run chat`：单轮真实对话（需 `OPENROUTER_API_KEY`）
 
 ```bash
-# 零凭据演示（dry-run，打印真实会发出的 Harness API 调用）
+# 零凭据演示（harness dry-run，打印将发出的 Harness API 调用）
 pnpm --filter @agent-harness/examples run demo:env
 
-# 真实 LLM + dry-run Harness：会真正调用 OpenRouter 驱动 create→destroy 循环
-export OPENROUTER_API_KEY=sk-or-...
-pnpm --filter @agent-harness/examples run real-loop
+# 本地后端：真正起预览服务，无需任何外部平台（ENV_PLATFORM=local）
+ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 
-# 真实接入 Harness：在 .env 填入 HARNESS_API_KEY / ACCOUNT / ORG / PROJECT 后重跑
+# 真实接入 Harness：在 .env 填入 HARNESS_API_KEY / ACCOUNT / ORG / PROJECT
+# 真实接入 K8s：先 `pnpm --filter @agent-harness/core add -D @kubernetes/client-node` 并配置 KUBECONFIG，再 ENV_PLATFORM=k8s
 ```
 
-运行示例时你会看到：用户一句话 → agent 调用 `create_ephemeral_environment`
-（打印触发的流水线 YAML）→ 用完后调用 `destroy_environment` 清理 → 闭环完成。
-护栏对含密钥输入依旧在入口拦截。
+> 设计要点：原 `harness-env-platform`（外部 Harness 账号里的两条 Pipeline）只是 `EnvPlatform`
+> 的一个实现。**不绑定 Harness 也能把"自助环境"跑起来**——用 `local` 验证、用 `k8s` 上生产，
+> 或把 `createEnvPlatform()` 工厂换成你自己的后端（实现 `EnvPlatform` 接口即可）。护栏对含密钥输入依旧在入口拦截。
 
 ## MCP 接入（已实现，配即激活）
 
@@ -249,7 +259,7 @@ UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 **可视化、可交互**地跑出来：
 
 ```bash
-pnpm --filter @agent-harness/ui run start            # 编译并启动，默认 http://localhost:4173 （可用 UI_PORT 改端口）
+pnpm --filter @agent-harness/server run start            # 编译并启动，默认 http://localhost:4173 （可用 UI_PORT 改端口）
 ```
 
 打开后你会看到三栏布局：
@@ -278,20 +288,20 @@ pnpm --filter @agent-harness/ui run start            # 编译并启动，默认 
 
 实现要点：
 
-- `packages/ui/src/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
+- `packages/server/src/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
   通过 SSE（`text/event-stream`）把 `HarnessEvent`、验证事件、MCP/Env 事件推给前端。
   端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
   `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
   `/api/env`（create/destroy 流式推状态机）、`/api/state`（全局状态快照）。
-- `src/ui/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVER_URL`
+- `src/server/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVER_URL`
   （逗号分隔可配多个）自动连接，并支持运行时通过 `/api/mcp/add` 逐步添加；
   每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
-- `src/ui/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
+- `src/server/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
   Harness 流水线各阶段；有 `HARNESS_API_KEY` 时可切换为调用真实 `HarnessClient`
   轮询真实状态。
 - `src/harness.ts` 新增可选 `onEvent` 回调（类型 `HarnessEvent`），在循环每一步
   发出事件，**不修改任何业务逻辑**，CLI 与测试完全不受影响。
-- 前端 `packages/ui/public/index.html` 是单文件（内联 CSS/JS，无 CDN 依赖），暗色主题，
+- 前端由 `packages/webapp`（Vite+Lit SPA）构建、`packages/server` 同源托管，暗色主题，
   通过 `fetch` + `ReadableStream` 解析 SSE，断网可用。
 
 ## 自包含验证（无需真实凭据/服务）
@@ -320,7 +330,7 @@ Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`�
 默认开放。**部署到公网前请设置 `UI_AUTH_TOKEN`**，此后这些端点需携带令牌：
 
 ```bash
-UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
+UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 # 请求时：Authorization: Bearer your-secret
 ```
 
@@ -405,7 +415,7 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
   （`RUN_QUEUE_FILE`，默认 `./data/queue/run-queue.jsonl`），进程崩溃 / 重启后**自动重放**，
   避免丢活（在飞任务因携带进程内状态不可恢复，客户端会自行重投）。零 npm 依赖。
 - **可插拔后端（水平扩展已落地）**：持久化由 `QueueBackend` 接口
-  （`packages/ui/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend` /
+  （`packages/server/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend` /
   `RedisQueueBackend`。**Redis 后端已实装**，把「可插拔接口」变成真水平扩展：
   - 数据结构：`runq:pending` / `runq:processing` 双列表 + `runq:jobs` / `runq:claimedAt` 哈希。
   - **原子领取**：`claim()` 用 `LMOVE pending processing LEFT RIGHT` 原子迁移，多实例并发下
@@ -439,11 +449,11 @@ UI_AUTH_TOKEN=your-secret node packages/ui/dist/server.js
 `GET /api/memory?session=<key>` 查看长期笔记与窗口长度；
 `DELETE /api/memory?session=<key>` 清空某会话记忆；`/api/metrics` 暴露 `memory.backend`。
 
-> 企业落地仍待补充：RBAC 与审批流（见仓库规划任务清单）。
+> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节。
 
 ### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
 
-鉴权与审批是**纯业务层**能力（`packages/ui/src/authz.ts` + `approval.ts`），核心
+鉴权与审批是**纯业务层**能力（`packages/server/src/authz.ts` + `approval.ts`），核心
 `@agent-harness/core` 不感知任何角色 / 权限 / 票据概念 —— 这是刻意的分层：核心只提供
 AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都是业务策略，可插拔、可组合。
 
@@ -459,7 +469,8 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
   - 可绕过审批的角色由 `UI_APPROVAL_BYPASS_ROLES`（默认 `admin`）控制；要接入外部审批系统
     （工单平台 / Slack / ITSM），只需替换 `createApprovalPolicy()` 工厂返回的 `ApprovalPolicy` 实现。
 - **可插拔 / 可组合的关键约束点**：`createAuthorizer()` 与 `createApprovalPolicy()` 是两个组合工厂。
-  替换身份源（OIDC / LDAP / SPIFFE）或审批后端时，**仅改这两个工厂，server 其余代码零改动**。
+  身份源由 `AUTH_PROVIDER` 切换：`token`（静态令牌，默认）/ `oidc`（Bearer JWT，零依赖验签）/ `proxy`
+  （LDAP/SSO 网关头注入）；OIDC/LDAP 与审批后端均**仅改这两个工厂，server 其余代码零改动**。
 
 运维端点（均受 RBAC 保护）：
 - `GET /api/roles`：当前权限矩阵概览（不含令牌明文）。
@@ -469,7 +480,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ### 运行评估与配方版本化（P2-13，业务质量策略与核心隔离）
 
-同样是**纯业务层**能力（`packages/ui/src/eval.ts`），核心不产出任何「评分 / 版本」概念：
+同样是**纯业务层**能力（`packages/server/src/eval.ts`），核心不产出任何「评分 / 版本」概念：
 核心只产出事件流，本模块负责把事件流还原为「运行配方快照（RunRecord）」再交给可替换的评估器。
 
 - **RunRecord（运行配方快照）**：从运行队列累积的 harness 事件还原出 `prompt / model / tools / steps /
@@ -487,7 +498,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ### 数据留存/出境策略、版本化 API 与 OpenAPI（P2-14，业务合规层与核心隔离）
 
-依旧是**纯业务层**能力（`packages/ui/src/retention.ts` + `openapi.ts`），核心不感知任何合规/契约概念：
+依旧是**纯业务层**能力（`packages/server/src/retention.ts` + `openapi.ts`），核心不感知任何合规/契约概念：
 
 - **留存与出境策略（RetentionPolicy）**：`RetentionPolicy` 接口 + `DefaultRetentionPolicy`。
   - 留存窗口按记录类型分化：`RETENTION_DAYS_AUDIT`(默认 90) / `RETENTION_DAYS_MEMORY`(默认 30) /
@@ -503,13 +514,21 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 > 至此，原「企业落地 14 项缺口」已全部落地：安全加固（P0）→ 内容安全/可观测/MCP 可靠性/成本/
 > 测试+SBOM/架构解耦/多租户记忆（P1）→ RBAC+审批/评估+版本化/留存+版本化API（P2）。
-> 贯穿原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 UI 业务层以「接口 + 默认实现 + 组合工厂」
+> 贯穿原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 server 业务层以「接口 + 默认实现 + 组合工厂」
 > 形式存在，核心 `@agent-harness/core` 始终零业务耦合、可插拔、可组合。**
+>
+> 另：**生产级交付物缺口已闭环**——新增 `Dockerfile` / `docker-compose.yml` / `deploy/k8s/`（kustomize）/ GHCR
+> 镜像 CI（`.github/workflows/docker.yml`），可脱离 Render 自托管（多副本需 `REDIS_URL` 运行队列）。
+> **企业身份源缺口也已闭环**：`AUTH_PROVIDER` 现支持 `token`（静态令牌，默认）/ `oidc`（Bearer JWT 资源服务器，
+> 零依赖验签 RS*/PS*/ES*/HS*）/ `proxy`（LDAP/SSO 网关头注入，企业接入 LDAP 的最低成本路径），三者均可与静态令牌
+> break-glass 逃生通道并存。详见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
+> 仍待补齐的企业级能力：多租户运营面（开通/配额/账单）、正式合规模块（SOC2/GDPR 数据主权分区）；
+> 这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
 
 ### 健壮性增强（与核心隔离的运行时加固）
 
 在 14 项功能落地之后，又对「系统不裸崩、任务不挂死、资源不泄漏、重启不丢活」做了进一步加固，
-绝大部分位于 UI 业务/运行时层；唯一一次对核心 `packages/core` 的改动是 `FileMemoryStore` 的
+绝大部分位于 server 业务/运行时层；唯一一次对核心 `packages/core` 的改动是 `FileMemoryStore` 的
 **原子写加固**（纯 I/O 安全，不引入任何业务策略），已在下方明示：
 
 - **运行队列防挂死**：每个 Job 自带 `AbortController` + 看门狗（`JOB_TIMEOUT_MS`，默认 5 分钟）。
@@ -525,19 +544,19 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 - **进程级崩溃防护**：注册 `uncaughtException`/`unhandledRejection` 兜底日志——未捕获异常记录后安全退出
   （交由 k8s/Render 重启），未处理拒绝仅记录不退出，避免单点拒绝拖垮在线服务；SSE 写操作对
   客户端断连（EPIPE）做了容错。
-- **队列持久化与重启重放**：`RunQueue` 接入 `QueueBackend` 抽象（`packages/ui/src/queue-backend.ts`），
+- **队列持久化与重启重放**：`RunQueue` 接入 `QueueBackend` 抽象（`packages/server/src/queue-backend.ts`），
   设 `RUN_QUEUE_BACKEND=file` 后，未开始的任务落盘到 JSONL，进程崩溃 / 重启自动重放，避免丢活
   （详见上文「运行队列」）；Redis / BullMQ 只需实现同一接口即可作为分布式后端接入。
 - **核心记忆文件原子写**：`FileMemoryStore.save` 改为「写临时文件 + 同 FS 原子 rename」——进程在写入途中
   崩溃时旧文件完好、仅残留可清理的 `.tmp`，既不丢数据也不产生半截 JSON。这是本轮**唯一一次核心改动**，
-  且仅为 I/O 安全加固，未触碰任何业务语义；其余加固均在 UI 层。
+  且仅为 I/O 安全加固，未触碰任何业务语义；其余加固均在 server 层。
 
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
 
 ## 密钥管理（外部化）
 
-服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`packages/ui/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。
+服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`packages/server/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。
 
 **三种来源（优先级从高到低，且均不覆盖平台注入的 env）：**
 
@@ -625,8 +644,8 @@ Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` �
 请求体上限(413)、`/api/metrics`、SSE `/api/run` 等端点：
 
 ```bash
-pnpm --filter @agent-harness/ui run build     # 先构建
-pnpm --filter @agent-harness/ui run test      # 跑集成测试
+pnpm --filter @agent-harness/server run build     # 先构建
+pnpm --filter @agent-harness/server run test      # 跑集成测试
 ```
 
 CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → test`，并附两个安全作业：
@@ -651,3 +670,17 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → test`，并�
   primary 连续失败/限流（达 `LLM_FAILOVER_THRESHOLD`）即打开电路转走 secondary，冷却后 half-open 探活恢复。
   对 harness 主循环透明；`LLM_FAILOVER=false` 可关闭。
 - **Harness 环境地址可配置**：`envUrlTemplate`（或 `HARNESS_ENV_URL_TEMPLATE`）替换原硬编码占位符。
+
+## 部署（自托管）
+
+仓库现已提供生产级交付物，可脱离 Render 独立部署：
+
+- **`Dockerfile`**（多阶段 pnpm 构建，基础镜像锁定 Node 22，非 root 运行 + HEALTHCHECK）
+- **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
+- **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
+- **`.github/workflows/docker.yml`**（推送 `dev`/`main` 或 tag 时构建并推送镜像到 GHCR）
+- **[`docs/deployment.md`](./docs/deployment.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
+
+> 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。
+> K8s 清单中的 `image`、`ingress.host`、Secret 占位值部署前必须替换为真实值（建议改用 Sealed/External Secrets）。
+> 默认 `ENV_PLATFORM=harness`（无 key 即 dry-run）；要真正拉起/销毁环境，设 `ENV_PLATFORM=local`（零依赖真跑）或 `k8s`（生产级）。

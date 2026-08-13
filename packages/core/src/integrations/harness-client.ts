@@ -1,4 +1,5 @@
 import type { EphemeralEnvInput, EnvHandle } from './harness-client.types';
+import type { EnvPlatform } from './env-platform';
 
 export interface HarnessClientConfig {
   apiKey?: string;
@@ -48,7 +49,8 @@ export interface HarnessClientConfig {
  * 字段映射可通过 `statusPath` / `doneStatuses` 配置，以适配你的 Harness
  * 实际返回结构（详见 `debug`）。
  */
-export class HarnessClient {
+export class HarnessClient implements EnvPlatform {
+  readonly kind = 'harness' as const;
   private apiKey?: string;
   private accountId?: string;
   private orgId?: string;
@@ -57,7 +59,7 @@ export class HarnessClient {
   private provisionPipelineId: string;
   private destroyPipelineId: string;
   private envUrlTemplate: string;
-  private dryRun: boolean;
+  readonly dryRun: boolean;
   private fetchImpl: typeof fetch;
   private pollIntervalMs: number;
   private maxPolls: number;
@@ -101,7 +103,7 @@ export class HarnessClient {
   }
 
   async createEphemeralEnvironment(input: EphemeralEnvInput): Promise<EnvHandle> {
-    const envId = `env-${Date.now()}`;
+    const envId = input.envId ?? `env-${Date.now()}`;
     const vars: Record<string, string | number> = {
       env_type: input.envType,
       branch: input.branch,
@@ -177,7 +179,7 @@ export class HarnessClient {
     input: EphemeralEnvInput,
     onStage: (status: string) => void
   ): Promise<EnvHandle> {
-    const envId = `env-${Date.now()}`;
+    const envId = input.envId ?? `env-${Date.now()}`;
     const vars: Record<string, string | number> = {
       env_type: input.envType,
       branch: input.branch,

@@ -1,14 +1,7 @@
-export interface EphemeralEnvInput {
-  envType: string; // 例如 'ephemeral' / 'preview'
-  branch: string; // 要部署的 Git 分支
-  ttlHours?: number; // N 小时后自动销毁
-  region?: string;
-  owner?: string;
-}
-
-export interface EnvHandle {
-  envId: string;
-  envUrl: string;
-  status: 'provisioning' | 'ready' | 'destroying' | 'destroyed' | 'failed';
-  executionId?: string;
-}
+/**
+ * Harness 客户端类型（向后兼容层）。
+ *
+ * `EphemeralEnvInput` / `EnvHandle` 已上移到 `env-platform.types.ts`（EnvPlatform 共享契约）。
+ * 这里 re-export 以兼容旧导入路径，避免破坏既有调用方。
+ */
+export type { EphemeralEnvInput, EnvHandle } from './env-platform.types';
