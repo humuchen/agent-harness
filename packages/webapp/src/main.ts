@@ -9,5 +9,6 @@ initTheme();
 
 import './app';
 import './panels';
+import './run';
 import './dashboard';
 import './observability';
