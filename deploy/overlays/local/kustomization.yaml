@@ -1,0 +1,37 @@
+# 本地验证 overlay：复用 base 全部清单，仅做本地化覆盖。
+#
+# 适用场景：本机已有 agent-harness:local 镜像（Docker Desktop / kind / minikube）。
+#   - Docker Desktop 内置 k8s：宿主机 `docker build -t agent-harness:local .` 后，
+#     kubelet 走 Docker Desktop 本地镜像代理拉取，imagePullPolicy: IfNotPresent 即可。
+#   - kind：先 `docker build -t agent-harness:local .`，再 `kind load docker-image agent-harness:local`。
+#   - minikube：先 `minikube cache add agent-harness:local`（或 `minikube image load`）。
+#
+# 部署：
+#   kubectl apply -k deploy/overlays/local
+# 访问：http://localhost:31473  （Service 已暴露 NodePort 31473）
+#   或：kubectl -n agent-harness port-forward svc/agent-harness 4173:4173
+#
+# 注意：overlay 必须放在 base（deploy/k8s）目录之外，否则 kustomize 会报
+# "cycle detected"（overlay 引用 base 且位于 base 子目录时触发）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-harness
+
+resources:
+  - ../../k8s
+
+patches:
+  - path: deployment-patch.yaml
+  - path: hpa-patch.yaml
+  - path: pvc-patch.yaml
+  - target:
+      kind: Service
+      name: agent-harness
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 31473

@@ -1,5 +1,6 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
 import { toOpenAIMessage, callOpenAIChat } from './shared';
+import { resolveOpenAIConfig } from './config';
 
 export interface OpenAIConfig {
   apiKey?: string;
@@ -20,16 +21,8 @@ export interface OpenAIConfig {
  * 第三个可选参数携带取消信号（超时 / 用户中止），会被透传给 fetch。
  */
 export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
-  const apiKey = config.apiKey ?? process.env.OPENAI_API_KEY;
-  const model =
-    (config.model && config.model.trim()) ||
-    (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) ||
-    'gpt-4o-mini';
-  const baseUrl =
-    (config.baseUrl && config.baseUrl.trim()) ||
-    (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.trim()) ||
-    'https://api.openai.com/v1';
-  const fetchImpl = config.fetchImpl ?? fetch;
+  // 集中解析：配置对象 → 环境变量 → 内置默认（见 ./config）。
+  const { apiKey, model, baseUrl, fetchImpl } = resolveOpenAIConfig(config);
 
   return async function openaiLLM(
     messages: Message[],

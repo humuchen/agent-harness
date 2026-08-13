@@ -1,5 +1,5 @@
 import type { HarnessEvent } from '@agent-harness/core';
-import { incCounter, recordLatency } from '@agent-harness/core';
+import { incCounter, recordLatency, resolveOpenRouterConfig } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
 
@@ -412,10 +412,7 @@ export class RunQueue {
         JOB_TIMEOUT_MS,
         job.maxSteps
       );
-      const model =
-        (job.model && job.model.trim()) ||
-        (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
-        'openai/gpt-4o-mini';
+      const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
         type: 'run:meta',
         mode: job.mode,

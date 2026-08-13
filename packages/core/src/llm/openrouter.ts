@@ -1,5 +1,6 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
 import { toOpenAIMessage, callOpenAIChat } from './shared';
+import { resolveOpenRouterConfig } from './config';
 
 export interface OpenRouterConfig {
   apiKey?: string;
@@ -37,28 +38,10 @@ export interface OpenRouterConfig {
  * 第三个可选参数携带取消信号（超时 / 用户中止），会被透传给 fetch。
  */
 export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
-  const apiKey = config.apiKey ?? process.env.OPENROUTER_API_KEY;
-  // 注意：用 `||` + trim 而非 `??`，因为环境变量可能被配置成空字符串
-  // （例如在 Render 里加了 OPENROUTER_MODEL 但留空），`??` 不会把空串当作
-  // "未设置" 而回落到默认值，导致把 model:"" 直接发给 OpenRouter 被拒。
-  const model =
-    (config.model && config.model.trim()) ||
-    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
-    'openai/gpt-4o-mini';
-  const baseUrl =
-    (config.baseUrl && config.baseUrl.trim()) ||
-    (process.env.OPENROUTER_BASE_URL && process.env.OPENROUTER_BASE_URL.trim()) ||
-    'https://openrouter.ai/api/v1';
-  const siteUrl =
-    (config.siteUrl && config.siteUrl.trim()) ||
-    (process.env.OPENROUTER_SITE_URL && process.env.OPENROUTER_SITE_URL.trim()) ||
-    'https://workbuddy.app';
-  const appName =
-    (config.appName && config.appName.trim()) ||
-    (process.env.OPENROUTER_APP_NAME && process.env.OPENROUTER_APP_NAME.trim()) ||
-    'agent-harness';
-  const fetchImpl = config.fetchImpl ?? fetch;
-  const retries = config.retries ?? 2;
+  // 集中解析：配置对象 → 环境变量 → 内置默认（agnes-2.5-flash 等常量见 ./config）。
+  // resolveOpenRouterConfig 已处理「空串视为未设置」的坑，无需在此重复。
+  const { apiKey, model, baseUrl, models, siteUrl, appName, fetchImpl, retries } =
+    resolveOpenRouterConfig(config);
 
   return async function openRouterLLM(
     messages: Message[],
@@ -76,8 +59,8 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     };
 
     // OpenRouter 支持单个 `model` 或 `models` 降级列表。
-    if (config.models && config.models.length > 0) {
-      body.models = config.models;
+    if (models && models.length > 0) {
+      body.models = models;
     } else {
       body.model = model;
     }

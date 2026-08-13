@@ -8,6 +8,8 @@ import {
   VolatileMemoryStore,
   createOpenRouterLLM,
   createOpenAILLM,
+  resolveOpenRouterConfig,
+  resolveOpenAIConfig,
   createFailoverLLM,
   createEnvPlatform,
   registerHarnessTools,
@@ -216,7 +218,7 @@ export async function assembleAgent(
       `通过 create_ephemeral_environment / destroy_environment 工具在对话中自助拉起/销毁环境。`
   );
   let llm: LLM;
-  let llmKind: 'mock' | 'openrouter' = 'mock';
+  let llmKind: 'mock' | 'openrouter' = 'openrouter';
   let failover = false;
   const mcpConnected = mcpManager.list().some((s) => s.status === 'connected');
 
@@ -231,11 +233,8 @@ export async function assembleAgent(
         '真实模式需要 OPENROUTER_API_KEY（在 .env 中配置）。可切换到 Mock 模式离线验证。'
       );
     }
-    const model =
-      (modelOverride && modelOverride.trim()) ||
-      (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
-      undefined;
-    const primary = createOpenRouterLLM(model ? { model } : {});
+    const effectiveModel = resolveOpenRouterConfig({ model: modelOverride }).model;
+    const primary = createOpenRouterLLM(modelOverride ? { model: modelOverride } : {});
     llmKind = 'openrouter';
 
     // 故障转移：若同时配置了原生 OpenAI（或兼容端点）密钥，则用熔断器把 OpenRouter
@@ -243,11 +242,7 @@ export async function assembleAgent(
     // 设 LLM_FAILOVER=false 可关闭（仅用 OpenRouter）。
     const openaiKey = process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim();
     if (openaiKey && process.env.LLM_FAILOVER !== 'false') {
-      const secondary = createOpenAILLM({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: (process.env.OPENAI_MODEL && process.env.OPENAI_MODEL.trim()) || undefined,
-        baseUrl: (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.trim()) || undefined,
-      });
+      const secondary = createOpenAILLM(resolveOpenAIConfig());
       llm = createFailoverLLM(primary, secondary, {
         failThreshold: Number(process.env.LLM_FAILOVER_THRESHOLD ?? 3) || 3,
         cooldownMs: Number(process.env.LLM_FAILOVER_COOLDOWN_MS ?? 60_000) || 60_000,
@@ -256,11 +251,11 @@ export async function assembleAgent(
       });
       failover = true;
       notes.push(
-        `使用真实 OpenRouter LLM（model=${model ?? '默认'}），并已启用 OpenAI 故障转移（熔断阈值 ${process.env.LLM_FAILOVER_THRESHOLD ?? 3}）。`
+        `使用真实 OpenRouter LLM（model=${effectiveModel}），并已启用 OpenAI 故障转移（熔断阈值 ${process.env.LLM_FAILOVER_THRESHOLD ?? 3}）。`
       );
     } else {
       llm = primary;
-      notes.push(`使用真实 OpenRouter LLM（model=${model ?? '默认'}）。`);
+      notes.push(`使用真实 OpenRouter LLM（model=${effectiveModel}）。`);
     }
   }
 
@@ -302,11 +297,9 @@ export async function assembleAgent(
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
   // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
   const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
-  // 当前 run 的计价/标识模型（modelOverride > env OPENROUTER_MODEL），供 LLM 摘要器标注与成本明细。
-  const accountModel =
-    (modelOverride && modelOverride.trim()) ||
-    (process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL.trim()) ||
-    undefined;
+  // 当前 run 的计价/标识模型（modelOverride > env OPENROUTER_MODEL > 内置默认），
+  // 供 LLM 摘要器标注与成本明细。
+  const accountModel = resolveOpenRouterConfig({ model: modelOverride }).model;
   // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
   // 根治「每步重发全部历史」导致的 token 平方增长（原问题 B 的根因）。
   // 默认关闭；CONTEXT_COMPRESSION=true 开启。摘要器必须同步、返回有界字符串。

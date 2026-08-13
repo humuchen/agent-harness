@@ -1,0 +1,19 @@
+# 本地化 Deployment：用本机镜像、单副本（HPA 也压到 1，避免本地频繁扩缩）。
+#
+# 注意：Docker Desktop 内置 K8s 底层是 kind 节点容器，其 containerd 默认读不到
+# `docker images` 里的镜像。故 imagePullPolicy 必须为 IfNotPresent（而非 Never），
+# 由 kubelet 走 Docker Desktop 的本地镜像代理拉取；Never 会因节点本地无镜像直接
+# 报 ErrImageNeverPull。前提是宿主机已 `docker build -t agent-harness:local .`。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: ui
+          image: agent-harness:local
+          imagePullPolicy: IfNotPresent

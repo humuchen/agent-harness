@@ -25,10 +25,15 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      # 共享记忆卷（RWX，多副本同时读写 /app/data）。PVC 定义见 pvc.yaml。
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agent-harness-data
       containers:
         - name: ui
-          image: ghcr.io/<your-org>/agent-harness:latest   # 替换为实际镜像与 tag（建议按 digest 固定）
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/humuchen/agent-harness:dev   # 由 CI(.github/workflows/docker.yml) 推送；dev 分支 push 后生成 :dev 标签（main 为 :latest）。生产建议按 digest 固定。
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 4173
@@ -37,6 +42,10 @@ spec:
                 name: agent-harness
             - secretRef:
                 name: agent-harness
+          # 决策 A：多副本共享记忆。所有 pod 挂载同一个 RWX 卷 /app/data（见 volumes）。
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
           resources:
             requests:
               cpu: "100m"
@@ -44,10 +53,10 @@ spec:
             limits:
               cpu: "1000m"
               memory: "1Gi"
-          # 健康检查：服务端 /api/v1/state（Render 亦用此路径）。
+          # 健康检查：服务端 /api/state（真实端点，Render/Docker 同此路径）。
           readinessProbe:
             httpGet:
-              path: /api/v1/state
+              path: /api/state
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -55,7 +64,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /api/v1/state
+              path: /api/state
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20

@@ -11,6 +11,11 @@
 #   1. 把 secret.yaml 的占位值替换为真实密钥（建议改用 Sealed/External Secrets）；
 #   2. 把 deployment.yaml 的 image 改为你的实际镜像与 tag；
 #   3. 把 ingress.yaml 的 host 改为你的域名，并确认集群有对应 Ingress Controller / TLS。
+#
+# 本地快速验证（用已构建的 agent-harness:local 镜像 + NodePort）：
+#   kubectl apply -k deploy/k8s/overlays/local
+#   kubectl -n agent-harness get pods -w
+#   浏览器打开 http://localhost:31473  （或 kubectl -n agent-harness port-forward svc/agent-harness 4173:4173）
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -26,5 +31,5 @@ resources:
   - service.yaml
   - ingress.yaml
   - hpa.yaml
-  # 可选：取消注释以启用内置 Redis（生产建议用托管 Redis）。
-  # - redis.yaml
+  - redis.yaml   # Redis 已默认启用，运行队列走 redis://redis:6379（见 Secret）
+  - pvc.yaml     # 记忆持久化共享卷（RWX，多副本共享 /app/data）

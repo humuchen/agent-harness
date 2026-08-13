@@ -84,7 +84,7 @@ docker run -p 4173:4173 \
 | `UI_AUTH_TOKEN` / `UI_TOKENS` | 生产必填 | Bearer 令牌；留空则开放（仅本地） |
 | `UI_CORS_ORIGIN` | 否 | 跨域白名单（逗号分隔） |
 | `OPENROUTER_API_KEY` | 真实 LLM 必填 | 留空用内置 Mock LLM 离线运行 |
-| `OPENROUTER_MODEL` | 否 | 默认 `openai/gpt-4o-mini` |
+| `OPENROUTER_MODEL` | 否 | 默认 `agnes-2.5-flash` |
 | `REDIS_URL` | 多副本必填 | 运行队列后端 |
 | `ENV_PLATFORM` | 否 | `harness`(默认,dry-run) / `local`(零依赖真跑) / `k8s`(生产级) |
 | `HARNESS_API_KEY` / `ACCOUNT` / `ORG` / `PROJECT` | 接 Harness 时填 | 仅 `ENV_PLATFORM=harness` 且要真拉环境时 |

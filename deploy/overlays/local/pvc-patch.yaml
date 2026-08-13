@@ -1,0 +1,11 @@
+# 本地 kind/Docker Desktop 默认 provisioner（rancher local-path）只支持 RWO。
+# local overlay 是单副本本地验证，把生产 base 的 RWX 记忆卷压成 RWO，
+# 否则 PVC 因无可用 StorageClass 而一直 Pending。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-harness-data
+  namespace: agent-harness
+spec:
+  accessModes:
+    - ReadWriteOnce

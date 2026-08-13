@@ -22,12 +22,38 @@
 #   保证 pnpm 的 workspace 软链（node_modules/@agent-harness/*）与 packages/*
 #   相对布局一致、可被 Node 解析。若追求更小体积，可改用 `pnpm deploy`
 #   （见下方注释的进阶方案）。
+#
+# ⚠️ 镜像源说明（网络受限环境）：
+# - 默认 NODE_BASE 使用 quay.io 的 node 镜像（quay.io/nodejs/node），
+#   因为本环境直连 Docker Hub 被网络策略拦截；quay.io 镜像与 Docker Hub
+#   官方 node 镜像内容一致（同为官方 node 构建产物）。
+# - 依赖安装走 npmmirror（registry.npmmirror.com），规避 npmjs.org 网络限制。
+# - 若你的生产集群可直连 Docker Hub（或自建 registry 代理），切换回官方镜像并去掉
+#   npmmirror 即可：
+#     docker build \
+#       --build-arg NODE_BASE=node \
+#       --build-arg NODE_TAG=22-bookworm-slim \
+#       -t agent-harness:local .
+
+# ----------------------------- 构建参数 -----------------------------
+# 默认走 quay.io 镜像（Docker Hub 在本环境被拦截时的可达替代源）。
+ARG NODE_BASE=quay.io/nodejs/node
+ARG NODE_TAG=22-bookworm
 
 # ----------------------------- 构建阶段 -----------------------------
-FROM node:22-bookworm AS build
-ENV PNPM_HOME=/pnpm
-ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable && corepack prepare pnpm@9 --activate
+FROM ${NODE_BASE}:${NODE_TAG} AS build
+# 依赖安装走国内可达的 npmmirror，规避 npmjs.org 网络限制（同时供 pnpm 自身安装）。
+ENV npm_config_registry=https://registry.npmmirror.com
+# 不使用 corepack：本环境经 npmmirror 拉取 pnpm 时 corepack 的签名校验会失败
+# （Cannot find matching keyid）。改为直接用 npm 安装 pnpm。
+# 注意：quay.io 上的 node 镜像停留在 v22.5.1，而 pnpm 11.9 要求 Node>=22.13，
+# 因此这里用 pnpm@10（lockfileVersion 同为 9.0，可正常消费现有锁文件）。
+# 生产环境若用官方 node:22-bookworm-slim（Node>=22.13），可改回 pnpm@11.9.0。
+# 先禁用 corepack 并清理可能残留的 pnpm，再安装并校验版本，避免命中缓存中的旧 pnpm。
+RUN corepack disable 2>/dev/null || true \
+ && npm remove -g pnpm 2>/dev/null || true \
+ && npm install -g pnpm@10 \
+ && pnpm --version
 
 WORKDIR /app
 
@@ -37,14 +63,23 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY packages/client/package.json packages/client/package.json
 COPY packages/webapp/package.json packages/webapp/package.json
+# 去掉根 package.json 的 packageManager 字段：否则 pnpm@10 会按该字段
+# （pnpm@11.9.0）通过 corepack 重新拉起 11.9.0，而 11.9.0 要求 Node>=22.13，
+# 在本环境的 node 22.5.1 上会直接报错。仅影响构建容器内副本，不改动源码。
+RUN node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f));delete p.packageManager;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
 RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
-# 再拷源码并全量构建（拓扑序：core → client → ui → webapp）。
+# 再拷源码并构建部署所需的包（server + 其依赖 core/mcp-sdk，以及 webapp + 其依赖 client）。
+# 不构建 cli：cli 是开发期命令行工具，不进入运行镜像；且在 pnpm@10（本环境受 node 22.5.1
+# 限制而使用）下 cli 的 tsc 解析有兼容性问题，官方环境用 pnpm@11.9 不受影响。
 COPY . .
-RUN pnpm -r build
+# COPY . . 会把带 packageManager 的根 package.json 覆盖回来，这里再次剥离，
+# 否则 pnpm 会按 packageManager(pnpm@11.9.0) 重新拉起高版本 pnpm 而失败。
+RUN node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f));delete p.packageManager;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." build
 
 # ----------------------------- 运行阶段 -----------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM ${NODE_BASE}:${NODE_TAG} AS runtime
 ENV NODE_ENV=production
 ENV PORT=4173
 ENV UI_HOST=0.0.0.0
@@ -62,7 +97,7 @@ USER ah:ah
 
 EXPOSE 4173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4173)+'/api/v1/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4173)+'/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "packages/server/dist/server.js"]
 
 # ----------------------------- 进阶：pnpm deploy 体积精简（可选） -----------------------------
