@@ -258,6 +258,26 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         }
       }
     }
+    // 托管 dist 根目录下的零散静态文件（favicon.ico / favicon.svg / robots.txt 等）。
+    // vite 会把 public/ 内容原样复制到 dist/ 根，但这些文件不在 /assets/ 前缀下，
+    // 需单独放行（仅允许无子目录的根级文件，避免路径穿越）。
+    if (req.method === 'GET' && !path.includes('/') && !path.startsWith('/api')) {
+      const wd = webappDir();
+      if (wd) {
+        const rel = decodeURIComponent(path.slice(1).split('?')[0]);
+        const fp = resolve(wd, rel);
+        if (fp === join(wd, rel)) {
+          try {
+            const buf = await readFile(fp);
+            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.end(buf);
+            return;
+          } catch {
+            /* 文件不存在，继续走后续路由 */
+          }
+        }
+      }
+    }
     if (req.method === 'GET' && path === '/api/state') {
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
