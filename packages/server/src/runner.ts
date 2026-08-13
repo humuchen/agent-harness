@@ -94,6 +94,67 @@ export function getMemoryStore(): MemoryStore {
   return _memoryStore;
 }
 
+/**
+ * 多轮会话记忆缓存（连续对话支持）。
+ *
+ * 关键观察：`AgentHarness.run()` 内部会把每一轮 user/assistant/tool 消息追加到
+ * `Memory` 的窗口，并在 `hasPersistence` 时 `load()`/`save()`。但 `execute()` 每次
+ * run 都 `assembleAgent()` 出一个全新的 `Memory`，窗口随之丢失 → 表现为「单次运行」。
+ *
+ * 解法：按 sessionKey 复用同一 `Memory` 实例（进程内缓存），使同一会话的多次
+ * `/api/run` 共享对话窗口，真正实现连续追问。该缓存与 store 后端**解耦**：
+ * - 即便后端是 volatile（默认），进程内缓存也足以保证连续性；
+ * - 若配置了 sqlite/file 后端，则额外落盘，用于进程崩溃/重启后的恢复
+ *   （harness.run 在 `hasPersistence` 时会先 load 再 append）。
+ * 并发安全由 run-queue 的 `runningSessions` 串行化保证：同会话同时只有 1 个 job 在跑。
+ */
+const SESSION_MEMORY_MAX = Number(process.env.SESSION_MEMORY_MAX ?? 256) || 256;
+const sessionMemories = new Map<string, Memory>();
+const sessionLastUsed = new Map<string, number>();
+
+/** 淘汰最久未使用的会话记忆，防止内存无限膨胀（有界 LRU）。 */
+function evictSessionMemories(): void {
+  if (sessionMemories.size <= SESSION_MEMORY_MAX) return;
+  const oldest = [...sessionLastUsed.entries()].sort((a, b) => a[1] - b[1]);
+  let over = sessionMemories.size - SESSION_MEMORY_MAX;
+  for (const [key] of oldest) {
+    if (over <= 0) break;
+    sessionMemories.delete(key);
+    sessionLastUsed.delete(key);
+    over -= 1;
+  }
+}
+
+/**
+ * 取得（或新建）某会话的 Memory 实例。跨 run 复用同一对象即可累积对话历史；
+ * 已缓存则忽略 summarizer（创建时已绑定）。首次构建按 sessionKey 隔离到所选 store 后端。
+ */
+export function getSessionMemory(
+  sessionKey: string,
+  maxWindow: number,
+  summarizer?: MemorySummarizer
+): Memory {
+  let mem = sessionMemories.get(sessionKey);
+  if (!mem) {
+    mem = new Memory({
+      store: getMemoryStore(),
+      sessionKey,
+      maxWindow,
+      ...(summarizer ? { summarizer } : {}),
+    });
+    sessionMemories.set(sessionKey, mem);
+  }
+  sessionLastUsed.set(sessionKey, Date.now());
+  evictSessionMemories();
+  return mem;
+}
+
+/** 失效某会话的进程内记忆缓存（如被清空 / 重置时），下次 run 将重建全新窗口。 */
+export function invalidateSessionMemory(sessionKey: string): void {
+  sessionMemories.delete(sessionKey);
+  sessionLastUsed.delete(sessionKey);
+}
+
 /** 根据运行模式组装一个带事件回调的 Agent。 */
 export async function assembleAgent(
   mode: RunMode,
@@ -107,7 +168,9 @@ export async function assembleAgent(
   /** 单次 run 的整体超时（毫秒）；超时后 harness 中止循环并返回超时提示。 */
   timeoutMs?: number,
   /** 单次 run 的循环步数上限；未传则取 env MAX_STEPS（默认 24）。复杂任务可调大。 */
-  maxSteps?: number
+  maxSteps?: number,
+  /** 复用既有 Memory（连续对话）。不传则由 sessionKey 自动按会话缓存取/建。 */
+  memoryArg?: Memory
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -282,12 +345,9 @@ export async function assembleAgent(
       ? createLLMSummarizer(llm, accountModel ?? 'openrouter')
       : heuristicSummarizer;
   }
-  const memory = new Memory({
-    store: getMemoryStore(),
-    sessionKey,
-    maxWindow,
-    ...(summarizer ? { summarizer } : {}),
-  });
+  // 复用按会话缓存的 Memory：同一 sessionKey 的多次 run 共享对话窗口，实现连续追问。
+  // 显式传入的 memoryArg（如测试）优先；否则按 sessionKey 取/建进程内缓存实例。
+  const memory = memoryArg ?? getSessionMemory(sessionKey ?? 'anonymous', maxWindow, summarizer);
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
