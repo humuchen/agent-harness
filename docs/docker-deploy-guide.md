@@ -46,15 +46,28 @@ docker compose up --build -d
 
 ---
 
-## 3. 带运行队列的部署（redis profile，支持多副本）
+## 3. 带运行队列 + 鉴权的部署（redis overlay，推荐用于内网多人）
+
+> ⚠️ **关键坑**：纯 `docker compose --profile redis up` 只会拉起 Redis **容器**，但 base `docker-compose.yml` 里的 `REDIS_URL` 读宿主机环境变量（默认空），应用仍走**内存队列**——Redis 在空转。必须用 `docker-compose.redis.yml` overlay 才会真正把 `REDIS_URL=redis://redis:6379` 注入 ui，并强制要求 `UI_AUTH_TOKEN`。
 
 ```bash
-docker compose --profile redis up --build -d
+# 0) 准备令牌（已为你生成在 .env；如需自签任选其一）
+openssl rand -base64 32
+# 或：node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+
+# 1) 从模板建 .env 并填入令牌（本项目已预置 .env，可直接用）
+cp .env.example .env
+#   编辑器打开 .env，把 UI_AUTH_TOKEN= 后面填上上面生成的令牌
+
+# 2) 停旧容器 + 用 overlay 重建（redis profile 自动把 REDIS_URL 注入 ui）
+docker compose down
+docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up --build -d
 ```
 
 - 自动拉起 `redis:7-alpine` 并挂载数据卷 `redis-data`。
-- `REDIS_URL` 自动设为 `redis://redis:6379`，无需手填。
-- 适用：需要跨实例共享运行队列 / 水平扩展多个 `ui` 副本时。
+- ui 容器 `REDIS_URL=redis://redis:6379` → 应用日志出现 `[queue-backend] using Redis backend`，运行队列由 Redis 接管（验证：`docker logs <项目名>-ui-1 | grep queue-backend`）。
+- `docker-compose.redis.yml` 把 `UI_AUTH_TOKEN` 设为**必填**（`${UI_AUTH_TOKEN:?...}`）：未设令牌则 `up` 直接报错退出，杜绝"开放 UI"误部署。设了令牌后，浏览器需在顶栏「Bearer 令牌」填入同一值。
+- 适用：内网多人低并发、需要跨实例共享运行队列 / 水平扩展多个 `ui` 副本时。
 
 ---
 
@@ -69,7 +82,7 @@ docker run -d -p 4173:4173 \
   --name ah \
   -e UI_AUTH_TOKEN=change-me \
   -e OPENROUTER_API_KEY=sk-or-xxx \
-  -e OPENROUTER_MODEL=openai/gpt-4o-mini \
+  -e OPENROUTER_MODEL=agnes-2.5-flash \
   agent-harness:local
 ```
 
@@ -87,7 +100,7 @@ docker run -d -p 4173:4173 \
 | `UI_HOST` | 否 | 0.0.0.0 | 绑定地址 |
 | `UI_AUTH_TOKEN` | 否 | 空 | 接口鉴权令牌。**留空 → UI 开放（仅本地演示可接受）；生产务必设强随机值** |
 | `OPENROUTER_API_KEY` | 否 | 空 | 真实 LLM 密钥。**留空 → 内置 Mock LLM 离线运行**（无需密钥即可演示运行时面板） |
-| `OPENROUTER_MODEL` | 否 | openai/gpt-4o-mini | OpenRouter 模型名 |
+| `OPENROUTER_MODEL` | 否 | agnes-2.5-flash | OpenRouter 模型名 |
 | `REDIS_URL` | 否 | 空 | 运行队列后端；启用 redis profile 后自动填 |
 
 > 本地演示最简形态：两个密钥都**留空**即可。`docker compose up --build -d` 后 Mock 模式直接可用。
@@ -195,8 +208,8 @@ A：内存模式作业/记忆重启即丢。挂 Redis（redis profile）或配�
 ```bash
 # 内存模式起
 docker compose up --build -d
-# 带 Redis 起
-docker compose --profile redis up --build -d
+# 带 Redis + 鉴权 起（需先 cp .env.example .env 并填 UI_AUTH_TOKEN）
+docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up --build -d
 # 看状态
 docker ps
 # 看健康

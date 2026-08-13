@@ -20,7 +20,7 @@ services:
       UI_AUTH_TOKEN: "${UI_AUTH_TOKEN:-}"
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-openai/gpt-4o-mini}"
+      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-agnes-2.5-flash}"
       # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
       REDIS_URL: "${REDIS_URL:-}"
     restart: unless-stopped
@@ -37,6 +37,8 @@ services:
     image: redis:7-alpine
     profiles: ["redis"]
     restart: unless-stopped
+    # 开启 AOF 持久化：队列 / 事件桥数据写入 redis-data 卷，Redis 重启或重建后不丢。
+    command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

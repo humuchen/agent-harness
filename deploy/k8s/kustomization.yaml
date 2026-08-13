@@ -32,3 +32,4 @@ resources:
   - ingress.yaml
   - hpa.yaml
   - redis.yaml   # Redis 已默认启用，运行队列走 redis://redis:6379（见 Secret）
+  - pvc.yaml     # 记忆持久化共享卷（RWX，多副本共享 /app/data）

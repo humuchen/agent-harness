@@ -12,6 +12,8 @@
 #   2. 让 ui 等待 redis 健康后再启动，避免队列后端连不上
 #   3. 强制要求 UI_AUTH_TOKEN（多人访问必须鉴权；未设置则 compose 启动直接报错退出，
 #      避免 UI 在无人值守下对全网开放）
+#   4. 数据持久化：挂载 ui-data 卷到 /app/data，并启用 sqlite 记忆后端，
+#      使多轮对话 / 会话 / 长期记忆在容器重建后保留（非持久化则重启即丢）
 
 services:
   ui:
@@ -19,6 +21,16 @@ services:
       REDIS_URL: "redis://redis:6379"
       # 内部多人试用必须设强随机令牌；未设置则拒绝启动
       UI_AUTH_TOKEN: "${UI_AUTH_TOKEN:?UI_AUTH_TOKEN 未设置！请先 cp .env.example .env 并填入 openssl rand -base64 32 生成的令牌}"
+      # 持久化记忆后端（sqlite 写入挂载卷 /app/data；node:sqlite 不可用时自动回退 file 后端，
+      # 由 MEMORY_DIR 落到同一卷）。留空则默认内存、重启即丢。
+      MEMORY_BACKEND: "sqlite"
+      MEMORY_SQLITE_FILE: "/app/data/memory.db"
+      MEMORY_DIR: "/app/data/memory"
+    volumes:
+      - ui-data:/app/data
     depends_on:
       redis:
         condition: service_healthy
+
+volumes:
+  ui-data:

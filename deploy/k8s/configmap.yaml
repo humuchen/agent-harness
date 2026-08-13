@@ -22,3 +22,8 @@ data:
   K8S_NAMESPACE_PREFIX: "ah-env-"
   K8S_INGRESS_HOST_TEMPLATE: "https://{envId}.env.example.com"
   K8S_TTL_DEFAULT_HOURS: "8"
+  # 记忆持久化后端（决策 A：多副本共享同一 RWX 卷 /app/data）。
+  # file 后端按会话分桶 JSON + 原子 rename，对网络文件系统(RWX)最稳定；
+  # 切勿用 sqlite（网络 FS 文件锁不可靠，多副本并发易损坏）。
+  MEMORY_BACKEND: "file"
+  MEMORY_DIR: "/app/data/memory"

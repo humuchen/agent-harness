@@ -9,18 +9,19 @@
   - 或 `kind` / `minikube` / 托管集群（EKS/GKE/AKS）。
 - `kubectl` 已安装，`kubectl config current-context` 指向目标集群。
 - 镜像：
-  - 本地：你已构建的 `agent-harness:local`（Docker Desktop / kind / minikube 均可直接吃）。
-  - 生产：推到 `ghcr.io/<org>/agent-harness:tag`（改 `deployment.yaml` 的 image 字段）。
+  - 本地（Docker Desktop 内置 K8s）：先 `docker build -t agent-harness:local .`，local overlay 的 `imagePullPolicy: IfNotPresent` 会让 kubelet 直接走 Docker Desktop 本地镜像代理拉取，**无需** kind load。
+  - 本地（kind / minikube）：需先把镜像灌进集群（见下方命令），且 overlay 的 `imagePullPolicy` 要相应调整。
+  - 生产：推到 `ghcr.io/<org>/agent-harness:tag`（改 `deploy/k8s/deployment.yaml` 的 image 字段）。
 
 ## 1. 本地验证（最快跑通）
 
 ```bash
-# 1) 若用 kind/minikube，先把本地镜像灌进集群（Docker Desktop 内置 k8s 跳过此步）
+# 1) 若用 kind/minikube，先把本地镜像灌进集群（Docker Desktop 内置 k8s 用 IfNotPresent 直接吃本地镜像，跳过此步）
 kind load docker-image agent-harness:local          # kind
 minikube cache add agent-harness:local              # minikube
 
 # 2) 应用本地 overlay（Redis 默认开，单副本，NodePort 31473）
-kubectl apply -k deploy/k8s/overlays/local
+kubectl apply -k deploy/overlays/local
 
 # 3) 等所有 Pod Running
 kubectl -n agent-harness get pods -w
@@ -62,6 +63,19 @@ kubectl apply -k deploy/k8s
 
 > 说明：`/api/v1/state` 仅存在于 OpenAPI 文档定义（挂在 `/api/openapi.json`），服务端真实健康检查端点是 `/api/state`。Docker 与 K8s 两处都已统一修正。
 
+## 3.1 生产加固补丁（记忆持久化 + Redis 密码）
+
+- **记忆持久化（决策 A：多副本共享）**：`configmap.yaml` 已设 `MEMORY_BACKEND=file` +
+  `MEMORY_DIR=/app/data/memory`，`deployment.yaml` 把 RWX 卷 `agent-harness-data` 挂到
+  `/app/data`。所有副本读同一共享卷 → 记忆跨副本一致、pod 重启不丢。
+  ⚠️ 该 PVC `accessModes: ReadWriteMany`，**必须**用支持 RWX 的 StorageClass
+  （AWS EFS / Azure Files / GCP Filestore / 阿里云 NAS），否则 PVC 一直 Pending。
+- **Redis 密码 + AOF**：`redis.yaml` 改为
+  `redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes --dir /data`，
+  密码取自 Secret 的 `REDIS_PASSWORD`；Secret 的 `REDIS_URL` 同步改为
+  `redis://:PASSWORD@redis:6379`。部署前用 `kubectl create secret` 注入真实密码
+  （见 secret.yaml 顶部命令），**切勿把真实密钥提交进仓库**。
+
 ## 4. 验证清单
 
 - [ ] `kubectl -n agent-harness get pods` 全部 `Running`，且 READY 为 `1/1`
@@ -81,7 +95,7 @@ kubectl apply -k deploy/k8s
 kubectl -n agent-harness get all
 kubectl -n agent-harness logs -f deploy/agent-harness
 kubectl -n agent-harness rollout restart deploy/agent-harness
-kubectl -n agent-harness delete -k deploy/k8s/overlays/local   # 清理本地
+kubectl -n agent-harness delete -k deploy/overlays/local   # 清理本地
 kubectl -n agent-harness delete -k deploy/k8s                  # 清理生产
 ```
 

@@ -14,7 +14,7 @@ spec:
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -43,7 +43,14 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
-          args: ["--save", "60", "1", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agent-harness
+                  key: REDIS_PASSWORD
+          # 生产加固：启用密码鉴权 + AOF 持久化；--dir /data 确保写入挂载卷而非只读根 FS。
+          command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\" --appendonly yes --dir /data --maxmemory 256mb --maxmemory-policy allkeys-lru"]
           ports:
             - name: redis
               containerPort: 6379
