@@ -17,6 +17,8 @@ const SERVER_JS = join(__dirname, '..', 'dist', 'server.js');
 const TOKEN = 'test-token-xyz';
 const PORT = 40000 + Math.floor(Math.random() * 5000);
 const RUN = existsSync(SERVER_JS);
+// 前端产物是可选前置：server 单测不应因 webapp 未构建而失败（CI 里 build 会产出，本地常常没有）。
+const WEBAPP_BUILT = existsSync(join(__dirname, '..', '..', 'webapp', 'dist', 'index.html'));
 
 function startServer() {
   return new Promise((resolve, reject) => {
@@ -91,10 +93,16 @@ test('UI server 集成：鉴权 / 体上限 / metrics / SSE', { skip: !RUN }, as
     let r = await request('GET', '/api/state');
     assert.equal(r.status, 200, 'GET /api/state 应 200');
 
-    // 2) / 返回 HTML 首页。
+    // 2) / 托管 webapp 首页。本用例不隐式依赖前端构建产物：
+    //    webapp 已构建 → 必须 200 + text/html；未构建 → 必须是可读的 500 兜底提示。
     r = await request('GET', '/');
-    assert.equal(r.status, 200, 'GET / 应 200');
-    assert.match(r.headers['content-type'] || '', /text\/html/, '首页 content-type 应为 text/html');
+    if (WEBAPP_BUILT) {
+      assert.equal(r.status, 200, 'GET / 应 200（webapp 已构建）');
+      assert.match(r.headers['content-type'] || '', /text\/html/, '首页 content-type 应为 text/html');
+    } else {
+      assert.equal(r.status, 500, 'GET / 在 webapp 未构建时应 500 兜底');
+      assert.match(r.body || '', /webapp/i, '兜底响应应提示先构建 webapp');
+    }
 
     // 3) 受保护端点无令牌 → 401。
     r = await request('GET', '/api/metrics');
