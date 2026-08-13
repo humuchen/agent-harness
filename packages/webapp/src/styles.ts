@@ -544,6 +544,16 @@ export const sharedStyles = css`
     background: var(--ah-danger-soft);
     border-color: transparent;
   }
+  .pill.session {
+    color: var(--ah-text-muted);
+    background: var(--ah-surface-3);
+    border-color: var(--ah-border);
+    font-family: var(--ah-mono, monospace);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .meta {
     font-family: var(--ah-font-mono);
     font-size: 12px;
@@ -841,6 +851,8 @@ export const sharedStyles = css`
   .trace-block.tool-result .tb-tag { background: rgba(48, 209, 88, 0.10); color: var(--ah-text-muted); }
   .trace-block.warn .tb-tag { background: var(--ah-warning-soft); color: var(--ah-warning); }
   .trace-block.error .tb-tag { background: var(--ah-danger-soft); color: var(--ah-danger); }
+  .trace-block.answer { border-left-color: var(--ah-accent); }
+  .trace-block.answer .tb-tag { background: var(--ah-accent); color: #fff; }
   .trace-block .tb-body { color: var(--ah-text); }
   .trace-block .tb-detail {
     color: var(--ah-text-muted);

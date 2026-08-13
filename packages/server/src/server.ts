@@ -3,7 +3,7 @@ import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { assembleAgent, defaultPromptFor, getMemoryStore, type RunMode } from './runner';
+import { assembleAgent, defaultPromptFor, getMemoryStore, invalidateSessionMemory, type RunMode } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { runQueue } from './run-queue';
@@ -258,6 +258,28 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         }
       }
     }
+    // 托管 dist 根目录下的零散静态文件（favicon.ico / favicon.svg / robots.txt 等）。
+    // vite 会把 public/ 内容原样复制到 dist/ 根，但这些文件不在 /assets/ 前缀下，
+    // 需单独放行（仅允许无子目录的根级文件，避免路径穿越）。
+    // 注意：path 带前导 '/'（如 /favicon.ico），故用 slice(1) 去掉首斜杠后再判断是否含 '/'，
+    // 以区分「根级文件」与「含子目录的路径」。
+    if (req.method === 'GET' && !path.slice(1).includes('/') && !path.startsWith('/api')) {
+      const wd = webappDir();
+      if (wd) {
+        const rel = decodeURIComponent(path.slice(1).split('?')[0]);
+        const fp = resolve(wd, rel);
+        if (fp === join(wd, rel)) {
+          try {
+            const buf = await readFile(fp);
+            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.end(buf);
+            return;
+          } catch {
+            /* 文件不存在，继续走后续路由 */
+          }
+        }
+      }
+    }
     if (req.method === 'GET' && path === '/api/state') {
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
@@ -322,6 +344,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         const store = getMemoryStore();
         const memory = new Memory({ store, sessionKey });
         await memory.clear();
+        // 同步失效进程内会话记忆缓存，避免下次 run 仍复用已被清空的旧窗口。
+        invalidateSessionMemory(sessionKey);
         auditAction('memory.clear', { sessionKey, role: ctx.role, sub: ctx.sub });
         return sendJson(res, { ok: true, sessionKey }, req);
       }
@@ -627,6 +651,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
   // 记忆按此 key 在所选后端（file/sqlite）隔离持久化，实现多租户。
+  // 注意：连续对话由 Web UI 在客户端生成并稳定携带 conversationId（见 webapp/run.ts），
+  // 因此 web 端每条会话都带唯一 sessionId；未携带时回落 anonymous（CLI 无 --session 时）。
   const sessionKey = sanitizeKey(
     (body.sessionId && String(body.sessionId)) ||
       (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
@@ -641,7 +667,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   if (!targetId) {
     const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps });
     auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, role: ctx.role, sub: ctx.sub });
-    send({ type: 'job:accepted', jobId: job.id });
+    send({ type: 'job:accepted', jobId: job.id, sessionKey });
     jobId = job.id;
   } else {
     auditAction('agent.run.reconnect', { jobId: targetId, role: ctx.role, sub: ctx.sub });

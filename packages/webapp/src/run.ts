@@ -16,7 +16,7 @@ interface Phase {
   status: 'pending' | 'active' | 'done';
 }
 
-type BlockKind = 'user' | 'think' | 'tool' | 'tool-result' | 'warn' | 'error';
+type BlockKind = 'user' | 'think' | 'tool' | 'tool-result' | 'warn' | 'error' | 'answer';
 
 interface TraceBlock {
   id: number;
@@ -41,6 +41,7 @@ const TAG_LABEL: Record<BlockKind, string> = {
   'tool-result': '结果',
   warn: '护栏',
   error: '错误',
+  answer: '回答',
 };
 
 /* ------------------------------ Run ------------------------------ */
@@ -54,6 +55,8 @@ export class AhRun extends LitElement {
   @state() model = '';
   @state() maxSteps = '';
   @state() sessionId = '';
+  /** 服务端分配的会话 key（连续追问用）。为空表示尚未建立会话，下次运行由服务端生成。 */
+  @state() conversationId = '';
   @state() reconnect = '';
   @state() showAdvanced = false;
 
@@ -102,6 +105,8 @@ export class AhRun extends LitElement {
     switch (ev.type) {
       case 'job:accepted':
         this.jobId = (ev as any).jobId ?? this.jobId;
+        // 服务端分配的会话 key：后续追问原样带回，即可复用同一 Memory 窗口续上对话。
+        if ((ev as any).sessionKey) this.conversationId = String((ev as any).sessionKey);
         break;
       case 'run:start':
         this.markActive(0);
@@ -156,6 +161,8 @@ export class AhRun extends LitElement {
         this.allDone();
         this.final = String((ev as any).final ?? '');
         this.steps = (ev as any).steps ?? this.steps;
+        // 把本轮最终回答作为一条「回答」块追加进对话轨迹，使多轮聊天记录连续可读。
+        if (this.final) this.push({ kind: 'answer', text: this.final });
         break;
       case 'error':
         this.push({ kind: 'error', text: String((ev as any).message ?? ev) });
@@ -171,21 +178,36 @@ export class AhRun extends LitElement {
     }
   }
 
-  /* ----------------------- 运行 / 停止 ----------------------- */
+  /* ----------------------- 运行 / 停止 / 新会话 ----------------------- */
 
+  /**
+   * 启动/继续一次运行。连续对话模式下**不清空** trace 与 nextId，
+   * 而是把本轮的 user/answer 块追加到既有对话轨迹之后，实现连续追问。
+   * 全量重置（清空对话、开新会话）由 newConversation() 负责。
+   */
   private async run() {
     this.error = null;
     this.ticket = null;
-    this.trace = [];
     this.final = '';
     this.jobId = null;
     this.toolsCount = 0;
     this.steps = 0;
     this.cost = 0;
-    this.nextId = 1;
+    // 注意：不重置 this.trace / this.nextId / this.conversationId —— 保留跨轮对话。
     this.phases = PHASES.map((p) => ({ ...p }));
     this.finished = false;
     this.running = true;
+
+    // 连续对话：若尚未建立会话，由客户端生成唯一会话 key 并稳定携带，
+    // 服务端据此复用同一 Memory 缓存窗口。持久化到 localStorage 以便刷新后续接。
+    if (!this.conversationId) {
+      this.conversationId = `sid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      try {
+        localStorage.setItem('ah_conversation_id', this.conversationId);
+      } catch {
+        /* 隐私模式等场景忽略 */
+      }
+    }
 
     const ac = new AbortController();
     this.abort = ac;
@@ -196,7 +218,9 @@ export class AhRun extends LitElement {
           prompt: this.prompt,
           model: this.model || undefined,
           maxSteps: this.maxSteps ? Number(this.maxSteps) : undefined,
-          sessionId: this.sessionId || undefined,
+          // 优先用客户端生成的会话 key（连续追问复用同一 Memory 窗口）；
+          // 高级选项里手动填写的 sessionId 作为可选的显式会话隔离覆盖。
+          sessionId: this.conversationId || (this.sessionId || undefined),
           jobId: this.reconnect || undefined,
         },
         { signal: ac.signal }
@@ -212,6 +236,41 @@ export class AhRun extends LitElement {
     } finally {
       this.running = false;
       this.finished = true;
+    }
+  }
+
+  /** 开新会话：清空全部状态并丢弃会话 key，下次运行由服务端分配全新会话。 */
+  private newConversation() {
+    this.abort?.abort();
+    this.trace = [];
+    this.nextId = 1;
+    this.final = '';
+    this.error = null;
+    this.ticket = null;
+    this.jobId = null;
+    this.conversationId = '';
+    try {
+      localStorage.removeItem('ah_conversation_id');
+    } catch {
+      /* 忽略 */
+    }
+    this.reconnect = '';
+    this.toolsCount = 0;
+    this.steps = 0;
+    this.cost = 0;
+    this.phases = PHASES.map((p) => ({ ...p }));
+    this.finished = false;
+    this.running = false;
+  }
+
+  /** 组件挂载时尝试恢复上次会话 key（服务器若配了持久化后端则可继续历史对话）。 */
+  connectedCallback(): void {
+    super.connectedCallback();
+    try {
+      const saved = localStorage.getItem('ah_conversation_id');
+      if (saved) this.conversationId = saved;
+    } catch {
+      /* 忽略 */
     }
   }
 
@@ -347,7 +406,7 @@ export class AhRun extends LitElement {
       <div class="run-actions">
         <button @click=${() => this.copyFinal()}>复制</button>
         <button @click=${() => this.exportRun()}>导出</button>
-        <button @click=${() => this.run()}>重试</button>
+        <button class="ghost" @click=${() => this.newConversation()}>新会话</button>
       </div>
     `;
   }
@@ -366,10 +425,13 @@ export class AhRun extends LitElement {
               <button class="${this.view === 'result' ? 'active' : ''}" @click=${() => (this.view = 'result')}>结果</button>
               <button class="${this.view === 'all' ? 'active' : ''}" @click=${() => (this.view = 'all')}>全览</button>
             </div>
+            ${this.conversationId
+              ? html`<span class="pill session" title=${this.conversationId}>会话 ${this.conversationId.slice(0, 12)}</span>`
+              : nothing}
             ${this.running
               ? html`<span class="pill running">运行中</span><button class="ghost" @click=${() => this.stop()}>停止</button>`
               : this.finished
-                ? html`<span class="pill done">已完成</span><button class="ghost" @click=${() => this.run()}>重新运行</button>`
+                ? html`<span class="pill done">已完成</span><button class="ghost" @click=${() => this.newConversation()}>新会话</button>`
                 : html`<span class="pill">空闲</span>`}
           </div>
         </div>
@@ -381,11 +443,14 @@ export class AhRun extends LitElement {
           </label>
           <div class="row">
             <button ?disabled=${this.running} @click=${() => this.run()}>
-              ${this.running ? '运行中…' : this.finished ? '重新运行' : '运行 Agent'}
+              ${this.running ? '运行中…' : '运行 Agent'}
             </button>
             <button class="ghost" @click=${() => (this.showAdvanced = !this.showAdvanced)}>
               ${this.showAdvanced ? '收起高级' : '高级选项'}
             </button>
+            ${this.conversationId
+              ? html`<span class="muted">已建立会话，再次运行即为「连续追问」</span>`
+              : nothing}
           </div>
           ${this.showAdvanced
             ? html`<div class="run-advanced">
