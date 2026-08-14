@@ -18,8 +18,9 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: yanghu88.dpdns.org
-      http:
+    # 不带 host = catch-all 默认后端：任何 Host（含裸 IP 10.67.7.143、局域网设备、
+    # Cloudflare 回源）都路由到 agent-harness。单应用部署足够；多租户时再按 host 拆分。
+    - http:
         paths:
           - path: /
             pathType: Prefix

@@ -12,3 +12,12 @@ import './panels';
 import './run';
 import './dashboard';
 import './observability';
+import './login';
+
+// 演示入口：访问 #/login 时以全屏登录页替换控制台，便于预览登录/注册 + 左侧动画。
+if (location.hash.startsWith('#/login')) {
+  const existing = document.querySelector('ah-app');
+  const login = document.createElement('ah-login');
+  if (existing) existing.replaceWith(login);
+  else document.body.appendChild(login);
+}
