@@ -1,14 +1,15 @@
 /**
  * 登录 / 注册页（ah-login）
  * ----------------------------------------------------------------
- * 严格还原 Ardot 原型（fileId 714449633680012，登录页·深色 3:1）：
- *  - 左侧品牌面板：45° 极光渐变背景 + 动画「智能体网络」mesh（节点呼吸 + 连线流动 +
- *    数据脉冲沿线游走）+ 漂浮发光粒子 + 右上角「实时编排中」脉冲徽标。
- *  - 右侧认证卡片：发光描边（内描边 + 外发光）+ 登录/注册双视图（底部链接切换，无分段控件）+
- *    统一 336×42 对齐输入框（密码框眼睛显隐）+ 发光 CTA + GitHub SSO。
+ * 单幅沉浸式背景 + 悬浮认证卡片：
+ *  - 整体锁定 1280×832 画幅并居中，避免大屏拉伸。
+ *  - 整页统一为极光渐变背景 + 动画「智能体网络」mesh + 漂浮发光粒子，
+ *    不再左右分栏；认证卡片以毛玻璃形态悬浮于画面中右（箭头指向区域）。
+ *  - 品牌文案分列左上/左下，与悬浮卡片形成图层感。
+ *  - 完全区分 dark/light 主题。
  *
- * 所有视觉只引用 --ah-* 语义令牌，随 dark/light 主题自动切换；
- * 动画命名沿用项目 ah-* 约定（组件内作用域，避免与 sharedStyles 冲突）。
+ * 视觉只引用 --ah-* 语义令牌，局部渐变/发光用 color-mix 或硬编码主题覆盖，
+ * 动画命名沿用项目 ah-* 约定（组件内作用域）。
  */
 import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -62,9 +63,9 @@ function edgePath(e: NetEdge): string {
 }
 
 /** 渲染整张 mesh：连线(流动) + 沿线游走的脉冲 + 节点(呼吸光晕 + 实心点)。 */
-function meshSvg() {
+function meshSvg(className = 'mesh') {
   return html`
-    <svg class="mesh" viewBox="0 0 560 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <svg class=${className} viewBox="0 0 560 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
       ${EDGES.map(
         (e, k) => html`
           <path id=${`edge-${k}`} class="edge" d=${edgePath(e)} style=${`animation-delay:${e.delay}s`}></path>
@@ -105,31 +106,34 @@ export class AhLogin extends LitElement {
     css`
       :host {
         display: grid;
-        grid-template-columns: 560px 1fr;
-        height: 100vh;
-        height: 100dvh;
-        overflow: hidden;
-        color: var(--ah-text);
+        place-items: center;
+        min-height: 100vh;
+        min-height: 100dvh;
+        overflow: auto;
+        background: var(--ah-canvas);
       }
-
-      /* ---------------------- 左：品牌 / 动画面板 ---------------------- */
-      .brand-panel {
+      /* 锁定 1280×832 画幅并居中；单幅沉浸式背景。 */
+      .login-wrap {
         position: relative;
+        width: 100%;
+        max-width: 1280px;
+        aspect-ratio: 1280 / 832;
+        max-height: 100vh;
+        max-height: 100dvh;
         overflow: hidden;
-        /* 原型 3:2：45° 极光线性渐变 accent(28%) → 深蓝(50%) → surface-1 */
+        /* 统一极光背景：accent → surface-3 → surface-1 */
         background: linear-gradient(
           135deg,
-          color-mix(in srgb, var(--ah-accent) 28%, transparent) 0%,
-          color-mix(in srgb, var(--ah-surface-3) 50%, transparent) 55%,
+          color-mix(in srgb, var(--ah-accent) 30%, transparent) 0%,
+          color-mix(in srgb, var(--ah-surface-3) 55%, transparent) 50%,
           var(--ah-surface-1) 100%
         );
-        border-right: 1px solid var(--ah-border);
-        display: flex;
-        flex-direction: column;
-        padding: 48px;
-        isolation: isolate;
       }
-      /* mesh 铺满面板，垫在文字之下，居中区域最密 */
+      :host([data-theme='light']) .login-wrap {
+        background: linear-gradient(135deg, rgba(0, 102, 230, 0.16) 0%, rgba(217, 235, 255, 0.55) 55%, #fff 100%);
+      }
+
+      /* ---------------------- 背景氛围层 ---------------------- */
       .mesh {
         position: absolute;
         inset: 0;
@@ -143,9 +147,12 @@ export class AhLogin extends LitElement {
         fill: none;
         stroke: var(--ah-accent);
         stroke-width: 1.2;
-        opacity: 0.45;
+        opacity: 0.5;
         stroke-dasharray: 5 9;
         animation: ah-login-flow 4s linear infinite;
+      }
+      :host([data-theme='light']) .edge {
+        opacity: 0.78;
       }
       @keyframes ah-login-flow {
         to { stroke-dashoffset: -140; }
@@ -166,11 +173,10 @@ export class AhLogin extends LitElement {
         stroke-width: 1.5;
       }
       @keyframes ah-login-node {
-        0%, 100% { opacity: 0.28; transform: scale(0.82); }
-        50% { opacity: 0.6; transform: scale(1.28); }
+        0%, 100% { opacity: 0.32; transform: scale(0.82); }
+        50% { opacity: 0.65; transform: scale(1.28); }
       }
 
-      /* 漂浮粒子（原型 3:211 / 3:212：accent 实心 + accent 发光） */
       .particles {
         position: absolute;
         inset: 0;
@@ -194,10 +200,98 @@ export class AhLogin extends LitElement {
         100% { transform: translateY(-150px); opacity: 0; }
       }
 
-      /* 顶部行：左 logo+名称+版本，右 状态徽标（原型 3:38 + 3:213 置于右上） */
+      /* 景深 mesh：比主 mesh 更大、更淡、更慢，营造空间纵深感。 */
+      .depth-mesh {
+        position: absolute;
+        inset: -12%;
+        width: 124%;
+        height: 124%;
+        z-index: 0;
+        opacity: 0.18;
+        filter: blur(1.5px);
+        pointer-events: none;
+        animation: ah-login-drift 24s ease-in-out infinite alternate;
+      }
+      :host([data-theme='light']) .depth-mesh {
+        opacity: 0.28;
+      }
+      .depth-mesh .edge {
+        opacity: 0.35;
+        stroke-width: 0.9;
+      }
+      .depth-mesh .node,
+      .depth-mesh .node-glow,
+      .depth-mesh .packet {
+        opacity: 0.45;
+      }
+      @keyframes ah-login-drift {
+        0% { transform: translate(-2%, -2%) scale(1.02); }
+        100% { transform: translate(2%, 2%) scale(1.08); }
+      }
+
+      /* 漂浮光球：大尺度 accent 柔光，增加背景层次。 */
+      .orbs {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .orb {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(60px);
+        opacity: 0.32;
+        animation: ah-login-orb 18s ease-in-out infinite alternate;
+      }
+      :host([data-theme='light']) .orb {
+        opacity: 0.22;
+      }
+      @keyframes ah-login-orb {
+        0% { transform: translate(0, 0) scale(1); }
+        100% { transform: translate(20px, -30px) scale(1.12); }
+      }
+
+      /* 全幅晕影：中心透亮、四周渐隐，让悬浮卡片更聚焦。 */
+      .vignette {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        background: radial-gradient(
+          circle at 50% 60%,
+          transparent 35%,
+          color-mix(in srgb, var(--ah-surface-1) 60%, transparent) 100%
+        );
+      }
+      :host([data-theme='light']) .vignette {
+        background: radial-gradient(circle at 50% 60%, transparent 35%, rgba(255, 255, 255, 0.45) 100%);
+      }
+      /* 卡片背后 accent 光晕 */
+      .card-halo {
+        position: absolute;
+        left: 46%;
+        top: 52%;
+        transform: translate(-50%, -50%);
+        width: 480px;
+        height: 620px;
+        z-index: 2;
+        pointer-events: none;
+        background: radial-gradient(circle, color-mix(in srgb, var(--ah-accent) 22%, transparent) 0%, transparent 70%);
+        filter: blur(50px);
+        opacity: 0.8;
+      }
+      :host([data-theme='light']) .card-halo {
+        background: radial-gradient(circle, rgba(0, 102, 230, 0.14) 0%, transparent 70%);
+      }
+
+      /* ---------------------- 品牌文案（左上 + 左下） ---------------------- */
       .brand-top {
-        position: relative;
-        z-index: 3;
+        position: absolute;
+        top: 42px;
+        left: 48px;
+        right: 48px;
+        z-index: 4;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -216,9 +310,11 @@ export class AhLogin extends LitElement {
         height: 34px;
         object-fit: contain;
         display: block;
-        /* 原型 3:39：双层 accent 发光 */
         filter: drop-shadow(0 0 10px color-mix(in srgb, var(--ah-accent) 60%, transparent))
           drop-shadow(0 0 22px color-mix(in srgb, var(--ah-accent) 35%, transparent));
+      }
+      :host([data-theme='light']) .brand-mark .logo {
+        filter: drop-shadow(0 0 8px rgba(0, 102, 230, 0.35)) drop-shadow(0 0 16px rgba(0, 102, 230, 0.22));
       }
       .brand-ver {
         font-family: var(--ah-font-mono);
@@ -244,7 +340,6 @@ export class AhLogin extends LitElement {
         height: 10px;
         border-radius: 50%;
         background: var(--ah-accent);
-        /* 原型 3:214：accent 强发光 + 脉冲 */
         box-shadow: 0 0 8px 1px var(--ah-accent);
         animation: ah-login-chip 1.6s ease-in-out infinite;
       }
@@ -253,24 +348,27 @@ export class AhLogin extends LitElement {
         50% { opacity: 0.45; }
       }
 
-      /* 顶部文案簇：标题（34px 发光）+ 副标题 */
       .brand-head {
-        position: relative;
-        z-index: 3;
-        margin-top: 24px;
+        position: absolute;
+        top: 72px;
+        left: 48px;
+        width: min(300px, 26%);
+        z-index: 4;
       }
       .brand-title {
         font-family: var(--ah-font-display);
-        font-size: 34px;
+        font-size: 26px;
         font-weight: 600;
         line-height: 1.25;
         margin: 0;
-        white-space: pre-line;
         color: var(--ah-text);
-        /* 原型 3:46：三层 accent 发光 */
         text-shadow: 0 0 6px color-mix(in srgb, var(--ah-accent) 55%, transparent),
           0 0 16px color-mix(in srgb, var(--ah-accent) 35%, transparent),
           0 0 32px color-mix(in srgb, var(--ah-accent) 20%, transparent);
+      }
+      :host([data-theme='light']) .brand-title {
+        text-shadow: 0 0 4px rgba(0, 102, 230, 0.35), 0 0 12px rgba(0, 102, 230, 0.22),
+          0 0 24px rgba(0, 102, 230, 0.12);
       }
       .brand-sub {
         color: var(--ah-text-muted);
@@ -280,23 +378,20 @@ export class AhLogin extends LitElement {
         max-width: 30ch;
       }
 
-      .spacer {
-        flex: 1 1 auto;
-        min-height: 40px;
-      }
-
-      /* 底部簇：特性清单 + 页脚 */
       .brand-bottom {
-        position: relative;
-        z-index: 3;
+        position: absolute;
+        bottom: 42px;
+        left: 48px;
+        width: min(300px, 26%);
+        z-index: 4;
       }
       .feature-list {
         list-style: none;
-        margin: 0 0 28px;
+        margin: 0 0 24px;
         padding: 0;
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 12px;
       }
       .feature-list li {
         display: flex;
@@ -317,28 +412,35 @@ export class AhLogin extends LitElement {
         font-family: var(--ah-font-mono);
       }
 
-      /* ---------------------- 右：认证卡片 ---------------------- */
-      .auth-panel {
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 48px;
-        /* 原型 3:3：中心 surface-2 径向微光 → canvas 暗边 */
-        background: radial-gradient(circle at 50% 42%, var(--ah-surface-2) 0%, var(--ah-canvas) 72%);
-        overflow: auto;
+      /* ---------------------- 悬浮认证卡片 ---------------------- */
+      .auth-float {
+        position: absolute;
+        /* 悬浮于画面中右，与左上标题、左下特性形成对角构图；
+           clamp 保证在任何画幅下都不覆盖左侧文案、不溢出右边界。 */
+        left: clamp(420px, 46%, calc(100% - 380px));
+        top: 52%;
+        transform: translate(-50%, -50%);
+        width: 360px;
+        max-width: calc(100% - 96px);
+        z-index: 5;
       }
       .auth-card {
-        width: 400px;
-        max-width: 100%;
-        background: var(--ah-surface-1);
+        width: 100%;
+        background: color-mix(in srgb, var(--ah-surface-1) 88%, transparent);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
         border: 1px solid var(--ah-border);
-        border-radius: 16px;
-        padding: 32px;
-        /* 原型 3:4：双层黑阴影 + 内 accent 描边 + 外 accent 发光 */
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28),
-          inset 0 0 0 1px color-mix(in srgb, var(--ah-accent) 55%, transparent),
-          0 0 22px color-mix(in srgb, var(--ah-accent) 38%, transparent);
+        border-radius: 20px;
+        padding: 34px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 24px 60px rgba(0, 0, 0, 0.32),
+          inset 0 0 0 1px color-mix(in srgb, var(--ah-accent) 50%, transparent),
+          0 0 30px color-mix(in srgb, var(--ah-accent) 30%, transparent);
+      }
+      :host([data-theme='light']) .auth-card {
+        background: rgba(255, 255, 255, 0.78);
+        border-color: rgba(0, 102, 230, 0.22);
+        box-shadow: 0 1px 2px rgba(10, 16, 26, 0.06), 0 24px 60px rgba(10, 16, 26, 0.10),
+          inset 0 0 0 1px rgba(0, 102, 230, 0.32), 0 0 30px rgba(0, 102, 230, 0.16);
       }
       .auth-card h1 {
         font-family: var(--ah-font-display);
@@ -367,7 +469,7 @@ export class AhLogin extends LitElement {
         box-sizing: border-box;
         height: 42px;
         padding: 0 14px;
-        background: var(--ah-surface-3);
+        background: var(--ah-surface-2);
         border: 1px solid var(--ah-border);
         border-radius: 8px;
         color: var(--ah-text);
@@ -403,7 +505,7 @@ export class AhLogin extends LitElement {
       }
       .eye-btn:hover {
         color: var(--ah-text);
-        background: var(--ah-surface-2);
+        background: var(--ah-surface-3);
       }
       .row-between {
         display: flex;
@@ -442,7 +544,6 @@ export class AhLogin extends LitElement {
         font-weight: 600;
         cursor: pointer;
         font-family: inherit;
-        /* 原型 3:25：accent 外发光（y4, r16） */
         box-shadow: 0 4px 16px color-mix(in srgb, var(--ah-accent) 55%, transparent);
         transition: filter 140ms ease, transform 80ms ease;
       }
@@ -474,7 +575,7 @@ export class AhLogin extends LitElement {
         align-items: center;
         justify-content: center;
         gap: 10px;
-        background: var(--ah-surface-3);
+        background: var(--ah-surface-2);
         border: 1px solid var(--ah-border);
         border-radius: var(--ah-radius-pill);
         color: var(--ah-text);
@@ -535,27 +636,55 @@ export class AhLogin extends LitElement {
       }
 
       /* ---------------------- 移动端：上下堆叠 ---------------------- */
-      @media (max-width: 860px) {
+      @media (max-width: 900px) {
         :host {
-          grid-template-columns: 1fr;
-          grid-template-rows: auto 1fr;
-          height: auto;
+          place-items: start center;
+        }
+        .login-wrap {
+          display: flex;
+          flex-direction: column;
+          aspect-ratio: auto;
+          max-height: none;
           min-height: 100dvh;
           overflow: visible;
+          padding: 32px 24px;
+          gap: 8px;
         }
-        .brand-panel {
-          border-right: none;
-          border-bottom: 1px solid var(--ah-border);
-          min-height: 360px;
+        .brand-top,
+        .brand-head,
+        .brand-bottom {
+          position: static;
+          width: auto;
         }
-        .spacer {
-          display: none;
+        .brand-head {
+          margin-top: 28px;
+        }
+        .brand-bottom {
+          margin-top: 8px;
         }
         .feature-list {
           display: none;
         }
-        .auth-panel {
-          overflow: visible;
+        .vignette,
+        .card-halo {
+          display: none;
+        }
+        .auth-float {
+          position: relative;
+          left: auto;
+          top: auto;
+          transform: none;
+          width: 100%;
+          max-width: 100%;
+          margin: 24px 0 0;
+        }
+        .auth-card {
+          background: var(--ah-surface-1);
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
+        }
+        :host([data-theme='light']) .auth-card {
+          background: #fff;
         }
       }
     `,
@@ -578,9 +707,10 @@ export class AhLogin extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    // 跟随全局主题切换 logo 资源：浅色面板用 logo.svg（近黑），深色面板用 logo-white.svg（白）。
+    this.setAttribute('data-theme', this.theme);
     this.themeObs = new MutationObserver(() => {
       this.theme = getTheme();
+      this.setAttribute('data-theme', this.theme);
     });
     this.themeObs.observe(document.documentElement, {
       attributes: true,
@@ -638,10 +768,26 @@ export class AhLogin extends LitElement {
       (left, i) => html`<span class="particle" style=${`left:${left}%;width:${4 + (i % 2)}px;height:${4 + (i % 2)}px;animation-duration:${5 + (i % 4)}s;animation-delay:${i * 0.7}s`}></span>`
     );
 
+    const orbs = [
+      { w: 420, h: 420, l: 6, t: 8, d: 0 },
+      { w: 320, h: 320, l: 62, t: 46, d: 6 },
+      { w: 260, h: 260, l: 34, t: 72, d: 12 },
+    ].map(
+      (o) =>
+        html`<span
+          class="orb"
+          style=${`left:${o.l}%;top:${o.t}%;width:${o.w}px;height:${o.h}px;background:radial-gradient(circle, color-mix(in srgb, var(--ah-accent) 55%, transparent) 0%, transparent 70%);animation-delay:${o.d}s`}
+        ></span>`
+    );
+
     return html`
-      <section class="brand-panel">
+      <div class="login-wrap">
+        <div class="depth-mesh">${meshSvg('depth-mesh')}</div>
+        <div class="orbs">${orbs}</div>
         ${meshSvg()}
         <div class="particles">${particles}</div>
+        <div class="vignette"></div>
+        <div class="card-halo"></div>
 
         <div class="brand-top">
           <div class="brand-mark">
@@ -657,11 +803,9 @@ export class AhLogin extends LitElement {
         </div>
 
         <div class="brand-head">
-          <h2 class="brand-title">编排、运行、观测\n你的每一个 AI Agent</h2>
+          <h2 class="brand-title">编排、运行、观测<br />你的每一个 AI Agent</h2>
           <p class="brand-sub">统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。</p>
         </div>
-
-        <div class="spacer"></div>
 
         <div class="brand-bottom">
           <ul class="feature-list">
@@ -684,54 +828,54 @@ export class AhLogin extends LitElement {
               全链路可观测与事件回放
             </li>
           </ul>
-          <div class="brand-foot">© 2026 Agent Harness · 隐私优先</div>
+          <div class="brand-foot">Agent Harness 2026 · 私有化部署就绪</div>
         </div>
-      </section>
 
-      <section class="auth-panel">
-        <div class="auth-card">
-          ${this.mode === 'login'
-            ? html`
-                <h1>欢迎回来</h1>
-                <p class="auth-sub">登录以进入你的 Agent 工作台</p>
-                <form @submit=${this.onSubmit}>
-                  ${this.field('邮箱', 'email', 'you@company.com', 'email')}
-                  ${this.field('密码', 'password', '请输入密码', 'password', true)}
-                  <div class="row-between">
-                    <label class="remember"><input type="checkbox" ?checked=${this.remember} @change=${(e: Event) => (this.remember = (e.target as HTMLInputElement).checked)} /> 记住我</label>
-                    <button class="forge" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
-                  </div>
-                  <button class="btn-primary" type="submit">登录</button>
-                </form>
-                <div class="divider">或</div>
-                <button class="btn-sso" type="button" @click=${() => (this.notice = '演示页面：GitHub OAuth 待接入。')}>
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z" />
-                  </svg>
-                  使用 GitHub 继续
-                </button>
-                ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
-                <div class="auth-foot">还没有账号？<button class="link" type="button" @click=${this.toggleMode}>立即注册</button></div>
-              `
-            : html`
-                <h1>创建账号</h1>
-                <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
-                <form @submit=${this.onSubmit}>
-                  ${this.field('邮箱', 'email', 'you@company.com', 'email')}
-                  ${this.field('用户名', 'text', '设置用户名', 'username')}
-                  ${this.field('密码', 'password', '至少 8 位', 'password', true)}
-                  ${this.field('确认密码', 'password', '再次输入密码', 'confirm', true)}
-                  <label class="terms">
-                    <input type="checkbox" ?checked=${this.agree} @change=${(e: Event) => (this.agree = (e.target as HTMLInputElement).checked)} />
-                    <span>我已阅读并同意 <a href="#" @click=${(e: Event) => e.preventDefault()}>服务条款</a> 与 <a href="#" @click=${(e: Event) => e.preventDefault()}>隐私政策</a>。</span>
-                  </label>
-                  <button class="btn-primary" type="submit">创建账号</button>
-                </form>
-                ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
-                <div class="auth-foot">已有账号？<button class="link" type="button" @click=${this.toggleMode}>去登录</button></div>
-              `}
+        <div class="auth-float">
+          <div class="auth-card">
+            ${this.mode === 'login'
+              ? html`
+                  <h1>欢迎回来</h1>
+                  <p class="auth-sub">登录以进入你的 Agent 工作台</p>
+                  <form @submit=${this.onSubmit}>
+                    ${this.field('邮箱', 'email', 'you@company.com', 'email')}
+                    ${this.field('密码', 'password', '请输入密码', 'password', true)}
+                    <div class="row-between">
+                      <label class="remember"><input type="checkbox" ?checked=${this.remember} @change=${(e: Event) => (this.remember = (e.target as HTMLInputElement).checked)} /> 记住我</label>
+                      <button class="forge" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
+                    </div>
+                    <button class="btn-primary" type="submit">登录</button>
+                  </form>
+                  <div class="divider">或</div>
+                  <button class="btn-sso" type="button" @click=${() => (this.notice = '演示页面：GitHub OAuth 待接入。')}>
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z" />
+                    </svg>
+                    使用 GitHub 继续
+                  </button>
+                  ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
+                  <div class="auth-foot">还没有账号？<button class="link" type="button" @click=${this.toggleMode}>立即注册</button></div>
+                `
+              : html`
+                  <h1>创建账号</h1>
+                  <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
+                  <form @submit=${this.onSubmit}>
+                    ${this.field('邮箱', 'email', 'you@company.com', 'email')}
+                    ${this.field('用户名', 'text', '设置用户名', 'username')}
+                    ${this.field('密码', 'password', '至少 8 位', 'password', true)}
+                    ${this.field('确认密码', 'password', '再次输入密码', 'confirm', true)}
+                    <label class="terms">
+                      <input type="checkbox" ?checked=${this.agree} @change=${(e: Event) => (this.agree = (e.target as HTMLInputElement).checked)} />
+                      <span>我已阅读并同意 <a href="#" @click=${(e: Event) => e.preventDefault()}>服务条款</a> 与 <a href="#" @click=${(e: Event) => e.preventDefault()}>隐私政策</a>。</span>
+                    </label>
+                    <button class="btn-primary" type="submit">创建账号</button>
+                  </form>
+                  ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
+                  <div class="auth-foot">已有账号？<button class="link" type="button" @click=${this.toggleMode}>去登录</button></div>
+                `}
+          </div>
         </div>
-      </section>
+      </div>
     `;
   }
 }
