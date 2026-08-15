@@ -700,10 +700,14 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
-  // P0.2：任务路由辅助字段（均由客户端显式声明；tenantId 实际应由 P0.3 的认证身份派生，
-  // 此处暂允许 body.tenantId 透传，后续接入策略引擎时以 authz 结果覆盖，避免客户端伪造越界）。
+  // P0.2/P0.3：任务路由 & 租户辅助字段。
+  // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
+  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId），
+  //   客户端声明的 body.tenantId 仅作本地/测试降级；认证身份优先，杜绝客户端伪造越界。
   const domain = body.domain ? String(body.domain).trim() : undefined;
-  const tenantId = body.tenantId ? String(body.tenantId).trim() : undefined;
+  const declaredTenantId = body.tenantId ? String(body.tenantId).trim() : undefined;
+  const effectiveTenantId = ctx.tenantId || declaredTenantId;
+  const tenantId = effectiveTenantId || undefined;
   const workflowId = body.workflowId ? String(body.workflowId).trim() : undefined;
   const traceId = body.traceId ? String(body.traceId).trim() : undefined;
 

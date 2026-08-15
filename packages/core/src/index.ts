@@ -7,6 +7,8 @@ export * from './builtins';
 export * from './agents';
 export * from './router';
 export * from './skills';
+export * from './tenant';
+export * from './policy';
 export * from './guardrails';
 export * from './harness';
 export * from './verify';

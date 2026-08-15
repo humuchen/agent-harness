@@ -24,6 +24,20 @@ export interface PiiRedactor {
 
 export type InjectionSensitivity = 'low' | 'medium' | 'high';
 
+/** 出网管控策略（P0.3）：约束 web_fetch 可访问的域名范围。 */
+export interface NetworkPolicy {
+  /**
+   * open：允许所有域名（默认，向后兼容）；
+   * allowlist：仅允许 listed 域名（含子域）出网；
+   * denylist：禁止 listed 域名（含子域），其余放行。
+   */
+  mode: 'open' | 'allowlist' | 'denylist';
+  /** allowlist 模式下仅允许这些域名（支持 `*.example.com` 通配子域）。 */
+  allowedDomains?: string[];
+  /** denylist 模式下禁止这些域名（支持 `*.example.com` 通配子域）。 */
+  deniedDomains?: string[];
+}
+
 export interface GuardrailPolicy {
   /** 输入最大字符数，超过即拦截（防超大输入 / 资源耗尽）。 */
   maxInputLength: number;
@@ -37,6 +51,8 @@ export interface GuardrailPolicy {
   enablePiiRedaction: boolean;
   /** 允许列表：命中这些关键词的输入/输出不会被注入检测拦截（如产品名恰好含 "system prompt"）。 */
   allowlist: string[];
+  /** 出网管控（P0.3）：约束 web_fetch 可访问域名；缺省 open（全部放行）。 */
+  network?: NetworkPolicy;
 }
 
 const DEFAULT_POLICY: GuardrailPolicy = {
@@ -155,15 +171,15 @@ export function registerInjectionScorer(fn: (text: string) => number): void {
   customInjectionScorers.push(fn);
 }
 
-function isAllowlisted(textNorm: string): boolean {
-  return policy.allowlist.some((w) => textNorm.includes(normalizeForScan(w)));
+function isAllowlisted(textNorm: string, pol: GuardrailPolicy): boolean {
+  return pol.allowlist.some((w) => textNorm.includes(normalizeForScan(w)));
 }
 
-function detectInjection(text: string): string | null {
-  if (!policy.enableInjectionScan) return null;
+function detectInjection(text: string, pol: GuardrailPolicy): string | null {
+  if (!pol.enableInjectionScan) return null;
   const norm = normalizeForScan(text);
-  if (isAllowlisted(norm)) return null;
-  for (const p of phraseSet(policy.injectionSensitivity)) {
+  if (isAllowlisted(norm, pol)) return null;
+  for (const p of phraseSet(pol.injectionSensitivity)) {
     if (norm.includes(normalizeForScan(p))) {
       return p;
     }
@@ -176,6 +192,42 @@ function detectInjection(text: string): string | null {
     }
   }
   return null;
+}
+
+/** 域名是否匹配策略中的条目（`*` 表示全部；`*.example.com` 通配子域；普通条目精确匹配主机或任意子域）。 */
+function domainMatches(host: string, entry: string): boolean {
+  const h = host.toLowerCase();
+  const e = entry.toLowerCase().trim();
+  if (e === '*') return true; // 通配全部：denylist 含 '*' 即禁止一切外部出网。
+  if (e.startsWith('*.')) {
+    const base = e.slice(2);
+    return h === base || h.endsWith(`.${base}`);
+  }
+  return h === e;
+}
+
+/**
+ * 出网管控（P0.3）：依据策略判定某 URL 是否允许访问。
+ * - open / 无 network：放行；
+ * - allowlist：仅允许 listed 域名（含子域），其余拒绝；
+ * - denylist：禁止 listed 域名（含子域），其余放行。
+ * 返回 null 表示放行，否则为拒绝原因。
+ */
+export function checkEgress(url: string, net?: NetworkPolicy): string | null {
+  if (!net || net.mode === 'open') return null;
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return 'invalid URL';
+  }
+  if (net.mode === 'denylist') {
+    const denied = (net.deniedDomains ?? []).some((d) => domainMatches(host, d));
+    return denied ? `egress denied to ${host} (denylist)` : null;
+  }
+  // allowlist
+  const allowed = (net.allowedDomains ?? []).some((d) => domainMatches(host, d));
+  return allowed ? null : `egress not allowed to ${host} (not in allowlist)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,9 +297,10 @@ export function redactPII(text: string): string {
   return out;
 }
 
-/** 输出侧脱敏：受策略开关控制；关闭时原样返回。 */
-export function redactOutput(text: string): string {
-  if (!policy.enablePiiRedaction) return text;
+/** 输出侧脱敏：受策略开关控制；关闭时原样返回。支持 per-call 策略覆盖（P0.3 租户隔离）。 */
+export function redactOutput(text: string, pol?: GuardrailPolicy): string {
+  const p = pol ?? policy;
+  if (!p.enablePiiRedaction) return text;
   return redactPII(text);
 }
 
@@ -255,19 +308,20 @@ export function redactOutput(text: string): string {
 // 对外校验接口（签名保持兼容）
 // ---------------------------------------------------------------------------
 
-export function checkInput(text: string): GuardrailResult {
+export function checkInput(text: string, pol?: GuardrailPolicy): GuardrailResult {
+  const p = pol ?? policy;
   if (typeof text !== 'string') {
     return { ok: false, reason: 'input must be a string' };
   }
-  if (text.length > policy.maxInputLength) {
-    return { ok: false, reason: `input too long (${text.length} > ${policy.maxInputLength})` };
+  if (text.length > p.maxInputLength) {
+    return { ok: false, reason: `input too long (${text.length} > ${p.maxInputLength})` };
   }
-  if (policy.enableSecretScan) {
+  if (p.enableSecretScan) {
     for (const re of SECRET_PATTERNS) {
       if (re.test(text)) return { ok: false, reason: 'possible secret in input' };
     }
   }
-  const inj = detectInjection(text);
+  const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
   for (const r of customInputRules) {
     if (r.re.test(text)) return { ok: false, reason: r.reason };
@@ -275,31 +329,39 @@ export function checkInput(text: string): GuardrailResult {
   return { ok: true };
 }
 
-export function checkOutput(text: string): GuardrailResult {
+export function checkOutput(text: string, pol?: GuardrailPolicy): GuardrailResult {
+  const p = pol ?? policy;
   if (typeof text !== 'string') return { ok: true };
-  if (policy.enableSecretScan) {
+  if (p.enableSecretScan) {
     for (const re of SECRET_PATTERNS) {
       if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
     }
   }
-  const inj = detectInjection(text);
+  const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
   return { ok: true };
 }
 
 export function checkToolArgs(
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  pol?: GuardrailPolicy
 ): GuardrailResult {
+  const p = pol ?? policy;
   const serialized = JSON.stringify(args);
-  if (policy.enableSecretScan) {
+  if (p.enableSecretScan) {
     for (const re of SECRET_PATTERNS) {
       if (re.test(serialized)) {
         return { ok: false, reason: `possible secret in tool args for ${name}` };
       }
     }
   }
-  const inj = detectInjection(serialized);
+  const inj = detectInjection(serialized, p);
   if (inj) return { ok: false, reason: `possible injection in tool args for ${name} (matched: ${inj})` };
+  // P0.3 出网管控：web_fetch 的目标 URL 受租户 network 策略约束。
+  if (name === 'builtin__web_fetch' && typeof args.url === 'string') {
+    const eg = checkEgress(String(args.url), p.network);
+    if (eg) return { ok: false, reason: `network egress blocked: ${eg}` };
+  }
   return { ok: true };
 }

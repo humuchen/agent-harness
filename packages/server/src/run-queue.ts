@@ -5,6 +5,7 @@ import {
   resolveOpenRouterConfig,
   createVerifier,
   resolveTask,
+  resolveTenantContext,
   type VerifyConfig,
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
@@ -451,6 +452,8 @@ export class RunQueue {
         traceId: job.traceId,
       }).catch(() => null);
       const targetCard = route?.card ?? null;
+      // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
+      const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
       const assembled = await assembleAgent(
         job.mode,
         onEvent,
@@ -465,7 +468,9 @@ export class RunQueue {
         verifier,
         verifyMaxRetries,
         // P0.1/P0.2：解析出的目标 AgentCard（null 退化为今天的通用 harness）。
-        targetCard
+        targetCard,
+        // P0.3：租户上下文（记忆分区 + 护栏策略覆盖 + 出网管控）。
+        tenantCtx
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
@@ -474,6 +479,7 @@ export class RunQueue {
         agentId: route?.agentId ?? job.agentId ?? null,
         decidedBy: route?.decidedBy ?? 'fallback',
         domain: job.domain ?? null,
+        tenantId: tenantCtx?.id ?? null,
         llmKind: assembled.llmKind,
         dryRun: assembled.dryRun,
         mcpConnected: assembled.mcpConnected,

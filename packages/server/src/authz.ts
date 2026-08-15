@@ -48,6 +48,8 @@ export interface AuthContext {
   email?: string;
   name?: string;
   groups?: string[];
+  /** P0.3 租户隔离：认证身份派生的租户标识（权威来源，不可客户端伪造）。SSO 网关 / IdP claim 注入；静态令牌模式不填。 */
+  tenantId?: string;
 }
 
 /** 鉴权配置概览（供 /api/roles、/api/auth/config 运维展示，不泄露令牌）。 */

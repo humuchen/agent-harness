@@ -2,7 +2,7 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
-import { checkInput, checkOutput, checkToolArgs, redactOutput } from './guardrails';
+import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
 import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert } from './telemetry';
 import { estimateCost } from './llm/pricing';
 
@@ -60,6 +60,9 @@ export interface HarnessOptions {
   verifyMaxRetries?: number;
   // 验证未通过且仍有重试额度时，是否注入自检提示重跑（默认：在 verifyMaxRetries>0 时开启）。
   verifySelfCorrect?: boolean;
+  // P0.3 租户隔离：per-run 护栏策略覆盖。传入后，输入/输出/工具参数校验与脱敏均使用
+  // 该策略而非全局默认。缺省（undefined）则沿用全局 default（向后兼容：零租户行为不变）。
+  guardrailPolicy?: GuardrailPolicy;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -80,6 +83,7 @@ interface ResolvedHarnessOptions {
   verify?: Verifier;
   verifyMaxRetries: number;
   verifySelfCorrect: boolean;
+  guardrailPolicy?: GuardrailPolicy;
 }
 
 let idCounter = 0;
@@ -102,6 +106,7 @@ export class AgentHarness {
       verify: opts.verify,
       verifyMaxRetries: opts.verifyMaxRetries ?? 0,
       verifySelfCorrect: opts.verifySelfCorrect ?? (opts.verifyMaxRetries ?? 0) > 0,
+      guardrailPolicy: opts.guardrailPolicy,
       ...opts,
     };
   }
@@ -140,7 +145,7 @@ export class AgentHarness {
     emit({ type: 'run:start', runId, input: userInput });
     incCounter('agent.run.start');
 
-    const guard = checkInput(userInput);
+    const guard = checkInput(userInput, this.opts.guardrailPolicy);
     if (!guard.ok) {
       recordError('guardrail.input');
       structLog('warn', 'guardrail blocked', { phase: 'input', reason: guard.reason, runId });
@@ -256,7 +261,7 @@ export class AgentHarness {
           if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
-          const outGuard = checkOutput(resp.content);
+          const outGuard = checkOutput(resp.content, this.opts.guardrailPolicy);
           if (!outGuard.ok) {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
@@ -295,7 +300,7 @@ export class AgentHarness {
             if (signal.aborted) {
               return abortedMessage(signal);
             }
-            const argGuard = checkToolArgs(call.name, call.arguments);
+            const argGuard = checkToolArgs(call.name, call.arguments, this.opts.guardrailPolicy);
             let result: unknown;
             let errored = false;
             if (!argGuard.ok) {
@@ -404,7 +409,7 @@ export class AgentHarness {
     }
 
     // 输出侧 PII 脱敏：无论正常结束、超时还是异常，最终返回给用户的内容都经过打码。
-    final = redactOutput(final);
+    final = redactOutput(final, this.opts.guardrailPolicy);
     incCounter('agent.run.end');
     cleanup();
     emit({ type: 'run:end', runId, final, steps });

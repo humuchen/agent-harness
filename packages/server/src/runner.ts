@@ -30,6 +30,9 @@ import {
   createSandboxExecutor,
   type Verifier,
   type AgentCard,
+  type TenantContext,
+  tenantSessionKey,
+  policyEngine,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -185,7 +188,13 @@ export async function assembleAgent(
    * 「领域 harness」（仅注册指定工具 / 技能 / MCP / 系统提示词）；为 undefined 时
    * 行为完全不变（今天的通用 harness），向后兼容。
    */
-  card?: AgentCard | null
+  card?: AgentCard | null,
+  /**
+   * P0.3 租户隔离：传入时按 tenant.id 从 PolicyEngine 取该租户护栏策略（含出网管控）注入
+   * harness，并将记忆分区为 `tenant::session` 复合 key。为 undefined 时退化为通用默认策略
+   * 与原始 sessionKey（今天的零租户行为完全不变），向后兼容。
+   */
+  tenantCtx?: TenantContext | null
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -376,7 +385,10 @@ export async function assembleAgent(
   }
   // 复用按会话缓存的 Memory：同一 sessionKey 的多次 run 共享对话窗口，实现连续追问。
   // 显式传入的 memoryArg（如测试）优先；否则按 sessionKey 取/建进程内缓存实例。
-  const memory = memoryArg ?? getSessionMemory(sessionKey ?? 'anonymous', maxWindow, summarizer);
+  // P0.3：per-tenant 复合记忆 key（tenant::session），实现租户间记忆物理隔离；
+  // 无 tenant 时退化为原始 sessionKey（与今天一致）。
+  const effectiveSessionKey = tenantSessionKey(tenantCtx, sessionKey ?? 'anonymous');
+  const memory = memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer);
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
@@ -391,6 +403,10 @@ export async function assembleAgent(
         : 24;
   const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
   const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
+  // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
+  // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
+  // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
+  const guardrailPolicy = tenantCtx ? policyEngine.getPolicy(tenantCtx.id) : policyEngine.getPolicy(undefined);
   const harness = new AgentHarness({
     llm,
     tools,
@@ -409,6 +425,8 @@ export async function assembleAgent(
     // 透传运行队列下发的取消信号与整体超时（harness 已原生支持，UI 此前未接线）。
     ...(signal ? { signal } : {}),
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
+    // P0.3：租户级护栏策略覆盖（含出网管控）。
+    ...(guardrailPolicy ? { guardrailPolicy } : {}),
   });
 
   notes.push(
