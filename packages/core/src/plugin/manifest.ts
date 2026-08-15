@@ -34,4 +34,14 @@ export interface PluginManifest {
   endpoint?: string;
   /** 隔离加载入口（P2 真实 worker/容器加载用；骨架层仅记录，不强制加载）。 */
   entry?: string;
+  /**
+   * 插件能力所属行业域（P2.c/2d）：用于合规画像叠加与「跨行业不可信」隔离升级。
+   * 缺省 'generic'（不触发强合规隔离）。
+   */
+  domain?: string;
+  /**
+   * 该插件要求的最低执行隔离级别（P2.d）：经 resolveIsolationBackend 收敛为真实后端。
+   * 远端/不可信插件应声明 'os' 或 'container'。
+   */
+  isolation?: 'none' | 'local' | 'os' | 'container';
 }

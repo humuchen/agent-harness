@@ -18,6 +18,8 @@ import { AgentRegistry } from '../agents/registry';
 import type { AgentStore } from '../agents/store';
 import { VolatileAgentStore } from '../agents/store';
 import type { PluginManifest } from './manifest';
+import { PluginRegistryClient, type RegistryEntry } from './registry';
+import { verifyManifest } from './signature';
 
 /** 插件生命周期状态。 */
 export type PluginState = 'installed' | 'enabled' | 'disabled';
@@ -60,6 +62,35 @@ export class PluginLoader {
   /** 取单个插件记录。 */
   get(id: string): PluginRecord | undefined {
     return this.plugins.get(id);
+  }
+
+  /**
+   * 从远程 registry 拉取并安装插件（P2.b 插件市场）。
+   * - 拉取清单 + 签名；当 `verifySecret` 给定时执行签名校验（HMAC/Ed25519），验签失败抛错；
+   * - 解析目标版本（默认 latest）；依赖解析通过后登记（默认 disabled）；
+   * - 若 `autoEnable` 为 true，安装后立即启用（经 sandbox 隔离钩子 + 注册 AgentCard）。
+   * 本地 install() 路径完全不变，本方法仅扩展「远程拉取」入口。
+   */
+  async installFromRegistry(
+    client: PluginRegistryClient,
+    registryUrl: string,
+    id: string,
+    version?: string,
+    opts: { verifySecret?: string; scheme?: 'hmac' | 'ed25519'; autoEnable?: boolean } = {}
+  ): Promise<PluginRecord> {
+    const entry: RegistryEntry = await client.get(registryUrl, id, version);
+    if (opts.verifySecret) {
+      const ok = verifyManifest(
+        entry.manifest,
+        entry.signature ?? '',
+        opts.verifySecret,
+        opts.scheme ?? 'hmac'
+      );
+      if (!ok) throw new Error(`plugin "${id}" signature verification failed`);
+    }
+    const rec = await this.install(entry.manifest);
+    if (opts.autoEnable) await this.enable(id);
+    return rec;
   }
 
   /** 安装：依赖解析通过后登记，默认 disabled（不暴露于路由）。 */
@@ -131,12 +162,15 @@ export class PluginLoader {
     return {
       id: m.id,
       name: m.name ?? m.id,
-      domain: 'generic',
+      // 插件可声明行业域（用于合规画像叠加 + 跨行业不可信隔离升级），缺省 generic。
+      domain: (m.domain as AgentCard['domain']) ?? 'generic',
       description: m.description,
       capabilities: m.capabilities,
       transport: m.transport ?? 'local',
       endpoint: m.endpoint,
       version: m.version,
+      // 插件可声明最低隔离级别（P2.d），经 resolveIsolationBackend 收敛。
+      isolation: m.isolation,
       // 启用即视为健康；真实探活/心跳留 P2。
       health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
     };

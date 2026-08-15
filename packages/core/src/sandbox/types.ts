@@ -18,6 +18,34 @@ import type { SandboxExecRequest, SandboxExecResult } from '../builtins/sandbox'
 export type NamespaceKind = 'user' | 'mount' | 'pid' | 'network' | 'ipc' | 'uts';
 
 /**
+ * 执行隔离级别（P2.d）。决定一次 run 的 shell/代码执行以何种隔离后端运行：
+ *   - 'none'   ：不隔离（仅逻辑沙箱白名单/作用域），仅用于完全可信的内部 agent；
+ *   - 'local'  ：硬化本地进程（默认，detach+超时强杀+擦密钥，无 OS 级隔离）；
+ *   - 'os'     ：OS 级原生隔离（命名空间+seccomp+rlimit+capabilities，依赖 Linux 与原生 helper，
+ *                不可用则自动降级 local）——承载不可信代码的推荐基线；
+ *   - 'container'：OCI 容器级隔离（docker/podman，--network none --read-only --cap-drop ALL），
+ *                不可信跨行业 agent 的强制级别。
+ * 级别有偏序：none < local < os < container，用于「升级到至少 X」的比较。
+ */
+export type IsolationLevel = 'none' | 'local' | 'os' | 'container';
+
+/** 隔离级别偏序：返回值 >0 表示 a 比 b 更强，<0 表示更弱，0 表示相等。 */
+export function compareIsolation(a: IsolationLevel | undefined, b: IsolationLevel | undefined): number {
+  const rank: Record<IsolationLevel, number> = { none: 0, local: 1, os: 2, container: 3 };
+  const ra = a ? rank[a] : -1;
+  const rb = b ? rank[b] : -1;
+  return ra - rb;
+}
+
+/** 返回两者中更强的隔离级别。 */
+export function strongerIsolation(a: IsolationLevel | undefined, b: IsolationLevel | undefined): IsolationLevel {
+  const rank: Record<IsolationLevel, number> = { none: 0, local: 1, os: 2, container: 3 };
+  if (!a) return b ?? 'local';
+  if (!b) return a;
+  return rank[a] >= rank[b] ? a : b;
+}
+
+/**
  * 资源限制（rlimit）。值为字节 / 数值；`null` 表示显式不限制（继承宿主）；
  * 省略（undefined）表示沿用 OSSandboxExecutor 内部默认值（见 executor.ts）。
  */

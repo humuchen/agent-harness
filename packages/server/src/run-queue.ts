@@ -6,6 +6,10 @@ import {
   createVerifier,
   resolveTask,
   resolveTenantContext,
+  policyEngine,
+  quotaEngine,
+  audit,
+  resolveIsolationBackend,
   HttpA2ATransport,
   type TaskEnvelope,
   type TaskResult,
@@ -434,6 +438,11 @@ export class RunQueue {
       }
     }, JOB_TIMEOUT_MS);
     const t0 = Date.now();
+    // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
+    const tenantIdForQuota = job.tenantId ?? 'anonymous';
+    // 在 try 之外保存，供 finally 中的审计留存引用（try 内 const 不可见于 finally）。
+    let resolvedAgentId: string | null = null;
+    let admitted = false;
     try {
       const signal = job.controller.signal;
       // P0-2：从 job 携带的可序列化验证配置装配运行期验证器（undefined 表示关闭门禁）。
@@ -457,6 +466,45 @@ export class RunQueue {
       const targetCard = route?.card ?? null;
       // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
       const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
+
+      // P2.a 配额/计费准入：QPS 令牌桶 + 并发信号量（硬限 token/cost 默认关闭，仅统计）。
+      // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
+      // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
+      const admit = quotaEngine.admit(tenantIdForQuota);
+      if (!admit.allowed) {
+        emit({ type: 'warn', message: `quota denied (tenant=${tenantIdForQuota}): ${admit.reason}` });
+        audit({
+          tenantId: job.tenantId,
+          actor: job.tenantId ?? 'anonymous',
+          action: 'agent.run.denied',
+          outcome: 'denied',
+          target: route?.agentId ?? job.agentId ?? 'default',
+          detail: { reason: admit.reason, mode: job.mode, domain: job.domain ?? null },
+        });
+        incCounter('run.quota.denied');
+        emit({ type: '_done', final: '', error: true });
+        job.status = 'failed';
+        return;
+      }
+      admitted = true;
+      resolvedAgentId = route?.agentId ?? job.agentId ?? 'default';
+      audit({
+        tenantId: job.tenantId,
+        actor: job.tenantId ?? 'anonymous',
+        action: 'agent.run.start',
+        outcome: 'info',
+        target: resolvedAgentId,
+        detail: { mode: job.mode, domain: job.domain ?? null, decidedBy: route?.decidedBy ?? 'fallback' },
+      });
+
+      // P2.d per-job 隔离后端：按 card 声明 → 租户策略强制 → env 默认 → 跨行业不可信升级，
+      // 收敛为最终 backend 字符串，传给 assembleAgent（shell 执行器据此选择 OS/容器/本地隔离）。
+      const sandboxBackend = resolveIsolationBackend({
+        card: targetCard,
+        tenantPolicy: tenantCtx ? policyEngine.getPolicy(tenantCtx.id) : null,
+        tenantDomain: tenantCtx?.domain ?? null,
+        envBackend: process.env.SANDBOX_BACKEND,
+      });
 
       // P1-④ A2A 跨主机派发：路由到的目标若是远端 a2a agent（transport=a2a 且有 endpoint），
       // 则不再本地装配 harness，而是经 HttpA2ATransport 把任务派发给远端 agent 执行，
@@ -524,7 +572,9 @@ export class RunQueue {
         // P0.1/P0.2：解析出的目标 AgentCard（null 退化为今天的通用 harness）。
         targetCard,
         // P0.3：租户上下文（记忆分区 + 护栏策略覆盖 + 出网管控）。
-        tenantCtx
+        tenantCtx,
+        // P2.d：per-job 隔离后端（card/租户/env 收敛，跨行业不可信强制强隔离）。
+        sandboxBackend
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
@@ -561,6 +611,17 @@ export class RunQueue {
       if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
       job.finishedAt = Date.now();
       recordLatency('run.totalMs', job.finishedAt - (job.startedAt ?? job.finishedAt));
+      // P2.a：归还并发额度（admit 成功才消耗；denied 路径 active=0，release 为 no-op 安全）。
+      if (admitted) quotaEngine.release(tenantIdForQuota);
+      // P2.a：运行结束审计留痕（成功/失败，便于强合规租户对账）。
+      audit({
+        tenantId: job.tenantId,
+        actor: job.tenantId ?? 'anonymous',
+        action: 'agent.run.end',
+        outcome: job.status === 'done' ? 'success' : job.status === 'failed' ? 'failure' : 'info',
+        target: resolvedAgentId ?? 'default',
+        detail: { steps: stepCount, mode: job.mode },
+      });
     }
   }
 }

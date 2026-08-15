@@ -197,6 +197,14 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 
 > 前置硬约束（评估第 3 节已强调）：**OS 级代码执行隔离（本会话已实现）必须先于不可信多行业 agent 上线**；且**租户/行业隔离模型（P0.3）必须先于多行业上线**，否则医疗 PII 与金融数据会在同一进程/输出通道混流。
 
+> ✅ **P2 已完成（2026-08-15）**：四项生产化能力全部落地并通过验证：
+> - **配额/计费/审计**：新增 `core/src/quota/engine.ts`（`QuotaEngine`：QPS 令牌桶 + 并发信号量 + token/cost 窗口硬限，per-tenant）；`telemetry.ts` 增 `incCounterTenant`/`recordTokensTenant`/`recordCostTenant`/`getMetricsByTenant`，`getMetricsSnapshot()` 增 `byTenant` 维度；新增 `core/src/audit.ts`（tenantId 维度审计，可插拔 sink）；`harness.ts` 把 `tenantId` 注入指标与 `run:cost` 事件；`run-queue.execute` 接入配额准入（拒绝即审计 denied + 失败）+ 运行结束审计 + 并发额度归还。
+> - **插件市场/远程 registry**：新增 `core/src/plugin/signature.ts`（`signManifest`/`verifyManifest`，HMAC/可选 Ed25519 + 规范化清单）+ `core/src/plugin/registry.ts`（`PluginRegistryClient`：index/get/版本解析，fetch 可注入）；`PluginLoader.installFromRegistry()` 拉取+验签+安装（+autoEnable 带 domain/isolation 注册 AgentCard）。
+> - **行业合规画像**：`GuardrailPolicy` 增可选 `compliance`（framework/dataResidency/auditRequired/piiRetentionDays）与 `isolation`；`INDUSTRY_PROFILES` 强化医疗等保/金融数据出境/教育放宽并标注合规与最低隔离级别；`PolicyEngine` 增 `registerIndustryProfiles()`/`listIndustryProfiles()`，服务端启动时引导注册。
+> - **per-job 隔离执行**：新增 `core/src/sandbox/isolation.ts`（`resolveIsolationBackend` 纯函数：card→租户策略→env 决策链 + 跨行业不可信升级最低到 os）；`AgentCard.isolation?`、`PluginManifest.domain/isolation?`；`assembleAgent` 增 `sandboxBackend` 形参透传到 `registerBuiltinTools`，`run-queue.execute` 收敛目标 card+tenant 的隔离后端注入。
+> 验证：新增 `quota.test.cjs`(7) / `audit.test.cjs`(3) / `plugin-registry.test.cjs`(7) / `isolation.test.cjs`(7) / `industry-profile.test.cjs`(5) 共 29 例全过；core 全量 **237 例中 236 过**（唯一失败为无关 k8s 环境测试 `createEnvPlatform(k8s)`），core+server+client+examples 四个包 `tsc` 干净编译；真实服务端冒烟 `/api/state`(200) + `/api/metrics`(含 `byTenant`) 正常。
+> 下一步：可将本次全部改动（P0/P1/P2）提交 git；如需继续可扩展「远程 registry 真实部署 + 签名公钥分发 + 多副本配额同步（共享后端）」。
+
 ---
 
 ## 4. 分阶段交付清单与验证策略
@@ -209,7 +217,7 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 | **P1.1** | `core/src/workflow/{types,engine,store}.ts` | `harness.ts:14/29`（agentId/workflowId/traceId）、`server.ts` `/api/workflows` | `workflow.test.cjs`（DAG/补偿/续跑） |
 | **P1.2** | `core/src/a2a/{types,transport}.ts` | `server.ts` `/api/a2a/tasks`、`client` + `openapi.ts` | a2a 端到端 smoke |
 | **P1.3** | `core/src/plugin/{manifest,loader}.ts` | — | `plugin.test.cjs`（manifest→AgentCard 注册） |
-| **P2** | 扩展 `plugin/`、`policy/`、`telemetry.ts` | 复用本会话 OS 沙箱 | 集成冒烟 + 配额/合规单测 |
+| **P2** | 扩展 `plugin/`、`policy/`、`telemetry.ts`、`quota/`、`audit.ts`、`sandbox/isolation.ts` | 复用本会话 OS 沙箱 | ✅ 集成冒烟 + 配额/合规/隔离单测（29 例全过，core 236/237，唯一失败为无关 k8s 环境测试） |
 
 **通用验证手段**（复用现有范式）
 - 单测：`node --test test/*.test.cjs`（零依赖，require 编译后 `dist`，与 `os-sandbox.test.cjs` 同风格）。

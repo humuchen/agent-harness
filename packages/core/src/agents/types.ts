@@ -76,6 +76,11 @@ export interface AgentCard {
   sla?: { p95LatencyMs?: number; maxConcurrency?: number };
   /** 本地 agent 的装配配方（transport=local 时使用）。 */
   assembly?: AgentAssembly;
+  /**
+   * 该 agent 要求的最低执行隔离级别（P2.d）。插件 / 远端 agent 应声明自身所需隔离，
+   * 服务端据此经 resolveIsolationBackend 收敛为真实后端；缺省不强制（沿用 SANDBOX_BACKEND）。
+   */
+  isolation?: 'none' | 'local' | 'os' | 'container';
 }
 
 /** 内置工具名清单（与 runner.ts 的 registerBuiltinTools 对应）。 */

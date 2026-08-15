@@ -27,31 +27,64 @@ function baseDefaultPolicy(): GuardrailPolicy {
 }
 
 /**
- * 行业域 → 策略画像覆盖项。
- * - medical-aesthetics / healthcare：强 PII 脱敏 + 高敏注入检测（医疗数据合规）。
- * - finance：默认禁止一切外部出网（denylist + `*`，等效「默认不出境」），租户可后续切 allowlist 放行内网/白名单。
- * - education：相对放宽（长输入、低敏、关脱敏，便于自由探索）。
+ * 行业域 → 策略画像覆盖项（P2.c 强化：标注合规框架 / 数据驻留 / 审计要求 / 最低隔离级别）。
+ * - medical-aesthetics / healthcare：强 PII 脱敏 + 高敏注入检测（医疗数据合规，等保 + 个保法）；
+ *   数据须国内驻留、强制审计、最低以 OS 级隔离执行（PII 不出进程）。
+ * - finance：默认禁止一切外部出网（denylist + `*`，等效「默认不出境」，符合金融数据出境安全评估）；
+ *   数据须国内驻留、强制审计、最低以 OS 级隔离执行。
+ * - education：相对放宽（长输入、低敏、关脱敏，便于自由探索），隔离沿用默认 local。
+ *
+ * 这些画像经 `applyIndustryProfile(tenantId, domain)` 透明叠加到某租户策略之上，使「新建金融 /
+ * 医疗租户即自带合规基线」开箱即用；`registerIndustryProfiles()` 可在服务启动时统一自检注册。
  */
 export const INDUSTRY_PROFILES: Record<string, Partial<GuardrailPolicy>> = {
   'medical-aesthetics': {
     enablePiiRedaction: true,
     enableInjectionScan: true,
     injectionSensitivity: 'high',
+    enableSecretScan: true,
+    compliance: {
+      framework: '等保三级 + 个人信息保护法',
+      dataResidency: 'domestic',
+      auditRequired: true,
+      piiRetentionDays: 30,
+    },
+    isolation: 'os',
   },
   healthcare: {
     enablePiiRedaction: true,
     enableInjectionScan: true,
     injectionSensitivity: 'high',
+    enableSecretScan: true,
+    compliance: {
+      framework: '等保三级 + 个人信息保护法',
+      dataResidency: 'domestic',
+      auditRequired: true,
+      piiRetentionDays: 30,
+    },
+    isolation: 'os',
   },
   finance: {
     enablePiiRedaction: true,
     enableSecretScan: true,
     network: { mode: 'denylist', deniedDomains: ['*'] },
+    compliance: {
+      framework: '金融行业数据安全 + 数据出境安全评估',
+      dataResidency: 'domestic',
+      auditRequired: true,
+    },
+    isolation: 'os',
   },
   education: {
     maxInputLength: 60000,
     injectionSensitivity: 'low',
     enablePiiRedaction: false,
+    compliance: {
+      framework: '教育行业基线（放宽）',
+      dataResidency: 'any',
+      auditRequired: false,
+    },
+    isolation: 'local',
   },
 };
 
@@ -101,6 +134,23 @@ export class PolicyEngine {
   /** 列出已注册租户策略 id（调试 / 健康检查）。 */
   listTenantIds(): string[] {
     return [...this.tenantPolicies.keys()];
+  }
+
+  /**
+   * 引导注册全部预置行业合规画像（P2.c）。幂等：以 `INDUSTRY_PROFILES` 为权威源重新同步
+   * 进程内 `industryProfiles` 表，确保服务重启后画像不丢失（构造期已 seed，这里用于显式引导
+   * 与自检）。返回已注册的画像域名列表。
+   */
+  registerIndustryProfiles(): string[] {
+    for (const [domain, prof] of Object.entries(INDUSTRY_PROFILES)) {
+      this.industryProfiles.set(domain, prof);
+    }
+    return [...this.industryProfiles.keys()];
+  }
+
+  /** 列出全部预置行业合规画像（含框架 / 数据驻留 / 审计 / 隔离级别），供治理端点展示。 */
+  listIndustryProfiles(): Array<{ domain: string; profile: Partial<GuardrailPolicy> }> {
+    return [...this.industryProfiles.entries()].map(([domain, profile]) => ({ domain, profile }));
   }
 }
 

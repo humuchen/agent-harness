@@ -63,6 +63,27 @@ let COST = 0;
 const COST_BY_MODEL: Record<string, number> = {};
 const START = Date.now();
 
+// P2：per-tenant 指标维度。与全局聚合同构，但 key 为 tenantId（global 仍走上面的 COUNTERS/TOKENS）。
+// 默认 tenant 用 'anonymous' 落到同一条目，保证「未分租户」场景指标不丢失。
+interface TenantMetrics {
+  counters: Record<string, number>;
+  hists: Record<string, Histogram>;
+  tokens: { prompt: number; completion: number; total: number };
+  cost: number;
+  costByModel: Record<string, number>;
+}
+const BY_TENANT = new Map<string, TenantMetrics>();
+
+function tenantMetrics(tenantId?: string | null): TenantMetrics {
+  const id = tenantId || 'anonymous';
+  let m = BY_TENANT.get(id);
+  if (!m) {
+    m = { counters: {}, hists: {}, tokens: { prompt: 0, completion: 0, total: 0 }, cost: 0, costByModel: {} };
+    BY_TENANT.set(id, m);
+  }
+  return m;
+}
+
 function ensureHist(name: string): Histogram {
   let h = HISTS[name];
   if (!h) {
@@ -125,6 +146,45 @@ export function recordError(name: string): void {
   incCounter('errors');
 }
 
+// ---------------------------------------------------------------------------
+// P2：per-tenant 指标维度（租户级计费 / 配额 / 合规观测）
+// ---------------------------------------------------------------------------
+
+/** 累加某租户计数器。 */
+export function incCounterTenant(name: string, tenantId?: string | null, n = 1): void {
+  const m = tenantMetrics(tenantId);
+  m.counters[name] = (m.counters[name] ?? 0) + n;
+  incCounter(name, n);
+}
+
+/** 记录某租户 token 用量（同时累计全局）。 */
+export function recordTokensTenant(
+  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined,
+  tenantId?: string | null
+): void {
+  if (!usage) return;
+  const m = tenantMetrics(tenantId);
+  const p = usage.prompt_tokens ?? 0;
+  const c = usage.completion_tokens ?? 0;
+  const t = usage.total_tokens ?? p + c;
+  m.tokens.prompt += p;
+  m.tokens.completion += c;
+  m.tokens.total += t;
+  recordTokens(usage);
+}
+
+/** 记录某租户成本（同时累计全局）。 */
+export function recordCostTenant(amount: number, model?: string, tenantId?: string | null): void {
+  if (!amount) return;
+  const m = tenantMetrics(tenantId);
+  m.cost += amount;
+  if (model) {
+    const key = model || 'unknown';
+    m.costByModel[key] = (m.costByModel[key] ?? 0) + amount;
+  }
+  recordCost(amount, model);
+}
+
 /**
  * 统一错误记录：累加错误计数器 + 输出结构化日志。
  * `err` 可传 Error（自动提取 message/stack）或任意字段对象；`fields` 用于补充上下文
@@ -154,6 +214,16 @@ export interface MetricsSnapshot {
   tokens: { prompt: number; completion: number; total: number };
   cost: number;
   costByModel: Record<string, number>;
+  /** P2：按租户维度聚合的指标（计费 / 配额 / 合规观测）。key 为 tenantId，'anonymous' 为未分租户。 */
+  byTenant: Record<string, TenantMetricsSnapshot>;
+}
+
+/** 单租户指标快照形态（与全局同构，但去掉 latency 直方图以控制体积）。 */
+export interface TenantMetricsSnapshot {
+  counters: Record<string, number>;
+  tokens: { prompt: number; completion: number; total: number };
+  cost: number;
+  costByModel: Record<string, number>;
 }
 
 /** 拉取当前指标快照（无 OTel Collector 时也能观测核心数据）。 */
@@ -168,6 +238,15 @@ export function getMetricsSnapshot(): MetricsSnapshot {
       avgMs: h.count ? h.sum / h.count : 0,
     };
   }
+  const byTenant: Record<string, TenantMetricsSnapshot> = {};
+  for (const [id, m] of BY_TENANT.entries()) {
+    byTenant[id] = {
+      counters: { ...m.counters },
+      tokens: { ...m.tokens },
+      cost: m.cost,
+      costByModel: { ...m.costByModel },
+    };
+  }
   return {
     since: START,
     uptimeMs: Date.now() - START,
@@ -176,7 +255,22 @@ export function getMetricsSnapshot(): MetricsSnapshot {
     tokens: { ...TOKENS },
     cost: COST,
     costByModel: { ...COST_BY_MODEL },
+    byTenant,
   };
+}
+
+/** 仅拉取 per-tenant 指标（运维 / 计费对账用，避免全局大对象）。 */
+export function getMetricsByTenant(): Record<string, TenantMetricsSnapshot> {
+  const out: Record<string, TenantMetricsSnapshot> = {};
+  for (const [id, m] of BY_TENANT.entries()) {
+    out[id] = {
+      counters: { ...m.counters },
+      tokens: { ...m.tokens },
+      cost: m.cost,
+      costByModel: { ...m.costByModel },
+    };
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 // 内容安全护栏（企业级可配置策略引擎）。
 //
+import type { IsolationLevel } from './sandbox/types';
+
 // 三个层面：输入校验、输出校验、工具参数校验。相比早期纯正则版本，本版增强：
 //   1) 可配置策略（configureGuardrails）：开关 / 敏感度 / 最大长度 / 允许列表；
 //   2) 归一化注入检测：先去除零宽字符、折叠空白、去标点后做子串匹配，
@@ -53,6 +55,32 @@ export interface GuardrailPolicy {
   allowlist: string[];
   /** 出网管控（P0.3）：约束 web_fetch 可访问域名；缺省 open（全部放行）。 */
   network?: NetworkPolicy;
+  /**
+   * 合规画像元数据（P2.c）：标注该策略所属合规框架 / 数据驻留要求 / 是否强制审计留痕。
+   * 仅用于治理展示与 P2.d 隔离决策，不影响护栏判定逻辑；全字段可选。
+   */
+  compliance?: ComplianceProfile;
+  /**
+   * 最低执行隔离级别（P2.d）：要求承载该策略的 agent 至少以何种隔离后端执行。
+   * 缺省 undefined 表示不强制（沿用 SANDBOX_BACKEND / AgentCard.isolation 决定）。
+   * 'none' 仅用于完全可信的内部 agent；不可信 / 跨行业 agent 应设为 'os' 或 'container'。
+   */
+  isolation?: IsolationLevel;
+}
+
+/** 合规画像元数据（P2.c）。 */
+export interface ComplianceProfile {
+  /** 适用合规框架标签，如 "等保三级"、"个人信息保护法"、"金融行业数据安全"。 */
+  framework?: string;
+  /**
+   * 数据驻留要求：'domestic' 表示数据不得出境（金融/医疗常用），'any' 无限制。
+   * 与 network 策略联动（domestic 通常配合 denylist: ['*'] 默认禁出网）。
+   */
+  dataResidency?: 'domestic' | 'any';
+  /** 是否强制审计留痕（关键动作须调用 audit()）。 */
+  auditRequired?: boolean;
+  /** PII 留存天数上限（治理展示用，实际留存由记忆后端配置）。 */
+  piiRetentionDays?: number;
 }
 
 const DEFAULT_POLICY: GuardrailPolicy = {

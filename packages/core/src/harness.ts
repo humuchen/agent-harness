@@ -3,7 +3,7 @@ import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
-import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert } from './telemetry';
+import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
 import { estimateCost } from './llm/pricing';
 
 /**
@@ -160,7 +160,7 @@ export class AgentHarness {
     };
 
     emit({ type: 'run:start', runId, input: userInput });
-    incCounter('agent.run.start');
+    incCounterTenant('agent.run.start', this.opts.tenantId);
 
     // P0/P1：把本次 run 关联到「智能体 / 工作流 / 追踪 / 租户」维度，供 UI / OTel 跨 agent 关联。
     // 仅为旁路观测；任一字段缺失（默认）都不发，零租户/无工作流行为完全不变。
@@ -267,7 +267,7 @@ export class AgentHarness {
             return abortedMessage(signal);
           }
           const resp: LLMResponse = raceResult;
-          recordTokens(resp.usage);
+          recordTokensTenant(resp.usage, this.opts.tenantId);
 
           // 成本记账：按实际使用模型（响应优先，回落配置 model）查单价表估算，
           // 累加进 per-run 与全局指标，并发出 run:cost 事件供 UI 实时展示。
@@ -275,7 +275,7 @@ export class AgentHarness {
           const stepCost = estimateCost(costModel, resp.usage);
           runCost += stepCost;
           runTokens += resp.usage?.total_tokens ?? 0;
-          recordCost(stepCost, costModel);
+          recordCostTenant(stepCost, costModel, this.opts.tenantId);
           // 仅在拿到 usage 时发出 run:cost（mock / 不返回用量的响应不刷屏）。
           if (resp.usage) {
             emit({
@@ -286,6 +286,7 @@ export class AgentHarness {
               stepCost,
               cumulativeTokens: runTokens,
               cumulativeCost: runCost,
+              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
             });
           }
           // 累加后立即检查预算：超限则中止，不再进入工具执行 / 下一轮。
@@ -441,7 +442,7 @@ export class AgentHarness {
 
     // 输出侧 PII 脱敏：无论正常结束、超时还是异常，最终返回给用户的内容都经过打码。
     final = redactOutput(final, this.opts.guardrailPolicy);
-    incCounter('agent.run.end');
+    incCounterTenant('agent.run.end', this.opts.tenantId);
     cleanup();
     emit({ type: 'run:end', runId, final, steps });
     return final;

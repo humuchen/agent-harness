@@ -194,7 +194,13 @@ export async function assembleAgent(
    * harness，并将记忆分区为 `tenant::session` 复合 key。为 undefined 时退化为通用默认策略
    * 与原始 sessionKey（今天的零租户行为完全不变），向后兼容。
    */
-  tenantCtx?: TenantContext | null
+  tenantCtx?: TenantContext | null,
+  /**
+   * P2.d per-job 隔离后端：由调用方（run-queue）经 resolveIsolationBackend 收敛后的最终
+   * backend 字符串（如 'os' / 'container' / 'local'）。缺省沿用 SANDBOX_BACKEND 全局值。
+   * 通过它实现「不可信 / 跨行业 agent 强制强隔离」而不改动 shell 工具逻辑。
+   */
+  sandboxBackend?: string | null
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -228,8 +234,9 @@ export async function assembleAgent(
     shellRequireConfirmation: shellRequireConfirm,
     shellConfirm: shellRequireConfirm ? (req) => waitApproval(req.command, req.args) : undefined,
     shellAllowOperators: process.env.SHELL_ALLOW_OPERATORS === 'true',
-    // P0-1：按 SANDBOX_BACKEND 选择 shell 执行器（local 硬化 / container 容器内 OS 级隔离）。
-    sandboxBackend: process.env.SANDBOX_BACKEND,
+    // P0-1/P2.d：选择 shell 执行器后端。优先用调用方收敛后的 per-job 隔离后端（sandboxBackend，
+    // 已含 card/租户/env 升级逻辑），缺省回退全局 SANDBOX_BACKEND（local 硬化 / container 隔离）。
+    sandboxBackend: sandboxBackend ?? process.env.SANDBOX_BACKEND,
     // P0.1：按 AgentCard.assembly.tools 收窄内置工具面（undefined/空 → 全部）。
     ...(assemblyTools ? { tools: assemblyTools } : {}),
   });
@@ -427,6 +434,8 @@ export async function assembleAgent(
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
     // P0.3：租户级护栏策略覆盖（含出网管控）。
     ...(guardrailPolicy ? { guardrailPolicy } : {}),
+    // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
+    ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   });
 
   notes.push(
