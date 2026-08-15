@@ -153,6 +153,8 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 
 **测试**：`packages/core/test/workflow.test.cjs`（DAG happy path + 补偿回滚 + 续跑）。
 
+> ✅ **P1-⑤ 已完成（2026-08-15）**：`DagEngine` 拓扑分层并行 + `compensate` 逆序补偿 + `resume` 检查点续跑均落地；`validateWorkflow()` 做 fail-fast（环/未知依赖/重复 id 直接 reject）。`harness.ts` 扩展 `run:meta` 事件（`agentId/workflowId/traceId/tenantId` 全可选、零字段向后兼容）；`server.ts` 新增 `POST /api/workflows`（开 SSE 前先 `validateWorkflow` 返回 400）+ `GET /api/workflows/:id`，并复用 `/api/run` 同款装配（`workflow-executor.ts` 注入 `assembleAgent(card)+harness.run`）。`authz.ts` 注册 `workflow:run`/`workflow:read`/`workflow:resume` 动作。验证：core `workflow.test.cjs` 8/8 通过，全量 195→194（唯一失败为无关 k8s 环境测试），core+server `tsc` 干净编译，服务端 executor mock 模式端到端跑通（STATE done + 2×`wf:step:done`）。
+
 ### 2.2 ④ 统一通信协议与 A2A（Task Envelope + 远端 agent 入驻）
 
 **目标**：定义 Task Envelope，桥接 MCP（工具级，已有）与 A2A（agent 级，新增），让异构远端行业 agent 以标准协议入驻。
@@ -169,6 +171,9 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 - `packages/server/src/server.ts`：新增 `POST /api/a2a/tasks` —— 接收远端 agent 任务（自注册 AgentCard + 执行 + 回传 `TaskResult`）；`TaskRouter` 选中 `transport: 'a2a'` 的远端 agent 时，经 `HttpA2ATransport` 派发。
 - `packages/client` + `openapi.ts`：扩展 `agents` / `tasks` / `workflows` 资源与类型。
 
+> ✅ **P1-④ 已完成（2026-08-15）**：新增 `core/src/a2a/{types,transport,index}.ts`（`TaskEnvelope`/`TaskResult`/`A2ARequest` + `A2ATransport` 接口 + `LocalA2ATransport` 进程内 handoff + `HttpA2ATransport` 跨主机投递到 `/api/a2a/tasks`，带 SLA 超时 abort 与失败降级 + `transportFor`/`dispatchAgentTask` 按 `AgentCard.transport+endpoint` 选传输）。服务端新增 `agent-run.ts`（`runAgentTask` 复用 helper，收敛 assembleAgent+run 单一入口）；`server.ts` 新增 `POST /api/a2a/tasks`（远端 card 自注册 + 本地执行 + 回传 `TaskResult`，仅接受 transport=local）；`run-queue.execute` 在路由到 `transport:'a2a'+endpoint` 的远端 agent 时经 `HttpA2ATransport` 跨主机派发，成功即返回、失败降级回退本地默认 harness；`authz.ts` 注册 `a2a:receive`/`a2a:send`。验证：`a2a.test.cjs` 7/7 通过（本地 handoff 成功/失败、HTTP 成功/非2xx/网络异常、transport 选择、dispatch 路由），core+server `tsc` 干净编译。
+> 🔧 **P1-④ 客户端补全（2026-08-15）**：实现计划 §2.2 所列 `packages/client + openapi.ts` 资源/类型扩展已落地 —— `packages/client/src/{types,client}.ts` 新增镜像类型（`AgentCard`/`AgentTransport`/`IndustryDomain`/`AgentQuery`/`TaskEnvelope`/`TaskResult`/`A2ARequest`/`WorkflowDef`/`StepDef`/`WorkflowRun`/`WorkflowEvent`）与强类型方法：`listAgents(filter?)`、`getAgent(id)`、`sendTask(req)`、`getWorkflow(id)`、`streamWorkflow(def,input?)`（SSE 迭代器）。服务端 `/api/v1/*` 已重写到 `/api/*`，客户端用 `/api/v1` 前缀命中。验证：启动真实服务端（mock 模式）后，用新客户端方法跑通 `listAgents`→`getAgent`→`sendTask`(A2A 本地闭环)→`streamWorkflow`(DAG 37 事件、finalState=done)→`getWorkflow`(state=done, steps=s1,s2) 全链路，client `tsc` 干净编译。
+
 ### 2.3 插件框架骨架（Plugin Framework）
 
 **目标**：Plugin Manifest + 生命周期 + 隔离加载骨架（完整市场留 P2）。
@@ -176,6 +181,8 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 **新增 `packages/core/src/plugin/`**
 - `manifest.ts` —— `PluginManifest { id; version; capabilities[]; dependencies[]; permissions[]; transport; entry }`。
 - `loader.ts` —— `PluginLoader`：`install/enable/disable/upgrade` 生命周期；依赖解析；以**隔离**方式加载（新建 `worker_threads` 或 `child_process` + 本会话已落地的 OS 沙箱后端 `createSandboxExecutor({ backend: 'os' | 'container' })`），与核心进程不同堆同权限问题；manifest 的 `capabilities` 自动转成 `AgentCard` 注册进 Registry。
+
+> ✅ **P1.③ 已完成（2026-08-15）**：新增 `core/src/plugin/{manifest,loader,index}.ts`（`PluginManifest` + `PluginLoader` 完整生命周期 `install/enable/disable/upgrade` + 依赖解析 + `sandbox` 隔离加载钩子预留；`manifest.capabilities` 自动转 `AgentCard` 注册进 `AgentRegistry`，使插件能力无缝进入既有路由/编排/隔离体系）。验证：`plugin.test.cjs` 7/7 通过（install 默认 disabled、enable 注册 AgentCard、disable 注销、upgrade 重注册、依赖缺失/已装、隔离钩子），core `tsc` 干净编译。完整市场/远程 registry/签名校验留 P2（扩展 `plugin/`）。
 
 ---
 

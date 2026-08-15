@@ -6,6 +6,9 @@ import {
   createVerifier,
   resolveTask,
   resolveTenantContext,
+  HttpA2ATransport,
+  type TaskEnvelope,
+  type TaskResult,
   type VerifyConfig,
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
@@ -454,6 +457,57 @@ export class RunQueue {
       const targetCard = route?.card ?? null;
       // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
       const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
+
+      // P1-④ A2A 跨主机派发：路由到的目标若是远端 a2a agent（transport=a2a 且有 endpoint），
+      // 则不再本地装配 harness，而是经 HttpA2ATransport 把任务派发给远端 agent 执行，
+      // 取回 TaskResult 作为本轮输出。派发失败（网络/远端错误）则降级回退本地默认 harness，
+      // 不中断执行（符合「一切降级可用」约定），并发告警事件。
+      if (targetCard?.transport === 'a2a' && targetCard?.endpoint) {
+        const envelope: TaskEnvelope = {
+          taskId: `task-${job.id}`,
+          tenantId: job.tenantId ?? 'default',
+          traceId: job.traceId,
+          fromAgent: 'default',
+          toAgent: targetCard.id,
+          input: job.prompt,
+          sla: { timeoutMs: JOB_TIMEOUT_MS },
+        };
+        const result: TaskResult | null = await new HttpA2ATransport(targetCard.endpoint)
+          .send(envelope)
+          .catch(() => null);
+        if (result && result.status === 'success') {
+          const finalText =
+            typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+          emit({
+            type: 'run:meta',
+            mode: job.mode,
+            agentId: targetCard.id,
+            decidedBy: route?.decidedBy ?? 'a2a-remote',
+            domain: job.domain ?? null,
+            tenantId: tenantCtx?.id ?? null,
+            llmKind: 'remote-a2a',
+            dryRun: false,
+            mcpConnected: false,
+            notes: [`A2A 跨主机派发至 ${targetCard.endpoint}`],
+            model: null,
+            tokenBudget: null,
+            costBudget: null,
+            failover: false,
+            workflowId: job.workflowId ?? null,
+            traceId: job.traceId ?? null,
+          });
+          emit({ type: 'run:end', final: finalText, steps: 0 });
+          emit({ type: '_done', final: finalText });
+          job.status = 'done';
+          incCounter('run.success');
+          return;
+        }
+        emit({
+          type: 'warn',
+          message: `A2A 派发至 ${targetCard.id} 失败，降级回退本地默认 harness：${result?.error ?? 'unknown'}`,
+        });
+      }
+
       const assembled = await assembleAgent(
         job.mode,
         onEvent,

@@ -21,6 +21,9 @@ export type HarnessEvent =
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number }
+  /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
+   *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
+  | { type: 'run:meta'; runId: string; agentId?: string; workflowId?: string; traceId?: string; tenantId?: string; decidedBy?: string }
   | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
   | { type: 'run:end'; runId: string; final: string; steps: number }
   | { type: 'verify:result'; attempt: number; passed: boolean; score: number; reasons: string[] }
@@ -63,6 +66,14 @@ export interface HarnessOptions {
   // P0.3 租户隔离：per-run 护栏策略覆盖。传入后，输入/输出/工具参数校验与脱敏均使用
   // 该策略而非全局默认。缺省（undefined）则沿用全局 default（向后兼容：零租户行为不变）。
   guardrailPolicy?: GuardrailPolicy;
+  // P0/P1 统一基座平台元数据：把本次 run 关联到「目标智能体 / 工作流 / 追踪 id / 租户」。
+  // 仅用于 run:meta 事件观测与可观测关联，不影响任何业务逻辑；全部可选、向后兼容。
+  agentId?: string;
+  workflowId?: string;
+  traceId?: string;
+  tenantId?: string;
+  /** 路由决策来源（explicit / domain / classify / fallback），供可观测区分。 */
+  decidedBy?: string;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -84,6 +95,12 @@ interface ResolvedHarnessOptions {
   verifyMaxRetries: number;
   verifySelfCorrect: boolean;
   guardrailPolicy?: GuardrailPolicy;
+  // P0/P1 统一基座平台元数据（仅观测用，不影响业务逻辑）。
+  agentId?: string;
+  workflowId?: string;
+  traceId?: string;
+  tenantId?: string;
+  decidedBy?: string;
 }
 
 let idCounter = 0;
@@ -144,6 +161,20 @@ export class AgentHarness {
 
     emit({ type: 'run:start', runId, input: userInput });
     incCounter('agent.run.start');
+
+    // P0/P1：把本次 run 关联到「智能体 / 工作流 / 追踪 / 租户」维度，供 UI / OTel 跨 agent 关联。
+    // 仅为旁路观测；任一字段缺失（默认）都不发，零租户/无工作流行为完全不变。
+    if (this.opts.agentId || this.opts.workflowId || this.opts.traceId || this.opts.tenantId || this.opts.decidedBy) {
+      emit({
+        type: 'run:meta',
+        runId,
+        agentId: this.opts.agentId,
+        workflowId: this.opts.workflowId,
+        traceId: this.opts.traceId,
+        tenantId: this.opts.tenantId,
+        decidedBy: this.opts.decidedBy,
+      });
+    }
 
     const guard = checkInput(userInput, this.opts.guardrailPolicy);
     if (!guard.ok) {

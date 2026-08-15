@@ -10,7 +10,9 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, type VerifyConfig, type AgentCard } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, type VerifyConfig, type AgentCard, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+import { createWorkflowExecutor, workflowStore } from './workflow-executor';
+import { runAgentTask } from './agent-run';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -357,6 +359,20 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       }
       return sendJson(res, { agent: card }, req);
     }
+    // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
+    if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
+      // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
+      const ctx = await guard(req, res, 'workflow:read');
+      if (!ctx) return;
+      const id = decodeURIComponent(path.slice('/api/workflows/'.length).replace(/\/$/, ''));
+      const run = id ? await workflowStore().get(id) : null;
+      if (!run) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workflow not found', id }));
+        return;
+      }
+      return sendJson(res, { workflow: run }, req);
+    }
     if (path === '/api/memory') {
       // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
       const sessionKey = sanitizeKey(url.searchParams.get('session') || 'anonymous');
@@ -488,6 +504,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/run') {
       return await handleRun(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/workflows') {
+      return await handleWorkflow(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/a2a/tasks') {
+      return await handleA2A(req, res);
     }
     if (req.method === 'POST' && path === '/api/verify') {
       return await handleVerify(req, res);
@@ -752,6 +774,133 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   res.on('close', () => {
     unsub();
   });
+  return;
+}
+
+/**
+ * P1-④ A2A 接收端点：远端 agent 把 TaskEnvelope 投递到本平台，由本平台在「本地」用
+ * 与 /api/run 同款的 assembleAgent+harness 执行（目标 agent 必须已注册或为 local transport）。
+ * body: A2ARequest { envelope: TaskEnvelope, card?: AgentCard }。
+ * - card 可选：随任务一起自注册/更新目标 agent 的能力卡片（远端 agent 入驻式入驻）；
+ * - 执行结果以 { result: TaskResult } 返回（成功 200，目标不存在 400）。
+ */
+async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'a2a:receive', body);
+  if (!ctx) return;
+  if (shuttingDown) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'server is shutting down' }));
+    return;
+  }
+
+  const reqBody = body as Partial<A2ARequest>;
+  const envelope = reqBody.envelope as TaskEnvelope | undefined;
+  if (!envelope || typeof envelope.taskId !== 'string' || typeof envelope.toAgent !== 'string') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid a2a request: 需要 { envelope: { taskId, toAgent, ... } }' }));
+    return;
+  }
+
+  // 远端 agent 随任务自注册能力卡片（首次入驻或覆盖更新）。
+  const card = reqBody.card as AgentCard | undefined;
+  if (card && typeof card.id === 'string') {
+    await getAgentRegistry().register(card);
+  }
+
+  const target = await getAgentRegistry().get(envelope.toAgent);
+  if (!target) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `unknown a2a target agent: ${envelope.toAgent}` }));
+    return;
+  }
+
+  // 安全红线：本端点只执行本地 agent（transport=local）。远端 a2a 目标不应被当作本地执行，
+  // 否则会与 run-queue 的跨主机派发语义混淆——跨主机由发起方经 HttpA2ATransport 走。
+  if (target.transport !== 'local') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `agent "${target.id}" transport=${target.transport} 不是本地 agent，无法被本端点直接执行` }));
+    return;
+  }
+
+  try {
+    const output = await runAgentTask(target, envelope.input, {
+      tenantId: envelope.tenantId,
+      onEvent: undefined,
+    });
+    const result: TaskResult = { taskId: envelope.taskId, status: 'success', output };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ result }));
+  } catch (e: any) {
+    const result: TaskResult = { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ result }));
+  }
+}
+
+/**
+ * P1-⑤ 工作流编排入口：定义并运行一个 DAG 工作流，SSE 直播每 step 进度与最终快照。
+ * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
+ * 每个 step 经 createWorkflowExecutor 复用 /api/run 同一套 assembleAgent + harness 装配。
+ */
+async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let closed = false;
+  res.on('close', () => {
+    closed = true;
+  });
+
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'workflow:run', body);
+  if (!ctx) return;
+  // 优雅停机期间不再接受新运行。
+  if (shuttingDown) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'server is shutting down' }));
+    return;
+  }
+
+  const def = body.def as WorkflowDef | undefined;
+  if (!def || typeof def.id !== 'string' || !Array.isArray(def.steps) || def.steps.length === 0) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] }' }));
+    return;
+  }
+
+  // SSE 发送器延迟绑定：先声明 no-op，校验通过后再挂真实 SSE；校验失败时根本不开 SSE。
+  let send: (payload: unknown) => void = () => {};
+  const onHarnessEvent = (e: any) => {
+    if (!closed) send({ type: 'harness', event: e });
+  };
+  const onWfEvent = (e: WorkflowEvent) => {
+    if (!closed) send(e);
+  };
+  const executor = createWorkflowExecutor({ onEvent: onHarnessEvent });
+  const engine = new DagEngine({ store: workflowStore(), executor, onEvent: onWfEvent });
+
+  // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 立即 400，不进入异步执行才失败。
+  try {
+    engine.validateWorkflow(def);
+  } catch (e: any) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `invalid workflow topology: ${e?.message ?? String(e)}` }));
+    return;
+  }
+
+  send = startSse(res, req);
+
+  auditAction('workflow.run', { workflowId: def.id, stepCount: def.steps.length, role: ctx.role, sub: ctx.sub });
+
+  // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
+  engine
+    .run(def, body.input)
+    .then((run) => {
+      if (!closed) send({ type: '_wf_done', run });
+      if (!closed) res.end();
+    })
+    .catch((e: any) => {
+      if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+      if (!closed) res.end();
+    });
   return;
 }
 

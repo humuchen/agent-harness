@@ -10,6 +10,9 @@
 import { parseSse, type SseOptions } from './sse.js';
 import type {
   AddMcpInput,
+  AgentCard,
+  AgentQuery,
+  A2ARequest,
   ApprovalStatus,
   ApprovalTicket,
   EvalResult,
@@ -23,7 +26,11 @@ import type {
   RunInput,
   RunMode,
   ServerState,
+  TaskResult,
   VerifyEvent,
+  WorkflowDef,
+  WorkflowEvent,
+  WorkflowRun,
 } from './types.js';
 
 export interface AgentClientOptions {
@@ -214,6 +221,34 @@ export class AgentClient {
     return this.json('/api/v1/eval', { method: 'POST', body: JSON.stringify({ jobId }) });
   }
 
+  /* ----------------------------- 智能体 (agents / P1.①) ----------------------------- */
+
+  /** 列出已注册 agent；可按要求 domain / capability 过滤。 */
+  listAgents(filter?: AgentQuery): Promise<{ agents: AgentCard[] }> {
+    const q: string[] = [];
+    if (filter?.domain) q.push(`domain=${encodeURIComponent(filter.domain)}`);
+    if (filter?.capability) q.push(`capability=${encodeURIComponent(filter.capability)}`);
+    const suffix = q.length ? `?${q.join('&')}` : '';
+    return this.json<{ agents: AgentCard[] }>(`/api/v1/agents${suffix}`);
+  }
+  /** 获取单个 agent 的能力卡片（不存在返回 { agent: null }）。 */
+  getAgent(id: string): Promise<{ agent: AgentCard | null }> {
+    return this.json<{ agent: AgentCard | null }>(`/api/v1/agents/${encodeURIComponent(id)}`);
+  }
+
+  /* ----------------------------- A2A 任务 (tasks / P1.④) ----------------------------- */
+
+  /**
+   * 向目标 agent 提交一个 A2A 任务。body 为 TaskEnvelope（可随 card 自注册远端 agent）。
+   * 服务端仅接受 transport='local' 的本地 agent 执行，返回标准 TaskResult。
+   */
+  sendTask(req: A2ARequest): Promise<{ result: TaskResult }> {
+    return this.json<{ result: TaskResult }>('/api/v1/a2a/tasks', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
   /* ----------------------------- 记忆 ----------------------------- */
 
   getMemory(sessionKey: string): Promise<{ sessionKey: string; backend: string; notes: string[]; windowLen: number }> {
@@ -286,6 +321,36 @@ export class AgentClient {
     }
     for await (const ev of parseSse(res, opts)) {
       yield ev as EnvEvent;
+    }
+  }
+
+  /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
+
+  /** 获取某次工作流运行的快照（最终状态 + 各 step 状态）。 */
+  getWorkflow(id: string): Promise<{ workflow: WorkflowRun }> {
+    return this.json<{ workflow: WorkflowRun }>(`/api/v1/workflows/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * 定义并运行一个 DAG 工作流，返回编排事件异步迭代器（与 harness 事件同通道）。
+   * wf:* 为编排事件；嵌套的 harness 事件以 { type: 'harness', event } 包裹。
+   */
+  async *streamWorkflow(
+    def: WorkflowDef,
+    input?: unknown,
+    opts: SseOptions = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const res = await this.request('/api/v1/workflows', {
+      method: 'POST',
+      body: JSON.stringify({ def, input }),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
     }
   }
 }
