@@ -700,6 +700,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
+  // P0.2：任务路由辅助字段（均由客户端显式声明；tenantId 实际应由 P0.3 的认证身份派生，
+  // 此处暂允许 body.tenantId 透传，后续接入策略引擎时以 authz 结果覆盖，避免客户端伪造越界）。
+  const domain = body.domain ? String(body.domain).trim() : undefined;
+  const tenantId = body.tenantId ? String(body.tenantId).trim() : undefined;
+  const workflowId = body.workflowId ? String(body.workflowId).trim() : undefined;
+  const traceId = body.traceId ? String(body.traceId).trim() : undefined;
+
   // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
   // > 服务端 AGENT_AUTO_VERIFY 默认）。验证器最终在 run-queue.execute 内按 config 装配，
   // 并以可序列化形式随 JobDescriptor 持久化，使重放/多实例领取后门禁行为一致。
@@ -716,7 +723,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps, verify: verifyConfig, agentId: agentCard?.id });
+    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps, verify: verifyConfig, agentId: agentCard?.id, domain, tenantId, workflowId, traceId });
     auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, agentId: agentCard?.id ?? null, role: ctx.role, sub: ctx.sub, verify: verifyConfig ? 'on' : 'off' });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
     jobId = job.id;

@@ -5,6 +5,7 @@ export * from './memory-store';
 export * from './tools';
 export * from './builtins';
 export * from './agents';
+export * from './router';
 export * from './skills';
 export * from './guardrails';
 export * from './harness';

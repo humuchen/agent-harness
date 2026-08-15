@@ -30,6 +30,14 @@ export interface JobDescriptor {
   verify?: VerifyConfig;
   /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
   agentId?: string;
+  /** P0.2：客户端/上游声明的领域（比 classify 更可信，可直接过滤候选）。 */
+  domain?: string;
+  /** P0.3 预留：租户标识（经认证派生，不可客户端伪造）。 */
+  tenantId?: string;
+  /** P0.2：工作流标识（可观测性，随 run:meta 透出）。 */
+  workflowId?: string;
+  /** P0.2：链路追踪标识（可观测性）。 */
+  traceId?: string;
   enqueuedAt: number;
 }
 

@@ -4,9 +4,8 @@ import {
   recordLatency,
   resolveOpenRouterConfig,
   createVerifier,
-  getAgentRegistry,
+  resolveTask,
   type VerifyConfig,
-  type AgentCard,
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
@@ -51,6 +50,14 @@ export interface RunJob {
   verify?: VerifyConfig;
   /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
   agentId?: string;
+  /** P0.2：任务领域（显式声明时直接过滤候选，优于自动分类）。 */
+  domain?: string;
+  /** P0.3 预留：租户标识（经认证派生，不可客户端伪造）。 */
+  tenantId?: string;
+  /** P0.2：工作流标识（可观测性）。 */
+  workflowId?: string;
+  /** P0.2：链路追踪标识（可观测性）。 */
+  traceId?: string;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -100,7 +107,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -112,6 +119,10 @@ export class RunQueue {
       maxSteps: job.maxSteps,
       verify: job.verify,
       agentId: job.agentId,
+      domain: job.domain,
+      tenantId: job.tenantId,
+      workflowId: job.workflowId,
+      traceId: job.traceId,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -130,7 +141,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -143,6 +154,10 @@ export class RunQueue {
       maxSteps: input.maxSteps,
       verify: input.verify,
       agentId: input.agentId,
+      domain: input.domain,
+      tenantId: input.tenantId,
+      workflowId: input.workflowId,
+      traceId: input.traceId,
       events: [],
       subscribers: new Set(),
       controller: new AbortController(),
@@ -189,7 +204,7 @@ export class RunQueue {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
-        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId },
+        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
         d.id
       );
     }
@@ -215,7 +230,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId },
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
           d.id
         );
         this.queue.push(job);
@@ -422,6 +437,20 @@ export class RunQueue {
       const verifyMaxRetries = verifier
         ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
         : 0;
+      // P0.2：capability-aware 路由解析目标 agent。
+      // - 显式 agentId 直达该 agent 装配配方；
+      // - 否则按 domain 过滤 / 经 IntentRouter 分类 + AgentSelector 打分选最优；
+      // - 无更优专属 agent 或 router 关闭（TASK_ROUTER=off）时回退 default 通用 harness。
+      // 全程降级可用：任何解析异常都退化为 default，不中断执行。
+      const route = await resolveTask({
+        agentId: job.agentId,
+        domain: job.domain,
+        tenantId: job.tenantId,
+        prompt: job.prompt,
+        workflowId: job.workflowId,
+        traceId: job.traceId,
+      }).catch(() => null);
+      const targetCard = route?.card ?? null;
       const assembled = await assembleAgent(
         job.mode,
         onEvent,
@@ -435,19 +464,16 @@ export class RunQueue {
         undefined,
         verifier,
         verifyMaxRetries,
-        // P0.1：若 job 显式指定了 agentId，从共享注册表解析其 AgentCard 并收窄装配；
-        // 未指定 / 找不到时传 null，退化为今天的通用 harness。
-        job.agentId
-          ? await getAgentRegistry()
-              .get(job.agentId)
-              .catch(() => null)
-          : null
+        // P0.1/P0.2：解析出的目标 AgentCard（null 退化为今天的通用 harness）。
+        targetCard
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
         type: 'run:meta',
         mode: job.mode,
-        agentId: job.agentId ?? null,
+        agentId: route?.agentId ?? job.agentId ?? null,
+        decidedBy: route?.decidedBy ?? 'fallback',
+        domain: job.domain ?? null,
         llmKind: assembled.llmKind,
         dryRun: assembled.dryRun,
         mcpConnected: assembled.mcpConnected,
@@ -456,6 +482,8 @@ export class RunQueue {
         tokenBudget: assembled.tokenBudget ?? null,
         costBudget: assembled.costBudget ?? null,
         failover: assembled.failover,
+        workflowId: job.workflowId ?? null,
+        traceId: job.traceId ?? null,
       });
       emit({ type: 'run:tools', tools: assembled.tools.schemas() });
       const finalText = await assembled.harness.run(job.prompt);
