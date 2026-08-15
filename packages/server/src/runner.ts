@@ -200,7 +200,13 @@ export async function assembleAgent(
    * backend 字符串（如 'os' / 'container' / 'local'）。缺省沿用 SANDBOX_BACKEND 全局值。
    * 通过它实现「不可信 / 跨行业 agent 强制强隔离」而不改动 shell 工具逻辑。
    */
-  sandboxBackend?: string | null
+  sandboxBackend?: string | null,
+  /**
+   * 是否启用 token 级流式（向聊天 UI 透出 llm:token / llm:reasoning 事件）。
+   * 不传时：默认开启（受 AGENT_STREAM_TOKENS!=='false' 控制），mock 与 real 模式均生效
+   * —— mock LLM 现已支持逐块流式回调，故本地无密钥也能看到打字机效果与深度思考块。
+   */
+  streamTokens?: boolean
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -434,9 +440,14 @@ export async function assembleAgent(
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
     // P0.3：租户级护栏策略覆盖（含出网管控）。
     ...(guardrailPolicy ? { guardrailPolicy } : {}),
-    // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
-    ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
-  });
+  // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
+  ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
+  // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
+  // 供聊天 UI 打字机效果与深度思考块。
+  ...(streamTokens ?? (process.env.AGENT_STREAM_TOKENS !== 'false')
+    ? { streamTokens: true }
+    : {}),
+});
 
   notes.push(
     `闭环步数上限 MAX_STEPS=${effectiveMaxSteps}` +
@@ -515,17 +526,18 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
   };
 }
 
-/** Mock LLM：无需密钥即可驱动 创建 → 销毁 闭环（与 examples/self-serve-env.ts 一致）。 */
+/** Mock LLM：无需密钥即可驱动 创建 → 销毁 闭环（与 examples/self-serve-env.ts 一致）。
+ * 支持 token 级流式：开启 streamTokens 时通过 opts.onToken / opts.onReasoning 逐块回调，
+ * 让聊天 UI 获得打字机效果与「深度思考」推理块。 */
 export function makeMockEnvLLM(): LLM {
-  return async (messages) => {
+  return async (messages, _tools, opts) => {
     const last = messages[messages.length - 1];
 
     if (last?.role === 'tool' && last.name === 'destroy_environment') {
       const h = safeParse(last.content ?? '');
-      return {
-        content: `已完成闭环：临时环境 ${h.envId} 已创建并销毁，无残留资源。`,
-        tool_calls: [],
-      };
+      const content = `已完成闭环：临时环境 ${h.envId} 已创建并销毁，无残留资源。`;
+      await streamOut(opts?.onToken, content, 16);
+      return { content, tool_calls: [] };
     }
 
     if (last?.role === 'tool' && last.name === 'create_ephemeral_environment') {
@@ -535,19 +547,45 @@ export function makeMockEnvLLM(): LLM {
         name: 'destroy_environment',
         arguments: { env_id: h.envId },
       };
+      await streamOut(
+        opts?.onReasoning,
+        `用户希望创建一个临时环境用于验证。\n从请求解析：环境类型 ephemeral，TTL 8h。\n分支推断为 ${branchOf(last?.content ?? '')}，据此调用 create_ephemeral_environment 落地。`,
+        14
+      );
       return { content: '', tool_calls: [call] };
     }
 
     const text = last?.content ?? '';
-    const branchMatch = text.match(/基于\s*([^\s,，]+)\s*分支/);
-    const branch = branchMatch ? branchMatch[1] : 'main';
+    const branch = branchOf(text);
     const call: ToolCall = {
       id: 'call_' + Date.now(),
       name: 'create_ephemeral_environment',
       arguments: { env_type: 'ephemeral', branch, ttl_hours: 8 },
     };
+    await streamOut(
+      opts?.onReasoning,
+      `收到用户请求，先明确目标环境。\n类型：ephemeral（临时、用完即销）。\n分支：从输入推断出 ${branch}。\n下一步调用 create_ephemeral_environment 创建，随后由 destroy_environment 自动清理。`,
+      14
+    );
     return { content: '', tool_calls: [call] };
   };
+}
+
+/** 把文本按 1~3 字切片并逐块回调（带轻微延迟），模拟真实流式输出。 */
+async function streamOut(cb: ((delta: string) => void) | undefined, text: string, delayMs: number) {
+  if (!cb || !text) return;
+  let i = 0;
+  while (i < text.length) {
+    const step = text[i] === '\n' ? 1 : 1 + Math.floor(Math.random() * 2);
+    cb(text.slice(i, i + step));
+    i += step;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+}
+
+function branchOf(text: string): string {
+  const m = text.match(/基于\s*([^\s,，]+)\s*分支/);
+  return m ? m[1] : 'main';
 }
 
 function safeParse(s: string): Record<string, unknown> {

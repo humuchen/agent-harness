@@ -10,6 +10,7 @@ initTheme();
 import './app';
 import './panels';
 import './run';
+import './chat';
 import './dashboard';
 import './observability';
 import './login';

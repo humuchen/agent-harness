@@ -18,6 +18,10 @@ export type HarnessEvent =
   | { type: 'step:start'; step: number; maxSteps: number }
   | { type: 'llm:call'; step: number; messageCount: number; toolCount: number }
   | { type: 'llm:response'; step: number; content: string; toolCalls: ToolCall[] }
+  /** token 级流式增量（打字机效果）。仅当 HarnessOptions.streamTokens 开启且适配器支持时发出。 */
+  | { type: 'llm:token'; step: number; delta: string }
+  /** 推理过程增量（思考折叠块）。部分推理模型在 delta.reasoning 中逐段返回。 */
+  | { type: 'llm:reasoning'; step: number; delta: string }
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number }
@@ -74,6 +78,12 @@ export interface HarnessOptions {
   tenantId?: string;
   /** 路由决策来源（explicit / domain / classify / fallback），供可观测区分。 */
   decidedBy?: string;
+  /**
+   * 是否启用 token 级流式：开启后 LLM 调用会透传 onToken/onReasoning 回调，
+   * harness 据此发出 llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。
+   * 默认 false，不改变既有非流式行为；服务端 assembleAgent 对 real 模式默认开启。
+   */
+  streamTokens?: boolean;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -101,6 +111,9 @@ interface ResolvedHarnessOptions {
   traceId?: string;
   tenantId?: string;
   decidedBy?: string;
+  // token 级流式开关：开启后 LLM 调用透传 onToken/onReasoning，harness 发出
+  // llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。默认 false。
+  streamTokens?: boolean;
 }
 
 let idCounter = 0;
@@ -257,7 +270,25 @@ export class AgentHarness {
 
           // 用 Promise.race 让「中止」能打断一个永不 settles 的 LLM 调用，
           // 即使底层适配器未尊重 signal 也能及时退出。
-          const llmPromise = this.opts.llm(messages, this.opts.tools.schemas(), { signal });
+          // token 级流式：开启 streamTokens 时透传 onToken/onReasoning 回调，
+          // 适配器（支持 stream）会逐 delta 回调；同时记录是否真的收到了增量，
+          // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
+          // 保证聊天 UI 始终能拿到可渲染的增量事件。
+          let streamedTokens = false;
+          const llmPromise = this.opts.llm(messages, this.opts.tools.schemas(), {
+            signal,
+            ...(this.opts.streamTokens
+              ? {
+                  onToken: (delta: string) => {
+                    streamedTokens = true;
+                    emit({ type: 'llm:token', step: steps, delta });
+                  },
+                  onReasoning: (delta: string) => {
+                    emit({ type: 'llm:reasoning', step: steps, delta });
+                  },
+                }
+              : {}),
+          });
           const abortedFlag = new Promise<'__aborted__'>((resolve) => {
             if (signal.aborted) return resolve('__aborted__');
             signal.addEventListener('abort', () => resolve('__aborted__'), { once: true });
@@ -300,6 +331,12 @@ export class AgentHarness {
             emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
             guardrailsBlocked += 1;
             return `[guardrail] blocked: ${outGuard.reason}`;
+          }
+
+          // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
+          // 则把整段内容作为单个 token 发出，确保聊天 UI 仍能渲染（无打字动画，但内容完整）。
+          if (this.opts.streamTokens && !streamedTokens && resp.content) {
+            emit({ type: 'llm:token', step: steps, delta: resp.content });
           }
 
           emit({ type: 'llm:response', step: steps, content: resp.content, toolCalls: resp.tool_calls });

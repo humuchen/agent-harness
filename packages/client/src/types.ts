@@ -20,10 +20,40 @@ export interface RunInput {
   model?: string;
   maxSteps?: number;
   sessionId?: string;
+  /** 多会话 Chat App：客户端分配的聊天会话 id，服务端据此把消息写入会话存储。 */
+  chatSessionId?: string;
   /** 断线重连：携带已知 jobId 直接订阅事件重放，不重复提交。 */
   jobId?: string;
   /** 审批工单号：敏感动作获批后随请求重投。 */
   approvalTicket?: string;
+}
+
+/* ----------------------------- 多会话 Chat App ----------------------------- */
+
+/** 工具调用记录（跨端还原用，参数/结果均为字符串）。 */
+export interface StoredTool {
+  name: string;
+  args?: string;
+  result?: string;
+  errored?: boolean;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  ts: number;
+  /** 推理过程（深度思考折叠块），仅推理模型产出。 */
+  reasoning?: string;
+  /** 本轮处理的工具调用列表，用于回看时还原工具卡片。 */
+  tools?: StoredTool[];
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
 }
 
 /** run 流首帧：服务端已接收并分配 jobId。 */
