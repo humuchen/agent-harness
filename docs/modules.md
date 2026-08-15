@@ -49,6 +49,20 @@ examples ──▶ core
   - `mcp/placeholder.ts` — MCP 连接管理器（注册/连接/重连/断开）。依赖 `tools, telemetry` + `@modelcontextprotocol/sdk`（外部硬依赖）。
   - `mcp/presets.ts` — MCP 预设目录（Context7/GitHub/…）。仅类型依赖 `placeholder`。
 
+### 统一基座子系统（P0/P1/P2，已落地，与早期文档不同）
+> 早期 `architecture.md` 写于这些模块落地前；现 `core` 已长出「智能体 / 路由 / 租户 / 策略 / 工作流 / A2A / 插件 / 沙箱 / 配额 / 审计」基座原语，core 仍保持零业务耦合（`@agent-harness/server` 才承载 RBAC/审批/评估等纯业务逻辑）。
+
+- **`agents/`** — 智能体层：`types`（AgentCard/AgentTransport/IndustryDomain/AgentCapability/Health/Assembly + `makeDefaultAgentCard`）、`store`（AgentStore 接口 + Volatile/File/Sqlite/Redis，`createAgentStoreFromEnv`）、`registry`（`AgentRegistry` 倒排索引 + heartbeat + `getAgentRegistry()` 单例，首次访问 seed default agent）。
+- **`router/`** — 路由编排层：`intent`（IntentRouter：rule 关键词 / `INTENT_ROUTER=llm` 小模型分类 / auto 智能降级）、`selector`（`scoreAgent` 纯函数 ×域×能力×健康×SLA×租户亲和）、`router`（`TaskRouter.resolve`：显式 agentId > 显式 domain > classify > fallback；`TASK_ROUTER=off` 关闭）。
+- **`tenant.ts`** — `TenantContext` + `resolveTenantContext`（认证身份优先防伪造）+ `tenantSessionKey`（复合记忆 key 物理隔离）。
+- **`policy/engine.ts`** — `PolicyEngine`（default + per-tenant 浅合并 + `applyIndustryProfile`）；内置 finance/medical-aesthetics/healthcare/education 四套合规画像（金融 denylist+`*` 禁出网 / 医疗高敏+强 PII / 教育放宽）。
+- **`workflow/`** — `engine`（DagEngine：拓扑并行 + 失败逆序 compensate + `resume()` 检查点续跑 + `validateWorkflow` 成环/缺依赖 fail-fast）、`store`（Volatile/File）、`types`（WorkflowDef/StepDef/WorkflowRun）。
+- **`a2a/`** — `types`（TaskEnvelope/TaskResult/A2ARequest）、`transport`（`LocalA2ATransport` 进程内 handoff / `HttpA2ATransport` fetch 投递 `+SLA 超时+失败降级` / `dispatchAgentTask` 按 card 选传输）。
+- **`plugin/`** — `manifest`（PluginManifest）、`loader`（PluginLoader：install/enable/disable/upgrade + 依赖解析 + capabilities 自动转 AgentCard）、`signature`（HMAC/Ed25519 验签）、`registry`（远程 registry 拉取 + 版本解析）。
+- **`sandbox/`** — `SandboxExecutor` 抽象 + `Local`/`Container`(docker/podman)/`OS`(原生 C helper：命名空间+seccomp+capabilities+rlimit) 三态后端 + 降级；`isolation.ts` 的 `resolveIsolationBackend`（card→租户策略→env 决策链）、`detect`/`profiles`/`args`/`executor` 支撑原生后端；`native/sandbox-exec/sandbox-exec.c` 为 C helper（`build:native.sh` 编译，非 Linux 自动降级）。
+- **`quota/engine.ts`** — `QuotaEngine`（QPS 令牌桶 + 并发信号量 + token/cost 窗口硬限，per-tenant；`admit`/`release` 配对）。
+- **`audit.ts`** — tenantId 维度审计，可插拔 sink。
+
 ## 3. 依赖边（要点）
 
 - 几乎全部模块 → `types.ts`（契约基座）。
@@ -65,8 +79,9 @@ examples ──▶ core
 
 | 模块 | 职责 |
 |---|---|
-| `server.ts` | 组合根 / HTTP+SSE 路由 / 优雅停机 |
-| `runner.ts` | 按模式（mock/real/real-mcp）组装 agent |
+| `server.ts` | 组合根 / HTTP+SSE 路由 / 启动装配（注册行业画像+选 AgentStore+意图路由+租户门禁）/ 优雅停机 |
+| `runner.ts` | 按模式（mock/real/real-mcp）组装 agent（`assembleAgent(card?, tenantCtx?, sandboxBackend?)` 收窄工具集） |
+| `agent-run.ts` | `runAgentTask` 单一入口（workflow/a2a/run-queue 共用 assemble+run；复用 ten化隔离） |
 | `run-queue.ts` + `queue-backend.ts` | 运行队列（Memory/File/Redis 后端） |
 | `mcp-manager.ts` | 多 MCP server 单例（共享注册表） |
 | `env-pipeline.ts` | 环境生命周期状态机 |
@@ -77,4 +92,4 @@ examples ──▶ core
 | `secrets.ts` | 密钥装配（env > SECRETS_FILE > .env） |
 | `verification.ts` | 三大能力自验证（流式事件） |
 
-> 原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 server 业务层，核心 `@agent-harness/core` 始终零业务耦合、可插拔、可组合。**
+> 原则：**纯业务策略（RBAC/审批/评估）全部在 `server` 业务层；`core` 只承载可复用的平台/基础设施原语（harness/tools/memory/guardrails + 智能体/路由/租户/策略/工作流/A2A/插件/沙箱/配额/审计），始终零业务耦合、可插拔、可组合。**
