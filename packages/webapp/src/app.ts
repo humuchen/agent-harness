@@ -5,13 +5,13 @@ import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 
-type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability';
+type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 
 const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'dashboard', label: '总览', short: '览' },
-  { id: 'run', label: '运行', short: '运' },
+  { id: 'chat', label: '对话', short: '话' },
   { id: 'verify', label: '验证', short: '验' },
   { id: 'env', label: '环境', short: '环' },
   { id: 'mcp', label: 'MCP', short: 'M' },
@@ -32,7 +32,7 @@ export class AhApp extends LitElement {
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
-  @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
 
   connectedCallback() {
@@ -103,7 +103,7 @@ export class AhApp extends LitElement {
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
-            <span class="brand-text">Agent Harness</span>
+            <!-- <span class="brand-text">Agent Harness</span>
             <button
               class="sidebar-toggle"
               title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
@@ -111,7 +111,7 @@ export class AhApp extends LitElement {
               aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
               ${this.sidebarCollapsed ? '›' : '‹'}
-            </button>
+            </button> -->
           </div>
           <nav class="nav">
             ${TABS.map(
@@ -178,8 +178,9 @@ export class AhApp extends LitElement {
             </button>
           </header>
 
-          <main class="content">
+          <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
             ${this.tab === 'dashboard' ? html`<ah-dashboard></ah-dashboard>` : ''}
+            ${this.tab === 'chat' ? html`<ah-chat></ah-chat>` : ''}
             ${this.tab === 'run' ? html`<ah-run></ah-run>` : ''}
             ${this.tab === 'verify' ? html`<ah-verify></ah-verify>` : ''}
             ${this.tab === 'env' ? html`<ah-env></ah-env>` : ''}

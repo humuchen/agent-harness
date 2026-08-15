@@ -54,6 +54,10 @@ export interface ChatCallOptions {
   modelLabel: string;
   // 取消信号（来自 Harness 的超时或外部 AbortSignal），透传给 fetch。
   signal?: AbortSignal;
+  // token 级流式回调（可选）：设置后适配器走 stream:true，逐 delta 回调并重建完整响应。
+  onToken?: (delta: string) => void;
+  // 推理过程流式回调（可选）：捕获 delta.reasoning（部分推理模型），用于「思考」折叠块。
+  onReasoning?: (delta: string) => void;
 }
 
 // 这些 HTTP 状态视为限流 / 瞬时故障，可重试（免费档常遇 429）。
@@ -61,7 +65,12 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 
 /** 调用任意 OpenAI 兼容 Chat Completions 端点并解析为标准 LLMResponse。 */
 export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
-  const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal } = opts;
+  const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal, onToken, onReasoning } = opts;
+  // token 级流式：回调存在即走 stream:true，边读边 emit 增量并重建完整响应
+  // （含工具调用的增量重组），保证既能在聊天 UI 实现打字机效果，又不丢失 agent 的工具执行能力。
+  if (onToken || onReasoning) {
+    return streamOpenAIChat({ baseUrl, headers, body, fetchImpl, modelLabel, signal, onToken, onReasoning });
+  }
   let last: LLMResponse = { content: '', tool_calls: [] };
   // 跨重试累计 token 用量：每次重试都重发全量 prompt，provider 对每次都计费，
   // 但旧实现只取最后一次响应的 usage → 重试成本被低估。这里把各次 usage 累加。
@@ -132,4 +141,106 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
   }
   return { ...last, usage: last.usage ? { ...usageAcc } : undefined };
+}
+
+/**
+ * 流式读取 OpenAI 兼容的 SSE 响应体。
+ * - 逐 `data:` 行解析，content delta 经 onToken 回调（打字机）；
+ * - 推理模型的 `delta.reasoning` 经 onReasoning 回调（思考折叠块）；
+ * - 工具调用在流中以增量 `tool_calls[]` 返回，按 index 重组为完整 ToolCall[]，
+ *   保证开启流式后仍可执行 agent 工具（不丢失 tool 能力）；
+ * - 用量在末帧（stream_options.include_usage=true）返回时捕获。
+ * 返回与一次性调用同形状的 LLMResponse，供 harness 记忆 / 成本记账 / 门禁复用。
+ */
+async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
+  const { baseUrl, headers, body, fetchImpl, modelLabel, signal, onToken, onReasoning } = opts;
+  const streamBody: Record<string, unknown> = {
+    ...body,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(streamBody),
+    signal,
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
+  }
+  if (!resp.body || typeof (resp.body as any).getReader !== 'function') {
+    throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
+  }
+
+  const reader = (resp.body as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullContent = '';
+  let reasoning = '';
+  let usage: TokenUsage | undefined;
+  let usedModel: string | undefined;
+  // 按 index 重组工具调用增量：{ id?, name?, args }
+  const toolAcc: Array<{ id?: string; name?: string; args: string }> = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      let json: any;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (json.model) usedModel = json.model;
+      if (json.usage) usage = toUsage(json.usage);
+      const choice = json.choices?.[0];
+      if (!choice) continue;
+      const delta = choice.delta ?? {};
+      if (typeof delta.content === 'string' && delta.content) {
+        fullContent += delta.content;
+        onToken?.(delta.content);
+      }
+      if (typeof delta.reasoning === 'string' && delta.reasoning) {
+        reasoning += delta.reasoning;
+        onReasoning?.(delta.reasoning);
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const i = typeof tc.index === 'number' ? tc.index : 0;
+          if (!toolAcc[i]) toolAcc[i] = { args: '' };
+          if (tc.id) toolAcc[i].id = tc.id;
+          if (tc.function?.name) toolAcc[i].name = tc.function.name;
+          if (typeof tc.function?.arguments === 'string') toolAcc[i].args += tc.function.arguments;
+        }
+      }
+    }
+  }
+
+  const toolCalls: ToolCall[] = toolAcc
+    .filter(Boolean)
+    .map((t, i) => ({
+      id: t.id ?? `call_${i}`,
+      name: t.name ?? 'unknown',
+      arguments: safeParseArgs(t.args),
+    }));
+
+  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel };
+}
+
+/** 将 provider 用量对象归一为标准 TokenUsage（缺失字段补 0）。 */
+function toUsage(u: any): TokenUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined;
+  const prompt = Number(u.prompt_tokens) || 0;
+  const completion = Number(u.completion_tokens) || 0;
+  const total = Number(u.total_tokens) || prompt + completion;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
 }

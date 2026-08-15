@@ -15,6 +15,7 @@ import type {
   A2ARequest,
   ApprovalStatus,
   ApprovalTicket,
+  ChatSession,
   EvalResult,
   EnvEvent,
   EnvHandle,
@@ -143,6 +144,37 @@ export class AgentClient {
   }
   getRetention(): Promise<unknown> {
     return this.json('/api/v1/retention');
+  }
+
+  /* ----------------------------- 多会话 Chat App ----------------------------- */
+
+  /** 列出全部聊天会话（含消息记录），按最近更新倒序。 */
+  listChatSessions(): Promise<ChatSession[]> {
+    return this.json<{ sessions: ChatSession[] }>('/api/v1/chat/sessions').then((r) => r.sessions);
+  }
+  /** 取单个聊天会话（含消息记录）。 */
+  getChatSession(id: string): Promise<ChatSession> {
+    return this.json<ChatSession>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`);
+  }
+  /** 新建聊天会话（可指定初始标题）。 */
+  createChatSession(title?: string): Promise<ChatSession> {
+    return this.json<ChatSession>('/api/v1/chat/sessions', {
+      method: 'POST',
+      body: JSON.stringify(title ? { title } : {}),
+    });
+  }
+  /** 重命名聊天会话。 */
+  renameChatSession(id: string, title: string): Promise<ChatSession> {
+    return this.json<ChatSession>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    });
+  }
+  /** 删除聊天会话。 */
+  deleteChatSession(id: string): Promise<{ ok: boolean }> {
+    return this.json<{ ok: boolean }>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
   }
 
   /* ----------------------------- MCP ----------------------------- */

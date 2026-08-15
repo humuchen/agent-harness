@@ -51,6 +51,16 @@ export interface LLMResponse {
 export interface LLMCallOptions {
   // 超时 / 用户主动取消时触发；适配器应将其透传给底层 fetch 以尽早中止请求。
   signal?: AbortSignal;
+  /**
+   * token 级流式回调（可选）。支持流式（stream）的适配器在逐 delta 到达时调用，
+   * 用于实现打字机式实时输出。不提供时适配器走一次性返回（向后兼容）。
+   */
+  onToken?: (delta: string) => void;
+  /**
+   * 推理过程流式回调（可选）。部分推理模型（如 DeepSeek-R1 / OpenRouter reasoning）
+   * 在 delta 中携带 reasoning 字段，适配器逐段回调，用于渲染「思考过程」折叠块。
+   */
+  onReasoning?: (delta: string) => void;
 }
 
 export type LLM = (

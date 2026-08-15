@@ -13,6 +13,16 @@ import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
+// 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
+import {
+  listChatSessions,
+  getChatSession,
+  createChatSession,
+  renameChatSession,
+  deleteChatSession,
+  appendChatMessage,
+  type StoredTool,
+} from './chat-sessions';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -505,6 +515,43 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (req.method === 'POST' && path === '/api/run') {
       return await handleRun(req, res);
     }
+
+    /* ----------------- 多会话 Chat App：会话存储 CRUD ----------------- */
+    // 注意：与已存在的 /api/sessions（agent 运行期会话）区分，聊天会话走独立前缀。
+    // 客户端以版本化 URL /api/v1/chat/sessions 调用，服务端在路由前已统一重写
+    // /api/v1 -> /api，故此处按重写后的 /api/chat/sessions 匹配。
+    if (req.method === 'GET' && path === '/api/chat/sessions') {
+      return sendJson(res, { sessions: listChatSessions() }, req);
+    }
+    if (req.method === 'POST' && path === '/api/chat/sessions') {
+      const b = await readBody(req);
+      return sendJson(res, createChatSession(b.title), req);
+    }
+    if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
+      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+      const s = getChatSession(id);
+      if (!s) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'session not found' }));
+      }
+      return sendJson(res, s, req);
+    }
+    if (req.method === 'PATCH' && path.startsWith('/api/chat/sessions/')) {
+      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+      const b = await readBody(req);
+      const s = renameChatSession(id, b.title);
+      if (!s) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'session not found' }));
+      }
+      return sendJson(res, s, req);
+    }
+    if (req.method === 'DELETE' && path.startsWith('/api/chat/sessions/')) {
+      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+      const ok = deleteChatSession(id);
+      return sendJson(res, { ok }, req);
+    }
+
     if (req.method === 'POST' && path === '/api/workflows') {
       return await handleWorkflow(req, res);
     }
@@ -714,6 +761,10 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       'anonymous'
   );
 
+  // 多会话 Chat App：客户端为每个聊天会话分配独立 chatSessionId（与 Memory 的 sessionKey 解耦），
+  // 服务端据此把 user/assistant 消息写入会话存储，供左侧栏与跨刷新恢复。
+  const chatSessionId = body.chatSessionId ? String(body.chatSessionId).trim() : '';
+
   // P0.1：显式指定目标 agent（绕过路由，直达该 agent 的装配配方）。
   // 未传 → 用注册表里 seed 的 default 通用 agent（退化为今天的万能 harness）。
   // 传入但不存在 → 400 拒绝，避免静默退化到错误 agent。
@@ -769,9 +820,50 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   }
 
   // 订阅事件流：先重放已发生事件，再转发后续；遇到终结事件 _done 主动关闭连接。
+  // 跨 run 累积的推理与工具调用缓冲，run:end 时一并落盘，确保切换会话后再切回可完整还原。
+  let reasoningBuf = '';
+  const toolMap = new Map<string, StoredTool>();
   const unsub = runQueue.subscribe(jobId, (e) => {
     if (closed) return;
     send(e);
+    // 多会话 Chat App：把 run 的首尾事件落盘到会话存储（user 提问 + assistant 回答），
+    // 并在过程中累积推理与工具调用，run 结束时一并写入，保证切换会话后再切回可完整还原。
+    if (chatSessionId) {
+      const ev = e as { type?: string; input?: unknown; final?: unknown };
+      const a = ev as any;
+      if (ev.type === 'llm:reasoning' && typeof a.delta === 'string') {
+        reasoningBuf += a.delta as string;
+      } else if (ev.type === 'tool:start' && a.call) {
+        const c = a.call;
+        toolMap.set(String(c.id), {
+          name: String(c.name ?? 'tool'),
+          args: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}),
+        });
+      } else if (ev.type === 'tool:result' && a.call) {
+        const c = a.call;
+        const t = toolMap.get(String(c.id)) ?? { name: String(c.name ?? 'tool') };
+        t.result = typeof a.result === 'string' ? a.result : JSON.stringify(a.result ?? {});
+        t.errored = !!a.errored;
+        toolMap.set(String(c.id), t);
+      } else if (ev.type === 'run:start' && ev.input != null) {
+        appendChatMessage(chatSessionId, { role: 'user', content: String(ev.input), ts: Date.now() });
+      } else if (ev.type === 'run:end' && ev.final != null) {
+        // 去重：run-queue 会在 harness 的 run:end 之后再补发一个不带 runId 的 run:end
+        // （两者 final 相同），避免历史里出现两条重复的 assistant 消息。仅当会话最后一条
+        // 还不是相同内容的 assistant 时才落盘。
+        const finalStr = String(ev.final);
+        const last = getChatSession(chatSessionId)?.messages.at(-1);
+        if (!(last && last.role === 'assistant' && last.content === finalStr)) {
+          appendChatMessage(chatSessionId, {
+            role: 'assistant',
+            content: finalStr,
+            ts: Date.now(),
+            reasoning: reasoningBuf || undefined,
+            tools: toolMap.size ? [...toolMap.values()] : undefined,
+          });
+        }
+      }
+    }
     if ((e as { type?: string }).type === '_done') {
       try {
         res.end();

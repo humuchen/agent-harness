@@ -51,6 +51,7 @@ export const sharedStyles = css`
     font-weight: 700;
     font-size: 16px;
     white-space: nowrap;
+    justify-content: center;
   }
   .sidebar-toggle {
     margin-left: auto;
@@ -274,6 +275,13 @@ export const sharedStyles = css`
     padding: 24px 32px;
     width: 100%;
     box-sizing: border-box;
+  }
+  /* 对话页全幅铺满：去掉外边距与外层滚动，由 ah-chat 内部自管滚动。 */
+  .content.chat {
+    flex: 1 1 auto;
+    height: 100%;
+    padding: 0;
+    overflow: hidden;
   }
   section {
     background: var(--ah-surface-1);
