@@ -651,7 +651,6 @@ export class AhChat extends LitElement {
     this.messages = [];
     this.input = '';
     this.error = null;
-    this.requestUpdate();
   }
 
   private async selectSession(id: string) {
@@ -814,15 +813,20 @@ export class AhChat extends LitElement {
         const c = cur();
         if (!c) break;
         const tools = [...(c.tools ?? [])];
+        const evName = (ev as any).call?.name;
         // 回填最近一条同名且尚未有结果的工具卡。
-        for (let i = tools.length - 1; i >= 0; i--) {
-          if (tools[i].name === (ev as any).call?.name && tools[i].result === undefined) {
-            tools[i] = {
-              ...tools[i],
-              result: String((ev as any).result ?? ''),
-              errored: Boolean((ev as any).errored),
-            };
-            break;
+        // 注意：必须要求 evName 存在（否则 undefined===undefined 会误匹配到任意空卡），
+        // 且用 result === undefined 区分「未回填」与「已回填空串」，避免重复覆盖。
+        if (evName !== undefined) {
+          for (let i = tools.length - 1; i >= 0; i--) {
+            if (tools[i].name === evName && tools[i].result === undefined) {
+              tools[i] = {
+                ...tools[i],
+                result: String((ev as any).result ?? ''),
+                errored: Boolean((ev as any).errored),
+              };
+              break;
+            }
           }
         }
         patch({ tools });
@@ -907,7 +911,7 @@ export class AhChat extends LitElement {
                     : nothing}
                 </summary>
                 <div class="body">
-                  ${hasReasoning ? unsafeHTML(toRichHtml(m.reasoning)) : nothing}
+                  ${hasReasoning ? unsafeHTML(toRichHtml(m.reasoning??'')) : nothing}
                   ${hasTools
                     ? html`
                         <div class="tool-summary">
@@ -1069,13 +1073,13 @@ function safeJson(v: unknown): string {
  */
 function formatToolJson(raw: string): string {
   if (!raw) return '';
-  // 先尝试解码已有的 HTML 实体（防御服务端已转义的情况）
+  // 先尝试解码已有的 HTML 实体（防御服务端已转义的情况），全部 5 种与 escapeHtml 对称。
   let decoded = raw
     .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
+    .replace(/&#39;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, "'");
+    .replace(/&amp;/g, '&');
   // 尝试美化 JSON（解析成功则缩进；否则原样展示）
   try {
     const parsed = JSON.parse(decoded);
@@ -1083,9 +1087,11 @@ function formatToolJson(raw: string): string {
   } catch {
     /* 不是合法 JSON，原样展示 */
   }
-  // 只逃逸三种真正危险的 HTML 字符，不碰引号
+  // 统一转义全部 5 种 HTML 危险字符，与 escapeHtml 保持一致，杜绝引号漏转义的 XSS 缝隙。
   return decoded
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
