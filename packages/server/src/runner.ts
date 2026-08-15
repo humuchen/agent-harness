@@ -27,6 +27,12 @@ import {
   type ToolCall,
   type Message,
   type MemorySummarizer,
+  createSandboxExecutor,
+  type Verifier,
+  type AgentCard,
+  type TenantContext,
+  tenantSessionKey,
+  policyEngine,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -172,12 +178,40 @@ export async function assembleAgent(
   /** 单次 run 的循环步数上限；未传则取 env MAX_STEPS（默认 24）。复杂任务可调大。 */
   maxSteps?: number,
   /** 复用既有 Memory（连续对话）。不传则由 sessionKey 自动按会话缓存取/建。 */
-  memoryArg?: Memory
+  memoryArg?: Memory,
+  /** 运行期自动验证门禁（P0-2）：传入则由 harness 在产出后自动校验，可选重试/标记。 */
+  verifier?: Verifier,
+  /** 验证未通过时的最大自动重试次数（透传给 harness）。 */
+  verifyMaxRetries?: number,
+  /**
+   * P0.1：目标 agent 的能力卡片。提供时按 `card.assembly` 把「万能 harness」收窄为
+   * 「领域 harness」（仅注册指定工具 / 技能 / MCP / 系统提示词）；为 undefined 时
+   * 行为完全不变（今天的通用 harness），向后兼容。
+   */
+  card?: AgentCard | null,
+  /**
+   * P0.3 租户隔离：传入时按 tenant.id 从 PolicyEngine 取该租户护栏策略（含出网管控）注入
+   * harness，并将记忆分区为 `tenant::session` 复合 key。为 undefined 时退化为通用默认策略
+   * 与原始 sessionKey（今天的零租户行为完全不变），向后兼容。
+   */
+  tenantCtx?: TenantContext | null,
+  /**
+   * P2.d per-job 隔离后端：由调用方（run-queue）经 resolveIsolationBackend 收敛后的最终
+   * backend 字符串（如 'os' / 'container' / 'local'）。缺省沿用 SANDBOX_BACKEND 全局值。
+   * 通过它实现「不可信 / 跨行业 agent 强制强隔离」而不改动 shell 工具逻辑。
+   */
+  sandboxBackend?: string | null
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
   const dryRun = envPlatform.dryRun;
   registerHarnessTools(tools, envPlatform);
+
+  // P0.1：按 AgentCard 收窄工具面（缺省 card 或 card.assembly 未指定某维度时退化为全开）。
+  const assembly = card?.assembly;
+  const assemblyTools = assembly?.tools;
+  const assemblySkills = assembly?.skills;
+  const assemblyMcp = assembly?.mcpServers;
 
   // 注册零依赖的内置基础工具（calculator / datetime / web_fetch / filesystem），
   // 默认常开，可用环境变量 BUILTINS_FS / BUILTINS_WEB / BUILTINS_CALC / BUILTINS_DT
@@ -200,17 +234,33 @@ export async function assembleAgent(
     shellRequireConfirmation: shellRequireConfirm,
     shellConfirm: shellRequireConfirm ? (req) => waitApproval(req.command, req.args) : undefined,
     shellAllowOperators: process.env.SHELL_ALLOW_OPERATORS === 'true',
+    // P0-1/P2.d：选择 shell 执行器后端。优先用调用方收敛后的 per-job 隔离后端（sandboxBackend，
+    // 已含 card/租户/env 升级逻辑），缺省回退全局 SANDBOX_BACKEND（local 硬化 / container 隔离）。
+    sandboxBackend: sandboxBackend ?? process.env.SANDBOX_BACKEND,
+    // P0.1：按 AgentCard.assembly.tools 收窄内置工具面（undefined/空 → 全部）。
+    ...(assemblyTools ? { tools: assemblyTools } : {}),
   });
 
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。
   // 注册表 + 元工具（builtin__use_skill）均为新增，不修改 Agent 主循环；
   // 技能目录与触发词自动预激活的指引会注入系统提示词。
   const skillRegistry = new SkillRegistry();
-  skillRegistry.registerMany(defaultSkills());
+  // P0.1：若 card 指定了 skills，仅启用这些；undefined → 全部；空数组 [] → 一个都不启用。
+  skillRegistry.registerMany(
+    defaultSkills().filter((s) => !assemblySkills || assemblySkills.includes(s.id))
+  );
   registerSkillTools(tools, skillRegistry);
 
   // 合并运行时已接入的 MCP 工具（共享注册表）。
-  tools.mergeFrom(mcpManager.liveRegistry());
+  // P0.1：若 card 指定了 mcpServers，仅合并列出的 MCP server（按 server 名 / 工具名前缀匹配）。
+  const allowMcp =
+    assemblyMcp && assemblyMcp.length
+      ? (name: string, source?: string) =>
+          assemblyMcp.some(
+            (s) => source === `mcp:${s}` || name === s || name.startsWith(`${s}__`)
+          )
+      : undefined;
+  tools.mergeFrom(mcpManager.liveRegistry(), allowMcp);
 
   const notes: string[] = [];
   notes.push(
@@ -289,7 +339,9 @@ export async function assembleAgent(
   // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
   const skillCatalog = skillRegistry.describeForPrompt();
   const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
-  const finalSystemPrompt = [systemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
+  // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
+  const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
+  const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
   const skillTitles = skillRegistry.enabledList().map((s) => s.id).join(' / ');
   notes.push(`已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`);
 
@@ -340,7 +392,10 @@ export async function assembleAgent(
   }
   // 复用按会话缓存的 Memory：同一 sessionKey 的多次 run 共享对话窗口，实现连续追问。
   // 显式传入的 memoryArg（如测试）优先；否则按 sessionKey 取/建进程内缓存实例。
-  const memory = memoryArg ?? getSessionMemory(sessionKey ?? 'anonymous', maxWindow, summarizer);
+  // P0.3：per-tenant 复合记忆 key（tenant::session），实现租户间记忆物理隔离；
+  // 无 tenant 时退化为原始 sessionKey（与今天一致）。
+  const effectiveSessionKey = tenantSessionKey(tenantCtx, sessionKey ?? 'anonymous');
+  const memory = memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer);
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
   const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
@@ -355,6 +410,10 @@ export async function assembleAgent(
         : 24;
   const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
   const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
+  // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
+  // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
+  // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
+  const guardrailPolicy = tenantCtx ? policyEngine.getPolicy(tenantCtx.id) : policyEngine.getPolicy(undefined);
   const harness = new AgentHarness({
     llm,
     tools,
@@ -367,9 +426,16 @@ export async function assembleAgent(
     maxSteps: effectiveMaxSteps,
     maxToolResultChars,
     requireCompletion,
+    // P0-2：运行期自动验证门禁（验证器由 run-queue 按配置/env 装配后注入）。
+    ...(verifier ? { verify: verifier } : {}),
+    ...(verifier && verifyMaxRetries ? { verifyMaxRetries } : {}),
     // 透传运行队列下发的取消信号与整体超时（harness 已原生支持，UI 此前未接线）。
     ...(signal ? { signal } : {}),
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
+    // P0.3：租户级护栏策略覆盖（含出网管控）。
+    ...(guardrailPolicy ? { guardrailPolicy } : {}),
+    // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
+    ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   });
 
   notes.push(
@@ -383,6 +449,15 @@ export async function assembleAgent(
         : '') +
       '。'
   );
+  if (verifier) {
+    notes.push(
+      `已启用运行期自动验证门禁（P0-2）：${
+        verifyMaxRetries && verifyMaxRetries > 0
+          ? `未通过时最多自动重试 ${verifyMaxRetries} 次并自检修正`
+          : '产出后自动校验，未通过则标记返回'
+      }。`
+    );
+  }
   if (enableCompression && compressionMode === 'llm' && !useLlmSummarizer) {
     notes.push('上下文压缩已设为 LLM 模式，但当前为 Mock/离线模式，已安全回退为启发式摘要。');
   }

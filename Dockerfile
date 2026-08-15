@@ -78,6 +78,14 @@ COPY . .
 RUN node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f));delete p.packageManager;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
 RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." build
 
+# 编译 OS 级沙箱原生 helper（Linux only；失败不阻断整体构建——运行期自动降级）。
+# 先 best-effort 装 C 工具链与可选依赖库（libseccomp/libcap）；网络受限装不上也没关系，
+# build-native.sh 会自动降级（缺库跳过对应能力、缺编译器整体跳过）。
+# 严格生产镜像可在有网环境下改用 HARNESS_NATIVE_STRICT=1 使缺编译条件即失败。
+RUN (apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config libseccomp-dev libcap-dev && rm -rf /var/lib/apt/lists/*) 2>/dev/null || true
+RUN bash scripts/build-native.sh || true
+
 # ----------------------------- 运行阶段 -----------------------------
 FROM ${NODE_BASE}:${NODE_TAG} AS runtime
 ENV NODE_ENV=production
@@ -86,10 +94,14 @@ ENV UI_HOST=0.0.0.0
 WORKDIR /app
 
 # 复制运行所需：node_modules（含 workspace 软链）与 packages 编译产物。
+# 注意：packages 全量复制已包含原生 helper 产物 packages/core/native/sandbox-exec/build/sandbox-exec，
+# 无需再单独 COPY（单独 COPY 在「未编译出 build 目录」时反而会导致构建失败）。
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=build /app/package.json ./package.json
+# 运行期共享库：若 helper 以 libseccomp/libcap 编译，则运行需对应 .so（best-effort，失败不阻断）。
+RUN (apt-get update && apt-get install -y --no-install-recommends libseccomp2 libcap2 && rm -rf /var/lib/apt/lists/*) 2>/dev/null || true
 
 # 以非 root 运行。
 RUN groupadd -r ah && useradd -r -g ah -d /app -s /usr/sbin/nologin ah && chown -R ah:ah /app

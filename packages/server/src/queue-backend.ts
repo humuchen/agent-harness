@@ -16,6 +16,7 @@
  */
 
 import type { RunMode } from './runner';
+import type { VerifyConfig } from '@agent-harness/core';
 
 /** 可持久化的任务意图（RunJob 的纯数据子集，可 JSON 序列化）。 */
 export interface JobDescriptor {
@@ -25,6 +26,18 @@ export interface JobDescriptor {
   model?: string;
   sessionKey?: string;
   maxSteps?: number;
+  /** 运行期自动验证门禁配置（P0-2，可序列化）。 */
+  verify?: VerifyConfig;
+  /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
+  agentId?: string;
+  /** P0.2：客户端/上游声明的领域（比 classify 更可信，可直接过滤候选）。 */
+  domain?: string;
+  /** P0.3 预留：租户标识（经认证派生，不可客户端伪造）。 */
+  tenantId?: string;
+  /** P0.2：工作流标识（可观测性，随 run:meta 透出）。 */
+  workflowId?: string;
+  /** P0.2：链路追踪标识（可观测性）。 */
+  traceId?: string;
   enqueuedAt: number;
 }
 

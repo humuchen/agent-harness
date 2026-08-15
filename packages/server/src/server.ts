@@ -10,7 +10,9 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+import { createWorkflowExecutor, workflowStore } from './workflow-executor';
+import { runAgentTask } from './agent-run';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -215,7 +217,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // CORS 预检：仅当配置了跨域白名单时才需处理。
     if (req.method === 'OPTIONS') {
       const h: Record<string, string> = {
-        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
         'access-control-allow-headers': 'content-type,authorization',
         ...corsHeaders(req),
       };
@@ -333,6 +335,43 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const store = getMemoryStore();
       const keys = await store.list();
       return sendJson(res, { backend: store.kind, sessions: keys }, req);
+    }
+    // ---- P0.1：智能体注册与发现 ----
+    if (req.method === 'GET' && path === '/api/agents') {
+      // 列出 / 按 domain + capability 发现已注册 agent。受 agent:read 保护。
+      const ctx = await guard(req, res, 'agent:read');
+      if (!ctx) return;
+      const domain = url.searchParams.get('domain') || undefined;
+      const capability = url.searchParams.get('capability') || undefined;
+      const agents = await getAgentRegistry().query({ ...(domain ? { domain } : {}), ...(capability ? { capability } : {}) });
+      return sendJson(res, { agents, count: agents.length }, req);
+    }
+    if (req.method === 'GET' && path.startsWith('/api/agents/')) {
+      // 取单个 agent 卡片（含健康度）。受 agent:read 保护。
+      const ctx = await guard(req, res, 'agent:read');
+      if (!ctx) return;
+      const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
+      const card = id ? await getAgentRegistry().get(id) : null;
+      if (!card) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'agent not found', id }));
+        return;
+      }
+      return sendJson(res, { agent: card }, req);
+    }
+    // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
+    if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
+      // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
+      const ctx = await guard(req, res, 'workflow:read');
+      if (!ctx) return;
+      const id = decodeURIComponent(path.slice('/api/workflows/'.length).replace(/\/$/, ''));
+      const run = id ? await workflowStore().get(id) : null;
+      if (!run) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'workflow not found', id }));
+        return;
+      }
+      return sendJson(res, { workflow: run }, req);
     }
     if (path === '/api/memory') {
       // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
@@ -465,6 +504,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/run') {
       return await handleRun(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/workflows') {
+      return await handleWorkflow(req, res);
+    }
+    if (req.method === 'POST' && path === '/api/a2a/tasks') {
+      return await handleA2A(req, res);
+    }
+    // P0.1 写端点：运行期注册/注销/心跳 agent（避免必须在启动期代码里硬编码新行业 agent）。
+    if (req.method === 'POST' && path === '/api/agents') {
+      return await handleAgentRegister(req, res);
+    }
+    if (req.method === 'POST' && path.startsWith('/api/agents/') && path.endsWith('/heartbeat')) {
+      return await handleAgentHeartbeat(req, res, path);
+    }
+    if (req.method === 'DELETE' && path.startsWith('/api/agents/')) {
+      return await handleAgentDeregister(req, res, path);
     }
     if (req.method === 'POST' && path === '/api/verify') {
       return await handleVerify(req, res);
@@ -659,14 +714,53 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       'anonymous'
   );
 
+  // P0.1：显式指定目标 agent（绕过路由，直达该 agent 的装配配方）。
+  // 未传 → 用注册表里 seed 的 default 通用 agent（退化为今天的万能 harness）。
+  // 传入但不存在 → 400 拒绝，避免静默退化到错误 agent。
+  const agentId = body.agentId ? String(body.agentId).trim() : undefined;
+  let agentCard: AgentCard | null = null;
+  if (agentId) {
+    agentCard = await getAgentRegistry().get(agentId);
+    if (!agentCard) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: `unknown agentId: ${agentId}` }));
+      return;
+    }
+  }
+
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
+  // P0.2/P0.3：任务路由 & 租户辅助字段。
+  // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
+  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId），
+  //   客户端声明的 body.tenantId 仅作本地/测试降级；认证身份优先，杜绝客户端伪造越界。
+  const domain = body.domain ? String(body.domain).trim() : undefined;
+  const declaredTenantId = body.tenantId ? String(body.tenantId).trim() : undefined;
+  const effectiveTenantId = ctx.tenantId || declaredTenantId;
+  const tenantId = effectiveTenantId || undefined;
+  const workflowId = body.workflowId ? String(body.workflowId).trim() : undefined;
+  const traceId = body.traceId ? String(body.traceId).trim() : undefined;
+
+  // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
+  // > 服务端 AGENT_AUTO_VERIFY 默认）。验证器最终在 run-queue.execute 内按 config 装配，
+  // 并以可序列化形式随 JobDescriptor 持久化，使重放/多实例领取后门禁行为一致。
+  let verifyConfig: VerifyConfig | undefined;
+  const envAutoVerify =
+    process.env.AGENT_AUTO_VERIFY === 'true' || process.env.AGENT_AUTO_VERIFY === '1';
+  if (body.verify && typeof body.verify === 'object' && !Array.isArray(body.verify)) {
+    verifyConfig = body.verify as VerifyConfig;
+  } else if (typeof body.autoVerify === 'boolean') {
+    verifyConfig = body.autoVerify ? { auto: true } : undefined;
+  } else if (envAutoVerify) {
+    verifyConfig = { auto: true };
+  }
+
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps });
-    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, role: ctx.role, sub: ctx.sub });
+    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps, verify: verifyConfig, agentId: agentCard?.id, domain, tenantId, workflowId, traceId });
+    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, agentId: agentCard?.id ?? null, role: ctx.role, sub: ctx.sub, verify: verifyConfig ? 'on' : 'off' });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
     jobId = job.id;
   } else {
@@ -690,6 +784,214 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   res.on('close', () => {
     unsub();
   });
+  return;
+}
+
+/**
+ * P1-④ A2A 接收端点：远端 agent 把 TaskEnvelope 投递到本平台，由本平台在「本地」用
+ * 与 /api/run 同款的 assembleAgent+harness 执行（目标 agent 必须已注册或为 local transport）。
+ * body: A2ARequest { envelope: TaskEnvelope, card?: AgentCard }。
+ * - card 可选：随任务一起自注册/更新目标 agent 的能力卡片（远端 agent 入驻式入驻）；
+ * - 执行结果以 { result: TaskResult } 返回（成功 200，目标不存在 400）。
+ */
+async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'a2a:receive', body);
+  if (!ctx) return;
+  if (shuttingDown) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'server is shutting down' }));
+    return;
+  }
+
+  const reqBody = body as Partial<A2ARequest>;
+  const envelope = reqBody.envelope as TaskEnvelope | undefined;
+  if (!envelope || typeof envelope.taskId !== 'string' || typeof envelope.toAgent !== 'string') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid a2a request: 需要 { envelope: { taskId, toAgent, ... } }' }));
+    return;
+  }
+
+  // 远端 agent 随任务自注册能力卡片（首次入驻或覆盖更新）。
+  const card = reqBody.card as AgentCard | undefined;
+  if (card && typeof card.id === 'string') {
+    await getAgentRegistry().register(card);
+  }
+
+  const target = await getAgentRegistry().get(envelope.toAgent);
+  if (!target) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `unknown a2a target agent: ${envelope.toAgent}` }));
+    return;
+  }
+
+  // 安全红线：本端点只执行本地 agent（transport=local）。远端 a2a 目标不应被当作本地执行，
+  // 否则会与 run-queue 的跨主机派发语义混淆——跨主机由发起方经 HttpA2ATransport 走。
+  if (target.transport !== 'local') {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `agent "${target.id}" transport=${target.transport} 不是本地 agent，无法被本端点直接执行` }));
+    return;
+  }
+
+  try {
+    const output = await runAgentTask(target, envelope.input, {
+      tenantId: envelope.tenantId,
+      onEvent: undefined,
+    });
+    const result: TaskResult = { taskId: envelope.taskId, status: 'success', output };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ result }));
+  } catch (e: any) {
+    const result: TaskResult = { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ result }));
+  }
+}
+
+/** 校验并补全一张待注册的 AgentCard（缺省健康度视为初次上线健康）。返回 null 表示非法。 */
+function normalizeIncomingCard(raw: unknown): AgentCard | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Partial<AgentCard>;
+  if (typeof c.id !== 'string' || !c.id.trim()) return null;
+  if (!Array.isArray(c.capabilities)) return null;
+  const now = Date.now();
+  return {
+    id: c.id.trim(),
+    name: typeof c.name === 'string' && c.name ? c.name : c.id.trim(),
+    domain: (c.domain ?? 'generic') as AgentCard['domain'],
+    description: c.description,
+    capabilities: c.capabilities,
+    transport: c.transport ?? 'local',
+    endpoint: c.endpoint,
+    version: c.version,
+    isolation: c.isolation,
+    assembly: c.assembly,
+    // 客户端可上报健康度；缺省视为「初次上线且健康」。
+    health: c.health ?? { status: 'healthy', lastHeartbeat: now, load: 0 },
+  } as AgentCard;
+}
+
+/**
+ * P0.1 注册/更新 agent。body = AgentCard（至少 { id, capabilities }）。
+ * 受 agent:register 保护（admin/operator）；写穿注册表持久后端，多副本经共享后端立即可见。
+ */
+async function handleAgentRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const card = normalizeIncomingCard(body);
+  if (!card) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid agent card: 需要 { id: string, capabilities: [] }' }));
+    return;
+  }
+  await getAgentRegistry().register(card);
+  auditAction('agent.register', { id: card.id, domain: card.domain, transport: card.transport, role: ctx.role, sub: ctx.sub });
+  return sendJson(res, { ok: true, agent: card }, req);
+}
+
+/**
+ * P0.1 心跳。path = /api/agents/:id/heartbeat；body = Partial<AgentHealth>（status/load 等）。
+ * 未注册的 id 静默返回 ok:false（不 404，便于客户端幂等重试）。
+ */
+async function handleAgentHeartbeat(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const id = decodeURIComponent(path.slice('/api/agents/'.length, path.length - '/heartbeat'.length));
+  if (!id) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing agent id' }));
+    return;
+  }
+  const existing = await getAgentRegistry().get(id);
+  if (!existing) {
+    return sendJson(res, { ok: false, reason: 'unknown agent', id }, req);
+  }
+  const health = (body ?? {}) as Partial<AgentHealth>;
+  await getAgentRegistry().heartbeat(id, health);
+  return sendJson(res, { ok: true, id }, req);
+}
+
+/** P0.1 注销 agent。path = /api/agents/:id。受 agent:register 保护。 */
+async function handleAgentDeregister(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
+  if (!id) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing agent id' }));
+    return;
+  }
+  await getAgentRegistry().deregister(id);
+  auditAction('agent.deregister', { id, role: ctx.role, sub: ctx.sub });
+  return sendJson(res, { ok: true, id }, req);
+}
+
+/**
+ * P1-⑤ 工作流编排入口：定义并运行一个 DAG 工作流，SSE 直播每 step 进度与最终快照。
+ * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
+ * 每个 step 经 createWorkflowExecutor 复用 /api/run 同一套 assembleAgent + harness 装配。
+ */
+async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let closed = false;
+  res.on('close', () => {
+    closed = true;
+  });
+
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'workflow:run', body);
+  if (!ctx) return;
+  // 优雅停机期间不再接受新运行。
+  if (shuttingDown) {
+    res.writeHead(503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'server is shutting down' }));
+    return;
+  }
+
+  const def = body.def as WorkflowDef | undefined;
+  if (!def || typeof def.id !== 'string' || !Array.isArray(def.steps) || def.steps.length === 0) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] }' }));
+    return;
+  }
+
+  // SSE 发送器延迟绑定：先声明 no-op，校验通过后再挂真实 SSE；校验失败时根本不开 SSE。
+  let send: (payload: unknown) => void = () => {};
+  const onHarnessEvent = (e: any) => {
+    if (!closed) send({ type: 'harness', event: e });
+  };
+  const onWfEvent = (e: WorkflowEvent) => {
+    if (!closed) send(e);
+  };
+  const executor = createWorkflowExecutor({ onEvent: onHarnessEvent });
+  const engine = new DagEngine({ store: workflowStore(), executor, onEvent: onWfEvent });
+
+  // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 立即 400，不进入异步执行才失败。
+  try {
+    engine.validateWorkflow(def);
+  } catch (e: any) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `invalid workflow topology: ${e?.message ?? String(e)}` }));
+    return;
+  }
+
+  send = startSse(res, req);
+
+  auditAction('workflow.run', { workflowId: def.id, stepCount: def.steps.length, role: ctx.role, sub: ctx.sub });
+
+  // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
+  engine
+    .run(def, body.input)
+    .then((run) => {
+      if (!closed) send({ type: '_wf_done', run });
+      if (!closed) res.end();
+    })
+    .catch((e: any) => {
+      if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+      if (!closed) res.end();
+    });
   return;
 }
 
@@ -856,7 +1158,55 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
   return;
 }
 
-server.listen(PORT, HOST, () => {
+/**
+ * 按 AGENT_STORE env 构造 AgentRegistry 持久后端（投产：多副本共享 + 重启不丢）。
+ * - redis：动态 require ioredis（可选依赖，与 queue-backend 同款）注入最小 Hash 契约；
+ *   URL 取 AGENT_STORE_REDIS_URL，回落 REDIS_URL。不可用则回退内存态并告警。
+ * - file / sqlite / volatile：由 core 的 createAgentStoreFromEnv 自解析（零依赖）。
+ */
+function buildAgentStore(): AgentStore {
+  const kind = (process.env.AGENT_STORE || '').toLowerCase();
+  let redis: AgentStoreRedis | null = null;
+  if (kind === 'redis') {
+    const url = process.env.AGENT_STORE_REDIS_URL || process.env.REDIS_URL;
+    try {
+      // ioredis 为可选依赖：动态 require，未安装则回退 volatile（保持「一切降级可用」）。
+      const RedisMod = require('ioredis');
+      const RedisCtor = (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+      redis = new RedisCtor(url || 'redis://localhost:6379', {
+        maxRetriesPerRequest: null,
+        lazyConnect: false,
+      }) as unknown as AgentStoreRedis;
+      (redis as any).on?.('error', (e: any) =>
+        console.error('[agent-store] redis error:', e?.message)
+      );
+      console.log(`[agent-store] using Redis backend${url ? ` (${url})` : ''}`);
+    } catch (e: any) {
+      console.error('[agent-store] ioredis 不可用，回退内存态 volatile 后端：', e?.message ?? e);
+    }
+  }
+  const store = createAgentStoreFromEnv(process.env, redis);
+  if (kind === 'redis' && store.kind !== 'redis') {
+    console.warn('[agent-store] ⚠️ AGENT_STORE=redis 但 client 未就绪，实际使用 volatile（重启即丢、多副本不共享）。');
+  }
+  return store;
+}
+
+/**
+ * 启动引导：先按 env 选定并初始化 AgentRegistry 持久后端（幂等，须早于首个请求），
+ * 再注册行业合规画像，最后开始监听。把这些放到 listen 之前，杜绝「请求早于注册表就绪」的竞态。
+ */
+async function bootstrap(): Promise<void> {
+  const store = buildAgentStore();
+  await initAgentRegistry(store);
+  // P2.c：引导注册全部预置行业合规画像（医疗等保 / 金融数据出境 / 教育放宽），使新建对应行业
+  // 租户即自带合规基线（applyIndustryProfile 透明叠加）。幂等，不影响已在运行的租户策略。
+  policyEngine.registerIndustryProfiles();
+  server.listen(PORT, HOST, onListening);
+}
+
+function onListening(): void {
+  const registry = getAgentRegistry();
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
@@ -883,8 +1233,26 @@ server.listen(PORT, HOST, () => {
   if (AUDIT_LOG) console.log(`   📝 审计日志落盘：${AUDIT_LOG}`);
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`);
   console.log(`   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`);
-  console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}\n`);
-});
+  console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}`);
+  const storeKind = (registry as any)?.store?.kind ?? 'volatile';
+  if (storeKind === 'volatile') {
+    console.warn(`   ⚠️  AgentRegistry 后端：volatile（内存态，重启即丢、多副本不共享）。生产请设 AGENT_STORE=redis|sqlite|file。`);
+  } else {
+    console.log(`   🗄️  AgentRegistry 后端：${storeKind}（持久化，重启保留 / 多副本可共享）。`);
+  }
+  if (isTenantRequired()) {
+    console.log(`   🔐 跨行业隔离强制：REQUIRE_TENANT=on（行业 agent 无租户上下文将被拒绝执行）。`);
+  } else {
+    console.log(`   🔓 跨行业隔离：opt-in（REQUIRE_TENANT 未开启；行业 agent 可在无租户下运行）。生产强合规建议设 REQUIRE_TENANT=true。`);
+  }
+  const intentMode = resolveIntentMode();
+  const intentRaw = (process.env.INTENT_ROUTER || 'rule').toLowerCase();
+  console.log(
+    `   🧭 意图路由：INTENT_ROUTER=${intentRaw} → 生效 ${intentMode}` +
+      (intentRaw === 'auto' ? `（${process.env.OPENROUTER_API_KEY ? '检测到 API key，用 llm 精准分类' : '无 API key，降级 rule 关键词分类'}）` : '')
+  );
+  console.log('');
+}
 
 // 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
 // - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
@@ -980,5 +1348,11 @@ async function shutdown(): Promise<void> {
 }
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
+
+// 启动：先完成 AgentRegistry 后端初始化 + 行业画像注册，再监听（详见 bootstrap 注释）。
+bootstrap().catch((e) => {
+  console.error('[ui] bootstrap 失败：', e?.message ?? e);
+  process.exit(1);
+});
 
 export {};

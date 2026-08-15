@@ -1,5 +1,21 @@
 import type { HarnessEvent } from '@agent-harness/core';
-import { incCounter, recordLatency, resolveOpenRouterConfig } from '@agent-harness/core';
+import {
+  incCounter,
+  recordLatency,
+  resolveOpenRouterConfig,
+  createVerifier,
+  resolveTask,
+  resolveTenantContext,
+  enforceTenantIsolation,
+  policyEngine,
+  quotaEngine,
+  audit,
+  resolveIsolationBackend,
+  HttpA2ATransport,
+  type TaskEnvelope,
+  type TaskResult,
+  type VerifyConfig,
+} from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
 
@@ -39,6 +55,18 @@ export interface RunJob {
   sessionKey?: string;
   /** 单次 run 的循环步数上限（来自 UI 输入 / env MAX_STEPS）。 */
   maxSteps?: number;
+  /** 运行期自动验证门禁配置（P0-2，可序列化，随 job 持久化）。 */
+  verify?: VerifyConfig;
+  /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
+  agentId?: string;
+  /** P0.2：任务领域（显式声明时直接过滤候选，优于自动分类）。 */
+  domain?: string;
+  /** P0.3 预留：租户标识（经认证派生，不可客户端伪造）。 */
+  tenantId?: string;
+  /** P0.2：工作流标识（可观测性）。 */
+  workflowId?: string;
+  /** P0.2：链路追踪标识（可观测性）。 */
+  traceId?: string;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -88,7 +116,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -98,6 +126,12 @@ export class RunQueue {
       model: job.model,
       sessionKey: job.sessionKey,
       maxSteps: job.maxSteps,
+      verify: job.verify,
+      agentId: job.agentId,
+      domain: job.domain,
+      tenantId: job.tenantId,
+      workflowId: job.workflowId,
+      traceId: job.traceId,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -116,7 +150,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -127,6 +161,12 @@ export class RunQueue {
       model: input.model,
       sessionKey: input.sessionKey,
       maxSteps: input.maxSteps,
+      verify: input.verify,
+      agentId: input.agentId,
+      domain: input.domain,
+      tenantId: input.tenantId,
+      workflowId: input.workflowId,
+      traceId: input.traceId,
       events: [],
       subscribers: new Set(),
       controller: new AbortController(),
@@ -173,7 +213,7 @@ export class RunQueue {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
-        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
         d.id
       );
     }
@@ -199,7 +239,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
           d.id
         );
         this.queue.push(job);
@@ -399,8 +439,148 @@ export class RunQueue {
       }
     }, JOB_TIMEOUT_MS);
     const t0 = Date.now();
+    // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
+    const tenantIdForQuota = job.tenantId ?? 'anonymous';
+    // 在 try 之外保存，供 finally 中的审计留存引用（try 内 const 不可见于 finally）。
+    let resolvedAgentId: string | null = null;
+    let admitted = false;
     try {
       const signal = job.controller.signal;
+      // P0-2：从 job 携带的可序列化验证配置装配运行期验证器（undefined 表示关闭门禁）。
+      const verifier = createVerifier(job.verify);
+      const verifyMaxRetries = verifier
+        ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
+        : 0;
+      // P0.2：capability-aware 路由解析目标 agent。
+      // - 显式 agentId 直达该 agent 装配配方；
+      // - 否则按 domain 过滤 / 经 IntentRouter 分类 + AgentSelector 打分选最优；
+      // - 无更优专属 agent 或 router 关闭（TASK_ROUTER=off）时回退 default 通用 harness。
+      // 全程降级可用：任何解析异常都退化为 default，不中断执行。
+      const route = await resolveTask({
+        agentId: job.agentId,
+        domain: job.domain,
+        tenantId: job.tenantId,
+        prompt: job.prompt,
+        workflowId: job.workflowId,
+        traceId: job.traceId,
+      }).catch(() => null);
+      const targetCard = route?.card ?? null;
+      // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
+      const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
+
+      // P2 投产加固：跨行业数据隔离强制门禁（REQUIRE_TENANT=true 时生效）。
+      // 路由命中非 generic 行业 agent（医疗/金融等）但无 tenantCtx → 拒绝执行，防止行业敏感数据
+      // 在无租户分区/无出网管控的默认通道混流。通用任务不受影响；默认关闭，向后兼容。
+      // 放在配额准入前：被拒任务不消耗配额，仅审计 denied。
+      const isolationDenied = enforceTenantIsolation({
+        agentDomain: targetCard?.domain ?? null,
+        tenant: tenantCtx,
+      });
+      if (isolationDenied) {
+        emit({ type: 'warn', message: `tenant isolation denied: ${isolationDenied.reason}` });
+        audit({
+          tenantId: job.tenantId,
+          actor: job.tenantId ?? 'anonymous',
+          action: 'agent.run.denied',
+          outcome: 'denied',
+          target: route?.agentId ?? job.agentId ?? 'default',
+          detail: { reason: isolationDenied.reason, mode: job.mode, domain: targetCard?.domain ?? job.domain ?? null, guard: 'require-tenant' },
+        });
+        incCounter('run.tenant.denied');
+        emit({ type: '_done', final: '', error: true });
+        job.status = 'failed';
+        return;
+      }
+
+      // P2.a 配额/计费准入：QPS 令牌桶 + 并发信号量（硬限 token/cost 默认关闭，仅统计）。
+      // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
+      // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
+      const admit = quotaEngine.admit(tenantIdForQuota);
+      if (!admit.allowed) {
+        emit({ type: 'warn', message: `quota denied (tenant=${tenantIdForQuota}): ${admit.reason}` });
+        audit({
+          tenantId: job.tenantId,
+          actor: job.tenantId ?? 'anonymous',
+          action: 'agent.run.denied',
+          outcome: 'denied',
+          target: route?.agentId ?? job.agentId ?? 'default',
+          detail: { reason: admit.reason, mode: job.mode, domain: job.domain ?? null },
+        });
+        incCounter('run.quota.denied');
+        emit({ type: '_done', final: '', error: true });
+        job.status = 'failed';
+        return;
+      }
+      admitted = true;
+      resolvedAgentId = route?.agentId ?? job.agentId ?? 'default';
+      audit({
+        tenantId: job.tenantId,
+        actor: job.tenantId ?? 'anonymous',
+        action: 'agent.run.start',
+        outcome: 'info',
+        target: resolvedAgentId,
+        detail: { mode: job.mode, domain: job.domain ?? null, decidedBy: route?.decidedBy ?? 'fallback' },
+      });
+
+      // P2.d per-job 隔离后端：按 card 声明 → 租户策略强制 → env 默认 → 跨行业不可信升级，
+      // 收敛为最终 backend 字符串，传给 assembleAgent（shell 执行器据此选择 OS/容器/本地隔离）。
+      const sandboxBackend = resolveIsolationBackend({
+        card: targetCard,
+        tenantPolicy: tenantCtx ? policyEngine.getPolicy(tenantCtx.id) : null,
+        tenantDomain: tenantCtx?.domain ?? null,
+        envBackend: process.env.SANDBOX_BACKEND,
+      });
+
+      // P1-④ A2A 跨主机派发：路由到的目标若是远端 a2a agent（transport=a2a 且有 endpoint），
+      // 则不再本地装配 harness，而是经 HttpA2ATransport 把任务派发给远端 agent 执行，
+      // 取回 TaskResult 作为本轮输出。派发失败（网络/远端错误）则降级回退本地默认 harness，
+      // 不中断执行（符合「一切降级可用」约定），并发告警事件。
+      if (targetCard?.transport === 'a2a' && targetCard?.endpoint) {
+        const envelope: TaskEnvelope = {
+          taskId: `task-${job.id}`,
+          tenantId: job.tenantId ?? 'default',
+          traceId: job.traceId,
+          fromAgent: 'default',
+          toAgent: targetCard.id,
+          input: job.prompt,
+          sla: { timeoutMs: JOB_TIMEOUT_MS },
+        };
+        const result: TaskResult | null = await new HttpA2ATransport(targetCard.endpoint)
+          .send(envelope)
+          .catch(() => null);
+        if (result && result.status === 'success') {
+          const finalText =
+            typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '');
+          emit({
+            type: 'run:meta',
+            mode: job.mode,
+            agentId: targetCard.id,
+            decidedBy: route?.decidedBy ?? 'a2a-remote',
+            domain: job.domain ?? null,
+            tenantId: tenantCtx?.id ?? null,
+            llmKind: 'remote-a2a',
+            dryRun: false,
+            mcpConnected: false,
+            notes: [`A2A 跨主机派发至 ${targetCard.endpoint}`],
+            model: null,
+            tokenBudget: null,
+            costBudget: null,
+            failover: false,
+            workflowId: job.workflowId ?? null,
+            traceId: job.traceId ?? null,
+          });
+          emit({ type: 'run:end', final: finalText, steps: 0 });
+          emit({ type: '_done', final: finalText });
+          job.status = 'done';
+          incCounter('run.success');
+          return;
+        }
+        emit({
+          type: 'warn',
+          message: `A2A 派发至 ${targetCard.id} 失败，降级回退本地默认 harness：${result?.error ?? 'unknown'}`,
+        });
+      }
+
       const assembled = await assembleAgent(
         job.mode,
         onEvent,
@@ -410,12 +590,25 @@ export class RunQueue {
         job.sessionKey,
         signal,
         JOB_TIMEOUT_MS,
-        job.maxSteps
+        job.maxSteps,
+        undefined,
+        verifier,
+        verifyMaxRetries,
+        // P0.1/P0.2：解析出的目标 AgentCard（null 退化为今天的通用 harness）。
+        targetCard,
+        // P0.3：租户上下文（记忆分区 + 护栏策略覆盖 + 出网管控）。
+        tenantCtx,
+        // P2.d：per-job 隔离后端（card/租户/env 收敛，跨行业不可信强制强隔离）。
+        sandboxBackend
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
         type: 'run:meta',
         mode: job.mode,
+        agentId: route?.agentId ?? job.agentId ?? null,
+        decidedBy: route?.decidedBy ?? 'fallback',
+        domain: job.domain ?? null,
+        tenantId: tenantCtx?.id ?? null,
         llmKind: assembled.llmKind,
         dryRun: assembled.dryRun,
         mcpConnected: assembled.mcpConnected,
@@ -424,6 +617,8 @@ export class RunQueue {
         tokenBudget: assembled.tokenBudget ?? null,
         costBudget: assembled.costBudget ?? null,
         failover: assembled.failover,
+        workflowId: job.workflowId ?? null,
+        traceId: job.traceId ?? null,
       });
       emit({ type: 'run:tools', tools: assembled.tools.schemas() });
       const finalText = await assembled.harness.run(job.prompt);
@@ -441,6 +636,17 @@ export class RunQueue {
       if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
       job.finishedAt = Date.now();
       recordLatency('run.totalMs', job.finishedAt - (job.startedAt ?? job.finishedAt));
+      // P2.a：归还并发额度（admit 成功才消耗；denied 路径 active=0，release 为 no-op 安全）。
+      if (admitted) quotaEngine.release(tenantIdForQuota);
+      // P2.a：运行结束审计留痕（成功/失败，便于强合规租户对账）。
+      audit({
+        tenantId: job.tenantId,
+        actor: job.tenantId ?? 'anonymous',
+        action: 'agent.run.end',
+        outcome: job.status === 'done' ? 'success' : job.status === 'failed' ? 'failure' : 'info',
+        target: resolvedAgentId ?? 'default',
+        detail: { steps: stepCount, mode: job.mode },
+      });
     }
   }
 }

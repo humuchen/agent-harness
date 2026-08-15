@@ -6,12 +6,19 @@
 
 | 文档 | 内容 | 配套图 |
 |---|---|---|
-| [architecture.md](./architecture.md) | 仓库形态、5 个包职责与依赖、外部集成、设计原则落点 | [diagrams/architecture.svg](./diagrams/architecture.svg) |
-| [execution.md](./execution.md) | `AgentHarness.run()` 执行流、关注点接入机制、超时/取消、运行队列解耦 | [diagrams/execution-flow.svg](./diagrams/execution-flow.svg) |
-| [modules.md](./modules.md) | core 内部模块分组与依赖边、server 业务层模块、包级依赖 | [diagrams/module-dependency.svg](./diagrams/module-dependency.svg) |
+| [architecture.md](./architecture.md) | **权威总览**：分层架构与职责、端到端业务流（启动→闭环）、部署与配置、核心模块协作 | [diagrams/architecture.svg](./diagrams/architecture.svg) |
+| [execution.md](./execution.md) | `AgentHarness.run()` 执行流、闭环收口机制、超时/取消、运行队列解耦 | [diagrams/execution-flow.svg](./diagrams/execution-flow.svg) |
+| [modules.md](./modules.md) | core 内部模块分组与依赖边（含 P0/P1/P2 基座子系统）、server 业务层模块、包级依赖 | [diagrams/module-dependency.svg](./diagrams/module-dependency.svg) |
+| [DEPLOY.md](./DEPLOY.md) | 部署决策树总入口（Compose / K8s 选路） |
 | [deployment.md](./deployment.md) | 自托管部署（Docker / K8s / 镜像 CI）、环境变量清单、SSO、安全清单、密钥管理 |
+| [docker-deploy-guide.md](./docker-deploy-guide.md) | Docker Compose 完整流程（内存模式 / Redis+鉴权 overlay） |
+| [k8s-deploy-guide.md](./k8s-deploy-guide.md) | Kubernetes 完整流程（base + overlays/local） |
 | [mcp-services.md](./mcp-services.md) | 可通过 URL 接入的远程 MCP 服务清单与接入方式 |
 | [multi-instance-runbook.md](./multi-instance-runbook.md) | 多实例水平扩展与压测 Runbook（Redis 队列、sticky session、故障注入） |
+| [os-sandbox.md](./os-sandbox.md) | OS 级沙箱（原生 C helper：命名空间/seccomp/capabilities/rlimit）设计 |
+| [AGENT_PLATFORM_IMPLEMENTATION_PLAN.md](./AGENT_PLATFORM_IMPLEMENTATION_PLAN.md) | 统一基座平台落地计划（P0/P1/P2，已落地 ✅） |
+| [INDUSTRY_AGENT_INTEGRATION_READINESS.md](./INDUSTRY_AGENT_INTEGRATION_READINESS.md) | 行业智能体对接就绪度（三种 transport + 实测证据） |
+| [SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md](./SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md) | 单行业智能体完全闭环可行性（自动闭环 vs 断点） |
 
 ## 图示速览（diagrams/）
 
@@ -30,6 +37,11 @@
 | `render.yaml` `startCommand` | `node packages/ui/dist/server.js` | `node packages/server/dist/server.js` ✅ |
 | 根 `package.json` 脚本 `ui` | `@agent-harness/ui` | `@agent-harness/server`（脚本名 `server`）✅ |
 | `README.md` / `DEPLOY.md` 中 `packages/ui/...` | — | `packages/server/...`（及 webapp/client/cli）✅ |
+
+## 过时文档与图表提示
+
+- **`ARCHITECTURE_CAPABILITY_ASSESSMENT.md`** 与 **`AGENT_ORCHESTRATION_PLATFORM_ASSESSMENT.md`** 写于 P0/P1/P2 基座能力落地**之前**，其"注册/路由/隔离/协议/编排缺失"评级已**不适用**——这些能力现已全部实现并接入 server 运行链路。结论以 `architecture.md`（权威总览）、`INDUSTRY_AGENT_INTEGRATION_READINESS.md`、`SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md` 为准。两份旧评估可保留作演进史参考，但请勿据其做架构判断。
+- **`diagrams/*.svg`** 为早期结构图，未包含 `agents/router/tenant/policy/workflow/a2a/plugin/sandbox/quota/audit` 等基座子系统；**文本文档（`architecture.md` / `modules.md`）为当前权威**，SVG 待刷新。
 
 ## 仓库结构（当前）
 

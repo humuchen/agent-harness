@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { objectParams, ToolRegistry } from '../tools';
+import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
 
 /**
  * 沙箱 shell / 代码执行能力（可选）。
@@ -57,6 +57,12 @@ export interface ShellOptions {
    * 默认 false：只接受「单条命令 + 参数」，杜绝命令注入式拼接。
    */
   allowShellOperators?: boolean;
+  /**
+   * 执行器（P0-1）：决定「被白名单放行的命令如何被执行」。
+   * 默认按 SANDBOX_BACKEND 选择（local 硬化进程 / container 容器内 OS 级隔离）。
+   * 三道闸门（白名单/作用域/确认）在此 executor 之前已生效，executor 只改变执行方式。
+   */
+  executor?: SandboxExecutor;
 }
 
 // 常见的 shell 元字符 / 运算符。命中即视为潜在命令注入。
@@ -69,6 +75,7 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
   const confirm: ShellConfirmStrategy = opts.confirm ?? (requireConfirmation ? 'deny' : 'auto');
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const allowShellOperators = opts.allowShellOperators ?? false;
+  const executor: SandboxExecutor = opts.executor ?? createSandboxExecutor();
 
   registry.register(
     'builtin__shell_exec',
@@ -139,8 +146,11 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
         }
       }
 
-      // 5) 执行
-      return runCommand(base, argList, cwdAbs, timeoutMs);
+      // 5) 执行：委托给注入的 SandboxExecutor（local 硬化 / container 隔离）。
+      const res = await executor.exec({ command: base, args: argList, cwd: cwdAbs, timeoutMs });
+      const status = res.signal ? `killed by ${res.signal}` : `exit code ${res.code ?? -1}`;
+      const body = [res.stdout, res.stderr].filter(Boolean).join('') || '(no output)';
+      return `[${status}]\n${body}`;
     },
     'builtin'
   );
@@ -172,41 +182,6 @@ function interactiveConfirm(req: ShellExecRequest): Promise<boolean> {
     rl.question(prompt, (ans: string) => {
       rl.close();
       resolve(/^y(es)?$/i.test(ans.trim()));
-    });
-  });
-}
-
-/** 在限定 cwd 内 spawn 命令，返回「状态 + 合并输出」字符串。 */
-function runCommand(command: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
-  return new Promise<string>((resolve) => {
-    let proc: ChildProcess;
-    try {
-      proc = spawn(command, args, { cwd, timeout: timeoutMs, windowsHide: true });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return resolve(`error: failed to start command "${command}": ${msg}`);
-    }
-
-    let stdout = '';
-    let stderr = '';
-    proc.stdout?.on('data', (d) => (stdout += d.toString()));
-    proc.stderr?.on('data', (d) => (stderr += d.toString()));
-
-    let settled = false;
-    const finish = (text: string) => {
-      if (settled) return;
-      settled = true;
-      resolve(text);
-    };
-
-    proc.on('error', (err) => {
-      finish(`error: failed to start command "${command}": ${err.message}`);
-    });
-    proc.on('close', (code, signal) => {
-      const out = [stdout, stderr].filter(Boolean).join('');
-      const status = signal ? `killed by ${signal}` : `exit code ${code ?? -1}`;
-      const body = out.length ? out : '(no output)';
-      finish(`[${status}]\n${body}`);
     });
   });
 }

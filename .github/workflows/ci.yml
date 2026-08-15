@@ -49,6 +49,25 @@ jobs:
         env:
           AH_SMOKE_STRICT: '1'
 
+  # OS 级沙箱原生 helper：Linux 上「编得过 + 隔得住」实测。
+  # - 严格编译（HARNESS_NATIVE_STRICT=1）：缺工具链/库即失败，杜绝静默降级掩盖编译错误。
+  # - verify-sandbox 断言命名空间/只读根/网络隔离真实生效；GitHub ubuntu runner 通常允许
+  #   非特权 user namespace，若个别环境被内核策略限制，脚本会 loud SKIP（exit 0）而非误报。
+  sandbox-native:
+    name: OS Sandbox Native (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install C toolchain & optional libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libseccomp-dev libcap-dev
+      - name: Build native helper (strict)
+        run: HARNESS_NATIVE_STRICT=1 bash scripts/build-native.sh
+      - name: Verify OS isolation actually holds
+        run: bash scripts/verify-sandbox.sh
+
   # 依赖安全扫描（不阻塞主流程，仅报告）。企业落地时建议转为门禁。
   audit:
     name: Dependency Audit & SBOM
