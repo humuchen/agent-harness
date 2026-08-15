@@ -6,6 +6,7 @@ import {
   createVerifier,
   resolveTask,
   resolveTenantContext,
+  enforceTenantIsolation,
   policyEngine,
   quotaEngine,
   audit,
@@ -466,6 +467,30 @@ export class RunQueue {
       const targetCard = route?.card ?? null;
       // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
       const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
+
+      // P2 投产加固：跨行业数据隔离强制门禁（REQUIRE_TENANT=true 时生效）。
+      // 路由命中非 generic 行业 agent（医疗/金融等）但无 tenantCtx → 拒绝执行，防止行业敏感数据
+      // 在无租户分区/无出网管控的默认通道混流。通用任务不受影响；默认关闭，向后兼容。
+      // 放在配额准入前：被拒任务不消耗配额，仅审计 denied。
+      const isolationDenied = enforceTenantIsolation({
+        agentDomain: targetCard?.domain ?? null,
+        tenant: tenantCtx,
+      });
+      if (isolationDenied) {
+        emit({ type: 'warn', message: `tenant isolation denied: ${isolationDenied.reason}` });
+        audit({
+          tenantId: job.tenantId,
+          actor: job.tenantId ?? 'anonymous',
+          action: 'agent.run.denied',
+          outcome: 'denied',
+          target: route?.agentId ?? job.agentId ?? 'default',
+          detail: { reason: isolationDenied.reason, mode: job.mode, domain: targetCard?.domain ?? job.domain ?? null, guard: 'require-tenant' },
+        });
+        incCounter('run.tenant.denied');
+        emit({ type: '_done', final: '', error: true });
+        job.status = 'failed';
+        return;
+      }
 
       // P2.a 配额/计费准入：QPS 令牌桶 + 并发信号量（硬限 token/cost 默认关闭，仅统计）。
       // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。

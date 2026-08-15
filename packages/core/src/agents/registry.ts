@@ -89,6 +89,16 @@ export class AgentRegistry {
   }
 
   /**
+   * 从持久后端预热：全量载入 store → 填充 cache → 重建倒排索引。
+   * 持久后端（file/sqlite/redis）在进程启动/换实例后，capIndex 初始为空，
+   * 若直接 `query({capability})` 会命中空索引而漏查已存在的 agent；本方法在启动期调用一次即可修复。
+   */
+  async preload(): Promise<void> {
+    await this.list();
+    this.rebuildIndex();
+  }
+
+  /**
    * 按 domain / capability 发现 agent。
    * capability 命中倒排索引（集合求交），domain 走缓存过滤，整体 O(匹配数) 而非全表。
    */
@@ -133,6 +143,8 @@ let _defaultRegistry: AgentRegistry | null = null;
  * - 首次调用自动 seed `default` 通用 agent（无 assembly → 退化为今天的万能 harness），
  *   保证现有 UI / CLI / 测试零改动可用。
  * - server 的 /api/agents 端点与各 run 都引用同一实例，self-registration 立即可见。
+ * - 默认后端为内存态（volatile）；生产多副本共享 / 重启不丢需在启动早期调用
+ *   `initAgentRegistry(store)` 注入持久后端（file / sqlite / redis）。
  */
 export function getAgentRegistry(): AgentRegistry {
   if (!_defaultRegistry) {
@@ -140,6 +152,33 @@ export function getAgentRegistry(): AgentRegistry {
     _defaultRegistry.register(makeDefaultAgentCard()).catch(() => {});
   }
   return _defaultRegistry;
+}
+
+/**
+ * 用指定 store 初始化共享注册表单例（幂等：仅在尚未初始化时生效）。
+ *
+ * server 启动早期按 env 选好后端（见 createAgentStoreFromEnv）后调用；之后所有
+ * `getAgentRegistry()` 都返回该实例，写入即落持久层、多副本经共享后端天然可见。
+ * - 已初始化后再次调用**不覆盖**（避免运行期换后端导致内存缓存/倒排索引错乱）。
+ * - 默认 seed `default` 通用 agent 并 `preload()` 预热（持久后端重启后恢复既有注册）。
+ * @returns 实际生效的单例（便于链式使用）。
+ */
+export async function initAgentRegistry(
+  store: AgentStore,
+  opts: { seedDefault?: boolean; preload?: boolean } = {}
+): Promise<AgentRegistry> {
+  if (!_defaultRegistry) {
+    _defaultRegistry = new AgentRegistry(store);
+    // 先预热已有注册（重建缓存 + 倒排索引），再 seed default（seed 覆盖同 id 无害）。
+    if (opts.preload !== false) await _defaultRegistry.preload().catch(() => {});
+    if (opts.seedDefault !== false) await _defaultRegistry.register(makeDefaultAgentCard()).catch(() => {});
+  }
+  return _defaultRegistry;
+}
+
+/** 仅供测试：重置单例，使下次 getAgentRegistry / initAgentRegistry 重新构造。 */
+export function _resetAgentRegistry(): void {
+  _defaultRegistry = null;
 }
 
 export { DEFAULT_AGENT_ID };

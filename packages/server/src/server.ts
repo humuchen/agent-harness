@@ -10,7 +10,7 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, policyEngine, type VerifyConfig, type AgentCard, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
@@ -217,7 +217,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // CORS 预检：仅当配置了跨域白名单时才需处理。
     if (req.method === 'OPTIONS') {
       const h: Record<string, string> = {
-        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
         'access-control-allow-headers': 'content-type,authorization',
         ...corsHeaders(req),
       };
@@ -510,6 +510,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
     if (req.method === 'POST' && path === '/api/a2a/tasks') {
       return await handleA2A(req, res);
+    }
+    // P0.1 写端点：运行期注册/注销/心跳 agent（避免必须在启动期代码里硬编码新行业 agent）。
+    if (req.method === 'POST' && path === '/api/agents') {
+      return await handleAgentRegister(req, res);
+    }
+    if (req.method === 'POST' && path.startsWith('/api/agents/') && path.endsWith('/heartbeat')) {
+      return await handleAgentHeartbeat(req, res, path);
+    }
+    if (req.method === 'DELETE' && path.startsWith('/api/agents/')) {
+      return await handleAgentDeregister(req, res, path);
     }
     if (req.method === 'POST' && path === '/api/verify') {
       return await handleVerify(req, res);
@@ -838,6 +848,87 @@ async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<voi
   }
 }
 
+/** 校验并补全一张待注册的 AgentCard（缺省健康度视为初次上线健康）。返回 null 表示非法。 */
+function normalizeIncomingCard(raw: unknown): AgentCard | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Partial<AgentCard>;
+  if (typeof c.id !== 'string' || !c.id.trim()) return null;
+  if (!Array.isArray(c.capabilities)) return null;
+  const now = Date.now();
+  return {
+    id: c.id.trim(),
+    name: typeof c.name === 'string' && c.name ? c.name : c.id.trim(),
+    domain: (c.domain ?? 'generic') as AgentCard['domain'],
+    description: c.description,
+    capabilities: c.capabilities,
+    transport: c.transport ?? 'local',
+    endpoint: c.endpoint,
+    version: c.version,
+    isolation: c.isolation,
+    assembly: c.assembly,
+    // 客户端可上报健康度；缺省视为「初次上线且健康」。
+    health: c.health ?? { status: 'healthy', lastHeartbeat: now, load: 0 },
+  } as AgentCard;
+}
+
+/**
+ * P0.1 注册/更新 agent。body = AgentCard（至少 { id, capabilities }）。
+ * 受 agent:register 保护（admin/operator）；写穿注册表持久后端，多副本经共享后端立即可见。
+ */
+async function handleAgentRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const card = normalizeIncomingCard(body);
+  if (!card) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'invalid agent card: 需要 { id: string, capabilities: [] }' }));
+    return;
+  }
+  await getAgentRegistry().register(card);
+  auditAction('agent.register', { id: card.id, domain: card.domain, transport: card.transport, role: ctx.role, sub: ctx.sub });
+  return sendJson(res, { ok: true, agent: card }, req);
+}
+
+/**
+ * P0.1 心跳。path = /api/agents/:id/heartbeat；body = Partial<AgentHealth>（status/load 等）。
+ * 未注册的 id 静默返回 ok:false（不 404，便于客户端幂等重试）。
+ */
+async function handleAgentHeartbeat(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const id = decodeURIComponent(path.slice('/api/agents/'.length, path.length - '/heartbeat'.length));
+  if (!id) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing agent id' }));
+    return;
+  }
+  const existing = await getAgentRegistry().get(id);
+  if (!existing) {
+    return sendJson(res, { ok: false, reason: 'unknown agent', id }, req);
+  }
+  const health = (body ?? {}) as Partial<AgentHealth>;
+  await getAgentRegistry().heartbeat(id, health);
+  return sendJson(res, { ok: true, id }, req);
+}
+
+/** P0.1 注销 agent。path = /api/agents/:id。受 agent:register 保护。 */
+async function handleAgentDeregister(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  const body = await readBody(req);
+  const ctx = await guard(req, res, 'agent:register', body);
+  if (!ctx) return;
+  const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
+  if (!id) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'missing agent id' }));
+    return;
+  }
+  await getAgentRegistry().deregister(id);
+  auditAction('agent.deregister', { id, role: ctx.role, sub: ctx.sub });
+  return sendJson(res, { ok: true, id }, req);
+}
+
 /**
  * P1-⑤ 工作流编排入口：定义并运行一个 DAG 工作流，SSE 直播每 step 进度与最终快照。
  * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
@@ -1067,10 +1158,55 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
   return;
 }
 
-server.listen(PORT, HOST, () => {
+/**
+ * 按 AGENT_STORE env 构造 AgentRegistry 持久后端（投产：多副本共享 + 重启不丢）。
+ * - redis：动态 require ioredis（可选依赖，与 queue-backend 同款）注入最小 Hash 契约；
+ *   URL 取 AGENT_STORE_REDIS_URL，回落 REDIS_URL。不可用则回退内存态并告警。
+ * - file / sqlite / volatile：由 core 的 createAgentStoreFromEnv 自解析（零依赖）。
+ */
+function buildAgentStore(): AgentStore {
+  const kind = (process.env.AGENT_STORE || '').toLowerCase();
+  let redis: AgentStoreRedis | null = null;
+  if (kind === 'redis') {
+    const url = process.env.AGENT_STORE_REDIS_URL || process.env.REDIS_URL;
+    try {
+      // ioredis 为可选依赖：动态 require，未安装则回退 volatile（保持「一切降级可用」）。
+      const RedisMod = require('ioredis');
+      const RedisCtor = (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+      redis = new RedisCtor(url || 'redis://localhost:6379', {
+        maxRetriesPerRequest: null,
+        lazyConnect: false,
+      }) as unknown as AgentStoreRedis;
+      (redis as any).on?.('error', (e: any) =>
+        console.error('[agent-store] redis error:', e?.message)
+      );
+      console.log(`[agent-store] using Redis backend${url ? ` (${url})` : ''}`);
+    } catch (e: any) {
+      console.error('[agent-store] ioredis 不可用，回退内存态 volatile 后端：', e?.message ?? e);
+    }
+  }
+  const store = createAgentStoreFromEnv(process.env, redis);
+  if (kind === 'redis' && store.kind !== 'redis') {
+    console.warn('[agent-store] ⚠️ AGENT_STORE=redis 但 client 未就绪，实际使用 volatile（重启即丢、多副本不共享）。');
+  }
+  return store;
+}
+
+/**
+ * 启动引导：先按 env 选定并初始化 AgentRegistry 持久后端（幂等，须早于首个请求），
+ * 再注册行业合规画像，最后开始监听。把这些放到 listen 之前，杜绝「请求早于注册表就绪」的竞态。
+ */
+async function bootstrap(): Promise<void> {
+  const store = buildAgentStore();
+  await initAgentRegistry(store);
   // P2.c：引导注册全部预置行业合规画像（医疗等保 / 金融数据出境 / 教育放宽），使新建对应行业
   // 租户即自带合规基线（applyIndustryProfile 透明叠加）。幂等，不影响已在运行的租户策略。
   policyEngine.registerIndustryProfiles();
+  server.listen(PORT, HOST, onListening);
+}
+
+function onListening(): void {
+  const registry = getAgentRegistry();
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
@@ -1097,8 +1233,26 @@ server.listen(PORT, HOST, () => {
   if (AUDIT_LOG) console.log(`   📝 审计日志落盘：${AUDIT_LOG}`);
   console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`);
   console.log(`   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`);
-  console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}\n`);
-});
+  console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}`);
+  const storeKind = (registry as any)?.store?.kind ?? 'volatile';
+  if (storeKind === 'volatile') {
+    console.warn(`   ⚠️  AgentRegistry 后端：volatile（内存态，重启即丢、多副本不共享）。生产请设 AGENT_STORE=redis|sqlite|file。`);
+  } else {
+    console.log(`   🗄️  AgentRegistry 后端：${storeKind}（持久化，重启保留 / 多副本可共享）。`);
+  }
+  if (isTenantRequired()) {
+    console.log(`   🔐 跨行业隔离强制：REQUIRE_TENANT=on（行业 agent 无租户上下文将被拒绝执行）。`);
+  } else {
+    console.log(`   🔓 跨行业隔离：opt-in（REQUIRE_TENANT 未开启；行业 agent 可在无租户下运行）。生产强合规建议设 REQUIRE_TENANT=true。`);
+  }
+  const intentMode = resolveIntentMode();
+  const intentRaw = (process.env.INTENT_ROUTER || 'rule').toLowerCase();
+  console.log(
+    `   🧭 意图路由：INTENT_ROUTER=${intentRaw} → 生效 ${intentMode}` +
+      (intentRaw === 'auto' ? `（${process.env.OPENROUTER_API_KEY ? '检测到 API key，用 llm 精准分类' : '无 API key，降级 rule 关键词分类'}）` : '')
+  );
+  console.log('');
+}
 
 // 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
 // - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
@@ -1194,5 +1348,11 @@ async function shutdown(): Promise<void> {
 }
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
+
+// 启动：先完成 AgentRegistry 后端初始化 + 行业画像注册，再监听（详见 bootstrap 注释）。
+bootstrap().catch((e) => {
+  console.error('[ui] bootstrap 失败：', e?.message ?? e);
+  process.exit(1);
+});
 
 export {};

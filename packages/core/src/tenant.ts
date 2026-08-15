@@ -48,3 +48,44 @@ export function tenantSessionKey(tenant: TenantContext | null | undefined, sessi
   if (!tenant) return sk;
   return `${tenant.id}::${sk}`;
 }
+
+/**
+ * 是否开启「跨行业数据隔离强制」（REQUIRE_TENANT）。
+ * 接受 1/true/yes/on（大小写不敏感）为真；缺省 / 其它值为假（向后兼容默认关闭）。
+ */
+export function isTenantRequired(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.REQUIRE_TENANT ?? '').toString().trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * 跨行业数据隔离强制门禁（P2 投产加固）。
+ *
+ * 背景：行业合规隔离（记忆分区 + 行业策略画像 + 出网管控）是 **opt-in** —— 仅当携带 tenantId
+ * 派生出 tenantCtx 时才生效。若一个非通用（行业）agent 在无租户上下文下执行，医疗 PII /
+ * 金融数据会走默认通用通道、无分区、无出网管控，存在合规越界风险。
+ *
+ * 本门禁在 REQUIRE_TENANT=true 时拦截「路由命中非 generic 行业 agent 但无 tenantCtx」的执行；
+ * 通用任务（domain=generic / 无 card）不受影响，向后兼容默认关闭。run-queue / A2A / workflow
+ * 三个装配入口一致调用本函数，杜绝任一路径绕过。
+ *
+ * @returns null 表示放行；否则返回拒绝原因（调用方据此拒绝执行 + 审计 denied）。
+ */
+export function enforceTenantIsolation(input: {
+  /** 路由命中的 agent 领域（null / undefined / 'generic' 视为通用）。 */
+  agentDomain?: string | null;
+  /** 已解析的租户上下文（null 表示无租户）。 */
+  tenant: TenantContext | null;
+  /** 是否强制（缺省读 REQUIRE_TENANT env）。 */
+  requireTenant?: boolean;
+}): { denied: true; reason: string } | null {
+  const required = input.requireTenant ?? isTenantRequired();
+  if (!required) return null;
+  const domain = input.agentDomain ?? 'generic';
+  if (domain === 'generic') return null;
+  if (input.tenant) return null;
+  return {
+    denied: true,
+    reason: `industry agent (domain=${domain}) requires tenant isolation, but no tenant context was provided (set REQUIRE_TENANT=false to allow, or pass an authenticated tenantId)`,
+  };
+}

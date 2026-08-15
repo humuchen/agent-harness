@@ -146,8 +146,10 @@ static void set_rlimit(int resource, long long value) {
 
 /* 丢弃全部 capabilities（始终可用，无需任何库）。 */
 static int drop_all_caps_raw(void) {
-    struct __user_cap_header hdr;
-    struct __user_cap_data data[_LINUX_CAPABILITY_U32S_2];
+    /* 注意：<linux/capability.h> 的结构体标签带 _struct 后缀（__user_cap_header_struct /
+       __user_cap_data_struct），不可写成 struct __user_cap_header（无此标签，会编译失败）。 */
+    struct __user_cap_header_struct hdr;
+    struct __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_2];
     memset(&hdr, 0, sizeof(hdr));
     memset(data, 0, sizeof(data));
     hdr.version = _LINUX_CAPABILITY_VERSION_3;

@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, type AgentCard, type TenantContext } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, type AgentCard, type TenantContext } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 
@@ -35,6 +35,14 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       throw new Error(`workflow step "${step.id}": unknown agentRef ${typeof ref === 'string' ? ref : '(inline card)'}`);
     }
     const tenantCtx: TenantContext | null = ctx.tenantId ? { id: ctx.tenantId } : null;
+
+    // P2 投产加固：与 /api/run、A2A 一致的跨行业隔离强制门禁（REQUIRE_TENANT=true 时生效）。
+    // 工作流某个 step 命中行业 agent 但无 tenantCtx → 抛错中断该 step（DagEngine 记为失败并按需补偿）。
+    const isolationDenied = enforceTenantIsolation({ agentDomain: card.domain ?? null, tenant: tenantCtx });
+    if (isolationDenied) {
+      throw new Error(`workflow step "${step.id}": tenant isolation denied: ${isolationDenied.reason}`);
+    }
+
     const sessionKey = `wf:${ctx.workflowId}:${step.id}`;
     const prompt = ctx.compensate
       ? // 补偿语义：以「回滚指令 / 已完成输出」作为本轮输入，交给 agent 执行回滚。

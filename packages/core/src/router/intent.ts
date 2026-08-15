@@ -6,6 +6,8 @@
  *   等动作自动推断 requiredCapabilities，供 AgentSelector 做能力匹配。
  * - INTENT_ROUTER=llm 时切换到小模型分类（复用核心 createOpenRouterLLM），精度更高但需 API key；
  *   任何解析失败/缺 key 都静默回退规则引擎（不中断，符合「一切降级可用」）。
+ * - INTENT_ROUTER=auto 智能降级：有 OPENROUTER_API_KEY 用 llm（精准），否则用 rule（离线可用），
+ *   免去运维「配了 key 还得记得改 INTENT_ROUTER=llm」的心智负担；缺省仍是 rule，向后兼容。
  * - 分类结果按 prompt 缓存（有界 LRU），避免重复分类成本。
  */
 
@@ -84,8 +86,26 @@ function classifyByRule(prompt: string): Intent {
 }
 
 /**
+ * 解析意图路由的**生效模式**（把 'auto' 收敛为 'rule' | 'llm'）。
+ * - 优先级：显式 `requested` > env INTENT_ROUTER > 缺省 'rule'（向后兼容）。
+ * - `llm`：强制小模型分类（缺 key 时 classify 阶段仍会回退 rule，不中断）。
+ * - `auto`：有 OPENROUTER_API_KEY → 'llm'（精准）；否则 → 'rule'（离线可用）—— 智能降级。
+ * - 其它 / 缺省 → 'rule'。
+ */
+export function resolveIntentMode(
+  requested?: 'rule' | 'llm' | 'auto',
+  env: NodeJS.ProcessEnv = process.env
+): 'rule' | 'llm' {
+  const raw = (requested ?? env.INTENT_ROUTER ?? 'rule').toString().trim().toLowerCase();
+  if (raw === 'llm') return 'llm';
+  if (raw === 'auto') return env.OPENROUTER_API_KEY ? 'llm' : 'rule';
+  return 'rule';
+}
+
+/**
  * 意图路由器。
- * - `mode` 来自 env INTENT_ROUTER（默认 'rule'）；设为 'llm' 启用小模型分类（需 OPENROUTER_API_KEY）。
+ * - `mode` 来自 env INTENT_ROUTER：`rule`（默认）/ `llm`（小模型分类，需 OPENROUTER_API_KEY）/
+ *   `auto`（有 key 用 llm、无 key 用 rule 的智能降级）。构造时即收敛为生效模式 'rule' | 'llm'。
  * - `cacheSize` 控制分类缓存上限（默认 256）。
  */
 export class IntentRouter {
@@ -93,9 +113,14 @@ export class IntentRouter {
   private cache = new Map<string, Intent>();
   private cacheSize: number;
 
-  constructor(opts: { mode?: 'rule' | 'llm'; cacheSize?: number } = {}) {
-    this.mode = opts.mode ?? (process.env.INTENT_ROUTER === 'llm' ? 'llm' : 'rule');
+  constructor(opts: { mode?: 'rule' | 'llm' | 'auto'; cacheSize?: number } = {}) {
+    this.mode = resolveIntentMode(opts.mode);
     this.cacheSize = opts.cacheSize ?? 256;
+  }
+
+  /** 当前生效模式（'auto' 已解析）。供运维/启动横幅展示。 */
+  get activeMode(): 'rule' | 'llm' {
+    return this.mode;
   }
 
   /** 分类（带缓存）。rule 模式纯本地；llm 模式失败自动回退 rule。 */

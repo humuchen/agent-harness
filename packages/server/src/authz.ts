@@ -37,6 +37,7 @@ export type Action =
   | 'policy:read'
   | 'approvals:review'
   | 'agent:read'
+  | 'agent:register'
   | 'workflow:run'
   | 'workflow:read'
   | 'a2a:receive'
@@ -83,14 +84,14 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
     'shell:approve', 'memory:read', 'memory:clear', 'metrics:read',
     'jobs:read', 'sessions:read',     'eval:run', 'recipe:save', 'recipe:read',
-    'policy:read', 'approvals:review', 'agent:read', 'workflow:run', 'workflow:read',
+    'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send',
   ],
   operator: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
     'shell:approve', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
-    'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'workflow:run', 'workflow:read',
+    'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send',
   ],
   viewer: [

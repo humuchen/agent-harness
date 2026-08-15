@@ -9,7 +9,7 @@
  */
 
 import type { HarnessEvent } from '@agent-harness/core';
-import { getAgentRegistry, type AgentCard, type TenantContext } from '@agent-harness/core';
+import { getAgentRegistry, enforceTenantIsolation, type AgentCard, type TenantContext } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 
 export interface RunAgentTaskOpts {
@@ -32,6 +32,14 @@ export async function runAgentTask(
     throw new Error(`unknown agentRef: ${typeof agentRef === 'string' ? agentRef : '(inline card)'}`);
   }
   const tenantCtx: TenantContext | null = opts.tenantId ? { id: opts.tenantId } : null;
+
+  // P2 投产加固：与 /api/run 一致的跨行业隔离强制门禁（REQUIRE_TENANT=true 时生效）。
+  // workflow / A2A 入口若把行业 agent 派发到无租户上下文，同样拒绝，避免绕过 /api/run 的守卫。
+  const isolationDenied = enforceTenantIsolation({ agentDomain: card.domain ?? null, tenant: tenantCtx });
+  if (isolationDenied) {
+    throw new Error(`tenant isolation denied: ${isolationDenied.reason}`);
+  }
+
   const sessionKey = opts.tenantId ? `${opts.tenantId}::a2a:${card.id}` : `a2a:${card.id}`;
   const prompt = typeof input === 'string' ? input : JSON.stringify(input ?? '');
 
