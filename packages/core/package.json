@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:native": "make -C native/sandbox-exec",
     "test": "node --test test/*.test.cjs"
   },
   "license": "MIT",

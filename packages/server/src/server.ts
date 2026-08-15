@@ -10,7 +10,7 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, type VerifyConfig, type AgentCard } from '@agent-harness/core';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -333,6 +333,29 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const store = getMemoryStore();
       const keys = await store.list();
       return sendJson(res, { backend: store.kind, sessions: keys }, req);
+    }
+    // ---- P0.1：智能体注册与发现 ----
+    if (req.method === 'GET' && path === '/api/agents') {
+      // 列出 / 按 domain + capability 发现已注册 agent。受 agent:read 保护。
+      const ctx = await guard(req, res, 'agent:read');
+      if (!ctx) return;
+      const domain = url.searchParams.get('domain') || undefined;
+      const capability = url.searchParams.get('capability') || undefined;
+      const agents = await getAgentRegistry().query({ ...(domain ? { domain } : {}), ...(capability ? { capability } : {}) });
+      return sendJson(res, { agents, count: agents.length }, req);
+    }
+    if (req.method === 'GET' && path.startsWith('/api/agents/')) {
+      // 取单个 agent 卡片（含健康度）。受 agent:read 保护。
+      const ctx = await guard(req, res, 'agent:read');
+      if (!ctx) return;
+      const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
+      const card = id ? await getAgentRegistry().get(id) : null;
+      if (!card) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'agent not found', id }));
+        return;
+      }
+      return sendJson(res, { agent: card }, req);
     }
     if (path === '/api/memory') {
       // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
@@ -659,14 +682,42 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       'anonymous'
   );
 
+  // P0.1：显式指定目标 agent（绕过路由，直达该 agent 的装配配方）。
+  // 未传 → 用注册表里 seed 的 default 通用 agent（退化为今天的万能 harness）。
+  // 传入但不存在 → 400 拒绝，避免静默退化到错误 agent。
+  const agentId = body.agentId ? String(body.agentId).trim() : undefined;
+  let agentCard: AgentCard | null = null;
+  if (agentId) {
+    agentCard = await getAgentRegistry().get(agentId);
+    if (!agentCard) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: `unknown agentId: ${agentId}` }));
+      return;
+    }
+  }
+
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
+  // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
+  // > 服务端 AGENT_AUTO_VERIFY 默认）。验证器最终在 run-queue.execute 内按 config 装配，
+  // 并以可序列化形式随 JobDescriptor 持久化，使重放/多实例领取后门禁行为一致。
+  let verifyConfig: VerifyConfig | undefined;
+  const envAutoVerify =
+    process.env.AGENT_AUTO_VERIFY === 'true' || process.env.AGENT_AUTO_VERIFY === '1';
+  if (body.verify && typeof body.verify === 'object' && !Array.isArray(body.verify)) {
+    verifyConfig = body.verify as VerifyConfig;
+  } else if (typeof body.autoVerify === 'boolean') {
+    verifyConfig = body.autoVerify ? { auto: true } : undefined;
+  } else if (envAutoVerify) {
+    verifyConfig = { auto: true };
+  }
+
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps });
-    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, role: ctx.role, sub: ctx.sub });
+    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps, verify: verifyConfig, agentId: agentCard?.id });
+    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, agentId: agentCard?.id ?? null, role: ctx.role, sub: ctx.sub, verify: verifyConfig ? 'on' : 'off' });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
     jobId = job.id;
   } else {

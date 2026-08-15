@@ -16,6 +16,7 @@
  */
 
 import type { RunMode } from './runner';
+import type { VerifyConfig } from '@agent-harness/core';
 
 /** 可持久化的任务意图（RunJob 的纯数据子集，可 JSON 序列化）。 */
 export interface JobDescriptor {
@@ -25,6 +26,10 @@ export interface JobDescriptor {
   model?: string;
   sessionKey?: string;
   maxSteps?: number;
+  /** 运行期自动验证门禁配置（P0-2，可序列化）。 */
+  verify?: VerifyConfig;
+  /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
+  agentId?: string;
   enqueuedAt: number;
 }
 

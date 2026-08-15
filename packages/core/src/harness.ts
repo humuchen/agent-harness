@@ -1,4 +1,5 @@
 import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
+import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs, redactOutput } from './guardrails';
@@ -22,6 +23,7 @@ export type HarnessEvent =
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number }
   | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
   | { type: 'run:end'; runId: string; final: string; steps: number }
+  | { type: 'verify:result'; attempt: number; passed: boolean; score: number; reasons: string[] }
   | { type: 'error'; message: string };
 
 export interface HarnessOptions {
@@ -51,6 +53,13 @@ export interface HarnessOptions {
   // 可选「完成自检」：开启后，若模型以空响应（疑似放弃）收尾，注入提示继续循环
   // 直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。默认关闭（避免额外成本）。
   requireCompletion?: boolean;
+  // 运行期自动验证门禁（P0-2）：产出最终答案后自动调用验证器。未通过时若仍有重试额度，
+  // 注入自检提示重跑循环（自愈）；否则在最终结果前加 [verify:failed] 标记。不设置则关闭门禁。
+  verify?: Verifier;
+  // 验证未通过时的最大自动重试次数（每次重跑一个完整 maxSteps 预算的循环）。默认 0（仅校验不重试）。
+  verifyMaxRetries?: number;
+  // 验证未通过且仍有重试额度时，是否注入自检提示重跑（默认：在 verifyMaxRetries>0 时开启）。
+  verifySelfCorrect?: boolean;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -68,6 +77,9 @@ interface ResolvedHarnessOptions {
   costBudget?: number;
   maxToolResultChars?: number;
   requireCompletion: boolean;
+  verify?: Verifier;
+  verifyMaxRetries: number;
+  verifySelfCorrect: boolean;
 }
 
 let idCounter = 0;
@@ -87,6 +99,9 @@ export class AgentHarness {
       onEvent: () => {},
       maxToolResultChars: opts.maxToolResultChars,
       requireCompletion: opts.requireCompletion ?? false,
+      verify: opts.verify,
+      verifyMaxRetries: opts.verifyMaxRetries ?? 0,
+      verifySelfCorrect: opts.verifySelfCorrect ?? (opts.verifyMaxRetries ?? 0) > 0,
       ...opts,
     };
   }
@@ -130,6 +145,8 @@ export class AgentHarness {
       recordError('guardrail.input');
       structLog('warn', 'guardrail blocked', { phase: 'input', reason: guard.reason, runId });
       emit({ type: 'guardrail:blocked', phase: 'input', reason: guard.reason ?? 'unknown' });
+      // 注意：此早期返回发生在 verify 门禁之前，不进入 runLoop，故不计入 guardrailsBlocked
+      // （verify 上下文只统计循环内发生的拦截；此处直接以 guardrail 消息结束本轮）。
       const msg = `[guardrail] blocked: ${guard.reason}`;
       cleanup();
       emit({ type: 'run:end', runId, final: msg, steps: 0 });
@@ -160,12 +177,16 @@ export class AgentHarness {
 
     let final = '[agent] reached max steps without a final answer';
     let steps = 0;
+    // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
+    let guardrailsBlocked = 0;
     // 本次 run 累计的 token 用量与成本（用于预算熔断与 run:cost 事件）。
     let runTokens = 0;
     let runCost = 0;
+    let budgetExceededFlag = false;
     const tokenBudget = this.opts.tokenBudget;
     const costBudget = this.opts.costBudget;
     const budgetExceeded = (kind: 'tokens' | 'cost'): string => {
+      budgetExceededFlag = true;
       const limit = kind === 'tokens' ? tokenBudget! : costBudget!;
       const used = kind === 'tokens' ? runTokens : runCost;
       incCounter('budget.exceeded');
@@ -173,8 +194,9 @@ export class AgentHarness {
       emit({ type: 'budget:exceeded', kind, limit, used });
       return `[budget] ${kind} exceeded: used ${used} / limit ${limit}`;
     };
-    try {
-      final = await withSpan('agent.run', async () => {
+    // 把主循环抽成函数，便于「验证失败后自动重试」复用同一 maxSteps 预算重跑。
+    const runLoop = (): Promise<string> =>
+      withSpan('agent.run', async () => {
         for (let step = 0; step < this.opts.maxSteps; step++) {
           // 进入下一步前先检查取消信号，避免对已中止的运行继续消耗工具/LLM。
           if (signal.aborted) {
@@ -239,6 +261,7 @@ export class AgentHarness {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
             emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
+            guardrailsBlocked += 1;
             return `[guardrail] blocked: ${outGuard.reason}`;
           }
 
@@ -286,6 +309,7 @@ export class AgentHarness {
                 tool: call.name,
                 reason: argGuard.reason ?? 'unknown',
               });
+              guardrailsBlocked += 1;
             } else {
               emit({ type: 'tool:start', step: steps, call });
               try {
@@ -319,11 +343,55 @@ export class AgentHarness {
         }
         return '[agent] reached max steps without a final answer';
       });
+
+    try {
+      final = await runLoop();
     } catch (e: any) {
       logError('agent.run', e, { runId });
       emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
       emit({ type: 'error', message: e?.message ?? String(e) });
       final = `[error] ${e?.message ?? String(e)}`;
+    }
+
+    // 运行期自动验证门禁（P0-2）：产出后自动校验；未通过可重试（self-correction）或标记。
+    if (this.opts.verify) {
+      const buildCtx = (): VerifyContext => ({
+        input: userInput,
+        final,
+        steps,
+        toolCalls: collectToolCalls(memory.history()),
+        guardrailsBlocked,
+        budgetExceeded: budgetExceededFlag,
+      });
+      let attempt = 0;
+      let outcome = await this.opts.verify(buildCtx());
+      emit({ type: 'verify:result', attempt, passed: outcome.passed, score: outcome.score, reasons: outcome.reasons });
+      while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
+        attempt += 1;
+        if (this.opts.verifySelfCorrect) {
+          // 注入自检提示，让模型根据失败原因修正后重新跑一轮（自动重试 / 自愈）。
+          memory.add({
+            role: 'user',
+            content:
+              '（系统提示）上一轮运行未通过自动验证：' +
+              outcome.reasons.join('；') +
+              '。请审视并修正你的回答与步骤，然后重新给出最终结果。',
+          });
+          try {
+            final = await runLoop();
+          } catch (e: any) {
+            logError('agent.run.retry', e, { runId });
+            final = `[error] ${e?.message ?? String(e)}`;
+          }
+          outcome = await this.opts.verify(buildCtx());
+          emit({ type: 'verify:result', attempt, passed: outcome.passed, score: outcome.score, reasons: outcome.reasons });
+        } else {
+          break;
+        }
+      }
+      if (!outcome.passed) {
+        final = `[verify:failed] ${outcome.reasons.join('; ')}\n\n${final}`;
+      }
     }
 
     // 运行结束，若有持久化路径则落盘（best-effort）。
@@ -350,4 +418,13 @@ function abortedMessage(signal: AbortSignal): string {
   if (reason === 'timeout') return '[timeout] run exceeded time limit';
   if (reason === 'external') return '[aborted] run cancelled by caller';
   return '[aborted] run cancelled';
+}
+
+/** 从对话历史收集所有工具调用（供验证上下文统计）。 */
+function collectToolCalls(messages: Message[]): ToolCall[] {
+  const out: ToolCall[] = [];
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls) out.push(...m.tool_calls);
+  }
+  return out;
 }

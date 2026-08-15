@@ -4,6 +4,7 @@ import { registerWebFetch, type WebFetchOptions } from './webfetch';
 import { registerCalculator } from './calculator';
 import { registerDateTime } from './datetime';
 import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
+import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
 
 export interface BuiltinOptions {
   /** 总开关；false 时不注册任何内置工具。默认 true。 */
@@ -34,6 +35,20 @@ export interface BuiltinOptions {
   shellTimeoutMs?: number;
   /** 允许 shell 元字符 / 管道。默认 false；或环境变量 SHELL_ALLOW_OPERATORS=true。 */
   shellAllowOperators?: boolean;
+  /**
+   * 沙箱执行器（P0-1）：决定被白名单放行的命令如何执行。
+   * 缺省按 SANDBOX_BACKEND（或 options.sandboxBackend）自动选择
+   * local（硬化进程）/ container（容器内 OS 级隔离）。
+   */
+  shellExecutor?: SandboxExecutor;
+  /** 直接指定 sandbox backend（'local' | 'container' | 'docker' | 'podman' | 'gvisor' | 'kata' | 'os'）。'os' 启用 OS 级原生隔离（命名空间 + seccomp + 资源限制 + 能力裁剪）。 */
+  sandboxBackend?: string;
+  /**
+   * 仅注册这些内置工具（按 `BUILTIN_TOOL_NAMES` 高-level 名：calculator / datetime /
+   * web_fetch / filesystem / shell）。用于按 AgentCard.assembly.tools 收窄工具面。
+   * 不填（undefined）注册全部；空数组 [] 表示不注册任何内置工具。
+   */
+  tools?: string[];
 }
 
 /**
@@ -55,11 +70,15 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const shellEnabled = options.shellEnabled ?? process.env.SHELL_ENABLED === 'true';
 
   if (!enabled) return;
-  if (fsEnabled) registerFilesystem(registry, { root: fsRoot });
-  if (webEnabled) registerWebFetch(registry, { maxBytes: webMaxBytes });
-  if (calcEnabled) registerCalculator(registry);
-  if (datetimeEnabled) registerDateTime(registry);
-  if (shellEnabled) {
+  // 按 AgentCard.assembly.tools 收窄：allow(n) 为真才注册该高-level 内置工具。
+  // undefined / 空 → 保留全部（向后兼容）；非空数组 → 仅注册列出的（空数组 = 一个都不注册）。
+  const only = options.tools;
+  const allow = (n: string) => !only || only.length === 0 || only.includes(n);
+  if (fsEnabled && allow('filesystem')) registerFilesystem(registry, { root: fsRoot });
+  if (webEnabled && allow('web_fetch')) registerWebFetch(registry, { maxBytes: webMaxBytes });
+  if (calcEnabled && allow('calculator')) registerCalculator(registry);
+  if (datetimeEnabled && allow('datetime')) registerDateTime(registry);
+  if (shellEnabled && allow('shell')) {
     const whitelist =
       options.shellWhitelist ??
       (process.env.SHELL_WHITELIST
@@ -74,6 +93,9 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
       timeoutMs: options.shellTimeoutMs,
       allowShellOperators:
         options.shellAllowOperators ?? process.env.SHELL_ALLOW_OPERATORS === 'true',
+      executor:
+        options.shellExecutor ??
+        createSandboxExecutor({ backend: options.sandboxBackend ?? process.env.SANDBOX_BACKEND }),
     });
   }
 }
@@ -81,5 +103,17 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
 export { evaluateExpression } from './calculator';
 export { registerShell } from './shell';
 export type { ShellOptions, ShellConfirmStrategy, ShellExecRequest } from './shell';
+export { createSandboxExecutor } from './sandbox';
+export type {
+  SandboxExecutor,
+  SandboxExecRequest,
+  SandboxExecResult,
+  SandboxBackend,
+  CreateSandboxOptions,
+  ContainerSandboxOptions,
+  LocalSandboxOptions,
+} from './sandbox';
 export type { FilesystemOptions } from './filesystem';
 export type { WebFetchOptions } from './webfetch';
+// OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
+export * from '../sandbox';

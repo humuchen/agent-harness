@@ -1,5 +1,13 @@
 import type { HarnessEvent } from '@agent-harness/core';
-import { incCounter, recordLatency, resolveOpenRouterConfig } from '@agent-harness/core';
+import {
+  incCounter,
+  recordLatency,
+  resolveOpenRouterConfig,
+  createVerifier,
+  getAgentRegistry,
+  type VerifyConfig,
+  type AgentCard,
+} from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
 
@@ -39,6 +47,10 @@ export interface RunJob {
   sessionKey?: string;
   /** 单次 run 的循环步数上限（来自 UI 输入 / env MAX_STEPS）。 */
   maxSteps?: number;
+  /** 运行期自动验证门禁配置（P0-2，可序列化，随 job 持久化）。 */
+  verify?: VerifyConfig;
+  /** P0.1：显式指定的目标 agent id（绕过路由，直达该 agent 的装配配方）。 */
+  agentId?: string;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -88,7 +100,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -98,6 +110,8 @@ export class RunQueue {
       model: job.model,
       sessionKey: job.sessionKey,
       maxSteps: job.maxSteps,
+      verify: job.verify,
+      agentId: job.agentId,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -116,7 +130,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -127,6 +141,8 @@ export class RunQueue {
       model: input.model,
       sessionKey: input.sessionKey,
       maxSteps: input.maxSteps,
+      verify: input.verify,
+      agentId: input.agentId,
       events: [],
       subscribers: new Set(),
       controller: new AbortController(),
@@ -173,7 +189,7 @@ export class RunQueue {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
-        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId },
         d.id
       );
     }
@@ -199,7 +215,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps },
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId },
           d.id
         );
         this.queue.push(job);
@@ -401,6 +417,11 @@ export class RunQueue {
     const t0 = Date.now();
     try {
       const signal = job.controller.signal;
+      // P0-2：从 job 携带的可序列化验证配置装配运行期验证器（undefined 表示关闭门禁）。
+      const verifier = createVerifier(job.verify);
+      const verifyMaxRetries = verifier
+        ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
+        : 0;
       const assembled = await assembleAgent(
         job.mode,
         onEvent,
@@ -410,12 +431,23 @@ export class RunQueue {
         job.sessionKey,
         signal,
         JOB_TIMEOUT_MS,
-        job.maxSteps
+        job.maxSteps,
+        undefined,
+        verifier,
+        verifyMaxRetries,
+        // P0.1：若 job 显式指定了 agentId，从共享注册表解析其 AgentCard 并收窄装配；
+        // 未指定 / 找不到时传 null，退化为今天的通用 harness。
+        job.agentId
+          ? await getAgentRegistry()
+              .get(job.agentId)
+              .catch(() => null)
+          : null
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
         type: 'run:meta',
         mode: job.mode,
+        agentId: job.agentId ?? null,
         llmKind: assembled.llmKind,
         dryRun: assembled.dryRun,
         mcpConnected: assembled.mcpConnected,

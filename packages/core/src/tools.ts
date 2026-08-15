@@ -52,9 +52,17 @@ export class ToolRegistry {
     return t.fn(args);
   }
 
-  /** 将另一个注册表的全部工具合并进当前注册表（用于共享 MCP 工具到各次运行）。 */
-  mergeFrom(other: ToolRegistry): void {
+  /**
+   * 将另一个注册表的（经 filter 过滤后的）工具合并进当前注册表（用于共享 MCP 工具到各次运行）。
+   * @param filter 可选：返回 true 才合并；缺省合并全部。常用于按 MCP server 名收窄。
+   * @param name 工具名（如 `server__tool`）；@param source 工具来源标记（如 `mcp:server`）。
+   */
+  mergeFrom(
+    other: ToolRegistry,
+    filter?: (name: string, source?: string) => boolean
+  ): void {
     for (const [name, entry] of other.tools) {
+      if (filter && !filter(name, entry.schema.source)) continue;
       if (!this.tools.has(name)) this.tools.set(name, entry);
     }
   }
