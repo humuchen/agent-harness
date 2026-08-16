@@ -38,6 +38,39 @@ export interface StoredTool {
   errored?: boolean;
 }
 
+/** 调用链路追踪节点类型。 */
+export type TraceKind =
+  | 'run'
+  | 'step'
+  | 'llm'
+  | 'tool'
+  | 'retrieval'
+  | 'reasoning'
+  | 'cost'
+  | 'verify'
+  | 'guardrail'
+  | 'budget'
+  | 'error';
+
+/**
+ * 调用链路（trace）节点：把一次 run 的「步骤 → LLM 调用 → 工具/检索/成本」以树状结构记录，
+ * 用于深度思考界面中可视化智能体的外部调用过程，便于追踪与复盘。
+ * detail/result 均为已格式化的可读字符串（如美化的 JSON），Children 构成调用层级。
+ */
+export interface TraceNode {
+  id: string;
+  kind: TraceKind;
+  label: string;
+  status: 'ok' | 'error' | 'pending';
+  /** 输入/参数（已格式化字符串）。 */
+  detail?: string;
+  /** 输出/结果（已格式化字符串）。 */
+  result?: string;
+  /** 快速展示用的元数据标签，如 step、model、tokens、cost、duration。 */
+  meta?: Record<string, string>;
+  children: TraceNode[];
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -46,6 +79,8 @@ export interface ChatMessage {
   reasoning?: string;
   /** 本轮处理的工具调用列表，用于回看时还原工具卡片。 */
   tools?: StoredTool[];
+  /** 调用链路追踪树，记录 LLM↔工具↔检索 的每一步，供深度思考界面可视化与复盘。 */
+  trace?: TraceNode[];
 }
 
 export interface ChatSession {

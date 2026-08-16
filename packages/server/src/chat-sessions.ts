@@ -19,6 +19,29 @@ export interface StoredTool {
   errored?: boolean;
 }
 
+/** 调用链路追踪节点（结构与 @agent-harness/client 的 TraceNode 一致，本地镜像避免包耦合）。 */
+export interface TraceNode {
+  id: string;
+  kind:
+    | 'run'
+    | 'step'
+    | 'llm'
+    | 'tool'
+    | 'retrieval'
+    | 'reasoning'
+    | 'cost'
+    | 'verify'
+    | 'guardrail'
+    | 'budget'
+    | 'error';
+  label: string;
+  status: 'ok' | 'error' | 'pending';
+  detail?: string;
+  result?: string;
+  meta?: Record<string, string>;
+  children: TraceNode[];
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -28,6 +51,8 @@ export interface ChatMessage {
   reasoning?: string;
   /** 本轮处理中调用的工具列表，用于回看时还原工具卡片。 */
   tools?: StoredTool[];
+  /** 调用链路追踪树，记录 LLM↔工具↔检索 的每一步，供深度思考界面可视化与复盘。 */
+  trace?: TraceNode[];
 }
 
 export interface ChatSession {

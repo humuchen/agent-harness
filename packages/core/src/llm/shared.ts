@@ -175,7 +175,7 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
 
   const reader = (resp.body as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();
-  let buffer = '';
+  let raw = '';
   let fullContent = '';
   let reasoning = '';
   let usage: TokenUsage | undefined;
@@ -186,7 +186,43 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    raw += decoder.decode(value, { stream: true });
+  }
+
+  // 兼容：部分端点（如 agnes）即便请求 stream:true，也可能返回「单条非流式」JSON
+  // （object=chat.completion，思考过程在 message.reasoning_content 而非 delta）。
+  // 此时没有 SSE 的 `data:` 标记，需按单条响应解析，否则 content 与 reasoning 都会丢失。
+  const isSSE = /^data:/.test(raw.trim()) || raw.includes('\n');
+  if (!isSSE) {
+    try {
+      const data = JSON.parse(raw);
+      const msg = data?.choices?.[0]?.message ?? {};
+      if (typeof msg.content === 'string' && msg.content) {
+        fullContent += msg.content;
+        onToken?.(msg.content);
+      }
+      // 思考过程：优先 reasoning_content，回落 reasoning（两种字段名都兼容）。
+      const rc =
+        typeof msg.reasoning_content === 'string'
+          ? msg.reasoning_content
+          : typeof msg.reasoning === 'string'
+            ? msg.reasoning
+            : '';
+      if (rc) {
+        reasoning += rc;
+        onReasoning?.(rc);
+      }
+      const tcs = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      for (const c of tcs) {
+        toolAcc.push({ id: c.id, name: c.function?.name, args: c.function?.arguments ?? '' });
+      }
+      if (data?.usage) usage = toUsage(data.usage);
+      if (data?.model) usedModel = data.model;
+    } catch {
+      /* 非预期响应体，忽略 */
+    }
+  } else {
+    let buffer = raw;
     let nl: number;
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl).trim();
@@ -205,6 +241,18 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       const choice = json.choices?.[0];
       if (!choice) continue;
       const delta = choice.delta ?? {};
+      // 部分端点（如 agnes）在流式响应里把思考过程放在「聚合后的 message」而非 delta
+      // （常见于最后一个事件），两种位置都兼容捕获。
+      const msgReasoning =
+        typeof choice.message?.reasoning_content === 'string'
+          ? choice.message.reasoning_content
+          : typeof choice.message?.reasoning === 'string'
+            ? choice.message.reasoning
+            : '';
+      if (msgReasoning) {
+        reasoning += msgReasoning;
+        onReasoning?.(msgReasoning);
+      }
       if (typeof delta.content === 'string' && delta.content) {
         fullContent += delta.content;
         onToken?.(delta.content);
@@ -212,6 +260,12 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       if (typeof delta.reasoning === 'string' && delta.reasoning) {
         reasoning += delta.reasoning;
         onReasoning?.(delta.reasoning);
+      }
+      // 部分端点（如 agnes）以 `reasoning_content` 而非 `reasoning` 返回思考过程，
+      // 这里两种字段名都兼容捕获，统一经 onReasoning 回调（驱动「深度思考」打字机）。
+      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+        reasoning += delta.reasoning_content;
+        onReasoning?.(delta.reasoning_content);
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const tc of delta.tool_calls) {

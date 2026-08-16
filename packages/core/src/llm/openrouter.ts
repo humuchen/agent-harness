@@ -77,6 +77,13 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       body.tool_choice = 'auto';
     }
 
+    // 请求模型返回「思考过程」（深度思考内容）。agnes 端点以 delta.reasoning_content
+    // 流式返回；该字段驱动前端「深度思考」tab 的逐字（打字机）展示。
+    // 个别不识别该参数的 provider 可用 LLM_REASONING=off 关闭，避免未知字段报错。
+    if (process.env.LLM_REASONING !== 'off') {
+      body.reasoning = { enabled: true };
+    }
+
     // OpenRouter 归因请求头（建议附加）。
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -93,6 +100,10 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       retries,
       modelLabel: model,
       signal: options?.signal,
+      // 透传流式回调：开启后走 stream:true，逐 delta 回调 token / reasoning，
+      // 驱动聊天 UI 打字机与「深度思考」块（此前遗漏，导致始终走非流式分支、推理丢失）。
+      onToken: options?.onToken,
+      onReasoning: options?.onReasoning,
     });
   };
 }

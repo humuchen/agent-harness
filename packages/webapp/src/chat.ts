@@ -1,11 +1,11 @@
-import { LitElement, html, css, nothing } from 'lit';
+import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
 import { client } from './api';
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
-import type { ChatSession, RunMode, StreamEvent } from '@agent-harness/client';
+import type { ChatSession, RunMode, StreamEvent, TraceNode, TraceKind } from '@agent-harness/client';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -24,8 +24,28 @@ interface ChatMsg {
   reasoning?: string;
   /** 工具调用卡片列表。 */
   tools?: ToolView[];
+  /** 调用链路追踪树：把本回合的 LLM↔工具↔检索 调用过程结构化记录，供深度思考界面可视化。 */
+  trace?: TraceNode[];
   /** 错误态：以警示样式渲染。 */
   error?: boolean;
+}
+
+/** 检索/搜索类工具名特征：命中则归类为 retrieval 节点，结果以「检索内容」突出展示。 */
+const RETRIEVAL_RE = /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
+function isRetrievalTool(name: string): boolean {
+  return RETRIEVAL_RE.test(name);
+}
+
+/** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
+interface Insights {
+  model?: string;
+  agent?: string;
+  mode?: string;
+  steps: number;
+  toolCount: number;
+  costTokens?: string;
+  costValue?: string;
+  retrievals: Array<{ label: string; result: string }>;
 }
 
 interface SessionView {
@@ -512,6 +532,671 @@ export class AhChat extends LitElement {
       .tool.errored .tag {
         color: var(--ah-danger, #e24b4a);
       }
+      /* ----------------------- 调用链路 (trace) ----------------------- */
+      .trace {
+        margin-bottom: 10px;
+        border: 1px solid var(--ah-border);
+        border-left: 3px solid var(--ah-accent, #2997ff);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--ah-accent, #2997ff) 5%, var(--ah-surface-2));
+        overflow: hidden;
+      }
+      .trace > summary {
+        cursor: pointer;
+        padding: 9px 12px;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--ah-accent, #2997ff);
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .trace > summary::-webkit-details-marker {
+        display: none;
+      }
+      .trace .ticon {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 auto;
+        opacity: 0.95;
+      }
+      .trace .tcount {
+        font-weight: 400;
+        font-size: 11px;
+        color: var(--ah-text-muted);
+        background: var(--ah-surface-3, var(--ah-surface-2));
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+      .trace-body {
+        padding: 2px 12px 10px 14px;
+      }
+      /* 树状节点：左侧连接线 + 圆点 */
+      .tnode {
+        border-left: 1px dashed var(--ah-border);
+        margin-left: 6px;
+        padding-left: 12px;
+      }
+      .tnode:last-child {
+        border-left-color: transparent;
+      }
+      .tnode > summary.tnode-head {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 0;
+        font-size: 12px;
+      }
+      .tnode > summary.tnode-head::-webkit-details-marker {
+        display: none;
+      }
+      .tdot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        background: var(--ah-text-muted);
+      }
+      .tlabel {
+        color: var(--ah-text);
+        font-weight: 500;
+      }
+      .tbadge {
+        font-size: 10px;
+        padding: 0 6px;
+        border-radius: 999px;
+        line-height: 16px;
+        flex: 0 0 auto;
+      }
+      .tbadge.err {
+        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 16%, transparent);
+        color: var(--ah-danger, #e24b4a);
+      }
+      .tbadge.pend {
+        background: color-mix(in srgb, var(--ah-accent, #2997ff) 16%, transparent);
+        color: var(--ah-accent, #2997ff);
+      }
+      .tchips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-left: 2px;
+      }
+      .tchip {
+        font-size: 10px;
+        color: var(--ah-text-muted);
+        background: var(--ah-surface-3, var(--ah-surface-2));
+        border: 1px solid var(--ah-border);
+        border-radius: 6px;
+        padding: 0 6px;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+      .tchip b {
+        color: var(--ah-text);
+        font-weight: 600;
+        margin-right: 3px;
+      }
+      .tdetail {
+        margin: 2px 0 4px 15px;
+        padding: 8px 10px;
+        font-size: 11px;
+        line-height: 1.5;
+        overflow: auto;
+        max-height: 180px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--ah-text-muted);
+        font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+        background: var(--ah-canvas);
+        border: 1px solid var(--ah-border);
+        border-radius: 7px;
+      }
+      .tresult {
+        margin: 2px 0 6px 15px;
+        padding: 8px 10px;
+        font-size: 11.5px;
+        line-height: 1.55;
+        color: var(--ah-text);
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: var(--ah-surface-3, var(--ah-surface-2));
+        border: 1px solid var(--ah-border);
+        border-radius: 7px;
+      }
+      .tresult.retrieval {
+        border-left: 3px solid var(--ah-success, #34c759);
+        background: color-mix(in srgb, var(--ah-success, #34c759) 8%, var(--ah-surface-2));
+      }
+      .tres-title {
+        font-size: 10.5px;
+        font-weight: 600;
+        color: var(--ah-success, #34c759);
+        margin-bottom: 4px;
+        letter-spacing: 0.03em;
+      }
+      .tchildren {
+        margin-top: 2px;
+      }
+      /* 节点类型着色（圆点 + 标签前缀色） */
+      .tnode.kind-step > summary .tdot { background: var(--ah-accent, #2997ff); }
+      .tnode.kind-llm > summary .tdot { background: #9b6dff; }
+      .tnode.kind-tool > summary .tdot { background: var(--ah-text-muted); }
+      .tnode.kind-retrieval > summary .tdot { background: var(--ah-success, #34c759); }
+      .tnode.kind-cost > summary .tdot { background: #f0a020; }
+      .tnode.kind-verify > summary .tdot { background: var(--ah-success, #34c759); }
+      .tnode.kind-guardrail > summary .tdot,
+      .tnode.kind-budget > summary .tdot,
+      .tnode.kind-error > summary .tdot { background: var(--ah-danger, #e24b4a); }
+      .tnode.status-error > summary .tlabel { color: var(--ah-danger, #e24b4a); }
+
+      /* ----------------------- 关键信息 (insights) ----------------------- */
+      .insights {
+        margin-bottom: 10px;
+        border: 1px solid var(--ah-border);
+        border-radius: 10px;
+        background: var(--ah-surface-2);
+        padding: 10px 12px 12px;
+      }
+      .insights-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--ah-text);
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .insights-title::before {
+        content: '';
+        width: 3px;
+        height: 12px;
+        border-radius: 2px;
+        background: var(--ah-accent, #2997ff);
+      }
+      .ins-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: 8px;
+      }
+      .ins-item {
+        background: var(--ah-surface-3, var(--ah-surface-1));
+        border: 1px solid var(--ah-border);
+        border-radius: 8px;
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .ins-k {
+        font-size: 10px;
+        color: var(--ah-text-muted);
+      }
+      .ins-v {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--ah-text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ins-retrieval {
+        margin-top: 10px;
+        border-top: 1px dashed var(--ah-border);
+        padding-top: 10px;
+      }
+      .ins-ret-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ah-success, #34c759);
+        margin-bottom: 6px;
+      }
+      .ins-ret-card {
+        border: 1px solid var(--ah-border);
+        border-left: 3px solid var(--ah-success, #34c759);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--ah-success, #34c759) 6%, var(--ah-surface-1));
+        padding: 8px 10px;
+        margin-bottom: 8px;
+      }
+      .ins-ret-name {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ah-text);
+        margin-bottom: 4px;
+      }
+      .ins-ret-body {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.5;
+        max-height: 160px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--ah-text-muted);
+        font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+      }
+      /* ----------------------- 合并视图：深度思考 + 最终回答 ----------------------- */
+      /* 思考区：合并视图顶部，实时流式呈现模型推理（随 token 增量逐字揭示）。 */
+      .think {
+        margin-bottom: 10px;
+        border: 1px solid var(--ah-border);
+        border-left: 3px solid var(--ah-accent, #2997ff);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--ah-accent, #2997ff) 5%, var(--ah-surface-2));
+        overflow: hidden;
+        animation: think-in 0.28s ease;
+      }
+      @keyframes think-in {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: none; }
+      }
+      .think-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px 7px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--ah-accent, #2997ff);
+        cursor: pointer;
+        user-select: none;
+      }
+      .think-ico {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 auto;
+        opacity: 0.95;
+      }
+      .think-title {
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .think-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 500;
+        font-style: normal;
+        color: var(--ah-accent, #2997ff);
+        flex: 0 0 auto;
+      }
+      .think-count {
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--ah-text-muted);
+        flex: 0 0 auto;
+      }
+      .think-chev {
+        flex: 0 0 auto;
+        width: 14px;
+        height: 14px;
+        color: var(--ah-text-muted);
+        transition: transform 0.18s ease;
+      }
+      .think.collapsed .think-chev {
+        transform: rotate(-90deg);
+      }
+      /* 高度封顶 + 内部滚动：超长推理不再撑高整条消息，降低视觉占用。 */
+      .think-body {
+        padding: 2px 12px 8px 34px;
+        color: var(--ah-text-muted);
+        font-size: 12.5px;
+        line-height: 1.65;
+        max-height: 180px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        overflow-wrap: anywhere;
+        position: relative;
+        scrollbar-width: thin;
+        scrollbar-color: var(--ah-border) transparent;
+      }
+      .think.collapsed .think-body {
+        display: none;
+      }
+      .think-body::-webkit-scrollbar {
+        width: 4px;
+      }
+      .think-body::-webkit-scrollbar-thumb {
+        background: var(--ah-border);
+        border-radius: 2px;
+      }
+      .think-text {
+        white-space: normal;
+      }
+      .think-text.muted {
+        opacity: 0.85;
+      }
+      /* 关键变量卡（深度思考内高亮） */
+      .dvars {
+        margin-bottom: 10px;
+        border: 1px dashed var(--ah-border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: var(--ah-canvas);
+      }
+      .dvars-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ah-success, #34c759);
+        margin-bottom: 6px;
+      }
+      .dvars-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 6px;
+      }
+      .dvar {
+        background: var(--ah-surface-3, var(--ah-surface-1));
+        border: 1px solid var(--ah-border);
+        border-radius: 7px;
+        padding: 5px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .dvar-k {
+        font-size: 10px;
+        color: var(--ah-text-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dvar-v {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--ah-text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* 思考区与回答区之间的清晰分隔 */
+      .sep {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 4px 0 10px;
+        color: var(--ah-text-muted);
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      .sep::before,
+      .sep::after {
+        content: '';
+        flex: 1 1 auto;
+        height: 1px;
+        background: var(--ah-border);
+      }
+      /* 回答区：合并视图底部，承载最终回答（流式逐字）。 */
+      .answer {
+        font-size: 14px;
+        line-height: 1.65;
+      }
+      /* “模型正在回复…” 文字动效：循环脉冲 + 跳动圆点，提示模型仍在处理。 */
+      .replying {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        font-size: 12.5px;
+        font-style: italic;
+        color: var(--ah-text-muted);
+        animation: replying-pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes replying-pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+      }
+      /* 通用跳动圆点（思考中 / 模型正在回复 共用 blinkdot 动效） */
+      .dots {
+        display: inline-flex;
+        gap: 3px;
+        vertical-align: middle;
+      }
+      .dots i {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: blinkdot 1.2s infinite ease-in-out;
+      }
+      .dots i:nth-child(2) {
+        animation-delay: 0.2s;
+      }
+      .dots i:nth-child(3) {
+        animation-delay: 0.4s;
+      }
+      /* 折叠式附加信息（调用链路 / 关键信息）：默认收起，不干扰主阅读流。 */
+      .extras {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .extra {
+        border: 1px solid var(--ah-border);
+        border-radius: 10px;
+        background: var(--ah-surface-2);
+        overflow: hidden;
+      }
+      .extra > summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--ah-text);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        user-select: none;
+      }
+      .extra > summary::-webkit-details-marker {
+        display: none;
+      }
+      .extra[open] > summary {
+        border-bottom: 1px solid var(--ah-border);
+      }
+      .extra .ticon {
+        width: 14px;
+        height: 14px;
+        flex: 0 0 auto;
+        opacity: 0.95;
+      }
+      .extra .tcount {
+        font-weight: 400;
+        font-size: 11px;
+        color: var(--ah-text-muted);
+        background: var(--ah-surface-3, var(--ah-surface-2));
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+      .extra .trace-body {
+        padding: 10px 12px;
+      }
+      .extra .insights {
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        margin: 0;
+        padding: 10px 12px 12px;
+      }
+
+      /* 移动端汉堡按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
+      .menu-btn {
+        display: none;
+        flex: 0 0 auto;
+        width: 34px;
+        height: 34px;
+        align-items: center;
+        justify-content: center;
+        font-size: 17px;
+        line-height: 1;
+        border-radius: 9px;
+        background: var(--ah-surface-2);
+        border: 1px solid var(--ah-border);
+        color: var(--ah-text);
+        cursor: pointer;
+        padding: 0;
+      }
+      .menu-btn:hover {
+        border-color: var(--ah-accent, #2997ff);
+      }
+      .scrim {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 40;
+        opacity: 0;
+        transition: opacity 200ms ease;
+      }
+      .scrim.show {
+        opacity: 1;
+        display: block;
+      }
+
+      /* ===================== 响应式适配 ===================== */
+      /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。 */
+      @media (max-width: 900px) {
+        :host {
+          height: 100dvh;
+          overflow: hidden;
+        }
+        .sidebar {
+          position: fixed;
+          top: 0;
+          left: 0;
+          height: 100%;
+          width: 264px;
+          max-width: 84vw;
+          transform: translateX(-100%);
+          transition: transform 220ms ease;
+          z-index: 50;
+          box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
+        }
+        .sidebar.open {
+          transform: none;
+        }
+        .menu-btn {
+          display: inline-flex;
+        }
+        .scrim.show {
+          display: block;
+        }
+        .chat-head {
+          padding: 10px 12px;
+          gap: 8px;
+        }
+        .model-input {
+          width: 120px;
+        }
+        .thread {
+          max-width: 100%;
+        }
+        .composer,
+        .hint {
+          max-width: 100%;
+        }
+      }
+      /* 手机（≤600px）：进一步收紧内边距 / 字号，确保完整显示与流畅操作。 */
+      @media (max-width: 600px) {
+        .scroll {
+          padding: 12px 0;
+        }
+        .thread {
+          padding: 0 12px;
+          gap: 14px;
+        }
+        .bubble {
+          padding: 10px 12px;
+        }
+        .avatar {
+          flex: 0 0 26px;
+          width: 26px;
+          height: 26px;
+          font-size: 12px;
+        }
+        .msg {
+          gap: 9px;
+        }
+        .chat-head {
+          padding: 8px 10px;
+          gap: 6px;
+        }
+        .title {
+          font-size: 13px;
+        }
+        .model-input {
+          width: 88px;
+          font-size: 11px;
+          padding: 4px 8px;
+        }
+        .toggle {
+          padding: 5px 9px;
+          font-size: 11.5px;
+          gap: 5px;
+        }
+        .toggle svg {
+          width: 12px;
+          height: 12px;
+        }
+        /* 联网搜索为 UI 占位，窄屏隐藏以节省头部空间 */
+        .toggle.web {
+          display: none;
+        }
+        .composer-wrap {
+          padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
+        }
+        .composer {
+          padding: 6px 6px 6px 12px;
+          gap: 8px;
+          border-radius: 14px;
+        }
+        .composer textarea {
+          font-size: 14px;
+        }
+        .send {
+          width: 34px;
+          height: 34px;
+          font-size: 15px;
+        }
+        .hint {
+          font-size: 10.5px;
+          margin-top: 6px;
+        }
+        .empty h1 {
+          font-size: 22px;
+        }
+        .empty p {
+          font-size: 13px;
+        }
+        .think-body {
+          font-size: 12px;
+          line-height: 1.55;
+        }
+        .sep {
+          font-size: 11px;
+          margin: 4px 0 8px;
+        }
+      }
+      /* 中屏（901–1100px）：侧栏收窄但常驻，兼顾 iPad 横屏与窄笔记本。 */
+      @media (min-width: 901px) and (max-width: 1100px) {
+        .sidebar {
+          width: 220px;
+          flex-basis: 220px;
+        }
+      }
+
       .composer-wrap {
         border-top: 1px solid var(--ah-border);
         background: var(--ah-surface-1);
@@ -607,17 +1292,45 @@ export class AhChat extends LitElement {
   @state() model = '';
   @state() running = false;
   @state() mode: RunMode = 'mock';
-  @state() deepThink = false;
+  @state() deepThink = true;
   @state() web = false;
+  /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
+  @state() thinkCollapsed: Record<string, boolean> = {};
+  /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
+  @state() sidebarOpen = false;
   @state() error: string | null = null;
-
   private nextId = 1;
   private abort?: AbortController;
   private activeIdx = -1;
   private jobId: string | null = null;
   private scrollRef = createRef<HTMLElement>();
+
+  /** 重置调用链路追踪的瞬态构建状态（防御上轮残留泄漏到本轮）。 */
+  private resetTrace() {
+    this.traceRoot = null;
+    this.traceParent = null;
+    this.traceLlm = null;
+    this.traceLastTool = null;
+    this.traceSeq = 0;
+  }
   /** 标记本轮是否已收到 llm:token 增量，用于防止 llm:response 整段覆盖打字机效果 */
   private receivedTokens = false;
+  /**
+   * 打字机缓冲：真实模型 / 代理（如 agnes apihub）常把整段回复塞进单个 llm:token，
+   * 若直接 patch 进 content 会「一帧跳到全文」，看不到逐字揭示。改为先进缓冲，
+   * 由定时器按稳定节奏逐字揭示，使无论后端逐字小 delta 还是一次性大块都呈现打字机效果。
+   */
+  private pendingContent = '';
+  private pendingReasoning = '';
+  private typedTimer: ReturnType<typeof setInterval> | null = null;
+  /** run:end 携带的权威全文（仅在打字机未产生任何可见文本时作兜底）。 */
+  private finalContent = '';
+  /** 调用链路追踪树的瞬态构建状态（每轮 run 重置；构建结果写入当前 assistant 消息的 trace 字段）。 */
+  private traceRoot: TraceNode | null = null;
+  private traceParent: TraceNode | null = null;
+  private traceLlm: TraceNode | null = null;
+  private traceLastTool: TraceNode | null = null;
+  private traceSeq = 0;
 
   async connectedCallback() {
     super.connectedCallback();
@@ -651,14 +1364,24 @@ export class AhChat extends LitElement {
     this.messages = [];
     this.input = '';
     this.error = null;
+    this.stopTypewriter();
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.resetTrace();
   }
 
   private async selectSession(id: string) {
     if (id === this.activeId) return;
     this.abort?.abort();
     this.activeId = id;
+    this.sidebarOpen = false;
     this.error = null;
     this.input = '';
+    // 切换会话时停掉打字机并清空缓冲，避免上一个会话的残留文本泄漏到新会话。
+    this.stopTypewriter();
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.resetTrace();
     // 优先用本地内存中的消息；否则向服务端拉取历史。
     try {
       const s = await client.getChatSession(id);
@@ -666,11 +1389,12 @@ export class AhChat extends LitElement {
         id: this.nextId++,
         role: m.role === 'user' ? 'user' : 'assistant',
         content: m.content,
-        // 还原落盘时一并写入的推理与工具调用，避免切换会话后再切回丢失深度思考/工具卡片。
+        // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
         reasoning: m.reasoning,
         tools: m.tools
           ? m.tools.map((t) => ({ name: t.name, args: t.args ?? '', result: t.result, errored: t.errored }))
           : undefined,
+        trace: m.trace ? m.trace : undefined,
       }));
     } catch {
       this.messages = [];
@@ -727,8 +1451,14 @@ export class AhChat extends LitElement {
     ];
     this.activeIdx = this.messages.length - 1;
     this.input = '';
-    this.running = true;
+    // 重置打字机状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.receivedTokens = false;
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.finalContent = '';
+    this.resetTrace();
+    this.stopTypewriter();
+    this.running = true;
 
     const ac = new AbortController();
     this.abort = ac;
@@ -750,6 +1480,20 @@ export class AhChat extends LitElement {
         i === this.activeIdx ? { ...m, error: true, content: m.content || `⚠️ ${e?.message ?? e}` } : m
       );
     } finally {
+      // 停掉 interval 定时器，改由 drainTypewriter 接管，按打字节奏把剩余缓冲揭示完，
+      // 避免 run:end 的 final 文本一次性覆盖掉打字机效果。
+      this.stopTypewriter();
+      if (ac.signal.aborted) {
+        // 被中止：立即落盘剩余文本（不追求打字质感）。
+        this.flushTypewriter();
+      } else {
+        await this.drainTypewriter();
+        // 兜底：若打字机全程未产生可见文本（如收到空 delta 但 run:end 带 final），用 final 补上。
+        const c = this.activeIdx >= 0 ? this.messages[this.activeIdx] : null;
+        if (c && !c.content && this.finalContent) {
+          this.patchActive({ content: this.finalContent });
+        }
+      }
       this.running = false;
       this.activeIdx = -1;
       this.jobId = null;
@@ -769,6 +1513,8 @@ export class AhChat extends LitElement {
       if (this.activeIdx < 0) return;
       this.messages = this.messages.map((x, i) => (i === this.activeIdx ? { ...x, ...p } : x));
     };
+    // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
+    this.traceHandle(ev);
     switch (ev.type) {
       case 'job:accepted':
         this.jobId = (ev as any).jobId ?? this.jobId;
@@ -777,13 +1523,19 @@ export class AhChat extends LitElement {
         const c = cur();
         if (c) {
           this.receivedTokens = true;
-          patch({ content: c.content + String((ev as any).delta ?? '') });
+          // 不再直接 patch 到 content：整段塞进单 delta 时会「一帧跳全文」。
+          // 改为进 pending 缓冲，由打字机定时器按节奏逐字揭示。
+          this.pendingContent += String((ev as any).delta ?? '');
+          this.ensureTypewriter();
         }
         break;
       }
       case 'llm:reasoning': {
         const c = cur();
-        if (c) patch({ reasoning: (c.reasoning ?? '') + String((ev as any).delta ?? '') });
+        if (c) {
+          this.pendingReasoning += String((ev as any).delta ?? '');
+          this.ensureTypewriter();
+        }
         break;
       }
       case 'llm:response': {
@@ -845,8 +1597,14 @@ export class AhChat extends LitElement {
         break;
       }
       case 'run:end': {
-        const c = cur();
-        if (c) patch({ content: String((ev as any).final ?? c.content) });
+        const finalStr = String((ev as any).final ?? '');
+        this.finalContent = finalStr;
+        // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
+        // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
+        if (!this.receivedTokens && finalStr) {
+          const c = cur();
+          if (c) patch({ content: finalStr });
+        }
         break;
       }
       case 'error': {
@@ -856,6 +1614,253 @@ export class AhChat extends LitElement {
       }
       default:
         break;
+    }
+  }
+
+  /* ----------------------- 调用链路追踪构建 ----------------------- */
+
+  /** 确保追踪树根节点（run）存在并返回。 */
+  private ensureTraceRoot(): TraceNode {
+    if (!this.traceRoot) {
+      this.traceRoot = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
+      this.traceParent = this.traceRoot;
+    }
+    return this.traceRoot;
+  }
+
+  /**
+   * 把一条流式事件汇入调用链路追踪树（瞬态构建，结果写入当前 assistant 消息的 trace 字段）。
+   * 树形：run → step → llm → tool/retrieval/cost，外加 root 级的 verify/guardrail/budget/error。
+   * 外部调用（工具/检索）因此被整合进对话上下文，可结构化复盘。
+   */
+  private traceHandle(ev: any) {
+    const mk = (
+      parent: TraceNode,
+      kind: TraceKind,
+      label: string,
+      status: TraceNode['status'] = 'ok',
+      extra: Partial<TraceNode> = {}
+    ): TraceNode => {
+      const n: TraceNode = { id: `t${++this.traceSeq}`, kind, label, status, children: [], ...extra };
+      parent.children.push(n);
+      return n;
+    };
+    switch (ev?.type) {
+      case 'run:meta': {
+        const r = this.ensureTraceRoot();
+        r.meta = {
+          ...(r.meta ?? {}),
+          ...(ev.model ? { model: String(ev.model) } : {}),
+          ...(ev.agentId ? { agent: String(ev.agentId) } : {}),
+          ...(ev.mode ? { mode: String(ev.mode) } : {}),
+        };
+        r.label = ev.model ? `运行 · ${ev.model}` : '运行';
+        break;
+      }
+      case 'step:start': {
+        const r = this.ensureTraceRoot();
+        this.traceParent = r;
+        const step = mk(r, 'step', `第 ${ev.step} 步`, 'ok', {
+          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` },
+        });
+        this.traceParent = step;
+        this.traceLlm = null;
+        this.traceLastTool = null;
+        break;
+      }
+      case 'llm:call': {
+        this.ensureTraceRoot();
+        const parent = this.traceParent ?? this.traceRoot!;
+        this.traceLlm = mk(parent, 'llm', 'LLM 调用', 'ok', {
+          meta: {
+            messages: `消息 ${ev.messageCount ?? '?'}`,
+            tools: `工具 ${ev.toolCount ?? '?'}`,
+          },
+        });
+        this.traceLastTool = null;
+        break;
+      }
+      case 'llm:reasoning': {
+        if (this.traceLlm && typeof ev.delta === 'string') {
+          const n = (this.traceLlm.meta?.reasoningChars ? Number(this.traceLlm.meta.reasoningChars) : 0) + ev.delta.length;
+          this.traceLlm.meta = { ...(this.traceLlm.meta ?? {}), reasoningChars: String(n) };
+        }
+        break;
+      }
+      case 'llm:token': {
+        if (this.traceLlm && typeof ev.delta === 'string') {
+          const n = (this.traceLlm.meta?.tokenChars ? Number(this.traceLlm.meta.tokenChars) : 0) + ev.delta.length;
+          this.traceLlm.meta = { ...(this.traceLlm.meta ?? {}), tokenChars: String(n) };
+        }
+        break;
+      }
+      case 'tool:start': {
+        if (!this.traceLlm || !ev.call) break;
+        const name = String(ev.call.name ?? 'tool');
+        const retrieval = isRetrievalTool(name);
+        this.traceLastTool = mk(this.traceLlm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
+          detail: typeof ev.call.arguments === 'string' ? ev.call.arguments : JSON.stringify(ev.call.arguments ?? {}),
+        });
+        break;
+      }
+      case 'tool:result': {
+        if (this.traceLastTool) {
+          this.traceLastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
+          this.traceLastTool.status = ev.errored ? 'error' : 'ok';
+          this.traceLastTool.meta = { ...(this.traceLastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
+        }
+        break;
+      }
+      case 'run:cost': {
+        this.ensureTraceRoot();
+        const parent = this.traceParent ?? this.traceRoot!;
+        mk(parent, 'cost', '成本 / 用量', 'ok', {
+          meta: {
+            tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
+            cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
+            ...(ev.model ? { model: String(ev.model) } : {}),
+          },
+        });
+        break;
+      }
+      case 'verify:result': {
+        this.ensureTraceRoot();
+        mk(this.traceRoot!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
+          meta: { score: String(ev.score ?? '?'), passed: ev.passed ? '通过' : '未通过' },
+          result: (ev.reasons ?? []).join('\n'),
+        });
+        break;
+      }
+      case 'guardrail:blocked': {
+        this.ensureTraceRoot();
+        mk(this.traceRoot!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', { detail: String(ev.reason ?? '') });
+        break;
+      }
+      case 'budget:exceeded': {
+        this.ensureTraceRoot();
+        mk(this.traceRoot!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
+          meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') },
+        });
+        break;
+      }
+      case 'error': {
+        this.ensureTraceRoot();
+        mk(this.traceRoot!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
+        break;
+      }
+      default:
+        break;
+    }
+    // 结构型事件才回写消息（token/reasoning 高频且仅更新 meta，避免无谓重渲染）。
+    if (
+      this.traceRoot &&
+      this.activeIdx >= 0 &&
+      ev.type !== 'llm:token' &&
+      ev.type !== 'llm:reasoning'
+    ) {
+      this.patchActive({ trace: [this.traceRoot] });
+    }
+  }
+
+  /* ----------------------- 打字机缓冲 ----------------------- */
+
+  /** 更新当前正在流式输出的 assistant 消息字段（activeIdx 指向的那条）。 */
+  private patchActive(p: Partial<ChatMsg>) {
+    if (this.activeIdx < 0) return;
+    this.messages = this.messages.map((x, i) => (i === this.activeIdx ? { ...x, ...p } : x));
+  }
+
+  /**
+   * 计算本 tick 应揭示的字符数：自适应速度。
+   * 缓冲越大揭示越快（保证长文在 ~1.5s 内揭示完），但最小 2 字/tick 保留打字质感，
+   * 最大 28 字/tick 防止对超长文本揭示过慢。真流式（小 delta 频繁到达）时缓冲始终很小，
+   * 故以最小速度揭示，呈现自然打字节奏。
+   */
+  private typeStep(n: number): number {
+    if (n <= 0) return 0;
+    return Math.min(28, Math.max(2, Math.ceil(n / 70)));
+  }
+
+  /** 启动打字机定时器（已运行则跳过）。 */
+  private ensureTypewriter() {
+    if (this.typedTimer) return;
+    this.typedTimer = setInterval(() => this.tickTypewriter(), 24);
+  }
+
+  /** 停止打字机定时器并清空缓冲状态。 */
+  private stopTypewriter() {
+    if (this.typedTimer) {
+      clearInterval(this.typedTimer);
+      this.typedTimer = null;
+    }
+  }
+
+  /** 把缓冲中的待揭示文本一次性落到 content / reasoning（运行结束或切换会话时调用，避免文本滞留）。 */
+  private flushTypewriter() {
+    if (this.activeIdx >= 0) {
+      const c = this.messages[this.activeIdx];
+      if (c) {
+        if (this.pendingContent) {
+          this.patchActive({ content: c.content + this.pendingContent });
+          this.pendingContent = '';
+        }
+        if (this.pendingReasoning) {
+          this.patchActive({ reasoning: (c.reasoning ?? '') + this.pendingReasoning });
+          this.pendingReasoning = '';
+        }
+      }
+    }
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.stopTypewriter();
+  }
+
+  /**
+   * 运行结束后，接替 interval 把剩余缓冲按打字节奏（与 tick 一致的步长/间隔）逐步揭示，
+   * 直到缓冲清空再 resolve。这样即使后端在一瞬间把整段塞进单个 token，用户也能看到逐字打字效果，
+   * 而不是 run:end 的 final 文本一次性覆盖。
+   */
+  private drainTypewriter(): Promise<void> {
+    return new Promise((resolve) => {
+      const step = () => {
+        if (!this.pendingContent.length && !this.pendingReasoning.length) {
+          this.stopTypewriter();
+          resolve();
+          return;
+        }
+        this.tickTypewriter();
+        setTimeout(step, 24);
+      };
+      step();
+    });
+  }
+
+  /** 每个 tick 从缓冲中揭示一段字符到可见文本。 */
+  private tickTypewriter() {
+    if (this.activeIdx < 0) {
+      this.stopTypewriter();
+      return;
+    }
+    const c = this.messages[this.activeIdx];
+    if (!c) {
+      this.stopTypewriter();
+      return;
+    }
+    if (this.pendingContent.length) {
+      const step = this.typeStep(this.pendingContent.length);
+      const move = this.pendingContent.slice(0, step);
+      this.pendingContent = this.pendingContent.slice(step);
+      this.patchActive({ content: c.content + move });
+    }
+    if (this.pendingReasoning.length) {
+      const step = this.typeStep(this.pendingReasoning.length);
+      const move = this.pendingReasoning.slice(0, step);
+      this.pendingReasoning = this.pendingReasoning.slice(step);
+      this.patchActive({ reasoning: (c.reasoning ?? '') + move });
+    }
+    // 缓冲清空且运行已结束 → 停止定时器（避免空转占资源）。
+    if (!this.pendingContent.length && !this.pendingReasoning.length && !this.running) {
+      this.stopTypewriter();
     }
   }
 
@@ -875,96 +1880,271 @@ export class AhChat extends LitElement {
     }
   }
 
-  private renderMessage(m: ChatMsg) {
-    const isUser = m.role === 'user';
-    // 深度思考：有推理内容或有工具调用时都展示（工具调用是模型"思考过程"的一部分）
-    const hasReasoning = !!m.reasoning;
-    const hasTools = !!(m.tools && m.tools.length > 0);
-    const showThinking = hasReasoning || hasTools;
-    // 展开状态：有内容时跟随开关，流式输出中强制展开
-    const thinkingOpen = this.deepThink || (
-      this.running && this.activeIdx >= 0 && this.messages[this.activeIdx]?.id === m.id
-    );
-    const isStreamingReasoning = this.running && this.activeIdx >= 0
-      && this.messages[this.activeIdx]?.id === m.id && showThinking && !m.content;
-    // 是否当前正在流式输出的 assistant 消息
-    const isStreamingAssistant = this.running && this.activeIdx >= 0
-      && this.messages[this.activeIdx]?.id === m.id && m.role === 'assistant';
+  /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
+  private toggleThink(id: number) {
+    const k = String(id);
+    const c = this.messages.find((m) => m.id === id);
+    const isThinking =
+      this.running && this.activeIdx >= 0 && this.messages[this.activeIdx]?.id === id && !c?.content;
+    if (isThinking) return;
+    this.thinkCollapsed = { ...this.thinkCollapsed, [k]: !this.thinkCollapsed[k] };
+  }
 
-    // 工具摘要：合并同名工具显示次数
-    const toolSummary = hasTools ? this.summarizeTools(m.tools!) : '';
+  /** 切换移动端侧栏抽屉（≤900px 生效）。 */
+  private toggleSidebar() {
+    this.sidebarOpen = !this.sidebarOpen;
+  }
+
+  private renderMessage(m: ChatMsg) {
+    // 用户消息：仅渲染气泡文本。
+    if (m.role === 'user') {
+      return html`
+        <div class="msg user">
+          <div class="avatar">你</div>
+          <div class="bubble">
+            <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // 助手消息：合并视图 —— 深度思考（实时流式）在上，最终回答（分隔后）在下；
+    // 模型仍在处理时于对应区域显示「思考中 / 模型正在回复…」文字动效。
+    const isStreamingAssistant =
+      this.running &&
+      this.activeIdx >= 0 &&
+      this.messages[this.activeIdx]?.id === m.id &&
+      m.role === 'assistant';
+    // 是否展示思考区：仅当模型确实返回了推理内容（流式首 token 到达即出现）。
+    const showThinking = !!m.reasoning;
+    // 阶段判定：尚未开始生成回答 → 处于「思考中」；否则「回答中」。
+    const isThinking = isStreamingAssistant && !m.content;
+    const isAnswering = isStreamingAssistant && !!m.content;
 
     return html`
-      <div class="msg ${m.role} ${m.error ? 'error' : ''}">
-        <div class="avatar">${isUser ? '你' : 'A'}</div>
+      <div class="msg assistant ${m.error ? 'error' : ''}">
+        <div class="avatar">A</div>
         <div class="bubble">
-          ${showThinking
-            ? html`<details class="reasoning" ?open=${thinkingOpen}>
-                <summary>
-                  <svg class="ricon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 18h6M10 21h4" />
-                    <path d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z" />
-                  </svg>
-                  <span>深度思考</span>
-                  ${isStreamingReasoning
-                    ? html`<span class="thinking"><i></i><i></i><i></i></span>`
-                    : nothing}
-                </summary>
-                <div class="body">
-                  ${hasReasoning ? unsafeHTML(toRichHtml(m.reasoning??'')) : nothing}
-                  ${hasTools
-                    ? html`
-                        <div class="tool-summary">
-                          <div class="tool-summary-title">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                            已调用 ${m.tools!.length} 个工具${toolSummary}
-                          </div>
-                          ${m.tools!.map(
-                            (t) => html`
-                              <details class="inner-tool ${t.errored ? 'errored' : ''}">
-                                <summary>
-                                  <span class="itag">${t.errored ? '✕' : '✓'}</span>
-                                  <span class="iname">${escapeHtml(t.name)}</span>
-                                  <svg class="ichev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-                                </summary>
-                                ${t.args ? html`<pre class="tool-pre">${formatToolJson(t.args)}</pre>` : nothing}
-                                ${t.result !== undefined
-                                  ? html`<div class="tool-result">结果：${formatToolJson(t.result)}</div>`
-                                  : nothing}
-                              </details>
-                            `
-                          )}
-                        </div>
-                      `
-                    : nothing}
-                </div>
-              </details>`
+          ${showThinking && this.deepThink ? this.renderThinking(m, isThinking) : nothing}
+          ${showThinking && this.deepThink && (m.content || isStreamingAssistant)
+            ? html`<div class="sep"><span>回答</span></div>`
             : nothing}
-          ${m.content
-            ? html`<div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>`
-            : nothing}
-          ${isStreamingAssistant
-            ? html`<span class="caret"></span>`
-            : nothing}
-          ${!m.content && !isStreamingAssistant && !showThinking
-            ? html`<div class="msg-text placeholder">等待响应...</div>`
-            : nothing}
+          ${this.renderAnswer(m, isAnswering, isStreamingAssistant)}
+          ${this.renderExtras(m, isStreamingAssistant)}
         </div>
       </div>
     `;
   }
 
-  /** 合并同名工具为 "×N" 摘要 */
-  private summarizeTools(tools: ToolView[]): string {
-    const counts = new Map<string, number>();
-    for (const t of tools) {
-      counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
-    }
-    const parts: string[] = [];
-    for (const [name, count] of counts) {
-      parts.push(count > 1 ? `${escapeHtml(name)}×${count}` : escapeHtml(name));
-    }
-    return parts.length > 0 ? `（${parts.join('、')}）` : '';
+  /**
+   * 渲染「深度思考」区（合并视图·顶部）：
+   * 展示模型实际返回的推理内容（m.reasoning），随 llm:reasoning 增量经打字机逐字显现。
+   * 流式推理进行中时，标题显示「思考中…」动效、正文末尾显示闪烁光标。
+   */
+  private renderThinking(m: ChatMsg, isThinking: boolean): TemplateResult {
+    const parsed = m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
+    const collapsed = !!this.thinkCollapsed[String(m.id)];
+    return html`
+      <div class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}">
+        <div class="think-head" @click=${() => this.toggleThink(m.id)} title="点击折叠 / 展开">
+          <svg class="think-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18h6M10 21h4" />
+            <path d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z" />
+          </svg>
+          <span class="think-title">深度思考</span>
+          ${isThinking
+            ? html`<span class="think-status">思考中<span class="dots"><i></i><i></i><i></i></span></span>`
+            : nothing}
+          ${collapsed && m.reasoning
+            ? html`<span class="think-count">${m.reasoning.length} 字</span>`
+            : nothing}
+          <svg class="think-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+        </div>
+        <div class="think-body">
+          ${
+            parsed
+              ? html`
+                ${parsed.vars.length
+                  ? html`<div class="dvars">
+                      <div class="dvars-title">关键变量</div>
+                      <div class="dvars-grid">
+                        ${parsed.vars.map(
+                          ([k, v]) => html`<div class="dvar">
+                            <span class="dvar-k">${escapeHtml(k)}</span>
+                            <span class="dvar-v">${escapeHtml(v)}</span>
+                          </div>`
+                        )}
+                      </div>
+                    </div>`
+                  : nothing}
+                <div class="think-text">
+                  ${parsed.text
+                    ? unsafeHTML(toRichHtml(parsed.text))
+                    : html`<span class="muted">（暂无推理内容）</span>`}
+                </div>`
+              : html`<div class="think-text muted">${isThinking ? '模型正在思考…' : '（模型未返回推理内容）'}</div>`
+          }
+          ${isThinking ? html`<span class="caret"></span>` : nothing}
+        </div>
+      </div>
+    `;
+  }
+
+  /** 渲染最终回答区（合并视图·底部）：随 llm:token 增量逐字显现；流式进行中显示「模型正在回复…」动效。 */
+  private renderAnswer(m: ChatMsg, isAnswering: boolean, isStreaming: boolean): TemplateResult {
+    return html`
+      <div class="answer">
+        ${m.content
+          ? html`<div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>`
+          : nothing}
+        ${isAnswering ? html`<span class="caret"></span>` : nothing}
+        ${isStreaming
+          ? html`<div class="replying">模型正在回复<span class="dots"><i></i><i></i><i></i></span></div>`
+          : nothing}
+        ${!m.content && !isStreaming
+          ? html`<div class="msg-text placeholder">等待响应…</div>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  /** 渲染折叠式附加信息（调用链路 / 关键信息），默认收起，不干扰主阅读流。 */
+  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
+    const hasTrace = !!(m.trace && m.trace.length > 0);
+    const insights = hasTrace ? this.buildInsights(m.trace!) : null;
+    if (!hasTrace && !insights) return html``;
+    return html`
+      <div class="extras">
+        ${hasTrace
+          ? html`<details class="extra">
+              <summary>
+                <svg class="ticon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6" cy="6" r="2.4" /><circle cx="18" cy="6" r="2.4" /><circle cx="12" cy="18" r="2.4" />
+                  <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
+                </svg>
+                <span>调用链路</span>
+                <span class="tcount">${this.countTraceNodes(m.trace!)} 节点</span>
+                ${isStreaming ? html`<span class="dots"><i></i><i></i><i></i></span>` : nothing}
+              </summary>
+              <div class="trace-body">${m.trace!.map((n) => this.renderTraceNode(n))}</div>
+            </details>`
+          : nothing}
+        ${insights
+          ? html`<details class="extra">
+              <summary><span>关键信息</span></summary>
+              <div class="insights">${this.renderInsights(insights)}</div>
+            </details>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  /** 统计追踪树节点总数（用于「调用链路」标题计数）。 */
+  private countTraceNodes(trace: TraceNode[]): number {
+    let n = 0;
+    const walk = (ns: TraceNode[]) => ns.forEach((x) => {
+      n++;
+      walk(x.children);
+    });
+    walk(trace);
+    return n;
+  }
+
+  /** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。 */
+  private renderTraceNode(n: TraceNode): TemplateResult {
+    const hasDetail = !!n.detail && n.detail.trim().length > 0;
+    const hasResult = n.result != null && n.result.trim().length > 0;
+    const isRetrieval = n.kind === 'retrieval';
+    // run/step/llm 默认展开，叶子节点（工具/检索/成本）默认收起。
+    const defaultOpen = n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
+    return html`
+      <details class="tnode kind-${n.kind} status-${n.status}" ?open=${defaultOpen}>
+        <summary class="tnode-head">
+          <span class="tdot"></span>
+          <span class="tlabel">${escapeHtml(n.label)}</span>
+          ${n.status === 'error' ? html`<span class="tbadge err">失败</span>` : nothing}
+          ${n.status === 'pending' ? html`<span class="tbadge pend">进行中</span>` : nothing}
+          ${n.meta
+            ? html`<span class="tchips">${Object.entries(n.meta).map(
+                ([k, v]) => html`<span class="tchip"><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span>`
+              )}</span>`
+            : nothing}
+        </summary>
+        ${hasDetail ? html`<pre class="tdetail">${formatToolJson(n.detail!)}</pre>` : nothing}
+        ${hasResult
+          ? html`<div class="tresult ${isRetrieval ? 'retrieval' : ''}">
+              ${isRetrieval ? html`<div class="tres-title">检索内容</div>` : nothing}${formatToolJson(n.result!)}
+            </div>`
+          : nothing}
+        ${n.children.length
+          ? html`<div class="tchildren">${n.children.map((c) => this.renderTraceNode(c))}</div>`
+          : nothing}
+      </details>
+    `;
+  }
+
+  /** 遍历追踪树，提炼「关键信息」结构化摘要。 */
+  private buildInsights(trace: TraceNode[]): Insights {
+    const root = trace[0];
+    const flat: TraceNode[] = [];
+    const walk = (ns: TraceNode[]): void => {
+      ns.forEach((x) => {
+        flat.push(x);
+        walk(x.children);
+      });
+    };
+    walk(root.children);
+    const steps = flat.filter((n) => n.kind === 'step').length;
+    const tools = flat.filter((n) => n.kind === 'tool');
+    const retrievals = flat.filter((n) => n.kind === 'retrieval');
+    const cost = flat.find((n) => n.kind === 'cost');
+    const meta = root.meta ?? {};
+    return {
+      model: meta.model,
+      agent: meta.agent,
+      mode: meta.mode,
+      steps,
+      toolCount: tools.length + retrievals.length,
+      costTokens: cost?.meta?.tokens,
+      costValue: cost?.meta?.cost,
+      retrievals: retrievals.map((n) => ({ label: n.label, result: n.result ?? '' })),
+    };
+  }
+
+  /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
+  private renderInsights(ins: Insights) {
+    const stats: Array<[string, string]> = [];
+    const push = (k: string, v: string | undefined) => {
+      if (v != null) stats.push([k, v]);
+    };
+    push('模型', ins.model);
+    push('Agent', ins.agent);
+    push('模式', ins.mode);
+    push('步骤', ins.steps ? String(ins.steps) : undefined);
+    push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
+    push('Token', ins.costTokens);
+    push('成本', ins.costValue);
+    return html`
+      <div class="insights-title">关键信息</div>
+      <div class="ins-grid">
+        ${stats.map(
+          ([k, v]) => html`<div class="ins-item">
+            <span class="ins-k">${escapeHtml(k)}</span><span class="ins-v">${escapeHtml(v)}</span>
+          </div>`
+        )}
+      </div>
+      ${ins.retrievals.length
+        ? html`<div class="ins-retrieval">
+            <div class="ins-ret-title">检索内容</div>
+            ${ins.retrievals.map(
+              (r) => html`<div class="ins-ret-card">
+                <div class="ins-ret-name">${escapeHtml(r.label)}</div>
+                <pre class="ins-ret-body">${formatToolJson(r.result)}</pre>
+              </div>`
+            )}
+          </div>`
+        : nothing}
+    `;
   }
 
   render() {
@@ -997,6 +2177,7 @@ export class AhChat extends LitElement {
 
       <div class="main">
         <div class="chat-head">
+          <button class="menu-btn" @click=${() => this.toggleSidebar()} title="菜单 / 会话列表">☰</button>
           <span class="title">${active ? escapeHtml(active.title) : '新对话'}</span>
           <span class="spacer"></span>
           <input
@@ -1007,7 +2188,7 @@ export class AhChat extends LitElement {
           />
           <span
             class="toggle ${this.deepThink ? 'on' : ''}"
-            title="UI 占位：暂未接入后端推理开关"
+            title="显示 / 隐藏深度思考区"
             @click=${() => (this.deepThink = !this.deepThink)}
             ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4" /><path d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z" /></svg>深度思考</span
           >
@@ -1050,6 +2231,8 @@ export class AhChat extends LitElement {
           </div>
         </div>
       </div>
+
+      <div class="scrim ${this.sidebarOpen ? 'show' : ''}" @click=${() => (this.sidebarOpen = false)}></div>
     `;
   }
 }
@@ -1071,6 +2254,33 @@ function safeJson(v: unknown): string {
  * 只转义 < > & 三种 HTML 危险字符，保留引号和换行不被转义，
  * 避免 JSON 中的 " 被 escapeHtml 转成 &quot; 导致渲染异常。
  */
+/**
+ * 深度思考解析：从模型实际返回的推理文本中提取「有价值内容」并解析为结构化呈现。
+ * - 按行切分，剔除空行噪声；
+ * - 识别「关键变量」（`key: value` / `key=value`，且非编号步骤），单独抽取供高亮；
+ * - 其余推理文本保留原结构（编号 / 项目符号 / 段落），以 Markdown 输出，最终由打字机读逐字揭示。
+ */
+function parseDeepThinking(raw: string): { text: string; vars: Array<[string, string]> } {
+  if (!raw || !raw.trim()) return { text: '', vars: [] };
+  const lines = raw.replace(/\r\n/g, '\n').split('\n').map((l) => l.trim());
+  const vars: Array<[string, string]> = [];
+  const out: string[] = [];
+  const varRe = /^(.{1,40})[:：=]\s*(.+)$/;
+  const stepRe = /^\d+[\.、\)]/;
+  for (const line of lines) {
+    if (!line) continue;
+    const vm = line.match(varRe);
+    // 仅当不是「编号步骤」且形如 key-value 时，才判定为关键变量，避免误吞步骤描述。
+    if (vm && !stepRe.test(line)) {
+      vars.push([vm[1].trim(), vm[2].trim()]);
+      continue;
+    }
+    out.push(line);
+  }
+  const text = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { text, vars };
+}
+
 function formatToolJson(raw: string): string {
   if (!raw) return '';
   // 先尝试解码已有的 HTML 实体（防御服务端已转义的情况），全部 5 种与 escapeHtml 对称。

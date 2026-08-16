@@ -22,6 +22,7 @@ import {
   deleteChatSession,
   appendChatMessage,
   type StoredTool,
+  type TraceNode,
 } from './chat-sessions';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
@@ -242,7 +243,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (wd) {
         try {
           const buf = await readFile(join(wd, 'index.html'));
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
           res.end(buf);
           return;
         } catch {
@@ -261,7 +262,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (fp.startsWith(assetRoot)) {
           try {
             const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
             res.end(buf);
             return;
           } catch {
@@ -283,7 +284,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (fp === join(wd, rel)) {
           try {
             const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
             res.end(buf);
             return;
           } catch {
@@ -685,6 +686,8 @@ function startSse(res: ServerResponse, req?: IncomingMessage): (obj: unknown) =>
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
+    // 禁用反向代理（nginx/网关）对 SSE 的缓冲，确保 token 级事件边产生边下发到浏览器。
+    'x-accel-buffering': 'no',
     ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
   });
   let closed = false;
@@ -744,7 +747,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     return;
   }
   const send = startSse(res, req);
-  const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
+  // 兼容前端两种字段名（chat UI 发 prompt，部分旧客户端发 input），避免落到默认示例 prompt。
+  const rawPrompt = body.prompt ?? body.input;
+  const prompt: string = (rawPrompt && String(rawPrompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
   // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
   const maxSteps: number | undefined =
@@ -823,9 +828,145 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   // 跨 run 累积的推理与工具调用缓冲，run:end 时一并落盘，确保切换会话后再切回可完整还原。
   let reasoningBuf = '';
   const toolMap = new Map<string, StoredTool>();
+  // 调用链路追踪树：把 run 事件流结构化为 trace 节点，run:end 时一并落盘，
+  // 供深度思考界面可视化 LLM↔工具↔检索 的每一步，便于追踪与复盘。
+  const RETRIEVAL_RE = /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
+  let traceRoot: TraceNode | null = null;
+  let traceParent: TraceNode | null = null;
+  let traceLlm: TraceNode | null = null;
+  let traceLastTool: TraceNode | null = null;
+  let traceSeq = 0;
+  const traceEnsureRoot = (): TraceNode => {
+    if (!traceRoot) {
+      traceRoot = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
+      traceParent = traceRoot;
+    }
+    return traceRoot;
+  };
+  const traceNode = (
+    parent: TraceNode,
+    kind: TraceNode['kind'],
+    label: string,
+    status: TraceNode['status'] = 'ok',
+    extra: Partial<TraceNode> = {}
+  ): TraceNode => {
+    const n: TraceNode = { id: `t${++traceSeq}`, kind, label, status, children: [], ...extra };
+    parent.children.push(n);
+    return n;
+  };
+  const traceHandle = (ev: any): void => {
+    switch (ev?.type) {
+      case 'run:meta': {
+        const r = traceEnsureRoot();
+        r.meta = {
+          ...(r.meta ?? {}),
+          ...(ev.model ? { model: String(ev.model) } : {}),
+          ...(ev.agentId ? { agent: String(ev.agentId) } : {}),
+          ...(ev.mode ? { mode: String(ev.mode) } : {}),
+        };
+        r.label = ev.model ? `运行 · ${ev.model}` : '运行';
+        break;
+      }
+      case 'step:start': {
+        const r = traceEnsureRoot();
+        traceParent = r;
+        const step = traceNode(r, 'step', `第 ${ev.step} 步`, 'ok', {
+          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` },
+        });
+        traceParent = step;
+        traceLlm = null;
+        traceLastTool = null;
+        break;
+      }
+      case 'llm:call': {
+        traceEnsureRoot();
+        const parent = traceParent ?? traceRoot!;
+        traceLlm = traceNode(parent, 'llm', 'LLM 调用', 'ok', {
+          meta: {
+            messages: `消息 ${ev.messageCount ?? '?'}`,
+            tools: `工具 ${ev.toolCount ?? '?'}`,
+          },
+        });
+        traceLastTool = null;
+        break;
+      }
+      case 'llm:reasoning': {
+        if (traceLlm && typeof ev.delta === 'string') {
+          const n = (traceLlm.meta?.reasoningChars ? Number(traceLlm.meta.reasoningChars) : 0) + ev.delta.length;
+          traceLlm.meta = { ...(traceLlm.meta ?? {}), reasoningChars: String(n) };
+        }
+        break;
+      }
+      case 'llm:token': {
+        if (traceLlm && typeof ev.delta === 'string') {
+          const n = (traceLlm.meta?.tokenChars ? Number(traceLlm.meta.tokenChars) : 0) + ev.delta.length;
+          traceLlm.meta = { ...(traceLlm.meta ?? {}), tokenChars: String(n) };
+        }
+        break;
+      }
+      case 'tool:start': {
+        if (!traceLlm || !ev.call) break;
+        const name = String(ev.call.name ?? 'tool');
+        const retrieval = RETRIEVAL_RE.test(name);
+        traceLastTool = traceNode(traceLlm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
+          detail: typeof ev.call.arguments === 'string' ? ev.call.arguments : JSON.stringify(ev.call.arguments ?? {}),
+        });
+        break;
+      }
+      case 'tool:result': {
+        if (traceLastTool) {
+          traceLastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
+          traceLastTool.status = ev.errored ? 'error' : 'ok';
+          traceLastTool.meta = { ...(traceLastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
+        }
+        break;
+      }
+      case 'run:cost': {
+        traceEnsureRoot();
+        const parent = traceParent ?? traceRoot!;
+        traceNode(parent, 'cost', '成本 / 用量', 'ok', {
+          meta: {
+            tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
+            cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
+            ...(ev.model ? { model: String(ev.model) } : {}),
+          },
+        });
+        break;
+      }
+      case 'verify:result': {
+        traceEnsureRoot();
+        traceNode(traceRoot!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
+          meta: { score: String(ev.score ?? '?'), passed: ev.passed ? '通过' : '未通过' },
+          result: (ev.reasons ?? []).join('\n'),
+        });
+        break;
+      }
+      case 'guardrail:blocked': {
+        traceEnsureRoot();
+        traceNode(traceRoot!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', {
+          detail: String(ev.reason ?? ''),
+        });
+        break;
+      }
+      case 'budget:exceeded': {
+        traceEnsureRoot();
+        traceNode(traceRoot!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
+          meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') },
+        });
+        break;
+      }
+      case 'error': {
+        traceEnsureRoot();
+        traceNode(traceRoot!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
+        break;
+      }
+    }
+  };
   const unsub = runQueue.subscribe(jobId, (e) => {
     if (closed) return;
     send(e);
+    // 结构化为调用链路追踪树（供深度思考界面可视化 / 复盘）。
+    if (chatSessionId) traceHandle(e);
     // 多会话 Chat App：把 run 的首尾事件落盘到会话存储（user 提问 + assistant 回答），
     // 并在过程中累积推理与工具调用，run 结束时一并写入，保证切换会话后再切回可完整还原。
     if (chatSessionId) {
@@ -853,6 +994,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         // 还不是相同内容的 assistant 时才落盘。
         const finalStr = String(ev.final);
         const last = getChatSession(chatSessionId)?.messages.at(-1);
+        if (traceRoot) traceRoot.status = 'ok';
         if (!(last && last.role === 'assistant' && last.content === finalStr)) {
           appendChatMessage(chatSessionId, {
             role: 'assistant',
@@ -860,6 +1002,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
             ts: Date.now(),
             reasoning: reasoningBuf || undefined,
             tools: toolMap.size ? [...toolMap.values()] : undefined,
+            trace: traceRoot ? [traceRoot] : undefined,
           });
         }
       }
