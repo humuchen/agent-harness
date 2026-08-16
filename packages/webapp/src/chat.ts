@@ -618,6 +618,16 @@ export class AhChat extends LitElement {
   private scrollRef = createRef<HTMLElement>();
   /** 标记本轮是否已收到 llm:token 增量，用于防止 llm:response 整段覆盖打字机效果 */
   private receivedTokens = false;
+  /**
+   * 打字机缓冲：真实模型 / 代理（如 agnes apihub）常把整段回复塞进单个 llm:token，
+   * 若直接 patch 进 content 会「一帧跳到全文」，看不到逐字揭示。改为先进缓冲，
+   * 由定时器按稳定节奏逐字揭示，使无论后端逐字小 delta 还是一次性大块都呈现打字机效果。
+   */
+  private pendingContent = '';
+  private pendingReasoning = '';
+  private typedTimer: ReturnType<typeof setInterval> | null = null;
+  /** run:end 携带的权威全文（仅在打字机未产生任何可见文本时作兜底）。 */
+  private finalContent = '';
 
   async connectedCallback() {
     super.connectedCallback();
@@ -651,6 +661,9 @@ export class AhChat extends LitElement {
     this.messages = [];
     this.input = '';
     this.error = null;
+    this.stopTypewriter();
+    this.pendingContent = '';
+    this.pendingReasoning = '';
   }
 
   private async selectSession(id: string) {
@@ -659,6 +672,10 @@ export class AhChat extends LitElement {
     this.activeId = id;
     this.error = null;
     this.input = '';
+    // 切换会话时停掉打字机并清空缓冲，避免上一个会话的残留文本泄漏到新会话。
+    this.stopTypewriter();
+    this.pendingContent = '';
+    this.pendingReasoning = '';
     // 优先用本地内存中的消息；否则向服务端拉取历史。
     try {
       const s = await client.getChatSession(id);
@@ -727,8 +744,13 @@ export class AhChat extends LitElement {
     ];
     this.activeIdx = this.messages.length - 1;
     this.input = '';
-    this.running = true;
+    // 重置打字机状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.receivedTokens = false;
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.finalContent = '';
+    this.stopTypewriter();
+    this.running = true;
 
     const ac = new AbortController();
     this.abort = ac;
@@ -750,6 +772,20 @@ export class AhChat extends LitElement {
         i === this.activeIdx ? { ...m, error: true, content: m.content || `⚠️ ${e?.message ?? e}` } : m
       );
     } finally {
+      // 停掉 interval 定时器，改由 drainTypewriter 接管，按打字节奏把剩余缓冲揭示完，
+      // 避免 run:end 的 final 文本一次性覆盖掉打字机效果。
+      this.stopTypewriter();
+      if (ac.signal.aborted) {
+        // 被中止：立即落盘剩余文本（不追求打字质感）。
+        this.flushTypewriter();
+      } else {
+        await this.drainTypewriter();
+        // 兜底：若打字机全程未产生可见文本（如收到空 delta 但 run:end 带 final），用 final 补上。
+        const c = this.activeIdx >= 0 ? this.messages[this.activeIdx] : null;
+        if (c && !c.content && this.finalContent) {
+          this.patchActive({ content: this.finalContent });
+        }
+      }
       this.running = false;
       this.activeIdx = -1;
       this.jobId = null;
@@ -777,13 +813,19 @@ export class AhChat extends LitElement {
         const c = cur();
         if (c) {
           this.receivedTokens = true;
-          patch({ content: c.content + String((ev as any).delta ?? '') });
+          // 不再直接 patch 到 content：整段塞进单 delta 时会「一帧跳全文」。
+          // 改为进 pending 缓冲，由打字机定时器按节奏逐字揭示。
+          this.pendingContent += String((ev as any).delta ?? '');
+          this.ensureTypewriter();
         }
         break;
       }
       case 'llm:reasoning': {
         const c = cur();
-        if (c) patch({ reasoning: (c.reasoning ?? '') + String((ev as any).delta ?? '') });
+        if (c) {
+          this.pendingReasoning += String((ev as any).delta ?? '');
+          this.ensureTypewriter();
+        }
         break;
       }
       case 'llm:response': {
@@ -845,8 +887,14 @@ export class AhChat extends LitElement {
         break;
       }
       case 'run:end': {
-        const c = cur();
-        if (c) patch({ content: String((ev as any).final ?? c.content) });
+        const finalStr = String((ev as any).final ?? '');
+        this.finalContent = finalStr;
+        // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
+        // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
+        if (!this.receivedTokens && finalStr) {
+          const c = cur();
+          if (c) patch({ content: finalStr });
+        }
         break;
       }
       case 'error': {
@@ -856,6 +904,108 @@ export class AhChat extends LitElement {
       }
       default:
         break;
+    }
+  }
+
+  /* ----------------------- 打字机缓冲 ----------------------- */
+
+  /** 更新当前正在流式输出的 assistant 消息字段（activeIdx 指向的那条）。 */
+  private patchActive(p: Partial<ChatMsg>) {
+    if (this.activeIdx < 0) return;
+    this.messages = this.messages.map((x, i) => (i === this.activeIdx ? { ...x, ...p } : x));
+  }
+
+  /**
+   * 计算本 tick 应揭示的字符数：自适应速度。
+   * 缓冲越大揭示越快（保证长文在 ~1.5s 内揭示完），但最小 2 字/tick 保留打字质感，
+   * 最大 28 字/tick 防止对超长文本揭示过慢。真流式（小 delta 频繁到达）时缓冲始终很小，
+   * 故以最小速度揭示，呈现自然打字节奏。
+   */
+  private typeStep(n: number): number {
+    if (n <= 0) return 0;
+    return Math.min(28, Math.max(2, Math.ceil(n / 70)));
+  }
+
+  /** 启动打字机定时器（已运行则跳过）。 */
+  private ensureTypewriter() {
+    if (this.typedTimer) return;
+    this.typedTimer = setInterval(() => this.tickTypewriter(), 24);
+  }
+
+  /** 停止打字机定时器并清空缓冲状态。 */
+  private stopTypewriter() {
+    if (this.typedTimer) {
+      clearInterval(this.typedTimer);
+      this.typedTimer = null;
+    }
+  }
+
+  /** 把缓冲中的待揭示文本一次性落到 content / reasoning（运行结束或切换会话时调用，避免文本滞留）。 */
+  private flushTypewriter() {
+    if (this.activeIdx >= 0) {
+      const c = this.messages[this.activeIdx];
+      if (c) {
+        if (this.pendingContent) {
+          this.patchActive({ content: c.content + this.pendingContent });
+          this.pendingContent = '';
+        }
+        if (this.pendingReasoning) {
+          this.patchActive({ reasoning: (c.reasoning ?? '') + this.pendingReasoning });
+          this.pendingReasoning = '';
+        }
+      }
+    }
+    this.pendingContent = '';
+    this.pendingReasoning = '';
+    this.stopTypewriter();
+  }
+
+  /**
+   * 运行结束后，接替 interval 把剩余缓冲按打字节奏（与 tick 一致的步长/间隔）逐步揭示，
+   * 直到缓冲清空再 resolve。这样即使后端在一瞬间把整段塞进单个 token，用户也能看到逐字打字效果，
+   * 而不是 run:end 的 final 文本一次性覆盖。
+   */
+  private drainTypewriter(): Promise<void> {
+    return new Promise((resolve) => {
+      const step = () => {
+        if (!this.pendingContent.length && !this.pendingReasoning.length) {
+          this.stopTypewriter();
+          resolve();
+          return;
+        }
+        this.tickTypewriter();
+        setTimeout(step, 24);
+      };
+      step();
+    });
+  }
+
+  /** 每个 tick 从缓冲中揭示一段字符到可见文本。 */
+  private tickTypewriter() {
+    if (this.activeIdx < 0) {
+      this.stopTypewriter();
+      return;
+    }
+    const c = this.messages[this.activeIdx];
+    if (!c) {
+      this.stopTypewriter();
+      return;
+    }
+    if (this.pendingContent.length) {
+      const step = this.typeStep(this.pendingContent.length);
+      const move = this.pendingContent.slice(0, step);
+      this.pendingContent = this.pendingContent.slice(step);
+      this.patchActive({ content: c.content + move });
+    }
+    if (this.pendingReasoning.length) {
+      const step = this.typeStep(this.pendingReasoning.length);
+      const move = this.pendingReasoning.slice(0, step);
+      this.pendingReasoning = this.pendingReasoning.slice(step);
+      this.patchActive({ reasoning: (c.reasoning ?? '') + move });
+    }
+    // 缓冲清空且运行已结束 → 停止定时器（避免空转占资源）。
+    if (!this.pendingContent.length && !this.pendingReasoning.length && !this.running) {
+      this.stopTypewriter();
     }
   }
 

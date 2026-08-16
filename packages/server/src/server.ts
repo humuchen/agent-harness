@@ -242,7 +242,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (wd) {
         try {
           const buf = await readFile(join(wd, 'index.html'));
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
           res.end(buf);
           return;
         } catch {
@@ -261,7 +261,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (fp.startsWith(assetRoot)) {
           try {
             const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
             res.end(buf);
             return;
           } catch {
@@ -283,7 +283,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         if (fp === join(wd, rel)) {
           try {
             const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp) });
+            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
             res.end(buf);
             return;
           } catch {
@@ -685,6 +685,8 @@ function startSse(res: ServerResponse, req?: IncomingMessage): (obj: unknown) =>
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
+    // 禁用反向代理（nginx/网关）对 SSE 的缓冲，确保 token 级事件边产生边下发到浏览器。
+    'x-accel-buffering': 'no',
     ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
   });
   let closed = false;
@@ -744,7 +746,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     return;
   }
   const send = startSse(res, req);
-  const prompt: string = (body.prompt && String(body.prompt).trim()) || defaultPromptFor(mode);
+  // 兼容前端两种字段名（chat UI 发 prompt，部分旧客户端发 input），避免落到默认示例 prompt。
+  const rawPrompt = body.prompt ?? body.input;
+  const prompt: string = (rawPrompt && String(rawPrompt).trim()) || defaultPromptFor(mode);
   const model: string | undefined = body.model ? String(body.model).trim() : undefined;
   // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
   const maxSteps: number | undefined =

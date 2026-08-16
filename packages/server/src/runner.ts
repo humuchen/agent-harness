@@ -526,9 +526,15 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
   };
 }
 
+/** 命中以下任一模式才视为「需要创建/管理临时环境」，走 创建 → 销毁 工具闭环；
+ * 否则按普通问答处理（不触发任何工具）。 */
+const ENV_INTENT =
+  /(创建|建个|搭个|拉起|起|新建| Provision|provision).{0,4}(环境|沙箱|env)|临时环境|预览环境|验证环境|销毁环境|沙箱环境|ephemeral|preview\s*env|create\s+.{0,12}env|环境.{0,3}(创建|验证|预览|销毁)/i;
+
 /** Mock LLM：无需密钥即可驱动 创建 → 销毁 闭环（与 examples/self-serve-env.ts 一致）。
  * 支持 token 级流式：开启 streamTokens 时通过 opts.onToken / opts.onReasoning 逐块回调，
- * 让聊天 UI 获得打字机效果与「深度思考」推理块。 */
+ * 让聊天 UI 获得打字机效果与「深度思考」推理块。
+ * 行为：仅当用户输入含「环境创建意图」时才调用环境工具；普通问答直接流式输出应答。 */
 export function makeMockEnvLLM(): LLM {
   return async (messages, _tools, opts) => {
     const last = messages[messages.length - 1];
@@ -556,6 +562,15 @@ export function makeMockEnvLLM(): LLM {
     }
 
     const text = last?.content ?? '';
+
+    // 普通问答：不触发任何工具，直接流式输出应答。
+    if (!ENV_INTENT.test(text)) {
+      const reply = mockGenericReply(text);
+      await streamOut(opts?.onToken, reply, 18);
+      return { content: reply, tool_calls: [] };
+    }
+
+    // 环境创建意图：走 创建 → 销毁 工具闭环。
     const branch = branchOf(text);
     const call: ToolCall = {
       id: 'call_' + Date.now(),
@@ -569,6 +584,21 @@ export function makeMockEnvLLM(): LLM {
     );
     return { content: '', tool_calls: [call] };
   };
+}
+
+/** 离线 Mock 的普通问答应答：无法真正理解语义，给出透明且友好的占位回复，
+ * 并提示切换到 real 模式可获真实回答。 */
+function mockGenericReply(question: string): string {
+  const q = question.trim();
+  if (!q) return '你好，有什么可以帮你的？';
+  const snippet = q.length > 60 ? q.slice(0, 60) + '…' : q;
+  return (
+    `（Mock 离线应答）收到你的问题：「${snippet}」。\n\n` +
+    `这是未接入大模型的演示应答。说明：\n` +
+    `· 普通问答不会触发环境工具；\n` +
+    `· 只有明确提到「创建 / 临时 / 预览 / 验证环境」才会走 创建→销毁 闭环；\n` +
+    `· 在服务端配置 OPENROUTER_API_KEY 并切到 real 模式，即可获得真实回答。`
+  );
 }
 
 /** 把文本按 1~3 字切片并逐块回调（带轻微延迟），模拟真实流式输出。 */
