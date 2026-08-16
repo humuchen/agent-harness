@@ -1335,8 +1335,16 @@ export class AhChat extends LitElement {
   private threads: Record<string, ChatMsg[]> = {};
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
-  /** 每个会话是否正在流式（支持多个会话并发进行）。 */
-  private streaming: Record<string, boolean> = {};
+  /** 每个会话是否正在流式（支持多个会话并发进行）。
+   *  MUST 为 @state 并以不可变重赋值（this.streaming = {...this.streaming, [sid]: x}）更新：
+   *  直接 this.streaming[sid] = x 是对象内属性赋值，Lit 不观测，重渲染不会触发，
+   *  会导致 run 结束后 UI 仍停在 streaming===true 的那一帧（一直显示「模型正在回复…」、输入框禁用）。 */
+  @state() private streaming: Record<string, boolean> = {};
+
+  /** 不可变更新某会话的流式状态，确保 Lit 触发重渲染（见 streaming 字段注释）。 */
+  private setStreaming(sid: string, val: boolean) {
+    this.streaming = { ...this.streaming, [sid]: val };
+  }
   /** 每会话的打字机缓冲（content / reasoning 分开）。 */
   private pending: Record<string, { content: string; reasoning: string }> = {};
   /** 每会话是否已收到 llm:token 增量（防止 llm:response 整段覆盖打字机效果）。 */
@@ -1520,7 +1528,7 @@ export class AhChat extends LitElement {
     this.finalBy[sessionId] = '';
     this.resetTrace(sessionId);
     this.stopTypewriter();
-    this.streaming[sessionId] = true;
+    this.setStreaming(sessionId, true);
     if (this.activeId === sessionId) this.messages = t;
 
     const ac = new AbortController();
@@ -1556,7 +1564,7 @@ export class AhChat extends LitElement {
       if (c && !c.content && this.finalBy[sessionId]) {
         this.patchSession(sessionId, { content: this.finalBy[sessionId] });
       }
-      this.streaming[sessionId] = false;
+      this.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
       if (this.activeId === sessionId) this.messages = this.threads[sessionId];
     }
@@ -1573,6 +1581,13 @@ export class AhChat extends LitElement {
     // 早期捕获的引用是「旧快照」，直接用它做增量拼接会丢内容 / 看不到已落下的工具卡。
     const cur = (): ChatMsg | null => this.curSession(sid);
     const patch = (p: Partial<ChatMsg>) => this.patchSession(sid, p);
+    // 终结事件（最终答复已到达 / 流结束 / 运行出错）：立即解除该会话的「流式」状态。
+    // 用不可变重赋值触发 Lit 重渲染，避免 run 结束后 UI 仍卡在「模型正在回复…」、输入框被禁用。
+    // 即便 SSE 连接因故迟迟未关闭，UI 也会在最终答复到达时即时解锁；send() 的 finally 为二次兜底。
+    const et = (ev as any).type;
+    if (et === 'run:end' || et === '_done' || et === 'error') {
+      this.setStreaming(sid, false);
+    }
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
     this.traceHandle(ev, sid);
     switch (ev.type) {
