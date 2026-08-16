@@ -65,6 +65,8 @@ export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
       retries: 0,
       modelLabel: model,
       signal: options?.signal,
+      onToken: options?.onToken,
+      onReasoning: options?.onReasoning,
     });
   };
 }
