@@ -54,6 +54,15 @@ interface SessionView {
   updatedAt: number;
 }
 
+/** 调用链路追踪树的瞬态构建上下文（每会话独立，支持多个会话并发流式互不干扰）。 */
+interface TraceCtx {
+  root: TraceNode | null;
+  parent: TraceNode | null;
+  llm: TraceNode | null;
+  lastTool: TraceNode | null;
+  seq: number;
+}
+
 /* ------------------------------ Chat ------------------------------ */
 
 @customElement('ah-chat')
@@ -1198,9 +1207,10 @@ export class AhChat extends LitElement {
       }
 
       .composer-wrap {
-        border-top: 1px solid var(--ah-border);
-        background: var(--ah-surface-1);
-        padding: 12px 18px 16px;
+        /* 悬浮输入：去除底部背景块与顶部分隔线，让输入框像卡片一样浮在对话区之上。 */
+        border-top: none;
+        background: transparent;
+        padding: 10px 18px 16px;
       }
       .composer {
         max-width: 820px;
@@ -1209,9 +1219,18 @@ export class AhChat extends LitElement {
         align-items: flex-end;
         gap: 10px;
         border: 1px solid var(--ah-border);
-        border-radius: 16px;
+        border-radius: 18px;
         background: var(--ah-surface-2);
-        padding: 8px 8px 8px 14px;
+        padding: 10px 8px 10px 14px;
+        /* 悬浮阴影 + 聚焦抬升：强化「卡片浮于对话区」的层次感 */
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.12);
+        transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+      }
+      .composer:focus-within {
+        border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 45%, var(--ah-border));
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2),
+          0 0 0 3px color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
+        transform: translateY(-1px);
       }
       .composer textarea {
         flex: 1 1 auto;
@@ -1224,7 +1243,7 @@ export class AhChat extends LitElement {
         font-size: 14px;
         line-height: 1.6;
         max-height: 180px;
-        min-height: 24px;
+        min-height: 56px;
       }
       .send {
         flex: 0 0 auto;
@@ -1290,7 +1309,6 @@ export class AhChat extends LitElement {
   @state() messages: ChatMsg[] = [];
   @state() input = '';
   @state() model = '';
-  @state() running = false;
   @state() mode: RunMode = 'mock';
   @state() deepThink = true;
   @state() web = false;
@@ -1299,38 +1317,69 @@ export class AhChat extends LitElement {
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
   @state() error: string | null = null;
+
   private nextId = 1;
-  private abort?: AbortController;
-  private activeIdx = -1;
-  private jobId: string | null = null;
   private scrollRef = createRef<HTMLElement>();
 
-  /** 重置调用链路追踪的瞬态构建状态（防御上轮残留泄漏到本轮）。 */
-  private resetTrace() {
-    this.traceRoot = null;
-    this.traceParent = null;
-    this.traceLlm = null;
-    this.traceLastTool = null;
-    this.traceSeq = 0;
-  }
-  /** 标记本轮是否已收到 llm:token 增量，用于防止 llm:response 整段覆盖打字机效果 */
-  private receivedTokens = false;
   /**
-   * 打字机缓冲：真实模型 / 代理（如 agnes apihub）常把整段回复塞进单个 llm:token，
-   * 若直接 patch 进 content 会「一帧跳到全文」，看不到逐字揭示。改为先进缓冲，
-   * 由定时器按稳定节奏逐字揭示，使无论后端逐字小 delta 还是一次性大块都呈现打字机效果。
+   * 每个会话独立的流式缓冲。切换会话时，进行中的 run 仍向所属会话的缓冲写入，
+   * 切回时实时恢复 —— 这是「切换会话不中断对话」的核心：
+   * 显示用的 this.messages 指向当前会话的缓冲，后台 run 写的是自己的会话缓冲，二者解耦。
    */
-  private pendingContent = '';
-  private pendingReasoning = '';
-  private typedTimer: ReturnType<typeof setInterval> | null = null;
+  private threads: Record<string, ChatMsg[]> = {};
+  /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
+  private streamIdx: Record<string, number> = {};
+  /** 每个会话是否正在流式（支持多个会话并发进行）。 */
+  private streaming: Record<string, boolean> = {};
+  /** 每会话的打字机缓冲（content / reasoning 分开）。 */
+  private pending: Record<string, { content: string; reasoning: string }> = {};
+  /** 每会话是否已收到 llm:token 增量（防止 llm:response 整段覆盖打字机效果）。 */
+  private received: Record<string, boolean> = {};
   /** run:end 携带的权威全文（仅在打字机未产生任何可见文本时作兜底）。 */
-  private finalContent = '';
-  /** 调用链路追踪树的瞬态构建状态（每轮 run 重置；构建结果写入当前 assistant 消息的 trace 字段）。 */
-  private traceRoot: TraceNode | null = null;
-  private traceParent: TraceNode | null = null;
-  private traceLlm: TraceNode | null = null;
-  private traceLastTool: TraceNode | null = null;
-  private traceSeq = 0;
+  private finalBy: Record<string, string> = {};
+  /** 每会话的调用链路追踪构建上下文。 */
+  private traces: Record<string, TraceCtx> = {};
+  /** 每会话的中止控制器（仅停止对应会话的 run）。 */
+  private abortBy: Record<string, AbortController> = {};
+  private typedTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** 当前是否仍有任何会话在流式（用于打字机定时器的停启判定）。 */
+  private get anyStreaming(): boolean {
+    for (const k in this.streaming) if (this.streaming[k]) return true;
+    return false;
+  }
+
+  /** 取（或惰性创建）某会话的消息缓冲。 */
+  private threadFor(sid: string): ChatMsg[] {
+    return this.threads[sid] ?? (this.threads[sid] = []);
+  }
+
+  /** 取某会话当前流式消息。 */
+  private curSession(sid: string): ChatMsg | null {
+    const idx = this.streamIdx[sid];
+    const t = this.threads[sid];
+    return idx >= 0 && t && t[idx] ? t[idx] : null;
+  }
+
+  /** 写入某会话的流式消息（streamIdx 指向的那条），并在该会话为当前显示会话时同步 this.messages 触发重渲染。 */
+  private patchSession(sid: string, p: Partial<ChatMsg>) {
+    const idx = this.streamIdx[sid];
+    if (idx == null || idx < 0) return;
+    const t = this.threads[sid];
+    if (!t || !t[idx]) return;
+    const nt = t.slice();
+    nt[idx] = { ...nt[idx], ...p };
+    this.threads[sid] = nt;
+    if (sid === this.activeId) this.messages = nt;
+  }
+
+  /** 重置某会话的调用链路追踪瞬态状态（防御上轮残留泄漏到本轮）。 */
+  private resetTrace(sid: string) {
+    this.traces[sid] = { root: null, parent: null, llm: null, lastTool: null, seq: 0 };
+  }
+  private traceCtx(sid: string): TraceCtx {
+    return this.traces[sid] ?? (this.traces[sid] = { root: null, parent: null, llm: null, lastTool: null, seq: 0 });
+  }
 
   async connectedCallback() {
     super.connectedCallback();
@@ -1349,6 +1398,7 @@ export class AhChat extends LitElement {
 
   protected updated() {
     this.scrollToBottom();
+    this.scrollThinkToBottom();
   }
 
   private scrollToBottom() {
@@ -1356,49 +1406,55 @@ export class AhChat extends LitElement {
     if (el) el.scrollTop = el.scrollHeight;
   }
 
+  /**
+   * 深度思考区流式（打字机）输出时，若内容已撑满 180px 上限，
+   * 始终将视口钉在底部，保证最新推理「从下往上」逐字可见。
+   * 只在思考区处于 live（流式、未折叠）时生效，思考结束后不再抢滚动，
+   * 方便用户自由回看上面的推理文本。
+   */
+  private scrollThinkToBottom() {
+    const tb = this.renderRoot.querySelector('.think.live .think-body') as HTMLElement | null;
+    if (tb) tb.scrollTop = tb.scrollHeight;
+  }
+
   /* ----------------------- 会话管理 ----------------------- */
 
   private async newChat() {
-    this.abort?.abort();
+    // 不中止任何进行中的 run：后台 run 继续写入其所属会话缓冲，新建对话只是切换显示到空线程。
     this.activeId = '';
     this.messages = [];
     this.input = '';
     this.error = null;
-    this.stopTypewriter();
-    this.pendingContent = '';
-    this.pendingReasoning = '';
-    this.resetTrace();
   }
 
   private async selectSession(id: string) {
     if (id === this.activeId) return;
-    this.abort?.abort();
     this.activeId = id;
     this.sidebarOpen = false;
     this.error = null;
     this.input = '';
-    // 切换会话时停掉打字机并清空缓冲，避免上一个会话的残留文本泄漏到新会话。
-    this.stopTypewriter();
-    this.pendingContent = '';
-    this.pendingReasoning = '';
-    this.resetTrace();
-    // 优先用本地内存中的消息；否则向服务端拉取历史。
-    try {
-      const s = await client.getChatSession(id);
-      this.messages = s.messages.map((m) => ({
-        id: this.nextId++,
-        role: m.role === 'user' ? 'user' : 'assistant',
-        content: m.content,
-        // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
-        reasoning: m.reasoning,
-        tools: m.tools
-          ? m.tools.map((t) => ({ name: t.name, args: t.args ?? '', result: t.result, errored: t.errored }))
-          : undefined,
-        trace: m.trace ? m.trace : undefined,
-      }));
-    } catch {
-      this.messages = [];
+    // 关键修复：切换会话【不再】中止进行中的 run，也不清空其打字机缓冲 / 追踪状态。
+    // 进行中的 run 仍向所属会话缓冲写内容，切回时实时恢复（见 this.threads / this.pending / this.traces）。
+    // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过）。
+    if (!this.threads[id]) {
+      try {
+        const s = await client.getChatSession(id);
+        this.threads[id] = s.messages.map((m) => ({
+          id: this.nextId++,
+          role: m.role === 'user' ? 'user' : 'assistant',
+          content: m.content,
+          // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
+          reasoning: m.reasoning,
+          tools: m.tools
+            ? m.tools.map((t) => ({ name: t.name, args: t.args ?? '', result: t.result, errored: t.errored }))
+            : undefined,
+          trace: m.trace ? m.trace : undefined,
+        }));
+      } catch {
+        this.threads[id] = [];
+      }
     }
+    this.messages = this.threads[id];
   }
 
   private async renameSession(id: string) {
@@ -1439,29 +1495,30 @@ export class AhChat extends LitElement {
 
   private async send() {
     const prompt = this.input.trim();
-    if (!prompt || this.running) return;
+    // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
+    if (!prompt || this.streaming[this.activeId]) return;
     this.error = null;
 
     const sessionId = await this.ensureSession();
 
-    this.messages = [
-      ...this.messages,
-      { id: this.nextId++, role: 'user', content: prompt },
-      { id: this.nextId++, role: 'assistant', content: '' },
-    ];
-    this.activeIdx = this.messages.length - 1;
+    // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
+    const t = this.threadFor(sessionId);
+    t.push({ id: this.nextId++, role: 'user', content: prompt });
+    t.push({ id: this.nextId++, role: 'assistant', content: '' });
+    this.streamIdx[sessionId] = t.length - 1;
+    this.threads[sessionId] = t;
     this.input = '';
-    // 重置打字机状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
-    this.receivedTokens = false;
-    this.pendingContent = '';
-    this.pendingReasoning = '';
-    this.finalContent = '';
-    this.resetTrace();
+    // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
+    this.received[sessionId] = false;
+    this.pending[sessionId] = { content: '', reasoning: '' };
+    this.finalBy[sessionId] = '';
+    this.resetTrace(sessionId);
     this.stopTypewriter();
-    this.running = true;
+    this.streaming[sessionId] = true;
+    if (this.activeId === sessionId) this.messages = t;
 
     const ac = new AbortController();
-    this.abort = ac;
+    this.abortBy[sessionId] = ac;
     try {
       for await (const ev of client.streamRun(
         {
@@ -1473,59 +1530,56 @@ export class AhChat extends LitElement {
         },
         { signal: ac.signal }
       )) {
-        this.ingest(ev as StreamEvent);
+        this.ingest(ev as StreamEvent, sessionId);
       }
     } catch (e: any) {
-      this.messages = this.messages.map((m, i) =>
-        i === this.activeIdx ? { ...m, error: true, content: m.content || `⚠️ ${e?.message ?? e}` } : m
-      );
+      this.patchSession(sessionId, {
+        error: true,
+        content: (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`,
+      });
     } finally {
-      // 停掉 interval 定时器，改由 drainTypewriter 接管，按打字节奏把剩余缓冲揭示完，
-      // 避免 run:end 的 final 文本一次性覆盖掉打字机效果。
+      // 先停掉 interval 定时器，再按打字节奏把剩余缓冲揭示完（drain），
+      // 避免 run:end 的 final 文本一次性覆盖掉打字机效果；被手动中止时则立即落盘。
       this.stopTypewriter();
       if (ac.signal.aborted) {
-        // 被中止：立即落盘剩余文本（不追求打字质感）。
-        this.flushTypewriter();
+        this.flushTypewriter(sessionId);
       } else {
-        await this.drainTypewriter();
-        // 兜底：若打字机全程未产生可见文本（如收到空 delta 但 run:end 带 final），用 final 补上。
-        const c = this.activeIdx >= 0 ? this.messages[this.activeIdx] : null;
-        if (c && !c.content && this.finalContent) {
-          this.patchActive({ content: this.finalContent });
-        }
+        await this.drainTypewriter(sessionId);
       }
-      this.running = false;
-      this.activeIdx = -1;
-      this.jobId = null;
+      const c = this.curSession(sessionId);
+      if (c && !c.content && this.finalBy[sessionId]) {
+        this.patchSession(sessionId, { content: this.finalBy[sessionId] });
+      }
+      this.streaming[sessionId] = false;
+      this.abortBy[sessionId] = undefined as any;
+      if (this.activeId === sessionId) this.messages = this.threads[sessionId];
     }
   }
 
+  /** 手动停止当前显示会话的 run（仅中止该会话，不影响其它后台 run）。 */
   private stop() {
-    this.abort?.abort();
+    const ac = this.abortBy[this.activeId];
+    ac?.abort();
   }
 
-  private ingest(ev: StreamEvent) {
-    // 每次都从最新 this.messages 读取当前消息：patch 会整体替换数组与对象，
+  private ingest(ev: StreamEvent, sid: string) {
+    // 每次都从最新 this.threads[sid] 读取当前消息：patch 会整体替换数组与对象，
     // 早期捕获的引用是「旧快照」，直接用它做增量拼接会丢内容 / 看不到已落下的工具卡。
-    const cur = (): ChatMsg | null =>
-      this.activeIdx >= 0 ? this.messages[this.activeIdx] ?? null : null;
-    const patch = (p: Partial<ChatMsg>) => {
-      if (this.activeIdx < 0) return;
-      this.messages = this.messages.map((x, i) => (i === this.activeIdx ? { ...x, ...p } : x));
-    };
+    const cur = (): ChatMsg | null => this.curSession(sid);
+    const patch = (p: Partial<ChatMsg>) => this.patchSession(sid, p);
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
-    this.traceHandle(ev);
+    this.traceHandle(ev, sid);
     switch (ev.type) {
       case 'job:accepted':
-        this.jobId = (ev as any).jobId ?? this.jobId;
+        // jobId 仅用于潜在调试，无需持久；忽略。
         break;
       case 'llm:token': {
         const c = cur();
         if (c) {
-          this.receivedTokens = true;
+          this.received[sid] = true;
           // 不再直接 patch 到 content：整段塞进单 delta 时会「一帧跳全文」。
           // 改为进 pending 缓冲，由打字机定时器按节奏逐字揭示。
-          this.pendingContent += String((ev as any).delta ?? '');
+          this.pending[sid].content += String((ev as any).delta ?? '');
           this.ensureTypewriter();
         }
         break;
@@ -1533,7 +1587,7 @@ export class AhChat extends LitElement {
       case 'llm:reasoning': {
         const c = cur();
         if (c) {
-          this.pendingReasoning += String((ev as any).delta ?? '');
+          this.pending[sid].reasoning += String((ev as any).delta ?? '');
           this.ensureTypewriter();
         }
         break;
@@ -1544,7 +1598,7 @@ export class AhChat extends LitElement {
         //   多轮工具调用时中间轮的 content='' 会把已累积文本清空）。
         // 仅在未收到任何 token 时（非流式回退路径）才用 response content 赋值。
         const c = cur();
-        if (c && !this.receivedTokens) {
+        if (c && !this.received[sid]) {
           const respContent = String((ev as any).content ?? '');
           if (respContent) patch({ content: respContent });
         }
@@ -1598,10 +1652,10 @@ export class AhChat extends LitElement {
       }
       case 'run:end': {
         const finalStr = String((ev as any).final ?? '');
-        this.finalContent = finalStr;
+        this.finalBy[sid] = finalStr;
         // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
         // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
-        if (!this.receivedTokens && finalStr) {
+        if (!this.received[sid] && finalStr) {
           const c = cur();
           if (c) patch({ content: finalStr });
         }
@@ -1619,21 +1673,23 @@ export class AhChat extends LitElement {
 
   /* ----------------------- 调用链路追踪构建 ----------------------- */
 
-  /** 确保追踪树根节点（run）存在并返回。 */
-  private ensureTraceRoot(): TraceNode {
-    if (!this.traceRoot) {
-      this.traceRoot = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
-      this.traceParent = this.traceRoot;
+  /** 确保追踪树根节点（run）存在并返回（按会话独立）。 */
+  private ensureTraceRoot(sid: string): TraceNode {
+    const tc = this.traceCtx(sid);
+    if (!tc.root) {
+      tc.root = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
+      tc.parent = tc.root;
     }
-    return this.traceRoot;
+    return tc.root;
   }
 
   /**
-   * 把一条流式事件汇入调用链路追踪树（瞬态构建，结果写入当前 assistant 消息的 trace 字段）。
+   * 把一条流式事件汇入调用链路追踪树（瞬态构建，结果写入当前会话 assistant 消息的 trace 字段）。
    * 树形：run → step → llm → tool/retrieval/cost，外加 root 级的 verify/guardrail/budget/error。
-   * 外部调用（工具/检索）因此被整合进对话上下文，可结构化复盘。
+   * 外部调用（工具/检索）因此被整合进对话上下文，可结构化复盘。追踪按会话隔离，支持并发流式。
    */
-  private traceHandle(ev: any) {
+  private traceHandle(ev: any, sid: string) {
+    const tc = this.traceCtx(sid);
     const mk = (
       parent: TraceNode,
       kind: TraceKind,
@@ -1641,13 +1697,13 @@ export class AhChat extends LitElement {
       status: TraceNode['status'] = 'ok',
       extra: Partial<TraceNode> = {}
     ): TraceNode => {
-      const n: TraceNode = { id: `t${++this.traceSeq}`, kind, label, status, children: [], ...extra };
+      const n: TraceNode = { id: `t${++tc.seq}`, kind, label, status, children: [], ...extra };
       parent.children.push(n);
       return n;
     };
     switch (ev?.type) {
       case 'run:meta': {
-        const r = this.ensureTraceRoot();
+        const r = this.ensureTraceRoot(sid);
         r.meta = {
           ...(r.meta ?? {}),
           ...(ev.model ? { model: String(ev.model) } : {}),
@@ -1658,62 +1714,62 @@ export class AhChat extends LitElement {
         break;
       }
       case 'step:start': {
-        const r = this.ensureTraceRoot();
-        this.traceParent = r;
+        const r = this.ensureTraceRoot(sid);
+        tc.parent = r;
         const step = mk(r, 'step', `第 ${ev.step} 步`, 'ok', {
           meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` },
         });
-        this.traceParent = step;
-        this.traceLlm = null;
-        this.traceLastTool = null;
+        tc.parent = step;
+        tc.llm = null;
+        tc.lastTool = null;
         break;
       }
       case 'llm:call': {
-        this.ensureTraceRoot();
-        const parent = this.traceParent ?? this.traceRoot!;
-        this.traceLlm = mk(parent, 'llm', 'LLM 调用', 'ok', {
+        this.ensureTraceRoot(sid);
+        const parent = tc.parent ?? tc.root!;
+        tc.llm = mk(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
             messages: `消息 ${ev.messageCount ?? '?'}`,
             tools: `工具 ${ev.toolCount ?? '?'}`,
           },
         });
-        this.traceLastTool = null;
+        tc.lastTool = null;
         break;
       }
       case 'llm:reasoning': {
-        if (this.traceLlm && typeof ev.delta === 'string') {
-          const n = (this.traceLlm.meta?.reasoningChars ? Number(this.traceLlm.meta.reasoningChars) : 0) + ev.delta.length;
-          this.traceLlm.meta = { ...(this.traceLlm.meta ?? {}), reasoningChars: String(n) };
+        if (tc.llm && typeof ev.delta === 'string') {
+          const n = (tc.llm.meta?.reasoningChars ? Number(tc.llm.meta.reasoningChars) : 0) + ev.delta.length;
+          tc.llm.meta = { ...(tc.llm.meta ?? {}), reasoningChars: String(n) };
         }
         break;
       }
       case 'llm:token': {
-        if (this.traceLlm && typeof ev.delta === 'string') {
-          const n = (this.traceLlm.meta?.tokenChars ? Number(this.traceLlm.meta.tokenChars) : 0) + ev.delta.length;
-          this.traceLlm.meta = { ...(this.traceLlm.meta ?? {}), tokenChars: String(n) };
+        if (tc.llm && typeof ev.delta === 'string') {
+          const n = (tc.llm.meta?.tokenChars ? Number(tc.llm.meta.tokenChars) : 0) + ev.delta.length;
+          tc.llm.meta = { ...(tc.llm.meta ?? {}), tokenChars: String(n) };
         }
         break;
       }
       case 'tool:start': {
-        if (!this.traceLlm || !ev.call) break;
+        if (!tc.llm || !ev.call) break;
         const name = String(ev.call.name ?? 'tool');
         const retrieval = isRetrievalTool(name);
-        this.traceLastTool = mk(this.traceLlm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
+        tc.lastTool = mk(tc.llm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
           detail: typeof ev.call.arguments === 'string' ? ev.call.arguments : JSON.stringify(ev.call.arguments ?? {}),
         });
         break;
       }
       case 'tool:result': {
-        if (this.traceLastTool) {
-          this.traceLastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
-          this.traceLastTool.status = ev.errored ? 'error' : 'ok';
-          this.traceLastTool.meta = { ...(this.traceLastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
+        if (tc.lastTool) {
+          tc.lastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
+          tc.lastTool.status = ev.errored ? 'error' : 'ok';
+          tc.lastTool.meta = { ...(tc.lastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
         }
         break;
       }
       case 'run:cost': {
-        this.ensureTraceRoot();
-        const parent = this.traceParent ?? this.traceRoot!;
+        this.ensureTraceRoot(sid);
+        const parent = tc.parent ?? tc.root!;
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
@@ -1724,28 +1780,28 @@ export class AhChat extends LitElement {
         break;
       }
       case 'verify:result': {
-        this.ensureTraceRoot();
-        mk(this.traceRoot!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
+        this.ensureTraceRoot(sid);
+        mk(tc.root!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
           meta: { score: String(ev.score ?? '?'), passed: ev.passed ? '通过' : '未通过' },
           result: (ev.reasons ?? []).join('\n'),
         });
         break;
       }
       case 'guardrail:blocked': {
-        this.ensureTraceRoot();
-        mk(this.traceRoot!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', { detail: String(ev.reason ?? '') });
+        this.ensureTraceRoot(sid);
+        mk(tc.root!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', { detail: String(ev.reason ?? '') });
         break;
       }
       case 'budget:exceeded': {
-        this.ensureTraceRoot();
-        mk(this.traceRoot!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
+        this.ensureTraceRoot(sid);
+        mk(tc.root!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
           meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') },
         });
         break;
       }
       case 'error': {
-        this.ensureTraceRoot();
-        mk(this.traceRoot!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
+        this.ensureTraceRoot(sid);
+        mk(tc.root!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
         break;
       }
       default:
@@ -1753,22 +1809,16 @@ export class AhChat extends LitElement {
     }
     // 结构型事件才回写消息（token/reasoning 高频且仅更新 meta，避免无谓重渲染）。
     if (
-      this.traceRoot &&
-      this.activeIdx >= 0 &&
+      tc.root &&
+      this.streamIdx[sid] >= 0 &&
       ev.type !== 'llm:token' &&
       ev.type !== 'llm:reasoning'
     ) {
-      this.patchActive({ trace: [this.traceRoot] });
+      this.patchSession(sid, { trace: [tc.root] });
     }
   }
 
   /* ----------------------- 打字机缓冲 ----------------------- */
-
-  /** 更新当前正在流式输出的 assistant 消息字段（activeIdx 指向的那条）。 */
-  private patchActive(p: Partial<ChatMsg>) {
-    if (this.activeIdx < 0) return;
-    this.messages = this.messages.map((x, i) => (i === this.activeIdx ? { ...x, ...p } : x));
-  }
 
   /**
    * 计算本 tick 应揭示的字符数：自适应速度。
@@ -1795,72 +1845,70 @@ export class AhChat extends LitElement {
     }
   }
 
-  /** 把缓冲中的待揭示文本一次性落到 content / reasoning（运行结束或切换会话时调用，避免文本滞留）。 */
-  private flushTypewriter() {
-    if (this.activeIdx >= 0) {
-      const c = this.messages[this.activeIdx];
-      if (c) {
-        if (this.pendingContent) {
-          this.patchActive({ content: c.content + this.pendingContent });
-          this.pendingContent = '';
-        }
-        if (this.pendingReasoning) {
-          this.patchActive({ reasoning: (c.reasoning ?? '') + this.pendingReasoning });
-          this.pendingReasoning = '';
-        }
-      }
+  /** 把某会话缓冲中的待揭示文本一次性落到 content / reasoning（运行结束时调用，避免文本滞留）。 */
+  private flushTypewriter(sid: string) {
+    const buf = this.pending[sid];
+    if (!buf) return;
+    const c = this.curSession(sid);
+    if (c) {
+      if (buf.content) this.patchSession(sid, { content: c.content + buf.content });
+      if (buf.reasoning) this.patchSession(sid, { reasoning: (c.reasoning ?? '') + buf.reasoning });
     }
-    this.pendingContent = '';
-    this.pendingReasoning = '';
-    this.stopTypewriter();
+    buf.content = '';
+    buf.reasoning = '';
+    if (!this.anyStreaming) this.stopTypewriter();
   }
 
   /**
    * 运行结束后，接替 interval 把剩余缓冲按打字节奏（与 tick 一致的步长/间隔）逐步揭示，
-   * 直到缓冲清空再 resolve。这样即使后端在一瞬间把整段塞进单个 token，用户也能看到逐字打字效果，
+   * 直到缓冲清空再 resolve。这样即使后端把整段塞进单个 token，用户也能看到逐字打字效果，
    * 而不是 run:end 的 final 文本一次性覆盖。
    */
-  private drainTypewriter(): Promise<void> {
+  private drainTypewriter(sid: string): Promise<void> {
     return new Promise((resolve) => {
       const step = () => {
-        if (!this.pendingContent.length && !this.pendingReasoning.length) {
-          this.stopTypewriter();
+        const buf = this.pending[sid];
+        if (!buf || (!buf.content.length && !buf.reasoning.length)) {
+          if (!this.anyStreaming) this.stopTypewriter();
           resolve();
           return;
         }
-        this.tickTypewriter();
+        this.tickSession(sid);
         setTimeout(step, 24);
       };
       step();
     });
   }
 
-  /** 每个 tick 从缓冲中揭示一段字符到可见文本。 */
+  /** 单个定时器 tick：遍历所有会话缓冲，逐步揭示；无缓冲且均无流式时停定时器。 */
   private tickTypewriter() {
-    if (this.activeIdx < 0) {
-      this.stopTypewriter();
-      return;
+    let any = false;
+    for (const sid in this.pending) {
+      const buf = this.pending[sid];
+      if (!buf || (!buf.content.length && !buf.reasoning.length)) continue;
+      this.tickSession(sid);
+      any = true;
     }
-    const c = this.messages[this.activeIdx];
-    if (!c) {
-      this.stopTypewriter();
-      return;
+    if (!any && !this.anyStreaming) this.stopTypewriter();
+  }
+
+  /** 揭示某会话的一小段缓冲到可见文本。 */
+  private tickSession(sid: string) {
+    const buf = this.pending[sid];
+    if (!buf) return;
+    const c = this.curSession(sid);
+    if (!c) return;
+    if (buf.content.length) {
+      const step = this.typeStep(buf.content.length);
+      const move = buf.content.slice(0, step);
+      buf.content = buf.content.slice(step);
+      this.patchSession(sid, { content: c.content + move });
     }
-    if (this.pendingContent.length) {
-      const step = this.typeStep(this.pendingContent.length);
-      const move = this.pendingContent.slice(0, step);
-      this.pendingContent = this.pendingContent.slice(step);
-      this.patchActive({ content: c.content + move });
-    }
-    if (this.pendingReasoning.length) {
-      const step = this.typeStep(this.pendingReasoning.length);
-      const move = this.pendingReasoning.slice(0, step);
-      this.pendingReasoning = this.pendingReasoning.slice(step);
-      this.patchActive({ reasoning: (c.reasoning ?? '') + move });
-    }
-    // 缓冲清空且运行已结束 → 停止定时器（避免空转占资源）。
-    if (!this.pendingContent.length && !this.pendingReasoning.length && !this.running) {
-      this.stopTypewriter();
+    if (buf.reasoning.length) {
+      const step = this.typeStep(buf.reasoning.length);
+      const move = buf.reasoning.slice(0, step);
+      buf.reasoning = buf.reasoning.slice(step);
+      this.patchSession(sid, { reasoning: (c.reasoning ?? '') + move });
     }
   }
 
@@ -1884,8 +1932,12 @@ export class AhChat extends LitElement {
   private toggleThink(id: number) {
     const k = String(id);
     const c = this.messages.find((m) => m.id === id);
+    const sIdx = this.streamIdx[this.activeId] ?? -1;
     const isThinking =
-      this.running && this.activeIdx >= 0 && this.messages[this.activeIdx]?.id === id && !c?.content;
+      this.streaming[this.activeId] &&
+      sIdx >= 0 &&
+      this.messages[sIdx]?.id === id &&
+      !c?.content;
     if (isThinking) return;
     this.thinkCollapsed = { ...this.thinkCollapsed, [k]: !this.thinkCollapsed[k] };
   }
@@ -1910,10 +1962,12 @@ export class AhChat extends LitElement {
 
     // 助手消息：合并视图 —— 深度思考（实时流式）在上，最终回答（分隔后）在下；
     // 模型仍在处理时于对应区域显示「思考中 / 模型正在回复…」文字动效。
+    // 流式判定基于「当前显示会话是否正在流式、且本消息即其流式消息」。
+    const sIdx = this.streamIdx[this.activeId] ?? -1;
     const isStreamingAssistant =
-      this.running &&
-      this.activeIdx >= 0 &&
-      this.messages[this.activeIdx]?.id === m.id &&
+      this.streaming[this.activeId] === true &&
+      sIdx >= 0 &&
+      this.messages[sIdx]?.id === m.id &&
       m.role === 'assistant';
     // 是否展示思考区：仅当模型确实返回了推理内容（流式首 token 到达即出现）。
     const showThinking = !!m.reasoning;
@@ -1994,7 +2048,7 @@ export class AhChat extends LitElement {
   private renderAnswer(m: ChatMsg, isAnswering: boolean, isStreaming: boolean): TemplateResult {
     return html`
       <div class="answer">
-        ${m.content
+        ${m.content && m.content.trim()
           ? html`<div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>`
           : nothing}
         ${isAnswering ? html`<span class="caret"></span>` : nothing}
@@ -2217,11 +2271,11 @@ export class AhChat extends LitElement {
               rows="1"
               placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
               .value=${this.input}
-              ?disabled=${this.running}
+              ?disabled=${this.streaming[this.activeId] === true}
               @input=${this.onInput}
               @keydown=${this.onKey}
             ></textarea>
-            ${this.running
+            ${this.streaming[this.activeId] === true
               ? html`<button class="send" title="停止" @click=${() => this.stop()}>■</button>`
               : html`<button class="send" title="发送" ?disabled=${!this.input.trim()} @click=${() => this.send()}>↑</button>`}
           </div>

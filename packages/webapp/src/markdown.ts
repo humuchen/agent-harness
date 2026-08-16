@@ -29,9 +29,12 @@ export function escapeHtml(s: string): string {
  */
 export function toRichHtml(text: string): string {
   if (!text) return '';
-  if (!isMarkdownLike(text)) {
-    return escapeHtml(text).replace(/\n/g, '<br>');
+  // 去掉首尾空白：模型常在回答/推理首尾填充换行，避免被转成无意义的 <br> 空行。
+  const t = text.trim();
+  if (!t) return '';
+  if (!isMarkdownLike(t)) {
+    return escapeHtml(t).replace(/\n/g, '<br>');
   }
-  const raw = marked.parse(text) as string;
+  const raw = marked.parse(t) as string;
   return DOMPurify.sanitize(raw);
 }
