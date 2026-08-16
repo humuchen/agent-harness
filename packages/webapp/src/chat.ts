@@ -2225,10 +2225,10 @@ export class AhChat extends LitElement {
               ? html`<button class="send" title="停止" @click=${() => this.stop()}>■</button>`
               : html`<button class="send" title="发送" ?disabled=${!this.input.trim()} @click=${() => this.send()}>↑</button>`}
           </div>
-          <div class="hint">
+          <!-- <div class="hint">
             模式：${this.mode} ·
             token 级流式已开启（打字机效果）· 深度思考/联网为 UI 占位
-          </div>
+          </div> -->
         </div>
       </div>
 
