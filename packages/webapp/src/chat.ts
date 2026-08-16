@@ -1078,13 +1078,12 @@ export class AhChat extends LitElement {
       /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。 */
       @media (max-width: 900px) {
         :host {
-          /* 用 svh（small viewport）而非 dvh：dvh 是地址栏收起后的最大高度，
-             手机刚打开地址栏可见时实际可见区更小，dvh 会让组件高于屏幕、输入框被推到折叠线以下需滚动。
-             svh=地址栏显示时的最小可见高度，输入框始终落在可见区；先写 vh 作为旧浏览器回退。
-             min-height:0 必须显式中和 sharedStyles 在 ≤760px 设的 min-height:100dvh
-             （dvh>svh 会把它顶高、导致仍需滚动），否则 100svh 被 min-height 撑开失效。 */
-          height: 100vh;
-          height: 100svh;
+          /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
+             .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
+             .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。
+             min-height:0 必须显式中和 sharedStyles ≤760px 设的 min-height:100dvh，
+             否则它把组件顶高、仍需滚动。 */
+          height: 100%;
           min-height: 0;
           overflow: hidden;
         }

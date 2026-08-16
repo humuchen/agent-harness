@@ -1,4 +1,4 @@
-import { LitElement, html } from 'lit';
+import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { client, getToken, setToken } from './api';
 import type { ServerState } from '@agent-harness/client';
@@ -20,12 +20,52 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
 ];
 
 /**
+ * 移动端「对话」Tab 专用外壳锁定样式：把应用壳钉成整屏（fixed + inset:0），
+ * 聊天区填满剩余空间、输入框固定在底部，无需滚动外层页面即可输入。
+ * 仅 chat Tab 生效（.shell.chat-mode），其它 Tab 仍走 sharedStyles 的自然滚动，
+ * 不影响 ah-run / ah-dashboard 等面板在移动端的内容滚动需求。
+ */
+const chatShellCss = css`
+  @media (max-width: 900px) {
+    .shell.chat-mode {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+    }
+    .shell.chat-mode .main {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    .shell.chat-mode .topbar {
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      gap: 8px;
+    }
+    /* 移动端对话页：隐藏令牌输入/刷新按钮，仅留状态与菜单，节省竖向空间 */
+    .shell.chat-mode .topbar .token,
+    .shell.chat-mode .topbar .ghost {
+      display: none;
+    }
+    .shell.chat-mode .content {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+    }
+  }
+`;
+
+/**
  * 顶层应用壳：顶栏（连接状态 + 令牌）、Tab 导航、各面板容器。
  * 面板通过 dispatchEvent(new CustomEvent('ah-refresh')) 通知顶栏刷新状态。
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
-  static styles = [sharedStyles];
+  static styles = [sharedStyles, chatShellCss];
 
   @state() private tab: Tab = 'dashboard';
   @state() private token = getToken();
@@ -95,7 +135,7 @@ export class AhApp extends LitElement {
 
   render() {
     return html`
-      <div class="shell">
+      <div class="shell ${this.tab === 'chat' ? 'chat-mode' : ''}">
         <aside class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''} ${this.drawerOpen ? 'open' : ''}">
           <div class="brand">
             <svg class="logo" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
