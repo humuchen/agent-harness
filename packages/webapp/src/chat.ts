@@ -1078,7 +1078,11 @@ export class AhChat extends LitElement {
       /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。 */
       @media (max-width: 900px) {
         :host {
-          height: 100dvh;
+          /* 用 svh（small viewport）而非 dvh：dvh 是地址栏收起后的最大高度，
+             手机刚打开地址栏可见时实际可见区更小，dvh 会让组件高于屏幕、输入框被推到折叠线以下需滚动。
+             svh=地址栏显示时的最小可见高度，输入框始终落在可见区；先写 vh 作为旧浏览器回退。 */
+          height: 100vh;
+          height: 100svh;
           overflow: hidden;
         }
         .sidebar {
