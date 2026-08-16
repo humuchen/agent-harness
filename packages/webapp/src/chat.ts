@@ -1080,9 +1080,12 @@ export class AhChat extends LitElement {
         :host {
           /* 用 svh（small viewport）而非 dvh：dvh 是地址栏收起后的最大高度，
              手机刚打开地址栏可见时实际可见区更小，dvh 会让组件高于屏幕、输入框被推到折叠线以下需滚动。
-             svh=地址栏显示时的最小可见高度，输入框始终落在可见区；先写 vh 作为旧浏览器回退。 */
+             svh=地址栏显示时的最小可见高度，输入框始终落在可见区；先写 vh 作为旧浏览器回退。
+             min-height:0 必须显式中和 sharedStyles 在 ≤760px 设的 min-height:100dvh
+             （dvh>svh 会把它顶高、导致仍需滚动），否则 100svh 被 min-height 撑开失效。 */
           height: 100vh;
           height: 100svh;
+          min-height: 0;
           overflow: hidden;
         }
         .sidebar {
