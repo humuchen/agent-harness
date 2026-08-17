@@ -14,7 +14,9 @@ import { existsSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import {
   PluginLoader,
+  PluginRegistryClient,
   getAgentRegistry,
+  type PluginManifest,
   type PluginModule,
 } from '@agent-harness/core';
 import { structLog } from '@agent-harness/core';
@@ -84,4 +86,28 @@ export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> 
     }
   }
   return enabled;
+}
+
+/**
+ * 解析插件升级目标 manifest（Phase 4 · 版本/依赖解析）。
+ * - 优先用请求体中的 `manifest`（平台已校验过的完整清单）；
+ * - 否则用 `PLUGIN_REGISTRY_URL` + `version` 经 registry 索引 + `resolveVersion` 拉取；
+ *   version 支持 `latest` / `^x.y.z` / 精确版本。
+ * 拉取到的 manifest 交给 `loader.upgrade`，其内部会按 `resolveDependencies` 校验依赖
+ * 并按原启用态重注册——全链路复用既有能力，无新实现。
+ */
+export async function resolveUpgradeManifest(
+  id: string,
+  body: { manifest?: PluginManifest; version?: string }
+): Promise<PluginManifest> {
+  if (body.manifest && body.manifest.id === id) return body.manifest;
+  const registryUrl = process.env.PLUGIN_REGISTRY_URL;
+  if (registryUrl && body.version) {
+    const client = new PluginRegistryClient();
+    const entries = await client.index(registryUrl);
+    const matched = entries.filter((e) => e.id === id);
+    if (matched.length === 0) throw new Error(`plugin "${id}" not found in registry`);
+    return client.resolveVersion(matched, body.version).manifest;
+  }
+  throw new Error('upgrade requires body.manifest or PLUGIN_REGISTRY_URL + version');
 }

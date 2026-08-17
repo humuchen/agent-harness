@@ -15,7 +15,7 @@ import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 // 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
-import { createPluginSystem, bootstrapPlugins, type PluginSystem } from './plugin-bootstrap';
+import { createPluginSystem, bootstrapPlugins, resolveUpgradeManifest, type PluginSystem } from './plugin-bootstrap';
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
   listChatSessions,
@@ -608,7 +608,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return await handleEnv(req, res);
     }
     // ---- 插件宿主：通用扩展点（无业务词）----
-    // 元数据端点：列出已启用插件与已注册前端视图（供 webapp 动态渲染 Tab）。
+    // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
     if (req.method === 'GET' && path === '/api/plugins') {
       return sendJson(
         res,
@@ -616,12 +616,52 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           plugins: pluginSystem.loader.list().map((r) => ({
             id: r.manifest.id,
             name: r.manifest.name ?? r.manifest.id,
+            version: r.manifest.version,
             state: r.state,
+            dependencies: r.manifest.dependencies ?? [],
           })),
           views: pluginSystem.webHost.listViews(),
         },
         req
       );
+    }
+    // 插件热插拔（Phase 4）：enable / disable / upgrade，受 plugin:manage 动作保护，
+    // 操作仅在进程内存注册表上增删，不触碰 /api/state 健康检查，也不重启进程。
+    {
+      const m = path.match(/^\/api\/plugins\/([^/]+)\/(enable|disable|upgrade)$/);
+      if (m && (req.method === 'POST')) {
+        const id = decodeURIComponent(m[1]);
+        const action = m[2];
+        const ctx = await guard(req, res, 'plugin:manage');
+        if (!ctx) return;
+        try {
+          if (action === 'upgrade') {
+            const body = await readBody(req);
+            const manifest = await resolveUpgradeManifest(id, body ?? {});
+            const rec = await pluginSystem.loader.upgrade(id, manifest);
+            return sendJson(res, { id, state: rec.state, version: rec.manifest.version, upgradedAt: rec.upgradedAt ?? null }, req);
+          }
+          const rec = action === 'enable'
+            ? await pluginSystem.loader.enable(id)
+            : await pluginSystem.loader.disable(id);
+          return sendJson(res, { id, state: rec.state }, req);
+        } catch (e: any) {
+          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+      }
+      // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
+      const dm = path.match(/^\/api\/plugins\/([^/]+)\/enable$/);
+      if (dm && req.method === 'DELETE') {
+        const id = decodeURIComponent(dm[1]);
+        const ctx = await guard(req, res, 'plugin:manage');
+        if (!ctx) return;
+        try {
+          const rec = await pluginSystem.loader.disable(id);
+          return sendJson(res, { id, state: rec.state }, req);
+        } catch (e: any) {
+          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+      }
     }
     // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
     if (await pluginSystem.serverHost.handle(path, req, res)) return;
