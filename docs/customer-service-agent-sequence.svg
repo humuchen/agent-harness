@@ -1,0 +1,65 @@
+<svg viewBox="0 0 680 690" width="100%" role="img">
+<title>单次对话运行时时序图</title>
+<desc>一次用户对话从发消息到落盘与统计的完整时序，含意图识别、工具调用与转人工决策分支</desc>
+<defs>
+<marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<text x="40" y="28" fill="#e8eaf2" font-size="14" font-weight="500">单次对话运行时时序（意图识别 → 工具调用 → 转人工决策）</text>
+
+<g><rect x="60" y="44" width="300" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="210" y="66" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">1 用户发送消息（网页聊天 UI）</text>
+<text x="210" y="82" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">携带 sessionId + chatSessionId</text></g>
+
+<g><rect x="60" y="110" width="300" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="210" y="132" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">2 API 网关 · RBAC 校验 · SSE 升级</text>
+<text x="210" y="148" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">guard(action) 鉴权后建立流</text></g>
+
+<g><rect x="60" y="176" width="300" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="210" y="198" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">3 RunQueue 入队（并发控制）</text></g>
+
+<g><rect x="60" y="242" width="300" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="210" y="264" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">4 getSessionMemory + TaskRouter.resolve</text>
+<text x="210" y="280" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">IntentRouter 识别 domain/intent</text></g>
+
+<g><rect x="60" y="308" width="300" height="44" rx="8" fill="#2f3d5c" stroke="#5b8def" stroke-width="1"/>
+<text x="210" y="330" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">5 AgentHarness.run 循环</text>
+<text x="210" y="346" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">LLM + Memory 多轮窗口</text></g>
+
+<polygon points="210,372 300,400 210,428 120,400" fill="#2f3d5c" stroke="#5b8def" stroke-width="1"/>
+<text x="210" y="396" fill="#e8eaf2" font-size="13" font-weight="500" text-anchor="middle" dominant-baseline="central">已解决?</text>
+<text x="150" y="418" fill="#7fb0e6" font-size="11">是</text>
+<text x="308" y="392" fill="#7fb0e6" font-size="11">否</text>
+
+<g><rect x="60" y="470" width="300" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="210" y="492" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">6 流式回复用户（SSE）</text>
+<text x="210" y="508" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">token / retrieval / tool 事件</text></g>
+
+<g><rect x="400" y="470" width="240" height="44" rx="8" fill="#2f3d5c" stroke="#5b8def" stroke-width="1"/>
+<text x="520" y="492" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">7 transfer_to_human</text>
+<text x="520" y="508" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">→ HandoffQueue 转人工</text></g>
+
+<g><rect x="60" y="544" width="580" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="350" y="566" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">8 run:end 落盘 + stats 累加</text>
+<text x="350" y="582" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">ChatSession / HandoffQueue 持久化 · 通知坐席</text></g>
+
+<g><rect x="60" y="612" width="580" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="350" y="634" fill="#e8eaf2" font-size="14" font-weight="500" text-anchor="middle" dominant-baseline="central">9 管理后台读取 stats / 会话 / 队列</text>
+<text x="350" y="650" fill="#9aa6c2" font-size="12" text-anchor="middle" dominant-baseline="central">满意度统计 · 转人工认领 · 会话回溯</text></g>
+
+<line x1="210" y1="88" x2="210" y2="110" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="154" x2="210" y2="176" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="220" x2="210" y2="242" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="286" x2="210" y2="308" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="352" x2="210" y2="372" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="428" x2="210" y2="470" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="300" y1="400" x2="400" y2="400" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="210" y1="514" x2="210" y2="544" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="520" y1="514" x2="520" y2="544" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+<line x1="350" y1="588" x2="350" y2="612" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+<text x="370" y="290" fill="#9aa6c2" font-size="11">循环内调用 search_faq / lookup_order</text>
+<text x="370" y="306" fill="#9aa6c2" font-size="11">无法解决则调用 transfer_to_human</text>
+</svg>

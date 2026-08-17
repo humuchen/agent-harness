@@ -4,11 +4,13 @@
 #   kubectl apply -k deploy/k8s
 #
 # 不含 Redis（内存模式单/多副本，无跨实例队列）：
-#   kubectl apply -f namespace.yaml -f configmap.yaml -f secret.yaml \
+#   kubectl apply -f namespace.yaml -f configmap.yaml -f secret.yaml.example \
 #     -f deployment.yaml -f service.yaml -f ingress.yaml -f hpa.yaml
 #
 # ⚠️ 部署前必须：
-#   1. 把 secret.yaml 的占位值替换为真实密钥（建议改用 Sealed/External Secrets）；
+#   1. secret.yaml 已移出 git（含真实凭据永不提交）。基于 secret.yaml.example
+#      在本地创建 secret.yaml（gitignore 已忽略它），或用 kubectl create secret
+#      直接注入真实密钥（建议 Sealed/External Secrets）；
 #   2. 把 deployment.yaml 的 image 改为你的实际镜像与 tag；
 #   3. 把 ingress.yaml 的 host 改为你的域名，并确认集群有对应 Ingress Controller / TLS。
 #
@@ -26,7 +28,7 @@ commonLabels:
 resources:
   - namespace.yaml
   - configmap.yaml
-  - secret.yaml
+  - secret.yaml.example
   - deployment.yaml
   - service.yaml
   - ingress.yaml

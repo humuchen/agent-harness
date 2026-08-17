@@ -1,352 +1,422 @@
 /*
- * sandbox-exec —— agent-harness 的 OS 级沙箱原生 helper（Linux only）。
+ * sandbox-exec —— agent-harness 的 OS 级沙箱原生助手（Linux only）。
  *
- * 职责：在 exec 目标命令之前，于当前进程施加四类底层隔离原语：
- *   1) 命名空间隔离  unshare(CLONE_NEWUSER|NEWNS|NEWPID|NEWNET|NEWIPC|NEWUTS)
- *                   并写 uid/gid_map 把真实 uid 映射为命名空间内 root（无需 setuid）。
- *   2) 系统调用过滤  libseccomp 编译 BPF，未授权 syscall 默认 errno/kill（可选，缺库则跳过）。
- *   3) 资源限制      setrlimit 封顶 地址空间/数据段/CPU/文件描述符/进程数/文件大小/栈。
- *   4) 权限控制      丢弃全部 capabilities（可选保留子集）、PR_SET_NO_NEW_PRIVS 禁提权、降权 uid/gid。
+ * 这是 packages/core/src/sandbox/args.ts 中 buildHelperArgs() 的 CLI 契约的 C 侧实现。
+ * 上层（OSSandboxExecutor）把 OSSandboxProfile 拼成 argv 后，由 Node 以 detached 进程组
+ * 方式 spawn 本助手；本助手在真正 exec 目标命令前，施加四类 OS 原语：
  *
- * 此外：把根文件系统重新挂载只读（--root-ro），仅把工作目录 bind 为可写（--bind-rw）。
+ *   1) 命名空间隔离 (namespaces)  —— user / mount / pid / network / ipc / uts
+ *   2) 系统调用过滤 (seccomp)     —— 未授权 syscall 默认 kill / errno（依赖可选 libseccomp）
+ *   3) 资源限制 (rlimit)          —— 地址空间 / CPU / 文件描述符 / 进程数 / 文件大小 / 栈
+ *   4) 权限控制 (capabilities)    —— 丢弃全部能力 / 保留子集 / 禁提权 / 降权 uid·gid
  *
- * 编译（见 Makefile）：
- *   cc -D_GNU_SOURCE sandbox-exec.c -o build/sandbox-exec \
- *      $(pkg-config --cflags --libs libseccomp 2>/dev/null) \
- *      $(pkg-config --cflags --libs libcap 2>/dev/null) \
- *      -DHAVE_LIBSECCOMP -DHAVE_LIBCAP
- * 缺 libseccomp / libcap 时去掉对应 -DHAVE_* 即可，对应能力自动降级（不阻断运行）。
+ * 设计要点：
+ *   - 零硬依赖：仅用 glibc + Linux 头文件即可编译；libseccomp 为「可选」——缺失时 seccomp
+ *     自动降级（仅告警，不阻断编译/运行），其余三类原语照常生效（符合「一切降级可用」）。
+ *   - capabilities 用裸 syscall(SYS_capset) 实现，不依赖 libcap。
+ *   - 所有隔离在 exec 之前施加；seccomp 必须在最后一道（否则 setup 自身 syscall 会被拦）。
+ *   - 任何「请求了但本机施加不了」的隔离都降级 + 往 stderr 打 WARNING（不静默吞掉，也不
+ *     让整次运行崩溃），由上层 run-queue / UI 决定是否收紧。
+ *   - stdout 绝不输出任何日志（会污染目标命令的输出）；一切诊断走 stderr。
  *
- * CLI 契约（与 packages/core/src/sandbox/args.ts 的 buildHelperArgs 对齐）：
- *   sandbox-exec [options] -- command [args...]
+ * 契约：sandbox-exec [options] -- command [args...]
+ *   --ns <csv>                  命名空间：user,mount,pid,net,ipc,uts
+ *   --no-net | --net-up         仅当含 net 时生效：--no-net 留 lo 全关；--net-up 拉起 lo
+ *   --root-ro                   把根重新挂载为只读（仅 writableMount 绑定点可写）
+ *   --bind-rw <host:container>  把宿主目录绑定挂载到命名空间内可写点（如 /work）
+ *   --cwd <path>                执行前 chdir
+ *   --rlimit-as/--rlimit-data/--rlimit-cpu/--rlimit-nofile/--rlimit-nproc/
+ *   --rlimit-fsize/--rlimit-stack <n>   资源上限（字节/秒/个数）
+ *   --drop-caps | --keep-caps <csv>      丢弃全部能力 / 仅保留子集
+ *   --no-new-privs | --allow-new-privs   禁止 / 允许子进程 setuid 提权
+ *   --uid <n> | --gid <n>                （在 user ns 内）降权到指定 uid/gid
+ *   --no-seccomp | --seccomp-allow <csv> --seccomp-default <action>
+ *   --path <p>                   注入精简 PATH
  */
 
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
+#include <unistd.h>
 #include <sched.h>
-#include <signal.h>
-#include <ctype.h>
-#include <sys/wait.h>
 #include <sys/mount.h>
-#include <sys/prctl.h>
 #include <sys/resource.h>
-#include <sys/socket.h>
-#include <net/if.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <net/if.h>
 #include <linux/sockios.h>
 #include <linux/capability.h>
-#include <sys/syscall.h>
+#include <signal.h>
+
+/* environ 由运行时提供（_GNU_SOURCE 下 <unistd.h> 已声明，这里显式声明以兼容严格编译）。 */
+extern char **environ;
 
 #ifdef HAVE_LIBSECCOMP
 #include <seccomp.h>
 #endif
-#ifdef HAVE_LIBCAP
-#include <sys/capability.h>
-#endif
 
-/* ----------------------------- 小工具 ----------------------------- */
-
-static void die(const char *msg) {
-    if (msg) perror(msg);
-    _exit(2);
+/* ---- 全局诊断：只走 stderr，绝不碰 stdout ---- */
+static void warn(const char *msg) {
+  fprintf(stderr, "sandbox-exec: WARNING: %s\n", msg);
 }
 
-static void write_file(const char *path, const char *fmt, ...) {
-    FILE *f = fopen(path, "w");
-    if (!f) { fprintf(stderr, "warn: cannot open %s: %s\n", path, strerror(errno)); return; }
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-    fclose(f);
+/* ---- 把 uid/gid 映射到新 user namespace（映射为 inner 0=root）---- */
+static int write_user_map(uid_t outer_uid, gid_t outer_gid) {
+  FILE *f;
+  /* 有附加组时须先置 setgroups=deny，否则 uid_map 写入被拒 */
+  f = fopen("/proc/self/setgroups", "w");
+  if (f) { fputs("deny\n", f); fclose(f); }
+  f = fopen("/proc/self/uid_map", "w");
+  if (!f) { warn("无法打开 /proc/self/uid_map"); return -1; }
+  fprintf(f, "0 %u 1\n", outer_uid);
+  fclose(f);
+  f = fopen("/proc/self/gid_map", "w");
+  if (!f) { warn("无法打开 /proc/self/gid_map"); return -1; }
+  fprintf(f, "0 %u 1\n", outer_gid);
+  fclose(f);
+  return 0;
 }
 
-/* ----------------------------- 命名空间 ----------------------------- */
+/* ---- 拉起 loopback（net ns 内 --net-up 时调用）---- */
+static void bring_up_lo(void) {
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return;
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(ifr));
+  strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
+  ifr.ifr_flags = IFF_UP | IFF_LOOPBACK;
+  if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0) warn("ioctl(SIOCSIFFLAGS) 拉起 lo 失败");
+  close(fd);
+}
 
-static int parse_ns_flags(const char *csv, int *has_user) {
-    int flags = 0;
-    *has_user = 0;
-    if (!csv) return 0;
-    char *buf = strdup(csv);
-    if (!buf) die("strdup");
-    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
-        if (strcmp(tok, "user") == 0)  { flags |= CLONE_NEWUSER; *has_user = 1; }
-        else if (strcmp(tok, "mount") == 0) flags |= CLONE_NEWNS;
-        else if (strcmp(tok, "pid") == 0)   flags |= CLONE_NEWPID;
-        else if (strcmp(tok, "net") == 0)   flags |= CLONE_NEWNET;
-        else if (strcmp(tok, "ipc") == 0)   flags |= CLONE_NEWIPC;
-        else if (strcmp(tok, "uts") == 0)   flags |= CLONE_NEWUTS;
+/* ---- capability 名 -> 编号（Linux 5.x/6.x 稳定；未知返回 -1）---- */
+static int cap_name_to_num(const char *name) {
+  static const struct { const char *n; int v; } tbl[] = {
+    {"CAP_CHOWN",0},{"CAP_DAC_OVERRIDE",1},{"CAP_DAC_READ_SEARCH",2},
+    {"CAP_FOWNER",3},{"CAP_FSETID",4},{"CAP_KILL",5},{"CAP_SETGID",6},
+    {"CAP_SETUID",7},{"CAP_SETPCAP",8},{"CAP_LINUX_IMMUTABLE",9},
+    {"CAP_NET_BIND_SERVICE",10},{"CAP_NET_BROADCAST",11},{"CAP_NET_ADMIN",12},
+    {"CAP_NET_RAW",13},{"CAP_IPC_LOCK",14},{"CAP_IPC_OWNER",15},
+    {"CAP_SYS_MODULE",16},{"CAP_SYS_RAWIO",17},{"CAP_SYS_CHROOT",18},
+    {"CAP_SYS_PTRACE",19},{"CAP_SYS_PACCT",20},{"CAP_SYS_ADMIN",21},
+    {"CAP_SYS_BOOT",22},{"CAP_SYS_NICE",23},{"CAP_SYS_RESOURCE",24},
+    {"CAP_SYS_TIME",25},{"CAP_SYS_TTY_CONFIG",26},{"CAP_MKNOD",27},
+    {"CAP_LEASE",28},{"CAP_AUDIT_WRITE",29},{"CAP_AUDIT_CONTROL",30},
+    {"CAP_SETFCAP",31},{"CAP_MAC_OVERRIDE",32},{"CAP_MAC_ADMIN",33},
+    {"CAP_SYSLOG",34},{"CAP_WAKE_ALARM",35},{"CAP_BLOCK_SUSPEND",36},
+    {"CAP_AUDIT_READ",37},{"CAP_PERFMON",38},{"CAP_BPF",39},
+    {"CAP_CHECKPOINT_RESTORE",40},
+    {NULL,-1}
+  };
+  for (int i = 0; tbl[i].n; i++)
+    if (strcmp(tbl[i].n, name) == 0) return tbl[i].v;
+  /* 也接受纯数字形式 */
+  char *end; long v = strtol(name, &end, 10);
+  if (*name && !*end) return (int)v;
+  return -1;
+}
+
+/* ---- 设置能力集：mask 中置位的 cap 被保留，其余丢弃 ----
+ * 两步法：先带上 CAP_SETPCAP 以便 capset 成功，再去掉 SETPCAP 收口。 */
+static int set_caps(uint64_t keep_mask) {
+  struct __user_cap_header_struct hdr;
+  struct __user_cap_data_struct data[2]; /* VERSION_3：64bit 拆两个 32bit 字 */
+  memset(&hdr, 0, sizeof(hdr));
+  memset(data, 0, sizeof(data));
+  hdr.version = _LINUX_CAPABILITY_VERSION_3;
+  hdr.pid = 0;
+
+  for (int n = 0; n <= 63; n++) {
+    if (!(keep_mask & (1ULL << n))) continue;
+    int idx = n / 32, bit = n % 32;
+    data[idx].effective   |= (1U << bit);
+    data[idx].permitted   |= (1U << bit);
+    data[idx].inheritable |= (1U << bit);
+  }
+  /* 临时保留 SETPCAP 以便本次 capset 通过 */
+  if (!(keep_mask & (1ULL << 8))) {
+    data[0].effective   |= (1U << 8);
+    data[0].permitted   |= (1U << 8);
+    data[0].inheritable |= (1U << 8);
+  }
+  if (syscall(SYS_capset, &hdr, data) < 0) {
+    warn("capset（保留子集）失败");
+    return -1;
+  }
+  /* 收口：去掉 SETPCAP（若未显式要求保留） */
+  if (!(keep_mask & (1ULL << 8))) {
+    data[0].effective   &= ~(1U << 8);
+    data[0].permitted   &= ~(1U << 8);
+    data[0].inheritable &= ~(1U << 8);
+    if (syscall(SYS_capset, &hdr, data) < 0) {
+      warn("capset（收口 SETPCAP）失败");
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* ---- 累加单个 cap 到 mask ---- */
+static uint64_t add_cap(uint64_t mask, const char *name) {
+  int n = cap_name_to_num(name);
+  if (n < 0 || n > 63) { warn("未知 capability 名，已忽略"); return mask; }
+  return mask | (1ULL << n);
+}
+
+#ifdef HAVE_LIBSECCOMP
+/* ---- seccomp BPF 过滤：默认动作 + 放行名单（syscall 名经 libseccomp 解析为编号）---- */
+static int setup_seccomp(const char *allow_csv, const char *def_action) {
+  uint32_t def = SCMP_ACT_ERRNO(EPERM);
+  if (strcmp(def_action, "kill") == 0)       def = SCMP_ACT_KILL_PROCESS;
+  else if (strcmp(def_action, "allow") == 0) def = SCMP_ACT_ALLOW;
+  else if (strcmp(def_action, "log") == 0)   def = SCMP_ACT_LOG;
+  else if (strcmp(def_action, "errno") == 0) def = SCMP_ACT_ERRNO(EPERM);
+  else { warn("未知 seccomp 默认动作，回退 errno"); }
+
+  scmp_filter_ctx ctx = seccomp_init(def);
+  if (!ctx) { warn("seccomp_init 失败"); return -1; }
+
+  if (allow_csv && *allow_csv) {
+    char *buf = strdup(allow_csv);
+    char *tok = strtok(buf, ",");
+    while (tok) {
+      int nr = seccomp_syscall_resolve_name(tok);
+      if (nr == __NR_SCMP_ERROR) {
+        fprintf(stderr, "sandbox-exec: WARNING: seccomp 无法解析 syscall '%s'，已跳过\n", tok);
+      } else if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, nr, 0) < 0) {
+        fprintf(stderr, "sandbox-exec: WARNING: seccomp 放行 '%s' 失败\n", tok);
+      }
+      tok = strtok(NULL, ",");
     }
     free(buf);
-    return flags;
-}
-
-static void write_id_maps(void) {
-    uid_t ruid = getuid();
-    gid_t rgid = getgid();
-    /* 把真实 uid/gid 映射为命名空间内 root（0）。这是 unshare --map-root-user 的等价做法，
-       无需 setuid 权限；映射包含进程自身 uid 即被内核允许。 */
-    write_file("/proc/self/uid_map", "0 %u 1\n", ruid);
-    write_file("/proc/self/setgroups", "deny\n");
-    write_file("/proc/self/gid_map", "0 %u 1\n", rgid);
-}
-
-/* ----------------------------- 文件系统 ----------------------------- */
-
-static int setup_mounts(const char *bind_src, const char *bind_dst, int root_ro) {
-    if (root_ro) {
-        /* 在把根重新挂载只读之前，先确保可写挂载点存在。 */
-        if (bind_dst) mkdir(bind_dst, 0755);
-        if (mount("/", "/", NULL, MS_REMOUNT | MS_BIND | MS_RDONLY, NULL) < 0) {
-            perror("remount / read-only");
-            return -1;
-        }
-    }
-    if (bind_src && bind_dst) {
-        /* bind 挂载工作目录为可写（默认 rw），覆盖在只读根之上形成唯一可写点。 */
-        if (mount(bind_src, bind_dst, "none", MS_BIND, NULL) < 0) {
-            perror("bind mount workdir");
-            return -1;
-        }
-    }
-    return 0;
-}
-
-/* ----------------------------- 网络 ----------------------------- */
-
-static void bring_up_lo(void) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return;
-    struct ifreq ifr;
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
-    ifr.ifr_flags = IFF_UP | IFF_RUNNING;
-    ioctl(fd, SIOCSIFFLAGS, &ifr);
-    close(fd);
-}
-
-/* ----------------------------- 资源限制 ----------------------------- */
-
-static void set_rlimit(int resource, long long value) {
-    if (value <= 0) return;
-    struct rlimit rl;
-    rl.rlim_cur = (rlim_t)value;
-    rl.rlim_max = (rlim_t)value;
-    if (setrlimit(resource, &rl) < 0)
-        fprintf(stderr, "warn: setrlimit(%d)=%lld failed: %s\n", resource, value, strerror(errno));
-}
-
-/* ----------------------------- 权限控制 ----------------------------- */
-
-/* 丢弃全部 capabilities（始终可用，无需任何库）。 */
-static int drop_all_caps_raw(void) {
-    /* 注意：<linux/capability.h> 的结构体标签带 _struct 后缀（__user_cap_header_struct /
-       __user_cap_data_struct），不可写成 struct __user_cap_header（无此标签，会编译失败）。 */
-    struct __user_cap_header_struct hdr;
-    struct __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_2];
-    memset(&hdr, 0, sizeof(hdr));
-    memset(data, 0, sizeof(data));
-    hdr.version = _LINUX_CAPABILITY_VERSION_3;
-    hdr.pid = 0;
-    if (syscall(SYS_capset, &hdr, data) < 0) {
-        perror("capset (drop all)");
-        return -1;
-    }
-    return 0;
-}
-
-#ifdef HAVE_LIBCAP
-/* 清空后仅保留 keep_csv 中的能力（按名解析）。 */
-static int set_caps_libcap(const char *keep_csv) {
-    cap_t cap = cap_init();
-    cap_clear(cap);
-    if (keep_csv && *keep_csv) {
-        char *buf = strdup(keep_csv);
-        if (!buf) { cap_free(cap); return -1; }
-        for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
-            cap_value_t v;
-            if (cap_from_name(tok, &v) == 0) {
-                cap_set_flag(cap, CAP_PERMITTED, 1, &v, CAP_SET);
-                cap_set_flag(cap, CAP_EFFECTIVE, 1, &v, CAP_SET);
-                cap_set_flag(cap, CAP_INHERITABLE, 1, &v, CAP_SET);
-            } else {
-                fprintf(stderr, "warn: unknown capability %s\n", tok);
-            }
-        }
-        free(buf);
-    }
-    if (cap_set_proc(cap) < 0) { perror("cap_set_proc"); cap_free(cap); return -1; }
-    cap_free(cap);
-    return 0;
-}
-#endif
-
-static int apply_capabilities(int drop_caps, const char *keep_csv) {
-    if (!drop_caps) return 0; /* 保留全部能力 */
-#ifdef HAVE_LIBCAP
-    if (keep_csv && *keep_csv) return set_caps_libcap(keep_csv);
-#endif
-    (void)keep_csv;
-    return drop_all_caps_raw();
-}
-
-/* ----------------------------- seccomp ----------------------------- */
-
-#ifdef HAVE_LIBSECCOMP
-static uint32_t default_action_code(const char *action) {
-    if (!action) return SCMP_ACT_ERRNO(EPERM);
-    if (strcmp(action, "kill") == 0)  return SCMP_ACT_KILL_PROCESS;
-    if (strcmp(action, "allow") == 0) return SCMP_ACT_ALLOW;
-    if (strcmp(action, "log") == 0)   return SCMP_ACT_LOG;
-    return SCMP_ACT_ERRNO(EPERM);
-}
-
-static int install_seccomp(const char *allow_csv, const char *default_action) {
-    uint32_t def = default_action_code(default_action);
-    scmp_filter_ctx ctx = seccomp_init(def);
-    if (!ctx) { fprintf(stderr, "warn: seccomp_init failed\n"); return -1; }
-    if (allow_csv && *allow_csv) {
-        char *buf = strdup(allow_csv);
-        if (!buf) { seccomp_release(ctx); return -1; }
-        for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
-            int nr = seccomp_syscall_resolve_name(tok);
-            if (nr == __NR_SCMP_ERROR) {
-                fprintf(stderr, "warn: seccomp unknown syscall %s\n", tok);
-                continue;
-            }
-            if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, nr, 0) < 0)
-                fprintf(stderr, "warn: seccomp_rule_add(%s) failed\n", tok);
-        }
-        free(buf);
-    }
-    if (seccomp_load(ctx) < 0) {
-        perror("seccomp_load");
-        seccomp_release(ctx);
-        return -1;
-    }
+  }
+  if (seccomp_load(ctx) < 0) {
     seccomp_release(ctx);
-    return 0;
+    warn("seccomp_load 失败，跳过系统调用过滤");
+    return -1;
+  }
+  seccomp_release(ctx);
+  return 0;
 }
 #endif
 
-/* ----------------------------- main ----------------------------- */
+/* ---- 解析并应用单个 rlimit ---- */
+static void apply_rlimit(const char *name, const char *valstr) {
+  struct rlimit rl;
+  rl.rlim_cur = (rlim_t)strtoull(valstr, NULL, 10);
+  rl.rlim_max = RLIM_INFINITY; /* 软限制由参数定，硬限制放开以便可调整 */
+  int which = -1;
+  if (strcmp(name, "as") == 0)        which = RLIMIT_AS;
+  else if (strcmp(name, "data") == 0) which = RLIMIT_DATA;
+  else if (strcmp(name, "cpu") == 0)  which = RLIMIT_CPU;
+  else if (strcmp(name, "nofile") == 0) which = RLIMIT_NOFILE;
+  else if (strcmp(name, "nproc") == 0)  which = RLIMIT_NPROC;
+  else if (strcmp(name, "fsize") == 0)  which = RLIMIT_FSIZE;
+  else if (strcmp(name, "stack") == 0) which = RLIMIT_STACK;
+  else { warn("未知 rlimit 名，已忽略"); return; }
+  if (setrlimit(which, &rl) < 0)
+    warn("setrlimit 失败（权限不足或值非法）");
+}
 
-int main(int argc, char **argv) {
-    const char *ns_csv = NULL;
-    int net_up = 0, root_ro = 0;
-    const char *bind_src = NULL, *bind_dst = NULL;
-    const char *cwd = NULL;
-    const char *path = NULL;
-    long long r_as = 0, r_data = 0, r_cpu = 0, r_nofile = 0, r_nproc = 0, r_fsize = 0, r_stack = 0;
-    int drop_caps = 0, no_new_privs = 0;
-    const char *keep_caps = NULL;
-    int uid = -1, gid = -1;
-    int no_seccomp = 0;
-    const char *seccomp_allow = NULL, *seccomp_default = "errno";
+int main(int argc, char *argv[]) {
+  /* 解析后的配置 */
+  const char *ns_csv = NULL;
+  int net_no = 0, net_up = 0, root_ro = 0;
+  const char *bind_spec = NULL, *cwd = NULL, *path = NULL;
+  int drop_caps = 0, no_new_privs = -1 /* -1=未指定 */;
+  const char *keep_caps_csv = NULL;
+  int has_uid = 0, has_gid = 0;
+  uid_t req_uid = 0; gid_t req_gid = 0;
+  int seccomp_off = 0;
+  const char *seccomp_allow = NULL, *seccomp_def = "errno";
 
-    int i = 1;
-    for (; i < argc; i++) {
-        if (strcmp(argv[i], "--") == 0) { i++; break; }
-        if (strcmp(argv[i], "--ns") == 0 && i + 1 < argc) ns_csv = argv[++i];
-        /* --no-net 为「无外部网络」的默认语义：建了 network 命名空间后仅留 loopback（默认 down），
-           无需额外动作，故此处仅作为兼容标记被识别。需本地回环时改用 --net-up。 */
-        else if (strcmp(argv[i], "--no-net") == 0) { /* no-op */ }
-        else if (strcmp(argv[i], "--net-up") == 0) net_up = 1;
-        else if (strcmp(argv[i], "--root-ro") == 0) root_ro = 1;
-        else if (strcmp(argv[i], "--bind-rw") == 0 && i + 1 < argc) {
-            char *eq = strchr(argv[++i], ':');
-            if (eq) { *eq = '\0'; bind_src = argv[i]; bind_dst = eq + 1; }
-            else { bind_src = argv[i]; bind_dst = argv[i]; }
-        }
-        else if (strcmp(argv[i], "--cwd") == 0 && i + 1 < argc) cwd = argv[++i];
-        else if (strcmp(argv[i], "--path") == 0 && i + 1 < argc) path = argv[++i];
-        else if (strcmp(argv[i], "--rlimit-as") == 0 && i + 1 < argc) r_as = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-data") == 0 && i + 1 < argc) r_data = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-cpu") == 0 && i + 1 < argc) r_cpu = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-nofile") == 0 && i + 1 < argc) r_nofile = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-nproc") == 0 && i + 1 < argc) r_nproc = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-fsize") == 0 && i + 1 < argc) r_fsize = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--rlimit-stack") == 0 && i + 1 < argc) r_stack = atoll(argv[++i]);
-        else if (strcmp(argv[i], "--drop-caps") == 0) drop_caps = 1;
-        else if (strcmp(argv[i], "--keep-caps") == 0 && i + 1 < argc) keep_caps = argv[++i];
-        else if (strcmp(argv[i], "--no-new-privs") == 0) no_new_privs = 1;
-        else if (strcmp(argv[i], "--allow-new-privs") == 0) no_new_privs = 0;
-        else if (strcmp(argv[i], "--uid") == 0 && i + 1 < argc) uid = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--gid") == 0 && i + 1 < argc) gid = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--no-seccomp") == 0) no_seccomp = 1;
-        else if (strcmp(argv[i], "--seccomp-allow") == 0 && i + 1 < argc) seccomp_allow = argv[++i];
-        else if (strcmp(argv[i], "--seccomp-default") == 0 && i + 1 < argc) seccomp_default = argv[++i];
-        else { fprintf(stderr, "warn: unknown option %s (ignored)\n", argv[i]); }
+  int i = 1;
+  while (i < argc) {
+    char *a = argv[i];
+    if (strcmp(a, "--") == 0) { i++; break; }
+    else if (strcmp(a, "--ns") == 0 && i + 1 < argc) ns_csv = argv[++i];
+    else if (strcmp(a, "--no-net") == 0) { net_no = 1; net_up = 0; }
+    else if (strcmp(a, "--net-up") == 0) { net_up = 1; net_no = 0; }
+    else if (strcmp(a, "--root-ro") == 0) root_ro = 1;
+    else if (strcmp(a, "--bind-rw") == 0 && i + 1 < argc) bind_spec = argv[++i];
+    else if (strcmp(a, "--cwd") == 0 && i + 1 < argc) cwd = argv[++i];
+    else if (strncmp(a, "--rlimit-", 9) == 0 && i + 1 < argc)
+      apply_rlimit(a + 9, argv[++i]);
+    else if (strcmp(a, "--drop-caps") == 0) drop_caps = 1;
+    else if (strcmp(a, "--keep-caps") == 0 && i + 1 < argc) keep_caps_csv = argv[++i];
+    else if (strcmp(a, "--no-new-privs") == 0) no_new_privs = 1;
+    else if (strcmp(a, "--allow-new-privs") == 0) no_new_privs = 0;
+    else if (strcmp(a, "--uid") == 0 && i + 1 < argc) { req_uid = (uid_t)atoi(argv[++i]); has_uid = 1; }
+    else if (strcmp(a, "--gid") == 0 && i + 1 < argc) { req_gid = (gid_t)atoi(argv[++i]); has_gid = 1; }
+    else if (strcmp(a, "--no-seccomp") == 0) seccomp_off = 1;
+    else if (strcmp(a, "--seccomp-allow") == 0 && i + 1 < argc) seccomp_allow = argv[++i];
+    else if (strcmp(a, "--seccomp-default") == 0 && i + 1 < argc) seccomp_def = argv[++i];
+    else if (strcmp(a, "--path") == 0 && i + 1 < argc) path = argv[++i];
+    else { fprintf(stderr, "sandbox-exec: 未知参数 '%s'\n", a); return 2; }
+    i++;
+  }
+  if (i >= argc) {
+    fprintf(stderr, "sandbox-exec: 缺少 '--' 之后的目标命令\n");
+    return 2;
+  }
+  char *command = argv[i];
+  char **cmd_argv = &argv[i];
+
+  /* 1) 解析命名空间 */
+  int user_ns = 0, mount_ns = 0, pid_ns = 0, net_ns = 0, uts_ns = 0, ipc_ns = 0;
+  if (ns_csv) {
+    char *buf = strdup(ns_csv);
+    char *tok = strtok(buf, ",");
+    while (tok) {
+      if (strcmp(tok, "user") == 0) user_ns = 1;
+      else if (strcmp(tok, "mount") == 0) mount_ns = 1;
+      else if (strcmp(tok, "pid") == 0) pid_ns = 1;
+      else if (strcmp(tok, "net") == 0) net_ns = 1;
+      else if (strcmp(tok, "uts") == 0) uts_ns = 1;
+      else if (strcmp(tok, "ipc") == 0) ipc_ns = 1;
+      else fprintf(stderr, "sandbox-exec: WARNING: 未知命名空间 '%s'\n", tok);
+      tok = strtok(NULL, ",");
+    }
+    free(buf);
+  }
+
+  /* 2) 施加命名空间（user/mount/uts/ipc/net 合并一次 unshare；pid 单独处理后 fork） */
+  int common_flags = 0;
+  if (user_ns)  common_flags |= CLONE_NEWUSER;
+  if (mount_ns) common_flags |= CLONE_NEWNS;
+  if (uts_ns)   common_flags |= CLONE_NEWUTS;
+  if (ipc_ns)   common_flags |= CLONE_NEWIPC;
+  if (net_ns)   common_flags |= CLONE_NEWNET;
+
+  if (common_flags) {
+    if (unshare(common_flags) != 0) {
+      fprintf(stderr, "sandbox-exec: WARNING: unshare(0x%x) 失败: %s（降级，命令将在较弱隔离下运行）\n",
+              common_flags, strerror(errno));
+    } else if (user_ns) {
+      /* 映射 outer uid/gid -> inner 0（root），从而拥有新 ns 内的全部能力 */
+      uid_t ou = getuid();
+      gid_t og = getgid();
+      if (write_user_map(ou, og) != 0)
+        warn("uid/gid 映射失败，后续特权操作可能受限");
+    }
+  }
+
+  /* 3) PID 命名空间：fork 使子进程成为 ns 内 PID 1；父进程等待并透传退出码 */
+  if (pid_ns) {
+    if (unshare(CLONE_NEWPID) != 0) {
+      warn("unshare(CLONE_NEWPID) 失败，PID 隔离未生效");
+    } else {
+      pid_t child = fork();
+      if (child < 0) { warn("fork 失败"); }
+      else if (child > 0) {
+        int status = 0;
+        waitpid(child, &status, 0);
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+        return 1;
+      }
+      /* 子进程继续往下执行 setup + exec */
+    }
+  }
+
+  /* 4) 挂载隔离（需 mount ns + 新 user ns 的 CAP_SYS_ADMIN） */
+  if (mount_ns) {
+    /* 断开与宿主的挂载传播，避免影响宿主 */
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
+      warn("mount(MS_PRIVATE) 失败，挂载隔离可能不完整");
+
+    /* 可写绑定点：先确保目标目录存在，再 bind 挂载 */
+    if (bind_spec) {
+      char host[4096] = {0}, container[4096] = {0};
+      const char *colon = strchr(bind_spec, ':');
+      if (!colon) {
+        warn("--bind-rw 格式应为 host:container");
+      } else {
+        size_t hl = (size_t)(colon - bind_spec);
+        if (hl >= sizeof(host)) hl = sizeof(host) - 1;
+        memcpy(host, bind_spec, hl);
+        strncpy(container, colon + 1, sizeof(container) - 1);
+        mkdir(container, 0755); /* 若不存在则创建（ro remount 之前，/ 尚且可写）*/
+        if (mount(host, container, NULL, MS_BIND, NULL) != 0)
+          warn("bind 挂载失败，工作目录可能不可写");
+      }
     }
 
-    if (i >= argc) { fprintf(stderr, "error: missing command after --\n"); return 2; }
-    const char *command = argv[i];
-    char **cmd_args = &argv[i];
-
-    /* 1) 命名空间 */
-    int has_user = 0;
-    int ns_flags = parse_ns_flags(ns_csv, &has_user);
-    if (ns_flags) {
-        if (unshare(ns_flags) < 0) die("unshare");
-        if (has_user) write_id_maps();
-        pid_t pid = fork();
-        if (pid < 0) die("fork");
-        if (pid > 0) {
-            /* 父进程：等待命名空间内的 PID 1（子），并把其退出状态透传给自身。 */
-            int status;
-            if (waitpid(pid, &status, 0) < 0) die("waitpid");
-            if (WIFEXITED(status)) return WEXITSTATUS(status);
-            if (WIFSIGNALED(status)) {
-                signal(WTERMSIG(status), SIG_DFL);
-                kill(getpid(), WTERMSIG(status));
-            }
-            return 1;
-        }
-        /* 子进程：新 pid 命名空间内的 PID 1，新 user 命名空间内 uid 0。 */
+    /* PID ns 时挂载 /proc */
+    if (pid_ns) {
+      if (mount("proc", "/proc", "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0)
+        warn("挂载 /proc 失败");
     }
 
-    /* 2) 文件系统（必须在 seccomp 之前，mount 自身也是 syscall）。 */
-    if (setup_mounts(bind_src, bind_dst, ns_flags && root_ro) < 0) return 2;
-    if (cwd && chdir(cwd) < 0) { perror("chdir"); return 2; }
-    if (net_up && (ns_flags & CLONE_NEWNET)) bring_up_lo();
-
-    /* 3) 资源限制 */
-    set_rlimit(RLIMIT_AS, r_as);
-    set_rlimit(RLIMIT_DATA, r_data);
-    set_rlimit(RLIMIT_CPU, r_cpu);
-    set_rlimit(RLIMIT_NOFILE, r_nofile);
-    set_rlimit(RLIMIT_NPROC, r_nproc);
-    set_rlimit(RLIMIT_FSIZE, r_fsize);
-    set_rlimit(RLIMIT_STACK, r_stack);
-
-    /* 4) 权限控制：先禁提权（seccomp 加载 KILL 动作需要），再裁能力，最后降权。 */
-    if (no_new_privs) {
-        if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
-            fprintf(stderr, "warn: prctl(NO_NEW_PRIVS) failed: %s\n", strerror(errno));
+    /* 只读根（须在 bind / proc 之后，避免把它们一起变只读） */
+    if (root_ro) {
+      if (mount("/", "/", "bind", MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL) != 0)
+        warn("根只读 remount 失败，根文件系统仍可写");
     }
+  }
+
+  /* 5) 降权到指定 uid/gid（user ns 内；仅当值在映射范围内，否则告警不致命） */
+  if (has_gid) {
+    if (setresgid(req_gid, req_gid, req_gid) != 0)
+      warn("setresgid 失败（uid 可能未在 user ns 映射中）");
+  }
+  if (has_uid) {
+    if (setresuid(req_uid, req_uid, req_uid) != 0)
+      warn("setresuid 失败（uid 可能未在 user ns 映射中）");
+  }
+
+  /* 6) 能力裁剪 */
+  if (drop_caps) {
+    set_caps(0); /* 全丢 */
+  } else if (keep_caps_csv) {
+    uint64_t mask = 0;
+    char *buf = strdup(keep_caps_csv);
+    char *tok = strtok(buf, ",");
+    while (tok) { mask = add_cap(mask, tok); tok = strtok(NULL, ","); }
+    free(buf);
+    /* 若 --no-new-privs 与 --keep-caps 并存，保留子集即可 */
+    if (no_new_privs == 1) mask |= (1ULL << 8); /* 仍保留 SETPCAP 以便收口 */
+    set_caps(mask);
+  }
+
+  /* 7) 禁提权（必须在 seccomp 之前） */
+  if (no_new_privs == 1) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+      warn("prctl(PR_SET_NO_NEW_PRIVS) 失败");
+  }
+
+  /* 8) 切换工作目录（须在 mount / seccomp 之前：chdir 自身不应被 seccomp 拦） */
+  if (cwd) {
+    if (chdir(cwd) != 0)
+      fprintf(stderr, "sandbox-exec: WARNING: chdir('%s') 失败: %s\n", cwd, strerror(errno));
+  }
+
+  /* 9) 网络：net ns 且 --net-up 时拉起 lo（--no-net 则彻底留空） */
+  if (net_ns && net_up) bring_up_lo();
+
+  /* 10) seccomp（最后一道，仅当未显式关闭） */
+  if (!seccomp_off) {
 #ifdef HAVE_LIBSECCOMP
-    if (!no_seccomp) {
-        if (install_seccomp(seccomp_allow, seccomp_default) < 0)
-            fprintf(stderr, "warn: seccomp install failed; continuing without syscall filter\n");
-    }
+    /* 默认动作由上层下发；未带 --seccomp-allow 时仅放行极少基础 syscall */
+    const char *allow = seccomp_allow ? seccomp_allow
+        : "read,write,exit,exit_group,mmap,brk,rt_sigprocmask,rt_sigaction,sched_yield,futex";
+    setup_seccomp(allow, seccomp_def);
 #else
-    if (!no_seccomp)
-        fprintf(stderr, "warn: seccomp requested but helper built without libseccomp; skipping\n");
+    warn("本助手编译时未链接 libseccomp，seccomp 系统调用过滤被跳过（其余隔离仍生效）");
 #endif
-    if (apply_capabilities(drop_caps, keep_caps) < 0)
-        fprintf(stderr, "warn: capability drop failed\n");
-    if (uid >= 0 && setuid((uid_t)uid) < 0) perror("setuid");
-    if (gid >= 0 && setgid((gid_t)gid) < 0) perror("setgid");
+  }
 
-    /* 5) 执行目标命令 */
-    if (path) setenv("PATH", path, 1);
-    execv(command, cmd_args);
-    perror("execv");
-    return 127;
+  /* 11) 注入 PATH（如有） */
+  if (path) setenv("PATH", path, 1);
+
+  /* 12) exec 目标命令（替换当前映像，继承上述全部隔离） */
+  execvpe(command, cmd_argv, environ);
+  fprintf(stderr, "sandbox-exec: exec '%s' 失败: %s\n", command, strerror(errno));
+  return 127;
 }

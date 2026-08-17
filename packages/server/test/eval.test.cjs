@@ -2,7 +2,7 @@
 // 需在 pnpm --filter @agent-harness/server build 之后运行：node --test test/*.test.cjs
 const test = require('node:test');
 const assert = require('node:assert');
-const { runRecordFromEvents, RuleBasedEvaluator, VolatileRecipeStore } = require('../dist/eval.js');
+const { runRecordFromEvents, RuleBasedEvaluator, VolatileRecipeStore, resolveEvalGate, evaluateCompletion } = require('../dist/eval.js');
 
 const SAMPLE_EVENTS = [
   { type: 'run:start', input: '拉一个临时环境' },
@@ -62,4 +62,40 @@ test('VolatileRecipeStore: 保存/读取/列表', () => {
   assert.strictEqual(store.get('rcp_1').name, '基线');
   assert.strictEqual(store.get('nope'), null);
   assert.strictEqual(store.list().length, 1);
+});
+
+test('resolveEvalGate: 环境变量驱动 off(默认)/warn/enforce', () => {
+  const prev = process.env.HARNESS_EVAL_GATE;
+  try {
+    delete process.env.HARNESS_EVAL_GATE;
+    assert.strictEqual(resolveEvalGate(), 'off');
+    process.env.HARNESS_EVAL_GATE = 'enforce';
+    assert.strictEqual(resolveEvalGate(), 'enforce');
+    process.env.HARNESS_EVAL_GATE = 'warn';
+    assert.strictEqual(resolveEvalGate(), 'warn');
+    process.env.HARNESS_EVAL_GATE = 'garbage';
+    assert.strictEqual(resolveEvalGate(), 'off');
+  } finally {
+    if (prev === undefined) delete process.env.HARNESS_EVAL_GATE;
+    else process.env.HARNESS_EVAL_GATE = prev;
+  }
+});
+
+test('evaluateCompletion: off 返回 null；warn 以 finalText 覆盖最终回答并通过；enforce 命中护栏硬失败', () => {
+  // off：零开销，直接 null
+  assert.strictEqual(evaluateCompletion('j_off', SAMPLE_EVENTS, '最终回答', 'off'), null);
+
+  // warn：正常闭环，finalAnswer 被运行最终回答覆盖
+  const warn = evaluateCompletion('j_warn', SAMPLE_EVENTS, '本轮真实最终回答', 'warn');
+  assert.ok(warn, 'warn 模式应返回评估结果');
+  assert.strictEqual(warn.gate, 'warn');
+  assert.strictEqual(warn.record.finalAnswer, '本轮真实最终回答');
+  assert.strictEqual(warn.result.passed, true);
+
+  // enforce：事件流含护栏拦截 → 判定不通过（fail closed 由调用方依据此结果拦截）
+  const blockedEvents = [...SAMPLE_EVENTS, { type: 'guardrail:blocked', phase: 'input', reason: '注入尝试' }];
+  const enforce = evaluateCompletion('j_enf', blockedEvents, '可能被污染的回答', 'enforce');
+  assert.ok(enforce);
+  assert.strictEqual(enforce.result.passed, false);
+  assert.strictEqual(enforce.result.score, 0);
 });

@@ -1,0 +1,2 @@
+# 编译产物（由 make / build-native.sh 生成），不纳入版本控制。
+build/

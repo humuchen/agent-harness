@@ -9,3 +9,6 @@ dist/
 .env.local
 .env.*.local
 .workbuddy/
+
+# Kubernetes Secret —— 含真实凭据，绝不提交。用 secret.yaml.example 模板本地生成。
+deploy/k8s/secret.yaml
