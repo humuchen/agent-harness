@@ -89,7 +89,7 @@ export const BUILTIN_TOOL_NAMES = [
   'datetime',
   'web_fetch',
   'filesystem',
-  'shell',
+  'shell'
 ] as const;
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 
@@ -99,13 +99,14 @@ export const DEFAULT_AGENT_ID = 'default';
 export function makeDefaultAgentCard(): AgentCard {
   return {
     id: DEFAULT_AGENT_ID,
-    name: 'Default Universal Agent',
+    name: '默认 Agent',
     domain: 'generic',
-    description: '保留现有行为的通用 agent：挂载全部内置工具、全部 MCP 与全部技能。',
+    description:
+      '保留现有行为的通用 agent：挂载全部内置工具、全部 MCP 与全部技能。',
     capabilities: [{ id: 'general-purpose' }],
     transport: 'local',
     version: '1.0.0',
-    health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
+    health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 }
     // 不填 assembly → assembleAgent 退化为今天的万能 harness。
   };
 }

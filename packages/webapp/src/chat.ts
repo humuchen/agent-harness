@@ -2583,7 +2583,6 @@ export class AhChat extends LitElement {
             @change=${(e: Event) =>
               (this.agentId = (e.target as HTMLSelectElement).value)}
           >
-            <option value="">默认 Agent</option>
             ${this.agents.map(
               (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
             )}

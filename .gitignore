@@ -3,6 +3,7 @@ dist/
 *.log
 .DS_Store
 *.tsbuildinfo
+data/
 
 # Local secrets — never commit. .env.example stays a tracked template.
 .env
