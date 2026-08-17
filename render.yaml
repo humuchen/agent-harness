@@ -10,11 +10,15 @@
 #   - web 服务：用仓库根目录的 Dockerfile 构建（多阶段 node:22，非 root `ah` 用户，
 #     入口 `node packages/server/dist/server.js`）。Render 用 Docker 运行时，
 #     buildCommand/startCommand 被忽略，全部由 Dockerfile 决定。
-#   - redis 服务：Render 托管的 Redis（共享运行队列后端，支持多实例、崩溃可重放）。
+#   - redis 服务：Render 托管的 Key Value（Redis 兼容，见下方 type: keyvalue），
+#     作为共享运行队列后端（支持多实例、崩溃可重放）。
 #
 # 重要：
-#   - Render 托管 Redis 没有免费档（最小为 Starter，约 $15/月）。若只用免费计划，
-#     请改用文末「方案 B：容器内自带 Redis」（单容器、免费档可用，但重启即丢数据）。
+#   - 本蓝图 web 与 redis 均使用免费档（plan: free）：web 为免费 Docker 服务，
+#     redis 为免费 Key Value（25MB，数据非持久化）。整栈零成本。
+#   - 免费档限制：web 服务 15 分钟无请求会休眠（冷启动 30-60s，SSE 长连接会被打断）；
+#     redis 免费档 25MB 且非持久（重启/维护丢数据）——对「运行队列」这类瞬时数据可接受。
+#   - 若需「不休眠 + 记忆持久化」，请升级 web 到 starter（$7/月）并挂载 Render Disk（仅付费档支持）。
 #   - 应用按如下规则选择队列后端（见 packages/server/src/queue-backend.ts）：
 #       REDIS_URL 存在 或 RUN_QUEUE_BACKEND=redis  → RedisQueueBackend（需 ioredis，
 #       已在 server 依赖中；未装则自动回退内存并告警）
@@ -30,7 +34,7 @@ services:
     name: agent-harness
     runtime: docker
     dockerfilePath: ./Dockerfile
-    # 免费档也可用 Docker web 服务（但本蓝图同时引用了 redis 服务，redis 需付费计划）。
+    # 免费档 Docker web 服务（休眠+冷启动）；redis 现也已用免费 Key Value，整栈零成本。
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
     healthCheckPath: /api/state
@@ -51,28 +55,31 @@ services:
       # 显式声明，确保即使 REDIS_URL 取不到也走 redis 分支（取不到会回退内存并告警）。
       - key: RUN_QUEUE_BACKEND
         value: redis
-      # 由下方 redis 服务自动注入的连接串（redis://...，含密码）。
+      # 由下方 Key Value（Redis）服务自动注入的连接串（redis://...，含密码）。
       - key: REDIS_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: agent-harness-redis
-          propertyHints:
-            - connectionString
+          property: connectionString
       # 记忆持久化（可选）：挂载 Disk 到 /app/data 后启用 file 后端。
       - key: MEMORY_BACKEND
         value: file
       - key: MEMORY_DIR
         value: /app/data/memory
 
-  # ----------------------------- 2) Render 托管 Redis -----------------------------
-  - type: redis
+  # ----------------------------- 2) Render 托管 Key Value（Redis 兼容，免费档） -----------------------------
+  - type: keyvalue
     name: agent-harness-redis
-    # 注意：Render Redis 无免费档，最小为 starter（约 $15/月）。
-    # 若当前账户仅免费计划，请删除本服务，并改用「方案 B」容器内自带 Redis。
-    plan: starter
+    # 免费档：25MB，数据非持久化（重启/维护会丢）。对运行队列这类瞬时数据完全够用。
+    # 如需持久（崩溃可重放），升级到 starter（$10/月）并配合 maxmemoryPolicy: noeviction。
+    plan: free
     region: oregon
-    # 可选：ipProtection 默认开；如需跨服务访问保持默认即可。
-    # maxmemoryPolicy 默认 noeviction，足够本项目使用。
+    # ipAllowList 为必填项：免费 web 服务无私有网络内网互通，需放开外部访问才能连上。
+    ipAllowList:
+      - source: 0.0.0.0/0
+    description: agent-harness 共享运行队列后端
+    # noeviction：队列满时不删任务（防止丢进行中的任务），最适合 job queue 场景。
+    maxmemoryPolicy: noeviction
 
 # （可选）持久化记忆卷：在 Dashboard 创建 Disk 并挂载到 /app/data，
 # 再配合上方 MEMORY_BACKEND=file，使多轮对话/会话在部署重启后保留。
