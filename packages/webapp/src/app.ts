@@ -12,6 +12,27 @@ type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'obser
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 
+/**
+ * 侧边栏收起态只显示「短标签」(data-short)。不同 Tab 的首字可能相同
+ * （如「客资看板」与「客服后台」首字都是「客」），若直接取首字会在收起态
+ * 出现两个一模一样的字。这里做全局去重：优先 1 字，冲突则逐步加长到
+ * 2 字 / 3 字，极端情况用完整 label 兜底，保证收起态每个 Tab 的短标签唯一可辨。
+ */
+function uniqueShort(label: string, used: Set<string>): string {
+  for (let n = 1; n <= label.length; n++) {
+    const cand = label.slice(0, n);
+    if (!used.has(cand)) {
+      used.add(cand);
+      return cand;
+    }
+  }
+  let i = 1;
+  let cand = `${label}(${i})`;
+  while (used.has(cand)) cand = `${label}(${++i})`;
+  used.add(cand);
+  return cand;
+}
+
 const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'dashboard', label: '总览', short: '览' },
   { id: 'chat', label: '对话', short: '话' },
@@ -78,8 +99,8 @@ export class AhApp extends LitElement {
   @state() private theme: Theme = getTheme();
   @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
-  /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。 */
-  @state() private pluginTabs: Array<{ id: string; label: string }> = [];
+  /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。short 为去重后的收起态短标签。 */
+  @state() private pluginTabs: Array<{ id: string; label: string; short: string }> = [];
 
   connectedCallback() {
     super.connectedCallback();
@@ -112,7 +133,13 @@ export class AhApp extends LitElement {
       const views = data.views ?? [];
       pluginUIRegistry.reset();
       for (const v of views) pluginUIRegistry.register(v);
-      this.pluginTabs = views.map((v) => ({ id: v.tabId, label: v.label }));
+      // 以静态 Tab 已有 short 为种子做去重，避免插件 Tab 与静态 Tab、插件 Tab 之间首字撞车。
+      const used = new Set(TABS.map((t) => t.short));
+      this.pluginTabs = views.map((v) => ({
+        id: v.tabId,
+        label: v.label,
+        short: uniqueShort(v.label, used),
+      }));
     } catch {
       /* 插件视图拉取失败不阻断主面板 */
     }
@@ -203,7 +230,7 @@ export class AhApp extends LitElement {
                 ${this.pluginTabs.map(
               (t) => html`<button
                 class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
-                data-short=${t.label.slice(0, 1)}
+                data-short=${t.short}
                 title=${t.label}
                 @click=${() => {
                   this.tab = t.id;

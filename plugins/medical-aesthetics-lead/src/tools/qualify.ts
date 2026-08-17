@@ -3,9 +3,8 @@ import { upsertLead } from '../store';
 import type { LeadGrade } from '../store';
 
 /**
- * lead_qualify：从抖音/小红书私信、微信对话中抽取客资要素，打 A/B/C/D 意向等级并写回客资库。
- * 工具名用短名 `lead_qualify`，loader 启用时自动加 `medical-aesthetics-lead__` 前缀合并进共享工具表，
- * server 的 assembleAgent 再把它并运行，模型即可调用。
+ * lead_qualify：结构化抽取抖音/小红书私信中的客资要素，并做 A/B/C/D 分级，写回共享存储。
+ * 工具名用短名，loader 启用时自动加 `medical-aesthetics-lead__` 前缀合并进共享工具表。
  */
 export function registerQualifyTool(tools: ToolRegistry): void {
   tools.register(
@@ -14,17 +13,13 @@ export function registerQualifyTool(tools: ToolRegistry): void {
     {
       type: 'object',
       properties: {
-        leadId: { type: 'string', description: '客资唯一 id（建议 channel_sessionId 或手机号）' },
+        leadId: { type: 'string', description: '客资唯一 id（可用 channel_sessionId 或手机号）' },
         channel: { type: 'string', description: '获客渠道：抖音/小红书/微信/美团/官网/其它' },
         project: { type: 'string', description: '意向项目，如 双眼皮/玻尿酸/热玛吉' },
         budget: { type: 'string', description: '预算区间，如 1-3万' },
         city: { type: 'string', description: '所在城市' },
         intent: { type: 'string', description: '核心诉求 / 一句话画像' },
-        grade: {
-          type: 'string',
-          description: '意向等级：A(高意向,已明确项目+预算) / B(有意向) / C(观望) / D(无效/同行)',
-          enum: ['A', 'B', 'C', 'D'],
-        },
+        grade: { type: 'string', description: '意向等级 A(高意向)/B(有意向)/C(观望)/D(无效)', enum: ['A', 'B', 'C', 'D'] },
       },
       required: ['leadId', 'channel', 'grade'],
     },
@@ -49,7 +44,7 @@ export function registerQualifyTool(tools: ToolRegistry): void {
         nextStep:
           grade === 'A' || grade === 'B'
             ? '主动私信引导留资 / 预约到店'
-            : '进入观望池，以科普内容定期触达',
+            : '进入观望池，定期内容触达',
       };
     }
   );

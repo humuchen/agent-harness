@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-harness/core": "workspace:*"
+    "@agent-harness/core": "workspace:*",
+    "@agent-harness/medical-ad-guard": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

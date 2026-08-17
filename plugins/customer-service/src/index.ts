@@ -6,6 +6,7 @@ import { csServerExtension } from './server/cs-routes';
 import { csAdminView } from './web/admin-panel';
 import { conversationWorkflow } from './workflows/conversation';
 import { appendMessage } from './store';
+import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;
@@ -64,6 +65,9 @@ export const customerServicePlugin: PluginModule = {
         appendMessage(`run:${String(e.runId)}`, 'assistant', e.final);
       }
     });
+
+    // 7) 接入医疗广告合规护栏（可插拔、幂等；与客资插件共用，互不影响）
+    registerMedicalAdGuardrail();
 
     ctx.logger.info('customer-service plugin setup complete');
   },

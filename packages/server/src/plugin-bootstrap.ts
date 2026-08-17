@@ -69,7 +69,10 @@ export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> 
     .map((s) => s.trim())
     .filter(Boolean);
   // __dirname = packages/server/dist → 需上溯三级到仓库根：../../../plugins/...
-  const defaults = ['../../../plugins/customer-service/dist/index.js'];
+  const defaults = [
+    '../../../plugins/customer-service/dist/index.js',
+    '../../../plugins/medical-aesthetics-lead/dist/index.js',
+  ];
   const entries = envList.length ? envList : defaults;
   const enabled: string[] = [];
 

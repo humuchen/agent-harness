@@ -126,12 +126,31 @@ importers:
       '@agent-harness/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@agent-harness/medical-ad-guard':
+        specifier: workspace:*
+        version: link:../../packages/medical-ad-guard
     devDependencies:
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
       typescript:
         specifier: ^5.4.0
+        version: 5.9.3
+
+  plugins/medical-aesthetics-lead:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@agent-harness/medical-ad-guard':
+        specifier: workspace:*
+        version: link:../../packages/medical-ad-guard
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
         version: 5.9.3
 
 packages:

@@ -1,7 +1,12 @@
 /**
  * 客资生命周期共享存储（文件后端，复刻 customer-service 的原子写 + 扫目录聚合模式）。
- * 目录优先级：CS_DATA_DIR > MEMORY_DIR/plugins/medical-aesthetics-lead > ./data/cs（单实例降级）。
+ * 目录优先级：MA_DATA_DIR > MEMORY_DIR/plugins/medical-aesthetics-lead > ./data/ma-lead（单实例降级）。
  * 多副本共享同一 RWX 卷时，任意副本写入的 lead 都能被看板聚合看到。
+ *
+ * 漏斗语义：stage 为「当前阶段」，reached 为「到达过的最远阶段」（单调不回退）。
+ * 看板漏斗按 reached 做**累计**统计（qualified >= captured >= booked >= arrived >= deal），
+ * 这样即便线索已推进到 booked，仍计入其经过的 qualified/captured，符合转化漏斗直觉。
+ * lost 为独立沉淀，不计入到店/成交。
  */
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
@@ -18,6 +23,13 @@ export type LeadStage =
   | 'lost';
 export type LeadGrade = 'A' | 'B' | 'C' | 'D';
 
+/** 阶段顺序（漏斗单调方向）。lost 为独立沉淀，不在此序列内。 */
+const ORDER: LeadStage[] = ['new', 'contacted', 'qualified', 'captured', 'booked', 'arrived', 'deal'];
+function rank(s: LeadStage): number {
+  const i = ORDER.indexOf(s);
+  return i < 0 ? 0 : i;
+}
+
 export interface LeadRecord {
   leadId: string;
   channel: string; // 抖音/小红书/微信/美团/官网
@@ -26,7 +38,10 @@ export interface LeadRecord {
   budget?: string;
   city?: string;
   grade?: LeadGrade;
+  /** 当前阶段。 */
   stage: LeadStage;
+  /** 到达过的最远阶段（单调不回退），漏斗累计统计依据。 */
+  reached?: LeadStage;
   wechat?: string;
   phone?: string;
   name?: string;
@@ -67,6 +82,7 @@ function safeFile(key: string): string {
 function readRecord(key: string): LeadRecord | null {
   try {
     const d = JSON.parse(readFileSync(safeFile(key), 'utf-8')) as Partial<LeadRecord>;
+    const stage = (d.stage ?? 'new') as LeadStage;
     return {
       leadId: key,
       channel: d.channel ?? 'unknown',
@@ -75,7 +91,8 @@ function readRecord(key: string): LeadRecord | null {
       budget: d.budget,
       city: d.city,
       grade: d.grade,
-      stage: d.stage ?? 'new',
+      stage,
+      reached: (d.reached as LeadStage | undefined) ?? stage,
       wechat: d.wechat,
       phone: d.phone,
       name: d.name,
@@ -111,6 +128,13 @@ function mutate(key: string, fn: (r: LeadRecord) => void): void {
     updatedAt: Date.now(),
   };
   fn(r);
+  // 单调推进 reached：除 lost 外，reached 取「已达最远」与「当前 stage」的较大者。
+  if (r.stage === 'lost') {
+    if (!r.reached) r.reached = 'lost';
+  } else {
+    const cur = r.reached ? rank(r.reached) : rank(r.stage);
+    r.reached = ORDER[Math.max(cur, rank(r.stage))];
+  }
   r.updatedAt = Date.now();
   writeRecord(r);
 }
@@ -163,7 +187,10 @@ export function bookLead(
 export function handoffLead(id: string, reason?: string): void {
   mutate(id, (r) => {
     r.handedOff = true;
-    r.stage = r.stage === 'lost' ? 'lost' : 'arrived';
+    // 转人工 = 到店交给咨询师接待：若尚未到店，则至少推进到 arrived；deal/lost 不回退。
+    if (r.stage !== 'lost' && r.stage !== 'deal' && rank(r.stage) < rank('arrived')) {
+      r.stage = 'arrived';
+    }
     if (reason) r.source = r.source ? `${r.source} | handoff:${reason}` : `handoff:${reason}`;
   });
 }
@@ -195,28 +222,29 @@ export function listLeads(): LeadRecord[] {
   }
 }
 
-const STAGES: LeadStage[] = [
-  'new',
-  'contacted',
-  'qualified',
-  'captured',
-  'booked',
-  'arrived',
-  'deal',
-  'lost',
-];
-
 export function fullStats(): LeadStats {
   const recs = listLeads();
-  const funnel = Object.fromEntries(STAGES.map((s) => [s, 0])) as Record<LeadStage, number>;
+  const funnel = Object.fromEntries(
+    (['new', 'contacted', 'qualified', 'captured', 'booked', 'arrived', 'deal', 'lost'] as LeadStage[]).map(
+      (s) => [s, 0]
+    )
+  ) as Record<LeadStage, number>;
   const channelDist: Record<string, number> = {};
   const gradeDist: Record<string, number> = {};
+
   for (const r of recs) {
-    funnel[r.stage] = (funnel[r.stage] ?? 0) + 1;
+    if (r.stage === 'lost') {
+      funnel.lost += 1;
+      continue;
+    }
+    // 累计漏斗：当前阶段之前的每一级都 +1
+    const rv = rank(r.reached ?? r.stage);
+    for (let i = 0; i <= rv; i++) funnel[ORDER[i]] += 1;
     channelDist[r.channel] = (channelDist[r.channel] ?? 0) + 1;
     if (r.grade) gradeDist[r.grade] = (gradeDist[r.grade] ?? 0) + 1;
   }
-  const arrived = funnel.arrived + funnel.deal; // 到店（含已成交）
+
+  const arrived = funnel.arrived; // 累计，已含 deal
   const deal = funnel.deal;
   const base = recs.length;
   return {
@@ -228,9 +256,7 @@ export function fullStats(): LeadStats {
     deal,
     arriveRate: base ? Math.round((arrived / base) * 100) : 0,
     dealRate: base ? Math.round((deal / base) * 100) : 0,
-    followupQueue: recs.filter(
-      (r) => (r.grade === 'C' || r.stage === 'lost') && !r.handedOff
-    ),
+    followupQueue: recs.filter((r) => (r.grade === 'C' || r.stage === 'lost') && !r.handedOff),
     handoffQueue: recs.filter((r) => r.handedOff && !r.consultedBy),
   };
 }
