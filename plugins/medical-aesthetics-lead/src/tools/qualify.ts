@@ -1,5 +1,5 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { upsertLead } from '../store';
+import { upsertLead, attachCurrentRunTranscript } from '../store';
 import type { LeadGrade } from '../store';
 
 /**
@@ -36,6 +36,8 @@ export function registerQualifyTool(tools: ToolRegistry): void {
         grade,
         stage: 'qualified',
       });
+      // 把「当前这次对话」的 transcript 补录到线索上（仅当线索已存在时；绝不凭空建档）。
+      attachCurrentRunTranscript(leadId);
       return {
         ok: true,
         leadId,

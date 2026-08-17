@@ -54,12 +54,18 @@ export const leadPlugin: PluginModule = {
     });
 
     // 5) 对话记录回填：核心 harness 每次运行都会 emit run:start / run:end，
-    //    订阅后把「用户问 + 最终答」落进共享存储（key=run:<runId>），看板即可展示对话记录。
+    //    订阅后把「用户问 + 最终答」落进【独立的 transcripts/ 子目录】，绝不创建客资线索。
+    //    只有模型真正调用 lead_qualify 时才会生成客资线索（见 tools/qualify.ts 的 attachCurrentRunTranscript），
+    //    从而修复「无关对话被记成客资」的数据 bug。
     offTranscript = ctx.events.on((e) => {
       if (e.type === 'run:start' && typeof e.input === 'string') {
-        appendMessage(`run:${String(e.runId)}`, 'user', e.input);
+        const key = `run:${String(e.runId)}`;
+        beginRun(key);
+        appendTranscript(key, 'user', e.input);
       } else if (e.type === 'run:end' && typeof e.final === 'string') {
-        appendMessage(`run:${String(e.runId)}`, 'assistant', e.final);
+        const key = `run:${String(e.runId)}`;
+        appendTranscript(key, 'assistant', e.final);
+        endRun();
       }
     });
 
