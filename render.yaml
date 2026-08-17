@@ -1,113 +1,51 @@
-# Render Blueprint for agent-harness (Docker + Redis)
+# Render Blueprint for agent-harness (pnpm monorepo)
 #
-# 部署步骤：
-#   1. 把本仓库推到 GitHub（分支：dev）。
-#   2. Render Dashboard → "New" → "Blueprint" → 连接仓库 → 选本 render.yaml。
-#   3. 选择要部署的分支（dev）。
-#   4. Redis 服务创建后，REDIS_URL 会自动注入到 web 服务（见下方 fromService 绑定）。
+# How to deploy:
+#   1. Push this repo to GitHub (branch: dev).
+#   2. In Render Dashboard → "New" → "Blueprint" → connect the repo → pick render.yaml.
+#   3. Select the branch you want to deploy from (dev).
 #
-# 架构：
-#   - web 服务：用仓库根目录的 Dockerfile 构建（多阶段 node:22，非 root `ah` 用户，
-#     入口 `node packages/server/dist/server.js`）。Render 用 Docker 运行时，
-#     buildCommand/startCommand 被忽略，全部由 Dockerfile 决定。
-#   - redis 服务：Render 托管的 Key Value（Redis 兼容，见下方 type: keyvalue），
-#     作为共享运行队列后端（支持多实例、崩溃可重放）。
-#
-# 重要：
-#   - 本蓝图 web 与 redis 均使用免费档（plan: free）：web 为免费 Docker 服务，
-#     redis 为免费 Key Value（25MB，数据非持久化）。整栈零成本。
-#   - 免费档限制：web 服务 15 分钟无请求会休眠（冷启动 30-60s，SSE 长连接会被打断）；
-#     redis 免费档 25MB 且非持久（重启/维护丢数据）——对「运行队列」这类瞬时数据可接受。
-#   - 若需「不休眠 + 记忆持久化」，请升级 web 到 starter（$7/月）并挂载 Render Disk（仅付费档支持）。
-#   - 应用按如下规则选择队列后端（见 packages/server/src/queue-backend.ts）：
-#       REDIS_URL 存在 或 RUN_QUEUE_BACKEND=redis  → RedisQueueBackend（需 ioredis，
-#       已在 server 依赖中；未装则自动回退内存并告警）
-#       RUN_QUEUE_BACKEND=file                      → FileQueueBackend（崩溃可重放）
-#       其余 / 未设置                                → MemoryQueueBackend（默认，重启即丢）
-#   - 公开暴露前务必设置 UI_AUTH_TOKEN（强随机令牌），否则 UI 对全网开放。
-#   - 记忆持久化：free 磁盘为临时盘，部署重置即清空；如需会话/长期记忆持久化，
-#     挂载 Render Disk 到 /app/data 并设 MEMORY_BACKEND=file（或 sqlite）。
+# Notes:
+#   - This is a pnpm workspace: packages/core (framework) + packages/server (web playground).
+#   - dist/ is gitignored, so Render builds each package via `pnpm -r build`.
+#   - The SSE dashboard binds 0.0.0.0:$PORT (Render injects PORT automatically).
+#   - Free plan spins the service down after 15 min of inactivity (cold start on next visit).
 
 services:
-  # ----------------------------- 1) Docker 构建的 Web 服务 -----------------------------
   - type: web
     name: agent-harness
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    # 免费档 Docker web 服务（休眠+冷启动）；redis 现也已用免费 Key Value，整栈零成本。
+    runtime: node
+    nodeVersion: "22"        # pin Node 22 (engines: 22.x); Render installs the latest 22.x
     plan: free
     region: oregon            # oregon | frankfurt | singapore | ohio | virginia
+    # IMPORTANT: this is a pnpm monorepo. The build MUST run `pnpm -r build` so each
+    # workspace package (packages/core, packages/server, examples) emits its dist/.
+    # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
+    # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
+    # 注意：显式 --no-frozen-lockfile 是为了自愈——CI 环境(pnpm 检测到 CI=true)默认会
+    # 强制 --frozen-lockfile，一旦有人提交新依赖却忘记同步 pnpm-lock.yaml，构建即 exit 1。
+    # 用 --no-frozen-lockfile 让 Render 在 lockfile 轻微漂移时自动校正，避免部署卡死。
+    # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
+    startCommand: node packages/server/dist/server.js
     healthCheckPath: /api/state
     envVars:
       - key: NODE_ENV
         value: production
       - key: UI_HOST
         value: 0.0.0.0
-      # 真实 LLM 模式：在 Dashboard 填写后启用（否则走 Mock 模式）。
+      # Real LLM mode — fill in the dashboard to enable (otherwise Mock mode is used).
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
         value: agnes-2.5-flash
-      # Context7 MCP 文档集成（无需 key 也可用）。
+      # Context7 MCP docs integration (works without a key).
       - key: MCP_SERVER_URL
         value: https://mcp.context7.com/mcp
-      # —— 队列后端切到 Redis ——
-      # 显式声明，确保即使 REDIS_URL 取不到也走 redis 分支（取不到会回退内存并告警）。
-      - key: RUN_QUEUE_BACKEND
-        value: redis
-      # 由下方 Key Value（Redis）服务自动注入的连接串（redis://...，含密码）。
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: agent-harness-redis
-          property: connectionString
-      # 记忆后端：免费档无持久磁盘，file 后端会写在临时盘（重启即丢）易误导，
-      # 故用 volatile（纯内存）。需持久记忆时升级付费档、挂 Render Disk 后改回 file。
+      # 记忆持久化后端（Phase 4 决策 A）：file 后端 + /app/data/memory。
+      # 注意：Render free 磁盘为临时盘，部署重置即清空；多副本共享需付费 plan + 挂载
+      # 持久卷（或改用 k8s 部署，已配 RWX 卷）。单实例场景下重启不丢（同部署内）。
       - key: MEMORY_BACKEND
-        value: volatile
-
-  # ----------------------------- 2) Render 托管 Key Value（Redis 兼容，免费档） -----------------------------
-  - type: keyvalue
-    name: agent-harness-redis
-    # 免费档：25MB，数据非持久化（重启/维护会丢）。对运行队列这类瞬时数据完全够用。
-    # 如需持久（崩溃可重放），升级到 starter（$10/月）并配合 maxmemoryPolicy: noeviction。
-    plan: free
-    region: oregon
-    # ipAllowList 为必填项：免费 web 服务无私有网络内网互通，需放开外部访问才能连上。
-    ipAllowList:
-      - source: 0.0.0.0/0
-    description: agent-harness 共享运行队列后端
-    # noeviction：队列满时不删任务（防止丢进行中的任务），最适合 job queue 场景。
-    maxmemoryPolicy: noeviction
-
-# （可选）持久化记忆卷：在 Dashboard 创建 Disk 并挂载到 /app/data，
-# 再配合上方 MEMORY_BACKEND=file，使多轮对话/会话在部署重启后保留。
-# disks:
-#   - name: agent-harness-data
-#     mountPath: /app/data
-#     sizeGB: 1
-
-# =====================================================================================
-# 方案 B（免费档可用）：单容器自带 Redis
-# -------------------------------------------------------------------------------------
-# 若不想为 Redis 付费，可让 Docker 镜像内同时跑 redis-server + node 服务，
-# 用 REDIS_URL=redis://127.0.0.1:6379 走本地 Redis。免费档即可，但重启即丢数据（与内存模式相当，
-# 仅多了「多实例可共享」的潜力——单实例免费档意义不大，主要价值是未来升付费/多副本平滑过渡）。
-#
-# 做法（需改两处）：
-#   1) Dockerfile 运行阶段安装 redis-server，并用启动脚本先拉起 redis 再启动 node：
-#        RUN (apt-get update && apt-get install -y --no-install-recommends redis-server \
-#             && rm -rf /var/lib/apt/lists/*) 2>/dev/null || true
-#        COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-#        RUN chmod +x /app/docker-entrypoint.sh
-#        ENTRYPOINT ["/app/docker-entrypoint.sh"]
-#      docker-entrypoint.sh：
-#        #!/usr/bin/env bash
-#        set -e
-#        redis-server --daemonize yes --save "" --appendonly no
-#        exec node packages/server/dist/server.js
-#   2) 本 render.yaml 去掉上面的 redis 服务，并把 web 服务的 REDIS_URL 改为固定值：
-#        - key: REDIS_URL
-#          value: redis://127.0.0.1:6379
-#      （RUN_QUEUE_BACKEND=redis 保持不变）
-# =====================================================================================
+        value: file
+      - key: MEMORY_DIR
+        value: /app/data/memory
