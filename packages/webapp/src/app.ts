@@ -201,16 +201,17 @@ export class AhApp extends LitElement {
           ${this.pluginTabs.length
             ? html`<div class="nav-sep"></div>
                 ${this.pluginTabs.map(
-                  (t) => html`<button
-                    class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
-                    title=${t.label}
-                    @click=${() => {
-                      this.tab = t.id;
-                      this.closeDrawer();
-                    }}
-                  >
-                    <span class="nav-text">${t.label}</span>
-                  </button>`
+              (t) => html`<button
+                class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
+                data-short=${t.label.slice(0, 1)}
+                title=${t.label}
+                @click=${() => {
+                  this.tab = t.id;
+                  this.closeDrawer();
+                }}
+              >
+                <span class="nav-text">${t.label}</span>
+              </button>`
                 )}`
             : ''}
           <div class="nav-spacer"></div>

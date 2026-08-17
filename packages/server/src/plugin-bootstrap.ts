@@ -18,6 +18,7 @@ import {
   getAgentRegistry,
   type PluginManifest,
   type PluginModule,
+  type PluginEvent,
 } from '@agent-harness/core';
 import { structLog } from '@agent-harness/core';
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -27,6 +28,22 @@ export interface PluginSystem {
   loader: PluginLoader;
   serverHost: ServerPluginHost;
   webHost: WebPluginHost;
+}
+
+/**
+ * 进程级插件系统单例引用（由 bootstrapPlugins 在启用期写入）。
+ * runner 等模块经 getPluginSystem() 取得 loader，把核心 harness 运行事件桥接进插件总线。
+ */
+let _system: PluginSystem | null = null;
+
+/** 取当前插件系统（未引导返回 null）。 */
+export function getPluginSystem(): PluginSystem | null {
+  return _system;
+}
+
+/** 把一条核心 harness 运行事件桥接给所有插件事件订阅者（无业务词）。 */
+export function bridgeHarnessEvent(e: PluginEvent): void {
+  _system?.loader.broadcast(e);
 }
 
 /** 构造插件系统：把 server/web 宿主注入 loader，使插件经 PluginContext 挂路由/视图。 */
@@ -46,11 +63,13 @@ export function createPluginSystem(): PluginSystem {
  * - 每个入口应 `export default` 一个 PluginModule（或 `export const plugin`）。
  */
 export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> {
+  _system = system;
   const envList = (process.env.AGENT_PLUGINS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const defaults = ['../../plugins/customer-service/dist/index.js'];
+  // __dirname = packages/server/dist → 需上溯三级到仓库根：../../../plugins/...
+  const defaults = ['../../../plugins/customer-service/dist/index.js'];
   const entries = envList.length ? envList : defaults;
   const enabled: string[] = [];
 

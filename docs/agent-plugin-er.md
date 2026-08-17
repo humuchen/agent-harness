@@ -1,7 +1,7 @@
 # 插件依赖 / 版本兼容 ER 图与解析规则
 
-> 本文档基于**已落地代码**（`packages/core/src/plugin/*`、`packages/core/src/agents/*`、
-> `packages/server/src/plugin-{bootstrap,ext}.ts`、`packages/webapp/src/plugin-ui-registry.ts`）
+> 本文档基于**已落地代码**（`packages/core/src/plugin/*`、`packages/core/src/agents/*`、>   
+> `packages/server/src/plugin-{bootstrap,ext}.ts`、`packages/webapp/src/plugin-ui-registry.ts`）>   
 > 抽取实体关系与版本/依赖解析契约。所有字段名与类型均对齐真实源码，非设计假设。
 
 ## 1. 实体关系图（ER）
@@ -126,13 +126,13 @@ erDiagram
 
 ### 1.1 关系说明（数组/集合类，未在主图连线，避免连线爆炸）
 
-| 关系 | 含义 | 代码位置 |
-| --- | --- | --- |
-| `PluginManifest.capabilities: AgentCapability[]` | 能力声明数组，启用时转成 AgentCard.capabilities | `manifest.ts` |
-| `PluginManifest.dependencies?: string[]` | 依赖的其它插件 id；启用前经 `resolveDependencies` 校验 | `loader.ts:resolveDependencies` |
-| `PluginManifest.assembly?: AgentAssembly` | 系统提示词/技能/MCP/工具面收窄，经 `toAgentCard` 透传到 AgentCard.assembly | `loader.ts:toAgentCard` |
-| `AgentRegistry.capIndex: Map<capId, Set<agentId>>` | 能力 → agent 倒排索引，O(1) 按能力发现；多插件声明同 capId 时集合共存 | `registry.ts` |
-| `getPluginToolRegistry()` 共享表 | 所有插件 `ctx.tools` 合并进来（前缀 `${pluginId}__`），`runner.assembleAgent` 统一 mergeFrom | `context.ts:getPluginToolRegistry` |
+| 关系                                                 | 含义                                                                            | 代码位置                               |
+| -------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------- |
+| `PluginManifest.capabilities: AgentCapability[]`   | 能力声明数组，启用时转成 AgentCard.capabilities                                           | `manifest.ts`                      |
+| `PluginManifest.dependencies?: string[]`           | 依赖的其它插件 id；启用前经 `resolveDependencies` 校验                                      | `loader.ts:resolveDependencies`    |
+| `PluginManifest.assembly?: AgentAssembly`          | 系统提示词/技能/MCP/工具面收窄，经 `toAgentCard` 透传到 AgentCard.assembly                     | `loader.ts:toAgentCard`            |
+| `AgentRegistry.capIndex: Map<capId, Set<agentId>>` | 能力 → agent 倒排索引，O(1) 按能力发现；多插件声明同 capId 时集合共存                                 | `registry.ts`                      |
+| `getPluginToolRegistry()` 共享表                      | 所有插件 `ctx.tools` 合并进来（前缀 `${pluginId}__`），`runner.assembleAgent` 统一 mergeFrom | `context.ts:getPluginToolRegistry` |
 
 ### 1.2 关键不变量（架构红线）
 
@@ -170,20 +170,20 @@ flowchart TD
 
 ## 3. 版本 / 依赖兼容性矩阵
 
-| 约束 | 解析规则 | 失败行为 | 代码位置 |
-| --- | --- | --- | --- |
-| `dependencies[]` | 每个 id 必须已 `install` | throw `missing plugin` | `loader.resolveDependencies` |
-| range = `latest` / 缺省 | 取语义版本最高 | — | `registry.resolveVersion` |
-| range = `^x.y.z` | 同主版本号最高 | throw `no version matching` | `registry.resolveVersion` |
-| range = 精确版本 | 精确相等 | throw `version not found` | `registry.resolveVersion` |
-| `upgrade` id | `manifest.id` 须等于插件 id | throw `id mismatch` | `loader.upgrade` |
-| capability 冲突 | 多插件同 capId → `capIndex` 集合共存 | 不冲突；router 按 score 选 | `AgentRegistry.capIndex` |
-| isolation | `manifest.isolation` → `resolveIsolationBackend` 收敛 | —（声明级，远端插件应声明 os/container） | `loader.toAgentCard` |
-| assembly | 仅原样透传 `AgentAssembly` | — | `loader.toAgentCard` |
+| 约束                    | 解析规则                                                | 失败行为                        | 代码位置                         |
+| --------------------- | --------------------------------------------------- | --------------------------- | ---------------------------- |
+| `dependencies[]`      | 每个 id 必须已 `install`                                 | throw `missing plugin`      | `loader.resolveDependencies` |
+| range = `latest` / 缺省 | 取语义版本最高                                             | —                           | `registry.resolveVersion`    |
+| range = `^x.y.z`      | 同主版本号最高                                             | throw `no version matching` | `registry.resolveVersion`    |
+| range = 精确版本          | 精确相等                                                | throw `version not found`   | `registry.resolveVersion`    |
+| `upgrade` id          | `manifest.id` 须等于插件 id                              | throw `id mismatch`         | `loader.upgrade`             |
+| capability 冲突         | 多插件同 capId → `capIndex` 集合共存                        | 不冲突；router 按 score 选        | `AgentRegistry.capIndex`     |
+| isolation             | `manifest.isolation` → `resolveIsolationBackend` 收敛 | —（声明级，远端插件应声明 os/container） | `loader.toAgentCard`         |
+| assembly              | 仅原样透传 `AgentAssembly`                               | —                           | `loader.toAgentCard`         |
 
 ### 3.1 热升级的边界（如实记录）
 
-- `upgrade` 是「**manifest 替换 + 按原启用态重注册**」：进程内 `PluginModule` 代码**不热替换**。
+- `upgrade` 是「**manifest 替换 + 按原启用态重注册**」：进程内 `PluginModule` 代码**不热替换**。    
   真正代码热升级需 `uninstall` + 重新 `installModule` + `enable`，或重启进程。
 - 单会话 `read-modify-write` 在跨副本极端并发下可能互相覆盖（低概率）；强一致需后续换 Redis 后端。
 - 版本比较用 `cmpVersion`（点分数字段，非数字按 0），不支持 prerelease 标签。
@@ -207,5 +207,6 @@ curl -X POST localhost:8080/api/plugins/customer-service/enable  -H "authorizati
 # 5) 端到端多轮对话（mock LLM）由 server 现有 /api/run SSE 覆盖，无需新增端点
 ```
 
-> 沙箱 `pnpm install` 被安全守卫拦截、无 `tsc`，本环境无法编译校验；上述改动按 core 公共 API 严格手写类型，
+> 沙箱 `pnpm install` 被安全守卫拦截、无 `tsc`，本环境无法编译校验；上述改动按 core 公共 API 严格手写类型，>   
 > 请在有依赖环境跑 `pnpm -r build` 验证（Phase 0–4 全部改动）。
+

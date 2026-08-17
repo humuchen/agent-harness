@@ -1,4 +1,5 @@
 import type { ToolRegistry } from '@agent-harness/core';
+import { recordIntent } from '../store';
 
 /** 演示 FAQ 语料（生产应替换为检索服务 / 向量库）。 */
 interface FaqItem {
@@ -45,6 +46,15 @@ function score(item: FaqItem, query: string): number {
   return s;
 }
 
+/** FAQ 标签 → 业务意图映射（用于管理后台意图分布统计）。 */
+function tagToIntent(tags: string[]): string {
+  const joined = tags.join(' ').toLowerCase();
+  if (joined.includes('refund')) return '退款';
+  if (joined.includes('logistics') || joined.includes('物流')) return '查询订单';
+  if (joined.includes('login') || joined.includes('登录') || joined.includes('password') || joined.includes('密码')) return '技术支持';
+  return '其它';
+}
+
 /**
  * 注册 FAQ 检索工具。工具名用短名 `faq_search`，loader 启用时会自动加 `customer-service__` 前缀
  * 合并进进程共享插件工具表，server 的 assembleAgent 再把它并运行，模型即可调用。
@@ -55,16 +65,24 @@ export function registerFaqTool(tools: ToolRegistry): void {
     '检索 FAQ 知识库，返回与用户问题最相关的标准答案（产品政策 / 常见问题）。',
     {
       type: 'object',
-      properties: { query: { type: 'string', description: '用户的问题或关键词' } },
+      properties: {
+        query: { type: 'string', description: '用户的问题或关键词' },
+        sessionId: { type: 'string', description: '可选：当前会话 id，用于把命中意图记入管理后台统计' },
+      },
       required: ['query'],
     },
     async (args: Record<string, unknown>) => {
       const query = String(args.query ?? '').trim();
+      const sessionId = String(args.sessionId ?? '').trim();
       if (!query) return { found: false, answer: '请提供要检索的问题。' };
       const ranked = FAQ_CORPUS.map((it) => ({ it, s: score(it, query) }))
         .filter((x) => x.s > 0)
         .sort((a, b) => b.s - a.s);
-      if (!ranked.length) return { found: false, answer: '知识库未找到相关条目，建议转人工。' };
+      if (!ranked.length) {
+        if (sessionId) recordIntent(sessionId, '未知/未命中');
+        return { found: false, answer: '知识库未找到相关条目，建议转人工。' };
+      }
+      if (sessionId) recordIntent(sessionId, tagToIntent(ranked[0].it.tags));
       return { found: true, answer: ranked[0].it.a, question: ranked[0].it.q };
     }
   );

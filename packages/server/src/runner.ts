@@ -37,6 +37,7 @@ import {
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
+import { bridgeHarnessEvent } from './plugin-bootstrap';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
 
@@ -430,7 +431,12 @@ export async function assembleAgent(
     tools,
     memory,
     systemPrompt: finalSystemPrompt,
-    onEvent,
+    // 事件桥接：把核心 harness 运行事件广播给插件事件订阅者（ctx.events.on），
+    // 使插件能订阅 run:start / run:end 等运行时事件（如客服对话记录），全程无业务耦合。
+    onEvent: (e: HarnessEvent) => {
+      bridgeHarnessEvent(e);
+      onEvent?.(e);
+    },
     model: accountModel,
     tokenBudget,
     costBudget,
