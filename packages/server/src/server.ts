@@ -29,7 +29,7 @@ import { createAuthorizer, type Authorizer, type AuthContext, type Action } from
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
 import { warmJwks, getAuthConfig } from './sso';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
-import { createEvaluator, createRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
+import { createEvaluator, getRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
@@ -81,7 +81,7 @@ if (AUTH_PROVIDER === 'oidc') {
 const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 // 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
 const evaluator: Evaluator = createEvaluator();
-const recipeStore: RecipeStore = createRecipeStore();
+const recipeStore: RecipeStore = getRecipeStore();
 // 数据留存/出境策略与 OpenAPI 契约（业务合规层），同样由组合工厂装配，核心不感知。
 const retentionPolicy: RetentionPolicy = createRetentionPolicy();
 const openApiSpec = buildOpenApiSpec();

@@ -157,6 +157,47 @@ export function createEvaluator(): Evaluator {
 }
 
 // ---------------------------------------------------------------------------
+// 运行完成闸门（Run-completion gate）：把评估接入「一次 run 结束」的时点。
+// 与 POST /api/eval 的「按需评估」不同，这里是「自动评估」——运行跑完立刻打分，
+// 可据配置决定仅告警（warn）还是硬性拦截（enforce）。运行管线（run-queue.execute）
+// 在 harness.run() 返回后调用本模块，把结果级断言校验（护栏/预算/非空回答/工具闭环）
+// 作为「交付前自检」闸门。
+// ---------------------------------------------------------------------------
+
+export type EvalGate = 'off' | 'warn' | 'enforce';
+
+/** 解析运行完成闸门开关：HARNESS_EVAL_GATE = off(默认) | warn | enforce。 */
+export function resolveEvalGate(): EvalGate {
+  const v = (process.env.HARNESS_EVAL_GATE ?? 'off').toLowerCase().trim();
+  return v === 'warn' || v === 'enforce' ? v : 'off';
+}
+
+export interface CompletionEval {
+  record: RunRecord;
+  result: EvalResult;
+  gate: EvalGate;
+}
+
+/**
+ * 运行结束后自动评估。把事件流还原为 RunRecord，并以运行最终回答覆盖 finalAnswer，
+ * 再交给 Evaluator 打分。gate=off 时直接返回 null（不评估，零开销）。
+ */
+export function evaluateCompletion(
+  jobId: string,
+  events: unknown[],
+  finalText: string,
+  gate: EvalGate = resolveEvalGate(),
+): CompletionEval | null {
+  if (gate === 'off') return null;
+  const rec = runRecordFromEvents(jobId, events);
+  // 运行结束时的真实最终回答优先（run:end/_done 之前事件可能尚无 finalAnswer）。
+  rec.finalAnswer = finalText;
+  rec.finishedAt = rec.finishedAt ?? Date.now();
+  const result = createEvaluator().evaluate(rec);
+  return { record: rec, result, gate };
+}
+
+// ---------------------------------------------------------------------------
 // 配方版本化（Recipe Versioning）：把一次 RunRecord 存为命名版本，便于回归比对。
 // ---------------------------------------------------------------------------
 
@@ -224,4 +265,14 @@ export function createRecipeStore(): RecipeStore {
   const dir = process.env.RECIPE_DIR;
   if (dir) return new FileRecipeStore(dir);
   return new VolatileRecipeStore();
+}
+
+/**
+ * 配方库单例：run-queue（运行完成闸门自动存档）与 server 的 /api/eval、/api/recipes
+ * 共用同一份存储，避免各自 new 出独立实例导致列表对不齐。内部惰性创建。
+ */
+let _recipeStore: RecipeStore | null = null;
+export function getRecipeStore(): RecipeStore {
+  if (!_recipeStore) _recipeStore = createRecipeStore();
+  return _recipeStore;
 }

@@ -18,6 +18,7 @@ import {
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
+import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
 
 /**
  * 运行任务队列（解耦「提交」与「执行」）。
@@ -622,6 +623,55 @@ export class RunQueue {
       });
       emit({ type: 'run:tools', tools: assembled.tools.schemas() });
       const finalText = await assembled.harness.run(job.prompt);
+
+      // 运行完成闸门（P2-13 延伸）：自动评估本轮质量，据 HARNESS_EVAL_GATE 决定告警或拦截。
+      // - off（默认）：不评估，零开销；
+      // - warn：评估并下发 eval:result 事件，但不改变运行结果；
+      // - enforce：评估未通过则判本次运行失败（fail closed），并审计留痕。
+      const evalGate = resolveEvalGate();
+      if (evalGate !== 'off') {
+        const completion = evaluateCompletion(job.id, job.events, finalText, evalGate);
+        if (completion) {
+          emit({
+            type: 'eval:result',
+            jobId: job.id,
+            score: completion.result.score,
+            passed: completion.result.passed,
+            reasons: completion.result.reasons,
+            gate: completion.gate,
+          });
+          // 配方版本化：把本轮 RunRecord 存为可回溯快照（内存/文件库由 RECIPE_DIR 决定）。
+          try {
+            getRecipeStore().save({
+              id: job.id,
+              name: `${job.mode}:${job.prompt.slice(0, 48)}`,
+              createdAt: Date.now(),
+              record: completion.record,
+            });
+          } catch {
+            /* 配方存储失败不影响主流程 */
+          }
+          if (evalGate === 'enforce' && !completion.result.passed) {
+            incCounter('run.eval.failed');
+            audit({
+              tenantId: job.tenantId,
+              actor: job.tenantId ?? 'anonymous',
+              action: 'agent.run.eval_failed',
+              outcome: 'denied',
+              target: resolvedAgentId ?? 'default',
+              detail: { score: completion.result.score, reasons: completion.result.reasons, mode: job.mode },
+            });
+            emit({
+              type: 'warn',
+              message: `运行自评估未通过（score=${completion.result.score}）：${completion.result.reasons.join('; ')}`,
+            });
+            emit({ type: '_done', final: finalText, error: true });
+            job.status = 'failed';
+            return;
+          }
+        }
+      }
+
       emit({ type: 'run:end', final: finalText, steps: stepCount });
       emit({ type: '_done', final: finalText });
       job.status = 'done';
