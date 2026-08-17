@@ -66,6 +66,19 @@ importers:
         specifier: ^1.7.0
         version: 1.9.1
 
+  packages/medical-ad-guard:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
   packages/server:
     dependencies:
       '@agent-harness/core':
