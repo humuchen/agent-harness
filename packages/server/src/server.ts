@@ -52,10 +52,13 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
+// 统一认证凭证：OPENROUTER_API_KEY 同时作为 LLM key 与权限校验依据。
+// 未接入 RBAC 时它是权限判断的唯一凭证；接入 RBAC 时作为 admin 逃生通道。
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
-// 非 token 模式即视为需要鉴权；token 模式仅在有静态令牌时才开启（向后兼容）。
-const REQUIRE_AUTH = AUTH_PROVIDER !== 'token' || !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
+// 非 token 模式即视为需要鉴权；token 模式在有静态令牌或 OPENROUTER_API_KEY 时开启（向后兼容）。
+const REQUIRE_AUTH = AUTH_PROVIDER !== 'token' || !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPENROUTER_API_KEY);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -249,9 +252,22 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const wd = webappDir();
       if (wd) {
         try {
-          const buf = await readFile(join(wd, 'index.html'));
+          let html = await readFile(join(wd, 'index.html'), 'utf8');
+          // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
+          // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPENROUTER_API_KEY 时注入。
+          if (OPENROUTER_API_KEY) {
+            const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;');
+            if (html.includes('<head>')) {
+              html = html.replace('<head>', `<head>\n    <meta name="ah-api-key" content="${escaped}" />`);
+            } else {
+              html = `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
+            }
+          }
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
-          res.end(buf);
+          res.end(html);
           return;
         } catch {
           /* webapp 未构建，交给 serveHtml 返回 500 */

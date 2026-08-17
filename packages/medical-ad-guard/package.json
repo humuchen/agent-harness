@@ -1,0 +1,22 @@
+{
+  "name": "@agent-harness/medical-ad-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "可插拔医疗广告合规护栏：基于 core guardrails 注册输入/输出规则，拦截绝对化疗效承诺、诊断式话术、患者形象证明、固定价承诺等违规内容。客服/客资插件共用。",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@agent-harness/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

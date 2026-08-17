@@ -22,6 +22,8 @@ export interface RunInput {
   sessionId?: string;
   /** 多会话 Chat App：客户端分配的聊天会话 id，服务端据此把消息写入会话存储。 */
   chatSessionId?: string;
+  /** 定向业务 agent（agentId）。不传则走默认通用 agent。Web 端用于把对话路由到具体插件 agent。 */
+  agentId?: string;
   /** 断线重连：携带已知 jobId 直接订阅事件重放，不重复提交。 */
   jobId?: string;
   /** 审批工单号：敏感动作获批后随请求重投。 */

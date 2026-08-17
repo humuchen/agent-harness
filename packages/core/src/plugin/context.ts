@@ -10,11 +10,12 @@
  */
 
 import type { AgentRegistry } from '../agents/registry';
-import type { ToolRegistry } from '../tools';
+import { ToolRegistry } from '../tools';
 import type { IntentRouter } from '../router/intent';
 import type { DagEngine, StepExecutor } from '../workflow/engine';
 import type { WorkflowDef } from '../workflow/types';
-import type { HttpA2ATransport, TaskEnvelope, TaskResult } from '../a2a/transport';
+import type { HttpA2ATransport } from '../a2a/transport';
+import type { TaskEnvelope, TaskResult } from '../a2a/types';
 import type { PluginManifest } from './manifest';
 
 /** 结构化日志接口（统一前缀，绝不上报密钥/token）。 */

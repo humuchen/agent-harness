@@ -270,6 +270,17 @@ export function registerInputRule(re: RegExp, reason: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// 自定义输出规则（与输入规则对称；供业务插件注册领域合规过滤，如医疗广告法）
+// ---------------------------------------------------------------------------
+
+const customOutputRules: { re: RegExp; reason: string }[] = [];
+
+/** 注册一条自定义输出校验规则（命中即拦截模型最终输出）。 */
+export function registerOutputRule(re: RegExp, reason: string): void {
+  customOutputRules.push({ re, reason });
+}
+
+// ---------------------------------------------------------------------------
 // PII 脱敏
 // ---------------------------------------------------------------------------
 
@@ -367,6 +378,9 @@ export function checkOutput(text: string, pol?: GuardrailPolicy): GuardrailResul
   }
   const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
+  for (const r of customOutputRules) {
+    if (r.re.test(text)) return { ok: false, reason: r.reason };
+  }
   return { ok: true };
 }
 

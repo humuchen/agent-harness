@@ -29,6 +29,7 @@ import {
   type ServerExtensionHost,
   type WebExtensionHost,
   type PluginEventListener,
+  type PluginEvent,
   getPluginToolRegistry,
 } from './context';
 import { getIntentRouter } from '../router/intent';
@@ -37,7 +38,7 @@ import { DagEngine } from '../workflow/engine';
 import type { StepExecutor } from '../workflow/engine';
 import type { WorkflowDef } from '../workflow/types';
 import { HttpA2ATransport } from '../a2a/transport';
-import type { TaskEnvelope, TaskResult } from '../a2a/transport';
+import type { TaskEnvelope, TaskResult } from '../a2a/types';
 import { structLog, emitAlert } from '../telemetry';
 
 /** 插件生命周期状态。 */
@@ -97,6 +98,22 @@ export class PluginLoader {
   /** 列出全部已安装插件。 */
   list(): PluginRecord[] {
     return [...this.plugins.values()];
+  }
+
+  /**
+   * 广播一条事件给所有插件事件订阅者（ctx.events.on）。
+   * 与 ctx.events.emit 的区别：只走监听器，不再调用 emitAlert，避免桥接场景下重复告警。
+   * 平台侧（runner）把核心 harness 运行事件经此方法桥接进插件总线，使插件能订阅
+   * run:start / run:end 等运行时事件（如客服对话记录），全程无业务耦合。
+   */
+  broadcast(e: PluginEvent): void {
+    for (const l of this.eventListeners) {
+      try {
+        void l(e);
+      } catch {
+        /* 单个监听器异常不影响其它 */
+      }
+    }
   }
 
   /** 取单个插件记录。 */
@@ -183,7 +200,13 @@ export class PluginLoader {
     if (rec.state === 'enabled') {
       const ctx = this.contexts.get(id);
       const mod = this.modules.get(id);
-      if (ctx && mod) await mod.onStop?.(ctx).catch(() => {});
+      if (ctx && mod) {
+        try {
+          await mod.onStop?.(ctx);
+        } catch {
+          /* 模块停用异常不阻断注销 */
+        }
+      }
       this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';
@@ -197,7 +220,13 @@ export class PluginLoader {
     if (rec.state === 'enabled') await this.disable(id);
     const ctx = this.contexts.get(id);
     const mod = this.modules.get(id);
-    if (ctx && mod) await mod.onUnload?.(ctx).catch(() => {});
+    if (ctx && mod) {
+      try {
+        await mod.onUnload?.(ctx);
+      } catch {
+        /* 卸载清理异常不阻断卸载 */
+      }
+    }
     this.modules.delete(id);
     this.contexts.delete(id);
     this.plugins.delete(id);
