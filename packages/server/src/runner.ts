@@ -33,6 +33,7 @@ import {
   type TenantContext,
   tenantSessionKey,
   policyEngine,
+  getPluginToolRegistry,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -267,6 +268,10 @@ export async function assembleAgent(
           )
       : undefined;
   tools.mergeFrom(mcpManager.liveRegistry(), allowMcp);
+
+  // P3：合并已启用插件的工具（命名空间 `${pluginId}__`），使插件能力进入运行。
+  // 插件工具经 core 的 getPluginToolRegistry 共享表注入，server 不感知任何具体插件。
+  tools.mergeFrom(getPluginToolRegistry());
 
   const notes: string[] = [];
   notes.push(

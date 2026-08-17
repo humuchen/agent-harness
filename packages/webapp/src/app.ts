@@ -1,9 +1,11 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, getToken, setToken } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
+import { pluginUIRegistry } from './plugin-ui-registry';
 
 type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat';
 
@@ -67,27 +69,51 @@ const chatShellCss = css`
 export class AhApp extends LitElement {
   static styles = [sharedStyles, chatShellCss];
 
-  @state() private tab: Tab = 'dashboard';
+  @state() private tab: string = 'dashboard';
   @state() private token = getToken();
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
   @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
+  /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。 */
+  @state() private pluginTabs: Array<{ id: string; label: string }> = [];
 
   connectedCallback() {
     super.connectedCallback();
     this.refreshState();
     this.theme = getTheme();
+    // 拉取插件视图（动态 Tab），失败不阻断主面板。
+    void this.loadPluginViews();
     // 监听子面板发来的刷新请求（如创建/销毁环境后）。
     this.addEventListener('ah-refresh', () => this.refreshState());
-    // 子面板（如 Dashboard）请求切换 Tab。
+    // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
-      if (t === 'run' || t === 'verify' || t === 'env' || t === 'mcp' || t === 'approvals' || t === 'observability' || t === 'dashboard') {
-        this.tab = t;
-      }
+      if (t) this.tab = t;
     });
+  }
+
+  /**
+   * 拉取服务端 /api/plugins 的插件视图列表，填充前端注册表与动态 Tab。
+   * 鉴权令牌（若有）随请求携带；失败仅告警，不阻断主面板渲染。
+   */
+  private async loadPluginViews() {
+    try {
+      const token = getToken();
+      const res = await fetch(
+        '/api/plugins',
+        token ? { headers: { authorization: `Bearer ${token}` } } : {}
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as { views?: Array<{ tabId: string; label: string; html: string }> };
+      const views = data.views ?? [];
+      pluginUIRegistry.reset();
+      for (const v of views) pluginUIRegistry.register(v);
+      this.pluginTabs = views.map((v) => ({ id: v.tabId, label: v.label }));
+    } catch {
+      /* 插件视图拉取失败不阻断主面板 */
+    }
   }
 
   private refreshState() {
@@ -170,6 +196,21 @@ export class AhApp extends LitElement {
               `
             )}
           </nav>
+          ${this.pluginTabs.length
+            ? html`<div class="nav-sep"></div>
+                ${this.pluginTabs.map(
+                  (t) => html`<button
+                    class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
+                    title=${t.label}
+                    @click=${() => {
+                      this.tab = t.id;
+                      this.closeDrawer();
+                    }}
+                  >
+                    <span class="nav-text">${t.label}</span>
+                  </button>`
+                )}`
+            : ''}
           <div class="nav-spacer"></div>
           <div class="sidebar-foot">
             <button
@@ -227,6 +268,9 @@ export class AhApp extends LitElement {
             ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
             ${this.tab === 'approvals' ? html`<ah-approvals></ah-approvals>` : ''}
             ${this.tab === 'observability' ? html`<ah-observability></ah-observability>` : ''}
+            ${this.pluginTabs.some((t) => t.id === this.tab)
+              ? html`<div class="plugin-view">${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}</div>`
+              : ''}
           </main>
         </div>
       </div>

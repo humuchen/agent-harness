@@ -11,7 +11,7 @@
  * - `transport`/`endpoint` 直接复用 AgentCard 语义，远端行业 agent 天然支持入驻。
  */
 
-import type { AgentCapability, AgentTransport } from '../agents/types';
+import type { AgentCapability, AgentTransport, AgentAssembly } from '../agents/types';
 
 /** 插件清单。 */
 export interface PluginManifest {
@@ -44,4 +44,9 @@ export interface PluginManifest {
    * 远端/不可信插件应声明 'os' 或 'container'。
    */
   isolation?: 'none' | 'local' | 'os' | 'container';
+  /**
+   * 装配配方（可选，复用 AgentAssembly）：把系统提示词 / 技能 / MCP / 内置工具面收窄到本插件 agent。
+   * 经 loader 的 toAgentCard 透传到 AgentCard.assembly，使插件 agent 走「领域 harness」而非万能 harness。
+   */
+  assembly?: AgentAssembly;
 }

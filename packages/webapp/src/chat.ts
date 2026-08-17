@@ -5,7 +5,13 @@ import { ref, createRef } from 'lit/directives/ref.js';
 import { client } from './api';
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
-import type { ChatSession, RunMode, StreamEvent, TraceNode, TraceKind } from '@agent-harness/client';
+import type {
+  ChatSession,
+  RunMode,
+  StreamEvent,
+  TraceNode,
+  TraceKind
+} from '@agent-harness/client';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -31,7 +37,8 @@ interface ChatMsg {
 }
 
 /** 检索/搜索类工具名特征：命中则归类为 retrieval 节点，结果以「检索内容」突出展示。 */
-const RETRIEVAL_RE = /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
+const RETRIEVAL_RE =
+  /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
 function isRetrievalTool(name: string): boolean {
   return RETRIEVAL_RE.test(name);
 }
@@ -114,9 +121,9 @@ export class AhChat extends LitElement {
         margin-bottom: 10px;
         background: var(--ah-surface-3, var(--ah-surface-2));
         transition: background 0.15s ease;
-        &::last-child {
-          margin-bottom: 0;
-        }
+      }
+      .session::last-child {
+        margin-bottom: 0;
       }
       .session:hover {
         background: var(--ah-surface-2);
@@ -196,8 +203,8 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-2);
         cursor: pointer;
         user-select: none;
-        transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease,
-          box-shadow 0.15s ease;
+        transition: color 0.15s ease, border-color 0.15s ease,
+          background 0.15s ease, box-shadow 0.15s ease;
       }
       .toggle:hover {
         border-color: var(--ah-accent, #2997ff);
@@ -211,8 +218,13 @@ export class AhChat extends LitElement {
       .toggle.on {
         color: var(--ah-accent, #2997ff);
         border-color: var(--ah-accent, #2997ff);
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 12%, transparent);
-        box-shadow: 0 0 0 1px color-mix(in srgb, var(--ah-accent, #2997ff) 28%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 12%,
+          transparent
+        );
+        box-shadow: 0 0 0 1px
+          color-mix(in srgb, var(--ah-accent, #2997ff) 28%, transparent);
       }
       .model-input {
         width: 180px;
@@ -295,7 +307,11 @@ export class AhChat extends LitElement {
         max-width: 760px;
       }
       .msg.user .bubble {
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 14%, var(--ah-surface-2));
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 14%,
+          var(--ah-surface-2)
+        );
         border-top-right-radius: 4px;
       }
       .msg.assistant.error .bubble {
@@ -314,7 +330,11 @@ export class AhChat extends LitElement {
         border: 1px solid var(--ah-border);
         border-left: 3px solid var(--ah-accent, #2997ff);
         border-radius: 10px;
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 7%, var(--ah-surface-2));
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 7%,
+          var(--ah-surface-2)
+        );
         overflow: hidden;
       }
       .reasoning summary {
@@ -364,7 +384,11 @@ export class AhChat extends LitElement {
         left: 0;
         right: 0;
         height: 32px;
-        background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--ah-surface-2) 80%, transparent));
+        background: linear-gradient(
+          to bottom,
+          transparent,
+          color-mix(in srgb, var(--ah-surface-2) 80%, transparent)
+        );
         pointer-events: none;
       }
       /* 工具摘要区：在深度思考框内统一展示所有工具调用 */
@@ -417,11 +441,19 @@ export class AhChat extends LitElement {
         justify-content: center;
         font-size: 10px;
         flex-shrink: 0;
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 12%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 12%,
+          transparent
+        );
         color: var(--ah-accent, #2997ff);
       }
       .inner-tool.errored .itag {
-        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 12%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-danger, #e24b4a) 12%,
+          transparent
+        );
         color: var(--ah-danger, #e24b4a);
       }
       .inner-tool .iname {
@@ -463,7 +495,9 @@ export class AhChat extends LitElement {
         animation-delay: 0.4s;
       }
       @keyframes blinkdot {
-        0%, 80%, 100% {
+        0%,
+        80%,
+        100% {
           opacity: 0.25;
           transform: translateY(0);
         }
@@ -547,7 +581,11 @@ export class AhChat extends LitElement {
         border: 1px solid var(--ah-border);
         border-left: 3px solid var(--ah-accent, #2997ff);
         border-radius: 10px;
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 5%, var(--ah-surface-2));
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 5%,
+          var(--ah-surface-2)
+        );
         overflow: hidden;
       }
       .trace > summary {
@@ -621,11 +659,19 @@ export class AhChat extends LitElement {
         flex: 0 0 auto;
       }
       .tbadge.err {
-        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 16%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-danger, #e24b4a) 16%,
+          transparent
+        );
         color: var(--ah-danger, #e24b4a);
       }
       .tbadge.pend {
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 16%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 16%,
+          transparent
+        );
         color: var(--ah-accent, #2997ff);
       }
       .tchips {
@@ -678,7 +724,11 @@ export class AhChat extends LitElement {
       }
       .tresult.retrieval {
         border-left: 3px solid var(--ah-success, #34c759);
-        background: color-mix(in srgb, var(--ah-success, #34c759) 8%, var(--ah-surface-2));
+        background: color-mix(
+          in srgb,
+          var(--ah-success, #34c759) 8%,
+          var(--ah-surface-2)
+        );
       }
       .tres-title {
         font-size: 10.5px;
@@ -691,16 +741,32 @@ export class AhChat extends LitElement {
         margin-top: 2px;
       }
       /* 节点类型着色（圆点 + 标签前缀色） */
-      .tnode.kind-step > summary .tdot { background: var(--ah-accent, #2997ff); }
-      .tnode.kind-llm > summary .tdot { background: #9b6dff; }
-      .tnode.kind-tool > summary .tdot { background: var(--ah-text-muted); }
-      .tnode.kind-retrieval > summary .tdot { background: var(--ah-success, #34c759); }
-      .tnode.kind-cost > summary .tdot { background: #f0a020; }
-      .tnode.kind-verify > summary .tdot { background: var(--ah-success, #34c759); }
+      .tnode.kind-step > summary .tdot {
+        background: var(--ah-accent, #2997ff);
+      }
+      .tnode.kind-llm > summary .tdot {
+        background: #9b6dff;
+      }
+      .tnode.kind-tool > summary .tdot {
+        background: var(--ah-text-muted);
+      }
+      .tnode.kind-retrieval > summary .tdot {
+        background: var(--ah-success, #34c759);
+      }
+      .tnode.kind-cost > summary .tdot {
+        background: #f0a020;
+      }
+      .tnode.kind-verify > summary .tdot {
+        background: var(--ah-success, #34c759);
+      }
       .tnode.kind-guardrail > summary .tdot,
       .tnode.kind-budget > summary .tdot,
-      .tnode.kind-error > summary .tdot { background: var(--ah-danger, #e24b4a); }
-      .tnode.status-error > summary .tlabel { color: var(--ah-danger, #e24b4a); }
+      .tnode.kind-error > summary .tdot {
+        background: var(--ah-danger, #e24b4a);
+      }
+      .tnode.status-error > summary .tlabel {
+        color: var(--ah-danger, #e24b4a);
+      }
 
       /* ----------------------- 关键信息 (insights) ----------------------- */
       .insights {
@@ -768,7 +834,11 @@ export class AhChat extends LitElement {
         border: 1px solid var(--ah-border);
         border-left: 3px solid var(--ah-success, #34c759);
         border-radius: 8px;
-        background: color-mix(in srgb, var(--ah-success, #34c759) 6%, var(--ah-surface-1));
+        background: color-mix(
+          in srgb,
+          var(--ah-success, #34c759) 6%,
+          var(--ah-surface-1)
+        );
         padding: 8px 10px;
         margin-bottom: 8px;
       }
@@ -796,13 +866,23 @@ export class AhChat extends LitElement {
         border: 1px solid var(--ah-border);
         border-left: 3px solid var(--ah-accent, #2997ff);
         border-radius: 10px;
-        background: color-mix(in srgb, var(--ah-accent, #2997ff) 5%, var(--ah-surface-2));
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 5%,
+          var(--ah-surface-2)
+        );
         overflow: hidden;
         animation: think-in 0.28s ease;
       }
       @keyframes think-in {
-        from { opacity: 0; transform: translateY(-4px); }
-        to { opacity: 1; transform: none; }
+        from {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
       }
       .think-head {
         display: flex;
@@ -962,8 +1042,13 @@ export class AhChat extends LitElement {
         animation: replying-pulse 1.5s ease-in-out infinite;
       }
       @keyframes replying-pulse {
-        0%, 100% { opacity: 0.5; }
-        50% { opacity: 1; }
+        0%,
+        100% {
+          opacity: 0.5;
+        }
+        50% {
+          opacity: 1;
+        }
       }
       /* 通用跳动圆点（思考中 / 模型正在回复 共用 blinkdot 动效） */
       .dots {
@@ -1229,13 +1314,20 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-2);
         padding: 10px 8px 10px 14px;
         /* 悬浮阴影 + 聚焦抬升：强化「卡片浮于对话区」的层次感 */
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.12);
-        transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22),
+          0 4px 12px rgba(0, 0, 0, 0.12);
+        transition: box-shadow 0.2s ease, border-color 0.2s ease,
+          transform 0.2s ease;
       }
       .composer:focus-within {
-        border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 45%, var(--ah-border));
+        border-color: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 45%,
+          var(--ah-border)
+        );
         box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2),
-          0 0 0 3px color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
+          0 0 0 3px
+            color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
         transform: translateY(-1px);
       }
       .composer textarea {
@@ -1307,7 +1399,7 @@ export class AhChat extends LitElement {
         opacity: 0.5;
         cursor: not-allowed;
       }
-    `,
+    `
   ];
 
   @state() sessions: SessionView[] = [];
@@ -1389,20 +1481,38 @@ export class AhChat extends LitElement {
 
   /** 重置某会话的调用链路追踪瞬态状态（防御上轮残留泄漏到本轮）。 */
   private resetTrace(sid: string) {
-    this.traces[sid] = { root: null, parent: null, llm: null, lastTool: null, seq: 0 };
+    this.traces[sid] = {
+      root: null,
+      parent: null,
+      llm: null,
+      lastTool: null,
+      seq: 0
+    };
   }
   private traceCtx(sid: string): TraceCtx {
-    return this.traces[sid] ?? (this.traces[sid] = { root: null, parent: null, llm: null, lastTool: null, seq: 0 });
+    return (
+      this.traces[sid] ??
+      (this.traces[sid] = {
+        root: null,
+        parent: null,
+        llm: null,
+        lastTool: null,
+        seq: 0
+      })
+    );
   }
 
   async connectedCallback() {
     super.connectedCallback();
     try {
-      const [list, state] = await Promise.all([client.listChatSessions(), client.getState()]);
+      const [list, state] = await Promise.all([
+        client.listChatSessions(),
+        client.getState()
+      ]);
       this.sessions = list.map((s: ChatSession) => ({
         id: s.id,
         title: s.title,
-        updatedAt: s.updatedAt,
+        updatedAt: s.updatedAt
       }));
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
     } catch {
@@ -1427,7 +1537,9 @@ export class AhChat extends LitElement {
    * 方便用户自由回看上面的推理文本。
    */
   private scrollThinkToBottom() {
-    const tb = this.renderRoot.querySelector('.think.live .think-body') as HTMLElement | null;
+    const tb = this.renderRoot.querySelector(
+      '.think.live .think-body'
+    ) as HTMLElement | null;
     if (tb) tb.scrollTop = tb.scrollHeight;
   }
 
@@ -1460,9 +1572,14 @@ export class AhChat extends LitElement {
           // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
           reasoning: m.reasoning,
           tools: m.tools
-            ? m.tools.map((t) => ({ name: t.name, args: t.args ?? '', result: t.result, errored: t.errored }))
+            ? m.tools.map((t) => ({
+                name: t.name,
+                args: t.args ?? '',
+                result: t.result,
+                errored: t.errored
+              }))
             : undefined,
-          trace: m.trace ? m.trace : undefined,
+          trace: m.trace ? m.trace : undefined
         }));
       } catch {
         this.threads[id] = [];
@@ -1477,7 +1594,9 @@ export class AhChat extends LitElement {
     if (!title || !title.trim()) return;
     try {
       await client.renameChatSession(id, title.trim());
-      this.sessions = this.sessions.map((s) => (s.id === id ? { ...s, title: title.trim() } : s));
+      this.sessions = this.sessions.map((s) =>
+        s.id === id ? { ...s, title: title.trim() } : s
+      );
     } catch (e: any) {
       this.error = String(e?.message ?? e);
     }
@@ -1502,7 +1621,7 @@ export class AhChat extends LitElement {
     this.activeId = s.id;
     this.sessions = [
       { id: s.id, title: s.title, updatedAt: s.updatedAt },
-      ...this.sessions,
+      ...this.sessions
     ];
     return s.id;
   }
@@ -1540,7 +1659,7 @@ export class AhChat extends LitElement {
           prompt,
           model: this.model || undefined,
           sessionId,
-          chatSessionId: sessionId,
+          chatSessionId: sessionId
         },
         { signal: ac.signal }
       )) {
@@ -1549,7 +1668,8 @@ export class AhChat extends LitElement {
     } catch (e: any) {
       this.patchSession(sessionId, {
         error: true,
-        content: (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`,
+        content:
+          (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
       });
     } finally {
       // 先停掉 interval 定时器，再按打字节奏把剩余缓冲揭示完（drain），
@@ -1631,7 +1751,7 @@ export class AhChat extends LitElement {
         const tools = [...(c.tools ?? [])];
         tools.push({
           name: (ev as any).call?.name ?? 'unknown',
-          args: safeJson((ev as any).call?.arguments),
+          args: safeJson((ev as any).call?.arguments)
         });
         patch({ tools });
         break;
@@ -1650,7 +1770,7 @@ export class AhChat extends LitElement {
               tools[i] = {
                 ...tools[i],
                 result: String((ev as any).result ?? ''),
-                errored: Boolean((ev as any).errored),
+                errored: Boolean((ev as any).errored)
               };
               break;
             }
@@ -1665,9 +1785,9 @@ export class AhChat extends LitElement {
           patch({
             content:
               c.content +
-              `\n\n> ⚠️ 护栏拦截（${escapeHtml(String((ev as any).phase ?? ''))}）：${escapeHtml(
-                String((ev as any).reason ?? '')
-              )}`,
+              `\n\n> ⚠️ 护栏拦截（${escapeHtml(
+                String((ev as any).phase ?? '')
+              )}）：${escapeHtml(String((ev as any).reason ?? ''))}`
           });
         break;
       }
@@ -1684,7 +1804,12 @@ export class AhChat extends LitElement {
       }
       case 'error': {
         const c = cur();
-        if (c) patch({ error: true, content: c.content || `⚠️ ${escapeHtml(String((ev as any).message ?? ev))}` });
+        if (c)
+          patch({
+            error: true,
+            content:
+              c.content || `⚠️ ${escapeHtml(String((ev as any).message ?? ev))}`
+          });
         break;
       }
       default:
@@ -1698,7 +1823,13 @@ export class AhChat extends LitElement {
   private ensureTraceRoot(sid: string): TraceNode {
     const tc = this.traceCtx(sid);
     if (!tc.root) {
-      tc.root = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
+      tc.root = {
+        id: 't0',
+        kind: 'run',
+        label: '运行',
+        status: 'ok',
+        children: []
+      };
       tc.parent = tc.root;
     }
     return tc.root;
@@ -1718,7 +1849,14 @@ export class AhChat extends LitElement {
       status: TraceNode['status'] = 'ok',
       extra: Partial<TraceNode> = {}
     ): TraceNode => {
-      const n: TraceNode = { id: `t${++tc.seq}`, kind, label, status, children: [], ...extra };
+      const n: TraceNode = {
+        id: `t${++tc.seq}`,
+        kind,
+        label,
+        status,
+        children: [],
+        ...extra
+      };
       parent.children.push(n);
       return n;
     };
@@ -1729,7 +1867,7 @@ export class AhChat extends LitElement {
           ...(r.meta ?? {}),
           ...(ev.model ? { model: String(ev.model) } : {}),
           ...(ev.agentId ? { agent: String(ev.agentId) } : {}),
-          ...(ev.mode ? { mode: String(ev.mode) } : {}),
+          ...(ev.mode ? { mode: String(ev.mode) } : {})
         };
         r.label = ev.model ? `运行 · ${ev.model}` : '运行';
         break;
@@ -1738,7 +1876,7 @@ export class AhChat extends LitElement {
         const r = this.ensureTraceRoot(sid);
         tc.parent = r;
         const step = mk(r, 'step', `第 ${ev.step} 步`, 'ok', {
-          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` },
+          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` }
         });
         tc.parent = step;
         tc.llm = null;
@@ -1751,22 +1889,27 @@ export class AhChat extends LitElement {
         tc.llm = mk(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
             messages: `消息 ${ev.messageCount ?? '?'}`,
-            tools: `工具 ${ev.toolCount ?? '?'}`,
-          },
+            tools: `工具 ${ev.toolCount ?? '?'}`
+          }
         });
         tc.lastTool = null;
         break;
       }
       case 'llm:reasoning': {
         if (tc.llm && typeof ev.delta === 'string') {
-          const n = (tc.llm.meta?.reasoningChars ? Number(tc.llm.meta.reasoningChars) : 0) + ev.delta.length;
+          const n =
+            (tc.llm.meta?.reasoningChars
+              ? Number(tc.llm.meta.reasoningChars)
+              : 0) + ev.delta.length;
           tc.llm.meta = { ...(tc.llm.meta ?? {}), reasoningChars: String(n) };
         }
         break;
       }
       case 'llm:token': {
         if (tc.llm && typeof ev.delta === 'string') {
-          const n = (tc.llm.meta?.tokenChars ? Number(tc.llm.meta.tokenChars) : 0) + ev.delta.length;
+          const n =
+            (tc.llm.meta?.tokenChars ? Number(tc.llm.meta.tokenChars) : 0) +
+            ev.delta.length;
           tc.llm.meta = { ...(tc.llm.meta ?? {}), tokenChars: String(n) };
         }
         break;
@@ -1775,16 +1918,31 @@ export class AhChat extends LitElement {
         if (!tc.llm || !ev.call) break;
         const name = String(ev.call.name ?? 'tool');
         const retrieval = isRetrievalTool(name);
-        tc.lastTool = mk(tc.llm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
-          detail: typeof ev.call.arguments === 'string' ? ev.call.arguments : JSON.stringify(ev.call.arguments ?? {}),
-        });
+        tc.lastTool = mk(
+          tc.llm,
+          retrieval ? 'retrieval' : 'tool',
+          retrieval ? `检索 · ${name}` : name,
+          'pending',
+          {
+            detail:
+              typeof ev.call.arguments === 'string'
+                ? ev.call.arguments
+                : JSON.stringify(ev.call.arguments ?? {})
+          }
+        );
         break;
       }
       case 'tool:result': {
         if (tc.lastTool) {
-          tc.lastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
+          tc.lastTool.result =
+            typeof ev.result === 'string'
+              ? ev.result
+              : JSON.stringify(ev.result ?? {});
           tc.lastTool.status = ev.errored ? 'error' : 'ok';
-          tc.lastTool.meta = { ...(tc.lastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
+          tc.lastTool.meta = {
+            ...(tc.lastTool.meta ?? {}),
+            status: ev.errored ? '失败' : '成功'
+          };
         }
         break;
       }
@@ -1793,36 +1951,48 @@ export class AhChat extends LitElement {
         const parent = tc.parent ?? tc.root!;
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
-            tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
-            cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
-            ...(ev.model ? { model: String(ev.model) } : {}),
-          },
+            tokens: String(
+              ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'
+            ),
+            cost:
+              ev.cumulativeCost != null
+                ? `$${Number(ev.cumulativeCost).toFixed(4)}`
+                : '?',
+            ...(ev.model ? { model: String(ev.model) } : {})
+          }
         });
         break;
       }
       case 'verify:result': {
         this.ensureTraceRoot(sid);
         mk(tc.root!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
-          meta: { score: String(ev.score ?? '?'), passed: ev.passed ? '通过' : '未通过' },
-          result: (ev.reasons ?? []).join('\n'),
+          meta: {
+            score: String(ev.score ?? '?'),
+            passed: ev.passed ? '通过' : '未通过'
+          },
+          result: (ev.reasons ?? []).join('\n')
         });
         break;
       }
       case 'guardrail:blocked': {
         this.ensureTraceRoot(sid);
-        mk(tc.root!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', { detail: String(ev.reason ?? '') });
+        mk(tc.root!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', {
+          detail: String(ev.reason ?? '')
+        });
         break;
       }
       case 'budget:exceeded': {
         this.ensureTraceRoot(sid);
         mk(tc.root!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
-          meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') },
+          meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') }
         });
         break;
       }
       case 'error': {
         this.ensureTraceRoot(sid);
-        mk(tc.root!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
+        mk(tc.root!, 'error', '运行错误', 'error', {
+          detail: String(ev.message ?? '')
+        });
         break;
       }
       default:
@@ -1872,8 +2042,12 @@ export class AhChat extends LitElement {
     if (!buf) return;
     const c = this.curSession(sid);
     if (c) {
-      if (buf.content) this.patchSession(sid, { content: c.content + buf.content });
-      if (buf.reasoning) this.patchSession(sid, { reasoning: (c.reasoning ?? '') + buf.reasoning });
+      if (buf.content)
+        this.patchSession(sid, { content: c.content + buf.content });
+      if (buf.reasoning)
+        this.patchSession(sid, {
+          reasoning: (c.reasoning ?? '') + buf.reasoning
+        });
     }
     buf.content = '';
     buf.reasoning = '';
@@ -1960,7 +2134,10 @@ export class AhChat extends LitElement {
       this.messages[sIdx]?.id === id &&
       !c?.content;
     if (isThinking) return;
-    this.thinkCollapsed = { ...this.thinkCollapsed, [k]: !this.thinkCollapsed[k] };
+    this.thinkCollapsed = {
+      ...this.thinkCollapsed,
+      [k]: !this.thinkCollapsed[k]
+    };
   }
 
   /** 切换移动端侧栏抽屉（≤900px 生效）。 */
@@ -2000,8 +2177,12 @@ export class AhChat extends LitElement {
       <div class="msg assistant ${m.error ? 'error' : ''}">
         <div class="avatar">A</div>
         <div class="bubble">
-          ${showThinking && this.deepThink ? this.renderThinking(m, isThinking) : nothing}
-          ${showThinking && this.deepThink && (m.content || isStreamingAssistant)
+          ${showThinking && this.deepThink
+            ? this.renderThinking(m, isThinking)
+            : nothing}
+          ${showThinking &&
+          this.deepThink &&
+          (m.content || isStreamingAssistant)
             ? html`<div class="sep"><span>回答</span></div>`
             : nothing}
           ${this.renderAnswer(m, isAnswering, isStreamingAssistant)}
@@ -2017,29 +2198,58 @@ export class AhChat extends LitElement {
    * 流式推理进行中时，标题显示「思考中…」动效、正文末尾显示闪烁光标。
    */
   private renderThinking(m: ChatMsg, isThinking: boolean): TemplateResult {
-    const parsed = m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
+    const parsed =
+      m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
     const collapsed = !!this.thinkCollapsed[String(m.id)];
     return html`
-      <div class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}">
-        <div class="think-head" @click=${() => this.toggleThink(m.id)} title="点击折叠 / 展开">
-          <svg class="think-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <div
+        class="think ${isThinking ? 'live' : ''} ${collapsed
+          ? 'collapsed'
+          : ''}"
+      >
+        <div
+          class="think-head"
+          @click=${() => this.toggleThink(m.id)}
+          title="点击折叠 / 展开"
+        >
+          <svg
+            class="think-ico"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d="M9 18h6M10 21h4" />
-            <path d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z" />
+            <path
+              d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
+            />
           </svg>
           <span class="think-title">深度思考</span>
           ${isThinking
-            ? html`<span class="think-status">思考中<span class="dots"><i></i><i></i><i></i></span></span>`
+            ? html`<span class="think-status"
+                >思考中<span class="dots"><i></i><i></i><i></i></span
+              ></span>`
             : nothing}
           ${collapsed && m.reasoning
             ? html`<span class="think-count">${m.reasoning.length} 字</span>`
             : nothing}
-          <svg class="think-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+          <svg
+            class="think-chev"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
         </div>
         <div class="think-body">
-          ${
-            parsed
-              ? html`
-                ${parsed.vars.length
+          ${parsed
+            ? html` ${parsed.vars.length
                   ? html`<div class="dvars">
                       <div class="dvars-title">关键变量</div>
                       <div class="dvars-grid">
@@ -2057,8 +2267,9 @@ export class AhChat extends LitElement {
                     ? unsafeHTML(toRichHtml(parsed.text))
                     : html`<span class="muted">（暂无推理内容）</span>`}
                 </div>`
-              : html`<div class="think-text muted">${isThinking ? '模型正在思考…' : '（模型未返回推理内容）'}</div>`
-          }
+            : html`<div class="think-text muted">
+                ${isThinking ? '模型正在思考…' : '（模型未返回推理内容）'}
+              </div>`}
           ${isThinking ? html`<span class="caret"></span>` : nothing}
         </div>
       </div>
@@ -2066,15 +2277,23 @@ export class AhChat extends LitElement {
   }
 
   /** 渲染最终回答区（合并视图·底部）：随 llm:token 增量逐字显现；流式进行中显示「模型正在回复…」动效。 */
-  private renderAnswer(m: ChatMsg, isAnswering: boolean, isStreaming: boolean): TemplateResult {
+  private renderAnswer(
+    m: ChatMsg,
+    isAnswering: boolean,
+    isStreaming: boolean
+  ): TemplateResult {
     return html`
       <div class="answer">
         ${m.content && m.content.trim()
-          ? html`<div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>`
+          ? html`<div class="msg-text">
+              ${unsafeHTML(toRichHtml(m.content))}
+            </div>`
           : nothing}
         ${isAnswering ? html`<span class="caret"></span>` : nothing}
         ${isStreaming
-          ? html`<div class="replying">模型正在回复<span class="dots"><i></i><i></i><i></i></span></div>`
+          ? html`<div class="replying">
+              模型正在回复<span class="dots"><i></i><i></i><i></i></span>
+            </div>`
           : nothing}
         ${!m.content && !isStreaming
           ? html`<div class="msg-text placeholder">等待响应…</div>`
@@ -2093,15 +2312,31 @@ export class AhChat extends LitElement {
         ${hasTrace
           ? html`<details class="extra">
               <summary>
-                <svg class="ticon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="6" cy="6" r="2.4" /><circle cx="18" cy="6" r="2.4" /><circle cx="12" cy="18" r="2.4" />
+                <svg
+                  class="ticon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <circle cx="6" cy="6" r="2.4" />
+                  <circle cx="18" cy="6" r="2.4" />
+                  <circle cx="12" cy="18" r="2.4" />
                   <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
                 </svg>
                 <span>调用链路</span>
-                <span class="tcount">${this.countTraceNodes(m.trace!)} 节点</span>
-                ${isStreaming ? html`<span class="dots"><i></i><i></i><i></i></span>` : nothing}
+                <span class="tcount"
+                  >${this.countTraceNodes(m.trace!)} 节点</span
+                >
+                ${isStreaming
+                  ? html`<span class="dots"><i></i><i></i><i></i></span>`
+                  : nothing}
               </summary>
-              <div class="trace-body">${m.trace!.map((n) => this.renderTraceNode(n))}</div>
+              <div class="trace-body">
+                ${m.trace!.map((n) => this.renderTraceNode(n))}
+              </div>
             </details>`
           : nothing}
         ${insights
@@ -2117,10 +2352,11 @@ export class AhChat extends LitElement {
   /** 统计追踪树节点总数（用于「调用链路」标题计数）。 */
   private countTraceNodes(trace: TraceNode[]): number {
     let n = 0;
-    const walk = (ns: TraceNode[]) => ns.forEach((x) => {
-      n++;
-      walk(x.children);
-    });
+    const walk = (ns: TraceNode[]) =>
+      ns.forEach((x) => {
+        n++;
+        walk(x.children);
+      });
     walk(trace);
     return n;
   }
@@ -2131,28 +2367,47 @@ export class AhChat extends LitElement {
     const hasResult = n.result != null && n.result.trim().length > 0;
     const isRetrieval = n.kind === 'retrieval';
     // run/step/llm 默认展开，叶子节点（工具/检索/成本）默认收起。
-    const defaultOpen = n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
+    const defaultOpen =
+      n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
     return html`
-      <details class="tnode kind-${n.kind} status-${n.status}" ?open=${defaultOpen}>
+      <details
+        class="tnode kind-${n.kind} status-${n.status}"
+        ?open=${defaultOpen}
+      >
         <summary class="tnode-head">
           <span class="tdot"></span>
           <span class="tlabel">${escapeHtml(n.label)}</span>
-          ${n.status === 'error' ? html`<span class="tbadge err">失败</span>` : nothing}
-          ${n.status === 'pending' ? html`<span class="tbadge pend">进行中</span>` : nothing}
+          ${n.status === 'error'
+            ? html`<span class="tbadge err">失败</span>`
+            : nothing}
+          ${n.status === 'pending'
+            ? html`<span class="tbadge pend">进行中</span>`
+            : nothing}
           ${n.meta
-            ? html`<span class="tchips">${Object.entries(n.meta).map(
-                ([k, v]) => html`<span class="tchip"><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span>`
-              )}</span>`
+            ? html`<span class="tchips"
+                >${Object.entries(n.meta).map(
+                  ([k, v]) =>
+                    html`<span class="tchip"
+                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                    >`
+                )}</span
+              >`
             : nothing}
         </summary>
-        ${hasDetail ? html`<pre class="tdetail">${formatToolJson(n.detail!)}</pre>` : nothing}
+        ${hasDetail
+          ? html`<pre class="tdetail">${formatToolJson(n.detail!)}</pre>`
+          : nothing}
         ${hasResult
           ? html`<div class="tresult ${isRetrieval ? 'retrieval' : ''}">
-              ${isRetrieval ? html`<div class="tres-title">检索内容</div>` : nothing}${formatToolJson(n.result!)}
+              ${isRetrieval
+                ? html`<div class="tres-title">检索内容</div>`
+                : nothing}${formatToolJson(n.result!)}
             </div>`
           : nothing}
         ${n.children.length
-          ? html`<div class="tchildren">${n.children.map((c) => this.renderTraceNode(c))}</div>`
+          ? html`<div class="tchildren">
+              ${n.children.map((c) => this.renderTraceNode(c))}
+            </div>`
           : nothing}
       </details>
     `;
@@ -2182,7 +2437,10 @@ export class AhChat extends LitElement {
       toolCount: tools.length + retrievals.length,
       costTokens: cost?.meta?.tokens,
       costValue: cost?.meta?.cost,
-      retrievals: retrievals.map((n) => ({ label: n.label, result: n.result ?? '' })),
+      retrievals: retrievals.map((n) => ({
+        label: n.label,
+        result: n.result ?? ''
+      }))
     };
   }
 
@@ -2204,7 +2462,8 @@ export class AhChat extends LitElement {
       <div class="ins-grid">
         ${stats.map(
           ([k, v]) => html`<div class="ins-item">
-            <span class="ins-k">${escapeHtml(k)}</span><span class="ins-v">${escapeHtml(v)}</span>
+            <span class="ins-k">${escapeHtml(k)}</span
+            ><span class="ins-v">${escapeHtml(v)}</span>
           </div>`
         )}
       </div>
@@ -2227,11 +2486,15 @@ export class AhChat extends LitElement {
     return html`
       <div class="sidebar">
         <div class="side-head">
-          <button class="primary new-btn" @click=${() => this.newChat()}>＋ 新对话</button>
+          <button class="primary new-btn" @click=${() => this.newChat()}>
+            ＋ 新对话
+          </button>
         </div>
         <div class="session-list">
           ${this.sessions.length === 0
-            ? html`<p class="muted" style="padding:8px 10px">暂无会话，发送消息即自动创建。</p>`
+            ? html`<p class="muted" style="padding:8px 10px">
+                暂无会话，发送消息即自动创建。
+              </p>`
             : this.sessions.map(
                 (s) => html`
                   <div
@@ -2241,8 +2504,26 @@ export class AhChat extends LitElement {
                     <span class="dot"></span>
                     <span class="title">${escapeHtml(s.title)}</span>
                     <span class="acts">
-                      <button class="icon-btn" title="重命名" @click=${(e: Event) => { e.stopPropagation(); this.renameSession(s.id); }}>✎</button>
-                      <button class="icon-btn" title="删除" @click=${(e: Event) => { e.stopPropagation(); this.deleteSession(s.id); }}>🗑</button>
+                      <button
+                        class="icon-btn"
+                        title="重命名"
+                        @click=${(e: Event) => {
+                          e.stopPropagation();
+                          this.renameSession(s.id);
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        class="icon-btn"
+                        title="删除"
+                        @click=${(e: Event) => {
+                          e.stopPropagation();
+                          this.deleteSession(s.id);
+                        }}
+                      >
+                        🗑
+                      </button>
                     </span>
                   </div>
                 `
@@ -2252,26 +2533,59 @@ export class AhChat extends LitElement {
 
       <div class="main">
         <div class="chat-head">
-          <button class="menu-btn" @click=${() => this.toggleSidebar()} title="菜单 / 会话列表">☰</button>
-          <span class="title">${active ? escapeHtml(active.title) : '新对话'}</span>
+          <button
+            class="menu-btn"
+            @click=${() => this.toggleSidebar()}
+            title="菜单 / 会话列表"
+          >
+            ☰
+          </button>
+          <span class="title"
+            >${active ? escapeHtml(active.title) : '新对话'}</span
+          >
           <span class="spacer"></span>
           <input
             class="model-input"
             placeholder="模型（留空用服务端默认）"
             .value=${this.model}
-            @input=${(e: Event) => (this.model = (e.target as HTMLInputElement).value)}
+            @input=${(e: Event) =>
+              (this.model = (e.target as HTMLInputElement).value)}
           />
           <span
             class="toggle ${this.deepThink ? 'on' : ''}"
             title="显示 / 隐藏深度思考区"
             @click=${() => (this.deepThink = !this.deepThink)}
-            ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4" /><path d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z" /></svg>深度思考</span
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M9 18h6M10 21h4" />
+              <path
+                d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
+              /></svg
+            >深度思考</span
           >
           <span
             class="toggle ${this.web ? 'on' : ''}"
             title="UI 占位：暂未接入后端联网开关"
             @click=${() => (this.web = !this.web)}
-            ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18" /></svg>联网搜索</span
+            ><svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path
+                d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"
+              /></svg
+            >联网搜索</span
           >
         </div>
 
@@ -2280,10 +2594,15 @@ export class AhChat extends LitElement {
             ? html`
                 <div class="empty">
                   <h1>有什么可以帮你的？</h1>
-                  <p>基于 agent-harness 的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。</p>
+                  <p>
+                    基于 agent-harness
+                    的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+                  </p>
                 </div>
               `
-            : html`<div class="thread">${this.messages.map((m) => this.renderMessage(m))}</div>`}
+            : html`<div class="thread">
+                ${this.messages.map((m) => this.renderMessage(m))}
+              </div>`}
         </div>
 
         <div class="composer-wrap">
@@ -2297,8 +2616,21 @@ export class AhChat extends LitElement {
               @keydown=${this.onKey}
             ></textarea>
             ${this.streaming[this.activeId] === true
-              ? html`<button class="send" title="停止" @click=${() => this.stop()}>■</button>`
-              : html`<button class="send" title="发送" ?disabled=${!this.input.trim()} @click=${() => this.send()}>↑</button>`}
+              ? html`<button
+                  class="send"
+                  title="停止"
+                  @click=${() => this.stop()}
+                >
+                  ■
+                </button>`
+              : html`<button
+                  class="send"
+                  title="发送"
+                  ?disabled=${!this.input.trim()}
+                  @click=${() => this.send()}
+                >
+                  ↑
+                </button>`}
           </div>
           <!-- <div class="hint">
             模式：${this.mode} ·
@@ -2307,7 +2639,10 @@ export class AhChat extends LitElement {
         </div>
       </div>
 
-      <div class="scrim ${this.sidebarOpen ? 'show' : ''}" @click=${() => (this.sidebarOpen = false)}></div>
+      <div
+        class="scrim ${this.sidebarOpen ? 'show' : ''}"
+        @click=${() => (this.sidebarOpen = false)}
+      ></div>
     `;
   }
 }
@@ -2335,9 +2670,15 @@ function safeJson(v: unknown): string {
  * - 识别「关键变量」（`key: value` / `key=value`，且非编号步骤），单独抽取供高亮；
  * - 其余推理文本保留原结构（编号 / 项目符号 / 段落），以 Markdown 输出，最终由打字机读逐字揭示。
  */
-function parseDeepThinking(raw: string): { text: string; vars: Array<[string, string]> } {
+function parseDeepThinking(raw: string): {
+  text: string;
+  vars: Array<[string, string]>;
+} {
   if (!raw || !raw.trim()) return { text: '', vars: [] };
-  const lines = raw.replace(/\r\n/g, '\n').split('\n').map((l) => l.trim());
+  const lines = raw
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((l) => l.trim());
   const vars: Array<[string, string]> = [];
   const out: string[] = [];
   const varRe = /^(.{1,40})[:：=]\s*(.+)$/;
@@ -2352,7 +2693,10 @@ function parseDeepThinking(raw: string): { text: string; vars: Array<[string, st
     }
     out.push(line);
   }
-  const text = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const text = out
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return { text, vars };
 }
 

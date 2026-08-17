@@ -1,16 +1,18 @@
 /**
- * 插件加载器（P1.③ 插件框架骨架）。
+ * 插件加载器（P1.③ 插件框架骨架 + P3 业务插件契约）。
  *
- * 生命周期：install → enable →（run）→ disable / upgrade。骨架层聚焦「清单 → AgentCard
- * 注册」这一核心闭环，让插件能力无缝进入既有的路由/编排/隔离体系：
- * - install：依赖解析（依赖须已安装）→ 登记（默认 disabled，不立即暴露给 router）；
- * - enable：把 manifest.capabilities 转成 AgentCard 注册进 Registry（可被选中执行）；
- *           若注入了 `sandbox` 隔离钩子，则先于注册执行（P2 真实 worker/OS 沙箱加载点）；
- * - disable：从 Registry 注销，退出路由候选；
- * - upgrade：替换 manifest（版本须一致 id），按原启用态重注册能力卡片。
+ * 生命周期：install → enable →（run）→ disable / upgrade / uninstall。
+ * 骨架层聚焦「清单 → AgentCard 注册」这一核心闭环，让插件能力无缝进入既有的路由/编排/隔离体系：
+ * - install / installModule：登记（默认 disabled，不立即暴露给 router）。installModule 额外持有
+ *   代码形态的 PluginModule（生命周期钩子），install 仅持清单（远端/静态声明式插件）。
+ * - enable：先隔离钩子（若有）→ 注入 PluginContext 并调用模块 setup(ctx)/onStart(ctx) →
+ *   把 manifest.capabilities 转成 AgentCard 注册进 Registry（可被选中执行）。
+ * - disable：调用模块 onStop(ctx)（若有）→ 从 Registry 注销。
+ * - uninstall：onStop（若仍 enabled）→ onUnload(ctx) 清理全部副作用 → 移出进程。
+ * - upgrade：替换 manifest（版本须一致 id），按原启用态重注册。
  *
- * 骨架层不实现「真实隔离加载 / 远程 registry 拉取 / 签名校验」——这些在 P2 扩展
- * `plugin/`（对应 plan §3），本文件只预留 `sandbox` 钩子与可注入 registry，便于扩展。
+ * 非侵入式关键：业务插件**只通过 PluginContext 调用 core 已导出的公共 API**，绝不直接 import/修改
+ * core 源码；server / web 宿主由运行时注入（PluginContext.server / PluginContext.web，可选）。
  */
 
 import { type AgentCard } from '../agents/types';
@@ -20,6 +22,23 @@ import { VolatileAgentStore } from '../agents/store';
 import type { PluginManifest } from './manifest';
 import { PluginRegistryClient, type RegistryEntry } from './registry';
 import { verifyManifest } from './signature';
+import type { PluginModule } from './module';
+import {
+  type PluginContext,
+  type PluginLogger,
+  type ServerExtensionHost,
+  type WebExtensionHost,
+  type PluginEventListener,
+  getPluginToolRegistry,
+} from './context';
+import { getIntentRouter } from '../router/intent';
+import { ToolRegistry } from '../tools';
+import { DagEngine } from '../workflow/engine';
+import type { StepExecutor } from '../workflow/engine';
+import type { WorkflowDef } from '../workflow/types';
+import { HttpA2ATransport } from '../a2a/transport';
+import type { TaskEnvelope, TaskResult } from '../a2a/transport';
+import { structLog, emitAlert } from '../telemetry';
 
 /** 插件生命周期状态。 */
 export type PluginState = 'installed' | 'enabled' | 'disabled';
@@ -42,16 +61,37 @@ export interface PluginLoaderOptions {
    * 传入 manifest（含 entry），返回即视为「已隔离加载」。骨架层缺省为 no-op。
    */
   sandbox?: (manifest: PluginManifest) => Promise<void> | void;
+  /** 服务端扩展宿主（server 注入，插件据此挂载 HTTP 路由/事件钩子）。 */
+  serverHost?: ServerExtensionHost;
+  /** 前端扩展宿主（webapp 注入，插件据此注册 Tab/面板）。 */
+  webHost?: WebExtensionHost;
 }
 
 export class PluginLoader {
   private readonly plugins = new Map<string, PluginRecord>();
+  private readonly modules = new Map<string, PluginModule>();
+  private readonly contexts = new Map<string, PluginContext>();
+  private readonly eventListeners = new Set<PluginEventListener>();
   private readonly registry: AgentRegistry;
   private readonly sandbox?: (manifest: PluginManifest) => Promise<void> | void;
+  private serverHost?: ServerExtensionHost;
+  private webHost?: WebExtensionHost;
 
   constructor(opts: PluginLoaderOptions = {}) {
-    this.registry = opts.registry ?? new AgentRegistry(opts.store ?? new VolatileAgentStore());
+    this.registry = opts.registry ?? new AgentRegistry();
     this.sandbox = opts.sandbox;
+    this.serverHost = opts.serverHost;
+    this.webHost = opts.webHost;
+  }
+
+  /** 注入服务端扩展宿主（server 启动时调用一次）。 */
+  setServerHost(host: ServerExtensionHost): void {
+    this.serverHost = host;
+  }
+
+  /** 注入前端扩展宿主（webapp 启动时调用一次）。 */
+  setWebHost(host: WebExtensionHost): void {
+    this.webHost = host;
   }
 
   /** 列出全部已安装插件。 */
@@ -104,23 +144,63 @@ export class PluginLoader {
     return rec;
   }
 
-  /** 启用：先隔离加载（若有 sandbox 钩子），再把能力卡片注册进 Registry。 */
+  /**
+   * 安装一个代码形态的插件模块（非侵入式主入口）。持有 PluginModule 生命周期钩子，
+   * 登记为 disabled；后续 enable() 时注入 PluginContext 并调用 setup/onStart。
+   */
+  async installModule(mod: PluginModule): Promise<PluginRecord> {
+    const manifest = mod.manifest;
+    if (this.plugins.has(manifest.id)) {
+      throw new Error(`plugin already installed: ${manifest.id}`);
+    }
+    this.resolveDependencies(manifest);
+    this.modules.set(manifest.id, mod);
+    const rec: PluginRecord = { manifest, state: 'disabled', installedAt: Date.now() };
+    this.plugins.set(manifest.id, rec);
+    return rec;
+  }
+
+  /** 启用：先隔离加载（若有 sandbox 钩子）→ 注入上下文 + 调模块 setup/onStart → 注册 AgentCard。 */
   async enable(id: string): Promise<PluginRecord> {
     const rec = this.require(id);
     if (rec.state === 'enabled') return rec;
     if (this.sandbox) await this.sandbox(rec.manifest);
+    const ctx = this.buildContext(rec);
+    const mod = this.modules.get(id);
+    if (mod) {
+      await mod.setup?.(ctx);
+      this.mergePluginTools(rec, ctx);
+      await mod.onStart?.(ctx);
+    }
     await this.registry.register(this.toAgentCard(rec.manifest));
     rec.state = 'enabled';
     return rec;
   }
 
-  /** 停用：从 Registry 注销，退出路由候选。 */
+  /** 停用：调用模块 onStop（若有）→ 从共享插件工具表移除该插件工具 → 从 Registry 注销。 */
   async disable(id: string): Promise<PluginRecord> {
     const rec = this.require(id);
     if (rec.state === 'enabled') {
+      const ctx = this.contexts.get(id);
+      const mod = this.modules.get(id);
+      if (ctx && mod) await mod.onStop?.(ctx).catch(() => {});
+      this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';
     }
+    return rec;
+  }
+
+  /** 卸载：先停用（若仍 enabled）→ 调 onUnload 清理副作用 → 移出进程。 */
+  async uninstall(id: string): Promise<PluginRecord> {
+    const rec = this.require(id);
+    if (rec.state === 'enabled') await this.disable(id);
+    const ctx = this.contexts.get(id);
+    const mod = this.modules.get(id);
+    if (ctx && mod) await mod.onUnload?.(ctx).catch(() => {});
+    this.modules.delete(id);
+    this.contexts.delete(id);
+    this.plugins.delete(id);
     return rec;
   }
 
@@ -130,7 +210,7 @@ export class PluginLoader {
     if (manifest.id !== id) throw new Error(`upgrade manifest id mismatch: ${manifest.id} != ${id}`);
     this.resolveDependencies(manifest);
     const wasEnabled = rec.state === 'enabled';
-    if (wasEnabled) await this.registry.deregister(id);
+    if (wasEnabled) await this.disable(id);
     rec.manifest = manifest;
     rec.upgradedAt = Date.now();
     rec.state = 'disabled';
@@ -157,6 +237,85 @@ export class PluginLoader {
     return rec;
   }
 
+  /** 构造注入给插件的上下文（缓存，生命周期钩子复用同一实例）。 */
+  private buildContext(rec: PluginRecord): PluginContext {
+    const cached = this.contexts.get(rec.manifest.id);
+    if (cached) return cached;
+    const manifest = rec.manifest;
+    const logger: PluginLogger = {
+      info: (m, f) => structLog('info', `[plugin:${manifest.id}] ${m}`, f),
+      warn: (m, f) => structLog('warn', `[plugin:${manifest.id}] ${m}`, f),
+      error: (m, f) => structLog('error', `[plugin:${manifest.id}] ${m}`, f),
+    };
+    const ctx: PluginContext = {
+      pluginId: manifest.id,
+      manifest,
+      config: {},
+      logger,
+      agentRegistry: this.registry,
+      tools: new ToolRegistry(),
+      router: getIntentRouter(),
+      workflow: {
+        createEngine: (executor: StepExecutor) => new DagEngine({ executor }),
+        validate: (def: WorkflowDef) => {
+          const probe = new DagEngine({ executor: async () => undefined });
+          probe.validateWorkflow(def);
+        },
+      },
+      a2a: {
+        transport: (baseUrl: string) => new HttpA2ATransport(baseUrl),
+        send: async (envelope: TaskEnvelope, baseUrl?: string): Promise<TaskResult> => {
+          const url = baseUrl ?? process.env.AGENT_A2A_BASE_URL ?? '';
+          if (!url) throw new Error('a2a.send 需要 baseUrl 或 AGENT_A2A_BASE_URL');
+          return new HttpA2ATransport(url).send(envelope);
+        },
+      },
+      events: {
+        on: (l: PluginEventListener) => {
+          this.eventListeners.add(l);
+          return () => this.eventListeners.delete(l);
+        },
+        emit: (e) => {
+          for (const l of this.eventListeners) {
+            try {
+              void l(e);
+            } catch {
+              /* 单个监听器异常不影响其它 */
+            }
+          }
+          emitAlert('warn', `plugin.${e.type}`, String(e.message ?? e.type), {
+            plugin: manifest.id,
+            ...e,
+          });
+        },
+      },
+      server: this.serverHost,
+      web: this.webHost,
+      env: process.env,
+    };
+    this.contexts.set(manifest.id, ctx);
+    return ctx;
+  }
+
+  /** 把插件专属 ToolRegistry 合并进进程共享插件工具表（前缀 `${pluginId}__` 做命名空间隔离）。 */
+  private mergePluginTools(rec: PluginRecord, ctx: PluginContext): void {
+    const shared = getPluginToolRegistry();
+    const prefix = `${rec.manifest.id}__`;
+    for (const { name, schema, fn } of ctx.tools.entries()) {
+      const full = name.startsWith(prefix) ? name : prefix + name;
+      shared.register(full, schema.description, schema.parameters as Record<string, unknown>, fn, `plugin:${rec.manifest.id}`);
+    }
+  }
+
+  /** 从进程共享插件工具表移除该插件工具（按前缀）。 */
+  private unmergePluginTools(rec: PluginRecord): void {
+    const shared = getPluginToolRegistry();
+    const prefix = `${rec.manifest.id}__`;
+    for (const { name } of shared.entries()) {
+      if (name.startsWith(prefix)) shared.unregister(name);
+    }
+  }
+
   /** 把 PluginManifest 的能力声明转成可路由的 AgentCard（复用既有 agent 代码路径）。 */
   private toAgentCard(m: PluginManifest): AgentCard {
     return {
@@ -171,6 +330,8 @@ export class PluginLoader {
       version: m.version,
       // 插件可声明最低隔离级别（P2.d），经 resolveIsolationBackend 收敛。
       isolation: m.isolation,
+      // 插件可声明装配配方（系统提示词 / 技能 / MCP / 工具面收窄），复用 AgentAssembly。
+      assembly: m.assembly,
       // 启用即视为健康；真实探活/心跳留 P2。
       health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
     };
