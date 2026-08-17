@@ -7,7 +7,7 @@ import { registerHandoffTool } from './tools/handoff';
 import { registerKbTool } from './tools/kb';
 import { leadServerExtension } from './server/routes';
 import { leadDashboardView } from './web/dashboard';
-import { appendMessage } from './store';
+import { appendTranscript, beginRun, endRun } from './store';
 import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */

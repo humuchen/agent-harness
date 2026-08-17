@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
-import { client } from './api';
+import { client, setToken } from './api';
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
 import type {
@@ -1528,6 +1528,16 @@ export class AhChat extends LitElement {
         id: String(a.id),
         name: String(a.name ?? a.id)
       }));
+    } catch {
+      /* ignore */
+    }
+    // 自动认证：服务端降级模式下会把统一凭证注入 <meta name="ah-api-key">，
+    // 此处读取并写入 client（持久化到 localStorage），使 SPA 在需鉴权时自动带 token。
+    try {
+      const metaKey = document
+        .querySelector('meta[name="ah-api-key"]')
+        ?.getAttribute('content');
+      if (metaKey) setToken(metaKey);
     } catch {
       /* ignore */
     }

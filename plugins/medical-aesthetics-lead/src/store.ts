@@ -74,6 +74,14 @@ const DATA_DIR =
     ? join(process.env.MEMORY_DIR, 'plugins', 'medical-aesthetics-lead')
     : join(process.cwd(), 'data', 'ma-lead'));
 
+// 对话记录（transcript）单独存放在 transcripts/ 子目录，与「客资线索」物理隔离：
+// 这样无关对话只落 transcript，不会在 DATA_DIR 根目录生成 .json，从而不会污染客资看板。
+const TRANSCRIPT_DIR = join(DATA_DIR, 'transcripts');
+
+// 当前运行上下文（由事件桥接在 run:start / run:end 间维护），用于把「当次对话」的
+// transcript 在 lead_qualify 时刻补录到真实线索上。模块级单例，仅用于单租户演示。
+let currentRunKey: string | null = null;
+
 function safeFile(key: string): string {
   const cleaned = String(key ?? 'anonymous').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
   return join(DATA_DIR, `${cleaned || 'anonymous'}.json`);
@@ -157,6 +165,66 @@ export function appendMessage(id: string, role: string, text: string): void {
     const turns = r.transcript ?? [];
     turns.push({ role, text: String(text ?? '').slice(0, 4000), t: Date.now() });
     r.transcript = turns.slice(-50);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 对话记录（transcript）：独立于「客资线索」存储，绝不创建 lead 记录
+// ---------------------------------------------------------------------------
+
+function safeTranscriptFile(runKey: string): string {
+  const cleaned = String(runKey ?? 'anon').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
+  return join(TRANSCRIPT_DIR, `${cleaned || 'anon'}.json`);
+}
+
+function readTranscript(runKey: string): { role: string; text: string; t: number }[] {
+  try {
+    const d = JSON.parse(readFileSync(safeTranscriptFile(runKey), 'utf-8')) as { turns?: unknown };
+    return Array.isArray(d.turns) ? (d.turns as { role: string; text: string; t: number }[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 仅落对话记录到 transcripts/ 子目录，不创建任何客资线索（修复「无关对话污染看板」）。 */
+export function appendTranscript(runKey: string, role: string, text: string): void {
+  if (!runKey) return;
+  const turns = readTranscript(runKey);
+  turns.push({ role, text: String(text ?? '').slice(0, 4000), t: Date.now() });
+  mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+  const tmp = `${safeTranscriptFile(runKey)}.tmp.${process.pid}.${Date.now().toString(36)}.${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  writeFileSync(tmp, JSON.stringify({ runKey, turns: turns.slice(-50) }), 'utf-8');
+  renameSync(tmp, safeTranscriptFile(runKey));
+}
+
+// 运行上下文维护（事件桥接调用），用于在 lead_qualify 时刻补录当次对话。
+export function beginRun(runKey: string): void {
+  currentRunKey = runKey;
+}
+export function endRun(): void {
+  currentRunKey = null;
+}
+
+/**
+ * 把「当前运行」的对话记录补录到真实线索上。仅当该 lead 已存在时才补录，
+ * 绝不凭空创建线索——这是与事件桥接解耦、避免污染看板的关键。
+ */
+export function attachCurrentRunTranscript(leadId: string): void {
+  if (!leadId || !currentRunKey) return;
+  const turns = readTranscript(currentRunKey);
+  if (!turns.length) return;
+  const existing = readRecord(leadId);
+  if (!existing) return;
+  mutate(leadId, (r) => {
+    const base = Array.isArray(r.transcript) ? r.transcript : [];
+    const seen = new Set(base.map((x) => `${x.role}:${x.text}`));
+    for (const t of turns) {
+      const sig = `${t.role}:${t.text}`;
+      if (!seen.has(sig)) base.push(t);
+    }
+    r.transcript = base.slice(-50);
   });
 }
 
@@ -266,6 +334,18 @@ export function clearLeads(): void {
     for (const f of readdirSync(DATA_DIR).filter((x) => x.endsWith('.json'))) {
       try {
         unlinkSync(join(DATA_DIR, f));
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  // 一并清空对话记录（transcripts/ 子目录），保证演示数据彻底重置。
+  try {
+    for (const f of readdirSync(TRANSCRIPT_DIR).filter((x) => x.endsWith('.json'))) {
+      try {
+        unlinkSync(join(TRANSCRIPT_DIR, f));
       } catch {
         /* ignore */
       }
