@@ -37,7 +37,7 @@ import { DagEngine } from '../workflow/engine';
 import type { StepExecutor } from '../workflow/engine';
 import type { WorkflowDef } from '../workflow/types';
 import { HttpA2ATransport } from '../a2a/transport';
-import type { TaskEnvelope, TaskResult } from '../a2a/transport';
+import type { TaskEnvelope, TaskResult } from '../a2a/types';
 import { structLog, emitAlert } from '../telemetry';
 
 /** 插件生命周期状态。 */
@@ -183,7 +183,13 @@ export class PluginLoader {
     if (rec.state === 'enabled') {
       const ctx = this.contexts.get(id);
       const mod = this.modules.get(id);
-      if (ctx && mod) await mod.onStop?.(ctx).catch(() => {});
+      if (ctx && mod) {
+        try {
+          await mod.onStop?.(ctx);
+        } catch {
+          /* 模块停用异常不阻断注销 */
+        }
+      }
       this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';
@@ -197,7 +203,13 @@ export class PluginLoader {
     if (rec.state === 'enabled') await this.disable(id);
     const ctx = this.contexts.get(id);
     const mod = this.modules.get(id);
-    if (ctx && mod) await mod.onUnload?.(ctx).catch(() => {});
+    if (ctx && mod) {
+      try {
+        await mod.onUnload?.(ctx);
+      } catch {
+        /* 卸载清理异常不阻断卸载 */
+      }
+    }
     this.modules.delete(id);
     this.contexts.delete(id);
     this.plugins.delete(id);
