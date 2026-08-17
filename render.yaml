@@ -61,11 +61,10 @@ services:
           type: keyvalue
           name: agent-harness-redis
           property: connectionString
-      # 记忆持久化（可选）：挂载 Disk 到 /app/data 后启用 file 后端。
+      # 记忆后端：免费档无持久磁盘，file 后端会写在临时盘（重启即丢）易误导，
+      # 故用 volatile（纯内存）。需持久记忆时升级付费档、挂 Render Disk 后改回 file。
       - key: MEMORY_BACKEND
-        value: file
-      - key: MEMORY_DIR
-        value: /app/data/memory
+        value: volatile
 
   # ----------------------------- 2) Render 托管 Key Value（Redis 兼容，免费档） -----------------------------
   - type: keyvalue
