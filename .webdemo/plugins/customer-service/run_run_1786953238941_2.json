@@ -1,1 +1,0 @@
-{"sessionId":"run:run_1786953238941_2","kind":"run","handedOff":false,"transcript":[{"role":"user","text":"你好，今天天气怎么样？","t":1786953238941},{"role":"assistant","text":"（Mock 离线应答）收到你的问题：「你好，今天天气怎么样？」。\n\n这是未接入大模型的演示应答。说明：\n· 普通问答不会触发环境工具；\n· 只有明确提到「创建 / 临时 / 预览 / 验证环境」才会走 创建→销毁 闭环；\n· 在服务端配置 OPENROUTER_API_KEY 并切到 real 模式，即可获得真实回答。","t":1786953242377}],"updatedAt":1786953242377}

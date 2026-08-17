@@ -66,6 +66,8 @@ export interface AuthDescribe {
   roles: Role[];
   permissions: Record<Role, Action[]>;
   idp?: { kind: 'oidc' | 'proxy'; issuer?: string; groupsClaim?: string; userHeader?: string; groupsHeader?: string; hmac?: boolean };
+  /** 降级模式：未接入 RBAC 时，OPENROUTER_API_KEY 作为权限判断唯一凭证。 */
+  degraded?: boolean;
 }
 
 export interface Authorizer {
@@ -127,11 +129,15 @@ function tokenFingerprint(t: string): string {
 export class RoleBasedAuthorizer implements Authorizer {
   private readonly matrix: Record<Role, Action[]>;
   private readonly tokens = new Map<string, Role>(); // 明文令牌 → 角色
+  private readonly degraded: boolean;
 
-  constructor(opts: { tokens?: Record<string, Role>; fallbackToken?: string; fallbackRole?: Role } = {}) {
+  constructor(opts: { tokens?: Record<string, Role>; fallbackToken?: string; fallbackRole?: Role; apiKeyToken?: string; degraded?: boolean } = {}) {
     this.matrix = loadMatrix();
     if (opts.tokens) for (const [t, r] of Object.entries(opts.tokens)) this.tokens.set(t, r);
+    // OPENROUTER_API_KEY 统一作为 admin 凭证（逃生通道），跨模式始终生效。
+    if (opts.apiKeyToken) this.tokens.set(opts.apiKeyToken, 'admin');
     if (opts.fallbackToken && opts.fallbackRole) this.tokens.set(opts.fallbackToken, opts.fallbackRole);
+    this.degraded = !!opts.degraded;
   }
 
   authenticate(req: IncomingMessage): AuthContext | null {
@@ -161,6 +167,7 @@ export class RoleBasedAuthorizer implements Authorizer {
       provider: 'token',
       roles: ['admin', 'operator', 'viewer'],
       permissions: this.matrix,
+      degraded: this.degraded,
     };
   }
 }
