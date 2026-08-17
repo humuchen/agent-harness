@@ -1,6 +1,7 @@
 packages:
   - 'packages/*'
   - 'examples'
+  - 'plugins/*'
 # pnpm v11：依赖的构建脚本默认全部禁止，需在此显式放行。
 # webapp 用 Vite 构建依赖 esbuild 的 postinstall 下载原生二进制；
 # 不放行则 pnpm install 直接 exit 1（ERR_PNPM_IGNORED_BUILDS），部署卡死。

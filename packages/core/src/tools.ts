@@ -35,6 +35,14 @@ export class ToolRegistry {
     return [...this.tools.values()].map((t) => t.schema);
   }
 
+  /**
+   * 遍历全部已注册工具（含执行函数），供插件系统把「插件专属 ToolRegistry」合并进
+   * 进程共享的插件工具注册表（自动加插件前缀做命名空间隔离）。属通用能力，不影响既有调用方。
+   */
+  entries(): Array<{ name: string; schema: ToolSchema; fn: ToolFn }> {
+    return [...this.tools.entries()].map(([name, t]) => ({ name, schema: t.schema, fn: t.fn }));
+  }
+
   has(name: string): boolean {
     return this.tools.has(name);
   }

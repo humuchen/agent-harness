@@ -13,6 +13,9 @@ import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
+// 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
+import { ServerPluginHost, WebPluginHost } from './plugin-ext';
+import { createPluginSystem, bootstrapPlugins, type PluginSystem } from './plugin-bootstrap';
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
   listChatSessions,
@@ -217,6 +220,10 @@ function unauthorized(res: ServerResponse): void {
 mcpManager.init();
 
 // 前端统一由 packages/webapp/dist 托管（见 webappDir）；项目不再包含 public 兜底目录。
+
+// 插件系统：loader + 双宿主（Server/Web）。在 bootstrap()（initAgentRegistry 之后）构造并赋值，
+// 以复用已注入持久后端的共享 AgentRegistry；此处仅声明（definite assignment，listen 前必赋值）。
+let pluginSystem!: PluginSystem;
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -600,6 +607,25 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     if (req.method === 'POST' && path === '/api/env') {
       return await handleEnv(req, res);
     }
+    // ---- 插件宿主：通用扩展点（无业务词）----
+    // 元数据端点：列出已启用插件与已注册前端视图（供 webapp 动态渲染 Tab）。
+    if (req.method === 'GET' && path === '/api/plugins') {
+      return sendJson(
+        res,
+        {
+          plugins: pluginSystem.loader.list().map((r) => ({
+            id: r.manifest.id,
+            name: r.manifest.name ?? r.manifest.id,
+            state: r.state,
+          })),
+          views: pluginSystem.webHost.listViews(),
+        },
+        req
+      );
+    }
+    // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
+    if (await pluginSystem.serverHost.handle(path, req, res)) return;
+
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
   } catch (e: any) {
@@ -1434,6 +1460,13 @@ function buildAgentStore(): AgentStore {
 async function bootstrap(): Promise<void> {
   const store = buildAgentStore();
   await initAgentRegistry(store);
+  // 插件系统：复用已注入持久后端的共享 AgentRegistry，构造 loader + 双宿主。
+  pluginSystem = createPluginSystem();
+  // 发现并启用插件（动态 require，server 不静态依赖具体插件）。
+  const enabledPlugins = await bootstrapPlugins(pluginSystem);
+  if (enabledPlugins.length) {
+    console.log(`   🔌 已启用插件：${enabledPlugins.join(', ')}`);
+  }
   // P2.c：引导注册全部预置行业合规画像（医疗等保 / 金融数据出境 / 教育放宽），使新建对应行业
   // 租户即自带合规基线（applyIndustryProfile 透明叠加）。幂等，不影响已在运行的租户策略。
   policyEngine.registerIndustryProfiles();

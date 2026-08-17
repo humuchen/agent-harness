@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 884" width="100%" role="img">
+<title>目标基座平台架构（结合 agent-harness 当前实现）</title>
+<desc>六层 AI Agent 调度基座：接入层、路由编排层、智能体层、基座服务层、执行后端层、外部集成/基础设施。基于 docs/architecture.md 权威分层与真实代码模块补全。</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="#AFA9EC" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<style>
+.bg{fill:#15131F}
+.th{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;font-weight:500;fill:#EEEDFE}
+.ts{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11px;font-weight:400;fill:#CECBF6}
+.tl{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;font-weight:500;fill:#EEEDFE}
+</style>
+
+<rect class="bg" x="0" y="0" width="680" height="884"/>
+
+<!-- Title -->
+<text class="tl" x="340" y="22" text-anchor="middle" fill="#AFA9EC">目标基座平台架构 · 结合 agent-harness 当前实现</text>
+
+<!-- ===== L1 接入层 ===== -->
+<g>
+  <rect x="40" y="34" width="600" height="92" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="56">接入层 Access Layer</text>
+
+  <rect x="60" y="66" width="170" height="50" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="84" text-anchor="middle" dominant-baseline="central">统一 API 网关</text>
+  <text class="ts" x="145" y="102" text-anchor="middle" dominant-baseline="central">HTTP+SSE · RBAC</text>
+
+  <rect x="245" y="66" width="170" height="50" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="84" text-anchor="middle" dominant-baseline="central">A2A 协议边界</text>
+  <text class="ts" x="330" y="102" text-anchor="middle" dominant-baseline="central">AgentCard 自注册</text>
+
+  <rect x="430" y="66" width="170" height="50" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="84" text-anchor="middle" dominant-baseline="central">Webapp + CLI</text>
+  <text class="ts" x="515" y="102" text-anchor="middle" dominant-baseline="central">面板 SPA · ah</text>
+</g>
+<path d="M340 126L340 146" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===== L2 路由编排层 ===== -->
+<g>
+  <rect x="40" y="146" width="600" height="104" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="168">路由编排层 Routing &amp; Orchestration</text>
+
+  <rect x="60" y="178" width="180" height="54" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="150" y="198" text-anchor="middle" dominant-baseline="central">Intent Router 意图路由</text>
+  <text class="ts" x="150" y="216" text-anchor="middle" dominant-baseline="central">分类 + 能力评分选 agent</text>
+
+  <rect x="260" y="178" width="160" height="54" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="340" y="198" text-anchor="middle" dominant-baseline="central">Workflow 编排</text>
+  <text class="ts" x="340" y="216" text-anchor="middle" dominant-baseline="central">DagEngine 补偿续跑</text>
+
+  <rect x="440" y="178" width="180" height="54" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="530" y="198" text-anchor="middle" dominant-baseline="central">A2A Transport</text>
+  <text class="ts" x="530" y="216" text-anchor="middle" dominant-baseline="central">Local / HTTP handoff</text>
+</g>
+<path d="M340 250L340 270" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===== L3 智能体层 ===== -->
+<g>
+  <rect x="40" y="270" width="600" height="138" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="292">智能体层 Agent Runtime × N</text>
+
+  <rect x="60" y="302" width="130" height="60" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="125" y="324" text-anchor="middle" dominant-baseline="central">医美 agent</text>
+  <text class="ts" x="125" y="344" text-anchor="middle" dominant-baseline="central">专属工具·记忆</text>
+
+  <rect x="200" y="302" width="130" height="60" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="265" y="324" text-anchor="middle" dominant-baseline="central">金融 agent</text>
+  <text class="ts" x="265" y="344" text-anchor="middle" dominant-baseline="central">专属工具·记忆</text>
+
+  <rect x="340" y="302" width="130" height="60" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="405" y="324" text-anchor="middle" dominant-baseline="central">医疗 agent</text>
+  <text class="ts" x="405" y="344" text-anchor="middle" dominant-baseline="central">专属工具·记忆</text>
+
+  <rect x="480" y="302" width="130" height="60" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="545" y="324" text-anchor="middle" dominant-baseline="central">教育 agent</text>
+  <text class="ts" x="545" y="344" text-anchor="middle" dominant-baseline="central">专属工具·记忆</text>
+
+  <text class="ts" x="340" y="384" text-anchor="middle" fill="#AFA9EC">AgentCard · AgentRegistry（心跳/发现）· AgentStore（file/sqlite/redis）</text>
+</g>
+<path d="M340 408L340 428" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===== L4 基座服务层 ===== -->
+<g>
+  <rect x="40" y="428" width="600" height="156" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="450">基座服务层 Base Services</text>
+
+  <rect x="60" y="460" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="477" text-anchor="middle" dominant-baseline="central">Agent Registry</text>
+
+  <rect x="245" y="460" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="477" text-anchor="middle" dominant-baseline="central">Tenant Service</text>
+
+  <rect x="430" y="460" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="477" text-anchor="middle" dominant-baseline="central">Policy Engine</text>
+
+  <rect x="60" y="502" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="519" text-anchor="middle" dominant-baseline="central">Quota Engine</text>
+
+  <rect x="245" y="502" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="519" text-anchor="middle" dominant-baseline="central">Audit 审计</text>
+
+  <rect x="430" y="502" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="519" text-anchor="middle" dominant-baseline="central">Observability</text>
+
+  <rect x="60" y="544" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="561" text-anchor="middle" dominant-baseline="central">Sandbox 隔离</text>
+
+  <rect x="245" y="544" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="561" text-anchor="middle" dominant-baseline="central">Plugin 插件市场</text>
+
+  <rect x="430" y="544" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="561" text-anchor="middle" dominant-baseline="central">Retention 留存</text>
+</g>
+<path d="M340 584L340 604" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===== L5 执行后端层 ===== -->
+<g>
+  <rect x="40" y="604" width="600" height="150" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="626">执行后端层 Execution Backend</text>
+
+  <rect x="60" y="636" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="653" text-anchor="middle" dominant-baseline="central">AgentHarness.run</text>
+
+  <rect x="245" y="636" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="653" text-anchor="middle" dominant-baseline="central">Tool Registry</text>
+
+  <rect x="430" y="636" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="653" text-anchor="middle" dominant-baseline="central">Memory</text>
+
+  <rect x="60" y="678" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="695" text-anchor="middle" dominant-baseline="central">Guardrails 护栏</text>
+
+  <rect x="245" y="678" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="695" text-anchor="middle" dominant-baseline="central">LLM 适配器</text>
+
+  <rect x="430" y="678" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="695" text-anchor="middle" dominant-baseline="central">MCP / Env Platform</text>
+
+  <rect x="60" y="720" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="737" text-anchor="middle" dominant-baseline="central">Skills 技能</text>
+
+  <rect x="245" y="720" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="737" text-anchor="middle" dominant-baseline="central">Verify 自检</text>
+
+  <rect x="430" y="720" width="170" height="34" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="737" text-anchor="middle" dominant-baseline="central">Builtins 内置工具</text>
+</g>
+<path d="M340 754L340 774" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<!-- ===== L6 外部集成 / 基础设施 ===== -->
+<g>
+  <rect x="40" y="774" width="600" height="92" rx="12" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="tl" x="58" y="796">外部集成 / 基础设施 External &amp; Infrastructure</text>
+
+  <rect x="60" y="806" width="170" height="36" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="145" y="824" text-anchor="middle" dominant-baseline="central">Redis</text>
+
+  <rect x="245" y="806" width="170" height="36" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="330" y="824" text-anchor="middle" dominant-baseline="central">OpenTelemetry</text>
+
+  <rect x="430" y="806" width="170" height="36" rx="8" fill="#3C3489" stroke="#7F77DD" stroke-width="0.5"/>
+  <text class="th" x="515" y="824" text-anchor="middle" dominant-baseline="central">Harness.io / K8s</text>
+</g>
+
+</svg>
