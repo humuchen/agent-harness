@@ -23,6 +23,10 @@ services:
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-agnes-2.5-flash}"
       # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
       REDIS_URL: "${REDIS_URL:-}"
+      # 记忆持久化后端（Phase 4 决策 A）：file 后端落 RWX 风格共享卷 /app/data，
+      # 配合下方 data 卷挂载，单实例重启不丢、与 k8s 部署行为一致（sqlite 勿用）。
+      MEMORY_BACKEND: "file"
+      MEMORY_DIR: "/app/data/memory"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -30,6 +34,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    volumes:
+      # 共享记忆卷：ui 容器把记忆与插件数据写入 /app/data（file 后端），重启不丢。
+      - data:/app/data
 
   # 可选：运行队列后端（多副本共享队列 / 跨实例事件桥）。
   # 启用：docker compose --profile redis up
@@ -49,3 +56,4 @@ services:
 
 volumes:
   redis-data:
+  data:

@@ -6,8 +6,9 @@ import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
+import './plugins-console';
 
-type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat';
+type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat' | 'plugins';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 
@@ -19,6 +20,7 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'mcp', label: 'MCP', short: 'M' },
   { id: 'approvals', label: '审批', short: '审' },
   { id: 'observability', label: '可观测', short: '观' },
+  { id: 'plugins', label: '插件', short: '插' },
 ];
 
 /**
@@ -268,6 +270,7 @@ export class AhApp extends LitElement {
             ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
             ${this.tab === 'approvals' ? html`<ah-approvals></ah-approvals>` : ''}
             ${this.tab === 'observability' ? html`<ah-observability></ah-observability>` : ''}
+            ${this.tab === 'plugins' ? html`<ah-plugins></ah-plugins>` : ''}
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}</div>`
               : ''}

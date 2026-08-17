@@ -231,3 +231,37 @@ Phase 0 (core 契约)  ──► Phase 1 (server 扩展点) ──┐
 | plugins/customer-service | 整包新建                                    | —                                     | 全部业务语义在此 |
 
 > 结论：core/server/webapp 三层**零业务耦合**，架构文档 §1 的边界红线被满足；业务 Agent 以独立插件包形态存在，可独立演进、独立版本、独立部署。
+
+---
+
+## Phase 4 — 已落地（实现记录 · 2026-08-17）
+
+### 4.0 共享记忆后端（RWX 卷 + file 后端）
+- **k8s（已具备）**：`deploy/k8s/configmap.yaml` 设 `MEMORY_BACKEND=file` + `MEMORY_DIR=/app/data/memory`；`pvc.yaml` 为 RWX（`ReadWriteMany`）卷 `agent-harness-data`；`deployment.yaml` 挂载到 `/app/data`（2 副本共享）。sqlite 明确禁用（网络 FS 锁不可靠）。
+- **docker-compose**：`ui` 服务加 `MEMORY_BACKEND=file` / `MEMORY_DIR=/app/data/memory` + 挂载命名卷 `data:/app/data`，单实例重启不丢。
+- **render.yaml**：声明 `MEMORY_BACKEND=file` / `MEMORY_DIR=/app/data/memory`（free 磁盘临时，多副本需付费 plan + 持久卷）。
+- **插件 store 文件化**：`plugins/customer-service/src/store.ts` 由「进程内 Map」改为文件后端，目录默认 `${MEMORY_DIR}/plugins/customer-service`（落在 RWX 卷内），原子写（tmp+rename）+ 读路径扫目录聚合 → **2 副本下任意副本写入的会话/满意度都能被管理后台读到**，满足「ChatSession 不丢」。
+
+### 4.1 插件热插拔 API（server，无业务词）
+- `packages/server/src/authz.ts`：Action 联合类型新增 `plugin:manage`，并授予 `admin` / `operator` 角色（非敏感动作，不经审批闸门）。
+- `packages/server/src/plugin-bootstrap.ts`：新增 `resolveUpgradeManifest(id, body)` —— 优先用请求体 `manifest`，否则用 `PLUGIN_REGISTRY_URL` + `version` 经 `PluginRegistryClient.index` + `resolveVersion` 拉取（复用既有版本/依赖解析）。
+- `packages/server/src/server.ts`：在 `/api/plugins` 之后新增（受 `guard(req,res,'plugin:manage')` 保护）：
+  - `POST /api/plugins/:id/enable` → `loader.enable(id)`
+  - `POST /api/plugins/:id/disable`（及 `DELETE /api/plugins/:id/enable` 兼容） → `loader.disable(id)`
+  - `POST /api/plugins/:id/upgrade` → `resolveUpgradeManifest` + `loader.upgrade(id, manifest)`（内部 `resolveDependencies` 校验、按启用态重注册）
+  - `/api/plugins` 元数据现返回 `version` / `dependencies`，供控制台展示。
+  - 全部为进程内注册表增删，**不触碰 `/api/state` 健康检查、不重启进程**。
+
+### 4.2 热插拔 UI 控制台（webapp，通用、无业务词）
+- 新增 `packages/webapp/src/plugins-console.ts`（`<ah-plugins>`）：拉取 `/api/plugins` 列出插件，提供「启用 / 停用 / 升级」按钮，调用上述端点（带 Bearer 令牌）。
+- `packages/webapp/src/app.ts`：Tab 联合类型加 `'plugins'`，侧栏新增「插件」导航项，内容区渲染 `<ah-plugins>`。组件与具体插件业务语义完全解耦。
+
+### 4.3 验收标准达成
+- 多副本 ChatSession 不丢：core Memory（file 后端）+ 插件 store（RWX 卷内文件）双路落盘。
+- 热启/停插件不中断 `/api/state`：端点操作纯内存注册表，健康检查独立。
+- core/server/webapp 仍**零业务词**；新增改动均经既有公共 API / 通用扩展点，无侵入。
+
+### 4.4 已知限制（如实记录）
+- 插件 store 单会话 read-modify-write 在跨副本极端并发下可能互相覆盖（低概率）；强一致需后续换 Redis 后端。
+- `upgrade` 为「manifest 替换 + 重注册」，进程内 PluginModule 代码不热替换；真正代码热升级需 `uninstall`+重新 `installModule`+`enable` 或重启（registry 安装路径另议）。
+- 沙箱 `pnpm install` 被拦截，无 `tsc` 校验；代码按 core 公共 API 严格手写类型，需在有依赖环境跑 `pnpm -r build` 验证。
