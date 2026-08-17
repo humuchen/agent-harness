@@ -1415,6 +1415,9 @@ export class AhChat extends LitElement {
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
   @state() error: string | null = null;
+  /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
+  @state() agents: { id: string; name: string }[] = [];
+  @state() agentId = '';
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
@@ -1517,6 +1520,16 @@ export class AhChat extends LitElement {
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
     } catch {
       /* 离线/未启动：仍可进入空状态，发送时按 mock 兜底 */
+    }
+    // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）
+    try {
+      const res = await client.listAgents();
+      this.agents = ((res?.agents as any[]) ?? []).map((a) => ({
+        id: String(a.id),
+        name: String(a.name ?? a.id)
+      }));
+    } catch {
+      /* ignore */
     }
   }
 
@@ -1658,6 +1671,7 @@ export class AhChat extends LitElement {
           mode: this.mode,
           prompt,
           model: this.model || undefined,
+          agentId: this.agentId || undefined,
           sessionId,
           chatSessionId: sessionId
         },
@@ -2551,6 +2565,19 @@ export class AhChat extends LitElement {
             @input=${(e: Event) =>
               (this.model = (e.target as HTMLInputElement).value)}
           />
+          <select
+            class="agent-select"
+            title="选择业务 Agent（默认走通用 Agent）"
+            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border,#3a3f4b);background:var(--ah-input,#1b1f27);color:inherit;padding:0 6px"
+            .value=${this.agentId}
+            @change=${(e: Event) =>
+              (this.agentId = (e.target as HTMLSelectElement).value)}
+          >
+            <option value="">默认 Agent</option>
+            ${this.agents.map(
+              (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
+            )}
+          </select>
           <span
             class="toggle ${this.deepThink ? 'on' : ''}"
             title="显示 / 隐藏深度思考区"
