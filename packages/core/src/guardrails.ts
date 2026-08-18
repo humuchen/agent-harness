@@ -56,6 +56,14 @@ export interface GuardrailPolicy {
   /** 出网管控（P0.3）：约束 web_fetch 可访问域名；缺省 open（全部放行）。 */
   network?: NetworkPolicy;
   /**
+   * web_fetch 工具参数 secret 扫描范围。
+   * - 'headers-only'（默认）：仅扫描 headers 对象，URL 只做协议/egress 检查；
+   *   避免把网页 URL 中常见的 token/api_key 查询参数误判为泄露 secret。
+   * - 'full'：对 url + headers 全部扫描（旧行为）。
+   * - 'off'：关闭 web_fetch 的 secret 扫描。
+   */
+  webFetchSecretScan?: 'headers-only' | 'full' | 'off';
+  /**
    * 合规画像元数据（P2.c）：标注该策略所属合规框架 / 数据驻留要求 / 是否强制审计留痕。
    * 仅用于治理展示与 P2.d 隔离决策，不影响护栏判定逻辑；全字段可选。
    */
@@ -97,6 +105,7 @@ function resolveDefaultPolicy(): GuardrailPolicy {
   const sens = (process.env.GUARDRAIL_SENSITIVITY || '').toLowerCase();
   const sensitivity: InjectionSensitivity = sens === 'low' || sens === 'high' ? sens : 'medium';
   const maxInput = Number(process.env.GUARDRAIL_MAX_INPUT ?? '');
+  const webFetchScan = (process.env.GUARDRAIL_WEB_FETCH_SECRET_SCAN || '').toLowerCase();
   return {
     maxInputLength:
       Number.isFinite(maxInput) && maxInput > 0 ? maxInput : DEFAULT_POLICY.maxInputLength,
@@ -108,6 +117,7 @@ function resolveDefaultPolicy(): GuardrailPolicy {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    webFetchSecretScan: webFetchScan === 'full' || webFetchScan === 'off' ? webFetchScan : 'headers-only',
   };
 }
 
@@ -390,16 +400,43 @@ export function checkToolArgs(
   pol?: GuardrailPolicy
 ): GuardrailResult {
   const p = pol ?? policy;
-  const serialized = JSON.stringify(args);
-  if (p.enableSecretScan) {
-    for (const re of SECRET_PATTERNS) {
-      if (re.test(serialized)) {
-        return { ok: false, reason: `possible secret in tool args for ${name}` };
+
+  // web_fetch 单独处理：URL 中常见的 token/api_key 查询参数不应直接视为 secret 泄露，
+  // 默认仅扫描 headers；需要更严格时可切回 'full'。
+  const webFetchScan = name === 'builtin__web_fetch' ? p.webFetchSecretScan ?? 'headers-only' : 'full';
+  const secretTargets: string[] = [];
+  if (p.enableSecretScan && webFetchScan !== 'off') {
+    if (name === 'builtin__web_fetch') {
+      if (webFetchScan === 'headers-only') {
+        if (args.headers && typeof args.headers === 'object') {
+          secretTargets.push(JSON.stringify(args.headers));
+        }
+      } else {
+        secretTargets.push(JSON.stringify(args));
+      }
+    } else {
+      secretTargets.push(JSON.stringify(args));
+    }
+    for (const text of secretTargets) {
+      for (let i = 0; i < SECRET_PATTERNS.length; i++) {
+        const re = SECRET_PATTERNS[i];
+        const m = re.exec(text);
+        if (m) {
+          const snippet = redactPII(m[0]);
+          return {
+            ok: false,
+            reason: `possible secret in tool args for ${name} (pattern #${i}: ${snippet})`,
+          };
+        }
       }
     }
   }
+
+  // 注入检测仍针对完整参数做，防止模型在 URL/headers 中夹带 prompt-injection 载荷。
+  const serialized = JSON.stringify(args);
   const inj = detectInjection(serialized, p);
   if (inj) return { ok: false, reason: `possible injection in tool args for ${name} (matched: ${inj})` };
+
   // P0.3 出网管控：web_fetch 的目标 URL 受租户 network 策略约束。
   if (name === 'builtin__web_fetch' && typeof args.url === 'string') {
     const eg = checkEgress(String(args.url), p.network);
