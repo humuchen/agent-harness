@@ -34,6 +34,62 @@ export function toOpenAIMessage(m: Message): Record<string, unknown> {
   return out;
 }
 
+/**
+ * 工具描述精简：在不改变工具「可执行语义」的前提下，缩短发送给 LLM 的
+ * 工具 schema 文本，降低每轮固定的 prompt 开销（尤其对 18+ 工具的 agent）。
+ * 仅截断散文 description，保留 `name` 与完整 `parameters` 结构，
+ * 工具的本地执行/help 文本不受影响（它们读的是 ToolRegistry 原样 schema）。
+ *
+ * @param t 原始 ToolSchema
+ * @param maxDesc 单段 description 的最大字符数（<=0 表示不截断）
+ */
+export function compactToolSchema(t: ToolSchema, maxDesc: number): ToolSchema {
+  if (!maxDesc || maxDesc <= 0) return t;
+  const desc = typeof t.description === 'string' ? truncate(t.description, maxDesc) : t.description;
+  const params = t.parameters as Record<string, unknown> | undefined;
+  // 仅压缩 properties 内各字段的 description，保持 type / required 等结构不变。
+  const compacted =
+    params && params.properties
+      ? { ...params, properties: compactParameters(params.properties as Record<string, unknown>, maxDesc) }
+      : params;
+  return { ...t, description: desc, parameters: compacted as ToolSchema['parameters'] };
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  // 保留语义完整性：截断后加省略标记，避免模型误以为描述到此为止。
+  return s.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
+}
+
+/**
+ * 递归截断 JSON Schema parameters.properties 里各 property / items 的 description 字段。
+ * 直接对「属性名字典」做处理并返回同结构字典（不包裹 {type, properties}），
+ * 因此 `properties` 内的嵌套 `properties` 也能被正确递归压缩。
+ */
+function compactParameters(
+  props: Record<string, unknown> | undefined,
+  max: number
+): Record<string, unknown> | undefined {
+  if (!props || typeof props !== 'object') return props;
+  const next: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (v && typeof v === 'object') {
+      const nv: Record<string, unknown> = { ...v };
+      if (typeof nv.description === 'string') nv.description = truncate(nv.description, max);
+      if (nv.properties) nv.properties = compactParameters(nv.properties as Record<string, unknown>, max);
+      if (nv.items && typeof nv.items === 'object') {
+        const items = nv.items as Record<string, unknown>;
+        if (typeof items.description === 'string') items.description = truncate(items.description, max);
+        if (items.properties) items.properties = compactParameters(items.properties as Record<string, unknown>, max);
+      }
+      next[k] = nv;
+    } else {
+      next[k] = v;
+    }
+  }
+  return next;
+}
+
 /** 容错解析工具调用参数（模型有时返回残缺 JSON）。 */
 export function safeParseArgs(s: string): Record<string, unknown> {
   try {
@@ -77,14 +133,22 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   // 但旧实现只取最后一次响应的 usage → 重试成本被低估。这里把各次 usage 累加。
   const usageAcc = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 };
 
-  // 可选 prompt caching：把系统提示词标记为可缓存（provider 不支持时忽略该字段）。
-  // 默认关闭，避免个别严格校验未知字段的 provider 报错；设 PROMPT_CACHE=true 开启。
+  // 可选 prompt caching：把系统提示词与工具 schema 标记为可缓存前缀
+  //（provider 不支持时忽略该字段）。默认开启以省去重复的系统提示 + 工具 schema 计费；
+  // 设 PROMPT_CACHE=false 可关闭（逃生阀，避免个别严格校验 cache_control 的 provider 报错）。
   // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
-  const caching = process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1';
+  const cacheDisabled = process.env.PROMPT_CACHE === 'false' || process.env.PROMPT_CACHE === '0';
+  const caching = !cacheDisabled;
   if (caching) {
     const msgs = (body as any).messages;
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
       msgs[0].cache_control = { type: 'ephemeral' };
+    }
+    // 工具 schema 同为每轮固定开销：在工具数组末项打 cache_control，
+    // 使「系统提示 + 全量工具」作为可缓存前缀，后续 step / 重试命中 provider 前缀缓存。
+    const tls = (body as any).tools;
+    if (Array.isArray(tls) && tls.length) {
+      tls[tls.length - 1].cache_control = { type: 'ephemeral' };
     }
   }
 

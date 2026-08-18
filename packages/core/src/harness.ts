@@ -6,6 +6,8 @@ import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPol
 import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
 import { estimateCost, estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
+import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
+import { selectToolsForInput } from './tools';
 
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
@@ -25,7 +27,7 @@ export type HarnessEvent =
   | { type: 'llm:reasoning'; step: number; delta: string }
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
-  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean }
+  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean; estTokens?: { system: number; tools: number; history: number; completion: number } }
   | { type: 'run:token-cache'; step: number; model?: string; interface: string; queries: number; hits: number; hitRate: number; cachedTokens: number; promptTokens: number; tokenHitRate: number; byModel: Record<string, { queries: number; hits: number; hitRate: number }> }
   /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
    *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
@@ -86,6 +88,12 @@ export interface HarnessOptions {
    * 默认 false，不改变既有非流式行为；服务端 assembleAgent 对 real 模式默认开启。
    */
   streamTokens?: boolean;
+  /**
+   * 动态工具选择：硬允许集（来自 AgentCard.assembly.tools 或核心环境工具）。
+   * 与「按意图动态裁剪」配合——这些工具无条件发给 LLM，永不裁掉；其余工具按
+   * 当前用户输入的相关性择优发送（见 selectToolsForInput）。缺省为空，表示无硬约束。
+   */
+  allowTools?: string[];
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -116,6 +124,8 @@ interface ResolvedHarnessOptions {
   // token 级流式开关：开启后 LLM 调用透传 onToken/onReasoning，harness 发出
   // llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。默认 false。
   streamTokens?: boolean;
+  // 动态工具选择：硬允许集（永远发给 LLM，不被按意图裁剪）。
+  allowTools?: string[];
 }
 
 let idCounter = 0;
@@ -234,6 +244,9 @@ export class AgentHarness {
     let runTokens = 0;
     let runCost = 0;
     let budgetExceededFlag = false;
+    // 动态工具选择：记录本 run 已实际调用过的工具名，后续步骤将其并入硬允许集，
+    // 保证多步任务后续步骤仍可复用已用工具，避免「选错漏发」导致质量退化。
+    const usedTools = new Set<string>();
     const tokenBudget = this.opts.tokenBudget;
     const costBudget = this.opts.costBudget;
     const budgetExceeded = (kind: 'tokens' | 'cost'): string => {
@@ -263,11 +276,33 @@ export class AgentHarness {
           emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
 
           const messages = memory.history();
+          // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
+          // 从全量工具中选出子集，降低简单输入（如问候）首呼时全量工具 schema 的固定开销。
+          // 执行仍走全量注册表（this.opts.tools.call），仅「发送给 LLM 的 schema」做裁剪。
+          const allSchemas = this.opts.tools.schemas();
+          let stepTools = allSchemas;
+          const dynamicOn = process.env.DYNAMIC_TOOLS !== 'false';
+          if (dynamicOn && allSchemas.length > 0) {
+            const latestUser = [...messages].reverse().find((m) => m.role === 'user');
+            const input = typeof latestUser?.content === 'string' ? latestUser.content : '';
+            const topK = Number(process.env.DYNAMIC_TOOL_TOPK ?? 8) || 8;
+            // 把本 run 已用过的工具并入硬允许，保证多步任务后续步骤仍可调用。
+            const allow = new Set(this.opts.allowTools ?? []);
+            for (const t of usedTools) allow.add(t);
+            const subset = selectToolsForInput(allSchemas, input, {
+              allowTools: [...allow],
+              topK,
+            });
+            // 安全网：若输入看起来是真实任务（含疑问或较长）但子集为空，回退全量，
+            // 避免漏发必要工具导致质量退化；问候/寒暄类短输入则保持最小子集。
+            const looksLikeTask = input.length > 12 || /[?？]/.test(input);
+            stepTools = subset.length === 0 && looksLikeTask ? allSchemas : subset;
+          }
           emit({
             type: 'llm:call',
             step: steps,
             messageCount: messages.length,
-            toolCount: this.opts.tools.schemas().length,
+            toolCount: stepTools.length,
           });
 
           // 用 Promise.race 让「中止」能打断一个永不 settles 的 LLM 调用，
@@ -277,7 +312,7 @@ export class AgentHarness {
           // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
           // 保证聊天 UI 始终能拿到可渲染的增量事件。
           let streamedTokens = false;
-          const llmPromise = this.opts.llm(messages, this.opts.tools.schemas(), {
+          const llmPromise = this.opts.llm(messages, stepTools, {
             signal,
             ...(this.opts.streamTokens
               ? {
@@ -318,6 +353,25 @@ export class AgentHarness {
               runId,
             });
           }
+          // 本地拆解四项占比（启发式估算，仅用于链路可视化；权威值仍以 provider 的 usage 为准）。
+          // 系统在「系统提示」项，工具 schema 在「工具」项，其余消息累计为「历史」，
+          // 模型本次输出（含 tool_calls 参数）计入「输出」项，便于定位高 token 消耗的固定开销来源。
+          let estSystem = 0;
+          let estHistory = 0;
+          for (const m of messages) {
+            const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+            if (m.role === 'system') estSystem += estimateTokens(c);
+            else estHistory += estimateTokens(c);
+          }
+          const estTools = estimateToolsTokens(stepTools);
+          let completionText = resp.content ?? '';
+          if (resp.tool_calls) {
+            for (const tc of resp.tool_calls) {
+              completionText +=
+                ' ' + (typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {}));
+            }
+          }
+          const estCompletion = estimateTokens(completionText);
           // 仅在拿到 usage 时发出 run:cost（mock / 不返回用量的响应不刷屏）。
           if (resp.usage) {
             emit({
@@ -329,6 +383,7 @@ export class AgentHarness {
               cumulativeTokens: runTokens,
               cumulativeCost: runCost,
               priced: estimate.found,
+              estTokens: { system: estSystem, tools: estTools, history: estHistory, completion: estCompletion },
               ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
             });
           }
@@ -401,6 +456,8 @@ export class AgentHarness {
             if (signal.aborted) {
               return abortedMessage(signal);
             }
+            // 记录已用工具，供后续步骤动态选择时并入硬允许集（见本步 llm:call 前）。
+            usedTools.add(call.name);
             const argGuard = checkToolArgs(call.name, call.arguments, this.opts.guardrailPolicy);
             let result: unknown;
             let errored = false;

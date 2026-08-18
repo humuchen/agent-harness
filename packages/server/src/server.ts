@@ -1012,12 +1012,22 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
       case 'run:cost': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
+        const est = ev.estTokens;
+        const estTotal = est ? est.system + est.tools + est.history + est.completion : 0;
         traceNode(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
             cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
             priced: ev.priced ? 'true' : 'false',
             ...(ev.model ? { model: String(ev.model) } : {}),
+            ...(est
+              ? {
+                  系统: String(est.system),
+                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  输出: `${est.completion}`,
+                }
+              : {}),
           },
         });
         break;

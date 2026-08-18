@@ -349,7 +349,10 @@ export async function assembleAgent(
   }
 
   // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
-  const skillCatalog = skillRegistry.describeForPrompt();
+  // 优化：问候/寒暄等明显不需要技能的输入，仅注入一行桩（id 列表），
+  // 避免把 4+ 个技能说明无谓塞进系统提示（占 ~200-400 tokens）。
+  const skillTriggered = userInput ? skillRegistry.hasTriggerMatch(userInput) : false;
+  const skillCatalog = skillRegistry.describeForPrompt(!skillTriggered);
   const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
   // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
   const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
@@ -451,6 +454,9 @@ export async function assembleAgent(
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
     // P0.3：租户级护栏策略覆盖（含出网管控）。
     ...(guardrailPolicy ? { guardrailPolicy } : {}),
+    // 动态工具选择：把 AgentCard.assembly.tools 作为硬允许集透传给 harness，
+    // 配合核心 selectToolsForInput 按意图裁剪其余工具（问候→最小子集）。
+    ...(assemblyTools && assemblyTools.length ? { allowTools: assemblyTools } : {}),
   // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，

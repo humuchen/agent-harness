@@ -56,6 +56,8 @@ interface Insights {
   costPriced?: string;
   cacheHitRate?: string;
   cacheHits?: string;
+  /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
+  costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
   retrievals: Array<{ label: string; result: string }>;
 }
 
@@ -835,6 +837,46 @@ export class AhChat extends LitElement {
         margin-top: 10px;
         border-top: 1px dashed var(--ah-border);
         padding-top: 10px;
+      }
+      .ins-breakdown {
+        margin-top: 10px;
+        border-top: 1px dashed var(--ah-border);
+        padding-top: 10px;
+      }
+      .ins-bd-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ah-accent, #2997ff);
+        margin-bottom: 8px;
+      }
+      .ins-bd-row {
+        margin-bottom: 7px;
+      }
+      .ins-bd-head {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+      .ins-bd-name {
+        color: var(--ah-text-muted);
+      }
+      .ins-bd-val {
+        color: var(--ah-text);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .ins-bd-track {
+        height: 6px;
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--ah-border) 60%, transparent);
+        overflow: hidden;
+      }
+      .ins-bd-fill {
+        height: 100%;
+        border-radius: 4px;
+        background: linear-gradient(90deg, var(--ah-accent, #2997ff), color-mix(in srgb, var(--ah-accent, #2997ff) 55%, #34c759));
+        transition: width 0.35s ease;
       }
       .ins-ret-title {
         font-size: 11px;
@@ -2492,11 +2534,37 @@ export class AhChat extends LitElement {
       costPriced: cost?.meta?.priced,
       cacheHitRate: cacheNode?.meta?.命中率,
       cacheHits: cacheNode?.meta?.命中,
+      costBreakdown: this.parseCostBreakdown(cost?.meta),
       retrievals: retrievals.map((n) => ({
         label: n.label,
         result: n.result ?? ''
       }))
     };
+  }
+
+  /**
+   * 从 cost 节点的 meta 解析「系统 / 工具 / 历史 / 输出」四项 token 占比。
+   * meta 中 工具/历史 的值形如 "320 (45%)"，系统/输出 为纯数字；这里统一提取数字与百分比。
+   */
+  private parseCostBreakdown(meta?: Record<string, string>): Insights['costBreakdown'] {
+    if (!meta) return undefined;
+    const order: Array<[string, string]> = [
+      ['系统', 'system'],
+      ['工具', 'tools'],
+      ['历史', 'history'],
+      ['输出', 'completion'],
+    ];
+    const out: Array<{ label: string; tokens: number; pct: number }> = [];
+    for (const [cn, _] of order) {
+      const raw = meta[cn];
+      if (raw == null) continue;
+      const num = parseInt(raw, 10);
+      if (Number.isNaN(num)) continue;
+      const pctMatch = raw.match(/\((\d+)%\)/);
+      const pct = pctMatch ? Number(pctMatch[1]) : 0;
+      out.push({ label: cn, tokens: num, pct });
+    }
+    return out.length ? out : undefined;
   }
 
   /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
@@ -2536,6 +2604,24 @@ export class AhChat extends LitElement {
           </div>`
         )}
       </div>
+      ${ins.costBreakdown
+        ? html`<div class="ins-breakdown">
+            <div class="ins-bd-title">Token 拆解</div>
+            <div class="ins-bd-bars">
+              ${ins.costBreakdown.map(
+                (b) => html`<div class="ins-bd-row">
+                  <div class="ins-bd-head">
+                    <span class="ins-bd-name">${escapeHtml(b.label)}</span>
+                    <span class="ins-bd-val">${escapeHtml(String(b.tokens))} tok · ${escapeHtml(String(b.pct))}%</span>
+                  </div>
+                  <div class="ins-bd-track">
+                    <div class="ins-bd-fill" style=${`width:${Math.max(2, b.pct)}%`}></div>
+                  </div>
+                </div>`
+              )}
+            </div>
+          </div>`
+        : nothing}
       ${ins.retrievals.length
         ? html`<div class="ins-retrieval">
             <div class="ins-ret-title">检索内容</div>

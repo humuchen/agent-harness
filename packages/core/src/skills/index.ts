@@ -67,10 +67,16 @@ export class SkillRegistry {
     return out;
   }
 
-  /** 生成注入系统提示词的「可用技能」清单段落；无技能时返回空串。 */
-  describeForPrompt(): string {
+  /** 生成注入系统提示词的「可用技能」清单段落；无技能时返回空串。
+   * @param compact 为 true 时仅输出一行桩（id 列表），用于问候/寒暄等
+   *   明显不需要技能的输入，避免把 4+ 个技能说明无谓塞进系统提示。 */
+  describeForPrompt(compact = false): string {
     const list = this.enabledList();
     if (!list.length) return '';
+    if (compact) {
+      const ids = list.map((s) => s.id).join(' / ');
+      return `可用技能：${ids}（涉及对应需求时自动激活，无需主动声明）。`;
+    }
     const lines = list.map((s) => {
       const toolLine = s.tools && s.tools.length ? `（关联工具：${s.tools.join('、')}）` : '';
       return `- ${s.id}：${s.description}${toolLine}`;
@@ -80,6 +86,12 @@ export class SkillRegistry {
       '当任务适合时，先调用 builtin__use_skill 激活对应技能以获取执行指引，再使用其关联工具。\n' +
       lines.join('\n')
     );
+  }
+
+  /** 输入是否命中任一已启用技能的触发词（用于按需注入完整技能目录）。 */
+  hasTriggerMatch(input: string): boolean {
+    if (!input) return false;
+    return this.matchTriggers(input).length > 0;
   }
 }
 
