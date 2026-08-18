@@ -556,7 +556,7 @@ export const sharedStyles = css`
     color: var(--ah-text-muted);
     background: var(--ah-surface-3);
     border-color: var(--ah-border);
-    font-family: var(--ah-mono, monospace);
+    font-family: var(--ah-font-mono);
     max-width: 180px;
     overflow: hidden;
     text-overflow: ellipsis;

@@ -96,9 +96,9 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-1);
         min-height: 0;
       }
-      .side-head {
-        padding: 14px 14px 10px;
-      }
+      // .side-head {
+      //   padding: 14px 14px 10px;
+      // }
       .new-btn {
         width: 100%;
         justify-content: center;
@@ -197,13 +197,14 @@ export class AhChat extends LitElement {
       .toggle {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        font-size: 12.5px;
-        color: var(--ah-text-muted);
-        padding: 6px 12px;
-        border-radius: 999px;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 50%;
         border: 1px solid var(--ah-border);
         background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
         cursor: pointer;
         user-select: none;
         transition: color 0.15s ease, border-color 0.15s ease,
@@ -212,10 +213,11 @@ export class AhChat extends LitElement {
       .toggle:hover {
         border-color: var(--ah-accent, #2997ff);
         color: var(--ah-text);
+        background: var(--ah-surface-3);
       }
       .toggle svg {
-        width: 14px;
-        height: 14px;
+        width: 15px;
+        height: 15px;
         flex: 0 0 auto;
       }
       .toggle.on {
@@ -1245,17 +1247,12 @@ export class AhChat extends LitElement {
           padding: 4px 8px;
         }
         .toggle {
-          padding: 5px 9px;
-          font-size: 11.5px;
-          gap: 5px;
+          width: 28px;
+          height: 28px;
         }
         .toggle svg {
-          width: 12px;
-          height: 12px;
-        }
-        /* 联网搜索为 UI 占位，窄屏隐藏以节省头部空间 */
-        .toggle.web {
-          display: none;
+          width: 14px;
+          height: 14px;
         }
         .composer-wrap {
           padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
@@ -2511,7 +2508,7 @@ export class AhChat extends LitElement {
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
     return html`
-      <div class="sidebar">
+      <div class="sidebar ${this.sidebarOpen ? 'open' : ''}">
         <div class="side-head">
           <button class="primary new-btn" @click=${() => this.newChat()}>
             ＋ 新对话
@@ -2519,7 +2516,7 @@ export class AhChat extends LitElement {
         </div>
         <div class="session-list">
           ${this.sessions.length === 0
-            ? html`<p class="muted" style="padding:8px 10px">
+            ? html`<p class="muted">
                 暂无会话，发送消息即自动创建。
               </p>`
             : this.sessions.map(
@@ -2581,7 +2578,7 @@ export class AhChat extends LitElement {
           <select
             class="agent-select"
             title="选择业务 Agent（默认走通用 Agent）"
-            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border,#3a3f4b);background:var(--ah-input,#1b1f27);color:inherit;padding:0 6px"
+            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border);background:var(--ah-surface-2);color:var(--ah-text);padding:0 6px"
             .value=${this.agentId}
             @change=${(e: Event) =>
               (this.agentId = (e.target as HTMLSelectElement).value)}
@@ -2590,11 +2587,13 @@ export class AhChat extends LitElement {
               (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
             )}
           </select>
-          <span
+          <button
             class="toggle ${this.deepThink ? 'on' : ''}"
-            title="显示 / 隐藏深度思考区"
+            title="深度思考"
+            aria-label="深度思考"
             @click=${() => (this.deepThink = !this.deepThink)}
-            ><svg
+          >
+            <svg
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -2605,14 +2604,16 @@ export class AhChat extends LitElement {
               <path d="M9 18h6M10 21h4" />
               <path
                 d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
-              /></svg
-            >深度思考</span
-          >
-          <span
+              />
+            </svg>
+          </button>
+          <button
             class="toggle ${this.web ? 'on' : ''}"
-            title="UI 占位：暂未接入后端联网开关"
+            title="联网搜索（开发中）"
+            aria-label="联网搜索（开发中）"
             @click=${() => (this.web = !this.web)}
-            ><svg
+          >
+            <svg
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -2623,9 +2624,9 @@ export class AhChat extends LitElement {
               <circle cx="12" cy="12" r="9" />
               <path
                 d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"
-              /></svg
-            >联网搜索</span
-          >
+              />
+            </svg>
+          </button>
         </div>
 
         <div class="scroll" ${ref(this.scrollRef)}>
