@@ -122,7 +122,7 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-3, var(--ah-surface-2));
         transition: background 0.15s ease;
       }
-      .session::last-child {
+      .session:last-child {
         margin-bottom: 0;
       }
       .session:hover {
@@ -145,6 +145,9 @@ export class AhChat extends LitElement {
         border-radius: 50%;
         background: var(--ah-text-muted);
         flex: 0 0 auto;
+      }
+      .session.active .dot {
+        background: var(--ah-success);
       }
       .session .acts {
         display: none;

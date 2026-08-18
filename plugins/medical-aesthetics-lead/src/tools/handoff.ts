@@ -1,13 +1,15 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { handoffLead } from '../store';
+import { handoffLead } from '../services/lead-service';
+import { errorResult } from '../infra/errors';
 
 /**
- * lead_handoff：把高意向/复杂诉求客资转给真人咨询师（A2A 或工单），标记 handedOff。
+ * lead_handoff：把高意向/复杂诉求客资转给真人咨询师（标记 handedOff + 推进到 arrived），
+ * 并异步同步 CRM。不再"无论结果都返回 ok"，同步状态如实反映（pending/disabled）。
  */
 export function registerHandoffTool(tools: ToolRegistry): void {
   tools.register(
     'lead_handoff',
-    '当客资意向高、诉求复杂或需真人跟进时，转接咨询师/医助，并标记 handedOff。',
+    '当客资意向高、诉求复杂或需真人跟进时，转接咨询师/医助，标记 handedOff 并推进到 arrived 阶段（真实落库，异步同步 CRM）。',
     {
       type: 'object',
       properties: {
@@ -20,10 +22,14 @@ export function registerHandoffTool(tools: ToolRegistry): void {
       required: ['leadId'],
     },
     async (args: Record<string, unknown>) => {
-      const leadId = String(args.leadId ?? '').trim();
-      if (!leadId) return { ok: false, error: 'leadId required' };
-      handoffLead(leadId, args.reason ? String(args.reason) : undefined);
-      return { ok: true, leadId, handedOff: true, message: '已转交咨询师跟进' };
+      try {
+        return handoffLead({
+          leadId: String(args.leadId ?? ''),
+          reason: args.reason ? String(args.reason) : undefined,
+        });
+      } catch (e) {
+        return errorResult(e);
+      }
     }
   );
 }
