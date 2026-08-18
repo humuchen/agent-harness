@@ -35,6 +35,8 @@ export interface TokenUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  /** 供应商侧 prompt 缓存命中的 token 数（OpenAI/OpenRouter 经 `prompt_tokens_details.cached_tokens` 返回）。用于缓存命中率统计。 */
+  cached_tokens?: number;
 }
 
 export interface LLMResponse {

@@ -10,7 +10,7 @@ import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, getTokenCacheStats, getTokenCacheHistory, startTokenCacheAggregation, setTokenCacheAlertSink, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 // 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
@@ -352,11 +352,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return sendJson(res, { presets: mcpManager.presets() });
     }
     if (req.method === 'GET' && path === '/api/metrics') {
-      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列）。受保护，需令牌。
+      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列 / token 缓存命中率）。受保护，需令牌。
       const store = getMemoryStore();
       return sendJson(
         res,
-        { ...getMetricsSnapshot(), queue: runQueue.stats(), memory: { backend: store.kind } },
+        {
+          ...getMetricsSnapshot(),
+          queue: runQueue.stats(),
+          memory: { backend: store.kind },
+          tokenCache: getTokenCacheStats(),
+          tokenCacheHistory: getTokenCacheHistory(),
+        },
         req
       );
     }
@@ -1628,6 +1634,9 @@ function setupAlerting(): void {
       for (const s of sinks) await s(a);
     });
   }
+  // Token 缓存命中率统计：复用同一套告警通道（webhook / 文件），并启动周期聚合。
+  setTokenCacheAlertSink(emitAlert);
+  startTokenCacheAggregation();
 }
 
 function installCrashGuard(): void {

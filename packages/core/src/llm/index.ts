@@ -8,3 +8,5 @@ export * from './config';
 // 成本记账（模型单价表 + 估算）与故障转移（熔断 + provider 切换）。
 export * from './pricing';
 export * from './failover';
+// Token 缓存命中率指标统计（实时计数 + 周期聚合 + 阈值告警）。
+export * from './token-cache-metrics';

@@ -1,4 +1,5 @@
 import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types';
+import { recordTokenCacheQuery } from './token-cache-metrics';
 
 /**
  * OpenAI 兼容 Chat Completions 适配器之间共享的纯函数。
@@ -74,16 +75,29 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   let last: LLMResponse = { content: '', tool_calls: [] };
   // 跨重试累计 token 用量：每次重试都重发全量 prompt，provider 对每次都计费，
   // 但旧实现只取最后一次响应的 usage → 重试成本被低估。这里把各次 usage 累加。
-  const usageAcc = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const usageAcc = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 };
 
   // 可选 prompt caching：把系统提示词标记为可缓存（provider 不支持时忽略该字段）。
   // 默认关闭，避免个别严格校验未知字段的 provider 报错；设 PROMPT_CACHE=true 开启。
-  if (process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1') {
+  // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
+  const caching = process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1';
+  if (caching) {
     const msgs = (body as any).messages;
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
       msgs[0].cache_control = { type: 'ephemeral' };
     }
   }
+
+  // 仅在开启 prompt caching 时记录缓存查询（关闭则 provider 不会缓存，记了会虚低命中率）。
+  const reportCache = () => {
+    if (!caching) return;
+    recordTokenCacheQuery({
+      hit: usageAcc.cached_tokens > 0,
+      cachedTokens: usageAcc.cached_tokens,
+      promptTokens: usageAcc.prompt_tokens,
+      model: last.model,
+    });
+  };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -120,12 +134,17 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
       usageAcc.completion_tokens += u.completion_tokens ?? 0;
       usageAcc.total_tokens +=
         u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
+      // 供应商侧 prompt 缓存命中 token 数（OpenAI / OpenRouter 字段名一致；Anthropic 经 OpenRouter 为 cached_prompt_tokens）。
+      usageAcc.cached_tokens +=
+        Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || 0;
     }
     const usage: TokenUsage | undefined = u
       ? {
           prompt_tokens: u.prompt_tokens ?? 0,
           completion_tokens: u.completion_tokens ?? 0,
           total_tokens: u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0),
+          cached_tokens:
+            Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || undefined,
         }
       : undefined;
     // 实际使用的模型（OpenRouter 多模型降级时会与请求模型不同）；用于按模型计价与可观测。
@@ -136,10 +155,12 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;
     if (!degenerate || attempt === retries) {
       // 返回累加后的用量，避免重试成本被低估。
+      reportCache();
       return { ...last, usage: u ? { ...usageAcc } : undefined };
     }
     await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
   }
+  reportCache();
   return { ...last, usage: last.usage ? { ...usageAcc } : undefined };
 }
 
@@ -159,6 +180,14 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     stream: true,
     stream_options: { include_usage: true },
   };
+  // 与一次性路径一致：开启 PROMPT_CACHE 时给系统提示词打 cache_control，让流式请求也能命中供应商侧 prompt 缓存。
+  const caching = process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1';
+  if (caching) {
+    const msgs = (streamBody as any).messages;
+    if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
+      msgs[0].cache_control = { type: 'ephemeral' };
+    }
+  }
   const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers,
@@ -287,6 +316,17 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       arguments: safeParseArgs(t.args),
     }));
 
+  // 流式路径同样在开启 PROMPT_CACHE 时记录一次缓存查询与命中情况。
+  if (caching) {
+    const cached = usage?.cached_tokens ?? 0;
+    recordTokenCacheQuery({
+      hit: cached > 0,
+      cachedTokens: cached,
+      promptTokens: usage?.prompt_tokens ?? 0,
+      model: usedModel,
+    });
+  }
+
   return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel };
 }
 
@@ -296,5 +336,11 @@ function toUsage(u: any): TokenUsage | undefined {
   const prompt = Number(u.prompt_tokens) || 0;
   const completion = Number(u.completion_tokens) || 0;
   const total = Number(u.total_tokens) || prompt + completion;
-  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+  const cached = Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || 0;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+    cached_tokens: cached || undefined,
+  };
 }
