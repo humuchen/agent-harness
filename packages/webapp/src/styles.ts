@@ -615,6 +615,26 @@ export const sharedStyles = css`
     border: 1px solid var(--ah-border);
     color: var(--ah-text-muted);
   }
+  .note {
+    padding: 8px 12px;
+    border-radius: var(--ah-radius-sm);
+    font-size: 12px;
+    line-height: 1.6;
+    background: var(--ah-surface-3);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+  }
+  .note code {
+    font-family: var(--ah-font-mono);
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--ah-radius-sm);
+    background: var(--ah-surface-1);
+    color: var(--ah-accent);
+  }
+  .note b {
+    color: var(--ah-text);
+  }
   .kv {
     display: flex;
     flex-direction: column;

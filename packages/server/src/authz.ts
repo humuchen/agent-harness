@@ -120,6 +120,21 @@ function loadMatrix(): Record<Role, Action[]> {
   }
 }
 
+/**
+ * 默认（未强制鉴权 / 开放 / 降级 fallback）模式的配置概览。
+ * 即便当前不强制鉴权，也把「默认角色权限矩阵」作为参考一并返回，
+ * 避免 /api/roles 在开放模式下返回空 roles / 空 permissions，导致前端角色与权限列表
+ * 整列缺失（即「数据展示不全」）。前端会依据 mode==='off' 标注「未强制」提示。
+ */
+function defaultDescribe(): AuthDescribe {
+  return {
+    mode: 'off',
+    provider: 'token',
+    roles: Object.keys(DEFAULT_MATRIX) as Role[],
+    permissions: DEFAULT_MATRIX,
+  };
+}
+
 // 非密码学哈希，仅用于日志/展示截断，安全校验走下面的常量比较。
 function tokenFingerprint(t: string): string {
   let h = 0;
@@ -202,10 +217,11 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   );
 
   // 全放行（开放语义）：本地无 key 且无 RBAC 的演示态，或 requireAuth=false。
+  // describe() 仍返回默认角色权限矩阵作为参考（见 defaultDescribe），保证前端列表完整。
   const openAuth: Authorizer = {
     authenticate: () => ({ token: '', sub: 'anon', role: 'admin' }),
     can: () => true,
-    describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
+    describe: defaultDescribe,
   };
 
   // ── 降级模式：requireAuth 触发、但未接入任何 RBAC 凭证 ──
@@ -265,9 +281,10 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   }
 
   // token 模式（默认）：必须有静态令牌或 OPENROUTER_API_KEY，否则全拒绝（fail-closed）。
+  // 无任何凭证时的 describe 同样返回默认矩阵参考，保证前端角色列表完整。
   return staticAuth ?? {
     authenticate: () => null,
     can: () => false,
-    describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
+    describe: defaultDescribe,
   };
 }

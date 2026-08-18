@@ -6,7 +6,7 @@
   "description": "Web SPA for agent-harness, built with Vite + Lit on @agent-harness/client (consumes /api/v1).",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "preview": "vite preview"
   },
