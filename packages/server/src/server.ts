@@ -11,6 +11,8 @@ import { envPipeline } from './env-pipeline';
 import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
 import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, getTokenCacheStats, getTokenCacheHistory, startTokenCacheAggregation, setTokenCacheAlertSink, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+// 错误明细存储（展示「错误数量 + 具体错误信息」）。
+import { getErrorLog, getErrorSummary, formatErrorReport, type ErrorRecord } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 // 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
@@ -320,6 +322,31 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
       return sendJson(res, buildState());
     }
+    // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
+    if (req.method === 'GET' && path === '/errors') {
+      const ctx = await guard(req, res, 'errors:read');
+      if (!ctx) return;
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+      res.end(renderErrorsHtml());
+      return;
+    }
+    // 错误明细 JSON 接口：count（错误数量）+ summary（分布）+ errors（具体明细列表）。
+    // 支持 ?limit=N（默认 200，取最近 N 条）、?full=1（不限条数）、?format=text（文本报告）。
+    if (req.method === 'GET' && path === '/api/errors') {
+      const ctx = await guard(req, res, 'errors:read');
+      if (!ctx) return;
+      const limitRaw = Number(url.searchParams.get('limit'));
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200;
+      const full = url.searchParams.get('full') === '1';
+      const fmt = url.searchParams.get('format');
+      if (fmt === 'text') {
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...corsHeaders(req) });
+        res.end(formatErrorReport({ limit: full ? undefined : limit }));
+        return;
+      }
+      const list = getErrorLog({ limit: full ? undefined : limit });
+      return sendJson(res, { count: list.length, summary: getErrorSummary(), errors: list }, req);
+    }
     if (req.method === 'GET' && path === '/api/auth/config') {
       // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
       // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
@@ -362,6 +389,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
           memory: { backend: store.kind },
           tokenCache: getTokenCacheStats(),
           tokenCacheHistory: getTokenCacheHistory(),
+          // 错误数量与最近明细（与 /api/errors 同源，便于一处查看）。
+          errors: getErrorSummary(),
+          recentErrors: getErrorLog({ limit: 20 }),
         },
         req
       );
@@ -726,6 +756,134 @@ function serveHtml(res: ServerResponse): void {
   // webapp 未构建时的兜底：直接返回 500 并提示先构建前端。
   res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
   res.end('Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build');
+}
+
+/** HTML 转义，防 XSS（错误信息可能含用户 / 第三方内容）。 */
+function esc(s: unknown): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * 服务端渲染「系统错误」展示页（深色主题，与运行时面板一致）：
+ * 顶部数量横幅（错误总数 + 按名称分布），下方逐条明细表格
+ * （序号 / 时间 / 级别 / 名称 / 类型 / 消息 / 堆栈+上下文）。
+ * 数据与 /api/errors 同源，刷新即重新拉取最新状态。
+ */
+function renderErrorsHtml(): string {
+  const summary = getErrorSummary();
+  const list = getErrorLog({ limit: 500 });
+  const pills = Object.entries(summary.byName)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span class="pill">${esc(k)} <b>${v}</b></span>`)
+    .join('');
+  const rows = list.length
+    ? list
+        .slice()
+        .reverse()
+        .map((e: ErrorRecord, idx: number) => {
+          const stack = e.stack
+            ? `<details class="stack"><summary>堆栈跟踪</summary><pre>${esc(e.stack)}</pre></details>`
+            : '';
+          const ctx =
+            e.fields && Object.keys(e.fields).length
+              ? `<div class="ctx">上下文：${esc(JSON.stringify(e.fields))}</div>`
+              : '';
+          return `<tr>
+      <td class="num">${list.length - idx}</td>
+      <td class="mono">${esc(e.ts)}</td>
+      <td><span class="sev sev-${esc(e.severity)}">${esc(e.severity)}</span></td>
+      <td class="name">${esc(e.name)}</td>
+      <td class="type">${esc(e.type ?? '-')}</td>
+      <td class="msg">${esc(e.message)}</td>
+      <td class="extra">${stack}${ctx}</td>
+    </tr>`;
+        })
+        .join('')
+    : `<tr><td colspan="7" class="empty">暂无错误记录</td></tr>`;
+  const span =
+    summary.firstSeen != null && summary.lastSeen != null
+      ? `<div class="span">时间跨度：${esc(new Date(summary.firstSeen).toISOString())} ~ ${esc(
+          new Date(summary.lastSeen).toISOString()
+        )}</div>`
+      : '';
+  return `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>系统错误 · Agent Harness</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0B0E14; color: #C9D1D9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #E6EDF3; font-weight: 600; }
+  .sub { color: #8B949E; margin: 0 0 18px; }
+  .banner {
+    background: #121622; border: 1px solid #1F2633; border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .count { font-size: 34px; font-weight: 700; color: #FF6B6B; line-height: 1; }
+  .count.zero { color: #3FB950; }
+  .label { color: #8B949E; margin-left: 8px; font-size: 13px; }
+  .pills { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill { background: #0B0E14; border: 1px solid #1F2633; border-radius: 999px; padding: 4px 12px; font-size: 12px; color: #C9D1D9; }
+  .pill b { color: #2997FF; margin-left: 4px; }
+  .span { color: #8B949E; margin-top: 10px; font-size: 12px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+  button, .btn {
+    background: #1F2633; color: #C9D1D9; border: 1px solid #2A3340; border-radius: 6px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+  }
+  button:hover, .btn:hover { background: #2A3340; }
+  table { width: 100%; border-collapse: collapse; background: #121622; border: 1px solid #1F2633; border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #1A2030; vertical-align: top; }
+  th { background: #0E1320; color: #8B949E; font-weight: 600; font-size: 12px; position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  td.num { color: #8B949E; width: 36px; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  td.name { font-family: ui-monospace, monospace; font-size: 12px; color: #79C0FF; white-space: nowrap; }
+  td.type { font-family: ui-monospace, monospace; font-size: 12px; color: #D2A8FF; white-space: nowrap; }
+  td.msg { color: #E6EDF3; }
+  .sev { font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .sev-error { background: rgba(255,107,107,0.15); color: #FF8787; }
+  .sev-fatal { background: rgba(255,71,87,0.2); color: #FF5252; }
+  .stack { margin-top: 6px; }
+  .stack summary { cursor: pointer; color: #8B949E; font-size: 12px; }
+  .stack pre { margin: 6px 0 0; padding: 10px; background: #0B0E14; border: 1px solid #1A2030; border-radius: 6px; overflow-x: auto; font-size: 11px; color: #8B949E; }
+  .ctx { margin-top: 6px; font-size: 11px; color: #6E7681; word-break: break-all; }
+  .empty { text-align: center; color: #8B949E; padding: 32px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>系统错误明细</h1>
+  <p class="sub">错误数量与每条错误的具体信息（类型 / 消息 / 时间 / 堆栈 / 上下文）同源展示。</p>
+  <div class="banner">
+    <div><span class="count ${summary.total === 0 ? 'zero' : ''}">${summary.total}</span><span class="label">条系统错误</span></div>
+    ${span}
+    <div class="pills">${pills || '<span class="pill">无</span>'}</div>
+  </div>
+  <div class="toolbar">
+    <button onclick="location.reload()">刷新</button>
+    <a class="btn" href="/api/errors?format=text" target="_blank">复制为文本报告</a>
+    <a class="btn" href="/api/errors?full=1" target="_blank">原始 JSON（全量）</a>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>时间</th><th>级别</th><th>名称</th><th>类型</th><th>消息</th><th>堆栈 / 上下文</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</div>
+</body>
+</html>`;
 }
 
 /** Web SPA 构建产物目录（packages/webapp/dist）；未构建则返回 null。 */

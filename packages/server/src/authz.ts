@@ -29,6 +29,7 @@ export type Action =
   | 'memory:read'
   | 'memory:clear'
   | 'metrics:read'
+  | 'errors:read'
   | 'jobs:read'
   | 'sessions:read'
   | 'eval:run'
@@ -85,7 +86,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
   admin: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
-    'shell:approve', 'memory:read', 'memory:clear', 'metrics:read',
+    'shell:approve', 'memory:read', 'memory:clear', 'metrics:read', 'errors:read',
     'jobs:read', 'sessions:read',     'eval:run', 'recipe:save', 'recipe:read',
     'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
@@ -98,7 +99,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'a2a:receive', 'a2a:send', 'plugin:manage',
   ],
   viewer: [
-    'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
+    'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'errors:read', 'jobs:read', 'sessions:read',
     'recipe:read', 'policy:read', 'agent:read', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send',
   ],
@@ -162,10 +163,14 @@ export class RoleBasedAuthorizer implements Authorizer {
   }
 
   describe(): AuthDescribe {
+    // 角色列表以权限矩阵（权限数据的权威来源）的键为准派生，确保接口返回的 roles
+    // 与 permissions 永远一致、完整。避免「硬编码角色列表」与「实际权限矩阵」两处维护
+    // 导致不同步、从而在 UI 上漏列某些角色的权限数据。
+    const roles = Object.keys(this.matrix) as Role[];
     return {
       mode: this.tokens.size > 0 ? 'on' : 'off',
       provider: 'token',
-      roles: ['admin', 'operator', 'viewer'],
+      roles,
       permissions: this.matrix,
       degraded: this.degraded,
     };

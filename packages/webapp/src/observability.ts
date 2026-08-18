@@ -89,17 +89,36 @@ export class AhObservability extends LitElement {
     }
   }
 
-  /** 把所有角色的动作并集收集为矩阵行（按字母序）。 */
+  /**
+   * 角色列（矩阵表头与单元格的数据来源）。
+   * 优先使用接口返回的 `roles`；当它缺失 / 为空（如接口返回被截断、字段缺失）时，
+   * 回退到从 `permissions` 的键推导 —— 因为权限数据才是角色集合的权威来源，
+   * 这样即便 `roles` 字段不完整，凡拥有权限数据的角色都不会被漏列。
+   */
+  private roleColumns(): string[] {
+    const r = this.roles;
+    if (!r) return [];
+    if (Array.isArray(r.roles) && r.roles.length > 0) return r.roles;
+    if (r.permissions && typeof r.permissions === 'object') return Object.keys(r.permissions);
+    return [];
+  }
+
+  /** 把所有角色的动作并集收集为矩阵行（按字母序）。对缺失 / 非数组字段做防御。 */
   private matrixRows(): { action: string; byRole: Record<string, boolean> }[] {
-    if (!this.roles) return [];
+    const r = this.roles;
+    if (!r || !r.permissions) return [];
+    const roles = this.roleColumns();
     const actions = new Set<string>();
-    for (const list of Object.values(this.roles.permissions)) list.forEach((a) => actions.add(a));
+    for (const list of Object.values(r.permissions)) {
+      // 接口可能返回 null / 非数组（字段缺失或数据不完整），需防御。
+      if (Array.isArray(list)) list.forEach((a) => actions.add(a));
+    }
     return [...actions]
       .sort()
       .map((action) => ({
         action,
         byRole: Object.fromEntries(
-          this.roles!.roles.map((role) => [role, this.roles!.permissions[role]?.includes(action) ?? false])
+          roles.map((role) => [role, Array.isArray(r.permissions[role]) && r.permissions[role].includes(action)])
         ),
       }));
   }
@@ -114,6 +133,7 @@ export class AhObservability extends LitElement {
     const cost = m ? `$${m.cost.toFixed(2)}` : '—';
     const queueDepth = (m?.queue?.queued ?? j?.queue.queued ?? 0) + (m?.queue?.running ?? j?.queue.running ?? 0);
     const rows = this.matrixRows();
+    const roleCols = this.roleColumns();
 
     return html`
       <section style="border:none;background:none;box-shadow:none;padding:0">
@@ -179,7 +199,7 @@ export class AhObservability extends LitElement {
             <thead>
               <tr>
                 <th>ACTION</th>
-                ${(this.roles?.roles ?? []).map((r) => html`<th style="text-align:center">${r.toUpperCase()}</th>`)}
+                ${roleCols.map((r) => html`<th style="text-align:center">${r.toUpperCase()}</th>`)}
               </tr>
             </thead>
             <tbody>
@@ -187,13 +207,19 @@ export class AhObservability extends LitElement {
                 (row) => html`
                   <tr>
                     <td class="act">${row.action}</td>
-                    ${(this.roles?.roles ?? []).map(
+                    ${roleCols.map(
                       (r) => html`<td class="center">${row.byRole[r] ? html`<span class="check">✓</span>` : html`<span class="dash">—</span>`}</td>`
                     )}
                   </tr>
                 `
               )}
-              ${rows.length === 0 ? html`<tr><td colspan="4" class="muted">无权限数据</td></tr>` : nothing}
+              ${rows.length === 0
+                ? html`<tr><td colspan="${roleCols.length + 1}" class="muted">${
+                    this.roles && (this.roles.mode === 'off' || roleCols.length === 0)
+                      ? '鉴权未启用（开放模式）：所有请求默认拥有完整权限（等效 admin）'
+                      : '无权限数据'
+                  }</td></tr>`
+                : nothing}
             </tbody>
           </table>
         </section>

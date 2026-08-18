@@ -10,6 +10,10 @@
 
 const OTEL_API = '@opentelemetry/api';
 
+// 错误明细存储（环形缓冲）：记录每条错误的具体类型 / 消息 / 时间 / 堆栈 / 上下文。
+// 注意：errorlog 不反向依赖 telemetry，避免循环引用；计数仍由本模块负责。
+import { captureError } from './errorlog';
+
 let tracer: any = null;
 let meter: any = null;
 let initPromise: Promise<void> | null = null;
@@ -140,10 +144,23 @@ export function recordCost(amount: number, model?: string): void {
   }
 }
 
-/** 记录一次错误（按 name 维度计数，同时累计全局 errors）。 */
-export function recordError(name: string): void {
+/** 记录一次错误（按 name 维度计数，同时累计全局 errors）。
+ *  若传入 `err`，会额外把错误类型 / 消息 / 堆栈捕获进错误明细存储（见 errorlog），
+ *  从而「错误数量」与「具体错误信息」可被一并回顾。 */
+export function recordError(name: string, err?: unknown): void {
   incCounter(`error.${name}`);
   incCounter('errors');
+  let type: string | undefined;
+  let message = name;
+  let stack: string | undefined;
+  if (err instanceof Error) {
+    type = err.name || 'Error';
+    message = err.message || name;
+    stack = err.stack;
+  } else if (err !== undefined) {
+    message = String(err);
+  }
+  captureError({ name, severity: 'error', type, message, stack });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,14 +212,24 @@ export function logError(name: string, err?: unknown, fields?: Record<string, un
   incCounter(`error.${name}`);
   incCounter('errors');
   const merged: Record<string, unknown> = { ...(fields ?? {}) };
+  let type: string | undefined;
+  let message = name;
+  let stack: string | undefined;
   if (err instanceof Error) {
+    type = err.name || 'Error';
+    message = err.message;
+    stack = err.stack;
     merged.message = err.message;
     merged.stack = err.stack;
   } else if (err && typeof err === 'object') {
     Object.assign(merged, err as Record<string, unknown>);
+    message = (err as { message?: unknown }).message != null ? String((err as { message?: unknown }).message) : name;
   } else if (err !== undefined) {
     merged.detail = String(err);
+    message = String(err);
   }
+  // 同步把具体错误信息捕获进错误明细存储（type / message / stack / 上下文）。
+  captureError({ name, severity: 'error', type, message, stack, fields: merged });
   structLog('error', `error: ${name}`, merged);
 }
 
@@ -327,6 +354,16 @@ export async function emitAlert(
 ): Promise<void> {
   incCounter('alerts');
   incCounter(`alerts.${level}`);
+  // 错误级 / 致命级告警也作为系统错误捕获进明细存储，保证告警与错误可一并回顾。
+  if (level === 'error' || level === 'fatal') {
+    captureError({
+      name: `alert.${name}`,
+      severity: level === 'fatal' ? 'fatal' : 'error',
+      type: 'alert',
+      message,
+      fields,
+    });
+  }
   structLog(level === 'warn' ? 'warn' : 'error', `[alert] ${name}: ${message}`, fields);
   if (alertSink) {
     try {
@@ -349,7 +386,7 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T
     try {
       return await fn();
     } catch (err: any) {
-      recordError(name);
+      recordError(name, err);
       throw err;
     } finally {
       recordLatency(name, nowMs() - start);
