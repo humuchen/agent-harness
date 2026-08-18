@@ -166,48 +166,72 @@ export const leadDashboardView: PluginUIView = {
 
       <section class="ma-panel">
         <h3>转人工队列（认领）</h3>
-        <table class="ma-table">
-          <thead><tr><th>客资</th><th>等级</th><th>项目</th><th>认领</th></tr></thead>
-          <tbody>${handoffRows}</tbody>
-        </table>
+        <div class="ma-table-wrap">
+          <table class="ma-table">
+            <thead><tr><th>客资</th><th>等级</th><th>项目</th><th>认领</th></tr></thead>
+            <tbody>${handoffRows}</tbody>
+          </table>
+        </div>
       </section>
 
       <section class="ma-panel">
         <h3>待跟进队列（C 级 / 未转化）</h3>
-        <table class="ma-table">
-          <thead><tr><th>客资</th><th>等级</th><th>渠道</th><th>项目</th></tr></thead>
-          <tbody>${followupRows}</tbody>
-        </table>
+        <div class="ma-table-wrap">
+          <table class="ma-table">
+            <thead><tr><th>客资</th><th>等级</th><th>渠道</th><th>项目</th></tr></thead>
+            <tbody>${followupRows}</tbody>
+          </table>
+        </div>
       </section>
 
       <section class="ma-panel">
         <h3>客资明细（最近 ${recs.length} 条）</h3>
-        <table class="ma-table">
-          <thead><tr><th>ID</th><th>渠道</th><th>项目</th><th>等级</th><th>阶段</th><th>处理</th><th>片段</th><th>更新时间</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="8">暂无数据</td></tr>'}</tbody>
-        </table>
+        <div class="ma-table-wrap">
+          <table class="ma-table ma-detail">
+            <thead><tr><th>ID</th><th>渠道</th><th>项目</th><th>等级</th><th>阶段</th><th>处理</th><th>片段</th><th>更新时间</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="8">暂无数据</td></tr>'}</tbody>
+          </table>
+        </div>
       </section>
     </div>
 
     <style>
+      .ma-dash, .ma-dash * { box-sizing:border-box; }
       .ma-dash { color:#e6edf3; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
       .ma-dash h2 { font-size:18px; margin:0 0 12px; }
       .ma-dash h3 { font-size:14px; margin:0 0 10px; color:#c9d1d9; font-weight:600; }
       .ma-cards { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
-      .ma-card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:10px 14px; min-width:96px; }
+      .ma-card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:10px 14px; min-width:96px; flex:1 1 auto; }
       .ma-card-v { font-size:20px; font-weight:600; }
       .ma-card-k { font-size:12px; color:#8b949e; margin-top:2px; }
       .ma-grid { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:16px; }
       .ma-panel { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:14px; flex:1 1 280px; min-width:260px; }
-      .ma-table { width:100%; border-collapse:collapse; font-size:12px; }
+      .ma-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+      .ma-table { width:100%; border-collapse:collapse; font-size:12px; min-width:100%; }
+      .ma-table.ma-detail { min-width:720px; }
       .ma-table th, .ma-table td { text-align:left; padding:6px 8px; border-bottom:1px solid #21262d; vertical-align:top; }
-      .ma-table th { color:#8b949e; font-weight:500; }
+      .ma-table th { color:#8b949e; font-weight:500; white-space:nowrap; }
+      .ma-table td { white-space:normal; }
       .ma-snip { color:#8b949e; max-width:320px; }
       .ma-empty { color:#8b949e; font-size:13px; }
-      .ma-claim { display:flex; gap:6px; align-items:center; }
+      .ma-claim { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
       .ma-input { background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#e6edf3; padding:4px 6px; font-size:12px; width:84px; }
       .ma-btn { background:#238636; border:0; border-radius:6px; color:#fff; padding:4px 10px; font-size:12px; cursor:pointer; }
       code { background:#0d1117; padding:1px 5px; border-radius:4px; font-size:11px; }
+      @media (max-width: 600px) {
+        .ma-dash h2 { font-size:16px; }
+        .ma-card { padding:8px 12px; min-width:0; flex:0 0 calc(50% - 5px); }
+        .ma-grid { gap:10px; }
+        .ma-panel { padding:10px; min-width:0; }
+        .ma-table th, .ma-table td { padding:5px 6px; font-size:11px; }
+        .ma-table.ma-detail { min-width:560px; }
+        .ma-claim { flex-direction:column; align-items:stretch; gap:6px; }
+        .ma-claim .ma-input { width:auto; }
+        .ma-snip { max-width:none; }
+      }
+      @media (max-width: 360px) {
+        .ma-card { flex:0 0 100%; }
+      }
     </style>`;
   },
 };

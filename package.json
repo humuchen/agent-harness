@@ -14,5 +14,8 @@
     "test": "pnpm -r test",
     "server": "pnpm --filter @agent-harness/server run start"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "playwright-core": "^1.49.1"
+  }
 }
