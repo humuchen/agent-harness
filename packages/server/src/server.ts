@@ -1022,6 +1022,25 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         });
         break;
       }
+      case 'run:token-cache': {
+        traceEnsureRoot();
+        const parent = traceParent ?? traceRoot!;
+        const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
+        const tcByModel = Object.entries<{ queries: number; hits: number; hitRate: number }>(ev.byModel ?? {})
+          .map(([m, st]) => `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`)
+          .join(' · ');
+        traceNode(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
+          meta: {
+            命中率: `${tcHitPct}%`,
+            命中: `${ev.hits}/${ev.queries}`,
+            接口: String(ev.interface ?? 'prompt-cache'),
+            ...(ev.model ? { 模型: String(ev.model) } : {}),
+            ...(tcByModel ? { 分模型: tcByModel } : {}),
+          },
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`,
+        });
+        break;
+      }
       case 'verify:result': {
         traceEnsureRoot();
         traceNode(traceRoot!, 'verify', '自检', ev.passed ? 'ok' : 'error', {

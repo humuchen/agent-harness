@@ -54,6 +54,8 @@ interface Insights {
   costValue?: string;
   /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
   costPriced?: string;
+  cacheHitRate?: string;
+  cacheHits?: string;
   retrievals: Array<{ label: string; result: string }>;
 }
 
@@ -762,6 +764,9 @@ export class AhChat extends LitElement {
       }
       .tnode.kind-cost > summary .tdot {
         background: #f0a020;
+      }
+      .tnode.kind-tokencache > summary .tdot {
+        background: #2dd4bf;
       }
       .tnode.kind-verify > summary .tdot {
         background: var(--ah-success, #34c759);
@@ -1990,6 +1995,25 @@ export class AhChat extends LitElement {
         });
         break;
       }
+      case 'run:token-cache': {
+        this.ensureTraceRoot(sid);
+        const parent = tc.parent ?? tc.root!;
+        const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
+        const tcByModel = Object.entries<{ queries: number; hits: number; hitRate: number }>(ev.byModel ?? {})
+          .map(([m, st]) => `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`)
+          .join(' · ');
+        mk(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
+          meta: {
+            命中率: `${tcHitPct}%`,
+            命中: `${ev.hits}/${ev.queries}`,
+            接口: String(ev.interface ?? 'prompt-cache'),
+            ...(ev.model ? { 模型: String(ev.model) } : {}),
+            ...(tcByModel ? { 分模型: tcByModel } : {}),
+          },
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`,
+        });
+        break;
+      }
       case 'verify:result': {
         this.ensureTraceRoot(sid);
         mk(tc.root!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
@@ -2455,6 +2479,7 @@ export class AhChat extends LitElement {
     const tools = flat.filter((n) => n.kind === 'tool');
     const retrievals = flat.filter((n) => n.kind === 'retrieval');
     const cost = flat.find((n) => n.kind === 'cost');
+    const cacheNode = flat.find((n) => n.kind === 'tokencache');
     const meta = root.meta ?? {};
     return {
       model: meta.model,
@@ -2465,6 +2490,8 @@ export class AhChat extends LitElement {
       costTokens: cost?.meta?.tokens,
       costValue: cost?.meta?.cost,
       costPriced: cost?.meta?.priced,
+      cacheHitRate: cacheNode?.meta?.命中率,
+      cacheHits: cacheNode?.meta?.命中,
       retrievals: retrievals.map((n) => ({
         label: n.label,
         result: n.result ?? ''
@@ -2484,6 +2511,7 @@ export class AhChat extends LitElement {
     push('步骤', ins.steps ? String(ins.steps) : undefined);
     push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
     push('Token', ins.costTokens);
+    push('缓存命中率', ins.cacheHitRate);
     // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
     const costRaw = ins.costValue ?? '';
     const priced = ins.costPriced === 'true';

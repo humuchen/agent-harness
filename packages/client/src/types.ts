@@ -52,6 +52,7 @@ export type TraceKind =
   | 'verify'
   | 'guardrail'
   | 'budget'
+  | 'tokencache'
   | 'error';
 
 /**

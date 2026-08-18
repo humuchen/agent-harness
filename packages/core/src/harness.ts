@@ -5,6 +5,7 @@ import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
 import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
 import { estimateCost, estimateCostDetailed } from './llm/pricing';
+import { getTokenCacheStats } from './llm/token-cache-metrics';
 
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
@@ -25,6 +26,7 @@ export type HarnessEvent =
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean }
+  | { type: 'run:token-cache'; step: number; model?: string; interface: string; queries: number; hits: number; hitRate: number; cachedTokens: number; promptTokens: number; tokenHitRate: number; byModel: Record<string, { queries: number; hits: number; hitRate: number }> }
   /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
    *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
   | { type: 'run:meta'; runId: string; agentId?: string; workflowId?: string; traceId?: string; tenantId?: string; decidedBy?: string }
@@ -327,6 +329,26 @@ export class AgentHarness {
               cumulativeTokens: runTokens,
               cumulativeCost: runCost,
               priced: estimate.found,
+              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
+            });
+          }
+          // Token 缓存命中率：仅在本次 run 真正发生过缓存查询时发出
+          // （PROMPT_CACHE 开启且供应商返回 cached_tokens）。数据来自全局统计快照，
+          // 随链路一并下发，便于在调用链 trace 中排查缓存/鉴权相关性能问题。
+          const tcStats = getTokenCacheStats();
+          if (tcStats.queries > 0) {
+            emit({
+              type: 'run:token-cache',
+              step: steps,
+              model: costModel,
+              interface: 'prompt-cache',
+              queries: tcStats.queries,
+              hits: tcStats.hits,
+              hitRate: tcStats.hitRate,
+              cachedTokens: tcStats.cachedTokens,
+              promptTokens: tcStats.promptTokens,
+              tokenHitRate: tcStats.tokenHitRate,
+              byModel: tcStats.byModel,
               ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
             });
           }
