@@ -156,7 +156,8 @@ export interface AppointmentRecord {
   slotId: string;
   date: string;
   time: string;
-  status: 'booked' | 'cancelled' | 'arrived';
+  status: 'booked' | 'cancelled' | 'arrived' | 'completed';
   externalId?: string;
+  externalStatus?: string;
   createdAt: number;
 }

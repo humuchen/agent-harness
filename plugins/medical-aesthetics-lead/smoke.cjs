@@ -43,6 +43,7 @@ function assert(cond, msg) {
   console.log('[4] consultation_book（真实号源校验 + 事务防超卖）');
   const b = schedSvc.bookConsultation({ leadId: 'douyin_001', clinic: '上海静安院区', date: '2026-09-01', time: '14:30' });
   assert(b.ok && b.appointmentId, 'booking 返回真实 appointmentId');
+  const bookedAppt = b.appointmentId;
   assert(lead.getLead('douyin_001').stage === 'booked', '线索推进到 booked');
   const s1 = sched.getSlot('s1');
   assert(s1.booked === 1 && s1.remaining === 0, '号源 s1 占用 booked=1/remaining=0（防超卖）');
@@ -84,6 +85,14 @@ function assert(cond, msg) {
   console.log('[11] dbHealth 真实行数');
   const health = db.dbHealth();
   assert(health.ok && health.counts.ma_lead >= 1 && health.counts.ma_appointment >= 1, 'dbHealth 反映真实行数');
+
+  console.log('[12] 外部同步回执回填（闭环 §4.4 缺口）：HIS 单号 + 状态写回本地预约单');
+  sched.setAppointmentExternal(bookedAppt, 'HIS20260901A', 'confirmed');
+  const byExt = sched.getAppointmentByExternalId('HIS20260901A');
+  assert(byExt && byExt.appointmentId === bookedAppt, '按 HIS 外部单号反查命中本地预约单');
+  assert(byExt.externalStatus === 'confirmed', 'external_status 已写回（confirmed）');
+  const direct = sched.getAppointment(bookedAppt);
+  assert(direct.externalId === 'HIS20260901A' && direct.externalStatus === 'confirmed', '预约单同时持有 HIS 单号与状态');
 
   console.log('\nALL SMOKE CHECKS PASSED ✅');
   db.closeDb();

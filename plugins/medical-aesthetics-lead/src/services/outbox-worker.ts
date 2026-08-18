@@ -9,6 +9,7 @@
 
 import { dueBatch, markSent, markFailed, outboxStats } from '../repo/outbox-repo';
 import { markCrmSync } from '../repo/lead-repo';
+import { setAppointmentExternal } from '../repo/schedule-repo';
 import { getConfig } from '../config';
 import { CrmClient } from './crm-client';
 import { HisClient } from './his-client';
@@ -37,9 +38,10 @@ async function deliverOne(
     const client = new HisClient();
     const res = await client.createAppointment(payload as never, idempotencyKey);
     markSent(id);
-    if (res.externalId) {
-      // 外部单号回填空缺：预约单 repo 暂无按 appointmentId 反查 slot 的入口，这里仅记录到日志级别。
-      void res.externalId;
+    // HIS 回执的外部单号 + 状态写回本地预约单（闭合外部同步链路）
+    const apptId = (payload as Record<string, unknown>).appointmentId as string | undefined;
+    if (res.externalId && apptId) {
+      setAppointmentExternal(apptId, res.externalId, 'confirmed');
     }
   } else {
     // 未知 topic：直接标记已发送，避免卡死队列

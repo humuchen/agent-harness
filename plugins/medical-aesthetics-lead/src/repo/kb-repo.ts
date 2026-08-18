@@ -1,7 +1,6 @@
 /**
  * 项目知识库仓储（真实 SQL 检索）。
  *
- * 取代原 kb.ts 的 PROJECT_CORPUS 硬编码语料数组：
  * - 内容由运营经导入接口写入 ma_project，或通过外部 KB 服务（MA_KB_SOURCE=http）同步落库；
  * - searchProjects() 用参数化 LIKE 做模糊初筛 + 关键词命中加权打分（score），返回真实命中；
  * - 源码零内置业务数据，彻底消除"假知识"。库空即返回空——绝不回退到内置语料。
@@ -38,7 +37,7 @@ function rowToProject(r: Record<string, unknown>): ProjectRecord {
     faq,
     source: (r.source as string) ?? undefined,
     active: Number(r.active) === 1,
-    updatedAt: Number(r.updated_at),
+    updatedAt: Number(r.updated_at)
   };
 }
 
@@ -67,7 +66,7 @@ export function scoreProject(p: ProjectRecord, q: string): number {
     [p.summary.toLowerCase(), 2],
     [(p.indications ?? '').toLowerCase(), 2],
     [(p.recovery ?? '').toLowerCase(), 1],
-    [(p.priceRange ?? '').toLowerCase(), 1],
+    [(p.priceRange ?? '').toLowerCase(), 1]
   ];
   let score = 0;
   for (const tk of tks) {
@@ -112,7 +111,9 @@ export function searchProjects(query: string, limit = 5): ProjectRecord[] {
 export function getProject(projectId: string): ProjectRecord | null {
   return dbCall(() => {
     const row = getDb()
-      .prepare('SELECT * FROM ma_project WHERE tenant_id = ? AND project_id = ?')
+      .prepare(
+        'SELECT * FROM ma_project WHERE tenant_id = ? AND project_id = ?'
+      )
       .get(getConfig().tenantId, projectId);
     return row ? rowToProject(row) : null;
   }, '读取知识库项目');
@@ -163,8 +164,8 @@ export function upsertProject(p: ProjectRecord): void {
       price_range: p.priceRange ?? null,
       faq: JSON.stringify(p.faq ?? []),
       source: p.source ?? 'import',
-      active: (p.active ?? true) ? 1 : 0,
-      updated_at: p.updatedAt ?? Date.now(),
+      active: p.active ?? true ? 1 : 0,
+      updated_at: p.updatedAt ?? Date.now()
     });
   }, '导入知识库项目');
 }

@@ -3,7 +3,8 @@ import { computeStats, listLeads, assignConsultant } from '../repo/lead-repo';
 import { saveInbound, markInboundState } from '../repo/inbound-repo';
 import { outboxSnapshot } from '../services/outbox-worker';
 import { importProjects, listKnowledge } from '../services/kb-service';
-import { upsertClinic, upsertSlot } from '../repo/schedule-repo';
+import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment } from '../repo/schedule-repo';
+import { markCrmSync } from '../repo/lead-repo';
 import { getConfig, configSummary } from '../config';
 import { dbHealth } from '../infra/db';
 import { verifyWebhook, verifyAdminToken } from '../infra/signature';
@@ -291,6 +292,50 @@ const webhook: PluginRouteHandler = async (req, res) => {
 };
 
 /**
+ * POST /callback —— 外部系统下行回写 / 状态回执入口（反向通道）。
+ * 用于 HIS/CRM 在异步处理后把结果推回：如预约在 HIS 侧被确认/取消、CRM 侧线索状态变更。
+ * 复用与入站 webhook 相同的 HMAC 验签（MA_WEBHOOK_SECRET），无密钥则全拒。
+ */
+const callback: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  const { raw, json } = await readRawBody(req);
+  try {
+    verifyWebhook(getConfig().webhookSecret, req.headers as Record<string, string | string[] | undefined>, raw);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const type = String(json.type ?? '');
+  try {
+    if (type === 'appt.status') {
+      // 解析预约单：优先 appointmentId，其次 externalId 反查
+      const apptId = String(json.appointmentId ?? '');
+      const extId = String(json.externalId ?? '');
+      const appt =
+        (apptId && getAppointment(apptId)) ||
+        (extId && getAppointmentByExternalId(extId)) ||
+        null;
+      if (!appt) {
+        return send(res, 404, { ok: false, code: 'NOT_FOUND', error: '预约单不存在（appointmentId/externalId 均未匹配）' });
+      }
+      setAppointmentExternal(appt.appointmentId, extId || undefined, String(json.status ?? 'confirmed'));
+      return send(res, 200, { ok: true, appointmentId: appt.appointmentId, externalStatus: json.status });
+    }
+    if (type === 'lead.status') {
+      const leadId = String(json.leadId ?? '');
+      if (!leadId) return send(res, 400, { ok: false, code: 'INVALID_ARGUMENT', error: 'leadId required' });
+      const state = String(json.status ?? '') === 'failed' ? 'failed' : 'synced';
+      markCrmSync(leadId, state, json.crmId ? String(json.crmId) : undefined);
+      return send(res, 200, { ok: true, leadId, crmSync: state });
+    }
+    return send(res, 400, { ok: false, code: 'INVALID_ARGUMENT', error: `未知回调类型：${type}` });
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
  * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敛到统一前缀
  * /api/plugins/medical-aesthetics-lead/*。
  */
@@ -310,5 +355,6 @@ export const leadServerExtension: ServerExtension = {
     '/clinics/import': clinicImport,
     '/slots/import': slotImport,
     '/webhook': webhook,
+    '/callback': callback,
   },
 };

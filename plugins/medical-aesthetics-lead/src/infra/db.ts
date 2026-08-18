@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS ma_appointment (
   slot_time      TEXT NOT NULL,
   status         TEXT NOT NULL DEFAULT 'booked',
   external_id    TEXT,
+  external_status TEXT,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
 );
@@ -206,12 +207,26 @@ export function getDb(): SqliteDatabase {
     conn.exec(`PRAGMA busy_timeout = ${cfg.db.busyTimeoutMs};`);
     conn.exec(`PRAGMA foreign_keys = ON;`);
     conn.exec(SCHEMA);
+    runMigrations(conn);
     db = conn;
     return db;
   } catch (e) {
     throw new MaError('DB_ERROR', `客资库初始化失败（${cfg.db.file}）：${(e as Error).message}`, {
       file: cfg.db.file,
     });
+  }
+}
+
+/**
+ * 幂等迁移：为已存在（由旧 schema 创建）的库补列，避免 ALTER 重复执行报错。
+ * 仅在列确实缺失时执行，全新库因 CREATE TABLE 已含该列而跳过。
+ */
+function runMigrations(conn: SqliteDatabase): void {
+  const cols = (conn
+    .prepare(`PRAGMA table_info(ma_appointment)`)
+    .all() as Record<string, unknown>[]).map((r) => String(r.name));
+  if (!cols.includes('external_status')) {
+    conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
   }
 }
 

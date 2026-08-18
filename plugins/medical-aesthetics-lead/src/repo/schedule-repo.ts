@@ -52,6 +52,7 @@ function rowToAppointment(r: Record<string, unknown>): AppointmentRecord {
     time: String(r.slot_time),
     status: r.status as AppointmentRecord['status'],
     externalId: (r.external_id as string) ?? undefined,
+    externalStatus: (r.external_status as string) ?? undefined,
     createdAt: Number(r.created_at),
   };
 }
@@ -196,13 +197,37 @@ export function cancelAppointmentTx(appointmentId: string): void {
   });
 }
 
-/** 把预约单同步到 HIS 后回填的外部单号。 */
-export function setAppointmentExternalId(appointmentId: string, externalId: string): void {
+/** 把预约单同步到 HIS 后回填的外部单号 / 外部状态。两者可独立更新（按需传参）。 */
+export function setAppointmentExternal(
+  appointmentId: string,
+  externalId?: string,
+  externalStatus?: string
+): void {
   dbCall(() => {
-    getDb()
-      .prepare('UPDATE ma_appointment SET external_id = ?, updated_at = ? WHERE appointment_id = ?')
-      .run(externalId, Date.now(), appointmentId);
-  }, '回填预约单外部单号');
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (externalId !== undefined) {
+      sets.push('external_id = ?');
+      vals.push(externalId);
+    }
+    if (externalStatus !== undefined) {
+      sets.push('external_status = ?');
+      vals.push(externalStatus);
+    }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    vals.push(Date.now());
+    vals.push(appointmentId);
+    getDb().prepare(`UPDATE ma_appointment SET ${sets.join(', ')} WHERE appointment_id = ?`).run(...(vals as never[]));
+  }, '回填预约单外部单号/状态');
+}
+
+/** 按 HIS 外部单号反查本地预约单（回调状态下发时用）。 */
+export function getAppointmentByExternalId(externalId: string): AppointmentRecord | null {
+  return dbCall(() => {
+    const row = getDb().prepare('SELECT * FROM ma_appointment WHERE external_id = ?').get(externalId);
+    return row ? rowToAppointment(row) : null;
+  }, '按外部单号查预约单');
 }
 
 /** 导入/同步院区（upsert）。 */
