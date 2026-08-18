@@ -449,7 +449,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 `GET /api/memory?session=<key>` 查看长期笔记与窗口长度；
 `DELETE /api/memory?session=<key>` 清空某会话记忆；`/api/metrics` 暴露 `memory.backend`。
 
-> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节。
+> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 [`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md) 第 7 节。
 
 ### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
 
@@ -521,7 +521,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 > 镜像 CI（`.github/workflows/docker.yml`），可脱离 Render 自托管（多副本需 `REDIS_URL` 运行队列）。
 > **企业身份源缺口也已闭环**：`AUTH_PROVIDER` 现支持 `token`（静态令牌，默认）/ `oidc`（Bearer JWT 资源服务器，
 > 零依赖验签 RS*/PS*/ES*/HS*）/ `proxy`（LDAP/SSO 网关头注入，企业接入 LDAP 的最低成本路径），三者均可与静态令牌
-> break-glass 逃生通道并存。详见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
+> break-glass 逃生通道并存。详见 [`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md) 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
 > 仍待补齐的企业级能力：多租户运营面（开通/配额/账单）、正式合规模块（SOC2/GDPR 数据主权分区）；
 > 这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
 
@@ -693,7 +693,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test →
 - **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
 - **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
 - **`.github/workflows/docker.yml`**（推送 `dev`/`main` 或 tag 时构建并推送镜像到 GHCR）
-- **[`docs/deployment.md`](./docs/deployment.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
+- **[`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
 
 > 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。
 > K8s 清单中的 `image`、`ingress.host`、Secret 占位值部署前必须替换为真实值（建议改用 Sealed/External Secrets）。

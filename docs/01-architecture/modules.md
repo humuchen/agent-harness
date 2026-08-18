@@ -1,6 +1,6 @@
 # 模块依赖图
 
-> 配套图：`diagrams/module-dependency.svg`
+> 配套图：`./diagrams/module-dependency.svg`
 > 范围：`@agent-harness/core` 内部模块分组 + 包级依赖
 
 ## 1. 包级依赖

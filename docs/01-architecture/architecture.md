@@ -1,8 +1,8 @@
 # Agent Harness · 系统架构（权威总览）
 
 > 本文档为当前实现的**单一权威架构说明**，覆盖：系统分层与职责、端到端业务流（启动 → 完整闭环）、部署与配置、核心模块协作关系。
-> 配套图示：`diagrams/architecture.svg`、`diagrams/execution-flow.svg`、`diagrams/module-dependency.svg`。
-> 历史专项分析（能力评估 / 行业对接 / 单智能体闭环）见 `docs/INDUSTRY_AGENT_INTEGRATION_READINESS.md`、`docs/SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md`，均基于**同一份已落地代码**。
+> 配套图示：`./diagrams/architecture.svg`、`./diagrams/execution-flow.svg`、`./diagrams/module-dependency.svg`。
+> 历史专项分析（能力评估 / 行业对接 / 单智能体闭环）见 `../05-analysis/industry-integration-readiness.md`、`../05-analysis/single-agent-closed-loop.md`，均基于**同一份已落地代码**。
 
 ---
 
@@ -155,7 +155,7 @@ SSE: run:start/step/llm/tool/cost/guardrail/verify/run:end 全程事件流
 - **C shell 确认**：仅 `SHELL_REQUIRE_CONFIRM` 影响 shell 内置工具，行业 agent 多走 MCP 不受影响。
 - **D 自检门禁**：`verify` 可选，需注入 `Verifier` 才有质量闭环。
 - **E 外部动作**：落地外系统取决于领域 MCP 工具是否齐全/幂等。
-> 详见 `docs/SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md`。
+> 详见 `../05-analysis/single-agent-closed-loop.md`。
 
 ---
 
@@ -188,11 +188,11 @@ docker run -p 4173:4173 \
 ### 4.3 部署形态选择
 | 场景 | 路径 | 文档 |
 |---|---|---|
-| 本机试用 / 演示 | Compose 内存模式（密钥留空即 Mock） | `docs/docker-deploy-guide.md` §2 |
-| 内网多人低并发 | Compose + Redis + 鉴权 overlay | `docs/docker-deploy-guide.md` §3、§9 |
-| 外部多人 / 高可用 | Kubernetes（kustomize base + overlays/local） | `docs/k8s-deploy-guide.md` |
+| 本机试用 / 演示 | Compose 内存模式（密钥留空即 Mock） | `../02-deployment/docker-deploy-guide.md` §2 |
+| 内网多人低并发 | Compose + Redis + 鉴权 overlay | `../02-deployment/docker-deploy-guide.md` §3、§9 |
+| 外部多人 / 高可用 | Kubernetes（kustomize base + overlays/local） | `../02-deployment/k8s-deploy-guide.md` |
 
-> K8s 关键坑（已修复）：健康检查必须为 `/api/state`（非 `/api/v1/state`）；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `docs/k8s-deploy-guide.md`。
+> K8s 关键坑（已修复）：健康检查必须为 `/api/state`（非 `/api/v1/state`）；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `../02-deployment/k8s-deploy-guide.md`。
 
 ### 4.4 配置说明（核心环境变量）
 | 分类 | 变量 | 默认 | 说明 |
@@ -218,7 +218,7 @@ docker run -p 4173:4173 \
 | Shell | `SHELL_ENABLED` / `SHELL_REQUIRE_CONFIRM` / `SHELL_ROOT` / `SHELL_WHITELIST` | true/false/cwd/空 | shell 工具开关与边界 |
 | 审计/告警 | `AUDIT_LOG` / `ALERT_WEBHOOK_URL` / `RETENTION_DAYS_AUDIT` | 空 | 审计落盘 / 告警 / 留存天数 |
 
-> 完整变量见 `docs/docker-deploy-guide.md`、`docs/k8s-deploy-guide.md` 及各 `.env.example`。
+> 完整变量见 `../02-deployment/docker-deploy-guide.md`、`../02-deployment/k8s-deploy-guide.md` 及各 `.env.example`。
 
 ---
 
@@ -237,13 +237,13 @@ docker run -p 4173:4173 \
 
 | 文档 | 内容 |
 |---|---|
-| `docs/architecture.md`（本文件） | 架构总览 / 分层 / 业务流 / 部署 / 模块协作（权威） |
-| `docs/modules.md` | 模块依赖图（core 内部分组 + 包级依赖） |
-| `docs/execution.md` | `AgentHarness.run` 执行流逐段拆解 |
-| `docs/DEPLOY.md` | 部署决策树总入口 |
-| `docs/docker-deploy-guide.md` / `docs/k8s-deploy-guide.md` | Compose / K8s 完整步骤 |
-| `docs/INDUSTRY_AGENT_INTEGRATION_READINESS.md` | 行业智能体对接就绪度 |
-| `docs/SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md` | 单智能体完全闭环可行性 |
-| `docs/os-sandbox.md` | OS 级沙箱设计 |
-| `docs/mcp-services.md` | 远程 MCP 服务清单 |
-| `docs/multi-instance-runbook.md` | 多实例运维手册 |
+| `./architecture.md`（本文件） | 架构总览 / 分层 / 业务流 / 部署 / 模块协作（权威） |
+| `./modules.md` | 模块依赖图（core 内部分组 + 包级依赖） |
+| `./execution.md` | `AgentHarness.run` 执行流逐段拆解 |
+| `../02-deployment/deployment-index.md` | 部署决策树总入口 |
+| `../02-deployment/docker-deploy-guide.md` / `../02-deployment/k8s-deploy-guide.md` | Compose / K8s 完整步骤 |
+| `../05-analysis/industry-integration-readiness.md` | 行业智能体对接就绪度 |
+| `../05-analysis/single-agent-closed-loop.md` | 单智能体完全闭环可行性 |
+| `../02-deployment/os-sandbox.md` | OS 级沙箱设计 |
+| `../02-deployment/mcp-services.md` | 远程 MCP 服务清单 |
+| `../02-deployment/multi-instance-runbook.md` | 多实例运维手册 |

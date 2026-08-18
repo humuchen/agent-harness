@@ -9,9 +9,9 @@
 
 | 你的场景 | 推荐路径 | 详细文档 |
 |---|---|---|
-| 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式 | [docs/docker-deploy-guide.md](docs/docker-deploy-guide.md) §2 |
-| **内网多人低并发（推荐你现在的用法）** | Compose + Redis + 鉴权 overlay | [docs/docker-deploy-guide.md](docs/docker-deploy-guide.md) §3、§9 |
-| 外部多人 / 高可用 / 弹性扩缩 | Kubernetes | [docs/k8s-deploy-guide.md](docs/k8s-deploy-guide.md) |
+| 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式 | [./docker-deploy-guide.md](./docker-deploy-guide.md) §2 |
+| **内网多人低并发（推荐你现在的用法）** | Compose + Redis + 鉴权 overlay | [./docker-deploy-guide.md](./docker-deploy-guide.md) §3、§9 |
+| 外部多人 / 高可用 / 弹性扩缩 | Kubernetes | [./k8s-deploy-guide.md](./k8s-deploy-guide.md) |
 
 > **结论**：你这次选的是「内网多人」档，所以主线就是 **Compose + Redis overlay + 强随机令牌**，下面「路径一」给的是完整可直接复制的命令。
 
@@ -54,7 +54,7 @@ curl http://localhost:4173/api/state
 1. `docker ps` → ui / redis 均 `healthy`。
 2. 打开 UI → 左侧「运行」→ 输入提示词 → 运行。
 3. 左卡「思考 Trace」流式输出，右卡「最终结果」交付物 + 复制/导出/重试。
-4. 详见 [docs/docker-deploy-guide.md](docs/docker-deploy-guide.md) §6、§7。
+4. 详见 [./docker-deploy-guide.md](./docker-deploy-guide.md) §6、§7。
 
 ---
 
@@ -69,7 +69,7 @@ curl http://localhost:4173/api/state
 - **Service NodePort 丢失**：strategic merge patch 合并 Service port 列表时 `nodePort` 字段被丢，已改为 JSON 6902 patch 显式注入 `31473`。
 - **镜像加载**：Docker Desktop 内置 K8s 底层是 kind 节点容器，读不到 `docker images`；local overlay 的 `imagePullPolicy` 必须是 `IfNotPresent`（不是 `Never`），由 kubelet 走 Docker Desktop 本地镜像代理拉取，否则 `ErrImageNeverPull`。宿主机需先 `docker build -t agent-harness:local .`。
 
-完整命令与验证清单见 [docs/k8s-deploy-guide.md](docs/k8s-deploy-guide.md)。本地验证步骤：
+完整命令与验证清单见 [./k8s-deploy-guide.md](./k8s-deploy-guide.md)。本地验证步骤：
 
 ```bash
 docker build -t agent-harness:local .                                  # 先构建本地镜像
@@ -105,7 +105,7 @@ docker-compose.yml          # base：内存模式单副本
 docker-compose.redis.yml    # overlay：Redis 接管队列 + 强制鉴权
 .env.example                # 环境变量模板（含全部真实配置项）
 .env                        # 本机实际配置（已被 .gitignore 忽略）
-DEPLOY.md                   # 本文件：决策树总入口
+deployment-index.md          # 本文件：决策树总入口
 docs/
   docker-deploy-guide.md    # Compose 完整流程（从部署到落地使用）
   k8s-deploy-guide.md       # K8s 完整流程（本地 overlay + 生产集群）

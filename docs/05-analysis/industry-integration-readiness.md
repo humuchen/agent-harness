@@ -2,7 +2,7 @@
 
 > 结论先行：**现在就能对接行业智能体并让它真正干活**。基座平台的核心能力（注册发现、任务路由、跨行业隔离、A2A 协议、工作流编排）在当前代码中均已实现并接入运行链路，不再只是 P0/P1 规划。
 >
-> ⚠️ 校正说明：本仓库 `docs/AGENT_ORCHESTRATION_PLATFORM_ASSESSMENT.md`（2026-08-15 上午产出）的"现状/差距"评级已**过时**——当时代码里 `agents/`、`router/`、`tenant.ts`、`policy/`、`a2a/`、`workflow/`、`plugin/`、`sandbox/`、`quota/`、`audit.ts` 等子系统尚未存在或未被接入。本文基于**当前真实代码**重做判定。
+> ⚠️ 校正说明：本仓库 `./platform-orchestration-assessment.md`（2026-08-15 上午产出）的"现状/差距"评级已**过时**——当时代码里 `agents/`、`router/`、`tenant.ts`、`policy/`、`a2a/`、`workflow/`、`plugin/`、`sandbox/`、`quota/`、`audit.ts` 等子系统尚未存在或未被接入。本文基于**当前真实代码**重做判定。
 
 ---
 

@@ -1,7 +1,7 @@
 # 部署文档（自托管）
 
 > 整合自根目录 `DEPLOY.md`，归入统一文档中心 `docs/`。仓库已完成 `packages/ui` → `packages/server`（并拆分为 `server` + `webapp` + `client` + `cli`）的重命名，根 `README.md` / `DEPLOY.md` / `package.json` / `render.yaml` / `Dockerfile` 均已同步更新。
-> 配套图：`diagrams/architecture.svg`
+> 配套图：`../01-architecture/diagrams/architecture.svg`
 
 核心原则：**所有密钥经 `process.env` 注入（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。**
 

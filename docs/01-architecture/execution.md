@@ -1,6 +1,6 @@
 # 项目执行图（AgentHarness.run 执行流）
 
-> 配套图：`diagrams/execution-flow.svg`
+> 配套图：`./diagrams/execution-flow.svg`
 > 代码位置：`packages/core/src/harness.ts` — `AgentHarness.run(userInput)`（约 104–344 行）
 
 ## 1. 总览
@@ -22,7 +22,7 @@
    - **工具执行**：每个 `tool_call` 先过 `checkToolArgs`（参数护栏）；通过则 `tools.call(name, args)`（错误作为 result 回灌自愈），结果截断后 `memory.add(tool)`。
 6. **收尾**：若注入了 `Verifier`（`verify` 选项），产出后自动校验；未过且 `verifyMaxRetries>0` 则注入自检提示重跑整个主循环（自愈），仍未过则加 `[verify:failed]` 标记。`memory.save()`（持久化）→ `redactOutput`（出口 PII 脱敏）→ `emit run:end` → `return final`。
 
-> **闭环收口保证**：超时（`timeoutMs`）/ 外部取消（`signal`）/ 预算（`tokenBudget`/`costBudget`）任一触发即中止并返回 `[timeout]`/`[aborted]`/`[budget]`，不会无限挂起。路径内**无人工节点**——工具异常作为 tool message 回灌模型自愈。完整「自动闭环 vs 断点（审批/记忆/隔离/外部动作）」分析见 `docs/SINGLE_AGENT_CLOSED_LOOP_ANALYSIS.md`。
+> **闭环收口保证**：超时（`timeoutMs`）/ 外部取消（`signal`）/ 预算（`tokenBudget`/`costBudget`）任一触发即中止并返回 `[timeout]`/`[aborted]`/`[budget]`，不会无限挂起。路径内**无人工节点**——工具异常作为 tool message 回灌模型自愈。完整「自动闭环 vs 断点（审批/记忆/隔离/外部动作）」分析见 `../05-analysis/single-agent-closed-loop.md`。
 
 ## 3. 关注点如何在主循环中「零改动接入」
 

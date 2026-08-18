@@ -3,7 +3,7 @@
 > 评估对象：`@agent-harness/core` + `@agent-harness/server`（截至 2026-08-15 代码快照）
 > 评估视角：能否作为**统一基座平台**，用于**调度与协调跨行业专业智能体**（医美 / 金融 / 医疗 / 教育 …）
 > 评估口径：**已具备**（能力完整、默认生效）/ **部分具备**（有核心实现但有边界或缺口）/ **缺失**（无对应实现）
-> 配套：本文聚焦「多智能体调度 / 协调」这一新维度；沙箱 / 进程隔离 / 自验证 / 自修复 / 插件化等单智能体维度见 `docs/ARCHITECTURE_CAPABILITY_ASSESSMENT.md`。
+> 配套：本文聚焦「多智能体调度 / 协调」这一新维度；沙箱 / 进程隔离 / 自验证 / 自修复 / 插件化等单智能体维度见 `./platform-capability-assessment.md`。
 
 ---
 
@@ -90,7 +90,7 @@
 - **无租户 / 行业边界**：所有 run 共享同一 Node 进程、同一全局 MCP 注册表（`mcpManager.liveRegistry()` 被合并进每次 run）、同一全局 `guardrails` 策略实例。**医疗 PII 与金融数据没有任何强制边界**。
 - **策略非 per-tenant**：`configureGuardrails(p)` 改的是全局单例。无法做到「医疗租户强制脱敏 + 金融租户额外审计 + 教育租户放宽」。
 - **无数据分区 / 数据驻留**：跨行业数据落同一后端、同一输出通道，无分区键、无行业合规画像（如医疗等保 / 金融数据出境限制）。
-- **无出网管控**：`web_fetch` 无域名白名单，MCP stdio 子进程可任意联网（`docs/ARCHITECTURE_CAPABILITY_ASSESSMENT.md` 已指出）。
+- **无出网管控**：`web_fetch` 无域名白名单，MCP stdio 子进程可任意联网（`./platform-capability-assessment.md` 已指出）。
 - **跨租户访问无强制隔离**：`sessionKey` 是客户端自报的弱标识，无租户认证锚定。
 
 **评级：部分具备。**
@@ -124,7 +124,7 @@
 关键缺口：
 - **无多智能体工作流引擎**：无法表达「医美 agent 完成 → 交给金融 agent → 再交教育 agent」的 DAG / 状态机。
 - **无 agent 间 handoff / 子 agent 派发**：当前 harness 内部不会 spawn 另一个 agent。
-- **无 step 级状态 / 检查点续跑**：一次长任务中断只能整体重来（`ARCHITECTURE_CAPABILITY_ASSESSMENT.md` 已指出）。
+- **无 step 级状态 / 检查点续跑**：一次长任务中断只能整体重来（`./platform-capability-assessment.md` 已指出）。
 - **无跨 agent 链路追踪**：`traceId` / `span` 无法关联多个 agent 的调用链。
 - **无工作流级监控**：`RunQueue` 的 job 状态是单 run 粒度，没有「工作流第 3 步在金融 agent 上卡住」这类视图。
 

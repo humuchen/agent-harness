@@ -1,6 +1,6 @@
 # 统一智能体调度基座 — 缺失能力实现计划（Plan & 实现方式）
 
-> 配套 `docs/AGENT_ORCHESTRATION_PLATFORM_ASSESSMENT.md`（评估结论：当前是优秀的「单智能体执行引擎」，但缺「智能体 / 路由 / 租户 / A2A / 工作流」五大基座能力）。
+> 配套 `./platform-orchestration-assessment.md`（评估结论：当前是优秀的「单智能体执行引擎」，但缺「智能体 / 路由 / 租户 / A2A / 工作流」五大基座能力）。
 > 本文件给出**具体落地计划**：对每个缺失能力，指明新增/修改的**精确文件与函数锚点**、**关键类型签名**与**实现方式**，并遵循评估的「演进而非重写」「复用 60–70% 资产」原则。
 > 评估中已核实的代码锚点（均已对照源码确认）：
 > - `packages/server/src/runner.ts:163` `assembleAgent()` —— 当前构建「万能 harness」，第 221 行 `tools.mergeFrom(mcpManager.liveRegistry())` 把**全部 MCP** 合并进每次 run。

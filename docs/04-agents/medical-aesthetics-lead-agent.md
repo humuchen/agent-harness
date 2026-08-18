@@ -342,10 +342,10 @@ harness 的 Agent 是**通道无关**的。每个渠道只需一个轻量适配�
 
 ---
 
-## 8. 落地步骤与验证（复用 `docs/run-local.md`）
+## 8. 落地步骤与验证（复用 `../02-deployment/run-local.md`）
 
 1. 新建 `plugins/medical-aesthetics-lead/`（package.json 加 `@agent-harness/core` 依赖 + `@types/node`）。
-2. `pnpm install`（沙箱用 `docs/run-local.md` §1.1 绕过）→ `pnpm -r build`。
+2. `pnpm install`（沙箱用 `../02-deployment/run-local.md` §1.1 绕过）→ `pnpm -r build`。
 3. 加 `authz.ts` 动作 `lead:read/lead:assign/lead:export` 并授 admin/operator。
 4. 启动（绝对 `MEMORY_DIR`）：
    ```bash

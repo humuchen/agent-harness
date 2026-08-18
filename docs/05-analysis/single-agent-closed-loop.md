@@ -147,4 +147,4 @@ POST /api/run  { domain:'finance', input:'帮我评估客户 A 的风险敞口',
 
 ## 附：与前一份评估的关系
 
-`AGENT_ORCHESTRATION_PLATFORM_ASSESSMENT.md`（上午写）在基座能力落地前判定"注册/路由/隔离/协议/编排缺失/部分具备"——**已过时**。本分析基于的这些能力（`agents/registry`、`router/`、`policy/engine`、`tenant.ts`、`a2a/`、`workflow/`、`guardrails` 出网+隔离）现已全部实现并接入 server 运行链路，故单智能体闭环在架构层已具备。剩余项是**生产加固（持久化、审批自动化、注册表持久化）**，非重写。
+`./platform-orchestration-assessment.md`（上午写）在基座能力落地前判定"注册/路由/隔离/协议/编排缺失/部分具备"——**已过时**。本分析基于的这些能力（`agents/registry`、`router/`、`policy/engine`、`tenant.ts`、`a2a/`、`workflow/`、`guardrails` 出网+隔离）现已全部实现并接入 server 运行链路，故单智能体闭环在架构层已具备。剩余项是**生产加固（持久化、审批自动化、注册表持久化）**，非重写。
