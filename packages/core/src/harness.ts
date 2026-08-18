@@ -293,10 +293,12 @@ export class AgentHarness {
               allowTools: [...allow],
               topK,
             });
-            // 安全网：若输入看起来是真实任务（含疑问或较长）但子集为空，回退全量，
-            // 避免漏发必要工具导致质量退化；问候/寒暄类短输入则保持最小子集。
-            const looksLikeTask = input.length > 12 || /[?？]/.test(input);
-            stepTools = subset.length === 0 && looksLikeTask ? allSchemas : subset;
+            // 安全网：若输入看起来是真实任务（含疑问、较长、或出现常见任务词），
+            // 直接回退全量工具，避免漏发必要工具导致质量退化；
+            // 问候/寒暄/极短输入则保持最小子集，保留优化收益。
+            const taskIndicators = /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯/;
+            const looksLikeTask = input.length >= 8 || taskIndicators.test(input);
+            stepTools = looksLikeTask ? allSchemas : subset;
           }
           emit({
             type: 'llm:call',

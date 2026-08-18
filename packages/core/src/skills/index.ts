@@ -102,7 +102,7 @@ export function defaultSkills(): Skill[] {
       id: 'web-research',
       title: '联网检索',
       description: '需要获取最新 / 外部网页信息、查证事实、读取在线文档时使用。',
-      triggers: ['搜索', '查一下', '最新', '官网', '网页', 'fetch', 'search', '查资料'],
+      triggers: ['搜索', '查一下', '最新', '官网', '网页', 'fetch', 'search', '查资料', '天气', '新闻', '资讯', '未来几天', '未来', '情况'],
       tools: ['builtin__web_fetch'],
       prompt:
         '执行联网检索：先用 builtin__web_fetch 抓取相关页面，提炼与用户问题直接相关的事实，' +

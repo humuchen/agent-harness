@@ -352,8 +352,16 @@ export async function assembleAgent(
   // 优化：问候/寒暄等明显不需要技能的输入，仅注入一行桩（id 列表），
   // 避免把 4+ 个技能说明无谓塞进系统提示（占 ~200-400 tokens）。
   const skillTriggered = userInput ? skillRegistry.hasTriggerMatch(userInput) : false;
+  const triggeredSkills = userInput ? skillRegistry.matchTriggers(userInput) : [];
   const skillCatalog = skillRegistry.describeForPrompt(!skillTriggered);
   const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
+
+  // 收集命中技能关联的工具 + 元工具，作为动态工具选择的「硬允许集」，
+  // 防止 selectToolsForInput 把模型需要的技能工具裁掉（如 web-research 场景）。
+  const triggeredSkillTools = new Set<string>(['builtin__use_skill']);
+  for (const s of triggeredSkills) {
+    for (const t of s.tools ?? []) triggeredSkillTools.add(t);
+  }
   // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
   const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
   const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
@@ -454,9 +462,9 @@ export async function assembleAgent(
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
     // P0.3：租户级护栏策略覆盖（含出网管控）。
     ...(guardrailPolicy ? { guardrailPolicy } : {}),
-    // 动态工具选择：把 AgentCard.assembly.tools 作为硬允许集透传给 harness，
-    // 配合核心 selectToolsForInput 按意图裁剪其余工具（问候→最小子集）。
-    ...(assemblyTools && assemblyTools.length ? { allowTools: assemblyTools } : {}),
+    // 动态工具选择：把 AgentCard.assembly.tools 与命中技能的关联工具作为硬允许集透传给 harness，
+    // 配合核心 selectToolsForInput 按意图裁剪其余工具（问候→最小子集；真实任务→全量）。
+    ...resolveAllowTools(assemblyTools, triggeredSkillTools),
   // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
@@ -541,6 +549,30 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
       return previous ?? '';
     }
   };
+}
+
+/** AgentCard.assembly.tools 使用高-level 内置工具名（calculator / datetime / web_fetch /
+ * filesystem / shell），而 harness.selectToolsForInput 按注册表实际名匹配。
+ * 把二者映射为实际工具名，再与命中技能的关联工具合并成硬允许集。 */
+function resolveAllowTools(
+  assemblyTools: string[] | undefined,
+  triggeredSkillTools: Set<string>
+): { allowTools: string[] } | Record<string, never> {
+  const BUILTIN_TOOL_MAP: Record<string, string[]> = {
+    calculator: ['builtin__calculator'],
+    datetime: ['builtin__datetime_now', 'builtin__datetime_convert', 'builtin__datetime_add'],
+    web_fetch: ['builtin__web_fetch'],
+    filesystem: ['builtin__fs_read', 'builtin__fs_list', 'builtin__fs_search'],
+    shell: ['builtin__shell_exec'],
+  };
+  const set = new Set<string>();
+  for (const t of triggeredSkillTools) set.add(t);
+  for (const name of assemblyTools ?? []) {
+    const mapped = BUILTIN_TOOL_MAP[name];
+    if (mapped) for (const m of mapped) set.add(m);
+    else set.add(name); // 未识别则按原样透传（可能是自定义工具名）
+  }
+  return set.size ? { allowTools: [...set] } : {};
 }
 
 /** 命中以下任一模式才视为「需要创建/管理临时环境」，走 创建 → 销毁 工具闭环；

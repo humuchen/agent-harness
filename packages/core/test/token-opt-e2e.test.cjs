@@ -68,7 +68,7 @@ function estimateFullTools(registry) {
   return registry.schemas().reduce((a, s) => a + (s.name.length + s.description.length), 0);
 }
 
-test('真实任务输入发送相关子集（含代码类工具），而非全量', async () => {
+test('真实任务输入回退全量工具（安全网优先，避免漏发）', async () => {
   const registry = buildRegistry();
   const seenToolNames = [];
   const mockLlm = async (messages, tools) => {
@@ -88,7 +88,8 @@ test('真实任务输入发送相关子集（含代码类工具），而非全�
     delete process.env.DYNAMIC_TOOLS;
   }
   const first = seenToolNames[0];
-  assert.ok(first.length > 0 && first.length < registry.schemas().length, `应发送相关子集而非全量 ${registry.schemas().length}，实际 ${first.length}`);
+  // 修复后策略：真实任务（含疑问/较长/任务词）一律发全量，确保不遗漏必要工具。
+  assert.ok(first.length === registry.schemas().length, `真实任务应回退全量 ${registry.schemas().length}，实际 ${first.length}`);
   assert.ok(first.includes('write_code'), `应含 write_code，实际 ${JSON.stringify(first)}`);
   assert.ok(first.includes('run_tests'), `应含 run_tests，实际 ${JSON.stringify(first)}`);
 });
