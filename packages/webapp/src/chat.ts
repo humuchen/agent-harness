@@ -52,6 +52,8 @@ interface Insights {
   toolCount: number;
   costTokens?: string;
   costValue?: string;
+  /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
+  costPriced?: string;
   retrievals: Array<{ label: string; result: string }>;
 }
 
@@ -1982,6 +1984,7 @@ export class AhChat extends LitElement {
               ev.cumulativeCost != null
                 ? `$${Number(ev.cumulativeCost).toFixed(4)}`
                 : '?',
+            priced: ev.priced ? 'true' : 'false',
             ...(ev.model ? { model: String(ev.model) } : {})
           }
         });
@@ -2461,6 +2464,7 @@ export class AhChat extends LitElement {
       toolCount: tools.length + retrievals.length,
       costTokens: cost?.meta?.tokens,
       costValue: cost?.meta?.cost,
+      costPriced: cost?.meta?.priced,
       retrievals: retrievals.map((n) => ({
         label: n.label,
         result: n.result ?? ''
@@ -2480,7 +2484,20 @@ export class AhChat extends LitElement {
     push('步骤', ins.steps ? String(ins.steps) : undefined);
     push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
     push('Token', ins.costTokens);
-    push('成本', ins.costValue);
+    // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
+    const costRaw = ins.costValue ?? '';
+    const priced = ins.costPriced === 'true';
+    const isZero = costRaw === '$0.0000' || costRaw === '$0.00' || costRaw === '$0';
+    push(
+      '成本',
+      costRaw
+        ? isZero
+          ? priced
+            ? '免费'
+            : '未定价'
+          : costRaw
+        : undefined
+    );
     return html`
       <div class="insights-title">关键信息</div>
       <div class="ins-grid">

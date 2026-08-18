@@ -31,6 +31,8 @@ const MODEL_PRICES: Record<string, ModelPrice> = {
   'gemini-1.5-flash': { prompt: 0.075, completion: 0.3 },
   // Meta（经 OpenRouter）
   'llama-3.1-70b-instruct': { prompt: 0.59, completion: 0.59 },
+  // Agnes（官方当前对 agnes-2.5-flash 实行免费策略，故单价为 0；后续若变更可覆盖）。
+  'agnes-2.5-flash': { prompt: 0, completion: 0 },
 };
 
 let defaultPrice: ModelPrice = {
@@ -55,23 +57,50 @@ export function configureDefaultPrice(promptPerM: number, completionPerM: number
   defaultPrice = { prompt: promptPerM, completion: completionPerM };
 }
 
-/** 取某模型的单价（已登记则返回，否则返回默认单价）。 */
-export function getPriceForModel(model: string | undefined): ModelPrice {
-  if (!model) return defaultPrice;
+/** 查找模型单价，并返回是否命中内置价目表（含前缀匹配）。 */
+function findModelPrice(model: string | undefined): { price: ModelPrice; found: boolean } {
+  if (!model) return { price: defaultPrice, found: false };
   const key = normalizeModel(model);
   // 精确匹配后，再做「前缀包含」匹配（如 gpt-4o-2024-08-06 → gpt-4o）。
-  if (MODEL_PRICES[key]) return MODEL_PRICES[key];
+  if (MODEL_PRICES[key]) return { price: MODEL_PRICES[key], found: true };
   for (const [k, v] of Object.entries(MODEL_PRICES)) {
-    if (key.startsWith(k)) return v;
+    if (key.startsWith(k)) return { price: v, found: true };
   }
-  return defaultPrice;
+  return { price: defaultPrice, found: false };
+}
+
+/** 取某模型的单价（已登记则返回，否则返回默认单价）。 */
+export function getPriceForModel(model: string | undefined): ModelPrice {
+  return findModelPrice(model).price;
+}
+
+/** 成本估算详情：除金额外，还携带「是否找到定价」信息，便于 UI 区分「免费/未定价」与计算错误。 */
+export interface CostEstimate {
+  cost: number;
+  /** 是否在价目表中找到该模型（含前缀匹配）。false 表示按默认单价估算（默认通常为 0）。 */
+  found: boolean;
+  /** 实际使用的 prompt 单价（USD / 1M tokens）。 */
+  promptPrice: number;
+  /** 实际使用的 completion 单价（USD / 1M tokens）。 */
+  completionPrice: number;
+}
+
+/** 按 token 用量与模型单价估算单次调用的美元成本（附带定价命中信息）。 */
+export function estimateCostDetailed(
+  model: string | undefined,
+  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+): CostEstimate {
+  if (!usage) {
+    return { cost: 0, found: false, promptPrice: defaultPrice.prompt, completionPrice: defaultPrice.completion };
+  }
+  const { price, found } = findModelPrice(model);
+  const prompt = usage.prompt_tokens ?? 0;
+  const completion = usage.completion_tokens ?? 0;
+  const cost = (prompt / 1_000_000) * price.prompt + (completion / 1_000_000) * price.completion;
+  return { cost, found, promptPrice: price.prompt, completionPrice: price.completion };
 }
 
 /** 按 token 用量与模型单价估算单次调用的美元成本。 */
 export function estimateCost(model: string | undefined, usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): number {
-  if (!usage) return 0;
-  const price = getPriceForModel(model);
-  const prompt = usage.prompt_tokens ?? 0;
-  const completion = usage.completion_tokens ?? 0;
-  return (prompt / 1_000_000) * price.prompt + (completion / 1_000_000) * price.completion;
+  return estimateCostDetailed(model, usage).cost;
 }

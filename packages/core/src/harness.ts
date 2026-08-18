@@ -4,7 +4,7 @@ import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
 import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
-import { estimateCost } from './llm/pricing';
+import { estimateCost, estimateCostDetailed } from './llm/pricing';
 
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
@@ -24,7 +24,7 @@ export type HarnessEvent =
   | { type: 'llm:reasoning'; step: number; delta: string }
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
-  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number }
+  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean }
   /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
    *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
   | { type: 'run:meta'; runId: string; agentId?: string; workflowId?: string; traceId?: string; tenantId?: string; decidedBy?: string }
@@ -303,10 +303,19 @@ export class AgentHarness {
           // 成本记账：按实际使用模型（响应优先，回落配置 model）查单价表估算，
           // 累加进 per-run 与全局指标，并发出 run:cost 事件供 UI 实时展示。
           const costModel = resp.model ?? this.opts.model;
-          const stepCost = estimateCost(costModel, resp.usage);
+          const estimate = estimateCostDetailed(costModel, resp.usage);
+          const stepCost = estimate.cost;
           runCost += stepCost;
           runTokens += resp.usage?.total_tokens ?? 0;
           recordCostTenant(stepCost, costModel, this.opts.tenantId);
+          // 未找到单价且未配置默认价时发出诊断日志，便于排查「cost 始终为 0」的根因。
+          if (!estimate.found && stepCost === 0 && (resp.usage?.prompt_tokens || resp.usage?.completion_tokens)) {
+            structLog('warn', 'model pricing not found, cost estimate is zero', {
+              model: costModel,
+              usage: resp.usage,
+              runId,
+            });
+          }
           // 仅在拿到 usage 时发出 run:cost（mock / 不返回用量的响应不刷屏）。
           if (resp.usage) {
             emit({
@@ -317,6 +326,7 @@ export class AgentHarness {
               stepCost,
               cumulativeTokens: runTokens,
               cumulativeCost: runCost,
+              priced: estimate.found,
               ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
             });
           }

@@ -1010,6 +1010,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
           meta: {
             tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
             cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
+            priced: ev.priced ? 'true' : 'false',
             ...(ev.model ? { model: String(ev.model) } : {}),
           },
         });
