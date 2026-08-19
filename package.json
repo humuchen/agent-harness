@@ -12,6 +12,10 @@
     "build:native": "bash scripts/build-native.sh",
     "verify:sandbox": "bash scripts/verify-sandbox.sh",
     "test": "pnpm -r test",
+    "test:load": "node scripts/load-test.cjs",
+    "test:load:heavy": "node scripts/load-test.cjs -c 50 -r 500",
+    "create:plugin": "node scripts/create-plugin.cjs",
+    "db:migrate": "node scripts/db-migrate.cjs",
     "server": "pnpm --filter @agent-harness/server run start",
     "dev": "node packages/server/dist/server.js"
   },

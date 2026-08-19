@@ -1,3 +1,22 @@
+/**
+ * @file chat.ts - 多轮对话示例
+ * @description 展示如何实现带上下文的连续对话
+ * @difficulty 🟢 入门级
+ *
+ * 使用场景:
+ * - 多轮对话交互
+ * - 上下文保持
+ * - 对话历史管理
+ *
+ * 运行方式:
+ *   npx tsx chat.ts
+ *
+ * 核心概念:
+ * 1. 创建对话会话
+ * 2. 发送多条消息
+ * 3. 保持上下文连贯性
+ */
+
 import {
   AgentHarness,
   ToolRegistry,
@@ -5,7 +24,7 @@ import {
   HarnessClient,
   registerHarnessTools,
   registerMcpTools,
-  loadEnv,
+  loadEnv
 } from '@agent-harness/core';
 import type { LLM } from '@agent-harness/core';
 
@@ -40,7 +59,7 @@ async function main(): Promise<void> {
     tools,
     systemPrompt:
       '你是基础设施助手。用户需要临时/预览环境时，调用 create_ephemeral_environment；' +
-      '环境用完后务必调用 destroy_environment 清理，避免资源浪费。',
+      '环境用完后务必调用 destroy_environment 清理，避免资源浪费。'
   });
 
   const result = await agent.run(

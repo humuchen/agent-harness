@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
+    "registry": "node dist/registry-server.js",
     "dev": "tsc -p tsconfig.json && node dist/server.js",
     "test": "node --test test/*.test.cjs"
   },

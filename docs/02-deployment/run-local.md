@@ -55,6 +55,54 @@ ls packages/webapp/dist/index.html         # 前端面板
 ls plugins/customer-service/dist/index.js  # 客服插件（默认入口）
 ```
 
+### 2.1 测试
+
+```bash
+#运行所有测试
+pnpm test
+
+# 负载测试
+pnpm test:load
+pnpm test:load:heavy
+```
+
+### 2.2 开发
+
+```bash
+# 创建新插件
+pnpm create:plugin my-plugin
+
+# 数据库迁移
+pnpm db:migrate status
+pnpm db:migrate up
+```
+
+### 2.3 部署
+
+```bash
+# 启动插件市场
+pnpm --filter @agent-harness/server registry
+
+# 健康检查
+curl http://localhost:4173/health/live
+curl http://localhost:4173/health/ready
+```
+
+### 2.4 特性管理
+
+```bash
+# 启动插件市场
+import { features } from '@agent-harness/core';
+
+// 检查特性
+if (features.isEnabled('workflowEngine')) {
+  // 使用新功能
+}
+
+// 运行时覆盖
+features.setOverride('workflowEngine', true);
+```
+
 ---
 
 ## 3. 准备演示数据（客服统计）
@@ -158,12 +206,12 @@ curl -X POST http://localhost:4173/api/plugins/customer-service/upgrade \
 
 ## 7. 常用排错
 
-| 现象 | 原因 | 修复 |
-| --- | --- | --- |
-| `/api/plugins` 返回空数组 | 插件入口路径解析错（相对 `packages/server/dist` 只上溯两级） | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
-| 客服后台数据恒为 0 | `MEMORY_DIR` 用了相对路径，或 Git Bash 下误用 POSIX 风格 `$(pwd)`（Node 解析成 `\c\Users\...` 错位目录） | 改用 `$(pwd -W)`（Windows）/ 绝对路径，seed 与服务用同一目录 |
-| `pnpm install` 报 TAR_ENTRY_ERROR / 卡住 | 沙箱 safe-delete 守卫拦截批量删除 | 用 §1.1 的绕过组合 + 关闭沙箱隔离 |
-| 面板提示 UI 开放 | 未设 `UI_AUTH_TOKEN` | 演示可忽略；真部署务必设置 |
+| 现象                                     | 原因                                                                                                     | 修复                                                                           |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `/api/plugins` 返回空数组                | 插件入口路径解析错（相对 `packages/server/dist` 只上溯两级）                                             | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
+| 客服后台数据恒为 0                       | `MEMORY_DIR` 用了相对路径，或 Git Bash 下误用 POSIX 风格 `$(pwd)`（Node 解析成 `\c\Users\...` 错位目录） | 改用 `$(pwd -W)`（Windows）/ 绝对路径，seed 与服务用同一目录                   |
+| `pnpm install` 报 TAR_ENTRY_ERROR / 卡住 | 沙箱 safe-delete 守卫拦截批量删除                                                                        | 用 §1.1 的绕过组合 + 关闭沙箱隔离                                              |
+| 面板提示 UI 开放                         | 未设 `UI_AUTH_TOKEN`                                                                                     | 演示可忽略；真部署务必设置                                                     |
 
 ---
 
