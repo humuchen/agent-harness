@@ -37,7 +37,7 @@ export interface HttpRequestOptions {
 }
 
 /** 上游名（错误信息里标明是哪个系统挂了，便于运维定位）。 */
-export type UpstreamName = 'CRM' | 'HIS' | 'KB';
+export type UpstreamName = 'CRM' | 'HIS' | 'KB' | 'EMBED';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

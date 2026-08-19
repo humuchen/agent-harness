@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "title": "意图 → 项目 映射（落 ma_project_intent，支撑意图归一检索）",
+    "updated": "2026-08-19",
+    "owner": "运营中台",
+    "note": "把用户口语诉求（脸大/显老/毛孔粗/松了/斑多）归一为知识库项目，提升 LIKE 检索召回。weight 用于同意图多项目排序；keywords 为包含触发的口语词。projectId 须与 project-catalog.json 一一对应。",
+    "source": "运营梳理 + 目录同义词"
+  },
+  "intents": [
+    { "intent": "面部年轻化", "projectId": "thermage", "weight": 3, "keywords": ["显老", "年轻", "老了", "垮", "松了", "面部年轻化", "抗初老"] },
+    { "intent": "面部年轻化", "projectId": "botox", "weight": 2, "keywords": ["显老", "老了", "动态纹", "皱纹多"] },
+    { "intent": "面部年轻化", "projectId": "hyaluronic-acid-filler", "weight": 2, "keywords": ["显老", "凹陷", "老了"] },
+    { "intent": "面部年轻化", "projectId": "少女针", "weight": 2, "keywords": ["显老", "塌陷", "容积流失"] },
+    { "intent": "面部年轻化", "projectId": "thread-lift", "weight": 2, "keywords": ["垮", "松了", "下垂"] },
+    { "intent": "面部年轻化", "projectId": "contour-lift-injection", "weight": 2, "keywords": ["脸扁平", "没立体感", "支撑感"] },
+    { "intent": "面部年轻化", "projectId": "ultrasound-lift", "weight": 2, "keywords": ["松了", "下颌线模糊", "垮"] },
+
+    { "intent": "祛皱", "projectId": "botox", "weight": 3, "keywords": ["皱纹", "眉间纹", "鱼尾纹", "抬头纹", "动态纹", "皱"] },
+    { "intent": "祛皱", "projectId": "hyaluronic-acid-filler", "weight": 2, "keywords": ["法令纹", "泪沟", "静态纹", "鼻唇沟"] },
+    { "intent": "祛皱", "projectId": "thermage", "weight": 2, "keywords": ["细纹", "皱纹", "松"] },
+    { "intent": "祛皱", "projectId": "少女针", "weight": 1, "keywords": ["细纹", "塌陷"] },
+
+    { "intent": "祛斑", "projectId": "picosecond-laser", "weight": 3, "keywords": ["斑", "雀斑", "晒斑", "褐青色痣", "色素沉着", "纹身"] },
+    { "intent": "祛斑", "projectId": "photon-rejuvenation", "weight": 2, "keywords": ["斑", "红血丝", "肤色不均", "暗沉"] },
+    { "intent": "祛斑", "projectId": "q-switch-laser", "weight": 3, "keywords": ["太田痣", "深层斑", "褐青色痣", "纹身", "真皮斑"] },
+
+    { "intent": "美白提亮", "projectId": "photon-rejuvenation", "weight": 3, "keywords": ["变白", "白", "提亮", "黄气", "肤色暗", "暗沉", "蜡黄", "想变白"] },
+    { "intent": "美白提亮", "projectId": "aha-peel", "weight": 2, "keywords": ["变白", "提亮", "角质暗", "黄气"] },
+    { "intent": "美白提亮", "projectId": "water-injection", "weight": 2, "keywords": ["变白", "水光提亮", "提亮", "想变白"] },
+
+    { "intent": "补水保湿", "projectId": "water-injection", "weight": 3, "keywords": ["缺水", "干", "补水", "保湿", "卡粉", "起皮"] },
+    { "intent": "补水保湿", "projectId": "microneedling", "weight": 2, "keywords": ["缺水", "干", "细纹"] },
+
+    { "intent": "瘦脸脸小", "projectId": "botox", "weight": 3, "keywords": ["脸大", "脸宽", "咬肌", "方脸", "脸胖", "脸小一点"] },
+    { "intent": "瘦脸脸小", "projectId": "contour-lift-injection", "weight": 2, "keywords": ["脸大", "脸宽", "轮廓", "脸型"] },
+    { "intent": "瘦脸脸小", "projectId": "fat-dissolving-injection", "weight": 2, "keywords": ["双下巴", "脸胖", "婴儿肥"] },
+    { "intent": "瘦脸脸小", "projectId": "liposuction", "weight": 1, "keywords": ["双下巴", "脸胖"] },
+
+    { "intent": "毛孔粗大", "projectId": "photon-rejuvenation", "weight": 3, "keywords": ["毛孔粗", "毛孔大", "毛孔", "草莓鼻"] },
+    { "intent": "毛孔粗大", "projectId": "fractional-laser", "weight": 3, "keywords": ["毛孔粗", "痘坑", "毛孔大"] },
+    { "intent": "毛孔粗大", "projectId": "rf-microneedle", "weight": 3, "keywords": ["毛孔粗", "毛孔大", "油"] },
+    { "intent": "毛孔粗大", "projectId": "aha-peel", "weight": 2, "keywords": ["毛孔粗", "角质", "黑头"] },
+    { "intent": "毛孔粗大", "projectId": "microneedling", "weight": 2, "keywords": ["毛孔粗", "毛孔大"] },
+
+    { "intent": "抗衰紧致", "projectId": "thermage", "weight": 3, "keywords": ["松弛", "紧致", "垮", "松", "下垂", "抗衰"] },
+    { "intent": "抗衰紧致", "projectId": "thread-lift", "weight": 3, "keywords": ["松弛", "下垂", "垮", "提升"] },
+    { "intent": "抗衰紧致", "projectId": "ultrasound-lift", "weight": 3, "keywords": ["松弛", "下垂", "下颌线"] },
+    { "intent": "抗衰紧致", "projectId": "contour-lift-injection", "weight": 2, "keywords": ["支撑感", "松弛"] },
+
+    { "intent": "轮廓提升", "projectId": "contour-lift-injection", "weight": 3, "keywords": ["轮廓", "脸型", "立体", "线条"] },
+    { "intent": "轮廓提升", "projectId": "thread-lift", "weight": 2, "keywords": ["提升", "下垂", "轮廓"] },
+    { "intent": "轮廓提升", "projectId": "botox", "weight": 1, "keywords": ["轮廓", "咬肌"] },
+
+    { "intent": "颈纹", "projectId": "neck-thread", "weight": 3, "keywords": ["颈纹", "脖子纹", "颈部皱纹"] },
+
+    { "intent": "黑眼圈泪沟", "projectId": "eye-rejuvenation", "weight": 3, "keywords": ["黑眼圈", "泪沟", "眼窝凹", "眼周", "无神", "疲惫", "没精神", "眼睛无神"] },
+    { "intent": "黑眼圈泪沟", "projectId": "collagen-filler", "weight": 2, "keywords": ["黑眼圈", "泪沟", "眼周暗"] },
+
+    { "intent": "眼袋", "projectId": "eye-bag", "weight": 3, "keywords": ["眼袋", "泡泡眼", "下眼"] },
+
+    { "intent": "双眼皮", "projectId": "blepharoplasty", "weight": 3, "keywords": ["双眼皮", "单眼皮", "内双", "重睑", "眼睛小", "无神", "眼睛无神"] },
+
+    { "intent": "隆鼻", "projectId": "rhinoplasty", "weight": 3, "keywords": ["隆鼻", "塌鼻子", "鼻梁低", "鼻整形", "鼻综合"] },
+
+    { "intent": "脸型骨相", "projectId": "facial-contour", "weight": 3, "keywords": ["方脸", "下颌角", "颧骨", "脸宽", "脸型", "骨骼"] },
+    { "intent": "脸型骨相", "projectId": "rhinoplasty", "weight": 1, "keywords": ["脸型", "鼻子"] },
+
+    { "intent": "体雕瘦身", "projectId": "liposuction", "weight": 3, "keywords": ["瘦身", "塑形", "减肥", "局部胖", "身材", "抽脂", "肚子", "小肚子", "腰腹", "肚腩", "肚子肉多"] },
+    { "intent": "体雕瘦身", "projectId": "cryolipolysis", "weight": 3, "keywords": ["瘦身", "减脂", "局部胖", "塑形", "酷塑", "肚子", "腰腹", "小肚子"] },
+    { "intent": "体雕瘦身", "projectId": "rf-lipo", "weight": 2, "keywords": ["瘦身", "紧致", "产后", "塑形", "腰腹", "肚子"] },
+    { "intent": "体雕瘦身", "projectId": "fat-dissolving-injection", "weight": 2, "keywords": ["局部胖", "双下巴", "减脂", "肚子", "腰腹"] },
+
+    { "intent": "局部减脂", "projectId": "fat-dissolving-injection", "weight": 3, "keywords": ["局部胖", "双下巴", "减脂", "肚子", "腰腹"] },
+    { "intent": "局部减脂", "projectId": "cryolipolysis", "weight": 3, "keywords": ["局部胖", "减脂", "酷塑", "腰腹", "肚子"] },
+    { "intent": "局部减脂", "projectId": "rf-lipo", "weight": 2, "keywords": ["局部胖", "紧致", "腰腹"] },
+    { "intent": "局部减脂", "projectId": "liposuction", "weight": 2, "keywords": ["局部胖", "抽脂", "肚子", "肚腩"] },
+
+    { "intent": "祛痘痤疮", "projectId": "aha-peel", "weight": 3, "keywords": ["痘痘", "痤疮", "闭口", "粉刺", "痘"] },
+    { "intent": "祛痘痤疮", "projectId": "red-blue-light", "weight": 3, "keywords": ["痘痘", "痤疮", "消炎", "痘"] },
+    { "intent": "祛痘痤疮", "projectId": "fractional-laser", "weight": 2, "keywords": ["痘坑", "痘印", "痤疮"] },
+
+    { "intent": "痘坑瘢痕", "projectId": "fractional-laser", "weight": 3, "keywords": ["痘坑", "瘢痕", "疤痕", "坑"] },
+    { "intent": "痘坑瘢痕", "projectId": "rf-microneedle", "weight": 3, "keywords": ["痘坑", "瘢痕", "坑", "油痘"] },
+    { "intent": "痘坑瘢痕", "projectId": "microneedling", "weight": 2, "keywords": ["痘坑", "坑", "瘢痕"] },
+
+    { "intent": "敏感肌", "projectId": "sensitive-care", "weight": 3, "keywords": ["敏感", "泛红", "红血丝", "屏障", "过敏"] },
+    { "intent": "敏感肌", "projectId": "hydrafacial", "weight": 1, "keywords": ["敏感", "清洁"] },
+
+    { "intent": "脱毛", "projectId": "laser-hair-removal", "weight": 3, "keywords": ["脱毛", "毛多", "腋毛", "唇毛", "体毛"] },
+
+    { "intent": "植发脱发", "projectId": "hair-transplant", "weight": 3, "keywords": ["脱发", "秃", "发际线", "植发", "掉发", "稀少"] },
+
+    { "intent": "牙齿美白", "projectId": "teeth-whitening", "weight": 3, "keywords": ["牙黄", "美白", "牙齿白", "烟渍", "茶渍"] },
+
+    { "intent": "牙齿矫正", "projectId": "invisible-ortho", "weight": 3, "keywords": ["牙齿不齐", "矫正", "牙套", "龅牙", "地包天"] },
+
+    { "intent": "纹眉", "projectId": "semi-permanent-brows", "weight": 3, "keywords": ["纹眉", "半永久", "雾眉", "眉形", "眉毛少"] },
+
+    { "intent": "隆胸", "projectId": "breast-aug", "weight": 3, "keywords": ["隆胸", "丰胸", "胸小", "乳房"] },
+
+    { "intent": "瘢痕修复", "projectId": "scar-repair", "weight": 3, "keywords": ["瘢痕", "疤痕", "疤", "增生疤", "疙瘩疤", "刀疤", "疤修复"] },
+    { "intent": "妊娠纹修复", "projectId": "stretch-marks", "weight": 3, "keywords": ["妊娠纹", "膨胀纹", "肥胖纹", "孕纹", "肚子花纹", "产后纹"] },
+    { "intent": "丰唇", "projectId": "lip-augmentation", "weight": 3, "keywords": ["丰唇", "嘴唇薄", "唇形", "嘟嘟唇", "唇部"] },
+    { "intent": "私密紧致", "projectId": "private-tightening", "weight": 3, "keywords": ["私密", "阴道紧缩", "阴部", "盆底松弛", "私密年轻化"] },
+    { "intent": "乳晕整形", "projectId": "areola-nipple", "weight": 3, "keywords": ["乳晕", "乳头内陷", "乳头", "乳晕缩小", "乳晕形态"] },
+    { "intent": "祛痣祛疣", "projectId": "mole-wart", "weight": 3, "keywords": ["痣", "祛痣", "点痣", "疣", "瘊子", "皮肤赘生物", "软纤维瘤"] },
+    { "intent": "黄褐斑", "projectId": "melasma-treatment", "weight": 3, "keywords": ["黄褐斑", "蝴蝶斑", "肝斑", "反复长斑", "斑反复"] },
+    { "intent": "提眉", "projectId": "forehead-lift", "weight": 3, "keywords": ["提眉", "眉下垂", "眉压眼", "额纹", "切眉", "眉形"] },
+    { "intent": "颈部提升", "projectId": "neck-lift", "weight": 3, "keywords": ["颈部松弛", "火鸡脖", "颈部下垂", "颈阔肌", "颈纹松弛"] },
+    { "intent": "手部年轻化", "projectId": "hand-rejuvenation", "weight": 3, "keywords": ["手老", "手背青筋", "手部年轻化", "手显老", "手背"] },
+    { "intent": "脱发养护", "projectId": "scalp-care", "weight": 3, "keywords": ["脱发养护", "头皮养护", "生发", "掉发养护", "养固", "头皮管理", "养护"] },
+    { "intent": "露龈笑", "projectId": "gummy-smile", "weight": 3, "keywords": ["露龈笑", "牙龈笑", "笑露龈", "露龈", "牙龈"] }
+  ]
+}

@@ -9,10 +9,10 @@
  * 3. 懒解析：env 可能在 import 之后才注入（server 启动顺序），因此配置在首次读取时解析并缓存，
  *    可通过 resetConfig() 失效（测试用）。
  *
- * 全部环境变量见 docs/medical-aesthetics-lead/CONFIG.md。
+ * 全部环境变量见 docs/CONFIG.md。
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 /** 关系库配置（线索/知识库/号源/预约/发件箱的系统记录）。 */
 export interface DbConfig {
@@ -37,6 +37,12 @@ export interface UpstreamConfig {
   retries: number;
 }
 
+/** 文本嵌入服务配置（语义检索用）。在通用上游基础上增加模型名。 */
+export interface EmbedConfig extends UpstreamConfig {
+  /** 嵌入模型名（OpenAI 兼容端点用，如 text-embedding-3-small / nomic-embed-text）。 */
+  model: string;
+}
+
 export interface MaConfig {
   /** 租户标识：贯穿 DB 行、CRM 请求头与 A2A 信封。 */
   tenantId: string;
@@ -47,6 +53,8 @@ export interface MaConfig {
   his: UpstreamConfig;
   /** 项目知识库服务。source=db 时查本地库；source=http 时查外部 KB 服务。 */
   kb: UpstreamConfig & { source: 'db' | 'http' };
+  /** 文本嵌入服务（语义检索用）。未配置则 hybrid 检索退化为词面+意图，绝不伪造向量。 */
+  embed: EmbedConfig;
   /** 渠道 webhook 入口：HMAC 校验密钥（未配置则拒绝所有 webhook，避免裸奔）。 */
   webhookSecret: string;
   /** 运营数据导入 / 看板写操作的管理令牌（未配置则拒绝写入）。 */
@@ -97,7 +105,9 @@ export function getConfig(): MaConfig {
     tenantId: (process.env.MA_TENANT_ID ?? 'default').trim() || 'default',
     db: {
       driver: 'sqlite',
-      file: process.env.MA_DB_FILE ?? join(dataDir, 'ma-lead.db'),
+      // MA_DB_FILE 可能传相对路径；统一在此解析为绝对路径，
+      // 避免 seed / export / 运行时在不同工作目录下解析到不同文件（曾导致导出读到空库）。
+      file: process.env.MA_DB_FILE ? resolve(process.cwd(), process.env.MA_DB_FILE) : join(dataDir, 'ma-lead.db'),
       busyTimeoutMs: int('MA_DB_BUSY_TIMEOUT_MS', 5000),
     },
     crm: upstream('MA_CRM'),
@@ -106,6 +116,10 @@ export function getConfig(): MaConfig {
       ...upstream('MA_KB'),
       // 缺省用本地库（运营经导入接口写入 / 由外部 KB 服务同步落库）。
       source: (process.env.MA_KB_SOURCE ?? 'db').trim() === 'http' ? 'http' : 'db',
+    },
+    embed: {
+      ...upstream('MA_EMBED'),
+      model: (process.env.MA_EMBED_MODEL ?? 'text-embedding-3-small').trim(),
     },
     webhookSecret: (process.env.MA_WEBHOOK_SECRET ?? '').trim(),
     adminToken: (process.env.MA_ADMIN_TOKEN ?? '').trim(),
@@ -139,6 +153,7 @@ export function configSummary(): Record<string, unknown> {
     crm: { enabled: c.crm.enabled, baseUrl: c.crm.baseUrl || null, hasToken: c.crm.token.length > 0 },
     his: { enabled: c.his.enabled, baseUrl: c.his.baseUrl || null, hasToken: c.his.token.length > 0 },
     kb: { source: c.kb.source, enabled: c.kb.enabled, baseUrl: c.kb.baseUrl || null },
+    embed: { enabled: c.embed.enabled, baseUrl: c.embed.baseUrl || null, model: c.embed.model },
     webhook: { configured: c.webhookSecret.length > 0 },
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,

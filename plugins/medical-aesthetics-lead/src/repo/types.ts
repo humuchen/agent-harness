@@ -109,7 +109,14 @@ export interface LeadStats {
   crmSync: Record<CrmSyncState, number>;
 }
 
-/** 知识库项目条目。 */
+/** 知识库项目条目。
+ *
+ * 字段分三组：
+ * - 科普描述（summary/indications/contraindications/recovery/priceRange/faq）：对客科普，不含疗效承诺。
+ * - 经营/检索增强（intentTags/comboWith/audience/seasonality/durationMin/painLevel/downtimeDays/courseSessions/avgPriceTier）：
+ *   用于线索分层、升单推荐与检索召回，内部使用。
+ * - 合规与向量（compliantCopy/complianceReviewed/embedding）：合规内建与语义检索。
+ */
 export interface ProjectRecord {
   projectId: string;
   name: string;
@@ -125,6 +132,46 @@ export interface ProjectRecord {
   /** 是否启用（导入时可置否软删）。缺省 true。 */
   active?: boolean;
   updatedAt: number;
+
+  // —— 经营 / 检索增强字段（P0 结构化扩编） ——
+  /** 诉求意图标签（如 面部年轻化 / 祛斑 / 瘦身），用于意图检索与升单组合。 */
+  intentTags?: string[];
+  /** 推荐联合项目（projectId 列表），用于升单建议。 */
+  comboWith?: string[];
+  /** 适合人群描述。 */
+  audience?: string;
+  /** 旺季 / 季节偏好提示。 */
+  seasonality?: string;
+  /** 单次时长（分钟）。 */
+  durationMin?: number;
+  /** 疼痛度 1-5（内部参考）。 */
+  painLevel?: number;
+  /** 停工期说明。 */
+  downtimeDays?: string;
+  /** 疗程次数说明（如 "3-5 次/疗程"）。 */
+  courseSessions?: string;
+  /** 客单价档位（如 "入门/中端/高端"），用于分层。 */
+  avgPriceTier?: string;
+
+  // —— 合规内建（P1） ——
+  /** 对外合规文案：已去除疗效承诺/术前术后对比的合规表述，检索对客优先返回。 */
+  compliantCopy?: string;
+  /** 是否已过合规复核。未过审则对客不返回疗效类 FAQ，仅返回科普。 */
+  complianceReviewed?: boolean;
+
+  // —— 语义检索（P1 hybrid，可空） ——
+  /** 项目摘要 embedding（JSON 数组文本列）。未配置嵌入服务时为 null。 */
+  embedding?: number[] | null;
+}
+
+/** 意图 → 项目 映射条目（knowledge/domain/intent-map.json → ma_project_intent）。 */
+export interface IntentMapping {
+  intent: string;
+  projectId: string;
+  /** 命中权重（同意图多项目时排序用）。 */
+  weight: number;
+  /** 触发该意图的关键词/短语（用于查询时意图归一）。 */
+  keywords: string[];
 }
 
 export interface ClinicRecord {

@@ -104,9 +104,35 @@ CREATE TABLE IF NOT EXISTS ma_project (
   faq               TEXT,
   source            TEXT,
   active            INTEGER NOT NULL DEFAULT 1,
-  updated_at        INTEGER NOT NULL
+  updated_at        INTEGER NOT NULL,
+  -- P0 结构化扩编：经营 / 检索增强字段
+  intent_tags       TEXT,
+  combo_with        TEXT,
+  audience          TEXT,
+  seasonality       TEXT,
+  duration_min      INTEGER,
+  pain_level        INTEGER,
+  downtime_days     TEXT,
+  course_sessions   TEXT,
+  avg_price_tier    TEXT,
+  -- P1 合规内建
+  compliant_copy       TEXT,
+  compliance_reviewed  INTEGER NOT NULL DEFAULT 0,
+  -- P1 语义检索（JSON 数组文本；未配置嵌入服务时为 NULL）
+  embedding         TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_project_tenant ON ma_project(tenant_id, active);
+
+-- 意图 → 项目 映射（knowledge/domain/intent-map.json 落库；支撑意图归一检索）
+CREATE TABLE IF NOT EXISTS ma_project_intent (
+  intent      TEXT NOT NULL,
+  project_id  TEXT NOT NULL,
+  tenant_id   TEXT NOT NULL DEFAULT 'default',
+  weight      INTEGER NOT NULL DEFAULT 1,
+  keywords    TEXT,
+  PRIMARY KEY (intent, project_id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS ix_intent_tenant ON ma_project_intent(tenant_id, intent);
 
 -- 院区（权威来源可为 HIS；本表为查询副本）
 CREATE TABLE IF NOT EXISTS ma_clinic (
@@ -222,12 +248,46 @@ export function getDb(): SqliteDatabase {
  * 仅在列确实缺失时执行，全新库因 CREATE TABLE 已含该列而跳过。
  */
 function runMigrations(conn: SqliteDatabase): void {
-  const cols = (conn
+  const apptCols = (conn
     .prepare(`PRAGMA table_info(ma_appointment)`)
     .all() as Record<string, unknown>[]).map((r) => String(r.name));
-  if (!cols.includes('external_status')) {
+  if (!apptCols.includes('external_status')) {
     conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
   }
+  // ma_project 新列增量迁移（P0 结构化 + P1 合规/语义）
+  const projCols = (conn
+    .prepare(`PRAGMA table_info(ma_project)`)
+    .all() as Record<string, unknown>[]).map((r) => String(r.name));
+  const projAdd: Record<string, string> = {
+    intent_tags: 'TEXT',
+    combo_with: 'TEXT',
+    audience: 'TEXT',
+    seasonality: 'TEXT',
+    duration_min: 'INTEGER',
+    pain_level: 'INTEGER',
+    downtime_days: 'TEXT',
+    course_sessions: 'TEXT',
+    avg_price_tier: 'TEXT',
+    compliant_copy: 'TEXT',
+    compliance_reviewed: 'INTEGER NOT NULL DEFAULT 0',
+    embedding: 'TEXT',
+  };
+  for (const [col, type] of Object.entries(projAdd)) {
+    if (!projCols.includes(col)) {
+      conn.exec(`ALTER TABLE ma_project ADD COLUMN ${col} ${type};`);
+    }
+  }
+  // ma_project_intent 表增量创建（旧库可能没有）
+  conn.exec(`
+    CREATE TABLE IF NOT EXISTS ma_project_intent (
+      intent      TEXT NOT NULL,
+      project_id  TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL DEFAULT 'default',
+      weight      INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (intent, project_id, tenant_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_intent_tenant ON ma_project_intent(tenant_id, intent);
+  `);
 }
 
 /** 关闭连接（插件 onUnload / 测试清理）。 */

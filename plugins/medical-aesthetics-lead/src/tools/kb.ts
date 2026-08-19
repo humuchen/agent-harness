@@ -1,5 +1,5 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { searchProjects } from '../services/kb-service';
+import { searchProjects, toCustomerView } from '../services/kb-service';
 import { errorResult } from '../infra/errors';
 
 /**
@@ -9,6 +9,9 @@ import { errorResult } from '../infra/errors';
  * - 本地库 ma_project（运营经导入接口写入，或外部 KB 服务同步落库）；或
  * - 外部 KB 服务（MA_KB_SOURCE=http 时真实出网检索）。
  * 库/服务中无相关项目时如实返回 found:false，绝不回退到内置语料。
+ *
+ * 合规内建（P1）：对客只返回合规文案（compliantCopy 优先，未过审退回科普且不带疗效 FAQ），
+ * 并显式标注 reviewed 状态，便于上层（护栏/话术）据实处理。
  */
 export function registerKbTool(tools: ToolRegistry): void {
   tools.register(
@@ -33,17 +36,18 @@ export function registerKbTool(tools: ToolRegistry): void {
               '暂未收录该项目（知识库为空或外部 KB 未配置），建议预约面诊由医生结合个人基础评估。',
           };
         }
-        const top = hits[0];
+        const top = toCustomerView(hits[0]);
         return {
           found: true,
+          reviewed: top.reviewed,
           project: top.name,
           category: top.category ?? '',
-          summary: top.summary,
-          indications: top.indications ?? '',
+          copy: top.copy,
+          indications: hits[0].indications ?? '',
           contraindications: top.contraindications ?? '',
           recovery: top.recovery ?? '',
           priceRange: top.priceRange ?? '',
-          faq: (top.faq ?? []).map((f) => (f.a ? `${f.q}：${f.a}` : f.q)),
+          faq: top.faq,
           more: hits.slice(1, 4).map((p) => p.name),
         };
       } catch (e) {
