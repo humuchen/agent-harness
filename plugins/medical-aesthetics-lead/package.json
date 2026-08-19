@@ -5,7 +5,9 @@
   "description": "医美客资 Agent 插件：多渠道获客 / 需求初筛 / 项目咨询 / 留资 / 预约到店 / 转人工咨询师，含医疗广告合规护栏。",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.cjs",
+    "smoke": "node smoke.cjs"
   },
   "license": "MIT",
   "engines": {
