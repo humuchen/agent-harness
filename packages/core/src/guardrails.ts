@@ -16,6 +16,12 @@ import type { IsolationLevel } from './sandbox/types';
 export interface GuardrailResult {
   ok: boolean;
   reason?: string;
+  /**
+   * 合规安全回复（可选）：拦截规则命中时可附带一段「合规、有事实依据」的兜底话术，
+   * 调用方（harness）优先采用它作为最终回复，而非暴露 [guardrail] blocked 内部文本。
+   * 例：知识库查空时，直接返回工具的标准「建议预约面诊」话术。
+   */
+  safeReply?: string;
 }
 
 export interface PiiRedactor {
@@ -291,6 +297,31 @@ export function registerOutputRule(re: RegExp, reason: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// 上下文感知输出规则（P0.x）：可据「最近一次工具调用」等业务上下文做精准拦截，
+// 突破纯文本正则无法感知会话状态的局限。例如：知识库查空后禁止模型自行推荐项目。
+// core 只透传通用上下文（recentTool），具体业务判定由领域插件（如 medical-ad-guard）注册。
+// ---------------------------------------------------------------------------
+
+/** 输出侧校验可携带的上下文（由 harness 在调用 checkOutput 时注入，core 不假定任何业务语义）。 */
+export interface GuardrailOutputContext {
+  /** 最近一次执行的工具调用（name 含 server 前缀，result 为工具返回文本）。 */
+  recentTool?: { name: string; result: string } | null;
+}
+
+/** 上下文感知输出规则：接收输出文本与上下文，返回拦截结果。 */
+export type ContextualOutputRule = (text: string, ctx: GuardrailOutputContext) => GuardrailResult;
+
+const customContextualOutputRules: ContextualOutputRule[] = [];
+
+/**
+ * 注册一条上下文感知的输出校验规则（命中即拦截模型最终输出）。
+ * 与 registerOutputRule（纯文本正则）互补：可据 recentTool 等上下文做精准判定。
+ */
+export function registerContextualOutputRule(fn: ContextualOutputRule): void {
+  customContextualOutputRules.push(fn);
+}
+
+// ---------------------------------------------------------------------------
 // PII 脱敏
 // ---------------------------------------------------------------------------
 
@@ -378,7 +409,11 @@ export function checkInput(text: string, pol?: GuardrailPolicy): GuardrailResult
   return { ok: true };
 }
 
-export function checkOutput(text: string, pol?: GuardrailPolicy): GuardrailResult {
+export function checkOutput(
+  text: string,
+  pol?: GuardrailPolicy,
+  ctx?: GuardrailOutputContext
+): GuardrailResult {
   const p = pol ?? policy;
   if (typeof text !== 'string') return { ok: true };
   if (p.enableSecretScan) {
@@ -390,6 +425,14 @@ export function checkOutput(text: string, pol?: GuardrailPolicy): GuardrailResul
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
   for (const r of customOutputRules) {
     if (r.re.test(text)) return { ok: false, reason: r.reason };
+  }
+  // 上下文感知规则：仅当调用方注入了上下文时运行（无 ctx 的旧调用方不受影响），
+  // 让领域插件据最近工具结果等业务上下文做精准拦截（如知识库查空后禁止自行推荐）。
+  if (ctx) {
+    for (const r of customContextualOutputRules) {
+      const res = r(text, ctx);
+      if (!res.ok) return res;
+    }
   }
   return { ok: true };
 }

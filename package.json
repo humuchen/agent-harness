@@ -12,7 +12,8 @@
     "build:native": "bash scripts/build-native.sh",
     "verify:sandbox": "bash scripts/verify-sandbox.sh",
     "test": "pnpm -r test",
-    "server": "pnpm --filter @agent-harness/server run start"
+    "server": "pnpm --filter @agent-harness/server run start",
+    "dev": "node packages/server/dist/server.js"
   },
   "license": "MIT",
   "dependencies": {

@@ -240,6 +240,12 @@ export class AgentHarness {
     let steps = 0;
     // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
     let guardrailsBlocked = 0;
+    // 输出护栏「合规内容类」拦截后，允许温和重试的次数（密钥/注入类不重试，直接兜底）。
+    // 每轮 run 重置，避免跨轮累积；重试会注入纠正提示让模型重新生成合规内容。
+    let guardrailRetriesLeft = 1;
+    // 最近一次执行的工具调用结果（跨 runLoop 迭代保留），用于向输出护栏注入上下文，
+    // 使规则能感知「上一步工具（如 project_kb_search）是否返回 found:false」等业务信号。
+    let lastToolResult: { name: string; result: string } | null = null;
     // 本次 run 累计的 token 用量与成本（用于预算熔断与 run:cost 事件）。
     let runTokens = 0;
     let runCost = 0;
@@ -413,13 +419,44 @@ export class AgentHarness {
           if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
-          const outGuard = checkOutput(resp.content, this.opts.guardrailPolicy);
+          const outGuard = checkOutput(
+            resp.content,
+            this.opts.guardrailPolicy,
+            lastToolResult ? { recentTool: lastToolResult } : undefined
+          );
           if (!outGuard.ok) {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
             emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
             guardrailsBlocked += 1;
-            return `[guardrail] blocked: ${outGuard.reason}`;
+
+            // 优雅兜底（三档，避免向用户暴露 [guardrail] blocked 方括号文本）：
+            // 1) 拦截规则自带合规安全回复（如知识库查空的标准「建议预约面诊」话术）→ 直接采用，
+            //    零额外 LLM 成本、零幻觉风险，体验最佳。
+            if (outGuard.safeReply) return outGuard.safeReply;
+
+            // 密钥 / 注入类拦截：重试无意义且可能再次泄露，直接走中性兜底。
+            const isSecretOrInjection =
+              !!outGuard.reason &&
+              (outGuard.reason.includes('secret') || outGuard.reason.includes('injection'));
+
+            // 2) 合规内容类拦截（非密钥/注入）→ 温和重试一次：注入纠正提示让模型重新生成。
+            if (!isSecretOrInjection && guardrailRetriesLeft > 0) {
+              guardrailRetriesLeft -= 1;
+              memory.add({
+                role: 'user',
+                content:
+                  '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
+                  (outGuard.reason ?? '合规校验未通过') +
+                  '）。请重新组织回复：仅陈述有事实依据、经工具/知识库确认的内容；' +
+                  '不要自行编造或补充任何未经确认的项目、功效、价格、恢复期或禁忌。' +
+                  '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。',
+              });
+              continue;
+            }
+
+            // 3) 重试仍不通过 / 无 safeReply → 中性安全兜底，绝不暴露内部拦截文本。
+            return '抱歉，我暂时无法提供该内容的回复。如有进一步需求，建议您通过官方正规渠道咨询。';
           }
 
           // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
@@ -504,6 +541,8 @@ export class AgentHarness {
               name: call.name,
               content: resultStr,
             });
+            // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
+            lastToolResult = { name: call.name, result: resultStr };
           }
         }
         return '[agent] reached max steps without a final answer';
