@@ -35,7 +35,9 @@ function rowToProject(r: Record<string, unknown>): ProjectRecord {
   }
   let embedding: number[] | null = null;
   try {
-    embedding = r.embedding ? (JSON.parse(String(r.embedding)) as number[]) : null;
+    embedding = r.embedding
+      ? (JSON.parse(String(r.embedding)) as number[])
+      : null;
   } catch {
     embedding = null;
   }
@@ -64,7 +66,7 @@ function rowToProject(r: Record<string, unknown>): ProjectRecord {
     avgPriceTier: (r.avg_price_tier as string) ?? undefined,
     compliantCopy: (r.compliant_copy as string) ?? undefined,
     complianceReviewed: Number(r.compliance_reviewed) === 1,
-    embedding,
+    embedding
   };
 }
 
@@ -104,7 +106,7 @@ export function scoreProject(p: ProjectRecord, q: string): number {
     [(p.priceRange ?? '').toLowerCase(), 1],
     [(p.intentTags ?? []).join(' ').toLowerCase(), 2],
     [(p.audience ?? '').toLowerCase(), 1],
-    [(p.avgPriceTier ?? '').toLowerCase(), 1],
+    [(p.avgPriceTier ?? '').toLowerCase(), 1]
   ];
   let score = 0;
   for (const tk of tks) {
@@ -138,7 +140,8 @@ export function expandByIntent(query: string): Map<string, number> {
     for (const r of rows) {
       const kws: string[] = r.keywords ? safeSplitJson(r.keywords) : [];
       const hit =
-        q.includes(r.intent.toLowerCase()) || kws.some((k) => q.includes(k.toLowerCase()));
+        q.includes(r.intent.toLowerCase()) ||
+        kws.some((k) => q.includes(k.toLowerCase()));
       if (hit) {
         const prev = boost.get(r.project_id) ?? 0;
         boost.set(r.project_id, prev + (r.weight || 1) * 3);
@@ -154,7 +157,10 @@ function safeSplitJson(s: string): string[] {
     return Array.isArray(a) ? a.map(String) : [];
   } catch {
     // 退化：按逗号切
-    return s.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+    return s
+      .split(/[,，]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
   }
 }
 
@@ -189,10 +195,13 @@ export function searchProjects(
     const rows = db
       .prepare(
         `SELECT * FROM ma_project WHERE tenant_id = ? AND active = 1
-         AND (name LIKE ? OR category LIKE ? OR aliases LIKE ? OR summary LIKE ? OR indications LIKE ? OR intent_tags LIKE ?)
-         ORDER BY updated_at DESC LIMIT 200`
+        AND (name LIKE ? OR category LIKE ? OR aliases LIKE ? OR summary LIKE ? OR indications LIKE ? OR intent_tags LIKE ?)
+        ORDER BY updated_at DESC LIMIT 200`
       )
-      .all(tid, like, like, like, like, like, like) as Record<string, unknown>[];
+      .all(tid, like, like, like, like, like, like) as Record<
+      string,
+      unknown
+    >[];
     const byId = new Map<string, ProjectRecord>();
     for (const r of rows) byId.set(String(r.project_id), rowToProject(r));
 
@@ -207,13 +216,16 @@ export function searchProjects(
           `SELECT * FROM ma_project WHERE tenant_id = ? AND active = 1 AND project_id IN (${ph})`
         )
         .all(tid, ...ids) as Record<string, unknown>[];
-      for (const r of intentRows) byId.set(String(r.project_id), rowToProject(r));
+      for (const r of intentRows)
+        byId.set(String(r.project_id), rowToProject(r));
     }
 
     const projects = [...byId.values()];
     if (!q && !queryEmbedding) return projects.slice(0, limit);
 
-    const useEmbed = !!queryEmbedding && projects.some((p) => p.embedding && p.embedding.length);
+    const useEmbed =
+      !!queryEmbedding &&
+      projects.some((p) => p.embedding && p.embedding.length);
     const scored = projects.map((p) => {
       let s = scoreProject(p, q);
       s += intentBoost.get(p.projectId) ?? 0;
@@ -234,7 +246,9 @@ export function searchProjects(
 export function getProject(projectId: string): ProjectRecord | null {
   return dbCall(() => {
     const row = getDb()
-      .prepare('SELECT * FROM ma_project WHERE tenant_id = ? AND project_id = ?')
+      .prepare(
+        'SELECT * FROM ma_project WHERE tenant_id = ? AND project_id = ?'
+      )
       .get(getConfig().tenantId, projectId);
     return row ? rowToProject(row) : null;
   }, '读取知识库项目');
@@ -308,7 +322,7 @@ export function upsertProject(p: ProjectRecord): void {
       avg_price_tier: p.avgPriceTier ?? null,
       compliant_copy: p.compliantCopy ?? null,
       compliance_reviewed: p.complianceReviewed ? 1 : 0,
-      embedding: p.embedding ? JSON.stringify(p.embedding) : null,
+      embedding: p.embedding ? JSON.stringify(p.embedding) : null
     });
   }, '导入知识库项目');
 }
@@ -316,7 +330,9 @@ export function upsertProject(p: ProjectRecord): void {
 /** 清空本租户意图映射（seed 重导入前调用，避免重复累积）。 */
 export function clearIntents(): void {
   dbCall(() => {
-    getDb().prepare('DELETE FROM ma_project_intent WHERE tenant_id = ?').run(getConfig().tenantId);
+    getDb()
+      .prepare('DELETE FROM ma_project_intent WHERE tenant_id = ?')
+      .run(getConfig().tenantId);
   }, '清空意图映射');
 }
 
