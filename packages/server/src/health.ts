@@ -236,20 +236,27 @@ async function checkRedis(): Promise<HealthCheck> {
     return {
       status: 'ok',
       latency: 0,
-      details: { note: '未配置Redis,使用内存存储' }
+      details: { note: '未配置REDIS_URL,使用内存存储' }
     };
   }
 
   try {
-    // TODO: 如果集成了Redis客户端,在这里PING测试
-    // const { getRedisClient } = await import('./redis-client');
-    // const redis = getRedisClient();
-    // await redis.ping();
+    // 使用Redis客户端进行PING测试
+    const { ping } = await import('./redis-client');
+    const latency = await ping();
+
+    if (latency < 0) {
+      return {
+        status: 'error',
+        latency: Date.now() - start,
+        error: 'Redis PING测试失败'
+      };
+    }
 
     return {
       status: 'ok',
-      latency: Date.now() - start,
-      details: { note: 'Redis已配置(待实现连接测试)' }
+      latency,
+      details: { configured: true }
     };
   } catch (e: any) {
     return {
