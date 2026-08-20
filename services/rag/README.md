@@ -10,7 +10,8 @@
 - **可插拔向量化**：默认 `HashEmbedding`（确定性、零外部依赖，用于冒烟/演示）；
   设 `RAG_EMBEDDING_API_KEY` 自动切换到真实远程 embedding（OpenAI / OpenRouter 兼容）。
 - **真 BM25 + 混合检索（P2）**：稠密余弦 + 真 BM25（IDF 加权）按 `RAG_FUSE_DENSE/BM25` 融合，
-  替代 P0 的弱关键词代理打分；MMR 多样性重排（`RAG_RERANK`）。
+  替代 P0 的弱关键词代理打分；重排三档：`mmr`（默认，MMR 多样性）| `api`（真实 cross-encoder，
+  兼容 Jina/Cohere Rerank，失败自动回退 MMR）| `none`。
 - **完整鉴权（P2）**：静态令牌（`RAG_TOKENS`）或 **JWT（HS256，`RAG_JWT_SECRET`）**；
   `tenant_id` 由服务端从凭证重写，杜绝客户端伪造跨租户读写。
 - **异步入库队列（P2）**：ingest 返回 202 + `job_id`，后台并发 worker 处理（`RAG_ASYNC_INGEST`）。
@@ -103,7 +104,10 @@ node --test test/*.test.cjs
 | `RAG_ASYNC_INGEST` | `true` | 异步入库队列（`false` 时同步立即返回结果） |
 | `RAG_CACHE` | `true` | 查询结果缓存（LRU+TTL） |
 | `RAG_SHARD_BY_TENANT` | `false` | 持久化按租户分片（`<base>.<tenant>.json`） |
-| `RAG_RERANK` | `mmr` | 重排：`mmr`（多样性，cross-encoder 重排的零依赖实现）或 `none` |
+| `RAG_RERANK` | `mmr` | 重排：`mmr`（MMR 多样性，零依赖）\| `api`（真实 cross-encoder，需下方 3 个配置，失败回退 MMR）\| `none` |
+| `RAG_RERANK_API_URL` | 空 | cross-encoder API 地址（Jina `.../v1/rerank` / Cohere `.../v2/rerank` 兼容） |
+| `RAG_RERANK_API_KEY` | 空 | cross-encoder API 密钥 |
+| `RAG_RERANK_MODEL` | `jina-reranker-v2-base-multilingual` | cross-encoder 模型名 |
 | `RAG_FUSE_DENSE` / `RAG_FUSE_BM25` | `0.6` / `0.4` | 稠密余弦与 BM25 融合权重 |
 | `RAG_EMBED_DIM` | `256` | 向量维度（切换 embedding 提供方需保持一致） |
 | `RAG_DATA_FILE` | 空 | JSON 持久化文件路径 |

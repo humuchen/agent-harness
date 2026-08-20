@@ -322,8 +322,8 @@ sequenceDiagram
 | `services/rag/src/server.ts`   | HTTP REST：`/v1/retrieve`、`/v1/ingest(异步)`、`/v1/ingest/:jobId`、`/v1/health`、`/v1/metrics` + JWT/令牌鉴权 + tenant 重写 |
 | `services/rag/src/mcp.ts`      | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest`（带缓存） |
 | `services/rag/src/index.ts`    | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输                                                |
-| `services/rag/src/{auth,bm25,queue,cache,metrics}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 |
-| `services/rag/test/*.test.cjs` | 单测 + 集成（11 用例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展 |
+| `services/rag/src/{auth,bm25,queue,cache,metrics,rerank}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 / cross-encoder 重排（MMR+API） |
+| `services/rag/test/*.test.cjs` | 单测 + 集成（15 用例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展/MMR/cross-encoder API |
 | `examples/rag-e2e.ts`          | 端到端演示：起 RAG → 注入 → 检索 → 融入生成                                             |
 
 ### 关键实现决策
@@ -340,8 +340,10 @@ sequenceDiagram
   - 完整鉴权：新增 `services/rag/src/auth.ts`——JWT(HS256, `node:crypto`，`RAG_JWT_SECRET`) +
     静态令牌双通道；`resolveTenant` 判别联合返回，缺失 401 / 无效 403；JWT `tenant` 声明即租户。
   - 真 BM25：新增 `services/rag/src/bm25.ts`（IDF/词频/长度归一化，k1=1.5, b=0.75），
-    `retrieve.ts` 替换原弱关键词代理，与稠密余弦按 `RAG_FUSE_DENSE/BM25`（0.6/0.4）融合；
-    MMR 多样性重排（`RAG_RERANK=mmr`，cross-encoder 重排的零依赖最小实现），结果带 `rerank_score`。
+    `retrieve.ts` 替换原弱关键词代理，与稠密余弦按 `RAG_FUSE_DENSE/BM25`（0.6/0.4）融合。
+    重排三档：`mmr`（默认，`rerank.ts` 内 MMR 多样性，零依赖）| `api`（`rerank.ts` 内
+    `rerankWithApi` 调真实 cross-encoder，兼容 Jina/Cohere Rerank，未配置/失败自动回退 MMR）| `none`；
+    结果带 `rerank_score`。
   - 异步入库队列：新增 `services/rag/src/queue.ts`（并发 worker + job 状态 + drain），
     HTTP ingest 默认 202 + `job_id`，`GET /v1/ingest/:jobId` 查询状态；MCP 保持同步兼容 e2e。
   - 跨租户压测：`test/p2.test.cjs` 覆盖 JWT 401/403/静态令牌兼容、BM25 区分度、队列统计、租户隔离。
@@ -354,8 +356,8 @@ sequenceDiagram
 
 ### 验证结果（P0+P1+P2+P3）
 
-- `services/rag` 构建通过（dist 12 模块），`node --test test/*.test.cjs` **11/11 全绿**
-  （原 6 例 + P2 4 例 + P3 1 例 HTTP 集成）。
+- `services/rag` 构建通过（dist 13 模块），`node --test test/*.test.cjs` **15/15 全绿**
+  （原 6 例 + P2 4 例 + P3 1 例 HTTP 集成 + 重排 4 例）。
 - HTTP 集成链路：JWT 鉴权(401/403) → 异步入库(202+job_id) → 轮询完成 → 检索召回 →
   重复查询 `cache_hit:true` → `/v1/metrics` 含 `rag_retrieve_total`/租户 chunk 计数 →
   `rag.json.acme.json` 分片落盘并可重载 → `expand` 返回扩展词。

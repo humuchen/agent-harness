@@ -26,6 +26,7 @@ import { resolveTenant } from './auth';
 import { IngestQueue } from './queue';
 import { QueryCache } from './cache';
 import { Metrics, logTrace } from './metrics';
+import { rerankWithApi, mmrRerank } from './rerank';
 
 export interface RagServerOptions {
   port?: number;
@@ -139,7 +140,19 @@ export function createRagServer(opts: RagServerOptions) {
           }
         }
 
-        const resp: RetrieveResponse = { ...retrieve(store, provider, rreq), cache_hit: false };
+        let resp: RetrieveResponse = { ...retrieve(store, provider, rreq), cache_hit: false };
+        // RAG_RERANK=api：真实 cross-encoder 重排（rerank.ts），失败回退 MMR
+        const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
+        if (rerankMode === 'api' && resp.results.length > 1) {
+          const rr = await rerankWithApi(rreq.query, resp.results);
+          if (rr) {
+            resp = { ...resp, results: rr };
+          } else {
+            const vectorMap = new Map<string, number[]>();
+            for (const c of store.getChunks(rreq.tenant_id)) vectorMap.set(c.chunk_id, c.vector);
+            resp = { ...resp, results: mmrRerank(resp.results, vectorMap, 0.5) };
+          }
+        }
         if (cacheEnabled) cache.set(ck, resp);
         metrics.recordRetrieve(Date.now() - t0, false);
         logTrace(resp.trace_id, 'info', 'retrieve', {

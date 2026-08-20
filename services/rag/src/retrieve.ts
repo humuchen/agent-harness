@@ -14,6 +14,7 @@
 import { MemoryVectorStore, RetrieveResult } from './store';
 import { EmbeddingProvider, tokenize } from './embed';
 import { Bm25Corpus } from './bm25';
+import { mmrRerank } from './rerank';
 
 export interface RetrieveFilters {
   doc_ids?: string[];
@@ -46,38 +47,6 @@ type Scored = RetrieveResult & { dense: number; bm25: number };
 
 function newTraceId(): string {
   return 'rag_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-}
-
-/**
- * MMR（最大边际相关）重排：λ*相关度 - (1-λ)*与已选结果的最大相似度。
- * 提升召回列表的多样性，避免多 chunk 内容冗余；零依赖的 cross-encoder 重排替代品。
- */
-function mmrRerank(items: Scored[], vectorMap: Map<string, number[]>, lambda: number): Scored[] {
-  const selected: Scored[] = [];
-  const remaining = [...items];
-  while (remaining.length) {
-    let bestIdx = 0;
-    let bestVal = -Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const rel = remaining[i].score;
-      let maxSim = 0;
-      for (const s of selected) {
-        const va = vectorMap.get(remaining[i].chunk_id);
-        const vb = vectorMap.get(s.chunk_id);
-        if (va && vb) {
-          const sim = MemoryVectorStore.cosine(va, vb);
-          if (sim > maxSim) maxSim = sim;
-        }
-      }
-      const val = lambda * rel - (1 - lambda) * maxSim;
-      if (val > bestVal) {
-        bestVal = val;
-        bestIdx = i;
-      }
-    }
-    selected.push(remaining.splice(bestIdx, 1)[0]);
-  }
-  return selected;
 }
 
 export function retrieve(
@@ -133,16 +102,17 @@ export function retrieve(
     });
   }
 
-  // 4) 重排（P2：cross-encoder 重排的最小可用实现 = MMR；RAG_RERANK=none 关闭）
+  // 4) 重排：RAG_RERANK=mmr 时做 MMR（默认，零依赖）；none 关闭；
+  //    api 模式由调用方（server/mcp）在检索后执行真实 cross-encoder（rerank.ts）
   const rerankMode = (process.env.RAG_RERANK ?? 'mmr').toLowerCase();
   let ordered = filtered;
-  if (rerankMode !== 'none' && filtered.length > 1) {
+  if (rerankMode === 'mmr' && filtered.length > 1) {
     ordered = mmrRerank(filtered, vectorMap, 0.5);
   }
 
   // 5) 阈值 + 取 top_k
   const ranked = ordered.filter((r) => r.score >= threshold).slice(0, topK);
-  if (rerankMode !== 'none') {
+  if (rerankMode === 'mmr') {
     for (const r of ranked) r.rerank_score = r.score;
   }
 

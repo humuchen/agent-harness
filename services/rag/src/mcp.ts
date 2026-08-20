@@ -18,6 +18,7 @@ import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
 import { QueryCache } from './cache';
+import { rerankWithApi, mmrRerank } from './rerank';
 
 export interface RagMcpOptions {
   tenantId: string;
@@ -119,7 +120,19 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             }
           }
           if (result === undefined) {
-            const resp: RetrieveResponse = { ...retrieve(store, provider, req), cache_hit: false };
+            let resp: RetrieveResponse = { ...retrieve(store, provider, req), cache_hit: false };
+            // RAG_RERANK=api：真实 cross-encoder 重排，失败回退 MMR
+            const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
+            if (rerankMode === 'api' && resp.results.length > 1) {
+              const rr = await rerankWithApi(req.query, resp.results);
+              if (rr) {
+                resp = { ...resp, results: rr };
+              } else {
+                const vectorMap = new Map<string, number[]>();
+                for (const c of store.getChunks(tenantId)) vectorMap.set(c.chunk_id, c.vector);
+                resp = { ...resp, results: mmrRerank(resp.results, vectorMap, 0.5) };
+              }
+            }
             if (cacheEnabled) cache.set(ck, resp);
             result = resp;
           }
