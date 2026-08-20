@@ -34,6 +34,7 @@ import {
   tenantSessionKey,
   policyEngine,
   getPluginToolRegistry,
+  isEnabled,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -377,9 +378,8 @@ export async function assembleAgent(
   const accountModel = resolveOpenRouterConfig({ model: modelOverride }).model;
   // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
   // 根治「每步重发全部历史」导致的 token 平方增长（原问题 B 的根因）。
-  // 默认关闭；CONTEXT_COMPRESSION=true 开启。摘要器必须同步、返回有界字符串。
-  const enableCompression =
-    process.env.CONTEXT_COMPRESSION === 'true' || process.env.CONTEXT_COMPRESSION === '1';
+  // 默认关闭；CONTEXT_COMPRESSION=true 开启（经特性开关框架统一判定）。摘要器必须同步、返回有界字符串。
+  const enableCompression = isEnabled('contextCompression');
   // 压缩模式：heuristic（默认，零额外调用，仅统计工具调用）| llm（调用 LLM 做高质量摘要）。
   // llm 仅可在 real 模式（真实 LLM 可用）下启用；mock 模式即便设了 llm 也会安全回退启发式。
   const compressionMode = (process.env.COMPRESSION_MODE || 'heuristic').toLowerCase();

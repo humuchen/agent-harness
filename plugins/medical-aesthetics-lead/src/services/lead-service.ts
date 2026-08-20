@@ -69,6 +69,11 @@ export function qualifyLead(input: {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
   const grade = validGrade(input.grade);
+  // 阶段单调推进（不回退）：已到更靠后阶段（captured/booked/arrived/deal）的线索，
+  // 再次 qualify 只更新画像字段，绝不把 stage 回退到 qualified。
+  const existing = getLead(leadId);
+  const keepStage: LeadStage =
+    existing && stageRank(existing.stage) >= stageRank('qualified') ? existing.stage : 'qualified';
   const lead = upsertLead(leadId, {
     channel: String(input.channel ?? 'unknown'),
     project: input.project ? String(input.project) : undefined,
@@ -76,13 +81,13 @@ export function qualifyLead(input: {
     city: input.city ? String(input.city) : undefined,
     intent: input.intent ? String(input.intent) : undefined,
     grade,
-    stage: 'qualified',
+    stage: keepStage,
   });
   // 仅当线索已存在才归集当次对话（绝不凭空建档）
   attachRunTranscript(leadId, getRunKey() ?? '');
   const crmSync = queueCrmSync(lead);
   if (crmSync === 'disabled') markCrmSync(leadId, 'disabled');
-  return { ok: true, leadId, grade, stage: 'qualified', crmSync };
+  return { ok: true, leadId, grade, stage: lead.stage, crmSync };
 }
 
 /** lead_capture：用户授权后留资，推进到 captured（且不回退更靠后的阶段）。 */

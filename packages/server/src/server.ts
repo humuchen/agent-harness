@@ -50,7 +50,8 @@ import {
   HttpA2ATransport,
   type TaskEnvelope,
   type TaskResult,
-  type A2ARequest
+  type A2ARequest,
+  features
 } from '@agent-harness/core';
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
 import {
@@ -338,7 +339,13 @@ function readAction(path: string): Action | null {
       return 'jobs:read';
     case '/api/sessions':
       return 'sessions:read';
+    case '/api/env':
+      return 'env:read';
+    case '/api/chat/sessions':
+      return 'chat:read';
     default:
+      // 聊天会话详情（含消息 / 推理 / 工具调用）同样属只读敏感数据，需 chat:read。
+      if (path.startsWith('/api/chat/sessions/')) return 'chat:read';
       return null;
   }
 }
@@ -533,6 +540,12 @@ const server = createServer(
         const ctx = await guard(req, res, 'policy:read');
         if (!ctx) return;
         return sendJson(res, retentionPolicy.describe(), req);
+      }
+      if (req.method === 'GET' && path === '/api/features') {
+        // 特性开关状态（运行时查询/审计），受 policy:read 保护。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        return sendJson(res, { flags: features.getAll(), stats: features.getStats() }, req);
       }
       // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
@@ -796,6 +809,8 @@ const server = createServer(
       }
       if (req.method === 'POST' && path === '/api/chat/sessions') {
         const b = await readBody(req);
+        const ctx = await guard(req, res, 'chat:write', b);
+        if (!ctx) return;
         return sendJson(res, createChatSession(b.title), req);
       }
       if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
@@ -810,6 +825,8 @@ const server = createServer(
       if (req.method === 'PATCH' && path.startsWith('/api/chat/sessions/')) {
         const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
         const b = await readBody(req);
+        const ctx = await guard(req, res, 'chat:write', b);
+        if (!ctx) return;
         const s = renameChatSession(id, b.title);
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
@@ -819,6 +836,8 @@ const server = createServer(
       }
       if (req.method === 'DELETE' && path.startsWith('/api/chat/sessions/')) {
         const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+        const ctx = await guard(req, res, 'chat:delete');
+        if (!ctx) return;
         const ok = deleteChatSession(id);
         return sendJson(res, { ok }, req);
       }

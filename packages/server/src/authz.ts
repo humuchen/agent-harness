@@ -43,7 +43,11 @@ export type Action =
   | 'workflow:read'
   | 'a2a:receive'
   | 'a2a:send'
-  | 'plugin:manage';
+  | 'plugin:manage'
+  | 'chat:read'
+  | 'chat:write'
+  | 'chat:delete'
+  | 'env:read';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -90,6 +94,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'jobs:read', 'sessions:read',     'eval:run', 'recipe:save', 'recipe:read',
     'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
+    'chat:read', 'chat:write', 'chat:delete', 'env:read',
   ],
   operator: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
@@ -97,11 +102,13 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'shell:approve', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
     'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
+    'chat:read', 'chat:write', 'chat:delete', 'env:read',
   ],
   viewer: [
     'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'errors:read', 'jobs:read', 'sessions:read',
     'recipe:read', 'policy:read', 'agent:read', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send',
+    'chat:read', 'env:read',
   ],
 };
 

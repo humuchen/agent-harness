@@ -4,6 +4,44 @@
 
 ---
 
+## [0.2.0] - 2026-08-20
+
+### ✨ 新增功能（多智能体基座子系统）
+
+在单智能体闭环之上落地多智能体基座，全部以「接口 + 默认实现 + 组合工厂」范式存在，server 已接入运行链路：
+
+- 智能体注册与发现（`agents/`）：`AgentCard` + `AgentRegistry` + `AgentStore`（volatile/file/redis）
+- 任务路由（`router/`）：`IntentRouter` + `AgentSelector` + LRU 缓存 LLM 意图分类 + 规则回退
+- 租户隔离（`tenant.ts`）：复合记忆 key、认证身份优先、`REQUIRE_TENANT` 门禁
+- 策略引擎（`policy/`）与配额引擎（`quota/`）：行业策略画像预选 + 租户级并发准入
+- 工作流编排（`workflow/`）：`DagEngine` DAG 执行 + 补偿 + `WorkflowStore`
+- A2A 协议（`a2a/`）：Local/Http 传输，跨主机 `/api/a2a/tasks` 派发
+- 插件框架（`plugin/`）：`PluginManifest` → `PluginLoader`（验签/升级）→ `PluginRegistryClient`
+- OS 级沙箱（`sandbox/`）：Linux 命名空间/seccomp，非 Linux 降级为硬化本地进程
+- 审计（`audit.ts`）、特性开关（`feature-flags.ts`）、统一错误日志（`errorlog.ts`）
+
+### 🔐 安全加固（本轮审查修复）
+
+- `/api/chat/sessions*` 多会话聊天 CRUD 补齐 RBAC 鉴权（新增 `chat:read`/`chat:write`/`chat:delete`）；`GET /api/env` 新增 `env:read`
+- 插件市场 `registry-server` 补发布鉴权（`REGISTRY_TOKEN`）、插件包下载端点（`GET /plugins/*.tar.gz`）、CORS 白名单（`REGISTRY_CORS_ORIGIN`）
+
+### 🐛 修复
+
+- 插件版本排序改用语义化比较（`cmpVersion`），修复 `localeCompare` 导致 `latestVersion` 计算错误
+- 插件市场元数据改为原子写（临时文件 + rename），下载计数改为内存聚合 + 定期落盘，避免每请求整文件重写
+
+### 🔧 工程改进
+
+- `feature-flags` 框架接线到真实功能：`contextCompression` 经 `isEnabled()` 判定，新增 `GET /api/features`（`policy:read`）
+- `examples/` 补齐 `workflow` / `multi-agent` / `os-sandbox` 入口脚本
+
+### 📚 文档
+
+- 根 `README.md` 新增「基座子系统」总览
+- `docs/03-plugins/customer-service-*` 标注为「设计稿（未落地）」；插件架构文档补充 `packages/` vs `plugins/` 目录边界说明
+
+---
+
 ## [0.1.0] - 2026-08-19
 
 ### ✨ 新增功能
@@ -143,17 +181,19 @@
 
 ### 📋 待办事项
 
+> 注：以下大部分已在本仓库后续演进中落地，勾选项见下（详见 [0.2.0] 与代码现状）。
+
 #### P2 - 开发者体验
 
 - [ ] 示例代码注释完善
-- [ ] 插件开发脚手架
-- [ ] 错误码文档
+- [x] 插件开发脚手架（`scripts/create-plugin.cjs`）
+- [x] 错误码文档（`docs/error-codes.md`）
 
 #### P3 - 架构增强
 
-- [ ] 健康检查端点标准化(/health/live, /health/ready)
-- [ ] 特性开关框架
-- [ ] 数据迁移脚本
+- [x] 健康检查端点标准化（`health.ts` + `/health/live`、`/health/ready`）
+- [x] 特性开关框架（`feature-flags.ts`，已接线 `/api/features`）
+- [x] 数据迁移脚本（`migrations/` + `scripts/db-migrate.cjs`）
 
 ---
 

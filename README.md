@@ -629,6 +629,27 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | `ALERT_WEBHOOK_URL` | 告警接收器：把告警 JSON POST 到该 Webhook（Slack/飞书/钉钉/自研网关） | 未设置（仅本地日志） |
 | `ALERT_LOG_PATH` | 告警接收器：把告警以 JSON 逐行追加到该文件，便于采集 | 未设置（仅本地日志） |
 
+## 基座子系统（多智能体基座）
+
+在单智能体闭环之上，`packages/core/src` 已落地一套**多智能体基座子系统**（详见 [`docs/01-architecture/modules.md`](./docs/01-architecture/modules.md)），全部以「接口 + 默认实现 + 组合工厂」范式存在，`server` 侧已接入运行链路：
+
+| 子系统 | 目录 | 作用 |
+|---|---|---|
+| **智能体注册与发现** | `agents/` | `AgentCard` + `AgentRegistry` + `AgentStore`（volatile/file/redis），P0.1 注册/发现/健康度 |
+| **任务路由** | `router/` | `IntentRouter` + `AgentSelector` + LRU 缓存的 LLM 意图分类 + 规则回退（P0.2） |
+| **租户隔离** | `tenant.ts` | 复合记忆 key `tenant::session`、`resolveTenantContext` 认证身份优先、`REQUIRE_TENANT` 门禁（P0.3） |
+| **策略引擎** | `policy/` | 行业策略画像预选与出网管控（接入 run-queue / runner / A2A / workflow 入口） |
+| **配额引擎** | `quota/` | 租户级并发准入配额（`admit`/`release`，接入 `run-queue`） |
+| **工作流编排** | `workflow/` | `DagEngine` DAG 执行 + 补偿 + `WorkflowStore`（volatile/file） |
+| **A2A 协议** | `a2a/` | `LocalA2ATransport` / `HttpA2ATransport`，跨主机 `POST /api/a2a/tasks` 派发 |
+| **插件框架** | `plugin/` | `PluginManifest` → `PluginLoader`（install/enable/disable/upgrade + 验签）→ `PluginRegistryClient`（远程市场） |
+| **OS 级沙箱** | `sandbox/` + `builtins/sandbox.ts` + `builtins/shell.ts` | Linux 命名空间/seccomp 隔离，非 Linux 自动降级为「硬化本地进程」 |
+| **审计** | `audit.ts` | 结构化审计事件（接入 RBAC/审批/敏感动作） |
+| **特性开关** | `feature-flags.ts` | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线） |
+| **错误日志** | `errorlog.ts` | 统一错误记录 + 计数 + 报告（`/api/errors`） |
+
+> 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`packages/medical-ad-guard`）。
+
 ## 测试
 
 核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、

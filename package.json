@@ -19,8 +19,5 @@
     "server": "pnpm --filter @agent-harness/server run start",
     "dev": "node packages/server/dist/server.js"
   },
-  "license": "MIT",
-  "dependencies": {
-    "playwright-core": "^1.49.1"
-  }
+  "license": "MIT"
 }
