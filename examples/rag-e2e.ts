@@ -55,6 +55,9 @@ function startRag(): ChildProcess {
       RAG_PORT: String(PORT),
       RAG_TENANT_ID: TENANT,
       RAG_DATA_FILE: '',
+      // 演示用同步入库，保证「入库 → 立即可检索」的确定性；
+      // 生产默认异步入库（RAG_ASYNC_INGEST=true），由服务端队列 + job 状态端点承接。
+      RAG_ASYNC_INGEST: 'false',
     },
     stdio: 'ignore',
   });

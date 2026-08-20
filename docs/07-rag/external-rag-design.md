@@ -7,12 +7,12 @@
 
 ## 1. 目标与定位
 
-| 维度 | 说明 |
-|---|---|
-| 角色 | RAG 是 agent 的**外部知识源**，不进入 agent 进程、不耦合业务语义 |
-| 边界红线 | RAG 服务**不知道** agent 的对话/租户业务逻辑；仅通过 `tenant_id` + `token` 做隔离与过滤 |
+| 维度           | 说明                                                                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 角色           | RAG 是 agent 的**外部知识源**，不进入 agent 进程、不耦合业务语义                                                                                   |
+| 边界红线       | RAG 服务**不知道** agent 的对话/租户业务逻辑；仅通过 `tenant_id` + `token` 做隔离与过滤                                                            |
 | 与现有架构关系 | 复用 agent-harness 的 **MCP 多 server 能力**（`placeholder.ts` / `parseMcpServersEnv`）+ `ToolRegistry`；RAG 以 MCP Server 形态被 agent 发现与调用 |
-| 非目标 | RAG 不负责最终回答生成（那是 LLM + agent loop 的事），只负责「高质量检索片段 + 可追溯来源」 |
+| 非目标         | RAG 不负责最终回答生成（那是 LLM + agent loop 的事），只负责「高质量检索片段 + 可追溯来源」                                                        |
 
 ---
 
@@ -55,13 +55,13 @@ flowchart LR
 
 **关键模块职责**
 
-| 模块 | 职责 | 独立部署关键点 |
-|---|---|---|
-| 入库流水线 | 文档解析、分块、向量化、写入 | 可跑在独立 worker，失败重试、幂等 |
-| 向量库 + 元数据库 | 存储 embedding 与 chunk 元数据 | 选用托管/独立向量引擎，与 agent 进程隔离 |
-| 检索编排 | 混合检索（稠密+关键词）、重排、过滤 | 无状态，水平扩展 |
-| API Gateway | 鉴权、限流、租户路由、审计 | 独立入口，token/JWT 校验 |
-| 缓存层 | 查询向量缓存、热 chunk 缓存 | 降低重复检索延迟 |
+| 模块              | 职责                                | 独立部署关键点                           |
+| ----------------- | ----------------------------------- | ---------------------------------------- |
+| 入库流水线        | 文档解析、分块、向量化、写入        | 可跑在独立 worker，失败重试、幂等        |
+| 向量库 + 元数据库 | 存储 embedding 与 chunk 元数据      | 选用托管/独立向量引擎，与 agent 进程隔离 |
+| 检索编排          | 混合检索（稠密+关键词）、重排、过滤 | 无状态，水平扩展                         |
+| API Gateway       | 鉴权、限流、租户路由、审计          | 独立入口，token/JWT 校验                 |
+| 缓存层            | 查询向量缓存、热 chunk 缓存         | 降低重复检索延迟                         |
 
 ---
 
@@ -99,12 +99,12 @@ sequenceDiagram
 
 ## 4. 向量化与存储选型
 
-| 组件 | 推荐 | 说明 |
-|---|---|---|
-| Embedding | 可插拔（默认 bge-m3 / text-embedding-3-small，维度 1024/1536） | 模型版本与向量维度写入元数据，便于后续迁移 |
-| 向量引擎 | Qdrant / Weaviate / pgvector（托管） | 独立部署、支持 ANN + 元数据过滤 |
-| 检索方式 | **混合检索**：稠密向量(ANN) + BM25/关键词，再经 cross-encoder 重排 | 兼顾语义与精确匹配 |
-| 元数据 | 关系型/文档库存 chunk 文本、来源、租户、标签、时间 | 支持按 `tenant_id`/`doc_ids`/`tags`/`time_range` 过滤 |
+| 组件      | 推荐                                                               | 说明                                                  |
+| --------- | ------------------------------------------------------------------ | ----------------------------------------------------- |
+| Embedding | 可插拔（默认 bge-m3 / text-embedding-3-small，维度 1024/1536）     | 模型版本与向量维度写入元数据，便于后续迁移            |
+| 向量引擎  | Qdrant / Weaviate / pgvector（托管）                               | 独立部署、支持 ANN + 元数据过滤                       |
+| 检索方式  | **混合检索**：稠密向量(ANN) + BM25/关键词，再经 cross-encoder 重排 | 兼顾语义与精确匹配                                    |
+| 元数据    | 关系型/文档库存 chunk 文本、来源、租户、标签、时间                 | 支持按 `tenant_id`/`doc_ids`/`tags`/`time_range` 过滤 |
 
 ---
 
@@ -115,9 +115,10 @@ sequenceDiagram
 `POST /v1/retrieve`
 
 **请求体**
+
 ```json
 {
-  "query": "苏州科达 603660 近期走势与仓位建议",
+  "query": "青岛现在都有哪些医美相关的医院",
   "top_k": 5,
   "score_threshold": 0.35,
   "rerank": true,
@@ -134,6 +135,7 @@ sequenceDiagram
 ```
 
 **响应体**
+
 ```json
 {
   "trace_id": "tr-9f2a",
@@ -142,9 +144,9 @@ sequenceDiagram
   "results": [
     {
       "chunk_id": "ck-3f1a-02",
-      "doc_id": "kb-finance-2026",
-      "title": "603660 苏州科达 8月复盘",
-      "content": "苏州科达(603660)近期受...（原文片段）",
+      "doc_id": "qd-hospital",
+      "title": "青岛现在都有哪些医美相关的医院",
+      "content": "青岛现在都有哪些医美相关的医院...（原文片段）",
       "score": 0.82,
       "rerank_score": 0.91,
       "metadata": {
@@ -153,13 +155,14 @@ sequenceDiagram
         "updated_at": "2026-08-18T09:00:00Z",
         "tags": ["a-share", "daily"]
       },
-      "highlights": ["苏州科达", "603660"]
+      "highlights": ["青岛", "医美", "医院"]
     }
   ]
 }
 ```
 
 字段约束：
+
 - `score` 为召回分（0~1），`rerank_score` 为重排分；`score_threshold` 拦截低质片段。
 - `chunk_id` 是**引用锚点**：agent 回答中的 `[1]` 指向对应 `chunk_id`，保证可追溯。
 - `tenant_id` 在服务端**强制**重写自 token，客户端传入仅作 hint，杜绝越权。
@@ -175,12 +178,18 @@ RAG 以 MCP Server 暴露一个工具，agent 通过 `MCP_SERVERS` 注册后即�
   "input_schema": {
     "type": "object",
     "properties": {
-      "query": { "type": "string", "description": "检索问题，建议用自然语言完整问句" },
+      "query": {
+        "type": "string",
+        "description": "检索问题，建议用自然语言完整问句"
+      },
       "top_k": { "type": "integer", "default": 5 },
       "tags": { "type": "array", "items": { "type": "string" } },
       "time_range": {
         "type": "object",
-        "properties": { "gte": { "type": "string" }, "lte": { "type": "string" } }
+        "properties": {
+          "gte": { "type": "string" },
+          "lte": { "type": "string" }
+        }
       }
     },
     "required": ["query"]
@@ -214,10 +223,10 @@ MCP_SERVERS='[
 
 ### 6.2 两种调用时机
 
-| 模式 | 触发 | 适用 |
-|---|---|---|
-| **On-demand（按需）** | LLM 自主决定调用 `rag__rag_retrieve` | 默认模式，最省 token，依赖模型工具选择能力 |
-| **Pre-retrieval（预检索）** | 每轮用户消息先进一次轻量检索，top-k 注入 system/context | 高准确率场景，先召回再生成 |
+| 模式                        | 触发                                                    | 适用                                       |
+| --------------------------- | ------------------------------------------------------- | ------------------------------------------ |
+| **On-demand（按需）**       | LLM 自主决定调用 `rag__rag_retrieve`                    | 默认模式，最省 token，依赖模型工具选择能力 |
+| **Pre-retrieval（预检索）** | 每轮用户消息先进一次轻量检索，top-k 注入 system/context | 高准确率场景，先召回再生成                 |
 
 推荐默认 **On-demand**，对关键业务（如金融/医疗）叠加 Pre-retrieval 守卫。
 
@@ -251,8 +260,8 @@ sequenceDiagram
 2. **引用规范**：在 system prompt 约定——「使用 `[n]` 引用 `results[n].chunk_id` 的来源；无法从检索内容得出时不臆测」。
 3. **上下文预算**：对 `results[].content` 做长度裁剪 + 重要性排序，避免超出上下文窗口；保留 `chunk_id`/`title` 用于引用。
 4. **融合策略（可选）**：
-   - *Gate 模式*：先检索，若 `total==0` 或 `max_score < 阈值`，提示 LLM「知识库无相关权威来源」，避免幻觉。
-   - *Confidence 模式*：把 `rerank_score` 作为回答置信度信号，低分时建议转人工/澄清。
+   - _Gate 模式_：先检索，若 `total==0` 或 `max_score < 阈值`，提示 LLM「知识库无相关权威来源」，避免幻觉。
+   - _Confidence 模式_：把 `rerank_score` 作为回答置信度信号，低分时建议转人工/澄清。
 5. **Guardrails 复用**：检索内容经 `guardrails.ts` 的 `INJECTION_PATTERNS` 检测，拦截"忽略以上指令"类提示注入；按 `tenant_id` 做 PII 脱敏。
 6. **可追溯**：最终回答的 `[1]` 与 `chunk_id` 映射可在 UI 的「调用链 / 深度思考」Tab 展示（复用现有 trace 能力）。
 
@@ -260,13 +269,13 @@ sequenceDiagram
 
 ## 8. 关键设计需求与量化目标
 
-| 需求 | 设计满足方式 | 量化目标 |
-|---|---|---|
-| **可独立部署** | 容器化服务，独立数据层，仅经 HTTP/MCP 通信；agent 崩不影响 RAG，反之亦然 | 独立镜像 + 独立扩缩容 |
-| **低延迟响应** | 无状态检索 + ANN 索引 + 查询向量缓存 + 连接池；重排模型本地常驻 | p95 检索 **<150ms**（不含 LLM）；冷启动 <1s |
-| **增量更新知识库** | chunk 级 upsert、幂等、异步 embedding、版本化快照 | 单文档更新 **<30s** 生效，无全量重建 |
-| **权限隔离** | `tenant_id` 服务端强制重写；JWT/token 鉴权；行级元数据过滤；配额限流 | 零跨租户泄漏；越权请求 403 |
-| **可扩展性** | 检索层无状态水平扩展；向量库按租户分片；Kafka/队列解耦入库；可插拔 embedding | 支持千级租户、亿级 chunk |
+| 需求               | 设计满足方式                                                                 | 量化目标                                    |
+| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------- |
+| **可独立部署**     | 容器化服务，独立数据层，仅经 HTTP/MCP 通信；agent 崩不影响 RAG，反之亦然     | 独立镜像 + 独立扩缩容                       |
+| **低延迟响应**     | 无状态检索 + ANN 索引 + 查询向量缓存 + 连接池；重排模型本地常驻              | p95 检索 **<150ms**（不含 LLM）；冷启动 <1s |
+| **增量更新知识库** | chunk 级 upsert、幂等、异步 embedding、版本化快照                            | 单文档更新 **<30s** 生效，无全量重建        |
+| **权限隔离**       | `tenant_id` 服务端强制重写；JWT/token 鉴权；行级元数据过滤；配额限流         | 零跨租户泄漏；越权请求 403                  |
+| **可扩展性**       | 检索层无状态水平扩展；向量库按租户分片；Kafka/队列解耦入库；可插拔 embedding | 支持千级租户、亿级 chunk                    |
 
 **可观测性（必备）**：每次检索返回 `trace_id` + `latency_ms`；服务端埋点（召回率、命中率、P95 延迟、限流次数）；agent 侧把 `trace_id` 写入 trace 日志，便于联合排障。
 
@@ -274,25 +283,25 @@ sequenceDiagram
 
 ## 9. 与当前 agent-harness 的接线点（实现时复用）
 
-| RAG 能力 | 复用点 |
-|---|---|
+| RAG 能力        | 复用点                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------- |
 | 工具注册 / 调用 | `placeholder.ts` `parseMcpServersEnv` + `connectMcpServers`；`ToolRegistry` 自动加 `rag__` 前缀 |
-| 内容安全 | `guardrails.ts` `INJECTION_PATTERNS` + `registerInputRule`（覆盖 input/output） |
-| 租户隔离 | `tenant.ts` 提供 `tenant_id`；RAG token 由租户侧 secret 派生 |
-| 检索缓存 | `memory-store.ts`（file/sqlite/volatile）可缓存 `query→results` 缩短重复延迟 |
-| 结果展示 | 现有 trace / 「调用链」Tab 展示 `chunk_id` 引用；typewriter 渲染深度思考 |
-| 失败自愈 | "工具抛错不中断，错误文本作为 tool message 回灌模型"机制天然兼容 RAG 超时/空结果 |
+| 内容安全        | `guardrails.ts` `INJECTION_PATTERNS` + `registerInputRule`（覆盖 input/output）                 |
+| 租户隔离        | `tenant.ts` 提供 `tenant_id`；RAG token 由租户侧 secret 派生                                    |
+| 检索缓存        | `memory-store.ts`（file/sqlite/volatile）可缓存 `query→results` 缩短重复延迟                    |
+| 结果展示        | 现有 trace / 「调用链」Tab 展示 `chunk_id` 引用；typewriter 渲染深度思考                        |
+| 失败自愈        | "工具抛错不中断，错误文本作为 tool message 回灌模型"机制天然兼容 RAG 超时/空结果                |
 
 ---
 
 ## 10. 落地 plan（Phase 建议）
 
-| Phase | 范围 | 交付 | 验收 |
-|---|---|---|---|
-| **P0** | RAG 服务骨架：检索 REST + 向量库 + 最小入库 | 可 `docker run` 单节点，REST 自测通过 | `/v1/retrieve` 返回结构化结果 |
-| **P1** | MCP Server 封装 + agent 侧注册 + On-demand 调用 | agent 能经 `rag__rag_retrieve` 取数 | 端到端跑通一次检索增强回答 |
-| **P2** | 鉴权/租户隔离 + 增量入库 + 重排 | 越权 403、文档更新 <30s 生效 | 安全/时效测试通过 |
-| **P3** | 缓存 + 可观测 + 水平扩展 + Pre-retrieval 模式 | p95<150ms、trace 贯通 | 压测 + 联合排障演练 |
+| Phase  | 范围                                            | 交付                                  | 验收                          |
+| ------ | ----------------------------------------------- | ------------------------------------- | ----------------------------- |
+| **P0** | RAG 服务骨架：检索 REST + 向量库 + 最小入库     | 可 `docker run` 单节点，REST 自测通过 | `/v1/retrieve` 返回结构化结果 |
+| **P1** | MCP Server 封装 + agent 侧注册 + On-demand 调用 | agent 能经 `rag__rag_retrieve` 取数   | 端到端跑通一次检索增强回答    |
+| **P2** | 鉴权/租户隔离 + 增量入库 + 重排                 | 越权 403、文档更新 <30s 生效          | 安全/时效测试通过             |
+| **P3** | 缓存 + 可观测 + 水平扩展 + Pre-retrieval 模式   | p95<150ms、trace 贯通                 | 压测 + 联合排障演练           |
 
 > 遵循你的 schema-first 约定：本稿为 **P0 设计确认**入口。确认后我可进入实现——建议先做 **P0+P1**（最小可用闭环），再迭代 P2/P3。需要我据此生成 `plugins/rag-connector/` 或独立 `services/rag/` 的脚手架代码吗？
 
@@ -304,17 +313,18 @@ sequenceDiagram
 
 ### 交付物
 
-| 文件 | 职责 |
-|---|---|
-| `services/rag/src/embed.ts` | 可插拔向量化：`HashEmbedding`（默认，零依赖演示）/ `OpenAIEmbedding`（设 key 启用） |
-| `services/rag/src/store.ts` | `MemoryVectorStore`：余弦检索 + JSON 持久化 + 租户过滤 |
-| `services/rag/src/ingest.ts` | 入库流水线：分块 → 向量化 → 幂等 upsert（增量更新） |
-| `services/rag/src/retrieve.ts` | 检索编排：余弦 + 关键词融合 + 阈值/过滤 + 重排占位 |
-| `services/rag/src/server.ts` | HTTP REST：`POST /v1/retrieve`、`/v1/ingest`、`GET /v1/health` + 令牌鉴权 + tenant 重写 |
-| `services/rag/src/mcp.ts` | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest` |
-| `services/rag/src/index.ts` | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输 |
-| `services/rag/test/*.test.cjs` | 单测：入库/检索/租户隔离/幂等/阈值 + MCP 端到端（6 用例全绿） |
-| `examples/rag-e2e.ts` | 端到端演示：起 RAG → 注入 → 检索 → 融入生成 |
+| 文件                           | 职责                                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------------- |
+| `services/rag/src/embed.ts`    | 可插拔向量化：`HashEmbedding`（默认，零依赖演示）/ `OpenAIEmbedding`（设 key 启用）     |
+| `services/rag/src/store.ts`    | `MemoryVectorStore`：余弦检索 + JSON 持久化（可按租户分片）+ 租户过滤 + `getChunks`  |
+| `services/rag/src/ingest.ts`   | 入库流水线：分块 → 向量化 → 幂等 upsert（增量更新）                                     |
+| `services/rag/src/retrieve.ts` | 检索编排：稠密余弦 + 真 BM25 融合 + MMR 重排 + 阈值/过滤 + Pre-retrieval 扩展           |
+| `services/rag/src/server.ts`   | HTTP REST：`/v1/retrieve`、`/v1/ingest(异步)`、`/v1/ingest/:jobId`、`/v1/health`、`/v1/metrics` + JWT/令牌鉴权 + tenant 重写 |
+| `services/rag/src/mcp.ts`      | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest`（带缓存） |
+| `services/rag/src/index.ts`    | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输                                                |
+| `services/rag/src/{auth,bm25,queue,cache,metrics}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 |
+| `services/rag/test/*.test.cjs` | 单测 + 集成（11 用例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展 |
+| `examples/rag-e2e.ts`          | 端到端演示：起 RAG → 注入 → 检索 → 融入生成                                             |
 
 ### 关键实现决策
 
@@ -324,15 +334,33 @@ sequenceDiagram
 - **零运行时依赖**：仅用 Node 内置模块，契合「可独立部署」关键要求。
 - **tenant 服务端重写**：ingest/retrieve 的请求体 `tenant_id` 一律被服务端解析值覆盖，杜绝越权。
 
-### 验证结果
+### P2+P3 已落地（2026-08-20）
 
-- `services/rag` 构建通过（dist 6 模块），`node --test` **6/6 全绿**（含 MCP 端到端）。
-- `examples/rag-e2e.ts` 端到端跑通：注入 2 文档 → 检索返回相关片段（`kb_refund` score 居首、
-  `kb_hours` 0.000 正确排后）→ 融合说明输出，子进程无泄漏。
-- 说明：演示用 `HashEmbedding` 维度有限、哈希碰撞难免，排序质量由真实 embedding 保证；
-  检索闭环的有效判据（相关文档被召回 + `trace_id`/`latency_ms` 可观测）已满足。
+- **P2**：
+  - 完整鉴权：新增 `services/rag/src/auth.ts`——JWT(HS256, `node:crypto`，`RAG_JWT_SECRET`) +
+    静态令牌双通道；`resolveTenant` 判别联合返回，缺失 401 / 无效 403；JWT `tenant` 声明即租户。
+  - 真 BM25：新增 `services/rag/src/bm25.ts`（IDF/词频/长度归一化，k1=1.5, b=0.75），
+    `retrieve.ts` 替换原弱关键词代理，与稠密余弦按 `RAG_FUSE_DENSE/BM25`（0.6/0.4）融合；
+    MMR 多样性重排（`RAG_RERANK=mmr`，cross-encoder 重排的零依赖最小实现），结果带 `rerank_score`。
+  - 异步入库队列：新增 `services/rag/src/queue.ts`（并发 worker + job 状态 + drain），
+    HTTP ingest 默认 202 + `job_id`，`GET /v1/ingest/:jobId` 查询状态；MCP 保持同步兼容 e2e。
+  - 跨租户压测：`test/p2.test.cjs` 覆盖 JWT 401/403/静态令牌兼容、BM25 区分度、队列统计、租户隔离。
+- **P3**：
+  - 查询缓存：`services/rag/src/cache.ts`（LRU+TTL），retrieve 响应带 `cache_hit`。
+  - 可观测：`services/rag/src/metrics.ts`（计数 + P50/P95/P99 reservoir + Prometheus 文本），
+    `GET /v1/metrics`；每次检索返回 `trace_id`+`latency_ms`，结构化日志。
+  - 向量库按租户分片：`store.persist/load(file, shardByTenant)` → `<base>.<tenant>.json`。
+  - Pre-retrieval：`expand: true` 返回显著查询扩展词 `expanded_terms`。
 
-### 下一步（P2/P3，待确认）
+### 验证结果（P0+P1+P2+P3）
 
-- **P2**：完整鉴权（JWT/租户 secret 派生）、跨租户压测、真 BM25 + cross-encoder 重排、异步入库队列。
-- **P3**：查询/向量缓存、可观测埋点（召回率/P95）、向量库按租户分片、Pre-retrieval 模式。
+- `services/rag` 构建通过（dist 12 模块），`node --test test/*.test.cjs` **11/11 全绿**
+  （原 6 例 + P2 4 例 + P3 1 例 HTTP 集成）。
+- HTTP 集成链路：JWT 鉴权(401/403) → 异步入库(202+job_id) → 轮询完成 → 检索召回 →
+  重复查询 `cache_hit:true` → `/v1/metrics` 含 `rag_retrieve_total`/租户 chunk 计数 →
+  `rag.json.acme.json` 分片落盘并可重载 → `expand` 返回扩展词。
+- `examples/rag-e2e.ts` 端到端：`kb_refund` score 0.580 居首、`kb_hours` 0.000 排后（BM25 融合生效），
+  延迟 1ms，子进程无泄漏（演示保持同步入库 `RAG_ASYNC_INGEST=false` 保证确定性）。
+- 说明：演示用 `HashEmbedding` 维度有限、哈希碰撞难免，精确语义排序由真实 embedding 保证；
+  生产建议启用 `RAG_EMBEDDING_API_KEY` + 真实 BM25（已就绪）+ 按需接入外部 cross-encoder 重排模型。
+  （原「P2/P3 待确认」清单已全部落地，见上。）

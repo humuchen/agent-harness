@@ -16,7 +16,8 @@ import { createInterface } from 'node:readline';
 import { MemoryVectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
-import { retrieve, RetrieveRequest } from './retrieve';
+import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
+import { QueryCache } from './cache';
 
 export interface RagMcpOptions {
   tenantId: string;
@@ -35,6 +36,7 @@ const TOOLS = [
         query: { type: 'string', description: '检索查询' },
         top_k: { type: 'number', description: '返回条数，默认 5' },
         tags: { type: 'array', items: { type: 'string' }, description: '按标签过滤' },
+        expand: { type: 'boolean', description: 'Pre-retrieval：返回显著查询扩展词' },
       },
       required: ['query'],
     },
@@ -57,9 +59,12 @@ const TOOLS = [
 
 export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
   const store = opts.store ?? new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
-  if (process.env.RAG_DATA_FILE) store.load(process.env.RAG_DATA_FILE);
+  const shard = (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
+  if (process.env.RAG_DATA_FILE) store.load(process.env.RAG_DATA_FILE, shard);
   const provider = opts.provider ?? createEmbedder();
   const tenantId = opts.tenantId;
+  const cacheEnabled = (process.env.RAG_CACHE || 'true').toLowerCase() !== 'false';
+  const cache = new QueryCache();
 
   const send = (obj: unknown): void => {
     process.stdout.write(JSON.stringify(obj) + '\n');
@@ -99,9 +104,25 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             query: String(args.query ?? ''),
             top_k: args.top_k,
             tenant_id: tenantId,
+            expand: !!args.expand,
           };
           if (args.tags) req.filters = { tags: args.tags };
-          result = retrieve(store, provider, req);
+          const t0 = Date.now();
+          const ck = cacheEnabled
+            ? cache.key(tenantId, req.query, req.top_k ?? 5, 0, JSON.stringify(req.filters ?? {}))
+            : '';
+          if (cacheEnabled) {
+            const hit = cache.get(ck) as RetrieveResponse | undefined;
+            if (hit) {
+              const resp: RetrieveResponse = { ...hit, cache_hit: true, latency_ms: Date.now() - t0 };
+              result = resp;
+            }
+          }
+          if (result === undefined) {
+            const resp: RetrieveResponse = { ...retrieve(store, provider, req), cache_hit: false };
+            if (cacheEnabled) cache.set(ck, resp);
+            result = resp;
+          }
         } else if (name === 'rag_ingest') {
           const input: IngestInput = {
             doc_id: String(args.doc_id ?? ''),
@@ -111,7 +132,7 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             tenant_id: tenantId,
           };
           result = await ingestDocument(store, provider, input);
-          if (process.env.RAG_DATA_FILE) store.persist(process.env.RAG_DATA_FILE);
+          if (process.env.RAG_DATA_FILE) store.persist(process.env.RAG_DATA_FILE, shard);
         } else {
           send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `unknown tool: ${name}` } });
           return;

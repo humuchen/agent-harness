@@ -7,8 +7,8 @@
  * - 可选 JSON 持久化（RAG_DATA_FILE），进程重启后恢复；生产可换 sqlite/向量库（见 persistSqlite 占位）。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
 
 export interface Chunk {
   chunk_id: string;
@@ -29,6 +29,8 @@ export interface RetrieveResult {
   title?: string;
   content: string;
   score: number;
+  /** 重排后的最终序分（MMR 等重排生效时填充）。 */
+  rerank_score?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -100,19 +102,80 @@ export class MemoryVectorStore {
     return this.byTenant(tenantId).length;
   }
 
-  // ---------- 持久化（JSON，单节点） ----------
-  persist(file: string): void {
-    mkdirSync(dirname(file), { recursive: true });
-    const rows = [...this.chunks.values()];
-    writeFileSync(file, JSON.stringify({ version: 1, dim: this.dim, chunks: rows }), 'utf8');
+  /** 各租户 chunk 数（可观测 / health 用）。 */
+  tenantCounts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const c of this.chunks.values()) out[c.tenant_id] = (out[c.tenant_id] || 0) + 1;
+    return out;
   }
 
-  load(file: string): void {
-    if (!existsSync(file)) return;
-    const raw = JSON.parse(readFileSync(file, 'utf8')) as { dim: number; chunks: Chunk[] };
-    if (raw.dim !== this.dim) {
-      throw new Error(`持久化维度(${raw.dim})与当前(${this.dim})不一致`);
+  /** 返回租户内全部 chunk（含 vector），供 BM25 / 重排按需重建语料（P2/P3）。 */
+  getChunks(tenantId: string): Chunk[] {
+    const out: Chunk[] = [];
+    for (const c of this.chunks.values()) {
+      if (c.tenant_id === tenantId) out.push(c);
     }
-    for (const c of raw.chunks) this.chunks.set(c.chunk_id, c);
+    return out;
+  }
+
+  // ---------- 持久化（JSON，单节点） ----------
+  /**
+   * 持久化到 JSON。
+   * @param shardByTenant 为 true 时按租户分片：每个租户写 `<base>.<tenant>.json`
+   *   （满足设计文档 P3「向量库按租户分片」——可映射到独立卷/分片存储）。
+   */
+  persist(file: string, shardByTenant = false): void {
+    if (!shardByTenant) {
+      mkdirSync(dirname(file), { recursive: true });
+      const rows = [...this.chunks.values()];
+      writeFileSync(file, JSON.stringify({ version: 1, dim: this.dim, chunks: rows }), 'utf8');
+      return;
+    }
+    const dir = dirname(file);
+    const base = basename(file);
+    const byTenant = new Map<string, Chunk[]>();
+    for (const c of this.chunks.values()) {
+      const arr = byTenant.get(c.tenant_id) ?? [];
+      arr.push(c);
+      byTenant.set(c.tenant_id, arr);
+    }
+    mkdirSync(dir, { recursive: true });
+    for (const [tenant, rows] of byTenant) {
+      writeFileSync(
+        join(dir, `${base}.${tenant}.json`),
+        JSON.stringify({ version: 1, dim: this.dim, tenant, chunks: rows }),
+        'utf8',
+      );
+    }
+  }
+
+  /**
+   * 从 JSON 恢复。
+   * @param shardByTenant 为 true 时加载所有 `<base>.<tenant>.json` 分片；
+   *   若分片均不存在但单文件存在，则回退加载单文件（兼容旧数据）。
+   */
+  load(file: string, shardByTenant = false): void {
+    if (!shardByTenant) {
+      if (!existsSync(file)) return;
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as { dim: number; chunks: Chunk[] };
+      if (raw.dim !== this.dim) {
+        throw new Error(`持久化维度(${raw.dim})与当前(${this.dim})不一致`);
+      }
+      for (const c of raw.chunks) this.chunks.set(c.chunk_id, c);
+      return;
+    }
+    const dir = dirname(file);
+    const base = basename(file);
+    let loaded = 0;
+    if (existsSync(dir)) {
+      for (const name of readdirSync(dir)) {
+        if (!name.startsWith(base + '.') || !name.endsWith('.json')) continue;
+        const raw = JSON.parse(readFileSync(join(dir, name), 'utf8')) as { dim: number; chunks: Chunk[] };
+        if (raw.dim !== this.dim) continue;
+        for (const c of raw.chunks) this.chunks.set(c.chunk_id, c);
+        loaded++;
+      }
+    }
+    if (loaded === 0 && existsSync(file)) this.load(file, false);
   }
 }

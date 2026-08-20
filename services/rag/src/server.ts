@@ -1,16 +1,20 @@
 /**
  * server.ts — 外部 RAG 的 HTTP REST 服务（独立部署单元）。
  *
- * 对外协议（设计文档第 4 节）：
- *   POST /v1/retrieve  { query, top_k?, score_threshold?, filters? }  -> RetrieveResponse
- *   POST /v1/ingest    { doc_id, title?, text, tags?, metadata? }     -> IngestResult
- *   GET  /v1/health                                                     -> { ok:true, ... }
+ * 对外协议（设计文档第 4 节 + P2/P3）：
+ *   POST /v1/retrieve        { query, top_k?, score_threshold?, filters?, expand? } -> RetrieveResponse
+ *   POST /v1/ingest          { doc_id, title?, text, tags?, metadata? }             -> 202 { accepted, job_id }（异步）| 200 IngestResult（同步）
+ *   GET  /v1/ingest/:jobId   异步任务状态
+ *   GET  /v1/health          { ok, chunks, dim, cache_size, ingest, metrics }
+ *   GET  /v1/metrics         Prometheus 文本格式
  *
- * 安全（设计文档第 8 节「权限隔离」基础版，P1 落地）：
- * - Bearer token 鉴权：RAG_TOKENS="tenantA:secretA,tenantB:secretB" 映射 secret->tenant。
- *   单租户最简：RAG_API_TOKEN=secret + RAG_TENANT_ID=tenantA。
- * - tenant_id 服务端强制重写：ingest/retrieve 的请求体里的 tenant_id 一律被覆盖为解析值，
- *   杜绝客户端伪造跨租户读写。
+ * 安全（设计文档第 8 节「权限隔离」，P1+P2 落地）：
+ * - Bearer token 鉴权：RAG_TOKENS="tenantA:secretA" 映射 secret->tenant。
+ * - JWT（HS256）鉴权：RAG_JWT_SECRET 配置后启用；令牌 `tenant` 声明即租户（auth.ts）。
+ * - tenant_id 服务端强制重写：ingest/retrieve 请求体里的 tenant_id 一律被覆盖，杜绝越权。
+ *
+ * P2：异步入库队列（RAG_ASYNC_INGEST，默认开）；P3：查询缓存（RAG_CACHE）、
+ * 可观测（metrics）、按租户分片持久化（RAG_SHARD_BY_TENANT）。
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
@@ -18,16 +22,22 @@ import { MemoryVectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
+import { resolveTenant } from './auth';
+import { IngestQueue } from './queue';
+import { QueryCache } from './cache';
+import { Metrics, logTrace } from './metrics';
 
 export interface RagServerOptions {
   port?: number;
   store?: MemoryVectorStore;
   provider?: EmbeddingProvider;
-  /** secret -> tenantId 映射（多租户）。 */
+  /** secret -> tenantId 映射（多租户静态令牌）。 */
   tokens?: Map<string, string>;
-  /** 单租户时的默认 tenant（未配 tokens 时启用，视为可信内网开放）。 */
+  /** 单租户时的默认 tenant（未配 tokens/JWT 时启用，视为可信内网开放）。 */
   defaultTenant?: string;
   dataFile?: string;
+  /** JWT（HS256）校验密钥；未配置则仅静态令牌/开放模式。 */
+  jwtSecret?: string;
 }
 
 function readJson(req: IncomingMessage): Promise<any> {
@@ -52,28 +62,25 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
   res.end(buf);
 }
 
-export function resolveTenant(
-  req: IncomingMessage,
-  opts: RagServerOptions,
-): { tenantId: string } | { error: number; message: string } {
-  const tokens = opts.tokens;
-  if (!tokens || tokens.size === 0) {
-    // 未配置令牌：开放模式（仅限可信内网），默认单租户
-    return { tenantId: opts.defaultTenant || 'default' };
-  }
-  const auth = (req.headers['authorization'] as string | undefined) || '';
-  const m = /^Bearer\s+(.+)$/i.exec(auth);
-  if (!m) return { error: 401, message: 'missing bearer token' };
-  const tenant = tokens.get(m[1]);
-  if (!tenant) return { error: 403, message: 'invalid token' };
-  return { tenantId: tenant };
-}
-
 export function createRagServer(opts: RagServerOptions) {
   const store = opts.store ?? new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
-  if (opts.dataFile) store.load(opts.dataFile);
+  const shard = (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
+  if (opts.dataFile) store.load(opts.dataFile, shard);
   const provider = opts.provider ?? createEmbedder();
   const tokens = opts.tokens;
+  const jwtSecret = opts.jwtSecret ?? process.env.RAG_JWT_SECRET;
+
+  const metrics = new Metrics();
+  const cacheEnabled = (process.env.RAG_CACHE || 'true').toLowerCase() !== 'false';
+  const cache = new QueryCache();
+  const asyncIngest = (process.env.RAG_ASYNC_INGEST || 'true').toLowerCase() !== 'false';
+  const queue = new IngestQueue(store, provider, {
+    dataFile: opts.dataFile,
+    shardByTenant: shard,
+    onDone: (job) => metrics.recordIngest(job.status === 'done'),
+  });
+
+  const authOpts = { tokens, defaultTenant: opts.defaultTenant, jwtSecret };
 
   const server = createServer(async (req, res) => {
     try {
@@ -82,11 +89,26 @@ export function createRagServer(opts: RagServerOptions) {
       const method = req.method || 'GET';
 
       if (path === '/v1/health' && method === 'GET') {
-        return send(res, 200, { ok: true, chunks: store.count(), dim: store.dim });
+        metrics.setTenantChunks(store.tenantCounts());
+        return send(res, 200, {
+          ok: true,
+          chunks: store.count(),
+          dim: store.dim,
+          cache_size: cache.size,
+          ingest: queue.stats(),
+          metrics: metrics.summary(),
+        });
+      }
+
+      if (path === '/v1/metrics' && method === 'GET') {
+        metrics.setTenantChunks(store.tenantCounts());
+        const buf = Buffer.from(metrics.toPrometheus(), 'utf8');
+        res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+        return res.end(buf);
       }
 
       if (path === '/v1/retrieve' && method === 'POST') {
-        const auth = resolveTenant(req, opts);
+        const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const body = await readJson(req);
         const rreq: RetrieveRequest = {
@@ -95,14 +117,52 @@ export function createRagServer(opts: RagServerOptions) {
           score_threshold: body.score_threshold,
           filters: body.filters,
           tenant_id: auth.tenantId, // 服务端重写
+          expand: !!body.expand,
         };
         if (!rreq.query) return send(res, 400, { error: 'query required' });
-        const resp: RetrieveResponse = retrieve(store, provider, rreq);
+
+        const t0 = Date.now();
+        const ck = cacheEnabled
+          ? cache.key(auth.tenantId, rreq.query, rreq.top_k ?? 5, rreq.score_threshold ?? 0, JSON.stringify(rreq.filters ?? {}))
+          : '';
+        if (cacheEnabled) {
+          const hit = cache.get(ck) as RetrieveResponse | undefined;
+          if (hit) {
+            metrics.recordRetrieve(Date.now() - t0, true);
+            const resp: RetrieveResponse = { ...hit, cache_hit: true, latency_ms: Date.now() - t0 };
+            logTrace(resp.trace_id, 'info', 'retrieve (cache hit)', {
+              tenant: auth.tenantId,
+              n: resp.results.length,
+              latency_ms: resp.latency_ms,
+            });
+            return send(res, 200, resp);
+          }
+        }
+
+        const resp: RetrieveResponse = { ...retrieve(store, provider, rreq), cache_hit: false };
+        if (cacheEnabled) cache.set(ck, resp);
+        metrics.recordRetrieve(Date.now() - t0, false);
+        logTrace(resp.trace_id, 'info', 'retrieve', {
+          tenant: auth.tenantId,
+          n: resp.results.length,
+          latency_ms: resp.latency_ms,
+          expand: !!rreq.expand,
+        });
         return send(res, 200, resp);
       }
 
+      // 异步任务状态查询
+      const jobMatch = /^\/v1\/ingest\/([^/]+)$/.exec(path);
+      if (jobMatch && method === 'GET') {
+        const auth = resolveTenant(req, authOpts);
+        if ('error' in auth) return send(res, auth.error, { error: auth.message });
+        const job = queue.job(jobMatch[1]);
+        if (!job) return send(res, 404, { error: 'job not found' });
+        return send(res, 200, job);
+      }
+
       if (path === '/v1/ingest' && method === 'POST') {
-        const auth = resolveTenant(req, opts);
+        const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const body = await readJson(req);
         const input: IngestInput = {
@@ -118,8 +178,25 @@ export function createRagServer(opts: RagServerOptions) {
         if (!input.doc_id || !input.text) {
           return send(res, 400, { error: 'doc_id and text required' });
         }
+
+        if (asyncIngest) {
+          const job = queue.enqueue(input);
+          metrics.recordIngestAccepted();
+          logTrace(`rag_job_${job.jobId}`, 'info', 'ingest accepted (async)', {
+            tenant: input.tenant_id,
+            job_id: job.jobId,
+          });
+          return send(res, 202, {
+            accepted: true,
+            job_id: job.jobId,
+            doc_id: input.doc_id,
+            tenant_id: input.tenant_id,
+          });
+        }
+
         const result = await ingestDocument(store, provider, input);
-        if (opts.dataFile) store.persist(opts.dataFile);
+        if (opts.dataFile) store.persist(opts.dataFile, shard);
+        metrics.recordIngest(true);
         return send(res, 200, result);
       }
 
@@ -133,11 +210,17 @@ export function createRagServer(opts: RagServerOptions) {
   return {
     store,
     provider,
-    listen: () => new Promise<void>((resolve) => server.listen(port, () => {
-      // eslint-disable-next-line no-console
-      console.log(`[rag] http listening on :${port}`);
-      resolve();
-    })),
+    metrics,
+    queue,
+    cache,
+    listen: () =>
+      new Promise<void>((resolve) =>
+        server.listen(port, () => {
+          // eslint-disable-next-line no-console
+          console.log(`[rag] http listening on :${port}`);
+          resolve();
+        }),
+      ),
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     server,
   };
