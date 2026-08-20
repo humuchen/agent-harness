@@ -52,6 +52,12 @@ interface Insights {
   toolCount: number;
   costTokens?: string;
   costValue?: string;
+  /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
+  costPriced?: string;
+  cacheHitRate?: string;
+  cacheHits?: string;
+  /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
+  costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
   retrievals: Array<{ label: string; result: string }>;
 }
 
@@ -96,9 +102,9 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-1);
         min-height: 0;
       }
-      .side-head {
-        padding: 14px 14px 10px;
-      }
+      // .side-head {
+      //   padding: 14px 14px 10px;
+      // }
       .new-btn {
         width: 100%;
         justify-content: center;
@@ -122,7 +128,7 @@ export class AhChat extends LitElement {
         background: var(--ah-surface-3, var(--ah-surface-2));
         transition: background 0.15s ease;
       }
-      .session::last-child {
+      .session:last-child {
         margin-bottom: 0;
       }
       .session:hover {
@@ -145,6 +151,9 @@ export class AhChat extends LitElement {
         border-radius: 50%;
         background: var(--ah-text-muted);
         flex: 0 0 auto;
+      }
+      .session.active .dot {
+        background: var(--ah-success);
       }
       .session .acts {
         display: none;
@@ -194,13 +203,14 @@ export class AhChat extends LitElement {
       .toggle {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        font-size: 12.5px;
-        color: var(--ah-text-muted);
-        padding: 6px 12px;
-        border-radius: 999px;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 50%;
         border: 1px solid var(--ah-border);
         background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
         cursor: pointer;
         user-select: none;
         transition: color 0.15s ease, border-color 0.15s ease,
@@ -209,10 +219,11 @@ export class AhChat extends LitElement {
       .toggle:hover {
         border-color: var(--ah-accent, #2997ff);
         color: var(--ah-text);
+        background: var(--ah-surface-3);
       }
       .toggle svg {
-        width: 14px;
-        height: 14px;
+        width: 15px;
+        height: 15px;
         flex: 0 0 auto;
       }
       .toggle.on {
@@ -756,6 +767,9 @@ export class AhChat extends LitElement {
       .tnode.kind-cost > summary .tdot {
         background: #f0a020;
       }
+      .tnode.kind-tokencache > summary .tdot {
+        background: #2dd4bf;
+      }
       .tnode.kind-verify > summary .tdot {
         background: var(--ah-success, #34c759);
       }
@@ -823,6 +837,46 @@ export class AhChat extends LitElement {
         margin-top: 10px;
         border-top: 1px dashed var(--ah-border);
         padding-top: 10px;
+      }
+      .ins-breakdown {
+        margin-top: 10px;
+        border-top: 1px dashed var(--ah-border);
+        padding-top: 10px;
+      }
+      .ins-bd-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ah-accent, #2997ff);
+        margin-bottom: 8px;
+      }
+      .ins-bd-row {
+        margin-bottom: 7px;
+      }
+      .ins-bd-head {
+        display: flex;
+        justify-content: space-between;
+        font-size: 11px;
+        margin-bottom: 3px;
+      }
+      .ins-bd-name {
+        color: var(--ah-text-muted);
+      }
+      .ins-bd-val {
+        color: var(--ah-text);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .ins-bd-track {
+        height: 6px;
+        border-radius: 4px;
+        background: color-mix(in srgb, var(--ah-border) 60%, transparent);
+        overflow: hidden;
+      }
+      .ins-bd-fill {
+        height: 100%;
+        border-radius: 4px;
+        background: linear-gradient(90deg, var(--ah-accent, #2997ff), color-mix(in srgb, var(--ah-accent, #2997ff) 55%, #34c759));
+        transition: width 0.35s ease;
       }
       .ins-ret-title {
         font-size: 11px;
@@ -1242,17 +1296,12 @@ export class AhChat extends LitElement {
           padding: 4px 8px;
         }
         .toggle {
-          padding: 5px 9px;
-          font-size: 11.5px;
-          gap: 5px;
+          width: 28px;
+          height: 28px;
         }
         .toggle svg {
-          width: 12px;
-          height: 12px;
-        }
-        /* 联网搜索为 UI 占位，窄屏隐藏以节省头部空间 */
-        .toggle.web {
-          display: none;
+          width: 14px;
+          height: 14px;
         }
         .composer-wrap {
           padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
@@ -1982,8 +2031,28 @@ export class AhChat extends LitElement {
               ev.cumulativeCost != null
                 ? `$${Number(ev.cumulativeCost).toFixed(4)}`
                 : '?',
+            priced: ev.priced ? 'true' : 'false',
             ...(ev.model ? { model: String(ev.model) } : {})
           }
+        });
+        break;
+      }
+      case 'run:token-cache': {
+        this.ensureTraceRoot(sid);
+        const parent = tc.parent ?? tc.root!;
+        const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
+        const tcByModel = Object.entries<{ queries: number; hits: number; hitRate: number }>(ev.byModel ?? {})
+          .map(([m, st]) => `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`)
+          .join(' · ');
+        mk(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
+          meta: {
+            命中率: `${tcHitPct}%`,
+            命中: `${ev.hits}/${ev.queries}`,
+            接口: String(ev.interface ?? 'prompt-cache'),
+            ...(ev.model ? { 模型: String(ev.model) } : {}),
+            ...(tcByModel ? { 分模型: tcByModel } : {}),
+          },
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`,
         });
         break;
       }
@@ -2452,6 +2521,7 @@ export class AhChat extends LitElement {
     const tools = flat.filter((n) => n.kind === 'tool');
     const retrievals = flat.filter((n) => n.kind === 'retrieval');
     const cost = flat.find((n) => n.kind === 'cost');
+    const cacheNode = flat.find((n) => n.kind === 'tokencache');
     const meta = root.meta ?? {};
     return {
       model: meta.model,
@@ -2461,11 +2531,40 @@ export class AhChat extends LitElement {
       toolCount: tools.length + retrievals.length,
       costTokens: cost?.meta?.tokens,
       costValue: cost?.meta?.cost,
+      costPriced: cost?.meta?.priced,
+      cacheHitRate: cacheNode?.meta?.命中率,
+      cacheHits: cacheNode?.meta?.命中,
+      costBreakdown: this.parseCostBreakdown(cost?.meta),
       retrievals: retrievals.map((n) => ({
         label: n.label,
         result: n.result ?? ''
       }))
     };
+  }
+
+  /**
+   * 从 cost 节点的 meta 解析「系统 / 工具 / 历史 / 输出」四项 token 占比。
+   * meta 中 工具/历史 的值形如 "320 (45%)"，系统/输出 为纯数字；这里统一提取数字与百分比。
+   */
+  private parseCostBreakdown(meta?: Record<string, string>): Insights['costBreakdown'] {
+    if (!meta) return undefined;
+    const order: Array<[string, string]> = [
+      ['系统', 'system'],
+      ['工具', 'tools'],
+      ['历史', 'history'],
+      ['输出', 'completion'],
+    ];
+    const out: Array<{ label: string; tokens: number; pct: number }> = [];
+    for (const [cn, _] of order) {
+      const raw = meta[cn];
+      if (raw == null) continue;
+      const num = parseInt(raw, 10);
+      if (Number.isNaN(num)) continue;
+      const pctMatch = raw.match(/\((\d+)%\)/);
+      const pct = pctMatch ? Number(pctMatch[1]) : 0;
+      out.push({ label: cn, tokens: num, pct });
+    }
+    return out.length ? out : undefined;
   }
 
   /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
@@ -2480,7 +2579,21 @@ export class AhChat extends LitElement {
     push('步骤', ins.steps ? String(ins.steps) : undefined);
     push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
     push('Token', ins.costTokens);
-    push('成本', ins.costValue);
+    push('缓存命中率', ins.cacheHitRate);
+    // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
+    const costRaw = ins.costValue ?? '';
+    const priced = ins.costPriced === 'true';
+    const isZero = costRaw === '$0.0000' || costRaw === '$0.00' || costRaw === '$0';
+    push(
+      '成本',
+      costRaw
+        ? isZero
+          ? priced
+            ? '免费'
+            : '未定价'
+          : costRaw
+        : undefined
+    );
     return html`
       <div class="insights-title">关键信息</div>
       <div class="ins-grid">
@@ -2491,6 +2604,24 @@ export class AhChat extends LitElement {
           </div>`
         )}
       </div>
+      ${ins.costBreakdown
+        ? html`<div class="ins-breakdown">
+            <div class="ins-bd-title">Token 拆解</div>
+            <div class="ins-bd-bars">
+              ${ins.costBreakdown.map(
+                (b) => html`<div class="ins-bd-row">
+                  <div class="ins-bd-head">
+                    <span class="ins-bd-name">${escapeHtml(b.label)}</span>
+                    <span class="ins-bd-val">${escapeHtml(String(b.tokens))} tok · ${escapeHtml(String(b.pct))}%</span>
+                  </div>
+                  <div class="ins-bd-track">
+                    <div class="ins-bd-fill" style=${`width:${Math.max(2, b.pct)}%`}></div>
+                  </div>
+                </div>`
+              )}
+            </div>
+          </div>`
+        : nothing}
       ${ins.retrievals.length
         ? html`<div class="ins-retrieval">
             <div class="ins-ret-title">检索内容</div>
@@ -2508,7 +2639,7 @@ export class AhChat extends LitElement {
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
     return html`
-      <div class="sidebar">
+      <div class="sidebar ${this.sidebarOpen ? 'open' : ''}">
         <div class="side-head">
           <button class="primary new-btn" @click=${() => this.newChat()}>
             ＋ 新对话
@@ -2516,7 +2647,7 @@ export class AhChat extends LitElement {
         </div>
         <div class="session-list">
           ${this.sessions.length === 0
-            ? html`<p class="muted" style="padding:8px 10px">
+            ? html`<p class="muted">
                 暂无会话，发送消息即自动创建。
               </p>`
             : this.sessions.map(
@@ -2578,7 +2709,7 @@ export class AhChat extends LitElement {
           <select
             class="agent-select"
             title="选择业务 Agent（默认走通用 Agent）"
-            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border,#3a3f4b);background:var(--ah-input,#1b1f27);color:inherit;padding:0 6px"
+            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border);background:var(--ah-surface-2);color:var(--ah-text);padding:0 6px"
             .value=${this.agentId}
             @change=${(e: Event) =>
               (this.agentId = (e.target as HTMLSelectElement).value)}
@@ -2587,11 +2718,13 @@ export class AhChat extends LitElement {
               (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
             )}
           </select>
-          <span
+          <button
             class="toggle ${this.deepThink ? 'on' : ''}"
-            title="显示 / 隐藏深度思考区"
+            title="深度思考"
+            aria-label="深度思考"
             @click=${() => (this.deepThink = !this.deepThink)}
-            ><svg
+          >
+            <svg
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -2602,14 +2735,16 @@ export class AhChat extends LitElement {
               <path d="M9 18h6M10 21h4" />
               <path
                 d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
-              /></svg
-            >深度思考</span
-          >
-          <span
+              />
+            </svg>
+          </button>
+          <button
             class="toggle ${this.web ? 'on' : ''}"
-            title="UI 占位：暂未接入后端联网开关"
+            title="联网搜索（开发中）"
+            aria-label="联网搜索（开发中）"
             @click=${() => (this.web = !this.web)}
-            ><svg
+          >
+            <svg
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -2620,9 +2755,9 @@ export class AhChat extends LitElement {
               <circle cx="12" cy="12" r="9" />
               <path
                 d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"
-              /></svg
-            >联网搜索</span
-          >
+              />
+            </svg>
+          </button>
         </div>
 
         <div class="scroll" ${ref(this.scrollRef)}>

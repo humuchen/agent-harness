@@ -58,3 +58,10 @@
 - 测试：`cd packages/core && node --test test/*.test.cjs`（注意：`node --test test/` 会把目录当模块报错，必须用显式文件通配）
 - UI 冒烟：`node packages/server/dist/server.js`，`/api/state` 与 `/` 应 200，`/api/run` mock SSE 正常。
 
+## 医美插件（medical-aesthetics-lead）数据目录约定（2026-08-20 固化）
+- 库路径由 `plugins/medical-aesthetics-lead/src/config.ts` 的 `resolveDataDir()` 决定，优先级：`MA_DATA_DIR` > `MEMORY_DIR/plugins/medical-aesthetics-lead` > `join(process.cwd(),'data','ma-lead')`。
+- **陷阱**：第 3 优先级相对 cwd；`pnpm --filter @agent-harness/server run start` 把 cwd 切到 `packages/server` → 库落 `packages/server/data/ma-lead`；从插件目录启动 → 落 `plugins/medical-aesthetics-lead/data/ma-lead`。同库分散多处，导出/统计易读到空库。
+- **修复**：在 `packages/server/.env`（兼容 `pnpm server`）与根 `.env`（兼容 `pnpm dev`）各写 `MA_DATA_DIR=C:/Users/Administrator/Documents/WorkBuddy/App/agent-harness/data/ma-lead`（绝对路径）；`.env` 已被 .gitignore 全局忽略不提交；`.env.example` 已补 `MA_DATA_DIR` 注释行。
+- 活跃库现固定于 `data/ma-lead/ma-lead.db`（node:sqlite `DatabaseSync`）。`plugins/.../data/ma-lead/ma-lead.sqlite` 为历史残留，db.ts 不读，可忽略。
+- 迁移须停服（server 持 sqlite 句柄）；同 NTFS 卷内 `mv` 为原子 rename。
+

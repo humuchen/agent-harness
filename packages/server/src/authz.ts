@@ -29,6 +29,7 @@ export type Action =
   | 'memory:read'
   | 'memory:clear'
   | 'metrics:read'
+  | 'errors:read'
   | 'jobs:read'
   | 'sessions:read'
   | 'eval:run'
@@ -42,7 +43,11 @@ export type Action =
   | 'workflow:read'
   | 'a2a:receive'
   | 'a2a:send'
-  | 'plugin:manage';
+  | 'plugin:manage'
+  | 'chat:read'
+  | 'chat:write'
+  | 'chat:delete'
+  | 'env:read';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -85,10 +90,11 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
   admin: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
     'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
-    'shell:approve', 'memory:read', 'memory:clear', 'metrics:read',
+    'shell:approve', 'memory:read', 'memory:clear', 'metrics:read', 'errors:read',
     'jobs:read', 'sessions:read',     'eval:run', 'recipe:save', 'recipe:read',
     'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
+    'chat:read', 'chat:write', 'chat:delete', 'env:read',
   ],
   operator: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
@@ -96,11 +102,13 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'shell:approve', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
     'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
+    'chat:read', 'chat:write', 'chat:delete', 'env:read',
   ],
   viewer: [
-    'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
+    'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'errors:read', 'jobs:read', 'sessions:read',
     'recipe:read', 'policy:read', 'agent:read', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send',
+    'chat:read', 'env:read',
   ],
 };
 
@@ -117,6 +125,21 @@ function loadMatrix(): Record<Role, Action[]> {
   } catch {
     return DEFAULT_MATRIX;
   }
+}
+
+/**
+ * 默认（未强制鉴权 / 开放 / 降级 fallback）模式的配置概览。
+ * 即便当前不强制鉴权，也把「默认角色权限矩阵」作为参考一并返回，
+ * 避免 /api/roles 在开放模式下返回空 roles / 空 permissions，导致前端角色与权限列表
+ * 整列缺失（即「数据展示不全」）。前端会依据 mode==='off' 标注「未强制」提示。
+ */
+function defaultDescribe(): AuthDescribe {
+  return {
+    mode: 'off',
+    provider: 'token',
+    roles: Object.keys(DEFAULT_MATRIX) as Role[],
+    permissions: DEFAULT_MATRIX,
+  };
 }
 
 // 非密码学哈希，仅用于日志/展示截断，安全校验走下面的常量比较。
@@ -162,10 +185,14 @@ export class RoleBasedAuthorizer implements Authorizer {
   }
 
   describe(): AuthDescribe {
+    // 角色列表以权限矩阵（权限数据的权威来源）的键为准派生，确保接口返回的 roles
+    // 与 permissions 永远一致、完整。避免「硬编码角色列表」与「实际权限矩阵」两处维护
+    // 导致不同步、从而在 UI 上漏列某些角色的权限数据。
+    const roles = Object.keys(this.matrix) as Role[];
     return {
       mode: this.tokens.size > 0 ? 'on' : 'off',
       provider: 'token',
-      roles: ['admin', 'operator', 'viewer'],
+      roles,
       permissions: this.matrix,
       degraded: this.degraded,
     };
@@ -197,10 +224,11 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   );
 
   // 全放行（开放语义）：本地无 key 且无 RBAC 的演示态，或 requireAuth=false。
+  // describe() 仍返回默认角色权限矩阵作为参考（见 defaultDescribe），保证前端列表完整。
   const openAuth: Authorizer = {
     authenticate: () => ({ token: '', sub: 'anon', role: 'admin' }),
     can: () => true,
-    describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
+    describe: defaultDescribe,
   };
 
   // ── 降级模式：requireAuth 触发、但未接入任何 RBAC 凭证 ──
@@ -260,9 +288,10 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   }
 
   // token 模式（默认）：必须有静态令牌或 OPENROUTER_API_KEY，否则全拒绝（fail-closed）。
+  // 无任何凭证时的 describe 同样返回默认矩阵参考，保证前端角色列表完整。
   return staticAuth ?? {
     authenticate: () => null,
     can: () => false,
-    describe: () => ({ mode: 'off', provider: 'token', roles: [], permissions: {} as Record<Role, Action[]> }),
+    describe: defaultDescribe,
   };
 }

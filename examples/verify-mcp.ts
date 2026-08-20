@@ -7,7 +7,7 @@
  *   1) 能连接并 listTools
  *   2) 每个工具被注册进 ToolRegistry
  *   3) 通过 Registry 调用工具会真正打到 MCP Server 并拿回结果
- * 这正是"配置 MCP_SERVER_URL 后即自动接入"的同一代码路径。
+ * 这正是 registerMcpTools 通过解析（MCP_SERVERS / MCP_SERVER_URL 兜底）自动接入 MCP 的同一代码路径。
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';

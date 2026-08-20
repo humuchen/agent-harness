@@ -11,7 +11,13 @@
  * - 幂等：进程内只注册一次（双插件调用安全）。
  */
 
-import { registerInputRule, registerOutputRule } from '@agent-harness/core';
+import {
+  registerInputRule,
+  registerOutputRule,
+  registerContextualOutputRule,
+  type GuardrailOutputContext,
+  type GuardrailResult,
+} from '@agent-harness/core';
 
 /** 医疗广告法违规模式（输入/输出共用同一组）。 */
 const MEDICAL_AD_RULES: Array<{ re: RegExp; reason: string }> = [
@@ -45,6 +51,53 @@ const MEDICAL_AD_RULES: Array<{ re: RegExp; reason: string }> = [
   },
 ];
 
+/**
+ * 知识库查空硬拦截（输出侧护栏）：当 project_kb_search 返回 found:false（知识库未收录）时，
+ * 仅凭 prompt 纪律不足以阻止模型自行编造项目/疗程/功效/恢复期推荐，故在此做硬保障。
+ * 命中即拦截，回复回退为「建议预约面诊」。词表刻意只覆盖「具体项目/治疗手段」，
+ * 避开纯诉求词（黑头/闭口/出油），以降低对正常面诊引导话术的误伤。
+ */
+const KB_EMPTY_PROJECT_HINT_RE =
+  /化学焕肤|果酸|小气泡|光子嫩肤|光子|M22|点阵激光|二氧化碳激光|皮秒|超皮秒|微针|中胚层|水光|热玛吉|超声炮|超声刀|线雕|埋线|玻尿酸|肉毒素|瘦脸针|除皱针|植发|种睫毛|纹眉|半永久|激光脱毛|酷塑|溶脂|吸脂|双眼皮|开眼角|隆鼻|隆胸|私密|妊娠纹|瘢痕|疤痕|黄褐斑|红血丝|刷酸|清痘/;
+
+/**
+ * 解析 project_kb_search 的工具结果，兼容「对象 JSON」与「二次 stringify」两种形态，
+ * 统一返回 { found, answer }（无法解析时返回 null）。检测 found:false 与提取 answer
+ * 共用此解析，保证两层逻辑对序列化形态的处理一致。
+ */
+function parseKbResult(result: string): { found: unknown; answer?: string } | null {
+  let obj: unknown = undefined;
+  try {
+    obj = JSON.parse(result);
+    if (typeof obj === 'string') obj = JSON.parse(obj); // 二次 stringify 兜底
+  } catch {
+    return null;
+  }
+  if (obj && typeof obj === 'object') return obj as { found: unknown; answer?: string };
+  return null;
+}
+
+/** 上下文感知规则：知识库查空后禁止模型输出任何具体项目推荐。 */
+function kbEmptyGuard(text: string, ctx: GuardrailOutputContext): GuardrailResult {
+  const tool = ctx.recentTool;
+  if (!tool) return { ok: true };
+  // 仅针对 project_kb_search（MCP 前缀形如 xxx__project_kb_search）。
+  if (!/project_kb_search/.test(tool.name)) return { ok: true };
+  // 解析工具结果：found===false 才视为「知识库未收录」；found:true 属正常命中，放行。
+  const parsed = parseKbResult(tool.result);
+  if (!parsed || parsed.found !== false) return { ok: true };
+  if (KB_EMPTY_PROJECT_HINT_RE.test(text)) {
+    const safeReply = typeof parsed.answer === 'string' ? parsed.answer : undefined;
+    return {
+      ok: false,
+      reason:
+        '医疗广告法：project_kb_search 返回 found:false（知识库未收录），不得自行推荐任何项目/功效/恢复期，仅可引导预约面诊',
+      ...(safeReply ? { safeReply } : {}),
+    };
+  }
+  return { ok: true };
+}
+
 let registered = false;
 
 /**
@@ -57,6 +110,7 @@ export function registerMedicalAdGuardrail(): void {
     registerInputRule(r.re, r.reason);
     registerOutputRule(r.re, r.reason);
   }
+  registerContextualOutputRule(kbEmptyGuard);
   registered = true;
 }
 

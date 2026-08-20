@@ -34,6 +34,7 @@ import {
   tenantSessionKey,
   policyEngine,
   getPluginToolRegistry,
+  isEnabled,
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -70,9 +71,9 @@ const SYSTEM_PROMPT =
  *
  * 按环境变量在进程内构建一次并缓存，供 assembleAgent 与运维端点（/api/sessions、
  * /api/memory）共享同一后端：
- * - MEMORY_BACKEND=sqlite：node:sqlite（零 npm 依赖，Node 22+ 内置，多租户推荐）
+ * - MEMORY_BACKEND=sqlite（或留空/未配置，默认）：node:sqlite（零 npm 依赖，Node 22+ 内置，多租户推荐）
  * - MEMORY_BACKEND=file （或配置了 MEMORY_DIR）：按会话分桶的 JSON 文件目录
- * - MEMORY_BACKEND=volatile / 未配置：纯内存（无持久化，默认）
+ * - MEMORY_BACKEND=volatile：纯内存（无持久化，需显式指定）
  * sqlite 在运行期不可用时（老 Node）自动回退到 file 并告警。
  */
 let _memoryStore: MemoryStore | null = null;
@@ -81,7 +82,7 @@ export function getMemoryStore(): MemoryStore {
   const backend = (process.env.MEMORY_BACKEND || '').toLowerCase();
   if (backend === 'volatile') {
     _memoryStore = new VolatileMemoryStore();
-  } else if (backend === 'sqlite') {
+  } else if (backend === 'sqlite' || backend === '') {
     const file = process.env.MEMORY_SQLITE_FILE || './data/memory.db';
     try {
       _memoryStore = new SqliteMemoryStore({ file });
@@ -113,7 +114,7 @@ export function getMemoryStore(): MemoryStore {
  *
  * 解法：按 sessionKey 复用同一 `Memory` 实例（进程内缓存），使同一会话的多次
  * `/api/run` 共享对话窗口，真正实现连续追问。该缓存与 store 后端**解耦**：
- * - 即便后端是 volatile（默认），进程内缓存也足以保证连续性；
+ * - 即便后端是 volatile，进程内缓存也足以保证连续性；
  * - 若配置了 sqlite/file 后端，则额外落盘，用于进程崩溃/重启后的恢复
  *   （harness.run 在 `hasPersistence` 时会先 load 再 append）。
  * 并发安全由 run-queue 的 `runningSessions` 串行化保证：同会话同时只有 1 个 job 在跑。
@@ -349,8 +350,19 @@ export async function assembleAgent(
   }
 
   // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
-  const skillCatalog = skillRegistry.describeForPrompt();
+  // 优化：问候/寒暄等明显不需要技能的输入，仅注入一行桩（id 列表），
+  // 避免把 4+ 个技能说明无谓塞进系统提示（占 ~200-400 tokens）。
+  const skillTriggered = userInput ? skillRegistry.hasTriggerMatch(userInput) : false;
+  const triggeredSkills = userInput ? skillRegistry.matchTriggers(userInput) : [];
+  const skillCatalog = skillRegistry.describeForPrompt(!skillTriggered);
   const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
+
+  // 收集命中技能关联的工具 + 元工具，作为动态工具选择的「硬允许集」，
+  // 防止 selectToolsForInput 把模型需要的技能工具裁掉（如 web-research 场景）。
+  const triggeredSkillTools = new Set<string>(['builtin__use_skill']);
+  for (const s of triggeredSkills) {
+    for (const t of s.tools ?? []) triggeredSkillTools.add(t);
+  }
   // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
   const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
   const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
@@ -366,9 +378,8 @@ export async function assembleAgent(
   const accountModel = resolveOpenRouterConfig({ model: modelOverride }).model;
   // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
   // 根治「每步重发全部历史」导致的 token 平方增长（原问题 B 的根因）。
-  // 默认关闭；CONTEXT_COMPRESSION=true 开启。摘要器必须同步、返回有界字符串。
-  const enableCompression =
-    process.env.CONTEXT_COMPRESSION === 'true' || process.env.CONTEXT_COMPRESSION === '1';
+  // 默认关闭；CONTEXT_COMPRESSION=true 开启（经特性开关框架统一判定）。摘要器必须同步、返回有界字符串。
+  const enableCompression = isEnabled('contextCompression');
   // 压缩模式：heuristic（默认，零额外调用，仅统计工具调用）| llm（调用 LLM 做高质量摘要）。
   // llm 仅可在 real 模式（真实 LLM 可用）下启用；mock 模式即便设了 llm 也会安全回退启发式。
   const compressionMode = (process.env.COMPRESSION_MODE || 'heuristic').toLowerCase();
@@ -451,6 +462,9 @@ export async function assembleAgent(
     ...(timeoutMs && timeoutMs > 0 ? { timeoutMs } : {}),
     // P0.3：租户级护栏策略覆盖（含出网管控）。
     ...(guardrailPolicy ? { guardrailPolicy } : {}),
+    // 动态工具选择：把 AgentCard.assembly.tools 与命中技能的关联工具作为硬允许集透传给 harness，
+    // 配合核心 selectToolsForInput 按意图裁剪其余工具（问候→最小子集；真实任务→全量）。
+    ...resolveAllowTools(assemblyTools, triggeredSkillTools),
   // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
@@ -535,6 +549,30 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
       return previous ?? '';
     }
   };
+}
+
+/** AgentCard.assembly.tools 使用高-level 内置工具名（calculator / datetime / web_fetch /
+ * filesystem / shell），而 harness.selectToolsForInput 按注册表实际名匹配。
+ * 把二者映射为实际工具名，再与命中技能的关联工具合并成硬允许集。 */
+function resolveAllowTools(
+  assemblyTools: string[] | undefined,
+  triggeredSkillTools: Set<string>
+): { allowTools: string[] } | Record<string, never> {
+  const BUILTIN_TOOL_MAP: Record<string, string[]> = {
+    calculator: ['builtin__calculator'],
+    datetime: ['builtin__datetime_now', 'builtin__datetime_convert', 'builtin__datetime_add'],
+    web_fetch: ['builtin__web_fetch'],
+    filesystem: ['builtin__fs_read', 'builtin__fs_list', 'builtin__fs_search'],
+    shell: ['builtin__shell_exec'],
+  };
+  const set = new Set<string>();
+  for (const t of triggeredSkillTools) set.add(t);
+  for (const name of assemblyTools ?? []) {
+    const mapped = BUILTIN_TOOL_MAP[name];
+    if (mapped) for (const m of mapped) set.add(m);
+    else set.add(name); // 未识别则按原样透传（可能是自定义工具名）
+  }
+  return set.size ? { allowTools: [...set] } : {};
 }
 
 /** 命中以下任一模式才视为「需要创建/管理临时环境」，走 创建 → 销毁 工具闭环；

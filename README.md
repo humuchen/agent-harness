@@ -26,24 +26,35 @@ agent-harness/                # 根：private 包 + pnpm workspace
 │  │  │  ├─ tools.ts          // 工具注册表 + JSON Schema 生成
 │  │  │  ├─ guardrails.ts     // 输入/输出/工具参数三层护栏
 │  │  │  ├─ harness.ts        // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
-│  │  │  ├─ loadEnv.ts         // 零依赖 .env 加载器
 │  │  │  ├─ index.ts          // 统一导出（barrel）
 │  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器 + shared.ts（共用请求/解析逻辑）
 │  │  │  ├─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
+│  │  │  ├─ agents/           // 多智能体基座：注册发现 / 路由 / 租户 / 策略 / 配额 / 工作流 / A2A / 插件
 │  │  │  └─ test/             // node:test 最小测试套件（护栏/记忆/工具/循环/适配器）
 │  │  └─ tsconfig.json
-│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
-│     ├─ src/
-│     │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
-│     │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
-│     │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
-│     │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
-│     │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
-│     └─ tsconfig.json
+│  ├─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
+│  │  ├─ src/
+│  │  │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
+│  │  │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
+│  │  │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
+│  │  │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
+│  │  │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
+│  │  └─ tsconfig.json
+│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（SSE 消费，断网可用）
+│  ├─ client/                 # @agent-harness/client —— 多平台客户端 SDK（离线契约测试 + e2e smoke）
+│  ├─ cli/                    # @agent-harness/cli —— CLI 入口
+│  └─ medical-ad-guard/       # 领域库：医疗广告合规护栏（与业务零耦合，可复用）
+├─ plugins/                   # 业务插件（core/server/webapp 零业务耦合，业务语义 100% 留此）
+│  └─ medical-aesthetics-lead/   # 青岛医美智能客服 Agent 插件（含 SQLite 业务库 + 知识库）
+├─ services/
+│  └─ rag/                    # 外部 RAG MCP Server（stdio 模式，由 MCP_SERVERS 接入）
 ├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
+├─ docs/                      # 完整文档（架构图 / 部署 / MCP / 多实例 Runbook）
+├─ deploy/                    # k8s（kustomize）/ docker 部署清单
 ├─ pnpm-workspace.yaml
 ├─ tsconfig.base.json
 ├─ package.json
+├─ Dockerfile / docker-compose.yml   # 自托管交付物（含 --profile redis 多副本队列）
 └─ render.yaml                # Render 部署 Blueprint（部署 packages/server）
 ```
 
@@ -154,7 +165,7 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 **真实 MCP 客户端**，支持三种传输：
 
 - 远程 **Streamable HTTP**（默认，URL 不以 `/sse` 结尾时自动选）
-- 远程 **SSE**（`MCP_SERVER_URL` 以 `/sse` 结尾，或显式 `transportType: 'sse'`）
+- 远程 **SSE**（在 `MCP_SERVERS` 条目显式设 `transportType: 'sse'`，或 URL 以 `/sse` 结尾时自动选）
 - 本地 **stdio**（`MCP_COMMAND` + `MCP_ARGS`）
 
 配置其一即可自动把 MCP 工具接进 `ToolRegistry`，护栏 / 记忆 / 追踪对它们
@@ -164,12 +175,17 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 ### 已接入：Context7（库文档/代码片段 MCP）
 
 首个真实 MCP 已接上 **Context7**（`https://mcp.context7.com/mcp`，Streamable HTTP，
-基础使用免 key）。`.env` 已激活：
+基础使用免 key）。三种接入方式任选其一，**主循环零改动**：
 
-```bash
-MCP_SERVER_URL=https://mcp.context7.com/mcp
-# 高配额才需要：MCP_HEADERS=CONTEXT7_API_KEY=你的key
-```
+1. **声明式（部署/重启常驻）** —— 在 `MCP_SERVERS` JSON 数组加一条（render.yaml / docker-compose / `.env` 同源键）：
+   ```bash
+   MCP_SERVERS='[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
+   # 高配额才需要：在条目加 "headers":{"CONTEXT7_API_KEY":"你的key"}
+   ```
+2. **运行时动态添加** —— 通过 `POST /api/mcp/add`（body `{name,serverUrl,headers?}`）或 UI 面板的
+   「添加 MCP」即时接入；也可从 `GET /api/mcp/presets` 预设市场（Context7 / GitHub / Composio 等）
+   一键 `POST /api/mcp/preset` 接入。**注意：动态添加是内存态、不持久化，重启即清空**，常驻 server 仍建议走方式 1。
+3. **stdio 本地服务** —— 同数组加 `{"name":"x","command":"npx","args":[...]}`。
 
 它提供两个工具：`resolve-library-id`（把库名解析成 Context7 库 ID）和
 `query-docs`（按库 ID + 问题拉取最新官方文档片段）。
@@ -178,9 +194,9 @@ MCP_SERVER_URL=https://mcp.context7.com/mcp
 pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
 ```
 
-> 你之前没有自己的 MCP，所以这块是「预留 → 激活」。接下来按同样方式逐步
-> 添加更多 MCP（改 `MCP_SERVER_URL` 或加多个 `registerMcpTools` 调用即可，
-> 主循环零改动）。
+> 多 server 模型由 `parseMcpServersEnv()`（`packages/core/src/integrations/mcp/placeholder.ts`）统一解析：
+> `MCP_SERVERS` 数组优先；旧的 `MCP_SERVER_URL` 单 server 快捷通道已废弃并移除。
+> 接下来按同样方式逐步添加更多 MCP（往 `MCP_SERVERS` 加条目，或运行时 `/api/mcp/add`），主循环零改动。
 
 ### 连接可靠性：自动重连 + 健康探测
 
@@ -293,9 +309,9 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
   端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
   `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
   `/api/env`（create/destroy 流式推状态机）、`/api/state`（全局状态快照）。
-- `src/server/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVER_URL`
-  （逗号分隔可配多个）自动连接，并支持运行时通过 `/api/mcp/add` 逐步添加；
-  每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
+- `packages/server/src/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVERS`
+  （JSON 数组，远程 URL / 本地 stdio 均支持）自动连接，并支持运行时通过 `/api/mcp/add`
+  （或预设市场 `/api/mcp/preset`）逐步添加；每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
 - `src/server/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
   Harness 流水线各阶段；有 `HARNESS_API_KEY` 时可切换为调用真实 `HarnessClient`
   轮询真实状态。
@@ -441,7 +457,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 - **SqliteMemoryStore**：基于 Node 22+ 内置的 `node:sqlite`（无需任何 npm 包、无需启动 flag），
   多租户生产推荐；运行期 Node 不支持时自动回退到 File 并告警。
 
-配置：设 `MEMORY_BACKEND=file|sqlite|volatile`（默认配了 `MEMORY_DIR` 用 file，否则 volatile）。
+配置：设 `MEMORY_BACKEND=file|sqlite|volatile`（未配置默认 `sqlite`；配了 `MEMORY_DIR` 走 file；`volatile` 需显式指定，纯内存无持久化）。
 隔离维度由调用方决定：前端 / API 携带 `x-session-id` 头或 `body.sessionId`，
 记忆即按该 key 在所选后端隔离持久化；未带则归入 `anonymous`。
 
@@ -449,7 +465,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 `GET /api/memory?session=<key>` 查看长期笔记与窗口长度；
 `DELETE /api/memory?session=<key>` 清空某会话记忆；`/api/metrics` 暴露 `memory.backend`。
 
-> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节。
+> RBAC 角色权限与审批工作流已在下方落地；身份源（OIDC/LDAP）接入见 [`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md) 第 7 节。
 
 ### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
 
@@ -521,7 +537,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 > 镜像 CI（`.github/workflows/docker.yml`），可脱离 Render 自托管（多副本需 `REDIS_URL` 运行队列）。
 > **企业身份源缺口也已闭环**：`AUTH_PROVIDER` 现支持 `token`（静态令牌，默认）/ `oidc`（Bearer JWT 资源服务器，
 > 零依赖验签 RS*/PS*/ES*/HS*）/ `proxy`（LDAP/SSO 网关头注入，企业接入 LDAP 的最低成本路径），三者均可与静态令牌
-> break-glass 逃生通道并存。详见 [`docs/deployment.md`](./docs/deployment.md) 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
+> break-glass 逃生通道并存。详见 [`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md) 第 7 节与 `.env.example` 的「身份源 / SSO」小节。
 > 仍待补齐的企业级能力：多租户运营面（开通/配额/账单）、正式合规模块（SOC2/GDPR 数据主权分区）；
 > 这些属于"对外 SaaS 化"范畴，内部/部门试点已可直接落地。
 
@@ -629,6 +645,27 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | `ALERT_WEBHOOK_URL` | 告警接收器：把告警 JSON POST 到该 Webhook（Slack/飞书/钉钉/自研网关） | 未设置（仅本地日志） |
 | `ALERT_LOG_PATH` | 告警接收器：把告警以 JSON 逐行追加到该文件，便于采集 | 未设置（仅本地日志） |
 
+## 基座子系统（多智能体基座）
+
+在单智能体闭环之上，`packages/core/src` 已落地一套**多智能体基座子系统**（详见 [`docs/01-architecture/modules.md`](./docs/01-architecture/modules.md)），全部以「接口 + 默认实现 + 组合工厂」范式存在，`server` 侧已接入运行链路：
+
+| 子系统 | 目录 | 作用 |
+|---|---|---|
+| **智能体注册与发现** | `agents/` | `AgentCard` + `AgentRegistry` + `AgentStore`（volatile/file/redis），P0.1 注册/发现/健康度 |
+| **任务路由** | `router/` | `IntentRouter` + `AgentSelector` + LRU 缓存的 LLM 意图分类 + 规则回退（P0.2） |
+| **租户隔离** | `tenant.ts` | 复合记忆 key `tenant::session`、`resolveTenantContext` 认证身份优先、`REQUIRE_TENANT` 门禁（P0.3） |
+| **策略引擎** | `policy/` | 行业策略画像预选与出网管控（接入 run-queue / runner / A2A / workflow 入口） |
+| **配额引擎** | `quota/` | 租户级并发准入配额（`admit`/`release`，接入 `run-queue`） |
+| **工作流编排** | `workflow/` | `DagEngine` DAG 执行 + 补偿 + `WorkflowStore`（volatile/file） |
+| **A2A 协议** | `a2a/` | `LocalA2ATransport` / `HttpA2ATransport`，跨主机 `POST /api/a2a/tasks` 派发 |
+| **插件框架** | `plugin/` | `PluginManifest` → `PluginLoader`（install/enable/disable/upgrade + 验签）→ `PluginRegistryClient`（远程市场） |
+| **OS 级沙箱** | `sandbox/` + `builtins/sandbox.ts` + `builtins/shell.ts` | Linux 命名空间/seccomp 隔离，非 Linux 自动降级为「硬化本地进程」 |
+| **审计** | `audit.ts` | 结构化审计事件（接入 RBAC/审批/敏感动作） |
+| **特性开关** | `feature-flags.ts` | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线） |
+| **错误日志** | `errorlog.ts` | 统一错误记录 + 计数 + 报告（`/api/errors`） |
+
+> 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`packages/medical-ad-guard`）。
+
 ## 测试
 
 核心库带一套零依赖测试（Node 内置 `node:test` + `node:assert`），覆盖护栏（含归一化注入检测 + PII 脱敏）、
@@ -693,7 +730,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test →
 - **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
 - **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
 - **`.github/workflows/docker.yml`**（推送 `dev`/`main` 或 tag 时构建并推送镜像到 GHCR）
-- **[`docs/deployment.md`](./docs/deployment.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
+- **[`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
 
 > 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。
 > K8s 清单中的 `image`、`ingress.host`、Secret 占位值部署前必须替换为真实值（建议改用 Sealed/External Secrets）。

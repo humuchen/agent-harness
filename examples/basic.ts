@@ -1,3 +1,23 @@
+/**
+ * @file basic.ts - Agent-Harness 最简示例
+ * @description 展示如何初始化Agent、注册工具、运行单次查询
+ * @difficulty 🟢 入门级
+ * 
+ * 使用场景:
+ * - 了解Agent基本用法
+ * - 学习工具注册机制
+ * - 快速验证框架安装
+ * 
+ * 运行方式:
+ *   npx tsx basic.ts
+ * 
+ * 核心概念:
+ * 1. 创建 AgentHarness 实例
+ * 2. 注册自定义工具
+ * 3. 配置 LLM 模型
+ * 4. 运行单次查询
+ */
+
 import {
   AgentHarness,
   ToolRegistry,

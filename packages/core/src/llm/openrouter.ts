@@ -1,5 +1,5 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
-import { toOpenAIMessage, callOpenAIChat } from './shared';
+import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared';
 import { resolveOpenRouterConfig } from './config';
 
 export interface OpenRouterConfig {
@@ -66,14 +66,19 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     }
 
     if (tools && tools.length > 0) {
-      body.tools = tools.map((t) => ({
-        type: 'function',
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-        },
-      }));
+      // 压缩工具描述以降低每轮固定 prompt 开销（不影响本地执行语义）。
+      const maxDesc = Number(process.env.TOOL_DESC_MAX_CHARS ?? 160) || 160;
+      body.tools = tools.map((t) => {
+        const c = compactToolSchema(t, maxDesc);
+        return {
+          type: 'function',
+          function: {
+            name: c.name,
+            description: c.description,
+            parameters: c.parameters,
+          },
+        };
+      });
       body.tool_choice = 'auto';
     }
 

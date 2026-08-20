@@ -21,7 +21,9 @@ loadEnv();
 async function main(): Promise<void> {
   const tools = new ToolRegistry();
 
-  // 接入 Context7（MCP_SERVER_URL 已在 .env 指向 mcp.context7.com/mcp）
+  // 接入 Context7：registerMcpTools 内部按 parseMcpServersEnv 解析——
+  // 优先读 MCP_SERVERS（JSON 数组），否则退回 MCP_SERVER_URL 单 URL 兜底。
+  // 本地自测可在 .env 设 MCP_SERVERS='[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'。
   try {
     await registerMcpTools(tools);
   } catch (e) {

@@ -15,9 +15,9 @@ services:
   - type: web
     name: agent-harness
     runtime: node
-    nodeVersion: "22"        # pin Node 22 (engines: 22.x); Render installs the latest 22.x
+    nodeVersion: '22' # pin Node 22 (engines: 22.x); Render installs the latest 22.x
     plan: free
-    region: oregon            # oregon | frankfurt | singapore | ohio | virginia
+    region: oregon # oregon | frankfurt | singapore | ohio | virginia
     # IMPORTANT: this is a pnpm monorepo. The build MUST run `pnpm -r build` so each
     # workspace package (packages/core, packages/server, examples) emits its dist/.
     # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
@@ -39,9 +39,6 @@ services:
         sync: false
       - key: OPENROUTER_MODEL
         value: agnes-2.5-flash
-      # Context7 MCP docs integration (works without a key).
-      - key: MCP_SERVER_URL
-        value: https://mcp.context7.com/mcp
       # 记忆持久化后端（Phase 4 决策 A）：file 后端 + /app/data/memory。
       # 注意：Render free 磁盘为临时盘，部署重置即清空；多副本共享需付费 plan + 挂载
       # 持久卷（或改用 k8s 部署，已配 RWX 卷）。单实例场景下重启不丢（同部署内）。
@@ -49,3 +46,16 @@ services:
         value: file
       - key: MEMORY_DIR
         value: /app/data/memory
+      # 外部 MCP 服务清单（多 server 声明式）：RAG（stdio）+ Context7（远程，无需 key）。
+      # 运行时仍可通过 /api/mcp/add 或预设市场动态增删，部署重启后从此清单重新加载。
+      - key: MCP_SERVERS
+        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
+      - key: RAG_TRANSPORT
+        value: mcp
+      - key: RAG_TENANT_ID
+        value: default
+      - key: RAG_DATA_FILE
+        value: data/rag-store.json
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 packages/server/data 与项目根 data 两处。
+      - key: MA_DATA_DIR
+        value: /app/data/ma-lead

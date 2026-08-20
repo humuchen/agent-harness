@@ -3,19 +3,73 @@ import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { assembleAgent, defaultPromptFor, getMemoryStore, invalidateSessionMemory, type RunMode } from './runner';
+import {
+  assembleAgent,
+  defaultPromptFor,
+  getMemoryStore,
+  invalidateSessionMemory,
+  type RunMode
+} from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { runQueue } from './run-queue';
 import { envPipeline } from './env-pipeline';
-import { approve as approveShell, preapprove as preapproveShell, shellSignature } from './shell-approval';
+import {
+  approve as approveShell,
+  preapprove as preapproveShell,
+  shellSignature
+} from './shell-approval';
 import type { McpTransportType } from '@agent-harness/core';
-import { getMetricsSnapshot, Memory, sanitizeKey, structLog, setAlertSink, emitAlert, logError, resolveOpenRouterConfig, getAgentRegistry, initAgentRegistry, createAgentStoreFromEnv, isTenantRequired, resolveIntentMode, policyEngine, type VerifyConfig, type AgentCard, type AgentHealth, type AgentStore, type AgentStoreRedis, DagEngine, type WorkflowDef, type WorkflowEvent, HttpA2ATransport, type TaskEnvelope, type TaskResult, type A2ARequest } from '@agent-harness/core';
+import {
+  getMetricsSnapshot,
+  Memory,
+  sanitizeKey,
+  structLog,
+  setAlertSink,
+  emitAlert,
+  logError,
+  resolveOpenRouterConfig,
+  getAgentRegistry,
+  initAgentRegistry,
+  createAgentStoreFromEnv,
+  isTenantRequired,
+  resolveIntentMode,
+  policyEngine,
+  getTokenCacheStats,
+  getTokenCacheHistory,
+  startTokenCacheAggregation,
+  setTokenCacheAlertSink,
+  type VerifyConfig,
+  type AgentCard,
+  type AgentHealth,
+  type AgentStore,
+  type AgentStoreRedis,
+  DagEngine,
+  type WorkflowDef,
+  type WorkflowEvent,
+  HttpA2ATransport,
+  type TaskEnvelope,
+  type TaskResult,
+  type A2ARequest,
+  features
+} from '@agent-harness/core';
+// 错误明细存储（展示「错误数量 + 具体错误信息」）。
+import {
+  getErrorLog,
+  getErrorSummary,
+  formatErrorReport,
+  type ErrorRecord
+} from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 // 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
-import { createPluginSystem, bootstrapPlugins, resolveUpgradeManifest, type PluginSystem } from './plugin-bootstrap';
+import {
+  createPluginSystem,
+  bootstrapPlugins,
+  resolveUpgradeManifest,
+  type PluginSystem
+} from './plugin-bootstrap';
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
   listChatSessions,
@@ -25,16 +79,29 @@ import {
   deleteChatSession,
   appendChatMessage,
   type StoredTool,
-  type TraceNode,
+  type TraceNode
 } from './chat-sessions';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
-import { createAuthorizer, type Authorizer, type AuthContext, type Action } from './authz';
+import {
+  createAuthorizer,
+  type Authorizer,
+  type AuthContext,
+  type Action
+} from './authz';
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
 import { warmJwks, getAuthConfig } from './sso';
 import { createApprovalPolicy, type ApprovalPolicy } from './approval';
-import { createEvaluator, getRecipeStore, runRecordFromEvents, type Evaluator, type RecipeStore } from './eval';
+import {
+  createEvaluator,
+  getRecipeStore,
+  runRecordFromEvents,
+  type Evaluator,
+  type RecipeStore
+} from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
+// K8s健康检查端点
+import { handleLiveness, handleReadiness } from './health';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
 
@@ -58,7 +125,9 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 // 非 token 模式即视为需要鉴权；token 模式在有静态令牌或 OPENROUTER_API_KEY 时开启（向后兼容）。
-const REQUIRE_AUTH = AUTH_PROVIDER !== 'token' || !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPENROUTER_API_KEY);
+const REQUIRE_AUTH =
+  AUTH_PROVIDER !== 'token' ||
+  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPENROUTER_API_KEY);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -121,8 +190,10 @@ function rateLimited(ip: string): boolean {
 function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin;
   if (!origin || UI_CORS_ORIGIN.length === 0) return {};
-  if (UI_CORS_ORIGIN.includes('*')) return { 'access-control-allow-origin': '*' };
-  if (UI_CORS_ORIGIN.includes(origin)) return { 'access-control-allow-origin': origin };
+  if (UI_CORS_ORIGIN.includes('*'))
+    return { 'access-control-allow-origin': '*' };
+  if (UI_CORS_ORIGIN.includes(origin))
+    return { 'access-control-allow-origin': origin };
   return {};
 }
 
@@ -158,40 +229,99 @@ function redactUrl(url?: string): string {
  * - body：POST 动作已解析的请求体（用于读取随请求的 approvalTicket，避免二次读流）。
  * - 需审批且未持有效票据时，创建 ticket 并回 202 { ticketId }；调用方据此轮询/重发。
  */
-async function guard(req: IncomingMessage, res: ServerResponse, action: Action, body?: any): Promise<AuthContext | null> {
+async function guard(
+  req: IncomingMessage,
+  res: ServerResponse,
+  action: Action,
+  body?: any
+): Promise<AuthContext | null> {
   const ip = clientIp(req);
   const ctx = authorizer.authenticate(req);
   if (!ctx) {
-    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: false, status: 401 });
+    audit({
+      kind: 'request',
+      method: req.method,
+      path: req.url,
+      ip,
+      authed: false,
+      status: 401
+    });
     unauthorized(res);
     return null;
   }
   if (rateLimited(ip)) {
-    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, status: 429 });
-    res.writeHead(429, { 'content-type': 'application/json', ...corsHeaders(req) });
+    audit({
+      kind: 'request',
+      method: req.method,
+      path: req.url,
+      ip,
+      authed: true,
+      status: 429
+    });
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      ...corsHeaders(req)
+    });
     res.end(JSON.stringify({ error: 'rate limit exceeded' }));
     return null;
   }
   if (!authorizer.can(ctx, action)) {
-    audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, status: 403, action });
-    res.writeHead(403, { 'content-type': 'application/json', ...corsHeaders(req) });
+    audit({
+      kind: 'request',
+      method: req.method,
+      path: req.url,
+      ip,
+      authed: true,
+      status: 403,
+      action
+    });
+    res.writeHead(403, {
+      'content-type': 'application/json',
+      ...corsHeaders(req)
+    });
     res.end(JSON.stringify({ error: 'forbidden', action }));
     return null;
   }
-  audit({ kind: 'request', method: req.method, path: req.url, ip, authed: true, action });
+  audit({
+    kind: 'request',
+    method: req.method,
+    path: req.url,
+    ip,
+    authed: true,
+    action
+  });
 
   // 审批闸门：敏感动作需先获批。已携带有效票据（动作一致且已批准）则放行。
   if (approvalPolicy.requiresApproval(action, ctx)) {
     const ticketId: string | null =
-      (body && typeof body.approvalTicket === 'string' && body.approvalTicket) ||
-      new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.get('approvalTicket');
+      (body &&
+        typeof body.approvalTicket === 'string' &&
+        body.approvalTicket) ||
+      new URL(
+        req.url ?? '/',
+        `http://${req.headers.host ?? 'localhost'}`
+      ).searchParams.get('approvalTicket');
     if (ticketId) {
       const t = approvalPolicy.consume(ticketId, action, ctx);
       if (t) return ctx; // 已批准，放行执行
     }
-    const ticket = approvalPolicy.create(action, ctx, `${action} · by ${ctx.sub}/${ctx.role}`);
-    res.writeHead(202, { 'content-type': 'application/json; charset=utf-8', ...corsHeaders(req) });
-    res.end(JSON.stringify({ ticketId: ticket.id, status: 'pending', message: '需要审批', poll: `/api/approvals/${ticket.id}` }));
+    const ticket = approvalPolicy.create(
+      action,
+      ctx,
+      `${action} · by ${ctx.sub}/${ctx.role}`
+    );
+    res.writeHead(202, {
+      'content-type': 'application/json; charset=utf-8',
+      ...corsHeaders(req)
+    });
+    res.end(
+      JSON.stringify({
+        ticketId: ticket.id,
+        status: 'pending',
+        message: '需要审批',
+        poll: `/api/approvals/${ticket.id}`
+      })
+    );
     return null;
   }
   return ctx;
@@ -209,7 +339,13 @@ function readAction(path: string): Action | null {
       return 'jobs:read';
     case '/api/sessions':
       return 'sessions:read';
+    case '/api/env':
+      return 'env:read';
+    case '/api/chat/sessions':
+      return 'chat:read';
     default:
+      // 聊天会话详情（含消息 / 推理 / 工具调用）同样属只读敏感数据，需 chat:read。
+      if (path.startsWith('/api/chat/sessions/')) return 'chat:read';
       return null;
   }
 }
@@ -228,478 +364,624 @@ mcpManager.init();
 // 以复用已注入持久后端的共享 AgentRegistry；此处仅声明（definite assignment，listen 前必赋值）。
 let pluginSystem!: PluginSystem;
 
-const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-  let path = url.pathname;
-  // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
-  if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
+const server = createServer(
+  async (req: IncomingMessage, res: ServerResponse) => {
+    const url = new URL(
+      req.url ?? '/',
+      `http://${req.headers.host ?? 'localhost'}`
+    );
+    let path = url.pathname;
+    // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
+    if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
 
-  try {
-    // CORS 预检：仅当配置了跨域白名单时才需处理。
-    if (req.method === 'OPTIONS') {
-      const h: Record<string, string> = {
-        'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-        'access-control-allow-headers': 'content-type,authorization',
-        ...corsHeaders(req),
-      };
-      res.writeHead(204, h);
-      res.end();
-      return;
-    }
+    try {
+      // CORS 预检：仅当配置了跨域白名单时才需处理。
+      if (req.method === 'OPTIONS') {
+        const h: Record<string, string> = {
+          'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
+          'access-control-allow-headers': 'content-type,authorization',
+          ...corsHeaders(req)
+        };
+        res.writeHead(204, h);
+        res.end();
+        return;
+      }
 
-    if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
-      // 优先托管 Web SPA 构建产物（packages/webapp/dist）；webapp 未构建则返回 500。
-      const wd = webappDir();
-      if (wd) {
-        try {
-          let html = await readFile(join(wd, 'index.html'), 'utf8');
-          // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
-          // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPENROUTER_API_KEY 时注入。
-          if (OPENROUTER_API_KEY) {
-            const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;');
-            if (html.includes('<head>')) {
-              html = html.replace('<head>', `<head>\n    <meta name="ah-api-key" content="${escaped}" />`);
-            } else {
-              html = `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
+      if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
+        // 优先托管 Web SPA 构建产物（packages/webapp/dist）；webapp 未构建则返回 500。
+        const wd = webappDir();
+        if (wd) {
+          try {
+            let html = await readFile(join(wd, 'index.html'), 'utf8');
+            // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
+            // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPENROUTER_API_KEY 时注入。
+            if (OPENROUTER_API_KEY) {
+              const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+              if (html.includes('<head>')) {
+                html = html.replace(
+                  '<head>',
+                  `<head>\n    <meta name="ah-api-key" content="${escaped}" />`
+                );
+              } else {
+                html = `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
+              }
+            }
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-cache'
+            });
+            res.end(html);
+            return;
+          } catch {
+            /* webapp 未构建，交给 serveHtml 返回 500 */
+          }
+        }
+        return await serveHtml(res);
+      }
+      // 托管 Web SPA 的静态资源（/assets/*）。仅当 webapp 已构建时生效。
+      if (req.method === 'GET' && path.startsWith('/assets/')) {
+        const wd = webappDir();
+        if (wd) {
+          const rel = decodeURIComponent(
+            path.slice('/assets/'.length).split('?')[0]
+          );
+          const assetRoot = join(wd, 'assets');
+          const fp = resolve(assetRoot, rel);
+          if (fp.startsWith(assetRoot)) {
+            try {
+              const buf = await readFile(fp);
+              res.writeHead(200, {
+                'content-type': contentTypeFor(fp),
+                'cache-control': 'no-cache'
+              });
+              res.end(buf);
+              return;
+            } catch {
+              /* 文件不存在，落到 404 */
             }
           }
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
-          res.end(html);
+        }
+      }
+      // 托管 dist 根目录下的零散静态文件（favicon.ico / favicon.svg / robots.txt 等）。
+      // vite 会把 public/ 内容原样复制到 dist/ 根，但这些文件不在 /assets/ 前缀下，
+      // 需单独放行（仅允许无子目录的根级文件，避免路径穿越）。
+      // 注意：path 带前导 '/'（如 /favicon.ico），故用 slice(1) 去掉首斜杠后再判断是否含 '/'，
+      // 以区分「根级文件」与「含子目录的路径」。
+      if (
+        req.method === 'GET' &&
+        !path.slice(1).includes('/') &&
+        !path.startsWith('/api')
+      ) {
+        const wd = webappDir();
+        if (wd) {
+          const rel = decodeURIComponent(path.slice(1).split('?')[0]);
+          const fp = resolve(wd, rel);
+          if (fp === join(wd, rel)) {
+            try {
+              const buf = await readFile(fp);
+              res.writeHead(200, {
+                'content-type': contentTypeFor(fp),
+                'cache-control': 'no-cache'
+              });
+              res.end(buf);
+              return;
+            } catch {
+              /* 文件不存在，继续走后续路由 */
+            }
+          }
+        }
+      }
+      // K8s Liveness 探针 - 进程存活检查
+      if (req.method === 'GET' && path === '/health/live') {
+        return handleLiveness(req, res);
+      }
+      // K8s Readiness 探针 - 依赖检查
+      if (req.method === 'GET' && path === '/health/ready') {
+        return handleReadiness(req, res);
+      }
+      if (req.method === 'GET' && path === '/api/state') {
+        // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
+        return sendJson(res, buildState());
+      }
+      // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
+      if (req.method === 'GET' && path === '/errors') {
+        const ctx = await guard(req, res, 'errors:read');
+        if (!ctx) return;
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-cache'
+        });
+        res.end(renderErrorsHtml());
+        return;
+      }
+      // 错误明细 JSON 接口：count（错误数量）+ summary（分布）+ errors（具体明细列表）。
+      // 支持 ?limit=N（默认 200，取最近 N 条）、?full=1（不限条数）、?format=text（文本报告）。
+      if (req.method === 'GET' && path === '/api/errors') {
+        const ctx = await guard(req, res, 'errors:read');
+        if (!ctx) return;
+        const limitRaw = Number(url.searchParams.get('limit'));
+        const limit =
+          Number.isFinite(limitRaw) && limitRaw > 0
+            ? Math.floor(limitRaw)
+            : 200;
+        const full = url.searchParams.get('full') === '1';
+        const fmt = url.searchParams.get('format');
+        if (fmt === 'text') {
+          res.writeHead(200, {
+            'content-type': 'text/plain; charset=utf-8',
+            ...corsHeaders(req)
+          });
+          res.end(formatErrorReport({ limit: full ? undefined : limit }));
           return;
-        } catch {
-          /* webapp 未构建，交给 serveHtml 返回 500 */
         }
+        const list = getErrorLog({ limit: full ? undefined : limit });
+        return sendJson(
+          res,
+          { count: list.length, summary: getErrorSummary(), errors: list },
+          req
+        );
       }
-      return await serveHtml(res);
-    }
-    // 托管 Web SPA 的静态资源（/assets/*）。仅当 webapp 已构建时生效。
-    if (req.method === 'GET' && path.startsWith('/assets/')) {
-      const wd = webappDir();
-      if (wd) {
-        const rel = decodeURIComponent(path.slice('/assets/'.length).split('?')[0]);
-        const assetRoot = join(wd, 'assets');
-        const fp = resolve(assetRoot, rel);
-        if (fp.startsWith(assetRoot)) {
-          try {
-            const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
-            res.end(buf);
-            return;
-          } catch {
-            /* 文件不存在，落到 404 */
-          }
+      if (req.method === 'GET' && path === '/api/auth/config') {
+        // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
+        // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
+        return sendJson(res, getAuthConfig(), req);
+      }
+      if (req.method === 'GET' && path === '/api/openapi.json') {
+        // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        return sendJson(res, openApiSpec, req);
+      }
+      if (req.method === 'GET' && path === '/api/retention') {
+        // 数据留存 / 出境策略快照（合规查阅）。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        return sendJson(res, retentionPolicy.describe(), req);
+      }
+      if (req.method === 'GET' && path === '/api/features') {
+        // 特性开关状态（运行时查询/审计），受 policy:read 保护。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        return sendJson(res, { flags: features.getAll(), stats: features.getStats() }, req);
+      }
+      // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
+      // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
+      const readAct = readAction(path);
+      if (readAct && req.method === 'GET') {
+        const ctx = await guard(req, res, readAct);
+        if (!ctx) return;
+      }
+      if (req.method === 'GET' && path === '/api/mcp/list') {
+        return sendJson(res, { servers: mcpManager.list() });
+      }
+      if (req.method === 'GET' && path === '/api/mcp/presets') {
+        // 开箱预设清单（Context7 / GitHub / Composio 等），供前端「预设市场」一键接入。
+        return sendJson(res, { presets: mcpManager.presets() });
+      }
+      if (req.method === 'GET' && path === '/api/metrics') {
+        // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列 / token 缓存命中率）。受保护，需令牌。
+        const store = getMemoryStore();
+        return sendJson(
+          res,
+          {
+            ...getMetricsSnapshot(),
+            queue: runQueue.stats(),
+            memory: { backend: store.kind },
+            tokenCache: getTokenCacheStats(),
+            tokenCacheHistory: getTokenCacheHistory(),
+            // 错误数量与最近明细（与 /api/errors 同源，便于一处查看）。
+            errors: getErrorSummary(),
+            recentErrors: getErrorLog({ limit: 20 })
+          },
+          req
+        );
+      }
+      if (req.method === 'GET' && path === '/api/jobs') {
+        // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
+        return sendJson(
+          res,
+          { queue: runQueue.stats(), jobs: runQueue.list() },
+          req
+        );
+      }
+      if (req.method === 'GET' && path === '/api/sessions') {
+        // 多租户记忆视图（P1-9）：列出所有已落盘记忆的会话 key 及后端类型。
+        const store = getMemoryStore();
+        const keys = await store.list();
+        return sendJson(res, { backend: store.kind, sessions: keys }, req);
+      }
+      // ---- P0.1：智能体注册与发现 ----
+      if (req.method === 'GET' && path === '/api/agents') {
+        // 列出 / 按 domain + capability 发现已注册 agent。受 agent:read 保护。
+        const ctx = await guard(req, res, 'agent:read');
+        if (!ctx) return;
+        const domain = url.searchParams.get('domain') || undefined;
+        const capability = url.searchParams.get('capability') || undefined;
+        const agents = await getAgentRegistry().query({
+          ...(domain ? { domain } : {}),
+          ...(capability ? { capability } : {})
+        });
+        return sendJson(res, { agents, count: agents.length }, req);
+      }
+      if (req.method === 'GET' && path.startsWith('/api/agents/')) {
+        // 取单个 agent 卡片（含健康度）。受 agent:read 保护。
+        const ctx = await guard(req, res, 'agent:read');
+        if (!ctx) return;
+        const id = decodeURIComponent(
+          path.slice('/api/agents/'.length).replace(/\/$/, '')
+        );
+        const card = id ? await getAgentRegistry().get(id) : null;
+        if (!card) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'agent not found', id }));
+          return;
         }
+        return sendJson(res, { agent: card }, req);
       }
-    }
-    // 托管 dist 根目录下的零散静态文件（favicon.ico / favicon.svg / robots.txt 等）。
-    // vite 会把 public/ 内容原样复制到 dist/ 根，但这些文件不在 /assets/ 前缀下，
-    // 需单独放行（仅允许无子目录的根级文件，避免路径穿越）。
-    // 注意：path 带前导 '/'（如 /favicon.ico），故用 slice(1) 去掉首斜杠后再判断是否含 '/'，
-    // 以区分「根级文件」与「含子目录的路径」。
-    if (req.method === 'GET' && !path.slice(1).includes('/') && !path.startsWith('/api')) {
-      const wd = webappDir();
-      if (wd) {
-        const rel = decodeURIComponent(path.slice(1).split('?')[0]);
-        const fp = resolve(wd, rel);
-        if (fp === join(wd, rel)) {
-          try {
-            const buf = await readFile(fp);
-            res.writeHead(200, { 'content-type': contentTypeFor(fp), 'cache-control': 'no-cache' });
-            res.end(buf);
-            return;
-          } catch {
-            /* 文件不存在，继续走后续路由 */
-          }
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
+      if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
+        // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
+        const ctx = await guard(req, res, 'workflow:read');
+        if (!ctx) return;
+        const id = decodeURIComponent(
+          path.slice('/api/workflows/'.length).replace(/\/$/, '')
+        );
+        const run = id ? await workflowStore().get(id) : null;
+        if (!run) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'workflow not found', id }));
+          return;
         }
+        return sendJson(res, { workflow: run }, req);
       }
-    }
-    if (req.method === 'GET' && path === '/api/state') {
-      // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
-      return sendJson(res, buildState());
-    }
-    if (req.method === 'GET' && path === '/api/auth/config') {
-      // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
-      // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
-      return sendJson(res, getAuthConfig(), req);
-    }
-    if (req.method === 'GET' && path === '/api/openapi.json') {
-      // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。
-      const ctx = await guard(req, res, 'policy:read');
-      if (!ctx) return;
-      return sendJson(res, openApiSpec, req);
-    }
-    if (req.method === 'GET' && path === '/api/retention') {
-      // 数据留存 / 出境策略快照（合规查阅）。
-      const ctx = await guard(req, res, 'policy:read');
-      if (!ctx) return;
-      return sendJson(res, retentionPolicy.describe(), req);
-    }
-    // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
-    // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
-    const readAct = readAction(path);
-    if (readAct && req.method === 'GET') {
-      const ctx = await guard(req, res, readAct);
-      if (!ctx) return;
-    }
-    if (req.method === 'GET' && path === '/api/mcp/list') {
-      return sendJson(res, { servers: mcpManager.list() });
-    }
-    if (req.method === 'GET' && path === '/api/mcp/presets') {
-      // 开箱预设清单（Context7 / GitHub / Composio 等），供前端「预设市场」一键接入。
-      return sendJson(res, { presets: mcpManager.presets() });
-    }
-    if (req.method === 'GET' && path === '/api/metrics') {
-      // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列）。受保护，需令牌。
-      const store = getMemoryStore();
-      return sendJson(
-        res,
-        { ...getMetricsSnapshot(), queue: runQueue.stats(), memory: { backend: store.kind } },
-        req
-      );
-    }
-    if (req.method === 'GET' && path === '/api/jobs') {
-      // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
-      return sendJson(res, { queue: runQueue.stats(), jobs: runQueue.list() }, req);
-    }
-    if (req.method === 'GET' && path === '/api/sessions') {
-      // 多租户记忆视图（P1-9）：列出所有已落盘记忆的会话 key 及后端类型。
-      const store = getMemoryStore();
-      const keys = await store.list();
-      return sendJson(res, { backend: store.kind, sessions: keys }, req);
-    }
-    // ---- P0.1：智能体注册与发现 ----
-    if (req.method === 'GET' && path === '/api/agents') {
-      // 列出 / 按 domain + capability 发现已注册 agent。受 agent:read 保护。
-      const ctx = await guard(req, res, 'agent:read');
-      if (!ctx) return;
-      const domain = url.searchParams.get('domain') || undefined;
-      const capability = url.searchParams.get('capability') || undefined;
-      const agents = await getAgentRegistry().query({ ...(domain ? { domain } : {}), ...(capability ? { capability } : {}) });
-      return sendJson(res, { agents, count: agents.length }, req);
-    }
-    if (req.method === 'GET' && path.startsWith('/api/agents/')) {
-      // 取单个 agent 卡片（含健康度）。受 agent:read 保护。
-      const ctx = await guard(req, res, 'agent:read');
-      if (!ctx) return;
-      const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
-      const card = id ? await getAgentRegistry().get(id) : null;
-      if (!card) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'agent not found', id }));
-        return;
-      }
-      return sendJson(res, { agent: card }, req);
-    }
-    // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
-    if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
-      // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
-      const ctx = await guard(req, res, 'workflow:read');
-      if (!ctx) return;
-      const id = decodeURIComponent(path.slice('/api/workflows/'.length).replace(/\/$/, ''));
-      const run = id ? await workflowStore().get(id) : null;
-      if (!run) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'workflow not found', id }));
-        return;
-      }
-      return sendJson(res, { workflow: run }, req);
-    }
-    if (path === '/api/memory') {
-      // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
-      const sessionKey = sanitizeKey(url.searchParams.get('session') || 'anonymous');
-      if (req.method === 'DELETE') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'memory:clear', body);
+      if (path === '/api/memory') {
+        // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
+        const sessionKey = sanitizeKey(
+          url.searchParams.get('session') || 'anonymous'
+        );
+        if (req.method === 'DELETE') {
+          const body = await readBody(req);
+          const ctx = await guard(req, res, 'memory:clear', body);
+          if (!ctx) return;
+          const store = getMemoryStore();
+          const memory = new Memory({ store, sessionKey });
+          await memory.clear();
+          // 同步失效进程内会话记忆缓存，避免下次 run 仍复用已被清空的旧窗口。
+          invalidateSessionMemory(sessionKey);
+          auditAction('memory.clear', {
+            sessionKey,
+            role: ctx.role,
+            sub: ctx.sub
+          });
+          return sendJson(res, { ok: true, sessionKey }, req);
+        }
+        // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
+        const ctx = await guard(req, res, 'memory:read');
         if (!ctx) return;
         const store = getMemoryStore();
         const memory = new Memory({ store, sessionKey });
-        await memory.clear();
-        // 同步失效进程内会话记忆缓存，避免下次 run 仍复用已被清空的旧窗口。
-        invalidateSessionMemory(sessionKey);
-        auditAction('memory.clear', { sessionKey, role: ctx.role, sub: ctx.sub });
-        return sendJson(res, { ok: true, sessionKey }, req);
+        await memory.load();
+        return sendJson(
+          res,
+          {
+            sessionKey,
+            backend: store.kind,
+            notes: memory.notes(),
+            windowLen: memory.history().length
+          },
+          req
+        );
       }
-      // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
-      const ctx = await guard(req, res, 'memory:read');
-      if (!ctx) return;
-      const store = getMemoryStore();
-      const memory = new Memory({ store, sessionKey });
-      await memory.load();
-      return sendJson(
-        res,
-        {
-          sessionKey,
-          backend: store.kind,
-          notes: memory.notes(),
-          windowLen: memory.history().length,
-        },
-        req
-      );
-    }
-    if (req.method === 'GET' && path === '/api/roles') {
-      // 当前授权配置概览（不含令牌明文），便于运维核对角色权限矩阵。
-      return sendJson(res, authorizer.describe(), req);
-    }
-    if (path === '/api/approvals') {
-      // 审批工单列表（admin / 审批人角色可读）。
-      if (req.method === 'GET') {
-        const ctx = await guard(req, res, 'approvals:review');
-        if (!ctx) return;
-        const status = url.searchParams.get('status');
-        return sendJson(res, { tickets: approvalPolicy.list(status ? { status: status as any } : undefined) }, req);
+      if (req.method === 'GET' && path === '/api/roles') {
+        // 当前授权配置概览（不含令牌明文），便于运维核对角色权限矩阵。
+        return sendJson(res, authorizer.describe(), req);
       }
-      res.writeHead(405, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
-    if (path.startsWith('/api/approvals/')) {
-      // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
-      const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
-      if (req.method === 'GET') {
-        const ctx = await guard(req, res, 'approvals:review');
-        if (!ctx) return;
-        const t = approvalPolicy.list().find((x) => x.id === id);
-        return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
+      if (path === '/api/approvals') {
+        // 审批工单列表（admin / 审批人角色可读）。
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'approvals:review');
+          if (!ctx) return;
+          const status = url.searchParams.get('status');
+          return sendJson(
+            res,
+            {
+              tickets: approvalPolicy.list(
+                status ? { status: status as any } : undefined
+              )
+            },
+            req
+          );
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
       }
-      if (req.method === 'POST') {
-        const ctx = await guard(req, res, 'approvals:review');
-        if (!ctx) return;
+      if (path.startsWith('/api/approvals/')) {
+        // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
+        const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'approvals:review');
+          if (!ctx) return;
+          const t = approvalPolicy.list().find((x) => x.id === id);
+          return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'approvals:review');
+          if (!ctx) return;
+          const body = await readBody(req);
+          const decision = body.decision === 'reject' ? 'reject' : 'approve';
+          const t = approvalPolicy.decide(id, decision, ctx.sub);
+          if (!t)
+            return sendJson(
+              res,
+              { error: 'ticket not found or already decided' },
+              req
+            );
+          auditAction('approval.decide', { id, decision, by: ctx.sub });
+          return sendJson(res, { ticket: t }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      // ---- 评估与配方版本化（P2-13，业务质量策略）----
+      if (req.method === 'POST' && path === '/api/eval') {
         const body = await readBody(req);
-        const decision = body.decision === 'reject' ? 'reject' : 'approve';
-        const t = approvalPolicy.decide(id, decision, ctx.sub);
-        if (!t) return sendJson(res, { error: 'ticket not found or already decided' }, req);
-        auditAction('approval.decide', { id, decision, by: ctx.sub });
-        return sendJson(res, { ticket: t }, req);
-      }
-      res.writeHead(405, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
-    // ---- 评估与配方版本化（P2-13，业务质量策略）----
-    if (req.method === 'POST' && path === '/api/eval') {
-      const body = await readBody(req);
-      const ctx = await guard(req, res, 'eval:run', body);
-      if (!ctx) return;
-      const jobId = String(body.jobId ?? '');
-      const job = runQueue.get(jobId);
-      if (!job) return sendJson(res, { error: 'job not found' }, req);
-      const rec = runRecordFromEvents(jobId, job.events);
-      const result = evaluator.evaluate(rec);
-      auditAction('eval.run', { jobId, score: result.score, passed: result.passed, role: ctx.role, sub: ctx.sub });
-      return sendJson(res, { jobId, record: rec, result }, req);
-    }
-    if (path === '/api/recipes') {
-      if (req.method === 'GET') {
-        const ctx = await guard(req, res, 'recipe:read');
-        if (!ctx) return;
-        return sendJson(res, { recipes: recipeStore.list() }, req);
-      }
-      if (req.method === 'POST') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'recipe:save', body);
+        const ctx = await guard(req, res, 'eval:run', body);
         if (!ctx) return;
         const jobId = String(body.jobId ?? '');
         const job = runQueue.get(jobId);
         if (!job) return sendJson(res, { error: 'job not found' }, req);
         const rec = runRecordFromEvents(jobId, job.events);
-        const id = `rcp_${Date.now().toString(36)}`;
-        const recipe = {
-          id,
-          name: String(body.name ?? id),
-          createdAt: Date.now(),
-          record: rec,
-          notes: body.notes ? String(body.notes) : undefined,
-        };
-        recipeStore.save(recipe);
-        auditAction('recipe.save', { id, name: recipe.name, role: ctx.role, sub: ctx.sub });
-        return sendJson(res, { recipe }, req);
+        const result = evaluator.evaluate(rec);
+        auditAction('eval.run', {
+          jobId,
+          score: result.score,
+          passed: result.passed,
+          role: ctx.role,
+          sub: ctx.sub
+        });
+        return sendJson(res, { jobId, record: rec, result }, req);
       }
-      res.writeHead(405, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
-    if (path.startsWith('/api/recipes/')) {
-      const id = path.slice('/api/recipes/'.length).replace(/\/$/, '');
-      if (req.method === 'GET') {
-        const ctx = await guard(req, res, 'recipe:read');
-        if (!ctx) return;
-        const r = recipeStore.get(id);
-        return sendJson(res, r ? { recipe: r } : { error: 'not found' }, req);
+      if (path === '/api/recipes') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'recipe:read');
+          if (!ctx) return;
+          return sendJson(res, { recipes: recipeStore.list() }, req);
+        }
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          const ctx = await guard(req, res, 'recipe:save', body);
+          if (!ctx) return;
+          const jobId = String(body.jobId ?? '');
+          const job = runQueue.get(jobId);
+          if (!job) return sendJson(res, { error: 'job not found' }, req);
+          const rec = runRecordFromEvents(jobId, job.events);
+          const id = `rcp_${Date.now().toString(36)}`;
+          const recipe = {
+            id,
+            name: String(body.name ?? id),
+            createdAt: Date.now(),
+            record: rec,
+            notes: body.notes ? String(body.notes) : undefined
+          };
+          recipeStore.save(recipe);
+          auditAction('recipe.save', {
+            id,
+            name: recipe.name,
+            role: ctx.role,
+            sub: ctx.sub
+          });
+          return sendJson(res, { recipe }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
       }
-      res.writeHead(405, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
-    if (req.method === 'GET' && path === '/api/env') {
-      return sendJson(res, { envs: envPipeline.list() });
-    }
-    if (req.method === 'POST' && path === '/api/run') {
-      return await handleRun(req, res);
-    }
+      if (path.startsWith('/api/recipes/')) {
+        const id = path.slice('/api/recipes/'.length).replace(/\/$/, '');
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'recipe:read');
+          if (!ctx) return;
+          const r = recipeStore.get(id);
+          return sendJson(res, r ? { recipe: r } : { error: 'not found' }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (req.method === 'GET' && path === '/api/env') {
+        return sendJson(res, { envs: envPipeline.list() });
+      }
+      if (req.method === 'POST' && path === '/api/run') {
+        return await handleRun(req, res);
+      }
 
-    /* ----------------- 多会话 Chat App：会话存储 CRUD ----------------- */
-    // 注意：与已存在的 /api/sessions（agent 运行期会话）区分，聊天会话走独立前缀。
-    // 客户端以版本化 URL /api/v1/chat/sessions 调用，服务端在路由前已统一重写
-    // /api/v1 -> /api，故此处按重写后的 /api/chat/sessions 匹配。
-    if (req.method === 'GET' && path === '/api/chat/sessions') {
-      return sendJson(res, { sessions: listChatSessions() }, req);
-    }
-    if (req.method === 'POST' && path === '/api/chat/sessions') {
-      const b = await readBody(req);
-      return sendJson(res, createChatSession(b.title), req);
-    }
-    if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
-      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-      const s = getChatSession(id);
-      if (!s) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'session not found' }));
+      /* ----------------- 多会话 Chat App：会话存储 CRUD ----------------- */
+      // 注意：与已存在的 /api/sessions（agent 运行期会话）区分，聊天会话走独立前缀。
+      // 客户端以版本化 URL /api/v1/chat/sessions 调用，服务端在路由前已统一重写
+      // /api/v1 -> /api，故此处按重写后的 /api/chat/sessions 匹配。
+      if (req.method === 'GET' && path === '/api/chat/sessions') {
+        return sendJson(res, { sessions: listChatSessions() }, req);
       }
-      return sendJson(res, s, req);
-    }
-    if (req.method === 'PATCH' && path.startsWith('/api/chat/sessions/')) {
-      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-      const b = await readBody(req);
-      const s = renameChatSession(id, b.title);
-      if (!s) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'session not found' }));
-      }
-      return sendJson(res, s, req);
-    }
-    if (req.method === 'DELETE' && path.startsWith('/api/chat/sessions/')) {
-      const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-      const ok = deleteChatSession(id);
-      return sendJson(res, { ok }, req);
-    }
-
-    if (req.method === 'POST' && path === '/api/workflows') {
-      return await handleWorkflow(req, res);
-    }
-    if (req.method === 'POST' && path === '/api/a2a/tasks') {
-      return await handleA2A(req, res);
-    }
-    // P0.1 写端点：运行期注册/注销/心跳 agent（避免必须在启动期代码里硬编码新行业 agent）。
-    if (req.method === 'POST' && path === '/api/agents') {
-      return await handleAgentRegister(req, res);
-    }
-    if (req.method === 'POST' && path.startsWith('/api/agents/') && path.endsWith('/heartbeat')) {
-      return await handleAgentHeartbeat(req, res, path);
-    }
-    if (req.method === 'DELETE' && path.startsWith('/api/agents/')) {
-      return await handleAgentDeregister(req, res, path);
-    }
-    if (req.method === 'POST' && path === '/api/verify') {
-      return await handleVerify(req, res);
-    }
-    if (req.method === 'POST' && path === '/api/mcp/add') {
-      return await handleMcpAdd(req, res);
-    }
-    if (req.method === 'POST' && path === '/api/mcp/preset') {
-      return await handleMcpPreset(req, res);
-    }
-    if (req.method === 'POST' && path === '/api/mcp/reconnect') {
-      const body = await readBody(req);
-      const ctx = await guard(req, res, 'mcp:reconnect', body);
-      if (!ctx) return;
-      const name = String(body.name ?? '');
-      if (!name) {
-        return sendJson(res, { error: '缺少 name' }, req);
-      }
-      auditAction('mcp.reconnect', { name, role: ctx.role, sub: ctx.sub });
-      try {
-        const meta = await mcpManager.reconnect(name);
-        return sendJson(res, { server: meta }, req);
-      } catch (e: any) {
-        return sendJson(res, { error: e?.message ?? String(e) }, req);
-      }
-    }
-    if (req.method === 'POST' && path === '/api/shell/approve') {
-      return await handleShellApprove(req, res);
-    }
-    if (req.method === 'POST' && path === '/api/env') {
-      return await handleEnv(req, res);
-    }
-    // ---- 插件宿主：通用扩展点（无业务词）----
-    // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
-    if (req.method === 'GET' && path === '/api/plugins') {
-      return sendJson(
-        res,
-        {
-          plugins: pluginSystem.loader.list().map((r) => ({
-            id: r.manifest.id,
-            name: r.manifest.name ?? r.manifest.id,
-            version: r.manifest.version,
-            state: r.state,
-            dependencies: r.manifest.dependencies ?? [],
-          })),
-          views: pluginSystem.webHost.listViews(),
-        },
-        req
-      );
-    }
-    // 插件热插拔（Phase 4）：enable / disable / upgrade，受 plugin:manage 动作保护，
-    // 操作仅在进程内存注册表上增删，不触碰 /api/state 健康检查，也不重启进程。
-    {
-      const m = path.match(/^\/api\/plugins\/([^/]+)\/(enable|disable|upgrade)$/);
-      if (m && (req.method === 'POST')) {
-        const id = decodeURIComponent(m[1]);
-        const action = m[2];
-        const ctx = await guard(req, res, 'plugin:manage');
+      if (req.method === 'POST' && path === '/api/chat/sessions') {
+        const b = await readBody(req);
+        const ctx = await guard(req, res, 'chat:write', b);
         if (!ctx) return;
+        return sendJson(res, createChatSession(b.title), req);
+      }
+      if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
+        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+        const s = getChatSession(id);
+        if (!s) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'session not found' }));
+        }
+        return sendJson(res, s, req);
+      }
+      if (req.method === 'PATCH' && path.startsWith('/api/chat/sessions/')) {
+        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+        const b = await readBody(req);
+        const ctx = await guard(req, res, 'chat:write', b);
+        if (!ctx) return;
+        const s = renameChatSession(id, b.title);
+        if (!s) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'session not found' }));
+        }
+        return sendJson(res, s, req);
+      }
+      if (req.method === 'DELETE' && path.startsWith('/api/chat/sessions/')) {
+        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
+        const ctx = await guard(req, res, 'chat:delete');
+        if (!ctx) return;
+        const ok = deleteChatSession(id);
+        return sendJson(res, { ok }, req);
+      }
+
+      if (req.method === 'POST' && path === '/api/workflows') {
+        return await handleWorkflow(req, res);
+      }
+      if (req.method === 'POST' && path === '/api/a2a/tasks') {
+        return await handleA2A(req, res);
+      }
+      // P0.1 写端点：运行期注册/注销/心跳 agent（避免必须在启动期代码里硬编码新行业 agent）。
+      if (req.method === 'POST' && path === '/api/agents') {
+        return await handleAgentRegister(req, res);
+      }
+      if (
+        req.method === 'POST' &&
+        path.startsWith('/api/agents/') &&
+        path.endsWith('/heartbeat')
+      ) {
+        return await handleAgentHeartbeat(req, res, path);
+      }
+      if (req.method === 'DELETE' && path.startsWith('/api/agents/')) {
+        return await handleAgentDeregister(req, res, path);
+      }
+      if (req.method === 'POST' && path === '/api/verify') {
+        return await handleVerify(req, res);
+      }
+      if (req.method === 'POST' && path === '/api/mcp/add') {
+        return await handleMcpAdd(req, res);
+      }
+      if (req.method === 'POST' && path === '/api/mcp/preset') {
+        return await handleMcpPreset(req, res);
+      }
+      if (req.method === 'POST' && path === '/api/mcp/reconnect') {
+        const body = await readBody(req);
+        const ctx = await guard(req, res, 'mcp:reconnect', body);
+        if (!ctx) return;
+        const name = String(body.name ?? '');
+        if (!name) {
+          return sendJson(res, { error: '缺少 name' }, req);
+        }
+        auditAction('mcp.reconnect', { name, role: ctx.role, sub: ctx.sub });
         try {
-          if (action === 'upgrade') {
-            const body = await readBody(req);
-            const manifest = await resolveUpgradeManifest(id, body ?? {});
-            const rec = await pluginSystem.loader.upgrade(id, manifest);
-            return sendJson(res, { id, state: rec.state, version: rec.manifest.version, upgradedAt: rec.upgradedAt ?? null }, req);
+          const meta = await mcpManager.reconnect(name);
+          return sendJson(res, { server: meta }, req);
+        } catch (e: any) {
+          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+      }
+      if (req.method === 'POST' && path === '/api/shell/approve') {
+        return await handleShellApprove(req, res);
+      }
+      if (req.method === 'POST' && path === '/api/env') {
+        return await handleEnv(req, res);
+      }
+      // ---- 插件宿主：通用扩展点（无业务词）----
+      // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
+      if (req.method === 'GET' && path === '/api/plugins') {
+        return sendJson(
+          res,
+          {
+            plugins: pluginSystem.loader.list().map((r) => ({
+              id: r.manifest.id,
+              name: r.manifest.name ?? r.manifest.id,
+              version: r.manifest.version,
+              state: r.state,
+              dependencies: r.manifest.dependencies ?? []
+            })),
+            views: pluginSystem.webHost.listViews()
+          },
+          req
+        );
+      }
+      // 插件热插拔（Phase 4）：enable / disable / upgrade，受 plugin:manage 动作保护，
+      // 操作仅在进程内存注册表上增删，不触碰 /api/state 健康检查，也不重启进程。
+      {
+        const m = path.match(
+          /^\/api\/plugins\/([^/]+)\/(enable|disable|upgrade)$/
+        );
+        if (m && req.method === 'POST') {
+          const id = decodeURIComponent(m[1]);
+          const action = m[2];
+          const ctx = await guard(req, res, 'plugin:manage');
+          if (!ctx) return;
+          try {
+            if (action === 'upgrade') {
+              const body = await readBody(req);
+              const manifest = await resolveUpgradeManifest(id, body ?? {});
+              const rec = await pluginSystem.loader.upgrade(id, manifest);
+              return sendJson(
+                res,
+                {
+                  id,
+                  state: rec.state,
+                  version: rec.manifest.version,
+                  upgradedAt: rec.upgradedAt ?? null
+                },
+                req
+              );
+            }
+            const rec =
+              action === 'enable'
+                ? await pluginSystem.loader.enable(id)
+                : await pluginSystem.loader.disable(id);
+            return sendJson(res, { id, state: rec.state }, req);
+          } catch (e: any) {
+            return sendJson(res, { error: e?.message ?? String(e) }, req);
           }
-          const rec = action === 'enable'
-            ? await pluginSystem.loader.enable(id)
-            : await pluginSystem.loader.disable(id);
-          return sendJson(res, { id, state: rec.state }, req);
-        } catch (e: any) {
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+        // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
+        const dm = path.match(/^\/api\/plugins\/([^/]+)\/enable$/);
+        if (dm && req.method === 'DELETE') {
+          const id = decodeURIComponent(dm[1]);
+          const ctx = await guard(req, res, 'plugin:manage');
+          if (!ctx) return;
+          try {
+            const rec = await pluginSystem.loader.disable(id);
+            return sendJson(res, { id, state: rec.state }, req);
+          } catch (e: any) {
+            return sendJson(res, { error: e?.message ?? String(e) }, req);
+          }
         }
       }
-      // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
-      const dm = path.match(/^\/api\/plugins\/([^/]+)\/enable$/);
-      if (dm && req.method === 'DELETE') {
-        const id = decodeURIComponent(dm[1]);
-        const ctx = await guard(req, res, 'plugin:manage');
-        if (!ctx) return;
-        try {
-          const rec = await pluginSystem.loader.disable(id);
-          return sendJson(res, { id, state: rec.state }, req);
-        } catch (e: any) {
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
-      }
-    }
-    // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
-    if (await pluginSystem.serverHost.handle(path, req, res)) return;
+      // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
+      if (await pluginSystem.serverHost.handle(path, req, res)) return;
 
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found' }));
-  } catch (e: any) {
-    logError('http.request', e, { path: req.url });
-    const code = typeof e?.status === 'number' ? e.status : 500;
-    if (!res.headersSent) {
-      res.writeHead(code, { 'content-type': 'application/json' });
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    } catch (e: any) {
+      logError('http.request', e, { path: req.url });
+      const code = typeof e?.status === 'number' ? e.status : 500;
+      if (!res.headersSent) {
+        res.writeHead(code, { 'content-type': 'application/json' });
+      }
+      res.end(JSON.stringify({ error: e?.message ?? String(e) }));
     }
-    res.end(JSON.stringify({ error: e?.message ?? String(e) }));
   }
-});
+);
 
 function buildState() {
   return {
     openrouter: !!process.env.OPENROUTER_API_KEY,
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
-    mcpUrl: process.env.MCP_SERVER_URL ?? null,
     model: resolveOpenRouterConfig().model,
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,
@@ -708,18 +990,153 @@ function buildState() {
       health: s.health ?? null,
       reconnectAttempts: s.reconnectAttempts ?? 0,
       toolCount: s.tools.length,
-      tools: s.tools.map((t) => ({ registeredName: t.registeredName, originalName: t.originalName })),
-      error: s.error ?? null,
+      tools: s.tools.map((t) => ({
+        registeredName: t.registeredName,
+        originalName: t.originalName
+      })),
+      error: s.error ?? null
     })),
-    mcpPresets: mcpManager.presets().map((p) => ({ id: p.id, name: p.name, authType: p.authType })),
-    envs: envPipeline.list(),
+    mcpPresets: mcpManager
+      .presets()
+      .map((p) => ({ id: p.id, name: p.name, authType: p.authType })),
+    envs: envPipeline.list()
   };
 }
 
 function serveHtml(res: ServerResponse): void {
   // webapp 未构建时的兜底：直接返回 500 并提示先构建前端。
   res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end('Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build');
+  res.end(
+    'Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build'
+  );
+}
+
+/** HTML 转义，防 XSS（错误信息可能含用户 / 第三方内容）。 */
+function esc(s: unknown): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * 服务端渲染「系统错误」展示页（深色主题，与运行时面板一致）：
+ * 顶部数量横幅（错误总数 + 按名称分布），下方逐条明细表格
+ * （序号 / 时间 / 级别 / 名称 / 类型 / 消息 / 堆栈+上下文）。
+ * 数据与 /api/errors 同源，刷新即重新拉取最新状态。
+ */
+function renderErrorsHtml(): string {
+  const summary = getErrorSummary();
+  const list = getErrorLog({ limit: 500 });
+  const pills = Object.entries(summary.byName)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span class="pill">${esc(k)} <b>${v}</b></span>`)
+    .join('');
+  const rows = list.length
+    ? list
+        .slice()
+        .reverse()
+        .map((e: ErrorRecord, idx: number) => {
+          const stack = e.stack
+            ? `<details class="stack"><summary>堆栈跟踪</summary><pre>${esc(e.stack)}</pre></details>`
+            : '';
+          const ctx =
+            e.fields && Object.keys(e.fields).length
+              ? `<div class="ctx">上下文：${esc(JSON.stringify(e.fields))}</div>`
+              : '';
+          return `<tr>
+      <td class="num">${list.length - idx}</td>
+      <td class="mono">${esc(e.ts)}</td>
+      <td><span class="sev sev-${esc(e.severity)}">${esc(e.severity)}</span></td>
+      <td class="name">${esc(e.name)}</td>
+      <td class="type">${esc(e.type ?? '-')}</td>
+      <td class="msg">${esc(e.message)}</td>
+      <td class="extra">${stack}${ctx}</td>
+    </tr>`;
+        })
+        .join('')
+    : `<tr><td colspan="7" class="empty">暂无错误记录</td></tr>`;
+  const span =
+    summary.firstSeen != null && summary.lastSeen != null
+      ? `<div class="span">时间跨度：${esc(new Date(summary.firstSeen).toISOString())} ~ ${esc(
+          new Date(summary.lastSeen).toISOString()
+        )}</div>`
+      : '';
+  return `<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>系统错误 · Agent Harness</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0B0E14; color: #C9D1D9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #E6EDF3; font-weight: 600; }
+  .sub { color: #8B949E; margin: 0 0 18px; }
+  .banner {
+    background: #121622; border: 1px solid #1F2633; border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .count { font-size: 34px; font-weight: 700; color: #FF6B6B; line-height: 1; }
+  .count.zero { color: #3FB950; }
+  .label { color: #8B949E; margin-left: 8px; font-size: 13px; }
+  .pills { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill { background: #0B0E14; border: 1px solid #1F2633; border-radius: 999px; padding: 4px 12px; font-size: 12px; color: #C9D1D9; }
+  .pill b { color: #2997FF; margin-left: 4px; }
+  .span { color: #8B949E; margin-top: 10px; font-size: 12px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+  button, .btn {
+    background: #1F2633; color: #C9D1D9; border: 1px solid #2A3340; border-radius: 6px;
+    padding: 6px 14px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block;
+  }
+  button:hover, .btn:hover { background: #2A3340; }
+  table { width: 100%; border-collapse: collapse; background: #121622; border: 1px solid #1F2633; border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #1A2030; vertical-align: top; }
+  th { background: #0E1320; color: #8B949E; font-weight: 600; font-size: 12px; position: sticky; top: 0; }
+  tr:last-child td { border-bottom: none; }
+  td.num { color: #8B949E; width: 36px; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  td.name { font-family: ui-monospace, monospace; font-size: 12px; color: #79C0FF; white-space: nowrap; }
+  td.type { font-family: ui-monospace, monospace; font-size: 12px; color: #D2A8FF; white-space: nowrap; }
+  td.msg { color: #E6EDF3; }
+  .sev { font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .sev-error { background: rgba(255,107,107,0.15); color: #FF8787; }
+  .sev-fatal { background: rgba(255,71,87,0.2); color: #FF5252; }
+  .stack { margin-top: 6px; }
+  .stack summary { cursor: pointer; color: #8B949E; font-size: 12px; }
+  .stack pre { margin: 6px 0 0; padding: 10px; background: #0B0E14; border: 1px solid #1A2030; border-radius: 6px; overflow-x: auto; font-size: 11px; color: #8B949E; }
+  .ctx { margin-top: 6px; font-size: 11px; color: #6E7681; word-break: break-all; }
+  .empty { text-align: center; color: #8B949E; padding: 32px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>系统错误明细</h1>
+  <p class="sub">错误数量与每条错误的具体信息（类型 / 消息 / 时间 / 堆栈 / 上下文）同源展示。</p>
+  <div class="banner">
+    <div><span class="count ${summary.total === 0 ? 'zero' : ''}">${summary.total}</span><span class="label">条系统错误</span></div>
+    ${span}
+    <div class="pills">${pills || '<span class="pill">无</span>'}</div>
+  </div>
+  <div class="toolbar">
+    <button onclick="location.reload()">刷新</button>
+    <a class="btn" href="/api/errors?format=text" target="_blank">复制为文本报告</a>
+    <a class="btn" href="/api/errors?full=1" target="_blank">原始 JSON（全量）</a>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>时间</th><th>级别</th><th>名称</th><th>类型</th><th>消息</th><th>堆栈 / 上下文</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</div>
+</body>
+</html>`;
 }
 
 /** Web SPA 构建产物目录（packages/webapp/dist）；未构建则返回 null。 */
@@ -750,27 +1167,34 @@ function contentTypeFor(fp: string): string {
     ico: 'image/x-icon',
     woff2: 'font/woff2',
     woff: 'font/woff',
-    ttf: 'font/ttf',
+    ttf: 'font/ttf'
   };
   return map[ext] ?? 'application/octet-stream';
 }
 
-function sendJson(res: ServerResponse, obj: unknown, req?: IncomingMessage): void {
+function sendJson(
+  res: ServerResponse,
+  obj: unknown,
+  req?: IncomingMessage
+): void {
   res.writeHead(200, {
     'content-type': 'application/json; charset=utf-8',
-    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage))
   });
   res.end(JSON.stringify(obj));
 }
 
-function startSse(res: ServerResponse, req?: IncomingMessage): (obj: unknown) => void {
+function startSse(
+  res: ServerResponse,
+  req?: IncomingMessage
+): (obj: unknown) => void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
     // 禁用反向代理（nginx/网关）对 SSE 的缓冲，确保 token 级事件边产生边下发到浏览器。
     'x-accel-buffering': 'no',
-    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage))
   });
   let closed = false;
   res.on('close', () => {
@@ -809,17 +1233,26 @@ async function readBody(req: IncomingMessage): Promise<any> {
   }
 }
 
-async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleRun(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   let closed = false;
   res.on('close', () => {
     closed = true;
   });
 
   const body = await readBody(req);
-  const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode) ? body.mode : 'mock';
+  const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode)
+    ? body.mode
+    : 'mock';
   // 按运行模式映射为细分动作，做角色授权 + 审批判定（real / real-mcp 需审批）。
   const runAction: Action =
-    mode === 'real-mcp' ? 'agent:run:real-mcp' : mode === 'real' ? 'agent:run:real' : 'agent:run:mock';
+    mode === 'real-mcp'
+      ? 'agent:run:real-mcp'
+      : mode === 'real'
+        ? 'agent:run:real'
+        : 'agent:run:mock';
   const ctx = await guard(req, res, runAction, body);
   if (!ctx) return;
   // 优雅停机期间不再接受新运行，避免任务在进程退出时被强杀。
@@ -831,11 +1264,16 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const send = startSse(res, req);
   // 兼容前端两种字段名（chat UI 发 prompt，部分旧客户端发 input），避免落到默认示例 prompt。
   const rawPrompt = body.prompt ?? body.input;
-  const prompt: string = (rawPrompt && String(rawPrompt).trim()) || defaultPromptFor(mode);
-  const model: string | undefined = body.model ? String(body.model).trim() : undefined;
+  const prompt: string =
+    (rawPrompt && String(rawPrompt).trim()) || defaultPromptFor(mode);
+  const model: string | undefined = body.model
+    ? String(body.model).trim()
+    : undefined;
   // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
   const maxSteps: number | undefined =
-    typeof body.maxSteps === 'number' && Number.isFinite(body.maxSteps) && body.maxSteps > 0
+    typeof body.maxSteps === 'number' &&
+    Number.isFinite(body.maxSteps) &&
+    body.maxSteps > 0
       ? Math.floor(body.maxSteps)
       : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
@@ -850,7 +1288,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   // 多会话 Chat App：客户端为每个聊天会话分配独立 chatSessionId（与 Memory 的 sessionKey 解耦），
   // 服务端据此把 user/assistant 消息写入会话存储，供左侧栏与跨刷新恢复。
-  const chatSessionId = body.chatSessionId ? String(body.chatSessionId).trim() : '';
+  const chatSessionId = body.chatSessionId
+    ? String(body.chatSessionId).trim()
+    : '';
 
   // P0.1：显式指定目标 agent（绕过路由，直达该 agent 的装配配方）。
   // 未传 → 用注册表里 seed 的 default 通用 agent（退化为今天的万能 harness）。
@@ -868,17 +1308,22 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
   const reconnectId = body.jobId ? String(body.jobId) : '';
-  const targetId = reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
+  const targetId =
+    reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
 
   // P0.2/P0.3：任务路由 & 租户辅助字段。
   // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
   // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId），
   //   客户端声明的 body.tenantId 仅作本地/测试降级；认证身份优先，杜绝客户端伪造越界。
   const domain = body.domain ? String(body.domain).trim() : undefined;
-  const declaredTenantId = body.tenantId ? String(body.tenantId).trim() : undefined;
+  const declaredTenantId = body.tenantId
+    ? String(body.tenantId).trim()
+    : undefined;
   const effectiveTenantId = ctx.tenantId || declaredTenantId;
   const tenantId = effectiveTenantId || undefined;
-  const workflowId = body.workflowId ? String(body.workflowId).trim() : undefined;
+  const workflowId = body.workflowId
+    ? String(body.workflowId).trim()
+    : undefined;
   const traceId = body.traceId ? String(body.traceId).trim() : undefined;
 
   // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
@@ -886,8 +1331,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   // 并以可序列化形式随 JobDescriptor 持久化，使重放/多实例领取后门禁行为一致。
   let verifyConfig: VerifyConfig | undefined;
   const envAutoVerify =
-    process.env.AGENT_AUTO_VERIFY === 'true' || process.env.AGENT_AUTO_VERIFY === '1';
-  if (body.verify && typeof body.verify === 'object' && !Array.isArray(body.verify)) {
+    process.env.AGENT_AUTO_VERIFY === 'true' ||
+    process.env.AGENT_AUTO_VERIFY === '1';
+  if (
+    body.verify &&
+    typeof body.verify === 'object' &&
+    !Array.isArray(body.verify)
+  ) {
     verifyConfig = body.verify as VerifyConfig;
   } else if (typeof body.autoVerify === 'boolean') {
     verifyConfig = body.autoVerify ? { auto: true } : undefined;
@@ -897,12 +1347,38 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({ mode, prompt, model, sessionKey, maxSteps, verify: verifyConfig, agentId: agentCard?.id, domain, tenantId, workflowId, traceId });
-    auditAction('agent.run', { mode, promptLen: prompt.length, model: model ?? null, jobId: job.id, sessionKey, agentId: agentCard?.id ?? null, role: ctx.role, sub: ctx.sub, verify: verifyConfig ? 'on' : 'off' });
+    const job = runQueue.submit({
+      mode,
+      prompt,
+      model,
+      sessionKey,
+      maxSteps,
+      verify: verifyConfig,
+      agentId: agentCard?.id,
+      domain,
+      tenantId,
+      workflowId,
+      traceId
+    });
+    auditAction('agent.run', {
+      mode,
+      promptLen: prompt.length,
+      model: model ?? null,
+      jobId: job.id,
+      sessionKey,
+      agentId: agentCard?.id ?? null,
+      role: ctx.role,
+      sub: ctx.sub,
+      verify: verifyConfig ? 'on' : 'off'
+    });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
     jobId = job.id;
   } else {
-    auditAction('agent.run.reconnect', { jobId: targetId, role: ctx.role, sub: ctx.sub });
+    auditAction('agent.run.reconnect', {
+      jobId: targetId,
+      role: ctx.role,
+      sub: ctx.sub
+    });
     jobId = targetId;
   }
 
@@ -912,7 +1388,8 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   const toolMap = new Map<string, StoredTool>();
   // 调用链路追踪树：把 run 事件流结构化为 trace 节点，run:end 时一并落盘，
   // 供深度思考界面可视化 LLM↔工具↔检索 的每一步，便于追踪与复盘。
-  const RETRIEVAL_RE = /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
+  const RETRIEVAL_RE =
+    /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
   let traceRoot: TraceNode | null = null;
   let traceParent: TraceNode | null = null;
   let traceLlm: TraceNode | null = null;
@@ -920,7 +1397,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   let traceSeq = 0;
   const traceEnsureRoot = (): TraceNode => {
     if (!traceRoot) {
-      traceRoot = { id: 't0', kind: 'run', label: '运行', status: 'ok', children: [] };
+      traceRoot = {
+        id: 't0',
+        kind: 'run',
+        label: '运行',
+        status: 'ok',
+        children: []
+      };
       traceParent = traceRoot;
     }
     return traceRoot;
@@ -932,7 +1415,14 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     status: TraceNode['status'] = 'ok',
     extra: Partial<TraceNode> = {}
   ): TraceNode => {
-    const n: TraceNode = { id: `t${++traceSeq}`, kind, label, status, children: [], ...extra };
+    const n: TraceNode = {
+      id: `t${++traceSeq}`,
+      kind,
+      label,
+      status,
+      children: [],
+      ...extra
+    };
     parent.children.push(n);
     return n;
   };
@@ -944,7 +1434,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
           ...(r.meta ?? {}),
           ...(ev.model ? { model: String(ev.model) } : {}),
           ...(ev.agentId ? { agent: String(ev.agentId) } : {}),
-          ...(ev.mode ? { mode: String(ev.mode) } : {}),
+          ...(ev.mode ? { mode: String(ev.mode) } : {})
         };
         r.label = ev.model ? `运行 · ${ev.model}` : '运行';
         break;
@@ -953,7 +1443,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         const r = traceEnsureRoot();
         traceParent = r;
         const step = traceNode(r, 'step', `第 ${ev.step} 步`, 'ok', {
-          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` },
+          meta: { step: `第 ${ev.step} 步 / 共 ${ev.maxSteps ?? '?'} 步` }
         });
         traceParent = step;
         traceLlm = null;
@@ -966,22 +1456,30 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         traceLlm = traceNode(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
             messages: `消息 ${ev.messageCount ?? '?'}`,
-            tools: `工具 ${ev.toolCount ?? '?'}`,
-          },
+            tools: `工具 ${ev.toolCount ?? '?'}`
+          }
         });
         traceLastTool = null;
         break;
       }
       case 'llm:reasoning': {
         if (traceLlm && typeof ev.delta === 'string') {
-          const n = (traceLlm.meta?.reasoningChars ? Number(traceLlm.meta.reasoningChars) : 0) + ev.delta.length;
-          traceLlm.meta = { ...(traceLlm.meta ?? {}), reasoningChars: String(n) };
+          const n =
+            (traceLlm.meta?.reasoningChars
+              ? Number(traceLlm.meta.reasoningChars)
+              : 0) + ev.delta.length;
+          traceLlm.meta = {
+            ...(traceLlm.meta ?? {}),
+            reasoningChars: String(n)
+          };
         }
         break;
       }
       case 'llm:token': {
         if (traceLlm && typeof ev.delta === 'string') {
-          const n = (traceLlm.meta?.tokenChars ? Number(traceLlm.meta.tokenChars) : 0) + ev.delta.length;
+          const n =
+            (traceLlm.meta?.tokenChars ? Number(traceLlm.meta.tokenChars) : 0) +
+            ev.delta.length;
           traceLlm.meta = { ...(traceLlm.meta ?? {}), tokenChars: String(n) };
         }
         break;
@@ -990,56 +1488,135 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         if (!traceLlm || !ev.call) break;
         const name = String(ev.call.name ?? 'tool');
         const retrieval = RETRIEVAL_RE.test(name);
-        traceLastTool = traceNode(traceLlm, retrieval ? 'retrieval' : 'tool', retrieval ? `检索 · ${name}` : name, 'pending', {
-          detail: typeof ev.call.arguments === 'string' ? ev.call.arguments : JSON.stringify(ev.call.arguments ?? {}),
-        });
+        traceLastTool = traceNode(
+          traceLlm,
+          retrieval ? 'retrieval' : 'tool',
+          retrieval ? `检索 · ${name}` : name,
+          'pending',
+          {
+            detail:
+              typeof ev.call.arguments === 'string'
+                ? ev.call.arguments
+                : JSON.stringify(ev.call.arguments ?? {})
+          }
+        );
         break;
       }
       case 'tool:result': {
         if (traceLastTool) {
-          traceLastTool.result = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result ?? {});
+          traceLastTool.result =
+            typeof ev.result === 'string'
+              ? ev.result
+              : JSON.stringify(ev.result ?? {});
           traceLastTool.status = ev.errored ? 'error' : 'ok';
-          traceLastTool.meta = { ...(traceLastTool.meta ?? {}), status: ev.errored ? '失败' : '成功' };
+          traceLastTool.meta = {
+            ...(traceLastTool.meta ?? {}),
+            status: ev.errored ? '失败' : '成功'
+          };
         }
         break;
       }
       case 'run:cost': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
+        const est = ev.estTokens;
+        const estTotal = est
+          ? est.system + est.tools + est.history + est.completion
+          : 0;
         traceNode(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
-            tokens: String(ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'),
-            cost: ev.cumulativeCost != null ? `$${Number(ev.cumulativeCost).toFixed(4)}` : '?',
+            tokens: String(
+              ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'
+            ),
+            cost:
+              ev.cumulativeCost != null
+                ? `$${Number(ev.cumulativeCost).toFixed(4)}`
+                : '?',
+            priced: ev.priced ? 'true' : 'false',
             ...(ev.model ? { model: String(ev.model) } : {}),
+            ...(est
+              ? {
+                  系统: String(est.system),
+                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  输出: `${est.completion}`
+                }
+              : {})
+          }
+        });
+        break;
+      }
+      case 'run:token-cache': {
+        traceEnsureRoot();
+        const parent = traceParent ?? traceRoot!;
+        const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
+        const tcByModel = Object.entries<{
+          queries: number;
+          hits: number;
+          hitRate: number;
+        }>(ev.byModel ?? {})
+          .map(
+            ([m, st]) =>
+              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`
+          )
+          .join(' · ');
+        traceNode(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
+          meta: {
+            命中率: `${tcHitPct}%`,
+            命中: `${ev.hits}/${ev.queries}`,
+            接口: String(ev.interface ?? 'prompt-cache'),
+            ...(ev.model ? { 模型: String(ev.model) } : {}),
+            ...(tcByModel ? { 分模型: tcByModel } : {})
           },
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`
         });
         break;
       }
       case 'verify:result': {
         traceEnsureRoot();
         traceNode(traceRoot!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
-          meta: { score: String(ev.score ?? '?'), passed: ev.passed ? '通过' : '未通过' },
-          result: (ev.reasons ?? []).join('\n'),
+          meta: {
+            score: String(ev.score ?? '?'),
+            passed: ev.passed ? '通过' : '未通过'
+          },
+          result: (ev.reasons ?? []).join('\n')
         });
         break;
       }
       case 'guardrail:blocked': {
         traceEnsureRoot();
-        traceNode(traceRoot!, 'guardrail', `护栏拦截 · ${ev.phase ?? ''}`, 'error', {
-          detail: String(ev.reason ?? ''),
-        });
+        traceNode(
+          traceRoot!,
+          'guardrail',
+          `护栏拦截 · ${ev.phase ?? ''}`,
+          'error',
+          {
+            detail: String(ev.reason ?? '')
+          }
+        );
         break;
       }
       case 'budget:exceeded': {
         traceEnsureRoot();
-        traceNode(traceRoot!, 'budget', `预算超限 · ${ev.kind ?? ''}`, 'error', {
-          meta: { used: String(ev.used ?? '?'), limit: String(ev.limit ?? '?') },
-        });
+        traceNode(
+          traceRoot!,
+          'budget',
+          `预算超限 · ${ev.kind ?? ''}`,
+          'error',
+          {
+            meta: {
+              used: String(ev.used ?? '?'),
+              limit: String(ev.limit ?? '?')
+            }
+          }
+        );
         break;
       }
       case 'error': {
         traceEnsureRoot();
-        traceNode(traceRoot!, 'error', '运行错误', 'error', { detail: String(ev.message ?? '') });
+        traceNode(traceRoot!, 'error', '运行错误', 'error', {
+          detail: String(ev.message ?? '')
+        });
         break;
       }
     }
@@ -1060,16 +1637,28 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
         const c = a.call;
         toolMap.set(String(c.id), {
           name: String(c.name ?? 'tool'),
-          args: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments ?? {}),
+          args:
+            typeof c.arguments === 'string'
+              ? c.arguments
+              : JSON.stringify(c.arguments ?? {})
         });
       } else if (ev.type === 'tool:result' && a.call) {
         const c = a.call;
-        const t = toolMap.get(String(c.id)) ?? { name: String(c.name ?? 'tool') };
-        t.result = typeof a.result === 'string' ? a.result : JSON.stringify(a.result ?? {});
+        const t = toolMap.get(String(c.id)) ?? {
+          name: String(c.name ?? 'tool')
+        };
+        t.result =
+          typeof a.result === 'string'
+            ? a.result
+            : JSON.stringify(a.result ?? {});
         t.errored = !!a.errored;
         toolMap.set(String(c.id), t);
       } else if (ev.type === 'run:start' && ev.input != null) {
-        appendChatMessage(chatSessionId, { role: 'user', content: String(ev.input), ts: Date.now() });
+        appendChatMessage(chatSessionId, {
+          role: 'user',
+          content: String(ev.input),
+          ts: Date.now()
+        });
       } else if (ev.type === 'run:end' && ev.final != null) {
         // 去重：run-queue 会在 harness 的 run:end 之后再补发一个不带 runId 的 run:end
         // （两者 final 相同），避免历史里出现两条重复的 assistant 消息。仅当会话最后一条
@@ -1084,7 +1673,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
             ts: Date.now(),
             reasoning: reasoningBuf || undefined,
             tools: toolMap.size ? [...toolMap.values()] : undefined,
-            trace: traceRoot ? [traceRoot] : undefined,
+            trace: traceRoot ? [traceRoot] : undefined
           });
         }
       }
@@ -1111,7 +1700,10 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
  * - card 可选：随任务一起自注册/更新目标 agent 的能力卡片（远端 agent 入驻式入驻）；
  * - 执行结果以 { result: TaskResult } 返回（成功 200，目标不存在 400）。
  */
-async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleA2A(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'a2a:receive', body);
   if (!ctx) return;
@@ -1123,9 +1715,18 @@ async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   const reqBody = body as Partial<A2ARequest>;
   const envelope = reqBody.envelope as TaskEnvelope | undefined;
-  if (!envelope || typeof envelope.taskId !== 'string' || typeof envelope.toAgent !== 'string') {
+  if (
+    !envelope ||
+    typeof envelope.taskId !== 'string' ||
+    typeof envelope.toAgent !== 'string'
+  ) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'invalid a2a request: 需要 { envelope: { taskId, toAgent, ... } }' }));
+    res.end(
+      JSON.stringify({
+        error:
+          'invalid a2a request: 需要 { envelope: { taskId, toAgent, ... } }'
+      })
+    );
     return;
   }
 
@@ -1138,7 +1739,9 @@ async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<voi
   const target = await getAgentRegistry().get(envelope.toAgent);
   if (!target) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: `unknown a2a target agent: ${envelope.toAgent}` }));
+    res.end(
+      JSON.stringify({ error: `unknown a2a target agent: ${envelope.toAgent}` })
+    );
     return;
   }
 
@@ -1146,20 +1749,32 @@ async function handleA2A(req: IncomingMessage, res: ServerResponse): Promise<voi
   // 否则会与 run-queue 的跨主机派发语义混淆——跨主机由发起方经 HttpA2ATransport 走。
   if (target.transport !== 'local') {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: `agent "${target.id}" transport=${target.transport} 不是本地 agent，无法被本端点直接执行` }));
+    res.end(
+      JSON.stringify({
+        error: `agent "${target.id}" transport=${target.transport} 不是本地 agent，无法被本端点直接执行`
+      })
+    );
     return;
   }
 
   try {
     const output = await runAgentTask(target, envelope.input, {
       tenantId: envelope.tenantId,
-      onEvent: undefined,
+      onEvent: undefined
     });
-    const result: TaskResult = { taskId: envelope.taskId, status: 'success', output };
+    const result: TaskResult = {
+      taskId: envelope.taskId,
+      status: 'success',
+      output
+    };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ result }));
   } catch (e: any) {
-    const result: TaskResult = { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
+    const result: TaskResult = {
+      taskId: envelope.taskId,
+      status: 'failed',
+      error: e?.message ?? String(e)
+    };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ result }));
   }
@@ -1184,7 +1799,7 @@ function normalizeIncomingCard(raw: unknown): AgentCard | null {
     isolation: c.isolation,
     assembly: c.assembly,
     // 客户端可上报健康度；缺省视为「初次上线且健康」。
-    health: c.health ?? { status: 'healthy', lastHeartbeat: now, load: 0 },
+    health: c.health ?? { status: 'healthy', lastHeartbeat: now, load: 0 }
   } as AgentCard;
 }
 
@@ -1192,18 +1807,31 @@ function normalizeIncomingCard(raw: unknown): AgentCard | null {
  * P0.1 注册/更新 agent。body = AgentCard（至少 { id, capabilities }）。
  * 受 agent:register 保护（admin/operator）；写穿注册表持久后端，多副本经共享后端立即可见。
  */
-async function handleAgentRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleAgentRegister(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'agent:register', body);
   if (!ctx) return;
   const card = normalizeIncomingCard(body);
   if (!card) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'invalid agent card: 需要 { id: string, capabilities: [] }' }));
+    res.end(
+      JSON.stringify({
+        error: 'invalid agent card: 需要 { id: string, capabilities: [] }'
+      })
+    );
     return;
   }
   await getAgentRegistry().register(card);
-  auditAction('agent.register', { id: card.id, domain: card.domain, transport: card.transport, role: ctx.role, sub: ctx.sub });
+  auditAction('agent.register', {
+    id: card.id,
+    domain: card.domain,
+    transport: card.transport,
+    role: ctx.role,
+    sub: ctx.sub
+  });
   return sendJson(res, { ok: true, agent: card }, req);
 }
 
@@ -1211,11 +1839,17 @@ async function handleAgentRegister(req: IncomingMessage, res: ServerResponse): P
  * P0.1 心跳。path = /api/agents/:id/heartbeat；body = Partial<AgentHealth>（status/load 等）。
  * 未注册的 id 静默返回 ok:false（不 404，便于客户端幂等重试）。
  */
-async function handleAgentHeartbeat(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+async function handleAgentHeartbeat(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'agent:register', body);
   if (!ctx) return;
-  const id = decodeURIComponent(path.slice('/api/agents/'.length, path.length - '/heartbeat'.length));
+  const id = decodeURIComponent(
+    path.slice('/api/agents/'.length, path.length - '/heartbeat'.length)
+  );
   if (!id) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'missing agent id' }));
@@ -1231,11 +1865,17 @@ async function handleAgentHeartbeat(req: IncomingMessage, res: ServerResponse, p
 }
 
 /** P0.1 注销 agent。path = /api/agents/:id。受 agent:register 保护。 */
-async function handleAgentDeregister(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+async function handleAgentDeregister(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'agent:register', body);
   if (!ctx) return;
-  const id = decodeURIComponent(path.slice('/api/agents/'.length).replace(/\/$/, ''));
+  const id = decodeURIComponent(
+    path.slice('/api/agents/'.length).replace(/\/$/, '')
+  );
   if (!id) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'missing agent id' }));
@@ -1251,7 +1891,10 @@ async function handleAgentDeregister(req: IncomingMessage, res: ServerResponse, 
  * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
  * 每个 step 经 createWorkflowExecutor 复用 /api/run 同一套 assembleAgent + harness 装配。
  */
-async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleWorkflow(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   let closed = false;
   res.on('close', () => {
     closed = true;
@@ -1268,9 +1911,18 @@ async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promis
   }
 
   const def = body.def as WorkflowDef | undefined;
-  if (!def || typeof def.id !== 'string' || !Array.isArray(def.steps) || def.steps.length === 0) {
+  if (
+    !def ||
+    typeof def.id !== 'string' ||
+    !Array.isArray(def.steps) ||
+    def.steps.length === 0
+  ) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] }' }));
+    res.end(
+      JSON.stringify({
+        error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] }'
+      })
+    );
     return;
   }
 
@@ -1283,20 +1935,33 @@ async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promis
     if (!closed) send(e);
   };
   const executor = createWorkflowExecutor({ onEvent: onHarnessEvent });
-  const engine = new DagEngine({ store: workflowStore(), executor, onEvent: onWfEvent });
+  const engine = new DagEngine({
+    store: workflowStore(),
+    executor,
+    onEvent: onWfEvent
+  });
 
   // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 立即 400，不进入异步执行才失败。
   try {
     engine.validateWorkflow(def);
   } catch (e: any) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: `invalid workflow topology: ${e?.message ?? String(e)}` }));
+    res.end(
+      JSON.stringify({
+        error: `invalid workflow topology: ${e?.message ?? String(e)}`
+      })
+    );
     return;
   }
 
   send = startSse(res, req);
 
-  auditAction('workflow.run', { workflowId: def.id, stepCount: def.steps.length, role: ctx.role, sub: ctx.sub });
+  auditAction('workflow.run', {
+    workflowId: def.id,
+    stepCount: def.steps.length,
+    role: ctx.role,
+    sub: ctx.sub
+  });
 
   // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
   engine
@@ -1312,7 +1977,10 @@ async function handleWorkflow(req: IncomingMessage, res: ServerResponse): Promis
   return;
 }
 
-async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleVerify(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   let closed = false;
   res.on('close', () => {
     closed = true;
@@ -1328,7 +1996,8 @@ async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<
     });
     if (!closed) send({ type: '_verify_done' });
   } catch (e: any) {
-    if (!closed) send({ type: 'verify:error', id: '0', message: e?.message ?? String(e) });
+    if (!closed)
+      send({ type: 'verify:error', id: '0', message: e?.message ?? String(e) });
     if (!closed) send({ type: '_verify_done' });
   } finally {
     if (!closed) res.end();
@@ -1338,7 +2007,10 @@ async function handleVerify(req: IncomingMessage, res: ServerResponse): Promise<
 // 合法的传输类型（与 core 的 McpTransportType 保持一致）。
 const MCP_TRANSPORT_TYPES = new Set(['auto', 'sse', 'streamable-http']);
 
-async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleMcpAdd(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'mcp:add', body);
   if (!ctx) return;
@@ -1347,21 +2019,48 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
   const serverUrl = String(body.url ?? body.serverUrl ?? '').trim();
   const command = body.command != null ? String(body.command) : undefined;
   const args = Array.isArray(body.args) ? body.args.map(String) : undefined;
-  const env = body.env && typeof body.env === 'object' ? (body.env as Record<string, string>) : undefined;
-  const headers = body.headers && typeof body.headers === 'object' ? (body.headers as Record<string, string>) : undefined;
+  const env =
+    body.env && typeof body.env === 'object'
+      ? (body.env as Record<string, string>)
+      : undefined;
+  const headers =
+    body.headers && typeof body.headers === 'object'
+      ? (body.headers as Record<string, string>)
+      : undefined;
   // 仅接受合法的传输类型，其余忽略（回退 core 的 'auto' 自动判定）。
   let transportType: McpTransportType | undefined;
-  if (typeof body.transportType === 'string' && MCP_TRANSPORT_TYPES.has(body.transportType)) {
+  if (
+    typeof body.transportType === 'string' &&
+    MCP_TRANSPORT_TYPES.has(body.transportType)
+  ) {
     transportType = body.transportType as McpTransportType;
   }
   if (!name && !serverUrl && !command) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'name 与（serverUrl/url 或 command）至少需提供其一' }));
+    res.end(
+      JSON.stringify({
+        error: 'name 与（serverUrl/url 或 command）至少需提供其一'
+      })
+    );
     return;
   }
-  auditAction('mcp.add', { name, url: redactUrl(serverUrl), command: command ?? null, role: ctx.role, sub: ctx.sub });
+  auditAction('mcp.add', {
+    name,
+    url: redactUrl(serverUrl),
+    command: command ?? null,
+    role: ctx.role,
+    sub: ctx.sub
+  });
   try {
-    const meta = await mcpManager.addServer({ name, serverUrl, command, args, env, headers, transportType });
+    const meta = await mcpManager.addServer({
+      name,
+      serverUrl,
+      command,
+      args,
+      env,
+      headers,
+      transportType
+    });
     sendJson(res, { server: meta, servers: mcpManager.list() }, req);
   } catch (e: any) {
     res.writeHead(500, { 'content-type': 'application/json' });
@@ -1370,7 +2069,10 @@ async function handleMcpAdd(req: IncomingMessage, res: ServerResponse): Promise<
 }
 
 /** 一键接入预设 MCP 服务（Context7 / GitHub / Composio 等）。 */
-async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleMcpPreset(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'mcp:preset', body);
   if (!ctx) return;
@@ -1378,7 +2080,11 @@ async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promi
   const token = body.token != null ? String(body.token) : undefined;
   if (!id) {
     res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: '缺少预设 id（如 context7 / github / composio）' }));
+    res.end(
+      JSON.stringify({
+        error: '缺少预设 id（如 context7 / github / composio）'
+      })
+    );
     return;
   }
   auditAction('mcp.preset', { id, role: ctx.role, sub: ctx.sub });
@@ -1396,7 +2102,10 @@ async function handleMcpPreset(req: IncomingMessage, res: ServerResponse): Promi
  * body: { command, args, preapprove? }。preapprove=true 时仅登记永久批准、不等待。
  * 返回被放行的等待项数量（waitingReleased）或预批准结果（preapproved）。
  */
-async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleShellApprove(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   const body = await readBody(req);
   const ctx = await guard(req, res, 'shell:approve', body);
   if (!ctx) return;
@@ -1407,7 +2116,12 @@ async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Pr
     res.end(JSON.stringify({ error: '缺少 command' }));
     return;
   }
-  auditAction('shell.approve', { command, preapprove: body.preapprove === true, role: ctx.role, sub: ctx.sub });
+  auditAction('shell.approve', {
+    command,
+    preapprove: body.preapprove === true,
+    role: ctx.role,
+    sub: ctx.sub
+  });
   if (body.preapprove === true) {
     preapproveShell(shellSignature(command, args));
     return sendJson(res, { preapproved: true }, req);
@@ -1416,14 +2130,18 @@ async function handleShellApprove(req: IncomingMessage, res: ServerResponse): Pr
   sendJson(res, { waitingReleased: released }, req);
 }
 
-async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleEnv(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
   let closed = false;
   res.on('close', () => {
     closed = true;
   });
   const body = await readBody(req);
   // 按动作类型映射为细分动作，做角色授权 + 审批判定（create/destroy 需审批）。
-  const envAction: Action = body.action === 'destroy' ? 'env:destroy' : 'env:create';
+  const envAction: Action =
+    body.action === 'destroy' ? 'env:destroy' : 'env:create';
   const ctx = await guard(req, res, envAction, body);
   if (!ctx) return;
   const send = startSse(res, req);
@@ -1435,16 +2153,24 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
       branch: String(body.branch ?? 'main'),
       ttlHours: body.ttl_hours != null ? Number(body.ttl_hours) : undefined,
       region: body.region ? String(body.region) : undefined,
-      owner: body.owner ? String(body.owner) : undefined,
+      owner: body.owner ? String(body.owner) : undefined
     };
-    auditAction('env.create', { envType: input.envType, branch: input.branch, region: input.region ?? null, owner: input.owner ?? null, role: ctx.role, sub: ctx.sub });
+    auditAction('env.create', {
+      envType: input.envType,
+      branch: input.branch,
+      region: input.region ?? null,
+      owner: input.owner ?? null,
+      role: ctx.role,
+      sub: ctx.sub
+    });
     try {
       await envPipeline.create(input, (env) => {
         if (!closed) send({ type: 'env:status', env });
       });
       if (!closed) send({ type: '_env_done' });
     } catch (e: any) {
-      if (!closed) send({ type: 'env:error', message: e?.message ?? String(e) });
+      if (!closed)
+        send({ type: 'env:error', message: e?.message ?? String(e) });
       if (!closed) send({ type: '_env_done', error: true });
     } finally {
       if (!closed) res.end();
@@ -1459,10 +2185,12 @@ async function handleEnv(req: IncomingMessage, res: ServerResponse): Promise<voi
       const env = await envPipeline.destroy(envId, (e) => {
         if (!closed) send({ type: 'env:status', env: e });
       });
-      if (!env && !closed) send({ type: 'env:error', message: `未找到环境 ${envId}` });
+      if (!env && !closed)
+        send({ type: 'env:error', message: `未找到环境 ${envId}` });
       if (!closed) send({ type: '_env_done', found: !!env });
     } catch (e: any) {
-      if (!closed) send({ type: 'env:error', message: e?.message ?? String(e) });
+      if (!closed)
+        send({ type: 'env:error', message: e?.message ?? String(e) });
       if (!closed) send({ type: '_env_done', error: true });
     } finally {
       if (!closed) res.end();
@@ -1489,22 +2217,28 @@ function buildAgentStore(): AgentStore {
     try {
       // ioredis 为可选依赖：动态 require，未安装则回退 volatile（保持「一切降级可用」）。
       const RedisMod = require('ioredis');
-      const RedisCtor = (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+      const RedisCtor =
+        (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
       redis = new RedisCtor(url || 'redis://localhost:6379', {
         maxRetriesPerRequest: null,
-        lazyConnect: false,
+        lazyConnect: false
       }) as unknown as AgentStoreRedis;
       (redis as any).on?.('error', (e: any) =>
         console.error('[agent-store] redis error:', e?.message)
       );
       console.log(`[agent-store] using Redis backend${url ? ` (${url})` : ''}`);
     } catch (e: any) {
-      console.error('[agent-store] ioredis 不可用，回退内存态 volatile 后端：', e?.message ?? e);
+      console.error(
+        '[agent-store] ioredis 不可用，回退内存态 volatile 后端：',
+        e?.message ?? e
+      );
     }
   }
   const store = createAgentStoreFromEnv(process.env, redis);
   if (kind === 'redis' && store.kind !== 'redis') {
-    console.warn('[agent-store] ⚠️ AGENT_STORE=redis 但 client 未就绪，实际使用 volatile（重启即丢、多副本不共享）。');
+    console.warn(
+      '[agent-store] ⚠️ AGENT_STORE=redis 但 client 未就绪，实际使用 volatile（重启即丢、多副本不共享）。'
+    );
   }
   return store;
 }
@@ -1540,40 +2274,69 @@ function onListening(): void {
         : AUTH_PROVIDER === 'proxy'
           ? 'SSO 网关头注入 (proxy)'
           : '静态令牌 (token)';
-    console.log(`   🔒 RBAC 鉴权已启用（身份源：${prov}）：请求需 Authorization: Bearer <token>`);
-    console.log(`   🔒 敏感动作（real 运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需审批：POST 返回 202 + ticketId`);
-    if ((AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') && (process.env.UI_TOKENS || UI_AUTH_TOKEN)) {
-      console.log(`   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_AUTH_TOKEN 直接鉴权（运维逃生通道）`);
+    console.log(
+      `   🔒 RBAC 鉴权已启用（身份源：${prov}）：请求需 Authorization: Bearer <token>`
+    );
+    console.log(
+      `   🔒 敏感动作（real 运行 / 环境创建销毁 / MCP 接入 / 记忆清空等）需审批：POST 返回 202 + ticketId`
+    );
+    if (
+      (AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') &&
+      (process.env.UI_TOKENS || UI_AUTH_TOKEN)
+    ) {
+      console.log(
+        `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_AUTH_TOKEN 直接鉴权（运维逃生通道）`
+      );
     }
   } else {
-    console.warn(`   ⚠️  未设置 UI_TOKENS / UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`);
+    console.warn(
+      `   ⚠️  未设置 UI_TOKENS / UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`
+    );
   }
   if (UI_CORS_ORIGIN.length === 0) {
-    console.log(`   🔒 CORS 仅同源（未配置 UI_CORS_ORIGIN）。跨域调用需显式设置白名单。`);
+    console.log(
+      `   🔒 CORS 仅同源（未配置 UI_CORS_ORIGIN）。跨域调用需显式设置白名单。`
+    );
   } else {
     console.log(`   🔒 CORS 白名单：${UI_CORS_ORIGIN.join(', ')}`);
   }
-  console.log(`   🔒 限流：${RATE_LIMIT > 0 ? `每 IP ${RATE_LIMIT} 次 / ${RATE_WINDOW_MS / 1000}s` : '关闭'}；请求体上限：${MAX_BODY_BYTES} 字节`);
+  console.log(
+    `   🔒 限流：${RATE_LIMIT > 0 ? `每 IP ${RATE_LIMIT} 次 / ${RATE_WINDOW_MS / 1000}s` : '关闭'}；请求体上限：${MAX_BODY_BYTES} 字节`
+  );
   if (AUDIT_LOG) console.log(`   📝 审计日志落盘：${AUDIT_LOG}`);
-  console.log(`   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`);
-  console.log(`   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`);
+  console.log(
+    `   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`
+  );
+  console.log(
+    `   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`
+  );
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}`);
   const storeKind = (registry as any)?.store?.kind ?? 'volatile';
   if (storeKind === 'volatile') {
-    console.warn(`   ⚠️  AgentRegistry 后端：volatile（内存态，重启即丢、多副本不共享）。生产请设 AGENT_STORE=redis|sqlite|file。`);
+    console.warn(
+      `   ⚠️  AgentRegistry 后端：volatile（内存态，重启即丢、多副本不共享）。生产请设 AGENT_STORE=redis|sqlite|file。`
+    );
   } else {
-    console.log(`   🗄️  AgentRegistry 后端：${storeKind}（持久化，重启保留 / 多副本可共享）。`);
+    console.log(
+      `   🗄️  AgentRegistry 后端：${storeKind}（持久化，重启保留 / 多副本可共享）。`
+    );
   }
   if (isTenantRequired()) {
-    console.log(`   🔐 跨行业隔离强制：REQUIRE_TENANT=on（行业 agent 无租户上下文将被拒绝执行）。`);
+    console.log(
+      `   🔐 跨行业隔离强制：REQUIRE_TENANT=on（行业 agent 无租户上下文将被拒绝执行）。`
+    );
   } else {
-    console.log(`   🔓 跨行业隔离：opt-in（REQUIRE_TENANT 未开启；行业 agent 可在无租户下运行）。生产强合规建议设 REQUIRE_TENANT=true。`);
+    console.log(
+      `   🔓 跨行业隔离：opt-in（REQUIRE_TENANT 未开启；行业 agent 可在无租户下运行）。生产强合规建议设 REQUIRE_TENANT=true。`
+    );
   }
   const intentMode = resolveIntentMode();
   const intentRaw = (process.env.INTENT_ROUTER || 'rule').toLowerCase();
   console.log(
     `   🧭 意图路由：INTENT_ROUTER=${intentRaw} → 生效 ${intentMode}` +
-      (intentRaw === 'auto' ? `（${process.env.OPENROUTER_API_KEY ? '检测到 API key，用 llm 精准分类' : '无 API key，降级 rule 关键词分类'}）` : '')
+      (intentRaw === 'auto'
+        ? `（${process.env.OPENROUTER_API_KEY ? '检测到 API key，用 llm 精准分类' : '无 API key，降级 rule 关键词分类'}）`
+        : '')
   );
   console.log('');
 }
@@ -1594,10 +2357,12 @@ function createWebhookAlertSink(url: string) {
       await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(a),
+        body: JSON.stringify(a)
       });
     } catch (e: any) {
-      structLog('warn', 'alert webhook failed', { error: e?.message ?? String(e) });
+      structLog('warn', 'alert webhook failed', {
+        error: e?.message ?? String(e)
+      });
     }
   };
 }
@@ -1627,13 +2392,21 @@ function setupAlerting(): void {
       for (const s of sinks) await s(a);
     });
   }
+  // Token 缓存命中率统计：复用同一套告警通道（webhook / 文件），并启动周期聚合。
+  setTokenCacheAlertSink(emitAlert);
+  startTokenCacheAggregation();
 }
 
 function installCrashGuard(): void {
   const fatal = (where: string, err: unknown) => {
     const e = err as { message?: string; stack?: string };
     logError('crash.guard', err, { where });
-    emitAlert('fatal', 'crash.guard', `${where}: ${e?.message ?? String(err)}`, { where, stack: e?.stack });
+    emitAlert(
+      'fatal',
+      'crash.guard',
+      `${where}: ${e?.message ?? String(err)}`,
+      { where, stack: e?.stack }
+    );
     console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
   };
   process.on('uncaughtException', (err) => {
@@ -1647,7 +2420,8 @@ function installCrashGuard(): void {
 installCrashGuard();
 
 // 停机宽限：先中止在飞任务，给其最多该时长退出，再关 MCP 与监听。
-const SHUTDOWN_GRACE_MS = Number(process.env.RUN_SHUTDOWN_GRACE_MS ?? 5000) || 5000;
+const SHUTDOWN_GRACE_MS =
+  Number(process.env.RUN_SHUTDOWN_GRACE_MS ?? 5000) || 5000;
 let shuttingDown = false;
 
 async function shutdown(): Promise<void> {

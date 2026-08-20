@@ -603,7 +603,13 @@ async function connectMcpClient(args: {
       await client.connect(new StreamableHTTPClientTransport(url, requestInit));
     }
   } else if (useStdio && command) {
-    await client.connect(new StdioClientTransport({ command, args: cmdArgs, env }));
+    // 重要：SDK 1.30 的 StdioClientTransport 在未显式传 env 时只继承「sudo 白名单」环境变量，
+    // 自定义顶层 env（如 RAG_TRANSPORT / 各 server 的配置）不会被子进程继承，导致 stdio server
+    // 以错误模式启动。此处显式兜底为 process.env（完整继承），确保顶层 env 配置始终生效；
+    // 显式 env（MCP_SERVERS 条目 env 字段）仍优先，SDK 按 `{...白名单, ...显式env}` 合并，不丢 PATH。
+    const childEnv: Record<string, string> | undefined =
+      env ?? Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>;
+    await client.connect(new StdioClientTransport({ command, args: cmdArgs, env: childEnv }));
   } else {
     throw new Error('未提供 MCP serverUrl / command / transport');
   }

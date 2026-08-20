@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "title": "本机构配置",
+    "updated": "2026-08-19",
+    "owner": "运营中台",
+    "confidence": "high",
+    "note": "本文件描述本机构的门店/人员映射、成本与口径假设。示例数据为占位，接入真实业务时需逐项替换。",
+    "source": "data/*.csv 字段推断 + 内部假设"
+  },
+  "org": {
+    "brand": "示例医美机构",
+    "city": "青岛",
+    "currency": "CNY",
+    "fiscal_year": "自然年（1-12月）",
+    "sleep_threshold_days": 180,
+    "stores": [{ "id": "store_01", "name": "示例总店", "city": "青岛" }],
+    "consultants": [
+      { "id": "咨询师A", "name": "咨询师A", "store": "store_01" },
+      { "id": "咨询师B", "name": "咨询师B", "store": "store_01" }
+    ],
+    "cost_assumptions": {
+      "note": "orders.csv 已含单笔 cost；机构级固定成本（房租/人力/营销）不计入项目毛利，做净利分析时另算。",
+      "default_gross_margin_assumption": 0.7
+    }
+  },
+  "data_quality_notes": [
+    "示例 members.csv 中 city=上海，与本项目定位（市场）不一致，属占位数据，接入真实业务时须替换为市场客群。",
+    "members.csv 无「二单金额/复购标记」，复购率与升单率需从 orders.csv 跨单推导。",
+    "channels.csv 无 impressions（曝光）字段，曝光→留资 转化率暂不可算。",
+    "orders.csv 无渠道归因字段，渠道 ROI 需补充归因口径。"
+  ],
+  "usage": "Agent 涉及本机构映射/成本假设/沉睡阈值时读取本文件；与数据字段冲突以数据为准并提示。"
+}

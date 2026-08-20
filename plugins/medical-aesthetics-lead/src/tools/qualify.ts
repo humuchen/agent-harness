@@ -1,15 +1,15 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { upsertLead, attachCurrentRunTranscript } from '../store';
-import type { LeadGrade } from '../store';
+import { qualifyLead } from '../services/lead-service';
+import { errorResult } from '../infra/errors';
 
 /**
- * lead_qualify：结构化抽取抖音/小红书私信中的客资要素，并做 A/B/C/D 分级，写回共享存储。
+ * lead_qualify：结构化抽取抖音/小红书私信中的客资要素，并做 A/B/C/D 分级，写回本地客资库（真实 DB）。
  * 工具名用短名，loader 启用时自动加 `medical-aesthetics-lead__` 前缀合并进共享工具表。
  */
 export function registerQualifyTool(tools: ToolRegistry): void {
   tools.register(
     'lead_qualify',
-    '从用户私信/对话中抽取客资关键信息（项目/预算/城市/诉求），判定意向等级 A/B/C/D 并写回客资库。',
+    '从用户私信/对话中抽取客资关键信息（项目/预算/城市/诉求），判定意向等级 A/B/C/D 并写回客资库（真实落库，并异步同步 CRM）。',
     {
       type: 'object',
       properties: {
@@ -24,30 +24,19 @@ export function registerQualifyTool(tools: ToolRegistry): void {
       required: ['leadId', 'channel', 'grade'],
     },
     async (args: Record<string, unknown>) => {
-      const leadId = String(args.leadId ?? '').trim();
-      if (!leadId) return { ok: false, error: 'leadId required' };
-      const grade = (['A', 'B', 'C', 'D'].includes(String(args.grade)) ? String(args.grade) : 'C') as LeadGrade;
-      upsertLead(leadId, {
-        channel: String(args.channel ?? 'unknown'),
-        project: args.project ? String(args.project) : undefined,
-        budget: args.budget ? String(args.budget) : undefined,
-        city: args.city ? String(args.city) : undefined,
-        source: args.intent ? String(args.intent) : undefined,
-        grade,
-        stage: 'qualified',
-      });
-      // 把「当前这次对话」的 transcript 补录到线索上（仅当线索已存在时；绝不凭空建档）。
-      attachCurrentRunTranscript(leadId);
-      return {
-        ok: true,
-        leadId,
-        grade,
-        stage: 'qualified',
-        nextStep:
-          grade === 'A' || grade === 'B'
-            ? '主动私信引导留资 / 预约到店'
-            : '进入观望池，定期内容触达',
-      };
+      try {
+        return qualifyLead({
+          leadId: String(args.leadId ?? ''),
+          channel: String(args.channel ?? 'unknown'),
+          project: args.project ? String(args.project) : undefined,
+          budget: args.budget ? String(args.budget) : undefined,
+          city: args.city ? String(args.city) : undefined,
+          intent: args.intent ? String(args.intent) : undefined,
+          grade: String(args.grade ?? 'C'),
+        });
+      } catch (e) {
+        return errorResult(e);
+      }
     }
   );
 }

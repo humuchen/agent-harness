@@ -87,3 +87,79 @@ export function objectParams(
     required,
   };
 }
+
+/**
+ * 按用户输入的相关性，从全量工具中选出「本步最可能需要」的子集，
+ * 用于降低简单输入（如「你好」）首呼时全量 18 个工具 schema 的固定开销。
+ *
+ * 设计目标（零依赖、零额外 LLM 调用）：
+ *  - 用输入文本与「工具名 + 描述 + 来源」做轻量词重叠打分（中文按字符二元组、英文按词）。
+ *  - `allowTools` 为硬允许集（来自 AgentCard.assembly.tools 或核心环境工具），始终保留，永不裁掉。
+ *  - `topK` 限制最大发出数量；当得分普遍极低（寒暄类）且超出允许集时返回空集。
+ *  - 评分采用「名称命中权重高、描述命中权重低」的启发式，避免把无关工具选入。
+ *
+ * 注意：这只影响「发送给 LLM 的 schema 子集」，本地执行仍走全量注册表；
+ * 若模型请求了未发出的工具，由 harness 主循环用全量 schema 重试兜底（见 harness.ts）。
+ */
+export interface ToolSelectOptions {
+  /** 硬允许集：这些工具无条件保留（如 card 声明 / 核心环境工具）。 */
+  allowTools?: string[];
+  /** 最多发出的工具数（含 allowTools）。默认 8。 */
+  topK?: number;
+}
+
+export function selectToolsForInput(
+  all: ToolSchema[],
+  input: string,
+  opts: ToolSelectOptions = {}
+): ToolSchema[] {
+  const topK = opts.topK && opts.topK > 0 ? opts.topK : 8;
+  const allow = new Set(opts.allowTools ?? []);
+  if (!input || !input.trim() || all.length === 0) {
+    // 无输入或空注册表：仅返回硬允许集（可能为空）。
+    return all.filter((t) => allow.has(t.name));
+  }
+
+  const grams = tokenize(input);
+  const scored = all.map((t) => {
+    const hay = [t.name, t.description ?? '', t.source ?? ''].join(' ');
+    let score = 0;
+    // 名称直接命中（含子串）给高权重。
+    if (t.name && input.toLowerCase().includes(t.name.toLowerCase())) score += 5;
+    for (const g of grams) {
+      if (!g) continue;
+      if (hay.toLowerCase().includes(g.toLowerCase())) score += g.length >= 2 ? 1 : 0.3;
+    }
+    return { t, score, allowed: allow.has(t.name) };
+  });
+
+  const allowed = scored.filter((s) => s.allowed).map((s) => s.t);
+  const candidates = scored
+    .filter((s) => !s.allowed && s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((s) => s.t);
+  // 先放硬允许集，再补相关性最高的候选，直到达到 topK。
+  const picked = [...allowed];
+  for (const c of candidates) {
+    if (picked.length >= topK) break;
+    picked.push(c);
+  }
+  return picked;
+}
+
+/** 极简分词：中文按字符二元组，英文/数字按连续词。零依赖。 */
+function tokenize(text: string): string[] {
+  const out: string[] = [];
+  const lower = text.toLowerCase();
+  // 英文/数字词
+  const en = lower.match(/[a-z0-9_]+/g);
+  if (en) out.push(...en);
+  // 中文二元组（覆盖大部分中文触发词重叠）
+  const cjk = lower.match(/[一-鿿]/g);
+  if (cjk) {
+    for (let i = 0; i < cjk.length - 1; i++) out.push(cjk[i] + cjk[i + 1]);
+    if (cjk.length === 1) out.push(cjk[0]);
+  }
+  return out;
+}
+

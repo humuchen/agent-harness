@@ -556,7 +556,7 @@ export const sharedStyles = css`
     color: var(--ah-text-muted);
     background: var(--ah-surface-3);
     border-color: var(--ah-border);
-    font-family: var(--ah-mono, monospace);
+    font-family: var(--ah-font-mono);
     max-width: 180px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -579,11 +579,70 @@ export const sharedStyles = css`
     border-collapse: collapse;
     font-size: 13px;
   }
+  /* 矩阵独立滚动容器：即便外层 .content 滚动受限，矩阵自身也能滚动查看全部行。
+     sticky 表头 + 首列在滚动时保持可见，避免「列表没展示全 / 看不到列名」。 */
+  .matrix-scroll {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+    scrollbar-width: thin;
+    scrollbar-color: var(--ah-border) transparent;
+  }
+  .matrix-scroll .matrix {
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  .matrix-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--ah-surface-1);
+    border-bottom: 1px solid var(--ah-border);
+  }
+  /* 首列（ACTION）横向滚动时固定，保证行含义始终可读 */
+  .matrix .sticky-col {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--ah-surface-1);
+  }
+  .matrix-scroll thead th.sticky-col {
+    z-index: 3;
+  }
   .matrix th,
   .matrix td {
     text-align: left;
     padding: 8px 10px;
     border-bottom: 1px solid var(--ah-border);
+  }
+  /* 运行队列 / 记忆会话 等列表：自带滚动区，不再静默截断 */
+  .panel-scroll {
+    max-height: 260px;
+    overflow: auto;
+    border-radius: var(--ah-radius-md);
+    scrollbar-width: thin;
+    scrollbar-color: var(--ah-border) transparent;
+  }
+  /* 区块标题上的数量徽标 */
+  .section-title .count {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 9px;
+    border-radius: var(--ah-radius-pill);
+    font-size: 11px;
+    font-family: var(--ah-font-mono);
+    background: var(--ah-accent-soft);
+    color: var(--ah-accent);
+    vertical-align: middle;
+  }
+  .accent-sm {
+    color: var(--ah-accent);
+  }
+  .scroll-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--ah-text-faint);
   }
   .matrix th {
     font-family: var(--ah-font-mono);
@@ -614,6 +673,26 @@ export const sharedStyles = css`
     background: var(--ah-surface-3);
     border: 1px solid var(--ah-border);
     color: var(--ah-text-muted);
+  }
+  .note {
+    padding: 8px 12px;
+    border-radius: var(--ah-radius-sm);
+    font-size: 12px;
+    line-height: 1.6;
+    background: var(--ah-surface-3);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+  }
+  .note code {
+    font-family: var(--ah-font-mono);
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--ah-radius-sm);
+    background: var(--ah-surface-1);
+    color: var(--ah-accent);
+  }
+  .note b {
+    color: var(--ah-text);
   }
   .kv {
     display: flex;

@@ -33,6 +33,7 @@ export interface TraceNode {
     | 'verify'
     | 'guardrail'
     | 'budget'
+    | 'tokencache'
     | 'error';
   label: string;
   status: 'ok' | 'error' | 'pending';

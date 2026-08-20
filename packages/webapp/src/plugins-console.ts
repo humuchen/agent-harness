@@ -29,13 +29,21 @@ function esc(s: string): string {
 export class AhPlugins extends LitElement {
   static styles = [sharedStyles, css`
     .wrap { padding: 18px 22px; }
+    /* 表格容器随主题切换 surface，与现有面板（section / codeblock）保持一致 */
+    .panel {
+      background: var(--ah-surface-1);
+      border: 1px solid var(--ah-border);
+      border-radius: var(--ah-radius-lg);
+      padding: 8px 14px;
+      overflow-x: auto;
+    }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border, #2a2f3a); }
-    th { color: var(--muted, #8b93a7); font-weight: 600; font-size: 12px; }
-    .state-enabled { color: #4ade80; }
-    .state-disabled { color: #f87171; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--ah-border); }
+    th { color: var(--ah-text-muted); font-weight: 600; font-size: 12px; }
+    .state-enabled { color: var(--ah-success); }
+    .state-disabled { color: var(--ah-danger); }
     button { margin-right: 6px; }
-    .hint { color: var(--muted, #8b93a7); font-size: 12px; margin-top: 10px; }
+    .hint { color: var(--ah-text-muted); font-size: 12px; margin-top: 10px; }
   `];
 
   @state() private loading = true;
@@ -108,6 +116,7 @@ export class AhPlugins extends LitElement {
         ${this.plugins.length === 0
           ? html`<p class="hint">未安装任何插件。</p>`
           : html`
+            <div class="panel">
             <table>
               <thead>
                 <tr><th>ID</th><th>名称</th><th>版本</th><th>状态</th><th>依赖</th><th>操作</th></tr>
@@ -141,7 +150,8 @@ export class AhPlugins extends LitElement {
                     </tr>`
                 )}
               </tbody>
-            </table>`}
+            </table>
+            </div>`}
       </div>
     `;
   }
