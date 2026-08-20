@@ -24,7 +24,8 @@ services:
       UI_AUTH_TOKEN: "${UI_AUTH_TOKEN:-}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       OPENROUTER_MODEL: "${OPENROUTER_MODEL:-agnes-2.5-flash}"
-      MCP_SERVER_URL: "${MCP_SERVER_URL:-https://mcp.context7.com/mcp}"
+      # 声明式多 server（与 render.yaml 对齐）；本地自测默认常驻 context7，可用 MCP_SERVERS 环境变量覆盖。
+      MCP_SERVERS: '[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
       # —— 队列后端走 Redis（与 Render 一致）——
       RUN_QUEUE_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379"

@@ -11,7 +11,7 @@
 
 1. **初始化**：生成 `runId`；`emit` 绑定到 `opts.onEvent`；构造 `AbortController`，把外部 `signal` 与 `timeoutMs` 定时器组合成统一的 `abortedFlag`。
 2. **输入护栏**：`checkInput` 扫描密钥 / 提示词注入 / 超长输入；若本次 run 携带 `guardrailPolicy`（per-tenant / 行业画像覆盖），输入/输出/工具参数校验与脱敏均用该策略而非全局默认。被拦截则 `emit guardrail:blocked` 并直接 `return`，不进入循环。
-3. **记忆加载**：若 `memory.hasPersistence`，从 `FileMemoryStore` / `SqliteMemoryStore` 加载长期笔记（跨 run 学习；默认 `MEMORY_BACKEND=volatile` 关闭）。
+3. **记忆加载**：若 `memory.hasPersistence`，从 `FileMemoryStore` / `SqliteMemoryStore` 加载长期笔记（跨 run 学习；默认 `MEMORY_BACKEND=sqlite` 已开启持久化）。
 4. **系统提示注入**：把长期记忆（`memory.systemContext()`）拼进系统提示词，再 `memory.add` 系统 + 用户消息。
 5. **主循环**（`for step < maxSteps`，**默认 12**）：
    - **预算检查**：`tokenBudget` / `costBudget` 超限即熔断 `return`。

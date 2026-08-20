@@ -982,7 +982,6 @@ function buildState() {
     openrouter: !!process.env.OPENROUTER_API_KEY,
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
-    mcpUrl: process.env.MCP_SERVER_URL ?? null,
     model: resolveOpenRouterConfig().model,
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,

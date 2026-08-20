@@ -151,7 +151,7 @@ SSE: run:start/step/llm/tool/cost/guardrail/verify/run:end 全程事件流
 
 ### 3.5 闭环的断点（需人/外部接力，均非结构缺失）
 - **A 提交闸门**：`agent:run:real`/`real-mcp` 需审批工单（除非 bypass 角色 / 自动过审策略）；`agent:run:mock` 天然闭环。
-- **B 跨 run 记忆**：默认 `MEMORY_BACKEND=volatile` 关闭，需 file/sqlite 才跨 run 保留。
+- **B 跨 run 记忆**：默认 `MEMORY_BACKEND=sqlite` 已跨 run 保留；`volatile` 需显式指定才会关闭持久化。
 - **C shell 确认**：仅 `SHELL_REQUIRE_CONFIRM` 影响 shell 内置工具，行业 agent 多走 MCP 不受影响。
 - **D 自检门禁**：`verify` 可选，需注入 `Verifier` 才有质量闭环。
 - **E 外部动作**：落地外系统取决于领域 MCP 工具是否齐全/幂等。
@@ -203,8 +203,8 @@ docker run -p 4173:4173 \
 | LLM | `OPENROUTER_API_KEY` | 空(Mock) | 真实 LLM；空则用 Mock |
 | LLM | `OPENAI_API_KEY` / `LLM_FAILOVER` | 空 / 非 false | OpenAI 故障转移 secondary |
 | 环境平台 | `HARNESS_API_KEY` | 空(dry-run) | Harness.io 环境流水线 |
-| MCP | `MCP_SERVER_URL` | 空 | 预连远程 MCP |
-| 记忆 | `MEMORY_BACKEND` / `MEMORY_DIR` / `MEMORY_SQLITE_FILE` | volatile | volatile/file/sqlite |
+| MCP | `MCP_SERVERS` | 空 | 声明式多 server（JSON 数组，如 `[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]`）；`MCP_SERVER_URL` 单 URL 仅保留向后兼容兜底 |
+| 记忆 | `MEMORY_BACKEND` / `MEMORY_DIR` / `MEMORY_SQLITE_FILE` | sqlite（未配置即默认） | sqlite/file/volatile |
 | Agent 注册表 | `AGENT_STORE` / `AGENT_STORE_REDIS_URL` / `REDIS_URL` | volatile | volatile/file/sqlite/redis |
 | 运行队列 | `RUN_QUEUE_BACKEND` / `RUN_QUEUE_FILE` | memory | memory/file/redis |
 | 路由 | `INTENT_ROUTER` | rule | rule / llm / auto |

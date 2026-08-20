@@ -91,7 +91,7 @@ docker run -p 4173:4173 \
 | `K8S_*` | `k8s` 后端用 | `KUBECONFIG`、镜像、Ingress 模板、TTL |
 | `MAX_BODY_BYTES` / `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 否 | 安全加固（防大报文 / 限流） |
 | `AUDIT_LOG` | 否 | 审计落盘路径；留空仅落 stdout(JSON 行) |
-| `MEMORY_BACKEND` | 否 | `volatile`(默认) / `file` / `sqlite` |
+| `MEMORY_BACKEND` | 否 | `sqlite`(默认) / `file` / `volatile` |
 | `RUN_QUEUE_BACKEND` | 否 | `memory`(默认) / `file` / `redis` |
 | `MAX_STEPS` / `MAX_TOOL_RESULT_CHARS` / `CONTEXT_COMPRESSION` / `PROMPT_CACHE` | 否 | 成本与完成率调优 |
 

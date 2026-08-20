@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   const tools = new ToolRegistry();
   const harness = new HarnessClient(); // dry-run unless HARNESS_API_KEY set
   registerHarnessTools(tools, harness);
-  await registerMcpTools(tools); // no-op until MCP_SERVER_URL is provided
+  await registerMcpTools(tools); // no-op until MCP_SERVERS / MCP_SERVER_URL is configured
 
   const llm: LLM = createOpenRouterLLM();
 

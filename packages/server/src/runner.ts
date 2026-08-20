@@ -71,9 +71,9 @@ const SYSTEM_PROMPT =
  *
  * 按环境变量在进程内构建一次并缓存，供 assembleAgent 与运维端点（/api/sessions、
  * /api/memory）共享同一后端：
- * - MEMORY_BACKEND=sqlite：node:sqlite（零 npm 依赖，Node 22+ 内置，多租户推荐）
+ * - MEMORY_BACKEND=sqlite（或留空/未配置，默认）：node:sqlite（零 npm 依赖，Node 22+ 内置，多租户推荐）
  * - MEMORY_BACKEND=file （或配置了 MEMORY_DIR）：按会话分桶的 JSON 文件目录
- * - MEMORY_BACKEND=volatile / 未配置：纯内存（无持久化，默认）
+ * - MEMORY_BACKEND=volatile：纯内存（无持久化，需显式指定）
  * sqlite 在运行期不可用时（老 Node）自动回退到 file 并告警。
  */
 let _memoryStore: MemoryStore | null = null;
@@ -82,7 +82,7 @@ export function getMemoryStore(): MemoryStore {
   const backend = (process.env.MEMORY_BACKEND || '').toLowerCase();
   if (backend === 'volatile') {
     _memoryStore = new VolatileMemoryStore();
-  } else if (backend === 'sqlite') {
+  } else if (backend === 'sqlite' || backend === '') {
     const file = process.env.MEMORY_SQLITE_FILE || './data/memory.db';
     try {
       _memoryStore = new SqliteMemoryStore({ file });
@@ -114,7 +114,7 @@ export function getMemoryStore(): MemoryStore {
  *
  * 解法：按 sessionKey 复用同一 `Memory` 实例（进程内缓存），使同一会话的多次
  * `/api/run` 共享对话窗口，真正实现连续追问。该缓存与 store 后端**解耦**：
- * - 即便后端是 volatile（默认），进程内缓存也足以保证连续性；
+ * - 即便后端是 volatile，进程内缓存也足以保证连续性；
  * - 若配置了 sqlite/file 后端，则额外落盘，用于进程崩溃/重启后的恢复
  *   （harness.run 在 `hasPersistence` 时会先 load 再 append）。
  * 并发安全由 run-queue 的 `runningSessions` 串行化保证：同会话同时只有 1 个 job 在跑。

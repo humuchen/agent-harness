@@ -26,24 +26,35 @@ agent-harness/                # 根：private 包 + pnpm workspace
 │  │  │  ├─ tools.ts          // 工具注册表 + JSON Schema 生成
 │  │  │  ├─ guardrails.ts     // 输入/输出/工具参数三层护栏
 │  │  │  ├─ harness.ts        // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
-│  │  │  ├─ loadEnv.ts         // 零依赖 .env 加载器
 │  │  │  ├─ index.ts          // 统一导出（barrel）
 │  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器 + shared.ts（共用请求/解析逻辑）
 │  │  │  ├─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
+│  │  │  ├─ agents/           // 多智能体基座：注册发现 / 路由 / 租户 / 策略 / 配额 / 工作流 / A2A / 插件
 │  │  │  └─ test/             // node:test 最小测试套件（护栏/记忆/工具/循环/适配器）
 │  │  └─ tsconfig.json
-│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
-│     ├─ src/
-│     │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
-│     │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
-│     │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
-│     │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
-│     │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
-│     └─ tsconfig.json
+│  ├─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
+│  │  ├─ src/
+│  │  │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
+│  │  │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
+│  │  │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
+│  │  │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
+│  │  │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
+│  │  └─ tsconfig.json
+│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（SSE 消费，断网可用）
+│  ├─ client/                 # @agent-harness/client —— 多平台客户端 SDK（离线契约测试 + e2e smoke）
+│  ├─ cli/                    # @agent-harness/cli —— CLI 入口
+│  └─ medical-ad-guard/       # 领域库：医疗广告合规护栏（与业务零耦合，可复用）
+├─ plugins/                   # 业务插件（core/server/webapp 零业务耦合，业务语义 100% 留此）
+│  └─ medical-aesthetics-lead/   # 青岛医美智能客服 Agent 插件（含 SQLite 业务库 + 知识库）
+├─ services/
+│  └─ rag/                    # 外部 RAG MCP Server（stdio 模式，由 MCP_SERVERS 接入）
 ├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
+├─ docs/                      # 完整文档（架构图 / 部署 / MCP / 多实例 Runbook）
+├─ deploy/                    # k8s（kustomize）/ docker 部署清单
 ├─ pnpm-workspace.yaml
 ├─ tsconfig.base.json
 ├─ package.json
+├─ Dockerfile / docker-compose.yml   # 自托管交付物（含 --profile redis 多副本队列）
 └─ render.yaml                # Render 部署 Blueprint（部署 packages/server）
 ```
 
@@ -154,7 +165,7 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 **真实 MCP 客户端**，支持三种传输：
 
 - 远程 **Streamable HTTP**（默认，URL 不以 `/sse` 结尾时自动选）
-- 远程 **SSE**（`MCP_SERVER_URL` 以 `/sse` 结尾，或显式 `transportType: 'sse'`）
+- 远程 **SSE**（在 `MCP_SERVERS` 条目显式设 `transportType: 'sse'`，或 URL 以 `/sse` 结尾时自动选）
 - 本地 **stdio**（`MCP_COMMAND` + `MCP_ARGS`）
 
 配置其一即可自动把 MCP 工具接进 `ToolRegistry`，护栏 / 记忆 / 追踪对它们
@@ -164,12 +175,17 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 ### 已接入：Context7（库文档/代码片段 MCP）
 
 首个真实 MCP 已接上 **Context7**（`https://mcp.context7.com/mcp`，Streamable HTTP，
-基础使用免 key）。`.env` 已激活：
+基础使用免 key）。三种接入方式任选其一，**主循环零改动**：
 
-```bash
-MCP_SERVER_URL=https://mcp.context7.com/mcp
-# 高配额才需要：MCP_HEADERS=CONTEXT7_API_KEY=你的key
-```
+1. **声明式（部署/重启常驻）** —— 在 `MCP_SERVERS` JSON 数组加一条（render.yaml / docker-compose / `.env` 同源键）：
+   ```bash
+   MCP_SERVERS='[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
+   # 高配额才需要：在条目加 "headers":{"CONTEXT7_API_KEY":"你的key"}
+   ```
+2. **运行时动态添加** —— 通过 `POST /api/mcp/add`（body `{name,serverUrl,headers?}`）或 UI 面板的
+   「添加 MCP」即时接入；也可从 `GET /api/mcp/presets` 预设市场（Context7 / GitHub / Composio 等）
+   一键 `POST /api/mcp/preset` 接入。**注意：动态添加是内存态、不持久化，重启即清空**，常驻 server 仍建议走方式 1。
+3. **stdio 本地服务** —— 同数组加 `{"name":"x","command":"npx","args":[...]}`。
 
 它提供两个工具：`resolve-library-id`（把库名解析成 Context7 库 ID）和
 `query-docs`（按库 ID + 问题拉取最新官方文档片段）。
@@ -178,9 +194,9 @@ MCP_SERVER_URL=https://mcp.context7.com/mcp
 pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
 ```
 
-> 你之前没有自己的 MCP，所以这块是「预留 → 激活」。接下来按同样方式逐步
-> 添加更多 MCP（改 `MCP_SERVER_URL` 或加多个 `registerMcpTools` 调用即可，
-> 主循环零改动）。
+> 多 server 模型由 `parseMcpServersEnv()`（`packages/core/src/integrations/mcp/placeholder.ts`）统一解析：
+> `MCP_SERVERS` 数组优先；旧的 `MCP_SERVER_URL` 单 server 快捷通道已废弃并移除。
+> 接下来按同样方式逐步添加更多 MCP（往 `MCP_SERVERS` 加条目，或运行时 `/api/mcp/add`），主循环零改动。
 
 ### 连接可靠性：自动重连 + 健康探测
 
@@ -293,9 +309,9 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
   端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
   `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
   `/api/env`（create/destroy 流式推状态机）、`/api/state`（全局状态快照）。
-- `src/server/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVER_URL`
-  （逗号分隔可配多个）自动连接，并支持运行时通过 `/api/mcp/add` 逐步添加；
-  每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
+- `packages/server/src/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVERS`
+  （JSON 数组，远程 URL / 本地 stdio 均支持）自动连接，并支持运行时通过 `/api/mcp/add`
+  （或预设市场 `/api/mcp/preset`）逐步添加；每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
 - `src/server/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
   Harness 流水线各阶段；有 `HARNESS_API_KEY` 时可切换为调用真实 `HarnessClient`
   轮询真实状态。
@@ -441,7 +457,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 - **SqliteMemoryStore**：基于 Node 22+ 内置的 `node:sqlite`（无需任何 npm 包、无需启动 flag），
   多租户生产推荐；运行期 Node 不支持时自动回退到 File 并告警。
 
-配置：设 `MEMORY_BACKEND=file|sqlite|volatile`（默认配了 `MEMORY_DIR` 用 file，否则 volatile）。
+配置：设 `MEMORY_BACKEND=file|sqlite|volatile`（未配置默认 `sqlite`；配了 `MEMORY_DIR` 走 file；`volatile` 需显式指定，纯内存无持久化）。
 隔离维度由调用方决定：前端 / API 携带 `x-session-id` 头或 `body.sessionId`，
 记忆即按该 key 在所选后端隔离持久化；未带则归入 `anonymous`。
 

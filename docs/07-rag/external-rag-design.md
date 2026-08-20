@@ -295,3 +295,44 @@ sequenceDiagram
 | **P3** | 缓存 + 可观测 + 水平扩展 + Pre-retrieval 模式 | p95<150ms、trace 贯通 | 压测 + 联合排障演练 |
 
 > 遵循你的 schema-first 约定：本稿为 **P0 设计确认**入口。确认后我可进入实现——建议先做 **P0+P1**（最小可用闭环），再迭代 P2/P3。需要我据此生成 `plugins/rag-connector/` 或独立 `services/rag/` 的脚手架代码吗？
+
+---
+
+## 11. 实现落地状态（P0 + P1 已完成 ✅）
+
+代码已落地于 `services/rag/`（独立部署单元，零运行时依赖），并端到端验证通过。
+
+### 交付物
+
+| 文件 | 职责 |
+|---|---|
+| `services/rag/src/embed.ts` | 可插拔向量化：`HashEmbedding`（默认，零依赖演示）/ `OpenAIEmbedding`（设 key 启用） |
+| `services/rag/src/store.ts` | `MemoryVectorStore`：余弦检索 + JSON 持久化 + 租户过滤 |
+| `services/rag/src/ingest.ts` | 入库流水线：分块 → 向量化 → 幂等 upsert（增量更新） |
+| `services/rag/src/retrieve.ts` | 检索编排：余弦 + 关键词融合 + 阈值/过滤 + 重排占位 |
+| `services/rag/src/server.ts` | HTTP REST：`POST /v1/retrieve`、`/v1/ingest`、`GET /v1/health` + 令牌鉴权 + tenant 重写 |
+| `services/rag/src/mcp.ts` | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest` |
+| `services/rag/src/index.ts` | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输 |
+| `services/rag/test/*.test.cjs` | 单测：入库/检索/租户隔离/幂等/阈值 + MCP 端到端（6 用例全绿） |
+| `examples/rag-e2e.ts` | 端到端演示：起 RAG → 注入 → 检索 → 融入生成 |
+
+### 关键实现决策
+
+- **MCP 采用协议级最小实现**（标准 JSON-RPC over stdio，不依赖 MCP SDK 的 `McpServer`）：
+  原因一是当前 workspace 未安装 `zod`（SDK 高层 `McpServer` 的硬依赖）；二是外部 RAG 作为
+  独立系统，不应被 agent-harness 的 SDK 版本耦合。agent 侧任何标准 MCP client 均可对接。
+- **零运行时依赖**：仅用 Node 内置模块，契合「可独立部署」关键要求。
+- **tenant 服务端重写**：ingest/retrieve 的请求体 `tenant_id` 一律被服务端解析值覆盖，杜绝越权。
+
+### 验证结果
+
+- `services/rag` 构建通过（dist 6 模块），`node --test` **6/6 全绿**（含 MCP 端到端）。
+- `examples/rag-e2e.ts` 端到端跑通：注入 2 文档 → 检索返回相关片段（`kb_refund` score 居首、
+  `kb_hours` 0.000 正确排后）→ 融合说明输出，子进程无泄漏。
+- 说明：演示用 `HashEmbedding` 维度有限、哈希碰撞难免，排序质量由真实 embedding 保证；
+  检索闭环的有效判据（相关文档被召回 + `trace_id`/`latency_ms` 可观测）已满足。
+
+### 下一步（P2/P3，待确认）
+
+- **P2**：完整鉴权（JWT/租户 secret 派生）、跨租户压测、真 BM25 + cross-encoder 重排、异步入库队列。
+- **P3**：查询/向量缓存、可观测埋点（召回率/P95）、向量库按租户分片、Pre-retrieval 模式。

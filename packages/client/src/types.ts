@@ -237,7 +237,6 @@ export interface ServerState {
   openrouter: boolean;
   harnessKey: boolean;
   harnessDryRun: boolean;
-  mcpUrl: string | null;
   model: string;
   mcpServers: Array<{
     name: string;
