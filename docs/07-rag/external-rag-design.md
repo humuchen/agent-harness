@@ -363,6 +363,15 @@ sequenceDiagram
   `rag.json.acme.json` 分片落盘并可重载 → `expand` 返回扩展词。
 - `examples/rag-e2e.ts` 端到端：`kb_refund` score 0.580 居首、`kb_hours` 0.000 排后（BM25 融合生效），
   延迟 1ms，子进程无泄漏（演示保持同步入库 `RAG_ASYNC_INGEST=false` 保证确定性）。
+- **真实模型端到端（`examples/rag-live-e2e.ts`，agnes-2.5-flash + OpenRouter）**：
+  MCP_SERVERS 注册 RAG → `rag__rag_ingest` 注入 2 篇知识 → agent.run 让真实 LLM **自主调用
+  `rag__rag_retrieve`** → 回答准确引用 `[kb_refund#0]` 且内容与知识库一致（七天无理由、三个工作日到账）→
+  `disconnectAllMcp()` 清理，全程 11s 无泄漏。
+- **core 修复（本轮发现）**：MCP SDK 1.30 `StdioClientTransport` 默认只继承「sudo 白名单」env、
+  不继承自定义顶层 env，导致 RAG 子进程拿不到 `RAG_TRANSPORT` 而落到 HTTP 模式、stdout 污染 MCP 通道
+  （`-32001 Request timed out`）。`placeholder.ts connectMcpClient` 已兜底 `env ?? process.env`（完整继承），
+  并新增回归测试 `test/mcp-stdio-env.test.cjs`（fixture `test/fixtures/mcp-env-probe.cjs` 把 `MCP_PROBE_VAR`
+  暴露进工具名；反向验证：回退兜底即失败）。mcp 相关 8/8、core 全量 301 过/3 环境前置失败，无回归。
 - 说明：演示用 `HashEmbedding` 维度有限、哈希碰撞难免，精确语义排序由真实 embedding 保证；
   生产建议启用 `RAG_EMBEDDING_API_KEY` + 真实 BM25（已就绪）+ 按需接入外部 cross-encoder 重排模型。
   （原「P2/P3 待确认」清单已全部落地，见上。）

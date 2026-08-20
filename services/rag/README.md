@@ -67,9 +67,8 @@ agent 侧用 `[n]` 引用 `chunk_id` 即可追溯来源。`expand: true` 时返�
 
 ## 在 agent-harness 中接入（P1，零业务改动）
 
-在环境变量配 `MCP_SERVERS` 加一条（指向 RAG 进程），**注意 `RAG_*` 必须作为顶层 env**，
-不能写进 MCP_SERVERS 条目的 `env` 子字段——SDK 的 `StdioClientTransport` 会把该字段
-**整体替换**子进程环境，导致 `node` 因丢失 `PATH` 无法启动：
+在环境变量配 `MCP_SERVERS` 加一条（指向 RAG 进程），RAG 所需配置（`RAG_TRANSPORT` 等）
+放**顶层 env**（由 RAG 子进程继承）：
 
 ```bash
 RAG_TRANSPORT=mcp
@@ -77,6 +76,13 @@ RAG_TENANT_ID=acme
 RAG_DATA_FILE=data/rag-store.json          # 可选
 MCP_SERVERS='[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]}]'
 ```
+
+> 环境变量继承说明（重要）：MCP SDK（1.30）的 `StdioClientTransport` 默认只继承
+> 「sudo 白名单」环境变量，**不继承自定义顶层 env**——若直接裸用 SDK，RAG 子进程会拿不到
+> `RAG_TRANSPORT` 而落到 HTTP 模式、把日志打进 stdout 破坏 MCP 通道。agent-harness 的
+> `connectMcpClient` 已兜底 `env ?? process.env`（`placeholder.ts`），顶层 env 会被完整继承；
+> 也可把 `RAG_*` 显式写进条目的 `env` 字段（SDK 按 `{白名单, ...显式env}` 合并，不丢 PATH），
+> 二选一。真实模型端到端示例见 `examples/rag-live-e2e.ts`。
 
 核心 loop 经 `connectMcpServers` 自动注册，ToolRegistry 生成
 `rag__rag_retrieve` / `rag__rag_ingest`，交由 LLM 自主调用。
@@ -86,9 +92,9 @@ MCP_SERVERS='[{"name":"rag","command":"node","args":["services/rag/dist/index.js
 
 ```bash
 node --test test/*.test.cjs
-# 覆盖（11 例）：入库分块 / 检索召回 / 租户隔离 / 幂等增量 / 阈值过滤 / MCP 端到端
+# 覆盖（15 例）：入库分块 / 检索召回 / 租户隔离 / 幂等增量 / 阈值过滤 / MCP 端到端
 #   / JWT 鉴权（401/403/兼容静态令牌）/ BM25 区分度 / 异步入库队列
-#   / 缓存命中 / metrics / 按租户分片持久化 / 查询扩展
+#   / 缓存命中 / metrics / 按租户分片持久化 / 查询扩展 / MMR / cross-encoder API 重排
 ```
 
 ## 环境变量

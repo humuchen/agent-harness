@@ -20,6 +20,7 @@
     "multi-agent": "tsc -p tsconfig.json && node dist/multi-agent.js",
     "os-sandbox": "tsc -p tsconfig.json && node dist/os-sandbox.js",
     "rag-e2e": "tsc -p tsconfig.json && node dist/rag-e2e.js",
+    "rag-live": "tsc -p tsconfig.json && node dist/rag-live-e2e.js",
     "verify": "tsc -p tsconfig.json && node dist/verify-harness.js && node dist/verify-mcp.js && node dist/verify-context7.js"
   },
   "license": "MIT",
