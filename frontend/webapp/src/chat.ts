@@ -1425,25 +1425,58 @@ export class AhChat extends LitElement {
       .attach-preview-item {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 6px 10px;
+        gap: 8px;
+        padding: 6px 8px 6px 6px;
         background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
-        border-radius: var(--ah-radius-sm);
+        border-radius: 14px;
         font-size: 12px;
-        max-width: 200px;
+        max-width: 180px;
+        min-width: 120px;
+        cursor: default;
+        transition: background 0.18s ease, border-color 0.18s ease,
+          box-shadow 0.18s ease, transform 0.18s ease;
         position: relative;
       }
+      .attach-preview-item:hover {
+        background: var(--ah-surface-2);
+        border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 35%, var(--ah-border));
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28),
+          0 1px 3px rgba(0, 0, 0, 0.18);
+        transform: translateY(-2px);
+      }
       .attach-thumb {
-        width: 32px;
-        height: 32px;
+        width: 36px;
+        height: 36px;
         object-fit: cover;
-        border-radius: 4px;
+        border-radius: 8px;
         flex-shrink: 0;
+        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+          box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+        display: block;
+      }
+      .attach-preview-item:hover .attach-thumb {
+        transform: scale(1.18);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+        z-index: 2;
+        position: relative;
       }
       .attach-icon {
         font-size: 18px;
         flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ah-surface-2);
+        border: 1px solid var(--ah-border);
+        border-radius: 8px;
+        transition: background 0.18s ease, transform 0.18s ease;
+      }
+      .attach-preview-item:hover .attach-icon {
+        background: var(--ah-surface-1);
+        transform: scale(1.1);
       }
       .attach-name {
         flex: 1;
@@ -1452,27 +1485,39 @@ export class AhChat extends LitElement {
         text-overflow: ellipsis;
         white-space: nowrap;
         color: var(--ah-text);
-        font-size: 11px;
+        font-size: 12px;
       }
       .attach-rm {
         border: none;
-        background: none;
-        color: var(--ah-text-faint);
+        background: transparent;
+        color: var(--ah-text-muted);
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
         cursor: pointer;
-        font-size: 14px;
-        padding: 0 2px;
+        font-size: 13px;
         line-height: 1;
         flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        opacity: 0;
+        transition: opacity 0.18s ease, background 0.15s ease, color 0.15s ease,
+          transform 0.15s ease;
+      }
+      .attach-preview-item:hover .attach-rm {
+        opacity: 1;
       }
       .attach-rm:hover {
-        color: var(--ah-danger);
+        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 18%, transparent);
+        color: var(--ah-danger, #e24b4a);
+        transform: scale(1.15);
       }
       .attach-status {
-        position: absolute;
-        top: -4px;
-        right: -4px;
-        width: 16px;
-        height: 16px;
+        flex-shrink: 0;
+        width: 18px;
+        height: 18px;
         border-radius: 50%;
         display: flex;
         align-items: center;
@@ -1505,6 +1550,15 @@ export class AhChat extends LitElement {
         max-height: 200px;
         border-radius: var(--ah-radius-sm);
         object-fit: cover;
+        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+          box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+        cursor: zoom-in;
+        display: block;
+      }
+      .attach-img:hover img {
+        transform: scale(1.06);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32),
+          0 2px 6px rgba(0, 0, 0, 0.2);
       }
       .attach-file {
         display: inline-flex;
@@ -1537,11 +1591,11 @@ export class AhChat extends LitElement {
       @media (max-width: 640px) {
         .attach-preview-item {
           max-width: 150px;
-          padding: 4px 8px;
+          padding: 5px 7px;
         }
         .attach-thumb {
-          width: 28px;
-          height: 28px;
+          width: 32px;
+          height: 32px;
         }
       }
       .caret {
@@ -2436,7 +2490,8 @@ export class AhChat extends LitElement {
 
   /** 移除已选附件。 */
   private removeAttachment(i: number) {
-    this.attachments = this.attachments.filter((_, idx) => idx !== i);
+    const newAttachments = this.attachments.filter((_, idx) => idx !== i);
+    this.attachments = newAttachments;
   }
 
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
@@ -3047,11 +3102,11 @@ export class AhChat extends LitElement {
                         ${f.type.startsWith('image/')
                           ? html`<img src=${f.dataUrl} alt=${escapeHtml(f.name)} class="attach-thumb" />`
                           : html`<span class="attach-icon">${this.fileIcon(f)}</span>`}
-                        <span class="attach-name" title=${f.name}>${escapeHtml(f.name)} (${this.formatSize(f.size)})</span>
+                        <span class="attach-name" title=${f.name}>${escapeHtml(f.name)}</span>
                         <span class="attach-status ${f.uploadStatus || 'idle'}" title=${f.uploadError || ''}>
                           ${f.uploadStatus === 'uploading' ? '⏳' : f.uploadStatus === 'done' ? '✓' : f.uploadStatus === 'error' ? '✗' : ''}
                         </span>
-                        <button class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
+                        <button type="button" class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
                       </div>
                     `
                   )}
