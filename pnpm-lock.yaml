@@ -121,6 +121,19 @@ importers:
         specifier: ^5.4.11
         version: 5.4.21(@types/node@20.19.43)
 
+  plugins/customer-service:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../../backend/core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
   plugins/medical-aesthetics-lead:
     dependencies:
       '@agent-harness/core':

@@ -1,0 +1,22 @@
+{
+  "name": "@agent-harness/customer-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "智能客服 Agent 插件：会话接待 / 知识库问答 / 工单 / 订单售后查询 / 转人工，非侵入式接入 agent-harness。",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.cjs"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@agent-harness/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}
