@@ -1413,6 +1413,137 @@ export class AhChat extends LitElement {
         color: var(--ah-text-muted);
         font-size: 11px;
       }
+      /* 附件上传区域样式 */
+      .attachments-preview {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 4px 0 8px;
+        border-bottom: 1px solid var(--ah-border);
+        margin-bottom: 4px;
+      }
+      .attach-preview-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        background: var(--ah-surface-3);
+        border: 1px solid var(--ah-border);
+        border-radius: var(--ah-radius-sm);
+        font-size: 12px;
+        max-width: 200px;
+        position: relative;
+      }
+      .attach-thumb {
+        width: 32px;
+        height: 32px;
+        object-fit: cover;
+        border-radius: 4px;
+        flex-shrink: 0;
+      }
+      .attach-icon {
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+      .attach-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--ah-text);
+        font-size: 11px;
+      }
+      .attach-rm {
+        border: none;
+        background: none;
+        color: var(--ah-text-faint);
+        cursor: pointer;
+        font-size: 14px;
+        padding: 0 2px;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .attach-rm:hover {
+        color: var(--ah-danger);
+      }
+      .attach-status {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        color: #fff;
+      }
+      .attach-status.uploading {
+        background: var(--ah-accent);
+        animation: ah-spin 1s linear infinite;
+      }
+      .attach-status.done {
+        background: var(--ah-success);
+      }
+      .attach-status.error {
+        background: var(--ah-danger);
+      }
+      /* 消息气泡中的附件 */
+      .attachments {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .attachments.has-images {
+        flex-direction: row;
+      }
+      .attach-img img {
+        max-width: 200px;
+        max-height: 200px;
+        border-radius: var(--ah-radius-sm);
+        object-fit: cover;
+      }
+      .attach-file {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        background: var(--ah-surface-3);
+        border: 1px solid var(--ah-border);
+        border-radius: var(--ah-radius-sm);
+        font-size: 12px;
+        color: var(--ah-text);
+      }
+      .attach-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        cursor: pointer;
+        color: var(--ah-text-muted);
+        transition: color 0.15s, background 0.15s;
+        flex-shrink: 0;
+      }
+      .attach-btn:hover {
+        color: var(--ah-accent);
+        background: var(--ah-surface-3);
+      }
+      /* 移动端适配 */
+      @media (max-width: 640px) {
+        .attach-preview-item {
+          max-width: 150px;
+          padding: 4px 8px;
+        }
+        .attach-thumb {
+          width: 28px;
+          height: 28px;
+        }
+      }
       .caret {
         display: inline-block;
         width: 8px;
@@ -1473,6 +1604,8 @@ export class AhChat extends LitElement {
   @state() agentId = '';
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
+  /** 上传中的文件追踪（key 为文件名+时间戳） */
+  private uploadingFiles: Map<string, { status: 'uploading' | 'done' | 'error'; error?: string }> = new Map();
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
@@ -2236,27 +2369,68 @@ export class AhChat extends LitElement {
     }
   }
 
-  /** 处理文件选择。 */
-  private onFileSelect(e: Event) {
+  /** 处理文件选择。读取本地预览并上传到服务端。 */
+  private async onFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files?.length) return;
-    const maxBytes = 5 * 1024 * 1024;
-    const files: UploadedFile[] = [];
+    const maxBytes = 10 * 1024 * 1024; // 10MB 上限
+    const newFiles: UploadedFile[] = [];
+
     for (const f of Array.from(input.files)) {
+      // 前置校验
       if (f.size > maxBytes) {
-        this.error = `文件过大：${f.name}（上限 5MB）`;
+        this.error = `文件过大：${f.name}（上限 10MB）`;
         continue;
       }
-      const reader = new FileReader();
-      const dataUrl = new Promise<string>((resolve) => {
+      const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','image/bmp','image/svg+xml',
+                           'text/plain','text/markdown','text/csv','application/json'];
+      if (!f.type.startsWith('image/') && !f.type.startsWith('text/') &&
+          !f.type.includes('json') && !['.txt','.md','.csv','.json'].includes(
+            f.name.slice(f.name.lastIndexOf('.')).toLowerCase())) {
+        this.error = `不支持的文件类型：${f.name}`;
+        continue;
+      }
+
+      // 本地预览 DataURL
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result ?? ''));
+        reader.onerror = () => reject(new Error('读取文件失败'));
         reader.readAsDataURL(f);
       });
-      dataUrl.then((url) => files.push({ name: f.name, size: f.size, type: f.type, dataUrl: url }));
+
+      const key = `${f.name}_${Date.now()}`;
+      const file: UploadedFile = { name: f.name, size: f.size, type: f.type, dataUrl, uploadStatus: 'uploading' };
+      this.uploadingFiles.set(key, { status: 'uploading' });
+
+      // 立即加入 attachments 显示预览
+      newFiles.push(file);
+      this.attachments = [...this.attachments, file];
+
+      // 上传到服务端
+      try {
+        const formData = new FormData();
+        formData.append('file', f, f.name);
+        const resp = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        const json = await resp.json();
+        if (json.ok && json.meta?.url) {
+          file.serverUrl = json.meta.url;
+          file.uploadStatus = 'done';
+          this.uploadingFiles.set(key, { status: 'done' });
+        } else {
+          throw new Error(json.error || '上传失败');
+        }
+      } catch (err) {
+        file.uploadStatus = 'error';
+        file.uploadError = err instanceof Error ? err.message : '上传失败';
+        this.uploadingFiles.set(key, { status: 'error', error: file.uploadError });
+        this.error = `上传失败：${f.name} — ${file.uploadError}`;
+      }
     }
-    Promise.all(files.map((_, i) => files[i].dataUrl)).then(() => {
-      this.attachments = [...this.attachments, ...files];
-    });
+
     input.value = '';
   }
 
@@ -2861,6 +3035,10 @@ export class AhChat extends LitElement {
 
         <div class="composer-wrap">
           <div class="composer">
+            <label class="attach-btn" title="上传附件">
+              <input type="file" multiple accept="image/*,.txt,.md,.csv,.json" style="display:none" @change=${this.onFileSelect} />
+              +
+            </label>
             ${this.attachments.length > 0
               ? html`<div class="attachments-preview">
                   ${this.attachments.map(
@@ -2869,7 +3047,10 @@ export class AhChat extends LitElement {
                         ${f.type.startsWith('image/')
                           ? html`<img src=${f.dataUrl} alt=${escapeHtml(f.name)} class="attach-thumb" />`
                           : html`<span class="attach-icon">${this.fileIcon(f)}</span>`}
-                        <span class="attach-name">${escapeHtml(f.name)}</span>
+                        <span class="attach-name" title=${f.name}>${escapeHtml(f.name)} (${this.formatSize(f.size)})</span>
+                        <span class="attach-status ${f.uploadStatus || 'idle'}" title=${f.uploadError || ''}>
+                          ${f.uploadStatus === 'uploading' ? '⏳' : f.uploadStatus === 'done' ? '✓' : f.uploadStatus === 'error' ? '✗' : ''}
+                        </span>
                         <button class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
                       </div>
                     `
@@ -2884,10 +3065,6 @@ export class AhChat extends LitElement {
               @input=${this.onInput}
               @keydown=${this.onKey}
             ></textarea>
-            <label class="attach-btn" title="上传附件">
-              <input type="file" multiple accept="image/*,.txt,.md,.csv,.json" style="display:none" @change=${this.onFileSelect} />
-              📎
-            </label>
             ${this.streaming[this.activeId] === true
               ? html`<button
                   class="send"

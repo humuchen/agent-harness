@@ -52,6 +52,12 @@ export interface UploadedFile {
   size: number;
   type: string;
   dataUrl: string;
+  /** 服务端返回的 URL（上传成功后设置） */
+  serverUrl?: string;
+  /** 上传状态：idle | uploading | done | error */
+  uploadStatus?: 'idle' | 'uploading' | 'done' | 'error';
+  /** 上传错误信息 */
+  uploadError?: string;
 }
 
 const STORAGE_KEY = 'ah:agent-context';
