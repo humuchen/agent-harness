@@ -53,6 +53,9 @@ export interface MaConfig {
   his: UpstreamConfig;
   /** 项目知识库服务。source=db 时查本地库；source=http 时查外部 KB 服务。 */
   kb: UpstreamConfig & { source: 'db' | 'http' };
+  /** 外部 RAG 检索服务（services/rag）。已配则 project_kb_search 优先走 RAG，
+   *  未配回退本地库（kb）。RAG 入库由 scripts/rag-ingest.cjs 完成。 */
+  rag: UpstreamConfig;
   /** 文本嵌入服务（语义检索用）。未配置则 hybrid 检索退化为词面+意图，绝不伪造向量。 */
   embed: EmbedConfig;
   /** 渠道 webhook 入口：HMAC 校验密钥（未配置则拒绝所有 webhook，避免裸奔）。 */
@@ -117,6 +120,7 @@ export function getConfig(): MaConfig {
       // 缺省用本地库（运营经导入接口写入 / 由外部 KB 服务同步落库）。
       source: (process.env.MA_KB_SOURCE ?? 'db').trim() === 'http' ? 'http' : 'db',
     },
+    rag: upstream('MA_RAG'),
     embed: {
       ...upstream('MA_EMBED'),
       model: (process.env.MA_EMBED_MODEL ?? 'text-embedding-3-small').trim(),
@@ -153,6 +157,7 @@ export function configSummary(): Record<string, unknown> {
     crm: { enabled: c.crm.enabled, baseUrl: c.crm.baseUrl || null, hasToken: c.crm.token.length > 0 },
     his: { enabled: c.his.enabled, baseUrl: c.his.baseUrl || null, hasToken: c.his.token.length > 0 },
     kb: { source: c.kb.source, enabled: c.kb.enabled, baseUrl: c.kb.baseUrl || null },
+    rag: { enabled: c.rag.enabled, baseUrl: c.rag.baseUrl || null },
     embed: { enabled: c.embed.enabled, baseUrl: c.embed.baseUrl || null, model: c.embed.model },
     webhook: { configured: c.webhookSecret.length > 0 },
     admin: { configured: c.adminToken.length > 0 },

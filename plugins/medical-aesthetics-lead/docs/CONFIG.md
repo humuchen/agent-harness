@@ -70,16 +70,30 @@ resp:  { "data": [ { "embedding": number[] } ] }            # OpenAI 兼容
        或自定义 { "embedding": number[] }
 ```
 
-**启用步骤（一次性向量化落库）**：
+**推荐：经外部 RAG 检索（services/rag）**。`knowledge/` 静态母版已随本次迁移**下线删除**，其知识由 `scripts/rag-ingest.cjs` 一次性灌入 RAG 向量库，运行期检索源是持久化的 `rag-store.json`（默认 `MA_DATA_DIR/rag-store.json`，gitignored）。`project_kb_search` 在 `MA_RAG_BASE_URL` 已配时经该库检索；未配则回退本地库 `ma_project`。RAG 的向量化由 `RAG_EMBEDDING_API_KEY` 控制（缺省用确定性 HashEmbedding，仅演示）：
+
+```bash
+# 1) 灌库（复用 services/rag 编译产物，向量化与服务端一致）
+MA_RAG_DATA_FILE=/data/ma-lead/rag-store.json \
+  node scripts/rag-ingest.cjs
+# 2) 启动 RAG 服务并让 harness 经 MCP_SERVERS 注册（详见仓库 .env.example）
+RAG_TRANSPORT=http RAG_DATA_FILE=/data/ma-lead/rag-store.json \
+  node services/rag/dist/index.js
+# 3) 插件开启 RAG 检索
+export MA_RAG_BASE_URL=http://localhost:8787
+```
+
+> ⚠️ **`rag-store.json` 是迁移后运行时唯一的持久化知识源，且被 gitignore（不在版本控制）。** 因 `knowledge/` 已删除，`rag-ingest.cjs` 现已无法重跑（会判定 `knowledge/` 不存在并安全退出）。新环境重建需**复制该 store 文件**，或先 `git checkout` 恢复 `knowledge/` 母版后再迁移。
+
+**可选：本地库语义 hybrid（ma_project 回退路径）**。仅当未配 `MA_RAG_BASE_URL` 时生效；启用步骤：
 
 ```bash
 export MA_EMBED_BASE_URL=https://你的端点/v1   # 或留基座，用 MA_EMBED_PATH 指定路径
 export MA_EMBED_MODEL=bge-small-zh             # / text-embedding-3-small / nomic-embed-text
 export MA_EMBED_TOKEN=可选
-node scripts/kb-seed.cjs --embed               # 把项目母版批量向量化写入 ma_project.embedding
 ```
 
-落库后，检索自动在「词面打分 ∪ 意图展开」基础上叠加**语义余弦相似度**重排。未配 `MA_EMBED_BASE_URL` 或嵌入调用失败时，自动降级，不影响基础召回。
+未配 `MA_EMBED_BASE_URL` 或嵌入调用失败时，自动降级，不影响基础召回。
 
 ---
 
@@ -119,18 +133,14 @@ node scripts/kb-seed.cjs --embed               # 把项目母版批量向量化�
 
 | 脚本 | 关键参数 | 说明 |
 | --- | --- | --- |
-| `kb-seed.cjs` | `--db <path>`、`--csv`、`--embed` | 母版/CSV 灌库；`--embed` 须已配 `MA_EMBED_*`。`--db` 等价于设置 `MA_DB_FILE`。 |
-| `kb-export.cjs` | `--db <path>` | DB → JSON（供与母版 diff / 审计）。 |
-| `kb-eval.cjs` | `--db <path>` | 跑 `golden-queries.json` 评测门禁，低于阈值 `exit 1`。 |
-| `kb-validate.cjs` | `--strict` | 静态 schema + 合规 lint；`--strict` 下 warning 也计为失败。 |
-| `kb-smoke.cjs` | `MA_DB_FILE` 环境变量 | 口语探针，量化检索召回率。 |
+| `rag-ingest.cjs` | `MA_RAG_DATA_FILE` | 把（已下线的）`knowledge/` 母版一次性灌入 RAG 向量库，产出 `rag-store.json` 作为运行期检索源（gitignored）。`RAG_EMBEDDING_API_KEY` 控制向量化。 |
+| `kb-smoke.cjs` | `MA_DB_FILE` 环境变量 | 口语探针，量化 ma_project 本地库召回率（仅未配 RAG 时参考）。 |
 
 示例：
 
 ```bash
-# 用临时库验证（seed / export / eval 须在同一进程内完成，否则沙箱隔离导致后续读取不到前序写入）
-MA_DB_FILE=./.probe.db node scripts/kb-seed.cjs --db ./.probe.db
-MA_DB_FILE=./.probe.db node scripts/kb-eval.cjs
+# 迁移知识到 RAG（运行期检索源）
+MA_RAG_DATA_FILE=/data/ma-lead/rag-store.json node scripts/rag-ingest.cjs
 ```
 
 ---
@@ -146,12 +156,12 @@ export MA_WEBHOOK_SECRET=换一个强随机串
 export MA_ADMIN_TOKEN=换一个强随机串
 ```
 
-启用语义 hybrid 检索追加：
+启用语义 hybrid 检索（本地库回退路径）追加：
 
 ```bash
 export MA_EMBED_BASE_URL=https://embed.example.com/v1
 export MA_EMBED_MODEL=bge-small-zh
-node scripts/kb-seed.cjs --embed
+node scripts/kb-smoke.cjs   # 验证本地库召回（可选）
 ```
 
 接入真实 CRM / HIS / 外部 KB：

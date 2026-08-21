@@ -105,7 +105,7 @@ plugins/medical-aesthetics-lead/
     ├── prompts.ts               # 系统提示词（角色 + 合规红线 + 阶段话术）
     ├── store.ts                 # 客资生命周期文件存储（复用 CS_DATA_DIR/MEMORY_DIR 模式）
     ├── tools/
-    │   ├── kb.ts                # project_kb_search 项目知识库检索（生产接 RAG）
+    │   ├── kb.ts                # project_kb_search 项目知识库检索（经外部 RAG 检索；knowledge/ 母版已迁移下线，源为 rag-store.json）
     │   ├── qualify.ts           # lead_qualify 结构化抽取+意向分级
     │   ├── capture.ts           # lead_capture 留资（带授权）
     │   ├── book.ts              # consultation_book 预约到店

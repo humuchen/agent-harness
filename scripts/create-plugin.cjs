@@ -357,13 +357,15 @@ pnpm dev
 
 ## 知识库
 
-知识库文件位于 \`knowledge/\` 目录:
+知识来源两种可选方式：
 
-- \`knowledge/domain/\` - 领域知识
-- \`knowledge/compliance/\` - 合规规则
-- \`knowledge/metrics/\` - 指标定义
-- \`knowledge/org/\` - 组织配置
-- \`knowledge/benchmark/\` - 基准测试
+- **外部 RAG（推荐，生产）**：用 \`services/rag\` 提供检索，领域知识经入库脚本灌入向量库，运行期经 MCP/HTTP 检索；详见仓库 \`.env.example\` 的 \`MA_RAG_*\` 配置与 \`services/rag/README.md\`。
+- **本地知识母版（可选）**：放在 \`knowledge/\` 目录，由插件自行加载：
+  - \`knowledge/domain/\` - 领域知识
+  - \`knowledge/compliance/\` - 合规规则
+  - \`knowledge/metrics/\` - 指标定义
+  - \`knowledge/org/\` - 组织配置
+  - \`knowledge/benchmark/\` - 基准测试
 
 ## 开发指南
 

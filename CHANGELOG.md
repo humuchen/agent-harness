@@ -4,6 +4,18 @@
 
 ---
 
+## [0.2.1] - 2026-08-21
+
+### 🔄 变更（medical-aesthetics-lead 知识检索迁移至外部 RAG）
+
+- 医美插件知识检索由静态 `knowledge/` 母版切换为外部 RAG 服务（`services/rag`）：
+  - 新增 `scripts/rag-ingest.cjs`，将（已下线的）`knowledge/` 母版灌入 RAG 向量库，产出 `rag-store.json`（gitignored，运行期唯一持久化知识源）。
+  - `project_kb_search` 在 `MA_RAG_BASE_URL` 已配时优先走 RAG `/v1/retrieve`，合规闸门（compliantCopy / reviewed）在 RAG 元数据上保留；未配回退 `ma_project` 本地库。
+  - 删除 `knowledge/` 目录与依赖它的 `kb-seed/kb-eval/kb-export/kb-validate.cjs`；保留 `kb-smoke.cjs`。
+  - `.env.example` 新增 `MA_RAG_*` 与 RAG MCP 注册示例；相关文档（CONFIG / REFACTOR / DATABASE_SCHEMA / agent 设计 / RAG 设计）已同步。
+
+---
+
 ## [0.2.0] - 2026-08-20
 
 ### ✨ 新增功能（多智能体基座子系统）

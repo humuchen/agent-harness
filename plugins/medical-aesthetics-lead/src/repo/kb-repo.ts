@@ -2,10 +2,10 @@
  * 项目知识库仓储（真实 SQL 检索）。
  *
  * 数据来源（单一事实源 → 落库）：
- * - 运营母版 knowledge/domain/project-catalog.json 经 scripts/kb-seed.cjs 灌入；
- * - 或外部 KB 服务（MA_KB_SOURCE=http）同步落库；
- * - 或 POST /kb/import 写接口。
- * 源码零内置业务数据，库空即返回空——绝不回退到内置语料。
+ * - 外部 RAG 服务（services/rag，MA_RAG_BASE_URL 已配）为主检索源，项目知识由
+ *   scripts/rag-ingest.cjs 从 knowledge/ 母版灌入 RAG 向量库（knowledge/ 已下线）；
+ * - 或本地库 ma_project：外部 KB 服务（MA_KB_SOURCE=http）同步落库，或 POST /kb/import 写接口。
+ * 源码零内置业务数据，库/RAG 空即返回空——绝不回退到内置语料。
  *
  * 检索策略（P0/P1 升级）：
  * 1. SQL 层 LIKE 模糊初筛（参数化，防注入）；

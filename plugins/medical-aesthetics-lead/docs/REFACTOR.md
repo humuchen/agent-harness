@@ -87,6 +87,7 @@ harness.run → 工具分发（plugins 工具表前缀 medical-aesthetics-lead__
   │                      └─ outbox.enqueue('lead.upsert') → ma_outbox
   │
   └─ project_kb_search ► kb-service.searchProjects
+                         ├─ (MA_RAG_BASE_URL 已配) → RAG /v1/retrieve（项目结构化 + 参考文档 refs；合规闸门在 RAG 元数据上保留）
                          ├─ (MA_KB_SOURCE=http) HttpClient → 外部 KB 服务 /v1/projects/search → 写穿透缓存 ma_project
                          └─ (缺省) repo/kb-repo.searchProjects → ma_project (LIKE 初筛 + 加权打分；库空即空，无假语料)
 ```

@@ -125,7 +125,7 @@ plugins/my-plugin/
 ├── test/
 ├── scripts/
 ├── docs/
-├── knowledge/
+├── knowledge/              # (可选) 本地知识母版目录；生产推荐改用外部 RAG（services/rag），详见生成的 README
 │   ├── domain/
 │   ├── compliance/
 │   ├── metrics/
