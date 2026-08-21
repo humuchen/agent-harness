@@ -1,8 +1,8 @@
 # OS 级沙箱（进程隔离）设计文档
 
-> 代码位置：`packages/core/src/sandbox/`（类型 / 能力 / 名单 / 探测 / argv / 执行器）
-> 原生 helper：`packages/core/native/sandbox-exec/`（C，Linux only）
-> 接入点：`packages/core/src/builtins/sandbox.ts` 的 `createSandboxExecutor({ backend: 'os' })`
+> 代码位置：`backend/core/src/sandbox/`（类型 / 能力 / 名单 / 探测 / argv / 执行器）
+> 原生 helper：`backend/core/native/sandbox-exec/`（C，Linux only）
+> 接入点：`backend/core/src/builtins/sandbox.ts` 的 `createSandboxExecutor({ backend: 'os' })`
 
 ## 1. 背景与定位
 
@@ -97,13 +97,13 @@ interface OSSandboxProfile {
 ## 5. 原生 helper（Linux）构建
 
 ```bash
-# 在 packages/core 下（需要 gcc/clang、libseccomp-dev、libcap-dev；缺库则对应能力降级）
+# 在 backend/core 下（需要 gcc/clang、libseccomp-dev、libcap-dev；缺库则对应能力降级）
 pnpm --filter @agent-harness/core run build:native
 # 或
-make -C packages/core/native/sandbox-exec
+make -C backend/core/native/sandbox-exec
 ```
 
-产物：`packages/core/native/sandbox-exec/build/sandbox-exec`。
+产物：`backend/core/native/sandbox-exec/build/sandbox-exec`。
 helper 自动探测 libseccomp / libcap，缺失则对应能力静默降级（命名空间 / 只读根 / 资源限制
 / 丢弃全部能力 / 禁提权仍生效）。CLI 契约见 `args.ts` 的 `buildHelperArgs`（TS 侧构造，
 可单元测试，无需真起进程）。
@@ -117,7 +117,7 @@ helper 自动探测 libseccomp / libcap，缺失则对应能力静默降级（�
 
 ## 7. 测试
 
-`packages/core/test/os-sandbox.test.cjs`（零依赖，任意平台可跑）：
+`backend/core/test/os-sandbox.test.cjs`（零依赖，任意平台可跑）：
 - `detectCapabilities()` 在非 Linux 正确判定 unsupported；
 - `buildHelperArgs` / `buildUnshareFallbackArgs` 产出的 argv 正确；
 - `profiles` / `capabilities` / `normalizeProfile` / `resolveSeccompList` 正确；

@@ -27,7 +27,7 @@
 
 ```bash
 cd services/rag
-node ../../packages/core/node_modules/typescript/bin/tsc -p tsconfig.json
+node ../../backend/core/node_modules/typescript/bin/tsc -p tsconfig.json
 # 产物输出到 dist/
 ```
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# 构建 agent-harness 的 OS 级沙箱原生 helper（packages/core/native/sandbox-exec）。
+# 构建 agent-harness 的 OS 级沙箱原生 helper（backend/core/native/sandbox-exec）。
 #
 # 这是 detect.ts 在「未找到原生 sandbox-exec helper」时提示的构建入口。产物落在
-#   packages/core/native/sandbox-exec/build/sandbox-exec
+#   backend/core/native/sandbox-exec/build/sandbox-exec
 # 与 resolveHelperPath() 的默认解析路径一致，编译后 detectCapabilities() 即认为 helper 就绪。
 #
 # 平台与降级约定（与「一切降级可用」一致）：
@@ -25,7 +25,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-NATIVE_DIR="$REPO_ROOT/packages/core/native/sandbox-exec"
+NATIVE_DIR="$REPO_ROOT/backend/core/native/sandbox-exec"
 BIN="$NATIVE_DIR/build/sandbox-exec"
 
 STRICT="${HARNESS_NATIVE_STRICT:-0}"

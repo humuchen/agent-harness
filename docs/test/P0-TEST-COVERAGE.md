@@ -8,7 +8,7 @@
 
 ## 1. Server 包单元测试 ✅
 
-**文件**: `packages/server/test/business.test.cjs`
+**文件**: `access/server/test/business.test.cjs`
 **测试数**: ~30 个用例
 **覆盖模块**:
 
@@ -52,7 +52,7 @@
 ### 运行方式
 
 ```bash
-cd packages/server
+cd access/server
 pnpm test
 ```
 
@@ -60,7 +60,7 @@ pnpm test
 
 ## 2. Medical-Ad-Guard 合规规则测试 ✅
 
-**文件**: `packages/medical-ad-guard/test/rules.test.cjs`
+**文件**: `backend/medical-ad-guard/test/rules.test.cjs`
 **测试数**: ~18 个用例
 **覆盖模块**:
 
@@ -113,7 +113,7 @@ pnpm test
 ### 运行方式
 
 ```bash
-cd packages/medical-ad-guard
+cd backend/medical-ad-guard
 pnpm test
 ```
 

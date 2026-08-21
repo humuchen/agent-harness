@@ -17,7 +17,7 @@
     "create:plugin": "node scripts/create-plugin.cjs",
     "db:migrate": "node scripts/db-migrate.cjs",
     "server": "pnpm --filter @agent-harness/server run start",
-    "dev": "node packages/server/dist/server.js"
+    "dev": "node access/server/dist/server.js"
   },
   "license": "MIT"
 }

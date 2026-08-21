@@ -9,7 +9,7 @@
 
 ### ✅ Task 1: 统一TypeScript配置
 
-**文件**: `packages/cli/tsconfig.json`
+**文件**: `frontend/cli/tsconfig.json`
 
 **改动**:
 
@@ -27,7 +27,7 @@ pnpm -r build  # 所有包构建成功
 
 ### ✅ Task 2: 增加API集成测试
 
-**文件**: `packages/server/test/api.integration.test.cjs`
+**文件**: `access/server/test/api.integration.test.cjs`
 
 **覆盖端点**:
 
@@ -105,7 +105,7 @@ node scripts/load-test.cjs -c 20 -r 200 -e /api/v1/run -m POST
 
 ### ✅ Task 4: 增加Webapp构建验证
 
-**文件**: `packages/webapp/package.json`
+**文件**: `frontend/webapp/package.json`
 
 **改动**:
 
@@ -145,7 +145,7 @@ pnpm --filter @agent-harness/webapp test
 }
 ```
 
-### packages/webapp/package.json
+### frontend/webapp/package.json
 
 ```json
 {

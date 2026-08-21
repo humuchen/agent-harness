@@ -2,7 +2,7 @@
 
 本目录集中存放 agent-harness 的全部文档，已按**主题/功能模块**归并为 5 类，采用统一的 `01-`/`02-`… 数字前缀 + kebab-case 命名，配套结构图（SVG）就近放在各自分类下的 `diagrams/` 子目录。所有图表基于**当前代码实际结构**整理。
 
-> 历史重命名：原 `packages/ui` 已重命名为 `packages/server`，并拆分为 `server` + `webapp` + `client` + `cli`；根 `README.md` / `DEPLOY.md` / `package.json` / `render.yaml` / `Dockerfile` 均已同步更新。
+> 历史重命名：原 `packages/ui` 已重命名为 `access/server`，并拆分为 `server` + `webapp` + `client` + `cli`；根 `README.md` / `DEPLOY.md` / `package.json` / `render.yaml` / `Dockerfile` 均已同步更新。
 
 ## 文档导航（按主题）
 

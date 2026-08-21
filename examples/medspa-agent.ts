@@ -5,7 +5,7 @@
  * 运行时动态接入并真正跑起来 —— 而不是在启动期硬编码。
  *
  * 全流程（均走真实 HTTP API，与 Web UI / 其它客户端同路径）：
- *   1) 启动服务端（本例就地 spawn `packages/server/dist/server.js`，也可连已运行的实例）；
+ *   1) 启动服务端（本例就地 spawn `access/server/dist/server.js`，也可连已运行的实例）；
  *   2) 构造一张「医美咨询顾问」AgentCard：声明 domain=medical-aesthetics、专属能力、
  *      以及 assembly 装配配方（收敛系统提示词 + 收窄工具），并声明最低隔离级别 os
  *      （医美属 STRICT 域，跨行业不可信须强隔离）；
@@ -25,7 +25,7 @@ import path from 'node:path';
 import type { AgentCard } from '@agent-harness/core';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
-const SERVER_ENTRY = path.resolve(REPO_ROOT, 'packages/server/dist/server.js');
+const SERVER_ENTRY = path.resolve(REPO_ROOT, 'access/server/dist/server.js');
 const PORT = Number(process.env.MEDSPA_PORT ?? 4178);
 
 /** 是否连已运行的平台（不就地拉起 server）。 */

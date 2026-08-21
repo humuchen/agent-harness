@@ -1,7 +1,7 @@
 # 单行业智能体「完全闭环」可行性分析
 
 > 口径说明：本文讨论"**一个行业智能体**（如金融 / 医疗 / 医美 / 教育）在当前架构下，能否在无人介入的情况下，从接收任务到产出结果自主完成端到端循环"。
-> 分析基于 `packages/core` 与 `packages/server` 的**真实当前代码**（非早期评估版本）。
+> 分析基于 `backend/core` 与 `access/server` 的**真实当前代码**（非早期评估版本）。
 > 结论：**执行/数据面完全自动闭环；控制面（real 模式提交）与跨 run 记忆持久化默认不闭合，但均为可配置项，非结构性缺失。**
 
 ---
@@ -23,7 +23,7 @@
 
 ## 二、单智能体闭环在代码层如何跑通（自动、无人）
 
-核心执行路径：`harness.ts → AgentHarness.run()`（packages/core/src/harness.ts:141）。它是**纯自动循环**，路径如下：
+核心执行路径：`harness.ts → AgentHarness.run()`（backend/core/src/harness.ts:141）。它是**纯自动循环**，路径如下：
 
 ```
 输入
@@ -54,7 +54,7 @@
 
 ## 三、多步骤工作流 DAG 的自动闭环
 
-若一个行业智能体的任务是多步骤编排（如"医疗：初诊分诊→开检查→出报告"），走 `DagEngine`（`packages/core/src/workflow/engine.ts`）：
+若一个行业智能体的任务是多步骤编排（如"医疗：初诊分诊→开检查→出报告"），走 `DagEngine`（`backend/core/src/workflow/engine.ts`）：
 
 - **拓扑分层**：`topoWaves()` 把无依赖的 step 编入同一波次并行执行（engine.ts:107-133），遇环/缺依赖 **fail-fast 抛错**（不静默死锁）。
 - **失败自动补偿**：任意 step 抛错会触发 `compensate()`，对已完成的 step **逆序**执行补偿动作（engine.ts:221-269），解决"副作用无回滚"。

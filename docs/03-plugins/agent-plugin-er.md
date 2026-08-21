@@ -1,7 +1,9 @@
 # 插件依赖 / 版本兼容 ER 图与解析规则
 
-> 本文档基于**已落地代码**（`packages/core/src/plugin/*`、`packages/core/src/agents/*`、>   
-> `packages/server/src/plugin-{bootstrap,ext}.ts`、`packages/webapp/src/plugin-ui-registry.ts`）>   
+> 本文档基于**已落地代码**（`backend/core/src/plugin/*`、`backend/core/src/agents/*`、
+>   
+> `access/server/src/plugin-{bootstrap,ext}.ts`、`frontend/webapp/src/plugin-ui-registry.ts`）
+>   
 > 抽取实体关系与版本/依赖解析契约。所有字段名与类型均对齐真实源码，非设计假设。
 
 ## 1. 实体关系图（ER）
@@ -183,7 +185,8 @@ flowchart TD
 
 ### 3.1 热升级的边界（如实记录）
 
-- `upgrade` 是「**manifest 替换 + 按原启用态重注册**」：进程内 `PluginModule` 代码**不热替换**。    
+- `upgrade` 是「**manifest 替换 + 按原启用态重注册**」：进程内 `PluginModule` 代码**不热替换**。
+    
   真正代码热升级需 `uninstall` + 重新 `installModule` + `enable`，或重启进程。
 - 单会话 `read-modify-write` 在跨副本极端并发下可能互相覆盖（低概率）；强一致需后续换 Redis 后端。
 - 版本比较用 `cmpVersion`（点分数字段，非数字按 0），不支持 prerelease 标签。
@@ -195,7 +198,7 @@ flowchart TD
 pnpm -r build
 
 # 2) 起 server（默认启用 plugins/customer-service）
-MEMORY_BACKEND=file MEMORY_DIR=/app/data/memory node packages/server/dist/server.js
+MEMORY_BACKEND=file MEMORY_DIR=/app/data/memory node access/server/dist/server.js
 
 # 3) 查看插件元数据（应返回 customer-service + version + views）
 curl -s localhost:8080/api/plugins | head -c 800; echo
@@ -207,6 +210,7 @@ curl -X POST localhost:8080/api/plugins/customer-service/enable  -H "authorizati
 # 5) 端到端多轮对话（mock LLM）由 server 现有 /api/run SSE 覆盖，无需新增端点
 ```
 
-> 沙箱 `pnpm install` 被安全守卫拦截、无 `tsc`，本环境无法编译校验；上述改动按 core 公共 API 严格手写类型，>   
+> 沙箱 `pnpm install` 被安全守卫拦截、无 `tsc`，本环境无法编译校验；上述改动按 core 公共 API 严格手写类型，
+>   
 > 请在有依赖环境跑 `pnpm -r build` 验证（Phase 0–4 全部改动）。
 

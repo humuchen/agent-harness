@@ -1,7 +1,7 @@
 # agent-harness —— 多阶段 Docker 镜像
 #
 # 目标：把 pnpm monorepo 构建为可独立部署的 ui 服务镜像。
-# 运行时只需 packages/server/dist（HTTP+SSE 服务）、packages/core/dist（被 server 依赖）
+# 运行时只需 access/server/dist（HTTP+SSE 服务）、backend/core/dist（被 server 依赖）
 # 以及生产依赖（MCP SDK / 可选 ioredis）。
 #
 # 构建（需联网拉取依赖）：
@@ -17,9 +17,9 @@
 # - 基础镜像锁定 Node 22（与 engines: 22.x / render.yaml 一致）。
 # - 使用 corepack 提供的 pnpm；锁文件漂移时降级为 --no-frozen-lockfile 自愈。
 # - webapp（Vite+Lit）在 `pnpm -r build` 阶段一并构建，server 会优先托管
-#   packages/webapp/dist（无 public 兜底目录）。
+#   frontend/webapp/dist（无 public 兜底目录）。
 # - runtime 用 slim 镜像；此处采用“复制 builder 已构建产物”的稳妥策略，
-#   保证 pnpm 的 workspace 软链（node_modules/@agent-harness/*）与 packages/*
+#   保证 pnpm 的 workspace 软链（node_modules/@agent-harness/*）与 frontend/* / access/* / backend/*
 #   相对布局一致、可被 Node 解析。若追求更小体积，可改用 `pnpm deploy`
 #   （见下方注释的进阶方案）。
 #
@@ -59,10 +59,10 @@ WORKDIR /app
 
 # 先装依赖（利用层缓存）：仅拷贝清单文件，再 install。
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
-COPY packages/core/package.json packages/core/package.json
-COPY packages/server/package.json packages/server/package.json
-COPY packages/client/package.json packages/client/package.json
-COPY packages/webapp/package.json packages/webapp/package.json
+COPY backend/core/package.json backend/core/package.json
+COPY access/server/package.json access/server/package.json
+COPY backend/client/package.json backend/client/package.json
+COPY frontend/webapp/package.json frontend/webapp/package.json
 # 去掉根 package.json 的 packageManager 字段：否则 pnpm@10 会按该字段
 # （pnpm@11.9.0）通过 corepack 重新拉起 11.9.0，而 11.9.0 要求 Node>=22.13，
 # 在本环境的 node 22.5.1 上会直接报错。仅影响构建容器内副本，不改动源码。
@@ -94,10 +94,12 @@ ENV UI_HOST=0.0.0.0
 WORKDIR /app
 
 # 复制运行所需：node_modules（含 workspace 软链）与 packages 编译产物。
-# 注意：packages 全量复制已包含原生 helper 产物 packages/core/native/sandbox-exec/build/sandbox-exec，
+# 注意：backend 全量复制已包含原生 helper 产物 backend/core/native/sandbox-exec/build/sandbox-exec，
 # 无需再单独 COPY（单独 COPY 在「未编译出 build 目录」时反而会导致构建失败）。
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages ./packages
+COPY --from=build /app/access ./access
+COPY --from=build /app/backend ./backend
+COPY --from=build /app/frontend ./frontend
 COPY --from=build /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=build /app/package.json ./package.json
 # 运行期共享库：若 helper 以 libseccomp/libcap 编译，则运行需对应 .so（best-effort，失败不阻断）。
@@ -110,7 +112,7 @@ USER ah:ah
 EXPOSE 4173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4173)+'/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["node", "packages/server/dist/server.js"]
+CMD ["node", "access/server/dist/server.js"]
 
 # ----------------------------- 进阶：pnpm deploy 体积精简（可选） -----------------------------
 # 若想进一步减小镜像，可放弃“复制 builder 全量 node_modules”，改为在 build 阶段末尾执行：

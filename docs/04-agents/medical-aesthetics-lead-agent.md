@@ -72,7 +72,7 @@
 
 ## 3. 架构映射：如何接入现有 harness
 
-现有插件契约（`packages/core/src/plugin/context.ts`）提供以下注入面，客资 Agent 全部复用：
+现有插件契约（`backend/core/src/plugin/context.ts`）提供以下注入面，客资 Agent 全部复用：
 
 | 业务需求 | 复用扩展点 | 说明 |
 | --- | --- | --- |
@@ -349,7 +349,7 @@ harness 的 Agent 是**通道无关**的。每个渠道只需一个轻量适配�
 3. 加 `authz.ts` 动作 `lead:read/lead:assign/lead:export` 并授 admin/operator。
 4. 启动（绝对 `MEMORY_DIR`）：
    ```bash
-   MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node packages/server/dist/server.js
+   MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node access/server/dist/server.js
    ```
 5. 浏览器开 `http://localhost:4173/` → 侧边栏出现「**客**」Tab（展开即「客资看板」）。
 6. 调 `POST /api/run`（`agentId: medical-aesthetics-lead`，模拟抖音私信）→ 看板漏斗 + 对话记录实时更新。

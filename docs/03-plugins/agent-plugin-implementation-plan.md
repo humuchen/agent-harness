@@ -21,9 +21,9 @@
 
 ## Phase 0 — Core 插件业务契约扩展（零业务耦合）
 
-**目标**：在 `packages/core/src/plugin/` 上叠加「业务模块钩子」，让插件能拿到注入面 `PluginContext` 并声明 `PluginModule` 生命周期，而不污染 core 既有逻辑。
+**目标**：在 `backend/core/src/plugin/` 上叠加「业务模块钩子」，让插件能拿到注入面 `PluginContext` 并声明 `PluginModule` 生命周期，而不污染 core 既有逻辑。
 
-### 0.1 新增文件 `packages/core/src/plugin/context.ts`
+### 0.1 新增文件 `backend/core/src/plugin/context.ts`
 
 定义注入面 `PluginContext`（core 公共能力的只读视图）：
 
@@ -43,7 +43,7 @@ export interface PluginContext {
 }
 ```
 
-### 0.2 新增文件 `packages/core/src/plugin/module.ts`
+### 0.2 新增文件 `backend/core/src/plugin/module.ts`
 
 定义业务模块契约 `PluginModule`：
 
@@ -58,20 +58,20 @@ export interface PluginModule {
 }
 ```
 
-### 0.3 修改 `packages/core/src/plugin/loader.ts`
+### 0.3 修改 `backend/core/src/plugin/loader.ts`
 
 - `PluginLoader` 新增 `registerLocalModule(id: string, mod: PluginModule): void`，存 `Map<id, PluginModule>`；
 - `enable(id)` 在 `registry.register(toAgentCard(...))` **之前**调 `mod.setup(ctx)`（注入 `PluginContext`）；
 - `disable(id)` / `upgrade(id)` 对应调 `mod.onStop?.()` / `mod.onUnload?.()`；
 - 新增 `private buildContext(manifest): PluginContext`，聚合 0.1 中的公共 API（从 core 单例取）。
 
-### 0.4 修改 `packages/core/src/plugin/index.ts`
+### 0.4 修改 `backend/core/src/plugin/index.ts`
 
 追加 `export * from './context'; export * from './module';`
 
 ### 0.5 验收标准
 
-- `tsc -p packages/core/tsconfig.json` 通过；
+- `tsc -p backend/core/tsconfig.json` 通过；
 - 一个 stub `PluginModule`（`setup` 里 `ctx.tools.register('demo', ...)`）能被 `enable` 注入并注册成功；
 - core 源码**不出现**任何业务词（客服/退款/FAQ/转人工）。
 
@@ -83,12 +83,12 @@ export interface PluginModule {
 
 **目标**：server 启动期扫描并加载插件、暴露通用扩展点（挂载路由 / 订阅事件），本身不含任何客服逻辑。
 
-### 1.1 新增文件 `packages/server/src/plugin-bootstrap.ts`
+### 1.1 新增文件 `access/server/src/plugin-bootstrap.ts`
 
 - `pluginBootstrap(ctx: PluginContext): Promise<void>`：扫描 `plugins/*/manifest.json`（静态声明式），逐个 `loader.install` → `loader.registerLocalModule` → `loader.enable`；
 - 支持进程内（本地目录）与远程 registry（`installFromRegistry`）两条路，路由选择由 env `PLUGIN_SOURCE` 决定。
 
-### 1.2 新增文件 `packages/server/src/plugin-ext.ts`
+### 1.2 新增文件 `access/server/src/plugin-ext.ts`
 
 定义 **业务无关** 扩展契约，供插件注入能力：
 
@@ -100,7 +100,7 @@ export interface ServerExtension {
 }
 ```
 
-### 1.3 修改 `packages/server/src/server.ts`
+### 1.3 修改 `access/server/src/server.ts`
 
 - 启动早期调用 `pluginBootstrap(ctx)`（在 `/api/state` 与静态页就绪**之后**，避免拖慢健康检查）；
 - 新增 `registerServerExtension(ext: ServerExtension)`：把扩展收集进 `PluginContext.server` 透传器；
@@ -120,7 +120,7 @@ export interface ServerExtension {
 
 **目标**：webapp 提供通用 Plugin UI 注册表，业务 Tab/面板由插件在运行时注入。
 
-### 2.1 新增文件 `packages/webapp/src/plugin-ui-registry.ts`
+### 2.1 新增文件 `frontend/webapp/src/plugin-ui-registry.ts`
 
 ```ts
 // [设计契约]
@@ -136,7 +136,7 @@ export class PluginUIRegistry {
 }
 ```
 
-### 2.2 修改 `packages/webapp/src/app.ts`
+### 2.2 修改 `frontend/webapp/src/app.ts`
 
 - 启动期 `fetch('/api/plugins')` → 对每个插件 `fetch('/api/plugins/<id>/ui')` 拉取 `PluginUIView` 描述；
 - 把动态 Tab 渲染进侧栏（与既有内置 Tab 并列，顺序可配置）。
@@ -185,7 +185,7 @@ plugins/customer-service/
 
 ### 3.3 验收标准（端到端 smoke）
 
-- `node packages/server/dist/server.js` 启动，`GET /api/plugins` 含 `customer-service:enabled`；
+- `node access/server/dist/server.js` 启动，`GET /api/plugins` 含 `customer-service:enabled`；
 - 未配 `OPENROUTER_API_KEY` 时走 mock LLM，仍能完成一次「查订单→FAQ 命中→人工转接」多轮对话；
 - 管理后台 Tab 可见对话记录与满意度占位统计。
 
@@ -243,9 +243,9 @@ Phase 0 (core 契约)  ──► Phase 1 (server 扩展点) ──┐
 - **插件 store 文件化**：`plugins/customer-service/src/store.ts` 由「进程内 Map」改为文件后端，目录默认 `${MEMORY_DIR}/plugins/customer-service`（落在 RWX 卷内），原子写（tmp+rename）+ 读路径扫目录聚合 → **2 副本下任意副本写入的会话/满意度都能被管理后台读到**，满足「ChatSession 不丢」。
 
 ### 4.1 插件热插拔 API（server，无业务词）
-- `packages/server/src/authz.ts`：Action 联合类型新增 `plugin:manage`，并授予 `admin` / `operator` 角色（非敏感动作，不经审批闸门）。
-- `packages/server/src/plugin-bootstrap.ts`：新增 `resolveUpgradeManifest(id, body)` —— 优先用请求体 `manifest`，否则用 `PLUGIN_REGISTRY_URL` + `version` 经 `PluginRegistryClient.index` + `resolveVersion` 拉取（复用既有版本/依赖解析）。
-- `packages/server/src/server.ts`：在 `/api/plugins` 之后新增（受 `guard(req,res,'plugin:manage')` 保护）：
+- `access/server/src/authz.ts`：Action 联合类型新增 `plugin:manage`，并授予 `admin` / `operator` 角色（非敏感动作，不经审批闸门）。
+- `access/server/src/plugin-bootstrap.ts`：新增 `resolveUpgradeManifest(id, body)` —— 优先用请求体 `manifest`，否则用 `PLUGIN_REGISTRY_URL` + `version` 经 `PluginRegistryClient.index` + `resolveVersion` 拉取（复用既有版本/依赖解析）。
+- `access/server/src/server.ts`：在 `/api/plugins` 之后新增（受 `guard(req,res,'plugin:manage')` 保护）：
   - `POST /api/plugins/:id/enable` → `loader.enable(id)`
   - `POST /api/plugins/:id/disable`（及 `DELETE /api/plugins/:id/enable` 兼容） → `loader.disable(id)`
   - `POST /api/plugins/:id/upgrade` → `resolveUpgradeManifest` + `loader.upgrade(id, manifest)`（内部 `resolveDependencies` 校验、按启用态重注册）
@@ -253,8 +253,8 @@ Phase 0 (core 契约)  ──► Phase 1 (server 扩展点) ──┐
   - 全部为进程内注册表增删，**不触碰 `/api/state` 健康检查、不重启进程**。
 
 ### 4.2 热插拔 UI 控制台（webapp，通用、无业务词）
-- 新增 `packages/webapp/src/plugins-console.ts`（`<ah-plugins>`）：拉取 `/api/plugins` 列出插件，提供「启用 / 停用 / 升级」按钮，调用上述端点（带 Bearer 令牌）。
-- `packages/webapp/src/app.ts`：Tab 联合类型加 `'plugins'`，侧栏新增「插件」导航项，内容区渲染 `<ah-plugins>`。组件与具体插件业务语义完全解耦。
+- 新增 `frontend/webapp/src/plugins-console.ts`（`<ah-plugins>`）：拉取 `/api/plugins` 列出插件，提供「启用 / 停用 / 升级」按钮，调用上述端点（带 Bearer 令牌）。
+- `frontend/webapp/src/app.ts`：Tab 联合类型加 `'plugins'`，侧栏新增「插件」导航项，内容区渲染 `<ah-plugins>`。组件与具体插件业务语义完全解耦。
 
 ### 4.3 验收标准达成
 - 多副本 ChatSession 不丢：core Memory（file 后端）+ 插件 store（RWX 卷内文件）双路落盘。

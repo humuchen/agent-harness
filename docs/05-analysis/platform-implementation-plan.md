@@ -3,12 +3,12 @@
 > 配套 `./platform-orchestration-assessment.md`（评估结论：当前是优秀的「单智能体执行引擎」，但缺「智能体 / 路由 / 租户 / A2A / 工作流」五大基座能力）。
 > 本文件给出**具体落地计划**：对每个缺失能力，指明新增/修改的**精确文件与函数锚点**、**关键类型签名**与**实现方式**，并遵循评估的「演进而非重写」「复用 60–70% 资产」原则。
 > 评估中已核实的代码锚点（均已对照源码确认）：
-> - `packages/server/src/runner.ts:163` `assembleAgent()` —— 当前构建「万能 harness」，第 221 行 `tools.mergeFrom(mcpManager.liveRegistry())` 把**全部 MCP** 合并进每次 run。
-> - `packages/server/src/run-queue.ts:93` `submit()` + `:372` `execute()` —— 仅 `sessionKey` 隔离，永远 `assembleAgent(job.mode, …)`，无任何 agent/domain/tenant 维度。
-> - `packages/server/src/queue-backend.ts:22` `JobDescriptor` —— 仅 `mode/prompt/model/sessionKey/maxSteps/verify`。
-> - `packages/core/src/guardrails.ts:70` 全局单例 `policy` + `:73` `configureGuardrails()` —— 非 per-tenant。
-> - `packages/core/src/memory-store.ts:26` `MemoryStore` 接口 —— `load/save/delete/list(key)`，单字符串 key。
-> - `packages/core/src/harness.ts:14` `HarnessEvent` / `:29` `HarnessOptions` —— 无 `agentId/workflowId/traceId`。
+> - `access/server/src/runner.ts:163` `assembleAgent()` —— 当前构建「万能 harness」，第 221 行 `tools.mergeFrom(mcpManager.liveRegistry())` 把**全部 MCP** 合并进每次 run。
+> - `access/server/src/run-queue.ts:93` `submit()` + `:372` `execute()` —— 仅 `sessionKey` 隔离，永远 `assembleAgent(job.mode, …)`，无任何 agent/domain/tenant 维度。
+> - `access/server/src/queue-backend.ts:22` `JobDescriptor` —— 仅 `mode/prompt/model/sessionKey/maxSteps/verify`。
+> - `backend/core/src/guardrails.ts:70` 全局单例 `policy` + `:73` `configureGuardrails()` —— 非 per-tenant。
+> - `backend/core/src/memory-store.ts:26` `MemoryStore` 接口 —— `load/save/delete/list(key)`，单字符串 key。
+> - `backend/core/src/harness.ts:14` `HarnessEvent` / `:29` `HarnessOptions` —— 无 `agentId/workflowId/traceId`。
 
 ---
 
@@ -27,7 +27,7 @@
 
 **目标**：把「agent」变成一等实体，具备 AgentCard 能力清单 + 可持久化注册表 + 按 domain/capability 发现。
 
-**新增模块 `packages/core/src/agents/`**
+**新增模块 `backend/core/src/agents/`**
 
 - `types.ts` —— AgentCard 与配套类型：
   ```ts
@@ -60,21 +60,21 @@
 - `index.ts` —— barrel 导出。
 
 **修改（精确锚点）**
-- `packages/server/src/runner.ts:163` `assembleAgent()`：新增形参 `card?: AgentCard`。
+- `access/server/src/runner.ts:163` `assembleAgent()`：新增形参 `card?: AgentCard`。
   - 当 `card` 为 `undefined` → 行为完全不变（今天的全能 harness，向后兼容）。
   - 当 `card` 存在 → 按 `card.assembly` **收窄**工具集：`registerBuiltinTools` 只开 `assembly.tools`；`skillRegistry.registerMany(defaultSkills().filter(s => card.assembly.skills?.includes(s.id)))`；`tools.mergeFrom` 仅合并 `card.assembly.mcpServers` 指定的 MCP（需给 `mcpManager.liveRegistry()` 增加按 server 名过滤的能力，或在 merge 前过滤 entries）；系统提示词改用 `card.assembly.systemPrompt`。
-- `packages/server/src/server.ts`：新增路由
+- `access/server/src/server.ts`：新增路由
   - `GET /api/agents`（支持 `?domain=&capability=` 过滤）、`GET /api/agents/:id`、`POST /api/agents`（注册/远端 A2A 自注册，P1 接入）。
   - `POST /api/run` 的 body 增加 `agentId?`（显式指定目标 agent，绕过路由）。
-- `packages/core/src/index.ts`：导出 `agents`。
+- `backend/core/src/index.ts`：导出 `agents`。
 
-**测试**：`packages/core/test/agents.test.cjs`（register/heartbeat/deregister/query）、`packages/server/test/agents.test.cjs`（端点 + assembleAgent 收窄）。
+**测试**：`backend/core/test/agents.test.cjs`（register/heartbeat/deregister/query）、`access/server/test/agents.test.cjs`（端点 + assembleAgent 收窄）。
 
 ### 1.2 ② 任务路由与分发（Task Router → capability-aware Dispatcher）
 
 **目标**：把 `RunQueue` 从「统一 harness 队列」升级为「按能力选 agent 再分发」的调度器；引入 Intent Router + Agent Selector。
 
-**新增模块 `packages/core/src/router/`**
+**新增模块 `backend/core/src/router/`**
 - `intent.ts` —— `IntentRouter.classify(prompt): Promise<{ domain: IndustryDomain; intent: string; requiredCapabilities: string[] }>`。默认规则引擎（领域词典 + 关键词）；`INTENT_ROUTER=llm` 时用小模型/LLM 分类（复用 `createOpenRouterLLM`）。轻量、可缓存。
 - `selector.ts` —— `AgentSelector.select(registry, intent, ctx): AgentCard | null`。评分 = 能力匹配度（capability 交集）× 健康度（1 - load）× SLA × 租户策略亲和（P0.3 的 `policyRef`）。取最高分；无候选返回 null（回退 default agent）。
 - `router.ts` —— `TaskRouter.resolve(job)`：
@@ -85,9 +85,9 @@
 - `index.ts` 导出。
 
 **修改（精确锚点）**
-- `packages/server/src/run-queue.ts:93` `submit(input)` 增加 `agentId?`、`domain?`、`tenantId?`、`workflowId?`、`traceId?`。
-- `packages/server/src/queue-backend.ts:22` `JobDescriptor` 同步增加上述字段（保持 JSON 可序列化）。
-- `packages/server/src/run-queue.ts:372` `execute()`：
+- `access/server/src/run-queue.ts:93` `submit(input)` 增加 `agentId?`、`domain?`、`tenantId?`、`workflowId?`、`traceId?`。
+- `access/server/src/queue-backend.ts:22` `JobDescriptor` 同步增加上述字段（保持 JSON 可序列化）。
+- `access/server/src/run-queue.ts:372` `execute()`：
   - 构建 `TenantContext`（P0.3）；
   - `const { card } = await router.resolve(job)`（开关 `TASK_ROUTER` 关闭时返回 default card）；
   - `assembleAgent(job.mode, onEvent, …, job.sessionKey, …, /* card */ card, /* tenantCtx */ tenantCtx)`；
@@ -95,15 +95,15 @@
 
 **复用**：`RunQueue` 并发/看门狗/同会话串行化/`reclaimStale` 一行不改，仅 `execute` 内多一步 resolve。
 
-**测试**：`packages/core/test/router.test.cjs`（classify/select/resolve，含显式 agentId 短路）、`run-queue` 现有测试不受影响（默认开关下行为不变）。
+**测试**：`backend/core/test/router.test.cjs`（classify/select/resolve，含显式 agentId 短路）、`run-queue` 现有测试不受影响（默认开关下行为不变）。
 
 ### 1.3 ③ 跨行业上下文隔离与数据安全（Tenant Isolation）
 
 **目标**：引入 `TenantContext`，实现 per-tenant 记忆分区 + per-tenant 护栏策略 + 出网管控；租户身份锚定到认证，防止客户端自报 `sessionKey` 越界。
 
 **新增**
-- `packages/core/src/tenant.ts`：`TenantContext { tenantId: string; industry?: IndustryDomain; policyRef?: string }`；`resolveTenantContext(body, auth)` 辅助（从 `body.tenantId` + 已认证的 JWT sub/`authz` 身份派生，客户端不可伪造）。
-- `packages/core/src/policy/engine.ts` —— `PolicyEngine`：
+- `backend/core/src/tenant.ts`：`TenantContext { tenantId: string; industry?: IndustryDomain; policyRef?: string }`；`resolveTenantContext(body, auth)` 辅助（从 `body.tenantId` + 已认证的 JWT sub/`authz` 身份派生，客户端不可伪造）。
+- `backend/core/src/policy/engine.ts` —— `PolicyEngine`：
   ```ts
   class PolicyEngine {
     private perTenant = new Map<string, GuardrailPolicy>();
@@ -117,13 +117,13 @@
   全局单例 `policyEngine`（替代 `guardrails.ts` 里裸 `policy` 变量）。
 
 **修改（精确锚点）**
-- `packages/core/src/guardrails.ts:73` `configureGuardrails()` 改为「设置 default 策略」；`checkInput/checkOutput/checkToolArgs` 增加可选 `policy?: GuardrailPolicy` 形参（缺省读 `policyEngine.getPolicy(tenantId)` 或全局 default，向后兼容）。
-- `packages/core/src/harness.ts:29` `HarnessOptions` 增加 `guardrailPolicy?: GuardrailPolicy`；harness 调用三个 check 时透传该 policy。
-- `packages/core/src/memory-store.ts`：记忆分区**不改接口**，仅在调用侧构造复合 key —— `packages/server/src/runner.ts:136` `getSessionMemory()` 改为 `getSessionMemory(tenantCtx ? sanitizeKey(tenantCtx.tenantId) + '::' + sanitizeKey(sessionKey) : sessionKey, …)`。file/sqlite 后端天然按 key 分桶 → 医疗 PII 与金融数据落到不同文件/行。
-- `packages/server/src/runner.ts:163` `assembleAgent` 增加 `tenantCtx?`，内部用 `policyEngine.getPolicy(tenantCtx.tenantId)` 注入 harness，并按租户策略给 `web_fetch`/`filesystem` 工具加 `allowedDomains`/`deniedDomains`（出网管控）。
-- `packages/server/src/server.ts` `handleRun`：从 `authz` 校验结果取租户身份，构造 `TenantContext` 传入 `submit()`。
+- `backend/core/src/guardrails.ts:73` `configureGuardrails()` 改为「设置 default 策略」；`checkInput/checkOutput/checkToolArgs` 增加可选 `policy?: GuardrailPolicy` 形参（缺省读 `policyEngine.getPolicy(tenantId)` 或全局 default，向后兼容）。
+- `backend/core/src/harness.ts:29` `HarnessOptions` 增加 `guardrailPolicy?: GuardrailPolicy`；harness 调用三个 check 时透传该 policy。
+- `backend/core/src/memory-store.ts`：记忆分区**不改接口**，仅在调用侧构造复合 key —— `access/server/src/runner.ts:136` `getSessionMemory()` 改为 `getSessionMemory(tenantCtx ? sanitizeKey(tenantCtx.tenantId) + '::' + sanitizeKey(sessionKey) : sessionKey, …)`。file/sqlite 后端天然按 key 分桶 → 医疗 PII 与金融数据落到不同文件/行。
+- `access/server/src/runner.ts:163` `assembleAgent` 增加 `tenantCtx?`，内部用 `policyEngine.getPolicy(tenantCtx.tenantId)` 注入 harness，并按租户策略给 `web_fetch`/`filesystem` 工具加 `allowedDomains`/`deniedDomains`（出网管控）。
+- `access/server/src/server.ts` `handleRun`：从 `authz` 校验结果取租户身份，构造 `TenantContext` 传入 `submit()`。
 
-**测试**：`packages/core/test/policy.test.cjs`（per-tenant 覆盖 default）、`packages/server/test/tenant.test.cjs`（复合 key 分区 + 越界拒绝）。
+**测试**：`backend/core/test/policy.test.cjs`（per-tenant 覆盖 default）、`access/server/test/tenant.test.cjs`（复合 key 分区 + 越界拒绝）。
 
 ### 1.4 复用 RunQueue 作为 dispatcher（小结）
 P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多实例、`reclaimStale`、同会话串行化全部复用，只新增「resolve 目标 agent」一步。**不新增独立 dispatcher 模块**。
@@ -136,7 +136,7 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 
 **目标**：DAG/状态机引擎，支持顺序/并行/条件分支、多 agent handoff、checkpoint 续跑、失败补偿（解决评估 P1「副作用无回滚」）。
 
-**新增 `packages/core/src/workflow/`**
+**新增 `backend/core/src/workflow/`**
 - `types.ts`：
   ```ts
   export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
@@ -147,11 +147,11 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 - `store.ts` —— `WorkflowStore`（复用 `QueueBackend`/`MemoryStore` 接口范式，存 `WorkflowDef` + 每 step 状态）。
 
 **修改**
-- `packages/core/src/harness.ts:14` `HarnessEvent` 各变体加可选 `agentId?`/`workflowId?`/`traceId?`；`HarnessOptions` 加 `agentId?`/`workflowId?`/`traceId?`，`emit` 装饰事件。
-- `packages/server/src/server.ts`：新增 `POST /api/workflows`（定义并运行）、`GET /api/workflows/:id`、SSE 进度；`run:meta` 与 `/api/metrics` 补充「第 N 步在哪个 agent、耗时、健康」视图。
+- `backend/core/src/harness.ts:14` `HarnessEvent` 各变体加可选 `agentId?`/`workflowId?`/`traceId?`；`HarnessOptions` 加 `agentId?`/`workflowId?`/`traceId?`，`emit` 装饰事件。
+- `access/server/src/server.ts`：新增 `POST /api/workflows`（定义并运行）、`GET /api/workflows/:id`、SSE 进度；`run:meta` 与 `/api/metrics` 补充「第 N 步在哪个 agent、耗时、健康」视图。
 - 可观测：`traceId` 贯穿所有 agent 调用，OTel span 跨 agent 关联（`telemetry.ts` 已有 `withSpan`）。
 
-**测试**：`packages/core/test/workflow.test.cjs`（DAG happy path + 补偿回滚 + 续跑）。
+**测试**：`backend/core/test/workflow.test.cjs`（DAG happy path + 补偿回滚 + 续跑）。
 
 > ✅ **P1-⑤ 已完成（2026-08-15）**：`DagEngine` 拓扑分层并行 + `compensate` 逆序补偿 + `resume` 检查点续跑均落地；`validateWorkflow()` 做 fail-fast（环/未知依赖/重复 id 直接 reject）。`harness.ts` 扩展 `run:meta` 事件（`agentId/workflowId/traceId/tenantId` 全可选、零字段向后兼容）；`server.ts` 新增 `POST /api/workflows`（开 SSE 前先 `validateWorkflow` 返回 400）+ `GET /api/workflows/:id`，并复用 `/api/run` 同款装配（`workflow-executor.ts` 注入 `assembleAgent(card)+harness.run`）。`authz.ts` 注册 `workflow:run`/`workflow:read`/`workflow:resume` 动作。验证：core `workflow.test.cjs` 8/8 通过，全量 195→194（唯一失败为无关 k8s 环境测试），core+server `tsc` 干净编译，服务端 executor mock 模式端到端跑通（STATE done + 2×`wf:step:done`）。
 
@@ -159,7 +159,7 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 
 **目标**：定义 Task Envelope，桥接 MCP（工具级，已有）与 A2A（agent 级，新增），让异构远端行业 agent 以标准协议入驻。
 
-**新增 `packages/core/src/a2a/`**
+**新增 `backend/core/src/a2a/`**
 - `types.ts`：
   ```ts
   export interface TaskEnvelope { taskId: string; tenantId: string; traceId?: string; fromAgent: string; toAgent: string; input: unknown; inputSchema?: Record<string, unknown>; sla?: { timeoutMs?: number }; callback?: string; }
@@ -168,17 +168,17 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 - `transport.ts` —— `A2ATransport` 接口 + `LocalA2ATransport`（进程内直接 `assembleAgent`+`run`，用于同进程多 agent handoff）、`HttpA2ATransport`（`fetch` 远端 agent 的 `/api/a2a/tasks`）。
 
 **修改**
-- `packages/server/src/server.ts`：新增 `POST /api/a2a/tasks` —— 接收远端 agent 任务（自注册 AgentCard + 执行 + 回传 `TaskResult`）；`TaskRouter` 选中 `transport: 'a2a'` 的远端 agent 时，经 `HttpA2ATransport` 派发。
-- `packages/client` + `openapi.ts`：扩展 `agents` / `tasks` / `workflows` 资源与类型。
+- `access/server/src/server.ts`：新增 `POST /api/a2a/tasks` —— 接收远端 agent 任务（自注册 AgentCard + 执行 + 回传 `TaskResult`）；`TaskRouter` 选中 `transport: 'a2a'` 的远端 agent 时，经 `HttpA2ATransport` 派发。
+- `backend/client` + `openapi.ts`：扩展 `agents` / `tasks` / `workflows` 资源与类型。
 
 > ✅ **P1-④ 已完成（2026-08-15）**：新增 `core/src/a2a/{types,transport,index}.ts`（`TaskEnvelope`/`TaskResult`/`A2ARequest` + `A2ATransport` 接口 + `LocalA2ATransport` 进程内 handoff + `HttpA2ATransport` 跨主机投递到 `/api/a2a/tasks`，带 SLA 超时 abort 与失败降级 + `transportFor`/`dispatchAgentTask` 按 `AgentCard.transport+endpoint` 选传输）。服务端新增 `agent-run.ts`（`runAgentTask` 复用 helper，收敛 assembleAgent+run 单一入口）；`server.ts` 新增 `POST /api/a2a/tasks`（远端 card 自注册 + 本地执行 + 回传 `TaskResult`，仅接受 transport=local）；`run-queue.execute` 在路由到 `transport:'a2a'+endpoint` 的远端 agent 时经 `HttpA2ATransport` 跨主机派发，成功即返回、失败降级回退本地默认 harness；`authz.ts` 注册 `a2a:receive`/`a2a:send`。验证：`a2a.test.cjs` 7/7 通过（本地 handoff 成功/失败、HTTP 成功/非2xx/网络异常、transport 选择、dispatch 路由），core+server `tsc` 干净编译。
-> 🔧 **P1-④ 客户端补全（2026-08-15）**：实现计划 §2.2 所列 `packages/client + openapi.ts` 资源/类型扩展已落地 —— `packages/client/src/{types,client}.ts` 新增镜像类型（`AgentCard`/`AgentTransport`/`IndustryDomain`/`AgentQuery`/`TaskEnvelope`/`TaskResult`/`A2ARequest`/`WorkflowDef`/`StepDef`/`WorkflowRun`/`WorkflowEvent`）与强类型方法：`listAgents(filter?)`、`getAgent(id)`、`sendTask(req)`、`getWorkflow(id)`、`streamWorkflow(def,input?)`（SSE 迭代器）。服务端 `/api/v1/*` 已重写到 `/api/*`，客户端用 `/api/v1` 前缀命中。验证：启动真实服务端（mock 模式）后，用新客户端方法跑通 `listAgents`→`getAgent`→`sendTask`(A2A 本地闭环)→`streamWorkflow`(DAG 37 事件、finalState=done)→`getWorkflow`(state=done, steps=s1,s2) 全链路，client `tsc` 干净编译。
+> 🔧 **P1-④ 客户端补全（2026-08-15）**：实现计划 §2.2 所列 `backend/client + openapi.ts` 资源/类型扩展已落地 —— `backend/client/src/{types,client}.ts` 新增镜像类型（`AgentCard`/`AgentTransport`/`IndustryDomain`/`AgentQuery`/`TaskEnvelope`/`TaskResult`/`A2ARequest`/`WorkflowDef`/`StepDef`/`WorkflowRun`/`WorkflowEvent`）与强类型方法：`listAgents(filter?)`、`getAgent(id)`、`sendTask(req)`、`getWorkflow(id)`、`streamWorkflow(def,input?)`（SSE 迭代器）。服务端 `/api/v1/*` 已重写到 `/api/*`，客户端用 `/api/v1` 前缀命中。验证：启动真实服务端（mock 模式）后，用新客户端方法跑通 `listAgents`→`getAgent`→`sendTask`(A2A 本地闭环)→`streamWorkflow`(DAG 37 事件、finalState=done)→`getWorkflow`(state=done, steps=s1,s2) 全链路，client `tsc` 干净编译。
 
 ### 2.3 插件框架骨架（Plugin Framework）
 
 **目标**：Plugin Manifest + 生命周期 + 隔离加载骨架（完整市场留 P2）。
 
-**新增 `packages/core/src/plugin/`**
+**新增 `backend/core/src/plugin/`**
 - `manifest.ts` —— `PluginManifest { id; version; capabilities[]; dependencies[]; permissions[]; transport; entry }`。
 - `loader.ts` —— `PluginLoader`：`install/enable/disable/upgrade` 生命周期；依赖解析；以**隔离**方式加载（新建 `worker_threads` 或 `child_process` + 本会话已落地的 OS 沙箱后端 `createSandboxExecutor({ backend: 'os' | 'container' })`），与核心进程不同堆同权限问题；manifest 的 `capabilities` 自动转成 `AgentCard` 注册进 Registry。
 
@@ -221,7 +221,7 @@ P0.2 的修改即是「capability-aware dispatcher」的最小实现：redis 多
 
 **通用验证手段**（复用现有范式）
 - 单测：`node --test test/*.test.cjs`（零依赖，require 编译后 `dist`，与 `os-sandbox.test.cjs` 同风格）。
-- 编译：`tsc -p packages/core/tsconfig.json && tsc -p packages/server/tsconfig.json`（workspace 内 typescript@5.4.5）。
+- 编译：`tsc -p backend/core/tsconfig.json && tsc -p access/server/tsconfig.json`（workspace 内 typescript@5.4.5）。
 - 集成冒烟：`examples/` 新增 `multi-agent.ts`（注册医美/金融两个本地 agent → 经 router 分发 → 验证记忆/护栏分区）、`workflow-demo.ts`。
 - 开关降级：每个新能力用 env 开关，关闭即今天行为，保证可灰度、可回滚。
 

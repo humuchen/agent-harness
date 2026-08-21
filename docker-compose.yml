@@ -27,7 +27,7 @@ services:
       # 配合下方 data 卷挂载，单实例重启不丢、与 k8s 部署行为一致（sqlite 勿用）。
       MEMORY_BACKEND: 'file'
       MEMORY_DIR: '/app/data/memory'
-      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 packages/server/data 与项目根 data 两处。
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       MA_DATA_DIR: '/app/data/ma-lead'
       # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
       MCP_SERVERS: '${MCP_SERVERS:-}'

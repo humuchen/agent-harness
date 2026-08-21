@@ -1,7 +1,10 @@
 packages:
-  - 'packages/*'
+  - 'frontend/*'      # 前端应用层：webapp, cli
+  - 'access/*'        # 接入层：server
+  - 'backend/*'       # 后端工具层：core, client, medical-ad-guard
+  - 'plugins/*'       # 业务插件（非侵入，跨层复用）
+  - 'services/*'      # 外部集成/底座：rag
   - 'examples'
-  - 'plugins/*'
 # pnpm v11：依赖的构建脚本默认全部禁止，需在此显式放行。
 # webapp 用 Vite 构建依赖 esbuild 的 postinstall 下载原生二进制；
 # 不放行则 pnpm install 直接 exit 1（ERR_PNPM_IGNORED_BUILDS），部署卡死。

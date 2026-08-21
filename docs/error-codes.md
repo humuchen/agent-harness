@@ -10,7 +10,7 @@
 
 **错误信息**: `unauthorized: missing or invalid token`
 
-**位置**: `packages/server/src/server.ts:221`
+**位置**: `access/server/src/server.ts:221`
 
 **原因**:
 
@@ -34,7 +34,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `forbidden`
 
-**位置**: `packages/server/src/server.ts:180`
+**位置**: `access/server/src/server.ts:180`
 
 **原因**:
 
@@ -44,7 +44,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 **解决**:
 
 - 检查用户角色: `admin` > `operator` > `viewer`
-- 查看权限矩阵: `packages/server/src/authz.ts`
+- 查看权限矩阵: `access/server/src/authz.ts`
 - 联系管理员提升权限
 
 ---
@@ -53,7 +53,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `rate limit exceeded`
 
-**位置**: `packages/server/src/server.ts:174`
+**位置**: `access/server/src/server.ts:174`
 
 **原因**:
 
@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `agent not found`
 
-**位置**: `packages/server/src/server.ts:427`
+**位置**: `access/server/src/server.ts:427`
 
 **原因**:
 
@@ -96,7 +96,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `workflow not found`
 
-**位置**: `packages/server/src/server.ts:441`
+**位置**: `access/server/src/server.ts:441`
 
 **原因**:
 
@@ -113,7 +113,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `job not found`
 
-**位置**: `packages/server/src/server.ts:524, 542`
+**位置**: `access/server/src/server.ts:524, 542`
 
 **原因**:
 
@@ -131,7 +131,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `_done{error: true}` (SSE事件)
 
-**位置**: `packages/server/src/run-queue.ts:491, 511, 668, 681`
+**位置**: `access/server/src/run-queue.ts:491, 511, 668, 681`
 
 **原因**:
 
@@ -158,7 +158,7 @@ echo $OPENROUTER_API_KEY
 
 **错误信息**: `Unknown tool: {name}`
 
-**位置**: `packages/core/src/tools.ts:58`
+**位置**: `backend/core/src/tools.ts:58`
 
 **原因**:
 
@@ -177,7 +177,7 @@ echo $OPENROUTER_API_KEY
 
 **错误信息**: `plugin not found: {id}`
 
-**位置**: `packages/core/src/plugin/loader.ts:265`
+**位置**: `backend/core/src/plugin/loader.ts:265`
 
 **原因**:
 
@@ -200,7 +200,7 @@ ls plugins/
 
 **错误信息**: `plugin already installed: {id}`
 
-**位置**: `packages/core/src/plugin/loader.ts:156, 171`
+**位置**: `backend/core/src/plugin/loader.ts:156, 171`
 
 **原因**:
 
@@ -217,7 +217,7 @@ ls plugins/
 
 **错误信息**: `plugin "{id}" signature verification failed`
 
-**位置**: `packages/core/src/plugin/loader.ts:146`
+**位置**: `backend/core/src/plugin/loader.ts:146`
 
 **原因**:
 
@@ -235,7 +235,7 @@ ls plugins/
 
 **错误信息**: `plugin "{id}" depends on missing plugin "{dep}"`
 
-**位置**: `packages/core/src/plugin/loader.ts:258`
+**位置**: `backend/core/src/plugin/loader.ts:258`
 
 **原因**:
 
@@ -255,7 +255,7 @@ cat plugins/*/manifest.json | grep dependencies
 
 **错误信息**: `upgrade manifest id mismatch: {manifest.id} != {id}`
 
-**位置**: `packages/core/src/plugin/loader.ts:239`
+**位置**: `backend/core/src/plugin/loader.ts:239`
 
 **原因**:
 
@@ -274,7 +274,7 @@ cat plugins/*/manifest.json | grep dependencies
 
 **错误信息**: `DagEngine requires an injected 'executor'`
 
-**位置**: `packages/core/src/workflow/engine.ts:70`
+**位置**: `backend/core/src/workflow/engine.ts:70`
 
 **原因**:
 
@@ -295,7 +295,7 @@ const engine = new DagEngine({
 
 **错误信息**: `duplicate step id: {id}`
 
-**位置**: `packages/core/src/workflow/engine.ts:89`
+**位置**: `backend/core/src/workflow/engine.ts:89`
 
 **原因**:
 
@@ -311,7 +311,7 @@ const engine = new DagEngine({
 
 **错误信息**: `unknown agentRef: {ref}`
 
-**位置**: `packages/core/src/workflow/engine.ts:99`
+**位置**: `backend/core/src/workflow/engine.ts:99`
 
 **原因**:
 
@@ -328,7 +328,7 @@ const engine = new DagEngine({
 
 **错误信息**: `step "{id}" depends on unknown step "{d}"`
 
-**位置**: `packages/core/src/workflow/engine.ts:111`
+**位置**: `backend/core/src/workflow/engine.ts:111`
 
 **原因**:
 
@@ -345,7 +345,7 @@ const engine = new DagEngine({
 
 **错误信息**: `workflow contains a dependency cycle`
 
-**位置**: `packages/core/src/workflow/engine.ts:124`
+**位置**: `backend/core/src/workflow/engine.ts:124`
 
 **原因**:
 
@@ -372,7 +372,7 @@ const engine = new DagEngine({
 
 **错误信息**: `workflow aborted`
 
-**位置**: `packages/core/src/workflow/engine.ts:165`
+**位置**: `backend/core/src/workflow/engine.ts:165`
 
 **原因**:
 
@@ -392,7 +392,7 @@ const engine = new DagEngine({
 
 **错误信息**: `LLM API error {status} (model={model}): {text}`
 
-**位置**: `packages/core/src/llm/shared.ts:184, 263`
+**位置**: `backend/core/src/llm/shared.ts:184, 263`
 
 **原因**:
 
@@ -422,7 +422,7 @@ curl https://api.openai.com/v1/models \
 
 **错误信息**: `LLM streaming response has no readable body (model={model})`
 
-**位置**: `packages/core/src/llm/shared.ts:266`
+**位置**: `backend/core/src/llm/shared.ts:266`
 
 **原因**:
 
@@ -445,8 +445,8 @@ curl https://api.openai.com/v1/models \
 
 **位置**:
 
-- `packages/core/src/llm/openai.ts:33`
-- `packages/core/src/llm/openrouter.ts:52`
+- `backend/core/src/llm/openai.ts:33`
+- `backend/core/src/llm/openrouter.ts:52`
 
 **解决**:
 
@@ -465,7 +465,7 @@ const llm = createOpenAILLM({ apiKey: 'sk-...' });
 
 **错误信息**: `真实模式需要 OPENROUTER_API_KEY(在 .env 中配置)。可切换到 Mock 模式离线验证。`
 
-**位置**: `packages/server/src/runner.ts:294`
+**位置**: `access/server/src/runner.ts:294`
 
 **解决**:
 
@@ -485,7 +485,7 @@ echo "OPENROUTER_API_KEY=sk-or-..." >> .env
 
 **错误信息**: `Skill 必须包含非空 id`
 
-**位置**: `packages/core/src/skills/index.ts:34`
+**位置**: `backend/core/src/skills/index.ts:34`
 
 **原因**:
 
@@ -509,7 +509,7 @@ skills.register({ id: 'my-skill', name: 'my-skill' });
 
 **错误信息**: `session not found`
 
-**位置**: `packages/server/src/server.ts:595`
+**位置**: `access/server/src/server.ts:595`
 
 **原因**:
 

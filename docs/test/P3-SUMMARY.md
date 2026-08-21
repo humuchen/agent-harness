@@ -9,7 +9,7 @@
 
 ### ✅ Task 1: 实现标准化健康检查端点
 
-**文件**: [packages/server/src/health.ts](./packages/server/src/health.ts)
+**文件**: [access/server/src/health.ts](./access/server/src/health.ts)
 
 **端点**:
 
@@ -73,7 +73,7 @@ readinessProbe:
 
 ### ✅ Task 2: 创建特性开关框架
 
-**文件**: [packages/core/src/feature-flags.ts](./packages/core/src/feature-flags.ts)
+**文件**: [backend/core/src/feature-flags.ts](./backend/core/src/feature-flags.ts)
 
 **管理的特性**(10个):
 
@@ -169,7 +169,7 @@ GET /api/features
 
 ### ✅ Task 3: 实现最小插件市场Registry Server
 
-**文件**: [packages/server/src/registry-server.ts](./packages/server/src/registry-server.ts)
+**文件**: [access/server/src/registry-server.ts](./access/server/src/registry-server.ts)
 
 **API端点**:
 
@@ -191,7 +191,7 @@ pnpm --filter @agent-harness/server build
 # 启动Registry Server
 pnpm --filter @agent-harness/server registry
 # 或
-PORT=4000 node packages/server/dist/registry-server.js
+PORT=4000 node access/server/dist/registry-server.js
 ```
 
 **使用示例**:
@@ -337,9 +337,9 @@ CREATE TABLE schema_migrations (
 
 | 文件                                     | 行数        | 功能           |
 | ---------------------------------------- | ----------- | -------------- |
-| `packages/server/src/health.ts`          | 218行       | 健康检查模块   |
-| `packages/core/src/feature-flags.ts`     | 252行       | 特性开关框架   |
-| `packages/server/src/registry-server.ts` | 324行       | 插件市场服务器 |
+| `access/server/src/health.ts`          | 218行       | 健康检查模块   |
+| `backend/core/src/feature-flags.ts`     | 252行       | 特性开关框架   |
+| `access/server/src/registry-server.ts` | 324行       | 插件市场服务器 |
 | `scripts/db-migrate.cjs`                 | 380行       | 数据库迁移工具 |
 | `migrations/001_init_leads.up.sql`       | 52行        | 示例迁移       |
 | `migrations/001_init_leads.down.sql`     | 9行         | 示例回滚       |
@@ -377,7 +377,7 @@ CREATE TABLE schema_migrations (
 }
 ```
 
-### packages/server/package.json
+### access/server/package.json
 
 ```json
 {

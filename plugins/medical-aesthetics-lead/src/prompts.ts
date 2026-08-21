@@ -1,6 +1,6 @@
 /**
  * 医美客资 Agent 系统提示词（含医疗广告合规红线）。
- * 双卡合规：本提示词强约束 + core guardrails 输出规则（packages/medical-ad-guard）拦截。
+ * 双卡合规：本提示词强约束 + core guardrails 输出规则（backend/medical-ad-guard）拦截。
  *
  * 关键设计：客资线索的「结构化字段」**只能**由工具调用写入（lead_qualify / lead_capture /
  * consultation_book / lead_handoff），不会自动从对话里抽取。因此本提示词的核心纪律是

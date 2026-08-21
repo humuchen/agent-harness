@@ -6,7 +6,7 @@
     "baseUrl": ".",
     "types": ["node"],
     "paths": {
-      "@agent-harness/core": ["../packages/core/dist/index.d.ts"]
+      "@agent-harness/core": ["../backend/core/dist/index.d.ts"]
     }
   },
   "include": ["*.ts"]

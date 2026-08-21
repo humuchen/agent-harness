@@ -23,7 +23,7 @@ services:
       UI_AUTH_TOKEN: '${UI_AUTH_TOKEN:?UI_AUTH_TOKEN 未设置！请先 cp .env.example .env 并填入 openssl rand -base64 32 生成的令牌}'
       # 持久化记忆后端（sqlite 写入挂载卷 /app/data；node:sqlite 不可用时自动回退 file 后端，
       # 由 MEMORY_DIR 落到同一卷）。留空则默认内存、重启即丢。
-      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 packages/server/data 与项目根 data 两处。
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       MEMORY_BACKEND: 'sqlite'
       MEMORY_SQLITE_FILE: '/app/data/memory.db'
       MEMORY_DIR: '/app/data/memory'

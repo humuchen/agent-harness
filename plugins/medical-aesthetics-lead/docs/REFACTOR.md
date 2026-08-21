@@ -165,7 +165,7 @@ export const leadManifest: PluginManifest = {
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
-    "paths": { "@agent-harness/core": ["../../packages/core/dist/index.d.ts"] }
+    "paths": { "@agent-harness/core": ["../../backend/core/dist/index.d.ts"] }
   },
   "include": ["src"]
 }
@@ -194,7 +194,7 @@ export const leadManifest: PluginManifest = {
 
 | 类别 | 依赖 | 说明 |
 | --- | --- | --- |
-| 运行时（workspace） | `@agent-harness/core` | 插件契约（ToolRegistry / PluginContext / ServerExtension / A2A / guardrails）。经 `paths` 指向 `packages/core/dist/index.d.ts`。 |
+| 运行时（workspace） | `@agent-harness/core` | 插件契约（ToolRegistry / PluginContext / ServerExtension / A2A / guardrails）。经 `paths` 指向 `backend/core/dist/index.d.ts`。 |
 | 运行时（workspace） | `@agent-harness/medical-ad-guard` | 医疗广告合规护栏（可插拔、幂等）。 |
 | 运行时（Node 内置，**零 npm 依赖**） | `node:sqlite` | Node 22+ 内置关系库；`require('node:sqlite').DatabaseSync` + 类型断言接入（@types/node@20 无声明）。 |
 | 运行时（Node 内置） | `node:fs` / `node:crypto` / `node:path` / `fetch` | 文件目录、HMAC 验签、路径、真实 HTTP 客户端。 |
@@ -262,7 +262,7 @@ node smoke.cjs
 MA_DATA_DIR=/abs/path/data \
 MA_WEBHOOK_SECRET=wh_xxx \
 MA_ADMIN_TOKEN=admin_xxx \
-node packages/server/dist/server.js
+node access/server/dist/server.js
 
 # 2) 导入院区 / 号源 / 知识库（管理令牌）
 curl -X POST localhost:4173/api/plugins/medical-aesthetics-lead/clinics/import \

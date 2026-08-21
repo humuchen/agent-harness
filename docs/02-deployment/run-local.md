@@ -50,8 +50,8 @@ pnpm -r build
 校验产物存在：
 
 ```bash
-ls packages/server/dist/server.js          # 服务入口
-ls packages/webapp/dist/index.html         # 前端面板
+ls access/server/dist/server.js          # 服务入口
+ls frontend/webapp/dist/index.html         # 前端面板
 ls plugins/customer-service/dist/index.js  # 客服插件（默认入口）
 ```
 
@@ -134,7 +134,7 @@ MEMORY_DIR="$(pwd -W)/.rtdata" node scripts/seed-cs-demo.mjs
 MEMORY_DIR="$(pwd -W)/.rtdata" \
 PORT=4173 \
 UI_HOST=0.0.0.0 \
-node packages/server/dist/server.js
+node access/server/dist/server.js
 ```
 
 要点：
@@ -208,7 +208,7 @@ curl -X POST http://localhost:4173/api/plugins/customer-service/upgrade \
 
 | 现象                                     | 原因                                                                                                     | 修复                                                                           |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `/api/plugins` 返回空数组                | 插件入口路径解析错（相对 `packages/server/dist` 只上溯两级）                                             | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
+| `/api/plugins` 返回空数组                | 插件入口路径解析错（相对 `access/server/dist` 只上溯两级）                                             | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
 | 客服后台数据恒为 0                       | `MEMORY_DIR` 用了相对路径，或 Git Bash 下误用 POSIX 风格 `$(pwd)`（Node 解析成 `\c\Users\...` 错位目录） | 改用 `$(pwd -W)`（Windows）/ 绝对路径，seed 与服务用同一目录                   |
 | `pnpm install` 报 TAR_ENTRY_ERROR / 卡住 | 沙箱 safe-delete 守卫拦截批量删除                                                                        | 用 §1.1 的绕过组合 + 关闭沙箱隔离                                              |
 | 面板提示 UI 开放                         | 未设 `UI_AUTH_TOKEN`                                                                                     | 演示可忽略；真部署务必设置                                                     |
@@ -224,7 +224,7 @@ set -e
 pnpm install --prefer-offline || true
 pnpm -r build
 MEMORY_DIR="$(pwd -W)/.rtdata" node scripts/seed-cs-demo.mjs
-MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node packages/server/dist/server.js
+MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node access/server/dist/server.js
 ```
 
 服务起在后台时，用 `run_in_background` 或 `nohup ... &` 均可；演示数据落文件态（`.rtdata/`），

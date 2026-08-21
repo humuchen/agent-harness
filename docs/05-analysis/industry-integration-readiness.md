@@ -10,11 +10,11 @@
 
 | 核心能力 | 当前状态 | 落地证据 |
 |---|---|---|
-| ① 智能体注册与发现 | **已实现** | `packages/core/src/agents/registry.ts`（`AgentRegistry` + 倒排索引 + 心跳 sweep）；`server.ts` 暴露 `GET /api/agents?domain=&capability=` 与 `GET /api/agents/:id` |
-| ② 任务路由与分发 | **已实现且已接线** | `packages/core/src/router/{router,selector,intent}.ts`；`run-queue.ts` 的 `execute()` 第 458 行调用 `resolveTask()` 解析目标 AgentCard，再 `assembleAgent(card)` 收敛为领域 harness |
-| ③ 跨行业上下文隔离与数据安全 | **已实现（按租户 opt-in）** | `packages/core/src/tenant.ts`（`tenant::session` 复合记忆 key）；`policy/engine.ts` 内置 medical-aesthetics/healthcare/finance/education 行业画像（PII 脱敏、金融 `denylist:*` 禁出网、OS 级隔离）；`runner.ts` 注入 `guardrailPolicy` |
-| ④ 统一通信协议与接口规范 | **已实现（A2A + MCP 双层）** | `packages/core/src/a2a/{types,transport}.ts`（TaskEnvelope/TaskResult + HttpA2ATransport）；`server.ts` 的 `POST /api/a2a/tasks` 接收远端 agent 任务；MCP 工具级接入经 `<server>__<tool>` 前缀 |
-| ⑤ 工作流编排与状态监控 | **已实现** | `packages/core/src/workflow/{engine,types}.ts` + `server.ts` 的 `POST /api/workflows`（DAG + 补偿 + SSE 直播每 step 状态） |
+| ① 智能体注册与发现 | **已实现** | `backend/core/src/agents/registry.ts`（`AgentRegistry` + 倒排索引 + 心跳 sweep）；`server.ts` 暴露 `GET /api/agents?domain=&capability=` 与 `GET /api/agents/:id` |
+| ② 任务路由与分发 | **已实现且已接线** | `backend/core/src/router/{router,selector,intent}.ts`；`run-queue.ts` 的 `execute()` 第 458 行调用 `resolveTask()` 解析目标 AgentCard，再 `assembleAgent(card)` 收敛为领域 harness |
+| ③ 跨行业上下文隔离与数据安全 | **已实现（按租户 opt-in）** | `backend/core/src/tenant.ts`（`tenant::session` 复合记忆 key）；`policy/engine.ts` 内置 medical-aesthetics/healthcare/finance/education 行业画像（PII 脱敏、金融 `denylist:*` 禁出网、OS 级隔离）；`runner.ts` 注入 `guardrailPolicy` |
+| ④ 统一通信协议与接口规范 | **已实现（A2A + MCP 双层）** | `backend/core/src/a2a/{types,transport}.ts`（TaskEnvelope/TaskResult + HttpA2ATransport）；`server.ts` 的 `POST /api/a2a/tasks` 接收远端 agent 任务；MCP 工具级接入经 `<server>__<tool>` 前缀 |
+| ⑤ 工作流编排与状态监控 | **已实现** | `backend/core/src/workflow/{engine,types}.ts` + `server.ts` 的 `POST /api/workflows`（DAG + 补偿 + SSE 直播每 step 状态） |
 
 ---
 

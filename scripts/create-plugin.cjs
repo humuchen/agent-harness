@@ -102,7 +102,7 @@ const tsconfig = {
     outDir: 'dist',
     declaration: true,
     paths: {
-      '@agent-harness/core': ['../../packages/core/dist/index.d.ts']
+      '@agent-harness/core': ['../../backend/core/dist/index.d.ts']
     }
   },
   include: ['src/**/*.ts']
