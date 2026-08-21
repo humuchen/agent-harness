@@ -28,6 +28,8 @@ export interface RunInput {
   jobId?: string;
   /** 审批工单号：敏感动作获批后随请求重投。 */
   approvalTicket?: string;
+  /** 图片附件列表（含 serverUrl），服务端将其转为 ContentBlock[] 传给 LLM。 */
+  attachments?: Array<{ url: string; name: string; type: string }>;
 }
 
 /* ----------------------------- 多会话 Chat App ----------------------------- */

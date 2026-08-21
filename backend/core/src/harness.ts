@@ -163,7 +163,7 @@ export class AgentHarness {
     return this.opts.memory.notes();
   }
 
-  async run(userInput: string): Promise<string> {
+  async run(userInput: string, imageAttachments?: Array<{ url: string; name: string; type: string }>): Promise<string> {
     const runId = nextId('run');
     const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
 
@@ -234,7 +234,17 @@ export class AgentHarness {
     if (sysContent && !memory.history().some((m) => m.role === 'system')) {
       memory.add({ role: 'system', content: sysContent });
     }
-    memory.add({ role: 'user', content: userInput });
+    // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
+    if (imageAttachments && imageAttachments.length > 0) {
+      const contentBlocks: Array<{ type: 'text'; text?: string } | { type: 'image_url'; image_url?: { url: string } }> = [];
+      if (userInput) contentBlocks.push({ type: 'text', text: userInput });
+      for (const img of imageAttachments) {
+        contentBlocks.push({ type: 'image_url', image_url: { url: img.url } });
+      }
+      memory.add({ role: 'user', content: contentBlocks as any });
+    } else {
+      memory.add({ role: 'user', content: userInput });
+    }
 
     let final = '[agent] reached max steps without a final answer';
     let steps = 0;

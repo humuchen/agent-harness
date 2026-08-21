@@ -68,6 +68,8 @@ export interface RunJob {
   workflowId?: string;
   /** P0.2：链路追踪标识（可观测性）。 */
   traceId?: string;
+  /** 图片附件列表，服务端将其转为 ContentBlock[] 传给 LLM。 */
+  attachments?: Array<{ url: string; name: string; type: string }>;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -117,7 +119,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }> }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -133,6 +135,7 @@ export class RunQueue {
       tenantId: job.tenantId,
       workflowId: job.workflowId,
       traceId: job.traceId,
+      attachments: job.attachments,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -151,7 +154,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }> },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -168,6 +171,7 @@ export class RunQueue {
       tenantId: input.tenantId,
       workflowId: input.workflowId,
       traceId: input.traceId,
+      attachments: input.attachments,
       events: [],
       subscribers: new Set(),
       controller: new AbortController(),
@@ -622,7 +626,7 @@ export class RunQueue {
         traceId: job.traceId ?? null,
       });
       emit({ type: 'run:tools', tools: assembled.tools.schemas() });
-      const finalText = await assembled.harness.run(job.prompt);
+      const finalText = await assembled.harness.run(job.prompt, job.attachments);
 
       // 运行完成闸门（P2-13 延伸）：自动评估本轮质量，据 HARNESS_EVAL_GATE 决定告警或拦截。
       // - off（默认）：不评估，零开销；

@@ -1404,7 +1404,8 @@ async function handleRun(
       domain,
       tenantId,
       workflowId,
-      traceId
+      traceId,
+      attachments: body.attachments
     });
     auditAction('agent.run', {
       mode,

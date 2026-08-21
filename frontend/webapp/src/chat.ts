@@ -1416,27 +1416,34 @@ export class AhChat extends LitElement {
       /* 附件上传区域样式 */
       .attachments-preview {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 8px;
-        padding: 4px 0 8px;
+        padding: 4px 0 6px;
         border-bottom: 1px solid var(--ah-border);
-        margin-bottom: 4px;
+        margin-bottom: 2px;
+        max-height: 56px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+        scrollbar-color: color-mix(in srgb, var(--ah-text-muted) 28%, transparent) transparent;
       }
       .attach-preview-item {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 6px 8px 6px 6px;
+        gap: 7px;
+        padding: 5px 32px 5px 6px;
         background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
-        border-radius: 14px;
+        border-radius: 12px;
         font-size: 12px;
-        max-width: 180px;
-        min-width: 120px;
+        max-width: 160px;
+        min-width: 110px;
+        height: 40px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
         position: relative;
+        flex-shrink: 0;
       }
       .attach-preview-item:hover {
         background: var(--ah-surface-2);
@@ -1899,18 +1906,14 @@ export class AhChat extends LitElement {
 
     const sessionId = await this.ensureSession();
 
-    // 构造用户消息内容：附件预览列表 + 提示词
-    const attachPreview = this.attachments.length
-      ? this.attachments
-          .map((f, i) => {
-            if (f.type.startsWith('image/')) {
-              return `<div class="attach-img" data-idx="${i}"><img src="${f.dataUrl}" alt="${escapeHtml(f.name)}" loading="lazy" /></div>`;
-            }
-            return `<div class="attach-file">${this.fileIcon(f)} ${escapeHtml(f.name)} (${this.formatSize(f.size)})</div>`;
-          })
-          .join('\n')
-      : '';
-    const content = attachPreview ? `${attachPreview}\n\n${prompt}` : prompt;
+    // 构造用户消息内容：只发送纯文本提示词给 LLM。
+    // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
+    const content = prompt;
+
+    // 为每个有 serverUrl 的图片构建结构化附件信息
+    const imageAttachments = this.attachments
+      .filter((f) => f.type.startsWith('image/') && f.serverUrl)
+      .map((f) => ({ url: f.serverUrl, name: f.name, type: f.type }));
 
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
@@ -1939,7 +1942,8 @@ export class AhChat extends LitElement {
           model: this.model || undefined,
           agentId: this.agentId || undefined,
           sessionId,
-          chatSessionId: sessionId
+          chatSessionId: sessionId,
+          attachments: imageAttachments.length > 0 ? imageAttachments : undefined
         },
         { signal: ac.signal }
       )) {

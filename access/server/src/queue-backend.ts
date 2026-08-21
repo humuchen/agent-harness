@@ -38,6 +38,8 @@ export interface JobDescriptor {
   workflowId?: string;
   /** P0.2：链路追踪标识（可观测性）。 */
   traceId?: string;
+  /** 图片附件列表，服务端将其转为 ContentBlock[] 传给 LLM。 */
+  attachments?: Array<{ url: string; name: string; type: string }>;
   enqueuedAt: number;
 }
 
