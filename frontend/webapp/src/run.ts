@@ -6,6 +6,10 @@ import { ApprovalRequiredError } from '@agent-harness/client';
 import type { RunMode, StreamEvent } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
+import { agentContext, useAgentContext, type UploadedFile } from './agent-context';
+import { SessionStateMachine } from './session-state';
+import './suggestions';
+import './file-upload';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -44,6 +48,14 @@ const TAG_LABEL: Record<BlockKind, string> = {
   answer: '回答',
 };
 
+/** 快捷建议（点击即填入输入框，覆盖新增内置工具的使用场景）。 */
+const SUGGESTIONS: Array<{ label: string; prompt: string }> = [
+  { label: '查天气', prompt: '帮我查一下上海的天气，未来 3 天' },
+  { label: '数据分析', prompt: '把下面这段 CSV 解析出来，并按 amount 汇总：\nname,amount\nAlice,10\nBob,20\nAlice,15' },
+  { label: '计算', prompt: '计算 pow(2,10) + sqrt(16) - 3.5' },
+  { label: '时间', prompt: '现在几点了？' },
+];
+
 /* ------------------------------ Run ------------------------------ */
 
 @customElement('ah-run')
@@ -78,6 +90,12 @@ export class AhRun extends LitElement {
   private nextId = 1;
   private abort?: AbortController;
   private toastTimer?: number;
+  /** 跨组件共享状态订阅（Lit 版 useAgentContext）：状态变更自动触发重渲染。 */
+  private ctx = useAgentContext(this);
+  /** 会话状态机：把 running/finished 从散落的布尔收敛为受控迁移。 */
+  private session = new SessionStateMachine();
+  /** 附件（来自 <ah-file-upload>，同时写入 agentContext 供各面板共享）。 */
+  @state() attachments: UploadedFile[] = [];
 
   /* ----------------------- 事件 → 阶段 / 轨迹 映射 ----------------------- */
 
@@ -161,6 +179,8 @@ export class AhRun extends LitElement {
         this.allDone();
         this.final = String((ev as any).final ?? '');
         this.steps = (ev as any).steps ?? this.steps;
+        // 会话状态机推进到 finished（订阅回调会把 running/finished 同步到位）。
+        if (this.session.can('finish')) this.session.finish();
         // 把本轮最终回答作为一条「回答」块追加进对话轨迹，使多轮聊天记录连续可读。
         if (this.final) this.push({ kind: 'answer', text: this.final });
         break;
@@ -195,8 +215,8 @@ export class AhRun extends LitElement {
     this.cost = 0;
     // 注意：不重置 this.trace / this.nextId / this.conversationId —— 保留跨轮对话。
     this.phases = PHASES.map((p) => ({ ...p }));
-    this.finished = false;
-    this.running = true;
+    // 由会话状态机统一驱动 running/finished（非法的重复 start 由 can() 挡住）。
+    if (this.session.can('start')) this.session.transition('start');
 
     // 连续对话：若尚未建立会话，由客户端生成唯一会话 key 并稳定携带，
     // 服务端据此复用同一 Memory 缓存窗口。持久化到 localStorage 以便刷新后续接。
@@ -230,12 +250,15 @@ export class AhRun extends LitElement {
     } catch (e: any) {
       if (e instanceof ApprovalRequiredError) {
         this.ticket = `需要审批：ticket ${e.ticketId}（在「审批」页裁决后重投）`;
+        if (this.session.can('approve')) this.session.requestApproval();
       } else {
         this.error = String(e?.message ?? e);
+        // 被 stop() 中止后状态已为 aborted，不再覆盖为 error。
+        if (this.session.can('error')) this.session.fail();
       }
     } finally {
-      this.running = false;
-      this.finished = true;
+      // 兜底：正常路径已在 run:end 里 finish()，这里保证任何异常路径也能收敛。
+      if (this.session.active) this.session.finish();
     }
   }
 
@@ -259,6 +282,7 @@ export class AhRun extends LitElement {
     this.steps = 0;
     this.cost = 0;
     this.phases = PHASES.map((p) => ({ ...p }));
+    this.session.reset();
     this.finished = false;
     this.running = false;
   }
@@ -272,9 +296,15 @@ export class AhRun extends LitElement {
     } catch {
       /* 忽略 */
     }
+    // 会话状态机 → UI 布尔态单向同步；后续只改状态机，不再手动改 running/finished。
+    this.session.subscribe((p) => {
+      this.running = p === 'running' || p === 'awaiting_approval';
+      this.finished = p === 'finished' || p === 'error' || p === 'aborted';
+    });
   }
 
   private stop() {
+    if (this.session.can('abort')) this.session.abort();
     this.abort?.abort();
   }
 
@@ -441,6 +471,25 @@ export class AhRun extends LitElement {
             任务提示词
             <textarea rows="3" .value=${this.prompt} ?disabled=${this.running} @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}></textarea>
           </label>
+          <ah-suggestions
+            .items=${SUGGESTIONS}
+            ?disabled=${this.running}
+            @suggestion-picked=${(e: Event) => {
+              this.prompt = (e as CustomEvent<string>).detail;
+            }}
+          ></ah-suggestions>
+          <ah-file-upload
+            .files=${this.attachments}
+            max-files="3"
+            max-size-mb="5"
+            accept=".txt,.md,.csv,.json,.log"
+            ?disabled=${this.running}
+            @files-changed=${(e: Event) => {
+              this.attachments = (e as CustomEvent<UploadedFile[]>).detail;
+              agentContext.set('files', this.attachments);
+            }}
+            @error=${(e: Event) => this.showToast((e as CustomEvent<string>).detail)}
+          ></ah-file-upload>
           <div class="row">
             <button ?disabled=${this.running} @click=${() => this.run()}>
               ${this.running ? '运行中…' : '运行 Agent'}

@@ -3,6 +3,8 @@ import { registerFilesystem, type FilesystemOptions } from './filesystem';
 import { registerWebFetch, type WebFetchOptions } from './webfetch';
 import { registerCalculator } from './calculator';
 import { registerDateTime } from './datetime';
+import { registerWeather } from './weather';
+import { registerDataTransform } from './datatransform';
 import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
 import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
 
@@ -17,6 +19,10 @@ export interface BuiltinOptions {
   webMaxBytes?: number;
   calcEnabled?: boolean;
   datetimeEnabled?: boolean;
+  /** 天气工具（open-meteo 免 key）开关。默认开启。 */
+  weatherEnabled?: boolean;
+  /** 数据转换/ETL 工具（JSON/CSV 解析、文本清洗、聚合）开关。默认开启。 */
+  dataTransformEnabled?: boolean;
   /**
    * 沙箱 shell / 代码执行能力开关。默认关闭（opt-in，危险能力需显式开启）：
    *   - 设为 true 开启；或环境变量 SHELL_ENABLED=true。
@@ -65,6 +71,8 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const webMaxBytes = options.webMaxBytes ?? 200_000;
   const calcEnabled = options.calcEnabled ?? true;
   const datetimeEnabled = options.datetimeEnabled ?? true;
+  const weatherEnabled = options.weatherEnabled ?? true;
+  const dataTransformEnabled = options.dataTransformEnabled ?? true;
 
   // 沙箱 shell 能力：默认关闭，需显式开启（环境变量 SHELL_ENABLED=true 或调用方传入）。
   const shellEnabled = options.shellEnabled ?? process.env.SHELL_ENABLED === 'true';
@@ -78,6 +86,8 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   if (webEnabled && allow('web_fetch')) registerWebFetch(registry, { maxBytes: webMaxBytes });
   if (calcEnabled && allow('calculator')) registerCalculator(registry);
   if (datetimeEnabled && allow('datetime')) registerDateTime(registry);
+  if (weatherEnabled && allow('weather')) registerWeather(registry);
+  if (dataTransformEnabled && allow('data_transform')) registerDataTransform(registry);
   if (shellEnabled && allow('shell')) {
     const whitelist =
       options.shellWhitelist ??
@@ -101,6 +111,8 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
 }
 
 export { evaluateExpression } from './calculator';
+export { registerWeather } from './weather';
+export { registerDataTransform } from './datatransform';
 export { registerShell } from './shell';
 export type { ShellOptions, ShellConfirmStrategy, ShellExecRequest } from './shell';
 export { createSandboxExecutor } from './sandbox';

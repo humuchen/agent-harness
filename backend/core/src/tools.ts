@@ -163,3 +163,89 @@ function tokenize(text: string): string[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// defineTool：声明式工具封装
+// ---------------------------------------------------------------------------
+// SVG 架构图里的「defineTool 工具封装」对应到核心框架的真实形态：
+// 用一个纯数据对象描述一个工具（名称 / 描述 / JSON-Schema 参数 / 执行函数），
+// 由 defineTool 做参数校验并产出一个可链式的 DefinedTool（自带 .register(registry)），
+// 让插件 / 行业 agent / 业务侧以「声明即注册」的方式接入，无需手动拼装 ToolRegistry.register。
+// 该 helper 不引入任何外部依赖，与 registerCalculator 等内置工具走同一注册表语义。
+
+/** 工具声明（声明式定义工具所需的最小信息）。 */
+export interface ToolDefinition {
+  /** 工具唯一名（允许字母数字、下划线、点、连字符；建议带命名空间前缀如 `builtin__` / `plugin__`）。 */
+  name: string;
+  /** 功能描述，供 LLM 选择工具时理解用途。 */
+  description: string;
+  /** JSON-Schema 风格的参数块（object 类型）。缺省视为「接收任意对象参数」。 */
+  parameters?: Record<string, unknown>;
+  /** 执行函数：接收参数对象，返回结果（字符串 / 对象 / 任意可序列化值）。 */
+  fn: ToolFn;
+  /** 工具来源标注（如 'builtin' / 'harness' / 'plugin:xxx'）。仅用于可视化与可观测。 */
+  source?: string;
+}
+
+/** defineTool 的产物：携带元数据的可注册工具。 */
+export interface DefinedTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly fn: ToolFn;
+  readonly source?: string;
+  /** 等价的 ToolSchema（可直接喂给 LLM 调用）。 */
+  readonly schema: ToolSchema;
+  /** 把本工具注册进给定注册表。 */
+  register(registry: ToolRegistry): void;
+}
+
+const TOOL_NAME_RE = /^[\w.-]+$/;
+
+/**
+ * 声明式定义一个工具：校验入参并产出 DefinedTool。
+ * 校验失败立即抛错（开发期快速暴露错误），不静默放行。
+ * @throws 当 name / description / fn 非法时抛 Error。
+ */
+export function defineTool(def: ToolDefinition): DefinedTool {
+  if (!def || typeof def !== 'object') {
+    throw new Error('defineTool: def 必须是一个对象');
+  }
+  const name = typeof def.name === 'string' ? def.name.trim() : '';
+  if (!name) {
+    throw new Error('defineTool: name 必填且必须是非空字符串');
+  }
+  if (!TOOL_NAME_RE.test(name)) {
+    throw new Error(
+      `defineTool: 非法工具名 "${name}"（仅允许字母、数字、下划线、点、连字符）`
+    );
+  }
+  if (typeof def.description !== 'string' || !def.description.trim()) {
+    throw new Error(`defineTool: "${name}" 必须提供 description`);
+  }
+  if (typeof def.fn !== 'function') {
+    throw new Error(`defineTool: "${name}" 必须提供 fn 函数`);
+  }
+  const parameters =
+    def.parameters && typeof def.parameters === 'object' && !Array.isArray(def.parameters)
+      ? def.parameters
+      : objectParams({});
+  const source = def.source;
+  const schema: ToolSchema = {
+    name,
+    description: def.description,
+    parameters,
+    ...(source ? { source } : {})
+  };
+  return {
+    name,
+    description: def.description,
+    parameters,
+    fn: def.fn,
+    source,
+    schema,
+    register(registry: ToolRegistry): void {
+      registry.register(name, def.description, parameters, def.fn, source);
+    }
+  };
+}
+

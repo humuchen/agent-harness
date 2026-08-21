@@ -111,7 +111,7 @@ test('fail-closed：外部订单上游未配置 → cs_order_query 返回 NOT_CO
   const out = await reg.call('cs_order_query', { orderNo: 'NO-123' });
   assert.strictEqual(out.code, 'NOT_CONFIGURED');
   assert.strictEqual(out.error, true);
-  // services 层同样 fail-closed
-  const svc = orderSvc.queryOrder({ orderNo: 'NO-123' });
+  // services 层同样 fail-closed（queryOrder 为 async，需 await）
+  const svc = await orderSvc.queryOrder({ orderNo: 'NO-123' });
   assert.strictEqual(svc.code, 'NOT_CONFIGURED');
 });
