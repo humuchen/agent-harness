@@ -4,6 +4,7 @@ import {
   Memory,
   objectParams,
   registerShell,
+  messageText,
   type ShellExecRequest,
 } from '@agent-harness/core';
 import type { LLM, ToolCall } from '@agent-harness/core';
@@ -52,9 +53,9 @@ async function main(): Promise<void> {
     const last = messages[messages.length - 1];
     // 工具结果回显，便于直观看到「拦截 / 成功」。
     if (last?.role === 'tool') {
-      return { content: `工具返回：${String(last.content ?? '').slice(0, 200)}`, tool_calls: [] };
+      return { content: `工具返回：${String(messageText(last)).slice(0, 200)}`, tool_calls: [] };
     }
-    const text = last?.content ?? '';
+    const text = messageText(last);
     if (text.includes('列出') || text.includes('list')) {
       const call: ToolCall = { id: 'c1', name: 'builtin__shell_exec', arguments: { command: 'ls', cwd: '.' } };
       return { content: '', tool_calls: [call] };

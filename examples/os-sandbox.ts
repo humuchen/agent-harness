@@ -5,6 +5,7 @@ import {
   objectParams,
   registerShell,
   createSandboxExecutor,
+  messageText,
   type ShellExecRequest,
 } from '@agent-harness/core';
 import type { LLM, ToolCall } from '@agent-harness/core';
@@ -67,9 +68,9 @@ async function main(): Promise<void> {
   const mockLLM: LLM = async (messages) => {
     const last = messages[messages.length - 1];
     if (last?.role === 'tool') {
-      return { content: `工具返回：${String(last.content ?? '').slice(0, 200)}`, tool_calls: [] };
+      return { content: `工具返回：${String(messageText(last)).slice(0, 200)}`, tool_calls: [] };
     }
-    const text = last?.content ?? '';
+    const text = messageText(last);
     if (text.includes('列出') || text.includes('list')) {
       return { content: '', tool_calls: [{ id: 'c1', name: 'builtin__shell_exec', arguments: { command: 'ls', cwd: '.' } } as ToolCall] };
     }

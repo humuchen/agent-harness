@@ -93,3 +93,13 @@ export type LLM = (
   tools: ToolSchema[],
   options?: LLMCallOptions
 ) => Promise<LLMResponse>;
+
+/** 从 Message.content 中提取纯文本（兼容 ContentBlock[] 多模态结构）。 */
+export function messageText(msg: Message | undefined): string {
+  if (!msg?.content) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  return msg.content
+    .filter((b): b is ContentBlock & { text: string } => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n');
+}
