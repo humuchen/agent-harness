@@ -12,6 +12,8 @@ import type {
   TraceNode,
   TraceKind
 } from '@agent-harness/client';
+import { agentContext, useAgentContext, type UploadedFile } from './agent-context';
+import './file-upload';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -34,6 +36,8 @@ interface ChatMsg {
   trace?: TraceNode[];
   /** 错误态：以警示样式渲染。 */
   error?: boolean;
+  /** 本次消息携带的附件（图片/文件预览）。 */
+  attachments?: UploadedFile[];
 }
 
 /** 检索/搜索类工具名特征：命中则归类为 retrieval 节点，结果以「检索内容」突出展示。 */
@@ -1467,6 +1471,8 @@ export class AhChat extends LitElement {
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
   @state() agents: { id: string; name: string }[] = [];
   @state() agentId = '';
+  /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
+  @state() attachments: UploadedFile[] = [];
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
@@ -1701,18 +1707,32 @@ export class AhChat extends LitElement {
   private async send() {
     const prompt = this.input.trim();
     // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
-    if (!prompt || this.streaming[this.activeId]) return;
+    if (!prompt && this.attachments.length === 0) return;
     this.error = null;
 
     const sessionId = await this.ensureSession();
 
+    // 构造用户消息内容：附件预览列表 + 提示词
+    const attachPreview = this.attachments.length
+      ? this.attachments
+          .map((f, i) => {
+            if (f.type.startsWith('image/')) {
+              return `<div class="attach-img" data-idx="${i}"><img src="${f.dataUrl}" alt="${escapeHtml(f.name)}" loading="lazy" /></div>`;
+            }
+            return `<div class="attach-file">${this.fileIcon(f)} ${escapeHtml(f.name)} (${this.formatSize(f.size)})</div>`;
+          })
+          .join('\n')
+      : '';
+    const content = attachPreview ? `${attachPreview}\n\n${prompt}` : prompt;
+
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
-    t.push({ id: this.nextId++, role: 'user', content: prompt });
+    t.push({ id: this.nextId++, role: 'user', content, attachments: [...this.attachments] });
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;
     this.threads[sessionId] = t;
     this.input = '';
+    this.attachments = [];
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.received[sessionId] = false;
     this.pending[sessionId] = { content: '', reasoning: '' };
@@ -2216,6 +2236,35 @@ export class AhChat extends LitElement {
     }
   }
 
+  /** 处理文件选择。 */
+  private onFileSelect(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (!input.files?.length) return;
+    const maxBytes = 5 * 1024 * 1024;
+    const files: UploadedFile[] = [];
+    for (const f of Array.from(input.files)) {
+      if (f.size > maxBytes) {
+        this.error = `文件过大：${f.name}（上限 5MB）`;
+        continue;
+      }
+      const reader = new FileReader();
+      const dataUrl = new Promise<string>((resolve) => {
+        reader.onload = () => resolve(String(reader.result ?? ''));
+        reader.readAsDataURL(f);
+      });
+      dataUrl.then((url) => files.push({ name: f.name, size: f.size, type: f.type, dataUrl: url }));
+    }
+    Promise.all(files.map((_, i) => files[i].dataUrl)).then(() => {
+      this.attachments = [...this.attachments, ...files];
+    });
+    input.value = '';
+  }
+
+  /** 移除已选附件。 */
+  private removeAttachment(i: number) {
+    this.attachments = this.attachments.filter((_, idx) => idx !== i);
+  }
+
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
   private toggleThink(id: number) {
     const k = String(id);
@@ -2238,13 +2287,47 @@ export class AhChat extends LitElement {
     this.sidebarOpen = !this.sidebarOpen;
   }
 
+  /** 渲染附件预览（图片缩略图 / 文件图标）。 */
+  private renderAttachments(files: UploadedFile[]): TemplateResult {
+    const hasImages = files.some((f) => f.type.startsWith('image/'));
+    const images = files.filter((f) => f.type.startsWith('image/'));
+    const others = files.filter((f) => !f.type.startsWith('image/'));
+    return html`
+      <div class="attachments ${hasImages ? 'has-images' : ''}">
+        ${images.map(
+          (f) =>
+            html`<div class="attach-img"><img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" /></div>`
+        )}
+        ${others.map(
+          (f) =>
+            html`<div class="attach-file">${this.fileIcon(f)} ${escapeHtml(f.name)} (${this.formatSize(f.size)})</div>`
+        )}
+      </div>
+    `;
+  }
+
+  private fileIcon(f: UploadedFile): string {
+    if (f.type.startsWith('image/')) return '🖼';
+    if (f.type.includes('pdf')) return '📄';
+    if (f.type.includes('csv') || f.type.includes('json') || f.type.includes('text')) return '📝';
+    return '📎';
+  }
+
+  private formatSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   private renderMessage(m: ChatMsg) {
-    // 用户消息：仅渲染气泡文本。
+    // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
+      const hasAttachments = m.attachments && m.attachments.length > 0;
       return html`
         <div class="msg user">
           <div class="avatar">你</div>
           <div class="bubble">
+            ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
             <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
           </div>
         </div>
@@ -2778,6 +2861,21 @@ export class AhChat extends LitElement {
 
         <div class="composer-wrap">
           <div class="composer">
+            ${this.attachments.length > 0
+              ? html`<div class="attachments-preview">
+                  ${this.attachments.map(
+                    (f, i) => html`
+                      <div class="attach-preview-item">
+                        ${f.type.startsWith('image/')
+                          ? html`<img src=${f.dataUrl} alt=${escapeHtml(f.name)} class="attach-thumb" />`
+                          : html`<span class="attach-icon">${this.fileIcon(f)}</span>`}
+                        <span class="attach-name">${escapeHtml(f.name)}</span>
+                        <button class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
+                      </div>
+                    `
+                  )}
+                </div>`
+              : nothing}
             <textarea
               rows="1"
               placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
@@ -2786,6 +2884,10 @@ export class AhChat extends LitElement {
               @input=${this.onInput}
               @keydown=${this.onKey}
             ></textarea>
+            <label class="attach-btn" title="上传附件">
+              <input type="file" multiple accept="image/*,.txt,.md,.csv,.json" style="display:none" @change=${this.onFileSelect} />
+              📎
+            </label>
             ${this.streaming[this.activeId] === true
               ? html`<button
                   class="send"

@@ -47,7 +47,8 @@ export type Action =
   | 'chat:read'
   | 'chat:write'
   | 'chat:delete'
-  | 'env:read';
+  | 'env:read'
+  | 'upload:file';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */

@@ -13,11 +13,34 @@ export interface ToolCall {
 
 export interface Message {
   role: Role;
-  content?: string;
+  /** 纯文本内容（向后兼容）；多模态时可为 ContentBlock[]。 */
+  content?: string | ContentBlock[];
   tool_calls?: ToolCall[];
   // 工具结果消息引用原始调用的 id 与工具名称
   tool_call_id?: string;
   name?: string;
+}
+
+/**
+ * 多模态消息内容块（OpenAI / Claude 兼容）。
+ * 支持 text（纯文本）与 image_url（图片 Base64）两种块。
+ */
+export interface ContentBlock {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string; detail?: 'low' | 'high' | 'auto' };
+}
+
+/** 已上传文件元信息（服务端返回 / 前端存储用）。 */
+export interface UploadedFileMeta {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  /** 服务端 URL，可直接用于 <img src>。 */
+  url: string;
+  /** 上传时间戳。 */
+  uploadedAt: number;
 }
 
 // 工具参数的类 JSON-Schema 描述。

@@ -33,6 +33,7 @@ import {
   type TenantContext,
   tenantSessionKey,
   policyEngine,
+  type ContentBlock,
   getPluginToolRegistry,
   isEnabled,
 } from '@agent-harness/core';
@@ -589,14 +590,14 @@ export function makeMockEnvLLM(): LLM {
     const last = messages[messages.length - 1];
 
     if (last?.role === 'tool' && last.name === 'destroy_environment') {
-      const h = safeParse(last.content ?? '');
+      const h = safeParse(messageText(last) ?? '');
       const content = `已完成闭环：临时环境 ${h.envId} 已创建并销毁，无残留资源。`;
       await streamOut(opts?.onToken, content, 16);
       return { content, tool_calls: [] };
     }
 
     if (last?.role === 'tool' && last.name === 'create_ephemeral_environment') {
-      const h = safeParse(last.content ?? '');
+      const h = safeParse(messageText(last) ?? '');
       const call: ToolCall = {
         id: 'call_' + Date.now(),
         name: 'destroy_environment',
@@ -604,13 +605,13 @@ export function makeMockEnvLLM(): LLM {
       };
       await streamOut(
         opts?.onReasoning,
-        `用户希望创建一个临时环境用于验证。\n从请求解析：环境类型 ephemeral，TTL 8h。\n分支推断为 ${branchOf(last?.content ?? '')}，据此调用 create_ephemeral_environment 落地。`,
+        `用户希望创建一个临时环境用于验证。\n从请求解析：环境类型 ephemeral，TTL 8h。\n分支推断为 ${branchOf(messageText(last))}，据此调用 create_ephemeral_environment 落地。`,
         14
       );
       return { content: '', tool_calls: [call] };
     }
 
-    const text = last?.content ?? '';
+    const text = messageText(last);
 
     // 普通问答：不触发任何工具，直接流式输出应答。
     if (!ENV_INTENT.test(text)) {
@@ -673,4 +674,14 @@ function safeParse(s: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+/** 从 Message.content 中提取纯文本（兼容 ContentBlock[] 多模态结构）。 */
+function messageText(msg: Message | undefined): string {
+  if (!msg?.content) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  return msg.content
+    .filter((b): b is ContentBlock & { text: string } => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n');
 }

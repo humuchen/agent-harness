@@ -100,6 +100,8 @@ import {
 } from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
+// 文件上传（图片/文本附件）。
+import { handleUpload, serveUploaded, type UploadMeta } from './upload';
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
@@ -961,6 +963,50 @@ const server = createServer(
           }
         }
       }
+      // 上传附件：POST /api/upload（multipart/form-data，图片/文本）。
+      if (path === '/api/upload' && req.method === 'POST') {
+        const ctx = await guard(req, res, 'upload:file');
+        if (!ctx) return;
+        try {
+          const chunks: Buffer[] = [];
+          let total = 0;
+          for await (const c of req) {
+            total += (c as Buffer).length;
+            if (total > 20 * 1024 * 1024) {
+              const err: any = new Error('request body too large (20 MB limit)');
+              err.status = 413;
+              throw err;
+            }
+            chunks.push(c as Buffer);
+          }
+          const result = await handleUpload(Buffer.concat(chunks), String(req.headers['content-type'] ?? ''));
+          if (!result.ok) {
+            return sendJson(res, { error: result.error }, req);
+          }
+          return sendJson(res, { ok: true, meta: result.meta }, req);
+        } catch (e: any) {
+          const code = typeof e?.status === 'number' ? e.status : 400;
+          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+      }
+
+      // 获取已上传文件：GET /api/uploads/:filename（静态展示用，含防穿越）。
+      const um = path.match(/^\/api\/uploads\/(.+)$/);
+      if (um && req.method === 'GET') {
+        const filename = decodeURIComponent(um[1]);
+        const result = await serveUploaded(filename);
+        if (!result.ok) {
+          return sendJson(res, { error: result.error }, req);
+        }
+        res.writeHead(200, {
+          'content-type': result.mime,
+          'cache-control': 'public, max-age=86400',
+          ...corsHeaders(req)
+        });
+        res.end(result.buf);
+        return;
+      }
+
       // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
       if (await pluginSystem.serverHost.handle(path, req, res)) return;
 
