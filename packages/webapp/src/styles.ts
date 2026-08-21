@@ -436,6 +436,62 @@ export const sharedStyles = css`
   .list li {
     margin: 4px 0;
   }
+  /* MCP 已接入错误：红色内联提示，让「添加后失败」可见原因 */
+  .mcp-err {
+    margin-top: 4px;
+    color: var(--ah-danger);
+    font-size: 12px;
+    font-family: var(--ah-font-mono);
+    word-break: break-all;
+  }
+  /* 预设市场卡片条目 */
+  .preset {
+    list-style: none;
+    margin: 0 0 14px !important;
+    padding: 12px 14px;
+    background: var(--ah-surface-1);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-md);
+  }
+  .preset-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .preset-note {
+    margin: 8px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: var(--ah-radius-pill);
+    font-size: 11px;
+    font-family: var(--ah-font-mono);
+    background: var(--ah-surface-3);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+  }
+  .chip.ok {
+    color: var(--ah-success);
+    background: var(--ah-success-soft);
+    border-color: transparent;
+  }
+  .preset-token {
+    flex: 1;
+    min-width: 160px;
+  }
+  .ghost-link {
+    color: var(--ah-accent);
+    font-size: 13px;
+    text-decoration: none;
+  }
+  .ghost-link:hover {
+    text-decoration: underline;
+  }
 
   /* ------------------- Dashboard / Observability 专用 ------------------- */
   .two {

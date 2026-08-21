@@ -37,6 +37,12 @@ export interface McpPreset {
   recommended?: boolean;
   /** 补充说明（如「需在 xxx 复制专属 URL」）。 */
   note?: string;
+  /**
+   * 是否支持面板「一键接入」（默认 true）。
+   * 设为 false 的预设（如 Zapier 通用端点需专属 secret URL）不渲染接入按钮，
+   * 改为引导用户复制专属 URL 走「自定义添加」，避免一键必失败。
+   */
+  oneClick?: boolean;
 }
 
 export const MCP_PRESETS: McpPreset[] = [
@@ -64,7 +70,7 @@ export const MCP_PRESETS: McpPreset[] = [
     capabilities: ['仓库', 'Issue', 'PR', 'Copilot Spaces'],
     docUrl: 'https://github.com/features/copilot',
     recommended: true,
-    note: '需 GitHub Copilot 订阅；可用 X-MCP-Toolsets 头启用工具集。',
+    note: '需 GitHub Copilot 订阅 + 有效 PAT；接入时填写 PAT。国内网络可能无法访问 api.githubcopilot.com（此时会 fetch failed）。',
   },
   {
     id: 'composio',
@@ -87,7 +93,8 @@ export const MCP_PRESETS: McpPreset[] = [
     authType: 'none',
     capabilities: ['9000+ App', '30000+ 动作'],
     docUrl: 'https://mcp.zapier.com',
-    note: '在 mcp.zapier.com 创建 server 后复制其专属 secret URL，再粘贴到「自定义添加」。',
+    oneClick: false,
+    note: '不支持一键接入：通用端点需登录后生成的「专属 secret URL」。请在 mcp.zapier.com 创建 server 并复制其 URL，再用左侧「自定义添加」粘贴接入。',
   },
   {
     id: 'playwright',

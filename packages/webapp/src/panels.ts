@@ -155,6 +155,8 @@ export class AhMcp extends LitElement {
   @state() presets: McpPreset[] = [];
   @state() name = '';
   @state() url = '';
+  /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
+  @state() tokens: Record<string, string> = {};
   @state() error: string | null = null;
 
   connectedCallback() {
@@ -220,7 +222,12 @@ export class AhMcp extends LitElement {
               <div class="section-title">已接入</div>
               <ul class="list">
                 ${this.servers.map(
-                  (s) => html`<li><b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具</li>`
+                  (s) => html`<li>
+                    <b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具
+                    ${s.status === 'error' && s.error
+                      ? html`<div class="mcp-err">⚠ ${s.error}</div>`
+                      : nothing}
+                  </li>`
                 )}
               </ul>
               ${this.servers.length === 0 ? html`<p class="muted">暂无已接入服务</p>` : nothing}
@@ -231,9 +238,36 @@ export class AhMcp extends LitElement {
           <div class="card">
             <div class="section-title">预设市场</div>
             <ul class="list">
-              ${this.presets.map(
-                (p) => html`<li>${p.name}（${p.authType}） <button @click=${() => this.preset(p.id)}>一键接入</button></li>`
-              )}
+              ${this.presets.map((p) => {
+                const tokenInput =
+                  p.authType === 'bearer'
+                    ? html`<label class="grow preset-token"
+                        >${p.authLabel ?? 'Token'}<input
+                          .value=${this.tokens[p.id] ?? ''}
+                          @input=${(e: Event) =>
+                            (this.tokens = { ...this.tokens, [p.id]: (e.target as HTMLInputElement).value })}
+                          placeholder=${p.authPlaceholder ?? ''}
+                      /></label>`
+                    : nothing;
+                return html`<li class="preset">
+                  <div class="preset-head">
+                    <b>${p.name}</b>
+                    <span class="chip">${p.authType}</span>
+                    ${p.recommended ? html`<span class="chip ok">推荐</span>` : nothing}
+                  </div>
+                  ${p.note ? html`<div class="muted preset-note">${p.note}</div>` : nothing}
+                  ${p.oneClick === false
+                    ? html`<div class="row" style="margin-top:8px">
+                        <a class="ghost-link" href=${p.docUrl ?? '#'} target="_blank" rel="noopener"
+                          >查看接入说明 ›</a
+                        >
+                      </div>`
+                    : html`<div class="row" style="margin-top:8px">
+                        ${tokenInput}
+                        <button @click=${() => this.preset(p.id, this.tokens[p.id])}>一键接入</button>
+                      </div>`}
+                </li>`;
+              })}
             </ul>
             ${this.presets.length === 0 ? html`<p class="muted">暂无预设</p>` : nothing}
           </div>
