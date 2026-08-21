@@ -108,8 +108,12 @@ export class AhApp extends LitElement {
     this.theme = getTheme();
     // 拉取插件视图（动态 Tab），失败不阻断主面板。
     void this.loadPluginViews();
-    // 监听子面板发来的刷新请求（如创建/销毁环境后）。
-    this.addEventListener('ah-refresh', () => this.refreshState());
+    // 监听子面板发来的刷新请求（如创建/销毁环境后）；同时重拉插件视图，
+    // 使正在查看的插件 Tab（如客资看板）也能拿到最新服务端渲染数据。
+    this.addEventListener('ah-refresh', () => {
+      this.refreshState();
+      void this.loadPluginViews();
+    });
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
@@ -143,6 +147,20 @@ export class AhApp extends LitElement {
     } catch {
       /* 插件视图拉取失败不阻断主面板 */
     }
+  }
+
+  /**
+   * 打开插件动态 Tab：先向服务端重新拉取插件视图（服务端会调用插件 view.render()
+   * 实时聚合 SQL 数据），再切换到目标 Tab。
+   *
+   * 修复：插件视图 HTML 是服务端按请求实时渲染的，若只在页面加载时拉取一次并缓存，
+   * 之后点击 Tab 注入的是旧快照（如「客资看板」首次进入无数据、需手动刷新才出现）。
+   * 这里点击时重新拉取，保证每次进入都看到最新数据；拉取失败则回退旧快照，不阻断切换。
+   */
+  private async openPluginTab(id: string) {
+    await this.loadPluginViews();
+    this.tab = id;
+    this.closeDrawer();
   }
 
   private refreshState() {
@@ -232,10 +250,7 @@ export class AhApp extends LitElement {
                 class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
                 data-short=${t.short}
                 title=${t.label}
-                @click=${() => {
-                  this.tab = t.id;
-                  this.closeDrawer();
-                }}
+                @click=${() => this.openPluginTab(t.id)}
               >
                 <span class="nav-text">${t.label}</span>
               </button>`
