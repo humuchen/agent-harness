@@ -1360,6 +1360,7 @@ export class AhChat extends LitElement {
         max-width: 820px;
         margin: 0 auto;
         display: flex;
+        flex-wrap: wrap;
         align-items: flex-end;
         gap: 10px;
         border: 1px solid var(--ah-border);
@@ -1415,13 +1416,16 @@ export class AhChat extends LitElement {
       }
       /* 附件上传区域样式 */
       .attachments-preview {
+        /* 独占整行：置于输入框上方，避免与 textarea 并排挤压其宽度 */
+        flex-basis: 100%;
+        order: -1;
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
-        padding: 4px 0 6px;
+        padding: 2px 0 8px;
         border-bottom: 1px solid var(--ah-border);
-        margin-bottom: 2px;
-        max-height: 56px;
+        margin-bottom: 0;
+        max-height: 52px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
@@ -1431,19 +1435,30 @@ export class AhChat extends LitElement {
         display: flex;
         align-items: center;
         gap: 7px;
-        padding: 5px 32px 5px 6px;
+        padding: 4px 30px 4px 6px;
         background: var(--ah-surface-3);
         border: 1px solid var(--ah-border);
         border-radius: 12px;
         font-size: 12px;
-        max-width: 160px;
+        max-width: 170px;
         min-width: 110px;
-        height: 40px;
+        height: 36px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
         position: relative;
         flex-shrink: 0;
+      }
+      /* 上传失败：去掉单独徽标，整框上红色边框 + 底色提示 */
+      .attach-preview-item.error {
+        border-color: var(--ah-danger, #e24b4a);
+        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 14%, var(--ah-surface-3));
+      }
+      .attach-err {
+        flex-shrink: 0;
+        font-size: 11px;
+        color: var(--ah-danger, #e24b4a);
+        white-space: nowrap;
       }
       .attach-preview-item:hover {
         background: var(--ah-surface-2);
@@ -1538,9 +1553,6 @@ export class AhChat extends LitElement {
       }
       .attach-status.done {
         background: var(--ah-success);
-      }
-      .attach-status.error {
-        background: var(--ah-danger);
       }
       /* 消息气泡中的附件 */
       .attachments {
@@ -1910,10 +1922,14 @@ export class AhChat extends LitElement {
     // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
     const content = prompt;
 
-    // 为每个有 serverUrl 的图片构建结构化附件信息
+    // 为每个图片构建结构化附件信息。
+    // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
+    // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
+    // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
     const imageAttachments = this.attachments
-      .filter((f) => f.type.startsWith('image/') && f.serverUrl)
-      .map((f) => ({ url: f.serverUrl, name: f.name, type: f.type }));
+      .filter((f) => f.type.startsWith('image/'))
+      .map((f) => ({ url: f.dataUrl || f.serverUrl || '', name: f.name, type: f.type }))
+      .filter((f) => f.url);
 
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
@@ -3102,14 +3118,18 @@ export class AhChat extends LitElement {
               ? html`<div class="attachments-preview">
                   ${this.attachments.map(
                     (f, i) => html`
-                      <div class="attach-preview-item">
+                      <div class="attach-preview-item ${f.uploadStatus === 'error' ? 'error' : ''}">
                         ${f.type.startsWith('image/')
                           ? html`<img src=${f.dataUrl} alt=${escapeHtml(f.name)} class="attach-thumb" />`
                           : html`<span class="attach-icon">${this.fileIcon(f)}</span>`}
                         <span class="attach-name" title=${f.name}>${escapeHtml(f.name)}</span>
-                        <span class="attach-status ${f.uploadStatus || 'idle'}" title=${f.uploadError || ''}>
-                          ${f.uploadStatus === 'uploading' ? '⏳' : f.uploadStatus === 'done' ? '✓' : f.uploadStatus === 'error' ? '✗' : ''}
-                        </span>
+                        ${f.uploadStatus === 'uploading'
+                          ? html`<span class="attach-status uploading" title="上传中">⏳</span>`
+                          : f.uploadStatus === 'done'
+                          ? html`<span class="attach-status done" title="已上传">✓</span>`
+                          : f.uploadStatus === 'error'
+                          ? html`<span class="attach-err" title=${f.uploadError || '上传失败'}>上传失败</span>`
+                          : nothing}
                         <button type="button" class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
                       </div>
                     `
