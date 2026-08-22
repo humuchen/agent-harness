@@ -6,6 +6,7 @@ import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
+import { renderSandboxChip } from './dashboard';
 import './plugins-console';
 
 type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat' | 'plugins';
@@ -290,6 +291,9 @@ export class AhApp extends LitElement {
                     <span class="pill">model: ${this.state.model}</span>
                     <span class="pill">env: ${this.state.envs.length}</span>
                     <span class="pill">mcp: ${this.state.mcpServers.length}</span>
+                    ${this.state.sandbox
+                      ? renderSandboxChip(this.state.sandbox)
+                      : html`<span class="pill muted">沙箱：硬化本地</span>`}
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>

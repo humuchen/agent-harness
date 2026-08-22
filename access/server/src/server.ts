@@ -488,6 +488,20 @@ const server = createServer(
         // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
         return sendJson(res, buildState());
       }
+      if (req.method === 'GET' && path === '/api/sandbox') {
+        // 沙箱能力快照（OS 级隔离就绪状态 + 实际生效原语），供前端「可观测」面板展示。
+        // 不依赖任何可选依赖；若未加载 OSSandboxExecutor 模块则返回「未启用」占位。
+        let sandboxStatus: unknown;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { createOSSandboxExecutor } = require('@agent-harness/core');
+          const exec = createOSSandboxExecutor();
+          sandboxStatus = (exec as { describe?(): unknown }).describe?.() ?? null;
+        } catch {
+          sandboxStatus = null;
+        }
+        return sendJson(res, { sandbox: sandboxStatus }, req);
+      }
       // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
       if (req.method === 'GET' && path === '/errors') {
         const ctx = await guard(req, res, 'errors:read');
@@ -1024,11 +1038,21 @@ const server = createServer(
 );
 
 function buildState() {
+  let sandbox: unknown = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createOSSandboxExecutor } = require('@agent-harness/core');
+    const exec = createOSSandboxExecutor();
+    sandbox = (exec as { describe?(): unknown }).describe?.() ?? null;
+  } catch {
+    // 模块未加载 / 构造失败均不影响主状态
+  }
   return {
     openrouter: !!process.env.OPENROUTER_API_KEY,
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
+    sandbox,
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,
       url: s.url ?? null,

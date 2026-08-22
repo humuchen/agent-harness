@@ -1,8 +1,21 @@
-/**
- * 总览（Dashboard）路由：健康 hero + KPI 卡片 + 实时活动 + 最近环境。
- * 数据来自 getState / getMetrics / getJobs / listApprovals（均为真实接口）。
- * 所有视觉走 --ah-* 语义令牌，主题切换零改动。
+/** 沙箱能力标签：把 `active` 四个原语渲染成「已生效 / 未生效」芯片。
+ * 供 Dashboard 顶栏展示当前 shell 执行被哪些 OS 隔离约束保护。
  */
+export function renderSandboxChip(s: NonNullable<ServerState['sandbox']>) {
+  const pills = [
+    ['namespaces', 'NS'],
+    ['seccomp', 'seccomp'],
+    ['resourceLimits', 'RL'],
+    ['capabilities', 'caps'],
+  ] as const;
+  const active = pills.filter(([k]) => s.active[k]).map(([, l]) => l);
+  const inactive = pills.filter(([k]) => !s.active[k]).map(([, l]) => l);
+  const icon = s.supported ? '🛡' : '⚠️';
+  const body = s.backend === 'os-fallback-local'
+    ? `硬化本地（${inactive.join('/') || '无 OS 原语'}）${s.reason ? ` — ${s.reason}` : ''}`
+    : `${s.backend} (${active.join('/')})`;
+  return html`<span class="pill sandbox" title="${body}">${icon} 沙箱</span>`;
+}
 import { LitElement, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
@@ -116,10 +129,13 @@ export class AhDashboard extends LitElement {
         <div class="hero">
           <h2>Agent Harness 控制台</h2>
           <div class="hero-sub">
-            ${s?.openrouter ? 'LLM 实时模式' : 'LLM 离线 Mock 模式'} ·
-            模型 ${s?.model ?? '—'} ·
-            记忆后端 ${m ? (m as any).memory?.backend ?? '—' : '—'}
-          </div>
+              ${s?.openrouter ? 'LLM 实时模式' : 'LLM 离线 Mock 模式'} ·
+              模型 ${s?.model ?? '—'} ·
+              记忆后端 ${m ? (m as any).memory?.backend ?? '—' : '—'} ·
+              ${s?.sandbox
+                ? html`沙箱 <b>${s.sandbox.backend}</b>${s.sandbox.supported ? '（' + Object.entries(s.sandbox.active).filter(([, v]) => v).map(([k]) => k).join('/') + '）' : ' — ' + s.sandbox.reason}`
+                : '沙箱：硬化本地（无 OS 级隔离）'}
+            </div>
           <div class="hero-stats">
             <div class="hero-stat"><div class="v">${fmtUptime(m?.uptimeMs ?? 0)}</div><div class="k">运行时长</div></div>
             <div class="hero-stat"><div class="v">${j?.queue.jobs ?? 0}</div><div class="k">累计任务</div></div>

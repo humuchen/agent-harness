@@ -240,6 +240,14 @@ export interface ServerState {
   harnessKey: boolean;
   harnessDryRun: boolean;
   model: string;
+  /** OS 级沙箱能力快照（由 /api/sandbox 同源构建）；null = 未启用或当前平台不支持（macOS/Windows 属此类）。 */
+  sandbox: {
+    backend: string;
+    supported: boolean;
+    reason: string;
+    active: { namespaces: boolean; seccomp: boolean; resourceLimits: boolean; capabilities: boolean };
+    profile?: unknown;
+  } | null;
   mcpServers: Array<{
     name: string;
     url: string | null;

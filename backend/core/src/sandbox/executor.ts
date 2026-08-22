@@ -76,8 +76,15 @@ export class OSSandboxExecutor implements SandboxExecutor {
   exec(req: SandboxExecRequest): Promise<SandboxExecResult> {
     if (this.backend === 'os-fallback-local') {
       // 降级：直接委托硬化本地执行器（已有 detach + 超时 + 擦环境）。
-      structLog('warn', 'os-sandbox degraded to hardened local executor', {
-        reason: this.caps.reason,
+      const hint = [
+        this.caps.isLinux ? `Linux 内核可用但 helper 缺失` : `非 Linux 平台（${this.caps.platform}）`,
+        !this.caps.userNamespaces ? 'user namespace 未启用' : null,
+        !this.caps.unshareAvailable ? 'unshare(1) 不可用' : null,
+      ].filter(Boolean);
+      structLog('warn', '[sandbox] OS-level isolation degraded to hardened local executor', {
+        backend: 'local',
+        reason: hint.join('; '),
+        capabilities: this.caps,
         command: req.command,
       });
       incCounter('os_sandbox.degraded');
@@ -86,6 +93,13 @@ export class OSSandboxExecutor implements SandboxExecutor {
     }
 
     if (this.backend === 'os-unshare') {
+      // 纯 unshare 降级：仅命名空间 + 部分 rlimit，无 seccomp/能力裁剪。
+      const active = this.profile.namespaces?.length ?? 0 > 0;
+      structLog('warn', '[sandbox] OS-level isolation using unshare fallback (no seccomp/capabilities)', {
+        backend: 'os-unshare',
+        namespaces: active,
+      });
+      incCounter('os_sandbox.unshare_fallback');
       return this.runViaUnshare(req);
     }
     return this.runViaHelper(req);
