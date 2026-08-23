@@ -1403,7 +1403,7 @@ export class AhChat extends LitElement {
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
-        padding: 2px 12px;
+        padding: 8px 12px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
