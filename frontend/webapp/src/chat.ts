@@ -2701,7 +2701,7 @@ export class AhChat extends LitElement {
             : null;
         const resp = await fetch('/api/upload', {
           method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
           body: formData
         });
         const json = await resp.json();

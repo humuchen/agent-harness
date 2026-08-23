@@ -520,7 +520,8 @@ export const sharedStyles = css`
   }
   /* 健康 hero */
   .hero {
-    background: linear-gradient(135deg, var(--ah-accent-soft), transparent 70%), var(--ah-surface-1);
+    background: linear-gradient(135deg, var(--ah-accent-soft), transparent 70%),
+      var(--ah-surface-1);
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-lg);
     padding: 22px 24px;
@@ -638,7 +639,7 @@ export const sharedStyles = css`
   /* 矩阵独立滚动容器：即便外层 .content 滚动受限，矩阵自身也能滚动查看全部行。
      sticky 表头 + 首列在滚动时保持可见，避免「列表没展示全 / 看不到列名」。 */
   .matrix-scroll {
-    max-height: 60vh;
+    max-height: 53vh;
     overflow: auto;
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
@@ -947,8 +948,13 @@ export const sharedStyles = css`
     font-family: var(--ah-font-mono);
   }
   @keyframes ah-pulse {
-    0%, 100% { box-shadow: 0 0 0 3px var(--ah-accent-soft); }
-    50% { box-shadow: 0 0 0 6px var(--ah-accent-soft); }
+    0%,
+    100% {
+      box-shadow: 0 0 0 3px var(--ah-accent-soft);
+    }
+    50% {
+      box-shadow: 0 0 0 6px var(--ah-accent-soft);
+    }
   }
   /* 思考轨迹（流式） */
   .trace {
@@ -989,14 +995,36 @@ export const sharedStyles = css`
     background: var(--ah-surface-3);
     color: var(--ah-text-muted);
   }
-  .trace-block.think .tb-tag { background: var(--ah-accent-soft); color: var(--ah-accent); }
-  .trace-block.tool .tb-tag { background: rgba(48, 209, 88, 0.15); color: var(--ah-success); }
-  .trace-block.tool-result .tb-tag { background: rgba(48, 209, 88, 0.10); color: var(--ah-text-muted); }
-  .trace-block.warn .tb-tag { background: var(--ah-warning-soft); color: var(--ah-warning); }
-  .trace-block.error .tb-tag { background: var(--ah-danger-soft); color: var(--ah-danger); }
-  .trace-block.answer { border-left-color: var(--ah-accent); }
-  .trace-block.answer .tb-tag { background: var(--ah-accent); color: #fff; }
-  .trace-block .tb-body { color: var(--ah-text); }
+  .trace-block.think .tb-tag {
+    background: var(--ah-accent-soft);
+    color: var(--ah-accent);
+  }
+  .trace-block.tool .tb-tag {
+    background: rgba(48, 209, 88, 0.15);
+    color: var(--ah-success);
+  }
+  .trace-block.tool-result .tb-tag {
+    background: rgba(48, 209, 88, 0.1);
+    color: var(--ah-text-muted);
+  }
+  .trace-block.warn .tb-tag {
+    background: var(--ah-warning-soft);
+    color: var(--ah-warning);
+  }
+  .trace-block.error .tb-tag {
+    background: var(--ah-danger-soft);
+    color: var(--ah-danger);
+  }
+  .trace-block.answer {
+    border-left-color: var(--ah-accent);
+  }
+  .trace-block.answer .tb-tag {
+    background: var(--ah-accent);
+    color: #fff;
+  }
+  .trace-block .tb-body {
+    color: var(--ah-text);
+  }
   .trace-block .tb-detail {
     color: var(--ah-text-muted);
     font-size: 11.5px;
@@ -1014,7 +1042,11 @@ export const sharedStyles = css`
     margin-left: 2px;
     animation: ah-blink 1s steps(2, start) infinite;
   }
-  @keyframes ah-blink { to { visibility: hidden; } }
+  @keyframes ah-blink {
+    to {
+      visibility: hidden;
+    }
+  }
   /* 最终结果卡 */
   .result-empty {
     display: flex;
@@ -1032,7 +1064,11 @@ export const sharedStyles = css`
     border-top-color: var(--ah-accent);
     animation: ah-spin 0.8s linear infinite;
   }
-  @keyframes ah-spin { to { transform: rotate(360deg); } }
+  @keyframes ah-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
   .skeleton {
     display: flex;
     flex-direction: column;
@@ -1042,13 +1078,22 @@ export const sharedStyles = css`
   .sk-line {
     height: 12px;
     border-radius: 6px;
-    background: linear-gradient(90deg, var(--ah-surface-3) 25%, var(--ah-surface-2) 37%, var(--ah-surface-3) 63%);
+    background: linear-gradient(
+      90deg,
+      var(--ah-surface-3) 25%,
+      var(--ah-surface-2) 37%,
+      var(--ah-surface-3) 63%
+    );
     background-size: 400% 100%;
     animation: ah-shimmer 1.4s ease infinite;
   }
   @keyframes ah-shimmer {
-    0% { background-position: 100% 0; }
-    100% { background-position: 0 0; }
+    0% {
+      background-position: 100% 0;
+    }
+    100% {
+      background-position: 0 0;
+    }
   }
   .deliverable {
     display: flex;
@@ -1059,11 +1104,23 @@ export const sharedStyles = css`
     border-bottom: 1px solid var(--ah-border);
     font-size: 13px;
   }
-  .deliverable:last-of-type { border-bottom: none; }
-  .deliverable .k { color: var(--ah-text-muted); }
-  .deliverable .v { color: var(--ah-text); font-family: var(--ah-font-mono); font-size: 12.5px; }
-  .deliverable .v.accent { color: var(--ah-accent); }
-  .deliverable .v.ok { color: var(--ah-success); }
+  .deliverable:last-of-type {
+    border-bottom: none;
+  }
+  .deliverable .k {
+    color: var(--ah-text-muted);
+  }
+  .deliverable .v {
+    color: var(--ah-text);
+    font-family: var(--ah-font-mono);
+    font-size: 12.5px;
+  }
+  .deliverable .v.accent {
+    color: var(--ah-accent);
+  }
+  .deliverable .v.ok {
+    color: var(--ah-success);
+  }
   .codeblock {
     margin-top: 14px;
     background: var(--ah-canvas);
@@ -1084,22 +1141,43 @@ export const sharedStyles = css`
 
   /* 富文本渲染（Markdown → HTML）排版 */
   .codeblock.rich {
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC',
+      'Microsoft YaHei', sans-serif;
     white-space: normal;
   }
-  .codeblock.rich > :first-child { margin-top: 0; }
-  .codeblock.rich > :last-child { margin-bottom: 0; }
+  .codeblock.rich > :first-child {
+    margin-top: 0;
+  }
+  .codeblock.rich > :last-child {
+    margin-bottom: 0;
+  }
   .codeblock.rich h1,
   .codeblock.rich h2,
   .codeblock.rich h3,
-  .codeblock.rich h4 { margin: 14px 0 8px; line-height: 1.3; }
-  .codeblock.rich h1 { font-size: 18px; }
-  .codeblock.rich h2 { font-size: 16px; }
-  .codeblock.rich h3 { font-size: 14.5px; }
-  .codeblock.rich p { margin: 8px 0; }
+  .codeblock.rich h4 {
+    margin: 14px 0 8px;
+    line-height: 1.3;
+  }
+  .codeblock.rich h1 {
+    font-size: 18px;
+  }
+  .codeblock.rich h2 {
+    font-size: 16px;
+  }
+  .codeblock.rich h3 {
+    font-size: 14.5px;
+  }
+  .codeblock.rich p {
+    margin: 8px 0;
+  }
   .codeblock.rich ul,
-  .codeblock.rich ol { margin: 8px 0; padding-left: 22px; }
-  .codeblock.rich li { margin: 3px 0; }
+  .codeblock.rich ol {
+    margin: 8px 0;
+    padding-left: 22px;
+  }
+  .codeblock.rich li {
+    margin: 3px 0;
+  }
   .codeblock.rich code {
     background: var(--ah-surface-3);
     padding: 1px 5px;
@@ -1114,7 +1192,10 @@ export const sharedStyles = css`
     border-radius: var(--ah-radius-md);
     overflow: auto;
   }
-  .codeblock.rich pre code { background: none; padding: 0; }
+  .codeblock.rich pre code {
+    background: none;
+    padding: 0;
+  }
   .codeblock.rich blockquote {
     margin: 10px 0;
     padding: 4px 14px;
@@ -1123,15 +1204,32 @@ export const sharedStyles = css`
     background: var(--ah-accent-soft);
     border-radius: 0 var(--ah-radius-sm) var(--ah-radius-sm) 0;
   }
-  .codeblock.rich table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  .codeblock.rich table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10px 0;
+  }
   .codeblock.rich th,
-  .codeblock.rich td { border: 1px solid var(--ah-border); padding: 5px 9px; text-align: left; }
-  .codeblock.rich th { background: var(--ah-surface-2); }
-  .codeblock.rich a { color: var(--ah-accent); }
-  .codeblock.rich img { max-width: 100%; border-radius: var(--ah-radius-sm); }
+  .codeblock.rich td {
+    border: 1px solid var(--ah-border);
+    padding: 5px 9px;
+    text-align: left;
+  }
+  .codeblock.rich th {
+    background: var(--ah-surface-2);
+  }
+  .codeblock.rich a {
+    color: var(--ah-accent);
+  }
+  .codeblock.rich img {
+    max-width: 100%;
+    border-radius: var(--ah-radius-sm);
+  }
 
   /* 思考轨迹块内的富文本（轻量覆盖，避免与等宽容器冲突） */
-  .trace-block .tb-body { white-space: normal; }
+  .trace-block .tb-body {
+    white-space: normal;
+  }
   .trace-block .tb-body code {
     background: var(--ah-surface-3);
     padding: 0 4px;
@@ -1140,8 +1238,13 @@ export const sharedStyles = css`
     font-size: 0.9em;
   }
   .trace-block .tb-body ul,
-  .trace-block .tb-body ol { margin: 6px 0; padding-left: 20px; }
-  .trace-block .tb-body p { margin: 6px 0; }
+  .trace-block .tb-body ol {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .trace-block .tb-body p {
+    margin: 6px 0;
+  }
   .run-actions {
     display: flex;
     gap: 8px;
@@ -1174,7 +1277,12 @@ export const sharedStyles = css`
     z-index: 60;
     animation: ah-toast-in 0.2s ease;
   }
-  @keyframes ah-toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+  @keyframes ah-toast-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, 8px);
+    }
+  }
 
   /* ------------------- 移动端适配（≤760px） ------------------- */
   @media (max-width: 760px) {
