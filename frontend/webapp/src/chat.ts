@@ -1360,9 +1360,9 @@ export class AhChat extends LitElement {
         max-width: 820px;
         margin: 0 auto;
         display: flex;
-        flex-wrap: wrap;
-        align-items: flex-end;
-        gap: 10px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
         border: 1px solid var(--ah-border);
         border-radius: 18px;
         background: var(--ah-surface-2);
@@ -1416,16 +1416,12 @@ export class AhChat extends LitElement {
       }
       /* 附件上传区域样式 */
       .attachments-preview {
-        /* 独占整行：置于输入框上方，避免与 textarea 并排挤压其宽度 */
-        flex-basis: 100%;
-        order: -1;
+        /* 行内横向滚动，不占用固定高度；置于 textarea 上方自然流动 */
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
-        padding: 2px 0 8px;
-        border-bottom: 1px solid var(--ah-border);
-        margin-bottom: 0;
-        max-height: 52px;
+        padding: 0 0 6px;
+        max-height: 44px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
@@ -1442,7 +1438,7 @@ export class AhChat extends LitElement {
         font-size: 12px;
         max-width: 170px;
         min-width: 110px;
-        height: 36px;
+        height: 32px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
@@ -1468,10 +1464,10 @@ export class AhChat extends LitElement {
         transform: translateY(-2px);
       }
       .attach-thumb {
-        width: 36px;
-        height: 36px;
+        width: 28px;
+        height: 28px;
         object-fit: cover;
-        border-radius: 8px;
+        border-radius: 6px;
         flex-shrink: 0;
         transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
           box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1484,10 +1480,10 @@ export class AhChat extends LitElement {
         position: relative;
       }
       .attach-icon {
-        font-size: 18px;
+        font-size: 22px;
         flex-shrink: 0;
-        width: 36px;
-        height: 36px;
+        width: 28px;
+        height: 28px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -1594,13 +1590,15 @@ export class AhChat extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 36px;
+        height: 36px;
         border-radius: 50%;
         cursor: pointer;
         color: var(--ah-text-muted);
         transition: color 0.15s, background 0.15s;
         flex-shrink: 0;
+        font-size: 22px;
+        line-height: 1;
       }
       .attach-btn:hover {
         color: var(--ah-accent);
@@ -1609,12 +1607,19 @@ export class AhChat extends LitElement {
       /* 移动端适配 */
       @media (max-width: 640px) {
         .attach-preview-item {
-          max-width: 150px;
-          padding: 5px 7px;
+          max-width: 140px;
+          min-width: 90px;
+          height: 28px;
+          padding: 3px 26px 3px 5px;
         }
         .attach-thumb {
-          width: 32px;
-          height: 32px;
+          width: 24px;
+          height: 24px;
+        }
+        .attach-icon {
+          font-size: 18px;
+          width: 24px;
+          height: 24px;
         }
       }
       .caret {
