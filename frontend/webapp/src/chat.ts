@@ -1470,7 +1470,7 @@ export class AhChat extends LitElement {
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
-        padding: 0 0 6px;
+        padding: 2px 12px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
@@ -1492,6 +1492,7 @@ export class AhChat extends LitElement {
         font-size: 12px;
         max-width: 170px;
         min-width: 110px;
+        height: 32px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
@@ -1542,7 +1543,7 @@ export class AhChat extends LitElement {
         width: 18px;
         height: 18px;
         object-fit: cover;
-        border-radius: 6px;
+        border-radius: 50%;
         flex-shrink: 0;
         /* transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
           box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1); */
@@ -2694,8 +2695,13 @@ export class AhChat extends LitElement {
       try {
         const formData = new FormData();
         formData.append('file', f, f.name);
+        const token =
+          typeof localStorage !== 'undefined'
+            ? localStorage.getItem('ah_token')
+            : null;
         const resp = await fetch('/api/upload', {
           method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData
         });
         const json = await resp.json();
