@@ -1403,8 +1403,7 @@ export class AhChat extends LitElement {
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
-        padding: 6px 12px 4px;
-        max-height: 44px;
+        padding: 2px 12px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
@@ -1472,7 +1471,6 @@ export class AhChat extends LitElement {
         flex-wrap: nowrap;
         gap: 8px;
         padding: 0 0 6px;
-        max-height: 44px;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
@@ -1494,7 +1492,6 @@ export class AhChat extends LitElement {
         font-size: 12px;
         max-width: 170px;
         min-width: 110px;
-        height: 32px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
