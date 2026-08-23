@@ -12,7 +12,11 @@ import type {
   TraceNode,
   TraceKind
 } from '@agent-harness/client';
-import { agentContext, useAgentContext, type UploadedFile } from './agent-context';
+import {
+  agentContext,
+  useAgentContext,
+  type UploadedFile
+} from './agent-context';
 import './file-upload';
 
 /* ------------------------------ 类型 ------------------------------ */
@@ -879,7 +883,11 @@ export class AhChat extends LitElement {
       .ins-bd-fill {
         height: 100%;
         border-radius: 4px;
-        background: linear-gradient(90deg, var(--ah-accent, #2997ff), color-mix(in srgb, var(--ah-accent, #2997ff) 55%, #34c759));
+        background: linear-gradient(
+          90deg,
+          var(--ah-accent, #2997ff),
+          color-mix(in srgb, var(--ah-accent, #2997ff) 55%, #34c759)
+        );
         transition: width 0.35s ease;
       }
       .ins-ret-title {
@@ -1311,8 +1319,6 @@ export class AhChat extends LitElement {
           padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
         }
         .composer {
-          padding: 6px 6px 6px 12px;
-          gap: 8px;
           border-radius: 14px;
         }
         .composer textarea {
@@ -1322,6 +1328,14 @@ export class AhChat extends LitElement {
           width: 34px;
           height: 34px;
           font-size: 15px;
+        }
+        .composer .composer-footer {
+          padding: 4px 6px 8px 8px;
+        }
+        .attach-btn {
+          width: 32px;
+          height: 32px;
+          font-size: 20px;
         }
         .hint {
           font-size: 10.5px;
@@ -1361,17 +1375,16 @@ export class AhChat extends LitElement {
         margin: 0 auto;
         display: flex;
         flex-direction: column;
-        align-items: stretch;
-        gap: 8px;
+        gap: 0;
         border: 1px solid var(--ah-border);
         border-radius: 18px;
         background: var(--ah-surface-2);
-        padding: 10px 8px 10px 14px;
-        /* 悬浮阴影 + 聚焦抬升：强化「卡片浮于对话区」的层次感 */
+        /* 悬浮阴影 + 聚焦抬升 */
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22),
           0 4px 12px rgba(0, 0, 0, 0.12);
         transition: box-shadow 0.2s ease, border-color 0.2s ease,
           transform 0.2s ease;
+        min-height: 56px;
       }
       .composer:focus-within {
         border-color: color-mix(
@@ -1384,6 +1397,32 @@ export class AhChat extends LitElement {
             color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
         transform: translateY(-1px);
       }
+      /* 附件预览条：顶部，横向滚动 */
+      .composer .attachments-preview {
+        flex-shrink: 0;
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 8px;
+        padding: 6px 12px 4px;
+        max-height: 44px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+        scrollbar-color: color-mix(
+            in srgb,
+            var(--ah-text-muted) 28%,
+            transparent
+          )
+          transparent;
+        border-bottom: 1px solid var(--ah-border);
+      }
+      /* 主体区：textarea 填满剩余高度 */
+      .composer .composer-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: stretch;
+      }
       .composer textarea {
         flex: 1 1 auto;
         resize: none;
@@ -1394,8 +1433,20 @@ export class AhChat extends LitElement {
         font: inherit;
         font-size: 14px;
         line-height: 1.6;
-        max-height: 180px;
-        min-height: 56px;
+        max-height: 140px;
+        min-height: 52px;
+        padding: 10px 12px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      /* 底部按钮行：固定高度，左 attach / 右 send */
+      .composer .composer-footer {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 4px 8px 8px 12px;
+        gap: 8px;
       }
       .send {
         flex: 0 0 auto;
@@ -1416,7 +1467,7 @@ export class AhChat extends LitElement {
       }
       /* 附件上传区域样式 */
       .attachments-preview {
-        /* 行内横向滚动，不占用固定高度；置于 textarea 上方自然流动 */
+        /* 行内横向滚动，不占用固定高度 */
         display: flex;
         flex-wrap: nowrap;
         gap: 8px;
@@ -1425,7 +1476,12 @@ export class AhChat extends LitElement {
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: thin;
-        scrollbar-color: color-mix(in srgb, var(--ah-text-muted) 28%, transparent) transparent;
+        scrollbar-color: color-mix(
+            in srgb,
+            var(--ah-text-muted) 28%,
+            transparent
+          )
+          transparent;
       }
       .attach-preview-item {
         display: flex;
@@ -1438,7 +1494,7 @@ export class AhChat extends LitElement {
         font-size: 12px;
         max-width: 170px;
         min-width: 110px;
-        height: 32px;
+        height: 15px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
@@ -1448,7 +1504,11 @@ export class AhChat extends LitElement {
       /* 上传失败：去掉单独徽标，整框上红色边框 + 底色提示 */
       .attach-preview-item.error {
         border-color: var(--ah-danger, #e24b4a);
-        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 14%, var(--ah-surface-3));
+        background: color-mix(
+          in srgb,
+          var(--ah-danger, #e24b4a) 14%,
+          var(--ah-surface-3)
+        );
       }
       .attach-err {
         flex-shrink: 0;
@@ -1458,14 +1518,18 @@ export class AhChat extends LitElement {
       }
       .attach-preview-item:hover {
         background: var(--ah-surface-2);
-        border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 35%, var(--ah-border));
+        border-color: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 35%,
+          var(--ah-border)
+        );
         box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28),
           0 1px 3px rgba(0, 0, 0, 0.18);
         transform: translateY(-2px);
       }
       .attach-thumb {
-        width: 28px;
-        height: 28px;
+        width: 18px;
+        height: 18px;
         object-fit: cover;
         border-radius: 6px;
         flex-shrink: 0;
@@ -1474,7 +1538,6 @@ export class AhChat extends LitElement {
         display: block;
       }
       .attach-preview-item:hover .attach-thumb {
-        transform: scale(1.18);
         box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
         z-index: 2;
         position: relative;
@@ -1506,6 +1569,10 @@ export class AhChat extends LitElement {
         font-size: 12px;
       }
       .attach-rm {
+        position: absolute;
+        right: 0;
+        top: 0;
+        transform: translate(6px, -10px);
         border: none;
         background: transparent;
         color: var(--ah-text-muted);
@@ -1528,7 +1595,11 @@ export class AhChat extends LitElement {
         opacity: 1;
       }
       .attach-rm:hover {
-        background: color-mix(in srgb, var(--ah-danger, #e24b4a) 18%, transparent);
+        background: color-mix(
+          in srgb,
+          var(--ah-danger, #e24b4a) 18%,
+          transparent
+        );
         color: var(--ah-danger, #e24b4a);
         transform: scale(1.15);
       }
@@ -1572,8 +1643,7 @@ export class AhChat extends LitElement {
       }
       .attach-img:hover img {
         transform: scale(1.06);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32),
-          0 2px 6px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.2);
       }
       .attach-file {
         display: inline-flex;
@@ -1683,7 +1753,10 @@ export class AhChat extends LitElement {
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
   /** 上传中的文件追踪（key 为文件名+时间戳） */
-  private uploadingFiles: Map<string, { status: 'uploading' | 'done' | 'error'; error?: string }> = new Map();
+  private uploadingFiles: Map<
+    string,
+    { status: 'uploading' | 'done' | 'error'; error?: string }
+  > = new Map();
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
@@ -1933,12 +2006,21 @@ export class AhChat extends LitElement {
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
     const imageAttachments = this.attachments
       .filter((f) => f.type.startsWith('image/'))
-      .map((f) => ({ url: f.dataUrl || f.serverUrl || '', name: f.name, type: f.type }))
+      .map((f) => ({
+        url: f.dataUrl || f.serverUrl || '',
+        name: f.name,
+        type: f.type
+      }))
       .filter((f) => f.url);
 
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
-    t.push({ id: this.nextId++, role: 'user', content, attachments: [...this.attachments] });
+    t.push({
+      id: this.nextId++,
+      role: 'user',
+      content,
+      attachments: [...this.attachments]
+    });
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;
     this.threads[sessionId] = t;
@@ -1964,7 +2046,8 @@ export class AhChat extends LitElement {
           agentId: this.agentId || undefined,
           sessionId,
           chatSessionId: sessionId,
-          attachments: imageAttachments.length > 0 ? imageAttachments : undefined
+          attachments:
+            imageAttachments.length > 0 ? imageAttachments : undefined
         },
         { signal: ac.signal }
       )) {
@@ -2273,8 +2356,17 @@ export class AhChat extends LitElement {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
         const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
-        const tcByModel = Object.entries<{ queries: number; hits: number; hitRate: number }>(ev.byModel ?? {})
-          .map(([m, st]) => `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`)
+        const tcByModel = Object.entries<{
+          queries: number;
+          hits: number;
+          hitRate: number;
+        }>(ev.byModel ?? {})
+          .map(
+            ([m, st]) =>
+              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${
+                st.queries
+              })`
+          )
           .join(' · ');
         mk(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
           meta: {
@@ -2282,9 +2374,13 @@ export class AhChat extends LitElement {
             命中: `${ev.hits}/${ev.queries}`,
             接口: String(ev.interface ?? 'prompt-cache'),
             ...(ev.model ? { 模型: String(ev.model) } : {}),
-            ...(tcByModel ? { 分模型: tcByModel } : {}),
+            ...(tcByModel ? { 分模型: tcByModel } : {})
           },
-          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`,
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${
+            ev.hits
+          }) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${
+            ev.model ?? '?'
+          } · ${ev.interface ?? 'prompt-cache'}。`
         });
         break;
       }
@@ -2461,11 +2557,26 @@ export class AhChat extends LitElement {
         this.error = `文件过大：${f.name}（上限 10MB）`;
         continue;
       }
-      const allowedTypes = ['image/jpeg','image/png','image/gif','image/webp','image/bmp','image/svg+xml',
-                           'text/plain','text/markdown','text/csv','application/json'];
-      if (!f.type.startsWith('image/') && !f.type.startsWith('text/') &&
-          !f.type.includes('json') && !['.txt','.md','.csv','.json'].includes(
-            f.name.slice(f.name.lastIndexOf('.')).toLowerCase())) {
+      const allowedTypes = [
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/bmp',
+        'image/svg+xml',
+        'text/plain',
+        'text/markdown',
+        'text/csv',
+        'application/json'
+      ];
+      if (
+        !f.type.startsWith('image/') &&
+        !f.type.startsWith('text/') &&
+        !f.type.includes('json') &&
+        !['.txt', '.md', '.csv', '.json'].includes(
+          f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
+        )
+      ) {
         this.error = `不支持的文件类型：${f.name}`;
         continue;
       }
@@ -2479,7 +2590,13 @@ export class AhChat extends LitElement {
       });
 
       const key = `${f.name}_${Date.now()}`;
-      const file: UploadedFile = { name: f.name, size: f.size, type: f.type, dataUrl, uploadStatus: 'uploading' };
+      const file: UploadedFile = {
+        name: f.name,
+        size: f.size,
+        type: f.type,
+        dataUrl,
+        uploadStatus: 'uploading'
+      };
       this.uploadingFiles.set(key, { status: 'uploading' });
 
       // 立即加入 attachments 显示预览
@@ -2492,7 +2609,7 @@ export class AhChat extends LitElement {
         formData.append('file', f, f.name);
         const resp = await fetch('/api/upload', {
           method: 'POST',
-          body: formData,
+          body: formData
         });
         const json = await resp.json();
         if (json.ok && json.meta?.url) {
@@ -2505,7 +2622,10 @@ export class AhChat extends LitElement {
       } catch (err) {
         file.uploadStatus = 'error';
         file.uploadError = err instanceof Error ? err.message : '上传失败';
-        this.uploadingFiles.set(key, { status: 'error', error: file.uploadError });
+        this.uploadingFiles.set(key, {
+          status: 'error',
+          error: file.uploadError
+        });
         this.error = `上传失败：${f.name} — ${file.uploadError}`;
       }
     }
@@ -2550,11 +2670,16 @@ export class AhChat extends LitElement {
       <div class="attachments ${hasImages ? 'has-images' : ''}">
         ${images.map(
           (f) =>
-            html`<div class="attach-img"><img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" /></div>`
+            html`<div class="attach-img">
+              <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+            </div>`
         )}
         ${others.map(
           (f) =>
-            html`<div class="attach-file">${this.fileIcon(f)} ${escapeHtml(f.name)} (${this.formatSize(f.size)})</div>`
+            html`<div class="attach-file">
+              ${this.fileIcon(f)} ${escapeHtml(f.name)}
+              (${this.formatSize(f.size)})
+            </div>`
         )}
       </div>
     `;
@@ -2563,7 +2688,12 @@ export class AhChat extends LitElement {
   private fileIcon(f: UploadedFile): string {
     if (f.type.startsWith('image/')) return '🖼';
     if (f.type.includes('pdf')) return '📄';
-    if (f.type.includes('csv') || f.type.includes('json') || f.type.includes('text')) return '📝';
+    if (
+      f.type.includes('csv') ||
+      f.type.includes('json') ||
+      f.type.includes('text')
+    )
+      return '📝';
     return '📎';
   }
 
@@ -2883,13 +3013,15 @@ export class AhChat extends LitElement {
    * 从 cost 节点的 meta 解析「系统 / 工具 / 历史 / 输出」四项 token 占比。
    * meta 中 工具/历史 的值形如 "320 (45%)"，系统/输出 为纯数字；这里统一提取数字与百分比。
    */
-  private parseCostBreakdown(meta?: Record<string, string>): Insights['costBreakdown'] {
+  private parseCostBreakdown(
+    meta?: Record<string, string>
+  ): Insights['costBreakdown'] {
     if (!meta) return undefined;
     const order: Array<[string, string]> = [
       ['系统', 'system'],
       ['工具', 'tools'],
       ['历史', 'history'],
-      ['输出', 'completion'],
+      ['输出', 'completion']
     ];
     const out: Array<{ label: string; tokens: number; pct: number }> = [];
     for (const [cn, _] of order) {
@@ -2920,16 +3052,11 @@ export class AhChat extends LitElement {
     // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
     const costRaw = ins.costValue ?? '';
     const priced = ins.costPriced === 'true';
-    const isZero = costRaw === '$0.0000' || costRaw === '$0.00' || costRaw === '$0';
+    const isZero =
+      costRaw === '$0.0000' || costRaw === '$0.00' || costRaw === '$0';
     push(
       '成本',
-      costRaw
-        ? isZero
-          ? priced
-            ? '免费'
-            : '未定价'
-          : costRaw
-        : undefined
+      costRaw ? (isZero ? (priced ? '免费' : '未定价') : costRaw) : undefined
     );
     return html`
       <div class="insights-title">关键信息</div>
@@ -2949,10 +3076,16 @@ export class AhChat extends LitElement {
                 (b) => html`<div class="ins-bd-row">
                   <div class="ins-bd-head">
                     <span class="ins-bd-name">${escapeHtml(b.label)}</span>
-                    <span class="ins-bd-val">${escapeHtml(String(b.tokens))} tok · ${escapeHtml(String(b.pct))}%</span>
+                    <span class="ins-bd-val"
+                      >${escapeHtml(String(b.tokens))} tok ·
+                      ${escapeHtml(String(b.pct))}%</span
+                    >
                   </div>
                   <div class="ins-bd-track">
-                    <div class="ins-bd-fill" style=${`width:${Math.max(2, b.pct)}%`}></div>
+                    <div
+                      class="ins-bd-fill"
+                      style=${`width:${Math.max(2, b.pct)}%`}
+                    ></div>
                   </div>
                 </div>`
               )}
@@ -2984,9 +3117,7 @@ export class AhChat extends LitElement {
         </div>
         <div class="session-list">
           ${this.sessions.length === 0
-            ? html`<p class="muted">
-                暂无会话，发送消息即自动创建。
-              </p>`
+            ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
             : this.sessions.map(
                 (s) => html`
                   <div
@@ -3115,56 +3246,95 @@ export class AhChat extends LitElement {
 
         <div class="composer-wrap">
           <div class="composer">
-            <label class="attach-btn" title="上传附件">
-              <input type="file" multiple accept="image/*,.txt,.md,.csv,.json" style="display:none" @change=${this.onFileSelect} />
-              +
-            </label>
             ${this.attachments.length > 0
               ? html`<div class="attachments-preview">
                   ${this.attachments.map(
                     (f, i) => html`
-                      <div class="attach-preview-item ${f.uploadStatus === 'error' ? 'error' : ''}">
+                      <div
+                        class="attach-preview-item ${f.uploadStatus === 'error'
+                          ? 'error'
+                          : ''}"
+                      >
                         ${f.type.startsWith('image/')
-                          ? html`<img src=${f.dataUrl} alt=${escapeHtml(f.name)} class="attach-thumb" />`
-                          : html`<span class="attach-icon">${this.fileIcon(f)}</span>`}
-                        <span class="attach-name" title=${f.name}>${escapeHtml(f.name)}</span>
-                        ${f.uploadStatus === 'uploading'
-                          ? html`<span class="attach-status uploading" title="上传中">⏳</span>`
+                          ? html`<img
+                              src=${f.dataUrl}
+                              alt=${escapeHtml(f.name)}
+                              class="attach-thumb"
+                            />`
+                          : html`<span class="attach-icon"
+                              >${this.fileIcon(f)}</span
+                            >`}
+                        <span class="attach-name" title=${f.name}
+                          >${escapeHtml(f.name)}</span
+                        >
+                        <!-- ${f.uploadStatus === 'uploading'
+                          ? html`<span
+                              class="attach-status uploading"
+                              title="上传中"
+                              >⏳</span
+                            >`
                           : f.uploadStatus === 'done'
-                          ? html`<span class="attach-status done" title="已上传">✓</span>`
+                          ? html`<span class="attach-status done" title="已上传"
+                              >✓</span
+                            >`
                           : f.uploadStatus === 'error'
-                          ? html`<span class="attach-err" title=${f.uploadError || '上传失败'}>上传失败</span>`
-                          : nothing}
-                        <button type="button" class="attach-rm" title="移除" @click=${() => this.removeAttachment(i)}>×</button>
+                          ? html`<span
+                              class="attach-err"
+                              title=${f.uploadError || '上传失败'}
+                              >上传失败</span
+                            >`
+                          : nothing} -->
+                        <button
+                          type="button"
+                          class="attach-rm"
+                          title="移除"
+                          @click=${() => this.removeAttachment(i)}
+                        >
+                          ×
+                        </button>
                       </div>
                     `
                   )}
                 </div>`
               : nothing}
-            <textarea
-              rows="1"
-              placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
-              .value=${this.input}
-              ?disabled=${this.streaming[this.activeId] === true}
-              @input=${this.onInput}
-              @keydown=${this.onKey}
-            ></textarea>
-            ${this.streaming[this.activeId] === true
-              ? html`<button
-                  class="send"
-                  title="停止"
-                  @click=${() => this.stop()}
-                >
-                  ■
-                </button>`
-              : html`<button
-                  class="send"
-                  title="发送"
-                  ?disabled=${!this.input.trim()}
-                  @click=${() => this.send()}
-                >
-                  ↑
-                </button>`}
+            <div class="composer-body">
+              <textarea
+                rows="1"
+                placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
+                .value=${this.input}
+                ?disabled=${this.streaming[this.activeId] === true}
+                @input=${this.onInput}
+                @keydown=${this.onKey}
+              ></textarea>
+            </div>
+            <div class="composer-footer">
+              <label class="attach-btn" title="上传附件">
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,.txt,.md,.csv,.json"
+                  style="display:none"
+                  @change=${this.onFileSelect}
+                />
+                +
+              </label>
+              ${this.streaming[this.activeId] === true
+                ? html`<button
+                    class="send"
+                    title="停止"
+                    @click=${() => this.stop()}
+                  >
+                    ■
+                  </button>`
+                : html`<button
+                    class="send"
+                    title="发送"
+                    ?disabled=${!this.input.trim()}
+                    @click=${() => this.send()}
+                  >
+                    ↑
+                  </button>`}
+            </div>
           </div>
           <!-- <div class="hint">
             模式：${this.mode} ·
