@@ -52,65 +52,80 @@ const ALLOWED_EXTS = new Set<string>(['.jpg', '.jpeg', '.png', '.gif', '.webp', 
 
 /**
  * 解析 multipart body 的极简实现（不依赖 busboy/multiparty）。
- * 仅处理单文件 + 可选文字字段，满足本项目「图片/文本上传」场景。
+ * 纯 Buffer 切分：
+ * - 兼容首个 boundary 前无 CRLF 的浏览器标准格式；
+ * - 文件体保持原始字节，不经 UTF-8 字符串往返，二进制不损坏。
  */
-async function parseMultipart(
+function parseMultipart(
   buf: Buffer,
   contentType: string
-): Promise<{
+): {
   filename?: string;
   mimeType?: string;
   fileBuf?: Buffer;
   fields?: Record<string, string>;
   boundary?: string;
-} | null> {
-  const ct = (contentType || '').toLowerCase();
-  const m = ct.match(/multipart\/form-data;\s*boundary=(.+)/i);
-  if (!m) return null;
-  const boundary = m[1].trim();
-  if (!buf.includes(Buffer.from(boundary))) return null;
+} | null {
+  // 仅对 MIME 前缀做大小写无关匹配；boundary 保留原始大小写（body 匹配是字节级的）。
+  const bm = contentType.match(/multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^;,]+))/i);
+  if (!bm) return null;
+  const boundary = (bm[1] || bm[2] || '').trim();
+  if (!boundary) return null;
 
-  const parts: { filename?: string; mimeType?: string; body: Buffer }[] = [];
-  const partRe = new RegExp(
-    '\\r?\\n' + escapeRegex(boundary) + '(--)?\\r?\\n([\\s\\S]*?)\\r?\\n' + escapeRegex(boundary) + '(--)?\\r?\\n',
-    'g'
-  );
-  let partMatch: RegExpExecArray | null;
-  while ((partMatch = partRe.exec(buf.toString('utf-8'))) !== null) {
-    const headerBlock = partMatch[3];
-    const bodyStr = partMatch[4] ?? '';
-    const isFooter = (partMatch[2] === '--' || partMatch[6] === '--');
-    if (isFooter) continue;
-    // 解析 Content-Disposition
-    const cdMatch = headerBlock.match(/content-disposition:\s*form-data;\s*name="([^"]*)"(?:;\s*filename="([^"]*)")?/i);
-    if (!cdMatch) continue;
-    const [, name, filename] = cdMatch;
-    const mimeMatch = headerBlock.match(/content-type:\s*([^ \r\n]+)/i);
+  const dash = Buffer.from(`--${boundary}`);
+  const marks: number[] = [];
+  for (let i = buf.indexOf(dash); i !== -1; i = buf.indexOf(dash, i + dash.length)) {
+    marks.push(i);
+  }
+  if (marks.length < 2) return null;
+
+  const parts: { name?: string; filename?: string; mimeType?: string; body: Buffer }[] = [];
+  for (let k = 0; k < marks.length - 1; k++) {
+    let start = marks[k] + dash.length;
+    if (buf.slice(start, start + 2).toString('latin1') === '--') break;
+    if (buf[start] === 13 && buf[start + 1] === 10) start += 2;
+    else if (buf[start] === 10) start += 1;
+
+    let end = marks[k + 1];
+    if (end >= 2 && buf[end - 2] === 13 && buf[end - 1] === 10) end -= 2;
+    else if (end >= 1 && buf[end - 1] === 10) end -= 1;
+    if (end <= start) continue;
+
+    const part = buf.slice(start, end);
+    let headerEnd = part.indexOf('\r\n\r\n');
+    let sepLen = 4;
+    if (headerEnd === -1) {
+      headerEnd = part.indexOf('\n\n');
+      sepLen = 2;
+    }
+    const headerBlock = headerEnd === -1 ? '' : part.slice(0, headerEnd).toString('utf-8');
+    const body = headerEnd === -1 ? part : part.slice(headerEnd + sepLen);
+
+    const cdMatch = headerBlock.match(/content-disposition:\s*form-data;[^\r\n]*/i);
+    let name: string | undefined;
+    let filename: string | undefined;
+    if (cdMatch) {
+      const cdLine = cdMatch[0];
+      const nm = cdLine.match(/\bname="([^"]*)"/i);
+      if (nm) name = nm[1];
+      const fm = cdLine.match(/\bfilename="([^"]*)"/i);
+      if (fm) filename = fm[1];
+      if (!filename) {
+        const fsMatch = cdLine.match(/filename\*=(?:UTF-8|utf-8)''([^;\r\n]+)/);
+        if (fsMatch) {
+          try { filename = decodeURIComponent(fsMatch[1]); } catch { /* ignore */ }
+        }
+      }
+    }
+    const mimeMatch = headerBlock.match(/content-type:\s*([^\r\n]+)/i);
     const mimeType = mimeMatch ? mimeMatch[1].trim() : undefined;
-    // body 需要去掉末尾 \r\n
-    const body = Buffer.from(bodyStr.replace(/\r?\n$/, ''), 'utf-8');
-    parts.push({ filename, mimeType, body });
+    parts.push({ name, filename, mimeType, body });
   }
 
   const file = parts.find((p) => p.filename);
   const fields: Record<string, string> = {};
   for (const p of parts) {
-    if (!p.filename) {
-      fields[p.body.toString('utf-8') || 'value'] = p.body.toString('utf-8');
-    }
-  }
-  // 更稳妥地按 name 提取文字字段
-  const raw = buf.toString('utf-8');
-  const fieldRe = new RegExp(
-    '\\r?\\n' + escapeRegex(boundary) + '\\r?\\n([\\s\\S]*?)\\r?\\n' + escapeRegex(boundary) + '(--)?\\r?\\n',
-    'g'
-  );
-  let fm: RegExpExecArray | null;
-  while ((fm = fieldRe.exec(raw)) !== null) {
-    const headerBlock = fm[1];
-    const body = fm[2];
-    const cdM = headerBlock.match(/content-disposition:\s*form-data;\s*name="([^"]*)"/i);
-    if (cdM) fields[cdM[1]] = body.replace(/\r?\n$/, '');
+    if (!p.filename && p.name) fields[p.name] = p.body.toString('utf-8');
   }
 
   return {
@@ -122,11 +137,7 @@ async function parseMultipart(
   };
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** 生成安全的 UUID-ish 文件名。 */
+/** 生成安全的文件名：8 位哈希 + 原始扩展名（防目录穿越）。 */
 function safeName(original: string): string {
   const ext = extname(original).toLowerCase().slice(0, 8);
   const hash = createHash('sha256')
@@ -154,7 +165,7 @@ export async function handleUpload(
   reqBody: Buffer,
   contentType: string
 ): Promise<{ ok: false; error: string } | { ok: true; meta: UploadMeta }> {
-  const parsed = await parseMultipart(reqBody, contentType);
+  const parsed = parseMultipart(reqBody, contentType);
   if (!parsed || !parsed.filename || !parsed.fileBuf) {
     return { ok: false, error: '缺少文件（multipart 格式非法）' };
   }
@@ -193,10 +204,6 @@ export async function handleUpload(
   };
 }
 
-/**
- * 获取已上传文件内容（供 <img src> 等）。
- * 含目录穿越防护（URL 中不允许 ..）。
- */
 export async function serveUploaded(
   filename: string
 ): Promise<{ ok: false; error: string } | { ok: true; buf: Buffer; mime: string }> {
