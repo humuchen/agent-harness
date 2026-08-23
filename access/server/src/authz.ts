@@ -96,6 +96,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
     'chat:read', 'chat:write', 'chat:delete', 'env:read',
+    'upload:file',
   ],
   operator: [
     'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
@@ -104,6 +105,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
     'a2a:receive', 'a2a:send', 'plugin:manage',
     'chat:read', 'chat:write', 'chat:delete', 'env:read',
+    'upload:file',
   ],
   viewer: [
     'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'errors:read', 'jobs:read', 'sessions:read',

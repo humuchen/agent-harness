@@ -1492,7 +1492,6 @@ export class AhChat extends LitElement {
         font-size: 12px;
         max-width: 170px;
         min-width: 110px;
-        height: 32px;
         cursor: default;
         transition: background 0.18s ease, border-color 0.18s ease,
           box-shadow 0.18s ease, transform 0.18s ease;
@@ -1642,6 +1641,9 @@ export class AhChat extends LitElement {
       .attachments.has-images {
         flex-direction: row;
       }
+      .attach-img.is-previewable {
+        cursor: zoom-in;
+      }
       .attach-img img {
         max-width: 200px;
         max-height: 200px;
@@ -1649,7 +1651,7 @@ export class AhChat extends LitElement {
         object-fit: cover;
         transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
           box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-        cursor: zoom-in;
+        cursor: inherit;
         display: block;
       }
       .attach-img:hover img {
@@ -1838,8 +1840,8 @@ export class AhChat extends LitElement {
   @state() agentId = '';
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
-  /** 当前预览中的附件索引；null 表示未打开预览。 */
-  @state() previewIndex: number | null = null;
+  /** 当前全屏预览的附件；null 表示未打开预览。 */
+  @state() private previewFile: UploadedFile | null = null;
   /** 上传中的文件追踪（key 为文件名+时间戳） */
   private uploadingFiles: Map<
     string,
@@ -1934,6 +1936,7 @@ export class AhChat extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    window.addEventListener('keydown', this.onPreviewKeydown);
     try {
       const [list, state] = await Promise.all([
         client.listChatSessions(),
@@ -1968,6 +1971,11 @@ export class AhChat extends LitElement {
     } catch {
       /* ignore */
     }
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('keydown', this.onPreviewKeydown);
   }
 
   protected updated() {
@@ -2701,7 +2709,7 @@ export class AhChat extends LitElement {
             : null;
         const resp = await fetch('/api/upload', {
           method: 'POST',
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData
         });
         const json = await resp.json();
@@ -2732,14 +2740,27 @@ export class AhChat extends LitElement {
     this.attachments = newAttachments;
   }
 
-  /** 打开图片/可预览附件的全屏预览；已打开时关闭。 */
-  private openPreview(i: number) {
-    this.previewIndex = this.previewIndex === i ? null : i;
+  /** 文件是否可预览（图片 MIME 或常见图片扩展名）。 */
+  private isPreviewable(f: UploadedFile): boolean {
+    return (
+      f.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|svg)$/i.test(f.name)
+    );
+  }
+
+  /** 打开图片附件的全屏预览。 */
+  private openPreview(f: UploadedFile) {
+    if (!this.isPreviewable(f)) return;
+    this.previewFile = f;
   }
 
   private closePreview() {
-    this.previewIndex = null;
+    this.previewFile = null;
   }
+
+  /** Esc 关闭预览（window 级监听，无需聚焦 lightbox）。 */
+  private onPreviewKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && this.previewFile) this.closePreview();
+  };
 
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
   private toggleThink(id: number) {
@@ -2772,7 +2793,11 @@ export class AhChat extends LitElement {
       <div class="attachments ${hasImages ? 'has-images' : ''}">
         ${images.map(
           (f) =>
-            html`<div class="attach-img">
+            html`<div
+              class="attach-img is-previewable"
+              title="点击预览"
+              @click=${() => this.openPreview(f)}
+            >
               <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
             </div>`
         )}
@@ -3355,14 +3380,8 @@ export class AhChat extends LitElement {
                       <div
                         class="attach-preview-item ${f.uploadStatus === 'error'
                           ? 'error'
-                          : ''} ${f.type.startsWith('image/') ||
-                        /\.(jpe?g|png|gif|webp|svg)$/i.test(f.name)
-                          ? 'is-image'
-                          : ''}"
-                        ${f.type.startsWith('image/') ||
-                        /\.(jpe?g|png|gif|webp|svg)$/i.test(f.name)
-                          ? `@click=${() => this.openPreview(i)}`
-                          : nothing}
+                          : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
+                        @click=${() => this.openPreview(f)}
                       >
                         ${f.type.startsWith('image/')
                           ? html`<img
@@ -3455,28 +3474,26 @@ export class AhChat extends LitElement {
         class="scrim ${this.sidebarOpen ? 'show' : ''}"
         @click=${() => (this.sidebarOpen = false)}
       ></div>
-      ${this.previewIndex !== null && this.attachments[this.previewIndex]
-        ? html`<div
-            class="lightbox"
-            @click=${() => this.closePreview()}
-            @keydown=${(e: KeyboardEvent) =>
-              e.key === 'Escape' && this.closePreview()}
-            tabindex="-1"
-          >
+      ${this.previewFile
+        ? html`<div class="lightbox" @click=${() => this.closePreview()}>
             <button
               class="lightbox-close"
               title="关闭 (Esc)"
-              @click=${() => this.closePreview()}
+              @click=${(e: Event) => {
+                e.stopPropagation();
+                this.closePreview();
+              }}
             >
               ×
             </button>
             <img
-              src=${this.attachments[this.previewIndex].dataUrl}
-              alt=${escapeHtml(this.attachments[this.previewIndex].name)}
+              src=${this.previewFile.dataUrl}
+              alt=${escapeHtml(this.previewFile.name)}
+              @click=${(e: Event) => e.stopPropagation()}
             />
             <div class="lightbox-info">
-              ${escapeHtml(this.attachments[this.previewIndex].name)} ·
-              ${this.formatSize(this.attachments[this.previewIndex].size)}
+              ${escapeHtml(this.previewFile.name)} ·
+              ${this.formatSize(this.previewFile.size)}
             </div>
           </div>`
         : nothing}
