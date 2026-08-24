@@ -39,11 +39,12 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-3-haiku': 200000,
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
-  'stealth/ox-alpha': 1000000,
+  'ox-alpha': 1000000,
   agnes: 1000000
 };
 
-function contextWindowFor(model?: string): number {
+/** 导出供 server（/api/state）向前端下发当前模型的上下文窗口上限。 */
+export function contextWindowFor(model?: string): number {
   const env = Number(process.env.AH_CONTEXT_WINDOW);
   if (env > 0) return env;
   if (model) {

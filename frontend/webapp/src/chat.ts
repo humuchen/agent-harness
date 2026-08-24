@@ -144,6 +144,8 @@ export class AhChat extends LitElement {
   @state() private stickToBottom = true;
   /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
   @state() private showScrollDown = false;
+  /** 服务端 /api/state 下发的当前模型上下文窗口上限（token）；0 = 未获取（回退基线）。 */
+  private serverCtxWindow = 0;
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
   /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
@@ -350,6 +352,9 @@ export class AhChat extends LitElement {
     try {
       const state = await client.getState();
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
+      // 同步模型上下文窗口：粗估回退的分母不再写死 128K（如 ox-alpha → 1M）。
+      const cw = Number((state as any)?.contextWindow);
+      if (Number.isFinite(cw) && cw > 0) this.serverCtxWindow = cw;
     } catch {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
@@ -468,7 +473,8 @@ export class AhChat extends LitElement {
       cls: string;
     }[];
   } {
-    const WINDOW = 128000; // 上下文窗口基线（token）
+    const WINDOW =
+      this.serverCtxWindow > 0 ? this.serverCtxWindow : 128000; // 上下文窗口（token）：优先后端 /api/state 下发（按模型解析，如 ox-alpha→1M），未到位时落基线
     const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
     const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
     const SKILL_BASE = 80; // 技能基线
@@ -1249,9 +1255,10 @@ export class AhChat extends LitElement {
         this.finalBy[sid] = finalStr;
         // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
         // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
+        // 计划模式：消息已挂计划卡片（content=友好摘要）时，跳过任何迟到的 raw final 覆盖。
         if (!this.received[sid] && finalStr) {
           const c = cur();
-          if (c) patch({ content: finalStr });
+          if (c && !c.plan) patch({ content: finalStr });
         }
         break;
       }

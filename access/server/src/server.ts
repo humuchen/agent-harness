@@ -53,7 +53,8 @@ import {
   type A2ARequest,
   features,
   buildPlannerPrompt,
-  parsePlanOutput
+  parsePlanOutput,
+  contextWindowFor
 } from '@agent-harness/core';
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
 import {
@@ -1149,6 +1150,9 @@ function buildState() {
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
+    // 上下文窗口上限随 state 下发：前端「上下文用量」粗估回退用它做分母，
+    // 与 llm:usage 精确路径共用 contextWindowFor 单一事实源（如 ox-alpha → 1M）。
+    contextWindow: contextWindowFor(resolveOpenRouterConfig().model),
     sandbox,
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,
@@ -1870,8 +1874,12 @@ async function handleRun(
           message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
         });
         // 落入下方通用逻辑：按普通 run:end 处理。
+      } else {
+        // 已处理过首条 run:end：这是 run-queue 补发的重复帧（final 仍是原始计划 JSON）。
+        // 必须整帧抑制——若放行到通用逻辑，前端会用 raw JSON 覆盖刚下发的友好摘要，
+        // 且历史落盘去重失败会把原始 JSON 追加为第二条 assistant 消息。
+        return;
       }
-      // 已处理过首条 run:end：重复帧不再进入计划分支，透传给通用逻辑。
     }
 
     // 计划模式 propose：抑制原始 JSON token/reasoning/response 流（避免计划 JSON 打字机外泄），

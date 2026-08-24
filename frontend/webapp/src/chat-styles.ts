@@ -465,6 +465,7 @@ export const chatStyles = [
           var(--ah-surface-2)
         );
         border-top-right-radius: 4px;
+        max-width:710px;
       }
       .msg.assistant.error .bubble {
         border-color: var(--ah-danger, #e24b4a);
