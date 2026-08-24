@@ -254,11 +254,64 @@ export class AhChat extends LitElement {
         padding: 5px 9px;
         font-size: 12px;
       }
+      /* 滚动区外壳：相对定位，作为「回到底部」浮动按钮的定位上下文；
+         按钮 absolute 钉在其底部中央，不进入文档流、不挤压/遮挡内容与输入框。 */
+      .scroll-region {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
       .scroll {
         flex: 1 1 auto;
         overflow-y: auto;
         min-height: 0;
         padding: 18px 0;
+      }
+      /* 回到底部悬浮按钮：默认隐藏（由 showScrollDown 控制挂载），
+         仅在用户向上滚动离开底部时出现；点击平滑滚回底部后由滚动事件自动消失。 */
+      .scroll-down {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 16px;
+        z-index: 6;
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        border: 1px solid var(--ah-border);
+        background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+        transition: color 0.15s ease, background 0.15s ease,
+          border-color 0.15s ease, transform 0.18s ease, opacity 0.18s ease;
+        animation: sdown-in 0.18s ease;
+      }
+      .scroll-down:hover {
+        color: var(--ah-text);
+        background: var(--ah-surface-3, var(--ah-surface-2));
+        border-color: var(--ah-accent, #2997ff);
+        transform: translateX(-50%) translateY(-1px);
+      }
+      .scroll-down svg {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+      }
+      @keyframes sdown-in {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%) translateY(0);
+        }
       }
       .empty {
         height: 100%;
@@ -1850,6 +1903,10 @@ export class AhChat extends LitElement {
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
+  /** 是否「钉」在底部：用户向上滚动看历史时为 false，新消息不再自动跟随其滚动。 */
+  @state() private stickToBottom = true;
+  /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
+  @state() private showScrollDown = false;
 
   /**
    * 每个会话独立的流式缓冲。切换会话时，进行中的 run 仍向所属会话的缓冲写入，
@@ -1984,8 +2041,31 @@ export class AhChat extends LitElement {
   }
 
   private scrollToBottom() {
+    // 仅当用户处于「钉底」状态时才自动跟随到底部；
+    // 用户若向上滚动看历史（stickToBottom=false），则保持当前位置不抢滚。
     const el = this.scrollRef.value;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && this.stickToBottom) el.scrollTop = el.scrollHeight;
+  }
+
+  /**
+   * 监听消息区滚动：计算距底部距离，决定是否「钉底」跟随，并驱动浮动按钮显隐。
+   * 阈值 24px：容忍亚像素/轻微回弹，认为已到底部则隐藏按钮、恢复跟随。
+   */
+  private onScroll() {
+    const el = this.scrollRef.value;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distance <= 24;
+    this.stickToBottom = atBottom;
+    this.showScrollDown = !atBottom;
+  }
+
+  /** 点击浮动按钮：平滑滚动回到底部，并重新开启「钉底」跟随（到底后按钮会被滚动事件自动隐藏）。 */
+  private scrollToBottomSmooth() {
+    const el = this.scrollRef.value;
+    if (!el) return;
+    this.stickToBottom = true;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }
 
   /**
@@ -2009,6 +2089,8 @@ export class AhChat extends LitElement {
     this.messages = [];
     this.input = '';
     this.error = null;
+    this.stickToBottom = true;
+    this.showScrollDown = false;
   }
 
   private async selectSession(id: string) {
@@ -2044,6 +2126,9 @@ export class AhChat extends LitElement {
       }
     }
     this.messages = this.threads[id];
+    // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
+    this.stickToBottom = true;
+    this.showScrollDown = false;
   }
 
   private async renameSession(id: string) {
@@ -2130,6 +2215,9 @@ export class AhChat extends LitElement {
     this.stopTypewriter();
     this.setStreaming(sessionId, true);
     if (this.activeId === sessionId) this.messages = t;
+    // 发送新消息：强制钉底并滚到最新内容（即便用户此前向上翻阅历史）。
+    this.stickToBottom = true;
+    this.showScrollDown = false;
 
     const ac = new AbortController();
     this.abortBy[sessionId] = ac;
@@ -3364,7 +3452,8 @@ export class AhChat extends LitElement {
           </button>
         </div>
 
-        <div class="scroll" ${ref(this.scrollRef)}>
+        <div class="scroll-region">
+          <div class="scroll" ${ref(this.scrollRef)} @scroll=${this.onScroll}>
           ${this.messages.length === 0
             ? html`
                 <div class="empty">
@@ -3378,6 +3467,26 @@ export class AhChat extends LitElement {
             : html`<div class="thread">
                 ${this.messages.map((m) => this.renderMessage(m))}
               </div>`}
+          </div>
+          ${this.showScrollDown
+            ? html`<button
+                class="scroll-down"
+                title="回到底部"
+                aria-label="回到底部"
+                @click=${() => this.scrollToBottomSmooth()}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M12 5v14M19 12l-7 7-7-7" />
+                </svg>
+              </button>`
+            : nothing}
         </div>
 
         <div class="composer-wrap">
