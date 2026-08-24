@@ -30,6 +30,8 @@ export interface RunInput {
   approvalTicket?: string;
   /** 图片附件列表（含 serverUrl），服务端将其转为 ContentBlock[] 传给 LLM。 */
   attachments?: Array<{ url: string; name: string; type: string }>;
+  /** 联网搜索开关：true 时服务端注册 web_fetch 工具与「联网检索」技能；否则不触发任何出网检索。 */
+  web?: boolean;
 }
 
 /* ----------------------------- 多会话 Chat App ----------------------------- */

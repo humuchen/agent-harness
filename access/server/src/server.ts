@@ -1429,7 +1429,9 @@ async function handleRun(
       tenantId,
       workflowId,
       traceId,
-      attachments: body.attachments
+      attachments: body.attachments,
+      // 联网搜索开关（Request 4）：透传 UI 开关；false/未传由 run-queue 收敛为不注册出网能力。
+      web: typeof body.web === 'boolean' ? body.web : undefined
     });
     auditAction('agent.run', {
       mode,

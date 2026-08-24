@@ -210,7 +210,14 @@ export async function assembleAgent(
    * 不传时：默认开启（受 AGENT_STREAM_TOKENS!=='false' 控制），mock 与 real 模式均生效
    * —— mock LLM 现已支持逐块流式回调，故本地无密钥也能看到打字机效果与深度思考块。
    */
-  streamTokens?: boolean
+  streamTokens?: boolean,
+  /**
+   * 联网搜索开关（Request 4）：显式控制是否注册 `web_fetch` 工具与「联网检索」技能。
+   * - 不传 / true：沿用环境变量 BUILTINS_WEB（默认开启）行为，向后兼容。
+   * - false：即便用户询问最新 / 外部信息，也不注册任何出网检索能力，避免无意义请求与资源消耗。
+   * 调用方（run-queue）经 per-job `job.web` 收敛后透传。
+   */
+  webEnabled?: boolean
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -230,10 +237,13 @@ export async function assembleAgent(
   // 若再设 SHELL_REQUIRE_CONFIRM=true 则每次执行前需经 /api/shell/approve 审批。
   const shellEnabled = process.env.SHELL_ENABLED === 'true';
   const shellRequireConfirm = process.env.SHELL_REQUIRE_CONFIRM === 'true';
+  // 联网搜索总开关：环境变量 BUILTINS_WEB（默认开）× 本次 run 的 webEnabled（UI 开关）。
+  // 两者任一为 false 即关闭 web_fetch 与「联网检索」技能 —— 即便用户询问外部/最新信息也不出网。
+  const builtinWebEnabled = (process.env.BUILTINS_WEB !== 'false') && (webEnabled ?? true);
   registerBuiltinTools(tools, {
     fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
     fsEnabled: process.env.BUILTINS_FS !== 'false',
-    webEnabled: process.env.BUILTINS_WEB !== 'false',
+    webEnabled: builtinWebEnabled,
     calcEnabled: process.env.BUILTINS_CALC !== 'false',
     datetimeEnabled: process.env.BUILTINS_DT !== 'false',
     shellEnabled,
@@ -256,9 +266,12 @@ export async function assembleAgent(
   // 技能目录与触发词自动预激活的指引会注入系统提示词。
   const skillRegistry = new SkillRegistry();
   // P0.1：若 card 指定了 skills，仅启用这些；undefined → 全部；空数组 [] → 一个都不启用。
-  skillRegistry.registerMany(
-    defaultSkills().filter((s) => !assemblySkills || assemblySkills.includes(s.id))
+  // Request 4：联网搜索关闭时（builtinWebEnabled=false）一并剔除「联网检索」技能，
+  // 否则该技能仍会引导模型调用 web_fetch（已被关闭），造成无效出网尝试与资源浪费。
+  const enabledSkills = defaultSkills().filter(
+    (s) => (!assemblySkills || assemblySkills.includes(s.id)) && (builtinWebEnabled || s.id !== 'web-research')
   );
+  skillRegistry.registerMany(enabledSkills);
   registerSkillTools(tools, skillRegistry);
 
   // 合并运行时已接入的 MCP 工具（共享注册表）。

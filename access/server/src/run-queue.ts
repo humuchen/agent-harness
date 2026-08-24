@@ -70,6 +70,8 @@ export interface RunJob {
   traceId?: string;
   /** 图片附件列表，服务端将其转为 ContentBlock[] 传给 LLM。 */
   attachments?: Array<{ url: string; name: string; type: string }>;
+  /** 是否开启联网搜索：false/未传时禁用 web_fetch 与「联网检索」技能，避免任何出网检索。 */
+  web?: boolean;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   subscribers: Set<(e: unknown) => void>;
@@ -119,7 +121,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }> }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -136,6 +138,7 @@ export class RunQueue {
       workflowId: job.workflowId,
       traceId: job.traceId,
       attachments: job.attachments,
+      web: job.web,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -154,7 +157,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }> },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -169,6 +172,7 @@ export class RunQueue {
       agentId: input.agentId,
       domain: input.domain,
       tenantId: input.tenantId,
+      web: input.web,
       workflowId: input.workflowId,
       traceId: input.traceId,
       attachments: input.attachments,
@@ -244,7 +248,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, web: d.web },
           d.id
         );
         this.queue.push(job);
@@ -603,8 +607,13 @@ export class RunQueue {
         targetCard,
         // P0.3：租户上下文（记忆分区 + 护栏策略覆盖 + 出网管控）。
         tenantCtx,
-        // P2.d：per-job 隔离后端（card/租户/env 收敛，跨行业不可信强制强隔离）。
-        sandboxBackend
+      // P2.d：per-job 隔离后端（card/租户/env 收敛，跨行业不可信强制强隔离）。
+      sandboxBackend,
+      // token 级流式：沿用默认（undefined → 受 AGENT_STREAM_TOKENS 控制，默认开启）。
+      undefined,
+      // 联网搜索开关：仅当本次 run 显式开启时才注册 web_fetch 与「联网检索」技能；
+      // 否则即便用户询问最新/外部信息，也不触发任何出网检索，避免无意义请求与资源消耗。
+      job.web ?? false
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({

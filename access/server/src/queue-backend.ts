@@ -40,6 +40,8 @@ export interface JobDescriptor {
   traceId?: string;
   /** 图片附件列表，服务端将其转为 ContentBlock[] 传给 LLM。 */
   attachments?: Array<{ url: string; name: string; type: string }>;
+  /** 是否开启联网搜索：false/未传时禁用 web_fetch 与「联网检索」技能，避免任何出网检索。 */
+  web?: boolean;
   enqueuedAt: number;
 }
 

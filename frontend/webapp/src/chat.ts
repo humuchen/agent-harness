@@ -2275,7 +2275,9 @@ export class AhChat extends LitElement {
       for (const it of items) it.pct = (it.tokens / u.window) * 100;
       return { totalPct, totalTokens, window: u.window, items };
     }
-    return this.displayContextUsage();
+    // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，
+    // 回退到前端基于消息缓冲的粗估，避免递归调用自身导致栈溢出。
+    return this.contextUsage();
   }
 
   /**
@@ -2445,7 +2447,9 @@ export class AhChat extends LitElement {
           sessionId,
           chatSessionId: sessionId,
           attachments:
-            imageAttachments.length > 0 ? imageAttachments : undefined
+            imageAttachments.length > 0 ? imageAttachments : undefined,
+          // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
+          web: this.web || undefined
         },
         { signal: ac.signal }
       )) {
