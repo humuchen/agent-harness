@@ -479,6 +479,12 @@ export async function assembleAgent(
     // 动态工具选择：把 AgentCard.assembly.tools 与命中技能的关联工具作为硬允许集透传给 harness，
     // 配合核心 selectToolsForInput 按意图裁剪其余工具（问候→最小子集；真实任务→全量）。
     ...resolveAllowTools(assemblyTools, triggeredSkillTools),
+    // 工具调用加固（默认开启，TOOL_DEDUP=false 可回退到旧行为）：
+    // - enableToolDedup：同 run 内「同名 + 相同归一化参数」的重复工具调用直接复用首次结果，
+    //   砍掉模型反复请求同一工具导致的调用爆炸（如截图 26 次 → 1 次），降低 token 成本。
+    // - maxToolCallsPerStep：单 step 工具调用预算封顶（MAX_TOOL_CALLS_PER_STEP，默认 0 不限制）。
+    enableToolDedup: process.env.TOOL_DEDUP !== 'false',
+    maxToolCallsPerStep: Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
   // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，

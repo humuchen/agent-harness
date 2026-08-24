@@ -52,6 +52,9 @@ export type HarnessEvent =
   | { type: 'llm:reasoning'; step: number; delta: string }
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
+  /** 加固：工具调用去重命中。同 run 内出现「同名 + 相同归一化参数」的重复请求时，
+   *  直接复用首次结果而不真正执行，emit 此事件（而非 tool:start），用于 UI 标记「复用缓存」并计入可观测。 */
+  | { type: 'tool:deduped'; step: number; call: ToolCall; result: string; errored: boolean }
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean; estTokens?: { system: number; tools: number; history: number; completion: number } }
   /** 上下文用量（精确）：以 provider 返回的 usage（prompt/completion）为权威总量，
    *  按各组件序列化 token 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），
@@ -64,6 +67,8 @@ export type HarnessEvent =
   | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
   | { type: 'run:end'; runId: string; final: string; steps: number }
   | { type: 'verify:result'; attempt: number; passed: boolean; score: number; reasons: string[] }
+  /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
+  | { type: 'warn'; message: string }
   | { type: 'error'; message: string };
 
 export interface HarnessOptions {
@@ -123,6 +128,40 @@ export interface HarnessOptions {
    * 当前用户输入的相关性择优发送（见 selectToolsForInput）。缺省为空，表示无硬约束。
    */
   allowTools?: string[];
+  // 加固：工具调用去重。开启后，对「同名 + 相同归一化参数」的重复工具调用，直接复用首次结果
+  //（emit tool:deduped 而非 tool:start），不真正重新执行，从而砍掉冗余调用、降低 token 成本与上下文膨胀。
+  // 默认 false（完全不介入），向后兼容，不破坏任何既有行为。
+  enableToolDedup?: boolean;
+  // 加固：单 step 内工具调用预算上限。每 step 真实执行达到上限后，剩余 tool_calls 被截断并 emit warn。
+  // 0 或不传表示不限制（保持现状），用于兜底「模型单轮并行请求过多工具」的场景。
+  maxToolCallsPerStep?: number;
+  // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
+  toolDedupKey?: (call: ToolCall) => string;
+}
+
+/** 把工具名 + 参数归一化为稳定字符串，用于去重比较（参数 key 排序，忽略字段顺序差异）。 */
+function stableToolKey(call: ToolCall): string {
+  let args: unknown = call.arguments;
+  try {
+    if (typeof args === 'string') args = JSON.parse(args as string);
+  } catch {
+    /* 保留原字符串 */
+  }
+  let norm: unknown = args;
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(args as Record<string, unknown>).sort()) {
+      sorted[k] = (args as Record<string, unknown>)[k];
+    }
+    norm = sorted;
+  }
+  let argStr: string;
+  try {
+    argStr = JSON.stringify(norm);
+  } catch {
+    argStr = String(args);
+  }
+  return `${call.name}::${argStr}`;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -155,6 +194,10 @@ interface ResolvedHarnessOptions {
   streamTokens?: boolean;
   // 动态工具选择：硬允许集（永远发给 LLM，不被按意图裁剪）。
   allowTools?: string[];
+  // 加固：工具调用去重开关与单 step 预算（见 HarnessOptions 注释）。
+  enableToolDedup: boolean;
+  maxToolCallsPerStep: number;
+  toolDedupKey?: (call: ToolCall) => string;
 }
 
 let idCounter = 0;
@@ -179,6 +222,8 @@ export class AgentHarness {
       verifySelfCorrect: opts.verifySelfCorrect ?? (opts.verifyMaxRetries ?? 0) > 0,
       guardrailPolicy: opts.guardrailPolicy,
       ...opts,
+      enableToolDedup: opts.enableToolDedup ?? false,
+      maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
     };
   }
 
@@ -292,6 +337,17 @@ export class AgentHarness {
     // 动态工具选择：记录本 run 已实际调用过的工具名，后续步骤将其并入硬允许集，
     // 保证多步任务后续步骤仍可复用已用工具，避免「选错漏发」导致质量退化。
     const usedTools = new Set<string>();
+    // 加固：工具调用去重缓存与单 step 预算。仅当 opts 显式开启时生效，默认完全不介入。
+    const toolDedupOn = !!this.opts.enableToolDedup;
+    const toolDedupCache = new Map<string, { result: string; errored: boolean }>();
+    const maxCallsPerStep =
+      this.opts.maxToolCallsPerStep && this.opts.maxToolCallsPerStep > 0
+        ? this.opts.maxToolCallsPerStep
+        : 0;
+    const makeDedupKey = (call: ToolCall): string =>
+      this.opts.toolDedupKey
+        ? this.opts.toolDedupKey(call)
+        : stableToolKey(call);
     const tokenBudget = this.opts.tokenBudget;
     const costBudget = this.opts.costBudget;
     const budgetExceeded = (kind: 'tokens' | 'cost'): string => {
@@ -318,6 +374,8 @@ export class AgentHarness {
           if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
           steps = step + 1;
+          // 加固：每 step 重置工具调用计数（配合 maxToolCallsPerStep 预算截断）。
+          let stepToolCalls = 0;
           emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
 
           const messages = memory.history();
@@ -566,6 +624,31 @@ export class AgentHarness {
             if (signal.aborted) {
               return abortedMessage(signal);
             }
+            // 加固：单 step 工具调用预算上限（默认不限制）。达到上限后截断剩余 tool_calls。
+            if (maxCallsPerStep > 0 && stepToolCalls >= maxCallsPerStep) {
+              emit({
+                type: 'warn',
+                message: `step ${steps} 工具调用已达上限 ${maxCallsPerStep}，截断剩余 tool_calls`,
+              });
+              break;
+            }
+            stepToolCalls++;
+            // 加固：同 run 内「同名 + 相同归一化参数」去重，复用首次结果，避免重复执行。
+            if (toolDedupOn) {
+              const dkey = makeDedupKey(call);
+              const cached = toolDedupCache.get(dkey);
+              if (cached) {
+                emit({ type: 'tool:deduped', step: steps, call, result: cached.result, errored: cached.errored });
+                memory.add({
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  name: call.name,
+                  content: cached.result,
+                });
+                lastToolResult = { name: call.name, result: cached.result };
+                continue;
+              }
+            }
             // 记录已用工具，供后续步骤动态选择时并入硬允许集（见本步 llm:call 前）。
             usedTools.add(call.name);
             const argGuard = checkToolArgs(call.name, call.arguments, this.opts.guardrailPolicy);
@@ -614,6 +697,10 @@ export class AgentHarness {
             });
             // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
             lastToolResult = { name: call.name, result: resultStr };
+            // 加固：将真实执行结果写入去重缓存，供后续相同调用复用。
+            if (toolDedupOn) {
+              toolDedupCache.set(makeDedupKey(call), { result: resultStr, errored });
+            }
           }
         }
         return '[agent] reached max steps without a final answer';
