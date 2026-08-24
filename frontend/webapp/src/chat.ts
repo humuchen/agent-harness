@@ -314,48 +314,80 @@ export class AhChat extends LitElement {
           transform: translateX(-50%) translateY(0);
         }
       }
-      /* 上下文用量指示器：头部按钮 + 弹层（分类占比，参考宿主「上下文用量」浮层）。 */
-      .ctx-usage {
+      /* 上下文用量圆环（环形进度条）：置于输入框发送按钮旁；hover 显示提示，
+         点击切换分类占比弹层（点击显示逻辑与原实现一致）。 */
+      .ctx-ring-wrap {
+        position: relative;
+        flex: 0 0 auto;
         display: flex;
         align-items: center;
-        gap: 8px;
-        height: 32px;
-        padding: 0 10px;
+      }
+      .ctx-ring {
+        display: block;
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        cursor: pointer;
+        transition: transform 0.15s ease;
+      }
+      .ctx-ring:hover {
+        transform: scale(1.08);
+      }
+      .ctx-ring svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .ring-bg {
+        fill: none;
+        stroke: var(--ah-surface-3, rgba(255, 255, 255, 0.14));
+      }
+      .ring-fg {
+        fill: none;
+        stroke: var(--ah-accent, #2997ff);
+        stroke-linecap: round;
+        transition: stroke-dashoffset 0.25s ease, stroke 0.25s ease;
+      }
+      .ring-fg.warn {
+        stroke: #ff453a;
+      }
+      .ring-num {
+        font-size: 9.5px;
+        font-weight: 600;
+        fill: var(--ah-text);
+        font-variant-numeric: tabular-nums;
+      }
+      /* hover 提示：圆环上方浮出「上下文已使用：xx.x% - 用量K/总量K」。 */
+      .ctx-tip {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%) translateY(2px);
+        white-space: nowrap;
+        padding: 5px 10px;
         border-radius: 8px;
         border: 1px solid var(--ah-border);
-        background: var(--ah-surface-2);
-        color: var(--ah-text-muted);
-        cursor: pointer;
-        font-size: 12px;
-        flex: 0 0 auto;
-      }
-      .ctx-usage:hover {
+        background: var(--ah-surface-1);
         color: var(--ah-text);
-        border-color: var(--ah-accent, #2997ff);
-      }
-      .ctx-pct {
+        font-size: 11px;
         font-variant-numeric: tabular-nums;
-        font-weight: 600;
-        color: var(--ah-text);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.32);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        z-index: 21;
       }
-      .ctx-bar {
-        width: 54px;
-        height: 6px;
-        border-radius: 3px;
-        background: var(--ah-surface-3, rgba(255, 255, 255, 0.12));
-        overflow: hidden;
-      }
-      .ctx-fill {
-        display: block;
-        height: 100%;
-        border-radius: 3px;
-        background: linear-gradient(90deg, #2997ff, #34c759);
-        transition: width 0.2s ease;
+      .ctx-ring-wrap:hover .ctx-tip {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
       }
       .ctx-pop {
         position: absolute;
-        top: calc(100% + 6px);
-        right: 12px;
+        bottom: calc(100% + 10px);
+        right: -6px;
         z-index: 20;
         width: 280px;
         max-width: calc(100vw - 24px);
@@ -369,7 +401,7 @@ export class AhChat extends LitElement {
       @keyframes ctx-in {
         from {
           opacity: 0;
-          transform: translateY(-6px);
+          transform: translateY(6px);
         }
         to {
           opacity: 1;
@@ -1626,7 +1658,7 @@ export class AhChat extends LitElement {
         width: 100%;
         box-sizing: border-box;
       }
-      /* 底部按钮行：固定高度，左 attach / 右 send */
+      /* 底部按钮行：固定高度，左 attach / 右 圆环+send */
       .composer .composer-footer {
         flex-shrink: 0;
         display: flex;
@@ -1634,6 +1666,11 @@ export class AhChat extends LitElement {
         justify-content: space-between;
         padding: 4px 8px 8px 12px;
         gap: 8px;
+      }
+      .composer-footer-right {
+        display: flex;
+        align-items: center;
+        gap: 4px;
       }
       .send {
         flex: 0 0 auto;
@@ -2280,6 +2317,84 @@ export class AhChat extends LitElement {
     return this.contextUsage();
   }
 
+  /** token 数缩写：78700 → "78.7K"（hover 提示 / 弹层用）。 */
+  private fmtK(n: number): string {
+    return `${(n / 1000).toFixed(1)}K`;
+  }
+
+  /**
+   * 上下文用量圆环（环形进度条）：置于输入框发送按钮旁。
+   * - 悬停：显示「上下文已使用：xx.x% - 用量/总量」提示；
+   * - 点击：切换分类占比弹层（显示逻辑与原头部按钮一致）；
+   * - >80% 时进度环转警示红。
+   */
+  private renderCtxRing() {
+    const u = this.displayContextUsage();
+    const pct = Math.min(100, u.totalPct);
+    const R = 15.5;
+    const C = 2 * Math.PI * R;
+    const offset = C * (1 - pct / 100);
+    return html`
+      <div class="ctx-ring-wrap">
+        <button
+          class="ctx-ring"
+          title="上下文用量"
+          aria-label="上下文用量"
+          @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
+        >
+          <svg viewBox="0 0 36 36" role="img" aria-hidden="true">
+            <circle class="ring-bg" cx="18" cy="18" r=${R} stroke-width="3"></circle>
+            <circle
+              class="ring-fg ${pct > 80 ? 'warn' : ''}"
+              cx="18"
+              cy="18"
+              r=${R}
+              stroke-width="3"
+              stroke-dasharray=${C.toFixed(2)}
+              stroke-dashoffset=${offset.toFixed(2)}
+              transform="rotate(-90 18 18)"
+            ></circle>
+            <text class="ring-num" x="18" y="18" text-anchor="middle" dominant-baseline="central">
+              ${Math.round(pct)}%
+            </text>
+          </svg>
+        </button>
+        <span class="ctx-tip"
+          >上下文已使用：${pct.toFixed(1)}% - ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
+        >
+        ${this.showCtxUsage
+          ? html`<div class="ctx-pop">
+              <div class="ctx-pop-head">
+                <span>上下文用量</span>
+                <span class="ctx-pop-total"
+                  >${u.totalTokens.toLocaleString()}
+                  / ${this.fmtK(u.window)}</span
+                >
+              </div>
+              <div class="ctx-seg">
+                ${u.items.map(
+                  (it) => html`<span
+                    class="ctx-seg-i ${it.cls}"
+                    style="width:${it.pct}%"
+                    title="${it.label} ${it.pct.toFixed(1)}%"
+                  ></span>`
+                )}
+              </div>
+              <ul class="ctx-list">
+                ${u.items.map(
+                  (it) => html`<li>
+                    <span class="ctx-dot ${it.cls}"></span>
+                    <span class="ctx-label">${it.label}</span>
+                    <span class="ctx-val">${it.pct.toFixed(1)}%</span>
+                  </li>`
+                )}
+              </ul>
+            </div>`
+          : nothing}
+      </div>
+    `;
+  }
+
   /**
    * 深度思考区流式（打字机）输出时，若内容已撑满 180px 上限，
    * 始终将视口钉在底部，保证最新推理「从下往上」逐字可见。
@@ -2742,6 +2857,33 @@ export class AhChat extends LitElement {
                 : JSON.stringify(ev.call.arguments ?? {})
           }
         );
+        break;
+      }
+      case 'tool:deduped': {
+        // 加固：工具调用去重命中。复用首次结果，记为「复用缓存」节点（仍挂在当前 LLM 调用下，
+        // 便于在调用链里看出哪些请求被去重），但 buildInsights 的「工具调用」计数会排除此类节点。
+        if (!tc.llm || !ev.call) break;
+        const name = String(ev.call.name ?? 'tool');
+        const retrieval = isRetrievalTool(name);
+        tc.lastTool = mk(
+          tc.llm,
+          retrieval ? 'retrieval' : 'tool',
+          retrieval ? `检索 · ${name}` : name,
+          ev.errored ? 'error' : 'ok',
+          {
+            detail:
+              typeof ev.call.arguments === 'string'
+                ? ev.call.arguments
+                : JSON.stringify(ev.call.arguments ?? {}),
+            meta: { reused: '复用缓存（去重）' }
+          }
+        );
+        if (tc.lastTool) {
+          tc.lastTool.result =
+            typeof ev.result === 'string'
+              ? ev.result
+              : JSON.stringify(ev.result ?? {});
+        }
         break;
       }
       case 'tool:result': {
@@ -3449,7 +3591,9 @@ export class AhChat extends LitElement {
     };
     walk(root.children);
     const steps = flat.filter((n) => n.kind === 'step').length;
-    const tools = flat.filter((n) => n.kind === 'tool');
+    // 「工具调用」计数只统计真实执行的工具节点；被去重复用（meta.reused）的请求不计入，
+    // 以免 UI 数字虚高（但 trace 树里仍保留这些复用节点供复盘）。
+    const tools = flat.filter((n) => n.kind === 'tool' && !(n.meta && n.meta.reused));
     const retrievals = flat.filter((n) => n.kind === 'retrieval');
     const cost = flat.find((n) => n.kind === 'cost');
     const cacheNode = flat.find((n) => n.kind === 'tokencache');
@@ -3672,8 +3816,8 @@ export class AhChat extends LitElement {
           </button>
           <button
             class="toggle ${this.web ? 'on' : ''}"
-            title="联网搜索（开发中）"
-            aria-label="联网搜索（开发中）"
+            title="联网搜索"
+            aria-label="联网搜索"
             @click=${() => (this.web = !this.web)}
           >
             <svg
@@ -3690,49 +3834,6 @@ export class AhChat extends LitElement {
               />
             </svg>
           </button>
-          <button
-            class="ctx-usage"
-            title="上下文用量"
-            aria-label="上下文用量"
-            @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
-          >
-            <span class="ctx-pct">${this.displayContextUsage().totalPct.toFixed(1)}%</span>
-            <span class="ctx-bar"
-              ><span
-                class="ctx-fill"
-                style="width:${Math.min(100, this.displayContextUsage().totalPct)}%"
-              ></span
-            ></span>
-          </button>
-          ${this.showCtxUsage
-            ? html`<div class="ctx-pop">
-                <div class="ctx-pop-head">
-                  <span>上下文用量</span>
-                  <span class="ctx-pop-total"
-                    >${this.displayContextUsage().totalTokens.toLocaleString()}
-                    / ${(this.displayContextUsage().window / 1000).toFixed(0)}K</span
-                  >
-                </div>
-                <div class="ctx-seg">
-                  ${this.displayContextUsage().items.map(
-                    (it) => html`<span
-                      class="ctx-seg-i ${it.cls}"
-                      style="width:${it.pct}%"
-                      title="${it.label} ${it.pct.toFixed(1)}%"
-                    ></span>`
-                  )}
-                </div>
-                <ul class="ctx-list">
-                  ${this.displayContextUsage().items.map(
-                    (it) => html`<li>
-                      <span class="ctx-dot ${it.cls}"></span>
-                      <span class="ctx-label">${it.label}</span>
-                      <span class="ctx-val">${it.pct.toFixed(1)}%</span>
-                    </li>`
-                  )}
-                </ul>
-              </div>`
-            : nothing}
         </div>
 
         <div class="scroll-region">
@@ -3850,22 +3951,25 @@ export class AhChat extends LitElement {
                 />
                 +
               </label>
-              ${this.streaming[this.activeId] === true
-                ? html`<button
-                    class="send"
-                    title="停止"
-                    @click=${() => this.stop()}
-                  >
-                    ■
-                  </button>`
-                : html`<button
-                    class="send"
-                    title="发送"
-                    ?disabled=${!this.input.trim()}
-                    @click=${() => this.send()}
-                  >
-                    ↑
-                  </button>`}
+              <div class="composer-footer-right">
+                ${this.renderCtxRing()}
+                ${this.streaming[this.activeId] === true
+                  ? html`<button
+                      class="send"
+                      title="停止"
+                      @click=${() => this.stop()}
+                    >
+                      ■
+                    </button>`
+                  : html`<button
+                      class="send"
+                      title="发送"
+                      ?disabled=${!this.input.trim()}
+                      @click=${() => this.send()}
+                    >
+                      ↑
+                    </button>`}
+              </div>
             </div>
           </div>
           <!-- <div class="hint">
