@@ -74,6 +74,8 @@ export interface RunJob {
   web?: boolean;
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
+  /** job 内事件单调序号计数器：emit 时为每个事件附加递增 seq，供客户端断线续传（since 游标）去重。 */
+  eventSeq: number;
   subscribers: Set<(e: unknown) => void>;
   /** job 级取消信号（超时 / 优雅停机触发）。 */
   controller: AbortController;
@@ -177,6 +179,7 @@ export class RunQueue {
       traceId: input.traceId,
       attachments: input.attachments,
       events: [],
+      eventSeq: 0,
       subscribers: new Set(),
       controller: new AbortController(),
       enqueuedAt: Date.now(),
@@ -420,6 +423,9 @@ export class RunQueue {
     void this.backend.ack(job.id).catch(() => {});
     let stepCount = 0;
     const emit = (e: unknown) => {
+      // 附加 job 内单调递增序号：客户端凭「已收到的最大 seq」断线续传，
+      // 服务端重放时跳过 seq ≤ since 的事件，保证恢复不重复、不丢失。
+      (e as { seq?: number }).seq = ++job.eventSeq;
       job.events.push(e);
       if (job.events.length > MAX_BUFFER) job.events.shift();
       // 复制一份，避免订阅者在回调内增删 subscribers 造成迭代异常。

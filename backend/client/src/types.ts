@@ -26,6 +26,8 @@ export interface RunInput {
   agentId?: string;
   /** 断线重连：携带已知 jobId 直接订阅事件重放，不重复提交。 */
   jobId?: string;
+  /** 断线续传游标：已收到的最大事件 seq；服务端重放时跳过 seq ≤ since 的事件，恢复不重复。 */
+  since?: number;
   /** 审批工单号：敏感动作获批后随请求重投。 */
   approvalTicket?: string;
   /** 图片附件列表（含 serverUrl），服务端将其转为 ContentBlock[] 传给 LLM。 */

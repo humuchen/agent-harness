@@ -1380,6 +1380,11 @@ async function handleRun(
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId =
     reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
+  // 断线续传游标：客户端携带已收到的最大事件 seq，重放时跳过 seq ≤ since 的事件，
+  // 避免恢复场景下（后台标签页冻结 / 网络中断后重连）内容与持久化副作用重复。
+  const sinceSeq = Number.isFinite(Number(body.since))
+    ? Math.max(-1, Math.floor(Number(body.since)))
+    : -1;
 
   // P0.2/P0.3：任务路由 & 租户辅助字段。
   // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
@@ -1694,7 +1699,23 @@ async function handleRun(
       }
     }
   };
-  const unsub = runQueue.subscribe(jobId, (e) => {
+  // SSE 保活心跳：每 15s 写一行注释帧（`: ping\n\n`）。长时间工具执行 / 模型思考期间
+  // 连接可能完全静默，中间代理（nginx/网关/NAT）会回收 idle 连接导致前端假性断连；
+  // 注释帧对 SSE 解析透明（parseSse 只认 data: 帧），仅用于维持链路活跃。
+  const pingTimer = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      closed = true;
+    }
+  }, 15_000);
+  let unsub: () => void = () => {};
+  unsub = runQueue.subscribe(jobId, (e) => {
+    // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
+    // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
+    const seq = (e as { seq?: number }).seq;
+    if (sinceSeq >= 0 && typeof seq === 'number' && seq <= sinceSeq) return;
     if (closed) return;
     send(e);
     // 结构化为调用链路追踪树（供深度思考界面可视化 / 复盘）。
@@ -1761,6 +1782,8 @@ async function handleRun(
   });
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
   res.on('close', () => {
+    closed = true;
+    clearInterval(pingTimer);
     unsub();
   });
   return;

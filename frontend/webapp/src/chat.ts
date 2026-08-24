@@ -22,6 +22,7 @@ import type {
   TraceNode,
   TraceKind
 } from '@agent-harness/client';
+import { ApiError } from '@agent-harness/client';
 import {
   agentContext,
   useAgentContext,
@@ -1190,14 +1191,64 @@ export class AhChat extends LitElement {
         padding: 8px 10px;
         margin-bottom: 8px;
       }
+      /* 检索内容折叠框（关键信息区）：与调用链 .tres-fold 同款交互 ——
+         短内容(≤240字)默认展开、长内容默认收起，标题行点击切换。 */
+      details.ins-ret-fold {
+        padding: 0;
+      }
+      .ins-ret-fold > summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        cursor: pointer;
+        user-select: none;
+        list-style: none;
+      }
+      .ins-ret-fold > summary::-webkit-details-marker,
+      .ins-ret-fold > summary::marker {
+        display: none;
+        content: '';
+      }
+      /* 折叠指示箭头：收起 ▸ / 展开 ▾（旋转过渡） */
+      .ins-ret-fold > summary::before {
+        content: '▸';
+        font-size: 10px;
+        line-height: 1;
+        color: var(--ah-success, #34c759);
+        transition: transform 0.15s ease;
+      }
+      .ins-ret-fold[open] > summary::before {
+        transform: rotate(90deg);
+      }
+      .ins-ret-fold > summary:hover .ins-ret-name {
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .ins-ret-fold > summary .ins-ret-name {
+        margin-bottom: 0;
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .ins-ret-name {
         font-size: 11px;
         font-weight: 600;
         color: var(--ah-text);
         margin-bottom: 4px;
       }
+      /* 折叠标题行的字数 meta。 */
+      .ins-ret-meta {
+        flex: 0 0 auto;
+        font-size: 10px;
+        color: var(--ah-text-muted);
+        font-variant-numeric: tabular-nums;
+      }
       .ins-ret-body {
         margin: 0;
+        padding: 0 10px 8px;
         font-size: 11px;
         line-height: 1.5;
         max-height: 160px;
@@ -1734,6 +1785,40 @@ export class AhChat extends LitElement {
         align-items: center;
         gap: 4px;
       }
+      /* 断连恢复横幅：置于消息区顶部，warn=自动恢复中 / lost=需手动重试。 */
+      .conn-banner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 0 auto 12px;
+        padding: 8px 14px;
+        border-radius: 10px;
+        font-size: 13px;
+        max-width: 720px;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .conn-banner.warn {
+        background: color-mix(in srgb, var(--ah-warn, #e6a23c) 14%, transparent);
+        border: 1px solid var(--ah-warn, #e6a23c);
+        color: var(--ah-text);
+      }
+      .conn-banner.lost {
+        background: color-mix(in srgb, var(--ah-danger, #e5484d) 14%, transparent);
+        border: 1px solid var(--ah-danger, #e5484d);
+        color: var(--ah-text);
+      }
+      .conn-retry {
+        flex: 0 0 auto;
+        padding: 4px 12px;
+        border-radius: 8px;
+        border: none;
+        cursor: pointer;
+        font-size: 13px;
+        background: var(--ah-accent, #2997ff);
+        color: var(--ah-accent-contrast, #fff);
+      }
       .send {
         flex: 0 0 auto;
         width: 36px;
@@ -2194,6 +2279,36 @@ export class AhChat extends LitElement {
   private traces: Record<string, TraceCtx> = {};
   /** 每会话的中止控制器（仅停止对应会话的 run）。 */
   private abortBy: Record<string, AbortController> = {};
+
+  /* ---------------------- 断线恢复（标签页切换 / 网络中断） ---------------------- */
+  /** 每会话当前 run 的 jobId（job:accepted 时记录）：断线重连时凭它重订阅事件重放流。 */
+  private jobBy: Record<string, string> = {};
+  /** 每会话已收到的最大事件 seq：断线续传游标，服务端只重放 seq 大于它的部分。 */
+  private lastSeqBy: Record<string, number> = {};
+  /** 每会话是否已收到终结事件（run:end/_done/error）：收到后不再自动重连。 */
+  private finishedBy: Record<string, boolean> = {};
+  /** 每会话最近一次收到 SSE 事件的时间戳：静默看门狗与切回标签页的健康判定依据。 */
+  private lastEventAt: Record<string, number> = {};
+  /**
+   * keepalive 中止标记：看门狗 / 切回标签页时用 abort() 唤醒挂起的 read() 走重连路径。
+   * 与用户手动 stop() 共用 AbortController，靠此标记区分「系统触发的中止」与「用户主动停止」。
+   */
+  private keepAliveAbort: Record<string, boolean> = {};
+  /** 每会话最近一次提交的完整 run 入参：彻底断连后供「重新连接」按钮恢复使用。 */
+  private lastInputBy: Record<string, Record<string, unknown>> = {};
+  /** 静默看门狗定时器：可见状态下某会话长时间无事件则强制唤醒走重连。 */
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  /** 每会话连接状态（驱动顶部横幅）：connected 正常 / reconnecting 自动恢复中 / lost 彻底断开。 */
+  @state() private connState: Record<
+    string,
+    'connected' | 'reconnecting' | 'lost'
+  > = {};
+
+  /** 不可变更新某会话的连接状态，确保 Lit 触发重渲染。 */
+  private setConn(sid: string, val: 'connected' | 'reconnecting' | 'lost') {
+    this.connState = { ...this.connState, [sid]: val };
+  }
+
   private typedTimer: ReturnType<typeof setInterval> | null = null;
 
   /** 当前是否仍有任何会话在流式（用于打字机定时器的停启判定）。 */
@@ -2264,6 +2379,14 @@ export class AhChat extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onPreviewKeydown);
+    // 断线恢复：切回标签页时立即体检所有流式会话；后台期间连接可能已被浏览器
+    // （Memory Saver 冻结 / 节流）或代理掐断，返回后第一时间唤醒重连路径。
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    // 静默看门狗：可见状态下流式会话超过 60s 无任何事件（read() 可能静默挂死），
+    // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
+    if (!this.watchTimer) {
+      this.watchTimer = setInterval(() => this.silentWatchdog(), 5000);
+    }
     // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
     // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
     const loadList = () => withTimeout(client.listChatSessions(), 6000, '加载会话列表');
@@ -2330,6 +2453,44 @@ export class AhChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+  }
+
+  /**
+   * 切回标签页（visibilitychange→visible）：对流式中的会话做连接体检。
+   * - 已标记 lost：立即唤醒重连；
+   * - 超过 10s 无任何事件：视为后台期间连接已被冻结/回收，abort 唤醒挂起的
+   *   read()，统一走 runWithReconnect 的续传路径（keepAliveAbort 标记区分用户停止）。
+   */
+  private onVisibilityChange = () => {
+    if (document.visibilityState !== 'visible') return;
+    for (const sid in this.streaming) {
+      if (!this.streaming[sid] || this.finishedBy[sid]) continue;
+      const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
+      const lost = this.connState[sid] === 'lost';
+      if (lost || silentFor > 10_000) {
+        this.keepAliveAbort[sid] = true;
+        if (this.abortBy[sid]) this.abortBy[sid]?.abort();
+        else void this.resumeLost(sid);
+      }
+    }
+  };
+
+  /** 静默看门狗：可见状态下流式会话 60s 无事件则强制唤醒重连（防御 read() 静默挂死）。 */
+  private silentWatchdog() {
+    if (document.visibilityState !== 'visible') return;
+    for (const sid in this.streaming) {
+      if (!this.streaming[sid] || this.finishedBy[sid]) continue;
+      const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
+      if (silentFor > 60_000 && !this.keepAliveAbort[sid]) {
+        this.keepAliveAbort[sid] = true;
+        this.abortBy[sid]?.abort();
+      }
+    }
   }
 
   protected updated() {
@@ -2762,6 +2923,11 @@ export class AhChat extends LitElement {
     this.received[sessionId] = false;
     this.pending[sessionId] = { content: '', reasoning: '' };
     this.finalBy[sessionId] = '';
+    // 断线恢复簿记归零：新一轮 run 重新记录 jobId / seq 游标 / 终结标记。
+    this.finishedBy[sessionId] = false;
+    this.jobBy[sessionId] = '';
+    this.lastSeqBy[sessionId] = -1;
+    this.setConn(sessionId, 'connected');
     this.resetTrace(sessionId);
     this.stopTypewriter();
     this.setStreaming(sessionId, true);
@@ -2774,32 +2940,38 @@ export class AhChat extends LitElement {
     // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
     this.saveHistory(sessionId);
 
+    const input: Record<string, unknown> = {
+      mode: this.mode,
+      prompt,
+      model: this.model || undefined,
+      agentId: this.agentId || undefined,
+      sessionId,
+      chatSessionId: sessionId,
+      attachments:
+        imageAttachments.length > 0 ? imageAttachments : undefined,
+      // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
+      web: this.web || undefined
+    };
+    // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
+    this.lastInputBy[sessionId] = input;
+
     const ac = new AbortController();
     this.abortBy[sessionId] = ac;
     try {
-      for await (const ev of client.streamRun(
-        {
-          mode: this.mode,
-          prompt,
-          model: this.model || undefined,
-          agentId: this.agentId || undefined,
-          sessionId,
-          chatSessionId: sessionId,
-          attachments:
-            imageAttachments.length > 0 ? imageAttachments : undefined,
-          // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
-          web: this.web || undefined
-        },
-        { signal: ac.signal }
-      )) {
-        this.ingest(ev as StreamEvent, sessionId);
-      }
+      await this.runWithReconnect(sessionId, input, ac);
     } catch (e: any) {
-      this.patchSession(sessionId, {
-        error: true,
-        content:
-          (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
-      });
+      if ((e as any)?.name === 'UserStoppedRun') {
+        // 用户主动停止：保留已揭示内容，不标错误（原有体验不变）。
+      } else {
+        // 彻底断连（重试耗尽 / job 已被服务端淘汰）：标记断开 + 错误提示，
+        // 顶部横幅出现「重新连接」手动入口。
+        this.setConn(sessionId, 'lost');
+        this.patchSession(sessionId, {
+          error: true,
+          content:
+            (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
+        });
+      }
     } finally {
       // 先停掉 interval 定时器，再按打字节奏把剩余缓冲揭示完（drain），
       // 避免 run:end 的 final 文本一次性覆盖掉打字机效果；被手动中止时则立即落盘。
@@ -2828,6 +3000,146 @@ export class AhChat extends LitElement {
     ac?.abort();
   }
 
+  /* ---------------------------- 断线恢复引擎 ---------------------------- */
+
+  /**
+   * 消费一次 run 的 SSE 事件流，并在意外断连时自动重连续传。
+   *
+   * - 首次以完整入参提交；断连后凭 jobId + since(seq 游标) 重订阅，
+   *   服务端只重放缺失事件 —— 内容不重复、不丢失，进行中的操作照常推进；
+   * - 用户手动 stop() 不重连（抛 UserStoppedRun）；看门狗 / 切回标签页触发的
+   *   keepalive 中止视为断连，照常进入恢复流程；
+   * - 重试指数退避（1s→2s→4s→8s 封顶），最多 6 次（总窗口 ≈ 30s+）；
+   * - 彻底失败向上抛错：send()/resumeLost 标记 lost 并给出手动重试入口。
+   */
+  private async runWithReconnect(
+    sid: string,
+    input: Record<string, unknown>,
+    ac: AbortController
+  ): Promise<void> {
+    const MAX_ATTEMPTS = 6;
+    let attempts = 0;
+    let first = true;
+    while (true) {
+      try {
+        const payload: Record<string, unknown> = first
+          ? input
+          : {
+              ...input,
+              jobId: this.jobBy[sid],
+              since: this.lastSeqBy[sid] ?? -1
+            };
+        first = false;
+        for await (const ev of client.streamRun(payload as any, {
+          signal: ac.signal
+        })) {
+          // 首个事件到达即视为链路恢复，清除「重连中」横幅。
+          if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
+          this.ingest(ev as StreamEvent, sid);
+        }
+        return; // 服务端正常关流（_done 后 end / job 已终结的重放完毕）
+      } catch (rawErr: any) {
+        const aborted = ac.signal.aborted;
+        const wasKeepAlive = this.keepAliveAbort[sid] === true;
+        this.keepAliveAbort[sid] = false;
+        if (aborted && !wasKeepAlive) {
+          // 用户手动停止：包装标记后上抛，调用方静默处理。
+          throw Object.assign(rawErr instanceof Error ? rawErr : new Error(String(rawErr)), {
+            name: 'UserStoppedRun'
+          });
+        }
+        // 断连前已收到最终答复：内容完整，无需恢复。
+        if (this.finishedBy[sid]) return;
+        attempts += 1;
+        const jobGone =
+          rawErr instanceof ApiError &&
+          rawErr.status >= 400 &&
+          rawErr.status < 500;
+        if (
+          jobGone ||
+          !this.jobBy[sid] ||
+          attempts > MAX_ATTEMPTS
+        ) {
+          throw rawErr;
+        }
+        const delay = Math.min(8000, 1000 * 2 ** (attempts - 1));
+        this.setConn(sid, 'reconnecting');
+        await this.sleep(delay, ac.signal);
+        // 等待期间被用户停止 → 静默退出；keepalive 唤醒则立即重试。
+        if (ac.signal.aborted && !this.keepAliveAbort[sid]) {
+          throw Object.assign(new Error('user stopped during reconnect'), {
+            name: 'UserStoppedRun'
+          });
+        }
+      }
+    }
+  }
+
+  /** 可被 AbortSignal 提前打断的 sleep（用户停止时立即结束退避等待）。 */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onAbort = () => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort);
+    });
+  }
+
+  /**
+   * 手动重试入口（顶部断连横幅按钮）：对仍持有 jobId 的会话发起恢复。
+   * 复用 runWithReconnect 的续传逻辑；成功则流继续、横幅消失，失败保持 lost。
+   */
+  private async resumeLost(sid: string) {
+    if (!sid || this.streaming[sid] || this.finishedBy[sid]) return;
+    if (!this.jobBy[sid]) {
+      // jobId 已不可用（服务端重启淘汰）：只能整段重发，提示用户重新发送消息。
+      this.patchSession(sid, { error: true });
+      return;
+    }
+    const input = this.lastInputBy[sid] ?? {};
+    const ac = new AbortController();
+    this.abortBy[sid] = ac;
+    this.received[sid] = false;
+    this.pending[sid] = { content: '', reasoning: '' };
+    this.setStreaming(sid, true);
+    this.setConn(sid, 'reconnecting');
+    try {
+      await this.runWithReconnect(sid, input, ac);
+    } catch (e: any) {
+      if ((e as any)?.name !== 'UserStoppedRun') {
+        this.setConn(sid, 'lost');
+        this.patchSession(sid, {
+          error: true,
+          content:
+            (this.curSession(sid)?.content ?? '') ||
+            `⚠️ 重连失败：${e?.message ?? e}（请重新发送消息）`
+        });
+      }
+    } finally {
+      this.stopTypewriter();
+      if (ac.signal.aborted) {
+        this.flushTypewriter(sid);
+      } else {
+        await this.drainTypewriter(sid);
+      }
+      const c = this.curSession(sid);
+      if (c && !c.content && this.finalBy[sid]) {
+        this.patchSession(sid, { content: this.finalBy[sid] });
+      }
+      this.setStreaming(sid, false);
+      this.abortBy[sid] = undefined as any;
+      if (this.activeId === sid) this.messages = this.threads[sid];
+      this.saveHistory(sid);
+    }
+  }
+
   private ingest(ev: StreamEvent, sid: string) {
     // 每次都从最新 this.threads[sid] 读取当前消息：patch 会整体替换数组与对象，
     // 早期捕获的引用是「旧快照」，直接用它做增量拼接会丢内容 / 看不到已落下的工具卡。
@@ -2839,6 +3151,19 @@ export class AhChat extends LitElement {
     const et = (ev as any).type;
     if (et === 'run:end' || et === '_done' || et === 'error') {
       this.setStreaming(sid, false);
+    }
+    // 断线恢复簿记：记录 jobId（重连凭据）、最大事件 seq（续传游标）、
+    // 活跃时间戳（看门狗/切回标签页的健康判定）与终结标记。
+    const anyEv = ev as any;
+    if (et === 'job:accepted' && anyEv.jobId) {
+      this.jobBy[sid] = String(anyEv.jobId);
+    }
+    if (typeof anyEv.seq === 'number') {
+      this.lastSeqBy[sid] = Math.max(this.lastSeqBy[sid] ?? -1, anyEv.seq);
+    }
+    this.lastEventAt[sid] = Date.now();
+    if (et === 'run:end' || et === '_done' || et === 'error') {
+      this.finishedBy[sid] = true;
     }
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
     this.traceHandle(ev, sid);
@@ -3552,6 +3877,25 @@ export class AhChat extends LitElement {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  /** 断连恢复横幅：reconnecting 显示自动恢复中提示；lost 给出「重新连接」手动入口。 */
+  private renderConnBanner() {
+    const st = this.connState[this.activeId];
+    if (!st || st === 'connected') return nothing;
+    if (st === 'reconnecting') {
+      return html`<div class="conn-banner warn">
+        ⚠️ 连接中断，正在自动恢复会话…
+      </div>`;
+    }
+    return html`<div class="conn-banner lost">
+      <span>⚠️ 与服务器的连接已断开${this.jobBy[this.activeId] ? '' : '，本次运行已丢失'}</span>
+      ${this.jobBy[this.activeId]
+        ? html`<button class="conn-retry" @click=${() => this.resumeLost(this.activeId)}>
+            重新连接
+          </button>`
+        : nothing}
+    </div>`;
+  }
+
   private renderMessage(m: ChatMsg) {
     // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
@@ -3974,10 +4318,16 @@ export class AhChat extends LitElement {
         ? html`<div class="ins-retrieval">
             <div class="ins-ret-title">检索内容</div>
             ${ins.retrievals.map(
-              (r) => html`<div class="ins-ret-card">
-                <div class="ins-ret-name">${escapeHtml(r.label)}</div>
+              (r) => html`<details
+                class="ins-ret-card ins-ret-fold"
+                ?open=${r.result.length <= 240}
+              >
+                <summary title="点击展开 / 收起">
+                  <span class="ins-ret-name">${escapeHtml(r.label)}</span>
+                  <span class="ins-ret-meta">${r.result.length} 字</span>
+                </summary>
                 <pre class="ins-ret-body">${formatToolJson(r.result)}</pre>
-              </div>`
+              </details>`
             )}
           </div>`
         : nothing}
@@ -4119,6 +4469,7 @@ export class AhChat extends LitElement {
                   </div>
                 `
               : html`<div class="thread">
+                  ${this.renderConnBanner()}
                   ${this.messages.map((m) => this.renderMessage(m))}
                 </div>`}
           </div>
