@@ -20,7 +20,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-NATIVE_DIR="$REPO_ROOT/packages/core/native/sandbox-exec"
+NATIVE_DIR="$REPO_ROOT/backend/core/native/sandbox-exec"
 BIN="${HARNESS_SANDBOX_HELPER:-$NATIVE_DIR/build/sandbox-exec}"
 STRICT="${HARNESS_SANDBOX_VERIFY_STRICT:-0}"
 

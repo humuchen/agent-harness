@@ -1,7 +1,7 @@
 # 项目执行图（AgentHarness.run 执行流）
 
 > 配套图：`./diagrams/execution-flow.svg`
-> 代码位置：`packages/core/src/harness.ts` — `AgentHarness.run(userInput)`（约 104–344 行）
+> 代码位置：`backend/core/src/harness.ts` — `AgentHarness.run(userInput)`（约 104–344 行）
 
 ## 1. 总览
 

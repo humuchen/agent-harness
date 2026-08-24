@@ -50,8 +50,8 @@ type RunEvent =
 ```
 
 **框架接驳点**
-- `packages/server/src/server.ts`：新增 `POST /api/run`、`GET /api/cs/*`；复用 `guard()` 与既有 `/api/chat/sessions*`。
-- `packages/server/src/runner.ts`：由 `RunQueue` 触发 `runSession(req)`。
+- `access/server/src/server.ts`：新增 `POST /api/run`、`GET /api/cs/*`；复用 `guard()` 与既有 `/api/chat/sessions*`。
+- `access/server/src/runner.ts`：由 `RunQueue` 触发 `runSession(req)`。
 
 **阶段**：阶段 0（复用既有网关与鉴权，仅需补 `cs:admin` 动作与 `handoff` 事件转发）。
 
@@ -80,7 +80,7 @@ function runSession(req: RunRequest): AsyncIterable<RunEvent>;
 ```
 
 **框架接驳点**
-- `packages/server/src/runner.ts`：扩展 `handleRun` 订阅逻辑；`packages/core/src/harness.ts`：`AgentHarness.run()` 与 `HarnessEvent` 流；`onEvent` 旁路通道。
+- `access/server/src/runner.ts`：扩展 `handleRun` 订阅逻辑；`backend/core/src/harness.ts`：`AgentHarness.run()` 与 `HarnessEvent` 流；`onEvent` 旁路通道。
 
 **阶段**：阶段 0（多轮+持久化复用），阶段 2（启发式升级 + handoff 桥接）。
 
@@ -112,9 +112,9 @@ interface RouteResult {
 ```
 
 **框架接驳点**
-- `packages/core/src/router/intent.ts`：扩 `DOMAIN_KEYWORDS` 与 `classify()`。
-- `packages/core/src/router/router.ts`：`resolveTask()` 增加 cs 分支。
-- `packages/core/src/agents.ts`：`AgentCard` / `IndustryDomain`。
+- `backend/core/src/router/intent.ts`：扩 `DOMAIN_KEYWORDS` 与 `classify()`。
+- `backend/core/src/router/router.ts`：`resolveTask()` 增加 cs 分支。
+- `backend/core/src/agents.ts`：`AgentCard` / `IndustryDomain`。
 
 **阶段**：阶段 1（补词典 + 开 `INTENT_ROUTER=llm`）。
 
@@ -147,7 +147,7 @@ interface AgentCard {
 ```
 
 **框架接驳点**
-- `packages/core/src/agents.ts`：`getAgentRegistry().register(card)`；服务端 bootstrap `seedCsAgents()`（沿用 `initAgentRegistry` 持久后端）。
+- `backend/core/src/agents.ts`：`getAgentRegistry().register(card)`；服务端 bootstrap `seedCsAgents()`（沿用 `initAgentRegistry` 持久后端）。
 
 **阶段**：阶段 1（注册 4–5 张卡）。
 
@@ -172,8 +172,8 @@ async function transfer_to_human(args: { reason: string; summary: string }): Pro
 ```
 
 **框架接驳点**
-- `packages/core/src/tools.ts`：`ToolRegistry.register(name, description, parameters, fn)`。
-- `packages/server/src/server.ts`：`RETRIEVAL_RE` / `chat-sessions.ts`：`isRetrievalTool` 识别与 `handoff` 落库。
+- `backend/core/src/tools.ts`：`ToolRegistry.register(name, description, parameters, fn)`。
+- `access/server/src/server.ts`：`RETRIEVAL_RE` / `chat-sessions.ts`：`isRetrievalTool` 识别与 `handoff` 落库。
 
 **阶段**：阶段 0（`search_faq`）/ 阶段 1（`lookup_order`）/ 阶段 2（`transfer_to_human`）。
 
@@ -217,8 +217,8 @@ interface ChatSession {
 ```
 
 **框架接驳点**
-- `packages/server/src/chat-sessions.ts`：扩模型 + 落盘逻辑。
-- `packages/core/src/memory-store.ts`：共享后端实现参照。
+- `access/server/src/chat-sessions.ts`：扩模型 + 落盘逻辑。
+- `backend/core/src/memory-store.ts`：共享后端实现参照。
 
 **阶段**：阶段 0（字段就绪）/ 阶段 2（handoff）/ 阶段 3（satisfaction）/ 阶段 4（共享后端）。
 
@@ -249,8 +249,8 @@ POST /api/cs/handoffs/:id/claim        // body: { claimedBy }
 ```
 
 **框架接驳点**
-- `packages/webapp/src/panels.ts` + `app.ts`：新增 `ah-cs-admin` 与 Tab，受 `cs:admin` 角色保护。
-- `packages/server/src/server.ts`：新增上述接口，接入 `guard()`。
+- `frontend/webapp/src/panels.ts` + `app.ts`：新增 `ah-cs-admin` 与 Tab，受 `cs:admin` 角色保护。
+- `access/server/src/server.ts`：新增上述接口，接入 `guard()`。
 
 **阶段**：阶段 3。
 

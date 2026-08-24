@@ -221,6 +221,8 @@ MCP_SERVERS='[
 
 注册后，`ToolRegistry` 自动出现 `rag__rag_retrieve`（`<server>__<tool>` 前缀约定，已在核心实现），agent loop 无需改动即可触发。
 
+> **示例消费者**：`medical-aesthetics-lead` 插件通过 `scripts/rag-ingest.cjs` 将领域知识母版灌入 RAG 向量库（`rag-store.json`），并在 `MA_RAG_BASE_URL` 已配时由 `project_kb_search` 工具经 RAG HTTP `/v1/retrieve` 检索；合规闸门（compliantCopy / reviewed）在 RAG chunk 元数据上保留，未配 RAG 时回退本地库 `ma_project`。
+
 ### 6.2 两种调用时机
 
 | 模式                        | 触发                                                    | 适用                                       |

@@ -8,7 +8,7 @@ function esc(s: unknown): string {
   return String(s ?? '').replace(
     /[&<>"]/g,
     (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string)
   );
 }
 
@@ -30,14 +30,14 @@ function barChart(
       const bw = Math.max(2, Math.round((it.value / max) * (w - barX - 42)));
       return `<g>
         <text class="ma-lab" x="0" y="${y + 15}" font-size="12">${esc(
-          it.label
-        )}</text>
+        it.label
+      )}</text>
         <rect x="${barX}" y="${
-          y + 4
-        }" width="${bw}" height="15" rx="3" fill="${color}"/>
+        y + 4
+      }" width="${bw}" height="15" rx="3" fill="${color}"/>
         <text class="ma-val" x="${barX + bw + 6}" y="${
-          y + 16
-        }" font-size="12">${it.value}</text>
+        y + 16
+      }" font-size="12">${it.value}</text>
       </g>`;
     })
     .join('');
@@ -68,14 +68,14 @@ function funnel(stages: { label: string; value: number }[]): string {
       const x = cx - bw / 2;
       return `<g>
         <rect x="${x}" y="${y + 4}" width="${bw}" height="20" rx="4" fill="${
-          palette[i % palette.length]
-        }"/>
+        palette[i % palette.length]
+      }"/>
         <text class="ma-lab" x="10" y="${y + 18}" font-size="12">${esc(
-          s.label
-        )}</text>
+        s.label
+      )}</text>
         <text class="ma-val" x="${w - 10}" y="${
-          y + 18
-        }" font-size="12" text-anchor="end">${s.value}</text>
+        y + 18
+      }" font-size="12" text-anchor="end">${s.value}</text>
       </g>`;
     })
     .join('');
@@ -224,7 +224,7 @@ export const leadDashboardView: PluginUIView = {
         </section>
       </div>
 
-      <div class="ma-panel">
+      <div class="crm ma-panel">
         <h3>CRM 同步健康</h3>
         ${
           crmItems.length
@@ -234,7 +234,7 @@ export const leadDashboardView: PluginUIView = {
         <p class="ma-sync">${esc(syncLine)}</p>
       </div>
 
-      <section class="ma-panel">
+      <section class="user-handoff ma-panel">
         <h3>转人工队列（认领）</h3>
         <div class="ma-table-wrap">
           <table class="ma-table">
@@ -244,7 +244,7 @@ export const leadDashboardView: PluginUIView = {
         </div>
       </section>
 
-      <section class="ma-panel">
+      <section class="pending-followup ma-panel">
         <h3>待跟进队列（C 级 / 未转化）</h3>
         <div class="ma-table-wrap">
           <table class="ma-table">
@@ -276,8 +276,9 @@ export const leadDashboardView: PluginUIView = {
       .ma-card-k { font-size:12px; color: var(--ah-text-muted); margin-top:2px; }
       .ma-grid { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:16px; }
       .ma-panel { background: var(--ah-surface-1); border:1px solid var(--ah-border); border-radius:12px; padding:14px; flex:1 1 280px; min-width:260px; }
-      section .ma-panel { margin-bottom:15px; }
-      section:last-child .ma-panel { margin-bottom:0; }
+      .crm.ma-panel,
+      .user-handoff.ma-panel,
+      .pending-followup.ma-panel{ margin-bottom:15px; }
       .ma-sync { color: var(--ah-text-muted); font-size:12px; margin:8px 0 0; word-break:break-all; }
       .ma-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
       .ma-table { width:100%; border-collapse:collapse; font-size:12px; min-width:100%; }

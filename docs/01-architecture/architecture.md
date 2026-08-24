@@ -8,7 +8,7 @@
 
 ## 0. 一句话定位
 
-`agent-harness` 是一个 **pnpm monorepo** 形态的「智能体调度基座」：在单智能体执行引擎之上，落地了**智能体注册发现、任务路由分发、跨行业租户隔离、统一 A2A 协议、工作流编排、插件框架、OS 级沙箱隔离、配额计费与审计**等统一基座能力。对外服务能力由 `packages/server` 的 HTTP+SSE 进程提供。设计目标：单一可替换 LLM 契约、零硬运行时依赖（OTel/K8s/Redis 缺失即降级）、工具错误自愈、护栏先行、一切降级可用。
+`agent-harness` 是一个 **pnpm monorepo** 形态的「智能体调度基座」：在单智能体执行引擎之上，落地了**智能体注册发现、任务路由分发、跨行业租户隔离、统一 A2A 协议、工作流编排、插件框架、OS 级沙箱隔离、配额计费与审计**等统一基座能力。对外服务能力由 `access/server` 的 HTTP+SSE 进程提供。设计目标：单一可替换 LLM 契约、零硬运行时依赖（OTel/K8s/Redis 缺失即降级）、工具错误自愈、护栏先行、一切降级可用。
 
 ---
 
@@ -16,7 +16,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  接入层 (packages/server · HTTP+SSE API + Webapp SPA + CLI)            │
+│  接入层 (access/server · HTTP+SSE API + Webapp SPA + CLI)            │
 │  /api/run · /api/agents · /api/workflows · /api/a2a/tasks · 鉴权/RBAC │
 ├──────────────────────────────────────────────────────────────────────┤
 │  路由编排层 (core: router/ · workflow/ · a2a/)                          │
@@ -171,7 +171,7 @@ SSE: run:start/step/llm/tool/cost/guardrail/verify/run:end 全程事件流
 # 本地开发
 pnpm install
 pnpm -r build          # 拓扑序：core → client → server → webapp/cli → examples
-pnpm server            # node packages/server/dist/server.js
+pnpm server            # node access/server/dist/server.js
 
 # 容器化（多阶段镜像，非 root 运行；HEALTHCHECK → /api/state）
 docker build -t agent-harness:local .
@@ -182,7 +182,7 @@ docker run -p 4173:4173 \
 
 # 云服务（Render Blueprint）
 #   push 到 GitHub(dev) → Render 选 render.yaml → build: pnpm install --no-frozen-lockfile && pnpm -r build
-#   start: node packages/server/dist/server.js  →  healthCheckPath: /api/state
+#   start: node access/server/dist/server.js  →  healthCheckPath: /api/state
 ```
 
 ### 4.3 部署形态选择

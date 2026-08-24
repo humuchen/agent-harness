@@ -1,6 +1,6 @@
 # 部署文档（自托管）
 
-> 整合自根目录 `DEPLOY.md`，归入统一文档中心 `docs/`。仓库已完成 `packages/ui` → `packages/server`（并拆分为 `server` + `webapp` + `client` + `cli`）的重命名，根 `README.md` / `DEPLOY.md` / `package.json` / `render.yaml` / `Dockerfile` 均已同步更新。
+> 整合自根目录 `DEPLOY.md`，归入统一文档中心 `docs/`。仓库已完成 `packages/ui` → `access/server`（并拆分为 `server` + `webapp` + `client` + `cli`）的重命名，根 `README.md` / `DEPLOY.md` / `package.json` / `render.yaml` / `Dockerfile` 均已同步更新。
 > 配套图：`../01-architecture/diagrams/architecture.svg`
 
 核心原则：**所有密钥经 `process.env` 注入（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。**
@@ -9,7 +9,7 @@
 
 ## 0. 部署目标
 
-对外服务由 **`packages/server`** 的 HTTP+SSE 进程提供（原 `packages/ui` 已重命名为 `packages/server`）。
+对外服务由 **`access/server`** 的 HTTP+SSE 进程提供（原 `packages/ui` 已重命名为 `access/server`）。
 
 ---
 
@@ -26,7 +26,7 @@ docker compose up --build
 docker compose --profile redis up --build
 ```
 
-访问 `http://localhost:4173`。Web 界面（Vite+Lit，位于 `packages/webapp`）由 `packages/server` 同源托管，需先构建 webapp（`pnpm --filter @agent-harness/webapp run build`）；若未构建，`/`（根路径）会返回 500 并提示先构建 webapp。
+访问 `http://localhost:4173`。Web 界面（Vite+Lit，位于 `frontend/webapp`）由 `access/server` 同源托管，需先构建 webapp（`pnpm --filter @agent-harness/webapp run build`）；若未构建，`/`（根路径）会返回 500 并提示先构建 webapp。
 
 ## 2. Kubernetes（kustomize）
 
@@ -100,8 +100,8 @@ docker run -p 4173:4173 \
 ## 6. 多平台客户端
 
 服务端暴露稳定 `/api/v1` 契约（JSON + SSE），任意平台用 **`@agent-harness/client`** 消费：
-- **Web（Lit+Vite）**：`packages/webapp`（生产产物被 server 同源托管）
-- **Node CLI**：`packages/cli`，如 `ah run --mode mock`、`ah env --action create`
+- **Web（Lit+Vite）**：`frontend/webapp`（生产产物被 server 同源托管）
+- **Node CLI**：`frontend/cli`，如 `ah run --mode mock`、`ah env --action create`
 - **自定义平台**：`new AgentClient({ baseUrl, token })` 调 `streamRun/streamVerify/streamEnv/getMcpServers/...`
 
 ## 7. SSO / 外部身份源
@@ -126,14 +126,14 @@ OIDC 直接对接：客户端拿 IdP 签发的 JWT，以 `Authorization: Bearer 
 - [ ] 设 `UI_CORS_ORIGIN` 白名单（不再回 `*`）
 - [ ] 设 `MAX_BODY_BYTES` / `RATE_LIMIT` 防 DoS
 - [ ] 设 `AUDIT_LOG` 落盘审计（绝不记录密钥/令牌/MCP 头）
-- [ ] 修正 `render.yaml` 的 `startCommand` 为 `packages/server/dist/server.js`
+- [ ] 修正 `render.yaml` 的 `startCommand` 为 `access/server/dist/server.js`
 - [ ] 多副本配 `REDIS_URL`；LB 开启 sticky session 获得最顺滑 SSE
 - [ ] K8s Secret / `image` / `ingress.host` 部署前替换为真实值（建议 Sealed/External Secrets）
 - [ ] `ENV_PLATFORM` 按是否需要真建环境选择 `local` / `k8s`（默认 `harness` 仅 dry-run）
 
 ## 9. 密钥管理（外部化）
 
-服务不依赖任何密钥 SDK，所有密钥经 `process.env` 读取，启动早期由 `loadSecrets()`（`packages/server/src/secrets.ts`）统一装配。三种来源优先级从高到低：
+服务不依赖任何密钥 SDK，所有密钥经 `process.env` 读取，启动早期由 `loadSecrets()`（`access/server/src/secrets.ts`）统一装配。三种来源优先级从高到低：
 
 1. **平台注入 env**（推荐，最高优先级）— Render / K8s / Docker / systemd 直接注入。
 2. **`SECRETS_FILE`（JSON）** — 适配 K8s Secret 挂载 / Docker secret / Render Secret Files。

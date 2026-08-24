@@ -17,36 +17,25 @@
 
 ```
 agent-harness/                # 根：private 包 + pnpm workspace
-├─ packages/
-│  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖）
-│  │  ├─ src/
-│  │  │  ├─ types.ts          // 核心契约：Message / ToolCall / ToolSchema / LLM
-│  │  │  ├─ telemetry.ts       // 可选 OTel 追踪（无依赖降级）
-│  │  │  ├─ memory.ts         // 滑动窗口 + 长期记忆 + 可选持久化
-│  │  │  ├─ tools.ts          // 工具注册表 + JSON Schema 生成
-│  │  │  ├─ guardrails.ts     // 输入/输出/工具参数三层护栏
-│  │  │  ├─ harness.ts        // 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 HarnessEvent
-│  │  │  ├─ index.ts          // 统一导出（barrel）
-│  │  │  ├─ llm/              // OpenRouter / OpenAI 适配器 + shared.ts（共用请求/解析逻辑）
-│  │  │  ├─ integrations/     // Harness 平台客户端 + harness-tools + mcp/placeholder
-│  │  │  ├─ agents/           // 多智能体基座：注册发现 / 路由 / 租户 / 策略 / 配额 / 工作流 / A2A / 插件
-│  │  │  └─ test/             // node:test 最小测试套件（护栏/记忆/工具/循环/适配器）
-│  │  └─ tsconfig.json
-│  ├─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
-│  │  ├─ src/
-│  │  │  ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
-│  │  │  ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
-│  │  │  ├─ verification.ts   // 三大能力的可视化验证（流式事件）
-│  │  │  ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
-│  │  │  └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
-│  │  └─ tsconfig.json
+├─ frontend/                  # 前端应用层（页面渲染 / 用户交互 / 业务编排 / 前端逻辑）
 │  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（SSE 消费，断网可用）
+│  └─ cli/                    # @agent-harness/cli —— CLI 入口
+├─ access/                    # 接入层（请求接入 / 路由分发 / 负载均衡 / 协议转换 / 鉴权）
+│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
+│     └─ src/
+│        ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
+│        ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
+│        ├─ verification.ts   // 三大能力的可视化验证（流式事件）
+│        ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
+│        └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
+├─ backend/                   # 后端工具层（通用工具 / 数据处理 / 第三方封装 / 底层能力）
+│  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖）
+│  │  └─ src/                 // types / telemetry / memory / tools / guardrails / harness / llm / integrations / agents
 │  ├─ client/                 # @agent-harness/client —— 多平台客户端 SDK（离线契约测试 + e2e smoke）
-│  ├─ cli/                    # @agent-harness/cli —— CLI 入口
 │  └─ medical-ad-guard/       # 领域库：医疗广告合规护栏（与业务零耦合，可复用）
 ├─ plugins/                   # 业务插件（core/server/webapp 零业务耦合，业务语义 100% 留此）
 │  └─ medical-aesthetics-lead/   # 青岛医美智能客服 Agent 插件（含 SQLite 业务库 + 知识库）
-├─ services/
+├─ services/                  # 外部集成 / 底座（独立部署，非 monorepo 三层）
 │  └─ rag/                    # 外部 RAG MCP Server（stdio 模式，由 MCP_SERVERS 接入）
 ├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
 ├─ docs/                      # 完整文档（架构图 / 部署 / MCP / 多实例 Runbook）
@@ -55,7 +44,7 @@ agent-harness/                # 根：private 包 + pnpm workspace
 ├─ tsconfig.base.json
 ├─ package.json
 ├─ Dockerfile / docker-compose.yml   # 自托管交付物（含 --profile redis 多副本队列）
-└─ render.yaml                # Render 部署 Blueprint（部署 packages/server）
+└─ render.yaml                # Render 部署 Blueprint（部署 access/server）
 ```
 
 ## 快速开始
@@ -116,7 +105,7 @@ const agent = new AgentHarness({ llm, tools });
 ## 自助环境治理闭环（可插拔 EnvPlatform）
 
 把 agent 接入一个**可替换的环境平台后端**，让它自助拉起 / 销毁临时或预览环境。
-核心只依赖 `EnvPlatform` 接口（`packages/core/src/integrations/env-platform.ts`），
+核心只依赖 `EnvPlatform` 接口（`backend/core/src/integrations/env-platform.ts`），
 具体后端由 `ENV_PLATFORM` 选择——**后端可换、主循环零改动**：
 
 | 后端 (`ENV_PLATFORM`) | 说明 | 依赖 | 是否真建环境 |
@@ -194,7 +183,7 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
 pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、列工具、并实打实调一次 resolve-library-id
 ```
 
-> 多 server 模型由 `parseMcpServersEnv()`（`packages/core/src/integrations/mcp/placeholder.ts`）统一解析：
+> 多 server 模型由 `parseMcpServersEnv()`（`backend/core/src/integrations/mcp/placeholder.ts`）统一解析：
 > `MCP_SERVERS` 数组优先；旧的 `MCP_SERVER_URL` 单 server 快捷通道已废弃并移除。
 > 接下来按同样方式逐步添加更多 MCP（往 `MCP_SERVERS` 加条目，或运行时 `/api/mcp/add`），主循环零改动。
 
@@ -233,7 +222,7 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 | `builtin__fs_list` | 列目录 | 列出目录条目 |
 | `builtin__fs_search` | 搜文件 | 按文件名/内容在 root 内递归搜索 |
 
-接入点：`registerBuiltinTools(registry, options)`（`packages/core/src/builtins`）。
+接入点：`registerBuiltinTools(registry, options)`（`backend/core/src/builtins`）。
 UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 `BUILTINS_FS` / `BUILTINS_WEB` / `BUILTINS_CALC` / `BUILTINS_DT` 设为 `false`；
 `HARNESS_FS_ROOT` 限定文件沙箱根目录（默认 `process.cwd()`）。
@@ -258,7 +247,7 @@ UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 | `files` | `builtin__fs_read`·`_list`·`_search` | 读文件 / 看文件 / 搜索文件 / file |
 | `current-time` | `builtin__datetime_*` | 现在几点 / 时间 / 时区 / time |
 
-接入点（`packages/core/src/skills`）：
+接入点（`backend/core/src/skills`）：
 
 - `SkillRegistry` — 注册 / 查询 / 触发匹配（`matchTriggers`）/ 生成提示词（`describeForPrompt`）。
 - `defaultSkills()` — 上述 4 个默认技能。
@@ -304,12 +293,12 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
 
 实现要点：
 
-- `packages/server/src/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
+- `access/server/src/server.ts` 仅用 `node:http` / `node:fs` / `node:path`，**零额外依赖**；
   通过 SSE（`text/event-stream`）把 `HarnessEvent`、验证事件、MCP/Env 事件推给前端。
   端点：`/api/run`（模式+提示词流式推 Agent 事件）、`/api/verify`（三大验证）、
   `/api/mcp/list`（列出已接 server）、`/api/mcp/add`（运行时新增 server）、
   `/api/env`（create/destroy 流式推状态机）、`/api/state`（全局状态快照）。
-- `packages/server/src/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVERS`
+- `access/server/src/mcp-manager.ts`：多 MCP server 单例管理器，启动时按 `MCP_SERVERS`
   （JSON 数组，远程 URL / 本地 stdio 均支持）自动连接，并支持运行时通过 `/api/mcp/add`
   （或预设市场 `/api/mcp/preset`）逐步添加；每个 server 的工具以 `<server>__<tool>` 前缀注册，避免命名冲突。
 - `src/server/env-pipeline.ts`：环境生命周期状态机，dry-run 下用定时器模拟真实
@@ -317,7 +306,7 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
   轮询真实状态。
 - `src/harness.ts` 新增可选 `onEvent` 回调（类型 `HarnessEvent`），在循环每一步
   发出事件，**不修改任何业务逻辑**，CLI 与测试完全不受影响。
-- 前端由 `packages/webapp`（Vite+Lit SPA）构建、`packages/server` 同源托管，暗色主题，
+- 前端由 `frontend/webapp`（Vite+Lit SPA）构建、`access/server` 同源托管，暗色主题，
   通过 `fetch` + `ReadableStream` 解析 SSE，断网可用。
 
 ## 自包含验证（无需真实凭据/服务）
@@ -346,7 +335,7 @@ Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`�
 默认开放。**部署到公网前请设置 `UI_AUTH_TOKEN`**，此后这些端点需携带令牌：
 
 ```bash
-UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
+UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 # 请求时：Authorization: Bearer your-secret
 ```
 
@@ -431,7 +420,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
   （`RUN_QUEUE_FILE`，默认 `./data/queue/run-queue.jsonl`），进程崩溃 / 重启后**自动重放**，
   避免丢活（在飞任务因携带进程内状态不可恢复，客户端会自行重投）。零 npm 依赖。
 - **可插拔后端（水平扩展已落地）**：持久化由 `QueueBackend` 接口
-  （`packages/server/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend` /
+  （`access/server/src/queue-backend.ts`）抽象，内置 `MemoryQueueBackend` / `FileQueueBackend` /
   `RedisQueueBackend`。**Redis 后端已实装**，把「可插拔接口」变成真水平扩展：
   - 数据结构：`runq:pending` / `runq:processing` 双列表 + `runq:jobs` / `runq:claimedAt` 哈希。
   - **原子领取**：`claim()` 用 `LMOVE pending processing LEFT RIGHT` 原子迁移，多实例并发下
@@ -469,7 +458,7 @@ UI_AUTH_TOKEN=your-secret node packages/server/dist/server.js
 
 ### RBAC 角色权限 + 审批工作流（P2-12，业务策略与核心隔离）
 
-鉴权与审批是**纯业务层**能力（`packages/server/src/authz.ts` + `approval.ts`），核心
+鉴权与审批是**纯业务层**能力（`access/server/src/authz.ts` + `approval.ts`），核心
 `@agent-harness/core` 不感知任何角色 / 权限 / 票据概念 —— 这是刻意的分层：核心只提供
 AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都是业务策略，可插拔、可组合。
 
@@ -496,7 +485,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ### 运行评估与配方版本化（P2-13，业务质量策略与核心隔离）
 
-同样是**纯业务层**能力（`packages/server/src/eval.ts`），核心不产出任何「评分 / 版本」概念：
+同样是**纯业务层**能力（`access/server/src/eval.ts`），核心不产出任何「评分 / 版本」概念：
 核心只产出事件流，本模块负责把事件流还原为「运行配方快照（RunRecord）」再交给可替换的评估器。
 
 - **RunRecord（运行配方快照）**：从运行队列累积的 harness 事件还原出 `prompt / model / tools / steps /
@@ -514,7 +503,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ### 数据留存/出境策略、版本化 API 与 OpenAPI（P2-14，业务合规层与核心隔离）
 
-依旧是**纯业务层**能力（`packages/server/src/retention.ts` + `openapi.ts`），核心不感知任何合规/契约概念：
+依旧是**纯业务层**能力（`access/server/src/retention.ts` + `openapi.ts`），核心不感知任何合规/契约概念：
 
 - **留存与出境策略（RetentionPolicy）**：`RetentionPolicy` 接口 + `DefaultRetentionPolicy`。
   - 留存窗口按记录类型分化：`RETENTION_DAYS_AUDIT`(默认 90) / `RETENTION_DAYS_MEMORY`(默认 30) /
@@ -544,7 +533,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 ### 健壮性增强（与核心隔离的运行时加固）
 
 在 14 项功能落地之后，又对「系统不裸崩、任务不挂死、资源不泄漏、重启不丢活」做了进一步加固，
-绝大部分位于 server 业务/运行时层；唯一一次对核心 `packages/core` 的改动是 `FileMemoryStore` 的
+绝大部分位于 server 业务/运行时层；唯一一次对核心 `backend/core` 的改动是 `FileMemoryStore` 的
 **原子写加固**（纯 I/O 安全，不引入任何业务策略），已在下方明示：
 
 - **运行队列防挂死**：每个 Job 自带 `AbortController` + 看门狗（`JOB_TIMEOUT_MS`，默认 5 分钟）。
@@ -560,7 +549,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 - **进程级崩溃防护**：注册 `uncaughtException`/`unhandledRejection` 兜底日志——未捕获异常记录后安全退出
   （交由 k8s/Render 重启），未处理拒绝仅记录不退出，避免单点拒绝拖垮在线服务；SSE 写操作对
   客户端断连（EPIPE）做了容错。
-- **队列持久化与重启重放**：`RunQueue` 接入 `QueueBackend` 抽象（`packages/server/src/queue-backend.ts`），
+- **队列持久化与重启重放**：`RunQueue` 接入 `QueueBackend` 抽象（`access/server/src/queue-backend.ts`），
   设 `RUN_QUEUE_BACKEND=file` 后，未开始的任务落盘到 JSONL，进程崩溃 / 重启自动重放，避免丢活
   （详见上文「运行队列」）；Redis / BullMQ 只需实现同一接口即可作为分布式后端接入。
 - **核心记忆文件原子写**：`FileMemoryStore.save` 改为「写临时文件 + 同 FS 原子 rename」——进程在写入途中
@@ -572,7 +561,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 
 ## 密钥管理（外部化）
 
-服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`packages/server/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。
+服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`access/server/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。
 
 **三种来源（优先级从高到低，且均不覆盖平台注入的 env）：**
 
@@ -597,7 +586,7 @@ UI 端实测反馈过两类现象，经排查均为**设计层面的真实问题
 
 ### 问题 A：复杂任务时 Agent 闭环「提前结束」
 
-闭环主循环在 `packages/core/src/harness.ts` 的 `run()` 中，有两处会导致复杂任务在中途收尾：
+闭环主循环在 `backend/core/src/harness.ts` 的 `run()` 中，有两处会导致复杂任务在中途收尾：
 
 1. **硬上限 `maxSteps` 偏低导致中途截断**。循环以 `for (step < this.opts.maxSteps)`（`harness.ts:178`）驱动；框架默认 `maxSteps: 12`（`harness.ts:84`），早期 UI 未显式覆盖时即沿用此值。任务若需要 >12 步（多轮工具调用 / 反复试错）就会在 `reached max steps without a final answer`（`harness.ts:317`）处被强制收尾，表现就是「闭环直接结束、没拿到结果」。
 2. **空响应即终止**。唯一终止条件是 `if (!resp.tool_calls || resp.tool_calls.length === 0) return resp.content;`（`harness.ts:249`）。弱 / 免费模型偶尔回空内容且无 `tool_calls`，主循环会把这段空回复当成「最终答案」直接返回，同样表现为提前结束。
@@ -647,7 +636,7 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 
 ## 基座子系统（多智能体基座）
 
-在单智能体闭环之上，`packages/core/src` 已落地一套**多智能体基座子系统**（详见 [`docs/01-architecture/modules.md`](./docs/01-architecture/modules.md)），全部以「接口 + 默认实现 + 组合工厂」范式存在，`server` 侧已接入运行链路：
+在单智能体闭环之上，`backend/core/src` 已落地一套**多智能体基座子系统**（详见 [`docs/01-architecture/modules.md`](./docs/01-architecture/modules.md)），全部以「接口 + 默认实现 + 组合工厂」范式存在，`server` 侧已接入运行链路：
 
 | 子系统 | 目录 | 作用 |
 |---|---|---|
@@ -664,7 +653,7 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | **特性开关** | `feature-flags.ts` | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线） |
 | **错误日志** | `errorlog.ts` | 统一错误记录 + 计数 + 报告（`/api/errors`） |
 
-> 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`packages/medical-ad-guard`）。
+> 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`backend/medical-ad-guard`）。
 
 ## 测试
 
@@ -687,7 +676,7 @@ pnpm --filter @agent-harness/server run test      # 跑集成测试
 
 多平台客户端 `@agent-harness/client` 分两层验证——**离线契约测试**（注入 fetch 替身，零网络，
 覆盖 URL 拼装 / Bearer 鉴权 / 错误映射 / 202 审批工单 / SSE 分帧健壮性）与**端到端 smoke**
-（自己在随机空闲端口拉起 `packages/server/dist/server.js`，跑完自动回收，不依赖外部已运行实例）：
+（自己在随机空闲端口拉起 `access/server/dist/server.js`，跑完自动回收，不依赖外部已运行实例）：
 
 ```bash
 pnpm --filter @agent-harness/client run build      # 先构建
@@ -713,7 +702,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test →
   时由 UI 统一 `disconnectAllMcp()` 清理，避免 stdio 子进程 / SSE 长连接泄漏。
 - **MCP 自动重连与健康探测**：远端 server 重启/网络抖动时三层自愈——工具调用失败懒重连一次、
   后台周期 `ping` 探测、指数退避自动重连；状态实时回写 UI 并可手动「↻ 重连」（见前文「连接可靠性」）。
-- **成本记账与配额**：每次 LLM 调用按模型单价表（`packages/core/src/llm/pricing.ts`）估算美元成本，
+- **成本记账与配额**：每次 LLM 调用按模型单价表（`backend/core/src/llm/pricing.ts`）估算美元成本，
   累加进可观测指标（`/api/metrics` 含 `cost` 与 `costByModel`），并发出 `run:cost` 事件供 UI 实时展示。
   可设单次 run 的 `tokenBudget` / `costBudget`（`MAX_TOKENS_PER_RUN` / `MAX_COST_PER_RUN`），超限即熔断中止。
   未知模型默认不计费（保守），可用 `registerModelPrice()` 按合同价覆盖。

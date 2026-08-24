@@ -6,7 +6,7 @@
   </defs>
   <rect width="820" height="1180" fill="#f8fafc"/>
   <text x="410" y="34" text-anchor="middle" font-size="21" font-weight="700" fill="#0f172a">AgentHarness.run() 执行流</text>
-  <text x="410" y="56" text-anchor="middle" font-size="12" fill="#64748b">packages/core/src/harness.ts — 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 onEvent / 可观测</text>
+  <text x="410" y="56" text-anchor="middle" font-size="12" fill="#64748b">backend/core/src/harness.ts — 编排循环（LLM ↔ 工具 ↔ 记忆）+ 事件流 onEvent / 可观测</text>
 
   <!-- center x = 410 -->
   <!-- START -->

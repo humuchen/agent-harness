@@ -1,6 +1,6 @@
 # 可直接通过 URL 访问的远程 MCP 服务清单
 
-> 适用对象：本仓库的 agent-harness（`packages/core` + `packages/server`）。
+> 适用对象：本仓库的 agent-harness（`backend/core` + `access/server`）。
 > 你的 harness 已支持远程 MCP：通过 `serverUrl` 连接，传输方式自动判定
 > （URL 以 `/sse` 结尾走 SSE，否则走 Streamable HTTP）。
 
@@ -42,7 +42,7 @@ MCP_SERVERS=[{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{
 
 ## 一（补）、开箱预设 · 一键接入（recommended）
 
-代码里已内置一组**预设清单**（`packages/core/src/integrations/mcp/presets.ts`，
+代码里已内置一组**预设清单**（`backend/core/src/integrations/mcp/presets.ts`，
 单一事实来源，UI 直接消费），覆盖最常用公共 MCP，无需手查 URL / 拼 headers：
 
 | 预设 id | 服务 | 鉴权 | 说明 |

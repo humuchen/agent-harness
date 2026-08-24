@@ -74,7 +74,7 @@
 - **运行质量评估（pluggable）**：`eval.ts` 提供 `Evaluator` 接口 + `RuleBasedEvaluator`（可解释、零依赖）：校验「护栏未拦截 / 预算未超限 / 有最终回答 / 调用了工具 / 有步骤」，硬性失败直接判不通过；`createEvaluator()` 工厂可替换为 LLM-as-judge。`runRecordFromEvents(jobId, events)` 从 harness 事件流**无损还原**运行配方快照（RunRecord）。
 - **配方版本化（Recipe）**：`RecipeStore` 接口 + `Volatile`/`File` 实现，把一次 RunRecord 存为命名版本便于回归比对。
 - **完成自检（inline）**：`harness.run` 的 `requireCompletion`（env `AGENT_COMPLETION_CHECK`）在模型以空响应收尾时注入提示继续循环，避免「空响应即结束」提前中断。
-- **测试套件**：`packages/core/test/*.test.cjs`（34 用例，零依赖）、`packages/server/test/*.test.cjs`（eval/retention 等）。
+- **测试套件**：`backend/core/test/*.test.cjs`（34 用例，零依赖）、`access/server/test/*.test.cjs`（eval/retention 等）。
 
 #### 覆盖边界与缺口
 - **触发条件 = 手动**：`/api/verify`、`/api/eval`、CLI `verify`/`eval` 全部由运维/用户显式触发；**运行管线内没有自动验证闸门**——一次 run 不会因为「评估不通过」而自动重试或告警（评估是旁路只读，不改主循环）。
@@ -154,8 +154,8 @@
 
 ## 四、证据索引（关键文件）
 
-- 沙箱/执行边界：`packages/core/src/builtins/shell.ts`、`packages/core/src/builtins/filesystem.ts`、`packages/core/src/guardrails.ts`
-- 进程/并发/队列：`packages/server/src/run-queue.ts`、`packages/server/src/queue-backend.ts`、`packages/core/src/harness.ts`、`packages/server/src/runner.ts`
-- 自验证：`packages/server/src/verification.ts`、`packages/server/src/eval.ts`
-- 自修复：`packages/core/src/llm/failover.ts`、`packages/core/src/integrations/mcp/placeholder.ts`、`packages/core/src/memory.ts`
-- 插件化：`packages/core/src/tools.ts`、`packages/core/src/integrations/mcp/placeholder.ts`、`packages/core/src/skills/index.ts`、`packages/server/src/approval.ts`、`packages/server/src/eval.ts`、`packages/core/src/integrations/env-platform.ts`
+- 沙箱/执行边界：`backend/core/src/builtins/shell.ts`、`backend/core/src/builtins/filesystem.ts`、`backend/core/src/guardrails.ts`
+- 进程/并发/队列：`access/server/src/run-queue.ts`、`access/server/src/queue-backend.ts`、`backend/core/src/harness.ts`、`access/server/src/runner.ts`
+- 自验证：`access/server/src/verification.ts`、`access/server/src/eval.ts`
+- 自修复：`backend/core/src/llm/failover.ts`、`backend/core/src/integrations/mcp/placeholder.ts`、`backend/core/src/memory.ts`
+- 插件化：`backend/core/src/tools.ts`、`backend/core/src/integrations/mcp/placeholder.ts`、`backend/core/src/skills/index.ts`、`access/server/src/approval.ts`、`access/server/src/eval.ts`、`backend/core/src/integrations/env-platform.ts`

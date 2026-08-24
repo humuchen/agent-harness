@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.cjs",
-    "smoke": "node smoke.cjs"
+    "smoke": "node smoke.cjs",
+    "eval:booking": "node scripts/booking-fail-eval.cjs"
   },
   "license": "MIT",
   "engines": {

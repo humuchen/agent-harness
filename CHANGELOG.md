@@ -4,6 +4,30 @@
 
 ---
 
+## [0.2.2] - 2026-08-21
+
+### 🐛 修复（medical-aesthetics-lead 转人工）
+
+- **Bug**：用户在线上预约系统不可用时被 agent 口头承诺「提交给客服人员」，但转人工队列为空——agent 只输出自然语言、未调 `lead_handoff`，客资未落库。
+- **提示词加固**（`src/prompts.ts`）：新增「转人工与预约失败的强约束」——`consultation_book` 返回 `ok:false`（NOT_CONFIGURED/CONFLICT/UPSTREAM_* 等）时必须 `lead_handoff`，reason 透传 `booking-failed:<code>` 与院区/日期/时段；禁止只口头承诺、禁止编造未配置跟进方式（短信/电话回访）、禁止失败后盲目重试；handoff 前先 `lead_qualify` 落库画像。
+- **硬兜底**（`src/tools/book.ts`）：非 `INVALID_ARGUMENT` 的 booking 失败，工具层自动触发 `lead_handoff` 落库并回灌 `autoHandoff` 字段给模型据实回复——即使模型不遵守提示词，客资也一定进队列（幂等 upsert）。
+- **测试/评测**：新增 `test/prompts.test.cjs`（6 例，提示词规则回归保护）、`test/hardoff.test.cjs`（4 例，NOT_FOUND 自动转人工 / INVALID_ARGUMENT 不触发 / 成功不触发 / 幂等）；`scripts/booking-fail-eval.cjs` 真实模型评测（`pnpm --filter @agent-harness/medical-aesthetics-lead run eval:booking`）——预约失败场景断言临时库 `handed_off=1` ≥1、回复如实提及转交且不编造跟进方式，EVAL_PASS。
+- 验证：插件 `node --test test/*.test.cjs` **22/22 全绿**。
+
+---
+
+## [0.2.1] - 2026-08-21
+
+### 🔄 变更（medical-aesthetics-lead 知识检索迁移至外部 RAG）
+
+- 医美插件知识检索由静态 `knowledge/` 母版切换为外部 RAG 服务（`services/rag`）：
+  - 新增 `scripts/rag-ingest.cjs`，将（已下线的）`knowledge/` 母版灌入 RAG 向量库，产出 `rag-store.json`（gitignored，运行期唯一持久化知识源）。
+  - `project_kb_search` 在 `MA_RAG_BASE_URL` 已配时优先走 RAG `/v1/retrieve`，合规闸门（compliantCopy / reviewed）在 RAG 元数据上保留；未配回退 `ma_project` 本地库。
+  - 删除 `knowledge/` 目录与依赖它的 `kb-seed/kb-eval/kb-export/kb-validate.cjs`；保留 `kb-smoke.cjs`。
+  - `.env.example` 新增 `MA_RAG_*` 与 RAG MCP 注册示例；相关文档（CONFIG / REFACTOR / DATABASE_SCHEMA / agent 设计 / RAG 设计）已同步。
+
+---
+
 ## [0.2.0] - 2026-08-20
 
 ### ✨ 新增功能（多智能体基座子系统）

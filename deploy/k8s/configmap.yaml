@@ -27,5 +27,5 @@ data:
   # 切勿用 sqlite（网络 FS 文件锁不可靠，多副本并发易损坏）。
   MEMORY_BACKEND: 'file'
   MEMORY_DIR: '/app/data/memory'
-  # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 packages/server/data 与项目根 data 两处。
+  # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
   MA_DATA_DIR: '/app/data/ma-lead'

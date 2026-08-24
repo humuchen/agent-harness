@@ -37,7 +37,7 @@
 
 关键事实（均已对照源码核实）：
 
-- **单执行循环**：`packages/core/src/harness.ts` 的 `AgentHarness` 是一个线性 `LLM ↔ 工具 ↔ 记忆` 循环。整库只有这一种「智能体」形态。
+- **单执行循环**：`backend/core/src/harness.ts` 的 `AgentHarness` 是一个线性 `LLM ↔ 工具 ↔ 记忆` 循环。整库只有这一种「智能体」形态。
 - **工具即能力原语**：`ToolRegistry`（`tools.ts`）是一切能力的统一载体；MCP 工具以 `<server>__<tool>` 前缀合并进同一注册表（`mcp-manager.ts` + `runner.ts: tools.mergeFrom(mcpManager.liveRegistry())`）。
 - **队列只管并发不管路由**：`RunQueue`（`run-queue.ts`）用 `RUN_CONCURRENCY`(默认 4) 限制并发、用 `runningSessions` 做同会话串行化、用 `JOB_TIMEOUT_MS` 看门狗兜底；但**每次 `execute()` 都 `assembleAgent()` 出一个挂满全部工具 + 全部 MCP 的全能 harness** —— 它并不知道「这个任务是医美的还是金融的」。
 - **记忆隔离到会话**：`sessionKey`（来自 `body.sessionId` / `x-session-id` / 默认 `anonymous`）在 `file` / `sqlite` / `volatile` 后端做隔离，配合 `SESSION_MEMORY_MAX` LRU（`runner.ts`）。这是**会话级**，不是**租户 / 行业级**。

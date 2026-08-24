@@ -1,7 +1,7 @@
 # Agent Harness · 本地 Docker 部署到落地使用完整流程
 
 > 适用对象：在本机（已安装 Docker）上把 `agent-harness-ts` 跑起来并实际使用「运行时面板」。
-> 本机已验证环境：Docker 29.6.2 / Docker Compose v5.3.1，项目根目录 `packages/server` + `packages/webapp` 均就绪。
+> 本机已验证环境：Docker 29.6.2 / Docker Compose v5.3.1，项目根目录 `access/server` + `frontend/webapp` 均就绪。
 
 ---
 
@@ -18,9 +18,9 @@
 | 项 | 说明 |
 |---|---|
 | 构建 | `Dockerfile` 多阶段：node:22-bookworm 构建 → node:22-bookworm-slim 运行 |
-| 进程 | `node packages/server/dist/server.js` |
+| 进程 | `node access/server/dist/server.js` |
 | 监听 | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0） |
-| 托管 | server 优先托管 `packages/webapp/dist`（即我们做的「运行」面板 UI） |
+| 托管 | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI） |
 | 健康检查 | `GET /api/state`（开放端点，无需令牌，返回 200 JSON） |
 | 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本） |
 | 运行用户 | 镜像内已用非 root 用户 `ah` 运行 |

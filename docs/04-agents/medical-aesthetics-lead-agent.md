@@ -72,7 +72,7 @@
 
 ## 3. 架构映射：如何接入现有 harness
 
-现有插件契约（`packages/core/src/plugin/context.ts`）提供以下注入面，客资 Agent 全部复用：
+现有插件契约（`backend/core/src/plugin/context.ts`）提供以下注入面，客资 Agent 全部复用：
 
 | 业务需求 | 复用扩展点 | 说明 |
 | --- | --- | --- |
@@ -105,7 +105,7 @@ plugins/medical-aesthetics-lead/
     ├── prompts.ts               # 系统提示词（角色 + 合规红线 + 阶段话术）
     ├── store.ts                 # 客资生命周期文件存储（复用 CS_DATA_DIR/MEMORY_DIR 模式）
     ├── tools/
-    │   ├── kb.ts                # project_kb_search 项目知识库检索（生产接 RAG）
+    │   ├── kb.ts                # project_kb_search 项目知识库检索（经外部 RAG 检索；knowledge/ 母版已迁移下线，源为 rag-store.json）
     │   ├── qualify.ts           # lead_qualify 结构化抽取+意向分级
     │   ├── capture.ts           # lead_capture 留资（带授权）
     │   ├── book.ts              # consultation_book 预约到店
@@ -349,7 +349,7 @@ harness 的 Agent 是**通道无关**的。每个渠道只需一个轻量适配�
 3. 加 `authz.ts` 动作 `lead:read/lead:assign/lead:export` 并授 admin/operator。
 4. 启动（绝对 `MEMORY_DIR`）：
    ```bash
-   MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node packages/server/dist/server.js
+   MEMORY_DIR="$(pwd -W)/.rtdata" PORT=4173 node access/server/dist/server.js
    ```
 5. 浏览器开 `http://localhost:4173/` → 侧边栏出现「**客**」Tab（展开即「客资看板」）。
 6. 调 `POST /api/run`（`agentId: medical-aesthetics-lead`，模拟抖音私信）→ 看板漏斗 + 对话记录实时更新。

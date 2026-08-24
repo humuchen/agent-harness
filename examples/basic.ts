@@ -23,6 +23,7 @@ import {
   ToolRegistry,
   Memory,
   objectParams,
+  messageText,
 } from '@agent-harness/core';
 import type { LLM, ToolCall } from '@agent-harness/core';
 
@@ -53,7 +54,7 @@ tools.register(
 // 仅用于演示契约。请替换为真实提供商。
 const mockLLM: LLM = async (messages) => {
   const last = messages[messages.length - 1];
-  const userText = last?.content ?? '';
+  const userText = messageText(last);
 
   const addMatch = userText.match(/(\d+)\s*(加|\+|plus)\s*(\d+)/i);
   if (addMatch) {

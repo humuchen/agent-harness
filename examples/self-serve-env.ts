@@ -7,6 +7,7 @@ import {
   registerHarnessTools,
   registerMcpTools,
   loadEnv,
+  messageText,
 } from '@agent-harness/core';
 import type { LLM, ToolCall } from '@agent-harness/core';
 
@@ -61,7 +62,7 @@ function makeMockEnvLLM(): LLM {
 
     // destroy 工具执行完毕后，总结并结束。
     if (last?.role === 'tool' && last.name === 'destroy_environment') {
-      const h = safeParse(last.content ?? '');
+      const h = safeParse(messageText(last));
       return {
         content: `已完成闭环：临时环境 ${h.envId} 已创建并销毁，无残留资源。`,
         tool_calls: [],
@@ -70,7 +71,7 @@ function makeMockEnvLLM(): LLM {
 
     // create 工具执行完毕后，继续执行 destroy（模拟"回归已完成"）。
     if (last?.role === 'tool' && last.name === 'create_ephemeral_environment') {
-      const h = safeParse(last.content ?? '');
+      const h = safeParse(messageText(last));
       const call: ToolCall = {
         id: 'call_' + Date.now(),
         name: 'destroy_environment',
@@ -80,7 +81,7 @@ function makeMockEnvLLM(): LLM {
     }
 
     // 首轮用户输入：解析意图并调用创建。
-    const text = last?.content ?? '';
+    const text = messageText(last);
     const branchMatch = text.match(/基于\s*([^\s,，]+)\s*分支/);
     const branch = branchMatch ? branchMatch[1] : 'main';
     const call: ToolCall = {

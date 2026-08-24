@@ -8,11 +8,11 @@ importers:
 
   .: {}
 
-  examples:
+  access/server:
     dependencies:
       '@agent-harness/core':
         specifier: workspace:*
-        version: link:../packages/core
+        version: link:../../backend/core
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
         version: 1.30.0(zod@4.4.3)
@@ -23,12 +23,12 @@ importers:
       typescript:
         specifier: ^5.4.5
         version: 5.9.3
+    optionalDependencies:
+      ioredis:
+        specifier: ^5.4.1
+        version: 5.11.1
 
-  packages/cli:
-    dependencies:
-      '@agent-harness/client':
-        specifier: workspace:*
-        version: link:../client
+  backend/client:
     devDependencies:
       '@types/node':
         specifier: ^20.19.43
@@ -37,16 +37,7 @@ importers:
         specifier: ^5.4.5
         version: 5.9.3
 
-  packages/client:
-    devDependencies:
-      '@types/node':
-        specifier: ^20.19.43
-        version: 20.19.43
-      typescript:
-        specifier: ^5.4.5
-        version: 5.9.3
-
-  packages/core:
+  backend/core:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
@@ -66,7 +57,7 @@ importers:
         specifier: ^1.7.0
         version: 1.9.1
 
-  packages/medical-ad-guard:
+  backend/medical-ad-guard:
     dependencies:
       '@agent-harness/core':
         specifier: workspace:*
@@ -79,11 +70,11 @@ importers:
         specifier: ^5.4.5
         version: 5.9.3
 
-  packages/server:
+  examples:
     dependencies:
       '@agent-harness/core':
         specifier: workspace:*
-        version: link:../core
+        version: link:../backend/core
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
         version: 1.30.0(zod@4.4.3)
@@ -94,16 +85,25 @@ importers:
       typescript:
         specifier: ^5.4.5
         version: 5.9.3
-    optionalDependencies:
-      ioredis:
-        specifier: ^5.4.1
-        version: 5.11.1
 
-  packages/webapp:
+  frontend/cli:
     dependencies:
       '@agent-harness/client':
         specifier: workspace:*
-        version: link:../client
+        version: link:../../backend/client
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  frontend/webapp:
+    dependencies:
+      '@agent-harness/client':
+        specifier: workspace:*
+        version: link:../../backend/client
       dompurify:
         specifier: ^3.1.6
         version: 3.4.13
@@ -121,14 +121,36 @@ importers:
         specifier: ^5.4.11
         version: 5.4.21(@types/node@20.19.43)
 
+  plugins/customer-service:
+    dependencies:
+      '@agent-harness/core':
+        specifier: workspace:*
+        version: link:../../backend/core
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
   plugins/medical-aesthetics-lead:
     dependencies:
       '@agent-harness/core':
         specifier: workspace:*
-        version: link:../../packages/core
+        version: link:../../backend/core
       '@agent-harness/medical-ad-guard':
         specifier: workspace:*
-        version: link:../../packages/medical-ad-guard
+        version: link:../../backend/medical-ad-guard
+    devDependencies:
+      '@types/node':
+        specifier: ^20.19.43
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  services/rag:
     devDependencies:
       '@types/node':
         specifier: ^20.19.43

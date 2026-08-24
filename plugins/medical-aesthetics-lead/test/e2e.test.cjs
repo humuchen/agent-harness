@@ -23,6 +23,9 @@ test.beforeEach(() => {
   process.env.MA_DATA_DIR = DATA_DIR;
   process.env.MA_TENANT_ID = 'test';
   process.env.MA_OUTBOX_ENABLED = 'false';
+  // 隔离：确保不继承外部 MA_RAG_BASE_URL，否则「空库返回空」用例会误走 RAG 路径
+  delete process.env.MA_RAG_BASE_URL;
+  delete process.env.MA_RAG_TOKEN;
   // 关键：config 是模块级单例缓存，若不失效，第二个用例起仍会复用第一个用例的 DB 路径，
   // 而 afterEach 删除的是「当前」DATA_DIR，导致 DB 实际文件未被清理、跨用例数据串扰（flaky 根因）。
   // 这里先关闭上一连接、再失效配置缓存，确保每个用例解析到自己的临时库。

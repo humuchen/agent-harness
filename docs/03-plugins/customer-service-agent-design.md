@@ -23,24 +23,24 @@
 ## 1. 需求与框架能力映射（含代码定位）
 
 ### 1.1 多轮对话 —— 已具备
-- 核心：`packages/core/src/harness.ts` 的 `AgentHarness.run()` 把每轮 user/assistant/tool 追加进 `Memory` 窗口；`packages/server/src/runner.ts` 的 `getSessionMemory(sessionKey)` 按 `sessionKey` 复用同一 `Memory` 实例，使同一会话多次 `/api/run` 共享上下文（LRU 有界缓存）。
-- 前端：`packages/webapp/src/chat.ts`（`ah-chat`）已是三栏多会话聊天 UI，按 `chatSessionId` 隔离、可并发流式、可跨刷新恢复。
+- 核心：`backend/core/src/harness.ts` 的 `AgentHarness.run()` 把每轮 user/assistant/tool 追加进 `Memory` 窗口；`access/server/src/runner.ts` 的 `getSessionMemory(sessionKey)` 按 `sessionKey` 复用同一 `Memory` 实例，使同一会话多次 `/api/run` 共享上下文（LRU 有界缓存）。
+- 前端：`frontend/webapp/src/chat.ts`（`ah-chat`）已是三栏多会话聊天 UI，按 `chatSessionId` 隔离、可并发流式、可跨刷新恢复。
 - **接入**：前端调用 `/api/run` 时稳定携带 `sessionId`（= 记忆 key）与 `chatSessionId`（= 会话存储 key），沿用既有机制即可。
 
 ### 1.2 对话历史持久化 —— 已具备，生产需升级后端
-- `packages/server/src/chat-sessions.ts`：`ChatSession` 模型（id/title/createdAt/updatedAt/messages[]），消息含 `role/content/ts/reasoning/tools/trace`。
+- `access/server/src/chat-sessions.ts`：`ChatSession` 模型（id/title/createdAt/updatedAt/messages[]），消息含 `role/content/ts/reasoning/tools/trace`。
 - 接口已存在（`server.ts`）：`GET/POST /api/chat/sessions`、`GET/PATCH/DELETE /api/chat/sessions/:id`。
 - 服务端 `handleRun` 已在 `run:start`/`run:end` 自动把 user/assistant 消息落盘到该存储（含推理/工具/链路）。
-- **缺口**：当前是「进程内存 Map + 可选单 JSON 文件（`CHAT_SESSIONS_FILE`）」。生产多副本需改为共享后端（sqlite/redis），与 `MemoryStore`（`packages/core/src/memory-store.ts`）同款思路。
+- **缺口**：当前是「进程内存 Map + 可选单 JSON 文件（`CHAT_SESSIONS_FILE`）」。生产多副本需改为共享后端（sqlite/redis），与 `MemoryStore`（`backend/core/src/memory-store.ts`）同款思路。
 
 ### 1.3 FAQ 知识库检索 —— 新增工具
-- 工具机制：`packages/core/src/tools.ts` 的 `ToolRegistry.register(name, description, parameters, fn)`。agent 在 harness 循环里自主决定调用。
+- 工具机制：`backend/core/src/tools.ts` 的 `ToolRegistry.register(name, description, parameters, fn)`。agent 在 harness 循环里自主决定调用。
 - 检索型工具在 `server.ts` 的 `RETRIEVAL_RE` / `chat.ts` 的 `isRetrievalTool` 会被识别为 `retrieval` 节点并绿色高亮——命名含 `search/query/lookup/knowledge` 即可自动获得好看的检索卡片。
 - **实现**：新增 `search_faq(query, topK?)` 工具，后端查 FAQ 库（JSON 或向量库）。也可把 FAQ 作为远程 MCP server 接入（框架已支持多 MCP，`mcpManager`）。
 
 ### 1.4 意图识别（退款/订单/技术）—— 已具备路由引擎，需补 CS 词典
-- `packages/core/src/router/intent.ts`：`IntentRouter.classify(prompt)` → `{domain, intent, requiredCapabilities, source}`，支持 rule（关键词）/ llm（`INTENT_ROUTER=llm`）/ auto（智能降级：有 key 用 llm，无 key 用 rule）。
-- `packages/core/src/router/router.ts`：`TaskRouter.resolve()` 决策优先级：显式 agentId > domain > classify > fallback，返回 `RouteResult{agentId, card, decidedBy, intent}`。
+- `backend/core/src/router/intent.ts`：`IntentRouter.classify(prompt)` → `{domain, intent, requiredCapabilities, source}`，支持 rule（关键词）/ llm（`INTENT_ROUTER=llm`）/ auto（智能降级：有 key 用 llm，无 key 用 rule）。
+- `backend/core/src/router/router.ts`：`TaskRouter.resolve()` 决策优先级：显式 agentId > domain > classify > fallback，返回 `RouteResult{agentId, card, decidedBy, intent}`。
 - **接入**：新增 CS 领域词典与 3 张领域 AgentCard（`cs-refund`/`cs-order`/`cs-tech`），`/api/run` 带 `domain:'cs'`（或固定 `agentId:'cs-orchestrator'`）即由路由引擎分派；命中意图经 `run:meta.decidedBy`/`intent` 透出，可落库做统计。
 
 ### 1.5 自动转人工 —— 新增工具 + 服务端升级
@@ -50,7 +50,7 @@
 
 ### 1.6 管理后台（记录+满意度）—— 扩展接口 + 前端面板
 - 数据接口已具备；需新增：满意度字段 + `POST /api/chat/sessions/:id/feedback`；统计聚合 `GET /api/cs/stats`；转人工队列 `GET/POST /api/cs/handoffs`。
-- 前端：`packages/webapp/src/panels.ts` 已用 LitElement 面板模式（`ah-verify`/`ah-env`/`ah-mcp`/`ah-approvals`），新增 `ah-cs-admin` 面板即可；纳入 `app.ts` 的 Tab 栏，受 RBAC（`sessions:read` 或新 `cs:admin`）保护。
+- 前端：`frontend/webapp/src/panels.ts` 已用 LitElement 面板模式（`ah-verify`/`ah-env`/`ah-mcp`/`ah-approvals`），新增 `ah-cs-admin` 面板即可；纳入 `app.ts` 的 Tab 栏，受 RBAC（`sessions:read` 或新 `cs:admin`）保护。
 
 ---
 
@@ -89,7 +89,7 @@ flowchart TD
 ## 3. 当前框架接入方案（按文件给出）
 
 ### 3.1 注册客服 Agent（core/agents）
-- 在 `packages/core/src/agents/types.ts` 的 `IndustryDomain` 联合类型补充客服域（如 `'cs-refund'|'cs-order'|'cs-tech'|'cs-general'`），或在 `router/intent.ts` 的 `DOMAIN_KEYWORDS` 增加客服词表（退款/退货/订单/物流/故障/报错…）。
+- 在 `backend/core/src/agents/types.ts` 的 `IndustryDomain` 联合类型补充客服域（如 `'cs-refund'|'cs-order'|'cs-tech'|'cs-general'`），或在 `router/intent.ts` 的 `DOMAIN_KEYWORDS` 增加客服词表（退款/退货/订单/物流/故障/报错…）。
 - 用 `getAgentRegistry().register(card)` 注册 3–4 张 `AgentCard`，每张 `assembly:{ systemPrompt, tools, skills }` 收窄到该意图；或在服务端 bootstrap 时 seed（沿用 `initAgentRegistry` 持久后端）。
 - 前端 `/api/run` 传 `agentId:'cs-orchestrator'`（或 `domain:'cs'`），`run-queue` 经 `resolveTask` 自动路由。
 
