@@ -3415,7 +3415,11 @@ export class AhChat extends LitElement {
                           type="button"
                           class="attach-rm"
                           title="移除"
-                          @click=${() => this.removeAttachment(i)}
+                          @click=${(e: Event) => {
+                            // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
+                            e.stopPropagation();
+                            this.removeAttachment(i);
+                          }}
                         >
                           ×
                         </button>
