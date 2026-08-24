@@ -67,6 +67,9 @@ export type HarnessEvent =
   | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
   | { type: 'run:end'; runId: string; final: string; steps: number }
   | { type: 'verify:result'; attempt: number; passed: boolean; score: number; reasons: string[] }
+  /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
+   *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
+  | { type: 'plan:proposed'; plan: import('./plan').ExecutionPlan }
   /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
   | { type: 'warn'; message: string }
   | { type: 'error'; message: string };

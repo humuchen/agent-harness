@@ -20,6 +20,9 @@ import type {
   EnvEvent,
   EnvHandle,
   EnvInput,
+  HistoryEnvelope,
+  HistoryPutInput,
+  HistoryThreadMeta,
   McpPreset,
   McpServerMeta,
   Recipe,
@@ -173,6 +176,32 @@ export class AgentClient {
   /** 删除聊天会话。 */
   deleteChatSession(id: string): Promise<{ ok: boolean }> {
     return this.json<{ ok: boolean }>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /* ------------------------- 聊天历史镜像（接口层） ------------------------- */
+
+  /** 列出全部历史镜像元信息（按落盘时间倒序）。 */
+  listHistoryIndex(): Promise<HistoryThreadMeta[]> {
+    return this.json<{ sessions: HistoryThreadMeta[] }>('/api/v1/history').then(
+      (r) => r.sessions
+    );
+  }
+  /** 读取某会话历史信封；不存在时服务端返回 404 → 抛 ApiError。 */
+  getHistoryThread(sid: string): Promise<HistoryEnvelope> {
+    return this.json<HistoryEnvelope>(`/api/v1/history/${encodeURIComponent(sid)}`);
+  }
+  /** 写入 / 覆盖某会话历史镜像（幂等 upsert）。 */
+  putHistoryThread(sid: string, input: HistoryPutInput): Promise<{ ok: boolean }> {
+    return this.json<{ ok: boolean }>(`/api/v1/history/${encodeURIComponent(sid)}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  }
+  /** 删除某会话历史镜像。 */
+  deleteHistoryThread(sid: string): Promise<{ ok: boolean }> {
+    return this.json<{ ok: boolean }>(`/api/v1/history/${encodeURIComponent(sid)}`, {
       method: 'DELETE',
     });
   }

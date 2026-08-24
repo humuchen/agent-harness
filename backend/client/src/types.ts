@@ -34,6 +34,35 @@ export interface RunInput {
   attachments?: Array<{ url: string; name: string; type: string }>;
   /** 联网搜索开关：true 时服务端注册 web_fetch 工具与「联网检索」技能；否则不触发任何出网检索。 */
   web?: boolean;
+  /** 交互模式（P0）：qa=问答（默认，缺省即现状）；plan=计划模式。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 计划阶段（interactionMode='plan' 时有效）：propose=生成计划（缺省）；execute=执行已确认任务。 */
+  planPhase?: 'propose' | 'execute';
+}
+
+/* ------------------------- 聊天历史镜像（接口层） ------------------------- */
+
+/** 单会话历史镜像元信息（GET /api/history 列表项）。 */
+export interface HistoryThreadMeta {
+  sid: string;
+  title: string;
+  /** 会话最近更新时间（毫秒，客户端上报）。 */
+  updatedAt: number;
+  /** 镜像落盘时间（毫秒）。 */
+  savedAt: number;
+}
+
+/** 历史信封：GET /api/history/:sid 返回结构（msgs 为服务端存储的原始消息数组）。 */
+export interface HistoryEnvelope extends HistoryThreadMeta {
+  v: number;
+  msgs: unknown[];
+}
+
+/** 历史写入入参：PUT /api/history/:sid。 */
+export interface HistoryPutInput {
+  title?: string;
+  updatedAt?: number;
+  msgs: unknown[];
 }
 
 /* ----------------------------- 多会话 Chat App ----------------------------- */
@@ -90,6 +119,9 @@ export interface ChatMessage {
   tools?: StoredTool[];
   /** 调用链路追踪树，记录 LLM↔工具↔检索 的每一步，供深度思考界面可视化与复盘。 */
   trace?: TraceNode[];
+  /** 计划模式：run:end 时服务端解析出的结构化执行计划（形状见 @agent-harness/core 的
+   *  ExecutionPlan；client 不依赖 core，按 unknown 结构透传，由 UI 层自行收敛校验）。 */
+  plan?: unknown;
 }
 
 export interface ChatSession {

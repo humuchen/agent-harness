@@ -72,6 +72,10 @@ export interface RunJob {
   attachments?: Array<{ url: string; name: string; type: string }>;
   /** 是否开启联网搜索：false/未传时禁用 web_fetch 与「联网检索」技能，避免任何出网检索。 */
   web?: boolean;
+  /** 交互模式（P0 计划模式）：qa=问答（默认）；plan=计划。仅 server 消费（token 抑制/计划落盘）。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 计划阶段：propose=生成计划（缺省）；execute=执行已确认的任务。 */
+  planPhase?: 'propose' | 'execute';
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
   /** job 内事件单调序号计数器：emit 时为每个事件附加递增 seq，供客户端断线续传（since 游标）去重。 */
@@ -123,7 +127,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -141,6 +145,8 @@ export class RunQueue {
       traceId: job.traceId,
       attachments: job.attachments,
       web: job.web,
+      interactionMode: job.interactionMode,
+      planPhase: job.planPhase,
       enqueuedAt: job.enqueuedAt,
     };
     // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
@@ -159,7 +165,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean },
+    input: { mode: RunMode; prompt: string; model?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -175,6 +181,8 @@ export class RunQueue {
       domain: input.domain,
       tenantId: input.tenantId,
       web: input.web,
+      interactionMode: input.interactionMode,
+      planPhase: input.planPhase,
       workflowId: input.workflowId,
       traceId: input.traceId,
       attachments: input.attachments,
@@ -225,7 +233,7 @@ export class RunQueue {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
-        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId },
+        { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, interactionMode: d.interactionMode, planPhase: d.planPhase },
         d.id
       );
     }
@@ -251,7 +259,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, web: d.web },
+          { mode: d.mode, prompt: d.prompt, model: d.model, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, web: d.web, interactionMode: d.interactionMode, planPhase: d.planPhase },
           d.id
         );
         this.queue.push(job);
@@ -305,6 +313,31 @@ export class RunQueue {
 
   get(id: string): RunJob | undefined {
     return this.jobs.get(id);
+  }
+
+  /**
+   * 注入服务端合成事件（如 plan:proposed / warn）：与 execute 内 emit 走同一
+   * seq 计数 + events 缓冲 + 订阅通知 + 跨实例桥，保证断线重连（since 游标）
+   * 后这些帧可被重放，计划卡片等派生状态不丢。
+   * 返回 false 表示 job 不存在（调用方可降级为直写 SSE）。
+   */
+  emitSynthetic(id: string, e: unknown): boolean {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    (e as { seq?: number }).seq = ++job.eventSeq;
+    job.events.push(e);
+    if (job.events.length > MAX_BUFFER) job.events.shift();
+    for (const fn of [...job.subscribers]) {
+      try {
+        fn(e);
+      } catch {
+        /* 忽略单订阅者异常 */
+      }
+    }
+    if (this.backend.publishEvent) {
+      void this.backend.publishEvent(id, e).catch(() => {});
+    }
+    return true;
   }
 
   /** 队列运行态快照（供 /api/metrics 与 /api/jobs 使用）。 */

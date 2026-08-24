@@ -1,25 +1,27 @@
 /**
- * 聊天历史容错持久化（localStorage 本地镜像层）。
+ * 聊天历史容错持久化（接口层）。
+ *
+ * ah_chat_history 已从 localStorage 迁出：本模块是前端唯一的「历史镜像」读写入口，
+ * 全部存取经 /api/v1/history* 接口打到服务端 ChatHistoryStore（默认 SQLite 临时
+ * 持久化，预留正式数据库扩展点），前端不再直接依赖 localStorage。
  *
  * 设计目标（与 chat.ts 的会话管理配合）：
- * 1）恢复失败不清数据：selectSession 拉取服务端历史失败时，回退到本模块的镜像，
- *    绝不把本地已有记录清空 / 覆盖；
- * 2）写读解耦：镜像写入发生在发送与 run 收尾处，独立于恢复流程的结果——
- *    无论之前是否发生过恢复失败，消息都会被可靠保存；
- * 3）可重试：恢复失败的会话被打上标记（restoreFailed），下次进入自动重试，
- *    而不是把空数组当成「已加载」永久缓存；
+ * 1）恢复失败不清数据：selectSession 拉取权威历史失败时，回退到本模块镜像，
+ *    绝不把已有记录清空 / 覆盖；
+ * 2）写读解耦：镜像写入发生在发送与 run 收尾处，独立于恢复流程的结果；
+ * 3）可重试：恢复失败的会话由 chat.ts 打 restoreFailed 标记，下次进入自动重试；
  * 4）不一致防御：sanitizeMessages 做类型校验 / 字段收敛 / 连续重复去重 / 保序；
- *    mergeThreadHistories 以「最长尾首重叠」合并服务端与本地两个版本，避免丢消息或重复。
+ *    mergeThreadHistories 以「最长尾首重叠」合并权威与镜像两个版本。
  *
- * 全部 API 吞掉内部异常并以可判定的返回值表达结果（降级策略），绝不向上抛错阻断 UI。
+ * 降级策略：服务端不可达时回退进程内缓存（页内读写仍可用，仅失去跨刷新持久化）；
+ * 全部 API 吞掉内部异常并以可判定返回值表达结果，绝不向上抛错阻断 UI。
  */
 
-const KEY_PREFIX = 'ah_chat_history_'; // 单会话镜像 key：ah_chat_history_<sid>
-const KEY_INDEX = 'ah_chat_index_v1'; // 会话元信息索引：{ [sid]: { title, updatedAt, savedAt } }
-const ENVELOPE_VERSION = 1;
-/** 单会话镜像保留的最大消息数（超出裁掉最旧的，防配额膨胀）。 */
+import { client } from './api';
+
+/** 单会话镜像保留的最大消息数（超出裁掉最旧的，控制单行体积）。 */
 const MAX_MSGS = 200;
-/** 单条消息内容在镜像中的字符上限（超大单条同样会撑爆 5MB 配额）。 */
+/** 单条消息内容在镜像中的字符上限。 */
 const MAX_CONTENT = 100_000;
 
 /* ----------------------------- 工具 ----------------------------- */
@@ -41,23 +43,6 @@ export function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): 
   });
 }
 
-function safeGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeSet(key: string, val: string): boolean {
-  try {
-    localStorage.setItem(key, val);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /* --------------------------- 数据消毒 --------------------------- */
 
 export interface MirroredTool {
@@ -74,6 +59,8 @@ export interface MirroredMsg {
   tools?: MirroredTool[];
   /** 结构化追踪树原样透传（JSON 安全值），恢复时还原深度思考区。 */
   trace?: unknown;
+  /** 计划模式：结构化执行计划原样透传（JSON 安全值），恢复时还原计划卡片。 */
+  plan?: unknown;
   error?: boolean;
 }
 
@@ -118,6 +105,7 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
       ...(reasoning ? { reasoning } : {}),
       ...(tools && tools.length ? { tools } : {}),
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
+      ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
       ...(o.error === true ? { error: true } : {})
     });
   }
@@ -125,8 +113,8 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
 }
 
 /**
- * 合并服务端权威历史与本地（可能更新的）缓冲，处理「记录丢失 / 重复」两类不一致：
- * - 计算 server 尾部与 local 头部按 (role+content) 的最长重叠（本地镜像往往是服务端的旧子集 +
+ * 合并权威历史与本地（可能更新的）缓冲，处理「记录丢失 / 重复」两类不一致：
+ * - 计算 server 尾部与 local 头部按 (role+content) 的最长重叠（镜像往往是权威的旧子集 +
  *   若干新消息），重叠部分以 server 为准只保留一份；
  * - 结果 = server 未重叠前缀 + local 全部，既不丢本地新消息也不引入重复。
  */
@@ -152,114 +140,91 @@ export function mergeThreadHistories(server: MirroredMsg[], local: MirroredMsg[]
   return [...server.slice(0, server.length - overlap), ...local];
 }
 
-/* ------------------------- 会话镜像读写 ------------------------- */
-
-interface Envelope {
-  v: number;
-  sid: string;
-  savedAt: number;
-  msgs: MirroredMsg[];
-}
-
-/** 把某会话的消息缓冲镜像进 localStorage。成功返回 true；配额不足等失败按阶梯降级重试。 */
-export function saveThread(
-  sid: string,
-  meta: { title: string; updatedAt?: number | string },
-  rawMsgs: unknown[]
-): boolean {
-  if (!sid) return false;
-  const msgs = sanitizeMessages(rawMsgs).slice(-MAX_MSGS);
-  const env = (list: MirroredMsg[]): Envelope => ({
-    v: ENVELOPE_VERSION,
-    sid,
-    savedAt: Date.now(),
-    msgs: list
-  });
-  // 降级阶梯：完整 → 去 trace → 裁半 → 再裁半，逐级瘦身直到写入成功或放弃（静默，不抛错）。
-  let list = msgs;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (safeSet(KEY_PREFIX + sid, JSON.stringify(env(list)))) {
-      upsertIndex(sid, meta);
-      return true;
-    }
-    if (attempt === 0) list = msgs.map(({ trace, ...rest }) => rest);
-    else list = list.slice(-Math.max(1, Math.floor(list.length / 2)));
-  }
-  return false;
-}
-
-/** 读取某会话的本地镜像；信封损坏 / 版本不符 / 内容非法一律返回 null（由调用方降级）。 */
-export function loadThread(sid: string): MirroredMsg[] | null {
-  const text = safeGet(KEY_PREFIX + sid);
-  if (!text) return null;
-  try {
-    const env = JSON.parse(text) as Envelope;
-    if (!env || env.v !== ENVELOPE_VERSION || env.sid !== sid || !Array.isArray(env.msgs)) {
-      return null;
-    }
-    const msgs = sanitizeMessages(env.msgs);
-    return msgs.length ? msgs : null;
-  } catch {
-    return null;
-  }
-}
-
-export function deleteThread(sid: string): void {
-  try {
-    localStorage.removeItem(KEY_PREFIX + sid);
-  } catch {
-    /* ignore */
-  }
-}
-
-/* --------------------------- 会话索引 --------------------------- */
+/* --------------------- 会话镜像读写（接口层） --------------------- */
 
 export interface MirrorMeta {
   title: string;
-  updatedAt?: number | string;
+  updatedAt?: number;
   savedAt: number;
 }
 
-/** 读取会话索引；损坏则返回空表（降级为「无离线会话」而非报错）。 */
-export function loadIndex(): Record<string, MirrorMeta> {
-  const text = safeGet(KEY_INDEX);
-  if (!text) return {};
+/** 进程内兜底缓存：服务端不可达时保持页内读写可用（跨刷新持久化由服务端负责）。 */
+const memThreads = new Map<string, MirroredMsg[]>();
+const memIndex = new Map<string, MirrorMeta>();
+
+/**
+ * 把某会话的消息缓冲写入历史镜像（幂等 upsert）。
+ * 先写穿进程内缓存（立即可读），再经接口落服务端；接口失败静默降级返回 false。
+ */
+export async function saveThread(
+  sid: string,
+  meta: { title: string; updatedAt?: number },
+  rawMsgs: unknown[]
+): Promise<boolean> {
+  if (!sid) return false;
+  const msgs = sanitizeMessages(rawMsgs).slice(-MAX_MSGS);
+  if (!msgs.length) return false;
+  const updatedAt = typeof meta.updatedAt === 'number' ? meta.updatedAt : Date.now();
+  const savedAt = Date.now();
+  memThreads.set(sid, msgs);
+  memIndex.set(sid, { title: meta.title, updatedAt, savedAt });
   try {
-    const obj = JSON.parse(text);
-    if (!obj || typeof obj !== 'object') return {};
-    const out: Record<string, MirrorMeta> = {};
-    for (const [sid, v] of Object.entries(obj as Record<string, unknown>)) {
-      if (!v || typeof v !== 'object') continue;
-      const m = v as Record<string, unknown>;
-      if (typeof m.title !== 'string' || !m.title) continue;
-      out[sid] = {
-        title: m.title,
-        updatedAt: typeof m.updatedAt === 'number' || typeof m.updatedAt === 'string'
-          ? (m.updatedAt as number | string)
-          : undefined,
-        savedAt: typeof m.savedAt === 'number' ? m.savedAt : 0
-      };
-    }
-    return out;
+    await withTimeout(
+      client.putHistoryThread(sid, {
+        title: meta.title,
+        updatedAt,
+        msgs: msgs as unknown[]
+      }),
+      6000,
+      '保存历史镜像'
+    );
+    return true;
   } catch {
-    return {};
+    // 服务端不可达 / 校验拒绝：内存兜底已写，不阻断 UI。
+    return false;
   }
 }
 
-function upsertIndex(sid: string, meta: { title: string; updatedAt?: number | string }): void {
-  const idx = loadIndex();
-  idx[sid] = { title: meta.title, updatedAt: meta.updatedAt, savedAt: Date.now() };
-  safeSet(KEY_INDEX, JSON.stringify(idx));
+/**
+ * 读取某会话的历史镜像；接口失败 / 无数据时回退进程内缓存，仍无则返回 null
+ * （由调用方降级，绝不抛错）。
+ */
+export async function loadThread(sid: string): Promise<MirroredMsg[] | null> {
+  try {
+    const env = await withTimeout(client.getHistoryThread(sid), 6000, '读取历史镜像');
+    const msgs = sanitizeMessages(env.msgs);
+    if (msgs.length) {
+      memThreads.set(sid, msgs);
+      return msgs;
+    }
+    return null;
+  } catch {
+    return memThreads.get(sid) ?? null;
+  }
 }
 
-function removeIndex(sid: string): void {
-  const idx = loadIndex();
-  delete idx[sid];
-  safeSet(KEY_INDEX, JSON.stringify(idx));
+/** 删除会话时同步清理镜像（进程内缓存 + 服务端存储），与 deleteChatSession 配对调用。 */
+export async function purgeSessionMirror(sid: string): Promise<void> {
+  memThreads.delete(sid);
+  memIndex.delete(sid);
+  try {
+    await client.deleteHistoryThread(sid);
+  } catch {
+    /* 服务端不可达：内存已清，忽略远端失败 */
+  }
 }
 
-/** 删除会话时同步清理镜像与索引（与 deleteChatSession 配对调用）。 */
-export function purgeSessionMirror(sid: string): void {
-  deleteThread(sid);
-  removeIndex(sid);
+/** 读取历史索引（服务端权威 + 进程内兜底合并）；失败时降级为仅内存兜底。 */
+export async function loadIndex(): Promise<Record<string, MirrorMeta>> {
+  const out: Record<string, MirrorMeta> = {};
+  for (const [sid, m] of memIndex) out[sid] = { ...m };
+  try {
+    const list = await withTimeout(client.listHistoryIndex(), 6000, '读取历史索引');
+    for (const it of list) {
+      out[it.sid] = { title: it.title, updatedAt: it.updatedAt, savedAt: it.savedAt };
+    }
+  } catch {
+    /* 服务端不可达：返回内存兜底索引 */
+  }
+  return out;
 }

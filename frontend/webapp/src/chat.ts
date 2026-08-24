@@ -39,6 +39,27 @@ interface ToolView {
   errored?: boolean;
 }
 
+/** 计划模式（P0）：计划任务 / 计划实体（与 core ExecutionPlan 契约一致，前端本地视图类型）。 */
+interface PlanTaskView {
+  id: string;
+  title: string;
+  steps: string[];
+  dependsOn: string[];
+  expectedOutput: string;
+}
+interface ExecutionPlanView {
+  goal: string;
+  tasks: PlanTaskView[];
+}
+/** 计划执行状态（key 为携带计划的消息 id）。 */
+interface PlanExecState {
+  status: 'pending' | 'running' | 'done' | 'cancelled';
+  /** 正在执行的任务 id（running 时有效）。 */
+  currentTaskId?: string;
+  /** 已完成任务 id 集合。 */
+  done: Record<string, boolean>;
+}
+
 interface ChatMsg {
   id: number;
   role: 'user' | 'assistant';
@@ -53,6 +74,8 @@ interface ChatMsg {
   error?: boolean;
   /** 本次消息携带的附件（图片/文件预览）。 */
   attachments?: UploadedFile[];
+  /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
+  plan?: ExecutionPlanView;
 }
 
 /** 检索/搜索类工具名特征：命中则归类为 retrieval 节点，结果以「检索内容」突出展示。 */
@@ -2192,6 +2215,43 @@ export class AhChat extends LitElement {
         opacity: 0.5;
         cursor: not-allowed;
       }
+    `,
+
+    css`
+    /* ---- 计划模式（P0）：计划卡片 ---- */
+    .plan-card {
+      border: 1px solid var(--ah-border);
+      border-radius: 12px;
+      background: var(--ah-surface-1);
+      padding: 14px 16px;
+      margin: 6px 0;
+    }
+    .plan-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+    .plan-title { font-weight: 600; white-space: nowrap; }
+    .plan-goal { flex: 1; min-width: 120px; font-size: 0.92em; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; }
+    .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .pill.pending { background: rgba(250, 204, 21, 0.15); color: #facc15; }
+    .pill.running { background: rgba(41, 151, 255, 0.18); color: #2997ff; }
+    .pill.done { background: rgba(52, 211, 153, 0.16); color: #34d399; }
+    .pill.cancelled { background: rgba(148, 163, 184, 0.18); color: #94a3b8; }
+    .plan-btn { border: none; border-radius: 8px; padding: 5px 14px; font-size: 13px; cursor: pointer; background: #2997ff; color: #fff; }
+    .plan-btn:hover { filter: brightness(1.1); }
+    .plan-btn.ghost { background: transparent; color: var(--ah-text); border: 1px solid var(--ah-border); }
+    .plan-tasks { margin: 0; padding-left: 4px; list-style: none; }
+    .plan-task { border-top: 1px dashed var(--ah-border); padding: 8px 0 8px 2px; }
+    .plan-task:first-child { border-top: none; }
+    .plan-task.active { background: rgba(41, 151, 255, 0.06); border-radius: 8px; }
+    .pt-head { display: flex; align-items: center; gap: 8px; }
+    .pt-mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background: var(--ah-surface-2); border: 1px solid var(--ah-border); flex-shrink: 0; }
+    .plan-task.done .pt-mark { background: rgba(52, 211, 153, 0.18); color: #34d399; border-color: transparent; }
+    .plan-task.done b { text-decoration: line-through; opacity: 0.65; }
+    .pt-steps { margin: 6px 0 0 30px; padding-left: 16px; opacity: 0.85; font-size: 0.92em; }
+    .pt-meta { margin: 4px 0 0 30px; font-size: 12px; opacity: 0.6; }
+
+    /* ---- 计划模式：问答/计划分段切换器 ---- */
+    .mode-seg { display: inline-flex; align-items: center; height: 32px; border: 1px solid var(--ah-border); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
+    .mode-btn { height: 100%; border: none; padding: 0 12px; font-size: 13px; cursor: pointer; background: var(--ah-surface-2); color: var(--ah-text); }
+    .mode-btn.on { background: #2997ff; color: #fff; }
     `
   ];
 
@@ -2201,6 +2261,11 @@ export class AhChat extends LitElement {
   @state() input = '';
   @state() model = '';
   @state() mode: RunMode = 'mock';
+  /** 交互模式（P0）：qa=问答（直接回答）；plan=计划（先出计划→确认→逐任务执行）。
+   *  localStorage 持久化跨刷新记忆。模式语义仅存在于前端，服务端只按字段透传。 */
+  @state() interactionMode: 'qa' | 'plan' = 'qa';
+  /** 计划执行状态（key 为携带计划的消息 id）。 */
+  @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
@@ -2323,15 +2388,15 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 把某会话当前消息缓冲镜像写入 localStorage（容错持久化）。
+   * 把某会话当前消息缓冲经接口层写入历史镜像（容错持久化，服务端 SQLite 存储）。
    * - 写入独立于恢复流程与 run 结果：发送时与 run 收尾时各写一次，任何错误场景下数据都已可靠保存；
-   * - 内部吞掉配额/序列化异常并按阶梯降级（见 chat-history.ts），绝不阻塞 UI。
+   * - 异步 fire-and-forget：内部吞掉网络/校验异常并降级进程内缓存（见 chat-history.ts），绝不阻塞 UI。
    */
   private saveHistory(sid: string) {
     const t = this.threads[sid];
     if (!t || !t.length) return;
     const meta = this.sessions.find((s) => s.id === sid);
-    saveThread(sid, { title: meta?.title ?? '新对话', updatedAt: Date.now() }, t);
+    void saveThread(sid, { title: meta?.title ?? '新对话', updatedAt: Date.now() }, t);
   }
 
   /** 取某会话当前流式消息。 */
@@ -2379,6 +2444,13 @@ export class AhChat extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onPreviewKeydown);
+    // 恢复上次选择的交互模式（问答/计划），跨刷新记忆。
+    try {
+      const saved = localStorage.getItem('ah_interaction_mode');
+      if (saved === 'plan' || saved === 'qa') this.interactionMode = saved;
+    } catch {
+      /* ignore */
+    }
     // 断线恢复：切回标签页时立即体检所有流式会话；后台期间连接可能已被浏览器
     // （Memory Saver 冻结 / 节流）或代理掐断，返回后第一时间唤醒重连路径。
     document.addEventListener('visibilitychange', this.onVisibilityChange);
@@ -2401,7 +2473,7 @@ export class AhChat extends LitElement {
         break;
       } catch {
         if (attempt === 1) {
-          const idx = loadIndex();
+          const idx = await loadIndex();
           this.sessions = Object.entries(idx).map(([sid, m]) => ({
             id: sid,
             title: m.title,
@@ -2413,7 +2485,8 @@ export class AhChat extends LitElement {
     // 服务端列表成功但缺项时（如离线期间新建的会话），用镜像索引补齐入口（不覆盖服务端条目）。
     if (this.sessions.length) {
       const known = new Set(this.sessions.map((s) => s.id));
-      const extra = Object.entries(loadIndex())
+      const idx = await loadIndex();
+      const extra = Object.entries(idx)
         .filter(([sid]) => !known.has(sid))
         .map(([sid, m]) => ({
           id: sid,
@@ -2802,7 +2875,8 @@ export class AhChat extends LitElement {
             content: m.content,
             reasoning: m.reasoning,
             tools: m.tools,
-            trace: m.trace
+            trace: m.trace,
+            plan: m.plan
           }))
         );
         if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
@@ -2816,14 +2890,14 @@ export class AhChat extends LitElement {
         this.restoreFailed[id] = false;
       } catch {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
-        //   localStorage 镜像 → 空线程 + 失败标记（下次重试）+ 非阻断警示。
-        const mirrored = loadThread(id);
+        //   历史镜像接口（服务端 SQLite / 进程内兜底） → 空线程 + 失败标记（下次重试）+ 非阻断警示。
+        const mirrored = await loadThread(id);
         if (mirrored && mirrored.length) {
           this.threads[id] = mirrored.map((m) => ({
             ...(m as Omit<ChatMsg, 'id'>),
             id: this.nextId++
           })) as ChatMsg[];
-          this.error = '⚠️ 服务端历史拉取失败，已从本地缓存恢复（可能非最新）。';
+          this.error = '⚠️ 服务端历史拉取失败，已从历史镜像恢复（可能非最新）。';
         } else {
           this.threads[id] = localBuf ?? [];
           this.restoreFailed[id] = true;
@@ -2859,8 +2933,8 @@ export class AhChat extends LitElement {
     if (!window.confirm('删除该会话及其消息？')) return;
     try {
       await client.deleteChatSession(id);
-      // 同步清理本地镜像与索引，避免「服务端已删、本地幽灵会话」复活。
-      purgeSessionMirror(id);
+      // 同步清理历史镜像与索引（进程内 + 服务端），避免「服务端已删、本地幽灵会话」复活。
+      await purgeSessionMirror(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
       if (this.activeId === id) this.newChat();
     } catch (e: any) {
@@ -2906,6 +2980,21 @@ export class AhChat extends LitElement {
       }))
       .filter((f) => f.url);
 
+    this.input = '';
+    this.attachments = [];
+    await this.dispatchPrompt(sessionId, content, imageAttachments);
+  }
+
+  /**
+   * 派发一次 run（send 与计划模式逐任务执行的公共管线）。
+   * 返回 'ok' | 'stopped'（用户手动停止）| 'error'（彻底断连/失败），
+   * 供计划执行循环决定是否继续派发后续任务。
+   */
+  private async dispatchPrompt(
+    sessionId: string,
+    content: string,
+    imageAttachments: Array<{ url: string; name: string; type: string }> = []
+  ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
     t.push({
@@ -2917,8 +3006,6 @@ export class AhChat extends LitElement {
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;
     this.threads[sessionId] = t;
-    this.input = '';
-    this.attachments = [];
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.received[sessionId] = false;
     this.pending[sessionId] = { content: '', reasoning: '' };
@@ -2942,7 +3029,7 @@ export class AhChat extends LitElement {
 
     const input: Record<string, unknown> = {
       mode: this.mode,
-      prompt,
+      prompt: content,
       model: this.model || undefined,
       agentId: this.agentId || undefined,
       sessionId,
@@ -2950,7 +3037,10 @@ export class AhChat extends LitElement {
       attachments:
         imageAttachments.length > 0 ? imageAttachments : undefined,
       // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
-      web: this.web || undefined
+      web: this.web || undefined,
+      // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
+      interactionMode: this.interactionMode === 'plan' ? 'plan' : undefined,
+      planPhase: this.interactionMode === 'plan' ? 'propose' : undefined
     };
     // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
     this.lastInputBy[sessionId] = input;
@@ -2959,9 +3049,11 @@ export class AhChat extends LitElement {
     this.abortBy[sessionId] = ac;
     try {
       await this.runWithReconnect(sessionId, input, ac);
+      return 'ok';
     } catch (e: any) {
       if ((e as any)?.name === 'UserStoppedRun') {
         // 用户主动停止：保留已揭示内容，不标错误（原有体验不变）。
+        return 'stopped';
       } else {
         // 彻底断连（重试耗尽 / job 已被服务端淘汰）：标记断开 + 错误提示，
         // 顶部横幅出现「重新连接」手动入口。
@@ -2971,6 +3063,7 @@ export class AhChat extends LitElement {
           content:
             (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
         });
+        return 'error';
       }
     } finally {
       // 先停掉 interval 定时器，再按打字节奏把剩余缓冲揭示完（drain），
@@ -3037,6 +3130,9 @@ export class AhChat extends LitElement {
           if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
           this.ingest(ev as StreamEvent, sid);
         }
+        // 流正常关闭：无论是否经历过断连，横幅一律复位。否则「重连后服务端只回放
+        // 末尾终结事件即关流」的场景下，无人再清 connState，横幅会永久残留。
+        if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
         return; // 服务端正常关流（_done 后 end / job 已终结的重放完毕）
       } catch (rawErr: any) {
         const aborted = ac.signal.aborted;
@@ -3044,6 +3140,9 @@ export class AhChat extends LitElement {
         this.keepAliveAbort[sid] = false;
         if (aborted && !wasKeepAlive) {
           // 用户手动停止：包装标记后上抛，调用方静默处理。
+          // 停止即退出恢复循环：先清掉「重连中」横幅再抛，避免停止后残留。
+          if (this.connState[sid] !== 'connected')
+            this.setConn(sid, 'connected');
           throw Object.assign(rawErr instanceof Error ? rawErr : new Error(String(rawErr)), {
             name: 'UserStoppedRun'
           });
@@ -3067,6 +3166,9 @@ export class AhChat extends LitElement {
         await this.sleep(delay, ac.signal);
         // 等待期间被用户停止 → 静默退出；keepalive 唤醒则立即重试。
         if (ac.signal.aborted && !this.keepAliveAbort[sid]) {
+          // 停止即退出：先复位横幅再抛，避免停止后「重连中」残留。
+          if (this.connState[sid] !== 'connected')
+            this.setConn(sid, 'connected');
           throw Object.assign(new Error('user stopped during reconnect'), {
             name: 'UserStoppedRun'
           });
@@ -3164,6 +3266,10 @@ export class AhChat extends LitElement {
     this.lastEventAt[sid] = Date.now();
     if (et === 'run:end' || et === '_done' || et === 'error') {
       this.finishedBy[sid] = true;
+      // 运行已终结：链路无论此前是否断连过都视为恢复，立即摘掉「连接中断」横幅，
+      // 防止「重连补收末尾终结事件 → 流关闭」时横幅无人清理而永久残留。
+      if (this.connState[sid] !== 'connected')
+        this.setConn(sid, 'connected');
     }
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
     this.traceHandle(ev, sid);
@@ -3171,6 +3277,19 @@ export class AhChat extends LitElement {
       case 'job:accepted':
         // jobId 仅用于潜在调试，无需持久；忽略。
         break;
+      case 'plan:proposed': {
+        // 计划模式（P0）：服务端解析成功后补发的结构化计划 —— 挂到流式消息上渲染计划卡片。
+        const c = cur();
+        const plan = anyEv.plan as ExecutionPlanView | undefined;
+        if (c && plan && plan.tasks?.length) {
+          patch({ plan });
+          this.planExec = {
+            ...this.planExec,
+            [c.id]: { status: 'pending', done: {} }
+          };
+        }
+        break;
+      }
       case 'llm:token': {
         const c = cur();
         if (c) {
@@ -3826,6 +3945,16 @@ export class AhChat extends LitElement {
     };
   }
 
+  /** 切换交互模式（问答/计划）并持久化。 */
+  private setInteractionMode(m: 'qa' | 'plan') {
+    this.interactionMode = m;
+    try {
+      localStorage.setItem('ah_interaction_mode', m);
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** 切换移动端侧栏抽屉（≤900px 生效）。 */
   private toggleSidebar() {
     this.sidebarOpen = !this.sidebarOpen;
@@ -3896,8 +4025,7 @@ export class AhChat extends LitElement {
     </div>`;
   }
 
-  private renderMessage(m: ChatMsg) {
-    // 用户消息：渲染气泡文本 + 附件预览。
+  private renderMessage(m: ChatMsg) {    // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
       const hasAttachments = m.attachments && m.attachments.length > 0;
       return html`
@@ -3939,6 +4067,7 @@ export class AhChat extends LitElement {
             ? html`<div class="sep"><span>回答</span></div>`
             : nothing}
           ${this.renderAnswer(m, isAnswering, isStreamingAssistant)}
+          ${m.plan ? this.renderPlanCard(m) : nothing}
           ${this.renderExtras(m, isStreamingAssistant)}
         </div>
       </div>
@@ -4055,9 +4184,112 @@ export class AhChat extends LitElement {
     `;
   }
 
+  /**
+   * 渲染计划卡片（P0 计划模式）：任务拆解 / 步骤 / 依赖 / 预期产出 + 状态标记。
+   * pending 态显示「确认执行 / 取消」；running 显示当前任务；done/cancelled 只读。
+   */
+  private renderPlanCard(m: ChatMsg): TemplateResult {
+    const plan = m.plan;
+    if (!plan) return html``;
+    const st = this.planExec[m.id] ?? { status: 'pending' as const, done: {} };
+    const statusLabel =
+      st.status === 'pending'
+        ? '待确认'
+        : st.status === 'running'
+          ? `执行中 · ${st.currentTaskId ?? ''}`
+          : st.status === 'done'
+            ? '已完成'
+            : '已取消';
+    return html`<div class="plan-card">
+      <div class="plan-head">
+        <span class="plan-title">📋 执行计划</span>
+        <span class="plan-goal">${escapeHtml(plan.goal)}</span>
+        <span class="pill ${st.status}">${statusLabel}</span>
+        ${st.status === 'pending'
+          ? html`
+              <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                确认执行
+              </button>
+              <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
+                取消
+              </button>
+            `
+          : nothing}
+      </div>
+      <ol class="plan-tasks">
+        ${plan.tasks.map((t, i) => {
+          const done = !!st.done[t.id];
+          const active = st.status === 'running' && st.currentTaskId === t.id;
+          return html`<li class="plan-task ${done ? 'done' : ''} ${active ? 'active' : '...'}">
+            <div class="pt-head">
+              <span class="pt-mark">${done ? '✓' : active ? '⏳' : i + 1}</span>
+              <b>${escapeHtml(t.title)}</b>
+            </div>
+            ${t.steps.length
+              ? html`<ol class="pt-steps">
+                  ${t.steps.map((s) => html`<li>${escapeHtml(s)}</li>`)}
+                </ol>`
+              : nothing}
+            <div class="pt-meta">
+              依赖：${t.dependsOn.length ? t.dependsOn.join('、') : '无'} ·
+              预期产出：${escapeHtml(t.expectedOutput || '—')}
+            </div>
+          </li>`;
+        })}
+      </ol>
+    </div>`;
+  }
+
+  /** 确认计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；用户停止/出错即中止后续任务。 */
+  private async confirmPlan(m: ChatMsg) {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    if (!st || st.status !== 'pending') return;
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    for (const task of m.plan.tasks) {
+      // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...this.planExec[m.id], status: 'running', currentTaskId: task.id }
+      };
+      const parts = [`【计划任务 ${task.id}】${task.title}`];
+      if (task.steps.length) {
+        parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
+      }
+      parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
+      const result = await this.dispatchPrompt(sid, parts.join('\n'));
+      if (result !== 'ok') {
+        // 停止 / 断连：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...this.planExec[m.id], status: 'cancelled', currentTaskId: undefined }
+        };
+        return;
+      }
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: {
+          ...this.planExec[m.id],
+          done: { ...this.planExec[m.id].done, [task.id]: true }
+        }
+      };
+    }
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: { ...this.planExec[m.id], status: 'done', currentTaskId: undefined }
+    };
+  }
+
+  /** 取消计划：不再执行任何任务。 */
+  private cancelPlan(msgId: number) {
+    const st = this.planExec[msgId];
+    if (!st || st.status !== 'pending') return;
+    this.planExec = { ...this.planExec, [msgId]: { ...st, status: 'cancelled' } };
+  }
+
   /** 渲染折叠式附加信息（调用链路 / 关键信息），默认收起，不干扰主阅读流。 */
-  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
-    const hasTrace = !!(m.trace && m.trace.length > 0);
+  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {    const hasTrace = !!(m.trace && m.trace.length > 0);
     const insights = hasTrace ? this.buildInsights(m.trace!) : null;
     if (!hasTrace && !insights) return html``;
     return html`
@@ -4414,6 +4646,20 @@ export class AhChat extends LitElement {
               (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
             )}
           </select>
+          <div class="mode-seg" title="运行模式：问答=直接回答；计划=先产出结构化执行计划，确认后逐步执行">
+            <button
+              class="mode-btn ${this.interactionMode === 'qa' ? 'on' : ''}"
+              @click=${() => this.setInteractionMode('qa')}
+            >
+              问答
+            </button>
+            <button
+              class="mode-btn ${this.interactionMode === 'plan' ? 'on' : ''}"
+              @click=${() => this.setInteractionMode('plan')}
+            >
+              计划
+            </button>
+          </div>
           <button
             class="toggle ${this.deepThink ? 'on' : ''}"
             title="深度思考"
