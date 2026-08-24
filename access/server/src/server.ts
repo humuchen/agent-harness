@@ -1819,6 +1819,8 @@ async function handleRun(
     }
   }, 15_000);
   let unsub: () => void = () => {};
+  // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
+  let planEndHandled = false;
   unsub = runQueue.subscribe(jobId, (e) => {
     // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
     // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
@@ -1837,32 +1839,39 @@ async function handleRun(
     // 在 run:end 处解析：成功 → 先补发 plan:proposed，再以友好摘要替换 final 转发，
     // 并把计划随消息落盘（刷新/切回可还原卡片）；失败 → emit warn 回退为普通回答。
     // 合成帧统一走 runQueue.emitSynthetic：附加 seq + 进重放缓冲，断线重连不丢计划卡片。
+    // 注意：普通路径下 run-queue 会在 harness 的 run:end 之后补发一条重复 run:end
+    //（不带 runId）；计划解析与全部副作用只处理本订阅内的第一条 run:end，
+    // 避免双份 warn / 双份计划卡片；后续重复帧直接透传给通用逻辑（自带内容去重）。
     if (isPlanPropose && (e as { type?: string }).type === 'run:end') {
-      const finalStr = String((e as { final?: unknown }).final ?? '');
-      const plan = parsePlanOutput(finalStr);
-      if (plan) {
-        runQueue.emitSynthetic(jobId, { type: 'plan:proposed', plan });
-        runQueue.emitSynthetic(jobId, {
-          ...(e as object),
-          __synthetic: true,
-          final: `已生成执行计划（共 ${plan.tasks.length} 个任务）：${plan.goal}。确认后将按依赖顺序逐任务执行。`
-        });
-        if (chatSessionId) {
-          traceHandle(e);
-          appendChatMessage(chatSessionId, {
-            role: 'assistant',
-            content: `📋 ${plan.goal}`,
-            ts: Date.now(),
-            plan
+      if (!planEndHandled) {
+        planEndHandled = true;
+        const finalStr = String((e as { final?: unknown }).final ?? '');
+        const plan = parsePlanOutput(finalStr);
+        if (plan) {
+          runQueue.emitSynthetic(jobId, { type: 'plan:proposed', plan });
+          runQueue.emitSynthetic(jobId, {
+            ...(e as object),
+            __synthetic: true,
+            final: `已生成执行计划（共 ${plan.tasks.length} 个任务）：${plan.goal}。确认后将按依赖顺序逐任务执行。`
           });
+          if (chatSessionId) {
+            traceHandle(e);
+            appendChatMessage(chatSessionId, {
+              role: 'assistant',
+              content: `📋 ${plan.goal}`,
+              ts: Date.now(),
+              plan
+            });
+          }
+          return;
         }
-        return;
+        runQueue.emitSynthetic(jobId, {
+          type: 'warn',
+          message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
+        });
+        // 落入下方通用逻辑：按普通 run:end 处理。
       }
-      runQueue.emitSynthetic(jobId, {
-        type: 'warn',
-        message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
-      });
-      // 落入下方通用逻辑：按普通 run:end 处理。
+      // 已处理过首条 run:end：重复帧不再进入计划分支，透传给通用逻辑。
     }
 
     // 计划模式 propose：抑制原始 JSON token/reasoning/response 流（避免计划 JSON 打字机外泄），

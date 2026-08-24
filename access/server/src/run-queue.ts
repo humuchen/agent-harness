@@ -652,7 +652,10 @@ export class RunQueue {
       undefined,
       // 联网搜索开关：仅当本次 run 显式开启时才注册 web_fetch 与「联网检索」技能；
       // 否则即便用户询问最新/外部信息，也不触发任何出网检索，避免无意义请求与资源消耗。
-      job.web ?? false
+      job.web ?? false,
+      // 计划模式 propose（P0）：透传给 harness，使其对计划 JSON 输出走结构化校验
+      // （跳过业务合规输出规则），避免计划被误拦后回退普通回答。
+      job.interactionMode === 'plan' && job.planPhase !== 'execute'
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({

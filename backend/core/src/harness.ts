@@ -2,7 +2,8 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
-import { checkInput, checkOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
+import { checkInput, checkOutput, checkStructuredOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
+import { parsePlanOutput } from './plan';
 import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
 import { estimateCost, estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
@@ -138,6 +139,11 @@ export interface HarnessOptions {
   // 加固：单 step 内工具调用预算上限。每 step 真实执行达到上限后，剩余 tool_calls 被截断并 emit warn。
   // 0 或不传表示不限制（保持现状），用于兜底「模型单轮并行请求过多工具」的场景。
   maxToolCallsPerStep?: number;
+  // 计划模式 propose（P0）：开启后，若模型最终输出能解析为合法计划 JSON，则输出校验
+  // 走 checkStructuredOutput（仅密钥/注入扫描），跳过业务自定义规则——结构化任务描述
+  // 极易被领域合规正则（如医疗广告法）误伤，且拦截后的合规话术重试会破坏 JSON 格式。
+  // 缺省 false（行为与之前完全一致，向后兼容）。
+  planPropose?: boolean;
   // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
   toolDedupKey?: (call: ToolCall) => string;
 }
@@ -201,6 +207,8 @@ interface ResolvedHarnessOptions {
   enableToolDedup: boolean;
   maxToolCallsPerStep: number;
   toolDedupKey?: (call: ToolCall) => string;
+  // 计划模式 propose（见 HarnessOptions 注释）。
+  planPropose: boolean;
 }
 
 let idCounter = 0;
@@ -227,6 +235,7 @@ export class AgentHarness {
       ...opts,
       enableToolDedup: opts.enableToolDedup ?? false,
       maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
+      planPropose: opts.planPropose ?? false,
     };
   }
 
@@ -551,11 +560,19 @@ export class AgentHarness {
           if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
-          const outGuard = checkOutput(
-            resp.content,
-            this.opts.guardrailPolicy,
-            lastToolResult ? { recentTool: lastToolResult } : undefined
-          );
+          // 计划模式 propose（P0）：输出能解析为合法计划 JSON 时，仅做密钥/注入扫描
+          // （checkStructuredOutput），跳过业务自定义规则与上下文规则——结构化任务描述
+          // 极易被领域合规正则（如医疗广告法关键词）误伤，导致计划永远生成失败。
+          // 解析不出计划的输出（含中间工具调用轮次）仍走完整 checkOutput，行为不变。
+          const structuredPlan =
+            this.opts.planPropose ? parsePlanOutput(resp.content) : null;
+          const outGuard = structuredPlan
+            ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
+            : checkOutput(
+              resp.content,
+              this.opts.guardrailPolicy,
+              lastToolResult ? { recentTool: lastToolResult } : undefined
+            );
           if (!outGuard.ok) {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
@@ -573,16 +590,24 @@ export class AgentHarness {
               (outGuard.reason.includes('secret') || outGuard.reason.includes('injection'));
 
             // 2) 合规内容类拦截（非密钥/注入）→ 温和重试一次：注入纠正提示让模型重新生成。
+            //    计划模式 propose 下，纠正提示必须保持「只输出计划 JSON」的格式约束，
+            //    否则模型会被带偏成合规话术，计划解析必然失败。
             if (!isSecretOrInjection && guardrailRetriesLeft > 0) {
               guardrailRetriesLeft -= 1;
               memory.add({
                 role: 'user',
-                content:
-                  '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
-                  (outGuard.reason ?? '合规校验未通过') +
-                  '）。请重新组织回复：仅陈述有事实依据、经工具/知识库确认的内容；' +
-                  '不要自行编造或补充任何未经确认的项目、功效、价格、恢复期或禁忌。' +
-                  '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。',
+                content: this.opts.planPropose
+                  ? '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
+                    (outGuard.reason ?? '合规校验未通过') +
+                    '）。请重新生成：仍然只输出一个符合格式要求的计划 JSON 对象' +
+                    '（{"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}），' +
+                    '不要输出解释文字或 markdown 围栏；任务描述仅陈述有事实依据的内容，' +
+                    '不要包含绝对化功效承诺、固定价格承诺或任何未经确认的信息。'
+                  : '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
+                    (outGuard.reason ?? '合规校验未通过') +
+                    '）。请重新组织回复：仅陈述有事实依据、经工具/知识库确认的内容；' +
+                    '不要自行编造或补充任何未经确认的项目、功效、价格、恢复期或禁忌。' +
+                    '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。',
               });
               continue;
             }

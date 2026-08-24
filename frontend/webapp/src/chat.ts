@@ -1803,6 +1803,12 @@ export class AhChat extends LitElement {
         padding: 4px 8px 8px 12px;
         gap: 8px;
       }
+      .composer-footer-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
       .composer-footer-right {
         display: flex;
         align-items: center;
@@ -4813,6 +4819,7 @@ export class AhChat extends LitElement {
               ></textarea>
             </div>
             <div class="composer-footer">
+              <div class="composer-footer-left">
               <label class="attach-btn" title="上传附件">
                 <input
                   type="file"
@@ -4836,6 +4843,7 @@ export class AhChat extends LitElement {
                 <option value="qa">回答</option>
                 <option value="plan">计划</option>
               </select>
+              </div>
               <div class="composer-footer-right">
                 ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true

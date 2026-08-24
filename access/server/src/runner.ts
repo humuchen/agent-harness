@@ -217,7 +217,13 @@ export async function assembleAgent(
    * - false：即便用户询问最新 / 外部信息，也不注册任何出网检索能力，避免无意义请求与资源消耗。
    * 调用方（run-queue）经 per-job `job.web` 收敛后透传。
    */
-  webEnabled?: boolean
+  webEnabled?: boolean,
+  /**
+   * 计划模式 propose（P0）：透传给 harness 的 planPropose 标志。开启后模型输出的
+   * 计划 JSON 经 parsePlanOutput 校验通过时仅做密钥/注入扫描，跳过业务合规输出规则，
+   * 避免结构化计划被误拦后回退为普通回答。缺省 false（行为不变）。
+   */
+  planPropose?: boolean
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -487,6 +493,8 @@ export async function assembleAgent(
     maxToolCallsPerStep: Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
   // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
+  // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
+  ...(planPropose ? { planPropose: true } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
   // 供聊天 UI 打字机效果与深度思考块。
   ...(streamTokens ?? (process.env.AGENT_STREAM_TOKENS !== 'false')

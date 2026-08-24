@@ -437,6 +437,29 @@ export function checkOutput(
   return { ok: true };
 }
 
+/**
+ * 结构化输出校验（计划模式等）：仅做密钥扫描与注入检测，跳过业务自定义规则与上下文规则。
+ * 背景：planner 产出的计划 JSON 是结构化产物，其任务描述字段极易被业务合规正则
+ * （如医疗广告法关键词）误命中；且拦截后的「合规话术重试」会破坏 JSON 格式，
+ * 导致计划永远解析失败。调用方应先用 parsePlanOutput 确认文本可解析为目标结构，
+ * 再走本函数做安全兜底扫描（secret / injection 仍然生效，安全底线不放松）。
+ */
+export function checkStructuredOutput(
+  text: string,
+  pol?: GuardrailPolicy
+): GuardrailResult {
+  const p = pol ?? policy;
+  if (typeof text !== 'string') return { ok: true };
+  if (p.enableSecretScan) {
+    for (const re of SECRET_PATTERNS) {
+      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
+    }
+  }
+  const inj = detectInjection(text, p);
+  if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
+  return { ok: true };
+}
+
 export function checkToolArgs(
   name: string,
   args: Record<string, unknown>,
