@@ -5,6 +5,16 @@ import { ref, createRef } from 'lit/directives/ref.js';
 import { client, setToken } from './api';
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
+import {
+  sanitizeMessages,
+  mergeThreadHistories,
+  saveThread,
+  loadThread,
+  purgeSessionMirror,
+  loadIndex,
+  withTimeout,
+  type MirroredMsg
+} from './chat-history';
 import type {
   ChatSession,
   RunMode,
@@ -976,6 +986,52 @@ export class AhChat extends LitElement {
         margin-bottom: 4px;
         letter-spacing: 0.03em;
       }
+      /* 检索内容折叠框：标题行可点击展开/收起，短内容默认展开、长内容默认收起。 */
+      .tresult.tres-fold {
+        padding: 0;
+      }
+      .tresult.tres-fold > summary {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        cursor: pointer;
+        user-select: none;
+        list-style: none;
+      }
+      .tresult.tres-fold > summary::-webkit-details-marker,
+      .tresult.tres-fold > summary::marker {
+        display: none;
+        content: '';
+      }
+      /* 折叠指示箭头：收起 ▸ / 展开 ▾（旋转过渡） */
+      .tresult.tres-fold > summary::before {
+        content: '▸';
+        font-size: 10px;
+        line-height: 1;
+        color: var(--ah-success, #34c759);
+        transition: transform 0.15s ease;
+      }
+      .tresult.tres-fold[open] > summary::before {
+        transform: rotate(90deg);
+      }
+      .tresult.tres-fold > summary:hover .tres-title {
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .tresult.tres-fold > summary .tres-title {
+        margin-bottom: 0;
+      }
+      .tres-meta {
+        font-size: 10px;
+        font-weight: 400;
+        color: var(--ah-text-muted);
+      }
+      .tresult.tres-fold .tres-body {
+        padding: 0 10px 8px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
       .tchildren {
         margin-top: 2px;
       }
@@ -1079,6 +1135,12 @@ export class AhChat extends LitElement {
       }
       .ins-bd-row {
         margin-bottom: 7px;
+      }
+      /* 分项缺失时的稳定占位（有总量、无明细），避免模块静默消失。 */
+      .ins-bd-empty {
+        font-size: 11px;
+        color: var(--ah-text-muted);
+        padding: 2px 0 4px;
       }
       .ins-bd-head {
         display: flex;
@@ -1681,6 +1743,7 @@ export class AhChat extends LitElement {
         align-items: center;
         justify-content: center;
         font-size: 16px;
+        line-height: 32px;
       }
       .hint {
         max-width: 820px;
@@ -2088,7 +2151,14 @@ export class AhChat extends LitElement {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
-    breakdown: { system: number; tools: number; messages: number; mcp: number; skills: number; completion: number };
+    breakdown: {
+      system: number;
+      tools: number;
+      messages: number;
+      mcp: number;
+      skills: number;
+      completion: number;
+    };
   } | null = null;
 
   /**
@@ -2097,6 +2167,11 @@ export class AhChat extends LitElement {
    * 显示用的 this.messages 指向当前会话的缓冲，后台 run 写的是自己的会话缓冲，二者解耦。
    */
   private threads: Record<string, ChatMsg[]> = {};
+  /**
+   * 会话恢复失败标记（容错持久化）：服务端历史拉取失败且无本地镜像时置 true，
+   * 空线程不再被当作「已加载」缓存 —— 下次进入该会话自动重试恢复，直到成功。
+   */
+  private restoreFailed: Record<string, boolean> = {};
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
   /** 每个会话是否正在流式（支持多个会话并发进行）。
@@ -2130,6 +2205,18 @@ export class AhChat extends LitElement {
   /** 取（或惰性创建）某会话的消息缓冲。 */
   private threadFor(sid: string): ChatMsg[] {
     return this.threads[sid] ?? (this.threads[sid] = []);
+  }
+
+  /**
+   * 把某会话当前消息缓冲镜像写入 localStorage（容错持久化）。
+   * - 写入独立于恢复流程与 run 结果：发送时与 run 收尾时各写一次，任何错误场景下数据都已可靠保存；
+   * - 内部吞掉配额/序列化异常并按阶梯降级（见 chat-history.ts），绝不阻塞 UI。
+   */
+  private saveHistory(sid: string) {
+    const t = this.threads[sid];
+    if (!t || !t.length) return;
+    const meta = this.sessions.find((s) => s.id === sid);
+    saveThread(sid, { title: meta?.title ?? '新对话', updatedAt: Date.now() }, t);
   }
 
   /** 取某会话当前流式消息。 */
@@ -2177,19 +2264,46 @@ export class AhChat extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onPreviewKeydown);
+    // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
+    // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
+    const loadList = () => withTimeout(client.listChatSessions(), 6000, '加载会话列表');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const list = await loadList();
+        this.sessions = list.map((s: ChatSession) => ({
+          id: s.id,
+          title: s.title,
+          updatedAt: s.updatedAt
+        }));
+        break;
+      } catch {
+        if (attempt === 1) {
+          const idx = loadIndex();
+          this.sessions = Object.entries(idx).map(([sid, m]) => ({
+            id: sid,
+            title: m.title,
+            updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+          }));
+        }
+      }
+    }
+    // 服务端列表成功但缺项时（如离线期间新建的会话），用镜像索引补齐入口（不覆盖服务端条目）。
+    if (this.sessions.length) {
+      const known = new Set(this.sessions.map((s) => s.id));
+      const extra = Object.entries(loadIndex())
+        .filter(([sid]) => !known.has(sid))
+        .map(([sid, m]) => ({
+          id: sid,
+          title: m.title,
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+        }));
+      if (extra.length) this.sessions = [...this.sessions, ...extra];
+    }
     try {
-      const [list, state] = await Promise.all([
-        client.listChatSessions(),
-        client.getState()
-      ]);
-      this.sessions = list.map((s: ChatSession) => ({
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt
-      }));
+      const state = await client.getState();
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
     } catch {
-      /* 离线/未启动：仍可进入空状态，发送时按 mock 兜底 */
+      /* 离线/未启动：发送时按 mock 兜底 */
     }
     // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）
     try {
@@ -2260,7 +2374,13 @@ export class AhChat extends LitElement {
     totalPct: number;
     totalTokens: number;
     window: number;
-    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+    items: {
+      key: string;
+      label: string;
+      tokens: number;
+      pct: number;
+      cls: string;
+    }[];
   } {
     const WINDOW = 128000; // 上下文窗口基线（token）
     const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
@@ -2275,11 +2395,41 @@ export class AhChat extends LitElement {
       for (const t of m.tools ?? []) toolTokens += tok(t.args) + tok(t.result);
     }
     const items = [
-      { key: 'sys', label: '系统提示词', tokens: SYS_BASE, cls: 'c-sys', pct: 0 },
-      { key: 'tools', label: '工具及子智能体', tokens: toolTokens, cls: 'c-tools', pct: 0 },
-      { key: 'msg', label: '对话消息', tokens: msgTokens, cls: 'c-msg', pct: 0 },
-      { key: 'mcp', label: '连接器及 MCP', tokens: MCP_BASE, cls: 'c-mcp', pct: 0 },
-      { key: 'skill', label: '技能', tokens: SKILL_BASE, cls: 'c-skill', pct: 0 }
+      {
+        key: 'sys',
+        label: '系统提示词',
+        tokens: SYS_BASE,
+        cls: 'c-sys',
+        pct: 0
+      },
+      {
+        key: 'tools',
+        label: '工具及子智能体',
+        tokens: toolTokens,
+        cls: 'c-tools',
+        pct: 0
+      },
+      {
+        key: 'msg',
+        label: '对话消息',
+        tokens: msgTokens,
+        cls: 'c-msg',
+        pct: 0
+      },
+      {
+        key: 'mcp',
+        label: '连接器及 MCP',
+        tokens: MCP_BASE,
+        cls: 'c-mcp',
+        pct: 0
+      },
+      {
+        key: 'skill',
+        label: '技能',
+        tokens: SKILL_BASE,
+        cls: 'c-skill',
+        pct: 0
+      }
     ];
     const totalTokens = items.reduce((s, it) => s + it.tokens, 0);
     const totalPct = Math.min(100, (totalTokens / WINDOW) * 100);
@@ -2296,16 +2446,52 @@ export class AhChat extends LitElement {
     totalPct: number;
     totalTokens: number;
     window: number;
-    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+    items: {
+      key: string;
+      label: string;
+      tokens: number;
+      pct: number;
+      cls: string;
+    }[];
   } {
     const u = this.backendUsage;
     if (u) {
       const items = [
-        { key: 'sys', label: '系统提示词', tokens: u.breakdown.system, cls: 'c-sys', pct: 0 },
-        { key: 'tools', label: '工具及子智能体', tokens: u.breakdown.tools, cls: 'c-tools', pct: 0 },
-        { key: 'msg', label: '对话消息', tokens: u.breakdown.messages, cls: 'c-msg', pct: 0 },
-        { key: 'mcp', label: '连接器及 MCP', tokens: u.breakdown.mcp, cls: 'c-mcp', pct: 0 },
-        { key: 'skill', label: '技能', tokens: u.breakdown.skills, cls: 'c-skill', pct: 0 }
+        {
+          key: 'sys',
+          label: '系统提示词',
+          tokens: u.breakdown.system,
+          cls: 'c-sys',
+          pct: 0
+        },
+        {
+          key: 'tools',
+          label: '工具及子智能体',
+          tokens: u.breakdown.tools,
+          cls: 'c-tools',
+          pct: 0
+        },
+        {
+          key: 'msg',
+          label: '对话消息',
+          tokens: u.breakdown.messages,
+          cls: 'c-msg',
+          pct: 0
+        },
+        {
+          key: 'mcp',
+          label: '连接器及 MCP',
+          tokens: u.breakdown.mcp,
+          cls: 'c-mcp',
+          pct: 0
+        },
+        {
+          key: 'skill',
+          label: '技能',
+          tokens: u.breakdown.skills,
+          cls: 'c-skill',
+          pct: 0
+        }
       ];
       const totalTokens = u.totalTokens;
       const totalPct = Math.min(100, (totalTokens / u.window) * 100);
@@ -2338,12 +2524,17 @@ export class AhChat extends LitElement {
       <div class="ctx-ring-wrap">
         <button
           class="ctx-ring"
-          title="上下文用量"
           aria-label="上下文用量"
           @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
         >
           <svg viewBox="0 0 36 36" role="img" aria-hidden="true">
-            <circle class="ring-bg" cx="18" cy="18" r=${R} stroke-width="3"></circle>
+            <circle
+              class="ring-bg"
+              cx="18"
+              cy="18"
+              r=${R}
+              stroke-width="3"
+            ></circle>
             <circle
               class="ring-fg ${pct > 80 ? 'warn' : ''}"
               cx="18"
@@ -2354,21 +2545,28 @@ export class AhChat extends LitElement {
               stroke-dashoffset=${offset.toFixed(2)}
               transform="rotate(-90 18 18)"
             ></circle>
-            <text class="ring-num" x="18" y="18" text-anchor="middle" dominant-baseline="central">
+            <text
+              class="ring-num"
+              x="18"
+              y="18"
+              text-anchor="middle"
+              dominant-baseline="central"
+            >
               ${Math.round(pct)}%
             </text>
           </svg>
         </button>
         <span class="ctx-tip"
-          >上下文已使用：${pct.toFixed(1)}% - ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
+          >上下文已使用：${pct.toFixed(1)}% -
+          ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
         >
         ${this.showCtxUsage
           ? html`<div class="ctx-pop">
               <div class="ctx-pop-head">
                 <span>上下文用量</span>
                 <span class="ctx-pop-total"
-                  >${u.totalTokens.toLocaleString()}
-                  / ${this.fmtK(u.window)}</span
+                  >${u.totalTokens.toLocaleString()} /
+                  ${this.fmtK(u.window)}</span
                 >
               </div>
               <div class="ctx-seg">
@@ -2429,28 +2627,47 @@ export class AhChat extends LitElement {
     this.input = '';
     // 关键修复：切换会话【不再】中止进行中的 run，也不清空其打字机缓冲 / 追踪状态。
     // 进行中的 run 仍向所属会话缓冲写内容，切回时实时恢复（见 this.threads / this.pending / this.traces）。
-    // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过）。
-    if (!this.threads[id]) {
+    // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
+    // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
+    const localBuf = this.threads[id];
+    if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
       try {
-        const s = await client.getChatSession(id);
-        this.threads[id] = s.messages.map((m) => ({
-          id: this.nextId++,
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.content,
-          // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
-          reasoning: m.reasoning,
-          tools: m.tools
-            ? m.tools.map((t) => ({
-                name: t.name,
-                args: t.args ?? '',
-                result: t.result,
-                errored: t.errored
-              }))
-            : undefined,
-          trace: m.trace ? m.trace : undefined
-        }));
+        // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
+        const s = await withTimeout(client.getChatSession(id), 8000, '恢复会话历史');
+        // 服务端数据先经消毒（类型收敛 / 过滤非法条目 / 连续重复去重 / 保序）再入内存。
+        const clean = sanitizeMessages(
+          s.messages.map((m) => ({
+            role: m.role === 'user' ? 'user' : 'assistant',
+            content: m.content,
+            reasoning: m.reasoning,
+            tools: m.tools,
+            trace: m.trace
+          }))
+        );
+        if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
+        // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
+        // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
+        const merged =
+          localBuf && localBuf.length
+            ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
+            : clean;
+        this.threads[id] = merged.map((m) => ({ ...m, id: this.nextId++ })) as ChatMsg[];
+        this.restoreFailed[id] = false;
       } catch {
-        this.threads[id] = [];
+        // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
+        //   localStorage 镜像 → 空线程 + 失败标记（下次重试）+ 非阻断警示。
+        const mirrored = loadThread(id);
+        if (mirrored && mirrored.length) {
+          this.threads[id] = mirrored.map((m) => ({
+            ...(m as Omit<ChatMsg, 'id'>),
+            id: this.nextId++
+          })) as ChatMsg[];
+          this.error = '⚠️ 服务端历史拉取失败，已从本地缓存恢复（可能非最新）。';
+        } else {
+          this.threads[id] = localBuf ?? [];
+          this.restoreFailed[id] = true;
+          this.error = '⚠️ 历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。';
+        }
       }
     }
     this.messages = this.threads[id];
@@ -2469,6 +2686,9 @@ export class AhChat extends LitElement {
       this.sessions = this.sessions.map((s) =>
         s.id === id ? { ...s, title: title.trim() } : s
       );
+      // 同步本地镜像索引标题（下次离线兜底渲染时名称一致）。
+      const t = this.threads[id];
+      if (t && t.length) this.saveHistory(id);
     } catch (e: any) {
       this.error = String(e?.message ?? e);
     }
@@ -2478,6 +2698,8 @@ export class AhChat extends LitElement {
     if (!window.confirm('删除该会话及其消息？')) return;
     try {
       await client.deleteChatSession(id);
+      // 同步清理本地镜像与索引，避免「服务端已删、本地幽灵会话」复活。
+      purgeSessionMirror(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
       if (this.activeId === id) this.newChat();
     } catch (e: any) {
@@ -2549,6 +2771,8 @@ export class AhChat extends LitElement {
     this.showScrollDown = false;
     this.showCtxUsage = false;
     this.backendUsage = null;
+    // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
+    this.saveHistory(sessionId);
 
     const ac = new AbortController();
     this.abortBy[sessionId] = ac;
@@ -2592,6 +2816,9 @@ export class AhChat extends LitElement {
       this.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
       if (this.activeId === sessionId) this.messages = this.threads[sessionId];
+      // 容错持久化：run 收尾（正常完成 / 出错 / 手动中止均会走到 finally）把最终消息镜像落盘，
+      // 写入独立于恢复流程结果，保证任何错误场景下历史都已可靠保存。
+      this.saveHistory(sessionId);
     }
   }
 
@@ -2707,7 +2934,10 @@ export class AhChat extends LitElement {
             totalTokens: u.totalTokens,
             breakdown: u.breakdown
           };
-          const totalPct = Math.min(100, (Number(u.totalTokens) / Number(u.window)) * 100);
+          const totalPct = Math.min(
+            100,
+            (Number(u.totalTokens) / Number(u.window)) * 100
+          );
           agentContext.set('lastContextUsage', {
             totalPct,
             totalTokens: Number(u.totalTokens),
@@ -2903,6 +3133,13 @@ export class AhChat extends LitElement {
       case 'run:cost': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
+        // Token 拆解四项（系统/工具/历史/输出）：与 access/server 的 traceHandle 保持
+        // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
+        // 仅在服务端落盘后的恢复视图中出现、实时流视图中消失（时有时无的根因）。
+        const est = (ev as any).estTokens as
+          | { system: number; tools: number; history: number; completion: number }
+          | undefined;
+        const estTotal = est ? est.system + est.tools + est.history + est.completion : 0;
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(
@@ -2913,7 +3150,15 @@ export class AhChat extends LitElement {
                 ? `$${Number(ev.cumulativeCost).toFixed(4)}`
                 : '?',
             priced: ev.priced ? 'true' : 'false',
-            ...(ev.model ? { model: String(ev.model) } : {})
+            ...(ev.model ? { model: String(ev.model) } : {}),
+            ...(est
+              ? {
+                  系统: String(est.system),
+                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  输出: String(est.completion)
+                }
+              : {})
           }
         });
         break;
@@ -3198,9 +3443,7 @@ export class AhChat extends LitElement {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '上传失败';
         this.attachments = this.attachments.map((a) =>
-          a === file
-            ? { ...a, uploadStatus: 'error', uploadError: msg }
-            : a
+          a === file ? { ...a, uploadStatus: 'error', uploadError: msg } : a
         );
         this.uploadingFiles.set(key, {
           status: 'error',
@@ -3564,11 +3807,18 @@ export class AhChat extends LitElement {
           ? html`<pre class="tdetail">${formatToolJson(n.detail!)}</pre>`
           : nothing}
         ${hasResult
-          ? html`<div class="tresult ${isRetrieval ? 'retrieval' : ''}">
-              ${isRetrieval
-                ? html`<div class="tres-title">检索内容</div>`
-                : nothing}${formatToolJson(n.result!)}
-            </div>`
+          ? isRetrieval
+            ? html`<details
+                class="tresult retrieval tres-fold"
+                ?open=${n.result!.length <= 240}
+              >
+                <summary title="点击展开 / 收起">
+                  <span class="tres-title">检索内容</span>
+                  <span class="tres-meta">${n.result!.length} 字</span>
+                </summary>
+                <div class="tres-body">${formatToolJson(n.result!)}</div>
+              </details>`
+            : html`<div class="tresult">${formatToolJson(n.result!)}</div>`
           : nothing}
         ${n.children.length
           ? html`<div class="tchildren">
@@ -3593,7 +3843,9 @@ export class AhChat extends LitElement {
     const steps = flat.filter((n) => n.kind === 'step').length;
     // 「工具调用」计数只统计真实执行的工具节点；被去重复用（meta.reused）的请求不计入，
     // 以免 UI 数字虚高（但 trace 树里仍保留这些复用节点供复盘）。
-    const tools = flat.filter((n) => n.kind === 'tool' && !(n.meta && n.meta.reused));
+    const tools = flat.filter(
+      (n) => n.kind === 'tool' && !(n.meta && n.meta.reused)
+    );
     const retrievals = flat.filter((n) => n.kind === 'retrieval');
     const cost = flat.find((n) => n.kind === 'cost');
     const cacheNode = flat.find((n) => n.kind === 'tokencache');
@@ -3620,9 +3872,11 @@ export class AhChat extends LitElement {
   /**
    * 从 cost 节点的 meta 解析「系统 / 工具 / 历史 / 输出」四项 token 占比。
    * meta 中 工具/历史 的值形如 "320 (45%)"，系统/输出 为纯数字；这里统一提取数字与百分比。
+   * 容错：值可能为 number 或 string；百分比缺失时按各项 tokens 占和兜底计算；
+   * 全部不可解析时返回 undefined（调用方据此展示降级文案而非静默消失）。
    */
   private parseCostBreakdown(
-    meta?: Record<string, string>
+    meta?: Record<string, unknown>
   ): Insights['costBreakdown'] {
     if (!meta) return undefined;
     const order: Array<[string, string]> = [
@@ -3632,16 +3886,22 @@ export class AhChat extends LitElement {
       ['输出', 'completion']
     ];
     const out: Array<{ label: string; tokens: number; pct: number }> = [];
-    for (const [cn, _] of order) {
+    for (const [cn] of order) {
       const raw = meta[cn];
       if (raw == null) continue;
-      const num = parseInt(raw, 10);
-      if (Number.isNaN(num)) continue;
-      const pctMatch = raw.match(/\((\d+)%\)/);
-      const pct = pctMatch ? Number(pctMatch[1]) : 0;
-      out.push({ label: cn, tokens: num, pct });
+      // parseInt 对 "320 (45%)" 取前缀数字，与纯数字字符串/数值统一兼容。
+      const num = parseInt(String(raw), 10);
+      if (!Number.isFinite(num)) continue;
+      const pctMatch = String(raw).match(/\((\d+(?:\.\d+)?)%\)/);
+      out.push({ label: cn, tokens: num, pct: pctMatch ? Number(pctMatch[1]) : 0 });
     }
-    return out.length ? out : undefined;
+    if (!out.length) return undefined;
+    // 百分比缺失的项按「该项 tokens ÷ 已解析各项之和」兜底，保证进度条始终有意义。
+    const sum = out.reduce((s, b) => s + b.tokens, 0);
+    for (const b of out) {
+      if (!b.pct && sum > 0) b.pct = Math.round((b.tokens / sum) * 100);
+    }
+    return out;
   }
 
   /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
@@ -3697,6 +3957,16 @@ export class AhChat extends LitElement {
                   </div>
                 </div>`
               )}
+            </div>
+          </div>`
+        : // 稳定降级：已有 Token 总量但分项缺失（旧落盘 trace / 事件未带 estTokens）时，
+          // 展示占位说明而非静默消失，避免模块「时有时无」的观感；完全无用量数据（如 mock）
+          // 才整体隐藏。
+        ins.costTokens
+        ? html`<div class="ins-breakdown">
+            <div class="ins-bd-title">Token 拆解</div>
+            <div class="ins-bd-bars">
+              <div class="ins-bd-empty">暂无分项数据（本次运行未返回拆解明细）</div>
             </div>
           </div>`
         : nothing}
@@ -3838,19 +4108,19 @@ export class AhChat extends LitElement {
 
         <div class="scroll-region">
           <div class="scroll" ${ref(this.scrollRef)} @scroll=${this.onScroll}>
-          ${this.messages.length === 0
-            ? html`
-                <div class="empty">
-                  <h1>有什么可以帮你的？</h1>
-                  <p>
-                    基于 agent-harness
-                    的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
-                  </p>
-                </div>
-              `
-            : html`<div class="thread">
-                ${this.messages.map((m) => this.renderMessage(m))}
-              </div>`}
+            ${this.messages.length === 0
+              ? html`
+                  <div class="empty">
+                    <h1>有什么可以帮你的？</h1>
+                    <p>
+                      基于 agent-harness
+                      的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+                    </p>
+                  </div>
+                `
+              : html`<div class="thread">
+                  ${this.messages.map((m) => this.renderMessage(m))}
+                </div>`}
           </div>
           ${this.showScrollDown
             ? html`<button
@@ -3952,7 +4222,6 @@ export class AhChat extends LitElement {
                 +
               </label>
               <div class="composer-footer-right">
-                ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
                   ? html`<button
                       class="send"
