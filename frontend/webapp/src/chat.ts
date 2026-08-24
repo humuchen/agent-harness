@@ -2714,20 +2714,29 @@ export class AhChat extends LitElement {
         });
         const json = await resp.json();
         if (json.ok && json.meta?.url) {
-          file.serverUrl = json.meta.url;
-          file.uploadStatus = 'done';
+          // 不可变更新：Lit @state() 仅在重新赋值时触发重渲染，
+          // 原地修改数组元素的字段不会刷新 UI（⏳ 会一直卡住）。
+          this.attachments = this.attachments.map((a) =>
+            a === file
+              ? { ...a, serverUrl: json.meta.url, uploadStatus: 'done' }
+              : a
+          );
           this.uploadingFiles.set(key, { status: 'done' });
         } else {
           throw new Error(json.error || '上传失败');
         }
       } catch (err) {
-        file.uploadStatus = 'error';
-        file.uploadError = err instanceof Error ? err.message : '上传失败';
+        const msg = err instanceof Error ? err.message : '上传失败';
+        this.attachments = this.attachments.map((a) =>
+          a === file
+            ? { ...a, uploadStatus: 'error', uploadError: msg }
+            : a
+        );
         this.uploadingFiles.set(key, {
           status: 'error',
-          error: file.uploadError
+          error: msg
         });
-        this.error = `上传失败：${f.name} — ${file.uploadError}`;
+        this.error = `上传失败：${f.name} — ${msg}`;
       }
     }
 
