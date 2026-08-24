@@ -2,9 +2,28 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
-import { checkInput, checkOutput, checkStructuredOutput, checkToolArgs, redactOutput, type GuardrailPolicy } from './guardrails';
+import {
+  checkInput,
+  checkOutput,
+  checkStructuredOutput,
+  checkToolArgs,
+  redactOutput,
+  type GuardrailPolicy
+} from './guardrails';
 import { parsePlanOutput } from './plan';
-import { withSpan, incCounter, recordError, recordTokens, recordCost, structLog, logError, emitAlert, recordTokensTenant, recordCostTenant, incCounterTenant } from './telemetry';
+import {
+  withSpan,
+  incCounter,
+  recordError,
+  recordTokens,
+  recordCost,
+  structLog,
+  logError,
+  emitAlert,
+  recordTokensTenant,
+  recordCostTenant,
+  incCounterTenant
+} from './telemetry';
 import { estimateCost, estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
@@ -20,7 +39,8 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-3-haiku': 200000,
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
-  agnes: 1000000,
+  'ox-alpha': 1000000,
+  agnes: 1000000
 };
 
 function contextWindowFor(model?: string): number {
@@ -43,31 +63,118 @@ function contextWindowFor(model?: string): number {
 export type HarnessEvent =
   | { type: 'run:start'; runId: string; input: string }
   | { type: 'run:tools'; tools: { name: string; description: string }[] }
-  | { type: 'guardrail:blocked'; phase: 'input' | 'output' | 'tool'; reason: string; tool?: string }
+  | {
+      type: 'guardrail:blocked';
+      phase: 'input' | 'output' | 'tool';
+      reason: string;
+      tool?: string;
+    }
   | { type: 'step:start'; step: number; maxSteps: number }
   | { type: 'llm:call'; step: number; messageCount: number; toolCount: number }
-  | { type: 'llm:response'; step: number; content: string; toolCalls: ToolCall[] }
+  | {
+      type: 'llm:response';
+      step: number;
+      content: string;
+      toolCalls: ToolCall[];
+    }
   /** token 级流式增量（打字机效果）。仅当 HarnessOptions.streamTokens 开启且适配器支持时发出。 */
   | { type: 'llm:token'; step: number; delta: string }
   /** 推理过程增量（思考折叠块）。部分推理模型在 delta.reasoning 中逐段返回。 */
   | { type: 'llm:reasoning'; step: number; delta: string }
   | { type: 'tool:start'; step: number; call: ToolCall }
-  | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
+  | {
+      type: 'tool:result';
+      step: number;
+      call: ToolCall;
+      result: string;
+      errored: boolean;
+    }
   /** 加固：工具调用去重命中。同 run 内出现「同名 + 相同归一化参数」的重复请求时，
    *  直接复用首次结果而不真正执行，emit 此事件（而非 tool:start），用于 UI 标记「复用缓存」并计入可观测。 */
-  | { type: 'tool:deduped'; step: number; call: ToolCall; result: string; errored: boolean }
-  | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean; estTokens?: { system: number; tools: number; history: number; completion: number } }
+  | {
+      type: 'tool:deduped';
+      step: number;
+      call: ToolCall;
+      result: string;
+      errored: boolean;
+    }
+  | {
+      type: 'run:cost';
+      step: number;
+      model?: string;
+      usage: TokenUsage;
+      stepCost: number;
+      cumulativeTokens: number;
+      cumulativeCost: number;
+      priced?: boolean;
+      estTokens?: {
+        system: number;
+        tools: number;
+        history: number;
+        completion: number;
+      };
+    }
   /** 上下文用量（精确）：以 provider 返回的 usage（prompt/completion）为权威总量，
    *  按各组件序列化 token 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），
    *  供前端「上下文用量」浮层展示精确占比。仅当拿到 provider usage 时发出。 */
-  | { type: 'llm:usage'; step: number; model?: string; window: number; promptTokens: number; completionTokens: number; totalTokens: number; breakdown: { system: number; tools: number; messages: number; mcp: number; skills: number; completion: number } }
-  | { type: 'run:token-cache'; step: number; model?: string; interface: string; queries: number; hits: number; hitRate: number; cachedTokens: number; promptTokens: number; tokenHitRate: number; byModel: Record<string, { queries: number; hits: number; hitRate: number }> }
+  | {
+      type: 'llm:usage';
+      step: number;
+      model?: string;
+      window: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      breakdown: {
+        system: number;
+        tools: number;
+        messages: number;
+        mcp: number;
+        skills: number;
+        completion: number;
+      };
+    }
+  | {
+      type: 'run:token-cache';
+      step: number;
+      model?: string;
+      interface: string;
+      queries: number;
+      hits: number;
+      hitRate: number;
+      cachedTokens: number;
+      promptTokens: number;
+      tokenHitRate: number;
+      byModel: Record<
+        string,
+        { queries: number; hits: number; hitRate: number }
+      >;
+    }
   /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
    *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
-  | { type: 'run:meta'; runId: string; agentId?: string; workflowId?: string; traceId?: string; tenantId?: string; decidedBy?: string }
-  | { type: 'budget:exceeded'; kind: 'tokens' | 'cost'; limit: number; used: number }
+  | {
+      type: 'run:meta';
+      runId: string;
+      agentId?: string;
+      workflowId?: string;
+      traceId?: string;
+      tenantId?: string;
+      decidedBy?: string;
+    }
+  | {
+      type: 'budget:exceeded';
+      kind: 'tokens' | 'cost';
+      limit: number;
+      used: number;
+    }
   | { type: 'run:end'; runId: string; final: string; steps: number }
-  | { type: 'verify:result'; attempt: number; passed: boolean; score: number; reasons: string[] }
+  | {
+      type: 'verify:result';
+      attempt: number;
+      passed: boolean;
+      score: number;
+      reasons: string[];
+    }
   /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
    *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
   | { type: 'plan:proposed'; plan: import('./plan').ExecutionPlan }
@@ -178,7 +285,7 @@ interface ResolvedHarnessOptions {
   llm: LLM;
   tools: ToolRegistry;
   memory: Memory;
-  systemPrompt: string;  // 注意：systemPrompt 实际不经过 Memory 持久化窗口，见下
+  systemPrompt: string; // 注意：systemPrompt 实际不经过 Memory 持久化窗口，见下
   maxSteps: number;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -230,12 +337,13 @@ export class AgentHarness {
       requireCompletion: opts.requireCompletion ?? false,
       verify: opts.verify,
       verifyMaxRetries: opts.verifyMaxRetries ?? 0,
-      verifySelfCorrect: opts.verifySelfCorrect ?? (opts.verifyMaxRetries ?? 0) > 0,
+      verifySelfCorrect:
+        opts.verifySelfCorrect ?? (opts.verifyMaxRetries ?? 0) > 0,
       guardrailPolicy: opts.guardrailPolicy,
       ...opts,
       enableToolDedup: opts.enableToolDedup ?? false,
       maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
-      planPropose: opts.planPropose ?? false,
+      planPropose: opts.planPropose ?? false
     };
   }
 
@@ -249,7 +357,10 @@ export class AgentHarness {
     return this.opts.memory.notes();
   }
 
-  async run(userInput: string, imageAttachments?: Array<{ url: string; name: string; type: string }>): Promise<string> {
+  async run(
+    userInput: string,
+    imageAttachments?: Array<{ url: string; name: string; type: string }>
+  ): Promise<string> {
     const runId = nextId('run');
     const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
 
@@ -258,7 +369,10 @@ export class AgentHarness {
     const onExternalAbort = () => controller.abort('external');
     if (this.opts.signal) {
       if (this.opts.signal.aborted) controller.abort('external');
-      else this.opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+      else
+        this.opts.signal.addEventListener('abort', onExternalAbort, {
+          once: true
+        });
     }
     const timeout =
       this.opts.timeoutMs && this.opts.timeoutMs > 0
@@ -267,7 +381,8 @@ export class AgentHarness {
     const signal = controller.signal;
     const cleanup = () => {
       if (timeout) clearTimeout(timeout);
-      if (this.opts.signal) this.opts.signal.removeEventListener('abort', onExternalAbort);
+      if (this.opts.signal)
+        this.opts.signal.removeEventListener('abort', onExternalAbort);
     };
 
     emit({ type: 'run:start', runId, input: userInput });
@@ -275,7 +390,13 @@ export class AgentHarness {
 
     // P0/P1：把本次 run 关联到「智能体 / 工作流 / 追踪 / 租户」维度，供 UI / OTel 跨 agent 关联。
     // 仅为旁路观测；任一字段缺失（默认）都不发，零租户/无工作流行为完全不变。
-    if (this.opts.agentId || this.opts.workflowId || this.opts.traceId || this.opts.tenantId || this.opts.decidedBy) {
+    if (
+      this.opts.agentId ||
+      this.opts.workflowId ||
+      this.opts.traceId ||
+      this.opts.tenantId ||
+      this.opts.decidedBy
+    ) {
       emit({
         type: 'run:meta',
         runId,
@@ -283,15 +404,23 @@ export class AgentHarness {
         workflowId: this.opts.workflowId,
         traceId: this.opts.traceId,
         tenantId: this.opts.tenantId,
-        decidedBy: this.opts.decidedBy,
+        decidedBy: this.opts.decidedBy
       });
     }
 
     const guard = checkInput(userInput, this.opts.guardrailPolicy);
     if (!guard.ok) {
       recordError('guardrail.input');
-      structLog('warn', 'guardrail blocked', { phase: 'input', reason: guard.reason, runId });
-      emit({ type: 'guardrail:blocked', phase: 'input', reason: guard.reason ?? 'unknown' });
+      structLog('warn', 'guardrail blocked', {
+        phase: 'input',
+        reason: guard.reason,
+        runId
+      });
+      emit({
+        type: 'guardrail:blocked',
+        phase: 'input',
+        reason: guard.reason ?? 'unknown'
+      });
       // 注意：此早期返回发生在 verify 门禁之前，不进入 runLoop，故不计入 guardrailsBlocked
       // （verify 上下文只统计循环内发生的拦截；此处直接以 guardrail 消息结束本轮）。
       const msg = `[guardrail] blocked: ${guard.reason}`;
@@ -322,7 +451,10 @@ export class AgentHarness {
     }
     // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
     if (imageAttachments && imageAttachments.length > 0) {
-      const contentBlocks: Array<{ type: 'text'; text?: string } | { type: 'image_url'; image_url?: { url: string } }> = [];
+      const contentBlocks: Array<
+        | { type: 'text'; text?: string }
+        | { type: 'image_url'; image_url?: { url: string } }
+      > = [];
       if (userInput) contentBlocks.push({ type: 'text', text: userInput });
       for (const img of imageAttachments) {
         contentBlocks.push({ type: 'image_url', image_url: { url: img.url } });
@@ -351,7 +483,10 @@ export class AgentHarness {
     const usedTools = new Set<string>();
     // 加固：工具调用去重缓存与单 step 预算。仅当 opts 显式开启时生效，默认完全不介入。
     const toolDedupOn = !!this.opts.enableToolDedup;
-    const toolDedupCache = new Map<string, { result: string; errored: boolean }>();
+    const toolDedupCache = new Map<
+      string,
+      { result: string; errored: boolean }
+    >();
     const maxCallsPerStep =
       this.opts.maxToolCallsPerStep && this.opts.maxToolCallsPerStep > 0
         ? this.opts.maxToolCallsPerStep
@@ -367,7 +502,12 @@ export class AgentHarness {
       const limit = kind === 'tokens' ? tokenBudget! : costBudget!;
       const used = kind === 'tokens' ? runTokens : runCost;
       incCounter('budget.exceeded');
-      structLog('warn', 'budget exceeded, aborting run', { kind, limit, used, runId });
+      structLog('warn', 'budget exceeded, aborting run', {
+        kind,
+        limit,
+        used,
+        runId
+      });
       emit({ type: 'budget:exceeded', kind, limit, used });
       return `[budget] ${kind} exceeded: used ${used} / limit ${limit}`;
     };
@@ -383,12 +523,17 @@ export class AgentHarness {
           // 历史已包含压缩结果（同步摘要器此步为 no-op，无额外开销）。
           await memory.flushSummary();
           // 预算熔断：token / cost 任一超限即中止（在发起下一次 LLM 调用前）。
-          if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
+          if (tokenBudget && runTokens > tokenBudget)
+            return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
           steps = step + 1;
           // 加固：每 step 重置工具调用计数（配合 maxToolCallsPerStep 预算截断）。
           let stepToolCalls = 0;
-          emit({ type: 'step:start', step: steps, maxSteps: this.opts.maxSteps });
+          emit({
+            type: 'step:start',
+            step: steps,
+            maxSteps: this.opts.maxSteps
+          });
 
           const messages = memory.history();
           // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
@@ -398,28 +543,33 @@ export class AgentHarness {
           let stepTools = allSchemas;
           const dynamicOn = process.env.DYNAMIC_TOOLS !== 'false';
           if (dynamicOn && allSchemas.length > 0) {
-            const latestUser = [...messages].reverse().find((m) => m.role === 'user');
-            const input = typeof latestUser?.content === 'string' ? latestUser.content : '';
+            const latestUser = [...messages]
+              .reverse()
+              .find((m) => m.role === 'user');
+            const input =
+              typeof latestUser?.content === 'string' ? latestUser.content : '';
             const topK = Number(process.env.DYNAMIC_TOOL_TOPK ?? 8) || 8;
             // 把本 run 已用过的工具并入硬允许，保证多步任务后续步骤仍可调用。
             const allow = new Set(this.opts.allowTools ?? []);
             for (const t of usedTools) allow.add(t);
             const subset = selectToolsForInput(allSchemas, input, {
               allowTools: [...allow],
-              topK,
+              topK
             });
             // 安全网：若输入看起来是真实任务（含疑问、较长、或出现常见任务词），
             // 直接回退全量工具，避免漏发必要工具导致质量退化；
             // 问候/寒暄/极短输入则保持最小子集，保留优化收益。
-            const taskIndicators = /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯/;
-            const looksLikeTask = input.length >= 8 || taskIndicators.test(input);
+            const taskIndicators =
+              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯/;
+            const looksLikeTask =
+              input.length >= 8 || taskIndicators.test(input);
             stepTools = looksLikeTask ? allSchemas : subset;
           }
           emit({
             type: 'llm:call',
             step: steps,
             messageCount: messages.length,
-            toolCount: stepTools.length,
+            toolCount: stepTools.length
           });
 
           // 用 Promise.race 让「中止」能打断一个永不 settles 的 LLM 调用，
@@ -439,15 +589,19 @@ export class AgentHarness {
                   },
                   onReasoning: (delta: string) => {
                     emit({ type: 'llm:reasoning', step: steps, delta });
-                  },
+                  }
                 }
-              : {}),
+              : {})
           });
           const abortedFlag = new Promise<'__aborted__'>((resolve) => {
             if (signal.aborted) return resolve('__aborted__');
-            signal.addEventListener('abort', () => resolve('__aborted__'), { once: true });
+            signal.addEventListener('abort', () => resolve('__aborted__'), {
+              once: true
+            });
           });
-          const raceResult = await withSpan('llm.call', () => Promise.race([llmPromise, abortedFlag]));
+          const raceResult = await withSpan('llm.call', () =>
+            Promise.race([llmPromise, abortedFlag])
+          );
           if (raceResult === '__aborted__') {
             return abortedMessage(signal);
           }
@@ -463,12 +617,20 @@ export class AgentHarness {
           runTokens += resp.usage?.total_tokens ?? 0;
           recordCostTenant(stepCost, costModel, this.opts.tenantId);
           // 未找到单价且未配置默认价时发出诊断日志，便于排查「cost 始终为 0」的根因。
-          if (!estimate.found && stepCost === 0 && (resp.usage?.prompt_tokens || resp.usage?.completion_tokens)) {
-            structLog('warn', 'model pricing not found, cost estimate is zero', {
-              model: costModel,
-              usage: resp.usage,
-              runId,
-            });
+          if (
+            !estimate.found &&
+            stepCost === 0 &&
+            (resp.usage?.prompt_tokens || resp.usage?.completion_tokens)
+          ) {
+            structLog(
+              'warn',
+              'model pricing not found, cost estimate is zero',
+              {
+                model: costModel,
+                usage: resp.usage,
+                runId
+              }
+            );
           }
           // 本地拆解四项占比（启发式估算，仅用于链路可视化；权威值仍以 provider 的 usage 为准）。
           // 系统在「系统提示」项，工具 schema 在「工具」项，其余消息累计为「历史」，
@@ -476,7 +638,10 @@ export class AgentHarness {
           let estSystem = 0;
           let estHistory = 0;
           for (const m of messages) {
-            const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+            const c =
+              typeof m.content === 'string'
+                ? m.content
+                : JSON.stringify(m.content ?? '');
             if (m.role === 'system') estSystem += estimateTokens(c);
             else estHistory += estimateTokens(c);
           }
@@ -485,7 +650,8 @@ export class AgentHarness {
           // 「工具及子智能体」与「连接器及 MCP」两类，使上下文用量拆分更贴近真实构成。
           let estMcp = 0;
           for (const t of stepTools) {
-            if (t.name.includes('__')) estMcp += estimateTokens(`${t.name} ${t.description ?? ''}`);
+            if (t.name.includes('__'))
+              estMcp += estimateTokens(`${t.name} ${t.description ?? ''}`);
           }
           const estToolsBuiltin = estTools - estMcp;
           const estSkills = 80; // 技能注册基线（粗估）
@@ -493,7 +659,10 @@ export class AgentHarness {
           if (resp.tool_calls) {
             for (const tc of resp.tool_calls) {
               completionText +=
-                ' ' + (typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {}));
+                ' ' +
+                (typeof tc.arguments === 'string'
+                  ? tc.arguments
+                  : JSON.stringify(tc.arguments ?? {}));
             }
           }
           const estCompletion = estimateTokens(completionText);
@@ -508,15 +677,21 @@ export class AgentHarness {
               cumulativeTokens: runTokens,
               cumulativeCost: runCost,
               priced: estimate.found,
-              estTokens: { system: estSystem, tools: estTools, history: estHistory, completion: estCompletion },
-              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
+              estTokens: {
+                system: estSystem,
+                tools: estTools,
+                history: estHistory,
+                completion: estCompletion
+              },
+              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {})
             });
             // 上下文用量（精确）：以 provider 的 usage 为权威总量，按各组件序列化 token
             // 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），供前端浮层展示精确占比。
             const promptTokens = resp.usage.prompt_tokens ?? 0;
             const completionTokens = resp.usage.completion_tokens ?? 0;
             const window = contextWindowFor(costModel);
-            const promptEst = estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
+            const promptEst =
+              estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
             const scale = promptEst > 0 ? promptTokens / promptEst : 0;
             emit({
               type: 'llm:usage',
@@ -532,8 +707,8 @@ export class AgentHarness {
                 messages: Math.round(estHistory * scale),
                 mcp: Math.round(estMcp * scale),
                 skills: Math.round(estSkills * scale),
-                completion: completionTokens,
-              },
+                completion: completionTokens
+              }
             });
           }
           // Token 缓存命中率：仅在本次 run 真正发生过缓存查询时发出
@@ -553,30 +728,40 @@ export class AgentHarness {
               promptTokens: tcStats.promptTokens,
               tokenHitRate: tcStats.tokenHitRate,
               byModel: tcStats.byModel,
-              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
+              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {})
             });
           }
           // 累加后立即检查预算：超限则中止，不再进入工具执行 / 下一轮。
-          if (tokenBudget && runTokens > tokenBudget) return budgetExceeded('tokens');
+          if (tokenBudget && runTokens > tokenBudget)
+            return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
           // 计划模式 propose（P0）：输出能解析为合法计划 JSON 时，仅做密钥/注入扫描
           // （checkStructuredOutput），跳过业务自定义规则与上下文规则——结构化任务描述
           // 极易被领域合规正则（如医疗广告法关键词）误伤，导致计划永远生成失败。
           // 解析不出计划的输出（含中间工具调用轮次）仍走完整 checkOutput，行为不变。
-          const structuredPlan =
-            this.opts.planPropose ? parsePlanOutput(resp.content) : null;
+          const structuredPlan = this.opts.planPropose
+            ? parsePlanOutput(resp.content)
+            : null;
           const outGuard = structuredPlan
             ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
             : checkOutput(
-              resp.content,
-              this.opts.guardrailPolicy,
-              lastToolResult ? { recentTool: lastToolResult } : undefined
-            );
+                resp.content,
+                this.opts.guardrailPolicy,
+                lastToolResult ? { recentTool: lastToolResult } : undefined
+              );
           if (!outGuard.ok) {
             recordError('guardrail.output');
-            structLog('warn', 'guardrail blocked', { phase: 'output', reason: outGuard.reason, runId });
-            emit({ type: 'guardrail:blocked', phase: 'output', reason: outGuard.reason ?? 'unknown' });
+            structLog('warn', 'guardrail blocked', {
+              phase: 'output',
+              reason: outGuard.reason,
+              runId
+            });
+            emit({
+              type: 'guardrail:blocked',
+              phase: 'output',
+              reason: outGuard.reason ?? 'unknown'
+            });
             guardrailsBlocked += 1;
 
             // 优雅兜底（三档，避免向用户暴露 [guardrail] blocked 方括号文本）：
@@ -587,7 +772,8 @@ export class AgentHarness {
             // 密钥 / 注入类拦截：重试无意义且可能再次泄露，直接走中性兜底。
             const isSecretOrInjection =
               !!outGuard.reason &&
-              (outGuard.reason.includes('secret') || outGuard.reason.includes('injection'));
+              (outGuard.reason.includes('secret') ||
+                outGuard.reason.includes('injection'));
 
             // 2) 合规内容类拦截（非密钥/注入）→ 温和重试一次：注入纠正提示让模型重新生成。
             //    计划模式 propose 下，纠正提示必须保持「只输出计划 JSON」的格式约束，
@@ -607,7 +793,7 @@ export class AgentHarness {
                     (outGuard.reason ?? '合规校验未通过') +
                     '）。请重新组织回复：仅陈述有事实依据、经工具/知识库确认的内容；' +
                     '不要自行编造或补充任何未经确认的项目、功效、价格、恢复期或禁忌。' +
-                    '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。',
+                    '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。'
               });
               continue;
             }
@@ -622,11 +808,16 @@ export class AgentHarness {
             emit({ type: 'llm:token', step: steps, delta: resp.content });
           }
 
-          emit({ type: 'llm:response', step: steps, content: resp.content, toolCalls: resp.tool_calls });
+          emit({
+            type: 'llm:response',
+            step: steps,
+            content: resp.content,
+            toolCalls: resp.tool_calls
+          });
           memory.add({
             role: 'assistant',
             content: resp.content,
-            tool_calls: resp.tool_calls,
+            tool_calls: resp.tool_calls
           });
 
           if (!resp.tool_calls || resp.tool_calls.length === 0) {
@@ -640,7 +831,8 @@ export class AgentHarness {
             ) {
               memory.add({
                 role: 'user',
-                content: '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。',
+                content:
+                  '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。'
               });
               continue;
             }
@@ -656,7 +848,7 @@ export class AgentHarness {
             if (maxCallsPerStep > 0 && stepToolCalls >= maxCallsPerStep) {
               emit({
                 type: 'warn',
-                message: `step ${steps} 工具调用已达上限 ${maxCallsPerStep}，截断剩余 tool_calls`,
+                message: `step ${steps} 工具调用已达上限 ${maxCallsPerStep}，截断剩余 tool_calls`
               });
               break;
             }
@@ -666,12 +858,18 @@ export class AgentHarness {
               const dkey = makeDedupKey(call);
               const cached = toolDedupCache.get(dkey);
               if (cached) {
-                emit({ type: 'tool:deduped', step: steps, call, result: cached.result, errored: cached.errored });
+                emit({
+                  type: 'tool:deduped',
+                  step: steps,
+                  call,
+                  result: cached.result,
+                  errored: cached.errored
+                });
                 memory.add({
                   role: 'tool',
                   tool_call_id: call.id,
                   name: call.name,
-                  content: cached.result,
+                  content: cached.result
                 });
                 lastToolResult = { name: call.name, result: cached.result };
                 continue;
@@ -679,19 +877,28 @@ export class AgentHarness {
             }
             // 记录已用工具，供后续步骤动态选择时并入硬允许集（见本步 llm:call 前）。
             usedTools.add(call.name);
-            const argGuard = checkToolArgs(call.name, call.arguments, this.opts.guardrailPolicy);
+            const argGuard = checkToolArgs(
+              call.name,
+              call.arguments,
+              this.opts.guardrailPolicy
+            );
             let result: unknown;
             let errored = false;
             if (!argGuard.ok) {
               result = `guardrail blocked: ${argGuard.reason}`;
               errored = true;
               recordError('guardrail.tool');
-              structLog('warn', 'guardrail blocked', { phase: 'tool', tool: call.name, reason: argGuard.reason, runId });
+              structLog('warn', 'guardrail blocked', {
+                phase: 'tool',
+                tool: call.name,
+                reason: argGuard.reason,
+                runId
+              });
               emit({
                 type: 'guardrail:blocked',
                 phase: 'tool',
                 tool: call.name,
-                reason: argGuard.reason ?? 'unknown',
+                reason: argGuard.reason ?? 'unknown'
               });
               guardrailsBlocked += 1;
             } else {
@@ -708,7 +915,8 @@ export class AgentHarness {
             }
             incCounter('tool.call');
             if (errored) recordError(`tool.${call.name}`);
-            let resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+            let resultStr =
+              typeof result === 'string' ? result : JSON.stringify(result);
             // 工具结果截断：降低「工具原文逐字重发」带来的上下文膨胀与 token 成本。
             const cap = this.opts.maxToolResultChars;
             if (cap && cap > 0 && resultStr.length > cap) {
@@ -716,18 +924,27 @@ export class AgentHarness {
                 resultStr.slice(0, cap) +
                 `\n…[工具结果已截断：原长 ${resultStr.length} 字符，仅保留前 ${cap} 字符]`;
             }
-            emit({ type: 'tool:result', step: steps, call, result: resultStr, errored });
+            emit({
+              type: 'tool:result',
+              step: steps,
+              call,
+              result: resultStr,
+              errored
+            });
             memory.add({
               role: 'tool',
               tool_call_id: call.id,
               name: call.name,
-              content: resultStr,
+              content: resultStr
             });
             // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
             lastToolResult = { name: call.name, result: resultStr };
             // 加固：将真实执行结果写入去重缓存，供后续相同调用复用。
             if (toolDedupOn) {
-              toolDedupCache.set(makeDedupKey(call), { result: resultStr, errored });
+              toolDedupCache.set(makeDedupKey(call), {
+                result: resultStr,
+                errored
+              });
             }
           }
         }
@@ -751,11 +968,17 @@ export class AgentHarness {
         steps,
         toolCalls: collectToolCalls(memory.history()),
         guardrailsBlocked,
-        budgetExceeded: budgetExceededFlag,
+        budgetExceeded: budgetExceededFlag
       });
       let attempt = 0;
       let outcome = await this.opts.verify(buildCtx());
-      emit({ type: 'verify:result', attempt, passed: outcome.passed, score: outcome.score, reasons: outcome.reasons });
+      emit({
+        type: 'verify:result',
+        attempt,
+        passed: outcome.passed,
+        score: outcome.score,
+        reasons: outcome.reasons
+      });
       while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
         attempt += 1;
         if (this.opts.verifySelfCorrect) {
@@ -765,7 +988,7 @@ export class AgentHarness {
             content:
               '（系统提示）上一轮运行未通过自动验证：' +
               outcome.reasons.join('；') +
-              '。请审视并修正你的回答与步骤，然后重新给出最终结果。',
+              '。请审视并修正你的回答与步骤，然后重新给出最终结果。'
           });
           try {
             final = await runLoop();
@@ -774,7 +997,13 @@ export class AgentHarness {
             final = `[error] ${e?.message ?? String(e)}`;
           }
           outcome = await this.opts.verify(buildCtx());
-          emit({ type: 'verify:result', attempt, passed: outcome.passed, score: outcome.score, reasons: outcome.reasons });
+          emit({
+            type: 'verify:result',
+            attempt,
+            passed: outcome.passed,
+            score: outcome.score,
+            reasons: outcome.reasons
+          });
         } else {
           break;
         }
