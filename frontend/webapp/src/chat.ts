@@ -4222,6 +4222,7 @@ export class AhChat extends LitElement {
                 +
               </label>
               <div class="composer-footer-right">
+                ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
                   ? html`<button
                       class="send"
