@@ -19,6 +19,20 @@
  */
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 
+/** 上下文用量汇总（由聊天页在收到后端 llm:usage 事件后写入，供 dashboard 跨页汇总展示）。 */
+export interface ContextUsageSummary {
+  /** 占上下文窗口的百分比（0-100）。 */
+  totalPct: number;
+  /** 精确总 token 数（provider usage）。 */
+  totalTokens: number;
+  /** 上下文窗口上限。 */
+  window: number;
+  /** 使用模型（可选）。 */
+  model?: string;
+  /** 最近一次更新时间戳。 */
+  updatedAt: number;
+}
+
 /** 共享状态允许的键。新增状态先在此登记，未登记的键 set 会抛错（防拼写错误）。 */
 export type AgentContextKey =
   | 'sessionId'
@@ -27,7 +41,8 @@ export type AgentContextKey =
   | 'theme'
   | 'token'
   | 'lastPrompt'
-  | 'files';
+  | 'files'
+  | 'lastContextUsage';
 
 /** 共享状态值类型。 */
 export interface AgentContextState {
@@ -45,6 +60,8 @@ export interface AgentContextState {
   lastPrompt: string;
   /** 用户通过文件上传组件挂载的附件（dataUrl 形式，可序列化持久化）。 */
   files: UploadedFile[];
+  /** 最近一次后端精确上下文用量汇总（供 dashboard 展示；未收到过为 null）。 */
+  lastContextUsage: ContextUsageSummary | null;
 }
 
 export interface UploadedFile {
@@ -70,6 +87,7 @@ const DEFAULTS: AgentContextState = {
   token: '',
   lastPrompt: '',
   files: [],
+  lastContextUsage: null,
 };
 
 /** 允许的键集合（白名单校验用）。 */
@@ -81,6 +99,7 @@ const KEYS = new Set<AgentContextKey>([
   'token',
   'lastPrompt',
   'files',
+  'lastContextUsage',
 ]);
 
 /** 键 → 值类型校验器。运行期早失败，避免脏数据扩散到各面板。 */
@@ -92,6 +111,7 @@ const VALIDATORS: Record<AgentContextKey, (v: unknown) => boolean> = {
   token: (v) => typeof v === 'string',
   lastPrompt: (v) => typeof v === 'string',
   files: (v) => Array.isArray(v),
+  lastContextUsage: (v) => v === null || (typeof v === 'object' && typeof (v as ContextUsageSummary).totalPct === 'number'),
 };
 
 function safeLoad(): Partial<AgentContextState> {

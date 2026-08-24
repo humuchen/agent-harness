@@ -21,6 +21,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
 import type { ApprovalTicket, ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
+import { agentContext, useAgentContext } from './agent-context';
 
 interface QueueStats {
   concurrency: number;
@@ -80,6 +81,8 @@ export class AhDashboard extends LitElement {
   @state() pending: ApprovalTicket[] = [];
   @state() error: string | null = null;
   @state() loading = true;
+  /** 订阅共享上下文中的「上下文用量」汇总（聊天页收到后端 llm:usage 后写入），实时刷新 KPI。 */
+  private ctx = useAgentContext(this, ['lastContextUsage']);
 
   connectedCallback() {
     super.connectedCallback();
@@ -123,6 +126,7 @@ export class AhDashboard extends LitElement {
     const envCount = s?.envs.length ?? 0;
     const mcpCount = s?.mcpServers.length ?? 0;
     const cost = m ? `$${m.cost.toFixed(2)}` : '—';
+    const lastUsage = agentContext.getState().lastContextUsage;
 
     return html`
       <section style="border:none;background:none;box-shadow:none;padding:0">
@@ -151,6 +155,14 @@ export class AhDashboard extends LitElement {
           <div class="kpi"><div class="v">${mcpCount}</div><div class="k">已接入 MCP</div></div>
           <div class="kpi"><div class="v ${this.pending.length ? 'warn' : 'ok'}">${this.pending.length}</div><div class="k">待审工单</div></div>
           <div class="kpi"><div class="v">${cost}</div><div class="k">累计花费</div></div>
+          ${lastUsage
+            ? html`<div class="kpi">
+                <div class="v ${lastUsage.totalPct > 80 ? 'warn' : 'accent'}">
+                  ${lastUsage.totalPct.toFixed(1)}%
+                </div>
+                <div class="k">上下文用量${lastUsage.model ? ` · ${lastUsage.model}` : ''}</div>
+              </div>`
+            : nothing}
         </div>
 
         ${this.error ? html`<div class="error">${this.error}</div>` : nothing}

@@ -191,6 +191,7 @@ export class AhChat extends LitElement {
         min-height: 0;
       }
       .chat-head {
+        position: relative;
         display: flex;
         align-items: center;
         gap: 10px;
@@ -312,6 +313,140 @@ export class AhChat extends LitElement {
           opacity: 1;
           transform: translateX(-50%) translateY(0);
         }
+      }
+      /* 上下文用量指示器：头部按钮 + 弹层（分类占比，参考宿主「上下文用量」浮层）。 */
+      .ctx-usage {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid var(--ah-border);
+        background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
+        cursor: pointer;
+        font-size: 12px;
+        flex: 0 0 auto;
+      }
+      .ctx-usage:hover {
+        color: var(--ah-text);
+        border-color: var(--ah-accent, #2997ff);
+      }
+      .ctx-pct {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        color: var(--ah-text);
+      }
+      .ctx-bar {
+        width: 54px;
+        height: 6px;
+        border-radius: 3px;
+        background: var(--ah-surface-3, rgba(255, 255, 255, 0.12));
+        overflow: hidden;
+      }
+      .ctx-fill {
+        display: block;
+        height: 100%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #2997ff, #34c759);
+        transition: width 0.2s ease;
+      }
+      .ctx-pop {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 12px;
+        z-index: 20;
+        width: 280px;
+        max-width: calc(100vw - 24px);
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--ah-border);
+        background: var(--ah-surface-1);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+        animation: ctx-in 0.16s ease;
+      }
+      @keyframes ctx-in {
+        from {
+          opacity: 0;
+          transform: translateY(-6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .ctx-pop-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+      .ctx-pop-head > span:first-child {
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--ah-text);
+      }
+      .ctx-pop-total {
+        font-size: 11px;
+        color: var(--ah-text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .ctx-seg {
+        display: flex;
+        height: 8px;
+        border-radius: 4px;
+        overflow: hidden;
+        gap: 2px;
+        margin-bottom: 10px;
+        background: var(--ah-surface-3, rgba(255, 255, 255, 0.08));
+      }
+      .ctx-seg-i {
+        height: 100%;
+      }
+      .ctx-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .ctx-list li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .ctx-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+      }
+      .ctx-label {
+        flex: 1 1 auto;
+        color: var(--ah-text-muted);
+      }
+      .ctx-val {
+        font-variant-numeric: tabular-nums;
+        color: var(--ah-text);
+        font-weight: 600;
+      }
+      .c-sys {
+        background: #ff9f0a;
+      }
+      .c-tools {
+        background: #5ac8fa;
+      }
+      .c-msg {
+        background: #2997ff;
+      }
+      .c-mcp {
+        background: #34c759;
+      }
+      .c-skill {
+        background: #bf5af2;
       }
       .empty {
         height: 100%;
@@ -1907,6 +2042,17 @@ export class AhChat extends LitElement {
   @state() private stickToBottom = true;
   /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
   @state() private showScrollDown = false;
+  /** 是否展开「上下文用量」弹层。 */
+  @state() private showCtxUsage = false;
+  /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
+   *  为 null 时「上下文用量」浮层回退到前端基于消息缓冲的粗估。 */
+  @state() private backendUsage: {
+    window: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    breakdown: { system: number; tools: number; messages: number; mcp: number; skills: number; completion: number };
+  } | null = null;
 
   /**
    * 每个会话独立的流式缓冲。切换会话时，进行中的 run 仍向所属会话的缓冲写入，
@@ -2069,6 +2215,70 @@ export class AhChat extends LitElement {
   }
 
   /**
+   * 估算当前线程占用模型上下文窗口的比例，按维度拆分（参考宿主「上下文用量」浮层）。
+   * 数据来自当前消息缓冲（对话内容 / 推理 / 工具调用 / 附件），系统提示词与 MCP / 技能为基线粗估。
+   * 注意：这是前端基于字符数的粗估（≈ 字符/3），仅用于趋势提示，并非后端精确 token 计数。
+   */
+  private contextUsage(): {
+    totalPct: number;
+    totalTokens: number;
+    window: number;
+    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+  } {
+    const WINDOW = 128000; // 上下文窗口基线（token）
+    const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
+    const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
+    const SKILL_BASE = 80; // 技能基线
+    const tok = (s?: string) => (s ? Math.ceil([...s].length / 3) : 0);
+    let msgTokens = 0;
+    let toolTokens = 0;
+    for (const m of this.messages) {
+      msgTokens += tok(m.content) + tok(m.reasoning);
+      for (const a of m.attachments ?? []) msgTokens += 1200; // 每图约 1.2K token
+      for (const t of m.tools ?? []) toolTokens += tok(t.args) + tok(t.result);
+    }
+    const items = [
+      { key: 'sys', label: '系统提示词', tokens: SYS_BASE, cls: 'c-sys', pct: 0 },
+      { key: 'tools', label: '工具及子智能体', tokens: toolTokens, cls: 'c-tools', pct: 0 },
+      { key: 'msg', label: '对话消息', tokens: msgTokens, cls: 'c-msg', pct: 0 },
+      { key: 'mcp', label: '连接器及 MCP', tokens: MCP_BASE, cls: 'c-mcp', pct: 0 },
+      { key: 'skill', label: '技能', tokens: SKILL_BASE, cls: 'c-skill', pct: 0 }
+    ];
+    const totalTokens = items.reduce((s, it) => s + it.tokens, 0);
+    const totalPct = Math.min(100, (totalTokens / WINDOW) * 100);
+    for (const it of items) it.pct = (it.tokens / WINDOW) * 100;
+    return { totalPct, totalTokens, window: WINDOW, items };
+  }
+
+  /**
+   * 返回「上下文用量」浮层当前应展示的数据：优先用后端精确计数（llm:usage），
+   * 未拿到后端数据（如 mock 模式、首屏）时回退到前端基于消息缓冲的粗估（contextUsage()）。
+   * 两种来源统一成相同结构，渲染层无需关心数据出处。
+   */
+  private displayContextUsage(): {
+    totalPct: number;
+    totalTokens: number;
+    window: number;
+    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+  } {
+    const u = this.backendUsage;
+    if (u) {
+      const items = [
+        { key: 'sys', label: '系统提示词', tokens: u.breakdown.system, cls: 'c-sys', pct: 0 },
+        { key: 'tools', label: '工具及子智能体', tokens: u.breakdown.tools, cls: 'c-tools', pct: 0 },
+        { key: 'msg', label: '对话消息', tokens: u.breakdown.messages, cls: 'c-msg', pct: 0 },
+        { key: 'mcp', label: '连接器及 MCP', tokens: u.breakdown.mcp, cls: 'c-mcp', pct: 0 },
+        { key: 'skill', label: '技能', tokens: u.breakdown.skills, cls: 'c-skill', pct: 0 }
+      ];
+      const totalTokens = u.totalTokens;
+      const totalPct = Math.min(100, (totalTokens / u.window) * 100);
+      for (const it of items) it.pct = (it.tokens / u.window) * 100;
+      return { totalPct, totalTokens, window: u.window, items };
+    }
+    return this.displayContextUsage();
+  }
+
+  /**
    * 深度思考区流式（打字机）输出时，若内容已撑满 180px 上限，
    * 始终将视口钉在底部，保证最新推理「从下往上」逐字可见。
    * 只在思考区处于 live（流式、未折叠）时生效，思考结束后不再抢滚动，
@@ -2091,6 +2301,7 @@ export class AhChat extends LitElement {
     this.error = null;
     this.stickToBottom = true;
     this.showScrollDown = false;
+    this.backendUsage = null;
   }
 
   private async selectSession(id: string) {
@@ -2129,6 +2340,7 @@ export class AhChat extends LitElement {
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
     this.stickToBottom = true;
     this.showScrollDown = false;
+    this.backendUsage = null;
   }
 
   private async renameSession(id: string) {
@@ -2218,6 +2430,8 @@ export class AhChat extends LitElement {
     // 发送新消息：强制钉底并滚到最新内容（即便用户此前向上翻阅历史）。
     this.stickToBottom = true;
     this.showScrollDown = false;
+    this.showCtxUsage = false;
+    this.backendUsage = null;
 
     const ac = new AbortController();
     this.abortBy[sessionId] = ac;
@@ -2361,6 +2575,28 @@ export class AhChat extends LitElement {
                 String((ev as any).phase ?? '')
               )}）：${escapeHtml(String((ev as any).reason ?? ''))}`
           });
+        break;
+      }
+      case 'llm:usage': {
+        // 后端精确上下文用量：更新浮层数据源，并同步给 dashboard 汇总（跨页面共享）。
+        const u = ev as any;
+        if (u && u.breakdown) {
+          this.backendUsage = {
+            window: u.window,
+            promptTokens: u.promptTokens,
+            completionTokens: u.completionTokens,
+            totalTokens: u.totalTokens,
+            breakdown: u.breakdown
+          };
+          const totalPct = Math.min(100, (Number(u.totalTokens) / Number(u.window)) * 100);
+          agentContext.set('lastContextUsage', {
+            totalPct,
+            totalTokens: Number(u.totalTokens),
+            window: Number(u.window),
+            model: u.model,
+            updatedAt: Date.now()
+          });
+        }
         break;
       }
       case 'run:end': {
@@ -3450,6 +3686,49 @@ export class AhChat extends LitElement {
               />
             </svg>
           </button>
+          <button
+            class="ctx-usage"
+            title="上下文用量"
+            aria-label="上下文用量"
+            @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
+          >
+            <span class="ctx-pct">${this.displayContextUsage().totalPct.toFixed(1)}%</span>
+            <span class="ctx-bar"
+              ><span
+                class="ctx-fill"
+                style="width:${Math.min(100, this.displayContextUsage().totalPct)}%"
+              ></span
+            ></span>
+          </button>
+          ${this.showCtxUsage
+            ? html`<div class="ctx-pop">
+                <div class="ctx-pop-head">
+                  <span>上下文用量</span>
+                  <span class="ctx-pop-total"
+                    >${this.displayContextUsage().totalTokens.toLocaleString()}
+                    / ${(this.displayContextUsage().window / 1000).toFixed(0)}K</span
+                  >
+                </div>
+                <div class="ctx-seg">
+                  ${this.displayContextUsage().items.map(
+                    (it) => html`<span
+                      class="ctx-seg-i ${it.cls}"
+                      style="width:${it.pct}%"
+                      title="${it.label} ${it.pct.toFixed(1)}%"
+                    ></span>`
+                  )}
+                </div>
+                <ul class="ctx-list">
+                  ${this.displayContextUsage().items.map(
+                    (it) => html`<li>
+                      <span class="ctx-dot ${it.cls}"></span>
+                      <span class="ctx-label">${it.label}</span>
+                      <span class="ctx-val">${it.pct.toFixed(1)}%</span>
+                    </li>`
+                  )}
+                </ul>
+              </div>`
+            : nothing}
         </div>
 
         <div class="scroll-region">

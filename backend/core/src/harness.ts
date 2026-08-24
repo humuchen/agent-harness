@@ -9,6 +9,31 @@ import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 
+/** 上下文窗口上限（token）：用于「上下文用量」占比分母。支持 AH_CONTEXT_WINDOW
+ *  环境变量覆盖；否则按模型名模糊匹配已知上限；兜底 128000。 */
+const CONTEXT_WINDOWS: Record<string, number> = {
+  'gpt-4o': 128000,
+  'gpt-4-turbo': 128000,
+  'claude-3-5-sonnet': 200000,
+  'claude-3-opus': 200000,
+  'claude-3-haiku': 200000,
+  'deepseek-chat': 64000,
+  'deepseek-reasoner': 64000,
+  agnes: 1000000,
+};
+
+function contextWindowFor(model?: string): number {
+  const env = Number(process.env.AH_CONTEXT_WINDOW);
+  if (env > 0) return env;
+  if (model) {
+    const m = model.toLowerCase();
+    for (const [k, v] of Object.entries(CONTEXT_WINDOWS)) {
+      if (m.includes(k)) return v;
+    }
+  }
+  return 128000;
+}
+
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
  * 这些事件让外部（CLI 进度条、Web UI、测试探针）无需侵入核心循环即可
@@ -28,6 +53,10 @@ export type HarnessEvent =
   | { type: 'tool:start'; step: number; call: ToolCall }
   | { type: 'tool:result'; step: number; call: ToolCall; result: string; errored: boolean }
   | { type: 'run:cost'; step: number; model?: string; usage: TokenUsage; stepCost: number; cumulativeTokens: number; cumulativeCost: number; priced?: boolean; estTokens?: { system: number; tools: number; history: number; completion: number } }
+  /** 上下文用量（精确）：以 provider 返回的 usage（prompt/completion）为权威总量，
+   *  按各组件序列化 token 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），
+   *  供前端「上下文用量」浮层展示精确占比。仅当拿到 provider usage 时发出。 */
+  | { type: 'llm:usage'; step: number; model?: string; window: number; promptTokens: number; completionTokens: number; totalTokens: number; breakdown: { system: number; tools: number; messages: number; mcp: number; skills: number; completion: number } }
   | { type: 'run:token-cache'; step: number; model?: string; interface: string; queries: number; hits: number; hitRate: number; cachedTokens: number; promptTokens: number; tokenHitRate: number; byModel: Record<string, { queries: number; hits: number; hitRate: number }> }
   /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
    *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
@@ -382,6 +411,14 @@ export class AgentHarness {
             else estHistory += estimateTokens(c);
           }
           const estTools = estimateToolsTokens(stepTools);
+          // 把工具拆分为「内置工具」与「MCP 工具（名称含 '__' 前缀）」，分别计入
+          // 「工具及子智能体」与「连接器及 MCP」两类，使上下文用量拆分更贴近真实构成。
+          let estMcp = 0;
+          for (const t of stepTools) {
+            if (t.name.includes('__')) estMcp += estimateTokens(`${t.name} ${t.description ?? ''}`);
+          }
+          const estToolsBuiltin = estTools - estMcp;
+          const estSkills = 80; // 技能注册基线（粗估）
           let completionText = resp.content ?? '';
           if (resp.tool_calls) {
             for (const tc of resp.tool_calls) {
@@ -403,6 +440,30 @@ export class AgentHarness {
               priced: estimate.found,
               estTokens: { system: estSystem, tools: estTools, history: estHistory, completion: estCompletion },
               ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {}),
+            });
+            // 上下文用量（精确）：以 provider 的 usage 为权威总量，按各组件序列化 token
+            // 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），供前端浮层展示精确占比。
+            const promptTokens = resp.usage.prompt_tokens ?? 0;
+            const completionTokens = resp.usage.completion_tokens ?? 0;
+            const window = contextWindowFor(costModel);
+            const promptEst = estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
+            const scale = promptEst > 0 ? promptTokens / promptEst : 0;
+            emit({
+              type: 'llm:usage',
+              step: steps,
+              model: costModel,
+              window,
+              promptTokens,
+              completionTokens,
+              totalTokens: promptTokens + completionTokens,
+              breakdown: {
+                system: Math.round(estSystem * scale),
+                tools: Math.round(estToolsBuiltin * scale),
+                messages: Math.round(estHistory * scale),
+                mcp: Math.round(estMcp * scale),
+                skills: Math.round(estSkills * scale),
+                completion: completionTokens,
+              },
             });
           }
           // Token 缓存命中率：仅在本次 run 真正发生过缓存查询时发出
