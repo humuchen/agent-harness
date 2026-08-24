@@ -8,8 +8,8 @@ import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './markdown';
 import { agentContext, useAgentContext, type UploadedFile } from './agent-context';
 import { SessionStateMachine } from './session-state';
-import './suggestions';
-import './file-upload';
+import './components/suggestions';
+import './components/file-upload';
 
 /* ------------------------------ 类型 ------------------------------ */
 

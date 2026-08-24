@@ -1,6 +1,10 @@
 /**
  * popup：通用弹层 / 模态（前端应用层「Popup」落地）。
  *
+ * @deprecated 全仓无调用点，已由 `components/ah-modal.ts`（<ah-modal>）取代——
+ * 后者覆盖变体体系（info/confirm/warning/danger）、尺寸预设、命令式 API、
+ * 焦点圈闭环与离场动画。请勿在新代码中引用；本文件仅作历史保留，计划下个迭代删除。
+ *
  * 轻量 modal：scrim + 居中面板 + 标题 + 三个命名插槽（header / 默认 / footer）。
  * 支持 Esc 关闭、scrim 点击关闭、`open` 属性反射控制、关闭后派发 `close` 事件。
  * 打开时记录触发焦点元素，关闭后归还焦点（无障碍基础）。零依赖，纯 Lit。

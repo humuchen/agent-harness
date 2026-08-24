@@ -15,7 +15,9 @@ import './dashboard';
 import './observability';
 import './login';
 // 通用 UI 原语（suggestions/file-upload 已由 run.ts 引入；popup 在此注册）。
-import './popup';
+import './components/popup';
+// 统一弹框组件（components/）：info / confirm / warning / 自定义内容 + 命令式 API。
+import './components/ah-modal';
 
 // 演示入口：访问 #/login 时以全屏登录页替换控制台，便于预览登录/注册 + 左侧动画。
 if (location.hash.startsWith('#/login')) {

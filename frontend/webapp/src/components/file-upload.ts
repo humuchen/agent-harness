@@ -16,7 +16,7 @@
  */
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import type { UploadedFile } from './agent-context';
+import type { UploadedFile } from '../agent-context';
 
 /** 上传状态枚举。 */
 type UploadStatus = 'pending' | 'uploading' | 'done' | 'error';

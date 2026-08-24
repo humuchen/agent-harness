@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
 import { client, setToken } from './api';
+import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
 import { isRetrievalTool, safeJson, parseDeepThinking, formatToolJson } from './chat-utils';
@@ -31,8 +32,8 @@ import {
   useAgentContext,
   type UploadedFile
 } from './agent-context';
-import './file-upload';
-import { renderJsonHtml } from './json-view';
+import './components/file-upload';
+import { renderJsonHtml } from './components/json-view';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -772,7 +773,13 @@ export class AhChat extends LitElement {
 
   private async renameSession(id: string) {
     const cur = this.sessions.find((s) => s.id === id);
-    const title = window.prompt('重命名会话', cur?.title ?? '');
+    // 统一弹框（components/ah-modal）：替代原生 window.prompt，主题/无障碍一致。
+    const title = await AhModal.prompt({
+      title: '重命名会话',
+      inputValue: cur?.title ?? '',
+      inputPlaceholder: '输入新的会话名称',
+      confirmText: '保存'
+    });
     if (!title || !title.trim()) return;
     try {
       await client.renameChatSession(id, title.trim());
@@ -788,7 +795,18 @@ export class AhChat extends LitElement {
   }
 
   private async deleteSession(id: string) {
-    if (!window.confirm('删除该会话及其消息？')) return;
+    // 统一弹框：警告变体 + 破坏性红色确认按钮，替代原生 window.confirm。
+    // maskClosable=false 防误触（危险操作需明确点击「删除」或「取消」）。
+    const ok = await AhModal.confirm({
+      variant: 'warning',
+      danger: true,
+      title: '删除会话',
+      message: '删除该会话及其全部消息？此操作不可恢复。',
+      confirmText: '删除',
+      cancelText: '取消',
+      maskClosable: false
+    });
+    if (!ok) return;
     try {
       await client.deleteChatSession(id);
       // 同步清理历史镜像与索引（进程内 + 服务端），避免「服务端已删、本地幽灵会话」复活。
@@ -851,7 +869,8 @@ export class AhChat extends LitElement {
   private async dispatchPrompt(
     sessionId: string,
     content: string,
-    imageAttachments: Array<{ url: string; name: string; type: string }> = []
+    imageAttachments: Array<{ url: string; name: string; type: string }> = [],
+    opts: { planTask?: boolean } = {}
   ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
@@ -897,8 +916,13 @@ export class AhChat extends LitElement {
       // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
       web: this.web || undefined,
       // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
-      interactionMode: this.interactionMode === 'plan' ? 'plan' : undefined,
-      planPhase: this.interactionMode === 'plan' ? 'propose' : undefined
+      // 计划任务的逐步执行（confirmPlan）必须按普通问答派发 —— 若仍带 planPhase:'propose'，
+      // 服务端会把每个任务 run 都当作一次新的计划提案，模型把旧计划原样再提一遍，
+      // 生成第二张「待确认」卡片，点执行又从第一步重来（交互死循环根因）。
+      interactionMode:
+        this.interactionMode === 'plan' && !opts.planTask ? 'plan' : undefined,
+      planPhase:
+        this.interactionMode === 'plan' && !opts.planTask ? 'propose' : undefined
     };
     // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
     this.lastInputBy[sessionId] = input;
@@ -1139,13 +1163,29 @@ export class AhChat extends LitElement {
         // 计划模式（P0）：服务端解析成功后补发的结构化计划 —— 挂到流式消息上渲染计划卡片。
         const c = cur();
         const plan = anyEv.plan as ExecutionPlanView | undefined;
-        if (c && plan && plan.tasks?.length) {
-          patch({ plan });
-          this.planExec = {
-            ...this.planExec,
-            [c.id]: { status: 'pending', done: {} }
-          };
-        }
+        if (!c || !plan || !plan.tasks?.length) break;
+        // 去重防御：模型偶尔会把已确认执行中/已完成的计划原样再输出一遍。
+        // 若本会话更早的消息里存在「目标一致且任务数一致」且状态为 running/done 的计划，
+        // 则本条继承其执行状态（不产生第二张可点「确认执行」的卡片），避免重复从头执行。
+        const dupSrc = [...(this.threads[sid] ?? [])]
+          .reverse()
+          .find(
+            (p) =>
+              p.id !== c.id &&
+              p.plan &&
+              p.plan.goal === plan.goal &&
+              p.plan.tasks.length === plan.tasks.length &&
+              ['running', 'done'].includes(
+                this.planExec[p.id]?.status ?? 'pending'
+              )
+          );
+        patch({ plan });
+        this.planExec = {
+          ...this.planExec,
+          [c.id]: dupSrc
+            ? { ...(this.planExec[dupSrc.id] ?? { status: 'pending', done: {} }) }
+            : { status: 'pending', done: {} }
+        };
         break;
       }
       case 'llm:token': {
@@ -2117,7 +2157,9 @@ export class AhChat extends LitElement {
         parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
       }
       parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
-      const result = await this.dispatchPrompt(sid, parts.join('\n'));
+      const result = await this.dispatchPrompt(sid, parts.join('\n'), [], {
+        planTask: true
+      });
       if (result !== 'ok') {
         // 停止 / 断连：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
         this.planExec = {

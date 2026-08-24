@@ -6,7 +6,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import type { TraceNode } from '@agent-harness/client';
 import { escapeHtml } from './markdown';
-import { renderJsonHtml } from './json-view';
+import { renderJsonHtml } from './components/json-view';
 
 /** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
 export interface Insights {
