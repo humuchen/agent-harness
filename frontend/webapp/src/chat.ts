@@ -2248,10 +2248,29 @@ export class AhChat extends LitElement {
     .pt-steps { margin: 6px 0 0 30px; padding-left: 16px; opacity: 0.85; font-size: 0.92em; }
     .pt-meta { margin: 4px 0 0 30px; font-size: 12px; opacity: 0.6; }
 
-    /* ---- 计划模式：问答/计划分段切换器 ---- */
-    .mode-seg { display: inline-flex; align-items: center; height: 32px; border: 1px solid var(--ah-border); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
-    .mode-btn { height: 100%; border: none; padding: 0 12px; font-size: 13px; cursor: pointer; background: var(--ah-surface-2); color: var(--ah-text); }
-    .mode-btn.on { background: #2997ff; color: #fff; }
+    /* ---- 计划模式：回答/计划下拉切换器（无边框无背景填充，仅文字+箭头） ---- */
+    .mode-select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: none;
+      background-color: transparent;
+      color: var(--ah-text-muted);
+      font-size: 13px;
+      height: 36px;
+      line-height: 36px;
+      padding: 0 20px 0 4px;
+      margin: 0;
+      cursor: pointer;
+      outline: none;
+      flex-shrink: 0;
+      transition: color 0.15s;
+      background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 4px center;
+    }
+    .mode-select:hover { color: var(--ah-accent); }
+    .mode-select:focus-visible { color: var(--ah-text); }
+    .mode-select option { background: var(--ah-surface-2); color: var(--ah-text); border: none; }
     `
   ];
 
@@ -4646,20 +4665,6 @@ export class AhChat extends LitElement {
               (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
             )}
           </select>
-          <div class="mode-seg" title="运行模式：问答=直接回答；计划=先产出结构化执行计划，确认后逐步执行">
-            <button
-              class="mode-btn ${this.interactionMode === 'qa' ? 'on' : ''}"
-              @click=${() => this.setInteractionMode('qa')}
-            >
-              问答
-            </button>
-            <button
-              class="mode-btn ${this.interactionMode === 'plan' ? 'on' : ''}"
-              @click=${() => this.setInteractionMode('plan')}
-            >
-              计划
-            </button>
-          </div>
           <button
             class="toggle ${this.deepThink ? 'on' : ''}"
             title="深度思考"
@@ -4818,6 +4823,19 @@ export class AhChat extends LitElement {
                 />
                 +
               </label>
+              <select
+                class="mode-select"
+                title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
+                aria-label="运行模式"
+                .value=${this.interactionMode}
+                @change=${(e: Event) =>
+                  this.setInteractionMode(
+                    (e.target as HTMLSelectElement).value as 'qa' | 'plan'
+                  )}
+              >
+                <option value="qa">回答</option>
+                <option value="plan">计划</option>
+              </select>
               <div class="composer-footer-right">
                 ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
