@@ -39,7 +39,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-3-haiku': 200000,
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
-  'ox-alpha': 1000000,
+  'stealth/ox-alpha': 1000000,
   agnes: 1000000
 };
 
