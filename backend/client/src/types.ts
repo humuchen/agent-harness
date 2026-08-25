@@ -18,6 +18,10 @@ export interface RunInput {
   mode?: RunMode;
   prompt?: string;
   model?: string;
+  /** 自定义模型专属接口地址（OpenAI 兼容端点 base URL）。透传给 runner 构造直连 LLM。 */
+  modelBaseUrl?: string;
+  /** 自定义模型专属 API Key。与 modelBaseUrl 搭配使用；缺省走服务端默认凭证。 */
+  modelApiKey?: string;
   maxSteps?: number;
   sessionId?: string;
   /** 多会话 Chat App：客户端分配的聊天会话 id，服务端据此把消息写入会话存储。 */

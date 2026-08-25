@@ -28,7 +28,36 @@ const PRESET_MODELS: string[] = [
   'openai/gpt-5.2'
 ];
 
+/** 远程模型条目：id + 官方上下文窗口（token），供宿主更新「上下文用量」分母。 */
+interface RemoteModel {
+  id: string;
+  ctx: number;
+}
+
+/** 自定义模型条目：模型名 + 可选的自定义接口地址与 API Key（直连任意 OpenAI 兼容端点）。 */
+interface CustomModel {
+  id: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
 const CUSTOM_KEY = 'ah_custom_models';
+
+/** 自定义模型的持久化形态兼容旧版（旧版存 string[]，读取时自动升级为对象）。 */
+function normalizeCustom(raw: unknown): CustomModel[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((it): CustomModel => {
+      if (typeof it === 'string') return { id: it };
+      const o = it as Partial<CustomModel>;
+      return {
+        id: String(o?.id ?? '').trim(),
+        ...(o?.baseUrl ? { baseUrl: String(o.baseUrl).trim() } : {}),
+        ...(o?.apiKey ? { apiKey: String(o.apiKey).trim() } : {})
+      };
+    })
+    .filter((m) => m.id);
+}
 
 @customElement('ah-model-picker')
 export class AhModelPicker extends LitElement {
@@ -132,7 +161,11 @@ export class AhModelPicker extends LitElement {
       transition: transform 0.15s, background 0.15s;
     }
     .switch:checked {
-      background: color-mix(in srgb, var(--ah-accent, #2997ff) 30%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 30%,
+        transparent
+      );
       border-color: var(--ah-accent, #2997ff);
     }
     .switch:checked::after {
@@ -228,9 +261,10 @@ export class AhModelPicker extends LitElement {
       border-left: 1px solid var(--ah-border);
     }
 
-    /* 自定义添加行：点「添加自定义模型」后展开 */
+    /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
     .add-row {
       display: flex;
+      flex-direction: column;
       gap: 6px;
       padding: 8px 14px;
       border-bottom: 1px solid var(--ah-border);
@@ -257,9 +291,8 @@ export class AhModelPicker extends LitElement {
       color: #fff;
       border-radius: 8px;
       font-size: 12px;
-      padding: 0 12px;
+      padding: 6px 12px;
       cursor: pointer;
-      flex-shrink: 0;
     }
 
     /* 遮罩：点击空白处关闭（移动端友好） */
@@ -284,23 +317,26 @@ export class AhModelPicker extends LitElement {
   @state() private open = false;
   @state() private query = '';
   @state() private adding = false;
-  @state() private draft = '';
-  /** 自定义模型清单（localStorage 持久化）。 */
-  @state() private customs: string[] = [];
-  /** 「刷新」拉取到的在线模型清单（失败为空）。 */
-  @state() private remote: string[] = [];
+  /** 自定义模型表单三项：接口地址 / API Key / 模型名称。 */
+  @state() private draftBaseUrl = '';
+  @state() private draftApiKey = '';
+  @state() private draftId = '';
+  /** 自定义模型清单（localStorage 持久化，含 baseUrl/apiKey）。 */
+  @state() private customs: CustomModel[] = [];
+  /** 「刷新」拉取到的在线模型清单（含官方上下文窗口；失败为空）。 */
+  @state() private remote: RemoteModel[] = [];
 
-  private loadCustoms(): string[] {
+  private loadCustoms(): CustomModel[] {
     try {
       const raw = localStorage.getItem(CUSTOM_KEY);
       const arr = raw ? (JSON.parse(raw) as unknown) : [];
-      return Array.isArray(arr) ? arr.map(String) : [];
+      return normalizeCustom(arr);
     } catch {
       return [];
     }
   }
 
-  private saveCustoms(list: string[]) {
+  private saveCustoms(list: CustomModel[]) {
     try {
       localStorage.setItem(CUSTOM_KEY, JSON.stringify(list));
     } catch {
@@ -317,7 +353,11 @@ export class AhModelPicker extends LitElement {
   private get allModels(): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const m of [...this.remote, ...this.customs, ...PRESET_MODELS]) {
+    for (const m of [
+      ...this.remote.map((r) => r.id),
+      ...this.customs.map((c) => c.id),
+      ...PRESET_MODELS
+    ]) {
       const k = m.trim();
       if (k && !seen.has(k)) {
         seen.add(k);
@@ -327,13 +367,20 @@ export class AhModelPicker extends LitElement {
     return out;
   }
 
+  /** 查询某模型的官方上下文窗口；未知返回 0（宿主据此隐藏用量展示）。 */
+  private ctxFor(id: string): number {
+    return this.remote.find((r) => r.id === id)?.ctx ?? 0;
+  }
+
   private toggle(open: boolean) {
     this.open = open;
     if (!open) {
       // 关闭时重置瞬态状态，下次打开回到干净视图。
       this.query = '';
       this.adding = false;
-      this.draft = '';
+      this.draftId = '';
+      this.draftBaseUrl = '';
+      this.draftApiKey = '';
     }
   }
 
@@ -342,50 +389,91 @@ export class AhModelPicker extends LitElement {
     try {
       const res = await fetch('https://openrouter.ai/api/v1/models');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { data?: { id?: string }[] };
-      // 过滤 :free 变体：免费模型在上游被激进限速，无余额 key 调用即 429
-      // （"temporarily rate-limited upstream"），实际不可用，不进清单误导选择。
-      const ids = (data.data ?? [])
-        .map((m) => String(m?.id ?? '').trim())
-        .filter((id) => id && !id.endsWith(':free'));
-      if (ids.length) this.remote = ids;
+      const data = (await res.json()) as {
+        data?: { id?: string; context_length?: number }[];
+      };
+      // 过滤 不是:free的模型
+      const list: RemoteModel[] = (data.data ?? [])
+        .map((m) => ({
+          id: String(m?.id ?? '').trim(),
+          ctx: Number(m?.context_length) || 0
+        }))
+        .filter((m) => m.id && m.id.endsWith(':free'));
+      if (list.length) this.remote = list;
+      // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
+      if (this.model) this.emitCtx(this.ctxFor(this.model));
     } catch {
       /* 离线 / 被拦截：保留本地清单即可，不打扰用户 */
     }
   }
 
-  private pick(m: string) {
+  /** 把模型上下文窗口抛给宿主（0 = 无数据，宿主应隐藏用量展示）。 */
+  private emitCtx(ctx: number) {
+    this.dispatchEvent(
+      new CustomEvent('ctx-change', {
+        detail: { ctx },
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+
+  private pick(id: string) {
     this.toggle(false);
     /**
      * 选择模型。detail.model 为空串表示清除选择（恢复服务端默认）。
+     * 同时携带该模型已知的上下文窗口（0 = 无数据），宿主据此更新/隐藏用量展示。
      */
     this.dispatchEvent(
-      new CustomEvent('model-change', { detail: { model: m }, bubbles: true, composed: true })
+      new CustomEvent('model-change', {
+        detail: { model: id, ctx: id ? this.ctxFor(id) : 0 },
+        bubbles: true,
+        composed: true
+      })
     );
   }
 
   private toggleThink(e: Event) {
     const v = (e.target as HTMLInputElement).checked;
     this.dispatchEvent(
-      new CustomEvent('think-change', { detail: { value: v }, bubbles: true, composed: true })
+      new CustomEvent('think-change', {
+        detail: { value: v },
+        bubbles: true,
+        composed: true
+      })
     );
   }
 
   private toggleWeb(e: Event) {
     const v = (e.target as HTMLInputElement).checked;
     this.dispatchEvent(
-      new CustomEvent('web-change', { detail: { value: v }, bubbles: true, composed: true })
+      new CustomEvent('web-change', {
+        detail: { value: v },
+        bubbles: true,
+        composed: true
+      })
     );
   }
 
   private submitDraft() {
-    const id = this.draft.trim();
+    const id = this.draftId.trim();
     if (!id) return;
-    if (!this.customs.includes(id)) {
-      this.customs = [id, ...this.customs];
-      this.saveCustoms(this.customs);
-    }
-    this.draft = '';
+    const baseUrl = this.draftBaseUrl.trim();
+    const apiKey = this.draftApiKey.trim();
+    // 同名已存在时更新其端点配置，否则插入到最前。
+    const rest = this.customs.filter((c) => c.id !== id);
+    this.customs = [
+      {
+        id,
+        ...(baseUrl ? { baseUrl } : {}),
+        ...(apiKey ? { apiKey } : {})
+      },
+      ...rest
+    ];
+    this.saveCustoms(this.customs);
+    this.draftId = '';
+    this.draftBaseUrl = '';
+    this.draftApiKey = '';
     this.adding = false;
     this.pick(id);
   }
@@ -402,7 +490,11 @@ export class AhModelPicker extends LitElement {
       (m) => !q || m.toLowerCase().includes(q)
     );
     return html`
-      <button class="scrim" aria-label="关闭模型选择" @click=${() => this.toggle(false)}></button>
+      <button
+        class="scrim"
+        aria-label="关闭模型选择"
+        @click=${() => this.toggle(false)}
+      ></button>
       <div class="panel" role="dialog" aria-label="模型选择">
         <div class="options">
           <div class="opt-row">
@@ -434,7 +526,8 @@ export class AhModelPicker extends LitElement {
             type="text"
             placeholder="搜索模型…"
             .value=${this.query}
-            @input=${(e: Event) => (this.query = (e.target as HTMLInputElement).value)}
+            @input=${(e: Event) =>
+              (this.query = (e.target as HTMLInputElement).value)}
           />
         </div>
         ${this.adding
@@ -442,15 +535,35 @@ export class AhModelPicker extends LitElement {
               <input
                 class="add-input"
                 type="text"
-                placeholder="输入模型 ID，如 vendor/model-name"
-                .value=${this.draft}
-                @input=${(e: Event) => (this.draft = (e.target as HTMLInputElement).value)}
+                placeholder="接口地址（可选，如 https://api.example.com/v1）"
+                .value=${this.draftBaseUrl}
+                @input=${(e: Event) =>
+                  (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
+              />
+              <input
+                class="add-input"
+                type="password"
+                placeholder="API Key（可选，留空用服务端默认）"
+                autocomplete="off"
+                .value=${this.draftApiKey}
+                @input=${(e: Event) =>
+                  (this.draftApiKey = (e.target as HTMLInputElement).value)}
+              />
+              <input
+                class="add-input"
+                type="text"
+                placeholder="模型名称（必填，如 vendor/model-name）"
+                .value=${this.draftId}
                 @keydown=${(e: KeyboardEvent) => {
                   if (e.key === 'Enter') this.submitDraft();
                   if (e.key === 'Escape') this.adding = false;
                 }}
+                @input=${(e: Event) =>
+                  (this.draftId = (e.target as HTMLInputElement).value)}
               />
-              <button class="add-ok" @click=${() => this.submitDraft()}>添加</button>
+              <button class="add-ok" @click=${() => this.submitDraft()}>
+                添加
+              </button>
             </div>`
           : nothing}
         <div class="list">
@@ -463,23 +576,37 @@ export class AhModelPicker extends LitElement {
                   @click=${() => this.pick('')}
                 >
                   <span>默认模型</span>
-                  ${this.model === '' ? html`<span class="check">✓</span>` : nothing}
+                  ${this.model === ''
+                    ? html`<span class="check">✓</span>`
+                    : nothing}
                 </button>
                 ${models.map(
                   (m) => html`
-                    <button class="item" title=${m} @click=${() => this.pick(m)}>
+                    <button
+                      class="item"
+                      title=${m}
+                      @click=${() => this.pick(m)}
+                    >
                       <span>${this.displayName(m)}</span>
-                      ${this.model === m ? html`<span class="check">✓</span>` : nothing}
+                      ${this.model === m
+                        ? html`<span class="check">✓</span>`
+                        : nothing}
                     </button>
                   `
                 )}
               `}
         </div>
         <div class="footer">
-          <button title="从 OpenRouter 拉取最新模型清单" @click=${() => void this.refreshModels()}>
+          <button
+            title="从 OpenRouter 拉取最新模型清单"
+            @click=${() => void this.refreshModels()}
+          >
             ⟳ 刷新模型
           </button>
-          <button title="手动添加自定义模型 ID" @click=${() => (this.adding = true)}>
+          <button
+            title="手动添加自定义模型 ID"
+            @click=${() => (this.adding = true)}
+          >
             ＋ 添加自定义模型
           </button>
         </div>
@@ -496,8 +623,17 @@ export class AhModelPicker extends LitElement {
         aria-expanded=${this.open ? 'true' : 'false'}
         @click=${() => this.toggle(!this.open)}
       >
-        <span class="name">${this.model ? this.displayName(this.model) : '默认模型'}</span>
-        <svg viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <span class="name"
+          >${this.model ? this.displayName(this.model) : '默认模型'}</span
+        >
+        <svg
+          viewBox="0 0 10 6"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <path d="M1 1l4 4 4-4" />
         </svg>
       </button>

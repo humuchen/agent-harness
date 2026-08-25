@@ -9,7 +9,16 @@ import { pluginUIRegistry } from './plugin-ui-registry';
 import { renderSandboxChip } from './dashboard';
 import './plugins-console';
 
-type Tab = 'dashboard' | 'run' | 'verify' | 'env' | 'mcp' | 'approvals' | 'observability' | 'chat' | 'plugins';
+type Tab =
+  | 'dashboard'
+  | 'run'
+  | 'verify'
+  | 'env'
+  | 'mcp'
+  | 'approvals'
+  | 'observability'
+  | 'chat'
+  | 'plugins';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 
@@ -42,7 +51,7 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'mcp', label: 'MCP', short: 'M' },
   { id: 'approvals', label: '审批', short: '审' },
   { id: 'observability', label: '可观测', short: '观' },
-  { id: 'plugins', label: '插件', short: '插' },
+  { id: 'plugins', label: '插件', short: '插' }
 ];
 
 /**
@@ -98,10 +107,15 @@ export class AhApp extends LitElement {
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
-  @state() private sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
+  @state() private sidebarCollapsed =
+    localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
   /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。short 为去重后的收起态短标签。 */
-  @state() private pluginTabs: Array<{ id: string; label: string; short: string }> = [];
+  @state() private pluginTabs: Array<{
+    id: string;
+    label: string;
+    short: string;
+  }> = [];
 
   connectedCallback() {
     super.connectedCallback();
@@ -134,7 +148,9 @@ export class AhApp extends LitElement {
         token ? { headers: { authorization: `Bearer ${token}` } } : {}
       );
       if (!res.ok) return;
-      const data = (await res.json()) as { views?: Array<{ tabId: string; label: string; html: string }> };
+      const data = (await res.json()) as {
+        views?: Array<{ tabId: string; label: string; html: string }>;
+      };
       const views = data.views ?? [];
       pluginUIRegistry.reset();
       for (const v of views) pluginUIRegistry.register(v);
@@ -143,7 +159,7 @@ export class AhApp extends LitElement {
       this.pluginTabs = views.map((v) => ({
         id: v.tabId,
         label: v.label,
-        short: uniqueShort(v.label, used),
+        short: uniqueShort(v.label, used)
       }));
     } catch {
       /* 插件视图拉取失败不阻断主面板 */
@@ -210,9 +226,19 @@ export class AhApp extends LitElement {
   render() {
     return html`
       <div class="shell ${this.tab === 'chat' ? 'chat-mode' : ''}">
-        <aside class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''} ${this.drawerOpen ? 'open' : ''}">
+        <aside
+          class="sidebar ${this.sidebarCollapsed ? 'collapsed' : ''} ${this
+            .drawerOpen
+            ? 'open'
+            : ''}"
+        >
           <div class="brand">
-            <svg class="logo" viewBox="0 0 100 100" fill="currentColor" aria-hidden="true">
+            <svg
+              class="logo"
+              viewBox="0 0 100 100"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path d="M50 6 L84 20 L50 34 L16 20 Z" />
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
@@ -247,14 +273,14 @@ export class AhApp extends LitElement {
           ${this.pluginTabs.length
             ? html`<div class="nav-sep"></div>
                 ${this.pluginTabs.map(
-              (t) => html`<button
-                class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
-                data-short=${t.short}
-                title=${t.label}
-                @click=${() => this.openPluginTab(t.id)}
-              >
-                <span class="nav-text">${t.label}</span>
-              </button>`
+                  (t) => html`<button
+                    class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
+                    data-short=${t.short}
+                    title=${t.label}
+                    @click=${() => this.openPluginTab(t.id)}
+                  >
+                    <span class="nav-text">${t.label}</span>
+                  </button>`
                 )}`
             : ''}
           <div class="nav-spacer"></div>
@@ -264,13 +290,20 @@ export class AhApp extends LitElement {
               title=${this.theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}
               @click=${() => this.onToggleTheme()}
             >
-              <span class="theme-text">${this.theme === 'dark' ? '暗色主题' : '亮色主题'}</span>
-              <span class="theme-icon">${this.theme === 'dark' ? '☾' : '☀'}</span>
+              <span class="theme-text"
+                >${this.theme === 'dark' ? '暗色主题' : '亮色主题'}</span
+              >
+              <span class="theme-icon"
+                >${this.theme === 'dark' ? '☾' : '☀'}</span
+              >
             </button>
           </div>
         </aside>
 
-        <div class="scrim ${this.drawerOpen ? 'show' : ''}" @click=${() => this.closeDrawer()}></div>
+        <div
+          class="scrim ${this.drawerOpen ? 'show' : ''}"
+          @click=${() => this.closeDrawer()}
+        ></div>
 
         <div class="main">
           <header class="topbar">
@@ -290,36 +323,46 @@ export class AhApp extends LitElement {
                     </span>
                     <span class="pill">model: ${this.state.model}</span>
                     <span class="pill">env: ${this.state.envs.length}</span>
-                    <span class="pill">mcp: ${this.state.mcpServers.length}</span>
+                    <span class="pill"
+                      >mcp: ${this.state.mcpServers.length}</span
+                    >
                     ${this.state.sandbox
                       ? renderSandboxChip(this.state.sandbox)
                       : html`<span class="pill muted">沙箱：硬化本地</span>`}
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
-            <input
+            <!-- <input
               class="token"
               placeholder="Bearer 令牌（可选）"
               .value=${this.token}
               @input=${this.onTokenInput}
-            />
+            /> -->
             <button class="ghost" @click=${() => this.refreshState()}>
               刷新状态
             </button>
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
-            ${this.tab === 'dashboard' ? html`<ah-dashboard></ah-dashboard>` : ''}
+            ${this.tab === 'dashboard'
+              ? html`<ah-dashboard></ah-dashboard>`
+              : ''}
             ${this.tab === 'chat' ? html`<ah-chat></ah-chat>` : ''}
             ${this.tab === 'run' ? html`<ah-run></ah-run>` : ''}
             ${this.tab === 'verify' ? html`<ah-verify></ah-verify>` : ''}
             ${this.tab === 'env' ? html`<ah-env></ah-env>` : ''}
             ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
-            ${this.tab === 'approvals' ? html`<ah-approvals></ah-approvals>` : ''}
-            ${this.tab === 'observability' ? html`<ah-observability></ah-observability>` : ''}
+            ${this.tab === 'approvals'
+              ? html`<ah-approvals></ah-approvals>`
+              : ''}
+            ${this.tab === 'observability'
+              ? html`<ah-observability></ah-observability>`
+              : ''}
             ${this.tab === 'plugins' ? html`<ah-plugins></ah-plugins>` : ''}
             ${this.pluginTabs.some((t) => t.id === this.tab)
-              ? html`<div class="plugin-view">${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}</div>`
+              ? html`<div class="plugin-view">
+                  ${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}
+                </div>`
               : ''}
           </main>
         </div>

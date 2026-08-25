@@ -1441,6 +1441,14 @@ async function handleRun(
   const model: string | undefined = body.model
     ? String(body.model).trim()
     : undefined;
+  // 自定义模型专属端点（可选）：前端「添加自定义模型」时填写的接口地址 / API Key。
+  // 仅在显式提供时透传，服务端据此构造直连该端点的 LLM；缺省走默认 OpenRouter。
+  const modelBaseUrl: string | undefined = body.modelBaseUrl
+    ? String(body.modelBaseUrl).trim()
+    : undefined;
+  const modelApiKey: string | undefined = body.modelApiKey
+    ? String(body.modelApiKey).trim()
+    : undefined;
   // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
   const maxSteps: number | undefined =
     typeof body.maxSteps === 'number' &&
@@ -1537,6 +1545,8 @@ async function handleRun(
       mode,
       prompt: effectivePrompt,
       model,
+      modelBaseUrl,
+      modelApiKey,
       sessionKey,
       maxSteps,
       verify: verifyConfig,

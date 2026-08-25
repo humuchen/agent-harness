@@ -169,6 +169,15 @@ export class AhChat extends LitElement {
   @state() private showScrollDown = false;
   /** 服务端 /api/state 下发的当前模型上下文窗口上限（token）；0 = 未获取（回退基线）。 */
   private serverCtxWindow = 0;
+  /** 服务端默认模型的上下文窗口：用户切回「默认模型」或无窗口数据模型时恢复用。 */
+  private defaultCtxWindow = 0;
+  /**
+   * 是否隐藏「上下文用量」圆环：自定义模型没有任何官方上下文窗口数据时
+   * （serverCtxWindow 无值且非服务端默认模型），占比无意义，直接不展示。
+   */
+  private hideCtxRing(): boolean {
+    return this.model !== '' && this.serverCtxWindow <= 0;
+  }
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
   /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
@@ -398,8 +407,12 @@ export class AhChat extends LitElement {
       const state = await client.getState();
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
       // 同步模型上下文窗口：粗估回退的分母不再写死 128K（如 ox-alpha → 1M）。
+      // 同时记为「服务端默认窗口」，用户切回默认模型时恢复该分母。
       const cw = Number((state as any)?.contextWindow);
-      if (Number.isFinite(cw) && cw > 0) this.serverCtxWindow = cw;
+      if (Number.isFinite(cw) && cw > 0) {
+        this.serverCtxWindow = cw;
+        this.defaultCtxWindow = cw;
+      }
     } catch {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
@@ -935,6 +948,35 @@ export class AhChat extends LitElement {
     return s.id;
   }
 
+  /**
+   * 当前选中模型的自定义端点配置（若有）：从 localStorage 自定义模型清单里
+   * 查出 baseUrl / apiKey，作为 run 请求的 modelBaseUrl / modelApiKey 字段。
+   * 未配置或非自定义模型返回空对象（不透传任何字段）。
+   */
+  private customModelEndpoint(): { modelBaseUrl?: string; modelApiKey?: string } {
+    if (!this.model) return {};
+    try {
+      const raw = localStorage.getItem('ah_custom_models');
+      if (!raw) return {};
+      const arr = JSON.parse(raw) as unknown;
+      if (!Array.isArray(arr)) return {};
+      for (const it of arr) {
+        const o = it as { id?: unknown; baseUrl?: unknown; apiKey?: unknown };
+        if (typeof o?.id === 'string' && o.id === this.model) {
+          const out: { modelBaseUrl?: string; modelApiKey?: string } = {};
+          if (typeof o.baseUrl === 'string' && o.baseUrl.trim())
+            out.modelBaseUrl = o.baseUrl.trim();
+          if (typeof o.apiKey === 'string' && o.apiKey.trim())
+            out.modelApiKey = o.apiKey.trim();
+          return out;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return {};
+  }
+
   private async send() {
     const prompt = this.input.trim();
     // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
@@ -1013,6 +1055,9 @@ export class AhChat extends LitElement {
       mode: this.mode,
       prompt: content,
       model: this.model || undefined,
+      // 自定义模型若配置了专属接口地址 / API Key，随请求透传给服务端
+      // （服务端用其构造直连端点的 LLM；未配置则走服务端默认 OpenRouter）。
+      ...this.customModelEndpoint(),
       agentId: this.agentId || undefined,
       sessionId,
       chatSessionId: sessionId,
@@ -2870,7 +2915,12 @@ export class AhChat extends LitElement {
                   .deepThink=${this.deepThink}
                   .web=${this.web}
                   @model-change=${(e: Event) => {
-                    this.model = (e as CustomEvent<{ model: string }>).detail.model;
+                    const d = (e as CustomEvent<{ model: string; ctx?: number }>).detail;
+                    this.model = d.model;
+                    // 选中模型带官方上下文窗口时更新用量分母；ctx=0（无数据/默认模型）
+                    // 恢复服务端下发值，交由 hideCtxRing 决定是否隐藏展示。
+                    if (d.ctx && d.ctx > 0) this.serverCtxWindow = d.ctx;
+                    else this.serverCtxWindow = this.defaultCtxWindow;
                     try {
                       localStorage.setItem('ah_model', this.model);
                     } catch {
@@ -2894,7 +2944,7 @@ export class AhChat extends LitElement {
                     }
                   }}
                 ></ah-model-picker>
-                ${this.renderCtxRing()}
+                ${this.hideCtxRing() ? nothing : this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
                   ? html`<button
                       class="send"

@@ -229,7 +229,14 @@ export async function assembleAgent(
    * ——「system prompt」等弱信号短语与宽松密钥样例正则会把架构教学内容误拦成
    * 兜底话术（实测 stealth/ox-alpha 概念综述即被拦）。缺省 false（行为不变）。
    */
-  planTask?: boolean
+  planTask?: boolean,
+  /**
+   * 自定义模型专属接口地址（可选，OpenAI 兼容端点 base URL）。提供时 OpenRouter LLM
+   * 以该地址直连（配合 modelApiKey），用于支持用户自带的任意兼容端点。缺省走默认。
+   */
+  modelBaseUrl?: string,
+  /** 自定义模型专属 API Key（可选）。与 modelBaseUrl 搭配；缺省走服务端默认凭证。 */
+  modelApiKey?: string
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -323,7 +330,13 @@ export async function assembleAgent(
       );
     }
     const effectiveModel = resolveOpenRouterConfig({ model: modelOverride }).model;
-    const primary = createOpenRouterLLM(modelOverride ? { model: modelOverride } : {});
+    // 自定义端点（可选）：前端自定义模型填写的 baseUrl/apiKey 优先于服务端默认配置，
+    // 使同一 runner 既支持 OpenRouter 也支持任意 OpenAI 兼容直连端点。
+    const primary = createOpenRouterLLM({
+      ...(modelOverride ? { model: modelOverride } : {}),
+      ...(modelBaseUrl ? { baseUrl: modelBaseUrl } : {}),
+      ...(modelApiKey ? { apiKey: modelApiKey } : {})
+    });
     llmKind = 'openrouter';
 
     // 故障转移：若同时配置了原生 OpenAI（或兼容端点）密钥，则用熔断器把 OpenRouter

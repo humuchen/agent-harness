@@ -24,6 +24,10 @@ export interface JobDescriptor {
   mode: RunMode;
   prompt: string;
   model?: string;
+  /** 自定义模型专属接口地址（可选，OpenAI 兼容端点）。随 descriptor 持久化。 */
+  modelBaseUrl?: string;
+  /** 自定义模型专属 API Key（可选）。随 descriptor 持久化（注意 file 后端为明文落盘）。 */
+  modelApiKey?: string;
   sessionKey?: string;
   maxSteps?: number;
   /** 运行期自动验证门禁配置（P0-2，可序列化）。 */
