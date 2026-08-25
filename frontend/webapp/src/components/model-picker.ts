@@ -734,6 +734,7 @@ export class AhModelPicker extends LitElement {
     return html`
       <button
         class="trigger"
+        part="trigger"
         title="选择模型"
         aria-haspopup="dialog"
         aria-expanded=${this.open ? 'true' : 'false'}
