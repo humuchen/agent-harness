@@ -431,7 +431,9 @@ export class AhModelPicker extends LitElement {
   /** 尝试拉取 OpenRouter 公共模型列表（无需密钥）；失败静默保留本地清单。 */
   private async refreshModels() {
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/models?q=free');
+      const res = await fetch(
+        'https://openrouter.ai/api/v1/models?q=free&output_modalities=text'
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as {
         data?: {
