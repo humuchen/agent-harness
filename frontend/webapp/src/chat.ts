@@ -46,6 +46,7 @@ import {
   type UploadedFile
 } from './agent-context';
 import './components/file-upload';
+import './components/model-picker';
 import { renderJsonHtml } from './components/json-view';
 
 /* ------------------------------ 类型 ------------------------------ */
@@ -334,6 +335,15 @@ export class AhChat extends LitElement {
     try {
       const saved = localStorage.getItem('ah_interaction_mode');
       if (saved === 'plan' || saved === 'qa') this.interactionMode = saved;
+    } catch {
+      /* ignore */
+    }
+    // 恢复上次的模型选择与深度思考开关，跨刷新记忆。
+    try {
+      const m = localStorage.getItem('ah_model');
+      if (m !== null) this.model = m;
+      const t = localStorage.getItem('ah_deep_think');
+      if (t !== null) this.deepThink = t === '1';
     } catch {
       /* ignore */
     }
@@ -2706,33 +2716,6 @@ export class AhChat extends LitElement {
             >${active ? escapeHtml(active.title) : '新对话'}</span
           >
           <span class="spacer"></span>
-          <input
-            class="model-input"
-            placeholder="模型（留空用服务端默认）"
-            .value=${this.model}
-            @input=${(e: Event) =>
-              (this.model = (e.target as HTMLInputElement).value)}
-          />
-          <button
-            class="toggle ${this.deepThink ? 'on' : ''}"
-            title="深度思考"
-            aria-label="深度思考"
-            @click=${() => (this.deepThink = !this.deepThink)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M9 18h6M10 21h4" />
-              <path
-                d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
-              />
-            </svg>
-          </button>
           <button
             class="toggle ${this.web ? 'on' : ''}"
             title="联网搜索"
@@ -2900,6 +2883,26 @@ export class AhChat extends LitElement {
                 </select>
               </div>
               <div class="composer-footer-right">
+                <ah-model-picker
+                  .model=${this.model}
+                  .deepThink=${this.deepThink}
+                  @model-change=${(e: Event) => {
+                    this.model = (e as CustomEvent<{ model: string }>).detail.model;
+                    try {
+                      localStorage.setItem('ah_model', this.model);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  @think-change=${(e: Event) => {
+                    this.deepThink = (e as CustomEvent<{ value: boolean }>).detail.value;
+                    try {
+                      localStorage.setItem('ah_deep_think', this.deepThink ? '1' : '0');
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                ></ah-model-picker>
                 ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
                   ? html`<button

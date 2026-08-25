@@ -223,7 +223,13 @@ export async function assembleAgent(
    * 计划 JSON 经 parsePlanOutput 校验通过时仅做密钥/注入扫描，跳过业务合规输出规则，
    * 避免结构化计划被误拦后回退为普通回答。缺省 false（行为不变）。
    */
-  planPropose?: boolean
+  planPropose?: boolean,
+  /**
+   * 计划任务执行（P0）：计划模式逐任务派发的 run。开启后模型输出走 checkTaskOutput
+   * ——「system prompt」等弱信号短语与宽松密钥样例正则会把架构教学内容误拦成
+   * 兜底话术（实测 stealth/ox-alpha 概念综述即被拦）。缺省 false（行为不变）。
+   */
+  planTask?: boolean
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -495,6 +501,9 @@ export async function assembleAgent(
   ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
   // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
   ...(planPropose ? { planPropose: true } : {}),
+  // 计划任务执行（P0）：教学内容输出走 checkTaskOutput 宽松扫描（弱信号短语 /
+  // 宽松密钥样例正则会误拦架构讲解），安全底线（真密钥 / 强信号注入）不放松。
+  ...(planTask ? { planTask: true } : {}),
   // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
   // 供聊天 UI 打字机效果与深度思考块。
   ...(streamTokens ?? (process.env.AGENT_STREAM_TOKENS !== 'false')

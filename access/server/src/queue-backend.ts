@@ -49,6 +49,15 @@ export interface JobDescriptor {
   enqueuedAt: number;
 }
 
+/**
+ * 计划任务派发判定：计划模式（plan）且非 propose 阶段 = 前端 confirmPlan 的逐任务 run。
+ * 服务端据此给这类 run 启用 planTask 宽松输出护栏与更长超时 —— 教学内容易被
+ * 弱信号护栏误拦、重任务常超默认 5 分钟（实测 stealth/ox-alpha 源码精读 >300s）。
+ */
+export function isPlanTaskRun(d: { interactionMode?: string; planPhase?: string }): boolean {
+  return d.interactionMode === 'plan' && d.planPhase !== 'propose';
+}
+
 /** 持久化后端契约：追加 / 列举 / 原子领取 / 消费确认 / 清空 + 可选跨实例事件桥。 */
 export interface QueueBackend {
   readonly kind: 'memory' | 'file' | 'redis' | 'bullmq';

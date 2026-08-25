@@ -471,6 +471,41 @@ export function checkStructuredOutput(
   return { ok: true };
 }
 
+/**
+ * 计划任务执行输出校验（计划模式逐任务派发的 run）。
+ *
+ * 与 checkStructuredOutput 同级的安全底线扫描（真实密钥格式 + 强信号注入短语），
+ * 但面向「自由文本教学内容」而非结构化 JSON，无需先经 parsePlanOutput 确认：
+ * - 跳过 medium/high 弱信号短短语（'system prompt' / 'dan' 等）：架构教学讲解
+ *   必然出现这些词（如「编排循环把 system prompt 注入每轮请求」），medium 敏感度
+ *   会把正常内容误拦成兜底话术 —— 实测 stealth/ox-alpha 的 t1 概念综述即被误拦；
+ * - 密钥扫描收紧为「高置信格式」：sk- 前缀 ≥20 位、AWS AKIA/ASIA、JWT 三段式。
+ *   宽松的 `password: xxx` / `token: yyy` 赋值样例正则会把讲解中的示例代码误拦，
+ *   故此处不复用 SECRET_PATTERNS，只保留几乎零误报的高置信模式；
+ * - 跳过业务自定义规则与上下文规则（与 propose 一致）。
+ */
+const TASK_SECRET_PATTERNS: RegExp[] = [
+  /(?:AKIA|ASIA)[0-9A-Z]{16}/,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/, // JWT 三段式
+];
+
+export function checkTaskOutput(
+  text: string,
+  pol?: GuardrailPolicy
+): GuardrailResult {
+  const p = pol ?? policy;
+  if (typeof text !== 'string') return { ok: true };
+  if (p.enableSecretScan) {
+    for (const re of TASK_SECRET_PATTERNS) {
+      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
+    }
+  }
+  const inj = detectInjection(text, p, true);
+  if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
+  return { ok: true };
+}
+
 export function checkToolArgs(
   name: string,
   args: Record<string, unknown>,

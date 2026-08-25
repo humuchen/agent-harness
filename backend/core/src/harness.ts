@@ -6,6 +6,7 @@ import {
   checkInput,
   checkOutput,
   checkStructuredOutput,
+  checkTaskOutput,
   checkToolArgs,
   redactOutput,
   type GuardrailPolicy
@@ -252,6 +253,13 @@ export interface HarnessOptions {
   // 极易被领域合规正则（如医疗广告法）误伤，且拦截后的合规话术重试会破坏 JSON 格式。
   // 缺省 false（行为与之前完全一致，向后兼容）。
   planPropose?: boolean;
+  // 计划任务执行（P0）：计划模式逐任务派发的 run。输出为面向用户的学习/执行内容，
+  // 常规架构讲解必然包含「system prompt」「apiKey=…示例」等字样 —— medium 敏感度的
+  // 弱信号注入短语与密钥赋值样例正则会把正常教学内容误拦成「无法提供回复」。
+  // 开启后输出校验降级为「真实密钥格式 + 强信号注入短语」扫描（checkTaskOutput），
+  // 跳过弱信号短语、业务自定义规则与上下文规则；安全底线（真密钥 / 注入攻击）不放松。
+  // 缺省 false（行为与之前完全一致，向后兼容）。
+  planTask?: boolean;
   // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
   toolDedupKey?: (call: ToolCall) => string;
 }
@@ -317,6 +325,8 @@ interface ResolvedHarnessOptions {
   toolDedupKey?: (call: ToolCall) => string;
   // 计划模式 propose（见 HarnessOptions 注释）。
   planPropose: boolean;
+  // 计划任务执行（见 HarnessOptions 注释）。
+  planTask: boolean;
 }
 
 let idCounter = 0;
@@ -344,7 +354,8 @@ export class AgentHarness {
       ...opts,
       enableToolDedup: opts.enableToolDedup ?? false,
       maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
-      planPropose: opts.planPropose ?? false
+      planPropose: opts.planPropose ?? false,
+      planTask: opts.planTask ?? false
     };
   }
 
@@ -741,16 +752,22 @@ export class AgentHarness {
           // （checkStructuredOutput），跳过业务自定义规则与上下文规则——结构化任务描述
           // 极易被领域合规正则（如医疗广告法关键词）误伤，导致计划永远生成失败。
           // 解析不出计划的输出（含中间工具调用轮次）仍走完整 checkOutput，行为不变。
+          // 计划任务执行（planTask）：输出为面向用户的教学/执行内容，走 checkTaskOutput
+          // ——「system prompt」等弱信号短语与宽松的密钥赋值样例正则会把架构讲解
+          // 误拦成兜底话术（实测 stealth/ox-alpha 概念综述即被拦）；安全底线
+          // （真实密钥格式 + 强信号注入短语）不放松。普通问答仍走完整 checkOutput。
           const structuredPlan = this.opts.planPropose
             ? parsePlanOutput(resp.content)
             : null;
           const outGuard = structuredPlan
             ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
-            : checkOutput(
-                resp.content,
-                this.opts.guardrailPolicy,
-                lastToolResult ? { recentTool: lastToolResult } : undefined
-              );
+            : this.opts.planTask
+              ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
+              : checkOutput(
+                  resp.content,
+                  this.opts.guardrailPolicy,
+                  lastToolResult ? { recentTool: lastToolResult } : undefined
+                );
           if (!outGuard.ok) {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', {

@@ -17,7 +17,7 @@ import {
   type VerifyConfig,
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
-import { createQueueBackend, type QueueBackend, type JobDescriptor } from './queue-backend';
+import { createQueueBackend, isPlanTaskRun, type QueueBackend, type JobDescriptor } from './queue-backend';
 import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
 
 /**
@@ -92,6 +92,11 @@ const MAX_BUFFER = Number(process.env.RUN_QUEUE_BUFFER ?? 500) || 500;
 const CONCURRENCY = Number(process.env.RUN_CONCURRENCY ?? 4) || 4;
 // 单次运行整体超时；超时后中止循环并释放 worker 槽位（默认 5 分钟）。
 const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
+// 计划任务执行（planTask run）专用超时：重任务（源码精读 / 体系化输出等）在真实
+// 模型上常超默认 5 分钟（实测 stealth/ox-alpha 单次推理 >300s 被看门狗掐断），
+// 默认放宽到 10 分钟，可用 PLAN_TASK_TIMEOUT_MS 环境变量覆盖。
+const PLAN_TASK_TIMEOUT_MS =
+  Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
 // jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
 const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
 
@@ -591,7 +596,8 @@ export class RunQueue {
           fromAgent: 'default',
           toAgent: targetCard.id,
           input: job.prompt,
-          sla: { timeoutMs: JOB_TIMEOUT_MS },
+          // 与本地 harness 看门狗一致：计划任务执行放宽到 PLAN_TASK_TIMEOUT_MS。
+          sla: { timeoutMs: isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS },
         };
         const result: TaskResult | null = await new HttpA2ATransport(targetCard.endpoint)
           .send(envelope)
@@ -637,7 +643,9 @@ export class RunQueue {
         job.prompt,
         job.sessionKey,
         signal,
-        JOB_TIMEOUT_MS,
+        // 计划任务执行用更长超时：重任务（源码精读等）常超默认 5 分钟
+        //（实测 stealth/ox-alpha 单次推理 >300s），被 watchdog 掐断后只能整任务作废。
+        isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS,
         job.maxSteps,
         undefined,
         verifier,
@@ -655,7 +663,10 @@ export class RunQueue {
       job.web ?? false,
       // 计划模式 propose（P0）：透传给 harness，使其对计划 JSON 输出走结构化校验
       // （跳过业务合规输出规则），避免计划被误拦后回退普通回答。
-      job.interactionMode === 'plan' && job.planPhase !== 'execute'
+      job.interactionMode === 'plan' && job.planPhase !== 'execute',
+      // 计划任务执行（P0）：输出走 checkTaskOutput 宽松扫描 —— 教学内容含
+      // 「system prompt」等弱信号词会被 medium 注入短语误拦成兜底话术。
+      isPlanTaskRun(job)
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({
