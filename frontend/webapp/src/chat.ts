@@ -6,19 +6,12 @@ import { client, setToken } from './api';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
-import {
-  isRetrievalTool,
-  safeJson,
-  parseDeepThinking,
-  formatToolJson
-} from './chat-utils';
+import { isRetrievalTool, safeJson, parseDeepThinking } from './chat-utils';
 import {
   buildInsights,
   countTraceNodes,
-  parseCostBreakdown,
   renderInsights,
-  renderTraceNode,
-  type Insights
+  renderTraceNode
 } from './chat-trace';
 import { toRichHtml, escapeHtml } from './markdown';
 import {
@@ -28,8 +21,7 @@ import {
   loadThread,
   purgeSessionMirror,
   loadIndex,
-  withTimeout,
-  type MirroredMsg
+  withTimeout
 } from './chat-history';
 import type {
   ChatSession,
@@ -40,14 +32,9 @@ import type {
   PlanExecMirror
 } from '@agent-harness/client';
 import { ApiError } from '@agent-harness/client';
-import {
-  agentContext,
-  useAgentContext,
-  type UploadedFile
-} from './agent-context';
+import { agentContext, type UploadedFile } from './agent-context';
 import './components/file-upload';
 import './components/model-picker';
-import { renderJsonHtml } from './components/json-view';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -126,35 +113,48 @@ export class AhChat extends LitElement {
   @state() input = '';
   @state() model = '';
   @state() mode: RunMode = 'mock';
+
   /** 交互模式（P0）：qa=问答（直接回答）；plan=计划（先出计划→确认→逐任务执行）。
    *  localStorage 持久化跨刷新记忆。模式语义仅存在于前端，服务端只按字段透传。 */
   @state() interactionMode: 'qa' | 'plan' = 'qa';
+
   /** 计划执行状态（key 为携带计划的消息 id）。 */
   @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
+
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
   @state() thinkCollapsed: Record<string, boolean> = {};
+
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
   @state() error: string | null = null;
+
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
   @state() agents: { id: string; name: string }[] = [];
   @state() agentId = '';
+
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
+
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
+
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
+
   /** 正在编辑的用户消息 id；-1 表示不在编辑态。 */
   @state() private editingMsgId = -1;
+
   /** 编辑中的草稿文本。 */
   @state() private editingDraft = '';
+
   /** 最近一次复制成功的消息 id + 时间戳：按钮短暂变为「已复制 ✓」。 */
   @state() private copiedMsgId = -1;
+
   /** 复制回执定时器。 */
   private copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
   /** 上传中的文件追踪（key 为文件名+时间戳） */
   private uploadingFiles: Map<
     string,
@@ -163,23 +163,29 @@ export class AhChat extends LitElement {
 
   private nextId = 1;
   private scrollRef = createRef<HTMLElement>();
+
   /** 是否「钉」在底部：用户向上滚动看历史时为 false，新消息不再自动跟随其滚动。 */
   @state() private stickToBottom = true;
+
   /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
   @state() private showScrollDown = false;
-  /** 服务端 /api/state 下发的当前模型上下文窗口上限（token）；0 = 未获取（回退基线）。 */
+
+  /** 当前选中模型的上下文窗口上限（token）。来源：模型目录官方 context_length；
+   *  0 = 无数据（默认模型 / 自定义模型），「上下文用量」圆环据此隐藏。 */
   private serverCtxWindow = 0;
-  /** 服务端默认模型的上下文窗口：用户切回「默认模型」或无窗口数据模型时恢复用。 */
-  private defaultCtxWindow = 0;
+
   /**
-   * 是否隐藏「上下文用量」圆环：自定义模型没有任何官方上下文窗口数据时
-   * （serverCtxWindow 无值且非服务端默认模型），占比无意义，直接不展示。
+   * 是否隐藏「上下文用量」圆环：只有选中「有官方 context_length 的模型」才展示。
+   * 默认模型（窗口未知）与自定义模型（无官方数据）一律隐藏 —— 分母不存在，
+   * 百分比无意义。serverCtxWindow 仅由 model-change 携带的官方 ctx 写入。
    */
   private hideCtxRing(): boolean {
-    return this.model !== '' && this.serverCtxWindow <= 0;
+    return this.serverCtxWindow <= 0;
   }
+
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
+
   /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
    *  为 null 时「上下文用量」浮层回退到前端基于消息缓冲的粗估。 */
   @state() private backendUsage: {
@@ -203,13 +209,16 @@ export class AhChat extends LitElement {
    * 显示用的 this.messages 指向当前会话的缓冲，后台 run 写的是自己的会话缓冲，二者解耦。
    */
   private threads: Record<string, ChatMsg[]> = {};
+
   /**
    * 会话恢复失败标记（容错持久化）：服务端历史拉取失败且无本地镜像时置 true，
    * 空线程不再被当作「已加载」缓存 —— 下次进入该会话自动重试恢复，直到成功。
    */
   private restoreFailed: Record<string, boolean> = {};
+
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
+
   /** 每个会话是否正在流式（支持多个会话并发进行）。
    *  MUST 为 @state 并以不可变重赋值（this.streaming = {...this.streaming, [sid]: x}）更新：
    *  直接 this.streaming[sid] = x 是对象内属性赋值，Lit 不观测，重渲染不会触发，
@@ -220,41 +229,54 @@ export class AhChat extends LitElement {
   private setStreaming(sid: string, val: boolean) {
     this.streaming = { ...this.streaming, [sid]: val };
   }
+
   /** 每会话的打字机缓冲（content / reasoning 分开）。 */
   private pending: Record<string, { content: string; reasoning: string }> = {};
+
   /** 每会话是否已收到 llm:token 增量（防止 llm:response 整段覆盖打字机效果）。 */
   private received: Record<string, boolean> = {};
+
   /** run:end 携带的权威全文（仅在打字机未产生任何可见文本时作兜底）。 */
   private finalBy: Record<string, string> = {};
+
   /** 每会话的调用链路追踪构建上下文。 */
   private traces: Record<string, TraceCtx> = {};
+
   /** 每会话的中止控制器（仅停止对应会话的 run）。 */
   private abortBy: Record<string, AbortController> = {};
 
   /* ---------------------- 断线恢复（标签页切换 / 网络中断） ---------------------- */
   /** 每会话当前 run 的 jobId（job:accepted 时记录）：断线重连时凭它重订阅事件重放流。 */
   private jobBy: Record<string, string> = {};
+
   /** 每会话已收到的最大事件 seq：断线续传游标，服务端只重放 seq 大于它的部分。 */
   private lastSeqBy: Record<string, number> = {};
+
   /** 每会话是否已收到终结事件（run:end/_done/error）：收到后不再自动重连。 */
   private finishedBy: Record<string, boolean> = {};
+
   /**
    * 每会话当前 run 是否收到过 error 事件：服务端在模型/运行异常时会先发 error
    * 再照常补发 run:end 收尾，流「正常关闭」≠ 运行成功 —— 计划模式据此把该轮
    * 判为失败并立即中止后续任务派发，而不是带着坏结果继续往下跑。
    */
   private erroredBy: Record<string, boolean> = {};
+
   /** 每会话最近一次收到 SSE 事件的时间戳：静默看门狗与切回标签页的健康判定依据。 */
   private lastEventAt: Record<string, number> = {};
+
   /**
    * keepalive 中止标记：看门狗 / 切回标签页时用 abort() 唤醒挂起的 read() 走重连路径。
    * 与用户手动 stop() 共用 AbortController，靠此标记区分「系统触发的中止」与「用户主动停止」。
    */
   private keepAliveAbort: Record<string, boolean> = {};
+
   /** 每会话最近一次提交的完整 run 入参：彻底断连后供「重新连接」按钮恢复使用。 */
   private lastInputBy: Record<string, Record<string, unknown>> = {};
+
   /** 静默看门狗定时器：可见状态下某会话长时间无事件则强制唤醒走重连。 */
   private watchTimer: ReturnType<typeof setInterval> | null = null;
+
   /** 每会话连接状态（驱动顶部横幅）：connected 正常 / reconnecting 自动恢复中 / lost 彻底断开。 */
   @state() private connState: Record<
     string,
@@ -406,13 +428,8 @@ export class AhChat extends LitElement {
     try {
       const state = await client.getState();
       this.mode = (state as any)?.openrouter ? 'real' : 'mock';
-      // 同步模型上下文窗口：粗估回退的分母不再写死 128K（如 ox-alpha → 1M）。
-      // 同时记为「服务端默认窗口」，用户切回默认模型时恢复该分母。
-      const cw = Number((state as any)?.contextWindow);
-      if (Number.isFinite(cw) && cw > 0) {
-        this.serverCtxWindow = cw;
-        this.defaultCtxWindow = cw;
-      }
+      // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
+      // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
     } catch {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
@@ -717,45 +734,45 @@ export class AhChat extends LitElement {
         >
         ${this.showCtxUsage
           ? html`<button
-              class="ctx-scrim"
-              aria-label="关闭上下文用量"
-              @click=${() => (this.showCtxUsage = false)}
-            ></button>
-            <div class="ctx-pop">
-              <div class="ctx-pop-head">
-                <span>上下文用量</span>
-                <span class="ctx-pop-total"
-                  >${u.totalTokens.toLocaleString()} /
-                  ${this.fmtK(u.window)}</span
-                >
-                <button
-                  class="ctx-pop-close"
-                  title="关闭"
-                  aria-label="关闭"
-                  @click=${() => (this.showCtxUsage = false)}
-                >
-                  ×
-                </button>
-              </div>
-              <div class="ctx-seg">
-                ${u.items.map(
-                  (it) => html`<span
-                    class="ctx-seg-i ${it.cls}"
-                    style="width:${it.pct}%"
-                    title="${it.label} ${it.pct.toFixed(1)}%"
-                  ></span>`
-                )}
-              </div>
-              <ul class="ctx-list">
-                ${u.items.map(
-                  (it) => html`<li>
-                    <span class="ctx-dot ${it.cls}"></span>
-                    <span class="ctx-label">${it.label}</span>
-                    <span class="ctx-val">${it.pct.toFixed(1)}%</span>
-                  </li>`
-                )}
-              </ul>
-            </div>`
+                class="ctx-scrim"
+                aria-label="关闭上下文用量"
+                @click=${() => (this.showCtxUsage = false)}
+              ></button>
+              <div class="ctx-pop">
+                <div class="ctx-pop-head">
+                  <span>上下文用量</span>
+                  <span class="ctx-pop-total"
+                    >${u.totalTokens.toLocaleString()} /
+                    ${this.fmtK(u.window)}</span
+                  >
+                  <button
+                    class="ctx-pop-close"
+                    title="关闭"
+                    aria-label="关闭"
+                    @click=${() => (this.showCtxUsage = false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div class="ctx-seg">
+                  ${u.items.map(
+                    (it) => html`<span
+                      class="ctx-seg-i ${it.cls}"
+                      style="width:${it.pct}%"
+                      title="${it.label} ${it.pct.toFixed(1)}%"
+                    ></span>`
+                  )}
+                </div>
+                <ul class="ctx-list">
+                  ${u.items.map(
+                    (it) => html`<li>
+                      <span class="ctx-dot ${it.cls}"></span>
+                      <span class="ctx-label">${it.label}</span>
+                      <span class="ctx-val">${it.pct.toFixed(1)}%</span>
+                    </li>`
+                  )}
+                </ul>
+              </div>`
           : nothing}
       </div>
     `;
@@ -972,7 +989,10 @@ export class AhChat extends LitElement {
    * 查出 baseUrl / apiKey，作为 run 请求的 modelBaseUrl / modelApiKey 字段。
    * 未配置或非自定义模型返回空对象（不透传任何字段）。
    */
-  private customModelEndpoint(): { modelBaseUrl?: string; modelApiKey?: string } {
+  private customModelEndpoint(): {
+    modelBaseUrl?: string;
+    modelApiKey?: string;
+  } {
     if (!this.model) return {};
     try {
       const raw = localStorage.getItem('ah_custom_models');
@@ -1469,8 +1489,8 @@ export class AhChat extends LitElement {
             this.serverCtxWindow > 0
               ? this.serverCtxWindow
               : Number.isFinite(Number(u.window)) && Number(u.window) > 0
-                ? Number(u.window)
-                : 0;
+              ? Number(u.window)
+              : 0;
           this.backendUsage = {
             window: win,
             promptTokens: u.promptTokens,
@@ -2946,12 +2966,14 @@ export class AhChat extends LitElement {
                   .deepThink=${this.deepThink}
                   .web=${this.web}
                   @model-change=${(e: Event) => {
-                    const d = (e as CustomEvent<{ model: string; ctx?: number }>).detail;
+                    const d = (
+                      e as CustomEvent<{ model: string; ctx?: number }>
+                    ).detail;
                     this.model = d.model;
-                    // 选中模型带官方上下文窗口时更新用量分母；ctx=0（无数据/默认模型）
-                    // 恢复服务端下发值，交由 hideCtxRing 决定是否隐藏展示。
-                    if (d.ctx && d.ctx > 0) this.serverCtxWindow = d.ctx;
-                    else this.serverCtxWindow = this.defaultCtxWindow;
+                    // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
+                    // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
+                    // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
+                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
                     try {
                       localStorage.setItem('ah_model', this.model);
                     } catch {
@@ -2959,15 +2981,22 @@ export class AhChat extends LitElement {
                     }
                   }}
                   @think-change=${(e: Event) => {
-                    this.deepThink = (e as CustomEvent<{ value: boolean }>).detail.value;
+                    this.deepThink = (
+                      e as CustomEvent<{ value: boolean }>
+                    ).detail.value;
                     try {
-                      localStorage.setItem('ah_deep_think', this.deepThink ? '1' : '0');
+                      localStorage.setItem(
+                        'ah_deep_think',
+                        this.deepThink ? '1' : '0'
+                      );
                     } catch {
                       /* ignore */
                     }
                   }}
                   @web-change=${(e: Event) => {
-                    this.web = (e as CustomEvent<{ value: boolean }>).detail.value;
+                    this.web = (
+                      e as CustomEvent<{ value: boolean }>
+                    ).detail.value;
                     try {
                       localStorage.setItem('ah_web', this.web ? '1' : '0');
                     } catch {

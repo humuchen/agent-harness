@@ -14,19 +14,6 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
-/** 内置常用模型预设：覆盖主流厂商的代表性型号（ID 与 OpenRouter 清单核对过），用户可再自行补充。 */
-const PRESET_MODELS: string[] = [
-  'anthropic/claude-sonnet-4.5',
-  'openai/gpt-5.2',
-  'qwen/qwen3.8-max',
-  'moonshotai/kimi-k3',
-  'deepseek/deepseek-v4-flash',
-  'minimax/minimax-m3',
-  'z-ai/glm-5.3',
-  'stepfun/step-3.7-flash',
-  'nvidia/nemotron-3-super-120b-a12b'
-];
-
 /** 远程模型条目：id + 官方上下文窗口（token），供宿主更新「上下文用量」分母。 */
 interface RemoteModel {
   id: string;
@@ -359,22 +346,28 @@ export class AhModelPicker extends LitElement {
 
   /** 当前模型（空串 = 服务端默认）。由宿主双向同步。 */
   @property({ type: String }) model = '';
+
   /** 深度思考开关（状态由宿主持有并透传）。 */
   @property({ type: Boolean }) deepThink = true;
+
   /** 联网搜索开关（状态由宿主持有并透传）。 */
   @property({ type: Boolean }) web = false;
 
   @state() private open = false;
   @state() private query = '';
   @state() private adding = false;
+
   /** 按供应商折叠的分组展开态（key = 供应商名；缺省全部展开）。 */
   @state() private collapsed: Record<string, boolean> = {};
+
   /** 自定义模型表单三项：接口地址 / API Key / 模型名称。 */
   @state() private draftBaseUrl = '';
   @state() private draftApiKey = '';
   @state() private draftId = '';
+
   /** 自定义模型清单（localStorage 持久化，含 baseUrl/apiKey）。 */
   @state() private customs: CustomModel[] = [];
+
   /** 「刷新」拉取到的在线模型清单（含官方上下文窗口；失败为空）。 */
   @state() private remote: RemoteModel[] = [];
 
@@ -407,8 +400,7 @@ export class AhModelPicker extends LitElement {
     const out: string[] = [];
     for (const m of [
       ...this.remote.map((r) => r.id),
-      ...this.customs.map((c) => c.id),
-      ...PRESET_MODELS
+      ...this.customs.map((c) => c.id)
     ]) {
       const k = m.trim();
       if (k && !seen.has(k)) {
