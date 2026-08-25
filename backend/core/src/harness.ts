@@ -16,8 +16,6 @@ import {
   withSpan,
   incCounter,
   recordError,
-  recordTokens,
-  recordCost,
   structLog,
   logError,
   emitAlert,
@@ -25,7 +23,7 @@ import {
   recordCostTenant,
   incCounterTenant
 } from './telemetry';
-import { estimateCost, estimateCostDetailed } from './llm/pricing';
+import { estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
@@ -41,7 +39,7 @@ const CONTEXT_WINDOWS: Record<string, number> = {
   'deepseek-chat': 64000,
   'deepseek-reasoner': 64000,
   'ox-alpha': 1000000,
-  agnes: 1000000
+  agnes: 10240
 };
 
 /** 导出供 server（/api/state）向前端下发当前模型的上下文窗口上限。 */
@@ -189,70 +187,91 @@ export interface HarnessOptions {
   tools: ToolRegistry;
   memory?: Memory;
   systemPrompt?: string;
+
   // 对 Agent 循环步数的安全上限（工具调用 -> LLM -> 工具调用 ...）。
   maxSteps?: number;
+
   // 整体运行超时（毫秒）。超时后中止循环并返回超时提示，避免长时间挂起。
   timeoutMs?: number;
+
   // 外部取消信号；触发后中止运行（例如用户关闭 UI、进程收到 SIGTERM）。
   signal?: AbortSignal;
+
   // 可选的事件回调：在循环每一步（LLM 调用 / 工具调用 / 护栏拦截）发生时触发。
   // 用于进度展示、可视化与测试断言，不修改任何业务逻辑。
   onEvent?: (e: HarnessEvent) => void;
+
   // 用于成本计价的模型标识（harness 不直接调 LLM 配置，需调用方传入用于查单价表）。
   // 缺省时仍会按响应里的 resp.model 计价；两者都无则按未知模型默认价（默认 0）。
   model?: string;
+
   // 单次 run 的 token 预算上限（累计 total_tokens）。超出即中止并返回预算超限提示。
   tokenBudget?: number;
+
   // 单次 run 的成本预算上限（美元，按模型单价估算）。超出即中止。
   costBudget?: number;
+
   // 单次 run 的工具结果字符上限（超出截断并标注）。降低「工具原文逐字重发」带来的
   // 上下文膨胀与 token 成本。未配置（undefined）则不截断；UI 默认 16000。
   maxToolResultChars?: number;
+
   // 可选「完成自检」：开启后，若模型以空响应（疑似放弃）收尾，注入提示继续循环
   // 直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。默认关闭（避免额外成本）。
   requireCompletion?: boolean;
+
   // 运行期自动验证门禁（P0-2）：产出最终答案后自动调用验证器。未通过时若仍有重试额度，
   // 注入自检提示重跑循环（自愈）；否则在最终结果前加 [verify:failed] 标记。不设置则关闭门禁。
   verify?: Verifier;
+
   // 验证未通过时的最大自动重试次数（每次重跑一个完整 maxSteps 预算的循环）。默认 0（仅校验不重试）。
   verifyMaxRetries?: number;
+
   // 验证未通过且仍有重试额度时，是否注入自检提示重跑（默认：在 verifyMaxRetries>0 时开启）。
   verifySelfCorrect?: boolean;
+
   // P0.3 租户隔离：per-run 护栏策略覆盖。传入后，输入/输出/工具参数校验与脱敏均使用
   // 该策略而非全局默认。缺省（undefined）则沿用全局 default（向后兼容：零租户行为不变）。
   guardrailPolicy?: GuardrailPolicy;
+
   // P0/P1 统一基座平台元数据：把本次 run 关联到「目标智能体 / 工作流 / 追踪 id / 租户」。
   // 仅用于 run:meta 事件观测与可观测关联，不影响任何业务逻辑；全部可选、向后兼容。
   agentId?: string;
   workflowId?: string;
   traceId?: string;
   tenantId?: string;
+
   /** 路由决策来源（explicit / domain / classify / fallback），供可观测区分。 */
   decidedBy?: string;
+
   /**
    * 是否启用 token 级流式：开启后 LLM 调用会透传 onToken/onReasoning 回调，
    * harness 据此发出 llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。
    * 默认 false，不改变既有非流式行为；服务端 assembleAgent 对 real 模式默认开启。
    */
   streamTokens?: boolean;
+
   /**
    * 动态工具选择：硬允许集（来自 AgentCard.assembly.tools 或核心环境工具）。
    * 与「按意图动态裁剪」配合——这些工具无条件发给 LLM，永不裁掉；其余工具按
    * 当前用户输入的相关性择优发送（见 selectToolsForInput）。缺省为空，表示无硬约束。
    */
   allowTools?: string[];
+
   // 加固：工具调用去重。开启后，对「同名 + 相同归一化参数」的重复工具调用，直接复用首次结果
   //（emit tool:deduped 而非 tool:start），不真正重新执行，从而砍掉冗余调用、降低 token 成本与上下文膨胀。
   // 默认 false（完全不介入），向后兼容，不破坏任何既有行为。
   enableToolDedup?: boolean;
+
   // 加固：单 step 内工具调用预算上限。每 step 真实执行达到上限后，剩余 tool_calls 被截断并 emit warn。
   // 0 或不传表示不限制（保持现状），用于兜底「模型单轮并行请求过多工具」的场景。
   maxToolCallsPerStep?: number;
+
   // 计划模式 propose（P0）：开启后，若模型最终输出能解析为合法计划 JSON，则输出校验
   // 走 checkStructuredOutput（仅密钥/注入扫描），跳过业务自定义规则——结构化任务描述
   // 极易被领域合规正则（如医疗广告法）误伤，且拦截后的合规话术重试会破坏 JSON 格式。
   // 缺省 false（行为与之前完全一致，向后兼容）。
   planPropose?: boolean;
+
   // 计划任务执行（P0）：计划模式逐任务派发的 run。输出为面向用户的学习/执行内容，
   // 常规架构讲解必然包含「system prompt」「apiKey=…示例」等字样 —— medium 敏感度的
   // 弱信号注入短语与密钥赋值样例正则会把正常教学内容误拦成「无法提供回复」。
@@ -260,6 +279,7 @@ export interface HarnessOptions {
   // 跳过弱信号短语、业务自定义规则与上下文规则；安全底线（真密钥 / 注入攻击）不放松。
   // 缺省 false（行为与之前完全一致，向后兼容）。
   planTask?: boolean;
+
   // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
   toolDedupKey?: (call: ToolCall) => string;
 }
@@ -762,12 +782,12 @@ export class AgentHarness {
           const outGuard = structuredPlan
             ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
             : this.opts.planTask
-              ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
-              : checkOutput(
-                  resp.content,
-                  this.opts.guardrailPolicy,
-                  lastToolResult ? { recentTool: lastToolResult } : undefined
-                );
+            ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
+            : checkOutput(
+                resp.content,
+                this.opts.guardrailPolicy,
+                lastToolResult ? { recentTool: lastToolResult } : undefined
+              );
           if (!outGuard.ok) {
             recordError('guardrail.output');
             structLog('warn', 'guardrail blocked', {

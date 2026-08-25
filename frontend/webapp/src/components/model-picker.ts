@@ -225,6 +225,57 @@ export class AhModelPicker extends LitElement {
       color: var(--ah-accent, #2997ff);
       font-weight: 700;
     }
+
+    /* ---- 按供应商折叠的分组 ---- */
+    .group + .group {
+      border-top: 1px solid var(--ah-border);
+    }
+    .group-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 14px;
+      border: none;
+      background: var(--ah-surface-2, transparent);
+      color: var(--ah-text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-align: left;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+    .group-head:hover {
+      color: var(--ah-text);
+      background: var(--ah-surface-3, var(--ah-surface-2));
+    }
+    .group-head .vendor {
+      flex: 1 1 auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-transform: capitalize;
+    }
+    .group-head .count {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 500;
+      background: var(--ah-surface-3, rgba(128, 128, 128, 0.15));
+      border-radius: 999px;
+      padding: 0 7px;
+      line-height: 16px;
+    }
+    .group-head .chev {
+      flex-shrink: 0;
+      width: 8px;
+      height: 5px;
+      transition: transform 0.15s;
+    }
+    .group-head.collapsed .chev {
+      transform: rotate(-90deg);
+    }
     .empty {
       padding: 16px 14px;
       color: var(--ah-text-muted);
@@ -317,6 +368,8 @@ export class AhModelPicker extends LitElement {
   @state() private open = false;
   @state() private query = '';
   @state() private adding = false;
+  /** 按供应商折叠的分组展开态（key = 供应商名；缺省全部展开）。 */
+  @state() private collapsed: Record<string, boolean> = {};
   /** 自定义模型表单三项：接口地址 / API Key / 模型名称。 */
   @state() private draftBaseUrl = '';
   @state() private draftApiKey = '';
@@ -484,6 +537,34 @@ export class AhModelPicker extends LitElement {
     return i >= 0 ? id.slice(i + 1) : id;
   }
 
+  /** 模型供应商名：取 `/` 前缀；无前缀归入「其他」。 */
+  private vendorOf(id: string): string {
+    const i = id.indexOf('/');
+    return i > 0 ? id.slice(0, i) : '其他';
+  }
+
+  /**
+   * 把模型清单按供应商分组（保持清单原有顺序，供应商按首次出现排序）。
+   * 搜索过滤后调用，保证折叠计数与当前可见条目一致。
+   */
+  private groupByVendor(models: string[]): { vendor: string; items: string[] }[] {
+    const order: string[] = [];
+    const map = new Map<string, string[]>();
+    for (const m of models) {
+      const v = this.vendorOf(m);
+      if (!map.has(v)) {
+        map.set(v, []);
+        order.push(v);
+      }
+      map.get(v)!.push(m);
+    }
+    return order.map((vendor) => ({ vendor, items: map.get(vendor)! }));
+  }
+
+  private toggleGroup(vendor: string) {
+    this.collapsed = { ...this.collapsed, [vendor]: !this.collapsed[vendor] };
+  }
+
   private renderPanel() {
     const q = this.query.trim().toLowerCase();
     const models = this.allModels.filter(
@@ -580,18 +661,52 @@ export class AhModelPicker extends LitElement {
                     ? html`<span class="check">✓</span>`
                     : nothing}
                 </button>
-                ${models.map(
-                  (m) => html`
-                    <button
-                      class="item"
-                      title=${m}
-                      @click=${() => this.pick(m)}
-                    >
-                      <span>${this.displayName(m)}</span>
-                      ${this.model === m
-                        ? html`<span class="check">✓</span>`
-                        : nothing}
-                    </button>
+                ${this.groupByVendor(models).map(
+                  ({ vendor, items }) => html`
+                    <div class="group">
+                      <button
+                        class="group-head ${this.collapsed[vendor] ? 'collapsed' : ''}"
+                        title=${this.collapsed[vendor]
+                          ? `展开 ${vendor}（${items.length}）`
+                          : `折叠 ${vendor}`}
+                        aria-expanded=${this.collapsed[vendor] ? 'false' : 'true'}
+                        @click=${() => this.toggleGroup(vendor)}
+                      >
+                        <svg
+                          class="chev"
+                          viewBox="0 0 10 6"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M1 1l4 4 4-4" />
+                        </svg>
+                        <span class="vendor">${vendor}</span>
+                        <span class="count">${items.length}</span>
+                      </button>
+                      ${this.collapsed[vendor]
+                        ? nothing
+                        : html`
+                            <div class="group-items">
+                              ${items.map(
+                                (m) => html`
+                                  <button
+                                    class="item"
+                                    title=${m}
+                                    @click=${() => this.pick(m)}
+                                  >
+                                    <span>${this.displayName(m)}</span>
+                                    ${this.model === m
+                                      ? html`<span class="check">✓</span>`
+                                      : nothing}
+                                  </button>
+                                `
+                              )}
+                            </div>
+                          `}
+                    </div>
                   `
                 )}
               `}
