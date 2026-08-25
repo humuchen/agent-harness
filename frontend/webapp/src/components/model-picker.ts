@@ -14,18 +14,17 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
-/** 内置常用模型预设：覆盖主流厂商的代表性型号，用户可再自行补充。 */
+/** 内置常用模型预设：覆盖主流厂商的代表性型号（ID 与 OpenRouter 清单核对过），用户可再自行补充。 */
 const PRESET_MODELS: string[] = [
-  'ox-alpha',
-  'deepseek/deepseek-chat-v4-flash',
+  'anthropic/claude-sonnet-4.5',
+  'openai/gpt-5.2',
   'qwen/qwen3.8-max',
   'moonshotai/kimi-k3',
+  'deepseek/deepseek-v4-flash',
   'minimax/minimax-m3',
   'z-ai/glm-5.3',
   'stepfun/step-3.7-flash',
-  'nvidia/nemotron-3-super-120b',
-  'anthropic/claude-sonnet-4.5',
-  'openai/gpt-5.2'
+  'nvidia/nemotron-3-super-120b-a12b'
 ];
 
 /** 远程模型条目：id + 官方上下文窗口（token），供宿主更新「上下文用量」分母。 */
@@ -443,15 +442,38 @@ export class AhModelPicker extends LitElement {
       const res = await fetch('https://openrouter.ai/api/v1/models');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as {
-        data?: { id?: string; context_length?: number }[];
+        data?: {
+          id?: string;
+          context_length?: number;
+          pricing?: { prompt?: string; completion?: string };
+        }[];
       };
-      // 过滤 不是:free的模型
+      // 过滤不可用模型（选了就 429 的两类）：
+      // 1) `:free` 后缀变体 —— 上游激进限速，无余额 key 调用即 429；
+      // 2) 实际价格为 0 的模型（如 openrouter/free 免费池、0 价预览模型）——
+      //    与 :free 同样被限速，仅靠后缀判断拦不住。
+      const isFree = (
+        id: string,
+        pricing?: { prompt?: string; completion?: string }
+      ): boolean => {
+        if (id.endsWith(':free')) return true;
+        try {
+          return (
+            (Number(pricing?.prompt) || 0) === 0 &&
+            (Number(pricing?.completion) || 0) === 0
+          );
+        } catch {
+          return false;
+        }
+      };
       const list: RemoteModel[] = (data.data ?? [])
         .map((m) => ({
+          raw: m,
           id: String(m?.id ?? '').trim(),
           ctx: Number(m?.context_length) || 0
         }))
-        .filter((m) => m.id && m.id.endsWith(':free'));
+        .filter((m) => m.id && !isFree(m.id, m.raw?.pricing))
+        .map(({ id, ctx }) => ({ id, ctx }));
       if (list.length) this.remote = list;
       // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
       if (this.model) this.emitCtx(this.ctxFor(this.model));
