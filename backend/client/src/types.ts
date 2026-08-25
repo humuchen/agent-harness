@@ -122,6 +122,17 @@ export interface ChatMessage {
   /** 计划模式：run:end 时服务端解析出的结构化执行计划（形状见 @agent-harness/core 的
    *  ExecutionPlan；client 不依赖 core，按 unknown 结构透传，由 UI 层自行收敛校验）。 */
   plan?: unknown;
+  /** 计划模式：任务级执行进度镜像（服务端随派发/完成/失败事件维护），
+   *  刷新 / 切回会话 / 服务重启后前端据此还原计划卡片状态并支持续跑。 */
+  planStatus?: PlanExecMirror;
+}
+
+/** 计划执行进度镜像（JSON 友好：done 用 id 数组而非对象）。 */
+export interface PlanExecMirror {
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  currentTaskId?: string;
+  failedTaskId?: string;
+  done: string[];
 }
 
 export interface ChatSession {

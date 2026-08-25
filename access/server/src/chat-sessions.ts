@@ -19,6 +19,14 @@ export interface StoredTool {
   errored?: boolean;
 }
 
+/** 计划执行进度镜像（与 @agent-harness/client 的 PlanExecMirror 形状一致，本地镜像避免包耦合）。 */
+export interface PlanExecMirror {
+  status: 'running' | 'done' | 'failed' | 'cancelled';
+  currentTaskId?: string;
+  failedTaskId?: string;
+  done: string[];
+}
+
 /** 调用链路追踪节点（结构与 @agent-harness/client 的 TraceNode 一致，本地镜像避免包耦合）。 */
 export interface TraceNode {
   id: string;
@@ -56,6 +64,8 @@ export interface ChatMessage {
   trace?: TraceNode[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时随消息落盘，刷新/切回可还原计划卡片）。 */
   plan?: import('@agent-harness/core').ExecutionPlan;
+  /** 计划模式：任务级执行进度镜像（服务端随任务派发/完成/失败事件维护），供前端恢复计划卡片状态。 */
+  planStatus?: PlanExecMirror;
 }
 
 export interface ChatSession {
@@ -166,4 +176,31 @@ export function appendChatMessage(id: string, msg: ChatMessage): ChatSession | n
   }
   persist();
   return s;
+}
+
+/**
+ * 计划模式（P0）：更新会话内携带计划的最新一条 assistant 消息的执行进度镜像。
+ * 服务端在任务派发/完成/失败事件时调用，把任务级状态随消息持久化 ——
+ * 前端刷新 / 切回 / 服务重启后据此还原计划卡片并支持「从失败任务继续」。
+ * 无可挂载的 plan 消息时不做任何事（普通问答不受影响）。
+ */
+export function updatePlanStatus(
+  id: string,
+  mutate: (prev: PlanExecMirror) => PlanExecMirror
+): void {
+  load();
+  const s = sessions.get(id);
+  if (!s) return;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i];
+    if (m.role === 'assistant' && m.plan) {
+      const prev: PlanExecMirror = m.planStatus ?? {
+        status: 'running',
+        done: []
+      };
+      m.planStatus = mutate({ ...prev, done: [...prev.done] });
+      persist();
+      return;
+    }
+  }
 }

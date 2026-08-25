@@ -24,7 +24,8 @@ import type {
   RunMode,
   StreamEvent,
   TraceNode,
-  TraceKind
+  TraceKind,
+  PlanExecMirror
 } from '@agent-harness/client';
 import { ApiError } from '@agent-harness/client';
 import {
@@ -753,10 +754,13 @@ export class AhChat extends LitElement {
             reasoning: m.reasoning,
             tools: m.tools,
             trace: m.trace,
-            plan: m.plan
+            plan: m.plan,
+            planStatus: (m as any).planStatus
           }))
         );
         if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
+        // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
+        const planStatusLookup = this.buildPlanStatusLookup(clean);
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
         // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
         const merged =
@@ -764,6 +768,8 @@ export class AhChat extends LitElement {
             ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
             : clean;
         this.threads[id] = merged.map((m) => ({ ...m, id: this.nextId++ })) as ChatMsg[];
+        // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
+        this.applyPlanStatusLookup(id, planStatusLookup);
         this.restoreFailed[id] = false;
       } catch {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
@@ -787,6 +793,50 @@ export class AhChat extends LitElement {
     this.stickToBottom = true;
     this.showScrollDown = false;
     this.backendUsage = null;
+  }
+
+  /**
+   * 从镜像消息构建「计划 goal → 执行进度镜像」查找表。
+   * 消息 id 在恢复时重新分配，不能按 id 对齐；goal 是计划卡片的稳定业务键。
+   */
+  private buildPlanStatusLookup(
+    msgs: Array<{ plan?: unknown; planStatus?: PlanExecMirror }>
+  ): Map<string, PlanExecMirror> {
+    const out = new Map<string, PlanExecMirror>();
+    for (const m of msgs) {
+      const plan = m.plan as { goal?: unknown } | undefined;
+      if (!plan || typeof plan.goal !== 'string' || !m.planStatus) continue;
+      if (!out.has(plan.goal)) out.set(plan.goal, m.planStatus);
+    }
+    return out;
+  }
+
+  /**
+   * 把镜像里的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
+   * 仅当内存中没有该消息的状态时写入，不覆盖本实例正在进行的执行状态；
+   * 镜像里的 running 态说明上次执行被中断（刷新/断连），收敛为 failed ——
+   * 卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默自动重放。
+   */
+  private applyPlanStatusLookup(sid: string, lookup: Map<string, PlanExecMirror>) {
+    if (!lookup.size) return;
+    for (const m of this.threads[sid] ?? []) {
+      if (!m.plan || this.planExec[m.id]) continue;
+      const ps = lookup.get(m.plan.goal);
+      if (!ps) continue;
+      const doneMap: Record<string, boolean> = {};
+      for (const tid of ps.done ?? []) doneMap[tid] = true;
+      // running = 上次执行中断：保留已完成集合，但置 failed 等待用户显式继续。
+      const interrupted = ps.status === 'running';
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: {
+          status: interrupted ? 'failed' : ps.status,
+          currentTaskId: interrupted ? ps.currentTaskId : undefined,
+          failedTaskId: interrupted ? ps.currentTaskId : ps.failedTaskId,
+          done: doneMap
+        }
+      };
+    }
   }
 
   private async renameSession(id: string) {

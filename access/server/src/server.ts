@@ -81,6 +81,7 @@ import {
   renameChatSession,
   deleteChatSession,
   appendChatMessage,
+  updatePlanStatus,
   type StoredTool,
   type TraceNode
 } from './chat-sessions';
@@ -1929,6 +1930,28 @@ async function handleRun(
           content: isPlanPropose ? prompt : String(ev.input),
           ts: Date.now()
         });
+        // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
+        // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
+        const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
+        if (!isPlanPropose && taskMatch) {
+          const taskId = taskMatch[1];
+          updatePlanStatus(chatSessionId, (prev) => ({
+            ...prev,
+            status: 'running',
+            currentTaskId: taskId,
+            failedTaskId: undefined
+          }));
+        }
+      } else if (ev.type === 'error') {
+        // 计划任务执行失败：进度镜像标记 failed + 失败节点，前端恢复时据此续跑。
+        if (!isPlanPropose) {
+          updatePlanStatus(chatSessionId, (prev) => ({
+            ...prev,
+            status: 'failed',
+            failedTaskId: prev.currentTaskId,
+            currentTaskId: undefined
+          }));
+        }
       } else if (ev.type === 'run:end' && ev.final != null) {
         // 去重：run-queue 会在 harness 的 run:end 之后再补发一个不带 runId 的 run:end
         // （两者 final 相同），避免历史里出现两条重复的 assistant 消息。仅当会话最后一条
@@ -1936,6 +1959,19 @@ async function handleRun(
         const finalStr = String(ev.final);
         const last = getChatSession(chatSessionId)?.messages.at(-1);
         if (traceRoot) traceRoot.status = 'ok';
+        // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
+        if (!isPlanPropose) {
+          updatePlanStatus(chatSessionId, (prev) => {
+            if (!prev.currentTaskId || prev.done.includes(prev.currentTaskId)) return prev;
+            const done = [...prev.done, prev.currentTaskId];
+            return {
+              ...prev,
+              status: 'running',
+              done,
+              currentTaskId: undefined
+            };
+          });
+        }
         if (!(last && last.role === 'assistant' && last.content === finalStr)) {
           appendChatMessage(chatSessionId, {
             role: 'assistant',

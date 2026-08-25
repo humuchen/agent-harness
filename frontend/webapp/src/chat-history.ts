@@ -61,11 +61,41 @@ export interface MirroredMsg {
   trace?: unknown;
   /** 计划模式：结构化执行计划原样透传（JSON 安全值），恢复时还原计划卡片。 */
   plan?: unknown;
+  /** 计划模式：任务级执行进度镜像（服务端维护），恢复时还原卡片状态并支持续跑。 */
+  planStatus?: {
+    status: 'running' | 'done' | 'failed' | 'cancelled';
+    currentTaskId?: string;
+    failedTaskId?: string;
+    done: string[];
+  };
   error?: boolean;
 }
 
 const clampStr = (v: unknown, cap = MAX_CONTENT): string =>
   typeof v === 'string' ? (v.length > cap ? v.slice(0, cap) : v) : '';
+
+/** 计划进度镜像收敛：形状非法或缺 done 数组时丢弃（恢复时宁缺勿错）。 */
+function sanitizePlanStatus(
+  v: unknown
+): Record<string, never> | { planStatus: NonNullable<MirroredMsg['planStatus']> } {
+  if (!v || typeof v !== 'object') return {};
+  const o = v as Record<string, unknown>;
+  const status = o.status;
+  if (
+    (status !== 'running' && status !== 'done' && status !== 'failed' && status !== 'cancelled') ||
+    !Array.isArray(o.done)
+  ) {
+    return {};
+  }
+  return {
+    planStatus: {
+      status,
+      ...(typeof o.currentTaskId === 'string' ? { currentTaskId: o.currentTaskId } : {}),
+      ...(typeof o.failedTaskId === 'string' ? { failedTaskId: o.failedTaskId } : {}),
+      done: o.done.filter((x): x is string => typeof x === 'string')
+    }
+  };
+}
 
 /**
  * 把任意来源（服务端响应 / 镜像读取 / 内存缓冲）的消息列表收敛成可信形状：
@@ -106,6 +136,7 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
       ...(tools && tools.length ? { tools } : {}),
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
       ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
+      ...sanitizePlanStatus(o.planStatus),
       ...(o.error === true ? { error: true } : {})
     });
   }
