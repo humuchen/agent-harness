@@ -472,7 +472,7 @@ export class AhModelPicker extends LitElement {
           id: String(m?.id ?? '').trim(),
           ctx: Number(m?.context_length) || 0
         }))
-        .filter((m) => m.id && !isFree(m.id, m.raw?.pricing))
+        .filter((m) => m.id && isFree(m.id, m.raw?.pricing))
         .map(({ id, ctx }) => ({ id, ctx }));
       if (list.length) this.remote = list;
       // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
@@ -569,7 +569,9 @@ export class AhModelPicker extends LitElement {
    * 把模型清单按供应商分组（保持清单原有顺序，供应商按首次出现排序）。
    * 搜索过滤后调用，保证折叠计数与当前可见条目一致。
    */
-  private groupByVendor(models: string[]): { vendor: string; items: string[] }[] {
+  private groupByVendor(
+    models: string[]
+  ): { vendor: string; items: string[] }[] {
     const order: string[] = [];
     const map = new Map<string, string[]>();
     for (const m of models) {
@@ -687,11 +689,15 @@ export class AhModelPicker extends LitElement {
                   ({ vendor, items }) => html`
                     <div class="group">
                       <button
-                        class="group-head ${this.collapsed[vendor] ? 'collapsed' : ''}"
+                        class="group-head ${this.collapsed[vendor]
+                          ? 'collapsed'
+                          : ''}"
                         title=${this.collapsed[vendor]
                           ? `展开 ${vendor}（${items.length}）`
                           : `折叠 ${vendor}`}
-                        aria-expanded=${this.collapsed[vendor] ? 'false' : 'true'}
+                        aria-expanded=${this.collapsed[vendor]
+                          ? 'false'
+                          : 'true'}
                         @click=${() => this.toggleGroup(vendor)}
                       >
                         <svg
