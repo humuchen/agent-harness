@@ -44,6 +44,56 @@ export class AhPlugins extends LitElement {
     .state-disabled { color: var(--ah-danger); }
     button { margin-right: 6px; }
     .hint { color: var(--ah-text-muted); font-size: 12px; margin-top: 10px; }
+    /* ---- 移动端（≤640px）：6 列表格在窄屏溢出，转为卡片式堆叠布局 ---- */
+    @media (max-width: 640px) {
+      .wrap { padding: 12px 14px; }
+      .panel { padding: 4px 10px; overflow-x: visible; }
+      table { margin-top: 8px; }
+      thead { display: none; }
+      table, tbody, tr, td {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      tr {
+        border-bottom: 1px solid var(--ah-border);
+        border-radius: 0;
+        padding: 10px 2px;
+      }
+      tr:last-child { border-bottom: none; }
+      td {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 3px 0;
+        border-bottom: none;
+        font-size: 13px;
+        word-break: break-all;
+      }
+      /* 每个字段前显示原表头标签（data-label 由模板写入） */
+      td::before {
+        content: attr(data-label);
+        flex-shrink: 0;
+        color: var(--ah-text-muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      /* 操作行：按钮换行为一组，占满宽度便于点按 */
+      td.actions {
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 6px;
+        padding-top: 8px;
+        border-top: 1px dashed var(--ah-border);
+      }
+      td.actions::before { width: 100%; }
+      button {
+        margin-right: 0;
+        min-height: 32px;
+        padding: 4px 12px;
+      }
+    }
   `];
 
   @state() private loading = true;
@@ -125,12 +175,12 @@ export class AhPlugins extends LitElement {
                 ${this.plugins.map(
                   (p) => html`
                     <tr>
-                      <td>${esc(p.id)}</td>
-                      <td>${esc(p.name)}</td>
-                      <td>${esc(p.version)}</td>
-                      <td class=${p.state === 'enabled' ? 'state-enabled' : 'state-disabled'}>${esc(p.state)}</td>
-                      <td>${esc(p.dependencies.join(', ') || '-')}</td>
-                      <td>
+                      <td data-label="ID">${esc(p.id)}</td>
+                      <td data-label="名称">${esc(p.name)}</td>
+                      <td data-label="版本">${esc(p.version)}</td>
+                      <td data-label="状态" class=${p.state === 'enabled' ? 'state-enabled' : 'state-disabled'}>${esc(p.state)}</td>
+                      <td data-label="依赖">${esc(p.dependencies.join(', ') || '-')}</td>
+                      <td class="actions">
                         <button
                           ?disabled=${this.busy !== null || p.state === 'enabled'}
                           @click=${() => this.act(p.id, 'enable')}
