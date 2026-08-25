@@ -97,9 +97,7 @@ export class AhModal extends LitElement {
     .leaving .panel {
       opacity: 0;
       transform: scale(0.96);
-      transition:
-        opacity ${LEAVE_MS}ms ease,
-        transform ${LEAVE_MS}ms ease;
+      transition: opacity ${LEAVE_MS}ms ease, transform ${LEAVE_MS}ms ease;
     }
     @keyframes ahm-fade-in {
       from {
@@ -222,9 +220,7 @@ export class AhModal extends LitElement {
       cursor: pointer;
       border-radius: var(--ah-radius-md);
       border: 1px solid var(--ah-border);
-      transition:
-        background 120ms ease,
-        border-color 120ms ease,
+      transition: background 120ms ease, border-color 120ms ease,
         color 120ms ease;
     }
     .btn.ghost {
@@ -344,9 +340,8 @@ export class AhModal extends LitElement {
             this.shadowRoot?.querySelector<HTMLElement>('.panel');
           target?.focus();
           // prompt 形态：光标移到末尾并全选便于直接改写。
-          const inp = this.shadowRoot?.querySelector<HTMLInputElement>(
-            '.modal-input'
-          );
+          const inp =
+            this.shadowRoot?.querySelector<HTMLInputElement>('.modal-input');
           if (inp) {
             inp.focus();
             inp.select();
@@ -440,13 +435,13 @@ export class AhModal extends LitElement {
     const iconChar =
       this.variant === 'warning' ? '!' : this.variant === 'confirm' ? '?' : 'i';
     const hasHeader = !!this.title || this.showClose;
-    const describedBy =
-      this.message && !this.showInput ? ' id="ahm-desc"' : '';
+    const describedBy = this.message && !this.showInput ? '确定要删除吗？' : '';
     return html`
       <div
         class="scrim ${this.leaving ? 'leaving' : ''}"
         @click=${(e: MouseEvent) => {
-          if (this.maskClosable && e.target === e.currentTarget) this.onCancel();
+          if (this.maskClosable && e.target === e.currentTarget)
+            this.onCancel();
         }}
       >
         <div
@@ -506,7 +501,11 @@ export class AhModal extends LitElement {
           </div>
           <div class="foot">
             ${this.showCancel
-              ? html`<button type="button" class="btn ghost" @click=${this.onCancel}>
+              ? html`<button
+                  type="button"
+                  class="btn ghost"
+                  @click=${this.onCancel}
+                >
                   ${this.cancelText}
                 </button>`
               : nothing}
@@ -532,7 +531,9 @@ export class AhModal extends LitElement {
    * 确认框：resolve true=确认 / false=取消或关闭。
    * 动态创建实例挂到 body，结束后自清理，调用方零模板侵入。
    */
-  static confirm(opts: AhModalOptions & { maskClosable?: boolean }): Promise<boolean> {
+  static confirm(
+    opts: AhModalOptions & { maskClosable?: boolean }
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       const el = document.createElement('ah-modal') as AhModal;
       Object.assign(el, {
@@ -581,7 +582,9 @@ export class AhModal extends LitElement {
   }
 
   /** 输入框（prompt 形态）：resolve 输入值；取消/关闭返回 null。 */
-  static prompt(opts: AhModalOptions & { inputValue?: string; inputPlaceholder?: string }): Promise<string | null> {
+  static prompt(
+    opts: AhModalOptions & { inputValue?: string; inputPlaceholder?: string }
+  ): Promise<string | null> {
     return new Promise((resolve) => {
       const el = document.createElement('ah-modal') as AhModal;
       Object.assign(el, {

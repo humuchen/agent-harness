@@ -6,8 +6,20 @@ import { client, setToken } from './api';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
-import { isRetrievalTool, safeJson, parseDeepThinking, formatToolJson } from './chat-utils';
-import { buildInsights, countTraceNodes, parseCostBreakdown, renderInsights, renderTraceNode, type Insights } from './chat-trace';
+import {
+  isRetrievalTool,
+  safeJson,
+  parseDeepThinking,
+  formatToolJson
+} from './chat-utils';
+import {
+  buildInsights,
+  countTraceNodes,
+  parseCostBreakdown,
+  renderInsights,
+  renderTraceNode,
+  type Insights
+} from './chat-trace';
 import { toRichHtml, escapeHtml } from './markdown';
 import {
   sanitizeMessages,
@@ -85,10 +97,6 @@ interface ChatMsg {
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
   plan?: ExecutionPlanView;
 }
-
-
-
-
 
 interface SessionView {
   id: string;
@@ -270,7 +278,11 @@ export class AhChat extends LitElement {
     const t = this.threads[sid];
     if (!t || !t.length) return;
     const meta = this.sessions.find((s) => s.id === sid);
-    void saveThread(sid, { title: meta?.title ?? '新对话', updatedAt: Date.now() }, t);
+    void saveThread(
+      sid,
+      { title: meta?.title ?? '新对话', updatedAt: Date.now() },
+      t
+    );
   }
 
   /** 取某会话当前流式消息。 */
@@ -335,7 +347,8 @@ export class AhChat extends LitElement {
     }
     // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
     // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
-    const loadList = () => withTimeout(client.listChatSessions(), 6000, '加载会话列表');
+    const loadList = () =>
+      withTimeout(client.listChatSessions(), 6000, '加载会话列表');
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const list = await loadList();
@@ -493,8 +506,7 @@ export class AhChat extends LitElement {
       cls: string;
     }[];
   } {
-    const WINDOW =
-      this.serverCtxWindow > 0 ? this.serverCtxWindow : 128000; // 上下文窗口（token）：优先后端 /api/state 下发（按模型解析，如 ox-alpha→1M），未到位时落基线
+    const WINDOW = this.serverCtxWindow > 0 ? this.serverCtxWindow : 128000; // 上下文窗口（token）：优先后端 /api/state 下发（按模型解析，如 ox-alpha→1M），未到位时落基线
     const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
     const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
     const SKILL_BASE = 80; // 技能基线
@@ -745,7 +757,11 @@ export class AhChat extends LitElement {
     if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
       try {
         // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
-        const s = await withTimeout(client.getChatSession(id), 8000, '恢复会话历史');
+        const s = await withTimeout(
+          client.getChatSession(id),
+          8000,
+          '恢复会话历史'
+        );
         // 服务端数据先经消毒（类型收敛 / 过滤非法条目 / 连续重复去重 / 保序）再入内存。
         const clean = sanitizeMessages(
           s.messages.map((m) => ({
@@ -767,7 +783,10 @@ export class AhChat extends LitElement {
           localBuf && localBuf.length
             ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
             : clean;
-        this.threads[id] = merged.map((m) => ({ ...m, id: this.nextId++ })) as ChatMsg[];
+        this.threads[id] = merged.map((m) => ({
+          ...m,
+          id: this.nextId++
+        })) as ChatMsg[];
         // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
         this.applyPlanStatusLookup(id, planStatusLookup);
         this.restoreFailed[id] = false;
@@ -780,11 +799,13 @@ export class AhChat extends LitElement {
             ...(m as Omit<ChatMsg, 'id'>),
             id: this.nextId++
           })) as ChatMsg[];
-          this.error = '⚠️ 服务端历史拉取失败，已从历史镜像恢复（可能非最新）。';
+          this.error =
+            '⚠️ 服务端历史拉取失败，已从历史镜像恢复（可能非最新）。';
         } else {
           this.threads[id] = localBuf ?? [];
           this.restoreFailed[id] = true;
-          this.error = '⚠️ 历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。';
+          this.error =
+            '⚠️ 历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。';
         }
       }
     }
@@ -817,7 +838,10 @@ export class AhChat extends LitElement {
    * 镜像里的 running 态说明上次执行被中断（刷新/断连），收敛为 failed ——
    * 卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默自动重放。
    */
-  private applyPlanStatusLookup(sid: string, lookup: Map<string, PlanExecMirror>) {
+  private applyPlanStatusLookup(
+    sid: string,
+    lookup: Map<string, PlanExecMirror>
+  ) {
     if (!lookup.size) return;
     for (const m of this.threads[sid] ?? []) {
       if (!m.plan || this.planExec[m.id]) continue;
@@ -980,8 +1004,7 @@ export class AhChat extends LitElement {
       agentId: this.agentId || undefined,
       sessionId,
       chatSessionId: sessionId,
-      attachments:
-        imageAttachments.length > 0 ? imageAttachments : undefined,
+      attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
       // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
       web: this.web || undefined,
       // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
@@ -991,7 +1014,9 @@ export class AhChat extends LitElement {
       interactionMode:
         this.interactionMode === 'plan' && !opts.planTask ? 'plan' : undefined,
       planPhase:
-        this.interactionMode === 'plan' && !opts.planTask ? 'propose' : undefined
+        this.interactionMode === 'plan' && !opts.planTask
+          ? 'propose'
+          : undefined
     };
     // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
     this.lastInputBy[sessionId] = input;
@@ -1018,7 +1043,8 @@ export class AhChat extends LitElement {
         this.patchSession(sessionId, {
           error: true,
           content:
-            (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
+            (this.curSession(sessionId)?.content ?? '') ||
+            `⚠️ ${e?.message ?? e}`
         });
         return 'error';
       }
@@ -1084,7 +1110,8 @@ export class AhChat extends LitElement {
           signal: ac.signal
         })) {
           // 首个事件到达即视为链路恢复，清除「重连中」横幅。
-          if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
+          if (this.connState[sid] !== 'connected')
+            this.setConn(sid, 'connected');
           this.ingest(ev as StreamEvent, sid);
         }
         // 流正常关闭：无论是否经历过断连，横幅一律复位。否则「重连后服务端只回放
@@ -1100,9 +1127,12 @@ export class AhChat extends LitElement {
           // 停止即退出恢复循环：先清掉「重连中」横幅再抛，避免停止后残留。
           if (this.connState[sid] !== 'connected')
             this.setConn(sid, 'connected');
-          throw Object.assign(rawErr instanceof Error ? rawErr : new Error(String(rawErr)), {
-            name: 'UserStoppedRun'
-          });
+          throw Object.assign(
+            rawErr instanceof Error ? rawErr : new Error(String(rawErr)),
+            {
+              name: 'UserStoppedRun'
+            }
+          );
         }
         // 断连前已收到最终答复：内容完整，无需恢复。
         if (this.finishedBy[sid]) return;
@@ -1111,11 +1141,7 @@ export class AhChat extends LitElement {
           rawErr instanceof ApiError &&
           rawErr.status >= 400 &&
           rawErr.status < 500;
-        if (
-          jobGone ||
-          !this.jobBy[sid] ||
-          attempts > MAX_ATTEMPTS
-        ) {
+        if (jobGone || !this.jobBy[sid] || attempts > MAX_ATTEMPTS) {
           throw rawErr;
         }
         const delay = Math.min(8000, 1000 * 2 ** (attempts - 1));
@@ -1228,8 +1254,7 @@ export class AhChat extends LitElement {
       if (et === 'error') this.erroredBy[sid] = true;
       // 运行已终结：链路无论此前是否断连过都视为恢复，立即摘掉「连接中断」横幅，
       // 防止「重连补收末尾终结事件 → 流关闭」时横幅无人清理而永久残留。
-      if (this.connState[sid] !== 'connected')
-        this.setConn(sid, 'connected');
+      if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
     }
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
     this.traceHandle(ev, sid);
@@ -1257,11 +1282,23 @@ export class AhChat extends LitElement {
                 this.planExec[p.id]?.status ?? 'pending'
               )
           );
-        patch({ plan });
+        patch({
+          plan,
+          // 计划卡片消息的内容占位：propose 阶段服务端抑制全部内容事件（防 JSON 外泄）、
+          // 合成 run:end 的摘要又因已挂卡片被跳过 —— 若不在此补一句摘要，
+          // 该消息 content 永远为空，回答区会永久停留在「等待响应…」。
+          ...(c.content?.trim()
+            ? {}
+            : {
+                content: `已生成执行计划（共 ${plan.tasks.length} 个任务）：${plan.goal}。确认后将按依赖顺序逐任务执行。`
+              })
+        });
         this.planExec = {
           ...this.planExec,
           [c.id]: dupSrc
-            ? { ...(this.planExec[dupSrc.id] ?? { status: 'pending', done: {} }) }
+            ? {
+                ...(this.planExec[dupSrc.id] ?? { status: 'pending', done: {} })
+              }
             : { status: 'pending', done: {} }
         };
         break;
@@ -1373,10 +1410,21 @@ export class AhChat extends LitElement {
         this.finalBy[sid] = finalStr;
         // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
         // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
-        // 计划模式：消息已挂计划卡片（content=友好摘要）时，跳过任何迟到的 raw final 覆盖。
+        // 计划模式：消息已挂计划卡片时跳过 raw final 覆盖（防原始 JSON 外泄），但若 content
+        // 仍为空则兜底填入摘要占位 —— 避免 run 结束后回答区永久停留在「等待响应…」。
         if (!this.received[sid] && finalStr) {
           const c = cur();
           if (c && !c.plan) patch({ content: finalStr });
+          else if (c && c.plan && !c.content?.trim()) {
+            const plan = c.plan as
+              | { goal?: string; tasks?: unknown[] }
+              | undefined;
+            patch({
+              content: `已生成执行计划（共 ${
+                plan?.tasks?.length ?? '?'
+              } 个任务）：${plan?.goal ?? ''}。确认后将按依赖顺序逐任务执行。`
+            });
+          }
         }
         break;
       }
@@ -1385,6 +1433,8 @@ export class AhChat extends LitElement {
         if (c)
           patch({
             error: true,
+            // 保留已有内容；内容为空时才填错误占位 —— 否则「等待响应…」会被
+            // 错误文本替换后仍因 content 非空判断而显示异常。
             content:
               c.content || `⚠️ ${escapeHtml(String((ev as any).message ?? ev))}`
           });
@@ -1558,9 +1608,16 @@ export class AhChat extends LitElement {
         // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
         // 仅在服务端落盘后的恢复视图中出现、实时流视图中消失（时有时无的根因）。
         const est = (ev as any).estTokens as
-          | { system: number; tools: number; history: number; completion: number }
+          | {
+              system: number;
+              tools: number;
+              history: number;
+              completion: number;
+            }
           | undefined;
-        const estTotal = est ? est.system + est.tools + est.history + est.completion : 0;
+        const estTotal = est
+          ? est.system + est.tools + est.history + est.completion
+          : 0;
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(
@@ -1575,8 +1632,16 @@ export class AhChat extends LitElement {
             ...(est
               ? {
                   系统: String(est.system),
-                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
-                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  工具: `${est.tools}${
+                    estTotal
+                      ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)`
+                      : ''
+                  }`,
+                  历史: `${est.history}${
+                    estTotal
+                      ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)`
+                      : ''
+                  }`,
                   输出: String(est.completion)
                 }
               : {})
@@ -2046,16 +2111,25 @@ export class AhChat extends LitElement {
       </div>`;
     }
     return html`<div class="conn-banner lost">
-      <span>⚠️ 与服务器的连接已断开${this.jobBy[this.activeId] ? '' : '，本次运行已丢失'}</span>
+      <span
+        >⚠️
+        与服务器的连接已断开${this.jobBy[this.activeId]
+          ? ''
+          : '，本次运行已丢失'}</span
+      >
       ${this.jobBy[this.activeId]
-        ? html`<button class="conn-retry" @click=${() => this.resumeLost(this.activeId)}>
+        ? html`<button
+            class="conn-retry"
+            @click=${() => this.resumeLost(this.activeId)}
+          >
             重新连接
           </button>`
         : nothing}
     </div>`;
   }
 
-  private renderMessage(m: ChatMsg) {    // 用户消息：渲染气泡文本 + 附件预览。
+  private renderMessage(m: ChatMsg) {
+    // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
       const hasAttachments = m.attachments && m.attachments.length > 0;
       // 编辑态：气泡原位替换为编辑框（草稿 + 取消/发送），不再展示原文。
@@ -2108,43 +2182,78 @@ export class AhChat extends LitElement {
           <div class="avatar">你</div>
           <div class="user-col">
             <div class="bubble">
-              ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
+              ${hasAttachments
+                ? this.renderAttachments(m.attachments!)
+                : nothing}
               <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
             </div>
             ${m.content?.trim()
-              ? html`<div class="msg-actions ${this.hoverUserMsgId === m.id ? 'show' : ''}">
-                <button
-                  type="button"
-                  class="msg-action"
-                  title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
-                  @click=${() => this.copyMsgText(m.id, m.content)}
+              ? html`<div
+                  class="msg-actions ${this.hoverUserMsgId === m.id
+                    ? 'show'
+                    : ''}"
                 >
-                  ${this.copiedMsgId === m.id
-                    ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>`
-                    : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-                      </svg>`}
-                </button>
-                <button
-                  type="button"
-                  class="msg-action"
-                  title="编辑"
-                  ?disabled=${this.streaming[this.activeId] === true}
-                  @click=${() => this.startEdit(m.id, m.content)}
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                    <path d="m15 5 4 4" />
-                  </svg>
-                </button>
-              </div>`
-            : nothing}
+                  <button
+                    type="button"
+                    class="msg-action"
+                    title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
+                    @click=${() => this.copyMsgText(m.id, m.content)}
+                  >
+                    ${this.copiedMsgId === m.id
+                      ? html`<svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2.2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>`
+                      : html`<svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <rect
+                            width="14"
+                            height="14"
+                            x="8"
+                            y="8"
+                            rx="2"
+                            ry="2"
+                          />
+                          <path
+                            d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+                          />
+                        </svg>`}
+                  </button>
+                  <button
+                    type="button"
+                    class="msg-action"
+                    title="编辑"
+                    ?disabled=${this.streaming[this.activeId] === true}
+                    @click=${() => this.startEdit(m.id, m.content)}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path
+                        d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"
+                      />
+                      <path d="m15 5 4 4" />
+                    </svg>
+                  </button>
+                </div>`
+              : nothing}
           </div>
         </div>
       `;
@@ -2166,8 +2275,7 @@ export class AhChat extends LitElement {
     const isAnswering = isStreamingAssistant && !!m.content;
 
     // 复制按钮：仅在回答已产出内容且非流式进行中时显示。
-    const showCopy =
-      !!m.content?.trim() && !isStreamingAssistant;
+    const showCopy = !!m.content?.trim() && !isStreamingAssistant;
 
     return html`
       <div class="msg assistant ${m.error ? 'error' : ''}">
@@ -2180,14 +2288,28 @@ export class AhChat extends LitElement {
               @click=${() => this.copyMsgText(m.id, m.content)}
             >
               ${this.copiedMsgId === m.id
-                ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                ? html`<svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <path d="M20 6 9 17l-5-5" />
                   </svg>`
-                : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                : html`<svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                    <path
+                      d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+                    />
                   </svg>`}
             </button>`
           : nothing}
@@ -2330,12 +2452,12 @@ export class AhChat extends LitElement {
       st.status === 'pending'
         ? '待确认'
         : st.status === 'running'
-          ? `执行中 · ${st.currentTaskId ?? ''}`
-          : st.status === 'done'
-            ? '已完成'
-            : st.status === 'failed'
-              ? `执行失败 · ${st.failedTaskId ?? ''}`
-              : '已取消';
+        ? `执行中 · ${st.currentTaskId ?? ''}`
+        : st.status === 'done'
+        ? '已完成'
+        : st.status === 'failed'
+        ? `执行失败 · ${st.failedTaskId ?? ''}`
+        : '已取消';
     return html`<div class="plan-card">
       <div class="plan-head">
         <span class="plan-title">📋 执行计划</span>
@@ -2346,7 +2468,10 @@ export class AhChat extends LitElement {
               <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
                 确认执行
               </button>
-              <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
+              <button
+                class="plan-btn ghost"
+                @click=${() => this.cancelPlan(m.id)}
+              >
                 取消
               </button>
             `
@@ -2364,9 +2489,15 @@ export class AhChat extends LitElement {
           const done = !!st.done[t.id];
           const active = st.status === 'running' && st.currentTaskId === t.id;
           const failed = st.status === 'failed' && st.failedTaskId === t.id;
-          return html`<li class="plan-task ${done ? 'done' : ''} ${active ? 'active' : ''} ${failed ? 'failed' : ''}">
+          return html`<li
+            class="plan-task ${done ? 'done' : ''} ${active
+              ? 'active'
+              : ''} ${failed ? 'failed' : ''}"
+          >
             <div class="pt-head">
-              <span class="pt-mark">${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span>
+              <span class="pt-mark"
+                >${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span
+              >
               <b>${escapeHtml(t.title)}</b>
             </div>
             ${t.steps.length
@@ -2398,7 +2529,11 @@ export class AhChat extends LitElement {
       // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
       this.planExec = {
         ...this.planExec,
-        [m.id]: { ...this.planExec[m.id], status: 'running', currentTaskId: task.id }
+        [m.id]: {
+          ...this.planExec[m.id],
+          status: 'running',
+          currentTaskId: task.id
+        }
       };
       const parts = [`【计划任务 ${task.id}】${task.title}`];
       if (task.steps.length) {
@@ -2446,7 +2581,12 @@ export class AhChat extends LitElement {
     }
     this.planExec = {
       ...this.planExec,
-      [m.id]: { ...this.planExec[m.id], status: 'done', currentTaskId: undefined, failedTaskId: undefined }
+      [m.id]: {
+        ...this.planExec[m.id],
+        status: 'done',
+        currentTaskId: undefined,
+        failedTaskId: undefined
+      }
     };
   }
 
@@ -2454,11 +2594,15 @@ export class AhChat extends LitElement {
   private cancelPlan(msgId: number) {
     const st = this.planExec[msgId];
     if (!st || st.status !== 'pending') return;
-    this.planExec = { ...this.planExec, [msgId]: { ...st, status: 'cancelled' } };
+    this.planExec = {
+      ...this.planExec,
+      [msgId]: { ...st, status: 'cancelled' }
+    };
   }
 
   /** 渲染折叠式附加信息（调用链路 / 关键信息），默认收起，不干扰主阅读流。 */
-  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {    const hasTrace = !!(m.trace && m.trace.length > 0);
+  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
+    const hasTrace = !!(m.trace && m.trace.length > 0);
     const insights = hasTrace ? buildInsights(m.trace!) : null;
     if (!hasTrace && !insights) return html``;
     return html`
@@ -2481,9 +2625,7 @@ export class AhChat extends LitElement {
                   <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
                 </svg>
                 <span>调用链路</span>
-                <span class="tcount"
-                  >${countTraceNodes(m.trace!)} 节点</span
-                >
+                <span class="tcount">${countTraceNodes(m.trace!)} 节点</span>
                 ${isStreaming
                   ? html`<span class="dots"><i></i><i></i><i></i></span>`
                   : nothing}
@@ -2502,7 +2644,6 @@ export class AhChat extends LitElement {
       </div>
     `;
   }
-
 
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
@@ -2572,18 +2713,6 @@ export class AhChat extends LitElement {
             @input=${(e: Event) =>
               (this.model = (e.target as HTMLInputElement).value)}
           />
-          <select
-            class="agent-select"
-            title="选择业务 Agent（默认走通用 Agent）"
-            style="margin-left:8px;height:32px;max-width:180px;border-radius:8px;border:1px solid var(--ah-border);background:var(--ah-surface-2);color:var(--ah-text);padding:0 6px"
-            .value=${this.agentId}
-            @change=${(e: Event) =>
-              (this.agentId = (e.target as HTMLSelectElement).value)}
-          >
-            ${this.agents.map(
-              (a) => html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
-            )}
-          </select>
           <button
             class="toggle ${this.deepThink ? 'on' : ''}"
             title="深度思考"
@@ -2733,29 +2862,42 @@ export class AhChat extends LitElement {
             </div>
             <div class="composer-footer">
               <div class="composer-footer-left">
-              <label class="attach-btn" title="上传附件">
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,.txt,.md,.csv,.json"
-                  style="display:none"
-                  @change=${this.onFileSelect}
-                />
-                +
-              </label>
-              <select
-                class="mode-select"
-                title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
-                aria-label="运行模式"
-                .value=${this.interactionMode}
-                @change=${(e: Event) =>
-                  this.setInteractionMode(
-                    (e.target as HTMLSelectElement).value as 'qa' | 'plan'
+                <label class="attach-btn" title="上传附件">
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/*,.txt,.md,.csv,.json"
+                    style="display:none"
+                    @change=${this.onFileSelect}
+                  />
+                  +
+                </label>
+                <select
+                  class="mode-select"
+                  title="选择业务 Agent（默认走通用 Agent）"
+                  aria-label="业务 Agent"
+                  .value=${this.agentId}
+                  @change=${(e: Event) =>
+                    (this.agentId = (e.target as HTMLSelectElement).value)}
+                >
+                  ${this.agents.map(
+                    (a) =>
+                      html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
                   )}
-              >
-                <option value="qa">回答</option>
-                <option value="plan">计划</option>
-              </select>
+                </select>
+                <select
+                  class="mode-select"
+                  title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
+                  aria-label="运行模式"
+                  .value=${this.interactionMode}
+                  @change=${(e: Event) =>
+                    this.setInteractionMode(
+                      (e.target as HTMLSelectElement).value as 'qa' | 'plan'
+                    )}
+                >
+                  <option value="qa">回答</option>
+                  <option value="plan">计划</option>
+                </select>
               </div>
               <div class="composer-footer-right">
                 ${this.renderCtxRing()}

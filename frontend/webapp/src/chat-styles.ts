@@ -447,6 +447,7 @@ export const chatStyles = [
       border-radius: 14px;
       line-height: 1.65;
       font-size: 14px;
+      max-width: 745px;
       overflow-wrap: anywhere;
     }
     .msg.assistant .bubble {
@@ -456,7 +457,6 @@ export const chatStyles = [
       background: var(--ah-surface-1);
       border: 1px solid var(--ah-border);
       border-top-left-radius: 4px;
-      max-width: 760px;
     }
     .msg.user .bubble {
       background: color-mix(
@@ -465,7 +465,6 @@ export const chatStyles = [
         var(--ah-surface-2)
       );
       border-top-right-radius: 4px;
-      max-width: 710px;
     }
     .msg.assistant.error .bubble {
       border-color: var(--ah-danger, #e24b4a);
@@ -488,9 +487,7 @@ export const chatStyles = [
       margin-top: 2px;
       opacity: 0;
       visibility: hidden;
-      transition:
-        opacity 0.15s ease,
-        visibility 0.15s ease;
+      transition: opacity 0.15s ease, visibility 0.15s ease;
       flex: 0 0 auto;
     }
     /* 悬停整条消息时显示；触屏无 hover，保持常显兜底。 */
@@ -516,9 +513,7 @@ export const chatStyles = [
       background: transparent;
       color: var(--ah-text-muted);
       cursor: pointer;
-      transition:
-        background 0.12s ease,
-        color 0.12s ease;
+      transition: background 0.12s ease, color 0.12s ease;
     }
     .msg-action:hover {
       background: var(--ah-surface-2);
@@ -562,9 +557,7 @@ export const chatStyles = [
       background: var(--ah-surface-2);
       color: var(--ah-text-muted);
       cursor: pointer;
-      transition:
-        background 0.12s ease,
-        color 0.12s ease;
+      transition: background 0.12s ease, color 0.12s ease;
     }
     .edit-btn:hover {
       background: var(--ah-surface-3, var(--ah-surface-2));
@@ -600,10 +593,7 @@ export const chatStyles = [
       color: var(--ah-text-muted);
       cursor: pointer;
       opacity: 0;
-      transition:
-        opacity 0.15s ease,
-        background 0.12s ease,
-        color 0.12s ease;
+      transition: opacity 0.15s ease, background 0.12s ease, color 0.12s ease;
     }
     .msg.assistant:hover .assistant-copy,
     .assistant-copy.done {
