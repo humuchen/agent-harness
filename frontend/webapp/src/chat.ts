@@ -135,6 +135,16 @@ export class AhChat extends LitElement {
   @state() attachments: UploadedFile[] = [];
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
+  /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
+  @state() private hoverUserMsgId = -1;
+  /** 正在编辑的用户消息 id；-1 表示不在编辑态。 */
+  @state() private editingMsgId = -1;
+  /** 编辑中的草稿文本。 */
+  @state() private editingDraft = '';
+  /** 最近一次复制成功的消息 id + 时间戳：按钮短暂变为「已复制 ✓」。 */
+  @state() private copiedMsgId = -1;
+  /** 复制回执定时器。 */
+  private copiedTimer: ReturnType<typeof setTimeout> | null = null;
   /** 上传中的文件追踪（key 为文件名+时间戳） */
   private uploadingFiles: Map<
     string,
@@ -1702,6 +1712,59 @@ export class AhChat extends LitElement {
 
   /* ----------------------- 渲染辅助 ----------------------- */
 
+  /** 复制消息原文到剪贴板，成功后短暂显示「已复制 ✓」回执。 */
+  private async copyMsgText(msgId: number, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 剪贴板 API 不可用 / 被拒绝时的兜底：execCommand。
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+    this.copiedMsgId = msgId;
+    if (this.copiedTimer) clearTimeout(this.copiedTimer);
+    this.copiedTimer = setTimeout(() => {
+      this.copiedMsgId = -1;
+      this.copiedTimer = null;
+    }, 1500);
+  }
+
+  /** 进入用户消息编辑态：气泡原位替换为输入框并自动聚焦。 */
+  private startEdit(msgId: number, content: string) {
+    this.editingMsgId = msgId;
+    this.editingDraft = content;
+    this.hoverUserMsgId = -1;
+  }
+
+  /** 退出编辑态，丢弃草稿。 */
+  private cancelEdit() {
+    this.editingMsgId = -1;
+    this.editingDraft = '';
+  }
+
+  /**
+   * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
+   * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   */
+  private async sendEdit(_msgId: number) {
+    const draft = this.editingDraft.trim();
+    if (!draft || this.streaming[this.activeId] === true) return;
+    this.cancelEdit();
+    const sessionId = await this.ensureSession();
+    this.input = draft;
+    await this.send();
+  }
+
   private onInput(e: Event) {
     this.input = (e.target as HTMLTextAreaElement).value;
     const ta = e.target as HTMLTextAreaElement;
@@ -1945,12 +2008,93 @@ export class AhChat extends LitElement {
   private renderMessage(m: ChatMsg) {    // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
       const hasAttachments = m.attachments && m.attachments.length > 0;
+      // 编辑态：气泡原位替换为编辑框（草稿 + 取消/发送），不再展示原文。
+      if (this.editingMsgId === m.id) {
+        return html`
+          <div class="msg user">
+            <div class="avatar">你</div>
+            <div class="bubble editing">
+              <textarea
+                class="edit-input"
+                .value=${this.editingDraft}
+                @input=${(e: Event) =>
+                  (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
+                @keydown=${(e: KeyboardEvent) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void this.sendEdit(m.id);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.cancelEdit();
+                  }
+                }}
+              ></textarea>
+              <div class="edit-actions">
+                <button
+                  type="button"
+                  class="edit-btn"
+                  title="取消编辑 (Esc)"
+                  @click=${() => this.cancelEdit()}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  class="edit-btn primary"
+                  title="发送 (Enter)"
+                  ?disabled=${!this.editingDraft.trim() ||
+                  this.streaming[this.activeId] === true}
+                  @click=${() => void this.sendEdit(m.id)}
+                >
+                  发送 ↑
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
       return html`
         <div class="msg user">
           <div class="avatar">你</div>
-          <div class="bubble">
-            ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
-            <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
+          <div class="user-col">
+            <div class="bubble">
+              ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
+              <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
+            </div>
+            ${m.content?.trim()
+              ? html`<div class="msg-actions ${this.hoverUserMsgId === m.id ? 'show' : ''}">
+                <button
+                  type="button"
+                  class="msg-action"
+                  title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
+                  @click=${() => this.copyMsgText(m.id, m.content)}
+                >
+                  ${this.copiedMsgId === m.id
+                    ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>`
+                    : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                      </svg>`}
+                </button>
+                <button
+                  type="button"
+                  class="msg-action"
+                  title="编辑"
+                  ?disabled=${this.streaming[this.activeId] === true}
+                  @click=${() => this.startEdit(m.id, m.content)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    <path d="m15 5 4 4" />
+                  </svg>
+                </button>
+              </div>`
+            : nothing}
           </div>
         </div>
       `;
@@ -1971,9 +2115,32 @@ export class AhChat extends LitElement {
     const isThinking = isStreamingAssistant && !m.content;
     const isAnswering = isStreamingAssistant && !!m.content;
 
+    // 复制按钮：仅在回答已产出内容且非流式进行中时显示。
+    const showCopy =
+      !!m.content?.trim() && !isStreamingAssistant;
+
     return html`
       <div class="msg assistant ${m.error ? 'error' : ''}">
         <div class="avatar">A</div>
+        ${showCopy
+          ? html`<button
+              type="button"
+              class="assistant-copy ${this.copiedMsgId === m.id ? 'done' : ''}"
+              title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
+              @click=${() => this.copyMsgText(m.id, m.content)}
+            >
+              ${this.copiedMsgId === m.id
+                ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>`
+                : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                  </svg>`}
+            </button>`
+          : nothing}
         <div class="bubble">
           ${showThinking && this.deepThink
             ? this.renderThinking(m, isThinking)

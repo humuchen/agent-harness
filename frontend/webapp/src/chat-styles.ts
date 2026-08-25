@@ -470,6 +470,156 @@ export const chatStyles = [
     .msg.assistant.error .bubble {
       border-color: var(--ah-danger, #e24b4a);
     }
+    /* ---- 用户消息悬停操作（复制 / 编辑）---- */
+    .msg {
+      position: relative;
+    }
+    .user-col {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .msg-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-top: 2px;
+      opacity: 0;
+      visibility: hidden;
+      transition:
+        opacity 0.15s ease,
+        visibility 0.15s ease;
+      flex: 0 0 auto;
+    }
+    /* 悬停整条消息时显示；触屏无 hover，保持常显兜底。 */
+    .msg.user:hover .msg-actions {
+      opacity: 1;
+      visibility: visible;
+    }
+    @media (hover: none) {
+      .msg-actions {
+        opacity: 1;
+        visibility: visible;
+      }
+    }
+    .msg-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ah-text-muted);
+      cursor: pointer;
+      transition:
+        background 0.12s ease,
+        color 0.12s ease;
+    }
+    .msg-action:hover {
+      background: var(--ah-surface-2);
+      color: var(--ah-text);
+    }
+    .msg-action svg {
+      width: 14px;
+      height: 14px;
+    }
+    /* 编辑态：气泡变为输入框 + 操作按钮。 */
+    .bubble.editing {
+      min-width: min(560px, calc(100vw - 140px));
+    }
+    .edit-input {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 64px;
+      max-height: 200px;
+      resize: vertical;
+      padding: 8px 10px;
+      border: 1px solid var(--ah-accent, #2997ff);
+      border-radius: 8px;
+      background: var(--ah-surface-1);
+      color: var(--ah-text);
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.55;
+      outline: none;
+    }
+    .edit-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .edit-btn {
+      padding: 4px 12px;
+      font-size: 12.5px;
+      border: 1px solid var(--ah-border);
+      border-radius: 8px;
+      background: var(--ah-surface-2);
+      color: var(--ah-text-muted);
+      cursor: pointer;
+      transition:
+        background 0.12s ease,
+        color 0.12s ease;
+    }
+    .edit-btn:hover {
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      color: var(--ah-text);
+    }
+    .edit-btn.primary {
+      background: var(--ah-accent, #2997ff);
+      border-color: var(--ah-accent, #2997ff);
+      color: #fff;
+    }
+    .edit-btn.primary:hover {
+      filter: brightness(1.08);
+    }
+    .edit-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    /* ---- 助手消息右上角复制按钮 ---- */
+    .assistant-copy {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid var(--ah-border);
+      border-radius: 7px;
+      background: var(--ah-surface-2);
+      color: var(--ah-text-muted);
+      cursor: pointer;
+      opacity: 0;
+      transition:
+        opacity 0.15s ease,
+        background 0.12s ease,
+        color 0.12s ease;
+    }
+    .msg.assistant:hover .assistant-copy,
+    .assistant-copy.done {
+      opacity: 1;
+    }
+    .assistant-copy:hover {
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      color: var(--ah-text);
+    }
+    .assistant-copy svg {
+      width: 13px;
+      height: 13px;
+    }
+    .assistant-copy.done {
+      color: var(--ah-ok, #34a853);
+    }
     .msg-text {
       font-size: 14px;
       line-height: 1.65;
@@ -2202,6 +2352,10 @@ export const chatStyles = [
       background: rgba(148, 163, 184, 0.18);
       color: #94a3b8;
     }
+    .pill.failed {
+      background: rgba(248, 113, 113, 0.16);
+      color: #f87171;
+    }
     .plan-btn {
       border: none;
       border-radius: 8px;
@@ -2260,6 +2414,15 @@ export const chatStyles = [
     .plan-task.done b {
       text-decoration: line-through;
       opacity: 0.65;
+    }
+    .plan-task.failed {
+      background: rgba(248, 113, 113, 0.06);
+      border-radius: 8px;
+    }
+    .plan-task.failed .pt-mark {
+      background: rgba(248, 113, 113, 0.18);
+      color: #f87171;
+      border-color: transparent;
     }
     .pt-steps {
       margin: 6px 0 0 30px;
