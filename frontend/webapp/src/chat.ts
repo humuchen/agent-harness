@@ -338,12 +338,14 @@ export class AhChat extends LitElement {
     } catch {
       /* ignore */
     }
-    // 恢复上次的模型选择与深度思考开关，跨刷新记忆。
+    // 恢复上次的模型选择与深度思考/联网开关，跨刷新记忆。
     try {
       const m = localStorage.getItem('ah_model');
       if (m !== null) this.model = m;
       const t = localStorage.getItem('ah_deep_think');
       if (t !== null) this.deepThink = t === '1';
+      const w = localStorage.getItem('ah_web');
+      if (w !== null) this.web = w === '1';
     } catch {
       /* ignore */
     }
@@ -2716,26 +2718,6 @@ export class AhChat extends LitElement {
             >${active ? escapeHtml(active.title) : '新对话'}</span
           >
           <span class="spacer"></span>
-          <button
-            class="toggle ${this.web ? 'on' : ''}"
-            title="联网搜索"
-            aria-label="联网搜索"
-            @click=${() => (this.web = !this.web)}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path
-                d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"
-              />
-            </svg>
-          </button>
         </div>
 
         <div class="scroll-region">
@@ -2886,6 +2868,7 @@ export class AhChat extends LitElement {
                 <ah-model-picker
                   .model=${this.model}
                   .deepThink=${this.deepThink}
+                  .web=${this.web}
                   @model-change=${(e: Event) => {
                     this.model = (e as CustomEvent<{ model: string }>).detail.model;
                     try {
@@ -2898,6 +2881,14 @@ export class AhChat extends LitElement {
                     this.deepThink = (e as CustomEvent<{ value: boolean }>).detail.value;
                     try {
                       localStorage.setItem('ah_deep_think', this.deepThink ? '1' : '0');
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  @web-change=${(e: Event) => {
+                    this.web = (e as CustomEvent<{ value: boolean }>).detail.value;
+                    try {
+                      localStorage.setItem('ah_web', this.web ? '1' : '0');
                     } catch {
                       /* ignore */
                     }

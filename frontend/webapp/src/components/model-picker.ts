@@ -278,6 +278,8 @@ export class AhModelPicker extends LitElement {
   @property({ type: String }) model = '';
   /** 深度思考开关（状态由宿主持有并透传）。 */
   @property({ type: Boolean }) deepThink = true;
+  /** 联网搜索开关（状态由宿主持有并透传）。 */
+  @property({ type: Boolean }) web = false;
 
   @state() private open = false;
   @state() private query = '';
@@ -341,9 +343,11 @@ export class AhModelPicker extends LitElement {
       const res = await fetch('https://openrouter.ai/api/v1/models');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { data?: { id?: string }[] };
+      // 过滤 :free 变体：免费模型在上游被激进限速，无余额 key 调用即 429
+      // （"temporarily rate-limited upstream"），实际不可用，不进清单误导选择。
       const ids = (data.data ?? [])
         .map((m) => String(m?.id ?? '').trim())
-        .filter(Boolean);
+        .filter((id) => id && !id.endsWith(':free'));
       if (ids.length) this.remote = ids;
     } catch {
       /* 离线 / 被拦截：保留本地清单即可，不打扰用户 */
@@ -364,6 +368,13 @@ export class AhModelPicker extends LitElement {
     const v = (e.target as HTMLInputElement).checked;
     this.dispatchEvent(
       new CustomEvent('think-change', { detail: { value: v }, bubbles: true, composed: true })
+    );
+  }
+
+  private toggleWeb(e: Event) {
+    const v = (e.target as HTMLInputElement).checked;
+    this.dispatchEvent(
+      new CustomEvent('web-change', { detail: { value: v }, bubbles: true, composed: true })
     );
   }
 
@@ -403,6 +414,17 @@ export class AhModelPicker extends LitElement {
               aria-label="深度思考"
               .checked=${this.deepThink}
               @change=${this.toggleThink}
+            />
+          </div>
+          <div class="opt-row" style="margin-top:8px">
+            <span class="opt-label">联网搜索</span>
+            <input
+              class="switch"
+              type="checkbox"
+              role="switch"
+              aria-label="联网搜索"
+              .checked=${this.web}
+              @change=${this.toggleWeb}
             />
           </div>
         </div>
