@@ -375,6 +375,11 @@ UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 | `GUARDRAIL_PII` | 是否在输出侧做 PII 脱敏 | `true` |
 | `GUARDRAIL_ALLOWLIST` | 命中即跳过注入拦截的关键词（逗号分隔） | 空 |
 
+> **误拦兜底**：若业务文本合理包含 `system prompt`、`jailbreak` 等注入特征词
+> （如计划模式下「优化 system prompt」的任务描述），除代码层的结构化输出
+> 弱信号豁免外，还可设 `GUARDRAIL_ALLOWLIST=system prompt,jailbreak`
+> 让命中这些关键词的输入/输出跳过注入检测（归一化后子串匹配）。
+
 关键能力：
 
 - **归一化注入检测**：先去零宽字符、折叠空白、去标点后做子串匹配，对大小写变形、
