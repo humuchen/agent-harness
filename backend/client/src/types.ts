@@ -22,6 +22,8 @@ export interface RunInput {
   modelBaseUrl?: string;
   /** 自定义模型专属 API Key。与 modelBaseUrl 搭配使用；缺省走服务端默认凭证。 */
   modelApiKey?: string;
+  /** 所选模型的官方上下文窗口上限（token）：来自模型目录 context_length，供 llm:usage 作分母。 */
+  ctxWindow?: number;
   maxSteps?: number;
   sessionId?: string;
   /** 多会话 Chat App：客户端分配的聊天会话 id，服务端据此把消息写入会话存储。 */

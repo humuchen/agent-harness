@@ -439,7 +439,7 @@ export class AhModelPicker extends LitElement {
   /** 尝试拉取 OpenRouter 公共模型列表（无需密钥）；失败静默保留本地清单。 */
   private async refreshModels() {
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/models');
+      const res = await fetch('https://openrouter.ai/api/v1/models?q=free');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as {
         data?: {
@@ -448,32 +448,12 @@ export class AhModelPicker extends LitElement {
           pricing?: { prompt?: string; completion?: string };
         }[];
       };
-      // 过滤不可用模型（选了就 429 的两类）：
-      // 1) `:free` 后缀变体 —— 上游激进限速，无余额 key 调用即 429；
-      // 2) 实际价格为 0 的模型（如 openrouter/free 免费池、0 价预览模型）——
-      //    与 :free 同样被限速，仅靠后缀判断拦不住。
-      const isFree = (
-        id: string,
-        pricing?: { prompt?: string; completion?: string }
-      ): boolean => {
-        if (id.endsWith(':free')) return true;
-        try {
-          return (
-            (Number(pricing?.prompt) || 0) === 0 &&
-            (Number(pricing?.completion) || 0) === 0
-          );
-        } catch {
-          return false;
-        }
-      };
-      const list: RemoteModel[] = (data.data ?? [])
-        .map((m) => ({
-          raw: m,
-          id: String(m?.id ?? '').trim(),
-          ctx: Number(m?.context_length) || 0
-        }))
-        .filter((m) => m.id && isFree(m.id, m.raw?.pricing))
-        .map(({ id, ctx }) => ({ id, ctx }));
+
+      const list: RemoteModel[] = (data.data ?? []).map((m) => ({
+        raw: m,
+        id: String(m?.id ?? '').trim(),
+        ctx: Number(m?.context_length) || 0
+      }));
       if (list.length) this.remote = list;
       // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
       if (this.model) this.emitCtx(this.ctxFor(this.model));

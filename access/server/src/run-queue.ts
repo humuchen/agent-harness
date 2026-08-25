@@ -56,6 +56,8 @@ export interface RunJob {
   modelBaseUrl?: string;
   /** 自定义模型专属 API Key（可选）。缺省走服务端默认凭证。 */
   modelApiKey?: string;
+  /** 所选模型的官方上下文窗口（token，可选）：前端从模型目录获取后随请求下发。 */
+  ctxWindow?: number;
   /** 会话/租户标识（P1-9）：记忆按 key 隔离并持久化到所选后端。 */
   sessionKey?: string;
   /** 单次 run 的循环步数上限（来自 UI 输入 / env MAX_STEPS）。 */
@@ -136,7 +138,7 @@ export class RunQueue {
    * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
    * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
    */
-  submit(input: { mode: RunMode; prompt: string; model?: string; modelBaseUrl?: string; modelApiKey?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' }): RunJob {
+  submit(input: { mode: RunMode; prompt: string; model?: string; modelBaseUrl?: string; modelApiKey?: string; ctxWindow?: number; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' }): RunJob {
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
     const descriptor: JobDescriptor = {
@@ -146,6 +148,7 @@ export class RunQueue {
       model: job.model,
       modelBaseUrl: job.modelBaseUrl,
       modelApiKey: job.modelApiKey,
+      ctxWindow: job.ctxWindow,
       sessionKey: job.sessionKey,
       maxSteps: job.maxSteps,
       verify: job.verify,
@@ -176,7 +179,7 @@ export class RunQueue {
 
   /** 仅创建本地 RunJob（用于 SSE 事件缓冲 / 订阅查找），不触发执行。 */
   private makeJob(
-    input: { mode: RunMode; prompt: string; model?: string; modelBaseUrl?: string; modelApiKey?: string; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' },
+    input: { mode: RunMode; prompt: string; model?: string; modelBaseUrl?: string; modelApiKey?: string; ctxWindow?: number; sessionKey?: string; maxSteps?: number; verify?: VerifyConfig; agentId?: string; domain?: string; tenantId?: string; workflowId?: string; traceId?: string; attachments?: Array<{ url: string; name: string; type: string }>; web?: boolean; interactionMode?: 'qa' | 'plan'; planPhase?: 'propose' | 'execute' },
     id: string
   ): RunJob {
     const job: RunJob = {
@@ -187,6 +190,7 @@ export class RunQueue {
       model: input.model,
       modelBaseUrl: input.modelBaseUrl,
       modelApiKey: input.modelApiKey,
+      ctxWindow: input.ctxWindow,
       sessionKey: input.sessionKey,
       maxSteps: input.maxSteps,
       verify: input.verify,
@@ -246,7 +250,7 @@ export class RunQueue {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
-        { mode: d.mode, prompt: d.prompt, model: d.model, modelBaseUrl: d.modelBaseUrl, modelApiKey: d.modelApiKey, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, interactionMode: d.interactionMode, planPhase: d.planPhase },
+        { mode: d.mode, prompt: d.prompt, model: d.model, modelBaseUrl: d.modelBaseUrl, modelApiKey: d.modelApiKey, ctxWindow: d.ctxWindow, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, interactionMode: d.interactionMode, planPhase: d.planPhase },
         d.id
       );
     }
@@ -272,7 +276,7 @@ export class RunQueue {
       await this.backend.clear();
       for (const d of pending) {
         const job = this.makeJob(
-          { mode: d.mode, prompt: d.prompt, model: d.model, modelBaseUrl: d.modelBaseUrl, modelApiKey: d.modelApiKey, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, web: d.web, interactionMode: d.interactionMode, planPhase: d.planPhase },
+          { mode: d.mode, prompt: d.prompt, model: d.model, modelBaseUrl: d.modelBaseUrl, modelApiKey: d.modelApiKey, ctxWindow: d.ctxWindow, sessionKey: d.sessionKey, maxSteps: d.maxSteps, verify: d.verify, agentId: d.agentId, domain: d.domain, tenantId: d.tenantId, workflowId: d.workflowId, traceId: d.traceId, web: d.web, interactionMode: d.interactionMode, planPhase: d.planPhase },
           d.id
         );
         this.queue.push(job);
@@ -678,7 +682,8 @@ export class RunQueue {
       // 自定义模型专属端点（可选）：前端自定义模型的 baseUrl/apiKey 透传给 runner，
       // 使其构造直连该端点的 LLM；缺省 undefined 走服务端默认 OpenRouter。
       job.modelBaseUrl,
-      job.modelApiKey
+      job.modelApiKey,
+      job.ctxWindow
       );
       const model = resolveOpenRouterConfig({ model: job.model }).model;
       emit({

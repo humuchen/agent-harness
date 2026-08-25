@@ -28,31 +28,17 @@ import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 
-/** 上下文窗口上限（token）：用于「上下文用量」占比分母。支持 AH_CONTEXT_WINDOW
- *  环境变量覆盖；否则按模型名模糊匹配已知上限；兜底 128000。 */
-const CONTEXT_WINDOWS: Record<string, number> = {
-  'gpt-4o': 128000,
-  'gpt-4-turbo': 128000,
-  'claude-3-5-sonnet': 200000,
-  'claude-3-opus': 200000,
-  'claude-3-haiku': 200000,
-  'deepseek-chat': 64000,
-  'deepseek-reasoner': 64000,
-  'ox-alpha': 1000000,
-  agnes: 10240
-};
+/** 上下文窗口上限（token）：用于「上下文用量」占比分母。
+ *  已废弃按模型名硬编码的猜测表 —— 各模型真实 context_length 由前端从
+ *  OpenRouter 模型目录获取并随 run 下发；此处仅保留 AH_CONTEXT_WINDOW
+ *  显式覆盖与保守兜底（仅影响未携带窗口数据的旧客户端）。 */
+const FALLBACK_CONTEXT_WINDOW = 128000;
 
 /** 导出供 server（/api/state）向前端下发当前模型的上下文窗口上限。 */
 export function contextWindowFor(model?: string): number {
   const env = Number(process.env.AH_CONTEXT_WINDOW);
   if (env > 0) return env;
-  if (model) {
-    const m = model.toLowerCase();
-    for (const [k, v] of Object.entries(CONTEXT_WINDOWS)) {
-      if (m.includes(k)) return v;
-    }
-  }
-  return 128000;
+  return FALLBACK_CONTEXT_WINDOW;
 }
 
 /**
@@ -205,6 +191,11 @@ export interface HarnessOptions {
   // 缺省时仍会按响应里的 resp.model 计价；两者都无则按未知模型默认价（默认 0）。
   model?: string;
 
+  // 该模型的真实上下文窗口上限（token）：llm:usage 事件据此下发「上下文用量」分母。
+  // 由调用方从权威来源（OpenRouter 模型目录 context_length / AH_CONTEXT_WINDOW）解析后传入；
+  // 未传时回落保守基线（FALLBACK_CONTEXT_WINDOW），不再按模型名猜测。
+  contextWindow?: number;
+
   // 单次 run 的 token 预算上限（累计 total_tokens）。超出即中止并返回预算超限提示。
   tokenBudget?: number;
 
@@ -320,6 +311,8 @@ interface ResolvedHarnessOptions {
   signal?: AbortSignal;
   onEvent: (e: HarnessEvent) => void;
   model?: string;
+  // 真实上下文窗口上限（token，可选）：llm:usage 分母。见 HarnessOptions.contextWindow。
+  contextWindow?: number;
   tokenBudget?: number;
   costBudget?: number;
   maxToolResultChars?: number;
@@ -721,7 +714,10 @@ export class AgentHarness {
             // 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），供前端浮层展示精确占比。
             const promptTokens = resp.usage.prompt_tokens ?? 0;
             const completionTokens = resp.usage.completion_tokens ?? 0;
-            const window = contextWindowFor(costModel);
+            const window =
+              this.opts.contextWindow && this.opts.contextWindow > 0
+                ? this.opts.contextWindow
+                : contextWindowFor(costModel);
             const promptEst =
               estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
             const scale = promptEst > 0 ? promptTokens / promptEst : 0;

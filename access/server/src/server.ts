@@ -1449,6 +1449,12 @@ async function handleRun(
   const modelApiKey: string | undefined = body.modelApiKey
     ? String(body.modelApiKey).trim()
     : undefined;
+  // 所选模型的官方上下文窗口（可选）：前端从 OpenRouter 模型目录拿到 context_length
+  // 后随请求下发，经 runner → harness 进入 llm:usage，作为「上下文用量」的权威分母。
+  const ctxWindow: number | undefined =
+    Number.isFinite(Number(body.ctxWindow)) && Number(body.ctxWindow) > 0
+      ? Math.floor(Number(body.ctxWindow))
+      : undefined;
   // 闭环步数上限：允许前端按任务复杂度覆盖；空/非法则回退到服务端 MAX_STEPS（默认 24）。
   const maxSteps: number | undefined =
     typeof body.maxSteps === 'number' &&
@@ -1547,6 +1553,7 @@ async function handleRun(
       model,
       modelBaseUrl,
       modelApiKey,
+      ctxWindow,
       sessionKey,
       maxSteps,
       verify: verifyConfig,

@@ -28,6 +28,8 @@ export interface JobDescriptor {
   modelBaseUrl?: string;
   /** 自定义模型专属 API Key（可选）。随 descriptor 持久化（注意 file 后端为明文落盘）。 */
   modelApiKey?: string;
+  /** 所选模型的官方上下文窗口（token，可选）。随 descriptor 持久化。 */
+  ctxWindow?: number;
   sessionKey?: string;
   maxSteps?: number;
   /** 运行期自动验证门禁配置（P0-2，可序列化）。 */

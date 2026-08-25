@@ -301,7 +301,7 @@ export const chatStyles = [
       position: absolute;
       bottom: calc(100% + 10px);
       right: -6px;
-      z-index: 20;
+      z-index: 22;
       width: 280px;
       max-width: calc(100vw - 24px);
       padding: 12px 14px;
@@ -310,6 +310,37 @@ export const chatStyles = [
       background: var(--ah-surface-1);
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
       animation: ctx-in 0.16s ease;
+    }
+    /* 弹层打开时的透明遮罩：点击弹层外任意处关闭（置于弹层之下、页面之上）。 */
+    .ctx-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 21;
+      background: transparent;
+      border: none;
+      padding: 0;
+      cursor: default;
+    }
+    .ctx-pop-close {
+      flex-shrink: 0;
+      align-self: center;
+      width: 20px;
+      height: 20px;
+      line-height: 18px;
+      text-align: center;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ah-text-muted);
+      font-size: 15px;
+      cursor: pointer;
+      padding: 0;
+      margin-left: 8px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .ctx-pop-close:hover {
+      color: var(--ah-text);
+      background: var(--ah-surface-3, var(--ah-surface-2));
     }
     @keyframes ctx-in {
       from {

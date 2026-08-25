@@ -35,7 +35,7 @@ import {
   policyEngine,
   type ContentBlock,
   getPluginToolRegistry,
-  isEnabled,
+  isEnabled
 } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
@@ -93,7 +93,7 @@ export function getMemoryStore(): MemoryStore {
       _memoryStore = new FileMemoryStore({ dir });
       structLog('warn', 'sqlite backend unavailable, fall back to file', {
         error: e?.message ?? String(e),
-        dir,
+        dir
       });
     }
   } else if (backend === 'file' || process.env.MEMORY_DIR) {
@@ -152,7 +152,7 @@ export function getSessionMemory(
       store: getMemoryStore(),
       sessionKey,
       maxWindow,
-      ...(summarizer ? { summarizer } : {}),
+      ...(summarizer ? { summarizer } : {})
     });
     sessionMemories.set(sessionKey, mem);
   }
@@ -236,7 +236,12 @@ export async function assembleAgent(
    */
   modelBaseUrl?: string,
   /** 自定义模型专属 API Key（可选）。与 modelBaseUrl 搭配；缺省走服务端默认凭证。 */
-  modelApiKey?: string
+  modelApiKey?: string,
+  /**
+   * 所选模型的真实上下文窗口上限（token，可选）：来自前端模型目录的官方 context_length。
+   * 透传给 harness 的 llm:usage 事件作为「上下文用量」分母；未传回落保守基线。
+   */
+  ctxWindow?: number
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -258,7 +263,8 @@ export async function assembleAgent(
   const shellRequireConfirm = process.env.SHELL_REQUIRE_CONFIRM === 'true';
   // 联网搜索总开关：环境变量 BUILTINS_WEB（默认开）× 本次 run 的 webEnabled（UI 开关）。
   // 两者任一为 false 即关闭 web_fetch 与「联网检索」技能 —— 即便用户询问外部/最新信息也不出网。
-  const builtinWebEnabled = (process.env.BUILTINS_WEB !== 'false') && (webEnabled ?? true);
+  const builtinWebEnabled =
+    process.env.BUILTINS_WEB !== 'false' && (webEnabled ?? true);
   registerBuiltinTools(tools, {
     fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
     fsEnabled: process.env.BUILTINS_FS !== 'false',
@@ -268,16 +274,20 @@ export async function assembleAgent(
     shellEnabled,
     shellRoot: process.env.SHELL_ROOT || process.cwd(),
     shellWhitelist: process.env.SHELL_WHITELIST
-      ? process.env.SHELL_WHITELIST.split(',').map((s) => s.trim()).filter(Boolean)
+      ? process.env.SHELL_WHITELIST.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [],
     shellRequireConfirmation: shellRequireConfirm,
-    shellConfirm: shellRequireConfirm ? (req) => waitApproval(req.command, req.args) : undefined,
+    shellConfirm: shellRequireConfirm
+      ? (req) => waitApproval(req.command, req.args)
+      : undefined,
     shellAllowOperators: process.env.SHELL_ALLOW_OPERATORS === 'true',
     // P0-1/P2.d：选择 shell 执行器后端。优先用调用方收敛后的 per-job 隔离后端（sandboxBackend，
     // 已含 card/租户/env 升级逻辑），缺省回退全局 SANDBOX_BACKEND（local 硬化 / container 隔离）。
     sandboxBackend: sandboxBackend ?? process.env.SANDBOX_BACKEND,
     // P0.1：按 AgentCard.assembly.tools 收窄内置工具面（undefined/空 → 全部）。
-    ...(assemblyTools ? { tools: assemblyTools } : {}),
+    ...(assemblyTools ? { tools: assemblyTools } : {})
   });
 
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。
@@ -288,7 +298,9 @@ export async function assembleAgent(
   // Request 4：联网搜索关闭时（builtinWebEnabled=false）一并剔除「联网检索」技能，
   // 否则该技能仍会引导模型调用 web_fetch（已被关闭），造成无效出网尝试与资源浪费。
   const enabledSkills = defaultSkills().filter(
-    (s) => (!assemblySkills || assemblySkills.includes(s.id)) && (builtinWebEnabled || s.id !== 'web-research')
+    (s) =>
+      (!assemblySkills || assemblySkills.includes(s.id)) &&
+      (builtinWebEnabled || s.id !== 'web-research')
   );
   skillRegistry.registerMany(enabledSkills);
   registerSkillTools(tools, skillRegistry);
@@ -299,7 +311,8 @@ export async function assembleAgent(
     assemblyMcp && assemblyMcp.length
       ? (name: string, source?: string) =>
           assemblyMcp.some(
-            (s) => source === `mcp:${s}` || name === s || name.startsWith(`${s}__`)
+            (s) =>
+              source === `mcp:${s}` || name === s || name.startsWith(`${s}__`)
           )
       : undefined;
   tools.mergeFrom(mcpManager.liveRegistry(), allowMcp);
@@ -310,7 +323,9 @@ export async function assembleAgent(
 
   const notes: string[] = [];
   notes.push(
-    `环境平台后端：${envPlatform.kind}${dryRun ? '（dry-run，未连接真实平台）' : '（真实后端）'}；` +
+    `环境平台后端：${envPlatform.kind}${
+      dryRun ? '（dry-run，未连接真实平台）' : '（真实后端）'
+    }；` +
       `通过 create_ephemeral_environment / destroy_environment 工具在对话中自助拉起/销毁环境。`
   );
   let llm: LLM;
@@ -329,7 +344,9 @@ export async function assembleAgent(
         '真实模式需要 OPENROUTER_API_KEY（在 .env 中配置）。可切换到 Mock 模式离线验证。'
       );
     }
-    const effectiveModel = resolveOpenRouterConfig({ model: modelOverride }).model;
+    const effectiveModel = resolveOpenRouterConfig({
+      model: modelOverride
+    }).model;
     // 自定义端点（可选）：前端自定义模型填写的 baseUrl/apiKey 优先于服务端默认配置，
     // 使同一 runner 既支持 OpenRouter 也支持任意 OpenAI 兼容直连端点。
     const primary = createOpenRouterLLM({
@@ -342,18 +359,22 @@ export async function assembleAgent(
     // 故障转移：若同时配置了原生 OpenAI（或兼容端点）密钥，则用熔断器把 OpenRouter
     // 作为 primary、OpenAI 作为 secondary；primary 连续失败或限流时自动回落，对主循环透明。
     // 设 LLM_FAILOVER=false 可关闭（仅用 OpenRouter）。
-    const openaiKey = process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim();
+    const openaiKey =
+      process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim();
     if (openaiKey && process.env.LLM_FAILOVER !== 'false') {
       const secondary = createOpenAILLM(resolveOpenAIConfig());
       llm = createFailoverLLM(primary, secondary, {
         failThreshold: Number(process.env.LLM_FAILOVER_THRESHOLD ?? 3) || 3,
-        cooldownMs: Number(process.env.LLM_FAILOVER_COOLDOWN_MS ?? 60_000) || 60_000,
+        cooldownMs:
+          Number(process.env.LLM_FAILOVER_COOLDOWN_MS ?? 60_000) || 60_000,
         primaryLabel: 'openrouter',
-        secondaryLabel: 'openai',
+        secondaryLabel: 'openai'
       });
       failover = true;
       notes.push(
-        `使用真实 OpenRouter LLM（model=${effectiveModel}），并已启用 OpenAI 故障转移（熔断阈值 ${process.env.LLM_FAILOVER_THRESHOLD ?? 3}）。`
+        `使用真实 OpenRouter LLM（model=${effectiveModel}），并已启用 OpenAI 故障转移（熔断阈值 ${
+          process.env.LLM_FAILOVER_THRESHOLD ?? 3
+        }）。`
       );
     } else {
       llm = primary;
@@ -366,7 +387,11 @@ export async function assembleAgent(
       .list()
       .filter((s) => s.status === 'connected')
       .reduce((n, s) => n + s.tools.length, 0);
-    notes.push(`已接入 MCP 服务 ${mcpManager.list().filter((s) => s.status === 'connected').length} 个，工具 ${total} 个。`);
+    notes.push(
+      `已接入 MCP 服务 ${
+        mcpManager.list().filter((s) => s.status === 'connected').length
+      } 个，工具 ${total} 个。`
+    );
   } else {
     notes.push('未检测到已连接的 MCP 服务（可在「MCP 服务」面板添加）。');
   }
@@ -377,24 +402,38 @@ export async function assembleAgent(
 
   if (shellEnabled) {
     const wl = process.env.SHELL_WHITELIST
-      ? process.env.SHELL_WHITELIST.split(',').map((s) => s.trim()).filter(Boolean)
+      ? process.env.SHELL_WHITELIST.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
     notes.push(
-      `已启用沙箱 shell 执行（builtin__shell_exec）：白名单 ${wl.length ? '[' + wl.join(', ') + ']' : '（空→不执行任何命令）'}` +
+      `已启用沙箱 shell 执行（builtin__shell_exec）：白名单 ${
+        wl.length ? '[' + wl.join(', ') + ']' : '（空→不执行任何命令）'
+      }` +
         `，作用域锁定 ${process.env.SHELL_ROOT || process.cwd()}` +
-        (shellRequireConfirm ? '，每次执行需经 /api/shell/approve 审批。' : '。')
+        (shellRequireConfirm
+          ? '，每次执行需经 /api/shell/approve 审批。'
+          : '。')
     );
   } else {
-    notes.push('沙箱 shell 执行未启用（设 SHELL_ENABLED=true 开启，受白名单 + 作用域管控）。');
+    notes.push(
+      '沙箱 shell 执行未启用（设 SHELL_ENABLED=true 开启，受白名单 + 作用域管控）。'
+    );
   }
 
   // 技能编排层：把技能目录与「按用户消息触发词自动预激活」的指引注入系统提示词。
   // 优化：问候/寒暄等明显不需要技能的输入，仅注入一行桩（id 列表），
   // 避免把 4+ 个技能说明无谓塞进系统提示（占 ~200-400 tokens）。
-  const skillTriggered = userInput ? skillRegistry.hasTriggerMatch(userInput) : false;
-  const triggeredSkills = userInput ? skillRegistry.matchTriggers(userInput) : [];
+  const skillTriggered = userInput
+    ? skillRegistry.hasTriggerMatch(userInput)
+    : false;
+  const triggeredSkills = userInput
+    ? skillRegistry.matchTriggers(userInput)
+    : [];
   const skillCatalog = skillRegistry.describeForPrompt(!skillTriggered);
-  const skillBoost = userInput ? skillBoostPrompt(userInput, skillRegistry) : '';
+  const skillBoost = userInput
+    ? skillBoostPrompt(userInput, skillRegistry)
+    : '';
 
   // 收集命中技能关联的工具 + 元工具，作为动态工具选择的「硬允许集」，
   // 防止 selectToolsForInput 把模型需要的技能工具裁掉（如 web-research 场景）。
@@ -404,9 +443,16 @@ export async function assembleAgent(
   }
   // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
   const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
-  const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost].filter(Boolean).join('\n\n');
-  const skillTitles = skillRegistry.enabledList().map((s) => s.id).join(' / ');
-  notes.push(`已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`);
+  const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost]
+    .filter(Boolean)
+    .join('\n\n');
+  const skillTitles = skillRegistry
+    .enabledList()
+    .map((s) => s.id)
+    .join(' / ');
+  notes.push(
+    `已启用技能编排层：${skillTitles}，模型可自动选用并按既定流程解决问题。`
+  );
 
   // 记忆后端：按会话隔离（P1-9）。未指定 sessionKey 时归入 'anonymous'，
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
@@ -421,7 +467,9 @@ export async function assembleAgent(
   const enableCompression = isEnabled('contextCompression');
   // 压缩模式：heuristic（默认，零额外调用，仅统计工具调用）| llm（调用 LLM 做高质量摘要）。
   // llm 仅可在 real 模式（真实 LLM 可用）下启用；mock 模式即便设了 llm 也会安全回退启发式。
-  const compressionMode = (process.env.COMPRESSION_MODE || 'heuristic').toLowerCase();
+  const compressionMode = (
+    process.env.COMPRESSION_MODE || 'heuristic'
+  ).toLowerCase();
   const useLlmSummarizer =
     enableCompression && compressionMode === 'llm' && llmKind === 'openrouter';
   const heuristicSummarizer: MemorySummarizer = ({ previous, evicted }) => {
@@ -430,7 +478,9 @@ export async function assembleAgent(
     const toolCounts = new Map<string, number>();
     for (const m of evicted) {
       if (m.role === 'user') userReqs++;
-      const tcs = (m as { tool_calls?: Array<{ function?: { name?: string } }> }).tool_calls;
+      const tcs = (
+        m as { tool_calls?: Array<{ function?: { name?: string } }> }
+      ).tool_calls;
       if (m.role === 'assistant' && Array.isArray(tcs)) {
         for (const tc of tcs) {
           const name = tc?.function?.name || 'unknown';
@@ -456,11 +506,19 @@ export async function assembleAgent(
   // 显式传入的 memoryArg（如测试）优先；否则按 sessionKey 取/建进程内缓存实例。
   // P0.3：per-tenant 复合记忆 key（tenant::session），实现租户间记忆物理隔离；
   // 无 tenant 时退化为原始 sessionKey（与今天一致）。
-  const effectiveSessionKey = tenantSessionKey(tenantCtx, sessionKey ?? 'anonymous');
-  const memory = memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer);
+  const effectiveSessionKey = tenantSessionKey(
+    tenantCtx,
+    sessionKey ?? 'anonymous'
+  );
+  const memory =
+    memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer);
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
-  const tokenBudget = process.env.MAX_TOKENS_PER_RUN ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined : undefined;
-  const costBudget = process.env.MAX_COST_PER_RUN ? Number(process.env.MAX_COST_PER_RUN) || undefined : undefined;
+  const tokenBudget = process.env.MAX_TOKENS_PER_RUN
+    ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined
+    : undefined;
+  const costBudget = process.env.MAX_COST_PER_RUN
+    ? Number(process.env.MAX_COST_PER_RUN) || undefined
+    : undefined;
   // 闭环步数上限：显式 maxSteps 优先 > env MAX_STEPS > 默认 24（原为硬编码 12，
   // 复杂任务常被提前截断）。工具结果截断降低每步重发的 token 成本。
   const envMaxSteps = Number(process.env.MAX_STEPS);
@@ -468,14 +526,19 @@ export async function assembleAgent(
     typeof maxSteps === 'number' && maxSteps > 0
       ? maxSteps
       : Number.isFinite(envMaxSteps) && envMaxSteps > 0
-        ? envMaxSteps
-        : 24;
-  const maxToolResultChars = Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
-  const requireCompletion = process.env.AGENT_COMPLETION_CHECK === 'true' || process.env.AGENT_COMPLETION_CHECK === '1';
+      ? envMaxSteps
+      : 24;
+  const maxToolResultChars =
+    Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
+  const requireCompletion =
+    process.env.AGENT_COMPLETION_CHECK === 'true' ||
+    process.env.AGENT_COMPLETION_CHECK === '1';
   // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
   // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
   // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
-  const guardrailPolicy = tenantCtx ? policyEngine.getPolicy(tenantCtx.id) : policyEngine.getPolicy(undefined);
+  const guardrailPolicy = tenantCtx
+    ? policyEngine.getPolicy(tenantCtx.id)
+    : policyEngine.getPolicy(undefined);
   const harness = new AgentHarness({
     llm,
     tools,
@@ -488,6 +551,8 @@ export async function assembleAgent(
       onEvent?.(e);
     },
     model: accountModel,
+    // 真实上下文窗口（来自前端模型目录的官方 context_length）：llm:usage 的分母。
+    ...(ctxWindow && ctxWindow > 0 ? { contextWindow: ctxWindow } : {}),
     tokenBudget,
     costBudget,
     maxSteps: effectiveMaxSteps,
@@ -510,19 +575,19 @@ export async function assembleAgent(
     // - maxToolCallsPerStep：单 step 工具调用预算封顶（MAX_TOOL_CALLS_PER_STEP，默认 0 不限制）。
     enableToolDedup: process.env.TOOL_DEDUP !== 'false',
     maxToolCallsPerStep: Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
-  // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
-  ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
-  // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
-  ...(planPropose ? { planPropose: true } : {}),
-  // 计划任务执行（P0）：教学内容输出走 checkTaskOutput 宽松扫描（弱信号短语 /
-  // 宽松密钥样例正则会误拦架构讲解），安全底线（真密钥 / 强信号注入）不放松。
-  ...(planTask ? { planTask: true } : {}),
-  // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
-  // 供聊天 UI 打字机效果与深度思考块。
-  ...(streamTokens ?? (process.env.AGENT_STREAM_TOKENS !== 'false')
-    ? { streamTokens: true }
-    : {}),
-});
+    // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
+    ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
+    // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
+    ...(planPropose ? { planPropose: true } : {}),
+    // 计划任务执行（P0）：教学内容输出走 checkTaskOutput 宽松扫描（弱信号短语 /
+    // 宽松密钥样例正则会误拦架构讲解），安全底线（真密钥 / 强信号注入）不放松。
+    ...(planTask ? { planTask: true } : {}),
+    // token 级流式：默认开启（AGENT_STREAM_TOKENS!=='false' 时可关），mock 与 real 均生效，
+    // 供聊天 UI 打字机效果与深度思考块。
+    ...(streamTokens ?? process.env.AGENT_STREAM_TOKENS !== 'false'
+      ? { streamTokens: true }
+      : {})
+  });
 
   notes.push(
     `闭环步数上限 MAX_STEPS=${effectiveMaxSteps}` +
@@ -530,7 +595,9 @@ export async function assembleAgent(
       `；工具结果截断 ${maxToolResultChars} 字符；记忆窗口 ${maxWindow}` +
       (enableCompression
         ? `；已启用上下文压缩（${
-            useLlmSummarizer ? 'LLM 摘要（调用模型压缩淘汰轮次）' : '启发式摘要（零额外调用）'
+            useLlmSummarizer
+              ? 'LLM 摘要（调用模型压缩淘汰轮次）'
+              : '启发式摘要（零额外调用）'
           }：淘汰轮次摘要为系统消息）`
         : '') +
       '。'
@@ -545,10 +612,24 @@ export async function assembleAgent(
     );
   }
   if (enableCompression && compressionMode === 'llm' && !useLlmSummarizer) {
-    notes.push('上下文压缩已设为 LLM 模式，但当前为 Mock/离线模式，已安全回退为启发式摘要。');
+    notes.push(
+      '上下文压缩已设为 LLM 模式，但当前为 Mock/离线模式，已安全回退为启发式摘要。'
+    );
   }
 
-  return { harness, tools, memory, llmKind, dryRun, mcpConnected, notes, tokenBudget, costBudget, accountModel, failover };
+  return {
+    harness,
+    tools,
+    memory,
+    llmKind,
+    dryRun,
+    mcpConnected,
+    notes,
+    tokenBudget,
+    costBudget,
+    accountModel,
+    failover
+  };
 }
 
 /** 各模式对应的默认提示词（用户在 UI 留空时使用）。 */
@@ -573,7 +654,8 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
   return async ({ previous, evicted }) => {
     const transcript = evicted
       .map((m) => {
-        const c = typeof m.content === 'string' ? m.content : '[非文本 / 工具结果对象]';
+        const c =
+          typeof m.content === 'string' ? m.content : '[非文本 / 工具结果对象]';
         return `${m.role}: ${c}`;
       })
       .join('\n');
@@ -582,7 +664,7 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
       `待压缩的对话轮次：\n${transcript}`;
     const messages: Message[] = [
       { role: 'system', content: SYSTEM },
-      { role: 'user', content: userContent },
+      { role: 'user', content: userContent }
     ];
     try {
       const resp = await llm(messages, []);
@@ -593,7 +675,7 @@ function createLLMSummarizer(llm: LLM, modelLabel: string): MemorySummarizer {
     } catch (e: any) {
       structLog('warn', 'llm summarizer failed, keep previous', {
         model: modelLabel,
-        error: e?.message ?? String(e),
+        error: e?.message ?? String(e)
       });
       recordError('compression.llm');
       return previous ?? '';
@@ -610,10 +692,14 @@ function resolveAllowTools(
 ): { allowTools: string[] } | Record<string, never> {
   const BUILTIN_TOOL_MAP: Record<string, string[]> = {
     calculator: ['builtin__calculator'],
-    datetime: ['builtin__datetime_now', 'builtin__datetime_convert', 'builtin__datetime_add'],
+    datetime: [
+      'builtin__datetime_now',
+      'builtin__datetime_convert',
+      'builtin__datetime_add'
+    ],
     web_fetch: ['builtin__web_fetch'],
     filesystem: ['builtin__fs_read', 'builtin__fs_list', 'builtin__fs_search'],
-    shell: ['builtin__shell_exec'],
+    shell: ['builtin__shell_exec']
   };
   const set = new Set<string>();
   for (const t of triggeredSkillTools) set.add(t);
@@ -650,11 +736,13 @@ export function makeMockEnvLLM(): LLM {
       const call: ToolCall = {
         id: 'call_' + Date.now(),
         name: 'destroy_environment',
-        arguments: { env_id: h.envId },
+        arguments: { env_id: h.envId }
       };
       await streamOut(
         opts?.onReasoning,
-        `用户希望创建一个临时环境用于验证。\n从请求解析：环境类型 ephemeral，TTL 8h。\n分支推断为 ${branchOf(messageText(last))}，据此调用 create_ephemeral_environment 落地。`,
+        `用户希望创建一个临时环境用于验证。\n从请求解析：环境类型 ephemeral，TTL 8h。\n分支推断为 ${branchOf(
+          messageText(last)
+        )}，据此调用 create_ephemeral_environment 落地。`,
         14
       );
       return { content: '', tool_calls: [call] };
@@ -674,7 +762,7 @@ export function makeMockEnvLLM(): LLM {
     const call: ToolCall = {
       id: 'call_' + Date.now(),
       name: 'create_ephemeral_environment',
-      arguments: { env_type: 'ephemeral', branch, ttl_hours: 8 },
+      arguments: { env_type: 'ephemeral', branch, ttl_hours: 8 }
     };
     await streamOut(
       opts?.onReasoning,
@@ -701,7 +789,11 @@ function mockGenericReply(question: string): string {
 }
 
 /** 把文本按 1~3 字切片并逐块回调（带轻微延迟），模拟真实流式输出。 */
-async function streamOut(cb: ((delta: string) => void) | undefined, text: string, delayMs: number) {
+async function streamOut(
+  cb: ((delta: string) => void) | undefined,
+  text: string,
+  delayMs: number
+) {
   if (!cb || !text) return;
   let i = 0;
   while (i < text.length) {
@@ -730,7 +822,10 @@ function messageText(msg: Message | undefined): string {
   if (!msg?.content) return '';
   if (typeof msg.content === 'string') return msg.content;
   return msg.content
-    .filter((b): b is ContentBlock & { text: string } => b.type === 'text' && typeof b.text === 'string')
+    .filter(
+      (b): b is ContentBlock & { text: string } =>
+        b.type === 'text' && typeof b.text === 'string'
+    )
     .map((b) => b.text)
     .join('\n');
 }

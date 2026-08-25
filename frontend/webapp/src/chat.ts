@@ -531,7 +531,13 @@ export class AhChat extends LitElement {
       cls: string;
     }[];
   } {
-    const WINDOW = this.serverCtxWindow > 0 ? this.serverCtxWindow : 128000; // 上下文窗口（token）：优先后端 /api/state 下发（按模型解析，如 ox-alpha→1M），未到位时落基线
+    // 分母：仅使用已知的真实窗口（服务端默认模型 → /api/state 下发；具体模型 →
+    // 模型目录官方 context_length）。不再写死 128K 兜底 —— 拿不到窗口数据时
+    // hideCtxRing() 已把整个圆环隐藏，本方法不会被调用。
+    if (this.serverCtxWindow <= 0) {
+      return { totalPct: 0, totalTokens: 0, window: 0, items: [] };
+    }
+    const WINDOW = this.serverCtxWindow;
     const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
     const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
     const SKILL_BASE = 80; // 技能基线
@@ -710,13 +716,26 @@ export class AhChat extends LitElement {
           ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
         >
         ${this.showCtxUsage
-          ? html`<div class="ctx-pop">
+          ? html`<button
+              class="ctx-scrim"
+              aria-label="关闭上下文用量"
+              @click=${() => (this.showCtxUsage = false)}
+            ></button>
+            <div class="ctx-pop">
               <div class="ctx-pop-head">
                 <span>上下文用量</span>
                 <span class="ctx-pop-total"
                   >${u.totalTokens.toLocaleString()} /
                   ${this.fmtK(u.window)}</span
                 >
+                <button
+                  class="ctx-pop-close"
+                  title="关闭"
+                  aria-label="关闭"
+                  @click=${() => (this.showCtxUsage = false)}
+                >
+                  ×
+                </button>
               </div>
               <div class="ctx-seg">
                 ${u.items.map(
@@ -1055,6 +1074,8 @@ export class AhChat extends LitElement {
       mode: this.mode,
       prompt: content,
       model: this.model || undefined,
+      // 所选模型的官方上下文窗口：随请求下发，服务端 llm:usage 用它做「上下文用量」分母。
+      ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
       // 自定义模型若配置了专属接口地址 / API Key，随请求透传给服务端
       // （服务端用其构造直连端点的 LLM；未配置则走服务端默认 OpenRouter）。
       ...this.customModelEndpoint(),
@@ -1441,21 +1462,28 @@ export class AhChat extends LitElement {
         // 后端精确上下文用量：更新浮层数据源，并同步给 dashboard 汇总（跨页面共享）。
         const u = ev as any;
         if (u && u.breakdown) {
+          // 窗口取值优先级：① 前端已知的官方 context_length（选中模型时由
+          // model-change 写入，随请求 ctxWindow 下发）→ ② 服务端 llm:usage 回传值 →
+          // ③ 0（无数据，hideCtxRing 隐藏展示）。绝不接受回传的猜测基线覆盖官方值。
+          const win =
+            this.serverCtxWindow > 0
+              ? this.serverCtxWindow
+              : Number.isFinite(Number(u.window)) && Number(u.window) > 0
+                ? Number(u.window)
+                : 0;
           this.backendUsage = {
-            window: u.window,
+            window: win,
             promptTokens: u.promptTokens,
             completionTokens: u.completionTokens,
             totalTokens: u.totalTokens,
             breakdown: u.breakdown
           };
-          const totalPct = Math.min(
-            100,
-            (Number(u.totalTokens) / Number(u.window)) * 100
-          );
+          const totalPct =
+            win > 0 ? Math.min(100, (Number(u.totalTokens) / win) * 100) : 0;
           agentContext.set('lastContextUsage', {
             totalPct,
             totalTokens: Number(u.totalTokens),
-            window: Number(u.window),
+            window: win,
             model: u.model,
             updatedAt: Date.now()
           });
@@ -2075,9 +2103,12 @@ export class AhChat extends LitElement {
     this.previewFile = null;
   }
 
-  /** Esc 关闭预览（window 级监听，无需聚焦 lightbox）。 */
+  /** Esc 关闭预览 / 上下文用量弹层（window 级监听，无需聚焦）。 */
   private onPreviewKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && this.previewFile) this.closePreview();
+    if (e.key === 'Escape') {
+      if (this.previewFile) this.closePreview();
+      else if (this.showCtxUsage) this.showCtxUsage = false;
+    }
   };
 
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
