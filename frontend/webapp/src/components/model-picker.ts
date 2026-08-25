@@ -448,7 +448,6 @@ export class AhModelPicker extends LitElement {
           pricing?: { prompt?: string; completion?: string };
         }[];
       };
-
       const list: RemoteModel[] = (data.data ?? []).map((m) => ({
         raw: m,
         id: String(m?.id ?? '').trim(),
