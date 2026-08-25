@@ -42,6 +42,10 @@ export interface JobDescriptor {
   attachments?: Array<{ url: string; name: string; type: string }>;
   /** 是否开启联网搜索：false/未传时禁用 web_fetch 与「联网检索」技能，避免任何出网检索。 */
   web?: boolean;
+  /** 交互模式（P0 计划模式）：qa=问答（默认，现状）；plan=计划。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 计划阶段：propose=生成计划（缺省）；execute=执行已确认的任务。 */
+  planPhase?: 'propose' | 'execute';
   enqueuedAt: number;
 }
 

@@ -16,6 +16,7 @@ export * from './a2a';
 export * from './plugin';
 export * from './guardrails';
 export * from './harness';
+export * from './plan';
 export * from './verify';
 export * from './quota/engine';
 export * from './audit';

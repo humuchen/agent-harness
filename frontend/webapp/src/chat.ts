@@ -1,10 +1,24 @@
-import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
 import { client, setToken } from './api';
+import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
+import { chatStyles } from './chat-styles';
+import { isRetrievalTool, safeJson, parseDeepThinking, formatToolJson } from './chat-utils';
+import { buildInsights, countTraceNodes, parseCostBreakdown, renderInsights, renderTraceNode, type Insights } from './chat-trace';
 import { toRichHtml, escapeHtml } from './markdown';
+import {
+  sanitizeMessages,
+  mergeThreadHistories,
+  saveThread,
+  loadThread,
+  purgeSessionMirror,
+  loadIndex,
+  withTimeout,
+  type MirroredMsg
+} from './chat-history';
 import type {
   ChatSession,
   RunMode,
@@ -12,12 +26,14 @@ import type {
   TraceNode,
   TraceKind
 } from '@agent-harness/client';
+import { ApiError } from '@agent-harness/client';
 import {
   agentContext,
   useAgentContext,
   type UploadedFile
 } from './agent-context';
-import './file-upload';
+import './components/file-upload';
+import { renderJsonHtml } from './components/json-view';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -26,6 +42,29 @@ interface ToolView {
   args: string;
   result?: string;
   errored?: boolean;
+}
+
+/** 计划模式（P0）：计划任务 / 计划实体（与 core ExecutionPlan 契约一致，前端本地视图类型）。 */
+interface PlanTaskView {
+  id: string;
+  title: string;
+  steps: string[];
+  dependsOn: string[];
+  expectedOutput: string;
+}
+interface ExecutionPlanView {
+  goal: string;
+  tasks: PlanTaskView[];
+}
+/** 计划执行状态（key 为携带计划的消息 id）。 */
+interface PlanExecState {
+  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
+  /** 正在执行的任务 id（running 时有效）。 */
+  currentTaskId?: string;
+  /** 失败的任务 id（failed 时有效）：恢复执行时从此任务重跑，已完成任务跳过。 */
+  failedTaskId?: string;
+  /** 已完成任务 id 集合。 */
+  done: Record<string, boolean>;
 }
 
 interface ChatMsg {
@@ -42,32 +81,13 @@ interface ChatMsg {
   error?: boolean;
   /** 本次消息携带的附件（图片/文件预览）。 */
   attachments?: UploadedFile[];
+  /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
+  plan?: ExecutionPlanView;
 }
 
-/** 检索/搜索类工具名特征：命中则归类为 retrieval 节点，结果以「检索内容」突出展示。 */
-const RETRIEVAL_RE =
-  /retriev|search|fetch|query|lookup|wiki|web|rag|google|bing|knowledge|document|semantic/i;
-function isRetrievalTool(name: string): boolean {
-  return RETRIEVAL_RE.test(name);
-}
 
-/** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
-interface Insights {
-  model?: string;
-  agent?: string;
-  mode?: string;
-  steps: number;
-  toolCount: number;
-  costTokens?: string;
-  costValue?: string;
-  /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
-  costPriced?: string;
-  cacheHitRate?: string;
-  cacheHits?: string;
-  /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
-  costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
-  retrievals: Array<{ label: string; result: string }>;
-}
+
+
 
 interface SessionView {
   id: string;
@@ -88,1964 +108,7 @@ interface TraceCtx {
 
 @customElement('ah-chat')
 export class AhChat extends LitElement {
-  static styles = [
-    sharedStyles,
-    // 聊天专属样式：三栏式（侧栏 + 对话 + 输入），严格使用语义令牌，随主题切换。
-    // 注意：sharedStyles 已设 :host{display:block;height:100vh;overflow:hidden}，这里覆盖为 flex 行布局。
-    css`
-      :host {
-        display: flex;
-        flex-direction: row;
-        height: 100%;
-        min-height: 0;
-        overflow: hidden;
-        background: var(--ah-canvas);
-      }
-      .sidebar {
-        width: 264px;
-        flex: 0 0 264px;
-        display: flex;
-        flex-direction: column;
-        border-right: 1px solid var(--ah-border);
-        background: var(--ah-surface-1);
-        min-height: 0;
-      }
-      // .side-head {
-      //   padding: 14px 14px 10px;
-      // }
-      .new-btn {
-        width: 100%;
-        justify-content: center;
-        gap: 8px;
-      }
-      .session-list {
-        flex: 1 1 auto;
-        overflow-y: auto;
-        padding: 6px 8px 14px;
-        min-height: 0;
-      }
-      .session {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 9px 10px;
-        border-radius: 10px;
-        cursor: pointer;
-        color: var(--ah-text);
-        margin-bottom: 10px;
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        transition: background 0.15s ease;
-      }
-      .session:last-child {
-        margin-bottom: 0;
-      }
-      .session:hover {
-        background: var(--ah-surface-2);
-      }
-      .session.active {
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        outline: 1px solid var(--ah-accent, #2997ff);
-      }
-      .session .title {
-        flex: 1 1 auto;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 13px;
-      }
-      .session .dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--ah-text-muted);
-        flex: 0 0 auto;
-      }
-      .session.active .dot {
-        background: var(--ah-success);
-      }
-      .session .acts {
-        display: none;
-        gap: 4px;
-      }
-      .session:hover .acts {
-        display: flex;
-      }
-      .icon-btn {
-        border: none;
-        background: transparent;
-        color: var(--ah-text-muted);
-        cursor: pointer;
-        font-size: 12px;
-        padding: 2px 5px;
-        border-radius: 6px;
-      }
-      .icon-btn:hover {
-        background: var(--ah-border);
-        color: var(--ah-text);
-      }
-      .main {
-        flex: 1 1 auto;
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-        min-height: 0;
-      }
-      .chat-head {
-        position: relative;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 18px;
-        border-bottom: 1px solid var(--ah-border);
-        background: var(--ah-surface-1);
-      }
-      .chat-head .title {
-        font-weight: 600;
-        font-size: 14px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .chat-head .spacer {
-        flex: 1 1 auto;
-      }
-      .toggle {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 30px;
-        height: 30px;
-        padding: 0;
-        border-radius: 50%;
-        border: 1px solid var(--ah-border);
-        background: var(--ah-surface-2);
-        color: var(--ah-text-muted);
-        cursor: pointer;
-        user-select: none;
-        transition: color 0.15s ease, border-color 0.15s ease,
-          background 0.15s ease, box-shadow 0.15s ease;
-      }
-      .toggle:hover {
-        border-color: var(--ah-accent, #2997ff);
-        color: var(--ah-text);
-        background: var(--ah-surface-3);
-      }
-      .toggle svg {
-        width: 15px;
-        height: 15px;
-        flex: 0 0 auto;
-      }
-      .toggle.on {
-        color: var(--ah-accent, #2997ff);
-        border-color: var(--ah-accent, #2997ff);
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 12%,
-          transparent
-        );
-        box-shadow: 0 0 0 1px
-          color-mix(in srgb, var(--ah-accent, #2997ff) 28%, transparent);
-      }
-      .model-input {
-        width: 180px;
-        background: var(--ah-surface-2);
-        border: 1px solid var(--ah-border);
-        border-radius: 8px;
-        color: var(--ah-text);
-        padding: 5px 9px;
-        font-size: 12px;
-      }
-      /* 滚动区外壳：相对定位，作为「回到底部」浮动按钮的定位上下文；
-         按钮 absolute 钉在其底部中央，不进入文档流、不挤压/遮挡内容与输入框。 */
-      .scroll-region {
-        position: relative;
-        flex: 1 1 auto;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-      }
-      .scroll {
-        flex: 1 1 auto;
-        overflow-y: auto;
-        min-height: 0;
-        padding: 18px 0;
-      }
-      /* 回到底部悬浮按钮：默认隐藏（由 showScrollDown 控制挂载），
-         仅在用户向上滚动离开底部时出现；点击平滑滚回底部后由滚动事件自动消失。 */
-      .scroll-down {
-        position: absolute;
-        left: 50%;
-        transform: translateX(-50%);
-        bottom: 16px;
-        z-index: 6;
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        border: 1px solid var(--ah-border);
-        background: var(--ah-surface-2);
-        color: var(--ah-text-muted);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
-        transition: color 0.15s ease, background 0.15s ease,
-          border-color 0.15s ease, transform 0.18s ease, opacity 0.18s ease;
-        animation: sdown-in 0.18s ease;
-      }
-      .scroll-down:hover {
-        color: var(--ah-text);
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border-color: var(--ah-accent, #2997ff);
-        transform: translateX(-50%) translateY(-1px);
-      }
-      .scroll-down svg {
-        width: 18px;
-        height: 18px;
-        flex: 0 0 auto;
-      }
-      @keyframes sdown-in {
-        from {
-          opacity: 0;
-          transform: translateX(-50%) translateY(6px);
-        }
-        to {
-          opacity: 1;
-          transform: translateX(-50%) translateY(0);
-        }
-      }
-      /* 上下文用量圆环（环形进度条）：置于输入框发送按钮旁；hover 显示提示，
-         点击切换分类占比弹层（点击显示逻辑与原实现一致）。 */
-      .ctx-ring-wrap {
-        position: relative;
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-      }
-      .ctx-ring {
-        display: block;
-        width: 36px;
-        height: 36px;
-        padding: 0;
-        border: none;
-        border-radius: 50%;
-        background: transparent;
-        cursor: pointer;
-        transition: transform 0.15s ease;
-      }
-      .ctx-ring:hover {
-        transform: scale(1.08);
-      }
-      .ctx-ring svg {
-        display: block;
-        width: 100%;
-        height: 100%;
-      }
-      .ring-bg {
-        fill: none;
-        stroke: var(--ah-surface-3, rgba(255, 255, 255, 0.14));
-      }
-      .ring-fg {
-        fill: none;
-        stroke: var(--ah-accent, #2997ff);
-        stroke-linecap: round;
-        transition: stroke-dashoffset 0.25s ease, stroke 0.25s ease;
-      }
-      .ring-fg.warn {
-        stroke: #ff453a;
-      }
-      .ring-num {
-        font-size: 9.5px;
-        font-weight: 600;
-        fill: var(--ah-text);
-        font-variant-numeric: tabular-nums;
-      }
-      /* hover 提示：圆环上方浮出「上下文已使用：xx.x% - 用量K/总量K」。 */
-      .ctx-tip {
-        position: absolute;
-        bottom: calc(100% + 8px);
-        left: 50%;
-        transform: translateX(-50%) translateY(2px);
-        white-space: nowrap;
-        padding: 5px 10px;
-        border-radius: 8px;
-        border: 1px solid var(--ah-border);
-        background: var(--ah-surface-1);
-        color: var(--ah-text);
-        font-size: 11px;
-        font-variant-numeric: tabular-nums;
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.32);
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.15s ease, transform 0.15s ease;
-        z-index: 21;
-      }
-      .ctx-ring-wrap:hover .ctx-tip {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-      }
-      .ctx-pop {
-        position: absolute;
-        bottom: calc(100% + 10px);
-        right: -6px;
-        z-index: 20;
-        width: 280px;
-        max-width: calc(100vw - 24px);
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--ah-border);
-        background: var(--ah-surface-1);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-        animation: ctx-in 0.16s ease;
-      }
-      @keyframes ctx-in {
-        from {
-          opacity: 0;
-          transform: translateY(6px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-      .ctx-pop-head {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        margin-bottom: 8px;
-      }
-      .ctx-pop-head > span:first-child {
-        font-weight: 600;
-        font-size: 13px;
-        color: var(--ah-text);
-      }
-      .ctx-pop-total {
-        font-size: 11px;
-        color: var(--ah-text-muted);
-        font-variant-numeric: tabular-nums;
-      }
-      .ctx-seg {
-        display: flex;
-        height: 8px;
-        border-radius: 4px;
-        overflow: hidden;
-        gap: 2px;
-        margin-bottom: 10px;
-        background: var(--ah-surface-3, rgba(255, 255, 255, 0.08));
-      }
-      .ctx-seg-i {
-        height: 100%;
-      }
-      .ctx-list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-      }
-      .ctx-list li {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12px;
-      }
-      .ctx-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        flex: 0 0 auto;
-      }
-      .ctx-label {
-        flex: 1 1 auto;
-        color: var(--ah-text-muted);
-      }
-      .ctx-val {
-        font-variant-numeric: tabular-nums;
-        color: var(--ah-text);
-        font-weight: 600;
-      }
-      .c-sys {
-        background: #ff9f0a;
-      }
-      .c-tools {
-        background: #5ac8fa;
-      }
-      .c-msg {
-        background: #2997ff;
-      }
-      .c-mcp {
-        background: #34c759;
-      }
-      .c-skill {
-        background: #bf5af2;
-      }
-      .empty {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 18px;
-        text-align: center;
-        padding: 0 20px;
-      }
-      .empty h1 {
-        font-size: 26px;
-        font-weight: 600;
-        margin: 0;
-      }
-      .empty p {
-        color: var(--ah-text-muted);
-        margin: 0;
-        font-size: 14px;
-      }
-      .thread {
-        max-width: 820px;
-        margin: 0 auto;
-        padding: 0 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 18px;
-      }
-      .msg {
-        display: flex;
-        gap: 12px;
-        align-items: flex-start;
-      }
-      .msg.user {
-        flex-direction: row-reverse;
-      }
-      .avatar {
-        flex: 0 0 30px;
-        width: 30px;
-        height: 30px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 13px;
-        font-weight: 600;
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        color: var(--ah-text-muted);
-      }
-      .bubble {
-        padding: 12px 14px;
-        border-radius: 14px;
-        line-height: 1.65;
-        font-size: 14px;
-        overflow-wrap: anywhere;
-      }
-      .msg.assistant .bubble {
-        /* 固定宽度：撑满可用空间并封顶，避免流式打字时气泡宽度随内容从窄到宽跳变。 */
-        flex: 1 1 auto;
-        width: 100%;
-        background: var(--ah-surface-1);
-        border: 1px solid var(--ah-border);
-        border-top-left-radius: 4px;
-        max-width: 760px;
-      }
-      .msg.user .bubble {
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 14%,
-          var(--ah-surface-2)
-        );
-        border-top-right-radius: 4px;
-      }
-      .msg.assistant.error .bubble {
-        border-color: var(--ah-danger, #e24b4a);
-      }
-      .msg-text {
-        font-size: 14px;
-        line-height: 1.65;
-      }
-      .msg-text.placeholder {
-        color: var(--ah-text-muted);
-        font-style: italic;
-      }
-      .reasoning {
-        margin-bottom: 10px;
-        border: 1px solid var(--ah-border);
-        border-left: 3px solid var(--ah-accent, #2997ff);
-        border-radius: 10px;
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 7%,
-          var(--ah-surface-2)
-        );
-        overflow: hidden;
-      }
-      .reasoning summary {
-        cursor: pointer;
-        padding: 9px 12px;
-        font-size: 12.5px;
-        font-weight: 600;
-        color: var(--ah-accent, #2997ff);
-        list-style: none;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .reasoning summary::-webkit-details-marker {
-        display: none;
-      }
-      .reasoning .ricon {
-        width: 14px;
-        height: 14px;
-        flex: 0 0 auto;
-        opacity: 0.95;
-      }
-      .reasoning .body {
-        padding: 2px 12px 10px 34px;
-        color: var(--ah-text-muted);
-        font-size: 13px;
-        line-height: 1.7;
-        max-height: 150px;
-        overflow-y: auto;
-        overflow-x: hidden;
-        position: relative;
-        scrollbar-width: thin;
-        scrollbar-color: var(--ah-border) transparent;
-      }
-      .reasoning .body::-webkit-scrollbar {
-        width: 4px;
-      }
-      .reasoning .body::-webkit-scrollbar-thumb {
-        background: var(--ah-border);
-        border-radius: 2px;
-      }
-      /* 底部渐变遮罩：提示内容被截断 */
-      .reasoning .body::after {
-        content: '';
-        position: sticky;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        height: 32px;
-        background: linear-gradient(
-          to bottom,
-          transparent,
-          color-mix(in srgb, var(--ah-surface-2) 80%, transparent)
-        );
-        pointer-events: none;
-      }
-      /* 工具摘要区：在深度思考框内统一展示所有工具调用 */
-      .tool-summary {
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px dashed var(--ah-border);
-      }
-      .tool-summary-title {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        font-weight: 500;
-        color: var(--ah-text);
-        padding: 2px 0 6px;
-      }
-      .tool-summary-title svg {
-        flex-shrink: 0;
-        color: var(--ah-accent, #2997ff);
-        opacity: 0.8;
-      }
-      /* 内嵌工具卡（在 reasoning body 内） */
-      .inner-tool {
-        margin-top: 4px;
-        border: 1px solid var(--ah-border);
-        border-radius: 7px;
-        background: var(--ah-canvas);
-        overflow: hidden;
-      }
-      .inner-tool summary {
-        cursor: pointer;
-        padding: 6px 10px;
-        font-size: 11.5px;
-        list-style: none;
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        user-select: none;
-      }
-      .inner-tool summary::-webkit-details-marker {
-        display: none;
-      }
-      .inner-tool .itag {
-        width: 16px;
-        height: 16px;
-        border-radius: 4px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 10px;
-        flex-shrink: 0;
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 12%,
-          transparent
-        );
-        color: var(--ah-accent, #2997ff);
-      }
-      .inner-tool.errored .itag {
-        background: color-mix(
-          in srgb,
-          var(--ah-danger, #e24b4a) 12%,
-          transparent
-        );
-        color: var(--ah-danger, #e24b4a);
-      }
-      .inner-tool .iname {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--ah-text-muted);
-        font-family: 'SF Mono', Menlo, Consolas, monospace;
-        font-size: 11.5px;
-      }
-      .inner-tool .ichev {
-        width: 9px;
-        height: 9px;
-        flex-shrink: 0;
-        color: var(--ah-text-muted, #999);
-        transition: transform 0.15s ease;
-      }
-      .inner-tool[open] .ichev {
-        transform: rotate(180deg);
-      }
-      .reasoning .thinking {
-        display: inline-flex;
-        gap: 3px;
-        margin-left: 2px;
-        vertical-align: middle;
-      }
-      .reasoning .thinking i {
-        width: 4px;
-        height: 4px;
-        border-radius: 50%;
-        background: var(--ah-accent, #2997ff);
-        animation: blinkdot 1.2s infinite ease-in-out;
-      }
-      .reasoning .thinking i:nth-child(2) {
-        animation-delay: 0.2s;
-      }
-      .reasoning .thinking i:nth-child(3) {
-        animation-delay: 0.4s;
-      }
-      @keyframes blinkdot {
-        0%,
-        80%,
-        100% {
-          opacity: 0.25;
-          transform: translateY(0);
-        }
-        40% {
-          opacity: 1;
-          transform: translateY(-2px);
-        }
-      }
-      .tool {
-        margin: 8px 10px 10px;
-        border: 1px solid var(--ah-border);
-        border-radius: 10px;
-        background: var(--ah-surface-2);
-        overflow: hidden;
-      }
-      .tool summary {
-        cursor: pointer;
-        padding: 8px 12px;
-        font-size: 12px;
-        list-style: none;
-        display: flex;
-        gap: 7px;
-        align-items: center;
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border-bottom: 1px solid var(--ah-border);
-        user-select: none;
-      }
-      .tool summary::-webkit-details-marker {
-        display: none;
-      }
-      .tool .tag {
-        color: var(--ah-accent, #2997ff);
-        font-weight: 500;
-        flex-shrink: 0;
-      }
-      .tool .tname {
-        color: var(--ah-text);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .tool .chev {
-        width: 10px;
-        height: 10px;
-        flex-shrink: 0;
-        color: var(--ah-text-muted);
-        transition: transform 0.15s ease;
-      }
-      .tool[open] .chev {
-        transform: rotate(180deg);
-      }
-      .tool-pre {
-        margin: 0;
-        padding: 10px 12px;
-        font-size: 11.5px;
-        line-height: 1.55;
-        overflow: auto;
-        max-height: 200px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--ah-text-muted);
-        font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-        background: var(--ah-canvas);
-      }
-      .tool-result {
-        padding: 8px 12px 10px;
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--ah-text-muted);
-        white-space: pre-wrap;
-        word-break: break-word;
-        border-top: 1px dashed var(--ah-border);
-      }
-      .tool.errored .tag {
-        color: var(--ah-danger, #e24b4a);
-      }
-      /* ----------------------- 调用链路 (trace) ----------------------- */
-      .trace {
-        margin-bottom: 10px;
-        border: 1px solid var(--ah-border);
-        border-left: 3px solid var(--ah-accent, #2997ff);
-        border-radius: 10px;
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 5%,
-          var(--ah-surface-2)
-        );
-        overflow: hidden;
-      }
-      .trace > summary {
-        cursor: pointer;
-        padding: 9px 12px;
-        font-size: 12.5px;
-        font-weight: 600;
-        color: var(--ah-accent, #2997ff);
-        list-style: none;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .trace > summary::-webkit-details-marker {
-        display: none;
-      }
-      .trace .ticon {
-        width: 14px;
-        height: 14px;
-        flex: 0 0 auto;
-        opacity: 0.95;
-      }
-      .trace .tcount {
-        font-weight: 400;
-        font-size: 11px;
-        color: var(--ah-text-muted);
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border-radius: 999px;
-        padding: 1px 8px;
-      }
-      .trace-body {
-        padding: 2px 12px 10px 14px;
-      }
-      /* 树状节点：左侧连接线 + 圆点 */
-      .tnode {
-        border-left: 1px dashed var(--ah-border);
-        margin-left: 6px;
-        padding-left: 12px;
-      }
-      .tnode:last-child {
-        border-left-color: transparent;
-      }
-      .tnode > summary.tnode-head {
-        cursor: pointer;
-        list-style: none;
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        padding: 5px 0;
-        font-size: 12px;
-      }
-      .tnode > summary.tnode-head::-webkit-details-marker {
-        display: none;
-      }
-      .tdot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        flex: 0 0 auto;
-        background: var(--ah-text-muted);
-      }
-      .tlabel {
-        color: var(--ah-text);
-        font-weight: 500;
-      }
-      .tbadge {
-        font-size: 10px;
-        padding: 0 6px;
-        border-radius: 999px;
-        line-height: 16px;
-        flex: 0 0 auto;
-      }
-      .tbadge.err {
-        background: color-mix(
-          in srgb,
-          var(--ah-danger, #e24b4a) 16%,
-          transparent
-        );
-        color: var(--ah-danger, #e24b4a);
-      }
-      .tbadge.pend {
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 16%,
-          transparent
-        );
-        color: var(--ah-accent, #2997ff);
-      }
-      .tchips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-left: 2px;
-      }
-      .tchip {
-        font-size: 10px;
-        color: var(--ah-text-muted);
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border: 1px solid var(--ah-border);
-        border-radius: 6px;
-        padding: 0 6px;
-        line-height: 16px;
-        white-space: nowrap;
-      }
-      .tchip b {
-        color: var(--ah-text);
-        font-weight: 600;
-        margin-right: 3px;
-      }
-      .tdetail {
-        margin: 2px 0 4px 15px;
-        padding: 8px 10px;
-        font-size: 11px;
-        line-height: 1.5;
-        overflow: auto;
-        max-height: 180px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--ah-text-muted);
-        font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-        background: var(--ah-canvas);
-        border: 1px solid var(--ah-border);
-        border-radius: 7px;
-      }
-      .tresult {
-        margin: 2px 0 6px 15px;
-        padding: 8px 10px;
-        font-size: 11.5px;
-        line-height: 1.55;
-        color: var(--ah-text);
-        white-space: pre-wrap;
-        word-break: break-word;
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border: 1px solid var(--ah-border);
-        border-radius: 7px;
-      }
-      .tresult.retrieval {
-        border-left: 3px solid var(--ah-success, #34c759);
-        background: color-mix(
-          in srgb,
-          var(--ah-success, #34c759) 8%,
-          var(--ah-surface-2)
-        );
-      }
-      .tres-title {
-        font-size: 10.5px;
-        font-weight: 600;
-        color: var(--ah-success, #34c759);
-        margin-bottom: 4px;
-        letter-spacing: 0.03em;
-      }
-      .tchildren {
-        margin-top: 2px;
-      }
-      /* 节点类型着色（圆点 + 标签前缀色） */
-      .tnode.kind-step > summary .tdot {
-        background: var(--ah-accent, #2997ff);
-      }
-      .tnode.kind-llm > summary .tdot {
-        background: #9b6dff;
-      }
-      .tnode.kind-tool > summary .tdot {
-        background: var(--ah-text-muted);
-      }
-      .tnode.kind-retrieval > summary .tdot {
-        background: var(--ah-success, #34c759);
-      }
-      .tnode.kind-cost > summary .tdot {
-        background: #f0a020;
-      }
-      .tnode.kind-tokencache > summary .tdot {
-        background: #2dd4bf;
-      }
-      .tnode.kind-verify > summary .tdot {
-        background: var(--ah-success, #34c759);
-      }
-      .tnode.kind-guardrail > summary .tdot,
-      .tnode.kind-budget > summary .tdot,
-      .tnode.kind-error > summary .tdot {
-        background: var(--ah-danger, #e24b4a);
-      }
-      .tnode.status-error > summary .tlabel {
-        color: var(--ah-danger, #e24b4a);
-      }
-
-      /* ----------------------- 关键信息 (insights) ----------------------- */
-      .insights {
-        margin-bottom: 10px;
-        border: 1px solid var(--ah-border);
-        border-radius: 10px;
-        background: var(--ah-surface-2);
-        padding: 10px 12px 12px;
-      }
-      .insights-title {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--ah-text);
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .insights-title::before {
-        content: '';
-        width: 3px;
-        height: 12px;
-        border-radius: 2px;
-        background: var(--ah-accent, #2997ff);
-      }
-      .ins-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-        gap: 8px;
-      }
-      .ins-item {
-        background: var(--ah-surface-3, var(--ah-surface-1));
-        border: 1px solid var(--ah-border);
-        border-radius: 8px;
-        padding: 6px 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-      }
-      .ins-k {
-        font-size: 10px;
-        color: var(--ah-text-muted);
-      }
-      .ins-v {
-        font-size: 12.5px;
-        font-weight: 600;
-        color: var(--ah-text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .ins-retrieval {
-        margin-top: 10px;
-        border-top: 1px dashed var(--ah-border);
-        padding-top: 10px;
-      }
-      .ins-breakdown {
-        margin-top: 10px;
-        border-top: 1px dashed var(--ah-border);
-        padding-top: 10px;
-      }
-      .ins-bd-title {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--ah-accent, #2997ff);
-        margin-bottom: 8px;
-      }
-      .ins-bd-row {
-        margin-bottom: 7px;
-      }
-      .ins-bd-head {
-        display: flex;
-        justify-content: space-between;
-        font-size: 11px;
-        margin-bottom: 3px;
-      }
-      .ins-bd-name {
-        color: var(--ah-text-muted);
-      }
-      .ins-bd-val {
-        color: var(--ah-text);
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-      }
-      .ins-bd-track {
-        height: 6px;
-        border-radius: 4px;
-        background: color-mix(in srgb, var(--ah-border) 60%, transparent);
-        overflow: hidden;
-      }
-      .ins-bd-fill {
-        height: 100%;
-        border-radius: 4px;
-        background: linear-gradient(
-          90deg,
-          var(--ah-accent, #2997ff),
-          color-mix(in srgb, var(--ah-accent, #2997ff) 55%, #34c759)
-        );
-        transition: width 0.35s ease;
-      }
-      .ins-ret-title {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--ah-success, #34c759);
-        margin-bottom: 6px;
-      }
-      .ins-ret-card {
-        border: 1px solid var(--ah-border);
-        border-left: 3px solid var(--ah-success, #34c759);
-        border-radius: 8px;
-        background: color-mix(
-          in srgb,
-          var(--ah-success, #34c759) 6%,
-          var(--ah-surface-1)
-        );
-        padding: 8px 10px;
-        margin-bottom: 8px;
-      }
-      .ins-ret-name {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--ah-text);
-        margin-bottom: 4px;
-      }
-      .ins-ret-body {
-        margin: 0;
-        font-size: 11px;
-        line-height: 1.5;
-        max-height: 160px;
-        overflow: auto;
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--ah-text-muted);
-        font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-      }
-      /* ----------------------- 合并视图：深度思考 + 最终回答 ----------------------- */
-      /* 思考区：合并视图顶部，实时流式呈现模型推理（随 token 增量逐字揭示）。 */
-      .think {
-        margin-bottom: 10px;
-        border: 1px solid var(--ah-border);
-        border-left: 3px solid var(--ah-accent, #2997ff);
-        border-radius: 10px;
-        background: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 5%,
-          var(--ah-surface-2)
-        );
-        overflow: hidden;
-        animation: think-in 0.28s ease;
-      }
-      @keyframes think-in {
-        from {
-          opacity: 0;
-          transform: translateY(-4px);
-        }
-        to {
-          opacity: 1;
-          transform: none;
-        }
-      }
-      .think-head {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        padding: 7px 10px 7px 12px;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--ah-accent, #2997ff);
-        cursor: pointer;
-        user-select: none;
-      }
-      .think-ico {
-        width: 14px;
-        height: 14px;
-        flex: 0 0 auto;
-        opacity: 0.95;
-      }
-      .think-title {
-        flex: 1 1 auto;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .think-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        font-size: 11px;
-        font-weight: 500;
-        font-style: normal;
-        color: var(--ah-accent, #2997ff);
-        flex: 0 0 auto;
-      }
-      .think-count {
-        font-size: 11px;
-        font-weight: 500;
-        color: var(--ah-text-muted);
-        flex: 0 0 auto;
-      }
-      .think-chev {
-        flex: 0 0 auto;
-        width: 14px;
-        height: 14px;
-        color: var(--ah-text-muted);
-        transition: transform 0.18s ease;
-      }
-      .think.collapsed .think-chev {
-        transform: rotate(-90deg);
-      }
-      /* 高度封顶 + 内部滚动：超长推理不再撑高整条消息，降低视觉占用。 */
-      .think-body {
-        padding: 2px 12px 8px 34px;
-        color: var(--ah-text-muted);
-        font-size: 12.5px;
-        line-height: 1.65;
-        max-height: 180px;
-        overflow-y: auto;
-        overflow-x: hidden;
-        overflow-wrap: anywhere;
-        position: relative;
-        scrollbar-width: thin;
-        scrollbar-color: var(--ah-border) transparent;
-      }
-      .think.collapsed .think-body {
-        display: none;
-      }
-      .think-body::-webkit-scrollbar {
-        width: 4px;
-      }
-      .think-body::-webkit-scrollbar-thumb {
-        background: var(--ah-border);
-        border-radius: 2px;
-      }
-      .think-text {
-        white-space: normal;
-      }
-      .think-text.muted {
-        opacity: 0.85;
-      }
-      /* 关键变量卡（深度思考内高亮） */
-      .dvars {
-        margin-bottom: 10px;
-        border: 1px dashed var(--ah-border);
-        border-radius: 8px;
-        padding: 8px 10px;
-        background: var(--ah-canvas);
-      }
-      .dvars-title {
-        font-size: 11px;
-        font-weight: 600;
-        color: var(--ah-success, #34c759);
-        margin-bottom: 6px;
-      }
-      .dvars-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-        gap: 6px;
-      }
-      .dvar {
-        background: var(--ah-surface-3, var(--ah-surface-1));
-        border: 1px solid var(--ah-border);
-        border-radius: 7px;
-        padding: 5px 8px;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-      }
-      .dvar-k {
-        font-size: 10px;
-        color: var(--ah-text-muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .dvar-v {
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--ah-text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      /* 思考区与回答区之间的清晰分隔 */
-      .sep {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin: 4px 0 10px;
-        color: var(--ah-text-muted);
-        font-size: 11.5px;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-      }
-      .sep::before,
-      .sep::after {
-        content: '';
-        flex: 1 1 auto;
-        height: 1px;
-        background: var(--ah-border);
-      }
-      /* 回答区：合并视图底部，承载最终回答（流式逐字）。 */
-      .answer {
-        font-size: 14px;
-        line-height: 1.65;
-      }
-      /* “模型正在回复…” 文字动效：循环脉冲 + 跳动圆点，提示模型仍在处理。 */
-      .replying {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin-top: 6px;
-        font-size: 12.5px;
-        font-style: italic;
-        color: var(--ah-text-muted);
-        animation: replying-pulse 1.5s ease-in-out infinite;
-      }
-      @keyframes replying-pulse {
-        0%,
-        100% {
-          opacity: 0.5;
-        }
-        50% {
-          opacity: 1;
-        }
-      }
-      /* 通用跳动圆点（思考中 / 模型正在回复 共用 blinkdot 动效） */
-      .dots {
-        display: inline-flex;
-        gap: 3px;
-        vertical-align: middle;
-      }
-      .dots i {
-        width: 4px;
-        height: 4px;
-        border-radius: 50%;
-        background: currentColor;
-        animation: blinkdot 1.2s infinite ease-in-out;
-      }
-      .dots i:nth-child(2) {
-        animation-delay: 0.2s;
-      }
-      .dots i:nth-child(3) {
-        animation-delay: 0.4s;
-      }
-      /* 折叠式附加信息（调用链路 / 关键信息）：默认收起，不干扰主阅读流。 */
-      .extras {
-        margin-top: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .extra {
-        border: 1px solid var(--ah-border);
-        border-radius: 10px;
-        background: var(--ah-surface-2);
-        overflow: hidden;
-      }
-      .extra > summary {
-        cursor: pointer;
-        list-style: none;
-        padding: 8px 12px;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--ah-text);
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        user-select: none;
-      }
-      .extra > summary::-webkit-details-marker {
-        display: none;
-      }
-      .extra[open] > summary {
-        border-bottom: 1px solid var(--ah-border);
-      }
-      .extra .ticon {
-        width: 14px;
-        height: 14px;
-        flex: 0 0 auto;
-        opacity: 0.95;
-      }
-      .extra .tcount {
-        font-weight: 400;
-        font-size: 11px;
-        color: var(--ah-text-muted);
-        background: var(--ah-surface-3, var(--ah-surface-2));
-        border-radius: 999px;
-        padding: 1px 8px;
-      }
-      .extra .trace-body {
-        padding: 10px 12px;
-      }
-      .extra .insights {
-        border: none;
-        border-radius: 0;
-        background: transparent;
-        margin: 0;
-        padding: 10px 12px 12px;
-      }
-
-      /* 移动端汉堡按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
-      .menu-btn {
-        display: none;
-        flex: 0 0 auto;
-        width: 34px;
-        height: 34px;
-        align-items: center;
-        justify-content: center;
-        font-size: 17px;
-        line-height: 1;
-        border-radius: 9px;
-        background: var(--ah-surface-2);
-        border: 1px solid var(--ah-border);
-        color: var(--ah-text);
-        cursor: pointer;
-        padding: 0;
-      }
-      .menu-btn:hover {
-        border-color: var(--ah-accent, #2997ff);
-      }
-      .scrim {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.45);
-        z-index: 40;
-        opacity: 0;
-        transition: opacity 200ms ease;
-      }
-      .scrim.show {
-        opacity: 1;
-        display: block;
-      }
-
-      /* ===================== 响应式适配 ===================== */
-      /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。 */
-      @media (max-width: 900px) {
-        :host {
-          /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
-             .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
-             .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。
-             min-height:0 必须显式中和 sharedStyles ≤760px 设的 min-height:100dvh，
-             否则它把组件顶高、仍需滚动。 */
-          height: 100%;
-          min-height: 0;
-          overflow: hidden;
-        }
-        .sidebar {
-          position: fixed;
-          top: 0;
-          left: 0;
-          height: 100%;
-          width: 264px;
-          max-width: 84vw;
-          transform: translateX(-100%);
-          transition: transform 220ms ease;
-          z-index: 50;
-          box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
-        }
-        .sidebar.open {
-          transform: none;
-        }
-        .menu-btn {
-          display: inline-flex;
-        }
-        .scrim.show {
-          display: block;
-        }
-        .chat-head {
-          padding: 10px 12px;
-          gap: 8px;
-        }
-        .model-input {
-          width: 120px;
-        }
-        .thread {
-          max-width: 100%;
-        }
-        .composer,
-        .hint {
-          max-width: 100%;
-        }
-      }
-      /* 手机（≤600px）：进一步收紧内边距 / 字号，确保完整显示与流畅操作。 */
-      @media (max-width: 600px) {
-        .scroll {
-          padding: 12px 0;
-        }
-        .thread {
-          padding: 0 12px;
-          gap: 14px;
-        }
-        .bubble {
-          padding: 10px 12px;
-        }
-        .avatar {
-          flex: 0 0 26px;
-          width: 26px;
-          height: 26px;
-          font-size: 12px;
-        }
-        .msg {
-          gap: 9px;
-        }
-        .chat-head {
-          padding: 8px 10px;
-          gap: 6px;
-        }
-        .title {
-          font-size: 13px;
-        }
-        .model-input {
-          width: 88px;
-          font-size: 11px;
-          padding: 4px 8px;
-        }
-        .toggle {
-          width: 28px;
-          height: 28px;
-        }
-        .toggle svg {
-          width: 14px;
-          height: 14px;
-        }
-        .composer-wrap {
-          padding: 10px 10px calc(12px + env(safe-area-inset-bottom));
-        }
-        .composer {
-          border-radius: 14px;
-        }
-        .composer textarea {
-          font-size: 14px;
-        }
-        .send {
-          width: 34px;
-          height: 34px;
-          font-size: 15px;
-        }
-        .composer .composer-footer {
-          padding: 4px 6px 8px 8px;
-        }
-        .attach-btn {
-          width: 32px;
-          height: 32px;
-          font-size: 20px;
-        }
-        .hint {
-          font-size: 10.5px;
-          margin-top: 6px;
-        }
-        .empty h1 {
-          font-size: 22px;
-        }
-        .empty p {
-          font-size: 13px;
-        }
-        .think-body {
-          font-size: 12px;
-          line-height: 1.55;
-        }
-        .sep {
-          font-size: 11px;
-          margin: 4px 0 8px;
-        }
-      }
-      /* 中屏（901–1100px）：侧栏收窄但常驻，兼顾 iPad 横屏与窄笔记本。 */
-      @media (min-width: 901px) and (max-width: 1100px) {
-        .sidebar {
-          width: 220px;
-          flex-basis: 220px;
-        }
-      }
-
-      .composer-wrap {
-        /* 悬浮输入：去除底部背景块与顶部分隔线，让输入框像卡片一样浮在对话区之上。 */
-        border-top: none;
-        background: transparent;
-        padding: 10px 18px 16px;
-      }
-      .composer {
-        max-width: 820px;
-        margin: 0 auto;
-        display: flex;
-        flex-direction: column;
-        gap: 0;
-        border: 1px solid var(--ah-border);
-        border-radius: 18px;
-        background: var(--ah-surface-2);
-        /* 悬浮阴影 + 聚焦抬升 */
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22),
-          0 4px 12px rgba(0, 0, 0, 0.12);
-        transition: box-shadow 0.2s ease, border-color 0.2s ease,
-          transform 0.2s ease;
-        min-height: 56px;
-      }
-      .composer:focus-within {
-        border-color: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 45%,
-          var(--ah-border)
-        );
-        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2),
-          0 0 0 3px
-            color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
-        transform: translateY(-1px);
-      }
-      /* 附件预览条：顶部，横向滚动 */
-      .composer .attachments-preview {
-        flex-shrink: 0;
-        display: flex;
-        flex-wrap: nowrap;
-        gap: 8px;
-        padding: 8px 12px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        scrollbar-width: thin;
-        scrollbar-color: color-mix(
-            in srgb,
-            var(--ah-text-muted) 28%,
-            transparent
-          )
-          transparent;
-        border-bottom: 1px solid var(--ah-border);
-      }
-      /* 主体区：textarea 填满剩余高度 */
-      .composer .composer-body {
-        flex: 1 1 auto;
-        min-height: 0;
-        display: flex;
-        align-items: stretch;
-      }
-      .composer textarea {
-        flex: 1 1 auto;
-        resize: none;
-        border: none;
-        outline: none;
-        background: transparent;
-        color: var(--ah-text);
-        font: inherit;
-        font-size: 14px;
-        line-height: 1.6;
-        max-height: 140px;
-        min-height: 52px;
-        padding: 10px 12px;
-        width: 100%;
-        box-sizing: border-box;
-      }
-      /* 底部按钮行：固定高度，左 attach / 右 圆环+send */
-      .composer .composer-footer {
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 4px 8px 8px 12px;
-        gap: 8px;
-      }
-      .composer-footer-right {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .send {
-        flex: 0 0 auto;
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 16px;
-      }
-      .hint {
-        max-width: 820px;
-        margin: 8px auto 0;
-        text-align: center;
-        color: var(--ah-text-muted);
-        font-size: 11px;
-      }
-      /* 附件上传区域样式 */
-      .attachments-preview {
-        /* 行内横向滚动，不占用固定高度 */
-        display: flex;
-        flex-wrap: nowrap;
-        gap: 8px;
-        padding: 2px 12px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        scrollbar-width: thin;
-        scrollbar-color: color-mix(
-            in srgb,
-            var(--ah-text-muted) 28%,
-            transparent
-          )
-          transparent;
-      }
-      .attach-preview-item {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        padding: 4px 30px 4px 6px;
-        background: var(--ah-surface-3);
-        border: 1px solid var(--ah-border);
-        border-radius: 12px;
-        font-size: 12px;
-        max-width: 170px;
-        min-width: 110px;
-        cursor: default;
-        transition: background 0.18s ease, border-color 0.18s ease,
-          box-shadow 0.18s ease, transform 0.18s ease;
-        position: relative;
-        flex-shrink: 0;
-      }
-      /* 图片附件：可点击预览 */
-      .attach-preview-item.is-image {
-        cursor: zoom-in;
-      }
-      .attach-preview-item.is-image:hover {
-        border-color: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 50%,
-          var(--ah-border)
-        );
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28),
-          0 1px 3px rgba(0, 0, 0, 0.18);
-        transform: translateY(-2px);
-      }
-      /* 上传失败：去掉单独徽标，整框上红色边框 + 底色提示 */
-      .attach-preview-item.error {
-        border-color: var(--ah-danger, #e24b4a);
-        background: color-mix(
-          in srgb,
-          var(--ah-danger, #e24b4a) 14%,
-          var(--ah-surface-3)
-        );
-      }
-      .attach-err {
-        flex-shrink: 0;
-        font-size: 11px;
-        color: var(--ah-danger, #e24b4a);
-        white-space: nowrap;
-      }
-      .attach-preview-item:hover {
-        background: var(--ah-surface-2);
-        border-color: color-mix(
-          in srgb,
-          var(--ah-accent, #2997ff) 35%,
-          var(--ah-border)
-        );
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28),
-          0 1px 3px rgba(0, 0, 0, 0.18);
-        transform: translateY(-2px);
-      }
-      .attach-thumb {
-        width: 18px;
-        height: 18px;
-        object-fit: cover;
-        border-radius: 50%;
-        flex-shrink: 0;
-        /* transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-          box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1); */
-        display: block;
-      }
-      .attach-preview-item:hover .attach-thumb {
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
-        z-index: 2;
-        position: relative;
-      }
-      .attach-icon {
-        font-size: 22px;
-        flex-shrink: 0;
-        width: 28px;
-        height: 28px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--ah-surface-2);
-        border: 1px solid var(--ah-border);
-        border-radius: 8px;
-        transition: background 0.18s ease, transform 0.18s ease;
-      }
-      .attach-preview-item:hover .attach-icon {
-        background: var(--ah-surface-1);
-        transform: scale(1.1);
-      }
-      .attach-name {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--ah-text);
-        font-size: 12px;
-      }
-      .attach-rm {
-        position: absolute;
-        right: 0;
-        top: 0;
-        transform: translate(6px, -10px);
-        border: none;
-        background: transparent;
-        color: var(--ah-text-muted);
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        cursor: pointer;
-        font-size: 13px;
-        line-height: 1;
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0;
-        opacity: 0;
-        transition: opacity 0.18s ease, background 0.15s ease, color 0.15s ease;
-      }
-      .attach-preview-item:hover .attach-rm {
-        opacity: 1;
-      }
-      .attach-rm:hover {
-        background: color-mix(
-          in srgb,
-          var(--ah-danger, #e24b4a) 18%,
-          transparent
-        );
-        color: var(--ah-danger, #e24b4a);
-        /* transform: scale(1.15); */
-      }
-      .attach-status {
-        flex-shrink: 0;
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 10px;
-        color: #fff;
-      }
-      .attach-status.uploading {
-        background: var(--ah-accent);
-        animation: ah-spin 1s linear infinite;
-      }
-      .attach-status.done {
-        background: var(--ah-success);
-      }
-      /* 消息气泡中的附件 */
-      .attachments {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-bottom: 8px;
-      }
-      .attachments.has-images {
-        flex-direction: row;
-      }
-      .attach-img.is-previewable {
-        cursor: zoom-in;
-      }
-      .attach-img img {
-        max-width: 200px;
-        max-height: 200px;
-        border-radius: var(--ah-radius-sm);
-        object-fit: cover;
-        transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-          box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-        cursor: inherit;
-        display: block;
-      }
-      .attach-img:hover img {
-        transform: scale(1.06);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.2);
-      }
-      .attach-file {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 10px;
-        background: var(--ah-surface-3);
-        border: 1px solid var(--ah-border);
-        border-radius: var(--ah-radius-sm);
-        font-size: 12px;
-        color: var(--ah-text);
-      }
-      .attach-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        cursor: pointer;
-        color: var(--ah-text-muted);
-        transition: color 0.15s, background 0.15s;
-        flex-shrink: 0;
-        font-size: 22px;
-        line-height: 1;
-      }
-      .attach-btn:hover {
-        color: var(--ah-accent);
-        background: var(--ah-surface-3);
-      }
-      /* 移动端适配 */
-      @media (max-width: 640px) {
-        .attach-preview-item {
-          max-width: 140px;
-          min-width: 90px;
-          height: 28px;
-          padding: 3px 26px 3px 5px;
-        }
-        .attach-thumb {
-          width: 24px;
-          height: 24px;
-        }
-        .attach-icon {
-          font-size: 18px;
-          width: 24px;
-          height: 24px;
-        }
-      }
-      .caret {
-        display: inline-block;
-        width: 8px;
-        height: 14px;
-        margin-left: 2px;
-        vertical-align: text-bottom;
-        background: var(--ah-text);
-        animation: blink 1s steps(2, start) infinite;
-      }
-      @keyframes blink {
-        to {
-          visibility: hidden;
-        }
-      }
-
-      /* 图片预览 Lightbox */
-      .lightbox {
-        position: fixed;
-        inset: 0;
-        z-index: 1000;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0, 0, 0, 0.85);
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        padding: 40px;
-        cursor: zoom-out;
-        animation: ah-fadeIn 0.18s ease;
-      }
-      @keyframes ah-fadeIn {
-        from {
-          opacity: 0;
-        }
-        to {
-          opacity: 1;
-        }
-      }
-      .lightbox img {
-        max-width: 90vw;
-        max-height: 88vh;
-        border-radius: 12px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-        object-fit: contain;
-        animation: ah-zoomIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-      @keyframes ah-zoomIn {
-        from {
-          transform: scale(0.85);
-          opacity: 0;
-        }
-        to {
-          transform: scale(1);
-          opacity: 1;
-        }
-      }
-      .lightbox-close {
-        position: absolute;
-        top: 16px;
-        right: 20px;
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        border: none;
-        background: rgba(255, 255, 255, 0.15);
-        color: #fff;
-        font-size: 20px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.15s ease;
-      }
-      .lightbox-close:hover {
-        background: rgba(255, 255, 255, 0.28);
-      }
-      .lightbox-info {
-        position: absolute;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(0, 0, 0, 0.6);
-        color: #fff;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-size: 12px;
-        white-space: nowrap;
-        pointer-events: none;
-      }
-      button {
-        font-family: inherit;
-      }
-      button.primary {
-        background: var(--ah-accent, #2997ff);
-        color: #fff;
-        border: none;
-        border-radius: 9px;
-        padding: 8px 14px;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      button.ghost {
-        background: transparent;
-        border: 1px solid var(--ah-border);
-        color: var(--ah-text);
-        border-radius: 9px;
-        padding: 8px 14px;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-    `
-  ];
+  static styles = [sharedStyles, chatStyles];
 
   @state() sessions: SessionView[] = [];
   @state() activeId = '';
@@ -2053,6 +116,11 @@ export class AhChat extends LitElement {
   @state() input = '';
   @state() model = '';
   @state() mode: RunMode = 'mock';
+  /** 交互模式（P0）：qa=问答（直接回答）；plan=计划（先出计划→确认→逐任务执行）。
+   *  localStorage 持久化跨刷新记忆。模式语义仅存在于前端，服务端只按字段透传。 */
+  @state() interactionMode: 'qa' | 'plan' = 'qa';
+  /** 计划执行状态（key 为携带计划的消息 id）。 */
+  @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
@@ -2067,6 +135,16 @@ export class AhChat extends LitElement {
   @state() attachments: UploadedFile[] = [];
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
+  /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
+  @state() private hoverUserMsgId = -1;
+  /** 正在编辑的用户消息 id；-1 表示不在编辑态。 */
+  @state() private editingMsgId = -1;
+  /** 编辑中的草稿文本。 */
+  @state() private editingDraft = '';
+  /** 最近一次复制成功的消息 id + 时间戳：按钮短暂变为「已复制 ✓」。 */
+  @state() private copiedMsgId = -1;
+  /** 复制回执定时器。 */
+  private copiedTimer: ReturnType<typeof setTimeout> | null = null;
   /** 上传中的文件追踪（key 为文件名+时间戳） */
   private uploadingFiles: Map<
     string,
@@ -2079,6 +157,8 @@ export class AhChat extends LitElement {
   @state() private stickToBottom = true;
   /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
   @state() private showScrollDown = false;
+  /** 服务端 /api/state 下发的当前模型上下文窗口上限（token）；0 = 未获取（回退基线）。 */
+  private serverCtxWindow = 0;
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
   /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
@@ -2088,7 +168,14 @@ export class AhChat extends LitElement {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
-    breakdown: { system: number; tools: number; messages: number; mcp: number; skills: number; completion: number };
+    breakdown: {
+      system: number;
+      tools: number;
+      messages: number;
+      mcp: number;
+      skills: number;
+      completion: number;
+    };
   } | null = null;
 
   /**
@@ -2097,6 +184,11 @@ export class AhChat extends LitElement {
    * 显示用的 this.messages 指向当前会话的缓冲，后台 run 写的是自己的会话缓冲，二者解耦。
    */
   private threads: Record<string, ChatMsg[]> = {};
+  /**
+   * 会话恢复失败标记（容错持久化）：服务端历史拉取失败且无本地镜像时置 true，
+   * 空线程不再被当作「已加载」缓存 —— 下次进入该会话自动重试恢复，直到成功。
+   */
+  private restoreFailed: Record<string, boolean> = {};
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
   /** 每个会话是否正在流式（支持多个会话并发进行）。
@@ -2119,6 +211,42 @@ export class AhChat extends LitElement {
   private traces: Record<string, TraceCtx> = {};
   /** 每会话的中止控制器（仅停止对应会话的 run）。 */
   private abortBy: Record<string, AbortController> = {};
+
+  /* ---------------------- 断线恢复（标签页切换 / 网络中断） ---------------------- */
+  /** 每会话当前 run 的 jobId（job:accepted 时记录）：断线重连时凭它重订阅事件重放流。 */
+  private jobBy: Record<string, string> = {};
+  /** 每会话已收到的最大事件 seq：断线续传游标，服务端只重放 seq 大于它的部分。 */
+  private lastSeqBy: Record<string, number> = {};
+  /** 每会话是否已收到终结事件（run:end/_done/error）：收到后不再自动重连。 */
+  private finishedBy: Record<string, boolean> = {};
+  /**
+   * 每会话当前 run 是否收到过 error 事件：服务端在模型/运行异常时会先发 error
+   * 再照常补发 run:end 收尾，流「正常关闭」≠ 运行成功 —— 计划模式据此把该轮
+   * 判为失败并立即中止后续任务派发，而不是带着坏结果继续往下跑。
+   */
+  private erroredBy: Record<string, boolean> = {};
+  /** 每会话最近一次收到 SSE 事件的时间戳：静默看门狗与切回标签页的健康判定依据。 */
+  private lastEventAt: Record<string, number> = {};
+  /**
+   * keepalive 中止标记：看门狗 / 切回标签页时用 abort() 唤醒挂起的 read() 走重连路径。
+   * 与用户手动 stop() 共用 AbortController，靠此标记区分「系统触发的中止」与「用户主动停止」。
+   */
+  private keepAliveAbort: Record<string, boolean> = {};
+  /** 每会话最近一次提交的完整 run 入参：彻底断连后供「重新连接」按钮恢复使用。 */
+  private lastInputBy: Record<string, Record<string, unknown>> = {};
+  /** 静默看门狗定时器：可见状态下某会话长时间无事件则强制唤醒走重连。 */
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  /** 每会话连接状态（驱动顶部横幅）：connected 正常 / reconnecting 自动恢复中 / lost 彻底断开。 */
+  @state() private connState: Record<
+    string,
+    'connected' | 'reconnecting' | 'lost'
+  > = {};
+
+  /** 不可变更新某会话的连接状态，确保 Lit 触发重渲染。 */
+  private setConn(sid: string, val: 'connected' | 'reconnecting' | 'lost') {
+    this.connState = { ...this.connState, [sid]: val };
+  }
+
   private typedTimer: ReturnType<typeof setInterval> | null = null;
 
   /** 当前是否仍有任何会话在流式（用于打字机定时器的停启判定）。 */
@@ -2130,6 +258,18 @@ export class AhChat extends LitElement {
   /** 取（或惰性创建）某会话的消息缓冲。 */
   private threadFor(sid: string): ChatMsg[] {
     return this.threads[sid] ?? (this.threads[sid] = []);
+  }
+
+  /**
+   * 把某会话当前消息缓冲经接口层写入历史镜像（容错持久化，服务端 SQLite 存储）。
+   * - 写入独立于恢复流程与 run 结果：发送时与 run 收尾时各写一次，任何错误场景下数据都已可靠保存；
+   * - 异步 fire-and-forget：内部吞掉网络/校验异常并降级进程内缓存（见 chat-history.ts），绝不阻塞 UI。
+   */
+  private saveHistory(sid: string) {
+    const t = this.threads[sid];
+    if (!t || !t.length) return;
+    const meta = this.sessions.find((s) => s.id === sid);
+    void saveThread(sid, { title: meta?.title ?? '新对话', updatedAt: Date.now() }, t);
   }
 
   /** 取某会话当前流式消息。 */
@@ -2177,19 +317,65 @@ export class AhChat extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onPreviewKeydown);
+    // 恢复上次选择的交互模式（问答/计划），跨刷新记忆。
     try {
-      const [list, state] = await Promise.all([
-        client.listChatSessions(),
-        client.getState()
-      ]);
-      this.sessions = list.map((s: ChatSession) => ({
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt
-      }));
-      this.mode = (state as any)?.openrouter ? 'real' : 'mock';
+      const saved = localStorage.getItem('ah_interaction_mode');
+      if (saved === 'plan' || saved === 'qa') this.interactionMode = saved;
     } catch {
-      /* 离线/未启动：仍可进入空状态，发送时按 mock 兜底 */
+      /* ignore */
+    }
+    // 断线恢复：切回标签页时立即体检所有流式会话；后台期间连接可能已被浏览器
+    // （Memory Saver 冻结 / 节流）或代理掐断，返回后第一时间唤醒重连路径。
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    // 静默看门狗：可见状态下流式会话超过 60s 无任何事件（read() 可能静默挂死），
+    // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
+    if (!this.watchTimer) {
+      this.watchTimer = setInterval(() => this.silentWatchdog(), 5000);
+    }
+    // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
+    // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
+    const loadList = () => withTimeout(client.listChatSessions(), 6000, '加载会话列表');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const list = await loadList();
+        this.sessions = list.map((s: ChatSession) => ({
+          id: s.id,
+          title: s.title,
+          updatedAt: s.updatedAt
+        }));
+        break;
+      } catch {
+        if (attempt === 1) {
+          const idx = await loadIndex();
+          this.sessions = Object.entries(idx).map(([sid, m]) => ({
+            id: sid,
+            title: m.title,
+            updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+          }));
+        }
+      }
+    }
+    // 服务端列表成功但缺项时（如离线期间新建的会话），用镜像索引补齐入口（不覆盖服务端条目）。
+    if (this.sessions.length) {
+      const known = new Set(this.sessions.map((s) => s.id));
+      const idx = await loadIndex();
+      const extra = Object.entries(idx)
+        .filter(([sid]) => !known.has(sid))
+        .map(([sid, m]) => ({
+          id: sid,
+          title: m.title,
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+        }));
+      if (extra.length) this.sessions = [...this.sessions, ...extra];
+    }
+    try {
+      const state = await client.getState();
+      this.mode = (state as any)?.openrouter ? 'real' : 'mock';
+      // 同步模型上下文窗口：粗估回退的分母不再写死 128K（如 ox-alpha → 1M）。
+      const cw = Number((state as any)?.contextWindow);
+      if (Number.isFinite(cw) && cw > 0) this.serverCtxWindow = cw;
+    } catch {
+      /* 离线/未启动：发送时按 mock 兜底 */
     }
     // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）
     try {
@@ -2216,6 +402,44 @@ export class AhChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+  }
+
+  /**
+   * 切回标签页（visibilitychange→visible）：对流式中的会话做连接体检。
+   * - 已标记 lost：立即唤醒重连；
+   * - 超过 10s 无任何事件：视为后台期间连接已被冻结/回收，abort 唤醒挂起的
+   *   read()，统一走 runWithReconnect 的续传路径（keepAliveAbort 标记区分用户停止）。
+   */
+  private onVisibilityChange = () => {
+    if (document.visibilityState !== 'visible') return;
+    for (const sid in this.streaming) {
+      if (!this.streaming[sid] || this.finishedBy[sid]) continue;
+      const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
+      const lost = this.connState[sid] === 'lost';
+      if (lost || silentFor > 10_000) {
+        this.keepAliveAbort[sid] = true;
+        if (this.abortBy[sid]) this.abortBy[sid]?.abort();
+        else void this.resumeLost(sid);
+      }
+    }
+  };
+
+  /** 静默看门狗：可见状态下流式会话 60s 无事件则强制唤醒重连（防御 read() 静默挂死）。 */
+  private silentWatchdog() {
+    if (document.visibilityState !== 'visible') return;
+    for (const sid in this.streaming) {
+      if (!this.streaming[sid] || this.finishedBy[sid]) continue;
+      const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
+      if (silentFor > 60_000 && !this.keepAliveAbort[sid]) {
+        this.keepAliveAbort[sid] = true;
+        this.abortBy[sid]?.abort();
+      }
+    }
   }
 
   protected updated() {
@@ -2260,9 +484,16 @@ export class AhChat extends LitElement {
     totalPct: number;
     totalTokens: number;
     window: number;
-    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+    items: {
+      key: string;
+      label: string;
+      tokens: number;
+      pct: number;
+      cls: string;
+    }[];
   } {
-    const WINDOW = 128000; // 上下文窗口基线（token）
+    const WINDOW =
+      this.serverCtxWindow > 0 ? this.serverCtxWindow : 128000; // 上下文窗口（token）：优先后端 /api/state 下发（按模型解析，如 ox-alpha→1M），未到位时落基线
     const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
     const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
     const SKILL_BASE = 80; // 技能基线
@@ -2275,11 +506,41 @@ export class AhChat extends LitElement {
       for (const t of m.tools ?? []) toolTokens += tok(t.args) + tok(t.result);
     }
     const items = [
-      { key: 'sys', label: '系统提示词', tokens: SYS_BASE, cls: 'c-sys', pct: 0 },
-      { key: 'tools', label: '工具及子智能体', tokens: toolTokens, cls: 'c-tools', pct: 0 },
-      { key: 'msg', label: '对话消息', tokens: msgTokens, cls: 'c-msg', pct: 0 },
-      { key: 'mcp', label: '连接器及 MCP', tokens: MCP_BASE, cls: 'c-mcp', pct: 0 },
-      { key: 'skill', label: '技能', tokens: SKILL_BASE, cls: 'c-skill', pct: 0 }
+      {
+        key: 'sys',
+        label: '系统提示词',
+        tokens: SYS_BASE,
+        cls: 'c-sys',
+        pct: 0
+      },
+      {
+        key: 'tools',
+        label: '工具及子智能体',
+        tokens: toolTokens,
+        cls: 'c-tools',
+        pct: 0
+      },
+      {
+        key: 'msg',
+        label: '对话消息',
+        tokens: msgTokens,
+        cls: 'c-msg',
+        pct: 0
+      },
+      {
+        key: 'mcp',
+        label: '连接器及 MCP',
+        tokens: MCP_BASE,
+        cls: 'c-mcp',
+        pct: 0
+      },
+      {
+        key: 'skill',
+        label: '技能',
+        tokens: SKILL_BASE,
+        cls: 'c-skill',
+        pct: 0
+      }
     ];
     const totalTokens = items.reduce((s, it) => s + it.tokens, 0);
     const totalPct = Math.min(100, (totalTokens / WINDOW) * 100);
@@ -2296,16 +557,52 @@ export class AhChat extends LitElement {
     totalPct: number;
     totalTokens: number;
     window: number;
-    items: { key: string; label: string; tokens: number; pct: number; cls: string }[];
+    items: {
+      key: string;
+      label: string;
+      tokens: number;
+      pct: number;
+      cls: string;
+    }[];
   } {
     const u = this.backendUsage;
     if (u) {
       const items = [
-        { key: 'sys', label: '系统提示词', tokens: u.breakdown.system, cls: 'c-sys', pct: 0 },
-        { key: 'tools', label: '工具及子智能体', tokens: u.breakdown.tools, cls: 'c-tools', pct: 0 },
-        { key: 'msg', label: '对话消息', tokens: u.breakdown.messages, cls: 'c-msg', pct: 0 },
-        { key: 'mcp', label: '连接器及 MCP', tokens: u.breakdown.mcp, cls: 'c-mcp', pct: 0 },
-        { key: 'skill', label: '技能', tokens: u.breakdown.skills, cls: 'c-skill', pct: 0 }
+        {
+          key: 'sys',
+          label: '系统提示词',
+          tokens: u.breakdown.system,
+          cls: 'c-sys',
+          pct: 0
+        },
+        {
+          key: 'tools',
+          label: '工具及子智能体',
+          tokens: u.breakdown.tools,
+          cls: 'c-tools',
+          pct: 0
+        },
+        {
+          key: 'msg',
+          label: '对话消息',
+          tokens: u.breakdown.messages,
+          cls: 'c-msg',
+          pct: 0
+        },
+        {
+          key: 'mcp',
+          label: '连接器及 MCP',
+          tokens: u.breakdown.mcp,
+          cls: 'c-mcp',
+          pct: 0
+        },
+        {
+          key: 'skill',
+          label: '技能',
+          tokens: u.breakdown.skills,
+          cls: 'c-skill',
+          pct: 0
+        }
       ];
       const totalTokens = u.totalTokens;
       const totalPct = Math.min(100, (totalTokens / u.window) * 100);
@@ -2338,12 +635,17 @@ export class AhChat extends LitElement {
       <div class="ctx-ring-wrap">
         <button
           class="ctx-ring"
-          title="上下文用量"
           aria-label="上下文用量"
           @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
         >
           <svg viewBox="0 0 36 36" role="img" aria-hidden="true">
-            <circle class="ring-bg" cx="18" cy="18" r=${R} stroke-width="3"></circle>
+            <circle
+              class="ring-bg"
+              cx="18"
+              cy="18"
+              r=${R}
+              stroke-width="3"
+            ></circle>
             <circle
               class="ring-fg ${pct > 80 ? 'warn' : ''}"
               cx="18"
@@ -2354,21 +656,28 @@ export class AhChat extends LitElement {
               stroke-dashoffset=${offset.toFixed(2)}
               transform="rotate(-90 18 18)"
             ></circle>
-            <text class="ring-num" x="18" y="18" text-anchor="middle" dominant-baseline="central">
+            <text
+              class="ring-num"
+              x="18"
+              y="18"
+              text-anchor="middle"
+              dominant-baseline="central"
+            >
               ${Math.round(pct)}%
             </text>
           </svg>
         </button>
         <span class="ctx-tip"
-          >上下文已使用：${pct.toFixed(1)}% - ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
+          >上下文已使用：${pct.toFixed(1)}% -
+          ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
         >
         ${this.showCtxUsage
           ? html`<div class="ctx-pop">
               <div class="ctx-pop-head">
                 <span>上下文用量</span>
                 <span class="ctx-pop-total"
-                  >${u.totalTokens.toLocaleString()}
-                  / ${this.fmtK(u.window)}</span
+                  >${u.totalTokens.toLocaleString()} /
+                  ${this.fmtK(u.window)}</span
                 >
               </div>
               <div class="ctx-seg">
@@ -2429,28 +738,48 @@ export class AhChat extends LitElement {
     this.input = '';
     // 关键修复：切换会话【不再】中止进行中的 run，也不清空其打字机缓冲 / 追踪状态。
     // 进行中的 run 仍向所属会话缓冲写内容，切回时实时恢复（见 this.threads / this.pending / this.traces）。
-    // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过）。
-    if (!this.threads[id]) {
+    // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
+    // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
+    const localBuf = this.threads[id];
+    if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
       try {
-        const s = await client.getChatSession(id);
-        this.threads[id] = s.messages.map((m) => ({
-          id: this.nextId++,
-          role: m.role === 'user' ? 'user' : 'assistant',
-          content: m.content,
-          // 还原落盘时一并写入的推理、工具调用与调用链路追踪，避免切换会话后再切回丢失深度思考/复盘数据。
-          reasoning: m.reasoning,
-          tools: m.tools
-            ? m.tools.map((t) => ({
-                name: t.name,
-                args: t.args ?? '',
-                result: t.result,
-                errored: t.errored
-              }))
-            : undefined,
-          trace: m.trace ? m.trace : undefined
-        }));
+        // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
+        const s = await withTimeout(client.getChatSession(id), 8000, '恢复会话历史');
+        // 服务端数据先经消毒（类型收敛 / 过滤非法条目 / 连续重复去重 / 保序）再入内存。
+        const clean = sanitizeMessages(
+          s.messages.map((m) => ({
+            role: m.role === 'user' ? 'user' : 'assistant',
+            content: m.content,
+            reasoning: m.reasoning,
+            tools: m.tools,
+            trace: m.trace,
+            plan: m.plan
+          }))
+        );
+        if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
+        // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
+        // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
+        const merged =
+          localBuf && localBuf.length
+            ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
+            : clean;
+        this.threads[id] = merged.map((m) => ({ ...m, id: this.nextId++ })) as ChatMsg[];
+        this.restoreFailed[id] = false;
       } catch {
-        this.threads[id] = [];
+        // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
+        //   历史镜像接口（服务端 SQLite / 进程内兜底） → 空线程 + 失败标记（下次重试）+ 非阻断警示。
+        const mirrored = await loadThread(id);
+        if (mirrored && mirrored.length) {
+          this.threads[id] = mirrored.map((m) => ({
+            ...(m as Omit<ChatMsg, 'id'>),
+            id: this.nextId++
+          })) as ChatMsg[];
+          this.error = '⚠️ 服务端历史拉取失败，已从历史镜像恢复（可能非最新）。';
+        } else {
+          this.threads[id] = localBuf ?? [];
+          this.restoreFailed[id] = true;
+          this.error = '⚠️ 历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。';
+        }
       }
     }
     this.messages = this.threads[id];
@@ -2462,22 +791,44 @@ export class AhChat extends LitElement {
 
   private async renameSession(id: string) {
     const cur = this.sessions.find((s) => s.id === id);
-    const title = window.prompt('重命名会话', cur?.title ?? '');
+    // 统一弹框（components/ah-modal）：替代原生 window.prompt，主题/无障碍一致。
+    const title = await AhModal.prompt({
+      title: '重命名会话',
+      inputValue: cur?.title ?? '',
+      inputPlaceholder: '输入新的会话名称',
+      confirmText: '保存'
+    });
     if (!title || !title.trim()) return;
     try {
       await client.renameChatSession(id, title.trim());
       this.sessions = this.sessions.map((s) =>
         s.id === id ? { ...s, title: title.trim() } : s
       );
+      // 同步本地镜像索引标题（下次离线兜底渲染时名称一致）。
+      const t = this.threads[id];
+      if (t && t.length) this.saveHistory(id);
     } catch (e: any) {
       this.error = String(e?.message ?? e);
     }
   }
 
   private async deleteSession(id: string) {
-    if (!window.confirm('删除该会话及其消息？')) return;
+    // 统一弹框：警告变体 + 破坏性红色确认按钮，替代原生 window.confirm。
+    // maskClosable=false 防误触（危险操作需明确点击「删除」或「取消」）。
+    const ok = await AhModal.confirm({
+      variant: 'warning',
+      danger: true,
+      title: '删除会话',
+      message: '删除该会话及其全部消息？此操作不可恢复。',
+      confirmText: '删除',
+      cancelText: '取消',
+      maskClosable: false
+    });
+    if (!ok) return;
     try {
       await client.deleteChatSession(id);
+      // 同步清理历史镜像与索引（进程内 + 服务端），避免「服务端已删、本地幽灵会话」复活。
+      await purgeSessionMirror(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
       if (this.activeId === id) this.newChat();
     } catch (e: any) {
@@ -2523,6 +874,22 @@ export class AhChat extends LitElement {
       }))
       .filter((f) => f.url);
 
+    this.input = '';
+    this.attachments = [];
+    await this.dispatchPrompt(sessionId, content, imageAttachments);
+  }
+
+  /**
+   * 派发一次 run（send 与计划模式逐任务执行的公共管线）。
+   * 返回 'ok' | 'stopped'（用户手动停止）| 'error'（彻底断连/失败），
+   * 供计划执行循环决定是否继续派发后续任务。
+   */
+  private async dispatchPrompt(
+    sessionId: string,
+    content: string,
+    imageAttachments: Array<{ url: string; name: string; type: string }> = [],
+    opts: { planTask?: boolean } = {}
+  ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
     t.push({
@@ -2534,12 +901,16 @@ export class AhChat extends LitElement {
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;
     this.threads[sessionId] = t;
-    this.input = '';
-    this.attachments = [];
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.received[sessionId] = false;
     this.pending[sessionId] = { content: '', reasoning: '' };
     this.finalBy[sessionId] = '';
+    // 断线恢复簿记归零：新一轮 run 重新记录 jobId / seq 游标 / 终结标记 / 错误标记。
+    this.finishedBy[sessionId] = false;
+    this.jobBy[sessionId] = '';
+    this.lastSeqBy[sessionId] = -1;
+    this.erroredBy[sessionId] = false;
+    this.setConn(sessionId, 'connected');
     this.resetTrace(sessionId);
     this.stopTypewriter();
     this.setStreaming(sessionId, true);
@@ -2549,33 +920,58 @@ export class AhChat extends LitElement {
     this.showScrollDown = false;
     this.showCtxUsage = false;
     this.backendUsage = null;
+    // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
+    this.saveHistory(sessionId);
+
+    const input: Record<string, unknown> = {
+      mode: this.mode,
+      prompt: content,
+      model: this.model || undefined,
+      agentId: this.agentId || undefined,
+      sessionId,
+      chatSessionId: sessionId,
+      attachments:
+        imageAttachments.length > 0 ? imageAttachments : undefined,
+      // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
+      web: this.web || undefined,
+      // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
+      // 计划任务的逐步执行（confirmPlan）必须按普通问答派发 —— 若仍带 planPhase:'propose'，
+      // 服务端会把每个任务 run 都当作一次新的计划提案，模型把旧计划原样再提一遍，
+      // 生成第二张「待确认」卡片，点执行又从第一步重来（交互死循环根因）。
+      interactionMode:
+        this.interactionMode === 'plan' && !opts.planTask ? 'plan' : undefined,
+      planPhase:
+        this.interactionMode === 'plan' && !opts.planTask ? 'propose' : undefined
+    };
+    // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
+    this.lastInputBy[sessionId] = input;
 
     const ac = new AbortController();
     this.abortBy[sessionId] = ac;
     try {
-      for await (const ev of client.streamRun(
-        {
-          mode: this.mode,
-          prompt,
-          model: this.model || undefined,
-          agentId: this.agentId || undefined,
-          sessionId,
-          chatSessionId: sessionId,
-          attachments:
-            imageAttachments.length > 0 ? imageAttachments : undefined,
-          // 联网搜索开关（Request 4）：仅在用户显式开启 web 时透传 true，关闭时缺省不触发任何出网检索。
-          web: this.web || undefined
-        },
-        { signal: ac.signal }
-      )) {
-        this.ingest(ev as StreamEvent, sessionId);
+      await this.runWithReconnect(sessionId, input, ac);
+      // 流正常关闭 ≠ 运行成功：服务端在模型/运行异常时先发 error 事件再补发
+      // run:end 正常收尾。此处必须检查本轮是否收到过 error，收到则按失败返回，
+      // 让计划执行循环立即中止后续任务派发（而不是把失败当成功继续跑下一步）。
+      if (this.erroredBy[sessionId]) {
+        return 'error';
       }
+      return 'ok';
     } catch (e: any) {
-      this.patchSession(sessionId, {
-        error: true,
-        content:
-          (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
-      });
+      if ((e as any)?.name === 'UserStoppedRun') {
+        // 用户主动停止：保留已揭示内容，不标错误（原有体验不变）。
+        return 'stopped';
+      } else {
+        // 彻底断连（重试耗尽 / job 已被服务端淘汰）：标记断开 + 错误提示，
+        // 顶部横幅出现「重新连接」手动入口。
+        this.setConn(sessionId, 'lost');
+        this.patchSession(sessionId, {
+          error: true,
+          content:
+            (this.curSession(sessionId)?.content ?? '') || `⚠️ ${e?.message ?? e}`
+        });
+        return 'error';
+      }
     } finally {
       // 先停掉 interval 定时器，再按打字节奏把剩余缓冲揭示完（drain），
       // 避免 run:end 的 final 文本一次性覆盖掉打字机效果；被手动中止时则立即落盘。
@@ -2592,6 +988,9 @@ export class AhChat extends LitElement {
       this.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
       if (this.activeId === sessionId) this.messages = this.threads[sessionId];
+      // 容错持久化：run 收尾（正常完成 / 出错 / 手动中止均会走到 finally）把最终消息镜像落盘，
+      // 写入独立于恢复流程结果，保证任何错误场景下历史都已可靠保存。
+      this.saveHistory(sessionId);
     }
   }
 
@@ -2599,6 +998,155 @@ export class AhChat extends LitElement {
   private stop() {
     const ac = this.abortBy[this.activeId];
     ac?.abort();
+  }
+
+  /* ---------------------------- 断线恢复引擎 ---------------------------- */
+
+  /**
+   * 消费一次 run 的 SSE 事件流，并在意外断连时自动重连续传。
+   *
+   * - 首次以完整入参提交；断连后凭 jobId + since(seq 游标) 重订阅，
+   *   服务端只重放缺失事件 —— 内容不重复、不丢失，进行中的操作照常推进；
+   * - 用户手动 stop() 不重连（抛 UserStoppedRun）；看门狗 / 切回标签页触发的
+   *   keepalive 中止视为断连，照常进入恢复流程；
+   * - 重试指数退避（1s→2s→4s→8s 封顶），最多 6 次（总窗口 ≈ 30s+）；
+   * - 彻底失败向上抛错：send()/resumeLost 标记 lost 并给出手动重试入口。
+   */
+  private async runWithReconnect(
+    sid: string,
+    input: Record<string, unknown>,
+    ac: AbortController
+  ): Promise<void> {
+    const MAX_ATTEMPTS = 6;
+    let attempts = 0;
+    let first = true;
+    while (true) {
+      try {
+        const payload: Record<string, unknown> = first
+          ? input
+          : {
+              ...input,
+              jobId: this.jobBy[sid],
+              since: this.lastSeqBy[sid] ?? -1
+            };
+        first = false;
+        for await (const ev of client.streamRun(payload as any, {
+          signal: ac.signal
+        })) {
+          // 首个事件到达即视为链路恢复，清除「重连中」横幅。
+          if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
+          this.ingest(ev as StreamEvent, sid);
+        }
+        // 流正常关闭：无论是否经历过断连，横幅一律复位。否则「重连后服务端只回放
+        // 末尾终结事件即关流」的场景下，无人再清 connState，横幅会永久残留。
+        if (this.connState[sid] !== 'connected') this.setConn(sid, 'connected');
+        return; // 服务端正常关流（_done 后 end / job 已终结的重放完毕）
+      } catch (rawErr: any) {
+        const aborted = ac.signal.aborted;
+        const wasKeepAlive = this.keepAliveAbort[sid] === true;
+        this.keepAliveAbort[sid] = false;
+        if (aborted && !wasKeepAlive) {
+          // 用户手动停止：包装标记后上抛，调用方静默处理。
+          // 停止即退出恢复循环：先清掉「重连中」横幅再抛，避免停止后残留。
+          if (this.connState[sid] !== 'connected')
+            this.setConn(sid, 'connected');
+          throw Object.assign(rawErr instanceof Error ? rawErr : new Error(String(rawErr)), {
+            name: 'UserStoppedRun'
+          });
+        }
+        // 断连前已收到最终答复：内容完整，无需恢复。
+        if (this.finishedBy[sid]) return;
+        attempts += 1;
+        const jobGone =
+          rawErr instanceof ApiError &&
+          rawErr.status >= 400 &&
+          rawErr.status < 500;
+        if (
+          jobGone ||
+          !this.jobBy[sid] ||
+          attempts > MAX_ATTEMPTS
+        ) {
+          throw rawErr;
+        }
+        const delay = Math.min(8000, 1000 * 2 ** (attempts - 1));
+        this.setConn(sid, 'reconnecting');
+        await this.sleep(delay, ac.signal);
+        // 等待期间被用户停止 → 静默退出；keepalive 唤醒则立即重试。
+        if (ac.signal.aborted && !this.keepAliveAbort[sid]) {
+          // 停止即退出：先复位横幅再抛，避免停止后「重连中」残留。
+          if (this.connState[sid] !== 'connected')
+            this.setConn(sid, 'connected');
+          throw Object.assign(new Error('user stopped during reconnect'), {
+            name: 'UserStoppedRun'
+          });
+        }
+      }
+    }
+  }
+
+  /** 可被 AbortSignal 提前打断的 sleep（用户停止时立即结束退避等待）。 */
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const onAbort = () => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener('abort', onAbort);
+    });
+  }
+
+  /**
+   * 手动重试入口（顶部断连横幅按钮）：对仍持有 jobId 的会话发起恢复。
+   * 复用 runWithReconnect 的续传逻辑；成功则流继续、横幅消失，失败保持 lost。
+   */
+  private async resumeLost(sid: string) {
+    if (!sid || this.streaming[sid] || this.finishedBy[sid]) return;
+    if (!this.jobBy[sid]) {
+      // jobId 已不可用（服务端重启淘汰）：只能整段重发，提示用户重新发送消息。
+      this.patchSession(sid, { error: true });
+      return;
+    }
+    const input = this.lastInputBy[sid] ?? {};
+    const ac = new AbortController();
+    this.abortBy[sid] = ac;
+    this.received[sid] = false;
+    this.pending[sid] = { content: '', reasoning: '' };
+    this.setStreaming(sid, true);
+    this.setConn(sid, 'reconnecting');
+    try {
+      await this.runWithReconnect(sid, input, ac);
+    } catch (e: any) {
+      if ((e as any)?.name !== 'UserStoppedRun') {
+        this.setConn(sid, 'lost');
+        this.patchSession(sid, {
+          error: true,
+          content:
+            (this.curSession(sid)?.content ?? '') ||
+            `⚠️ 重连失败：${e?.message ?? e}（请重新发送消息）`
+        });
+      }
+    } finally {
+      this.stopTypewriter();
+      if (ac.signal.aborted) {
+        this.flushTypewriter(sid);
+      } else {
+        await this.drainTypewriter(sid);
+      }
+      const c = this.curSession(sid);
+      if (c && !c.content && this.finalBy[sid]) {
+        this.patchSession(sid, { content: this.finalBy[sid] });
+      }
+      this.setStreaming(sid, false);
+      this.abortBy[sid] = undefined as any;
+      if (this.activeId === sid) this.messages = this.threads[sid];
+      this.saveHistory(sid);
+    }
   }
 
   private ingest(ev: StreamEvent, sid: string) {
@@ -2613,12 +1161,61 @@ export class AhChat extends LitElement {
     if (et === 'run:end' || et === '_done' || et === 'error') {
       this.setStreaming(sid, false);
     }
+    // 断线恢复簿记：记录 jobId（重连凭据）、最大事件 seq（续传游标）、
+    // 活跃时间戳（看门狗/切回标签页的健康判定）与终结标记。
+    const anyEv = ev as any;
+    if (et === 'job:accepted' && anyEv.jobId) {
+      this.jobBy[sid] = String(anyEv.jobId);
+    }
+    if (typeof anyEv.seq === 'number') {
+      this.lastSeqBy[sid] = Math.max(this.lastSeqBy[sid] ?? -1, anyEv.seq);
+    }
+    this.lastEventAt[sid] = Date.now();
+    if (et === 'run:end' || et === '_done' || et === 'error') {
+      this.finishedBy[sid] = true;
+      // 记录本轮 run 是否出现过 error 事件：dispatchPrompt 收尾时据此区分
+      // 「成功收尾」与「带错误收尾」，计划执行循环依赖这一判定中止后续任务。
+      if (et === 'error') this.erroredBy[sid] = true;
+      // 运行已终结：链路无论此前是否断连过都视为恢复，立即摘掉「连接中断」横幅，
+      // 防止「重连补收末尾终结事件 → 流关闭」时横幅无人清理而永久残留。
+      if (this.connState[sid] !== 'connected')
+        this.setConn(sid, 'connected');
+    }
     // 把事件汇入调用链路追踪树（独立于内容/工具卡，结构化记录 LLM↔工具↔检索 过程）。
     this.traceHandle(ev, sid);
     switch (ev.type) {
       case 'job:accepted':
         // jobId 仅用于潜在调试，无需持久；忽略。
         break;
+      case 'plan:proposed': {
+        // 计划模式（P0）：服务端解析成功后补发的结构化计划 —— 挂到流式消息上渲染计划卡片。
+        const c = cur();
+        const plan = anyEv.plan as ExecutionPlanView | undefined;
+        if (!c || !plan || !plan.tasks?.length) break;
+        // 去重防御：模型偶尔会把已确认执行中/已完成的计划原样再输出一遍。
+        // 若本会话更早的消息里存在「目标一致且任务数一致」且状态为 running/done 的计划，
+        // 则本条继承其执行状态（不产生第二张可点「确认执行」的卡片），避免重复从头执行。
+        const dupSrc = [...(this.threads[sid] ?? [])]
+          .reverse()
+          .find(
+            (p) =>
+              p.id !== c.id &&
+              p.plan &&
+              p.plan.goal === plan.goal &&
+              p.plan.tasks.length === plan.tasks.length &&
+              ['running', 'done'].includes(
+                this.planExec[p.id]?.status ?? 'pending'
+              )
+          );
+        patch({ plan });
+        this.planExec = {
+          ...this.planExec,
+          [c.id]: dupSrc
+            ? { ...(this.planExec[dupSrc.id] ?? { status: 'pending', done: {} }) }
+            : { status: 'pending', done: {} }
+        };
+        break;
+      }
       case 'llm:token': {
         const c = cur();
         if (c) {
@@ -2707,7 +1304,10 @@ export class AhChat extends LitElement {
             totalTokens: u.totalTokens,
             breakdown: u.breakdown
           };
-          const totalPct = Math.min(100, (Number(u.totalTokens) / Number(u.window)) * 100);
+          const totalPct = Math.min(
+            100,
+            (Number(u.totalTokens) / Number(u.window)) * 100
+          );
           agentContext.set('lastContextUsage', {
             totalPct,
             totalTokens: Number(u.totalTokens),
@@ -2723,9 +1323,10 @@ export class AhChat extends LitElement {
         this.finalBy[sid] = finalStr;
         // 若已通过 llm:token 走打字机揭示：不在这里用 final 覆盖 content（否则整段秒显，打字机失效）。
         // 让打字机按节奏自然揭示到 final 文本；仅在完全没有 token 增量时（非流式回退）才直接赋值。
+        // 计划模式：消息已挂计划卡片（content=友好摘要）时，跳过任何迟到的 raw final 覆盖。
         if (!this.received[sid] && finalStr) {
           const c = cur();
-          if (c) patch({ content: finalStr });
+          if (c && !c.plan) patch({ content: finalStr });
         }
         break;
       }
@@ -2903,6 +1504,13 @@ export class AhChat extends LitElement {
       case 'run:cost': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
+        // Token 拆解四项（系统/工具/历史/输出）：与 access/server 的 traceHandle 保持
+        // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
+        // 仅在服务端落盘后的恢复视图中出现、实时流视图中消失（时有时无的根因）。
+        const est = (ev as any).estTokens as
+          | { system: number; tools: number; history: number; completion: number }
+          | undefined;
+        const estTotal = est ? est.system + est.tools + est.history + est.completion : 0;
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(
@@ -2913,7 +1521,15 @@ export class AhChat extends LitElement {
                 ? `$${Number(ev.cumulativeCost).toFixed(4)}`
                 : '?',
             priced: ev.priced ? 'true' : 'false',
-            ...(ev.model ? { model: String(ev.model) } : {})
+            ...(ev.model ? { model: String(ev.model) } : {}),
+            ...(est
+              ? {
+                  系统: String(est.system),
+                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  输出: String(est.completion)
+                }
+              : {})
           }
         });
         break;
@@ -3096,6 +1712,59 @@ export class AhChat extends LitElement {
 
   /* ----------------------- 渲染辅助 ----------------------- */
 
+  /** 复制消息原文到剪贴板，成功后短暂显示「已复制 ✓」回执。 */
+  private async copyMsgText(msgId: number, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 剪贴板 API 不可用 / 被拒绝时的兜底：execCommand。
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+    this.copiedMsgId = msgId;
+    if (this.copiedTimer) clearTimeout(this.copiedTimer);
+    this.copiedTimer = setTimeout(() => {
+      this.copiedMsgId = -1;
+      this.copiedTimer = null;
+    }, 1500);
+  }
+
+  /** 进入用户消息编辑态：气泡原位替换为输入框并自动聚焦。 */
+  private startEdit(msgId: number, content: string) {
+    this.editingMsgId = msgId;
+    this.editingDraft = content;
+    this.hoverUserMsgId = -1;
+  }
+
+  /** 退出编辑态，丢弃草稿。 */
+  private cancelEdit() {
+    this.editingMsgId = -1;
+    this.editingDraft = '';
+  }
+
+  /**
+   * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
+   * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   */
+  private async sendEdit(_msgId: number) {
+    const draft = this.editingDraft.trim();
+    if (!draft || this.streaming[this.activeId] === true) return;
+    this.cancelEdit();
+    const sessionId = await this.ensureSession();
+    this.input = draft;
+    await this.send();
+  }
+
   private onInput(e: Event) {
     this.input = (e.target as HTMLTextAreaElement).value;
     const ta = e.target as HTMLTextAreaElement;
@@ -3198,9 +1867,7 @@ export class AhChat extends LitElement {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '上传失败';
         this.attachments = this.attachments.map((a) =>
-          a === file
-            ? { ...a, uploadStatus: 'error', uploadError: msg }
-            : a
+          a === file ? { ...a, uploadStatus: 'error', uploadError: msg } : a
         );
         this.uploadingFiles.set(key, {
           status: 'error',
@@ -3258,6 +1925,16 @@ export class AhChat extends LitElement {
     };
   }
 
+  /** 切换交互模式（问答/计划）并持久化。 */
+  private setInteractionMode(m: 'qa' | 'plan') {
+    this.interactionMode = m;
+    try {
+      localStorage.setItem('ah_interaction_mode', m);
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** 切换移动端侧栏抽屉（≤900px 生效）。 */
   private toggleSidebar() {
     this.sidebarOpen = !this.sidebarOpen;
@@ -3309,16 +1986,115 @@ export class AhChat extends LitElement {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  private renderMessage(m: ChatMsg) {
-    // 用户消息：渲染气泡文本 + 附件预览。
+  /** 断连恢复横幅：reconnecting 显示自动恢复中提示；lost 给出「重新连接」手动入口。 */
+  private renderConnBanner() {
+    const st = this.connState[this.activeId];
+    if (!st || st === 'connected') return nothing;
+    if (st === 'reconnecting') {
+      return html`<div class="conn-banner warn">
+        ⚠️ 连接中断，正在自动恢复会话…
+      </div>`;
+    }
+    return html`<div class="conn-banner lost">
+      <span>⚠️ 与服务器的连接已断开${this.jobBy[this.activeId] ? '' : '，本次运行已丢失'}</span>
+      ${this.jobBy[this.activeId]
+        ? html`<button class="conn-retry" @click=${() => this.resumeLost(this.activeId)}>
+            重新连接
+          </button>`
+        : nothing}
+    </div>`;
+  }
+
+  private renderMessage(m: ChatMsg) {    // 用户消息：渲染气泡文本 + 附件预览。
     if (m.role === 'user') {
       const hasAttachments = m.attachments && m.attachments.length > 0;
+      // 编辑态：气泡原位替换为编辑框（草稿 + 取消/发送），不再展示原文。
+      if (this.editingMsgId === m.id) {
+        return html`
+          <div class="msg user">
+            <div class="avatar">你</div>
+            <div class="bubble editing">
+              <textarea
+                class="edit-input"
+                .value=${this.editingDraft}
+                @input=${(e: Event) =>
+                  (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
+                @keydown=${(e: KeyboardEvent) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void this.sendEdit(m.id);
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    this.cancelEdit();
+                  }
+                }}
+              ></textarea>
+              <div class="edit-actions">
+                <button
+                  type="button"
+                  class="edit-btn"
+                  title="取消编辑 (Esc)"
+                  @click=${() => this.cancelEdit()}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  class="edit-btn primary"
+                  title="发送 (Enter)"
+                  ?disabled=${!this.editingDraft.trim() ||
+                  this.streaming[this.activeId] === true}
+                  @click=${() => void this.sendEdit(m.id)}
+                >
+                  发送 ↑
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
       return html`
         <div class="msg user">
           <div class="avatar">你</div>
-          <div class="bubble">
-            ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
-            <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
+          <div class="user-col">
+            <div class="bubble">
+              ${hasAttachments ? this.renderAttachments(m.attachments!) : nothing}
+              <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
+            </div>
+            ${m.content?.trim()
+              ? html`<div class="msg-actions ${this.hoverUserMsgId === m.id ? 'show' : ''}">
+                <button
+                  type="button"
+                  class="msg-action"
+                  title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
+                  @click=${() => this.copyMsgText(m.id, m.content)}
+                >
+                  ${this.copiedMsgId === m.id
+                    ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>`
+                    : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                      </svg>`}
+                </button>
+                <button
+                  type="button"
+                  class="msg-action"
+                  title="编辑"
+                  ?disabled=${this.streaming[this.activeId] === true}
+                  @click=${() => this.startEdit(m.id, m.content)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+                    <path d="m15 5 4 4" />
+                  </svg>
+                </button>
+              </div>`
+            : nothing}
           </div>
         </div>
       `;
@@ -3339,9 +2115,32 @@ export class AhChat extends LitElement {
     const isThinking = isStreamingAssistant && !m.content;
     const isAnswering = isStreamingAssistant && !!m.content;
 
+    // 复制按钮：仅在回答已产出内容且非流式进行中时显示。
+    const showCopy =
+      !!m.content?.trim() && !isStreamingAssistant;
+
     return html`
       <div class="msg assistant ${m.error ? 'error' : ''}">
         <div class="avatar">A</div>
+        ${showCopy
+          ? html`<button
+              type="button"
+              class="assistant-copy ${this.copiedMsgId === m.id ? 'done' : ''}"
+              title=${this.copiedMsgId === m.id ? '已复制' : '复制'}
+              @click=${() => this.copyMsgText(m.id, m.content)}
+            >
+              ${this.copiedMsgId === m.id
+                ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>`
+                : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                  </svg>`}
+            </button>`
+          : nothing}
         <div class="bubble">
           ${showThinking && this.deepThink
             ? this.renderThinking(m, isThinking)
@@ -3352,6 +2151,7 @@ export class AhChat extends LitElement {
             ? html`<div class="sep"><span>回答</span></div>`
             : nothing}
           ${this.renderAnswer(m, isAnswering, isStreamingAssistant)}
+          ${m.plan ? this.renderPlanCard(m) : nothing}
           ${this.renderExtras(m, isStreamingAssistant)}
         </div>
       </div>
@@ -3468,10 +2268,148 @@ export class AhChat extends LitElement {
     `;
   }
 
+  /**
+   * 渲染计划卡片（P0 计划模式）：任务拆解 / 步骤 / 依赖 / 预期产出 + 状态标记。
+   * pending 态显示「确认执行 / 取消」；running 显示当前任务；done/cancelled 只读。
+   */
+  private renderPlanCard(m: ChatMsg): TemplateResult {
+    const plan = m.plan;
+    if (!plan) return html``;
+    const st = this.planExec[m.id] ?? { status: 'pending' as const, done: {} };
+    const statusLabel =
+      st.status === 'pending'
+        ? '待确认'
+        : st.status === 'running'
+          ? `执行中 · ${st.currentTaskId ?? ''}`
+          : st.status === 'done'
+            ? '已完成'
+            : st.status === 'failed'
+              ? `执行失败 · ${st.failedTaskId ?? ''}`
+              : '已取消';
+    return html`<div class="plan-card">
+      <div class="plan-head">
+        <span class="plan-title">📋 执行计划</span>
+        <span class="plan-goal">${escapeHtml(plan.goal)}</span>
+        <span class="pill ${st.status}">${statusLabel}</span>
+        ${st.status === 'pending'
+          ? html`
+              <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                确认执行
+              </button>
+              <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
+                取消
+              </button>
+            `
+          : nothing}
+        ${st.status === 'failed'
+          ? html`
+              <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                从失败任务继续
+              </button>
+            `
+          : nothing}
+      </div>
+      <ol class="plan-tasks">
+        ${plan.tasks.map((t, i) => {
+          const done = !!st.done[t.id];
+          const active = st.status === 'running' && st.currentTaskId === t.id;
+          const failed = st.status === 'failed' && st.failedTaskId === t.id;
+          return html`<li class="plan-task ${done ? 'done' : ''} ${active ? 'active' : ''} ${failed ? 'failed' : ''}">
+            <div class="pt-head">
+              <span class="pt-mark">${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span>
+              <b>${escapeHtml(t.title)}</b>
+            </div>
+            ${t.steps.length
+              ? html`<ol class="pt-steps">
+                  ${t.steps.map((s) => html`<li>${escapeHtml(s)}</li>`)}
+                </ol>`
+              : nothing}
+            <div class="pt-meta">
+              依赖：${t.dependsOn.length ? t.dependsOn.join('、') : '无'} ·
+              预期产出：${escapeHtml(t.expectedOutput || '—')}
+            </div>
+          </li>`;
+        })}
+      </ol>
+    </div>`;
+  }
+
+  /** 确认/恢复计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；任一任务失败或用户停止即立即中止，等待用户指令后再继续。 */
+  private async confirmPlan(m: ChatMsg) {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
+    if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    for (const task of m.plan.tasks) {
+      // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
+      if (st.done[task.id]) continue;
+      // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...this.planExec[m.id], status: 'running', currentTaskId: task.id }
+      };
+      const parts = [`【计划任务 ${task.id}】${task.title}`];
+      if (task.steps.length) {
+        parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
+      }
+      parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
+      const result = await this.dispatchPrompt(sid, parts.join('\n'), [], {
+        planTask: true
+      });
+      if (result !== 'ok') {
+        if (result === 'error') {
+          // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
+          // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
+          // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: {
+              ...this.planExec[m.id],
+              status: 'failed',
+              failedTaskId: task.id,
+              currentTaskId: undefined
+            }
+          };
+        } else {
+          // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: {
+              ...this.planExec[m.id],
+              status: 'cancelled',
+              currentTaskId: undefined
+            }
+          };
+        }
+        return;
+      }
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: {
+          ...this.planExec[m.id],
+          done: { ...this.planExec[m.id].done, [task.id]: true },
+          failedTaskId: undefined
+        }
+      };
+    }
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: { ...this.planExec[m.id], status: 'done', currentTaskId: undefined, failedTaskId: undefined }
+    };
+  }
+
+  /** 取消计划：不再执行任何任务。 */
+  private cancelPlan(msgId: number) {
+    const st = this.planExec[msgId];
+    if (!st || st.status !== 'pending') return;
+    this.planExec = { ...this.planExec, [msgId]: { ...st, status: 'cancelled' } };
+  }
+
   /** 渲染折叠式附加信息（调用链路 / 关键信息），默认收起，不干扰主阅读流。 */
-  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
-    const hasTrace = !!(m.trace && m.trace.length > 0);
-    const insights = hasTrace ? this.buildInsights(m.trace!) : null;
+  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {    const hasTrace = !!(m.trace && m.trace.length > 0);
+    const insights = hasTrace ? buildInsights(m.trace!) : null;
     if (!hasTrace && !insights) return html``;
     return html`
       <div class="extras">
@@ -3494,225 +2432,27 @@ export class AhChat extends LitElement {
                 </svg>
                 <span>调用链路</span>
                 <span class="tcount"
-                  >${this.countTraceNodes(m.trace!)} 节点</span
+                  >${countTraceNodes(m.trace!)} 节点</span
                 >
                 ${isStreaming
                   ? html`<span class="dots"><i></i><i></i><i></i></span>`
                   : nothing}
               </summary>
               <div class="trace-body">
-                ${m.trace!.map((n) => this.renderTraceNode(n))}
+                ${m.trace!.map((n) => renderTraceNode(n))}
               </div>
             </details>`
           : nothing}
         ${insights
           ? html`<details class="extra">
               <summary><span>关键信息</span></summary>
-              <div class="insights">${this.renderInsights(insights)}</div>
+              <div class="insights">${renderInsights(insights)}</div>
             </details>`
           : nothing}
       </div>
     `;
   }
 
-  /** 统计追踪树节点总数（用于「调用链路」标题计数）。 */
-  private countTraceNodes(trace: TraceNode[]): number {
-    let n = 0;
-    const walk = (ns: TraceNode[]) =>
-      ns.forEach((x) => {
-        n++;
-        walk(x.children);
-      });
-    walk(trace);
-    return n;
-  }
-
-  /** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。 */
-  private renderTraceNode(n: TraceNode): TemplateResult {
-    const hasDetail = !!n.detail && n.detail.trim().length > 0;
-    const hasResult = n.result != null && n.result.trim().length > 0;
-    const isRetrieval = n.kind === 'retrieval';
-    // run/step/llm 默认展开，叶子节点（工具/检索/成本）默认收起。
-    const defaultOpen =
-      n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
-    return html`
-      <details
-        class="tnode kind-${n.kind} status-${n.status}"
-        ?open=${defaultOpen}
-      >
-        <summary class="tnode-head">
-          <span class="tdot"></span>
-          <span class="tlabel">${escapeHtml(n.label)}</span>
-          ${n.status === 'error'
-            ? html`<span class="tbadge err">失败</span>`
-            : nothing}
-          ${n.status === 'pending'
-            ? html`<span class="tbadge pend">进行中</span>`
-            : nothing}
-          ${n.meta
-            ? html`<span class="tchips"
-                >${Object.entries(n.meta).map(
-                  ([k, v]) =>
-                    html`<span class="tchip"
-                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                    >`
-                )}</span
-              >`
-            : nothing}
-        </summary>
-        ${hasDetail
-          ? html`<pre class="tdetail">${formatToolJson(n.detail!)}</pre>`
-          : nothing}
-        ${hasResult
-          ? html`<div class="tresult ${isRetrieval ? 'retrieval' : ''}">
-              ${isRetrieval
-                ? html`<div class="tres-title">检索内容</div>`
-                : nothing}${formatToolJson(n.result!)}
-            </div>`
-          : nothing}
-        ${n.children.length
-          ? html`<div class="tchildren">
-              ${n.children.map((c) => this.renderTraceNode(c))}
-            </div>`
-          : nothing}
-      </details>
-    `;
-  }
-
-  /** 遍历追踪树，提炼「关键信息」结构化摘要。 */
-  private buildInsights(trace: TraceNode[]): Insights {
-    const root = trace[0];
-    const flat: TraceNode[] = [];
-    const walk = (ns: TraceNode[]): void => {
-      ns.forEach((x) => {
-        flat.push(x);
-        walk(x.children);
-      });
-    };
-    walk(root.children);
-    const steps = flat.filter((n) => n.kind === 'step').length;
-    // 「工具调用」计数只统计真实执行的工具节点；被去重复用（meta.reused）的请求不计入，
-    // 以免 UI 数字虚高（但 trace 树里仍保留这些复用节点供复盘）。
-    const tools = flat.filter((n) => n.kind === 'tool' && !(n.meta && n.meta.reused));
-    const retrievals = flat.filter((n) => n.kind === 'retrieval');
-    const cost = flat.find((n) => n.kind === 'cost');
-    const cacheNode = flat.find((n) => n.kind === 'tokencache');
-    const meta = root.meta ?? {};
-    return {
-      model: meta.model,
-      agent: meta.agent,
-      mode: meta.mode,
-      steps,
-      toolCount: tools.length + retrievals.length,
-      costTokens: cost?.meta?.tokens,
-      costValue: cost?.meta?.cost,
-      costPriced: cost?.meta?.priced,
-      cacheHitRate: cacheNode?.meta?.命中率,
-      cacheHits: cacheNode?.meta?.命中,
-      costBreakdown: this.parseCostBreakdown(cost?.meta),
-      retrievals: retrievals.map((n) => ({
-        label: n.label,
-        result: n.result ?? ''
-      }))
-    };
-  }
-
-  /**
-   * 从 cost 节点的 meta 解析「系统 / 工具 / 历史 / 输出」四项 token 占比。
-   * meta 中 工具/历史 的值形如 "320 (45%)"，系统/输出 为纯数字；这里统一提取数字与百分比。
-   */
-  private parseCostBreakdown(
-    meta?: Record<string, string>
-  ): Insights['costBreakdown'] {
-    if (!meta) return undefined;
-    const order: Array<[string, string]> = [
-      ['系统', 'system'],
-      ['工具', 'tools'],
-      ['历史', 'history'],
-      ['输出', 'completion']
-    ];
-    const out: Array<{ label: string; tokens: number; pct: number }> = [];
-    for (const [cn, _] of order) {
-      const raw = meta[cn];
-      if (raw == null) continue;
-      const num = parseInt(raw, 10);
-      if (Number.isNaN(num)) continue;
-      const pctMatch = raw.match(/\((\d+)%\)/);
-      const pct = pctMatch ? Number(pctMatch[1]) : 0;
-      out.push({ label: cn, tokens: num, pct });
-    }
-    return out.length ? out : undefined;
-  }
-
-  /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
-  private renderInsights(ins: Insights) {
-    const stats: Array<[string, string]> = [];
-    const push = (k: string, v: string | undefined) => {
-      if (v != null) stats.push([k, v]);
-    };
-    push('模型', ins.model);
-    push('Agent', ins.agent);
-    push('模式', ins.mode);
-    push('步骤', ins.steps ? String(ins.steps) : undefined);
-    push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
-    push('Token', ins.costTokens);
-    push('缓存命中率', ins.cacheHitRate);
-    // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
-    const costRaw = ins.costValue ?? '';
-    const priced = ins.costPriced === 'true';
-    const isZero =
-      costRaw === '$0.0000' || costRaw === '$0.00' || costRaw === '$0';
-    push(
-      '成本',
-      costRaw ? (isZero ? (priced ? '免费' : '未定价') : costRaw) : undefined
-    );
-    return html`
-      <div class="insights-title">关键信息</div>
-      <div class="ins-grid">
-        ${stats.map(
-          ([k, v]) => html`<div class="ins-item">
-            <span class="ins-k">${escapeHtml(k)}</span
-            ><span class="ins-v">${escapeHtml(v)}</span>
-          </div>`
-        )}
-      </div>
-      ${ins.costBreakdown
-        ? html`<div class="ins-breakdown">
-            <div class="ins-bd-title">Token 拆解</div>
-            <div class="ins-bd-bars">
-              ${ins.costBreakdown.map(
-                (b) => html`<div class="ins-bd-row">
-                  <div class="ins-bd-head">
-                    <span class="ins-bd-name">${escapeHtml(b.label)}</span>
-                    <span class="ins-bd-val"
-                      >${escapeHtml(String(b.tokens))} tok ·
-                      ${escapeHtml(String(b.pct))}%</span
-                    >
-                  </div>
-                  <div class="ins-bd-track">
-                    <div
-                      class="ins-bd-fill"
-                      style=${`width:${Math.max(2, b.pct)}%`}
-                    ></div>
-                  </div>
-                </div>`
-              )}
-            </div>
-          </div>`
-        : nothing}
-      ${ins.retrievals.length
-        ? html`<div class="ins-retrieval">
-            <div class="ins-ret-title">检索内容</div>
-            ${ins.retrievals.map(
-              (r) => html`<div class="ins-ret-card">
-                <div class="ins-ret-name">${escapeHtml(r.label)}</div>
-                <pre class="ins-ret-body">${formatToolJson(r.result)}</pre>
-              </div>`
-            )}
-          </div>`
-        : nothing}
-    `;
-  }
 
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
@@ -3838,19 +2578,20 @@ export class AhChat extends LitElement {
 
         <div class="scroll-region">
           <div class="scroll" ${ref(this.scrollRef)} @scroll=${this.onScroll}>
-          ${this.messages.length === 0
-            ? html`
-                <div class="empty">
-                  <h1>有什么可以帮你的？</h1>
-                  <p>
-                    基于 agent-harness
-                    的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
-                  </p>
-                </div>
-              `
-            : html`<div class="thread">
-                ${this.messages.map((m) => this.renderMessage(m))}
-              </div>`}
+            ${this.messages.length === 0
+              ? html`
+                  <div class="empty">
+                    <h1>有什么可以帮你的？</h1>
+                    <p>
+                      基于 agent-harness
+                      的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+                    </p>
+                  </div>
+                `
+              : html`<div class="thread">
+                  ${this.renderConnBanner()}
+                  ${this.messages.map((m) => this.renderMessage(m))}
+                </div>`}
           </div>
           ${this.showScrollDown
             ? html`<button
@@ -3941,6 +2682,7 @@ export class AhChat extends LitElement {
               ></textarea>
             </div>
             <div class="composer-footer">
+              <div class="composer-footer-left">
               <label class="attach-btn" title="上传附件">
                 <input
                   type="file"
@@ -3951,6 +2693,20 @@ export class AhChat extends LitElement {
                 />
                 +
               </label>
+              <select
+                class="mode-select"
+                title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
+                aria-label="运行模式"
+                .value=${this.interactionMode}
+                @change=${(e: Event) =>
+                  this.setInteractionMode(
+                    (e.target as HTMLSelectElement).value as 'qa' | 'plan'
+                  )}
+              >
+                <option value="qa">回答</option>
+                <option value="plan">计划</option>
+              </select>
+              </div>
               <div class="composer-footer-right">
                 ${this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
@@ -4008,82 +2764,4 @@ export class AhChat extends LitElement {
         : nothing}
     `;
   }
-}
-
-/** 把任意值安全转成单行/多行 JSON 预览，失败则原样字符串化。 */
-function safeJson(v: unknown): string {
-  if (v === undefined || v === null) return '';
-  if (typeof v === 'string') return v.length > 800 ? v.slice(0, 800) + '…' : v;
-  try {
-    const s = JSON.stringify(v, null, 2);
-    return s.length > 800 ? s.slice(0, 800) + '…' : s;
-  } catch {
-    return String(v);
-  }
-}
-
-/**
- * 格式化工具卡入参/结果供 <pre> 展示。
- * 只转义 < > & 三种 HTML 危险字符，保留引号和换行不被转义，
- * 避免 JSON 中的 " 被 escapeHtml 转成 &quot; 导致渲染异常。
- */
-/**
- * 深度思考解析：从模型实际返回的推理文本中提取「有价值内容」并解析为结构化呈现。
- * - 按行切分，剔除空行噪声；
- * - 识别「关键变量」（`key: value` / `key=value`，且非编号步骤），单独抽取供高亮；
- * - 其余推理文本保留原结构（编号 / 项目符号 / 段落），以 Markdown 输出，最终由打字机读逐字揭示。
- */
-function parseDeepThinking(raw: string): {
-  text: string;
-  vars: Array<[string, string]>;
-} {
-  if (!raw || !raw.trim()) return { text: '', vars: [] };
-  const lines = raw
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((l) => l.trim());
-  const vars: Array<[string, string]> = [];
-  const out: string[] = [];
-  const varRe = /^(.{1,40})[:：=]\s*(.+)$/;
-  const stepRe = /^\d+[\.、\)]/;
-  for (const line of lines) {
-    if (!line) continue;
-    const vm = line.match(varRe);
-    // 仅当不是「编号步骤」且形如 key-value 时，才判定为关键变量，避免误吞步骤描述。
-    if (vm && !stepRe.test(line)) {
-      vars.push([vm[1].trim(), vm[2].trim()]);
-      continue;
-    }
-    out.push(line);
-  }
-  const text = out
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return { text, vars };
-}
-
-function formatToolJson(raw: string): string {
-  if (!raw) return '';
-  // 先尝试解码已有的 HTML 实体（防御服务端已转义的情况），全部 5 种与 escapeHtml 对称。
-  let decoded = raw
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-  // 尝试美化 JSON（解析成功则缩进；否则原样展示）
-  try {
-    const parsed = JSON.parse(decoded);
-    decoded = JSON.stringify(parsed, null, 2);
-  } catch {
-    /* 不是合法 JSON，原样展示 */
-  }
-  // 统一转义全部 5 种 HTML 危险字符，与 escapeHtml 保持一致，杜绝引号漏转义的 XSS 缝隙。
-  return decoded
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }

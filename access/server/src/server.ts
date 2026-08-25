@@ -51,7 +51,10 @@ import {
   type TaskEnvelope,
   type TaskResult,
   type A2ARequest,
-  features
+  features,
+  buildPlannerPrompt,
+  parsePlanOutput,
+  contextWindowFor
 } from '@agent-harness/core';
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
 import {
@@ -81,6 +84,8 @@ import {
   type StoredTool,
   type TraceNode
 } from './chat-sessions';
+// 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
+import { getHistoryStore } from './history-store';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
@@ -348,6 +353,8 @@ function readAction(path: string): Action | null {
     default:
       // 聊天会话详情（含消息 / 推理 / 工具调用）同样属只读敏感数据，需 chat:read。
       if (path.startsWith('/api/chat/sessions/')) return 'chat:read';
+      // 聊天历史镜像（ah_chat_history 迁移的接口层）：读取需 chat:read。
+      if (path === '/api/history' || path.startsWith('/api/history/')) return 'chat:read';
       return null;
   }
 }
@@ -858,6 +865,97 @@ const server = createServer(
         return sendJson(res, { ok }, req);
       }
 
+      /* ------------- 聊天历史镜像 CRUD（ah_chat_history 接口层） ------------- */
+      // 前端不再直写 localStorage：历史容错镜像统一经本组端点落到 ChatHistoryStore
+      // （默认 SQLite 临时持久化，HISTORY_BACKEND/HISTORY_DB_FILE 可调，预留正式数据库扩展）。
+      // 注意按重写后的 /api/history 匹配（/api/v1 -> /api 已在路由前统一重写）。
+      {
+        const HISTORY_PREFIX = '/api/history/';
+        // 单会话镜像的序列化体积上限：超过即拒绝（防止单行撑爆 SQLite / 内存）。
+        const HISTORY_MAX_BYTES = 512 * 1024;
+        const validSid = (sid: string): boolean =>
+          !!sid && sid.length <= 128 && /^[A-Za-z0-9_\-]+$/.test(sid);
+
+        if (req.method === 'GET' && path === '/api/history') {
+          return sendJson(res, { sessions: getHistoryStore().index() }, req);
+        }
+        if (req.method === 'GET' && path.startsWith(HISTORY_PREFIX)) {
+          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
+          if (!validSid(sid)) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'invalid session id' }));
+          }
+          const row = getHistoryStore().get(sid);
+          if (!row) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'history not found' }));
+          }
+          try {
+            const msgs = JSON.parse(row.data);
+            return sendJson(
+              res,
+              { ...row.meta, v: 1, msgs: Array.isArray(msgs) ? msgs : [] },
+              req
+            );
+          } catch {
+            // 存储层数据损坏：明确返回 522 类错误而非抛出未捕获异常。
+            res.writeHead(500, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'history data corrupted' }));
+          }
+        }
+        if (req.method === 'PUT' && path.startsWith(HISTORY_PREFIX)) {
+          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
+          if (!validSid(sid)) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'invalid session id' }));
+          }
+          const b = await readBody(req);
+          const ctx = await guard(req, res, 'chat:write', b);
+          if (!ctx) return;
+          // 参数校验：msgs 必须为数组；title 收敛为字符串；整体序列化体积受限。
+          if (!Array.isArray(b.msgs)) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'msgs must be an array' }));
+          }
+          let data: string;
+          try {
+            data = JSON.stringify(b.msgs);
+          } catch {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'msgs not serializable' }));
+          }
+          if (Buffer.byteLength(data, 'utf-8') > HISTORY_MAX_BYTES) {
+            res.writeHead(413, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'history too large' }));
+          }
+          const now = Date.now();
+          getHistoryStore().upsert(
+            {
+              sid,
+              title: typeof b.title === 'string' && b.title.trim() ? b.title.trim().slice(0, 200) : '新对话',
+              updatedAt:
+                typeof b.updatedAt === 'number' && Number.isFinite(b.updatedAt)
+                  ? Math.floor(b.updatedAt)
+                  : now,
+              savedAt: now
+            },
+            data
+          );
+          return sendJson(res, { ok: true }, req);
+        }
+        if (req.method === 'DELETE' && path.startsWith(HISTORY_PREFIX)) {
+          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
+          if (!validSid(sid)) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'invalid session id' }));
+          }
+          const ctx = await guard(req, res, 'chat:delete');
+          if (!ctx) return;
+          const ok = getHistoryStore().remove(sid);
+          return sendJson(res, { ok }, req);
+        }
+      }
+
       if (req.method === 'POST' && path === '/api/workflows') {
         return await handleWorkflow(req, res);
       }
@@ -1052,6 +1150,9 @@ function buildState() {
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
+    // 上下文窗口上限随 state 下发：前端「上下文用量」粗估回退用它做分母，
+    // 与 llm:usage 精确路径共用 contextWindowFor 单一事实源（如 ox-alpha → 1M）。
+    contextWindow: contextWindowFor(resolveOpenRouterConfig().model),
     sandbox,
     mcpServers: mcpManager.list().map((s) => ({
       name: s.name,
@@ -1362,6 +1463,15 @@ async function handleRun(
     ? String(body.chatSessionId).trim()
     : '';
 
+  // 交互模式（P0 计划模式）：白名单校验，非法值回退 qa（= 现状）。
+  const interactionMode: 'qa' | 'plan' =
+    body.interactionMode === 'plan' ? 'plan' : 'qa';
+  const planPhase: 'propose' | 'execute' =
+    body.planPhase === 'execute' ? 'execute' : 'propose';
+  const isPlanPropose = interactionMode === 'plan' && planPhase === 'propose';
+  // 计划生成本身是一次普通 run：用 planner 提示词包装用户需求，约束模型输出计划 JSON。
+  const effectivePrompt = isPlanPropose ? buildPlannerPrompt(prompt) : prompt;
+
   // P0.1：显式指定目标 agent（绕过路由，直达该 agent 的装配配方）。
   // 未传 → 用注册表里 seed 的 default 通用 agent（退化为今天的万能 harness）。
   // 传入但不存在 → 400 拒绝，避免静默退化到错误 agent。
@@ -1380,6 +1490,11 @@ async function handleRun(
   const reconnectId = body.jobId ? String(body.jobId) : '';
   const targetId =
     reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
+  // 断线续传游标：客户端携带已收到的最大事件 seq，重放时跳过 seq ≤ since 的事件，
+  // 避免恢复场景下（后台标签页冻结 / 网络中断后重连）内容与持久化副作用重复。
+  const sinceSeq = Number.isFinite(Number(body.since))
+    ? Math.max(-1, Math.floor(Number(body.since)))
+    : -1;
 
   // P0.2/P0.3：任务路由 & 租户辅助字段。
   // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
@@ -1419,7 +1534,7 @@ async function handleRun(
   if (!targetId) {
     const job = runQueue.submit({
       mode,
-      prompt,
+      prompt: effectivePrompt,
       model,
       sessionKey,
       maxSteps,
@@ -1431,7 +1546,9 @@ async function handleRun(
       traceId,
       attachments: body.attachments,
       // 联网搜索开关（Request 4）：透传 UI 开关；false/未传由 run-queue 收敛为不注册出网能力。
-      web: typeof body.web === 'boolean' ? body.web : undefined
+      web: typeof body.web === 'boolean' ? body.web : undefined,
+      interactionMode,
+      planPhase
     });
     auditAction('agent.run', {
       mode,
@@ -1694,8 +1811,87 @@ async function handleRun(
       }
     }
   };
-  const unsub = runQueue.subscribe(jobId, (e) => {
+  // SSE 保活心跳：每 15s 写一行注释帧（`: ping\n\n`）。长时间工具执行 / 模型思考期间
+  // 连接可能完全静默，中间代理（nginx/网关/NAT）会回收 idle 连接导致前端假性断连；
+  // 注释帧对 SSE 解析透明（parseSse 只认 data: 帧），仅用于维持链路活跃。
+  const pingTimer = setInterval(() => {
     if (closed) return;
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      closed = true;
+    }
+  }, 15_000);
+  let unsub: () => void = () => {};
+  // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
+  let planEndHandled = false;
+  unsub = runQueue.subscribe(jobId, (e) => {
+    // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
+    // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
+    const seq = (e as { seq?: number }).seq;
+    if (sinceSeq >= 0 && typeof seq === 'number' && seq <= sinceSeq) return;
+    if (closed) return;
+
+    // 合成事件（plan:proposed / 友好摘要 / warn 等，由 emitSynthetic 注入）：
+    // 已带新 seq 并入重放缓冲；这里只透传给 SSE，不再触发计划解析与落盘副作用。
+    if ((e as { __synthetic?: boolean }).__synthetic) {
+      send(e);
+      return;
+    }
+
+    // 计划模式 propose（P0）：模型原始输出是计划 JSON，不应直接流入聊天 UI。
+    // 在 run:end 处解析：成功 → 先补发 plan:proposed，再以友好摘要替换 final 转发，
+    // 并把计划随消息落盘（刷新/切回可还原卡片）；失败 → emit warn 回退为普通回答。
+    // 合成帧统一走 runQueue.emitSynthetic：附加 seq + 进重放缓冲，断线重连不丢计划卡片。
+    // 注意：普通路径下 run-queue 会在 harness 的 run:end 之后补发一条重复 run:end
+    //（不带 runId）；计划解析与全部副作用只处理本订阅内的第一条 run:end，
+    // 避免双份 warn / 双份计划卡片；后续重复帧直接透传给通用逻辑（自带内容去重）。
+    if (isPlanPropose && (e as { type?: string }).type === 'run:end') {
+      if (!planEndHandled) {
+        planEndHandled = true;
+        const finalStr = String((e as { final?: unknown }).final ?? '');
+        const plan = parsePlanOutput(finalStr);
+        if (plan) {
+          runQueue.emitSynthetic(jobId, { type: 'plan:proposed', plan });
+          runQueue.emitSynthetic(jobId, {
+            ...(e as object),
+            __synthetic: true,
+            final: `已生成执行计划（共 ${plan.tasks.length} 个任务）：${plan.goal}。确认后将按依赖顺序逐任务执行。`
+          });
+          if (chatSessionId) {
+            traceHandle(e);
+            appendChatMessage(chatSessionId, {
+              role: 'assistant',
+              content: `📋 ${plan.goal}`,
+              ts: Date.now(),
+              plan
+            });
+          }
+          return;
+        }
+        runQueue.emitSynthetic(jobId, {
+          type: 'warn',
+          message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
+        });
+        // 落入下方通用逻辑：按普通 run:end 处理。
+      } else {
+        // 已处理过首条 run:end：这是 run-queue 补发的重复帧（final 仍是原始计划 JSON）。
+        // 必须整帧抑制——若放行到通用逻辑，前端会用 raw JSON 覆盖刚下发的友好摘要，
+        // 且历史落盘去重失败会把原始 JSON 追加为第二条 assistant 消息。
+        return;
+      }
+    }
+
+    // 计划模式 propose：抑制原始 JSON token/reasoning/response 流（避免计划 JSON 打字机外泄），
+    // 其余事件照常；最终内容由 run:end 分支以友好摘要替换后下发。
+    if (
+      isPlanPropose &&
+      ((e as { type?: string }).type === 'llm:token' ||
+        (e as { type?: string }).type === 'llm:reasoning' ||
+        (e as { type?: string }).type === 'llm:response')
+    ) {
+      return;
+    }
     send(e);
     // 结构化为调用链路追踪树（供深度思考界面可视化 / 复盘）。
     if (chatSessionId) traceHandle(e);
@@ -1729,7 +1925,8 @@ async function handleRun(
       } else if (ev.type === 'run:start' && ev.input != null) {
         appendChatMessage(chatSessionId, {
           role: 'user',
-          content: String(ev.input),
+          // 计划模式下落盘用户的原始需求（ev.input 是 planner 包装后的提示词）。
+          content: isPlanPropose ? prompt : String(ev.input),
           ts: Date.now()
         });
       } else if (ev.type === 'run:end' && ev.final != null) {
@@ -1761,6 +1958,8 @@ async function handleRun(
   });
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
   res.on('close', () => {
+    closed = true;
+    clearInterval(pingTimer);
     unsub();
   });
   return;

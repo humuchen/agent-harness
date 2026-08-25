@@ -26,12 +26,43 @@ export interface RunInput {
   agentId?: string;
   /** 断线重连：携带已知 jobId 直接订阅事件重放，不重复提交。 */
   jobId?: string;
+  /** 断线续传游标：已收到的最大事件 seq；服务端重放时跳过 seq ≤ since 的事件，恢复不重复。 */
+  since?: number;
   /** 审批工单号：敏感动作获批后随请求重投。 */
   approvalTicket?: string;
   /** 图片附件列表（含 serverUrl），服务端将其转为 ContentBlock[] 传给 LLM。 */
   attachments?: Array<{ url: string; name: string; type: string }>;
   /** 联网搜索开关：true 时服务端注册 web_fetch 工具与「联网检索」技能；否则不触发任何出网检索。 */
   web?: boolean;
+  /** 交互模式（P0）：qa=问答（默认，缺省即现状）；plan=计划模式。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 计划阶段（interactionMode='plan' 时有效）：propose=生成计划（缺省）；execute=执行已确认任务。 */
+  planPhase?: 'propose' | 'execute';
+}
+
+/* ------------------------- 聊天历史镜像（接口层） ------------------------- */
+
+/** 单会话历史镜像元信息（GET /api/history 列表项）。 */
+export interface HistoryThreadMeta {
+  sid: string;
+  title: string;
+  /** 会话最近更新时间（毫秒，客户端上报）。 */
+  updatedAt: number;
+  /** 镜像落盘时间（毫秒）。 */
+  savedAt: number;
+}
+
+/** 历史信封：GET /api/history/:sid 返回结构（msgs 为服务端存储的原始消息数组）。 */
+export interface HistoryEnvelope extends HistoryThreadMeta {
+  v: number;
+  msgs: unknown[];
+}
+
+/** 历史写入入参：PUT /api/history/:sid。 */
+export interface HistoryPutInput {
+  title?: string;
+  updatedAt?: number;
+  msgs: unknown[];
 }
 
 /* ----------------------------- 多会话 Chat App ----------------------------- */
@@ -88,6 +119,9 @@ export interface ChatMessage {
   tools?: StoredTool[];
   /** 调用链路追踪树，记录 LLM↔工具↔检索 的每一步，供深度思考界面可视化与复盘。 */
   trace?: TraceNode[];
+  /** 计划模式：run:end 时服务端解析出的结构化执行计划（形状见 @agent-harness/core 的
+   *  ExecutionPlan；client 不依赖 core，按 unknown 结构透传，由 UI 层自行收敛校验）。 */
+  plan?: unknown;
 }
 
 export interface ChatSession {
@@ -242,6 +276,9 @@ export interface ServerState {
   harnessKey: boolean;
   harnessDryRun: boolean;
   model: string;
+  /** 当前模型的上下文窗口上限（token），按服务端模型目录解析（含 AH_CONTEXT_WINDOW 覆盖）；
+   *  前端「上下文用量」粗估回退以此为分母，避免写死基线导致大窗口模型显示错误。 */
+  contextWindow: number;
   /** OS 级沙箱能力快照（由 /api/sandbox 同源构建）；null = 未启用或当前平台不支持（macOS/Windows 属此类）。 */
   sandbox: {
     backend: string;

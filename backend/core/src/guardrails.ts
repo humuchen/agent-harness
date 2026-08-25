@@ -219,11 +219,17 @@ function isAllowlisted(textNorm: string, pol: GuardrailPolicy): boolean {
   return pol.allowlist.some((w) => textNorm.includes(normalizeForScan(w)));
 }
 
-function detectInjection(text: string, pol: GuardrailPolicy): string | null {
+function detectInjection(
+  text: string,
+  pol: GuardrailPolicy,
+  /** 仅用句子级强信号短语（PHRASES_LOW）检测，跳过 medium/high 的弱信号短短语。 */
+  strongOnly = false
+): string | null {
   if (!pol.enableInjectionScan) return null;
   const norm = normalizeForScan(text);
   if (isAllowlisted(norm, pol)) return null;
-  for (const p of phraseSet(pol.injectionSensitivity)) {
+  const phrases = strongOnly ? PHRASES_LOW : phraseSet(pol.injectionSensitivity);
+  for (const p of phrases) {
     if (norm.includes(normalizeForScan(p))) {
       return p;
     }
@@ -434,6 +440,34 @@ export function checkOutput(
       if (!res.ok) return res;
     }
   }
+  return { ok: true };
+}
+
+/**
+ * 结构化输出校验（计划模式等）：仅做密钥扫描与注入检测，跳过业务自定义规则与上下文规则。
+ * 背景：planner 产出的计划 JSON 是结构化产物，其任务描述字段极易被业务合规正则
+ * （如医疗广告法关键词）误命中；且拦截后的「合规话术重试」会破坏 JSON 格式，
+ * 导致计划永远解析失败。调用方应先用 parsePlanOutput 确认文本可解析为目标结构，
+ * 再走本函数做安全兜底扫描（secret / injection 仍然生效，安全底线不放松）。
+ *
+ * 注入检测仅用句子级强信号短语（PHRASES_LOW，如 "ignore previous instructions"），
+ * 跳过 'system prompt' / 'dan' / 'jailbreak' 等弱信号短短语：计划任务描述合理地
+ * 提到「优化 system prompt」这类内容不是注入，误拦会让计划永远生成失败。
+ * 若仍被误拦，可用 GUARDRAIL_ALLOWLIST 配置允许关键词兜底。
+ */
+export function checkStructuredOutput(
+  text: string,
+  pol?: GuardrailPolicy
+): GuardrailResult {
+  const p = pol ?? policy;
+  if (typeof text !== 'string') return { ok: true };
+  if (p.enableSecretScan) {
+    for (const re of SECRET_PATTERNS) {
+      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
+    }
+  }
+  const inj = detectInjection(text, p, true);
+  if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
   return { ok: true };
 }
 

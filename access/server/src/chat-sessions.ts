@@ -54,6 +54,8 @@ export interface ChatMessage {
   tools?: StoredTool[];
   /** 调用链路追踪树，记录 LLM↔工具↔检索 的每一步，供深度思考界面可视化与复盘。 */
   trace?: TraceNode[];
+  /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时随消息落盘，刷新/切回可还原计划卡片）。 */
+  plan?: import('@agent-harness/core').ExecutionPlan;
 }
 
 export interface ChatSession {
