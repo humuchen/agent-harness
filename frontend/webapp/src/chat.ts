@@ -2922,17 +2922,17 @@ export class AhChat extends LitElement {
               ></textarea>
             </div>
             <div class="composer-footer">
-              <div class="composer-footer-left">
-                <label class="attach-btn" title="上传附件">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,.txt,.md,.csv,.json"
-                    style="display:none"
-                    @change=${this.onFileSelect}
-                  />
-                  +
-                </label>
+              <label class="attach-btn" title="上传附件">
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,.txt,.md,.csv,.json"
+                  style="display:none"
+                  @change=${this.onFileSelect}
+                />
+                +
+              </label>
+              <div class="composer-footer-mid">
                 <select
                   class="mode-select"
                   title="选择业务 Agent（默认走通用 Agent）"
@@ -2960,8 +2960,8 @@ export class AhChat extends LitElement {
                   <option value="plan">计划</option>
                 </select>
               </div>
-              <div class="composer-footer-right">
-                <ah-model-picker
+              ${this.hideCtxRing() ? nothing : this.renderCtxRing()}
+              <ah-model-picker
                   .model=${this.model}
                   .deepThink=${this.deepThink}
                   .web=${this.web}
@@ -3004,7 +3004,6 @@ export class AhChat extends LitElement {
                     }
                   }}
                 ></ah-model-picker>
-                ${this.hideCtxRing() ? nothing : this.renderCtxRing()}
                 ${this.streaming[this.activeId] === true
                   ? html`<button
                       class="send"
@@ -3021,7 +3020,6 @@ export class AhChat extends LitElement {
                     >
                       ↑
                     </button>`}
-              </div>
             </div>
           </div>
           <!-- <div class="hint">

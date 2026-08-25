@@ -1794,11 +1794,31 @@ export const chatStyles = [
       }
       .composer .composer-footer {
         padding: 4px 6px 8px 8px;
+        gap: 0;
+      }
+      /* 手机：发送按钮推到最右，其余操作靠左；触控目标 ≥36px */
+      .composer .composer-footer .send {
+        margin-left: auto;
+        width: 38px;
+        height: 38px;
+        font-size: 17px;
       }
       .attach-btn {
-        width: 22px;
-        height: 22px;
-        font-size: 20px;
+        width: 36px;
+        height: 36px;
+        font-size: 22px;
+      }
+      .mode-select {
+        height: 36px;
+        line-height: 36px;
+        max-width: 96px;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .ctx-ring {
+        width: 34px;
+        height: 34px;
       }
       .hint {
         font-size: 10.5px;
@@ -1896,25 +1916,26 @@ export const chatStyles = [
       width: 100%;
       box-sizing: border-box;
     }
-    /* 底部按钮行：固定高度，左 attach / 右 圆环+send */
+    /* 底部操作行：flex 平铺 + wrap，窄屏自动换行不挤压 */
     .composer .composer-footer {
       flex-shrink: 0;
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      flex-wrap: wrap;
       padding: 4px 8px 8px 12px;
-      gap: 8px;
+      gap: 2px 4px;
     }
-    .composer-footer-left {
+    /* 中段（Agent/模式选择）：可收缩，溢出时优先截断 */
+    .composer-footer-mid {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 0;
       min-width: 0;
+      overflow: hidden;
     }
-    .composer-footer-right {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .composer-footer-mid .mode-select {
+      min-width: 0;
+      text-overflow: ellipsis;
     }
     /* 断连恢复横幅：置于消息区顶部，warn=自动恢复中 / lost=需手动重试。 */
     .conn-banner {
