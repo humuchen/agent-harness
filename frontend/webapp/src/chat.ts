@@ -58,9 +58,11 @@ interface ExecutionPlanView {
 }
 /** 计划执行状态（key 为携带计划的消息 id）。 */
 interface PlanExecState {
-  status: 'pending' | 'running' | 'done' | 'cancelled';
+  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
   /** 正在执行的任务 id（running 时有效）。 */
   currentTaskId?: string;
+  /** 失败的任务 id（failed 时有效）：恢复执行时从此任务重跑，已完成任务跳过。 */
+  failedTaskId?: string;
   /** 已完成任务 id 集合。 */
   done: Record<string, boolean>;
 }
@@ -207,6 +209,12 @@ export class AhChat extends LitElement {
   private lastSeqBy: Record<string, number> = {};
   /** 每会话是否已收到终结事件（run:end/_done/error）：收到后不再自动重连。 */
   private finishedBy: Record<string, boolean> = {};
+  /**
+   * 每会话当前 run 是否收到过 error 事件：服务端在模型/运行异常时会先发 error
+   * 再照常补发 run:end 收尾，流「正常关闭」≠ 运行成功 —— 计划模式据此把该轮
+   * 判为失败并立即中止后续任务派发，而不是带着坏结果继续往下跑。
+   */
+  private erroredBy: Record<string, boolean> = {};
   /** 每会话最近一次收到 SSE 事件的时间戳：静默看门狗与切回标签页的健康判定依据。 */
   private lastEventAt: Record<string, number> = {};
   /**
@@ -887,10 +895,11 @@ export class AhChat extends LitElement {
     this.received[sessionId] = false;
     this.pending[sessionId] = { content: '', reasoning: '' };
     this.finalBy[sessionId] = '';
-    // 断线恢复簿记归零：新一轮 run 重新记录 jobId / seq 游标 / 终结标记。
+    // 断线恢复簿记归零：新一轮 run 重新记录 jobId / seq 游标 / 终结标记 / 错误标记。
     this.finishedBy[sessionId] = false;
     this.jobBy[sessionId] = '';
     this.lastSeqBy[sessionId] = -1;
+    this.erroredBy[sessionId] = false;
     this.setConn(sessionId, 'connected');
     this.resetTrace(sessionId);
     this.stopTypewriter();
@@ -931,6 +940,12 @@ export class AhChat extends LitElement {
     this.abortBy[sessionId] = ac;
     try {
       await this.runWithReconnect(sessionId, input, ac);
+      // 流正常关闭 ≠ 运行成功：服务端在模型/运行异常时先发 error 事件再补发
+      // run:end 正常收尾。此处必须检查本轮是否收到过 error，收到则按失败返回，
+      // 让计划执行循环立即中止后续任务派发（而不是把失败当成功继续跑下一步）。
+      if (this.erroredBy[sessionId]) {
+        return 'error';
+      }
       return 'ok';
     } catch (e: any) {
       if ((e as any)?.name === 'UserStoppedRun') {
@@ -1148,6 +1163,9 @@ export class AhChat extends LitElement {
     this.lastEventAt[sid] = Date.now();
     if (et === 'run:end' || et === '_done' || et === 'error') {
       this.finishedBy[sid] = true;
+      // 记录本轮 run 是否出现过 error 事件：dispatchPrompt 收尾时据此区分
+      // 「成功收尾」与「带错误收尾」，计划执行循环依赖这一判定中止后续任务。
+      if (et === 'error') this.erroredBy[sid] = true;
       // 运行已终结：链路无论此前是否断连过都视为恢复，立即摘掉「连接中断」横幅，
       // 防止「重连补收末尾终结事件 → 流关闭」时横幅无人清理而永久残留。
       if (this.connState[sid] !== 'connected')
@@ -2098,7 +2116,9 @@ export class AhChat extends LitElement {
           ? `执行中 · ${st.currentTaskId ?? ''}`
           : st.status === 'done'
             ? '已完成'
-            : '已取消';
+            : st.status === 'failed'
+              ? `执行失败 · ${st.failedTaskId ?? ''}`
+              : '已取消';
     return html`<div class="plan-card">
       <div class="plan-head">
         <span class="plan-title">📋 执行计划</span>
@@ -2114,14 +2134,22 @@ export class AhChat extends LitElement {
               </button>
             `
           : nothing}
+        ${st.status === 'failed'
+          ? html`
+              <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                从失败任务继续
+              </button>
+            `
+          : nothing}
       </div>
       <ol class="plan-tasks">
         ${plan.tasks.map((t, i) => {
           const done = !!st.done[t.id];
           const active = st.status === 'running' && st.currentTaskId === t.id;
-          return html`<li class="plan-task ${done ? 'done' : ''} ${active ? 'active' : '...'}">
+          const failed = st.status === 'failed' && st.failedTaskId === t.id;
+          return html`<li class="plan-task ${done ? 'done' : ''} ${active ? 'active' : ''} ${failed ? 'failed' : ''}">
             <div class="pt-head">
-              <span class="pt-mark">${done ? '✓' : active ? '⏳' : i + 1}</span>
+              <span class="pt-mark">${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span>
               <b>${escapeHtml(t.title)}</b>
             </div>
             ${t.steps.length
@@ -2139,14 +2167,17 @@ export class AhChat extends LitElement {
     </div>`;
   }
 
-  /** 确认计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；用户停止/出错即中止后续任务。 */
+  /** 确认/恢复计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；任一任务失败或用户停止即立即中止，等待用户指令后再继续。 */
   private async confirmPlan(m: ChatMsg) {
     const sid = this.activeId;
     if (!sid || !m.plan) return;
     const st = this.planExec[m.id];
-    if (!st || st.status !== 'pending') return;
+    // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
+    if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     for (const task of m.plan.tasks) {
+      // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
+      if (st.done[task.id]) continue;
       // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
       this.planExec = {
         ...this.planExec,
@@ -2161,24 +2192,44 @@ export class AhChat extends LitElement {
         planTask: true
       });
       if (result !== 'ok') {
-        // 停止 / 断连：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
-        this.planExec = {
-          ...this.planExec,
-          [m.id]: { ...this.planExec[m.id], status: 'cancelled', currentTaskId: undefined }
-        };
+        if (result === 'error') {
+          // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
+          // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
+          // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: {
+              ...this.planExec[m.id],
+              status: 'failed',
+              failedTaskId: task.id,
+              currentTaskId: undefined
+            }
+          };
+        } else {
+          // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: {
+              ...this.planExec[m.id],
+              status: 'cancelled',
+              currentTaskId: undefined
+            }
+          };
+        }
         return;
       }
       this.planExec = {
         ...this.planExec,
         [m.id]: {
           ...this.planExec[m.id],
-          done: { ...this.planExec[m.id].done, [task.id]: true }
+          done: { ...this.planExec[m.id].done, [task.id]: true },
+          failedTaskId: undefined
         }
       };
     }
     this.planExec = {
       ...this.planExec,
-      [m.id]: { ...this.planExec[m.id], status: 'done', currentTaskId: undefined }
+      [m.id]: { ...this.planExec[m.id], status: 'done', currentTaskId: undefined, failedTaskId: undefined }
     };
   }
 
