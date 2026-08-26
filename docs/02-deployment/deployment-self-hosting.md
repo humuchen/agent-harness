@@ -16,7 +16,7 @@
 ## 1. 本地 Docker Compose（最快上手）
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
+export OPEN_API_KEY=sk-or-...
 export UI_AUTH_TOKEN=$(openssl rand -hex 24)
 
 # 内存模式（单副本，开箱即用）
@@ -36,7 +36,7 @@ docker compose --profile redis up --build
 # 1) 用真实密钥覆盖占位 Secret（建议改用 Sealed Secrets / External Secrets）
 kubectl -n agent-harness create secret generic agent-harness \
   --from-literal=UI_AUTH_TOKEN="$(openssl rand -hex 24)" \
-  --from-literal=OPENROUTER_API_KEY='sk-or-...' \
+  --from-literal=OPEN_API_KEY='sk-or-...' \
   --from-literal=REDIS_URL='redis://redis:6379'
 
 # 2) 修改 deployment.yaml 的 image 与 ingress.yaml 的 host（真实值）
@@ -60,13 +60,14 @@ kubectl -n agent-harness exec deploy/agent-harness -- \
 ```bash
 docker build -t agent-harness:local .
 docker run -p 4173:4173 \
-  -e OPENROUTER_API_KEY=sk-or-... \
+  -e OPEN_API_KEY=sk-or-... \
   -e UI_AUTH_TOKEN=change-me \
   -e REDIS_URL=redis://redis:6379 \
   agent-harness:local
 ```
 
 `Dockerfile` 多阶段：
+
 - **build**：`corepack enable` + pnpm 安装并 `pnpm -r build`（拓扑序 core → client → server → webapp → cli）。
 - **runtime**：`node:22-bookworm-slim`，非 root 运行，HEALTHCHECK 探活 `/api/v1/state`。
 
@@ -76,30 +77,31 @@ docker run -p 4173:4173 \
 
 ## 5. 环境变量清单（按场景）
 
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `PORT` / `UI_PORT` | 否 | 监听端口，默认 4173 |
-| `UI_HOST` | 否 | 绑定地址，默认 0.0.0.0 |
-| `NODE_ENV` | 否 | 设 `production` |
-| `UI_AUTH_TOKEN` / `UI_TOKENS` | 生产必填 | Bearer 令牌；留空则开放（仅本地） |
-| `UI_CORS_ORIGIN` | 否 | 跨域白名单（逗号分隔） |
-| `OPENROUTER_API_KEY` | 真实 LLM 必填 | 留空用内置 Mock LLM 离线运行 |
-| `OPENROUTER_MODEL` | 否 | 默认 `agnes-2.5-flash` |
-| `REDIS_URL` | 多副本必填 | 运行队列后端 |
-| `ENV_PLATFORM` | 否 | `harness`(默认,dry-run) / `local`(零依赖真跑) / `k8s`(生产级) |
-| `HARNESS_API_KEY` / `ACCOUNT` / `ORG` / `PROJECT` | 接 Harness 时填 | 仅 `ENV_PLATFORM=harness` 且要真拉环境时 |
-| `K8S_*` | `k8s` 后端用 | `KUBECONFIG`、镜像、Ingress 模板、TTL |
-| `MAX_BODY_BYTES` / `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 否 | 安全加固（防大报文 / 限流） |
-| `AUDIT_LOG` | 否 | 审计落盘路径；留空仅落 stdout(JSON 行) |
-| `MEMORY_BACKEND` | 否 | `sqlite`(默认) / `file` / `volatile` |
-| `RUN_QUEUE_BACKEND` | 否 | `memory`(默认) / `file` / `redis` |
-| `MAX_STEPS` / `MAX_TOOL_RESULT_CHARS` / `CONTEXT_COMPRESSION` / `PROMPT_CACHE` | 否 | 成本与完成率调优 |
+| 变量                                                                           | 必填            | 说明                                                          |
+| ------------------------------------------------------------------------------ | --------------- | ------------------------------------------------------------- |
+| `PORT` / `UI_PORT`                                                             | 否              | 监听端口，默认 4173                                           |
+| `UI_HOST`                                                                      | 否              | 绑定地址，默认 0.0.0.0                                        |
+| `NODE_ENV`                                                                     | 否              | 设 `production`                                               |
+| `UI_AUTH_TOKEN` / `UI_TOKENS`                                                  | 生产必填        | Bearer 令牌；留空则开放（仅本地）                             |
+| `UI_CORS_ORIGIN`                                                               | 否              | 跨域白名单（逗号分隔）                                        |
+| `OPEN_API_KEY`                                                                 | 真实 LLM 必填   | 留空用内置 Mock LLM 离线运行                                  |
+| `OPEN_MODEL`                                                                   | 否              | 默认 `agnes-2.5-flash`                                        |
+| `REDIS_URL`                                                                    | 多副本必填      | 运行队列后端                                                  |
+| `ENV_PLATFORM`                                                                 | 否              | `harness`(默认,dry-run) / `local`(零依赖真跑) / `k8s`(生产级) |
+| `HARNESS_API_KEY` / `ACCOUNT` / `ORG` / `PROJECT`                              | 接 Harness 时填 | 仅 `ENV_PLATFORM=harness` 且要真拉环境时                      |
+| `K8S_*`                                                                        | `k8s` 后端用    | `KUBECONFIG`、镜像、Ingress 模板、TTL                         |
+| `MAX_BODY_BYTES` / `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS`                       | 否              | 安全加固（防大报文 / 限流）                                   |
+| `AUDIT_LOG`                                                                    | 否              | 审计落盘路径；留空仅落 stdout(JSON 行)                        |
+| `MEMORY_BACKEND`                                                               | 否              | `sqlite`(默认) / `file` / `volatile`                          |
+| `RUN_QUEUE_BACKEND`                                                            | 否              | `memory`(默认) / `file` / `redis`                             |
+| `MAX_STEPS` / `MAX_TOOL_RESULT_CHARS` / `CONTEXT_COMPRESSION` / `PROMPT_CACHE` | 否              | 成本与完成率调优                                              |
 
 完整可注入变量见 `.env.example` 与各 `config.ts` / `secrets.ts`。
 
 ## 6. 多平台客户端
 
 服务端暴露稳定 `/api/v1` 契约（JSON + SSE），任意平台用 **`@agent-harness/client`** 消费：
+
 - **Web（Lit+Vite）**：`frontend/webapp`（生产产物被 server 同源托管）
 - **Node CLI**：`frontend/cli`，如 `ah run --mode mock`、`ah env --action create`
 - **自定义平台**：`new AgentClient({ baseUrl, token })` 调 `streamRun/streamVerify/streamEnv/getMcpServers/...`
@@ -108,11 +110,11 @@ docker run -p 4173:4173 \
 
 鉴权抽象为可插拔 `Authorizer`，身份源由 `AUTH_PROVIDER` 切换，server 其余代码不变。
 
-| `AUTH_PROVIDER` | 场景 | 令牌形态 | 角色来源 |
-|---|---|---|---|
-| `token`（默认） | 本地/演示/break-glass | 静态 `UI_TOKENS` / `UI_AUTH_TOKEN` | 令牌→角色映射 |
-| `oidc` | IdP 签发 JWT（Keycloak/Okta/Azure AD/Auth0） | `Bearer <JWT>` | JWT 的 groups/roles claim |
-| `proxy` | 部署在 SSO/LDAP 网关之后 | 网关注入请求头 | `X-Forwarded-Groups` |
+| `AUTH_PROVIDER` | 场景                                         | 令牌形态                           | 角色来源                  |
+| --------------- | -------------------------------------------- | ---------------------------------- | ------------------------- |
+| `token`（默认） | 本地/演示/break-glass                        | 静态 `UI_TOKENS` / `UI_AUTH_TOKEN` | 令牌 → 角色映射           |
+| `oidc`          | IdP 签发 JWT（Keycloak/Okta/Azure AD/Auth0） | `Bearer <JWT>`                     | JWT 的 groups/roles claim |
+| `proxy`         | 部署在 SSO/LDAP 网关之后                     | 网关注入请求头                     | `X-Forwarded-Groups`      |
 
 **推荐路径（AUTH_PROVIDER=proxy）**：把服务部署在 SSO 网关（Authelia / OAuth2 Proxy / Keycloak / nginx `auth_request`）之后，认证后注入标准头，本服务据头映射角色，**无需实现任何 LDAP 协议**。可配 `PROXY_HMAC_SECRET` 防伪造。
 

@@ -129,15 +129,15 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
-// 统一认证凭证：OPENROUTER_API_KEY 同时作为 LLM key 与权限校验依据。
+// 统一认证凭证：OPEN_API_KEY 同时作为 LLM key 与权限校验依据。
 // 未接入 RBAC 时它是权限判断的唯一凭证；接入 RBAC 时作为 admin 逃生通道。
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPEN_API_KEY = process.env.OPEN_API_KEY || '';
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
-// 非 token 模式即视为需要鉴权；token 模式在有静态令牌或 OPENROUTER_API_KEY 时开启（向后兼容）。
+// 非 token 模式即视为需要鉴权；token 模式在有静态令牌或 OPEN_API_KEY 时开启（向后兼容）。
 const REQUIRE_AUTH =
   AUTH_PROVIDER !== 'token' ||
-  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPENROUTER_API_KEY);
+  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPEN_API_KEY);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -357,7 +357,8 @@ function readAction(path: string): Action | null {
       // 聊天会话详情（含消息 / 推理 / 工具调用）同样属只读敏感数据，需 chat:read。
       if (path.startsWith('/api/chat/sessions/')) return 'chat:read';
       // 聊天历史镜像（ah_chat_history 迁移的接口层）：读取需 chat:read。
-      if (path === '/api/history' || path.startsWith('/api/history/')) return 'chat:read';
+      if (path === '/api/history' || path.startsWith('/api/history/'))
+        return 'chat:read';
       return null;
   }
 }
@@ -406,7 +407,7 @@ const server = createServer(
           try {
             let html = await readFile(join(wd, 'index.html'), 'utf8');
             // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
-            // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPENROUTER_API_KEY 时注入。
+            // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPEN_API_KEY 时注入。
             html = injectApiKey(html);
             res.writeHead(200, {
               'content-type': 'text/html; charset=utf-8',
@@ -435,7 +436,8 @@ const server = createServer(
       if (
         req.method === 'GET' &&
         !SPA_FALLBACK_EXCLUDED.some(
-          (p) => path === p || path.startsWith(p + '/') || path.startsWith(p + '?')
+          (p) =>
+            path === p || path.startsWith(p + '/') || path.startsWith(p + '?')
         )
       ) {
         const wd = webappDir();
@@ -528,7 +530,8 @@ const server = createServer(
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const { createOSSandboxExecutor } = require('@agent-harness/core');
           const exec = createOSSandboxExecutor();
-          sandboxStatus = (exec as { describe?(): unknown }).describe?.() ?? null;
+          sandboxStatus =
+            (exec as { describe?(): unknown }).describe?.() ?? null;
         } catch {
           sandboxStatus = null;
         }
@@ -593,7 +596,11 @@ const server = createServer(
         // 特性开关状态（运行时查询/审计），受 policy:read 保护。
         const ctx = await guard(req, res, 'policy:read');
         if (!ctx) return;
-        return sendJson(res, { flags: features.getAll(), stats: features.getStats() }, req);
+        return sendJson(
+          res,
+          { flags: features.getAll(), stats: features.getStats() },
+          req
+        );
       }
       // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
@@ -844,10 +851,21 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/env') {
         return sendJson(res, { envs: envPipeline.list() }, req);
       }
-      // 自定义模型 CRUD（SQLite 持久化 + AES-GCM 密文 apiKey）
-      {
+      // 自定义模型 CRUD（SQLite 持久化 + AES-GCM 密文 apiKey）。
+      // 仅当路径命中前缀时才读 body —— 否则会把请求流消费掉，
+      // 导致后续路由再次 readBody 时挂起。
+      if (path.startsWith('/api/custom-models')) {
         const cmBody = await readBody(req);
-        if (registerCustomModelRoutes(req, res, path, req.method, cmBody)) return;
+        if (
+          await registerCustomModelRoutes(
+            req,
+            res,
+            path,
+            req.method ?? 'GET',
+            cmBody
+          )
+        )
+          return;
       }
       if (req.method === 'POST' && path === '/api/run') {
         return await handleRun(req, res);
@@ -962,7 +980,10 @@ const server = createServer(
           getHistoryStore().upsert(
             {
               sid,
-              title: typeof b.title === 'string' && b.title.trim() ? b.title.trim().slice(0, 200) : '新对话',
+              title:
+                typeof b.title === 'string' && b.title.trim()
+                  ? b.title.trim().slice(0, 200)
+                  : '新对话',
               updatedAt:
                 typeof b.updatedAt === 'number' && Number.isFinite(b.updatedAt)
                   ? Math.floor(b.updatedAt)
@@ -1115,13 +1136,18 @@ const server = createServer(
           for await (const c of req) {
             total += (c as Buffer).length;
             if (total > 20 * 1024 * 1024) {
-              const err: any = new Error('request body too large (20 MB limit)');
+              const err: any = new Error(
+                'request body too large (20 MB limit)'
+              );
               err.status = 413;
               throw err;
             }
             chunks.push(c as Buffer);
           }
-          const result = await handleUpload(Buffer.concat(chunks), String(req.headers['content-type'] ?? ''));
+          const result = await handleUpload(
+            Buffer.concat(chunks),
+            String(req.headers['content-type'] ?? '')
+          );
           if (!result.ok) {
             return sendJson(res, { error: result.error }, req);
           }
@@ -1176,7 +1202,7 @@ function buildState() {
     // 模块未加载 / 构造失败均不影响主状态
   }
   return {
-    openrouter: !!process.env.OPENROUTER_API_KEY,
+    openrouter: !!process.env.OPEN_API_KEY,
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
@@ -1214,8 +1240,8 @@ function serveHtml(res: ServerResponse): void {
 
 /** 降级模式下把统一认证凭证注入 HTML（<meta name="ah-api-key">），供 SPA 自动带 token。 */
 function injectApiKey(html: string): string {
-  if (!OPENROUTER_API_KEY) return html;
-  const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
+  if (!OPEN_API_KEY) return html;
+  const escaped = OPEN_API_KEY.replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
@@ -1257,16 +1283,22 @@ function renderErrorsHtml(): string {
         .reverse()
         .map((e: ErrorRecord, idx: number) => {
           const stack = e.stack
-            ? `<details class="stack"><summary>堆栈跟踪</summary><pre>${esc(e.stack)}</pre></details>`
+            ? `<details class="stack"><summary>堆栈跟踪</summary><pre>${esc(
+                e.stack
+              )}</pre></details>`
             : '';
           const ctx =
             e.fields && Object.keys(e.fields).length
-              ? `<div class="ctx">上下文：${esc(JSON.stringify(e.fields))}</div>`
+              ? `<div class="ctx">上下文：${esc(
+                  JSON.stringify(e.fields)
+                )}</div>`
               : '';
           return `<tr>
       <td class="num">${list.length - idx}</td>
       <td class="mono">${esc(e.ts)}</td>
-      <td><span class="sev sev-${esc(e.severity)}">${esc(e.severity)}</span></td>
+      <td><span class="sev sev-${esc(e.severity)}">${esc(
+            e.severity
+          )}</span></td>
       <td class="name">${esc(e.name)}</td>
       <td class="type">${esc(e.type ?? '-')}</td>
       <td class="msg">${esc(e.message)}</td>
@@ -1277,9 +1309,9 @@ function renderErrorsHtml(): string {
     : `<tr><td colspan="7" class="empty">暂无错误记录</td></tr>`;
   const span =
     summary.firstSeen != null && summary.lastSeen != null
-      ? `<div class="span">时间跨度：${esc(new Date(summary.firstSeen).toISOString())} ~ ${esc(
-          new Date(summary.lastSeen).toISOString()
-        )}</div>`
+      ? `<div class="span">时间跨度：${esc(
+          new Date(summary.firstSeen).toISOString()
+        )} ~ ${esc(new Date(summary.lastSeen).toISOString())}</div>`
       : '';
   return `<!doctype html>
 <html lang="zh">
@@ -1338,7 +1370,9 @@ function renderErrorsHtml(): string {
   <h1>系统错误明细</h1>
   <p class="sub">错误数量与每条错误的具体信息（类型 / 消息 / 时间 / 堆栈 / 上下文）同源展示。</p>
   <div class="banner">
-    <div><span class="count ${summary.total === 0 ? 'zero' : ''}">${summary.total}</span><span class="label">条系统错误</span></div>
+    <div><span class="count ${summary.total === 0 ? 'zero' : ''}">${
+    summary.total
+  }</span><span class="label">条系统错误</span></div>
     ${span}
     <div class="pills">${pills || '<span class="pill">无</span>'}</div>
   </div>
@@ -1358,7 +1392,15 @@ function renderErrorsHtml(): string {
 
 /** Web SPA 构建产物目录（frontend/webapp/dist）；未构建则返回 null。 */
 function webappDir(): string | null {
-  const dir = resolve(__dirname, '..', '..', '..', 'frontend', 'webapp', 'dist');
+  const dir = resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    'frontend',
+    'webapp',
+    'dist'
+  );
   try {
     accessSync(dir);
     return dir;
@@ -1468,8 +1510,8 @@ async function handleRun(
     mode === 'real-mcp'
       ? 'agent:run:real-mcp'
       : mode === 'real'
-        ? 'agent:run:real'
-        : 'agent:run:mock';
+      ? 'agent:run:real'
+      : 'agent:run:mock';
   const ctx = await guard(req, res, runAction, body);
   if (!ctx) return;
   // 优雅停机期间不再接受新运行，避免任务在进程退出时被强杀。
@@ -1797,8 +1839,16 @@ async function handleRun(
             ...(est
               ? {
                   系统: String(est.system),
-                  工具: `${est.tools}${estTotal ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)` : ''}`,
-                  历史: `${est.history}${estTotal ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)` : ''}`,
+                  工具: `${est.tools}${
+                    estTotal
+                      ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)`
+                      : ''
+                  }`,
+                  历史: `${est.history}${
+                    estTotal
+                      ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)`
+                      : ''
+                  }`,
                   输出: `${est.completion}`
                 }
               : {})
@@ -1817,7 +1867,9 @@ async function handleRun(
         }>(ev.byModel ?? {})
           .map(
             ([m, st]) =>
-              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${st.queries})`
+              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${
+                st.queries
+              })`
           )
           .join(' · ');
         traceNode(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
@@ -1828,7 +1880,11 @@ async function handleRun(
             ...(ev.model ? { 模型: String(ev.model) } : {}),
             ...(tcByModel ? { 分模型: tcByModel } : {})
           },
-          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${ev.hits}) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${ev.model ?? '?'} · ${ev.interface ?? 'prompt-cache'}。`
+          detail: `采集点：LLM 调用返回 usage.prompt_tokens_details.cached_tokens；计算逻辑：命中次数(${
+            ev.hits
+          }) ÷ 总查询次数(${ev.queries}) = ${tcHitPct}%。关联服务/接口：${
+            ev.model ?? '?'
+          } · ${ev.interface ?? 'prompt-cache'}。`
         });
         break;
       }
@@ -2031,7 +2087,8 @@ async function handleRun(
         // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
         if (!isPlanPropose) {
           updatePlanStatus(chatSessionId, (prev) => {
-            if (!prev.currentTaskId || prev.done.includes(prev.currentTaskId)) return prev;
+            if (!prev.currentTaskId || prev.done.includes(prev.currentTaskId))
+              return prev;
             const done = [...prev.done, prev.currentTaskId];
             return {
               ...prev,
@@ -2649,8 +2706,8 @@ function onListening(): void {
       AUTH_PROVIDER === 'oidc'
         ? 'OIDC (Bearer JWT)'
         : AUTH_PROVIDER === 'proxy'
-          ? 'SSO 网关头注入 (proxy)'
-          : '静态令牌 (token)';
+        ? 'SSO 网关头注入 (proxy)'
+        : '静态令牌 (token)';
     console.log(
       `   🔒 RBAC 鉴权已启用（身份源：${prov}）：请求需 Authorization: Bearer <token>`
     );
@@ -2678,14 +2735,24 @@ function onListening(): void {
     console.log(`   🔒 CORS 白名单：${UI_CORS_ORIGIN.join(', ')}`);
   }
   console.log(
-    `   🔒 限流：${RATE_LIMIT > 0 ? `每 IP ${RATE_LIMIT} 次 / ${RATE_WINDOW_MS / 1000}s` : '关闭'}；请求体上限：${MAX_BODY_BYTES} 字节`
+    `   🔒 限流：${
+      RATE_LIMIT > 0
+        ? `每 IP ${RATE_LIMIT} 次 / ${RATE_WINDOW_MS / 1000}s`
+        : '关闭'
+    }；请求体上限：${MAX_BODY_BYTES} 字节`
   );
   if (AUDIT_LOG) console.log(`   📝 审计日志落盘：${AUDIT_LOG}`);
   console.log(
-    `   OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? '已配置' : '未配置（Mock 模式可用）'}`
+    `   OPEN_API_KEY: ${
+      process.env.OPEN_API_KEY ? '已配置' : '未配置（Mock 模式可用）'
+    }`
   );
   console.log(
-    `   HARNESS_API_KEY: ${process.env.HARNESS_API_KEY ? '已配置' : '未配置（环境流水线走 dry-run 演示）'}`
+    `   HARNESS_API_KEY: ${
+      process.env.HARNESS_API_KEY
+        ? '已配置'
+        : '未配置（环境流水线走 dry-run 演示）'
+    }`
   );
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}`);
   const storeKind = (registry as any)?.store?.kind ?? 'volatile';
@@ -2712,7 +2779,11 @@ function onListening(): void {
   console.log(
     `   🧭 意图路由：INTENT_ROUTER=${intentRaw} → 生效 ${intentMode}` +
       (intentRaw === 'auto'
-        ? `（${process.env.OPENROUTER_API_KEY ? '检测到 API key，用 llm 精准分类' : '无 API key，降级 rule 关键词分类'}）`
+        ? `（${
+            process.env.OPEN_API_KEY
+              ? '检测到 API key，用 llm 精准分类'
+              : '无 API key，降级 rule 关键词分类'
+          }）`
         : '')
   );
   console.log('');

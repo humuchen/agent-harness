@@ -339,9 +339,9 @@ export async function assembleAgent(
     notes.push('内置 Mock LLM（无需密钥），离线即可跑通 创建 → 销毁 闭环。');
   } else {
     // real / real-mcp 都依赖真实 OpenRouter
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!process.env.OPEN_API_KEY) {
       throw new Error(
-        '真实模式需要 OPENROUTER_API_KEY（在 .env 中配置）。可切换到 Mock 模式离线验证。'
+        '真实模式需要 OPEN_API_KEY（在 .env 中配置）。可切换到 Mock 模式离线验证。'
       );
     }
     const effectiveModel = resolveOpenRouterConfig({
@@ -458,7 +458,7 @@ export async function assembleAgent(
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
   // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
   const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
-  // 当前 run 的计价/标识模型（modelOverride > env OPENROUTER_MODEL > 内置默认），
+  // 当前 run 的计价/标识模型（modelOverride > env OPEN_MODEL > 内置默认），
   // 供 LLM 摘要器标注与成本明细。
   const accountModel = resolveOpenRouterConfig({ model: modelOverride }).model;
   // 上下文压缩（P1）：滑动窗口溢出淘汰旧轮次时，将其压缩为一条 system 摘要固定保留，
@@ -784,7 +784,7 @@ function mockGenericReply(question: string): string {
     `这是未接入大模型的演示应答。说明：\n` +
     `· 普通问答不会触发环境工具；\n` +
     `· 只有明确提到「创建 / 临时 / 预览 / 验证环境」才会走 创建→销毁 闭环；\n` +
-    `· 在服务端配置 OPENROUTER_API_KEY 并切到 real 模式，即可获得真实回答。`
+    `· 在服务端配置 OPEN_API_KEY 并切到 real 模式，即可获得真实回答。`
   );
 }
 

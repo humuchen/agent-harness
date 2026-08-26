@@ -43,7 +43,7 @@ curl http://localhost:31473/api/state     # 应返回 200 JSON
 kubectl -n agent-harness create secret generic agent-harness \
   --dry-run=client -o yaml \
   --from-literal=UI_AUTH_TOKEN='<强随机，如 openssl rand -base64 32>' \
-  --from-literal=OPENROUTER_API_KEY='sk-or-...' \
+  --from-literal=OPEN_API_KEY='sk-or-...' \
   --from-literal=REDIS_URL='redis://redis:6379' \
   | kubectl apply -f -
 
@@ -56,9 +56,9 @@ kubectl apply -k deploy/k8s
 
 ## 3. 已修复的关键坑（务必知悉）
 
-| 问题 | 旧值 | 现状 |
-|---|---|---|
-| 健康检查探针路径 | `/api/v1/state`（**404，pod 永远 not-ready**） | 已改为 `/api/state`，否则 Service 收不到流量 |
+| 问题               | 旧值                                              | 现状                                                       |
+| ------------------ | ------------------------------------------------- | ---------------------------------------------------------- |
+| 健康检查探针路径   | `/api/v1/state`（**404，pod 永远 not-ready**）    | 已改为 `/api/state`，否则 Service 收不到流量               |
 | Redis 是否默认接入 | `redis.yaml` 被注释、`REDIS_URL=""`（走内存队列） | 已默认启用，`REDIS_URL=redis://redis:6379`，多副本共享队列 |
 
 > 说明：`/api/v1/state` 仅存在于 OpenAPI 文档定义（挂在 `/api/openapi.json`），服务端真实健康检查端点是 `/api/state`。Docker 与 K8s 两处都已统一修正。

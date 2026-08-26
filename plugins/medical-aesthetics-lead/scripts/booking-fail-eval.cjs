@@ -10,8 +10,8 @@
  *   2) 提示词纪律：模型应据 autoHandoff/工具结果如实告知「已转交咨询师」，
  *      不得编造未配置的跟进方式（短信/电话回访）。
  *
- * 运行（需要 OPENROUTER_API_KEY）：
- *   OPENROUTER_API_KEY=sk-xxx node plugins/medical-aesthetics-lead/scripts/booking-fail-eval.cjs
+ * 运行（需要 OPEN_API_KEY）：
+ *   OPEN_API_KEY=sk-xxx node plugins/medical-aesthetics-lead/scripts/booking-fail-eval.cjs
  * 脚本使用临时 MA_DATA_DIR，不污染真实客资库。
  */
 const fs = require('node:fs');
@@ -29,11 +29,15 @@ delete process.env.MA_HIS_BASE_URL;
 delete process.env.MA_RAG_BASE_URL;
 delete process.env.MA_RAG_TOKEN;
 
-const { AgentHarness, ToolRegistry, createOpenRouterLLM } = require('@agent-harness/core');
+const {
+  AgentHarness,
+  ToolRegistry,
+  createOpenRouterLLM
+} = require('@agent-harness/core');
 
 async function main() {
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.error('[eval] 需要 OPENROUTER_API_KEY（见 .env.example）');
+  if (!process.env.OPEN_API_KEY) {
+    console.error('[eval] 需要 OPEN_API_KEY（见 .env.example）');
     process.exit(2);
   }
 
@@ -44,16 +48,23 @@ async function main() {
   require(path.join(P, 'dist/tools/book')).registerBookTool(tools);
   require(path.join(P, 'dist/tools/handoff')).registerHandoffTool(tools);
   require(path.join(P, 'dist/tools/kb')).registerKbTool(tools);
-  console.log('[eval] 已注册工具:', tools.schemas().map((s) => s.name).join(', '));
+  console.log(
+    '[eval] 已注册工具:',
+    tools
+      .schemas()
+      .map((s) => s.name)
+      .join(', ')
+  );
 
   const agent = new AgentHarness({
     llm: createOpenRouterLLM(),
     tools,
-    systemPrompt: require(path.join(P, 'dist/prompts')).buildSystemPrompt(),
+    systemPrompt: require(path.join(P, 'dist/prompts')).buildSystemPrompt()
   });
 
   // 场景：用户给全了渠道/项目/预算/城市/院区/日期/时段，但本环境无任何院区 → booking 必失败
-  const question = '我是抖音来的，想做皮肤管理，预算 1000 以内，人在青岛。帮我预约青岛市南院 8月23日 10:00 面诊。';
+  const question =
+    '我是抖音来的，想做皮肤管理，预算 1000 以内，人在青岛。帮我预约青岛市南院 8月23日 10:00 面诊。';
   console.log('\n[1/3] user:', question);
   const answer = await agent.run(question);
   console.log('\n[2/3] 最终回复:\n' + answer);
@@ -62,20 +73,43 @@ async function main() {
   const dbFile = path.join(DATA_DIR, 'ma-lead.db');
   const Database = require('node:sqlite').DatabaseSync;
   const db = new Database(dbFile, { readOnly: true });
-  const all = db.prepare('SELECT lead_id, stage, handed_off, channel, project FROM ma_lead').all();
-  const handed = db.prepare('SELECT lead_id, stage, handoff_reason FROM ma_lead WHERE handed_off = 1').all();
+  const all = db
+    .prepare('SELECT lead_id, stage, handed_off, channel, project FROM ma_lead')
+    .all();
+  const handed = db
+    .prepare(
+      'SELECT lead_id, stage, handoff_reason FROM ma_lead WHERE handed_off = 1'
+    )
+    .all();
   db.close();
-  console.log('\n[3/3] 临时库线索:', all.length, '| 转人工(handed_off=1):', handed.length);
+  console.log(
+    '\n[3/3] 临时库线索:',
+    all.length,
+    '| 转人工(handed_off=1):',
+    handed.length
+  );
   for (const r of handed) console.log('   ', JSON.stringify(r));
 
   const hasHandoff = handed.length >= 1;
   const saysTransferred = /转交|转接|咨询师|人工/.test(answer);
-  const hallucinatedChannel = /(今天内|稍后|稍候).{0,12}(短信|电话|微信)|(短信|电话|微信).{0,8}(回访|联系您)/.test(answer);
+  const hallucinatedChannel =
+    /(今天内|稍后|稍候).{0,12}(短信|电话|微信)|(短信|电话|微信).{0,8}(回访|联系您)/.test(
+      answer
+    );
 
   console.log('\n断言:');
-  console.log('  [A] 转人工队列非空（handed_off=1 ≥ 1）:', hasHandoff ? 'PASS' : 'FAIL');
-  console.log('  [B] 回复如实提及已转交咨询师:', saysTransferred ? 'PASS' : 'WARN（可能未说明去向）');
-  console.log('  [C] 未编造未配置跟进方式（短信/电话回访）:', hallucinatedChannel ? 'FAIL' : 'PASS');
+  console.log(
+    '  [A] 转人工队列非空（handed_off=1 ≥ 1）:',
+    hasHandoff ? 'PASS' : 'FAIL'
+  );
+  console.log(
+    '  [B] 回复如实提及已转交咨询师:',
+    saysTransferred ? 'PASS' : 'WARN（可能未说明去向）'
+  );
+  console.log(
+    '  [C] 未编造未配置跟进方式（短信/电话回访）:',
+    hallucinatedChannel ? 'FAIL' : 'PASS'
+  );
 
   const ok = hasHandoff;
   console.log(ok ? '\nEVAL_PASS' : '\nEVAL_FAIL');

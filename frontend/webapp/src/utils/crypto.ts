@@ -38,6 +38,7 @@ function bufferByteLength(buf: ArrayBufferView | ArrayBuffer): number {
 /** AES-GCM 加密：输出 base64(iv + ciphertext)。 */
 export async function encryptApiKey(plaintext: string): Promise<string> {
   const key = getBuildTimeCryptoKey();
+  // @ts-ignore - TS lib 的 Uint8Array<ArrayBufferLike> 与 BufferSource 重载不匹配，运行时合法
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     key,

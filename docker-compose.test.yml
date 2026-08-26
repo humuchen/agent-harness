@@ -7,7 +7,7 @@
 # 说明：
 #   - 记忆用 volatile（纯内存，自测无需持久）；要测持久记忆可改 MEMORY_BACKEND=file 并挂 data 卷。
 #   - UI_AUTH_TOKEN 留空则本地开放；如需鉴权在命令前加 UI_AUTH_TOKEN=xxx 环境变量。
-#   - 真实 LLM：OPENROUTER_API_KEY=xxx 传入；留空走内置 Mock LLM 离线运行。
+#   - 真实 LLM：OPEN_API_KEY=xxx 传入；留空走内置 Mock LLM 离线运行。
 
 services:
   ui:
@@ -22,8 +22,8 @@ services:
       PORT: '4173'
       UI_HOST: '0.0.0.0'
       UI_AUTH_TOKEN: '${UI_AUTH_TOKEN:-}'
-      OPENROUTER_API_KEY: '${OPENROUTER_API_KEY:-}'
-      OPENROUTER_MODEL: '${OPENROUTER_MODEL:-}'
+      OPEN_API_KEY: '${OPEN_API_KEY:-}'
+      OPEN_MODEL: '${OPEN_MODEL:-}'
       # 声明式多 server（与 render.yaml 对齐）；本地自测默认常驻 context7，可用 MCP_SERVERS 环境变量覆盖。
       MCP_SERVERS: '[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
       # —— 队列后端走 Redis（与 Render 一致）——

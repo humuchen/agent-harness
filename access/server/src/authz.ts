@@ -71,8 +71,15 @@ export interface AuthDescribe {
   provider: 'token' | 'oidc' | 'proxy';
   roles: Role[];
   permissions: Record<Role, Action[]>;
-  idp?: { kind: 'oidc' | 'proxy'; issuer?: string; groupsClaim?: string; userHeader?: string; groupsHeader?: string; hmac?: boolean };
-  /** 降级模式：未接入 RBAC 时，OPENROUTER_API_KEY 作为权限判断唯一凭证。 */
+  idp?: {
+    kind: 'oidc' | 'proxy';
+    issuer?: string;
+    groupsClaim?: string;
+    userHeader?: string;
+    groupsHeader?: string;
+    hmac?: boolean;
+  };
+  /** 降级模式：未接入 RBAC 时，OPEN_API_KEY 作为权限判断唯一凭证。 */
   degraded?: boolean;
 }
 
@@ -89,30 +96,92 @@ export interface Authorizer {
 // {"admin":[...],"operator":[...],"viewer":[...]}），实现策略可配置。
 const DEFAULT_MATRIX: Record<Role, Action[]> = {
   admin: [
-    'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
-    'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
-    'shell:approve', 'memory:read', 'memory:clear', 'metrics:read', 'errors:read',
-    'jobs:read', 'sessions:read',     'eval:run', 'recipe:save', 'recipe:read',
-    'policy:read', 'approvals:review', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
-    'a2a:receive', 'a2a:send', 'plugin:manage',
-    'chat:read', 'chat:write', 'chat:delete', 'env:read',
-    'upload:file',
+    'agent:run:mock',
+    'agent:run:real',
+    'agent:run:real-mcp',
+    'verify',
+    'env:create',
+    'env:destroy',
+    'mcp:read',
+    'mcp:add',
+    'mcp:preset',
+    'mcp:reconnect',
+    'shell:approve',
+    'memory:read',
+    'memory:clear',
+    'metrics:read',
+    'errors:read',
+    'jobs:read',
+    'sessions:read',
+    'eval:run',
+    'recipe:save',
+    'recipe:read',
+    'policy:read',
+    'approvals:review',
+    'agent:read',
+    'agent:register',
+    'workflow:run',
+    'workflow:read',
+    'a2a:receive',
+    'a2a:send',
+    'plugin:manage',
+    'chat:read',
+    'chat:write',
+    'chat:delete',
+    'env:read',
+    'upload:file'
   ],
   operator: [
-    'agent:run:mock', 'agent:run:real', 'agent:run:real-mcp', 'verify',
-    'env:create', 'env:destroy', 'mcp:read', 'mcp:add', 'mcp:preset', 'mcp:reconnect',
-    'shell:approve', 'memory:read', 'metrics:read', 'jobs:read', 'sessions:read',
-    'eval:run', 'recipe:save', 'recipe:read', 'policy:read', 'agent:read', 'agent:register', 'workflow:run', 'workflow:read',
-    'a2a:receive', 'a2a:send', 'plugin:manage',
-    'chat:read', 'chat:write', 'chat:delete', 'env:read',
-    'upload:file',
+    'agent:run:mock',
+    'agent:run:real',
+    'agent:run:real-mcp',
+    'verify',
+    'env:create',
+    'env:destroy',
+    'mcp:read',
+    'mcp:add',
+    'mcp:preset',
+    'mcp:reconnect',
+    'shell:approve',
+    'memory:read',
+    'metrics:read',
+    'jobs:read',
+    'sessions:read',
+    'eval:run',
+    'recipe:save',
+    'recipe:read',
+    'policy:read',
+    'agent:read',
+    'agent:register',
+    'workflow:run',
+    'workflow:read',
+    'a2a:receive',
+    'a2a:send',
+    'plugin:manage',
+    'chat:read',
+    'chat:write',
+    'chat:delete',
+    'env:read',
+    'upload:file'
   ],
   viewer: [
-    'agent:run:mock', 'mcp:read', 'memory:read', 'metrics:read', 'errors:read', 'jobs:read', 'sessions:read',
-    'recipe:read', 'policy:read', 'agent:read', 'workflow:run', 'workflow:read',
-    'a2a:receive', 'a2a:send',
-    'chat:read', 'env:read',
-  ],
+    'agent:run:mock',
+    'mcp:read',
+    'memory:read',
+    'metrics:read',
+    'errors:read',
+    'jobs:read',
+    'sessions:read',
+    'recipe:read',
+    'policy:read',
+    'agent:read',
+    'workflow:run',
+    'workflow:read',
+    'a2a:receive',
+    'a2a:send',
+    'chat:read',
+    'env:read'
+  ]
 };
 
 function loadMatrix(): Record<Role, Action[]> {
@@ -141,7 +210,7 @@ function defaultDescribe(): AuthDescribe {
     mode: 'off',
     provider: 'token',
     roles: Object.keys(DEFAULT_MATRIX) as Role[],
-    permissions: DEFAULT_MATRIX,
+    permissions: DEFAULT_MATRIX
   };
 }
 
@@ -157,23 +226,40 @@ export class RoleBasedAuthorizer implements Authorizer {
   private readonly tokens = new Map<string, Role>(); // 明文令牌 → 角色
   private readonly degraded: boolean;
 
-  constructor(opts: { tokens?: Record<string, Role>; fallbackToken?: string; fallbackRole?: Role; apiKeyToken?: string; degraded?: boolean } = {}) {
+  constructor(
+    opts: {
+      tokens?: Record<string, Role>;
+      fallbackToken?: string;
+      fallbackRole?: Role;
+      apiKeyToken?: string;
+      degraded?: boolean;
+    } = {}
+  ) {
     this.matrix = loadMatrix();
-    if (opts.tokens) for (const [t, r] of Object.entries(opts.tokens)) this.tokens.set(t, r);
-    // OPENROUTER_API_KEY 统一作为 admin 凭证（逃生通道），跨模式始终生效。
+    if (opts.tokens)
+      for (const [t, r] of Object.entries(opts.tokens)) this.tokens.set(t, r);
+    // OPEN_API_KEY 统一作为 admin 凭证（逃生通道），跨模式始终生效。
     if (opts.apiKeyToken) this.tokens.set(opts.apiKeyToken, 'admin');
-    if (opts.fallbackToken && opts.fallbackRole) this.tokens.set(opts.fallbackToken, opts.fallbackRole);
+    if (opts.fallbackToken && opts.fallbackRole)
+      this.tokens.set(opts.fallbackToken, opts.fallbackRole);
     this.degraded = !!opts.degraded;
   }
 
   authenticate(req: IncomingMessage): AuthContext | null {
     const auth = req.headers['authorization'];
     let token: string | null = null;
-    if (auth && typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
+    if (
+      auth &&
+      typeof auth === 'string' &&
+      auth.toLowerCase().startsWith('bearer ')
+    ) {
       token = auth.slice(7).trim();
     }
     if (!token) {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+      const url = new URL(
+        req.url ?? '/',
+        `http://${req.headers.host ?? 'localhost'}`
+      );
       const q = url.searchParams.get('token');
       if (q) token = q;
     }
@@ -197,7 +283,7 @@ export class RoleBasedAuthorizer implements Authorizer {
       provider: 'token',
       roles,
       permissions: this.matrix,
-      degraded: this.degraded,
+      degraded: this.degraded
     };
   }
 }
@@ -206,20 +292,20 @@ export class RoleBasedAuthorizer implements Authorizer {
  * 组合工厂：从环境变量装配 Authorizer。
  *
  * 认证依据（按优先级）：
- * 1. OPENROUTER_API_KEY —— 统一认证凭证。本地启动后所有权限校验均接受它（admin 角色）；
+ * 1. OPEN_API_KEY —— 统一认证凭证。本地启动后所有权限校验均接受它（admin 角色）；
  *    部署到现场若未接入 RBAC，则自动降级为「唯一凭证」，保证无 RBAC 场景下服务不中断、权限校验不挂。
  * 2. RBAC 体系 —— UI_TOKENS / UI_AUTH_TOKEN / UI_ROLE_PERMISSIONS / AUTH_PROVIDER(oidc|proxy)。
- *    接入后按角色判定，但 OPENROUTER_API_KEY 仍作为 admin 逃生通道并行生效。
+ *    接入后按角色判定，但 OPEN_API_KEY 仍作为 admin 逃生通道并行生效。
  *
  * 降级判定：当未配置任何 RBAC 凭证（无 UI_TOKENS / UI_AUTH_TOKEN / UI_ROLE_PERMISSIONS 且
- * AUTH_PROVIDER 为默认 token）→ 视为「未接入 RBAC」，OPENROUTER_API_KEY 即权限判断唯一凭证：
+ * AUTH_PROVIDER 为默认 token）→ 视为「未接入 RBAC」，OPEN_API_KEY 即权限判断唯一凭证：
  *   - 配置了 key：仅接受该 key（admin，全权限），其余一律 401/403。
  *   - 连 key 都缺失：fail-open（全放行），确保服务即便零配置也能启动、权限校验不中断。
  *
  * requireAuth=false（且无 key 无 RBAC）时同样全放行，保持本地/演示的开放语义（向后兼容）。
  */
 export function createAuthorizer(requireAuth: boolean): Authorizer {
-  const apiKey = process.env.OPENROUTER_API_KEY || '';
+  const apiKey = process.env.OPEN_API_KEY || '';
   const rbacConfigured = !!(
     process.env.UI_TOKENS ||
     process.env.UI_AUTH_TOKEN ||
@@ -231,18 +317,18 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   const openAuth: Authorizer = {
     authenticate: () => ({ token: '', sub: 'anon', role: 'admin' }),
     can: () => true,
-    describe: defaultDescribe,
+    describe: defaultDescribe
   };
 
   // ── 降级模式：requireAuth 触发、但未接入任何 RBAC 凭证 ──
-  // 现场环境若未接入 RBAC，则自动降级：OPENROUTER_API_KEY 作为权限判断的唯一凭证。
+  // 现场环境若未接入 RBAC，则自动降级：OPEN_API_KEY 作为权限判断的唯一凭证。
   if (requireAuth && !rbacConfigured) {
     if (apiKey) {
-      // 仅接受 OPENROUTER_API_KEY（admin 全权限）；其余一律拒绝（保证权限校验不挂、不越权）。
+      // 仅接受 OPEN_API_KEY（admin 全权限）；其余一律拒绝（保证权限校验不挂、不越权）。
       return new RoleBasedAuthorizer({
         fallbackToken: apiKey,
         fallbackRole: 'admin',
-        degraded: true,
+        degraded: true
       });
     }
     // 连唯一凭证都缺失 → fail-open，服务不中断（仅本地/演示，权限校验开放）。
@@ -253,7 +339,7 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   if (!requireAuth) return openAuth;
 
   // ── RBAC 已接入：token / oidc / proxy 模式 ──
-  // OPENROUTER_API_KEY 始终作为 admin 逃生通道（统一认证依据），与 RBAC 角色并行生效。
+  // OPEN_API_KEY 始终作为 admin 逃生通道（统一认证依据），与 RBAC 角色并行生效。
   const tokens: Record<string, Role> = {};
   const tokensRaw = process.env.UI_TOKENS;
   if (tokensRaw) {
@@ -265,12 +351,17 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   }
   const fallback = process.env.UI_AUTH_TOKEN || undefined;
   const hasStatic = Object.keys(tokens).length > 0 || !!fallback;
-  // 业务令牌鉴权器；若配置了 OPENROUTER_API_KEY 则追加为 admin 逃生通道。
+  // 业务令牌鉴权器；若配置了 OPEN_API_KEY 则追加为 admin 逃生通道。
   const staticAuth: RoleBasedAuthorizer | undefined = hasStatic
-    ? new RoleBasedAuthorizer({ tokens, fallbackToken: fallback, fallbackRole: 'operator', apiKeyToken: apiKey })
+    ? new RoleBasedAuthorizer({
+        tokens,
+        fallbackToken: fallback,
+        fallbackRole: 'operator',
+        apiKeyToken: apiKey
+      })
     : apiKey
-      ? new RoleBasedAuthorizer({ fallbackToken: apiKey, fallbackRole: 'admin' })
-      : undefined;
+    ? new RoleBasedAuthorizer({ fallbackToken: apiKey, fallbackRole: 'admin' })
+    : undefined;
 
   const provider = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 
@@ -279,22 +370,24 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
     return new OidcAuthorizer({
       mapping: loadRoleMapping(),
       policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
-      fallback: staticAuth,
+      fallback: staticAuth
     });
   }
   if (provider === 'proxy') {
     return new ProxyAuthorizer({
       mapping: loadRoleMapping(),
       policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
-      fallback: staticAuth,
+      fallback: staticAuth
     });
   }
 
-  // token 模式（默认）：必须有静态令牌或 OPENROUTER_API_KEY，否则全拒绝（fail-closed）。
+  // token 模式（默认）：必须有静态令牌或 OPEN_API_KEY，否则全拒绝（fail-closed）。
   // 无任何凭证时的 describe 同样返回默认矩阵参考，保证前端角色列表完整。
-  return staticAuth ?? {
-    authenticate: () => null,
-    can: () => false,
-    describe: defaultDescribe,
-  };
+  return (
+    staticAuth ?? {
+      authenticate: () => null,
+      can: () => false,
+      describe: defaultDescribe
+    }
+  );
 }

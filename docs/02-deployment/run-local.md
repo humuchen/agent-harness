@@ -143,7 +143,7 @@ node access/server/dist/server.js
   导致插件 `store.ts` 读错目录、`/api/plugins` 的客服统计恒为空（这是之前踩过的一个坑）。
 - 未设置 `UI_AUTH_TOKEN` / `UI_TOKENS` 时，UI 接口处于**开放状态**（仅本地 / 演示用，会有一条告警日志）。
   真多人试用请设置：`UI_AUTH_TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")`。
-- 无 `OPENROUTER_API_KEY` 时自动退化到 Mock LLM，面板照样能跑、能看演示。
+- 无 `OPEN_API_KEY` 时自动退化到 Mock LLM，面板照样能跑、能看演示。
 
 启动成功日志：
 
@@ -208,7 +208,7 @@ curl -X POST http://localhost:4173/api/plugins/customer-service/upgrade \
 
 | 现象                                     | 原因                                                                                                     | 修复                                                                           |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `/api/plugins` 返回空数组                | 插件入口路径解析错（相对 `access/server/dist` 只上溯两级）                                             | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
+| `/api/plugins` 返回空数组                | 插件入口路径解析错（相对 `access/server/dist` 只上溯两级）                                               | 已修正为 `../../../plugins/customer-service/dist/index.js`；重编译 server 即可 |
 | 客服后台数据恒为 0                       | `MEMORY_DIR` 用了相对路径，或 Git Bash 下误用 POSIX 风格 `$(pwd)`（Node 解析成 `\c\Users\...` 错位目录） | 改用 `$(pwd -W)`（Windows）/ 绝对路径，seed 与服务用同一目录                   |
 | `pnpm install` 报 TAR_ENTRY_ERROR / 卡住 | 沙箱 safe-delete 守卫拦截批量删除                                                                        | 用 §1.1 的绕过组合 + 关闭沙箱隔离                                              |
 | 面板提示 UI 开放                         | 未设 `UI_AUTH_TOKEN`                                                                                     | 演示可忽略；真部署务必设置                                                     |

@@ -8,13 +8,13 @@
 
 ## 一、实测：五大基座能力的当前状态
 
-| 核心能力 | 当前状态 | 落地证据 |
-|---|---|---|
-| ① 智能体注册与发现 | **已实现** | `backend/core/src/agents/registry.ts`（`AgentRegistry` + 倒排索引 + 心跳 sweep）；`server.ts` 暴露 `GET /api/agents?domain=&capability=` 与 `GET /api/agents/:id` |
-| ② 任务路由与分发 | **已实现且已接线** | `backend/core/src/router/{router,selector,intent}.ts`；`run-queue.ts` 的 `execute()` 第 458 行调用 `resolveTask()` 解析目标 AgentCard，再 `assembleAgent(card)` 收敛为领域 harness |
-| ③ 跨行业上下文隔离与数据安全 | **已实现（按租户 opt-in）** | `backend/core/src/tenant.ts`（`tenant::session` 复合记忆 key）；`policy/engine.ts` 内置 medical-aesthetics/healthcare/finance/education 行业画像（PII 脱敏、金融 `denylist:*` 禁出网、OS 级隔离）；`runner.ts` 注入 `guardrailPolicy` |
-| ④ 统一通信协议与接口规范 | **已实现（A2A + MCP 双层）** | `backend/core/src/a2a/{types,transport}.ts`（TaskEnvelope/TaskResult + HttpA2ATransport）；`server.ts` 的 `POST /api/a2a/tasks` 接收远端 agent 任务；MCP 工具级接入经 `<server>__<tool>` 前缀 |
-| ⑤ 工作流编排与状态监控 | **已实现** | `backend/core/src/workflow/{engine,types}.ts` + `server.ts` 的 `POST /api/workflows`（DAG + 补偿 + SSE 直播每 step 状态） |
+| 核心能力                     | 当前状态                     | 落地证据                                                                                                                                                                                                                              |
+| ---------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ① 智能体注册与发现           | **已实现**                   | `backend/core/src/agents/registry.ts`（`AgentRegistry` + 倒排索引 + 心跳 sweep）；`server.ts` 暴露 `GET /api/agents?domain=&capability=` 与 `GET /api/agents/:id`                                                                     |
+| ② 任务路由与分发             | **已实现且已接线**           | `backend/core/src/router/{router,selector,intent}.ts`；`run-queue.ts` 的 `execute()` 第 458 行调用 `resolveTask()` 解析目标 AgentCard，再 `assembleAgent(card)` 收敛为领域 harness                                                    |
+| ③ 跨行业上下文隔离与数据安全 | **已实现（按租户 opt-in）**  | `backend/core/src/tenant.ts`（`tenant::session` 复合记忆 key）；`policy/engine.ts` 内置 medical-aesthetics/healthcare/finance/education 行业画像（PII 脱敏、金融 `denylist:*` 禁出网、OS 级隔离）；`runner.ts` 注入 `guardrailPolicy` |
+| ④ 统一通信协议与接口规范     | **已实现（A2A + MCP 双层）** | `backend/core/src/a2a/{types,transport}.ts`（TaskEnvelope/TaskResult + HttpA2ATransport）；`server.ts` 的 `POST /api/a2a/tasks` 接收远端 agent 任务；MCP 工具级接入经 `<server>__<tool>` 前缀                                         |
+| ⑤ 工作流编排与状态监控       | **已实现**                   | `backend/core/src/workflow/{engine,types}.ts` + `server.ts` 的 `POST /api/workflows`（DAG + 补偿 + SSE 直播每 step 状态）                                                                                                             |
 
 ---
 
@@ -23,6 +23,7 @@
 平台已支持三种 transport（`agents/types.ts` 的 `AgentTransport = 'local' | 'mcp' | 'a2a'`），覆盖"自带 agent / 远端异构 agent / 工具型 agent"三类场景。
 
 ### 路径 A：本地行业智能体（`transport: 'local'`）—— 最常用
+
 把一个领域 agent 收敛为"只挂该行业工具/技能/系统提示词"的领域 harness。
 
 1. 注册 AgentCard（启动期代码或配置引导，`getAgentRegistry().register(card)`）：
@@ -43,6 +44,7 @@
    （`runner.ts` 第 211–263 行、`assembleAgent` 第 191 行 `card?: AgentCard` 参数均已打通。）
 
 ### 路径 B：远端异构行业智能体（`transport: 'a2a'` + `endpoint`）—— 跨主机/跨团队
+
 把另一台主机上独立部署的 agent 作为"被调度节点"接入，无需把它的代码合进本仓库。
 
 1. 注册 AgentCard：`{ id:'remote-med-agent', domain:'medical-aesthetics', transport:'a2a', endpoint:'https://med-agent.internal' }`。
@@ -50,6 +52,7 @@
    → 路由选中 `remote-med-agent` → `run-queue.ts` 第 513 行检测到 `transport==='a2a' && endpoint` → `HttpA2ATransport.send()` 把 `TaskEnvelope` 投递到远端 `POST /api/a2a/tasks` → 取回 `TaskResult` 作为本轮输出；**派发失败自动降级回退本地 default harness**（第 553 行）。
 
 ### 路径 C：工具型行业能力（`transport: 'mcp'`）—— 最轻量
+
 行业能力只暴露为 MCP 工具（如医美知识库、金融行情），挂到通用（或某领域）harness 上由 LLM 按需调用。机制同 `examples/multi-mcp.ts`：`connectMcpServers()` 顺序接入、单服务失败不影响其余、工具按 `<server>__<tool>` 前缀避免冲突、护栏/记忆/追踪自动覆盖。
 
 ---
@@ -68,7 +71,7 @@
             harness.run(prompt) → 经 finance-mcp__xxx 工具取数 → 输出
 ```
 
-整条链路在当前代码中**可运行**（mock LLM 离线可验证，真实 LLM 需 `OPENROUTER_API_KEY`）。
+整条链路在当前代码中**可运行**（mock LLM 离线可验证，真实 LLM 需 `OPEN_API_KEY`）。
 
 ---
 
@@ -89,6 +92,6 @@
 
 - **今天就能做**：选 1 个行业（如金融/医美），按路径 A 注册 AgentCard + 接 MCP + 用 `domain` 触发，离线 mock 验证闭环。
 - **本周可做**：补 `POST /api/agents` 注册端点；为试点租户 `applyIndustryProfile` 绑定合规基线；把 `AgentRegistry` 换 Redis 后端以支持多副本。
-- **本月可做**：`INTENT_ROUTER=llm` 提路由精度；验证 `sandbox/` OS/容器隔离；用 `POST /api/workflows` 串起"金融→医美"跨 agent DAG 做协同验证。
+- **本月可做**：`INTENT_ROUTER=llm` 提路由精度；验证 `sandbox/` OS/容器隔离；用 `POST /api/workflows` 串起"金融 → 医美"跨 agent DAG 做协同验证。
 
 > 一句话：架构层面**已经具备对接行业智能体的基座能力**，无需重写；剩余工作是"把内存态/opt-in 变成生产级持久化与默认安全"，以及补一个 agent 注册 REST 端点。

@@ -1,4 +1,10 @@
-import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
+import type {
+  LLM,
+  Message,
+  ToolSchema,
+  LLMResponse,
+  LLMCallOptions
+} from '../types';
 import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared';
 import { resolveOpenRouterConfig } from './config';
 
@@ -40,8 +46,16 @@ export interface OpenRouterConfig {
 export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
   // 集中解析：配置对象 → 环境变量 → 内置默认（agnes-2.5-flash 等常量见 ./config）。
   // resolveOpenRouterConfig 已处理「空串视为未设置」的坑，无需在此重复。
-  const { apiKey, model, baseUrl, models, siteUrl, appName, fetchImpl, retries } =
-    resolveOpenRouterConfig(config);
+  const {
+    apiKey,
+    model,
+    baseUrl,
+    models,
+    siteUrl,
+    appName,
+    fetchImpl,
+    retries
+  } = resolveOpenRouterConfig(config);
 
   return async function openRouterLLM(
     messages: Message[],
@@ -50,12 +64,12 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
   ): Promise<LLMResponse> {
     if (!apiKey) {
       throw new Error(
-        'OpenRouter LLM requires OPENROUTER_API_KEY (or pass apiKey to createOpenRouterLLM).'
+        'OpenRouter LLM requires OPEN_API_KEY (or pass apiKey to createOpenRouterLLM).'
       );
     }
 
     const body: Record<string, unknown> = {
-      messages: messages.map(toOpenAIMessage),
+      messages: messages.map(toOpenAIMessage)
     };
 
     // OpenRouter 支持单个 `model` 或 `models` 降级列表。
@@ -75,8 +89,8 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
           function: {
             name: c.name,
             description: c.description,
-            parameters: c.parameters,
-          },
+            parameters: c.parameters
+          }
         };
       });
       body.tool_choice = 'auto';
@@ -94,7 +108,7 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
       'HTTP-Referer': siteUrl,
-      'X-Title': appName,
+      'X-Title': appName
     };
 
     return callOpenAIChat({
@@ -108,7 +122,7 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       // 透传流式回调：开启后走 stream:true，逐 delta 回调 token / reasoning，
       // 驱动聊天 UI 打字机与「深度思考」块（此前遗漏，导致始终走非流式分支、推理丢失）。
       onToken: options?.onToken,
-      onReasoning: options?.onReasoning,
+      onReasoning: options?.onReasoning
     });
   };
 }

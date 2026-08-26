@@ -7,7 +7,6 @@
  *  - 服务端不持有前端私钥：AES key 由 Vite build-time define 注入（__AH_CRYPTO_KEY__）。
  */
 
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -37,26 +36,31 @@ function getBuildTimeCryptoKey(): Uint8Array {
 
 /**
  * 服务端解密：输入 base64(iv + ciphertext)，输出明文 apiKey。
- * 使用 Node.js 内置 node:crypto，同步接口（Node 22+）。
+ *
+ * 密文由浏览器 WebCrypto AES-GCM 产生，其输出为 ciphertext || authTag(16B)，
+ * 即完整载荷 = iv(12B) || ct(n-28) || tag(16B)。Node 的 createDecipheriv
+ * 要求显式 setAuthTag 后 final() 校验才能通过。
  */
 export function decryptApiKey(payload: unknown): string {
   if (typeof payload !== 'string') return '';
   const raw = Buffer.from(payload, 'base64');
-  if (raw.length < 13) return '';
-  const iv = raw.slice(0, 12);
-  const ct = raw.slice(12);
-  const key = getBuildTimeCryptoKey();
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createDecipheriv } = require('node:crypto') as typeof import('node:crypto');
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
-  let plaintext: Buffer;
+  // 最短合法载荷：12(iv) + 16(tag)，明文可为空但实际 key 不为空。
+  if (raw.length < 12 + 16) return '';
+  const iv = raw.subarray(0, 12);
+  const tag = raw.subarray(raw.length - 16);
+  const ct = raw.subarray(12, raw.length - 16);
+  const { createDecipheriv } =
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require('node:crypto') as typeof import('node:crypto');
+  const decipher = createDecipheriv('aes-256-gcm', getBuildTimeCryptoKey(), iv);
+  decipher.setAuthTag(tag);
   try {
-    plaintext = Buffer.concat([decipher.update(ct), decipher.final()]);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString('utf8');
   } catch {
+    // tag 校验失败 / key 不匹配：拒绝而非降级。
     return '';
   }
-  // GCM auth tag（最后 16 bytes）已在 final() 校验
-  return plaintext.toString('utf8');
 }
 
 // ─── SQLite 存储 ─────────────────────────────────────────────────────────────
@@ -148,24 +152,23 @@ export async function deleteCustomModel(id: string): Promise<void> {
 
 // ─── HTTP 路由 ───────────────────────────────────────────────────────────────
 
-export function registerCustomModelRoutes(
+export async function registerCustomModelRoutes(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
   method: string,
   body: any
-): boolean {
+): Promise<boolean> {
   if (!path.startsWith('/api/custom-models')) return false;
 
   if (method === 'GET' && path === '/api/custom-models') {
-    const rows = listCustomModelsSync();
-    sendJson(res, rows, req);
+    sendJson(res, await listCustomModels(), req);
     return true;
   }
 
   if (method === 'GET' && /^\/api\/custom-models\/[^/]+$/.test(path)) {
     const id = decodeURIComponent(path.split('/').pop() || '');
-    const row = getCustomModelSync(id);
+    const row = await getCustomModel(id);
     if (!row) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
@@ -184,7 +187,8 @@ export function registerCustomModelRoutes(
     }
     const baseUrl = typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : undefined;
     const apiKey = typeof body?.apiKey === 'string' ? body.apiKey.trim() : undefined;
-    void putCustomModel({
+    // 等待写入完成再响应，避免「先回 200 后落库」的竞态。
+    await putCustomModel({
       id,
       ...(baseUrl ? { baseUrl } : {}),
       ...(apiKey ? { apiKey } : {}),
@@ -196,44 +200,16 @@ export function registerCustomModelRoutes(
 
   if (method === 'DELETE' && /^\/api\/custom-models\/[^/]+$/.test(path)) {
     const id = decodeURIComponent(path.split('/').pop() || '');
-    void deleteCustomModel(id);
+    await deleteCustomModel(id);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return true;
   }
 
-  if (path.startsWith('/api/custom-models')) {
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found' }));
-    return true;
-  }
-  return false;
-}
-
-// 服务端路由为同步分发，SQLite 查询提供同步包装（node:sqlite 本身支持同步 API）。
-function listCustomModelsSync(): CustomModelRow[] {
-  if (!db) return [];
-  const stmt = db.prepare('SELECT id, base_url, api_key, updated_at FROM custom_models ORDER BY updated_at DESC');
-  const rows = stmt.all() as any[];
-  return rows.map((r) => ({
-    id: r.id,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    ...(r.api_key ? { apiKey: r.api_key } : {}),
-    updatedAt: r.updated_at,
-  }));
-}
-
-function getCustomModelSync(id: string): CustomModelRow | null {
-  if (!db) return null;
-  const stmt = db.prepare('SELECT id, base_url, api_key, updated_at FROM custom_models WHERE id = ?');
-  const r = stmt.get(id) as any | undefined;
-  if (!r) return null;
-  return {
-    id: r.id,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    ...(r.api_key ? { apiKey: r.api_key } : {}),
-    updatedAt: r.updated_at,
-  };
+  // 命中前缀但未匹配任何子路由：404（不落入后续通用路由）。
+  res.writeHead(404, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ error: 'not found' }));
+  return true;
 }
 
 // ─── 最小 sendJson 复用（避免重复声明类型） ─────────────────────────────────

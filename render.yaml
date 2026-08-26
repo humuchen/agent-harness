@@ -35,9 +35,9 @@ services:
       - key: UI_HOST
         value: 0.0.0.0
       # Real LLM mode — fill in the dashboard to enable (otherwise Mock mode is used).
-      - key: OPENROUTER_API_KEY
+      - key: OPEN_API_KEY
         sync: false
-      - key: OPENROUTER_MODEL
+      - key: OPEN_MODEL
         value:
       # 记忆持久化后端（Phase 4 决策 A）：file 后端 + /app/data/memory。
       # 注意：Render free 磁盘为临时盘，部署重置即清空；多副本共享需付费 plan + 挂载

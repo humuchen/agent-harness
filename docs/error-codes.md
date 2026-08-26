@@ -39,7 +39,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 **原因**:
 
 - 用户角色不具备所需权限
-- RBAC策略拒绝操作
+- RBAC 策略拒绝操作
 
 **解决**:
 
@@ -67,9 +67,9 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 ---
 
-## 🤖 Agent与作业错误
+## 🤖 Agent 与作业错误
 
-### AGENT_001 - Agent未找到
+### AGENT_001 - Agent 未找到
 
 **错误信息**: `agent not found`
 
@@ -77,8 +77,8 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **原因**:
 
-- 请求的Agent ID不存在
-- Agent未正确注册
+- 请求的 Agent ID 不存在
+- Agent 未正确注册
 
 **解决**:
 
@@ -100,7 +100,7 @@ curl http://localhost:3100/api/agents
 
 **原因**:
 
-- 请求的工作流ID不存在
+- 请求的工作流 ID 不存在
 
 **解决**:
 
@@ -117,25 +117,25 @@ curl http://localhost:3100/api/agents
 
 **原因**:
 
-- Job ID不存在或已过期
-- Job可能已被清理
+- Job ID 不存在或已过期
+- Job 可能已被清理
 
 **解决**:
 
-- 检查Job ID是否正确
+- 检查 Job ID 是否正确
 - 查看作业列表: `GET /api/jobs`
 
 ---
 
 ### JOB_002 - 作业执行失败
 
-**错误信息**: `_done{error: true}` (SSE事件)
+**错误信息**: `_done{error: true}` (SSE 事件)
 
 **位置**: `access/server/src/run-queue.ts:491, 511, 668, 681`
 
 **原因**:
 
-- LLM API调用失败
+- LLM API 调用失败
 - 工具执行异常
 - 超时或资源限制
 
@@ -147,7 +147,7 @@ DEBUG=* pnpm server
 
 # 检查LLM API Key
 echo $OPENAI_API_KEY
-echo $OPENROUTER_API_KEY
+echo $OPEN_API_KEY
 ```
 
 ---
@@ -181,7 +181,7 @@ echo $OPENROUTER_API_KEY
 
 **原因**:
 
-- 插件ID不存在
+- 插件 ID 不存在
 - 插件未正确安装
 
 **解决**:
@@ -251,7 +251,7 @@ cat plugins/*/manifest.json | grep dependencies
 
 ---
 
-### PLUGIN_005 - 插件ID不匹配
+### PLUGIN_005 - 插件 ID 不匹配
 
 **错误信息**: `upgrade manifest id mismatch: {manifest.id} != {id}`
 
@@ -259,12 +259,12 @@ cat plugins/*/manifest.json | grep dependencies
 
 **原因**:
 
-- 升级包的manifest与实际ID不符
+- 升级包的 manifest 与实际 ID 不符
 
 **解决**:
 
 - 检查升级包是否正确
-- 确认manifest.json中的id字段
+- 确认 manifest.json 中的 id 字段
 
 ---
 
@@ -278,7 +278,7 @@ cat plugins/*/manifest.json | grep dependencies
 
 **原因**:
 
-- 创建DagEngine时未提供executor参数
+- 创建 DagEngine 时未提供 executor 参数
 
 **解决**:
 
@@ -291,7 +291,7 @@ const engine = new DagEngine({
 
 ---
 
-### WF_002 - 重复步骤ID
+### WF_002 - 重复步骤 ID
 
 **错误信息**: `duplicate step id: {id}`
 
@@ -299,15 +299,15 @@ const engine = new DagEngine({
 
 **原因**:
 
-- 工作流定义中有重复的步骤ID
+- 工作流定义中有重复的步骤 ID
 
 **解决**:
 
-- 检查步骤定义,确保每个步骤ID唯一
+- 检查步骤定义,确保每个步骤 ID 唯一
 
 ---
 
-### WF_003 - 未知Agent引用
+### WF_003 - 未知 Agent 引用
 
 **错误信息**: `unknown agentRef: {ref}`
 
@@ -315,12 +315,12 @@ const engine = new DagEngine({
 
 **原因**:
 
-- 步骤引用了未注册的Agent
+- 步骤引用了未注册的 Agent
 
 **解决**:
 
-- 确保所有agentRef对应的Agent已注册
-- 检查Agent名称拼写
+- 确保所有 agentRef 对应的 Agent 已注册
+- 检查 Agent 名称拼写
 
 ---
 
@@ -332,7 +332,7 @@ const engine = new DagEngine({
 
 **原因**:
 
-- 步骤的dependsOn引用了不存在的步骤
+- 步骤的 dependsOn 引用了不存在的步骤
 
 **解决**:
 
@@ -376,7 +376,7 @@ const engine = new DagEngine({
 
 **原因**:
 
-- AbortSignal被触发
+- AbortSignal 被触发
 - 用户主动取消
 
 **解决**:
@@ -386,9 +386,9 @@ const engine = new DagEngine({
 
 ---
 
-## 💬 LLM错误
+## 💬 LLM 错误
 
-### LLM_001 - API调用失败
+### LLM_001 - API 调用失败
 
 **错误信息**: `LLM API error {status} (model={model}): {text}`
 
@@ -396,9 +396,9 @@ const engine = new DagEngine({
 
 **原因**:
 
-- API Key无效或过期
+- API Key 无效或过期
 - 模型名称错误
-- API额度耗尽
+- API 额度耗尽
 - 网络问题
 
 **解决**:
@@ -406,7 +406,7 @@ const engine = new DagEngine({
 ```bash
 # 检查API Key
 echo $OPENAI_API_KEY
-echo $OPENROUTER_API_KEY
+echo $OPEN_API_KEY
 
 # 测试API连接
 curl https://api.openai.com/v1/models \
@@ -418,7 +418,7 @@ curl https://api.openai.com/v1/models \
 
 ---
 
-### LLM_002 - 流式响应无Body
+### LLM_002 - 流式响应无 Body
 
 **错误信息**: `LLM streaming response has no readable body (model={model})`
 
@@ -426,22 +426,22 @@ curl https://api.openai.com/v1/models \
 
 **原因**:
 
-- LLM API未返回流式响应
+- LLM API 未返回流式响应
 - 响应格式不兼容
 
 **解决**:
 
 - 确认模型支持流式输出
-- 检查API版本
+- 检查 API 版本
 
 ---
 
-### LLM_003 - 缺少API Key
+### LLM_003 - 缺少 API Key
 
 **错误信息**:
 
 - `OpenAI LLM requires OPENAI_API_KEY`
-- `OpenRouter LLM requires OPENROUTER_API_KEY`
+- `OpenRouter LLM requires OPEN_API_KEY`
 
 **位置**:
 
@@ -453,7 +453,7 @@ curl https://api.openai.com/v1/models \
 ```bash
 # 在 .env 文件中配置
 echo "OPENAI_API_KEY=sk-..." >> .env
-echo "OPENROUTER_API_KEY=sk-or-..." >> .env
+echo "OPEN_API_KEY=sk-or-..." >> .env
 
 # 或在创建LLM时传入
 const llm = createOpenAILLM({ apiKey: 'sk-...' });
@@ -461,9 +461,9 @@ const llm = createOpenAILLM({ apiKey: 'sk-...' });
 
 ---
 
-### LLM_004 - 真实模式缺少Key
+### LLM_004 - 真实模式缺少 Key
 
-**错误信息**: `真实模式需要 OPENROUTER_API_KEY(在 .env 中配置)。可切换到 Mock 模式离线验证。`
+**错误信息**: `真实模式需要 OPEN_API_KEY(在 .env 中配置)。可切换到 Mock 模式离线验证。`
 
 **位置**: `access/server/src/runner.ts:294`
 
@@ -471,7 +471,7 @@ const llm = createOpenAILLM({ apiKey: 'sk-...' });
 
 ```bash
 # 方式1: 配置API Key
-echo "OPENROUTER_API_KEY=sk-or-..." >> .env
+echo "OPEN_API_KEY=sk-or-..." >> .env
 
 # 方式2: 使用Mock模式测试
 # 修改代码切换到mock模式
@@ -481,7 +481,7 @@ echo "OPENROUTER_API_KEY=sk-or-..." >> .env
 
 ## 🎯 技能错误
 
-### SKILL_001 - 技能ID为空
+### SKILL_001 - 技能 ID 为空
 
 **错误信息**: `Skill 必须包含非空 id`
 
@@ -489,7 +489,7 @@ echo "OPENROUTER_API_KEY=sk-or-..." >> .env
 
 **原因**:
 
-- 注册技能时未提供id或id为空
+- 注册技能时未提供 id 或 id 为空
 
 **解决**:
 
@@ -513,12 +513,12 @@ skills.register({ id: 'my-skill', name: 'my-skill' });
 
 **原因**:
 
-- 会话ID不存在或已过期
+- 会话 ID 不存在或已过期
 - 会话可能已被清理
 
 **解决**:
 
-- 检查会话ID是否正确
+- 检查会话 ID 是否正确
 - 查看会话列表
 
 ---
@@ -561,7 +561,7 @@ skills.register({ id: 'my-skill', name: 'my-skill' });
 
 ---
 
-### MA_003 - CRM同步禁用
+### MA_003 - CRM 同步禁用
 
 **现象**: `crmSync: 'disabled'`
 
@@ -569,7 +569,7 @@ skills.register({ id: 'my-skill', name: 'my-skill' });
 
 **原因**:
 
-- 未配置CRM系统连接
+- 未配置 CRM 系统连接
 - 这是正常状态,不影响核心功能
 
 **解决**(可选):
@@ -582,7 +582,7 @@ export MA_CRM_API_KEY=your-key
 
 ---
 
-### MA_004 - HIS同步禁用
+### MA_004 - HIS 同步禁用
 
 **现象**: `hisSync: 'disabled'`
 
@@ -590,7 +590,7 @@ export MA_CRM_API_KEY=your-key
 
 **原因**:
 
-- 未配置HIS系统连接
+- 未配置 HIS 系统连接
 
 **解决**(可选):
 
@@ -641,11 +641,11 @@ export MA_HIS_API_KEY=your-key
 | ------------------ | ---------------------------------- |
 | 401 Unauthorized   | 检查 ADMIN_TOKEN 环境变量          |
 | 403 Forbidden      | 检查用户角色和权限                 |
-| 404 Not Found      | 检查ID是否正确                     |
+| 404 Not Found      | 检查 ID 是否正确                   |
 | 429 Rate Limit     | 降低请求频率                       |
 | 500 Internal Error | 查看服务器日志                     |
 | 插件未加载         | 检查 plugins/ 目录和 manifest.json |
-| LLM调用失败        | 检查 API Key 和模型名称            |
+| LLM 调用失败       | 检查 API Key 和模型名称            |
 
 ---
 
@@ -653,8 +653,8 @@ export MA_HIS_API_KEY=your-key
 
 如果错误不在文档中,或解决建议无效:
 
-1. **查看GitHub Issues**: https://github.com/your-org/agent-harness/issues
-2. **提交新Issue**: 包含完整错误信息和复现步骤
+1. **查看 GitHub Issues**: https://github.com/your-org/agent-harness/issues
+2. **提交新 Issue**: 包含完整错误信息和复现步骤
 3. **查看文档**: docs/ 目录
 
 ---

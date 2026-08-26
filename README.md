@@ -89,7 +89,7 @@ pnpm -r build
 ```ts
 import { AgentHarness, createOpenRouterLLM } from '@agent-harness/core';
 
-// 读 OPENROUTER_API_KEY / OPENROUTER_MODEL / OPENROUTER_BASE_URL
+// 读 OPEN_API_KEY / OPEN_MODEL / OPEN_BASE_URL
 const llm = createOpenRouterLLM();
 const agent = new AgentHarness({ llm, tools });
 ```
@@ -99,7 +99,7 @@ const agent = new AgentHarness({ llm, tools });
 - 弱/免费模型偶尔返回空响应，`createOpenRouterLLM({ retries: 2 })`（默认即 2）会在无文本且无工具调用时自动重试，提升 demo 稳定性。
 - 若你只用 OpenAI / Azure / 本地 vLLM，仍可用 `createOpenAILLM()`（`src/llm/openai.ts`）。
 
-设置环境变量即可（见 `.env.example`）；不填 `OPENROUTER_API_KEY` 时示例会
+设置环境变量即可（见 `.env.example`）；不填 `OPEN_API_KEY` 时示例会
 自动退回内置 mock LLM，保证零配置可运行。
 
 ## 自助环境治理闭环（可插拔 EnvPlatform）
@@ -108,11 +108,11 @@ const agent = new AgentHarness({ llm, tools });
 核心只依赖 `EnvPlatform` 接口（`backend/core/src/integrations/env-platform.ts`），
 具体后端由 `ENV_PLATFORM` 选择——**后端可换、主循环零改动**：
 
-| 后端 (`ENV_PLATFORM`) | 说明 | 依赖 | 是否真建环境 |
-|---|---|---|---|
-| `harness`（默认） | Harness NG Pipeline 客户端，把"我要环境/拆掉它"映射为 `provision-environment` / `destroy-ephemeral` 流水线触发 + 状态轮询 | 零依赖 | 无 `HARNESS_API_KEY` 时 **dry-run**（只打印将发出的 API 调用），填 key 后真建 |
-| `local` | **零依赖本地后端**：真正起一个 `node:http` 预览服务（按 envId 分配端口 + TTL 自动销毁） | 零依赖 | 是，开箱即真实可跑（适合本地验证 / 小团队 / 演示） |
-| `k8s` | Kubernetes 后端：把分支部署成真实 Deployment/Service/可选 Ingress，轮询就绪 | 可选依赖 `@kubernetes/client-node` + 可用 kubeconfig | 是，生产级（企业落地推荐） |
+| 后端 (`ENV_PLATFORM`) | 说明                                                                                                                      | 依赖                                                 | 是否真建环境                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `harness`（默认）     | Harness NG Pipeline 客户端，把"我要环境/拆掉它"映射为 `provision-environment` / `destroy-ephemeral` 流水线触发 + 状态轮询 | 零依赖                                               | 无 `HARNESS_API_KEY` 时 **dry-run**（只打印将发出的 API 调用），填 key 后真建 |
+| `local`               | **零依赖本地后端**：真正起一个 `node:http` 预览服务（按 envId 分配端口 + TTL 自动销毁）                                   | 零依赖                                               | 是，开箱即真实可跑（适合本地验证 / 小团队 / 演示）                            |
+| `k8s`                 | Kubernetes 后端：把分支部署成真实 Deployment/Service/可选 Ingress，轮询就绪                                               | 可选依赖 `@kubernetes/client-node` + 可用 kubeconfig | 是，生产级（企业落地推荐）                                                    |
 
 - `EnvPlatform` 契约（`env-platform.ts`）：`createEphemeralEnvironment` / `destroyEnvironment` /
   `*WithEvents`（流式状态机供 UI 可视化）/ `getStatus`。`createEnvPlatform()` 按
@@ -121,8 +121,8 @@ const agent = new AgentHarness({ llm, tools });
   （`statusPath` 默认 `pipelineExecution.summary.status`、`doneStatuses`、`successStatuses`），
   设 `HARNESS_DEBUG=1` 打印原始 trigger/status 响应以便对齐你的实例。
 - `LocalEnvPlatform`（`local-env-platform.ts`）：每个 env 独立目录 `ENV_LOCAL_ROOT/<envId>`
-  + 一张预览页；`ENV_LOCAL_HOST`（默认 `localhost`）决定暴露的 URL；`ttlHours` 到期自动销毁。
-  闭环真实可跑——`create` 拿到可访问 URL、用户可打开、`destroy` 后 URL 下线。
+  - 一张预览页；`ENV_LOCAL_HOST`（默认 `localhost`）决定暴露的 URL；`ttlHours` 到期自动销毁。
+    闭环真实可跑——`create` 拿到可访问 URL、用户可打开、`destroy` 后 URL 下线。
 - `KubernetesEnvPlatform`（`k8s-env-platform.ts`）：镜像来自 `K8S_IMAGE`（或 `create` 工具传入
   `image`），资源名 `K8S_NAME_PREFIX+envId`；设 `K8S_INGRESS_HOST_TEMPLATE` 才建 Ingress（否则返回
   集群内 Service DNS）。依赖缺失或无可用的 kubeconfig 时**构造即抛清晰错误**，不静默降级。
@@ -131,7 +131,7 @@ const agent = new AgentHarness({ llm, tools });
 - 示例：
   - `examples/self-serve-env.ts` — `pnpm --filter @agent-harness/examples run demo:env`
   - `examples/real-loop.ts` — `pnpm --filter @agent-harness/examples run real-loop`：真实两轮对话闭环（拉起 → 销毁）
-  - `examples/chat.ts` — `pnpm --filter @agent-harness/examples run chat`：单轮真实对话（需 `OPENROUTER_API_KEY`）
+  - `examples/chat.ts` — `pnpm --filter @agent-harness/examples run chat`：单轮真实对话（需 `OPEN_API_KEY`）
 
 ```bash
 # 零凭据演示（harness dry-run，打印将发出的 Harness API 调用）
@@ -211,16 +211,16 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 所有内置工具以 `builtin__` 前缀注册进 `ToolRegistry`，与 MCP 工具（`<server>__` 前缀）
 共用同一注册表，因此护栏 / 记忆 / 追踪对它们自动覆盖，主循环零改动。
 
-| 工具 | 能力 | 说明 |
-|---|---|---|
-| `builtin__calculator` | 精确数学求值 | 自研 tokenizer + shunting-yard + RPN，**绝不 `eval`**；支持 `+-*/%^`、括号、一元负号、常量 `pi/e`、函数 `sqrt/abs/floor/ceil/round/exp/ln/log/sin/cos/tan/pow/atan2/min/max` |
-| `builtin__datetime_now` | 当前时间 | 返回 ISO-8601 与指定 IANA 时区的可读时间 |
-| `builtin__datetime_convert` | 时区转换 | ISO 时间戳在时区间转换 |
-| `builtin__datetime_add` | 时间偏移 | 对时间加减 seconds…years（负数即减） |
-| `builtin__web_fetch` | 抓取网页 | 仅允许 http/https，HTML 轻量清洗为文本，带超时与大小上限 |
-| `builtin__fs_read` | 读文件 | UTF-8 文本读取（限 root 内） |
-| `builtin__fs_list` | 列目录 | 列出目录条目 |
-| `builtin__fs_search` | 搜文件 | 按文件名/内容在 root 内递归搜索 |
+| 工具                        | 能力         | 说明                                                                                                                                                                         |
+| --------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builtin__calculator`       | 精确数学求值 | 自研 tokenizer + shunting-yard + RPN，**绝不 `eval`**；支持 `+-*/%^`、括号、一元负号、常量 `pi/e`、函数 `sqrt/abs/floor/ceil/round/exp/ln/log/sin/cos/tan/pow/atan2/min/max` |
+| `builtin__datetime_now`     | 当前时间     | 返回 ISO-8601 与指定 IANA 时区的可读时间                                                                                                                                     |
+| `builtin__datetime_convert` | 时区转换     | ISO 时间戳在时区间转换                                                                                                                                                       |
+| `builtin__datetime_add`     | 时间偏移     | 对时间加减 seconds…years（负数即减）                                                                                                                                         |
+| `builtin__web_fetch`        | 抓取网页     | 仅允许 http/https，HTML 轻量清洗为文本，带超时与大小上限                                                                                                                     |
+| `builtin__fs_read`          | 读文件       | UTF-8 文本读取（限 root 内）                                                                                                                                                 |
+| `builtin__fs_list`          | 列目录       | 列出目录条目                                                                                                                                                                 |
+| `builtin__fs_search`        | 搜文件       | 按文件名/内容在 root 内递归搜索                                                                                                                                              |
 
 接入点：`registerBuiltinTools(registry, options)`（`backend/core/src/builtins`）。
 UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
@@ -234,18 +234,19 @@ UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 再使用其关联工具——从「能用工具」升级为「会办事」。
 
 **落地方式（主循环零改动）**：技能层不修改 Agent 主循环，只做两件事——
+
 1. 把「技能目录」注入系统提示词，让模型知道有哪些能力可用；
 2. 提供一个元工具 `builtin__use_skill`，模型调用它传入技能 `id` 即取回执行指引。
 
 此外，运行时按用户消息的**触发词自动预激活**对应技能（其指引直接并入当次系统提示词），
 让模型在无需显式调用工具的情况下也按既定流程工作。
 
-| 默认技能 id | 关联工具 | 触发词示例 |
-|---|---|---|
-| `web-research` | `builtin__web_fetch` | 搜索 / 查一下 / 最新 / 官网 / fetch |
-| `math` | `builtin__calculator` | 算 / 计算 / 多少 / 百分比 / calculate |
-| `files` | `builtin__fs_read`·`_list`·`_search` | 读文件 / 看文件 / 搜索文件 / file |
-| `current-time` | `builtin__datetime_*` | 现在几点 / 时间 / 时区 / time |
+| 默认技能 id    | 关联工具                             | 触发词示例                            |
+| -------------- | ------------------------------------ | ------------------------------------- |
+| `web-research` | `builtin__web_fetch`                 | 搜索 / 查一下 / 最新 / 官网 / fetch   |
+| `math`         | `builtin__calculator`                | 算 / 计算 / 多少 / 百分比 / calculate |
+| `files`        | `builtin__fs_read`·`_list`·`_search` | 读文件 / 看文件 / 搜索文件 / file     |
+| `current-time` | `builtin__datetime_*`                | 现在几点 / 时间 / 时区 / time         |
 
 接入点（`backend/core/src/skills`）：
 
@@ -255,8 +256,6 @@ UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
 - `skillBoostPrompt(text, registry)` — 按触发词生成「自动启用技能」段落。
 - UI 在 `assembleAgent` 中默认构建注册表、注册元工具，并把目录 + 触发预激活注入系统提示词；
   也支持自定义技能：在 `assembleAgent` 前 `skillRegistry.register({...})` 即可。
-
-
 
 ## 可视化验证 Playground（Web UI）
 
@@ -270,9 +269,9 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
 打开后你会看到三栏布局：
 
 - **左栏**：当前模式的工具注册表（Tool Registry，按来源 `harness` / `mcp` 分组）
-  + **MCP 服务面板**（每个已接 server 的状态灯、工具数、工具列表，并可填
-  URL 实时「添加 MCP」）+ 三大验证（Agent 闭环 / Harness 轮询 / MCP 接入）
-  的实时状态灯。
+  - **MCP 服务面板**（每个已接 server 的状态灯、工具数、工具列表，并可填
+    URL 实时「添加 MCP」）+ 三大验证（Agent 闭环 / Harness 轮询 / MCP 接入）
+    的实时状态灯。
 - **中栏**：Agent 闭环的**实时时间线**（每一步 LLM 调用、工具调用的参数与
   结果都流式出现）+ 同步的「记忆 / 对话」视图 + 顶部**环境流水线**视图。
 - **右栏**：护栏拦截日志（输入 / 输出 / 工具参数被拦截时高亮）+ 原始事件流。
@@ -281,7 +280,7 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
 
 - **Mock（离线）**：内置 mock LLM + Harness dry-run 工具，**无需任何密钥**
   即可可视化跑通「创建 → 销毁」闭环，最适合离线验证。
-- **真实 LLM**：走 OpenRouter 真实模型（需 `OPENROUTER_API_KEY`）。
+- **真实 LLM**：走 OpenRouter 真实模型（需 `OPEN_API_KEY`）。
 - **真实 + Context7 MCP**：在真实 LLM 基础上接入已配置的 Context7 MCP，
   可视化看到 agent 自主调用远程 MCP 工具。
 
@@ -324,9 +323,9 @@ pnpm --filter @agent-harness/examples run real-loop         # #1：真实 OpenRo
 - `examples/verify-harness.ts`：注入模拟 Harness 后端，覆盖 SUCCESS / FAILED
   两条终态路径，并验证自定义 `statusPath` 生效。
 - `examples/verify-mcp.ts`：用 SDK `InMemoryTransport` 在进程内起 MCP Server，
-  经 `registerMcpTools` 注入 transport，完整跑通「连接→list→注册→调用」。
+  经 `registerMcpTools` 注入 transport，完整跑通「连接 →list→ 注册 → 调用」。
 - `examples/verify-context7.ts`：连真实 Context7 端点，列工具并实调 `resolve-library-id`。
-- `examples/real-loop.ts`：需 `OPENROUTER_API_KEY`（见 `.env`）才走真实模型；
+- `examples/real-loop.ts`：需 `OPEN_API_KEY`（见 `.env`）才走真实模型；
   MCP 接入为 best-effort——`registerMcpTools` 失败只告警不中断环境闭环。
 
 ## 接口鉴权（Web Playground）
@@ -349,13 +348,13 @@ UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 
 除了令牌，还提供以下开箱即用开关（详见 `.env.example`）：
 
-| 环境变量 | 作用 | 默认 |
-|---|---|---|
-| `UI_AUTH_TOKEN` | 接口 Bearer 鉴权；未设置则开放 | 空（开放） |
-| `UI_CORS_ORIGIN` | 跨域白名单（逗号分隔）；留空=仅同源（不再回 `*`） | 空（仅同源） |
-| `MAX_BODY_BYTES` | 请求体上限，防大报文 DoS | 1048576（1MB） |
-| `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭 | 120 / 60000 |
-| `AUDIT_LOG` | 审计日志落盘路径；留空则仅输出 stdout（JSON 行） | 空（stdout） |
+| 环境变量                              | 作用                                              | 默认           |
+| ------------------------------------- | ------------------------------------------------- | -------------- |
+| `UI_AUTH_TOKEN`                       | 接口 Bearer 鉴权；未设置则开放                    | 空（开放）     |
+| `UI_CORS_ORIGIN`                      | 跨域白名单（逗号分隔）；留空=仅同源（不再回 `*`） | 空（仅同源）   |
+| `MAX_BODY_BYTES`                      | 请求体上限，防大报文 DoS                          | 1048576（1MB） |
+| `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭               | 120 / 60000    |
+| `AUDIT_LOG`                           | 审计日志落盘路径；留空则仅输出 stdout（JSON 行）  | 空（stdout）   |
 
 审计日志会记录 时间 / 方法 / 路径 / 客户端 IP / 是否鉴权 / 状态码，并对高危动作
 （`agent.run`、`env.create`/`env.destroy`、`mcp.add`/`mcp.preset`、`shell.approve`）
@@ -366,14 +365,14 @@ UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 三层防护（输入 / 输出 / 工具参数）已升级为可配置策略引擎，可通过环境变量或
 `configureGuardrails()` 在运行时调整（详见 `.env.example`）：
 
-| 环境变量 | 作用 | 默认 |
-|---|---|---|
-| `GUARDRAIL_SENSITIVITY` | 注入检测敏感度 `low`/`medium`/`high` | `medium` |
-| `GUARDRAIL_MAX_INPUT` | 输入最大字符数，超过即拦截 | `20000` |
-| `GUARDRAIL_SECRET_SCAN` | 是否扫描密钥类敏感串 | `true` |
-| `GUARDRAIL_INJECTION_SCAN` | 是否做提示词注入检测 | `true` |
-| `GUARDRAIL_PII` | 是否在输出侧做 PII 脱敏 | `true` |
-| `GUARDRAIL_ALLOWLIST` | 命中即跳过注入拦截的关键词（逗号分隔） | 空 |
+| 环境变量                   | 作用                                   | 默认     |
+| -------------------------- | -------------------------------------- | -------- |
+| `GUARDRAIL_SENSITIVITY`    | 注入检测敏感度 `low`/`medium`/`high`   | `medium` |
+| `GUARDRAIL_MAX_INPUT`      | 输入最大字符数，超过即拦截             | `20000`  |
+| `GUARDRAIL_SECRET_SCAN`    | 是否扫描密钥类敏感串                   | `true`   |
+| `GUARDRAIL_INJECTION_SCAN` | 是否做提示词注入检测                   | `true`   |
+| `GUARDRAIL_PII`            | 是否在输出侧做 PII 脱敏                | `true`   |
+| `GUARDRAIL_ALLOWLIST`      | 命中即跳过注入拦截的关键词（逗号分隔） | 空       |
 
 > **误拦兜底**：若业务文本合理包含 `system prompt`、`jailbreak` 等注入特征词
 > （如计划模式下「优化 system prompt」的任务描述），除代码层的结构化输出
@@ -398,12 +397,12 @@ UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 - Web Playground 暴露受保护的 `GET /api/metrics`（需 `UI_AUTH_TOKEN`），返回上述快照 JSON，
   可直接接入 Grafana / Prometheus。
 - **统一错误日志与告警收口**：所有业务错误统一经 `logError(scope, err, fields)` 留结构化日志
-  + 计数；`emitAlert(level, name, message, fields)` 在记录日志的同时，把错误/致命事件推送到
-  可插拔的告警接收器（`setAlertSink`）。默认无接收器（仅本地日志）；可经环境变量装配：
-  - `ALERT_WEBHOOK_URL`：把告警 JSON（`{level,name,message,fields,ts}`）POST 到 Webhook
+  - 计数；`emitAlert(level, name, message, fields)` 在记录日志的同时，把错误/致命事件推送到
+    可插拔的告警接收器（`setAlertSink`）。默认无接收器（仅本地日志）；可经环境变量装配：
+  * `ALERT_WEBHOOK_URL`：把告警 JSON（`{level,name,message,fields,ts}`）POST 到 Webhook
     （Slack / 飞书 / 钉钉 入站 Webhook 或自研告警网关）；
-  - `ALERT_LOG_PATH`：把告警以 JSON 逐行追加到文件，便于 Filebeat / Loki 采集。
-  - 多个 sink 可同时启用；sink 异常被吞掉，绝不影响主流程。`/api/metrics` 含 `alerts`、
+  * `ALERT_LOG_PATH`：把告警以 JSON 逐行追加到文件，便于 Filebeat / Loki 采集。
+  * 多个 sink 可同时启用；sink 异常被吞掉，绝不影响主流程。`/api/metrics` 含 `alerts`、
     `alerts.error`、`alerts.fatal` 等计数器。
 
 ### 运行队列与水平扩展（P1-8 架构解耦）
@@ -483,9 +482,10 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
   （LDAP/SSO 网关头注入）；OIDC/LDAP 与审批后端均**仅改这两个工厂，server 其余代码零改动**。
 
 运维端点（均受 RBAC 保护）：
+
 - `GET /api/roles`：当前权限矩阵概览（不含令牌明文）。
 - `GET /api/approvals` / `GET|POST /api/approvals/:id`：工单列表 / 查看 / 裁决（approve|reject）。
--   前端 Playground 在令牌具备审批权限时显示「🛡 审批队列」面板，可一键批准 / 拒绝；
+- 前端 Playground 在令牌具备审批权限时显示「🛡 审批队列」面板，可一键批准 / 拒绝；
   提交敏感动作若进入审批，前端自动轮询并在批准后继续执行。
 
 ### 运行评估与配方版本化（P2-13，业务质量策略与核心隔离）
@@ -494,7 +494,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 核心只产出事件流，本模块负责把事件流还原为「运行配方快照（RunRecord）」再交给可替换的评估器。
 
 - **RunRecord（运行配方快照）**：从运行队列累积的 harness 事件还原出 `prompt / model / tools / steps /
-  guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就是一次运行的「版本化配方」，
+guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就是一次运行的「版本化配方」，
   天然支持回归比对（同一 recipe 多次跑，对比得分）。
 - **Evaluator（可插拔评估器）**：`Evaluator` 接口 + 默认 `RuleBasedEvaluator`（可解释、零依赖）：
   护栏未被拦截、预算未超限、有非空最终回答为硬性通过项；再综合「是否调用工具 / 步骤数 / 成本」加权出 0~1 分。
@@ -523,7 +523,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
   便于接入网关 / 客户端代码生成 / 合规审查。当前留存策略快照见 `GET /api/v1/retention`。
 
 > 至此，原「企业落地 14 项缺口」已全部落地：安全加固（P0）→ 内容安全/可观测/MCP 可靠性/成本/
-> 测试+SBOM/架构解耦/多租户记忆（P1）→ RBAC+审批/评估+版本化/留存+版本化API（P2）。
+> 测试+SBOM/架构解耦/多租户记忆（P1）→ RBAC+审批/评估+版本化/留存+版本化 API（P2）。
 > 贯穿原则：**业务策略（鉴权/审批/评估/版本化/合规）全部在 server 业务层以「接口 + 默认实现 + 组合工厂」
 > 形式存在，核心 `@agent-harness/core` 始终零业务耦合、可插拔、可组合。**
 >
@@ -574,7 +574,7 @@ AgentHarness 等框架原语，所有「谁能做什么、要不要审批」都�
 2. **`SECRETS_FILE`（JSON）** — 指向一个密钥文件，适配 K8s Secret 挂载、Docker secret、Render Secret Files。例如：
    ```bash
    export SECRETS_FILE=/run/secrets/app.json
-   # 文件内容：{"OPENROUTER_API_KEY":"sk-...","UI_AUTH_TOKEN":"tok-...","REDIS_URL":"redis://..."}
+   # 文件内容：{"OPEN_API_KEY":"sk-...","UI_AUTH_TOKEN":"tok-...","REDIS_URL":"redis://..."}
    ```
 3. **本地 `.env`** — 仅开发便利，已被 `.gitignore` 忽略；生产环境无此文件即跳过。
 
@@ -627,36 +627,36 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 
 ### 相关环境变量（新增，详见 `.env.example`）
 
-| 变量 | 作用 | 默认 |
-|---|---|---|
-| `MAX_STEPS` | 单次闭环步数上限（前端也可按任务覆盖） | `24`（核心框架默认 12） |
-| `MAX_TOOL_RESULT_CHARS` | 工具结果截断阈值，压低上下文重发成本 | `16000` |
-| `AGENT_COMPLETION_CHECK` | 开启空响应完成自检，避免空回复提前终止 | 关闭 |
-| `MEMORY_WINDOW` | 滑动窗口容量（`memory.ts` 溢出淘汰非 system 历史） | `20` |
-| `PROMPT_CACHE` | 给 system 打 `cache_control`，命中提示词缓存降输入费 | 关闭 |
-| `CONTEXT_COMPRESSION` | 滑动窗口溢出时把淘汰轮次压缩为 system 摘要固定保留，根治 token 平方增长 | 关闭 |
-| `COMPRESSION_MODE` | 压缩摘要器：`heuristic`（零额外调用）/ `llm`（调用模型做高质量压缩，仅 real 模式生效，mock 自动回退） | `heuristic` |
-| `ALERT_WEBHOOK_URL` | 告警接收器：把告警 JSON POST 到该 Webhook（Slack/飞书/钉钉/自研网关） | 未设置（仅本地日志） |
-| `ALERT_LOG_PATH` | 告警接收器：把告警以 JSON 逐行追加到该文件，便于采集 | 未设置（仅本地日志） |
+| 变量                     | 作用                                                                                                  | 默认                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- | ----------------------- |
+| `MAX_STEPS`              | 单次闭环步数上限（前端也可按任务覆盖）                                                                | `24`（核心框架默认 12） |
+| `MAX_TOOL_RESULT_CHARS`  | 工具结果截断阈值，压低上下文重发成本                                                                  | `16000`                 |
+| `AGENT_COMPLETION_CHECK` | 开启空响应完成自检，避免空回复提前终止                                                                | 关闭                    |
+| `MEMORY_WINDOW`          | 滑动窗口容量（`memory.ts` 溢出淘汰非 system 历史）                                                    | `20`                    |
+| `PROMPT_CACHE`           | 给 system 打 `cache_control`，命中提示词缓存降输入费                                                  | 关闭                    |
+| `CONTEXT_COMPRESSION`    | 滑动窗口溢出时把淘汰轮次压缩为 system 摘要固定保留，根治 token 平方增长                               | 关闭                    |
+| `COMPRESSION_MODE`       | 压缩摘要器：`heuristic`（零额外调用）/ `llm`（调用模型做高质量压缩，仅 real 模式生效，mock 自动回退） | `heuristic`             |
+| `ALERT_WEBHOOK_URL`      | 告警接收器：把告警 JSON POST 到该 Webhook（Slack/飞书/钉钉/自研网关）                                 | 未设置（仅本地日志）    |
+| `ALERT_LOG_PATH`         | 告警接收器：把告警以 JSON 逐行追加到该文件，便于采集                                                  | 未设置（仅本地日志）    |
 
 ## 基座子系统（多智能体基座）
 
 在单智能体闭环之上，`backend/core/src` 已落地一套**多智能体基座子系统**（详见 [`docs/01-architecture/modules.md`](./docs/01-architecture/modules.md)），全部以「接口 + 默认实现 + 组合工厂」范式存在，`server` 侧已接入运行链路：
 
-| 子系统 | 目录 | 作用 |
-|---|---|---|
-| **智能体注册与发现** | `agents/` | `AgentCard` + `AgentRegistry` + `AgentStore`（volatile/file/redis），P0.1 注册/发现/健康度 |
-| **任务路由** | `router/` | `IntentRouter` + `AgentSelector` + LRU 缓存的 LLM 意图分类 + 规则回退（P0.2） |
-| **租户隔离** | `tenant.ts` | 复合记忆 key `tenant::session`、`resolveTenantContext` 认证身份优先、`REQUIRE_TENANT` 门禁（P0.3） |
-| **策略引擎** | `policy/` | 行业策略画像预选与出网管控（接入 run-queue / runner / A2A / workflow 入口） |
-| **配额引擎** | `quota/` | 租户级并发准入配额（`admit`/`release`，接入 `run-queue`） |
-| **工作流编排** | `workflow/` | `DagEngine` DAG 执行 + 补偿 + `WorkflowStore`（volatile/file） |
-| **A2A 协议** | `a2a/` | `LocalA2ATransport` / `HttpA2ATransport`，跨主机 `POST /api/a2a/tasks` 派发 |
-| **插件框架** | `plugin/` | `PluginManifest` → `PluginLoader`（install/enable/disable/upgrade + 验签）→ `PluginRegistryClient`（远程市场） |
-| **OS 级沙箱** | `sandbox/` + `builtins/sandbox.ts` + `builtins/shell.ts` | Linux 命名空间/seccomp 隔离，非 Linux 自动降级为「硬化本地进程」 |
-| **审计** | `audit.ts` | 结构化审计事件（接入 RBAC/审批/敏感动作） |
-| **特性开关** | `feature-flags.ts` | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线） |
-| **错误日志** | `errorlog.ts` | 统一错误记录 + 计数 + 报告（`/api/errors`） |
+| 子系统               | 目录                                                     | 作用                                                                                                           |
+| -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **智能体注册与发现** | `agents/`                                                | `AgentCard` + `AgentRegistry` + `AgentStore`（volatile/file/redis），P0.1 注册/发现/健康度                     |
+| **任务路由**         | `router/`                                                | `IntentRouter` + `AgentSelector` + LRU 缓存的 LLM 意图分类 + 规则回退（P0.2）                                  |
+| **租户隔离**         | `tenant.ts`                                              | 复合记忆 key `tenant::session`、`resolveTenantContext` 认证身份优先、`REQUIRE_TENANT` 门禁（P0.3）             |
+| **策略引擎**         | `policy/`                                                | 行业策略画像预选与出网管控（接入 run-queue / runner / A2A / workflow 入口）                                    |
+| **配额引擎**         | `quota/`                                                 | 租户级并发准入配额（`admit`/`release`，接入 `run-queue`）                                                      |
+| **工作流编排**       | `workflow/`                                              | `DagEngine` DAG 执行 + 补偿 + `WorkflowStore`（volatile/file）                                                 |
+| **A2A 协议**         | `a2a/`                                                   | `LocalA2ATransport` / `HttpA2ATransport`，跨主机 `POST /api/a2a/tasks` 派发                                    |
+| **插件框架**         | `plugin/`                                                | `PluginManifest` → `PluginLoader`（install/enable/disable/upgrade + 验签）→ `PluginRegistryClient`（远程市场） |
+| **OS 级沙箱**        | `sandbox/` + `builtins/sandbox.ts` + `builtins/shell.ts` | Linux 命名空间/seccomp 隔离，非 Linux 自动降级为「硬化本地进程」                                               |
+| **审计**             | `audit.ts`                                               | 结构化审计事件（接入 RBAC/审批/敏感动作）                                                                      |
+| **特性开关**         | `feature-flags.ts`                                       | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线）                                      |
+| **错误日志**         | `errorlog.ts`                                            | 统一错误记录 + 计数 + 报告（`/api/errors`）                                                                    |
 
 > 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`backend/medical-ad-guard`）。
 

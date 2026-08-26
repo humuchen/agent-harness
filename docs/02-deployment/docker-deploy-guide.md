@@ -9,21 +9,21 @@
 
 - 已安装并启动 Docker（Docker Desktop 或 daemon）。
 - 本机已 `git clone` 项目到本地路径，如 `C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness-ts`。
-- （可选）想要**真实 LLM** 时准备 `OPENROUTER_API_KEY`；不准备也能跑——内置 **Mock LLM 离线模式** 可直接演示运行时面板。
+- （可选）想要**真实 LLM** 时准备 `OPEN_API_KEY`；不准备也能跑——内置 **Mock LLM 离线模式** 可直接演示运行时面板。
 
 ---
 
 ## 1. 架构速览（先搞清楚跑起来的是什么）
 
-| 项 | 说明 |
-|---|---|
-| 构建 | `Dockerfile` 多阶段：node:22-bookworm 构建 → node:22-bookworm-slim 运行 |
-| 进程 | `node access/server/dist/server.js` |
-| 监听 | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0） |
-| 托管 | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI） |
-| 健康检查 | `GET /api/state`（开放端点，无需令牌，返回 200 JSON） |
-| 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本） |
-| 运行用户 | 镜像内已用非 root 用户 `ah` 运行 |
+| 项       | 说明                                                                    |
+| -------- | ----------------------------------------------------------------------- |
+| 构建     | `Dockerfile` 多阶段：node:22-bookworm 构建 → node:22-bookworm-slim 运行 |
+| 进程     | `node access/server/dist/server.js`                                     |
+| 监听     | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0）                          |
+| 托管     | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI）     |
+| 健康检查 | `GET /api/state`（开放端点，无需令牌，返回 200 JSON）                   |
+| 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本）        |
+| 运行用户 | 镜像内已用非 root 用户 `ah` 运行                                        |
 
 > 注意：服务器真实健康端点是 `/api/state`（server.ts:283）。早期健康检查误写为 `/api/v1/state`（仅存在于 OpenAPI 文档定义，无真实 handler），现已修正为 `/api/state`，部署后 `docker ps` 应显示 `healthy`。
 
@@ -81,8 +81,8 @@ docker build -t agent-harness:local .
 docker run -d -p 4173:4173 \
   --name ah \
   -e UI_AUTH_TOKEN=change-me \
-  -e OPENROUTER_API_KEY=sk-or-xxx \
-  -e OPENROUTER_MODEL=agnes-2.5-flash \
+  -e OPEN_API_KEY=sk-or-xxx \
+  -e OPEN_MODEL=agnes-2.5-flash \
   agent-harness:local
 ```
 
@@ -93,15 +93,15 @@ docker run -d -p 4173:4173 \
 
 ## 5. 环境变量清单
 
-| 变量 | 必填 | 默认 | 说明 |
-|---|---|---|---|
-| `NODE_ENV` | 否 | production | 运行环境 |
-| `PORT` | 否 | 4173 | 容器内监听端口 |
-| `UI_HOST` | 否 | 0.0.0.0 | 绑定地址 |
-| `UI_AUTH_TOKEN` | 否 | 空 | 接口鉴权令牌。**留空 → UI 开放（仅本地演示可接受）；生产务必设强随机值** |
-| `OPENROUTER_API_KEY` | 否 | 空 | 真实 LLM 密钥。**留空 → 内置 Mock LLM 离线运行**（无需密钥即可演示运行时面板） |
-| `OPENROUTER_MODEL` | 否 | agnes-2.5-flash | OpenRouter 模型名 |
-| `REDIS_URL` | 否 | 空 | 运行队列后端；启用 redis profile 后自动填 |
+| 变量            | 必填 | 默认            | 说明                                                                           |
+| --------------- | ---- | --------------- | ------------------------------------------------------------------------------ |
+| `NODE_ENV`      | 否   | production      | 运行环境                                                                       |
+| `PORT`          | 否   | 4173            | 容器内监听端口                                                                 |
+| `UI_HOST`       | 否   | 0.0.0.0         | 绑定地址                                                                       |
+| `UI_AUTH_TOKEN` | 否   | 空              | 接口鉴权令牌。**留空 → UI 开放（仅本地演示可接受）；生产务必设强随机值**       |
+| `OPEN_API_KEY`  | 否   | 空              | 真实 LLM 密钥。**留空 → 内置 Mock LLM 离线运行**（无需密钥即可演示运行时面板） |
+| `OPEN_MODEL`    | 否   | agnes-2.5-flash | OpenRouter 模型名                                                              |
+| `REDIS_URL`     | 否   | 空              | 运行队列后端；启用 redis profile 后自动填                                      |
 
 > 本地演示最简形态：两个密钥都**留空**即可。`docker compose up --build -d` 后 Mock 模式直接可用。
 
@@ -138,7 +138,7 @@ curl http://localhost:4173/api/state
 6. **复制 / 导出**：把最终答复或整段轨迹导出为自包含 `.html`。
 7. 顶部分段控制 `思考 / 结果 / 全览` 切换主视区；状态 pill 显示 空闲 / 运行中 / 已完成。
 
-> 未配 `OPENROUTER_API_KEY` 时走 Mock，事件流仍是真实的 `StreamEvent` 协议（run:start / step:start / llm:response / tool:result / run:end …），面板交互与真实 LLM 完全一致，只是「思考内容」是 mock 生成。
+> 未配 `OPEN_API_KEY` 时走 Mock，事件流仍是真实的 `StreamEvent` 协议（run:start / step:start / llm:response / tool:result / run:end …），面板交互与真实 LLM 完全一致，只是「思考内容」是 mock 生成。
 
 ---
 
@@ -190,7 +190,7 @@ A：旧镜像打的是 `/api/v1/state`（404）。当前代码已修正为 `/api
 A：换映射端口，如 `docker run -p 8080:4173 ...`，访问 `http://localhost:8080`。compose 改 `ports: ["8080:4173"]`。
 
 **Q4：没密钥能跑吗？**
-A：能。`OPENROUTER_API_KEY` 留空即 Mock LLM 离线模式，运行时面板交互完整可演示。
+A：能。`OPEN_API_KEY` 留空即 Mock LLM 离线模式，运行时面板交互完整可演示。
 
 **Q5：数据重启后没了？**
 A：内存模式作业/记忆重启即丢。挂 Redis（redis profile）或配置 `memory.persistencePath` 持久化。

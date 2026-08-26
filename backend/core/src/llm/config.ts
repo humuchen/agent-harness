@@ -11,12 +11,12 @@ import type { OpenAIConfig } from './openai';
  *
  * 想换默认模型 / 端点，只改下面这组常量即可（或运行时用对应环境变量覆盖）。
  */
-export const DEFAULT_OPENROUTER_MODEL = '';
+export const DEFAULT_OPEN_MODEL = '';
 export const DEFAULT_OPENAI_MODEL = '';
-export const DEFAULT_OPENROUTER_BASE_URL = 'https://apihub.agnes-ai.com/v1'; //'https://openrouter.ai/api/v1';
+export const DEFAULT_OPEN_BASE_URL = 'https://apihub.agnes-ai.com/v1'; //'https://openrouter.ai/api/v1';
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-export const DEFAULT_OPENROUTER_SITE_URL = 'https://workbuddy.app';
-export const DEFAULT_OPENROUTER_APP_NAME = 'agent-harness';
+export const DEFAULT_OPEN_SITE_URL = 'https://workbuddy.app';
+export const DEFAULT_OPEN_APP_NAME = 'agent-harness';
 export const DEFAULT_LLM_RETRIES = 2;
 
 type EnvLike = Record<string, string | undefined>;
@@ -61,27 +61,23 @@ export function resolveOpenRouterConfig(
   env: EnvLike = process.env as EnvLike
 ): ResolvedOpenRouterConfig {
   return {
-    apiKey: input.apiKey ?? env.OPENROUTER_API_KEY,
-    model: resolveField(
-      input.model,
-      env.OPENROUTER_MODEL,
-      DEFAULT_OPENROUTER_MODEL
-    ),
+    apiKey: input.apiKey ?? env.OPEN_API_KEY,
+    model: resolveField(input.model, env.OPEN_MODEL, DEFAULT_OPEN_MODEL),
     models: input.models,
     baseUrl: resolveField(
       input.baseUrl,
-      env.OPENROUTER_BASE_URL,
-      DEFAULT_OPENROUTER_BASE_URL
+      env.OPEN_BASE_URL,
+      DEFAULT_OPEN_BASE_URL
     ),
     siteUrl: resolveField(
       input.siteUrl,
-      env.OPENROUTER_SITE_URL,
-      DEFAULT_OPENROUTER_SITE_URL
+      env.OPEN_SITE_URL,
+      DEFAULT_OPEN_SITE_URL
     ),
     appName: resolveField(
       input.appName,
-      env.OPENROUTER_APP_NAME,
-      DEFAULT_OPENROUTER_APP_NAME
+      env.OPEN_APP_NAME,
+      DEFAULT_OPEN_APP_NAME
     ),
     fetchImpl: input.fetchImpl ?? fetch,
     retries: input.retries ?? DEFAULT_LLM_RETRIES

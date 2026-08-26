@@ -32,15 +32,15 @@ loadEnv(); // load .env (git-ignored) if present; explicit env wins
 
 // 使用 OpenRouter + Harness 自助环境闭环的端到端真实运行。
 // 运行：npm run chat
-// 需要在环境中设置 OPENROUTER_API_KEY（参见 .env.example）。
+// 需要在环境中设置 OPEN_API_KEY（参见 .env.example）。
 
 async function main(): Promise<void> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.OPEN_API_KEY;
   if (!apiKey) {
     console.error(
-      '\n[chat] OPENROUTER_API_KEY is not set — cannot run a real LLM turn.\n' +
+      '\n[chat] OPEN_API_KEY is not set — cannot run a real LLM turn.\n' +
         '  1. Get a key at https://openrouter.ai/keys\n' +
-        '  2. Export it:  export OPENROUTER_API_KEY=sk-or-...\n' +
+        '  2. Export it:  export OPEN_API_KEY=sk-or-...\n' +
         '     (or copy .env.example to .env and fill it in)\n' +
         '  3. Re-run:     npm run chat\n'
     );

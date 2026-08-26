@@ -5,14 +5,14 @@
  * agent 自己决定调用 resolve-library-id（来自 Context7 MCP），
  * 拿到真实返回后用中文总结——全程护栏/记忆/追踪自动生效。
  *
- * 运行：npm run use:context7（需要 OPENROUTER_API_KEY；无 key 退回 mock）
+ * 运行：npm run use:context7（需要 OPEN_API_KEY；无 key 退回 mock）
  */
 import {
   AgentHarness,
   ToolRegistry,
   createOpenRouterLLM,
   registerMcpTools,
-  loadEnv,
+  loadEnv
 } from '@agent-harness/core';
 import type { LLM } from '@agent-harness/core';
 
@@ -27,26 +27,31 @@ async function main(): Promise<void> {
   try {
     await registerMcpTools(tools);
   } catch (e) {
-    console.error('[use:context7] MCP not available (best-effort):', (e as Error).message);
+    console.error(
+      '[use:context7] MCP not available (best-effort):',
+      (e as Error).message
+    );
   }
 
-  const llm: LLM = process.env.OPENROUTER_API_KEY
+  const llm: LLM = process.env.OPEN_API_KEY
     ? createOpenRouterLLM()
-    : (async (_m, _t) => ({
+    : async (_m, _t) => ({
         content:
-          '（mock）已连上 Context7，工具列表见上方[mcp]日志；填入 OPENROUTER_API_KEY 即由真实模型调用。',
-        tool_calls: [],
-      }));
+          '（mock）已连上 Context7，工具列表见上方[mcp]日志；填入 OPEN_API_KEY 即由真实模型调用。',
+        tool_calls: []
+      });
 
   const agent = new AgentHarness({
     llm,
     tools,
     systemPrompt:
       '你是文档助手。当用户询问某个库/框架时，优先调用 Context7 的 resolve-library-id 解析库 ID，' +
-      '并据此用中文给出准确的库说明。',
+      '并据此用中文给出准确的库说明。'
   });
 
-  const answer = await agent.run('帮我查一下 typescript 这个库的 Context7 库 ID 是什么？');
+  const answer = await agent.run(
+    '帮我查一下 typescript 这个库的 Context7 库 ID 是什么？'
+  );
   console.log('\n=== 最终回复 ===\n' + answer);
 }
 
