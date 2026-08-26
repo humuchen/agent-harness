@@ -1685,7 +1685,7 @@ export const chatStyles = [
       padding: 10px 12px 12px;
     }
 
-    /* 移动端汉堡按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
+    /* 移动端「会话列表」按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
     .menu-btn {
       display: none;
       flex: 0 0 auto;
@@ -1693,14 +1693,16 @@ export const chatStyles = [
       height: 34px;
       align-items: center;
       justify-content: center;
-      font-size: 17px;
-      line-height: 1;
       border-radius: 9px;
       background: var(--ah-surface-2);
       border: 1px solid var(--ah-border);
       color: var(--ah-text);
       cursor: pointer;
       padding: 0;
+    }
+    .menu-btn svg {
+      width: 17px;
+      height: 17px;
     }
     .menu-btn:hover {
       border-color: var(--ah-accent, #2997ff);

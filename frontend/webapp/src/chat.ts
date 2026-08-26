@@ -1166,6 +1166,8 @@ export class AhChat extends LitElement {
       if (c && !c.content && this.finalBy[sessionId]) {
         this.patchSession(sessionId, { content: this.finalBy[sessionId] });
       }
+      // 兜底：非流式回退路径内容不经 llm:token 到达，run 收尾时再尝试折叠一次。
+      this.autoCollapseThink(sessionId);
       this.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
       if (this.activeId === sessionId) this.messages = this.threads[sessionId];
@@ -1323,6 +1325,8 @@ export class AhChat extends LitElement {
       if (c && !c.content && this.finalBy[sid]) {
         this.patchSession(sid, { content: this.finalBy[sid] });
       }
+      // 兜底：断线恢复路径同样在 run 收尾时尝试折叠思考面板。
+      this.autoCollapseThink(sid);
       this.setStreaming(sid, false);
       this.abortBy[sid] = undefined as any;
       if (this.activeId === sid) this.messages = this.threads[sid];
@@ -1415,6 +1419,8 @@ export class AhChat extends LitElement {
           // 不再直接 patch 到 content：整段塞进单 delta 时会「一帧跳全文」。
           // 改为进 pending 缓冲，由打字机定时器按节奏逐字揭示。
           this.pending[sid].content += String((ev as any).delta ?? '');
+          // 首个回答 token 到达 = 思考阶段结束：自动折叠本轮思考面板。
+          if (!c.content) this.autoCollapseThink(sid);
           this.ensureTypewriter();
         }
         break;
@@ -2139,10 +2145,11 @@ export class AhChat extends LitElement {
   private longPressStart: { x: number; y: number } | null = null;
 
   private static readonly LONG_PRESS_MS = 600;
-  private static readonly LONG_PRESS_MOVE_TOLERANCE = 10; // px
+  private static readonly LONG_PRESS_MOVE_TOLERANCE = 15; // px
 
   private onComposerPointerDown(e: PointerEvent) {
-    if (e.pointerType !== 'touch') return; // 仅触屏长按触发，桌面不受影响
+    if (this.streaming[this.activeId] === true) return;
+    // 触屏与鼠标均允许长按（鼠标路径便于桌面端验证同一交互）。
     this.longPressStart = { x: e.clientX, y: e.clientY };
     this.longPressTimer = setTimeout(() => {
       this.longPressTimer = null;
@@ -2206,6 +2213,20 @@ export class AhChat extends LitElement {
       ...this.thinkCollapsed,
       [k]: !this.thinkCollapsed[k]
     };
+  }
+
+  /**
+   * 深度思考结束自动折叠本轮思考面板：
+   * 在首个回答 token 到达时调用（非流式回退路径由 run 收尾兜底再调一次，已折叠则跳过）。
+   * 仅当本轮确实产出过推理内容（思考面板实际展示）才折叠；用户此前手动折叠过则保持不动。
+   */
+  private autoCollapseThink(sid: string) {
+    const sIdx = this.streamIdx[sid] ?? -1;
+    const m = sIdx >= 0 ? (this.threads[sid] ?? [])[sIdx] : undefined;
+    if (!m?.reasoning) return;
+    const k = String(m.id);
+    if (this.thinkCollapsed[k]) return;
+    this.thinkCollapsed = { ...this.thinkCollapsed, [k]: true };
   }
 
   /** 切换交互模式（问答/计划）并持久化。 */
@@ -2874,9 +2895,23 @@ export class AhChat extends LitElement {
           <button
             class="menu-btn"
             @click=${() => this.toggleSidebar()}
-            title="菜单 / 会话列表"
+            title="会话列表"
+            aria-label="会话列表"
           >
-            ☰
+            <!-- 对话气泡 + 文字行图标：与外层外壳的导航汉堡 ☰ 区分，语义为「会话/历史列表」 -->
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+              />
+              <path d="M8 9h8M8 13h5" />
+            </svg>
           </button>
           <span class="title"
             >${active ? escapeHtml(active.title) : '新对话'}</span
@@ -3023,10 +3058,11 @@ export class AhChat extends LitElement {
               @pointerdown=${this.onComposerPointerDown}
               @pointermove=${this.onComposerPointerMove}
               @pointerup=${() => this.cancelComposerLongPress()}
-              @pointercancel=${() => this.cancelComposerLongPress()}
               @contextmenu=${(e: Event) => {
-                // 长按已触发全屏编辑时，抑制系统右键/长按菜单，避免两层 UI 叠加。
-                if (this.fullscreenEditOpen) e.preventDefault();
+                // 长按期间 / 全屏编辑已打开时，抑制系统右键或 Android 长按菜单，
+                // 否则系统菜单会抢走手势导致全屏编辑永远不触发。
+                if (this.longPressTimer || this.fullscreenEditOpen)
+                  e.preventDefault();
               }}
             >
               <textarea
