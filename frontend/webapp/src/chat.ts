@@ -382,8 +382,9 @@ export class AhChat extends LitElement {
     try {
       const m = localStorage.getItem('ah_model');
       if (m !== null) this.model = m;
-      const t = localStorage.getItem('ah_deep_think');
-      if (t !== null) this.deepThink = t === '1';
+      // 深度思考默认开启：不再从 localStorage 恢复关闭态 ——
+      // 用户会话内可随时关闭，但刷新后一律回到默认开启。
+      this.deepThink = true;
       const w = localStorage.getItem('ah_web');
       if (w !== null) this.web = w === '1';
     } catch {

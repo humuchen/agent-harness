@@ -140,7 +140,7 @@ export class AhModelPicker extends LitElement {
       position: absolute;
       bottom: calc(100% + 8px);
       right: 0;
-      width: min(92vw, 360px);
+      width: min(92vw, 300px);
       max-height: min(70vh, 460px);
       background: var(--ah-surface-2, #1c1c1c);
       border: 1px solid var(--ah-border, #2a2a2a);
@@ -467,7 +467,10 @@ export class AhModelPicker extends LitElement {
     // 同步到后端 SQLite。
     this.saving = true;
     try {
-      const body: Record<string, unknown> = { id, ...(baseUrl ? { baseUrl } : {}) };
+      const body: Record<string, unknown> = {
+        id,
+        ...(baseUrl ? { baseUrl } : {})
+      };
       if (encryptedApiKey) body.apiKey = encryptedApiKey;
       const res = await fetch('/api/custom-models', {
         method: 'POST',
@@ -582,7 +585,9 @@ export class AhModelPicker extends LitElement {
         <path
           d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"
         />
-        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" />
+        <path
+          d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z"
+        />
       </svg>`;
     }
     const v = this.vendorOf(id);
@@ -657,9 +662,12 @@ export class AhModelPicker extends LitElement {
     const collapsed = this.collapsed[name] ?? true;
     return html`
       <div class="group">
-        <div class="group-title" @click=${() => {
-          this.collapsed = { ...this.collapsed, [name]: !collapsed };
-        }}>
+        <div
+          class="group-title"
+          @click=${() => {
+            this.collapsed = { ...this.collapsed, [name]: !collapsed };
+          }}
+        >
           ${name}
           <svg
             class="chev"
@@ -669,7 +677,9 @@ export class AhModelPicker extends LitElement {
             stroke-width="2"
             stroke-linecap="round"
             stroke-linejoin="round"
-            style="width:14px;height:14px;vertical-align:middle;transition:transform .15s ease;transform:${collapsed ? 'rotate(0deg)' : 'rotate(180deg)'}"
+            style="width:14px;height:14px;vertical-align:middle;transition:transform .15s ease;transform:${collapsed
+              ? 'rotate(0deg)'
+              : 'rotate(180deg)'}"
           >
             <path d="M6 9l6 6 6-6" />
           </svg>
@@ -685,16 +695,16 @@ export class AhModelPicker extends LitElement {
                     @click=${() => this.pick(id)}
                   >
                     ${this.isCustom(id)
-                      ? html`
-                          <button
-                            class="custom-edit"
-                            title="编辑自定义模型"
-                            @click=${(e: Event) => {
-                              e.stopPropagation();
-                              this.startEdit(id);
-                            }}
-                          >编辑</button
-                        >`
+                      ? html` <button
+                          class="custom-edit"
+                          title="编辑自定义模型"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.startEdit(id);
+                          }}
+                        >
+                          编辑
+                        </button>`
                       : nothing}
                     <span class="name">${this.displayName(id)}</span>
                     ${active
@@ -749,9 +759,11 @@ export class AhModelPicker extends LitElement {
       )
       .map(([provider, list]) => ({
         provider,
-        items: list.map((c) => c.id).sort((a, b) =>
-          this.displayName(a).localeCompare(this.displayName(b))
-        )
+        items: list
+          .map((c) => c.id)
+          .sort((a, b) =>
+            this.displayName(a).localeCompare(this.displayName(b))
+          )
       }));
 
     // 显示规则：OpenRouter 两面板始终显示（哪怕空）；自定义服务商组无结果时隐藏。
@@ -796,9 +808,15 @@ export class AhModelPicker extends LitElement {
               </div>
               <div class="panel-body">
                 ${showFree
-                  ? this.renderGroup('OPENROUTER FREE', free.map((m) => m.id), true)
+                  ? this.renderGroup(
+                      'OPENROUTER FREE',
+                      free.map((m) => m.id),
+                      true
+                    )
                   : nothing}
-                ${showOpenRouter ? this.renderGroup('OPENROUTER', nonFree) : nothing}
+                ${showOpenRouter
+                  ? this.renderGroup('OPENROUTER', nonFree)
+                  : nothing}
                 ${customGroups.map(({ provider, items }) =>
                   this.renderGroup(provider, items)
                 )}
@@ -829,14 +847,18 @@ export class AhModelPicker extends LitElement {
                       placeholder="接口地址（可选，OpenAI 兼容端点）"
                       .value=${this.draftBaseUrl}
                       @input=${(e: Event) =>
-                        (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
+                        (this.draftBaseUrl = (
+                          e.target as HTMLInputElement
+                        ).value)}
                     />
                     <input
                       placeholder="API Key（可选，将加密保存）"
                       .value=${this.draftApiKey}
                       type="password"
                       @input=${(e: Event) =>
-                        (this.draftApiKey = (e.target as HTMLInputElement).value)}
+                        (this.draftApiKey = (
+                          e.target as HTMLInputElement
+                        ).value)}
                     />
                     <div class="add-actions">
                       <button
