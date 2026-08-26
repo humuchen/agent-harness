@@ -255,6 +255,19 @@ export class AhModelPicker extends LitElement {
       gap: 8px;
       justify-content: flex-end;
     }
+    .save-error {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--ah-danger, #e24b4a);
+      background: color-mix(
+        in srgb,
+        var(--ah-danger, #e24b4a) 10%,
+        transparent
+      );
+      border-radius: 8px;
+      padding: 6px 9px;
+      word-break: break-all;
+    }
     .add-actions button {
       appearance: none;
       border: none;
@@ -321,6 +334,8 @@ export class AhModelPicker extends LitElement {
 
   /** 是否正在保存到后端（按钮 loading 态）。 */
   @state() private saving = false;
+  /** 保存失败提示（如加密密钥未配置 / 网络错误），展示在表单下方。 */
+  @state() private saveError = '';
 
   /** 「刷新」拉取到的在线模型清单（含官方上下文窗口；失败为空）。 */
   async refreshModels() {
@@ -463,7 +478,21 @@ export class AhModelPicker extends LitElement {
     const apiKey = this.draftApiKey.trim();
     const editing = this.editingId === id && this.isCustom(id);
     // 加密 apiKey（前端 build-time key，后端同源可解密）。
-    const encryptedApiKey = apiKey ? await encryptApiKey(apiKey) : undefined;
+    // 失败（如 AH_CRYPTO_KEY 未配置/非法）不再裸抛：给出明确提示并中止保存，
+    // 避免把明文 key 或空值静默落库。
+    let encryptedApiKey: string | undefined;
+    this.saveError = '';
+    if (apiKey) {
+      try {
+        encryptedApiKey = await encryptApiKey(apiKey);
+      } catch (e) {
+        this.saveError =
+          'API Key 加密失败：' +
+          (e instanceof Error ? e.message : String(e)) +
+          '。请在服务端 .env 配置 AH_CRYPTO_KEY（64 位 hex）后重新构建前端。';
+        return;
+      }
+    }
     // 同步到后端 SQLite。
     this.saving = true;
     try {
@@ -738,10 +767,17 @@ export class AhModelPicker extends LitElement {
       ? this.customs.filter((c) => c.id.toLowerCase().includes(q))
       : this.customs;
 
-    const free = filteredRemote.filter((m) => this.isFreeId(m.id));
+    // 组内模型按展示名（去厂商前缀）A-Z 排序；OpenRouter 原始返回为热度序，非字母序。
+    const byDisplayName = (a: string, b: string) =>
+      this.displayName(a).localeCompare(this.displayName(b));
+    const free = filteredRemote
+      .filter((m) => this.isFreeId(m.id))
+      .map((m) => m.id)
+      .sort(byDisplayName);
     const nonFree = filteredRemote
       .filter((m) => !this.isFreeId(m.id))
-      .map((m) => m.id);
+      .map((m) => m.id)
+      .sort(byDisplayName);
 
     // 服务商分类（用户指定）：OpenRouter 全量模型只归两块面板 ——
     // OPENROUTER FREE（:free 变体，置顶）与 OPENROUTER（付费）；
@@ -808,11 +844,7 @@ export class AhModelPicker extends LitElement {
               </div>
               <div class="panel-body">
                 ${showFree
-                  ? this.renderGroup(
-                      'OPENROUTER FREE',
-                      free.map((m) => m.id),
-                      true
-                    )
+                  ? this.renderGroup('OPENROUTER FREE', free, true)
                   : nothing}
                 ${showOpenRouter
                   ? this.renderGroup('OPENROUTER', nonFree)
@@ -865,6 +897,7 @@ export class AhModelPicker extends LitElement {
                         class="btn-ghost"
                         @click=${() => {
                           this.adding = false;
+                          this.saveError = '';
                           this.draftId = '';
                           this.draftBaseUrl = '';
                           this.draftApiKey = '';
@@ -880,6 +913,11 @@ export class AhModelPicker extends LitElement {
                         ${this.saving ? '保存中…' : '保存'}
                       </button>
                     </div>
+                    ${this.saveError
+                      ? html`<div class="save-error" role="alert">
+                          ${this.saveError}
+                        </div>`
+                      : nothing}
                   </div>`
                 : nothing}
             </div>`

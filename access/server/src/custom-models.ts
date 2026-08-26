@@ -4,7 +4,8 @@
  * 约束：
  *  - 自定义模型统一走 SQLite（不再 frontend localStorage）；
  *  - API Key 由前端 AES-GCM 加密后传输，服务端在此层解密后交给 runner；
- *  - 服务端不持有前端私钥：AES key 由 Vite build-time define 注入（__AH_CRYPTO_KEY__）。
+ *  - 密钥来源：仓库根 .env 的 AH_CRYPTO_KEY（64 hex / 32 bytes）。
+ *    前端经 vite define 注入同一值（见 frontend/webapp/vite.config.ts），两端共用。
  */
 
 import { join } from 'node:path';
@@ -20,13 +21,20 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** 从注入的 build-time 常量取 AES-256 key；未注入则抛错（禁止静默降级为明文）。 */
+/**
+ * 从运行时环境取 AES-256 key（64 hex chars）。
+ *
+ * 服务端是纯 tsc 编译、没有 Vite define 注入，因此不依赖任何 build-time 全局，
+ * 统一从 process.env.AH_CRYPTO_KEY 读取（server.ts 顶部 loadSecrets() 已把
+ * 仓库根 .env 装配进 process.env）。与前端 vite.config.ts 注入的是同一个值。
+ * 未配置则抛错（禁止静默降级为明文）。
+ */
 function getBuildTimeCryptoKey(): Uint8Array {
-  // @ts-ignore - 由 vite.config.ts define 注入
-  const raw = typeof __AH_CRYPTO_KEY__ === 'string' ? __AH_CRYPTO_KEY__ : '';
-  if (!raw || raw.length !== 64) {
+  const raw = (process.env.AH_CRYPTO_KEY || '').trim();
+  if (!raw || raw.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(raw)) {
     throw new Error(
-      'missing build-time crypto key: __AH_CRYPTO_KEY__ must be 64 hex chars (AES-256)'
+      'missing crypto key: AH_CRYPTO_KEY env must be 64 hex chars (AES-256)。' +
+        '请在仓库根 .env 配置 AH_CRYPTO_KEY 后重启服务。'
     );
   }
   return hexToBytes(raw);
