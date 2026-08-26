@@ -1015,35 +1015,34 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 当前选中模型的自定义端点配置（若有）：从 localStorage 自定义模型清单里
+   * 当前选中模型的自定义端点配置（若有）：从后端 SQLite 的自定义模型清单里
    * 查出 baseUrl / apiKey，作为 run 请求的 modelBaseUrl / modelApiKey 字段。
    * 未配置或非自定义模型返回空对象（不透传任何字段）。
    */
-  private customModelEndpoint(): {
+  private async customModelEndpoint(): Promise<{
     modelBaseUrl?: string;
     modelApiKey?: string;
-  } {
+  }> {
     if (!this.model) return {};
     try {
-      const raw = localStorage.getItem('ah_custom_models');
-      if (!raw) return {};
-      const arr = JSON.parse(raw) as unknown;
-      if (!Array.isArray(arr)) return {};
-      for (const it of arr) {
-        const o = it as { id?: unknown; baseUrl?: unknown; apiKey?: unknown };
-        if (typeof o?.id === 'string' && o.id === this.model) {
-          const out: { modelBaseUrl?: string; modelApiKey?: string } = {};
-          if (typeof o.baseUrl === 'string' && o.baseUrl.trim())
-            out.modelBaseUrl = o.baseUrl.trim();
-          if (typeof o.apiKey === 'string' && o.apiKey.trim())
-            out.modelApiKey = o.apiKey.trim();
-          return out;
-        }
-      }
+      const res = await fetch('/api/custom-models');
+      if (!res.ok) return {};
+      const rows = (await res.json()) as Array<{
+        id: string;
+        baseUrl?: string;
+        apiKey?: string;
+      }>;
+      const row = rows.find((r) => r.id === this.model);
+      if (!row) return {};
+      const out: { modelBaseUrl?: string; modelApiKey?: string } = {};
+      if (typeof row.baseUrl === 'string' && row.baseUrl.trim())
+        out.modelBaseUrl = row.baseUrl.trim();
+      if (typeof row.apiKey === 'string' && row.apiKey.trim())
+        out.modelApiKey = row.apiKey.trim();
+      return out;
     } catch {
-      /* ignore */
+      return {};
     }
-    return {};
   }
 
   private async send() {
@@ -1120,6 +1119,7 @@ export class AhChat extends LitElement {
     // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
     this.saveHistory(sessionId);
 
+    const endpoint = await this.customModelEndpoint();
     const input: Record<string, unknown> = {
       mode: this.mode,
       prompt: content,
@@ -1128,7 +1128,7 @@ export class AhChat extends LitElement {
       ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
       // 自定义模型若配置了专属接口地址 / API Key，随请求透传给服务端
       // （服务端用其构造直连端点的 LLM；未配置则走服务端默认 OpenRouter）。
-      ...this.customModelEndpoint(),
+      ...endpoint,
       agentId: this.agentId || undefined,
       sessionId,
       chatSessionId: sessionId,

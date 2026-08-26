@@ -11,9 +11,9 @@ import type { OpenAIConfig } from './openai';
  *
  * 想换默认模型 / 端点，只改下面这组常量即可（或运行时用对应环境变量覆盖）。
  */
-export const DEFAULT_OPENROUTER_MODEL = 'agnes-2.5-flash';
-export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
-export const DEFAULT_OPENROUTER_BASE_URL = 'https://apihub.agnes-ai.com/v1';//'https://openrouter.ai/api/v1';
+export const DEFAULT_OPENROUTER_MODEL = '';
+export const DEFAULT_OPENAI_MODEL = '';
+export const DEFAULT_OPENROUTER_BASE_URL = 'https://apihub.agnes-ai.com/v1'; //'https://openrouter.ai/api/v1';
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_OPENROUTER_SITE_URL = 'https://workbuddy.app';
 export const DEFAULT_OPENROUTER_APP_NAME = 'agent-harness';
@@ -25,7 +25,11 @@ type EnvLike = Record<string, string | undefined>;
  * 三源解析：配置对象优先 → 环境变量次之 → 内置默认兜底。
  * 空字符串一律视为「未设置」，继续往后回落（避免 Render 等平台把变量填成空串时报错）。
  */
-function resolveField(cfgVal: string | undefined, envVal: string | undefined, fallback: string): string {
+function resolveField(
+  cfgVal: string | undefined,
+  envVal: string | undefined,
+  fallback: string
+): string {
   const trimmedCfg = cfgVal && cfgVal.trim();
   if (trimmedCfg) return trimmedCfg;
   const trimmedEnv = envVal && envVal.trim();
@@ -58,13 +62,29 @@ export function resolveOpenRouterConfig(
 ): ResolvedOpenRouterConfig {
   return {
     apiKey: input.apiKey ?? env.OPENROUTER_API_KEY,
-    model: resolveField(input.model, env.OPENROUTER_MODEL, DEFAULT_OPENROUTER_MODEL),
+    model: resolveField(
+      input.model,
+      env.OPENROUTER_MODEL,
+      DEFAULT_OPENROUTER_MODEL
+    ),
     models: input.models,
-    baseUrl: resolveField(input.baseUrl, env.OPENROUTER_BASE_URL, DEFAULT_OPENROUTER_BASE_URL),
-    siteUrl: resolveField(input.siteUrl, env.OPENROUTER_SITE_URL, DEFAULT_OPENROUTER_SITE_URL),
-    appName: resolveField(input.appName, env.OPENROUTER_APP_NAME, DEFAULT_OPENROUTER_APP_NAME),
+    baseUrl: resolveField(
+      input.baseUrl,
+      env.OPENROUTER_BASE_URL,
+      DEFAULT_OPENROUTER_BASE_URL
+    ),
+    siteUrl: resolveField(
+      input.siteUrl,
+      env.OPENROUTER_SITE_URL,
+      DEFAULT_OPENROUTER_SITE_URL
+    ),
+    appName: resolveField(
+      input.appName,
+      env.OPENROUTER_APP_NAME,
+      DEFAULT_OPENROUTER_APP_NAME
+    ),
     fetchImpl: input.fetchImpl ?? fetch,
-    retries: input.retries ?? DEFAULT_LLM_RETRIES,
+    retries: input.retries ?? DEFAULT_LLM_RETRIES
   };
 }
 
@@ -76,7 +96,11 @@ export function resolveOpenAIConfig(
   return {
     apiKey: input.apiKey ?? env.OPENAI_API_KEY,
     model: resolveField(input.model, env.OPENAI_MODEL, DEFAULT_OPENAI_MODEL),
-    baseUrl: resolveField(input.baseUrl, env.OPENAI_BASE_URL, DEFAULT_OPENAI_BASE_URL),
-    fetchImpl: input.fetchImpl ?? fetch,
+    baseUrl: resolveField(
+      input.baseUrl,
+      env.OPENAI_BASE_URL,
+      DEFAULT_OPENAI_BASE_URL
+    ),
+    fetchImpl: input.fetchImpl ?? fetch
   };
 }

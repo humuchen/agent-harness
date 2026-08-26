@@ -6,13 +6,15 @@
  * 中部为可搜索的模型列表（当前选中项打勾），
  * 底部提供「刷新模型」与「添加自定义模型」。
  *
- * 数据来源：内置常用模型预设 + 用户自定义模型（localStorage `ah_custom_models`）；
+ * 数据来源：内置常用模型预设 + 用户自定义模型（经后端 SQLite 持久化，通过
+ * `/api/custom-models` CRUD；前端本地不再以明文存 apiKey）。
  * 「刷新」尝试拉取 OpenRouter 公共模型列表（无需密钥），失败时静默回退本地清单。
  * 选择结果经 `model-change` 事件抛给宿主（detail.model 为空串表示恢复服务端默认）；
  * 思考开关经 `think-change` 事件抛出（detail.value）。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { encryptApiKey } from '../utils/crypto';
 
 /** 远程模型条目：id + 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -33,18 +35,22 @@ const CUSTOM_KEY = 'ah_custom_models';
 
 /** 自定义模型的持久化形态兼容旧版（旧版存 string[]，读取时自动升级为对象）。 */
 function normalizeCustom(raw: unknown): CustomModel[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((it): CustomModel => {
-      if (typeof it === 'string') return { id: it };
-      const o = it as Partial<CustomModel>;
-      return {
-        id: String(o?.id ?? '').trim(),
-        ...(o?.baseUrl ? { baseUrl: String(o.baseUrl).trim() } : {}),
-        ...(o?.apiKey ? { apiKey: String(o.apiKey).trim() } : {})
-      };
-    })
-    .filter((m) => m.id);
+  try {
+    const arr = Array.isArray(raw) ? raw : [];
+    return arr
+      .map((it): CustomModel => {
+        if (typeof it === 'string') return { id: it };
+        const o = it as Partial<CustomModel>;
+        return {
+          id: String(o?.id ?? '').trim(),
+          ...(o?.baseUrl ? { baseUrl: String(o.baseUrl).trim() } : {}),
+          ...(o?.apiKey ? { apiKey: String(o.apiKey).trim() } : {})
+        };
+      })
+      .filter((m) => m.id);
+  } catch {
+    return [];
+  }
 }
 
 @customElement('ah-model-picker')
@@ -52,55 +58,43 @@ export class AhModelPicker extends LitElement {
   static styles = css`
     :host {
       display: inline-block;
-      position: relative;
+      font-family: inherit;
+      color: var(--ah-text);
     }
-    /* 触发按钮：与 mode-select 一致的轻量文字风格 */
+    /* 触发按钮：胶囊形（图标+文字+chevron） */
     .trigger {
       appearance: none;
       border: none;
       background: transparent;
-      color: var(--ah-text-muted);
-      font-size: 12px;
-      height: 28px;
-      line-height: 26px;
-      padding: 0 10px;
-      margin: 0;
+      color: inherit;
+      font: inherit;
       cursor: pointer;
-      outline: none;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      max-width: 160px;
-      transition: color 0.15s;
-    }
-    .trigger:hover {
-      color: var(--ah-accent);
-      /* 胶囊背景：悬停在选中模型上时的视觉反馈 */
-      background: var(--ah-surface-3, var(--ah-surface-2));
-      border-radius: 999px;
-    }
-    /* 选中模型厂商徽标：品牌色圆底首字母 / 系统默认芯片图标（自定义与默认模型） */
-    .trigger .vlogo {
-      flex-shrink: 0;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
       display: inline-flex;
       align-items: center;
-      justify-content: center;
-      font-size: 9px;
-      font-weight: 700;
-      color: #fff;
-      user-select: none;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      transition: background 0.15s ease;
+      max-width: 46vw;
     }
-    .trigger .vlogo-sys {
-      border-radius: 0;
-      color: var(--ah-text-muted);
+    .trigger:hover {
+      background: rgba(125, 125, 125, 0.18);
+    }
+    .trigger:active {
+      background: rgba(125, 125, 125, 0.28);
     }
     .trigger .name {
+      font-size: 13px;
+      line-height: 20px;
+      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
+    }
+    .trigger > svg:not(.vlogo) {
+      width: 16px;
+      height: 16px;
+      opacity: 0.85;
+      flex: 0 0 auto;
     }
     /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
     @media (max-width: 600px) {
@@ -111,149 +105,167 @@ export class AhModelPicker extends LitElement {
         overflow: hidden;
       }
       .trigger:hover {
-        padding: 0; /* 触屏无 hover 语义，避免胶囊挤压 logo */
+        padding: 0;
       }
       .trigger .name,
       .trigger > svg:not(.vlogo) {
         display: none;
       }
-      .trigger .vlogo {
-        width: 26px;
-        height: 26px;
-        font-size: 12px;
-      }
     }
-    .trigger svg {
-      flex-shrink: 0;
-      width: 10px;
-      height: 6px;
+    /* 厂商徽标 */
+    .vlogo {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      flex: 0 0 auto;
+      line-height: 1;
     }
-
-    /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
+    .vlogo-sys {
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
+    }
+    /* 面板容器 */
     .panel {
       position: absolute;
+      bottom: calc(100% + 8px);
       right: 0;
-      bottom: calc(100% + 10px);
-      z-index: 60;
-      width: 264px;
-      max-width: calc(100vw - 24px);
-      max-height: min(420px, 70vh);
+      width: min(92vw, 360px);
+      max-height: min(70vh, 460px);
+      background: var(--ah-surface-2, #1c1c1c);
+      border: 1px solid var(--ah-border, #2a2a2a);
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
       display: flex;
       flex-direction: column;
-      background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
-      border-radius: var(--ah-radius-lg, 12px);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
       overflow: hidden;
+      z-index: 30;
     }
-
-    /* 顶部：选项区（思考开关），与列表用分隔线隔开 */
-    .options {
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--ah-border);
-      flex-shrink: 0;
+    .panel-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--ah-border, #2a2a2a);
     }
-    .opt-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-    }
-    .opt-label {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--ah-text);
-    }
-    /* 开关：纯 CSS toggle */
-    .switch {
-      appearance: none;
-      width: 34px;
-      height: 20px;
-      border-radius: 999px;
-      background: var(--ah-surface-3, var(--ah-surface-2));
-      border: 1px solid var(--ah-border);
-      position: relative;
-      cursor: pointer;
-      outline: none;
-      transition: background 0.15s, border-color 0.15s;
-      flex-shrink: 0;
-      margin: 0;
-    }
-    .switch::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      background: var(--ah-text-muted);
-      transition: transform 0.15s, background 0.15s;
-    }
-    .switch:checked {
-      background: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 30%,
-        transparent
-      );
-      border-color: var(--ah-accent, #2997ff);
-    }
-    .switch:checked::after {
-      transform: translateX(14px);
-      background: var(--ah-accent, #2997ff);
-    }
-
-    /* 搜索框 */
-    .search-wrap {
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--ah-border);
-      flex-shrink: 0;
-    }
-    .search {
+    .panel-head input {
       width: 100%;
       box-sizing: border-box;
-      background: var(--ah-surface-2);
-      border: 1px solid var(--ah-border);
-      border-radius: 8px;
+      background: transparent;
       color: var(--ah-text);
-      padding: 6px 9px;
-      font-size: 12px;
+      border: none;
       outline: none;
+      font: inherit;
+      font-size: 14px;
     }
-    .search:focus {
-      border-color: var(--ah-accent, #2997ff);
-    }
-
-    /* 模型列表 */
-    .list {
-      flex: 1 1 auto;
+    .panel-body {
       overflow-y: auto;
-      min-height: 60px;
-      padding: 4px 0;
+      padding: 6px 0;
     }
+    /* 分组标题 */
+    .group-title {
+      font-size: 11px;
+      color: var(--ah-text-muted, #9e9e9e);
+      padding: 8px 14px 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      user-select: none;
+    }
+    /* 模型条目 */
     .item {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      width: 100%;
-      box-sizing: border-box;
-      padding: 8px 14px;
-      border: none;
-      background: transparent;
-      color: var(--ah-text);
-      font-size: 13px;
-      text-align: left;
+      gap: 10px;
+      padding: 7px 12px;
       cursor: pointer;
-      word-break: break-all;
+      user-select: none;
     }
     .item:hover {
-      background: var(--ah-surface-2);
+      background: rgba(125, 125, 125, 0.12);
+    }
+    .item .name {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 13px;
+      line-height: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .item .check {
-      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
       color: var(--ah-accent, #2997ff);
-      font-weight: 700;
+      flex: 0 0 auto;
+    }
+    /* 底部操作行 */
+    .footer {
+      display: flex;
+      border-top: 1px solid var(--ah-border, #2a2a2a);
+    }
+    .footer button {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 10px 0;
+      flex: 1 1 auto;
+    }
+    .footer button:hover {
+      color: var(--ah-text);
+      background: rgba(125, 125, 125, 0.1);
+    }
+    .footer button + button {
+      border-left: 1px solid var(--ah-border, #2a2a2a);
+    }
+    /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
+    .add-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--ah-border, #2a2a2a);
+    }
+    .add-row input {
+      background: transparent;
+      color: var(--ah-text);
+      border: 1px solid var(--ah-border, #2a2a2a);
+      border-radius: 10px;
+      padding: 8px 10px;
+      outline: none;
+      font: inherit;
+      font-size: 13px;
+    }
+    .add-row input:focus {
+      border-color: var(--ah-accent, #2997ff);
+    }
+    .add-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .add-actions button {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      padding: 7px 12px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--ah-accent, #2997ff);
+      color: #fff;
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
     }
     /* 自定义模型条目：主体（选择）+ 右侧「编辑」按钮 */
     .item.custom-item {
@@ -264,319 +276,49 @@ export class AhModelPicker extends LitElement {
       min-width: 0;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 8px 0 8px 14px;
-      border: none;
-      background: transparent;
-      color: var(--ah-text);
-      font-size: 13px;
+      gap: 10px;
+      padding: 7px 12px;
       text-align: left;
       cursor: pointer;
       word-break: break-all;
     }
-    .custom-item:hover {
-      background: var(--ah-surface-2);
-    }
-    .item-edit {
-      flex-shrink: 0;
+    .custom-edit {
+      appearance: none;
       border: none;
       background: transparent;
-      color: var(--ah-text-muted);
-      font-size: 13px;
-      padding: 8px 12px;
+      color: var(--ah-text-muted, #9e9e9e);
       cursor: pointer;
-      transition: color 0.15s;
+      padding: 7px 10px;
+      font: inherit;
+      font-size: 12px;
     }
-    .item-edit:hover {
-      color: var(--ah-accent, #2997ff);
-    }
-
-    /* ---- 按供应商折叠的分组 ---- */
-    .group + .group {
-      border-top: 1px solid var(--ah-border);
-    }
-    .group-head {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      width: 100%;
-      box-sizing: border-box;
-      padding: 7px 14px;
-      border: none;
-      background: var(--ah-surface-2, transparent);
-      color: var(--ah-text-muted);
-      font-size: 11px;
-      font-weight: 600;
-      text-align: left;
-      letter-spacing: 0.04em;
-      cursor: pointer;
-      transition: color 0.15s, background 0.15s;
-    }
-    .group-head:hover {
+    .custom-edit:hover {
       color: var(--ah-text);
-      background: var(--ah-surface-3, var(--ah-surface-2));
-    }
-    .group-head .vendor {
-      flex: 1 1 auto;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      text-transform: capitalize;
-    }
-    .group-head .count {
-      flex-shrink: 0;
-      font-size: 10px;
-      font-weight: 500;
-      background: var(--ah-surface-3, rgba(128, 128, 128, 0.15));
-      border-radius: 999px;
-      padding: 0 7px;
-      line-height: 16px;
-    }
-    .group-head .chev {
-      flex-shrink: 0;
-      width: 8px;
-      height: 5px;
-      transition: transform 0.15s;
-    }
-    .group-head.collapsed .chev {
-      transform: rotate(-90deg);
-    }
-    /* Free 分组：弱化配色 + 警示色调，提示限速风险；置于清单最末、默认折叠。 */
-    .group-free .group-head {
-      color: color-mix(
-        in srgb,
-        var(--ah-warn, #e6a23c) 75%,
-        var(--ah-text-muted)
-      );
-    }
-    .group-free .group-head:hover {
-      color: var(--ah-warn, #e6a23c);
-    }
-    /* 自定义模型分组：置于清单最末，标题不可折叠（数量少、常驻可见）。 */
-    .group-custom .group-head.static {
-      cursor: default;
-    }
-    .group-custom .group-head.static:hover {
-      color: var(--ah-text-muted);
-      background: var(--ah-surface-2, transparent);
-    }
-    .empty {
-      padding: 16px 14px;
-      color: var(--ah-text-muted);
-      font-size: 12px;
-      text-align: center;
-    }
-
-    /* 底部操作条 */
-    .footer {
-      display: flex;
-      align-items: stretch;
-      border-top: 1px solid var(--ah-border);
-      flex-shrink: 0;
-    }
-    .footer button {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted);
-      font-size: 12px;
-      padding: 10px 6px;
-      cursor: pointer;
-      transition: color 0.15s, background 0.15s;
-    }
-    .footer button:hover {
-      color: var(--ah-text);
-      background: var(--ah-surface-2);
-    }
-    .footer button + button {
-      border-left: 1px solid var(--ah-border);
-    }
-
-    /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
-    .add-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--ah-border);
-      flex-shrink: 0;
-    }
-    .add-input {
-      flex: 1;
-      min-width: 0;
-      box-sizing: border-box;
-      background: var(--ah-surface-2);
-      border: 1px solid var(--ah-border);
-      border-radius: 8px;
-      color: var(--ah-text);
-      padding: 6px 9px;
-      font-size: 12px;
-      outline: none;
-    }
-    .add-input:focus {
-      border-color: var(--ah-accent, #2997ff);
-    }
-    /* 编辑态：接口地址 / 模型名称只读（仅 API Key 可改），弱化外观提示不可编辑 */
-    .add-input[readonly] {
-      color: var(--ah-text-muted);
-      opacity: 0.75;
-      cursor: not-allowed;
-      border-style: dashed;
-    }
-    .add-ok {
-      border: none;
-      background: var(--ah-accent, #2997ff);
-      color: #fff;
-      border-radius: 8px;
-      font-size: 12px;
-      padding: 6px 12px;
-      cursor: pointer;
-    }
-
-    /* 遮罩：点击空白处关闭（移动端友好） */
-    .scrim {
-      position: fixed;
-      inset: 0;
-      z-index: 50;
-      background: transparent;
-      border: none;
-      padding: 0;
-      cursor: default;
     }
   `;
 
-  /** 当前模型（空串 = 服务端默认）。由宿主双向同步。 */
-  @property({ type: String }) model = '';
-
-  /** 深度思考开关（状态由宿主持有并透传）。 */
-  @property({ type: Boolean }) deepThink = true;
-
-  /** 联网搜索开关（状态由宿主持有并透传）。 */
-  @property({ type: Boolean }) web = false;
+  @property({ attribute: false }) model = '';
+  @property({ attribute: false }) deepThink = false;
+  @property({ attribute: false }) web = false;
 
   @state() private open = false;
   @state() private query = '';
   @state() private adding = false;
-  /** 正在编辑的自定义模型 id（空串 = 添加新模型而非编辑）。 */
   @state() private editingId = '';
-
-  /** 按供应商折叠的分组展开态（key = 供应商名；缺省全部展开）。 */
   @state() private collapsed: Record<string, boolean> = {};
+  @state() private remote: RemoteModel[] = [];
+  @state() private customs: CustomModel[] = [];
 
   /** 自定义模型表单三项：接口地址 / API Key / 模型名称。 */
   @state() private draftBaseUrl = '';
   @state() private draftApiKey = '';
   @state() private draftId = '';
 
-  /** 自定义模型清单（localStorage 持久化，含 baseUrl/apiKey）。 */
-  @state() private customs: CustomModel[] = [];
+  /** 是否正在保存到后端（按钮 loading 态）。 */
+  @state() private saving = false;
 
   /** 「刷新」拉取到的在线模型清单（含官方上下文窗口；失败为空）。 */
-  @state() private remote: RemoteModel[] = [];
-
-  private loadCustoms(): CustomModel[] {
-    try {
-      const raw = localStorage.getItem(CUSTOM_KEY);
-      const arr = raw ? (JSON.parse(raw) as unknown) : [];
-      return normalizeCustom(arr);
-    } catch {
-      return [];
-    }
-  }
-
-  private saveCustoms(list: CustomModel[]) {
-    try {
-      localStorage.setItem(CUSTOM_KEY, JSON.stringify(list));
-    } catch {
-      /* 隐私模式忽略 */
-    }
-  }
-
-  connectedCallback() {
-    super.connectedCallback();
-    this.customs = this.loadCustoms();
-    this.refreshModels();
-    // 面板外点关闭兜底（document 级捕获 pointerdown）：
-    // 不依赖 fixed 遮罩的 CSS 几何 —— 祖先的 transform/filter 会劫持 fixed
-    // 元素的包含块、让全视口遮罩缩水失效；此监听保证点空白必定可关。
-    // 必须用 composedPath() 判断命中：面板在本组件 shadow root 内，
-    // document 监听拿到的 e.target 已被重定向到宿主元素，closest 会失配。
-    // 命中面板或触发按钮则忽略（触发按钮由自身 click 切换）。
-    this.onDocPointerDown = (e: PointerEvent) => {
-      if (!this.open) return;
-      const path = e.composedPath();
-      const inside = path.some(
-        (n) =>
-          n instanceof Element &&
-          (n.classList.contains('panel') || n.classList.contains('trigger'))
-      );
-      if (!inside) this.toggle(false);
-    };
-    document.addEventListener('pointerdown', this.onDocPointerDown, true);
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    if (this.onDocPointerDown)
-      document.removeEventListener('pointerdown', this.onDocPointerDown, true);
-  }
-
-  /** 外点监听句柄（connectedCallback 装载，disconnectedCallback 卸载）。 */
-  private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
-
-  /** 合并去重后的完整模型清单：远程 > 自定义 > 内置预设（各自保序）。 */
-  private get allModels(): string[] {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const m of [
-      ...this.remote.map((r) => r.id),
-      ...this.customs.map((c) => c.id)
-    ]) {
-      const k = m.trim();
-      if (k && !seen.has(k)) {
-        seen.add(k);
-        out.push(k);
-      }
-    }
-    return out;
-  }
-
-  /** 查询某模型的官方上下文窗口；未知返回 0（宿主据此隐藏用量展示）。 */
-  private ctxFor(id: string): number {
-    return this.remote.find((r) => r.id === id)?.ctx ?? 0;
-  }
-
-  private toggle(open: boolean) {
-    this.open = open;
-    if (!open) {
-      // 关闭时重置瞬态状态，下次打开回到干净视图。
-      this.query = '';
-      this.adding = false;
-      this.editingId = '';
-      this.draftId = '';
-      this.draftBaseUrl = '';
-      this.draftApiKey = '';
-    }
-  }
-
-  /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。 */
-  private startEdit(id: string) {
-    const c = this.customs.find((x) => x.id === id);
-    if (!c) return;
-    this.editingId = id;
-    this.adding = true;
-    this.draftId = c.id;
-    this.draftBaseUrl = c.baseUrl ?? '';
-    this.draftApiKey = c.apiKey ?? '';
-  }
-
-  /** 尝试拉取 OpenRouter 公共模型列表（无需密钥）；失败静默保留本地清单。 */
-  private async refreshModels() {
+  async refreshModels() {
     try {
       // 全量拉取（output_modalities=text 只排除非文本输出模型，如图像/音频生成）。
       // 那只会返回免费变体，官方付费模型的 context_length 全部拿不到。
@@ -679,13 +421,61 @@ export class AhModelPicker extends LitElement {
     );
   }
 
-  private submitDraft() {
+  /** 查询某模型的官方上下文窗口；未知返回 0（宿主据此隐藏用量展示）。 */
+  private ctxFor(id: string): number {
+    return this.remote.find((r) => r.id === id)?.ctx ?? 0;
+  }
+
+  private toggle(open: boolean) {
+    this.open = open;
+    if (!open) {
+      // 关闭时重置瞬态状态，下次打开回到干净视图。
+      this.query = '';
+      this.adding = false;
+      this.editingId = '';
+      this.draftId = '';
+      this.draftBaseUrl = '';
+      this.draftApiKey = '';
+    }
+  }
+
+  /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。 */
+  private startEdit(id: string) {
+    const c = this.customs.find((x) => x.id === id);
+    if (!c) return;
+    this.editingId = id;
+    this.adding = true;
+    this.draftId = c.id;
+    this.draftBaseUrl = c.baseUrl ?? '';
+    this.draftApiKey = c.apiKey ?? '';
+  }
+
+  /** 提交自定义模型（新增/编辑）：加密 apiKey 后保存到后端 SQLite。 */
+  private async submitDraft() {
     const id = this.draftId.trim();
     if (!id) return;
     const baseUrl = this.draftBaseUrl.trim();
     const apiKey = this.draftApiKey.trim();
     const editing = this.editingId === id && this.isCustom(id);
-    // 同名已存在时更新其端点配置，否则插入到最前。
+    // 加密 apiKey（前端 build-time key，后端同源可解密）。
+    const encryptedApiKey = apiKey ? await encryptApiKey(apiKey) : undefined;
+    // 同步到后端 SQLite。
+    this.saving = true;
+    try {
+      const body: Record<string, unknown> = { id, ...(baseUrl ? { baseUrl } : {}) };
+      if (encryptedApiKey) body.apiKey = encryptedApiKey;
+      const res = await fetch('/api/custom-models', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      /* 离线 / 失败：静默忽略，不打断编辑流 */
+    } finally {
+      this.saving = false;
+    }
+    // 本地状态同步。
     const rest = this.customs.filter((c) => c.id !== id);
     const prev = editing ? this.customs.find((c) => c.id === id) : undefined;
     this.customs = [
@@ -699,11 +489,10 @@ export class AhModelPicker extends LitElement {
           : baseUrl
           ? { baseUrl }
           : {}),
-        ...(apiKey ? { apiKey } : {})
+        ...(encryptedApiKey ? { apiKey: encryptedApiKey } : {})
       },
       ...rest
     ];
-    this.saveCustoms(this.customs);
     this.draftId = '';
     this.draftBaseUrl = '';
     this.draftApiKey = '';
@@ -836,317 +625,235 @@ export class AhModelPicker extends LitElement {
    * @param name 面板标题
    * @param items 模型清单（已按搜索过滤）
    * @param free 是否为 Free 面板（警示色调）
-   * @param expanded 初始展开态（Free/其他默认折叠，自定义默认展开）
    */
   private renderGroup(
     name: string,
     items: string[],
-    free: boolean,
-    expanded: boolean
+    free = false
   ): TemplateResult {
-    const collapsed = !expanded;
-    // 组内模型按展示名 A-Z 排序（Free 面板里混着多厂商变体，排序后更易查找）。
-    const sorted = [...items].sort((a, b) =>
-      this.displayName(a).localeCompare(this.displayName(b))
-    );
+    const collapsed = this.collapsed[name] ?? true;
     return html`
-      <div class="group ${free ? 'group-free' : ''}">
-        <button
-          class="group-head ${collapsed ? 'collapsed' : ''}"
-          title=${collapsed
-            ? `展开 ${name}（${items.length}）`
-            : `折叠 ${name}`}
-          aria-expanded=${collapsed ? 'false' : 'true'}
-          @click=${() => this.toggleGroup(name, expanded)}
-        >
+      <div class="group">
+        <div class="group-title" @click=${() => {
+          this.collapsed = { ...this.collapsed, [name]: !collapsed };
+        }}>
+          ${name}
           <svg
             class="chev"
-            viewBox="0 0 10 6"
+            viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            stroke-width="1.5"
+            stroke-width="2"
             stroke-linecap="round"
             stroke-linejoin="round"
+            style="width:14px;height:14px;vertical-align:middle;transition:transform .15s ease;transform:${collapsed ? 'rotate(0deg)' : 'rotate(180deg)'}"
           >
-            <path d="M1 1l4 4 4-4" />
+            <path d="M6 9l6 6 6-6" />
           </svg>
-          <span class="vendor">${name}</span>
-          <span class="count">${items.length}</span>
-        </button>
+        </div>
         ${collapsed
           ? nothing
-          : html`
-              <div class="group-items">
-                ${sorted.map(
-                  (m) => html`
-                    <button
-                      class="item"
-                      title=${m}
-                      @click=${() => this.pick(m)}
-                    >
-                      <span>${this.displayName(m)}</span>
-                      ${this.model === m
-                        ? html`<span class="check">✓</span>`
-                        : nothing}
-                    </button>
-                  `
-                )}
-              </div>
-            `}
-      </div>
-    `;
-  }
-
-  /**
-   * 切换分组展开/折叠。必须基于渲染时传入的当前视觉状态（expanded）翻转：
-   * 折叠态用「键缺失 = undefined」表示默认折叠，直接对 undefined 取反会写出
-   * true（仍视为折叠）——这正是首次点击需要点两次才展开的根因。
-   */
-  private toggleGroup(vendor: string, currentlyExpanded: boolean) {
-    this.collapsed = { ...this.collapsed, [vendor]: currentlyExpanded };
-  }
-
-  private renderPanel() {
-    const q = this.query.trim().toLowerCase();
-    const match = (m: string) => !q || m.toLowerCase().includes(q);
-    // 展示顺序：默认模型 → Free（默认折叠）→ 其他模型/非 Free（默认折叠）→ 自定义模型（默认展开）。
-    const customIds = this.customs.map((c) => c.id);
-    const customs = customIds.filter(match);
-    const remoteIds = this.allModels.filter((m) => !customIds.includes(m));
-    // Free 面板：:free 变体；「其他」面板：全部非 Free（远程付费 + 内置预设）。
-    // 自定义模型不混入其他面板，独立成组置底。
-    const freeModels = remoteIds.filter((m) => this.isFreeId(m) && match(m));
-    const otherModels = remoteIds.filter((m) => !this.isFreeId(m) && match(m));
-    return html`
-      <button
-        class="scrim"
-        aria-label="关闭模型选择"
-        @click=${() => this.toggle(false)}
-      ></button>
-      <div class="panel" role="dialog" aria-label="模型选择">
-        <div class="options">
-          <div class="opt-row">
-            <span class="opt-label">思考</span>
-            <input
-              class="switch"
-              type="checkbox"
-              role="switch"
-              aria-label="深度思考"
-              .checked=${this.deepThink}
-              @change=${this.toggleThink}
-            />
-          </div>
-          <div class="opt-row" style="margin-top:8px">
-            <span class="opt-label">联网搜索</span>
-            <input
-              class="switch"
-              type="checkbox"
-              role="switch"
-              aria-label="联网搜索"
-              .checked=${this.web}
-              @change=${this.toggleWeb}
-            />
-          </div>
-        </div>
-        <div class="search-wrap">
-          <input
-            class="search"
-            type="text"
-            placeholder="搜索模型…"
-            .value=${this.query}
-            @input=${(e: Event) =>
-              (this.query = (e.target as HTMLInputElement).value)}
-          />
-        </div>
-        ${this.adding
-          ? html`<div class="add-row">
-              <input
-                class="add-input"
-                type="text"
-                placeholder="接口地址（可选，如 https://api.example.com/v1）"
-                .value=${this.draftBaseUrl}
-                ?readonly=${this.editingId !== ''}
-                title=${this.editingId ? '编辑时不可修改接口地址' : ''}
-                @input=${(e: Event) =>
-                  (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
-              />
-              <input
-                class="add-input"
-                type="password"
-                placeholder="API Key（可选，留空用服务端默认）"
-                autocomplete="off"
-                .value=${this.draftApiKey}
-                @input=${(e: Event) =>
-                  (this.draftApiKey = (e.target as HTMLInputElement).value)}
-              />
-              <input
-                class="add-input"
-                type="text"
-                placeholder="模型名称（必填，如 vendor/model-name）"
-                .value=${this.draftId}
-                ?readonly=${this.editingId !== ''}
-                title=${this.editingId ? '编辑时不可修改模型名称' : ''}
-                @keydown=${(e: KeyboardEvent) => {
-                  if (e.key === 'Enter') this.submitDraft();
-                  if (e.key === 'Escape') this.adding = false;
-                }}
-                @input=${(e: Event) =>
-                  (this.draftId = (e.target as HTMLInputElement).value)}
-              />
-              <button class="add-ok" @click=${() => this.submitDraft()}>
-                ${this.editingId ? '保存' : '添加'}
-              </button>
-            </div>`
-          : nothing}
-        <div class="list">
-          ${freeModels.length === 0 &&
-          otherModels.length === 0 &&
-          customs.length === 0
-            ? html`<div class="empty">没有匹配的模型</div>`
-            : html`
-                <button
-                  class="item"
-                  title="使用服务端默认模型"
-                  @click=${() => this.pick('')}
-                >
-                  <span>默认模型</span>
-                  ${this.model === ''
-                    ? html`<span class="check">✓</span>`
-                    : nothing}
-                </button>
-                <!-- 面板一：Free（:free 变体，默认折叠，警示色调；可折叠/展开） -->
-                ${freeModels.length
-                  ? this.renderGroup(
-                      'Free',
-                      freeModels,
-                      true,
-                      this.collapsed['Free'] === false
-                    )
-                  : nothing}
-                <!-- 面板二起：按供应商 A-Z 分组（同厂商模型合并，每组默认折叠） -->
-                ${this.groupByVendor(otherModels).map(({ vendor, items }) =>
-                  this.renderGroup(
-                    vendor,
-                    items,
-                    false,
-                    this.collapsed[vendor] === false
-                  )
-                )}
-                <!-- 自定义模型：用户手动添加，默认展开；每项带「编辑」（仅 API Key 可改） -->
-                ${customs.length
-                  ? html`<div class="group group-custom">
-                      <button
-                        class="group-head"
-                        title=${`折叠 自定义模型`}
-                        aria-expanded=${this.collapsed['自定义模型']
-                          ? 'false'
-                          : 'true'}
-                        @click=${() =>
-                          this.toggleGroup(
-                            '自定义模型',
-                            !this.collapsed['自定义模型']
-                          )}
-                      >
-                        <svg
-                          class="chev"
-                          viewBox="0 0 10 6"
+          : html`<div class="panel-body">
+              ${items.map((id) => {
+                const active = this.model === id;
+                return html`
+                  <div
+                    class="item ${this.isCustom(id) ? 'custom-item' : ''}"
+                    @click=${() => this.pick(id)}
+                  >
+                    ${this.isCustom(id)
+                      ? html`
+                          <button
+                            class="custom-edit"
+                            title="编辑自定义模型"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.startEdit(id);
+                            }}
+                          >编辑</button
+                        >`
+                      : nothing}
+                    <span class="name">${this.displayName(id)}</span>
+                    ${active
+                      ? html`<svg
+                          class="check"
+                          viewBox="0 0 24 24"
                           fill="none"
                           stroke="currentColor"
-                          stroke-width="1.5"
+                          stroke-width="2.5"
                           stroke-linecap="round"
                           stroke-linejoin="round"
                         >
-                          <path d="M1 1l4 4 4-4" />
-                        </svg>
-                        <span class="vendor">自定义模型</span>
-                        <span class="count">${customs.length}</span>
-                      </button>
-                      ${this.collapsed['自定义模型']
-                        ? nothing
-                        : html`<div class="group-items">
-                            ${customs.map(
-                              (m) => html`
-                                <div class="item custom-item">
-                                  <button
-                                    class="custom-main"
-                                    title=${m}
-                                    @click=${() => this.pick(m)}
-                                  >
-                                    <span>${this.displayName(m)}</span>
-                                    ${this.model === m
-                                      ? html`<span class="check">✓</span>`
-                                      : nothing}
-                                  </button>
-                                  <button
-                                    class="item-edit"
-                                    title="编辑 API Key"
-                                    aria-label="编辑 ${m} 的 API Key"
-                                    @click=${(e: Event) => {
-                                      e.stopPropagation();
-                                      this.startEdit(m);
-                                    }}
-                                  >
-                                    ✎
-                                  </button>
-                                </div>`
-                            )}
-                          </div>`}
-                    </div>`
-                  : nothing}
-              `}
-        </div>
-        <div class="footer">
-          <button
-            title="从 OpenRouter 拉取最新模型清单"
-            @click=${() => void this.refreshModels()}
-          >
-            ⟳ 刷新模型
-          </button>
-          <button
-            title="手动添加自定义模型 ID"
-            @click=${() => (this.adding = true)}
-          >
-            ＋ 添加自定义模型
-          </button>
-        </div>
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>`
+                      : nothing}
+                  </div>
+                `;
+              })}
+            </div>`}
       </div>
     `;
   }
 
   render() {
+    const q = this.query.trim().toLowerCase();
+    // 过滤：远程列表 + 自定义列表。
+    const filteredRemote = q
+      ? this.remote.filter((m) => m.id.toLowerCase().includes(q))
+      : this.remote;
+    const filteredCustom = q
+      ? this.customs.filter((c) => c.id.toLowerCase().includes(q))
+      : this.customs;
+
+    const free = filteredRemote.filter((m) => this.isFreeId(m.id));
+    const nonFree = filteredRemote
+      .filter((m) => !this.isFreeId(m.id))
+      .map((m) => m.id);
+    const groups = this.groupByVendor(nonFree);
+
+    // 显示规则：Free 面板始终显示（哪怕空），分组无结果时隐藏该组。
+    const hasCustoms = filteredCustom.length > 0;
+    const showFree = true;
+    const showCustoms = hasCustoms;
+
     return html`
-      <button
-        class="trigger"
-        part="trigger"
-        title="选择模型"
-        aria-haspopup="dialog"
-        aria-expanded=${this.open ? 'true' : 'false'}
-        @click=${() => this.toggle(!this.open)}
-      >
-        <!-- 始终渲染徽标：移动端文字与箭头被隐藏后，logo 是唯一可见元素；
-             未选模型 / 自定义模型走系统芯片图标兜底（renderVendorLogo 内部处理）。 -->
-        ${this.renderVendorLogo(this.model)}
-        <span class="name"
-          >${this.model ? this.displayName(this.model) : '默认模型'}</span
+      <div class="wrap">
+        <button
+          class="trigger"
+          title="选择模型"
+          aria-haspopup="listbox"
+          aria-expanded="${this.open}"
+          @click=${() => this.toggle(!this.open)}
         >
-        <svg
-          viewBox="0 0 10 6"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M1 1l4 4 4-4" />
-        </svg>
-      </button>
-      ${this.open ? this.renderPanel() : nothing}
+          ${this.renderVendorLogo(this.model)}
+          <span class="name"
+            >${this.model ? this.displayName(this.model) : '默认模型'}</span
+          >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </button>
+
+        ${this.open
+          ? html`<div class="panel" role="listbox">
+              <div class="panel-head">
+                <input
+                  placeholder="搜索模型…"
+                  .value=${this.query}
+                  @input=${(e: Event) =>
+                    (this.query = (e.target as HTMLInputElement).value)}
+                />
+              </div>
+              <div class="panel-body">
+                ${showFree
+                  ? this.renderGroup('Free', free.map((m) => m.id), true)
+                  : nothing}
+                ${groups.map(({ vendor, items }) =>
+                  this.renderGroup(vendor, items)
+                )}
+                ${showCustoms
+                  ? this.renderGroup('自定义', filteredCustom.map((c) => c.id))
+                  : nothing}
+              </div>
+              <div class="footer">
+                <button @click=${() => this.refreshModels()}>刷新模型</button>
+                <button
+                  @click=${() => {
+                    this.adding = !this.adding;
+                    this.editingId = '';
+                    this.draftId = '';
+                    this.draftBaseUrl = '';
+                    this.draftApiKey = '';
+                  }}
+                >
+                  ${this.adding ? '取消添加' : '添加自定义模型'}
+                </button>
+              </div>
+              ${this.adding
+                ? html`<div class="add-row">
+                    <input
+                      placeholder="模型名称（如 my-model）"
+                      .value=${this.draftId}
+                      @input=${(e: Event) =>
+                        (this.draftId = (e.target as HTMLInputElement).value)}
+                    />
+                    <input
+                      placeholder="接口地址（可选，OpenAI 兼容端点）"
+                      .value=${this.draftBaseUrl}
+                      @input=${(e: Event) =>
+                        (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
+                    />
+                    <input
+                      placeholder="API Key（可选，将加密保存）"
+                      .value=${this.draftApiKey}
+                      type="password"
+                      @input=${(e: Event) =>
+                        (this.draftApiKey = (e.target as HTMLInputElement).value)}
+                    />
+                    <div class="add-actions">
+                      <button
+                        class="btn-ghost"
+                        @click=${() => {
+                          this.adding = false;
+                          this.draftId = '';
+                          this.draftBaseUrl = '';
+                          this.draftApiKey = '';
+                        }}
+                      >
+                        取消
+                      </button>
+                      <button
+                        class="btn-primary"
+                        ?disabled=${this.saving}
+                        @click=${() => this.submitDraft()}
+                      >
+                        ${this.saving ? '保存中…' : '保存'}
+                      </button>
+                    </div>
+                  </div>`
+                : nothing}
+            </div>`
+          : nothing}
+      </div>
     `;
   }
-}
 
-declare global {
-  interface HTMLElementTagNameMap {
-    'ah-model-picker': AhModelPicker;
+  // 外点监听句柄（connectedCallback 装载，disconnectedCallback 卸载）。
+  private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.refreshModels();
+    // 面板外点关闭兜底（document 级捕获 pointerdown）：
+    // 不依赖 fixed 遮罩的 CSS 几何 —— 祖先的 transform/filter 会劫持 fixed
+    // 元素的包含块、让全视口遮罩缩水失效；此监听保证点空白必定可关。
+    // 必须用 composedPath() 判断命中：面板在本组件 shadow root 内，
+    // document 监听拿到的 e.target 已被重定向到宿主元素，closest 会失配。
+    // 命中面板或触发按钮则忽略（触发按钮由自身 click 切换）。
+    this.onDocPointerDown = (e: PointerEvent) => {
+      if (!this.open) return;
+      const path = e.composedPath();
+      const inside = path.some(
+        (n) =>
+          n instanceof Element &&
+          (n.classList.contains('panel') || n.classList.contains('trigger'))
+      );
+      if (!inside) this.toggle(false);
+    };
+    document.addEventListener('pointerdown', this.onDocPointerDown, true);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.onDocPointerDown)
+      document.removeEventListener('pointerdown', this.onDocPointerDown, true);
   }
 }

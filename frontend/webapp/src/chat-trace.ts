@@ -6,7 +6,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import type { TraceNode } from '@agent-harness/client';
 import { escapeHtml } from './markdown';
-import { renderJsonHtml } from './components/json-view';
+import { renderJsonHtml } from './utils/json-view';
 
 /** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
 export interface Insights {
@@ -43,8 +43,7 @@ export function renderTraceNode(n: TraceNode): TemplateResult {
   const hasResult = n.result != null && n.result.trim().length > 0;
   const isRetrieval = n.kind === 'retrieval';
   // run/step/llm 默认展开，叶子节点（工具/检索/成本）默认收起。
-  const defaultOpen =
-    n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
+  const defaultOpen = n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
   return html`
     <details
       class="tnode kind-${n.kind} status-${n.status}"
@@ -160,7 +159,11 @@ export function parseCostBreakdown(
     const num = parseInt(String(raw), 10);
     if (!Number.isFinite(num)) continue;
     const pctMatch = String(raw).match(/\((\d+(?:\.\d+)?)%\)/);
-    out.push({ label: cn, tokens: num, pct: pctMatch ? Number(pctMatch[1]) : 0 });
+    out.push({
+      label: cn,
+      tokens: num,
+      pct: pctMatch ? Number(pctMatch[1]) : 0
+    });
   }
   if (!out.length) return undefined;
   // 百分比缺失的项按「该项 tokens ÷ 已解析各项之和」兜底，保证进度条始终有意义。
@@ -227,13 +230,15 @@ export function renderInsights(ins: Insights) {
           </div>
         </div>`
       : // 稳定降级：已有 Token 总量但分项缺失（旧落盘 trace / 事件未带 estTokens）时，
-        // 展示占位说明而非静默消失，避免模块「时有时无」的观感；完全无用量数据（如 mock）
-        // 才整体隐藏。
+      // 展示占位说明而非静默消失，避免模块「时有时无」的观感；完全无用量数据（如 mock）
+      // 才整体隐藏。
       ins.costTokens
       ? html`<div class="ins-breakdown">
           <div class="ins-bd-title">Token 拆解</div>
           <div class="ins-bd-bars">
-            <div class="ins-bd-empty">暂无分项数据（本次运行未返回拆解明细）</div>
+            <div class="ins-bd-empty">
+              暂无分项数据（本次运行未返回拆解明细）
+            </div>
           </div>
         </div>`
       : nothing}
@@ -256,4 +261,3 @@ export function renderInsights(ins: Insights) {
       : nothing}
   `;
 }
-

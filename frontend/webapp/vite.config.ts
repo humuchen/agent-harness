@@ -3,6 +3,11 @@ import { defineConfig } from 'vite';
 // 构建产物默认输出到 dist/（frontend/webapp/dist），
 // 由 access/server 服务端同源托管（server.ts 优先读取该目录）。
 export default defineConfig({
+  define: {
+    // build-time 注入 AES-256 key（64 hex chars）；前端用于 AES-GCM 加密自定义模型 apiKey。
+    // 要求：AH_CRYPTO_KEY 环境变量为 64 位十六进制字符串（32 bytes）。
+    __AH_CRYPTO_KEY__: JSON.stringify(process.env.AH_CRYPTO_KEY || ''),
+  },
   build: {
     // 输出为可直接被 node:http 静态托管的纯静态资源（无 SSR）。
     target: 'es2022',

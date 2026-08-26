@@ -13,15 +13,20 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
-export type TenantResolution = { tenantId: string } | { error: number; message: string };
+export type TenantResolution =
+  | { tenantId: string }
+  | { error: number; message: string };
 
 export interface ResolveOptions {
   /** secret -> tenantId 映射（多租户静态令牌）。 */
   tokens?: Map<string, string>;
+
   /** 开放模式（无令牌/JWT）时的默认租户。 */
   defaultTenant?: string;
+
   /** 启用 JWT 校验的 HMAC 密钥；未配置则仅静态令牌可用。 */
   jwtSecret?: string;
+
   /** JWT 中承载租户的声明名，默认 "tenant"。 */
   jwtTenantClaim?: string;
 }
@@ -34,33 +39,50 @@ function b64url(input: string | Buffer): string {
 export function signJwt(
   payload: Record<string, unknown>,
   secret: string,
-  opts?: { expiresInSec?: number; kid?: string },
+  opts?: { expiresInSec?: number; kid?: string }
 ): string {
-  const header = { alg: 'HS256', typ: 'JWT', ...(opts?.kid ? { kid: opts.kid } : {}) };
+  const header = {
+    alg: 'HS256',
+    typ: 'JWT',
+    ...(opts?.kid ? { kid: opts.kid } : {})
+  };
   const now = Math.floor(Date.now() / 1000);
   const body: Record<string, unknown> = {
     ...payload,
     iat: payload.iat ?? now,
-    ...(opts?.expiresInSec ? { exp: now + opts.expiresInSec } : {}),
+    ...(opts?.expiresInSec ? { exp: now + opts.expiresInSec } : {})
   };
   const h = b64url(JSON.stringify(header));
   const p = b64url(JSON.stringify(body));
-  const sig = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
+  const sig = createHmac('sha256', secret)
+    .update(`${h}.${p}`)
+    .digest('base64url');
   return `${h}.${p}.${sig}`;
 }
 
 /** 校验 HS256 JWT；失败（签名/过期/格式）返回 null。 */
-export function verifyJwt(token: string, secret: string): Record<string, unknown> | null {
+export function verifyJwt(
+  token: string,
+  secret: string
+): Record<string, unknown> | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [h, p, s] = parts;
-  const expected = createHmac('sha256', secret).update(`${h}.${p}`).digest('base64url');
+  const expected = createHmac('sha256', secret)
+    .update(`${h}.${p}`)
+    .digest('base64url');
   const a = Buffer.from(s);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   try {
-    const payload = JSON.parse(Buffer.from(p, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    const payload = JSON.parse(
+      Buffer.from(p, 'base64url').toString('utf8')
+    ) as Record<string, unknown>;
+    if (
+      typeof payload.exp === 'number' &&
+      payload.exp < Math.floor(Date.now() / 1000)
+    )
+      return null;
     return payload;
   } catch {
     return null;
@@ -74,7 +96,10 @@ export function verifyJwt(token: string, secret: string): Record<string, unknown
  *   都失败 -> 401（缺令牌）/ 403（令牌无效）。
  * 若既无 tokens 也无 jwtSecret（开放模式），返回默认租户（仅限可信内网）。
  */
-export function resolveTenant(req: IncomingMessage, opts: ResolveOptions): TenantResolution {
+export function resolveTenant(
+  req: IncomingMessage,
+  opts: ResolveOptions
+): TenantResolution {
   const tokens = opts.tokens;
   const jwtSecret = opts.jwtSecret;
 
@@ -91,7 +116,9 @@ export function resolveTenant(req: IncomingMessage, opts: ResolveOptions): Tenan
   if (jwtSecret) {
     const payload = verifyJwt(raw, jwtSecret);
     if (payload) {
-      const tenant = String(payload[opts.jwtTenantClaim || 'tenant'] ?? payload.sub ?? '');
+      const tenant = String(
+        payload[opts.jwtTenantClaim || 'tenant'] ?? payload.sub ?? ''
+      );
       if (tenant) return { tenantId: tenant };
       return { error: 403, message: 'jwt missing tenant claim' };
     }

@@ -110,6 +110,8 @@ import { buildOpenApiSpec } from './openapi';
 import { handleUpload, serveUploaded, type UploadMeta } from './upload';
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
+// 自定义模型 SQLite 持久化 + AES-GCM 解密
+import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
 
@@ -840,7 +842,12 @@ const server = createServer(
         return;
       }
       if (req.method === 'GET' && path === '/api/env') {
-        return sendJson(res, { envs: envPipeline.list() });
+        return sendJson(res, { envs: envPipeline.list() }, req);
+      }
+      // 自定义模型 CRUD（SQLite 持久化 + AES-GCM 密文 apiKey）
+      {
+        const cmBody = await readBody(req);
+        if (registerCustomModelRoutes(req, res, path, req.method, cmBody)) return;
       }
       if (req.method === 'POST' && path === '/api/run') {
         return await handleRun(req, res);
@@ -1484,9 +1491,16 @@ async function handleRun(
   const modelBaseUrl: string | undefined = body.modelBaseUrl
     ? String(body.modelBaseUrl).trim()
     : undefined;
-  const modelApiKey: string | undefined = body.modelApiKey
-    ? String(body.modelApiKey).trim()
-    : undefined;
+  const modelApiKey: string | undefined = (() => {
+    const raw = body.modelApiKey ? String(body.modelApiKey).trim() : '';
+    if (!raw) return undefined;
+    // 前端已做 AES-GCM 加密传输；服务端解密后拿到明文 key。
+    try {
+      return decryptApiKey(raw);
+    } catch {
+      return undefined;
+    }
+  })();
   // 所选模型的官方上下文窗口（可选）：前端从 OpenRouter 模型目录拿到 context_length
   // 后随请求下发，经 runner → harness 进入 llm:usage，作为「上下文用量」的权威分母。
   const ctxWindow: number | undefined =
