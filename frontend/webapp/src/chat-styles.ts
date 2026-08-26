@@ -1989,6 +1989,41 @@ export const chatStyles = [
       align-items: center;
       gap: 4px;
     }
+    /* 深度思考 / 联网搜索 快捷开关图标（激活态 accent 高亮） */
+    .tool-toggle {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      transition:
+        color 0.15s ease,
+        background 0.15s ease;
+    }
+    .tool-toggle svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+    }
+    .tool-toggle:hover {
+      color: var(--ah-text);
+      background: rgba(125, 125, 125, 0.14);
+    }
+    .tool-toggle.on {
+      color: var(--ah-accent, #2997ff);
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 16%,
+        transparent
+      );
+    }
     /* 断连恢复横幅：置于消息区顶部，warn=自动恢复中 / lost=需手动重试。 */
     .conn-banner {
       display: flex;

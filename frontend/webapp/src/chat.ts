@@ -3136,6 +3136,63 @@ export class AhChat extends LitElement {
                 ></ah-mode-picker>
               </div>
               <div class="composer-footer-right">
+                <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，状态持久化） -->
+                <button
+                  class="tool-toggle ${this.deepThink ? 'on' : ''}"
+                  title="深度思考"
+                  aria-pressed="${this.deepThink}"
+                  @click=${() => {
+                    this.deepThink = !this.deepThink;
+                    try {
+                      localStorage.setItem(
+                        'ah_deep_think',
+                        this.deepThink ? '1' : '0'
+                      );
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 18h6M10 22h4" />
+                    <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z" />
+                  </svg>
+                </button>
+                <button
+                  class="tool-toggle ${this.web ? 'on' : ''}"
+                  title="联网搜索"
+                  aria-pressed="${this.web}"
+                  @click=${() => {
+                    this.web = !this.web;
+                    try {
+                      localStorage.setItem('ah_web', this.web ? '1' : '0');
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M2 12h20" />
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                  </svg>
+                </button>
                 <ah-model-picker
                   .model=${this.model}
                   .deepThink=${this.deepThink}
