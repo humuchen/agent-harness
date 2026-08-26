@@ -2329,12 +2329,12 @@ export const chatStyles = [
       font-weight: 600;
       color: var(--ah-text);
     }
-    /* 收起按钮：圆形图标钮 + CSS 边框 chevron（旋转 L 形边框绘制，
-       走盒模型渲染 —— SVG 曾在该环境隐形，纯文字方案观感差）。 */
+    /* 收起按钮：圆形图标钮 */
     .fe-collapse {
       width: 34px;
       height: 34px;
       border-radius: 50%;
+      padding: 0;
       border: none;
       background: var(--ah-surface-3, var(--ah-surface-2, #1c1c1c));
       color: var(--ah-text, #fff);
@@ -2342,19 +2342,12 @@ export const chatStyles = [
       display: flex;
       align-items: center;
       justify-content: center;
-      transition:
-        background 0.15s ease,
-        transform 0.15s ease;
+      transition: background 0.15s ease, transform 0.15s ease;
     }
-    /* chevron 本体：9×9 的 L 形右边框+下边框，旋转 45° 即向下箭头 */
-    .fe-collapse .fe-chev {
-      display: block;
-      width: 9px;
-      height: 9px;
-      border-right: 2px solid currentColor;
-      border-bottom: 2px solid currentColor;
-      border-bottom-right-radius: 1.5px;
-      transform: rotate(45deg) translateY(-2px);
+
+    .fe-collapse svg {
+      width: 12px;
+      height: 12px;
     }
     .fe-collapse:hover {
       background: var(--ah-surface-2, #1c1c1c);
