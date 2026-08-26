@@ -14,10 +14,12 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
-/** 远程模型条目：id + 官方上下文窗口（token），供宿主更新「上下文用量」分母。 */
+/** 远程模型条目：id + 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
   id: string;
   ctx: number;
+  /** 免费模型（`:free` 变体 / 实际 0 价格）：单独分组展示，默认折叠。 */
+  free?: boolean;
 }
 
 /** 自定义模型条目：模型名 + 可选的自定义接口地址与 API Key（直连任意 OpenAI 兼容端点）。 */
@@ -262,6 +264,21 @@ export class AhModelPicker extends LitElement {
     .group-head.collapsed .chev {
       transform: rotate(-90deg);
     }
+    /* Free 分组：弱化配色 + 警示色调，提示限速风险；置于清单最末、默认折叠。 */
+    .group-free .group-head {
+      color: color-mix(in srgb, var(--ah-warn, #e6a23c) 75%, var(--ah-text-muted));
+    }
+    .group-free .group-head:hover {
+      color: var(--ah-warn, #e6a23c);
+    }
+    /* 自定义模型分组：置于清单最末，标题不可折叠（数量少、常驻可见）。 */
+    .group-custom .group-head.static {
+      cursor: default;
+    }
+    .group-custom .group-head.static:hover {
+      color: var(--ah-text-muted);
+      background: var(--ah-surface-2, transparent);
+    }
     .empty {
       padding: 16px 14px;
       color: var(--ah-text-muted);
@@ -392,6 +409,7 @@ export class AhModelPicker extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.customs = this.loadCustoms();
+    this.refreshModels();
   }
 
   /** 合并去重后的完整模型清单：远程 > 自定义 > 内置预设（各自保序）。 */
@@ -431,8 +449,11 @@ export class AhModelPicker extends LitElement {
   /** 尝试拉取 OpenRouter 公共模型列表（无需密钥）；失败静默保留本地清单。 */
   private async refreshModels() {
     try {
+      // 全量拉取（output_modalities=text 只排除非文本输出模型，如图像/音频生成）。
+      // 不可用模型（:free 变体 / 0 价格）在下方过滤；绝不能用 q=free 搜索参数 ——
+      // 那只会返回免费变体，官方付费模型的 context_length 全部拿不到。
       const res = await fetch(
-        'https://openrouter.ai/api/v1/models?q=free&output_modalities=text'
+        'https://openrouter.ai/api/v1/models?output_modalities=text'
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as {
@@ -442,11 +463,32 @@ export class AhModelPicker extends LitElement {
           pricing?: { prompt?: string; completion?: string };
         }[];
       };
-      const list: RemoteModel[] = (data.data ?? []).map((m) => ({
-        raw: m,
-        id: String(m?.id ?? '').trim(),
-        ctx: Number(m?.context_length) || 0
-      }));
+      // 过滤掉实际不可调用的 0 价格「伪免费池」（openrouter/free、0 价预览模型）——
+      // 它们没有独立模型身份；真正的 `:free` 变体保留，单独分组展示（默认折叠）。
+      const isZeroPrice = (
+        pricing?: { prompt?: string; completion?: string }
+      ): boolean => {
+        try {
+          return (
+            (Number(pricing?.prompt) || 0) === 0 &&
+            (Number(pricing?.completion) || 0) === 0
+          );
+        } catch {
+          return false;
+        }
+      };
+      const list: RemoteModel[] = (data.data ?? [])
+        .map((m) => ({
+          raw: m,
+          id: String(m?.id ?? '').trim(),
+          ctx: Number(m?.context_length) || 0
+        }))
+        .filter((m) => m.id && !(m.id.endsWith(':free') && isZeroPrice(m.raw?.pricing)) && m.id !== 'openrouter/free')
+        .map(({ raw, id, ctx }) => ({
+          id,
+          ctx,
+          free: id.endsWith(':free')
+        }));
       if (list.length) this.remote = list;
       // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
       if (this.model) this.emitCtx(this.ctxFor(this.model));
@@ -538,16 +580,24 @@ export class AhModelPicker extends LitElement {
     return i > 0 ? id.slice(0, i) : '其他';
   }
 
+  /** 模型是否为免费变体（`:free` 后缀）：免费模型单独分组、排在最后且默认折叠。 */
+  private isFreeId(id: string): boolean {
+    return id.endsWith(':free');
+  }
+
   /**
    * 把模型清单按供应商分组（保持清单原有顺序，供应商按首次出现排序）。
-   * 搜索过滤后调用，保证折叠计数与当前可见条目一致。
+   * 免费模型（`:free`）抽出为独立「Free」分组；搜索过滤后调用，
+   * 保证折叠计数与当前可见条目一致。
    */
   private groupByVendor(
     models: string[]
-  ): { vendor: string; items: string[] }[] {
+  ): { vendor: string; items: string[]; free?: boolean }[] {
+    const freeItems = models.filter((m) => this.isFreeId(m));
+    const paid = models.filter((m) => !this.isFreeId(m));
     const order: string[] = [];
     const map = new Map<string, string[]>();
-    for (const m of models) {
+    for (const m of paid) {
       const v = this.vendorOf(m);
       if (!map.has(v)) {
         map.set(v, []);
@@ -555,7 +605,22 @@ export class AhModelPicker extends LitElement {
       }
       map.get(v)!.push(m);
     }
-    return order.map((vendor) => ({ vendor, items: map.get(vendor)! }));
+    const groups: { vendor: string; items: string[]; free?: boolean }[] = order.map(
+      (vendor) => ({ vendor, items: map.get(vendor)! })
+    );
+    if (freeItems.length) {
+      groups.unshift({
+        vendor: 'Free',
+        items: freeItems,
+        free: true
+      });
+    }
+    return groups;
+  }
+
+  private isGroupCollapsed(vendor: string, free?: boolean): boolean {
+    // Free 分组默认折叠：免费变体在上游被激进限速，展开是低频操作。
+    return free ? this.collapsed[vendor] !== false : !!this.collapsed[vendor];
   }
 
   private toggleGroup(vendor: string) {
@@ -564,9 +629,11 @@ export class AhModelPicker extends LitElement {
 
   private renderPanel() {
     const q = this.query.trim().toLowerCase();
-    const models = this.allModels.filter(
-      (m) => !q || m.toLowerCase().includes(q)
-    );
+    const match = (m: string) => !q || m.toLowerCase().includes(q);
+    // 展示顺序：默认模型 → Free 分组 → 非 Free（供应商分组）→ 自定义模型。
+    const customs = this.customs.map((c) => c.id).filter(match);
+    const remoteIds = this.allModels;
+    const models = remoteIds.filter(match);
     return html`
       <button
         class="scrim"
@@ -645,7 +712,7 @@ export class AhModelPicker extends LitElement {
             </div>`
           : nothing}
         <div class="list">
-          ${models.length === 0
+          ${models.length === 0 && customs.length === 0
             ? html`<div class="empty">没有匹配的模型</div>`
             : html`
                 <button
@@ -659,57 +726,80 @@ export class AhModelPicker extends LitElement {
                     : nothing}
                 </button>
                 ${this.groupByVendor(models).map(
-                  ({ vendor, items }) => html`
-                    <div class="group">
-                      <button
-                        class="group-head ${this.collapsed[vendor]
-                          ? 'collapsed'
-                          : ''}"
-                        title=${this.collapsed[vendor]
-                          ? `展开 ${vendor}（${items.length}）`
-                          : `折叠 ${vendor}`}
-                        aria-expanded=${this.collapsed[vendor]
-                          ? 'false'
-                          : 'true'}
-                        @click=${() => this.toggleGroup(vendor)}
-                      >
-                        <svg
-                          class="chev"
-                          viewBox="0 0 10 6"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="1.5"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
+                  ({ vendor, items, free }) => {
+                    const collapsed = this.isGroupCollapsed(vendor, free);
+                    return html`
+                      <div class="group ${free ? 'group-free' : ''}">
+                        <button
+                          class="group-head ${collapsed ? 'collapsed' : ''}"
+                          title=${collapsed
+                            ? `展开 ${vendor}（${items.length}）`
+                            : `折叠 ${vendor}`}
+                          aria-expanded=${collapsed ? 'false' : 'true'}
+                          @click=${() => this.toggleGroup(vendor)}
                         >
-                          <path d="M1 1l4 4 4-4" />
-                        </svg>
-                        <span class="vendor">${vendor}</span>
-                        <span class="count">${items.length}</span>
-                      </button>
-                      ${this.collapsed[vendor]
-                        ? nothing
-                        : html`
-                            <div class="group-items">
-                              ${items.map(
-                                (m) => html`
-                                  <button
-                                    class="item"
-                                    title=${m}
-                                    @click=${() => this.pick(m)}
-                                  >
-                                    <span>${this.displayName(m)}</span>
-                                    ${this.model === m
-                                      ? html`<span class="check">✓</span>`
-                                      : nothing}
-                                  </button>
-                                `
-                              )}
-                            </div>
-                          `}
-                    </div>
-                  `
+                          <svg
+                            class="chev"
+                            viewBox="0 0 10 6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d="M1 1l4 4 4-4" />
+                          </svg>
+                          <span class="vendor">${vendor}</span>
+                          <span class="count">${items.length}</span>
+                        </button>
+                        ${collapsed
+                          ? nothing
+                          : html`
+                              <div class="group-items">
+                                ${items.map(
+                                  (m) => html`
+                                    <button
+                                      class="item"
+                                      title=${m}
+                                      @click=${() => this.pick(m)}
+                                    >
+                                      <span>${this.displayName(m)}</span>
+                                      ${this.model === m
+                                        ? html`<span class="check">✓</span>`
+                                        : nothing}
+                                    </button>
+                                  `
+                                )}
+                              </div>
+                            `}
+                      </div>
+                    `;
+                  }
                 )}
+                ${customs.length
+                  ? html`<div class="group group-custom">
+                      <div class="group-head static">
+                        <span class="vendor">自定义模型</span>
+                        <span class="count">${customs.length}</span>
+                      </div>
+                      <div class="group-items">
+                        ${customs.map(
+                          (m) => html`
+                            <button
+                              class="item"
+                              title=${m}
+                              @click=${() => this.pick(m)}
+                            >
+                              <span>${this.displayName(m)}</span>
+                              ${this.model === m
+                                ? html`<span class="check">✓</span>`
+                                : nothing}
+                            </button>
+                          `
+                        )}
+                      </div>
+                    </div>`
+                  : nothing}
               `}
         </div>
         <div class="footer">
