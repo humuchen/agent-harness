@@ -2440,14 +2440,22 @@ export const chatStyles = [
       color: var(--ah-text);
       border: 1px solid var(--ah-border);
     }
-    /* 计划操作区：置于卡片右下角（任务列表之下），主操作视觉重心更符合阅读动线。 */
+    /* 计划操作区：置于卡片右下角一行 —— 状态 pill 在前（左），操作按钮在后（右）。 */
     .plan-actions {
       display: flex;
-      justify-content: flex-end;
+      justify-content: space-between;
+      align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
       margin-top: 12px;
       padding-top: 10px;
       border-top: 1px dashed var(--ah-border);
+    }
+    .plan-action-btns {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
     }
     .plan-tasks {
       margin: 0;

@@ -2580,7 +2580,6 @@ export class AhChat extends LitElement {
       <div class="plan-head">
         <span class="plan-title">📋 执行计划</span>
         <span class="plan-goal">${escapeHtml(plan.goal)}</span>
-        <span class="pill ${st.status}">${statusLabel}</span>
       </div>
       <ol class="plan-tasks">
         ${plan.tasks.map((t, i) => {
@@ -2610,23 +2609,25 @@ export class AhChat extends LitElement {
           </li>`;
         })}
       </ol>
-      ${st.status === 'pending'
-        ? html`<div class="plan-actions">
-            <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
-              确认执行
-            </button>
-            <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
-              取消
-            </button>
-          </div>`
-        : nothing}
-      ${st.status === 'failed'
-        ? html`<div class="plan-actions">
-            <button class="plan-btn" @click=${() => this.confirmPlan(m)}>
-              从失败任务继续
-            </button>
-          </div>`
-        : nothing}
+      ${/* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */
+      html`<div class="plan-actions">
+        <span class="pill ${st.status}">${statusLabel}</span>
+        <div class="plan-action-btns">
+          ${st.status === 'pending'
+            ? html`<button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                确认执行
+              </button>
+              <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
+                取消
+              </button>`
+            : nothing}
+          ${st.status === 'failed'
+            ? html`<button class="plan-btn" @click=${() => this.confirmPlan(m)}>
+                从失败任务继续
+              </button>`
+            : nothing}
+        </div>
+      </div>`}
     </div>`;
   }
 

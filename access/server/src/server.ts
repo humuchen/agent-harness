@@ -405,20 +405,7 @@ const server = createServer(
             let html = await readFile(join(wd, 'index.html'), 'utf8');
             // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
             // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPENROUTER_API_KEY 时注入。
-            if (OPENROUTER_API_KEY) {
-              const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
-              if (html.includes('<head>')) {
-                html = html.replace(
-                  '<head>',
-                  `<head>\n    <meta name="ah-api-key" content="${escaped}" />`
-                );
-              } else {
-                html = `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
-              }
-            }
+            html = injectApiKey(html);
             res.writeHead(200, {
               'content-type': 'text/html; charset=utf-8',
               'cache-control': 'no-cache'
@@ -427,6 +414,41 @@ const server = createServer(
             return;
           } catch {
             /* webapp 未构建，交给 serveHtml 返回 500 */
+          }
+        }
+        return await serveHtml(res);
+      }
+      // SPA fallback（history 路由）：前端使用 history.pushState 做客户端路由
+      //（如 /chat /verify），刷新或直接打开深链接时这些路径会打到服务器。
+      // 所有「非 API、非静态资源」的 GET 请求统一回退到 index.html，由前端路由接管。
+      // 已知接口/探针路径不回退（保持 404 语义，避免掩盖路由错误）。
+      const SPA_FALLBACK_EXCLUDED = [
+        '/api',
+        '/assets',
+        '/health',
+        '/favicon.ico',
+        '/favicon.svg',
+        '/robots.txt'
+      ];
+      if (
+        req.method === 'GET' &&
+        !SPA_FALLBACK_EXCLUDED.some(
+          (p) => path === p || path.startsWith(p + '/') || path.startsWith(p + '?')
+        )
+      ) {
+        const wd = webappDir();
+        if (wd) {
+          try {
+            let html = await readFile(join(wd, 'index.html'), 'utf8');
+            html = injectApiKey(html);
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-cache'
+            });
+            res.end(html);
+            return;
+          } catch {
+            /* webapp 未构建，交给后续 serveHtml 返回 500 */
           }
         }
         return await serveHtml(res);
@@ -1181,6 +1203,22 @@ function serveHtml(res: ServerResponse): void {
   res.end(
     'Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build'
   );
+}
+
+/** 降级模式下把统一认证凭证注入 HTML（<meta name="ah-api-key">），供 SPA 自动带 token。 */
+function injectApiKey(html: string): string {
+  if (!OPENROUTER_API_KEY) return html;
+  const escaped = OPENROUTER_API_KEY.replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  if (html.includes('<head>')) {
+    return html.replace(
+      '<head>',
+      `<head>\n    <meta name="ah-api-key" content="${escaped}" />`
+    );
+  }
+  return `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
 }
 
 /** HTML 转义，防 XSS（错误信息可能含用户 / 第三方内容）。 */

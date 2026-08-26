@@ -51,6 +51,12 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'plugins', label: '插件', short: '插' }
 ];
 
+/** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
+function initialTabFromPath(): string {
+  const seg = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  return seg || 'dashboard';
+}
+
 /**
  * 移动端「对话」Tab 专用外壳锁定样式：把应用壳钉成整屏（fixed + inset:0），
  * 聊天区填满剩余空间、输入框固定在底部，无需滚动外层页面即可输入。
@@ -99,7 +105,7 @@ const chatShellCss = css`
 export class AhApp extends LitElement {
   static styles = [sharedStyles, chatShellCss];
 
-  @state() private tab: string = 'dashboard';
+  @state() private tab: string = initialTabFromPath();
   @state() private token = getToken();
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
@@ -129,8 +135,34 @@ export class AhApp extends LitElement {
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
-      if (t) this.tab = t;
+      if (t) this.setTab(t);
     });
+    // History 路由：浏览器后退 / 前进时从 pathname 恢复 Tab（SPA fallback 保证刷新可用）。
+    this.onPopState = () => {
+      this.tab = initialTabFromPath();
+      this.closeDrawer();
+    };
+    window.addEventListener('popstate', this.onPopState);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('popstate', this.onPopState);
+  }
+
+  /** History 路由的 popstate 处理器引用（disconnectedCallback 解绑用）。 */
+  private onPopState = () => {};
+
+  /**
+   * 统一的 Tab 切换入口：所有写入点（菜单点击 / ah-goto / 插件 Tab）都必须走这里，
+   * 同步 pushState 写入路径，使浏览器后退 / 前进 / 刷新与 Tab 状态保持一致。
+   */
+  private setTab(tab: string) {
+    this.tab = tab;
+    const target = `/${tab}`;
+    if (window.location.pathname !== target) {
+      history.pushState({ tab }, '', target);
+    }
   }
 
   /**
@@ -173,7 +205,7 @@ export class AhApp extends LitElement {
    */
   private async openPluginTab(id: string) {
     await this.loadPluginViews();
-    this.tab = id;
+    this.setTab(id);
     this.closeDrawer();
   }
 
@@ -258,7 +290,7 @@ export class AhApp extends LitElement {
                   data-short=${t.short}
                   title=${t.label}
                   @click=${() => {
-                    this.tab = t.id;
+                    this.setTab(t.id);
                     this.closeDrawer();
                   }}
                 >
