@@ -1851,13 +1851,15 @@ export const chatStyles = [
         height: 36px;
         line-height: 36px;
       }
-      /* 手机：模型选择器只显示图标（隐藏文字与箭头），节省横向空间 */
+      /* 手机：模型选择器只显示厂商 logo（隐藏文字与箭头，组件内部媒体查询处理），
+         宿主只需放宽宽度预算并保持点击热区。 */
       .composer-footer-right ah-model-picker {
-        max-width: 36px;
+        max-width: 40px;
       }
       .composer-footer-right ah-model-picker::part(trigger) {
-        max-width: 36px;
-        padding: 0;
+        max-width: 40px;
+        height: 34px;
+        line-height: 34px;
         justify-content: center;
         overflow: hidden;
       }

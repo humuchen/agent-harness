@@ -37,9 +37,9 @@ export class AhAgentPicker extends LitElement {
         transparent
       );
       color: var(--ah-accent, #2997ff);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 500;
-      height: 32px;
+      height: 28px;
       padding: 0 12px;
       border-radius: 16px;
       cursor: pointer;
@@ -48,9 +48,7 @@ export class AhAgentPicker extends LitElement {
       align-items: center;
       gap: 6px;
       max-width: 46vw;
-      transition:
-        background 0.15s,
-        filter 0.15s;
+      transition: background 0.15s, filter 0.15s;
     }
     .trigger:hover {
       filter: brightness(1.25);
@@ -65,6 +63,9 @@ export class AhAgentPicker extends LitElement {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .trigger .chev {
+      width: 12px;
+    }
 
     /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
     .panel {
@@ -72,7 +73,7 @@ export class AhAgentPicker extends LitElement {
       left: 0;
       bottom: calc(100% + 10px);
       z-index: 60;
-      width: 208px;
+      width: 180px;
       max-width: calc(100vw - 24px);
       max-height: min(320px, 60vh);
       overflow-y: auto;
@@ -93,7 +94,7 @@ export class AhAgentPicker extends LitElement {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 9px 10px;
+      padding: 4.5px 10px;
       border-radius: 8px;
       color: var(--ah-text);
       font-size: 13.5px;
@@ -101,6 +102,10 @@ export class AhAgentPicker extends LitElement {
       cursor: pointer;
       text-align: left;
       transition: background 0.12s;
+      margin-bottom: 6px;
+      &:last-child {
+        margin-bottom: 0;
+      }
     }
     .item:hover {
       background: color-mix(

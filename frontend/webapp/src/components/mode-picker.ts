@@ -42,16 +42,13 @@ export class AhModePicker extends LitElement {
       display: inline-block;
       position: relative;
     }
-    /* 触发按钮：胶囊形（图标+文字+chevron），低饱和强调底色 */
+    /* 触发按钮：胶囊形（图标+文字+chevron），按模式区分色调：
+       Ask=青绿，Plan=紫。低饱和底色 + 同系文字色 */
     .trigger {
       appearance: none;
       border: none;
-      background: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 14%,
-        transparent
-      );
-      color: var(--ah-accent, #2997ff);
+      background: var(--mode-bg, rgba(40, 184, 148, 0.2));
+      color: var(--mode-fg, rgb(40, 184, 148));
       font-size: 12px;
       font-weight: 500;
       height: 28px;
@@ -67,6 +64,11 @@ export class AhModePicker extends LitElement {
     }
     .trigger:hover {
       filter: brightness(1.25);
+    }
+    /* Plan 模式：紫色调（Ask 默认即青绿色调） */
+    .trigger.plan {
+      --mode-bg: rgba(108, 77, 255, 0.2);
+      --mode-fg: rgb(169, 151, 255);
     }
     .trigger svg {
       flex-shrink: 0;
@@ -188,7 +190,7 @@ export class AhModePicker extends LitElement {
     const current = MODES.find((m) => m.value === this.mode) ?? MODES[0];
     return html`
       <button
-        class="trigger"
+        class="trigger ${this.mode === 'plan' ? 'plan' : ''}"
         title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
         aria-haspopup="dialog"
         aria-expanded=${this.open ? 'true' : 'false'}

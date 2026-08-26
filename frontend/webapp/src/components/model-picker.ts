@@ -75,11 +75,54 @@ export class AhModelPicker extends LitElement {
     }
     .trigger:hover {
       color: var(--ah-accent);
+      /* 胶囊背景：悬停在选中模型上时的视觉反馈 */
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      border-radius: 999px;
+      padding: 0 10px;
+    }
+    /* 选中模型厂商徽标：品牌色圆底首字母 / 系统默认芯片图标（自定义与默认模型） */
+    .trigger .vlogo {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      color: #fff;
+      user-select: none;
+    }
+    .trigger .vlogo-sys {
+      border-radius: 0;
+      color: var(--ah-text-muted);
     }
     .trigger .name {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
+    @media (max-width: 600px) {
+      .trigger {
+        max-width: 40px;
+        padding: 0;
+        justify-content: center;
+        overflow: hidden;
+      }
+      .trigger:hover {
+        padding: 0; /* 触屏无 hover 语义，避免胶囊挤压 logo */
+      }
+      .trigger .name,
+      .trigger > svg:not(.vlogo) {
+        display: none;
+      }
+      .trigger .vlogo {
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+      }
     }
     .trigger svg {
       flex-shrink: 0;
@@ -621,6 +664,76 @@ export class AhModelPicker extends LitElement {
     return v || '其他';
   }
 
+  /** 已知厂商品牌色（用于选中模型的圆形首字母徽标）；未收录回退中性灰。 */
+  private static readonly VENDOR_BRANDS: Record<string, string> = {
+    openai: '#10a37f',
+    anthropic: '#d97757',
+    google: '#4285f4',
+    'google-vertex': '#4285f4',
+    meta: '#0668e1',
+    mistralai: '#fa520f',
+    deepseek: '#4d6bfe',
+    'x-ai': '#1a1a1a',
+    qwen: '#615ced',
+    'z-ai': '#3b82f6',
+    nvidia: '#76b900',
+    microsoft: '#0078d4',
+    azure: '#0078d4',
+    'amazon-bedrock': '#ff9900',
+    cohere: '#39594d',
+    perplexity: '#20808d',
+    moonshotai: '#1c1c1c',
+    baidu: '#2932e1',
+    minimax: '#ef4444',
+    ai21: '#e03430'
+  };
+
+  private vendorColor(vendor: string): string {
+    return AhModelPicker.VENDOR_BRANDS[vendor.toLowerCase()] ?? '';
+  }
+
+  /** 该模型是否用户自定义（自定义与默认模型一律使用系统默认 logo）。 */
+  private isCustom(id: string): boolean {
+    return this.customs.some((c) => c.id === id);
+  }
+
+  /**
+   * 选中模型的厂商徽标：
+   * - 已知厂商 → 品牌色圆底 + 厂商首字母；
+   * - 自定义 / 默认模型 / 未收录厂商 → 系统默认芯片图标（未收录厂商无品牌底色，
+   *   用中性灰描边图标，避免臆造配色）。
+   */
+  private renderVendorLogo(id: string): TemplateResult {
+    if (!id || this.isCustom(id)) {
+      return html`<svg
+        class="vlogo vlogo-sys"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="5" y="5" width="14" height="14" rx="2" />
+        <rect x="9" y="9" width="6" height="6" />
+        <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />
+      </svg>`;
+    }
+    const v = this.vendorOf(id);
+    const color = this.vendorColor(v);
+    if (!color) {
+      // 未收录厂商：同样走系统默认图标，保持视觉一致。
+      return this.renderVendorLogo('');
+    }
+    return html`<span
+      class="vlogo"
+      style=${`background:${color}`}
+      aria-hidden="true"
+      >${v.charAt(0).toUpperCase()}</span
+    >`;
+  }
+
   /**
    * 把非 Free 模型按供应商分组，供应商按首字母 A-Z 排序（同组内模型保持原序）。
    * 无 `/` 前缀的归入「其他」，排最末。
@@ -881,6 +994,7 @@ export class AhModelPicker extends LitElement {
         aria-expanded=${this.open ? 'true' : 'false'}
         @click=${() => this.toggle(!this.open)}
       >
+        ${this.model ? this.renderVendorLogo(this.model) : nothing}
         <span class="name"
           >${this.model ? this.displayName(this.model) : '默认模型'}</span
         >
