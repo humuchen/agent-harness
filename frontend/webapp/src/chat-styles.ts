@@ -1916,7 +1916,7 @@ export const chatStyles = [
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22),
         0 4px 12px rgba(0, 0, 0, 0.12);
       transition: box-shadow 0.2s ease, border-color 0.2s ease;
-      min-height: 56px;
+      min-height: 80px;
     }
     .composer:focus-within {
       border-color: color-mix(
@@ -1963,7 +1963,7 @@ export const chatStyles = [
       font-size: 14px;
       line-height: 1.6;
       max-height: 140px;
-      min-height: 52px;
+      min-height: 75px;
       padding: 10px 12px;
       width: 100%;
       box-sizing: border-box;
