@@ -61,6 +61,11 @@ export class AhModelPicker extends LitElement {
       font-family: inherit;
       color: var(--ah-text);
     }
+    /* 面板锚定基准：absolute 弹层必须相对本组件定位 */
+    .wrap {
+      position: relative;
+      display: inline-block;
+    }
     /* 触发按钮：胶囊形（图标+文字+chevron） */
     .trigger {
       appearance: none;
@@ -841,10 +846,11 @@ export class AhModelPicker extends LitElement {
     this.onDocPointerDown = (e: PointerEvent) => {
       if (!this.open) return;
       const path = e.composedPath();
+      // 面板内部任何元素（分组标题 / 模型条目 / 添加表单…）都不算外点：
+      // 只判断「点击是否落在本组件 shadow 内」，否则 group-title 等内部
+      // 元素会被误判为外部，面板刚展开就被关掉（表现为点击无法展开）。
       const inside = path.some(
-        (n) =>
-          n instanceof Element &&
-          (n.classList.contains('panel') || n.classList.contains('trigger'))
+        (n) => n instanceof AhModelPicker || (n as any) === this.renderRoot
       );
       if (!inside) this.toggle(false);
     };
