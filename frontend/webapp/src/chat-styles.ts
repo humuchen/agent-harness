@@ -2329,39 +2329,39 @@ export const chatStyles = [
       font-weight: 600;
       color: var(--ah-text);
     }
-    /* 收起按钮：文字胶囊（纯文本，不依赖 SVG 渲染 —— 真机上矢量图标反复隐形） */
+    /* 收起按钮：圆形图标钮 + CSS 边框 chevron（旋转 L 形边框绘制，
+       走盒模型渲染 —— SVG 曾在该环境隐形，纯文字方案观感差）。 */
     .fe-collapse {
-      width: 24px;
-      height: 24px;
-      padding: 0 7px;
+      width: 34px;
+      height: 34px;
       border-radius: 50%;
-      border: 1px solid var(--ah-border);
+      border: none;
       background: var(--ah-surface-3, var(--ah-surface-2, #1c1c1c));
       color: var(--ah-text, #fff);
-      font-size: 12px;
-      font-family: inherit;
       cursor: pointer;
-      display: inline-flex;
+      display: flex;
       align-items: center;
-      gap: 4px;
-      line-height: 1;
-      transition: color 0.15s ease, border-color 0.15s ease,
-        background 0.15s ease;
+      justify-content: center;
+      transition:
+        background 0.15s ease,
+        transform 0.15s ease;
     }
-    .fe-collapse-arrow {
-      font-size: 10px;
-      line-height: 1;
-      /* 字符基线微调：让 ⌄ 与「收起」视觉对齐 */
-      transform: translateY(-3px);
+    /* chevron 本体：9×9 的 L 形右边框+下边框，旋转 45° 即向下箭头 */
+    .fe-collapse .fe-chev {
+      display: block;
+      width: 9px;
+      height: 9px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      border-bottom-right-radius: 1.5px;
+      transform: rotate(45deg) translateY(-2px);
     }
     .fe-collapse:hover {
-      color: var(--ah-accent, #2997ff);
-      border-color: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 45%,
-        var(--ah-border)
-      );
-      background: color-mix(in srgb, var(--ah-accent, #2997ff) 8%, transparent);
+      background: var(--ah-surface-2, #1c1c1c);
+      transform: scale(1.06);
+    }
+    .fe-collapse:active {
+      transform: scale(0.94);
     }
     .fe-input {
       flex: 1 1 auto;
