@@ -3226,7 +3226,7 @@ export class AhChat extends LitElement {
                 aria-label="收起全屏编辑"
                 @click=${() => this.closeFullscreenEdit()}
               >
-                收起<span class="fe-collapse-arrow">⌄</span>
+                <span class="fe-collapse-arrow">⌄</span>
               </button>
             </div>
             <textarea

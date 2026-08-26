@@ -2331,13 +2331,14 @@ export const chatStyles = [
     }
     /* 收起按钮：文字胶囊（纯文本，不依赖 SVG 渲染 —— 真机上矢量图标反复隐形） */
     .fe-collapse {
-      height: 32px;
-      padding: 0 14px;
-      border-radius: 16px;
+      width: 24px;
+      height: 24px;
+      padding: 0 7px;
+      border-radius: 50%;
       border: 1px solid var(--ah-border);
       background: var(--ah-surface-3, var(--ah-surface-2, #1c1c1c));
       color: var(--ah-text, #fff);
-      font-size: 13px;
+      font-size: 12px;
       font-family: inherit;
       cursor: pointer;
       display: inline-flex;
@@ -2348,10 +2349,10 @@ export const chatStyles = [
         background 0.15s ease;
     }
     .fe-collapse-arrow {
-      font-size: 15px;
+      font-size: 10px;
       line-height: 1;
       /* 字符基线微调：让 ⌄ 与「收起」视觉对齐 */
-      transform: translateY(-1px);
+      transform: translateY(-3px);
     }
     .fe-collapse:hover {
       color: var(--ah-accent, #2997ff);
