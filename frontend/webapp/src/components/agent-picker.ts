@@ -1,48 +1,33 @@
 /**
- * mode-picker：运行模式选择器（输入框底部工具栏）。
+ * agent-picker：业务 Agent 选择器（输入框底部工具栏）。
  *
- * 参照主流客户端交互（参考截图设计）：胶囊触发按钮「图标 + 文字 + chevron」，
+ * 与 mode-picker 同一套视觉（参考截图设计）：胶囊触发按钮「图标 + 名称 + chevron」，
  * 点击向上弹出竖列面板，每项「左侧线性图标 + 名称 + 选中 ✓」，当前项高亮底色。
  *
- * 模式经 `mode-change` 事件抛给宿主（detail.value 为 'qa' | 'plan'），
- * 状态由宿主持有并持久化 —— 组件本身不保存选择结果。
+ * 列表与当前值均由宿主持有并透传；选择结果经 `agent-change`
+ * 事件抛出（detail.value 为 agent id）。
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
-/** 运行模式定义：值与宿主 interactionMode 对齐。 */
-interface ModeItem {
-  value: 'qa' | 'plan';
-  label: string;
-  /** 左侧 24×24 线性图标的 path。 */
-  iconPath: string;
+/** 宿主传入的 Agent 条目。 */
+export interface AgentOption {
+  id: string;
+  name: string;
 }
 
-const MODES: ModeItem[] = [
-  {
-    value: 'qa',
-    label: 'Ask',
-    // 对话气泡
-    iconPath:
-      'M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z'
-  },
-  {
-    value: 'plan',
-    label: 'Plan',
-    // 剪贴板清单
-    iconPath:
-      'M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9l2 2 4-4'
-  }
-];
+/** 统一机器人图标：所有 Agent 共用，仅名称区分。 */
+const BOT_ICON =
+  'M12 2v2m0 0a2 2 0 0 1 2 2h-4a2 2 0 0 1 2-2zM8 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2M9 13h.01M15 13h.01M9.5 16.5h5';
 
-@customElement('ah-mode-picker')
-export class AhModePicker extends LitElement {
+@customElement('ah-agent-picker')
+export class AhAgentPicker extends LitElement {
   static styles = css`
     :host {
       display: inline-block;
       position: relative;
     }
-    /* 触发按钮：胶囊形（图标+文字+chevron），低饱和强调底色 */
+    /* 触发按钮：胶囊形（图标+文字+chevron），低饱和强调底色 —— 与 mode-picker 一致 */
     .trigger {
       appearance: none;
       border: none;
@@ -52,9 +37,9 @@ export class AhModePicker extends LitElement {
         transparent
       );
       color: var(--ah-accent, #2997ff);
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 500;
-      height: 28px;
+      height: 32px;
       padding: 0 12px;
       border-radius: 16px;
       cursor: pointer;
@@ -63,7 +48,9 @@ export class AhModePicker extends LitElement {
       align-items: center;
       gap: 6px;
       max-width: 46vw;
-      transition: background 0.15s, filter 0.15s;
+      transition:
+        background 0.15s,
+        filter 0.15s;
     }
     .trigger:hover {
       filter: brightness(1.25);
@@ -73,9 +60,10 @@ export class AhModePicker extends LitElement {
       width: 15px;
       height: 15px;
     }
-
-    .trigger .chev {
-      width: 12px;
+    .trigger .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
@@ -84,15 +72,17 @@ export class AhModePicker extends LitElement {
       left: 0;
       bottom: calc(100% + 10px);
       z-index: 60;
-      width: 156px;
+      width: 208px;
       max-width: calc(100vw - 24px);
+      max-height: min(320px, 60vh);
+      overflow-y: auto;
       background: var(--ah-surface-1);
       border: 1px solid var(--ah-border);
       border-radius: var(--ah-radius-lg, 12px);
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-      overflow: hidden;
       padding: 6px;
       box-sizing: border-box;
+      scrollbar-width: thin;
     }
     /* 选项行：图标 + 名称 + 选中✓，选中项高亮底色 */
     .item {
@@ -103,19 +93,14 @@ export class AhModePicker extends LitElement {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 4.5px 10px;
+      padding: 9px 10px;
       border-radius: 8px;
       color: var(--ah-text);
-      font-size: 12px;
+      font-size: 13.5px;
       font-family: inherit;
       cursor: pointer;
       text-align: left;
       transition: background 0.12s;
-      margin-bottom: 6px;
-
-      &:last-child {
-        margin-bottom: 0;
-      }
     }
     .item:hover {
       background: color-mix(
@@ -167,17 +152,20 @@ export class AhModePicker extends LitElement {
     }
   `;
 
-  /** 当前模式（状态由宿主持有并透传）。 */
-  @property({ type: String }) mode: 'qa' | 'plan' = 'qa';
+  /** 可选 Agent 列表（由宿主持有）。 */
+  @property({ attribute: false }) agents: AgentOption[] = [];
+
+  /** 当前选中的 agent id。 */
+  @property({ type: String }) value = '';
 
   @state() private open = false;
 
-  private select(v: 'qa' | 'plan') {
+  private select(id: string) {
     this.open = false;
-    if (v === this.mode) return;
+    if (id === this.value) return;
     this.dispatchEvent(
-      new CustomEvent('mode-change', {
-        detail: { value: v },
+      new CustomEvent('agent-change', {
+        detail: { value: id },
         bubbles: true,
         composed: true
       })
@@ -185,16 +173,16 @@ export class AhModePicker extends LitElement {
   }
 
   render() {
-    const current = MODES.find((m) => m.value === this.mode) ?? MODES[0];
+    const current = this.agents.find((a) => a.id === this.value);
     return html`
       <button
         class="trigger"
-        title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
+        title="选择业务 Agent（默认走通用 Agent）"
         aria-haspopup="dialog"
         aria-expanded=${this.open ? 'true' : 'false'}
         @click=${() => (this.open = !this.open)}
       >
-        <!-- 当前模式的图标 -->
+        <!-- 统一机器人图标 -->
         <svg
           viewBox="0 0 24 24"
           fill="none"
@@ -203,9 +191,9 @@ export class AhModePicker extends LitElement {
           stroke-linecap="round"
           stroke-linejoin="round"
         >
-          <path d=${current.iconPath} />
+          <path d=${BOT_ICON} />
         </svg>
-        <span class="name">${current.label}</span>
+        <span class="name">${current?.name ?? '默认'}</span>
         <!-- 下拉 chevron -->
         <svg
           class="chev"
@@ -223,17 +211,18 @@ export class AhModePicker extends LitElement {
         ? html`
             <button
               class="scrim"
-              aria-label="关闭模式选择"
+              aria-label="关闭 Agent 选择"
               @click=${() => (this.open = false)}
             ></button>
-            <div class="panel" role="dialog" aria-label="运行模式">
-              ${MODES.map(
-                (m) => html`
+            <div class="panel" role="dialog" aria-label="业务 Agent">
+              ${this.agents.map(
+                (a) => html`
                   <button
-                    class="item ${this.mode === m.value ? 'selected' : ''}"
+                    class="item ${this.value === a.id ? 'selected' : ''}"
                     role="option"
-                    aria-selected=${this.mode === m.value ? 'true' : 'false'}
-                    @click=${() => this.select(m.value)}
+                    aria-selected=${this.value === a.id ? 'true' : 'false'}
+                    title=${a.name}
+                    @click=${() => this.select(a.id)}
                   >
                     <svg
                       viewBox="0 0 24 24"
@@ -243,10 +232,10 @@ export class AhModePicker extends LitElement {
                       stroke-linecap="round"
                       stroke-linejoin="round"
                     >
-                      <path d=${m.iconPath} />
+                      <path d=${BOT_ICON} />
                     </svg>
-                    <span class="name">${m.label}</span>
-                    ${this.mode === m.value
+                    <span class="name">${a.name}</span>
+                    ${this.value === a.id
                       ? html`<span class="check">✓</span>`
                       : nothing}
                   </button>
@@ -261,6 +250,6 @@ export class AhModePicker extends LitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'ah-mode-picker': AhModePicker;
+    'ah-agent-picker': AhAgentPicker;
   }
 }

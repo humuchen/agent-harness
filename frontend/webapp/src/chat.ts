@@ -36,6 +36,7 @@ import { agentContext, type UploadedFile } from './agent-context';
 import './components/file-upload';
 import './components/model-picker';
 import './components/mode-picker';
+import './components/agent-picker';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -3118,19 +3119,14 @@ export class AhChat extends LitElement {
                   />
                   +
                 </label>
-                <select
-                  class="mode-select"
-                  title="选择业务 Agent（默认走通用 Agent）"
-                  aria-label="业务 Agent"
+                <ah-agent-picker
+                  .agents=${this.agents}
                   .value=${this.agentId}
-                  @change=${(e: Event) =>
-                    (this.agentId = (e.target as HTMLSelectElement).value)}
-                >
-                  ${this.agents.map(
-                    (a) =>
-                      html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
-                  )}
-                </select>
+                  @agent-change=${(e: Event) =>
+                    (this.agentId = (
+                      e as CustomEvent<{ value: string }>
+                    ).detail.value)}
+                ></ah-agent-picker>
                 <ah-mode-picker
                   .mode=${this.interactionMode}
                   @mode-change=${(e: Event) =>
