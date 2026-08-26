@@ -450,7 +450,7 @@ export const chatStyles = [
       padding: 0 18px;
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      // gap: 18px;
     }
     .msg {
       display: flex;
@@ -459,6 +459,10 @@ export const chatStyles = [
     }
     .msg.user {
       flex-direction: row-reverse;
+      margin-top: 30px;
+    }
+    .msg.user:first-child {
+      margin-top: 0;
     }
     .avatar {
       flex: 0 0 30px;
@@ -644,6 +648,33 @@ export const chatStyles = [
     .msg-text {
       font-size: 14px;
       line-height: 1.65;
+      /* 防溢出三件套：长单词/URL/连续标点在任意位置折行，杜绝气泡内横向滚动条。
+         pre/code/table 由下方子规则单独处理（内部滚动而非撑破气泡）。 */
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      min-width: 0;
+    }
+    /* 富文本内的代码块 / 表格：限制在气泡宽度内，自身横向滚动，不撑破外层。 */
+    .msg-text pre,
+    .msg-text code {
+      max-width: 100%;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg-text pre {
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .msg-text table {
+      display: block;
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .msg-text img,
+    .msg-text video {
+      max-width: 100%;
+      height: auto;
     }
     .msg-text.placeholder {
       color: var(--ah-text-muted);
@@ -2408,6 +2439,15 @@ export const chatStyles = [
       background: transparent;
       color: var(--ah-text);
       border: 1px solid var(--ah-border);
+    }
+    /* 计划操作区：置于卡片右下角（任务列表之下），主操作视觉重心更符合阅读动线。 */
+    .plan-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--ah-border);
     }
     .plan-tasks {
       margin: 0;
