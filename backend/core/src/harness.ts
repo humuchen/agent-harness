@@ -433,7 +433,13 @@ export class AgentHarness {
       });
     }
 
-    const guard = checkInput(userInput, this.opts.guardrailPolicy);
+    const guard = checkInput(
+      userInput,
+      this.opts.guardrailPolicy,
+      // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
+      // 对称地降级为强信号注入检测 —— 任务步骤合理提到「system prompt」等词不应拦截。
+      this.opts.planTask === true
+    );
     if (!guard.ok) {
       recordError('guardrail.input');
       structLog('warn', 'guardrail blocked', {

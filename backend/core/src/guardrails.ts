@@ -394,7 +394,17 @@ export function redactOutput(text: string, pol?: GuardrailPolicy): string {
 // 对外校验接口（签名保持兼容）
 // ---------------------------------------------------------------------------
 
-export function checkInput(text: string, pol?: GuardrailPolicy): GuardrailResult {
+export function checkInput(
+  text: string,
+  pol?: GuardrailPolicy,
+  /**
+   * 强信号模式（计划任务派发专用）：仅用句子级强信号短语（PHRASES_LOW）做注入检测，
+   * 跳过 'system prompt' 等 medium 弱信号短短语 —— 与输出侧 checkTaskOutput 对称。
+   * 计划任务的步骤描述合理地提到「阅读 system prompt 文档 / 优化 system prompt」，
+   * 弱信号命中会把整次任务派发拦死；安全底线（真密钥格式 + 强信号注入）不放松。
+   */
+  strongOnly = false
+): GuardrailResult {
   const p = pol ?? policy;
   if (typeof text !== 'string') {
     return { ok: false, reason: 'input must be a string' };
@@ -407,7 +417,7 @@ export function checkInput(text: string, pol?: GuardrailPolicy): GuardrailResult
       if (re.test(text)) return { ok: false, reason: 'possible secret in input' };
     }
   }
-  const inj = detectInjection(text, p);
+  const inj = detectInjection(text, p, strongOnly);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
   for (const r of customInputRules) {
     if (r.re.test(text)) return { ok: false, reason: r.reason };
