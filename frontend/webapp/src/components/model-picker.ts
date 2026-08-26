@@ -60,10 +60,10 @@ export class AhModelPicker extends LitElement {
       border: none;
       background: transparent;
       color: var(--ah-text-muted);
-      font-size: 13px;
-      height: 36px;
-      line-height: 36px;
-      padding: 0 4px;
+      font-size: 12px;
+      height: 28px;
+      line-height: 26px;
+      padding: 0 10px;
       margin: 0;
       cursor: pointer;
       outline: none;
@@ -78,7 +78,6 @@ export class AhModelPicker extends LitElement {
       /* 胶囊背景：悬停在选中模型上时的视觉反馈 */
       background: var(--ah-surface-3, var(--ah-surface-2));
       border-radius: 999px;
-      padding: 0 10px;
     }
     /* 选中模型厂商徽标：品牌色圆底首字母 / 系统默认芯片图标（自定义与默认模型） */
     .trigger .vlogo {
@@ -469,8 +468,7 @@ export class AhModelPicker extends LitElement {
       const inside = path.some(
         (n) =>
           n instanceof Element &&
-          (n.classList.contains('panel') ||
-            n.classList.contains('trigger'))
+          (n.classList.contains('panel') || n.classList.contains('trigger'))
       );
       if (!inside) this.toggle(false);
     };
@@ -738,7 +736,9 @@ export class AhModelPicker extends LitElement {
    * 把非 Free 模型按供应商分组，供应商按首字母 A-Z 排序（同组内模型保持原序）。
    * 无 `/` 前缀的归入「其他」，排最末。
    */
-  private groupByVendor(models: string[]): { vendor: string; items: string[] }[] {
+  private groupByVendor(
+    models: string[]
+  ): { vendor: string; items: string[] }[] {
     const map = new Map<string, string[]>();
     for (const m of models) {
       const v = this.vendorOf(m);
@@ -780,7 +780,9 @@ export class AhModelPicker extends LitElement {
       <div class="group ${free ? 'group-free' : ''}">
         <button
           class="group-head ${collapsed ? 'collapsed' : ''}"
-          title=${collapsed ? `展开 ${name}（${items.length}）` : `折叠 ${name}`}
+          title=${collapsed
+            ? `展开 ${name}（${items.length}）`
+            : `折叠 ${name}`}
           aria-expanded=${collapsed ? 'false' : 'true'}
           @click=${() => this.toggleGroup(name, expanded)}
         >
@@ -841,9 +843,7 @@ export class AhModelPicker extends LitElement {
     // Free 面板：:free 变体；「其他」面板：全部非 Free（远程付费 + 内置预设）。
     // 自定义模型不混入其他面板，独立成组置底。
     const freeModels = remoteIds.filter((m) => this.isFreeId(m) && match(m));
-    const otherModels = remoteIds.filter(
-      (m) => !this.isFreeId(m) && match(m)
-    );
+    const otherModels = remoteIds.filter((m) => !this.isFreeId(m) && match(m));
     return html`
       <button
         class="scrim"

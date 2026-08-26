@@ -1902,7 +1902,7 @@ export const chatStyles = [
       display: flex;
       flex-direction: column;
       gap: 0;
-      border: 1px solid var(--ah-border);
+      // border: 1px solid var(--ah-border);
       border-radius: 18px;
       background: var(--ah-surface-2);
       /* 悬浮阴影（聚焦抬升已移除：transform 会劫持内部 fixed 遮罩的包含块） */
@@ -2333,9 +2333,7 @@ export const chatStyles = [
       display: flex;
       align-items: center;
       justify-content: center;
-      transition:
-        color 0.15s ease,
-        border-color 0.15s ease,
+      transition: color 0.15s ease, border-color 0.15s ease,
         background 0.15s ease;
     }
     .fe-collapse svg,
@@ -2352,11 +2350,7 @@ export const chatStyles = [
         var(--ah-accent, #2997ff) 45%,
         var(--ah-border)
       );
-      background: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 8%,
-        transparent
-      );
+      background: color-mix(in srgb, var(--ah-accent, #2997ff) 8%, transparent);
     }
     .fe-input {
       flex: 1 1 auto;
