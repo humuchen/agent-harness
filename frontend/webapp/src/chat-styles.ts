@@ -2268,6 +2268,97 @@ export const chatStyles = [
       }
     }
 
+    /* 移动端长按弹出的全屏编辑器（与主输入框共享 this.input） */
+    .fullscreen-edit {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      background: var(--ah-surface-1, #141414);
+      /* 顶栏 + 输入区避开刘海 / 手势条 */
+      padding: calc(12px + env(safe-area-inset-top)) 14px
+        calc(12px + env(safe-area-inset-bottom));
+      box-sizing: border-box;
+      animation: ah-slideUp 0.2s ease;
+    }
+    @keyframes ah-slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(24px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .fe-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .fe-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--ah-text);
+    }
+    .fe-collapse {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid var(--ah-border);
+      background: var(--ah-surface-2, #1c1c1c);
+      color: var(--ah-text-muted, #999);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition:
+        color 0.15s ease,
+        border-color 0.15s ease,
+        background 0.15s ease;
+    }
+    .fe-collapse svg {
+      width: 20px;
+      height: 20px;
+    }
+    .fe-collapse:hover {
+      color: var(--ah-accent, #2997ff);
+      border-color: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 45%,
+        var(--ah-border)
+      );
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 8%,
+        transparent
+      );
+    }
+    .fe-input {
+      flex: 1 1 auto;
+      min-height: 0;
+      resize: none;
+      border: 1px solid var(--ah-border);
+      border-radius: 14px;
+      background: var(--ah-surface-2, #1c1c1c);
+      color: var(--ah-text);
+      font: inherit;
+      font-size: 15px;
+      line-height: 1.6;
+      padding: 14px;
+      outline: none;
+      box-sizing: border-box;
+    }
+    .fe-input:focus {
+      border-color: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 45%,
+        var(--ah-border)
+      );
+    }
+
     /* 图片预览 Lightbox */
     .lightbox {
       position: fixed;

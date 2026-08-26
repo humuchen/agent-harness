@@ -140,6 +140,12 @@ export class AhChat extends LitElement {
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
 
+  /**
+   * 移动端长按输入框弹出的全屏编辑器是否打开。
+   * 与主输入框共享同一个 this.input，收起后内容自动回到原输入框。
+   */
+  @state() private fullscreenEditOpen = false;
+
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
 
@@ -463,6 +469,7 @@ export class AhChat extends LitElement {
       clearInterval(this.watchTimer);
       this.watchTimer = null;
     }
+    this.cancelComposerLongPress();
   }
 
   /**
@@ -2123,10 +2130,63 @@ export class AhChat extends LitElement {
     this.previewFile = null;
   }
 
+  // ── 移动端长按输入框 → 全屏编辑器 ──────────────────────────────
+
+  /** 长按计时器句柄；600ms 触发全屏编辑。 */
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 长按起点坐标；移动距离超过该阈值视为滚动，取消长按。 */
+  private longPressStart: { x: number; y: number } | null = null;
+
+  private static readonly LONG_PRESS_MS = 600;
+  private static readonly LONG_PRESS_MOVE_TOLERANCE = 10; // px
+
+  private onComposerPointerDown(e: PointerEvent) {
+    if (e.pointerType !== 'touch') return; // 仅触屏长按触发，桌面不受影响
+    this.longPressStart = { x: e.clientX, y: e.clientY };
+    this.longPressTimer = setTimeout(() => {
+      this.longPressTimer = null;
+      this.fullscreenEditOpen = true;
+      // 打开后自动聚焦，直接弹键盘可输入。
+      void this.updateComplete.then(() => {
+        this.renderRoot.querySelector<HTMLTextAreaElement>(
+          '.fe-input'
+        )?.focus();
+      });
+    }, AhChat.LONG_PRESS_MS);
+  }
+
+  private onComposerPointerMove(e: PointerEvent) {
+    if (!this.longPressTimer || !this.longPressStart) return;
+    const dx = e.clientX - this.longPressStart.x;
+    const dy = e.clientY - this.longPressStart.y;
+    if (dx * dx + dy * dy > AhChat.LONG_PRESS_MOVE_TOLERANCE ** 2) {
+      this.cancelComposerLongPress(); // 手指滑动（滚动文本）→ 取消
+    }
+  }
+
+  private cancelComposerLongPress() {
+    if (this.longPressTimer) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+    this.longPressStart = null;
+  }
+
+  private async closeFullscreenEdit() {
+    this.fullscreenEditOpen = false;
+    // 焦点还给原输入框，方便继续键入 / 直接发送。
+    await this.updateComplete;
+    this.renderRoot.querySelector<HTMLTextAreaElement>(
+      '.composer textarea'
+    )?.focus();
+  }
+
   /** Esc 关闭预览 / 上下文用量弹层（window 级监听，无需聚焦）。 */
   private onPreviewKeydown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
-      if (this.previewFile) this.closePreview();
+      if (this.fullscreenEditOpen) this.closeFullscreenEdit();
+      else if (this.previewFile) this.closePreview();
       else if (this.showCtxUsage) this.showCtxUsage = false;
     }
   };
@@ -2958,7 +3018,17 @@ export class AhChat extends LitElement {
                   )}
                 </div>`
               : nothing}
-            <div class="composer-body">
+            <div
+              class="composer-body"
+              @pointerdown=${this.onComposerPointerDown}
+              @pointermove=${this.onComposerPointerMove}
+              @pointerup=${() => this.cancelComposerLongPress()}
+              @pointercancel=${() => this.cancelComposerLongPress()}
+              @contextmenu=${(e: Event) => {
+                // 长按已触发全屏编辑时，抑制系统右键/长按菜单，避免两层 UI 叠加。
+                if (this.fullscreenEditOpen) e.preventDefault();
+              }}
+            >
               <textarea
                 rows="1"
                 placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
@@ -3082,6 +3152,41 @@ export class AhChat extends LitElement {
         class="scrim ${this.sidebarOpen ? 'show' : ''}"
         @click=${() => (this.sidebarOpen = false)}
       ></div>
+      ${this.fullscreenEditOpen
+        ? html`<div
+            class="fullscreen-edit"
+            @contextmenu=${(e: Event) => e.stopPropagation()}
+          >
+            <div class="fe-head">
+              <span class="fe-title">编辑消息</span>
+              <button
+                class="fe-collapse"
+                title="收起"
+                aria-label="收起全屏编辑"
+                @click=${() => this.closeFullscreenEdit()}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <!-- 收起默认输入框：向下收拢箭头 -->
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+            </div>
+            <textarea
+              class="fe-input"
+              placeholder="输入消息…"
+              .value=${this.input}
+              @input=${(e: Event) =>
+                (this.input = (e.target as HTMLTextAreaElement).value)}
+            ></textarea>
+          </div>`
+        : nothing}
       ${this.previewFile
         ? html`<div class="lightbox" @click=${() => this.closePreview()}>
             <button
