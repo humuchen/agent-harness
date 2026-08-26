@@ -3217,26 +3217,16 @@ export class AhChat extends LitElement {
           >
             <div class="fe-head">
               <span class="fe-title">编辑消息</span>
+              <!-- 收起按钮：纯文本字符方案（不依赖 SVG 渲染，任何环境都可见）。
+                   前几版 SVG 图标在真机上反复隐形（只剩圆底），故弃用矢量方案。 -->
               <button
+                type="button"
                 class="fe-collapse"
                 title="收起"
                 aria-label="收起全屏编辑"
                 @click=${() => this.closeFullscreenEdit()}
               >
-                <svg
-                  class="fe-collapse-icon"
-                  viewBox="0 0 24 24"
-                  width="20"
-                  height="20"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <!-- 收起：向下收拢箭头 -->
-                  <path d="M6 9l6 6 6-6" />
-                </svg>
+                收起<span class="fe-collapse-arrow">⌄</span>
               </button>
             </div>
             <textarea

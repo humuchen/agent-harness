@@ -302,6 +302,13 @@ export const chatStyles = [
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+    /* 移动端（≤600px）：无 hover 语义，且触屏长按/点按易误触发提示，
+       直接禁用 hover 浮出的 tip（分类明细仍可点击圆环查看）。 */
+    @media (max-width: 600px) {
+      .ctx-tip {
+        display: none;
+      }
+    }
     .ctx-pop {
       position: absolute;
       bottom: calc(100% + 10px);
@@ -2322,29 +2329,29 @@ export const chatStyles = [
       font-weight: 600;
       color: var(--ah-text);
     }
+    /* 收起按钮：文字胶囊（纯文本，不依赖 SVG 渲染 —— 真机上矢量图标反复隐形） */
     .fe-collapse {
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
+      height: 32px;
+      padding: 0 14px;
+      border-radius: 16px;
       border: 1px solid var(--ah-border);
       background: var(--ah-surface-3, var(--ah-surface-2, #1c1c1c));
-      /* 图标必须与深色圆底保持高对比：text-muted 暗灰在 surface 底上近乎隐形
-         （曾出现「收起按钮只见一个空圆点」的反馈），改用主文字色。 */
       color: var(--ah-text, #fff);
+      font-size: 13px;
+      font-family: inherit;
       cursor: pointer;
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      justify-content: center;
+      gap: 4px;
+      line-height: 1;
       transition: color 0.15s ease, border-color 0.15s ease,
         background 0.15s ease;
     }
-    .fe-collapse svg,
-    .fe-collapse .fe-collapse-icon {
-      display: block; /* svg 默认 inline：基线缝隙会把 20px 图标挤出/裁切 */
-      width: 20px;
-      height: 20px;
-      /* stroke 用 currentColor；显式声明防止被继承样式置为 none 而隐形。 */
-      stroke: currentColor;
+    .fe-collapse-arrow {
+      font-size: 15px;
+      line-height: 1;
+      /* 字符基线微调：让 ⌄ 与「收起」视觉对齐 */
+      transform: translateY(-1px);
     }
     .fe-collapse:hover {
       color: var(--ah-accent, #2997ff);

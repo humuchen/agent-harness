@@ -72,7 +72,6 @@ export class AhAgentPicker extends LitElement {
     @media (max-width: 600px) {
       .trigger {
         padding: 0 10px;
-        gap: 0;
       }
       .trigger > svg {
         display: none;

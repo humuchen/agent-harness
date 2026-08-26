@@ -118,9 +118,9 @@ export class AhModelPicker extends LitElement {
         display: none;
       }
       .trigger .vlogo {
-        width: 20px;
-        height: 20px;
-        font-size: 11px;
+        width: 26px;
+        height: 26px;
+        font-size: 12px;
       }
     }
     .trigger svg {
@@ -698,11 +698,12 @@ export class AhModelPicker extends LitElement {
   /**
    * 选中模型的厂商徽标：
    * - 已知厂商 → 品牌色圆底 + 厂商首字母；
-   * - 自定义 / 默认模型 / 未收录厂商 → 系统默认芯片图标（未收录厂商无品牌底色，
+   * - 自定义 / 默认模型 / 未收录厂商 → 默认火花图标（未收录厂商无品牌底色，
    *   用中性灰描边图标，避免臆造配色）。
    */
   private renderVendorLogo(id: string): TemplateResult {
     if (!id || this.isCustom(id)) {
+      // 四角火花（sparkles）：寓意「默认/智能推荐」，替代旧芯片图形。
       return html`<svg
         class="vlogo vlogo-sys"
         viewBox="0 0 24 24"
@@ -713,9 +714,10 @@ export class AhModelPicker extends LitElement {
         stroke-linejoin="round"
         aria-hidden="true"
       >
-        <rect x="5" y="5" width="14" height="14" rx="2" />
-        <rect x="9" y="9" width="6" height="6" />
-        <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />
+        <path
+          d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"
+        />
+        <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" />
       </svg>`;
     }
     const v = this.vendorOf(id);
