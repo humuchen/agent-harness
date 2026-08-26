@@ -994,7 +994,9 @@ export class AhModelPicker extends LitElement {
         aria-expanded=${this.open ? 'true' : 'false'}
         @click=${() => this.toggle(!this.open)}
       >
-        ${this.model ? this.renderVendorLogo(this.model) : nothing}
+        <!-- 始终渲染徽标：移动端文字与箭头被隐藏后，logo 是唯一可见元素；
+             未选模型 / 自定义模型走系统芯片图标兜底（renderVendorLogo 内部处理）。 -->
+        ${this.renderVendorLogo(this.model)}
         <span class="name"
           >${this.model ? this.displayName(this.model) : '默认模型'}</span
         >

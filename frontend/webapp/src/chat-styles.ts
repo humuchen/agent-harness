@@ -2327,8 +2327,10 @@ export const chatStyles = [
       height: 36px;
       border-radius: 50%;
       border: 1px solid var(--ah-border);
-      background: var(--ah-surface-2, #1c1c1c);
-      color: var(--ah-text-muted, #999);
+      background: var(--ah-surface-3, var(--ah-surface-2, #1c1c1c));
+      /* 图标必须与深色圆底保持高对比：text-muted 暗灰在 surface 底上近乎隐形
+         （曾出现「收起按钮只见一个空圆点」的反馈），改用主文字色。 */
+      color: var(--ah-text, #fff);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -2338,6 +2340,7 @@ export const chatStyles = [
     }
     .fe-collapse svg,
     .fe-collapse .fe-collapse-icon {
+      display: block; /* svg 默认 inline：基线缝隙会把 20px 图标挤出/裁切 */
       width: 20px;
       height: 20px;
       /* stroke 用 currentColor；显式声明防止被继承样式置为 none 而隐形。 */

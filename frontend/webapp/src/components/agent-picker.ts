@@ -67,6 +67,23 @@ export class AhAgentPicker extends LitElement {
       width: 12px;
     }
 
+    /* 移动端（≤600px）：隐藏图标与箭头，名称只展示前两个字符，
+       与 model-picker 的「移动端极简触发按钮」策略一致。 */
+    @media (max-width: 600px) {
+      .trigger {
+        padding: 0 10px;
+        gap: 0;
+      }
+      .trigger > svg {
+        display: none;
+      }
+      /* 名称截前两个字：用整字宽的省略号占位符撑住宽度，避免布局跳动 */
+      .trigger .name {
+        max-width: 2em;
+        text-overflow: clip;
+      }
+    }
+
     /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
     .panel {
       position: absolute;
@@ -97,7 +114,7 @@ export class AhAgentPicker extends LitElement {
       padding: 4.5px 10px;
       border-radius: 8px;
       color: var(--ah-text);
-      font-size: 13.5px;
+      font-size: 12px;
       font-family: inherit;
       cursor: pointer;
       text-align: left;
