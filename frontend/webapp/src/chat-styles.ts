@@ -480,7 +480,7 @@ export const chatStyles = [
       flex: 0 0 30px;
       width: 30px;
       height: 30px;
-      border-radius: 8px;
+      border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
