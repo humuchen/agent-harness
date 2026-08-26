@@ -73,9 +73,9 @@ export class AhAgentPicker extends LitElement {
       .trigger {
         padding: 0 10px;
       }
-      .trigger > svg {
-        display: none;
-      }
+      // .trigger > svg {
+      //   display: none;
+      // }
       /* 名称截前两个字：用整字宽的省略号占位符撑住宽度，避免布局跳动 */
       .trigger .name {
         max-width: 2em;
