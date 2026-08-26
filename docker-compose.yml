@@ -20,7 +20,7 @@ services:
       UI_AUTH_TOKEN: '${UI_AUTH_TOKEN:-}'
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPENROUTER_API_KEY: '${OPENROUTER_API_KEY:-}'
-      OPENROUTER_MODEL: '${OPENROUTER_MODEL:-agnes-2.5-flash}'
+      OPENROUTER_MODEL: '${OPENROUTER_MODEL:-}'
       # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
       REDIS_URL: '${REDIS_URL:-}'
       # 记忆持久化后端（Phase 4 决策 A）：file 后端落 RWX 风格共享卷 /app/data，

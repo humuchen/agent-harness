@@ -38,7 +38,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: agnes-2.5-flash
+        value:
       # 记忆持久化后端（Phase 4 决策 A）：file 后端 + /app/data/memory。
       # 注意：Render free 磁盘为临时盘，部署重置即清空；多副本共享需付费 plan + 挂载
       # 持久卷（或改用 k8s 部署，已配 RWX 卷）。单实例场景下重启不丢（同部署内）。
