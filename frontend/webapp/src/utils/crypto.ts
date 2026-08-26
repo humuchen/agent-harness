@@ -2,7 +2,7 @@
  * 前端 AES-GCM helper（与后端 `decryptApiKey` 配对）。
  *
  * 密钥来自 build-time 注入的 `__AH_CRYPTO_KEY__`（64 hex chars / 32 bytes）。
- * 密文格式：base64(iv + ciphertext)，iv 固定 12 bytes，与后端约定一致。
+ * 密文格式：base64(iv + ciphertext + tag)，iv 固定 12 bytes，与后端约定一致。
  */
 
 /** 取 build-time 注入的 AES-256 key；未配置则抛错（禁止静默降级）。 */
@@ -30,31 +30,26 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** 安全读取 ArrayBuffer 的 byteLength（避开 TS 对 `ArrayBufferLike` 的严格校验）。 */
-function bufferByteLength(buf: ArrayBufferView | ArrayBuffer): number {
-  return (buf as any).byteLength ?? (buf as ArrayBuffer).byteLength;
-}
-
-/** AES-GCM 加密：输出 base64(iv + ciphertext)。 */
+/** AES-GCM 加密：输出 base64(iv + ciphertext + authTag)。 */
 export async function encryptApiKey(plaintext: string): Promise<string> {
   const key = getBuildTimeCryptoKey();
-  // @ts-ignore - TS lib 的 Uint8Array<ArrayBufferLike> 与 BufferSource 重载不匹配，运行时合法
+  // 参数级 `as any`：TS lib 的 Uint8Array<ArrayBufferLike> 与 BufferSource 重载不匹配，
+  // 运行时完全合法（WebCrypto 接受任意 ArrayBufferView）。
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
-    key,
+    key as any,
     { name: 'AES-GCM' },
     false,
     ['encrypt']
   );
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  // @ts-ignore - 运行时返回 ArrayBuffer；此处显式断言以绕过 TS strict 对 BufferSource 的过度校验
-  const ct = (await crypto.subtle.encrypt(
+  const ct = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
-    keyMaterial as any,
+    keyMaterial,
     new TextEncoder().encode(plaintext)
-  )) as ArrayBuffer;
+  );
   const ivBytes = new Uint8Array(iv);
-  const ctBytes = new Uint8Array(ct);
+  const ctBytes = new Uint8Array(ct as unknown as ArrayBuffer);
   const combined = new Uint8Array(ivBytes.length + ctBytes.length);
   combined.set(ivBytes, 0);
   combined.set(ctBytes, ivBytes.length);
