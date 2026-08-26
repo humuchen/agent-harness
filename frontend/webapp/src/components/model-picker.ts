@@ -414,7 +414,34 @@ export class AhModelPicker extends LitElement {
     super.connectedCallback();
     this.customs = this.loadCustoms();
     this.refreshModels();
+    // 面板外点关闭兜底（document 级捕获 pointerdown）：
+    // 不依赖 fixed 遮罩的 CSS 几何 —— 祖先的 transform/filter 会劫持 fixed
+    // 元素的包含块、让全视口遮罩缩水失效；此监听保证点空白必定可关。
+    // 必须用 composedPath() 判断命中：面板在本组件 shadow root 内，
+    // document 监听拿到的 e.target 已被重定向到宿主元素，closest 会失配。
+    // 命中面板或触发按钮则忽略（触发按钮由自身 click 切换）。
+    this.onDocPointerDown = (e: PointerEvent) => {
+      if (!this.open) return;
+      const path = e.composedPath();
+      const inside = path.some(
+        (n) =>
+          n instanceof Element &&
+          (n.classList.contains('panel') ||
+            n.classList.contains('trigger'))
+      );
+      if (!inside) this.toggle(false);
+    };
+    document.addEventListener('pointerdown', this.onDocPointerDown, true);
   }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.onDocPointerDown)
+      document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+  }
+
+  /** 外点监听句柄（connectedCallback 装载，disconnectedCallback 卸载）。 */
+  private onDocPointerDown: ((e: PointerEvent) => void) | null = null;
 
   /** 合并去重后的完整模型清单：远程 > 自定义 > 内置预设（各自保序）。 */
   private get allModels(): string[] {
@@ -642,7 +669,7 @@ export class AhModelPicker extends LitElement {
           class="group-head ${collapsed ? 'collapsed' : ''}"
           title=${collapsed ? `展开 ${name}（${items.length}）` : `折叠 ${name}`}
           aria-expanded=${collapsed ? 'false' : 'true'}
-          @click=${() => this.toggleGroup(name)}
+          @click=${() => this.toggleGroup(name, expanded)}
         >
           <svg
             class="chev"
@@ -682,8 +709,13 @@ export class AhModelPicker extends LitElement {
     `;
   }
 
-  private toggleGroup(vendor: string) {
-    this.collapsed = { ...this.collapsed, [vendor]: !this.collapsed[vendor] };
+  /**
+   * 切换分组展开/折叠。必须基于渲染时传入的当前视觉状态（expanded）翻转：
+   * 折叠态用「键缺失 = undefined」表示默认折叠，直接对 undefined 取反会写出
+   * true（仍视为折叠）——这正是首次点击需要点两次才展开的根因。
+   */
+  private toggleGroup(vendor: string, currentlyExpanded: boolean) {
+    this.collapsed = { ...this.collapsed, [vendor]: currentlyExpanded };
   }
 
   private renderPanel() {

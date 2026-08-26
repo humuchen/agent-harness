@@ -384,8 +384,8 @@ export const sharedStyles = css`
     color: var(--ah-text-muted);
   }
   .error {
-    background: var(--ah-danger-soft);
-    border: 1px solid var(--ah-danger);
+    // background: var(--ah-danger-soft);
+    // border: 1px solid var(--ah-danger);
     color: var(--ah-danger);
     border-radius: var(--ah-radius-sm);
     padding: 8px 12px;

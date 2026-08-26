@@ -80,8 +80,13 @@ export const chatStyles = [
       display: none;
       gap: 4px;
     }
-    .session:hover .acts {
-      display: flex;
+    /* 仅真实悬停设备（鼠标）hover 才浮现操作按钮：触屏没有 hover，
+       点按会话行时浏览器先置 hover 态、按钮在指尖下瞬间出现并截获本次 click，
+       导致「选会话」误触发重命名弹框。触屏端改为常驻显示（见 ≤900px 媒体查询）。 */
+    @media (hover: hover) {
+      .session:hover .acts {
+        display: flex;
+      }
     }
     .icon-btn {
       border: none;
@@ -1759,6 +1764,14 @@ export const chatStyles = [
         padding: 10px 12px;
         gap: 8px;
       }
+      /* 触屏无 hover：会话操作按钮常驻显示，避免点按时按钮在指尖下浮现截获 click
+         （选会话误触发重命名弹框的根因）。 */
+      .session .acts {
+        display: flex;
+      }
+      .session .acts .icon-btn {
+        padding: 6px 8px; /* 触屏加大点击热区 */
+      }
       .model-input {
         width: 120px;
       }
@@ -1890,11 +1903,10 @@ export const chatStyles = [
       border: 1px solid var(--ah-border);
       border-radius: 18px;
       background: var(--ah-surface-2);
-      /* 悬浮阴影 + 聚焦抬升 */
+      /* 悬浮阴影（聚焦抬升已移除：transform 会劫持内部 fixed 遮罩的包含块） */
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22),
         0 4px 12px rgba(0, 0, 0, 0.12);
-      transition: box-shadow 0.2s ease, border-color 0.2s ease,
-        transform 0.2s ease;
+      transition: box-shadow 0.2s ease, border-color 0.2s ease;
       min-height: 56px;
     }
     .composer:focus-within {
@@ -1905,7 +1917,10 @@ export const chatStyles = [
       );
       box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2),
         0 0 0 3px color-mix(in srgb, var(--ah-accent, #2997ff) 14%, transparent);
-      transform: translateY(-1px);
+      /* 注意：不可在此加 transform（哪怕是 translateY(-1px)）——
+         祖先一旦有 transform，其内部所有 position:fixed 的后代（模型选择器 /
+         上下文用量的全视口透明遮罩）都会改以 composer 为包含块，
+         遮罩不再铺满视口，「点击空白处关闭」随之失效。 */
     }
     /* 附件预览条：顶部，横向滚动 */
     .composer .attachments-preview {
@@ -2321,9 +2336,12 @@ export const chatStyles = [
         border-color 0.15s ease,
         background 0.15s ease;
     }
-    .fe-collapse svg {
+    .fe-collapse svg,
+    .fe-collapse .fe-collapse-icon {
       width: 20px;
       height: 20px;
+      /* stroke 用 currentColor；显式声明防止被继承样式置为 none 而隐形。 */
+      stroke: currentColor;
     }
     .fe-collapse:hover {
       color: var(--ah-accent, #2997ff);

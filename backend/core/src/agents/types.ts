@@ -99,7 +99,7 @@ export const DEFAULT_AGENT_ID = 'default';
 export function makeDefaultAgentCard(): AgentCard {
   return {
     id: DEFAULT_AGENT_ID,
-    name: '默认 Agent',
+    name: '默认',
     domain: 'generic',
     description:
       '保留现有行为的通用 agent：挂载全部内置工具、全部 MCP 与全部技能。',

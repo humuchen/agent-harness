@@ -35,6 +35,7 @@ import { ApiError } from '@agent-harness/client';
 import { agentContext, type UploadedFile } from './agent-context';
 import './components/file-upload';
 import './components/model-picker';
+import './components/mode-picker';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -141,8 +142,8 @@ export class AhChat extends LitElement {
   @state() private previewFile: UploadedFile | null = null;
 
   /**
-   * 移动端长按输入框弹出的全屏编辑器是否打开。
-   * 与主输入框共享同一个 this.input，收起后内容自动回到原输入框。
+   * 长按用户消息的编辑输入框（edit-input）弹出的全屏编辑器是否打开。
+   * 与编辑草稿共享同一个 editingDraft，收起后内容回到气泡内原位编辑框。
    */
   @state() private fullscreenEditOpen = false;
 
@@ -368,6 +369,7 @@ export class AhChat extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onPreviewKeydown);
+    document.addEventListener('pointerdown', this.onDocPointerDown, true);
     // 恢复上次选择的交互模式（问答/计划），跨刷新记忆。
     try {
       const saved = localStorage.getItem('ah_interaction_mode');
@@ -464,6 +466,7 @@ export class AhChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
+    document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     if (this.watchTimer) {
       clearInterval(this.watchTimer);
@@ -509,6 +512,25 @@ export class AhChat extends LitElement {
     this.scrollToBottom();
     this.scrollThinkToBottom();
   }
+
+  /**
+   * 上下文用量弹层外点关闭兜底（document 级 pointerdown）：
+   * 不依赖 CSS 几何 —— 即便未来某祖先的 transform/filter 再次劫持 fixed 遮罩
+   * 的包含块，点空白仍能可靠关闭。
+   * 注意必须用 composedPath() 判断命中：弹层在 ah-chat 的 shadow root 内，
+   * document 监听拿到的 e.target 已被重定向到宿主元素，closest 会失配。
+   */
+  private onDocPointerDown = (e: PointerEvent) => {
+    if (!this.showCtxUsage) return;
+    const path = e.composedPath();
+    const inside = path.some(
+      (n) =>
+        n instanceof Element &&
+        (n.classList.contains('ctx-pop') ||
+          n.classList.contains('ctx-ring-wrap'))
+    );
+    if (!inside) this.showCtxUsage = false;
+  };
 
   private scrollToBottom() {
     // 仅当用户处于「钉底」状态时才自动跟随到底部；
@@ -2148,7 +2170,8 @@ export class AhChat extends LitElement {
   private static readonly LONG_PRESS_MOVE_TOLERANCE = 15; // px
 
   private onComposerPointerDown(e: PointerEvent) {
-    if (this.streaming[this.activeId] === true) return;
+    // 仅在用户消息编辑态可用；流式进行中不响应。
+    if (this.editingMsgId < 0 || this.streaming[this.activeId] === true) return;
     // 触屏与鼠标均允许长按（鼠标路径便于桌面端验证同一交互）。
     this.longPressStart = { x: e.clientX, y: e.clientY };
     this.longPressTimer = setTimeout(() => {
@@ -2156,9 +2179,9 @@ export class AhChat extends LitElement {
       this.fullscreenEditOpen = true;
       // 打开后自动聚焦，直接弹键盘可输入。
       void this.updateComplete.then(() => {
-        this.renderRoot.querySelector<HTMLTextAreaElement>(
-          '.fe-input'
-        )?.focus();
+        this.renderRoot
+          .querySelector<HTMLTextAreaElement>('.fe-input')
+          ?.focus();
       });
     }, AhChat.LONG_PRESS_MS);
   }
@@ -2182,11 +2205,9 @@ export class AhChat extends LitElement {
 
   private async closeFullscreenEdit() {
     this.fullscreenEditOpen = false;
-    // 焦点还给原输入框，方便继续键入 / 直接发送。
+    // 焦点还给气泡内的编辑输入框，继续原位编辑。
     await this.updateComplete;
-    this.renderRoot.querySelector<HTMLTextAreaElement>(
-      '.composer textarea'
-    )?.focus();
+    this.renderRoot.querySelector<HTMLTextAreaElement>('.edit-input')?.focus();
   }
 
   /** Esc 关闭预览 / 上下文用量弹层（window 级监听，无需聚焦）。 */
@@ -2350,6 +2371,13 @@ export class AhChat extends LitElement {
                     e.preventDefault();
                     this.cancelEdit();
                   }
+                }}
+                @pointerdown=${this.onComposerPointerDown}
+                @pointermove=${this.onComposerPointerMove}
+                @pointerup=${() => this.cancelComposerLongPress()}
+                @contextmenu=${(e: Event) => {
+                  // 长按待触发期间抑制系统右键/Android 长按菜单，否则菜单抢走手势。
+                  if (this.longPressTimer) e.preventDefault();
                 }}
               ></textarea>
               <div class="edit-actions">
@@ -2690,25 +2718,36 @@ export class AhChat extends LitElement {
           </li>`;
         })}
       </ol>
-      ${/* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */
-      html`<div class="plan-actions">
-        <span class="pill ${st.status}">${statusLabel}</span>
-        <div class="plan-action-btns">
-          ${st.status === 'pending'
-            ? html`<button class="plan-btn" @click=${() => this.confirmPlan(m)}>
-                确认执行
-              </button>
-              <button class="plan-btn ghost" @click=${() => this.cancelPlan(m.id)}>
-                取消
-              </button>`
-            : nothing}
-          ${st.status === 'failed'
-            ? html`<button class="plan-btn" @click=${() => this.confirmPlan(m)}>
-                从失败任务继续
-              </button>`
-            : nothing}
-        </div>
-      </div>`}
+      ${
+        /* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */
+        html`<div class="plan-actions">
+          <span class="pill ${st.status}">${statusLabel}</span>
+          <div class="plan-action-btns">
+            ${st.status === 'pending'
+              ? html`<button
+                    class="plan-btn"
+                    @click=${() => this.confirmPlan(m)}
+                  >
+                    确认执行
+                  </button>
+                  <button
+                    class="plan-btn ghost"
+                    @click=${() => this.cancelPlan(m.id)}
+                  >
+                    取消
+                  </button>`
+              : nothing}
+            ${st.status === 'failed'
+              ? html`<button
+                  class="plan-btn"
+                  @click=${() => this.confirmPlan(m)}
+                >
+                  从失败任务继续
+                </button>`
+              : nothing}
+          </div>
+        </div>`
+      }
     </div>`;
   }
 
@@ -2950,8 +2989,12 @@ export class AhChat extends LitElement {
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
-              <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+              <path
+                d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"
+              />
+              <path
+                d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"
+              />
               <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
               <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
             </svg>
@@ -3053,18 +3096,7 @@ export class AhChat extends LitElement {
                   )}
                 </div>`
               : nothing}
-            <div
-              class="composer-body"
-              @pointerdown=${this.onComposerPointerDown}
-              @pointermove=${this.onComposerPointerMove}
-              @pointerup=${() => this.cancelComposerLongPress()}
-              @contextmenu=${(e: Event) => {
-                // 长按期间 / 全屏编辑已打开时，抑制系统右键或 Android 长按菜单，
-                // 否则系统菜单会抢走手势导致全屏编辑永远不触发。
-                if (this.longPressTimer || this.fullscreenEditOpen)
-                  e.preventDefault();
-              }}
-            >
+            <div class="composer-body">
               <textarea
                 rows="1"
                 placeholder="给 Agent 发送消息…（Enter 发送，Shift+Enter 换行）"
@@ -3099,19 +3131,13 @@ export class AhChat extends LitElement {
                       html`<option value=${a.id}>${escapeHtml(a.name)}</option>`
                   )}
                 </select>
-                <select
-                  class="mode-select"
-                  title="运行模式：回答=直接回答；计划=先产出结构化执行计划，确认后逐步执行"
-                  aria-label="运行模式"
-                  .value=${this.interactionMode}
-                  @change=${(e: Event) =>
+                <ah-mode-picker
+                  .mode=${this.interactionMode}
+                  @mode-change=${(e: Event) =>
                     this.setInteractionMode(
-                      (e.target as HTMLSelectElement).value as 'qa' | 'plan'
+                      (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
                     )}
-                >
-                  <option value="qa">回答</option>
-                  <option value="plan">计划</option>
-                </select>
+                ></ah-mode-picker>
               </div>
               <div class="composer-footer-right">
                 <ah-model-picker
@@ -3202,14 +3228,17 @@ export class AhChat extends LitElement {
                 @click=${() => this.closeFullscreenEdit()}
               >
                 <svg
+                  class="fe-collapse-icon"
                   viewBox="0 0 24 24"
+                  width="20"
+                  height="20"
                   fill="none"
                   stroke="currentColor"
-                  stroke-width="2"
+                  stroke-width="2.2"
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 >
-                  <!-- 收起默认输入框：向下收拢箭头 -->
+                  <!-- 收起：向下收拢箭头 -->
                   <path d="M6 9l6 6 6-6" />
                 </svg>
               </button>
@@ -3217,9 +3246,9 @@ export class AhChat extends LitElement {
             <textarea
               class="fe-input"
               placeholder="输入消息…"
-              .value=${this.input}
+              .value=${this.editingDraft}
               @input=${(e: Event) =>
-                (this.input = (e.target as HTMLTextAreaElement).value)}
+                (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
             ></textarea>
           </div>`
         : nothing}
