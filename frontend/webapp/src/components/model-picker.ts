@@ -620,6 +620,24 @@ export class AhModelPicker extends LitElement {
       .map(([vendor, items]) => ({ vendor, items }));
   }
 
+  /**
+   * 自定义模型的服务商分组名：取 baseUrl 的主机名并大写展示
+   * （如 https://apihub.agnes-ai.com/v1 → APIHUB.AGNES-AI.COM）。
+   * 未配置 baseUrl 的归入「自定义」。
+   */
+  private customProviderName(c: CustomModel): string {
+    if (!c.baseUrl) return '自定义';
+    try {
+      const host = new URL(c.baseUrl).hostname;
+      if (host) return host.toUpperCase();
+    } catch {
+      /* 非法 URL：回退到原始串的大写 */
+      const t = c.baseUrl.trim();
+      if (t) return t.toUpperCase();
+    }
+    return '自定义';
+  }
+
   /** 模型是否为免费变体（`:free` 后缀）：归入「Free」面板。 */
   private isFreeId(id: string): boolean {
     return id.endsWith(':free');
@@ -714,12 +732,31 @@ export class AhModelPicker extends LitElement {
     const nonFree = filteredRemote
       .filter((m) => !this.isFreeId(m.id))
       .map((m) => m.id);
-    const groups = this.groupByVendor(nonFree);
 
-    // 显示规则：Free 面板始终显示（哪怕空），分组无结果时隐藏该组。
-    const hasCustoms = filteredCustom.length > 0;
+    // 服务商分类（用户指定）：OpenRouter 全量模型只归两块面板 ——
+    // OPENROUTER FREE（:free 变体，置顶）与 OPENROUTER（付费）；
+    // 自定义模型按 baseUrl 主机名分组（如 APIHUB.AGNES-AI.COM），无 baseUrl 归「自定义」。
+    // 组名 A-Z 排序；组内模型按展示名 A-Z 排序。
+    const customGroupsMap = new Map<string, CustomModel[]>();
+    for (const c of filteredCustom) {
+      const p = this.customProviderName(c);
+      if (!customGroupsMap.has(p)) customGroupsMap.set(p, []);
+      customGroupsMap.get(p)!.push(c);
+    }
+    const customGroups = [...customGroupsMap.entries()]
+      .sort(([a], [b]) =>
+        a === '自定义' ? 1 : b === '自定义' ? -1 : a.localeCompare(b)
+      )
+      .map(([provider, list]) => ({
+        provider,
+        items: list.map((c) => c.id).sort((a, b) =>
+          this.displayName(a).localeCompare(this.displayName(b))
+        )
+      }));
+
+    // 显示规则：OpenRouter 两面板始终显示（哪怕空）；自定义服务商组无结果时隐藏。
     const showFree = true;
-    const showCustoms = hasCustoms;
+    const showOpenRouter = true;
 
     return html`
       <div class="wrap">
@@ -759,14 +796,12 @@ export class AhModelPicker extends LitElement {
               </div>
               <div class="panel-body">
                 ${showFree
-                  ? this.renderGroup('Free', free.map((m) => m.id), true)
+                  ? this.renderGroup('OPENROUTER FREE', free.map((m) => m.id), true)
                   : nothing}
-                ${groups.map(({ vendor, items }) =>
-                  this.renderGroup(vendor, items)
+                ${showOpenRouter ? this.renderGroup('OPENROUTER', nonFree) : nothing}
+                ${customGroups.map(({ provider, items }) =>
+                  this.renderGroup(provider, items)
                 )}
-                ${showCustoms
-                  ? this.renderGroup('自定义', filteredCustom.map((c) => c.id))
-                  : nothing}
               </div>
               <div class="footer">
                 <button @click=${() => this.refreshModels()}>刷新模型</button>
