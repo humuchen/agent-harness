@@ -46,10 +46,7 @@ function uniqueShort(label: string, used: Set<string>): string {
 const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'dashboard', label: '总览', short: '览' },
   { id: 'chat', label: '对话', short: '话' },
-  { id: 'verify', label: '验证', short: '验' },
-  { id: 'env', label: '环境', short: '环' },
   { id: 'mcp', label: 'MCP', short: 'M' },
-  { id: 'approvals', label: '审批', short: '审' },
   { id: 'observability', label: '可观测', short: '观' },
   { id: 'plugins', label: '插件', short: '插' }
 ];

@@ -583,10 +583,15 @@ export class AhModelPicker extends LitElement {
     return i >= 0 ? id.slice(i + 1) : id;
   }
 
-  /** 模型供应商名：取 `/` 前缀；无前缀归入「其他」。 */
+  /** 模型供应商名：取 `/` 前缀并剥掉 `~` 别名前缀（`~z-ai` → `z-ai`，合并到现有厂商）；
+   *  无 `/` 前缀归入「其他」。 */
   private vendorOf(id: string): string {
     const i = id.indexOf('/');
-    return i > 0 ? id.slice(0, i) : '其他';
+    if (i <= 0) return '其他';
+    let v = id.slice(0, i);
+    // OpenRouter 用 `~vendor` 标记「latest 别名路由」，与正式 vendor 同源，合并分组。
+    while (v.startsWith('~')) v = v.slice(1);
+    return v || '其他';
   }
 
   /**
@@ -627,6 +632,10 @@ export class AhModelPicker extends LitElement {
     expanded: boolean
   ): TemplateResult {
     const collapsed = !expanded;
+    // 组内模型按展示名 A-Z 排序（Free 面板里混着多厂商变体，排序后更易查找）。
+    const sorted = [...items].sort((a, b) =>
+      this.displayName(a).localeCompare(this.displayName(b))
+    );
     return html`
       <div class="group ${free ? 'group-free' : ''}">
         <button
@@ -653,7 +662,7 @@ export class AhModelPicker extends LitElement {
           ? nothing
           : html`
               <div class="group-items">
-                ${items.map(
+                ${sorted.map(
                   (m) => html`
                     <button
                       class="item"
@@ -783,9 +792,14 @@ export class AhModelPicker extends LitElement {
                     ? html`<span class="check">✓</span>`
                     : nothing}
                 </button>
-                <!-- 面板一：Free（:free 变体，默认折叠，警示色调） -->
+                <!-- 面板一：Free（:free 变体，默认折叠，警示色调；可折叠/展开） -->
                 ${freeModels.length
-                  ? this.renderGroup('Free', freeModels, true, true)
+                  ? this.renderGroup(
+                      'Free',
+                      freeModels,
+                      true,
+                      this.collapsed['Free'] === false
+                    )
                   : nothing}
                 <!-- 面板二起：按供应商 A-Z 分组（同厂商模型合并，每组默认折叠） -->
                 ${this.groupByVendor(otherModels).map(({ vendor, items }) =>
