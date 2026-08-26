@@ -255,6 +255,42 @@ export class AhModelPicker extends LitElement {
       color: var(--ah-accent, #2997ff);
       font-weight: 700;
     }
+    /* 自定义模型条目：主体（选择）+ 右侧「编辑」按钮 */
+    .item.custom-item {
+      padding: 0;
+    }
+    .custom-main {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 0 8px 14px;
+      border: none;
+      background: transparent;
+      color: var(--ah-text);
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      word-break: break-all;
+    }
+    .custom-item:hover {
+      background: var(--ah-surface-2);
+    }
+    .item-edit {
+      flex-shrink: 0;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted);
+      font-size: 13px;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+    .item-edit:hover {
+      color: var(--ah-accent, #2997ff);
+    }
 
     /* ---- 按供应商折叠的分组 ---- */
     .group + .group {
@@ -385,6 +421,13 @@ export class AhModelPicker extends LitElement {
     .add-input:focus {
       border-color: var(--ah-accent, #2997ff);
     }
+    /* 编辑态：接口地址 / 模型名称只读（仅 API Key 可改），弱化外观提示不可编辑 */
+    .add-input[readonly] {
+      color: var(--ah-text-muted);
+      opacity: 0.75;
+      cursor: not-allowed;
+      border-style: dashed;
+    }
     .add-ok {
       border: none;
       background: var(--ah-accent, #2997ff);
@@ -419,6 +462,8 @@ export class AhModelPicker extends LitElement {
   @state() private open = false;
   @state() private query = '';
   @state() private adding = false;
+  /** 正在编辑的自定义模型 id（空串 = 添加新模型而非编辑）。 */
+  @state() private editingId = '';
 
   /** 按供应商折叠的分组展开态（key = 供应商名；缺省全部展开）。 */
   @state() private collapsed: Record<string, boolean> = {};
@@ -512,10 +557,22 @@ export class AhModelPicker extends LitElement {
       // 关闭时重置瞬态状态，下次打开回到干净视图。
       this.query = '';
       this.adding = false;
+      this.editingId = '';
       this.draftId = '';
       this.draftBaseUrl = '';
       this.draftApiKey = '';
     }
+  }
+
+  /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。 */
+  private startEdit(id: string) {
+    const c = this.customs.find((x) => x.id === id);
+    if (!c) return;
+    this.editingId = id;
+    this.adding = true;
+    this.draftId = c.id;
+    this.draftBaseUrl = c.baseUrl ?? '';
+    this.draftApiKey = c.apiKey ?? '';
   }
 
   /** 尝试拉取 OpenRouter 公共模型列表（无需密钥）；失败静默保留本地清单。 */
@@ -627,12 +684,21 @@ export class AhModelPicker extends LitElement {
     if (!id) return;
     const baseUrl = this.draftBaseUrl.trim();
     const apiKey = this.draftApiKey.trim();
+    const editing = this.editingId === id && this.isCustom(id);
     // 同名已存在时更新其端点配置，否则插入到最前。
     const rest = this.customs.filter((c) => c.id !== id);
+    const prev = editing ? this.customs.find((c) => c.id === id) : undefined;
     this.customs = [
       {
         id,
-        ...(baseUrl ? { baseUrl } : {}),
+        // 编辑态：接口地址与模型名称锁定不可改，保留原值；仅 API Key 可更新。
+        ...(editing
+          ? prev?.baseUrl
+            ? { baseUrl: prev.baseUrl }
+            : {}
+          : baseUrl
+          ? { baseUrl }
+          : {}),
         ...(apiKey ? { apiKey } : {})
       },
       ...rest
@@ -642,6 +708,11 @@ export class AhModelPicker extends LitElement {
     this.draftBaseUrl = '';
     this.draftApiKey = '';
     this.adding = false;
+    this.editingId = '';
+    if (editing) {
+      // 编辑保存：不切换选中模型（可能只是换 Key），仅刷新视图。
+      return;
+    }
     this.pick(id);
   }
 
@@ -894,6 +965,8 @@ export class AhModelPicker extends LitElement {
                 type="text"
                 placeholder="接口地址（可选，如 https://api.example.com/v1）"
                 .value=${this.draftBaseUrl}
+                ?readonly=${this.editingId !== ''}
+                title=${this.editingId ? '编辑时不可修改接口地址' : ''}
                 @input=${(e: Event) =>
                   (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
               />
@@ -911,6 +984,8 @@ export class AhModelPicker extends LitElement {
                 type="text"
                 placeholder="模型名称（必填，如 vendor/model-name）"
                 .value=${this.draftId}
+                ?readonly=${this.editingId !== ''}
+                title=${this.editingId ? '编辑时不可修改模型名称' : ''}
                 @keydown=${(e: KeyboardEvent) => {
                   if (e.key === 'Enter') this.submitDraft();
                   if (e.key === 'Escape') this.adding = false;
@@ -919,7 +994,7 @@ export class AhModelPicker extends LitElement {
                   (this.draftId = (e.target as HTMLInputElement).value)}
               />
               <button class="add-ok" @click=${() => this.submitDraft()}>
-                添加
+                ${this.editingId ? '保存' : '添加'}
               </button>
             </div>`
           : nothing}
@@ -957,14 +1032,66 @@ export class AhModelPicker extends LitElement {
                     this.collapsed[vendor] === false
                   )
                 )}
-                <!-- 自定义模型：用户手动添加，默认展开 -->
+                <!-- 自定义模型：用户手动添加，默认展开；每项带「编辑」（仅 API Key 可改） -->
                 ${customs.length
-                  ? this.renderGroup(
-                      '自定义模型',
-                      customs,
-                      false,
-                      !this.collapsed['自定义模型']
-                    )
+                  ? html`<div class="group group-custom">
+                      <button
+                        class="group-head"
+                        title=${`折叠 自定义模型`}
+                        aria-expanded=${this.collapsed['自定义模型']
+                          ? 'false'
+                          : 'true'}
+                        @click=${() =>
+                          this.toggleGroup(
+                            '自定义模型',
+                            !this.collapsed['自定义模型']
+                          )}
+                      >
+                        <svg
+                          class="chev"
+                          viewBox="0 0 10 6"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M1 1l4 4 4-4" />
+                        </svg>
+                        <span class="vendor">自定义模型</span>
+                        <span class="count">${customs.length}</span>
+                      </button>
+                      ${this.collapsed['自定义模型']
+                        ? nothing
+                        : html`<div class="group-items">
+                            ${customs.map(
+                              (m) => html`
+                                <div class="item custom-item">
+                                  <button
+                                    class="custom-main"
+                                    title=${m}
+                                    @click=${() => this.pick(m)}
+                                  >
+                                    <span>${this.displayName(m)}</span>
+                                    ${this.model === m
+                                      ? html`<span class="check">✓</span>`
+                                      : nothing}
+                                  </button>
+                                  <button
+                                    class="item-edit"
+                                    title="编辑 API Key"
+                                    aria-label="编辑 ${m} 的 API Key"
+                                    @click=${(e: Event) => {
+                                      e.stopPropagation();
+                                      this.startEdit(m);
+                                    }}
+                                  >
+                                    ✎
+                                  </button>
+                                </div>`
+                            )}
+                          </div>`}
+                    </div>`
                   : nothing}
               `}
         </div>

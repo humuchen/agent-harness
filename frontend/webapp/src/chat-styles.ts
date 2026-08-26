@@ -347,7 +347,7 @@ export const chatStyles = [
       font-size: 15px;
       cursor: pointer;
       padding: 0;
-      margin-left: 8px;
+      margin-left: auto;
       transition: color 0.15s, background 0.15s;
     }
     .ctx-pop-close:hover {
@@ -379,6 +379,7 @@ export const chatStyles = [
       font-size: 11px;
       color: var(--ah-text-muted);
       font-variant-numeric: tabular-nums;
+      margin-left: 20px;
     }
     .ctx-seg {
       display: flex;
