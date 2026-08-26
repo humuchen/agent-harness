@@ -1991,6 +1991,7 @@ export const chatStyles = [
     }
     /* 深度思考 / 联网搜索 快捷开关图标（激活态 accent 高亮） */
     .tool-toggle {
+      padding: 0;
       appearance: none;
       border: none;
       background: transparent;
