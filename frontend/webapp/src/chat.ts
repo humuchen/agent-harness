@@ -3226,7 +3226,17 @@ export class AhChat extends LitElement {
                 aria-label="收起全屏编辑"
                 @click=${() => this.closeFullscreenEdit()}
               >
-                <i class="fe-chev" aria-hidden="true"></i>
+                <svg
+                  class="chev"
+                  viewBox="0 0 10 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M1 1l4 4 4-4"></path>
+                </svg>
               </button>
             </div>
             <textarea
