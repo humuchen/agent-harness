@@ -40,7 +40,7 @@ const NODES: NetNode[] = [
   { x: 95, y: 430, r: 5, delay: 0.3 }, // 3
   { x: 460, y: 440, r: 6, delay: 1.4 }, // 4
   { x: 210, y: 560, r: 5, delay: 0.9 }, // 5
-  { x: 370, y: 580, r: 5, delay: 1.8 }, // 6
+  { x: 370, y: 580, r: 5, delay: 1.8 } // 6
 ];
 const EDGES: NetEdge[] = [
   { a: 0, b: 1, dur: 4.2, delay: 0.0 },
@@ -54,7 +54,7 @@ const EDGES: NetEdge[] = [
   { a: 4, b: 6, dur: 5.2, delay: 0.4 },
   { a: 1, b: 3, dur: 6.0, delay: 1.2 },
   { a: 2, b: 4, dur: 5.6, delay: 0.6 },
-  { a: 5, b: 6, dur: 6.2, delay: 1.5 },
+  { a: 5, b: 6, dur: 6.2, delay: 1.5 }
 ];
 
 function edgePath(e: NetEdge): string {
@@ -66,12 +66,26 @@ function edgePath(e: NetEdge): string {
 /** 渲染整张 mesh：连线(流动) + 沿线游走的脉冲 + 节点(呼吸光晕 + 实心点)。 */
 function meshSvg(className = 'mesh') {
   return html`
-    <svg class=${className} viewBox="0 0 560 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <svg
+      class=${className}
+      viewBox="0 0 560 640"
+      preserveAspectRatio="xMidYMid slice"
+      aria-hidden="true"
+    >
       ${EDGES.map(
         (e, k) => html`
-          <path id=${`edge-${k}`} class="edge" d=${edgePath(e)} style=${`animation-delay:${e.delay}s`}></path>
+          <path
+            id=${`edge-${k}`}
+            class="edge"
+            d=${edgePath(e)}
+            style=${`animation-delay:${e.delay}s`}
+          ></path>
           <circle class="packet" r="3">
-            <animateMotion dur=${`${e.dur}s`} begin=${`${e.delay}s`} repeatCount="indefinite">
+            <animateMotion
+              dur=${`${e.dur}s`}
+              begin=${`${e.delay}s`}
+              repeatCount="indefinite"
+            >
               <mpath href=${`#edge-${k}`}></mpath>
             </animateMotion>
           </circle>
@@ -79,7 +93,13 @@ function meshSvg(className = 'mesh') {
       )}
       ${NODES.map(
         (n) => html`
-          <circle class="node-glow" cx=${n.x} cy=${n.y} r=${n.r * 2.4} style=${`animation-delay:${n.delay}s`}></circle>
+          <circle
+            class="node-glow"
+            cx=${n.x}
+            cy=${n.y}
+            r=${n.r * 2.4}
+            style=${`animation-delay:${n.delay}s`}
+          ></circle>
           <circle class="node" cx=${n.x} cy=${n.y} r=${n.r}></circle>
         `
       )}
@@ -90,12 +110,38 @@ function meshSvg(className = 'mesh') {
 /** 眼睛图标：open=true 睁眼，false 闭眼（带斜杠）。 */
 function eyeIcon(open: boolean) {
   return open
-    ? html`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
-        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" stroke="currentColor" stroke-width="1.6" />
-        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6" />
+    ? html`<svg
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="3"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
       </svg>`
-    : html`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
-        <path d="M2 12s3.5-7 10-7c2 0 3.7.8 5.2 1.9M22 12s-3.5 7-10 7c-2 0-3.7-.8-5.2-1.9" stroke="currentColor" stroke-width="1.6" />
+    : html`<svg
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path
+          d="M2 12s3.5-7 10-7c2 0 3.7.8 5.2 1.9M22 12s-3.5 7-10 7c-2 0-3.7-.8-5.2-1.9"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
         <path d="M4 4l16 16" stroke="currentColor" stroke-width="1.6" />
       </svg>`;
 }
@@ -117,7 +163,6 @@ export class AhLogin extends LitElement {
       .login-wrap {
         position: relative;
         width: 100%;
-        max-width: 1280px;
         aspect-ratio: 1280 / 832;
         max-height: 100vh;
         max-height: 100dvh;
@@ -131,7 +176,12 @@ export class AhLogin extends LitElement {
         );
       }
       :host([data-theme='light']) .login-wrap {
-        background: linear-gradient(135deg, rgba(0, 102, 230, 0.16) 0%, rgba(217, 235, 255, 0.55) 55%, #fff 100%);
+        background: linear-gradient(
+          135deg,
+          rgba(0, 102, 230, 0.16) 0%,
+          rgba(217, 235, 255, 0.55) 55%,
+          #fff 100%
+        );
       }
 
       /* ---------------------- 背景氛围层 ---------------------- */
@@ -156,7 +206,9 @@ export class AhLogin extends LitElement {
         opacity: 0.78;
       }
       @keyframes ah-login-flow {
-        to { stroke-dashoffset: -140; }
+        to {
+          stroke-dashoffset: -140;
+        }
       }
       .packet {
         fill: var(--ah-accent-strong);
@@ -174,8 +226,15 @@ export class AhLogin extends LitElement {
         stroke-width: 1.5;
       }
       @keyframes ah-login-node {
-        0%, 100% { opacity: 0.32; transform: scale(0.82); }
-        50% { opacity: 0.65; transform: scale(1.28); }
+        0%,
+        100% {
+          opacity: 0.32;
+          transform: scale(0.82);
+        }
+        50% {
+          opacity: 0.65;
+          transform: scale(1.28);
+        }
       }
 
       .particles {
@@ -195,10 +254,20 @@ export class AhLogin extends LitElement {
         animation: ah-login-float linear infinite;
       }
       @keyframes ah-login-float {
-        0% { transform: translateY(0); opacity: 0; }
-        12% { opacity: 0.85; }
-        88% { opacity: 0.85; }
-        100% { transform: translateY(-150px); opacity: 0; }
+        0% {
+          transform: translateY(0);
+          opacity: 0;
+        }
+        12% {
+          opacity: 0.85;
+        }
+        88% {
+          opacity: 0.85;
+        }
+        100% {
+          transform: translateY(-150px);
+          opacity: 0;
+        }
       }
 
       /* 景深 mesh：比主 mesh 更大、更淡、更慢，营造空间纵深感。 */
@@ -226,8 +295,12 @@ export class AhLogin extends LitElement {
         opacity: 0.45;
       }
       @keyframes ah-login-drift {
-        0% { transform: translate(-2%, -2%) scale(1.02); }
-        100% { transform: translate(2%, 2%) scale(1.08); }
+        0% {
+          transform: translate(-2%, -2%) scale(1.02);
+        }
+        100% {
+          transform: translate(2%, 2%) scale(1.08);
+        }
       }
 
       /* 漂浮光球：大尺度 accent 柔光，增加背景层次。 */
@@ -249,8 +322,12 @@ export class AhLogin extends LitElement {
         opacity: 0.22;
       }
       @keyframes ah-login-orb {
-        0% { transform: translate(0, 0) scale(1); }
-        100% { transform: translate(20px, -30px) scale(1.12); }
+        0% {
+          transform: translate(0, 0) scale(1);
+        }
+        100% {
+          transform: translate(20px, -30px) scale(1.12);
+        }
       }
 
       /* 全幅晕影：中心透亮、四周渐隐，让悬浮卡片更聚焦。 */
@@ -266,7 +343,11 @@ export class AhLogin extends LitElement {
         );
       }
       :host([data-theme='light']) .vignette {
-        background: radial-gradient(circle at 50% 60%, transparent 35%, rgba(255, 255, 255, 0.45) 100%);
+        background: radial-gradient(
+          circle at 50% 60%,
+          transparent 35%,
+          rgba(255, 255, 255, 0.45) 100%
+        );
       }
       /* 卡片背后 accent 光晕 */
       .card-halo {
@@ -278,12 +359,20 @@ export class AhLogin extends LitElement {
         height: 620px;
         z-index: 2;
         pointer-events: none;
-        background: radial-gradient(circle, color-mix(in srgb, var(--ah-accent) 22%, transparent) 0%, transparent 70%);
+        background: radial-gradient(
+          circle,
+          color-mix(in srgb, var(--ah-accent) 22%, transparent) 0%,
+          transparent 70%
+        );
         filter: blur(50px);
         opacity: 0.8;
       }
       :host([data-theme='light']) .card-halo {
-        background: radial-gradient(circle, rgba(0, 102, 230, 0.14) 0%, transparent 70%);
+        background: radial-gradient(
+          circle,
+          rgba(0, 102, 230, 0.14) 0%,
+          transparent 70%
+        );
       }
 
       /* ---------------------- 品牌文案（左上 + 左下） ---------------------- */
@@ -311,11 +400,16 @@ export class AhLogin extends LitElement {
         height: 34px;
         object-fit: contain;
         display: block;
-        filter: drop-shadow(0 0 10px color-mix(in srgb, var(--ah-accent) 60%, transparent))
-          drop-shadow(0 0 22px color-mix(in srgb, var(--ah-accent) 35%, transparent));
+        filter: drop-shadow(
+            0 0 10px color-mix(in srgb, var(--ah-accent) 60%, transparent)
+          )
+          drop-shadow(
+            0 0 22px color-mix(in srgb, var(--ah-accent) 35%, transparent)
+          );
       }
       :host([data-theme='light']) .brand-mark .logo {
-        filter: drop-shadow(0 0 8px rgba(0, 102, 230, 0.35)) drop-shadow(0 0 16px rgba(0, 102, 230, 0.22));
+        filter: drop-shadow(0 0 8px rgba(0, 102, 230, 0.35))
+          drop-shadow(0 0 16px rgba(0, 102, 230, 0.22));
       }
       .brand-ver {
         font-family: var(--ah-font-mono);
@@ -345,13 +439,18 @@ export class AhLogin extends LitElement {
         animation: ah-login-chip 1.6s ease-in-out infinite;
       }
       @keyframes ah-login-chip {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.45; }
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.45;
+        }
       }
 
       .brand-head {
         position: absolute;
-        top: 72px;
+        top: 110px;
         left: 48px;
         width: min(300px, 26%);
         z-index: 4;
@@ -363,13 +462,14 @@ export class AhLogin extends LitElement {
         line-height: 1.25;
         margin: 0;
         color: var(--ah-text);
-        text-shadow: 0 0 6px color-mix(in srgb, var(--ah-accent) 55%, transparent),
+        text-shadow: 0 0 6px
+            color-mix(in srgb, var(--ah-accent) 55%, transparent),
           0 0 16px color-mix(in srgb, var(--ah-accent) 35%, transparent),
           0 0 32px color-mix(in srgb, var(--ah-accent) 20%, transparent);
       }
       :host([data-theme='light']) .brand-title {
-        text-shadow: 0 0 4px rgba(0, 102, 230, 0.35), 0 0 12px rgba(0, 102, 230, 0.22),
-          0 0 24px rgba(0, 102, 230, 0.12);
+        text-shadow: 0 0 4px rgba(0, 102, 230, 0.35),
+          0 0 12px rgba(0, 102, 230, 0.22), 0 0 24px rgba(0, 102, 230, 0.12);
       }
       .brand-sub {
         color: var(--ah-text-muted);
@@ -433,15 +533,18 @@ export class AhLogin extends LitElement {
         border: 1px solid var(--ah-border);
         border-radius: 20px;
         padding: 34px;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 24px 60px rgba(0, 0, 0, 0.32),
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35),
+          0 24px 60px rgba(0, 0, 0, 0.32),
           inset 0 0 0 1px color-mix(in srgb, var(--ah-accent) 50%, transparent),
           0 0 30px color-mix(in srgb, var(--ah-accent) 30%, transparent);
       }
       :host([data-theme='light']) .auth-card {
         background: rgba(255, 255, 255, 0.78);
         border-color: rgba(0, 102, 230, 0.22);
-        box-shadow: 0 1px 2px rgba(10, 16, 26, 0.06), 0 24px 60px rgba(10, 16, 26, 0.10),
-          inset 0 0 0 1px rgba(0, 102, 230, 0.32), 0 0 30px rgba(0, 102, 230, 0.16);
+        box-shadow: 0 1px 2px rgba(10, 16, 26, 0.06),
+          0 24px 60px rgba(10, 16, 26, 0.1),
+          inset 0 0 0 1px rgba(0, 102, 230, 0.32),
+          0 0 30px rgba(0, 102, 230, 0.16);
       }
       .auth-card h1 {
         font-family: var(--ah-font-display);
@@ -545,7 +648,8 @@ export class AhLogin extends LitElement {
         font-weight: 600;
         cursor: pointer;
         font-family: inherit;
-        box-shadow: 0 4px 16px color-mix(in srgb, var(--ah-accent) 55%, transparent);
+        box-shadow: 0 4px 16px
+          color-mix(in srgb, var(--ah-accent) 55%, transparent);
         transition: filter 140ms ease, transform 80ms ease;
       }
       .btn-primary:hover {
@@ -632,8 +736,13 @@ export class AhLogin extends LitElement {
         border-radius: 8px;
         background: var(--ah-accent-soft);
         color: var(--ah-accent);
-        font-size: 12.5px;
+        font-size: 12px;
         text-align: center;
+      }
+
+      .notice .error {
+        background: var(--ah-danger-soft);
+        color: var(--ah-danger);
       }
 
       /* ---------------------- 移动端：上下堆叠 ---------------------- */
@@ -688,7 +797,7 @@ export class AhLogin extends LitElement {
           background: #fff;
         }
       }
-    `,
+    `
   ];
 
   @state() mode: 'login' | 'register' = 'login';
@@ -716,7 +825,7 @@ export class AhLogin extends LitElement {
     });
     this.themeObs.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['data-theme']
     });
   }
 
@@ -742,9 +851,20 @@ export class AhLogin extends LitElement {
     }
     // 从表单读取字段（输入项受控在 DOM，按 name 取）。
     const form = e.target as HTMLFormElement;
-    const email = (form.elements.namedItem('email') as HTMLInputElement | null)?.value?.trim() ?? '';
-    const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
-    const confirm = (form.elements.namedItem('confirm') as HTMLInputElement | null)?.value ?? '';
+    const email =
+      (
+        form.elements.namedItem('email') as HTMLInputElement | null
+      )?.value?.trim() ?? '';
+    const password =
+      (form.elements.namedItem('password') as HTMLInputElement | null)?.value ??
+      '';
+    const confirm =
+      (form.elements.namedItem('confirm') as HTMLInputElement | null)?.value ??
+      '';
+    const username =
+      (
+        form.elements.namedItem('username') as HTMLInputElement | null
+      )?.value?.trim() ?? '';
 
     if (this.mode === 'register') {
       if (!email) {
@@ -774,18 +894,26 @@ export class AhLogin extends LitElement {
     this.notice = null;
     try {
       const endpoint =
-        this.mode === 'register' ? '/api/account/register' : '/api/account/login';
+        this.mode === 'register'
+          ? '/api/account/register'
+          : '/api/account/login';
       // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
-      const body = JSON.stringify({ username: email, password });
+      const body = JSON.stringify({ username, email, password });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,
         credentials: 'same-origin'
       });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; username?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        username?: string;
+      };
       if (!res.ok || !data.ok) {
-        this.notice = data.error || (this.mode === 'register' ? '注册失败。' : '登录失败。');
+        this.notice =
+          data.error ||
+          (this.mode === 'register' ? '注册失败。' : '登录失败。');
         return;
       }
       // 服务端已下发 ah_auth cookie；前端仅记录用户名用于双因子 header。
@@ -794,7 +922,9 @@ export class AhLogin extends LitElement {
         new CustomEvent('ah-login-success', { bubbles: true, composed: true })
       );
     } catch (err) {
-      this.notice = '网络异常，请稍后重试。' + (err instanceof Error ? `（${err.message}）` : '');
+      this.notice =
+        '网络异常，请稍后重试。' +
+        (err instanceof Error ? `（${err.message}）` : '');
     } finally {
       this.submitting = false;
     }
@@ -814,21 +944,37 @@ export class AhLogin extends LitElement {
           ? 'text'
           : 'password'
         : this.showConfirm
-          ? 'text'
-          : 'password'
+        ? 'text'
+        : 'password'
       : type;
     return html`
       <div class="field ${hasEye ? 'has-eye' : ''}">
         <label>${label}</label>
-        <input name=${valueKey} type=${inputType} placeholder=${placeholder} autocomplete=${valueKey} />
+        <input
+          name=${valueKey}
+          type=${inputType}
+          placeholder=${placeholder}
+          autocomplete=${valueKey}
+        />
         ${hasEye
           ? html`<button
               class="eye-btn"
               type="button"
-              title=${valueKey === 'password' ? (this.showPassword ? '隐藏密码' : '显示密码') : this.showConfirm ? '隐藏密码' : '显示密码'}
-              @click=${() => (valueKey === 'password' ? (this.showPassword = !this.showPassword) : (this.showConfirm = !this.showConfirm))}
+              title=${valueKey === 'password'
+                ? this.showPassword
+                  ? '隐藏密码'
+                  : '显示密码'
+                : this.showConfirm
+                ? '隐藏密码'
+                : '显示密码'}
+              @click=${() =>
+                valueKey === 'password'
+                  ? (this.showPassword = !this.showPassword)
+                  : (this.showConfirm = !this.showConfirm)}
             >
-              ${eyeIcon(valueKey === 'password' ? this.showPassword : this.showConfirm)}
+              ${eyeIcon(
+                valueKey === 'password' ? this.showPassword : this.showConfirm
+              )}
             </button>`
           : nothing}
       </div>
@@ -837,13 +983,19 @@ export class AhLogin extends LitElement {
 
   render() {
     const particles = [10, 24, 39, 55, 70, 84, 93].map(
-      (left, i) => html`<span class="particle" style=${`left:${left}%;width:${4 + (i % 2)}px;height:${4 + (i % 2)}px;animation-duration:${5 + (i % 4)}s;animation-delay:${i * 0.7}s`}></span>`
+      (left, i) =>
+        html`<span
+          class="particle"
+          style=${`left:${left}%;width:${4 + (i % 2)}px;height:${
+            4 + (i % 2)
+          }px;animation-duration:${5 + (i % 4)}s;animation-delay:${i * 0.7}s`}
+        ></span>`
     );
 
     const orbs = [
       { w: 420, h: 420, l: 6, t: 8, d: 0 },
       { w: 320, h: 320, l: 62, t: 46, d: 6 },
-      { w: 260, h: 260, l: 34, t: 72, d: 12 },
+      { w: 260, h: 260, l: 34, t: 72, d: 12 }
     ].map(
       (o) =>
         html`<span
@@ -865,37 +1017,74 @@ export class AhLogin extends LitElement {
           <div class="brand-mark">
             <img
               class="logo"
-              src=${this.theme === 'light' ? '/logo.svg' : '/logo-white.svg'}
+              src=${this.theme === 'light' ? './logo.svg' : './logo-white.svg'}
               alt="Agent Harness"
             />
             <span>Agent Harness</span>
             <span class="brand-ver">v2.0</span>
           </div>
-          <div class="status-chip"><span class="chip-dot"></span>实时编排中</div>
+          <div class="status-chip">
+            <span class="chip-dot"></span>实时编排中
+          </div>
         </div>
 
         <div class="brand-head">
           <h2 class="brand-title">编排、运行、观测<br />你的每一个 AI Agent</h2>
-          <p class="brand-sub">统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。</p>
+          <p class="brand-sub">
+            统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。
+          </p>
         </div>
 
         <div class="brand-bottom">
           <ul class="feature-list">
             <li>
-              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <svg
+                class="tick"
+                viewBox="0 0 20 20"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4 10.5l4 4 8-9"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
               多 Agent 编排与并行调度
             </li>
             <li>
-              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <svg
+                class="tick"
+                viewBox="0 0 20 20"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4 10.5l4 4 8-9"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
               一键接入 40+ MCP 服务
             </li>
             <li>
-              <svg class="tick" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path d="M4 10.5l4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <svg
+                class="tick"
+                viewBox="0 0 20 20"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4 10.5l4 4 8-9"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
               全链路可观测与事件回放
             </li>
@@ -910,23 +1099,73 @@ export class AhLogin extends LitElement {
                   <h1>欢迎回来</h1>
                   <p class="auth-sub">登录以进入你的 Agent 工作台</p>
                   <form @submit=${this.onSubmit}>
-                    ${this.field('邮箱', 'email', 'you@company.com', 'email')}
-                    ${this.field('密码', 'password', '请输入密码', 'password', true)}
+                    ${this.field('用户名', 'username', '用户名', 'username')}
+                    ${this.field(
+                      '密码',
+                      'password',
+                      '请输入密码',
+                      'password',
+                      true
+                    )}
                     <div class="row-between">
-                      <label class="remember"><input type="checkbox" ?checked=${this.remember} @change=${(e: Event) => (this.remember = (e.target as HTMLInputElement).checked)} /> 记住我</label>
-                      <button class="forge" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
+                      <label class="remember"
+                        ><input
+                          type="checkbox"
+                          ?checked=${this.remember}
+                          @change=${(e: Event) =>
+                            (this.remember = (
+                              e.target as HTMLInputElement
+                            ).checked)}
+                        />
+                        记住我</label
+                      >
+                      <button
+                        class="forge"
+                        type="button"
+                        @click=${() =>
+                          (this.notice = '演示页面：找回密码流程待接入。')}
+                      >
+                        忘记密码？
+                      </button>
                     </div>
-                    <button class="btn-primary" type="submit" ?disabled=${this.submitting}>${this.submitting ? '登录中…' : '登录'}</button>
+                    <button
+                      class="btn-primary"
+                      type="submit"
+                      ?disabled=${this.submitting}
+                    >
+                      ${this.submitting ? '登录中…' : '登录'}
+                    </button>
                   </form>
                   <div class="divider">或</div>
-                  <button class="btn-sso" type="button" @click=${() => (this.notice = '演示页面：GitHub OAuth 待接入。')}>
-                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                      <path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z" />
+                  <button
+                    class="btn-sso"
+                    type="button"
+                    @click=${() =>
+                      (this.notice = '演示页面：GitHub OAuth 待接入。')}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"
+                      />
                     </svg>
                     使用 GitHub 继续
                   </button>
-                  ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
-                  <div class="auth-foot">还没有账号？<button class="link" type="button" @click=${this.toggleMode}>立即注册</button></div>
+                  ${this.notice
+                    ? html`<div class="notice error">${this.notice}</div>`
+                    : nothing}
+                  <div class="auth-foot">
+                    还没有账号？<button
+                      class="link"
+                      type="button"
+                      @click=${this.toggleMode}
+                    >
+                      立即注册
+                    </button>
+                  </div>
                 `
               : html`
                   <h1>创建账号</h1>
@@ -934,16 +1173,58 @@ export class AhLogin extends LitElement {
                   <form @submit=${this.onSubmit}>
                     ${this.field('邮箱', 'email', 'you@company.com', 'email')}
                     ${this.field('用户名', 'text', '设置用户名', 'username')}
-                    ${this.field('密码', 'password', '至少 8 位', 'password', true)}
-                    ${this.field('确认密码', 'password', '再次输入密码', 'confirm', true)}
+                    ${this.field(
+                      '密码',
+                      'password',
+                      '至少 8 位',
+                      'password',
+                      true
+                    )}
+                    ${this.field(
+                      '确认密码',
+                      'password',
+                      '再次输入密码',
+                      'confirm',
+                      true
+                    )}
                     <label class="terms">
-                      <input type="checkbox" ?checked=${this.agree} @change=${(e: Event) => (this.agree = (e.target as HTMLInputElement).checked)} />
-                      <span>我已阅读并同意 <a href="#" @click=${(e: Event) => e.preventDefault()}>服务条款</a> 与 <a href="#" @click=${(e: Event) => e.preventDefault()}>隐私政策</a>。</span>
+                      <input
+                        type="checkbox"
+                        ?checked=${this.agree}
+                        @change=${(e: Event) =>
+                          (this.agree = (e.target as HTMLInputElement).checked)}
+                      />
+                      <span
+                        >我已阅读并同意
+                        <a href="#" @click=${(e: Event) => e.preventDefault()}
+                          >服务条款</a
+                        >
+                        与
+                        <a href="#" @click=${(e: Event) => e.preventDefault()}
+                          >隐私政策</a
+                        >。</span
+                      >
                     </label>
-                    <button class="btn-primary" type="submit" ?disabled=${this.submitting}>${this.submitting ? '创建中…' : '创建账号'}</button>
+                    <button
+                      class="btn-primary"
+                      type="submit"
+                      ?disabled=${this.submitting}
+                    >
+                      ${this.submitting ? '创建中…' : '创建账号'}
+                    </button>
                   </form>
-                  ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
-                  <div class="auth-foot">已有账号？<button class="link" type="button" @click=${this.toggleMode}>去登录</button></div>
+                  ${this.notice
+                    ? html`<div class="notice">${this.notice}</div>`
+                    : nothing}
+                  <div class="auth-foot">
+                    已有账号？<button
+                      class="link"
+                      type="button"
+                      @click=${this.toggleMode}
+                    >
+                      去登录
+                    </button>
+                  </div>
                 `}
           </div>
         </div>

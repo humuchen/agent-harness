@@ -194,6 +194,7 @@ export interface AccountResult {
   error?: string;
   username?: string;
   token?: string;
+  email?: string;
 }
 
 function validUsername(u: string): boolean {
@@ -203,7 +204,8 @@ function validUsername(u: string): boolean {
 
 export async function registerUser(
   username: string,
-  password: string
+  password: string,
+  email: string
 ): Promise<AccountResult> {
   username = (username || '').trim();
   password = password || '';
@@ -216,7 +218,7 @@ export async function registerUser(
     .get(username);
   if (existing) return { ok: false, error: '用户名已被占用' };
   db.prepare(
-    'INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)'
+    'INSERT INTO users (username, password,email, created_at) VALUES (?, ?, ?, ?)'
   ).run(username, hashPassword(password), Date.now());
   return { ok: true, username };
 }
