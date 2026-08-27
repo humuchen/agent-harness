@@ -300,6 +300,15 @@ export class AhDrawer extends LitElement {
   @property({ type: String, attribute: 'cancel-text' })
   cancelText = '取消';
 
+  /**
+   * 是否显示底部操作区。默认 false（不显示 footer）——调用方需显式开启：
+   * - 传 `show-footer`（无值属性，或 ?show-footer=${true}）→ 渲染默认「取消 / 确定」按钮；
+   * - 或在默认插槽外另传 <div slot="footer">…</div> 自定义按钮（优先级高于默认按钮）；
+   * - 不传 slot 也不传 show-footer → 彻底不渲染 footer（满足「不设 slot 也能关掉」）。
+   */
+  @property({ type: Boolean, attribute: 'show-footer' })
+  showFooter = false;
+
   /** 离场动画进行中标记。 */
   @state()
   private leaving = false;
@@ -445,24 +454,26 @@ export class AhDrawer extends LitElement {
             : nothing}
           <div class="body"><slot></slot></div>
 
-          ${this.querySelector('[slot="footer"]')
-            ? html` <div class="foot"><slot name="footer"></slot></div>`
-            : html` <div class="foot">
-                <button
-                  type="button"
-                  class="btn ghost"
-                  @click=${() => this.finish('button')}
-                >
-                  ${this.cancelText}
-                </button>
-                <button
-                  type="button"
-                  class="btn primary"
-                  @click=${this.onConfirm}
-                >
-                  ${this.confirmText}
-                </button>
-              </div>`}
+          ${this.showFooter
+            ? this.querySelector('[slot="footer"]')
+              ? html` <div class="foot"><slot name="footer"></slot></div>`
+              : html` <div class="foot">
+                  <button
+                    type="button"
+                    class="btn ghost"
+                    @click=${() => this.finish('button')}
+                  >
+                    ${this.cancelText}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn primary"
+                    @click=${this.onConfirm}
+                  >
+                    ${this.confirmText}
+                  </button>
+                </div>`
+            : nothing}
         </aside>
       </div>
     `;

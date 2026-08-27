@@ -352,7 +352,10 @@ export function renderInsights(ins: Insights) {
     </div>
     ${ins.costBreakdown
       ? html`<div class="ins-breakdown">
-          <div class="ins-bd-title">Token 拆解</div>
+          <div
+            class="ins-bd-title"
+            title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
+          >Token 拆解 <span class="ins-bd-est">估算</span></div>
           <div class="ins-bd-bars">
             ${ins.costBreakdown.map(
               (b) => html`<div class="ins-bd-row">
@@ -378,7 +381,10 @@ export function renderInsights(ins: Insights) {
       // 才整体隐藏。
       ins.costTokens
       ? html`<div class="ins-breakdown">
-          <div class="ins-bd-title">Token 拆解</div>
+          <div
+            class="ins-bd-title"
+            title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
+          >Token 拆解 <span class="ins-bd-est">估算</span></div>
           <div class="ins-bd-bars">
             <div class="ins-bd-empty">
               暂无分项数据（本次运行未返回拆解明细）

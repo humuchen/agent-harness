@@ -1500,6 +1500,18 @@ export const chatStyles = [
       color: var(--ah-accent, #2997ff);
       margin-bottom: 8px;
     }
+    /* 「估算」角标：提示 Token 拆解四项占比是启发式估算而非 provider 真实分项计数。 */
+    .ins-bd-est {
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--ah-text-muted);
+      border: 1px solid var(--ah-border);
+      border-radius: 4px;
+      padding: 0 4px;
+      margin-left: 6px;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
     .ins-bd-row {
       margin-bottom: 7px;
     }
