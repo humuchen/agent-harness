@@ -455,13 +455,21 @@ export class AhChat extends LitElement {
     } catch {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
-    // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）
+    // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
+    // 注意：后端默认 agent 的 id 为 'default'（非空串），而前端 agentId 初始值为 ''（表示「走默认」）。
+    // 若直接把 'default' 塞进列表，则列表项 id 与 agentId('') 永远对不上 → 选中态(selected/✓)永远不命中，
+    // 表现为「点开下拉却没有任何项高亮」。这里把后端 'default' 归一到 ''，并保证列表始终含一个
+    // id='' 的默认项，从而 agentId('') 能稳定命中、默认项在展开时高亮 + 打勾。
     try {
       const res = await client.listAgents();
-      this.agents = ((res?.agents as any[]) ?? []).map((a) => ({
+      const raw = ((res?.agents as any[]) ?? []).map((a) => ({
         id: String(a.id),
         name: String(a.name ?? a.id)
       }));
+      const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
+      this.agents = hasDefault
+        ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
+        : [{ id: '', name: '默认' }, ...raw];
     } catch {
       /* ignore */
     }
