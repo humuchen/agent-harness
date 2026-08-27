@@ -2942,7 +2942,7 @@ export class AhChat extends LitElement {
           ? html`<div class="trace-drawer">
               ${this.traceDrawerSection === 'trace'
                 ? html`<div class="trace-body">
-                    ${m.trace.map((n) => renderTraceNode(n))}
+                    ${m.trace.map((n) => renderTraceNode(n, undefined, () => this.requestUpdate()))}
                   </div>`
                 : html`<div class="insights">
                     ${renderInsights(buildInsights(m.trace))}

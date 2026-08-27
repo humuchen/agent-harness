@@ -1079,15 +1079,15 @@ export const chatStyles = [
       color: var(--ah-accent, #2997ff);
     }
     .tmsg-list {
-      display: none;
+      display: block;
       margin: 4px 0 6px 15px;
       border: 1px solid var(--ah-border);
       border-radius: 8px;
       background: var(--ah-surface-2, #1f2228);
       overflow: hidden;
     }
-    .tmsg-list.tmsg-open {
-      display: block;
+    .tmsg-list[hidden] {
+      display: none !important;
     }
     .tmsg-head {
       padding: 6px 10px;
@@ -1142,6 +1142,10 @@ export const chatStyles = [
       white-space: pre-wrap;
       border-left: 2px solid var(--ah-border);
       padding-left: 8px;
+    }
+    /* LLM 节点「工具 N」chip 收起时隐藏其下工具列表（点击再展开）。 */
+    .tchildren-hidden {
+      display: none;
     }
     .tdetail {
       margin: 2px 0 4px 15px;

@@ -115,6 +115,10 @@ export interface TraceNode {
   /** LLM 调用时携带的「截至此次调用的会话消息上下文」（来自前端 threads，纯前端展开用）。
    *  点击 LLM 节点上的「消息 N」chip 时，就地展开这 N 条消息（role + content）供回看。 */
   messages?: ChatMessage[];
+  /** 纯前端 UI 态：消息上下文面板是否展开（由「消息 N」chip 切换，持久化在节点上以防重渲染丢失）。 */
+  msgOpen?: boolean;
+  /** 纯前端 UI 态：工具调用列表是否收起（由「工具 N」chip 切换）。 */
+  toolsCollapsed?: boolean;
   children: TraceNode[];
 }
 

@@ -8,16 +8,7 @@ import type { TraceNode } from '@agent-harness/client';
 import { escapeHtml } from './markdown';
 import { renderJsonHtml } from './utils/json-view';
 
-/** 点击 LLM 节点的「消息 N」chip 时，切换该节点下方消息上下文面板的显隐（纯 DOM 操作，无需组件状态）。 */
-function toggleMsgPanel(e: Event) {
-  const t = e.currentTarget as HTMLElement;
-  const host = t.closest('.tnode.kind-llm');
-  const panel = host?.querySelector<HTMLElement>('.tmsg-list');
-  if (!panel) return;
-  const open = panel.classList.toggle('tmsg-open');
-  t.classList.toggle('active', open);
-  t.setAttribute('aria-expanded', String(open));
-}
+
 
 /** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
 export interface Insights {
@@ -50,8 +41,13 @@ export function countTraceNodes(trace: TraceNode[]): number {
   return n;
 }
 
-/** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。 */
-export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResult {
+/** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。
+ *  onToggle 用于 LLM 节点的「消息 N / 工具 N」chip 切换后触发父组件重渲染，使展开态持久化（避免流式重渲染丢状态）。 */
+export function renderTraceNode(
+  n: TraceNode,
+  parentKind?: string,
+  onToggle?: () => void
+): TemplateResult {
   // 成本节点：左侧竖排「成本 / 用量」标签 + 右侧按语义分组的指标。
   // 分为三组：成本（cost/priced，橙黄）、用量（tokens/系统/工具/历史/输出，蓝）、
   // 模型（model，中性灰），分组着色 + 竖排成三行，一眼可辨成本与用量。
@@ -95,7 +91,7 @@ export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResu
         </summary>
         ${n.children.length
           ? html`<div class="tchildren">
-              ${n.children.map((c) => renderTraceNode(c, n.kind))}
+              ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
             </div>`
           : nothing}
       </details>`;
@@ -129,18 +125,38 @@ export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResu
               >${Object.entries(n.meta)
                 .filter(([k]) => !(n.kind === 'run' && k === 'model'))
                 .map(([k, v]) =>
-                  k === 'messages' && n.kind === 'llm' && n.messages?.length
+                  (k === 'messages' &&
+                    n.kind === 'llm' &&
+                    n.messages?.length) ||
+                  (k === 'tools' && n.kind === 'llm' && n.children.length)
                     ? html`<span
-                        class="tchip tchip-btn"
+                        class="tchip tchip-btn ${k === 'messages'
+                          ? n.msgOpen
+                            ? 'active'
+                            : ''
+                          : n.toolsCollapsed
+                            ? ''
+                            : 'active'}"
                         role="button"
                         tabindex="0"
-                        title="点击展开消息上下文"
-                        aria-expanded="false"
-                        @click=${(e: Event) => toggleMsgPanel(e)}
+                        title=${k === 'messages' ? '点击展开 / 收起消息上下文' : '点击展开 / 收起工具调用'}
+                        aria-expanded=${k === 'messages'
+                          ? String(!!n.msgOpen)
+                          : String(!n.toolsCollapsed)}
+                        @click=${(e: Event) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (k === 'messages') n.msgOpen = !n.msgOpen;
+                          else n.toolsCollapsed = !n.toolsCollapsed;
+                          onToggle?.();
+                        }}
                         @keydown=${(e: KeyboardEvent) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
-                            toggleMsgPanel(e);
+                            e.stopPropagation();
+                            if (k === 'messages') n.msgOpen = !n.msgOpen;
+                            else n.toolsCollapsed = !n.toolsCollapsed;
+                            onToggle?.();
                           }
                         }}
                         ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
@@ -154,7 +170,7 @@ export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResu
       </summary>
       ${
         n.kind === 'llm' && n.messages?.length
-          ? html`<div class="tmsg-list">
+          ? html`<div class="tmsg-list" ?hidden=${!n.msgOpen}>
               <div class="tmsg-head">消息上下文 · 共 ${n.messages.length} 条</div>
               ${n.messages.map(
                 (m) =>
@@ -197,10 +213,10 @@ export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResu
           : html`<div class="tresult">${renderJsonHtml(n.result!)}</div>`
         : nothing}
       ${n.children.length
-        ? html`<div class="tchildren">
-            ${n.children.map((c) => renderTraceNode(c))}
-          </div>`
-        : nothing}
+          ? html`<div class="tchildren${n.toolsCollapsed ? ' tchildren-hidden' : ''}">
+              ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+            </div>`
+          : nothing}
     </details>
   `;
 }
