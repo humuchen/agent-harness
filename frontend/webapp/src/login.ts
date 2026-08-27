@@ -624,6 +624,7 @@ export class AhLogin extends LitElement {
         gap: 7px;
         color: var(--ah-text-muted);
         cursor: pointer;
+        flex-direction: row;
       }
       .remember input {
         accent-color: var(--ah-accent);
@@ -705,6 +706,7 @@ export class AhLogin extends LitElement {
         color: var(--ah-text-muted);
         margin-bottom: 18px;
         line-height: 1.5;
+        flex-direction: row;
       }
       .terms input {
         margin-top: 2px;
@@ -851,10 +853,6 @@ export class AhLogin extends LitElement {
     }
     // 从表单读取字段（输入项受控在 DOM，按 name 取）。
     const form = e.target as HTMLFormElement;
-    const username =
-      (
-        form.elements.namedItem('username') as HTMLInputElement | null
-      )?.value?.trim() ?? '';
     const email =
       (
         form.elements.namedItem('email') as HTMLInputElement | null
@@ -865,14 +863,14 @@ export class AhLogin extends LitElement {
     const confirm =
       (form.elements.namedItem('confirm') as HTMLInputElement | null)?.value ??
       '';
+    const username =
+      (
+        form.elements.namedItem('username') as HTMLInputElement | null
+      )?.value?.trim() ?? '';
 
     if (this.mode === 'register') {
-      if (!username) {
-        this.notice = '请设置用户名（3-32 位字母、数字、下划线）。';
-        return;
-      }
-      if (!/^[A-Za-z0-9_]{3,32}$/.test(username)) {
-        this.notice = '用户名需为 3-32 位字母、数字、下划线。';
+      if (!email) {
+        this.notice = '请填写邮箱。';
         return;
       }
       if (password.length < 8) {
@@ -883,13 +881,9 @@ export class AhLogin extends LitElement {
         this.notice = '两次输入的密码不一致。';
         return;
       }
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        this.notice = '邮箱格式不正确。';
-        return;
-      }
     } else {
-      if (!username) {
-        this.notice = '请填写用户名。';
+      if (!email) {
+        this.notice = '请填写邮箱 / 用户名。';
         return;
       }
       if (!password) {
@@ -905,7 +899,7 @@ export class AhLogin extends LitElement {
         this.mode === 'register'
           ? '/api/account/register'
           : '/api/account/login';
-      // 登录标识统一为 username（邮箱为选填联系信息，非登录名）。
+      // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
       const body = JSON.stringify({ username, email, password });
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -925,7 +919,7 @@ export class AhLogin extends LitElement {
         return;
       }
       // 服务端已下发 ah_auth cookie；前端仅记录用户名用于双因子 header。
-      setSession(data.username || username);
+      setSession(data.username || email);
       this.dispatchEvent(
         new CustomEvent('ah-login-success', { bubbles: true, composed: true })
       );
@@ -1222,7 +1216,7 @@ export class AhLogin extends LitElement {
                     </button>
                   </form>
                   ${this.notice
-                    ? html`<div class="notice">${this.notice}</div>`
+                    ? html`<div class="notice error">${this.notice}</div>`
                     : nothing}
                   <div class="auth-foot">
                     已有账号？<button

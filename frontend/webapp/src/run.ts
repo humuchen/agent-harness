@@ -5,9 +5,13 @@ import { client } from './api';
 import { ApprovalRequiredError } from '@agent-harness/client';
 import type { RunMode, StreamEvent } from '@agent-harness/client';
 import { sharedStyles } from './styles';
-import { toRichHtml, escapeHtml } from './markdown';
-import { agentContext, useAgentContext, type UploadedFile } from './agent-context';
-import { SessionStateMachine } from './session-state';
+import { toRichHtml, escapeHtml } from './utils/markdown';
+import {
+  agentContext,
+  useAgentContext,
+  type UploadedFile
+} from './agent-context';
+import { SessionStateMachine } from './utils/session-state';
 import './components/suggestions';
 import './components/file-upload';
 
@@ -20,7 +24,14 @@ interface Phase {
   status: 'pending' | 'active' | 'done';
 }
 
-type BlockKind = 'user' | 'think' | 'tool' | 'tool-result' | 'warn' | 'error' | 'answer';
+type BlockKind =
+  | 'user'
+  | 'think'
+  | 'tool'
+  | 'tool-result'
+  | 'warn'
+  | 'error'
+  | 'answer';
 
 interface TraceBlock {
   id: number;
@@ -35,7 +46,7 @@ const PHASES: Phase[] = [
   { key: 'plan', label: '规划', sub: '拟定执行步骤', status: 'pending' },
   { key: 'tool', label: '调用工具', sub: '执行外部动作', status: 'pending' },
   { key: 'reason', label: '推理', sub: '模型思考与决策', status: 'pending' },
-  { key: 'summarize', label: '总结', sub: '整合最终结果', status: 'pending' },
+  { key: 'summarize', label: '总结', sub: '整合最终结果', status: 'pending' }
 ];
 
 const TAG_LABEL: Record<BlockKind, string> = {
@@ -45,15 +56,19 @@ const TAG_LABEL: Record<BlockKind, string> = {
   'tool-result': '结果',
   warn: '护栏',
   error: '错误',
-  answer: '回答',
+  answer: '回答'
 };
 
 /** 快捷建议（点击即填入输入框，覆盖新增内置工具的使用场景）。 */
 const SUGGESTIONS: Array<{ label: string; prompt: string }> = [
   { label: '查天气', prompt: '帮我查一下上海的天气，未来 3 天' },
-  { label: '数据分析', prompt: '把下面这段 CSV 解析出来，并按 amount 汇总：\nname,amount\nAlice,10\nBob,20\nAlice,15' },
+  {
+    label: '数据分析',
+    prompt:
+      '把下面这段 CSV 解析出来，并按 amount 汇总：\nname,amount\nAlice,10\nBob,20\nAlice,15'
+  },
   { label: '计算', prompt: '计算 pow(2,10) + sqrt(16) - 3.5' },
-  { label: '时间', prompt: '现在几点了？' },
+  { label: '时间', prompt: '现在几点了？' }
 ];
 
 /* ------------------------------ Run ------------------------------ */
@@ -108,7 +123,9 @@ export class AhRun extends LitElement {
   }
 
   private markDone(idx: number) {
-    this.phases = this.phases.map((p, i) => (i === idx ? { ...p, status: 'done' } : p));
+    this.phases = this.phases.map((p, i) =>
+      i === idx ? { ...p, status: 'done' } : p
+    );
   }
 
   private allDone() {
@@ -124,11 +141,15 @@ export class AhRun extends LitElement {
       case 'job:accepted':
         this.jobId = (ev as any).jobId ?? this.jobId;
         // 服务端分配的会话 key：后续追问原样带回，即可复用同一 Memory 窗口续上对话。
-        if ((ev as any).sessionKey) this.conversationId = String((ev as any).sessionKey);
+        if ((ev as any).sessionKey)
+          this.conversationId = String((ev as any).sessionKey);
         break;
       case 'run:start':
         this.markActive(0);
-        this.push({ kind: 'user', text: String((ev as any).input ?? this.prompt) });
+        this.push({
+          kind: 'user',
+          text: String((ev as any).input ?? this.prompt)
+        });
         break;
       case 'run:tools':
         this.toolsCount = (ev as any).tools?.length ?? this.toolsCount;
@@ -143,7 +164,12 @@ export class AhRun extends LitElement {
       case 'llm:response': {
         this.markActive(3);
         const content = (ev as any).content;
-        if (content) this.push({ kind: 'think', text: String(content), step: (ev as any).step });
+        if (content)
+          this.push({
+            kind: 'think',
+            text: String(content),
+            step: (ev as any).step
+          });
         break;
       }
       case 'tool:start':
@@ -152,22 +178,24 @@ export class AhRun extends LitElement {
           kind: 'tool',
           text: `调用工具：${(ev as any).call?.name ?? 'unknown'}`,
           step: (ev as any).step,
-          detail: safeJson((ev as any).call?.arguments),
+          detail: safeJson((ev as any).call?.arguments)
         });
         break;
       case 'tool:result':
         this.markDone(2);
         this.push({
           kind: 'tool-result',
-          text: `${(ev as any).call?.name ?? 'unknown'} → ${(ev as any).errored ? '失败' : '完成'}`,
+          text: `${(ev as any).call?.name ?? 'unknown'} → ${
+            (ev as any).errored ? '失败' : '完成'
+          }`,
           step: (ev as any).step,
-          detail: safeJson((ev as any).result),
+          detail: safeJson((ev as any).result)
         });
         break;
       case 'guardrail:blocked':
         this.push({
           kind: 'warn',
-          text: `护栏拦截(${(ev as any).phase})：${(ev as any).reason ?? ''}`,
+          text: `护栏拦截(${(ev as any).phase})：${(ev as any).reason ?? ''}`
         });
         break;
       case 'run:cost':
@@ -189,7 +217,9 @@ export class AhRun extends LitElement {
         break;
       case 'env:status':
       case '_env_done':
-        this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
+        this.dispatchEvent(
+          new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        );
         break;
       default:
         // 未知事件类型：以原始 JSON 兜底展示，保证不丢信息
@@ -221,7 +251,9 @@ export class AhRun extends LitElement {
     // 连续对话：若尚未建立会话，由客户端生成唯一会话 key 并稳定携带，
     // 服务端据此复用同一 Memory 缓存窗口。持久化到 localStorage 以便刷新后续接。
     if (!this.conversationId) {
-      this.conversationId = `sid_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      this.conversationId = `sid_${Date.now().toString(36)}_${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
       try {
         localStorage.setItem('ah_conversation_id', this.conversationId);
       } catch {
@@ -240,8 +272,8 @@ export class AhRun extends LitElement {
           maxSteps: this.maxSteps ? Number(this.maxSteps) : undefined,
           // 优先用客户端生成的会话 key（连续追问复用同一 Memory 窗口）；
           // 高级选项里手动填写的 sessionId 作为可选的显式会话隔离覆盖。
-          sessionId: this.conversationId || (this.sessionId || undefined),
-          jobId: this.reconnect || undefined,
+          sessionId: this.conversationId || this.sessionId || undefined,
+          jobId: this.reconnect || undefined
         },
         { signal: ac.signal }
       )) {
@@ -323,7 +355,9 @@ export class AhRun extends LitElement {
     const blocks = this.trace
       .map(
         (b) =>
-          `<div class="tb"><span class="tb-tag">${escapeHtml(TAG_LABEL[b.kind])}</span>${toRichHtml(b.text)}</div>`
+          `<div class="tb"><span class="tb-tag">${escapeHtml(
+            TAG_LABEL[b.kind]
+          )}</span>${toRichHtml(b.text)}</div>`
       )
       .join('\n');
     const htmlDoc = `<!doctype html>
@@ -355,7 +389,9 @@ export class AhRun extends LitElement {
   ${blocks}
   <h2>最终结果</h2>
   ${toRichHtml(this.final)}
-  <div class="meta">jobId: ${escapeHtml(String(this.jobId ?? '-'))} · 步数: ${this.steps} · 花费: $${this.cost.toFixed(4)} · 工具: ${this.toolsCount}</div>
+  <div class="meta">jobId: ${escapeHtml(String(this.jobId ?? '-'))} · 步数: ${
+      this.steps
+    } · 花费: $${this.cost.toFixed(4)} · 工具: ${this.toolsCount}</div>
 </body>
 </html>`;
     const blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
@@ -381,7 +417,13 @@ export class AhRun extends LitElement {
       ${this.phases.map(
         (p) => html`
           <div class="phase ${p.status}">
-            <span class="dot">${p.status === 'done' ? '✓' : p.status === 'active' ? '◌' : ''}</span>
+            <span class="dot"
+              >${p.status === 'done'
+                ? '✓'
+                : p.status === 'active'
+                ? '◌'
+                : ''}</span
+            >
             <span class="label">${p.label}</span>
             ${p.sub ? html`<span class="sub">· ${p.sub}</span>` : nothing}
           </div>
@@ -394,16 +436,21 @@ export class AhRun extends LitElement {
     const blocks = this.trace.map(
       (b) => html`
         <div class="trace-block ${b.kind}">
-          <div class="tb-head"><span class="tb-tag">${TAG_LABEL[b.kind]}</span>${b.step != null ? html`<span class="sub">step ${b.step}</span>` : nothing}</div>
+          <div class="tb-head">
+            <span class="tb-tag">${TAG_LABEL[b.kind]}</span>${b.step != null
+              ? html`<span class="sub">step ${b.step}</span>`
+              : nothing}
+          </div>
           <div class="tb-body">${unsafeHTML(toRichHtml(b.text))}</div>
           ${b.detail ? html`<div class="tb-detail">${b.detail}</div>` : nothing}
         </div>
       `
     );
     return html`<div class="trace">
-      ${blocks}
-      ${this.running ? html`<span class="caret"></span>` : nothing}
-      ${this.trace.length === 0 && !this.running ? html`<span class="muted">运行后这里会实时显示思考轨迹…</span>` : nothing}
+      ${blocks} ${this.running ? html`<span class="caret"></span>` : nothing}
+      ${this.trace.length === 0 && !this.running
+        ? html`<span class="muted">运行后这里会实时显示思考轨迹…</span>`
+        : nothing}
     </div>`;
   }
 
@@ -427,16 +474,24 @@ export class AhRun extends LitElement {
         <span class="k">执行步数</span><span class="v">${this.steps}</span>
       </div>
       <div class="deliverable">
-        <span class="k">累计花费</span><span class="v accent">$${this.cost.toFixed(4)}</span>
+        <span class="k">累计花费</span
+        ><span class="v accent">$${this.cost.toFixed(4)}</span>
       </div>
       <div class="deliverable">
-        <span class="k">调用工具</span><span class="v ok">${this.toolsCount} 个</span>
+        <span class="k">调用工具</span
+        ><span class="v ok">${this.toolsCount} 个</span>
       </div>
-      <div class="codeblock rich">${this.final ? unsafeHTML(toRichHtml(this.final)) : '（模型未返回最终文本）'}</div>
+      <div class="codeblock rich">
+        ${this.final
+          ? unsafeHTML(toRichHtml(this.final))
+          : '（模型未返回最终文本）'}
+      </div>
       <div class="run-actions">
         <button @click=${() => this.copyFinal()}>复制</button>
         <button @click=${() => this.exportRun()}>导出</button>
-        <button class="ghost" @click=${() => this.newConversation()}>新会话</button>
+        <button class="ghost" @click=${() => this.newConversation()}>
+          新会话
+        </button>
       </div>
     `;
   }
@@ -451,25 +506,54 @@ export class AhRun extends LitElement {
           <h2 class="run-title">运行时</h2>
           <div class="run-head-right">
             <div class="seg">
-              <button class="${this.view === 'thinking' ? 'active' : ''}" @click=${() => (this.view = 'thinking')}>思考</button>
-              <button class="${this.view === 'result' ? 'active' : ''}" @click=${() => (this.view = 'result')}>结果</button>
-              <button class="${this.view === 'all' ? 'active' : ''}" @click=${() => (this.view = 'all')}>全览</button>
+              <button
+                class="${this.view === 'thinking' ? 'active' : ''}"
+                @click=${() => (this.view = 'thinking')}
+              >
+                思考
+              </button>
+              <button
+                class="${this.view === 'result' ? 'active' : ''}"
+                @click=${() => (this.view = 'result')}
+              >
+                结果
+              </button>
+              <button
+                class="${this.view === 'all' ? 'active' : ''}"
+                @click=${() => (this.view = 'all')}
+              >
+                全览
+              </button>
             </div>
             ${this.conversationId
-              ? html`<span class="pill session" title=${this.conversationId}>会话 ${this.conversationId.slice(0, 12)}</span>`
+              ? html`<span class="pill session" title=${this.conversationId}
+                  >会话 ${this.conversationId.slice(0, 12)}</span
+                >`
               : nothing}
             ${this.running
-              ? html`<span class="pill running">运行中</span><button class="ghost" @click=${() => this.stop()}>停止</button>`
+              ? html`<span class="pill running">运行中</span
+                  ><button class="ghost" @click=${() => this.stop()}>
+                    停止
+                  </button>`
               : this.finished
-                ? html`<span class="pill done">已完成</span><button class="ghost" @click=${() => this.newConversation()}>新会话</button>`
-                : html`<span class="pill">空闲</span>`}
+              ? html`<span class="pill done">已完成</span
+                  ><button class="ghost" @click=${() => this.newConversation()}>
+                    新会话
+                  </button>`
+              : html`<span class="pill">空闲</span>`}
           </div>
         </div>
 
         <div class="run-task card">
           <label class="block">
             任务提示词
-            <textarea rows="3" .value=${this.prompt} ?disabled=${this.running} @input=${(e: Event) => (this.prompt = (e.target as HTMLTextAreaElement).value)}></textarea>
+            <textarea
+              rows="3"
+              .value=${this.prompt}
+              ?disabled=${this.running}
+              @input=${(e: Event) =>
+                (this.prompt = (e.target as HTMLTextAreaElement).value)}
+            ></textarea>
           </label>
           <ah-suggestions
             .items=${SUGGESTIONS}
@@ -488,45 +572,95 @@ export class AhRun extends LitElement {
               this.attachments = (e as CustomEvent<UploadedFile[]>).detail;
               agentContext.set('files', this.attachments);
             }}
-            @error=${(e: Event) => this.showToast((e as CustomEvent<string>).detail)}
+            @error=${(e: Event) =>
+              this.showToast((e as CustomEvent<string>).detail)}
           ></ah-file-upload>
           <div class="row">
             <button ?disabled=${this.running} @click=${() => this.run()}>
               ${this.running ? '运行中…' : '运行 Agent'}
             </button>
-            <button class="ghost" @click=${() => (this.showAdvanced = !this.showAdvanced)}>
+            <button
+              class="ghost"
+              @click=${() => (this.showAdvanced = !this.showAdvanced)}
+            >
               ${this.showAdvanced ? '收起高级' : '高级选项'}
             </button>
             ${this.conversationId
-              ? html`<span class="muted">已建立会话，再次运行即为「连续追问」</span>`
+              ? html`<span class="muted"
+                  >已建立会话，再次运行即为「连续追问」</span
+                >`
               : nothing}
           </div>
           ${this.showAdvanced
             ? html`<div class="run-advanced">
-                <label>模式
-                  <select ?disabled=${this.running} @change=${(e: Event) => (this.mode = (e.target as HTMLSelectElement).value as RunMode)}>
-                    <option value="mock" ?selected=${this.mode === 'mock'}>mock（离线）</option>
-                    <option value="real" ?selected=${this.mode === 'real'}>real（真实 LLM）</option>
-                    <option value="real-mcp" ?selected=${this.mode === 'real-mcp'}>real-mcp</option>
+                <label
+                  >模式
+                  <select
+                    ?disabled=${this.running}
+                    @change=${(e: Event) =>
+                      (this.mode = (e.target as HTMLSelectElement)
+                        .value as RunMode)}
+                  >
+                    <option value="mock" ?selected=${this.mode === 'mock'}>
+                      mock（离线）
+                    </option>
+                    <option value="real" ?selected=${this.mode === 'real'}>
+                      real（真实 LLM）
+                    </option>
+                    <option
+                      value="real-mcp"
+                      ?selected=${this.mode === 'real-mcp'}
+                    >
+                      real-mcp
+                    </option>
                   </select>
                 </label>
-                <label>模型<input .value=${this.model} ?disabled=${this.running} @input=${(e: Event) => (this.model = (e.target as HTMLInputElement).value)} placeholder="留空用服务端默认" /></label>
-                <label>最大步数<input .value=${this.maxSteps} ?disabled=${this.running} @input=${(e: Event) => (this.maxSteps = (e.target as HTMLInputElement).value)} placeholder="留空用默认 24" /></label>
-                <label>会话 ID<input .value=${this.sessionId} ?disabled=${this.running} @input=${(e: Event) => (this.sessionId = (e.target as HTMLInputElement).value)} placeholder="多租户隔离 key" /></label>
-                <label>重连 jobId<input .value=${this.reconnect} ?disabled=${this.running} @input=${(e: Event) => (this.reconnect = (e.target as HTMLInputElement).value)} placeholder="断线重连用，可留空" /></label>
+                <label
+                  >模型<input
+                    .value=${this.model}
+                    ?disabled=${this.running}
+                    @input=${(e: Event) =>
+                      (this.model = (e.target as HTMLInputElement).value)}
+                    placeholder="留空用服务端默认"
+                /></label>
+                <label
+                  >最大步数<input
+                    .value=${this.maxSteps}
+                    ?disabled=${this.running}
+                    @input=${(e: Event) =>
+                      (this.maxSteps = (e.target as HTMLInputElement).value)}
+                    placeholder="留空用默认 24"
+                /></label>
+                <label
+                  >会话 ID<input
+                    .value=${this.sessionId}
+                    ?disabled=${this.running}
+                    @input=${(e: Event) =>
+                      (this.sessionId = (e.target as HTMLInputElement).value)}
+                    placeholder="多租户隔离 key"
+                /></label>
+                <label
+                  >重连 jobId<input
+                    .value=${this.reconnect}
+                    ?disabled=${this.running}
+                    @input=${(e: Event) =>
+                      (this.reconnect = (e.target as HTMLInputElement).value)}
+                    placeholder="断线重连用，可留空"
+                /></label>
               </div>`
             : nothing}
         </div>
 
         ${this.ticket ? html`<div class="warn">${this.ticket}</div>` : nothing}
-        ${this.error && this.running ? html`<div class="error">${this.error}</div>` : nothing}
+        ${this.error && this.running
+          ? html`<div class="error">${this.error}</div>`
+          : nothing}
 
         <div class="run-two">
           ${showThinking
             ? html`<div class="card">
                 <div class="run-col-title"><h3>思考 Trace</h3></div>
-                ${this.renderPhases()}
-                ${this.renderTrace()}
+                ${this.renderPhases()} ${this.renderTrace()}
               </div>`
             : nothing}
           ${showResult

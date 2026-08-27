@@ -1074,7 +1074,11 @@ export const chatStyles = [
       color: var(--ah-accent, #2997ff);
     }
     .tchip-btn.active {
-      background: color-mix(in srgb, var(--ah-accent, #2997ff) 18%, var(--ah-surface-3, #262a31));
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 18%,
+        var(--ah-surface-3, #262a31)
+      );
       border-color: var(--ah-accent, #2997ff);
       color: var(--ah-accent, #2997ff);
     }
@@ -1110,19 +1114,6 @@ export const chatStyles = [
       outline-offset: 2px;
       border-radius: 4px;
     }
-    .texp-caret {
-      width: 0;
-      height: 0;
-      margin-left: 2px;
-      border-left: 4px solid transparent;
-      border-right: 4px solid transparent;
-      border-top: 5px solid var(--ah-text-muted);
-      transition: transform 0.15s ease;
-      flex: 0 0 auto;
-    }
-    .texp-caret.open {
-      transform: rotate(-180deg);
-    }
     .tllm-body {
       /* 显隐由 ?hidden 属性控制（display:none !important 已全局生效），此处仅做过渡留白 */
       margin-top: 2px;
@@ -1150,7 +1141,11 @@ export const chatStyles = [
       margin-bottom: 5px;
     }
     .tmsg-item.role-user .tmsg-role {
-      background: color-mix(in srgb, var(--ah-accent, #2997ff) 20%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 20%,
+        transparent
+      );
       color: var(--ah-accent, #2997ff);
     }
     .tmsg-item.role-assistant .tmsg-role {

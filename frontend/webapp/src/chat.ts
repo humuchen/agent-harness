@@ -6,14 +6,18 @@ import { client, authedFetch } from './api';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
-import { isRetrievalTool, safeJson, parseDeepThinking } from './chat-utils';
+import {
+  isRetrievalTool,
+  safeJson,
+  parseDeepThinking
+} from './utils/chat-utils';
 import {
   buildInsights,
   countTraceNodes,
   renderInsights,
   renderTraceNode
 } from './chat-trace';
-import { toRichHtml, escapeHtml } from './markdown';
+import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
   sanitizeMessages,
   mergeThreadHistories,
@@ -2917,7 +2921,7 @@ export class AhChat extends LitElement {
     return html`
       <ah-drawer
         ?open=${m !== null}
-        showFooter=${false}
+        ?show-footer=${false}
         placement="right"
         title=${title}
         size="500px"

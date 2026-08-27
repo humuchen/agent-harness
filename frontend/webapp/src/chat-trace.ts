@@ -5,10 +5,8 @@
  */
 import { html, nothing, type TemplateResult } from 'lit';
 import type { TraceNode } from '@agent-harness/client';
-import { escapeHtml } from './markdown';
+import { escapeHtml } from './utils/markdown';
 import { renderJsonHtml } from './utils/json-view';
-
-
 
 /** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
 export interface Insights {
@@ -57,125 +55,125 @@ export function renderTraceNode(
       k === 'cost' || k === 'priced'
         ? 'cost'
         : k === 'model'
-          ? 'model'
-          : 'usage';
-    const groups: Array<['cost' | 'usage' | 'model', Array<[string, unknown]>]> = [
+        ? 'model'
+        : 'usage';
+    const groups: Array<
+      ['cost' | 'usage' | 'model', Array<[string, unknown]>]
+    > = [
       ['cost', entries.filter(([k]) => groupOf(k) === 'cost')],
       ['usage', entries.filter(([k]) => groupOf(k) === 'usage')],
       ['model', entries.filter(([k]) => groupOf(k) === 'model')]
     ];
-    return html`
-      <details class="tnode kind-cost status-${n.status}">
-        <summary class="tnode-head">
-          <span class="tdot"></span>
-          <span class="tlabel">成本 / 用量</span>
-          ${entries.length
-            ? html`<span class="tmetrics"
-                >${groups.map(
-                  ([g, items]) =>
-                    items.length
-                      ? html`<span class="tgrp tgrp-${g}"
-                          >${items.map(
-                            ([k, v]) =>
-                              html`<span class="tchip"
-                                ><b>${escapeHtml(k)}</b> ${escapeHtml(
-                                  String(v)
-                                )}</span
-                              >`
-                          )}</span
-                        >`
-                      : nothing
-                )}</span
-              >`
-            : nothing}
-        </summary>
-        ${n.children.length
-          ? html`<div class="tchildren">
-              ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
-            </div>`
+    return html` <details class="tnode kind-cost status-${n.status}">
+      <summary class="tnode-head">
+        <span class="tdot"></span>
+        <span class="tlabel">成本 / 用量</span>
+        ${entries.length
+          ? html`<span class="tmetrics"
+              >${groups.map(([g, items]) =>
+                items.length
+                  ? html`<span class="tgrp tgrp-${g}"
+                      >${items.map(
+                        ([k, v]) =>
+                          html`<span class="tchip"
+                            ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                              String(v)
+                            )}</span
+                          >`
+                      )}</span
+                    >`
+                  : nothing
+              )}</span
+            >`
           : nothing}
-      </details>`;
+      </summary>
+      ${n.children.length
+        ? html`<div class="tchildren">
+            ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+          </div>`
+        : nothing}
+    </details>`;
   }
   // LLM 调用节点：点击「LLM 调用」标题统一展开 / 收起其下的消息上下文与工具调用列表。
   // 用受控容器（非原生 <details>），避免点标题时整块折叠闪跳；展开态持久化在 n.expanded 上，
   // 经 onToggle 触发 Lit 重渲染，流式更新不会丢态。
   if (n.kind === 'llm') {
     const expanded = n.expanded !== false;
-    return html`
-      <div class="tnode kind-llm status-${n.status}">
-        <div
-          class="tnode-head tnode-head-btn"
-          role="button"
-          tabindex="0"
-          title="点击展开 / 收起消息与工具调用"
-          aria-expanded=${String(expanded)}
-          @click=${() => {
+    return html` <div class="tnode kind-llm status-${n.status}">
+      <div
+        class="tnode-head tnode-head-btn"
+        role="button"
+        tabindex="0"
+        title="点击展开 / 收起消息与工具调用"
+        aria-expanded=${String(expanded)}
+        @click=${() => {
+          n.expanded = !expanded;
+          onToggle?.();
+        }}
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
             n.expanded = !expanded;
             onToggle?.();
-          }}
-          @keydown=${(e: KeyboardEvent) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              n.expanded = !expanded;
-              onToggle?.();
-            }
-          }}
-        >
-          <span class="tdot"></span>
-          <span class="tlabel">${escapeHtml(n.label)}</span>
-          ${n.status === 'error'
-            ? html`<span class="tbadge err">失败</span>`
-            : nothing}
-          ${n.status === 'pending'
-            ? html`<span class="tbadge pend">进行中</span>`
-            : nothing}
-          ${n.meta
-            ? html`<span class="tchips"
-                >${Object.entries(n.meta).map(
-                  ([k, v]) =>
-                    html`<span class="tchip"
-                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                    >`
-                )}</span
-              >`
-            : nothing}
-          <span class="texp-caret ${expanded ? 'open' : ''}"></span>
-        </div>
-        <div class="tllm-body" ?hidden=${!expanded}>
-          ${n.messages?.length
-            ? html`<div class="tmsg-list">
-                <div class="tmsg-head">消息上下文 · 共 ${n.messages.length} 条</div>
-                ${n.messages.map(
-                  (m) =>
-                    html`<div class="tmsg-item role-${m.role}">
-                      <span class="tmsg-role"
-                        >${m.role === 'user'
-                          ? '用户'
-                          : m.role === 'assistant'
-                          ? '助手'
-                          : '系统'}</span
-                      >
-                      <div class="tmsg-body">
-                        ${m.content
-                          ? escapeHtml(m.content)
-                          : html`<span class="tmsg-empty">（空内容）</span>`}
-                      </div>
-                      ${m.reasoning
-                        ? html`<div class="tmsg-reason">
-                            ${escapeHtml(m.reasoning)}
-                          </div>`
-                        : nothing}
-                    </div>`
-                )}
-              </div>`
-            : nothing}
-          ${n.children.length
-            ? html`<div class="tchildren">
-                ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
-              </div>`
-            : nothing}
-        </div>
-      </div>`;
+          }
+        }}
+      >
+        <span class="tdot"></span>
+        <span class="tlabel">${escapeHtml(n.label)}</span>
+        ${n.status === 'error'
+          ? html`<span class="tbadge err">失败</span>`
+          : nothing}
+        ${n.status === 'pending'
+          ? html`<span class="tbadge pend">进行中</span>`
+          : nothing}
+        ${n.meta
+          ? html`<span class="tchips"
+              >${Object.entries(n.meta).map(
+                ([k, v]) =>
+                  html`<span class="tchip"
+                    ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                  >`
+              )}</span
+            >`
+          : nothing}
+      </div>
+      <div class="tllm-body" ?hidden=${!expanded}>
+        ${n.messages?.length
+          ? html`<div class="tmsg-list">
+              <div class="tmsg-head">
+                消息上下文 · 共 ${n.messages.length} 条
+              </div>
+              ${n.messages.map(
+                (m) =>
+                  html`<div class="tmsg-item role-${m.role}">
+                    <span class="tmsg-role"
+                      >${m.role === 'user'
+                        ? '用户'
+                        : m.role === 'assistant'
+                        ? '助手'
+                        : '系统'}</span
+                    >
+                    <div class="tmsg-body">
+                      ${m.content
+                        ? escapeHtml(m.content)
+                        : html`<span class="tmsg-empty">（空内容）</span>`}
+                    </div>
+                    ${m.reasoning
+                      ? html`<div class="tmsg-reason">
+                          ${escapeHtml(m.reasoning)}
+                        </div>`
+                      : nothing}
+                  </div>`
+              )}
+            </div>`
+          : nothing}
+        ${n.children.length
+          ? html`<div class="tchildren">
+              ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+            </div>`
+          : nothing}
+      </div>
+    </div>`;
   }
   const hasDetail = !!n.detail && n.detail.trim().length > 0;
   const hasResult = n.result != null && n.result.trim().length > 0;
@@ -183,9 +181,7 @@ export function renderTraceNode(
   // run/step 默认展开；LLM 调用下的直接子节点（工具/检索，parentKind==='llm'）也默认展开，
   // 点击「LLM 调用」标题可一次性看到其下全部调用链路（子节点仍可单独收起）。
   const defaultOpen =
-    n.kind === 'run' ||
-    n.kind === 'step' ||
-    parentKind === 'llm';
+    n.kind === 'run' || n.kind === 'step' || parentKind === 'llm';
   return html`
     <details
       class="tnode kind-${n.kind} status-${n.status}"
@@ -231,10 +227,10 @@ export function renderTraceNode(
           : html`<div class="tresult">${renderJsonHtml(n.result!)}</div>`
         : nothing}
       ${n.children.length
-          ? html`<div class="tchildren">
-              ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
-            </div>`
-          : nothing}
+        ? html`<div class="tchildren">
+            ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+          </div>`
+        : nothing}
     </details>
   `;
 }
