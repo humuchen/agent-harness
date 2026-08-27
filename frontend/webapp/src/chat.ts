@@ -148,6 +148,14 @@ export class AhChat extends LitElement {
    */
   @state() private fullscreenEditOpen = false;
 
+  /**
+   * 调用链路 / 关键信息 抽屉：当前正在查看的消息（存引用以便流式过程中内容实时刷新）；
+   * null 表示抽屉关闭。section 决定抽屉内默认展示「调用链路」树还是「关键信息」摘要。
+   * 同屏只开一个抽屉，按钮点击即切换目标消息。
+   */
+  @state() private traceDrawerMsg: ChatMsg | null = null;
+  @state() private traceDrawerSection: 'trace' | 'insights' = 'trace';
+
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
 
@@ -2838,48 +2846,96 @@ export class AhChat extends LitElement {
     };
   }
 
-  /** 渲染折叠式附加信息（调用链路 / 关键信息），默认收起，不干扰主阅读流。 */
+  /**
+   * 渲染 Agent 回复下方的「调用链路 / 关键信息」入口按钮。
+   * 原内联折叠块已改为：点按钮 → <ah-drawer> 侧滑抽屉展示（不占用主阅读流、移动端更友好）。
+   * 两个分区各一个按钮；点击分别打开抽屉并定位到对应分区。流式进行中给调用链路按钮加动效点。
+   */
   private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
     const hasTrace = !!(m.trace && m.trace.length > 0);
     const insights = hasTrace ? buildInsights(m.trace!) : null;
     if (!hasTrace && !insights) return html``;
+    const traceIcon = html`<svg
+      class="ticon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="6" cy="6" r="2.4" />
+      <circle cx="18" cy="6" r="2.4" />
+      <circle cx="12" cy="18" r="2.4" />
+      <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
+    </svg>`;
     return html`
       <div class="extras">
         ${hasTrace
-          ? html`<details class="extra">
-              <summary>
-                <svg
-                  class="ticon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <circle cx="6" cy="6" r="2.4" />
-                  <circle cx="18" cy="6" r="2.4" />
-                  <circle cx="12" cy="18" r="2.4" />
-                  <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
-                </svg>
-                <span>调用链路</span>
-                <span class="tcount">${countTraceNodes(m.trace!)} 节点</span>
-                ${isStreaming
-                  ? html`<span class="dots"><i></i><i></i><i></i></span>`
-                  : nothing}
-              </summary>
-              <div class="trace-body">
-                ${m.trace!.map((n) => renderTraceNode(n))}
-              </div>
-            </details>`
+          ? html`<button
+              type="button"
+              class="extra-btn ${this.traceDrawerMsg === m &&
+              this.traceDrawerSection === 'trace'
+                ? 'active'
+                : ''}"
+              @click=${() => {
+                this.traceDrawerMsg = m;
+                this.traceDrawerSection = 'trace';
+              }}
+            >
+              ${traceIcon}<span>调用链路</span
+              ><span class="tcount">${countTraceNodes(m.trace!)} 节点</span>
+              ${isStreaming
+                ? html`<span class="dots"><i></i><i></i><i></i></span>`
+                : nothing}
+            </button>`
           : nothing}
         ${insights
-          ? html`<details class="extra">
-              <summary><span>关键信息</span></summary>
-              <div class="insights">${renderInsights(insights)}</div>
-            </details>`
+          ? html`<button
+              type="button"
+              class="extra-btn alt ${this.traceDrawerMsg === m &&
+              this.traceDrawerSection === 'insights'
+                ? 'active'
+                : ''}"
+              @click=${() => {
+                this.traceDrawerMsg = m;
+                this.traceDrawerSection = 'insights';
+              }}
+            >
+              <span>关键信息</span>
+            </button>`
           : nothing}
       </div>
+    `;
+  }
+
+  /** 调用链路 / 关键信息 抽屉：展示当前选中消息的追踪树与洞察摘要。
+   *  始终渲染 <ah-drawer>（open 绑定到是否有选中消息），关闭时由组件自放离场动画，
+   *  父级仅在 close 事件后才清空 traceDrawerMsg，保证滑出动画完整可见。 */
+  private renderTraceDrawer(): TemplateResult {
+    const m = this.traceDrawerMsg;
+    const title =
+      this.traceDrawerSection === 'trace' ? '调用链路' : '关键信息';
+    return html`
+      <ah-drawer
+        ?open=${m !== null}
+        placement="right"
+        title=${title}
+        size="440px"
+        @close=${() => (this.traceDrawerMsg = null)}
+      >
+        ${m && m.trace && m.trace.length > 0
+          ? html`<div class="trace-drawer">
+              ${this.traceDrawerSection === 'trace'
+                ? html`<div class="trace-body">
+                    ${m.trace.map((n) => renderTraceNode(n))}
+                  </div>`
+                : html`<div class="insights">
+                    ${renderInsights(buildInsights(m.trace))}
+                  </div>`}
+            </div>`
+          : nothing}
+      </ah-drawer>
     `;
   }
 
@@ -3329,6 +3385,7 @@ export class AhChat extends LitElement {
             </div>
           </div>`
         : nothing}
+      ${this.renderTraceDrawer()}
     `;
   }
 }

@@ -1642,44 +1642,57 @@ export const chatStyles = [
     .dots i:nth-child(3) {
       animation-delay: 0.4s;
     }
-    /* 折叠式附加信息（调用链路 / 关键信息）：默认收起，不干扰主阅读流。 */
+    /* 折叠式附加信息（调用链路 / 关键信息）：默认收起，点按钮从侧滑抽屉展开。 */
     .extras {
       margin-top: 12px;
       display: flex;
-      flex-direction: column;
+      flex-wrap: wrap;
       gap: 8px;
     }
-    .extra {
-      border: 1px solid var(--ah-border);
-      border-radius: 10px;
-      background: var(--ah-surface-2);
-      overflow: hidden;
-    }
-    .extra > summary {
-      cursor: pointer;
-      list-style: none;
-      padding: 8px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--ah-text);
-      display: flex;
+    /* 入口按钮：与气泡内操作控件同语言，悬停高亮，激活态（对应抽屉正打开）描边。 */
+    .extra-btn {
+      display: inline-flex;
       align-items: center;
-      gap: 8px;
-      user-select: none;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12.5px;
+      font-weight: 600;
+      font-family: inherit;
+      color: var(--ah-accent, #2997ff);
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 6%,
+        var(--ah-surface-2)
+      );
+      border: 1px solid var(--ah-border);
+      border-radius: 999px;
+      cursor: pointer;
+      line-height: 1;
+      transition: background 120ms ease, border-color 120ms ease;
     }
-    .extra > summary::-webkit-details-marker {
-      display: none;
+    .extra-btn.alt {
+      color: var(--ah-text-muted);
+      background: var(--ah-surface-2);
     }
-    .extra[open] > summary {
-      border-bottom: 1px solid var(--ah-border);
+    .extra-btn:hover {
+      border-color: var(--ah-accent, #2997ff);
     }
-    .extra .ticon {
+    .extra-btn.active {
+      color: var(--ah-accent, #2997ff);
+      border-color: var(--ah-accent, #2997ff);
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 14%,
+        var(--ah-surface-2)
+      );
+    }
+    .extra-btn .ticon {
       width: 14px;
       height: 14px;
       flex: 0 0 auto;
       opacity: 0.95;
     }
-    .extra .tcount {
+    .extra-btn .tcount {
       font-weight: 400;
       font-size: 11px;
       color: var(--ah-text-muted);
@@ -1687,15 +1700,17 @@ export const chatStyles = [
       border-radius: 999px;
       padding: 1px 8px;
     }
-    .extra .trace-body {
-      padding: 10px 12px;
+    /* 抽屉内的链路树 / 洞察区：复用原有 .trace-body / .insights 排版，仅去掉容器边框/圆角
+       （外层已由 ah-drawer 面板提供背景与边距）。 */
+    .trace-drawer .trace-body {
+      padding: 0;
     }
-    .extra .insights {
+    .trace-drawer .insights {
       border: none;
       border-radius: 0;
       background: transparent;
       margin: 0;
-      padding: 10px 12px 12px;
+      padding: 0;
     }
 
     /* 移动端「会话列表」按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
