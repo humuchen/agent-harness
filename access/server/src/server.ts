@@ -403,7 +403,8 @@ const server = createServer(
       if (req.method === 'OPTIONS') {
         const h: Record<string, string> = {
           'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-          'access-control-allow-headers': 'content-type,authorization,x-ah-username',
+          'access-control-allow-headers':
+            'content-type,authorization,x-ah-username',
           ...corsHeaders(req)
         };
         res.writeHead(204, h);
@@ -594,7 +595,7 @@ const server = createServer(
         const b = await readBody(req);
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
-        const r: AccountResult = await registerUser(u, p);
+        const r: AccountResult = await registerUser(u, p, b.email);
         if (!r.ok) {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: r.error }));
@@ -604,7 +605,9 @@ const server = createServer(
         const lr: AccountResult = await loginUser(u, p);
         if (!lr.ok || !lr.token) {
           res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '注册成功但签发登录态失败' }));
+          res.end(
+            JSON.stringify({ ok: false, error: '注册成功但签发登录态失败' })
+          );
           return;
         }
         res.writeHead(200, {
