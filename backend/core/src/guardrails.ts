@@ -178,10 +178,12 @@ const PHRASES_LOW = [
 ];
 
 // 中等敏感度追加：短短语与伪装类。
+// 注意：'system prompt' / 'fake system prompt' 已从本集合移除——二者是公认弱信号误拦词，
+// 在「学习 / 讨论 / 优化 system prompt」这类正常输入中必然出现，却从不在真实注入里孤立出现
+// （真实注入靠 PHRASES_LOW 的强信号句子兜底）。此前仅在输出侧（checkTaskOutput 等 strongOnly）
+// 豁免，输入侧漏补导致正常含该词的输入被误拦；现与输出侧对称，任何敏感度均不因其单独命中。
 const PHRASES_MED = [
   ...PHRASES_LOW,
-  'system prompt',
-  'fake system prompt',
   'act as dan',
   'developer mode',
 ];

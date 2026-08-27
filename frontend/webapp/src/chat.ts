@@ -207,7 +207,10 @@ export class AhChat extends LitElement {
   @state() private showCtxUsage = false;
 
   /** 后端经 SSE `llm:usage` 下发的精确上下文用量（provider usage 为权威总量）。
-   *  为 null 时「上下文用量」浮层回退到前端基于消息缓冲的粗估。 */
+   *  为 null 时「上下文用量」浮层回退到前端基于消息缓冲的粗估。
+   *  注意：窗口占用口径只计「输入」(promptTokens)，不含模型当轮输出(completionTokens)——
+   *  输出不会进入下一轮上下文；`totalTokens` 因含 completion 仅用于「累计消耗」展示，
+   *  不用于窗口占用圆环，避免圆环被 output 虚高。 */
   @state() private backendUsage: {
     window: number;
     promptTokens: number;
@@ -222,6 +225,11 @@ export class AhChat extends LitElement {
       completion: number;
     };
   } | null = null;
+
+  /** 本运行累计 token 消耗（来自 run:cost 事件的 cumulativeTokens，所有 step 之和）。
+   *  与「上下文用量」(单轮窗口占用) 是两个不同指标，分开展示避免混淆。 */
+  @state() private runCumulative: { tokens: number; cost: number } | null =
+    null;
 
   /**
    * 每个会话独立的流式缓冲。切换会话时，进行中的 run 仍向所属会话的缓冲写入，
@@ -651,66 +659,70 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 返回「上下文用量」浮层当前应展示的数据：优先用后端精确计数（llm:usage），
-   * 未拿到后端数据（如 mock 模式、首屏）时回退到前端基于消息缓冲的粗估（contextUsage()）。
-   * 两种来源统一成相同结构，渲染层无需关心数据出处。
-   */
-  private displayContextUsage(): {
-    totalPct: number;
-    totalTokens: number;
-    window: number;
-    items: {
-      key: string;
-      label: string;
-      tokens: number;
-      pct: number;
-      cls: string;
-    }[];
-  } {
-    const u = this.backendUsage;
-    if (u) {
-      const items = [
-        {
-          key: 'sys',
-          label: '系统提示词',
-          tokens: u.breakdown.system,
-          cls: 'c-sys',
-          pct: 0
-        },
-        {
-          key: 'tools',
-          label: '工具及子智能体',
-          tokens: u.breakdown.tools,
-          cls: 'c-tools',
-          pct: 0
-        },
-        {
-          key: 'msg',
-          label: '对话消息',
-          tokens: u.breakdown.messages,
-          cls: 'c-msg',
-          pct: 0
-        },
-        {
-          key: 'mcp',
-          label: '连接器及 MCP',
-          tokens: u.breakdown.mcp,
-          cls: 'c-mcp',
-          pct: 0
-        },
-        {
-          key: 'skill',
-          label: '技能',
-          tokens: u.breakdown.skills,
-          cls: 'c-skill',
-          pct: 0
-        }
-      ];
-      const totalTokens = u.totalTokens;
-      const totalPct = Math.min(100, (totalTokens / u.window) * 100);
-      for (const it of items) it.pct = (it.tokens / u.window) * 100;
-      return { totalPct, totalTokens, window: u.window, items };
-    }
+   /** 返回「上下文用量」浮层当前应展示的数据：优先用后端精确计数（llm:usage），
+    * 未拿到后端数据（如 mock 模式、首屏）时回退到前端基于消息缓冲的粗估（contextUsage()）。
+    * 两种来源统一成相同结构，渲染层无需关心数据出处。
+    *
+    * 窗口占用口径：totalTokens 取 promptTokens（仅输入，不含模型当轮输出 completion），
+    * 因为下一轮上下文只由输入构成；`totalTokens`（含 output）另用于「累计消耗」展示。
+    */
+   private displayContextUsage(): {
+     totalPct: number;
+     totalTokens: number;
+     window: number;
+     items: {
+       key: string;
+       label: string;
+       tokens: number;
+       pct: number;
+       cls: string;
+     }[];
+   } {
+     const u = this.backendUsage;
+     if (u) {
+       const items = [
+         {
+           key: 'sys',
+           label: '系统提示词',
+           tokens: u.breakdown.system,
+           cls: 'c-sys',
+           pct: 0
+         },
+         {
+           key: 'tools',
+           label: '工具及子智能体',
+           tokens: u.breakdown.tools,
+           cls: 'c-tools',
+           pct: 0
+         },
+         {
+           key: 'msg',
+           label: '对话消息',
+           tokens: u.breakdown.messages,
+           cls: 'c-msg',
+           pct: 0
+         },
+         {
+           key: 'mcp',
+           label: '连接器及 MCP',
+           tokens: u.breakdown.mcp,
+           cls: 'c-mcp',
+           pct: 0
+         },
+         {
+           key: 'skill',
+           label: '技能',
+           tokens: u.breakdown.skills,
+           cls: 'c-skill',
+           pct: 0
+         }
+       ];
+       // 窗口占用只算输入（promptTokens），不含当轮输出 completion。
+       const totalTokens = u.promptTokens;
+       const totalPct = Math.min(100, (totalTokens / u.window) * 100);
+       for (const it of items) it.pct = (it.tokens / u.window) * 100;
+       return { totalPct, totalTokens, window: u.window, items };
+     }
     // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，
     // 回退到前端基于消息缓冲的粗估，避免递归调用自身导致栈溢出。
     return this.contextUsage();
@@ -812,6 +824,20 @@ export class AhChat extends LitElement {
                       <span class="ctx-val">${it.pct.toFixed(1)}%</span>
                     </li>`
                   )}
+                  ${
+                    this.runCumulative
+                      ? html`<li class="ctx-cum">
+                          <span class="ctx-dot c-cum"></span>
+                          <span class="ctx-label">本运行累计</span>
+                          <span class="ctx-val"
+                            >${this.fmtK(this.runCumulative.tokens)} ·
+                            ${this.runCumulative.cost > 0
+                              ? `$${this.runCumulative.cost.toFixed(4)}`
+                              : '免费'}</span
+                          >
+                        </li>`
+                      : nothing
+                  }
                 </ul>
               </div>`
           : nothing}
@@ -843,6 +869,7 @@ export class AhChat extends LitElement {
     this.stickToBottom = true;
     this.showScrollDown = false;
     this.backendUsage = null;
+    this.runCumulative = null;
   }
 
   private async selectSession(id: string) {
@@ -916,6 +943,7 @@ export class AhChat extends LitElement {
     this.stickToBottom = true;
     this.showScrollDown = false;
     this.backendUsage = null;
+    this.runCumulative = null;
   }
 
   /**
@@ -1127,6 +1155,7 @@ export class AhChat extends LitElement {
     this.showScrollDown = false;
     this.showCtxUsage = false;
     this.backendUsage = null;
+    this.runCumulative = null;
     // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
     this.saveHistory(sessionId);
 
@@ -1772,6 +1801,14 @@ export class AhChat extends LitElement {
       case 'run:cost': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
+        // 本运行累计 token 消耗（所有 step 之和）：供「上下文用量」弹层的「累计消耗」行展示，
+        // 与单轮窗口占用（llm:usage.promptTokens）区分，避免混淆。
+        if ((ev as any).cumulativeTokens != null) {
+          this.runCumulative = {
+            tokens: Number((ev as any).cumulativeTokens),
+            cost: (ev as any).cumulativeCost != null ? Number((ev as any).cumulativeCost) : 0
+          };
+        }
         // Token 拆解四项（系统/工具/历史/输出）：与 access/server 的 traceHandle 保持
         // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
         // 仅在服务端落盘后的恢复视图中出现、实时流视图中消失（时有时无的根因）。

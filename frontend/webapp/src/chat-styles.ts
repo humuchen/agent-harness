@@ -437,6 +437,15 @@ export const chatStyles = [
     .c-skill {
       background: #bf5af2;
     }
+    /* 本运行累计 token（与单轮窗口占用区分的高亮项） */
+    .ctx-cum {
+      margin-top: 2px;
+      padding-top: 6px;
+      border-top: 1px dashed var(--ah-border);
+    }
+    .c-cum {
+      background: var(--ah-accent, #2997ff);
+    }
     .empty {
       height: 100%;
       display: flex;
