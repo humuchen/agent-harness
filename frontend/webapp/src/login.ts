@@ -754,9 +754,8 @@ export class AhLogin extends LitElement {
       @media (max-width: 900px) {
         :host {
           place-items: start center;
-          /* 移动端 .login-wrap 放开竖向滚动（overflow: visible），
-             但装饰层 .depth-mesh（inset:-12% / width:124%）会向右溢出约 12%，
-             横向裁掉以避免出现横向滚动条；纵向滚动仍由 overflow-y:auto 保留。 */
+          /* 横向裁掉：装饰层 .depth-mesh（inset:-12% / width:124%）
+             在移动端 .login-wrap 放开后本体会向右溢出约 12%。 */
           overflow-x: hidden;
         }
         .login-wrap {
@@ -765,9 +764,15 @@ export class AhLogin extends LitElement {
           aspect-ratio: auto;
           max-height: none;
           min-height: 100dvh;
-          overflow: visible;
-          padding: 32px 24px;
-          gap: 8px;
+          /* border-box：padding 计入宽度，避免 100% 宽 + 内边距撑出横向溢出；
+             overflow-x:hidden 裁掉装饰层右溢，overflow-y:auto 让内容超高时纵向滚动，
+             同时裁掉 .depth-mesh 上下 -12% 的幻影溢出（它原本会把 scrollHeight 撑大、
+             凭空触发竖向滚动条）。 */
+          box-sizing: border-box;
+          overflow-x: hidden;
+          overflow-y: auto;
+          padding: 24px 18px;
+          gap: 4px;
         }
         .brand-top,
         .brand-head,
@@ -775,11 +780,17 @@ export class AhLogin extends LitElement {
           position: static;
           width: auto;
         }
+        .brand-top {
+          padding: 0;
+        }
         .brand-head {
-          margin-top: 28px;
+          margin-top: 18px;
         }
         .brand-bottom {
-          margin-top: 8px;
+          margin-top: 6px;
+        }
+        .brand-sub {
+          margin-top: 10px;
         }
         .feature-list {
           display: none;
@@ -788,14 +799,29 @@ export class AhLogin extends LitElement {
         .card-halo {
           display: none;
         }
+        /* depth-mesh 是 inset:-12% / width:124% 的装饰景深层，无 overflow 裁切，
+           会在移动端向下/右溢出、凭空撑出滚动条；移动端隐藏，保留主 mesh + 粒子即可。 */
+        .depth-mesh {
+          display: none;
+        }
+        /* 极矮屏（如 640 高的小手机）：隐藏冗余品牌文案，只留卡片。 */
+        @media (max-height: 680px) {
+          .brand-head,
+          .brand-bottom {
+            display: none;
+          }
+          .auth-float {
+            margin-top: 12px;
+          }
+        }
         .auth-float {
           position: relative;
           left: auto;
           top: auto;
           transform: none;
           width: 100%;
-          max-width: 100%;
-          margin: 24px 0 0;
+          max-width: 460px;
+          margin: 18px auto 0;
         }
         .auth-card {
           background: var(--ah-surface-1);
