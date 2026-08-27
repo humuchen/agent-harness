@@ -84,6 +84,7 @@ async function ensureDb(): Promise<void> {
         `CREATE TABLE IF NOT EXISTS users (
           username TEXT PRIMARY KEY,
           password TEXT NOT NULL,            -- scrypt: salt:hash (hex)
+          email TEXT,                        -- 选填联系邮箱（注册时收集，非登录标识）
           created_at INTEGER NOT NULL
         )`
       );
@@ -98,6 +99,12 @@ async function ensureDb(): Promise<void> {
       db.exec(
         `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
       );
+      // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则忽略错误）。
+      try {
+        db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+      } catch {
+        /* 列已存在，忽略 */
+      }
     })();
   }
   await dbReady;
@@ -205,21 +212,24 @@ function validUsername(u: string): boolean {
 export async function registerUser(
   username: string,
   password: string,
-  email: string
+  email?: string
 ): Promise<AccountResult> {
   username = (username || '').trim();
   password = password || '';
+  email = (email || '').trim();
   if (!validUsername(username))
     return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
   if (password.length < 8) return { ok: false, error: '密码至少 8 位' };
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return { ok: false, error: '邮箱格式不正确' };
   await ensureDb();
   const existing = db
     .prepare('SELECT username FROM users WHERE username = ?')
     .get(username);
   if (existing) return { ok: false, error: '用户名已被占用' };
   db.prepare(
-    'INSERT INTO users (username, password,email, created_at) VALUES (?, ?, ?, ?)'
-  ).run(username, hashPassword(password), Date.now());
+    'INSERT INTO users (username, password, email, created_at) VALUES (?, ?, ?, ?)'
+  ).run(username, hashPassword(password), email || null, Date.now());
   return { ok: true, username };
 }
 

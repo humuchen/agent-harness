@@ -2916,19 +2916,25 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('\n[ui] 收到停机信号，开始优雅停机…');
+
   // 1) 中止所有在飞/排队任务（job 级 AbortController），释放 worker 与 LLM/MCP 占用。
   runQueue.abortAll('shutdown');
+
   // 1b) 停止领取轮询并关闭共享后端（redis）连接，避免进程退出后空转。
   runQueue.stop();
+
   // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
   await new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
+
   // 3) 关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
   await mcpManager.shutdown().catch(() => {});
+
   // 4) 停止接受新连接，等待已建立的连接（如健康检查）关闭。
   server.close(() => {
     console.log('[ui] 已停止接受新连接。');
     process.exit(0);
   });
+
   // 兜底：若 server.close 因长连接迟迟不结束，强制退出。
   setTimeout(() => process.exit(0), 3000).unref();
 }
