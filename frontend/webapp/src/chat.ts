@@ -1673,8 +1673,10 @@ export class AhChat extends LitElement {
             : undefined;
         tc.llm = mk(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
-            messages: `消息 ${ev.messageCount ?? '?'}`,
-            tools: `工具 ${ev.toolCount ?? '?'}`
+            messages: `消息 ${ev.messageCount ?? '?'}`
+            // 不再写入 tools：上游 toolCount 是「注入模型的可用工具数」(schema 量级，如25)，
+            // 并非「本次实际执行的工具调用数」。真实执行数应派生自下方实际挂载的子节点，
+            // 由 chat-trace.ts 的 LLM 分支从 n.children.length 计算，避免「工具25 却无节点」的误导。
           },
           ...(messages && messages.length ? { messages } : {})
         });

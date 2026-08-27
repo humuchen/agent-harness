@@ -2,13 +2,13 @@
  * 与 @agent-harness/client 的薄封装：同源单例 + 会话本地持久化。
  * 所有面板都从这里拿 client，不再手写 fetch / SSE。
  *
- * 鉴权说明：
- *  - 站点鉴权走「账户密码 cookie + x-ah-username 双因子」（见 access/server 的 AccountAuthorizer）。
- *  - 登录成功后服务端下发 HttpOnly cookie `ah_auth`（浏览器自动随同源请求带上），
- *    前端只需把用户名记到 localStorage 并传入 client 的 x-ah-username header。
- *  - 鉴权门 getToken()/isAuthed() 以「本地是否存有用户名」为准；cookie 是否仍有效由服务端判定，
+ * 鉴权说明（账户密码模式）：
+ *  - 站点鉴权 100% 走服务端下发的 HttpOnly cookie `ah_auth`（浏览器自动随同源请求带上），
+ *    前端【不】在 localStorage 存任何 token，也不构造 Bearer。
+ *  - 前端只把「登录用户名」记到 localStorage，用于给 client 传 x-ah-username 双因子头
+ *    （AccountAuthorizer 要求 cookie + header 用户名一致）。
+ *  - 鉴权门 isAuthed()/getToken() 以「本地是否存有用户名」为准；cookie 是否仍有效由服务端判定，
  *    任何 401 都会触发全局 onUnauthorized → 清会话并重回登录页。
- *  - 非账户模式（静态令牌 / OIDC Bearer）仍可手动粘贴 token（顶栏 token 输入框），走 setToken。
  */
 import { AgentClient } from '@agent-harness/client';
 
@@ -17,17 +17,10 @@ const baseUrl =
 
 // 仅持久化用户名（cookie 由浏览器托管，前端不触碰其值）。
 const USER_KEY = 'ah_user';
-// 静态令牌 / OIDC Bearer 模式下的手动 token（非账户模式兼容）。
-const TOKEN_KEY = 'ah_token';
 
 function initialUser(): string {
   if (typeof localStorage === 'undefined') return '';
   return localStorage.getItem(USER_KEY) || '';
-}
-
-function initialToken(): string {
-  if (typeof localStorage === 'undefined') return '';
-  return localStorage.getItem(TOKEN_KEY) || '';
 }
 
 // 全局 401 → 回到登录页（幂等：main.ts 注册的监听器负责清会话 + 挂载登录页）。
@@ -37,7 +30,6 @@ function handleUnauthorized(): void {
 
 export const client = new AgentClient({
   baseUrl,
-  token: initialToken() || undefined,
   username: initialUser() || undefined,
   onUnauthorized: handleUnauthorized,
 });
@@ -54,15 +46,6 @@ export function setSession(username: string): void {
 /** 清除登录会话（登出 / 登录失效）。cookie 由服务端在 /api/account/logout 清除。 */
 export function clearSession(): void {
   setSession('');
-}
-
-/** 手动设置 Bearer token（静态令牌 / OIDC Bearer 模式兼容，供顶栏 token 输入框使用）。 */
-export function setToken(token: string): void {
-  client.setToken(token || undefined);
-  if (typeof localStorage !== 'undefined') {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  }
 }
 
 /** 是否已登录（本地视角）：存在用户名即视为已登录；cookie 有效性由服务端 401 兜底。 */

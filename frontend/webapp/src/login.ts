@@ -398,8 +398,9 @@ export class AhLogin extends LitElement {
       .brand-mark .logo {
         width: 34px;
         height: 34px;
-        object-fit: contain;
         display: block;
+        fill: currentColor;
+        color: var(--ah-text);
         filter: drop-shadow(
             0 0 10px color-mix(in srgb, var(--ah-accent) 60%, transparent)
           )
@@ -408,6 +409,7 @@ export class AhLogin extends LitElement {
           );
       }
       :host([data-theme='light']) .brand-mark .logo {
+        color: var(--ah-accent);
         filter: drop-shadow(0 0 8px rgba(0, 102, 230, 0.35))
           drop-shadow(0 0 16px rgba(0, 102, 230, 0.22));
       }
@@ -882,8 +884,8 @@ export class AhLogin extends LitElement {
         return;
       }
     } else {
-      if (!email) {
-        this.notice = '请填写邮箱 / 用户名。';
+      if (!username) {
+        this.notice = '请填写用户名。';
         return;
       }
       if (!password) {
@@ -1017,11 +1019,16 @@ export class AhLogin extends LitElement {
 
         <div class="brand-top">
           <div class="brand-mark">
-            <img
+            <svg
               class="logo"
-              src=${this.theme === 'light' ? './logo.svg' : './logo-white.svg'}
-              alt="Agent Harness"
-            />
+              viewBox="0 0 100 100"
+              role="img"
+              aria-label="Agent Harness"
+            >
+              <path d="M50 6 L84 20 L50 34 L16 20 Z" />
+              <path d="M50 36 L84 50 L50 64 L16 50 Z" />
+              <path d="M50 66 L84 80 L50 94 L16 80 Z" />
+            </svg>
             <span>Agent Harness</span>
             <span class="brand-ver">v2.0</span>
           </div>

@@ -126,16 +126,20 @@ export function renderTraceNode(
         ${n.status === 'pending'
           ? html`<span class="tbadge pend">进行中</span>`
           : nothing}
-        ${n.meta
-          ? html`<span class="tchips"
-              >${Object.entries(n.meta).map(
-                ([k, v]) =>
-                  html`<span class="tchip"
-                    ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+        ${html`<span class="tchips"
+              >${n.meta
+                ? Object.entries(n.meta).map(
+                    ([k, v]) =>
+                      html`<span class="tchip"
+                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                      >`
+                  )
+                : nothing}${n.children.length
+                ? html`<span class="tchip"
+                    ><b>工具</b> ${n.children.length}</span
                   >`
-              )}</span
-            >`
-          : nothing}
+                : nothing}</span
+            >`}
       </div>
       <div class="tllm-body" ?hidden=${!expanded}>
         ${n.messages?.length

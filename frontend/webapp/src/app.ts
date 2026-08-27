@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
-import { client, getToken, setToken, authedFetch } from './api';
+import { client, authedFetch } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
@@ -84,8 +84,7 @@ const chatShellCss = css`
       padding: 8px 10px;
       gap: 8px;
     }
-    /* 移动端对话页：隐藏令牌输入/刷新按钮，仅留状态与菜单，节省竖向空间 */
-    .shell.chat-mode .topbar .token,
+    /* 移动端对话页：隐藏刷新按钮，仅留状态与菜单，节省竖向空间 */
     .shell.chat-mode .topbar .ghost {
       display: none;
     }
@@ -106,7 +105,6 @@ export class AhApp extends LitElement {
   static styles = [sharedStyles, chatShellCss];
 
   @state() private tab: string = initialTabFromPath();
-  @state() private token = getToken();
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
@@ -215,12 +213,6 @@ export class AhApp extends LitElement {
       .catch((e) => {
         this.err = String(e?.message ?? e);
       });
-  }
-
-  private onTokenInput(e: Event) {
-    const v = (e.target as HTMLInputElement).value;
-    this.token = v;
-    setToken(v);
   }
 
   private onToggleTheme() {
@@ -357,12 +349,6 @@ export class AhApp extends LitElement {
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
-            <!-- <input
-              class="token"
-              placeholder="Bearer 令牌（可选）"
-              .value=${this.token}
-              @input=${this.onTokenInput}
-            /> -->
             <button class="ghost" @click=${() => this.refreshState()}>
               刷新状态
             </button>
