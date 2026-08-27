@@ -435,6 +435,7 @@ export class ProxyAuthorizer implements Authorizer {
 
 export function getAuthConfig(): {
   provider: SsoProvider;
+  github?: { enabled: boolean };
   oidc?: {
     issuer?: string;
     clientId?: string;
@@ -447,9 +448,11 @@ export function getAuthConfig(): {
   };
 } {
   const provider = ((process.env.AUTH_PROVIDER || 'token').toLowerCase() as SsoProvider);
+  const githubEnabled = !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
   if (provider === 'oidc') {
     return {
       provider,
+      github: { enabled: githubEnabled },
       oidc: {
         issuer: process.env.OIDC_ISSUER,
         clientId: process.env.OIDC_CLIENT_ID || process.env.OIDC_AUDIENCE,
@@ -463,6 +466,7 @@ export function getAuthConfig(): {
     const hmac = !!process.env.PROXY_HMAC_SECRET;
     return {
       provider,
+      github: { enabled: githubEnabled },
       proxy: {
         headers: {
           user: process.env.PROXY_USER_HEADER || 'x-forwarded-user',
@@ -473,5 +477,5 @@ export function getAuthConfig(): {
       },
     };
   }
-  return { provider: 'token' };
+  return { provider: 'token', github: { enabled: githubEnabled } };
 }

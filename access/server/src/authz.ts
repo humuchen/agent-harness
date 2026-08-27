@@ -349,9 +349,11 @@ export class AccountAuthorizer implements Authorizer {
   }
 
   describe() {
+    // mode 透传底层 policy 的 mode：开放语义（openAuth / requireAuth=false）时为 'off'，
+    // 强制鉴权（strictClosed / RBAC）时为 'on'。不硬编码 'on'，否则会误报「已启用鉴权」。
+    // provider 标 'account' 表示账户密码档已叠加（有合法 cookie 按账户身份放行）。
     return {
       ...this.policy.describe(),
-      mode: 'on' as const,
       provider: 'account' as const
     };
   }

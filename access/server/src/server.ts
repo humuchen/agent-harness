@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   assembleAgent,
@@ -116,6 +117,9 @@ import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
 import {
   registerUser,
   loginUser,
+  upsertGithubUser,
+  usernameFromCookie,
+  cookieValue,
   authCookieValue,
   AUTH_COOKIE,
   type AccountResult
@@ -137,6 +141,8 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
+// GitHub OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
+const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 // LLM 统一密钥 OPEN_API_KEY 仅作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
 // 不再参与站点鉴权；站点鉴权由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
@@ -635,6 +641,120 @@ const server = createServer(
         });
         res.end(JSON.stringify({ ok: true, username: r.username }));
         return;
+      }
+      if (req.method === 'GET' && path === '/api/account/me') {
+        // 当前会话：仅依赖 ah_auth cookie（不要求 x-ah-username 双因子，避免鸡生蛋）。
+        // 前端在 OAuth 回调后回填用户名（setSession）时调用。
+        const u = usernameFromCookie(req);
+        if (!u) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: '未登录' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, username: u }));
+        return;
+      }
+      // ── GitHub OAuth 授权码流（后端持有 client_secret）──
+      // 1) 前端按钮跳转这里 → 302 到 GitHub 授权页（带 CSRF state，存于 HttpOnly cookie）。
+      if (req.method === 'GET' && path === '/api/account/oauth/github') {
+        const clientId = process.env.GITHUB_CLIENT_ID;
+        if (!clientId || !process.env.GITHUB_CLIENT_SECRET) {
+          res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。' }));
+          return;
+        }
+        const cfg = process.env.GITHUB_OAUTH_REDIRECT ||
+          `/api/account/oauth/github/callback`;
+        const redirectUri = cfg.startsWith('http')
+          ? cfg
+          : `${req.headers.host ? `http://${String(req.headers.host)}` : ''}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+        const state = randomBytes(16).toString('hex');
+        const ghUrl =
+          `https://github.com/login/oauth/authorize` +
+          `?client_id=${encodeURIComponent(clientId || '')}` +
+          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+          `&scope=${encodeURIComponent('read:user user:email')}` +
+          `&state=${encodeURIComponent(state)}`;
+        res.writeHead(302, {
+          'set-cookie': `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`,
+          'cache-control': 'no-store',
+          location: ghUrl
+        });
+        res.end();
+        return;
+      }
+      // 2) GitHub 回调：校验 state → 用 code 换 token → 拉 user + 主邮箱 → 本地 upsert → 下发 cookie → 回首页。
+      if (req.method === 'GET' && path === '/api/account/oauth/github/callback') {
+        const fail = (code: number, msg: string) => {
+          res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: msg }));
+          return;
+        };
+        if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
+          return fail(500, '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。');
+        }
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
+        if (!state || !expect || state !== expect) {
+          return fail(400, 'OAuth state 校验失败（可能是 CSRF 或过期）。');
+        }
+        if (!code) return fail(400, 'GitHub 未回传授权码。');
+        try {
+          const cfg = process.env.GITHUB_OAUTH_REDIRECT ||
+            `/api/account/oauth/github/callback`;
+          const redirectUri = cfg.startsWith('http')
+            ? cfg
+            : `${req.headers.host ? `http://${String(req.headers.host)}` : ''}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+          // 换 access_token（GitHub 接受 Accept: application/json）。
+          const tokRes = await fetch('https://github.com/login/oauth/access_token', {
+            method: 'POST',
+            headers: {
+              accept: 'application/json',
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              client_id: process.env.GITHUB_CLIENT_ID,
+              client_secret: process.env.GITHUB_CLIENT_SECRET,
+              code,
+              redirect_uri: redirectUri
+            })
+          });
+          const tok = (await tokRes.json()) as { access_token?: string; error?: string };
+          if (!tok.access_token) return fail(400, `GitHub 换 token 失败：${tok.error ?? '未知错误'}`);
+          // 拉用户基本信息。
+          const userRes = await fetch('https://api.github.com/user', {
+            headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-harness' }
+          });
+          const user = (await userRes.json()) as { login?: string; id?: number; email?: string };
+          if (!user.login) return fail(400, '无法获取 GitHub 用户信息。');
+          // 拉主邮箱（user.email 常常为空，需单独调 /user/emails 取 primary/verified）。
+          let email = user.email;
+          if (!email) {
+            try {
+              const emRes = await fetch('https://api.github.com/user/emails', {
+                headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-harness' }
+              });
+              const ems = (await emRes.json()) as Array<{ email?: string; primary?: boolean; verified?: boolean }>;
+              const primary = ems.find((e) => e.primary && e.verified) || ems.find((e) => e.verified) || ems[0];
+              email = primary?.email;
+            } catch { /* 邮箱可选，失败不阻断登录 */ }
+          }
+          const r: AccountResult = await upsertGithubUser(user.login, Number(user.id ?? 0), email);
+          if (!r.ok || !r.token) return fail(500, '创建/登录本地账户失败。');
+          const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
+          res.writeHead(302, {
+            'set-cookie': authCookieValue(req, r.token),
+            'cache-control': 'no-store',
+            location: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+          });
+          res.end();
+          return;
+        } catch (err) {
+          return fail(500, `GitHub OAuth 处理异常：${(err as Error)?.message ?? String(err)}`);
+        }
       }
       if (req.method === 'GET' && path === '/api/openapi.json') {
         // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。

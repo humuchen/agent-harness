@@ -29,6 +29,13 @@ services:
     buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
     startCommand: node access/server/dist/server.js
     healthCheckPath: /api/state
+    # 持久卷（需付费 plan 才能挂载；free plan 不支持，磁盘临时重启即清空）。
+    # 挂载到 /app/data 后可保留账户 / 记忆 / 医美插件等本地状态；否则依赖下方
+    # ADMIN_USERNAME/ADMIN_PASSWORD 的启动 seeding（admin 账户每次重启自动重建）。
+    disks:
+      - name: data
+        mountPath: /app/data
+        sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -59,3 +66,14 @@ services:
       # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       - key: MA_DATA_DIR
         value: /app/data/ma-lead
+      # 账户密码子系统 SQLite 落点：固定到 /app/data（配合上面 disks 持久卷可保留注册账户）。
+      # free plan 无持久卷时，库每次重启清空，但下方 ADMIN_USERNAME/ADMIN_PASSWORD 会在启动时
+      # 自动重建 admin 账户，保证 admin/admin888 始终可登录放行。
+      - key: ACCOUNT_DB_FILE
+        value: /app/data/accounts.db
+      # 部署逃生账户：服务启动自动确保该账户存在（库清空或改密时同步），默认 admin / admin888。
+      # 在 Render 面板覆盖 ADMIN_PASSWORD 即可改默认口令；设为空字符串可禁用内置账户。
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: admin888

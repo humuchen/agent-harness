@@ -20,7 +20,7 @@ import './components';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
 // 与 app.ts 的 History 路由解耦——这是「是否放行应用」的门户，而非一条普通路由。
-import { getToken, clearSession } from './api';
+import { getToken, setSession, clearSession } from './api';
 
 /** 把控制台挂到 body（幂等：已存在则不重复创建）。 */
 function mountApp(): void {
@@ -37,8 +37,33 @@ function mountLogin(): void {
 }
 
 // 首屏按当前 token 落地：未登录 → 登录页；已登录 → 控制台。
-if (!getToken()) mountLogin();
-else mountApp();
+// OAuth 回调场景：浏览器带 ah_auth cookie 回到 ?oauth=success，但本地尚无用户名记录，
+// 此时需先打 /api/account/me 用 cookie 回填会话，再进控制台（满足 x-ah-username 双因子）。
+const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'success';
+async function bootstrap(): Promise<void> {
+  if (getToken()) {
+    mountApp();
+    return;
+  }
+  if (oauthSuccess) {
+    try {
+      const me = await fetch('/api/account/me', { credentials: 'same-origin' });
+      if (me.ok) {
+        const data = (await me.json()) as { username?: string };
+        if (data.username) {
+          setSession(data.username);
+          history.replaceState(null, '', location.pathname);
+          mountApp();
+          return;
+        }
+      }
+    } catch {
+      /* 忽略，落到登录页 */
+    }
+  }
+  mountLogin();
+}
+bootstrap();
 
 // 登录页派发 ah-login-success 后进入控制台。
 window.addEventListener('ah-login-success', () => mountApp());

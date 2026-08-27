@@ -203,6 +203,39 @@ export class AhDrawer extends LitElement {
       border-top: 1px solid var(--ah-border);
       flex: 0 0 auto;
     }
+    /* footer 按钮：复用全应用统一 .btn 体系（与 ah-modal 一致），保证视觉统一。 */
+    .foot .btn {
+      min-width: 76px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-family: var(--ah-font-sans);
+      cursor: pointer;
+      border-radius: var(--ah-radius-md);
+      border: 1px solid var(--ah-border);
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .foot .btn.ghost {
+      background: transparent;
+      color: var(--ah-text-muted);
+    }
+    .foot .btn.ghost:hover {
+      color: var(--ah-text);
+      border-color: var(--ah-text-faint);
+    }
+    .foot .btn.primary {
+      background: var(--ah-accent);
+      border-color: var(--ah-accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    .foot .btn.primary:hover {
+      background: var(--ah-accent-strong);
+      border-color: var(--ah-accent-strong);
+    }
+    .foot .btn:focus-visible {
+      outline: 2px solid var(--ah-accent);
+      outline-offset: 2px;
+    }
 
     @media (max-width: 600px) {
       /* 窄屏下侧滑/上下抽屉尽量占满，避免内容被挤。 */
@@ -218,6 +251,9 @@ export class AhDrawer extends LitElement {
         flex-direction: row-reverse;
       }
       .foot > ::slotted(*) {
+        flex: 1;
+      }
+      .foot .btn {
         flex: 1;
       }
     }
@@ -258,6 +294,14 @@ export class AhDrawer extends LitElement {
   /** 是否显示底部。 */
   @property({ type: Boolean, attribute: 'show-footer' })
   showFooter = true;
+
+  /** 默认 footer 的确认按钮文案（调用方未通过 footer 插槽自定义时生效）。 */
+  @property({ type: String, attribute: 'confirm-text' })
+  confirmText = '确定';
+
+  /** 默认 footer 的取消按钮文案。 */
+  @property({ type: String, attribute: 'cancel-text' })
+  cancelText = '取消';
 
   /** 离场动画进行中标记。 */
   @state()
@@ -307,6 +351,17 @@ export class AhDrawer extends LitElement {
         })
       );
     }, LEAVE_MS);
+  }
+
+  /**
+   * 默认 footer 的「确定」按钮：仅派发 ah-confirm 事件，不直接关闭抽屉，
+   * 由调用方在 @ah-confirm 里执行确认逻辑（保存 / 提交等），需要关闭时
+   * 自行置 open=false（或复用 close 事件复位）。取消按钮则直接 finish('button') 关闭。
+   */
+  private onConfirm() {
+    this.dispatchEvent(
+      new CustomEvent('ah-confirm', { bubbles: true, composed: true })
+    );
   }
 
   private onKeydown(e: KeyboardEvent) {
@@ -394,10 +449,24 @@ export class AhDrawer extends LitElement {
           <div class="body"><slot></slot></div>
           ${this.showFooter
             ? html`<div class="foot">
-                <button>取消</button>
-                <button>确定</button>
+                ${this.querySelector('[slot="footer"]')
+                  ? html`<slot name="footer"></slot>`
+                  : html`<button
+                        type="button"
+                        class="btn ghost"
+                        @click=${() => this.finish('button')}
+                      >
+                        ${this.cancelText}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn primary"
+                        @click=${this.onConfirm}
+                      >
+                        ${this.confirmText}
+                      </button>`}
               </div>`
-            : html`<div class="foot"><slot name="footer"></slot></div>`}
+            : nothing}
         </aside>
       </div>
     `;

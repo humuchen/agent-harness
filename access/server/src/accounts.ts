@@ -105,6 +105,29 @@ async function ensureDb(): Promise<void> {
       } catch {
         /* 列已存在，忽略 */
       }
+      // ── 部署逃生账户 seeding ──
+      // 若配置了 ADMIN_USERNAME / ADMIN_PASSWORD（默认 admin / admin888），则确保该账户
+      // 常驻本地库：库被清空（如 Render 临时盘重启）或密码变更时自动重建 / 同步。
+      // 这样无论磁盘是否持久化，admin 账户都随时可登录放行，无需手工注册。
+      // 设 ADMIN_PASSWORD=（空）可禁用内置账户。
+      const adminUser = (process.env.ADMIN_USERNAME || 'admin').trim();
+      const adminPass = process.env.ADMIN_PASSWORD;
+      if (adminUser && adminPass) {
+        const exists = db
+          .prepare('SELECT password FROM users WHERE username = ?')
+          .get(adminUser) as { password: string } | undefined;
+        if (!exists) {
+          db.prepare(
+            'INSERT INTO users (username, password, email, created_at) VALUES (?, ?, ?, ?)'
+          ).run(adminUser, hashPassword(adminPass), null, Date.now());
+        } else if (!verifyPassword(adminPass, exists.password)) {
+          // 环境变量指定的密码与库中不一致（部署改密）→ 同步更新。
+          db.prepare('UPDATE users SET password = ? WHERE username = ?').run(
+            hashPassword(adminPass),
+            adminUser
+          );
+        }
+      }
     })();
   }
   await dbReady;
@@ -252,6 +275,43 @@ export async function loginUser(
   return { ok: true, username, token };
 }
 
+/**
+ * GitHub OAuth 登录：按 GitHub login 在本地 upsert 一个账户并签发登录态。
+ *  - username 取 GitHub login（已做合法性校验，非法时回退用 gh_<id>）。
+ *  - 密码用一次性随机 scrypt 占位：GitHub 用户无法用密码登录，只能走 OAuth，降低撞库风险。
+ *  - 已存在则仅更新 email（GitHub 主邮箱可能变化），不覆盖密码。
+ * 返回 { ok, username, token }（token 即 ah_auth cookie 值）。
+ */
+export async function upsertGithubUser(
+  login: string,
+  githubId: number,
+  email?: string
+): Promise<AccountResult> {
+  // GitHub login 允许字母/数字/连字符/点，但本地用户名仅允许 [A-Za-z0-9_]，
+  // 故做映射：非法字符替换成下划线，过长则截断到 32，并以 gh_ 前缀避免与手动注册撞名。
+  let username = (login || `gh_${githubId}`)
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .slice(0, 32);
+  if (!validUsername(username)) username = `gh_${githubId}`;
+  email = (email || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) email = '';
+
+  await ensureDb();
+  const existing = db
+    .prepare('SELECT username FROM users WHERE username = ?')
+    .get(username) as { username: string } | undefined;
+  if (!existing) {
+    db.prepare(
+      'INSERT INTO users (username, password, email, created_at) VALUES (?, ?, ?, ?)'
+    ).run(username, hashPassword(randomBytes(24).toString('hex')), email || null, Date.now());
+  } else if (email) {
+    // 已存在：仅同步 GitHub 主邮箱（不碰密码）。
+    db.prepare('UPDATE users SET email = ? WHERE username = ?').run(email, username);
+  }
+  const token = await issueToken(username);
+  return { ok: true, username, token };
+}
+
 // ─── Cookie 辅助 ────────────────────────────────────────────────────────────
 export const AUTH_COOKIE = 'ah_auth';
 
@@ -296,3 +356,17 @@ export function cookieValue(
 }
 
 export const TOKEN_TTL = TOKEN_TTL_MS;
+
+/**
+ * 从请求的 ah_auth cookie 解析出当前已登录用户名（签名/过期/吊销任一失败返回 null）。
+ * 供 /api/account/me 等「当前会话」端点使用。
+ */
+export function usernameFromCookie(
+  req: { headers: Record<string, string | string[] | undefined> }
+): string | null {
+  const raw = cookieValue(req, AUTH_COOKIE);
+  if (!raw) return null;
+  const t = parseToken(raw);
+  if (!t || !isTokenValidLocally(t)) return null;
+  return t.username;
+}
