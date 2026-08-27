@@ -2923,7 +2923,6 @@ export class AhChat extends LitElement {
     return html`
       <ah-drawer
         ?open=${m !== null}
-        ?show-footer=${false}
         placement="right"
         title=${title}
         size="500px"

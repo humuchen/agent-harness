@@ -1348,8 +1348,7 @@ export const chatStyles = [
        与截图中的视觉意图一致但更精致；圆点带光晕、指标右对齐且不拥挤。 */
     .tnode.kind-cost {
       border-left: none;
-      margin-left: 0;
-      padding-left: 0;
+      margin-top: 10px;
     }
     .tnode.kind-cost > summary.tnode-head {
       align-items: center;

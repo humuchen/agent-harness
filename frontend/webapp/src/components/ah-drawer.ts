@@ -212,7 +212,8 @@ export class AhDrawer extends LitElement {
       cursor: pointer;
       border-radius: var(--ah-radius-md);
       border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      transition: background 120ms ease, border-color 120ms ease,
+        color 120ms ease;
     }
     .foot .btn.ghost {
       background: transparent;
@@ -290,10 +291,6 @@ export class AhDrawer extends LitElement {
   /** 是否显示右上角 × 按钮。 */
   @property({ type: Boolean, attribute: 'show-close' })
   showClose = true;
-
-  /** 是否显示底部。 */
-  @property({ type: Boolean, attribute: 'show-footer' })
-  showFooter = true;
 
   /** 默认 footer 的确认按钮文案（调用方未通过 footer 插槽自定义时生效）。 */
   @property({ type: String, attribute: 'confirm-text' })
@@ -447,26 +444,25 @@ export class AhDrawer extends LitElement {
               </div>`
             : nothing}
           <div class="body"><slot></slot></div>
-          ${this.showFooter
-            ? html`<div class="foot">
-                ${this.querySelector('[slot="footer"]')
-                  ? html`<slot name="footer"></slot>`
-                  : html`<button
-                        type="button"
-                        class="btn ghost"
-                        @click=${() => this.finish('button')}
-                      >
-                        ${this.cancelText}
-                      </button>
-                      <button
-                        type="button"
-                        class="btn primary"
-                        @click=${this.onConfirm}
-                      >
-                        ${this.confirmText}
-                      </button>`}
-              </div>`
-            : nothing}
+
+          ${this.querySelector('[slot="footer"]')
+            ? html` <div class="foot"><slot name="footer"></slot></div>`
+            : html` <div class="foot">
+                <button
+                  type="button"
+                  class="btn ghost"
+                  @click=${() => this.finish('button')}
+                >
+                  ${this.cancelText}
+                </button>
+                <button
+                  type="button"
+                  class="btn primary"
+                  @click=${this.onConfirm}
+                >
+                  ${this.confirmText}
+                </button>
+              </div>`}
         </aside>
       </div>
     `;
