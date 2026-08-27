@@ -20,15 +20,25 @@
  *  - Cookie: HttpOnly; SameSite=Lax; 仅非 localhost 置 Secure（dev 可 http）；Max-Age=604800。
  *  - 签名密钥 AH_AUTH_SECRET（64 hex）；缺失时回退 AH_CRYPTO_KEY，再缺则每进程随机生成（重启即失效，仅演示）。
  */
-import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
+import {
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+  createHmac
+} from 'node:crypto';
 import { join } from 'node:path';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
 function getAuthSecret(): Uint8Array {
-  const raw = (process.env.AH_AUTH_SECRET || process.env.AH_CRYPTO_KEY || '').trim();
+  const raw = (
+    process.env.AH_AUTH_SECRET ||
+    process.env.AH_CRYPTO_KEY ||
+    ''
+  ).trim();
   if (raw && /^[0-9a-fA-F]{64}$/.test(raw)) {
     const out = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) out[i] = parseInt(raw.slice(i * 2, i * 2 + 2), 16);
+    for (let i = 0; i < 32; i++)
+      out[i] = parseInt(raw.slice(i * 2, i * 2 + 2), 16);
     return out;
   }
   // 演示兜底：每进程随机密钥（重启后旧 token 全部失效）。生产务必配置 AH_AUTH_SECRET。
@@ -39,8 +49,13 @@ function getAuthSecret(): Uint8Array {
 }
 
 const b64url = (buf: Buffer): string =>
-  buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const b64urlJson = (obj: unknown): string => b64url(Buffer.from(JSON.stringify(obj), 'utf8'));
+  buf
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+const b64urlJson = (obj: unknown): string =>
+  b64url(Buffer.from(JSON.stringify(obj), 'utf8'));
 
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
 
@@ -49,7 +64,9 @@ let db: any = null;
 let dbReady: Promise<void> | null = null;
 
 function getDbFile(): string {
-  return process.env.ACCOUNT_DB_FILE || join(process.cwd(), 'data', 'accounts.db');
+  return (
+    process.env.ACCOUNT_DB_FILE || join(process.cwd(), 'data', 'accounts.db')
+  );
 }
 
 async function ensureDb(): Promise<void> {
@@ -78,7 +95,9 @@ async function ensureDb(): Promise<void> {
           created_at INTEGER NOT NULL
         )`
       );
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`);
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
+      );
     })();
   }
   await dbReady;
@@ -97,7 +116,9 @@ function verifyPassword(pw: string, stored: string): boolean {
   const salt = Buffer.from(saltHex, 'hex');
   const derived = scryptSync(pw, salt, 64);
   const expected = Buffer.from(hashHex, 'hex');
-  return derived.length === expected.length && timingSafeEqual(derived, expected);
+  return (
+    derived.length === expected.length && timingSafeEqual(derived, expected)
+  );
 }
 
 // ─── token 签发 / 校验 ──────────────────────────────────────────────────────
@@ -141,11 +162,14 @@ export function parseToken(raw: string): AccountToken | null {
     return null;
   }
   try {
-    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf8')) as {
+    const payload = JSON.parse(
+      Buffer.from(payloadB64, 'base64').toString('utf8')
+    ) as {
       u: string;
       exp: number;
     };
-    if (typeof payload.u !== 'string' || typeof payload.exp !== 'number') return null;
+    if (typeof payload.u !== 'string' || typeof payload.exp !== 'number')
+      return null;
     return { jti, username: payload.u, exp: payload.exp, sig };
   } catch {
     return null;
@@ -158,10 +182,9 @@ export function isTokenValidLocally(t: AccountToken): boolean {
   // ensureDb 为异步（建表），但调用前已通过 login/register 触发过一次，
   // 此处用同步快照：若尚未就绪直接判否（首请求并发场景极少见，且会重试建库）。
   if (!db) return false;
-  const row = db.prepare('SELECT jti FROM auth_tokens WHERE jti = ? AND expires_at > ?').get(
-    t.jti,
-    Date.now()
-  );
+  const row = db
+    .prepare('SELECT jti FROM auth_tokens WHERE jti = ? AND expires_at > ?')
+    .get(t.jti, Date.now());
   return !!row;
 }
 
@@ -174,8 +197,8 @@ export interface AccountResult {
 }
 
 function validUsername(u: string): boolean {
-  // 3-32 位，字母/数字/下划线/连字符，避免空白与特殊字符（防注入与日志污染）。
-  return /^[A-Za-z0-9_-]{3,32}$/.test(u);
+  // 3-32 位，字母/数字/下划线，避免空白与特殊字符（防注入与日志污染）。
+  return /^[A-Za-z0-9_]{3,32}$/.test(u);
 }
 
 export async function registerUser(
@@ -185,17 +208,16 @@ export async function registerUser(
   username = (username || '').trim();
   password = password || '';
   if (!validUsername(username))
-    return { ok: false, error: '用户名需为 3-32 位字母/数字/下划线/连字符' };
-  if (password.length < 8)
-    return { ok: false, error: '密码至少 8 位' };
+    return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
+  if (password.length < 8) return { ok: false, error: '密码至少 8 位' };
   await ensureDb();
-  const existing = db.prepare('SELECT username FROM users WHERE username = ?').get(username);
+  const existing = db
+    .prepare('SELECT username FROM users WHERE username = ?')
+    .get(username);
   if (existing) return { ok: false, error: '用户名已被占用' };
-  db.prepare('INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)').run(
-    username,
-    hashPassword(password),
-    Date.now()
-  );
+  db.prepare(
+    'INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)'
+  ).run(username, hashPassword(password), Date.now());
   return { ok: true, username };
 }
 
@@ -205,9 +227,9 @@ export async function loginUser(
 ): Promise<AccountResult> {
   username = (username || '').trim();
   await ensureDb();
-  const row = db.prepare('SELECT password FROM users WHERE username = ?').get(username) as
-    | { password: string }
-    | undefined;
+  const row = db
+    .prepare('SELECT password FROM users WHERE username = ?')
+    .get(username) as { password: string } | undefined;
   // 统一延迟：用户不存在也走一次哈希比较，避免用户枚举时序差。
   const fake = hashPassword('__nonexistent__');
   const stored = row?.password ?? fake;
@@ -223,24 +245,34 @@ export const AUTH_COOKIE = 'ah_auth';
 
 function isLocalhost(req: { headers: Record<string, unknown> }): boolean {
   const host = String(req.headers.host ?? '');
-  return host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]');
+  return (
+    host.startsWith('localhost') ||
+    host.startsWith('127.0.0.1') ||
+    host.startsWith('[::1]')
+  );
 }
 
 /** 构造 Set-Cookie 头值：HttpOnly + SameSite=Lax；仅非 localhost 置 Secure（dev 可 http）。 */
-export function authCookieValue(req: { headers: Record<string, unknown> }, token: string): string {
+export function authCookieValue(
+  req: { headers: Record<string, unknown> },
+  token: string
+): string {
   const parts = [
     `${AUTH_COOKIE}=${token}`,
     'HttpOnly',
     'SameSite=Lax',
     'Path=/',
-    `Max-Age=${TOKEN_TTL_MS / 1000}`,
+    `Max-Age=${TOKEN_TTL_MS / 1000}`
   ];
   if (!isLocalhost(req)) parts.push('Secure');
   return parts.join('; ');
 }
 
 /** 从请求里取出 ah_auth cookie 值（无则返回 null）。 */
-export function cookieValue(req: { headers: Record<string, string | string[] | undefined> }, name: string): string | null {
+export function cookieValue(
+  req: { headers: Record<string, string | string[] | undefined> },
+  name: string
+): string | null {
   const raw = req.headers.cookie;
   if (!raw) return null;
   const cookies = (Array.isArray(raw) ? raw.join('; ') : raw).split(';');
