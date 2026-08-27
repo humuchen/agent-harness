@@ -6,9 +6,16 @@
  *
  * 进程内 Map 为权威态；若设置了 CHAT_SESSIONS_FILE 则额外落盘（JSON），
  * 进程重启后可恢复会话列表与历史。无文件配置时仅驻留内存（单实例够用）。
+ *
+ * 多用户隔离（P多用户）：每个会话归属一个 owner（= 登录用户名 ctx.sub）。
+ * 所有读写函数均接收 owner 并校验归属，跨用户不可互见；旧存档无 owner 的会话
+ * 归 'legacy' 桶，普通用户 list/get 均不可见（仅服务端保留，不泄露存在性）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+/** 无归属旧数据的兜底桶（仅服务端保留，普通用户不可见）。 */
+export const LEGACY_OWNER = 'legacy';
 
 /** 工具调用记录（存储态：参数/结果均已序列化为字符串，便于 JSON 持久化与跨端还原）。 */
 export interface StoredTool {
@@ -74,6 +81,8 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** 归属用户（= 登录用户名 ctx.sub）。无归属旧数据记为 'legacy'。 */
+  owner: string;
 }
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
@@ -85,8 +94,13 @@ function load(): void {
   loaded = true;
   if (FILE && existsSync(FILE)) {
     try {
-      const arr = JSON.parse(readFileSync(FILE, 'utf-8')) as ChatSession[];
-      for (const s of arr) sessions.set(s.id, s);
+      const arr = JSON.parse(readFileSync(FILE, 'utf-8')) as Array<
+        ChatSession & { owner?: string }
+      >;
+      for (const s of arr) {
+        // 旧存档无 owner 字段：归 legacy 桶，普通用户不可见、不泄露存在性。
+        sessions.set(s.id, { ...s, owner: s.owner ?? LEGACY_OWNER });
+      }
     } catch {
       // 损坏的存档不致命：从空态继续。
     }
@@ -107,20 +121,31 @@ function genId(): string {
   return `cs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** 列出全部会话（按最近更新倒序）。 */
-export function listChatSessions(): ChatSession[] {
+/**
+ * 列出会话（按最近更新倒序）。
+ * @param owner 指定时只返回该用户的会话；传 undefined 返回全部（运维/管理用，调用方需自行鉴权）。
+ */
+export function listChatSessions(owner?: string): ChatSession[] {
   load();
-  return [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const all = [...sessions.values()];
+  const filtered = owner ? all.filter((s) => s.owner === owner) : all;
+  return filtered.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** 取单个会话（含消息记录）；不存在返回 null。 */
-export function getChatSession(id: string): ChatSession | null {
+/**
+ * 取单个会话（含消息记录）；不存在或 owner 不符时返回 null（不泄露存在性）。
+ * @param owner 指定时做归属校验，不符返回 null。
+ */
+export function getChatSession(id: string, owner?: string): ChatSession | null {
   load();
-  return sessions.get(id) ?? null;
+  const s = sessions.get(id);
+  if (!s) return null;
+  if (owner && s.owner !== owner) return null;
+  return s;
 }
 
-/** 新建会话（可指定初始标题，留空则默认「新对话」）。 */
-export function createChatSession(title?: string): ChatSession {
+/** 新建会话（归属 owner；可指定初始标题，留空则默认「新对话」）。 */
+export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSession {
   load();
   const now = Date.now();
   const session: ChatSession = {
@@ -129,26 +154,35 @@ export function createChatSession(title?: string): ChatSession {
     createdAt: now,
     updatedAt: now,
     messages: [],
+    owner,
   };
   sessions.set(session.id, session);
   persist();
   return session;
 }
 
-/** 重命名会话（标题用于左侧栏展示）。 */
-export function renameChatSession(id: string, title: string): ChatSession | null {
+/** 重命名会话（标题用于左侧栏展示）；owner 不符或不存在返回 null。 */
+export function renameChatSession(
+  id: string,
+  title: string,
+  owner?: string
+): ChatSession | null {
   load();
   const s = sessions.get(id);
   if (!s) return null;
+  if (owner && s.owner !== owner) return null;
   s.title = title?.trim() || s.title;
   s.updatedAt = Date.now();
   persist();
   return s;
 }
 
-/** 删除会话及其消息记录。 */
-export function deleteChatSession(id: string): boolean {
+/** 删除会话及其消息记录；owner 不符或不存在返回 false。 */
+export function deleteChatSession(id: string, owner?: string): boolean {
   load();
+  const s = sessions.get(id);
+  if (!s) return false;
+  if (owner && s.owner !== owner) return false;
   const ok = sessions.delete(id);
   if (ok) persist();
   return ok;
@@ -157,13 +191,23 @@ export function deleteChatSession(id: string): boolean {
 /**
  * 向会话追加一条消息并自动更新时间戳。
  * 首条用户消息会自动作为会话标题（取前 40 字），复刻 DeepSeek 的「首句作标题」体验。
+ *
+ * 归属校验：若会话已存在且 owner 与传入 owner 不符，返回 null（越权写入被拒），
+ * 调用方应据此向前端报 404/403。自动新建的会话归属传入 owner。
  */
-export function appendChatMessage(id: string, msg: ChatMessage): ChatSession | null {
+export function appendChatMessage(
+  id: string,
+  msg: ChatMessage,
+  owner = LEGACY_OWNER
+): ChatSession | null {
   load();
   let s = sessions.get(id);
-  if (!s) {
+  if (s) {
+    // 会话已存在：校验归属，禁止越权写入他人会话。
+    if (s.owner !== owner) return null;
+  } else {
     const now = Date.now();
-    s = { id, title: '新对话', createdAt: now, updatedAt: now, messages: [] };
+    s = { id, title: '新对话', createdAt: now, updatedAt: now, messages: [], owner };
     sessions.set(id, s);
   }
   s.messages.push(msg);
@@ -182,15 +226,17 @@ export function appendChatMessage(id: string, msg: ChatMessage): ChatSession | n
  * 计划模式（P0）：更新会话内携带计划的最新一条 assistant 消息的执行进度镜像。
  * 服务端在任务派发/完成/失败事件时调用，把任务级状态随消息持久化 ——
  * 前端刷新 / 切回 / 服务重启后据此还原计划卡片并支持「从失败任务继续」。
- * 无可挂载的 plan 消息时不做任何事（普通问答不受影响）。
+ * 无可挂载的 plan 消息时不做任何事（普通问答不受影响）。owner 不符则静默跳过。
  */
 export function updatePlanStatus(
   id: string,
-  mutate: (prev: PlanExecMirror) => PlanExecMirror
+  mutate: (prev: PlanExecMirror) => PlanExecMirror,
+  owner?: string
 ): void {
   load();
   const s = sessions.get(id);
   if (!s) return;
+  if (owner && s.owner !== owner) return;
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i];
     if (m.role === 'assistant' && m.plan) {

@@ -62,6 +62,24 @@ export interface HistoryThreadMeta {
 export interface HistoryEnvelope extends HistoryThreadMeta {
   v: number;
   msgs: unknown[];
+  /** 会话级用量快照（前端在保存历史时一并写入，恢复时回填上下文用量浮层）。
+   * 不含于 msgs，作为信封并行字段，向后兼容旧版（缺失时为 undefined）。 */
+  usage?: {
+    backendUsage: {
+      window: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      breakdown: {
+        system: number;
+        tools: number;
+        messages: number;
+        mcp: number;
+        skills: number;
+      };
+    } | null;
+    runCumulative: { tokens: number; cost: number } | null;
+  } | null;
 }
 
 /** 历史写入入参：PUT /api/history/:sid。 */
@@ -69,6 +87,8 @@ export interface HistoryPutInput {
   title?: string;
   updatedAt?: number;
   msgs: unknown[];
+  /** 会话级用量快照（可选，向后兼容）。 */
+  usage?: HistoryEnvelope['usage'];
 }
 
 /* ----------------------------- 多会话 Chat App ----------------------------- */

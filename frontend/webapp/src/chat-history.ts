@@ -183,14 +183,36 @@ export interface MirrorMeta {
 const memThreads = new Map<string, MirroredMsg[]>();
 const memIndex = new Map<string, MirrorMeta>();
 
+/** 镜像用量快照：会话级上下文用量（backendUsage）+ 本运行累计（runCumulative），
+ * 随历史一并落盘，刷新/切换会话后回填上下文用量浮层，避免归零或回退粗估。 */
+export interface MirroredUsage {
+  backendUsage: {
+    window: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    breakdown: {
+      system: number;
+      tools: number;
+      messages: number;
+      mcp: number;
+      skills: number;
+      completion: number;
+    };
+  } | null;
+  runCumulative: { tokens: number; cost: number } | null;
+}
+
 /**
  * 把某会话的消息缓冲写入历史镜像（幂等 upsert）。
  * 先写穿进程内缓存（立即可读），再经接口落服务端；接口失败静默降级返回 false。
+ * @param usage 会话级用量快照（可选）；不传则仅镜像消息。
  */
 export async function saveThread(
   sid: string,
   meta: { title: string; updatedAt?: number },
-  rawMsgs: unknown[]
+  rawMsgs: unknown[],
+  usage?: MirroredUsage | null
 ): Promise<boolean> {
   if (!sid) return false;
   const msgs = sanitizeMessages(rawMsgs).slice(-MAX_MSGS);
@@ -204,7 +226,8 @@ export async function saveThread(
       client.putHistoryThread(sid, {
         title: meta.title,
         updatedAt,
-        msgs: msgs as unknown[]
+        msgs: msgs as unknown[],
+        ...(usage ? { usage } : {})
       }),
       6000,
       '保存历史镜像'
@@ -219,18 +242,23 @@ export async function saveThread(
 /**
  * 读取某会话的历史镜像；接口失败 / 无数据时回退进程内缓存，仍无则返回 null
  * （由调用方降级，绝不抛错）。
+ * 返回结构含消息数组与用量快照（用量可能为空，调用方按需回退）。
  */
-export async function loadThread(sid: string): Promise<MirroredMsg[] | null> {
+export async function loadThread(
+  sid: string
+): Promise<{ msgs: MirroredMsg[]; usage: MirroredUsage | null } | null> {
   try {
     const env = await withTimeout(client.getHistoryThread(sid), 6000, '读取历史镜像');
     const msgs = sanitizeMessages(env.msgs);
+    const usage = (env.usage as MirroredUsage | null) ?? null;
     if (msgs.length) {
       memThreads.set(sid, msgs);
-      return msgs;
+      return { msgs, usage };
     }
-    return null;
+    return memThreads.get(sid) ? { msgs: memThreads.get(sid)!, usage } : null;
   } catch {
-    return memThreads.get(sid) ?? null;
+    const mem = memThreads.get(sid);
+    return mem ? { msgs: mem, usage: null } : null;
   }
 }
 

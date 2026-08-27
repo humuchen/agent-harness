@@ -121,6 +121,10 @@ import {
   usernameFromCookie,
   cookieValue,
   authCookieValue,
+  clearAuthCookie,
+  getProfile,
+  changePassword,
+  revokeAllTokens,
   AUTH_COOKIE,
   type AccountResult
 } from './accounts';
@@ -651,8 +655,45 @@ const server = createServer(
           res.end(JSON.stringify({ ok: false, error: '未登录' }));
           return;
         }
+        // 账户密码档在 RBAC 中统一为 admin 角色（authz.ts: AccountAuthorizer）。
+        // 这里随 /me 一并返回 username / role / email，供顶栏用户菜单展示。
+        const profile = getProfile(u);
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        res.end(JSON.stringify({ ok: true, username: u }));
+        res.end(JSON.stringify({
+          ok: true,
+          username: u,
+          role: 'admin',
+          email: profile?.email ?? null
+        }));
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/account/change-password') {
+        // 改密：需先登录（cookie 有效且 x-ah-username 双因子一致，由下方 guard 保证）。
+        const ctx = await guard(req, res, 'chat:write');
+        if (!ctx) return;
+        const b = await readBody(req);
+        const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
+        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
+        const r = changePassword(ctx.sub, oldPw, newPw);
+        if (!r.ok) {
+          res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: r.error }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/account/logout') {
+        // 登出：清除服务端 token 记录 + 让浏览器丢弃 ah_auth cookie（HttpOnly 只能由服务端清除）。
+        const u = usernameFromCookie(req);
+        if (u) revokeAllTokens(u);
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': clearAuthCookie(req),
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
       // ── GitHub OAuth 授权码流（后端持有 client_secret）──
@@ -1052,17 +1093,34 @@ const server = createServer(
       // 客户端以版本化 URL /api/v1/chat/sessions 调用，服务端在路由前已统一重写
       // /api/v1 -> /api，故此处按重写后的 /api/chat/sessions 匹配。
       if (req.method === 'GET' && path === '/api/chat/sessions') {
-        return sendJson(res, { sessions: listChatSessions() }, req);
+        // 多用户隔离：必须已登录（非匿名）才能读取自己的会话列表；越权/匿名返回 401。
+        const ctx = await guard(req, res, 'chat:read');
+        if (!ctx) return;
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+        }
+        return sendJson(res, { sessions: listChatSessions(ctx.sub) }, req);
       }
       if (req.method === 'POST' && path === '/api/chat/sessions') {
         const b = await readBody(req);
         const ctx = await guard(req, res, 'chat:write', b);
         if (!ctx) return;
-        return sendJson(res, createChatSession(b.title), req);
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+        }
+        return sendJson(res, createChatSession(b.title, ctx.sub), req);
       }
       if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
         const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-        const s = getChatSession(id);
+        const ctx = await guard(req, res, 'chat:read');
+        if (!ctx) return;
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+        }
+        const s = getChatSession(id, ctx.sub);
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'session not found' }));
@@ -1074,7 +1132,11 @@ const server = createServer(
         const b = await readBody(req);
         const ctx = await guard(req, res, 'chat:write', b);
         if (!ctx) return;
-        const s = renameChatSession(id, b.title);
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+        }
+        const s = renameChatSession(id, b.title, ctx.sub);
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'session not found' }));
@@ -1085,7 +1147,11 @@ const server = createServer(
         const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
         const ctx = await guard(req, res, 'chat:delete');
         if (!ctx) return;
-        const ok = deleteChatSession(id);
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+        }
+        const ok = deleteChatSession(id, ctx.sub);
         return sendJson(res, { ok }, req);
       }
 
@@ -1101,24 +1167,44 @@ const server = createServer(
           !!sid && sid.length <= 128 && /^[A-Za-z0-9_\-]+$/.test(sid);
 
         if (req.method === 'GET' && path === '/api/history') {
-          return sendJson(res, { sessions: getHistoryStore().index() }, req);
+          // 多用户隔离：必须已登录（非匿名）才能读取自己的历史索引；匿名返回 401。
+          const ctx = await guard(req, res, 'chat:read');
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          }
+          return sendJson(res, { sessions: getHistoryStore().index(ctx.sub) }, req);
         }
         if (req.method === 'GET' && path.startsWith(HISTORY_PREFIX)) {
           const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
+          const ctx = await guard(req, res, 'chat:read');
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          }
           if (!validSid(sid)) {
             res.writeHead(400, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'invalid session id' }));
           }
-          const row = getHistoryStore().get(sid);
+          const row = getHistoryStore().get(sid, ctx.sub);
           if (!row) {
             res.writeHead(404, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'history not found' }));
           }
           try {
-            const msgs = JSON.parse(row.data);
+            const parsed = JSON.parse(row.data);
+            // 兼容旧版：data 可能是纯 msgs 数组，也可能是 { msgs, usage } 信封。
+            const msgs = Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed?.msgs)
+                ? parsed.msgs
+                : [];
+            const usage = !Array.isArray(parsed) ? parsed.usage ?? null : null;
             return sendJson(
               res,
-              { ...row.meta, v: 1, msgs: Array.isArray(msgs) ? msgs : [] },
+              { ...row.meta, v: 1, msgs, usage },
               req
             );
           } catch {
@@ -1136,6 +1222,10 @@ const server = createServer(
           const b = await readBody(req);
           const ctx = await guard(req, res, 'chat:write', b);
           if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          }
           // 参数校验：msgs 必须为数组；title 收敛为字符串；整体序列化体积受限。
           if (!Array.isArray(b.msgs)) {
             res.writeHead(400, { 'content-type': 'application/json' });
@@ -1143,7 +1233,8 @@ const server = createServer(
           }
           let data: string;
           try {
-            data = JSON.stringify(b.msgs);
+            // 信封并行携带会话级用量快照（usage，可选），与 msgs 一并落盘，向后兼容旧版。
+            data = JSON.stringify({ msgs: b.msgs, usage: b.usage ?? null });
           } catch {
             res.writeHead(400, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'msgs not serializable' }));
@@ -1153,6 +1244,7 @@ const server = createServer(
             return res.end(JSON.stringify({ error: 'history too large' }));
           }
           const now = Date.now();
+          // owner 由服务端以 ctx.sub 强制写入，忽略客户端上报（防伪造归属）。
           getHistoryStore().upsert(
             {
               sid,
@@ -1166,7 +1258,8 @@ const server = createServer(
                   : now,
               savedAt: now
             },
-            data
+            data,
+            ctx.sub
           );
           return sendJson(res, { ok: true }, req);
         }
@@ -1178,7 +1271,11 @@ const server = createServer(
           }
           const ctx = await guard(req, res, 'chat:delete');
           if (!ctx) return;
-          const ok = getHistoryStore().remove(sid);
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          }
+          const ok = getHistoryStore().remove(sid, ctx.sub);
           return sendJson(res, { ok }, req);
         }
       }
@@ -1674,6 +1771,12 @@ async function handleRun(
       : 'agent:run:mock';
   const ctx = await guard(req, res, runAction, body);
   if (!ctx) return;
+  // 多用户隔离：聊天历史/会话必须登录后才能写入；匿名（auth off 或未登录）直接拒。
+  if (ctx.sub === 'anon') {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+    return;
+  }
   // 优雅停机期间不再接受新运行，避免任务在进程退出时被强杀。
   if (shuttingDown) {
     res.writeHead(503, { 'content-type': 'application/json' });
@@ -2151,7 +2254,7 @@ async function handleRun(
               content: `📋 ${plan.goal}`,
               ts: Date.now(),
               plan
-            });
+            }, ctx.sub);
           }
           return;
         }
@@ -2214,7 +2317,7 @@ async function handleRun(
           // 计划模式下落盘用户的原始需求（ev.input 是 planner 包装后的提示词）。
           content: isPlanPropose ? prompt : String(ev.input),
           ts: Date.now()
-        });
+        }, ctx.sub);
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
         // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
         const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
@@ -2225,7 +2328,7 @@ async function handleRun(
             status: 'running',
             currentTaskId: taskId,
             failedTaskId: undefined
-          }));
+          }), ctx.sub);
         }
       } else if (ev.type === 'error') {
         // 计划任务执行失败：进度镜像标记 failed + 失败节点，前端恢复时据此续跑。
@@ -2235,14 +2338,14 @@ async function handleRun(
             status: 'failed',
             failedTaskId: prev.currentTaskId,
             currentTaskId: undefined
-          }));
+          }), ctx.sub);
         }
       } else if (ev.type === 'run:end' && ev.final != null) {
         // 去重：run-queue 会在 harness 的 run:end 之后再补发一个不带 runId 的 run:end
         // （两者 final 相同），避免历史里出现两条重复的 assistant 消息。仅当会话最后一条
         // 还不是相同内容的 assistant 时才落盘。
         const finalStr = String(ev.final);
-        const last = getChatSession(chatSessionId)?.messages.at(-1);
+        const last = getChatSession(chatSessionId, ctx.sub)?.messages.at(-1);
         if (traceRoot) traceRoot.status = 'ok';
         // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
         if (!isPlanPropose) {
@@ -2256,7 +2359,7 @@ async function handleRun(
               done,
               currentTaskId: undefined
             };
-          });
+          }, ctx.sub);
         }
         if (!(last && last.role === 'assistant' && last.content === finalStr)) {
           appendChatMessage(chatSessionId, {
@@ -2266,7 +2369,7 @@ async function handleRun(
             reasoning: reasoningBuf || undefined,
             tools: toolMap.size ? [...toolMap.values()] : undefined,
             trace: traceRoot ? [traceRoot] : undefined
-          });
+          }, ctx.sub);
         }
       }
     }

@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
-import { client, authedFetch } from './api';
+import { client, authedFetch, fetchMe } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
@@ -108,6 +108,8 @@ export class AhApp extends LitElement {
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
+  @state() private me: { username: string; role: string; email: string | null } | null =
+    null;
   @state() private sidebarCollapsed =
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
@@ -122,6 +124,8 @@ export class AhApp extends LitElement {
     super.connectedCallback();
     this.refreshState();
     this.theme = getTheme();
+    // 拉取当前登录用户资料（顶栏头像 / 角色展示）。
+    void this.loadMe();
     // 拉取插件视图（动态 Tab），失败不阻断主面板。
     void this.loadPluginViews();
     // 监听子面板发来的刷新请求（如创建/销毁环境后）；同时重拉插件视图，
@@ -213,6 +217,12 @@ export class AhApp extends LitElement {
       .catch((e) => {
         this.err = String(e?.message ?? e);
       });
+  }
+
+  /** 拉取当前登录用户资料（username / role / email），供顶栏头像菜单展示。 */
+  private async loadMe() {
+    const me = await fetchMe();
+    if (me) this.me = me;
   }
 
   private onToggleTheme() {
@@ -352,6 +362,13 @@ export class AhApp extends LitElement {
             <button class="ghost" @click=${() => this.refreshState()}>
               刷新状态
             </button>
+            ${this.me
+              ? html`<ah-user-menu
+                  username=${this.me.username}
+                  role=${this.me.role}
+                  email=${this.me.email ?? ''}
+                ></ah-user-menu>`
+              : ''}
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">

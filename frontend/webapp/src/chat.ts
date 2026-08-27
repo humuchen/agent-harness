@@ -25,7 +25,8 @@ import {
   loadThread,
   purgeSessionMirror,
   loadIndex,
-  withTimeout
+  withTimeout,
+  type MirroredUsage
 } from './chat-history';
 import type {
   ChatSession,
@@ -338,10 +339,33 @@ export class AhChat extends LitElement {
     const t = this.threads[sid];
     if (!t || !t.length) return;
     const meta = this.sessions.find((s) => s.id === sid);
+    // 会话级用量快照：随历史一并落盘，刷新/切换会话后回填上下文用量浮层。
+    const usage: MirroredUsage | null = {
+      backendUsage: this.backendUsage
+        ? {
+            window: this.backendUsage.window,
+            promptTokens: this.backendUsage.promptTokens,
+            completionTokens: this.backendUsage.completionTokens,
+            totalTokens: this.backendUsage.totalTokens,
+            breakdown: {
+              system: this.backendUsage.breakdown.system,
+              tools: this.backendUsage.breakdown.tools,
+              messages: this.backendUsage.breakdown.messages,
+              mcp: this.backendUsage.breakdown.mcp,
+              skills: this.backendUsage.breakdown.skills,
+              completion: this.backendUsage.breakdown.completion
+            }
+          }
+        : null,
+      runCumulative: this.runCumulative
+        ? { tokens: this.runCumulative.tokens, cost: this.runCumulative.cost }
+        : null
+    };
     void saveThread(
       sid,
       { title: meta?.title ?? '新对话', updatedAt: Date.now() },
-      t
+      t,
+      usage
     );
   }
 
@@ -478,6 +502,14 @@ export class AhChat extends LitElement {
       this.agents = hasDefault
         ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
         : [{ id: '', name: '默认' }, ...raw];
+    } catch {
+      /* ignore */
+    }
+    // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
+    // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
+    try {
+      const saved = localStorage.getItem('ah_active_id');
+      if (saved) void this.selectSession(saved);
     } catch {
       /* ignore */
     }
@@ -870,11 +902,24 @@ export class AhChat extends LitElement {
     this.showScrollDown = false;
     this.backendUsage = null;
     this.runCumulative = null;
+    // 清空「上次会话」标记，刷新后进入空白新对话（与 ensureSession 新建逻辑一致）。
+    this.persistActiveId('');
+  }
+
+  /** 持久化当前会话 id（跨刷新恢复用）；传入空串表示「无当前会话」。 */
+  private persistActiveId(id: string) {
+    try {
+      if (id) localStorage.setItem('ah_active_id', id);
+      else localStorage.removeItem('ah_active_id');
+    } catch {
+      /* ignore */
+    }
   }
 
   private async selectSession(id: string) {
     if (id === this.activeId) return;
     this.activeId = id;
+    this.persistActiveId(id);
     this.sidebarOpen = false;
     this.error = null;
     this.input = '';
@@ -883,6 +928,8 @@ export class AhChat extends LitElement {
     // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
     // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
     const localBuf = this.threads[id];
+    // 会话级用量快照（随历史镜像恢复）；getChatSession 不含 usage，仅 history 镜像携带。
+    let recoveredUsage: MirroredUsage | null = null;
     if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
       try {
         // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
@@ -923,8 +970,9 @@ export class AhChat extends LitElement {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
         //   历史镜像接口（服务端 SQLite / 进程内兜底） → 空线程 + 失败标记（下次重试）+ 非阻断警示。
         const mirrored = await loadThread(id);
-        if (mirrored && mirrored.length) {
-          this.threads[id] = mirrored.map((m) => ({
+        if (mirrored && mirrored.msgs.length) {
+          recoveredUsage = mirrored.usage;
+          this.threads[id] = mirrored.msgs.map((m) => ({
             ...(m as Omit<ChatMsg, 'id'>),
             id: this.nextId++
           })) as ChatMsg[];
@@ -942,8 +990,10 @@ export class AhChat extends LitElement {
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
     this.stickToBottom = true;
     this.showScrollDown = false;
-    this.backendUsage = null;
-    this.runCumulative = null;
+    // 用量快照从会话镜像回填（若有），避免刷新/切换后上下文用量归零或回退粗估；
+    // 无快照则保持 null，由后续 llm:usage 事件或回退估算补充。
+    this.backendUsage = recoveredUsage?.backendUsage ?? null;
+    this.runCumulative = recoveredUsage?.runCumulative ?? null;
   }
 
   /**
@@ -1043,9 +1093,13 @@ export class AhChat extends LitElement {
   /* ----------------------- 发送 / 流式 ----------------------- */
 
   private async ensureSession(): Promise<string> {
-    if (this.activeId) return this.activeId;
+    if (this.activeId) {
+      this.persistActiveId(this.activeId);
+      return this.activeId;
+    }
     const s = await client.createChatSession('新对话');
     this.activeId = s.id;
+    this.persistActiveId(s.id);
     this.sessions = [
       { id: s.id, title: s.title, updatedAt: s.updatedAt },
       ...this.sessions
@@ -1096,11 +1150,15 @@ export class AhChat extends LitElement {
     // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
     const content = prompt;
 
+    // 在清空 this.attachments 之前保留完整附件副本（含 dataUrl），
+    // 用于回显到 user 气泡；否则消息写入时附件已被清空，气泡里图片不显示。
+    const rawAttachments = [...this.attachments];
+
     // 为每个图片构建结构化附件信息。
     // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
     // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
-    const imageAttachments = this.attachments
+    const imageAttachments = rawAttachments
       .filter((f) => f.type.startsWith('image/'))
       .map((f) => ({
         url: f.dataUrl || f.serverUrl || '',
@@ -1111,7 +1169,9 @@ export class AhChat extends LitElement {
 
     this.input = '';
     this.attachments = [];
-    await this.dispatchPrompt(sessionId, content, imageAttachments);
+    await this.dispatchPrompt(sessionId, content, imageAttachments, {
+      attachments: rawAttachments
+    });
   }
 
   /**
@@ -1123,7 +1183,7 @@ export class AhChat extends LitElement {
     sessionId: string,
     content: string,
     imageAttachments: Array<{ url: string; name: string; type: string }> = [],
-    opts: { planTask?: boolean } = {}
+    opts: { planTask?: boolean; attachments?: UploadedFile[] } = {}
   ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.threadFor(sessionId);
@@ -1131,7 +1191,7 @@ export class AhChat extends LitElement {
       id: this.nextId++,
       role: 'user',
       content,
-      attachments: [...this.attachments]
+      attachments: opts.attachments ? [...opts.attachments] : [...this.attachments]
     });
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;

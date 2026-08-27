@@ -370,3 +370,81 @@ export function usernameFromCookie(
   if (!t || !isTokenValidLocally(t)) return null;
   return t.username;
 }
+
+/** 当前登录用户的基础资料（username / email / 注册时间），供 /api/account/me 回填 UI。 */
+export interface AccountProfile {
+  username: string;
+  email: string | null;
+  createdAt: number;
+}
+
+/** 读取某用户的基础资料（库未就绪 / 用户不存在返回 null）。 */
+export function getProfile(username: string): AccountProfile | null {
+  if (!db) return null;
+  const row = db
+    .prepare(
+      'SELECT username, email, created_at FROM users WHERE username = ?'
+    )
+    .get(username) as
+    | { username: string; email: string | null; created_at: number }
+    | undefined;
+  if (!row) return null;
+  return {
+    username: row.username,
+    email: row.email ?? null,
+    createdAt: row.created_at
+  };
+}
+
+/**
+ * 修改密码：校验「旧密码」→ 校验「新密码强度」→ 覆盖 users.password。
+ * 注意：仅改密码，不动 token（已登录会话保持有效，符合常见 UX；如需强制重登可另调 revokeAllTokens）。
+ * 返回 ok / error（error 区分「旧密码错误」与「弱密码」）。
+ */
+export function changePassword(
+  username: string,
+  oldPassword: string,
+  newPassword: string
+): { ok: boolean; error?: string } {
+  if (!username) return { ok: false, error: '未登录' };
+  if (!newPassword || newPassword.length < 8)
+    return { ok: false, error: '新密码至少 8 位' };
+  // GitHub OAuth 用户：密码为一次性随机占位，无法用旧密码校验，直接拒绝自助改密。
+  if (!db) return { ok: false, error: '服务端未就绪' };
+  const row = db
+    .prepare('SELECT password FROM users WHERE username = ?')
+    .get(username) as { password: string } | undefined;
+  if (!row) return { ok: false, error: '用户不存在' };
+  if (!verifyPassword(oldPassword || '', row.password))
+    return { ok: false, error: '旧密码错误' };
+  db.prepare('UPDATE users SET password = ? WHERE username = ?').run(
+    hashPassword(newPassword),
+    username
+  );
+  return { ok: true };
+}
+
+/** 吊销某用户全部登录态（删除 auth_tokens 记录；cookie 由前端/登出接口同步清除）。 */
+export function revokeAllTokens(username: string): void {
+  if (!db) return;
+  db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+}
+
+/**
+ * 构造「清除 ah_auth cookie」的 Set-Cookie 头值：空值 + 立即过期 + 与下发时一致的属性。
+ * 用于 /api/account/logout。
+ */
+export function clearAuthCookie(req: {
+  headers: Record<string, unknown>;
+}): string {
+  const parts = [
+    `${AUTH_COOKIE}=`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  ];
+  if (!isLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}

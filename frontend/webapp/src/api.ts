@@ -48,6 +48,85 @@ export function clearSession(): void {
   setSession('');
 }
 
+/** 读取当前本地已登录用户名（无则返回空串）。 */
+export function getUsername(): string {
+  return initialUser();
+}
+
+/** 当前会话资料（供用户菜单展示）。 */
+export interface MeInfo {
+  username: string;
+  role: string;
+  email: string | null;
+}
+
+/**
+ * 拉取当前登录态资料：GET /api/account/me（仅依赖 ah_auth cookie，无需双因子）。
+ * 返回 null 表示未登录 / 会话失效。
+ */
+export async function fetchMe(): Promise<MeInfo | null> {
+  try {
+    const res = await fetch('/api/account/me', {
+      method: 'GET',
+      credentials: 'same-origin'
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<MeInfo> & { ok?: boolean };
+    if (!data.username) return null;
+    return {
+      username: data.username,
+      role: data.role ?? 'admin',
+      email: data.email ?? null
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 修改密码：POST /api/account/change-password（需登录）。
+ * 返回 { ok, error? }；error 区分「旧密码错误」与「新密码太弱」。
+ */
+export async function changePassword(
+  oldPassword: string,
+  newPassword: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await authedFetch('/api/account/change-password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ oldPassword, newPassword })
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+    };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || '修改失败' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: '网络异常，请稍后重试。' };
+  }
+}
+
+/**
+ * 登出：POST /api/account/logout（服务端清 cookie + 吊销 token）。
+ * 成功后清本地会话并派发 ah-session-expired 让 main.ts 回到登录页。
+ */
+export async function logout(): Promise<void> {
+  try {
+    await authedFetch('/api/account/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+  } catch {
+    /* 即便请求失败也强制本地登出，避免卡在控制台 */
+  }
+  clearSession();
+  window.dispatchEvent(new CustomEvent('ah-session-expired'));
+}
+
 /** 是否已登录（本地视角）：存在用户名即视为已登录；cookie 有效性由服务端 401 兜底。 */
 export function isAuthed(): boolean {
   return !!initialUser();
