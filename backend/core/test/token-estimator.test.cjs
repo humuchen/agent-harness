@@ -9,9 +9,12 @@ test('estimateTokens 空输入为 0', () => {
   assert.equal(estimateTokens(undefined), 0);
 });
 
-test('estimateTokens 中文按字计数', () => {
+test('estimateTokens 中文按系数计数(非 1 字 1 token)', () => {
+  // 4 个汉字：ceil(4 * 0.6) = 3，修正此前 1 字 1 token 的高估。
   const n = estimateTokens('你好世界');
-  assert.equal(n, 4);
+  assert.equal(n, 3);
+  // 纯中文长度与 token 数不再相等，应小于字符数。
+  assert.ok(n < '你好世界'.length, `中文 token 应小于字符数，实际 ${n}`);
 });
 
 test('estimateTokens 混合文本非0', () => {
