@@ -112,6 +112,14 @@ import { handleUpload, serveUploaded, type UploadMeta } from './upload';
 import { handleLiveness, handleReadiness } from './health';
 // 自定义模型 SQLite 持久化 + AES-GCM 解密
 import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
+// 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
+import {
+  registerUser,
+  loginUser,
+  authCookieValue,
+  AUTH_COOKIE,
+  type AccountResult
+} from './accounts';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
 
@@ -132,11 +140,15 @@ const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
 // 统一认证凭证：OPEN_API_KEY 同时作为 LLM key 与权限校验依据。
 // 未接入 RBAC 时它是权限判断的唯一凭证；接入 RBAC 时作为 admin 逃生通道。
 const OPEN_API_KEY = process.env.OPEN_API_KEY || '';
-// 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。
+// 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
-// 非 token 模式即视为需要鉴权；token 模式在有静态令牌或 OPEN_API_KEY 时开启（向后兼容）。
+// 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
+const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? 'on').toLowerCase() !== 'off';
+// 非 token 模式、或启用账户密码鉴权、或配置了静态令牌/OPEN_API_KEY，均视为需要鉴权。
+// token 模式在没有上述任一凭证时保持开放（仅建议本地 / 演示使用）。
 const REQUIRE_AUTH =
   AUTH_PROVIDER !== 'token' ||
+  ACCOUNT_AUTH ||
   !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPEN_API_KEY);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
@@ -392,7 +404,7 @@ const server = createServer(
       if (req.method === 'OPTIONS') {
         const h: Record<string, string> = {
           'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-          'access-control-allow-headers': 'content-type,authorization',
+          'access-control-allow-headers': 'content-type,authorization,x-ah-username',
           ...corsHeaders(req)
         };
         res.writeHead(204, h);
@@ -579,6 +591,52 @@ const server = createServer(
         // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
         // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
         return sendJson(res, getAuthConfig(), req);
+      }
+      // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
+      // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦掉，
+      // 故显式放在 guard 之前处理。
+      if (path === '/api/account/register' && req.method === 'POST') {
+        const b = await readBody(req);
+        const u = typeof b?.username === 'string' ? b.username : '';
+        const p = typeof b?.password === 'string' ? b.password : '';
+        const r: AccountResult = await registerUser(u, p);
+        if (!r.ok) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: r.error }));
+          return;
+        }
+        // 注册成功顺带登录，直接下发 cookie token，减少一次往返。
+        const lr: AccountResult = await loginUser(u, p);
+        if (!lr.ok || !lr.token) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: '注册成功但签发登录态失败' }));
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': authCookieValue(req, lr.token),
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true, username: lr.username }));
+        return;
+      }
+      if (path === '/api/account/login' && req.method === 'POST') {
+        const b = await readBody(req);
+        const u = typeof b?.username === 'string' ? b.username : '';
+        const p = typeof b?.password === 'string' ? b.password : '';
+        const r: AccountResult = await loginUser(u, p);
+        if (!r.ok || !r.token) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: r.error ?? '登录失败' }));
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': authCookieValue(req, r.token),
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true, username: r.username }));
+        return;
       }
       if (req.method === 'GET' && path === '/api/openapi.json') {
         // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。

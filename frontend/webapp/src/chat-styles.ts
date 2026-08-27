@@ -1063,6 +1063,86 @@ export const chatStyles = [
       font-weight: 600;
       margin-right: 3px;
     }
+    /* LLM 节点的「消息 N」chip：可点击展开消息上下文面板。 */
+    .tchip-btn {
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .tchip-btn:hover {
+      border-color: var(--ah-accent, #2997ff);
+      color: var(--ah-accent, #2997ff);
+    }
+    .tchip-btn.active {
+      background: color-mix(in srgb, var(--ah-accent, #2997ff) 18%, var(--ah-surface-3, #262a31));
+      border-color: var(--ah-accent, #2997ff);
+      color: var(--ah-accent, #2997ff);
+    }
+    .tmsg-list {
+      display: none;
+      margin: 4px 0 6px 15px;
+      border: 1px solid var(--ah-border);
+      border-radius: 8px;
+      background: var(--ah-surface-2, #1f2228);
+      overflow: hidden;
+    }
+    .tmsg-list.tmsg-open {
+      display: block;
+    }
+    .tmsg-head {
+      padding: 6px 10px;
+      font-size: 11px;
+      color: var(--ah-text-muted);
+      background: var(--ah-surface-3, #262a31);
+      border-bottom: 1px solid var(--ah-border);
+    }
+    .tmsg-item {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--ah-border);
+    }
+    .tmsg-item:last-child {
+      border-bottom: none;
+    }
+    .tmsg-role {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 5px;
+      margin-bottom: 5px;
+    }
+    .tmsg-item.role-user .tmsg-role {
+      background: color-mix(in srgb, var(--ah-accent, #2997ff) 20%, transparent);
+      color: var(--ah-accent, #2997ff);
+    }
+    .tmsg-item.role-assistant .tmsg-role {
+      background: color-mix(in srgb, #34c759 20%, transparent);
+      color: #34c759;
+    }
+    .tmsg-item.role-system .tmsg-role {
+      background: var(--ah-surface-3, #262a31);
+      color: var(--ah-text-muted);
+    }
+    .tmsg-body {
+      font-size: 11.5px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--ah-text);
+    }
+    .tmsg-empty {
+      color: var(--ah-text-faint, #6b7280);
+      font-style: italic;
+    }
+    .tmsg-reason {
+      margin-top: 5px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--ah-text-muted);
+      white-space: pre-wrap;
+      border-left: 2px solid var(--ah-border);
+      padding-left: 8px;
+    }
     .tdetail {
       margin: 2px 0 4px 15px;
       padding: 8px 10px;
@@ -1225,6 +1305,82 @@ export const chatStyles = [
     }
     .tnode.kind-cost > summary .tdot {
       background: #f0a020;
+    }
+    /* 成本节点专属：竖排「成本 / 用量」标签 + 右侧指标卡片。
+       取消树状左边线，改用淡橙黄卡片承载，竖排标签用 writing-mode 直立排列，
+       与截图中的视觉意图一致但更精致；圆点带光晕、指标右对齐且不拥挤。 */
+    .tnode.kind-cost {
+      border-left: none;
+      margin-left: 0;
+      padding-left: 0;
+    }
+    .tnode.kind-cost > summary.tnode-head {
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, #f0a020 9%, var(--ah-surface-2));
+      border: 1px solid color-mix(in srgb, #f0a020 30%, var(--ah-border));
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .tnode.kind-cost > summary.tnode-head:hover {
+      background: color-mix(in srgb, #f0a020 15%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #f0a020 45%, var(--ah-border));
+    }
+    .tnode.kind-cost > summary .tdot {
+      width: 9px;
+      height: 9px;
+      box-shadow: 0 0 0 3px color-mix(in srgb, #f0a020 18%, transparent);
+    }
+    .tnode.kind-cost > summary .tlabel {
+      writing-mode: vertical-rl;
+      text-orientation: upright;
+      letter-spacing: 3px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #e8941a;
+      line-height: 1;
+      padding: 1px 0;
+      white-space: nowrap;
+    }
+    /* 成本节点右侧：指标按语义竖排成三组，分组着色一眼可辨。 */
+    .tnode.kind-cost > summary .tmetrics {
+      margin-left: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      align-items: flex-end;
+    }
+    .tnode.kind-cost > summary .tgrp {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: flex-end;
+    }
+    /* 组标题色：成本=橙黄、用量=蓝、模型=中性灰；组内 chip 用对应淡色底。 */
+    .tnode.kind-cost > summary .tgrp-cost .tchip {
+      background: color-mix(in srgb, #f0a020 16%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #f0a020 40%, var(--ah-border));
+      color: #f0a020;
+    }
+    .tnode.kind-cost > summary .tgrp-cost .tchip b {
+      color: #ffb84d;
+    }
+    .tnode.kind-cost > summary .tgrp-usage .tchip {
+      background: color-mix(in srgb, #2997ff 15%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #2997ff 38%, var(--ah-border));
+      color: var(--ah-accent, #2997ff);
+    }
+    .tnode.kind-cost > summary .tgrp-usage .tchip b {
+      color: #6db5ff;
+    }
+    .tnode.kind-cost > summary .tgrp-model .tchip {
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      border-color: var(--ah-border);
+      color: var(--ah-text-muted);
+    }
+    .tnode.kind-cost > summary .tgrp-model .tchip b {
+      color: var(--ah-text);
     }
     .tnode.kind-tokencache > summary .tdot {
       background: #2dd4bf;
@@ -1655,8 +1811,8 @@ export const chatStyles = [
       align-items: center;
       gap: 6px;
       padding: 6px 12px;
-      font-size: 12.5px;
-      font-weight: 600;
+      font-size: 12px;
+      font-weight: 500;
       font-family: inherit;
       color: var(--ah-accent, #2997ff);
       background: color-mix(
@@ -2019,9 +2175,7 @@ export const chatStyles = [
       align-items: center;
       justify-content: center;
       flex: 0 0 auto;
-      transition:
-        color 0.15s ease,
-        background 0.15s ease;
+      transition: color 0.15s ease, background 0.15s ease;
     }
     .tool-toggle svg {
       width: 18px;

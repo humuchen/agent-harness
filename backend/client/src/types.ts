@@ -112,6 +112,9 @@ export interface TraceNode {
   result?: string;
   /** 快速展示用的元数据标签，如 step、model、tokens、cost、duration。 */
   meta?: Record<string, string>;
+  /** LLM 调用时携带的「截至此次调用的会话消息上下文」（来自前端 threads，纯前端展开用）。
+   *  点击 LLM 节点上的「消息 N」chip 时，就地展开这 N 条消息（role + content）供回看。 */
+  messages?: ChatMessage[];
   children: TraceNode[];
 }
 

@@ -15,6 +15,7 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
+import { setToken } from './api';
 
 /* ------------------------------ 智能体网络 mesh 数据 ------------------------------ */
 
@@ -723,9 +724,22 @@ export class AhLogin extends LitElement {
     this.themeObs?.disconnect();
   }
 
+  /**
+   * 提交（演示态）：当前未接入真实鉴权后端，提交即视为成功——
+   * 写入一个演示 token（使外部 getToken() 鉴权门放行，刷新后仍停留控制台），
+   * 并派发 ah-login-success 通知 main.ts 切换回控制台。其余待对接点用提示文案占位。
+   * 注意：真实接入时应改为校验凭据后再 setToken + 派发事件。
+   */
   private onSubmit(e: Event) {
     e.preventDefault();
-    this.notice = '演示页面：未接入鉴权后端，提交逻辑待对接。';
+    if (this.mode === 'register' && !this.agree) {
+      this.notice = '请先阅读并同意服务条款与隐私政策。';
+      return;
+    }
+    setToken('demo-token');
+    this.dispatchEvent(
+      new CustomEvent('ah-login-success', { bubbles: true, composed: true })
+    );
   }
 
   private field(

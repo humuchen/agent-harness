@@ -10,6 +10,14 @@
 import type { IncomingMessage } from 'node:http';
 // 外部身份源实现（OIDC Bearer JWT / proxy 头注入）。authz 单向依赖 sso，sso 仅 import type 引用本文件类型。
 import { OidcAuthorizer, ProxyAuthorizer, loadRoleMapping } from './sso';
+// 账户密码身份源（注册/登录 + 服务端签发 7 天 token + cookie）。与 OIDC/proxy/静态令牌共存，
+// 作为 Authorizer 的 fallback 档。accounts 仅依赖 node 内置模块，无循环依赖风险。
+import {
+  parseToken,
+  isTokenValidLocally,
+  cookieValue,
+  AUTH_COOKIE
+} from './accounts';
 
 export type Role = 'admin' | 'operator' | 'viewer';
 
@@ -67,8 +75,8 @@ export interface AuthContext {
 /** 鉴权配置概览（供 /api/roles、/api/auth/config 运维展示，不泄露令牌）。 */
 export interface AuthDescribe {
   mode: 'off' | 'on';
-  /** 身份源：token（静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）。 */
-  provider: 'token' | 'oidc' | 'proxy';
+  /** 身份源：token（静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。 */
+  provider: 'token' | 'oidc' | 'proxy' | 'account';
   roles: Role[];
   permissions: Record<Role, Action[]>;
   idp?: {
@@ -288,6 +296,67 @@ export class RoleBasedAuthorizer implements Authorizer {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 账户密码身份源（注册/登录 + 服务端签发 7 天 token + cookie）
+// ---------------------------------------------------------------------------
+
+/** 从请求读取账户 token：优先 Cookie（浏览器自动带），其次 Authorization Bearer，再次 ?token=（API 客户端兼容）。 */
+function accountTokenRaw(req: IncomingMessage): string | null {
+  const fromCookie = cookieValue(req, AUTH_COOKIE);
+  if (fromCookie) return fromCookie;
+  const auth = req.headers['authorization'];
+  if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+  const q = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.get('token');
+  return q;
+}
+
+/**
+ * AccountAuthorizer：账户密码档的鉴权器。
+ * - token 取自 Cookie / Authorization / ?token；
+ * - 必须同时存在 x-ah-username 头，且头中 username 与 token 内签名 username 一致
+ *   （防客户端只伪造 username 头绕过；服务端以签名为准）；
+ * - 验签 + 服务端 token 记录仍有效（7 天 TTL / 吊销）。
+ * 失败返回 null（调用方 401）。
+ */
+export class AccountAuthorizer implements Authorizer {
+  private readonly policy: Authorizer;
+  private readonly fallback?: Authorizer;
+
+  constructor(policy: Authorizer, fallback?: Authorizer) {
+    this.policy = policy;
+    this.fallback = fallback;
+  }
+
+  authenticate(req: IncomingMessage): AuthContext | null {
+    const raw = accountTokenRaw(req);
+    if (raw) {
+      const t = parseToken(raw);
+      // 头中的 username 必须存在且与 token 内 username 一致（签名不可伪造，头仅作双因子校验）。
+      const headerUser = req.headers['x-ah-username'];
+      const username = Array.isArray(headerUser) ? headerUser[0] : headerUser;
+      if (t && username && username === t.username && isTokenValidLocally(t)) {
+        return { token: t.jti, sub: t.username, role: 'admin' };
+      }
+    }
+    // 账户档未命中（无 cookie / 签错 / 过期）→ 回退到 OIDC / proxy / 静态令牌等其它身份源。
+    return this.fallback?.authenticate(req) ?? null;
+  }
+
+  can(ctx: AuthContext, action: Action): boolean {
+    return this.policy.can(ctx, action);
+  }
+
+  describe() {
+    return {
+      ...this.policy.describe(),
+      mode: 'on' as const,
+      provider: 'account' as const
+    };
+  }
+}
+
 /**
  * 组合工厂：从环境变量装配 Authorizer。
  *
@@ -320,23 +389,41 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
     describe: defaultDescribe
   };
 
+  // 严格拒绝档：无任何身份源命中即 401/403（fail-closed）。账户档未命中时回退到此，
+  // 而不是 fail-open 的 openAuth —— 否则「账户 + 无其它凭证」部署下会退化为全员放行。
+  const strictClosed: Authorizer = {
+    authenticate: () => null,
+    can: () => false,
+    describe: defaultDescribe
+  };
+
+  // 统一收口：把账户档包进 AccountAuthorizer。policy 用完整 RBAC 矩阵（can 委托，账户登录即 admin 全权限）；
+  // fallback 为「严格链」——账户未命中时回退到 OIDC / proxy / 静态令牌等原有身份源（严格拒绝）。
+  // 注意：fallback 永远用 strictClosed，绝不用 openAuth（fail-open），否则账户档形同虚设。
+  const accountOf = (fallback: Authorizer): Authorizer =>
+    new AccountAuthorizer(new RoleBasedAuthorizer(), fallback);
+
   // ── 降级模式：requireAuth 触发、但未接入任何 RBAC 凭证 ──
   // 现场环境若未接入 RBAC，则自动降级：OPEN_API_KEY 作为权限判断的唯一凭证。
   if (requireAuth && !rbacConfigured) {
     if (apiKey) {
       // 仅接受 OPEN_API_KEY（admin 全权限）；其余一律拒绝（保证权限校验不挂、不越权）。
-      return new RoleBasedAuthorizer({
-        fallbackToken: apiKey,
-        fallbackRole: 'admin',
-        degraded: true
-      });
+      return accountOf(
+        new RoleBasedAuthorizer({
+          fallbackToken: apiKey,
+          fallbackRole: 'admin',
+          degraded: true
+        })
+      );
     }
-    // 连唯一凭证都缺失 → fail-open，服务不中断（仅本地/演示，权限校验开放）。
-    return openAuth;
+    // 连唯一凭证都缺失：启用账户密码档作为唯一身份源（严格回退，无 cookie 即 401），
+    // 不再 fail-open（fail-open 仅限 requireAuth=false 的显式开放语义）。
+    return accountOf(strictClosed);
   }
 
-  // 完全开放语义（requireAuth=false 且无 key 也无 RBAC）。
-  if (!requireAuth) return openAuth;
+  // 完全开放语义（requireAuth=false 且无 key 也无 RBAC）：显式放行。
+  // 仍包一层 AccountAuthorizer —— 有合法账户 cookie 时按账户身份放行，无 cookie 则失败开放。
+  if (!requireAuth) return accountOf(openAuth);
 
   // ── RBAC 已接入：token / oidc / proxy 模式 ──
   // OPEN_API_KEY 始终作为 admin 逃生通道（统一认证依据），与 RBAC 角色并行生效。
@@ -366,28 +453,26 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   const provider = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 
   if (provider === 'oidc') {
-    // policy 持有 RBAC 权限矩阵（can/describe 委托给它）；fallback 提供静态令牌/key 逃生通道。
-    return new OidcAuthorizer({
-      mapping: loadRoleMapping(),
-      policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
-      fallback: staticAuth
-    });
+    // policy 持有 RBAC 权限矩阵（can/describe 委托给它）；fallback 提供静态令牌/文章逃生通道。
+    return accountOf(
+      new OidcAuthorizer({
+        mapping: loadRoleMapping(),
+        policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
+        fallback: staticAuth
+      })
+    );
   }
   if (provider === 'proxy') {
-    return new ProxyAuthorizer({
-      mapping: loadRoleMapping(),
-      policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
-      fallback: staticAuth
-    });
+    return accountOf(
+      new ProxyAuthorizer({
+        mapping: loadRoleMapping(),
+        policy: staticAuth ?? new RoleBasedAuthorizer({ apiKeyToken: apiKey }),
+        fallback: staticAuth
+      })
+    );
   }
 
   // token 模式（默认）：必须有静态令牌或 OPEN_API_KEY，否则全拒绝（fail-closed）。
   // 无任何凭证时的 describe 同样返回默认矩阵参考，保证前端角色列表完整。
-  return (
-    staticAuth ?? {
-      authenticate: () => null,
-      can: () => false,
-      describe: defaultDescribe
-    }
-  );
+  return accountOf(staticAuth ?? strictClosed);
 }

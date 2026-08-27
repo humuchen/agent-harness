@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 /**
  * ah-drawer：通用抽屉组件（components 目录 · 全应用唯一的侧滑抽屉原语）。
  *
@@ -156,7 +157,7 @@ export class AhDrawer extends LitElement {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 16px 18px;
+      padding: 7.5px 16px;
       border-bottom: 1px solid var(--ah-border);
       flex: 0 0 auto;
     }
@@ -175,22 +176,21 @@ export class AhDrawer extends LitElement {
       border: none;
       background: none;
       color: var(--ah-text-faint);
-      font-size: 18px;
+      font-size: 22px;
       line-height: 1;
       cursor: pointer;
-      padding: 2px 8px;
+      padding: 0 8px;
       border-radius: var(--ah-radius-sm);
     }
     .close:hover {
       color: var(--ah-text);
-      background: var(--ah-surface-2);
     }
 
     .body {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
-      padding: 16px 18px;
+      padding: 16px;
       font-size: 14px;
       line-height: 1.6;
       color: var(--ah-text);
@@ -199,7 +199,7 @@ export class AhDrawer extends LitElement {
       display: flex;
       justify-content: flex-end;
       gap: 10px;
-      padding: 12px 18px;
+      padding: 12px 16px;
       border-top: 1px solid var(--ah-border);
       flex: 0 0 auto;
     }
@@ -208,7 +208,7 @@ export class AhDrawer extends LitElement {
       /* 窄屏下侧滑/上下抽屉尽量占满，避免内容被挤。 */
       .left .panel,
       .right .panel {
-        width: min(86vw, var(--ahd-size, 320px));
+        width: min(88vw, var(--ahd-size, 320px));
       }
       .top .panel,
       .bottom .panel {
@@ -254,6 +254,10 @@ export class AhDrawer extends LitElement {
   /** 是否显示右上角 × 按钮。 */
   @property({ type: Boolean, attribute: 'show-close' })
   showClose = true;
+
+  /** 是否显示底部。 */
+  @property({ type: Boolean, attribute: 'show-footer' })
+  showFooter = true;
 
   /** 离场动画进行中标记。 */
   @state()
@@ -334,7 +338,8 @@ export class AhDrawer extends LitElement {
     const first = focusables[0]!;
     const last = focusables[focusables.length - 1]!;
     const active = this.shadowRoot?.activeElement as HTMLElement | null;
-    const activeIn = active !== null && focusables.includes(active as HTMLElement);
+    const activeIn =
+      active !== null && focusables.includes(active as HTMLElement);
     if (e.shiftKey && (active === first || !activeIn)) {
       e.preventDefault();
       last.focus();
@@ -387,7 +392,12 @@ export class AhDrawer extends LitElement {
               </div>`
             : nothing}
           <div class="body"><slot></slot></div>
-          <slot name="footer" class="foot"></slot>
+          ${this.showFooter
+            ? html`<div class="foot">
+                <button>取消</button>
+                <button>确定</button>
+              </div>`
+            : html`<div class="foot"><slot name="footer"></slot></div>`}
         </aside>
       </div>
     `;

@@ -8,6 +8,17 @@ import type { TraceNode } from '@agent-harness/client';
 import { escapeHtml } from './markdown';
 import { renderJsonHtml } from './utils/json-view';
 
+/** 点击 LLM 节点的「消息 N」chip 时，切换该节点下方消息上下文面板的显隐（纯 DOM 操作，无需组件状态）。 */
+function toggleMsgPanel(e: Event) {
+  const t = e.currentTarget as HTMLElement;
+  const host = t.closest('.tnode.kind-llm');
+  const panel = host?.querySelector<HTMLElement>('.tmsg-list');
+  if (!panel) return;
+  const open = panel.classList.toggle('tmsg-open');
+  t.classList.toggle('active', open);
+  t.setAttribute('aria-expanded', String(open));
+}
+
 /** 从调用链路提炼出的「关键信息」结构化摘要，用于深度思考区的复盘视图。 */
 export interface Insights {
   model?: string;
@@ -17,10 +28,12 @@ export interface Insights {
   toolCount: number;
   costTokens?: string;
   costValue?: string;
+
   /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
   costPriced?: string;
   cacheHitRate?: string;
   cacheHits?: string;
+
   /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
   costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
   retrievals: Array<{ label: string; result: string }>;
@@ -38,12 +51,65 @@ export function countTraceNodes(trace: TraceNode[]): number {
 }
 
 /** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。 */
-export function renderTraceNode(n: TraceNode): TemplateResult {
+export function renderTraceNode(n: TraceNode, parentKind?: string): TemplateResult {
+  // 成本节点：左侧竖排「成本 / 用量」标签 + 右侧按语义分组的指标。
+  // 分为三组：成本（cost/priced，橙黄）、用量（tokens/系统/工具/历史/输出，蓝）、
+  // 模型（model，中性灰），分组着色 + 竖排成三行，一眼可辨成本与用量。
+  if (n.kind === 'cost') {
+    const entries = n.meta ? Object.entries(n.meta) : [];
+    const groupOf = (k: string): 'cost' | 'usage' | 'model' =>
+      k === 'cost' || k === 'priced'
+        ? 'cost'
+        : k === 'model'
+          ? 'model'
+          : 'usage';
+    const groups: Array<['cost' | 'usage' | 'model', Array<[string, unknown]>]> = [
+      ['cost', entries.filter(([k]) => groupOf(k) === 'cost')],
+      ['usage', entries.filter(([k]) => groupOf(k) === 'usage')],
+      ['model', entries.filter(([k]) => groupOf(k) === 'model')]
+    ];
+    return html`
+      <details class="tnode kind-cost status-${n.status}">
+        <summary class="tnode-head">
+          <span class="tdot"></span>
+          <span class="tlabel">成本 / 用量</span>
+          ${entries.length
+            ? html`<span class="tmetrics"
+                >${groups.map(
+                  ([g, items]) =>
+                    items.length
+                      ? html`<span class="tgrp tgrp-${g}"
+                          >${items.map(
+                            ([k, v]) =>
+                              html`<span class="tchip"
+                                ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                                  String(v)
+                                )}</span
+                              >`
+                          )}</span
+                        >`
+                      : nothing
+                )}</span
+              >`
+            : nothing}
+        </summary>
+        ${n.children.length
+          ? html`<div class="tchildren">
+              ${n.children.map((c) => renderTraceNode(c, n.kind))}
+            </div>`
+          : nothing}
+      </details>`;
+  }
   const hasDetail = !!n.detail && n.detail.trim().length > 0;
   const hasResult = n.result != null && n.result.trim().length > 0;
   const isRetrieval = n.kind === 'retrieval';
-  // run/step/llm 默认展开，叶子节点（工具/检索/成本）默认收起。
-  const defaultOpen = n.kind === 'run' || n.kind === 'step' || n.kind === 'llm';
+  // run/step/llm 默认展开；LLM 调用下的直接子节点（工具/检索，parentKind==='llm'）
+  // 也默认展开，点击 LLM 节点即可一次性看到其下全部调用链路（子节点仍可单独收起）。
+  const defaultOpen =
+    n.kind === 'run' ||
+    n.kind === 'step' ||
+    n.kind === 'llm' ||
+    parentKind === 'llm';
   return html`
     <details
       class="tnode kind-${n.kind} status-${n.status}"
@@ -60,15 +126,59 @@ export function renderTraceNode(n: TraceNode): TemplateResult {
           : nothing}
         ${n.meta
           ? html`<span class="tchips"
-              >${Object.entries(n.meta).map(
-                ([k, v]) =>
-                  html`<span class="tchip"
-                    ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                  >`
-              )}</span
+              >${Object.entries(n.meta)
+                .filter(([k]) => !(n.kind === 'run' && k === 'model'))
+                .map(([k, v]) =>
+                  k === 'messages' && n.kind === 'llm' && n.messages?.length
+                    ? html`<span
+                        class="tchip tchip-btn"
+                        role="button"
+                        tabindex="0"
+                        title="点击展开消息上下文"
+                        aria-expanded="false"
+                        @click=${(e: Event) => toggleMsgPanel(e)}
+                        @keydown=${(e: KeyboardEvent) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleMsgPanel(e);
+                          }
+                        }}
+                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                      >`
+                    : html`<span class="tchip"
+                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                      >`
+                )}</span
             >`
           : nothing}
       </summary>
+      ${
+        n.kind === 'llm' && n.messages?.length
+          ? html`<div class="tmsg-list">
+              <div class="tmsg-head">消息上下文 · 共 ${n.messages.length} 条</div>
+              ${n.messages.map(
+                (m) =>
+                  html`<div class="tmsg-item role-${m.role}">
+                    <span class="tmsg-role"
+                      >${m.role === 'user'
+                        ? '用户'
+                        : m.role === 'assistant'
+                        ? '助手'
+                        : '系统'}</span
+                    >
+                    <div class="tmsg-body">
+                      ${m.content
+                        ? escapeHtml(m.content)
+                        : html`<span class="tmsg-empty">（空内容）</span>`}
+                    </div>
+                    ${m.reasoning
+                      ? html`<div class="tmsg-reason">${escapeHtml(m.reasoning)}</div>`
+                      : nothing}
+                  </div>`
+              )}
+            </div>`
+          : nothing
+      }
       ${hasDetail
         ? html`<pre class="tdetail">${renderJsonHtml(n.detail!)}</pre>`
         : nothing}

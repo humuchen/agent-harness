@@ -1664,11 +1664,25 @@ export class AhChat extends LitElement {
       case 'llm:call': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
+        // 纯前端：把截至此次调用的会话消息快照挂到节点，点击「消息 N」可就地展开回看。
+        const msgs = this.threads[sid];
+        const messages =
+          Array.isArray(msgs) && ev.messageCount
+            ? msgs
+                .slice(0, Math.max(0, Number(ev.messageCount) || msgs.length))
+                .map((m) => ({
+                  role: m.role,
+                  content: m.content ?? '',
+                  ts: typeof m.id === 'number' ? m.id : Date.now(),
+                  ...(m.reasoning ? { reasoning: m.reasoning } : {})
+                }))
+            : undefined;
         tc.llm = mk(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
             messages: `消息 ${ev.messageCount ?? '?'}`,
             tools: `工具 ${ev.toolCount ?? '?'}`
-          }
+          },
+          ...(messages && messages.length ? { messages } : {})
         });
         tc.lastTool = null;
         break;
@@ -2914,14 +2928,14 @@ export class AhChat extends LitElement {
    *  父级仅在 close 事件后才清空 traceDrawerMsg，保证滑出动画完整可见。 */
   private renderTraceDrawer(): TemplateResult {
     const m = this.traceDrawerMsg;
-    const title =
-      this.traceDrawerSection === 'trace' ? '调用链路' : '关键信息';
+    const title = this.traceDrawerSection === 'trace' ? '调用链路' : '关键信息';
     return html`
       <ah-drawer
         ?open=${m !== null}
+        ?showFooter=${false}
         placement="right"
         title=${title}
-        size="440px"
+        size="500px"
         @close=${() => (this.traceDrawerMsg = null)}
       >
         ${m && m.trace && m.trace.length > 0
@@ -3041,7 +3055,9 @@ export class AhChat extends LitElement {
               aria-hidden="true"
             >
               <path d="M9 18h6M10 22h4" />
-              <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z" />
+              <path
+                d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"
+              />
             </svg>
           </button>
           <button
@@ -3068,7 +3084,9 @@ export class AhChat extends LitElement {
             >
               <circle cx="12" cy="12" r="10" />
               <path d="M2 12h20" />
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              <path
+                d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+              />
             </svg>
           </button>
           <!-- 自检 / 环境：跳转到原「验证」「环境」面板（菜单已收纳，经 ah-goto 路由） -->
