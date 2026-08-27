@@ -15,7 +15,7 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
-import { setToken } from './api';
+import { setSession } from './api';
 
 /* ------------------------------ 智能体网络 mesh 数据 ------------------------------ */
 
@@ -697,6 +697,7 @@ export class AhLogin extends LitElement {
   @state() remember = false;
   @state() agree = false;
   @state() notice: string | null = null;
+  @state() submitting = false;
   @state() theme: Theme = getTheme();
 
   private themeObs?: MutationObserver;
@@ -725,21 +726,78 @@ export class AhLogin extends LitElement {
   }
 
   /**
-   * 提交（演示态）：当前未接入真实鉴权后端，提交即视为成功——
-   * 写入一个演示 token（使外部 getToken() 鉴权门放行，刷新后仍停留控制台），
-   * 并派发 ah-login-success 通知 main.ts 切换回控制台。其余待对接点用提示文案占位。
-   * 注意：真实接入时应改为校验凭据后再 setToken + 派发事件。
+   * 提交：真实接入账户密码后端。
+   *  - 注册：POST /api/account/register（服务端落库 + 顺带签发登录 cookie）。
+   *  - 登录：POST /api/account/login（校验凭据 + 下发 cookie）。
+   * 成功后服务端已下发现有 HttpOnly cookie，前端只需记录用户名（setSession）并派发
+   * ah-login-success 通知 main.ts 进入控制台；失败则展示后端返回的错误文案。
+   * 注意：cookie 由浏览器托管、前端不读取其值；用户名仅用于 x-ah-username 双因子。
    */
-  private onSubmit(e: Event) {
+  private async onSubmit(e: Event) {
     e.preventDefault();
+    if (this.submitting) return;
     if (this.mode === 'register' && !this.agree) {
       this.notice = '请先阅读并同意服务条款与隐私政策。';
       return;
     }
-    setToken('demo-token');
-    this.dispatchEvent(
-      new CustomEvent('ah-login-success', { bubbles: true, composed: true })
-    );
+    // 从表单读取字段（输入项受控在 DOM，按 name 取）。
+    const form = e.target as HTMLFormElement;
+    const email = (form.elements.namedItem('email') as HTMLInputElement | null)?.value?.trim() ?? '';
+    const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
+    const confirm = (form.elements.namedItem('confirm') as HTMLInputElement | null)?.value ?? '';
+
+    if (this.mode === 'register') {
+      if (!email) {
+        this.notice = '请填写邮箱。';
+        return;
+      }
+      if (password.length < 8) {
+        this.notice = '密码至少 8 位。';
+        return;
+      }
+      if (password !== confirm) {
+        this.notice = '两次输入的密码不一致。';
+        return;
+      }
+    } else {
+      if (!email) {
+        this.notice = '请填写邮箱 / 用户名。';
+        return;
+      }
+      if (!password) {
+        this.notice = '请填写密码。';
+        return;
+      }
+    }
+
+    this.submitting = true;
+    this.notice = null;
+    try {
+      const endpoint =
+        this.mode === 'register' ? '/api/account/register' : '/api/account/login';
+      // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
+      const body = JSON.stringify({ username: email, password });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+        credentials: 'same-origin'
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; username?: string };
+      if (!res.ok || !data.ok) {
+        this.notice = data.error || (this.mode === 'register' ? '注册失败。' : '登录失败。');
+        return;
+      }
+      // 服务端已下发 ah_auth cookie；前端仅记录用户名用于双因子 header。
+      setSession(data.username || email);
+      this.dispatchEvent(
+        new CustomEvent('ah-login-success', { bubbles: true, composed: true })
+      );
+    } catch (err) {
+      this.notice = '网络异常，请稍后重试。' + (err instanceof Error ? `（${err.message}）` : '');
+    } finally {
+      this.submitting = false;
+    }
   }
 
   private field(
@@ -762,7 +820,7 @@ export class AhLogin extends LitElement {
     return html`
       <div class="field ${hasEye ? 'has-eye' : ''}">
         <label>${label}</label>
-        <input type=${inputType} placeholder=${placeholder} autocomplete=${valueKey} />
+        <input name=${valueKey} type=${inputType} placeholder=${placeholder} autocomplete=${valueKey} />
         ${hasEye
           ? html`<button
               class="eye-btn"
@@ -858,7 +916,7 @@ export class AhLogin extends LitElement {
                       <label class="remember"><input type="checkbox" ?checked=${this.remember} @change=${(e: Event) => (this.remember = (e.target as HTMLInputElement).checked)} /> 记住我</label>
                       <button class="forge" type="button" @click=${() => (this.notice = '演示页面：找回密码流程待接入。')}>忘记密码？</button>
                     </div>
-                    <button class="btn-primary" type="submit">登录</button>
+                    <button class="btn-primary" type="submit" ?disabled=${this.submitting}>${this.submitting ? '登录中…' : '登录'}</button>
                   </form>
                   <div class="divider">或</div>
                   <button class="btn-sso" type="button" @click=${() => (this.notice = '演示页面：GitHub OAuth 待接入。')}>
@@ -882,7 +940,7 @@ export class AhLogin extends LitElement {
                       <input type="checkbox" ?checked=${this.agree} @change=${(e: Event) => (this.agree = (e.target as HTMLInputElement).checked)} />
                       <span>我已阅读并同意 <a href="#" @click=${(e: Event) => e.preventDefault()}>服务条款</a> 与 <a href="#" @click=${(e: Event) => e.preventDefault()}>隐私政策</a>。</span>
                     </label>
-                    <button class="btn-primary" type="submit">创建账号</button>
+                    <button class="btn-primary" type="submit" ?disabled=${this.submitting}>${this.submitting ? '创建中…' : '创建账号'}</button>
                   </form>
                   ${this.notice ? html`<div class="notice">${this.notice}</div>` : nothing}
                   <div class="auth-foot">已有账号？<button class="link" type="button" @click=${this.toggleMode}>去登录</button></div>

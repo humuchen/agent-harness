@@ -119,6 +119,8 @@ export interface TraceNode {
   msgOpen?: boolean;
   /** 纯前端 UI 态：工具调用列表是否收起（由「工具 N」chip 切换）。 */
   toolsCollapsed?: boolean;
+  /** 纯前端 UI 态：LLM 调用节点是否展开（点「LLM 调用」标题统一控制消息上下文与工具列表的显隐）。 */
+  expanded?: boolean;
   children: TraceNode[];
 }
 

@@ -1089,6 +1089,44 @@ export const chatStyles = [
     .tmsg-list[hidden] {
       display: none !important;
     }
+    /* LLM 调用节点：点击「LLM 调用」标题统一展开 / 收起消息与工具调用（受控容器，非原生 details）。 */
+    .tnode.kind-llm {
+      border-left: 1px dashed var(--ah-border);
+      margin-left: 6px;
+      padding-left: 12px;
+    }
+    .tnode.kind-llm > .tnode-head.tnode-head-btn {
+      cursor: pointer;
+      list-style: none;
+    }
+    .tnode.kind-llm > .tnode-head.tnode-head-btn::-webkit-details-marker {
+      display: none;
+    }
+    .tnode.kind-llm > .tnode-head.tnode-head-btn:hover .tlabel {
+      color: var(--ah-accent, #2997ff);
+    }
+    .tnode.kind-llm > .tnode-head.tnode-head-btn:focus-visible {
+      outline: 1px solid var(--ah-accent, #2997ff);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .texp-caret {
+      width: 0;
+      height: 0;
+      margin-left: 2px;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--ah-text-muted);
+      transition: transform 0.15s ease;
+      flex: 0 0 auto;
+    }
+    .texp-caret.open {
+      transform: rotate(-180deg);
+    }
+    .tllm-body {
+      /* 显隐由 ?hidden 属性控制（display:none !important 已全局生效），此处仅做过渡留白 */
+      margin-top: 2px;
+    }
     .tmsg-head {
       padding: 6px 10px;
       font-size: 11px;

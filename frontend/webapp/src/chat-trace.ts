@@ -96,15 +96,95 @@ export function renderTraceNode(
           : nothing}
       </details>`;
   }
+  // LLM 调用节点：点击「LLM 调用」标题统一展开 / 收起其下的消息上下文与工具调用列表。
+  // 用受控容器（非原生 <details>），避免点标题时整块折叠闪跳；展开态持久化在 n.expanded 上，
+  // 经 onToggle 触发 Lit 重渲染，流式更新不会丢态。
+  if (n.kind === 'llm') {
+    const expanded = n.expanded !== false;
+    return html`
+      <div class="tnode kind-llm status-${n.status}">
+        <div
+          class="tnode-head tnode-head-btn"
+          role="button"
+          tabindex="0"
+          title="点击展开 / 收起消息与工具调用"
+          aria-expanded=${String(expanded)}
+          @click=${() => {
+            n.expanded = !expanded;
+            onToggle?.();
+          }}
+          @keydown=${(e: KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              n.expanded = !expanded;
+              onToggle?.();
+            }
+          }}
+        >
+          <span class="tdot"></span>
+          <span class="tlabel">${escapeHtml(n.label)}</span>
+          ${n.status === 'error'
+            ? html`<span class="tbadge err">失败</span>`
+            : nothing}
+          ${n.status === 'pending'
+            ? html`<span class="tbadge pend">进行中</span>`
+            : nothing}
+          ${n.meta
+            ? html`<span class="tchips"
+                >${Object.entries(n.meta).map(
+                  ([k, v]) =>
+                    html`<span class="tchip"
+                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                    >`
+                )}</span
+              >`
+            : nothing}
+          <span class="texp-caret ${expanded ? 'open' : ''}"></span>
+        </div>
+        <div class="tllm-body" ?hidden=${!expanded}>
+          ${n.messages?.length
+            ? html`<div class="tmsg-list">
+                <div class="tmsg-head">消息上下文 · 共 ${n.messages.length} 条</div>
+                ${n.messages.map(
+                  (m) =>
+                    html`<div class="tmsg-item role-${m.role}">
+                      <span class="tmsg-role"
+                        >${m.role === 'user'
+                          ? '用户'
+                          : m.role === 'assistant'
+                          ? '助手'
+                          : '系统'}</span
+                      >
+                      <div class="tmsg-body">
+                        ${m.content
+                          ? escapeHtml(m.content)
+                          : html`<span class="tmsg-empty">（空内容）</span>`}
+                      </div>
+                      ${m.reasoning
+                        ? html`<div class="tmsg-reason">
+                            ${escapeHtml(m.reasoning)}
+                          </div>`
+                        : nothing}
+                    </div>`
+                )}
+              </div>`
+            : nothing}
+          ${n.children.length
+            ? html`<div class="tchildren">
+                ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+              </div>`
+            : nothing}
+        </div>
+      </div>`;
+  }
   const hasDetail = !!n.detail && n.detail.trim().length > 0;
   const hasResult = n.result != null && n.result.trim().length > 0;
   const isRetrieval = n.kind === 'retrieval';
-  // run/step/llm 默认展开；LLM 调用下的直接子节点（工具/检索，parentKind==='llm'）
-  // 也默认展开，点击 LLM 节点即可一次性看到其下全部调用链路（子节点仍可单独收起）。
+  // run/step 默认展开；LLM 调用下的直接子节点（工具/检索，parentKind==='llm'）也默认展开，
+  // 点击「LLM 调用」标题可一次性看到其下全部调用链路（子节点仍可单独收起）。
   const defaultOpen =
     n.kind === 'run' ||
     n.kind === 'step' ||
-    n.kind === 'llm' ||
     parentKind === 'llm';
   return html`
     <details
@@ -124,77 +204,15 @@ export function renderTraceNode(
           ? html`<span class="tchips"
               >${Object.entries(n.meta)
                 .filter(([k]) => !(n.kind === 'run' && k === 'model'))
-                .map(([k, v]) =>
-                  (k === 'messages' &&
-                    n.kind === 'llm' &&
-                    n.messages?.length) ||
-                  (k === 'tools' && n.kind === 'llm' && n.children.length)
-                    ? html`<span
-                        class="tchip tchip-btn ${k === 'messages'
-                          ? n.msgOpen
-                            ? 'active'
-                            : ''
-                          : n.toolsCollapsed
-                            ? ''
-                            : 'active'}"
-                        role="button"
-                        tabindex="0"
-                        title=${k === 'messages' ? '点击展开 / 收起消息上下文' : '点击展开 / 收起工具调用'}
-                        aria-expanded=${k === 'messages'
-                          ? String(!!n.msgOpen)
-                          : String(!n.toolsCollapsed)}
-                        @click=${(e: Event) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (k === 'messages') n.msgOpen = !n.msgOpen;
-                          else n.toolsCollapsed = !n.toolsCollapsed;
-                          onToggle?.();
-                        }}
-                        @keydown=${(e: KeyboardEvent) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (k === 'messages') n.msgOpen = !n.msgOpen;
-                            else n.toolsCollapsed = !n.toolsCollapsed;
-                            onToggle?.();
-                          }
-                        }}
-                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                      >`
-                    : html`<span class="tchip"
-                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                      >`
+                .map(
+                  ([k, v]) =>
+                    html`<span class="tchip"
+                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                    >`
                 )}</span
             >`
           : nothing}
       </summary>
-      ${
-        n.kind === 'llm' && n.messages?.length
-          ? html`<div class="tmsg-list" ?hidden=${!n.msgOpen}>
-              <div class="tmsg-head">消息上下文 · 共 ${n.messages.length} 条</div>
-              ${n.messages.map(
-                (m) =>
-                  html`<div class="tmsg-item role-${m.role}">
-                    <span class="tmsg-role"
-                      >${m.role === 'user'
-                        ? '用户'
-                        : m.role === 'assistant'
-                        ? '助手'
-                        : '系统'}</span
-                    >
-                    <div class="tmsg-body">
-                      ${m.content
-                        ? escapeHtml(m.content)
-                        : html`<span class="tmsg-empty">（空内容）</span>`}
-                    </div>
-                    ${m.reasoning
-                      ? html`<div class="tmsg-reason">${escapeHtml(m.reasoning)}</div>`
-                      : nothing}
-                  </div>`
-              )}
-            </div>`
-          : nothing
-      }
       ${hasDetail
         ? html`<pre class="tdetail">${renderJsonHtml(n.detail!)}</pre>`
         : nothing}
@@ -213,7 +231,7 @@ export function renderTraceNode(
           : html`<div class="tresult">${renderJsonHtml(n.result!)}</div>`
         : nothing}
       ${n.children.length
-          ? html`<div class="tchildren${n.toolsCollapsed ? ' tchildren-hidden' : ''}">
+          ? html`<div class="tchildren">
               ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
             </div>`
           : nothing}

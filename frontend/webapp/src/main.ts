@@ -20,7 +20,7 @@ import './components';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
 // 与 app.ts 的 History 路由解耦——这是「是否放行应用」的门户，而非一条普通路由。
-import { getToken } from './api';
+import { getToken, clearSession } from './api';
 
 /** 把控制台挂到 body（幂等：已存在则不重复创建）。 */
 function mountApp(): void {
@@ -40,5 +40,12 @@ function mountLogin(): void {
 if (!getToken()) mountLogin();
 else mountApp();
 
-// 登录页派发 ah-login-success（演示态：任意提交即视为成功）后进入控制台。
+// 登录页派发 ah-login-success 后进入控制台。
 window.addEventListener('ah-login-success', () => mountApp());
+
+// 任意请求 401（登录态失效 / cookie 过期 / 被吊销）→ 清会话并强制回到登录页。
+// 幂等：main.ts 只负责清本地状态 + 切登录页，不重复弹窗。
+window.addEventListener('ah-session-expired', () => {
+  clearSession();
+  mountLogin();
+});

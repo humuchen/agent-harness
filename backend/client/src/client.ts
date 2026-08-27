@@ -40,8 +40,12 @@ import type {
 export interface AgentClientOptions {
   /** 服务端基址，如 https://harness.example.com（自动去除尾部斜杠）。 */
   baseUrl: string;
-  /** Bearer 令牌；也可后续 setToken 动态设置。 */
+  /** Bearer 令牌（非浏览器客户端兼容；浏览器优先用 cookie）。可后续 setToken 动态设置。 */
   token?: string;
+  /** 当前登录用户名；浏览器鉴权为 cookie + x-ah-username 双因子校验，需随请求带上。 */
+  username?: string;
+  /** 401 回调：登录态失效时由调用方统一跳转登录页（幂等）。 */
+  onUnauthorized?: () => void;
   /** 可注入 fetch（跨运行时 / 测试替身）。默认取全局 fetch。 */
   fetchImpl?: typeof fetch;
 }
@@ -68,11 +72,15 @@ export class ApprovalRequiredError extends Error {
 export class AgentClient {
   private readonly baseUrl: string;
   private token?: string;
+  private username?: string;
+  private readonly onUnauthorized?: () => void;
   private readonly fetchImpl: typeof fetch;
 
   constructor(opts: AgentClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
+    this.username = opts.username;
+    this.onUnauthorized = opts.onUnauthorized;
     const f = opts.fetchImpl ?? (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     if (!f) throw new Error('global fetch unavailable; pass fetchImpl explicitly');
     // 浏览器里 window.fetch 是原生方法：若直接保存为属性再以 this.fetchImpl(...) 调用，
@@ -85,8 +93,18 @@ export class AgentClient {
     this.token = token;
   }
 
+  /** 设置当前登录用户名，随 cookie 一起做双因子校验。 */
+  setUsername(username: string | undefined): void {
+    this.username = username;
+  }
+
   private authHeaders(): Record<string, string> {
-    return this.token ? { authorization: `Bearer ${this.token}` } : {};
+    const h: Record<string, string> = {};
+    if (this.token) h.authorization = `Bearer ${this.token}`;
+    // 浏览器侧账户鉴权：服务端要求 cookie(ah_auth) + x-ah-username 双因子一致，
+    // 这里把用户名带到 header（cookie 由浏览器自动附加）。非浏览器客户端也可带。
+    if (this.username) h['x-ah-username'] = this.username;
+    return h;
   }
 
   private async request(
@@ -99,6 +117,9 @@ export class AgentClient {
       headers.set('content-type', 'application/json');
     }
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    if (res.status === 401 && this.onUnauthorized) {
+      this.onUnauthorized();
+    }
     return res;
   }
 

@@ -137,19 +137,18 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 // `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
 // 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
-// 统一认证凭证：OPEN_API_KEY 同时作为 LLM key 与权限校验依据。
-// 未接入 RBAC 时它是权限判断的唯一凭证；接入 RBAC 时作为 admin 逃生通道。
-const OPEN_API_KEY = process.env.OPEN_API_KEY || '';
+// LLM 统一密钥 OPEN_API_KEY 仅作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
+// 不再参与站点鉴权；站点鉴权由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
 const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? 'on').toLowerCase() !== 'off';
-// 非 token 模式、或启用账户密码鉴权、或配置了静态令牌/OPEN_API_KEY，均视为需要鉴权。
-// token 模式在没有上述任一凭证时保持开放（仅建议本地 / 演示使用）。
+// 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS / UI_AUTH_TOKEN）。
+// OPEN_API_KEY 已移出鉴权链路；若以上均不满足，则仅由账户密码档严格拒绝（无 cookie 即 401）。
 const REQUIRE_AUTH =
   AUTH_PROVIDER !== 'token' ||
   ACCOUNT_AUTH ||
-  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN || OPEN_API_KEY);
+  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -418,9 +417,6 @@ const server = createServer(
         if (wd) {
           try {
             let html = await readFile(join(wd, 'index.html'), 'utf8');
-            // 降级模式下把统一认证凭证注入页面，供 SPA 自动带 Authorization 头，
-            // 否则浏览器拿不到 token 会被 401 拦截。仅在配置了 OPEN_API_KEY 时注入。
-            html = injectApiKey(html);
             res.writeHead(200, {
               'content-type': 'text/html; charset=utf-8',
               'cache-control': 'no-cache'
@@ -456,7 +452,6 @@ const server = createServer(
         if (wd) {
           try {
             let html = await readFile(join(wd, 'index.html'), 'utf8');
-            html = injectApiKey(html);
             res.writeHead(200, {
               'content-type': 'text/html; charset=utf-8',
               'cache-control': 'no-cache'
@@ -1294,22 +1289,6 @@ function serveHtml(res: ServerResponse): void {
   res.end(
     'Web 前端未构建，请先构建 webapp：pnpm --filter @agent-harness/webapp run build'
   );
-}
-
-/** 降级模式下把统一认证凭证注入 HTML（<meta name="ah-api-key">），供 SPA 自动带 token。 */
-function injectApiKey(html: string): string {
-  if (!OPEN_API_KEY) return html;
-  const escaped = OPEN_API_KEY.replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-  if (html.includes('<head>')) {
-    return html.replace(
-      '<head>',
-      `<head>\n    <meta name="ah-api-key" content="${escaped}" />`
-    );
-  }
-  return `<meta name="ah-api-key" content="${escaped}" />\n${html}`;
 }
 
 /** HTML 转义，防 XSS（错误信息可能含用户 / 第三方内容）。 */

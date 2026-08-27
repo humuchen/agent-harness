@@ -15,6 +15,7 @@
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { encryptApiKey } from '../utils/crypto';
+import { authedFetch } from '../api';
 
 /** 远程模型条目：id + 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -501,7 +502,7 @@ export class AhModelPicker extends LitElement {
         ...(baseUrl ? { baseUrl } : {})
       };
       if (encryptedApiKey) body.apiKey = encryptedApiKey;
-      const res = await fetch('/api/custom-models', {
+      const res = await authedFetch('/api/custom-models', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body)

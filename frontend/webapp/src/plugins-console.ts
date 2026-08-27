@@ -9,7 +9,7 @@
 
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { getToken } from './api';
+import { client, authedFetch } from './api';
 import { sharedStyles } from './styles';
 
 interface PluginInfo {
@@ -110,11 +110,7 @@ export class AhPlugins extends LitElement {
     this.loading = true;
     this.err = null;
     try {
-      const token = getToken();
-      const res = await fetch(
-        '/api/plugins',
-        token ? { headers: { authorization: `Bearer ${token}` } } : {}
-      );
+      const res = await authedFetch('/api/plugins');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { plugins?: PluginInfo[] };
       this.plugins = (data.plugins ?? []).map((p) => ({
@@ -135,12 +131,10 @@ export class AhPlugins extends LitElement {
     this.busy = `${id}:${action}`;
     this.err = null;
     try {
-      const token = getToken();
-      const res = await fetch(
+      const res = await authedFetch(
         `/api/plugins/${encodeURIComponent(id)}/${action}`,
         {
           method: 'POST',
-          headers: token ? { authorization: `Bearer ${token}` } : {},
           body: action === 'upgrade' ? JSON.stringify({ version: 'latest' }) : undefined,
         }
       );

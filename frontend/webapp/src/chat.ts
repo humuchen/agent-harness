@@ -2,7 +2,7 @@ import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
-import { client, setToken } from './api';
+import { client, authedFetch } from './api';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
@@ -458,16 +458,6 @@ export class AhChat extends LitElement {
         id: String(a.id),
         name: String(a.name ?? a.id)
       }));
-    } catch {
-      /* ignore */
-    }
-    // 自动认证：服务端降级模式下会把统一凭证注入 <meta name="ah-api-key">，
-    // 此处读取并写入 client（持久化到 localStorage），使 SPA 在需鉴权时自动带 token。
-    try {
-      const metaKey = document
-        .querySelector('meta[name="ah-api-key"]')
-        ?.getAttribute('content');
-      if (metaKey) setToken(metaKey);
     } catch {
       /* ignore */
     }
@@ -1034,7 +1024,7 @@ export class AhChat extends LitElement {
   }> {
     if (!this.model) return {};
     try {
-      const res = await fetch('/api/custom-models');
+      const res = await authedFetch('/api/custom-models');
       if (!res.ok) return {};
       const rows = (await res.json()) as Array<{
         id: string;
@@ -2121,13 +2111,8 @@ export class AhChat extends LitElement {
       try {
         const formData = new FormData();
         formData.append('file', f, f.name);
-        const token =
-          typeof localStorage !== 'undefined'
-            ? localStorage.getItem('ah_token')
-            : null;
-        const resp = await fetch('/api/upload', {
+        const resp = await authedFetch('/api/upload', {
           method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
           body: formData
         });
         const json = await resp.json();
@@ -2932,7 +2917,7 @@ export class AhChat extends LitElement {
     return html`
       <ah-drawer
         ?open=${m !== null}
-        ?showFooter=${false}
+        showFooter=${false}
         placement="right"
         title=${title}
         size="500px"
@@ -2942,7 +2927,9 @@ export class AhChat extends LitElement {
           ? html`<div class="trace-drawer">
               ${this.traceDrawerSection === 'trace'
                 ? html`<div class="trace-body">
-                    ${m.trace.map((n) => renderTraceNode(n, undefined, () => this.requestUpdate()))}
+                    ${m.trace.map((n) =>
+                      renderTraceNode(n, undefined, () => this.requestUpdate())
+                    )}
                   </div>`
                 : html`<div class="insights">
                     ${renderInsights(buildInsights(m.trace))}

@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
-import { client, getToken, setToken } from './api';
+import { client, getToken, setToken, authedFetch } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
@@ -171,11 +171,7 @@ export class AhApp extends LitElement {
    */
   private async loadPluginViews() {
     try {
-      const token = getToken();
-      const res = await fetch(
-        '/api/plugins',
-        token ? { headers: { authorization: `Bearer ${token}` } } : {}
-      );
+      const res = await authedFetch('/api/plugins');
       if (!res.ok) return;
       const data = (await res.json()) as {
         views?: Array<{ tabId: string; label: string; html: string }>;
