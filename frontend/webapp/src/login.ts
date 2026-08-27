@@ -529,6 +529,7 @@ export class AhLogin extends LitElement {
       }
       .auth-card {
         width: 100%;
+        box-sizing: border-box;
         background: color-mix(in srgb, var(--ah-surface-1) 88%, transparent);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
@@ -753,6 +754,10 @@ export class AhLogin extends LitElement {
       @media (max-width: 900px) {
         :host {
           place-items: start center;
+          /* 移动端 .login-wrap 放开竖向滚动（overflow: visible），
+             但装饰层 .depth-mesh（inset:-12% / width:124%）会向右溢出约 12%，
+             横向裁掉以避免出现横向滚动条；纵向滚动仍由 overflow-y:auto 保留。 */
+          overflow-x: hidden;
         }
         .login-wrap {
           display: flex;
