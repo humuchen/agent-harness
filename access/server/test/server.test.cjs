@@ -280,6 +280,79 @@ test(
   }
 );
 
+// 修复：LLM 节点 meta.tools 是「注入模型的可用工具数」，不是本次真实执行数，
+// 会导致重新进入历史后「工具 N」chip 与实际工具子节点脱节。已改为不写入 tools，
+// 真实执行的工具节点作为 children 挂载，由前端从 n.children.length 计数展示。
+test(
+  '调用链路 LLM 节点工具计数来自真实执行的子节点（tools meta 回归）',
+  { skip: !RUN, timeout: 150000 },
+  async () => {
+    let child = null;
+    try {
+      child = await startServer();
+
+      const r = await request('POST', '/api/chat/sessions', {
+        headers: auth(),
+        body: { title: 'tool-trace-regression' }
+      });
+      assert.equal(r.status, 200, '创建会话应 200');
+      const sid = JSON.parse(r.body).id;
+      assert.ok(sid, '应返回会话 id');
+
+      // mock LLM 在输入命中「创建临时环境」意图时会调用 create/destroy 工具闭环。
+      const run = await request('POST', '/api/run', {
+        headers: auth(),
+        body: { prompt: '创建一个临时环境', chatSessionId: sid }
+      });
+      assert.equal(run.status, 200, '/api/run 应 200');
+      assert.ok(run.body.includes('tool:start'), 'SSE 应下发 tool:start');
+      assert.ok(run.body.includes('_done'), 'SSE 应以 _done 终结');
+
+      const get = await request('GET', `/api/chat/sessions/${sid}`, {
+        headers: auth()
+      });
+      assert.equal(get.status, 200, '读取会话应 200');
+      const sess = JSON.parse(get.body);
+      const traced = sess.messages.find(
+        (m) => m.role === 'assistant' && Array.isArray(m.trace) && m.trace.length
+      );
+      assert.ok(traced, '应存在携带 trace 的 assistant 消息');
+
+      const toolNodes = [];
+      const llmMetas = [];
+      const walk = (n) => {
+        if (n.kind === 'llm') {
+          llmMetas.push(n.meta || {});
+        }
+        if (n.kind === 'tool') {
+          toolNodes.push(n);
+        }
+        (n.children || []).forEach(walk);
+      };
+      (traced.trace || []).forEach(walk);
+
+      assert.ok(
+        toolNodes.length > 0,
+        '调用链路应包含真实执行的工具子节点'
+      );
+      assert.ok(
+        toolNodes.some((t) => t.detail && t.result),
+        '工具节点应同时保留入参（detail）与结果（result）'
+      );
+      assert.ok(
+        llmMetas.every((m) => m.tools === undefined),
+        'LLM 节点 meta 不应再包含误导性的 tools 字段（可用工具数≠执行数）'
+      );
+    } finally {
+      if (child) {
+        try {
+          child.kill('SIGTERM');
+        } catch {}
+      }
+    }
+  }
+);
+
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。
 test('dist 未构建时显式提示', { skip: RUN }, () => {
   assert.fail(

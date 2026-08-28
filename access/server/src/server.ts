@@ -2041,8 +2041,9 @@ async function handleRun(
             : undefined;
         traceLlm = traceNode(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
-            messages: `消息 ${ev.messageCount ?? '?'}`,
-            tools: `工具 ${ev.toolCount ?? '?'}`
+            messages: `消息 ${ev.messageCount ?? '?'}`
+            // 不写入 tools：toolCount 是「注入模型的可用工具数」，并非本次真实执行数；
+            // 真实执行的工具节点会作为 children 挂载，由 chat-trace.ts 从 n.children.length 计数展示。
           },
           ...(messages && messages.length ? { messages } : {})
         });

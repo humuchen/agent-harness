@@ -128,12 +128,16 @@ export function renderTraceNode(
           : nothing}
         ${html`<span class="tchips"
               >${n.meta
-                ? Object.entries(n.meta).map(
-                    ([k, v]) =>
-                      html`<span class="tchip"
-                        ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                      >`
-                  )
+                ? Object.entries(n.meta)
+                    // tools 是「注入模型的可用工具数」，不是本次真实执行数；
+                    // 旧落盘 trace 可能仍带此字段，过滤掉避免与下方真实执行计数混淆。
+                    .filter(([k]) => k !== 'tools')
+                    .map(
+                      ([k, v]) =>
+                        html`<span class="tchip"
+                          ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                        >`
+                    )
                 : nothing}${n.children.length
                 ? html`<span class="tchip"
                     ><b>工具</b> ${n.children.length}</span
