@@ -15,7 +15,8 @@ export const sharedStyles = css`
     font-family: var(--ah-font-sans);
     font-size: 14px;
     line-height: 1.5;
-    height: 100%;
+    height: 100vh;
+    height: 100dvh;
     overflow: hidden;
   }
   /* 滚动条：细轨道、圆角滑块，hover 才高亮，保持界面干净 */
