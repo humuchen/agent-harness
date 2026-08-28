@@ -36,14 +36,17 @@ export const chatStyles = [
       justify-content: center;
       padding: 9px;
     }
-    .side-foot {
-      border-top: 1px solid var(--ah-border);
-      padding: 8px;
+    .sidebar.collapsed .session .acts {
+      display: none;
+    }
+    .side-head {
       display: flex;
-      justify-content: center;
+      flex-direction: column;
+      gap: 8px;
+      padding: 14px 14px 10px;
     }
     .collapse-btn {
-      width: 28px;
+      width: 100%;
       height: 28px;
       padding: 0;
       border-radius: 6px;
@@ -76,6 +79,7 @@ export const chatStyles = [
       min-height: 0;
     }
     .session {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -117,6 +121,10 @@ export const chatStyles = [
     .session .acts {
       display: none;
       gap: 4px;
+      position: absolute;
+      right: 0px;
+      background: var(--ah-surface-3);
+      border-radius: 10px;
     }
     /* 仅真实悬停设备（鼠标）hover 才浮现操作按钮：触屏没有 hover，
        点按会话行时浏览器先置 hover 态、按钮在指尖下瞬间出现并截获本次 click，
@@ -2090,7 +2098,10 @@ export const chatStyles = [
         justify-content: flex-start;
         padding: 9px 10px;
       }
-      .side-foot {
+      .sidebar.collapsed .session .acts {
+        display: flex;
+      }
+      .collapse-btn {
         display: none;
       }
       .menu-btn {

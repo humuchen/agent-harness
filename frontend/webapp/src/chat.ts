@@ -3242,6 +3242,13 @@ export class AhChat extends LitElement {
           <button class="primary new-btn" @click=${() => this.newChat()}>
             ＋ 新对话
           </button>
+          <button
+            class="collapse-btn"
+            title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+            @click=${() => this.toggleSidebarCollapse()}
+          >
+            ${this.sidebarCollapsed ? '›' : '‹'}
+          </button>
         </div>
         <div class="session-list">
           ${this.sessions.length === 0
@@ -3279,15 +3286,6 @@ export class AhChat extends LitElement {
                   </div>
                 `
               )}
-        </div>
-        <div class="side-foot">
-          <button
-            class="collapse-btn"
-            title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-            @click=${() => this.toggleSidebarCollapse()}
-          >
-            ${this.sidebarCollapsed ? '›' : '‹'}
-          </button>
         </div>
       </div>
 
