@@ -41,6 +41,24 @@ async function main(): Promise<void> {
           '@modelcontextprotocol/server-filesystem',
           path.resolve(process.cwd())
         ]
+      },
+      {
+        name: 'fetch',
+        command: 'npx',
+        args: ['-y', '@tokenizin/mcp-npx-fetch']
+      },
+      {
+        name: 'memory',
+        command: 'npx',
+        args: ['-y', '@modelcontextprotocol/server-memory']
+      },
+      {
+        name: 'excel',
+        command: 'npx',
+        args: ['--yes', '@negokaz/excel-mcp-server'],
+        env: {
+          EXCEL_MCP_PAGING_CELLS_LIMIT: '4000'
+        }
       }
     ];
     console.log(

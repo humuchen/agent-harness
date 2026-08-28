@@ -52,6 +52,11 @@ MCP_SERVERS=[{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{
 | `composio` | Composio | Bearer（`ck_...`） | 单端点覆盖 1000+ 集成 |
 | `zapier` | Zapier | 无（secret URL） | 需从 mcp.zapier.com 复制专属 URL 后走「自定义添加」 |
 | `playwright` | Playwright（自托管） | 无 | 需 `npx @playwright/mcp@latest --port 8931` 自起 |
+| `modelscope` | ModelScope（魔塔） | Bearer（`msa_...`） | 模型调用 / 数据集检索 / 社区资源 |
+| `filesystem` | Filesystem（文件系统） | 无 | 读写文件 / 列目录 / 搜索（默认授权目录为运行目录） |
+| `fetch` | Fetch（网页抓取） | 无 | 基于 `tokenizin/mcp-npx-fetch` 抓取网页转 Markdown |
+| `memory` | Memory（知识记忆） | 无 | 持久知识图谱 / 实体关系 / 跨会话记忆 |
+| `excel` | Excel（表格处理） | 无 | 读写 Excel / 单元格操作（分页上限 4000） |
 
 **UI 面板**：左侧「MCP 预设市场 · Presets」列出上述预设，带能力 chip 与（如需）token 输入框，
 点「⚡ 一键接入」即连。
