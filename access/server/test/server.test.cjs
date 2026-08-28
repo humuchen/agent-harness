@@ -209,6 +209,77 @@ test(
   }
 );
 
+// 回归：调用链路（trace）中 LLM 节点的「消息上下文」必须包含 assistant 内容。
+// 根因：llm:call 发生时 assistant 尚未落盘，导致 trace.messages 仅含用户消息、
+// meta 却显示「消息 N」，重新进入历史后点开调用链路看不到 agent 助理内容；
+// 修复在 run:end（assistant 已完整）时按消息计数重建每个 LLM 节点的 messages。
+// 直接用真实构建产物跑一轮 mock run 并回看持久化会话，断言 LLM 节点 messages 含 assistant。
+test(
+  '调用链路 LLM 节点的消息上下文包含 assistant（trace rebuild 回归）',
+  { skip: !RUN, timeout: 150000 },
+  async () => {
+    let child = null;
+    try {
+      child = await startServer();
+
+      // 1) 创建聊天会话（非 anon 鉴权）。
+      let r = await request('POST', '/api/chat/sessions', {
+        headers: auth(),
+        body: { title: 'trace-regression' }
+      });
+      assert.equal(r.status, 200, '创建会话应 200');
+      const sid = JSON.parse(r.body).id;
+      assert.ok(sid, '应返回会话 id');
+
+      // 2) 触发一轮 mock run，绑定到该会话（SSE 直到 _done 关闭连接）。
+      r = await request('POST', '/api/run', {
+        headers: auth(),
+        body: { prompt: '用一句话介绍你自己', chatSessionId: sid }
+      });
+      assert.equal(r.status, 200, '/api/run 应 200');
+      assert.ok(r.body.includes('job:accepted'), 'SSE 应下发 job:accepted');
+      assert.ok(r.body.includes('_done'), 'SSE 应以 _done 终结');
+
+      // 3) 回看持久化会话，定位 LLM 调用节点的消息上下文。
+      r = await request('GET', `/api/chat/sessions/${sid}`, { headers: auth() });
+      assert.equal(r.status, 200, '读取会话应 200');
+      const sess = JSON.parse(r.body);
+
+      // 找到携带 trace 的 assistant 消息，遍历其 trace 树。
+      const traced = sess.messages.find(
+        (m) => m.role === 'assistant' && Array.isArray(m.trace) && m.trace.length
+      );
+      assert.ok(traced, '应存在携带 trace 的 assistant 消息');
+
+      const roles = [];
+      const walk = (n) => {
+        if (n.kind === 'llm' && Array.isArray(n.messages)) {
+          n.messages.forEach((m) => roles.push(m.role));
+        }
+        (n.children || []).forEach(walk);
+      };
+      (traced.trace || []).forEach(walk);
+
+      assert.ok(
+        roles.length > 0,
+        'LLM 节点的消息上下文不应为空'
+      );
+      assert.ok(
+        roles.includes('assistant'),
+        `LLM 节点的消息上下文必须包含 assistant（实际角色：${JSON.stringify(
+          roles
+        )}）—— 否则重新进入历史后点开调用链路会丢失助理内容`
+      );
+    } finally {
+      if (child) {
+        try {
+          child.kill('SIGTERM');
+        } catch {}
+      }
+    }
+  }
+);
+
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。
 test('dist 未构建时显式提示', { skip: RUN }, () => {
   assert.fail(
