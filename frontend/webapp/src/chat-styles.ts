@@ -43,15 +43,16 @@ export const chatStyles = [
       display: flex;
       flex-direction: column;
       gap: 8px;
-      padding: 14px 14px 10px;
+      padding: 0 14px 10px;
+      align-items: end;
     }
     .collapse-btn {
-      width: 100%;
+      width: 28px;
       height: 28px;
       padding: 0;
       border-radius: 6px;
-      border: 1px solid var(--ah-border);
-      background: var(--ah-surface-2);
+      /* border: 1px solid var(--ah-border); */
+      background: transparent;
       color: var(--ah-text-muted);
       font-size: 14px;
       cursor: pointer;
