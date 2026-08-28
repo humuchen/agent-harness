@@ -542,7 +542,11 @@ export class AhUserMenu extends LitElement {
                 </div>
               </div>
               <div class="items">
-                <button class="item" role="menuitem" @click=${() => this.openPw()}>
+                <button
+                  class="item"
+                  role="menuitem"
+                  @click=${() => this.openPw()}
+                >
                   ${this.keyIcon()}<span class="label">修改密码</span>
                 </button>
                 <button
@@ -562,13 +566,28 @@ export class AhUserMenu extends LitElement {
 
   private renderPwModal() {
     return html`
-      <div class="pw-scrim" @click=${(e: MouseEvent) => {
-        if (e.target === e.currentTarget) this.closePw();
-      }}>
-        <div class="pw-panel" role="dialog" aria-modal="true" aria-label="修改密码">
+      <div
+        class="pw-scrim"
+        @click=${(e: MouseEvent) => {
+          if (e.target === e.currentTarget) this.closePw();
+        }}
+      >
+        <div
+          class="pw-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="修改密码"
+        >
           <div class="pw-head">
             <span class="pw-title">修改密码</span>
-            <button class="pw-close" title="关闭" aria-label="关闭" @click=${() => this.closePw()}>×</button>
+            <button
+              class="pw-close"
+              title="关闭"
+              aria-label="关闭"
+              @click=${() => this.closePw()}
+            >
+              ×
+            </button>
           </div>
           <div class="pw-body">
             <div class="field">
@@ -577,6 +596,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-old"
                 type="password"
                 autocomplete="current-password"
+                placholer="请输入当前密码"
                 .value=${this.oldPw}
                 @input=${(e: InputEvent) =>
                   (this.oldPw = (e.target as HTMLInputElement).value)}
@@ -587,6 +607,7 @@ export class AhUserMenu extends LitElement {
               <input
                 id="pw-new"
                 type="password"
+                placholer="请输入新密码"
                 autocomplete="new-password"
                 .value=${this.newPw}
                 @input=${(e: InputEvent) =>
@@ -599,6 +620,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-confirm"
                 type="password"
                 autocomplete="new-password"
+                placholer="请输入确认密码"
                 .value=${this.confirmPw}
                 @input=${(e: InputEvent) =>
                   (this.confirmPw = (e.target as HTMLInputElement).value)}
@@ -613,8 +635,18 @@ export class AhUserMenu extends LitElement {
             <div class="pw-error">${this.pwError ?? ''}</div>
           </div>
           <div class="pw-foot">
-            <button class="btn ghost" @click=${() => this.closePw()} ?disabled=${this.pwBusy}>取消</button>
-            <button class="btn primary" @click=${() => this.submitPw()} ?disabled=${this.pwBusy}>
+            <button
+              class="btn ghost"
+              @click=${() => this.closePw()}
+              ?disabled=${this.pwBusy}
+            >
+              取消
+            </button>
+            <button
+              class="btn primary"
+              @click=${() => this.submitPw()}
+              ?disabled=${this.pwBusy}
+            >
               ${this.pwBusy ? '提交中…' : '修改'}
             </button>
           </div>

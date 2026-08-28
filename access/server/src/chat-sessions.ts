@@ -55,6 +55,9 @@ export interface TraceNode {
   detail?: string;
   result?: string;
   meta?: Record<string, string>;
+  /** LLM 调用时携带的「截至此次调用的会话消息上下文」（来自 getChatSession 的会话消息快照）。
+   *  点击 LLM 节点时就地展开这 N 条消息（role + content）供回看。 */
+  messages?: Array<{ role: string; content: string; ts: number; reasoning?: string }>;
   children: TraceNode[];
 }
 
@@ -73,6 +76,9 @@ export interface ChatMessage {
   plan?: import('@agent-harness/core').ExecutionPlan;
   /** 计划模式：任务级执行进度镜像（服务端随任务派发/完成/失败事件维护），供前端恢复计划卡片状态。 */
   planStatus?: PlanExecMirror;
+  /** 用户消息携带的附件（图片/文件预览）。url 兼容本地 dataUrl 或服务端上传地址，
+   *  随会话历史持久化，供刷新 / 切回后还原气泡内图片。 */
+  attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
 }
 
 export interface ChatSession {

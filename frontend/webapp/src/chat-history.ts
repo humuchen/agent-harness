@@ -68,6 +68,8 @@ export interface MirroredMsg {
     failedTaskId?: string;
     done: string[];
   };
+  /** 用户消息携带的附件（图片/文件预览）。随镜像落盘需在体积上限内（超大图不持久化）。 */
+  attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
   error?: boolean;
 }
 
@@ -124,16 +126,49 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
           }))
           .filter((t) => t.name)
       : undefined;
+    // 附件（图片/文件预览）：收敛字段并丢弃超大 dataUrl（避免历史被撑爆），
+    // 仅当次会话内存仍保留完整预览，镜像/恢复仅保留体积受限内的数据。
+    const attachments = Array.isArray(o.attachments)
+      ? (o.attachments as unknown[])
+          .filter(
+            (a): a is Record<string, unknown> =>
+              !!a &&
+              typeof a === 'object' &&
+              typeof (a as Record<string, unknown>).name === 'string' &&
+              typeof (a as Record<string, unknown>).type === 'string'
+          )
+          .map((a) => {
+            const url = typeof a.url === 'string' ? a.url : '';
+            const serverUrl = typeof a.serverUrl === 'string' ? a.serverUrl : undefined;
+            return {
+              name: a.name as string,
+              type: a.type as string,
+              ...(url && url.length <= 5_000_000 ? { url } : {}),
+              ...(serverUrl ? { serverUrl } : {})
+            };
+          })
+          .filter((a) => a.url || a.serverUrl)
+      : undefined;
     // 全空占位（如尚未流式完成的 assistant 空壳）不入镜。
     if (!content && !reasoning && !(tools && tools.length)) continue;
     // 连续完全相同的 (role+content) 视为重复写入，去重保序。
     const prev = out[out.length - 1];
-    if (prev && prev.role === role && prev.content === content && !reasoning && !tools) continue;
+    if (
+      prev &&
+      prev.role === role &&
+      prev.content === content &&
+      !reasoning &&
+      !tools &&
+      // 仅当本条也无附件时才按重复跳过，避免把「带图消息」误判为重复占位丢弃。
+      !(attachments && attachments.length)
+    )
+      continue;
     out.push({
       role,
       content,
       ...(reasoning ? { reasoning } : {}),
       ...(tools && tools.length ? { tools } : {}),
+      ...(attachments && attachments.length ? { attachments } : {}),
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
       ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
       ...sanitizePlanStatus(o.planStatus),

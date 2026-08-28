@@ -520,10 +520,11 @@ export class AhLogin extends LitElement {
         position: absolute;
         /* 悬浮于画面中右，与左上标题、左下特性形成对角构图；
            clamp 保证在任何画幅下都不覆盖左侧文案、不溢出右边界。 */
-        left: clamp(420px, 46%, calc(100% - 380px));
+        left: clamp(420px, 46%, calc(100% - 700px));
         top: 52%;
         transform: translate(-50%, -50%);
-        width: 360px;
+        /* PC 端卡片宽度 680px（可用 --ahd-size 覆盖）；移动端媒体查询强制 100% 满宽。 */
+        width: var(--ahd-size, 680px);
         max-width: calc(100% - 96px);
         z-index: 5;
       }
@@ -757,10 +758,15 @@ export class AhLogin extends LitElement {
           /* 横向裁掉：装饰层 .depth-mesh（inset:-12% / width:124%）
              在移动端 .login-wrap 放开后本体会向右溢出约 12%。 */
           overflow-x: hidden;
+          /* 移动端允许整页滚动，避免内容超高被裁切 */
+          overflow-y: auto;
+          -webkit-text-size-adjust: 100%;
+          text-size-adjust: 100%;
         }
         .login-wrap {
           display: flex;
           flex-direction: column;
+          box-sizing: border-box;
           aspect-ratio: auto;
           max-height: none;
           min-height: 100dvh;
@@ -828,8 +834,91 @@ export class AhLogin extends LitElement {
           backdrop-filter: none;
           -webkit-backdrop-filter: none;
         }
+        /* iOS 聚焦输入框自动放大问题：移动端字号不小于 16px */
+        .field input,
+        .btn-primary,
+        .forge,
+        .remember {
+          font-size: 16px;
+        }
         :host([data-theme='light']) .auth-card {
           background: #fff;
+        }
+      }
+
+      /* ---------------------- 窄屏手机（≤480px）细化 ---------------------- */
+      @media (max-width: 480px) {
+        .login-wrap {
+          padding: 22px 16px;
+          gap: 4px;
+        }
+        .brand-top {
+          top: 0;
+          left: 0;
+          right: 0;
+          padding: 0;
+        }
+        .brand-mark {
+          font-size: 16px;
+          gap: 9px;
+        }
+        .brand-mark .logo {
+          width: 28px;
+          height: 28px;
+        }
+        .brand-head {
+          margin-top: 16px;
+        }
+        .brand-title {
+          font-size: 22px;
+        }
+        .brand-sub {
+          font-size: 14px;
+          margin-top: 10px;
+        }
+        .brand-bottom {
+          margin-top: 4px;
+        }
+        .auth-float {
+          margin: 18px 0 0;
+        }
+        .auth-card {
+          padding: 22px 18px;
+          border-radius: 16px;
+        }
+        .auth-card h1 {
+          font-size: 20px;
+        }
+        .auth-sub {
+          font-size: 12px;
+          margin-bottom: 18px;
+        }
+        .field {
+          margin-bottom: 12px;
+        }
+        .field label {
+          font-size: 12px;
+          margin-bottom: 5px;
+        }
+        .field input {
+          height: 44px;
+          padding: 0 12px;
+        }
+        .field.has-eye input {
+          padding-right: 40px;
+        }
+        .eye-btn {
+          width: 32px;
+          height: 32px;
+          right: 5px;
+          bottom: 6px;
+        }
+        .row-between {
+          margin: 2px 0 14px;
+          font-size: 13px;
+        }
+        .btn-primary {
+          height: 48px;
         }
       }
     `

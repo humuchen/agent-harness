@@ -148,6 +148,10 @@ export function authedFetch(
     ...init,
     headers,
     credentials: init.credentials ?? 'same-origin'
+  }).then((res) => {
+    // 与 client 单例一致：任意 401 都触发全局跳转登录页（幂等）。
+    if (res.status === 401) handleUnauthorized();
+    return res;
   });
 }
 

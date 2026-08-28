@@ -2018,11 +2018,32 @@ async function handleRun(
       case 'llm:call': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
+        // 服务端：把截至此次调用的会话消息快照挂到节点 messages 字段，
+        // 与前端 traceHandle 对称（前端用内存 threads 填充，但该数据不在持久化 trace 内）。
+        // 否则 getChatSession 恢复的 trace 仅含 meta 字符串「消息 N」，点开 LLM 节点后
+        // 消息上下文 panel 为空，无法复盘本次调用的完整 prompt。
+        const sessMsgs = chatSessionId
+          ? getChatSession(chatSessionId, ctx.sub)?.messages
+          : undefined;
+        const messages =
+          sessMsgs && ev.messageCount
+            ? sessMsgs
+                .slice(0, Math.max(0, Number(ev.messageCount) || sessMsgs.length))
+                .map((m) => ({
+                  role: m.role,
+                  content: m.content ?? '',
+                  ts: typeof (m as { ts?: unknown }).ts === 'number'
+                    ? (m as { ts: number }).ts
+                    : Date.now(),
+                  ...(m.reasoning ? { reasoning: m.reasoning } : {})
+                }))
+            : undefined;
         traceLlm = traceNode(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
             messages: `消息 ${ev.messageCount ?? '?'}`,
             tools: `工具 ${ev.toolCount ?? '?'}`
-          }
+          },
+          ...(messages && messages.length ? { messages } : {})
         });
         traceLastTool = null;
         break;
@@ -2316,7 +2337,32 @@ async function handleRun(
           role: 'user',
           // 计划模式下落盘用户的原始需求（ev.input 是 planner 包装后的提示词）。
           content: isPlanPropose ? prompt : String(ev.input),
-          ts: Date.now()
+          ts: Date.now(),
+          // 把用户消息携带的图片/文件附件一并落盘（url 兼容本地 dataUrl 或服务端
+          // 上传地址），否则 getChatSession 恢复时气泡内图片丢失。单图体积超限时
+          // 不持久化（仅当次显示），避免历史被超大 base64 撑爆。
+          ...(body.attachments && body.attachments.length
+            ? {
+                attachments: body.attachments
+                  .filter(
+                    (a: { url?: string; name?: string; type?: string }) =>
+                      a && (a.url || '').length <= 5_000_000
+                  )
+                  .map(
+                    (a: {
+                      url?: string;
+                      name?: string;
+                      type?: string;
+                      serverUrl?: string;
+                    }) => ({
+                      name: a.name ?? 'file',
+                      type: a.type ?? 'application/octet-stream',
+                      ...(a.url ? { url: a.url } : {}),
+                      ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
+                    })
+                  )
+              }
+            : {})
         }, ctx.sub);
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
         // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。

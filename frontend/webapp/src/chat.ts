@@ -947,7 +947,11 @@ export class AhChat extends LitElement {
             tools: m.tools,
             trace: m.trace,
             plan: m.plan,
-            planStatus: (m as any).planStatus
+            planStatus: (m as any).planStatus,
+            // 服务端落盘的附件（图片/文件预览）原样透传，刷新 / 切回后还原气泡内图片。
+            ...(m.attachments && m.attachments.length
+              ? { attachments: m.attachments }
+              : {})
           }))
         );
         if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
@@ -961,6 +965,18 @@ export class AhChat extends LitElement {
             : clean;
         this.threads[id] = merged.map((m) => ({
           ...m,
+          // 恢复源附件为 {name,type,url?,serverUrl?} 形状，渲染需 UploadedFile（dataUrl）。
+          ...(m.attachments && m.attachments.length
+            ? {
+                attachments: m.attachments.map((a) => ({
+                  name: a.name,
+                  size: 0,
+                  type: a.type,
+                  dataUrl: a.url || '',
+                  ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
+                }))
+              }
+            : {}),
           id: this.nextId++
         })) as ChatMsg[];
         // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
@@ -974,6 +990,18 @@ export class AhChat extends LitElement {
           recoveredUsage = mirrored.usage;
           this.threads[id] = mirrored.msgs.map((m) => ({
             ...(m as Omit<ChatMsg, 'id'>),
+            // 恢复源附件为 {name,type,url?,serverUrl?} 形状，渲染需 UploadedFile（dataUrl）。
+            ...(m.attachments && m.attachments.length
+              ? {
+                  attachments: m.attachments.map((a) => ({
+                    name: a.name,
+                    size: 0,
+                    type: a.type,
+                    dataUrl: a.url || '',
+                    ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
+                  }))
+                }
+              : {}),
             id: this.nextId++
           })) as ChatMsg[];
           this.error =

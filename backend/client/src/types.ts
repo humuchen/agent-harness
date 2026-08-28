@@ -160,6 +160,10 @@ export interface ChatMessage {
   /** 计划模式：任务级执行进度镜像（服务端随派发/完成/失败事件维护），
    *  刷新 / 切回会话 / 服务重启后前端据此还原计划卡片状态并支持续跑。 */
   planStatus?: PlanExecMirror;
+  /** 用户消息携带的附件（图片/文件），随会话历史持久化，供刷新 / 切回后还原气泡内预览。
+   *  url 兼容「本地 dataUrl（base64）」与「服务端上传后的相对地址」两种来源；
+   *  dataUrl 仅在单图体积受限内落盘，超限则不持久化（仅当次显示）。 */
+  attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
 }
 
 /** 计划执行进度镜像（JSON 友好：done 用 id 数组而非对象）。 */
