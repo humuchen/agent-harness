@@ -382,15 +382,18 @@ export const chatStyles = [
       margin-left: 20px;
     }
     .ctx-bar-meta {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
       margin-bottom: 6px;
       font-size: 12px;
       color: var(--ah-text-muted);
     }
+    .ctx-bar-pct {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--ah-text);
+    }
     .ctx-bar-total {
       font-variant-numeric: tabular-nums;
+      padding-left: 5px;
     }
     .ctx-seg {
       display: flex;

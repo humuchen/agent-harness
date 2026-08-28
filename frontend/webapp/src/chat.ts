@@ -405,7 +405,10 @@ export class AhChat extends LitElement {
   }
 
   /** 流式推进中刷新当前 LLM 节点的消息上下文快照与计数标签。 */
-  private refreshLlmTraceMessages(sid: string, tc: ReturnType<typeof this.traceCtx>) {
+  private refreshLlmTraceMessages(
+    sid: string,
+    tc: ReturnType<typeof this.traceCtx>
+  ) {
     if (!tc.llm) return;
     const snap = this.snapshotTraceMessages(sid);
     tc.llm.messages = snap;
@@ -800,63 +803,63 @@ export class AhChat extends LitElement {
     * 窗口占用口径：totalTokens 取 promptTokens（仅输入，不含模型当轮输出 completion），
     * 因为下一轮上下文只由输入构成；`totalTokens`（含 output）另用于「累计消耗」展示。
     */
-   private displayContextUsage(): {
-     totalPct: number;
-     totalTokens: number;
-     window: number;
-     items: {
-       key: string;
-       label: string;
-       tokens: number;
-       pct: number;
-       cls: string;
-     }[];
-   } {
-     const u = this.backendUsage;
-     if (u) {
-       const items = [
-         {
-           key: 'sys',
-           label: '系统提示词',
-           tokens: u.breakdown.system,
-           cls: 'c-sys',
-           pct: 0
-         },
-         {
-           key: 'tools',
-           label: '工具及子智能体',
-           tokens: u.breakdown.tools,
-           cls: 'c-tools',
-           pct: 0
-         },
-         {
-           key: 'msg',
-           label: '对话消息',
-           tokens: u.breakdown.messages,
-           cls: 'c-msg',
-           pct: 0
-         },
-         {
-           key: 'mcp',
-           label: '连接器及 MCP',
-           tokens: u.breakdown.mcp,
-           cls: 'c-mcp',
-           pct: 0
-         },
-         {
-           key: 'skill',
-           label: '技能',
-           tokens: u.breakdown.skills,
-           cls: 'c-skill',
-           pct: 0
-         }
-       ];
-       // 窗口占用只算输入（promptTokens），不含当轮输出 completion。
-       const totalTokens = u.promptTokens;
-       const totalPct = Math.min(100, (totalTokens / u.window) * 100);
-       for (const it of items) it.pct = (it.tokens / u.window) * 100;
-       return { totalPct, totalTokens, window: u.window, items };
-     }
+  private displayContextUsage(): {
+    totalPct: number;
+    totalTokens: number;
+    window: number;
+    items: {
+      key: string;
+      label: string;
+      tokens: number;
+      pct: number;
+      cls: string;
+    }[];
+  } {
+    const u = this.backendUsage;
+    if (u) {
+      const items = [
+        {
+          key: 'sys',
+          label: '系统提示词',
+          tokens: u.breakdown.system,
+          cls: 'c-sys',
+          pct: 0
+        },
+        {
+          key: 'tools',
+          label: '工具及子智能体',
+          tokens: u.breakdown.tools,
+          cls: 'c-tools',
+          pct: 0
+        },
+        {
+          key: 'msg',
+          label: '对话消息',
+          tokens: u.breakdown.messages,
+          cls: 'c-msg',
+          pct: 0
+        },
+        {
+          key: 'mcp',
+          label: '连接器及 MCP',
+          tokens: u.breakdown.mcp,
+          cls: 'c-mcp',
+          pct: 0
+        },
+        {
+          key: 'skill',
+          label: '技能',
+          tokens: u.breakdown.skills,
+          cls: 'c-skill',
+          pct: 0
+        }
+      ];
+      // 窗口占用只算输入（promptTokens），不含当轮输出 completion。
+      const totalTokens = u.promptTokens;
+      const totalPct = Math.min(100, (totalTokens / u.window) * 100);
+      for (const it of items) it.pct = (it.tokens / u.window) * 100;
+      return { totalPct, totalTokens, window: u.window, items };
+    }
     // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，
     // 回退到前端基于消息缓冲的粗估，避免递归调用自身导致栈溢出。
     return this.contextUsage();
@@ -938,11 +941,9 @@ export class AhChat extends LitElement {
                   </button>
                 </div>
                 <div class="ctx-bar-meta">
-                  <span class="ctx-bar-pct"
-                    >${u.totalPct.toFixed(1)}% 已使用</span
-                  >
-                  <span class="ctx-bar-total"
-                    >${this.fmtK(u.totalTokens)} /
+                  <span class="ctx-bar-pct">${u.totalPct.toFixed(1)}%</span>
+                  <span class="ctx-bar-total">
+                    已使用 ${this.fmtK(u.totalTokens)} /
                     ${this.fmtK(u.window)}</span
                   >
                 </div>
@@ -963,20 +964,18 @@ export class AhChat extends LitElement {
                       <span class="ctx-val">${it.pct.toFixed(1)}%</span>
                     </li>`
                   )}
-                  ${
-                    this.runCumulative
-                      ? html`<li class="ctx-cum">
-                          <span class="ctx-dot c-cum"></span>
-                          <span class="ctx-label">本运行累计</span>
-                          <span class="ctx-val"
-                            >${this.fmtK(this.runCumulative.tokens)} ·
-                            ${this.runCumulative.cost > 0
-                              ? `$${this.runCumulative.cost.toFixed(4)}`
-                              : '免费'}</span
-                          >
-                        </li>`
-                      : nothing
-                  }
+                  ${this.runCumulative
+                    ? html`<li class="ctx-cum">
+                        <span class="ctx-dot c-cum"></span>
+                        <span class="ctx-label">本运行累计</span>
+                        <span class="ctx-val"
+                          >${this.fmtK(this.runCumulative.tokens)} ·
+                          ${this.runCumulative.cost > 0
+                            ? `$${this.runCumulative.cost.toFixed(4)}`
+                            : '免费'}</span
+                        >
+                      </li>`
+                    : nothing}
                 </ul>
               </div>`
           : nothing}
@@ -1328,7 +1327,9 @@ export class AhChat extends LitElement {
       id: this.nextId++,
       role: 'user',
       content,
-      attachments: opts.attachments ? [...opts.attachments] : [...this.attachments]
+      attachments: opts.attachments
+        ? [...opts.attachments]
+        : [...this.attachments]
     });
     t.push({ id: this.nextId++, role: 'assistant', content: '' });
     this.streamIdx[sessionId] = t.length - 1;
@@ -1795,7 +1796,8 @@ export class AhChat extends LitElement {
                 messages: prev.breakdown.messages + (u.breakdown.messages ?? 0),
                 mcp: prev.breakdown.mcp + (u.breakdown.mcp ?? 0),
                 skills: prev.breakdown.skills + (u.breakdown.skills ?? 0),
-                completion: prev.breakdown.completion + (u.breakdown.completion ?? 0)
+                completion:
+                  prev.breakdown.completion + (u.breakdown.completion ?? 0)
               }
             };
           } else {
@@ -2036,7 +2038,10 @@ export class AhChat extends LitElement {
         if ((ev as any).cumulativeTokens != null) {
           this.runCumulative = {
             tokens: Number((ev as any).cumulativeTokens),
-            cost: (ev as any).cumulativeCost != null ? Number((ev as any).cumulativeCost) : 0
+            cost:
+              (ev as any).cumulativeCost != null
+                ? Number((ev as any).cumulativeCost)
+                : 0
           };
           // 累计消耗更新后立即落盘，与 llm:usage 对称，避免重新进入会话后「本运行累计」丢失。
           this.saveHistory(sid);
