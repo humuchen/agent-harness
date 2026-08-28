@@ -84,7 +84,8 @@ import {
   appendChatMessage,
   updatePlanStatus,
   type StoredTool,
-  type TraceNode
+  type TraceNode,
+  type ChatMessage
 } from './chat-sessions';
 // 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
 import { getHistoryStore } from './history-store';
