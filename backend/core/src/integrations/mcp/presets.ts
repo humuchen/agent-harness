@@ -7,7 +7,7 @@ import type { McpTransportType } from './placeholder';
  * 单一事实来源：core 定义，UI 直接消费，前端与静态演示页各自引用同一份数据。
  *
  * authType 决定前端是否展示 token 输入框，以及 headers 如何拼装：
- *   - 'none'    ：无需鉴权（或鉴权已 baked 进 URL，如 Zapier 专属 secret URL）。
+ *   - 'none'    ：无需鉴权（或鉴权已 baked 进 URL）。
  *   - 'bearer'  ：传入 token 后拼 `Authorization: Bearer ${token}`，可选、GitHub/Composio 必填。
  *   - 'oauth'   ：走 OAuth 流程，token 同样以 Bearer 注入（此处仅做静态配置接入）。
  *   - 'header'  ：通用请求头（如 X-MCP-Toolsets），由调用方按服务说明提供。
@@ -47,7 +47,7 @@ export interface McpPreset {
   note?: string;
   /**
    * 是否支持面板「一键接入」（默认 true）。
-   * 设为 false 的预设（如 Zapier 通用端点需专属 secret URL）不渲染接入按钮，
+   * 设为 false 的预设不渲染接入按钮，
    * 改为引导用户复制专属 URL 走「自定义添加」，避免一键必失败。
    */
   oneClick?: boolean;
@@ -65,7 +65,7 @@ export const MCP_PRESETS: McpPreset[] = [
     capabilities: ['库文档', 'API 最新片段', 'TypeScript/Python/Rust 等'],
     docUrl: 'https://context7.com',
     recommended: true,
-    note: '零配置即可用，专治 LLM 用陈旧训练数据。免 key 时直接接入。',
+    note: '零配置即可用，专治 LLM 用陈旧训练数据。免 key 时直接接入。'
   },
   {
     id: 'github',
@@ -78,7 +78,7 @@ export const MCP_PRESETS: McpPreset[] = [
     capabilities: ['仓库', 'Issue', 'PR', 'Copilot Spaces'],
     docUrl: 'https://github.com/features/copilot',
     recommended: true,
-    note: '需 GitHub Copilot 订阅 + 有效 PAT；接入时填写 PAT。国内网络可能无法访问 api.githubcopilot.com（此时会 fetch failed）。',
+    note: '需 GitHub Copilot 订阅 + 有效 PAT；接入时填写 PAT。国内网络可能无法访问 api.githubcopilot.com（此时会 fetch failed）。'
   },
   {
     id: 'composio',
@@ -91,28 +91,7 @@ export const MCP_PRESETS: McpPreset[] = [
     capabilities: ['Gmail', 'Slack', 'Notion', 'Linear', '1000+ 集成'],
     docUrl: 'https://composio.dev',
     recommended: true,
-    note: '单端点覆盖 1000+ 集成，治理/鉴权由 Composio 托管。',
-  },
-  {
-    id: 'zapier',
-    name: 'Zapier',
-    url: 'https://mcp.zapier.com/api/v1/connect',
-    transportType: 'streamable-http',
-    authType: 'none',
-    capabilities: ['9000+ App', '30000+ 动作'],
-    docUrl: 'https://mcp.zapier.com',
-    oneClick: false,
-    note: '不支持一键接入：通用端点需登录后生成的「专属 secret URL」。请在 mcp.zapier.com 创建 server 并复制其 URL，再用左侧「自定义添加」粘贴接入。',
-  },
-  {
-    id: 'playwright',
-    name: 'Playwright（自托管）',
-    url: 'http://localhost:8931/mcp',
-    transportType: 'streamable-http',
-    authType: 'none',
-    capabilities: ['浏览器自动化', '网页抓取', '填表'],
-    docUrl: 'https://github.com/microsoft/playwright-mcp',
-    note: '需自托管：npx @playwright/mcp@latest --port 8931（容器内加 --host 0.0.0.0）。',
+    note: '单端点覆盖 1000+ 集成，治理/鉴权由 Composio 托管。'
   },
   {
     id: 'modelscope',
@@ -125,7 +104,7 @@ export const MCP_PRESETS: McpPreset[] = [
     authEnvVar: 'MODELSCOPE_API_TOKEN',
     capabilities: ['模型调用', '数据集检索', '社区资源'],
     docUrl: 'https://www.modelscope.cn/mcp',
-    note: '需 ModelScope 账号 + API Key（在 modelscope.cn → 首页 → 访问令牌 获取）。一键接入会自动安装 uvx 模式的 stdio 服务器并注入密钥。',
+    note: '需 ModelScope 账号 + API Key（在 modelscope.cn → 首页 → 访问令牌 获取）。一键接入会自动安装 uvx 模式的 stdio 服务器并注入密钥。'
   },
   {
     id: 'filesystem',
@@ -134,8 +113,9 @@ export const MCP_PRESETS: McpPreset[] = [
     args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()],
     authType: 'none',
     capabilities: ['读写文件', '列目录', '搜索'],
-    docUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
-    note: `本地 stdio 文件服务；默认授权目录为服务运行目录（${process.cwd()}）。一键接入会动态注入当前工作目录作为可访问根。`,
+    docUrl:
+      'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
+    note: `本地 stdio 文件服务；默认授权目录为服务运行目录（${process.cwd()}）。一键接入会动态注入当前工作目录作为可访问根。`
   },
   {
     id: 'fetch',
@@ -145,7 +125,7 @@ export const MCP_PRESETS: McpPreset[] = [
     authType: 'none',
     capabilities: ['抓取网页', '提取正文', '内容摘要'],
     docUrl: 'https://www.npmjs.com/package/@tokenizin/mcp-npx-fetch',
-    note: '基于 tokenizin/mcp-npx-fetch 的网页抓取服务，将 URL 转换为可读取的 Markdown / 文本。',
+    note: '基于 tokenizin/mcp-npx-fetch 的网页抓取服务，将 URL 转换为可读取的 Markdown / 文本。'
   },
   {
     id: 'memory',
@@ -154,8 +134,9 @@ export const MCP_PRESETS: McpPreset[] = [
     args: ['-y', '@modelcontextprotocol/server-memory'],
     authType: 'none',
     capabilities: ['持久知识图谱', '实体关系', '跨会话记忆'],
-    docUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
-    note: '基于知识图谱的持久记忆服务，默认数据落在其工作目录（memory.json）。',
+    docUrl:
+      'https://github.com/modelcontextprotocol/servers/tree/main/src/memory',
+    note: '基于知识图谱的持久记忆服务，默认数据落在其工作目录（memory.json）。'
   },
   {
     id: 'excel',
@@ -166,8 +147,8 @@ export const MCP_PRESETS: McpPreset[] = [
     authType: 'none',
     capabilities: ['读写 Excel', '单元格操作', '数据透视'],
     docUrl: 'https://github.com/negokaz/excel-mcp-server',
-    note: 'negokaz/excel-mcp-server，分页上限已设为 4000 单元格（EXCEL_MCP_PAGING_CELLS_LIMIT）。',
-  },
+    note: 'negokaz/excel-mcp-server，分页上限已设为 4000 单元格（EXCEL_MCP_PAGING_CELLS_LIMIT）。'
+  }
 ];
 
 /** 返回全部预设（复制，避免外部修改内部数组）。 */
@@ -185,7 +166,10 @@ export function getPreset(id: string): McpPreset | undefined {
  * - 'none': 始终返回 {}（鉴权已 baked 进 URL 或无需鉴权）。
  * - 其余：有 token 才注入 `Authorization: Bearer ${token}`，无 token 返回 {}（由调用方决定能否连）。
  */
-export function headersForPreset(p: McpPreset, token?: string): Record<string, string> {
+export function headersForPreset(
+  p: McpPreset,
+  token?: string
+): Record<string, string> {
   if (p.authType === 'none') return {};
   const t = token && token.trim();
   if (!t) return {};
@@ -197,7 +181,10 @@ export function headersForPreset(p: McpPreset, token?: string): Record<string, s
  * `authEnvVar` 指定环境变量名（如 MODELSCOPE_API_TOKEN）。
  * 返回 undefined 表示无需 env 注入（HTTP 预设或无 token）。
  */
-export function envForPreset(p: McpPreset, token?: string): Record<string, string> | undefined {
+export function envForPreset(
+  p: McpPreset,
+  token?: string
+): Record<string, string> | undefined {
   if (!p.command || !p.authEnvVar) return undefined;
   const t = token && token.trim();
   if (!t) return undefined;
