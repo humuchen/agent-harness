@@ -136,6 +136,8 @@ export class AhChat extends LitElement {
 
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
+  /** PC 端侧栏折叠态（默认展开）。 */
+  @state() sidebarCollapsed = false;
   @state() error: string | null = null;
 
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
@@ -2562,6 +2564,11 @@ export class AhChat extends LitElement {
     this.sidebarOpen = !this.sidebarOpen;
   }
 
+  /** 切换 PC 端侧栏折叠态（展开/收起）。 */
+  private toggleSidebarCollapse() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
+  }
+
   /**
    * 跳转到指定功能面板（自检 / 环境等）：经 ah-goto 事件冒泡到顶层 ah-app
    * 的 Tab 路由。这些入口已从侧边菜单收纳为聊天页顶栏的快捷按钮。
@@ -3230,7 +3237,7 @@ export class AhChat extends LitElement {
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
     return html`
-      <div class="sidebar ${this.sidebarOpen ? 'open' : ''}">
+      <div class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed ? 'collapsed' : ''}">
         <div class="side-head">
           <button class="primary new-btn" @click=${() => this.newChat()}>
             ＋ 新对话
@@ -3272,6 +3279,15 @@ export class AhChat extends LitElement {
                   </div>
                 `
               )}
+        </div>
+        <div class="side-foot">
+          <button
+            class="collapse-btn"
+            title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+            @click=${() => this.toggleSidebarCollapse()}
+          >
+            ${this.sidebarCollapsed ? '›' : '‹'}
+          </button>
         </div>
       </div>
 

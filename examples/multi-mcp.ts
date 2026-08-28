@@ -44,8 +44,8 @@ async function main(): Promise<void> {
       },
       {
         name: 'fetch',
-        command: 'npx',
-        args: ['-y', '@tokenizin/mcp-npx-fetch']
+        command: 'node',
+        args: ['access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js']
       },
       {
         name: 'memory',

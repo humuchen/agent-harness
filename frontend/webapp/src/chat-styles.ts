@@ -22,6 +22,44 @@ export const chatStyles = [
       border-right: 1px solid var(--ah-border);
       background: var(--ah-surface-1);
       min-height: 0;
+      transition: width 200ms ease, flex-basis 200ms ease;
+    }
+    .sidebar.collapsed {
+      width: 64px;
+      flex: 0 0 64px;
+    }
+    .sidebar.collapsed .session .title,
+    .sidebar.collapsed .new-btn {
+      display: none;
+    }
+    .sidebar.collapsed .session {
+      justify-content: center;
+      padding: 9px;
+    }
+    .side-foot {
+      border-top: 1px solid var(--ah-border);
+      padding: 8px;
+      display: flex;
+      justify-content: center;
+    }
+    .collapse-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 6px;
+      border: 1px solid var(--ah-border);
+      background: var(--ah-surface-2);
+      color: var(--ah-text-muted);
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .collapse-btn:hover {
+      color: var(--ah-text);
+      border-color: var(--ah-accent);
+      background: var(--ah-surface-3);
     }
     // .side-head {
     //   padding: 14px 14px 10px;
@@ -2038,6 +2076,22 @@ export const chatStyles = [
       }
       .sidebar.open {
         transform: none;
+      }
+      /* 移动端忽略 PC 折叠态：始终展示完整侧栏 */
+      .sidebar.collapsed {
+        width: 264px;
+        flex: 0 0 264px;
+      }
+      .sidebar.collapsed .session .title,
+      .sidebar.collapsed .new-btn {
+        display: flex;
+      }
+      .sidebar.collapsed .session {
+        justify-content: flex-start;
+        padding: 9px 10px;
+      }
+      .side-foot {
+        display: none;
       }
       .menu-btn {
         display: inline-flex;

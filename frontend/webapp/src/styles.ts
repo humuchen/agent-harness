@@ -269,12 +269,12 @@ export const sharedStyles = css`
   .content {
     flex: 1 1 0%;
     min-height: 0;
-    overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--ah-border) transparent;
+    overflow: hidden;
     padding: 24px 32px;
     width: 100%;
     box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
   /* 对话页全幅铺满：去掉外边距与外层滚动，由 ah-chat 内部自管滚动。 */
   .content.chat {
@@ -282,12 +282,16 @@ export const sharedStyles = css`
     height: 100%;
     padding: 0;
     overflow: hidden;
+    display: block;
   }
-  /* 插件视图 / MCP 布局：填充内容区剩余空间，避免内容不足时出现滚动条 */
+  /* 各页面根元素填充剩余空间，内容超高时内部滚动 */
+  section,
+  .mcp-layout,
   .plugin-view,
-  .mcp-layout {
+  .wrap {
     flex: 1 1 0%;
     min-height: 0;
+    overflow: auto;
     display: flex;
     flex-direction: column;
   }

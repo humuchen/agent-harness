@@ -120,8 +120,8 @@ export const MCP_PRESETS: McpPreset[] = [
   {
     id: 'fetch',
     name: 'Fetch（网页抓取）',
-    command: 'npx',
-    args: ['-y', 'tokenizin/mcp-npx-fetch'],
+    command: 'node',
+    args: ['access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js'],
     authType: 'none',
     capabilities: ['抓取网页', '提取正文', '内容摘要'],
     docUrl: 'https://www.npmjs.com/package/@tokenizin/mcp-npx-fetch',

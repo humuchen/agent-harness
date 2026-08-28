@@ -680,13 +680,13 @@ export class AhLogin extends LitElement {
       }
       .btn-sso {
         width: 100%;
-        height: 46px;
-        display: inline-flex;
+        /* height: 46px; */
+        /* display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        background: var(--ah-surface-2);
-        border: 1px solid var(--ah-border);
+        gap: 10px; */
+        background: transparent;
+        /* border: 1px solid var(--ah-border); */
         border-radius: var(--ah-radius-pill);
         color: var(--ah-text);
         font-size: 14px;
@@ -959,7 +959,9 @@ export class AhLogin extends LitElement {
       .then((cfg) => {
         if (cfg?.github?.enabled) this.githubEnabled = true;
       })
-      .catch(() => { /* 拉取失败不展示按钮，不影响账号密码登录 */ });
+      .catch(() => {
+        /* 拉取失败不展示按钮，不影响账号密码登录 */
+      });
   }
 
   disconnectedCallback() {
@@ -1299,7 +1301,6 @@ export class AhLogin extends LitElement {
                             d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"
                           />
                         </svg>
-                        使用 GitHub 继续
                       </button>`
                     : nothing}
                   ${this.notice

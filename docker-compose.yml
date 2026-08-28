@@ -31,7 +31,7 @@ services:
       MA_DATA_DIR: '/app/data/ma-lead'
       # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
       # 内置默认清单（未设宿主 MCP_SERVERS 时生效）：rag / context7 / filesystem / fetch / memory / excel。
-      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"npx","args":["-y","tokenizin/mcp-npx-fetch"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
+      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
       RAG_TRANSPORT: '${RAG_TRANSPORT:-mcp}'
       RAG_TENANT_ID: '${RAG_TENANT_ID:-default}'
       RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'

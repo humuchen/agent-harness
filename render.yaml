@@ -58,7 +58,7 @@ services:
       #   filesystem / fetch / memory / excel（stdio，npx 拉起）。
       # 运行时仍可通过 /api/mcp/add 或预设市场动态增删，部署重启后从此清单重新加载。
       - key: MCP_SERVERS
-        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"npx","args":["-y","tokenizin/mcp-npx-fetch"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]'
+        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]'
       - key: RAG_TRANSPORT
         value: mcp
       - key: RAG_TENANT_ID
