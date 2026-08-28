@@ -1501,7 +1501,8 @@ function buildState() {
       toolCount: s.tools.length,
       tools: s.tools.map((t) => ({
         registeredName: t.registeredName,
-        originalName: t.originalName
+        originalName: t.originalName,
+        description: t.description ?? ''
       })),
       error: s.error ?? null
     })),

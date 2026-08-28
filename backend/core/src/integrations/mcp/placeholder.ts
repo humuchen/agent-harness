@@ -264,6 +264,7 @@ async function establishConnection(
     args: config.args,
     env: config.env,
     client,
+    name: config.name,
   });
   const toolsInfo: ToolInfo[] = [];
   const names: string[] = [];
@@ -433,7 +434,7 @@ async function probeOnce(entry: LiveMcp, key: string): Promise<void> {
   }
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('health check timeout')), ms);
     p.then(
@@ -445,6 +446,26 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
         clearTimeout(t);
         reject(e);
       }
+    );
+  });
+}
+
+/**
+ * 包装 MCP 连接 / 工具列表请求的超时。
+ * 在超时或出错时抛出包含 serverLabel + 操作阶段的明确错误信息，
+ * 便于用户在 UI 上快速定位是哪个服务卡住。
+ */
+async function withMcpTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  serverLabel: string,
+  stage: 'connect' | 'listTools'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`Request timed out (>${ms}ms) during ${stage}`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
     );
   });
 }
@@ -588,10 +609,15 @@ async function connectMcpClient(args: {
   args?: string[];
   env?: Record<string, string>;
   client: Client;
+  name?: string;
 }): Promise<{ client: Client; tools: any[] }> {
-  const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client } = args;
+  const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client, name } = args;
+  // 可配置 MCP 连接超时（默认 15s）。过长会导致「添加服务」界面卡顿 —32001 超时误报。
+  const MCP_CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 15000);
+  const serverLabel = name ?? (serverUrl ? `URL ${serverUrl}` : (command ? `command ${command}` : 'unknown'));
+  let connPromise: Promise<void>;
   if (transport) {
-    await client.connect(transport);
+    connPromise = client.connect(transport);
   } else if (serverUrl) {
     let url: URL;
     try {
@@ -605,9 +631,9 @@ async function connectMcpClient(args: {
     const useSse = tt === 'sse' || (tt === 'auto' && url.pathname.endsWith('/sse'));
     const requestInit = headers ? { requestInit: { headers } } : undefined;
     if (useSse) {
-      await client.connect(new SSEClientTransport(url, requestInit));
+      connPromise = client.connect(new SSEClientTransport(url, requestInit));
     } else {
-      await client.connect(new StreamableHTTPClientTransport(url, requestInit));
+      connPromise = client.connect(new StreamableHTTPClientTransport(url, requestInit));
     }
   } else if (useStdio && command) {
     // 重要：SDK 1.30 的 StdioClientTransport 在未显式传 env 时只继承「sudo 白名单」环境变量，
@@ -616,12 +642,20 @@ async function connectMcpClient(args: {
     // 显式 env（MCP_SERVERS 条目 env 字段）仍优先，SDK 按 `{...白名单, ...显式env}` 合并，不丢 PATH。
     const childEnv: Record<string, string> | undefined =
       env ?? Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>;
-    await client.connect(new StdioClientTransport({ command, args: cmdArgs, env: childEnv }));
+    connPromise = client.connect(new StdioClientTransport({ command, args: cmdArgs, env: childEnv }));
   } else {
     throw new Error('未提供 MCP serverUrl / command / transport');
   }
-  const list = await client.listTools();
-  return { client, tools: list.tools };
+  // 用超时包装 connect + listTools，避免单次卡住 60s 的 SDK 默认超时。
+  try {
+    await withMcpTimeout(connPromise, MCP_CONNECT_TIMEOUT_MS, serverLabel, 'connect');
+    const list = await withMcpTimeout(client.listTools(), MCP_CONNECT_TIMEOUT_MS, serverLabel, 'listTools');
+    return { client, tools: list.tools };
+  } catch (e: any) {
+    // 补充服务器上下文信息，便于排查。
+    const detail = e?.message ?? String(e);
+    throw new Error(`MCP server "${serverLabel}" ${detail}`);
+  }
 }
 
 // 将 MCP 工具结果的内容块展平为 LLM 可读取的字符串。

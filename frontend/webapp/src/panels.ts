@@ -211,6 +211,8 @@ export class AhMcp extends LitElement {
   @state() adding = false;
   /** 已接入列表是否展开 */
   @state() serversExpanded = true;
+  /** 每个服务器的工具列表是否展开（key: server name） */
+  @state() toolsExpanded: Record<string, boolean> = {};
 
   /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
   @state() tokens: Record<string, string> = {};
@@ -446,10 +448,25 @@ export class AhMcp extends LitElement {
               ${this.serversExpanded
                 ? html`<ul class="list">
                     ${this.servers.map(
-                      (s) => html`<li>
-                        <b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具
+                      (s) => html`<li class="mcp-server-item">
+                        <div class="mcp-server-header" @click=${() => (this.toolsExpanded = { ...this.toolsExpanded, [s.name]: !this.toolsExpanded[s.name] })}>
+                          <div><b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具</div>
+                          ${s.toolCount > 0
+                            ? html`<span class="chevron">${this.toolsExpanded[s.name] ? '▼' : '▶'}</span>`
+                            : nothing}
+                        </div>
                         ${s.status === 'error' && s.error
                           ? html`<div class="mcp-err">⚠ ${s.error}</div>`
+                          : nothing}
+                        ${this.toolsExpanded[s.name] && s.tools.length > 0
+                          ? html`<ul class="mcp-tools">
+                              ${s.tools.map((t) => html`<li>
+                                <div class="mcp-tool-name">${t.originalName}</div>
+                                ${t.description
+                                  ? html`<div class="mcp-tool-desc" title="${t.description}">${t.description.length > 80 ? t.description.slice(0, 80) + '...' : t.description}</div>`
+                                  : nothing}
+                              </li>`)}
+                            </ul>`
                           : nothing}
                       </li>`
                     )}

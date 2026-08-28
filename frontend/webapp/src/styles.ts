@@ -500,6 +500,50 @@ export const sharedStyles = css`
   label.radio input[type='radio'] {
     cursor: pointer;
   }
+  /* MCP 表单：环境变量编辑区 */
+  .env-list {
+    width: 100%;
+    margin: 8px 0;
+  }
+  /* MCP 已接入列表：服务器项 + 工具列表 */
+  .mcp-server-item {
+    list-style: none;
+    padding: 4px 0;
+  }
+  .mcp-server-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+  }
+  .mcp-server-header:hover .chevron {
+    color: var(--ah-text);
+  }
+  .mcp-tools {
+    list-style: none;
+    margin: 6px 0 0 14px;
+    padding-left: 0;
+    border-left: 1px solid var(--ah-border);
+    padding-top: 4px;
+  }
+  .mcp-tool-name {
+    font-family: var(--ah-font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ah-text);
+  }
+  .mcp-tool-desc {
+    font-size: 11px;
+    color: var(--ah-text-muted);
+    line-height: 1.4;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
   .ghost-link {
     color: var(--ah-accent);
     font-size: 13px;

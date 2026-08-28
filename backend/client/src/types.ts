@@ -256,6 +256,7 @@ export type EnvEvent = EnvStatusEvent | EnvDoneEvent | StreamEvent;
 export interface McpToolRef {
   registeredName: string;
   originalName: string;
+  description?: string;
 }
 
 export interface McpServerMeta {
