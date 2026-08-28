@@ -320,7 +320,11 @@ export const sharedStyles = css`
     gap: 10px;
     align-items: flex-end;
     flex-wrap: wrap;
-    margin: 10px 0;
+    margin-bottom: 10px;
+
+    &:first-child {
+      margin-top: 10px;
+    }
   }
   label {
     display: flex;
@@ -493,13 +497,8 @@ export const sharedStyles = css`
     color: var(--ah-text);
     cursor: pointer;
   }
-  label.radio input[type="radio"] {
+  label.radio input[type='radio'] {
     cursor: pointer;
-  }
-  /* MCP 表单：环境变量编辑区 */
-  .env-list {
-    width: 100%;
-    margin: 8px 0;
   }
   .ghost-link {
     color: var(--ah-accent);
@@ -534,6 +533,21 @@ export const sharedStyles = css`
     text-transform: uppercase;
     color: var(--ah-text-faint);
     margin: 4px 0 10px;
+  }
+  .section-title.collapsible {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+  }
+  .section-title.collapsible:hover .chevron {
+    color: var(--ah-text);
+  }
+  .chevron {
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    transition: transform 120ms ease;
   }
   /* 健康 hero */
   .hero {

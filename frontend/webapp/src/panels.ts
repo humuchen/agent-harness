@@ -209,6 +209,8 @@ export class AhMcp extends LitElement {
 
   /** 添加/接入操作是否进行中（防重复点击） */
   @state() adding = false;
+  /** 已接入列表是否展开 */
+  @state() serversExpanded = true;
 
   /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
   @state() tokens: Record<string, string> = {};
@@ -437,19 +439,24 @@ export class AhMcp extends LitElement {
             </div>
             ${ErrorBox(this.error)}
             <div class="card">
-              <div class="section-title">已接入</div>
-              <ul class="list">
-                ${this.servers.map(
-                  (s) => html`<li>
-                    <b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具
-                    ${s.status === 'error' && s.error
-                      ? html`<div class="mcp-err">⚠ ${s.error}</div>`
-                      : nothing}
-                  </li>`
-                )}
-              </ul>
-              ${this.servers.length === 0
-                ? html`<p class="muted">暂无已接入服务</p>`
+              <div class="section-title collapsible" @click=${() => (this.serversExpanded = !this.serversExpanded)}>
+                <span>已接入</span>
+                <span class="chevron">${this.serversExpanded ? '▼' : '▶'}</span>
+              </div>
+              ${this.serversExpanded
+                ? html`<ul class="list">
+                    ${this.servers.map(
+                      (s) => html`<li>
+                        <b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具
+                        ${s.status === 'error' && s.error
+                          ? html`<div class="mcp-err">⚠ ${s.error}</div>`
+                          : nothing}
+                      </li>`
+                    )}
+                  </ul>
+                  ${this.servers.length === 0
+                    ? html`<p class="muted">暂无已接入服务</p>`
+                    : nothing}`
                 : nothing}
             </div>
           </div>
