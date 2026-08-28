@@ -484,6 +484,18 @@ export const sharedStyles = css`
     flex: 1;
     min-width: 160px;
   }
+  /* MCP 表单：radio 单选钮标签样式 */
+  label.radio {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--ah-text);
+    cursor: pointer;
+  }
+  label.radio input[type="radio"] {
+    cursor: pointer;
+  }
   .ghost-link {
     color: var(--ah-accent);
     font-size: 13px;

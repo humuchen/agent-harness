@@ -153,8 +153,15 @@ export class AhMcp extends LitElement {
 
   @state() servers: McpServerMeta[] = [];
   @state() presets: McpPreset[] = [];
-  @state() name = '';
-  @state() url = '';
+  /** 添加服务表单的状态 */
+  @state() addForm = {
+    name: '',
+    type: 'http' as 'http' | 'stdio',
+    url: '',
+    command: '',
+    params: '',
+    envs: {} as Record<string, string>,
+  };
   /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
   @state() tokens: Record<string, string> = {};
   @state() error: string | null = null;
@@ -177,10 +184,21 @@ export class AhMcp extends LitElement {
 
   private async add() {
     this.error = null;
+    const envEntries = Object.entries(this.addForm.envs).filter(([k]) => k);
     try {
-      await client.addMcpServer({ name: this.name, url: this.url });
-      this.name = '';
-      this.url = '';
+      if (this.addForm.type === 'http') {
+        await client.addMcpServer({ name: this.addForm.name, url: this.addForm.url });
+      } else {
+        // stdio: Command + Params（空格分割）+ Envs
+        const params = this.addForm.params.trim().split(/\s+/).filter(Boolean);
+        await client.addMcpServer({
+          name: this.addForm.name,
+          command: this.addForm.command,
+          args: params,
+          env: envEntries.length > 0 ? Object.fromEntries(envEntries) as Record<string, string> : undefined,
+        });
+      }
+      this.addForm = { name: '', type: 'http', url: '', command: '', params: '', envs: {} };
       await this.refresh();
       this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
     } catch (e: any) {
@@ -200,6 +218,7 @@ export class AhMcp extends LitElement {
   }
 
   render() {
+    const { addForm: af } = this;
     return html`
       <div class="mcp-layout">
         <h2>MCP 服务</h2>
@@ -208,10 +227,31 @@ export class AhMcp extends LitElement {
           <div class="stack">
             <div class="card">
               <div class="section-title">添加服务</div>
-              <div class="row">
-                <label>名称<input .value=${this.name} @input=${(e: Event) => (this.name = (e.target as HTMLInputElement).value)} /></label>
-                <label class="grow">URL<input .value=${this.url} @input=${(e: Event) => (this.url = (e.target as HTMLInputElement).value)} placeholder="https://... 或留空用 command" /></label>
+              <label>名称<input .value=${af.name} @input=${(e: Event) => (this.addForm = { ...this.addForm, name: (e.target as HTMLInputElement).value })} /></label>
+              <div class="row" style="margin-top:8px">
+                <label class="radio"><input type="radio" name="type" value="http" .checked=${af.type === 'http'} @change=${() => (this.addForm = { ...this.addForm, type: 'http' })} /> SSE/HTTP</label>
+                <label class="radio"><input type="radio" name="type" value="stdio" .checked=${af.type === 'stdio'} @change=${() => (this.addForm = { ...this.addForm, type: 'stdio' })} /> STDIO</label>
               </div>
+              ${af.type === 'http'
+                ? html`<label class="grow">URL<input .value=${af.url} @input=${(e: Event) => (this.addForm = { ...this.addForm, url: (e.target as HTMLInputElement).value })} placeholder="https://..." /></label>`
+                : html`<label class="grow">Command<input .value=${af.command} @input=${(e: Event) => (this.addForm = { ...this.addForm, command: (e.target as HTMLInputElement).value })} placeholder="npx" /></label>`}
+              ${af.type === 'stdio'
+                ? html`<label class="grow">Params<input .value=${af.params} @input=${(e: Event) => (this.addForm = { ...this.addForm, params: (e.target as HTMLInputElement).value })} placeholder="-y @tokenizin/mcp-npx-fetch" /></label>`
+                : nothing}
+              ${Object.keys(af.envs).length > 0
+                ? html`<div class="env-list">
+                    ${Object.entries(af.envs).map(([k, v]) => html`
+                      <div class="row">
+                        <input .value=${k} @input=${(e: Event) => { const nk = (e.target as HTMLInputElement).value; const next = { ...this.addForm.envs }; delete next[k]; next[nk] = v; this.addForm = { ...this.addForm, envs: next }; }} placeholder="KEY" />
+                        <input .value=${v} @input=${(e: Event) => (this.addForm = { ...this.addForm, envs: { ...this.addForm.envs, [k]: (e.target as HTMLInputElement).value } })} placeholder="VALUE" />
+                        <button class="ghost" @click=${() => { const { [k]: _, ...rest } = this.addForm.envs; this.addForm = { ...this.addForm, envs: rest }; }}>✕</button>
+                      </div>
+                    `)}
+                  </div>`
+                : nothing}
+              ${af.type === 'stdio'
+                ? html`<div class="row" style="margin-top:8px"><button class="ghost" @click=${() => this.addForm = { ...this.addForm, envs: { ...this.addForm.envs, '': '' } }}>+ 添加环境变量</button></div>`
+                : nothing}
               <div class="row" style="margin-top:12px">
                 <button @click=${() => this.add()}>添加</button>
                 <button class="ghost" @click=${() => this.refresh()}>刷新</button>

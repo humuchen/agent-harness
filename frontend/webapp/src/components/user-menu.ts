@@ -1,7 +1,7 @@
 /**
  * ah-user-menu：顶栏「登录用户」入口（头像 + 下拉菜单）。
  *
- * 位置：顶栏右上角，紧跟「刷新状态」按钮之后。由 ah-login 登录成功后回填会话、或由
+ * 位置：顶栏右上角，由 ah-login 登录成功后回填会话、或由
  * ah-app 挂载后调用 /api/account/me 拉取当前用户资料（username / role / email）。
  *
  * 交互：
@@ -596,7 +596,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-old"
                 type="password"
                 autocomplete="current-password"
-                placholer="请输入当前密码"
+                placeholer="请输入当前密码"
                 .value=${this.oldPw}
                 @input=${(e: InputEvent) =>
                   (this.oldPw = (e.target as HTMLInputElement).value)}
@@ -607,7 +607,7 @@ export class AhUserMenu extends LitElement {
               <input
                 id="pw-new"
                 type="password"
-                placholer="请输入新密码"
+                placeholer="请输入新密码"
                 autocomplete="new-password"
                 .value=${this.newPw}
                 @input=${(e: InputEvent) =>
@@ -620,7 +620,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-confirm"
                 type="password"
                 autocomplete="new-password"
-                placholer="请输入确认密码"
+                placeholer="请输入确认密码"
                 .value=${this.confirmPw}
                 @input=${(e: InputEvent) =>
                   (this.confirmPw = (e.target as HTMLInputElement).value)}

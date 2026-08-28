@@ -98,7 +98,7 @@ const chatShellCss = css`
 
 /**
  * 顶层应用壳：顶栏（连接状态 + 令牌）、Tab 导航、各面板容器。
- * 面板通过 dispatchEvent(new CustomEvent('ah-refresh')) 通知顶栏刷新状态。
+ * 面板通过 dispatchEvent(new CustomEvent('ah-refresh')) 。
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
@@ -108,8 +108,11 @@ export class AhApp extends LitElement {
   @state() private state: ServerState | null = null;
   @state() private err: string | null = null;
   @state() private theme: Theme = getTheme();
-  @state() private me: { username: string; role: string; email: string | null } | null =
-    null;
+  @state() private me: {
+    username: string;
+    role: string;
+    email: string | null;
+  } | null = null;
   @state() private sidebarCollapsed =
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   @state() private drawerOpen = false;
@@ -359,9 +362,6 @@ export class AhApp extends LitElement {
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
-            <button class="ghost" @click=${() => this.refreshState()}>
-              刷新状态
-            </button>
             ${this.me
               ? html`<ah-user-menu
                   username=${this.me.username}
