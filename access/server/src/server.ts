@@ -148,6 +148,22 @@ const HOST = process.env.UI_HOST ?? '0.0.0.0';
 const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
 // GitHub OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 const OAUTH_STATE_COOKIE = 'ah_oauth_state';
+
+// 协议自适应的 GitHub OAuth 回调 URL 构造：
+//   1) 显式 GITHUB_OAUTH_REDIRECT（完整 http(s) URL）→ 直接用，最高优先级；
+//   2) 否则读反向代理注入的 X-Forwarded-Proto（Render/Vercel/Cloud Run 等都会注入）；
+//   3) 兜底：host 为 localhost/127.0.0.1 用 http，其余（生产域名）默认 https。
+// 关键：authorize 跳转 与 callback 换 token 必须返回完全一致的值，否则 GitHub 会因
+// redirect_uri 不一致再次拒绝授权（此前在 Render 上因后端写死 http:// 导致此问题）。
+function githubRedirectUri(req: IncomingMessage): string {
+  const cfg = process.env.GITHUB_OAUTH_REDIRECT || '/api/account/oauth/github/callback';
+  if (cfg.startsWith('http')) return cfg; // 完整 URL，直接采用，不走协议推断
+  const host = req.headers.host ? String(req.headers.host) : '';
+  if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`; // 无 host 兜底（保持原行为）
+  const xfp = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim();
+  const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
+  return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+}
 // LLM 统一密钥 OPEN_API_KEY 仅作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
 // 不再参与站点鉴权；站点鉴权由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
@@ -706,11 +722,7 @@ const server = createServer(
           res.end(JSON.stringify({ ok: false, error: '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。' }));
           return;
         }
-        const cfg = process.env.GITHUB_OAUTH_REDIRECT ||
-          `/api/account/oauth/github/callback`;
-        const redirectUri = cfg.startsWith('http')
-          ? cfg
-          : `${req.headers.host ? `http://${String(req.headers.host)}` : ''}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+        const redirectUri = githubRedirectUri(req);
         const state = randomBytes(16).toString('hex');
         const ghUrl =
           `https://github.com/login/oauth/authorize` +
@@ -745,11 +757,7 @@ const server = createServer(
         }
         if (!code) return fail(400, 'GitHub 未回传授权码。');
         try {
-          const cfg = process.env.GITHUB_OAUTH_REDIRECT ||
-            `/api/account/oauth/github/callback`;
-          const redirectUri = cfg.startsWith('http')
-            ? cfg
-            : `${req.headers.host ? `http://${String(req.headers.host)}` : ''}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+          const redirectUri = githubRedirectUri(req);
           // 换 access_token（GitHub 接受 Accept: application/json）。
           const tokRes = await fetch('https://github.com/login/oauth/access_token', {
             method: 'POST',
