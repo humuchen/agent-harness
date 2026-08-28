@@ -193,6 +193,8 @@ export class AhChat extends LitElement {
 
   /** 是否显示「回到底部」悬浮按钮（仅当用户离开底部时显示）。 */
   @state() private showScrollDown = false;
+  /** 侧栏打开瞬间标记：防止打开后立即被 scrim 点击关闭。 */
+  private _sidebarJustOpened = false;
 
   /** 当前选中模型的上下文窗口上限（token）。来源：模型目录官方 context_length；
    *  0 = 无数据（默认模型 / 自定义模型），「上下文用量」圆环据此隐藏。 */
@@ -992,10 +994,12 @@ export class AhChat extends LitElement {
    * 方便用户自由回看上面的推理文本。
    */
   private scrollThinkToBottom() {
-    const tb = this.renderRoot.querySelector(
-      '.think.live .think-body'
-    ) as HTMLElement | null;
-    if (tb) tb.scrollTop = tb.scrollHeight;
+    requestAnimationFrame(() => {
+      const tb = this.renderRoot.querySelector(
+        '.think.live .think-body'
+      ) as HTMLElement | null;
+      if (tb) tb.scrollTop = tb.scrollHeight;
+    });
   }
 
   /* ----------------------- 会话管理 ----------------------- */
@@ -2562,6 +2566,11 @@ export class AhChat extends LitElement {
   /** 切换移动端侧栏抽屉（≤900px 生效）。 */
   private toggleSidebar() {
     this.sidebarOpen = !this.sidebarOpen;
+    if (this.sidebarOpen) {
+      // 防止打开瞬间触发 scrim 点击导致立即关闭
+      this._sidebarJustOpened = true;
+      setTimeout(() => { this._sidebarJustOpened = false; }, 300);
+    }
   }
 
   /** 切换 PC 端侧栏折叠态（展开/收起）。 */
@@ -3637,7 +3646,10 @@ export class AhChat extends LitElement {
 
       <div
         class="scrim ${this.sidebarOpen ? 'show' : ''}"
-        @click=${() => (this.sidebarOpen = false)}
+        @click=${() => {
+          if (this._sidebarJustOpened) return;
+          this.sidebarOpen = false;
+        }}
       ></div>
       ${this.fullscreenEditOpen
         ? html`<div
