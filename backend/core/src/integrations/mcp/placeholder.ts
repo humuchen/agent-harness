@@ -593,7 +593,14 @@ async function connectMcpClient(args: {
   if (transport) {
     await client.connect(transport);
   } else if (serverUrl) {
-    const url = new URL(serverUrl);
+    let url: URL;
+    try {
+      url = new URL(serverUrl);
+    } catch {
+      throw new Error(
+        `Invalid MCP server URL: "${serverUrl}" — a valid URL must include the protocol (e.g. "https://...")`,
+      );
+    }
     const tt = transportType ?? 'auto';
     const useSse = tt === 'sse' || (tt === 'auto' && url.pathname.endsWith('/sse'));
     const requestInit = headers ? { requestInit: { headers } } : undefined;

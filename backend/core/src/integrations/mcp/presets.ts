@@ -8,7 +8,7 @@ import type { McpTransportType } from './placeholder';
  *
  * authType 决定前端是否展示 token 输入框，以及 headers 如何拼装：
  *   - 'none'    ：无需鉴权（或鉴权已 baked 进 URL，如 Zapier 专属 secret URL）。
- *   - 'bearer'  ：传入 token 后拼 `Authorization: Bearer <token>`（Context7 可选、GitHub/Composio 必需）。
+ *   - 'bearer'  ：传入 token 后拼 `Authorization: Bearer ${token}`，可选、GitHub/Composio 必填。
  *   - 'oauth'   ：走 OAuth 流程，token 同样以 Bearer 注入（此处仅做静态配置接入）。
  *   - 'header'  ：通用请求头（如 X-MCP-Toolsets），由调用方按服务说明提供。
  */
@@ -20,15 +20,23 @@ export interface McpPreset {
   id: string;
   /** 展示名。 */
   name: string;
-  /** 默认接入端点。 */
-  url: string;
-  /** 传输类型（auto 会按 URL 是否以 /sse 结尾自动判定）。 */
-  transportType: McpTransportType;
+  /** 默认接入端点（HTTP/SSE 远端服务器）。stdio 预设时留空。 */
+  url?: string;
+  /** 传输类型（auto 会按 URL 是否以 /sse 结尾自动判定）。stdio 预设时留空。 */
+  transportType?: McpTransportType;
+  /** stdio 启动命令（如 "uvx"、"npx"）。HTTP 预设时留空。 */
+  command?: string;
+  /** stdio 启动参数。HTTP 预设时留空。 */
+  args?: string[];
+  /** stdio 子进程环境变量。HTTP 预设时留空。 */
+  env?: Record<string, string>;
   authType: McpAuthType;
   /** token 输入框的标签（如「GitHub PAT」）。 */
   authLabel?: string;
   /** token 输入框占位符。 */
   authPlaceholder?: string;
+  /** stdio 预设时用于注入 token 的环境变量名（如 MODELSCOPE_API_TOKEN）。HTTP 预设时留空。 */
+  authEnvVar?: string;
   /** 该服务可提供的核心能力（前端以 chip 展示）。 */
   capabilities: string[];
   /** 官方文档 / 注册页。 */
@@ -106,6 +114,19 @@ export const MCP_PRESETS: McpPreset[] = [
     docUrl: 'https://github.com/microsoft/playwright-mcp',
     note: '需自托管：npx @playwright/mcp@latest --port 8931（容器内加 --host 0.0.0.0）。',
   },
+  {
+    id: 'modelscope',
+    name: 'ModelScope（魔塔）',
+    command: 'uvx',
+    args: ['modelscope-mcp-server'],
+    authType: 'bearer',
+    authLabel: 'ModelScope API Key',
+    authPlaceholder: 'msa_...（从 modelscope.cn 获取）',
+    authEnvVar: 'MODELSCOPE_API_TOKEN',
+    capabilities: ['模型调用', '数据集检索', '社区资源'],
+    docUrl: 'https://www.modelscope.cn/mcp',
+    note: '需 ModelScope 账号 + API Key（在 modelscope.cn → 首页 → 访问令牌 获取）。一键接入会自动安装 uvx 模式的 stdio 服务器并注入密钥。',
+  },
 ];
 
 /** 返回全部预设（复制，避免外部修改内部数组）。 */
@@ -120,12 +141,24 @@ export function getPreset(id: string): McpPreset | undefined {
 
 /**
  * 根据预设与可选 token 拼装连接所需的请求头。
- * - 'none'：始终返回 {}（鉴权已 baked 进 URL 或无需鉴权）。
- * - 其余：有 token 才注入 `Authorization: Bearer <token>`，无 token 返回 {}（由调用方决定能否连）。
+ * - 'none': 始终返回 {}（鉴权已 baked 进 URL 或无需鉴权）。
+ * - 其余：有 token 才注入 `Authorization: Bearer ${token}`，无 token 返回 {}（由调用方决定能否连）。
  */
 export function headersForPreset(p: McpPreset, token?: string): Record<string, string> {
   if (p.authType === 'none') return {};
   const t = token && token.trim();
   if (!t) return {};
   return { Authorization: `Bearer ${t}` };
+}
+
+/**
+ * 对于 stdio 预设，将用户填写的 token 注入 env。
+ * `authEnvVar` 指定环境变量名（如 MODELSCOPE_API_TOKEN）。
+ * 返回 undefined 表示无需 env 注入（HTTP 预设或无 token）。
+ */
+export function envForPreset(p: McpPreset, token?: string): Record<string, string> | undefined {
+  if (!p.command || !p.authEnvVar) return undefined;
+  const t = token && token.trim();
+  if (!t) return undefined;
+  return { [p.authEnvVar]: t };
 }

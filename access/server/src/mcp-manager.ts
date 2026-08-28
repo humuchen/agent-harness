@@ -7,6 +7,7 @@ import {
   getPreset,
   listPresets,
   headersForPreset,
+  envForPreset,
   type McpServerMeta,
   type McpServerConfig,
   type McpPreset,
@@ -144,7 +145,7 @@ class McpManager {
    * 一键接入一个预设 MCP 服务。
    * @param id 预设 id（见 MCP_PRESETS）
    * @param token 可选鉴权令牌（GitHub PAT / Composio ck_ / Context7 key 等）；
-   *             按预设的 authType 拼装请求头，无 token 时返回空头（由服务决定是否可连）。
+   *             按预设的 authType 拼装请求头或环境变量，无 token 时不注入。
    */
   async connectPreset(id: string, token?: string): Promise<McpServerMeta> {
     return this.withLock(async () => {
@@ -153,11 +154,14 @@ class McpManager {
         throw new Error(`[mcp-manager] 未知预设: ${id}`);
       }
       const headers = headersForPreset(preset, token);
-      // 复用与 addServer 完全一致的连接路径（connectMcpServer），保持工具前缀等行为统一；
-      // 直接内联调用以避免在 withLock 内再嵌套一层 withLock。
+      const env = envForPreset(preset, token);
+      // HTTP 预设用 serverUrl + headers；stdio 预设用 command + args + env。
       const cfg: McpServerConfig = {
         name: preset.id,
         serverUrl: preset.url,
+        command: preset.command,
+        args: preset.args,
+        env: env ?? preset.env,
         headers,
         transportType: preset.transportType,
       };
