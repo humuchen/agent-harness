@@ -447,6 +447,32 @@ export class AhModelPicker extends LitElement {
     return this.remote.find((r) => r.id === id)?.ctx ?? 0;
   }
 
+  /**
+   * 宿主（chat.ts）在切换会话 / 恢复模型后调用：回抛当前（或指定）模型的官方
+   * 上下文窗口。若无缓存（首次拉取未归位），触发一次静默刷新，归位后由
+   * refreshModels 的 emitCtx 再次回抛。这样「进入会话」时用量圆环能即时显示，
+   * 不必等用户手动重选模型。
+   */
+  requestCtx(model?: string) {
+    const m = model ?? this.model;
+    const ctx = m ? this.ctxFor(m) : 0;
+    this.emitCtx(ctx);
+    if (m && ctx === 0 && !this.remote.length) {
+      void this.refreshModels();
+    }
+  }
+
+  /** 模型属性变化时回抛官方上下文窗口：修复「首屏/切会话后用量圆环不显示，
+   *  需手动重选模型才出现」——首帧渲染绑定 .model 后才拿到值，此前 refreshModels
+   *  的 emitCtx 用的是空 model，故此处补一次回抛，宿主据此显示用量圆环。 */
+  protected updated(changed: Map<string, unknown>) {
+    if (changed.has('model')) {
+      const ctx = this.model ? this.ctxFor(this.model) : 0;
+      this.emitCtx(ctx);
+      if (this.model && ctx === 0 && !this.remote.length) void this.refreshModels();
+    }
+  }
+
   private toggle(open: boolean) {
     this.open = open;
     if (!open) {

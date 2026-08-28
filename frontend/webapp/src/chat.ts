@@ -34,7 +34,8 @@ import type {
   StreamEvent,
   TraceNode,
   TraceKind,
-  PlanExecMirror
+  PlanExecMirror,
+  ChatMessage
 } from '@agent-harness/client';
 import { ApiError } from '@agent-harness/client';
 import { agentContext, type UploadedFile } from './agent-context';
@@ -376,6 +377,43 @@ export class AhChat extends LitElement {
     return idx >= 0 && t && t[idx] ? t[idx] : null;
   }
 
+  /**
+   * 取「截至当前」的会话消息快照，用于调用链路 LLM 节点的「消息上下文」回看。
+   * 与以往在 llm:call 时一次性冻结不同，这里随流式推进实时读取 this.threads，
+   * 因此助手回复生成后会自动纳入，避免「调用链路里只剩用户消息、助手回复丢失」的问题。
+   * 末尾尚未产生内容的 assistant 占位（流式刚开始、本轮回复还没来）不计入。
+   */
+  private snapshotTraceMessages(sid: string): ChatMessage[] {
+    const t = this.threads[sid];
+    if (!Array.isArray(t) || !t.length) return [];
+    const msgs = t.slice();
+    while (
+      msgs.length &&
+      msgs[msgs.length - 1].role === 'assistant' &&
+      !(msgs[msgs.length - 1].content ?? '')
+    ) {
+      msgs.pop();
+    }
+    return msgs.map(
+      (m): ChatMessage => ({
+        role: m.role as ChatMessage['role'],
+        content: m.content ?? '',
+        ts: typeof m.id === 'number' ? m.id : Date.now(),
+        ...(m.reasoning ? { reasoning: m.reasoning } : {})
+      })
+    );
+  }
+
+  /** 流式推进中刷新当前 LLM 节点的消息上下文快照与计数标签。 */
+  private refreshLlmTraceMessages(sid: string, tc: ReturnType<typeof this.traceCtx>) {
+    if (!tc.llm) return;
+    const snap = this.snapshotTraceMessages(sid);
+    tc.llm.messages = snap;
+    if (tc.llm.meta) {
+      tc.llm.meta = { ...tc.llm.meta, messages: `消息 ${snap.length || '?'}` };
+    }
+  }
+
   /** 写入某会话的流式消息（streamIdx 指向的那条），并在该会话为当前显示会话时同步 this.messages 触发重渲染。 */
   private patchSession(sid: string, p: Partial<ChatMsg>) {
     const idx = this.streamIdx[sid];
@@ -386,6 +424,10 @@ export class AhChat extends LitElement {
     nt[idx] = { ...nt[idx], ...p };
     this.threads[sid] = nt;
     if (sid === this.activeId) this.messages = nt;
+    // 流式消息已写入会话缓冲：同步刷新调用链路 LLM 节点的「消息上下文」快照，
+    // 使助手回复生成后自动纳入调用链路（修复「切换/回看时助手消息丢失」）。
+    const tc = this.traces[sid];
+    if (tc && tc.llm) this.refreshLlmTraceMessages(sid, tc);
   }
 
   /** 重置某会话的调用链路追踪瞬态状态（防御上轮残留泄漏到本轮）。 */
@@ -1783,27 +1825,19 @@ export class AhChat extends LitElement {
       case 'llm:call': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
-        // 纯前端：把截至此次调用的会话消息快照挂到节点，点击「消息 N」可就地展开回看。
-        const msgs = this.threads[sid];
-        const messages =
-          Array.isArray(msgs) && ev.messageCount
-            ? msgs
-                .slice(0, Math.max(0, Number(ev.messageCount) || msgs.length))
-                .map((m) => ({
-                  role: m.role,
-                  content: m.content ?? '',
-                  ts: typeof m.id === 'number' ? m.id : Date.now(),
-                  ...(m.reasoning ? { reasoning: m.reasoning } : {})
-                }))
-            : undefined;
+        // 纯前端：把「截至此次调用的会话消息上下文」挂到节点，点击「消息 N」可就地展开回看。
+        // 注意这里实时读取 this.threads（而非一次性按 ev.messageCount 截断），
+        // 助手回复生成后会自动补入，避免「调用链路里助手消息丢失」；
+        // 末尾尚未产出的空 assistant 占位不计入，计数与下方「共 M 条」保持一致。
+        const messages = this.snapshotTraceMessages(sid);
         tc.llm = mk(parent, 'llm', 'LLM 调用', 'ok', {
           meta: {
-            messages: `消息 ${ev.messageCount ?? '?'}`
+            messages: `消息 ${messages.length || '?'}`
             // 不再写入 tools：上游 toolCount 是「注入模型的可用工具数」(schema 量级，如25)，
             // 并非「本次实际执行的工具调用数」。真实执行数应派生自下方实际挂载的子节点，
             // 由 chat-trace.ts 的 LLM 分支从 n.children.length 计算，避免「工具25 却无节点」的误导。
           },
-          ...(messages && messages.length ? { messages } : {})
+          ...(messages.length ? { messages } : {})
         });
         tc.lastTool = null;
         break;
@@ -1815,6 +1849,7 @@ export class AhChat extends LitElement {
               ? Number(tc.llm.meta.reasoningChars)
               : 0) + ev.delta.length;
           tc.llm.meta = { ...(tc.llm.meta ?? {}), reasoningChars: String(n) };
+          this.refreshLlmTraceMessages(sid, tc);
         }
         break;
       }
@@ -1824,6 +1859,7 @@ export class AhChat extends LitElement {
             (tc.llm.meta?.tokenChars ? Number(tc.llm.meta.tokenChars) : 0) +
             ev.delta.length;
           tc.llm.meta = { ...(tc.llm.meta ?? {}), tokenChars: String(n) };
+          this.refreshLlmTraceMessages(sid, tc);
         }
         break;
       }
@@ -3434,6 +3470,11 @@ export class AhChat extends LitElement {
                     } catch {
                       /* ignore */
                     }
+                  }}
+                  @ctx-change=${(e: Event) => {
+                    const d = (e as CustomEvent<{ ctx: number }>).detail;
+                    // 模型目录回抛的官方上下文窗口：有则显示用量圆环，无则隐藏。
+                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
                   }}
                 ></ah-model-picker>
                 ${this.hideCtxRing() ? nothing : this.renderCtxRing()}
