@@ -381,6 +381,17 @@ export const chatStyles = [
       font-variant-numeric: tabular-nums;
       margin-left: 20px;
     }
+    .ctx-bar-meta {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--ah-text-muted);
+    }
+    .ctx-bar-total {
+      font-variant-numeric: tabular-nums;
+    }
     .ctx-seg {
       display: flex;
       height: 8px;

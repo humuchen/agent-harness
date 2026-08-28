@@ -928,10 +928,6 @@ export class AhChat extends LitElement {
               <div class="ctx-pop">
                 <div class="ctx-pop-head">
                   <span>上下文用量</span>
-                  <span class="ctx-pop-total"
-                    >${u.totalTokens.toLocaleString()} /
-                    ${this.fmtK(u.window)}</span
-                  >
                   <button
                     class="ctx-pop-close"
                     title="关闭"
@@ -940,6 +936,15 @@ export class AhChat extends LitElement {
                   >
                     ×
                   </button>
+                </div>
+                <div class="ctx-bar-meta">
+                  <span class="ctx-bar-pct"
+                    >${u.totalPct.toFixed(1)}% 已使用</span
+                  >
+                  <span class="ctx-bar-total"
+                    >${this.fmtK(u.totalTokens)} /
+                    ${this.fmtK(u.window)}</span
+                  >
                 </div>
                 <div class="ctx-seg">
                   ${u.items.map(
