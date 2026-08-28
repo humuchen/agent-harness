@@ -267,7 +267,7 @@ export const sharedStyles = css`
     overflow: hidden;
   }
   .content {
-    flex: 0 1 auto;
+    flex: 1 1 0%;
     min-height: 0;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -283,6 +283,14 @@ export const sharedStyles = css`
     padding: 0;
     overflow: hidden;
   }
+  /* 插件视图 / MCP 布局：填充内容区剩余空间，避免内容不足时出现滚动条 */
+  .plugin-view,
+  .mcp-layout {
+    flex: 1 1 0%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
   section {
     background: var(--ah-surface-1);
     border: 1px solid var(--ah-border);
@@ -290,17 +298,16 @@ export const sharedStyles = css`
     padding: 24px 24px;
     box-shadow: var(--ah-shadow);
   }
+
   .card {
-    background: var(--ah-surface-2);
+    background: var(--ah-surface-1);
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
     padding: 16px 18px;
     max-height: 800px;
     overflow-y: auto;
   }
-  .mcp-layout {
-    /* MCP 页面专用：标题 + 两栏独立卡片，无外层 section 卡片包裹 */
-  }
+
   h2 {
     margin: 0 0 12px;
     font-family: var(--ah-font-display);
@@ -601,8 +608,7 @@ export const sharedStyles = css`
   }
   /* 健康 hero */
   .hero {
-    background: linear-gradient(135deg, var(--ah-accent-soft), transparent 70%),
-      var(--ah-surface-1);
+    background: var(--ah-surface-1);
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-lg);
     padding: 22px 24px;
@@ -641,7 +647,7 @@ export const sharedStyles = css`
     margin-bottom: 16px;
   }
   .kpi {
-    background: var(--ah-surface-2);
+    background: var(--ah-surface-1);
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-lg);
     padding: 16px;
@@ -1457,6 +1463,7 @@ export const sharedStyles = css`
       overflow: visible;
       height: auto;
       flex: none;
+      display: block;
     }
     /* 顶栏吸顶，移动端长页面滚动时仍可随时操作 */
     .topbar {
