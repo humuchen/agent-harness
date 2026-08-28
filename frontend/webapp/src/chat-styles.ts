@@ -1135,11 +1135,45 @@ export const chatStyles = [
       border-bottom: 1px solid var(--ah-border);
     }
     .tmsg-item {
-      padding: 8px 10px;
       border-bottom: 1px solid var(--ah-border);
     }
     .tmsg-item:last-child {
       border-bottom: none;
+    }
+    /* 单条消息折叠摘要行：点击展开完整内容（默认折叠）。 */
+    .tmsg-sum {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      list-style: none;
+    }
+    .tmsg-sum::-webkit-details-marker {
+      display: none;
+    }
+    .tmsg-sum:hover {
+      background: var(--ah-surface-3, #262a31);
+    }
+    .tmsg-preview {
+      flex: 1;
+      min-width: 0;
+      font-size: 11px;
+      color: var(--ah-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tmsg-caret {
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--ah-text-muted);
+      transition: transform 120ms ease;
+    }
+    .tmsg-item[open] > .tmsg-sum > .tmsg-caret {
+      transform: rotate(-180deg);
     }
     .tmsg-role {
       display: inline-block;
@@ -1147,7 +1181,7 @@ export const chatStyles = [
       font-weight: 600;
       padding: 1px 6px;
       border-radius: 5px;
-      margin-bottom: 5px;
+      flex: 0 0 auto;
     }
     .tmsg-item.role-user .tmsg-role {
       background: color-mix(
@@ -1166,6 +1200,7 @@ export const chatStyles = [
       color: var(--ah-text-muted);
     }
     .tmsg-body {
+      padding: 0 10px 8px;
       font-size: 11.5px;
       line-height: 1.55;
       white-space: pre-wrap;
@@ -1177,7 +1212,7 @@ export const chatStyles = [
       font-style: italic;
     }
     .tmsg-reason {
-      margin-top: 5px;
+      margin: 0 10px 8px;
       font-size: 11px;
       line-height: 1.5;
       color: var(--ah-text-muted);

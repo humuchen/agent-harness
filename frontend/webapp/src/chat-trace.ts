@@ -148,15 +148,24 @@ export function renderTraceNode(
                 消息上下文 · 共 ${n.messages.length} 条
               </div>
               ${n.messages.map(
-                (m) =>
-                  html`<div class="tmsg-item role-${m.role}">
-                    <span class="tmsg-role"
-                      >${m.role === 'user'
-                        ? '用户'
-                        : m.role === 'assistant'
-                        ? '助手'
-                        : '系统'}</span
-                    >
+                (m) => {
+                  const raw = m.content ?? '';
+                  const flat = raw.replace(/\s+/g, ' ').trim();
+                  const preview =
+                    flat.length > 48 ? flat.slice(0, 48) + '…' : flat;
+                  const previewCount = raw ? ` · ${[...raw].length}字` : '';
+                  return html`<details class="tmsg-item role-${m.role}">
+                    <summary class="tmsg-sum">
+                      <span class="tmsg-role"
+                        >${m.role === 'user'
+                          ? '用户'
+                          : m.role === 'assistant'
+                          ? '助手'
+                          : '系统'}</span
+                      >
+                      <span class="tmsg-preview">${preview}${previewCount}</span>
+                      <span class="tmsg-caret"></span>
+                    </summary>
                     <div class="tmsg-body">
                       ${m.content
                         ? escapeHtml(m.content)
@@ -167,7 +176,8 @@ export function renderTraceNode(
                           ${escapeHtml(m.reasoning)}
                         </div>`
                       : nothing}
-                  </div>`
+                  </details>`;
+                }
               )}
             </div>`
           : nothing}
