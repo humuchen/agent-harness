@@ -310,6 +310,7 @@ export class AhMcp extends LitElement {
               <div class="section-title">添加服务</div>
               <label
                 >名称<input
+                  placeholder="输入名称"
                   .value=${af.name}
                   @input=${(e: Event) =>
                     (this.addForm = {
@@ -441,39 +442,67 @@ export class AhMcp extends LitElement {
             </div>
             ${ErrorBox(this.error)}
             <div class="card">
-              <div class="section-title collapsible" @click=${() => (this.serversExpanded = !this.serversExpanded)}>
+              <div
+                class="section-title collapsible"
+                @click=${() => (this.serversExpanded = !this.serversExpanded)}
+              >
                 <span>已接入</span>
                 <span class="chevron">${this.serversExpanded ? '▼' : '▶'}</span>
               </div>
               ${this.serversExpanded
                 ? html`<ul class="list">
-                    ${this.servers.map(
-                      (s) => html`<li class="mcp-server-item">
-                        <div class="mcp-server-header" @click=${() => (this.toolsExpanded = { ...this.toolsExpanded, [s.name]: !this.toolsExpanded[s.name] })}>
-                          <div><b>${s.name}</b> · ${s.status} · ${s.toolCount} 工具</div>
-                          ${s.toolCount > 0
-                            ? html`<span class="chevron">${this.toolsExpanded[s.name] ? '▼' : '▶'}</span>`
+                      ${this.servers.map(
+                        (s) => html`<li class="mcp-server-item">
+                          <div
+                            class="mcp-server-header"
+                            @click=${() =>
+                              (this.toolsExpanded = {
+                                ...this.toolsExpanded,
+                                [s.name]: !this.toolsExpanded[s.name]
+                              })}
+                          >
+                            <div>
+                              <b>${s.name}</b> · ${s.status} · ${s.toolCount}
+                              工具
+                            </div>
+                            ${s.toolCount > 0
+                              ? html`<span class="chevron"
+                                  >${this.toolsExpanded[s.name]
+                                    ? '▼'
+                                    : '▶'}</span
+                                >`
+                              : nothing}
+                          </div>
+                          ${s.status === 'error' && s.error
+                            ? html`<div class="mcp-err">⚠ ${s.error}</div>`
                             : nothing}
-                        </div>
-                        ${s.status === 'error' && s.error
-                          ? html`<div class="mcp-err">⚠ ${s.error}</div>`
-                          : nothing}
-                        ${this.toolsExpanded[s.name] && s.tools.length > 0
-                          ? html`<ul class="mcp-tools">
-                              ${s.tools.map((t) => html`<li>
-                                <div class="mcp-tool-name">${t.originalName}</div>
-                                ${t.description
-                                  ? html`<div class="mcp-tool-desc" title="${t.description}">${t.description.length > 80 ? t.description.slice(0, 80) + '...' : t.description}</div>`
-                                  : nothing}
-                              </li>`)}
-                            </ul>`
-                          : nothing}
-                      </li>`
-                    )}
-                  </ul>
-                  ${this.servers.length === 0
-                    ? html`<p class="muted">暂无已接入服务</p>`
-                    : nothing}`
+                          ${this.toolsExpanded[s.name] && s.tools.length > 0
+                            ? html`<ul class="mcp-tools">
+                                ${s.tools.map(
+                                  (t) => html`<li class="mcp-tool-item">
+                                    <div class="mcp-tool-name">
+                                      ${t.originalName}
+                                    </div>
+                                    ${t.description
+                                      ? html`<div
+                                          class="mcp-tool-desc"
+                                          title="${t.description}"
+                                        >
+                                          ${t.description.length > 80
+                                            ? t.description.slice(0, 80) + '...'
+                                            : t.description}
+                                        </div>`
+                                      : nothing}
+                                  </li>`
+                                )}
+                              </ul>`
+                            : nothing}
+                        </li>`
+                      )}
+                    </ul>
+                    ${this.servers.length === 0
+                      ? html`<p class="muted">暂无已接入服务</p>`
+                      : nothing}`
                 : nothing}
             </div>
           </div>

@@ -59,6 +59,8 @@ interface LiveMcp {
   reconnecting: boolean;
   closed: boolean;
   probeTimer?: ReturnType<typeof setInterval>;
+  /** 连续健康探测失败次数（达到阈值后才触发重连，避免单次探测抖动误伤） */
+  consecutiveProbeFailures: number;
 }
 
 const liveClients = new Map<string, LiveMcp>();
@@ -251,7 +253,8 @@ function slugFromUrl(url: string): string {
 async function establishConnection(
   registry: ToolRegistry,
   config: McpConnectionConfig,
-  initialTransport?: Transport
+  initialTransport?: Transport,
+  timeoutMs?: number
 ): Promise<{ client: Client; names: string[]; toolsInfo: ToolInfo[] }> {
   const client = new Client({ name: 'agent-harness-ts', version: '0.1.0' });
   const conn = await connectMcpClient({
@@ -265,6 +268,7 @@ async function establishConnection(
     env: config.env,
     client,
     name: config.name,
+    timeoutMs,
   });
   const toolsInfo: ToolInfo[] = [];
   const names: string[] = [];
@@ -412,6 +416,9 @@ function stopProbe(entry: LiveMcp): void {
   }
 }
 
+/** 健康探测连续失败 N 次后才触发重连，避免单次探测抖动误伤导致的连接闪断。 */
+const PROBE_FAILURE_THRESHOLD = Math.max(1, Number(process.env.MCP_PROBE_FAILURE_THRESHOLD ?? '2') || 1);
+
 async function probeOnce(entry: LiveMcp, key: string): Promise<void> {
   if (entry.closed || entry.reconnecting) return;
   const client = entry.client as any;
@@ -425,12 +432,20 @@ async function probeOnce(entry: LiveMcp, key: string): Promise<void> {
     entry.meta.lastHealthyAt = entry.lastHealthyAt;
     entry.reconnectAttempts = 0;
     entry.meta.reconnectAttempts = 0;
+    entry.consecutiveProbeFailures = 0;
   } catch {
+    entry.consecutiveProbeFailures = (entry.consecutiveProbeFailures ?? 0) + 1;
     entry.health = 'unhealthy';
     entry.meta.health = 'unhealthy';
     incCounter('mcp.health.fail');
-    structLog('warn', 'mcp health check failed, triggering reconnect', { server: key });
-    await performReconnect(key);
+    // 仅在连续失败达到阈值时才触发重连，避免单次探测超时导致的误伤。
+    if (entry.consecutiveProbeFailures >= PROBE_FAILURE_THRESHOLD) {
+      structLog('warn', 'mcp health check failed, triggering reconnect', { server: key, failures: entry.consecutiveProbeFailures });
+      entry.consecutiveProbeFailures = 0; // 重置，避免重复触发
+      await performReconnect(key);
+    } else {
+      structLog('warn', 'mcp health check failed (will retry before reconnect)', { server: key, failures: entry.consecutiveProbeFailures, threshold: PROBE_FAILURE_THRESHOLD });
+    }
   }
 }
 
@@ -523,6 +538,7 @@ export async function registerMcpTools(
       reconnectAttempts: 0,
       reconnecting: false,
       closed: false,
+      consecutiveProbeFailures: 0,
     });
     // 内存传输（测试）不探测；远端/stdio 挂健康探测以自愈。
     const entry = liveClients.get('__default__');
@@ -581,6 +597,7 @@ export async function connectMcpServer(
       reconnectAttempts: 0,
       reconnecting: false,
       closed: false,
+      consecutiveProbeFailures: 0,
     });
     meta.status = 'connected';
     meta.health = 'healthy';
@@ -610,10 +627,12 @@ async function connectMcpClient(args: {
   env?: Record<string, string>;
   client: Client;
   name?: string;
+  timeoutMs?: number;
 }): Promise<{ client: Client; tools: any[] }> {
-  const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client, name } = args;
+  const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client, name, timeoutMs } = args;
   // 可配置 MCP 连接超时（默认 15s）。过长会导致「添加服务」界面卡顿 —32001 超时误报。
-  const MCP_CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 15000);
+  // 重连路径传入较短的 timeoutMs，避免健康探测周期内二次卡住。
+  const MCP_CONNECT_TIMEOUT_MS = timeoutMs ?? Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 15000);
   const serverLabel = name ?? (serverUrl ? `URL ${serverUrl}` : (command ? `command ${command}` : 'unknown'));
   let connPromise: Promise<void>;
   if (transport) {

@@ -526,6 +526,10 @@ export const sharedStyles = css`
     padding-left: 0;
     border-left: 1px solid var(--ah-border);
     padding-top: 4px;
+
+    .mcp-tool-item {
+      padding-left: 8px;
+    }
   }
   .mcp-tool-name {
     font-family: var(--ah-font-mono);
