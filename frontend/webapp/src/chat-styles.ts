@@ -44,14 +44,14 @@ export const chatStyles = [
       flex-direction: column;
       gap: 8px;
       padding: 0 14px 10px;
-      align-items: end;
+      align-items: center;
     }
     .collapse-btn {
       width: 28px;
       height: 28px;
       padding: 0;
       border-radius: 6px;
-      /* border: 1px solid var(--ah-border); */
+      border: 1px solid var(--ah-border);
       background: transparent;
       color: var(--ah-text-muted);
       font-size: 14px;
