@@ -131,6 +131,53 @@ class McpManager {
     });
   }
 
+  /**
+   * 后台接入 MCP 服务（非阻塞）：立刻返回一个「connecting」占位 meta，
+   * 然后异步执行 connectMcpServer；连接结果通过后续 refresh / 健康探测反映到状态上。
+   * 用于「添加服务」API 响应，避免因 stdio 服务器启动耗时（如 uvx 下载包）
+   * 而阻塞 HTTP 响应 — 用户立即可见「连接中」，刷新后或自动探测到最终状态。
+   */
+  addServerBackground(config: McpServerConfig): McpServerMeta {
+    if (!config.serverUrl && !config.command) {
+      throw new Error(
+        `[mcp-manager] addServerBackground 需要至少一个连接目标 (serverUrl 或 command)，收到: ${JSON.stringify(config)}`
+      );
+    }
+    const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
+    this.configs.set(clean, config);
+    // 同步推入占位 meta，立即可见。
+    const idx = this.servers.findIndex((s) => s.name === clean);
+    const placeholder: McpServerMeta = {
+      name: clean,
+      url: config.serverUrl,
+      command: config.command,
+      status: 'connecting',
+      health: 'unknown',
+      tools: [],
+      transportType: config.transportType ?? 'auto',
+      reconnectAttempts: 0,
+    };
+    if (idx >= 0) this.servers[idx] = placeholder;
+    else this.servers.push(placeholder);
+    // 异步执行 — 不阻塞 HTTP 响应。
+    this.withLock(async () => {
+      const meta = await connectMcpServer(this.registry, {
+        name: clean,
+        serverUrl: config.serverUrl,
+        command: config.command,
+        args: config.args,
+        env: config.env,
+        headers: config.headers,
+        transportType: config.transportType,
+      });
+      const i = this.servers.findIndex((s) => s.name === clean);
+      if (i >= 0) this.servers[i] = meta;
+      else this.servers.push(meta);
+      return meta;
+    });
+    return placeholder;
+  }
+
   list(): McpServerMeta[] {
     // 返回副本，避免调用方直接篡改内部状态。
     return [...this.servers];
@@ -148,26 +195,25 @@ class McpManager {
    *             按预设的 authType 拼装请求头或环境变量，无 token 时不注入。
    */
   async connectPreset(id: string, token?: string): Promise<McpServerMeta> {
-    return this.withLock(async () => {
-      const preset = getPreset(id);
-      if (!preset) {
-        throw new Error(`[mcp-manager] 未知预设: ${id}`);
-      }
-      const headers = headersForPreset(preset, token);
-      const env = envForPreset(preset, token);
-      // HTTP 预设用 serverUrl + headers；stdio 预设用 command + args + env。
-      const cfg: McpServerConfig = {
-        name: preset.id,
-        serverUrl: preset.url,
-        command: preset.command,
-        args: preset.args,
-        env: env ?? preset.env,
-        headers,
-        transportType: preset.transportType,
-      };
-      this.configs.set(preset.id, cfg);
-      return this.addServerUnguarded(cfg);
-    });
+    const preset = getPreset(id);
+    if (!preset) {
+      throw new Error(`[mcp-manager] 未知预设: ${id}`);
+    }
+    const headers = headersForPreset(preset, token);
+    const env = envForPreset(preset, token);
+    // HTTP 预设用 serverUrl + headers；stdio 预设用 command + args + env。
+    const cfg: McpServerConfig = {
+      name: preset.id,
+      serverUrl: preset.url,
+      command: preset.command,
+      args: preset.args,
+      env: env ?? preset.env,
+      headers,
+      transportType: preset.transportType,
+    };
+    // 使用非阻塞接入：返回「connecting」占位状态，连接异步执行。
+    // addServerBackground 内部通过 withLock 串行化异步连接。
+    return this.addServerBackground(cfg);
   }
 
   /** 当前所有 MCP 工具所在的共享注册表（供 Agent 运行合并）。 */

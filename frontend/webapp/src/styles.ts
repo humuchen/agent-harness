@@ -320,7 +320,7 @@ export const sharedStyles = css`
     gap: 10px;
     align-items: flex-end;
     flex-wrap: wrap;
-    margin-bottom: 10px;
+    margin: 10px 0;
   }
   label {
     display: flex;
@@ -495,6 +495,11 @@ export const sharedStyles = css`
   }
   label.radio input[type="radio"] {
     cursor: pointer;
+  }
+  /* MCP 表单：环境变量编辑区 */
+  .env-list {
+    width: 100%;
+    margin: 8px 0;
   }
   .ghost-link {
     color: var(--ah-accent);

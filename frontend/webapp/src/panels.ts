@@ -6,7 +6,7 @@ import type {
   EnvAction,
   McpServerMeta,
   McpPreset,
-  ApprovalTicket,
+  ApprovalTicket
 } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 
@@ -61,12 +61,19 @@ export class AhVerify extends LitElement {
     return html`
       <section>
         <h2>自检 / 验证</h2>
-        <p class="muted">对服务端能力做三组断言（MCP 连接 / 护栏 / 环境流水线时序）。</p>
+        <p class="muted">
+          对服务端能力做三组断言（MCP 连接 / 护栏 / 环境流水线时序）。
+        </p>
         <div class="row">
           <button ?disabled=${this.running} @click=${() => this.run()}>
             ${this.running ? '验证中…' : '运行验证'}
           </button>
-          <button ?disabled=${!this.running} @click=${() => this.abort?.abort()}>停止</button>
+          <button
+            ?disabled=${!this.running}
+            @click=${() => this.abort?.abort()}
+          >
+            停止
+          </button>
         </div>
         ${ErrorBox(this.error)}
         <div class="stream">${this.events.map(EventRow)}</div>
@@ -102,11 +109,13 @@ export class AhEnv extends LitElement {
         ttl_hours: this.ttl ? Number(this.ttl) : undefined,
         region: this.region || undefined,
         owner: this.owner || undefined,
-        env_id: this.envId || undefined,
+        env_id: this.envId || undefined
       })) {
         this.events = [...this.events, ev];
       }
-      this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
+      this.dispatchEvent(
+        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+      );
     } catch (e: any) {
       this.error = String(e?.message ?? e);
     } finally {
@@ -122,16 +131,50 @@ export class AhEnv extends LitElement {
         <div class="row">
           <label>
             动作
-            <select @change=${(e: Event) => (this.action = (e.target as HTMLSelectElement).value as EnvAction)}>
+            <select
+              @change=${(e: Event) =>
+                (this.action = (e.target as HTMLSelectElement)
+                  .value as EnvAction)}
+            >
               <option value="create">创建</option>
               <option value="destroy">销毁</option>
             </select>
           </label>
-          <label>分支<input .value=${this.branch} ?disabled=${!isCreate} @input=${(e: Event) => (this.branch = (e.target as HTMLInputElement).value)} /></label>
-          <label>TTL(小时)<input .value=${this.ttl} ?disabled=${!isCreate} @input=${(e: Event) => (this.ttl = (e.target as HTMLInputElement).value)} /></label>
-          <label>区域<input .value=${this.region} ?disabled=${!isCreate} @input=${(e: Event) => (this.region = (e.target as HTMLInputElement).value)} /></label>
-          <label>拥有者<input .value=${this.owner} ?disabled=${!isCreate} @input=${(e: Event) => (this.owner = (e.target as HTMLInputElement).value)} /></label>
-          <label>env_id(销毁时填)<input .value=${this.envId} ?disabled=${isCreate} @input=${(e: Event) => (this.envId = (e.target as HTMLInputElement).value)} /></label>
+          <label
+            >分支<input
+              .value=${this.branch}
+              ?disabled=${!isCreate}
+              @input=${(e: Event) =>
+                (this.branch = (e.target as HTMLInputElement).value)}
+          /></label>
+          <label
+            >TTL(小时)<input
+              .value=${this.ttl}
+              ?disabled=${!isCreate}
+              @input=${(e: Event) =>
+                (this.ttl = (e.target as HTMLInputElement).value)}
+          /></label>
+          <label
+            >区域<input
+              .value=${this.region}
+              ?disabled=${!isCreate}
+              @input=${(e: Event) =>
+                (this.region = (e.target as HTMLInputElement).value)}
+          /></label>
+          <label
+            >拥有者<input
+              .value=${this.owner}
+              ?disabled=${!isCreate}
+              @input=${(e: Event) =>
+                (this.owner = (e.target as HTMLInputElement).value)}
+          /></label>
+          <label
+            >env_id(销毁时填)<input
+              .value=${this.envId}
+              ?disabled=${isCreate}
+              @input=${(e: Event) =>
+                (this.envId = (e.target as HTMLInputElement).value)}
+          /></label>
         </div>
         <div class="row">
           <button ?disabled=${this.running} @click=${() => this.submit()}>
@@ -153,6 +196,7 @@ export class AhMcp extends LitElement {
 
   @state() servers: McpServerMeta[] = [];
   @state() presets: McpPreset[] = [];
+
   /** 添加服务表单的状态 */
   @state() addForm = {
     name: '',
@@ -160,10 +204,15 @@ export class AhMcp extends LitElement {
     url: '',
     command: '',
     params: '',
-    envs: {} as Record<string, string>,
+    envs: {} as Record<string, string>
   };
+
+  /** 添加/接入操作是否进行中（防重复点击） */
+  @state() adding = false;
+
   /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
   @state() tokens: Record<string, string> = {};
+
   @state() error: string | null = null;
 
   connectedCallback() {
@@ -174,7 +223,10 @@ export class AhMcp extends LitElement {
   private async refresh() {
     this.error = null;
     try {
-      const [s, p] = await Promise.all([client.getMcpServers(), client.getMcpPresets()]);
+      const [s, p] = await Promise.all([
+        client.getMcpServers(),
+        client.getMcpPresets()
+      ]);
       this.servers = s.servers;
       this.presets = p.presets;
     } catch (e: any) {
@@ -183,11 +235,16 @@ export class AhMcp extends LitElement {
   }
 
   private async add() {
+    if (this.adding) return;
+    this.adding = true;
     this.error = null;
     const envEntries = Object.entries(this.addForm.envs).filter(([k]) => k);
     try {
       if (this.addForm.type === 'http') {
-        await client.addMcpServer({ name: this.addForm.name, url: this.addForm.url });
+        await client.addMcpServer({
+          name: this.addForm.name,
+          url: this.addForm.url
+        });
       } else {
         // stdio: Command + Params（空格分割）+ Envs
         const params = this.addForm.params.trim().split(/\s+/).filter(Boolean);
@@ -195,25 +252,45 @@ export class AhMcp extends LitElement {
           name: this.addForm.name,
           command: this.addForm.command,
           args: params,
-          env: envEntries.length > 0 ? Object.fromEntries(envEntries) as Record<string, string> : undefined,
+          env:
+            envEntries.length > 0
+              ? (Object.fromEntries(envEntries) as Record<string, string>)
+              : undefined
         });
       }
-      this.addForm = { name: '', type: 'http', url: '', command: '', params: '', envs: {} };
+      this.addForm = {
+        name: '',
+        type: 'http',
+        url: '',
+        command: '',
+        params: '',
+        envs: {}
+      };
       await this.refresh();
-      this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
+      this.dispatchEvent(
+        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+      );
     } catch (e: any) {
       this.error = String(e?.message ?? e);
+    } finally {
+      this.adding = false;
     }
   }
 
   private async preset(id: string, token?: string) {
+    if (this.adding) return;
+    this.adding = true;
     this.error = null;
     try {
       await client.connectMcpPreset(id, token);
       await this.refresh();
-      this.dispatchEvent(new CustomEvent('ah-refresh', { bubbles: true, composed: true }));
+      this.dispatchEvent(
+        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+      );
     } catch (e: any) {
       this.error = String(e?.message ?? e);
+    } finally {
+      this.adding = false;
     }
   }
 
@@ -227,34 +304,135 @@ export class AhMcp extends LitElement {
           <div class="stack">
             <div class="card">
               <div class="section-title">添加服务</div>
-              <label>名称<input .value=${af.name} @input=${(e: Event) => (this.addForm = { ...this.addForm, name: (e.target as HTMLInputElement).value })} /></label>
+              <label
+                >名称<input
+                  .value=${af.name}
+                  @input=${(e: Event) =>
+                    (this.addForm = {
+                      ...this.addForm,
+                      name: (e.target as HTMLInputElement).value
+                    })}
+              /></label>
               <div class="row" style="margin-top:8px">
-                <label class="radio"><input type="radio" name="type" value="http" .checked=${af.type === 'http'} @change=${() => (this.addForm = { ...this.addForm, type: 'http' })} /> SSE/HTTP</label>
-                <label class="radio"><input type="radio" name="type" value="stdio" .checked=${af.type === 'stdio'} @change=${() => (this.addForm = { ...this.addForm, type: 'stdio' })} /> STDIO</label>
+                <label class="radio"
+                  ><input
+                    type="radio"
+                    name="type"
+                    value="http"
+                    .checked=${af.type === 'http'}
+                    @change=${() =>
+                      (this.addForm = { ...this.addForm, type: 'http' })}
+                  />
+                  SSE/HTTP</label
+                >
+                <label class="radio"
+                  ><input
+                    type="radio"
+                    name="type"
+                    value="stdio"
+                    .checked=${af.type === 'stdio'}
+                    @change=${() =>
+                      (this.addForm = { ...this.addForm, type: 'stdio' })}
+                  />
+                  STDIO</label
+                >
               </div>
               ${af.type === 'http'
-                ? html`<label class="grow">URL<input .value=${af.url} @input=${(e: Event) => (this.addForm = { ...this.addForm, url: (e.target as HTMLInputElement).value })} placeholder="https://..." /></label>`
-                : html`<label class="grow">Command<input .value=${af.command} @input=${(e: Event) => (this.addForm = { ...this.addForm, command: (e.target as HTMLInputElement).value })} placeholder="npx" /></label>`}
+                ? html`<label class="grow"
+                    >URL<input
+                      .value=${af.url}
+                      @input=${(e: Event) =>
+                        (this.addForm = {
+                          ...this.addForm,
+                          url: (e.target as HTMLInputElement).value
+                        })}
+                      placeholder="https://..."
+                  /></label>`
+                : html`<label class="grow"
+                    >Command<input
+                      .value=${af.command}
+                      @input=${(e: Event) =>
+                        (this.addForm = {
+                          ...this.addForm,
+                          command: (e.target as HTMLInputElement).value
+                        })}
+                      placeholder="npx"
+                  /></label>`}
               ${af.type === 'stdio'
-                ? html`<label class="grow">Params<input .value=${af.params} @input=${(e: Event) => (this.addForm = { ...this.addForm, params: (e.target as HTMLInputElement).value })} placeholder="-y @tokenizin/mcp-npx-fetch" /></label>`
+                ? html`<label class="grow"
+                    >Params<input
+                      .value=${af.params}
+                      @input=${(e: Event) =>
+                        (this.addForm = {
+                          ...this.addForm,
+                          params: (e.target as HTMLInputElement).value
+                        })}
+                      placeholder="-y @tokenizin/mcp-npx-fetch"
+                  /></label>`
                 : nothing}
               ${Object.keys(af.envs).length > 0
                 ? html`<div class="env-list">
-                    ${Object.entries(af.envs).map(([k, v]) => html`
-                      <div class="row">
-                        <input .value=${k} @input=${(e: Event) => { const nk = (e.target as HTMLInputElement).value; const next = { ...this.addForm.envs }; delete next[k]; next[nk] = v; this.addForm = { ...this.addForm, envs: next }; }} placeholder="KEY" />
-                        <input .value=${v} @input=${(e: Event) => (this.addForm = { ...this.addForm, envs: { ...this.addForm.envs, [k]: (e.target as HTMLInputElement).value } })} placeholder="VALUE" />
-                        <button class="ghost" @click=${() => { const { [k]: _, ...rest } = this.addForm.envs; this.addForm = { ...this.addForm, envs: rest }; }}>✕</button>
-                      </div>
-                    `)}
+                    ${Object.entries(af.envs).map(
+                      ([k, v]) => html`
+                        <div class="row">
+                          <input
+                            .value=${k}
+                            @input=${(e: Event) => {
+                              const nk = (e.target as HTMLInputElement).value;
+                              const next = { ...this.addForm.envs };
+                              delete next[k];
+                              next[nk] = v;
+                              this.addForm = { ...this.addForm, envs: next };
+                            }}
+                            placeholder="KEY"
+                          />
+                          <input
+                            .value=${v}
+                            @input=${(e: Event) =>
+                              (this.addForm = {
+                                ...this.addForm,
+                                envs: {
+                                  ...this.addForm.envs,
+                                  [k]: (e.target as HTMLInputElement).value
+                                }
+                              })}
+                            placeholder="VALUE"
+                          />
+                          <button
+                            class="ghost"
+                            @click=${() => {
+                              const { [k]: _, ...rest } = this.addForm.envs;
+                              this.addForm = { ...this.addForm, envs: rest };
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      `
+                    )}
                   </div>`
                 : nothing}
               ${af.type === 'stdio'
-                ? html`<div class="row" style="margin-top:8px"><button class="ghost" @click=${() => this.addForm = { ...this.addForm, envs: { ...this.addForm.envs, '': '' } }}>+ 添加环境变量</button></div>`
+                ? html`<div class="row" style="margin-top:8px">
+                    <button
+                      class="ghost"
+                      @click=${() =>
+                        (this.addForm = {
+                          ...this.addForm,
+                          envs: { ...this.addForm.envs, '': '' }
+                        })}
+                    >
+                      + 添加环境变量
+                    </button>
+                  </div>`
                 : nothing}
               <div class="row" style="margin-top:12px">
-                <button @click=${() => this.add()}>添加</button>
-                <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+                <button @click=${() => this.add()} ?disabled=${this.adding}>
+                  ${this.adding ? '连接中...' : '添加'}
+                </button>
+                <button class="ghost" @click=${() => this.refresh()}>
+                  刷新
+                </button>
               </div>
             </div>
             ${ErrorBox(this.error)}
@@ -270,7 +448,9 @@ export class AhMcp extends LitElement {
                   </li>`
                 )}
               </ul>
-              ${this.servers.length === 0 ? html`<p class="muted">暂无已接入服务</p>` : nothing}
+              ${this.servers.length === 0
+                ? html`<p class="muted">暂无已接入服务</p>`
+                : nothing}
             </div>
           </div>
 
@@ -285,7 +465,10 @@ export class AhMcp extends LitElement {
                         >${p.authLabel ?? 'Token'}<input
                           .value=${this.tokens[p.id] ?? ''}
                           @input=${(e: Event) =>
-                            (this.tokens = { ...this.tokens, [p.id]: (e.target as HTMLInputElement).value })}
+                            (this.tokens = {
+                              ...this.tokens,
+                              [p.id]: (e.target as HTMLInputElement).value
+                            })}
                           placeholder=${p.authPlaceholder ?? ''}
                       /></label>`
                     : nothing;
@@ -293,23 +476,38 @@ export class AhMcp extends LitElement {
                   <div class="preset-head">
                     <b>${p.name}</b>
                     <span class="chip">${p.authType}</span>
-                    ${p.recommended ? html`<span class="chip ok">推荐</span>` : nothing}
+                    ${p.recommended
+                      ? html`<span class="chip ok">推荐</span>`
+                      : nothing}
                   </div>
-                  ${p.note ? html`<div class="muted preset-note">${p.note}</div>` : nothing}
+                  ${p.note
+                    ? html`<div class="muted preset-note">${p.note}</div>`
+                    : nothing}
                   ${p.oneClick === false
                     ? html`<div class="row" style="margin-top:8px">
-                        <a class="ghost-link" href=${p.docUrl ?? '#'} target="_blank" rel="noopener"
+                        <a
+                          class="ghost-link"
+                          href=${p.docUrl ?? '#'}
+                          target="_blank"
+                          rel="noopener"
                           >查看接入说明 ›</a
                         >
                       </div>`
                     : html`<div class="row" style="margin-top:8px">
                         ${tokenInput}
-                        <button @click=${() => this.preset(p.id, this.tokens[p.id])}>一键接入</button>
+                        <button
+                          @click=${() => this.preset(p.id, this.tokens[p.id])}
+                          ?disabled=${this.adding}
+                        >
+                          ${this.adding ? '连接中...' : '一键接入'}
+                        </button>
                       </div>`}
                 </li>`;
               })}
             </ul>
-            ${this.presets.length === 0 ? html`<p class="muted">暂无预设</p>` : nothing}
+            ${this.presets.length === 0
+              ? html`<p class="muted">暂无预设</p>`
+              : nothing}
           </div>
         </div>
       </div>
@@ -365,9 +563,22 @@ export class AhApprovals extends LitElement {
                 (a) => html`
                   <li>
                     <b>${a.id}</b> · ${a.action} · ${a.status}<br />
-                    <span class="muted">decision: ${a.decision ?? '-'}${a.note ? ' / ' + a.note : ''}</span><br />
-                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'approve')}>通过</button>
-                    <button ?disabled=${a.status !== 'pending'} @click=${() => this.decide(a.id, 'reject')}>拒绝</button>
+                    <span class="muted"
+                      >decision:
+                      ${a.decision ?? '-'}${a.note ? ' / ' + a.note : ''}</span
+                    ><br />
+                    <button
+                      ?disabled=${a.status !== 'pending'}
+                      @click=${() => this.decide(a.id, 'approve')}
+                    >
+                      通过
+                    </button>
+                    <button
+                      ?disabled=${a.status !== 'pending'}
+                      @click=${() => this.decide(a.id, 'reject')}
+                    >
+                      拒绝
+                    </button>
                   </li>
                 `
               )}

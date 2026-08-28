@@ -2845,7 +2845,10 @@ async function handleMcpAdd(
     sub: ctx.sub
   });
   try {
-    const meta = await mcpManager.addServer({
+    // 使用非阻塞接入：立刻返回「connecting」占位状态，避免 stdio 服务器
+    // 启动耗时（如 uvx 下载包）阻塞 HTTP 响应。连接结果通过后续
+    // /api/mcp/list 或健康探测反映到状态上。
+    const meta = mcpManager.addServerBackground({
       name,
       serverUrl,
       command,
