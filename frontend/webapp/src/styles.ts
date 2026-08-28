@@ -15,8 +15,7 @@ export const sharedStyles = css`
     font-family: var(--ah-font-sans);
     font-size: 14px;
     line-height: 1.5;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     overflow: hidden;
   }
   /* 滚动条：细轨道、圆角滑块，hover 才高亮，保持界面干净 */
@@ -295,6 +294,8 @@ export const sharedStyles = css`
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
     padding: 16px 18px;
+    max-height: 800px;
+    overflow-y: auto;
   }
   .mcp-layout {
     /* MCP 页面专用：标题 + 两栏独立卡片，无外层 section 卡片包裹 */
