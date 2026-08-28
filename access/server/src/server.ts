@@ -2393,6 +2393,46 @@ async function handleRun(
         const finalStr = String(ev.final);
         const last = getChatSession(chatSessionId, ctx.sub)?.messages.at(-1);
         if (traceRoot) traceRoot.status = 'ok';
+        // 补全调用链路中 LLM 节点的「消息上下文」：llm:call 发生时 assistant 尚未落盘，
+        // 导致 trace 节点 messages 只有用户消息、meta 却显示「消息 N」，重新进入历史后
+        // 点开调用链路看不到 agent 助理内容。run:end 时 assistant 内容已完整，用当前
+        // 会话消息 + 本次回答重建每个 LLM 节点的 messages。
+        if (traceRoot && chatSessionId) {
+          const sess = getChatSession(chatSessionId, ctx.sub);
+          if (sess) {
+            const fullMsgs: ChatMessage[] = [
+              ...sess.messages,
+              {
+                role: 'assistant',
+                content: finalStr,
+                ts: Date.now(),
+                ...(reasoningBuf ? { reasoning: reasoningBuf } : {})
+              }
+            ];
+            const countFromMeta = (meta?: Record<string, string>) => {
+              const raw = meta?.messages ?? '';
+              const m = raw.match(/(\d+)/);
+              return m ? Number(m[1]) : 0;
+            };
+            const rebuildMessages = (node: TraceNode) => {
+              if (node.kind === 'llm' && node.messages) {
+                const want = countFromMeta(node.meta);
+                if (want > 0) {
+                  node.messages = fullMsgs
+                    .slice(0, Math.min(want, fullMsgs.length))
+                    .map((m) => ({
+                      role: m.role,
+                      content: m.content ?? '',
+                      ts: m.ts,
+                      ...(m.reasoning ? { reasoning: m.reasoning } : {})
+                    }));
+                }
+              }
+              node.children.forEach(rebuildMessages);
+            };
+            rebuildMessages(traceRoot);
+          }
+        }
         // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
         if (!isPlanPropose) {
           updatePlanStatus(chatSessionId, (prev) => {

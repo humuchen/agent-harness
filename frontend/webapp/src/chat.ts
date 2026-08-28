@@ -414,6 +414,66 @@ export class AhChat extends LitElement {
     }
   }
 
+  /**
+   * 用当前线程完整内容重建某会话追踪树中所有 LLM 节点的 messages 上下文。
+   * run 收尾时调用：避免打字机缓冲在落盘前尚未完全揭示，导致 trace 中 assistant
+   * 内容缺失或为空。
+   */
+  private rebuildTraceMessages(sid: string) {
+    const tc = this.traces[sid];
+    if (!tc?.root) return;
+    const t = this.threads[sid];
+    if (!t?.length) return;
+    const fullMsgs = this.snapshotTraceMessages(sid);
+    const countFromMeta = (meta?: Record<string, string>) => {
+      const raw = meta?.messages ?? '';
+      const m = raw.match(/(\d+)/);
+      return m ? Number(m[1]) : 0;
+    };
+    const walk = (node: TraceNode) => {
+      if (node.kind === 'llm' && node.messages) {
+        const want = countFromMeta(node.meta);
+        if (want > 0) {
+          node.messages = fullMsgs.slice(0, Math.min(want, fullMsgs.length));
+        }
+      }
+      node.children.forEach(walk);
+    };
+    walk(tc.root);
+  }
+
+  /**
+   * 恢复历史后补全已落盘 trace 中 assistant 消息的内容。
+   * 服务端/前端在 llm:call 时 assistant 可能尚未生成，导致旧 trace 的 messages 中
+   * assistant 条目内容为空；用当前线程中同序号的 assistant 实际内容回填。
+   */
+  private restoreTraceMessages(sid: string) {
+    const t = this.threads[sid];
+    if (!t?.length) return;
+    const assistants = t.filter((m) => m.role === 'assistant');
+    for (const m of t) {
+      if (!m.trace?.length || m.role !== 'assistant') continue;
+      for (const root of m.trace) {
+        const walk = (node: TraceNode) => {
+          if (node.kind === 'llm' && node.messages) {
+            let ai = 0;
+            for (const msg of node.messages) {
+              if (msg.role === 'assistant') {
+                const src = assistants[ai++];
+                if (src) {
+                  msg.content = src.content ?? '';
+                  if (src.reasoning) msg.reasoning = src.reasoning;
+                }
+              }
+            }
+          }
+          node.children.forEach(walk);
+        };
+        walk(root);
+      }
+    }
+  }
+
   /** 写入某会话的流式消息（streamIdx 指向的那条），并在该会话为当前显示会话时同步 this.messages 触发重渲染。 */
   private patchSession(sid: string, p: Partial<ChatMsg>) {
     const idx = this.streamIdx[sid];
@@ -1056,6 +1116,8 @@ export class AhChat extends LitElement {
         }
       }
     }
+    // 恢复历史后补全调用链路中 assistant 消息的内容（修复旧 trace 中 assistant 为空）。
+    this.restoreTraceMessages(id);
     this.messages = this.threads[id];
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
     this.stickToBottom = true;
@@ -1284,7 +1346,9 @@ export class AhChat extends LitElement {
     this.stickToBottom = true;
     this.showScrollDown = false;
     this.showCtxUsage = false;
-    this.backendUsage = null;
+    // 注意：不在发送时清空 backendUsage —— 它是「会话级累计窗口占用」，跨 run 持续累加
+    // （由 llm:usage 累加、run 开始不清零），仅新会话 newChat 才重置。
+    // 仅清空「本运行累计」（本次 run 的真实消耗，run:cost 会重新赋值）。
     this.runCumulative = null;
     // 容错持久化：用户消息一入缓冲立即镜像落盘（独立于 run 结果 —— 即便后续流式中断/出错也已保存）。
     this.saveHistory(sessionId);
@@ -1361,6 +1425,13 @@ export class AhChat extends LitElement {
       }
       // 兜底：非流式回退路径内容不经 llm:token 到达，run 收尾时再尝试折叠一次。
       this.autoCollapseThink(sessionId);
+      // 运行收尾：用完整消息内容重建调用链路 LLM 节点的 messages 上下文，
+      // 避免打字机缓冲未完全揭示导致 trace 中 assistant 内容丢失，再落盘历史。
+      this.rebuildTraceMessages(sessionId);
+      const tc = this.traces[sessionId];
+      if (tc?.root) {
+        this.patchSession(sessionId, { trace: [tc.root] });
+      }
       this.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
       if (this.activeId === sessionId) this.messages = this.threads[sessionId];
@@ -1520,6 +1591,12 @@ export class AhChat extends LitElement {
       }
       // 兜底：断线恢复路径同样在 run 收尾时尝试折叠思考面板。
       this.autoCollapseThink(sid);
+      // 断线恢复收尾：同样重建调用链路 messages，避免 assistant 内容丢失后落盘。
+      this.rebuildTraceMessages(sid);
+      const tc2 = this.traces[sid];
+      if (tc2?.root) {
+        this.patchSession(sid, { trace: [tc2.root] });
+      }
       this.setStreaming(sid, false);
       this.abortBy[sid] = undefined as any;
       if (this.activeId === sid) this.messages = this.threads[sid];
@@ -1697,13 +1774,34 @@ export class AhChat extends LitElement {
               : Number.isFinite(Number(u.window)) && Number(u.window) > 0
               ? Number(u.window)
               : 0;
-          this.backendUsage = {
-            window: win,
-            promptTokens: u.promptTokens,
-            completionTokens: u.completionTokens,
-            totalTokens: u.totalTokens,
-            breakdown: u.breakdown
-          };
+          // 会话级累计窗口占用：跨 run 累加每次 LLM 调用的 prompt/completion，
+          // 而非用「最后一次调用」覆盖（旧逻辑会让顶部数字随 step 跳变、且永远只是单次输入）。
+          // 窗口口径（win）变化时（切换模型）重新初始化，避免不同窗口分母的累计错配。
+          const prev = this.backendUsage;
+          if (prev && prev.window === win && prev.breakdown && u.breakdown) {
+            this.backendUsage = {
+              window: win,
+              promptTokens: prev.promptTokens + u.promptTokens,
+              completionTokens: prev.completionTokens + u.completionTokens,
+              totalTokens: prev.totalTokens + u.totalTokens,
+              breakdown: {
+                system: prev.breakdown.system + (u.breakdown.system ?? 0),
+                tools: prev.breakdown.tools + (u.breakdown.tools ?? 0),
+                messages: prev.breakdown.messages + (u.breakdown.messages ?? 0),
+                mcp: prev.breakdown.mcp + (u.breakdown.mcp ?? 0),
+                skills: prev.breakdown.skills + (u.breakdown.skills ?? 0),
+                completion: prev.breakdown.completion + (u.breakdown.completion ?? 0)
+              }
+            };
+          } else {
+            this.backendUsage = {
+              window: win,
+              promptTokens: u.promptTokens,
+              completionTokens: u.completionTokens,
+              totalTokens: u.totalTokens,
+              breakdown: u.breakdown
+            };
+          }
           const totalPct =
             win > 0 ? Math.min(100, (Number(u.totalTokens) / win) * 100) : 0;
           agentContext.set('lastContextUsage', {
@@ -1713,6 +1811,9 @@ export class AhChat extends LitElement {
             model: u.model,
             updatedAt: Date.now()
           });
+          // 用量更新后立即镜像落盘：否则发送时已落过一次 null，run 完成后再不落盘，
+          // 重新进入会话就会读到 null → 回退前端粗估（表现为「丢失/回退」）。
+          this.saveHistory(sid);
         }
         break;
       }
@@ -1932,6 +2033,8 @@ export class AhChat extends LitElement {
             tokens: Number((ev as any).cumulativeTokens),
             cost: (ev as any).cumulativeCost != null ? Number((ev as any).cumulativeCost) : 0
           };
+          // 累计消耗更新后立即落盘，与 llm:usage 对称，避免重新进入会话后「本运行累计」丢失。
+          this.saveHistory(sid);
         }
         // Token 拆解四项（系统/工具/历史/输出）：与 access/server 的 traceHandle 保持
         // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
