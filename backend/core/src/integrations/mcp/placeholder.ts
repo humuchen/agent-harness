@@ -630,9 +630,9 @@ async function connectMcpClient(args: {
   timeoutMs?: number;
 }): Promise<{ client: Client; tools: any[] }> {
   const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client, name, timeoutMs } = args;
-  // 可配置 MCP 连接超时（默认 15s）。过长会导致「添加服务」界面卡顿 —32001 超时误报。
-  // 重连路径传入较短的 timeoutMs，避免健康探测周期内二次卡住。
-  const MCP_CONNECT_TIMEOUT_MS = timeoutMs ?? Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 15000);
+  // 可配置 MCP 连接超时（默认 60s）。stdio 服务器（如 npx/uvx）首次启动需下载包，
+  // 15s 易超时；可通过 MCP_CONNECT_TIMEOUT_MS 环境变量或 timeoutMs 参数覆盖。
+  const MCP_CONNECT_TIMEOUT_MS = timeoutMs ?? Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 60000);
   const serverLabel = name ?? (serverUrl ? `URL ${serverUrl}` : (command ? `command ${command}` : 'unknown'));
   let connPromise: Promise<void>;
   if (transport) {

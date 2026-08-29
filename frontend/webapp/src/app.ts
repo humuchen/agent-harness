@@ -372,21 +372,15 @@ export class AhApp extends LitElement {
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
-            ${this.tab === 'dashboard'
-              ? html`<ah-dashboard></ah-dashboard>`
-              : ''}
-            ${this.tab === 'chat' ? html`<ah-chat></ah-chat>` : ''}
-            ${this.tab === 'run' ? html`<ah-run></ah-run>` : ''}
-            ${this.tab === 'verify' ? html`<ah-verify></ah-verify>` : ''}
-            ${this.tab === 'env' ? html`<ah-env></ah-env>` : ''}
-            ${this.tab === 'mcp' ? html`<ah-mcp></ah-mcp>` : ''}
-            ${this.tab === 'approvals'
-              ? html`<ah-approvals></ah-approvals>`
-              : ''}
-            ${this.tab === 'observability'
-              ? html`<ah-observability></ah-observability>`
-              : ''}
-            ${this.tab === 'plugins' ? html`<ah-plugins></ah-plugins>` : ''}
+            <ah-dashboard ?hidden=${this.tab !== 'dashboard'}></ah-dashboard>
+            <ah-chat ?hidden=${this.tab !== 'chat'}></ah-chat>
+            <ah-run ?hidden=${this.tab !== 'run'}></ah-run>
+            <ah-verify ?hidden=${this.tab !== 'verify'}></ah-verify>
+            <ah-env ?hidden=${this.tab !== 'env'}></ah-env>
+            <ah-mcp ?hidden=${this.tab !== 'mcp'}></ah-mcp>
+            <ah-approvals ?hidden=${this.tab !== 'approvals'}></ah-approvals>
+            <ah-observability ?hidden=${this.tab !== 'observability'}></ah-observability>
+            <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">
                   ${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}

@@ -109,8 +109,8 @@ export const MCP_PRESETS: McpPreset[] = [
   {
     id: 'filesystem',
     name: 'Filesystem（文件系统）',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', process.cwd()],
+    command: 'node',
+    args: ['access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js', process.cwd()],
     authType: 'none',
     capabilities: ['读写文件', '列目录', '搜索'],
     docUrl:
@@ -130,8 +130,8 @@ export const MCP_PRESETS: McpPreset[] = [
   {
     id: 'memory',
     name: 'Memory（知识记忆）',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-memory'],
+    command: 'node',
+    args: ['access/server/node_modules/@modelcontextprotocol/server-memory/dist/index.js'],
     authType: 'none',
     capabilities: ['持久知识图谱', '实体关系', '跨会话记忆'],
     docUrl:
@@ -141,8 +141,8 @@ export const MCP_PRESETS: McpPreset[] = [
   {
     id: 'excel',
     name: 'Excel（表格处理）',
-    command: 'npx',
-    args: ['--yes', 'negokaz/excel-mcp-server'],
+    command: 'node',
+    args: ['access/server/node_modules/@negokaz/excel-mcp-server/dist/launcher.js'],
     env: { EXCEL_MCP_PAGING_CELLS_LIMIT: '4000' },
     authType: 'none',
     capabilities: ['读写 Excel', '单元格操作', '数据透视'],

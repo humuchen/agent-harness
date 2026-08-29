@@ -514,6 +514,17 @@ export class AhMcp extends LitElement {
                                 )}
                               </ul>`
                             : nothing}
+                          <div class="mcp-server-actions">
+                            <button
+                              class="ghost"
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this.remove(s.name);
+                              }}
+                            >
+                              移除
+                            </button>
+                          </div>
                         </li>`
                       )}
                     </ul>
