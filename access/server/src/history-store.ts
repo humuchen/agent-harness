@@ -96,11 +96,15 @@ class SqliteHistoryStore implements ChatHistoryStore {
         owner      TEXT NOT NULL DEFAULT ''
       );
     `);
-    // 旧库兼容：补 owner 列（已存在时忽略错误）。
+    // 旧库兼容：补 owner 列（列已存在则跳过；Turso 不支持重复 ADD COLUMN）。
     try {
-      this.db.exec(`ALTER TABLE chat_history ADD COLUMN owner TEXT NOT NULL DEFAULT ''`);
+      const cols = this.db.prepare('PRAGMA table_info(chat_history)').all() as Record<string, unknown>[];
+      const hasOwner = cols.some((c) => String(c.name) === 'owner');
+      if (!hasOwner) {
+        this.db.exec(`ALTER TABLE chat_history ADD COLUMN owner TEXT NOT NULL DEFAULT ''`);
+      }
     } catch {
-      /* 列已存在 */
+      /* 列已存在或 Turso 不支持该 DDL，忽略 */
     }
   }
 

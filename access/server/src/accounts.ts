@@ -96,11 +96,15 @@ async function ensureDb(): Promise<void> {
       db.exec(
         `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
       );
-      // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则忽略错误）。
+      // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则跳过）。
       try {
-        db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+        const cols = db.prepare('PRAGMA table_info(users)').all() as Record<string, unknown>[];
+        const hasEmail = cols.some((c) => String(c.name) === 'email');
+        if (!hasEmail) {
+          db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+        }
       } catch {
-        /* 列已存在，忽略 */
+        /* 列已存在或 Turso 不支持该 DDL，忽略 */
       }
       // ── 部署逃生账户 seeding ──
       // 若配置了 ADMIN_USERNAME / ADMIN_PASSWORD（默认 admin / admin888），则确保该账户
