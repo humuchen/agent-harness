@@ -1828,9 +1828,14 @@ export const chatStyles = [
       position: relative;
       scrollbar-width: thin;
       scrollbar-color: var(--ah-border) transparent;
+      transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease;
     }
     .think.collapsed .think-body {
-      display: none;
+      max-height: 0 !important;
+      opacity: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+      overflow: hidden;
     }
     .think-body::-webkit-scrollbar {
       width: 4px;

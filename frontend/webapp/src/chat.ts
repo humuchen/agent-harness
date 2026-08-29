@@ -998,7 +998,8 @@ export class AhChat extends LitElement {
       const tb = this.renderRoot.querySelector(
         '.think.live .think-body'
       ) as HTMLElement | null;
-      if (tb) tb.scrollTop = tb.scrollHeight;
+      // 折叠时不跟随滚动（用户主动隐藏），展开时才自动滚到底
+      if (tb && !tb.closest('.think.collapsed')) tb.scrollTop = tb.scrollHeight;
     });
   }
 
