@@ -34,16 +34,17 @@ export interface HistoryThreadMeta {
 }
 
 /** 聊天历史存取契约（增删改查）。data 为调用方序列化好的信封 JSON 字符串。
- *  所有方法接收 owner 做归属隔离；index/get/remove 传 owner 时只作用该用户。 */
+ *  所有方法接收 owner 做归属隔离；index/get/remove 传 owner 时只作用该用户。
+ *  注意：所有方法均为异步，以兼容 Turso HTTP 模式（Promise-based execute）。 */
 export interface ChatHistoryStore {
   /** 写入 / 覆盖某会话的历史镜像（幂等 upsert），owner 为归属用户（服务端强制）。 */
-  upsert(meta: HistoryThreadMeta, data: string, owner: string): void;
+  upsert(meta: HistoryThreadMeta, data: string, owner: string): Promise<void>;
   /** 读取某会话镜像；owner 不符或不存在返回 null（不泄露存在性）。 */
-  get(sid: string, owner?: string): { meta: HistoryThreadMeta; data: string } | null;
+  get(sid: string, owner?: string): Promise<{ meta: HistoryThreadMeta; data: string } | null>;
   /** 删除某会话镜像；owner 不符或不存在返回 false。 */
-  remove(sid: string, owner?: string): boolean;
+  remove(sid: string, owner?: string): Promise<boolean>;
   /** 列出会话元信息（按 savedAt 倒序）；owner 指定时只列该用户。 */
-  index(owner?: string): HistoryThreadMeta[];
+  index(owner?: string): Promise<HistoryThreadMeta[]>;
 }
 
 /* ------------------------------ 内存实现 ------------------------------ */
@@ -54,22 +55,22 @@ class MemoryHistoryStore implements ChatHistoryStore {
     { meta: HistoryThreadMeta; data: string; owner: string }
   >();
 
-  upsert(meta: HistoryThreadMeta, data: string, owner: string): void {
+  async upsert(meta: HistoryThreadMeta, data: string, owner: string): Promise<void> {
     this.rows.set(meta.sid, { meta: { ...meta }, data, owner });
   }
-  get(sid: string, owner?: string) {
+  async get(sid: string, owner?: string): Promise<{ meta: HistoryThreadMeta; data: string } | null> {
     const r = this.rows.get(sid);
     if (!r) return null;
     if (owner && r.owner !== owner) return null;
     return { meta: { ...r.meta }, data: r.data };
   }
-  remove(sid: string, owner?: string): boolean {
+  async remove(sid: string, owner?: string): Promise<boolean> {
     const r = this.rows.get(sid);
     if (!r) return false;
     if (owner && r.owner !== owner) return false;
     return this.rows.delete(sid);
   }
-  index(owner?: string): HistoryThreadMeta[] {
+  async index(owner?: string): Promise<HistoryThreadMeta[]> {
     const all = [...this.rows.values()];
     const filtered = owner ? all.filter((r) => r.owner === owner) : all;
     return filtered
@@ -86,7 +87,7 @@ class SqliteHistoryStore implements ChatHistoryStore {
   constructor(file: string) {
     // 使用统一适配器（支持 sqlite / turso 双后端）
     this.db = getDbAdapter({ file });
-    this.db.exec(`
+    const execResult = this.db.exec(`
       CREATE TABLE IF NOT EXISTS chat_history (
         sid        TEXT PRIMARY KEY,
         title      TEXT NOT NULL,
@@ -96,20 +97,27 @@ class SqliteHistoryStore implements ChatHistoryStore {
         owner      TEXT NOT NULL DEFAULT ''
       );
     `);
-    // 旧库兼容：补 owner 列（列已存在则跳过；Turso 不支持重复 ADD COLUMN）。
-    try {
-      const cols = this.db.prepare('PRAGMA table_info(chat_history)').all() as Record<string, unknown>[];
-      const hasOwner = cols.some((c) => String(c.name) === 'owner');
-      if (!hasOwner) {
-        this.db.exec(`ALTER TABLE chat_history ADD COLUMN owner TEXT NOT NULL DEFAULT ''`);
+    const finishSetup = () => {
+      // 旧库兼容：补 owner 列（列已存在则跳过；Turso 不支持重复 ADD COLUMN）。
+      try {
+        const cols = (this.db.prepare('PRAGMA table_info(chat_history)').all()) as Record<string, unknown>[];
+        const hasOwner = cols.some((c) => String(c.name) === 'owner');
+        if (!hasOwner) {
+          this.db.exec(`ALTER TABLE chat_history ADD COLUMN owner TEXT NOT NULL DEFAULT ''`);
+        }
+      } catch {
+        /* 列已存在或 Turso 不支持该 DDL，忽略 */
       }
-    } catch {
-      /* 列已存在或 Turso 不支持该 DDL，忽略 */
+    };
+    if (execResult && typeof (execResult as any).then === 'function') {
+      (execResult as Promise<void>).then(finishSetup);
+    } else {
+      finishSetup();
     }
   }
 
-  upsert(meta: HistoryThreadMeta, data: string, owner: string): void {
-    this.db
+  async upsert(meta: HistoryThreadMeta, data: string, owner: string): Promise<void> {
+    await this.db
       .prepare(
         `INSERT INTO chat_history (sid, title, updated_at, saved_at, data, owner)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -123,14 +131,14 @@ class SqliteHistoryStore implements ChatHistoryStore {
       .run(meta.sid, meta.title, meta.updatedAt, meta.savedAt, data, owner);
   }
 
-  get(sid: string, owner?: string): { meta: HistoryThreadMeta; data: string } | null {
+  async get(sid: string, owner?: string): Promise<{ meta: HistoryThreadMeta; data: string } | null> {
     const sql =
       owner !== undefined
         ? `SELECT sid, title, updated_at, saved_at, data FROM chat_history WHERE sid = ? AND owner = ?`
         : `SELECT sid, title, updated_at, saved_at, data FROM chat_history WHERE sid = ?`;
     const row = owner !== undefined
-      ? this.db.prepare(sql).get(sid, owner)
-      : this.db.prepare(sql).get(sid);
+      ? await this.db.prepare(sql).get(sid, owner)
+      : await this.db.prepare(sql).get(sid);
     if (!row) return null;
     return {
       meta: {
@@ -143,20 +151,20 @@ class SqliteHistoryStore implements ChatHistoryStore {
     };
   }
 
-  remove(sid: string, owner?: string): boolean {
+  async remove(sid: string, owner?: string): Promise<boolean> {
     const r =
       owner !== undefined
-        ? this.db.prepare(`DELETE FROM chat_history WHERE sid = ? AND owner = ?`).run(sid, owner)
-        : this.db.prepare(`DELETE FROM chat_history WHERE sid = ?`).run(sid);
+        ? await this.db.prepare(`DELETE FROM chat_history WHERE sid = ? AND owner = ?`).run(sid, owner)
+        : await this.db.prepare(`DELETE FROM chat_history WHERE sid = ?`).run(sid);
     return Number(r?.changes ?? 0) > 0;
   }
 
-  index(owner?: string): HistoryThreadMeta[] {
+  async index(owner?: string): Promise<HistoryThreadMeta[]> {
     const sql =
       owner !== undefined
         ? `SELECT sid, title, updated_at, saved_at FROM chat_history WHERE owner = ? ORDER BY saved_at DESC`
         : `SELECT sid, title, updated_at, saved_at FROM chat_history ORDER BY saved_at DESC`;
-    const rows = owner !== undefined ? this.db.prepare(sql).all(owner) : this.db.prepare(sql).all();
+    const rows = owner !== undefined ? await this.db.prepare(sql).all(owner) : await this.db.prepare(sql).all();
     return (rows ?? []).map((row: any) => ({
       sid: String(row.sid),
       title: String(row.title),

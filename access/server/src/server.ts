@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   assembleAgent,
@@ -119,6 +119,7 @@ import {
   registerUser,
   loginUser,
   upsertGithubUser,
+  upsertGoogleUser,
   usernameFromCookie,
   cookieValue,
   authCookieValue,
@@ -157,6 +158,16 @@ function githubRedirectUri(req: IncomingMessage): string {
   if (cfg.startsWith('http')) return cfg; // 完整 URL，直接采用，不走协议推断
   const host = req.headers.host ? String(req.headers.host) : '';
   if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`; // 无 host 兜底（保持原行为）
+  const xfp = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim();
+  const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
+  return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
+}
+// Google OAuth 回调 URL 构造：与 githubRedirectUri 同理
+function googleRedirectUri(req: IncomingMessage): string {
+  const cfg = process.env.GOOGLE_OAUTH_REDIRECT || '/api/account/oauth/google/callback';
+  if (cfg.startsWith('http')) return cfg;
+  const host = req.headers.host ? String(req.headers.host) : '';
+  if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`;
   const xfp = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim();
   const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
   return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
@@ -281,7 +292,7 @@ async function guard(
   body?: any
 ): Promise<AuthContext | null> {
   const ip = clientIp(req);
-  const ctx = authorizer.authenticate(req);
+  const ctx = await authorizer.authenticate(req);
   if (!ctx) {
     audit({
       kind: 'request',
@@ -663,7 +674,7 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/account/me') {
         // 当前会话：仅依赖 ah_auth cookie（不要求 x-ah-username 双因子，避免鸡生蛋）。
         // 前端在 OAuth 回调后回填用户名（setSession）时调用。
-        const u = usernameFromCookie(req);
+        const u = await usernameFromCookie(req);
         if (!u) {
           res.writeHead(401, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: '未登录' }));
@@ -671,7 +682,7 @@ const server = createServer(
         }
         // 账户密码档在 RBAC 中统一为 admin 角色（authz.ts: AccountAuthorizer）。
         // 这里随 /me 一并返回 username / role / email，供顶栏用户菜单展示。
-        const profile = getProfile(u);
+        const profile = await getProfile(u);
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         res.end(JSON.stringify({
           ok: true,
@@ -688,7 +699,7 @@ const server = createServer(
         const b = await readBody(req);
         const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const r = changePassword(ctx.sub, oldPw, newPw);
+        const r = await changePassword(ctx.sub, oldPw, newPw);
         if (!r.ok) {
           res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' });
           res.end(JSON.stringify({ ok: false, error: r.error }));
@@ -700,8 +711,8 @@ const server = createServer(
       }
       if (req.method === 'POST' && path === '/api/account/logout') {
         // 登出：清除服务端 token 记录 + 让浏览器丢弃 ah_auth cookie（HttpOnly 只能由服务端清除）。
-        const u = usernameFromCookie(req);
-        if (u) revokeAllTokens(u);
+        const u = await usernameFromCookie(req);
+        if (u) await revokeAllTokens(u);
         res.writeHead(200, {
           'content-type': 'application/json',
           'set-cookie': clearAuthCookie(req),
@@ -738,6 +749,12 @@ const server = createServer(
       // 2) GitHub 回调：校验 state → 用 code 换 token → 拉 user + 主邮箱 → 本地 upsert → 下发 cookie → 回首页。
       if (req.method === 'GET' && path === '/api/account/oauth/github/callback') {
         const fail = (code: number, msg: string) => {
+          if (code === 500 && process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+            // 配置正常但处理异常：返回 HTML 错误页
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: msg }));
+            return;
+          }
           res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
           res.end(JSON.stringify({ ok: false, error: msg }));
           return;
@@ -750,9 +767,15 @@ const server = createServer(
         const state = url.searchParams.get('state');
         const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         if (!state || !expect || state !== expect) {
-          return fail(400, 'OAuth state 校验失败（可能是 CSRF 或过期）。');
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
+          return;
         }
-        if (!code) return fail(400, 'GitHub 未回传授权码。');
+        if (!code) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: 'GitHub 未回传授权码，请重试。' }));
+          return;
+        }
         try {
           const redirectUri = githubRedirectUri(req);
           // 换 access_token（GitHub 接受 Accept: application/json）。
@@ -770,13 +793,21 @@ const server = createServer(
             })
           });
           const tok = (await tokRes.json()) as { access_token?: string; error?: string };
-          if (!tok.access_token) return fail(400, `GitHub 换 token 失败：${tok.error ?? '未知错误'}`);
+          if (!tok.access_token) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: `GitHub 换 token 失败：${tok.error ?? '未知错误'}` }));
+            return;
+          }
           // 拉用户基本信息。
           const userRes = await fetch('https://api.github.com/user', {
             headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-harness' }
           });
           const user = (await userRes.json()) as { login?: string; id?: number; email?: string };
-          if (!user.login) return fail(400, '无法获取 GitHub 用户信息。');
+          if (!user.login) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: '无法获取 GitHub 用户信息。' }));
+            return;
+          }
           // 拉主邮箱（user.email 常常为空，需单独调 /user/emails 取 primary/verified）。
           let email = user.email;
           if (!email) {
@@ -790,17 +821,161 @@ const server = createServer(
             } catch { /* 邮箱可选，失败不阻断登录 */ }
           }
           const r: AccountResult = await upsertGithubUser(user.login, Number(user.id ?? 0), email);
-          if (!r.ok || !r.token) return fail(500, '创建/登录本地账户失败。');
+          if (!r.ok || !r.token) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: '创建/登录本地账户失败，请稍后重试。' }));
+            return;
+          }
           const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
-          res.writeHead(302, {
+          // 先下发 cookie，再返回 HTML 过渡页（带自动跳转），避免空白页
+          res.writeHead(200, {
             'set-cookie': authCookieValue(req, r.token),
-            'cache-control': 'no-store',
-            location: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
           });
-          res.end();
+          res.end(renderOAuthTransitionHtml({
+            ok: true,
+            message: `欢迎回来，${r.username}！正在跳转到工作台…`,
+            redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+          }));
           return;
         } catch (err) {
           return fail(500, `GitHub OAuth 处理异常：${(err as Error)?.message ?? String(err)}`);
+        }
+      }
+      // ── Google OAuth 授权码流（后端持有 client_secret）──
+      // 1) 前端按钮跳转这里 → 302 到 Google 授权页（带 CSRF state + PKCE code_challenge）。
+      if (req.method === 'GET' && path === '/api/account/oauth/google') {
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        if (!clientId || !process.env.GOOGLE_CLIENT_SECRET) {
+          res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ ok: false, error: '服务端未配置 Google OAuth（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）。' }));
+          return;
+        }
+        const redirectUri = googleRedirectUri(req);
+        const state = randomBytes(16).toString('hex');
+        const codeVerifier = randomBytes(32).toString('base64url');
+        const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+        const googleUrl =
+          `https://accounts.google.com/o/oauth2/v2/auth` +
+          `?client_id=${encodeURIComponent(clientId)}` +
+          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+          `&response_type=code` +
+          `&scope=${encodeURIComponent('openid email profile')}` +
+          `&state=${encodeURIComponent(state)}` +
+          `&code_challenge=${encodeURIComponent(codeChallenge)}` +
+          `&code_challenge_method=S256` +
+          `&access_type=online` +
+          `&prompt=consent`;
+        res.writeHead(302, {
+          'set-cookie': [
+            `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`,
+            `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
+          ].join(', '),
+          'cache-control': 'no-store',
+          location: googleUrl
+        });
+        res.end();
+        return;
+      }
+      // 2) Google 回调：校验 state → 用 code + code_verifier 换 token → 解析 id_token → 本地 upsert → 下发 cookie → 回首页。
+      if (req.method === 'GET' && path === '/api/account/oauth/google/callback') {
+        if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: '服务端未配置 Google OAuth。' }));
+          return;
+        }
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
+        const codeVerifier = cookieValue(req, 'ah_oauth_cv');
+        if (!state || !expect || state !== expect) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
+          return;
+        }
+        if (!code) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 未回传授权码，请重试。' }));
+          return;
+        }
+        if (!codeVerifier) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: 'PKCE code_verifier 丢失，请重新登录。' }));
+          return;
+        }
+        try {
+          const redirectUri = googleRedirectUri(req);
+          // 换 token
+          const tokRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              client_id: process.env.GOOGLE_CLIENT_ID,
+              client_secret: process.env.GOOGLE_CLIENT_SECRET,
+              code,
+              redirect_uri: redirectUri,
+              grant_type: 'authorization_code',
+              code_verifier: codeVerifier
+            }).toString()
+          });
+          const tok = (await tokRes.json()) as { id_token?: string; access_token?: string; error?: string };
+          if (!tok.id_token) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: `Google 换 token 失败：${tok.error ?? '未知错误'}` }));
+            return;
+          }
+          // 解析 JWT id_token（不验签，已来自 Google 直连 + 后续用 access_token 拉 userinfo 复核）
+          const parts = tok.id_token.split('.');
+          if (parts.length !== 3) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 返回的 id_token 格式异常。' }));
+            return;
+          }
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8')) as {
+            sub?: string;
+            email?: string;
+            name?: string;
+            email_verified?: boolean;
+          };
+          if (!payload.sub || !payload.email || payload.email_verified === false) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 账号未验证邮箱或信息不完整。' }));
+            return;
+          }
+          // 用 access_token 拉 userinfo 做最终复核（防 id_token 被重放）
+          const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { authorization: `Bearer ${tok.access_token}` }
+          });
+          const info = (await infoRes.json()) as { sub?: string; email?: string };
+          if (info.sub && info.sub !== payload.sub) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 用户信息校验不一致。' }));
+            return;
+          }
+          const r: AccountResult = await upsertGoogleUser(payload.sub, payload.email, payload.name);
+          if (!r.ok || !r.token) {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(renderOAuthTransitionHtml({ ok: false, message: '创建/登录本地账户失败，请稍后重试。' }));
+            return;
+          }
+          const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
+          res.writeHead(200, {
+            'set-cookie': authCookieValue(req, r.token),
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(renderOAuthTransitionHtml({
+            ok: true,
+            message: `欢迎回来，${r.username}！正在跳转到工作台…`,
+            redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+          }));
+          return;
+        } catch (err) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(renderOAuthTransitionHtml({ ok: false, message: `Google OAuth 处理异常：${(err as Error)?.message ?? String(err)}` }));
+          return;
         }
       }
       if (req.method === 'GET' && path === '/api/openapi.json') {
@@ -1180,7 +1355,8 @@ const server = createServer(
             res.writeHead(401, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
           }
-          return sendJson(res, { sessions: getHistoryStore().index(ctx.sub) }, req);
+          const index = await getHistoryStore().index(ctx.sub);
+          return sendJson(res, { sessions: index }, req);
         }
         if (req.method === 'GET' && path.startsWith(HISTORY_PREFIX)) {
           const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
@@ -1194,7 +1370,7 @@ const server = createServer(
             res.writeHead(400, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'invalid session id' }));
           }
-          const row = getHistoryStore().get(sid, ctx.sub);
+          const row = await getHistoryStore().get(sid, ctx.sub);
           if (!row) {
             res.writeHead(404, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'history not found' }));
@@ -1251,7 +1427,7 @@ const server = createServer(
           }
           const now = Date.now();
           // owner 由服务端以 ctx.sub 强制写入，忽略客户端上报（防伪造归属）。
-          getHistoryStore().upsert(
+          await getHistoryStore().upsert(
             {
               sid,
               title:
@@ -1281,7 +1457,7 @@ const server = createServer(
             res.writeHead(401, { 'content-type': 'application/json' });
             return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
           }
-          const ok = getHistoryStore().remove(sid, ctx.sub);
+          const ok = await getHistoryStore().remove(sid, ctx.sub);
           return sendJson(res, { ok }, req);
         }
       }
@@ -1526,6 +1702,54 @@ function esc(s: unknown): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * 渲染 OAuth 回调过渡页：成功时展示「正在登录…」动效并自动跳转；
+ * 失败时展示错误信息与「回到登录页」按钮。
+ * 避免用户在回调期间面对空白页或原始 JSON 错误。
+ */
+function renderOAuthTransitionHtml(opts: { ok: boolean; message: string; redirect?: string }): string {
+  const redirect = opts.redirect || '/';
+  const safeMsg = esc(opts.message);
+  const safeRedirect = esc(redirect);
+  const autoRedirect = opts.ok
+    ? `<script>setTimeout(()=>{window.location.href="${safeRedirect}";},1200);</script>`
+    : '';
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${opts.ok ? '登录成功' : '登录失败'}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0f1117;color:#e6e6e6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;}
+.card{background:#181b22;border:1px solid #2a2f3a;border-radius:16px;padding:40px 32px;max-width:380px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.4);}
+.spinner{width:38px;height:38px;border:3px solid #2a2f3a;border-top-color:#6c5ce7;border-radius:50%;margin:0 auto 20px;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.ok{width:42px;height:42px;margin:0 auto 18px;border-radius:50%;background:#198754;display:flex;align-items:center;justify-content:center;}
+.ok::after{content:"";width:12px;height:20px;border-right:3px solid #fff;border-bottom:3px solid #fff;transform:rotate(45deg) translate(-2px,-2px);}
+.err{width:42px;height:42px;margin:0 auto 18px;border-radius:50%;background:#dc3545;display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff;font-weight:700;}
+h2{font-size:18px;font-weight:600;margin-bottom:8px;}
+p{font-size:13px;color:#9ca3af;line-height:1.6;margin-bottom:22px;word-break:break-word;}
+.btn{display:inline-block;width:100%;padding:10px 18px;border-radius:8px;background:#6c5ce7;color:#fff;text-decoration:none;font-size:14px;font-weight:500;border:none;cursor:pointer;transition:background .15s;}
+.btn:hover{background:#5a4bd6;}
+</style>
+</head>
+<body>
+<div class="card">
+${opts.ok ? '<div class="ok"></div>' : '<div class="err">×</div>'}
+${opts.ok ? '<div class="spinner" style="position:absolute;visibility:hidden;"></div>' : ''}
+<h2>${opts.ok ? '登录成功' : '登录失败'}</h2>
+<p>${safeMsg}</p>
+${opts.ok
+  ? `<a class="btn" href="${safeRedirect}">进入工作台</a>`
+  : '<button class="btn" onclick="window.location.href=\'/\'">回到登录页</button>'}
+</div>
+${autoRedirect}
+</body>
+</html>`;
 }
 
 /**

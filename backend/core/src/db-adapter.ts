@@ -19,14 +19,16 @@
 
 // ─── 类型契约 ────────────────────────────────────────────────────────────────
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface DbStatement {
-  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
+  run(...params: unknown[]): MaybePromise<{ changes: number; lastInsertRowid: number | bigint }>;
+  get(...params: unknown[]): MaybePromise<Record<string, unknown> | undefined>;
+  all(...params: unknown[]): MaybePromise<Record<string, unknown>[]>;
 }
 
 export interface DbAdapter {
-  exec(sql: string): void;
+  exec(sql: string): MaybePromise<void>;
   prepare(sql: string): DbStatement;
   close?(): void;
 }
@@ -121,30 +123,63 @@ class TursoAdapter implements DbAdapter {
     }
   }
 
-  exec(sql: string): void {
+  exec(sql: string): void | Promise<void> {
     // libsql Hrana 不允许单条 execute 中包含多条语句，需要按分号分割后逐个执行
     // 顺序执行 DDL 即可满足幂等建表需求。
+    const stmts: string[] = [];
     for (const stmt of sql.split(/;\s*/)) {
       const trimmed = stmt.trim();
-      if (trimmed) this.client.execute(trimmed);
+      if (trimmed) stmts.push(trimmed);
+    }
+    if (stmts.length === 0) return;
+    
+    // 检查第一条返回值判断是否为 Promise（HTTP 模式）
+    const firstResult = this.client.execute(stmts[0]);
+    if (firstResult && typeof firstResult.then === 'function') {
+      // HTTP 模式：顺序 await 每条语句
+      let chain = firstResult;
+      for (let i = 1; i < stmts.length; i++) {
+        chain = chain.then(() => this.client.execute(stmts[i]));
+      }
+      return chain.then(() => {});
+    } else {
+      // WebSocket 模式：同步执行
+      for (let i = 1; i < stmts.length; i++) {
+        this.client.execute(stmts[i]);
+      }
     }
   }
 
   prepare(sql: string): DbStatement {
     return {
-      run: (...params: unknown[]) => {
+      run: async (...params: unknown[]) => {
         const r = this.client.execute({ sql, args: params as any });
+        if (r && typeof r.then === 'function') {
+          const res = await r;
+          return {
+            changes: res.rowsAffected ?? 0,
+            lastInsertRowid: res.lastInsertRowid != null ? Number(res.lastInsertRowid) : 0,
+          };
+        }
         return {
           changes: r.rowsAffected ?? 0,
           lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : 0,
         };
       },
-      get: (...params: unknown[]) => {
+      get: async (...params: unknown[]) => {
         const r = this.client.execute({ sql, args: params as any });
+        if (r && typeof r.then === 'function') {
+          const res = await r;
+          return res.rows?.[0] as Record<string, unknown> | undefined;
+        }
         return r.rows?.[0] as Record<string, unknown> | undefined;
       },
-      all: (...params: unknown[]) => {
+      all: async (...params: unknown[]) => {
         const r = this.client.execute({ sql, args: params as any });
+        if (r && typeof r.then === 'function') {
+          const res = await r;
+          return res.rows as Record<string, unknown>[] ?? [];
+        }
         return r.rows as Record<string, unknown>[] ?? [];
       },
     };

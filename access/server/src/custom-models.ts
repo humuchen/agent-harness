@@ -98,7 +98,7 @@ async function ensureDb() {
       const file = getDbFile();
       // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
       db = getDbAdapter({ file });
-      db.exec(
+      await db.exec(
         `CREATE TABLE IF NOT EXISTS custom_models (
           id TEXT PRIMARY KEY,
           base_url TEXT,
@@ -114,7 +114,7 @@ async function ensureDb() {
 export async function listCustomModels(): Promise<CustomModelRow[]> {
   await ensureDb();
   const stmt = db.prepare('SELECT id, base_url, api_key, updated_at FROM custom_models ORDER BY updated_at DESC');
-  const rows = stmt.all() as any[];
+  const rows = await stmt.all() as any[];
   return rows.map((r) => ({
     id: r.id,
     ...(r.base_url ? { baseUrl: r.base_url } : {}),
@@ -126,7 +126,7 @@ export async function listCustomModels(): Promise<CustomModelRow[]> {
 export async function getCustomModel(id: string): Promise<CustomModelRow | null> {
   await ensureDb();
   const stmt = db.prepare('SELECT id, base_url, api_key, updated_at FROM custom_models WHERE id = ?');
-  const r = stmt.get(id) as any | undefined;
+  const r = await stmt.get(id) as any | undefined;
   if (!r) return null;
   return {
     id: r.id,
@@ -147,12 +147,12 @@ export async function putCustomModel(row: Omit<CustomModelRow, 'updatedAt'>): Pr
        api_key = excluded.api_key,
        updated_at = excluded.updated_at`
   );
-  stmt.run(row.id, row.baseUrl ?? null, row.apiKey ?? null, now);
+  await stmt.run(row.id, row.baseUrl ?? null, row.apiKey ?? null, now);
 }
 
 export async function deleteCustomModel(id: string): Promise<void> {
   await ensureDb();
-  db.prepare('DELETE FROM custom_models WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM custom_models WHERE id = ?').run(id);
 }
 
 // ─── HTTP 路由 ───────────────────────────────────────────────────────────────

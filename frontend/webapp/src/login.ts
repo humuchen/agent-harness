@@ -746,7 +746,7 @@ export class AhLogin extends LitElement {
         text-align: center;
       }
 
-      .notice .error {
+      .notice.error {
         background: var(--ah-danger-soft);
         color: var(--ah-danger);
       }
@@ -934,6 +934,8 @@ export class AhLogin extends LitElement {
   @state() theme: Theme = getTheme();
   // GitHub OAuth 是否可用（后端配置了 GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET 时为 true）。
   @state() githubEnabled = false;
+  // Google OAuth 是否可用（后端配置了 GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET 时为 true）。
+  @state() googleEnabled = false;
 
   private themeObs?: MutationObserver;
 
@@ -953,11 +955,12 @@ export class AhLogin extends LitElement {
       attributes: true,
       attributeFilter: ['data-theme']
     });
-    // 拉取鉴权元信息，决定是否展示 GitHub 登录按钮。
+    // 拉取鉴权元信息，决定是否展示 GitHub / Google 登录按钮。
     fetch('/api/auth/config', { credentials: 'same-origin' })
       .then((r) => (r.ok ? r.json() : null))
       .then((cfg) => {
         if (cfg?.github?.enabled) this.githubEnabled = true;
+        if (cfg?.google?.enabled) this.googleEnabled = true;
       })
       .catch(() => {
         /* 拉取失败不展示按钮，不影响账号密码登录 */
@@ -976,6 +979,15 @@ export class AhLogin extends LitElement {
    */
   private startGithubOAuth() {
     window.location.href = '/api/account/oauth/github';
+  }
+
+  /**
+   * 发起 Google OAuth 授权码流（PKCE）：跳转后端 /api/account/oauth/google，
+   * 后端 302 到 Google 授权页；用户授权后由后端回调换 token、签发 ah_auth cookie、
+   * 再 302 回首页 ?oauth=success，由 main.ts 用 /api/account/me 回填会话并进入控制台。
+   */
+  private startGoogleOAuth() {
+    window.location.href = '/api/account/oauth/google';
   }
 
   /**
@@ -1299,6 +1311,23 @@ export class AhLogin extends LitElement {
                         >
                           <path
                             d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"
+                          />
+                        </svg>
+                      </button>`
+                    : nothing}
+                  ${this.googleEnabled
+                    ? html`<button
+                        class="btn-sso"
+                        type="button"
+                        @click=${() => this.startGoogleOAuth()}
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M21.35 11.1H12v3.18h5.59c-.5 2.53-2.65 4.32-5.59 4.32-3.32 0-6-2.69-6-6s2.68-6 6-6c1.46 0 2.79.5 3.84 1.34l2.36-2.36C16.45 4.34 14.32 3.5 12 3.5c-4.97 0-9 4.03-9 9s4.03 9 9 9c5.18 0 8.6-3.62 8.6-8.74 0-.59-.06-1.14-.15-1.66Z"
                           />
                         </svg>
                       </button>`

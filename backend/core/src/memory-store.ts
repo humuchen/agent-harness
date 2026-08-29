@@ -191,7 +191,7 @@ export class SqliteMemoryStore implements MemoryStore {
     this.ready = (async () => {
       // 使用统一适配器（支持 sqlite / turso 双后端）
       this.db = getDbAdapter({ file: this.file });
-      this.db.exec(
+      await this.db.exec(
         'CREATE TABLE IF NOT EXISTS memory (' +
           'key TEXT PRIMARY KEY, ' +
           'window TEXT NOT NULL, ' +
@@ -200,10 +200,10 @@ export class SqliteMemoryStore implements MemoryStore {
       );
       // 兼容旧库：缺列时补上（列已存在则跳过；Turso 不支持重复 ADD COLUMN）。
       try {
-        const cols = this.db!.prepare('PRAGMA table_info(memory)').all() as Record<string, unknown>[];
+        const cols = (await this.db.prepare('PRAGMA table_info(memory)').all()) as Record<string, unknown>[];
         const hasSummary = cols.some((c) => String(c.name) === 'summary');
         if (!hasSummary) {
-          this.db!.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
+          await this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
         }
       } catch {
         /* 列已存在或 Turso 不支持该 DDL，忽略 */
@@ -214,7 +214,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async load(key: string): Promise<PersistedMemory | null> {
     await this.ensure();
-    const row = this.db!
+    const row = await this.db!
       .prepare('SELECT window, long_term, summary FROM memory WHERE key = ?')
       .get(key);
     if (!row) return null;
@@ -229,7 +229,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async save(key: string, data: PersistedMemory): Promise<void> {
     await this.ensure();
-    this.db!
+    await this.db!
       .prepare(
         'INSERT OR REPLACE INTO memory (key, window, long_term, summary) VALUES (?, ?, ?, ?)'
       )
@@ -243,12 +243,12 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async delete(key: string): Promise<void> {
     await this.ensure();
-    this.db!.prepare('DELETE FROM memory WHERE key = ?').run(key);
+    await this.db!.prepare('DELETE FROM memory WHERE key = ?').run(key);
   }
 
   async list(): Promise<string[]> {
     await this.ensure();
-    const rows = this.db!.prepare('SELECT key FROM memory').all() as { key: string }[];
+    const rows = await this.db!.prepare('SELECT key FROM memory').all() as { key: string }[];
     return rows.map((r) => r.key);
   }
 }

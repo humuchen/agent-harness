@@ -298,15 +298,15 @@ export class OidcAuthorizer implements Authorizer {
     }
   }
 
-  authenticate(req: IncomingMessage): AuthContext | null {
+  async authenticate(req: IncomingMessage): Promise<AuthContext | null> {
     const token = bearerToken(req);
-    if (!token) return this.fallback?.authenticate(req) ?? null;
+    if (!token) return (await this.fallback?.authenticate(req)) ?? null;
 
     const jwt = parseJwt(token);
-    if (!jwt) return this.fallback?.authenticate(req) ?? null;
+    if (!jwt) return (await this.fallback?.authenticate(req)) ?? null;
 
     const keys = getJwksSync();
-    if (!keys.length) return this.fallback?.authenticate(req) ?? null;
+    if (!keys.length) return (await this.fallback?.authenticate(req)) ?? null;
 
     // 选候选密钥：优先 kid 匹配；若 IdP/内联 JWKS 的密钥未带 kid（常见），回退尝试全部密钥。
     // 逐把尝试验签也天然兼容 IdP 的密钥轮换（多密钥并存）。
@@ -321,16 +321,16 @@ export class OidcAuthorizer implements Authorizer {
         break;
       }
     }
-    if (!sigOk) return this.fallback?.authenticate(req) ?? null;
+    if (!sigOk) return (await this.fallback?.authenticate(req)) ?? null;
 
     const issuer = process.env.OIDC_ISSUER;
     const audience = process.env.OIDC_AUDIENCE || process.env.OIDC_CLIENT_ID || undefined;
-    if (!validateClaims(jwt.payload, issuer, audience)) return this.fallback?.authenticate(req) ?? null;
+    if (!validateClaims(jwt.payload, issuer, audience)) return (await this.fallback?.authenticate(req)) ?? null;
 
     const groupsClaim = process.env.OIDC_ROLE_CLAIM || 'groups';
     const groups = groupsFromClaim(jwt.payload, groupsClaim);
     const role = mapGroupsToRole(groups, this.mapping);
-    if (!role) return this.fallback?.authenticate(req) ?? null;
+    if (!role) return (await this.fallback?.authenticate(req)) ?? null;
 
     const usernameClaim = process.env.OIDC_USERNAME_CLAIM || 'preferred_username';
     const sub =
@@ -375,7 +375,7 @@ export class ProxyAuthorizer implements Authorizer {
     this.fallback = opts.fallback;
   }
 
-  authenticate(req: IncomingMessage): AuthContext | null {
+  async authenticate(req: IncomingMessage): Promise<AuthContext | null> {
     const userHeader = (process.env.PROXY_USER_HEADER || 'x-forwarded-user').toLowerCase();
     const groupsHeader = (process.env.PROXY_GROUPS_HEADER || 'x-forwarded-groups').toLowerCase();
     const emailHeader = (process.env.PROXY_EMAIL_HEADER || 'x-forwarded-email').toLowerCase();
@@ -383,7 +383,7 @@ export class ProxyAuthorizer implements Authorizer {
     const sep = process.env.PROXY_GROUPS_SEPARATOR || ',';
 
     const user = hdr(req, userHeader);
-    if (!user) return this.fallback?.authenticate(req) ?? null;
+    if (!user) return (await this.fallback?.authenticate(req)) ?? null;
 
     // 可选 HMAC：仅在配置了 PROXY_HMAC_SECRET 时强制校验，防非受信网络头伪造。
     const secret = process.env.PROXY_HMAC_SECRET;
@@ -399,7 +399,7 @@ export class ProxyAuthorizer implements Authorizer {
     const groupsRaw = hdr(req, groupsHeader);
     const groups = groupsRaw ? groupsRaw.split(sep).map((s) => s.trim()).filter(Boolean) : [];
     const role = mapGroupsToRole(groups, this.mapping);
-    if (!role) return this.fallback?.authenticate(req) ?? null;
+    if (!role) return (await this.fallback?.authenticate(req)) ?? null;
 
     return {
       token: fingerprint(user),
@@ -436,6 +436,7 @@ export class ProxyAuthorizer implements Authorizer {
 export function getAuthConfig(): {
   provider: SsoProvider;
   github?: { enabled: boolean };
+  google?: { enabled: boolean };
   oidc?: {
     issuer?: string;
     clientId?: string;
@@ -449,10 +450,12 @@ export function getAuthConfig(): {
 } {
   const provider = ((process.env.AUTH_PROVIDER || 'token').toLowerCase() as SsoProvider);
   const githubEnabled = !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
+  const googleEnabled = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
   if (provider === 'oidc') {
     return {
       provider,
       github: { enabled: githubEnabled },
+      google: { enabled: googleEnabled },
       oidc: {
         issuer: process.env.OIDC_ISSUER,
         clientId: process.env.OIDC_CLIENT_ID || process.env.OIDC_AUDIENCE,
@@ -467,6 +470,7 @@ export function getAuthConfig(): {
     return {
       provider,
       github: { enabled: githubEnabled },
+      google: { enabled: googleEnabled },
       proxy: {
         headers: {
           user: process.env.PROXY_USER_HEADER || 'x-forwarded-user',
@@ -477,5 +481,5 @@ export function getAuthConfig(): {
       },
     };
   }
-  return { provider: 'token', github: { enabled: githubEnabled } };
+  return { provider: 'token', github: { enabled: githubEnabled }, google: { enabled: googleEnabled } };
 }

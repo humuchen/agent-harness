@@ -93,7 +93,7 @@ export interface AuthDescribe {
 
 export interface Authorizer {
   /** 从请求中提取主体；失败返回 null（调用方应回 401）。 */
-  authenticate(req: IncomingMessage): AuthContext | null;
+  authenticate(req: IncomingMessage): Promise<AuthContext | null> | AuthContext | null;
   /** 该角色是否允许执行动作。 */
   can(ctx: AuthContext, action: Action): boolean;
   /** 当前授权配置概览（供 /api/roles 运维展示，不泄露令牌）。 */
@@ -329,19 +329,19 @@ export class AccountAuthorizer implements Authorizer {
     this.fallback = fallback;
   }
 
-  authenticate(req: IncomingMessage): AuthContext | null {
+  async authenticate(req: IncomingMessage): Promise<AuthContext | null> {
     const raw = accountTokenRaw(req);
     if (raw) {
       const t = parseToken(raw);
       // 头中的 username 必须存在且与 token 内 username 一致（签名不可伪造，头仅作双因子校验）。
       const headerUser = req.headers['x-ah-username'];
       const username = Array.isArray(headerUser) ? headerUser[0] : headerUser;
-      if (t && username && username === t.username && isTokenValidLocally(t)) {
+      if (t && username && username === t.username && await isTokenValidLocally(t)) {
         return { token: t.jti, sub: t.username, role: 'admin' };
       }
     }
     // 账户档未命中（无 cookie / 签错 / 过期）→ 回退到 OIDC / proxy / 静态令牌等其它身份源。
-    return this.fallback?.authenticate(req) ?? null;
+    return (await this.fallback?.authenticate(req)) ?? null;
   }
 
   can(ctx: AuthContext, action: Action): boolean {
