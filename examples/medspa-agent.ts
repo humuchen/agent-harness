@@ -43,7 +43,7 @@ function startServer(): void {
     );
     process.exit(1);
   }
-  // 开放鉴权（无 UI_AUTH_TOKEN）+ 强制租户隔离（演示投产加固）。
+  // 开放鉴权（无 UI_TOKENS）+ 强制租户隔离（演示投产加固）。
   serverProc = spawn('node', [SERVER_ENTRY], {
     env: {
       ...process.env,

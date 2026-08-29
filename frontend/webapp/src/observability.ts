@@ -211,7 +211,7 @@ export class AhObservability extends LitElement {
           ${this.roles?.mode === 'off'
             ? html`<div class="note" style="margin-bottom:10px">
                 开放模式（未强制鉴权）：以下为<b>默认角色权限参考</b>，当前所有请求默认拥有完整权限。配置
-                <code>UI_AUTH_TOKEN</code> / <code>UI_ROLE_PERMISSIONS</code> 后此处将显示实际生效的矩阵。
+                <code>UI_TOKENS</code> / <code>UI_ROLE_PERMISSIONS</code> 后此处将显示实际生效的矩阵。
               </div>`
             : nothing}
           <div class="matrix-scroll">

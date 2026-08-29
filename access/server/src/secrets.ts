@@ -60,7 +60,7 @@ function readSource(file: string): Record<string, string> {
 
 /**
  * 装配密钥到 `process.env`。幂等：多次调用仅首次生效。
- * 必须在读取任何密钥（如 `UI_AUTH_TOKEN`）之前调用。
+ * 必须在读取任何密钥之前调用。
  */
 export function loadSecrets(opts: LoadSecretsOptions = {}): void {
   if (loaded) return;

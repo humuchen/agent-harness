@@ -365,10 +365,10 @@ export class AccountAuthorizer implements Authorizer {
  * 认证依据（按优先级）：
  * 1. OPEN_API_KEY —— 统一认证凭证。本地启动后所有权限校验均接受它（admin 角色）；
  *    部署到现场若未接入 RBAC，则自动降级为「唯一凭证」，保证无 RBAC 场景下服务不中断、权限校验不挂。
- * 2. RBAC 体系 —— UI_TOKENS / UI_AUTH_TOKEN / UI_ROLE_PERMISSIONS / AUTH_PROVIDER(oidc|proxy)。
+ * 2. RBAC 体系 —— UI_TOKENS / UI_ROLE_PERMISSIONS / AUTH_PROVIDER(oidc|proxy)。
  *    接入后按角色判定，但 OPEN_API_KEY 仍作为 admin 逃生通道并行生效。
  *
- * 降级判定：当未配置任何 RBAC 凭证（无 UI_TOKENS / UI_AUTH_TOKEN / UI_ROLE_PERMISSIONS 且
+ * 降级判定：当未配置任何 RBAC 凭证（无 UI_TOKENS / UI_ROLE_PERMISSIONS 且
  * AUTH_PROVIDER 为默认 token）→ 视为「未接入 RBAC」，OPEN_API_KEY 即权限判断唯一凭证：
  *   - 配置了 key：仅接受该 key（admin，全权限），其余一律 401/403。
  *   - 连 key 都缺失：fail-open（全放行），确保服务即便零配置也能启动、权限校验不中断。
@@ -379,7 +379,6 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   const apiKey = process.env.OPEN_API_KEY || '';
   const rbacConfigured = !!(
     process.env.UI_TOKENS ||
-    process.env.UI_AUTH_TOKEN ||
     process.env.UI_ROLE_PERMISSIONS
   );
 
@@ -438,14 +437,11 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
       /* 忽略错误配置，回退到单令牌 */
     }
   }
-  const fallback = process.env.UI_AUTH_TOKEN || undefined;
-  const hasStatic = Object.keys(tokens).length > 0 || !!fallback;
+  const hasStatic = Object.keys(tokens).length > 0;
   // 业务令牌鉴权器；若配置了 OPEN_API_KEY 则追加为 admin 逃生通道。
   const staticAuth: RoleBasedAuthorizer | undefined = hasStatic
     ? new RoleBasedAuthorizer({
         tokens,
-        fallbackToken: fallback,
-        fallbackRole: 'operator',
         apiKeyToken: apiKey
       })
     : apiKey

@@ -16,8 +16,8 @@
  *     可选 HMAC 校验（PROXY_HMAC_SECRET）防止非受信网络下的头伪造。
  *     这是企业落地 LDAP/SSO 的**最低成本路径**：把 agent-harness 部署在网关之后即可。
  *
- * 两类 provider 都支持 break-glass：即使启用 OIDC/proxy，只要配置了 UI_TOKENS /
- * UI_AUTH_TOKEN，静态令牌仍可越过外部 IdP 直接鉴权（运维逃生通道）。
+ * 两类 provider 都支持 break-glass：即使启用 OIDC/proxy，只要配置了 UI_TOKENS，
+ * 静态令牌仍可越过外部 IdP 直接鉴权（运维逃生通道）。
  *
  * 注意：本文件仅 `import type` 引用 authz（类型），运行时单向依赖 authz→sso，避免循环依赖。
  */
@@ -278,7 +278,7 @@ export interface SsoAuthorizerOpts {
   mapping: RoleMapping;
   /** 持有 RBAC 权限矩阵的 policy（can/describe 委托给它）。 */
   policy: Authorizer;
-  /** break-glass：静态令牌鉴权器（配置了 UI_TOKENS/UI_AUTH_TOKEN 时才传入）。 */
+  /** break-glass：静态令牌鉴权器（配置了 UI_TOKENS 时才传入）。 */
   fallback?: Authorizer;
 }
 

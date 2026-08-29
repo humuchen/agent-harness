@@ -15,6 +15,7 @@ const http = require('node:http');
 
 const SERVER_JS = join(__dirname, '..', 'dist', 'server.js');
 const TOKEN = 'test-token-xyz';
+const TOKENS_JSON = JSON.stringify({ [TOKEN]: 'admin' });
 const PORT = 40000 + Math.floor(Math.random() * 5000);
 const RUN = existsSync(SERVER_JS);
 // 前端产物是可选前置：server 单测不应因 webapp 未构建而失败（CI 里 build 会产出，本地常常没有）。
@@ -28,7 +29,7 @@ function startServer() {
       ...process.env,
       PORT: String(PORT),
       UI_HOST: '127.0.0.1',
-      UI_AUTH_TOKEN: TOKEN,
+      UI_TOKENS: TOKENS_JSON,
       // 收紧体上限以便测试 413；关闭限流避免误伤；不接 MCP / 真实 LLM。
       MAX_BODY_BYTES: '1024',
       RATE_LIMIT: '0',

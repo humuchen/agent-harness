@@ -142,10 +142,7 @@ setupAlerting();
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
 const HOST = process.env.UI_HOST ?? '0.0.0.0';
 
-// 接口鉴权：设置 UI_AUTH_TOKEN 后，除健康检查与静态页外的所有 API 都需
-// `Authorization: Bearer <token>`（或 `?token=<token>` 兼容旧用法）。
-// 未设置则保持开放（仅建议本地 / 演示使用，启动时会给出告警）。
-const UI_AUTH_TOKEN = process.env.UI_AUTH_TOKEN || '';
+
 // GitHub OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 
@@ -170,12 +167,12 @@ function githubRedirectUri(req: IncomingMessage): string {
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
 const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? 'on').toLowerCase() !== 'off';
-// 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS / UI_AUTH_TOKEN）。
+// 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS）。
 // OPEN_API_KEY 已移出鉴权链路；若以上均不满足，则仅由账户密码档严格拒绝（无 cookie 即 401）。
 const REQUIRE_AUTH =
   AUTH_PROVIDER !== 'token' ||
   ACCOUNT_AUTH ||
-  !!(process.env.UI_TOKENS || UI_AUTH_TOKEN);
+  !!(process.env.UI_TOKENS);
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
@@ -3079,15 +3076,15 @@ function onListening(): void {
     );
     if (
       (AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') &&
-      (process.env.UI_TOKENS || UI_AUTH_TOKEN)
+      (process.env.UI_TOKENS)
     ) {
       console.log(
-        `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_AUTH_TOKEN 直接鉴权（运维逃生通道）`
+        `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_TOKENS 直接鉴权（运维逃生通道）`
       );
     }
   } else {
     console.warn(
-      `   ⚠️  未设置 UI_TOKENS / UI_AUTH_TOKEN，UI 接口处于开放状态（仅建议本地 / 演示使用）。`
+      `   ⚠️  未设置 UI_TOKENS，UI 接口处于开放状态（仅建议本地 / 演示使用）。`
     );
   }
   if (UI_CORS_ORIGIN.length === 0) {

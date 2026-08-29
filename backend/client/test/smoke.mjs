@@ -85,7 +85,6 @@ async function startServer() {
       PORT: String(port),
       UI_HOST: '127.0.0.1',
       AUTH_PROVIDER: 'token',
-      UI_AUTH_TOKEN: '',
       UI_TOKENS: '',
       RATE_LIMIT: '0',
       AUDIT_LOG: '',

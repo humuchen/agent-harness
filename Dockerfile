@@ -9,7 +9,6 @@
 # 运行：
 #   docker run -p 4173:4173 \
 #     -e OPEN_API_KEY=sk-or-... \
-#     -e UI_AUTH_TOKEN=change-me \
 #     -e REDIS_URL=redis://redis:6379 \
 #     agent-harness:local
 #

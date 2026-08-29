@@ -1,13 +1,13 @@
-# GitHub Actions — 测试 + 构建 + 部署到 Fly.io
+# GitHub Actions — 测试 + 构建 + 部署到 Render
 #
 # 触发：
-#   - push 到 dev 分支：构建并部署到 Fly（预览环境）
-#   - push 到 main 分支：构建并部署到 Fly（生产环境）
+#   - push 到 dev 分支：部署到 Render
+#   - push 到 main 分支：部署到 Render
 #
 # 需要的 Secrets：
-#   FLY_API_TOKEN — 从 https://fly.io/user/personal_access_tokens 生成
-#   TURSO_URL     — （可选）Turso 数据库地址
-#   TURSO_TOKEN   — （可选）Turso 访问令牌
+#   RENDER_DEPLOY_HOOK_URL — 从 Render Dashboard → Settings → Deploy Hook 获取
+#   TURSO_URL              — （可选）Turso 数据库地址
+#   TURSO_TOKEN            — （可选）Turso 访问令牌
 
 name: CI/CD
 
@@ -47,17 +47,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: 部署到 Fly.io
+      - name: 部署到 Render
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
-            fly deploy --remote-only --app agent-harness
-          else
-            fly deploy --remote-only --app agent-harness-dev
-          fi
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": true}'
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          # Turso 配置（可选）
           TURSO_URL: ${{ secrets.TURSO_URL }}
           TURSO_TOKEN: ${{ secrets.TURSO_TOKEN }}

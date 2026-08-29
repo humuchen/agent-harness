@@ -16,8 +16,6 @@ services:
       NODE_ENV: production
       PORT: '4173'
       UI_HOST: '0.0.0.0'
-      # 接口鉴权：请改成强随机值；留空则开放（仅本地演示）。
-      UI_AUTH_TOKEN: '${UI_AUTH_TOKEN:-}'
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPEN_API_KEY: '${OPEN_API_KEY:-}'
       OPEN_MODEL: '${OPEN_MODEL:-}'

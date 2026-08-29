@@ -68,6 +68,15 @@ services:
       # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       - key: MA_DATA_DIR
         value: /app/data/ma-lead
+      # 数据库后端：sqlite（默认，本地文件）| turso（云端 SQLite，需配 TURSO_URL + TURSO_TOKEN）
+      # 自动回退：turso 初始化失败时降级为本地 sqlite
+      - key: DB_BACKEND
+        value: sqlite
+      # Turso 数据库（可选，配了后自动切换）
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_TOKEN
+        sync: false
       # 账户密码子系统 SQLite 落点：固定到 /app/data（配合上面 disks 持久卷可保留注册账户）。
       # free plan 无持久卷时，库每次重启清空，但下方 ADMIN_USERNAME/ADMIN_PASSWORD 会在启动时
       # 自动重建 admin 账户，保证 admin/admin888 始终可登录放行。
