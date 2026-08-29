@@ -21,7 +21,8 @@
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@modelcontextprotocol/server-filesystem": "^2025.1.0",
     "@modelcontextprotocol/server-memory": "^2025.1.0",
-    "@tokenizin/mcp-npx-fetch": "^1.0.0"
+    "@tokenizin/mcp-npx-fetch": "^1.0.0",
+    "@negokaz/excel-mcp-server": "^0.12.0"
   },
   "optionalDependencies": {
     "ioredis": "^5.4.1"

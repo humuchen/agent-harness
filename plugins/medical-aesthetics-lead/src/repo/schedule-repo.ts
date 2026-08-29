@@ -10,7 +10,7 @@
  * 现在号源满/已约/不存在均抛 MaError（CONFLICT/NOT_FOUND），由工具层据实回灌模型。
  */
 
-import { getDb, dbCall, inTransaction, type SqliteDatabase } from '../infra/db';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, inTransaction, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 import { MaError } from '../infra/errors';
 import { type ClinicRecord, type SlotRecord, type AppointmentRecord } from './types';
@@ -58,61 +58,53 @@ function rowToAppointment(r: Record<string, unknown>): AppointmentRecord {
 }
 
 /** 查询院区（可选按城市过滤，参数化）。 */
-export function searchClinics(city?: string): ClinicRecord[] {
-  return dbCall(() => {
-    const db = getDb();
+export async function searchClinics(city?: string): Promise<ClinicRecord[]> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const tid = getConfig().tenantId;
     const rows = city
-      ? db.prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND active = 1 AND city = ? ORDER BY name').all(tid, city)
-      : db.prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND active = 1 ORDER BY city, name').all(tid);
+      ? await allRows(db.prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND active = 1 AND city = ? ORDER BY name'), tid, city)
+      : await allRows(db.prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND active = 1 ORDER BY city, name'), tid);
     return rows.map(rowToClinic);
   }, '查询院区');
 }
 
-export function getClinic(clinicId: string): ClinicRecord | null {
-  return dbCall(() => {
-    const row = getDb()
-      .prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND clinic_id = ?')
-      .get(getConfig().tenantId, clinicId);
+export async function getClinic(clinicId: string): Promise<ClinicRecord | null> {
+  return await dbCall(async () => {
+    const row = await getRow((await getDb()).prepare('SELECT * FROM ma_clinic WHERE tenant_id = ? AND clinic_id = ?'), getConfig().tenantId, clinicId);
     return row ? rowToClinic(row) : null;
   }, '读取院区');
 }
 
 /** 列出某院区号源（可选按日期过滤），仅返回仍开放且有余量的。 */
-export function listSlots(clinicId: string, date?: string): SlotRecord[] {
-  return dbCall(() => {
-    const db = getDb();
+export async function listSlots(clinicId: string, date?: string): Promise<SlotRecord[]> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const tid = getConfig().tenantId;
     let rows;
     if (date) {
-      rows = db
-        .prepare(
+      rows = await allRows(db.prepare(
           `SELECT * FROM ma_slot WHERE tenant_id = ? AND clinic_id = ? AND slot_date = ? AND status = 'open' ORDER BY slot_date, slot_time`
-        )
-        .all(tid, clinicId, date);
+        ), tid, clinicId, date);
     } else {
-      rows = db
-        .prepare(
+      rows = await allRows(db.prepare(
           `SELECT * FROM ma_slot WHERE tenant_id = ? AND clinic_id = ? AND status = 'open' ORDER BY slot_date, slot_time`
-        )
-        .all(tid, clinicId);
+        ), tid, clinicId);
     }
     return rows.map(rowToSlot).filter((s) => s.remaining > 0);
   }, '查询号源');
 }
 
-export function getSlot(slotId: string): SlotRecord | null {
-  return dbCall(() => {
-    const row = getDb()
-      .prepare('SELECT * FROM ma_slot WHERE tenant_id = ? AND slot_id = ?')
-      .get(getConfig().tenantId, slotId);
+export async function getSlot(slotId: string): Promise<SlotRecord | null> {
+  return await dbCall(async () => {
+    const row = await getRow((await getDb()).prepare('SELECT * FROM ma_slot WHERE tenant_id = ? AND slot_id = ?'), getConfig().tenantId, slotId);
     return row ? rowToSlot(row) : null;
   }, '读取号源');
 }
 
-export function getAppointment(appointmentId: string): AppointmentRecord | null {
-  return dbCall(() => {
-    const row = getDb().prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?').get(appointmentId);
+export async function getAppointment(appointmentId: string): Promise<AppointmentRecord | null> {
+  return await dbCall(async () => {
+    const row = await (await getDb()).prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?').get(appointmentId);
     return row ? rowToAppointment(row) : null;
   }, '读取预约单');
 }
@@ -123,14 +115,12 @@ export function getAppointment(appointmentId: string): AppointmentRecord | null 
  * 任一条件不满足（号源不存在 / 已关闭 / 已满 / 已约）抛 MaError。
  * 返回建好的预约单（含真实 appointment_id）。
  */
-export function bookSlotWithinTx(
+export async function bookSlotWithinTx(
   conn: SqliteDatabase,
   args: { leadId: string; clinicId: string; slotId: string }
-): AppointmentRecord {
+): Promise<AppointmentRecord> {
   const tid = getConfig().tenantId;
-  const slot = conn
-    .prepare('SELECT * FROM ma_slot WHERE tenant_id = ? AND slot_id = ?')
-    .get(tid, args.slotId) as Record<string, unknown> | undefined;
+  const slot = await getRow(conn.prepare('SELECT * FROM ma_slot WHERE tenant_id = ? AND slot_id = ?'), tid, args.slotId) as Record<string, unknown> | undefined;
   if (!slot) throw new MaError('NOT_FOUND', `号源不存在：${args.slotId}`);
   if (Number(slot.status) !== 1 && slot.status !== 'open') {
     throw new MaError('CONFLICT', `号源已关闭不可预约：${args.slotId}`);
@@ -139,14 +129,10 @@ export function bookSlotWithinTx(
     throw new MaError('CONFLICT', `号源已满：${args.slotId}（${slot.booked}/${slot.capacity}）`);
   }
   // 已存在有效预约单？
-  const dup = conn
-    .prepare("SELECT 1 FROM ma_appointment WHERE slot_id = ? AND lead_id = ? AND status = 'booked'")
-    .get(args.slotId, args.leadId);
+  const dup = await getRow(conn.prepare("SELECT 1 FROM ma_appointment WHERE slot_id = ? AND lead_id = ? AND status = 'booked'"), args.slotId, args.leadId);
   if (dup) throw new MaError('CONFLICT', `该客户已预约此号源：${args.slotId}`);
   // 条件占用 +1（并发安全；即便穿越到此处，唯一索引也会兜底）
-  const upd = conn
-    .prepare('UPDATE ma_slot SET booked = booked + 1, updated_at = ? WHERE slot_id = ? AND booked < capacity')
-    .run(Date.now(), args.slotId);
+  const upd = await runStmt(conn.prepare('UPDATE ma_slot SET booked = booked + 1, updated_at = ? WHERE slot_id = ? AND booked < capacity'), Date.now(), args.slotId);
   if (upd.changes !== 1) throw new MaError('CONFLICT', `号源已不可约：${args.slotId}`);
   const now = Date.now();
   const apptId = `appt_${now}_${Math.random().toString(36).slice(2, 8)}`;
@@ -167,30 +153,28 @@ export function bookSlotWithinTx(
       now,
       now
     );
-  return rowToAppointment(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?').get(apptId) as Record<string, unknown>);
+  return rowToAppointment(await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), apptId) as Record<string, unknown>);
 }
 
 /** 便捷封装：自带事务的号源锁定 + 建预约单。 */
-export function bookSlotTx(args: {
+export async function bookSlotTx(args: {
   leadId: string;
   clinicId: string;
   slotId: string;
   createdBy?: string;
-}): AppointmentRecord {
-  return inTransaction((conn: SqliteDatabase) => bookSlotWithinTx(conn, args));
+}): Promise<AppointmentRecord> {
+  return await inTransaction((conn: SqliteDatabase) => bookSlotWithinTx(conn, args));
 }
 
 /** 取消预约单（事务内回退号源占用，幂等）。 */
-export function cancelAppointmentTx(appointmentId: string): void {
-  inTransaction((conn: SqliteDatabase) => {
-    const row = conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?').get(appointmentId) as
+export async function cancelAppointmentTx(appointmentId: string): Promise<void> {
+  await inTransaction((conn: SqliteDatabase) => {
+    const row = await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), appointmentId) as
       | Record<string, unknown>
       | undefined;
     if (!row) throw new MaError('NOT_FOUND', `预约单不存在：${appointmentId}`);
     if (row.status !== 'booked') return; // 已取消/已到院 → 幂等
-    conn
-      .prepare("UPDATE ma_appointment SET status = 'cancelled', updated_at = ? WHERE appointment_id = ?")
-      .run(Date.now(), appointmentId);
+    await runStmt(conn.prepare("UPDATE ma_appointment SET status = 'cancelled', updated_at = ? WHERE appointment_id = ?"), Date.now(), appointmentId);
     conn
       .prepare('UPDATE ma_slot SET booked = MAX(0, booked - 1), updated_at = ? WHERE slot_id = ?')
       .run(Date.now(), String(row.slot_id));
@@ -198,12 +182,12 @@ export function cancelAppointmentTx(appointmentId: string): void {
 }
 
 /** 把预约单同步到 HIS 后回填的外部单号 / 外部状态。两者可独立更新（按需传参）。 */
-export function setAppointmentExternal(
+export async function setAppointmentExternal(
   appointmentId: string,
   externalId?: string,
   externalStatus?: string
-): void {
-  dbCall(() => {
+): Promise<void> {
+  await dbCall(async () => {
     const sets: string[] = [];
     const vals: unknown[] = [];
     if (externalId !== undefined) {
@@ -218,22 +202,22 @@ export function setAppointmentExternal(
     sets.push('updated_at = ?');
     vals.push(Date.now());
     vals.push(appointmentId);
-    getDb().prepare(`UPDATE ma_appointment SET ${sets.join(', ')} WHERE appointment_id = ?`).run(...(vals as never[]));
+    (await getDb()).prepare(`UPDATE ma_appointment SET ${sets.join(', ')} WHERE appointment_id = ?`).run(...(vals as never[]));
   }, '回填预约单外部单号/状态');
 }
 
 /** 按 HIS 外部单号反查本地预约单（回调状态下发时用）。 */
-export function getAppointmentByExternalId(externalId: string): AppointmentRecord | null {
-  return dbCall(() => {
-    const row = getDb().prepare('SELECT * FROM ma_appointment WHERE external_id = ?').get(externalId);
+export async function getAppointmentByExternalId(externalId: string): Promise<AppointmentRecord | null> {
+  return await dbCall(async () => {
+    const row = (await getDb()).prepare('SELECT * FROM ma_appointment WHERE external_id = ?').get(externalId);
     return row ? rowToAppointment(row) : null;
   }, '按外部单号查预约单');
 }
 
 /** 导入/同步院区（upsert）。 */
-export function upsertClinic(c: ClinicRecord): void {
-  dbCall(() => {
-    const db = getDb();
+export async function upsertClinic(c: ClinicRecord): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
     db.prepare(
       `INSERT INTO ma_clinic (clinic_id, tenant_id, name, city, address, phone, active, updated_at)
        VALUES (:clinic_id, :tenant_id, :name, :city, :address, :phone, :active, :updated_at)
@@ -254,7 +238,7 @@ export function upsertClinic(c: ClinicRecord): void {
 }
 
 /** 导入/同步号源（upsert，按 slot_id）。 */
-export function upsertSlot(s: {
+export async function upsertSlot(s: {
   slotId: string;
   clinicId: string;
   date: string;
@@ -262,9 +246,9 @@ export function upsertSlot(s: {
   capacity?: number;
   doctor?: string;
   status?: 'open' | 'closed';
-}): void {
-  dbCall(() => {
-    const db = getDb();
+}): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
     db.prepare(
       `INSERT INTO ma_slot (slot_id, tenant_id, clinic_id, slot_date, slot_time, capacity, booked, status, doctor, updated_at)
        VALUES (:slot_id, :tenant_id, :clinic_id, :slot_date, :slot_time, :capacity, 0, :status, :doctor, :updated_at)

@@ -7,7 +7,7 @@
  * - 全部按 tenant_id 过滤，天然多租户隔离。
  */
 
-import { getDb, dbCall, type SqliteDatabase } from '../infra/db';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 import {
   type LeadRecord,
@@ -54,35 +54,31 @@ function rowToLead(r: Record<string, unknown>): LeadRecord {
 }
 
 /** 读取单条线索（含最近消息）。 */
-export function getLead(leadId: string, withMessages = false): LeadRecord | null {
-  return dbCall(() => {
-    const db = getDb();
-    const row = db
-      .prepare('SELECT * FROM ma_lead WHERE tenant_id = ? AND lead_id = ?')
-      .get(getConfig().tenantId, leadId);
+export async function getLead(leadId: string, withMessages = false): Promise<LeadRecord | null> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const row = await getRow(db.prepare('SELECT * FROM ma_lead WHERE tenant_id = ? AND lead_id = ?'), getConfig().tenantId, leadId);
     if (!row) return null;
     const lead = rowToLead(row);
-    if (withMessages) lead.messages = getMessages(leadId);
+    if (withMessages) lead.messages = await getMessages(leadId);
     return lead;
   }, '读取线索');
 }
 
-export function leadExists(leadId: string): boolean {
-  return getLead(leadId) !== null;
+export async function leadExists(leadId: string): Promise<boolean> {
+  return (await getLead(leadId)) !== null;
 }
 
 /**
  * upsert 线索：不存在则插入，存在则按 patch 更新非空字段。
  * reached 在应用层单调推进（除 lost 外取 max(reached, stage)）。
  */
-export function upsertLead(leadId: string, patch: LeadPatch): LeadRecord {
-  return dbCall(() => {
-    const db = getDb();
+export async function upsertLead(leadId: string, patch: LeadPatch): Promise<LeadRecord> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const now = Date.now();
     const cfg = getConfig();
-    const existing = db
-      .prepare('SELECT * FROM ma_lead WHERE tenant_id = ? AND lead_id = ?')
-      .get(cfg.tenantId, leadId);
+    const existing = await getRow(db.prepare('SELECT * FROM ma_lead WHERE tenant_id = ? AND lead_id = ?'), cfg.tenantId, leadId);
 
     // 合并当前值与 patch，计算最终 stage/reached
     const cur = existing ? rowToLead(existing) : null;
@@ -151,14 +147,14 @@ export function upsertLead(leadId: string, patch: LeadPatch): LeadRecord {
       updated_at: now,
     });
 
-    return getLead(leadId)!;
+    return (await getLead(leadId))!;
   }, 'upsert 线索');
 }
 
 /** 追加已归属线索的对话消息（保留最近 200 条，超出裁剪）。 */
-export function appendLeadMessage(leadId: string, role: string, text: string, runId?: string): void {
-  dbCall(() => {
-    const db = getDb();
+export async function appendLeadMessage(leadId: string, role: string, text: string, runId?: string): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
     db.prepare(
       'INSERT INTO ma_lead_message (lead_id, run_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)'
     ).run(leadId, runId ?? null, role, String(text ?? '').slice(0, 4000), Date.now());
@@ -171,11 +167,9 @@ export function appendLeadMessage(leadId: string, role: string, text: string, ru
   }, '写入线索消息');
 }
 
-export function getMessages(leadId: string, limit = 50): { role: string; text: string; t: number }[] {
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare('SELECT role, text, created_at FROM ma_lead_message WHERE lead_id = ? ORDER BY id DESC LIMIT ?')
-      .all(leadId, limit);
+export async function getMessages(leadId: string, limit = 50): Promise<{ role: string; text: string; t: number }[]> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare('SELECT role, text, created_at FROM ma_lead_message WHERE lead_id = ? ORDER BY id DESC LIMIT ?'), leadId, limit);
     return rows
       .map((r) => ({ role: String(r.role), text: String(r.text), t: Number(r.created_at) }))
       .reverse();
@@ -183,13 +177,11 @@ export function getMessages(leadId: string, limit = 50): { role: string; text: s
 }
 
 /** 列出线索（按更新时间倒序，分页）。 */
-export function listLeads(limit = 100, offset = 0): LeadRecord[] {
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare(
+export async function listLeads(limit = 100, offset = 0): Promise<LeadRecord[]> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare(
         'SELECT * FROM ma_lead WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?'
-      )
-      .all(getConfig().tenantId, limit, offset);
+      ), getConfig().tenantId, limit, offset);
     return rows.map(rowToLead);
   }, '列出线索');
 }
@@ -198,22 +190,20 @@ export function listLeads(limit = 100, offset = 0): LeadRecord[] {
  * 完整统计（SQL 聚合）。漏斗按 reached 口径累计：某线索 reached=booked 时，
  * new..booked 各 +1，符合转化漏斗直觉；lost 独立计数、不进漏斗。
  */
-export function computeStats(): LeadStats {
-  return dbCall(() => {
-    const db = getDb();
+export async function computeStats(): Promise<LeadStats> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const tid = getConfig().tenantId;
 
     const total = Number(
-      db.prepare('SELECT COUNT(*) AS c FROM ma_lead WHERE tenant_id = ?').get(tid)?.c ?? 0
+      (await getRow(db.prepare('SELECT COUNT(*) AS c FROM ma_lead WHERE tenant_id = ?'), tid))?.c ?? 0
     );
 
     // reached 分布（排除 lost），据此累计成漏斗
-    const reachedRows = db
-      .prepare(
+    const reachedRows = await allRows(db.prepare(
         `SELECT reached, COUNT(*) AS c FROM ma_lead
          WHERE tenant_id = ? AND stage != 'lost' GROUP BY reached`
-      )
-      .all(tid);
+      ), tid);
     const funnel = Object.fromEntries(STAGE_ORDER.map((s) => [s, 0])) as Record<LeadStage, number> & {
       lost: number;
     };
@@ -224,44 +214,39 @@ export function computeStats(): LeadStats {
       for (let i = 0; i <= rr; i++) funnel[STAGE_ORDER[i]] += c;
     }
     (funnel as Record<string, number>).lost = Number(
-      db.prepare(`SELECT COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND stage = 'lost'`).get(tid)?.c ?? 0
+      (await getRow(db.prepare(`SELECT COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND stage = 'lost'`), tid))?.c ?? 0
     );
 
     const channelDist: Record<string, number> = {};
-    for (const row of db
-      .prepare(`SELECT channel, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND stage != 'lost' GROUP BY channel`)
-      .all(tid)) {
+    for (const row of await allRows(db.prepare(
+      `SELECT channel, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND stage != 'lost' GROUP BY channel`
+    ), tid)) {
       channelDist[String(row.channel)] = Number(row.c);
     }
 
     const gradeDist: Record<string, number> = {};
-    for (const row of db
-      .prepare(`SELECT grade, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND grade IS NOT NULL GROUP BY grade`)
-      .all(tid)) {
+    for (const row of await allRows(db.prepare(
+      `SELECT grade, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND grade IS NOT NULL GROUP BY grade`
+    ), tid)) {
       gradeDist[String(row.grade)] = Number(row.c);
     }
 
     const crmSync: Record<CrmSyncState, number> = { pending: 0, synced: 0, failed: 0, disabled: 0 };
-    for (const row of db
-      .prepare('SELECT crm_sync_state AS s, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? GROUP BY crm_sync_state')
-      .all(tid)) {
+    for (const row of await allRows(db.prepare(
+      'SELECT crm_sync_state AS s, COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? GROUP BY crm_sync_state'
+    ), tid)) {
       crmSync[(row.s as CrmSyncState) ?? 'pending'] = Number(row.c);
     }
 
-    const followupQueue = db
-      .prepare(
+    const followupQueue = (await allRows(db.prepare(
         `SELECT * FROM ma_lead WHERE tenant_id = ? AND handed_off = 0
          AND (grade = 'C' OR stage = 'lost') ORDER BY updated_at DESC LIMIT 100`
-      )
-      .all(tid)
-      .map(rowToLead);
+      ), tid)).map(rowToLead);
 
-    const handoffQueue = db
-      .prepare(
+    const handoffQueue = (await allRows(db.prepare(
         `SELECT * FROM ma_lead WHERE tenant_id = ? AND handed_off = 1 AND consulted_by IS NULL
          ORDER BY updated_at DESC LIMIT 100`
-      )
-      .all(tid)
+      ), tid))
       .map(rowToLead);
 
     const arrived = funnel.arrived;
@@ -286,22 +271,20 @@ export function computeStats(): LeadStats {
  * 认领：仅当已转人工且未被认领时置 consulted_by（条件更新，防并发重复认领）。
  * 返回 true 表示本次认领成功。
  */
-export function assignConsultant(leadId: string, consultant: string): boolean {
-  return dbCall(() => {
-    const res = getDb()
-      .prepare(
+export async function assignConsultant(leadId: string, consultant: string): Promise<boolean> {
+  return await dbCall(async () => {
+    const res = await runStmt((await getDb()).prepare(
         `UPDATE ma_lead SET consulted_by = ?, updated_at = ?
          WHERE tenant_id = ? AND lead_id = ? AND handed_off = 1 AND consulted_by IS NULL`
-      )
-      .run(consultant || 'anonymous', Date.now(), getConfig().tenantId, leadId);
+      ), consultant || 'anonymous', Date.now(), getConfig().tenantId, leadId);
     return res.changes === 1;
   }, '认领线索');
 }
 
 /** 供发件箱 worker 使用：更新 CRM 同步结果。 */
-export function markCrmSync(leadId: string, state: CrmSyncState, crmId?: string): void {
-  dbCall(() => {
-    getDb()
+export async function markCrmSync(leadId: string, state: CrmSyncState, crmId?: string): Promise<void> {
+  dbCall(async () => {
+    (await getDb())
       .prepare(
         'UPDATE ma_lead SET crm_sync_state = ?, crm_id = COALESCE(?, crm_id), crm_synced_at = ?, updated_at = ? WHERE lead_id = ?'
       )
@@ -310,13 +293,13 @@ export function markCrmSync(leadId: string, state: CrmSyncState, crmId?: string)
 }
 
 /** 事务内推进阶段（供 schedule-service 预约成功后原子更新）。 */
-export function advanceStageTx(
+export async function advanceStageTx(
   conn: SqliteDatabase,
   leadId: string,
   patch: LeadPatch & { stage: LeadStage }
-): void {
+): Promise<void> {
   const now = Date.now();
-  const cur = conn.prepare('SELECT stage, reached FROM ma_lead WHERE lead_id = ?').get(leadId);
+  const cur = await getRow(conn.prepare('SELECT stage, reached FROM ma_lead WHERE lead_id = ?'), leadId);
   const curReached = (cur?.reached as LeadStage) ?? patch.stage;
   const reached =
     patch.stage === 'lost'

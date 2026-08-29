@@ -5,7 +5,7 @@
  * 再触发 agent。即使下游 agent 处理失败，消息不丢、可重试。
  */
 
-import { getDb, dbCall } from '../infra/db';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 
 export type InboundState = 'received' | 'dispatched' | 'processed' | 'error';
@@ -41,35 +41,31 @@ function rowToInbound(r: Record<string, unknown>): InboundMessage {
 /**
  * 落库一条入站消息。已存在相同 (channel, external_id) 则返回既有记录（天然去重防重放）。
  */
-export function saveInbound(msg: {
+export async function saveInbound(msg: {
   channel: string;
   externalId: string;
   leadKey: string;
   text: string;
-}): InboundMessage {
-  return dbCall(() => {
-    const db = getDb();
+}): Promise<InboundMessage> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const tid = getConfig().tenantId;
-    const existing = db
-      .prepare('SELECT * FROM ma_inbound_message WHERE tenant_id = ? AND channel = ? AND external_id = ?')
-      .get(tid, msg.channel, msg.externalId);
+    const existing = await getRow(db.prepare('SELECT * FROM ma_inbound_message WHERE tenant_id = ? AND channel = ? AND external_id = ?'), tid, msg.channel, msg.externalId);
     if (existing) return rowToInbound(existing);
     db.prepare(
       `INSERT INTO ma_inbound_message (tenant_id, channel, external_id, lead_key, text, state, received_at)
        VALUES (?, ?, ?, ?, ?, 'received', ?)`
     ).run(tid, msg.channel, msg.externalId, msg.leadKey, msg.text, Date.now());
-    const row = db
-      .prepare('SELECT * FROM ma_inbound_message WHERE tenant_id = ? AND channel = ? AND external_id = ?')
-      .get(tid, msg.channel, msg.externalId);
+    const row = await getRow(db.prepare('SELECT * FROM ma_inbound_message WHERE tenant_id = ? AND channel = ? AND external_id = ?'), tid, msg.channel, msg.externalId);
     return rowToInbound(row as Record<string, unknown>);
   }, '落库入站消息');
 }
 
 /** 更新入站消息状态机（dispatched→processed/error）。 */
-export function markInboundState(id: number, state: InboundState, runId?: string, error?: string): void {
-  dbCall(() => {
+export async function markInboundState(id: number, state: InboundState, runId?: string, error?: string): Promise<void> {
+  await dbCall(async () => {
     const processedAt = state === 'processed' || state === 'error' ? Date.now() : null;
-    getDb()
+    (await getDb())
       .prepare(
         `UPDATE ma_inbound_message SET state = ?, run_id = COALESCE(?, run_id), error = ?, processed_at = COALESCE(?, processed_at) WHERE id = ?`
       )

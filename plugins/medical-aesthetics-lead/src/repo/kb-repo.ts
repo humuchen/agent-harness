@@ -15,7 +15,7 @@
  * 4. 可选语义 hybrid：若查询与项目均带 embedding，则叠加余弦相似度（未配置嵌入服务时跳过，绝不伪造向量）。
  */
 
-import { getDb, dbCall } from '../infra/db';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 import { type ProjectRecord, type IntentMapping } from './types';
 
@@ -93,7 +93,7 @@ function tokens(q: string): string[] {
  * 关键词命中加权打分：name/alias 命中权重最高，category/summary 次之，适应症/恢复/经营字段再次。
  * 纯函数，便于单测；打分在 JS 侧完成（SQL 只做"是否可能相关"的模糊初筛）。
  */
-export function scoreProject(p: ProjectRecord, q: string): number {
+export async function scoreProject(p: ProjectRecord, q: string): Promise<number> {
   const tks = tokens(q);
   if (!tks.length) return 1;
   const hay: Array<[string, number]> = [
@@ -122,16 +122,14 @@ export function scoreProject(p: ProjectRecord, q: string): number {
  * 命中 ma_project_intent 的 keyword/intent 时，返回 {projectId: 意图权重} 供检索提权。
  * 仅做包含匹配（查询串包含关键词即算命中），低成本、零依赖、可解释。
  */
-export function expandByIntent(query: string): Map<string, number> {
+export async function expandByIntent(query: string): Promise<Map<string, number>> {
   const q = query.toLowerCase().trim();
   if (!q) return new Map();
   const boost = new Map<string, number>();
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare(
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare(
         `SELECT intent, project_id, weight, keywords FROM ma_project_intent WHERE tenant_id = ?`
-      )
-      .all(getConfig().tenantId) as Array<{
+      ), getConfig().tenantId) as Array<{
       intent: string;
       project_id: string;
       weight: number;
@@ -181,24 +179,22 @@ export function cosine(a?: number[] | null, b?: number[] | null): number {
 
 /** 检索知识库（词面打分 + 意图提权 + 可选语义 hybrid）。
  * 库内无相关项目时返回空数组——fail-closed 的正确表现。 */
-export function searchProjects(
+export async function searchProjects(
   query: string,
   limit = 5,
   queryEmbedding?: number[] | null
-): ProjectRecord[] {
-  return dbCall(() => {
-    const db = getDb();
+): Promise<ProjectRecord[]> {
+  return await dbCall(async () => {
+    const db = await getDb();
     const tid = getConfig().tenantId;
     const q = query.trim();
     const like = `%${q}%`;
     // 1) 字面初筛（LIKE）作为第一波候选
-    const rows = db
-      .prepare(
+    const rows = await db.prepare(
         `SELECT * FROM ma_project WHERE tenant_id = ? AND active = 1
         AND (name LIKE ? OR category LIKE ? OR aliases LIKE ? OR summary LIKE ? OR indications LIKE ? OR intent_tags LIKE ?)
         ORDER BY updated_at DESC LIMIT 200`
-      )
-      .all(tid, like, like, like, like, like, like) as Record<
+      ).all(tid, like, like, like, like, like, like) as Record<
       string,
       unknown
     >[];
@@ -207,15 +203,13 @@ export function searchProjects(
 
     // 2) 意图归一扩展：把口语诉求**直接映射进候选集**（绕过字面 LIKE），
     //    否则"脸大/显老/想变白"等无字面命中的诉求会因 LIKE 空集而空召回。
-    const intentBoost = expandByIntent(q);
+    const intentBoost = await expandByIntent(q);
     if (intentBoost.size) {
       const ids = [...intentBoost.keys()];
       const ph = ids.map(() => '?').join(',');
-      const intentRows = db
-        .prepare(
+      const intentRows = await allRows(db.prepare(
           `SELECT * FROM ma_project WHERE tenant_id = ? AND active = 1 AND project_id IN (${ph})`
-        )
-        .all(tid, ...ids) as Record<string, unknown>[];
+        ), tid, ...ids) as Record<string, unknown>[];
       for (const r of intentRows)
         byId.set(String(r.project_id), rowToProject(r));
     }
@@ -226,14 +220,14 @@ export function searchProjects(
     const useEmbed =
       !!queryEmbedding &&
       projects.some((p) => p.embedding && p.embedding.length);
-    const scored = projects.map((p) => {
-      let s = scoreProject(p, q);
+    const scored = await Promise.all(projects.map(async (p) => {
+      let s = await scoreProject(p, q);
       s += intentBoost.get(p.projectId) ?? 0;
       if (useEmbed && p.embedding) {
         s += 4 * cosine(queryEmbedding, p.embedding); // 语义权重与意图同量级
       }
       return { p, s };
-    });
+    }));
     return scored
       .filter((x) => x.s > 0)
       .sort((a, b) => b.s - a.s)
@@ -243,35 +237,31 @@ export function searchProjects(
 }
 
 /** 读取单条项目（按 project_id）。 */
-export function getProject(projectId: string): ProjectRecord | null {
-  return dbCall(() => {
-    const row = getDb()
-      .prepare(
+export async function getProject(projectId: string): Promise<ProjectRecord | null> {
+  return await dbCall(async () => {
+    const row = await getRow((await getDb()).prepare(
         'SELECT * FROM ma_project WHERE tenant_id = ? AND project_id = ?'
-      )
-      .get(getConfig().tenantId, projectId);
+      ), getConfig().tenantId, projectId);
     return row ? rowToProject(row) : null;
   }, '读取知识库项目');
 }
 
 /** 列出项目（供导入校验/看板）。 */
-export function listProjects(activeOnly = true, limit = 500): ProjectRecord[] {
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare(
+export async function listProjects(activeOnly = true, limit = 500): Promise<ProjectRecord[]> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare(
         `SELECT * FROM ma_project WHERE tenant_id = ? ${
           activeOnly ? 'AND active = 1' : ''
         } ORDER BY category, name LIMIT ?`
-      )
-      .all(getConfig().tenantId, limit) as Record<string, unknown>[];
+      ), getConfig().tenantId, limit) as Record<string, unknown>[];
     return rows.map(rowToProject);
   }, '列出知识库项目');
 }
 
 /** 导入/同步单条项目（upsert），供 KB 导入接口与外部 KB 服务写入。源码自身从不调用。 */
-export function upsertProject(p: ProjectRecord): void {
-  dbCall(() => {
-    const db = getDb();
+export async function upsertProject(p: ProjectRecord): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
     db.prepare(
       `INSERT INTO ma_project (
         project_id, tenant_id, name, category, aliases, summary, indications,
@@ -328,18 +318,16 @@ export function upsertProject(p: ProjectRecord): void {
 }
 
 /** 清空本租户意图映射（seed 重导入前调用，避免重复累积）。 */
-export function clearIntents(): void {
-  dbCall(() => {
-    getDb()
-      .prepare('DELETE FROM ma_project_intent WHERE tenant_id = ?')
-      .run(getConfig().tenantId);
+export async function clearIntents(): Promise<void> {
+  await dbCall(async () => {
+    await runStmt((await getDb()).prepare('DELETE FROM ma_project_intent WHERE tenant_id = ?'), getConfig().tenantId);
   }, '清空意图映射');
 }
 
 /** 写入意图映射（intent-map.json → ma_project_intent）。 */
-export function upsertIntent(m: IntentMapping): void {
-  dbCall(() => {
-    getDb()
+export async function upsertIntent(m: IntentMapping): Promise<void> {
+  await dbCall(async () => {
+    (await getDb())
       .prepare(
         `INSERT INTO ma_project_intent (intent, project_id, tenant_id, weight, keywords)
          VALUES (?, ?, ?, ?, ?)

@@ -6,7 +6,7 @@
  * 幂等键（idempotency_key UNIQUE）保证重投不会造成上游重复建单。
  */
 
-import { getDb, dbCall } from '../infra/db';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 
 export type OutboxState = 'pending' | 'sent' | 'failed';
@@ -46,9 +46,9 @@ function rowToOutbox(r: Record<string, unknown>): OutboxRow {
 }
 
 /** 入队（幂等键冲突则忽略，避免重复建单）。 */
-export function enqueue(topic: string, idempotencyKey: string, payload: unknown): void {
-  dbCall(() => {
-    getDb()
+export async function enqueue(topic: string, idempotencyKey: string, payload: unknown): Promise<void> {
+  await dbCall(async () => {
+    (await getDb())
       .prepare(
         `INSERT INTO ma_outbox (tenant_id, topic, idempotency_key, payload, state, attempts, next_retry_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'pending', 0, 0, ?, ?)
@@ -59,47 +59,41 @@ export function enqueue(topic: string, idempotencyKey: string, payload: unknown)
 }
 
 /** 扫描到期待投递记录（next_retry_at <= now）。 */
-export function dueBatch(limit: number, now: number): OutboxRow[] {
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare(
+export async function dueBatch(limit: number, now: number): Promise<OutboxRow[]> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare(
         `SELECT * FROM ma_outbox WHERE tenant_id = ? AND state = 'pending' AND next_retry_at <= ?
          ORDER BY next_retry_at ASC LIMIT ?`
-      )
-      .all(getConfig().tenantId, now, limit);
+      ), getConfig().tenantId, now, limit);
     return rows.map(rowToOutbox);
   }, '扫描待投递');
 }
 
 /** 标记已投递（state=sent）。 */
-export function markSent(id: number): void {
-  dbCall(() => {
-    getDb()
-      .prepare(`UPDATE ma_outbox SET state = 'sent', attempts = attempts + 1, updated_at = ? WHERE id = ?`)
-      .run(Date.now(), id);
+export async function markSent(id: number): Promise<void> {
+  await dbCall(async () => {
+    await runStmt((await getDb()).prepare(`UPDATE ma_outbox SET state = 'sent', attempts = attempts + 1, updated_at = ? WHERE id = ?`), Date.now(), id);
   }, '标记已投递');
 }
 
 /** 标记失败：递增 attempts，到上限置 failed，否则排期下一次重试。 */
-export function markFailed(id: number, err: string, maxAttempts: number, nextDelayMs: number): void {
-  dbCall(() => {
-    const db = getDb();
-    const row = db.prepare('SELECT attempts FROM ma_outbox WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+export async function markFailed(id: number, err: string, maxAttempts: number, nextDelayMs: number): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
+    const row = await getRow(db.prepare('SELECT attempts FROM ma_outbox WHERE id = ?'), id) as Record<string, unknown> | undefined;
     const attempts = Number(row?.attempts ?? 0) + 1;
     const state: OutboxState = attempts >= maxAttempts ? 'failed' : 'pending';
     const next = state === 'failed' ? Number.MAX_SAFE_INTEGER : Date.now() + nextDelayMs;
-    db.prepare(
+    await runStmt(db.prepare(
       `UPDATE ma_outbox SET state = ?, attempts = ?, last_error = ?, next_retry_at = ?, updated_at = ? WHERE id = ?`
-    ).run(state, attempts, String(err).slice(0, 500), next, Date.now(), id);
+    ), state, attempts, String(err).slice(0, 500), next, Date.now(), id);
   }, '标记投递失败');
 }
 
 /** 发件箱健康（看板同步状态用）。 */
-export function outboxStats(): { pending: number; sent: number; failed: number } {
-  return dbCall(() => {
-    const rows = getDb()
-      .prepare('SELECT state, COUNT(*) AS c FROM ma_outbox WHERE tenant_id = ? GROUP BY state')
-      .all(getConfig().tenantId);
+export async function outboxStats(): Promise<{ pending: number; sent: number; failed: number }> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare('SELECT state, COUNT(*) AS c FROM ma_outbox WHERE tenant_id = ? GROUP BY state'), getConfig().tenantId);
     const out = { pending: 0, sent: 0, failed: 0 };
     for (const r of rows) {
       const s = String(r.state);

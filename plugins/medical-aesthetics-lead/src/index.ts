@@ -11,6 +11,7 @@ import { setRunKey, setPluginContext } from './runtime';
 import { appendTranscript } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
 import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
+import { getDbAsync } from './infra/db';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;
@@ -34,6 +35,11 @@ export const leadPlugin: PluginModule = {
   async setup(ctx: PluginContext): Promise<void> {
     // 捕获 ctx 供 routes(webhook) 经 ctx.a2a 触发 agent
     setPluginContext(ctx);
+
+    // 0) 预热数据库（Turso HTTP 模式下 exec/all 为异步，需 await 初始化完成）。
+    //    首次调用会建目录、开 WAL、执行幂等 DDL + 迁移。
+    //    初始化完成后 getDb() 直接返回缓存实例，后续同步调用不受影响。
+    await getDbAsync();
 
     // 1) 注册工具（loader 启用时自动加 medical-aesthetics-lead__ 前缀合并进进程共享插件工具表）
     registerQualifyTool(ctx.tools);

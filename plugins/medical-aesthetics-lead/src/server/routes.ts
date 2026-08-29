@@ -125,7 +125,7 @@ const assign: PluginRouteHandler = async (req, res) => {
   const leadId = String(json.leadId ?? '');
   const consultant = String(json.consultant ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
-  const ok = assignConsultant(leadId, consultant);
+  const ok = await assignConsultant(leadId, consultant);
   send(res, ok ? 200 : 409, { ok, consultant: ok ? consultant : undefined });
 };
 
@@ -136,7 +136,7 @@ const claim: PluginRouteHandler = async (req, res) => {
   const leadId = String(json.leadId ?? '');
   const consultant = String(json.consultant ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
-  const ok = assignConsultant(leadId, consultant);
+  const ok = await assignConsultant(leadId, consultant);
   send(res, ok ? 200 : 409, { ok, consultant: ok ? consultant : undefined });
 };
 

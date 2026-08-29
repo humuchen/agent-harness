@@ -25,6 +25,9 @@ importers:
       '@modelcontextprotocol/server-memory':
         specifier: ^2025.1.0
         version: 2025.11.25(zod@4.4.3)
+      '@negokaz/excel-mcp-server':
+        specifier: ^0.12.0
+        version: 0.12.0
       '@tokenizin/mcp-npx-fetch':
         specifier: ^1.0.0
         version: 1.0.0
@@ -467,6 +470,10 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@negokaz/excel-mcp-server@0.12.0':
+    resolution: {integrity: sha512-d42FfomnLrqT/Z6lCBWTCUxuMpWIp3dgvII6kLYZBRaZlOe4h/rMxFfe5Odkryoeo1H8HxJhdLnDhkINsNuDxw==}
+    hasBin: true
 
   '@neon-rs/load@0.0.4':
     resolution: {integrity: sha512-kTPhdZyTQxB+2wpiRcFWrDcejc4JI6tkPuS7UZCG4l6Zvc5kU/gGQ/ozvHTh1XR5tS+UlfAfGuPajjzQjCiHCw==}
@@ -1888,6 +1895,8 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@negokaz/excel-mcp-server@0.12.0': {}
 
   '@neon-rs/load@0.0.4': {}
 

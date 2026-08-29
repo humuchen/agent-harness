@@ -71,10 +71,10 @@ export function qualifyLead(input: {
   const grade = validGrade(input.grade);
   // 阶段单调推进（不回退）：已到更靠后阶段（captured/booked/arrived/deal）的线索，
   // 再次 qualify 只更新画像字段，绝不把 stage 回退到 qualified。
-  const existing = getLead(leadId);
+  const existing = await getLead(leadId);
   const keepStage: LeadStage =
     existing && stageRank(existing.stage) >= stageRank('qualified') ? existing.stage : 'qualified';
-  const lead = upsertLead(leadId, {
+  const lead = await upsertLead(leadId, {
     channel: String(input.channel ?? 'unknown'),
     project: input.project ? String(input.project) : undefined,
     budget: input.budget ? String(input.budget) : undefined,
@@ -84,9 +84,9 @@ export function qualifyLead(input: {
     stage: keepStage,
   });
   // 仅当线索已存在才归集当次对话（绝不凭空建档）
-  attachRunTranscript(leadId, getRunKey() ?? '');
-  const crmSync = queueCrmSync(lead);
-  if (crmSync === 'disabled') markCrmSync(leadId, 'disabled');
+  await attachRunTranscript(leadId, getRunKey() ?? '');
+  const crmSync = await queueCrmSync(lead);
+  if (crmSync === 'disabled') await markCrmSync(leadId, 'disabled');
   return { ok: true, leadId, grade, stage: lead.stage, crmSync };
 }
 
@@ -113,19 +113,19 @@ export function captureLead(input: {
   if (!wechat && !phone && !name) throw new MaError('INVALID_ARGUMENT', '至少提供一项联系方式');
 
   // 不回退：已到更靠后阶段（如 booked）则保持原阶段
-  const existing = getLead(leadId);
+  const existing = await getLead(leadId);
   const keepStage: LeadStage =
     existing && stageRank(existing.stage) >= stageRank('captured') ? existing.stage : 'captured';
 
-  const lead = upsertLead(leadId, {
+  const lead = await upsertLead(leadId, {
     wechat,
     phone,
     name,
     consentAt: Date.now(),
     stage: keepStage,
   });
-  const crmSync = queueCrmSync(lead);
-  if (crmSync === 'disabled') markCrmSync(leadId, 'disabled');
+  const crmSync = await queueCrmSync(lead);
+  if (crmSync === 'disabled') await markCrmSync(leadId, 'disabled');
   return {
     ok: true,
     leadId,
@@ -142,20 +142,20 @@ export function handoffLead(input: {
 }): { ok: true; leadId: string; handedOff: true; stage: string; crmSync: CrmSyncState } {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
-  const existing = getLead(leadId);
+  const existing = await getLead(leadId);
   const keepStage: LeadStage =
     existing && stageRank(existing.stage) >= stageRank('arrived') ? existing.stage : 'arrived';
-  const lead = upsertLead(leadId, {
+  const lead = await upsertLead(leadId, {
     handedOff: true,
     handoffReason: input.reason ? String(input.reason) : undefined,
     stage: keepStage,
   });
-  const crmSync = queueCrmSync(lead);
-  if (crmSync === 'disabled') markCrmSync(leadId, 'disabled');
+  const crmSync = await queueCrmSync(lead);
+  if (crmSync === 'disabled') await markCrmSync(leadId, 'disabled');
   return { ok: true, leadId, handedOff: true, stage: lead.stage, crmSync };
 }
 
 /** 认领（条件更新，防并发重复认领）。返回本次是否认领成功。 */
-export function claimLead(leadId: string, consultant: string): boolean {
+export async function claimLead(leadId: string, consultant: string): Promise<boolean> {
   return assignConsultant(leadId, consultant);
 }

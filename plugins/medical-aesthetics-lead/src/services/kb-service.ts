@@ -160,7 +160,7 @@ export async function searchProjectsRag(query: string, limit = 5): Promise<RagSe
 }
 
 /** 导入/同步一批项目（运营写接口调用）。返回成功条数。 */
-export function importProjects(projects: ProjectRecord[]): number {
+export async function importProjects(projects: ProjectRecord[]): Promise<number> {
   let n = 0;
   for (const p of projects) {
     upsertProject({ ...p, updatedAt: p.updatedAt ?? Date.now() });
@@ -170,7 +170,7 @@ export function importProjects(projects: ProjectRecord[]): number {
 }
 
 /** 列出知识库项目（看板/校验）。 */
-export function listKnowledge(activeOnly = true): ProjectRecord[] {
+export async function listKnowledge(activeOnly = true): Promise<ProjectRecord[]> {
   return listProjects(activeOnly);
 }
 

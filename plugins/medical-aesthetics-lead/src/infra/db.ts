@@ -17,21 +17,24 @@ import { getConfig } from '../config';
 import { MaError } from './errors';
 import { getDbAdapter, DbAdapter } from '@agent-harness/core';
 
-/** node:sqlite 预编译语句的最小接口。 */
+/** node:sqlite 预编译语句的最小接口（始终返回 Promise，由包装层兼容 sqlite 同步 / turso 异步）。 */
 export interface SqliteStatement {
-  run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
+  run(...params: unknown[]): Promise<{ changes: number; lastInsertRowid: number | bigint }>;
+  get(...params: unknown[]): Promise<Record<string, unknown> | undefined>;
+  all(...params: unknown[]): Promise<Record<string, unknown>[]>;
 }
 
 /** node:sqlite 数据库的最小接口。 */
 export interface SqliteDatabase {
-  exec(sql: string): void;
+  exec(sql: string): Promise<void>;
   prepare(sql: string): SqliteStatement;
   close(): void;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 let db: SqliteDatabase | null = null;
+let dbReady: Promise<SqliteDatabase> | null = null;
 
 /** 表结构定义（幂等 DDL，每次启动执行；新增列走 migrate() 增量）。 */
 const SCHEMA = `
@@ -221,12 +224,12 @@ CREATE INDEX IF NOT EXISTS ix_inbound_state ON ma_inbound_message(state, receive
 /**
  * 取得（并按需初始化）数据库连接。进程内单例。
  * 首次调用会建目录、开 WAL、执行幂等 DDL。
+ * 返回的 SqliteDatabase 接口方法始终返回 Promise（兼容 sqlite 同步 / turso 异步）。
  */
 export function getDb(): SqliteDatabase {
   if (db) return db;
   const cfg = getConfig();
   try {
-    // 使用统一适配器（支持 sqlite / turso 双后端，自动回退）
     const adapter = getDbAdapter({
       file: cfg.db.file,
       pragmas: {
@@ -235,11 +238,36 @@ export function getDb(): SqliteDatabase {
         foreignKeys: true,
       },
     });
-    // 适配器返回的是 DbAdapter，需要断言为 SqliteDatabase（接口兼容）
-    const conn = adapter as unknown as SqliteDatabase;
-    conn.exec(SCHEMA);
-    runMigrations(conn);
-    db = conn;
+    // 包装适配器：将同步返回值包装为 Promise，使接口统一为 async
+    const wrapped: SqliteDatabase = {
+      exec: (sql: string): Promise<void> => {
+        const r = adapter.exec(sql);
+        return r instanceof Promise ? r : Promise.resolve();
+      },
+      prepare: (sql: string) => {
+        const stmt = adapter.prepare(sql);
+        return {
+          run: (...params: unknown[]): Promise<{ changes: number; lastInsertRowid: number | bigint }> => {
+            const r = stmt.run(...params);
+            return r instanceof Promise ? r : Promise.resolve(r);
+          },
+          get: (...params: unknown[]): Promise<Record<string, unknown> | undefined> => {
+            const r = stmt.get(...params);
+            return r instanceof Promise ? r : Promise.resolve(r);
+          },
+          all: (...params: unknown[]): Promise<Record<string, unknown>[]> => {
+            const r = stmt.all(...params);
+            return r instanceof Promise ? r : Promise.resolve(r);
+          },
+        };
+      },
+      close: () => adapter.close?.(),
+    };
+    // 同步初始化（sqlite 模式）；Turso 模式下 exec 返回 Promise 但不阻塞后续调用
+    const initResult = wrapped.exec(SCHEMA);
+    if (initResult instanceof Promise) initResult.then(() => runMigrations(wrapped)).catch(() => {});
+    else runMigrations(wrapped);
+    db = wrapped;
     return db;
   } catch (e) {
     throw new MaError('DB_ERROR', `客资库初始化失败（${cfg.db.file}）：${(e as Error).message}`, {
@@ -248,21 +276,47 @@ export function getDb(): SqliteDatabase {
   }
 }
 
+/** 异步版 getDb：等待初始化完成（Turso HTTP 模式下 exec 为异步）。 */
+export function getDbAsync(): Promise<SqliteDatabase> {
+  if (db) return Promise.resolve(db);
+  if (dbReady) return dbReady;
+  dbReady = (async () => {
+    const cfg = getConfig();
+    const adapter = getDbAdapter({
+      file: cfg.db.file,
+      pragmas: {
+        journalMode: 'wal',
+        busyTimeoutMs: cfg.db.busyTimeoutMs,
+        foreignKeys: true,
+      },
+    });
+    const conn = adapter as unknown as SqliteDatabase;
+    await conn.exec(SCHEMA);
+    await runMigrationsAsync(conn);
+    db = conn;
+    return db;
+  })().catch((e) => {
+    dbReady = null;
+    const cfg = getConfig();
+    throw new MaError('DB_ERROR', `客资库初始化失败（${cfg.db.file}）：${(e as Error).message}`, {
+      file: cfg.db.file,
+    });
+  });
+  return dbReady;
+}
+
 /**
  * 幂等迁移：为已存在（由旧 schema 创建）的库补列，避免 ALTER 重复执行报错。
  * 仅在列确实缺失时执行，全新库因 CREATE TABLE 已含该列而跳过。
  */
-function runMigrations(conn: SqliteDatabase): void {
-  const apptCols = (conn
-    .prepare(`PRAGMA table_info(ma_appointment)`)
-    .all() as Record<string, unknown>[]).map((r) => String(r.name));
+async function runMigrations(conn: SqliteDatabase): Promise<void> {
+  const apptResult = await conn.prepare(`PRAGMA table_info(ma_appointment)`).all();
+  const apptCols = (apptResult as Record<string, unknown>[]).map((r) => String(r.name));
   if (!apptCols.includes('external_status')) {
-    conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
   }
-  // ma_project 新列增量迁移（P0 结构化 + P1 合规/语义）
-  const projCols = (conn
-    .prepare(`PRAGMA table_info(ma_project)`)
-    .all() as Record<string, unknown>[]).map((r) => String(r.name));
+  const projResult = await conn.prepare(`PRAGMA table_info(ma_project)`).all();
+  const projCols = (projResult as Record<string, unknown>[]).map((r) => String(r.name));
   const projAdd: Record<string, string> = {
     intent_tags: 'TEXT',
     combo_with: 'TEXT',
@@ -279,11 +333,50 @@ function runMigrations(conn: SqliteDatabase): void {
   };
   for (const [col, type] of Object.entries(projAdd)) {
     if (!projCols.includes(col)) {
-      conn.exec(`ALTER TABLE ma_project ADD COLUMN ${col} ${type};`);
+      await conn.exec(`ALTER TABLE ma_project ADD COLUMN ${col} ${type};`);
     }
   }
-  // ma_project_intent 表增量创建（旧库可能没有）
-  conn.exec(`
+  await conn.exec(`
+    CREATE TABLE IF NOT EXISTS ma_project_intent (
+      intent      TEXT NOT NULL,
+      project_id  TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL DEFAULT 'default',
+      weight      INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (intent, project_id, tenant_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_intent_tenant ON ma_project_intent(tenant_id, intent);
+  `);
+}
+
+/** 异步版 runMigrations（Turso HTTP 模式）。 */
+async function runMigrationsAsync(conn: SqliteDatabase): Promise<void> {
+  const apptResult = await conn.prepare(`PRAGMA table_info(ma_appointment)`).all();
+  const apptCols = (apptResult as Record<string, unknown>[]).map((r) => String(r.name));
+  if (!apptCols.includes('external_status')) {
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
+  }
+  const projResult = await conn.prepare(`PRAGMA table_info(ma_project)`).all();
+  const projCols = (projResult as Record<string, unknown>[]).map((r) => String(r.name));
+  const projAdd: Record<string, string> = {
+    intent_tags: 'TEXT',
+    combo_with: 'TEXT',
+    audience: 'TEXT',
+    seasonality: 'TEXT',
+    duration_min: 'INTEGER',
+    pain_level: 'INTEGER',
+    downtime_days: 'TEXT',
+    course_sessions: 'TEXT',
+    avg_price_tier: 'TEXT',
+    compliant_copy: 'TEXT',
+    compliance_reviewed: 'INTEGER NOT NULL DEFAULT 0',
+    embedding: 'TEXT',
+  };
+  for (const [col, type] of Object.entries(projAdd)) {
+    if (!projCols.includes(col)) {
+      await conn.exec(`ALTER TABLE ma_project ADD COLUMN ${col} ${type};`);
+    }
+  }
+  await conn.exec(`
     CREATE TABLE IF NOT EXISTS ma_project_intent (
       intent      TEXT NOT NULL,
       project_id  TEXT NOT NULL,
@@ -305,30 +398,44 @@ export function closeDb(): void {
   db = null;
 }
 
-/** 包装 DB 异常为 MaError('DB_ERROR')。 */
-export function dbCall<T>(fn: () => T, what: string): T {
+/** 包装 DB 异常为 MaError('DB_ERROR')。支持同步和异步函数。 */
+export async function dbCall<T>(fn: () => T | Promise<T>, what: string): Promise<T> {
   try {
-    return fn();
+    return await fn();
   } catch (e) {
     if (e instanceof MaError) throw e;
     throw new MaError('DB_ERROR', `${what} 失败：${(e as Error).message}`);
   }
 }
 
+/** 规范化 prepare().all()：直接 await。兼容 sqlite 同步 / turso 异步。 */
+export async function allRows(stmt: { all: (...p: any[]) => MaybePromise<Record<string, unknown>[]> }, ...params: any[]): Promise<Record<string, unknown>[]> {
+  return await stmt.all(...params);
+}
+
+export async function getRow(stmt: { get: (...p: any[]) => MaybePromise<Record<string, unknown> | undefined> }, ...params: any[]): Promise<Record<string, unknown> | undefined> {
+  return await stmt.get(...params);
+}
+
+export async function runStmt(stmt: { run: (...p: any[]) => MaybePromise<{ changes: number; lastInsertRowid: number | bigint }> }, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number | bigint }> {
+  return await stmt.run(...params);
+}
+
 /**
  * 在事务中执行。用于「号源占用 + 建预约单 + 推进线索阶段」这类必须原子的操作。
  * 抛错自动 ROLLBACK。SQLite 单写者模型下配合 IMMEDIATE 拿写锁，避免并发下的写冲突。
+ * 支持异步函数（Turso HTTP 模式下 exec 为异步）。
  */
-export function inTransaction<T>(fn: (conn: SqliteDatabase) => T): T {
-  const conn = getDb();
-  conn.exec('BEGIN IMMEDIATE');
+export async function inTransaction<T>(fn: (conn: SqliteDatabase) => T | Promise<T>): Promise<T> {
+  const conn = await getDbAsync();
+  await conn.exec('BEGIN IMMEDIATE');
   try {
-    const out = fn(conn);
-    conn.exec('COMMIT');
+    const out = await fn(conn);
+    await conn.exec('COMMIT');
     return out;
   } catch (e) {
     try {
-      conn.exec('ROLLBACK');
+      await conn.exec('ROLLBACK');
     } catch {
       /* rollback 失败也要把原始错误上抛 */
     }
@@ -338,9 +445,9 @@ export function inTransaction<T>(fn: (conn: SqliteDatabase) => T): T {
 }
 
 /** 健康检查：真实执行一次查询，返回各表行数（看板/运维用）。 */
-export function dbHealth(): Record<string, unknown> {
+export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
-    const conn = getDb();
+    const conn = await getDbAsync();
     const counts: Record<string, number> = {};
     for (const t of [
       'ma_lead',
@@ -351,7 +458,7 @@ export function dbHealth(): Record<string, unknown> {
       'ma_outbox',
       'ma_inbound_message',
     ]) {
-      const row = conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
+      const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);
     }
     return { ok: true, file: getConfig().db.file, counts };

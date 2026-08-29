@@ -64,6 +64,11 @@ function initialTabFromPath(): string {
  * 不影响 ah-run / ah-dashboard 等面板在移动端的内容滚动需求。
  */
 const chatShellCss = css`
+  /* ?hidden 绑定用于 Tab 切换时隐藏非激活面板。:host 的 display:block 会盖过
+     浏览器默认的 [hidden] 样式，必须加 !important 保险。 */
+  [hidden] {
+    display: none !important;
+  }
   @media (max-width: 900px) {
     .shell.chat-mode {
       position: fixed;
