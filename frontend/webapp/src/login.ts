@@ -679,14 +679,13 @@ export class AhLogin extends LitElement {
         background: var(--ah-border);
       }
       .btn-sso {
-        width: 100%;
-        /* height: 46px; */
-        /* display: inline-flex;
+        height: 46px;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 10px; */
+        gap: 10px;
         background: transparent;
-        /* border: 1px solid var(--ah-border); */
+        border: 1px solid var(--ah-border);
         border-radius: var(--ah-radius-pill);
         color: var(--ah-text);
         font-size: 14px;
@@ -701,6 +700,14 @@ export class AhLogin extends LitElement {
       .btn-sso svg {
         width: 18px;
         height: 18px;
+      }
+      .sso-row {
+        display: flex;
+        gap: 12px;
+      }
+      .sso-row .btn-sso {
+        flex: 1;
+        width: auto;
       }
       .terms {
         display: flex;
@@ -1298,39 +1305,45 @@ export class AhLogin extends LitElement {
                     </button>
                   </form>
                   <div class="divider">或</div>
-                  ${this.githubEnabled
-                    ? html`<button
-                        class="btn-sso"
-                        type="button"
-                        @click=${() => this.startGithubOAuth()}
-                      >
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path
-                            d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"
-                          />
-                        </svg>
-                      </button>`
-                    : nothing}
-                  ${this.googleEnabled
-                    ? html`<button
-                        class="btn-sso"
-                        type="button"
-                        @click=${() => this.startGoogleOAuth()}
-                      >
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="currentColor"
-                          aria-hidden="true"
-                        >
-                          <path
-                            d="M21.35 11.1H12v3.18h5.59c-.5 2.53-2.65 4.32-5.59 4.32-3.32 0-6-2.69-6-6s2.68-6 6-6c1.46 0 2.79.5 3.84 1.34l2.36-2.36C16.45 4.34 14.32 3.5 12 3.5c-4.97 0-9 4.03-9 9s4.03 9 9 9c5.18 0 8.6-3.62 8.6-8.74 0-.59-.06-1.14-.15-1.66Z"
-                          />
-                        </svg>
-                      </button>`
+                  ${this.githubEnabled || this.googleEnabled
+                    ? html`<div class="sso-row">
+                        ${this.githubEnabled
+                          ? html`<button
+                              class="btn-sso"
+                              type="button"
+                              @click=${() => this.startGithubOAuth()}
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5Z"
+                                />
+                              </svg>
+                              GitHub
+                            </button>`
+                          : nothing}
+                        ${this.googleEnabled
+                          ? html`<button
+                              class="btn-sso"
+                              type="button"
+                              @click=${() => this.startGoogleOAuth()}
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                aria-hidden="true"
+                              >
+                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                              </svg>
+                              Google
+                            </button>`
+                          : nothing}
+                      </div>`
                     : nothing}
                   ${this.notice
                     ? html`<div class="notice error">${this.notice}</div>`
