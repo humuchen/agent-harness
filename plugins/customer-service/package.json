@@ -13,7 +13,8 @@
     "node": "22.x"
   },
   "dependencies": {
-    "@agent-harness/core": "workspace:*"
+    "@agent-harness/core": "workspace:*",
+    "@libsql/client": "^0.14.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

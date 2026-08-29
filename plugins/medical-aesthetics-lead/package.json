@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@agent-harness/core": "workspace:*",
-    "@agent-harness/medical-ad-guard": "workspace:*"
+    "@agent-harness/medical-ad-guard": "workspace:*",
+    "@libsql/client": "^0.14.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

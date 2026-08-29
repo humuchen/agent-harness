@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@agent-harness/core": "workspace:*",
+    "@libsql/client": "^0.14.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@modelcontextprotocol/server-filesystem": "^2025.1.0",
     "@modelcontextprotocol/server-memory": "^2025.1.0",
