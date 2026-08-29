@@ -116,13 +116,9 @@ class TursoAdapter implements DbAdapter {
 
   exec(sql: string): void {
     // libsql Hrana 不允许单条 execute 中包含多条语句，需要按分号分割后逐个执行
-    if (sql.includes(';')) {
-      for (const stmt of sql.split(';')) {
-        const trimmed = stmt.trim();
-        if (trimmed) this.client.execute(trimmed);
-      }
-    } else {
-      this.client.execute(sql);
+    for (const stmt of sql.split(/;\s*/)) {
+      const trimmed = stmt.trim();
+      if (trimmed) this.client.execute(trimmed);
     }
   }
 
