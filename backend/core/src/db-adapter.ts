@@ -104,9 +104,9 @@ class TursoAdapter implements DbAdapter {
 
   constructor(url: string, token?: string) {
     try {
-      // @libsql/client/node 提供同步 API，接口风格与 node:sqlite 类似
-      const { Client } = require('@libsql/client/node') as { Client: any };
-      this.client = new Client({ url, authToken: token });
+      // @libsql/client/node 使用 createClient 工厂函数
+      const { createClient } = require('@libsql/client/node') as { createClient: any };
+      this.client = createClient({ url, authToken: token });
     } catch (e: any) {
       throw new Error(
         `Turso 后端初始化失败（缺少依赖或配置错误）：${e.message}。请执行 pnpm add @libsql/client`
