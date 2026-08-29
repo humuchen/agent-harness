@@ -1,4 +1,8 @@
 import { Message } from './types';
+import {
+  getDbAdapter,
+  DbAdapter,
+} from './db-adapter';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。
@@ -174,7 +178,7 @@ export class FileMemoryStore implements MemoryStore {
 export class SqliteMemoryStore implements MemoryStore {
   readonly kind = 'sqlite' as const;
   private file: string;
-  private db: any = null;
+  private db: DbAdapter | null = null;
   private ready: Promise<void> | null = null;
 
   constructor(opts: { file: string }) {
@@ -185,12 +189,8 @@ export class SqliteMemoryStore implements MemoryStore {
   private ensure(): Promise<void> {
     if (this.ready) return this.ready;
     this.ready = (async () => {
-      const fs = await import('node:fs/promises');
-      const pathMod = await import('node:path');
-      await fs.mkdir(pathMod.dirname(this.file), { recursive: true });
-      // 动态加载 node:sqlite；运行期若不可用会在此抛出（由调用方捕获回退）。
-      const sqlite = (await import('node:sqlite' as any)) as { DatabaseSync: any };
-      this.db = new sqlite.DatabaseSync(this.file);
+      // 使用统一适配器（支持 sqlite / turso 双后端）
+      this.db = getDbAdapter({ file: this.file });
       this.db.exec(
         'CREATE TABLE IF NOT EXISTS memory (' +
           'key TEXT PRIMARY KEY, ' +
@@ -210,7 +210,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async load(key: string): Promise<PersistedMemory | null> {
     await this.ensure();
-    const row = this.db
+    const row = this.db!
       .prepare('SELECT window, long_term, summary FROM memory WHERE key = ?')
       .get(key);
     if (!row) return null;
@@ -225,7 +225,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async save(key: string, data: PersistedMemory): Promise<void> {
     await this.ensure();
-    this.db
+    this.db!
       .prepare(
         'INSERT OR REPLACE INTO memory (key, window, long_term, summary) VALUES (?, ?, ?, ?)'
       )
@@ -239,12 +239,12 @@ export class SqliteMemoryStore implements MemoryStore {
 
   async delete(key: string): Promise<void> {
     await this.ensure();
-    this.db.prepare('DELETE FROM memory WHERE key = ?').run(key);
+    this.db!.prepare('DELETE FROM memory WHERE key = ?').run(key);
   }
 
   async list(): Promise<string[]> {
     await this.ensure();
-    const rows = this.db.prepare('SELECT key FROM memory').all() as { key: string }[];
+    const rows = this.db!.prepare('SELECT key FROM memory').all() as { key: string }[];
     return rows.map((r) => r.key);
   }
 }

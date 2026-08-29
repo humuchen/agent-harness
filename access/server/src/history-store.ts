@@ -4,10 +4,10 @@
  * 设计：
  * - `ChatHistoryStore` 是唯一存取契约（增删改查），前端所有读写经 /api/history* 路由
  *   打到该接口，不再直接依赖 localStorage；
- * - 当前以 SQLite（Node 22+ 内置 node:sqlite，零 npm 依赖）作为临时持久化方案；
- *   后续切换正式数据库时只需新增一个实现并在 createHistoryStore 工厂中替换，
+ * - 当前通过统一 db-adapter（支持 sqlite / turso 双后端）实现持久化；
+ *   后续切换正式数据库时只需新增一个实现并在 getHistoryStore 工厂中替换，
  *   接口与调用方零改动；
- * - node:sqlite 运行期不可用（老版本 Node）时自动降级为进程内存实现，
+ * - 数据库运行时不可用时自动降级为进程内存实现，
  *   保证服务可启动、功能可用（仅失去跨重启持久化）。
  *
  * 多用户隔离（P多用户）：每条历史镜像归属一个 owner（= 登录用户名 ctx.sub）。
@@ -16,9 +16,13 @@
  * 普通用户的 owner 过滤天然不命中（= 不可见，不泄露存在性）。
  *
  * 环境变量：
- * - HISTORY_BACKEND: 'sqlite'（默认）| 'memory'
+ * - HISTORY_BACKEND: 'sqlite'（默认）| 'memory'（未配置时按 DB_BACKEND 决定）
  * - HISTORY_DB_FILE: SQLite 文件路径（默认 <cwd>/data/chat-history.db）
+ * - DB_BACKEND: sqlite | turso（顶层数据库后端切换，优先级高于 HISTORY_BACKEND）
+ * - TURSO_URL / TURSO_TOKEN: Turso 连接配置
  */
+
+import { getDbAdapter } from '@agent-harness/core';
 
 export interface HistoryThreadMeta {
   sid: string;
@@ -77,18 +81,11 @@ class MemoryHistoryStore implements ChatHistoryStore {
 /* ----------------------------- SQLite 实现 ---------------------------- */
 
 class SqliteHistoryStore implements ChatHistoryStore {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private db: any;
 
   constructor(file: string) {
-    // 兼容说明：部分 @types/node 版本无 node:sqlite 类型，动态加载并视为 any
-    // （与 backend/core/src/memory-store.ts 同一约定）。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const sqlite = require('node:sqlite') as { DatabaseSync: any };
-    const fs = require('node:fs') as typeof import('node:fs');
-    const path = require('node:path') as typeof import('node:path');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    this.db = new sqlite.DatabaseSync(file);
+    // 使用统一适配器（支持 sqlite / turso 双后端）
+    this.db = getDbAdapter({ file });
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS chat_history (
         sid        TEXT PRIMARY KEY,

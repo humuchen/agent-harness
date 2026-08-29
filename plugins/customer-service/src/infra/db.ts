@@ -1,13 +1,15 @@
 /**
- * node:sqlite 连接（零依赖，进程内关系库）。
+ * 数据库连接（通过统一 db-adapter，支持 sqlite / turso 双后端）。
  * 表结构：会话 / 工单 / 知识库。首次连接自动建表（IF NOT EXISTS）。
  *
- * node:sqlite 的 TS 类型在 @types/node@20 尚未提供，故按 ma-lead 同款做法用
- * 动态 require + 本地接口，绕开类型声明缺口（运行时 Node 22+ 自带该模块）。
+ * 后端切换：
+ *   - DB_BACKEND=sqlite（默认）：node:sqlite 内置，零 npm 依赖
+ *   - DB_BACKEND=turso：@libsql/client/node（Turso 云端 SQLite）
+ *   - 自动回退：turso 初始化失败时降级为本地 sqlite
  */
-import { join, resolve, dirname } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { getConfig } from '../config';
+import { getDbAdapter, DbAdapter } from '@agent-harness/core';
 
 interface SqliteStatement {
   run(...params: unknown[]): unknown;
@@ -21,28 +23,20 @@ interface SqliteDatabase {
 }
 
 let _db: SqliteDatabase | null = null;
-let _ctor: (new (file: string) => SqliteDatabase) | null = null;
-
-/** 懒加载 node:sqlite 构造器（动态 require，避免静态类型缺口）。 */
-function sqliteCtor(): new (file: string) => SqliteDatabase {
-  if (!_ctor) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const req: NodeRequire = require;
-    _ctor = (req('node:sqlite') as { DatabaseSync: new (file: string) => SqliteDatabase }).DatabaseSync;
-  }
-  return _ctor;
-}
 
 /** 取得（并惰化建表）连接。 */
 export function getDb(): SqliteDatabase {
   if (_db) return _db;
   const { db } = getConfig();
-  // node:sqlite 不会自动创建父目录；缺目录时 ensure（含多副本共享卷场景）。
-  mkdirSync(dirname(db.file), { recursive: true });
-  const Ctor = sqliteCtor();
-  const database = new Ctor(db.file);
-  database.exec(`PRAGMA journal_mode = WAL;`);
-  database.exec(`PRAGMA busy_timeout = ${db.busyTimeoutMs};`);
+  // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
+  const adapter = getDbAdapter({
+    file: db.file,
+    pragmas: {
+      journalMode: 'wal',
+      busyTimeoutMs: db.busyTimeoutMs,
+    },
+  });
+  const database = adapter as unknown as SqliteDatabase;
   database.exec(`
     CREATE TABLE IF NOT EXISTS cs_session (
       session_id   TEXT PRIMARY KEY,

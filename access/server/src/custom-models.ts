@@ -10,6 +10,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { getDbAdapter } from '@agent-harness/core';
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
 
@@ -94,13 +95,9 @@ async function ensureDb() {
   if (db) return;
   if (!dbReady) {
     dbReady = (async () => {
-      const { mkdirSync } = await import('node:fs');
-      const path = await import('node:path');
       const file = getDbFile();
-      mkdirSync(path.dirname(file), { recursive: true });
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: any };
-      db = new DatabaseSync(file);
+      // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
+      db = getDbAdapter({ file });
       db.exec(
         `CREATE TABLE IF NOT EXISTS custom_models (
           id TEXT PRIMARY KEY,

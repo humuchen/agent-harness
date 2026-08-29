@@ -1,19 +1,21 @@
 /**
- * 真实关系库接入（node:sqlite，Node 22+ 内置，零 npm 依赖）。
+ * 真实关系库接入（通过统一 db-adapter，支持 sqlite / turso 双后端）。
  *
  * 这是本次重构的核心：把原来「散落 JSON 文件 + 内存扫目录聚合」换成**真实数据库 + 真实 SQL**。
  * - 线索、项目知识库、院区、号源、预约单、CRM 发件箱、入站消息全部落表；
  * - 看板漏斗/渠道/等级分布改由 SQL 聚合（GROUP BY）产出，不再在 Node 里遍历文件；
  * - 号源占用走**事务 + 条件更新**，天然防超卖（见 schedule-repo）。
  *
- * 类型说明：@types/node@20 尚无 node:sqlite 声明，故以 require + 最小接口断言接入
- * （与 core/src/memory-store.ts 的处理方式一致）。运行期若 node 不支持会抛出清晰错误。
+ * 后端切换：
+ *   - DB_BACKEND=sqlite（默认）：node:sqlite 内置，零 npm 依赖
+ *   - DB_BACKEND=turso：@libsql/client/node（Turso 云端 SQLite）
+ *   - 自动回退：turso 初始化失败时降级为本地 sqlite
  */
 
-import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getConfig } from '../config';
 import { MaError } from './errors';
+import { getDbAdapter, DbAdapter } from '@agent-harness/core';
 
 /** node:sqlite 预编译语句的最小接口。 */
 export interface SqliteStatement {
@@ -224,14 +226,17 @@ export function getDb(): SqliteDatabase {
   if (db) return db;
   const cfg = getConfig();
   try {
-    mkdirSync(dirname(cfg.db.file), { recursive: true });
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const sqlite = require('node:sqlite') as { DatabaseSync: new (p: string) => SqliteDatabase };
-    const conn = new sqlite.DatabaseSync(cfg.db.file);
-    // WAL：读写并发更好；busy_timeout：多副本共享卷时等待锁而非立即失败
-    conn.exec(`PRAGMA journal_mode = WAL;`);
-    conn.exec(`PRAGMA busy_timeout = ${cfg.db.busyTimeoutMs};`);
-    conn.exec(`PRAGMA foreign_keys = ON;`);
+    // 使用统一适配器（支持 sqlite / turso 双后端，自动回退）
+    const adapter = getDbAdapter({
+      file: cfg.db.file,
+      pragmas: {
+        journalMode: 'wal',
+        busyTimeoutMs: cfg.db.busyTimeoutMs,
+        foreignKeys: true,
+      },
+    });
+    // 适配器返回的是 DbAdapter，需要断言为 SqliteDatabase（接口兼容）
+    const conn = adapter as unknown as SqliteDatabase;
     conn.exec(SCHEMA);
     runMigrations(conn);
     db = conn;

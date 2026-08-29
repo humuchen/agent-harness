@@ -27,6 +27,7 @@ import {
   createHmac
 } from 'node:crypto';
 import { join } from 'node:path';
+import { getDbAdapter } from '@agent-harness/core';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
 function getAuthSecret(): Uint8Array {
@@ -59,7 +60,7 @@ const b64urlJson = (obj: unknown): string =>
 
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
 
-// ─── SQLite 存储（复用 custom-models 同款 node:sqlite 零依赖方案）─────────────
+// ─── 数据库存储（通过统一适配器，支持 sqlite / turso 双后端）──────────────
 let db: any = null;
 let dbReady: Promise<void> | null = null;
 
@@ -73,13 +74,9 @@ async function ensureDb(): Promise<void> {
   if (db) return;
   if (!dbReady) {
     dbReady = (async () => {
-      const { mkdirSync } = await import('node:fs');
-      const path = await import('node:path');
       const file = getDbFile();
-      mkdirSync(path.dirname(file), { recursive: true });
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: any };
-      db = new DatabaseSync(file);
+      // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
+      db = getDbAdapter({ file });
       db.exec(
         `CREATE TABLE IF NOT EXISTS users (
           username TEXT PRIMARY KEY,

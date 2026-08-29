@@ -4,6 +4,7 @@ export * from './errorlog';
 export * from './feature-flags';
 export * from './memory';
 export * from './memory-store';
+export * from './db-adapter';
 export * from './tools';
 export * from './builtins';
 export * from './agents';
