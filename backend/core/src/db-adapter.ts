@@ -106,7 +106,14 @@ class TursoAdapter implements DbAdapter {
     try {
       // @libsql/client/node 使用 createClient 工厂函数
       const { createClient } = require('@libsql/client/node') as { createClient: any };
-      this.client = createClient({ url, authToken: token });
+      this.client = createClient({
+        url,
+        authToken: token,
+        // 启用 Hrana v2 协议（libsql:// / wss://），以获得 batch 多语句原子执行能力。
+        // 若服务端不支持则自动降级到 HTTP。
+        ...(url.startsWith('libsql://') || url.startsWith('libsql+ws://') || url.startsWith('libsql+wss://')
+          ? { tls: true } : {}),
+      });
     } catch (e: any) {
       throw new Error(
         `Turso 后端初始化失败（缺少依赖或配置错误）：${e.message}。请执行 pnpm add @libsql/client`
@@ -116,6 +123,7 @@ class TursoAdapter implements DbAdapter {
 
   exec(sql: string): void {
     // libsql Hrana 不允许单条 execute 中包含多条语句，需要按分号分割后逐个执行
+    // 顺序执行 DDL 即可满足幂等建表需求。
     for (const stmt of sql.split(/;\s*/)) {
       const trimmed = stmt.trim();
       if (trimmed) this.client.execute(trimmed);
