@@ -871,7 +871,7 @@ const server = createServer(
           'set-cookie': [
             `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`,
             `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
-          ].join(', '),
+          ],
           'cache-control': 'no-store',
           location: googleUrl
         });
