@@ -394,6 +394,18 @@ export class AhModelPicker extends LitElement {
     }
   }
 
+  /** 从后端 SQLite 加载已保存的自定义模型列表。 */
+  private async loadCustoms() {
+    try {
+      const res = await authedFetch('/api/custom-models');
+      if (!res.ok) return;
+      const rows = (await res.json()) as CustomModel[];
+      this.customs = normalizeCustom(rows);
+    } catch {
+      /* 离线 / 失败：保留本地清单即可，不打扰用户 */
+    }
+  }
+
   /** 把模型上下文窗口抛给宿主（0 = 无数据，宿主应隐藏用量展示）。 */
   private emitCtx(ctx: number) {
     this.dispatchEvent(
@@ -959,6 +971,7 @@ export class AhModelPicker extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.refreshModels();
+    this.loadCustoms();
     // 面板外点关闭兜底（document 级捕获 pointerdown）：
     // 不依赖 fixed 遮罩的 CSS 几何 —— 祖先的 transform/filter 会劫持 fixed
     // 元素的包含块、让全视口遮罩缩水失效；此监听保证点空白必定可关。

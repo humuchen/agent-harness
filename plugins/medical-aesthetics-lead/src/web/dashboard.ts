@@ -89,11 +89,12 @@ function funnel(stages: { label: string; value: number }[]): string {
 export const leadDashboardView: PluginUIView = {
   tabId: 'ma-lead',
   label: '客资看板',
-  render(): string {
-    const stats = computeStats();
-    const recs = listLeads(40, 0);
-    const ob = outboxSnapshot();
-    const db = dbHealth();
+  render(): string | Promise<string> {
+    return (async () => {
+      const stats = await Promise.resolve(computeStats());
+      const recs = await Promise.resolve(listLeads(40, 0));
+      const ob = await Promise.resolve(outboxSnapshot());
+      const db = await Promise.resolve(dbHealth());
 
     const funnelStages = [
       'new',
@@ -309,5 +310,6 @@ export const leadDashboardView: PluginUIView = {
         .ma-card { flex:0 0 100%; }
       }
     </style>`;
-  }
+    })();
+  },
 };

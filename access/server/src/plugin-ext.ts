@@ -92,8 +92,13 @@ export class WebPluginHost implements WebExtensionHost {
   }
 
   /** 渲染全部已注册视图（调用各 view.render()），返回 Tab 元信息 + HTML 片段。 */
-  listViews(): Array<{ tabId: string; label: string; html: string }> {
-    return this.views.map((v) => ({ tabId: v.tabId, label: v.label, html: v.render() }));
+  async listViews(): Promise<Array<{ tabId: string; label: string; html: string }>> {
+    const out: Array<{ tabId: string; label: string; html: string }> = [];
+    for (const v of this.views) {
+      const html = await v.render();
+      out.push({ tabId: v.tabId, label: v.label, html });
+    }
+    return out;
   }
 
   /** 调试/可观测：当前已注册的前端视图数。 */

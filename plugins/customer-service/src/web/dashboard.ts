@@ -9,19 +9,20 @@ import { listSessions } from '../repo/session-repo';
 export const csDashboardView: PluginUIView = {
   tabId: 'customer-service',
   label: '客服看板',
-  render(): string {
-    const tickets = listTickets(undefined, 50);
-    const sessions = listSessions(50);
-    const open = tickets.filter((t) => t.status === 'open').length;
-    const handoff = sessions.filter((s) => s.status === 'handoff').length;
-    const rows = tickets
-      .map(
-        (t) =>
-          `<tr><td>${t.ticketId}</td><td>${escapeHtml(t.subject)}</td><td>${t.priority}</td><td>${t.status}</td><td>${t.assignee ?? '-'}</td></tr>`
-      )
-      .join('');
+  render(): string | Promise<string> {
+    return (async () => {
+      const tickets = await Promise.resolve(listTickets(undefined, 50));
+      const sessions = await Promise.resolve(listSessions(50));
+      const open = tickets.filter((t) => t.status === 'open').length;
+      const handoff = sessions.filter((s) => s.status === 'handoff').length;
+      const rows = tickets
+        .map(
+          (t) =>
+            `<tr><td>${t.ticketId}</td><td>${escapeHtml(t.subject)}</td><td>${t.priority}</td><td>${t.status}</td><td>${t.assignee ?? '-'}</td></tr>`
+        )
+        .join('');
 
-    return `
+      return `
       <section class="cs-dashboard">
         <h2>智能客服看板</h2>
         <div class="cs-metrics">
@@ -35,6 +36,7 @@ export const csDashboardView: PluginUIView = {
           <tbody>${rows || '<tr><td colspan="5">暂无工单</td></tr>'}</tbody>
         </table>
       </section>`;
+    })();
   },
 };
 

@@ -281,6 +281,23 @@ export class AhMcp extends LitElement {
     }
   }
 
+  private async remove(name: string) {
+    if (this.adding) return;
+    this.adding = true;
+    this.error = null;
+    try {
+      await client.removeMcp(name);
+      await this.refresh();
+      this.dispatchEvent(
+        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+      );
+    } catch (e: any) {
+      this.error = String(e?.message ?? e);
+    } finally {
+      this.adding = false;
+    }
+  }
+
   private async preset(id: string, token?: string) {
     if (this.adding) return;
     this.adding = true;

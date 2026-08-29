@@ -54,6 +54,7 @@ const SENSITIVE_ACTIONS: Action[] = [
   'mcp:add',
   'mcp:preset',
   'mcp:reconnect',
+  'mcp:remove',
   'shell:approve',
   'memory:clear',
 ];

@@ -33,6 +33,7 @@ export type Action =
   | 'mcp:add'
   | 'mcp:preset'
   | 'mcp:reconnect'
+  | 'mcp:remove'
   | 'shell:approve'
   | 'memory:read'
   | 'memory:clear'
@@ -114,6 +115,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'mcp:add',
     'mcp:preset',
     'mcp:reconnect',
+    'mcp:remove',
     'shell:approve',
     'memory:read',
     'memory:clear',

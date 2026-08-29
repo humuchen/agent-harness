@@ -1507,6 +1507,22 @@ const server = createServer(
           return sendJson(res, { error: e?.message ?? String(e) }, req);
         }
       }
+      if (req.method === 'POST' && path === '/api/mcp/remove') {
+        const body = await readBody(req);
+        const ctx = await guard(req, res, 'mcp:remove', body);
+        if (!ctx) return;
+        const name = String(body.name ?? '');
+        if (!name) {
+          return sendJson(res, { error: '缺少 name' }, req);
+        }
+        auditAction('mcp.remove', { name, role: ctx.role, sub: ctx.sub });
+        try {
+          await mcpManager.removeServer(name);
+          return sendJson(res, { ok: true, servers: mcpManager.list() }, req);
+        } catch (e: any) {
+          return sendJson(res, { error: e?.message ?? String(e) }, req);
+        }
+      }
       if (req.method === 'POST' && path === '/api/shell/approve') {
         return await handleShellApprove(req, res);
       }
@@ -1516,6 +1532,7 @@ const server = createServer(
       // ---- 插件宿主：通用扩展点（无业务词）----
       // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
       if (req.method === 'GET' && path === '/api/plugins') {
+        const views = await pluginSystem.webHost.listViews();
         return sendJson(
           res,
           {
@@ -1526,7 +1543,7 @@ const server = createServer(
               state: r.state,
               dependencies: r.manifest.dependencies ?? []
             })),
-            views: pluginSystem.webHost.listViews()
+            views
           },
           req
         );

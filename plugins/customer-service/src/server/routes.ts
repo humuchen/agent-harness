@@ -42,9 +42,9 @@ export const csServerExtension: ServerExtension = {
   id: 'customer-service',
   mountRoutes: {
     // GET /api/plugins/customer-service/stats —— 看板概览
-    '/stats': ((_req, res) => {
-      const tickets = listTickets(undefined, 1000);
-      const sessions = listSessions(1000);
+    '/stats': (async (_req, res) => {
+      const tickets = await Promise.resolve(listTickets(undefined, 1000));
+      const sessions = await Promise.resolve(listSessions(1000));
       const open = tickets.filter((t) => t.status === 'open').length;
       const handoff = sessions.filter((s) => s.status === 'handoff').length;
       json(res, 200, {
@@ -55,10 +55,11 @@ export const csServerExtension: ServerExtension = {
     }) as PluginRouteHandler,
 
     // GET /api/plugins/customer-service/tickets?status=open
-    '/tickets': ((req, res) => {
+    '/tickets': (async (req, res) => {
       const url = new URL(req.url ?? '', 'http://localhost');
       const status = url.searchParams.get('status') ?? undefined;
-      json(res, 200, listTickets(status ?? undefined, 200));
+      const rows = await Promise.resolve(listTickets(status ?? undefined, 200));
+      json(res, 200, rows);
     }) as PluginRouteHandler,
 
     // GET /api/plugins/customer-service/ticket?id=xxx

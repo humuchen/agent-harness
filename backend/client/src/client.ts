@@ -250,6 +250,12 @@ export class AgentClient {
       body: JSON.stringify({ name }),
     });
   }
+  removeMcp(name: string): Promise<{ ok: boolean; servers: McpServerMeta[] }> {
+    return this.json('/api/v1/mcp/remove', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+  }
 
   /* ----------------------------- 审批 ----------------------------- */
 

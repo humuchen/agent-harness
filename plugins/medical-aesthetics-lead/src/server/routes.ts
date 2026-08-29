@@ -55,19 +55,22 @@ function send(res: Res, code: number, obj: unknown): void {
 /** GET /stats —— 完整客资统计（漏斗 / 渠道 / 等级 / 队列 / CRM 同步健康）。 */
 const stats: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  send(res, 200, { ...computeStats(), outbox: outboxSnapshot() });
+  const [stats, ob] = await Promise.all([computeStats(), outboxSnapshot()]);
+  send(res, 200, { ...stats, outbox: ob });
 };
 
 /** GET /leads —— 客资明细 + 统计。 */
 const leads: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  send(res, 200, { total: listLeads().length, stats: computeStats(), leads: listLeads(100, 0) });
+  const [stats, all, page] = await Promise.all([computeStats(), listLeads(), listLeads(100, 0)]);
+  send(res, 200, { total: all.length, stats, leads: page });
 };
 
 /** GET /handoffs —— 转人工队列（待认领）。 */
 const handoffs: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  const q = computeStats().handoffQueue.map((r) => ({
+  const s = await Promise.resolve(computeStats());
+  const q = s.handoffQueue.map((r) => ({
     leadId: r.leadId,
     grade: r.grade,
     project: r.project,
@@ -80,7 +83,8 @@ const handoffs: PluginRouteHandler = async (req, res) => {
 /** GET /followups —— 待跟进队列（C 级 / 未转化）。 */
 const followups: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  const q = computeStats().followupQueue.map((r) => ({
+  const s = await Promise.resolve(computeStats());
+  const q = s.followupQueue.map((r) => ({
     leadId: r.leadId,
     grade: r.grade,
     channel: r.channel,
@@ -93,7 +97,8 @@ const followups: PluginRouteHandler = async (req, res) => {
 /** GET /health —— 库健康 + 配置摘要（脱敏）。 */
 const health: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  send(res, 200, { ok: true, db: dbHealth(), config: configSummary(), outbox: outboxSnapshot() });
+  const [db, ob] = await Promise.all([dbHealth(), outboxSnapshot()]);
+  send(res, 200, { ok: true, db, config: configSummary(), outbox: ob });
 };
 
 /** GET /config —— 配置摘要（脱敏）。 */

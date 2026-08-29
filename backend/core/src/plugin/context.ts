@@ -84,8 +84,8 @@ export interface PluginUIView {
   tabId: string;
   /** Tab 展示名。 */
   label: string;
-  /** 返回一个可直接渲染的 HTML 字符串（webapp 注入到内容区，无框架耦合）。 */
-  render(): string;
+  /** 返回可直接渲染的 HTML 字符串（webapp 注入到内容区，无框架耦合）。支持异步（Turso 后端）。 */
+  render(): string | Promise<string>;
 }
 
 /** 前端扩展宿主：webapp 注入，插件据此注册 Tab/面板（无业务词）。 */

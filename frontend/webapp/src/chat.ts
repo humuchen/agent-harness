@@ -575,8 +575,10 @@ export class AhChat extends LitElement {
         }
       }
     }
-    // 服务端列表成功但缺项时（如离线期间新建的会话），用镜像索引补齐入口（不覆盖服务端条目）。
-    if (this.sessions.length) {
+    // 用镜像索引补齐入口（服务端列表为空 / 缺项时，保证历史会话可见）。
+    // 典型场景：服务端重启后 chat-sessions 内存态清空（无 CHAT_SESSIONS_FILE），
+    // 但 history 镜像仍落 SQLite；此处兜底从 /api/history 索引补全。
+    {
       const known = new Set(this.sessions.map((s) => s.id));
       const idx = await loadIndex();
       const extra = Object.entries(idx)

@@ -44,6 +44,23 @@ function getBuildTimeCryptoKey(): Uint8Array {
 // ─── 服务端 AES-GCM 解密 ─────────────────────────────────────────────────────
 
 /**
+ * 服务端加密：输入明文，输出 base64(iv + ciphertext + authTag)。
+ * 与前端 crypto.ts 的 encryptApiKey 配对（同 key、同 iv 长度、同输出格式）。
+ */
+export function encryptApiKey(plaintext: string): string {
+  const { createCipheriv, randomBytes } =
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    require('node:crypto') as typeof import('node:crypto');
+  const key = getBuildTimeCryptoKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const combined = Buffer.concat([iv, ct, tag]);
+  return combined.toString('base64');
+}
+
+/**
  * 服务端解密：输入 base64(iv + ciphertext)，输出明文 apiKey。
  *
  * 密文由浏览器 WebCrypto AES-GCM 产生，其输出为 ciphertext || authTag(16B)，

@@ -12,6 +12,13 @@ import {
   type McpServerConfig,
   type McpPreset,
 } from '@agent-harness/core';
+import {
+  listMcpServers,
+  putMcpServer,
+  deleteMcpServer,
+  type McpServerRecord,
+} from './mcp-store';
+import { encryptApiKey } from './custom-models';
 
 /**
  * MCP 服务的运行时管理器（单例）。
@@ -49,23 +56,42 @@ class McpManager {
     return run;
   }
 
-  /** 启动连接：从环境变量加载并接入所有已配置服务（不阻塞调用方）。 */
+  /** 启动连接：从环境变量 + SQLite 加载并接入所有已配置服务（不阻塞调用方）。 */
   init(): Promise<void> {
     if (this.initialized) return Promise.resolve();
     if (this.initPromise) return this.initPromise;
     // 共用 core 的解析入口（MCP_SERVERS JSON 与 MCP_SERVER_URL 兜底），
     // 每个 server 可独立携带 transport / command / args / headers。
-    const list = parseMcpServersEnv();
+    const envList = parseMcpServersEnv();
     this.initialized = true;
     // 顺序连接，避免并发握手压垮免费服务；连接进度实时反映到 servers 列表。
     // 整个启动连接过程纳入串行链，确保后续运行时变更排在它之后。
     this.initPromise = this.withLock(async () => {
-      for (const s of list) {
-        this.configs.set(s.name, s);
+      // 从 SQLite 加载持久化的服务配置
+      const persisted = await listMcpServers();
+      // 合并：环境变量优先（同名覆盖），持久化补充
+      const merged = new Map<string, McpServerConfig & { authToken?: string }>();
+      for (const r of persisted) {
+        merged.set(r.name, {
+          name: r.name,
+          serverUrl: r.serverUrl,
+          command: r.command,
+          args: r.args,
+          env: r.env,
+          headers: r.headers,
+          transportType: r.transportType as any,
+          authToken: r.authToken,
+        });
+      }
+      for (const s of envList) {
+        merged.set(s.name, s);
+      }
+      for (const [name, cfg] of merged) {
+        this.configs.set(name, cfg);
         // 先放一个占位 meta（connecting），无论成败都保留可见状态，
         // 避免「单个服务连接失败」中断其余服务的接入。
         const placeholder: McpServerMeta = {
-          name: s.name,
+          name,
           status: 'connecting',
           health: 'unknown',
           tools: [],
@@ -74,13 +100,13 @@ class McpManager {
         this.servers.push(placeholder);
         try {
           const meta = await connectMcpServer(this.registry, {
-            name: s.name,
-            serverUrl: s.serverUrl,
-            command: s.command,
-            args: s.args,
-            env: s.env,
-            headers: s.headers,
-            transportType: s.transportType,
+            name,
+            serverUrl: cfg.serverUrl,
+            command: cfg.command,
+            args: cfg.args,
+            env: cfg.env,
+            headers: cfg.headers,
+            transportType: cfg.transportType,
           });
           Object.assign(placeholder, meta);
         } catch (e: any) {
@@ -89,7 +115,7 @@ class McpManager {
           placeholder.health = 'unhealthy';
           placeholder.error = msg;
           console.error(
-            `[mcp-manager] 启动连接 MCP 服务 ${s.name} 失败（已跳过，其余服务继续）：`,
+            `[mcp-manager] 启动连接 MCP 服务 ${name} 失败（已跳过，其余服务继续）：`,
             msg
           );
         }
@@ -159,6 +185,8 @@ class McpManager {
     };
     if (idx >= 0) this.servers[idx] = placeholder;
     else this.servers.push(placeholder);
+    // 持久化到 SQLite（不含运行时状态）
+    void putMcpServer({ name: clean, serverUrl: config.serverUrl, command: config.command, args: config.args, env: config.env, headers: config.headers, transportType: config.transportType });
     // 异步执行 — 不阻塞 HTTP 响应。
     this.withLock(async () => {
       const meta = await connectMcpServer(this.registry, {
@@ -213,10 +241,39 @@ class McpManager {
     };
     // 使用非阻塞接入：返回「connecting」占位状态，连接异步执行。
     // addServerBackground 内部通过 withLock 串行化异步连接。
-    return this.addServerBackground(cfg);
+    const meta = await this.addServerBackground(cfg);
+    // 持久化 token（加密后落库），供重启后重连时恢复鉴权
+    if (token && token.trim()) {
+      try {
+        const encrypted = encryptApiKey(token.trim());
+        await putMcpServer({ ...cfg, authToken: encrypted });
+      } catch (e: any) {
+        console.warn(`[mcp-manager] 加密保存 MCP token 失败（不影响连接）：`, e?.message);
+      }
+    }
+    return meta;
   }
 
-  /** 当前所有 MCP 工具所在的共享注册表（供 Agent 运行合并）。 */
+  /**
+   * 移除一个 MCP 服务：从注册表注销工具、停止探测、断开连接，并从 SQLite 删除。
+   * @param name 服务名
+   */
+  async removeServer(name: string): Promise<void> {
+    // 动态导入避免循环依赖
+    const core = await import('@agent-harness/core');
+    await this.withLock(async () => {
+      const idx = this.servers.findIndex((s) => s.name === name);
+      if (idx >= 0) {
+        // 从 core 的 liveClients 断开（若有）
+        await core.disconnectMcpServer(name).catch(() => {});
+        this.servers.splice(idx, 1);
+      }
+      this.configs.delete(name);
+      // 从 SQLite 删除
+      await deleteMcpServer(name);
+    });
+  }
+
   liveRegistry(): ToolRegistry {
     return this.registry;
   }
