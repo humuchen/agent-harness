@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { getHistoryStore } from './history-store';
 
 /** 无归属旧数据的兜底桶（仅服务端保留，普通用户不可见）。 */
 export const LEGACY_OWNER = 'legacy';
@@ -142,7 +143,49 @@ export function listChatSessions(owner?: string): ChatSession[] {
  * 取单个会话（含消息记录）；不存在或 owner 不符时返回 null（不泄露存在性）。
  * @param owner 指定时做归属校验，不符返回 null。
  */
-export function getChatSession(id: string, owner?: string): ChatSession | null {
+/**
+ * 取单个会话（含消息记录）；不存在或 owner 不符时返回 null（不泄露存在性）。
+ * 内存 Map 未命中时回退到聊天历史镜像（SQLite）：服务端重启后内存态清空、但镜像仍在，
+ * 此时从镜像恢复会话并写回内存态。
+ */
+export async function getChatSession(
+  id: string,
+  owner?: string
+): Promise<ChatSession | null> {
+  load();
+  let s = sessions.get(id);
+  if (!s) {
+    const row = await getHistoryStore().get(id, owner);
+    if (row) {
+      let msgs: ChatMessage[] = [];
+      try {
+        const env = JSON.parse(row.data) as { msgs?: ChatMessage[] };
+        msgs = Array.isArray(env.msgs) ? env.msgs : [];
+      } catch {
+        /* 损坏信封忽略，按空消息恢复 */
+      }
+      s = {
+        id,
+        title: row.meta.title,
+        createdAt: row.meta.updatedAt,
+        updatedAt: row.meta.updatedAt,
+        messages: msgs,
+        owner: owner ?? LEGACY_OWNER
+      };
+      sessions.set(id, s);
+    }
+  }
+  if (!s) return null;
+  if (owner && s.owner !== owner) return null;
+  return s;
+}
+
+/**
+ * 同步读取（仅查内存 Map，不回退镜像）：供运行期 trace 重建等热路径使用，
+ * 这些路径在调用前已通过 appendChatMessage 把会话写入内存态。需要镜像回退的
+ * 接口层请改用异步 getChatSession。
+ */
+export function peekChatSession(id: string, owner?: string): ChatSession | null {
   load();
   const s = sessions.get(id);
   if (!s) return null;
@@ -167,31 +210,85 @@ export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSes
   return session;
 }
 
-/** 重命名会话（标题用于左侧栏展示）；owner 不符或不存在返回 null。 */
-export function renameChatSession(
+/**
+ * 重命名会话（标题用于左侧栏展示）；owner 不符或不存在返回 null。
+ * 内存 Map 未命中时回退到聊天历史镜像（SQLite）：服务端重启后内存态清空、但镜像仍在，
+ * 此时从镜像恢复会话（含消息）并写回内存态，保证重命名对「仅存于镜像」的会话也生效。
+ */
+export async function renameChatSession(
   id: string,
   title: string,
   owner?: string
-): ChatSession | null {
+): Promise<ChatSession | null> {
   load();
-  const s = sessions.get(id);
+  let s = sessions.get(id);
+  if (!s) {
+    // 回退：从聊天历史镜像恢复（owner 由服务端鉴权层传入，与镜像 owner 一致）。
+    const row = await getHistoryStore().get(id, owner);
+    if (row) {
+      let msgs: ChatMessage[] = [];
+      try {
+        const env = JSON.parse(row.data) as { msgs?: ChatMessage[] };
+        msgs = Array.isArray(env.msgs) ? env.msgs : [];
+      } catch {
+        /* 损坏信封忽略，按空消息恢复 */
+      }
+      s = {
+        id,
+        title: row.meta.title,
+        createdAt: row.meta.updatedAt,
+        updatedAt: row.meta.updatedAt,
+        messages: msgs,
+        owner: owner ?? LEGACY_OWNER
+      };
+      sessions.set(id, s);
+    }
+  }
   if (!s) return null;
   if (owner && s.owner !== owner) return null;
   s.title = title?.trim() || s.title;
   s.updatedAt = Date.now();
   persist();
+  // 同步写回历史镜像（SQLite），保证镜像中的标题也更新（镜像为主持久化层）。
+  try {
+    const store = getHistoryStore();
+    const existing = await store.get(id, owner);
+    const data = existing?.data ?? JSON.stringify({ msgs: s.messages });
+    await store.upsert(
+      {
+        sid: id,
+        title: s.title,
+        updatedAt: s.updatedAt,
+        savedAt: s.updatedAt
+      },
+      data,
+      owner ?? s.owner
+    );
+  } catch {
+    /* 镜像写回失败不致命：内存态已更新 */
+  }
   return s;
 }
 
-/** 删除会话及其消息记录；owner 不符或不存在返回 false。 */
-export function deleteChatSession(id: string, owner?: string): boolean {
+/** 删除会话及其消息记录；owner 不符或不存在返回 false。
+ *  同时清理内存 Map 与历史镜像（SQLite），保证两个存储一致。 */
+export async function deleteChatSession(
+  id: string,
+  owner?: string
+): Promise<boolean> {
   load();
   const s = sessions.get(id);
-  if (!s) return false;
-  if (owner && s.owner !== owner) return false;
+  if (s && owner && s.owner !== owner) return false;
   const ok = sessions.delete(id);
   if (ok) persist();
-  return ok;
+  // 同步清理历史镜像（镜像为主持久化层）；Map 未命中也尝试删镜像。
+  let mirrorOk = false;
+  try {
+    mirrorOk = await getHistoryStore().remove(id, owner);
+  } catch {
+    /* 镜像清理失败不致命 */
+  }
+  return ok || mirrorOk;
 }
 
 /**

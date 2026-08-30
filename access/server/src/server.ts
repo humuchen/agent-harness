@@ -78,6 +78,7 @@ import {
 import {
   listChatSessions,
   getChatSession,
+  peekChatSession,
   createChatSession,
   renameChatSession,
   deleteChatSession,
@@ -1301,7 +1302,7 @@ const server = createServer(
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
         }
-        const s = getChatSession(id, ctx.sub);
+        const s = await getChatSession(id, ctx.sub);
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'session not found' }));
@@ -1317,7 +1318,7 @@ const server = createServer(
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
         }
-        const s = renameChatSession(id, b.title, ctx.sub);
+        const s = await renameChatSession(id, b.title, ctx.sub);
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'session not found' }));
@@ -1332,7 +1333,7 @@ const server = createServer(
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
         }
-        const ok = deleteChatSession(id, ctx.sub);
+        const ok = await deleteChatSession(id, ctx.sub);
         return sendJson(res, { ok }, req);
       }
 
@@ -2271,7 +2272,7 @@ async function handleRun(
         // 否则 getChatSession 恢复的 trace 仅含 meta 字符串「消息 N」，点开 LLM 节点后
         // 消息上下文 panel 为空，无法复盘本次调用的完整 prompt。
         const sessMsgs = chatSessionId
-          ? getChatSession(chatSessionId, ctx.sub)?.messages
+          ? peekChatSession(chatSessionId, ctx.sub)?.messages
           : undefined;
         const messages =
           sessMsgs && ev.messageCount
@@ -2640,14 +2641,14 @@ async function handleRun(
         // （两者 final 相同），避免历史里出现两条重复的 assistant 消息。仅当会话最后一条
         // 还不是相同内容的 assistant 时才落盘。
         const finalStr = String(ev.final);
-        const last = getChatSession(chatSessionId, ctx.sub)?.messages.at(-1);
+        const last = peekChatSession(chatSessionId, ctx.sub)?.messages.at(-1);
         if (traceRoot) traceRoot.status = 'ok';
         // 补全调用链路中 LLM 节点的「消息上下文」：llm:call 发生时 assistant 尚未落盘，
         // 导致 trace 节点 messages 只有用户消息、meta 却显示「消息 N」，重新进入历史后
         // 点开调用链路看不到 agent 助理内容。run:end 时 assistant 内容已完整，用当前
         // 会话消息 + 本次回答重建每个 LLM 节点的 messages。
         if (traceRoot && chatSessionId) {
-          const sess = getChatSession(chatSessionId, ctx.sub);
+          const sess = peekChatSession(chatSessionId, ctx.sub);
           if (sess) {
             const fullMsgs: ChatMessage[] = [
               ...sess.messages,

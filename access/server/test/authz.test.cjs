@@ -35,9 +35,9 @@ test('RoleBasedAuthorizer: 令牌映射到角色 + 权限矩阵', () => {
   assert.strictEqual(az.authenticate(fakeReq({}, '/x?token=opTok')).role, 'operator');
 });
 
-test('createAuthorizer: 关闭鉴权时全放行', () => {
+test('createAuthorizer: 关闭鉴权时全放行', async () => {
   const az = createAuthorizer(false);
-  const ctx = az.authenticate(fakeReq({}));
+  const ctx = await az.authenticate(fakeReq({}));
   assert.strictEqual(ctx.role, 'admin');
   assert.strictEqual(az.can(ctx, 'env:destroy'), true);
   assert.strictEqual(az.describe().mode, 'off');

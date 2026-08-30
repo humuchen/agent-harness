@@ -16,14 +16,21 @@ const http = require('node:http');
 const SERVER_JS = join(__dirname, '..', 'dist', 'server.js');
 const TOKEN = 'test-token-xyz';
 const TOKENS_JSON = JSON.stringify({ [TOKEN]: 'admin' });
-const PORT = 40000 + Math.floor(Math.random() * 5000);
 const RUN = existsSync(SERVER_JS);
+// 当前启动的服务端端口（每次 startServer 刷新）。request 据此发请求。
+let PORT = 40000 + Math.floor(Math.random() * 5000);
+// 每次启动服务端都用全新随机端口，避免上一次测试的端口尚未释放（TIME_WAIT / SIGTERM
+// 延迟）导致后续测试 EADDRINUSE 崩溃。范围避开常用端口。
+function freshPort() {
+  return 40000 + Math.floor(Math.random() * 5000);
+}
 // 前端产物是可选前置：server 单测不应因 webapp 未构建而失败（CI 里 build 会产出，本地常常没有）。
 const WEBAPP_BUILT = existsSync(
   join(__dirname, '..', '..', '..', 'frontend', 'webapp', 'dist', 'index.html')
 );
 
 function startServer() {
+  PORT = freshPort();
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
