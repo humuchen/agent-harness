@@ -111,6 +111,64 @@ export async function changePassword(
 }
 
 /**
+ * 申请重置密码：POST /api/account/forgot-password（公开，无需登录）。
+ * 入参 identifier 为「用户名 或 注册邮箱」；成功返回一次性重置凭证 resetToken
+ * （演示环境无邮件服务，token 直接返回前端以便走通流程；生产应改为仅下发到邮箱）。
+ * 返回 { ok, error?, resetToken? }。
+ */
+export async function requestPasswordReset(
+  identifier: string
+): Promise<{ ok: boolean; error?: string; resetToken?: string }> {
+  try {
+    const res = await fetch('/api/account/forgot-password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ identifier }),
+      credentials: 'same-origin'
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      resetToken?: string;
+    };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || '申请失败' };
+    }
+    return { ok: true, resetToken: data.resetToken };
+  } catch {
+    return { ok: false, error: '网络异常，请稍后重试。' };
+  }
+}
+
+/**
+ * 用重置凭证重设密码：POST /api/account/reset-password（公开）。
+ * 成功会吊销该用户所有已登录会话（强制重新登录）。返回 { ok, error? }。
+ */
+export async function resetPassword(
+  token: string,
+  newPassword: string
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/account/reset-password', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, newPassword }),
+      credentials: 'same-origin'
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+    };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || '重置失败' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: '网络异常，请稍后重试。' };
+  }
+}
+
+/**
  * 登出：POST /api/account/logout（服务端清 cookie + 吊销 token）。
  * 成功后清本地会话并派发 ah-session-expired 让 main.ts 回到登录页。
  */

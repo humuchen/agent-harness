@@ -130,6 +130,8 @@ import {
   getProfile,
   changePassword,
   revokeAllTokens,
+  requestPasswordReset,
+  resetPassword,
   AUTH_COOKIE,
   type AccountResult
 } from './accounts';
@@ -672,6 +674,47 @@ const server = createServer(
           'cache-control': 'no-store'
         });
         res.end(JSON.stringify({ ok: true, username: r.username }));
+        return;
+      }
+      // ── 忘记密码 / 重置密码（公开，放在 guard 之前，与 register/login 同区）──
+      if (req.method === 'POST' && path === '/api/account/forgot-password') {
+        const b = await readBody(req);
+        const identifier =
+          typeof b?.identifier === 'string' ? b.identifier : '';
+        const r = await requestPasswordReset(identifier);
+        if (!r.ok) {
+          res.writeHead(400, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(JSON.stringify({ ok: false, error: r.error }));
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true, resetToken: r.resetToken ?? null }));
+        return;
+      }
+      if (req.method === 'POST' && path === '/api/account/reset-password') {
+        const b = await readBody(req);
+        const token = typeof b?.token === 'string' ? b.token : '';
+        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
+        const r = await resetPassword(token, newPw);
+        if (!r.ok) {
+          res.writeHead(400, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(JSON.stringify({ ok: false, error: r.error }));
+          return;
+        }
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
       if (req.method === 'GET' && path === '/api/account/me') {

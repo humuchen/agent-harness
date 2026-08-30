@@ -111,3 +111,34 @@ export function validateChangePassword(form: ChangePasswordForm): string | null 
     return '新密码不能与当前密码相同。';
   return validateConfirm(form.newPassword, form.confirm);
 }
+
+/** 申请重置密码表单字段。 */
+export interface ForgotForm {
+  identifier: string;
+}
+
+/**
+ * 申请重置密码校验：用户名或注册邮箱其一合法即可（与后端 requestPasswordReset 对齐）。
+ * 通过返回 null。
+ */
+export function validateForgot(form: ForgotForm): string | null {
+  const v = (form.identifier ?? '').trim();
+  if (!v) return '请填写用户名或邮箱。';
+  const isEmail = EMAIL_RE.test(v);
+  const isUser = USERNAME_RE.test(v);
+  if (!isEmail && !isUser) return '请输入有效的用户名或邮箱。';
+  return null;
+}
+
+/** 重置密码表单字段（无需旧密码，凭重置凭证）。 */
+export interface ResetForm {
+  newPassword: string;
+  confirm: string;
+}
+
+/** 重置密码校验：返回第一个不通过字段的提示（null = 全部通过）。 */
+export function validateResetPassword(form: ResetForm): string | null {
+  const pwdErr = validatePassword(form.newPassword);
+  if (pwdErr) return pwdErr;
+  return validateConfirm(form.newPassword, form.confirm);
+}

@@ -59,6 +59,8 @@ const b64urlJson = (obj: unknown): string =>
   b64url(Buffer.from(JSON.stringify(obj), 'utf8'));
 
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+/** 重置凭证有效期（15 分钟）。过期需重新申请。 */
+const RESET_TTL_MS = 15 * 60 * 1000;
 
 // ─── 数据库存储（通过统一适配器，支持 sqlite / turso 双后端）──────────────
 let db: any = null;
@@ -95,6 +97,18 @@ async function ensureDb(): Promise<void> {
       );
       await db.exec(
         `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
+      );
+      // 密码重置凭证表：token 一次性使用，过期由 RESET_TTL_MS 控制。
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS password_resets (
+          token TEXT PRIMARY KEY,
+          username TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )`
+      );
+      await db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_resets_user ON password_resets(username)`
       );
       // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则跳过）。
       try {
@@ -464,6 +478,79 @@ export async function changePassword(
 export async function revokeAllTokens(username: string): Promise<void> {
   if (!db) return;
   await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+}
+
+/**
+ * 申请重置密码：按「用户名或注册邮箱」定位账号，存在则生成一次性重置凭证
+ * （token + 15 分钟过期）写入 password_resets 表，并返回 token。
+ *
+ * 演示环境（无邮件服务）：token 直接返回前端，便于走通「申请 → 重置」全流程；
+ * 生产环境应改为仅把 token 下发到用户邮箱、本接口不返回 token（避免链接泄露即失密）。
+ * 账号不存在时明确返回错误——本项目注册接口已暴露「用户名已被占用」，
+ * 用户枚举风险本就存在，保持一致性、方便用户自查输入。
+ */
+export interface ResetRequestResult {
+  ok: boolean;
+  error?: string;
+  resetToken?: string;
+}
+
+export async function requestPasswordReset(
+  identifier: string
+): Promise<ResetRequestResult> {
+  identifier = (identifier || '').trim();
+  if (!identifier) return { ok: false, error: '请填写用户名或邮箱' };
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+  if (!isEmail && !validUsername(identifier))
+    return { ok: false, error: '请输入有效的用户名或邮箱' };
+  await ensureDb();
+  const row = (await db
+    .prepare('SELECT username FROM users WHERE username = ? OR email = ?')
+    .get(identifier, identifier)) as { username: string } | undefined;
+  if (!row) return { ok: false, error: '该账号不存在' };
+  // 清理该用户旧的重置凭证（避免堆积 / 多链接并存）。
+  await db
+    .prepare('DELETE FROM password_resets WHERE username = ?')
+    .run(row.username);
+  const token = randomBytes(24).toString('hex');
+  const exp = Date.now() + RESET_TTL_MS;
+  await db
+    .prepare(
+      'INSERT INTO password_resets (token, username, expires_at, created_at) VALUES (?, ?, ?, ?)'
+    )
+    .run(token, row.username, exp, Date.now());
+  return { ok: true, resetToken: token };
+}
+
+/**
+ * 用重置凭证重设密码：校验 token 存在且未过期 → 校验新密码强度 →
+ * 覆盖 users.password → 立即作废该 token（一次性）→ 吊销该用户全部已登录会话（强制重登）。
+ * 返回 ok / error（区分「凭证无效 / 过期」与「弱密码」）。
+ */
+export async function resetPassword(
+  token: string,
+  newPassword: string
+): Promise<{ ok: boolean; error?: string }> {
+  token = (token || '').trim();
+  newPassword = newPassword || '';
+  if (!token) return { ok: false, error: '缺少重置凭证' };
+  if (newPassword.length < 8) return { ok: false, error: '密码至少 8 位' };
+  await ensureDb();
+  const rec = (await db
+    .prepare(
+      'SELECT username, expires_at FROM password_resets WHERE token = ?'
+    )
+    .get(token)) as { username: string; expires_at: number } | undefined;
+  if (!rec) return { ok: false, error: '重置凭证无效，请重新申请' };
+  if (Date.now() >= rec.expires_at)
+    return { ok: false, error: '重置凭证已过期，请重新申请' };
+  // 一次性：先更新密码、作废凭证，再吊销既有登录态（强制重新登录）。
+  await db
+    .prepare('UPDATE users SET password = ? WHERE username = ?')
+    .run(hashPassword(newPassword), rec.username);
+  await db.prepare('DELETE FROM password_resets WHERE token = ?').run(token);
+  await revokeAllTokens(rec.username);
+  return { ok: true };
 }
 
 /**

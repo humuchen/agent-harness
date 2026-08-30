@@ -24,12 +24,14 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
-import { setSession } from './api';
+import { setSession, requestPasswordReset, resetPassword } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 import {
   validateLogin,
   validateRegister,
+  validateForgot,
+  validateResetPassword,
   type LoginForm,
   type RegisterForm
 } from './utils/auth-validation';
@@ -1328,11 +1330,15 @@ export class AhLogin extends LitElement {
     `
   ];
 
-  @state() mode: 'login' | 'register' = 'login';
+  @state() mode: 'login' | 'register' | 'forgot' = 'login';
   @state() showPassword = false;
   @state() showConfirm = false;
   @state() agree = false;
   @state() submitting = false;
+  /** 忘记密码流程的子步骤：request（申请凭证）→ reset（设置新密码）。 */
+  @state() private forgotStep: 'request' | 'reset' = 'request';
+  /** 后端返回的一次性重置凭证（演示环境直接注入，生产应来自邮件链接）。 */
+  @state() private resetToken: string | null = null;
   @state() theme: Theme = getTheme();
   // GitHub OAuth 是否可用（后端配置了 GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET 时为 true）。
   @state() githubEnabled = false;
@@ -1345,8 +1351,25 @@ export class AhLogin extends LitElement {
   private themeObs?: MutationObserver;
   private telTimer?: number;
 
-  private toggleMode() {
-    this.mode = this.mode === 'login' ? 'register' : 'login';
+  private switchMode(m: 'login' | 'register') {
+    this.mode = m;
+    this.agree = false;
+    this.forgotStep = 'request';
+    this.resetToken = null;
+  }
+
+  /** 进入「忘记密码」流程（重置 forgotStep / resetToken，避免残留上一轮凭证）。 */
+  private enterForgot() {
+    this.mode = 'forgot';
+    this.forgotStep = 'request';
+    this.resetToken = null;
+  }
+
+  /** 从忘记密码流程回到登录。 */
+  private backToLogin() {
+    this.mode = 'login';
+    this.forgotStep = 'request';
+    this.resetToken = null;
   }
 
   connectedCallback() {
@@ -1435,6 +1458,117 @@ export class AhLogin extends LitElement {
   private onSubmit(e: Event) {
     e.preventDefault();
     void this.submitForm(e.target as HTMLFormElement);
+  }
+
+  /* ----------------------- 忘记密码：申请凭证 ----------------------- */
+
+  private onForgotRequest(e: Event) {
+    e.preventDefault();
+    void this.submitForgotRequest(e.target as HTMLFormElement);
+  }
+
+  private onForgotKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
+    const el = e.target as HTMLElement | null;
+    if (!el || el.tagName !== 'INPUT') return;
+    const input = el as HTMLInputElement;
+    if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
+      return;
+    e.preventDefault();
+    const form =
+      input.form ?? (this.renderRoot?.querySelector('form') as HTMLFormElement);
+    void this.submitForgotRequest(form);
+  }
+
+  /** 申请重置凭证：前端校验 identifier → POST /api/account/forgot-password。 */
+  private async submitForgotRequest(form: HTMLFormElement | null) {
+    if (this.submitting || !form) return;
+    const identifier =
+      (
+        form.elements.namedItem('username') as HTMLInputElement | null
+      )?.value?.trim() ?? '';
+    const err = validateForgot({ identifier });
+    if (err) {
+      notify.warning(err, { key: 'forgot-form' });
+      (form.elements.namedItem('username') as HTMLInputElement | null)?.focus();
+      return;
+    }
+    this.submitting = true;
+    try {
+      const r = await requestPasswordReset(identifier);
+      if (!r.ok || !r.resetToken) {
+        notify.error(r.error || '申请失败。', { key: 'forgot-form' });
+        return;
+      }
+      // 演示环境：token 直接注入，跳到第二步设置新密码（生产应改为来自邮件链接）。
+      this.resetToken = r.resetToken;
+      this.forgotStep = 'reset';
+      notify.success('验证通过，请设置新密码');
+    } catch (err) {
+      notifyError(err, { fallback: '申请失败。', key: 'forgot-form' });
+    } finally {
+      this.submitting = false;
+    }
+  }
+
+  /* ----------------------- 忘记密码：设置新密码 ----------------------- */
+
+  private onResetSubmit(e: Event) {
+    e.preventDefault();
+    void this.submitReset(e.target as HTMLFormElement);
+  }
+
+  private onResetKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
+    const el = e.target as HTMLElement | null;
+    if (!el || el.tagName !== 'INPUT') return;
+    const input = el as HTMLInputElement;
+    if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
+      return;
+    e.preventDefault();
+    const form =
+      input.form ?? (this.renderRoot?.querySelector('form') as HTMLFormElement);
+    void this.submitReset(form);
+  }
+
+  /** 用凭证重设密码：前端校验 → POST /api/account/reset-password → 回登录页。 */
+  private async submitReset(form: HTMLFormElement | null) {
+    if (this.submitting || !form) return;
+    if (!this.resetToken) {
+      notify.error('重置凭证已失效，请重新申请。', { key: 'forgot-form' });
+      this.forgotStep = 'request';
+      return;
+    }
+    const password =
+      (form.elements.namedItem('password') as HTMLInputElement | null)?.value ??
+      '';
+    const confirm =
+      (form.elements.namedItem('confirm') as HTMLInputElement | null)?.value ??
+      '';
+    const err = validateResetPassword({ newPassword: password, confirm });
+    if (err) {
+      notify.warning(err, { key: 'forgot-form' });
+      (
+        form.elements.namedItem('password') as HTMLInputElement | null
+      )?.focus();
+      return;
+    }
+    this.submitting = true;
+    try {
+      const r = await resetPassword(this.resetToken, password);
+      if (!r.ok) {
+        notify.error(r.error || '重置失败。', { key: 'forgot-form' });
+        return;
+      }
+      notify.success('密码已重置，请使用新密码登录');
+      this.mode = 'login';
+      this.forgotStep = 'request';
+      this.resetToken = null;
+    } catch (err) {
+      notifyError(err, { fallback: '重置失败。', key: 'forgot-form' });
+    } finally {
+      this.submitting = false;
+    }
   }
 
   /**
@@ -1783,8 +1917,7 @@ export class AhLogin extends LitElement {
                       <button
                         class="forge"
                         type="button"
-                        @click=${() =>
-                          notify.info('演示页面：找回密码流程待接入。')}
+                        @click=${this.enterForgot}
                       >
                         忘记密码？
                       </button>
@@ -1852,13 +1985,14 @@ export class AhLogin extends LitElement {
                     还没有账号？<button
                       class="link"
                       type="button"
-                      @click=${this.toggleMode}
+                      @click=${() => this.switchMode('register')}
                     >
                       立即注册
                     </button>
                   </div>
                 `
-              : html`
+              : this.mode === 'register'
+                ? html`
                   <h1>创建账号</h1>
                   <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
                   <form @submit=${this.onSubmit} @keydown=${this.onFormKeydown}>
@@ -1909,9 +2043,85 @@ export class AhLogin extends LitElement {
                     已有账号？<button
                       class="link"
                       type="button"
-                      @click=${this.toggleMode}
+                      @click=${() => this.switchMode('login')}
                     >
                       去登录
+                    </button>
+                  </div>
+                `
+              : html`
+                  <h1>找回密码</h1>
+                  <p class="auth-sub">
+                    ${
+                      this.forgotStep === 'request'
+                        ? '输入你的用户名或注册邮箱，验证通过后将引导你设置新密码。'
+                        : '为该账号设置一个新密码，重置成功后需使用新密码重新登录。'
+                    }
+                  </p>
+                  ${
+                    this.forgotStep === 'request'
+                      ? html`
+                          <form
+                            @submit=${this.onForgotRequest}
+                            @keydown=${this.onForgotKeydown}
+                          >
+                            ${this.field(
+                              '用户名或邮箱',
+                              'text',
+                              '用户名 / you@company.com',
+                              'username'
+                            )}
+                            <button
+                              class="btn-primary"
+                              type="submit"
+                              ?disabled=${this.submitting}
+                            >
+                              ${this.submitting ? '验证中…' : '发送重置凭证'}
+                            </button>
+                            <div class="enter-hint">
+                              按 <kbd>Enter</kbd> 提交
+                            </div>
+                          </form>
+                        `
+                      : html`
+                          <form
+                            @submit=${this.onResetSubmit}
+                            @keydown=${this.onResetKeydown}
+                          >
+                            ${this.field(
+                              '新密码',
+                              'password',
+                              '至少 8 位',
+                              'password',
+                              true
+                            )}
+                            ${this.field(
+                              '确认新密码',
+                              'password',
+                              '再次输入密码',
+                              'confirm',
+                              true
+                            )}
+                            <button
+                              class="btn-primary"
+                              type="submit"
+                              ?disabled=${this.submitting}
+                            >
+                              ${this.submitting ? '重置中…' : '重置密码'}
+                            </button>
+                            <div class="enter-hint">
+                              按 <kbd>Enter</kbd> 提交
+                            </div>
+                          </form>
+                        `
+                  }
+                  <div class="auth-foot">
+                    想起来了？<button
+                      class="link"
+                      type="button"
+                      @click=${this.backToLogin}
+                    >
+                      返回登录
                     </button>
                   </div>
                 `}

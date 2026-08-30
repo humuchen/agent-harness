@@ -189,6 +189,7 @@ export class AhUserMenu extends LitElement {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 115px;
     }
 
     .items {
@@ -591,7 +592,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-old"
                 type="password"
                 autocomplete="current-password"
-                placeholer="请输入当前密码"
+                placeholder="请输入当前密码"
                 .value=${this.oldPw}
                 @input=${(e: InputEvent) =>
                   (this.oldPw = (e.target as HTMLInputElement).value)}
@@ -602,7 +603,7 @@ export class AhUserMenu extends LitElement {
               <input
                 id="pw-new"
                 type="password"
-                placeholer="请输入新密码"
+                placeholder="请输入新密码"
                 autocomplete="new-password"
                 .value=${this.newPw}
                 @input=${(e: InputEvent) =>
@@ -615,7 +616,7 @@ export class AhUserMenu extends LitElement {
                 id="pw-confirm"
                 type="password"
                 autocomplete="new-password"
-                placeholer="请输入确认密码"
+                placeholder="请输入确认密码"
                 .value=${this.confirmPw}
                 @input=${(e: InputEvent) =>
                   (this.confirmPw = (e.target as HTMLInputElement).value)}
