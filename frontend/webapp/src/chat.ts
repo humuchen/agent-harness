@@ -952,8 +952,16 @@ export class AhChat extends LitElement {
             t[idx] = { ...cur, content, ...extra };
           }
         } else {
-          // 完整 / 终态：用权威全文直接覆盖本端回复（含 tools/trace）。
-          t[idx] = { ...cur, content, ...extra };
+          // 完整 / 终态：用权威全文覆盖本端回复（含 tools/trace）。
+          // 防御：若终态 content 比已流式累积的更短（个别 harness 的 run:end.final
+          // 不含完整 token 流），保留更长的累积内容，避免「末尾缺一段」；
+          // 工具/链路/思考始终以终态（权威）为准合并。
+          const finalContent = content;
+          const useContent =
+            finalContent.length >= (cur.content ?? '').length
+              ? finalContent
+              : (cur.content ?? '');
+          t[idx] = { ...cur, content: useContent, ...extra };
           this.remoteStreaming[sid] = false; // 收尾，下一轮重新追加
         }
       }
