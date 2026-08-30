@@ -94,6 +94,20 @@ export class AhPlugins extends LitElement {
         padding: 4px 12px;
       }
     }
+    /* 加载骨架屏单元格：复用 .sk-line 同款 shimmer 渐变（依赖全局 --ah-surface-* 变量）。 */
+    .sk-cell {
+      display: inline-block;
+      height: 12px;
+      border-radius: 6px;
+      background: linear-gradient(
+        90deg,
+        var(--ah-surface-3) 25%,
+        var(--ah-surface-2) 37%,
+        var(--ah-surface-3) 63%
+      );
+      background-size: 400% 100%;
+      animation: ah-shimmer 1.4s ease infinite;
+    }
   `];
 
   @state() private loading = true;
@@ -153,7 +167,36 @@ export class AhPlugins extends LitElement {
   }
 
   render() {
-    if (this.loading) return html`<div class="wrap">加载插件列表…</div>`;
+    if (this.loading) {
+      // 表格形状的骨架屏：保留表头 + 若干 shimmer 占位行，与加载完成的表格视觉对齐。
+      return html`
+        <div class="wrap">
+          <h2>插件管理</h2>
+          <p class="hint">运行时启停 / 升级插件，无需重启服务进程；操作受服务端 plugin:manage 权限保护。</p>
+          <div class="panel">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>名称</th><th>版本</th><th>状态</th><th>依赖</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                ${[0, 1, 2, 3].map(
+                  (i) => html`
+                    <tr>
+                      <td data-label="ID"><span class="sk-cell" style="width:80%"></span></td>
+                      <td data-label="名称"><span class="sk-cell" style="width:70%"></span></td>
+                      <td data-label="版本"><span class="sk-cell" style="width:50%"></span></td>
+                      <td data-label="状态"><span class="sk-cell" style="width:60%"></span></td>
+                      <td data-label="依赖"><span class="sk-cell" style="width:40%"></span></td>
+                      <td class="actions" data-label="操作">
+                        <span class="sk-cell" style="width:96px;height:24px"></span>
+                      </td>
+                    </tr>`
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>`;
+    }
     return html`
       <div class="wrap">
         <h2>插件管理</h2>
