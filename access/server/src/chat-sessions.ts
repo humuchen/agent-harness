@@ -337,7 +337,10 @@ export function appendChatMessage(
   if (msg.role === 'user') {
     const userCount = s.messages.filter((m) => m.role === 'user').length;
     if (userCount === 1 && msg.content.trim()) {
-      s.title = msg.content.trim().slice(0, 40);
+      // 首次用户输入作标题：去首尾/内部多余空白与换行，过长截断并加省略号（保存进库）。
+      const raw = msg.content.trim().replace(/\s+/g, ' ');
+      const TITLE_MAX = 40;
+      s.title = raw.length > TITLE_MAX ? raw.slice(0, TITLE_MAX - 1) + '…' : raw;
     }
   }
   persist();

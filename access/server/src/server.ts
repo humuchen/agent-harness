@@ -2088,15 +2088,11 @@ async function handleRun(
     } else if (t === 'llm:reasoning' && typeof e?.delta === 'string') {
       streamReasoning += e.delta;
     } else if (t === 'run:end' && e?.final != null) {
-      if (runEnded) return; // 重复 run:end 帧：跳过，只广播一次终态
+      if (runEnded) return; // 重复 run:end 帧：跳过，只处理一次
       runEnded = true;
-      // 终态：广播完整 final，让他端用权威全文收尾（覆盖此前的增量快照）。
-      publishChatEvent(ctx.sub, {
-        type: 'message:append',
-        session: chatSessionId,
-        message: { role: 'assistant', content: String(e.final), final: true, ts: Date.now() },
-        origin: body.origin || ''
-      });
+      // 终态全文无需此处再广播：下方 run:end 分支的 appendChatMessage 会把完整 assistant
+      // 消息（含 tools/trace）经 chat-bus 广播一次，他端凭 final/streaming 游标收尾。
+      // 若这里再 publish 会与 appendChatMessage 的广播形成「两次终态」，导致他端新回复重复。
       streamBuf = '';
       streamReasoning = '';
       return;
