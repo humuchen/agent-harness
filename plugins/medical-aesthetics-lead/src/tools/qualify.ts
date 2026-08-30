@@ -25,7 +25,7 @@ export function registerQualifyTool(tools: ToolRegistry): void {
     },
     async (args: Record<string, unknown>) => {
       try {
-        return qualifyLead({
+        return await qualifyLead({
           leadId: String(args.leadId ?? ''),
           channel: String(args.channel ?? 'unknown'),
           project: args.project ? String(args.project) : undefined,

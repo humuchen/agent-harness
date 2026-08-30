@@ -168,7 +168,7 @@ export async function bookSlotTx(args: {
 
 /** 取消预约单（事务内回退号源占用，幂等）。 */
 export async function cancelAppointmentTx(appointmentId: string): Promise<void> {
-  await inTransaction((conn: SqliteDatabase) => {
+  await inTransaction(async (conn: SqliteDatabase) => {
     const row = await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), appointmentId) as
       | Record<string, unknown>
       | undefined;
@@ -209,7 +209,7 @@ export async function setAppointmentExternal(
 /** 按 HIS 外部单号反查本地预约单（回调状态下发时用）。 */
 export async function getAppointmentByExternalId(externalId: string): Promise<AppointmentRecord | null> {
   return await dbCall(async () => {
-    const row = (await getDb()).prepare('SELECT * FROM ma_appointment WHERE external_id = ?').get(externalId);
+    const row = await (await getDb()).prepare('SELECT * FROM ma_appointment WHERE external_id = ?').get(externalId);
     return row ? rowToAppointment(row) : null;
   }, '按外部单号查预约单');
 }

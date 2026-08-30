@@ -91,10 +91,10 @@ export const leadDashboardView: PluginUIView = {
   label: '客资看板',
   render(): string | Promise<string> {
     return (async () => {
-      const stats = await Promise.resolve(computeStats());
-      const recs = await Promise.resolve(listLeads(40, 0));
-      const ob = await Promise.resolve(outboxSnapshot());
-      const db = await Promise.resolve(dbHealth());
+      const stats = await computeStats();
+      const recs = await listLeads(40, 0);
+      const ob = await outboxSnapshot();
+      const db = await dbHealth();
 
     const funnelStages = [
       'new',

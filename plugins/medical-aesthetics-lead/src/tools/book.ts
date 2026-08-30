@@ -35,13 +35,13 @@ export function registerBookTool(tools: ToolRegistry): void {
       const date = String(args.date ?? '').trim();
       const time = String(args.time ?? '').trim();
       try {
-        return bookConsultation({ leadId, clinic, date, time });
+        return await bookConsultation({ leadId, clinic, date, time });
       } catch (e) {
         const err = toMaError(e, 'UPSTREAM_ERROR');
         // 硬兜底：系统/号源侧不可自愈的失败 → 自动转人工落库（幂等，同 leadId 重复调用无害）
         if (err.code !== 'INVALID_ARGUMENT' && leadId) {
           try {
-            const h = handoffLead({
+            const h = await handoffLead({
               leadId,
               reason:
                 `booking-failed:${err.code} 用户选定院区=${clinic || '?'} ` +

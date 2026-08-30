@@ -224,12 +224,13 @@ CREATE INDEX IF NOT EXISTS ix_inbound_state ON ma_inbound_message(state, receive
 /**
  * 取得（并按需初始化）数据库连接。进程内单例。
  * 首次调用会建目录、开 WAL、执行幂等 DDL。
- * 返回的 SqliteDatabase 接口方法始终返回 Promise（兼容 sqlite 同步 / turso 异步）。
+ * 返回 Promise（Turso HTTP 模式下初始化为异步，需 await）。
  */
-export function getDb(): SqliteDatabase {
+export async function getDb(): Promise<SqliteDatabase> {
   if (db) return db;
-  const cfg = getConfig();
-  try {
+  if (dbReady) return dbReady;
+  dbReady = (async () => {
+    const cfg = getConfig();
     const adapter = getDbAdapter({
       file: cfg.db.file,
       pragmas: {
@@ -263,37 +264,9 @@ export function getDb(): SqliteDatabase {
       },
       close: () => adapter.close?.(),
     };
-    // 同步初始化（sqlite 模式）；Turso 模式下 exec 返回 Promise 但不阻塞后续调用
-    const initResult = wrapped.exec(SCHEMA);
-    if (initResult instanceof Promise) initResult.then(() => runMigrations(wrapped)).catch(() => {});
-    else runMigrations(wrapped);
+    await wrapped.exec(SCHEMA);
+    await runMigrations(wrapped);
     db = wrapped;
-    return db;
-  } catch (e) {
-    throw new MaError('DB_ERROR', `客资库初始化失败（${cfg.db.file}）：${(e as Error).message}`, {
-      file: cfg.db.file,
-    });
-  }
-}
-
-/** 异步版 getDb：等待初始化完成（Turso HTTP 模式下 exec 为异步）。 */
-export function getDbAsync(): Promise<SqliteDatabase> {
-  if (db) return Promise.resolve(db);
-  if (dbReady) return dbReady;
-  dbReady = (async () => {
-    const cfg = getConfig();
-    const adapter = getDbAdapter({
-      file: cfg.db.file,
-      pragmas: {
-        journalMode: 'wal',
-        busyTimeoutMs: cfg.db.busyTimeoutMs,
-        foreignKeys: true,
-      },
-    });
-    const conn = adapter as unknown as SqliteDatabase;
-    await conn.exec(SCHEMA);
-    await runMigrationsAsync(conn);
-    db = conn;
     return db;
   })().catch((e) => {
     dbReady = null;
@@ -388,6 +361,15 @@ async function runMigrationsAsync(conn: SqliteDatabase): Promise<void> {
   `);
 }
 
+/**
+ * 异步预热数据库连接（Turso HTTP 模式下 exec/all 为异步，须 await 初始化完成）。
+ * 首次调用会建目录、开 WAL、执行幂等 DDL + 迁移；其后直接返回缓存实例。
+ * 与 getDb() 等价（getDb 自身即返回 Promise），仅为语义清晰的预热入口。
+ */
+export async function getDbAsync(): Promise<SqliteDatabase> {
+  return getDb();
+}
+
 /** 关闭连接（插件 onUnload / 测试清理）。 */
 export function closeDb(): void {
   try {
@@ -396,6 +378,7 @@ export function closeDb(): void {
     /* 关闭失败不阻断卸载 */
   }
   db = null;
+  dbReady = null; // 关键：同时清空初始化句柄，否则下次 getDb() 会返回已关闭的旧连接（测试隔离 / 重载后必现 "database is not open"）
 }
 
 /** 包装 DB 异常为 MaError('DB_ERROR')。支持同步和异步函数。 */
@@ -427,7 +410,7 @@ export async function runStmt(stmt: { run: (...p: any[]) => MaybePromise<{ chang
  * 支持异步函数（Turso HTTP 模式下 exec 为异步）。
  */
 export async function inTransaction<T>(fn: (conn: SqliteDatabase) => T | Promise<T>): Promise<T> {
-  const conn = await getDbAsync();
+  const conn = await getDb();
   await conn.exec('BEGIN IMMEDIATE');
   try {
     const out = await fn(conn);
@@ -447,7 +430,7 @@ export async function inTransaction<T>(fn: (conn: SqliteDatabase) => T | Promise
 /** 健康检查：真实执行一次查询，返回各表行数（看板/运维用）。 */
 export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
-    const conn = await getDbAsync();
+    const conn = await getDb();
     const counts: Record<string, number> = {};
     for (const t of [
       'ma_lead',

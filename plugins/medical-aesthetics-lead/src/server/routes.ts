@@ -110,7 +110,7 @@ const configRoute: PluginRouteHandler = async (req, res) => {
 /** GET /kb —— 知识库项目清单（真实数据）。 */
 const kbList: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
-  const items = listKnowledge(true).map((p) => ({ projectId: p.projectId, name: p.name, category: p.category }));
+  const items = (await listKnowledge(true)).map((p) => ({ projectId: p.projectId, name: p.name, category: p.category }));
   send(res, 200, { total: items.length, projects: items });
 };
 
@@ -153,7 +153,7 @@ const kbImport: PluginRouteHandler = async (req, res) => {
   const projects = (Array.isArray(json.projects) ? json.projects : []) as Record<string, unknown>[];
   if (!projects.length) return send(res, 400, { error: 'projects[] required' });
   try {
-    const n = importProjects(
+    const n = await importProjects(
       projects.map((p) => ({
         projectId: String(p.projectId ?? p.id ?? ''),
         name: String(p.name ?? ''),
@@ -196,7 +196,7 @@ const clinicImport: PluginRouteHandler = async (req, res) => {
   try {
     let n = 0;
     for (const c of clinics) {
-      upsertClinic({
+      await upsertClinic({
         clinicId: String(c.clinicId ?? c.id ?? ''),
         name: String(c.name ?? ''),
         city: c.city ? String(c.city) : undefined,
@@ -228,7 +228,7 @@ const slotImport: PluginRouteHandler = async (req, res) => {
   try {
     let n = 0;
     for (const s of slots) {
-      upsertSlot({
+      await upsertSlot({
         slotId: String(s.slotId ?? s.id ?? ''),
         clinicId: String(s.clinicId ?? ''),
         date: String(s.date ?? ''),
@@ -265,13 +265,13 @@ const webhook: PluginRouteHandler = async (req, res) => {
   const channel = String(json.channel ?? 'unknown');
   const externalId = String(json.externalId ?? '');
   if (!externalId) return send(res, 400, { ok: false, code: 'INVALID_ARGUMENT', error: 'externalId required' });
-  const inbound = saveInbound({
+  const inbound = await saveInbound({
     channel,
     externalId,
     leadKey: String(json.leadKey ?? externalId),
     text: String(json.text ?? ''),
   });
-  markInboundState(inbound.id, 'dispatched');
+  await markInboundState(inbound.id, 'dispatched');
   // 3) 经 A2A 触发 agent（异步、fire-and-forget；失败不丢消息，仍可重试）
   const ctx = getPluginContext();
   const baseUrl = getConfig().a2a.baseUrl;
@@ -290,7 +290,7 @@ const webhook: PluginRouteHandler = async (req, res) => {
       );
       dispatched = true;
     } catch (e) {
-      markInboundState(inbound.id, 'error', undefined, String((e as Error).message));
+      await markInboundState(inbound.id, 'error', undefined, String((e as Error).message));
     }
   }
   send(res, 202, { ok: true, accepted: true, inboundId: inbound.id, dispatched });
@@ -317,13 +317,12 @@ const callback: PluginRouteHandler = async (req, res) => {
       const apptId = String(json.appointmentId ?? '');
       const extId = String(json.externalId ?? '');
       const appt =
-        (apptId && getAppointment(apptId)) ||
-        (extId && getAppointmentByExternalId(extId)) ||
-        null;
+        (apptId ? await getAppointment(apptId) : null) ??
+        (extId ? await getAppointmentByExternalId(extId) : null);
       if (!appt) {
         return send(res, 404, { ok: false, code: 'NOT_FOUND', error: '预约单不存在（appointmentId/externalId 均未匹配）' });
       }
-      setAppointmentExternal(appt.appointmentId, extId || undefined, String(json.status ?? 'confirmed'));
+      await setAppointmentExternal(appt.appointmentId, extId || undefined, String(json.status ?? 'confirmed'));
       return send(res, 200, { ok: true, appointmentId: appt.appointmentId, externalStatus: json.status });
     }
     if (type === 'lead.status') {

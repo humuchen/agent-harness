@@ -34,8 +34,8 @@ export async function readTranscript(runKey: string): Promise<{ role: string; te
 export async function attachRunTranscript(leadId: string, runKey: string): Promise<number> {
   if (!leadId || !runKey) return 0;
   if (!leadExists(leadId)) return 0;
-  const turns = readTranscript(runKey);
+  const turns = await readTranscript(runKey);
   if (!turns.length) return 0;
-  for (const t of turns) appendLeadMessage(leadId, t.role, t.text, runKey);
+  for (const t of turns) await appendLeadMessage(leadId, t.role, t.text, runKey);
   return turns.length;
 }

@@ -32,20 +32,20 @@ async function deliverOne(
   if (topic === 'lead.upsert') {
     const client = new CrmClient(); // 未配置会抛 NOT_CONFIGURED（被外层捕获为失败重试）
     const res = await client.upsertLead(payload as never, idempotencyKey);
-    markSent(id);
-    if (payload.leadId) markCrmSync(String(payload.leadId), 'synced', res.crmId || undefined);
+    await markSent(id);
+    if (payload.leadId) await markCrmSync(String(payload.leadId), 'synced', res.crmId || undefined);
   } else if (topic === 'appt.create') {
     const client = new HisClient();
     const res = await client.createAppointment(payload as never, idempotencyKey);
-    markSent(id);
+    await markSent(id);
     // HIS 回执的外部单号 + 状态写回本地预约单（闭合外部同步链路）
     const apptId = (payload as Record<string, unknown>).appointmentId as string | undefined;
     if (res.externalId && apptId) {
-      setAppointmentExternal(apptId, res.externalId, 'confirmed');
+      await setAppointmentExternal(apptId, res.externalId, 'confirmed');
     }
   } else {
     // 未知 topic：直接标记已发送，避免卡死队列
-    markSent(id);
+    await markSent(id);
   }
 }
 
@@ -54,16 +54,16 @@ async function tick(): Promise<void> {
   if (!cfg.outbox.enabled) return;
   if (!cfg.crm.enabled && !cfg.his.enabled) return; // 无上游可投：跳过（积压保留）
   try {
-    const due = dueBatch(cfg.outbox.batchSize, Date.now());
+    const due = await dueBatch(cfg.outbox.batchSize, Date.now());
     for (const row of due) {
       try {
         await deliverOne(row.id, row.topic, row.idempotencyKey, row.payload as Record<string, unknown>);
       } catch (e) {
         const msg = e instanceof MaError ? e.message : String(e);
-        markFailed(row.id, msg, cfg.outbox.maxAttempts, backoffMs(row.attempts));
+        await markFailed(row.id, msg, cfg.outbox.maxAttempts, backoffMs(row.attempts));
         // 达到上限且为线索同步 → 标记线索同步失败
         if (row.attempts + 1 >= cfg.outbox.maxAttempts && row.payload && (row.payload as Record<string, unknown>).leadId) {
-          markCrmSync(String((row.payload as Record<string, unknown>).leadId), 'failed');
+          await markCrmSync(String((row.payload as Record<string, unknown>).leadId), 'failed');
         }
       }
     }
@@ -91,17 +91,17 @@ export function stopOutboxWorker(): void {
 }
 
 /** 看板/运维快照：发件箱健康。 */
-export function outboxSnapshot(): {
+export async function outboxSnapshot(): Promise<{
   enabled: boolean;
   crmEnabled: boolean;
   hisEnabled: boolean;
-  stats: ReturnType<typeof outboxStats>;
-} {
+  stats: Awaited<ReturnType<typeof outboxStats>>;
+}> {
   const cfg = getConfig();
   return {
     enabled: cfg.outbox.enabled,
     crmEnabled: cfg.crm.enabled,
     hisEnabled: cfg.his.enabled,
-    stats: outboxStats(),
+    stats: await outboxStats(),
   };
 }

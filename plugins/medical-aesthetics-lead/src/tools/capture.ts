@@ -23,7 +23,7 @@ export function registerCaptureTool(tools: ToolRegistry): void {
     },
     async (args: Record<string, unknown>) => {
       try {
-        return captureLead({
+        return await captureLead({
           leadId: String(args.leadId ?? ''),
           consent: args.consent === true || args.consent === 'true',
           wechat: args.wechat ? String(args.wechat) : undefined,

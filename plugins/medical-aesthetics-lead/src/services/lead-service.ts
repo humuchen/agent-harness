@@ -28,11 +28,11 @@ function validGrade(g: unknown): LeadGrade {
 }
 
 /** 将线索变更入队 CRM 同步；CRM 未配置返回 disabled（不假装同步成功）。 */
-function queueCrmSync(lead: LeadRecord): CrmSyncState {
+async function queueCrmSync(lead: LeadRecord): Promise<CrmSyncState> {
   const cfg = getConfig();
   if (!cfg.crm.enabled) return 'disabled';
   const idem = `lead:${lead.leadId}:${lead.updatedAt}`;
-  enqueue('lead.upsert', idem, {
+  void enqueue('lead.upsert', idem, {
     leadId: lead.leadId,
     tenantId: cfg.tenantId,
     channel: lead.channel,
@@ -57,7 +57,7 @@ function queueCrmSync(lead: LeadRecord): CrmSyncState {
 }
 
 /** lead_qualify：结构化抽取客资要素 + A/B/C/D 分级，写回本地库并归集当次对话。 */
-export function qualifyLead(input: {
+export async function qualifyLead(input: {
   leadId: string;
   channel: string;
   project?: string;
@@ -65,7 +65,7 @@ export function qualifyLead(input: {
   city?: string;
   intent?: string;
   grade: string;
-}): { ok: true; leadId: string; grade: LeadGrade; stage: string; crmSync: CrmSyncState } {
+}): Promise<{ ok: true; leadId: string; grade: LeadGrade; stage: string; crmSync: CrmSyncState }> {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
   const grade = validGrade(input.grade);
@@ -91,19 +91,19 @@ export function qualifyLead(input: {
 }
 
 /** lead_capture：用户授权后留资，推进到 captured（且不回退更靠后的阶段）。 */
-export function captureLead(input: {
+export async function captureLead(input: {
   leadId: string;
   consent: boolean;
   wechat?: string;
   phone?: string;
   name?: string;
-}): {
+}): Promise<{
   ok: true;
   leadId: string;
   stage: string;
   crmSync: CrmSyncState;
   captured: { wechat: string; phone: string; name: string };
-} {
+}> {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
   if (!input.consent) throw new MaError('INVALID_ARGUMENT', '未获用户授权，不得留资');
@@ -136,10 +136,10 @@ export function captureLead(input: {
 }
 
 /** lead_handoff：转交真人咨询师，标记 handedOff + 推进到 arrived（不回退）。 */
-export function handoffLead(input: {
+export async function handoffLead(input: {
   leadId: string;
   reason?: string;
-}): { ok: true; leadId: string; handedOff: true; stage: string; crmSync: CrmSyncState } {
+}): Promise<{ ok: true; leadId: string; handedOff: true; stage: string; crmSync: CrmSyncState }> {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
   const existing = await getLead(leadId);

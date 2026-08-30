@@ -31,12 +31,12 @@ function findSlotByTime(slots: SlotRecord[], time: string): SlotRecord | undefin
 }
 
 /** consultation_book：真实可用性校验 → 事务锁号建单 → HIS/CRM 同步入队。 */
-export function bookConsultation(input: {
+export async function bookConsultation(input: {
   leadId: string;
   clinic: string;
   date: string;
   time: string;
-}): {
+}): Promise<{
   ok: true;
   leadId: string;
   appointmentId: string;
@@ -46,7 +46,7 @@ export function bookConsultation(input: {
   time: string;
   hisSync: 'queued' | 'disabled';
   crmSync: 'pending' | 'disabled';
-} {
+}> {
   const leadId = String(input.leadId ?? '').trim();
   if (!leadId) throw new MaError('INVALID_ARGUMENT', 'leadId required');
   const clinicName = String(input.clinic ?? '').trim();
@@ -55,7 +55,7 @@ export function bookConsultation(input: {
   if (!clinicName || !date || !time) throw new MaError('INVALID_ARGUMENT', 'clinic/date/time 必填');
 
   // 1) 解析院区（真实查库）
-  const clinics = searchClinics();
+  const clinics = await searchClinics();
   const clinic = resolveClinic(clinics, clinicName);
   if (!clinic) {
     const names = clinics.map((c) => c.name).join('、') || '无（请先经管理接口导入院区）';
@@ -63,7 +63,7 @@ export function bookConsultation(input: {
   }
 
   // 2) 查询该日期号源（真实查库）
-  const slots = listSlots(clinic.clinicId, date);
+  const slots = await listSlots(clinic.clinicId, date);
   const slot = findSlotByTime(slots, time);
   if (!slot) {
     const avail = slots.map((s) => s.time).join('、') || '无';
@@ -72,14 +72,14 @@ export function bookConsultation(input: {
 
   // 3) 事务内锁号 + 建预约单 + 推进线索阶段到 booked（原子；不回退更靠后阶段）
   const cfg = getConfig();
-  const appt = inTransaction((conn: SqliteDatabase) => {
-    const a = bookSlotWithinTx(conn, { leadId, clinicId: clinic.clinicId, slotId: slot.slotId });
-    const cur = conn.prepare('SELECT stage FROM ma_lead WHERE lead_id = ?').get(leadId) as
+  const appt = await inTransaction(async (conn: SqliteDatabase) => {
+    const a = await bookSlotWithinTx(conn, { leadId, clinicId: clinic.clinicId, slotId: slot.slotId });
+    const cur = await conn.prepare('SELECT stage FROM ma_lead WHERE lead_id = ?').get(leadId) as
       | Record<string, unknown>
       | undefined;
     const keepStage: LeadStage =
       cur && stageRank(cur.stage as LeadStage) >= stageRank('booked') ? (cur.stage as LeadStage) : 'booked';
-    advanceStageTx(conn, leadId, {
+    await advanceStageTx(conn, leadId, {
       stage: keepStage,
       clinicId: clinic.clinicId,
       clinicName: clinic.name,

@@ -88,7 +88,7 @@ describe('consultation_book 硬兜底', () => {
     // 先建档（真实流程中由 lead_qualify 创建线索），再导入院区与号源
     const sched = require('../dist/repo/schedule-repo');
     const leadSvc = require('../dist/services/lead-service');
-    leadSvc.qualifyLead({ leadId: 'bk_3', channel: '抖音', project: '皮肤管理', city: '青岛', grade: 'A' });
+    await leadSvc.qualifyLead({ leadId: 'bk_3', channel: '抖音', project: '皮肤管理', city: '青岛', grade: 'A' });
     sched.upsertClinic({ clinicId: 'c1', name: '青岛市南院', city: '青岛', active: true });
     sched.upsertSlot({ slotId: 's1', clinicId: 'c1', date: '2026-08-23', time: '10:00', capacity: 2 });
 

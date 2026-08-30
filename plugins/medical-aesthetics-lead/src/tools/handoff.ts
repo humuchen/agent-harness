@@ -23,7 +23,7 @@ export function registerHandoffTool(tools: ToolRegistry): void {
     },
     async (args: Record<string, unknown>) => {
       try {
-        return handoffLead({
+        return await handoffLead({
           leadId: String(args.leadId ?? ''),
           reason: args.reason ? String(args.reason) : undefined,
         });

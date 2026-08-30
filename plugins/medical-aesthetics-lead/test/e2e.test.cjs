@@ -8,7 +8,11 @@
  * - 知识库查空拦截
  * - 发件箱投递
  * - 看板统计
+ *
+ * 注：repo/service 层已全面异步化（DB 适配器在 Turso HTTP 模式下返回 Promise），
+ * 因此所有 DB 读写调用都必须 await。
  */
+
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -57,13 +61,13 @@ describe('医美客资插件 E2E', () => {
     const lead = require('../dist/repo/lead-repo');
 
     // 1. 导入号源
-    sched.upsertClinic({
+    await sched.upsertClinic({
       clinicId: 'c1',
       name: '测试院区',
       city: '上海',
       active: true
     });
-    sched.upsertSlot({
+    await sched.upsertSlot({
       slotId: 's1',
       clinicId: 'c1',
       date: '2026-09-01',
@@ -72,7 +76,7 @@ describe('医美客资插件 E2E', () => {
     });
 
     // 2. 线索资质评估
-    const q = leadSvc.qualifyLead({
+    const q = await leadSvc.qualifyLead({
       leadId: 'lead_001',
       channel: '抖音',
       project: '双眼皮',
@@ -82,10 +86,10 @@ describe('医美客资插件 E2E', () => {
     });
     assert.ok(q.ok);
     assert.strictEqual(q.stage, 'qualified');
-    assert.strictEqual(lead.getLead('lead_001').reached, 'qualified');
+    assert.strictEqual((await lead.getLead('lead_001')).reached, 'qualified');
 
     // 3. 授权留资
-    const cap = leadSvc.captureLead({
+    const cap = await leadSvc.captureLead({
       leadId: 'lead_001',
       consent: true,
       wechat: 'wx_test'
@@ -94,7 +98,7 @@ describe('医美客资插件 E2E', () => {
     assert.strictEqual(cap.stage, 'captured');
 
     // 4. 预约咨询 (使用 schedSvc)
-    const b = schedSvc.bookConsultation({
+    const b = await schedSvc.bookConsultation({
       leadId: 'lead_001',
       clinic: '测试院区',
       date: '2026-09-01',
@@ -102,16 +106,16 @@ describe('医美客资插件 E2E', () => {
     });
     assert.ok(b.ok);
     assert.ok(b.appointmentId);
-    assert.strictEqual(lead.getLead('lead_001').stage, 'booked');
+    assert.strictEqual((await lead.getLead('lead_001')).stage, 'booked');
 
     // 5. 转人工
-    const h = leadSvc.handoffLead({
+    const h = await leadSvc.handoffLead({
       leadId: 'lead_001',
       reason: '高意向需面诊设计'
     });
     assert.ok(h.ok);
     assert.ok(h.handedOff);
-    assert.strictEqual(lead.getLead('lead_001').stage, 'arrived');
+    assert.strictEqual((await lead.getLead('lead_001')).stage, 'arrived');
   });
 
   test('号源防超卖', async () => {
@@ -119,13 +123,13 @@ describe('医美客资插件 E2E', () => {
     const schedSvc = require('../dist/services/schedule-service');
 
     // 导入仅 1 个容量的号源
-    sched.upsertClinic({
+    await sched.upsertClinic({
       clinicId: 'c2',
       name: '院区2',
       city: '上海',
       active: true
     });
-    sched.upsertSlot({
+    await sched.upsertSlot({
       slotId: 's2',
       clinicId: 'c2',
       date: '2026-09-02',
@@ -134,7 +138,7 @@ describe('医美客资插件 E2E', () => {
     });
 
     // 第一次预约成功
-    const b1 = schedSvc.bookConsultation({
+    const b1 = await schedSvc.bookConsultation({
       leadId: 'lead_002',
       clinic: '院区2',
       date: '2026-09-02',
@@ -145,7 +149,7 @@ describe('医美客资插件 E2E', () => {
     // 第二次预约应失败
     let rejected = false;
     try {
-      schedSvc.bookConsultation({
+      await schedSvc.bookConsultation({
         leadId: 'lead_003',
         clinic: '院区2',
         date: '2026-09-02',
@@ -163,13 +167,13 @@ describe('医美客资插件 E2E', () => {
     const sched = require('../dist/repo/schedule-repo');
     const schedSvc = require('../dist/services/schedule-service');
 
-    sched.upsertClinic({
+    await sched.upsertClinic({
       clinicId: 'c3',
       name: '院区3',
       city: '上海',
       active: true
     });
-    sched.upsertSlot({
+    await sched.upsertSlot({
       slotId: 's3',
       clinicId: 'c3',
       date: '2026-09-03',
@@ -178,7 +182,7 @@ describe('医美客资插件 E2E', () => {
     });
 
     // 资质评估
-    const q = leadSvc.qualifyLead({
+    const q = await leadSvc.qualifyLead({
       leadId: 'lead_norewind',
       channel: '微信',
       project: '光子嫩肤',
@@ -189,7 +193,7 @@ describe('医美客资插件 E2E', () => {
     assert.ok(q.ok, 'qualifyLead 应成功');
 
     // 留资
-    const cap = leadSvc.captureLead({
+    const cap = await leadSvc.captureLead({
       leadId: 'lead_norewind',
       consent: true,
       phone: '13800138000'
@@ -197,7 +201,7 @@ describe('医美客资插件 E2E', () => {
     assert.ok(cap.ok, 'captureLead 应成功');
 
     // 预约 (使用 schedSvc)
-    const b = schedSvc.bookConsultation({
+    const b = await schedSvc.bookConsultation({
       leadId: 'lead_norewind',
       clinic: '院区3',
       date: '2026-09-03',
@@ -205,7 +209,7 @@ describe('医美客资插件 E2E', () => {
     });
     assert.ok(b.ok, 'bookConsultation 应成功');
 
-    const stageAfterBook = lead.getLead('lead_norewind').stage;
+    const stageAfterBook = (await lead.getLead('lead_norewind')).stage;
     assert.strictEqual(
       stageAfterBook,
       'booked',
@@ -213,7 +217,7 @@ describe('医美客资插件 E2E', () => {
     );
 
     // 尝试回退到 qualified（应被阻止）
-    leadSvc.qualifyLead({
+    await leadSvc.qualifyLead({
       leadId: 'lead_norewind',
       channel: '微信',
       project: '光子嫩肤',
@@ -223,7 +227,7 @@ describe('医美客资插件 E2E', () => {
     });
 
     // 阶段应保持 booked
-    assert.strictEqual(lead.getLead('lead_norewind').stage, 'booked');
+    assert.strictEqual((await lead.getLead('lead_norewind')).stage, 'booked');
   });
 
   test('看板统计准确性', async () => {
@@ -231,7 +235,7 @@ describe('医美客资插件 E2E', () => {
     const lead = require('../dist/repo/lead-repo');
 
     // 使用唯一 ID 创建 2 条线索
-    leadSvc.qualifyLead({
+    await leadSvc.qualifyLead({
       leadId: 'stat_unique_001',
       channel: '抖音',
       project: '双眼皮',
@@ -240,7 +244,7 @@ describe('医美客资插件 E2E', () => {
       intent: '咨询'
     });
 
-    leadSvc.qualifyLead({
+    await leadSvc.qualifyLead({
       leadId: 'stat_unique_002',
       channel: '小红书',
       project: '隆鼻',
@@ -249,13 +253,13 @@ describe('医美客资插件 E2E', () => {
       intent: '咨询'
     });
 
-    leadSvc.captureLead({
+    await leadSvc.captureLead({
       leadId: 'stat_unique_001',
       consent: true,
       wechat: 'wx1'
     });
 
-    const stats = lead.computeStats();
+    const stats = await lead.computeStats();
     // 统计是全局的,至少包含我们创建的 2 条
     assert.ok(stats.total >= 2, `total 应 >= 2, 实际为 ${stats.total}`);
     assert.ok(stats.funnel.qualified >= 2);
@@ -265,14 +269,14 @@ describe('医美客资插件 E2E', () => {
   test('渠道入站去重', async () => {
     const inbound = require('../dist/repo/inbound-repo');
 
-    const m1 = inbound.saveInbound({
+    const m1 = await inbound.saveInbound({
       channel: '抖音',
       externalId: 'ext_dup_001',
       leadKey: 'key1',
       text: '你好'
     });
 
-    const m2 = inbound.saveInbound({
+    const m2 = await inbound.saveInbound({
       channel: '抖音',
       externalId: 'ext_dup_001',
       leadKey: 'key1',
@@ -294,13 +298,13 @@ describe('医美客资插件 E2E', () => {
   test('发件箱入队与扫描', async () => {
     const outbox = require('../dist/repo/outbox-repo');
 
-    outbox.enqueue('lead.upsert', 'lead:test_001:1', { leadId: 'test_001' });
+    await outbox.enqueue('lead.upsert', 'lead:test_001:1', { leadId: 'test_001' });
 
-    const due = outbox.dueBatch(10, Date.now());
+    const due = await outbox.dueBatch(10, Date.now());
     assert.strictEqual(due.length, 1);
     assert.strictEqual(due[0].topic, 'lead.upsert');
 
-    const stats = outbox.outboxStats();
+    const stats = await outbox.outboxStats();
     assert.strictEqual(stats.pending, 1);
   });
 
@@ -308,13 +312,13 @@ describe('医美客资插件 E2E', () => {
     const sched = require('../dist/repo/schedule-repo');
     const schedSvc = require('../dist/services/schedule-service');
 
-    sched.upsertClinic({
+    await sched.upsertClinic({
       clinicId: 'c4',
       name: '院区4',
       city: '上海',
       active: true
     });
-    sched.upsertSlot({
+    await sched.upsertSlot({
       slotId: 's4',
       clinicId: 'c4',
       date: '2026-09-04',
@@ -322,7 +326,7 @@ describe('医美客资插件 E2E', () => {
       capacity: 3
     });
 
-    const b = schedSvc.bookConsultation({
+    const b = await schedSvc.bookConsultation({
       leadId: 'lead_005',
       clinic: '院区4',
       date: '2026-09-04',
@@ -332,15 +336,15 @@ describe('医美客资插件 E2E', () => {
     const apptId = b.appointmentId;
 
     // 模拟 HIS 系统回调
-    sched.setAppointmentExternal(apptId, 'HIS20260904A', 'confirmed');
+    await sched.setAppointmentExternal(apptId, 'HIS20260904A', 'confirmed');
 
     // 反查
-    const byExt = sched.getAppointmentByExternalId('HIS20260904A');
+    const byExt = await sched.getAppointmentByExternalId('HIS20260904A');
     assert.ok(byExt);
     assert.strictEqual(byExt.appointmentId, apptId);
     assert.strictEqual(byExt.externalStatus, 'confirmed');
 
-    const direct = sched.getAppointment(apptId);
+    const direct = await sched.getAppointment(apptId);
     assert.strictEqual(direct.externalId, 'HIS20260904A');
     assert.strictEqual(direct.externalStatus, 'confirmed');
   });
