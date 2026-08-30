@@ -15,5 +15,7 @@ import './ah-popup';
 import './ah-modal';
 // 通用抽屉组件：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
 import './ah-drawer';
+// 全局通知组件：全站「接口错误 / 操作结果」提示的唯一出口（notify.* 命令式 API）。
+import './ah-notification';
 // 顶栏用户菜单（头像 + 下拉：用户·角色 / 修改密码 / 退出登录）。
 import './user-menu';

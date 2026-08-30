@@ -7,6 +7,7 @@ import { LitElement, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
 import { sharedStyles } from './styles';
+import { notifyError } from './utils/errors';
 
 interface QueueStats {
   concurrency: number;
@@ -60,7 +61,6 @@ export class AhObservability extends LitElement {
   @state() jobs: JobsView | null = null;
   @state() sessions: { backend: string; sessions: string[] } | null = null;
   @state() roles: RolesView | null = null;
-  @state() error: string | null = null;
   @state() loading = true;
 
   connectedCallback() {
@@ -69,7 +69,6 @@ export class AhObservability extends LitElement {
   }
 
   private async refresh() {
-    this.error = null;
     this.loading = true;
     try {
       const [m, j, se, r] = await Promise.all([
@@ -83,7 +82,7 @@ export class AhObservability extends LitElement {
       this.sessions = se;
       this.roles = r;
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      notifyError(e, { title: '可观测', key: 'observability' });
     } finally {
       this.loading = false;
     }
@@ -143,8 +142,6 @@ export class AhObservability extends LitElement {
           <div class="kpi"><div class="v">${cost}</div><div class="k">累计花费</div></div>
           <div class="kpi"><div class="v accent">${queueDepth}</div><div class="k">队列深度</div></div>
         </div>
-
-        ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
 
         <div class="two">
           <div>

@@ -8,7 +8,8 @@
  *  - 点击头像 → 切换下拉：头部展示「用户名 · 角色徽标」（含 email 可选），
  *    菜单含「修改密码」「退出登录」两项。
  *  - 「修改密码」→ 弹出模态（旧密码 / 新密码 / 确认新密码），复用 --ah-* 令牌与 ah-modal 视觉。
- *    校验失败就地提示、不关闭；成功则静默关闭并复位。
+ *    校验前移到前端（规则同登录/注册，见 utils/auth-validation.ts），校验失败 / 后端报错 /
+ *    网络异常一律走 ah-notification，模态内不再保留内联错误条。
  *  - 「退出登录」→ POST /api/account/logout（服务端清 cookie + 吊销 token），本地清会话回登录页。
  *  - 点击外部 / Esc 关闭下拉；模态下 Esc / 遮罩关闭。
  *
@@ -17,6 +18,9 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { fetchMe, logout, changePassword } from '../api';
+import { notify } from './ah-notification';
+import { notifyError } from '../utils/errors';
+import { validateChangePassword } from '../utils/auth-validation';
 
 // 角色 → 中文 + 徽标配色（延续 styles.ts 的 .role-badge 视觉）。
 const ROLE_LABEL: Record<string, string> = {
@@ -322,12 +326,6 @@ export class AhUserMenu extends LitElement {
       border-color: var(--ah-accent);
       box-shadow: 0 0 0 3px var(--ah-accent-soft);
     }
-    .pw-error {
-      font-size: 12px;
-      color: var(--ah-danger);
-      min-height: 16px;
-      line-height: 1.4;
-    }
     .pw-foot {
       display: flex;
       justify-content: flex-end;
@@ -385,7 +383,6 @@ export class AhUserMenu extends LitElement {
   @state() private oldPw = '';
   @state() private newPw = '';
   @state() private confirmPw = '';
-  @state() private pwError: string | null = null;
   @state() private pwBusy = false;
 
   connectedCallback() {
@@ -436,7 +433,6 @@ export class AhUserMenu extends LitElement {
     this.oldPw = '';
     this.newPw = '';
     this.confirmPw = '';
-    this.pwError = null;
     this.pwBusy = false;
     this.open = false;
     this.showPw = true;
@@ -449,27 +445,26 @@ export class AhUserMenu extends LitElement {
 
   private async submitPw() {
     if (this.pwBusy) return;
-    if (!this.oldPw) {
-      this.pwError = '请填写当前密码。';
-      return;
-    }
-    if (this.newPw.length < 8) {
-      this.pwError = '新密码至少 8 位。';
-      return;
-    }
-    if (this.newPw !== this.confirmPw) {
-      this.pwError = '两次输入的新密码不一致。';
+    // 前端校验（规则与后端一致，见 utils/auth-validation.ts）：不发请求即给出反馈。
+    const invalid = validateChangePassword({
+      oldPassword: this.oldPw,
+      newPassword: this.newPw,
+      confirm: this.confirmPw
+    });
+    if (invalid) {
+      notify.warning(invalid, { key: 'change-password' });
       return;
     }
     this.pwBusy = true;
-    this.pwError = null;
     const r = await changePassword(this.oldPw, this.newPw);
     this.pwBusy = false;
     if (!r.ok) {
-      this.pwError = r.error ?? '修改失败。';
+      // 后端业务错误（旧密码错误 / 新密码太弱 / OAuth 账户不支持…）统一走通知。
+      notify.error(r.error ?? '修改失败。', { key: 'change-password' });
       return;
     }
     this.showPw = false;
+    notify.success('密码已修改，下次登录请使用新密码');
   }
 
   private async onLogout() {
@@ -632,7 +627,6 @@ export class AhUserMenu extends LitElement {
                 }}
               />
             </div>
-            <div class="pw-error">${this.pwError ?? ''}</div>
           </div>
           <div class="pw-foot">
             <button

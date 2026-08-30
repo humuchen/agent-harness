@@ -7,6 +7,7 @@ import { sharedStyles } from './styles';
 import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
 import { renderSandboxChip } from './dashboard';
+import { notifyError } from './utils/errors';
 import './plugins-console';
 
 type Tab =
@@ -205,8 +206,13 @@ export class AhApp extends LitElement {
         label: v.label,
         short: uniqueShort(v.label, used)
       }));
-    } catch {
-      /* 插件视图拉取失败不阻断主面板 */
+    } catch (e) {
+      // 拉取失败不阻断主面板（回退旧快照），但要让用户知道视图可能不是最新的。
+      notifyError(e, {
+        title: '插件视图',
+        fallback: '插件视图加载失败，展示的可能是旧数据',
+        key: 'plugin-views'
+      });
     }
   }
 
@@ -228,6 +234,10 @@ export class AhApp extends LitElement {
     });
   }
 
+  /**
+   * 拉取服务端状态。失败时除保留顶栏 pill 文案外，额外弹一条通知
+   * （此前只把错误静默写进 pill，用户切到别的 Tab 就完全看不到）。
+   */
   private refreshState() {
     client
       .getState()
@@ -237,6 +247,7 @@ export class AhApp extends LitElement {
       })
       .catch((e) => {
         this.err = String(e?.message ?? e);
+        notifyError(e, { title: '服务端状态', key: 'app-state' });
       });
   }
 

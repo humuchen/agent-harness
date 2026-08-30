@@ -16,6 +16,8 @@ import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { encryptApiKey } from '../utils/crypto';
 import { authedFetch } from '../api';
+import { notify } from './ah-notification';
+import { notifyError, errorMessage } from '../utils/errors';
 
 /** 远程模型条目：id + 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -256,18 +258,6 @@ export class AhModelPicker extends LitElement {
       gap: 8px;
       justify-content: flex-end;
     }
-    .save-error {
-      font-size: 12px;
-      line-height: 1.5;
-      color: var(--ah-danger, #e24b4a);
-      background: color-mix(
-        in srgb,
-        var(--ah-danger, #e24b4a) 10%,
-        transparent
-      );
-      border-radius: 8px;
-      padding: 6px 9px;
-      word-break: break-all;
     }
     .add-actions button {
       appearance: none;
@@ -335,11 +325,13 @@ export class AhModelPicker extends LitElement {
 
   /** 是否正在保存到后端（按钮 loading 态）。 */
   @state() private saving = false;
-  /** 保存失败提示（如加密密钥未配置 / 网络错误），展示在表单下方。 */
-  @state() private saveError = '';
 
-  /** 「刷新」拉取到的在线模型清单（含官方上下文窗口；失败为空）。 */
-  async refreshModels() {
+  /**
+   * 「刷新」拉取在线模型清单（含官方上下文窗口；失败为空、回退本地清单）。
+   * @param opts.silent 后台自动刷新传 true —— 失败静默；用户手动点「刷新模型」
+   *   走默认 false，失败会弹提示（否则点了没反应）。
+   */
+  async refreshModels(opts: { silent?: boolean } = {}) {
     try {
       // 全量拉取（output_modalities=text 只排除非文本输出模型，如图像/音频生成）。
       // 那只会返回免费变体，官方付费模型的 context_length 全部拿不到。
@@ -389,8 +381,15 @@ export class AhModelPicker extends LitElement {
       if (list.length) this.remote = list;
       // 刷新后当前选中模型可能首次拿到官方窗口数据，通知宿主更新分母。
       if (this.model) this.emitCtx(this.ctxFor(this.model));
-    } catch {
-      /* 离线 / 被拦截：保留本地清单即可，不打扰用户 */
+    } catch (e) {
+      // 后台自动刷新（首帧 / 选中模型补分母）失败不打扰：本地清单本就可用。
+      // 用户主动点「刷新模型」时才提示，否则点了没反应会让人以为没生效。
+      if (!opts.silent) {
+        notify.warning(
+          errorMessage(e, '在线模型清单拉取失败，当前使用本地预设清单'),
+          { title: '刷新模型清单', key: 'model-refresh' }
+        );
+      }
     }
   }
 
@@ -401,8 +400,14 @@ export class AhModelPicker extends LitElement {
       if (!res.ok) return;
       const rows = (await res.json()) as CustomModel[];
       this.customs = normalizeCustom(rows);
-    } catch {
-      /* 离线 / 失败：保留本地清单即可，不打扰用户 */
+    } catch (e) {
+      // 加载失败 → 自定义模型会从列表里「凭空消失」，必须告知，否则用户会
+      // 以为是自己没保存过。本地清单仍可用，故用 error 提示但只弹一条。
+      notifyError(e, {
+        title: '自定义模型',
+        fallback: '自定义模型列表加载失败，暂只展示内置模型',
+        key: 'custom-model-list'
+      });
     }
   }
 
@@ -470,7 +475,7 @@ export class AhModelPicker extends LitElement {
     const ctx = m ? this.ctxFor(m) : 0;
     this.emitCtx(ctx);
     if (m && ctx === 0 && !this.remote.length) {
-      void this.refreshModels();
+      void this.refreshModels({ silent: true });
     }
   }
 
@@ -481,7 +486,9 @@ export class AhModelPicker extends LitElement {
     if (changed.has('model')) {
       const ctx = this.model ? this.ctxFor(this.model) : 0;
       this.emitCtx(ctx);
-      if (this.model && ctx === 0 && !this.remote.length) void this.refreshModels();
+      if (this.model && ctx === 0 && !this.remote.length) {
+        void this.refreshModels({ silent: true });
+      }
     }
   }
 
@@ -520,15 +527,17 @@ export class AhModelPicker extends LitElement {
     // 失败（如 AH_CRYPTO_KEY 未配置/非法）不再裸抛：给出明确提示并中止保存，
     // 避免把明文 key 或空值静默落库。
     let encryptedApiKey: string | undefined;
-    this.saveError = '';
     if (apiKey) {
       try {
         encryptedApiKey = await encryptApiKey(apiKey);
       } catch (e) {
-        this.saveError =
+        // 加密失败 → 明确提示并中止保存，避免把明文 key 或空值静默落库。
+        notify.error(
           'API Key 加密失败：' +
-          (e instanceof Error ? e.message : String(e)) +
-          '。请在服务端 .env 配置 AH_CRYPTO_KEY（64 位 hex）后重新构建前端。';
+            (e instanceof Error ? e.message : String(e)) +
+            '。请在服务端 .env 配置 AH_CRYPTO_KEY（64 位 hex）后重新构建前端。',
+          { title: '自定义模型', key: 'custom-model' }
+        );
         return;
       }
     }
@@ -546,8 +555,14 @@ export class AhModelPicker extends LitElement {
         body: JSON.stringify(body)
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch {
-      /* 离线 / 失败：静默忽略，不打断编辑流 */
+    } catch (e) {
+      // 写库失败必须让用户知道：此前静默忽略会让人误以为已保存，
+      // 结果刷新后自定义模型消失。
+      notifyError(e, {
+        title: '自定义模型',
+        fallback: '保存失败，自定义模型可能未持久化',
+        key: 'custom-model'
+      });
     } finally {
       this.saving = false;
     }
@@ -576,8 +591,10 @@ export class AhModelPicker extends LitElement {
     this.editingId = '';
     if (editing) {
       // 编辑保存：不切换选中模型（可能只是换 Key），仅刷新视图。
+      notify.success(`自定义模型「${id}」已更新`);
       return;
     }
+    notify.success(`自定义模型「${id}」已保存`);
     this.pick(id);
   }
 
@@ -936,7 +953,6 @@ export class AhModelPicker extends LitElement {
                         class="btn-ghost"
                         @click=${() => {
                           this.adding = false;
-                          this.saveError = '';
                           this.draftId = '';
                           this.draftBaseUrl = '';
                           this.draftApiKey = '';
@@ -952,11 +968,6 @@ export class AhModelPicker extends LitElement {
                         ${this.saving ? '保存中…' : '保存'}
                       </button>
                     </div>
-                    ${this.saveError
-                      ? html`<div class="save-error" role="alert">
-                          ${this.saveError}
-                        </div>`
-                      : nothing}
                   </div>`
                 : nothing}
             </div>`
@@ -970,7 +981,7 @@ export class AhModelPicker extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.refreshModels();
+    this.refreshModels({ silent: true });
     this.loadCustoms();
     // 面板外点关闭兜底（document 级捕获 pointerdown）：
     // 不依赖 fixed 遮罩的 CSS 几何 —— 祖先的 transform/filter 会劫持 fixed

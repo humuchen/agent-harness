@@ -11,6 +11,12 @@
  *  - 账号/密码/邮箱/确认密码框支持 Enter 直接提交；按钮下方给出 Enter 提示。
  *  - 完全区分 dark/light 主题，并遵循 prefers-reduced-motion 降级。
  *
+ * 校验与提示（本迭代变更）：
+ *  - 登录 / 注册的全部字段校验前移到前端（utils/auth-validation.ts，规则与后端
+ *    accounts.ts 对齐）；校验不通过不发请求，直接用 ah-notification 提示并聚焦出错字段。
+ *  - 所有提示（校验错误 / 后端业务错误 / 网络异常 / 成功）统一走 ah-notification，
+ *    页内不再保留内联 `.notice` 提示条。
+ *
  * 视觉只引用 --ah-* 语义令牌，局部渐变/发光用 color-mix 或硬编码主题覆盖，
  * 动画命名沿用项目 ah-* 约定（组件内作用域）。
  */
@@ -19,6 +25,14 @@ import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
 import { setSession } from './api';
+import { notify } from './components/ah-notification';
+import { notifyError } from './utils/errors';
+import {
+  validateLogin,
+  validateRegister,
+  type LoginForm,
+  type RegisterForm
+} from './utils/auth-validation';
 
 /* ------------------------------ 智能体网络 mesh 数据 ------------------------------ */
 
@@ -953,17 +967,6 @@ export class AhLogin extends LitElement {
         margin: 4px 0 18px;
         font-size: 13px;
       }
-      .remember {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        color: var(--ah-text-muted);
-        cursor: pointer;
-        flex-direction: row;
-      }
-      .remember input {
-        accent-color: var(--ah-accent);
-      }
       .forge {
         background: none;
         border: none;
@@ -1123,21 +1126,6 @@ export class AhLogin extends LitElement {
         font-family: inherit;
         font-weight: 600;
       }
-      .notice {
-        margin-top: 14px;
-        padding: 8px 12px;
-        border-radius: 8px;
-        background: var(--ah-accent-soft);
-        color: var(--ah-accent);
-        font-size: 12px;
-        text-align: center;
-      }
-
-      .notice.error {
-        background: var(--ah-danger-soft);
-        color: var(--ah-danger);
-      }
-
       /* ---------------------- 降级：尊重系统「减少动态效果」 ---------------------- */
       @media (prefers-reduced-motion: reduce) {
         .tech-grid,
@@ -1254,8 +1242,7 @@ export class AhLogin extends LitElement {
         /* iOS 聚焦输入框自动放大问题：移动端字号不小于 16px */
         .field input,
         .btn-primary,
-        .forge,
-        .remember {
+        .forge {
           font-size: 16px;
         }
         :host([data-theme='light']) .auth-card {
@@ -1344,9 +1331,7 @@ export class AhLogin extends LitElement {
   @state() mode: 'login' | 'register' = 'login';
   @state() showPassword = false;
   @state() showConfirm = false;
-  @state() remember = false;
   @state() agree = false;
-  @state() notice: string | null = null;
   @state() submitting = false;
   @state() theme: Theme = getTheme();
   // GitHub OAuth 是否可用（后端配置了 GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET 时为 true）。
@@ -1362,7 +1347,6 @@ export class AhLogin extends LitElement {
 
   private toggleMode() {
     this.mode = this.mode === 'login' ? 'register' : 'login';
-    this.notice = null;
   }
 
   connectedCallback() {
@@ -1404,9 +1388,9 @@ export class AhLogin extends LitElement {
   private fmtUptime(): string {
     const s = this.uptimeSec;
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(
-      s % 60
-    )}`;
+    return `${pad(Math.floor(s / 3600))}:${pad(
+      Math.floor((s % 3600) / 60)
+    )}:${pad(s % 60)}`;
   }
 
   /**
@@ -1460,13 +1444,14 @@ export class AhLogin extends LitElement {
    * 成功后服务端已下发现有 HttpOnly cookie，前端只需记录用户名（setSession）并派发
    * ah-login-success 通知 main.ts 进入控制台；失败则展示后端返回的错误文案。
    * 注意：cookie 由浏览器托管、前端不读取其值；用户名仅用于 x-ah-username 双因子。
+   *
+   * 校验前移：用户名格式 / 密码长度 / 邮箱格式 / 两次一致 / 同意条款全部在前端完成
+   * （规则见 utils/auth-validation.ts，与后端 accounts.ts 逐条对齐）。校验不通过直接
+   * 用 notification 提示并聚焦到出错字段，不发请求；后端侧仍保留同规则校验作为纵深
+   * 防御，其返回的「用户名已被占用」等业务错误也统一走 notification。
    */
   private async submitForm(form: HTMLFormElement | null) {
     if (this.submitting) return;
-    if (this.mode === 'register' && !this.agree) {
-      this.notice = '请先阅读并同意服务条款与隐私政策。';
-      return;
-    }
     // 从表单读取字段（输入项受控在 DOM，按 name 取）。
     if (!form) return;
     const email =
@@ -1484,32 +1469,32 @@ export class AhLogin extends LitElement {
         form.elements.namedItem('username') as HTMLInputElement | null
       )?.value?.trim() ?? '';
 
+    // ── 前端校验：不通过则提示 + 聚焦出错字段，不发请求 ──
     if (this.mode === 'register') {
-      if (!email) {
-        this.notice = '请填写邮箱。';
-        return;
-      }
-      if (password.length < 8) {
-        this.notice = '密码至少 8 位。';
-        return;
-      }
-      if (password !== confirm) {
-        this.notice = '两次输入的密码不一致。';
+      const payload: RegisterForm = {
+        email,
+        username,
+        password,
+        confirm,
+        agree: this.agree
+      };
+      const err = validateRegister(payload);
+      if (err) {
+        notify.warning(err, { key: 'auth-form' });
+        this.focusField(form, err, payload);
         return;
       }
     } else {
-      if (!username) {
-        this.notice = '请填写用户名。';
-        return;
-      }
-      if (!password) {
-        this.notice = '请填写密码。';
+      const payload: LoginForm = { username, password };
+      const err = validateLogin(payload);
+      if (err) {
+        notify.warning(err, { key: 'auth-form' });
+        this.focusField(form, err, payload);
         return;
       }
     }
 
     this.submitting = true;
-    this.notice = null;
     try {
       const endpoint =
         this.mode === 'register'
@@ -1529,23 +1514,49 @@ export class AhLogin extends LitElement {
         username?: string;
       };
       if (!res.ok || !data.ok) {
-        this.notice =
+        // 服务端业务错误（用户名已被占用 / 用户名或密码错误…）统一走通知组件。
+        notify.error(
           data.error ||
-          (this.mode === 'register' ? '注册失败。' : '登录失败。');
+            (this.mode === 'register' ? '注册失败。' : '登录失败。'),
+          { key: 'auth-form' }
+        );
         return;
       }
       // 服务端已下发 ah_auth cookie；前端仅记录用户名用于双因子 header。
       setSession(data.username || email);
+      notify.success(
+        this.mode === 'register' ? '注册成功，已自动登录' : '登录成功'
+      );
       this.dispatchEvent(
         new CustomEvent('ah-login-success', { bubbles: true, composed: true })
       );
     } catch (err) {
-      this.notice =
-        '网络异常，请稍后重试。' +
-        (err instanceof Error ? `（${err.message}）` : '');
+      notifyError(err, {
+        fallback: this.mode === 'register' ? '注册失败。' : '登录失败。',
+        key: 'auth-form'
+      });
     } finally {
       this.submitting = false;
     }
+  }
+
+  /**
+   * 校验失败后把焦点送到出错字段：由校验文案反查字段名，省去在校验器里
+   * 额外返回字段标识（文案与字段一一对应，见 auth-validation.ts）。
+   */
+  private focusField(
+    form: HTMLFormElement,
+    err: string,
+    _payload: Partial<LoginForm & RegisterForm>
+  ): void {
+    let name: 'email' | 'username' | 'password' | 'confirm' | null = null;
+    if (err.includes('邮箱')) name = 'email';
+    else if (err.includes('用户名')) name = 'username';
+    else if (err.includes('不一致')) name = 'confirm';
+    else if (err.includes('密码')) name = 'password';
+    if (!name) return;
+    const el = form.elements.namedItem(name) as HTMLInputElement | null;
+    el?.focus?.();
   }
 
   private field(
@@ -1566,7 +1577,8 @@ export class AhLogin extends LitElement {
         ? 'new-password'
         : valueKey;
     // 移动端软键盘回车键文案：账号类「下一项」，最后一个密码框「前往 / 提交」。
-    const enterkeyhint = valueKey === 'password' || valueKey === 'confirm' ? 'go' : 'next';
+    const enterkeyhint =
+      valueKey === 'password' || valueKey === 'confirm' ? 'go' : 'next';
     const inputType = isPw
       ? valueKey === 'password'
         ? this.showPassword
@@ -1660,12 +1672,12 @@ export class AhLogin extends LitElement {
         </div>
         <div class="hud-ruler">${ruler}</div>
         <div class="hud-tel">
-          <div>MESH <b>${NODES.length}</b> NODES · <b>${EDGES.length}</b> LINKS</div>
+          <div>
+            MESH <b>${NODES.length}</b> NODES · <b>${EDGES.length}</b> LINKS
+          </div>
           <div>UPLINK <b>STABLE</b></div>
           <div>RTT <b>${this.latencyMs}ms</b></div>
-          <div>
-            UP ${this.fmtUptime()}<i class="cursor"></i>
-          </div>
+          <div>UP ${this.fmtUptime()}<i class="cursor"></i></div>
         </div>
 
         <div class="brand-top">
@@ -1768,22 +1780,11 @@ export class AhLogin extends LitElement {
                       true
                     )}
                     <div class="row-between">
-                      <label class="remember"
-                        ><input
-                          type="checkbox"
-                          ?checked=${this.remember}
-                          @change=${(e: Event) =>
-                            (this.remember = (
-                              e.target as HTMLInputElement
-                            ).checked)}
-                        />
-                        记住我</label
-                      >
                       <button
                         class="forge"
                         type="button"
                         @click=${() =>
-                          (this.notice = '演示页面：找回密码流程待接入。')}
+                          notify.info('演示页面：找回密码流程待接入。')}
                       >
                         忘记密码？
                       </button>
@@ -1824,22 +1825,28 @@ export class AhLogin extends LitElement {
                               type="button"
                               @click=${() => this.startGoogleOAuth()}
                             >
-                              <svg
-                                viewBox="0 0 24 24"
-                                aria-hidden="true"
-                              >
-                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                              <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <path
+                                  fill="#4285F4"
+                                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                                />
+                                <path
+                                  fill="#34A853"
+                                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                                />
+                                <path
+                                  fill="#FBBC05"
+                                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                                />
+                                <path
+                                  fill="#EA4335"
+                                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                                />
                               </svg>
                               Google
                             </button>`
                           : nothing}
                       </div>`
-                    : nothing}
-                  ${this.notice
-                    ? html`<div class="notice error">${this.notice}</div>`
                     : nothing}
                   <div class="auth-foot">
                     还没有账号？<button
@@ -1898,9 +1905,6 @@ export class AhLogin extends LitElement {
                     </button>
                     <div class="enter-hint">按 <kbd>Enter</kbd> 提交注册</div>
                   </form>
-                  ${this.notice
-                    ? html`<div class="notice error">${this.notice}</div>`
-                    : nothing}
                   <div class="auth-foot">
                     已有账号？<button
                       class="link"

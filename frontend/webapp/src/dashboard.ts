@@ -21,6 +21,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
 import type { ApprovalTicket, ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
+import { notifyError } from './utils/errors';
 
 interface QueueStats {
   concurrency: number;
@@ -78,7 +79,6 @@ export class AhDashboard extends LitElement {
   @state() metrics: Metrics | null = null;
   @state() jobs: JobsView | null = null;
   @state() pending: ApprovalTicket[] = [];
-  @state() error: string | null = null;
   @state() loading = true;
 
   connectedCallback() {
@@ -87,7 +87,6 @@ export class AhDashboard extends LitElement {
   }
 
   private async refresh() {
-    this.error = null;
     this.loading = true;
     try {
       const [s, m, j, a] = await Promise.all([
@@ -101,7 +100,7 @@ export class AhDashboard extends LitElement {
       this.jobs = j;
       this.pending = a.tickets;
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      notifyError(e, { title: '总览', key: 'dashboard' });
     } finally {
       this.loading = false;
     }
@@ -152,8 +151,6 @@ export class AhDashboard extends LitElement {
           <div class="kpi"><div class="v ${this.pending.length ? 'warn' : 'ok'}">${this.pending.length}</div><div class="k">待审工单</div></div>
           <div class="kpi"><div class="v">${cost}</div><div class="k">累计花费</div></div>
         </div>
-
-        ${this.error ? html`<div class="error">${this.error}</div>` : nothing}
 
         <div class="two">
           <section>

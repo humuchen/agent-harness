@@ -15,12 +15,14 @@ import './chat';
 import './dashboard';
 import './observability';
 import './login';
-// 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉）：集中注册所有通用 UI 原语。
+// 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。
 import './components';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
 // 与 app.ts 的 History 路由解耦——这是「是否放行应用」的门户，而非一条普通路由。
 import { getToken, setSession, clearSession } from './api';
+import { notify } from './components/ah-notification';
+import { notifyError } from './utils/errors';
 
 /** 把控制台挂到 body（幂等：已存在则不重复创建）。 */
 function mountApp(): void {
@@ -54,11 +56,19 @@ async function bootstrap(): Promise<void> {
           setSession(data.username);
           history.replaceState(null, '', location.pathname);
           mountApp();
+          notify.success('第三方登录成功');
           return;
         }
       }
-    } catch {
-      /* 忽略，落到登录页 */
+      // 带回 ?oauth=success 却拿不到会话：授权流程未走完 / 后端未签发 cookie。
+      notify.error('第三方登录未能完成，请重新登录。', {
+        key: 'oauth-failed'
+      });
+    } catch (e) {
+      notifyError(e, {
+        fallback: '第三方登录校验失败，请重新登录。',
+        key: 'oauth-failed'
+      });
     }
   }
   mountLogin();
@@ -69,8 +79,14 @@ bootstrap();
 window.addEventListener('ah-login-success', () => mountApp());
 
 // 任意请求 401（登录态失效 / cookie 过期 / 被吊销）→ 清会话并强制回到登录页。
-// 幂等：main.ts 只负责清本地状态 + 切登录页，不重复弹窗。
+// 幂等：main.ts 只负责清本地状态 + 切登录页；同时给一条常驻通知说明「为什么被踢回来」
+// （此前是静默跳登录页，用户只会以为是自己手滑退出了）。
+// 通知 key 固定，多个并发 401 只合并成一条。
 window.addEventListener('ah-session-expired', () => {
   clearSession();
   mountLogin();
+  notify.warning('登录已失效，请重新登录。', {
+    key: 'session-expired',
+    duration: 0
+  });
 });

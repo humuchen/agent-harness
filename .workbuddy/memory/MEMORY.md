@@ -19,6 +19,8 @@
 - onEvent 纯旁路观测；工具抛错不中断，回灌模型自愈。
 - MCP 多 server：`MCP_SERVERS` JSON 优先；工具前缀 `<server>__<tool>`。
 - 前端 chat 页（frontend/webapp/src/chat.ts）：消息区 `.scroll` 钉底跟随由 `stickToBottom` 状态门控，`onScroll` 计算距底 ≤24px 判为 atBottom 并驱动 `showScrollDown` 浮动「回到底部」按钮显隐。
+- **前端提示统一出口**：`components/ah-notification.ts` 的 `notify.*`（success/error/warning/info）+ `utils/errors.ts` 的 `notifyError(e, {title,key,fallback})`。新增任何接口调用都不许再写内联 `.error` 红条或自绘 toast，一律 `notifyError`。纯文案归并在 `utils/error-message.ts`（零依赖，好单测）。
+- **登录/注册/改密校验在前端**：`utils/auth-validation.ts`，规则与 `access/server/src/accounts.ts` 逐条对齐（改一处必须同步另一处）；后端保留同规则校验作为纵深防御。
 
 ## 记忆后端
 

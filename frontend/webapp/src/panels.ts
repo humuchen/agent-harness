@@ -9,6 +9,8 @@ import type {
   ApprovalTicket
 } from '@agent-harness/client';
 import { sharedStyles } from './styles';
+import { notifyError } from './utils/errors';
+import { notify } from './components/ah-notification';
 
 /* ------------------------------ 通用辅助 ------------------------------ */
 
@@ -21,8 +23,20 @@ function EventRow(ev: StreamEvent) {
   </div>`;
 }
 
-function ErrorBox(msg: string | null) {
-  return msg ? html`<div class="error">${msg}</div>` : nothing;
+/**
+ * 面板名 → 通知标题的映射：错误提示带上「哪个面板出的错」，
+ * 用户不必猜（此前各面板只把 message 原样塞进内联红条）。
+ */
+const PANEL_TITLE = {
+  verify: '自检 / 验证',
+  env: '临时环境',
+  mcp: 'MCP 服务',
+  approvals: '审批工单'
+} as const;
+
+/** 面板错误统一出口：归一化文案 + notification 弹出。 */
+function reportError(scope: keyof typeof PANEL_TITLE, e: unknown): void {
+  notifyError(e, { title: PANEL_TITLE[scope], key: `panel-${scope}` });
 }
 
 /* ------------------------------ Run ------------------------------
@@ -37,11 +51,9 @@ export class AhVerify extends LitElement {
 
   @state() events: StreamEvent[] = [];
   @state() running = false;
-  @state() error: string | null = null;
   private abort?: AbortController;
 
   private async run() {
-    this.error = null;
     this.events = [];
     this.running = true;
     const ac = new AbortController();
@@ -51,7 +63,7 @@ export class AhVerify extends LitElement {
         this.events = [...this.events, ev];
       }
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('verify', e);
     } finally {
       this.running = false;
     }
@@ -75,7 +87,6 @@ export class AhVerify extends LitElement {
             停止
           </button>
         </div>
-        ${ErrorBox(this.error)}
         <div class="stream">${this.events.map(EventRow)}</div>
       </section>
     `;
@@ -96,10 +107,8 @@ export class AhEnv extends LitElement {
   @state() envId = '';
   @state() events: StreamEvent[] = [];
   @state() running = false;
-  @state() error: string | null = null;
 
   private async submit() {
-    this.error = null;
     this.events = [];
     this.running = true;
     try {
@@ -117,7 +126,7 @@ export class AhEnv extends LitElement {
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('env', e);
     } finally {
       this.running = false;
     }
@@ -181,7 +190,6 @@ export class AhEnv extends LitElement {
             ${this.running ? '处理中…' : isCreate ? '创建环境' : '销毁环境'}
           </button>
         </div>
-        ${ErrorBox(this.error)}
         <div class="stream">${this.events.map(EventRow)}</div>
       </section>
     `;
@@ -217,15 +225,12 @@ export class AhMcp extends LitElement {
   /** 预设市场按 id 暂存的 token（bearer 型预设接入时透传）。 */
   @state() tokens: Record<string, string> = {};
 
-  @state() error: string | null = null;
-
   connectedCallback() {
     super.connectedCallback();
     this.refresh();
   }
 
   private async refresh() {
-    this.error = null;
     try {
       const [s, p] = await Promise.all([
         client.getMcpServers(),
@@ -234,14 +239,13 @@ export class AhMcp extends LitElement {
       this.servers = s.servers;
       this.presets = p.presets;
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('mcp', e);
     }
   }
 
   private async add() {
     if (this.adding) return;
     this.adding = true;
-    this.error = null;
     const envEntries = Object.entries(this.addForm.envs).filter(([k]) => k);
     try {
       if (this.addForm.type === 'http') {
@@ -271,28 +275,34 @@ export class AhMcp extends LitElement {
         envs: {}
       };
       await this.refresh();
+      notify.success(`MCP 服务「${this.addForm.name || '未命名'}」已接入`);
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('mcp', e);
     } finally {
       this.adding = false;
     }
   }
 
-  private async remove(name: string) {
+  /**
+   * 移除已接入的 MCP 服务。
+   * 注意：方法名不能叫 remove —— HTMLElement 自带 remove()，
+   * 同名会与基类签名冲突导致 tsc 报 TS2416/TS1238（类装饰器解析失败）。
+   */
+  private async removeServer(name: string) {
     if (this.adding) return;
     this.adding = true;
-    this.error = null;
     try {
       await client.removeMcp(name);
       await this.refresh();
+      notify.success(`已移除 MCP 服务「${name}」`);
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('mcp', e);
     } finally {
       this.adding = false;
     }
@@ -301,15 +311,15 @@ export class AhMcp extends LitElement {
   private async preset(id: string, token?: string) {
     if (this.adding) return;
     this.adding = true;
-    this.error = null;
     try {
       await client.connectMcpPreset(id, token);
       await this.refresh();
+      notify.success('预设市场服务接入成功');
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('mcp', e);
     } finally {
       this.adding = false;
     }
@@ -457,7 +467,6 @@ export class AhMcp extends LitElement {
                 </button>
               </div>
             </div>
-            ${ErrorBox(this.error)}
             <div class="card">
               <div
                 class="section-title collapsible"
@@ -519,7 +528,7 @@ export class AhMcp extends LitElement {
                               class="ghost"
                               @click=${(e: Event) => {
                                 e.stopPropagation();
-                                this.remove(s.name);
+                                this.removeServer(s.name);
                               }}
                             >
                               移除
@@ -603,7 +612,6 @@ export class AhApprovals extends LitElement {
   static styles = [sharedStyles];
 
   @state() items: ApprovalTicket[] = [];
-  @state() error: string | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -611,21 +619,20 @@ export class AhApprovals extends LitElement {
   }
 
   private async refresh() {
-    this.error = null;
     try {
       this.items = (await client.listApprovals()).tickets;
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('approvals', e);
     }
   }
 
   private async decide(id: string, decision: 'approve' | 'reject') {
-    this.error = null;
     try {
       await client.decideApproval(id, decision);
       await this.refresh();
+      notify.success(decision === 'approve' ? '工单已通过' : '工单已拒绝');
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      reportError('approvals', e);
     }
   }
 
@@ -636,7 +643,6 @@ export class AhApprovals extends LitElement {
         <div class="row">
           <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
-        ${ErrorBox(this.error)}
         <ul class="list">
           ${this.items.length === 0
             ? html`<li class="muted">暂无工单</li>`

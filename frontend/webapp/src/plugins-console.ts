@@ -11,6 +11,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { client, authedFetch } from './api';
 import { sharedStyles } from './styles';
+import { notifyError } from './utils/errors';
+import { notify } from './components/ah-notification';
 
 interface PluginInfo {
   id: string;
@@ -112,7 +114,6 @@ export class AhPlugins extends LitElement {
 
   @state() private loading = true;
   @state() private plugins: PluginInfo[] = [];
-  @state() private err: string | null = null;
   @state() private busy: string | null = null;
 
   connectedCallback() {
@@ -122,7 +123,6 @@ export class AhPlugins extends LitElement {
 
   private async refresh() {
     this.loading = true;
-    this.err = null;
     try {
       const res = await authedFetch('/api/plugins');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -135,7 +135,7 @@ export class AhPlugins extends LitElement {
         dependencies: p.dependencies ?? [],
       }));
     } catch (e: any) {
-      this.err = String(e?.message ?? e);
+      notifyError(e, { title: '插件管理', key: 'plugins' });
     } finally {
       this.loading = false;
     }
@@ -143,7 +143,7 @@ export class AhPlugins extends LitElement {
 
   private async act(id: string, action: 'enable' | 'disable' | 'upgrade') {
     this.busy = `${id}:${action}`;
-    this.err = null;
+    const label = { enable: '启用', disable: '停用', upgrade: '升级' }[action];
     try {
       const res = await authedFetch(
         `/api/plugins/${encodeURIComponent(id)}/${action}`,
@@ -157,10 +157,11 @@ export class AhPlugins extends LitElement {
         throw new Error(d.error ?? `HTTP ${res.status}`);
       }
       await this.refresh();
+      notify.success(`插件「${id}」已${label}`);
       // 通知其它面板（聊天页 agent 下拉 / 外壳动态 Tab）：插件集合已变，需重拉自身数据。
       window.dispatchEvent(new CustomEvent('ah-plugins-changed'));
     } catch (e: any) {
-      this.err = String(e?.message ?? e);
+      notifyError(e, { title: '插件管理', fallback: `插件${label}失败`, key: 'plugins' });
     } finally {
       this.busy = null;
     }
@@ -201,7 +202,6 @@ export class AhPlugins extends LitElement {
       <div class="wrap">
         <h2>插件管理</h2>
         <p class="hint">运行时启停 / 升级插件，无需重启服务进程；操作受服务端 plugin:manage 权限保护。</p>
-        ${this.err ? html`<p class="state-disabled">错误：${esc(this.err)}</p>` : ''}
         ${this.plugins.length === 0
           ? html`<p class="hint">未安装任何插件。</p>`
           : html`

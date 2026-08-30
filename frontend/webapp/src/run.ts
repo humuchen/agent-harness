@@ -12,6 +12,8 @@ import {
   type UploadedFile
 } from './agent-context';
 import { SessionStateMachine } from './utils/session-state';
+import { notifyError } from './utils/errors';
+import { notify } from './components/ah-notification';
 import './components/suggestions';
 import './components/file-upload';
 
@@ -100,11 +102,9 @@ export class AhRun extends LitElement {
   @state() toolsCount = 0;
   @state() steps = 0;
   @state() cost = 0;
-  @state() toast: string | null = null;
 
   private nextId = 1;
   private abort?: AbortController;
-  private toastTimer?: number;
   /** 跨组件共享状态订阅（Lit 版 useAgentContext）：状态变更自动触发重渲染。 */
   private ctx = useAgentContext(this);
   /** 会话状态机：把 running/finished 从散落的布尔收敛为受控迁移。 */
@@ -282,9 +282,12 @@ export class AhRun extends LitElement {
     } catch (e: any) {
       if (e instanceof ApprovalRequiredError) {
         this.ticket = `需要审批：ticket ${e.ticketId}（在「审批」页裁决后重投）`;
+        notify.warning(this.ticket, { title: '需要审批', key: 'run-approval' });
         if (this.session.can('approve')) this.session.requestApproval();
       } else {
         this.error = String(e?.message ?? e);
+        // 运行失败统一走通知组件（用户主动点「停止」属 AbortError，内部会静默跳过）。
+        notifyError(e, { title: '运行失败', key: 'run' });
         // 被 stop() 中止后状态已为 aborted，不再覆盖为 error。
         if (this.session.can('error')) this.session.fail();
       }
@@ -345,9 +348,9 @@ export class AhRun extends LitElement {
   private async copyFinal() {
     try {
       await navigator.clipboard.writeText(this.final || '（暂无结果）');
-      this.showToast('已复制最终结果');
+      notify.success('已复制最终结果');
     } catch {
-      this.showToast('复制失败：浏览器拒绝了剪贴板权限');
+      notify.error('复制失败：浏览器拒绝了剪贴板权限');
     }
   }
 
@@ -401,13 +404,7 @@ export class AhRun extends LitElement {
     a.download = `agent-run-${this.jobId ?? Date.now()}.html`;
     a.click();
     URL.revokeObjectURL(url);
-    this.showToast('已导出运行记录（HTML）');
-  }
-
-  private showToast(msg: string) {
-    this.toast = msg;
-    if (this.toastTimer) clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => (this.toast = null), 1800);
+    notify.success('已导出运行记录（HTML）');
   }
 
   /* ----------------------- 渲染 ----------------------- */
@@ -466,8 +463,10 @@ export class AhRun extends LitElement {
         </div>
       </div>`;
     }
+    // 运行失败：错误文案已由通知组件弹出（见 run() 的 catch），这里只留一条
+    // 状态提示，避免在结果区重复渲染同一份错误（全站错误提示统一出口）。
     if (this.error) {
-      return html`<div class="error">${this.error}</div>`;
+      return html`<div class="muted">运行失败，详见通知提示与左侧思考 Trace。</div>`;
     }
     return html`
       <div class="deliverable">
@@ -573,7 +572,10 @@ export class AhRun extends LitElement {
               agentContext.set('files', this.attachments);
             }}
             @error=${(e: Event) =>
-              this.showToast((e as CustomEvent<string>).detail)}
+              notify.warning((e as CustomEvent<string>).detail, {
+                title: '附件',
+                key: 'run-upload'
+              })}
           ></ah-file-upload>
           <div class="row">
             <button ?disabled=${this.running} @click=${() => this.run()}>
@@ -652,9 +654,6 @@ export class AhRun extends LitElement {
         </div>
 
         ${this.ticket ? html`<div class="warn">${this.ticket}</div>` : nothing}
-        ${this.error && this.running
-          ? html`<div class="error">${this.error}</div>`
-          : nothing}
 
         <div class="run-two">
           ${showThinking
@@ -671,7 +670,6 @@ export class AhRun extends LitElement {
             : nothing}
         </div>
       </section>
-      ${this.toast ? html`<div class="toast">${this.toast}</div>` : nothing}
     `;
   }
 }

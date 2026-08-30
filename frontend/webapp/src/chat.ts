@@ -46,6 +46,8 @@ import type {
 } from '@agent-harness/client';
 import { ApiError } from '@agent-harness/client';
 import { agentContext, type UploadedFile } from './agent-context';
+import { notifyError } from './utils/errors';
+import { notify } from './components/ah-notification';
 import './components/file-upload';
 import './components/model-picker';
 import './components/mode-picker';
@@ -151,7 +153,6 @@ export class AhChat extends LitElement {
   @state() sidebarOpen = false;
   /** PC 端侧栏折叠态（默认展开）。 */
   @state() sidebarCollapsed = false;
-  @state() error: string | null = null;
 
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
   @state() agents: { id: string; name: string }[] = [];
@@ -599,8 +600,15 @@ export class AhChat extends LitElement {
           agentId: s.agentId
         }));
         break;
-      } catch {
+      } catch (e) {
         if (attempt === 1) {
+          // 重试仍失败 → 降级为本地镜像索引，并明确告诉用户「列表可能不完整」，
+          // 而不是像以前那样静默吞掉、让用户以为是自己没有历史会话。
+          notifyError(e, {
+            title: '会话列表',
+            fallback: '会话列表加载失败，已降级为本地缓存（可能不完整）',
+            key: 'chat-sessions'
+          });
           const idx = await loadIndex();
           this.sessions = Object.entries(idx).map(([sid, m]) => ({
             id: sid,
@@ -773,8 +781,13 @@ export class AhChat extends LitElement {
       if (this.agentId && !next.some((a) => a.id === this.agentId)) {
         this.agentId = '';
       }
-    } catch {
-      /* 拉取失败不阻断聊天：保持上一次列表（或初始化时的默认项） */
+    } catch (e) {
+      // 不阻断聊天（下拉退化为「默认」），但下拉里只剩默认项会让人困惑，给一条提示。
+      notifyError(e, {
+        title: 'Agent 列表',
+        fallback: 'Agent 列表拉取失败，已回退为「默认 Agent」',
+        key: 'chat-agents'
+      });
     }
   }
 
@@ -1349,7 +1362,6 @@ export class AhChat extends LitElement {
     this.activeId = '';
     this.messages = [];
     this.input = '';
-    this.error = null;
     this.stickToBottom = true;
     this.showScrollDown = false;
     this.backendUsage = null;
@@ -1383,7 +1395,6 @@ export class AhChat extends LitElement {
     else if (sv?.agentId !== undefined) this.agentId = sv.agentId;
     this.persistActiveId(id);
     this.sidebarOpen = false;
-    this.error = null;
     this.input = '';
     // 关键修复：切换会话【不再】中止进行中的 run，也不清空其打字机缓冲 / 追踪状态。
     // 进行中的 run 仍向所属会话缓冲写内容，切回时实时恢复（见 this.threads / this.pending / this.traces）。
@@ -1466,13 +1477,16 @@ export class AhChat extends LitElement {
               : {}),
             id: this.nextId++
           })) as ChatMsg[];
-          this.error =
-            '⚠️ 服务端历史拉取失败，已从历史镜像恢复（可能非最新）。';
+          notify.warning('服务端历史拉取失败，已从历史镜像恢复（可能非最新）。', {
+            key: 'chat-history'
+          });
         } else {
           this.threads[id] = localBuf ?? [];
           this.restoreFailed[id] = true;
-          this.error =
-            '⚠️ 历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。';
+          notify.warning(
+            '历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。',
+            { key: 'chat-history' }
+          );
         }
       }
     }
@@ -1553,8 +1567,9 @@ export class AhChat extends LitElement {
       // 同步本地镜像索引标题（下次离线兜底渲染时名称一致）。
       const t = this.threads[id];
       if (t && t.length) this.saveHistory(id);
+      notify.success('会话已重命名');
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      notifyError(e, { title: '重命名会话', fallback: '重命名失败' });
     }
   }
 
@@ -1577,8 +1592,9 @@ export class AhChat extends LitElement {
       await purgeSessionMirror(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
       if (this.activeId === id) this.newChat();
+      notify.success('会话已删除');
     } catch (e: any) {
-      this.error = String(e?.message ?? e);
+      notifyError(e, { title: '删除会话', fallback: '删除失败' });
     }
   }
 
@@ -1650,9 +1666,16 @@ export class AhChat extends LitElement {
     const prompt = this.input.trim();
     // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
     if (!prompt && this.attachments.length === 0) return;
-    this.error = null;
 
-    const sessionId = await this.ensureSession();
+    // 会话创建是接口调用：失败时给出明确提示，而不是静默地什么都不发生
+    // （此前这里没有 try/catch，失败会变成未捕获的 Promise rejection）。
+    let sessionId: string;
+    try {
+      sessionId = await this.ensureSession();
+    } catch (e: any) {
+      notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
+      return;
+    }
 
     // 构造用户消息内容：只发送纯文本提示词给 LLM。
     // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
@@ -1780,7 +1803,7 @@ export class AhChat extends LitElement {
         return 'stopped';
       } else {
         // 彻底断连（重试耗尽 / job 已被服务端淘汰）：标记断开 + 错误提示，
-        // 顶部横幅出现「重新连接」手动入口。
+        // 顶部横幅出现「重新连接」手动入口；同时弹一条通知（用户可能已切走页面）。
         this.setConn(sessionId, 'lost');
         this.patchSession(sessionId, {
           error: true,
@@ -1788,6 +1811,7 @@ export class AhChat extends LitElement {
             (this.curSession(sessionId)?.content ?? '') ||
             `⚠️ ${e?.message ?? e}`
         });
+        notifyError(e, { title: '对话中断', key: `chat-run-${sessionId}` });
         return 'error';
       }
     } finally {
@@ -1957,6 +1981,7 @@ export class AhChat extends LitElement {
             (this.curSession(sid)?.content ?? '') ||
             `⚠️ 重连失败：${e?.message ?? e}（请重新发送消息）`
         });
+        notifyError(e, { title: '重连失败', key: `chat-run-${sid}` });
       }
     } finally {
       this.stopTypewriter();
@@ -2720,7 +2745,7 @@ export class AhChat extends LitElement {
     for (const f of Array.from(input.files)) {
       // 前置校验
       if (f.size > maxBytes) {
-        this.error = `文件过大：${f.name}（上限 10MB）`;
+        notify.warning(`文件过大：${f.name}（上限 10MB）`, { key: 'chat-upload' });
         continue;
       }
       const allowedTypes = [
@@ -2743,7 +2768,7 @@ export class AhChat extends LitElement {
           f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
         )
       ) {
-        this.error = `不支持的文件类型：${f.name}`;
+        notify.warning(`不支持的文件类型：${f.name}`, { key: 'chat-upload' });
         continue;
       }
 
@@ -2799,7 +2824,11 @@ export class AhChat extends LitElement {
           status: 'error',
           error: msg
         });
-        this.error = `上传失败：${f.name} — ${msg}`;
+        notifyError(err, {
+          title: '附件上传',
+          fallback: `上传失败：${f.name}`,
+          key: 'chat-upload'
+        });
       }
     }
 
