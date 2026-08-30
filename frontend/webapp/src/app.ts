@@ -144,6 +144,8 @@ export class AhApp extends LitElement {
       this.refreshState();
       void this.loadPluginViews();
     });
+    // 监听插件集合变化（启用/停用/升级）：重拉动态 Tab，使已禁用插件的 Tab 即时消失。
+    window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
@@ -160,10 +162,15 @@ export class AhApp extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
+    window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
   }
 
   /** History 路由的 popstate 处理器引用（disconnectedCallback 解绑用）。 */
   private onPopState = () => {};
+
+  private onPluginsChanged = () => {
+    void this.loadPluginViews();
+  };
 
   /**
    * 统一的 Tab 切换入口：所有写入点（菜单点击 / ah-goto / 插件 Tab）都必须走这里，

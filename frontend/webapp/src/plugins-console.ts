@@ -143,6 +143,8 @@ export class AhPlugins extends LitElement {
         throw new Error(d.error ?? `HTTP ${res.status}`);
       }
       await this.refresh();
+      // 通知其它面板（聊天页 agent 下拉 / 外壳动态 Tab）：插件集合已变，需重拉自身数据。
+      window.dispatchEvent(new CustomEvent('ah-plugins-changed'));
     } catch (e: any) {
       this.err = String(e?.message ?? e);
     } finally {

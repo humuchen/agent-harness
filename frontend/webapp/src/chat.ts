@@ -614,23 +614,9 @@ export class AhChat extends LitElement {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
     // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
-    // 注意：后端默认 agent 的 id 为 'default'（非空串），而前端 agentId 初始值为 ''（表示「走默认」）。
-    // 若直接把 'default' 塞进列表，则列表项 id 与 agentId('') 永远对不上 → 选中态(selected/✓)永远不命中，
-    // 表现为「点开下拉却没有任何项高亮」。这里把后端 'default' 归一到 ''，并保证列表始终含一个
-    // id='' 的默认项，从而 agentId('') 能稳定命中、默认项在展开时高亮 + 打勾。
-    try {
-      const res = await client.listAgents();
-      const raw = ((res?.agents as any[]) ?? []).map((a) => ({
-        id: String(a.id),
-        name: String(a.name ?? a.id)
-      }));
-      const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
-      this.agents = hasDefault
-        ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
-        : [{ id: '', name: '默认' }, ...raw];
-    } catch {
-      /* ignore */
-    }
+    await this.refreshAgents();
+    // 插件启用/停用会改变已注册 agent 集合，监听后实时刷新下拉（使已禁用插件的 agent 即时隐藏）。
+    window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
     try {
@@ -663,6 +649,7 @@ export class AhChat extends LitElement {
       this.watchTimer = null;
     }
     this.cancelComposerLongPress();
+    window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
   }
 
   /**
@@ -726,8 +713,46 @@ export class AhChat extends LitElement {
     }
   }
 
+  /**
+   * 重拉 agent 列表（写入 this.agents）。
+   * 注意：后端默认 agent 的 id 为 'default'（非空串），而前端 agentId 初始值为 ''（表示「走默认」）。
+   * 若直接把 'default' 塞进列表，则列表项 id 与 agentId('') 永远对不上 → 选中态(selected/✓)永远不命中，
+   * 表现为「点开下拉却没有任何项高亮」。这里把后端 'default' 归一到 ''，并保证列表始终含一个
+   * id='' 的默认项，从而 agentId('') 能稳定命中、默认项在展开时高亮 + 打勾。
+   * 失败不影响聊天：selector 退化为仅「默认 Agent」。
+   */
+  private async refreshAgents() {
+    try {
+      const res = await client.listAgents();
+      const raw = ((res?.agents as any[]) ?? []).map((a) => ({
+        id: String(a.id),
+        name: String(a.name ?? a.id)
+      }));
+      const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
+      const next = hasDefault
+        ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
+        : [{ id: '', name: '默认' }, ...raw];
+      this.agents = next;
+      // 当前选中的 agent 若已随插件禁用而从注册表消失，回退到「默认」。
+      if (this.agentId && !next.some((a) => a.id === this.agentId)) {
+        this.agentId = '';
+      }
+    } catch {
+      /* 拉取失败不阻断聊天：保持上一次列表（或初始化时的默认项） */
+    }
+  }
+
+  /**
+   * 插件启用/停用后，已注册 agent 集合变化，实时重拉下拉，使被禁用插件的 agent 即时从列表中消失。
+   * 由 plugins-console 经 window 事件 'ah-plugins-changed' 广播触发。
+   */
+  private onPluginsChanged = () => {
+    void this.refreshAgents();
+  };
+
   /** 跨设备：原地更新列表中某会话的标题与时间（不重排，仅刷字段）。 */
   private patchSessionMeta(sid: string, title: string, updatedAt: number) {
+
     let changed = false;
     this.sessions = this.sessions.map((s) => {
       if (s.id !== sid) return s;
