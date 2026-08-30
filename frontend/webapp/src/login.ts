@@ -5,8 +5,11 @@
  *  - 整体锁定 1280×832 画幅并居中，避免大屏拉伸。
  *  - 整页统一为极光渐变背景 + 动画「智能体网络」mesh + 漂浮发光粒子，
  *    不再左右分栏；认证卡片以毛玻璃形态悬浮于画面中右（箭头指向区域）。
- *  - 品牌文案分列左上/左下，与悬浮卡片形成图层感。
- *  - 完全区分 dark/light 主题。
+ *  - 科技感叠层（自下而上）：细网格底纹 → 透视地平线网格 → 光球 → 景深 mesh
+ *    → 主 mesh → 扫描光带/雷达线 → 粒子 → 晕影 → CRT 扫描线 → HUD（四角括号、
+ *    右侧刻度尺、右下角遥测读数）。品牌文案分列左上/左下。
+ *  - 账号/密码/邮箱/确认密码框支持 Enter 直接提交；按钮下方给出 Enter 提示。
+ *  - 完全区分 dark/light 主题，并遵循 prefers-reduced-motion 降级。
  *
  * 视觉只引用 --ah-* 语义令牌，局部渐变/发光用 color-mix 或硬编码主题覆盖，
  * 动画命名沿用项目 ah-* 约定（组件内作用域）。
@@ -330,6 +333,334 @@ export class AhLogin extends LitElement {
         }
       }
 
+      /* ---------------------- 科技感图层：网格 / 扫描光带 / HUD ---------------------- */
+      /* 细网格底纹：整幅 64px 网格，中心亮、四周径向淡出，并极缓慢平移。 */
+      .tech-grid {
+        position: absolute;
+        inset: -1px;
+        z-index: 0;
+        pointer-events: none;
+        background-image: linear-gradient(
+            to right,
+            color-mix(in srgb, var(--ah-accent) 26%, transparent) 1px,
+            transparent 1px
+          ),
+          linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--ah-accent) 26%, transparent) 1px,
+            transparent 1px
+          );
+        background-size: 64px 64px;
+        mask-image: radial-gradient(
+          ellipse 78% 70% at 48% 46%,
+          #000 24%,
+          transparent 92%
+        );
+        -webkit-mask-image: radial-gradient(
+          ellipse 78% 70% at 48% 46%,
+          #000 24%,
+          transparent 92%
+        );
+        opacity: 0.42;
+        animation: ah-login-grid-pan 26s linear infinite;
+      }
+      :host([data-theme='light']) .tech-grid {
+        background-image: linear-gradient(
+            to right,
+            rgba(0, 102, 230, 0.16) 1px,
+            transparent 1px
+          ),
+          linear-gradient(
+            to bottom,
+            rgba(0, 102, 230, 0.16) 1px,
+            transparent 1px
+          );
+        opacity: 0.55;
+      }
+      @keyframes ah-login-grid-pan {
+        to {
+          background-position: 64px 64px, 64px 64px;
+        }
+      }
+
+      /* 透视地平线网格：底部 3D 网格向后退去，制造纵深空间。 */
+      .grid-floor {
+        position: absolute;
+        left: -20%;
+        right: -20%;
+        bottom: -8%;
+        height: 42%;
+        z-index: 0;
+        pointer-events: none;
+        overflow: hidden;
+        perspective: 300px;
+        perspective-origin: 50% 0%;
+      }
+      .grid-floor::before {
+        content: '';
+        position: absolute;
+        inset: 0 -20% -180% -20%;
+        transform-origin: 50% 0%;
+        transform: rotateX(74deg);
+        background-image: linear-gradient(
+            to right,
+            color-mix(in srgb, var(--ah-accent) 42%, transparent) 1px,
+            transparent 1px
+          ),
+          linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--ah-accent) 42%, transparent) 1px,
+            transparent 1px
+          );
+        background-size: 72px 72px;
+        mask-image: linear-gradient(
+          to bottom,
+          transparent 0%,
+          #000 36%,
+          transparent 86%
+        );
+        -webkit-mask-image: linear-gradient(
+          to bottom,
+          transparent 0%,
+          #000 36%,
+          transparent 86%
+        );
+        animation: ah-login-floor 5.5s linear infinite;
+      }
+      :host([data-theme='light']) .grid-floor::before {
+        background-image: linear-gradient(
+            to right,
+            rgba(0, 102, 230, 0.26) 1px,
+            transparent 1px
+          ),
+          linear-gradient(
+            to bottom,
+            rgba(0, 102, 230, 0.26) 1px,
+            transparent 1px
+          );
+      }
+      @keyframes ah-login-floor {
+        to {
+          background-position: 0 72px;
+        }
+      }
+
+      /* 扫描层：竖向柔光带 + 横向雷达线，交替扫过全幅。 */
+      .scan-track {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        pointer-events: none;
+        overflow: hidden;
+      }
+      .scan-beam {
+        position: absolute;
+        top: -8%;
+        bottom: -8%;
+        left: 0;
+        width: 16%;
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          color-mix(in srgb, var(--ah-accent) 8%, transparent) 36%,
+          color-mix(in srgb, var(--ah-accent) 32%, transparent) 50%,
+          color-mix(in srgb, var(--ah-accent) 8%, transparent) 64%,
+          transparent 100%
+        );
+        filter: blur(8px);
+        opacity: 0;
+        animation: ah-login-sweep 11s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+      }
+      :host([data-theme='light']) .scan-beam {
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(0, 102, 230, 0.06) 36%,
+          rgba(0, 102, 230, 0.2) 50%,
+          rgba(0, 102, 230, 0.06) 64%,
+          transparent 100%
+        );
+      }
+      /* translateX 走自身宽度的倍数：宽度 16% ⇒ -130% → 660% 正好扫过整个容器。 */
+      @keyframes ah-login-sweep {
+        0% {
+          transform: translateX(-130%);
+          opacity: 0;
+        }
+        12% {
+          opacity: 0.9;
+        }
+        88% {
+          opacity: 0.9;
+        }
+        100% {
+          transform: translateX(660%);
+          opacity: 0;
+        }
+      }
+      .scan-line {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: -1%;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          color-mix(in srgb, var(--ah-accent) 60%, transparent) 18%,
+          color-mix(in srgb, var(--ah-accent) 90%, transparent) 50%,
+          color-mix(in srgb, var(--ah-accent) 60%, transparent) 82%,
+          transparent 100%
+        );
+        box-shadow: 0 0 20px 2px
+          color-mix(in srgb, var(--ah-accent) 40%, transparent);
+        opacity: 0;
+        animation: ah-login-scanline 7.5s ease-in-out infinite;
+      }
+      @keyframes ah-login-scanline {
+        0% {
+          top: -1%;
+          opacity: 0;
+        }
+        10% {
+          opacity: 0.5;
+        }
+        90% {
+          opacity: 0.5;
+        }
+        100% {
+          top: 101%;
+          opacity: 0;
+        }
+      }
+
+      /* CRT 扫描线：极淡横向条纹，压一层数字屏幕质感。 */
+      .scanlines {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(190, 225, 255, 0.05) 0 1px,
+          transparent 1px 4px
+        );
+        opacity: 0.45;
+      }
+      :host([data-theme='light']) .scanlines {
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(10, 32, 68, 0.04) 0 1px,
+          transparent 1px 4px
+        );
+        opacity: 0.5;
+      }
+
+      /* HUD 四角括号：给画幅加一层「取景框 / 控制台」感。 */
+      .hud {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        pointer-events: none;
+      }
+      .hud-corner {
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        border: 1px solid color-mix(in srgb, var(--ah-accent) 62%, transparent);
+      }
+      .hud-corner.tl {
+        top: 20px;
+        left: 24px;
+        border-right: 0;
+        border-bottom: 0;
+      }
+      .hud-corner.tr {
+        top: 20px;
+        right: 24px;
+        border-left: 0;
+        border-bottom: 0;
+      }
+      .hud-corner.bl {
+        bottom: 20px;
+        left: 24px;
+        border-right: 0;
+        border-top: 0;
+      }
+      .hud-corner.br {
+        bottom: 20px;
+        right: 24px;
+        border-left: 0;
+        border-top: 0;
+      }
+
+      /* HUD 右侧刻度尺：等距刻度 + 等宽数字，模拟遥测标尺。 */
+      .hud-ruler {
+        position: absolute;
+        right: 28px;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 3;
+        pointer-events: none;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 15px;
+        font-family: var(--ah-font-mono);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        color: var(--ah-text-faint);
+      }
+      .hud-ruler span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .hud-ruler i {
+        display: block;
+        width: 12px;
+        height: 1px;
+        background: color-mix(in srgb, var(--ah-accent) 50%, transparent);
+      }
+
+      /* HUD 遥测读数：右下角实时 uptime / 链路延迟，带闪烁光标。 */
+      .hud-tel {
+        position: absolute;
+        right: 28px;
+        bottom: 26px;
+        z-index: 3;
+        pointer-events: none;
+        text-align: right;
+        font-family: var(--ah-font-mono);
+        font-size: 10.5px;
+        line-height: 1.95;
+        letter-spacing: 0.04em;
+        color: var(--ah-text-faint);
+      }
+      .hud-tel b {
+        font-weight: 600;
+        color: color-mix(in srgb, var(--ah-accent) 82%, var(--ah-text));
+      }
+      .hud-tel .cursor {
+        display: inline-block;
+        width: 6px;
+        height: 10px;
+        margin-left: 4px;
+        vertical-align: -1px;
+        background: var(--ah-accent);
+        animation: ah-login-caret 1.05s steps(1) infinite;
+      }
+      @keyframes ah-login-caret {
+        0%,
+        50% {
+          opacity: 1;
+        }
+        50.01%,
+        100% {
+          opacity: 0;
+        }
+      }
+
       /* 全幅晕影：中心透亮、四周渐隐，让悬浮卡片更聚焦。 */
       .vignette {
         position: absolute;
@@ -643,6 +974,8 @@ export class AhLogin extends LitElement {
         font-family: inherit;
       }
       .btn-primary {
+        position: relative;
+        overflow: hidden;
         width: 100%;
         height: 46px;
         background: var(--ah-accent);
@@ -657,11 +990,58 @@ export class AhLogin extends LitElement {
           color-mix(in srgb, var(--ah-accent) 55%, transparent);
         transition: filter 140ms ease, transform 80ms ease;
       }
+      /* 按钮表面掠过的高光，弱化纯色块、增加「可点击」的电流感。 */
+      .btn-primary::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -40%;
+        width: 38%;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          rgba(255, 255, 255, 0.3),
+          transparent
+        );
+        animation: ah-login-shimmer 3.8s ease-in-out infinite;
+      }
+      @keyframes ah-login-shimmer {
+        0%,
+        62% {
+          left: -40%;
+        }
+        100% {
+          left: 122%;
+        }
+      }
       .btn-primary:hover {
         filter: brightness(1.06);
       }
       .btn-primary:active {
         transform: translateY(1px);
+      }
+
+      /* Enter 提示：明确告诉用户回车即可提交。 */
+      .enter-hint {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin-top: 10px;
+        font-family: var(--ah-font-mono);
+        font-size: 11px;
+        color: var(--ah-text-faint);
+      }
+      .enter-hint kbd {
+        font-family: var(--ah-font-mono);
+        font-size: 10px;
+        line-height: 1;
+        padding: 3px 6px;
+        border-radius: 5px;
+        border: 1px solid var(--ah-border);
+        background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
       }
       .divider {
         display: flex;
@@ -758,6 +1138,28 @@ export class AhLogin extends LitElement {
         color: var(--ah-danger);
       }
 
+      /* ---------------------- 降级：尊重系统「减少动态效果」 ---------------------- */
+      @media (prefers-reduced-motion: reduce) {
+        .tech-grid,
+        .grid-floor::before,
+        .scan-beam,
+        .scan-line,
+        .orb,
+        .particle,
+        .depth-mesh,
+        .chip-dot,
+        .hud-tel .cursor,
+        .btn-primary::after,
+        .edge,
+        .node-glow {
+          animation: none !important;
+        }
+        .scan-track,
+        .scanlines {
+          display: none;
+        }
+      }
+
       /* ---------------------- 移动端：上下堆叠 ---------------------- */
       @media (max-width: 900px) {
         :host {
@@ -809,7 +1211,15 @@ export class AhLogin extends LitElement {
           display: none;
         }
         .vignette,
-        .card-halo {
+        .card-halo,
+        /* 移动端为滚动布局，关闭 3D 地面、扫描线与 HUD 等纯装饰层，
+           只保留细网格 + 主 mesh + 粒子，保证性能与可读性。 */
+        .grid-floor,
+        .scan-track,
+        .scanlines,
+        .hud,
+        .hud-ruler,
+        .hud-tel {
           display: none;
         }
         /* depth-mesh 是 inset:-12% / width:124% 的装饰景深层，无 overflow 裁切，
@@ -943,8 +1353,12 @@ export class AhLogin extends LitElement {
   @state() githubEnabled = false;
   // Google OAuth 是否可用（后端配置了 GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET 时为 true）。
   @state() googleEnabled = false;
+  // HUD 遥测读数：会话秒数 + 抖动后的链路延迟，仅用于背景氛围。
+  @state() private uptimeSec = 0;
+  @state() private latencyMs = 24;
 
   private themeObs?: MutationObserver;
+  private telTimer?: number;
 
   private toggleMode() {
     this.mode = this.mode === 'login' ? 'register' : 'login';
@@ -972,11 +1386,27 @@ export class AhLogin extends LitElement {
       .catch(() => {
         /* 拉取失败不展示按钮，不影响账号密码登录 */
       });
+    // HUD 遥测读数自走：每秒 tick 一次，延迟在 18~38ms 间抖动。
+    this.telTimer = window.setInterval(() => {
+      this.uptimeSec += 1;
+      this.latencyMs = 18 + Math.floor(Math.random() * 21);
+    }, 1000);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this.themeObs?.disconnect();
+    if (this.telTimer !== undefined) window.clearInterval(this.telTimer);
+    this.telTimer = undefined;
+  }
+
+  /** HUD 遥测：把会话秒数格式化为 HH:MM:SS。 */
+  private fmtUptime(): string {
+    const s = this.uptimeSec;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(
+      s % 60
+    )}`;
   }
 
   /**
@@ -998,6 +1428,32 @@ export class AhLogin extends LitElement {
   }
 
   /**
+   * 表单内按 Enter 直接提交（账号 / 密码 / 邮箱 / 确认密码均生效）。
+   * 浏览器原生隐式提交在部分场景（输入法回车、自定义组件、无 submit 按钮）不可靠，
+   * 这里显式兜底：preventDefault 掉原生提交，统一走 submitForm，避免一次回车提交两次。
+   * 注意 isComposing：中文输入法组字期间的回车用于「确认候选词」，不能触发登录。
+   */
+  private onFormKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
+    const el = e.target as HTMLElement | null;
+    if (!el || el.tagName !== 'INPUT') return;
+    const input = el as HTMLInputElement;
+    // 复选框 / 按钮类控件保留原生 Enter 行为。
+    if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
+      return;
+    e.preventDefault();
+    const form =
+      input.form ?? (this.renderRoot?.querySelector('form') as HTMLFormElement);
+    void this.submitForm(form);
+  }
+
+  /** 表单 submit 事件：点击提交按钮、移动端软键盘 Go 键都汇聚到这里。 */
+  private onSubmit(e: Event) {
+    e.preventDefault();
+    void this.submitForm(e.target as HTMLFormElement);
+  }
+
+  /**
    * 提交：真实接入账户密码后端。
    *  - 注册：POST /api/account/register（服务端落库 + 顺带签发登录 cookie）。
    *  - 登录：POST /api/account/login（校验凭据 + 下发 cookie）。
@@ -1005,15 +1461,14 @@ export class AhLogin extends LitElement {
    * ah-login-success 通知 main.ts 进入控制台；失败则展示后端返回的错误文案。
    * 注意：cookie 由浏览器托管、前端不读取其值；用户名仅用于 x-ah-username 双因子。
    */
-  private async onSubmit(e: Event) {
-    e.preventDefault();
+  private async submitForm(form: HTMLFormElement | null) {
     if (this.submitting) return;
     if (this.mode === 'register' && !this.agree) {
       this.notice = '请先阅读并同意服务条款与隐私政策。';
       return;
     }
     // 从表单读取字段（输入项受控在 DOM，按 name 取）。
-    const form = e.target as HTMLFormElement;
+    if (!form) return;
     const email =
       (
         form.elements.namedItem('email') as HTMLInputElement | null
@@ -1101,6 +1556,17 @@ export class AhLogin extends LitElement {
     hasEye = false
   ) {
     const isPw = hasEye;
+    // 登录用 current-password、注册用 new-password，让密码管理器正确归类。
+    const autocomplete =
+      valueKey === 'password'
+        ? this.mode === 'login'
+          ? 'current-password'
+          : 'new-password'
+        : valueKey === 'confirm'
+        ? 'new-password'
+        : valueKey;
+    // 移动端软键盘回车键文案：账号类「下一项」，最后一个密码框「前往 / 提交」。
+    const enterkeyhint = valueKey === 'password' || valueKey === 'confirm' ? 'go' : 'next';
     const inputType = isPw
       ? valueKey === 'password'
         ? this.showPassword
@@ -1117,7 +1583,9 @@ export class AhLogin extends LitElement {
           name=${valueKey}
           type=${inputType}
           placeholder=${placeholder}
-          autocomplete=${valueKey}
+          autocomplete=${autocomplete}
+          enterkeyhint=${enterkeyhint}
+          ?disabled=${this.submitting}
         />
         ${hasEye
           ? html`<button
@@ -1167,14 +1635,38 @@ export class AhLogin extends LitElement {
         ></span>`
     );
 
+    // HUD 右侧刻度尺读数（等宽数字 + 短刻度线），纯装饰。
+    const ruler = ['08', '16', '24', '32', '40', '48', '56'].map(
+      (v) => html`<span>${v}<i></i></span>`
+    );
+
     return html`
       <div class="login-wrap">
-        <div class="depth-mesh">${meshSvg('depth-mesh')}</div>
+        <div class="tech-grid"></div>
+        <div class="grid-floor"></div>
         <div class="orbs">${orbs}</div>
+        <div class="depth-mesh">${meshSvg('depth-mesh')}</div>
         ${meshSvg()}
+        <div class="scan-track">
+          <i class="scan-beam"></i><i class="scan-line"></i>
+        </div>
         <div class="particles">${particles}</div>
         <div class="vignette"></div>
         <div class="card-halo"></div>
+        <div class="scanlines"></div>
+        <div class="hud">
+          <i class="hud-corner tl"></i><i class="hud-corner tr"></i
+          ><i class="hud-corner bl"></i><i class="hud-corner br"></i>
+        </div>
+        <div class="hud-ruler">${ruler}</div>
+        <div class="hud-tel">
+          <div>MESH <b>${NODES.length}</b> NODES · <b>${EDGES.length}</b> LINKS</div>
+          <div>UPLINK <b>STABLE</b></div>
+          <div>RTT <b>${this.latencyMs}ms</b></div>
+          <div>
+            UP ${this.fmtUptime()}<i class="cursor"></i>
+          </div>
+        </div>
 
         <div class="brand-top">
           <div class="brand-mark">
@@ -1266,7 +1758,7 @@ export class AhLogin extends LitElement {
               ? html`
                   <h1>欢迎回来</h1>
                   <p class="auth-sub">登录以进入你的 Agent 工作台</p>
-                  <form @submit=${this.onSubmit}>
+                  <form @submit=${this.onSubmit} @keydown=${this.onFormKeydown}>
                     ${this.field('用户名', 'username', '用户名', 'username')}
                     ${this.field(
                       '密码',
@@ -1303,6 +1795,7 @@ export class AhLogin extends LitElement {
                     >
                       ${this.submitting ? '登录中…' : '登录'}
                     </button>
+                    <div class="enter-hint">按 <kbd>Enter</kbd> 登录</div>
                   </form>
                   <div class="divider">或</div>
                   ${this.githubEnabled || this.googleEnabled
@@ -1361,7 +1854,7 @@ export class AhLogin extends LitElement {
               : html`
                   <h1>创建账号</h1>
                   <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
-                  <form @submit=${this.onSubmit}>
+                  <form @submit=${this.onSubmit} @keydown=${this.onFormKeydown}>
                     ${this.field('邮箱', 'email', 'you@company.com', 'email')}
                     ${this.field('用户名', 'text', '设置用户名', 'username')}
                     ${this.field(
@@ -1403,6 +1896,7 @@ export class AhLogin extends LitElement {
                     >
                       ${this.submitting ? '创建中…' : '创建账号'}
                     </button>
+                    <div class="enter-hint">按 <kbd>Enter</kbd> 提交注册</div>
                   </form>
                   ${this.notice
                     ? html`<div class="notice error">${this.notice}</div>`
