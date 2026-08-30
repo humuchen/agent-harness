@@ -91,6 +91,12 @@ export interface ChatSession {
   messages: ChatMessage[];
   /** 归属用户（= 登录用户名 ctx.sub）。无归属旧数据记为 'legacy'。 */
   owner: string;
+  /** 交互模式（问答/计划），按会话持久化，供跨设备对齐。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 选中的模型标识，按会话持久化，供跨设备对齐。 */
+  model?: string;
+  /** 定向业务 agent id（空=默认通用 Agent），按会话持久化，供跨设备对齐。 */
+  agentId?: string;
 }
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
@@ -195,7 +201,11 @@ export function peekChatSession(id: string, owner?: string): ChatSession | null 
 }
 
 /** 新建会话（归属 owner；可指定初始标题，留空则默认「新对话」）。 */
-export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSession {
+export function createChatSession(
+  title?: string,
+  owner = LEGACY_OWNER,
+  meta?: ChatSessionMeta
+): ChatSession {
   load();
   const now = Date.now();
   const session: ChatSession = {
@@ -205,6 +215,9 @@ export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSes
     updatedAt: now,
     messages: [],
     owner,
+    ...(meta?.interactionMode ? { interactionMode: meta.interactionMode } : {}),
+    ...(meta?.model ? { model: meta.model } : {}),
+    ...(meta?.agentId ? { agentId: meta.agentId } : {})
   };
   sessions.set(session.id, session);
   persist();
@@ -216,14 +229,20 @@ export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSes
 }
 
 /**
- * 重命名会话（标题用于左侧栏展示）；owner 不符或不存在返回 null。
- * 内存 Map 未命中时回退到聊天历史镜像（SQLite）：服务端重启后内存态清空、但镜像仍在，
- * 此时从镜像恢复会话（含消息）并写回内存态，保证重命名对「仅存于镜像」的会话也生效。
+ * 更新会话元数据（标题 + 可选的交互模式/模型/agent，按会话持久化，供跨设备对齐）。
+ * owner 不符或不存在返回 null。内存 Map 未命中时回退到聊天历史镜像（SQLite）。
  */
+export interface ChatSessionMeta {
+  interactionMode?: 'qa' | 'plan';
+  model?: string;
+  agentId?: string;
+}
+
 export async function renameChatSession(
   id: string,
   title: string,
-  owner?: string
+  owner?: string,
+  meta?: ChatSessionMeta
 ): Promise<ChatSession | null> {
   load();
   let s = sessions.get(id);
@@ -252,15 +271,24 @@ export async function renameChatSession(
   if (!s) return null;
   if (owner && s.owner !== owner) return null;
   s.title = title?.trim() || s.title;
+  // 合并按会话持久化的设置（仅当调用方显式传入才覆盖，未传入保留原值）。
+  if (meta) {
+    if (meta.interactionMode !== undefined) s.interactionMode = meta.interactionMode;
+    if (meta.model !== undefined) s.model = meta.model;
+    if (meta.agentId !== undefined) s.agentId = meta.agentId;
+  }
   s.updatedAt = Date.now();
   persist();
-  // 跨设备广播：其它端标题/时间实时同步（不重发全量消息）。
+  // 跨设备广播：其它端标题/时间/设置实时同步（不重发全量消息）。
   if (owner && owner !== LEGACY_OWNER) {
     publishChatEvent(owner, {
       type: 'session:meta',
       session: id,
       title: s.title,
-      updatedAt: s.updatedAt
+      updatedAt: s.updatedAt,
+      ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
+      ...(s.model ? { model: s.model } : {}),
+      ...(s.agentId ? { agentId: s.agentId } : {})
     });
   }
   // 同步写回历史镜像（SQLite），保证镜像中的标题也更新（镜像为主持久化层）。

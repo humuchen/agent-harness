@@ -38,7 +38,15 @@ export const MY_ORIGIN = deviceId();
 export type ChatSyncEvent =
   | { type: 'chat:ready'; owner: string }
   | { type: 'message:append'; session: string; message: unknown; origin: string }
-  | { type: 'session:meta'; session: string; title: string; updatedAt: number }
+  | {
+      type: 'session:meta';
+      session: string;
+      title: string;
+      updatedAt: number;
+      interactionMode?: 'qa' | 'plan';
+      model?: string;
+      agentId?: string;
+    }
   | { type: 'session:remove'; session: string }
   | { type: 'session:list' };
 

@@ -180,18 +180,31 @@ export class AgentClient {
   getChatSession(id: string): Promise<ChatSession> {
     return this.json<ChatSession>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`);
   }
-  /** 新建聊天会话（可指定初始标题）。 */
-  createChatSession(title?: string): Promise<ChatSession> {
+  /** 新建聊天会话（可指定初始标题 + 初始按会话设置）。 */
+  createChatSession(
+    title?: string,
+    meta?: { interactionMode?: 'qa' | 'plan'; model?: string; agentId?: string }
+  ): Promise<ChatSession> {
     return this.json<ChatSession>('/api/v1/chat/sessions', {
       method: 'POST',
-      body: JSON.stringify(title ? { title } : {}),
+      body: JSON.stringify({
+        ...(title ? { title } : {}),
+        ...(meta ? { interactionMode: meta.interactionMode, model: meta.model, agentId: meta.agentId } : {})
+      }),
     });
   }
-  /** 重命名聊天会话。 */
-  renameChatSession(id: string, title: string): Promise<ChatSession> {
+  /** 重命名 / 更新会话元数据（标题 + 可选按会话设置）。 */
+  renameChatSession(
+    id: string,
+    title: string,
+    meta?: { interactionMode?: 'qa' | 'plan'; model?: string; agentId?: string }
+  ): Promise<ChatSession> {
     return this.json<ChatSession>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({
+        title,
+        ...(meta ? { interactionMode: meta.interactionMode, model: meta.model, agentId: meta.agentId } : {})
+      }),
     });
   }
   /** 删除聊天会话。 */

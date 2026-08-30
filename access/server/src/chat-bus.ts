@@ -14,7 +14,7 @@
  *
  * 事件形状（与前端 chat-sync.ts 约定）：
  * - { type: 'message:append', session, message, origin } 增量落库消息
- * - { type: 'session:meta', session, title, updatedAt } 标题/时间变更
+ * - { type: 'session:meta', session, title, updatedAt, interactionMode?, model?, agentId? } 标题/时间/按会话设置变更
  * - { type: 'session:remove', session } 会话删除
  * - { type: 'session:list' } 触发列表重拉（新建会话/批量变更）
  * `origin` 为发送端的设备指纹，前端据此忽略自己发出的回声，避免重复插入。
@@ -25,7 +25,15 @@ import { createQueueBackend } from './queue-backend';
 /** 广播事件（与前端契约一致）。 */
 export type ChatBusEvent =
   | { type: 'message:append'; session: string; message: unknown; origin: string }
-  | { type: 'session:meta'; session: string; title: string; updatedAt: number }
+  | {
+      type: 'session:meta';
+      session: string;
+      title: string;
+      updatedAt: number;
+      interactionMode?: 'qa' | 'plan';
+      model?: string;
+      agentId?: string;
+    }
   | { type: 'session:remove'; session: string }
   | { type: 'session:list' };
 

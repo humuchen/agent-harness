@@ -180,6 +180,12 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  /** 交互模式（问答/计划），按会话持久化，供跨设备对齐。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 选中的模型标识，按会话持久化，供跨设备对齐。 */
+  model?: string;
+  /** 定向业务 agent id（空=默认通用 Agent），按会话持久化，供跨设备对齐。 */
+  agentId?: string;
 }
 
 /** run 流首帧：服务端已接收并分配 jobId。 */

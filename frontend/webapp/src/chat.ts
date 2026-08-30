@@ -105,6 +105,12 @@ interface SessionView {
   id: string;
   title: string;
   updatedAt: number;
+  /** 交互模式（问答/计划），按会话持久化，供跨设备对齐。 */
+  interactionMode?: 'qa' | 'plan';
+  /** 选中的模型标识，按会话持久化，供跨设备对齐。 */
+  model?: string;
+  /** 定向业务 agent id，按会话持久化，供跨设备对齐。 */
+  agentId?: string;
 }
 
 /** 调用链路追踪树的瞬态构建上下文（每会话独立，支持多个会话并发流式互不干扰）。 */
@@ -259,6 +265,17 @@ export class AhChat extends LitElement {
 
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
+
+  /**
+   * 按会话持久化的设置（交互模式 / 模型 / agent）。
+   * 切换会话时从本表（优先）或服务端会话元数据加载到当前控件，实现「同一对话两端对齐」。
+   * 用户改任一设置即写入本表 + PATCH 服务端 + 经 session:meta 广播给其它端。
+   */
+  private sessionSettings: Record<string, {
+    interactionMode?: 'qa' | 'plan';
+    model?: string;
+    agentId?: string;
+  }> = {};
 
   /**
    * 跨设备远程流式游标：标记某会话「他端发来的进行中 assistant」是否已在本地线程建了占位。
@@ -576,7 +593,10 @@ export class AhChat extends LitElement {
         this.sessions = list.map((s: ChatSession) => ({
           id: s.id,
           title: s.title,
-          updatedAt: s.updatedAt
+          updatedAt: s.updatedAt,
+          interactionMode: s.interactionMode,
+          model: s.model,
+          agentId: s.agentId
         }));
         break;
       } catch {
@@ -585,7 +605,10 @@ export class AhChat extends LitElement {
           this.sessions = Object.entries(idx).map(([sid, m]) => ({
             id: sid,
             title: m.title,
-            updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+            updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
+            interactionMode: (m as any).interactionMode,
+            model: (m as any).model,
+            agentId: (m as any).agentId
           }));
         }
       }
@@ -601,7 +624,10 @@ export class AhChat extends LitElement {
         .map(([sid, m]) => ({
           id: sid,
           title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
+          interactionMode: (m as any).interactionMode,
+          model: (m as any).model,
+          agentId: (m as any).agentId
         }));
       if (extra.length) this.sessions = [...this.sessions, ...extra];
     }
@@ -668,8 +694,12 @@ export class AhChat extends LitElement {
         void this.refreshSessions();
         break;
       case 'session:meta':
-        // 标题/时间变更：原地更新列表项，无需重拉全量。
-        this.patchSessionMeta(e.session, e.title, e.updatedAt);
+        // 标题/时间/按会话设置变更：原地更新列表项，无需重拉全量。
+        this.patchSessionMeta(e.session, e.title, e.updatedAt, {
+          interactionMode: e.interactionMode,
+          model: e.model,
+          agentId: e.agentId
+        });
         break;
       case 'session:remove':
         this.removeSessionFromList(e.session);
@@ -694,7 +724,10 @@ export class AhChat extends LitElement {
       const mapped = list.map((s: ChatSession) => ({
         id: s.id,
         title: s.title,
-        updatedAt: s.updatedAt
+        updatedAt: s.updatedAt,
+        interactionMode: s.interactionMode,
+        model: s.model,
+        agentId: s.agentId
       }));
       this.sessions = [...mapped];
       // 用本地镜像索引补齐（服务端列表为空/缺项时历史会话仍可见）。
@@ -705,7 +738,10 @@ export class AhChat extends LitElement {
         .map(([sid, m]) => ({
           id: sid,
           title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
+          interactionMode: (m as any).interactionMode,
+          model: (m as any).model,
+          agentId: (m as any).agentId
         }));
       if (extra.length) this.sessions = [...this.sessions, ...extra];
     } catch {
@@ -751,17 +787,48 @@ export class AhChat extends LitElement {
   };
 
   /** 跨设备：原地更新列表中某会话的标题与时间（不重排，仅刷字段）。 */
-  private patchSessionMeta(sid: string, title: string, updatedAt: number) {
-
+  private patchSessionMeta(
+    sid: string,
+    title: string,
+    updatedAt: number,
+    meta?: {
+      interactionMode?: 'qa' | 'plan';
+      model?: string;
+      agentId?: string;
+    }
+  ) {
     let changed = false;
     this.sessions = this.sessions.map((s) => {
       if (s.id !== sid) return s;
       changed = true;
-      return { ...s, title: title || s.title, updatedAt };
+      return {
+        ...s,
+        title: title || s.title,
+        updatedAt,
+        interactionMode: meta?.interactionMode !== undefined ? meta.interactionMode : s.interactionMode,
+        model: meta?.model !== undefined ? meta.model : s.model,
+        agentId: meta?.agentId !== undefined ? meta.agentId : s.agentId
+      };
     });
     if (!changed) {
       // 列表里没有该会话（如他端新建后本端尚未见）：加入入口。
-      this.sessions = [...this.sessions, { id: sid, title, updatedAt }];
+      this.sessions = [
+        ...this.sessions,
+        {
+          id: sid,
+          title,
+          updatedAt,
+          interactionMode: meta?.interactionMode,
+          model: meta?.model,
+          agentId: meta?.agentId
+        }
+      ];
+    }
+    // 若正打开该会话，按最新设置刷新当前控件，实现「两端实时对齐」。
+    if (this.activeId === sid) {
+      if (meta?.interactionMode !== undefined) this.interactionMode = meta.interactionMode;
+      if (meta?.model !== undefined) this.model = meta.model;
+      if (meta?.agentId !== undefined) this.agentId = meta.agentId;
     }
   }
 
@@ -1296,6 +1363,16 @@ export class AhChat extends LitElement {
   private async selectSession(id: string) {
     if (id === this.activeId) return;
     this.activeId = id;
+    // 加载本会话持久化的设置（交互模式/模型/agent），实现「同一对话两端对齐」。
+    // 优先级：本地按会话表 > 列表项（来自服务端元数据）> 保留当前全局值（旧会话无记录时）。
+    const sv = this.sessions.find((s) => s.id === id);
+    const st = this.sessionSettings[id];
+    if (st?.interactionMode !== undefined) this.interactionMode = st.interactionMode;
+    else if (sv?.interactionMode !== undefined) this.interactionMode = sv.interactionMode;
+    if (st?.model !== undefined) this.model = st.model;
+    else if (sv?.model !== undefined) this.model = sv.model;
+    if (st?.agentId !== undefined) this.agentId = st.agentId;
+    else if (sv?.agentId !== undefined) this.agentId = sv.agentId;
     this.persistActiveId(id);
     this.sidebarOpen = false;
     this.error = null;
@@ -2820,13 +2897,60 @@ export class AhChat extends LitElement {
     this.thinkCollapsed = { ...this.thinkCollapsed, [k]: true };
   }
 
-  /** 切换交互模式（问答/计划）并持久化。 */
+  /** 切换交互模式（问答/计划）并按当前会话持久化 + 广播。 */
   private setInteractionMode(m: 'qa' | 'plan') {
     this.interactionMode = m;
+    // 保留全局偏好（跨刷新记忆），同时按当前会话记录，供跨设备对齐。
     try {
       localStorage.setItem('ah_interaction_mode', m);
     } catch {
       /* ignore */
+    }
+    this.persistSessionSettings({ interactionMode: m });
+  }
+
+  /**
+   * 把当前会话的某项设置写入本地表 + 同步到服务端（其它端经 session:meta 实时收到）。
+   * @param partial 仅需更新的字段（交互模式 / 模型 / agent 之一或多个）。
+   */
+  private async persistSessionSettings(
+    partial: {
+      interactionMode?: 'qa' | 'plan';
+      model?: string;
+      agentId?: string;
+    }
+  ) {
+    const sid = this.activeId;
+    if (!sid) return;
+    // 合并进按会话本地表（先取已记录的，再覆盖本次更新项）。
+    const prev = this.sessionSettings[sid] || {};
+    const next = { ...prev, ...partial };
+    this.sessionSettings = { ...this.sessionSettings, [sid]: next };
+    // 更新左侧栏列表项（切回/刷新时一致）。
+    this.sessions = this.sessions.map((s) =>
+      s.id === sid
+        ? {
+            ...s,
+            interactionMode: next.interactionMode,
+            model: next.model,
+            agentId: next.agentId
+          }
+        : s
+    );
+    // 服务端落库 + 广播（title 沿用当前列表项标题，meta 仅带本次变更字段）。
+    const cur = this.sessions.find((s) => s.id === sid);
+    try {
+      await client.renameChatSession(
+        sid,
+        cur?.title || '新对话',
+        {
+          interactionMode: next.interactionMode,
+          model: next.model,
+          agentId: next.agentId
+        }
+      );
+    } catch {
+      /* 同步失败不致命：本地已乐观更新，下次列表刷新会重试 */
     }
   }
 
@@ -3824,10 +3948,11 @@ export class AhChat extends LitElement {
                 <ah-agent-picker
                   .agents=${this.agents}
                   .value=${this.agentId}
-                  @agent-change=${(e: Event) =>
-                    (this.agentId = (
-                      e as CustomEvent<{ value: string }>
-                    ).detail.value)}
+                  @agent-change=${(e: Event) => {
+                    const v = (e as CustomEvent<{ value: string }>).detail.value;
+                    this.agentId = v;
+                    this.persistSessionSettings({ agentId: v });
+                  }}
                 ></ah-agent-picker>
                 <ah-mode-picker
                   .mode=${this.interactionMode}
@@ -3856,6 +3981,7 @@ export class AhChat extends LitElement {
                     } catch {
                       /* ignore */
                     }
+                    this.persistSessionSettings({ model: d.model });
                   }}
                   @think-change=${(e: Event) => {
                     this.deepThink = (

@@ -1294,7 +1294,15 @@ const server = createServer(
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
         }
-        return sendJson(res, createChatSession(b.title, ctx.sub), req);
+        return sendJson(
+          res,
+          createChatSession(b.title, ctx.sub, {
+            interactionMode: b.interactionMode,
+            model: b.model,
+            agentId: b.agentId
+          }),
+          req
+        );
       }
       if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
         const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
@@ -1320,7 +1328,11 @@ const server = createServer(
           res.writeHead(401, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
         }
-        const s = await renameChatSession(id, b.title, ctx.sub);
+        const s = await renameChatSession(id, b.title, ctx.sub, {
+          interactionMode: b.interactionMode,
+          model: b.model,
+          agentId: b.agentId
+        });
         if (!s) {
           res.writeHead(404, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'session not found' }));
