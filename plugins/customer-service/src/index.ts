@@ -7,7 +7,7 @@ import { registerHandoffTool } from './tools/handoff';
 import { csServerExtension } from './server/routes';
 import { csDashboardView } from './web/dashboard';
 import { setPluginContext } from './runtime';
-import { getDb, closeDb } from './infra/db';
+import { getDb } from './infra/db';
 import { configSummary } from './config';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
@@ -62,12 +62,13 @@ export const csPlugin: PluginModule = {
   },
 
   async onStop(ctx: PluginContext): Promise<void> {
-    closeDb();
+    // 不在此关闭 DB：getDbAdapter 是进程级单例（按 backend:file 缓存），
+    // 停用插件只是「禁用」而非「关闭进程数据库」，关闭会波及其它仍有效的插件请求，
+    // 且单例缓存仍持有已关闭实例导致后续无法复用。进程的数据库连接在进程退出时统一回收。
     ctx.logger.info('customer-service plugin stopped');
   },
 
   async onUnload(ctx: PluginContext): Promise<void> {
-    closeDb();
     offEvents?.();
     offEvents = undefined;
     offTranscript?.();

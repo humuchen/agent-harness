@@ -31,6 +31,8 @@ export interface DbAdapter {
   exec(sql: string): MaybePromise<void>;
   prepare(sql: string): DbStatement;
   close?(): void;
+  /** 在 adapterCache 中的键（close 时用于同步删除缓存条目，实现自愈）。 */
+  cacheKey?: string;
 }
 
 export type DbBackend = 'sqlite' | 'turso';
@@ -60,11 +62,14 @@ export interface DbAdapterOptions {
 class SqliteAdapter implements DbAdapter {
   private db: any;
   private file: string;
+  /** 自身在 adapterCache 中的键，close 时用于同步删除缓存条目（自愈）。 */
+  cacheKey: string;
 
   constructor(file: string, pragmas?: DbAdapterOptions['pragmas']) {
     const fs = require('node:fs');
     const path = require('node:path');
     this.file = file;
+    this.cacheKey = `sqlite:${file}`;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const sqlite = require('node:sqlite') as { DatabaseSync: any };
     this.db = new sqlite.DatabaseSync(file);
@@ -96,6 +101,7 @@ class SqliteAdapter implements DbAdapter {
 
   close(): void {
     try { this.db.close(); } catch { /* ok */ }
+    evictAdapterCache(this.cacheKey);
   }
 }
 
@@ -103,8 +109,11 @@ class SqliteAdapter implements DbAdapter {
 
 class TursoAdapter implements DbAdapter {
   private client: any;
+  /** 自身在 adapterCache 中的键，close 时用于同步删除缓存条目（自愈）。 */
+  cacheKey: string;
 
   constructor(url: string, token?: string) {
+    this.cacheKey = `turso:${url}`;
     try {
       // @libsql/client/node 使用 createClient 工厂函数
       const { createClient } = require('@libsql/client/node') as { createClient: any };
@@ -187,6 +196,7 @@ class TursoAdapter implements DbAdapter {
 
   close(): void {
     try { this.client.close(); } catch { /* ok */ }
+    evictAdapterCache(this.cacheKey);
   }
 }
 
@@ -194,15 +204,28 @@ class TursoAdapter implements DbAdapter {
 
 const adapterCache = new Map<string, DbAdapter>();
 
+/** 关闭适配器时把对应缓存条目删除：下次 getDbAdapter 会重新建连（关闭后自愈，避免复用已关闭实例）。 */
+function evictAdapterCache(cacheKey: string): void {
+  adapterCache.delete(cacheKey);
+}
+
 /**
  * 获取（或创建）数据库适配器。
  *
  * 同一 file 配置返回同一实例（单例）；不同 file 各自独立连接。
  * 自动回退：若环境指定 turso 但初始化失败，降级为本地 sqlite。
+ *
+ * ⚠️ 单例是**进程级**的，插件「停用」不应关闭它：关闭会波及其它仍有效的插件，
+ * 且缓存仍持有已关闭实例导致后续请求全部失败（"Client was manually closed"）。
+ * 因此 close() 会同步把缓存条目删除，使下次 getDbAdapter 重新建连（自愈）。
  */
 export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
   const backend = (opts.backend || process.env.DB_BACKEND || 'sqlite').toLowerCase() as DbBackend;
-  const file = opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
+  // Turso 后端按 TURSO_URL 区分（同一文件可被多个远端库共用），sqlite 按 file 区分。
+  const file =
+    backend === 'turso'
+      ? process.env.TURSO_URL || opts.file || './data/app.db'
+      : opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
   const cacheKey = `${backend}:${file}`;
 
   if (adapterCache.has(cacheKey)) return adapterCache.get(cacheKey)!;
@@ -231,6 +254,9 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
   }
 
   adapterCache.set(cacheKey, adapter);
+  // 兜底（Turso→sqlite 降级）也可能构造 sqlite 实例并自带正确的 cacheKey，
+  // 这里再显式对齐，确保 close 时 evict 的是当前缓存键。
+  adapter.cacheKey = cacheKey;
   return adapter;
 }
 

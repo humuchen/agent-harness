@@ -2077,6 +2077,9 @@ async function handleRun(
   let streamBuf = '';
   let streamReasoning = '';
   let lastStreamFlush = 0;
+  // 同一 run 的 run:end 会被 run-queue 补发一次（不带 runId 的重复帧），用此标志保证
+  // 终态 final 只广播一次，避免他端把重复帧当成「新一轮回复」而追加多余 assistant。
+  let runEnded = false;
   const maybeBroadcastStream = (e: any): void => {
     if (!chatSessionId || !ctx || ctx.sub === 'anon') return;
     const t = e?.type;
@@ -2085,6 +2088,8 @@ async function handleRun(
     } else if (t === 'llm:reasoning' && typeof e?.delta === 'string') {
       streamReasoning += e.delta;
     } else if (t === 'run:end' && e?.final != null) {
+      if (runEnded) return; // 重复 run:end 帧：跳过，只广播一次终态
+      runEnded = true;
       // 终态：广播完整 final，让他端用权威全文收尾（覆盖此前的增量快照）。
       publishChatEvent(ctx.sub, {
         type: 'message:append',

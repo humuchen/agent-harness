@@ -260,6 +260,14 @@ export class AhChat extends LitElement {
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
 
+  /**
+   * 跨设备远程流式游标：标记某会话「他端发来的进行中 assistant」是否已在本地线程建了占位。
+   * 用于区分「在他端回复上累积（streaming 帧）」与「新建一条本端回复（首帧 / 新轮）」，
+   * 避免多轮对话时把新回复误覆盖到上一轮的 assistant 上（此前用「找最后一条 assistant」
+   * 会命中旧回复，导致电脑端看不到手机端新回复）。
+   */
+  private remoteStreaming: Record<string, boolean> = {};
+
   /** 每个会话是否正在流式（支持多个会话并发进行）。
    *  MUST 为 @state 并以不可变重赋值（this.streaming = {...this.streaming, [sid]: x}）更新：
    *  直接 this.streaming[sid] = x 是对象内属性赋值，Lit 不观测，重渲染不会触发，
@@ -808,45 +816,47 @@ export class AhChat extends LitElement {
       return;
     }
 
-    // assistant：找该会话最后一条 assistant 消息（一次 run 末尾即为 assistant）。
-    let idx = -1;
-    for (let i = t.length - 1; i >= 0; i--) {
-      if (t[i].role === 'assistant') {
-        idx = i;
-        break;
-      }
-    }
-    if (idx < 0) {
-      // 尚无 assistant 占位：建一条（含当前内容，可能是流式首帧或最终全文）。
+    // assistant：多轮对话下，最后一条 assistant 很可能是上一轮的旧回复，不能盲目覆盖。
+    // 用 remoteStreaming[sid] 游标区分两种情形：
+    //   - 游标为 false（首帧 / 新一轮回复）：在末尾【追加】一条新 assistant 占位，并置游标。
+    //   - 游标为 true（后续 streaming 帧）：在刚追加的那条上累积（仅当更长，防乱序帧）。
+    //   - 收到 final/完整帧：直接覆盖游标指向的那条（即本端回复），并清游标收尾。
+    if (!this.remoteStreaming[sid]) {
+      // 新一轮远程回复：追加新 assistant（不再找「最后一条 assistant」，避免覆盖旧轮回复）。
       const msg: ChatMsg = {
         id: this.nextId++,
         role: 'assistant',
         content,
-        ...(typeof m.reasoning === 'string' && m.reasoning
-          ? { reasoning: m.reasoning }
-          : {}),
-        ...(Array.isArray(m.tools) && m.tools.length
-          ? { tools: m.tools as ToolView[] }
-          : {}),
-        ...(Array.isArray(m.trace) && m.trace.length
-          ? { trace: m.trace as TraceNode[] }
-          : {})
+        ...(typeof m.reasoning === 'string' && m.reasoning ? { reasoning: m.reasoning } : {}),
+        ...(Array.isArray(m.tools) && m.tools.length ? { tools: m.tools as ToolView[] } : {}),
+        ...(Array.isArray(m.trace) && m.trace.length ? { trace: m.trace as TraceNode[] } : {})
       };
       t.push(msg);
+      this.remoteStreaming[sid] = true; // 标记：后续该会话的增量/终态都作用在这条上
     } else {
+      const idx = t.length - 1;
       const cur = t[idx];
-      const reasoning =
-        typeof m.reasoning === 'string' && m.reasoning
-          ? m.reasoning
-          : cur.reasoning;
-      if (m.streaming) {
-        // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧）。
-        if (content.length >= (cur.content ?? '').length) {
-          t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
-        }
+      if (!cur || cur.role !== 'assistant') {
+        // 防御：游标为真却末尾非 assistant（理论上不会），补建并修正。
+        const msg: ChatMsg = {
+          id: this.nextId++,
+          role: 'assistant',
+          content
+        };
+        t.push(msg);
       } else {
-        // 完整 / 终态：用权威全文直接覆盖最后一条 assistant。
-        t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+        const reasoning =
+          typeof m.reasoning === 'string' && m.reasoning ? m.reasoning : cur.reasoning;
+        if (m.streaming) {
+          // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧把已揭示文本截断）。
+          if (content.length >= (cur.content ?? '').length) {
+            t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+          }
+        } else {
+          // 完整 / 终态：用权威全文直接覆盖本端回复。
+          t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+          this.remoteStreaming[sid] = false; // 收尾，下一轮重新追加
+        }
       }
     }
     this.threads[sid] = t;
