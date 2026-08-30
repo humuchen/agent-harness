@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getHistoryStore } from './history-store';
+import { publishChatEvent } from './chat-bus';
 
 /** 无归属旧数据的兜底桶（仅服务端保留，普通用户不可见）。 */
 export const LEGACY_OWNER = 'legacy';
@@ -207,6 +208,10 @@ export function createChatSession(title?: string, owner = LEGACY_OWNER): ChatSes
   };
   sessions.set(session.id, session);
   persist();
+  // 跨设备广播：其它端实时看到新会话（左侧栏即时出现）。
+  if (owner && owner !== LEGACY_OWNER) {
+    publishChatEvent(owner, { type: 'session:list' });
+  }
   return session;
 }
 
@@ -249,6 +254,15 @@ export async function renameChatSession(
   s.title = title?.trim() || s.title;
   s.updatedAt = Date.now();
   persist();
+  // 跨设备广播：其它端标题/时间实时同步（不重发全量消息）。
+  if (owner && owner !== LEGACY_OWNER) {
+    publishChatEvent(owner, {
+      type: 'session:meta',
+      session: id,
+      title: s.title,
+      updatedAt: s.updatedAt
+    });
+  }
   // 同步写回历史镜像（SQLite），保证镜像中的标题也更新（镜像为主持久化层）。
   try {
     const store = getHistoryStore();
@@ -281,6 +295,10 @@ export async function deleteChatSession(
   if (s && owner && s.owner !== owner) return false;
   const ok = sessions.delete(id);
   if (ok) persist();
+  // 跨设备广播：其它端列表实时移除该会话。
+  if (owner && owner !== LEGACY_OWNER) {
+    publishChatEvent(owner, { type: 'session:remove', session: id });
+  }
   // 同步清理历史镜像（镜像为主持久化层）；Map 未命中也尝试删镜像。
   let mirrorOk = false;
   try {
@@ -301,7 +319,8 @@ export async function deleteChatSession(
 export function appendChatMessage(
   id: string,
   msg: ChatMessage,
-  owner = LEGACY_OWNER
+  owner = LEGACY_OWNER,
+  origin = ''
 ): ChatSession | null {
   load();
   let s = sessions.get(id);
@@ -322,6 +341,15 @@ export function appendChatMessage(
     }
   }
   persist();
+  // 跨设备广播：其它端实时收到增量消息（本端本地已乐观插入，按 origin 去重回声）。
+  if (owner && owner !== LEGACY_OWNER) {
+    publishChatEvent(owner, {
+      type: 'message:append',
+      session: id,
+      message: msg,
+      origin
+    });
+  }
   return s;
 }
 

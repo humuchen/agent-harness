@@ -90,6 +90,8 @@ import {
 } from './chat-sessions';
 // 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
 import { getHistoryStore } from './history-store';
+// 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
+import { subscribeChatEvents, chatSubscriberCount } from './chat-bus';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
@@ -1337,6 +1339,39 @@ const server = createServer(
         return sendJson(res, { ok }, req);
       }
 
+      /* ------------- 聊天实时广播通道（跨设备 / 跨标签页同步） ------------- */
+      // 前端登录后建立一条常驻 SSE：按 owner 订阅 chat-bus，把本账户其它端写入的
+      // 消息/标题/删除事件实时推回。单实例走进程内 fanout，多实例（有 Redis）走
+      // chat-bus 的 pub/sub 桥自动跨实例转发。心跳保活，断线由前端按游标重连。
+      if (req.method === 'GET' && path === '/api/chat/stream') {
+        const ctx = await guard(req, res, 'chat:read');
+        if (!ctx) return;
+        if (ctx.sub === 'anon') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(
+            JSON.stringify({ error: 'authentication required for chat stream' })
+          );
+        }
+        const send = startSse(res, req);
+        // 连接建立即时确认，便于前端判定通道已就绪。
+        send({ type: 'chat:ready', owner: ctx.sub });
+        const unsub = subscribeChatEvents(ctx.sub, (e) => {
+          try {
+            send(e);
+          } catch {
+            /* 连接已断，unsub 在 close 时执行 */
+          }
+        });
+        res.on('close', () => {
+          try {
+            unsub();
+          } catch {
+            /* 重复 unsub 安全 */
+          }
+        });
+        return;
+      }
+
       /* ------------- 聊天历史镜像 CRUD（ah_chat_history 接口层） ------------- */
       // 前端不再直写 localStorage：历史容错镜像统一经本组端点落到 ChatHistoryStore
       // （默认 SQLite 临时持久化，HISTORY_BACKEND/HISTORY_DB_FILE 可调，预留正式数据库扩展）。
@@ -2525,7 +2560,7 @@ async function handleRun(
               content: `📋 ${plan.goal}`,
               ts: Date.now(),
               plan
-            }, ctx.sub);
+            }, ctx.sub, body.origin || '');
           }
           return;
         }
@@ -2613,7 +2648,7 @@ async function handleRun(
                   )
               }
             : {})
-        }, ctx.sub);
+        }, ctx.sub, body.origin || '');
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
         // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
         const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
@@ -2705,7 +2740,7 @@ async function handleRun(
             reasoning: reasoningBuf || undefined,
             tools: toolMap.size ? [...toolMap.values()] : undefined,
             trace: traceRoot ? [traceRoot] : undefined
-          }, ctx.sub);
+          }, ctx.sub, body.origin || '');
         }
       }
     }

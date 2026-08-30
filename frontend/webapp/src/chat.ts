@@ -2,7 +2,9 @@ import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
-import { client, authedFetch } from './api';
+import { client, authedFetch, getUsername } from './api';
+// 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
+import { startChatSync, stopChatSync, MY_ORIGIN, type ChatSyncEvent } from './chat-sync';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
@@ -624,6 +626,12 @@ export class AhChat extends LitElement {
     } catch {
       /* ignore */
     }
+    // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
+    // 已登录（本地有用户名）才启动；未登录（匿名）无 owner，服务端会 401，无需连接。
+    if (getUsername()) {
+      window.addEventListener('ah-chat-sync', this.onChatSync as EventListener);
+      startChatSync(getUsername());
+    }
   }
 
   disconnectedCallback() {
@@ -631,11 +639,149 @@ export class AhChat extends LitElement {
     window.removeEventListener('keydown', this.onPreviewKeydown);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    // 跨设备实时同步：组件卸载时停掉常驻 SSE 并移除事件监听（避免泄漏/重复订阅）。
+    window.removeEventListener('ah-chat-sync', this.onChatSync as EventListener);
+    stopChatSync();
     if (this.watchTimer) {
       clearInterval(this.watchTimer);
       this.watchTimer = null;
     }
     this.cancelComposerLongPress();
+  }
+
+  /**
+   * 消费 chat-sync.ts 经 window CustomEvent 派发的跨设备同步事件。
+   * 四类事件：session:list（重拉列表）/ session:meta（标题时间）/ session:remove（删除）/
+   * message:append（增量消息）。本端自己发出的回声（origin===MY_ORIGIN）由服务端不广播给
+   * 发送端、且前端发送时已本地乐观插入，故此处收到的 message:append 一律视为「他端」增量，
+   * 按内容去重后追加，绝不重复渲染。
+   */
+  private onChatSync = (ev: Event) => {
+    const e = (ev as CustomEvent<ChatSyncEvent>).detail;
+    if (!e || typeof e !== 'object') return;
+    switch (e.type) {
+      case 'session:list':
+        // 新建/批量变更：重拉列表（带超时容错），与 connectedCallback 同款降级。
+        void this.refreshSessions();
+        break;
+      case 'session:meta':
+        // 标题/时间变更：原地更新列表项，无需重拉全量。
+        this.patchSessionMeta(e.session, e.title, e.updatedAt);
+        break;
+      case 'session:remove':
+        this.removeSessionFromList(e.session);
+        break;
+      case 'message:append':
+        // 他端写入的增量消息：去重后追加到对应会话线程。
+        this.appendRemoteMessage(e.session, e.message);
+        break;
+      default:
+        break;
+    }
+  };
+
+  /** 跨设备：重拉会话列表（容错降级，与 connectedCallback 一致）。 */
+  private async refreshSessions() {
+    try {
+      const list = await withTimeout(client.listChatSessions(), 6000, '同步会话列表');
+      const mapped = list.map((s: ChatSession) => ({
+        id: s.id,
+        title: s.title,
+        updatedAt: s.updatedAt
+      }));
+      this.sessions = [...mapped];
+      // 用本地镜像索引补齐（服务端列表为空/缺项时历史会话仍可见）。
+      const known = new Set(this.sessions.map((s) => s.id));
+      const idx = await loadIndex();
+      const extra = Object.entries(idx)
+        .filter(([sid]) => !known.has(sid))
+        .map(([sid, m]) => ({
+          id: sid,
+          title: m.title,
+          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt
+        }));
+      if (extra.length) this.sessions = [...this.sessions, ...extra];
+    } catch {
+      /* 同步失败不阻断：下一次 enter/列表交互会重试 */
+    }
+  }
+
+  /** 跨设备：原地更新列表中某会话的标题与时间（不重排，仅刷字段）。 */
+  private patchSessionMeta(sid: string, title: string, updatedAt: number) {
+    let changed = false;
+    this.sessions = this.sessions.map((s) => {
+      if (s.id !== sid) return s;
+      changed = true;
+      return { ...s, title: title || s.title, updatedAt };
+    });
+    if (!changed) {
+      // 列表里没有该会话（如他端新建后本端尚未见）：加入入口。
+      this.sessions = [...this.sessions, { id: sid, title, updatedAt }];
+    }
+  }
+
+  /** 跨设备：从列表中移除被他端删除的会话；若正打开则回退到空。 */
+  private removeSessionFromList(sid: string) {
+    this.sessions = this.sessions.filter((s) => s.id !== sid);
+    if (this.activeId === sid) {
+      this.activeId = '';
+      this.messages = [];
+      try {
+        localStorage.removeItem('ah_active_id');
+      } catch {
+        /* ignore */
+      }
+    }
+    // 同时清理本地线程缓冲与镜像，避免残留。
+    delete this.threads[sid];
+    void purgeSessionMirror(sid).catch(() => {});
+  }
+
+  /**
+   * 跨设备：把他端追加的消息写入对应会话线程（去重后增量插入）。
+   * 去重依据：同会话末尾已存在「role 相同且内容完全相同」的消息则跳过（防重放/回声）。
+   * 若当前正显示该会话，则同步刷新 this.messages 触发重渲染。
+   */
+  private appendRemoteMessage(sid: string, raw: unknown) {
+    if (!raw || typeof raw !== 'object') return;
+    const m = raw as Partial<ChatMessage> & { role?: string; content?: string };
+    const role: 'user' | 'assistant' =
+      m.role === 'user' ? 'user' : 'assistant';
+    const content = typeof m.content === 'string' ? m.content : '';
+    const t = this.threadFor(sid);
+    const last = t[t.length - 1];
+    if (
+      last &&
+      last.role === role &&
+      (last.content ?? '') === content &&
+      content.length > 0
+    ) {
+      // 末尾已是相同内容：视为重复，跳过。
+      return;
+    }
+    const msg: ChatMsg = {
+      id: this.nextId++,
+      role,
+      content,
+      ...(typeof m.reasoning === 'string' && m.reasoning
+        ? { reasoning: m.reasoning }
+        : {}),
+      ...(Array.isArray(m.tools) && m.tools.length
+        ? { tools: m.tools as ToolView[] }
+        : {}),
+      ...(Array.isArray(m.trace) && m.trace.length
+        ? { trace: m.trace as TraceNode[] }
+        : {})
+    };
+    t.push(msg);
+    this.threads[sid] = t;
+    // 刷新列表项时间（按该会话 updatedAt 兜底为 now）。
+    this.patchSessionMeta(
+      sid,
+      (this.sessions.find((s) => s.id === sid)?.title) ?? '',
+      typeof m.ts === 'number' ? m.ts : Date.now()
+    );
+    if (this.activeId === sid) this.messages = t;
   }
 
   /**
@@ -1393,7 +1539,9 @@ export class AhChat extends LitElement {
       planPhase:
         this.interactionMode === 'plan' && !opts.planTask
           ? 'propose'
-          : undefined
+          : undefined,
+      // 设备指纹：服务端跨设备广播据此区分本端回声与他端消息，前端按 origin 去重。
+      origin: MY_ORIGIN
     };
     // 断连后「重新连接」按钮需要原始入参（服务端 job 过期时无法仅凭 jobId 恢复）。
     this.lastInputBy[sessionId] = input;
