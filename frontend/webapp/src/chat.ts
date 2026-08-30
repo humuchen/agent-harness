@@ -1581,11 +1581,27 @@ export class AhChat extends LitElement {
       this.persistActiveId(this.activeId);
       return this.activeId;
     }
-    const s = await client.createChatSession('新对话');
+    const s = await client.createChatSession('新对话', {
+      interactionMode: this.interactionMode,
+      model: this.model,
+      agentId: this.agentId
+    });
     this.activeId = s.id;
     this.persistActiveId(s.id);
+    // 新建会话即带上当前默认设置，确保它端首次见到该会话时已对齐。
+    this.sessionSettings = {
+      ...this.sessionSettings,
+      [s.id]: { interactionMode: s.interactionMode, model: s.model, agentId: s.agentId }
+    };
     this.sessions = [
-      { id: s.id, title: s.title, updatedAt: s.updatedAt },
+      {
+        id: s.id,
+        title: s.title,
+        updatedAt: s.updatedAt,
+        interactionMode: s.interactionMode,
+        model: s.model,
+        agentId: s.agentId
+      },
       ...this.sessions
     ];
     return s.id;
