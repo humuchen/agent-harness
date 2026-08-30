@@ -127,6 +127,8 @@ export class AhApp extends LitElement {
     label: string;
     short: string;
   }> = [];
+  /** 正在加载（服务端实时渲染）的插件 Tab id；非空时内容区显示骨架屏。 */
+  @state() private pluginLoading: string | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -209,10 +211,14 @@ export class AhApp extends LitElement {
    * 之后点击 Tab 注入的是旧快照（如「客资看板」首次进入无数据、需手动刷新才出现）。
    * 这里点击时重新拉取，保证每次进入都看到最新数据；拉取失败则回退旧快照，不阻断切换。
    */
-  private async openPluginTab(id: string) {
-    await this.loadPluginViews();
+  private openPluginTab(id: string) {
+    // 先即时切换 Tab（高亮 + 骨架屏），再异步拉取，消除「点击后无反应」等待感。
     this.setTab(id);
     this.closeDrawer();
+    this.pluginLoading = id;
+    void this.loadPluginViews().finally(() => {
+      if (this.pluginLoading === id) this.pluginLoading = null;
+    });
   }
 
   private refreshState() {
@@ -388,7 +394,15 @@ export class AhApp extends LitElement {
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">
-                  ${unsafeHTML(pluginUIRegistry.getHtml(this.tab))}
+                  ${this.pluginLoading === this.tab
+                    ? html`<div class="skeleton">
+                        <div class="sk-line" style="width:40%"></div>
+                        <div class="sk-line" style="width:90%"></div>
+                        <div class="sk-line" style="width:80%"></div>
+                        <div class="sk-line" style="width:95%"></div>
+                        <div class="sk-line" style="width:60%"></div>
+                      </div>`
+                    : unsafeHTML(pluginUIRegistry.getHtml(this.tab))}
                 </div>`
               : ''}
           </main>
