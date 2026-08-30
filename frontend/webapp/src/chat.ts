@@ -4,7 +4,12 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { ref, createRef } from 'lit/directives/ref.js';
 import { client, authedFetch, getUsername } from './api';
 // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
-import { startChatSync, stopChatSync, MY_ORIGIN, type ChatSyncEvent } from './chat-sync';
+import {
+  startChatSync,
+  stopChatSync,
+  MY_ORIGIN,
+  type ChatSyncEvent
+} from './chat-sync';
 import { AhModal } from './components/ah-modal';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
@@ -640,7 +645,10 @@ export class AhChat extends LitElement {
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     // 跨设备实时同步：组件卸载时停掉常驻 SSE 并移除事件监听（避免泄漏/重复订阅）。
-    window.removeEventListener('ah-chat-sync', this.onChatSync as EventListener);
+    window.removeEventListener(
+      'ah-chat-sync',
+      this.onChatSync as EventListener
+    );
     stopChatSync();
     if (this.watchTimer) {
       clearInterval(this.watchTimer);
@@ -672,8 +680,8 @@ export class AhChat extends LitElement {
         this.removeSessionFromList(e.session);
         break;
       case 'message:append':
-        // 他端写入的增量消息：去重后追加到对应会话线程。
-        this.appendRemoteMessage(e.session, e.message);
+        // 他端写入的增量消息（含进行中流式快照）：按 origin 忽略本端回声，其余去重后合并。
+        this.appendRemoteMessage(e.session, e.message, e.origin);
         break;
       default:
         break;
@@ -683,7 +691,11 @@ export class AhChat extends LitElement {
   /** 跨设备：重拉会话列表（容错降级，与 connectedCallback 一致）。 */
   private async refreshSessions() {
     try {
-      const list = await withTimeout(client.listChatSessions(), 6000, '同步会话列表');
+      const list = await withTimeout(
+        client.listChatSessions(),
+        6000,
+        '同步会话列表'
+      );
       const mapped = list.map((s: ChatSession) => ({
         id: s.id,
         title: s.title,
@@ -738,47 +750,109 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 跨设备：把他端追加的消息写入对应会话线程（去重后增量插入）。
-   * 去重依据：同会话末尾已存在「role 相同且内容完全相同」的消息则跳过（防重放/回声）。
-   * 若当前正显示该会话，则同步刷新 this.messages 触发重渲染。
+   * 跨设备：把他端追加的消息写入对应会话线程。
+   * - origin===MY_ORIGIN（本端自己的回声）：直接忽略，本端已用本地 run 流渲染，避免重复。
+   * - role==='user'：末尾相同内容则跳过（防重放），否则追加一条。
+   * - role==='assistant' 且带 streaming 标记：进行中增量快照，累积覆盖该会话最后一条
+   *   assistant（仅当更长，防乱序/重复帧覆盖）；无 assistant 占位则先建一条。
+   * - role==='assistant' 带 final 标记（或完整消息无 streaming）：用权威全文覆盖最后一条
+   *   assistant（或追加），收尾本次远程流式。
    */
-  private appendRemoteMessage(sid: string, raw: unknown) {
+  private appendRemoteMessage(sid: string, raw: unknown, origin?: string) {
     if (!raw || typeof raw !== 'object') return;
-    const m = raw as Partial<ChatMessage> & { role?: string; content?: string };
-    const role: 'user' | 'assistant' =
-      m.role === 'user' ? 'user' : 'assistant';
+    // 本端回声：发送端自己的 /api/chat/stream 也会收到 chat-bus 的 fanout，凭 origin 丢弃，
+    // 本端完全依赖本地 run 的 send(e) 流，不使用回声，避免重复/覆盖本地正在流式的内容。
+    if (origin && origin === MY_ORIGIN) return;
+    const m = raw as Partial<ChatMessage> & {
+      role?: string;
+      content?: string;
+      reasoning?: string;
+      streaming?: boolean;
+      final?: boolean;
+    };
+    const role: 'user' | 'assistant' = m.role === 'user' ? 'user' : 'assistant';
     const content = typeof m.content === 'string' ? m.content : '';
     const t = this.threadFor(sid);
-    const last = t[t.length - 1];
-    if (
-      last &&
-      last.role === role &&
-      (last.content ?? '') === content &&
-      content.length > 0
-    ) {
-      // 末尾已是相同内容：视为重复，跳过。
+
+    if (role === 'user') {
+      const last = t[t.length - 1];
+      if (
+        last &&
+        last.role === 'user' &&
+        (last.content ?? '') === content &&
+        content.length > 0
+      ) {
+        return; // 重复，跳过
+      }
+      t.push({
+        id: this.nextId++,
+        role: 'user',
+        content,
+        ...(typeof m.reasoning === 'string' && m.reasoning
+          ? { reasoning: m.reasoning }
+          : {}),
+        ...(Array.isArray(m.tools) && m.tools.length
+          ? { tools: m.tools as ToolView[] }
+          : {}),
+        ...(Array.isArray(m.trace) && m.trace.length
+          ? { trace: m.trace as TraceNode[] }
+          : {})
+      });
+      this.threads[sid] = t;
+      this.patchSessionMeta(
+        sid,
+        this.sessions.find((s) => s.id === sid)?.title ?? '',
+        typeof m.ts === 'number' ? m.ts : Date.now()
+      );
+      if (this.activeId === sid) this.messages = t;
       return;
     }
-    const msg: ChatMsg = {
-      id: this.nextId++,
-      role,
-      content,
-      ...(typeof m.reasoning === 'string' && m.reasoning
-        ? { reasoning: m.reasoning }
-        : {}),
-      ...(Array.isArray(m.tools) && m.tools.length
-        ? { tools: m.tools as ToolView[] }
-        : {}),
-      ...(Array.isArray(m.trace) && m.trace.length
-        ? { trace: m.trace as TraceNode[] }
-        : {})
-    };
-    t.push(msg);
+
+    // assistant：找该会话最后一条 assistant 消息（一次 run 末尾即为 assistant）。
+    let idx = -1;
+    for (let i = t.length - 1; i >= 0; i--) {
+      if (t[i].role === 'assistant') {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) {
+      // 尚无 assistant 占位：建一条（含当前内容，可能是流式首帧或最终全文）。
+      const msg: ChatMsg = {
+        id: this.nextId++,
+        role: 'assistant',
+        content,
+        ...(typeof m.reasoning === 'string' && m.reasoning
+          ? { reasoning: m.reasoning }
+          : {}),
+        ...(Array.isArray(m.tools) && m.tools.length
+          ? { tools: m.tools as ToolView[] }
+          : {}),
+        ...(Array.isArray(m.trace) && m.trace.length
+          ? { trace: m.trace as TraceNode[] }
+          : {})
+      };
+      t.push(msg);
+    } else {
+      const cur = t[idx];
+      const reasoning =
+        typeof m.reasoning === 'string' && m.reasoning
+          ? m.reasoning
+          : cur.reasoning;
+      if (m.streaming) {
+        // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧）。
+        if (content.length >= (cur.content ?? '').length) {
+          t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+        }
+      } else {
+        // 完整 / 终态：用权威全文直接覆盖最后一条 assistant。
+        t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+      }
+    }
     this.threads[sid] = t;
-    // 刷新列表项时间（按该会话 updatedAt 兜底为 now）。
     this.patchSessionMeta(
       sid,
-      (this.sessions.find((s) => s.id === sid)?.title) ?? '',
+      this.sessions.find((s) => s.id === sid)?.title ?? '',
       typeof m.ts === 'number' ? m.ts : Date.now()
     );
     if (this.activeId === sid) this.messages = t;
@@ -2720,7 +2794,9 @@ export class AhChat extends LitElement {
     if (this.sidebarOpen) {
       // 防止打开瞬间触发 scrim 点击导致立即关闭
       this._sidebarJustOpened = true;
-      setTimeout(() => { this._sidebarJustOpened = false; }, 300);
+      setTimeout(() => {
+        this._sidebarJustOpened = false;
+      }, 300);
     }
   }
 
@@ -3788,10 +3864,6 @@ export class AhChat extends LitElement {
               </div>
             </div>
           </div>
-          <!-- <div class="hint">
-            模式：${this.mode} ·
-            token 级流式已开启（打字机效果）· 深度思考/联网为 UI 占位
-          </div> -->
         </div>
       </div>
 

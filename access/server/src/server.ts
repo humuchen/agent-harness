@@ -91,7 +91,7 @@ import {
 // 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
 import { getHistoryStore } from './history-store';
 // 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
-import { subscribeChatEvents, chatSubscriberCount } from './chat-bus';
+import { subscribeChatEvents, publishChatEvent, chatSubscriberCount } from './chat-bus';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
@@ -2068,6 +2068,56 @@ async function handleRun(
     return;
   }
   const send = startSse(res, req);
+  // 跨设备：进行中 assistant 增量的节流广播（让他端实时看到「正在回复…」而非仅最终全文）。
+  // 声明置于 run 事件循环之前，确保整次 run 共享同一累积缓冲与节流游标（否则每次事件
+  // 都重置 streamBuf，增量永不累积）。仅同 owner 的其他在线连接收到；发送端经下方 send(e)
+  // 已收完整流，其回声由前端按 origin 忽略。计划模式 propose 阶段在下方 return 前拦截
+  // token，自然不会进广播（不泄露计划 JSON）。
+  const STREAM_FLUSH_MS = 200;
+  let streamBuf = '';
+  let streamReasoning = '';
+  let lastStreamFlush = 0;
+  const maybeBroadcastStream = (e: any): void => {
+    if (!chatSessionId || !ctx || ctx.sub === 'anon') return;
+    const t = e?.type;
+    if (t === 'llm:token' && typeof e?.delta === 'string') {
+      streamBuf += e.delta;
+    } else if (t === 'llm:reasoning' && typeof e?.delta === 'string') {
+      streamReasoning += e.delta;
+    } else if (t === 'run:end' && e?.final != null) {
+      // 终态：广播完整 final，让他端用权威全文收尾（覆盖此前的增量快照）。
+      publishChatEvent(ctx.sub, {
+        type: 'message:append',
+        session: chatSessionId,
+        message: { role: 'assistant', content: String(e.final), final: true, ts: Date.now() },
+        origin: body.origin || ''
+      });
+      streamBuf = '';
+      streamReasoning = '';
+      return;
+    } else {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastStreamFlush < STREAM_FLUSH_MS) return;
+    lastStreamFlush = now;
+    if (!streamBuf && !streamReasoning) return;
+    publishChatEvent(ctx.sub, {
+      type: 'message:append',
+      session: chatSessionId,
+      message: {
+        role: 'assistant',
+        content: streamBuf,
+        ...(streamReasoning ? { reasoning: streamReasoning } : {}),
+        streaming: true,
+        ts: Date.now()
+      },
+      origin: body.origin || ''
+    });
+    // flush 后清空累积缓冲，下次窗口重新累积（避免重复下发全文）。
+    streamBuf = '';
+    streamReasoning = '';
+  };
   // 兼容前端两种字段名（chat UI 发 prompt，部分旧客户端发 input），避免落到默认示例 prompt。
   const rawPrompt = body.prompt ?? body.input;
   const prompt: string =
@@ -2588,6 +2638,8 @@ async function handleRun(
       return;
     }
     send(e);
+    // 跨设备广播（进行中增量 / 终态全文）：与 send(e) 并列，仅影响其他连接。
+    maybeBroadcastStream(e);
     // 结构化为调用链路追踪树（供深度思考界面可视化 / 复盘）。
     if (chatSessionId) traceHandle(e);
     // 多会话 Chat App：把 run 的首尾事件落盘到会话存储（user 提问 + assistant 回答），
