@@ -334,16 +334,31 @@ export function appendChatMessage(
   }
   s.messages.push(msg);
   s.updatedAt = Date.now();
+  let titleChanged = false;
   if (msg.role === 'user') {
     const userCount = s.messages.filter((m) => m.role === 'user').length;
     if (userCount === 1 && msg.content.trim()) {
       // 首次用户输入作标题：去首尾/内部多余空白与换行，过长截断并加省略号（保存进库）。
       const raw = msg.content.trim().replace(/\s+/g, ' ');
       const TITLE_MAX = 40;
-      s.title = raw.length > TITLE_MAX ? raw.slice(0, TITLE_MAX - 1) + '…' : raw;
+      const newTitle = raw.length > TITLE_MAX ? raw.slice(0, TITLE_MAX - 1) + '…' : raw;
+      if (newTitle !== s.title) {
+        s.title = newTitle;
+        titleChanged = true;
+      }
     }
   }
   persist();
+  // 跨设备广播：首次用户输入改标题时，实时把新标题推给其它端（否则列表项标题空白、
+  // 需手动刷新才从列表接口拉到）。仅标题真正变化时才发，避免无谓广播。
+  if (titleChanged && owner && owner !== LEGACY_OWNER) {
+    publishChatEvent(owner, {
+      type: 'session:meta',
+      session: id,
+      title: s.title,
+      updatedAt: s.updatedAt
+    });
+  }
   // 跨设备广播：其它端实时收到增量消息（本端本地已乐观插入，按 origin 去重回声）。
   if (owner && owner !== LEGACY_OWNER) {
     publishChatEvent(owner, {

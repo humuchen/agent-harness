@@ -872,14 +872,21 @@ export class AhChat extends LitElement {
       } else {
         const reasoning =
           typeof m.reasoning === 'string' && m.reasoning ? m.reasoning : cur.reasoning;
+        // 终态/流式帧同样携带 tools / trace（服务端完整消息含调用链路）：
+        // 必须从 m 合并进来，否则他端同步后「调用链路 / 关键信息」按钮因缺 trace 而不显示。
+        const extra = {
+          ...(reasoning ? { reasoning } : {}),
+          ...(Array.isArray(m.tools) && m.tools.length ? { tools: m.tools as ToolView[] } : {}),
+          ...(Array.isArray(m.trace) && m.trace.length ? { trace: m.trace as TraceNode[] } : {})
+        };
         if (m.streaming) {
           // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧把已揭示文本截断）。
           if (content.length >= (cur.content ?? '').length) {
-            t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+            t[idx] = { ...cur, content, ...extra };
           }
         } else {
-          // 完整 / 终态：用权威全文直接覆盖本端回复。
-          t[idx] = { ...cur, content, ...(reasoning ? { reasoning } : {}) };
+          // 完整 / 终态：用权威全文直接覆盖本端回复（含 tools/trace）。
+          t[idx] = { ...cur, content, ...extra };
           this.remoteStreaming[sid] = false; // 收尾，下一轮重新追加
         }
       }
