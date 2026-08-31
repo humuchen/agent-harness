@@ -5,7 +5,7 @@
  */
 
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { listNotes, saveNote, deleteNote } from './store';
+import { listNotes, saveNote, deleteNote, pendingReminders, upcomingReminders, markNotified } from './store';
 
 function json(res: import('node:http').ServerResponse, code: number, body: unknown): void {
   res.statusCode = code;
@@ -56,5 +56,36 @@ export const memoServerExtension: ServerExtension = {
       const deleted = deleteNote(id);
       json(res, deleted ? 200 : 404, { ok: deleted });
     }) as PluginRouteHandler,
+
+    // GET /api/plugins/memo/reminders -> { pending: 已到期未通知, upcoming: 将来 }
+    // 供前端轮询主动弹通知。
+    '/reminders': ((req, res) => {
+      if (req.method !== 'GET') {
+        return json(res, 405, { error: true, message: 'method not allowed' });
+      }
+      const now = Date.now();
+      json(res, 200, {
+        ok: true,
+        pending: pendingReminders(now).map(toReminderDto),
+        upcoming: upcomingReminders(50).map(toReminderDto),
+      });
+    }) as PluginRouteHandler,
+
+    // POST /api/plugins/memo/reminders/ack?id=xxx -> 标记某提醒已通知（落盘 notified）
+    '/reminders/ack': ((req, res) => {
+      if (req.method !== 'POST') {
+        return json(res, 405, { error: true, message: 'method not allowed' });
+      }
+      const url = new URL(req.url ?? '', 'http://localhost');
+      const id = url.searchParams.get('id');
+      if (!id) return json(res, 400, { error: true, message: 'id required' });
+      const ok = markNotified(id);
+      json(res, 200, { ok, notified: ok });
+    }) as PluginRouteHandler,
   },
 };
+
+/** 提醒 DTO（前端友好的精简字段）。 */
+function toReminderDto(n: { id: string; text: string; tag?: string; remindAt?: number }) {
+  return { id: n.id, text: n.text, tag: n.tag ?? null, remindAt: n.remindAt ?? null };
+}

@@ -174,3 +174,165 @@ test('边界：存储文件损坏时回退为空而非抛错', async () => {
   const after = await reg.call('note_list', {});
   assert.equal(after.total, 1, '损坏恢复后应能正常写入并读出');
 });
+
+// ---------------------------------------------------------------------------
+// 提醒功能：store / 工具解析 / 路由 / 调度器
+// ---------------------------------------------------------------------------
+
+test('提醒：note_save 接受未来 remindAt 并落盘 remindAt/notified=false', async () => {
+  freshDataDir();
+  const reg = new core.ToolRegistry();
+  plugin.registerNoteTools(reg);
+
+  const future = Date.now() + 60_000;
+  const saved = await reg.call('note_save', { text: '开会', remindAt: future, tag: 'work' });
+  assert.equal(saved.ok, true);
+  assert.equal(typeof saved.remindAt, 'number');
+  assert.ok(saved.remindAt >= future - 1, '应回传 remindAt');
+
+  // store 层可查到待提醒（未来时间 → 不在 pending，在 upcoming）
+  const store = require('../dist/store.js');
+  const upcoming = store.upcomingReminders(10);
+  assert.equal(upcoming.length, 1, '未来提醒应出现在即将到来列表');
+  assert.equal(upcoming[0].notified, false, '未触发时应 notified=false');
+});
+
+test('提醒：note_save 拒绝过去/非法 remindAt（忽略提醒，不污染数据）', async () => {
+  freshDataDir();
+  const reg = new core.ToolRegistry();
+  plugin.registerNoteTools(reg);
+
+  const past = await reg.call('note_save', { text: '已过期', remindAt: Date.now() - 1000 });
+  assert.equal(past.ok, true);
+  assert.equal(past.remindAt, null, '过去时间应忽略 remindAt');
+
+  const bad = await reg.call('note_save', { text: '非法', remindAtISO: 'not-a-date' });
+  assert.equal(bad.ok, true);
+  assert.equal(bad.remindAt, null, '非法 ISO 应忽略 remindAt');
+
+  const store = require('../dist/store.js');
+  assert.equal(store.pendingReminders(Date.now()).length, 0, '无待提醒项');
+});
+
+test('提醒：pendingReminders 只返回到期且未 notified 的项；markNotified 去重', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  // 直接写一条已到期的备忘（remindAt 在过去）
+  store.saveNote('到期提醒', 'work', Date.now() - 1000);
+  const due = store.pendingReminders(Date.now());
+  assert.equal(due.length, 1, '到期未通知应被捞回');
+
+  const ok = store.markNotified(due[0].id);
+  assert.equal(ok, true, '首次 ack 应成功');
+  assert.equal(store.pendingReminders(Date.now()).length, 0, 'ack 后不再出现');
+
+  // 重复 ack 幂等
+  const ok2 = store.markNotified(due[0].id);
+  assert.equal(ok2, false, '重复 ack 应返回 false（无变更）');
+});
+
+test('提醒：路由 /reminders 返回 pending+upcoming；/reminders/ack 标记', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  store.saveNote('即将开会', 'work', Date.now() + 30_000);
+  store.saveNote('昨晚的事', 'life', Date.now() - 60_000);
+
+  const ext = plugin.memoServerExtension;
+  const base = 'http://localhost';
+  const mkReq = (url, method = 'GET') => ({ url, method });
+  const collect = () => {
+    let body = '';
+    const res = {
+      statusCode: 0,
+      setHeader() {},
+      end(b) { body = b; },
+    };
+    return { res, get obj() { return JSON.parse(body); } };
+  };
+
+  // GET /reminders
+  {
+    const { res, body } = collect();
+    await ext.mountRoutes['/reminders'](mkReq('/reminders', 'GET'), res);
+    assert.equal(body.ok, true);
+    assert.equal(body.upcoming.length, 1, 'upcoming 应含未来提醒');
+    assert.equal(body.pending.length, 1, 'pending 应含到期提醒');
+  }
+
+  // POST /reminders/ack?id=...
+  {
+    const dueId = store.pendingReminders(Date.now())[0].id;
+    const { res, body } = collect();
+    await ext.mountRoutes['/reminders/ack'](mkReq(`/reminders/ack?id=${dueId}`, 'POST'), res);
+    assert.equal(body.ok, true);
+    assert.equal(body.notified, true, 'ack 应落盘');
+    assert.equal(store.pendingReminders(Date.now()).length, 0, 'ack 后 pending 清空');
+  }
+});
+
+test('提醒：调度器到点 fire 一次（进程内去重）+ 重启自然补发（靠 pendingReminders）', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  const ReminderScheduler = require('../dist/reminder-scheduler.js').ReminderScheduler;
+
+  let fires = 0;
+  const alerts = [];
+  const logger = { info() {}, warn() {} };
+  const sched = new ReminderScheduler(
+    () => { fires++; },
+    (e) => alerts.push(e),
+    logger
+  );
+
+  // 写一条已到期提醒
+  store.saveNote('到点提醒', 'work', Date.now() - 1000);
+
+  // 立即触发一次：应 fire 一次
+  await sched.triggerNow();
+  assert.equal(fires, 1, '到期未通知项应 fire 一次');
+  assert.equal(alerts.length, 0, '正常 fire 不应走 alert 通道');
+
+  // 再次触发：进程内去重，不应重复 fire
+  await sched.triggerNow();
+  assert.equal(fires, 1, '进程内已 fire 过的 id 不应重复触发');
+
+  // 「重启」语义：本进程 firedThisProcess 是内存态，但 store 层 pendingReminders 仍会捞回
+  // （只要前端未 ack 落盘）。这里模拟「前端未 ack」：pending 仍在，新进程会再次 fire。
+  assert.equal(store.pendingReminders(Date.now()).length, 1, '未 ack 时，重启后 pending 仍可被捞回（天然补发）');
+
+  sched.stop();
+});
+
+test('提醒：调度器 fire 抛错走 alert 通道且不中断后续项', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  const ReminderScheduler = require('../dist/reminder-scheduler.js').ReminderScheduler;
+
+  let fires = 0;
+  const alerts = [];
+  const logger = { info() {}, warn() {} };
+  const sched = new ReminderScheduler(
+    () => { fires++; throw new Error('boom'); },
+    (e) => alerts.push(e),
+    logger
+  );
+  store.saveNote('会失败', 'x', Date.now() - 1000);
+  store.saveNote('会成功', 'y', Date.now() - 1000);
+
+  await sched.triggerNow();
+  // 两项都到期：fire 对第一项抛错被捕获，第二项仍执行（fire 计数含失败的也调用了）
+  assert.equal(fires, 2, '两项都应被 fire（失败不阻断后续）');
+  assert.equal(alerts.length, 1, '失败项应走 alert 通道');
+  sched.stop();
+});
+
+test('提醒：前端视图形状新增「待提醒」卡（渲染含 --ah- 令牌）', () => {
+  const store = require('../dist/store.js');
+  store.saveNote('看板提醒', 'idea', Date.now() + 120_000);
+  const view = plugin.memoBoardView;
+  const html = view.render();
+  assert.ok(typeof html === 'string');
+  assert.ok(html.includes('待提醒'), '看板应包含「待提醒」区块');
+  assert.ok(html.includes('--ah-'), '样式应使用 --ah-* 主题令牌');
+});
+

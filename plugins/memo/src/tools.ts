@@ -12,15 +12,35 @@ function errResult(e: unknown): { error: true; message: string } {
   return { error: true, message: e instanceof Error ? e.message : String(e) };
 }
 
+/**
+ * 解析提醒时间：接受 epoch ms（number）或 ISO 字符串（含「明早9点」这类需调用方先换算的）。
+ * 返回 epoch ms；非法 / 过去时间返回 null（调用方据此忽略提醒，不让过期提醒污染数据）。
+ */
+function parseRemindAt(args: Record<string, unknown>): number | null {
+  const raw = args.remindAt;
+  let ms: number | null = null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    ms = raw;
+  } else if (typeof args.remindAtISO === 'string' && args.remindAtISO.trim()) {
+    const t = Date.parse(args.remindAtISO.trim());
+    if (Number.isFinite(t)) ms = t;
+  }
+  if (ms == null || !Number.isFinite(ms)) return null;
+  // 只接受未来时间；过去时间视为无效（避免一保存就立刻触发提醒）。
+  return ms > Date.now() ? Math.floor(ms) : null;
+}
+
 export function registerNoteTools(tools: ToolRegistry): void {
   tools.register(
     'note_save',
-    '保存一条备忘/笔记。传入 text（必填）与可选 tag 分类标签，返回生成的备忘 id。',
+    '保存一条备忘/笔记。传入 text（必填）与可选 tag 分类标签；可选 remindAt（epoch 毫秒）或 remindAtISO（ISO 时间串）设定提醒时间（仅接受未来时间，到点后前端主动弹提醒）。返回生成的备忘 id 与 remindAt。',
     {
       type: 'object',
       properties: {
         text: { type: 'string', description: '备忘内容（必填）' },
         tag: { type: 'string', description: '可选分类标签，如 work / idea' },
+        remindAt: { type: 'number', description: '可选提醒时间（epoch 毫秒，仅未来有效）' },
+        remindAtISO: { type: 'string', description: '可选提醒时间（ISO 8601 字符串，如 2026-09-01T09:00:00，仅未来有效）' },
       },
       required: ['text'],
     },
@@ -28,8 +48,15 @@ export function registerNoteTools(tools: ToolRegistry): void {
       try {
         const text = String(args.text ?? '').trim();
         if (!text) return { error: true, message: 'text 不能为空' };
-        const note = saveNote(text, args.tag ? String(args.tag) : undefined);
-        return { ok: true, id: note.id, text: note.text, tag: note.tag ?? null };
+        const remindAt = parseRemindAt(args);
+        const note = saveNote(text, args.tag ? String(args.tag) : undefined, remindAt ?? undefined);
+        return {
+          ok: true,
+          id: note.id,
+          text: note.text,
+          tag: note.tag ?? null,
+          remindAt: note.remindAt ?? null,
+        };
       } catch (e) {
         return errResult(e);
       }

@@ -3,6 +3,7 @@ import { memoManifest } from './manifest';
 import { registerNoteTools } from './tools';
 import { memoServerExtension } from './server-routes';
 import { memoBoardView } from './web-view';
+import { ReminderScheduler } from './reminder-scheduler';
 
 /**
  * 备忘助手插件模块（PluginModule 主入口）。
@@ -39,7 +40,27 @@ export const memoPlugin: PluginModule = {
   },
 
   async onStart(ctx: PluginContext): Promise<void> {
-    ctx.logger.info('memo plugin started');
+    // 起提醒调度器：进程内每 15s 轮询到期提醒，重启后自然补发（notified 持久化在 notes.json）。
+    // fire 回调仅发事件/日志（真正的用户通知由前端轮询 /api/plugins/memo/reminders 弹窗）。
+    const scheduler = new ReminderScheduler(
+      (r) => {
+        ctx.events.emit({
+          type: 'memo:reminder',
+          plugin: 'memo',
+          noteId: r.id,
+          text: r.text,
+          tag: r.tag ?? null,
+          remindAt: r.remindAt,
+        });
+        ctx.logger.info('memo reminder due', { id: r.id, text: r.text });
+      },
+      (e) => ctx.events.emit(e),
+      ctx.logger,
+    );
+    scheduler.start();
+
+    cleanupFns.push(() => scheduler.stop());
+    ctx.logger.info('memo plugin started (reminder scheduler on)');
   },
 
   async onStop(ctx: PluginContext): Promise<void> {
