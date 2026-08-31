@@ -21,8 +21,8 @@ import {
 import {
   countTraceNodes,
   renderTraceNode,
-  renderConfidence,
-  type MsgTab
+  buildInsights,
+  renderInsights
 } from './chat-trace';
 import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
@@ -175,8 +175,8 @@ export class AhChat extends LitElement {
    * null 表示抽屉关闭。section 决定抽屉内默认展示「调用链路」树还是「关键信息」摘要。
    * 同屏只开一个抽屉，按钮点击即切换目标消息。
    */
-  /** 每条助手消息当前选中的内容 Tab（回答/深度思考/调用链/链路信心）。 */
-  @state() private msgTab: Record<string, MsgTab> = {};
+  @state() private traceDrawerMsg: ChatMsg | null = null;
+  @state() private traceDrawerSection: 'trace' | 'insights' = 'trace';
 
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
@@ -3295,6 +3295,10 @@ export class AhChat extends LitElement {
       sIdx >= 0 &&
       this.messages[sIdx]?.id === m.id &&
       m.role === 'assistant';
+    // 是否展示思考区：仅当模型确实返回了推理内容（流式首 token 到达即出现）。
+    const showThinking = !!m.reasoning;
+    const isThinking = isStreamingAssistant && !m.content;
+    const isAnswering = isStreamingAssistant && !!m.content;
     // 复制按钮：仅在回答已产出内容且非流式进行中时显示。
     const showCopy = !!m.content?.trim() && !isStreamingAssistant;
 
@@ -3335,8 +3339,17 @@ export class AhChat extends LitElement {
             </button>`
           : nothing}
         <div class="bubble">
-          ${this.renderMsgTabs(m, isStreamingAssistant)}
+          ${showThinking && this.deepThink
+            ? this.renderThinking(m, isThinking)
+            : nothing}
+          ${showThinking &&
+          this.deepThink &&
+          (m.content || isStreamingAssistant)
+            ? html`<div class="sep"><span>回答</span></div>`
+            : nothing}
+          ${this.renderAnswer(m, isAnswering, isStreamingAssistant)}
           ${m.plan ? this.renderPlanCard(m) : nothing}
+          ${this.renderExtras(m, isStreamingAssistant)}
         </div>
       </div>
     `;
@@ -3453,76 +3466,96 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 助手消息内容 Tab 切换器：回答 / 深度思考 / 调用链 / 链路信心。
-   * 替代旧「气泡内联合并视图 + 侧滑抽屉」两件套（2026-08-31 重构）。
-   * - 回答：最终回复（renderAnswer，随 llm:token 逐字流式）。
-   * - 深度思考：仅当模型返回推理内容（m.reasoning，受 deepThink 开关门控）时出现，typewriter 逐字。
-   * - 调用链：trace 树（renderTraceNode）；流式进行中显示「生成中」动效。
-   * - 链路信心：verify 自检分 + trace 合成信心（renderConfidence）。
-   * 默认选中：有显式选择沿用之；否则思考流式且尚无回答时选深度思考，其余默认回答。
+   * 渲染 Agent 回复下方的「调用链路 / 关键信息」入口按钮。
+   * 点按钮 → <ah-drawer> 侧滑抽屉展示（不占用主阅读流、移动端更友好）。
+   * 两个分区各一个按钮；点击分别打开抽屉并定位到对应分区。流式进行中给调用链路按钮加动效点。
    */
-  private renderMsgTabs(m: ChatMsg, isStreaming: boolean): TemplateResult {
+  private renderExtras(m: ChatMsg, isStreaming: boolean): TemplateResult {
     const hasTrace = !!(m.trace && m.trace.length > 0);
-    const hasThinking = !!m.reasoning;
-    const tabs: Array<{ key: MsgTab; label: string }> = [
-      { key: 'answer', label: '回答' },
-      ...(hasThinking
-        ? [{ key: 'thinking' as MsgTab, label: '深度思考' }]
-        : []),
-      ...(hasTrace ? [{ key: 'trace' as MsgTab, label: '调用链' }] : []),
-      ...(hasTrace ? [{ key: 'confidence' as MsgTab, label: '链路信心' }] : [])
-    ];
-    if (tabs.length === 0) return html``;
-    const stored = this.msgTab[String(m.id)];
-    const available = !!stored && tabs.some((t) => t.key === stored);
-    let active: MsgTab;
-    if (available) active = stored!;
-    else if (isStreaming && hasThinking && !m.content) active = 'thinking';
-    else if (m.content) active = 'answer';
-    else if (hasThinking) active = 'thinking';
-    else active = 'answer';
-    const isThinking = isStreaming && !m.content;
-    const isAnswering = isStreaming && !!m.content;
+    const insights = hasTrace ? buildInsights(m.trace!) : null;
+    if (!hasTrace && !insights) return html``;
+    const traceIcon = html`<svg
+      class="ticon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="6" cy="6" r="2.4" />
+      <circle cx="18" cy="6" r="2.4" />
+      <circle cx="12" cy="18" r="2.4" />
+      <path d="M7.6 7.6 11 16M16.4 7.6 13 16M8 6h8" />
+    </svg>`;
     return html`
-      <div class="msg-tabs">
-        <div class="msg-tab-bar" role="tablist">
-          ${tabs.map(
-            (t) => html`<button
+      <div class="extras">
+        ${hasTrace
+          ? html`<button
               type="button"
-              role="tab"
-              class="msg-tab ${active === t.key ? 'active' : ''}"
-              aria-selected=${String(active === t.key)}
+              class="extra-btn ${this.traceDrawerMsg === m &&
+              this.traceDrawerSection === 'trace'
+                ? 'active'
+                : ''}"
               @click=${() => {
-                this.msgTab = { ...this.msgTab, [String(m.id)]: t.key };
+                this.traceDrawerMsg = m;
+                this.traceDrawerSection = 'trace';
               }}
             >
-              <span>${t.label}</span>${t.key === 'trace' && hasTrace
-                ? html`<span class="tcount">${countTraceNodes(m.trace!)}</span>`
+              ${traceIcon}<span>调用链路</span
+              ><span class="tcount">${countTraceNodes(m.trace!)} 节点</span>
+              ${isStreaming
+                ? html`<span class="dots"><i></i><i></i><i></i></span>`
                 : nothing}
             </button>`
-          )}
-        </div>
-        <div class="msg-tab-body" role="tabpanel">
-          ${active === 'answer'
-            ? this.renderAnswer(m, isAnswering, isStreaming)
-            : active === 'thinking'
-            ? this.renderThinking(m, isThinking)
-            : active === 'trace'
-            ? html`<div class="trace-body">
-                ${m.trace!.map((n) =>
-                  renderTraceNode(n, undefined, () => this.requestUpdate())
-                )}
-                ${isStreaming
-                  ? html`<div class="trace-live">
-                      调用链路生成中<span class="dots"
-                        ><i></i><i></i><i></i
-                      ></span>
-                    </div>`
-                  : nothing}
-              </div>`
-            : renderConfidence(m.trace!)}
-        </div>
+          : nothing}
+        ${insights
+          ? html`<button
+              type="button"
+              class="extra-btn alt ${this.traceDrawerMsg === m &&
+              this.traceDrawerSection === 'insights'
+                ? 'active'
+                : ''}"
+              @click=${() => {
+                this.traceDrawerMsg = m;
+                this.traceDrawerSection = 'insights';
+              }}
+            >
+              <span>关键信息</span>
+            </button>`
+          : nothing}
       </div>
+    `;
+  }
+
+  /** 调用链路 / 关键信息 抽屉：展示当前选中消息的追踪树与洞察摘要。
+   *  始终渲染 <ah-drawer>（open 绑定到是否有选中消息），关闭时由组件自放离场动画，
+   *  父级仅在 close 事件后才清空 traceDrawerMsg，保证滑出动画完整可见。 */
+  private renderTraceDrawer(): TemplateResult {
+    const m = this.traceDrawerMsg;
+    const title = this.traceDrawerSection === 'trace' ? '调用链路' : '关键信息';
+    return html`
+      <ah-drawer
+        ?open=${m !== null}
+        placement="right"
+        title=${title}
+        size="500px"
+        @close=${() => (this.traceDrawerMsg = null)}
+      >
+        ${m && m.trace && m.trace.length > 0
+          ? html`<div class="trace-drawer">
+              ${this.traceDrawerSection === 'trace'
+                ? html`<div class="trace-body">
+                    ${m.trace.map((n) =>
+                      renderTraceNode(n, undefined, () => this.requestUpdate())
+                    )}
+                  </div>`
+                : html`<div class="insights">
+                    ${renderInsights(buildInsights(m.trace))}
+                  </div>`}
+            </div>`
+          : nothing}
+      </ah-drawer>
     `;
   }
 
@@ -4163,6 +4196,7 @@ export class AhChat extends LitElement {
             </div>
           </div>`
         : nothing}
+      ${this.renderTraceDrawer()}
     `;
   }
 }
