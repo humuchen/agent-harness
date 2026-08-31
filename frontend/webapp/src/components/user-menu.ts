@@ -19,8 +19,11 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { fetchMe, logout, changePassword } from '../api';
 import { notify } from './ah-notification';
-import { notifyError } from '../utils/errors';
 import { validateChangePassword } from '../utils/auth-validation';
+
+/** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
+// @ts-ignore - vite define 注入
+const APP_VERSION = __APP_VERSION__;
 
 // 角色 → 中文 + 徽标配色（延续 styles.ts 的 .role-badge 视觉）。
 const ROLE_LABEL: Record<string, string> = {
@@ -235,6 +238,15 @@ export class AhUserMenu extends LitElement {
     .item:focus-visible {
       outline: 2px solid var(--ah-accent);
       outline-offset: -2px;
+    }
+
+    /* 版本信息页脚 */
+    .ver {
+      padding: 7px 12px 9px;
+      border-top: 1px solid var(--ah-border);
+      font-size: 11px;
+      font-family: var(--ah-font-mono);
+      color: var(--ah-text-faint);
     }
 
     /* ── 改密模态（内联，复用 ah-modal 视觉，自行控制校验/关闭）── */
@@ -553,6 +565,7 @@ export class AhUserMenu extends LitElement {
                   ${this.logoutIcon()}<span class="label">退出登录</span>
                 </button>
               </div>
+              <div class="ver">Agent Harness v${APP_VERSION}</div>
             </div>
           `
         : ''}

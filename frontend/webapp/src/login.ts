@@ -36,6 +36,10 @@ import {
   type RegisterForm
 } from './utils/auth-validation';
 
+/** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
+// @ts-ignore - vite define 注入
+const APP_VERSION = __APP_VERSION__;
+
 /* ------------------------------ 智能体网络 mesh 数据 ------------------------------ */
 
 interface NetNode {
@@ -1823,7 +1827,7 @@ export class AhLogin extends LitElement {
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
             <span>Agent Harness</span>
-            <span class="brand-ver">v2.0</span>
+            <span class="brand-ver">v${APP_VERSION}</span>
           </div>
           <div class="status-chip">
             <span class="chip-dot"></span>实时编排中

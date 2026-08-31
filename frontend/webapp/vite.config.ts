@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
+import pkg from './package.json';
 
 // 构建产物默认输出到 dist/（frontend/webapp/dist），
 // 由 access/server 服务端同源托管（server.ts 优先读取该目录）。
@@ -14,10 +15,12 @@ export default defineConfig(({ mode }) => {
       // 要求：仓库根 .env 中 AH_CRYPTO_KEY 为 64 位十六进制字符串（32 bytes），
       // 与服务端解密（custom-models.ts 读同名环境变量）共用同一值。
       __AH_CRYPTO_KEY__: JSON.stringify(rootEnv.AH_CRYPTO_KEY || ''),
+      // build-time 注入应用版本号，取自 package.json（login.ts 展示用）。
+      __APP_VERSION__: JSON.stringify(pkg.version)
     },
     build: {
       // 输出为可直接被 node:http 静态托管的纯静态资源（无 SSR）。
-      target: 'es2022',
+      target: 'es2022'
     },
     // history 路由回退：dev 模式下 /chat 等深链接刷新时返回 index.html，
     // 与生产端 server.ts 的 SPA fallback 行为保持一致。
@@ -28,9 +31,9 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: process.env.AH_API_TARGET || 'http://localhost:4173',
-          changeOrigin: true,
-        },
-      },
-    },
+          changeOrigin: true
+        }
+      }
+    }
   };
 });
