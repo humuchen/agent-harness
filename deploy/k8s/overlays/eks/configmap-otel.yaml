@@ -1,0 +1,17 @@
+# R7 可观测性接入：注入 OTLP 环境变量，让 agent-harness 把 traces/metrics/logs
+# 发往 harness-env-platform 的 OpenTelemetry Collector（DaemonSet，OTLP gRPC :4317）。
+#
+# 端点说明：Collector 由 env-platform/observability/otel-collector.yaml 部署，
+# 默认命名空间 observability、Service 名 otel-collector。若你的部署用了别的
+# 命名空间/Service 名，请改下方 endpoint。端点不可达时 OTel SDK 静默丢弃，
+# 不影响业务进程。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4317"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+  OTEL_SERVICE_NAME: "agent-harness"
+  OTEL_RESOURCE_ATTRIBUTES: "service.namespace=agent-harness,deployment.environment=eks"

@@ -582,7 +582,7 @@ export class AhLogin extends LitElement {
       .hud-corner {
         position: absolute;
         width: 28px;
-        height: 28px;
+        height: var(--ah-h-lg);
         border: 1px solid color-mix(in srgb, var(--ah-accent) 62%, transparent);
       }
       .hud-corner.tl {
@@ -1268,7 +1268,7 @@ export class AhLogin extends LitElement {
         }
         .brand-mark .logo {
           width: 28px;
-          height: 28px;
+          height: var(--ah-h-lg);
         }
         .brand-head {
           margin-top: 16px;

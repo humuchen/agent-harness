@@ -150,6 +150,8 @@ export class LocalSandboxExecutor implements SandboxExecutor {
 export interface ContainerSandboxOptions {
   /** 容器运行时：docker 或 podman（默认 docker）。 */
   backend?: 'docker' | 'podman';
+  /** 显式指定运行时可执行文件名，覆盖 backend 推导（常用于测试或自定义 runtime）。缺失时按 backend 推导。 */
+  bin?: string;
   /** 镜像（默认 alpine:latest）。应预先 docker pull 或配置 always-pull 策略。 */
   image?: string;
   /** 内存上限（MB），--memory。默认 256。 */
@@ -178,7 +180,7 @@ export interface ContainerSandboxOptions {
  * --pids-limit（资源封顶）；仅把已锁定的工作目录挂载进 /work 并设为工作目录。
  */
 export function buildContainerArgs(o: ContainerSandboxOptions, req: SandboxExecRequest): string[] {
-  const bin = o.backend === 'podman' ? 'podman' : 'docker';
+  const bin = o.bin ?? (o.backend === 'podman' ? 'podman' : 'docker');
   const args: string[] = [bin, 'run', '--rm', '-i'];
   const network = o.network ?? 'none';
   if (network === 'none') args.push('--network', 'none');
@@ -205,7 +207,7 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
 
   exec(req: SandboxExecRequest): Promise<SandboxExecResult> {
     const args = buildContainerArgs(this.opts, req);
-    const bin = this.opts.backend === 'podman' ? 'podman' : 'docker';
+    const bin = this.opts.bin ?? (this.opts.backend === 'podman' ? 'podman' : 'docker');
     return new Promise<SandboxExecResult>((resolve) => {
       // 与 LocalSandboxExecutor 一致：finish 幂等，避免 ENOENT 时「error 事件触发降级」与
       // 紧随的「close 事件（code -2）」双重 resolve —— 否则会抢先以空结果结束 Promise，

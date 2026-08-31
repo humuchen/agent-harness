@@ -39,7 +39,7 @@ export class AhAgentPicker extends LitElement {
       color: var(--ah-accent, #2997ff);
       font-size: 12px;
       font-weight: 500;
-      height: 28px;
+      height: var(--ah-h-lg);
       padding: 0 12px;
       border-radius: 16px;
       cursor: pointer;

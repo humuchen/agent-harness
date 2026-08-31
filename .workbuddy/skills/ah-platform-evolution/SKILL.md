@@ -60,4 +60,4 @@ Smoke the server: `node access/server/dist/server.js`, then `curl localhost:<por
 - `architecture.md` — concrete file/function anchors, type signatures, the `assembleAgent` narrowing pattern, the `NetworkPolicy`/`checkEgress` egress-control design, industry profile map (finance/medical/education), and the existing P0 baseline (agents/router/tenant/policy) to build P1 (workflow/a2a/plugin) on top of.
 
 ### scripts/
-- `build-and-test.sh` — runs the exact compile + full core test sequence above. Use it after every change to confirm a clean build and green suite.
+- `build-and-test.sh` — auto-detected toolchain (REPO_ROOT found by walking up to `pnpm-workspace.yaml`; tsc resolved to the installed `node_modules/.bin/tsc` and invoked directly, never auto-installs). Subcommands: `core` / `server` / `test` / `lint` / `all`. `test` **先离线构建 core+server 再跑 node --test**（避免 stale `dist` 造成假性失败——`dist` 过期会让测试挂掉但退出码仍由 `set -e` 透传）；`all` = build+test+lint for `backend/core` + `access/server`; `lint` auto-selects eslint > prettier > `tsc --noEmit`. Use it after every change to confirm a clean build and green suite.

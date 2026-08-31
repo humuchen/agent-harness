@@ -48,7 +48,8 @@ export const chatStyles = [
     }
     .collapse-btn {
       width: 28px;
-      height: 28px;
+      height: var(--ah-h-lg);
+      line-height: 28px;
       padding: 0;
       border-radius: 6px;
       border: 1px solid var(--ah-border);
@@ -624,7 +625,7 @@ export const chatStyles = [
       align-items: center;
       justify-content: center;
       width: 26px;
-      height: 26px;
+      height: var(--ah-h-md);
       padding: 0;
       border: none;
       border-radius: 6px;
@@ -2154,7 +2155,7 @@ export const chatStyles = [
       .avatar {
         flex: 0 0 26px;
         width: 26px;
-        height: 26px;
+        height: var(--ah-h-md);
         font-size: 12px;
       }
       .msg {
@@ -2174,7 +2175,7 @@ export const chatStyles = [
       }
       .toggle {
         width: 28px;
-        height: 28px;
+        height: var(--ah-h-lg);
       }
       .toggle svg {
         width: 14px;
@@ -2514,7 +2515,7 @@ export const chatStyles = [
       font-size: 22px;
       flex-shrink: 0;
       width: 28px;
-      height: 28px;
+      height: var(--ah-h-lg);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -2631,7 +2632,7 @@ export const chatStyles = [
       align-items: center;
       justify-content: center;
       width: 22px;
-      height: 22px;
+      height: var(--ah-h-sm);
       border-radius: 50%;
       cursor: pointer;
       color: var(--ah-text-muted);
@@ -2649,7 +2650,7 @@ export const chatStyles = [
       .attach-preview-item {
         max-width: 140px;
         min-width: 90px;
-        height: 28px;
+        height: var(--ah-h-lg);
         padding: 3px 26px 3px 5px;
       }
       .attach-thumb {
@@ -2974,7 +2975,7 @@ export const chatStyles = [
     }
     .pt-mark {
       width: 22px;
-      height: 22px;
+      height: var(--ah-h-sm);
       border-radius: 50%;
       display: inline-flex;
       align-items: center;
@@ -3044,6 +3045,214 @@ export const chatStyles = [
       background: var(--ah-surface-2);
       color: var(--ah-text);
       border: none;
+    }
+
+    /* ---- 助手消息内容 Tab 切换器（回答 / 深度思考 / 调用链 / 链路信心） ---- */
+    .msg-tabs {
+      margin-top: 4px;
+    }
+    .msg-tab-bar {
+      display: flex;
+      gap: 2px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--ah-border);
+      scrollbar-width: none;
+    }
+    .msg-tab-bar::-webkit-scrollbar {
+      display: none;
+    }
+    .msg-tab {
+      appearance: none;
+      -webkit-appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted);
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      padding: 7px 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .msg-tab:hover {
+      color: var(--ah-text);
+    }
+    .msg-tab.active {
+      color: var(--ah-accent);
+      border-bottom-color: var(--ah-accent);
+    }
+    .msg-tab .tcount {
+      font-weight: 400;
+      font-size: 11px;
+      color: var(--ah-text-muted);
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      border-radius: 999px;
+      padding: 1px 7px;
+    }
+    .msg-tab-body {
+      padding: 10px 2px 2px;
+      max-height: 440px;
+      overflow: auto;
+    }
+    .msg-tab-body::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .msg-tab-body::-webkit-scrollbar-thumb {
+      background: var(--ah-border);
+      border-radius: 999px;
+    }
+    .trace-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      font-size: 12.5px;
+      font-style: italic;
+      color: var(--ah-text-muted);
+      animation: replying-pulse 1.5s ease-in-out infinite;
+    }
+
+    /* ---- 链路信心 Tab ---- */
+    .confidence {
+      --conf: var(--ah-accent);
+      border: 1px solid var(--ah-border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: var(--ah-surface-2);
+    }
+    .confidence.level-high {
+      --conf: rgba(46, 204, 113, 0.95);
+    }
+    .confidence.level-mid {
+      --conf: rgba(245, 180, 70, 0.95);
+    }
+    .confidence.level-low {
+      --conf: rgba(239, 90, 90, 0.95);
+    }
+    .conf-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .conf-score {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 3px;
+      color: var(--conf);
+    }
+    .conf-num {
+      font-size: 30px;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .conf-unit {
+      font-size: 13px;
+      opacity: 0.8;
+    }
+    .conf-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .conf-level {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--conf);
+    }
+    .conf-badge {
+      align-self: flex-start;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--ah-border);
+      color: var(--ah-text-muted);
+    }
+    .conf-badge.ok {
+      color: rgba(46, 204, 113, 0.95);
+      border-color: rgba(46, 204, 113, 0.4);
+    }
+    .conf-badge.err {
+      color: rgba(239, 90, 90, 0.95);
+      border-color: rgba(239, 90, 90, 0.4);
+    }
+    .conf-badge.synth {
+      color: var(--ah-text-muted);
+    }
+    .conf-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .conf-row {
+      display: grid;
+      grid-template-columns: 76px 1fr 42px;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .conf-name {
+      color: var(--ah-text-muted);
+    }
+    .conf-track {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      overflow: hidden;
+    }
+    .conf-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--ah-accent);
+      transition: width 0.4s ease;
+    }
+    .conf-fill.warn {
+      background: rgba(239, 90, 90, 0.85);
+    }
+    .conf-val {
+      text-align: right;
+      color: var(--ah-text);
+      font-variant-numeric: tabular-nums;
+    }
+    .conf-reasons {
+      margin-top: 12px;
+      border-top: 1px solid var(--ah-border);
+      padding-top: 8px;
+    }
+    .conf-reasons summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--ah-text-muted);
+      list-style: none;
+    }
+    .conf-reasons summary::-webkit-details-marker {
+      display: none;
+    }
+    .conf-reasons pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--ah-text);
+      background: var(--ah-surface-1, var(--ah-surface-2));
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .conf-note {
+      margin-top: 10px;
+      font-size: 11.5px;
+      color: var(--ah-text-muted);
+      opacity: 0.85;
     }
   `
 ];

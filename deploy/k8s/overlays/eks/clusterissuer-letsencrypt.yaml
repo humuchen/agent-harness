@@ -1,0 +1,19 @@
+# Let's Encrypt ClusterIssuer（生产源站 HTTPS）。
+# HTTP-01 solver 复用 ingress-nginx（class: nginx，由 Plan A 安装），
+# 与 Ingress 的 tls 段配合，cert-manager 自动完成签发/续期并写入 agent-harness-tls。
+#
+# 前置：base ingress.yaml 的 host 必须是真实、已解析到 ingress-nginx LB 的域名，
+# 否则 HTTP-01 校验失败。本地/内网测试可继续用 selfsigned-issuer（base 默认）。
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key   # cert-manager 自动创建
+    solvers:
+      - http01:
+          ingress:
+            class: nginx

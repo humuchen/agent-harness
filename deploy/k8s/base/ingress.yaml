@@ -1,0 +1,48 @@
+# Ingress：把 agent-harness 暴露到集群外部。
+#
+# 依赖 harness-env-platform 的 app-ready 层（Plan A）提供的集群级能力：
+#   · ingress-nginx      -> ingressClassName: nginx
+#   · cert-manager       -> 源站 HTTPS 自动签发（下方 cluster-issuer）
+#
+# 生产落地三件事（均已在 Plan A / 本清单预留）：
+#   1. 把两处 agent-harness.example.com 换成真实域名（OAuth 回调也用此 host）；
+#   2. 把 cert-manager.io/cluster-issuer 从 selfsigned-issuer 换成 Let's Encrypt
+#      （HTTP-01 solver 复用本 Ingress，cert-manager 已装好）；
+#   3. 若仅内网/测试不想开源站 HTTPS，可删 tls 段并把 ssl-redirect 改 "false"。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+  annotations:
+    # 源站 HTTPS：cert-manager 按 ClusterIssuer 自动签发并写入 agent-harness-tls
+    cert-manager.io/cluster-issuer: selfsigned-issuer
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # SSE 流需长超时
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # R2 加固：多副本下用 cookie 亲和，避免登录会话被其它副本踢掉
+    # （根治方案是共享会话存储，cookie 亲和是零成本的稳妥兜底）
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "ah-session"
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-same-site: "Lax"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - agent-harness.example.com   # TODO: 换成真实域名
+      secretName: agent-harness-tls
+  rules:
+    # host 必填：OAuth 回调与 Let's Encrypt HTTP-01 都需要真实域名（替代原 catch-all）。
+    - host: agent-harness.example.com   # TODO: 换成真实域名
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-harness
+                port:
+                  name: http

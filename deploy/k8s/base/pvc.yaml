@@ -25,4 +25,6 @@ spec:
   resources:
     requests:
       storage: 2Gi
-  # storageClassName: ""   # 取消注释并填入支持 RWX 的 StorageClass 名称
+  # 由 harness-env-platform 的 app-ready 层提供（EFS CSI driver + efs-sc StorageClass，RWX）。
+  # Plan A 的 module.app_ready 已安装此 StorageClass，PVC 不会再 Pending。
+  storageClassName: efs-sc

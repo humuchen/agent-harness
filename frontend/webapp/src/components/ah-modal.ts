@@ -129,7 +129,7 @@ export class AhModal extends LitElement {
     .icon {
       flex: none;
       width: 28px;
-      height: 28px;
+      height: var(--ah-h-lg);
       border-radius: 50%;
       display: flex;
       align-items: center;

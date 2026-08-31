@@ -56,7 +56,7 @@ export const sharedStyles = css`
   .sidebar-toggle {
     margin-left: auto;
     width: 26px;
-    height: 26px;
+    height: var(--ah-h-md);
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -76,7 +76,7 @@ export const sharedStyles = css`
   }
   .logo {
     width: 22px;
-    height: 22px;
+    height: var(--ah-h-sm);
     flex: 0 0 auto;
     display: block;
     color: var(--ah-text);
@@ -532,6 +532,11 @@ export const sharedStyles = css`
   }
   .mcp-server-header:hover .chevron {
     color: var(--ah-text);
+  }
+  .mcp-server-actions .ghost {
+    height: var(--ah-h-lg);
+    padding: 0 10px;
+    font-size: 12px;
   }
   .mcp-tools {
     list-style: none;

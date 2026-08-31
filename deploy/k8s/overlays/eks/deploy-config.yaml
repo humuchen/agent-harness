@@ -1,0 +1,12 @@
+# R6 部署期可注入变量：对外域名（OAuth 回调 / Let's Encrypt HTTP-01 都依赖真实域名）。
+# 改这一个值即可，EKS overlay 的 replacements 会把它写进 Ingress 的
+# spec.rules[0].host 与 spec.tls[0].hosts[0]（见 overlays/eks/kustomization.yaml）。
+#
+# 部署期把 agent-harness.example.com 换成你的真实域名（已解析到 ingress-nginx LB）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-harness-deploy-config
+  namespace: agent-harness
+data:
+  host: "agent-harness.example.com"

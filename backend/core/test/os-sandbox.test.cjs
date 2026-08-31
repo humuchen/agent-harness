@@ -9,6 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');
+const path = require('node:path');
 
 const sandbox = require('../dist/sandbox/index.js');
 const {
@@ -44,7 +45,8 @@ test('detectCapabilities：非 Linux 判定 unsupported 并给出原因', () => 
 
 test('resolveHelperPath：默认路径指向 native 构建产物，env 可覆盖', () => {
   const def = resolveHelperPath();
-  assert.match(def, /native\/sandbox-exec\/build\/sandbox-exec$/);
+  // 跨平台归一化：resolve() 在 Windows 上返回反斜杠路径，正则用正斜杠匹配需先归一化。
+  assert.match(def.split(path.sep).join('/'), /native\/sandbox-exec\/build\/sandbox-exec$/);
   const prev = process.env.HARNESS_SANDBOX_HELPER;
   process.env.HARNESS_SANDBOX_HELPER = '/custom/bin/sandbox-exec';
   assert.strictEqual(resolveHelperPath(), '/custom/bin/sandbox-exec');

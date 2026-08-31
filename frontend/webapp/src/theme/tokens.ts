@@ -34,6 +34,9 @@ const darkTokens = `
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
   --ah-radius-pill: 999px;
+  --ah-h-sm: 22px;
+  --ah-h-md: 26px;
+  --ah-h-lg: 28px;
   --ah-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --ah-font-display: 'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --ah-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -64,6 +67,9 @@ const lightTokens = `
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
   --ah-radius-pill: 999px;
+  --ah-h-sm: 22px;
+  --ah-h-md: 26px;
+  --ah-h-lg: 28px;
   --ah-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --ah-font-display: 'Inter Tight', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --ah-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;

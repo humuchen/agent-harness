@@ -73,6 +73,21 @@ test('buildContainerArgs 自定义资源上限生效', () => {
   assert.strictEqual(args[pi + 1], '256');
 });
 
+test('buildContainerArgs 自定义 bin 覆盖运行时可执行文件名', () => {
+  // bin 选项应覆盖默认的 docker/podman 推导（自定义 runtime 如 nerdctl 场景）。
+  const args = buildContainerArgs(
+    { bin: 'nerdctl', image: 'busybox' },
+    { command: 'echo', args: ['hi'], cwd: '/work', timeoutMs: 1000 }
+  );
+  assert.strictEqual(args[0], 'nerdctl', 'bin 选项应覆盖默认 docker/podman');
+  // bin 显式指定时，即使 backend 为 podman 也以 bin 为准。
+  const args2 = buildContainerArgs(
+    { backend: 'podman', bin: 'docker' },
+    { command: 'echo', args: ['x'], cwd: '/tmp', timeoutMs: 100 }
+  );
+  assert.strictEqual(args2[0], 'docker', 'bin 应优先于 backend 推导');
+});
+
 // ---------------------------------------------------------------------------
 // scrubEnv（密钥擦除）
 // ---------------------------------------------------------------------------
@@ -157,16 +172,16 @@ test('createSandboxExecutor 容器类后端返回容器执行器', () => {
   }
 });
 
-test('ContainerSandboxExecutor 在缺 docker 时优雅降级到本地', async () => {
-  // 本机未安装 docker（command -v docker 为空），故 docker 一定 ENOENT → 触发降级到本地执行器。
-  // 执行继承宿主 PATH（含 echo），验证「一切降级可用」路径：降级后 echo 正常产出。
-  const ex = new ContainerSandboxExecutor({ backend: 'docker' });
+test('ContainerSandboxExecutor 在容器运行时缺失时优雅降级到本地', async () => {
+  // 用必然 ENOENT 的二进制名强制触发「容器运行时缺失 → 降级本地执行器」路径，
+  // 不受宿主是否装了 docker/podman 影响（CI/本机均可确定性通过）。
+  const ex = new ContainerSandboxExecutor({ backend: 'docker', bin: 'harness-nonexistent-runtime-xyz' });
   const res = await ex.exec({
-    command: 'echo',
-    args: ['fallback-ok'],
+    command: 'node',
+    args: ['-e', 'process.stdout.write("fallback-ok")'],
     cwd: process.cwd(),
     timeoutMs: 5000,
   });
-  assert.strictEqual(res.code, 0, '降级到本地执行器应正常执行 echo');
+  assert.strictEqual(res.code, 0, '降级到本地执行器应正常执行命令');
   assert.ok(res.stdout.includes('fallback-ok'), '降级到本地执行器仍应正常运行');
 });

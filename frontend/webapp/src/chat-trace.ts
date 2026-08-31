@@ -28,6 +28,153 @@ export interface Insights {
   retrievals: Array<{ label: string; result: string }>;
 }
 
+/** 每条助手消息内容区的 Tab 键。 */
+export type MsgTab = 'answer' | 'thinking' | 'trace' | 'confidence';
+
+/**
+ * 「链路信心」Tab 的渲染数据源：
+ * - 后端启用自检（AGENT_AUTO_VERIFY）时，优先采用 verify 节点的 score / 通过结论；
+ * - 未启用自检时，回退到由调用链合成的信心（工具成功率、错误节点、缓存命中率）。
+ */
+export interface Confidence {
+  hasVerify: boolean;
+  verifyScore?: string;
+  verifyPassed?: boolean;
+  verifyReasons?: string;
+  toolTotal: number;
+  toolErrors: number;
+  errorNodes: number;
+  cacheHitRate?: string;
+  /** 0–100 综合信心分。 */
+  score: number;
+  level: 'high' | 'mid' | 'low';
+  levelLabel: string;
+}
+
+/** 从调用链路提炼「链路信心」：verify 自检分优先，否则基于 trace 信号合成。 */
+export function buildConfidence(trace: TraceNode[]): Confidence {
+  const flat: TraceNode[] = [];
+  const walk = (ns: TraceNode[]) =>
+    ns.forEach((x) => {
+      flat.push(x);
+      walk(x.children);
+    });
+  walk(trace);
+  const verify = flat.find((n) => n.kind === 'verify');
+  const tools = flat.filter((n) => n.kind === 'tool');
+  const toolErrors = tools.filter((n) => n.status === 'error').length;
+  const errorNodes = flat.filter(
+    (n) => n.status === 'error' || n.kind === 'error'
+  ).length;
+  const ins = buildInsights(trace);
+  const hasVerify = !!verify;
+  let score: number;
+  let level: Confidence['level'];
+  if (verify) {
+    const raw = Number(String(verify.meta?.score ?? '').replace(/[^\d.]/g, ''));
+    score = Number.isFinite(raw) && raw > 0 ? Math.min(100, Math.round(raw)) : 0;
+  } else {
+    // 合成：工具成功率为主，错误节点扣分，缓存命中率加分。
+    const toolTotal = tools.length;
+    const successRate = toolTotal > 0 ? (toolTotal - toolErrors) / toolTotal : 1;
+    const errPenalty = Math.min(40, errorNodes * 12);
+    let cacheBonus = 0;
+    if (ins.cacheHitRate) {
+      const cpct = Number(String(ins.cacheHitRate).replace(/[^\d.]/g, ''));
+      if (Number.isFinite(cpct)) cacheBonus = Math.min(10, cpct / 5);
+    }
+    score = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(100 * (0.55 + 0.45 * successRate) - errPenalty + cacheBonus)
+      )
+    );
+  }
+  level = score >= 80 ? 'high' : score >= 60 ? 'mid' : 'low';
+  const levelLabel = level === 'high' ? '高' : level === 'mid' ? '中' : '低';
+  return {
+    hasVerify,
+    verifyScore: verify ? String(verify.meta?.score ?? '?') : undefined,
+    verifyPassed: verify ? String(verify.meta?.passed) !== '未通过' : undefined,
+    verifyReasons: verify?.result || undefined,
+    toolTotal: tools.length,
+    toolErrors,
+    errorNodes,
+    cacheHitRate: ins.cacheHitRate,
+    score,
+    level,
+    levelLabel
+  };
+}
+
+/** 渲染「链路信心」Tab：自检分 / 合成信心 + 拆解条。 */
+export function renderConfidence(trace: TraceNode[]): TemplateResult {
+  const c = buildConfidence(trace);
+  const successRate =
+    c.toolTotal > 0
+      ? Math.round(((c.toolTotal - c.toolErrors) / c.toolTotal) * 100)
+      : 100;
+  const cachePct = c.cacheHitRate
+    ? Math.min(100, Number(String(c.cacheHitRate).replace(/[^\d.]/g, '')) || 0)
+    : 0;
+  return html`
+    <div class="confidence level-${c.level}">
+      <div class="conf-head">
+        <div class="conf-score">
+          <span class="conf-num">${String(c.score)}</span>
+          <span class="conf-unit">分</span>
+        </div>
+        <div class="conf-meta">
+          <span class="conf-level">信心 ${c.levelLabel}</span>
+          ${c.hasVerify
+            ? html`<span class="conf-badge ${c.verifyPassed ? 'ok' : 'err'}"
+                >自检 ${c.verifyPassed ? '通过' : '未通过'}</span
+              >`
+            : html`<span class="conf-badge synth">合成</span>`}
+        </div>
+      </div>
+      <div class="conf-bars">
+        <div class="conf-row">
+          <span class="conf-name">工具成功率</span>
+          <div class="conf-track">
+            <div class="conf-fill" style=${`width:${successRate}%`}></div>
+          </div>
+          <span class="conf-val">${successRate}%</span>
+        </div>
+        <div class="conf-row">
+          <span class="conf-name">缓存命中率</span>
+          <div class="conf-track">
+            <div class="conf-fill" style=${`width:${cachePct}%`}></div>
+          </div>
+          <span class="conf-val">${c.cacheHitRate ?? '—'}</span>
+        </div>
+        <div class="conf-row">
+          <span class="conf-name">错误节点</span>
+          <div class="conf-track">
+            <div
+              class="conf-fill warn"
+              style=${`width:${Math.min(100, c.errorNodes * 20)}%`}
+            ></div>
+          </div>
+          <span class="conf-val">${c.errorNodes}</span>
+        </div>
+      </div>
+      ${c.hasVerify && c.verifyReasons
+        ? html`<details class="conf-reasons">
+            <summary>自检依据</summary>
+            <pre>${escapeHtml(c.verifyReasons)}</pre>
+          </details>`
+        : nothing}
+      ${c.hasVerify
+        ? nothing
+        : html`<div class="conf-note">
+            本次未启用自检（AGENT_AUTO_VERIFY），以下为基于调用链的合成信心。
+          </div>`}
+    </div>
+  `;
+}
+
 export function countTraceNodes(trace: TraceNode[]): number {
   let n = 0;
   const walk = (ns: TraceNode[]) =>

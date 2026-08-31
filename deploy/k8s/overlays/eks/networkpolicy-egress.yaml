@@ -1,0 +1,61 @@
+# R3 出网策略（可选模板）：确认节点经 NAT(enable_nat=true) 出网后，
+# 用 NetworkPolicy 显式声明 agent-harness 允许的出口。需支持 NetworkPolicy 的
+# CNI（Calico/Cilium）才生效；不支持时此资源被忽略。
+#
+# ⚠️ 重要：一旦给 Pod 套上带 Egress 的 NetworkPolicy，默认的「允许所有出网」
+# 即被覆盖——只允许本条列出的出口。所以必须显式放通：
+#   · kube-dns (UDP/TCP 53)         —— DNS 解析（否则所有域名解析失败）
+#   · 443/80 → 0.0.0.0/0            —— npx MCP 拉包、OpenRouter、Let's Encrypt HTTP-01
+#   · redis:6379（本命名空间）       —— 运行队列（漏放 → 副本起不来/任务卡死）
+# 可选：otel-collector:4317（observability 命名空间，R7 链路上报；OTel SDK 对
+#       不可达静默丢弃，不放也不会影响业务，可按需追加）。
+#
+# 启用方法：在 overlays/eks/kustomization.yaml 的 resources 取消注释本文件：
+#   # - networkpolicy-egress.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-harness-egress
+  namespace: agent-harness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-harness
+  policyTypes:
+    - Egress
+  egress:
+    # 1) DNS 解析（kube-system 的 kube-dns/CoreDNS）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2) 外部 HTTPS/HTTP（OpenRouter、npx 包registry、Let's Encrypt HTTP-01 校验）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    # 3) 运行队列 Redis（同命名空间，按 Pod 标签放通 6379）
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # 4) 可选：OTel Collector（R7 链路上报，observability 命名空间 :4317）
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: observability
+    #   ports:
+    #     - protocol: TCP
+    #       port: 4317

@@ -1,0 +1,102 @@
+# 外部 RAG 服务（services/rag）。可选：仅当 agent-harness 启用 RAG 工具时部署。
+#
+# 部署（需先构建并推送镜像，例如 ghcr.io/humuchen/agent-harness-rag:dev）：
+#   kubectl -n agent-harness apply -f rag.yaml
+#
+# 鉴权：RAG_API_TOKEN 取自 Secret agent-harness（见 secret.yaml.example，已新增该键）。
+# 数据：RAG_DATA_FILE=/data/rag.jsonl 落 RWX 卷（复用 Plan A 的 efs-sc，免装 EBS CSI）。
+# 端口：HTTP 模式默认 8787（RAG_PORT）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rag-data
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: efs-sc   # Plan A 提供（RWX）；单副本用 RWO 亦可，但 efs-sc 免 EBS CSI 依赖
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/name: rag
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rag
+        app.kubernetes.io/part-of: agent-harness
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: rag
+          image: ghcr.io/humuchen/agent-harness-rag:dev   # 需先构建推送；建议按 digest 固定
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8787
+          env:
+            - name: RAG_TRANSPORT
+              value: "http"
+            - name: RAG_PORT
+              value: "8787"
+            - name: RAG_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-harness
+                  key: RAG_API_TOKEN
+            - name: RAG_TENANT_ID
+              value: "default"
+            - name: RAG_DATA_FILE
+              value: /data/rag.jsonl
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rag-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rag
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http

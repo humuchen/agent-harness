@@ -51,7 +51,7 @@ export class AhModePicker extends LitElement {
       color: var(--mode-fg, rgb(40, 184, 148));
       font-size: 12px;
       font-weight: 500;
-      height: 28px;
+      height: var(--ah-h-lg);
       padding: 0 12px;
       border-radius: 16px;
       cursor: pointer;
