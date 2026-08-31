@@ -4,14 +4,14 @@ Concrete anchors for extending the orchestration base. Paths are relative to rep
 
 ## Repo shape (monorepo, pnpm)
 
-- `packages/core/src/` → `@agent-harness/core`: framework lib (harness / tools / memory / guardrails / telemetry / llm / integrations / **agents / router / tenant / policy**).
-- `packages/server/src/` → `@agent-harness/server`: HTTP+SSE runtime. Key files: `server.ts`, `runner.ts` (`assembleAgent`), `run-queue.ts` (`submit`/`execute`), `queue-backend.ts` (`JobDescriptor`), `authz.ts`.
-- `packages/core/src/index.ts` re-exports `agents`, `router`, `tenant`, `policy`, `guardrails`, `harness`, integrations. **Add every new domain to this barrel.**
+- `backend/core/src/` → `@agent-harness/core`: framework lib (harness / tools / memory / guardrails / telemetry / llm / integrations / **agents / router / tenant / policy**).
+- `access/server/src/` → `@agent-harness/server`: HTTP+SSE runtime. Key files: `server.ts`, `runner.ts` (`assembleAgent`), `run-queue.ts` (`submit`/`execute`), `queue-backend.ts` (`JobDescriptor`), `authz.ts`.
+- `backend/core/src/index.ts` re-exports `agents`, `router`, `tenant`, `policy`, `guardrails`, `harness`, integrations. **Add every new domain to this barrel.**
 - Build order (topological): `core` → `server` → `webapp` → `examples`. Local pnpm install is blocked; compile via the managed `tsc` (see SKILL.md Verification).
 
 ## P0 baseline (already implemented — build P1 on top of these)
 
-### ① Agent Registry & Discovery — `core/src/agents/`
+### ① Agent Registry & Discovery — `backend/core/src/agents/`
 - `types.ts`: `AgentCard` (`id, name, domain, capabilities[], transport, version, health, assembly?{systemPrompt?,skills?,mcpServers?,tools?}`), `AgentCapability`, `AgentTransport`, `IndustryDomain`, `AgentHealth`.
 - `store.ts`: `AgentStore` interface (`register/heartbeat/deregister/get/list/query`) with `VolatileAgentStore` (default) / `FileAgentStore` / `SqliteAgentStore`, keyed by `agentId`. Mirrors `memory-store.ts` paradigm.
 - `registry.ts`: `AgentRegistry` wraps the store, maintains a capability→agentId inverted index, and sweeps agents past their heartbeat TTL (marks `down`).
@@ -20,13 +20,13 @@ Concrete anchors for extending the orchestration base. Paths are relative to rep
 
 **Server wiring:** `runner.ts` `assembleAgent(card?)` — undefined ⇒ legacy; present ⇒ narrow `registerBuiltinTools` to `assembly.tools`, filter `defaultSkills()` by `assembly.skills`, `tools.mergeFrom` only the named `mcpServers`, system prompt from `assembly.systemPrompt`. `server.ts` exposes `GET /api/agents` (`?domain=&capability=`), `GET /api/agents/:id`, `POST /api/agents`, and parses `agentId` from `POST /api/run` body. `authz.ts` gained `agent:read` action.
 
-### ② Task Router / Dispatcher — `core/src/router/`
+### ② Task Router / Dispatcher — `backend/core/src/router/`
 - `intent.ts`: `IntentRouter.classify(prompt)` → `{domain, intent, requiredCapabilities}`. Rule engine (domain lexicon) by default; `INTENT_ROUTER=llm` uses a small LLM classifier (reuse `createOpenRouterLLM`). Cache results.
 - `selector.ts`: `scoreAgent(card, intent, ctx)` = capability∩ × (1−load) × SLA × tenant affinity. `AgentSelector.select(registry, intent, ctx)` returns highest score or `null`.
 - `router.ts`: `TaskRouter.resolve(job)` precedence — explicit `job.agentId` → `job.domain` filter → `classify`+`select` → `default` agent. `resolveTask()` singleton.
 - **Server wiring:** `run-queue.ts` `submit` + `queue-backend.ts` `JobDescriptor` add `agentId?`/`domain?`/`tenantId?`/`workflowId?`/`traceId?`. `execute()` derives `TenantContext`, calls `router.resolve(job)`, assembles, and stamps `agentId`/`workflowId`/`traceId` into `run:meta`. `RunQueue` concurrency/watchdog/reclaimStale untouched.
 
-### ③ Tenant Isolation & Policy — `core/src/tenant.ts` + `core/src/policy/`
+### ③ Tenant Isolation & Policy — `backend/core/src/tenant.ts` + `backend/core/src/policy/`
 - `tenant.ts`: `TenantContext {tenantId, industry?, policyRef?}`; `resolveTenantContext(body, auth)` (auth principal wins, prevents spoofing); `tenantSessionKey(tenantId, sessionKey)` → `tenant::session` composite key.
 - `policy/engine.ts`: `PolicyEngine` with `perTenant` Map (shallow merge over `default`), `getPolicy(tenantId)`, `registerIndustryProfile(industry, policy)`. `policyEngine` singleton replaces the bare `policy` var in `guardrails.ts`.
 - Industry profiles: `finance` (data-egress limits), `medical` (forced redaction + audit), `education` (relaxed).
@@ -37,20 +37,20 @@ Concrete anchors for extending the orchestration base. Paths are relative to rep
 
 ## P1 — next capabilities to land
 
-### ⑤ Workflow Orchestrator — `core/src/workflow/` (NEXT, not yet implemented)
+### ⑤ Workflow Orchestrator — `backend/core/src/workflow/` (NEXT, not yet implemented)
 - `types.ts`: `StepState = 'pending'|'running'|'done'|'failed'|'compensated'`; `StepDef {id, agentRef: string|AgentCard, inputMapping, dependsOn?, compensate?}`; `WorkflowDef {id, steps[]}`.
 - `engine.ts`: `DagEngine` — topological sort, run dependency-free steps in parallel via `assembleAgent(card).run(input)`; persist each step state to `WorkflowStore`; on failure, run `compensate` for completed steps in reverse (delegate to the agent's compensation tool/rollback); `resume(workflowId)` replays from last checkpoint.
 - `store.ts`: `WorkflowStore` (reuse `QueueBackend`/`MemoryStore` interface; stores `WorkflowDef` + per-step state).
 - **`harness.ts`:** `HarnessEvent` variants gain optional `agentId?`/`workflowId?`/`traceId?`; `HarnessOptions` gains same; `emit` decorates events. This is the metadata channel P0 already paved.
 - **`server.ts`:** `POST /api/workflows` (define+run), `GET /api/workflows/:id`, SSE progress. `traceId` spans all agent calls; OTel `withSpan` (`telemetry.ts`) correlates across agents.
-- **Tests:** `packages/core/test/workflow.test.cjs` — DAG happy path + compensation rollback + resume.
+- **Tests:** `backend/core/test/workflow.test.cjs` — DAG happy path + compensation rollback + resume.
 
-### ④ A2A / Task Envelope — `core/src/a2a/`
+### ④ A2A / Task Envelope — `backend/core/src/a2a/`
 - `types.ts`: `TaskEnvelope {taskId, tenantId, traceId?, fromAgent, toAgent, input, inputSchema?, sla?, callback?}`, `TaskResult {taskId, status, output?, error?}`.
 - `transport.ts`: `A2ATransport` + `LocalA2ATransport` (in-process `assembleAgent`+`run`) + `HttpA2ATransport` (`fetch` remote `/api/a2a/tasks`).
 - **`server.ts`:** `POST /api/a2a/tasks` (self-register card + execute + return `TaskResult`). `TaskRouter` dispatches `transport:'a2a'` cards via `HttpA2ATransport`.
 
-### Plugin Framework — `core/src/plugin/`
+### Plugin Framework — `backend/core/src/plugin/`
 - `manifest.ts`: `PluginManifest {id, version, capabilities[], dependencies[], permissions[], transport, entry}`.
 - `loader.ts`: `PluginLoader` lifecycle (install/enable/disable/upgrade) + dependency resolution; load **isolated** via `worker_threads`/`child_process` with the OS sandbox backend `createSandboxExecutor({backend:'os'|'container'})` (already implemented in `sandbox/`). Manifest `capabilities` auto-register an `AgentCard`.
 

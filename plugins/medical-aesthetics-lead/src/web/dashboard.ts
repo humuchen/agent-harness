@@ -44,14 +44,12 @@ function barChart(
   return `<svg class="ma-chart" viewBox="0 0 ${w} ${h}" width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:480px">${bars}</svg>`;
 }
 
-/** 转化漏斗（SVG 字符串，居中渐宽条形）。 */
-function funnel(stages: { label: string; value: number }[]): string {
-  const w = 480,
-    rowH = 30,
-    top = 6,
-    cx = w / 2;
-  const max = Math.max(1, ...stages.map((s) => s.value));
-  const h = top * 2 + stages.length * rowH;
+/** 转化漏斗（饼/环图 SVG 字符串，服务端渲染；环心显示进入漏斗的客资总数）。 */
+function pieChart(stages: { label: string; value: number }[]): string {
+  const total = stages.reduce((a, s) => a + s.value, 0);
+  if (total === 0) {
+    return '<p class="ma-empty">暂无漏斗数据（请经 webhook 或工具落客资）</p>';
+  }
   const palette = [
     '#5B8FF9',
     '#5AD8A6',
@@ -61,25 +59,58 @@ function funnel(stages: { label: string; value: number }[]): string {
     '#6DC8EC',
     '#9270CA'
   ];
-  const bars = stages
+  const cx = 100,
+    cy = 100,
+    r = 86,
+    ri = 50;
+  const TWO_PI = Math.PI * 2;
+  let a = 0;
+  const slices = stages
     .map((s, i) => {
-      const y = top + i * rowH;
-      const bw = Math.max(10, Math.round((s.value / max) * (w - 140)));
-      const x = cx - bw / 2;
+      const frac = s.value / total;
+      const a1 = a + frac * TWO_PI;
+      const color = palette[i % palette.length];
+      const pct = Math.round(frac * 1000) / 10;
+      let shape: string;
+      if (frac >= 0.9999) {
+        // 满环：起止点重合时 SVG 弧不绘制，改用描边圆表示整圈。
+        const rmid = (r + ri) / 2;
+        shape = `<circle cx="${cx}" cy="${cy}" r="${rmid}" fill="none" stroke="${color}" stroke-width="${r - ri}"/>`;
+      } else {
+        const large = a1 - a > Math.PI ? 1 : 0;
+        const x0o = cx + r * Math.sin(a),
+          y0o = cy - r * Math.cos(a);
+        const x1o = cx + r * Math.sin(a1),
+          y1o = cy - r * Math.cos(a1);
+        const x0i = cx + ri * Math.sin(a),
+          y0i = cy - ri * Math.cos(a);
+        const x1i = cx + ri * Math.sin(a1),
+          y1i = cy - ri * Math.cos(a1);
+        shape = `<path d="M${x0o.toFixed(2)},${y0o.toFixed(2)} A${r},${r} 0 ${large} 1 ${x1o.toFixed(2)},${y1o.toFixed(2)} L${x1i.toFixed(2)},${y1i.toFixed(2)} A${ri},${ri} 0 ${large} 0 ${x0i.toFixed(2)},${y0i.toFixed(2)} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+      }
+      a = a1;
+      return `${shape}<title>${esc(s.label)}: ${s.value}（${pct}%）</title>`;
+    })
+    .join('');
+  const entered = stages.length ? stages[0].value : 0;
+  const legend = stages
+    .map((s, i) => {
+      const pct = Math.round((s.value / total) * 1000) / 10;
+      const y = 26 + i * 24;
       return `<g>
-        <rect x="${x}" y="${y + 4}" width="${bw}" height="20" rx="4" fill="${
-        palette[i % palette.length]
-      }"/>
-        <text class="ma-lab" x="10" y="${y + 18}" font-size="12">${esc(
-        s.label
-      )}</text>
-        <text class="ma-val" x="${w - 10}" y="${
-        y + 18
-      }" font-size="12" text-anchor="end">${s.value}</text>
+        <rect x="210" y="${y - 12}" width="12" height="12" rx="2" fill="${palette[i % palette.length]}"/>
+        <text class="ma-lab" x="228" y="${y - 1}" font-size="12">${esc(s.label)}</text>
+        <text class="ma-val" x="470" y="${y - 1}" font-size="12" text-anchor="end">${s.value} · ${pct}%</text>
       </g>`;
     })
     .join('');
-  return `<svg class="ma-chart" viewBox="0 0 ${w} ${h}" width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:520px">${bars}</svg>`;
+  const h = Math.max(200, 26 + stages.length * 24 + 10);
+  return `<svg class="ma-chart" viewBox="0 0 480 ${h}" width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:520px">
+    ${slices}
+    <text class="ma-donut-center" x="${cx}" y="${cy - 4}" font-size="20" text-anchor="middle">${entered}</text>
+    <text class="ma-donut-sub" x="${cx}" y="${cy + 16}" font-size="11" text-anchor="middle">进入漏斗</text>
+    ${legend}
+  </svg>`;
 }
 
 /**
@@ -204,8 +235,8 @@ export const leadDashboardView: PluginUIView = {
 
       <div class="ma-grid">
         <section class="ma-panel">
-          <h3>转化漏斗（真实 SQL 聚合）</h3>
-          ${funnel(funnelStages)}
+          <h3>转化漏斗（饼图）</h3>
+          ${pieChart(funnelStages)}
         </section>
         <section class="ma-panel">
           <h3>渠道分布</h3>
@@ -296,6 +327,9 @@ export const leadDashboardView: PluginUIView = {
       /* SVG 图表文字随主题切换：柱体/漏斗保留数据系列配色，轴标签与数值改用语义令牌 */
       .ma-chart .ma-lab { fill: var(--ah-text-muted); }
       .ma-chart .ma-val { fill: var(--ah-text-faint); }
+      /* 饼/环图中心文字随主题切换 */
+      .ma-chart .ma-donut-center { fill: var(--ah-text); font-weight:600; }
+      .ma-chart .ma-donut-sub { fill: var(--ah-text-muted); }
       @media (max-width: 600px) {
         .ma-dash h2 { font-size:16px; }
         .ma-card { padding:8px 12px; min-width:0; flex:0 0 calc(50% - 5px); }

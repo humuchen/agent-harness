@@ -19,5 +19,5 @@
     "server": "pnpm --filter @agent-harness/server run start",
     "dev": "node access/server/dist/server.js"
   },
-  "license": "MIT"
+  "license": "Apache License, Version 2.0"
 }
