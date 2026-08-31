@@ -31,3 +31,8 @@ examples/
 
 # OS
 .DS_Store
+
+# 开发者专属（不入镜像）：WorkBuddy 技能壳与本地记忆均为开发期资产，
+# 运行镜像只含编译产物 + node_modules，无需这些。
+.workbuddy
+skills
