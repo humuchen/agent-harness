@@ -1427,7 +1427,8 @@ export class AhChat extends LitElement {
               : {})
           }))
         );
-        if (clean.length === 0) throw new Error('会话数据不完整（空历史）');
+        // 空消息属正常（新建会话尚未发送任何消息，服务端返回 messages:[]）：
+        // 直接按合法空会话走合并/落内存，不再当作恢复失败抛异常。
         // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
         const planStatusLookup = this.buildPlanStatusLookup(clean);
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
@@ -1455,7 +1456,7 @@ export class AhChat extends LitElement {
         // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
         this.applyPlanStatusLookup(id, planStatusLookup);
         this.restoreFailed[id] = false;
-      } catch {
+      } catch (err) {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
         //   历史镜像接口（服务端 SQLite / 进程内兜底） → 空线程 + 失败标记（下次重试）+ 非阻断警示。
         const mirrored = await loadThread(id);
@@ -1482,11 +1483,18 @@ export class AhChat extends LitElement {
           });
         } else {
           this.threads[id] = localBuf ?? [];
-          this.restoreFailed[id] = true;
-          notify.warning(
-            '历史记录恢复失败（服务端不可达且无本地缓存），已保留当前内容；再次进入将自动重试。',
-            { key: 'chat-history' }
-          );
+          // 区分「真·服务端不可达（网络/超时/5xx）」与「会话本就为空或不存在（404 且无镜像）」：
+          // 后者无数据可恢复、也非故障，不打吓人告警、不打 restoreFailed（避免每次进入空会话都重试弹窗）；
+          // 仅前者标记 restoreFailed 并提示，待服务端恢复后再次进入自动重试。
+          const isNotFound =
+            !!err && typeof err === 'object' && (err as { status?: number }).status === 404;
+          if (!isNotFound) {
+            this.restoreFailed[id] = true;
+            notify.warning(
+              '历史记录恢复失败（服务端不可达），已保留当前内容；再次进入将自动重试。',
+              { key: 'chat-history' }
+            );
+          }
         }
       }
     }
