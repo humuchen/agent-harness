@@ -1065,19 +1065,16 @@ export class AhLogin extends LitElement {
       }
       .btn-sso {
         /* 图标按钮：仅展示各自 logo，方形成组并排。 */
-        height: 46px;
-        width: 46px;
         flex: 0 0 auto;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         background: transparent;
-        border: 1px solid var(--ah-border);
-        border-radius: 12px;
         color: var(--ah-text);
         cursor: pointer;
         font-family: inherit;
         transition: border-color 140ms ease, background 140ms ease;
+        padding: 0;
       }
       .btn-sso:hover {
         border-color: var(--ah-accent);
@@ -1094,7 +1091,6 @@ export class AhLogin extends LitElement {
       }
       .sso-row .btn-sso {
         flex: 0 0 auto;
-        width: 46px;
       }
       .terms {
         display: flex;
@@ -1550,9 +1546,7 @@ export class AhLogin extends LitElement {
     const err = validateResetPassword({ newPassword: password, confirm });
     if (err) {
       notify.warning(err, { key: 'forgot-form' });
-      (
-        form.elements.namedItem('password') as HTMLInputElement | null
-      )?.focus();
+      (form.elements.namedItem('password') as HTMLInputElement | null)?.focus();
       return;
     }
     this.submitting = true;
@@ -1996,7 +1990,7 @@ export class AhLogin extends LitElement {
                   </div>
                 `
               : this.mode === 'register'
-                ? html`
+              ? html`
                   <h1>创建账号</h1>
                   <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
                   <form @submit=${this.onSubmit} @keydown=${this.onFormKeydown}>
@@ -2056,69 +2050,61 @@ export class AhLogin extends LitElement {
               : html`
                   <h1>找回密码</h1>
                   <p class="auth-sub">
-                    ${
-                      this.forgotStep === 'request'
-                        ? '输入你的用户名或注册邮箱，验证通过后将引导你设置新密码。'
-                        : '为该账号设置一个新密码，重置成功后需使用新密码重新登录。'
-                    }
+                    ${this.forgotStep === 'request'
+                      ? '输入你的用户名或注册邮箱，验证通过后将引导你设置新密码。'
+                      : '为该账号设置一个新密码，重置成功后需使用新密码重新登录。'}
                   </p>
-                  ${
-                    this.forgotStep === 'request'
-                      ? html`
-                          <form
-                            @submit=${this.onForgotRequest}
-                            @keydown=${this.onForgotKeydown}
+                  ${this.forgotStep === 'request'
+                    ? html`
+                        <form
+                          @submit=${this.onForgotRequest}
+                          @keydown=${this.onForgotKeydown}
+                        >
+                          ${this.field(
+                            '用户名或邮箱',
+                            'text',
+                            '用户名 / you@company.com',
+                            'username'
+                          )}
+                          <button
+                            class="btn-primary"
+                            type="submit"
+                            ?disabled=${this.submitting}
                           >
-                            ${this.field(
-                              '用户名或邮箱',
-                              'text',
-                              '用户名 / you@company.com',
-                              'username'
-                            )}
-                            <button
-                              class="btn-primary"
-                              type="submit"
-                              ?disabled=${this.submitting}
-                            >
-                              ${this.submitting ? '验证中…' : '发送重置凭证'}
-                            </button>
-                            <div class="enter-hint">
-                              按 <kbd>Enter</kbd> 提交
-                            </div>
-                          </form>
-                        `
-                      : html`
-                          <form
-                            @submit=${this.onResetSubmit}
-                            @keydown=${this.onResetKeydown}
+                            ${this.submitting ? '验证中…' : '发送重置凭证'}
+                          </button>
+                          <div class="enter-hint">按 <kbd>Enter</kbd> 提交</div>
+                        </form>
+                      `
+                    : html`
+                        <form
+                          @submit=${this.onResetSubmit}
+                          @keydown=${this.onResetKeydown}
+                        >
+                          ${this.field(
+                            '新密码',
+                            'password',
+                            '至少 8 位',
+                            'password',
+                            true
+                          )}
+                          ${this.field(
+                            '确认新密码',
+                            'password',
+                            '再次输入密码',
+                            'confirm',
+                            true
+                          )}
+                          <button
+                            class="btn-primary"
+                            type="submit"
+                            ?disabled=${this.submitting}
                           >
-                            ${this.field(
-                              '新密码',
-                              'password',
-                              '至少 8 位',
-                              'password',
-                              true
-                            )}
-                            ${this.field(
-                              '确认新密码',
-                              'password',
-                              '再次输入密码',
-                              'confirm',
-                              true
-                            )}
-                            <button
-                              class="btn-primary"
-                              type="submit"
-                              ?disabled=${this.submitting}
-                            >
-                              ${this.submitting ? '重置中…' : '重置密码'}
-                            </button>
-                            <div class="enter-hint">
-                              按 <kbd>Enter</kbd> 提交
-                            </div>
-                          </form>
-                        `
-                  }
+                            ${this.submitting ? '重置中…' : '重置密码'}
+                          </button>
+                          <div class="enter-hint">按 <kbd>Enter</kbd> 提交</div>
+                        </form>
+                      `}
                   <div class="auth-foot">
                     想起来了？<button
                       class="link"
