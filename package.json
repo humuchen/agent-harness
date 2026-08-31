@@ -17,7 +17,12 @@
     "create:plugin": "node scripts/create-plugin.cjs",
     "db:migrate": "node scripts/db-migrate.cjs",
     "server": "pnpm --filter @agent-harness/server run start",
-    "dev": "node access/server/dist/server.js"
+    "dev": "node access/server/dist/server.js",
+    "skills:core": "bash skills/ah-platform-evolution/scripts/build-and-test.sh core",
+    "skills:server": "bash skills/ah-platform-evolution/scripts/build-and-test.sh server",
+    "skills:test": "bash skills/ah-platform-evolution/scripts/build-and-test.sh test",
+    "skills:lint": "bash skills/ah-platform-evolution/scripts/build-and-test.sh lint",
+    "skills:all": "bash skills/ah-platform-evolution/scripts/build-and-test.sh all"
   },
   "license": "Apache License, Version 2.0"
 }
