@@ -1,6 +1,6 @@
 ---
 name: ah-platform-evolution
-description: Use this skill when extending the agent-harness TypeScript monorepo (backend/core + access/server) with new platform-level capabilities — agent registry/discovery, task routing/dispatcher, tenant isolation/policy, workflow orchestration (DAG + compensation), A2A, or plugin framework. It encodes the project's non-negotiable conventions learned while building the unified orchestration base: evolve-don't-rewrite, all-new-fields-optional back-compat with a seeded `default` agent, env-switch feature degradation, the `assembleAgent(card?, tenantCtx?)` assembly-recipe pattern, composite `tenant::session` memory keys, JSON-only entity types, and the isolated `tsc` toolchain + `node --test` verification loop.
+description: "扩展 agent-harness TypeScript monorepo（backend/core + access/server）的平台级能力时使用：agent 注册与发现、任务路由与调度器、租户隔离与策略、工作流编排（DAG + 补偿）、A2A、插件框架；或改动 assembleAgent / RunQueue.execute / HarnessEvent / store 单例、需要跑隔离 tsc + node --test 验证回路时。Use when extending agent-harness with agent registry/discovery, task routing/dispatcher, tenant isolation/policy, workflow orchestration (DAG + compensation), A2A, or plugin framework. Encodes non-negotiable conventions: evolve-don't-rewrite, all-new-fields-optional back-compat with a seeded default agent, env-switch degradation, assembleAgent(card?, tenantCtx?) narrowing, composite tenant::session memory keys, JSON-only entity types."
 ---
 
 # agent-harness Platform Evolution

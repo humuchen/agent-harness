@@ -542,6 +542,8 @@ export const sharedStyles = css`
     padding-left: 0;
     border-left: 1px solid var(--ah-border);
     padding-top: 4px;
+    max-height: 200px;
+    overflow: auto;
 
     .mcp-tool-item {
       padding-left: 8px;

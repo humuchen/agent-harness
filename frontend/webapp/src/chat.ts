@@ -272,11 +272,14 @@ export class AhChat extends LitElement {
    * 切换会话时从本表（优先）或服务端会话元数据加载到当前控件，实现「同一对话两端对齐」。
    * 用户改任一设置即写入本表 + PATCH 服务端 + 经 session:meta 广播给其它端。
    */
-  private sessionSettings: Record<string, {
-    interactionMode?: 'qa' | 'plan';
-    model?: string;
-    agentId?: string;
-  }> = {};
+  private sessionSettings: Record<
+    string,
+    {
+      interactionMode?: 'qa' | 'plan';
+      model?: string;
+      agentId?: string;
+    }
+  > = {};
 
   /**
    * 跨设备远程流式游标：标记某会话「他端发来的进行中 assistant」是否已在本地线程建了占位。
@@ -613,7 +616,8 @@ export class AhChat extends LitElement {
           this.sessions = Object.entries(idx).map(([sid, m]) => ({
             id: sid,
             title: m.title,
-            updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
+            updatedAt:
+              typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
             interactionMode: (m as any).interactionMode,
             model: (m as any).model,
             agentId: (m as any).agentId
@@ -650,7 +654,10 @@ export class AhChat extends LitElement {
     // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
     await this.refreshAgents();
     // 插件启用/停用会改变已注册 agent 集合，监听后实时刷新下拉（使已禁用插件的 agent 即时隐藏）。
-    window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    window.addEventListener(
+      'ah-plugins-changed',
+      this.onPluginsChanged as EventListener
+    );
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
     try {
@@ -683,7 +690,10 @@ export class AhChat extends LitElement {
       this.watchTimer = null;
     }
     this.cancelComposerLongPress();
-    window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    window.removeEventListener(
+      'ah-plugins-changed',
+      this.onPluginsChanged as EventListener
+    );
   }
 
   /**
@@ -818,7 +828,10 @@ export class AhChat extends LitElement {
         ...s,
         title: title || s.title,
         updatedAt,
-        interactionMode: meta?.interactionMode !== undefined ? meta.interactionMode : s.interactionMode,
+        interactionMode:
+          meta?.interactionMode !== undefined
+            ? meta.interactionMode
+            : s.interactionMode,
         model: meta?.model !== undefined ? meta.model : s.model,
         agentId: meta?.agentId !== undefined ? meta.agentId : s.agentId
       };
@@ -839,7 +852,8 @@ export class AhChat extends LitElement {
     }
     // 若正打开该会话，按最新设置刷新当前控件，实现「两端实时对齐」。
     if (this.activeId === sid) {
-      if (meta?.interactionMode !== undefined) this.interactionMode = meta.interactionMode;
+      if (meta?.interactionMode !== undefined)
+        this.interactionMode = meta.interactionMode;
       if (meta?.model !== undefined) this.model = meta.model;
       if (meta?.agentId !== undefined) this.agentId = meta.agentId;
     }
@@ -932,9 +946,15 @@ export class AhChat extends LitElement {
         id: this.nextId++,
         role: 'assistant',
         content,
-        ...(typeof m.reasoning === 'string' && m.reasoning ? { reasoning: m.reasoning } : {}),
-        ...(Array.isArray(m.tools) && m.tools.length ? { tools: m.tools as ToolView[] } : {}),
-        ...(Array.isArray(m.trace) && m.trace.length ? { trace: m.trace as TraceNode[] } : {})
+        ...(typeof m.reasoning === 'string' && m.reasoning
+          ? { reasoning: m.reasoning }
+          : {}),
+        ...(Array.isArray(m.tools) && m.tools.length
+          ? { tools: m.tools as ToolView[] }
+          : {}),
+        ...(Array.isArray(m.trace) && m.trace.length
+          ? { trace: m.trace as TraceNode[] }
+          : {})
       };
       t.push(msg);
       this.remoteStreaming[sid] = true; // 标记：后续该会话的增量/终态都作用在这条上
@@ -951,13 +971,19 @@ export class AhChat extends LitElement {
         t.push(msg);
       } else {
         const reasoning =
-          typeof m.reasoning === 'string' && m.reasoning ? m.reasoning : cur.reasoning;
+          typeof m.reasoning === 'string' && m.reasoning
+            ? m.reasoning
+            : cur.reasoning;
         // 终态/流式帧同样携带 tools / trace（服务端完整消息含调用链路）：
         // 必须从 m 合并进来，否则他端同步后「调用链路 / 关键信息」按钮因缺 trace 而不显示。
         const extra = {
           ...(reasoning ? { reasoning } : {}),
-          ...(Array.isArray(m.tools) && m.tools.length ? { tools: m.tools as ToolView[] } : {}),
-          ...(Array.isArray(m.trace) && m.trace.length ? { trace: m.trace as TraceNode[] } : {})
+          ...(Array.isArray(m.tools) && m.tools.length
+            ? { tools: m.tools as ToolView[] }
+            : {}),
+          ...(Array.isArray(m.trace) && m.trace.length
+            ? { trace: m.trace as TraceNode[] }
+            : {})
         };
         if (m.streaming) {
           // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧把已揭示文本截断）。
@@ -973,7 +999,7 @@ export class AhChat extends LitElement {
           const useContent =
             finalContent.length >= (cur.content ?? '').length
               ? finalContent
-              : (cur.content ?? '');
+              : cur.content ?? '';
           t[idx] = { ...cur, content: useContent, ...extra };
           this.remoteStreaming[sid] = false; // 收尾，下一轮重新追加
         }
@@ -1111,35 +1137,35 @@ export class AhChat extends LitElement {
     const items = [
       {
         key: 'sys',
-        label: '系统提示词',
+        label: 'System Prompt',
         tokens: SYS_BASE,
         cls: 'c-sys',
         pct: 0
       },
       {
         key: 'tools',
-        label: '工具及子智能体',
+        label: 'Tools',
         tokens: toolTokens,
         cls: 'c-tools',
         pct: 0
       },
       {
         key: 'msg',
-        label: '对话消息',
+        label: 'Conversation',
         tokens: msgTokens,
         cls: 'c-msg',
         pct: 0
       },
       {
         key: 'mcp',
-        label: '连接器及 MCP',
+        label: 'MCP',
         tokens: MCP_BASE,
         cls: 'c-mcp',
         pct: 0
       },
       {
         key: 'skill',
-        label: '技能',
+        label: 'Skills',
         tokens: SKILL_BASE,
         cls: 'c-skill',
         pct: 0
@@ -1387,8 +1413,10 @@ export class AhChat extends LitElement {
     // 优先级：本地按会话表 > 列表项（来自服务端元数据）> 保留当前全局值（旧会话无记录时）。
     const sv = this.sessions.find((s) => s.id === id);
     const st = this.sessionSettings[id];
-    if (st?.interactionMode !== undefined) this.interactionMode = st.interactionMode;
-    else if (sv?.interactionMode !== undefined) this.interactionMode = sv.interactionMode;
+    if (st?.interactionMode !== undefined)
+      this.interactionMode = st.interactionMode;
+    else if (sv?.interactionMode !== undefined)
+      this.interactionMode = sv.interactionMode;
     if (st?.model !== undefined) this.model = st.model;
     else if (sv?.model !== undefined) this.model = sv.model;
     if (st?.agentId !== undefined) this.agentId = st.agentId;
@@ -1478,16 +1506,21 @@ export class AhChat extends LitElement {
               : {}),
             id: this.nextId++
           })) as ChatMsg[];
-          notify.warning('服务端历史拉取失败，已从历史镜像恢复（可能非最新）。', {
-            key: 'chat-history'
-          });
+          notify.warning(
+            '服务端历史拉取失败，已从历史镜像恢复（可能非最新）。',
+            {
+              key: 'chat-history'
+            }
+          );
         } else {
           this.threads[id] = localBuf ?? [];
           // 区分「真·服务端不可达（网络/超时/5xx）」与「会话本就为空或不存在（404 且无镜像）」：
           // 后者无数据可恢复、也非故障，不打吓人告警、不打 restoreFailed（避免每次进入空会话都重试弹窗）；
           // 仅前者标记 restoreFailed 并提示，待服务端恢复后再次进入自动重试。
           const isNotFound =
-            !!err && typeof err === 'object' && (err as { status?: number }).status === 404;
+            !!err &&
+            typeof err === 'object' &&
+            (err as { status?: number }).status === 404;
           if (!isNotFound) {
             this.restoreFailed[id] = true;
             notify.warning(
@@ -1623,7 +1656,11 @@ export class AhChat extends LitElement {
     // 新建会话即带上当前默认设置，确保它端首次见到该会话时已对齐。
     this.sessionSettings = {
       ...this.sessionSettings,
-      [s.id]: { interactionMode: s.interactionMode, model: s.model, agentId: s.agentId }
+      [s.id]: {
+        interactionMode: s.interactionMode,
+        model: s.model,
+        agentId: s.agentId
+      }
     };
     this.sessions = [
       {
@@ -2753,7 +2790,9 @@ export class AhChat extends LitElement {
     for (const f of Array.from(input.files)) {
       // 前置校验
       if (f.size > maxBytes) {
-        notify.warning(`文件过大：${f.name}（上限 10MB）`, { key: 'chat-upload' });
+        notify.warning(`文件过大：${f.name}（上限 10MB）`, {
+          key: 'chat-upload'
+        });
         continue;
       }
       const allowedTypes = [
@@ -2974,13 +3013,11 @@ export class AhChat extends LitElement {
    * 把当前会话的某项设置写入本地表 + 同步到服务端（其它端经 session:meta 实时收到）。
    * @param partial 仅需更新的字段（交互模式 / 模型 / agent 之一或多个）。
    */
-  private async persistSessionSettings(
-    partial: {
-      interactionMode?: 'qa' | 'plan';
-      model?: string;
-      agentId?: string;
-    }
-  ) {
+  private async persistSessionSettings(partial: {
+    interactionMode?: 'qa' | 'plan';
+    model?: string;
+    agentId?: string;
+  }) {
     const sid = this.activeId;
     if (!sid) return;
     // 合并进按会话本地表（先取已记录的，再覆盖本次更新项）。
@@ -3001,15 +3038,11 @@ export class AhChat extends LitElement {
     // 服务端落库 + 广播（title 沿用当前列表项标题，meta 仅带本次变更字段）。
     const cur = this.sessions.find((s) => s.id === sid);
     try {
-      await client.renameChatSession(
-        sid,
-        cur?.title || '新对话',
-        {
-          interactionMode: next.interactionMode,
-          model: next.model,
-          agentId: next.agentId
-        }
-      );
+      await client.renameChatSession(sid, cur?.title || '新对话', {
+        interactionMode: next.interactionMode,
+        model: next.model,
+        agentId: next.agentId
+      });
     } catch {
       /* 同步失败不致命：本地已乐观更新，下次列表刷新会重试 */
     }
@@ -3482,8 +3515,8 @@ export class AhChat extends LitElement {
                 ${isStreaming
                   ? html`<div class="trace-live">
                       调用链路生成中<span class="dots"
-                        ><i></i><i></i><i></i></span
-                      >
+                        ><i></i><i></i><i></i
+                      ></span>
                     </div>`
                   : nothing}
               </div>`
@@ -3975,7 +4008,8 @@ export class AhChat extends LitElement {
                   .agents=${this.agents}
                   .value=${this.agentId}
                   @agent-change=${(e: Event) => {
-                    const v = (e as CustomEvent<{ value: string }>).detail.value;
+                    const v = (e as CustomEvent<{ value: string }>).detail
+                      .value;
                     this.agentId = v;
                     this.persistSessionSettings({ agentId: v });
                   }}
