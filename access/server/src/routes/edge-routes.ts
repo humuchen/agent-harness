@@ -146,11 +146,13 @@ export function tryDispatchEdgeRoute(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  deps: EdgeRouteDeps
+  deps: EdgeRouteDeps,
+  /** 已由 server 重写后的路径（如 /api/v1/* → /api/*），用于路由匹配。 */
+  path?: string
 ): boolean {
   const method = req.method ?? 'GET';
-  const path = url.pathname;
-  const hit = findEdgeRoute(routes, method, path);
+  const matchPath = path ?? url.pathname;
+  const hit = findEdgeRoute(routes, method, matchPath);
   if (!hit) return false;
   hit.handler(req, res, url, deps);
   return true;

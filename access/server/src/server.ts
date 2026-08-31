@@ -595,7 +595,7 @@ const server = createServer(
       // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
       // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
       if (
-        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps())
+        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
       ) {
         return;
       }

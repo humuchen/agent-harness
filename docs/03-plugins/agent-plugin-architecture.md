@@ -55,7 +55,7 @@
 
 **边界红线**：`core/server/webapp` 三层的源码中**不得出现**「客服 / 退款 / FAQ / 转人工」等业务词；这些词只存在于插件包。三层只演进「通用扩展点」。
 
-> **`packages/` 与 `plugins/` 的目录边界（补充说明）**：`plugins/` 放**业务插件**（含 `PluginManifest` + 业务装配 `PluginModule`，如 `medical-aesthetics-lead`）；`packages/` 放**可复用库**，包括跨插件共用的领域合规库。`backend/medical-ad-guard`（`@agent-harness/medical-ad-guard`）即属后者——它**不含 PluginManifest / AgentCard / 业务工作流**，只把医疗广告法违规模式注册进 core 的通用 `guardrails`，供客服/客资插件复用，因此按「可复用领域库」置于 `packages/`，**不违反**上述红线（core 中仅注释提及，无实际 import）。业务语义仍 100% 落在插件包内。
+> **`packages/` 与 `plugins/` 的目录边界（补充说明）**：`plugins/` 放**业务插件**（含 `PluginManifest` + 业务装配 `PluginModule`，如 `medical-aesthetics-lead`、`customer-service`）；可复用领域库置于 `backend/`（如 `backend/medical-ad-guard`，包名 `@agent-harness/medical-ad-guard`）——它**不含 PluginManifest / AgentCard / 业务工作流**，只把医疗广告法违规模式注册进 core 的通用 `guardrails`，供客服/客资插件复用，因此按「可复用领域库」置于 `backend/`，**不违反**上述红线（core 中仅注释提及，无实际 import）。业务语义仍 100% 落在插件包内。
 
 ---
 

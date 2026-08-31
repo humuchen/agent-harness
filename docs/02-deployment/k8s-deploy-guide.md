@@ -58,10 +58,10 @@ kubectl apply -k deploy/k8s
 
 | 问题               | 旧值                                              | 现状                                                       |
 | ------------------ | ------------------------------------------------- | ---------------------------------------------------------- |
-| 健康检查探针路径   | `/api/v1/state`（**404，pod 永远 not-ready**）    | 已改为 `/api/state`，否则 Service 收不到流量               |
+| 健康检查探针路径   | `/api/v1/state`（早期 404，pod 永远 not-ready）   | 路由入口已将 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 均返回 200，否则 Service 收不到流量 |
 | Redis 是否默认接入 | `redis.yaml` 被注释、`REDIS_URL=""`（走内存队列） | 已默认启用，`REDIS_URL=redis://redis:6379`，多副本共享队列 |
 
-> 说明：`/api/v1/state` 仅存在于 OpenAPI 文档定义（挂在 `/api/openapi.json`），服务端真实健康检查端点是 `/api/state`。Docker 与 K8s 两处都已统一修正。
+> 说明：`/api/v1/state` 与 `/api/state` 等价（server 在路由入口统一重写前缀），健康检查二者皆可。Docker 与 K8s 两处都已统一。
 
 ## 3.1 生产加固补丁（记忆持久化 + Redis 密码）
 

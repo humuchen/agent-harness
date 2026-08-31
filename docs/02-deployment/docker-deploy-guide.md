@@ -21,11 +21,11 @@
 | 进程     | `node access/server/dist/server.js`                                     |
 | 监听     | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0）                          |
 | 托管     | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI）     |
-| 健康检查 | `GET /api/state`（开放端点，无需令牌，返回 200 JSON）                   |
+| 健康检查 | `GET /api/state` 与 `GET /api/v1/state` 均开放（无需令牌，返回 200 JSON） |
 | 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本）        |
 | 运行用户 | 镜像内已用非 root 用户 `ah` 运行                                        |
 
-> 注意：服务器真实健康端点是 `/api/state`（server.ts:283）。早期健康检查误写为 `/api/v1/state`（仅存在于 OpenAPI 文档定义，无真实 handler），现已修正为 `/api/state`，部署后 `docker ps` 应显示 `healthy`。
+> 注意：健康检查端点为 `/api/state`。早期版本健康检查误写为 `/api/v1/state`（当时确无对应 handler，返回 404），现已在 `server.ts` 路由入口将 `/api/v1/*` 重写为 `/api/*`，故 `/api/v1/state` 与 `/api/state` **二者均返回 200**，部署后 `docker ps` 应显示 `healthy`。
 
 ---
 
@@ -184,7 +184,7 @@ docker compose down -v
 A：首次构建需联网拉全部依赖 + Vite 全量构建，几分钟级属正常。若卡死，确认 Docker 有网络访问；`pnpm` 版本不一致时 build 会自动 `--no-frozen-lockfile` 自愈。
 
 **Q2：`docker ps` 显示 unhealthy？**
-A：旧镜像打的是 `/api/v1/state`（404）。当前代码已修正为 `/api/state`。若仍 unhealthy，确认是用最新代码 `up --build` 重建的；或手动 `curl http://localhost:4173/api/state` 验证。
+A：健康检查走 `/api/state`（与版本化 `/api/v1/state` 等价，均 200）。若仍 unhealthy，确认是用最新代码 `up --build` 重建的；或手动 `curl http://localhost:4173/api/state` 验证。
 
 **Q3：浏览器打不开 / 端口被占用？**
 A：换映射端口，如 `docker run -p 8080:4173 ...`，访问 `http://localhost:8080`。compose 改 `ports: ["8080:4173"]`。

@@ -3,7 +3,7 @@
 本文档把「在本地把 agent-harness + 客服插件跑起来、并在 Web 端看到运行面板」的完整流程固化下来，
 覆盖：依赖安装、构建、示例数据、启动服务、Web 验证、常见坑。
 
-> 适用对象：本仓库（pnpm monorepo，含 `packages/*` 与 `plugins/customer-service`）。
+> 适用对象：本仓库（pnpm monorepo，含 `frontend/` `access/` `backend/` 与 `plugins/customer-service`）。
 > 目标：本地 `http://localhost:4173` 打开运行面板，看到客服插件「转人工队列 / 满意度 / 对话记录」等演示数据。
 
 ---
