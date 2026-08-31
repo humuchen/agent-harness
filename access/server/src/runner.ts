@@ -68,6 +68,29 @@ const SYSTEM_PROMPT =
   '用户确认回归/验证完成后，务必调用 destroy_environment 清理，避免资源浪费。';
 
 /**
+ * 当前真实日期时间上下文（Asia/Shanghai）。注入系统提示词，作为模型解析
+ * 「X月X号」「下周」等相对日期的唯一权威锚点，杜绝凭训练记忆编造年份
+ * （曾出现把「9月5号」误判为 2025-09-05 的回归）。
+ */
+function currentDateContextLine(): string {
+  const now = new Date();
+  const formatted = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(now);
+  return (
+    '当前真实日期与时间（Asia/Shanghai，解析「X月X号」等相对日期时必须以此为准，' +
+    '严禁凭记忆猜测年份）：' +
+    formatted
+  );
+}
+
+/**
  * 记忆存储后端单例（P1-9：多租户 / DB 化）。
  *
  * 按环境变量在进程内构建一次并缓存，供 assembleAgent 与运维端点（/api/sessions、
@@ -443,7 +466,9 @@ export async function assembleAgent(
   }
   // P0.1：若 card 自带系统提示词，以其覆盖运行模式默认提示词（skillCatalog/boost 仍叠加）。
   const effectiveSystemPrompt = card?.assembly?.systemPrompt ?? systemPrompt;
-  const finalSystemPrompt = [effectiveSystemPrompt, skillCatalog, skillBoost]
+  // 当前真实日期锚点：注入系统提示词，作为模型解析相对日期的权威基准，避免编造年份。
+  const dateContext = currentDateContextLine();
+  const finalSystemPrompt = [effectiveSystemPrompt, dateContext, skillCatalog, skillBoost]
     .filter(Boolean)
     .join('\n\n');
   const skillTitles = skillRegistry

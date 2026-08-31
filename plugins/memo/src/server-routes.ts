@@ -5,7 +5,7 @@
  */
 
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { listNotes, saveNote, deleteNote, pendingReminders, upcomingReminders, markNotified } from './store';
+import { listNotes, saveNote, deleteNote, pendingReminders, upcomingReminders, markNotified, resolveRemindAt } from './store';
 
 function json(res: import('node:http').ServerResponse, code: number, body: unknown): void {
   res.statusCode = code;
@@ -36,8 +36,9 @@ export const memoServerExtension: ServerExtension = {
         const body = await readBody(req);
         const text = String(body.text ?? '').trim();
         if (!text) return json(res, 400, { error: true, message: 'text required' });
-        const note = saveNote(text, body.tag ? String(body.tag) : undefined);
-        return json(res, 200, { ok: true, id: note.id });
+        const remindAt = resolveRemindAt(body.remindAt, body.remindAtISO);
+        const note = saveNote(text, body.tag ? String(body.tag) : undefined, remindAt ?? undefined);
+        return json(res, 200, { ok: true, id: note.id, remindAt: note.remindAt ?? null });
       }
       const url = new URL(req.url ?? '', 'http://localhost');
       const tag = url.searchParams.get('tag') ?? undefined;

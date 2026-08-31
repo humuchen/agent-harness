@@ -739,7 +739,7 @@ export const sharedStyles = css`
   /* 矩阵独立滚动容器：即便外层 .content 滚动受限，矩阵自身也能滚动查看全部行。
      sticky 表头 + 首列在滚动时保持可见，避免「列表没展示全 / 看不到列名」。 */
   .matrix-scroll {
-    max-height: 35vh;
+    max-height: 25vh;
     overflow: auto;
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);

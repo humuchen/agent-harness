@@ -69,6 +69,23 @@ export function saveNote(text: string, tag?: string, remindAt?: number): MemoNot
   return note;
 }
 
+/**
+ * 解析提醒时间：接受 epoch ms（number）或 ISO 字符串。
+ * 返回 epoch ms；非法 / 过去时间返回 null（调用方据此忽略提醒）。
+ */
+export function resolveRemindAt(raw: unknown, iso?: unknown): number | null {
+  let ms: number | null = null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    ms = raw;
+  } else if (typeof iso === 'string' && iso.trim()) {
+    const t = Date.parse(iso.trim());
+    if (Number.isFinite(t)) ms = t;
+  }
+  if (ms == null || !Number.isFinite(ms)) return null;
+  // 只接受未来时间；过去时间视为无效。
+  return ms > Date.now() ? Math.floor(ms) : null;
+}
+
 /** 列出备忘（可选按 tag 过滤，按写入倒序，limit 上限 200）。 */
 export function listNotes(tag?: string, limit = 50): MemoNote[] {
   const notes = loadAll();

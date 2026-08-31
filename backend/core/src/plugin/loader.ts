@@ -323,6 +323,14 @@ export class PluginLoader {
               /* 单个监听器异常不影响其它 */
             }
           }
+          // 桥接到服务端宿主：ServerPluginHost.emit 内已硬编码把 memo:reminder
+          // 事件经 reminder-bus 推前端 SSE（plugin-ext.ts）。否则插件 fire 的事件
+          // 只在本 loader 内部总线流转，前端永远收不到提醒（曾导致「去喝水」提醒丢失）。
+          try {
+            this.serverHost?.emit(e);
+          } catch {
+            /* 宿主桥接异常不影响插件自身 */
+          }
           emitAlert('warn', `plugin.${e.type}`, String(e.message ?? e.type), {
             plugin: manifest.id,
             ...e,
@@ -339,6 +347,10 @@ export class PluginLoader {
               arr.push(unreg);
               this.hostUnregs.set(id, arr);
               return unreg;
+            },
+            // 透传插件事件给宿主（如 memo:reminder → reminder-bus → 前端 SSE）。
+            emit: (e: PluginEvent) => {
+              this.serverHost!.emit(e);
             },
           }
         : undefined,

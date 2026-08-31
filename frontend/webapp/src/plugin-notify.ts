@@ -1,16 +1,17 @@
 /**
- * 插件主动提醒轮询（通用、按约定端点，不耦合具体插件业务词）。
+ * 插件主动提醒（SSE 实时推送 + 轮询降级，通用、不耦合具体插件业务词）。
  *
- * 背景：webapp 用 unsafeHTML 注入插件 HTML，<script> 不执行；项目也无通用事件 SSE。
- * 因此「主动提醒」采用「服务端落盘待提醒 + 前端轮询端点」链路（与 chat-sync 的 SSE 互补）。
- * 约定：插件在 PluginContext.server 注册 GET /api/plugins/<pluginId>/reminders，
- * 返回 { pending: [{id,text,tag,remindAt}], upcoming: [...] }；前端轮询 pending，
- * 用 ah-notification 弹应用内通知 + 浏览器 Notification API 弹系统桌面通知，
- * 并对每条已弹过的 id 调 POST .../reminders/ack?id= 落盘，避免重复。
+ * 背景：webapp 用 unsafeHTML 注入插件 HTML，<script> 不执行；项目已有 SSE 基建
+ * （/api/chat/stream 按 owner 订阅 chat-bus）。提醒采用「服务端经 reminder-bus 实时推 SSE +
+ * 前端订阅 /api/events」链路（与 chat-sync 同源范式），轮询仅作 SSE 断开时的降级兜底。
+ *
+ * 约定：插件在 fire 时经 ctx.events.emit('memo:reminder', {...})，服务端 plugin-ext 把它桥接进
+ * reminder-bus；前端经 /api/events 收到即弹 ah-notification + 浏览器桌面通知，并调
+ * POST /api/plugins/memo/reminders/ack?id= 落盘 ack 防重复。SSE 不可用时降级为每 20s 轮询
+ * GET /api/plugins/memo/reminders 的 pending 列表。
  *
  * 去重：内存 Set（本会话不重复弹）+ 服务端 ack（跨刷新/跨端不重复）。
- * 桌面通知权限：若用户未授权 Notification.permission，则仅应用内 toast，不阻塞；
- * 授权窗口由首次提醒时按需申请。
+ * 桌面通知权限：未授权则仅应用内 toast，不阻塞；首次提醒按需申请。
  */
 
 import { authedFetch } from './api';
@@ -23,21 +24,17 @@ interface ReminderDto {
   remindAt?: number | null;
 }
 
-interface RemindersResp {
-  ok?: boolean;
-  pending?: ReminderDto[];
-  upcoming?: ReminderDto[];
-}
-
 const POLL_MS = 20_000;
 
-/** 单次轮询是否正在飞行，防重叠。 */
-let inFlight = false;
 /** 本会话已弹过的 id（内存去重）。 */
 const shown = new Set<string>();
-/** 轮询定时器句柄。 */
-let timer: ReturnType<typeof setInterval> | null = null;
-/** 是否已申请过桌面通知权限（避免每次提醒都弹授权框）。 */
+/** SSE 连接句柄（非浏览器/未建立时为 null）。 */
+let es: { close: () => void } | null = null;
+/** 轮询定时器句柄（降级用）。 */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** 是否正在用轮询降级（SSE 不可用/断开）。 */
+let polling = false;
+/** 是否已申请过桌面通知权限。 */
 let permProbed = false;
 
 function fmtTime(ts?: number | null): string {
@@ -52,7 +49,6 @@ function ensureDesktopPermission(): NotificationPermission {
   if (typeof Notification === 'undefined') return 'denied';
   if (!permProbed) {
     permProbed = true;
-    // 仅当默认态（未决定）才主动申请，避免打扰已拒绝的用户。
     if (Notification.permission === 'default') {
       void Notification.requestPermission().catch(() => undefined);
     }
@@ -67,21 +63,19 @@ function fireDesktop(r: ReminderDto): void {
     const n = new Notification('备忘提醒', {
       body: r.tag ? `[${r.tag}] ${r.text}` : r.text,
       tag: `memo-remind-${r.id}`,
-      // 点击聚焦窗口（无多窗口场景，仅 best-effort）。
       requireInteraction: false,
     });
     n.onclick = () => {
       window.focus();
       n.close();
     };
-    // 自动关闭，避免堆积。
     setTimeout(() => n.close(), 12_000);
   } catch {
-    /* 某些浏览器在非用户手势下构造 Notification 会抛错，忽略即可 */
+    /* 非用户手势下构造 Notification 可能抛错，忽略 */
   }
 }
 
-/** 弹应用内通知 + 桌面通知，并 ack 服务端落盘。 */
+/** 弹应用内通知 + 桌面通知，并 ack 服务端落盘（幂等）。 */
 function surface(r: ReminderDto): void {
   if (shown.has(r.id)) return;
   shown.add(r.id);
@@ -96,46 +90,116 @@ function surface(r: ReminderDto): void {
 
   fireDesktop(r);
 
-  // 落盘 ack（best-effort，失败不重试；下次轮询若仍 pending 会再弹，但 shown 已去重）。
   void authedFetch(
     `/api/plugins/memo/reminders/ack?id=${encodeURIComponent(r.id)}`,
     { method: 'POST' }
   ).catch(() => undefined);
 }
 
-/** 单次轮询：拉取待提醒并逐条弹窗。 */
-async function poll(): Promise<void> {
-  if (inFlight) return;
-  inFlight = true;
+/** 处理一条提醒事件（SSE 或轮询均走此入口）。 */
+function handleReminder(e: unknown): void {
+  const r = e as ReminderDto & { type?: string };
+  if (!r || typeof r.id !== 'string') return;
+  surface(r);
+}
+
+// ---------------------------------------------------------------------------
+// 轮询降级
+// ---------------------------------------------------------------------------
+
+let pollInFlight = false;
+
+/** 单次轮询：拉取待提醒并逐条弹窗（仅在 SSE 不可用时启用）。 */
+async function pollOnce(): Promise<void> {
+  if (pollInFlight) return;
+  pollInFlight = true;
   try {
     const res = await authedFetch('/api/plugins/memo/reminders', {
       method: 'GET',
       headers: { accept: 'application/json' },
     });
     if (!res.ok) return;
-    const data = (await res.json()) as RemindersResp;
-    const pending = data.pending ?? [];
-    for (const r of pending) surface(r);
+    const data = (await res.json()) as { pending?: ReminderDto[] };
+    for (const r of data.pending ?? []) handleReminder(r);
   } catch {
-    /* 网络/鉴权失败静默：下次轮询继续；401 由 authedFetch 统一回收登录态。 */
+    /* 网络/鉴权失败静默：下次轮询继续 */
   } finally {
-    inFlight = false;
+    pollInFlight = false;
   }
 }
 
-/** 启动提醒轮询（幂等）。首次立即拉一次，随后每 POLL_MS 轮询。 */
+function startPolling(): void {
+  if (polling) return;
+  polling = true;
+  void pollOnce();
+  pollTimer = setInterval(() => void pollOnce(), POLL_MS);
+}
+
+function stopPolling(): void {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  polling = false;
+}
+
+// ---------------------------------------------------------------------------
+// SSE 主通道
+// ---------------------------------------------------------------------------
+
+function startSse(): void {
+  if (es || typeof EventSource === 'undefined') {
+    // 不支持 EventSource 直接走轮询降级
+    startPolling();
+    return;
+  }
+  try {
+    const source = new EventSource('/api/events');
+    es = { close: () => source.close() };
+    source.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data) as { type?: string };
+        if (data.type === 'memo:reminder') {
+          handleReminder(data);
+        }
+      } catch {
+        /* 坏消息跳过 */
+      }
+    };
+    source.onerror = () => {
+      // SSE 断开：关连接 + 降级轮询，待下次 start 重连（浏览器会在 onerror 后停发，
+      // 由我们主动关闭并切轮询，避免无限重连刷日志）。
+      try {
+        source.close();
+      } catch {
+        /* 已关 */
+      }
+      es = null;
+      startPolling();
+    };
+  } catch {
+    // EventSource 构造失败：降级轮询
+    es = null;
+    startPolling();
+  }
+}
+
+/** 启动提醒通道（SSE 优先，失败轮询降级）。幂等。 */
 export function startPluginNotify(): void {
-  if (timer) return;
-  void poll();
-  timer = setInterval(() => void poll(), POLL_MS);
+  startSse();
 }
 
-/** 停止轮询并清理（登出时调用）。 */
+/** 停止全部提醒通道并清理（登出时调用）。 */
 export function stopPluginNotify(): void {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+  if (es) {
+    try {
+      es.close();
+    } catch {
+      /* 已关 */
+    }
+    es = null;
   }
+  stopPolling();
   shown.clear();
   permProbed = false;
 }

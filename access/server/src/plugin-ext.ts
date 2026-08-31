@@ -17,6 +17,7 @@ import type {
   WebExtensionHost,
   PluginUIView,
 } from '@agent-harness/core';
+import { publishReminder } from './reminder-bus';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -64,6 +65,11 @@ export class ServerPluginHost implements ServerExtensionHost {
       } catch {
         /* 单个钩子异常不影响其它 */
       }
+    }
+    // 备忘提醒事件桥接到实时广播总线：前端 /api/events SSE 据此即时弹通知。
+    // 单租户数据，不按 owner 隔离（多租户需给 note 加 owner 字段再收窄）。
+    if (e.type === 'memo:reminder') {
+      publishReminder(e);
     }
   }
 

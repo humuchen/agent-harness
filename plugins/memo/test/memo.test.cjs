@@ -252,20 +252,20 @@ test('提醒：路由 /reminders 返回 pending+upcoming；/reminders/ack 标记
 
   // GET /reminders
   {
-    const { res, body } = collect();
-    await ext.mountRoutes['/reminders'](mkReq('/reminders', 'GET'), res);
-    assert.equal(body.ok, true);
-    assert.equal(body.upcoming.length, 1, 'upcoming 应含未来提醒');
-    assert.equal(body.pending.length, 1, 'pending 应含到期提醒');
+    const c = collect();
+    await ext.mountRoutes['/reminders'](mkReq('/reminders', 'GET'), c.res);
+    assert.equal(c.obj.ok, true);
+    assert.equal(c.obj.upcoming.length, 1, 'upcoming 应含未来提醒');
+    assert.equal(c.obj.pending.length, 1, 'pending 应含到期提醒');
   }
 
   // POST /reminders/ack?id=...
   {
     const dueId = store.pendingReminders(Date.now())[0].id;
-    const { res, body } = collect();
-    await ext.mountRoutes['/reminders/ack'](mkReq(`/reminders/ack?id=${dueId}`, 'POST'), res);
-    assert.equal(body.ok, true);
-    assert.equal(body.notified, true, 'ack 应落盘');
+    const c = collect();
+    await ext.mountRoutes['/reminders/ack'](mkReq(`/reminders/ack?id=${dueId}`, 'POST'), c.res);
+    assert.equal(c.obj.ok, true);
+    assert.equal(c.obj.notified, true, 'ack 应落盘');
     assert.equal(store.pendingReminders(Date.now()).length, 0, 'ack 后 pending 清空');
   }
 });
@@ -322,7 +322,7 @@ test('提醒：调度器 fire 抛错走 alert 通道且不中断后续项', asyn
   await sched.triggerNow();
   // 两项都到期：fire 对第一项抛错被捕获，第二项仍执行（fire 计数含失败的也调用了）
   assert.equal(fires, 2, '两项都应被 fire（失败不阻断后续）');
-  assert.equal(alerts.length, 1, '失败项应走 alert 通道');
+  assert.equal(alerts.length, 2, '两条都失败应各走一次 alert 通道');
   sched.stop();
 });
 

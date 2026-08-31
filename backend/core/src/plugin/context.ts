@@ -76,6 +76,12 @@ export interface ServerExtension {
 export interface ServerExtensionHost {
   /** 注册一个服务端扩展，返回注销函数。 */
   registerExtension(ext: ServerExtension): () => void;
+  /**
+   * 向宿主广播一条插件事件（如 memo:reminder）。宿主据此桥接进实时通道
+   * （SSE / reminder-bus 等），使前端能即时收到。与 ctx.events.on 订阅互补：
+   * on 是「插件收核心事件」，emit 是「插件发事件给宿主」。
+   */
+  emit(event: PluginEvent): void;
 }
 
 /** 插件前端视图（由插件提供，webapp 在运行时渲染为动态 Tab）。 */

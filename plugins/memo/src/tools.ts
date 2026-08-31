@@ -6,7 +6,7 @@
  */
 
 import type { ToolRegistry } from '@agent-harness/core';
-import { saveNote, listNotes, deleteNote } from './store';
+import { saveNote, listNotes, deleteNote, resolveRemindAt } from './store';
 
 function errResult(e: unknown): { error: true; message: string } {
   return { error: true, message: e instanceof Error ? e.message : String(e) };
@@ -17,17 +17,7 @@ function errResult(e: unknown): { error: true; message: string } {
  * 返回 epoch ms；非法 / 过去时间返回 null（调用方据此忽略提醒，不让过期提醒污染数据）。
  */
 function parseRemindAt(args: Record<string, unknown>): number | null {
-  const raw = args.remindAt;
-  let ms: number | null = null;
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    ms = raw;
-  } else if (typeof args.remindAtISO === 'string' && args.remindAtISO.trim()) {
-    const t = Date.parse(args.remindAtISO.trim());
-    if (Number.isFinite(t)) ms = t;
-  }
-  if (ms == null || !Number.isFinite(ms)) return null;
-  // 只接受未来时间；过去时间视为无效（避免一保存就立刻触发提醒）。
-  return ms > Date.now() ? Math.floor(ms) : null;
+  return resolveRemindAt(args.remindAt, args.remindAtISO);
 }
 
 export function registerNoteTools(tools: ToolRegistry): void {

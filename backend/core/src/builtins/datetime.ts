@@ -12,7 +12,7 @@ function formatIn(d: Date, tz?: string): string {
       minute: '2-digit',
       second: '2-digit',
       hour12: false,
-      timeZoneName: 'short',
+      timeZoneName: 'short'
     }).format(d);
   } catch {
     return (
@@ -23,7 +23,7 @@ function formatIn(d: Date, tz?: string): string {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
-        hour12: false,
+        hour12: false
       }).format(d) + ' (UTC fallback)'
     );
   }
@@ -64,16 +64,30 @@ export function registerDateTime(registry: ToolRegistry): void {
     'builtin__datetime_now',
     'Get the current date/time. Returns ISO-8601 UTC and a human-readable form in the requested ' +
       'IANA timezone (e.g. "Asia/Shanghai", "America/New_York"). Defaults to UTC. Use this ' +
-      'whenever the user asks about "now", dates, or times.',
+      'whenever the user asks about "now", dates, or times. CRITICAL: when the user says ' +
+      'relative dates like "xx月xx号", "明天", "下周", or "x天后", you MUST call this tool first ' +
+      'to get the real current year/month/day, then compute the absolute time from it. ' +
+      'Never guess the year from training memory — always anchor on the value returned here.',
     objectParams(
-      { timezone: { type: 'string', description: 'IANA timezone name, e.g. Asia/Shanghai. Defaults to UTC.' } },
+      {
+        timezone: {
+          type: 'string',
+          description:
+            'IANA timezone name, e.g. Asia/Shanghai. Defaults to UTC.'
+        }
+      },
       []
     ),
     async (args: Record<string, unknown>) => {
       const tz = args.timezone ? String(args.timezone) : undefined;
       try {
         const d = new Date();
-        return JSON.stringify({ iso: d.toISOString(), tz: tz ?? 'UTC', formatted: formatIn(d, tz), epoch: d.getTime() });
+        return JSON.stringify({
+          iso: d.toISOString(),
+          tz: tz ?? 'UTC',
+          formatted: formatIn(d, tz),
+          epoch: d.getTime()
+        });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return `error: ${msg}`;
@@ -87,9 +101,16 @@ export function registerDateTime(registry: ToolRegistry): void {
     'Convert an ISO-8601 timestamp from one timezone to another.',
     objectParams(
       {
-        time: { type: 'string', description: 'ISO-8601 timestamp, e.g. "2026-01-01T00:00:00Z".' },
-        from: { type: 'string', description: 'Source IANA timezone (optional; inferred from the timestamp if omitted).' },
-        to: { type: 'string', description: 'Target IANA timezone.' },
+        time: {
+          type: 'string',
+          description: 'ISO-8601 timestamp, e.g. "2026-01-01T00:00:00Z".'
+        },
+        from: {
+          type: 'string',
+          description:
+            'Source IANA timezone (optional; inferred from the timestamp if omitted).'
+        },
+        to: { type: 'string', description: 'Target IANA timezone.' }
       },
       ['time', 'to']
     ),
@@ -102,7 +123,7 @@ export function registerDateTime(registry: ToolRegistry): void {
           from: args.from ? String(args.from) : 'parsed',
           to,
           iso: d.toISOString(),
-          formatted: formatIn(d, to),
+          formatted: formatIn(d, to)
         });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -118,10 +139,22 @@ export function registerDateTime(registry: ToolRegistry): void {
       'seconds/minutes/hours/days/weeks/months/years.',
     objectParams(
       {
-        time: { type: 'string', description: 'ISO-8601 timestamp; defaults to now if omitted.' },
-        amount: { type: 'number', description: 'Amount to add (negative to subtract).' },
-        unit: { type: 'string', description: 'One of seconds/minutes/hours/days/weeks/months/years.' },
-        timezone: { type: 'string', description: 'IANA timezone for output formatting.' },
+        time: {
+          type: 'string',
+          description: 'ISO-8601 timestamp; defaults to now if omitted.'
+        },
+        amount: {
+          type: 'number',
+          description: 'Amount to add (negative to subtract).'
+        },
+        unit: {
+          type: 'string',
+          description: 'One of seconds/minutes/hours/days/weeks/months/years.'
+        },
+        timezone: {
+          type: 'string',
+          description: 'IANA timezone for output formatting.'
+        }
       },
       ['amount', 'unit']
     ),
@@ -133,7 +166,11 @@ export function registerDateTime(registry: ToolRegistry): void {
       const tz = args.timezone ? String(args.timezone) : undefined;
       try {
         const d = addDuration(base, amount, unit);
-        return JSON.stringify({ iso: d.toISOString(), formatted: formatIn(d, tz), epoch: d.getTime() });
+        return JSON.stringify({
+          iso: d.toISOString(),
+          formatted: formatIn(d, tz),
+          epoch: d.getTime()
+        });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return `error: ${msg}`;
