@@ -308,6 +308,8 @@ export const sharedStyles = css`
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
     padding: 16px 18px;
+    max-height: 800px;
+    overflow-y: auto;
   }
 
   h2 {
@@ -517,6 +519,10 @@ export const sharedStyles = css`
     margin: 8px 0;
   }
   /* MCP 已接入列表：服务器项 + 工具列表 */
+  ,
+  .card.mcp-server-list {
+    max-height: 490px;
+  }
   .mcp-server-item {
     list-style: none;
     padding: 4px 0;
@@ -542,8 +548,6 @@ export const sharedStyles = css`
     padding-left: 0;
     border-left: 1px solid var(--ah-border);
     padding-top: 4px;
-    max-height: 200px;
-    overflow: auto;
 
     .mcp-tool-item {
       padding-left: 8px;

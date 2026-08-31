@@ -467,7 +467,7 @@ export class AhMcp extends LitElement {
                 </button>
               </div>
             </div>
-            <div class="card">
+            <div class="card mcp-server-list">
               <div
                 class="section-title collapsible"
                 @click=${() => (this.serversExpanded = !this.serversExpanded)}
