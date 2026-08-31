@@ -19,6 +19,9 @@
     "workflow": "tsc -p tsconfig.json && node dist/workflow-demo.js",
     "multi-agent": "tsc -p tsconfig.json && node dist/multi-agent.js",
     "os-sandbox": "tsc -p tsconfig.json && node dist/os-sandbox.js",
+    "a2a-remote": "tsc -p tsconfig.json && node dist/a2a-remote-agent.js",
+    "registry-pull": "tsc -p tsconfig.json && node dist/plugin-registry-pull.js",
+    "scheduled-trigger": "tsc -p tsconfig.json && node dist/scheduled-trigger-plugin.js",
     "rag-e2e": "tsc -p tsconfig.json && node dist/rag-e2e.js",
     "rag-live": "tsc -p tsconfig.json && node dist/rag-live-e2e.js",
     "verify": "tsc -p tsconfig.json && node dist/verify-harness.js && node dist/verify-mcp.js && node dist/verify-context7.js"

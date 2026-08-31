@@ -72,6 +72,7 @@ export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> 
   const defaults = [
     '../../../plugins/customer-service/dist/index.js',
     '../../../plugins/medical-aesthetics-lead/dist/index.js',
+    '../../../plugins/memo/dist/index.js',
   ];
   const entries = envList.length ? envList : defaults;
   const enabled: string[] = [];

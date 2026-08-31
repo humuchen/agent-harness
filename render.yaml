@@ -68,6 +68,12 @@ services:
       # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       - key: MA_DATA_DIR
         value: /app/data/ma-lead
+      # 插件启用清单（可选覆盖），逗号分隔 .js 绝对路径。
+      # 不配则回落 plugin-bootstrap 默认列表（customer-service / medical-aesthetics-lead / memo）。
+      # 路径相对 access/server/dist 上溯三级：../../../plugins/<id>/dist/index.js。
+      # 设为空字符串 '' 可强制「仅默认列表」语义显式化；自定义新增插件在此追加即可。
+      - key: AGENT_PLUGINS
+        value: '../../../plugins/customer-service/dist/index.js,../../../plugins/medical-aesthetics-lead/dist/index.js,../../../plugins/memo/dist/index.js'
       # 数据库后端：sqlite（默认，本地文件）| turso（云端 SQLite，需配 TURSO_URL + TURSO_TOKEN）
       # 自动回退：turso 初始化失败时降级为本地 sqlite
       - key: DB_BACKEND

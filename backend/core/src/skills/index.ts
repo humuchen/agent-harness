@@ -129,6 +129,19 @@ export function defaultSkills(): Skill[] {
         '定位后再用 builtin__fs_read 读取内容。所有路径都限定在沙箱根目录内。',
     },
     {
+      id: 'repo-verify',
+      title: '仓库构建验证',
+      description: '改动 agent-harness 代码后需要类型检查、单元测试或全量构建验证时使用，确保交付前全绿。',
+      triggers: ['构建', '编译', '跑测试', '全绿', '验证一下', 'build', 'tsc', 'node --test', 'pnpm -r'],
+      tools: [],
+      prompt:
+        '执行 agent-harness 仓库构建验证：\n' +
+        '1) 逐包类型检查：tsc -p <pkg>/tsconfig.json（webapp 因 .bin 为 sh 脚本不可直跑，用 node node_modules/typescript/bin/tsc）；\n' +
+        '2) 单元测试：core 与各插件包均为 node --test test/*.test.cjs（零依赖 require dist）；\n' +
+        '3) 全量构建：pnpm -r build（拓扑序 core → server/webapp/plugins），EXIT=0 才算全绿；\n' +
+        '4) 任何一步失败先修复再重跑，不允许静默跳过；交付前必须三步全部通过。',
+    },
+    {
       id: 'current-time',
       title: '当前时间与时区',
       description: '需要“现在几点”、时区换算、相对时间（如“3 小时后”）时使用。',

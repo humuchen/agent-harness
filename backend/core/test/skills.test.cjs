@@ -17,15 +17,18 @@ test('SkillRegistry 注册与查询', () => {
   assert.throws(() => r.register({ id: '', title: 'x', description: 'd' }));
 });
 
-test('defaultSkills 提供 4 个默认技能', () => {
+test('defaultSkills 提供 5 个默认技能', () => {
   const list = defaultSkills();
-  assert.strictEqual(list.length, 4);
+  assert.strictEqual(list.length, 5);
   const ids = list.map((s) => s.id).sort();
-  assert.deepStrictEqual(ids, ['current-time', 'files', 'math', 'web-research']);
+  assert.deepStrictEqual(ids, ['current-time', 'files', 'math', 'repo-verify', 'web-research']);
   for (const s of list) {
-    assert.ok(s.tools && s.tools.length > 0, `${s.id} 应声明 tools`);
+    // tools 允许为空（prompt-only 技能，如 repo-verify），但 triggers 必须声明
     assert.ok(s.triggers && s.triggers.length > 0, `${s.id} 应声明 triggers`);
   }
+  const repoVerify = list.find((s) => s.id === 'repo-verify');
+  assert.ok(repoVerify, 'repo-verify 技能存在');
+  assert.ok(repoVerify.prompt && repoVerify.prompt.length > 20, 'repo-verify 应携带执行指引');
 });
 
 test('matchTriggers 中文/英文触发词（大小写不敏感）', () => {
