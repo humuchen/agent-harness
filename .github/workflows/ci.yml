@@ -33,6 +33,9 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+      - name: 代码检查（ESLint，warn-only）
+        run: pnpm lint || true
+
       - name: 构建
         run: pnpm -r build
 

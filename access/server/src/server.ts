@@ -137,6 +137,14 @@ import {
 } from './accounts';
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
+// 接入层公开/运维探针路由表（可测试接缝，详见 routes/edge-routes.ts）。
+import {
+  createEdgeRoutes,
+  tryDispatchEdgeRoute,
+  type EdgeRouteDeps
+} from './routes/edge-routes';
+// 接入层结构化日志封装（统一收口启动横幅 / 降级告警 / 自检结论）。
+import { log, banner } from './logger';
 
 // 必须在下方任何 `process.env.X` 顶层读取前执行（幂等，仅首次生效）。
 loadSecrets();
@@ -147,6 +155,31 @@ setupAlerting();
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
 const HOST = process.env.UI_HOST ?? '0.0.0.0';
+
+// 边缘路由表（公开/运维探针）：在鉴权守卫前分发，命中即短路。
+// deps 在首次需要时构造，getSandboxStatus 懒加载 core 的沙箱执行器，避免模块加载期副作用。
+const edgeRoutes = createEdgeRoutes();
+function edgeRouteDeps(): EdgeRouteDeps {
+  return {
+    buildState: () => buildState(),
+    getSandboxStatus: () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { createOSSandboxExecutor } = require('@agent-harness/core');
+        const exec = createOSSandboxExecutor();
+        return (exec as { describe?(): unknown }).describe?.() ?? null;
+      } catch {
+        return null;
+      }
+    },
+    getAuthConfig: () => getAuthConfig(),
+    getErrorLog: (opts) => getErrorLog(opts),
+    getErrorSummary: () => getErrorSummary(),
+    formatErrorReport: (opts) => formatErrorReport(opts),
+    handleLiveness,
+    handleReadiness
+  };
+}
 
 
 // GitHub OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
@@ -558,32 +591,13 @@ const server = createServer(
           }
         }
       }
-      // K8s Liveness 探针 - 进程存活检查
-      if (req.method === 'GET' && path === '/health/live') {
-        return handleLiveness(req, res);
-      }
-      // K8s Readiness 探针 - 依赖检查
-      if (req.method === 'GET' && path === '/health/ready') {
-        return handleReadiness(req, res);
-      }
-      if (req.method === 'GET' && path === '/api/state') {
-        // 健康检查端点保持开放（Render 等 PaaS 无法在健康检查中带令牌）。
-        return sendJson(res, buildState());
-      }
-      if (req.method === 'GET' && path === '/api/sandbox') {
-        // 沙箱能力快照（OS 级隔离就绪状态 + 实际生效原语），供前端「可观测」面板展示。
-        // 不依赖任何可选依赖；若未加载 OSSandboxExecutor 模块则返回「未启用」占位。
-        let sandboxStatus: unknown;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { createOSSandboxExecutor } = require('@agent-harness/core');
-          const exec = createOSSandboxExecutor();
-          sandboxStatus =
-            (exec as { describe?(): unknown }).describe?.() ?? null;
-        } catch {
-          sandboxStatus = null;
-        }
-        return sendJson(res, { sandbox: sandboxStatus }, req);
+      // 边缘路由（公开/运维探针）：命中即短路分发，未命中继续主链。
+      // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
+      // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
+      if (
+        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps())
+      ) {
+        return;
       }
       // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
       if (req.method === 'GET' && path === '/errors') {
@@ -595,38 +609,6 @@ const server = createServer(
         });
         res.end(renderErrorsHtml());
         return;
-      }
-      // 错误明细 JSON 接口：count（错误数量）+ summary（分布）+ errors（具体明细列表）。
-      // 支持 ?limit=N（默认 200，取最近 N 条）、?full=1（不限条数）、?format=text（文本报告）。
-      if (req.method === 'GET' && path === '/api/errors') {
-        const ctx = await guard(req, res, 'errors:read');
-        if (!ctx) return;
-        const limitRaw = Number(url.searchParams.get('limit'));
-        const limit =
-          Number.isFinite(limitRaw) && limitRaw > 0
-            ? Math.floor(limitRaw)
-            : 200;
-        const full = url.searchParams.get('full') === '1';
-        const fmt = url.searchParams.get('format');
-        if (fmt === 'text') {
-          res.writeHead(200, {
-            'content-type': 'text/plain; charset=utf-8',
-            ...corsHeaders(req)
-          });
-          res.end(formatErrorReport({ limit: full ? undefined : limit }));
-          return;
-        }
-        const list = getErrorLog({ limit: full ? undefined : limit });
-        return sendJson(
-          res,
-          { count: list.length, summary: getErrorSummary(), errors: list },
-          req
-        );
-      }
-      if (req.method === 'GET' && path === '/api/auth/config') {
-        // 公开：供前端获取身份源元信息（如 OIDC 授权端点 / clientId / scopes），
-        // 以便发起 SSO 登录（授权码流 + PKCE，令牌取回后作为 Bearer 调用本服务）。
-        return sendJson(res, getAuthConfig(), req);
       }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
       // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦掉，
@@ -3427,6 +3409,38 @@ function buildAgentStore(): AgentStore {
  * 再注册行业合规画像，最后开始监听。把这些放到 listen 之前，杜绝「请求早于注册表就绪」的竞态。
  */
 async function bootstrap(): Promise<void> {
+  // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
+  // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
+  // 默认开启；确有单实例或外部共享存储场景可用 REPLICA_CHECK=off 关闭（需自担风险）。
+  if ((process.env.REPLICA_CHECK || 'on').toLowerCase() !== 'off') {
+    const replicaCount = Number(process.env.REPLICA_COUNT ?? '');
+    const multiReplica = replicaCount > 1 || !!process.env.REPLICA_ID;
+    if (multiReplica) {
+      const redisUrl = process.env.REDIS_URL || process.env.AGENT_STORE_REDIS_URL;
+      const queueBackend = (process.env.RUN_QUEUE_BACKEND || '').toLowerCase();
+      const agentStore = (process.env.AGENT_STORE || '').toLowerCase();
+      const problems: string[] = [];
+      if (!redisUrl) problems.push('REDIS_URL 未设置（多副本共享存储缺失）');
+      if (queueBackend !== 'redis') problems.push(`RUN_QUEUE_BACKEND=${queueBackend || 'memory'}，应为 redis`);
+      if (agentStore !== 'redis') problems.push(`AGENT_STORE=${agentStore || 'volatile'}，应为 redis`);
+      if (problems.length) {
+        const msg =
+          `[multi-replica] 检测到多实例配置但共享后端未就绪：` +
+          problems.join('；') +
+          '。多副本下内存态队列/注册表会导致任务丢失与 agent 漂移。' +
+          '请配置 REDIS_URL 并将 RUN_QUEUE_BACKEND/AGENT_STORE 设为 redis；' +
+          '若确为单实例，请设 REPLICA_CHECK=off 关闭本自检。';
+        log.error('multi-replica misconfig: refusing to start', {
+          problems,
+          replicaCount,
+          replicaId: process.env.REPLICA_ID ?? null
+        });
+        // 启动期失败退出，交由编排（k8s/Render）重启并告警，优于带着错误配置静默上线。
+        process.exit(1);
+      }
+      log.info('multi-replica self-check passed (redis-backed queue/registry)');
+    }
+  }
   const store = buildAgentStore();
   await initAgentRegistry(store);
   // 插件系统：复用已注入持久后端的共享 AgentRegistry，构造 loader + 双宿主。
@@ -3531,6 +3545,33 @@ function onListening(): void {
           }）`
         : '')
   );
+  // 沙箱隔离启动自检：当「环境要求 OS 级强隔离」却不可用时，显式高声告警，
+  // 杜绝「以为有强隔离、其实静默降级为弱隔离」的安全错配（曾为稳定性隐患）。
+  // 仅当 SANDBOX_BACKEND=os/java（或跨行业租户需强隔离）时才值得告警；
+  // 默认 local/container 不在告警范围。
+  try {
+    const sandboxBackend = (process.env.SANDBOX_BACKEND || '').toLowerCase();
+    const wantOsIsolation =
+      sandboxBackend === 'os' || sandboxBackend === 'native' || isTenantRequired();
+    if (wantOsIsolation) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createOSSandboxExecutor } = require('@agent-harness/core');
+      const status = (createOSSandboxExecutor() as { describe?(): { backend: string; supported: boolean; reason: string } }).describe?.();
+      if (status && status.backend === 'os-fallback-local') {
+        log.warn('OS-level sandbox degraded to hardened local executor (weak isolation)', {
+          reason: status.reason,
+          sandboxBackend
+        });
+      } else if (status) {
+        log.info('OS-level sandbox active', {
+          backend: status.backend,
+          supported: status.supported
+        });
+      }
+    }
+  } catch {
+    /* 沙箱模块缺失时跳过自检，不影响启动 */
+  }
   console.log('');
 }
 

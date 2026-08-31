@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vite build",
+    "test": "vitest run",
     "test:ci": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "preview": "vite preview"
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "typescript": "^5.4.5",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
   }
 }

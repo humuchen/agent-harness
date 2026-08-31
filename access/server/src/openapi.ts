@@ -33,6 +33,19 @@ export function buildOpenApiSpec(): Record<string, unknown> {
         responses: { '200': jsonResponse('服务状态') },
       },
     },
+    '/api/v1/auth/config': {
+      get: {
+        summary: '鉴权元信息（OIDC 授权端点 / clientId / scopes，供前端发起 SSO）',
+        responses: { '200': jsonResponse('鉴权配置') },
+      },
+    },
+    '/api/v1/errors': {
+      get: {
+        summary: '错误明细（count / summary / errors 列表）',
+        ...bearer(),
+        responses: { '200': jsonResponse('错误明细'), '401': jsonResponse('未鉴权') },
+      },
+    },
     '/api/v1/metrics': {
       get: {
         summary: '可观测性指标快照（token / 延迟 / 错误 / 成本 / 队列）',

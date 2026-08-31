@@ -4,7 +4,9 @@
 // 仅依赖 node 内置模块；测试 runner 不直接 require server（避免拉入 MCP SDK）。
 // 运行前需 `pnpm --filter @agent-harness/server run build` 产 dist。
 //
-// 用单个测试串行执行 setup → 断言 → teardown，避免 node:test 默认并发导致的时序问题。
+// 并发安全：node:test 默认并发执行顶层 test()。因此每个测试独立持有自己的 server
+// 子进程与端口，request 必须显式携带「本测试」的 port，绝不读写模块级共享端口——
+// 否则一个测试的请求可能命中另一个测试的服务端（交叉串话），表现为偶发 413/401/404。
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -17,8 +19,6 @@ const SERVER_JS = join(__dirname, '..', 'dist', 'server.js');
 const TOKEN = 'test-token-xyz';
 const TOKENS_JSON = JSON.stringify({ [TOKEN]: 'admin' });
 const RUN = existsSync(SERVER_JS);
-// 当前启动的服务端端口（每次 startServer 刷新）。request 据此发请求。
-let PORT = 40000 + Math.floor(Math.random() * 5000);
 // 每次启动服务端都用全新随机端口，避免上一次测试的端口尚未释放（TIME_WAIT / SIGTERM
 // 延迟）导致后续测试 EADDRINUSE 崩溃。范围避开常用端口。
 function freshPort() {
@@ -29,12 +29,13 @@ const WEBAPP_BUILT = existsSync(
   join(__dirname, '..', '..', '..', 'frontend', 'webapp', 'dist', 'index.html')
 );
 
+// 启动一个专属 server 子进程，返回 { child, port }。
 function startServer() {
-  PORT = freshPort();
+  const port = freshPort();
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
-      PORT: String(PORT),
+      PORT: String(port),
       UI_HOST: '127.0.0.1',
       UI_TOKENS: TOKENS_JSON,
       // 收紧体上限以便测试 413；关闭限流避免误伤；不接 MCP / 真实 LLM。
@@ -55,7 +56,7 @@ function startServer() {
       buf += d.toString();
       if (!resolved && buf.includes('已启动')) {
         resolved = true;
-        resolve(child);
+        resolve({ child, port });
       }
     });
     child.stderr.on('data', (d) =>
@@ -72,12 +73,14 @@ function startServer() {
   });
 }
 
-function request(method, path, { headers = {}, body, rawBody } = {}) {
+// 向「指定 port」的 server 发请求。port 必须由调用方显式传入（本测试），
+// 不得依赖任何共享全局，避免并发测试交叉串话。
+function request(method, path, port, { headers = {}, body, rawBody } = {}) {
   return new Promise((resolve, reject) => {
     const payload =
       rawBody != null ? rawBody : body != null ? JSON.stringify(body) : null;
     const req = http.request(
-      { host: '127.0.0.1', port: PORT, method, path, headers: { ...headers } },
+      { host: '127.0.0.1', port, method, path, headers: { ...headers } },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
@@ -103,21 +106,25 @@ function request(method, path, { headers = {}, body, rawBody } = {}) {
 
 const auth = () => ({ authorization: 'Bearer ' + TOKEN });
 
+// 在单个测试作用域内包一个自动注入 port 的 req 便捷函数，避免逐个手写 port。
+function makeReq(port) {
+  return (method, path, opts) => request(method, path, port, opts);
+}
+
 test(
   'UI server 集成：鉴权 / 体上限 / metrics / SSE',
   { skip: !RUN },
   async () => {
-    let child = null;
+    const { child, port } = await startServer();
+    const req = makeReq(port);
     try {
-      child = await startServer();
-
       // 1) /api/state 始终开放（供 Render 等健康检查）。
-      let r = await request('GET', '/api/state');
+      let r = await req('GET', '/api/state');
       assert.equal(r.status, 200, 'GET /api/state 应 200');
 
       // 2) / 托管 webapp 首页。本用例不隐式依赖前端构建产物：
       //    webapp 已构建 → 必须 200 + text/html；未构建 → 必须是可读的 500 兜底提示。
-      r = await request('GET', '/');
+      r = await req('GET', '/');
       if (WEBAPP_BUILT) {
         assert.equal(r.status, 200, 'GET / 应 200（webapp 已构建）');
         assert.match(
@@ -131,17 +138,17 @@ test(
       }
 
       // 3) 受保护端点无令牌 → 401。
-      r = await request('GET', '/api/metrics');
+      r = await req('GET', '/api/metrics');
       assert.equal(r.status, 401, '无令牌 /api/metrics 应 401');
 
       // 4) 错误令牌 → 401。
-      r = await request('GET', '/api/metrics', {
+      r = await req('GET', '/api/metrics', {
         headers: { authorization: 'Bearer wrong' }
       });
       assert.equal(r.status, 401, '错误令牌应 401');
 
       // 5) /api/metrics 带正确令牌 → 200，含 cost/costByModel/tokens（P1-6）。
-      r = await request('GET', '/api/metrics', { headers: auth() });
+      r = await req('GET', '/api/metrics', { headers: auth() });
       assert.equal(r.status, 200, '带令牌 /api/metrics 应 200');
       const metrics = JSON.parse(r.body);
       assert.ok(typeof metrics.cost === 'number', 'metrics.cost 应为 number');
@@ -155,18 +162,18 @@ test(
       );
 
       // 6) /api/mcp/list 带令牌 → 200。
-      r = await request('GET', '/api/mcp/list', { headers: auth() });
+      r = await req('GET', '/api/mcp/list', { headers: auth() });
       assert.equal(r.status, 200, '/api/mcp/list 应 200');
       assert.ok(Array.isArray(JSON.parse(r.body).servers), 'servers 应为数组');
 
       // 7) POST /api/run 无令牌 → 401。
-      r = await request('POST', '/api/run', {
+      r = await req('POST', '/api/run', {
         body: { mode: 'mock', prompt: 'hi' }
       });
       assert.equal(r.status, 401, '无令牌 /api/run 应 401');
 
       // 8) POST /api/run 带令牌(mock) → 200 SSE；事件流含 job:accepted 与终结节点 _done。
-      r = await request('POST', '/api/run', {
+      r = await req('POST', '/api/run', {
         headers: auth(),
         body: { mode: 'mock', prompt: '帮我在 feature/x 分支拉起临时环境' }
       });
@@ -187,15 +194,15 @@ test(
 
       // 9) 请求体超限 → 413（MAX_BODY_BYTES=1024）。
       const big = { mode: 'mock', prompt: 'p'.repeat(2000) };
-      r = await request('POST', '/api/run', { headers: auth(), body: big });
+      r = await req('POST', '/api/run', { headers: auth(), body: big });
       assert.equal(r.status, 413, '超限 body 应 413');
 
       // 10) 未知路径 → 404。
-      r = await request('GET', '/api/does-not-exist');
+      r = await req('GET', '/api/does-not-exist');
       assert.equal(r.status, 404, '未知路径应 404');
 
       // 11) /api/jobs 带令牌 → 200，返回运行队列快照（并发配置 + jobs 数组，验证有界化/统计）。
-      r = await request('GET', '/api/jobs', { headers: auth() });
+      r = await req('GET', '/api/jobs', { headers: auth() });
       assert.equal(r.status, 200, '/api/jobs 应 200');
       const jobsView = JSON.parse(r.body);
       assert.ok(Array.isArray(jobsView.jobs), 'jobs.jobs 应为数组');
@@ -208,11 +215,9 @@ test(
         'jobs.queue 应含在飞会话数'
       );
     } finally {
-      if (child) {
-        try {
-          child.kill('SIGTERM');
-        } catch {}
-      }
+      try {
+        child.kill('SIGTERM');
+      } catch {}
     }
   }
 );
@@ -226,12 +231,11 @@ test(
   '调用链路 LLM 节点的消息上下文包含 assistant（trace rebuild 回归）',
   { skip: !RUN, timeout: 150000 },
   async () => {
-    let child = null;
+    const { child, port } = await startServer();
+    const req = makeReq(port);
     try {
-      child = await startServer();
-
       // 1) 创建聊天会话（非 anon 鉴权）。
-      let r = await request('POST', '/api/chat/sessions', {
+      let r = await req('POST', '/api/chat/sessions', {
         headers: auth(),
         body: { title: 'trace-regression' }
       });
@@ -240,7 +244,7 @@ test(
       assert.ok(sid, '应返回会话 id');
 
       // 2) 触发一轮 mock run，绑定到该会话（SSE 直到 _done 关闭连接）。
-      r = await request('POST', '/api/run', {
+      r = await req('POST', '/api/run', {
         headers: auth(),
         body: { prompt: '用一句话介绍你自己', chatSessionId: sid }
       });
@@ -249,7 +253,7 @@ test(
       assert.ok(r.body.includes('_done'), 'SSE 应以 _done 终结');
 
       // 3) 回看持久化会话，定位 LLM 调用节点的消息上下文。
-      r = await request('GET', `/api/chat/sessions/${sid}`, { headers: auth() });
+      r = await req('GET', `/api/chat/sessions/${sid}`, { headers: auth() });
       assert.equal(r.status, 200, '读取会话应 200');
       const sess = JSON.parse(r.body);
 
@@ -268,10 +272,7 @@ test(
       };
       (traced.trace || []).forEach(walk);
 
-      assert.ok(
-        roles.length > 0,
-        'LLM 节点的消息上下文不应为空'
-      );
+      assert.ok(roles.length > 0, 'LLM 节点的消息上下文不应为空');
       assert.ok(
         roles.includes('assistant'),
         `LLM 节点的消息上下文必须包含 assistant（实际角色：${JSON.stringify(
@@ -279,11 +280,9 @@ test(
         )}）—— 否则重新进入历史后点开调用链路会丢失助理内容`
       );
     } finally {
-      if (child) {
-        try {
-          child.kill('SIGTERM');
-        } catch {}
-      }
+      try {
+        child.kill('SIGTERM');
+      } catch {}
     }
   }
 );
@@ -295,11 +294,10 @@ test(
   '调用链路 LLM 节点工具计数来自真实执行的子节点（tools meta 回归）',
   { skip: !RUN, timeout: 150000 },
   async () => {
-    let child = null;
+    const { child, port } = await startServer();
+    const req = makeReq(port);
     try {
-      child = await startServer();
-
-      const r = await request('POST', '/api/chat/sessions', {
+      const r = await req('POST', '/api/chat/sessions', {
         headers: auth(),
         body: { title: 'tool-trace-regression' }
       });
@@ -308,7 +306,7 @@ test(
       assert.ok(sid, '应返回会话 id');
 
       // mock LLM 在输入命中「创建临时环境」意图时会调用 create/destroy 工具闭环。
-      const run = await request('POST', '/api/run', {
+      const run = await req('POST', '/api/run', {
         headers: auth(),
         body: { prompt: '创建一个临时环境', chatSessionId: sid }
       });
@@ -316,7 +314,7 @@ test(
       assert.ok(run.body.includes('tool:start'), 'SSE 应下发 tool:start');
       assert.ok(run.body.includes('_done'), 'SSE 应以 _done 终结');
 
-      const get = await request('GET', `/api/chat/sessions/${sid}`, {
+      const get = await req('GET', `/api/chat/sessions/${sid}`, {
         headers: auth()
       });
       assert.equal(get.status, 200, '读取会话应 200');
@@ -339,10 +337,7 @@ test(
       };
       (traced.trace || []).forEach(walk);
 
-      assert.ok(
-        toolNodes.length > 0,
-        '调用链路应包含真实执行的工具子节点'
-      );
+      assert.ok(toolNodes.length > 0, '调用链路应包含真实执行的工具子节点');
       assert.ok(
         toolNodes.some((t) => t.detail && t.result),
         '工具节点应同时保留入参（detail）与结果（result）'
@@ -352,11 +347,9 @@ test(
         'LLM 节点 meta 不应再包含误导性的 tools 字段（可用工具数≠执行数）'
       );
     } finally {
-      if (child) {
-        try {
-          child.kill('SIGTERM');
-        } catch {}
-      }
+      try {
+        child.kill('SIGTERM');
+      } catch {}
     }
   }
 );

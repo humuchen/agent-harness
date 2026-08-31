@@ -11,6 +11,8 @@
     "build": "pnpm -r build",
     "build:native": "bash scripts/build-native.sh",
     "verify:sandbox": "bash scripts/verify-sandbox.sh",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "pnpm -r test",
     "test:load": "node scripts/load-test.cjs",
     "test:load:heavy": "node scripts/load-test.cjs -c 50 -r 500",
@@ -24,5 +26,10 @@
     "skills:lint": "bash skills/ah-platform-evolution/scripts/build-and-test.sh lint",
     "skills:all": "bash skills/ah-platform-evolution/scripts/build-and-test.sh all"
   },
-  "license": "Apache License, Version 2.0"
+  "license": "Apache License, Version 2.0",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9.39.4",
+    "typescript-eslint": "^8.68.0"
+  }
 }

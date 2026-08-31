@@ -20,7 +20,11 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       // 输出为可直接被 node:http 静态托管的纯静态资源（无 SSR）。
-      target: 'es2022'
+      target: 'es2022',
+      // 测试文件（*.test.ts）仅用于 vitest，禁止打进生产产物。
+      rollupOptions: {
+        external: [/\.test\.ts$/]
+      }
     },
     // history 路由回退：dev 模式下 /chat 等深链接刷新时返回 index.html，
     // 与生产端 server.ts 的 SPA fallback 行为保持一致。
