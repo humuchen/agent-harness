@@ -9,7 +9,10 @@
 #   - lint auto-selects eslint > prettier > tsc --noEmit, whichever is installed.
 # On Windows/Git-Bash, paths are converted to native form (cygpath -m) so the
 # shell-launched tsc sh script resolves its node modules correctly.
-# Usage: bash scripts/build-and-test.sh [core|server|test|lint|all]
+# Usage: bash skills/ah-platform-evolution/scripts/build-and-test.sh [core|server|test|lint|all]
+#   pnpm aliases (defined in the repo root package.json):
+#     pnpm skills:core | skills:server | skills:test | skills:lint | skills:all
+#   Prefer the direct bash call for tight iteration loops (pnpm adds ~12s overhead).
 
 set -euo pipefail
 
@@ -23,7 +26,7 @@ find_repo_root() {
     fi
     dir="$(dirname "$dir")"
   done
-  # Fallback: this script lives at <repo>/.workbuddy/skills/ah-platform-evolution/scripts
+  # Fallback: this script lives at <repo>/skills/ah-platform-evolution/scripts
   ( cd "$SCRIPT_DIR/../../.." && pwd )
 }
 REPO_ROOT="$(find_repo_root "$SCRIPT_DIR")"
