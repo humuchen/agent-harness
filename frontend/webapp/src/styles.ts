@@ -308,8 +308,6 @@ export const sharedStyles = css`
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
     padding: 16px 18px;
-    max-height: 800px;
-    overflow-y: auto;
   }
 
   h2 {
