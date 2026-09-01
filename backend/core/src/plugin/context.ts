@@ -56,10 +56,20 @@ export interface PluginEventApi {
   emit(event: PluginEvent): void;
 }
 
-/** 单个 HTTP 路由处理器（express-free：直接对接 node:http 的 req/res）。 */
+/** 插件路由的当前用户（由宿主 server 鉴权后传入；开放/降级模式 sub 可能为 'anon'）。 */
+export interface PluginRouteUser {
+  /** 归属主体标识（账户模式下为登录用户名），数据归属绑定的权威来源。 */
+  sub: string;
+  /** 角色（可选，RBAC 模式下提供）。 */
+  role?: string;
+}
+
+/** 单个 HTTP 路由处理器（express-free：直接对接 node:http 的 req/res）。
+ *  user 为宿主鉴权后注入的当前用户（第三参，向后兼容：老宿主不传时为 undefined）。 */
 export type PluginRouteHandler = (
   req: import('node:http').IncomingMessage,
-  res: import('node:http').ServerResponse
+  res: import('node:http').ServerResponse,
+  user?: PluginRouteUser
 ) => void | Promise<void>;
 
 /** 服务端扩展（由插件提供，server 在运行时消费）。 */
@@ -90,8 +100,11 @@ export interface PluginUIView {
   tabId: string;
   /** Tab 展示名。 */
   label: string;
-  /** 返回可直接渲染的 HTML 字符串（webapp 注入到内容区，无框架耦合）。支持异步（Turso 后端）。 */
-  render(): string | Promise<string>;
+  /**
+   * 返回可直接渲染的 HTML 字符串（webapp 注入到内容区，无框架耦合）。支持异步（Turso 后端）。
+   * user 为宿主鉴权后的当前用户：插件据此按登录人渲染数据视图（owner 绑定）。
+   */
+  render(user?: PluginRouteUser): string | Promise<string>;
 }
 
 /** 前端扩展宿主：webapp 注入，插件据此注册 Tab/面板（无业务词）。 */

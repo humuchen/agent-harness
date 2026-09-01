@@ -14,6 +14,7 @@ import type {
   PluginEventListener,
   PluginEvent,
   PluginRouteHandler,
+  PluginRouteUser,
   WebExtensionHost,
   PluginUIView,
 } from '@agent-harness/core';
@@ -49,11 +50,14 @@ export class ServerPluginHost implements ServerExtensionHost {
     };
   }
 
-  /** 尝试用插件路由处理给定 path；命中返回 true（已写出响应）。 */
-  async handle(path: string, req: Req, res: Res): Promise<boolean> {
+  /**
+   * 尝试用插件路由处理给定 path；命中返回 true（已写出响应）。
+   * user 为宿主鉴权后的当前用户（插件据此做数据归属绑定）；未鉴权（开放模式）为 undefined。
+   */
+  async handle(path: string, req: Req, res: Res, user?: PluginRouteUser): Promise<boolean> {
     const h = this.routes.get(path);
     if (!h) return false;
-    await h(req, res);
+    await h(req, res, user);
     return true;
   }
 
@@ -67,7 +71,7 @@ export class ServerPluginHost implements ServerExtensionHost {
       }
     }
     // 备忘提醒事件桥接到实时广播总线：前端 /api/events SSE 据此即时弹通知。
-    // 单租户数据，不按 owner 隔离（多租户需给 note 加 owner 字段再收窄）。
+    // 事件携带 owner（= 归属用户），reminder-bus 按订阅连接的 owner 过滤后转发。
     if (e.type === 'memo:reminder') {
       publishReminder(e);
     }
@@ -97,11 +101,14 @@ export class WebPluginHost implements WebExtensionHost {
     };
   }
 
-  /** 渲染全部已注册视图（调用各 view.render()），返回 Tab 元信息 + HTML 片段。 */
-  async listViews(): Promise<Array<{ tabId: string; label: string; html: string }>> {
+  /**
+   * 渲染全部已注册视图（调用各 view.render(user)），返回 Tab 元信息 + HTML 片段。
+   * user 为宿主鉴权后的当前用户，插件据此按登录人渲染（数据 owner 绑定）。
+   */
+  async listViews(user?: PluginRouteUser): Promise<Array<{ tabId: string; label: string; html: string }>> {
     const out: Array<{ tabId: string; label: string; html: string }> = [];
     for (const v of this.views) {
-      const html = await v.render();
+      const html = await v.render(user);
       out.push({ tabId: v.tabId, label: v.label, html });
     }
     return out;

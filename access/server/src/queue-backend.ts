@@ -52,6 +52,8 @@ export interface JobDescriptor {
   interactionMode?: 'qa' | 'plan';
   /** 计划阶段：propose=生成计划（缺省）；execute=执行已确认的任务。 */
   planPhase?: 'propose' | 'execute';
+  /** 归属用户（= 认证身份 sub，不可客户端伪造）：执行期注入工具链路做数据归属绑定。 */
+  owner?: string;
   enqueuedAt: number;
 }
 

@@ -1412,20 +1412,17 @@ const server = createServer(
       }
 
       /* ------------- 插件事件实时广播通道（SSE，提醒即时推送） ------------- */
-      // 前端登录后建立一条常驻 SSE：订阅 reminder-bus，把备忘提醒事件（memo:reminder）
-      // 实时推回，前端据此立即弹 ah-notification + 浏览器桌面通知（替代纯轮询）。
-      // 单租户数据，向所有在线连接广播即可。心跳保活，断线前端按指数退避重连，
+      // 前端登录后建立一条常驻 SSE：按 owner 订阅 reminder-bus，只收本用户的备忘提醒
+      // （memo:reminder 事件携带 owner，跨用户不互见）。前端据此立即弹 ah-notification +
+      // 浏览器桌面通知（替代纯轮询）。心跳保活，断线前端按指数退避重连，
       // 重连期间漏掉的提醒由前端轮询 /api/plugins/memo/reminders 兜底补发。
       if (req.method === 'GET' && path === '/api/events') {
         const ctx = await guard(req, res, 'chat:read');
         if (!ctx) return;
-        // 备忘是单租户全局数据，零配置演示态（anon）即唯一用户，直接放行；
-        // 仅真正鉴权失败（ctx 为空）才拒绝。与 chat/stream 区别：chat 需多端隔离，
-        // 提醒无需隔离。
         const send = startSse(res, req);
-        // 连接建立即时确认。
-        send({ type: 'events:ready' });
-        const unsub = subscribeReminders((e) => {
+        // 连接建立即时确认（带 owner，便于前端核对归属）。
+        send({ type: 'events:ready', owner: ctx.sub });
+        const unsub = subscribeReminders(ctx.sub, (e) => {
           try {
             send(e);
           } catch {
@@ -1637,8 +1634,17 @@ const server = createServer(
       }
       // ---- 插件宿主：通用扩展点（无业务词）----
       // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
+      // 视图按当前登录用户渲染（数据 owner 绑定）：鉴权失败 401，开放模式 sub='anon'。
       if (req.method === 'GET' && path === '/api/plugins') {
-        const views = await pluginSystem.webHost.listViews();
+        const viewUser = await authorizer.authenticate(req);
+        if (!viewUser) {
+          unauthorized(res);
+          return;
+        }
+        const views = await pluginSystem.webHost.listViews({
+          sub: viewUser.sub,
+          role: viewUser.role
+        });
         return sendJson(
           res,
           {
@@ -1754,7 +1760,34 @@ const server = createServer(
       }
 
       // 插件挂载的 HTTP 路由（统一前缀 /api/plugins/:pluginId/*，由宿主收敛）。
-      if (await pluginSystem.serverHost.handle(path, req, res)) return;
+      // 插件数据已按登录用户（owner）落库隔离：分发前必须鉴权，把当前用户传给插件路由。
+      // 鉴权失败（无任何有效凭证）→ 401；开放/降级模式 authenticate 恒成功（sub='anon'），
+      // 匿名数据归入共享 anon 桶，登录用户各归各桶。
+      {
+        const pluginUser = await authorizer.authenticate(req);
+        if (!pluginUser) {
+          audit({
+            kind: 'request',
+            method: req.method,
+            path: req.url,
+            ip: clientIp(req),
+            authed: false,
+            status: 401
+          });
+          unauthorized(res);
+          return;
+        }
+        if (
+          await pluginSystem.serverHost.handle(
+            path,
+            req,
+            res,
+            { sub: pluginUser.sub, role: pluginUser.role }
+          )
+        ) {
+          return;
+        }
+      }
 
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
@@ -2328,7 +2361,10 @@ async function handleRun(
       // 联网搜索开关（Request 4）：透传 UI 开关；false/未传由 run-queue 收敛为不注册出网能力。
       web: typeof body.web === 'boolean' ? body.web : undefined,
       interactionMode,
-      planPhase
+      planPhase,
+      // 归属用户（权威来源 = 认证身份 ctx.sub）：执行期经 runWithUser 注入工具链路，
+      // 插件（如 memo）据此把工具产生的数据绑定到登录用户。
+      owner: ctx.sub
     });
     auditAction('agent.run', {
       mode,

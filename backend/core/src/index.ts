@@ -11,6 +11,7 @@ export * from './agents';
 export * from './router';
 export * from './skills';
 export * from './tenant';
+export * from './run-user';
 export * from './policy';
 export * from './workflow';
 export * from './a2a';

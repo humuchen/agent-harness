@@ -40,19 +40,21 @@ export const memoPlugin: PluginModule = {
   },
 
   async onStart(ctx: PluginContext): Promise<void> {
-    // 起提醒调度器：进程内每 15s 轮询到期提醒，重启后自然补发（notified 持久化在 notes.json）。
-    // fire 回调仅发事件/日志（真正的用户通知由前端轮询 /api/plugins/memo/reminders 弹窗）。
+    // 起提醒调度器：进程内每 15s 轮询全用户到期提醒，重启后自然补发（notified 持久化在库）。
+    // fire 回调仅发事件/日志（事件携带 owner，宿主 reminder-bus 只推给本人连接；
+    // 真正的用户通知由前端轮询 /api/plugins/memo/reminders 按 owner 收口兜底）。
     const scheduler = new ReminderScheduler(
       (r) => {
         ctx.events.emit({
           type: 'memo:reminder',
           plugin: 'memo',
           noteId: r.id,
+          owner: r.owner,
           text: r.text,
           tag: r.tag ?? null,
           remindAt: r.remindAt,
         });
-        ctx.logger.info('memo reminder due', { id: r.id, text: r.text });
+        ctx.logger.info('memo reminder due', { id: r.id, owner: r.owner, text: r.text });
       },
       (e) => ctx.events.emit(e),
       ctx.logger,

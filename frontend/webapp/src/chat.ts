@@ -1207,35 +1207,35 @@ export class AhChat extends LitElement {
       const items = [
         {
           key: 'sys',
-          label: '系统提示词',
+          label: 'System Prompt',
           tokens: u.breakdown.system,
           cls: 'c-sys',
           pct: 0
         },
         {
           key: 'tools',
-          label: '工具及子智能体',
+          label: 'Tools',
           tokens: u.breakdown.tools,
           cls: 'c-tools',
           pct: 0
         },
         {
           key: 'msg',
-          label: '对话消息',
+          label: 'Conversation',
           tokens: u.breakdown.messages,
           cls: 'c-msg',
           pct: 0
         },
         {
           key: 'mcp',
-          label: '连接器及 MCP',
+          label: 'MCP',
           tokens: u.breakdown.mcp,
           cls: 'c-mcp',
           pct: 0
         },
         {
           key: 'skill',
-          label: '技能',
+          label: 'Skills',
           tokens: u.breakdown.skills,
           cls: 'c-skill',
           pct: 0
