@@ -130,7 +130,8 @@ export class FeatureFlagManager {
 
     // 运行时覆盖
     if (key in runtimeOverrides) {
-      return runtimeOverrides[key];
+      const override = runtimeOverrides[key];
+      if (override !== undefined) return override;
     }
 
     // 环境变量
@@ -206,13 +207,12 @@ export class FeatureFlagManager {
     const byCategory: Record<string, { total: number; enabled: number }> = {};
 
     for (const flag of all) {
-      if (!byCategory[flag.category]) {
-        byCategory[flag.category] = { total: 0, enabled: 0 };
-      }
-      byCategory[flag.category].total++;
+      const bucket = byCategory[flag.category] ?? { total: 0, enabled: 0 };
+      bucket.total++;
       if (flag.enabled) {
-        byCategory[flag.category].enabled++;
+        bucket.enabled++;
       }
+      byCategory[flag.category] = bucket;
     }
 
     return {

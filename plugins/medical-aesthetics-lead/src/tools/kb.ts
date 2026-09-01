@@ -55,14 +55,22 @@ export function registerKbTool(tools: ToolRegistry): void {
               })),
             };
           }
-          const top = toCustomerView(projects[0]);
+          const proj = projects[0];
+          if (!proj) {
+            return {
+              found: false,
+              answer:
+                '知识库暂无匹配项目（projects 为空），建议预约面诊由医生结合个人基础评估。',
+            };
+          }
+          const top = toCustomerView(proj);
           const resp: Record<string, unknown> = {
             found: true,
             reviewed: top.reviewed,
             project: top.name,
             category: top.category ?? '',
             copy: top.copy,
-            indications: projects[0].indications ?? '',
+            indications: proj.indications ?? '',
             contraindications: top.contraindications ?? '',
             recovery: top.recovery ?? '',
             priceRange: top.priceRange ?? '',
@@ -87,14 +95,22 @@ export function registerKbTool(tools: ToolRegistry): void {
               '暂未收录该项目（知识库为空或外部 KB 未配置），建议预约面诊由医生结合个人基础评估。',
           };
         }
-        const top = toCustomerView(hits[0]);
+        const hit = hits[0];
+        if (!hit) {
+          return {
+            found: false,
+            answer:
+              '暂未收录该项目（知识库为空或外部 KB 未配置），建议预约面诊由医生结合个人基础评估。',
+          };
+        }
+        const top = toCustomerView(hit);
         return {
           found: true,
           reviewed: top.reviewed,
           project: top.name,
           category: top.category ?? '',
           copy: top.copy,
-          indications: hits[0].indications ?? '',
+          indications: hit.indications ?? '',
           contraindications: top.contraindications ?? '',
           recovery: top.recovery ?? '',
           priceRange: top.priceRange ?? '',

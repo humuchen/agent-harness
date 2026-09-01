@@ -197,7 +197,10 @@ export async function issueToken(username: string): Promise<string> {
 export function parseToken(raw: string): AccountToken | null {
   const parts = raw.split('.');
   if (parts.length !== 3) return null;
-  const [jti, payloadB64, sig] = parts;
+  const jti = parts[0];
+  const payloadB64 = parts[1];
+  const sig = parts[2];
+  if (!jti || !payloadB64 || !sig) return null;
   const expected = sign(jti, payloadB64);
   try {
     const a = Buffer.from(sig, 'base64');
@@ -339,7 +342,7 @@ export async function upsertGoogleUser(
 ): Promise<AccountResult> {
   // 优先用 name 构造友好用户名；非法字符替换成下划线，截断到 24
   let base = (name || '').trim().replace(/\s+/g, '_').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24);
-  if (!base || base.length < 3) base = email.split('@')[0].replace(/[^A-Za-z0-9_]/g, '').slice(0, 24) || `gg_${sub.slice(-8)}`;
+  if (!base || base.length < 3) base = (email.split('@')[0] ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24) || `gg_${sub.slice(-8)}`;
   let username = base.startsWith('gg_') ? base : `gg_${base}`;
   username = username.slice(0, 32);
   if (!validUsername(username)) username = `gg_${sub.replace(/[^A-Za-z0-9_]/g, '').slice(-24)}`;

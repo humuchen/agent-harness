@@ -24,7 +24,7 @@ interface PluginInfo {
 
 /** HTML 转义。 */
 function esc(s: string): string {
-  return String(s).replace(/[&<>"]/g, (c) => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<string, string>)[c]));
+  return String(s).replace(/[&<>"]/g, (c) => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<string, string>)[c] ?? c));
 }
 
 @customElement('ah-plugins')

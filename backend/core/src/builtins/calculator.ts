@@ -30,9 +30,9 @@ const CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E };
 function tokenize(s: string): Tok[] {
   const tokens: Tok[] = [];
   let i = 0;
-  const isDigit = (c: string) => c >= '0' && c <= '9';
-  const isAlpha = (c: string) =>
-    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
+  const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+  const isAlpha = (c: string | undefined) =>
+    c !== undefined && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_');
   while (i < s.length) {
     const c = s[i];
     if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
@@ -125,22 +125,23 @@ function toRPN(tokens: Tok[]): Tok[] {
     if (tok.t === 'num') {
       out.push(tok);
     } else if (tok.t === 'id') {
-      if (CONSTANTS[tok.v] !== undefined) out.push({ t: 'num', v: CONSTANTS[tok.v] });
+      const constantVal = CONSTANTS[tok.v];
+      if (constantVal !== undefined) out.push({ t: 'num', v: constantVal });
       else if (FUNCS[tok.v]) stack.push(tok);
       else throw new Error(`unknown function or constant '${tok.v}'`);
     } else if (tok.t === 'lp') {
       stack.push(tok);
     } else if (tok.t === 'rp') {
-      while (stack.length && stack[stack.length - 1].t !== 'lp') out.push(stack.pop() as Tok);
-      if (stack.length && stack[stack.length - 1].t === 'lp') stack.pop();
-      if (stack.length && stack[stack.length - 1].t === 'id') out.push(stack.pop() as Tok);
+      while (stack.length && stack[stack.length - 1]?.t !== 'lp') out.push(stack.pop() as Tok);
+      if (stack.length && stack[stack.length - 1]?.t === 'lp') stack.pop();
+      if (stack.length && stack[stack.length - 1]?.t === 'id') out.push(stack.pop() as Tok);
     } else if (tok.t === 'op') {
       if (tok.v === ',') {
-        while (stack.length && stack[stack.length - 1].t !== 'lp') out.push(stack.pop() as Tok);
+        while (stack.length && stack[stack.length - 1]?.t !== 'lp') out.push(stack.pop() as Tok);
       } else {
         while (stack.length) {
           const top = stack[stack.length - 1];
-          if (top.t === 'lp' || top.t === 'id') break;
+          if (!top || top.t === 'lp' || top.t === 'id') break;
           if (top.t !== 'op') break;
           const topPrec = prec((top as OpTok).v);
           const tokPrec = prec(tok.v);
@@ -213,7 +214,9 @@ function evalRPN(rpn: Tok[]): number {
     }
   }
   if (st.length !== 1) throw new Error('invalid expression');
-  return st[0];
+  const result = st[0];
+  if (result === undefined) throw new Error('invalid expression');
+  return result;
 }
 
 /** 安全求值数学表达式（绝不执行任意代码）。返回数值；非法输入抛错。 */

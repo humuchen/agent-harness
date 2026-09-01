@@ -103,7 +103,7 @@ export class ReplicaPicker {
   pick(key?: string): Replica | null {
     const healthy = this.replicas.filter((r) => r.healthy !== false);
     if (healthy.length === 0) return null;
-    if (healthy.length === 1) return healthy[0];
+    if (healthy.length === 1) return healthy[0] ?? null;
     switch (this.strategy) {
       case 'least-load':
         return this.pickLeastLoad(healthy);
@@ -131,7 +131,7 @@ export class ReplicaPicker {
   }
 
   /** 加权轮询：按 weight 展平为多槽位后取模；单槽副本不占权重。 */
-  private pickRoundRobin(healthy: Replica[]): Replica {
+  private pickRoundRobin(healthy: Replica[]): Replica | null {
     const slots: Replica[] = [];
     for (const r of healthy) {
       const w = r.weight ?? 1;
@@ -139,12 +139,14 @@ export class ReplicaPicker {
     }
     const idx = this.rrIndex % slots.length;
     this.rrIndex = (this.rrIndex + 1) % slots.length;
-    return slots[idx];
+    return slots[idx] ?? null;
   }
 
   /** 最少负载：选 load 最小的；并列时按稳定顺序（id 排序）取首个，避免抖动。 */
-  private pickLeastLoad(healthy: Replica[]): Replica {
-    let best: Replica = healthy[0];
+  private pickLeastLoad(healthy: Replica[]): Replica | null {
+    const first = healthy[0];
+    if (!first) return null;
+    let best: Replica = first;
     let bestLoad = Number.POSITIVE_INFINITY;
     for (const r of healthy) {
       const load = typeof r.load === 'number' && Number.isFinite(r.load) ? r.load : 0;
@@ -163,7 +165,7 @@ export class ReplicaPicker {
  * 避免「短 id 哈希偏低、长 key 哈希偏高」导致 key 全部落到环首的聚簇问题。
  * key 缺失时退化为轮询。
  */
-private pickSticky(healthy: Replica[], key?: string): Replica {
+private pickSticky(healthy: Replica[], key?: string): Replica | null {
   if (!key || !key.trim()) return this.pickRoundRobin(healthy);
   const ring: Array<{ id: string; h: number }> = [];
   for (const r of healthy) {
@@ -180,6 +182,6 @@ private pickSticky(healthy: Replica[], key?: string): Replica {
       if (hit) return hit;
     }
   }
-  return healthy[0];
+  return healthy[0] ?? null;
 }
 }

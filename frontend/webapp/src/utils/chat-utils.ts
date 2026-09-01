@@ -51,7 +51,7 @@ export function parseDeepThinking(raw: string): {
     const vm = line.match(varRe);
     // 仅当不是「编号步骤」且形如 key-value 时，才判定为关键变量，避免误吞步骤描述。
     if (vm && !stepRe.test(line)) {
-      vars.push([vm[1].trim(), vm[2].trim()]);
+      vars.push([(vm[1] ?? '').trim(), (vm[2] ?? '').trim()]);
       continue;
     }
     out.push(line);

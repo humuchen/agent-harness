@@ -262,7 +262,7 @@ const openApiSpec = buildOpenApiSpec();
 /** 取客户端真实 IP（兼容反向代理 X-Forwarded-For）。 */
 function clientIp(req: IncomingMessage): string {
   const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
+  if (typeof xff === 'string' && xff.length) return (xff.split(',')[0] ?? '').trim();
   return req.socket?.remoteAddress || 'unknown';
 }
 
@@ -312,7 +312,7 @@ function redactUrl(url?: string): string {
     const u = new URL(url);
     return u.origin + u.pathname;
   } catch {
-    return url.split('?')[0];
+    return (url.split('?')[0] ?? '');
   }
 }
 
@@ -543,7 +543,7 @@ const server = createServer(
         const wd = webappDir();
         if (wd) {
           const rel = decodeURIComponent(
-            path.slice('/assets/'.length).split('?')[0]
+            path.slice('/assets/'.length).split('?')[0] ?? ''
           );
           const assetRoot = join(wd, 'assets');
           const fp = resolve(assetRoot, rel);
@@ -574,7 +574,7 @@ const server = createServer(
       ) {
         const wd = webappDir();
         if (wd) {
-          const rel = decodeURIComponent(path.slice(1).split('?')[0]);
+          const rel = decodeURIComponent(path.slice(1).split('?')[0] ?? '');
           const fp = resolve(wd, rel);
           if (fp === join(wd, rel)) {
             try {
@@ -956,7 +956,7 @@ const server = createServer(
           }
           // 解析 JWT id_token（不验签，已来自 Google 直连 + 后续用 access_token 拉 userinfo 复核）
           const parts = tok.id_token.split('.');
-          if (parts.length !== 3) {
+          if (parts.length !== 3 || !parts[1]) {
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
             res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 返回的 id_token 格式异常。' }));
             return;
@@ -1628,7 +1628,7 @@ const server = createServer(
           /^\/api\/plugins\/([^/]+)\/(enable|disable|upgrade)$/
         );
         if (m && req.method === 'POST') {
-          const id = decodeURIComponent(m[1]);
+          const id = decodeURIComponent(m[1] ?? '');
           const action = m[2];
           const ctx = await guard(req, res, 'plugin:manage');
           if (!ctx) return;
@@ -1660,7 +1660,7 @@ const server = createServer(
         // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
         const dm = path.match(/^\/api\/plugins\/([^/]+)\/enable$/);
         if (dm && req.method === 'DELETE') {
-          const id = decodeURIComponent(dm[1]);
+          const id = decodeURIComponent(dm[1] ?? '');
           const ctx = await guard(req, res, 'plugin:manage');
           if (!ctx) return;
           try {
@@ -1706,7 +1706,7 @@ const server = createServer(
       // 获取已上传文件：GET /api/uploads/:filename（静态展示用，含防穿越）。
       const um = path.match(/^\/api\/uploads\/(.+)$/);
       if (um && req.method === 'GET') {
-        const filename = decodeURIComponent(um[1]);
+        const filename = decodeURIComponent(um[1] ?? '');
         const result = await serveUploaded(filename);
         if (!result.ok) {
           return sendJson(res, { error: result.error }, req);

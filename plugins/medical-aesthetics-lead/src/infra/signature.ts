@@ -70,7 +70,7 @@ export function verifyAdminToken(
 ): void {
   if (!expected) throw notConfigured('运营管理令牌', 'MA_ADMIN_TOKEN');
   const raw = headers['authorization'];
-  const got = (Array.isArray(raw) ? raw[0] : raw ?? '').replace(/^Bearer\s+/i, '').trim();
+  const got = (Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '')).replace(/^Bearer\s+/i, '').trim();
   if (!got || !safeEqual(expected, got)) {
     throw new MaError('UNAUTHORIZED', '管理令牌无效');
   }

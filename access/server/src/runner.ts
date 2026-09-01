@@ -806,7 +806,7 @@ async function streamOut(
 
 function branchOf(text: string): string {
   const m = text.match(/基于\s*([^\s,，]+)\s*分支/);
-  return m ? m[1] : 'main';
+  return m ? (m[1] ?? 'main') : 'main';
 }
 
 function safeParse(s: string): Record<string, unknown> {

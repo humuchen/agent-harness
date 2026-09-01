@@ -76,14 +76,20 @@ export class PluginRegistryClient {
    */
   resolveVersion(entries: RegistryEntry[], range?: string): RegistryEntry {
     if (entries.length === 0) throw new Error('no entries to resolve version from');
+    const sorted = (list: RegistryEntry[]) =>
+      list.slice().sort((a, b) => cmpVersion(b.version, a.version));
     if (!range || range === 'latest') {
-      return entries.slice().sort((a, b) => cmpVersion(b.version, a.version))[0];
+      const best = sorted(entries)[0];
+      if (!best) throw new Error('no entries to resolve version from');
+      return best;
     }
     if (range.startsWith('^')) {
       const major = range.slice(1).split('.')[0];
       const matched = entries.filter((e) => e.version.split('.')[0] === major);
       if (matched.length === 0) throw new Error(`no plugin version matching ${range}`);
-      return matched.slice().sort((a, b) => cmpVersion(b.version, a.version))[0];
+      const best = sorted(matched)[0];
+      if (!best) throw new Error(`no plugin version matching ${range}`);
+      return best;
     }
     const exact = entries.find((e) => e.version === range);
     if (!exact) throw new Error(`plugin version ${range} not found`);

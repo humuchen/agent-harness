@@ -83,6 +83,7 @@ const EDGES: NetEdge[] = [
 function edgePath(e: NetEdge): string {
   const a = NODES[e.a];
   const b = NODES[e.b];
+  if (!a || !b) return '';
   return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
 }
 

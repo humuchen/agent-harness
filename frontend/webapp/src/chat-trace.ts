@@ -410,7 +410,7 @@ export function buildInsights(trace: TraceNode[]): Insights {
       walk(x.children);
     });
   };
-  walk(root.children);
+  walk(root?.children ?? []);
   const steps = flat.filter((n) => n.kind === 'step').length;
   // 「工具调用」计数只统计真实执行的工具节点；被去重复用（meta.reused）的请求不计入，
   // 以免 UI 数字虚高（但 trace 树里仍保留这些复用节点供复盘）。
@@ -420,7 +420,7 @@ export function buildInsights(trace: TraceNode[]): Insights {
   const retrievals = flat.filter((n) => n.kind === 'retrieval');
   const cost = flat.find((n) => n.kind === 'cost');
   const cacheNode = flat.find((n) => n.kind === 'tokencache');
-  const meta = root.meta ?? {};
+  const meta = root?.meta ?? {};
   return {
     model: meta.model,
     agent: meta.agent,

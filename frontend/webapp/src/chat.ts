@@ -413,8 +413,10 @@ export class AhChat extends LitElement {
   /** 取某会话当前流式消息。 */
   private curSession(sid: string): ChatMsg | null {
     const idx = this.streamIdx[sid];
+    if (typeof idx !== 'number') return null;
     const t = this.threads[sid];
-    return idx >= 0 && t && t[idx] ? t[idx] : null;
+    const m = t ? t[idx] : undefined;
+    return m ? m : null;
   }
 
   /**
@@ -429,8 +431,10 @@ export class AhChat extends LitElement {
     const msgs = t.slice();
     while (
       msgs.length &&
-      msgs[msgs.length - 1].role === 'assistant' &&
-      !(msgs[msgs.length - 1].content ?? '')
+      (() => {
+        const last = msgs[msgs.length - 1];
+        return !!last && last.role === 'assistant' && !(last.content ?? '');
+      })()
     ) {
       msgs.pop();
     }
@@ -524,7 +528,8 @@ export class AhChat extends LitElement {
     const t = this.threads[sid];
     if (!t || !t[idx]) return;
     const nt = t.slice();
-    nt[idx] = { ...nt[idx], ...p };
+    const cur = nt[idx];
+    if (cur) nt[idx] = { ...cur, ...p };
     this.threads[sid] = nt;
     if (sid === this.activeId) this.messages = nt;
     // 流式消息已写入会话缓冲：同步刷新调用链路 LLM 节点的「消息上下文」快照，
@@ -1533,7 +1538,7 @@ export class AhChat extends LitElement {
     }
     // 恢复历史后补全调用链路中 assistant 消息的内容（修复旧 trace 中 assistant 为空）。
     this.restoreTraceMessages(id);
-    this.messages = this.threads[id];
+    this.messages = this.threads[id] ?? [];
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
     this.stickToBottom = true;
     this.showScrollDown = false;
@@ -2049,7 +2054,7 @@ export class AhChat extends LitElement {
       }
       this.setStreaming(sid, false);
       this.abortBy[sid] = undefined as any;
-      if (this.activeId === sid) this.messages = this.threads[sid];
+      if (this.activeId === sid) this.messages = this.threads[sid] ?? [];
       this.saveHistory(sid);
     }
   }
@@ -2136,9 +2141,8 @@ export class AhChat extends LitElement {
         const c = cur();
         if (c) {
           this.received[sid] = true;
-          // 不再直接 patch 到 content：整段塞进单 delta 时会「一帧跳全文」。
-          // 改为进 pending 缓冲，由打字机定时器按节奏逐字揭示。
-          this.pending[sid].content += String((ev as any).delta ?? '');
+          const p = this.pending[sid];
+          if (p) p.content += String((ev as any).delta ?? '');
           // 首个回答 token 到达 = 思考阶段结束：自动折叠本轮思考面板。
           if (!c.content) this.autoCollapseThink(sid);
           this.ensureTypewriter();
@@ -2148,7 +2152,8 @@ export class AhChat extends LitElement {
       case 'llm:reasoning': {
         const c = cur();
         if (c) {
-          this.pending[sid].reasoning += String((ev as any).delta ?? '');
+          const p = this.pending[sid];
+          if (p) p.reasoning += String((ev as any).delta ?? '');
           this.ensureTypewriter();
         }
         break;
@@ -2186,9 +2191,11 @@ export class AhChat extends LitElement {
         // 且用 result === undefined 区分「未回填」与「已回填空串」，避免重复覆盖。
         if (evName !== undefined) {
           for (let i = tools.length - 1; i >= 0; i--) {
-            if (tools[i].name === evName && tools[i].result === undefined) {
+            const tv = tools[i];
+            if (!tv) continue;
+            if (tv.name === evName && tv.result === undefined) {
               tools[i] = {
-                ...tools[i],
+                ...tv,
                 result: String((ev as any).result ?? ''),
                 errored: Boolean((ev as any).errored)
               };
@@ -2605,7 +2612,7 @@ export class AhChat extends LitElement {
     // 结构型事件才回写消息（token/reasoning 高频且仅更新 meta，避免无谓重渲染）。
     if (
       tc.root &&
-      this.streamIdx[sid] >= 0 &&
+      (this.streamIdx[sid] ?? -1) >= 0 &&
       ev.type !== 'llm:token' &&
       ev.type !== 'llm:reasoning'
     ) {
@@ -3650,19 +3657,14 @@ export class AhChat extends LitElement {
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
-    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    let cur: PlanExecState = { ...st, status: 'running' };
+    this.planExec = { ...this.planExec, [m.id]: cur };
     for (const task of m.plan.tasks) {
       // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
-      if (st.done[task.id]) continue;
+      if (cur.done[task.id]) continue;
       // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
-      this.planExec = {
-        ...this.planExec,
-        [m.id]: {
-          ...this.planExec[m.id],
-          status: 'running',
-          currentTaskId: task.id
-        }
-      };
+      cur = { ...cur, status: 'running', currentTaskId: task.id };
+      this.planExec = { ...this.planExec, [m.id]: cur };
       const parts = [`【计划任务 ${task.id}】${task.title}`];
       if (task.steps.length) {
         parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
@@ -3676,46 +3678,23 @@ export class AhChat extends LitElement {
           // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
           // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
           // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
-          this.planExec = {
-            ...this.planExec,
-            [m.id]: {
-              ...this.planExec[m.id],
-              status: 'failed',
-              failedTaskId: task.id,
-              currentTaskId: undefined
-            }
-          };
+          cur = { ...cur, status: 'failed', failedTaskId: task.id, currentTaskId: undefined };
         } else {
           // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
-          this.planExec = {
-            ...this.planExec,
-            [m.id]: {
-              ...this.planExec[m.id],
-              status: 'cancelled',
-              currentTaskId: undefined
-            }
-          };
+          cur = { ...cur, status: 'cancelled', currentTaskId: undefined };
         }
+        this.planExec = { ...this.planExec, [m.id]: cur };
         return;
       }
-      this.planExec = {
-        ...this.planExec,
-        [m.id]: {
-          ...this.planExec[m.id],
-          done: { ...this.planExec[m.id].done, [task.id]: true },
-          failedTaskId: undefined
-        }
-      };
-    }
-    this.planExec = {
-      ...this.planExec,
-      [m.id]: {
-        ...this.planExec[m.id],
-        status: 'done',
-        currentTaskId: undefined,
+      cur = {
+        ...cur,
+        done: { ...cur.done, [task.id]: true },
         failedTaskId: undefined
-      }
-    };
+      };
+      this.planExec = { ...this.planExec, [m.id]: cur };
+    }
+    cur = { ...cur, status: 'done', currentTaskId: undefined, failedTaskId: undefined };
+    this.planExec = { ...this.planExec, [m.id]: cur };
   }
 
   /** 取消计划：不再执行任何任务。 */

@@ -193,7 +193,9 @@ export function mergeThreadHistories(server: MirroredMsg[], local: MirroredMsg[]
   for (let k = maxOverlap; k > 0; k--) {
     let matched = true;
     for (let i = 0; i < k; i++) {
-      if (keyOf(server[server.length - k + i]) !== keyOf(local[i])) {
+      const sv = server[server.length - k + i];
+      const lv = local[i];
+      if (!sv || !lv || keyOf(sv) !== keyOf(lv)) {
         matched = false;
         break;
       }

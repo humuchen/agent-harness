@@ -7,6 +7,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "rootDir": "src",
     "outDir": "dist",
+    "noUncheckedIndexedAccess": true,
     "declaration": true,
     "strict": true,
     "esModuleInterop": true,

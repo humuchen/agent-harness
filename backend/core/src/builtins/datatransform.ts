@@ -68,12 +68,13 @@ function parseCsv(text: string, delimiter: string, hasHeader: boolean): Json[] {
   // 收尾：若有未闭合字段或最后一行非空则补一行
   if (field.length > 0 || row.length > 0) pushRow();
   // 去掉纯空白的空尾行
-  const clean = rows.filter((r) => r.length > 1 || (r.length === 1 && r[0].trim() !== ''));
+  const clean = rows.filter((r) => r.length > 1 || (r.length === 1 && (r[0]?.trim() ?? '') !== ''));
 
   if (!hasHeader || clean.length === 0) {
     return clean.map((r) => r.map((v) => v));
   }
   const header = clean[0];
+  if (!header) return [];
   return clean.slice(1).map((r) => {
     const o: Record<string, string> = {};
     header.forEach((h, idx) => {

@@ -103,10 +103,14 @@ function b64urlToBuf(s: string): Buffer {
 function parseJwt(token: string): ParsedJwt | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
+  const p0 = parts[0];
+  const p1 = parts[1];
+  const p2 = parts[2];
+  if (!p0 || !p1 || !p2) return null;
   try {
-    const header = JSON.parse(b64urlToBuf(parts[0]).toString('utf8')) as Record<string, unknown>;
-    const payload = JSON.parse(b64urlToBuf(parts[1]).toString('utf8')) as Record<string, unknown>;
-    return { header, payload, signature: b64urlToBuf(parts[2]), signingInput: `${parts[0]}.${parts[1]}` };
+    const header = JSON.parse(b64urlToBuf(p0).toString('utf8')) as Record<string, unknown>;
+    const payload = JSON.parse(b64urlToBuf(p1).toString('utf8')) as Record<string, unknown>;
+    return { header, payload, signature: b64urlToBuf(p2), signingInput: `${p0}.${p1}` };
   } catch {
     return null;
   }
@@ -115,11 +119,11 @@ function parseJwt(token: string): ParsedJwt | null {
 /** EC 原始 R||S 签名 → DER（Node crypto.verify 对 EC 期望 DER 编码）。 */
 function ecRawToDer(raw: Buffer): Buffer {
   const half = raw.length / 2;
-  const strip = (b: Buffer): Buffer => (b.length > 1 && b[0] === 0 ? b.subarray(1) : b);
+  const strip = (b: Buffer): Buffer => (b.length > 1 && (b[0] ?? 0) === 0 ? b.subarray(1) : b);
   const r = strip(raw.subarray(0, half));
   const s = strip(raw.subarray(half));
   const intBytes = (b: Buffer): Buffer => {
-    const lead = b[0] & 0x80 ? Buffer.concat([Buffer.from([0]), b]) : b;
+    const lead = (b[0] ?? 0) & 0x80 ? Buffer.concat([Buffer.from([0]), b]) : b;
     return Buffer.concat([Buffer.from([0x02]), Buffer.from([lead.length]), lead]);
   };
   const body = Buffer.concat([intBytes(r), intBytes(s)]);

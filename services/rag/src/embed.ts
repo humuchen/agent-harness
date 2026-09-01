@@ -77,7 +77,8 @@ export class HashEmbedding implements EmbeddingProvider {
   embed(text: string): number[] {
     const v = new Array<number>(this.dim).fill(0);
     for (const t of tokenize(text)) {
-      v[hashStr(t) % this.dim] += 1;
+      const idx = hashStr(t) % this.dim;
+      v[idx] = (v[idx] ?? 0) + 1;
     }
     return l2normalize(v);
   }

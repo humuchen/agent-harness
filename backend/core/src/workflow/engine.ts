@@ -247,6 +247,7 @@ export class DagEngine {
           const card = await this.resolveCard(compStep.agentRef);
           const result = await this.executor(compStep, run.steps[compStep.id]?.output, ctx);
           run.steps[compStep.id] = {
+            id: compStep.id,
             ...run.steps[compStep.id],
             state: 'compensated',
             output: result,
@@ -256,12 +257,12 @@ export class DagEngine {
           // 补偿指令为字面量：复用同一 agent（executor 据 compensate 标志回滚）。
           const card = await this.resolveCard(step.agentRef);
           const result = await this.executor(step, comp, ctx);
-          run.steps[step.id] = { ...run.steps[step.id], state: 'compensated', output: result };
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result };
         }
       } catch (e2: any) {
         // 补偿失败：记录但不阻断其余补偿（避免雪崩）。
         const sid = compStep ? compStep.id : step.id;
-        run.steps[sid] = { ...run.steps[sid], state: 'compensated', error: e2?.message ?? String(e2) };
+        run.steps[sid] = { id: sid, ...run.steps[sid], state: 'compensated', error: e2?.message ?? String(e2) };
       }
       await this.store.save(run);
       this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compStep ? compStep.id : step.id });
@@ -276,7 +277,7 @@ export class DagEngine {
 
     const outputs: Record<string, unknown> = {};
     for (const s of run.def.steps) {
-      if (run.steps[s.id]?.state === 'done') outputs[s.id] = run.steps[s.id].output;
+      if (run.steps[s.id]?.state === 'done') outputs[s.id] = run.steps[s.id]?.output;
     }
 
     run.state = 'running';

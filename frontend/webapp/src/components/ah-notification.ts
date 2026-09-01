@@ -426,6 +426,7 @@ export class AhNotificationHost extends LitElement {
       );
       if (idx >= 0) {
         const prev = this.items[idx];
+        if (!prev) return -1;
         const merged: NotificationItem = {
           ...seed,
           id: prev.id,
@@ -451,6 +452,7 @@ export class AhNotificationHost extends LitElement {
     );
     if (dupIdx >= 0) {
       const prev = this.items[dupIdx];
+      if (!prev) return -1;
       const merged: NotificationItem = {
         ...prev,
         ...seed,

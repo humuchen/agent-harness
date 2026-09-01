@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor: echoExecutor });
   const run = await engine.run(def, 'hello');
   console.log('[workflow] DAG 状态：', run.state);
-  console.log('[workflow] s3 输入（合并 s1/s2 输出）：', JSON.stringify(run.steps.s3.output));
+  console.log('[workflow] s3 输入（合并 s1/s2 输出）：', JSON.stringify(run.steps.s3?.output));
   if (run.state !== 'done') throw new Error('DAG 未成功完成');
 
   // 2) 失败补偿：s1 完成、s2 失败 → s1 的 compensate 被逆序执行。
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   console.log('[workflow] 各 step 终态：', JSON.stringify(
     Object.fromEntries(Object.entries(run2.steps).map(([k, v]) => [k, v.state])),
   ));
-  if (run2.steps.s1.state !== 'done' || run2.steps.c1.state !== 'compensated') {
+  if (run2.steps.s1?.state !== 'done' || run2.steps.c1?.state !== 'compensated') {
     throw new Error('失败补偿未按预期执行（s1 应 done、c1 应 compensated）');
   }
 

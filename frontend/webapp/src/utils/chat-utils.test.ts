@@ -69,4 +69,12 @@ describe('formatToolJson', () => {
   it('空输入返回空串', () => {
     expect(formatToolJson('')).toBe('');
   });
+  it('非 JSON 原样转义（脚本注入无害化）', () => {
+    const out = formatToolJson('<script>alert(1)</script>');
+    expect(out).toBe('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+  it('美化后的 JSON 保留缩进结构', () => {
+    const out = formatToolJson('{"a":1,"b":[1,2]}');
+    expect(out).toContain('\n  ');
+  });
 });

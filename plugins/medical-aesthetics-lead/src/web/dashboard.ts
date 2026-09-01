@@ -92,7 +92,7 @@ function pieChart(stages: { label: string; value: number }[]): string {
       return `${shape}<title>${esc(s.label)}: ${s.value}（${pct}%）</title>`;
     })
     .join('');
-  const entered = stages.length ? stages[0].value : 0;
+  const entered = stages[0]?.value ?? 0;
   const legend = stages
     .map((s, i) => {
       const pct = Math.round((s.value / total) * 1000) / 10;

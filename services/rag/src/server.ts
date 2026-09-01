@@ -169,7 +169,7 @@ export function createRagServer(opts: RagServerOptions) {
       if (jobMatch && method === 'GET') {
         const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
-        const job = queue.job(jobMatch[1]);
+        const job = queue.job(jobMatch[1] ?? '');
         if (!job) return send(res, 404, { error: 'job not found' });
         return send(res, 200, job);
       }

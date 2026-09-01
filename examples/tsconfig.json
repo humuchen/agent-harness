@@ -4,6 +4,7 @@
     "rootDir": ".",
     "outDir": "dist",
     "baseUrl": ".",
+    "noUncheckedIndexedAccess": true,
     "types": ["node"],
     "paths": {
       "@agent-harness/core": ["../backend/core/dist/index.d.ts"]

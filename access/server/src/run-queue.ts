@@ -430,13 +430,16 @@ export class RunQueue {
       let idx = -1;
       for (let i = 0; i < this.queue.length; i++) {
         const cand = this.queue[i];
+        if (!cand) continue;
         if (!cand.sessionKey || !this.runningSessions.has(cand.sessionKey)) {
           idx = i;
           break;
         }
       }
       if (idx < 0) break;
-      const job = this.queue.splice(idx, 1)[0];
+      const removed = this.queue.splice(idx, 1);
+      const job = removed[0];
+      if (!job) break;
       this.running += 1;
       if (job.sessionKey) this.runningSessions.add(job.sessionKey);
       job.status = 'running';

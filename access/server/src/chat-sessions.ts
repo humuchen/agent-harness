@@ -416,6 +416,7 @@ export function updatePlanStatus(
   if (owner && s.owner !== owner) return;
   for (let i = s.messages.length - 1; i >= 0; i--) {
     const m = s.messages[i];
+    if (!m) continue;
     if (m.role === 'assistant' && m.plan) {
       const prev: PlanExecMirror = m.planStatus ?? {
         status: 'running',

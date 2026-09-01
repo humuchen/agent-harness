@@ -81,14 +81,17 @@ function parseMultipart(
 
   const parts: { name?: string; filename?: string; mimeType?: string; body: Buffer }[] = [];
   for (let k = 0; k < marks.length - 1; k++) {
-    let start = marks[k] + dash.length;
+    const mk = marks[k];
+    const mkNext = marks[k + 1];
+    if (mk === undefined || mkNext === undefined) continue;
+    let start = mk + dash.length;
     if (buf.slice(start, start + 2).toString('latin1') === '--') break;
-    if (buf[start] === 13 && buf[start + 1] === 10) start += 2;
-    else if (buf[start] === 10) start += 1;
+    if (buf.readUInt8(start) === 13 && buf.readUInt8(start + 1) === 10) start += 2;
+    else if (buf.readUInt8(start) === 10) start += 1;
 
-    let end = marks[k + 1];
-    if (end >= 2 && buf[end - 2] === 13 && buf[end - 1] === 10) end -= 2;
-    else if (end >= 1 && buf[end - 1] === 10) end -= 1;
+    let end = mkNext;
+    if (end >= 2 && buf.readUInt8(end - 2) === 13 && buf.readUInt8(end - 1) === 10) end -= 2;
+    else if (end >= 1 && buf.readUInt8(end - 1) === 10) end -= 1;
     if (end <= start) continue;
 
     const part = buf.slice(start, end);
@@ -113,12 +116,12 @@ function parseMultipart(
       if (!filename) {
         const fsMatch = cdLine.match(/filename\*=(?:UTF-8|utf-8)''([^;\r\n]+)/);
         if (fsMatch) {
-          try { filename = decodeURIComponent(fsMatch[1]); } catch { /* ignore */ }
+          try { filename = decodeURIComponent(fsMatch[1] ?? ''); } catch { /* ignore */ }
         }
       }
     }
     const mimeMatch = headerBlock.match(/content-type:\s*([^\r\n]+)/i);
-    const mimeType = mimeMatch ? mimeMatch[1].trim() : undefined;
+    const mimeType = mimeMatch ? (mimeMatch[1] ?? '').trim() : undefined;
     parts.push({ name, filename, mimeType, body });
   }
 

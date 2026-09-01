@@ -235,7 +235,7 @@ async function handleRequest(
         plugins: plugins.map((p) => ({
           id: p.id,
           name: p.name,
-          latestVersion: p.versions[p.versions.length - 1].version,
+          latestVersion: p.versions[p.versions.length - 1]?.version ?? '',
           downloads: effectiveDownloads(p),
           publishedAt: p.publishedAt
         })),
@@ -362,7 +362,7 @@ async function handleRequest(
         results: results.map((p) => ({
           id: p.id,
           name: p.name,
-          latestVersion: p.versions[p.versions.length - 1].version,
+          latestVersion: p.versions[p.versions.length - 1]?.version ?? '',
           downloads: effectiveDownloads(p)
         })),
         total: results.length

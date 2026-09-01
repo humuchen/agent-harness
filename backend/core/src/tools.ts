@@ -157,7 +157,7 @@ function tokenize(text: string): string[] {
   // 中文二元组（覆盖大部分中文触发词重叠）
   const cjk = lower.match(/[一-鿿]/g);
   if (cjk) {
-    for (let i = 0; i < cjk.length - 1; i++) out.push(cjk[i] + cjk[i + 1]);
+    for (let i = 0; i < cjk.length - 1; i++) out.push((cjk[i] ?? '') + (cjk[i + 1] ?? ''));
     if (cjk.length === 1) out.push(cjk[0]);
   }
   return out;

@@ -55,7 +55,7 @@ export function parsePlanOutput(text: string): ExecutionPlan | null {
   if (!text || !text.trim()) return null;
   const candidates: string[] = [text];
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) candidates.push(fenced[1]);
+  if (fenced) candidates.push(fenced[1] ?? '');
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');
   if (first !== -1 && last > first) candidates.push(text.slice(first, last + 1));

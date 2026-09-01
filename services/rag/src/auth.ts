@@ -67,7 +67,10 @@ export function verifyJwt(
 ): Record<string, unknown> | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
-  const [h, p, s] = parts;
+  const h = parts[0];
+  const p = parts[1];
+  const s = parts[2];
+  if (!h || !p || !s) return null;
   const expected = createHmac('sha256', secret)
     .update(`${h}.${p}`)
     .digest('base64url');
@@ -110,7 +113,7 @@ export function resolveTenant(
   const auth = (req.headers['authorization'] as string | undefined) || '';
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   if (!m) return { error: 401, message: 'missing bearer token' };
-  const raw = m[1].trim();
+  const raw = (m[1] ?? '').trim();
 
   // 1) JWT 优先（若启用）
   if (jwtSecret) {

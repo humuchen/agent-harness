@@ -26,10 +26,10 @@ export function mmrRerank<T extends { chunk_id: string; score: number }>(
     let bestIdx = 0;
     let bestVal = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
-      const rel = remaining[i].score;
+      const rel = remaining[i]?.score ?? 0;
       let maxSim = 0;
       for (const s of selected) {
-        const va = vectorMap.get(remaining[i].chunk_id);
+        const va = vectorMap.get(remaining[i]?.chunk_id ?? '');
         const vb = vectorMap.get(s.chunk_id);
         if (va && vb) {
           const sim = MemoryVectorStore.cosine(va, vb);
@@ -42,7 +42,8 @@ export function mmrRerank<T extends { chunk_id: string; score: number }>(
         bestIdx = i;
       }
     }
-    selected.push(remaining.splice(bestIdx, 1)[0]);
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    if (chosen) selected.push(chosen);
   }
   return selected;
 }

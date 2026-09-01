@@ -85,7 +85,7 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
     const stage: LeadStage = (patch.stage ?? cur?.stage ?? 'new') as LeadStage;
     let reached: LeadStage = cur?.reached ?? stage;
     if (stage !== 'lost') {
-      reached = STAGE_ORDER[Math.max(stageRank(reached), stageRank(stage))];
+      reached = STAGE_ORDER[Math.max(stageRank(reached), stageRank(stage))] ?? 'lost';
     } else if (!cur) {
       reached = 'lost' as LeadStage;
     }
@@ -211,7 +211,7 @@ export async function computeStats(): Promise<LeadStats> {
     for (const row of reachedRows) {
       const rr = stageRank(row.reached as LeadStage);
       const c = Number(row.c);
-      for (let i = 0; i <= rr; i++) funnel[STAGE_ORDER[i]] += c;
+      for (let i = 0; i <= rr; i++) funnel[STAGE_ORDER[i] ?? 'lost'] += c;
     }
     (funnel as Record<string, number>).lost = Number(
       (await getRow(db.prepare(`SELECT COUNT(*) AS c FROM ma_lead WHERE tenant_id = ? AND stage = 'lost'`), tid))?.c ?? 0

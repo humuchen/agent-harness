@@ -45,7 +45,7 @@ export class Metrics {
     if (!this.latSamples.length) return 0;
     const s = [...this.latSamples].sort((a, b) => a - b);
     const idx = Math.min(s.length - 1, Math.max(0, Math.floor((p / 100) * (s.length - 1))));
-    return s[idx];
+    return s[idx] ?? 0;
   }
 
   p50(): number {

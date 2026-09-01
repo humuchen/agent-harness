@@ -205,9 +205,9 @@ export class AhModePicker extends LitElement {
           stroke-linecap="round"
           stroke-linejoin="round"
         >
-          <path d=${current.iconPath} />
+          <path d=${current?.iconPath ?? ''} />
         </svg>
-        <span class="name">${current.label}</span>
+        <span class="name">${current?.label ?? ''}</span>
         <!-- 下拉 chevron -->
         <svg
           class="chev"

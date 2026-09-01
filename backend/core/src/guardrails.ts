@@ -544,9 +544,10 @@ export function checkToolArgs(
     for (const text of secretTargets) {
       for (let i = 0; i < SECRET_PATTERNS.length; i++) {
         const re = SECRET_PATTERNS[i];
+        if (!re) continue;
         const m = re.exec(text);
         if (m) {
-          const snippet = redactPII(m[0]);
+          const snippet = redactPII(m[0] ?? '');
           return {
             ok: false,
             reason: `possible secret in tool args for ${name} (pattern #${i}: ${snippet})`,
