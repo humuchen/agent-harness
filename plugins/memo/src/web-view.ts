@@ -20,10 +20,12 @@
 
 import type { PluginUIView, PluginRouteUser } from '@agent-harness/core';
 import type { MemoNote } from './store';
-import { searchNotes, noteStats, noteTags, upcomingReminders, reminderHistory } from './store';
+import { searchNotes, noteStats, noteTags, upcomingReminders, reminderHistory, DISPLAY_TZ, tzOffsetMs } from './store';
 
 /** 看板每页条数（分页粒度，服务端检索用）。 */
 export const BOARD_PAGE = 20;
+/** 内联 JS 辅助：读取 ah_user（与 api.ts 同步的 localStorage key），构造带 x-ah-username 头的 fetch 选项。 */
+const AUTH_HEADERS_JS = `(function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})()`;
 
 function esc(s: unknown): string {
   return String(s ?? '').replace(
@@ -33,18 +35,31 @@ function esc(s: unknown): string {
   );
 }
 
-/** 把 epoch ms 格式化为「MM-DD HH:mm」（本地时区）。 */
+/** 把 epoch ms 格式化为「MM-DD HH:mm」，按 DISPLAY_TZ (默认 Asia/Shanghai) 渲染墙上时间。
+ *  服务端渲染时 new Date().getHours() 受进程 TZ 影响；强制使用 tzOffsetMs 校正，
+ *  保证无论服务器在 UTC 还是 CST，看板都显示用户所在时区的墙上时间，与落库 epoch ms 一致。
+ */
 function fmt(ts: number): string {
-  const d = new Date(ts);
+  const wall = ts + tzOffsetMs(ts, DISPLAY_TZ);
+  const d = new Date(wall);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+/**
+ * 内联 fetch 的鉴权头：从 localStorage 读取当前登录用户名，设 x-ah-username 头。
+ * AccountAuthorizer 要求 ah_auth Cookie + x-ah-username 双因子校验，缺一即 401。
+ * 与 api.ts authedFetch 同源（均读 ah_user localStorage）。
+ */
+function authHeaderJs(): string {
+  return `{'x-ah-username':localStorage.getItem('ah_user')||''}`;
 }
 
 /** 删除按钮：内联 handler（无 CSP 环境）发 DELETE 后仅刷新当前片段（不整页 reload）。 */
 function delBtn(id: string): string {
   const js = `if(confirm('确认删除这条备忘？')){fetch('/api/plugins/memo/note?id=${encodeURIComponent(
     id
-  )}',{method:'DELETE',credentials:'include'}).then(function(){${refreshCurrentJs()}})}`;
+  )}',{method:'DELETE',credentials:'include',headers:${authHeaderJs()}}).then(function(){${refreshCurrentJs()}})}`;
   return `<button class="memo-del" onclick="${esc(js)}">删除</button>`;
 }
 
@@ -56,13 +71,13 @@ function selectAllBox(): string {
 
 /** 批量删除：收集勾选项 → 确认 → DELETE /notes/batch，成功后仅刷新当前片段。 */
 function batchDelBtn(): string {
-  const js = `(function(){var ids=[];var cbs=document.querySelectorAll('.memo-mgmt-chk:checked');for(var i=0;i<cbs.length;i++){ids.push(cbs[i].value)}if(!ids.length){return}if(!confirm('确认删除选中的 '+ids.length+' 条备忘？此操作不可恢复')){return}fetch('/api/plugins/memo/notes/batch',{method:'DELETE',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({ids:ids})}).then(function(){${refreshCurrentJs()}})})()`;
+  const js = `(function(){var ids=[];var cbs=document.querySelectorAll('.memo-mgmt-chk:checked');for(var i=0;i<cbs.length;i++){ids.push(cbs[i].value)}if(!ids.length){return}if(!confirm('确认删除选中的 '+ids.length+' 条备忘？此操作不可恢复')){return}fetch('/api/plugins/memo/notes/batch',{method:'DELETE',credentials:'include',headers:Object.assign((function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})(),{'content-type':'application/json'}),body:JSON.stringify({ids:ids})}).then(function(){${refreshCurrentJs()}})})()`;
   return `<button class="memo-batch-del" onclick="${esc(js)}">删除选中</button>`;
 }
 
 /** 清空全部：二次确认 → DELETE /notes/all（仅清空当前 owner），成功后仅刷新当前片段。 */
 function clearAllBtn(): string {
-  const js = `if(confirm('确认清空当前账号的全部备忘？此操作不可恢复')){fetch('/api/plugins/memo/notes/all',{method:'DELETE',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:true})}).then(function(){${refreshCurrentJs()}})}`;
+  const js = `if(confirm('确认清空当前账号的全部备忘？此操作不可恢复')){fetch('/api/plugins/memo/notes/all',{method:'DELETE',credentials:'include',headers:Object.assign((function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})(),{'content-type':'application/json'}),body:JSON.stringify({confirm:true})}).then(function(){${refreshCurrentJs()}})}`;
   return `<button class="memo-clear-all" onclick="${esc(js)}">清空全部</button>`;
 }
 
@@ -80,18 +95,20 @@ function boardUrl(offsetExpr: string): string {
 
 /** 拉取指定 offset 的 /board 片段并替换 #memo-mgmt-body（搜索 oninput / 排序 onchange / 分页 onclick 用）。 */
 function goJs(offset: number): string {
-  return `fetch(${boardUrl(String(offset))},{credentials:'include'})${BOARD_FETCH_TAIL}`;
+  return `fetch(${boardUrl(String(offset))},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
 }
 
 /** 删除成功后：读取片段内 #memo-offset 隐藏域的当前页码重新拉取本页（不整页 reload，体验更顺滑）。 */
 function refreshCurrentJs(): string {
-  return `var __o=document.getElementById('memo-offset');var __off=__o?parseInt(__o.value||'0',10):0;fetch(${boardUrl('__off')},{credentials:'include'})${BOARD_FETCH_TAIL}`;
+  return `var __o=document.getElementById('memo-offset');var __off=__o?parseInt(__o.value||'0',10):0;fetch(${boardUrl('__off')},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
 }
 
 /** 单行备忘（供数据管理表体）。data-text 存小写文本+标签，旧版客户端过滤兼容用。 */
 export function noteRowHtml(n: MemoNote): string {
-  const d = new Date(n.createdAt);
-  const time = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  // 按 DISPLAY_TZ 渲染墙上时间；服务器进程 TZ 不影响展示。
+  const wall = n.createdAt + tzOffsetMs(n.createdAt, DISPLAY_TZ);
+  const d = new Date(wall);
+  const time = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
   const remind = n.remindAt ? `<span class="memo-remind">⏰ ${esc(fmt(n.remindAt))}</span>` : '';
   const txt = (n.text + ' ' + (n.tag ?? '')).toLowerCase();
   return `<tr data-text="${esc(txt)}">
@@ -275,10 +292,13 @@ export const memoBoardView: PluginUIView = {
         .memo-remind-list .memo-empty, .memo-empty { color: var(--ah-text-muted); font-size:12px; }
 
         .memo-mgmt-bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:10px; }
-        .memo-search { flex:1 1 220px; min-width:160px; background: var(--ah-surface-3); border:1px solid var(--ah-border); border-radius:8px; padding:7px 10px; color: var(--ah-text); font:inherit; font-size:13px; }
+        .memo-search { flex:1 1 220px; min-width:160px; background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; }
+        .memo-search:focus { border:2px solid var(--ah-accent); border-radius:10px; }
         .memo-search::placeholder { color: var(--ah-text-muted); }
-        .memo-sort { background: var(--ah-surface-3); border:1px solid var(--ah-border); border-radius:8px; padding:7px 10px; color: var(--ah-text); font:inherit; font-size:13px; }
-        .memo-tag { background: var(--ah-surface-3); border:1px solid var(--ah-border); border-radius:8px; padding:7px 10px; color: var(--ah-text); font:inherit; font-size:13px; max-width:160px; }
+        .memo-sort { background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; background-image:none; }
+        .memo-sort:focus { border:2px solid var(--ah-accent); border-radius:10px; }
+        .memo-tag { background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; max-width:160px; background-image:none; }
+        .memo-tag:focus { border:2px solid var(--ah-accent); border-radius:10px; }
         .memo-mgmt-actions { display:flex; gap:8px; }
         .memo-batch-del { font:inherit; font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--ah-border); background:transparent; color: var(--ah-danger, #e05252); cursor:pointer; }
         .memo-batch-del:hover { border-color: var(--ah-danger, #e05252); background: var(--ah-danger-alpha, rgba(224,82,82,.12)); }

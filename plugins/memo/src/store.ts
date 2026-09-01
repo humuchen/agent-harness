@@ -184,7 +184,7 @@ export async function saveNote(
  * 解析，09:28 的提醒实际被存成 17:28 (GMT+8)，晚 8 小时才触发；而看板按 UTC 渲染又把
  * 17:28 显示回 "09:28"，双重错位互相抵消，问题被掩盖。
  */
-const DISPLAY_TZ = process.env.REMINDER_TZ?.trim() || 'Asia/Shanghai';
+export const DISPLAY_TZ = process.env.REMINDER_TZ?.trim() || 'Asia/Shanghai';
 
 /** ISO 字符串是否已带时区（Z 或 ±HH:MM / ±HHMM 结尾）。 */
 function isTzAware(s: string): boolean {
@@ -192,7 +192,7 @@ function isTzAware(s: string): boolean {
 }
 
 /** 计算某 UTC 时刻在目标时区的偏移（ms）＝ 目标时区墙上时间 − UTC。 */
-function tzOffsetMs(utcMs: number, tz: string): number {
+export function tzOffsetMs(utcMs: number, tz: string): number {
   const dtf = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     hour12: false,

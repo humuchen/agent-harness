@@ -233,40 +233,74 @@ function stopPolling(): void {
 // ---------------------------------------------------------------------------
 
 function startSse(): void {
-  if (es || typeof EventSource === 'undefined') {
-    // 不支持 EventSource 直接走轮询降级
-    startPolling();
-    return;
-  }
-  try {
-    const source = new EventSource('/api/events');
-    es = { close: () => source.close() };
-    source.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data) as { type?: string };
-        if (data.type === 'memo:reminder') {
-          handleReminder(data);
-        }
-      } catch {
-        /* 坏消息跳过 */
-      }
-    };
-    source.onerror = () => {
-      // SSE 断开：关连接 + 降级轮询，待下次 start 重连（浏览器会在 onerror 后停发，
-      // 由我们主动关闭并切轮询，避免无限重连刷日志）。
-      try {
-        source.close();
-      } catch {
-        /* 已关 */
-      }
+  // 原生 EventSource 不会自动携带同域 Cookies（withCredentials 默认 false），
+  // 导致 /api/events 因 ah_auth Cookie 缺失而 401。改用 fetch 手动建立 SSE，
+  // 传入 credentials:'same-origin' 自动带 Cookie，行为与 authedFetch 保持一致。
+  if (es) return;
+  const controller = new AbortController();
+  es = { close: () => controller.abort() };
+
+  void fetch('/api/events', {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { accept: 'text/event-stream' },
+    signal: controller.signal
+  }).then(async (res) => {
+    if (!res.ok) {
+      // 401 等鉴权失败 → 降级轮询
       es = null;
       startPolling();
-    };
-  } catch {
-    // EventSource 构造失败：降级轮询
+      return;
+    }
+    if (!res.body) {
+      es = null;
+      startPolling();
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // 按 SSE 规范：事件以 \n\n 分隔
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
+        for (const part of parts) {
+          const lines = part.split('\n');
+          let data = '';
+          for (const line of lines) {
+            if (line.startsWith('data:')) {
+              data += line.slice(5).trimStart();
+            }
+          }
+          if (data) {
+            try {
+              const parsed = JSON.parse(data) as { type?: string };
+              if (parsed.type === 'memo:reminder') {
+                handleReminder(parsed);
+              }
+            } catch {
+              /* 坏消息跳过 */
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        // 主动关闭，什么都不做
+      } else {
+        // 连接意外中断 → 降级轮询
+        es = null;
+        startPolling();
+      }
+    }
+  }).catch(() => {
     es = null;
     startPolling();
-  }
+  });
 }
 
 /** 启动提醒通道（SSE 优先，失败轮询降级）。幂等。 */
