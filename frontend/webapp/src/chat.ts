@@ -27,6 +27,13 @@ import {
 import { toRichHtml, escapeHtml } from './utils/markdown';
 // 上下文用量圆环（已抽离到 chat-context-usage.ts，降低 chat.ts 单体规模）。
 import { renderCtxRing, selectContextUsage } from './chat-context-usage';
+// 纯渲染/格式化工具（已抽离到 chat-render-utils.ts）。
+import {
+  fileIcon,
+  formatSize,
+  buildPlanStatusLookup,
+  renderAttachments
+} from './chat-render-utils';
 // 聊天界面本地视图类型（已拆出到 chat-types.ts，降低 chat.ts 单体规模）。
 import type {
   ToolView,
@@ -1132,7 +1139,7 @@ export class AhChat extends LitElement {
         // 空消息属正常（新建会话尚未发送任何消息，服务端返回 messages:[]）：
         // 直接按合法空会话走合并/落内存，不再当作恢复失败抛异常。
         // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
-        const planStatusLookup = this.buildPlanStatusLookup(clean);
+        const planStatusLookup = buildPlanStatusLookup(clean);
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
         // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
         const merged =
@@ -1217,21 +1224,6 @@ export class AhChat extends LitElement {
     this.runCumulative = recoveredUsage?.runCumulative ?? null;
   }
 
-  /**
-   * 从镜像消息构建「计划 goal → 执行进度镜像」查找表。
-   * 消息 id 在恢复时重新分配，不能按 id 对齐；goal 是计划卡片的稳定业务键。
-   */
-  private buildPlanStatusLookup(
-    msgs: Array<{ plan?: unknown; planStatus?: PlanExecMirror }>
-  ): Map<string, PlanExecMirror> {
-    const out = new Map<string, PlanExecMirror>();
-    for (const m of msgs) {
-      const plan = m.plan as { goal?: unknown } | undefined;
-      if (!plan || typeof plan.goal !== 'string' || !m.planStatus) continue;
-      if (!out.has(plan.goal)) out.set(plan.goal, m.planStatus);
-    }
-    return out;
-  }
 
   /**
    * 把镜像里的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
@@ -2751,51 +2743,6 @@ export class AhChat extends LitElement {
     );
   }
 
-  /** 渲染附件预览（图片缩略图 / 文件图标）。 */
-  private renderAttachments(files: UploadedFile[]): TemplateResult {
-    const hasImages = files.some((f) => f.type.startsWith('image/'));
-    const images = files.filter((f) => f.type.startsWith('image/'));
-    const others = files.filter((f) => !f.type.startsWith('image/'));
-    return html`
-      <div class="attachments ${hasImages ? 'has-images' : ''}">
-        ${images.map(
-          (f) =>
-            html`<div
-              class="attach-img is-previewable"
-              title="点击预览"
-              @click=${() => this.openPreview(f)}
-            >
-              <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
-            </div>`
-        )}
-        ${others.map(
-          (f) =>
-            html`<div class="attach-file">
-              ${this.fileIcon(f)} ${escapeHtml(f.name)}
-              (${this.formatSize(f.size)})
-            </div>`
-        )}
-      </div>
-    `;
-  }
-
-  private fileIcon(f: UploadedFile): string {
-    if (f.type.startsWith('image/')) return '🖼';
-    if (f.type.includes('pdf')) return '📄';
-    if (
-      f.type.includes('csv') ||
-      f.type.includes('json') ||
-      f.type.includes('text')
-    )
-      return '📝';
-    return '📎';
-  }
-
-  private formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
 
   /** 断连恢复横幅：reconnecting 显示自动恢复中提示；lost 给出「重新连接」手动入口。 */
   private renderConnBanner() {
@@ -2886,7 +2833,10 @@ export class AhChat extends LitElement {
           <div class="user-col">
             <div class="bubble">
               ${hasAttachments
-                ? this.renderAttachments(m.attachments!)
+                ? renderAttachments({
+                    files: m.attachments!,
+                    onPreview: (f) => this.openPreview(f)
+                  })
                 : nothing}
               <div class="msg-text">${unsafeHTML(toRichHtml(m.content))}</div>
             </div>
@@ -3625,7 +3575,7 @@ export class AhChat extends LitElement {
                               class="attach-thumb"
                             />`
                           : html`<span class="attach-icon"
-                              >${this.fileIcon(f)}</span
+                              >${fileIcon(f)}</span
                             >`}
                         <span class="attach-name" title=${f.name}
                           >${escapeHtml(f.name)}</span
@@ -3853,7 +3803,7 @@ export class AhChat extends LitElement {
             />
             <div class="lightbox-info">
               ${escapeHtml(this.previewFile.name)} ·
-              ${this.formatSize(this.previewFile.size)}
+              ${formatSize(this.previewFile.size)}
             </div>
           </div>`
         : nothing}
