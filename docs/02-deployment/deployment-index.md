@@ -62,7 +62,7 @@ curl http://localhost:4173/api/state
 
 `deploy/k8s/` 下已有完整 kustomize 清单（namespace / configmap / secret / deployment / service / ingress / hpa / redis），base 之外平级放了 `deploy/overlays/local` 本地验证 overlay（kustomize 要求 overlay 与 base 平级，否则报 cycle detected）。已修复的致命坑：
 
-- 健康检查探针 `/api/v1/state`(404) → 已改 `/api/state`（否则 pod 永远 not-ready）。
+- 健康检查探针：早期 `/api/v1/state` 返回 404（pod 永远 not-ready），已在 server 路由入口将 `/api/v1/*` 重写为 `/api/*`，现 `/api/v1/state` 与 `/api/state` 均 200。
 - Redis 默认接入、带密码（`REDIS_URL=redis://:PASSWORD@redis:6379`，否则多副本走内存队列）。
 - 记忆持久化：RWX 卷 `agent-harness-data` 挂 `/app/data`，`MEMORY_BACKEND=file`，多副本共享、重启不丢（依赖支持 RWX 的 StorageClass）。
 - **kustomize 循环**：local overlay 原放在 `deploy/k8s/overlays/local`（base 子目录），引用 base 触发 `cycle detected`，已移至 `deploy/overlays/local`。

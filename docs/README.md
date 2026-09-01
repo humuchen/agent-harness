@@ -32,8 +32,8 @@
 | [agent-plugin-architecture.md](03-plugins/agent-plugin-architecture.md) | 插件架构边界 / 契约 / 复用路径 / 实例化 |
 | [agent-plugin-er.md](03-plugins/agent-plugin-er.md) | 插件 ER 模型（清单 / 智能体卡 / 注册表） |
 | [agent-plugin-implementation-plan.md](03-plugins/agent-plugin-implementation-plan.md) | 插件化落地计划（分期、契约实现、验证） |
-| [customer-service-agent-design.md](03-plugins/customer-service-agent-design.md) | 智能客服 Agent 设计（**设计稿，尚未落地实现**） |
-| [customer-service-agent-modules.md](03-plugins/customer-service-agent-modules.md) | 智能客服 Agent 模块拆分（**设计稿**） |
+| [customer-service-agent-design.md](03-plugins/customer-service-agent-design.md) | 智能客服 Agent 设计（**已落地**，`plugins/customer-service/`） |
+| [customer-service-agent-modules.md](03-plugins/customer-service-agent-modules.md) | 智能客服 Agent 模块拆分（**已落地**） |
 | 配套图 | [agent-plugin-architecture.svg](03-plugins/diagrams/agent-plugin-architecture.svg) · [agent-plugin-cs-composition.svg](03-plugins/diagrams/agent-plugin-cs-composition.svg) · [agent-plugin-lifecycle.svg](03-plugins/diagrams/agent-plugin-lifecycle.svg) · [agent-plugin-phases.svg](03-plugins/diagrams/agent-plugin-phases.svg) · [customer-service-agent-architecture.svg](03-plugins/diagrams/customer-service-agent-architecture.svg) · [customer-service-agent-sequence.svg](03-plugins/diagrams/customer-service-agent-sequence.svg) |
 
 ### 04 智能体 · `04-agents/`
@@ -79,13 +79,23 @@
 ## 仓库结构（当前）
 
 ```
-agent-harness/
-├─ packages/{core,server,webapp,client,cli,medical-ad-guard}
-├─ examples/            多个 CLI 示例（basic / chat / multi-agent / workflow-demo / medspa-agent / os-sandbox …）
-├─ plugins/medical-aesthetics-lead/   医美客资业务插件（已落地）
-│   （plugins/customer-service 为「设计稿」阶段，尚未落地实现）
-├─ deploy/k8s/          K8s 清单（kustomize base + overlays/local）
+agent-harness/                # pnpm monorepo
+├─ frontend/                 # 前端应用层
+│  ├─ webapp/                # Lit + Vite SPA（运行时面板 / Playground）
+│  └─ cli/                   # 运维/CI 命令行（ah）
+├─ access/                   # 接入层
+│  └─ server/                # HTTP+SSE 服务入口（access/server）
+├─ backend/                  # 后端工具层
+│  ├─ core/                  # 核心框架库
+│  ├─ client/                # 零依赖 HTTP+SSE 客户端 SDK
+│  └─ medical-ad-guard/      # 可复用领域合规库（医疗广告法）
+├─ plugins/                  # 业务插件（非侵入，跨层复用）
+│  ├─ medical-aesthetics-lead/   医美客资业务插件（已落地）
+│  └─ customer-service/          智能客服业务插件（已落地）
+├─ services/rag/             # 外部 RAG 服务（向量检索）
+├─ examples/                多个 CLI 示例（basic / chat / multi-agent / workflow-demo / medspa-agent / os-sandbox …）
+├─ deploy/k8s/              K8s 清单（kustomize base + overlays/local）
 ├─ Dockerfile · docker-compose.yml · docker-compose.redis.yml · render.yaml
-├─ docs/                统一文档中心（见上方 5 类导航）
+├─ docs/                    统一文档中心（见上方 5 类导航）
 └─ tsconfig.base.json · pnpm-workspace.yaml
 ```

@@ -1,7 +1,7 @@
 # 外部 RAG（检索增强生成）系统设计方案
 
 > 适用范围：为 `agent-harness`（pnpm monorepo）设计一套**独立于 agent 运行时**的外部 RAG 服务，并说明当前 agent 如何在运行时调用它、把检索结果融入生成流程。
-> 本文为 **设计稿（Phase 0）**，不含代码实现；落地 plan 见文末，确认后再进入编码阶段。
+> **状态：已落地实现**。`services/rag`（`@agent-harness/rag-service`）已实现并接入医美插件（`project_kb_search` 在 `MA_RAG_BASE_URL` 配置时优先走 RAG `/v1/retrieve`，详见 CHANGELOG 0.2.1）。本文为早期设计方案，记录设计演进，实现细节以代码为准。
 
 ---
 

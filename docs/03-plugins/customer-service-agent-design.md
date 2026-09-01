@@ -1,6 +1,6 @@
 # 智能客服 Agent 应用 · 设计方案与框架接入计划
 
-> ⚠️ **状态：设计稿（尚未落地实现）**。`plugins/customer-service/` 目录目前不存在；本文为规划/接入方案，待排期实现。当前已落地的业务插件仅 `plugins/medical-aesthetics-lead/`。
+> **状态：已落地实现**。`plugins/customer-service/` 目录已存在（含 `src`/`dist`/`manifest.json`，包名 `@agent-harness/customer-service`），随 server 启动自动启用。本文为早期设计方案与框架接入计划，记录设计演进，实际实现以代码为准。当前已落地的业务插件含 `plugins/medical-aesthetics-lead/` 与 `plugins/customer-service/`。
 
 > 目标：基于当前 `agent-harness` monorepo，构建一个支持「多轮对话 / FAQ 检索 / 意图识别（退款·订单·技术）/ 自动转人工 / 对话持久化 / 管理后台（记录+满意度）」的智能客服 Agent。
 > 本文仅给出**设计方案与框架接入方案**，不含代码实现。

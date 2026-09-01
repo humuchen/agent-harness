@@ -205,7 +205,7 @@ docker run -p 4173:4173 \
 | 内网多人低并发    | Compose + Redis + 鉴权 overlay                | `../02-deployment/docker-deploy-guide.md` §3、§9 |
 | 外部多人 / 高可用 | Kubernetes（kustomize base + overlays/local） | `../02-deployment/k8s-deploy-guide.md`           |
 
-> K8s 关键坑（已修复）：健康检查必须为 `/api/state`（非 `/api/v1/state`）；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `../02-deployment/k8s-deploy-guide.md`。
+> K8s 关键坑（已修复）：早期健康检查误用 `/api/v1/state` 返回 404（pod 永远 not-ready），现已在 server 路由入口把 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 二者均 200；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `../02-deployment/k8s-deploy-guide.md`。
 
 ### 4.4 配置说明（核心环境变量）
 

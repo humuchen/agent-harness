@@ -92,6 +92,8 @@ import {
 import { getHistoryStore } from './history-store';
 // 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
 import { subscribeChatEvents, publishChatEvent, chatSubscriberCount } from './chat-bus';
+// 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
+import { subscribeReminders } from './reminder-bus';
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
@@ -595,7 +597,7 @@ const server = createServer(
       // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
       // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
       if (
-        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps())
+        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
       ) {
         return;
       }
@@ -1393,6 +1395,37 @@ const server = createServer(
         // 连接建立即时确认，便于前端判定通道已就绪。
         send({ type: 'chat:ready', owner: ctx.sub });
         const unsub = subscribeChatEvents(ctx.sub, (e) => {
+          try {
+            send(e);
+          } catch {
+            /* 连接已断，unsub 在 close 时执行 */
+          }
+        });
+        res.on('close', () => {
+          try {
+            unsub();
+          } catch {
+            /* 重复 unsub 安全 */
+          }
+        });
+        return;
+      }
+
+      /* ------------- 插件事件实时广播通道（SSE，提醒即时推送） ------------- */
+      // 前端登录后建立一条常驻 SSE：订阅 reminder-bus，把备忘提醒事件（memo:reminder）
+      // 实时推回，前端据此立即弹 ah-notification + 浏览器桌面通知（替代纯轮询）。
+      // 单租户数据，向所有在线连接广播即可。心跳保活，断线前端按指数退避重连，
+      // 重连期间漏掉的提醒由前端轮询 /api/plugins/memo/reminders 兜底补发。
+      if (req.method === 'GET' && path === '/api/events') {
+        const ctx = await guard(req, res, 'chat:read');
+        if (!ctx) return;
+        // 备忘是单租户全局数据，零配置演示态（anon）即唯一用户，直接放行；
+        // 仅真正鉴权失败（ctx 为空）才拒绝。与 chat/stream 区别：chat 需多端隔离，
+        // 提醒无需隔离。
+        const send = startSse(res, req);
+        // 连接建立即时确认。
+        send({ type: 'events:ready' });
+        const unsub = subscribeReminders((e) => {
           try {
             send(e);
           } catch {

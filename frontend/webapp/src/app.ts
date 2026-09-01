@@ -8,6 +8,7 @@ import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
 import { renderSandboxChip } from './dashboard';
 import { notifyError } from './utils/errors';
+import { startPluginNotify, stopPluginNotify } from './plugin-notify';
 import './plugins-console';
 
 type Tab =
@@ -147,6 +148,8 @@ export class AhApp extends LitElement {
     });
     // 监听插件集合变化（启用/停用/升级）：重拉动态 Tab，使已禁用插件的 Tab 即时消失。
     window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
+    startPluginNotify();
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
@@ -164,6 +167,7 @@ export class AhApp extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
     window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    stopPluginNotify();
   }
 
   /** History 路由的 popstate 处理器引用（disconnectedCallback 解绑用）。 */
