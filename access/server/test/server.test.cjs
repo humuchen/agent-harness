@@ -197,9 +197,10 @@ test(
       r = await req('POST', '/api/run', { headers: auth(), body: big });
       assert.equal(r.status, 413, '超限 body 应 413');
 
-      // 10) 未知路径 → 404。
-      r = await req('GET', '/api/does-not-exist');
-      assert.equal(r.status, 404, '未知路径应 404');
+      // 10) 未知路径（已鉴权）→ 404。未鉴权时会被 auth 网关先拦 401（防路径枚举），
+      //     故此处带令牌以验证「鉴权通过后」的 404 路由兜底。
+      r = await req('GET', '/api/does-not-exist', { headers: auth() });
+      assert.equal(r.status, 404, '未知路径（已鉴权）应 404');
 
       // 11) /api/jobs 带令牌 → 200，返回运行队列快照（并发配置 + jobs 数组，验证有界化/统计）。
       r = await req('GET', '/api/jobs', { headers: auth() });

@@ -10,12 +10,13 @@
  * 健壮性：单插件加载/启用失败仅告警并跳过，绝不拖垮主服务启动。
  */
 
-import { existsSync } from 'node:fs';
-import { resolve, isAbsolute } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { resolve, isAbsolute, join } from 'node:path';
 import {
   PluginLoader,
   PluginRegistryClient,
   getAgentRegistry,
+  normalizeManifest,
   type PluginManifest,
   type PluginModule,
   type PluginEvent,
@@ -57,10 +58,41 @@ export function createPluginSystem(): PluginSystem {
 }
 
 /**
+ * 目录自动发现：扫描给定 plugins 目录，收集所有「含 dist/index.js 入口」的插件绝对路径。
+ *
+ * 纯函数（目录路径由调用方传入），便于单测。发现规则：
+ * - 仅遍历直接子目录（一层），不递归；
+ * - 子目录存在 `<sub>/dist/index.js` 即视为合法插件入口；
+ * - 按目录名排序，保证发现顺序确定（不依赖文件系统遍历次序）。
+ *
+ * 注意：只产出「候选入口路径」，是否真正启用由 bootstrapPlugins 的 require + 契约校验决定。
+ */
+export function discoverPluginEntries(pluginsDir: string): string[] {
+  if (!existsSync(pluginsDir)) return [];
+  try {
+    return readdirSync(pluginsDir)
+      .filter((name) => {
+        try {
+          const full = join(pluginsDir, name);
+          return statSync(full).isDirectory() && existsSync(join(full, 'dist', 'index.js'));
+        } catch {
+          return false;
+        }
+      })
+      .sort()
+      .map((name) => join(pluginsDir, name, 'dist', 'index.js'));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 发现并启用插件。
- * - 入口经 env AGENT_PLUGINS（逗号分隔的 .js 路径）指定；未配置则尝试默认客服插件。
- * - 默认入口不存在时静默跳过（避免无插件部署刷错误日志）。
+ * - 入口经 env AGENT_PLUGINS（逗号分隔的 .js 路径）指定；这是**显式覆盖**，优先级最高。
+ * - 未配置 AGENT_PLUGINS 时，自动扫描 `plugins/` 目录（目录自动发现）；扫描为空才回落到
+ *   三个内置默认插件路径（兼容 Render 等无法解析相对目录的部署形态）。
  * - 每个入口应 `export default` 一个 PluginModule（或 `export const plugin`）。
+ * - 加载后先经 normalizeManifest 收敛为统一 manifest 形态（消除 manifest 漂移），再 install/enable。
  */
 export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> {
   _system = system;
@@ -69,12 +101,23 @@ export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> 
     .map((s) => s.trim())
     .filter(Boolean);
   // __dirname = access/server/dist → 需上溯三级到仓库根：../../../plugins/...
-  const defaults = [
-    '../../../plugins/customer-service/dist/index.js',
-    '../../../plugins/medical-aesthetics-lead/dist/index.js',
-    '../../../plugins/memo/dist/index.js',
-  ];
-  const entries = envList.length ? envList : defaults;
+  const pluginsDir = resolve(__dirname, '../../../plugins');
+  let entries: string[];
+  if (envList.length) {
+    entries = envList;
+  } else {
+    const scanned = discoverPluginEntries(pluginsDir);
+    if (scanned.length) {
+      entries = scanned;
+    } else {
+      // 兜底：扫描无果时回落三个内置默认插件（与历史部署行为一致）。
+      entries = [
+        '../../../plugins/customer-service/dist/index.js',
+        '../../../plugins/medical-aesthetics-lead/dist/index.js',
+        '../../../plugins/memo/dist/index.js',
+      ];
+    }
+  }
   const enabled: string[] = [];
 
   for (const entry of entries) {
@@ -100,6 +143,8 @@ export async function bootstrapPlugins(system: PluginSystem): Promise<string[]> 
         structLog('warn', 'plugin.bootstrap.skip', { entry, reason: 'no default PluginModule export' });
         continue;
       }
+      // manifest 归一化（统一形态，消除早期 schema 漂移），不修改插件原对象。
+      mod.manifest = normalizeManifest(mod.manifest);
       await system.loader.installModule(mod);
       await system.loader.enable(mod.manifest.id);
       enabled.push(mod.manifest.id);

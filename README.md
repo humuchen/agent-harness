@@ -331,17 +331,26 @@ pnpm --filter @agent-harness/examples run real-loop         # #1：真实 OpenRo
 ## 接口鉴权（Web Playground）
 
 Web UI 的写操作（`/api/run`、`/api/verify`、`/api/mcp/add`、`/api/env`、`/api/mcp/list`、…）
-默认开放。**部署到公网前请设置 `UI_AUTH_TOKEN`**，此后这些端点需携带令牌：
+默认在 `REQUIRE_AUTH=false` 时开放。**部署到公网前务必启用鉴权**（见下方开关）。
+
+鉴权密钥说明：
+- `OPEN_API_KEY`：统一 LLM 密钥，主要作为模型调用凭证；在 `ADMIN_API_KEY` 未设置时，也兼作站点 admin 凭证（向后兼容）。
+- `ADMIN_API_KEY`（推荐）：独立的站点 admin 密钥，与 LLM 密钥职责分离。生产部署务必显式设置，使二者解耦。
+- `UI_TOKENS`：多用户静态令牌（`user:token` 列表），接入后按角色鉴权。
 
 ```bash
-UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
-# 请求时：Authorization: Bearer your-secret
+# 方式一：独立 admin 密钥（推荐，LLM 密钥与鉴权解耦）
+ADMIN_API_KEY=your-admin-secret OPEN_API_KEY=your-llm-key node access/server/dist/server.js
+
+# 方式二：复用 OPEN_API_KEY 作 admin（向后兼容，但双用途）
+OPEN_API_KEY=your-key node access/server/dist/server.js
+# 请求时：Authorization: Bearer <key>
 ```
 
-- 前端：右上角「访问令牌」输入框填写 `UI_AUTH_TOKEN`，请求自动以
+- 前端：右上角「访问令牌」输入框填写 admin 密钥 / `UI_TOKENS` 中的某个 token，请求自动以
   `Authorization: Bearer <token>` 发送（不再依赖会泄露在日志/历史里的 `?token=`）。
   （`?token=` 仍保留为兼容写法，但建议迁移到 Bearer。）
-- 未设置 `UI_AUTH_TOKEN` 时服务照常启动，但会在日志给出开放模式告警。
+- 未启用鉴权时服务照常启动，但会在日志给出开放模式告警；若监听在非本地回环地址，会额外输出高危告警。
 - `/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。
 
 ### 部署公网前的安全加固（必做）
@@ -350,7 +359,10 @@ UI_AUTH_TOKEN=your-secret node access/server/dist/server.js
 
 | 环境变量                              | 作用                                              | 默认           |
 | ------------------------------------- | ------------------------------------------------- | -------------- |
-| `UI_AUTH_TOKEN`                       | 接口 Bearer 鉴权；未设置则开放                    | 空（开放）     |
+| `ADMIN_API_KEY`                        | 站点 admin 密钥（推荐，与 LLM 密钥 OPEN_API_KEY 解耦）；未设则回退 OPEN_API_KEY | 空（回退 OPEN_API_KEY） |
+| `UI_TOKENS`                           | 多用户静态令牌 `user:token,...`；设置后开启 RBAC 令牌鉴权 | 空（开放/降级） |
+| `AUTH_PROVIDER`                       | 身份源：`token`（默认）/ `oidc` / `proxy` / `account` | `token` |
+| `ACCOUNT_AUTH`                        | 账户密码身份源开关（on/off）；开则强制要求登录态   | `on` |
 | `UI_CORS_ORIGIN`                      | 跨域白名单（逗号分隔）；留空=仅同源（不再回 `*`） | 空（仅同源）   |
 | `MAX_BODY_BYTES`                      | 请求体上限，防大报文 DoS                          | 1048576（1MB） |
 | `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭               | 120 / 60000    |

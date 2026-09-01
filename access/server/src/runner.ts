@@ -40,8 +40,30 @@ import {
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
 import { bridgeHarnessEvent } from './plugin-bootstrap';
+import path from 'node:path';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
+
+/**
+ * 把数据路径解析为绝对路径并做落盘安全校验。
+ * - 绝对路径：原样返回。
+ * - 相对路径：相对 APP_HOME（优先）或 process.cwd() 解析，并告警——
+ *   相对路径会随进程 cwd 漂移，导致数据落盘分散（后台任务 / 多副本场景尤其危险，
+ *   曾有插件因 cwd 偏移把库写到非预期目录）。
+ * 建议部署时把 MEMORY_DIR / MEMORY_SQLITE_FILE 设为绝对路径（或设 APP_HOME）。
+ */
+function resolveDataPath(raw: string, what: string): string {
+  if (path.isAbsolute(raw)) return raw;
+  const base = process.env.APP_HOME || process.cwd();
+  const resolved = path.resolve(base, raw);
+  structLog('warn', 'data path not absolute', {
+    what,
+    raw,
+    resolved,
+    hint: `建议将 ${what} 设为绝对路径（或设置 APP_HOME）以避免 cwd 漂移导致落盘分散`
+  });
+  return resolved;
+}
 
 export type RunMode = 'mock' | 'real' | 'real-mcp';
 
@@ -107,12 +129,18 @@ export function getMemoryStore(): MemoryStore {
   if (backend === 'volatile') {
     _memoryStore = new VolatileMemoryStore();
   } else if (backend === 'sqlite' || backend === '') {
-    const file = process.env.MEMORY_SQLITE_FILE || './data/memory.db';
+    const file = resolveDataPath(
+      process.env.MEMORY_SQLITE_FILE || './data/memory.db',
+      'MEMORY_SQLITE_FILE'
+    );
     try {
       _memoryStore = new SqliteMemoryStore({ file });
       structLog('info', 'memory store', { backend: 'sqlite', file });
     } catch (e: any) {
-      const dir = process.env.MEMORY_DIR || './data/memory';
+      const dir = resolveDataPath(
+        process.env.MEMORY_DIR || './data/memory',
+        'MEMORY_DIR'
+      );
       _memoryStore = new FileMemoryStore({ dir });
       structLog('warn', 'sqlite backend unavailable, fall back to file', {
         error: e?.message ?? String(e),
@@ -120,7 +148,10 @@ export function getMemoryStore(): MemoryStore {
       });
     }
   } else if (backend === 'file' || process.env.MEMORY_DIR) {
-    const dir = process.env.MEMORY_DIR || './data/memory';
+    const dir = resolveDataPath(
+      process.env.MEMORY_DIR || './data/memory',
+      'MEMORY_DIR'
+    );
     _memoryStore = new FileMemoryStore({ dir });
     structLog('info', 'memory store', { backend: 'file', dir });
   } else {

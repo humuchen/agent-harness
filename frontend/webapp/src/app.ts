@@ -13,7 +13,7 @@ import {
   stopPluginNotify,
   getReminderUnread,
   clearReminderUnread,
-  type ReminderUnread,
+  type ReminderUnread
 } from './plugin-notify';
 import './plugins-console';
 
@@ -196,10 +196,16 @@ export class AhApp extends LitElement {
       void this.loadPluginViews();
     });
     // 监听插件集合变化（启用/停用/升级）：重拉动态 Tab，使已禁用插件的 Tab 即时消失。
-    window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    window.addEventListener(
+      'ah-plugins-changed',
+      this.onPluginsChanged as EventListener
+    );
     // 监听未读提醒数变化（plugin-notify 在桌面通知不可用时累加）。
     this.reminderUnread = getReminderUnread();
-    window.addEventListener('ah-reminder-unread', this.onReminderUnread as EventListener);
+    window.addEventListener(
+      'ah-reminder-unread',
+      this.onReminderUnread as EventListener
+    );
     // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
     startPluginNotify();
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
@@ -218,8 +224,14 @@ export class AhApp extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
-    window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
-    window.removeEventListener('ah-reminder-unread', this.onReminderUnread as EventListener);
+    window.removeEventListener(
+      'ah-plugins-changed',
+      this.onPluginsChanged as EventListener
+    );
+    window.removeEventListener(
+      'ah-reminder-unread',
+      this.onReminderUnread as EventListener
+    );
     stopPluginNotify();
   }
 
@@ -233,7 +245,10 @@ export class AhApp extends LitElement {
   /** 未读提醒数变化：刷新红点状态（detail 含归属 tabId 与最新计数）。 */
   private onReminderUnread = (e: CustomEvent<ReminderUnread>) => {
     const d = e.detail;
-    this.reminderUnread = { tabId: d?.tabId ?? '', count: Number(d?.count) || 0 };
+    this.reminderUnread = {
+      tabId: d?.tabId ?? '',
+      count: Number(d?.count) || 0
+    };
   };
 
   /**
@@ -400,11 +415,15 @@ export class AhApp extends LitElement {
                 ${this.pluginTabs.map((t) => {
                   // 未读红点：仅当该 Tab 正是提醒归属 Tab 且计数 > 0 时出现。
                   const unread =
-                    this.reminderUnread.tabId === t.id ? this.reminderUnread.count : 0;
+                    this.reminderUnread.tabId === t.id
+                      ? this.reminderUnread.count
+                      : 0;
                   return html`<button
                     class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
                     data-short=${t.short}
-                    title=${unread > 0 ? `${t.label}（${unread} 条未读提醒）` : t.label}
+                    title=${unread > 0
+                      ? `${t.label}（${unread} 条未读提醒）`
+                      : t.label}
                     @click=${() => this.openPluginTab(t.id)}
                   >
                     <span class="nav-text">${t.label}</span>
@@ -412,7 +431,8 @@ export class AhApp extends LitElement {
                       ? html`<span
                           class="nav-dot"
                           aria-label=${`${unread} 条未读提醒`}
-                        >${unread > 99 ? '99+' : unread}</span>`
+                          >${unread > 99 ? '99+' : unread}</span
+                        >`
                       : ''}
                   </button>`;
                 })}`
@@ -455,7 +475,6 @@ export class AhApp extends LitElement {
                     <span class="pill ${this.state.openrouter ? 'ok' : ''}">
                       LLM ${this.state.openrouter ? 'live' : 'mock'}
                     </span>
-                    <span class="pill">model: ${this.state.model}</span>
                     <span class="pill">env: ${this.state.envs.length}</span>
                     <span class="pill"
                       >mcp: ${this.state.mcpServers.length}</span
@@ -483,7 +502,9 @@ export class AhApp extends LitElement {
             <ah-env ?hidden=${this.tab !== 'env'}></ah-env>
             <ah-mcp ?hidden=${this.tab !== 'mcp'}></ah-mcp>
             <ah-approvals ?hidden=${this.tab !== 'approvals'}></ah-approvals>
-            <ah-observability ?hidden=${this.tab !== 'observability'}></ah-observability>
+            <ah-observability
+              ?hidden=${this.tab !== 'observability'}
+            ></ah-observability>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">

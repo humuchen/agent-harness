@@ -17,6 +17,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { UploadedFile } from '../agent-context';
+import { uploadFileToApi } from '../utils/upload';
 
 /** 上传状态枚举。 */
 type UploadStatus = 'pending' | 'uploading' | 'done' | 'error';
@@ -25,6 +26,7 @@ interface UploadedFileWithStatus extends UploadedFile {
   status: UploadStatus;
   error?: string;
   progress?: number; // 0-100
+  file?: File; // 原始 File 引用，用于服务端上传（不进入 dataUrl / 模型载荷）
 }
 
 @customElement('ah-file-upload')
@@ -272,6 +274,7 @@ export class AhFileUpload extends LitElement {
                   type: f.type,
                   dataUrl,
                   status: 'pending',
+                  file: f,
                 };
                 // 若是图片且开启服务端上传，先本地显示 pending，再尝试 POST
                 if (this.serverUpload && f.type.startsWith('image/')) {
@@ -287,6 +290,8 @@ export class AhFileUpload extends LitElement {
                       this.emit();
                     }
                   });
+                  // 已乐观加入 this.files，这里 resolve 以解除 Promise.all 等待（避免挂起）。
+                  resolve(base);
                 } else {
                   resolve({ ...base, status: 'done' });
                 }
@@ -304,16 +309,15 @@ export class AhFileUpload extends LitElement {
     }
   }
 
-  /** 把文件 POST 到 /api/upload，返回是否成功。 */
+  /** 把文件 POST 到 /api/upload，返回是否成功，并回填 serverUrl。 */
   private async uploadToServer(file: UploadedFileWithStatus): Promise<boolean> {
-    try {
-      const formData = new FormData();
-      // 需要原始 File 对象——这里从 dataUrl 反推不可行，因此实际使用应传入 File 实例。
-      // 简化实现：仅标记 success（真实场景应由父组件在选中时立刻 POST）。
+    if (!file.file) return false;
+    const res = await uploadFileToApi(file.file);
+    if (res.ok && res.url) {
+      file.serverUrl = res.url;
       return true;
-    } catch {
-      return false;
     }
+    return false;
   }
 
   private removeFile(i: number) {

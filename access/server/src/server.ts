@@ -115,6 +115,8 @@ import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
 // 文件上传（图片/文本附件）。
 import { handleUpload, serveUploaded, type UploadMeta } from './upload';
+// 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
+import { logConfigValidation } from './config-schema';
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
 // 自定义模型 SQLite 持久化 + AES-GCM 解密
@@ -212,14 +214,17 @@ function googleRedirectUri(req: IncomingMessage): string {
   const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
   return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
 }
-// LLM 统一密钥 OPEN_API_KEY 仅作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
-// 不再参与站点鉴权；站点鉴权由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
+// LLM 统一密钥 OPEN_API_KEY 主要作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
+// 出于向后兼容，OPEN_API_KEY 在 ADMIN_API_KEY 未设置时仍被接受为 admin 鉴权凭证（逃生通道 / 降级唯一凭证），
+// 详见 authz.ts 的 createAuthorizer。新部署应显式设置 ADMIN_API_KEY，使「LLM 密钥」与「站点鉴权」职责分离。
+// 站点鉴权主链路由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
 const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
 const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? 'on').toLowerCase() !== 'off';
 // 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS）。
-// OPEN_API_KEY 已移出鉴权链路；若以上均不满足，则仅由账户密码档严格拒绝（无 cookie 即 401）。
+// 若以上均不满足：降级模式下 admin key（ADMIN_API_KEY 或回退 OPEN_API_KEY）仍可作唯一凭证，
+// 否则由账户密码档严格拒绝（无 cookie 即 401）。
 const REQUIRE_AUTH =
   AUTH_PROVIDER !== 'token' ||
   ACCOUNT_AUTH ||
@@ -242,6 +247,9 @@ const AUDIT_LOG = process.env.AUDIT_LOG || '';
 // 业务策略装配（组合根）：RBAC 鉴权器 + 审批策略。二者均为可插拔接口实现，
 // 核心 framework 不感知任何角色/权限/审批概念。替换身份源或审批后端只需改这两个工厂。
 const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
+
+// 启动期配置校验：把「写错但静默启动」的 misconfig 显性化为日志告警（不阻断启动，向后兼容）。
+logConfigValidation();
 
 // OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。
 if (AUTH_PROVIDER === 'oidc') {
@@ -3553,6 +3561,20 @@ function onListening(): void {
   } else {
     console.warn(
       `   ⚠️  未设置 UI_TOKENS，UI 接口处于开放状态（仅建议本地 / 演示使用）。`
+    );
+  }
+  // 公网绑定 + 开放鉴权 = 任何人可匿名调用 admin 接口：高危告警。
+  if (!REQUIRE_AUTH && HOST && !['localhost', '127.0.0.1', '::1'].includes(HOST)) {
+    console.warn(
+      `   ⛔ 安全告警：鉴权未启用（REQUIRE_AUTH=false）且监听在 ${HOST}（非本地回环）。\n` +
+        `      任何人都能以匿名 admin 调用所有接口。公网部署前请设置 UI_TOKENS 或 ADMIN_API_KEY 并启用鉴权。`
+    );
+  }
+  // OPEN_API_KEY 双用途告警：未单独设置 ADMIN_API_KEY 时，admin 鉴权实际依赖 LLM 密钥。
+  if (process.env.OPEN_API_KEY && !process.env.ADMIN_API_KEY) {
+    console.warn(
+      `   ⚠️  OPEN_API_KEY 同时承担「LLM 密钥」与「站点 admin 凭证」两种职责（ADMIN_API_KEY 未设置）。\n` +
+        `      建议设置 ADMIN_API_KEY 将二者解耦，避免同一密钥泄漏即同时失守模型计费与 admin 权限。`
     );
   }
   if (UI_CORS_ORIGIN.length === 0) {

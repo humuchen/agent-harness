@@ -47,26 +47,51 @@ function fmt(ts: number): string {
 }
 
 /**
- * 内联 fetch 的鉴权头：从 localStorage 读取当前登录用户名，设 x-ah-username 头。
- * AccountAuthorizer 要求 ah_auth Cookie + x-ah-username 双因子校验，缺一即 401。
- * 与 api.ts authedFetch 同源（均读 ah_user localStorage）。
+ * 聊天风格自定义下拉菜单：
+ *  - 隐藏原生 <select>（保留 id，用于 boardUrl 获取 value）
+ *  - 浮动 trigger 按钮 + 悬浮 <ul> 选项列表
+ *  - 选中项显示蓝底 + 左图标 + 右勾
+ *  - 点击选项 → 设置 hidden select value 触发 onchange → fetch /board
  */
-function authHeaderJs(): string {
-  return `{'x-ah-username':localStorage.getItem('ah_user')||''}`;
+function selectHtml(opts: {
+  id: string;
+  placeholder: string;
+  value: string;
+  items: { value: string; label: string; icon?: string }[];
+  onChangeFetch: string;
+}): string {
+  const selected = opts.items.find((i) => i.value === opts.value) ?? opts.items[0] ?? { label: opts.placeholder, icon: '•' };
+  const optHtml = opts.items
+    .map((i) => `
+      <li class="memo-select-option ${i.value === opts.value ? 'memo-select-option-selected' : ''}"
+          data-value="${esc(i.value)}" onclick="document.getElementById('${opts.id}').value='${esc(i.value)}';this.dispatchEvent(new Event('change',{bubbles:true}))">${esc(i.icon ?? '•')} ${esc(i.label)}</li>`)
+    .join('');
+  return `
+    <div class="memo-select-wrap">
+      <select id="${opts.id}" style="display:none" onchange="${esc(opts.onChangeFetch)}">${opts.items
+        .map((i) => `<option value="${esc(i.value)}" ${i.value === opts.value ? 'selected' : ''}>${esc(i.label)}</option>`)
+        .join('')}</select>
+      <button type="button" class="memo-select-trigger" id="${opts.id}-trigger" onclick="var m=document.getElementById('${opts.id}-menu');m.style.display=m.style.display==='block'?'none':'block';"><span class="memo-select-trigger-icon">${esc(selected.icon ?? '•')}</span><span class="memo-select-trigger-label">${esc(selected.label)}</span><span class="memo-select-trigger-chevron">▼</span></button>
+      <ul class="memo-select-menu" id="${opts.id}-menu" style="display:none">${optHtml}</ul>
+    </div>`;
 }
 
 /** 删除按钮：内联 handler（无 CSP 环境）发 DELETE 后仅刷新当前片段（不整页 reload）。 */
 function delBtn(id: string): string {
   const js = `if(confirm('确认删除这条备忘？')){fetch('/api/plugins/memo/note?id=${encodeURIComponent(
     id
-  )}',{method:'DELETE',credentials:'include',headers:${authHeaderJs()}}).then(function(){${refreshCurrentJs()}})}`;
+  )}',{method:'DELETE',credentials:'include',headers:${AUTH_HEADERS_JS}}).then(function(){${refreshCurrentJs()}})}`;
   return `<button class="memo-del" onclick="${esc(js)}">删除</button>`;
 }
 
-/** 表头「全选」：点击切换所有行复选框（this 指向表头复选框本身）。 */
+/** 表头「全选」：点击切换所有行复选框。
+ *  使用 onchange + event.target 而非 onclick + this，避免 unsafeHTML / Lit 重渲染时
+ *  this 绑定丢失；同时用 Array.from(...).forEach 取代 for(i<cb.length) 循环，
+ *  避开 esc() 对 < 转义可能在属性值解析层产生歧义。
+ */
 function selectAllBox(): string {
-  const js = `var cb=document.querySelectorAll('.memo-mgmt-chk');for(var i=0;i<cb.length;i++){cb[i].checked=this.checked}`;
-  return `<input type="checkbox" class="memo-mgmt-all" title="全选" onclick="${esc(js)}">`;
+  const js = `Array.from(document.querySelectorAll('.memo-mgmt-chk')).forEach(function(c){c.checked=event.target.checked})`;
+  return `<input type="checkbox" class="memo-mgmt-all" title="全选" onchange="${esc(js)}">`;
 }
 
 /** 批量删除：收集勾选项 → 确认 → DELETE /notes/batch，成功后仅刷新当前片段。 */
@@ -236,15 +261,27 @@ export const memoBoardView: PluginUIView = {
         <h3>数据管理</h3>
         <div class="memo-mgmt-bar">
           <input id="memo-search" class="memo-search" placeholder="搜索备忘内容 / 标签…" oninput="${esc(goJs(0))}">
-          <select id="memo-tag" class="memo-tag" onchange="${esc(goJs(0))}">
-            <option value="">全部标签</option>
-            ${tags.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
-          </select>
-          <select id="memo-sort" class="memo-sort" onchange="${esc(goJs(0))}">
-            <option value="newest">最新优先</option>
-            <option value="oldest">最早优先</option>
-            <option value="remind">按提醒时间</option>
-          </select>
+          ${selectHtml({
+            id: 'memo-tag',
+            placeholder: '全部标签',
+            value: '',
+            onChangeFetch: goJs(0),
+            items: [
+              { value: '', label: '全部标签', icon: '🏷️' },
+              ...tags.map((t) => ({ value: t, label: t })),
+            ],
+          })}
+          ${selectHtml({
+            id: 'memo-sort',
+            placeholder: '最新优先',
+            value: 'newest',
+            onChangeFetch: goJs(0),
+            items: [
+              { value: 'newest', label: '最新优先', icon: '🕒' },
+              { value: 'oldest', label: '最早优先', icon: '⏮️' },
+              { value: 'remind', label: '按提醒时间', icon: '⏰' },
+            ],
+          })}
           <span class="memo-mgmt-actions">
             ${batchDelBtn()}
             ${clearAllBtn()}
@@ -295,10 +332,31 @@ export const memoBoardView: PluginUIView = {
         .memo-search { flex:1 1 220px; min-width:160px; background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; }
         .memo-search:focus { border:2px solid var(--ah-accent); border-radius:10px; }
         .memo-search::placeholder { color: var(--ah-text-muted); }
-        .memo-sort { background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; background-image:none; }
-        .memo-sort:focus { border:2px solid var(--ah-accent); border-radius:10px; }
-        .memo-tag { background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; max-width:160px; background-image:none; }
-        .memo-tag:focus { border:2px solid var(--ah-accent); border-radius:10px; }
+        /* 聊天风格自定义下拉 */
+        .memo-select-wrap { position:relative; display:inline-block; }
+        .memo-select-trigger {
+          display:flex; align-items:center; gap:6px;
+          background: var(--ah-surface-3); border:none; border-radius:12px;
+          padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px;
+          outline:none; cursor:pointer; min-width:96px;
+        }
+        .memo-select-trigger-chevron { font-size:10px; color: var(--ah-text-muted); }
+        .memo-select-trigger:focus { border:2px solid var(--ah-accent); border-radius:10px; }
+        .memo-select-trigger-icon { font-size:13px; }
+        .memo-select-menu {
+          position:absolute; top:100%; left:0; z-index:100;
+          min-width:120px; margin-top:4px;
+          background: var(--ah-surface-1); border:1px solid var(--ah-border);
+          border-radius:12px; box-shadow:0 4px 16px rgba(0,0,0,0.3);
+          padding:4px 0; list-style:none; margin:0;
+        }
+        .memo-select-option {
+          display:flex; align-items:center; gap:8px;
+          padding:9px 14px; cursor:pointer; font:inherit; font-size:14px; color: var(--ah-text);
+        }
+        .memo-select-option:hover { background: var(--ah-surface-3); }
+        .memo-select-option-selected { background: var(--ah-accent); color:#fff; font-weight:600; }
+        .memo-select-option-selected::after { content:'✓'; margin-left:auto; }
         .memo-mgmt-actions { display:flex; gap:8px; }
         .memo-batch-del { font:inherit; font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--ah-border); background:transparent; color: var(--ah-danger, #e05252); cursor:pointer; }
         .memo-batch-del:hover { border-color: var(--ah-danger, #e05252); background: var(--ah-danger-alpha, rgba(224,82,82,.12)); }

@@ -28,7 +28,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile

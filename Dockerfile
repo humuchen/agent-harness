@@ -37,21 +37,20 @@
 # ----------------------------- 构建参数 -----------------------------
 # 默认走 quay.io 镜像（Docker Hub 在本环境被拦截时的可达替代源）。
 ARG NODE_BASE=quay.io/nodejs/node
-ARG NODE_TAG=22-bookworm
+# ⚠️ pnpm@11.9.0 要求 Node>=22.13；基础镜像必须满足条件。
+# 官方/quay 的 22-bookworm-slim 现已提供 >=22.13 的 Node（2026 起），故切到 slim 并统一 pnpm 版本。
+ARG NODE_TAG=22-bookworm-slim
 
 # ----------------------------- 构建阶段 -----------------------------
 FROM ${NODE_BASE}:${NODE_TAG} AS build
 # 依赖安装走国内可达的 npmmirror，规避 npmjs.org 网络限制（同时供 pnpm 自身安装）。
 ENV npm_config_registry=https://registry.npmmirror.com
 # 不使用 corepack：本环境经 npmmirror 拉取 pnpm 时 corepack 的签名校验会失败
-# （Cannot find matching keyid）。改为直接用 npm 安装 pnpm。
-# 注意：quay.io 上的 node 镜像停留在 v22.5.1，而 pnpm 11.9 要求 Node>=22.13，
-# 因此这里用 pnpm@10（lockfileVersion 同为 9.0，可正常消费现有锁文件）。
-# 生产环境若用官方 node:22-bookworm-slim（Node>=22.13），可改回 pnpm@11.9.0。
-# 先禁用 corepack 并清理可能残留的 pnpm，再安装并校验版本，避免命中缓存中的旧 pnpm。
+# （Cannot find matching keyid）。改为直接用 npm 安装与根 package.json 的 packageManager 一致的 pnpm@11.9.0。
+# 前提：基础镜像 Node>=22.13（见 NODE_TAG）。
 RUN corepack disable 2>/dev/null || true \
  && npm remove -g pnpm 2>/dev/null || true \
- && npm install -g pnpm@10 \
+ && npm install -g pnpm@11.9.0 \
  && pnpm --version
 
 WORKDIR /app
@@ -62,20 +61,14 @@ COPY backend/core/package.json backend/core/package.json
 COPY access/server/package.json access/server/package.json
 COPY backend/client/package.json backend/client/package.json
 COPY frontend/webapp/package.json frontend/webapp/package.json
-# 去掉根 package.json 的 packageManager 字段：否则 pnpm@10 会按该字段
-# （pnpm@11.9.0）通过 corepack 重新拉起 11.9.0，而 11.9.0 要求 Node>=22.13，
-# 在本环境的 node 22.5.1 上会直接报错。仅影响构建容器内副本，不改动源码。
-RUN node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f));delete p.packageManager;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+COPY frontend/cli/package.json frontend/cli/package.json
+# 不再剥离根 package.json 的 packageManager 字段：基础镜像已满足 Node>=22.13，
+# pnpm@11.9.0 与根 packageManager（pnpm@11.9.0）一致，corepack/版本错配问题不复存在。
 RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
-# 再拷源码并构建部署所需的包（server + 其依赖 core/mcp-sdk，以及 webapp + 其依赖 client）。
-# 不构建 cli：cli 是开发期命令行工具，不进入运行镜像；且在 pnpm@10（本环境受 node 22.5.1
-# 限制而使用）下 cli 的 tsc 解析有兼容性问题，官方环境用 pnpm@11.9 不受影响。
+# 再拷源码并构建部署所需的包（server + 其依赖，以及 webapp + 其依赖，以及 cli）。
 COPY . .
-# COPY . . 会把带 packageManager 的根 package.json 覆盖回来，这里再次剥离，
-# 否则 pnpm 会按 packageManager(pnpm@11.9.0) 重新拉起高版本 pnpm 而失败。
-RUN node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f));delete p.packageManager;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
-RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." build
+RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." --filter "@agent-harness/cli..." build
 
 # 编译 OS 级沙箱原生 helper（Linux only）。
 # 生产镜像必须产出 helper：用 HARNESS_NATIVE_STRICT=1 使「非 Linux / 缺编译器 / 缺库」一律失败，

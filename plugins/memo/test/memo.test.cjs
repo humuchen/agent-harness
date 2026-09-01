@@ -696,6 +696,23 @@ test('数据管理：看板渲染管理面板（统计/搜索框/全选/批量�
   assert.ok(html.includes('--ah-'), '样式应使用 --ah-* 令牌');
 });
 
+test('全选 checkbox：使用 onchange 而非 onclick，避免 this 绑定丢失；JS 不含 < 运算符', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  await store.saveNote(alice.sub, '条目 A', 'work');
+  await store.saveNote(alice.sub, '条目 B', 'life');
+
+  const html = await plugin.memoBoardView.render(alice);
+  // 表头全选框应使用 onchange 事件（event.target 稳定），不是 onclick（this 易丢失）
+  const headerMatch = html.match(/class="memo-mgmt-all"[^>]*>/);
+  assert.ok(headerMatch, '应含全选复选框');
+  assert.ok(headerMatch[0].includes('onchange='), '全选框应绑定 onchange 而非 onclick');
+  assert.ok(!headerMatch[0].includes('onclick='), '全选框不应再绑定 onclick');
+  // onchange JS 不应包含 < 运算符（esc('<') → &lt; 可能在属性解析层被错误解码）
+  const onchangeJs = headerMatch[0].match(/onchange="([^"]*)"/)?.[1] ?? '';
+  assert.ok(!onchangeJs.includes('&lt;'), '全选 JS 不应含 < 运算符（经 esc 转义为 &lt;）');
+});
+
 test('数据管理：searchNotes 支持 sort（newest/oldest/remind）', async () => {
   freshDataDir();
   const store = require('../dist/store.js');

@@ -7,6 +7,7 @@
  */
 
 export * from './manifest';
+export * from './normalize';
 export * from './context';
 export * from './module';
 export * from './loader';

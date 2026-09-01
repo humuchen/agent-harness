@@ -248,7 +248,7 @@ export class RoleBasedAuthorizer implements Authorizer {
     this.matrix = loadMatrix();
     if (opts.tokens)
       for (const [t, r] of Object.entries(opts.tokens)) this.tokens.set(t, r);
-    // OPEN_API_KEY 统一作为 admin 凭证（逃生通道），跨模式始终生效。
+    // admin 凭证（逃生通道）：ADMIN_API_KEY 优先，未设置时回退 OPEN_API_KEY，跨模式始终生效。
     if (opts.apiKeyToken) this.tokens.set(opts.apiKeyToken, 'admin');
     if (opts.fallbackToken && opts.fallbackRole)
       this.tokens.set(opts.fallbackToken, opts.fallbackRole);
@@ -365,20 +365,25 @@ export class AccountAuthorizer implements Authorizer {
  * 组合工厂：从环境变量装配 Authorizer。
  *
  * 认证依据（按优先级）：
- * 1. OPEN_API_KEY —— 统一认证凭证。本地启动后所有权限校验均接受它（admin 角色）；
- *    部署到现场若未接入 RBAC，则自动降级为「唯一凭证」，保证无 RBAC 场景下服务不中断、权限校验不挂。
- * 2. RBAC 体系 —— UI_TOKENS / UI_ROLE_PERMISSIONS / AUTH_PROVIDER(oidc|proxy)。
- *    接入后按角色判定，但 OPEN_API_KEY 仍作为 admin 逃生通道并行生效。
+ * 1. ADMIN_API_KEY —— 站点 admin 凭证（推荐）。与 LLM 密钥 OPEN_API_KEY 职责分离：
+ *    泄露 admin key 不会同时暴露模型计费密钥。
+ * 2. OPEN_API_KEY —— 历史双用途密钥（LLM 密钥 + admin 凭证）。在 ADMIN_API_KEY 未设置时
+ *    作为向后兼容的 admin 回退凭证（含降级唯一凭证与 RBAC 下的 escape 通道）。
+ *    新部署务必设置 ADMIN_API_KEY，使二者解耦（见 server 启动期告警）。
+ * 3. RBAC 体系 —— UI_TOKENS / UI_ROLE_PERMISSIONS / AUTH_PROVIDER(oidc|proxy)。
+ *    接入后按角色判定，但 admin key（ADMIN_API_KEY 或回退 OPEN_API_KEY）仍作为逃生通道并行生效。
  *
  * 降级判定：当未配置任何 RBAC 凭证（无 UI_TOKENS / UI_ROLE_PERMISSIONS 且
- * AUTH_PROVIDER 为默认 token）→ 视为「未接入 RBAC」，OPEN_API_KEY 即权限判断唯一凭证：
+ * AUTH_PROVIDER 为默认 token）→ 视为「未接入 RBAC」，admin key 即权限判断唯一凭证：
  *   - 配置了 key：仅接受该 key（admin，全权限），其余一律 401/403。
  *   - 连 key 都缺失：fail-open（全放行），确保服务即便零配置也能启动、权限校验不中断。
  *
  * requireAuth=false（且无 key 无 RBAC）时同样全放行，保持本地/演示的开放语义（向后兼容）。
  */
 export function createAuthorizer(requireAuth: boolean): Authorizer {
-  const apiKey = process.env.OPEN_API_KEY || '';
+  // admin 鉴权密钥：优先 ADMIN_API_KEY；未设置时回退 OPEN_API_KEY（向后兼容历史双用途）。
+  // 二者都不影响 OPEN_API_KEY 作为 LLM 调用密钥的职责（core 直接读它）。
+  const apiKey = process.env.ADMIN_API_KEY || process.env.OPEN_API_KEY || '';
   const rbacConfigured = !!(
     process.env.UI_TOKENS ||
     process.env.UI_ROLE_PERMISSIONS
