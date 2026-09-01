@@ -18,6 +18,12 @@ export interface MemoNote {
   remindAt?: number;
   /** 是否已触发过提醒（防重复提醒）。 */
   notified?: boolean;
+  /**
+   * 提醒被前端确认（ack）落盘的时间（epoch ms）。
+   * 与 notified 的区别：notified 只表达「已提醒过」，notifiedAt 额外记录「何时确认」，
+   * 供看板渲染「提醒历史」——否则错过的提醒无从回查，用户只能干等下一次 fire。
+   */
+  notifiedAt?: number;
 }
 
 /** 解析并确保数据目录存在。 */
@@ -117,16 +123,40 @@ export function upcomingReminders(limit = 50): MemoNote[] {
   return fut.slice(0, n);
 }
 
-/** 标记某条备忘已提醒（notified=true），避免重复提醒；返回是否真的发生变更。 */
+/**
+ * 标记某条备忘已提醒（notified=true），并写入 ack 时间戳，避免重复提醒；
+ * 返回是否真的发生变更（幂等：重复 ack 返回 false）。
+ */
 export function markNotified(id: string): boolean {
   const notes = loadAll();
   let changed = false;
   for (const n of notes) {
     if (n.id === id && !n.notified) {
       n.notified = true;
+      n.notifiedAt = Date.now();
       changed = true;
     }
   }
   if (changed) saveAll(notes);
   return changed;
+}
+
+/**
+ * 提醒历史：已触发过提醒的备忘，按确认时间倒序（最近触发的在前），limit 上限 50。
+ *
+ * 兼容历史数据：早期版本的备忘只有 notified 而无 notifiedAt（ack 时未记时间），
+ * 这里用 `notifiedAt ?? remindAt ?? createdAt` 兜底排序，保证老数据也能出现在历史里，
+ * 不会因为缺字段就整体消失。
+ */
+export function reminderHistory(limit = 20): MemoNote[] {
+  const done = loadAll()
+    .filter((n) => n.notified && n.remindAt != null)
+    .sort((a, b) => sortKey(b) - sortKey(a));
+  const n = Math.max(1, Math.min(50, Math.floor(limit) || 20));
+  return done.slice(0, n);
+}
+
+/** 提醒历史的排序键：优先 ack 时间，回退提醒时间，最后回退创建时间。 */
+function sortKey(n: MemoNote): number {
+  return n.notifiedAt ?? n.remindAt ?? n.createdAt;
 }

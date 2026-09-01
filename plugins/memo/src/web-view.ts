@@ -5,7 +5,7 @@
  */
 
 import type { PluginUIView } from '@agent-harness/core';
-import { listNotes, upcomingReminders } from './store';
+import { listNotes, upcomingReminders, reminderHistory } from './store';
 
 function esc(s: unknown): string {
   return String(s ?? '').replace(
@@ -28,10 +28,12 @@ export const memoBoardView: PluginUIView = {
   render(): string | Promise<string> {
     const notes = listNotes(undefined, 50);
     const upcoming = upcomingReminders(20);
+    const history = reminderHistory(20);
     const cards = [
       { k: '备忘总数', v: String(notes.length) },
       { k: '带标签', v: String(notes.filter((n) => n.tag).length) },
       { k: '待提醒', v: String(upcoming.length) },
+      { k: '已提醒', v: String(history.length) },
     ]
       .map(
         (c) =>
@@ -61,6 +63,21 @@ export const memoBoardView: PluginUIView = {
       )
       .join('');
 
+    // 提醒历史：已触发过的提醒（按确认时间倒序）。错过 toast 窗口时可在此回查。
+    // 时间优先取 notifiedAt（实际送到用户的时间），老数据无此字段时回退 remindAt。
+    const historyRows = history
+      .map((n) => {
+        const at = n.notifiedAt ?? (n.remindAt as number);
+        return `<li><span class="memo-history-time">${esc(fmt(at))}</span>
+          <span class="memo-remind-text">${esc(n.text)}</span>
+          ${
+            n.tag
+              ? `<span class="memo-badge memo-badge-dim">${esc(n.tag)}</span>`
+              : ''
+          }</li>`;
+      })
+      .join('');
+
     return `
     <div class="memo-dash">
       <h2>备忘助手 · 备忘看板</h2>
@@ -70,6 +87,16 @@ export const memoBoardView: PluginUIView = {
         <h3>待提醒（即将到来）</h3>
         <ul class="memo-remind-list">
           ${remindRows || '<li class="memo-empty">暂无待提醒的备忘</li>'}
+        </ul>
+      </section>
+
+      <section class="memo-panel">
+        <h3>提醒历史（已触发）</h3>
+        <ul class="memo-remind-list">
+          ${
+            historyRows ||
+            '<li class="memo-empty">还没有触发过提醒（到点后会出现在这里）</li>'
+          }
         </ul>
       </section>
 
@@ -98,6 +125,8 @@ export const memoBoardView: PluginUIView = {
         .memo-remind-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
         .memo-remind-list li { display:flex; align-items:center; gap:10px; font-size:13px; }
         .memo-remind-time { flex:none; font-variant-numeric:tabular-nums; color: var(--ah-accent); font-weight:600; }
+        /* 提醒历史时间用弱化色，与「待提醒」的 accent 色区分，避免两个区块看起来一样。 */
+        .memo-history-time { flex:none; font-variant-numeric:tabular-nums; color: var(--ah-text-muted); font-weight:600; }
         .memo-remind-text { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
         .memo-remind-list .memo-empty, .memo-empty { color: var(--ah-text-muted); font-size:12px; }
 
@@ -108,6 +137,7 @@ export const memoBoardView: PluginUIView = {
         .memo-table code { background: var(--ah-surface-3); padding:1px 5px; border-radius:4px; font-size:11px; }
 
         .memo-badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:500; line-height:1.6; background: var(--ah-accent-alpha, rgba(41,151,255,.15)); color: var(--ah-accent); }
+        .memo-badge-dim { background: var(--ah-surface-3); color: var(--ah-text-muted); }
         .memo-remind { display:inline-block; margin-left:8px; font-size:11px; color: var(--ah-warning, #e0a000); }
       </style>
     </div>`;

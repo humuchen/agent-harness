@@ -5,7 +5,16 @@
  */
 
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { listNotes, saveNote, deleteNote, pendingReminders, upcomingReminders, markNotified, resolveRemindAt } from './store';
+import {
+  listNotes,
+  saveNote,
+  deleteNote,
+  pendingReminders,
+  upcomingReminders,
+  reminderHistory,
+  markNotified,
+  resolveRemindAt,
+} from './store';
 
 function json(res: import('node:http').ServerResponse, code: number, body: unknown): void {
   res.statusCode = code;
@@ -58,8 +67,9 @@ export const memoServerExtension: ServerExtension = {
       json(res, deleted ? 200 : 404, { ok: deleted });
     }) as PluginRouteHandler,
 
-    // GET /api/plugins/memo/reminders -> { pending: 已到期未通知, upcoming: 将来 }
-    // 供前端轮询主动弹通知。
+    // GET /api/plugins/memo/reminders
+    // -> { pending: 已到期未通知, upcoming: 将来, history: 已触发过的提醒 }
+    // 供前端轮询主动弹通知；history 供「提醒历史」回查错过窗口的提醒。
     '/reminders': ((req, res) => {
       if (req.method !== 'GET') {
         return json(res, 405, { error: true, message: 'method not allowed' });
@@ -69,6 +79,7 @@ export const memoServerExtension: ServerExtension = {
         ok: true,
         pending: pendingReminders(now).map(toReminderDto),
         upcoming: upcomingReminders(50).map(toReminderDto),
+        history: reminderHistory(20).map(toReminderDto),
       });
     }) as PluginRouteHandler,
 
@@ -86,7 +97,19 @@ export const memoServerExtension: ServerExtension = {
   },
 };
 
-/** 提醒 DTO（前端友好的精简字段）。 */
-function toReminderDto(n: { id: string; text: string; tag?: string; remindAt?: number }) {
-  return { id: n.id, text: n.text, tag: n.tag ?? null, remindAt: n.remindAt ?? null };
+/** 提醒 DTO（前端友好的精简字段）。notifiedAt 仅「提醒历史」用（pending/upcoming 为 null）。 */
+function toReminderDto(n: {
+  id: string;
+  text: string;
+  tag?: string;
+  remindAt?: number;
+  notifiedAt?: number;
+}) {
+  return {
+    id: n.id,
+    text: n.text,
+    tag: n.tag ?? null,
+    remindAt: n.remindAt ?? null,
+    notifiedAt: n.notifiedAt ?? null,
+  };
 }

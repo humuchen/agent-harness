@@ -8,7 +8,13 @@ import { getTheme, toggleTheme, type Theme } from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
 import { renderSandboxChip } from './dashboard';
 import { notifyError } from './utils/errors';
-import { startPluginNotify, stopPluginNotify } from './plugin-notify';
+import {
+  startPluginNotify,
+  stopPluginNotify,
+  getReminderUnread,
+  clearReminderUnread,
+  type ReminderUnread,
+} from './plugin-notify';
 import './plugins-console';
 
 type Tab =
@@ -65,6 +71,44 @@ function initialTabFromPath(): string {
  * 仅 chat Tab 生效（.shell.chat-mode），其它 Tab 仍走 sharedStyles 的自然滚动，
  * 不影响 ah-run / ah-dashboard 等面板在移动端的内容滚动需求。
  */
+/**
+ * 插件 Tab 的未读提醒红点徽标。
+ * 用 danger 色契合「待处理」语义；收起态（data-short 可见、nav-text 隐藏）也要能看到，
+ * 所以不依赖 .nav-text 的布局，独立用 margin-left:auto 贴到按钮右侧。
+ */
+const navDotCss = css`
+  /* 展开态：带数字的胶囊徽标，贴在标签右侧。 */
+  .nav-dot {
+    flex: none;
+    margin-left: auto;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    background: var(--ah-danger, #e5484d);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 16px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  /* 收起态：只剩短标签、宽度紧张，退化为右上角的小圆点（隐去数字，只表「有未读」）。 */
+  .sidebar.collapsed .nav-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    margin-left: 0;
+    width: 8px;
+    min-width: 8px;
+    height: 8px;
+    padding: 0;
+    font-size: 0;
+    line-height: 0;
+  }
+`;
+
 const chatShellCss = css`
   /* ?hidden 绑定用于 Tab 切换时隐藏非激活面板。:host 的 display:block 会盖过
      浏览器默认的 [hidden] 样式，必须加 !important 保险。 */
@@ -109,7 +153,7 @@ const chatShellCss = css`
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
-  static styles = [sharedStyles, chatShellCss];
+  static styles = [sharedStyles, navDotCss, chatShellCss];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
@@ -131,6 +175,11 @@ export class AhApp extends LitElement {
   }> = [];
   /** 正在加载（服务端实时渲染）的插件 Tab id；非空时内容区显示骨架屏。 */
   @state() private pluginLoading: string | null = null;
+  /**
+   * 未读提醒状态（桌面通知不可用时由 plugin-notify 累加并持久化）。
+   * tabId 由事件 detail 带出，本壳只做匹配、不认识具体是哪个业务插件。
+   */
+  @state() private reminderUnread: ReminderUnread = { tabId: '', count: 0 };
 
   connectedCallback() {
     super.connectedCallback();
@@ -148,6 +197,9 @@ export class AhApp extends LitElement {
     });
     // 监听插件集合变化（启用/停用/升级）：重拉动态 Tab，使已禁用插件的 Tab 即时消失。
     window.addEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    // 监听未读提醒数变化（plugin-notify 在桌面通知不可用时累加）。
+    this.reminderUnread = getReminderUnread();
+    window.addEventListener('ah-reminder-unread', this.onReminderUnread as EventListener);
     // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
     startPluginNotify();
     // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
@@ -167,6 +219,7 @@ export class AhApp extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
     window.removeEventListener('ah-plugins-changed', this.onPluginsChanged as EventListener);
+    window.removeEventListener('ah-reminder-unread', this.onReminderUnread as EventListener);
     stopPluginNotify();
   }
 
@@ -175,6 +228,12 @@ export class AhApp extends LitElement {
 
   private onPluginsChanged = () => {
     void this.loadPluginViews();
+  };
+
+  /** 未读提醒数变化：刷新红点状态（detail 含归属 tabId 与最新计数）。 */
+  private onReminderUnread = (e: CustomEvent<ReminderUnread>) => {
+    const d = e.detail;
+    this.reminderUnread = { tabId: d?.tabId ?? '', count: Number(d?.count) || 0 };
   };
 
   /**
@@ -232,6 +291,9 @@ export class AhApp extends LitElement {
     // 先即时切换 Tab（高亮 + 骨架屏），再异步拉取，消除「点击后无反应」等待感。
     this.setTab(id);
     this.closeDrawer();
+    // 进入承载提醒的 Tab 即清零未读——红点的使命就是把这个 Tab 里
+    // 的「提醒历史」推到用户眼前，看到即算已读。
+    if (this.reminderUnread.tabId === id) clearReminderUnread();
     this.pluginLoading = id;
     void this.loadPluginViews().finally(() => {
       if (this.pluginLoading === id) this.pluginLoading = null;
@@ -335,16 +397,25 @@ export class AhApp extends LitElement {
           </nav>
           ${this.pluginTabs.length
             ? html`<div class="nav-sep"></div>
-                ${this.pluginTabs.map(
-                  (t) => html`<button
+                ${this.pluginTabs.map((t) => {
+                  // 未读红点：仅当该 Tab 正是提醒归属 Tab 且计数 > 0 时出现。
+                  const unread =
+                    this.reminderUnread.tabId === t.id ? this.reminderUnread.count : 0;
+                  return html`<button
                     class="nav-item plugin ${this.tab === t.id ? 'active' : ''}"
                     data-short=${t.short}
-                    title=${t.label}
+                    title=${unread > 0 ? `${t.label}（${unread} 条未读提醒）` : t.label}
                     @click=${() => this.openPluginTab(t.id)}
                   >
                     <span class="nav-text">${t.label}</span>
-                  </button>`
-                )}`
+                    ${unread > 0
+                      ? html`<span
+                          class="nav-dot"
+                          aria-label=${`${unread} 条未读提醒`}
+                        >${unread > 99 ? '99+' : unread}</span>`
+                      : ''}
+                  </button>`;
+                })}`
             : ''}
           <div class="nav-spacer"></div>
           <div class="sidebar-foot">

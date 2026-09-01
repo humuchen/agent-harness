@@ -336,3 +336,109 @@ test('提醒：前端视图形状新增「待提醒」卡（渲染含 --ah- 令�
   assert.ok(html.includes('--ah-'), '样式应使用 --ah-* 主题令牌');
 });
 
+// ---------------------------------------------------------------------------
+// 提醒历史：错过通知窗口后的可回查能力
+// ---------------------------------------------------------------------------
+
+test('提醒历史：ack 时落盘 notifiedAt，reminderHistory 按确认时间倒序返回', () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  // 三条都已触发并被 ack（notified 由 markNotified 置位，同时写入 notifiedAt）
+  const a = store.saveNote('第一条', 'work', Date.now() - 300_000);
+  const b = store.saveNote('第二条', 'work', Date.now() - 200_000);
+  const c = store.saveNote('第三条', 'life', Date.now() - 100_000);
+  store.markNotified(a.id);
+  store.markNotified(b.id);
+  store.markNotified(c.id);
+
+  const hist = store.reminderHistory(20);
+  assert.equal(hist.length, 3, '三条已 ack 的提醒都应进入历史');
+  // 倒序：最近 ack 的在前
+  assert.equal(hist[0].id, c.id, '最近确认的应排最前');
+  assert.equal(hist[2].id, a.id, '最早确认的应排最后');
+  for (const n of hist) {
+    assert.equal(typeof n.notifiedAt, 'number', 'ack 应写入 notifiedAt 时间戳');
+  }
+});
+
+test('提醒历史：未 ack 的项不进历史；pending/upcoming 也不混入历史', () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  const pending = store.saveNote('到期未 ack', 'work', Date.now() - 1000);
+  const upcoming = store.saveNote('将来才提醒', 'work', Date.now() + 60_000);
+  const done = store.saveNote('已确认', 'work', Date.now() - 5000);
+  store.markNotified(done.id);
+
+  const hist = store.reminderHistory(20);
+  assert.equal(hist.length, 1, '只有已 ack 的才进历史');
+  assert.equal(hist[0].id, done.id);
+  assert.ok(!hist.some((n) => n.id === pending.id), '到期未 ack 不应进历史');
+  assert.ok(!hist.some((n) => n.id === upcoming.id), '未到期不应进历史');
+});
+
+test('提醒历史：无 remindAt 的普通备忘不会误入历史', () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  store.saveNote('纯备忘无提醒', 'idea');
+  assert.equal(store.reminderHistory(20).length, 0, '无 remindAt 的备忘不应出现在历史');
+});
+
+test('提醒历史：兼容无 notifiedAt 的旧数据（回退 remindAt 排序仍可见）', () => {
+  const dir = freshDataDir();
+  const fs2 = require('node:fs');
+  const path2 = require('node:path');
+  // 模拟旧版本落盘形态：只有 notified 标志，没有 notifiedAt 字段
+  const old = [
+    {
+      id: 'legacy-1',
+      text: '旧数据提醒',
+      tag: 'work',
+      createdAt: Date.now() - 600_000,
+      remindAt: Date.now() - 500_000,
+      notified: true,
+    },
+  ];
+  fs2.writeFileSync(path2.join(dir, 'notes.json'), JSON.stringify(old), 'utf8');
+
+  const store = require('../dist/store.js');
+  const hist = store.reminderHistory(20);
+  assert.equal(hist.length, 1, '旧数据（无 notifiedAt）也应出现在历史里');
+  assert.equal(hist[0].id, 'legacy-1');
+});
+
+test('提醒：路由 /reminders 额外返回 history 字段', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  const done = store.saveNote('已提醒的', 'work', Date.now() - 10_000);
+  store.markNotified(done.id);
+
+  const ext = plugin.memoServerExtension;
+  let body = '';
+  const res = {
+    statusCode: 0,
+    setHeader() {},
+    end(b) {
+      body = b;
+    },
+  };
+  await ext.mountRoutes['/reminders']({ url: '/reminders', method: 'GET' }, res);
+  const data = JSON.parse(body);
+  assert.equal(data.ok, true);
+  assert.ok(Array.isArray(data.history), 'history 应为数组');
+  assert.equal(data.history.length, 1, 'history 应含已触发的提醒');
+  assert.equal(data.history[0].id, done.id);
+  assert.equal(typeof data.history[0].notifiedAt, 'number', 'history 项应带 notifiedAt');
+});
+
+test('提醒：前端看板新增「提醒历史」区块（渲染含 --ah- 令牌）', () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  const done = store.saveNote('历史提醒', 'work', Date.now() - 30_000);
+  store.markNotified(done.id);
+
+  const html = plugin.memoBoardView.render();
+  assert.ok(html.includes('提醒历史'), '看板应包含「提醒历史」区块');
+  assert.ok(html.includes('历史提醒'), '历史条目内容应被渲染');
+  assert.ok(html.includes('--ah-'), '样式应使用 --ah-* 主题令牌');
+});
+
