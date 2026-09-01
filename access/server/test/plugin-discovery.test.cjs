@@ -23,11 +23,10 @@ test('discoverPluginEntries: 收集含 dist/index.js 的插件入口', () => {
 
     const found = discoverPluginEntries(root);
     assert.strictEqual(found.length, 2);
+    // 返回路径形如 <root>/plugin-a/dist/index.js：取 dist 的父目录名，即插件名。
+    const names = found.map((p) => path.basename(path.dirname(path.dirname(p)))).sort();
     // 按目录名排序，顺序确定
-    assert.deepStrictEqual(
-      found.map((p) => path.basename(path.dirname(p))),
-      ['plugin-a', 'plugin-b']
-    );
+    assert.deepStrictEqual(names, ['plugin-a', 'plugin-b']);
     for (const f of found) assert.ok(f.endsWith(path.join('dist', 'index.js')));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -27,7 +27,8 @@ interface Field {
 
 // 关键变量 schema（覆盖服务绑定 / 鉴权 / LLM / 记忆 / MCP / 队列 / DB）。
 // 仅在「写错会静默出错」的变量上做校验；其余保持原样由各处读取。
-const SCHEMA: Field[] = [
+// 导出供 config-defaults 漂移守卫复用（DEFAULTS 键集合应与 SCHEMA 键集合一致）。
+export const SCHEMA: Field[] = [
   // 服务绑定
   { key: 'PORT', type: 'number', min: 1, max: 65535, desc: '监听端口' },
   { key: 'UI_HOST', type: 'string', desc: '监听地址' },
@@ -82,7 +83,8 @@ const SCHEMA: Field[] = [
   { key: 'HISTORY_BACKEND', type: 'enum', allowed: ['sqlite', 'file'], desc: '历史记录后端' },
   // 安全加固
   { key: 'UI_CORS_ORIGIN', type: 'string', desc: 'CORS 白名单' },
-  { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' }
+  { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' },
+  { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' }
 ];
 
 // 常见拼写错误 → 提示正确变量名（减少「配了但不生效」的静默坑）。

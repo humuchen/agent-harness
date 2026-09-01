@@ -20,7 +20,15 @@
 
 import type { PluginUIView, PluginRouteUser } from '@agent-harness/core';
 import type { MemoNote } from './store';
-import { searchNotes, noteStats, noteTags, upcomingReminders, reminderHistory, DISPLAY_TZ, tzOffsetMs } from './store';
+import {
+  searchNotes,
+  noteStats,
+  noteTags,
+  upcomingReminders,
+  reminderHistory,
+  DISPLAY_TZ,
+  tzOffsetMs
+} from './store';
 
 /** 看板每页条数（分页粒度，服务端检索用）。 */
 export const BOARD_PAGE = 20;
@@ -31,7 +39,9 @@ function esc(s: unknown): string {
   return String(s ?? '').replace(
     /[&<>"']/g,
     (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[
+        c
+      ] as string)
   );
 }
 
@@ -43,7 +53,9 @@ function fmt(ts: number): string {
   const wall = ts + tzOffsetMs(ts, DISPLAY_TZ);
   const d = new Date(wall);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(
+    d.getUTCHours()
+  )}:${p(d.getUTCMinutes())}`;
 }
 
 /**
@@ -60,19 +72,45 @@ function selectHtml(opts: {
   items: { value: string; label: string; icon?: string }[];
   onChangeFetch: string;
 }): string {
-  const selected = opts.items.find((i) => i.value === opts.value) ?? opts.items[0] ?? { label: opts.placeholder, icon: '•' };
+  const selected = opts.items.find((i) => i.value === opts.value) ??
+    opts.items[0] ?? { label: opts.placeholder, icon: '•' };
   const optHtml = opts.items
-    .map((i) => `
-      <li class="memo-select-option ${i.value === opts.value ? 'memo-select-option-selected' : ''}"
-          data-value="${esc(i.value)}" onclick="document.getElementById('${opts.id}').value='${esc(i.value)}';this.dispatchEvent(new Event('change',{bubbles:true}))">${esc(i.icon ?? '•')} ${esc(i.label)}</li>`)
+    .map(
+      (i) => `
+      <li class="memo-select-option ${
+        i.value === opts.value ? 'memo-select-option-selected' : ''
+      }"
+          data-value="${esc(i.value)}" onclick="document.getElementById('${
+        opts.id
+      }').value='${esc(
+        i.value
+      )}';this.dispatchEvent(new Event('change',{bubbles:true}))">${esc(
+        i.icon ?? '•'
+      )} ${esc(i.label)}</li>`
+    )
     .join('');
   return `
     <div class="memo-select-wrap">
-      <select id="${opts.id}" style="display:none" onchange="${esc(opts.onChangeFetch)}">${opts.items
-        .map((i) => `<option value="${esc(i.value)}" ${i.value === opts.value ? 'selected' : ''}>${esc(i.label)}</option>`)
-        .join('')}</select>
-      <button type="button" class="memo-select-trigger" id="${opts.id}-trigger" onclick="var m=document.getElementById('${opts.id}-menu');m.style.display=m.style.display==='block'?'none':'block';"><span class="memo-select-trigger-icon">${esc(selected.icon ?? '•')}</span><span class="memo-select-trigger-label">${esc(selected.label)}</span><span class="memo-select-trigger-chevron">▼</span></button>
-      <ul class="memo-select-menu" id="${opts.id}-menu" style="display:none">${optHtml}</ul>
+      <select id="${opts.id}" style="display:none" onchange="${esc(
+    opts.onChangeFetch
+  )}">${opts.items
+    .map(
+      (i) =>
+        `<option value="${esc(i.value)}" ${
+          i.value === opts.value ? 'selected' : ''
+        }>${esc(i.label)}</option>`
+    )
+    .join('')}</select>
+      <button type="button" class="memo-select-trigger" id="${
+        opts.id
+      }-trigger" onclick="var m=this.nextElementSibling;m.style.display=m.style.display==='block'?'none':'block';"><span class="memo-select-trigger-icon">${esc(
+    selected.icon ?? '•'
+  )}</span><span class="memo-select-trigger-label">${esc(
+    selected.label
+  )}</span><span class="memo-select-trigger-chevron">▼</span></button>
+      <ul class="memo-select-menu" id="${
+        opts.id
+      }-menu" style="display:none">${optHtml}</ul>
     </div>`;
 }
 
@@ -91,19 +129,25 @@ function delBtn(id: string): string {
  */
 function selectAllBox(): string {
   const js = `Array.from(document.querySelectorAll('.memo-mgmt-chk')).forEach(function(c){c.checked=event.target.checked})`;
-  return `<input type="checkbox" class="memo-mgmt-all" title="全选" onchange="${esc(js)}">`;
+  return `<input type="checkbox" class="memo-mgmt-all" title="全选" onchange="${esc(
+    js
+  )}">`;
 }
 
 /** 批量删除：收集勾选项 → 确认 → DELETE /notes/batch，成功后仅刷新当前片段。 */
 function batchDelBtn(): string {
   const js = `(function(){var ids=[];var cbs=document.querySelectorAll('.memo-mgmt-chk:checked');for(var i=0;i<cbs.length;i++){ids.push(cbs[i].value)}if(!ids.length){return}if(!confirm('确认删除选中的 '+ids.length+' 条备忘？此操作不可恢复')){return}fetch('/api/plugins/memo/notes/batch',{method:'DELETE',credentials:'include',headers:Object.assign((function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})(),{'content-type':'application/json'}),body:JSON.stringify({ids:ids})}).then(function(){${refreshCurrentJs()}})})()`;
-  return `<button class="memo-batch-del" onclick="${esc(js)}">删除选中</button>`;
+  return `<button class="memo-batch-del" onclick="${esc(
+    js
+  )}">删除选中</button>`;
 }
 
 /** 清空全部：二次确认 → DELETE /notes/all（仅清空当前 owner），成功后仅刷新当前片段。 */
 function clearAllBtn(): string {
   const js = `if(confirm('确认清空当前账号的全部备忘？此操作不可恢复')){fetch('/api/plugins/memo/notes/all',{method:'DELETE',credentials:'include',headers:Object.assign((function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})(),{'content-type':'application/json'}),body:JSON.stringify({confirm:true})}).then(function(){${refreshCurrentJs()}})}`;
-  return `<button class="memo-clear-all" onclick="${esc(js)}">清空全部</button>`;
+  return `<button class="memo-clear-all" onclick="${esc(
+    js
+  )}">清空全部</button>`;
 }
 
 /** fetch 尾部：解析 JSON 并把返回 html 注入 #memo-mgmt-body（翻页/检索/删除后通用）。 */
@@ -120,12 +164,16 @@ function boardUrl(offsetExpr: string): string {
 
 /** 拉取指定 offset 的 /board 片段并替换 #memo-mgmt-body（搜索 oninput / 排序 onchange / 分页 onclick 用）。 */
 function goJs(offset: number): string {
-  return `fetch(${boardUrl(String(offset))},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
+  return `fetch(${boardUrl(
+    String(offset)
+  )},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
 }
 
 /** 删除成功后：读取片段内 #memo-offset 隐藏域的当前页码重新拉取本页（不整页 reload，体验更顺滑）。 */
 function refreshCurrentJs(): string {
-  return `var __o=document.getElementById('memo-offset');var __off=__o?parseInt(__o.value||'0',10):0;fetch(${boardUrl('__off')},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
+  return `var __o=document.getElementById('memo-offset');var __off=__o?parseInt(__o.value||'0',10):0;fetch(${boardUrl(
+    '__off'
+  )},{credentials:'include',headers:${AUTH_HEADERS_JS}})${BOARD_FETCH_TAIL}`;
 }
 
 /** 单行备忘（供数据管理表体）。data-text 存小写文本+标签，旧版客户端过滤兼容用。 */
@@ -133,11 +181,20 @@ export function noteRowHtml(n: MemoNote): string {
   // 按 DISPLAY_TZ 渲染墙上时间；服务器进程 TZ 不影响展示。
   const wall = n.createdAt + tzOffsetMs(n.createdAt, DISPLAY_TZ);
   const d = new Date(wall);
-  const time = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
-  const remind = n.remindAt ? `<span class="memo-remind">⏰ ${esc(fmt(n.remindAt))}</span>` : '';
+  const time = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(d.getUTCDate()).padStart(2, '0')} ${String(
+    d.getUTCHours()
+  ).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  const remind = n.remindAt
+    ? `<span class="memo-remind">⏰ ${esc(fmt(n.remindAt))}</span>`
+    : '';
   const txt = (n.text + ' ' + (n.tag ?? '')).toLowerCase();
   return `<tr data-text="${esc(txt)}">
-    <td class="memo-col-chk"><input type="checkbox" class="memo-mgmt-chk" value="${esc(n.id)}"></td>
+    <td class="memo-col-chk"><input type="checkbox" class="memo-mgmt-chk" value="${esc(
+      n.id
+    )}"></td>
     <td><code>${esc(n.id.slice(0, 8))}</code></td>
     <td>${esc(n.text)}${remind}</td>
     <td>${n.tag ? `<span class="memo-badge">${esc(n.tag)}</span>` : '-'}</td>
@@ -166,16 +223,22 @@ export function boardBodyHtml(args: {
   const count = items.length;
   const pager = `
     <div class="memo-mgmt-foot">
-      <span class="memo-pager">第 ${offset + 1}–${offset + count} 条 / 共 ${total} 条</span>
+      <span class="memo-pager">第 ${offset + 1}–${
+    offset + count
+  } 条 / 共 ${total} 条</span>
       <span class="memo-pager-btns">
         ${
           offset > 0
-            ? `<button class="memo-page-btn" onclick="${esc(goJs(offset - limit))}">上一页</button>`
+            ? `<button class="memo-page-btn" onclick="${esc(
+                goJs(offset - limit)
+              )}">上一页</button>`
             : '<button class="memo-page-btn" disabled>上一页</button>'
         }
         ${
           offset + count < total
-            ? `<button class="memo-page-btn" onclick="${esc(goJs(offset + limit))}">下一页</button>`
+            ? `<button class="memo-page-btn" onclick="${esc(
+                goJs(offset + limit)
+              )}">下一页</button>`
             : '<button class="memo-page-btn" disabled>下一页</button>'
         }
       </span>
@@ -189,7 +252,8 @@ export function boardBodyHtml(args: {
           <th>id</th><th>内容</th><th>标签</th><th>时间</th><th>操作</th>
         </tr></thead>
         <tbody id="memo-mgmt-tbody">${
-          rows || '<tr><td colspan="6">暂无备忘（对话中说「记一下：…」即可保存）</td></tr>'
+          rows ||
+          '<tr><td colspan="6">暂无备忘（对话中说「记一下：…」即可保存）</td></tr>'
         }</tbody>
       </table>
     </div>
@@ -207,18 +271,20 @@ export const memoBoardView: PluginUIView = {
       noteStats(owner),
       upcomingReminders(owner, 20),
       reminderHistory(owner, 20),
-      noteTags(owner),
+      noteTags(owner)
     ]);
 
     const cards = [
       { k: '备忘总数', v: String(stats.total) },
       { k: '带标签', v: String(stats.tagged) },
       { k: '含提醒', v: String(stats.withReminder) },
-      { k: '已提醒', v: String(stats.history) },
+      { k: '已提醒', v: String(stats.history) }
     ]
       .map(
         (c) =>
-          `<div class="memo-card"><div class="memo-card-v">${esc(c.v)}</div><div class="memo-card-k">${esc(c.k)}</div></div>`
+          `<div class="memo-card"><div class="memo-card-v">${esc(
+            c.v
+          )}</div><div class="memo-card-k">${esc(c.k)}</div></div>`
       )
       .join('');
 
@@ -226,12 +292,14 @@ export const memoBoardView: PluginUIView = {
       items: page.items,
       total: page.total,
       offset: 0,
-      limit: BOARD_PAGE,
+      limit: BOARD_PAGE
     });
 
     const remindRows = upcoming
       .map(
-        (n) => `<li><span class="memo-remind-time">${esc(fmt(n.remindAt as number))}</span>
+        (n) => `<li><span class="memo-remind-time">${esc(
+          fmt(n.remindAt as number)
+        )}</span>
           <span class="memo-remind-text">${esc(n.text)}</span>
           ${n.tag ? `<span class="memo-badge">${esc(n.tag)}</span>` : ''}</li>`
       )
@@ -254,13 +322,17 @@ export const memoBoardView: PluginUIView = {
 
     return `
     <div class="memo-dash">
-      <h2>备忘助手 · 备忘看板<span class="memo-owner">（${esc(owner)} 的备忘）</span></h2>
+      <h2>备忘助手 · 备忘看板<span class="memo-owner">（${esc(
+        owner
+      )} 的备忘）</span></h2>
       <div class="memo-cards">${cards}</div>
 
       <section class="memo-panel">
         <h3>数据管理</h3>
         <div class="memo-mgmt-bar">
-          <input id="memo-search" class="memo-search" placeholder="搜索备忘内容 / 标签…" oninput="${esc(goJs(0))}">
+          <input id="memo-search" class="memo-search" placeholder="搜索备忘内容 / 标签…" oninput="${esc(
+            goJs(0)
+          )}">
           ${selectHtml({
             id: 'memo-tag',
             placeholder: '全部标签',
@@ -268,8 +340,8 @@ export const memoBoardView: PluginUIView = {
             onChangeFetch: goJs(0),
             items: [
               { value: '', label: '全部标签', icon: '🏷️' },
-              ...tags.map((t) => ({ value: t, label: t })),
-            ],
+              ...tags.map((t) => ({ value: t, label: t }))
+            ]
           })}
           ${selectHtml({
             id: 'memo-sort',
@@ -279,8 +351,8 @@ export const memoBoardView: PluginUIView = {
             items: [
               { value: 'newest', label: '最新优先', icon: '🕒' },
               { value: 'oldest', label: '最早优先', icon: '⏮️' },
-              { value: 'remind', label: '按提醒时间', icon: '⏰' },
-            ],
+              { value: 'remind', label: '按提醒时间', icon: '⏰' }
+            ]
           })}
           <span class="memo-mgmt-actions">
             ${batchDelBtn()}
@@ -337,7 +409,7 @@ export const memoBoardView: PluginUIView = {
         .memo-select-trigger {
           display:flex; align-items:center; gap:6px;
           background: var(--ah-surface-3); border:none; border-radius:12px;
-          padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px;
+          padding:5.5px 14px; color: var(--ah-text); font:inherit; font-size:14px;
           outline:none; cursor:pointer; min-width:96px;
         }
         .memo-select-trigger-chevron { font-size:10px; color: var(--ah-text-muted); }
@@ -383,5 +455,5 @@ export const memoBoardView: PluginUIView = {
         .memo-del:hover { border-color: var(--ah-danger, #e05252); color: var(--ah-danger, #e05252); }
       </style>
     </div>`;
-  },
+  }
 };

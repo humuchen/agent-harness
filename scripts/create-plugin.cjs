@@ -114,17 +114,19 @@ fs.writeFileSync(
 );
 console.log('   ✅ tsconfig.json');
 
-// 生成 manifest.json
+// 生成 manifest.json（与 @agent-harness/core 的 PluginManifest 接口对齐，单一事实来源）
 console.log('\n📋 生成 manifest.json...');
 const manifest = {
   id: PLUGIN_NAME,
   name: PLUGIN_NAME.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
   version: '0.1.0',
   description: `插件描述 - 请修改为实际描述`,
-  author: 'your-name',
-  capabilities: ['chat', 'tools'],
-  requiresIsolation: true,
-  isolationLevel: 'os'
+  domain: 'generic',
+  transport: 'local',
+  entry: 'dist/index.js',
+  isolation: 'none',
+  // capabilities 用对象写法（{id}），与早期字符串写法经 normalizeManifest 自动兼容。
+  capabilities: [{ id: 'chat' }, { id: 'tools' }]
 };
 
 fs.writeFileSync(
@@ -137,11 +139,28 @@ console.log('   ✅ manifest.json');
 console.log('\n📝 生成源代码文件...');
 const indexTs = `/**
  * ${manifest.name} 插件主入口
+ *
+ * 以 PluginModule 形态导出（与 memo / customer-service / medical-aesthetics-lead 完全一致）：
+ * bootstrap 消费 default 或命名导出 plugin / 具名 manifest。
  */
+import type { PluginModule, PluginContext } from '@agent-harness/core';
+import { manifest } from './manifest';
+import { prompts } from './prompts';
+
+export const plugin: PluginModule = {
+  manifest,
+  async setup(ctx: PluginContext): Promise<void> {
+    // 在此注册工具 / 服务端扩展 / 前端视图 / 订阅事件。
+    ctx.logger.info('[${PLUGIN_NAME}] plugin setup');
+  },
+  async onStart(ctx: PluginContext): Promise<void> {
+    ctx.logger.info('[${PLUGIN_NAME}] plugin started');
+  },
+};
 
 export { manifest } from './manifest';
-export { runtime } from './runtime';
 export { prompts } from './prompts';
+export default plugin;
 
 // 工具注册
 export * as tools from './tools';
@@ -153,7 +172,7 @@ export * as services from './services';
 fs.writeFileSync(path.join(PLUGIN_DIR, 'src', 'index.ts'), indexTs);
 console.log('   ✅ src/index.ts');
 
-// 生成 manifest.ts
+// 生成 manifest.ts（与 @agent-harness/core PluginManifest 接口对齐）
 const manifestTs = `import type { PluginManifest } from '@agent-harness/core';
 
 export const manifest: PluginManifest = ${JSON.stringify(manifest, null, 2)};
@@ -161,28 +180,6 @@ export const manifest: PluginManifest = ${JSON.stringify(manifest, null, 2)};
 
 fs.writeFileSync(path.join(PLUGIN_DIR, 'src', 'manifest.ts'), manifestTs);
 console.log('   ✅ src/manifest.ts');
-
-// 生成 runtime.ts
-const runtimeTs = `import type { PluginRuntime } from '@agent-harness/core';
-
-export function createRuntime(): PluginRuntime {
-  return {
-    name: '${PLUGIN_NAME}',
-    version: '0.1.0',
-    init: async () => {
-      console.log('[${PLUGIN_NAME}] 插件初始化');
-    },
-    destroy: async () => {
-      console.log('[${PLUGIN_NAME}] 插件销毁');
-    },
-  };
-}
-
-export const runtime = createRuntime();
-`;
-
-fs.writeFileSync(path.join(PLUGIN_DIR, 'src', 'runtime.ts'), runtimeTs);
-console.log('   ✅ src/runtime.ts');
 
 // 生成 prompts.ts
 const promptsTs = `/**
@@ -285,20 +282,21 @@ const assert = require('node:assert');
 
 async function smoke() {
   console.log('🧪 运行 smoke 测试...');
-  
+
   // 导入插件
-  const { manifest, runtime } = require('./dist/index');
-  
-  // 验证 manifest
-  assert.ok(manifest.id, 'manifest.id 应存在');
+  const mod = require('./dist/index');
+
+  // 验证 manifest（与 PluginManifest 接口对齐）
+  const manifest = mod.manifest ?? mod.plugin?.manifest;
+  assert.ok(manifest && manifest.id, 'manifest.id 应存在');
   assert.ok(manifest.name, 'manifest.name 应存在');
   console.log('✅ manifest 验证通过');
-  
-  // 验证 runtime
-  assert.ok(runtime.init, 'runtime.init 应存在');
-  assert.ok(runtime.destroy, 'runtime.destroy 应存在');
-  console.log('✅ runtime 验证通过');
-  
+
+  // 验证 PluginModule 形态
+  const plugin = mod.plugin ?? mod.default;
+  assert.ok(plugin && typeof plugin.setup === 'function', 'plugin.setup 应存在');
+  console.log('✅ PluginModule 验证通过');
+
   console.log('\\n✅ Smoke 测试通过!');
 }
 

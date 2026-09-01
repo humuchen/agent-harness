@@ -55,7 +55,8 @@ import {
   features,
   buildPlannerPrompt,
   parsePlanOutput,
-  contextWindowFor
+  contextWindowFor,
+  enableTelemetryAutosave
 } from '@agent-harness/core';
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
 import {
@@ -117,6 +118,7 @@ import { buildOpenApiSpec } from './openapi';
 import { handleUpload, serveUploaded, type UploadMeta } from './upload';
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
+import { DEFAULTS } from './config-defaults';
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
 // 自定义模型 SQLite 持久化 + AES-GCM 解密
@@ -157,8 +159,9 @@ loadSecrets();
 setupAlerting();
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
-const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? 4173);
-const HOST = process.env.UI_HOST ?? '0.0.0.0';
+// 默认值统一来自 config-defaults.DEFAULTS（单一事实来源，消除与 schema 校验的漂移）。
+const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? (DEFAULTS.PORT as number));
+const HOST = process.env.UI_HOST ?? (DEFAULTS.UI_HOST as string);
 
 // 边缘路由表（公开/运维探针）：在鉴权守卫前分发，命中即短路。
 // deps 在首次需要时构造，getSandboxStatus 懒加载 core 的沙箱执行器，避免模块加载期副作用。
@@ -219,9 +222,9 @@ function googleRedirectUri(req: IncomingMessage): string {
 // 详见 authz.ts 的 createAuthorizer。新部署应显式设置 ADMIN_API_KEY，使「LLM 密钥」与「站点鉴权」职责分离。
 // 站点鉴权主链路由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
-const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || 'token').toLowerCase();
+const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || (DEFAULTS.AUTH_PROVIDER as string)).toLowerCase();
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
-const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? 'on').toLowerCase() !== 'off';
+const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? (DEFAULTS.ACCOUNT_AUTH as string)).toLowerCase() !== 'off';
 // 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS）。
 // 若以上均不满足：降级模式下 admin key（ADMIN_API_KEY 或回退 OPEN_API_KEY）仍可作唯一凭证，
 // 否则由账户密码档严格拒绝（无 cookie 即 401）。
@@ -232,17 +235,17 @@ const REQUIRE_AUTH =
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
-const UI_CORS_ORIGIN = (process.env.UI_CORS_ORIGIN || '')
+const UI_CORS_ORIGIN = (process.env.UI_CORS_ORIGIN ?? (DEFAULTS.UI_CORS_ORIGIN as string))
   .split(',')
-  .map((s) => s.trim())
+  .map((s: string) => s.trim())
   .filter(Boolean);
 // 请求体上限（字节），防大报文 DoS。默认 1MB。
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES ?? 1_048_576);
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number));
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
-const RATE_LIMIT = Number(process.env.RATE_LIMIT ?? 120);
-const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60_000);
+const RATE_LIMIT = Number(process.env.RATE_LIMIT ?? (DEFAULTS.RATE_LIMIT as number));
+const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? (DEFAULTS.RATE_WINDOW_MS as number));
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
-const AUDIT_LOG = process.env.AUDIT_LOG || '';
+const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
 // 业务策略装配（组合根）：RBAC 鉴权器 + 审批策略。二者均为可插拔接口实现，
 // 核心 framework 不感知任何角色/权限/审批概念。替换身份源或审批后端只需改这两个工厂。
@@ -3530,6 +3533,16 @@ async function bootstrap(): Promise<void> {
   // P2.c：引导注册全部预置行业合规画像（医疗等保 / 金融数据出境 / 教育放宽），使新建对应行业
   // 租户即自带合规基线（applyIndustryProfile 透明叠加）。幂等，不影响已在运行的租户策略。
   policyEngine.registerIndustryProfiles();
+
+  // P2：指标持久化（跨重启保留累计计数 / token / 成本 / 租户维度）。
+  // TELEMETRY_FILE 非空即启用自动落盘（定时 flush + 退出 flush）；默认关闭（'')，
+  // 以免测试 / 无状态环境产生意外 IO。Render 部署设置 TELEMETRY_FILE=/app/data/telemetry-metrics.json 即可。
+  const TELEMETRY_FILE = process.env.TELEMETRY_FILE ?? (DEFAULTS.TELEMETRY_FILE as string);
+  if (TELEMETRY_FILE) {
+    enableTelemetryAutosave(TELEMETRY_FILE);
+    structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
   server.listen(PORT, HOST, onListening);
 }
 

@@ -40,6 +40,7 @@ import {
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
 import { bridgeHarnessEvent } from './plugin-bootstrap';
+import { DEFAULTS } from './config-defaults';
 import path from 'node:path';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
@@ -128,9 +129,9 @@ export function getMemoryStore(): MemoryStore {
   const backend = (process.env.MEMORY_BACKEND || '').toLowerCase();
   if (backend === 'volatile') {
     _memoryStore = new VolatileMemoryStore();
-  } else if (backend === 'sqlite' || backend === '') {
+  } else   if (backend === 'sqlite' || backend === '') {
     const file = resolveDataPath(
-      process.env.MEMORY_SQLITE_FILE || './data/memory.db',
+      process.env.MEMORY_SQLITE_FILE || (DEFAULTS.MEMORY_SQLITE_FILE as string),
       'MEMORY_SQLITE_FILE'
     );
     try {
@@ -138,7 +139,7 @@ export function getMemoryStore(): MemoryStore {
       structLog('info', 'memory store', { backend: 'sqlite', file });
     } catch (e: any) {
       const dir = resolveDataPath(
-        process.env.MEMORY_DIR || './data/memory',
+        process.env.MEMORY_DIR || (DEFAULTS.MEMORY_DIR as string),
         'MEMORY_DIR'
       );
       _memoryStore = new FileMemoryStore({ dir });
@@ -149,7 +150,7 @@ export function getMemoryStore(): MemoryStore {
     }
   } else if (backend === 'file' || process.env.MEMORY_DIR) {
     const dir = resolveDataPath(
-      process.env.MEMORY_DIR || './data/memory',
+      process.env.MEMORY_DIR || (DEFAULTS.MEMORY_DIR as string),
       'MEMORY_DIR'
     );
     _memoryStore = new FileMemoryStore({ dir });

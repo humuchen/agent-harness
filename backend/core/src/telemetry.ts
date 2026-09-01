@@ -421,3 +421,106 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T
 export function bindOtelMeter(m: any): void {
   meter = m;
 }
+
+// ---------------------------------------------------------------------------
+// P2：指标持久化（跨重启保留累计计数 / token / 成本 / 租户维度）
+// ---------------------------------------------------------------------------
+// 采用零依赖 JSON 文件落盘（与 memory file 后端同源思路），默认 <APP_HOME||cwd>/data/telemetry-metrics.json。
+// 进程退出（SIGTERM/SIGINT）与定时（默认 30s）自动 flush；启动时 loadMetricsSnapshot 回填内存态。
+// 纯进程内单例场景下重启不丢累计指标，适配 Render 等无状态部署。
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
+let TELEMETRY_FILE: string | null = null;
+let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+
+function resolveTelemetryPath(p: string): string {
+  if (path.isAbsolute(p)) return p;
+  const base = process.env.APP_HOME || process.cwd();
+  return path.resolve(base, p);
+}
+
+/** 设置持久化文件路径；传 null 关闭持久化（默认关闭，避免无谓 IO）。 */
+export function setTelemetryFile(file: string | null): void {
+  TELEMETRY_FILE = file ? resolveTelemetryPath(file) : null;
+}
+
+/**
+ * 把快照写回内存态（启动时调用一次）。采用「覆盖」语义（非累计），
+ * 因为落盘快照本身已是累计值，重复累加会翻倍。
+ */
+export function restoreMetricsSnapshot(snap: MetricsSnapshot): void {
+  for (const k of Object.keys(COUNTERS)) delete COUNTERS[k];
+  Object.assign(COUNTERS, snap.counters ?? {});
+  for (const k of Object.keys(HISTS)) delete HISTS[k];
+  for (const [k, v] of Object.entries(snap.latency ?? {})) {
+    HISTS[k] = {
+      count: v.count,
+      sum: v.sumMs,
+      min: v.minMs === 0 ? Infinity : v.minMs,
+      max: v.maxMs === 0 ? -Infinity : v.maxMs,
+    };
+  }
+  TOKENS.prompt = snap.tokens?.prompt ?? 0;
+  TOKENS.completion = snap.tokens?.completion ?? 0;
+  TOKENS.total = snap.tokens?.total ?? 0;
+  COST = snap.cost ?? 0;
+  for (const k of Object.keys(COST_BY_MODEL)) delete COST_BY_MODEL[k];
+  Object.assign(COST_BY_MODEL, snap.costByModel ?? {});
+  BY_TENANT.clear();
+  for (const [id, m] of Object.entries(snap.byTenant ?? {})) {
+    BY_TENANT.set(id, {
+      counters: { ...m.counters },
+      hists: {},
+      tokens: { ...m.tokens },
+      cost: m.cost,
+      costByModel: { ...m.costByModel },
+    });
+  }
+}
+
+/** 启动时从文件回填（文件不存在 / 解析失败则静默跳过，不阻断启动）。 */
+export function loadMetricsSnapshot(): void {
+  if (!TELEMETRY_FILE) return;
+  try {
+    if (!existsSync(TELEMETRY_FILE)) return;
+    const raw = readFileSync(TELEMETRY_FILE, 'utf8');
+    const snap = JSON.parse(raw) as MetricsSnapshot;
+    restoreMetricsSnapshot(snap);
+    structLog('info', 'telemetry', { loaded: true, file: TELEMETRY_FILE });
+  } catch (e: any) {
+    structLog('warn', 'telemetry', { loaded: false, error: e?.message ?? String(e) });
+  }
+}
+
+/** 把当前快照原子写盘（先写 .tmp 再 rename，避免半截文件）。失败时静默。 */
+export function saveMetricsSnapshot(): void {
+  if (!TELEMETRY_FILE) return;
+  try {
+    const dir = path.dirname(TELEMETRY_FILE);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmp = `${TELEMETRY_FILE}.tmp`;
+    writeFileSync(tmp, JSON.stringify(getMetricsSnapshot()), 'utf8');
+    renameSync(tmp, TELEMETRY_FILE);
+  } catch (e: any) {
+    structLog('warn', 'telemetry', { saved: false, error: e?.message ?? String(e) });
+  }
+}
+
+/**
+ * 启用自动持久化：设置文件路径 + 定时 flush（unref，不阻止进程退出）+ 退出信号 flush。
+ * 仅由 server 启动时调用一次；幂等（重复调用先关闭旧定时器）。
+ * 注意：不注册 beforeExit，避免短命/测试子进程退出时落盘产生副作用；真实部署靠 SIGTERM/SIGINT 优雅退出 flush。
+ */
+export function enableTelemetryAutosave(file?: string, intervalMs = 30_000): void {
+  if (file) setTelemetryFile(file);
+  if (!TELEMETRY_FILE) return;
+  loadMetricsSnapshot();
+  if (autosaveTimer) clearInterval(autosaveTimer);
+  autosaveTimer = setInterval(() => saveMetricsSnapshot(), intervalMs);
+  // unref：不阻止 Node 事件循环自然退出（避免测试 / 短命进程挂起）。
+  (autosaveTimer as { unref?: () => void }).unref?.();
+  const flush = () => saveMetricsSnapshot();
+  process.once('SIGTERM', flush);
+  process.once('SIGINT', flush);
+}
