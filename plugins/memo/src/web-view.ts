@@ -80,13 +80,9 @@ function selectHtml(opts: {
       <li class="memo-select-option ${
         i.value === opts.value ? 'memo-select-option-selected' : ''
       }"
-          data-value="${esc(i.value)}" onclick="document.getElementById('${
-        opts.id
-      }').value='${esc(
-        i.value
-      )}';this.dispatchEvent(new Event('change',{bubbles:true}))">${esc(
+          data-value="${esc(i.value)}" onclick="var s=document.getElementById('${opts.id}');s.value='${esc(i.value)}';s.dispatchEvent(new Event('change',{bubbles:true}));var m=this.closest('.memo-select-menu');m.style.display='none';"><span class="memo-select-option-icon">${esc(
         i.icon ?? '•'
-      )} ${esc(i.label)}</li>`
+      )}</span> ${esc(i.label)}</li>`
     )
     .join('');
   return `
@@ -103,7 +99,7 @@ function selectHtml(opts: {
     .join('')}</select>
       <button type="button" class="memo-select-trigger" id="${
         opts.id
-      }-trigger" onclick="var m=this.nextElementSibling;m.style.display=m.style.display==='block'?'none':'block';"><span class="memo-select-trigger-icon">${esc(
+      }-trigger" onclick="var w=this.closest('.memo-select-wrap');var m=w.querySelector('.memo-select-menu');m.style.display=m.style.display==='block'?'none':'block';"><span class="memo-select-trigger-icon">${esc(
     selected.icon ?? '•'
   )}</span><span class="memo-select-trigger-label">${esc(
     selected.label
@@ -404,31 +400,38 @@ export const memoBoardView: PluginUIView = {
         .memo-search { flex:1 1 220px; min-width:160px; background: var(--ah-surface-3); border:none; border-radius:12px; padding:9px 14px; color: var(--ah-text); font:inherit; font-size:14px; outline:none; }
         .memo-search:focus { border:2px solid var(--ah-accent); border-radius:10px; }
         .memo-search::placeholder { color: var(--ah-text-muted); }
-        /* 聊天风格自定义下拉 */
-        .memo-select-wrap { position:relative; display:inline-block; }
+        /* 聊天风格自定义下拉 —— trigger + menu 保持视觉一致 */
+        .memo-select-wrap { position:relative; display:inline-block; flex:0 0 auto; }
         .memo-select-trigger {
           display:flex; align-items:center; gap:6px;
-          background: var(--ah-surface-3); border:none; border-radius:12px;
-          padding:5.5px 14px; color: var(--ah-text); font:inherit; font-size:14px;
-          outline:none; cursor:pointer; min-width:96px;
+          background: var(--ah-surface-2); border:1px solid var(--ah-border); border-radius:10px;
+          padding:6px 12px; color: var(--ah-text); font:inherit; font-size:13px;
+          outline:none; cursor:pointer; min-width:100px; height:34px; box-sizing:border-box;
         }
-        .memo-select-trigger-chevron { font-size:10px; color: var(--ah-text-muted); }
-        .memo-select-trigger:focus { border:2px solid var(--ah-accent); border-radius:10px; }
-        .memo-select-trigger-icon { font-size:13px; }
+        .memo-select-trigger:hover { background: var(--ah-surface-3); }
+        .memo-select-trigger:focus { border-color: var(--ah-accent); box-shadow:0 0 0 2px var(--ah-accent-alpha, rgba(41,151,255,.3)); }
+        .memo-select-trigger-icon { font-size:14px; line-height:1; }
+        .memo-select-trigger-chevron { font-size:11px; color: var(--ah-text-muted); margin-left:2px; opacity:0.6; }
         .memo-select-menu {
-          position:absolute; top:100%; left:0; z-index:100;
-          min-width:120px; margin-top:4px;
+          position:absolute; top:100%; left:0; z-index:1000;
+          min-width:120px; max-width:200px; width:100%;
+          margin-top:4px;
           background: var(--ah-surface-1); border:1px solid var(--ah-border);
-          border-radius:12px; box-shadow:0 4px 16px rgba(0,0,0,0.3);
+          border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,0.3);
           padding:4px 0; list-style:none; margin:0;
+          box-sizing:border-box;
         }
         .memo-select-option {
           display:flex; align-items:center; gap:8px;
-          padding:9px 14px; cursor:pointer; font:inherit; font-size:14px; color: var(--ah-text);
+          padding:8px 12px; cursor:pointer; font:inherit; font-size:13px; color: var(--ah-text);
+          border-radius:6px; margin:0 4px;
         }
-        .memo-select-option:hover { background: var(--ah-surface-3); }
-        .memo-select-option-selected { background: var(--ah-accent); color:#fff; font-weight:600; }
-        .memo-select-option-selected::after { content:'✓'; margin-left:auto; }
+        .memo-select-option:hover { background: var(--ah-surface-2); }
+        .memo-select-option-selected {
+          background: var(--ah-accent); color:#fff; font-weight:600;
+        }
+        .memo-select-option-selected .memo-select-option-icon { color:#fff; }
+        .memo-select-option-selected::after { content:'✓'; margin-left:auto; color:#fff; }
         .memo-mgmt-actions { display:flex; gap:8px; }
         .memo-batch-del { font:inherit; font-size:12px; padding:6px 14px; border-radius:8px; border:1px solid var(--ah-border); background:transparent; color: var(--ah-danger, #e05252); cursor:pointer; }
         .memo-batch-del:hover { border-color: var(--ah-danger, #e05252); background: var(--ah-danger-alpha, rgba(224,82,82,.12)); }

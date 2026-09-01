@@ -28,7 +28,7 @@ describe('uploadFileToApi', () => {
     expect(r.ok).toBe(true);
     expect(r.url).toBe('https://cdn.example/a.png');
     // 追加为 multipart/form-data，字段名 file
-    const call = (authedFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const call = (authedFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(call[0]).toBe('/api/upload');
     expect(call[1].method).toBe('POST');
     expect(call[1].body).toBeInstanceOf(FormData);

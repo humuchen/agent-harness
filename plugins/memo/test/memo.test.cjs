@@ -713,6 +713,24 @@ test('全选 checkbox：使用 onchange 而非 onclick，避免 this 绑定丢�
   assert.ok(!onchangeJs.includes('&lt;'), '全选 JS 不应含 < 运算符（经 esc 转义为 &lt;）');
 });
 
+test('下拉菜单：点击选项应正确设置 hidden select value 并触发 change 事件', async () => {
+  freshDataDir();
+  const store = require('../dist/store.js');
+  await store.saveNote(alice.sub, '条目 A', 'work');
+  await store.saveNote(alice.sub, '条目 B', 'life');
+
+  const html = await plugin.memoBoardView.render(alice);
+  // 选项的 onclick 应：1) 设置 hidden select value，2) 在 select 上 dispatch change，3) 关闭菜单
+  const optionMatch = html.match(/memo-select-option[^>]*onclick="([^"]*)"/);
+  assert.ok(optionMatch, '应含下拉选项 onclick');
+  const onclickJs = optionMatch[1];
+  // 应在 hidden select 上 dispatch change，不是在 li(this) 上
+  assert.ok(onclickJs.includes('s.dispatchEvent(new Event'), '选项点击应在 select 上派发 change 事件');
+  // 应关闭菜单（closest('.memo-select-menu') + style.display='none'）
+  assert.ok(onclickJs.includes('.memo-select-menu'), '选项点击应关闭菜单');
+  assert.ok(onclickJs.includes("display='none'"), '菜单应被隐藏');
+});
+
 test('数据管理：searchNotes 支持 sort（newest/oldest/remind）', async () => {
   freshDataDir();
   const store = require('../dist/store.js');

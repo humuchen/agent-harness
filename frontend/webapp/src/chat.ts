@@ -25,6 +25,18 @@ import {
   renderInsights
 } from './chat-trace';
 import { toRichHtml, escapeHtml } from './utils/markdown';
+// 上下文用量圆环（已抽离到 chat-context-usage.ts，降低 chat.ts 单体规模）。
+import { renderCtxRing, selectContextUsage } from './chat-context-usage';
+// 聊天界面本地视图类型（已拆出到 chat-types.ts，降低 chat.ts 单体规模）。
+import type {
+  ToolView,
+  PlanTaskView,
+  ExecutionPlanView,
+  PlanExecState,
+  ChatMsg,
+  SessionView,
+  TraceCtx
+} from './chat-types';
 import {
   sanitizeMessages,
   mergeThreadHistories,
@@ -53,76 +65,6 @@ import './components/model-picker';
 import './components/mode-picker';
 import './components/agent-picker';
 
-/* ------------------------------ 类型 ------------------------------ */
-
-interface ToolView {
-  name: string;
-  args: string;
-  result?: string;
-  errored?: boolean;
-}
-
-/** 计划模式（P0）：计划任务 / 计划实体（与 core ExecutionPlan 契约一致，前端本地视图类型）。 */
-interface PlanTaskView {
-  id: string;
-  title: string;
-  steps: string[];
-  dependsOn: string[];
-  expectedOutput: string;
-}
-interface ExecutionPlanView {
-  goal: string;
-  tasks: PlanTaskView[];
-}
-/** 计划执行状态（key 为携带计划的消息 id）。 */
-interface PlanExecState {
-  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
-  /** 正在执行的任务 id（running 时有效）。 */
-  currentTaskId?: string;
-  /** 失败的任务 id（failed 时有效）：恢复执行时从此任务重跑，已完成任务跳过。 */
-  failedTaskId?: string;
-  /** 已完成任务 id 集合。 */
-  done: Record<string, boolean>;
-}
-
-interface ChatMsg {
-  id: number;
-  role: 'user' | 'assistant';
-  content: string;
-  /** 推理过程（思考折叠块），仅推理模型有。 */
-  reasoning?: string;
-  /** 工具调用卡片列表。 */
-  tools?: ToolView[];
-  /** 调用链路追踪树：把本回合的 LLM↔工具↔检索 调用过程结构化记录，供深度思考界面可视化。 */
-  trace?: TraceNode[];
-  /** 错误态：以警示样式渲染。 */
-  error?: boolean;
-  /** 本次消息携带的附件（图片/文件预览）。 */
-  attachments?: UploadedFile[];
-  /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
-  plan?: ExecutionPlanView;
-}
-
-interface SessionView {
-  id: string;
-  title: string;
-  updatedAt: number;
-  /** 交互模式（问答/计划），按会话持久化，供跨设备对齐。 */
-  interactionMode?: 'qa' | 'plan';
-  /** 选中的模型标识，按会话持久化，供跨设备对齐。 */
-  model?: string;
-  /** 定向业务 agent id，按会话持久化，供跨设备对齐。 */
-  agentId?: string;
-}
-
-/** 调用链路追踪树的瞬态构建上下文（每会话独立，支持多个会话并发流式互不干扰）。 */
-interface TraceCtx {
-  root: TraceNode | null;
-  parent: TraceNode | null;
-  llm: TraceNode | null;
-  lastTool: TraceNode | null;
-  seq: number;
-}
 
 /* ------------------------------ Chat ------------------------------ */
 
@@ -214,14 +156,6 @@ export class AhChat extends LitElement {
    *  0 = 无数据（默认模型 / 自定义模型），「上下文用量」圆环据此隐藏。 */
   private serverCtxWindow = 0;
 
-  /**
-   * 是否隐藏「上下文用量」圆环：只有选中「有官方 context_length 的模型」才展示。
-   * 默认模型（窗口未知）与自定义模型（无官方数据）一律隐藏 —— 分母不存在，
-   * 百分比无意义。serverCtxWindow 仅由 model-change 携带的官方 ctx 写入。
-   */
-  private hideCtxRing(): boolean {
-    return this.serverCtxWindow <= 0;
-  }
 
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
@@ -1104,271 +1038,6 @@ export class AhChat extends LitElement {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }
 
-  /**
-   * 估算当前线程占用模型上下文窗口的比例，按维度拆分（参考宿主「上下文用量」浮层）。
-   * 数据来自当前消息缓冲（对话内容 / 推理 / 工具调用 / 附件），系统提示词与 MCP / 技能为基线粗估。
-   * 注意：这是前端基于字符数的粗估（≈ 字符/3），仅用于趋势提示，并非后端精确 token 计数。
-   */
-  private contextUsage(): {
-    totalPct: number;
-    totalTokens: number;
-    window: number;
-    items: {
-      key: string;
-      label: string;
-      tokens: number;
-      pct: number;
-      cls: string;
-    }[];
-  } {
-    // 分母：仅使用已知的真实窗口（服务端默认模型 → /api/state 下发；具体模型 →
-    // 模型目录官方 context_length）。不再写死 128K 兜底 —— 拿不到窗口数据时
-    // hideCtxRing() 已把整个圆环隐藏，本方法不会被调用。
-    if (this.serverCtxWindow <= 0) {
-      return { totalPct: 0, totalTokens: 0, window: 0, items: [] };
-    }
-    const WINDOW = this.serverCtxWindow;
-    const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
-    const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
-    const SKILL_BASE = 80; // 技能基线
-    const tok = (s?: string) => (s ? Math.ceil([...s].length / 3) : 0);
-    let msgTokens = 0;
-    let toolTokens = 0;
-    for (const m of this.messages) {
-      msgTokens += tok(m.content) + tok(m.reasoning);
-      for (const a of m.attachments ?? []) msgTokens += 1200; // 每图约 1.2K token
-      for (const t of m.tools ?? []) toolTokens += tok(t.args) + tok(t.result);
-    }
-    const items = [
-      {
-        key: 'sys',
-        label: 'System Prompt',
-        tokens: SYS_BASE,
-        cls: 'c-sys',
-        pct: 0
-      },
-      {
-        key: 'tools',
-        label: 'Tools',
-        tokens: toolTokens,
-        cls: 'c-tools',
-        pct: 0
-      },
-      {
-        key: 'msg',
-        label: 'Conversation',
-        tokens: msgTokens,
-        cls: 'c-msg',
-        pct: 0
-      },
-      {
-        key: 'mcp',
-        label: 'MCP',
-        tokens: MCP_BASE,
-        cls: 'c-mcp',
-        pct: 0
-      },
-      {
-        key: 'skill',
-        label: 'Skills',
-        tokens: SKILL_BASE,
-        cls: 'c-skill',
-        pct: 0
-      }
-    ];
-    const totalTokens = items.reduce((s, it) => s + it.tokens, 0);
-    const totalPct = Math.min(100, (totalTokens / WINDOW) * 100);
-    for (const it of items) it.pct = (it.tokens / WINDOW) * 100;
-    return { totalPct, totalTokens, window: WINDOW, items };
-  }
-
-  /**
-   /** 返回「上下文用量」浮层当前应展示的数据：优先用后端精确计数（llm:usage），
-    * 未拿到后端数据（如 mock 模式、首屏）时回退到前端基于消息缓冲的粗估（contextUsage()）。
-    * 两种来源统一成相同结构，渲染层无需关心数据出处。
-    *
-    * 窗口占用口径：totalTokens 取 promptTokens（仅输入，不含模型当轮输出 completion），
-    * 因为下一轮上下文只由输入构成；`totalTokens`（含 output）另用于「累计消耗」展示。
-    */
-  private displayContextUsage(): {
-    totalPct: number;
-    totalTokens: number;
-    window: number;
-    items: {
-      key: string;
-      label: string;
-      tokens: number;
-      pct: number;
-      cls: string;
-    }[];
-  } {
-    const u = this.backendUsage;
-    if (u) {
-      const items = [
-        {
-          key: 'sys',
-          label: 'System Prompt',
-          tokens: u.breakdown.system,
-          cls: 'c-sys',
-          pct: 0
-        },
-        {
-          key: 'tools',
-          label: 'Tools',
-          tokens: u.breakdown.tools,
-          cls: 'c-tools',
-          pct: 0
-        },
-        {
-          key: 'msg',
-          label: 'Conversation',
-          tokens: u.breakdown.messages,
-          cls: 'c-msg',
-          pct: 0
-        },
-        {
-          key: 'mcp',
-          label: 'MCP',
-          tokens: u.breakdown.mcp,
-          cls: 'c-mcp',
-          pct: 0
-        },
-        {
-          key: 'skill',
-          label: 'Skills',
-          tokens: u.breakdown.skills,
-          cls: 'c-skill',
-          pct: 0
-        }
-      ];
-      // 窗口占用只算输入（promptTokens），不含当轮输出 completion。
-      const totalTokens = u.promptTokens;
-      const totalPct = Math.min(100, (totalTokens / u.window) * 100);
-      for (const it of items) it.pct = (it.tokens / u.window) * 100;
-      return { totalPct, totalTokens, window: u.window, items };
-    }
-    // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，
-    // 回退到前端基于消息缓冲的粗估，避免递归调用自身导致栈溢出。
-    return this.contextUsage();
-  }
-
-  /** token 数缩写：78700 → "78.7K"（hover 提示 / 弹层用）。 */
-  private fmtK(n: number): string {
-    return `${(n / 1000).toFixed(1)}K`;
-  }
-
-  /**
-   * 上下文用量圆环（环形进度条）：置于输入框发送按钮旁。
-   * - 悬停：显示「上下文已使用：xx.x% - 用量/总量」提示；
-   * - 点击：切换分类占比弹层（显示逻辑与原头部按钮一致）；
-   * - >80% 时进度环转警示红。
-   */
-  private renderCtxRing() {
-    const u = this.displayContextUsage();
-    const pct = Math.min(100, u.totalPct);
-    const R = 15.5;
-    const C = 2 * Math.PI * R;
-    const offset = C * (1 - pct / 100);
-    return html`
-      <div class="ctx-ring-wrap">
-        <button
-          class="ctx-ring"
-          aria-label="上下文用量"
-          @click=${() => (this.showCtxUsage = !this.showCtxUsage)}
-        >
-          <svg viewBox="0 0 36 36" role="img" aria-hidden="true">
-            <circle
-              class="ring-bg"
-              cx="18"
-              cy="18"
-              r=${R}
-              stroke-width="3"
-            ></circle>
-            <circle
-              class="ring-fg ${pct > 80 ? 'warn' : ''}"
-              cx="18"
-              cy="18"
-              r=${R}
-              stroke-width="3"
-              stroke-dasharray=${C.toFixed(2)}
-              stroke-dashoffset=${offset.toFixed(2)}
-              transform="rotate(-90 18 18)"
-            ></circle>
-            <text
-              class="ring-num"
-              x="18"
-              y="18"
-              text-anchor="middle"
-              dominant-baseline="central"
-            >
-              ${Math.round(pct)}%
-            </text>
-          </svg>
-        </button>
-        <span class="ctx-tip"
-          >上下文已使用：${pct.toFixed(1)}% -
-          ${this.fmtK(u.totalTokens)}/${this.fmtK(u.window)}</span
-        >
-        ${this.showCtxUsage
-          ? html`<button
-                class="ctx-scrim"
-                aria-label="关闭上下文用量"
-                @click=${() => (this.showCtxUsage = false)}
-              ></button>
-              <div class="ctx-pop">
-                <div class="ctx-pop-head">
-                  <span>上下文用量</span>
-                  <button
-                    class="ctx-pop-close"
-                    title="关闭"
-                    aria-label="关闭"
-                    @click=${() => (this.showCtxUsage = false)}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div class="ctx-bar-meta">
-                  <span class="ctx-bar-pct">${u.totalPct.toFixed(1)}%</span>
-                  <span class="ctx-bar-total">
-                    已使用 ${this.fmtK(u.totalTokens)} /
-                    ${this.fmtK(u.window)}</span
-                  >
-                </div>
-                <div class="ctx-seg">
-                  ${u.items.map(
-                    (it) => html`<span
-                      class="ctx-seg-i ${it.cls}"
-                      style="width:${it.pct}%"
-                      title="${it.label} ${it.pct.toFixed(1)}%"
-                    ></span>`
-                  )}
-                </div>
-                <ul class="ctx-list">
-                  ${u.items.map(
-                    (it) => html`<li>
-                      <span class="ctx-dot ${it.cls}"></span>
-                      <span class="ctx-label">${it.label}</span>
-                      <span class="ctx-val">${it.pct.toFixed(1)}%</span>
-                    </li>`
-                  )}
-                  ${this.runCumulative
-                    ? html`<li class="ctx-cum">
-                        <span class="ctx-dot c-cum"></span>
-                        <span class="ctx-label">本运行累计</span>
-                        <span class="ctx-val"
-                          >${this.fmtK(this.runCumulative.tokens)} ·
-                          ${this.runCumulative.cost > 0
-                            ? `$${this.runCumulative.cost.toFixed(4)}`
-                            : '免费'}</span
-                        >
-                      </li>`
-                    : nothing}
-                </ul>
-              </div>`
-          : nothing}
-      </div>
-    `;
-  }
 
   /**
    * 深度思考区流式（打字机）输出时，若内容已撑满 180px 上限，
@@ -4084,7 +3753,20 @@ export class AhChat extends LitElement {
                     this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
                   }}
                 ></ah-model-picker>
-                ${this.hideCtxRing() ? nothing : this.renderCtxRing()}
+                ${this.serverCtxWindow <= 0
+                  ? nothing
+                  : renderCtxRing({
+                      usage: selectContextUsage({
+                        backendUsage: this.backendUsage,
+                        serverCtxWindow: this.serverCtxWindow,
+                        messages: this.messages,
+                      }),
+                      showCtxUsage: this.showCtxUsage,
+                      runCumulative: this.runCumulative,
+                      onToggle: () =>
+                        (this.showCtxUsage = !this.showCtxUsage),
+                      onClose: () => (this.showCtxUsage = false),
+                    })}
                 ${this.streaming[this.activeId] === true
                   ? html`<button
                       class="send"
