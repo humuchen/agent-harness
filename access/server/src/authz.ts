@@ -46,6 +46,7 @@ export type Action =
   | 'recipe:read'
   | 'policy:read'
   | 'approvals:review'
+  | 'approvals:read'
   | 'agent:read'
   | 'agent:register'
   | 'workflow:run'
@@ -127,9 +128,10 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'eval:run',
     'recipe:save',
     'recipe:read',
-    'policy:read',
-    'approvals:review',
-    'agent:read',
+  'policy:read',
+  'approvals:review',
+  'approvals:read',
+  'agent:read',
     'agent:register',
     'workflow:run',
     'workflow:read',
@@ -163,6 +165,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'recipe:save',
     'recipe:read',
     'policy:read',
+    'approvals:read',
     'agent:read',
     'agent:register',
     'workflow:run',

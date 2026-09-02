@@ -6,14 +6,17 @@ export function renderSandboxChip(s: NonNullable<ServerState['sandbox']>) {
     ['namespaces', 'NS'],
     ['seccomp', 'seccomp'],
     ['resourceLimits', 'RL'],
-    ['capabilities', 'caps'],
+    ['capabilities', 'caps']
   ] as const;
   const active = pills.filter(([k]) => s.active[k]).map(([, l]) => l);
   const inactive = pills.filter(([k]) => !s.active[k]).map(([, l]) => l);
   const icon = s.supported ? '🛡' : '⚠️';
-  const body = s.backend === 'os-fallback-local'
-    ? `硬化本地（${inactive.join('/') || '无 OS 原语'}）${s.reason ? ` — ${s.reason}` : ''}`
-    : `${s.backend} (${active.join('/')})`;
+  const body =
+    s.backend === 'os-fallback-local'
+      ? `硬化本地（${inactive.join('/') || '无 OS 原语'}）${
+          s.reason ? ` — ${s.reason}` : ''
+        }`
+      : `${s.backend} (${active.join('/')})`;
   return html`<span class="pill sandbox" title="${body}">${icon} 沙箱</span>`;
 }
 import { LitElement, html, nothing } from 'lit';
@@ -93,7 +96,9 @@ export class AhDashboard extends LitElement {
         client.getState(),
         client.getMetrics() as Promise<Metrics>,
         client.getJobs() as Promise<JobsView>,
-        client.listApprovals('pending').catch(() => ({ tickets: [] as ApprovalTicket[] })),
+        client
+          .listApprovals('pending')
+          .catch(() => ({ tickets: [] as ApprovalTicket[] }))
       ]);
       this.state = s;
       this.metrics = m;
@@ -107,7 +112,9 @@ export class AhDashboard extends LitElement {
   }
 
   private goto(tab: string) {
-    this.dispatchEvent(new CustomEvent('ah-goto', { detail: tab, bubbles: true, composed: true }));
+    this.dispatchEvent(
+      new CustomEvent('ah-goto', { detail: tab, bubbles: true, composed: true })
+    );
   }
 
   render() {
@@ -128,35 +135,74 @@ export class AhDashboard extends LitElement {
         <div class="hero">
           <h2>Agent Harness 控制台</h2>
           <div class="hero-sub">
-              ${s?.openrouter ? 'LLM 实时模式' : 'LLM 离线 Mock 模式'} ·
-              模型 ${s?.model ?? '—'} ·
-              记忆后端 ${m ? (m as any).memory?.backend ?? '—' : '—'} ·
-              ${s?.sandbox
-                ? html`沙箱 <b>${s.sandbox.backend}</b>${s.sandbox.supported ? '（' + Object.entries(s.sandbox.active).filter(([, v]) => v).map(([k]) => k).join('/') + '）' : ' — ' + s.sandbox.reason}`
-                : '沙箱：硬化本地（无 OS 级隔离）'}
-            </div>
+            记忆后端 ${m ? (m as any).memory?.backend ?? '—' : '—'} ·
+            ${s?.sandbox
+              ? html`沙箱 <b>${s.sandbox.backend}</b>${s.sandbox.supported
+                    ? '（' +
+                      Object.entries(s.sandbox.active)
+                        .filter(([, v]) => v)
+                        .map(([k]) => k)
+                        .join('/') +
+                      '）'
+                    : ' — ' + s.sandbox.reason}`
+              : '沙箱：硬化本地（无 OS 级隔离）'}
+          </div>
           <div class="hero-stats">
-            <div class="hero-stat"><div class="v">${fmtUptime(m?.uptimeMs ?? 0)}</div><div class="k">运行时长</div></div>
-            <div class="hero-stat"><div class="v">${j?.queue.jobs ?? 0}</div><div class="k">累计任务</div></div>
-            <div class="hero-stat"><div class="v accent">${running}</div><div class="k">运行中</div></div>
-            <div class="hero-stat"><div class="v warn">${queued}</div><div class="k">排队中</div></div>
-            <div class="hero-stat"><div class="v">${envCount}</div><div class="k">环境数</div></div>
+            <div class="hero-stat">
+              <div class="v">${fmtUptime(m?.uptimeMs ?? 0)}</div>
+              <div class="k">运行时长</div>
+            </div>
+            <div class="hero-stat">
+              <div class="v">${j?.queue.jobs ?? 0}</div>
+              <div class="k">累计任务</div>
+            </div>
+            <div class="hero-stat">
+              <div class="v accent">${running}</div>
+              <div class="k">运行中</div>
+            </div>
+            <div class="hero-stat">
+              <div class="v warn">${queued}</div>
+              <div class="k">排队中</div>
+            </div>
+            <div class="hero-stat">
+              <div class="v">${envCount}</div>
+              <div class="k">环境数</div>
+            </div>
           </div>
         </div>
 
         <div class="cards">
-          <div class="kpi"><div class="v accent">${running}</div><div class="k">运行任务</div></div>
-          <div class="kpi"><div class="v">${envCount}</div><div class="k">就绪环境</div></div>
-          <div class="kpi"><div class="v">${mcpCount}</div><div class="k">已接入 MCP</div></div>
-          <div class="kpi"><div class="v ${this.pending.length ? 'warn' : 'ok'}">${this.pending.length}</div><div class="k">待审工单</div></div>
-          <div class="kpi"><div class="v">${cost}</div><div class="k">累计花费</div></div>
+          <div class="kpi">
+            <div class="v accent">${running}</div>
+            <div class="k">运行任务</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${envCount}</div>
+            <div class="k">就绪环境</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${mcpCount}</div>
+            <div class="k">已接入 MCP</div>
+          </div>
+          <div class="kpi">
+            <div class="v ${this.pending.length ? 'warn' : 'ok'}">
+              ${this.pending.length}
+            </div>
+            <div class="k">待审工单</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${cost}</div>
+            <div class="k">累计花费</div>
+          </div>
         </div>
 
         <div class="two">
           <section>
             <div class="row-between">
               <div class="section-title">实时活动</div>
-              <button class="link" @click=${() => this.goto('observability')}>查看队列 →</button>
+              <button class="link" @click=${() => this.goto('observability')}>
+                查看队列 →
+              </button>
             </div>
             <ul class="list">
               ${(j?.jobs ?? []).slice(0, 6).map(
@@ -164,18 +210,24 @@ export class AhDashboard extends LitElement {
                   <li>
                     <span class="meta">${job.id}</span>
                     <span class="pill ${job.status}">${job.status}</span>
-                    <span class="muted-sm">· ${job.mode} · ${fmtAge(job.enqueuedAt)}前</span>
+                    <span class="muted-sm"
+                      >· ${job.mode} · ${fmtAge(job.enqueuedAt)}前</span
+                    >
                   </li>
                 `
               )}
-              ${(j?.jobs ?? []).length === 0 ? html`<li class="muted">暂无任务</li>` : nothing}
+              ${(j?.jobs ?? []).length === 0
+                ? html`<li class="muted">暂无任务</li>`
+                : nothing}
             </ul>
           </section>
 
           <section>
             <div class="row-between">
               <div class="section-title">最近环境</div>
-              <button class="link" @click=${() => this.goto('env')}>管理环境 →</button>
+              <button class="link" @click=${() => this.goto('env')}>
+                管理环境 →
+              </button>
             </div>
             <ul class="list">
               ${(s?.envs ?? []).slice(0, 4).map(
@@ -183,11 +235,15 @@ export class AhDashboard extends LitElement {
                   <li>
                     <b>${e.envId}</b>
                     <span class="pill ${e.status}">${e.status}</span><br />
-                    <span class="muted-sm">${e.branch ?? '—'}${e.owner ? ' · ' + e.owner : ''}</span>
+                    <span class="muted-sm"
+                      >${e.branch ?? '—'}${e.owner ? ' · ' + e.owner : ''}</span
+                    >
                   </li>
                 `
               )}
-              ${(s?.envs ?? []).length === 0 ? html`<li class="muted">暂无环境</li>` : nothing}
+              ${(s?.envs ?? []).length === 0
+                ? html`<li class="muted">暂无环境</li>`
+                : nothing}
             </ul>
           </section>
         </div>

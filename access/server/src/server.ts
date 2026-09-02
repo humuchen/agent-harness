@@ -1324,9 +1324,9 @@ const server = createServer(
         return sendJson(res, authorizer.describe(), req);
       }
       if (path === '/api/approvals') {
-        // 审批工单列表（admin / 审批人角色可读）。
+        // 审批工单列表（admin / operator 可读：operator 会发起需审批动作，应能看到工单状态）。
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const status = url.searchParams.get('status');
           return sendJson(
@@ -1344,10 +1344,10 @@ const server = createServer(
         return;
       }
       if (path.startsWith('/api/approvals/')) {
-        // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
+        // 单张工单：GET 查看状态（admin / operator 可读）；POST 审批人裁决（approve/reject，仅 admin）。
         const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const t = (await approvalPolicy.list()).find((x: ApprovalTicket) => x.id === id);
           return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
