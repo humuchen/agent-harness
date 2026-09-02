@@ -1,0 +1,76 @@
+# EKS 专属 overlay：在 base（deploy/k8s 各清单）之上叠加 EKS 环境加固。
+#
+# 应用：
+#   kubectl apply -k deploy/k8s/overlays/eks
+#
+# 覆盖内容（对应 Request 4 的待办项）：
+#   P2-prod  自签名 → Let's Encrypt（clusterissuer-letsencrypt.yaml + ingress-issuer 切换）
+#   P3       镜像供应链 → imagePullSecrets: regcred（deployment-regcred.yaml，regcred 须先建）
+#   R4       服务端 RAG 接线 → MA_RAG_BASE_URL 注入（configmap-rag.yaml；令牌 MA_RAG_TOKEN 走 Secret）
+#   R6       域名可注入 → deploy-config.yaml 的 host 经 replacements 写进 Ingress（OAuth 回调/HTTPS）
+#   R7       OTel    → 注入 OTLP 端点（configmap-otel.yaml，指向 env-platform 的 Collector）
+#   R8       FinOps  → 成本归属标签（labels）
+#   R3       出网    → 可选 egress NetworkPolicy 模板（networkpolicy-egress.yaml，需 CNI 支持）
+#
+# 说明：base 以「目录型 kustomization」(../../) 引入。kubectl 内置 kustomize v5
+# 默认 LoadRestrictionsRootOnly，禁止 resources 直接引用父目录的「文件」
+# (../../*.yaml)，所以只能引目录（子 kustomization）——这正是 base 的形态。
+# patches 用显式 target(kind+name) 匹配 base 内的资源，避免「find unique target」歧义。
+#
+# 前置：
+#   1. harness-env-platform 已 apply（ingress-nginx + cert-manager + efs-sc 就绪）；
+#   2. 把 deploy-config.yaml 的 host 换成真实域名（OAuth 回调 / Let's Encrypt HTTP-01 都依赖它）；
+#   3. 用 regcred.yaml.example 的命令创建 regcred（私有/ECR 源才需要）；
+#   4. Secret agent-harness 须设 RAG_API_TOKEN 与 MA_RAG_TOKEN（两值相同）才能接通 RAG。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agent-harness
+
+resources:
+  - ../../base                     # base 子 kustomization（含 namespace/configmap/secret/deployment/service/ingress/hpa/redis/pvc）
+  - clusterissuer-letsencrypt.yaml
+  - deploy-config.yaml             # R6：对外域名（replacements 源）
+  # 可选：启用出网 NetworkPolicy（需支持 NetworkPolicy 的 CNI，否则被忽略）
+  # - networkpolicy-egress.yaml
+
+patches:
+  - path: ingress-issuer.yaml
+    target:
+      kind: Ingress
+      name: agent-harness
+  - path: deployment-regcred.yaml
+    target:
+      kind: Deployment
+      name: agent-harness
+  - path: configmap-otel.yaml
+    target:
+      kind: ConfigMap
+      name: agent-harness
+  - path: configmap-rag.yaml
+    target:
+      kind: ConfigMap
+      name: agent-harness
+
+# R6：把 deploy-config ConfigMap 的 host 写进 Ingress 的 rules host 与 tls hosts。
+# 改域名只动 deploy-config.yaml 一处，无需改 base ingress.yaml。
+replacements:
+  - source:
+      kind: ConfigMap
+      name: agent-harness-deploy-config
+      fieldPath: data.host
+    targets:
+      - select:
+          kind: Ingress
+          name: agent-harness
+        fieldPaths:
+          - spec.rules.0.host
+          - spec.tls.0.hosts.0
+
+# R8 FinOps：成本归属标签（AWS Cost Explorer 侧也需在集群打同样 tag 才能对账）
+# 注：kubectl 内置 kustomize 仍用 commonLabels（labels 数组 schema 尚未支持），保留之。
+commonLabels:
+  finops.cost-center: cc-0001
+  finops.owner: platform-team
+  finops.env: eks
+  app.kubernetes.io/part-of: agent-harness

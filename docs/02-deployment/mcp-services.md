@@ -1,0 +1,126 @@
+# 可直接通过 URL 访问的远程 MCP 服务清单
+
+> 适用对象：本仓库的 agent-harness（`backend/core` + `access/server`）。
+> 你的 harness 已支持远程 MCP：通过 `serverUrl` 连接，传输方式自动判定
+> （URL 以 `/sse` 结尾走 SSE，否则走 Streamable HTTP）。
+
+---
+
+## 一、你的 harness 如何接入一个远程 MCP
+
+**方式 A — UI 面板**
+打开 Web Playground → 「MCP 服务」面板 → 添加，填 `name` + `url`（可选 `headers`）。
+
+**方式 B — HTTP 接口**
+
+```bash
+# 远程 Streamable HTTP（默认，无需指定 transportType）
+curl -X POST https://<你的服务>/api/mcp/add \
+  -H "Content-Type: application/json" \
+  -d '{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{}}'
+
+# 远程 SSE（强制指定 transportType，适用于只提供 SSE 且 URL 不以 /sse 结尾的服务）
+curl -X POST https://<你的服务>/api/mcp/add \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-sse","url":"https://example.com/mcp","transportType":"sse","headers":{"Authorization":"Bearer <TOKEN>"}}'
+
+# 本地 stdio（command + args 启动子进程；可选 env 注入环境变量）
+curl -X POST https://<你的服务>/api/mcp/add \
+  -H "Content-Type: application/json" \
+  -d '{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/data"]}'
+```
+
+接口字段：`{ name?: string, url?: string, serverUrl?: string, command?: string, args?: string[], env?: Record<string,string>, headers?: Record<string,string>, transportType?: 'auto' | 'sse' | 'streamable-http' }`
+
+- `url` 与 `serverUrl` 等价（兼容旧字段）；`transportType` 缺省时按 URL 自动判定（非 `/sse` 结尾走 Streamable HTTP）。
+
+**方式 C — 环境变量预置（启动即连）**
+在 Render 环境变量加：
+
+```
+MCP_SERVERS=[{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{}}]
+```
+
+支持数组，多个服务逗号分隔。
+
+---
+
+## 一（补）、开箱预设 · 一键接入（recommended）
+
+代码里已内置一组**预设清单**（`backend/core/src/integrations/mcp/presets.ts`，
+单一事实来源，UI 直接消费），覆盖最常用公共 MCP，无需手查 URL / 拼 headers：
+
+| 预设 id    | 服务                | 鉴权                         | 说明                           |
+| ---------- | ------------------- | ---------------------------- | ------------------------------ |
+| `context7` | Context7（Upstash） | 可选 Bearer（免 key 也能用） | 拉取任意库最新文档，零配置首选 |
+| `github`   | GitHub Copilot MCP  | Bearer（PAT）                | 仓库 / Issue / PR              |
+| `composio` | Composio            | Bearer（`ck_...`）           | 单端点覆盖 1000+ 集成          |
+
+| `modelscope` | ModelScope（魔塔） | Bearer（`msa_...`） | 模型调用 / 数据集检索 / 社区资源 |
+| `filesystem` | Filesystem（文件系统） | 无 | 读写文件 / 列目录 / 搜索（默认授权目录为运行目录） |
+| `fetch` | Fetch（网页抓取） | 无 | 基于 `tokenizin/mcp-npx-fetch` 抓取网页转 Markdown |
+| `memory` | Memory（知识记忆） | 无 | 持久知识图谱 / 实体关系 / 跨会话记忆 |
+| `excel` | Excel（表格处理） | 无 | 读写 Excel / 单元格操作（分页上限 4000） |
+
+**UI 面板**：左侧「MCP 预设市场 · Presets」列出上述预设，带能力 chip 与（如需）token 输入框，
+点「⚡ 一键接入」即连。
+
+**HTTP 接口**：
+
+```bash
+# 列出全部预设
+curl https://<你的服务>/api/mcp/presets
+
+# 一键接入某个预设（token 仅 authType!=none 时需要）
+curl -X POST https://<你的服务>/api/mcp/preset \
+  -H "Content-Type: application/json" \
+  -d '{"id":"context7","token":"ctx7_你的key（可留空）"}'
+```
+
+**代码**：`mcpManager.connectPreset(id, token?)`；core 侧 `listPresets() / getPreset(id) / headersForPreset(preset, token)`。
+
+---
+
+## 二、已核实的公共远程 MCP 服务
+
+| 名称                    | URL                                  | 传输            | 鉴权                                                                  | 能力                                                                | 备注                                                                                 |
+| ----------------------- | ------------------------------------ | --------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| **Context7**（Upstash） | `https://mcp.context7.com/mcp`       | Streamable HTTP | 可选：`Authorization: Bearer <CONTEXT7_API_KEY>`；免费档免 key 也能用 | 拉取任意库的最新文档（`resolve-library-id` / `get-library-docs`）   | **最推荐**，零配置即可用，专治 LLM 用陈旧训练数据                                    |
+| **GitHub**              | `https://api.githubcopilot.com/mcp/` | Streamable HTTP | OAuth（Copilot）或 PAT：`Authorization: Bearer <GH_PAT>`              | 仓库 / Issue / PR 操作                                              | 需要 GitHub Copilot 订阅；可用 `X-MCP-Toolsets: default,copilot_spaces` 头启用工具集 |
+| **Composio**            | `https://connect.composio.dev/mcp`   | Streamable HTTP | Composio API Key（`Authorization: Bearer ck_...`）                    | 单端点覆盖 1000+ 集成（Gmail / Slack / Notion / Linear / GitHub …） | 一个 URL 动态发现全部工具，治理/鉴权由 Composio 托管                                 |
+
+### 各服务接入示例
+
+```bash
+# Context7（免 key）
+curl -X POST https://<你的服务>/api/mcp/add -H "Content-Type: application/json" \
+  -d '{"name":"context7","url":"https://mcp.context7.com/mcp","headers":{}}'
+
+# GitHub（用 PAT）
+curl -X POST https://<你的服务>/api/mcp/add -H "Content-Type: application/json" \
+  -d '{"name":"github","url":"https://api.githubcopilot.com/mcp/","headers":{"Authorization":"Bearer <GH_PAT>"}}'
+
+# Composio
+curl -X POST https://<你的服务>/api/mcp/add -H "Content-Type: application/json" \
+  -d '{"name":"composio","url":"https://connect.composio.dev/mcp","headers":{"Authorization":"Bearer ck_你的key"}}'
+
+```
+
+---
+
+---
+
+## 四、去哪里发现更多远程 MCP
+
+- **官方注册表（最权威）**：https://modelcontextprotocol.io/registry/remote-servers
+  （`server.json` 里用 `remotes[].url` + `remotes[].type` 描述，可直接抄 URL）
+- **MCP.run**（Tend）：托管式远程 MCP 市场
+- **Smithery.ai**：MCP 服务器目录，部分支持远程 URL
+
+---
+
+## 五、选型建议（针对你的基础设施助手场景）
+
+1. 想让 agent 读**最新库文档** → 接 **Context7**（零成本、零配置）。
+2. 想让 agent 操作 **GitHub 仓库** → 接 **GitHub**（需 Copilot + PAT）。
+3. 想让 agent 调度 **Slack / 邮件 / 日历 / CRM** 等办公套件 → 接 **Composio** （一个 URL 覆盖众多 App，鉴权由平台托管）。

@@ -1,0 +1,121 @@
+# Render Blueprint for agent-harness (pnpm monorepo)
+#
+# How to deploy:
+#   1. Push this repo to GitHub (branch: dev).
+#   2. In Render Dashboard → "New" → "Blueprint" → connect the repo → pick render.yaml.
+#   3. Select the branch you want to deploy from (dev).
+#
+# Notes:
+#   - This is a pnpm workspace: backend/core (framework) + access/server (web playground).
+#   - dist/ is gitignored, so Render builds each package via `pnpm -r build`.
+#   - The SSE dashboard binds 0.0.0.0:$PORT (Render injects PORT automatically).
+#   - Free plan spins the service down after 15 min of inactivity (cold start on next visit).
+
+services:
+  - type: web
+    name: agent-harness
+    runtime: node
+    nodeVersion: '22' # pin Node 22 (engines: 22.x); Render installs the latest 22.x
+    plan: free
+    region: oregon # oregon | frankfurt | singapore | ohio | virginia
+    # IMPORTANT: this is a pnpm monorepo. The build MUST run `pnpm -r build` so each
+    # workspace package (backend/core, access/server, examples) emits its dist/.
+    # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
+    # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
+    # 注意：显式 --no-frozen-lockfile 是为了自愈——CI 环境(pnpm 检测到 CI=true)默认会
+    # 强制 --frozen-lockfile，一旦有人提交新依赖却忘记同步 pnpm-lock.yaml，构建即 exit 1。
+    # 用 --no-frozen-lockfile 让 Render 在 lockfile 轻微漂移时自动校正，避免部署卡死。
+    # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
+    buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
+    startCommand: node access/server/dist/server.js
+    healthCheckPath: /api/state
+    # 持久卷（需付费 plan 才能挂载；free plan 不支持，磁盘临时重启即清空）。
+    # 挂载到 /app/data 后可保留账户 / 记忆 / 医美插件等本地状态；否则依赖下方
+    # ADMIN_USERNAME/ADMIN_PASSWORD 的启动 seeding（admin 账户每次重启自动重建）。
+    disks:
+      - name: data
+        mountPath: /app/data
+        sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: UI_HOST
+        value: 0.0.0.0
+      # 生产限流：默认 120/60s 在 Cloudflare 共享 IP + 多 SSE 重连场景下偏紧，
+      # 提升到 300/60s；如需严格限流可在 Render Dashboard 覆盖。
+      - key: RATE_LIMIT
+        value: '300'
+      # ── 管理员鉴权凭证（与 LLM 密钥职责分离，强烈建议设置）──
+      # 生成（64 位 hex）：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      # 在 Render Dashboard 的 Secret 里填（sync: false），不要明文写进仓库。
+      - key: ADMIN_API_KEY
+        sync: false
+      # ── LLM 改为 BYOK：环境不再写死 OPEN_API_KEY ──
+      # 用户在「设置 → 模型服务商」自填 OpenRouter/OpenAI Key，按用户加密落库、运行期注入。
+      # 平台兜底默认关闭（生产请勿开启，否则用户自带 Key 形同虚设）。
+      - key: ALLOW_PLATFORM_KEY
+        value: 'false'
+      # 如需临时灰度，可在此（sync:false）填一把平台 Key：
+      # - key: PLATFORM_OPEN_API_KEY
+      #   sync: false
+      # 用户 provider Key 库落点（与 accounts.db 同卷，避免重启丢失）：
+      - key: PROVIDER_KEYS_DB_FILE
+        value: /app/data/provider-keys.db
+      # 记忆持久化后端（Phase 4 决策 A）：file 后端 + /app/data/memory。
+      # 注意：Render free 磁盘为临时盘，部署重置即清空；多副本共享需付费 plan + 挂载
+      # 持久卷（或改用 k8s 部署，已配 RWX 卷）。单实例场景下重启不丢（同部署内）。
+      - key: MEMORY_BACKEND
+        value: file
+      - key: MEMORY_DIR
+        value: /app/data/memory
+      # 外部 MCP 服务清单（多 server 声明式，启动时自动接入）：
+      #   rag（stdio，本仓库 RAG 服务）/ context7（远程，免 key）/
+      #   filesystem / fetch / memory / excel（stdio，npx 拉起）。
+      # 运行时仍可通过 /api/mcp/add 或预设市场动态增删，部署重启后从此清单重新加载。
+      - key: MCP_SERVERS
+        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]'
+      - key: RAG_TRANSPORT
+        value: mcp
+      - key: RAG_TENANT_ID
+        value: default
+      - key: RAG_DATA_FILE
+        value: data/rag-store.json
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
+      - key: MA_DATA_DIR
+        value: /app/data/ma-lead
+      # 插件启用清单（可选覆盖），逗号分隔 .js 绝对路径。
+      # 不配则回落 plugin-bootstrap 默认列表（customer-service / medical-aesthetics-lead / memo）。
+      # 路径相对 access/server/dist 上溯三级：../../../plugins/<id>/dist/index.js。
+      # 设为空字符串 '' 可强制「仅默认列表」语义显式化；自定义新增插件在此追加即可。
+      - key: AGENT_PLUGINS
+        value: '../../../plugins/customer-service/dist/index.js,../../../plugins/medical-aesthetics-lead/dist/index.js,../../../plugins/memo/dist/index.js'
+      # 数据库后端：sqlite（默认，本地文件）| turso（云端 SQLite，需配 TURSO_URL + TURSO_TOKEN）
+      # 自动回退：turso 初始化失败时降级为本地 sqlite
+      - key: DB_BACKEND
+        value: sqlite
+      # Turso 数据库（可选，配了后自动切换）
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_TOKEN
+        sync: false
+      # 账户密码子系统 SQLite 落点：固定到 /app/data（配合上面 disks 持久卷可保留注册账户）。
+      # free plan 无持久卷时，库每次重启清空，但下方 ADMIN_USERNAME/ADMIN_PASSWORD 会在启动时
+      # 自动重建 admin 账户，保证 admin/admin888 始终可登录放行。
+      - key: ACCOUNT_DB_FILE
+        value: /app/data/accounts.db
+      # 部署逃生账户：服务启动自动确保该账户存在（库清空或改密时同步），默认 admin / admin888。
+      # 在 Render 面板覆盖 ADMIN_PASSWORD 即可改默认口令；设为空字符串可禁用内置账户。
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        value: admin888
+      # ── GitHub OAuth 登录（按需开启；不配则登录页不显示 GitHub 按钮，功能自动禁用）──
+      # CLIENT_ID / CLIENT_SECRET 在 GitHub → Settings → Developer settings → OAuth Apps 获取；
+      # Authorization callback URL 填 https://<your-render-domain>/api/account/oauth/github/callback
+      # 密钥类请在 Render Dashboard 的 Secret 里填（sync: false），不要明文写进仓库。
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_OAUTH_SUCCESS_REDIRECT
+        value: '/'

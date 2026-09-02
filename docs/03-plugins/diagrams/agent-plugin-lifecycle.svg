@@ -1,0 +1,52 @@
+<svg viewBox="0 0 680 640" width="100%" role="img">
+<title>插件生命周期与接入时序</title>
+<desc>install→enable→setup(ctx)→onStart→Running→disable/onUnload；setup 经注入的 PluginContext 注册 agent/tools/intent/workflow/routes/panels</desc>
+<defs>
+<marker id="lb" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<text x="40" y="28" fill="#e8eaf2" font-size="14" font-weight="500">插件生命周期与接入时序（setup 经 ctx 注册能力）</text>
+
+<g><rect x="60" y="50" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="77" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">1 install · 解析 dependencies → 登记 disabled</text></g>
+<g><rect x="60" y="130" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="157" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">2 enable · 调 module.setup(ctx)</text></g>
+<g><rect x="60" y="210" width="340" height="44" rx="8" fill="#2f3d5c" stroke="#5b8def" stroke-width="1"/>
+<text x="80" y="237" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">3 setup · 注册 agent/tools/intent/workflow/routes/panels</text></g>
+<g><rect x="60" y="290" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="317" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">4 onStart · 业务启动（预热/建连）</text></g>
+<g><rect x="60" y="370" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="397" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">5 Running · 请求经 core 路由/记忆/Memory 处理</text></g>
+<g><rect x="60" y="450" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="477" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">6 disable / onUnload · 从注册表注销、移除路由/面板</text></g>
+<g><rect x="60" y="530" width="340" height="44" rx="8" fill="#313a52" stroke="#4f5d82" stroke-width="0.5"/>
+<text x="80" y="557" fill="#e8eaf2" font-size="13" font-weight="500" dominant-baseline="central">7 upgrade · 替换 manifest 按原态热替换</text></g>
+
+<line x1="230" y1="94" x2="230" y2="130" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+<line x1="230" y1="174" x2="230" y2="210" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+<line x1="230" y1="254" x2="230" y2="290" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+<line x1="230" y1="334" x2="230" y2="370" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+<line x1="230" y1="414" x2="230" y2="450" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+<line x1="230" y1="494" x2="230" y2="530" stroke="#6c7a99" stroke-width="1.5" marker-end="url(#lb)"/>
+
+<rect x="440" y="50" width="200" height="524" rx="10" fill="#232838" stroke="#353c52" stroke-width="0.5"/>
+<text x="460" y="74" fill="#9fb0d0" font-size="13" font-weight="500">PluginContext 注入面</text>
+<text x="460" y="100" fill="#c8d0e0" font-size="12">· agentRegistry</text>
+<text x="460" y="124" fill="#c8d0e0" font-size="12">· tools</text>
+<text x="460" y="148" fill="#c8d0e0" font-size="12">· router（contributeIntent）</text>
+<text x="460" y="172" fill="#c8d0e0" font-size="12">· workflow（register）</text>
+<text x="460" y="196" fill="#c8d0e0" font-size="12">· a2a（collaborate）</text>
+<text x="460" y="220" fill="#c8d0e0" font-size="12">· events（on handoff/meta）</text>
+<text x="460" y="244" fill="#c8d0e0" font-size="12">· server（route mount）</text>
+<text x="460" y="268" fill="#c8d0e0" font-size="12">· web（registerTab）</text>
+<text x="460" y="292" fill="#c8d0e0" font-size="12">· config / logger</text>
+<line x1="460" y1="312" x2="620" y2="312" stroke="#353c52" stroke-width="0.5"/>
+<text x="460" y="338" fill="#9aa6c2" font-size="11">setup() 内所有注册均</text>
+<text x="460" y="356" fill="#9aa6c2" font-size="11">经上述公共 API 完成，</text>
+<text x="460" y="374" fill="#9aa6c2" font-size="11">不修改 core 源码。</text>
+
+<line x1="400" y1="232" x2="440" y2="232" stroke="#5b8def" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#lb)"/>
+<text x="404" y="226" fill="#7fb0e6" font-size="11">经 ctx.* 注册</text>
+</svg>

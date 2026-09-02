@@ -1,0 +1,27 @@
+# 镜像拉取密钥（私有仓库 / AWS ECR）。与 secret.yaml 同理：勿提交真实凭据。
+#
+# 创建（把镜像从私有源拉取，落地 P3 镜像供应链加固）：
+#   kubectl -n agent-harness create secret docker-registry regcred \
+#     --docker-server=<REGISTRY> \
+#     --docker-username=<USER> \
+#     --docker-password=<PASS> \
+#     --docker-email=<EMAIL>
+#
+# AWS ECR 示例（需 aws cli，且密码会过期 → 生产改用 IRSA + kube2iam 或
+# External Secrets 周期刷新；或用 ECR 的 IAM 角色直接授权节点拉取）：
+#   aws ecr get-login-password --region ap-northeast-1 | \
+#     kubectl -n agent-harness create secret docker-registry regcred \
+#     --docker-server=<ACCOUNT>.dkr.ecr.ap-northeast-1.amazonaws.com \
+#     --docker-username=AWS \
+#     --docker-password=stdin
+#
+# 引用方式：在 EKS overlay 的 Deployment patch 中加 imagePullSecrets（见
+# deploy/k8s/overlays/eks/deployment-regcred.yaml）。ghcr.io 公开镜像可不创建。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: regcred
+  namespace: agent-harness
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ""   # 由 kubectl create secret 注入，勿手填

@@ -1,0 +1,77 @@
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
+import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared';
+import { resolveOpenAIConfig } from './config';
+
+export interface OpenAIConfig {
+  apiKey?: string;
+  model?: string;
+  baseUrl?: string;
+  // 可注入的 fetch（便于测试或代理）。默认使用全局 fetch。
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * 面向任意 OpenAI 兼容 Chat Completions 端点的真实 LLM 适配器
+ *（OpenAI、Azure OpenAI、本地 llama.cpp / vLLM 等）。
+ *
+ * 使用内置全局 `fetch` —— 无需 `openai` npm 依赖，
+ * 保证 Harness 在运行时零强制依赖。
+ *
+ * 实现单一的 `LLM` 契约；直接传入 `new AgentHarness({ llm })` 即可使用。
+ * 第三个可选参数携带取消信号（超时 / 用户中止），会被透传给 fetch。
+ */
+export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
+  // 集中解析：配置对象 → 环境变量 → 内置默认（见 ./config）。
+  const { apiKey, model, baseUrl, fetchImpl } = resolveOpenAIConfig(config);
+
+  return async function openaiLLM(
+    messages: Message[],
+    tools: ToolSchema[],
+    options?: LLMCallOptions
+  ): Promise<LLMResponse> {
+    if (!apiKey) {
+      throw new Error(
+        'OpenAI LLM requires OPENAI_API_KEY (or pass apiKey to createOpenAILLM).'
+      );
+    }
+
+    const body: Record<string, unknown> = {
+      model,
+      messages: messages.map(toOpenAIMessage),
+    };
+
+    if (tools && tools.length > 0) {
+      // 压缩工具描述以降低每轮固定 prompt 开销（不影响本地执行语义）。
+      const maxDesc = Number(process.env.TOOL_DESC_MAX_CHARS ?? 160) || 160;
+      body.tools = tools.map((t) => {
+        const c = compactToolSchema(t, maxDesc);
+        return {
+          type: 'function',
+          function: {
+            name: c.name,
+            description: c.description,
+            parameters: c.parameters,
+          },
+        };
+      });
+      body.tool_choice = 'auto';
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    };
+
+    return callOpenAIChat({
+      baseUrl,
+      headers,
+      body,
+      fetchImpl,
+      retries: 0,
+      modelLabel: model,
+      signal: options?.signal,
+      onToken: options?.onToken,
+      onReasoning: options?.onReasoning,
+    });
+  };
+}

@@ -1,0 +1,62 @@
+# 本地一键自测：server 镜像 + Redis 队列后端（镜像 Render 免费档部署）。
+#   docker compose -f docker-compose.test.yml up --build     # 构建并启动
+#   docker compose -f docker-compose.test.yml down            # 停止并清理容器
+# 启动后访问 http://localhost:4173 。Redis 默认启用（RUN_QUEUE_BACKEND=redis），
+# 与 Render 上 web(free) + keyvalue(free) 的队列路径一致，可提前验证 redis 队列是否真通。
+#
+# 说明：
+#   - 记忆用 volatile（纯内存，自测无需持久）；要测持久记忆可改 MEMORY_BACKEND=file 并挂 data 卷。
+#   - 真实 LLM：OPEN_API_KEY=xxx 传入；留空走内置 Mock LLM 离线运行。
+
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-harness:test
+    ports:
+      - '4173:4173'
+    environment:
+      NODE_ENV: production
+      PORT: '4173'
+      UI_HOST: '0.0.0.0'
+      OPEN_API_KEY: '${OPEN_API_KEY:-}'
+      OPEN_MODEL: '${OPEN_MODEL:-}'
+      # 声明式多 server（与 render.yaml 对齐）；本地自测默认常驻 context7，可用 MCP_SERVERS 环境变量覆盖。
+      MCP_SERVERS: '[{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"}]'
+      # —— 队列后端走 Redis（与 Render 一致）——
+      RUN_QUEUE_BACKEND: 'redis'
+      REDIS_URL: 'redis://redis:6379'
+      # 自测用纯内存记忆，无需持久卷。
+      MEMORY_BACKEND: 'volatile'
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4173/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

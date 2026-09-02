@@ -1,0 +1,38 @@
+# docker-compose.redis.yml —— Redis 运行队列 overlay（内部多人试用推荐）
+#
+# 与 docker-compose.yml 叠加使用；仅当启用 `redis` profile 时生效，
+# 不会破坏默认的内存模式（无 Redis 单副本）。
+#
+# 用法：
+#   cp .env.example .env          # 先填入 UI_TOKENS（可选，多角色鉴权）
+#   docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up -d
+#
+# 作用：
+#   1. 自动把 REDIS_URL 注入 ui 服务（原 docker-compose.yml 读宿主机变量、默认空 → 应用回退内存队列）
+#   2. 让 ui 等待 redis 健康后再启动，避免队列后端连不上
+#   3. 可选配置 UI_TOKENS（多角色鉴权）
+#      避免 UI 在无人值守下对全网开放）
+#   4. 数据持久化：挂载 ui-data 卷到 /app/data，并启用 sqlite 记忆后端，
+#      使多轮对话 / 会话 / 长期记忆在容器重建后保留（非持久化则重启即丢）
+
+services:
+  ui:
+    environment:
+      REDIS_URL: 'redis://redis:6379'
+      # 可选：多角色鉴权（JSON 格式）
+      # UI_TOKENS: '{"admin-token":"admin","viewer-token":"viewer"}'
+      # 持久化记忆后端（sqlite 写入挂载卷 /app/data；node:sqlite 不可用时自动回退 file 后端，
+      # 由 MEMORY_DIR 落到同一卷）。留空则默认内存、重启即丢。
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
+      MEMORY_BACKEND: 'sqlite'
+      MEMORY_SQLITE_FILE: '/app/data/memory.db'
+      MEMORY_DIR: '/app/data/memory'
+      MA_DATA_DIR: '/app/data/ma-lead'
+    volumes:
+      - ui-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  ui-data:

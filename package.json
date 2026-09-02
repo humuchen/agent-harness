@@ -1,0 +1,35 @@
+{
+  "name": "agent-harness-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monorepo for agent-harness: @agent-harness/core (framework) + @agent-harness/server (HTTP+SSE server).",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "build:native": "bash scripts/build-native.sh",
+    "verify:sandbox": "bash scripts/verify-sandbox.sh",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "pnpm -r test",
+    "test:load": "node scripts/load-test.cjs",
+    "test:load:heavy": "node scripts/load-test.cjs -c 50 -r 500",
+    "create:plugin": "node scripts/create-plugin.cjs",
+    "db:migrate": "node scripts/db-migrate.cjs",
+    "server": "pnpm --filter @agent-harness/server run start",
+    "dev": "node access/server/dist/server.js",
+    "skills:core": "bash skills/ah-platform-evolution/scripts/build-and-test.sh core",
+    "skills:server": "bash skills/ah-platform-evolution/scripts/build-and-test.sh server",
+    "skills:test": "bash skills/ah-platform-evolution/scripts/build-and-test.sh test",
+    "skills:lint": "bash skills/ah-platform-evolution/scripts/build-and-test.sh lint",
+    "skills:all": "bash skills/ah-platform-evolution/scripts/build-and-test.sh all"
+  },
+  "license": "Apache License, Version 2.0",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9.39.4",
+    "typescript-eslint": "^8.68.0"
+  }
+}

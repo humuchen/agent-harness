@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+data:
+  NODE_ENV: 'production'
+  PORT: '4173'
+  UI_HOST: '0.0.0.0'
+  # 运行队列后端：默认内存模式；生产建议设 REDIS_URL（见 Secret）走 Redis 多副本。
+  ENV_PLATFORM: 'harness' # harness | local | k8s
+  # 跨域白名单（逗号分隔）；留空=仅同源。多端客户端包需把各端 origin 列在此处。
+  UI_CORS_ORIGIN: ''
+  # 安全加固（可按需调小）。
+  MAX_BODY_BYTES: '1048576' # 1MB
+  RATE_LIMIT: '120' # 单 IP 窗口内请求数（<=0 关闭）
+  RATE_LIMIT_WINDOW_MS: '60000'
+  AUDIT_LOG: '' # 留空=审计仅落 stdout(JSON 行)
+  # K8s 环境平台后端配置（仅当 ENV_PLATFORM=k8s 时生效）。
+  K8S_NAMESPACE_PREFIX: 'ah-env-'
+  K8S_INGRESS_HOST_TEMPLATE: 'https://{envId}.env.example.com'
+  K8S_TTL_DEFAULT_HOURS: '8'
+  # 记忆持久化后端（决策 A：多副本共享同一 RWX 卷 /app/data）。
+  # file 后端按会话分桶 JSON + 原子 rename，对网络文件系统(RWX)最稳定；
+  # 切勿用 sqlite（网络 FS 文件锁不可靠，多副本并发易损坏）。
+  MEMORY_BACKEND: 'file'
+  MEMORY_DIR: '/app/data/memory'
+  # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
+  MA_DATA_DIR: '/app/data/ma-lead'

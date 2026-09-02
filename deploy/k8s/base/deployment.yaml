@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/name: agent-harness
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  # 生产建议 >=2 副本（配合 REDIS_URL 运行队列实现水平扩展）。
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-harness
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-harness
+        app.kubernetes.io/part-of: agent-harness
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # 共享记忆卷（RWX，多副本同时读写 /app/data）。PVC 定义见 pvc.yaml。
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agent-harness-data
+      containers:
+        - name: ui
+          image: ghcr.io/humuchen/agent-harness:dev   # 由 CI(.github/workflows/docker.yml) 推送；dev 分支 push 后生成 :dev 标签（main 为 :latest）。生产建议按 digest 固定。
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 4173
+          envFrom:
+            - configMapRef:
+                name: agent-harness
+            - secretRef:
+                name: agent-harness
+          # 决策 A：多副本共享记忆。所有 pod 挂载同一个 RWX 卷 /app/data（见 volumes）。
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          # 健康检查：服务端 /api/state（真实端点，Render/Docker 同此路径）。
+          readinessProbe:
+            httpGet:
+              path: /api/state
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/state
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # server 需要写 /tmp 与内存持久化目录
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,71 @@
+# 本地自托管 agent-harness（单实例）。
+#   docker compose up --build            # 内存模式（无 Redis，单副本）
+#   docker compose --profile redis up    # 带 Redis 运行队列（支持多副本水平扩展）
+#
+# 镜像从仓库根目录的 Dockerfile 构建（pnpm monorepo 多阶段构建）。
+
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-harness:local
+    ports:
+      - '4173:4173'
+    environment:
+      NODE_ENV: production
+      PORT: '4173'
+      UI_HOST: '0.0.0.0'
+      # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
+      OPEN_API_KEY: '${OPEN_API_KEY:-}'
+      OPEN_MODEL: '${OPEN_MODEL:-}'
+      # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
+      REDIS_URL: '${REDIS_URL:-}'
+      # 记忆持久化后端（Phase 4 决策 A）：file 后端落 RWX 风格共享卷 /app/data，
+      # 配合下方 data 卷挂载，单实例重启不丢、与 k8s 部署行为一致（sqlite 勿用）。
+      MEMORY_BACKEND: 'file'
+      MEMORY_DIR: '/app/data/memory'
+      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
+      MA_DATA_DIR: '/app/data/ma-lead'
+      # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
+      # 内置默认清单（未设宿主 MCP_SERVERS 时生效）：rag / context7 / filesystem / fetch / memory / excel。
+      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
+      RAG_TRANSPORT: '${RAG_TRANSPORT:-mcp}'
+      RAG_TENANT_ID: '${RAG_TENANT_ID:-default}'
+      RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4173/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    volumes:
+      # 共享记忆卷：ui 容器把记忆与插件数据写入 /app/data（file 后端），重启不丢。
+      - data:/app/data
+
+  # 可选：运行队列后端（多副本共享队列 / 跨实例事件桥）。
+  # 启用：docker compose --profile redis up
+  redis:
+    image: redis:7-alpine
+    profiles: ['redis']
+    restart: unless-stopped
+    # 开启 AOF 持久化：队列 / 事件桥数据写入 redis-data 卷，Redis 重启或重建后不丢。
+    command: ['redis-server', '--appendonly', 'yes']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+  data:

@@ -1,0 +1,22 @@
+{
+  "name": "@agent-harness/memo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "备忘助手插件：备忘录/笔记的记录、检索与删除，非侵入式接入 agent-harness（技能落地执行样例）。",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.cjs"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@agent-harness/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

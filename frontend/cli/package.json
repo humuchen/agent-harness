@@ -1,0 +1,25 @@
+{
+  "name": "@agent-harness/cli",
+  "version": "0.1.0",
+  "description": "Node CLI client for the agent-harness /api/v1 server. Zero-dependency, consumes @agent-harness/client.",
+  "type": "module",
+  "bin": {
+    "ah": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@agent-harness/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

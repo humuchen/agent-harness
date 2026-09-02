@@ -1,0 +1,10 @@
+# 把 Ingress 的 cert-manager issuer 从 selfsigned 切到 Let's Encrypt（生产源站 HTTPS）。
+# 与 clusterissuer-letsencrypt.yaml + base ingress 的 tls 段配合。
+# 仅注解合并，不影响其它 ingress 配置。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod

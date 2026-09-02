@@ -1,0 +1,26 @@
+{
+  "name": "@agent-harness/webapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web SPA for agent-harness, built with Vite + Lit on @agent-harness/client (consumes /api/v1).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:ci": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@agent-harness/client": "workspace:*",
+    "dompurify": "^3.1.6",
+    "lit": "^3.2.1",
+    "marked": "^12.0.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
+  }
+}

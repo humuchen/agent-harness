@@ -1,0 +1,10 @@
+{
+  "id": "medical-aesthetics-lead",
+  "version": "0.1.0",
+  "name": "医美客资顾问",
+  "description": "多渠道获客/需求初筛/项目咨询/留资/预约到店/转人工咨询师，含医疗广告合规护栏",
+  "domain": "medical-aesthetics",
+  "transport": "local",
+  "entry": "dist/index.js",
+  "capabilities": ["chat", "lead", "consult", "book", "handoff"]
+}

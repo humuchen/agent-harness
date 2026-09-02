@@ -1,0 +1,9 @@
+# 根 kustomization：仅作为代理，把 deploy/k8s 的 apply 指向 base/。
+# 这样 `kubectl apply -k deploy/k8s` 与 `kubectl apply -k deploy/k8s/base` 等价，
+# 而 EKS 等环境差异化加固放在 deploy/k8s/overlays/<env>（与 base 平级，避免
+# kustomize 的「overlay 不能嵌套在被引用目录内」循环检测）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base

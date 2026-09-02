@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+*.tsbuildinfo
+data/
+
+# Local secrets — never commit. .env.example stays a tracked template.
+.env
+.env.local
+.env.*.local
+
+# Kubernetes Secret —— 含真实凭据，绝不提交。用 secret.yaml.example 模板本地生成。
+deploy/k8s/secret.yaml
+
+# WorkBuddy 项目级记忆（开发者 scratch 笔记）：含内部绝对路径、沙箱守卫绕过手法、
+# 项目决策记录等，不应随仓库分发或进入生产环境（Render 原生 node buildpack 会 clone
+# 整个仓库）。仅排除 memory/，注册壳 .workbuddy/skills/ 仍需入库（团队共享的发现入口）。
+# 文件仍保留在本地磁盘，记忆功能不受影响。
+.workbuddy/memory/

@@ -1,0 +1,10 @@
+{
+  "id": "customer-service",
+  "version": "0.1.0",
+  "name": "智能客服",
+  "description": "会话接待 / 知识库问答 / 工单 / 订单售后查询 / 转人工",
+  "domain": "customer-service",
+  "transport": "local",
+  "entry": "dist/index.js",
+  "capabilities": ["chat", "intent", "ticket", "kb", "handoff"]
+}

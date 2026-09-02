@@ -1,0 +1,13 @@
+# P3 镜像供应链加固：给 agent-harness Deployment 加 imagePullSecrets。
+# regcred 须先用 regcred.yaml.example 的命令创建（私有/ECR 源才需要）。
+# 公开镜像（ghcr.io）也可不创建 regcred —— 但应用此 overlay 即要求该 Secret 存在。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+spec:
+  template:
+    spec:
+      imagePullSecrets:
+        - name: regcred

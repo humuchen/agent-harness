@@ -1,0 +1,34 @@
+{
+  "name": "@agent-harness/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HTTP+SSE server / dashboard for @agent-harness/core (deploys the agent harness and hosts the webapp).",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "registry": "node dist/registry-server.js",
+    "dev": "tsc -p tsconfig.json && node dist/server.js",
+    "test": "node --test test/*.test.cjs"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@agent-harness/core": "workspace:*",
+    "@libsql/client": "^0.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/server-filesystem": "^2025.1.0",
+    "@modelcontextprotocol/server-memory": "^2025.1.0",
+    "@tokenizin/mcp-npx-fetch": "^1.0.0",
+    "@negokaz/excel-mcp-server": "^0.12.0"
+  },
+  "optionalDependencies": {
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.4.5"
+  }
+}

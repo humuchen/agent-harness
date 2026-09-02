@@ -1,0 +1,60 @@
+# GitHub Actions — 测试 + 构建 + 部署到 Render
+#
+# 触发：
+#   - push 到 dev 分支：部署到 Render
+#   - push 到 main 分支：部署到 Render
+#
+# 需要的 Secrets：
+#   RENDER_DEPLOY_HOOK_URL — 从 Render Dashboard → Settings → Deploy Hook 获取
+#   TURSO_URL              — （可选）Turso 数据库地址
+#   TURSO_TOKEN            — （可选）Turso 访问令牌
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main, dev]
+
+jobs:
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 代码检查（ESLint，warn-only）
+        run: pnpm lint || true
+
+      - name: 构建
+        run: pnpm -r build
+
+      - name: 测试
+        run: pnpm -r test
+
+  deploy:
+    name: 部署
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency: deploy-${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 部署到 Render
+        run: |
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": true}'
+        env:
+          TURSO_URL: ${{ secrets.TURSO_URL }}
+          TURSO_TOKEN: ${{ secrets.TURSO_TOKEN }}
