@@ -296,7 +296,7 @@ export class AhModelPicker extends LitElement {
       opacity: 0.6;
       cursor: not-allowed;
     }
-    /* 自定义模型条目：主体（选择）+ 右侧「编辑」按钮 */
+    /* 自定义模型条目：主体（选择）+ 右侧操作 icon 按钮 */
     .item.custom-item {
       padding: 0;
     }
@@ -311,18 +311,36 @@ export class AhModelPicker extends LitElement {
       cursor: pointer;
       word-break: break-all;
     }
-    .custom-edit {
+    .custom-actions {
+      display: flex;
+      gap: 2px;
+      flex: 0 0 auto;
+    }
+    .custom-icon-btn {
       appearance: none;
       border: none;
       background: transparent;
       color: var(--ah-text-muted, #9e9e9e);
       cursor: pointer;
-      padding: 7px 10px;
-      font: inherit;
-      font-size: 12px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 100ms ease, background 100ms ease;
     }
-    .custom-edit:hover {
+    .custom-icon-btn:hover {
       color: var(--ah-text);
+      background: rgba(125, 125, 125, 0.15);
+    }
+    .custom-icon-btn.delete:hover {
+      color: var(--ah-danger);
+      background: var(--ah-danger-soft);
+    }
+    .custom-icon-btn svg {
+      width: 14px;
+      height: 14px;
+      display: block;
     }
   `;
 
@@ -334,6 +352,7 @@ export class AhModelPicker extends LitElement {
   @state() private query = '';
   @state() private adding = false;
   @state() private editingId = '';
+  @state() private deletingId = '';
   @state() private collapsed: Record<string, boolean> = {};
   @state() private remote: RemoteModel[] = [];
   @state() private customs: CustomModel[] = [];
@@ -519,6 +538,7 @@ export class AhModelPicker extends LitElement {
       this.query = '';
       this.adding = false;
       this.editingId = '';
+      this.deletingId = '';
       this.draftId = '';
       this.draftBaseUrl = '';
       this.draftApiKey = '';
@@ -602,7 +622,34 @@ export class AhModelPicker extends LitElement {
     this.pick(id);
   }
 
-  /** 模型展示名：去掉厂商前缀（如 `openai/gpt-5.2` → `gpt-5.2`）。 */
+  /** 删除自定义模型（弹出确认）。 */
+  private async deleteCustom(id: string) {
+    if (!confirm(`确定要删除自定义模型「${id}」吗？此操作不可撤销。`)) {
+      return;
+    }
+    this.deletingId = id;
+    try {
+      const res = await authedFetch(`/api/custom-models/${id}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      this.customs = this.customs.filter((c) => c.id !== id);
+      notify.success(`已删除自定义模型「${id}」`);
+      // 如果当前选中的是被删模型，清除选择
+      if (this.model === id) {
+        this.model = '';
+        this.emitCtx(0);
+      }
+    } catch (e) {
+      notifyError(e, {
+        title: '自定义模型',
+        fallback: '删除失败',
+        key: 'custom-model-delete'
+      });
+    } finally {
+      this.deletingId = '';
+    }
+  }
   private displayName(id: string): string {
     const i = id.indexOf('/');
     return i >= 0 ? id.slice(i + 1) : id;
@@ -784,16 +831,38 @@ export class AhModelPicker extends LitElement {
                     @click=${() => this.pick(id)}
                   >
                     ${this.isCustom(id)
-                      ? html` <button
-                          class="custom-edit"
-                          title="编辑自定义模型"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this.startEdit(id);
-                          }}
-                        >
-                          编辑
-                        </button>`
+                      ? html` <span class="custom-actions">
+                          <button
+                            class="custom-icon-btn"
+                            title="编辑自定义模型"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.startEdit(id);
+                            }}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+                          <button
+                            class="custom-icon-btn delete"
+                            title="删除自定义模型"
+                            ?disabled=${this.deletingId === id}
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.deleteCustom(id);
+                            }}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <polyline points="3 6 5 6 21 6"/>
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                              <path d="M10 11v6"/>
+                              <path d="M14 11v6"/>
+                              <path d="M9 6V4h6v2"/>
+                            </svg>
+                          </button>
+                        </span>`
                       : nothing}
                     <span class="name">${this.displayName(id)}</span>
                     ${active
@@ -919,6 +988,7 @@ export class AhModelPicker extends LitElement {
                   @click=${() => {
                     this.adding = !this.adding;
                     this.editingId = '';
+                    this.deletingId = '';
                     this.draftId = '';
                     this.draftBaseUrl = '';
                     this.draftApiKey = '';
