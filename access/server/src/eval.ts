@@ -7,7 +7,7 @@
  * - Evaluator / RecipeStore 均为接口 + 默认实现 + 组合工厂；替换评分逻辑（如 LLM-as-judge）
  *   或落地存储（如数据库）只需改 createEvaluator / createRecipeStore，server 其余代码不动。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** 一次运行的配方快照：prompt / 工具 / 模型 + 关键质量信号，天然即「版本化配方」。 */
@@ -238,7 +238,10 @@ export class FileRecipeStore implements RecipeStore {
     return join(this.dir, `${id}.json`);
   }
   save(r: Recipe): void {
-    writeFileSync(this.path(r.id), JSON.stringify(r, null, 2), 'utf-8');
+    const p = this.path(r.id);
+    const tmp = p + '.tmp';
+    writeFileSync(tmp, JSON.stringify(r, null, 2), 'utf-8');
+    renameSync(tmp, p);
   }
   get(id: string): Recipe | null {
     try {

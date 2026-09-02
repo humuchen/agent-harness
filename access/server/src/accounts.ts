@@ -484,10 +484,11 @@ export async function usernameFromCookie(
   return t.username;
 }
 
-/** 当前登录用户的基础资料（username / email / 注册时间），供 /api/account/me 回填 UI。 */
+/** 当前登录用户的基础资料（username / email / role / 注册时间），供 /api/account/me 回填 UI。 */
 export interface AccountProfile {
   username: string;
   email: string | null;
+  role: string;
   createdAt: number;
 }
 
@@ -496,15 +497,16 @@ export async function getProfile(username: string): Promise<AccountProfile | nul
   if (!db) return null;
   const row = await db
     .prepare(
-      'SELECT username, email, created_at FROM users WHERE username = ?'
+      'SELECT username, email, role, created_at FROM users WHERE username = ?'
     )
     .get(username) as
-    | { username: string; email: string | null; created_at: number }
+    | { username: string; email: string | null; role: string; created_at: number }
     | undefined;
   if (!row) return null;
   return {
     username: row.username,
     email: row.email ?? null,
+    role: row.role ?? 'viewer',
     createdAt: row.created_at
   };
 }

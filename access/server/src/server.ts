@@ -862,8 +862,6 @@ const server = createServer(
           res.end(JSON.stringify({ ok: false, error: '未登录' }));
           return;
         }
-        // 账户密码档在 RBAC 中统一为 admin 角色（authz.ts: AccountAuthorizer）。
-        // 这里随 /me 一并返回 username / role / email，供顶栏用户菜单展示。
         const profile = await getProfile(u);
         res.writeHead(200, {
           'content-type': 'application/json',
@@ -873,7 +871,7 @@ const server = createServer(
           JSON.stringify({
             ok: true,
             username: u,
-            role: 'admin',
+            role: profile?.role ?? 'admin',
             email: profile?.email ?? null
           })
         );
@@ -3367,10 +3365,21 @@ async function handleRun(
     }
   });
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
-  res.on('close', () => {
+  // P1-1：客户端断连时立即中止 in-flight job（用户关浏览器后 agent 继续烧 token 最多 5 分钟 → 改为立即 abort）。
+  // 仅当该 job 无其他活跃订阅者时才 abort（允许多客户端同时订阅同一 job）。
+  res.on('close', async () => {
     closed = true;
     clearInterval(pingTimer);
     unsub();
+    const remainingSubs = [...(runQueue.get(jobId)?.subscribers ?? [])];
+    if (remainingSubs.length <= 1) {
+      // 这是最后一个订阅者，立即中止在飞任务
+      try {
+        runQueue.get(jobId)?.controller?.abort('client disconnected');
+      } catch {
+        /* 忽略 */
+      }
+    }
   });
   return;
 }

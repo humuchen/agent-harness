@@ -45,6 +45,10 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 安全
   UI_CORS_ORIGIN: '',
   AUDIT_LOG: '/app/data/audit/audit.jsonl',
+  // 配额
+  MAX_COST_PER_WINDOW: 0, // 0=不限（硬上限关闭），正数=窗口内最大成本（美元）
+  // 存储路径（生产建议绝对路径；相对路径依赖 cwd 巧合命中卷）
+  ACCOUNT_DB_FILE: './data/accounts.db',
   // 可观测性
   TELEMETRY_FILE: '',
   // OTLP 导出

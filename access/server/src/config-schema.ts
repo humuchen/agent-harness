@@ -84,6 +84,10 @@ export const SCHEMA: Field[] = [
   // 安全加固
   { key: 'UI_CORS_ORIGIN', type: 'string', desc: 'CORS 白名单' },
   { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' },
+  // 配额硬上限（0=关闭，正数=窗口内最大成本美元）
+  { key: 'MAX_COST_PER_WINDOW', type: 'number', min: 0, desc: '每窗口最大成本（美元，0=不限）' },
+  // 存储路径（建议绝对路径）
+  { key: 'ACCOUNT_DB_FILE', type: 'string', desc: '账户数据库文件路径' },
   { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' },
   // OTLP 导出（留空即不启用导出，故不设 required）
   {

@@ -176,14 +176,18 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
       throwEvents: []
     });
     // 让 streamRun 抛 4xx：包一层覆盖默认 throw。
+    // 注意：必须用 async function*（AsyncGenerator），不能是 async function。
+    // async function 会在调用时同步抛出，而非返回 rejected Promise，
+    // 导致 for await 收到 TypeError: not async iterable。
+    const apiErr2 = apiErr; // capture for closure
     const deps2: ReconnectDeps = {
       ...deps,
-      streamRun: async function (
+      streamRun: async function* (
         _p: Record<string, unknown>,
         _o: { signal: AbortSignal }
       ) {
         calls.push(_p);
-        throw apiErr;
+        throw apiErr2;
       }
     };
 

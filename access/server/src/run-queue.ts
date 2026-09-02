@@ -799,10 +799,13 @@ export class RunQueue {
           return;
         }
 
-        // P2.a 配额/计费准入：QPS 令牌桶 + 并发信号量（硬限 token/cost 默认关闭，仅统计）。
+        // P0-2: 配额/计费准入：QPS 令牌桶 + 并发信号量 + 成本硬上限。
+        // 从环境变量读取 MAX_COST_PER_WINDOW（默认 0=关闭硬上限）。
         // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
         // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
-        const admit = quotaEngine.admit(tenantIdForQuota);
+        const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
+        const requestedCost = maxCostPerWindow > 0 ? { cost: maxCostPerWindow } : {};
+        const admit = quotaEngine.admit(tenantIdForQuota, requestedCost, maxCostPerWindow > 0);
         if (!admit.allowed) {
           emit({
             type: 'warn',
