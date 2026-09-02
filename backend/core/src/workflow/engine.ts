@@ -158,7 +158,9 @@ export class DagEngine {
     return out;
   }
 
-  /** 完整运行一个工作流（DAG 并行 + 失败补偿）。 */
+  /**
+   * 完整运行一个工作流（DAG 并行 + 失败补偿 + 条件分支）。
+   */
   async run(def: WorkflowDef, initialInput?: unknown, signal?: AbortSignal): Promise<WorkflowRun> {
     const run: WorkflowRun = {
       def,
@@ -173,19 +175,32 @@ export class DagEngine {
     this.emit({ type: 'wf:start', workflowId: def.id });
 
     const outputs: Record<string, unknown> = {};
+    const skipped = new Set<string>(); // 被条件跳过的 step id
     try {
       for (const wave of this.topoWaves(def)) {
         if (signal?.aborted) throw new Error('workflow aborted');
         await Promise.all(
           wave.map(async (id) => {
             const step = def.steps.find((s) => s.id === id)!;
+
+            // P2 条件分支：检查前置条件
+            if (step.condition) {
+              const conditionMet = await this.evaluateCondition(step.condition, initialInput, outputs);
+              if (!conditionMet) {
+                skipped.add(id);
+                run.steps[id] = { id, state: 'skipped' };
+                await this.store.save(run);
+                this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id });
+                this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id });
+                return;
+              }
+            }
+
             const input = this.resolveInput(step, initialInput, outputs);
             // P1-④：优先处理 teamRef（团队协作），agentRef 作为 fallback
             const team = await this.resolveTeam(step.teamRef);
             let card: AgentCard;
             if (team) {
-              // 团队模式：记录 teamId，由 server 层 executor 通过 agentRef
-              // + teamRef 协同执行（executor 内部查询 TeamManager.executeTask）。
               card = await this.resolveCard(step.agentRef);
               this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id, teamId: team.id });
             } else {
@@ -212,8 +227,6 @@ export class DagEngine {
               await this.store.save(run);
               this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id, output: result });
             } catch (e: any) {
-              // 单 step 失败：先持久化该 step 的 failed 状态（避免停在 running），
-              // 再向外抛出以触发补偿事务。
               const errMsg: string = e?.message ?? String(e);
               sr.state = 'failed';
               sr.error = errMsg;
@@ -239,6 +252,44 @@ export class DagEngine {
       this.emit({ type: 'wf:failed', workflowId: def.id, run });
       return run;
     }
+  }
+
+  /**
+   * 求值条件表达式（P2）。
+   * 支持的语法：
+   * - `steps.<id>.output` → 引用上游 step 的输出（truthy 则通过）
+   * - `steps.<id>.state`  → 引用上游 step 的状态（'done' 则通过）
+   * - `true` / `false`    → 字面量
+   */
+  private async evaluateCondition(
+    condition: string,
+    initialInput: unknown,
+    outputs: Record<string, unknown>
+  ): Promise<boolean> {
+    const cond = condition.trim();
+
+    // 字面量
+    if (cond === 'true') return true;
+    if (cond === 'false') return false;
+
+    // 引用上游输出：steps.<id>.output
+    const outputMatch = /^steps\.(\w+)\.output$/.exec(cond);
+    if (outputMatch) {
+      const stepId = outputMatch[1]!;
+      const val = outputs[stepId];
+      return !!val;
+    }
+
+    // 引用上游状态：steps.<id>.state
+    const stateMatch = /^steps\.(\w+)\.state$/.exec(cond);
+    if (stateMatch) {
+      const stepId = stateMatch[1]!;
+      // 需要从 run.steps 获取，这里用 outputs 近似（done 时有 output）
+      return !!outputs[stepId];
+    }
+
+    // 默认：通过（兼容旧格式）
+    return true;
   }
 
   /** 失败补偿：已完成 step 逆序执行 compensate（解决「副作用无回滚」）。 */

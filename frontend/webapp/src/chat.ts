@@ -207,6 +207,10 @@ export class AhChat extends LitElement {
    *  0 = 无数据（默认模型 / 自定义模型），「上下文用量」圆环据此隐藏。 */
   private serverCtxWindow = 0;
 
+  /** 当前选中模型的 baseUrl（OpenRouter 模型为 openrouter.ai，自定义模型为用户填写的地址）；
+   *  空串表示使用服务端默认配置。由 @model-change 事件的 detail.baseUrl 驱动。 */
+  private modelBaseUrl = '';
+
   /** 是否展开「上下文用量」弹层。 */
   @state() private showCtxUsage = false;
 
@@ -1454,6 +1458,7 @@ export class AhChat extends LitElement {
         this.planExec = v;
       },
       getServerCtxWindow: () => this.serverCtxWindow,
+      getServerModelBaseUrl: () => this.modelBaseUrl,
       getBackendUsage: () => this.backendUsage,
       setBackendUsage: (v) => {
         this.backendUsage = v;
@@ -2764,6 +2769,7 @@ export class AhChat extends LitElement {
                     // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
                     // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
                     this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
+                    if (typeof d.baseUrl === 'string') this.modelBaseUrl = d.baseUrl;
                     try {
                       localStorage.setItem('ah_model', this.model);
                     } catch {

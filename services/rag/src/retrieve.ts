@@ -31,6 +31,11 @@ export interface RetrieveRequest {
   tenant_id: string;
   /** Pre-retrieval：返回显著查询扩展词（agent 可据此二次检索）。 */
   expand?: boolean;
+  /**
+   * 外部传入的 trace_id（P2 全链路追踪）。
+   * 若提供，则复用该 id 而非生成新的；便于与 harness 侧的 run:meta traceId 关联。
+   */
+  trace_id?: string;
 }
 
 export interface RetrieveResponse {
@@ -59,11 +64,13 @@ export function retrieve(
   const threshold = req.score_threshold ?? 0;
   const queryVec = provider.embed(req.query);
   const queryTerms = tokenize(req.query);
+  // 复用外部 trace_id 或生成新的
+  const traceId = req.trace_id ?? newTraceId();
 
   // 1) 稠密余弦候选（放大候选集供融合/重排）
   const cand = store.search(req.tenant_id, queryVec, topK * 4);
   if (cand.length === 0) {
-    return { results: [], trace_id: newTraceId(), latency_ms: Date.now() - t0 };
+    return { results: [], trace_id: traceId, latency_ms: Date.now() - t0 };
   }
 
   // 2) 真 BM25：从租户全量 chunk 重建语料（含 IDF），对候选打分
@@ -121,7 +128,7 @@ export function retrieve(
 
   return {
     results: ranked,
-    trace_id: newTraceId(),
+    trace_id: traceId,
     latency_ms: Date.now() - t0,
     expanded_terms,
   };

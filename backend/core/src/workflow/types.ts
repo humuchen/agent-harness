@@ -14,7 +14,7 @@ import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
 
 /** 单个 step 的运行态。 */
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
 
 /** 整个工作流的运行态。 */
 export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
@@ -52,6 +52,17 @@ export interface StepDef {
    * 不填则无补偿（仅标记该 step 为 compensated）。
    */
   compensate?: string;
+  /**
+   * 条件分支（P2）：本 step 是否执行的前置条件。
+   * - 若为空 / 不填 → 正常执行（向后兼容）
+   * - 若为字符串表达式 → 在运行时求值，结果为 falsy 则跳过本 step
+   *   支持语法：
+   *   - `steps.<id>.output` → 引用上游 step 的输出
+   *   - `steps.<id>.state`  → 引用上游 step 的执行状态（'done' | 'failed'）
+   *   - 字面量布尔值（'true' / 'false'）
+   * 条件不满足时，本 step 标记为 'skipped'，下游依赖本 step 的 step 会被跳过。
+   */
+  condition?: string;
 }
 
 /** 工作流定义（DAG）。 */

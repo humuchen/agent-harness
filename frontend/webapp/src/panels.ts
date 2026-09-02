@@ -230,18 +230,49 @@ export class AhMcp extends LitElement {
   @state() tokens: Record<string, string> = {};
 
   /** 已接入列表自动刷新定时器（连接状态变化无需手动刷新）。 */
-  private refreshTimer?: ReturnType<typeof setInterval>;
+  private refreshTimer?: ReturnType<typeof setInterval> | null = null;
+  private readonly REFRESH_INTERVAL_MS = 10000;
 
   connectedCallback() {
     super.connectedCallback();
     this.refresh();
-    // 每 10s 静默刷新一次已接入列表（连接状态 / 工具数会变化）。
-    this.refreshTimer = window.setInterval(() => this.refresh(true), 10000);
+    this.startAutoRefresh();
+    // 监听页面可见性变化：后台 / 最小化时暂停轮询，恢复时重连。
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.refreshTimer) window.clearInterval(this.refreshTimer);
+    this.stopAutoRefresh();
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+  }
+
+  /** 页面可见性变化处理：隐藏时停止轮询，显示时重启（若仍在 DOM 中）。 */
+  private onVisibilityChange = () => {
+    if (document.hidden) {
+      this.stopAutoRefresh();
+    } else {
+      this.startAutoRefresh();
+      this.refresh(true);
+    }
+  };
+
+  /** 只有元素可见（display:none 时 offsetParent 为 null）时才启动轮询。 */
+  private startAutoRefresh() {
+    // 若元素被隐藏（display:none）则不轮询，避免浪费请求。
+    if (this.offsetParent === null) return;
+    if (this.refreshTimer) return; // 防重复
+    this.refreshTimer = window.setInterval(
+      () => this.refresh(true),
+      this.REFRESH_INTERVAL_MS
+    );
+  }
+
+  private stopAutoRefresh() {
+    if (this.refreshTimer) {
+      window.clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
   }
 
   private async refresh(silent = false) {
