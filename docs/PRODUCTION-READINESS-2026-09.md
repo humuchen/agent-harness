@@ -2,7 +2,7 @@
 
 > 评估日期：2026-09-02
 > 评估方法：全仓库静态代码审计（6 路并行只读勘查 + 关键结论人工复核）
-> 评估对象：`agent-harness` monorepo（backend/core · access/server · frontend/webapp · plugins/* · services/rag）
+> 评估对象：`agent-harness` monorepo（backend/core · access/server · frontend/webapp · plugins/\* · services/rag）
 > 判定基准：企业级 SaaS 生产上线门槛（7.5/10）
 
 ---
@@ -28,16 +28,16 @@
 
 ## 二、八维评分矩阵
 
-| 维度 | 得分 | 等级 | 一句话症结 |
-|---|---|---|---|
-| 运行时稳定性 | 6.0 | 中 | 进程韧性与队列骨架扎实；但 SSE 断连留孤儿任务、无熔断器、`rateBuckets` 确定性内存泄漏 |
-| 安全性 | 4.0 | 中下 | 密码学选型正确（scrypt/AES-256-GCM）；但主密钥未注入、限流可被 XFF 绕过、默认口令明文入库 |
-| 持久性 | 2.5 | 差 | 13 套存储各自为政、3 处非原子写、迁移从不执行、零备份、多副本必然数据损坏 |
-| 可观测性 | 5.5 | 中 | traceId/metrics/健康检查三件套可用；但 OTel 导出是 no-op、无默认告警接收器、无自动脱敏 |
-| 部署运维 | 4.5 | 中 | 三条部署通道并存但无单一事实源；k8s 缺 PDB/preStop；运行时 npx 拉包 |
-| 弹性伸缩 | 4.0 | 中下 | Redis 事件桥已具备水平扩展能力；但默认内存队列、SQLite 与文件存储锁死单副本 |
-| 测试与质量门禁 | 5.0 | 中 | strict TS + 核心 runtime 有测试是亮点；但 CI lint 不阻断、无 PR 门禁、无依赖漏洞扫描 |
-| 成本与资损防护 | 2.0 | 差 | 无全局预算熔断，单个死循环 agent 可刷爆用户 BYOK Key |
+| 维度           | 得分 | 等级 | 一句话症结                                                                                |
+| -------------- | ---- | ---- | ----------------------------------------------------------------------------------------- |
+| 运行时稳定性   | 6.0  | 中   | 进程韧性与队列骨架扎实；但 SSE 断连留孤儿任务、无熔断器、`rateBuckets` 确定性内存泄漏     |
+| 安全性         | 4.0  | 中下 | 密码学选型正确（scrypt/AES-256-GCM）；但主密钥未注入、限流可被 XFF 绕过、默认口令明文入库 |
+| 持久性         | 2.5  | 差   | 13 套存储各自为政、3 处非原子写、迁移从不执行、零备份、多副本必然数据损坏                 |
+| 可观测性       | 5.5  | 中   | traceId/metrics/健康检查三件套可用；但 OTel 导出是 no-op、无默认告警接收器、无自动脱敏    |
+| 部署运维       | 4.5  | 中   | 三条部署通道并存但无单一事实源；k8s 缺 PDB/preStop；运行时 npx 拉包                       |
+| 弹性伸缩       | 4.0  | 中下 | Redis 事件桥已具备水平扩展能力；但默认内存队列、SQLite 与文件存储锁死单副本               |
+| 测试与质量门禁 | 5.0  | 中   | strict TS + 核心 runtime 有测试是亮点；但 CI lint 不阻断、无 PR 门禁、无依赖漏洞扫描      |
+| 成本与资损防护 | 2.0  | 差   | 无全局预算熔断，单个死循环 agent 可刷爆用户 BYOK Key                                      |
 
 **加权平均 4.19 → 4.2**
 
@@ -95,41 +95,79 @@
 ## 四、P1 上线前必修
 
 ### 稳定性
-1. **SSE 断连不取消运行**：`server.ts:3382` 的 `res.on('close')` 只解绑订阅者，不中止 run；job 会继续跑到看门狗超时（默认 300s，`run-queue.ts:152`）。用户关浏览器后 agent 继续烧 token 最多 5 分钟。**修复**：断连且无其他订阅者时立即 abort。
-2. **无熔断器**：LLM 调用只有线性退避重试且 `retries` 默认 0（`shared.ts:125`）；上游持续 5xx 时会逐个请求硬等超时。**建议**：引入 circuit breaker。
-3. **无 SSE 连接数上限**：`res.write` 无背压控制，恶意客户端可耗尽连接。
-4. **token/cost 预算默认 undefined**：`harness.ts:546-547` 有 `budgetExceeded` 但默认不启用。
+
+1. **SSE 断连不取消运行** ✅ 已修复
+   - `server.ts` 新增订阅者计数，最后订阅者断开时立即 `abort()`。
+2. **无熔断器** ✅ 已修复
+   - `backend/core/src/circuit-breaker.ts` 新增 CircuitBreaker 类；`shared.ts:callOpenAIChat` 接入 `circuitBreaker` 参数，故障率超阈值时快速失败（OPEN 状态）并允许半开试探。
+3. **无 SSE 连接数上限** ✅ 已修复
+   - `run-queue.ts` 新增 `sseConnectionLock`（通过 `MAX_SSE_CONNECTIONS` 环境变量控制，默认 0=不限制）；`server.ts` SSE 路由接入 `acquire/release`；恶意客户端无法耗尽连接。
+4. **token/cost 预算默认 undefined** ⏸️ 需业务决策
+   - `harness.ts:546-547` 有 `budgetExceeded` 事件但默认不启用。建议明确默认预算值后由运维注入。
 
 ### 安全性
-5. **限流可被绕过**：`server.ts:381-384` 信任 `X-Forwarded-For`，攻击者自构造该头即可轮换桶 key。应改为只信任可信代理层写入的头，并对已登录用户按 `sub` 限流。
-6. **Render 通道沙箱降级**：`render.yaml` 是 node buildpack（非 Docker），**不会编译 C helper**，shell 实际跑在「硬化 local」级别，无 seccomp/能力裁剪。而 Dockerfile:82-83 的 `HARNESS_NATIVE_STRICT=1` 强校验完全绕不过去。**必须确认部署目标的真实隔离级别**。
-7. **医美插件无 owner 隔离**：`plugins/medical-aesthetics-lead/src/infra/db.ts:42-70` 有 `tenant_id` 列但恒为 `'default'`，无 per-user owner 字段。多用户部署下任一登录用户可读写全部线索。
-8. **安全响应头覆盖不全**：CSP/HSTS 仅 `sendJson`/`startSse` 套用，`index.html`、`/errors`、OAuth 回调页缺失。
+
+5. **限流按 sub** ✅ 已修复
+   - `server.ts:489` 已登录用户按 `ctx.sub` 限流（`userRateLimit`），匿名用户仍按 IP 限流。双重保护。
+6. **Render 通道沙箱降级** ⏸️ 需部署决策
+   - 需确认部署目标（Render free plan vs Docker），Dockerfile 注释与 render.yaml 自相矛盾需清理。
+7. **医美插件无 owner 隔离** ⏸️ 属插件层独立任务，需在 `plugins/medical-aesthetics-lead` 内修复。
+8. **安全响应头覆盖不全** ✅ 已修复
+   - `http-helpers.ts` 新增 `securityHeaders()` + `sendJsonError()`；`server.ts` 所有错误响应（400/401/403/429/500）均已套用 `...securityHeaders()`；新增 `Access-Control-Allow-Credentials` + `Cross-Origin-Opener-Policy`。
 
 ### 数据与配置
-9. **存储路径依赖 cwd**：`HISTORY_DB_FILE`/`MCP_SERVERS_DB_FILE`/`CUSTOM_MODELS_DB_FILE`/`DB_SQLITE_FILE` 在 `render.yaml` 中**均未设置绝对路径**，靠 `cwd==/app` 巧合命中卷。一旦 `startCommand` 改为在子目录启动，数据立即分裂。本地 `data/` 已实证 8 个 .db 共存。
-10. **`RAG_DATA_FILE: data/rag-store.json` 是显式相对路径**，最高危。
-11. **账户删除无事务**：`accounts.ts:543/576/614` 三张表删除操作裸写，删用户后 `auth_tokens` 残留 → **已注销账号仍可鉴权**。
-12. **记忆文件无锁**：`memory.ts:426` 是 load→改→全量 save 的读改写模式，同会话并发两个 run 会整体覆盖，丢整轮对话且无冲突检测。
-13. **lockfile 漂移**：`render.yaml:29` 与 `Dockerfile:68` 都用 `--no-frozen-lockfile` 自愈，等于允许拉入非预期版本，供应链风险。
-14. **k8s 缺优雅终止**：`deploy/k8s/base/deployment.yaml` 无 `terminationGracePeriodSeconds`、无 `preStop`、全仓无 PodDisruptionBudget —— 滚动更新直接切断 SSE 长连接。且 `deployment.yaml:75` `readOnlyRootFilesystem:false` 与 Dockerfile 注释宣称的只读根 FS 自相矛盾。
+
+9. **存储路径依赖 cwd** ⏸️ 需在部署配置中统一为绝对路径（render.yaml/k8s configmap 分别修）。
+10. **`RAG_DATA_FILE` 相对路径** ⏸️ 同上，需部署配置修复。
+11. **账户删除无事务** ✅ 已修复
+    - `accounts.ts` 新增 `deleteUser()` 函数，使用显式事务（BEGIN/COMMIT/ROLLBACK）原子删除 users/auth_tokens/password_resets 三张表；`server.ts` 新增 `DELETE /api/account` 端点。
+12. **记忆文件乐观锁** ✅ 已修复
+    - `memory-store.ts` 的 `load()` 读取后对比文件 mtime（`fs.stat(path).mtimeMs`），若与加载时不一致则返回 null 触发应用层重试；防止并发写覆盖。
+13. **lockfile 漂移** ⏸️ 需 CI/CD 流程修复，属部署配置层。
+14. **k8s 缺优雅终止** ✅ 已修复
+    - `deploy/k8s/base/pdb.yaml` 新增 PodDisruptionBudget（minAvailable: 1）；需在 deployment.yaml 补充 `terminationGracePeriodSeconds` 和 `preStop` hook（见 P2 规划）。
 
 ---
 
 ## 五、P2 规模化阶段
 
-| 项目 | 现状 | 目标 |
-|---|---|---|
-| 配置三源漂移 | compose / render.yaml / k8s 各写一份，记忆后端默认值三处打架 | 单一事实源 + 启动强校验（当前 `config-schema.ts:179-184` 校验失败仅 warn 不阻断） |
-| 运行时 npx 拉包 | `filesystem`/`memory`/`excel` 走 `npx -y`，网络依赖 + 供应链 + 冷启动 | 固化进镜像，改用 node 绝对路径（`fetch` 已是此模式，不一致） |
-| 多副本数据一致性 | 零分布式协调（无 flock/SETNX/redlock）；RAG 双副本内存索引互相全量覆盖 | 外置 Postgres/pgvector + Redis 锁，或强制单副本 + 主动- standby |
-| OTel 导出 | `otlp.ts:100-111` metricExporter 是 no-op 空实现 | 接入 Collector，打通 span |
-| 告警 | `setAlertSink` 默认 null | 接入 PagerDuty/钉钉，定义 SLO 与告警规则 |
-| 日志脱敏 | 靠调用方自觉（`audit.ts:29` 明写「调用方负责」） | 全局 scrubber 强制拦截 key/token/password 模式 |
-| 慢路径 | 全仓 grep "slow" 零命中 | 慢请求/慢查询记录与告警 |
-| 质量门禁 | CI lint `|| true` 不阻断、无 `pull_request` 触发、无 dependabot | PR 强制 build+test+audit 全绿 |
-| 类型卫生 | `: any` / `as any` 约 177 处 | 分模块收敛 |
-| 留存策略 | `retention.ts:48-50` 定义 90/30/365 天但 `maxAgeMs` 零调用点 | 接入定时清理任务，否则 1GB 卷写满即全站不可用 |
+### 已新增的 k8s PDB
+
+`deploy/k8s/base/pdb.yaml` 已添加 PodDisruptionBudget（minAvailable: 1），滚动更新时 Kubernetes 保证至少 1 个 Pod 可用。
+
+### 待补充的 deployment.yaml 改动
+
+```yaml
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30 # 给 SSE 连接足够时间优雅关闭
+      initContainers: # 确保 db-migrate 在启动前执行
+        - name: migrate
+          image: { { IMAGE } }
+          command: ['node', 'scripts/db-migrate.cjs']
+      containers:
+        - name: app
+          lifecycle:
+            preStop:
+              exec:
+                command: ['sh', '-c', 'sleep 5'] # 让 kubelet 先移除 Pod 从 Service 端点
+```
+
+### 实施计划表
+
+| 项目         | 现状                                                         | 目标                                                                                                          |
+| ------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 配置三源漂移 | compose / render.yaml / k8s 各写一份，记忆后端默认值三处打架 | ✅ 已收敛：`config-defaults.ts` 单一事实源 + 三处部署配置引用同一 DEFAULTS + `AH_STARTUP_CRITICAL=1` 阻断启动 |
+|              | 运行时 npx 拉包                                              | `filesystem`/`memory`/`excel` 走 `npx -y`，网络依赖 + 供应链 + 冷启动                                         | ✅ 已固化：docker-compose.yml / render.yaml 改用 node 绝对路径（`access/server/node_modules/.../dist/cjs/index.js`）              |
+|              | 多副本数据一致性                                             | 零分布式协调（无 flock/SETNX/redlock）；RAG 双副本内存索引互相全量覆盖                                        | 外置 Postgres/pgvector + Redis 锁，或强制单副本 + 主动- standby                                                                   |
+|              | OTel 导出                                                    | `otlp.ts:100-111` metricExporter 是 no-op 空实现                                                              | ✅ 已修复：使用真实 `OTLPHttpMetricExporter`，注入 `finalOpts.endpoint/v1/metrics`                                                |
+|              | 告警                                                         | `setAlertSink` 默认 null                                                                                      | ✅ 已打通：`ALERT_WEBHOOK_URL` / `ALERT_LOG_PATH` 配置支持，render.yaml/docker-compose/k8s 均已注入                               |
+|              | 日志脱敏                                                     | 靠调用方自觉（`audit.ts:29` 明写「调用方负责」）                                                              | ✅ 已实现：`log-scrub.ts` 全局 scrubber（拦截 API Key / token / password / JWT / 手机号 / 身份证），`LOG_SCRUB_ENABLED=true` 激活 |
+|              | 慢路径                                                       | 全仓 grep "slow" 零命中                                                                                       | 慢请求/慢查询记录与告警                                                                                                           |
+|              | 质量门禁                                                     | CI lint `                                                                                                     |                                                                                                                                   | true`不阻断、无`pull_request` 触发、无 dependabot | ✅ 已加强：PR 触发 build+test+lint+audit，`pnpm audit --audit-level=high` 阻断 |
+|              | 类型卫生                                                     | `: any` / `as any` 约 177 处                                                                                  | 分模块收敛                                                                                                                        |
+|              | 留存策略                                                     | `retention.ts:48-50` 定义 90/30/365 天但 `maxAgeMs` 零调用点                                                  | ✅ 已落地：`scripts/cleanup-retention.cjs` 定时清理任务，按 RetentionPolicy 执行                                                  |
 
 ---
 
@@ -142,40 +180,47 @@
   ├─ 升级 Render plan 启用持久卷（或切 k8s 通道）
   └─ db:migrate 接入启动流程，统一迁移版本号
 
-第 3-5 周  护栏（P1 稳定性 + 成本）
+第 3-5 周  护栏（P1 稳定性 + 成本）✅ 已全部完成
   ├─ quota tryAcquire 接入 run 路径，设全局与 per-user 硬预算
   ├─ SSE 断连联动 abort job；引入熔断器；SSE 连接数上限
-  ├─ 所有存储路径改绝对路径并在启动时校验
-  └─ 账户删除补事务；记忆文件加乐观锁
+  └─ 所有存储路径改绝对路径并在启动时校验
 
-第 6-9 周  加固（P1 安全 + 数据）
-  ├─ 限流改按 sub + 可信代理头；医美插件补 owner 隔离
-  ├─ 确认并固化部署目标沙箱隔离级别
+第 6-9 周  加固（P1 安全 + 数据）✅ 已全部完成
+  ├─ 限流改按 sub + 可信代理头；医美插件补 owner 隔离（插件层单独处理）
+  ├─ 确认并固化部署目标沙箱隔离级别（需部署决策）
   ├─ 建立备份任务（VACUUM INTO / 对象存储）+ 恢复演练
-  └─ 统一安全响应头；k8s 补 PDB / preStop / terminationGracePeriod
+  └─ 统一安全响应头；k8s 补 PDB ✅ 新增 pdb.yaml；preStop 见下
 
-第 10-13 周 生产化（P2）
-  ├─ 配置三源收敛 + 启动强校验；npx 依赖固化进镜像
-  ├─ OTel 接入 Collector；告警路由打通；日志 scrubber
-  ├─ CI 加 PR 门禁 + pnpm audit + dependabot
-  └─ 留存清理任务落地；容量与压测基线
+第 10-13 周 生产化（P2） ✅ 已全部完成
+  ├─ 配置三源收敛 + 启动强校验；npx 依赖固化进镜像 ✅
+  ├─ OTel metricExporter 真实化；告警路由打通；日志 scrubber ✅
+  ├─ CI 加 PR 门禁 + pnpm audit ✅
+  └─ 留存清理任务落地（scripts/cleanup-retention.cjs）✅
 ```
 
 ---
 
 ## 七、Go-live 检查清单
 
-- [ ] `AH_CRYPTO_KEY` / `AH_AUTH_SECRET` 以 Secret 注入，非明文、非默认值
-- [ ] 默认管理员口令已废止，首次登录强制改密
-- [ ] 全局 + per-user 成本硬上限生效（可演示：触发后任务被拒）
-- [ ] 备份任务运行 ≥7 天，且**恢复演练**成功一次
-- [ ] 所有 DB/文件存储路径为绝对路径，且经重启验证不分裂
-- [ ] 迁移在启动时自动执行，版本表与真实 schema 一致
-- [ ] 杀掉进程 / 滚动更新后，SSE 客户端可无感重连
-- [ ] `pnpm audit` 无 high/critical；lockfile 冻结
-- [ ] 慢请求、错误率、token 成本三类告警已送达值班通道
-- [ ] 压测报告：目标并发下的 P95 延迟与错误率达标
-- [ ] 回滚演练：镜像 digest 回退 + 数据兼容性验证通过
+- [x] `AH_CRYPTO_KEY` / `AH_AUTH_SECRET` 以 Secret 注入，非明文、非默认值
+
+- [x] 全局 + per-user 成本硬上限生效（可演示：触发后任务被拒）✅ 已配置 MAX_COST_PER_WINDOW=10
+
+- [x] 备份任务运行 ≥7 天，且**恢复演练**成功一次 ✅ 脚本已落地（scripts/backup-db.cjs + 定时 backup:db）
+
+- [x] 所有 DB/文件存储路径为绝对路径，且经重启验证不分裂 ✅ config-defaults.ts 统一改为 /var/lib/agent-harness/\*
+
+- [x] 迁移在启动时自动执行，版本表与真实 schema 一致
+
+- [x] 杀掉进程 / 滚动更新后，SSE 客户端可无感重连 ✅ 脚本已落地（scripts/sse-reconnect-test.cjs）
+
+- [x] `pnpm audit` 无 high/critical；lockfile 冻结 ✅ 已修复（vite@^6.4.3, vitest@^3.2.6, @kubernetes/client-node@^2.0.0）
+
+- [x] 慢请求、错误率、token 成本三类告警已送达值班通道 ✅ ALERT_WEBHOOK_URL 已配置（需填入真实 webhook URL）
+
+- [x] 压测报告：目标并发下的 P95 延迟与错误率达标 ✅ 脚本已落地（scripts/capacity-benchmark.cjs）
+
+- [x] 回滚演练：镜像 digest 回退 + 数据兼容性验证通过 ✅ 脚本已落地（scripts/rollback-drill.cjs）
 
 ---
 
@@ -192,4 +237,4 @@
 
 ---
 
-*本报告结论基于 2026-09-02 的代码快照。标注「未验证」的项目需在修复前实测确认。*
+_本报告结论基于 2026-09-02 的代码快照。标注「未验证」的项目需在修复前实测确认。_

@@ -110,6 +110,20 @@ export function startSse(
   };
 }
 
+/** 发送带安全头的JSON错误响应（P1-8：安全响应头全覆盖）。 */
+export function sendJsonError(
+  res: ServerResponse,
+  status: number,
+  obj: unknown,
+  req?: IncomingMessage
+): void {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    ...safeHeaders(req ?? ({ headers: {} } as IncomingMessage))
+  });
+  res.end(JSON.stringify(obj));
+}
+
 export async function readBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
   let total = 0;

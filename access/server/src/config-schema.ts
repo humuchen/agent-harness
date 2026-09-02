@@ -84,7 +84,37 @@ export const SCHEMA: Field[] = [
   // 安全加固
   { key: 'UI_CORS_ORIGIN', type: 'string', desc: 'CORS 白名单' },
   { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' },
-  { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' }
+  // 配额硬上限（0=关闭，正数=窗口内最大成本美元）
+  { key: 'MAX_COST_PER_WINDOW', type: 'number', min: 0, desc: '每窗口最大成本（美元，0=不限）' },
+  // 存储路径（建议绝对路径）
+  { key: 'ACCOUNT_DB_FILE', type: 'string', desc: '账户数据库文件路径' },
+  { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' },
+  // OTLP 导出（留空即不启用导出，故不设 required）
+  {
+    key: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+    type: 'url',
+    desc: 'OTLP Collector 地址（http(s)://，空=不导出）'
+  },
+  { key: 'OTEL_SERVICE_NAME', type: 'string', desc: 'OTel 服务名' },
+  {
+    key: 'OTEL_EXPORTER_OTLP_HEADERS',
+    type: 'string',
+    desc: 'OTLP 额外 Header（逗号分隔 key=value）'
+  },
+  {
+    key: 'OTEL_METRICS_TEMPORALITY',
+    type: 'enum',
+    allowed: ['cumulative', 'delta'],
+    desc: '指标时间聚合方式'
+  },
+  // 动态配置热更新
+  {
+    key: 'CONFIG_HOT_RELOAD_INTERVAL_MS',
+    type: 'number',
+    min: 0,
+    desc: '配置热更新轮询间隔（ms）'
+  },
+  { key: 'CONFIG_PATHS', type: 'string', desc: '热更新配置文件路径（逗号分隔）' }
 ];
 
 // 常见拼写错误 → 提示正确变量名（减少「配了但不生效」的静默坑）。
@@ -167,7 +197,9 @@ export function validateConfig(): ConfigReport {
   return { errors, warnings };
 }
 
-/** 启动早期调用：校验并结构化日志输出，把静默 misconfig 显性化。 */
+/** 校验并结构化日志输出，把静默 misconfig 显性化。
+ * AH_STARTUP_CRITICAL=1 时，critical 字段校验失败直接 throw，阻断启动（生产推荐）。
+ * 默认不阻断（向后兼容），仅记录 error 级日志。 */
 export function logConfigValidation(): void {
   const { errors, warnings } = validateConfig();
   if (errors.length === 0 && warnings.length === 0) {
@@ -177,9 +209,13 @@ export function logConfigValidation(): void {
   for (const e of errors) structLog('error', 'config', { issue: e });
   for (const w of warnings) structLog('warn', 'config', { issue: w });
   if (errors.length > 0) {
+    const criticalErrors = SCHEMA.filter(f => f.critical).map(f => f.key);
     structLog('error', 'config', {
       summary: `${errors.length} 个必需/关键环境变量校验失败，请检查配置`,
       hint: '服务仍会尽量启动（向后兼容），但相关功能可能异常'
     });
+    if (process.env.AH_STARTUP_CRITICAL === '1') {
+      throw new Error(`启动阻断：${errors.length} 项配置校验失败，详见上方日志\n关键项: ${criticalErrors.join(', ')}`);
+    }
   }
 }

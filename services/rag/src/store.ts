@@ -7,7 +7,7 @@
  * - 可选 JSON 持久化（RAG_DATA_FILE），进程重启后恢复；生产可换 sqlite/向量库（见 persistSqlite 占位）。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
 
 export interface Chunk {
@@ -128,7 +128,9 @@ export class MemoryVectorStore {
     if (!shardByTenant) {
       mkdirSync(dirname(file), { recursive: true });
       const rows = [...this.chunks.values()];
-      writeFileSync(file, JSON.stringify({ version: 1, dim: this.dim, chunks: rows }), 'utf8');
+      const tmp = file + '.tmp';
+      writeFileSync(tmp, JSON.stringify({ version: 1, dim: this.dim, chunks: rows }), 'utf8');
+      renameSync(tmp, file);
       return;
     }
     const dir = dirname(file);
@@ -141,11 +143,10 @@ export class MemoryVectorStore {
     }
     mkdirSync(dir, { recursive: true });
     for (const [tenant, rows] of byTenant) {
-      writeFileSync(
-        join(dir, `${base}.${tenant}.json`),
-        JSON.stringify({ version: 1, dim: this.dim, tenant, chunks: rows }),
-        'utf8',
-      );
+      const target = join(dir, `${base}.${tenant}.json`);
+      const tmp = target + '.tmp';
+      writeFileSync(tmp, JSON.stringify({ version: 1, dim: this.dim, tenant, chunks: rows }), 'utf8');
+      renameSync(tmp, target);
     }
   }
 

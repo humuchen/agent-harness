@@ -15,8 +15,6 @@ export const DEFAULT_OPEN_MODEL = '';
 export const DEFAULT_OPENAI_MODEL = '';
 export const DEFAULT_OPEN_BASE_URL = 'https://apihub.agnes-ai.com/v1'; //'https://openrouter.ai/api/v1';
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-export const DEFAULT_OPEN_SITE_URL = 'https://workbuddy.app';
-export const DEFAULT_OPEN_APP_NAME = 'agent-harness';
 export const DEFAULT_LLM_RETRIES = 2;
 
 type EnvLike = Record<string, string | undefined>;
@@ -42,8 +40,6 @@ export interface ResolvedOpenRouterConfig {
   model: string;
   models?: string[];
   baseUrl: string;
-  siteUrl: string;
-  appName: string;
   fetchImpl: typeof fetch;
   retries: number;
 }
@@ -68,16 +64,6 @@ export function resolveOpenRouterConfig(
       input.baseUrl,
       env.OPEN_BASE_URL,
       DEFAULT_OPEN_BASE_URL
-    ),
-    siteUrl: resolveField(
-      input.siteUrl,
-      env.OPEN_SITE_URL,
-      DEFAULT_OPEN_SITE_URL
-    ),
-    appName: resolveField(
-      input.appName,
-      env.OPEN_APP_NAME,
-      DEFAULT_OPEN_APP_NAME
     ),
     fetchImpl: input.fetchImpl ?? fetch,
     retries: input.retries ?? DEFAULT_LLM_RETRIES

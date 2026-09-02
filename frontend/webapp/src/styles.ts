@@ -691,6 +691,16 @@ export const sharedStyles = css`
     color: var(--ah-accent);
     background: var(--ah-accent-soft);
     border-color: transparent;
+    animation: ah-pulse 2s ease-in-out infinite;
+  }
+  @keyframes ah-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
+    }
   }
   .pill.queued {
     color: var(--ah-warning);

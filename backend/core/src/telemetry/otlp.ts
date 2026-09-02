@@ -97,18 +97,10 @@ export async function initOtlpExporter(opts?: OtlpOptions): Promise<void> {
         headers: finalOpts.headers
       });
 
-      const metricExporter = {
-        export(metrics: any, cb: (r: any) => void) {
-          // 使用已有 meter 批量导出
-          cb({ resources: [] });
-        },
-        async forceFlush() {
-          return Promise.resolve();
-        },
-        shutdown() {
-          return Promise.resolve();
-        }
-      };
+      const metricExporter = new (require(OTEL_METRICS_EXPORTER).OTLPHttpMetricExporter)({
+        url: `${finalOpts.endpoint}/v1/metrics`,
+        headers: finalOpts.headers
+      });
 
       const reader = new PeriodicExportingMetricReader({
         exporter: metricExporter,

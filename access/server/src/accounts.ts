@@ -484,10 +484,11 @@ export async function usernameFromCookie(
   return t.username;
 }
 
-/** 当前登录用户的基础资料（username / email / 注册时间），供 /api/account/me 回填 UI。 */
+/** 当前登录用户的基础资料（username / email / role / 注册时间），供 /api/account/me 回填 UI。 */
 export interface AccountProfile {
   username: string;
   email: string | null;
+  role: string;
   createdAt: number;
 }
 
@@ -496,15 +497,16 @@ export async function getProfile(username: string): Promise<AccountProfile | nul
   if (!db) return null;
   const row = await db
     .prepare(
-      'SELECT username, email, created_at FROM users WHERE username = ?'
+      'SELECT username, email, role, created_at FROM users WHERE username = ?'
     )
     .get(username) as
-    | { username: string; email: string | null; created_at: number }
+    | { username: string; email: string | null; role: string; created_at: number }
     | undefined;
   if (!row) return null;
   return {
     username: row.username,
     email: row.email ?? null,
+    role: row.role ?? 'viewer',
     createdAt: row.created_at
   };
 }
@@ -541,6 +543,31 @@ export async function changePassword(
 export async function revokeAllTokens(username: string): Promise<void> {
   if (!db) return;
   await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+}
+
+/**
+ * P1-11: 删除用户及其全部关联数据（事务原子性，防止已注销账号仍可鉴权）。
+ * 一次性删除 users / auth_tokens / password_resets 三张表的数据。
+ * 任一步骤失败则整体回滚，保证不出现「用户存在但 token 已删」或「用户已删但 token 残留」的半删状态。
+ */
+export async function deleteUser(username: string): Promise<{ ok: boolean; error?: string }> {
+  if (!db) return { ok: false, error: '数据库未就绪' };
+  // 先校验用户是否存在
+  const exists = await db.prepare('SELECT username FROM users WHERE username = ?').get(username);
+  if (!exists) return { ok: false, error: '用户不存在' };
+  try {
+    // SQLite 默认开启了外键约束检查（PRAGMA foreign_keys=ON）；此处使用显式事务保证原子性。
+    await db.exec('BEGIN TRANSACTION');
+    await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+    await db.prepare('DELETE FROM password_resets WHERE username = ?').run(username);
+    await db.prepare('DELETE FROM users WHERE username = ?').run(username);
+    await db.exec('COMMIT');
+    return { ok: true };
+  } catch (e: any) {
+    // 出错时尝试回滚（若事务已开始）
+    try { await db.exec('ROLLBACK'); } catch { /* 忽略 */ }
+    return { ok: false, error: e.message ?? '删除用户失败' };
+  }
 }
 
 /**

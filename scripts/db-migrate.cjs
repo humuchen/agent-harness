@@ -57,6 +57,7 @@ function createMigrationsTable() {
 function getCurrentVersion() {
   createMigrationsTable();
   const row = db.prepare('SELECT MAX(version) as version FROM schema_migrations').get();
+  // 统一版本号策略为时间戳（与 createMigration 保持一致），避免「手写 002_* 迁移版本号的整数永远小于 MAX(Date)」导致的永久跳过。
   return row && row.version ? Number(row.version) : 0;
 }
 

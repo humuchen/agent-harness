@@ -11,7 +11,7 @@ import {
 } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
-import { runQueue } from './run-queue';
+import { runQueue, sseConnectionLock } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import {
   approve as approveShell,
@@ -78,7 +78,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody } from './http-helpers';
+import { corsHeaders, sendJson, startSse, readBody, securityHeaders, sendJsonError } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -145,7 +145,11 @@ import { handleUpload, serveUploaded } from './upload';
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
 
+// P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
+import { installScrubber } from './log-scrub';
+
 import { DEFAULTS } from './config-defaults';
+import { rateLimited } from './rate-limit';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import { resolveTenantContext, type TenantContext } from '@agent-harness/core';
@@ -182,6 +186,7 @@ import {
   revokeAllTokens,
   requestPasswordReset,
   resetPassword,
+  deleteUser,
   type AccountResult
 } from './accounts';
 
@@ -356,6 +361,12 @@ const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
 // 启动期配置校验：把「写错但静默启动」的 misconfig 显性化为日志告警（不阻断启动，向后兼容）。
 logConfigValidation();
 
+// P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
+if (process.env.LOG_SCRUB_ENABLED === 'true') {
+  installScrubber({});
+  structLog('info', 'log-scrub', { enabled: true, note: '全局日志脱敏已激活' });
+}
+
 // OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。
 if (AUTH_PROVIDER === 'oidc') {
   void warmJwks();
@@ -384,22 +395,9 @@ function clientIp(req: IncomingMessage): string {
   return req.socket?.remoteAddress || 'unknown';
 }
 
-/** 内存态固定窗口限流；返回是否应拒绝 + 剩余毫秒数（用于 Retry-After）。 */
-const rateBuckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimited(ip: string): { limited: boolean; retryAfter: number } {
-  if (!(RATE_LIMIT > 0)) return { limited: false, retryAfter: 0 };
-  const now = Date.now();
-  let b = rateBuckets.get(ip);
-  if (!b || now > b.resetAt) {
-    b = { count: 0, resetAt: now + RATE_WINDOW_MS };
-    rateBuckets.set(ip, b);
-  }
-  b.count += 1;
-  return {
-    limited: b.count > RATE_LIMIT,
-    retryAfter: Math.max(0, b.resetAt - now)
-  };
-}
+// 固定窗口限流已收敛到 ./rate-limit（阈值与窗口显式传入）。
+// 原先内联版本只往 Map 里 set 从不 delete，每个唯一 IP 永久占一条记录，
+// 属确定性内存泄漏；新实现有惰性过期 + 定时 sweep + 容量上限三层防护。
 
 /** SSE 长连接端点：固定窗口限流会把连接/重连计入同一计数器，极易在刷新时触发 429 螺旋。 */
 function isSseEndpoint(req: IncomingMessage): boolean {
@@ -482,7 +480,10 @@ async function guard(
         action,
         reason: 'tenant isolation required but no tenant context provided'
       });
-      res.writeHead(403, { 'content-type': 'application/json' });
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        ...securityHeaders()
+      });
       res.end(
         JSON.stringify({
           error: 'forbidden',
@@ -498,20 +499,24 @@ async function guard(
   // 与短 API 共享同一 120/60s 桶极易误伤；生产环境仍受连接数/代理层保护。
   const { limited, retryAfter } = isSseEndpoint(req)
     ? { limited: false, retryAfter: 0 }
-    : rateLimited(ip);
-  if (limited) {
+    : rateLimited(ip, RATE_LIMIT, RATE_WINDOW_MS);
+  // P1-5: 已登录用户按 sub 限流（防单账号滥用）
+  const userRateLimit = ctx ? rateLimited(ctx.sub, Number(process.env.USER_RATE_LIMIT ?? 60) || 60, RATE_WINDOW_MS) : { limited: false, retryAfter: 0 };
+  if (limited || (ctx && userRateLimit.limited)) {
     audit({
       kind: 'request',
       method: req.method,
       path: req.url,
       ip,
       authed: true,
-      status: 429
+      status: 429,
+      ...(ctx ? { sub: ctx.sub } : {})
     });
     res.writeHead(429, {
       'content-type': 'application/json',
       'retry-after': String(Math.ceil(retryAfter / 1000)),
-      ...corsHeaders(req)
+      ...corsHeaders(req),
+      ...securityHeaders()
     });
     res.end(JSON.stringify({ error: 'rate limit exceeded' }));
     return null;
@@ -528,7 +533,8 @@ async function guard(
     });
     res.writeHead(403, {
       'content-type': 'application/json',
-      ...corsHeaders(req)
+      ...corsHeaders(req),
+      ...securityHeaders()
     });
     res.end(JSON.stringify({ error: 'forbidden', action }));
     return null;
@@ -606,8 +612,12 @@ function readAction(path: string): Action | null {
   }
 }
 
-function unauthorized(res: ServerResponse): void {
-  res.writeHead(401, { 'content-type': 'application/json' });
+function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
+  res.writeHead(401, {
+    'content-type': 'application/json',
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
+    ...securityHeaders()
+  });
   res.end(JSON.stringify({ error: 'unauthorized: missing or invalid token' }));
 }
 
@@ -874,8 +884,6 @@ const server = createServer(
           res.end(JSON.stringify({ ok: false, error: '未登录' }));
           return;
         }
-        // 账户密码档在 RBAC 中统一为 admin 角色（authz.ts: AccountAuthorizer）。
-        // 这里随 /me 一并返回 username / role / email，供顶栏用户菜单展示。
         const profile = await getProfile(u);
         res.writeHead(200, {
           'content-type': 'application/json',
@@ -885,7 +893,7 @@ const server = createServer(
           JSON.stringify({
             ok: true,
             username: u,
-            role: 'admin',
+            role: profile?.role ?? 'admin',
             email: profile?.email ?? null
           })
         );
@@ -922,6 +930,27 @@ const server = createServer(
           'content-type': 'application/json',
           'set-cookie': clearAuthCookie(req),
           'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
+      if (req.method === 'DELETE' && path === '/api/account') {
+        const u = await usernameFromCookie(req);
+        if (!u) {
+          sendJsonError(res, 401, { error: 'unauthorized' }, req);
+          return;
+        }
+        const result = await deleteUser(u);
+        if (!result.ok) {
+          sendJsonError(res, 500, { error: result.error ?? '删除失败' }, req);
+          return;
+        }
+        // 删除成功后清除 cookie
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': clearAuthCookie(req),
+          ...securityHeaders()
         });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -1650,7 +1679,10 @@ const server = createServer(
         const ctx = await guard(req, res, 'memory:clear');
         if (!ctx) return;
         if (ctx.role !== 'admin') {
-          res.writeHead(403, { 'content-type': 'application/json' });
+          res.writeHead(403, {
+            'content-type': 'application/json',
+            ...securityHeaders()
+          });
           return res.end(JSON.stringify({ error: 'forbidden: admin only' }));
         }
         const b = await readBody(req);
@@ -1994,10 +2026,13 @@ const server = createServer(
         const ctx = await guard(req, res, 'chat:read');
         if (!ctx) return;
         if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({ error: 'authentication required for chat stream' })
-          );
+          sendJsonError(res, 401, { error: 'authentication required for chat stream' }, req);
+          return;
+        }
+        // P1-3: SSE 连接数上限检查（防止恶意客户端耗尽连接）
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
         }
         const send = startSse(res, req);
         // 连接建立即时确认，便于前端判定通道已就绪。
@@ -2015,6 +2050,7 @@ const server = createServer(
           } catch {
             /* 重复 unsub 安全 */
           }
+          sseConnectionLock.release();
         });
         return;
       }
@@ -2027,6 +2063,11 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/events') {
         const ctx = await guard(req, res, 'chat:read');
         if (!ctx) return;
+        // P1-3: SSE 连接数上限检查
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
+        }
         const send = startSse(res, req);
         // 连接建立即时确认（带 owner，便于前端核对归属）。
         send({ type: 'events:ready', owner: ctx.sub });
@@ -2043,6 +2084,7 @@ const server = createServer(
           } catch {
             /* 重复 unsub 安全 */
           }
+          sseConnectionLock.release();
         });
         return;
       }
@@ -3379,10 +3421,21 @@ async function handleRun(
     }
   });
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
-  res.on('close', () => {
+  // P1-1：客户端断连时立即中止 in-flight job（用户关浏览器后 agent 继续烧 token 最多 5 分钟 → 改为立即 abort）。
+  // 仅当该 job 无其他活跃订阅者时才 abort（允许多客户端同时订阅同一 job）。
+  res.on('close', async () => {
     closed = true;
     clearInterval(pingTimer);
     unsub();
+    const remainingSubs = [...(runQueue.get(jobId)?.subscribers ?? [])];
+    if (remainingSubs.length <= 1) {
+      // 这是最后一个订阅者，立即中止在飞任务
+      try {
+        runQueue.get(jobId)?.controller?.abort('client disconnected');
+      } catch {
+        /* 忽略 */
+      }
+    }
   });
   return;
 }

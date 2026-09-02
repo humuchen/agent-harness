@@ -282,6 +282,9 @@ export class AhChat extends LitElement {
   /** 不可变更新某会话的流式状态，确保 Lit 触发重渲染（见 streaming 字段注释）。 */
   private setStreaming(sid: string, val: boolean) {
     this.streaming = { ...this.streaming, [sid]: val };
+    // 全局运行中指示器：任意会话在流式时亮起，全部结束后熄灭。
+    const any = Object.values(this.streaming).some(Boolean);
+    window.dispatchEvent(new Event(any ? 'ah:run:start' : 'ah:run:stop'));
   }
 
   /** 每会话的调用链路追踪构建上下文。 */

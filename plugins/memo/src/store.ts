@@ -321,7 +321,7 @@ export async function reminderHistory(owner: string, limit = 20): Promise<MemoNo
     .prepare(
       `SELECT * FROM memo_notes
        WHERE owner = ? AND notified = 1 AND remind_at IS NOT NULL
-       ORDER BY COALESCE(notified_at, remind_at, created_at) DESC
+       ORDER BY COALESCE(notified_at, remind_at, created_at) DESC, remind_at DESC, id DESC
        LIMIT ?`
     )
     .all(owner, n);

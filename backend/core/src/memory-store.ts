@@ -99,8 +99,9 @@ export class FileMemoryStore implements MemoryStore {
 
   async load(key: string): Promise<PersistedMemory | null> {
     const fs = await import('node:fs/promises');
+    const path = this.filePath(key);
     try {
-      const raw = await fs.readFile(this.filePath(key), 'utf-8');
+      const raw = await fs.readFile(path, 'utf-8');
       const data = JSON.parse(raw) as Partial<PersistedMemory>;
       return {
         window: Array.isArray(data.window) ? (data.window as Message[]) : [],

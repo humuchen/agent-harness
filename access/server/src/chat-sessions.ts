@@ -11,7 +11,7 @@
  * 所有读写函数均接收 owner 并校验归属，跨用户不可互见；旧存档无 owner 的会话
  * 归 'legacy' 桶，普通用户 list/get 均不可见（仅服务端保留，不泄露存在性）。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getHistoryStore } from './history-store';
 import { publishChatEvent } from './chat-bus';
@@ -121,11 +121,14 @@ function load(): void {
   }
 }
 
+/** 持久化到 JSON（原子写：tmp → rename，防崩溃产生半截文件）。 */
 function persist(): void {
   if (!FILE) return;
   try {
     mkdirSync(dirname(FILE), { recursive: true });
-    writeFileSync(FILE, JSON.stringify([...sessions.values()], null, 2), 'utf-8');
+    const tmpPath = FILE + '.tmp';
+    writeFileSync(tmpPath, JSON.stringify([...sessions.values()], null, 2), 'utf-8');
+    renameSync(tmpPath, FILE);
   } catch {
     // 持久化失败不影响内存态运行，仅记录。
   }

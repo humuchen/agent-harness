@@ -33,10 +33,24 @@ services:
       MA_DATA_DIR: '/app/data/ma-lead'
       # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
       # 内置默认清单（未设宿主 MCP_SERVERS 时生效）：rag / context7 / filesystem / fetch / memory / excel。
-      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
+      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/cjs/index.js","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-memory/dist/cjs/index.js"]},{"name":"excel","command":"node","args":["access/server/node_modules/@negokaz/excel-mcp-server/dist/index.js"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
       RAG_TRANSPORT: '${RAG_TRANSPORT:-mcp}'
       RAG_TENANT_ID: '${RAG_TENANT_ID:-default}'
       RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'
+      # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
+      AH_STARTUP_CRITICAL: '1'
+      # ── 成本硬上限（P2 Go-live）：每窗口最大成本（美元），0=不限
+      MAX_COST_PER_WINDOW: '10'
+      # ── 告警路由（P2）：ALERT_WEBHOOK_URL 推送至 Slack/飞书/钉钉入站 Webhook
+      ALERT_WEBHOOK_URL: '${ALERT_WEBHOOK_URL:-}'
+      ALERT_LOG_PATH: '/app/data/alerts.jsonl'
+      # ── 日志脱敏（P2）：全局 scrubber 激活开关
+      LOG_SCRUB_ENABLED: 'true'
+      # ── 指标持久化（P2）：跨重启保留累计计数 / token / 成本 / 租户维度
+      TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
+      # ── Go-live：备份与恢复配置
+      AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
+      AH_BACKUP_KEEP_DAYS: '30'
     restart: unless-stopped
     healthcheck:
       test:

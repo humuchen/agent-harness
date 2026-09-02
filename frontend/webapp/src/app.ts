@@ -16,6 +16,7 @@ import {
 } from './plugin-notify';
 import './plugins-console';
 import './components/provider-key-settings';
+import { TopProgressBar } from './top-progress-bar';
 
 type Tab =
   | 'dashboard'
@@ -167,6 +168,10 @@ export class AhApp extends LitElement {
   } | null = null;
   @state() private sidebarCollapsed =
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
+  /** 全局运行中指示器：任意面板（chat / run）发起运行即亮起，全部结束后熄灭。 */
+  @state() private globalRunning = false;
+  /** 顶部进度条实例。 */
+  private progressBar = TopProgressBar.getInstance();
   @state() private drawerOpen = false;
   /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。short 为去重后的收起态短标签。 */
   @state() private pluginTabs: Array<{
@@ -213,6 +218,15 @@ export class AhApp extends LitElement {
     this.addEventListener('ah-goto', (e) => {
       const t = (e as CustomEvent<string>).detail;
       if (t) this.setTab(t);
+    });
+    // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
+    window.addEventListener('ah:run:start', () => {
+      this.globalRunning = true;
+      window.dispatchEvent(new Event('ah:bar:start'));
+    });
+    window.addEventListener('ah:run:stop', () => {
+      this.globalRunning = false;
+      window.dispatchEvent(new Event('ah:bar:stop'));
     });
     // History 路由：浏览器后退 / 前进时从 pathname 恢复 Tab（SPA fallback 保证刷新可用）。
     this.onPopState = () => {
@@ -476,6 +490,9 @@ export class AhApp extends LitElement {
                     <span class="pill ${this.state.openrouter ? 'ok' : ''}">
                       LLM ${this.state.openrouter ? 'live' : 'mock'}
                     </span>
+                    ${this.globalRunning
+                      ? html`<span class="pill running">运行中</span>`
+                      : ''}
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
