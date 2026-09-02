@@ -144,7 +144,7 @@ export function createEdgeRoutes(): RouteDef[] {
  * server.ts 在 CORS 预检、SPA/静态资源、鉴权 guard 之前调用，覆盖纯公开端点；
  * 错误明细页（/errors HTML）因需鉴权，不在此表，仍由 server.ts 处理。
  */
-export function tryDispatchEdgeRoute(
+export async function tryDispatchEdgeRoute(
   routes: RouteDef[],
   req: IncomingMessage,
   res: ServerResponse,
@@ -152,11 +152,11 @@ export function tryDispatchEdgeRoute(
   deps: EdgeRouteDeps,
   /** 已由 server 重写后的路径（如 /api/v1/* → /api/*），用于路由匹配。 */
   path?: string
-): boolean {
+): Promise<boolean> {
   const method = req.method ?? 'GET';
   const matchPath = path ?? url.pathname;
   const hit = findEdgeRoute(routes, method, matchPath);
   if (!hit) return false;
-  hit.handler(req, res, url, deps);
+  await hit.handler(req, res, url, deps);
   return true;
 }

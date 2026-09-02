@@ -219,8 +219,7 @@ function edgeRouteDeps(): EdgeRouteDeps {
 
 // OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 // 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
-const OAUTH_STATE_COOKIE_GH = 'ah_oauth_state_gh';
-const OAUTH_STATE_COOKIE_GG = 'ah_oauth_state_gg';
+const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 
 /** 请求是否来自 localhost（dev 可走 http，不置 Secure）。 */
 function isReqLocalhost(req: { headers?: Record<string, unknown> }): boolean {
@@ -707,7 +706,7 @@ const server = createServer(
       // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
       // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
       if (
-        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
+        await tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
       ) {
         return;
       }
@@ -879,7 +878,7 @@ const server = createServer(
           `&scope=${encodeURIComponent('read:user user:email')}` +
           `&state=${encodeURIComponent(state)}`;
         res.writeHead(302, {
-          'set-cookie': oauthStateCookie(req, OAUTH_STATE_COOKIE_GH, state),
+          'set-cookie': oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
           'cache-control': 'no-store',
           location: ghUrl
         });
@@ -905,7 +904,7 @@ const server = createServer(
         const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE_GH);
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         if (!state || !expect || !safeEqualString(state, expect)) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
           res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
@@ -1010,7 +1009,7 @@ const server = createServer(
           `&prompt=consent`;
         res.writeHead(302, {
           'set-cookie': [
-            oauthStateCookie(req, OAUTH_STATE_COOKIE_GG, state),
+            oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
             `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
           ],
           'cache-control': 'no-store',
@@ -1029,7 +1028,7 @@ const server = createServer(
         const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE_GG);
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         const codeVerifier = cookieValue(req, 'ah_oauth_cv');
         if (!state || !expect || !safeEqualString(state, expect)) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -1274,9 +1273,9 @@ const server = createServer(
         return sendJson(res, authorizer.describe(), req);
       }
       if (path === '/api/approvals') {
-        // 审批工单列表（admin / 审批人角色可读）。
+        // 审批工单列表（admin / operator 可读：operator 会发起需审批动作，应能看到工单状态）。
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const status = url.searchParams.get('status');
           return sendJson(
@@ -1294,10 +1293,10 @@ const server = createServer(
         return;
       }
       if (path.startsWith('/api/approvals/')) {
-        // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
+        // 单张工单：GET 查看状态（admin / operator 可读）；POST 审批人裁决（approve/reject，仅 admin）。
         const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const t = (await approvalPolicy.list()).find((x: ApprovalTicket) => x.id === id);
           return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
@@ -1307,7 +1306,7 @@ const server = createServer(
           if (!ctx) return;
           const body = await readBody(req);
           const decision = body.decision === 'reject' ? 'reject' : 'approve';
-          const t = approvalPolicy.decide(id, decision, ctx.sub);
+          const t = await approvalPolicy.decide(id, decision, ctx.sub);
           if (!t)
             return sendJson(
               res,

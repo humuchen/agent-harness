@@ -53,7 +53,7 @@ test('createEdgeRoutes: 含健康探针与公开端点', () => {
   assert.ok(routes.every((r) => typeof r.handler === 'function'));
 });
 
-test('tryDispatchEdgeRoute: 命中后调用 handler 并短路返回 true', () => {
+test('tryDispatchEdgeRoute: 命中后调用 handler 并短路返回 true', async () => {
   // 通过 createEdgeRoutes + 桩 deps 验证 /api/state 能分发且写入 200 JSON。
   const { tryDispatchEdgeRoute } = require('../dist/routes/edge-routes');
   const routes = createEdgeRoutes();
@@ -79,7 +79,7 @@ test('tryDispatchEdgeRoute: 命中后调用 handler 并短路返回 true', () =>
     handleReadiness: () => {}
   };
   const url = new URL('http://localhost/api/state');
-  const dispatched = tryDispatchEdgeRoute(routes, { method: 'GET', url }, res, url, deps);
+  const dispatched = await tryDispatchEdgeRoute(routes, { method: 'GET', url }, res, url, deps);
   assert.equal(dispatched, true);
   assert.equal(res.code, 200);
   assert.deepEqual(JSON.parse(res.body), { ok: 1 });

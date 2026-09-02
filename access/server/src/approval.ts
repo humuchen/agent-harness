@@ -41,13 +41,13 @@ export interface ApprovalPolicy {
    * 校验随请求携带的审批票据：动作一致且已批准则返回 ticket，否则 null。
    * 调用方凭返回的 ticket 继续执行业务动作。
    */
-  consume(ticketId: string, action: Action, ctx: AuthContext): Promise<ApprovalTicket | null>;
+  consume(ticketId: string, action: Action, ctx: AuthContext): ApprovalTicket | null | Promise<ApprovalTicket | null>;
   /** 创建待审批票据。 */
-  create(action: Action, ctx: AuthContext, summary: string): Promise<ApprovalTicket>;
+  create(action: Action, ctx: AuthContext, summary: string): ApprovalTicket | Promise<ApprovalTicket>;
   /** 审批人裁决。返回更新后的 ticket，或 null（不存在/已决）。 */
-  decide(id: string, decision: 'approve' | 'reject', by: string): Promise<ApprovalTicket | null>;
+  decide(id: string, decision: 'approve' | 'reject', by: string): ApprovalTicket | null | Promise<ApprovalTicket | null>;
   /** 列出票据（可按状态过滤），新的在前。 */
-  list(filter?: { status?: TicketStatus }): Promise<ApprovalTicket[]>;
+  list(filter?: { status?: TicketStatus }): ApprovalTicket[] | Promise<ApprovalTicket[]>;
 }
 
 // 敏感动作（需审批）。只读/低危动作不在列，天然免审批。
@@ -84,7 +84,7 @@ export class InMemoryApprovalPolicy implements ApprovalPolicy {
     return SENSITIVE_ACTIONS.includes(action);
   }
 
-  async consume(ticketId: string, action: Action, _ctx: AuthContext): Promise<ApprovalTicket | null> {
+  consume(ticketId: string, action: Action, _ctx: AuthContext): ApprovalTicket | null {
     const t = this.tickets.get(ticketId);
     if (!t) return null;
     if (t.action !== action) return null; // 票据与动作必须一致，防越权复用
@@ -92,7 +92,7 @@ export class InMemoryApprovalPolicy implements ApprovalPolicy {
     return t;
   }
 
-  async create(action: Action, ctx: AuthContext, summary: string): Promise<ApprovalTicket> {
+  create(action: Action, ctx: AuthContext, summary: string): ApprovalTicket {
     const id = `apr_${++this.seq}_${Date.now().toString(36)}`;
     const t: ApprovalTicket = {
       id,
@@ -107,7 +107,7 @@ export class InMemoryApprovalPolicy implements ApprovalPolicy {
     return t;
   }
 
-  async decide(id: string, decision: 'approve' | 'reject', by: string): Promise<ApprovalTicket | null> {
+  decide(id: string, decision: 'approve' | 'reject', by: string): ApprovalTicket | null {
     const t = this.tickets.get(id);
     if (!t || t.status !== 'pending') return null;
     t.status = decision === 'approve' ? 'approved' : 'rejected';
@@ -116,7 +116,7 @@ export class InMemoryApprovalPolicy implements ApprovalPolicy {
     return t;
   }
 
-  async list(filter?: { status?: TicketStatus }): Promise<ApprovalTicket[]> {
+  list(filter?: { status?: TicketStatus }): ApprovalTicket[] {
     const all = [...this.tickets.values()].sort((a, b) => b.createdAt - a.createdAt);
     return filter?.status ? all.filter((t) => t.status === filter.status) : all;
   }
