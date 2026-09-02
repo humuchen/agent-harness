@@ -1004,7 +1004,7 @@ export class AgentHarness {
             });
               try {
                 result = await withSpan(`tool.${call.name}`, async () =>
-                  this.opts.tools.call(call.name, call.arguments)
+                  this.opts.tools.call(call.name, call.arguments, { traceId: this.opts.traceId })
                 );
               } catch (e: any) {
                 // 将错误作为工具结果返回，以便模型自行修复。

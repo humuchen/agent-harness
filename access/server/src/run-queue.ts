@@ -767,7 +767,17 @@ export class RunQueue {
           prompt: job.prompt,
           workflowId: job.workflowId,
           traceId: job.traceId
-        }).catch(() => null);
+        }).catch((e: any) => {
+          // 置信度阀门 signal 模式：低置信度信号 → 发澄清提示，仍回退到 default agent 执行
+          if (e?.message?.startsWith('LOW_CONFIDENCE:')) {
+            const confidence = e.message.replace('LOW_CONFIDENCE:', '');
+            emit({ type: 'warn', message: `low confidence routing: ${confidence} → fallback to default` });
+            return null;
+          }
+          // 其他异常静默降级
+          emit({ type: 'warn', message: `router failed: ${e?.message ?? String(e)} → fallback to default` });
+          return null;
+        });
         const targetCard = route?.card ?? null;
         // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
         const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });

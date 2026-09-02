@@ -63,7 +63,7 @@ export function registerDateTime(registry: ToolRegistry): void {
   registry.register(
     'builtin__datetime_now',
     'Get the current date/time. Returns ISO-8601 UTC and a human-readable form in the requested ' +
-      'IANA timezone (e.g. "Asia/Shanghai", "America/New_York"). Defaults to UTC. Use this ' +
+      'IANA timezone (e.g. "Asia/Shanghai", "America/New_York"). Defaults to Asia/Shanghai. Use this ' +
       'whenever the user asks about "now", dates, or times. CRITICAL: when the user says ' +
       'relative dates like "xx月xx号", "明天", "下周", or "x天后", you MUST call this tool first ' +
       'to get the real current year/month/day, then compute the absolute time from it. ' +
@@ -79,7 +79,7 @@ export function registerDateTime(registry: ToolRegistry): void {
       []
     ),
     async (args: Record<string, unknown>) => {
-      const tz = args.timezone ? String(args.timezone) : undefined;
+      const tz = args.timezone ? String(args.timezone) : 'Asia/Shanghai';
       try {
         const d = new Date();
         return JSON.stringify({

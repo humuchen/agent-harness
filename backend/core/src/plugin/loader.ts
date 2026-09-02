@@ -23,6 +23,7 @@ import type { PluginManifest } from './manifest';
 import { PluginRegistryClient, type RegistryEntry } from './registry';
 import { verifyManifest } from './signature';
 import type { PluginModule } from './module';
+import { validatePluginManifest } from './manifest';
 import {
   type PluginContext,
   type PluginLogger,
@@ -66,8 +67,13 @@ export interface PluginLoaderOptions {
   sandbox?: (manifest: PluginManifest) => Promise<void> | void;
   /** 服务端扩展宿主（server 注入，插件据此挂载 HTTP 路由/事件钩子）。 */
   serverHost?: ServerExtensionHost;
-  /** 前端扩展宿主（webapp 注入，插件据此注册 Tab/面板）。 */
+  /** 前端扩展宿主（webapp 启动时调用一次）。 */
   webHost?: WebExtensionHost;
+  /**
+   * 插件目录路径（可选）；配置后启用文件系统监听，修改 manifest.json 自动 reload。
+   * 文件变更事件触发 installModule；disable 状态插件不启用（仅安装）。
+   */
+  pluginDir?: string;
 }
 
 export class PluginLoader {
@@ -75,6 +81,8 @@ export class PluginLoader {
   private readonly modules = new Map<string, PluginModule>();
   private readonly contexts = new Map<string, PluginContext>();
   private readonly eventListeners = new Set<PluginEventListener>();
+  private readonly pluginDir?: string;
+  private watchHandle?: ReturnType<typeof import('node:fs').watchFile>;
   /**
    * 插件经 ctx.server / ctx.web 注册的视图/路由注销句柄（按 pluginId 收集）。
    * disable 时对称调用，使「停用」真正生效：已禁用插件的看板 Tab 与 HTTP 路由不再暴露。
@@ -90,6 +98,7 @@ export class PluginLoader {
     this.sandbox = opts.sandbox;
     this.serverHost = opts.serverHost;
     this.webHost = opts.webHost;
+    this.pluginDir = opts.pluginDir;
   }
 
   /** 注入服务端扩展宿主（server 启动时调用一次）。 */
@@ -100,6 +109,69 @@ export class PluginLoader {
   /** 注入前端扩展宿主（webapp 启动时调用一次）。 */
   setWebHost(host: WebExtensionHost): void {
     this.webHost = host;
+  }
+
+  /**
+   * 启动插件目录热加载监听（可选，由调用方在 server 启动后显式调用）。
+   * 监听 pluginDir 下所有 manifest.json，变更时 reload；
+   * 已 enable 的插件自动重新启用，新增插件登记为 disabled。
+   */
+  async startHotReload(): Promise<void> {
+    if (!this.pluginDir) return;
+    const { watchFile, existsSync, readdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    // 初始扫描：一次性安装目录内所有 manifest.json
+    if (existsSync(this.pluginDir)) {
+      for (const entry of readdirSync(this.pluginDir)) {
+        const dirPath = join(this.pluginDir, entry);
+        const manifestPath = join(dirPath, 'manifest.json');
+        if (existsSync(manifestPath)) {
+          try {
+            const raw = JSON.parse(require('fs').readFileSync(manifestPath, 'utf8'));
+            await this.install(raw);
+          } catch {
+            // 跳过无效 manifest
+          }
+        }
+      }
+    }
+
+    // 文件变更监听（毫秒级节流）
+    let lastChange = 0;
+    const throttled = () => {
+      const now = Date.now();
+      if (now - lastChange < 1000) return;
+      lastChange = now;
+      this._reloadFromDir();
+    };
+
+    const reload = this._reloadFromDir.bind(this);
+    watchFile(this.pluginDir, { interval: 500 }, () => {
+      throttled();
+    });
+  }
+
+  private async _reloadFromDir(): Promise<void> {
+    if (!this.pluginDir) return;
+    const { existsSync, readdirSync } = require('node:fs');
+    const { join } = require('node:path');
+    if (!existsSync(this.pluginDir)) return;
+    for (const entry of readdirSync(this.pluginDir)) {
+      const manifestPath = join(this.pluginDir, entry, 'manifest.json');
+      if (!existsSync(manifestPath)) continue;
+      try {
+        const raw = JSON.parse(require('fs').readFileSync(manifestPath, 'utf8'));
+        const existing = this.plugins.get(raw.id);
+        if (existing) {
+          await this.upgrade(raw.id, raw);
+        } else {
+          await this.install(raw);
+        }
+      } catch {
+        // 跳过无效文件
+      }
+    }
   }
 
   /** 列出全部已安装插件。 */
@@ -157,8 +229,15 @@ export class PluginLoader {
     return rec;
   }
 
-  /** 安装：依赖解析通过后登记，默认 disabled（不暴露于路由）。 */
+  /** 安装：清单校验 + 依赖解析通过后登记，默认 disabled（不暴露于路由）。 */
   async install(manifest: PluginManifest): Promise<PluginRecord> {
+    const errors = validatePluginManifest(manifest);
+    if (errors.length > 0) {
+      throw new Error(
+        `plugin "${manifest.id}": manifest validation failed:\n` +
+          errors.map((e) => `  - ${e.field}: ${e.message}`).join('\n')
+      );
+    }
     if (this.plugins.has(manifest.id)) {
       throw new Error(`plugin already installed: ${manifest.id}`);
     }
@@ -174,6 +253,13 @@ export class PluginLoader {
    */
   async installModule(mod: PluginModule): Promise<PluginRecord> {
     const manifest = mod.manifest;
+    const errors = validatePluginManifest(manifest);
+    if (errors.length > 0) {
+      throw new Error(
+        `plugin "${manifest.id}": manifest validation failed:\n` +
+          errors.map((e) => `  - ${e.field}: ${e.message}`).join('\n')
+      );
+    }
     if (this.plugins.has(manifest.id)) {
       throw new Error(`plugin already installed: ${manifest.id}`);
     }

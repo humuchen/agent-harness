@@ -25,7 +25,9 @@ export const memoManifest: PluginManifest = {
         '【必须先调用 builtin__datetime_now 取得当前真实年月日与星期】，再换算成绝对提醒时间，' +
         '严禁凭记忆猜测年份；最终用 note_save 的 remindAt/remindAtISO 设定（仅接受未来时间），到点后前端会主动弹出通知。' +
         'remindAtISO 优先传【带时区偏移】的 ISO（如 2026-09-05T06:30:00+08:00）；用户在东八区，' +
-        '若不带偏移则按 Asia/Shanghai 解释，勿按服务器时区换算。',
+        '若不带偏移则按 Asia/Shanghai 解释，勿按服务器时区换算。' +
+        '保存后复述提醒时，直接使用工具返回的 remindAt 时间戳差值计算剩余分钟数（或用"到 X 点 Y 分将提醒您"的句式），' +
+        '严禁自行心算时间差，避免复述出现"约 20 分钟后"这类错误估算。',
       '工具：note_save / note_list / note_delete（运行时自动加 memo__ 前缀注入）。',
     ].join('\n'),
     skills: ['repo-verify'],

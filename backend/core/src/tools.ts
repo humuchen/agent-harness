@@ -1,6 +1,6 @@
 import { ToolSchema } from './types';
 
-export type ToolFn = (args: Record<string, unknown>) => Promise<unknown> | unknown;
+export type ToolFn = (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> | unknown;
 
 interface RegisteredTool {
   schema: ToolSchema;
@@ -52,12 +52,12 @@ export class ToolRegistry {
     this.tools.delete(name);
   }
 
-  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async call(name: string, args: Record<string, unknown>, ctx?: Record<string, unknown>): Promise<unknown> {
     const t = this.tools.get(name);
     if (!t) {
       throw new Error(`Unknown tool: ${name}`);
     }
-    return t.fn(args);
+    return t.fn(args, ctx);
   }
 
   /**

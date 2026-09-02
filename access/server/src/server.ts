@@ -1619,21 +1619,72 @@ const server = createServer(
         }
         return sendJson(res, { agent: card }, req);
       }
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
-      if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
-        // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑）----
+      // GET  /api/workflows/:id     → 执行快照
+      // POST /api/workflows/:id/resume → 从断点续跑
+      if (path.startsWith('/api/workflows/')) {
         const ctx = await guard(req, res, 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
         );
-        const run = id ? await workflowStore().get(id) : null;
-        if (!run) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'workflow not found', id }));
+        // POST /resume 路径单独处理
+        if (req.method === 'POST' && id.endsWith('/resume')) {
+          const workflowId = id.slice(0, -'/resume'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          let closed = false;
+          res.on('close', () => { closed = true; });
+          const send = (payload: unknown) => {
+            if (!closed) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          };
+          try {
+            const store = workflowStore();
+            const existing = await store.get(workflowId);
+            if (!existing) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            // 检查是否可续跑：无 steps 或全部 completed 则无需续跑
+            const steps = (existing as any).steps ?? [];
+            const unfinished = steps.filter((s: any) => s.state !== 'completed' && s.state !== 'skipped');
+            if (unfinished.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no unfinished steps to resume' }));
+              return;
+            }
+            const engine = new DagEngine({
+              store,
+              executor: createWorkflowExecutor({
+                onEvent: (e: any) => {
+                  if (!closed) send({ type: 'harness', event: e });
+                },
+              }),
+              onEvent: (e) => { if (!closed) send(e); },
+            });
+            const run = await engine.resume(workflowId);
+            if (!closed) send({ type: '_wf_done', run });
+            if (!closed) res.end();
+          } catch (e: any) {
+            if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+            if (!closed) res.end();
+          }
           return;
         }
-        return sendJson(res, { workflow: run }, req);
+        // GET 取单个工作流执行快照
+        if (req.method === 'GET') {
+          const run = id ? await workflowStore().get(id) : null;
+          if (!run) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'workflow not found', id }));
+            return;
+          }
+          return sendJson(res, { workflow: run }, req);
+        }
       }
       if (path === '/api/memory') {
         // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。

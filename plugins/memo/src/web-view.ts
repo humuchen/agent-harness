@@ -71,6 +71,10 @@ function fmt(ts: number): string {
  *  - 浮动 trigger 按钮 + 悬浮 <ul> 选项列表
  *  - 选中项显示蓝底 + 左图标 + 右勾
  *  - 点击选项 → 设置 hidden select value 触发 onchange → fetch /board
+ *
+ * 注意：使用 position:fixed 而非 absolute，因为父容器 .plugin-view 有
+ * overflow:auto，会裁剪 absolute 定位的下拉菜单。fixed 相对于视口定位，
+ * 用 JS 计算 trigger 的 getBoundingClientRect() 来设置 top/left。
  */
 function selectHtml(opts: {
   id: string;
@@ -87,16 +91,14 @@ function selectHtml(opts: {
       <li class="memo-select-option ${
         i.value === opts.value ? 'memo-select-option-selected' : ''
       }"
-          data-value="${esc(i.value)}" onclick="${ROOT_REF}var s=__r.getElementById('${opts.id}');if(!s){return;}s.value='${esc(i.value)}';s.dispatchEvent(new Event('change',{bubbles:true}));var m=this.closest('.memo-select-menu');if(m){m.style.display='none';}var tw=this.closest('.memo-select-wrap');var tg=tw&&tw.querySelector('.memo-select-trigger');if(tg){tg.classList.remove('is-open');}"><span class="memo-select-option-icon">${esc(
+          data-value="${esc(i.value)}" onclick="var s=document.getElementById('${opts.id}');if(!s){return;}s.value='${esc(i.value)}';s.dispatchEvent(new Event('change',{bubbles:true}));fetch(${esc(opts.onChangeFetch)}, {credentials:'include',headers:${AUTH_HEADERS_JS}}).then(function(r){return r.json()}).then(function(d){var b=document.getElementById('memo-mgmt-body');if(b)b.innerHTML=d.html})"><span class="memo-select-option-icon">${esc(
         i.icon ?? '•'
       )}</span> ${esc(i.label)}</li>`
     )
     .join('');
   return `
     <div class="memo-select-wrap">
-      <select id="${opts.id}" style="display:none" onchange="${ROOT_REF}${esc(
-    opts.onChangeFetch
-  )}">${opts.items
+      <select id="${opts.id}" style="display:none">${opts.items
     .map(
       (i) =>
         `<option value="${esc(i.value)}" ${
@@ -106,7 +108,7 @@ function selectHtml(opts: {
     .join('')}</select>
       <button type="button" class="memo-select-trigger" id="${
         opts.id
-      }-trigger" onclick="var w=this.closest('.memo-select-wrap');var m=w.querySelector('.memo-select-menu');var open=m.style.display==='block';m.style.display=open?'none':'block';this.classList.toggle('is-open',!open);"><span class="memo-select-trigger-icon">${esc(
+      }-trigger" onclick="var w=this.closest('.memo-select-wrap');var m=w.querySelector('.memo-select-menu');var open=m.style.display==='block';if(open){m.style.display='none';this.classList.remove('is-open');return;}m.style.display='block';this.classList.add('is-open');var r=this.getBoundingClientRect();m.style.top=(r.bottom+4)+'px';m.style.left=r.left+'px';"><span class="memo-select-trigger-icon">${esc(
     selected.icon ?? '•'
   )}</span><span class="memo-select-trigger-label">${esc(
     selected.label
@@ -408,7 +410,7 @@ export const memoBoardView: PluginUIView = {
         .memo-search:focus { border-color: var(--ah-accent); box-shadow:0 0 0 2px var(--ah-accent-alpha, rgba(41,151,255,.3)); }
         .memo-search::placeholder { color: var(--ah-text-muted); }
         /* 聊天风格自定义下拉 —— trigger + menu 保持视觉一致 */
-        .memo-select-wrap { position:relative; display:inline-block; flex:0 0 auto; }
+        .memo-select-wrap { display:inline-block; }
         .memo-select-trigger {
           display:flex; align-items:center; gap:6px;
           height:38px; box-sizing:border-box; min-width:108px;
@@ -426,7 +428,8 @@ export const memoBoardView: PluginUIView = {
         .memo-select-trigger.is-open { border-color: var(--ah-accent); background: var(--ah-surface-3); }
         .memo-select-trigger.is-open .memo-select-trigger-chevron { transform:rotate(180deg); color: var(--ah-accent); }
         .memo-select-menu {
-          position:absolute; top:calc(100% + 6px); left:0; z-index:1000;
+          position:fixed;
+          z-index:1000;
           min-width:128px; max-width:220px; width:max-content;
           max-height:280px; overflow-y:auto;
           background: var(--ah-surface-1); border:1px solid var(--ah-border);
