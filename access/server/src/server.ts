@@ -146,6 +146,7 @@ import { handleUpload, serveUploaded } from './upload';
 import { logConfigValidation } from './config-schema';
 
 import { DEFAULTS } from './config-defaults';
+import { rateLimited } from './rate-limit';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import { resolveTenantContext, type TenantContext } from '@agent-harness/core';
@@ -384,22 +385,9 @@ function clientIp(req: IncomingMessage): string {
   return req.socket?.remoteAddress || 'unknown';
 }
 
-/** 内存态固定窗口限流；返回是否应拒绝 + 剩余毫秒数（用于 Retry-After）。 */
-const rateBuckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimited(ip: string): { limited: boolean; retryAfter: number } {
-  if (!(RATE_LIMIT > 0)) return { limited: false, retryAfter: 0 };
-  const now = Date.now();
-  let b = rateBuckets.get(ip);
-  if (!b || now > b.resetAt) {
-    b = { count: 0, resetAt: now + RATE_WINDOW_MS };
-    rateBuckets.set(ip, b);
-  }
-  b.count += 1;
-  return {
-    limited: b.count > RATE_LIMIT,
-    retryAfter: Math.max(0, b.resetAt - now)
-  };
-}
+// 固定窗口限流已收敛到 ./rate-limit（阈值与窗口显式传入）。
+// 原先内联版本只往 Map 里 set 从不 delete，每个唯一 IP 永久占一条记录，
+// 属确定性内存泄漏；新实现有惰性过期 + 定时 sweep + 容量上限三层防护。
 
 /** SSE 长连接端点：固定窗口限流会把连接/重连计入同一计数器，极易在刷新时触发 429 螺旋。 */
 function isSseEndpoint(req: IncomingMessage): boolean {

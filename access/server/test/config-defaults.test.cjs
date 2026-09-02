@@ -9,12 +9,25 @@ const assert = require('node:assert');
 const { DEFAULTS, cfgStr, cfgNum, cfgBool } = require('../dist/config-defaults.js');
 const { SCHEMA } = require('../dist/config-schema.js');
 
-test('DEFAULTS 与 SCHEMA 键集合一致（漂移守卫）', () => {
+test('DEFAULTS 与 SCHEMA 键集合一致（双向漂移守卫）', () => {
   const schemaKeys = new Set(SCHEMA.map((f) => f.key));
   const defaultKeys = Object.keys(DEFAULTS);
-  const missing = defaultKeys.filter((k) => !schemaKeys.has(k));
-  // 每个 DEFAULTS 键都应有对应的 schema 校验项，否则就是「有默认值但无校验」的漂移。
-  assert.deepStrictEqual(missing, [], `DEFAULTS 中缺少 SCHEMA 校验的键: ${missing.join(', ')}`);
+
+  // 方向一：有默认值但无校验项 —— 配置项游离于启动期校验之外，写错不会告警。
+  const withoutSchema = defaultKeys.filter((k) => !schemaKeys.has(k));
+  assert.deepStrictEqual(
+    withoutSchema,
+    [],
+    `DEFAULTS 中存在 SCHEMA 未覆盖的键（有默认值但无校验）: ${withoutSchema.join(', ')}`
+  );
+
+  // 方向二：有校验项但无集中默认值 —— 默认值散落回行内字面量，易与校验清单分叉。
+  const withoutDefaults = [...schemaKeys].filter((k) => !defaultKeys.includes(k));
+  assert.deepStrictEqual(
+    withoutDefaults,
+    [],
+    `SCHEMA 中存在 DEFAULTS 未定义的键（有校验但无集中默认值）: ${withoutDefaults.join(', ')}`
+  );
 });
 
 test('核心默认值与既有文档行为一致', () => {

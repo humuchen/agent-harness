@@ -84,7 +84,33 @@ export const SCHEMA: Field[] = [
   // 安全加固
   { key: 'UI_CORS_ORIGIN', type: 'string', desc: 'CORS 白名单' },
   { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' },
-  { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' }
+  { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' },
+  // OTLP 导出（留空即不启用导出，故不设 required）
+  {
+    key: 'OTEL_EXPORTER_OTLP_ENDPOINT',
+    type: 'url',
+    desc: 'OTLP Collector 地址（http(s)://，空=不导出）'
+  },
+  { key: 'OTEL_SERVICE_NAME', type: 'string', desc: 'OTel 服务名' },
+  {
+    key: 'OTEL_EXPORTER_OTLP_HEADERS',
+    type: 'string',
+    desc: 'OTLP 额外 Header（逗号分隔 key=value）'
+  },
+  {
+    key: 'OTEL_METRICS_TEMPORALITY',
+    type: 'enum',
+    allowed: ['cumulative', 'delta'],
+    desc: '指标时间聚合方式'
+  },
+  // 动态配置热更新
+  {
+    key: 'CONFIG_HOT_RELOAD_INTERVAL_MS',
+    type: 'number',
+    min: 0,
+    desc: '配置热更新轮询间隔（ms）'
+  },
+  { key: 'CONFIG_PATHS', type: 'string', desc: '热更新配置文件路径（逗号分隔）' }
 ];
 
 // 常见拼写错误 → 提示正确变量名（减少「配了但不生效」的静默坑）。
