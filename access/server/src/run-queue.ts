@@ -29,6 +29,12 @@ import {
 import { resolveRunCredential } from './provider-keys';
 import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
 
+/** 内存监控阈值（MB）：超过此值触发告警，OOM 前预警。 */
+const MEMORY_WARN_MB = Number(process.env.JOB_MEMORY_WARN_MB ?? 800) || 800;
+const MEMORY_CRITICAL_MB = Number(process.env.JOB_MEMORY_CRITICAL_MB ?? 950) || 950;
+/** 监控间隔（ms）：每此间隔采样一次内存。 */
+const MEMORY_CHECK_INTERVAL_MS = Number(process.env.JOB_MEMORY_CHECK_MS ?? 5000) || 5000;
+
 /**
  * 运行任务队列（解耦「提交」与「执行」）。
  *
@@ -133,6 +139,10 @@ export interface RunJob {
   enqueuedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** 内存使用超警告阈值（由内存监控器设置）。 */
+  memoryWarned?: boolean;
+  /** 内存使用超临界阈值，已触发 abort。 */
+  memoryCritical?: boolean;
 }
 
 const MAX_BUFFER = Number(process.env.RUN_QUEUE_BUFFER ?? 500) || 500;
@@ -515,7 +525,8 @@ export class RunQueue {
       pending: this.queue.length,
       running: this.running,
       jobs: this.jobs.size,
-      sessionsRunning: this.runningSessions.size
+      sessionsRunning: this.runningSessions.size,
+      memoryCheckTimers: this.memoryCheckTimers.size
     };
   }
 
@@ -604,6 +615,7 @@ export class RunQueue {
       job.status = 'running';
       job.startedAt = Date.now();
       void this.execute(job).finally(() => {
+        this.stopMemoryCheck(job.id);
         this.running -= 1;
         this.pump();
         this.evictIfNeeded();
@@ -631,7 +643,45 @@ export class RunQueue {
     }
   }
 
+  /** 内存监控定时器 */
+  private memoryCheckTimers = new Map<string, NodeJS.Timeout>();
+
+  /** 启动 per-job 内存监控，超过阈值触发告警并标记 job。 */
+  private startMemoryCheck(job: RunJob): void {
+    const check = () => {
+      const mem = process.memoryUsage();
+      const rssMb = mem.rss / 1024 / 1024;
+      const heapMb = mem.heapUsed / 1024 / 1024;
+      // 触发告警（仅首次）
+      if (heapMb > MEMORY_CRITICAL_MB && job.status === 'running') {
+        job.memoryCritical = true;
+        console.error(`[run-queue] CRITICAL: job=${job.id} heap=${heapMb.toFixed(1)}MB rss=${rssMb.toFixed(1)}MB`);
+        // 立即中止：避免 OOM 影响其他 job
+        job.controller.abort('memory-critical');
+      } else if (heapMb > MEMORY_WARN_MB && !job.memoryWarned) {
+        job.memoryWarned = true;
+        console.warn(`[run-queue] WARN: job=${job.id} heap=${heapMb.toFixed(1)}MB rss=${rssMb.toFixed(1)}MB`);
+      }
+    };
+    // 立即检查一次
+    check();
+    // 周期性检查
+    const timer = setInterval(check, MEMORY_CHECK_INTERVAL_MS);
+    this.memoryCheckTimers.set(job.id, timer);
+  }
+
+  /** 停止 per-job 内存监控。 */
+  private stopMemoryCheck(jobId: string): void {
+    const timer = this.memoryCheckTimers.get(jobId);
+    if (timer) {
+      clearInterval(timer);
+      this.memoryCheckTimers.delete(jobId);
+    }
+  }
+
   private async execute(job: RunJob): Promise<void> {
+    // 启动 per-job 内存监控
+    this.startMemoryCheck(job);
     // 任务正式开始执行：从持久层移除，重启后不再重放（在飞任务的 controller 不可恢复，
     // 客户端会自行重投）。失败仅记录。
     void this.backend.ack(job.id).catch(() => {});

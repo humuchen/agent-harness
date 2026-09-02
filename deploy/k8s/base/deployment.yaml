@@ -54,6 +54,10 @@ spec:
               cpu: "1000m"
               memory: "1Gi"
           # 健康检查：服务端 /api/state（真实端点，Render/Docker 同此路径）。
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
           readinessProbe:
             httpGet:
               path: /api/state

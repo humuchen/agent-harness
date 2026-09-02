@@ -1,0 +1,91 @@
+# agent-harness 告警规则
+#
+# 供 Prometheus Alertmanager 使用。
+# 部署方式：
+#   kubectl apply -f deploy/k8s/overlays/prod/alerts.yaml
+#
+# 阈值说明：
+#   - memory: RSS 超过 90% 容器 limits 持续 2 分钟
+#   - queue_depth: pending 队列超过 30 持续 5 分钟
+#   - llm_error_rate: LLM 调用错误率超过 10% 持续 5 分钟
+#   - job_duration: 单个 job 执行超过 10 分钟（可能挂死）
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agent-harness-alerts
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/name: agent-harness
+    app.kubernetes.io/part-of: agent-harness
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: agent-harness
+      rules:
+        # 1. 内存使用过高
+        - alert: HarnessMemoryHigh
+          expr: |
+            (process_resident_memory_bytes / 1024 / 1024)
+            > (kube_deployment_spec_replicas * 1024)
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "agent-harness 内存使用过高"
+            description: "Pod {{ $labels.pod }} 内存使用 {{ $value | humanize1024 }}MB，超过阈值 1GB。可能内存泄漏。"
+            runbook_url: "https://wiki.example.com/runbooks/harness-memory"
+
+        # 2. 队列深度过高
+        - alert: HarnessQueueDepthHigh
+          expr: harness_queue_pending > 30
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "agent-harness 队列深度过高"
+            description: "队列等待任务数 {{ $value }}，超过阈值 30。可能需要扩容或排查慢任务。"
+            runbook_url: "https://wiki.example.com/runbooks/harness-queue"
+
+        # 3. LLM 调用错误率高
+        - alert: HarnessLlmErrorRateHigh
+          expr: |
+            rate(llm_call_errors_total[5m])
+            / rate(llm_call_attempts_total[5m])
+            > 0.1
+          for: 5m
+          labels:
+            severity: critical
+            team: llm
+          annotations:
+            summary: "agent-harness LLM 调用错误率过高"
+            description: "LLM 错误率 {{ $value | humanizePercentage }}，超过阈值 10%。检查熔断器状态和模型端点。"
+            runbook_url: "https://wiki.example.com/runbooks/harness-llm"
+
+        # 4. Job 执行时间过长（可能挂死）
+        - alert: HarnessJobDurationLong
+          expr: |
+            (time() - harness_job_started_seconds)
+            > 600
+          for: 2m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "agent-harness Job 执行时间过长"
+            description: "Job {{ $labels.job_id }} 已执行 {{ $value | humanizeDuration }}，超过 10 分钟。可能挂死，检查看门狗。"
+            runbook_url: "https://wiki.example.com/runbooks/harness-job"
+
+        # 5. 健康检查失败
+        - alert: HarnessReadinessProbeFailed
+          expr: up{job="agent-harness"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "agent-harness 实例不可用"
+            description: "Pod {{ $labels.pod }} 健康检查失败，可能被 K8s 重启。"

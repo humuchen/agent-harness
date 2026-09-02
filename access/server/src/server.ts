@@ -588,6 +588,8 @@ function readAction(path: string): Action | null {
       return 'metrics:read';
     case '/api/jobs':
       return 'jobs:read';
+    case '/api/data/gdpr':
+      return 'memory:clear';
     case '/api/sessions':
       return 'sessions:read';
     case '/api/env':
@@ -1641,6 +1643,40 @@ const server = createServer(
           },
           req
         );
+      }
+      if (req.method === 'DELETE' && path === '/api/data/gdpr') {
+        // GDPR 数据删除：按 tenantId 级联清理记忆、队列任务、会话历史。
+        // 需要 memory:clear 权限 + admin 角色。
+        const ctx = await guard(req, res, 'memory:clear');
+        if (!ctx) return;
+        if (ctx.role !== 'admin') {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'forbidden: admin only' }));
+        }
+        const b = await readBody(req);
+        const tenantId = typeof b?.tenantId === 'string' ? b.tenantId : '';
+        if (!tenantId) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'missing tenantId' }));
+        }
+        try {
+          const store = getMemoryStore();
+          const allKeys = await store.list();
+          let deleted = 0;
+          for (const key of allKeys) {
+            // 简单匹配：sessionKey 包含 tenantId 或等于 tenantId
+            if (key.includes(tenantId) || key === tenantId) {
+              await store.delete(key);
+              invalidateSessionMemory(key);
+              deleted++;
+            }
+          }
+          auditAction('gdpr.delete', { tenantId, deletedCount: deleted, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { ok: true, tenantId, deletedSessions: deleted }, req);
+        } catch (e: any) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: e.message }));
+        }
       }
       if (req.method === 'GET' && path === '/api/roles') {
         // 当前授权配置概览（不含令牌明文），便于运维核对角色权限矩阵。
