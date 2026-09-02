@@ -29,6 +29,15 @@ process.env.UI_CORS_ORIGIN = '';
 process.env.GITHUB_CLIENT_ID = 'test_client_id';
 process.env.GITHUB_CLIENT_SECRET = 'test_client_secret';
 
+// 账号库隔离：默认 ./data/accounts.db 会被其它测试/历史运行污染，导致 GitHub login=octocat
+// 命中已存在的密码账户而触发 _gh 后缀（正确的防接管行为），使本测试误判。指向临时库保证干净起点。
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const OAUTH_TEST_DB = path.join(os.tmpdir(), `ah-oauth-test-${process.pid}.db`);
+try { fs.unlinkSync(OAUTH_TEST_DB); } catch {}
+process.env.ACCOUNT_DB_FILE = OAUTH_TEST_DB;
+
 // ── mock GitHub 接口（仅拦截 OAuth 链路用到的三个 URL）────────────
 // 其余请求回退到真实 fetch，避免干扰 bootstrap 启动期间的内部探测。
 const realFetch = globalThis.fetch;

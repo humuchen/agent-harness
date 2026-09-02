@@ -219,8 +219,7 @@ function edgeRouteDeps(): EdgeRouteDeps {
 
 // OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 // 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
-const OAUTH_STATE_COOKIE_GH = 'ah_oauth_state_gh';
-const OAUTH_STATE_COOKIE_GG = 'ah_oauth_state_gg';
+const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 
 /** 请求是否来自 localhost（dev 可走 http，不置 Secure）。 */
 function isReqLocalhost(req: { headers?: Record<string, unknown> }): boolean {
@@ -879,7 +878,7 @@ const server = createServer(
           `&scope=${encodeURIComponent('read:user user:email')}` +
           `&state=${encodeURIComponent(state)}`;
         res.writeHead(302, {
-          'set-cookie': oauthStateCookie(req, OAUTH_STATE_COOKIE_GH, state),
+          'set-cookie': oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
           'cache-control': 'no-store',
           location: ghUrl
         });
@@ -905,7 +904,7 @@ const server = createServer(
         const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE_GH);
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         if (!state || !expect || !safeEqualString(state, expect)) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
           res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
@@ -1010,7 +1009,7 @@ const server = createServer(
           `&prompt=consent`;
         res.writeHead(302, {
           'set-cookie': [
-            oauthStateCookie(req, OAUTH_STATE_COOKIE_GG, state),
+            oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
             `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
           ],
           'cache-control': 'no-store',
@@ -1029,7 +1028,7 @@ const server = createServer(
         const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE_GG);
+        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         const codeVerifier = cookieValue(req, 'ah_oauth_cv');
         if (!state || !expect || !safeEqualString(state, expect)) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
