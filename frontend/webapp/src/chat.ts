@@ -84,7 +84,13 @@ import './components/file-upload';
 import './components/model-picker';
 import './components/mode-picker';
 import './components/agent-picker';
-import { AhCommandSuggestions } from './components/ah-command-suggestions';
+// 副作用导入：注册 <ah-command-suggestions> 自定义元素。
+// 不能写成 `import { AhCommandSuggestions }` —— 该类在 chat.ts 里只作为类型
+// 注解（private suggestEl?: AhCommandSuggestions）使用，Vite/esbuild 会把它当作
+// 纯类型导入而整条丢弃，导致 customElements.define 永不执行、元素不升级、联想面板
+// 永远弹不出来（同时 onKey 转发 handleKey 时会报 “is not a function”）。
+import './components/ah-command-suggestions';
+import type { AhCommandSuggestions } from './components/ah-command-suggestions';
 
 /* ------------------------------ Chat ------------------------------ */
 
