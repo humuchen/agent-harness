@@ -16,6 +16,8 @@
     "test": "pnpm -r test",
     "test:load": "node scripts/load-test.cjs",
     "test:load:heavy": "node scripts/load-test.cjs -c 50 -r 500",
+    "test:sse-reconnect": "node scripts/sse-reconnect-test.cjs",
+    "test:capacity": "node scripts/capacity-benchmark.cjs",
     "create:plugin": "node scripts/create-plugin.cjs",
     "db:migrate": "node scripts/db-migrate.cjs",
     "server": "pnpm --filter @agent-harness/server run start",
@@ -26,7 +28,13 @@
     "skills:lint": "bash skills/ah-platform-evolution/scripts/build-and-test.sh lint",
     "skills:all": "bash skills/ah-platform-evolution/scripts/build-and-test.sh all",
     "cleanup:retention": "node scripts/cleanup-retention.cjs --force",
-    "cleanup:retention:dry-run": "node scripts/cleanup-retention.cjs --dry-run"
+    "cleanup:retention:dry-run": "node scripts/cleanup-retention.cjs --dry-run",
+    "backup:db": "node scripts/backup-db.cjs --action backup",
+    "backup:db:list": "node scripts/backup-db.cjs --action list",
+    "backup:db:restore": "node scripts/backup-db.cjs --action restore",
+    "drill:rollback": "node scripts/rollback-drill.cjs",
+    "drill:rollback:verify": "node scripts/rollback-drill.cjs --action verify",
+    "drill:rollback:backup": "node scripts/rollback-drill.cjs --action backup"
   },
   "license": "Apache License, Version 2.0",
   "devDependencies": {

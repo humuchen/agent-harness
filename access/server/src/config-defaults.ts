@@ -29,8 +29,8 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   LLM_REASONING: 'on',
   // 记忆
   MEMORY_BACKEND: '',
-  MEMORY_DIR: './data/memory',
-  MEMORY_SQLITE_FILE: './data/memory.db',
+  MEMORY_DIR: '/var/lib/agent-harness/memory',
+  MEMORY_SQLITE_FILE: '/var/lib/agent-harness/memory.db',
   // MCP
   MCP_SERVER_URL: '',
   // MCP 服务器清单（JSON 数组字符串）；留空则由 core 的解析入口回退到内置默认清单。
@@ -46,9 +46,9 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   UI_CORS_ORIGIN: '',
   AUDIT_LOG: '/app/data/audit/audit.jsonl',
   // 配额
-  MAX_COST_PER_WINDOW: 0, // 0=不限（硬上限关闭），正数=窗口内最大成本（美元）
+  MAX_COST_PER_WINDOW: 10, // 窗口内最大成本（美元）；0=不限，正数=硬上限
   // 存储路径（生产建议绝对路径；相对路径依赖 cwd 巧合命中卷）
-  ACCOUNT_DB_FILE: './data/accounts.db',
+  ACCOUNT_DB_FILE: '/var/lib/agent-harness/accounts.db',
   // 可观测性
   TELEMETRY_FILE: '',
   // OTLP 导出

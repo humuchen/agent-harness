@@ -2,21 +2,21 @@
 #
 # 触发：
 #   - push 到 dev 分支：部署到 Render
-#   - push 到 master 分支：部署到 Render
-#   - pull_request 到 dev/master 分支：PR 门禁，必须全绿才能合并
+#   - push 到 main 分支：部署到 Render
+#   - pull_request 到 dev/main 分支：PR 门禁，必须全绿才能合并
 #
 # 需要的 Secrets：
 #   RENDER_DEPLOY_HOOK_URL — 从 Render Dashboard → Settings → Deploy Hook 获取
 #   TURSO_URL              — （可选）Turso 数据库地址
 #   TURSO_TOKEN            — （可选）Turso 访问令牌
-
+#
 name: CI/CD
 
 on:
   push:
-    branches: [master, dev]
+    branches: [main, dev, master]
   pull_request:
-    branches: [master, dev]
+    branches: [main, dev, master]
 
 jobs:
   test:
@@ -50,6 +50,9 @@ jobs:
 
       - name: 留存清理测试（dry-run）
         run: node scripts/cleanup-retention.cjs --dry-run
+
+      - name: 备份脚本验证
+        run: node scripts/backup-db.cjs --action backup && node scripts/backup-db.cjs --action list
 
   deploy:
     name: 部署

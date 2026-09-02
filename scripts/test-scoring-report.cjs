@@ -5,9 +5,8 @@
  */
 'use strict';
 
-const { Memory, HeuristicMemoryScorer, createHeuristicScorer, isEnabled } = require('./backend/core/dist/memory.js');
-const { FileMemoryStore, VolatileMemoryStore } = require('./backend/core/dist/memory-store.js');
-const fs = require('fs');
+const { Memory, HeuristicMemoryScorer, createHeuristicScorer } = require('../backend/core/dist/memory.js');
+const { FileMemoryStore, VolatileMemoryStore } = require('../backend/core/dist/memory-store.js');
 const path = require('path');
 const os = require('os');
 
@@ -327,7 +326,7 @@ test('滑动窗口溢出时 FIFO 淘汰（无 scorer）', () => {
 console.log('\n[10] Feature Flag 验证');
 test('isEnabled 可查询 memoryScoring 开关', () => {
   // isEnabled 来自 feature-flags，从 dist 导入
-  const { isEnabled } = require('./backend/core/dist/feature-flags.js');
+  const { isEnabled } = require('../backend/core/dist/feature-flags.js');
   assert(typeof isEnabled === 'function', 'isEnabled 应为函数');
 });
 
@@ -427,7 +426,7 @@ const summary = {
     '持久化': results.filter(r => r.name.includes('持久化') || r.name.includes('Round-Trip') || r.name.includes('load')).length,
     '边界情况': results.filter(r => r.name.includes('空') || r.name.includes('超长') || r.name.includes('边界')).length,
     '异步': results.filter(r => r.name.includes('异步') || r.name.includes('Promise')).length,
-    '综合': results.filter(r => r.name.includes('完整') || r.name.includes('综合')).length,
+    '综合': results.filter(r => r.name.includes('完整') || r.name.includes('场景') || r.name.includes('综合')).length,
   }
 };
 

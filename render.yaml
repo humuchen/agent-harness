@@ -116,16 +116,13 @@ services:
       # 自动重建 admin 账户，保证 admin/admin888 始终可登录放行。
       - key: ACCOUNT_DB_FILE
         value: /app/data/accounts.db
-      # 部署逃生账户：服务启动自动确保该账户存在（库清空或改密时同步），默认 admin / admin888。
-      # 在 Render 面板覆盖 ADMIN_PASSWORD 即可改默认口令；设为空字符串可禁用内置账户。
-      - key: ADMIN_USERNAME
-        value: admin
-      - key: ADMIN_PASSWORD
-        value: admin888
       # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
       # 生产部署建议开启，避免静默 misconfig 导致功能异常。
       - key: AH_STARTUP_CRITICAL
         value: '1'
+      # ── 成本硬上限（P2 Go-live）：每窗口最大成本（美元），0=不限
+      - key: MAX_COST_PER_WINDOW
+        value: '10'
       # ── 告警路由（P2）：ALERT_WEBHOOK_URL 推送至 Slack/飞书/钉钉入站 Webhook
       #   ALERT_LOG_PATH 落盘 JSONL（便于被 Filebeat/Loki 采集）
       - key: ALERT_WEBHOOK_URL
@@ -135,6 +132,11 @@ services:
       # ── 日志脱敏（P2）：全局 scrubber 激活开关
       - key: LOG_SCRUB_ENABLED
         value: 'true'
+      # ── Go-live：备份与恢复配置
+      - key: AH_BACKUP_DIR
+        value: /app/data/backups
+      - key: AH_BACKUP_KEEP_DAYS
+        value: '30'
       # ── GitHub OAuth 登录（按需开启；不配则登录页不显示 GitHub 按钮，功能自动禁用）──
       # CLIENT_ID / CLIENT_SECRET 在 GitHub → Settings → Developer settings → OAuth Apps 获取；
       # Authorization callback URL 填 https://<your-render-domain>/api/account/oauth/github/callback
