@@ -486,7 +486,7 @@ async function guard(
   // 与短 API 共享同一 120/60s 桶极易误伤；生产环境仍受连接数/代理层保护。
   const { limited, retryAfter } = isSseEndpoint(req)
     ? { limited: false, retryAfter: 0 }
-    : rateLimited(ip);
+    : rateLimited(ip, RATE_LIMIT, RATE_WINDOW_MS);
   if (limited) {
     audit({
       kind: 'request',
