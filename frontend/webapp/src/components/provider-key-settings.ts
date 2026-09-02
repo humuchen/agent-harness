@@ -563,13 +563,17 @@ export class AhProviderKeySettings extends LitElement {
 
   /** 删除（DELETE）。 */
   private async removeKey() {
+    const label = this.providerLabel(this.provider);
+    if (!confirm(`确定要删除「${label}」的 API Key 吗？此操作不可撤销。`)) {
+      return;
+    }
     try {
       const res = await authedFetch(
         `/api/account/provider-keys/${this.provider}`,
         { method: 'DELETE' }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      notify.success(`已删除「${this.providerLabel(this.provider)}」API Key`);
+      notify.success(`已删除「${label}」API Key`);
       this.editing = false;
       this.draftApiKey = '';
       await this.load();
