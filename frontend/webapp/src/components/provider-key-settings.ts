@@ -462,13 +462,18 @@ export class AhProviderKeySettings extends LitElement {
       notify.warning('请先粘贴你的 API Key', { title: 'API Key', key: 'pk-empty' });
       return;
     }
+    const baseUrl = this.draftBaseUrl.trim();
+    // 除 OpenRouter 外，接口地址为必填
+    if (this.provider !== 'openrouter' && !baseUrl) {
+      notify.warning('请填写接口地址', { title: 'API Key', key: 'pk-baseurl-empty' });
+      return;
+    }
     // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
     const extras = this.draftExtraKeys
       .split(/[\n,]/)
       .map((s) => s.trim())
       .filter(Boolean);
     const keys = [apiKey, ...extras];
-    const baseUrl = this.draftBaseUrl.trim();
     this.saving = true;
     try {
       const res = await authedFetch(
@@ -676,9 +681,9 @@ export class AhProviderKeySettings extends LitElement {
         />
       </div>
       <div class="field">
-        <label>接口地址（可选；留空用服务商默认端点）</label>
+        <label>${this.provider === 'openrouter' ? '接口地址（可选；留空用服务商默认端点）' : '接口地址（必填）'}</label>
         <input
-          placeholder="https://openrouter.ai/api/v1"
+          placeholder="${this.provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : `https://${this.provider}.com/v1`}"
           .value=${this.draftBaseUrl}
           @input=${(e: Event) =>
             (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
