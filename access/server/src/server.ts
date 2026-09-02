@@ -1,11 +1,9 @@
 import { createServer } from 'node:http';
-import { accessSync } from 'node:fs';
 import { readFile, appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
-  assembleAgent,
   defaultPromptFor,
   getMemoryStore,
   invalidateSessionMemory,
@@ -48,7 +46,6 @@ import {
   DagEngine,
   type WorkflowDef,
   type WorkflowEvent,
-  HttpA2ATransport,
   type TaskEnvelope,
   type TaskResult,
   type A2ARequest,
@@ -57,10 +54,10 @@ import {
   parsePlanOutput,
   contextWindowFor,
   enableTelemetryAutosave,
-  initTeamManager,
   getTeamManager,
   type Team
 } from '@agent-harness/core';
+
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
 import {
   getErrorLog,
@@ -69,6 +66,7 @@ import {
 } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore } from './workflow-executor';
 import { runAgentTask } from './agent-run';
+
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
 import {
   serveHtml,
@@ -78,21 +76,20 @@ import {
   webappDir,
   contentTypeFor
 } from './views';
+
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import {
-  corsHeaders,
-  sendJson,
-  startSse,
-  readBody
-} from './http-helpers';
-// 插件系统（Phase 1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
+import { corsHeaders, sendJson, startSse, readBody } from './http-helpers';
+
+// 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
+
 import {
   createPluginSystem,
   bootstrapPlugins,
   resolveUpgradeManifest,
   type PluginSystem
 } from './plugin-bootstrap';
+
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
   listChatSessions,
@@ -107,12 +104,16 @@ import {
   type TraceNode,
   type ChatMessage
 } from './chat-sessions';
+
 // 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
 import { getHistoryStore } from './history-store';
+
 // 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
-import { subscribeChatEvents, publishChatEvent, chatSubscriberCount } from './chat-bus';
+import { subscribeChatEvents, publishChatEvent } from './chat-bus';
+
 // 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
 import { subscribeReminders } from './reminder-bus';
+
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
@@ -120,9 +121,14 @@ import {
   type AuthContext,
   type Action
 } from './authz';
+
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
 import { warmJwks, getAuthConfig } from './sso';
-import { createApprovalPolicy, type ApprovalPolicy, type ApprovalTicket } from './approval';
+import {
+  createApprovalPolicy,
+  type ApprovalPolicy,
+  type ApprovalTicket
+} from './approval';
 import {
   createEvaluator,
   getRecipeStore,
@@ -132,25 +138,35 @@ import {
 } from './eval';
 import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
+
 // 文件上传（图片/文本附件）。
-import { handleUpload, serveUploaded, type UploadMeta } from './upload';
+import { handleUpload, serveUploaded } from './upload';
+
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
+
 import { DEFAULTS } from './config-defaults';
+
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import { resolveTenantContext, type TenantContext } from '@agent-harness/core';
+
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
+
 // 自定义模型 SQLite 持久化 + AES-GCM 解密
 import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
+
 import {
   registerProviderKeyRoutes,
   resolveRunCredential
 } from './provider-keys';
+
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
 import { quotaEngine } from '@agent-harness/core';
+
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
 import { registerOAuthRoutes } from './oauth';
+
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
   registerUser,
@@ -166,19 +182,21 @@ import {
   revokeAllTokens,
   requestPasswordReset,
   resetPassword,
-  AUTH_COOKIE,
   type AccountResult
 } from './accounts';
+
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
+
 // 接入层公开/运维探针路由表（可测试接缝，详见 routes/edge-routes.ts）。
 import {
   createEdgeRoutes,
   tryDispatchEdgeRoute,
   type EdgeRouteDeps
 } from './routes/edge-routes';
+
 // 接入层结构化日志封装（统一收口启动横幅 / 降级告警 / 自检结论）。
-import { log, banner } from './logger';
+import { log } from './logger';
 
 // 必须在下方任何 `process.env.X` 顶层读取前执行（幂等，仅首次生效）。
 loadSecrets();
@@ -188,7 +206,9 @@ setupAlerting();
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 // 默认值统一来自 config-defaults.DEFAULTS（单一事实来源，消除与 schema 校验的漂移）。
-const PORT = Number(process.env.PORT ?? process.env.UI_PORT ?? (DEFAULTS.PORT as number));
+const PORT = Number(
+  process.env.PORT ?? process.env.UI_PORT ?? (DEFAULTS.PORT as number)
+);
 const HOST = process.env.UI_HOST ?? (DEFAULTS.UI_HOST as string);
 
 // 边缘路由表（公开/运维探针）：在鉴权守卫前分发，命中即短路。
@@ -215,7 +235,6 @@ function edgeRouteDeps(): EdgeRouteDeps {
     handleReadiness
   };
 }
-
 
 // OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 // 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
@@ -263,22 +282,30 @@ function safeEqualString(a: string, b: string): boolean {
 // 关键：authorize 跳转 与 callback 换 token 必须返回完全一致的值，否则 GitHub 会因
 // redirect_uri 不一致再次拒绝授权（此前在 Render 上因后端写死 http:// 导致此问题）。
 function githubRedirectUri(req: IncomingMessage): string {
-  const cfg = process.env.GITHUB_OAUTH_REDIRECT || '/api/account/oauth/github/callback';
+  const cfg =
+    process.env.GITHUB_OAUTH_REDIRECT || '/api/account/oauth/github/callback';
   if (cfg.startsWith('http')) return cfg; // 完整 URL，直接采用，不走协议推断
   const host = req.headers.host ? String(req.headers.host) : '';
   if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`; // 无 host 兜底（保持原行为）
-  const xfp = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim();
-  const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
+  const xfp = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    ?.trim();
+  const proto =
+    xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
   return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
 }
 // Google OAuth 回调 URL 构造：与 githubRedirectUri 同理
 function googleRedirectUri(req: IncomingMessage): string {
-  const cfg = process.env.GOOGLE_OAUTH_REDIRECT || '/api/account/oauth/google/callback';
+  const cfg =
+    process.env.GOOGLE_OAUTH_REDIRECT || '/api/account/oauth/google/callback';
   if (cfg.startsWith('http')) return cfg;
   const host = req.headers.host ? String(req.headers.host) : '';
   if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`;
-  const xfp = String(req.headers['x-forwarded-proto'] || '').split(',')[0]?.trim();
-  const proto = xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
+  const xfp = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    ?.trim();
+  const proto =
+    xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
   return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
 }
 // LLM 统一密钥 OPEN_API_KEY 主要作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
@@ -286,28 +313,39 @@ function googleRedirectUri(req: IncomingMessage): string {
 // 详见 authz.ts 的 createAuthorizer。新部署应显式设置 ADMIN_API_KEY，使「LLM 密钥」与「站点鉴权」职责分离。
 // 站点鉴权主链路由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
-const AUTH_PROVIDER = (process.env.AUTH_PROVIDER || (DEFAULTS.AUTH_PROVIDER as string)).toLowerCase();
+const AUTH_PROVIDER = (
+  process.env.AUTH_PROVIDER || (DEFAULTS.AUTH_PROVIDER as string)
+).toLowerCase();
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
-const ACCOUNT_AUTH = (process.env.ACCOUNT_AUTH ?? (DEFAULTS.ACCOUNT_AUTH as string)).toLowerCase() !== 'off';
+const ACCOUNT_AUTH =
+  (
+    process.env.ACCOUNT_AUTH ?? (DEFAULTS.ACCOUNT_AUTH as string)
+  ).toLowerCase() !== 'off';
 // 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS）。
 // 若以上均不满足：降级模式下 admin key（ADMIN_API_KEY 或回退 OPEN_API_KEY）仍可作唯一凭证，
 // 否则由账户密码档严格拒绝（无 cookie 即 401）。
 const REQUIRE_AUTH =
-  AUTH_PROVIDER !== 'token' ||
-  ACCOUNT_AUTH ||
-  !!(process.env.UI_TOKENS);
+  AUTH_PROVIDER !== 'token' || ACCOUNT_AUTH || !!process.env.UI_TOKENS;
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
-const UI_CORS_ORIGIN = (process.env.UI_CORS_ORIGIN ?? (DEFAULTS.UI_CORS_ORIGIN as string))
+const UI_CORS_ORIGIN = (
+  process.env.UI_CORS_ORIGIN ?? (DEFAULTS.UI_CORS_ORIGIN as string)
+)
   .split(',')
   .map((s: string) => s.trim())
   .filter(Boolean);
 // 请求体上限（字节），防大报文 DoS。默认 1MB。
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number));
+const MAX_BODY_BYTES = Number(
+  process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
+);
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
-const RATE_LIMIT = Number(process.env.RATE_LIMIT ?? (DEFAULTS.RATE_LIMIT as number));
-const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? (DEFAULTS.RATE_WINDOW_MS as number));
+const RATE_LIMIT = Number(
+  process.env.RATE_LIMIT ?? (DEFAULTS.RATE_LIMIT as number)
+);
+const RATE_WINDOW_MS = Number(
+  process.env.RATE_LIMIT_WINDOW_MS ?? (DEFAULTS.RATE_WINDOW_MS as number)
+);
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
@@ -341,7 +379,8 @@ function clientIp(req: IncomingMessage): string {
   const cf = req.headers['cf-connecting-ip'];
   if (typeof cf === 'string' && cf.length) return cf.trim();
   const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length) return (xff.split(',')[0] ?? '').trim();
+  if (typeof xff === 'string' && xff.length)
+    return (xff.split(',')[0] ?? '').trim();
   return req.socket?.remoteAddress || 'unknown';
 }
 
@@ -356,7 +395,10 @@ function rateLimited(ip: string): { limited: boolean; retryAfter: number } {
     rateBuckets.set(ip, b);
   }
   b.count += 1;
-  return { limited: b.count > RATE_LIMIT, retryAfter: Math.max(0, b.resetAt - now) };
+  return {
+    limited: b.count > RATE_LIMIT,
+    retryAfter: Math.max(0, b.resetAt - now)
+  };
 }
 
 /** SSE 长连接端点：固定窗口限流会把连接/重连计入同一计数器，极易在刷新时触发 429 螺旋。 */
@@ -365,7 +407,6 @@ function isSseEndpoint(req: IncomingMessage): boolean {
   const path = String(req.url ?? '').split('?')[0];
   return path === '/api/events' || path === '/api/chat/stream';
 }
-
 
 /** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。 */
 function audit(rec: Record<string, unknown>): void {
@@ -388,7 +429,7 @@ function redactUrl(url?: string): string {
     const u = new URL(url);
     return u.origin + u.pathname;
   } catch {
-    return (url.split('?')[0] ?? '');
+    return url.split('?')[0] ?? '';
   }
 }
 
@@ -442,7 +483,12 @@ async function guard(
         reason: 'tenant isolation required but no tenant context provided'
       });
       res.writeHead(403, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'forbidden', reason: 'tenant isolation required' }));
+      res.end(
+        JSON.stringify({
+          error: 'forbidden',
+          reason: 'tenant isolation required'
+        })
+      );
       return null;
     }
     // 将解析后的租户上下文附加到 AuthContext，供下游消费。
@@ -706,7 +752,14 @@ const server = createServer(
       // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
       // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
       if (
-        await tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
+        await tryDispatchEdgeRoute(
+          edgeRoutes,
+          req,
+          res,
+          url,
+          edgeRouteDeps(),
+          path
+        )
       ) {
         return;
       }
@@ -822,13 +875,18 @@ const server = createServer(
         // 账户密码档在 RBAC 中统一为 admin 角色（authz.ts: AccountAuthorizer）。
         // 这里随 /me 一并返回 username / role / email，供顶栏用户菜单展示。
         const profile = await getProfile(u);
-        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        res.end(JSON.stringify({
-          ok: true,
-          username: u,
-          role: 'admin',
-          email: profile?.email ?? null
-        }));
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            username: u,
+            role: 'admin',
+            email: profile?.email ?? null
+          })
+        );
         return;
       }
       if (req.method === 'POST' && path === '/api/account/change-password') {
@@ -840,11 +898,17 @@ const server = createServer(
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
         const r = await changePassword(ctx.sub, oldPw, newPw);
         if (!r.ok) {
-          res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.writeHead(400, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
           res.end(JSON.stringify({ ok: false, error: r.error }));
           return;
         }
-        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
         res.end(JSON.stringify({ ok: true }));
         return;
       }
@@ -865,8 +929,17 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/account/oauth/github') {
         const clientId = process.env.GITHUB_CLIENT_ID;
         if (!clientId || !process.env.GITHUB_CLIENT_SECRET) {
-          res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-          res.end(JSON.stringify({ ok: false, error: '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。' }));
+          res.writeHead(500, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error:
+                '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。'
+            })
+          );
           return;
         }
         const redirectUri = githubRedirectUri(req);
@@ -886,65 +959,134 @@ const server = createServer(
         return;
       }
       // 2) GitHub 回调：校验 state → 用 code 换 token → 拉 user + 主邮箱 → 本地 upsert → 下发 cookie → 回首页。
-      if (req.method === 'GET' && path === '/api/account/oauth/github/callback') {
+      if (
+        req.method === 'GET' &&
+        path === '/api/account/oauth/github/callback'
+      ) {
         const fail = (code: number, msg: string) => {
-          if (code === 500 && process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+          if (
+            code === 500 &&
+            process.env.GITHUB_CLIENT_ID &&
+            process.env.GITHUB_CLIENT_SECRET
+          ) {
             // 配置正常但处理异常：返回 HTML 错误页
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
             res.end(renderOAuthTransitionHtml({ ok: false, message: msg }));
             return;
           }
-          res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.writeHead(code, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
           res.end(JSON.stringify({ ok: false, error: msg }));
           return;
         };
-        if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
-          return fail(500, '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。');
+        if (
+          !process.env.GITHUB_CLIENT_ID ||
+          !process.env.GITHUB_CLIENT_SECRET
+        ) {
+          return fail(
+            500,
+            '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。'
+          );
         }
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = new URL(
+          req.url ?? '/',
+          `http://${req.headers.host ?? 'localhost'}`
+        );
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
         const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         if (!state || !expect || !safeEqualString(state, expect)) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message:
+                'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。'
+            })
+          );
           return;
         }
         if (!code) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: 'GitHub 未回传授权码，请重试。' }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message: 'GitHub 未回传授权码，请重试。'
+            })
+          );
           return;
         }
         try {
           const redirectUri = githubRedirectUri(req);
           // 换 access_token（GitHub 接受 Accept: application/json）。
-          const tokRes = await fetch('https://github.com/login/oauth/access_token', {
-            method: 'POST',
-            headers: {
-              accept: 'application/json',
-              'content-type': 'application/json'
-            },
-            body: JSON.stringify({
-              client_id: process.env.GITHUB_CLIENT_ID,
-              client_secret: process.env.GITHUB_CLIENT_SECRET,
-              code,
-              redirect_uri: redirectUri
-            })
-          });
-          const tok = (await tokRes.json()) as { access_token?: string; error?: string };
+          const tokRes = await fetch(
+            'https://github.com/login/oauth/access_token',
+            {
+              method: 'POST',
+              headers: {
+                accept: 'application/json',
+                'content-type': 'application/json'
+              },
+              body: JSON.stringify({
+                client_id: process.env.GITHUB_CLIENT_ID,
+                client_secret: process.env.GITHUB_CLIENT_SECRET,
+                code,
+                redirect_uri: redirectUri
+              })
+            }
+          );
+          const tok = (await tokRes.json()) as {
+            access_token?: string;
+            error?: string;
+          };
           if (!tok.access_token) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: `GitHub 换 token 失败：${tok.error ?? '未知错误'}` }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: `GitHub 换 token 失败：${tok.error ?? '未知错误'}`
+              })
+            );
             return;
           }
           // 拉用户基本信息。
           const userRes = await fetch('https://api.github.com/user', {
-            headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-harness' }
+            headers: {
+              authorization: `Bearer ${tok.access_token}`,
+              accept: 'application/vnd.github+json',
+              'user-agent': 'agent-harness'
+            }
           });
-          const user = (await userRes.json()) as { login?: string; id?: number; email?: string };
+          const user = (await userRes.json()) as {
+            login?: string;
+            id?: number;
+            email?: string;
+          };
           if (!user.login) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: '无法获取 GitHub 用户信息。' }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: '无法获取 GitHub 用户信息。'
+              })
+            );
             return;
           }
           // 拉主邮箱（user.email 常常为空，需单独调 /user/emails 取 primary/verified）。
@@ -952,18 +1094,40 @@ const server = createServer(
           if (!email) {
             try {
               const emRes = await fetch('https://api.github.com/user/emails', {
-                headers: { authorization: `Bearer ${tok.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-harness' }
+                headers: {
+                  authorization: `Bearer ${tok.access_token}`,
+                  accept: 'application/vnd.github+json',
+                  'user-agent': 'agent-harness'
+                }
               });
-              const ems = (await emRes.json()) as Array<{ email?: string; primary?: boolean; verified?: boolean }>;
+              const ems = (await emRes.json()) as Array<{
+                email?: string;
+                primary?: boolean;
+                verified?: boolean;
+              }>;
               // 仅接受 GitHub 已 verified 的邮箱；未验证邮箱一律不采用，避免冒用他人邮箱身份。
               const primary = ems.find((e) => e.verified);
               email = primary?.email;
-            } catch { /* 邮箱可选，失败不阻断登录 */ }
+            } catch {
+              /* 邮箱可选，失败不阻断登录 */
+            }
           }
-          const r: AccountResult = await upsertGithubUser(user.login, Number(user.id ?? 0), email);
+          const r: AccountResult = await upsertGithubUser(
+            user.login,
+            Number(user.id ?? 0),
+            email
+          );
           if (!r.ok || !r.token) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: '创建/登录本地账户失败，请稍后重试。' }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: '创建/登录本地账户失败，请稍后重试。'
+              })
+            );
             return;
           }
           const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
@@ -973,14 +1137,19 @@ const server = createServer(
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
-          res.end(renderOAuthTransitionHtml({
-            ok: true,
-            message: `欢迎回来，${r.username}！正在跳转到工作台…`,
-            redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
-          }));
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: true,
+              message: `欢迎回来，${r.username}！正在跳转到工作台…`,
+              redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+            })
+          );
           return;
         } catch (err) {
-          return fail(500, `GitHub OAuth 处理异常：${(err as Error)?.message ?? String(err)}`);
+          return fail(
+            500,
+            `GitHub OAuth 处理异常：${(err as Error)?.message ?? String(err)}`
+          );
         }
       }
       // ── Google OAuth 授权码流（后端持有 client_secret）──
@@ -988,14 +1157,25 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/account/oauth/google') {
         const clientId = process.env.GOOGLE_CLIENT_ID;
         if (!clientId || !process.env.GOOGLE_CLIENT_SECRET) {
-          res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-          res.end(JSON.stringify({ ok: false, error: '服务端未配置 Google OAuth（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）。' }));
+          res.writeHead(500, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error:
+                '服务端未配置 Google OAuth（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）。'
+            })
+          );
           return;
         }
         const redirectUri = googleRedirectUri(req);
         const state = randomBytes(16).toString('hex');
         const codeVerifier = randomBytes(32).toString('base64url');
-        const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+        const codeChallenge = createHash('sha256')
+          .update(codeVerifier)
+          .digest('base64url');
         const googleUrl =
           `https://accounts.google.com/o/oauth2/v2/auth` +
           `?client_id=${encodeURIComponent(clientId)}` +
@@ -1019,30 +1199,72 @@ const server = createServer(
         return;
       }
       // 2) Google 回调：校验 state → 用 code + code_verifier 换 token → 解析 id_token → 本地 upsert → 下发 cookie → 回首页。
-      if (req.method === 'GET' && path === '/api/account/oauth/google/callback') {
-        if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: '服务端未配置 Google OAuth。' }));
+      if (
+        req.method === 'GET' &&
+        path === '/api/account/oauth/google/callback'
+      ) {
+        if (
+          !process.env.GOOGLE_CLIENT_ID ||
+          !process.env.GOOGLE_CLIENT_SECRET
+        ) {
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message: '服务端未配置 Google OAuth。'
+            })
+          );
           return;
         }
-        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+        const url = new URL(
+          req.url ?? '/',
+          `http://${req.headers.host ?? 'localhost'}`
+        );
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
         const expect = cookieValue(req, OAUTH_STATE_COOKIE);
         const codeVerifier = cookieValue(req, 'ah_oauth_cv');
         if (!state || !expect || !safeEqualString(state, expect)) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: 'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。' }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message:
+                'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。'
+            })
+          );
           return;
         }
         if (!code) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 未回传授权码，请重试。' }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message: 'Google 未回传授权码，请重试。'
+            })
+          );
           return;
         }
         if (!codeVerifier) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: 'PKCE code_verifier 丢失，请重新登录。' }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message: 'PKCE code_verifier 丢失，请重新登录。'
+            })
+          );
           return;
         }
         try {
@@ -1060,44 +1282,104 @@ const server = createServer(
               code_verifier: codeVerifier
             }).toString()
           });
-          const tok = (await tokRes.json()) as { id_token?: string; access_token?: string; error?: string };
+          const tok = (await tokRes.json()) as {
+            id_token?: string;
+            access_token?: string;
+            error?: string;
+          };
           if (!tok.id_token) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: `Google 换 token 失败：${tok.error ?? '未知错误'}` }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: `Google 换 token 失败：${tok.error ?? '未知错误'}`
+              })
+            );
             return;
           }
           // 解析 JWT id_token（不验签，已来自 Google 直连 + 后续用 access_token 拉 userinfo 复核）
           const parts = tok.id_token.split('.');
           if (parts.length !== 3 || !parts[1]) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 返回的 id_token 格式异常。' }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: 'Google 返回的 id_token 格式异常。'
+              })
+            );
             return;
           }
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8')) as {
+          const payload = JSON.parse(
+            Buffer.from(parts[1], 'base64url').toString('utf-8')
+          ) as {
             sub?: string;
             email?: string;
             name?: string;
             email_verified?: boolean;
           };
-          if (!payload.sub || !payload.email || payload.email_verified === false) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 账号未验证邮箱或信息不完整。' }));
+          if (
+            !payload.sub ||
+            !payload.email ||
+            payload.email_verified === false
+          ) {
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: 'Google 账号未验证邮箱或信息不完整。'
+              })
+            );
             return;
           }
           // 用 access_token 拉 userinfo 做最终复核（防 id_token 被重放）
-          const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-            headers: { authorization: `Bearer ${tok.access_token}` }
-          });
-          const info = (await infoRes.json()) as { sub?: string; email?: string };
+          const infoRes = await fetch(
+            'https://www.googleapis.com/oauth2/v3/userinfo',
+            {
+              headers: { authorization: `Bearer ${tok.access_token}` }
+            }
+          );
+          const info = (await infoRes.json()) as {
+            sub?: string;
+            email?: string;
+          };
           if (info.sub && info.sub !== payload.sub) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: 'Google 用户信息校验不一致。' }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: 'Google 用户信息校验不一致。'
+              })
+            );
             return;
           }
-          const r: AccountResult = await upsertGoogleUser(payload.sub, payload.email, payload.name);
+          const r: AccountResult = await upsertGoogleUser(
+            payload.sub,
+            payload.email,
+            payload.name
+          );
           if (!r.ok || !r.token) {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: '创建/登录本地账户失败，请稍后重试。' }));
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store'
+            });
+            res.end(
+              renderOAuthTransitionHtml({
+                ok: false,
+                message: '创建/登录本地账户失败，请稍后重试。'
+              })
+            );
             return;
           }
           const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
@@ -1106,15 +1388,27 @@ const server = createServer(
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
-          res.end(renderOAuthTransitionHtml({
-            ok: true,
-            message: `欢迎回来，${r.username}！正在跳转到工作台…`,
-            redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
-          }));
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: true,
+              message: `欢迎回来，${r.username}！正在跳转到工作台…`,
+              redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
+            })
+          );
           return;
         } catch (err) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(renderOAuthTransitionHtml({ ok: false, message: `Google OAuth 处理异常：${(err as Error)?.message ?? String(err)}` }));
+          res.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store'
+          });
+          res.end(
+            renderOAuthTransitionHtml({
+              ok: false,
+              message: `Google OAuth 处理异常：${
+                (err as Error)?.message ?? String(err)
+              }`
+            })
+          );
           return;
         }
       }
@@ -1139,6 +1433,29 @@ const server = createServer(
           { flags: features.getAll(), stats: features.getStats() },
           req
         );
+      }
+      if (req.method === 'POST' && path === '/api/features/toggle') {
+        // 运行时切换特性开关，受 policy:write 保护。
+        const ctx = await guard(req, res, 'features:write');
+        if (!ctx) return;
+        const b = await readBody(req);
+        const key = typeof b?.key === 'string' ? b.key : '';
+        const enabled = typeof b?.enabled === 'boolean' ? b.enabled : undefined;
+        if (!key) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'missing key' }));
+        }
+        if (enabled === undefined) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'missing enabled' }));
+        }
+        try {
+          features.setOverride(key, enabled);
+          return sendJson(res, { ok: true, key, enabled }, req);
+        } catch (e: any) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: e.message }));
+        }
       }
       // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
@@ -1166,16 +1483,18 @@ const server = createServer(
             ...snapshot,
             queue: qstats,
             prometheus: {
-              'harness_queue_pending': qstats.pending ?? 0,
-              'harness_queue_processing': qstats.running ?? 0,
-              'harness_queue_concurrency_limit': qstats.concurrency ?? 4,
-              'harness_run_success_total': snapshot.counters['run.success'] ?? 0,
-              'harness_run_failed_total': snapshot.counters['run.failed'] ?? 0,
-              'harness_guardrail_blocked_total': snapshot.counters['guardrail.blocked'] ?? 0,
-              'harness_os_sandbox_degraded_total': snapshot.counters['os_sandbox.degraded'] ?? 0,
-              'harness_errors_total': snapshot.counters['errors'] ?? 0,
-              'harness_tokens_total': snapshot.tokens.total,
-              'harness_cost_total': snapshot.cost,
+              harness_queue_pending: qstats.pending ?? 0,
+              harness_queue_processing: qstats.running ?? 0,
+              harness_queue_concurrency_limit: qstats.concurrency ?? 4,
+              harness_run_success_total: snapshot.counters['run.success'] ?? 0,
+              harness_run_failed_total: snapshot.counters['run.failed'] ?? 0,
+              harness_guardrail_blocked_total:
+                snapshot.counters['guardrail.blocked'] ?? 0,
+              harness_os_sandbox_degraded_total:
+                snapshot.counters['os_sandbox.degraded'] ?? 0,
+              harness_errors_total: snapshot.counters['errors'] ?? 0,
+              harness_tokens_total: snapshot.tokens.total,
+              harness_cost_total: snapshot.cost
             },
             memory: { backend: store.kind },
             tokenCache: getTokenCacheStats(),
@@ -1205,10 +1524,14 @@ const server = createServer(
           `harness_run_failed_total ${snapshot.counters['run.failed'] ?? 0}`,
           '# HELP harness_guardrail_blocked_total 护栏拦截次数',
           '# TYPE harness_guardrail_blocked_total counter',
-          `harness_guardrail_blocked_total ${snapshot.counters['guardrail.blocked'] ?? 0}`,
+          `harness_guardrail_blocked_total ${
+            snapshot.counters['guardrail.blocked'] ?? 0
+          }`,
           '# HELP harness_os_sandbox_degraded_total OS 沙箱降级为 local 的次数',
           '# TYPE harness_os_sandbox_degraded_total counter',
-          `harness_os_sandbox_degraded_total ${snapshot.counters['os_sandbox.degraded'] ?? 0}`,
+          `harness_os_sandbox_degraded_total ${
+            snapshot.counters['os_sandbox.degraded'] ?? 0
+          }`,
           '# HELP harness_errors_total 累计错误数',
           '# TYPE harness_errors_total counter',
           `harness_errors_total ${snapshot.counters['errors'] ?? 0}`,
@@ -1217,7 +1540,7 @@ const server = createServer(
           `harness_tokens_total ${snapshot.tokens.total}`,
           '# HELP harness_cost_total 累计 LLM 调用成本（货币单位与模型定价一致）',
           '# TYPE harness_cost_total gauge',
-          `harness_cost_total ${Number(snapshot.cost).toFixed(6)}`,
+          `harness_cost_total ${Number(snapshot.cost).toFixed(6)}`
         ];
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(lines.join('\n') + '\n');
@@ -1333,7 +1656,7 @@ const server = createServer(
             res,
             {
               tickets: await approvalPolicy.list(
-                status ? { status: (status as any) } : undefined
+                status ? { status: status as any } : undefined
               )
             },
             req
@@ -1349,7 +1672,9 @@ const server = createServer(
         if (req.method === 'GET') {
           const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
-          const t = (await approvalPolicy.list()).find((x: ApprovalTicket) => x.id === id);
+          const t = (await approvalPolicy.list()).find(
+            (x: ApprovalTicket) => x.id === id
+          );
           return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
         }
         if (req.method === 'POST') {
@@ -1536,7 +1861,11 @@ const server = createServer(
         if (!ctx) return;
         if (ctx.sub === 'anon') {
           res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          return res.end(
+            JSON.stringify({
+              error: 'authentication required for chat history'
+            })
+          );
         }
         return sendJson(res, { sessions: listChatSessions(ctx.sub) }, req);
       }
@@ -1546,7 +1875,11 @@ const server = createServer(
         if (!ctx) return;
         if (ctx.sub === 'anon') {
           res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          return res.end(
+            JSON.stringify({
+              error: 'authentication required for chat history'
+            })
+          );
         }
         return sendJson(
           res,
@@ -1564,7 +1897,11 @@ const server = createServer(
         if (!ctx) return;
         if (ctx.sub === 'anon') {
           res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          return res.end(
+            JSON.stringify({
+              error: 'authentication required for chat history'
+            })
+          );
         }
         const s = await getChatSession(id, ctx.sub);
         if (!s) {
@@ -1580,7 +1917,11 @@ const server = createServer(
         if (!ctx) return;
         if (ctx.sub === 'anon') {
           res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          return res.end(
+            JSON.stringify({
+              error: 'authentication required for chat history'
+            })
+          );
         }
         const s = await renameChatSession(id, b.title, ctx.sub, {
           interactionMode: b.interactionMode,
@@ -1599,7 +1940,11 @@ const server = createServer(
         if (!ctx) return;
         if (ctx.sub === 'anon') {
           res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+          return res.end(
+            JSON.stringify({
+              error: 'authentication required for chat history'
+            })
+          );
         }
         const ok = await deleteChatSession(id, ctx.sub);
         return sendJson(res, { ok }, req);
@@ -1683,7 +2028,11 @@ const server = createServer(
           if (!ctx) return;
           if (ctx.sub === 'anon') {
             res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+            return res.end(
+              JSON.stringify({
+                error: 'authentication required for chat history'
+              })
+            );
           }
           const index = await getHistoryStore().index(ctx.sub);
           return sendJson(res, { sessions: index }, req);
@@ -1694,7 +2043,11 @@ const server = createServer(
           if (!ctx) return;
           if (ctx.sub === 'anon') {
             res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+            return res.end(
+              JSON.stringify({
+                error: 'authentication required for chat history'
+              })
+            );
           }
           if (!validSid(sid)) {
             res.writeHead(400, { 'content-type': 'application/json' });
@@ -1711,14 +2064,10 @@ const server = createServer(
             const msgs = Array.isArray(parsed)
               ? parsed
               : Array.isArray(parsed?.msgs)
-                ? parsed.msgs
-                : [];
+              ? parsed.msgs
+              : [];
             const usage = !Array.isArray(parsed) ? parsed.usage ?? null : null;
-            return sendJson(
-              res,
-              { ...row.meta, v: 1, msgs, usage },
-              req
-            );
+            return sendJson(res, { ...row.meta, v: 1, msgs, usage }, req);
           } catch {
             // 存储层数据损坏：明确返回 522 类错误而非抛出未捕获异常。
             res.writeHead(500, { 'content-type': 'application/json' });
@@ -1736,7 +2085,11 @@ const server = createServer(
           if (!ctx) return;
           if (ctx.sub === 'anon') {
             res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+            return res.end(
+              JSON.stringify({
+                error: 'authentication required for chat history'
+              })
+            );
           }
           // 参数校验：msgs 必须为数组；title 收敛为字符串；整体序列化体积受限。
           if (!Array.isArray(b.msgs)) {
@@ -1785,7 +2138,11 @@ const server = createServer(
           if (!ctx) return;
           if (ctx.sub === 'anon') {
             res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+            return res.end(
+              JSON.stringify({
+                error: 'authentication required for chat history'
+              })
+            );
           }
           const ok = await getHistoryStore().remove(sid, ctx.sub);
           return sendJson(res, { ok }, req);
@@ -1807,7 +2164,8 @@ const server = createServer(
         const ctx = await guard(req, res, 'agent:read');
         if (!ctx) return;
         const tm = getTeamManager();
-        if (!tm) return sendJson(res, { error: 'TeamManager not initialized' }, req);
+        if (!tm)
+          return sendJson(res, { error: 'TeamManager not initialized' }, req);
         return sendJson(res, { teams: tm.list() }, req);
       }
       if (req.method === 'POST' && path === '/api/teams') {
@@ -1831,9 +2189,14 @@ const server = createServer(
         const ctx = await guard(req, res, 'agent:register');
         if (!ctx) return;
         const teamId = path.slice('/api/teams/'.length).replace(/\/$/, '');
-        auditAction('team.deregister', { teamId, role: ctx.role, sub: ctx.sub });
+        auditAction('team.deregister', {
+          teamId,
+          role: ctx.role,
+          sub: ctx.sub
+        });
         const tm = getTeamManager();
-        if (!tm) return sendJson(res, { error: 'TeamManager not initialized' }, req);
+        if (!tm)
+          return sendJson(res, { error: 'TeamManager not initialized' }, req);
         tm.deregister(teamId);
         return sendJson(res, { ok: true }, req);
       }
@@ -1842,9 +2205,11 @@ const server = createServer(
         if (!ctx) return;
         const teamId = path.slice('/api/teams/'.length).replace(/\/$/, '');
         const tm = getTeamManager();
-        if (!tm) return sendJson(res, { error: 'TeamManager not initialized' }, req);
+        if (!tm)
+          return sendJson(res, { error: 'TeamManager not initialized' }, req);
         const team = tm.get(teamId);
-        if (!team) return sendJson(res, { error: `Team not found: ${teamId}` }, req);
+        if (!team)
+          return sendJson(res, { error: `Team not found: ${teamId}` }, req);
         return sendJson(res, { team }, req);
       }
       if (
@@ -2050,12 +2415,10 @@ const server = createServer(
           return;
         }
         if (
-          await pluginSystem.serverHost.handle(
-            path,
-            req,
-            res,
-            { sub: pluginUser.sub, role: pluginUser.role }
-          )
+          await pluginSystem.serverHost.handle(path, req, res, {
+            sub: pluginUser.sub,
+            role: pluginUser.role
+          })
         ) {
           return;
         }
@@ -2143,8 +2506,6 @@ async function buildState(req: IncomingMessage) {
   };
 }
 
-
-
 async function handleRun(
   req: IncomingMessage,
   res: ServerResponse
@@ -2170,7 +2531,9 @@ async function handleRun(
   // 多用户隔离：聊天历史/会话必须登录后才能写入；匿名（auth off 或未登录）直接拒。
   if (ctx.sub === 'anon') {
     res.writeHead(401, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'authentication required for chat history' }));
+    res.end(
+      JSON.stringify({ error: 'authentication required for chat history' })
+    );
     return;
   }
   // 优雅停机期间不再接受新运行，避免任务在进程退出时被强杀。
@@ -2351,7 +2714,9 @@ async function handleRun(
     : undefined;
   // traceId：优先 body 声明（客户端幂等追踪），再查 X-Request-Id header，最后服务端生成。
   // 注入到 JobDescriptor 后由 run-queue.withRequestContext 自动传给所有 structLog/audit。
-  const traceId = body.traceId ? String(body.traceId).trim() : resolveTraceId(req, body) || undefined;
+  const traceId = body.traceId
+    ? String(body.traceId).trim()
+    : resolveTraceId(req, body) || undefined;
 
   // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
   // > 服务端 AGENT_AUTO_VERIFY 默认）。验证器最终在 run-queue.execute 内按 config 装配，
@@ -2504,13 +2869,17 @@ async function handleRun(
         const messages =
           sessMsgs && ev.messageCount
             ? sessMsgs
-                .slice(0, Math.max(0, Number(ev.messageCount) || sessMsgs.length))
+                .slice(
+                  0,
+                  Math.max(0, Number(ev.messageCount) || sessMsgs.length)
+                )
                 .map((m) => ({
                   role: m.role,
                   content: m.content ?? '',
-                  ts: typeof (m as { ts?: unknown }).ts === 'number'
-                    ? (m as { ts: number }).ts
-                    : Date.now(),
+                  ts:
+                    typeof (m as { ts?: unknown }).ts === 'number'
+                      ? (m as { ts: number }).ts
+                      : Date.now(),
                   ...(m.reasoning ? { reasoning: m.reasoning } : {})
                 }))
             : undefined;
@@ -2747,12 +3116,17 @@ async function handleRun(
           });
           if (chatSessionId) {
             traceHandle(e);
-            appendChatMessage(chatSessionId, {
-              role: 'assistant',
-              content: `📋 ${plan.goal}`,
-              ts: Date.now(),
-              plan
-            }, ctx.sub, body.origin || '');
+            appendChatMessage(
+              chatSessionId,
+              {
+                role: 'assistant',
+                content: `📋 ${plan.goal}`,
+                ts: Date.now(),
+                plan
+              },
+              ctx.sub,
+              body.origin || ''
+            );
           }
           return;
         }
@@ -2812,58 +3186,71 @@ async function handleRun(
         t.errored = !!a.errored;
         toolMap.set(String(c.id), t);
       } else if (ev.type === 'run:start' && ev.input != null) {
-        appendChatMessage(chatSessionId, {
-          role: 'user',
-          // 计划模式下落盘用户的原始需求（ev.input 是 planner 包装后的提示词）。
-          content: isPlanPropose ? prompt : String(ev.input),
-          ts: Date.now(),
-          // 把用户消息携带的图片/文件附件一并落盘（url 兼容本地 dataUrl 或服务端
-          // 上传地址），否则 getChatSession 恢复时气泡内图片丢失。单图体积超限时
-          // 不持久化（仅当次显示），避免历史被超大 base64 撑爆。
-          ...(body.attachments && body.attachments.length
-            ? {
-                attachments: body.attachments
-                  .filter(
-                    (a: { url?: string; name?: string; type?: string }) =>
-                      a && (a.url || '').length <= 5_000_000
-                  )
-                  .map(
-                    (a: {
-                      url?: string;
-                      name?: string;
-                      type?: string;
-                      serverUrl?: string;
-                    }) => ({
-                      name: a.name ?? 'file',
-                      type: a.type ?? 'application/octet-stream',
-                      ...(a.url ? { url: a.url } : {}),
-                      ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
-                    })
-                  )
-              }
-            : {})
-        }, ctx.sub, body.origin || '');
+        appendChatMessage(
+          chatSessionId,
+          {
+            role: 'user',
+            // 计划模式下落盘用户的原始需求（ev.input 是 planner 包装后的提示词）。
+            content: isPlanPropose ? prompt : String(ev.input),
+            ts: Date.now(),
+            // 把用户消息携带的图片/文件附件一并落盘（url 兼容本地 dataUrl 或服务端
+            // 上传地址），否则 getChatSession 恢复时气泡内图片丢失。单图体积超限时
+            // 不持久化（仅当次显示），避免历史被超大 base64 撑爆。
+            ...(body.attachments && body.attachments.length
+              ? {
+                  attachments: body.attachments
+                    .filter(
+                      (a: { url?: string; name?: string; type?: string }) =>
+                        a && (a.url || '').length <= 5_000_000
+                    )
+                    .map(
+                      (a: {
+                        url?: string;
+                        name?: string;
+                        type?: string;
+                        serverUrl?: string;
+                      }) => ({
+                        name: a.name ?? 'file',
+                        type: a.type ?? 'application/octet-stream',
+                        ...(a.url ? { url: a.url } : {}),
+                        ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
+                      })
+                    )
+                }
+              : {})
+          },
+          ctx.sub,
+          body.origin || ''
+        );
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
         // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
         const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
         if (!isPlanPropose && taskMatch) {
           const taskId = taskMatch[1];
-          updatePlanStatus(chatSessionId, (prev) => ({
-            ...prev,
-            status: 'running',
-            currentTaskId: taskId,
-            failedTaskId: undefined
-          }), ctx.sub);
+          updatePlanStatus(
+            chatSessionId,
+            (prev) => ({
+              ...prev,
+              status: 'running',
+              currentTaskId: taskId,
+              failedTaskId: undefined
+            }),
+            ctx.sub
+          );
         }
       } else if (ev.type === 'error') {
         // 计划任务执行失败：进度镜像标记 failed + 失败节点，前端恢复时据此续跑。
         if (!isPlanPropose) {
-          updatePlanStatus(chatSessionId, (prev) => ({
-            ...prev,
-            status: 'failed',
-            failedTaskId: prev.currentTaskId,
-            currentTaskId: undefined
-          }), ctx.sub);
+          updatePlanStatus(
+            chatSessionId,
+            (prev) => ({
+              ...prev,
+              status: 'failed',
+              failedTaskId: prev.currentTaskId,
+              currentTaskId: undefined
+            }),
+            ctx.sub
+          );
         }
       } else if (ev.type === 'run:end' && ev.final != null) {
         // 去重：run-queue 会在 harness 的 run:end 之后再补发一个不带 runId 的 run:end
@@ -2914,27 +3301,36 @@ async function handleRun(
         }
         // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
         if (!isPlanPropose) {
-          updatePlanStatus(chatSessionId, (prev) => {
-            if (!prev.currentTaskId || prev.done.includes(prev.currentTaskId))
-              return prev;
-            const done = [...prev.done, prev.currentTaskId];
-            return {
-              ...prev,
-              status: 'running',
-              done,
-              currentTaskId: undefined
-            };
-          }, ctx.sub);
+          updatePlanStatus(
+            chatSessionId,
+            (prev) => {
+              if (!prev.currentTaskId || prev.done.includes(prev.currentTaskId))
+                return prev;
+              const done = [...prev.done, prev.currentTaskId];
+              return {
+                ...prev,
+                status: 'running',
+                done,
+                currentTaskId: undefined
+              };
+            },
+            ctx.sub
+          );
         }
         if (!(last && last.role === 'assistant' && last.content === finalStr)) {
-          appendChatMessage(chatSessionId, {
-            role: 'assistant',
-            content: finalStr,
-            ts: Date.now(),
-            reasoning: reasoningBuf || undefined,
-            tools: toolMap.size ? [...toolMap.values()] : undefined,
-            trace: traceRoot ? [traceRoot] : undefined
-          }, ctx.sub, body.origin || '');
+          appendChatMessage(
+            chatSessionId,
+            {
+              role: 'assistant',
+              content: finalStr,
+              ts: Date.now(),
+              reasoning: reasoningBuf || undefined,
+              tools: toolMap.size ? [...toolMap.values()] : undefined,
+              trace: traceRoot ? [traceRoot] : undefined
+            },
+            ctx.sub,
+            body.origin || ''
+          );
         }
       }
     }
@@ -3512,23 +3908,26 @@ function buildAgentStore(): AgentStore {
  * 启动引导：先按 env 选定并初始化 AgentRegistry 持久后端（幂等，须早于首个请求），
  * 再注册行业合规画像，最后开始监听。把这些放到 listen 之前，杜绝「请求早于注册表就绪」的竞态。
  */
- /** 解析当前请求的 traceId（客户端显式声明优先，否则生成 UUID）。 */
- function resolveTraceId(req: IncomingMessage, body?: Record<string, unknown>): string {
- // 先查 Request Body
- const bodyTraceId = body?.traceId;
- if (typeof bodyTraceId === 'string' && bodyTraceId.trim().length > 0) {
-   return bodyTraceId.trim().slice(0, 64);
- }
- // 再查 HTTP Header（透传上游 LB 注入的 X-Request-Id）
- const headerTraceId = req.headers['x-request-id'] as string | undefined;
- if (headerTraceId && headerTraceId.trim().length > 0) {
-   return headerTraceId.trim().slice(0, 64);
- }
- // 兜底：生成 UUID v4
- return randomBytes(16).toString('hex');
- }
+/** 解析当前请求的 traceId（客户端显式声明优先，否则生成 UUID）。 */
+function resolveTraceId(
+  req: IncomingMessage,
+  body?: Record<string, unknown>
+): string {
+  // 先查 Request Body
+  const bodyTraceId = body?.traceId;
+  if (typeof bodyTraceId === 'string' && bodyTraceId.trim().length > 0) {
+    return bodyTraceId.trim().slice(0, 64);
+  }
+  // 再查 HTTP Header（透传上游 LB 注入的 X-Request-Id）
+  const headerTraceId = req.headers['x-request-id'] as string | undefined;
+  if (headerTraceId && headerTraceId.trim().length > 0) {
+    return headerTraceId.trim().slice(0, 64);
+  }
+  // 兜底：生成 UUID v4
+  return randomBytes(16).toString('hex');
+}
 
- async function bootstrap(): Promise<void> {
+async function bootstrap(): Promise<void> {
   // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
   // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
   // 默认开启；确有单实例或外部共享存储场景可用 REPLICA_CHECK=off 关闭（需自担风险）。
@@ -3536,13 +3935,18 @@ function buildAgentStore(): AgentStore {
     const replicaCount = Number(process.env.REPLICA_COUNT ?? '');
     const multiReplica = replicaCount > 1 || !!process.env.REPLICA_ID;
     if (multiReplica) {
-      const redisUrl = process.env.REDIS_URL || process.env.AGENT_STORE_REDIS_URL;
+      const redisUrl =
+        process.env.REDIS_URL || process.env.AGENT_STORE_REDIS_URL;
       const queueBackend = (process.env.RUN_QUEUE_BACKEND || '').toLowerCase();
       const agentStore = (process.env.AGENT_STORE || '').toLowerCase();
       const problems: string[] = [];
       if (!redisUrl) problems.push('REDIS_URL 未设置（多副本共享存储缺失）');
-      if (queueBackend !== 'redis') problems.push(`RUN_QUEUE_BACKEND=${queueBackend || 'memory'}，应为 redis`);
-      if (agentStore !== 'redis') problems.push(`AGENT_STORE=${agentStore || 'volatile'}，应为 redis`);
+      if (queueBackend !== 'redis')
+        problems.push(
+          `RUN_QUEUE_BACKEND=${queueBackend || 'memory'}，应为 redis`
+        );
+      if (agentStore !== 'redis')
+        problems.push(`AGENT_STORE=${agentStore || 'volatile'}，应为 redis`);
       if (problems.length) {
         const msg =
           `[multi-replica] 检测到多实例配置但共享后端未就绪：` +
@@ -3577,7 +3981,8 @@ function buildAgentStore(): AgentStore {
   // P2：指标持久化（跨重启保留累计计数 / token / 成本 / 租户维度）。
   // TELEMETRY_FILE 非空即启用自动落盘（定时 flush + 退出 flush）；默认关闭（''），
   // 以免测试 / 无状态环境产生意外 IO。Render 部署设置 TELEMETRY_FILE=/app/data/telemetry-metrics.json 即可。
-  const TELEMETRY_FILE = process.env.TELEMETRY_FILE ?? (DEFAULTS.TELEMETRY_FILE as string);
+  const TELEMETRY_FILE =
+    process.env.TELEMETRY_FILE ?? (DEFAULTS.TELEMETRY_FILE as string);
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
@@ -3613,7 +4018,7 @@ function onListening(): void {
     );
     if (
       (AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') &&
-      (process.env.UI_TOKENS)
+      process.env.UI_TOKENS
     ) {
       console.log(
         `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_TOKENS 直接鉴权（运维逃生通道）`
@@ -3625,7 +4030,11 @@ function onListening(): void {
     );
   }
   // 公网绑定 + 开放鉴权 = 任何人可匿名调用 admin 接口：高危告警。
-  if (!REQUIRE_AUTH && HOST && !['localhost', '127.0.0.1', '::1'].includes(HOST)) {
+  if (
+    !REQUIRE_AUTH &&
+    HOST &&
+    !['localhost', '127.0.0.1', '::1'].includes(HOST)
+  ) {
     console.warn(
       `   ⛔ 安全告警：鉴权未启用（REQUIRE_AUTH=false）且监听在 ${HOST}（非本地回环）。\n` +
         `      任何人都能以匿名 admin 调用所有接口。公网部署前请设置 UI_TOKENS 或 ADMIN_API_KEY 并启用鉴权。`
@@ -3704,16 +4113,25 @@ function onListening(): void {
   try {
     const sandboxBackend = (process.env.SANDBOX_BACKEND || '').toLowerCase();
     const wantOsIsolation =
-      sandboxBackend === 'os' || sandboxBackend === 'native' || isTenantRequired();
+      sandboxBackend === 'os' ||
+      sandboxBackend === 'native' ||
+      isTenantRequired();
     if (wantOsIsolation) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createOSSandboxExecutor } = require('@agent-harness/core');
-      const status = (createOSSandboxExecutor() as { describe?(): { backend: string; supported: boolean; reason: string } }).describe?.();
+      const status = (
+        createOSSandboxExecutor() as {
+          describe?(): { backend: string; supported: boolean; reason: string };
+        }
+      ).describe?.();
       if (status && status.backend === 'os-fallback-local') {
-        log.warn('OS-level sandbox degraded to hardened local executor (weak isolation)', {
-          reason: status.reason,
-          sandboxBackend
-        });
+        log.warn(
+          'OS-level sandbox degraded to hardened local executor (weak isolation)',
+          {
+            reason: status.reason,
+            sandboxBackend
+          }
+        );
       } else if (status) {
         log.info('OS-level sandbox active', {
           backend: status.backend,
@@ -3778,6 +4196,7 @@ function setupAlerting(): void {
       for (const s of sinks) await s(a);
     });
   }
+
   // Token 缓存命中率统计：复用同一套告警通道（webhook / 文件），并启动周期聚合。
   setTokenCacheAlertSink(emitAlert);
   startTokenCacheAggregation();

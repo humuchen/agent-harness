@@ -44,7 +44,15 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   UI_CORS_ORIGIN: '',
   AUDIT_LOG: '/app/data/audit/audit.jsonl',
   // 可观测性
-  TELEMETRY_FILE: ''
+  TELEMETRY_FILE: '',
+  // OTLP 导出
+  OTEL_EXPORTER_OTLP_ENDPOINT: '',
+  OTEL_SERVICE_NAME: 'agent-harness',
+  OTEL_EXPORTER_OTLP_HEADERS: '',
+  OTEL_METRICS_TEMPORALITY: 'cumulative',
+  // 动态配置
+  CONFIG_HOT_RELOAD_INTERVAL_MS: '60000',
+  CONFIG_PATHS: '',
 };
 
 /** 读取字符串配置：env 优先，缺失回退 DEFAULTS（再回退传入 fallback）。 */
