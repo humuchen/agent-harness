@@ -48,7 +48,11 @@ const PROVIDERS: Array<{ id: string; label: string; docUrl: string }> = [
     label: 'OpenAI',
     docUrl: 'https://platform.openai.com/api-keys'
   },
-  { id: 'custom', label: '自定义兼容端点', docUrl: 'https://openrouter.ai/keys' }
+  {
+    id: 'custom',
+    label: '自定义兼容端点',
+    docUrl: 'https://openrouter.ai/keys'
+  }
 ];
 
 @customElement('ah-provider-key-settings')
@@ -236,7 +240,8 @@ export class AhProviderKeySettings extends LitElement {
       cursor: pointer;
       border-radius: var(--ah-radius-md, 10px);
       border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      transition: background 120ms ease, border-color 120ms ease,
+        color 120ms ease;
     }
     .btn.ghost {
       background: transparent;
@@ -306,7 +311,10 @@ export class AhProviderKeySettings extends LitElement {
   }
 
   private get docUrl(): string {
-    return PROVIDERS.find((p) => p.id === this.provider)?.docUrl ?? 'https://openrouter.ai/keys';
+    return (
+      PROVIDERS.find((p) => p.id === this.provider)?.docUrl ??
+      'https://openrouter.ai/keys'
+    );
   }
 
   connectedCallback() {
@@ -339,7 +347,9 @@ export class AhProviderKeySettings extends LitElement {
   /** P2.1 拉取 OpenRouter OAuth 是否可用。 */
   private async loadOAuthConfig() {
     try {
-      const res = await authedFetch('/api/account/oauth/config?provider=openrouter');
+      const res = await authedFetch(
+        '/api/account/oauth/config?provider=openrouter'
+      );
       if (!res.ok) return;
       const data = (await res.json()) as { enabled?: boolean };
       this.oauthEnabled = !!data.enabled;
@@ -459,13 +469,18 @@ export class AhProviderKeySettings extends LitElement {
   private async save() {
     const apiKey = this.draftApiKey.trim();
     if (!apiKey) {
-      notify.warning('请先粘贴你的 API Key', { title: 'API Key', key: 'pk-empty' });
+      notify.warning('请先粘贴你的 API Key', {
+        title: 'API Key',
+        key: 'pk-empty'
+      });
       return;
     }
     const baseUrl = this.draftBaseUrl.trim();
-    // 除 OpenRouter 外，接口地址为必填
-    if (this.provider !== 'openrouter' && !baseUrl) {
-      notify.warning('请填写接口地址', { title: 'API Key', key: 'pk-baseurl-empty' });
+    if (!baseUrl) {
+      notify.warning('请填写接口地址', {
+        title: 'API Key',
+        key: 'pk-baseurl-empty'
+      });
       return;
     }
     // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
@@ -490,12 +505,16 @@ export class AhProviderKeySettings extends LitElement {
         }
       );
       if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as { error?: string } | null;
+        const err = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(err?.error || `HTTP ${res.status}`);
       }
       notify.success(
         extras.length
-          ? `「${this.providerLabel(this.provider)}」已保存 ${keys.length} 把 Key`
+          ? `「${this.providerLabel(this.provider)}」已保存 ${
+              keys.length
+            } 把 Key`
           : `「${this.providerLabel(this.provider)}」API Key 已保存`
       );
       this.editing = false;
@@ -531,7 +550,9 @@ export class AhProviderKeySettings extends LitElement {
         { method: 'POST' }
       );
       if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as { error?: string } | null;
+        const err = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(err?.error || `HTTP ${res.status}`);
       }
       const data = (await res.json()) as {
@@ -613,16 +634,15 @@ export class AhProviderKeySettings extends LitElement {
           ${typeof cur.keyCount === 'number' && cur.keyCount > 1
             ? html`<span class="badge multi">${cur.keyCount} 把 Key</span>`
             : ''}
-          ${cur.baseUrl
-            ? html`<span class="hint">· ${cur.baseUrl}</span>`
-            : ''}
+          ${cur.baseUrl ? html`<span class="hint">· ${cur.baseUrl}</span>` : ''}
         </div>
         ${cur.status === 'invalid' && cur.lastError
           ? html`<p class="err">${cur.lastError}</p>`
           : ''}
         ${cur.needsRotation
           ? html`<p class="warn">
-              ⚠ 该 Key 已较长时间未轮换，建议重新保存以刷新（密钥泄露风险更低）。
+              ⚠ 该 Key
+              已较长时间未轮换，建议重新保存以刷新（密钥泄露风险更低）。
             </p>`
           : ''}
         <div class="actions">
@@ -633,8 +653,12 @@ export class AhProviderKeySettings extends LitElement {
           >
             ${this.verifying ? '测试中…' : '测试连通'}
           </button>
-          <button class="btn ghost" @click=${() => this.startEdit()}>编辑</button>
-          <button class="btn danger" @click=${() => this.removeKey()}>删除</button>
+          <button class="btn ghost" @click=${() => this.startEdit()}>
+            编辑
+          </button>
+          <button class="btn danger" @click=${() => this.removeKey()}>
+            删除
+          </button>
         </div>
         ${this.provider === 'openrouter' && this.oauthEnabled
           ? html`
@@ -644,7 +668,9 @@ export class AhProviderKeySettings extends LitElement {
                   ?disabled=${this.oauthing}
                   @click=${() => this.startOAuth()}
                 >
-                  ${this.oauthing ? '授权中…' : '使用 OpenRouter 授权（免粘贴）'}
+                  ${this.oauthing
+                    ? '授权中…'
+                    : '使用 OpenRouter 授权（免粘贴）'}
                 </button>
               </div>
             `
@@ -681,9 +707,15 @@ export class AhProviderKeySettings extends LitElement {
         />
       </div>
       <div class="field">
-        <label>${this.provider === 'openrouter' ? '接口地址（可选；留空用服务商默认端点）' : '接口地址（必填）'}</label>
+        <label
+          >${this.provider === 'openrouter'
+            ? '接口地址（可选；留空用服务商默认端点）'
+            : '接口地址（必填）'}</label
+        >
         <input
-          placeholder="${this.provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : `https://${this.provider}.com/v1`}"
+          placeholder="${this.provider === 'openrouter'
+            ? 'https://openrouter.ai/api/v1'
+            : `https://${this.provider}.com/v1`}"
           .value=${this.draftBaseUrl}
           @input=${(e: Event) =>
             (this.draftBaseUrl = (e.target as HTMLInputElement).value)}
@@ -691,7 +723,8 @@ export class AhProviderKeySettings extends LitElement {
       </div>
       <div class="field">
         <label
-          >附加 Key（可选，P2.4 多 Key 负载/故障转移：一行一个或逗号分隔）</label
+          >附加 Key（可选，P2.4 多 Key
+          负载/故障转移：一行一个或逗号分隔）</label
         >
         <textarea
           class="extra-keys"
@@ -702,7 +735,8 @@ export class AhProviderKeySettings extends LitElement {
             (this.draftExtraKeys = (e.target as HTMLTextAreaElement).value)}
         ></textarea>
         <span class="hint"
-          >多 Key 时请求会在各 Key 间轮询并自动熔断失效 Key（如 429/401），提升稳定性。</span
+          >多 Key 时请求会在各 Key 间轮询并自动熔断失效 Key（如
+          429/401），提升稳定性。</span
         >
       </div>
       <div class="actions">
@@ -731,9 +765,10 @@ export class AhProviderKeySettings extends LitElement {
     const cur = this.current;
     return html`
       <p class="intro">
-        配置你自己的大模型 API Key 后，对话将使用<strong>真实模型</strong>（按你的账号计费）。
-        Key 按账号加密保存、跨设备可用，平台不托管、看不到明文。
-        未配置时使用离线 Mock 模型，可正常体验流程但不消耗真实额度。
+        配置你自己的大模型 API Key
+        后，对话将使用<strong>真实模型</strong>（按你的账号计费）。 Key
+        按账号加密保存、跨设备可用，平台不托管、看不到明文。 未配置时使用离线
+        Mock 模型，可正常体验流程但不消耗真实额度。
       </p>
       <div class="prov-tabs">
         ${PROVIDERS.map(
@@ -757,7 +792,12 @@ export class AhProviderKeySettings extends LitElement {
           ? nothing
           : html`
               <div class="actions" style="margin-top:14px">
-                <a class="help-link" href=${this.docUrl} target="_blank" rel="noopener noreferrer">
+                <a
+                  class="help-link"
+                  href=${this.docUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   前往 ${this.providerLabel(this.provider)} 获取 Key ↗
                 </a>
               </div>
