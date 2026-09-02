@@ -334,7 +334,7 @@ test('RunQueue 共享模式（redis）：submit 走 claim 驱动、不落本地 
     assert.ok(q.get(job.id), '提交后本地 RunJob 应存在（供 SSE 缓冲）');
     // 共享模式不把任务压入本地 queue——执行完全由 claim 轮询驱动（queued 恒为 0）；
     // 对照的非共享模式则由 pump 立即取出执行，二者都不应残留于 queued。
-    assert.strictEqual(q.stats().queued, 0, '共享模式不应把任务压入本地 queue');
+    assert.strictEqual(q.stats().pending, 0, '共享模式不应把任务压入本地 queue');
 
     const j2 = q2.submit({ mode: 'mock', prompt: 'local-task' });
     assert.ok(q2.get(j2.id), '内存后端 submit 应建立本地 RunJob');
