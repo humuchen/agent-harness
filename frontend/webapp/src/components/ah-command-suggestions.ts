@@ -724,18 +724,24 @@ export class AhCommandSuggestions extends LitElement {
     `;
   }
 
-  /** 单个分组。offset 为该组首项在扁平候选列表中的下标，用于 activeIndex 对齐。 */
+  /** 单个分组。 */
   private renderGroup(group: CommandGroup): TemplateResult {
-    const base = this.flatOffsetOf(group);
     return html`
       <div class="group" role="group" aria-label=${group.label}>
         <div class="group-label">${group.label}</div>
-        ${group.items.map((c, i) => this.renderItem(c, base + i))}
+        ${group.items.map((c) => this.renderItem(c))}
       </div>
     `;
   }
 
-  private renderItem(cmd: SlashCommand, index: number): TemplateResult {
+  private renderItem(cmd: SlashCommand): TemplateResult {
+    // 高亮/键盘共用 this.candidates（已按 query 过滤）里的真实扁平下标。
+    // 不能用「分组首项下标 + 组内序号」推算：分组顺序（COMMAND_GROUPS）与
+    // candidates 的字母序不同，会让不同分组的命令拿到相同下标
+    // （如 new 与 plan 同为 4、mode 与 stop 同为 3），导致 hover 一个却两个同时高亮。
+    // 这里直接以「命令名在 candidates 中的位置」为准，保证与 handleKey 的
+    // this.candidates[activeIndex] 完全对齐、且每个命令的下标唯一。
+    const index = this.candidates.findIndex((c) => c.name === cmd.name);
     const active = index === this.activeIndex;
     return html`
       <button
@@ -779,13 +785,6 @@ export class AhCommandSuggestions extends LitElement {
           : html`<kbd>Esc</kbd> 关闭面板`}
       </div>
     `;
-  }
-
-  /** 分组首项在扁平候选列表中的下标。 */
-  private flatOffsetOf(group: CommandGroup): number {
-    const first = group.items[0];
-    if (!first) return 0;
-    return this.candidates.findIndex((c) => c.name === first.name);
   }
 }
 
