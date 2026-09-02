@@ -1876,7 +1876,7 @@ export class AhLogin extends LitElement {
                   stroke-linejoin="round"
                 />
               </svg>
-              一键接入 40+ MCP 服务
+              MCP 服务一键接入
             </li>
             <li>
               <svg
