@@ -42,7 +42,7 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   HISTORY_BACKEND: 'sqlite',
   // 安全
   UI_CORS_ORIGIN: '',
-  AUDIT_LOG: '',
+  AUDIT_LOG: '/app/data/audit/audit.jsonl',
   // 可观测性
   TELEMETRY_FILE: ''
 };

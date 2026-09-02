@@ -1157,20 +1157,71 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/metrics') {
         // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列 / token 缓存命中率）。受保护，需令牌。
         const store = getMemoryStore();
+        const snapshot = getMetricsSnapshot();
+        // 队列深度 Prometheus 友好指标：queue.pending / queue.processing / queue.concurrency
+        const qstats = runQueue.stats();
         return sendJson(
           res,
           {
-            ...getMetricsSnapshot(),
-            queue: runQueue.stats(),
+            ...snapshot,
+            queue: qstats,
+            prometheus: {
+              'harness_queue_pending': qstats.pending ?? 0,
+              'harness_queue_processing': qstats.running ?? 0,
+              'harness_queue_concurrency_limit': qstats.concurrency ?? 4,
+              'harness_run_success_total': snapshot.counters['run.success'] ?? 0,
+              'harness_run_failed_total': snapshot.counters['run.failed'] ?? 0,
+              'harness_guardrail_blocked_total': snapshot.counters['guardrail.blocked'] ?? 0,
+              'harness_os_sandbox_degraded_total': snapshot.counters['os_sandbox.degraded'] ?? 0,
+              'harness_errors_total': snapshot.counters['errors'] ?? 0,
+              'harness_tokens_total': snapshot.tokens.total,
+              'harness_cost_total': snapshot.cost,
+            },
             memory: { backend: store.kind },
             tokenCache: getTokenCacheStats(),
             tokenCacheHistory: getTokenCacheHistory(),
-            // 错误数量与最近明细（与 /api/errors 同源，便于一处查看）。
             errors: getErrorSummary(),
             recentErrors: getErrorLog({ limit: 20 })
           },
           req
         );
+      }
+      if (req.method === 'GET' && path === '/api/metrics/prometheus') {
+        // Prometheus scrape 端点：返回文本格式的 key=value 指标（供 Prometheus node_exporter/textfile 采集）。
+        const qstats = runQueue.stats();
+        const snapshot = getMetricsSnapshot();
+        const lines = [
+          '# HELP harness_queue_pending 当前排队中（pending）的任务数',
+          '# TYPE harness_queue_pending gauge',
+          `harness_queue_pending ${qstats.pending ?? 0}`,
+          '# HELP harness_queue_processing 当前正在执行的任务数',
+          '# TYPE harness_queue_processing gauge',
+          `harness_queue_processing ${qstats.running ?? 0}`,
+          '# HELP harness_run_success_total 累计成功完成的 run 次数',
+          '# TYPE harness_run_success_total counter',
+          `harness_run_success_total ${snapshot.counters['run.success'] ?? 0}`,
+          '# HELP harness_run_failed_total 累计失败的 run 次数',
+          '# TYPE harness_run_failed_total counter',
+          `harness_run_failed_total ${snapshot.counters['run.failed'] ?? 0}`,
+          '# HELP harness_guardrail_blocked_total 护栏拦截次数',
+          '# TYPE harness_guardrail_blocked_total counter',
+          `harness_guardrail_blocked_total ${snapshot.counters['guardrail.blocked'] ?? 0}`,
+          '# HELP harness_os_sandbox_degraded_total OS 沙箱降级为 local 的次数',
+          '# TYPE harness_os_sandbox_degraded_total counter',
+          `harness_os_sandbox_degraded_total ${snapshot.counters['os_sandbox.degraded'] ?? 0}`,
+          '# HELP harness_errors_total 累计错误数',
+          '# TYPE harness_errors_total counter',
+          `harness_errors_total ${snapshot.counters['errors'] ?? 0}`,
+          '# HELP harness_tokens_total 累计 token 用量',
+          '# TYPE harness_tokens_total counter',
+          `harness_tokens_total ${snapshot.tokens.total}`,
+          '# HELP harness_cost_total 累计 LLM 调用成本（货币单位与模型定价一致）',
+          '# TYPE harness_cost_total gauge',
+          `harness_cost_total ${Number(snapshot.cost).toFixed(6)}`,
+        ];
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(lines.join('\n') + '\n');
+        return;
       }
       if (req.method === 'GET' && path === '/api/jobs') {
         // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
@@ -1273,9 +1324,9 @@ const server = createServer(
         return sendJson(res, authorizer.describe(), req);
       }
       if (path === '/api/approvals') {
-        // 审批工单列表（admin / 审批人角色可读）。
+        // 审批工单列表（admin / operator 可读：operator 会发起需审批动作，应能看到工单状态）。
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const status = url.searchParams.get('status');
           return sendJson(
@@ -1293,10 +1344,10 @@ const server = createServer(
         return;
       }
       if (path.startsWith('/api/approvals/')) {
-        // 单张工单：GET 查看状态；POST 审批人裁决（approve/reject）。
+        // 单张工单：GET 查看状态（admin / operator 可读）；POST 审批人裁决（approve/reject，仅 admin）。
         const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
         if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:review');
+          const ctx = await guard(req, res, 'approvals:read');
           if (!ctx) return;
           const t = (await approvalPolicy.list()).find((x: ApprovalTicket) => x.id === id);
           return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
@@ -2298,7 +2349,9 @@ async function handleRun(
   const workflowId = body.workflowId
     ? String(body.workflowId).trim()
     : undefined;
-  const traceId = body.traceId ? String(body.traceId).trim() : undefined;
+  // traceId：优先 body 声明（客户端幂等追踪），再查 X-Request-Id header，最后服务端生成。
+  // 注入到 JobDescriptor 后由 run-queue.withRequestContext 自动传给所有 structLog/audit。
+  const traceId = body.traceId ? String(body.traceId).trim() : resolveTraceId(req, body) || undefined;
 
   // P0-2：运行期自动验证门禁配置解析（优先级：body.verify 显式完整配置 > body.autoVerify 开关
   // > 服务端 AGENT_AUTO_VERIFY 默认）。验证器最终在 run-queue.execute 内按 config 装配，
@@ -3459,7 +3512,23 @@ function buildAgentStore(): AgentStore {
  * 启动引导：先按 env 选定并初始化 AgentRegistry 持久后端（幂等，须早于首个请求），
  * 再注册行业合规画像，最后开始监听。把这些放到 listen 之前，杜绝「请求早于注册表就绪」的竞态。
  */
-async function bootstrap(): Promise<void> {
+ /** 解析当前请求的 traceId（客户端显式声明优先，否则生成 UUID）。 */
+ function resolveTraceId(req: IncomingMessage, body?: Record<string, unknown>): string {
+ // 先查 Request Body
+ const bodyTraceId = body?.traceId;
+ if (typeof bodyTraceId === 'string' && bodyTraceId.trim().length > 0) {
+   return bodyTraceId.trim().slice(0, 64);
+ }
+ // 再查 HTTP Header（透传上游 LB 注入的 X-Request-Id）
+ const headerTraceId = req.headers['x-request-id'] as string | undefined;
+ if (headerTraceId && headerTraceId.trim().length > 0) {
+   return headerTraceId.trim().slice(0, 64);
+ }
+ // 兜底：生成 UUID v4
+ return randomBytes(16).toString('hex');
+ }
+
+ async function bootstrap(): Promise<void> {
   // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
   // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
   // 默认开启；确有单实例或外部共享存储场景可用 REPLICA_CHECK=off 关闭（需自担风险）。
@@ -3506,12 +3575,20 @@ async function bootstrap(): Promise<void> {
   policyEngine.registerIndustryProfiles();
 
   // P2：指标持久化（跨重启保留累计计数 / token / 成本 / 租户维度）。
-  // TELEMETRY_FILE 非空即启用自动落盘（定时 flush + 退出 flush）；默认关闭（'')，
+  // TELEMETRY_FILE 非空即启用自动落盘（定时 flush + 退出 flush）；默认关闭（''），
   // 以免测试 / 无状态环境产生意外 IO。Render 部署设置 TELEMETRY_FILE=/app/data/telemetry-metrics.json 即可。
   const TELEMETRY_FILE = process.env.TELEMETRY_FILE ?? (DEFAULTS.TELEMETRY_FILE as string);
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P2：审计日志落盘。AUDIT_LOG 非空时把文件 sink 注入核心 audit()，与 server.ts 自身的 stdout 审计并行。
+  const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
+  if (AUDIT_LOG) {
+    const { enableAuditFile } = await import('@agent-harness/core');
+    await enableAuditFile(AUDIT_LOG);
+    structLog('info', 'audit', { enabled: true, file: AUDIT_LOG });
   }
 
   server.listen(PORT, HOST, onListening);

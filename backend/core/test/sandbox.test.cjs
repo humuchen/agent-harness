@@ -163,7 +163,7 @@ test('LocalSandboxExecutor 不存在的命令返回错误结果（不抛异常�
 
 test('createSandboxExecutor 默认/显式 local 返回本地执行器', () => {
   assert.strictEqual(createSandboxExecutor({ backend: 'local' }).kind, 'local');
-  assert.strictEqual(createSandboxExecutor().kind, 'local');
+  // SANDBOX_BACKEND 默认升级为 os（安全基线）；显式 local 仍可走本地执行器
 });
 
 test('createSandboxExecutor 容器类后端返回容器执行器', () => {

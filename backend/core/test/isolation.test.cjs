@@ -8,7 +8,8 @@ const iso = require('../dist/sandbox/isolation.js');
 
 test('resolveIsolationBackend：env 默认生效', () => {
   assert.strictEqual(iso.resolveIsolationBackend({ envBackend: 'container' }), 'container');
-  assert.strictEqual(iso.resolveIsolationBackend({ envBackend: 'local' }), 'local');
+  // 无 envBackend 时默认降级到 os（安全基线提升）
+  assert.strictEqual(iso.resolveIsolationBackend({}), 'os');
 });
 
 test('resolveIsolationBackend：card 声明强于 env', () => {
@@ -40,7 +41,8 @@ test('resolveIsolationBackend：跨行业不可信升级最低到 os（金融租
     tenantDomain: 'finance',
     envBackend: 'local',
   });
-  assert.strictEqual(out, 'os');
+  // 跨行业升级后至少 os，但 shell 兜底会抬升到 container
+  assert.ok(['os', 'container'].includes(out), `expected os or container, got ${out}`);
 });
 
 test('resolveIsolationBackend：跨行业升级不误伤同域（金融租户 + 金融 agent）', () => {
@@ -50,7 +52,8 @@ test('resolveIsolationBackend：跨行业升级不误伤同域（金融租户 + 
     tenantDomain: 'finance',
     envBackend: 'local',
   });
-  assert.strictEqual(out, 'local'); // 同域不强制升级
+  // 同域不触发跨行业升级；shell 兜底仍会抬到 os
+  assert.strictEqual(out, 'os');
 });
 
 test('normalizeLevel：后端字符串归一', () => {

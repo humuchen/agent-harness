@@ -54,10 +54,22 @@ export function resolveIsolationBackend(input: ResolveIsolationInput): string {
     input.card.domain !== tenantDomain &&
     input.card.domain !== 'generic'
   ) {
+    level = strongerIsolation(level, 'container');
+  }
+
+  // 5) shell 工具安全兜底：若任务启用了 shell（allowedCommands 非空），
+  // 且未显式降级到 none，默认抬升到 os（OS 级隔离），杜绝继承宿主权限执行。
+  const envBackend = (input.envBackend || '').toLowerCase();
+  const shellExplicit = process.env.SHELL_EXEC_ISOLATION;
+  if (shellExplicit) {
+    const explicitLevel = normalizeLevel(shellExplicit);
+    if (explicitLevel) level = strongerIsolation(level, explicitLevel);
+  } else if (envBackend !== 'none') {
+    // 默认把 shell 执行抬到 OS 级；仅当 SANDBOX_BACKEND=none 时保持弱隔离。
     level = strongerIsolation(level, 'os');
   }
 
-  return level ?? envLevel ?? 'local';
+  return level ?? 'os';
 }
 
 /** 把后端字符串归一为语义隔离级别；无法识别的（docker/podman/gvisor/kata）按 container 处理。 */

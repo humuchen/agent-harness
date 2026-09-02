@@ -16,6 +16,10 @@ services:
       NODE_ENV: production
       PORT: '4173'
       UI_HOST: '0.0.0.0'
+      # 代码执行隔离级别：os=OS 级命名空间/seccomp 隔离（默认，需 Linux+helper）；
+      #   container=Docker 容器隔离；local=硬化本地进程（非 Linux 降级）；none=仅逻辑沙箱。
+      # shell_exec 任务默认按 resolveIsolationBackend() 抬升到 os，此处覆盖全局基线。
+      SANDBOX_BACKEND: '${SANDBOX_BACKEND:-os}'
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPEN_API_KEY: '${OPEN_API_KEY:-}'
       OPEN_MODEL: '${OPEN_MODEL:-}'

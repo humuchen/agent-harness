@@ -295,7 +295,7 @@ export interface CreateSandboxOptions {
  * 内部会再降级到本地；OS 路径同理，保持「一切降级可用」。
  */
 export function createSandboxExecutor(opts: CreateSandboxOptions = {}): SandboxExecutor {
-  const backend = (opts.backend ?? process.env.SANDBOX_BACKEND ?? 'local').toLowerCase();
+  const backend = (opts.backend ?? process.env.SANDBOX_BACKEND ?? 'os').toLowerCase();
   const isContainer =
     backend === 'container' || backend === 'docker' || backend === 'podman' || backend === 'gvisor' || backend === 'kata';
   if (isContainer) {

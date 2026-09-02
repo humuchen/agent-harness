@@ -16,6 +16,8 @@ import {
   type TaskEnvelope,
   type TaskResult,
   type VerifyConfig,
+  withRequestContext,
+  type RequestContext,
 } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { createQueueBackend, isPlanTaskRun, type QueueBackend, type JobDescriptor } from './queue-backend';
@@ -367,7 +369,7 @@ export class RunQueue {
   stats() {
     return {
       concurrency: this.concurrency,
-      queued: this.queue.length,
+      pending: this.queue.length,
       running: this.running,
       jobs: this.jobs.size,
       sessionsRunning: this.runningSessions.size,
@@ -531,6 +533,13 @@ export class RunQueue {
     // 在 try 之外保存，供 finally 中的审计留存引用（try 内 const 不可见于 finally）。
     let resolvedAgentId: string | null = null;
     let admitted = false;
+    // 为本次执行建立请求级上下文，让所有 structLog / audit 调用自动携带 traceId。
+    const reqCtx: RequestContext = {
+      traceId: job.traceId || job.id,
+      jobId: job.id,
+      tenantId: job.tenantId,
+    };
+    return withRequestContext(reqCtx, async () => {
     try {
       const signal = job.controller.signal;
       // P0-2：从 job 携带的可序列化验证配置装配运行期验证器（undefined 表示关闭门禁）。
@@ -842,6 +851,7 @@ export class RunQueue {
         detail: { steps: stepCount, mode: job.mode },
       });
     }
+    }); // end withRequestContext
   }
 }
 
