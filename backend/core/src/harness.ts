@@ -2,6 +2,7 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
+import { resolveAndTrack, EntityTracker } from './coreference';
 import {
   checkInput,
   checkOutput,
@@ -351,6 +352,9 @@ function nextId(prefix: string): string {
 
 export class AgentHarness {
   private opts: ResolvedHarnessOptions;
+  /** 指代消解实体追踪器（COREF_ENABLED=true 时启用） */
+  private _corefTracker?: EntityTracker;
+  private _corefTurn = 0;
 
   constructor(opts: HarnessOptions) {
     this.opts = {
@@ -371,6 +375,10 @@ export class AgentHarness {
       planPropose: opts.planPropose ?? false,
       planTask: opts.planTask ?? false
     };
+    // 初始化指代消解追踪器（若开启）
+    if (process.env.COREF_ENABLED === 'true') {
+      this._corefTracker = new EntityTracker();
+    }
   }
 
   /** 向长期记忆追加一条笔记（会随下次运行的系统提示词注入给模型）。 */
@@ -442,8 +450,19 @@ export class AgentHarness {
       });
     }
 
+    // 可选指代消解：在输入进入护栏/记忆之前展开代词（COREF_ENABLED=true 时生效）
+    let resolvedInput = userInput;
+    if (process.env.COREF_ENABLED === 'true' && this._corefTracker) {
+      const turn = this._corefTurn++;
+      const { resolved } = resolveAndTrack(resolvedInput, this._corefTracker, turn);
+      if (resolved !== resolvedInput) {
+        emit({ type: 'warn', message: `[coref] expanded: ${userInput} → ${resolved}` });
+      }
+      resolvedInput = resolved;
+    }
+
     const guard = checkInput(
-      userInput,
+      resolvedInput,
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
       // 对称地降级为强信号注入检测 —— 任务步骤合理提到「system prompt」等词不应拦截。
@@ -509,7 +528,7 @@ export class AgentHarness {
       }
       memory.add({ role: 'user', content: contentBlocks as any });
     } else {
-      memory.add({ role: 'user', content: userInput });
+      memory.add({ role: 'user', content: resolvedInput });
     }
 
     let final = '[agent] reached max steps without a final answer';

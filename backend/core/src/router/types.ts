@@ -65,10 +65,12 @@ export interface RouteResult {
    * 路由决策来源：
    * - 'explicit'  显式 agentId 命中；
    * - 'domain'    按 domain 过滤 + selector 命中；
-   * - 'classify'  经 intent.classify + selector 命中；
-   * - 'fallback'  selector 无候选 / 出错，回退 default 通用 agent。
+   * - 'classify'  经 intent.classify + selector + 置信度阀门命中；
+   * - 'fallback'  selector 无候选 / 置信度不足 / 出错，回退 default 通用 agent。
    */
   decidedBy: 'explicit' | 'domain' | 'classify' | 'fallback';
   /** 当 decidedBy 为 classify/domain 时附带的意图（fallback/explicit 时为 null）。 */
   intent: Intent | null;
+  /** 路由置信度分数（0~1），fallback/explicit 时为 undefined。 */
+  confidence?: number;
 }

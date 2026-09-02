@@ -222,16 +222,20 @@ export class AhApp extends LitElement {
     // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
     window.addEventListener('ah:run:start', () => {
       this.globalRunning = true;
-      window.dispatchEvent(new Event('ah:bar:start'));
     });
     window.addEventListener('ah:run:stop', () => {
       this.globalRunning = false;
-      window.dispatchEvent(new Event('ah:bar:stop'));
     });
     // History 路由：浏览器后退 / 前进时从 pathname 恢复 Tab（SPA fallback 保证刷新可用）。
     this.onPopState = () => {
+      const prevTab = this.tab;
       this.tab = initialTabFromPath();
       this.closeDrawer();
+      // 路由切换时显示顶部进度条
+      if (prevTab !== this.tab) {
+        window.dispatchEvent(new Event('ah:bar:start'));
+        setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
+      }
     };
     window.addEventListener('popstate', this.onPopState);
   }
@@ -271,10 +275,17 @@ export class AhApp extends LitElement {
    * 同步 pushState 写入路径，使浏览器后退 / 前进 / 刷新与 Tab 状态保持一致。
    */
   private setTab(tab: string) {
+    const prevTab = this.tab;
     this.tab = tab;
     const target = `/${tab}`;
     if (window.location.pathname !== target) {
       history.pushState({ tab }, '', target);
+    }
+    // 路由切换时显示顶部进度条，加载完成后隐藏
+    if (prevTab !== tab) {
+      window.dispatchEvent(new Event('ah:bar:start'));
+      // 短暂延迟后停止，模拟页面加载完成
+      setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
     }
   }
 

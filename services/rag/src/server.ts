@@ -27,6 +27,7 @@ import { IngestQueue } from './queue';
 import { QueryCache } from './cache';
 import { Metrics, logTrace } from './metrics';
 import { rerankWithApi, mmrRerank } from './rerank';
+import { createRAGEvaluator, type EvalDataset } from './eval';
 
 export interface RagServerOptions {
   port?: number;
@@ -211,6 +212,43 @@ export function createRagServer(opts: RagServerOptions) {
         if (opts.dataFile) store.persist(opts.dataFile, shard);
         metrics.recordIngest(true);
         return send(res, 200, result);
+      }
+
+      // RAG 评估端点：POST /v1/eval — 批量评估检索+生成质量
+      if (path === '/v1/eval' && method === 'POST') {
+        const auth = resolveTenant(req, authOpts);
+        if ('error' in auth) return send(res, auth.error, { error: auth.message });
+        const body = await readJson(req);
+        // dataset 格式：{ name, samples: [{ query, groundTruthChunkIds?, groundTruthAnswer? }] }
+        const dataset: EvalDataset = {
+          name: String(body.name ?? 'default'),
+          samples: Array.isArray(body.samples)
+            ? body.samples.map((s: any) => ({
+                query: String(s.query ?? ''),
+                groundTruthChunkIds: Array.isArray(s.groundTruthChunkIds) ? s.groundTruthChunkIds : undefined,
+                groundTruthAnswer: s.groundTruthAnswer ? String(s.groundTruthAnswer) : undefined,
+              }))
+            : [],
+        };
+        if (dataset.samples.length === 0) {
+          return send(res, 400, { error: 'samples required' });
+        }
+        try {
+          const evaluator = createRAGEvaluator({ k: Number(body.k) || 5 });
+          // 将 retrieve 函数包装为 evaluate 所需的 async 形式
+          const retrieveFn = async (query: string): Promise<any[]> => {
+            const resp = await retrieve(store, provider, {
+              query,
+              top_k: Number(body.k) || 5,
+              tenant_id: auth.tenantId,
+            } as any);
+            return resp.results ?? [];
+          };
+          const result = await evaluator.evaluate(dataset, retrieveFn);
+          return send(res, 200, result);
+        } catch (e: any) {
+          return send(res, 500, { error: String(e?.message || e) });
+        }
       }
 
       return send(res, 404, { error: 'not found', path });
