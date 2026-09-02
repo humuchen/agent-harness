@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/name: agent-harness
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  # 滚动更新时至少保持 1 个副本可用（minAvailable=1）；
+  # 或允许最多 1 个 Pod 同时不可用（maxUnavailable=1）。
+  # 生产建议：replicas >= 3 时使用 minAvailable，防止全部 Pod 同时被驱逐。
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-harness

@@ -546,6 +546,31 @@ export async function revokeAllTokens(username: string): Promise<void> {
 }
 
 /**
+ * P1-11: 删除用户及其全部关联数据（事务原子性，防止已注销账号仍可鉴权）。
+ * 一次性删除 users / auth_tokens / password_resets 三张表的数据。
+ * 任一步骤失败则整体回滚，保证不出现「用户存在但 token 已删」或「用户已删但 token 残留」的半删状态。
+ */
+export async function deleteUser(username: string): Promise<{ ok: boolean; error?: string }> {
+  if (!db) return { ok: false, error: '数据库未就绪' };
+  // 先校验用户是否存在
+  const exists = await db.prepare('SELECT username FROM users WHERE username = ?').get(username);
+  if (!exists) return { ok: false, error: '用户不存在' };
+  try {
+    // SQLite 默认开启了外键约束检查（PRAGMA foreign_keys=ON）；此处使用显式事务保证原子性。
+    await db.exec('BEGIN TRANSACTION');
+    await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+    await db.prepare('DELETE FROM password_resets WHERE username = ?').run(username);
+    await db.prepare('DELETE FROM users WHERE username = ?').run(username);
+    await db.exec('COMMIT');
+    return { ok: true };
+  } catch (e: any) {
+    // 出错时尝试回滚（若事务已开始）
+    try { await db.exec('ROLLBACK'); } catch { /* 忽略 */ }
+    return { ok: false, error: e.message ?? '删除用户失败' };
+  }
+}
+
+/**
  * 申请重置密码：按「用户名或注册邮箱」定位账号，存在则生成一次性重置凭证
  * （token + 15 分钟过期）写入 password_resets 表，并返回 token。
  *

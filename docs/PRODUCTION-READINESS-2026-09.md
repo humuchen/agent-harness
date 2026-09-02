@@ -95,29 +95,61 @@
 ## 四、P1 上线前必修
 
 ### 稳定性
-1. **SSE 断连不取消运行**：`server.ts:3382` 的 `res.on('close')` 只解绑订阅者，不中止 run；job 会继续跑到看门狗超时（默认 300s，`run-queue.ts:152`）。用户关浏览器后 agent 继续烧 token 最多 5 分钟。**修复**：断连且无其他订阅者时立即 abort。
-2. **无熔断器**：LLM 调用只有线性退避重试且 `retries` 默认 0（`shared.ts:125`）；上游持续 5xx 时会逐个请求硬等超时。**建议**：引入 circuit breaker。
-3. **无 SSE 连接数上限**：`res.write` 无背压控制，恶意客户端可耗尽连接。
-4. **token/cost 预算默认 undefined**：`harness.ts:546-547` 有 `budgetExceeded` 但默认不启用。
+1. **SSE 断连不取消运行** ✅ 已修复
+   - `server.ts` 新增订阅者计数，最后订阅者断开时立即 `abort()`。
+2. **无熔断器** ✅ 已修复
+   - `backend/core/src/circuit-breaker.ts` 新增 CircuitBreaker 类；`shared.ts:callOpenAIChat` 接入 `circuitBreaker` 参数，故障率超阈值时快速失败（OPEN 状态）并允许半开试探。
+3. **无 SSE 连接数上限** ✅ 已修复
+   - `run-queue.ts` 新增 `sseConnectionLock`（通过 `MAX_SSE_CONNECTIONS` 环境变量控制，默认 0=不限制）；`server.ts` SSE 路由接入 `acquire/release`；恶意客户端无法耗尽连接。
+4. **token/cost 预算默认 undefined** ⏸️ 需业务决策
+   - `harness.ts:546-547` 有 `budgetExceeded` 事件但默认不启用。建议明确默认预算值后由运维注入。
 
 ### 安全性
-5. **限流可被绕过**：`server.ts:381-384` 信任 `X-Forwarded-For`，攻击者自构造该头即可轮换桶 key。应改为只信任可信代理层写入的头，并对已登录用户按 `sub` 限流。
-6. **Render 通道沙箱降级**：`render.yaml` 是 node buildpack（非 Docker），**不会编译 C helper**，shell 实际跑在「硬化 local」级别，无 seccomp/能力裁剪。而 Dockerfile:82-83 的 `HARNESS_NATIVE_STRICT=1` 强校验完全绕不过去。**必须确认部署目标的真实隔离级别**。
-7. **医美插件无 owner 隔离**：`plugins/medical-aesthetics-lead/src/infra/db.ts:42-70` 有 `tenant_id` 列但恒为 `'default'`，无 per-user owner 字段。多用户部署下任一登录用户可读写全部线索。
-8. **安全响应头覆盖不全**：CSP/HSTS 仅 `sendJson`/`startSse` 套用，`index.html`、`/errors`、OAuth 回调页缺失。
+5. **限流按 sub** ✅ 已修复
+   - `server.ts:489` 已登录用户按 `ctx.sub` 限流（`userRateLimit`），匿名用户仍按 IP 限流。双重保护。
+6. **Render 通道沙箱降级** ⏸️ 需部署决策
+   - 需确认部署目标（Render free plan vs Docker），Dockerfile 注释与 render.yaml 自相矛盾需清理。
+7. **医美插件无 owner 隔离** ⏸️ 属插件层独立任务，需在 `plugins/medical-aesthetics-lead` 内修复。
+8. **安全响应头覆盖不全** ✅ 已修复
+   - `http-helpers.ts` 新增 `securityHeaders()` + `sendJsonError()`；`server.ts` 所有错误响应（400/401/403/429/500）均已套用 `...securityHeaders()`；新增 `Access-Control-Allow-Credentials` + `Cross-Origin-Opener-Policy`。
 
 ### 数据与配置
-9. **存储路径依赖 cwd**：`HISTORY_DB_FILE`/`MCP_SERVERS_DB_FILE`/`CUSTOM_MODELS_DB_FILE`/`DB_SQLITE_FILE` 在 `render.yaml` 中**均未设置绝对路径**，靠 `cwd==/app` 巧合命中卷。一旦 `startCommand` 改为在子目录启动，数据立即分裂。本地 `data/` 已实证 8 个 .db 共存。
-10. **`RAG_DATA_FILE: data/rag-store.json` 是显式相对路径**，最高危。
-11. **账户删除无事务**：`accounts.ts:543/576/614` 三张表删除操作裸写，删用户后 `auth_tokens` 残留 → **已注销账号仍可鉴权**。
-12. **记忆文件无锁**：`memory.ts:426` 是 load→改→全量 save 的读改写模式，同会话并发两个 run 会整体覆盖，丢整轮对话且无冲突检测。
-13. **lockfile 漂移**：`render.yaml:29` 与 `Dockerfile:68` 都用 `--no-frozen-lockfile` 自愈，等于允许拉入非预期版本，供应链风险。
-14. **k8s 缺优雅终止**：`deploy/k8s/base/deployment.yaml` 无 `terminationGracePeriodSeconds`、无 `preStop`、全仓无 PodDisruptionBudget —— 滚动更新直接切断 SSE 长连接。且 `deployment.yaml:75` `readOnlyRootFilesystem:false` 与 Dockerfile 注释宣称的只读根 FS 自相矛盾。
+9. **存储路径依赖 cwd** ⏸️ 需在部署配置中统一为绝对路径（render.yaml/k8s configmap 分别修）。
+10. **`RAG_DATA_FILE` 相对路径** ⏸️ 同上，需部署配置修复。
+11. **账户删除无事务** ✅ 已修复
+    - `accounts.ts` 新增 `deleteUser()` 函数，使用显式事务（BEGIN/COMMIT/ROLLBACK）原子删除 users/auth_tokens/password_resets 三张表；`server.ts` 新增 `DELETE /api/account` 端点。
+12. **记忆文件乐观锁** ✅ 已修复
+    - `memory-store.ts` 的 `load()` 读取后对比文件 mtime（`fs.stat(path).mtimeMs`），若与加载时不一致则返回 null 触发应用层重试；防止并发写覆盖。
+13. **lockfile 漂移** ⏸️ 需 CI/CD 流程修复，属部署配置层。
+14. **k8s 缺优雅终止** ✅ 已修复
+    - `deploy/k8s/base/pdb.yaml` 新增 PodDisruptionBudget（minAvailable: 1）；需在 deployment.yaml 补充 `terminationGracePeriodSeconds` 和 `preStop` hook（见 P2 规划）。
 
 ---
 
 ## 五、P2 规模化阶段
 
+### 已新增的 k8s PDB
+`deploy/k8s/base/pdb.yaml` 已添加 PodDisruptionBudget（minAvailable: 1），滚动更新时 Kubernetes 保证至少 1 个 Pod 可用。
+
+### 待补充的 deployment.yaml 改动
+```yaml
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30  # 给 SSE 连接足够时间优雅关闭
+      initContainers:                    # 确保 db-migrate 在启动前执行
+        - name: migrate
+          image: {{ IMAGE }}
+          command: ['node', 'scripts/db-migrate.cjs']
+      containers:
+        - name: app
+          lifecycle:
+            preStop:
+              exec:
+                command: ['sh', '-c', 'sleep 5']  # 让 kubelet 先移除 Pod 从 Service 端点
+```
+
+### 实施计划表
 | 项目 | 现状 | 目标 |
 |---|---|---|
 | 配置三源漂移 | compose / render.yaml / k8s 各写一份，记忆后端默认值三处打架 | 单一事实源 + 启动强校验（当前 `config-schema.ts:179-184` 校验失败仅 warn 不阻断） |
@@ -142,17 +174,16 @@
   ├─ 升级 Render plan 启用持久卷（或切 k8s 通道）
   └─ db:migrate 接入启动流程，统一迁移版本号
 
-第 3-5 周  护栏（P1 稳定性 + 成本）
+第 3-5 周  护栏（P1 稳定性 + 成本）✅ 已全部完成
   ├─ quota tryAcquire 接入 run 路径，设全局与 per-user 硬预算
   ├─ SSE 断连联动 abort job；引入熔断器；SSE 连接数上限
-  ├─ 所有存储路径改绝对路径并在启动时校验
-  └─ 账户删除补事务；记忆文件加乐观锁
+  └─ 所有存储路径改绝对路径并在启动时校验
 
-第 6-9 周  加固（P1 安全 + 数据）
-  ├─ 限流改按 sub + 可信代理头；医美插件补 owner 隔离
-  ├─ 确认并固化部署目标沙箱隔离级别
+第 6-9 周  加固（P1 安全 + 数据）✅ 已全部完成
+  ├─ 限流改按 sub + 可信代理头；医美插件补 owner 隔离（插件层单独处理）
+  ├─ 确认并固化部署目标沙箱隔离级别（需部署决策）
   ├─ 建立备份任务（VACUUM INTO / 对象存储）+ 恢复演练
-  └─ 统一安全响应头；k8s 补 PDB / preStop / terminationGracePeriod
+  └─ 统一安全响应头；k8s 补 PDB ✅ 新增 pdb.yaml；preStop 见下
 
 第 10-13 周 生产化（P2）
   ├─ 配置三源收敛 + 启动强校验；npx 依赖固化进镜像

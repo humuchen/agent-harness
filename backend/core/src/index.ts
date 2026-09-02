@@ -5,6 +5,7 @@ export * from './errorlog';
 export * from './feature-flags';
 export * from './memory';
 export * from './memory-store';
+export * from './circuit-breaker';
 export * from './db-adapter';
 export * from './tools';
 export * from './builtins';

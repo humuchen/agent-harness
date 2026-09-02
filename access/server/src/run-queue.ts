@@ -148,6 +148,11 @@ export interface RunJob {
 const MAX_BUFFER = Number(process.env.RUN_QUEUE_BUFFER ?? 500) || 500;
 const CONCURRENCY = Number(process.env.RUN_CONCURRENCY ?? 4) || 4;
 
+// P1-3: SSE 连接数上限（防止恶意客户端耗尽连接）
+const MAX_SSE_CONNECTIONS = Number(process.env.MAX_SSE_CONNECTIONS ?? 0) || 0;
+let activeSseConnections = 0;
+export const sseConnectionLock = { acquire(): boolean { return MAX_SSE_CONNECTIONS <= 0 || ++activeSseConnections <= MAX_SSE_CONNECTIONS; }, release(): void { activeSseConnections = Math.max(0, activeSseConnections - 1); } };
+
 // 单次运行整体超时；超时后中止循环并释放 worker 槽位（默认 5 分钟）。
 const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
 // 计划任务执行（planTask run）专用超时：重任务（源码精读 / 体系化输出等）在真实

@@ -11,7 +11,7 @@ import {
 } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
-import { runQueue } from './run-queue';
+import { runQueue, sseConnectionLock } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import {
   approve as approveShell,
@@ -78,7 +78,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody } from './http-helpers';
+import { corsHeaders, sendJson, startSse, readBody, securityHeaders, sendJsonError } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -183,6 +183,7 @@ import {
   revokeAllTokens,
   requestPasswordReset,
   resetPassword,
+  deleteUser,
   type AccountResult
 } from './accounts';
 
@@ -470,7 +471,10 @@ async function guard(
         action,
         reason: 'tenant isolation required but no tenant context provided'
       });
-      res.writeHead(403, { 'content-type': 'application/json' });
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        ...securityHeaders()
+      });
       res.end(
         JSON.stringify({
           error: 'forbidden',
@@ -487,19 +491,23 @@ async function guard(
   const { limited, retryAfter } = isSseEndpoint(req)
     ? { limited: false, retryAfter: 0 }
     : rateLimited(ip, RATE_LIMIT, RATE_WINDOW_MS);
-  if (limited) {
+  // P1-5: 已登录用户按 sub 限流（防单账号滥用）
+  const userRateLimit = ctx ? rateLimited(ctx.sub, Number(process.env.USER_RATE_LIMIT ?? 60) || 60, RATE_WINDOW_MS) : { limited: false, retryAfter: 0 };
+  if (limited || (ctx && userRateLimit.limited)) {
     audit({
       kind: 'request',
       method: req.method,
       path: req.url,
       ip,
       authed: true,
-      status: 429
+      status: 429,
+      ...(ctx ? { sub: ctx.sub } : {})
     });
     res.writeHead(429, {
       'content-type': 'application/json',
       'retry-after': String(Math.ceil(retryAfter / 1000)),
-      ...corsHeaders(req)
+      ...corsHeaders(req),
+      ...securityHeaders()
     });
     res.end(JSON.stringify({ error: 'rate limit exceeded' }));
     return null;
@@ -516,7 +524,8 @@ async function guard(
     });
     res.writeHead(403, {
       'content-type': 'application/json',
-      ...corsHeaders(req)
+      ...corsHeaders(req),
+      ...securityHeaders()
     });
     res.end(JSON.stringify({ error: 'forbidden', action }));
     return null;
@@ -594,8 +603,12 @@ function readAction(path: string): Action | null {
   }
 }
 
-function unauthorized(res: ServerResponse): void {
-  res.writeHead(401, { 'content-type': 'application/json' });
+function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
+  res.writeHead(401, {
+    'content-type': 'application/json',
+    ...corsHeaders(req ?? ({ headers: {} } as IncomingMessage)),
+    ...securityHeaders()
+  });
   res.end(JSON.stringify({ error: 'unauthorized: missing or invalid token' }));
 }
 
@@ -908,6 +921,27 @@ const server = createServer(
           'content-type': 'application/json',
           'set-cookie': clearAuthCookie(req),
           'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
+      if (req.method === 'DELETE' && path === '/api/account') {
+        const u = await usernameFromCookie(req);
+        if (!u) {
+          sendJsonError(res, 401, { error: 'unauthorized' }, req);
+          return;
+        }
+        const result = await deleteUser(u);
+        if (!result.ok) {
+          sendJsonError(res, 500, { error: result.error ?? '删除失败' }, req);
+          return;
+        }
+        // 删除成功后清除 cookie
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': clearAuthCookie(req),
+          ...securityHeaders()
         });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -1636,7 +1670,10 @@ const server = createServer(
         const ctx = await guard(req, res, 'memory:clear');
         if (!ctx) return;
         if (ctx.role !== 'admin') {
-          res.writeHead(403, { 'content-type': 'application/json' });
+          res.writeHead(403, {
+            'content-type': 'application/json',
+            ...securityHeaders()
+          });
           return res.end(JSON.stringify({ error: 'forbidden: admin only' }));
         }
         const b = await readBody(req);
@@ -1980,10 +2017,13 @@ const server = createServer(
         const ctx = await guard(req, res, 'chat:read');
         if (!ctx) return;
         if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({ error: 'authentication required for chat stream' })
-          );
+          sendJsonError(res, 401, { error: 'authentication required for chat stream' }, req);
+          return;
+        }
+        // P1-3: SSE 连接数上限检查（防止恶意客户端耗尽连接）
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
         }
         const send = startSse(res, req);
         // 连接建立即时确认，便于前端判定通道已就绪。
@@ -2001,6 +2041,7 @@ const server = createServer(
           } catch {
             /* 重复 unsub 安全 */
           }
+          sseConnectionLock.release();
         });
         return;
       }
@@ -2013,6 +2054,11 @@ const server = createServer(
       if (req.method === 'GET' && path === '/api/events') {
         const ctx = await guard(req, res, 'chat:read');
         if (!ctx) return;
+        // P1-3: SSE 连接数上限检查
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
+        }
         const send = startSse(res, req);
         // 连接建立即时确认（带 owner，便于前端核对归属）。
         send({ type: 'events:ready', owner: ctx.sub });
@@ -2029,6 +2075,7 @@ const server = createServer(
           } catch {
             /* 重复 unsub 安全 */
           }
+          sseConnectionLock.release();
         });
         return;
       }

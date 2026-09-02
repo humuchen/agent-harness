@@ -115,6 +115,8 @@ export interface ChatCallOptions {
   onToken?: (delta: string) => void;
   // 推理过程流式回调（可选）：捕获 delta.reasoning（部分推理模型），用于「思考」折叠块。
   onReasoning?: (delta: string) => void;
+  // P1-2: CircuitBreaker 实例（可选）。传入后自动包裹调用，熔断打开时抛出 CircuitBreakerOpen。
+  circuitBreaker?: import('../circuit-breaker').CircuitBreaker;
 }
 
 // 这些 HTTP 状态视为限流 / 瞬时故障，可重试（免费档常遇 429）。
@@ -122,7 +124,7 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 
 /** 调用任意 OpenAI 兼容 Chat Completions 端点并解析为标准 LLMResponse。 */
 export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
-  const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal, onToken, onReasoning } = opts;
+  const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal, onToken, onReasoning, circuitBreaker } = opts;
   // token 级流式：回调存在即走 stream:true，边读边 emit 增量并重建完整响应
   // （含工具调用的增量重组），保证既能在聊天 UI 实现打字机效果，又不丢失 agent 的工具执行能力。
   if (onToken || onReasoning) {
@@ -163,13 +165,29 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     });
   };
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
+  const fetchWithBreaker = circuitBreaker
+    ? () => circuitBreaker.withRequest(() => fetchImpl(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    }))
+    : () => fetchImpl(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
       signal,
     });
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let resp: Response;
+    try {
+      resp = await fetchWithBreaker();
+    } catch (breakerErr: any) {
+      // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略
+      if (breakerErr?.name === 'CircuitBreakerOpen') throw breakerErr;
+      throw breakerErr;
+    }
 
     if (!resp.ok) {
       const text = await resp.text();
