@@ -13,12 +13,48 @@ spec:
   minReplicas: 2
   maxReplicas: 6
   metrics:
+    # CPU 利用率（基础扩缩容）
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
           averageUtilization: 70
+    # 队列深度（业务扩缩容）：pending 任务超过 10 时触发扩容，低于 3 时缩容
+    # 需配合 prometheus-adapter 使用；应用层通过 /api/metrics/prometheus 暴露 harness_queue_pending gauge
+    - type: Pods
+      pods:
+        metric:
+          name: harness_queue_pending
+        target:
+          type: AverageValue
+          averageValue: "3"
+    # LLM 调用延迟 p95（可选，需自定义指标）：超过 5s 时考虑扩容
+    # - type: Pods
+    #   pods:
+    #     metric:
+    #       name: harness_llm_call_duration_seconds
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "5"
   behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Max
     scaleDown:
       stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 120
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+      selectPolicy: Min
