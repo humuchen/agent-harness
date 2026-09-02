@@ -706,7 +706,7 @@ const server = createServer(
       // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
       // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
       if (
-        tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
+        await tryDispatchEdgeRoute(edgeRoutes, req, res, url, edgeRouteDeps(), path)
       ) {
         return;
       }
@@ -1306,7 +1306,7 @@ const server = createServer(
           if (!ctx) return;
           const body = await readBody(req);
           const decision = body.decision === 'reject' ? 'reject' : 'approve';
-          const t = approvalPolicy.decide(id, decision, ctx.sub);
+          const t = await approvalPolicy.decide(id, decision, ctx.sub);
           if (!t)
             return sendJson(
               res,
