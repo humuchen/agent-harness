@@ -202,16 +202,19 @@ export class SqliteMemoryStore implements MemoryStore {
           'long_term TEXT NOT NULL, ' +
           'summary TEXT)'
       );
-      // 兼容旧库：缺列时补上（列已存在则跳过；Turso 不支持重复 ADD COLUMN）。
+      // 启用 WAL 模式 + 连接池优化
+      try { await this.db.exec('PRAGMA journal_mode=WAL;'); } catch { /* ok */ }
+      try { await this.db.exec('PRAGMA synchronous=NORMAL;'); } catch { /* ok */ }
+      try { await this.db.exec('PRAGMA cache_size=-64000;'); } catch { /* ok */ }
+      try { await this.db.exec('PRAGMA temp_store=MEMORY;'); } catch { /* ok */ }
+      // 兼容旧库：缺列时补上
       try {
         const cols = (await this.db.prepare('PRAGMA table_info(memory)').all()) as Record<string, unknown>[];
         const hasSummary = cols.some((c) => String(c.name) === 'summary');
         if (!hasSummary) {
           await this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
         }
-      } catch {
-        /* 列已存在或 Turso 不支持该 DDL，忽略 */
-      }
+      } catch { /* 列已存在，忽略 */ }
     })();
     return this.ready;
   }

@@ -59,7 +59,8 @@ export type Action =
   | 'chat:delete'
   | 'env:read'
   | 'upload:file'
-  | 'provider:manage';
+  | 'provider:manage'
+  | 'features:write';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -143,7 +144,8 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'chat:delete',
     'env:read',
     'upload:file',
-    'provider:manage'
+    'provider:manage',
+    'features:write'
   ],
   operator: [
     'agent:run:mock',

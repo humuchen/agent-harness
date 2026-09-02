@@ -31,6 +31,22 @@ export interface AuditEvent {
 
 type AuditSink = (e: AuditEvent) => void | Promise<void>;
 let auditSink: AuditSink | null = null;
+let auditLogFile: string | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let auditFileHandle: any = null;
+
+/** 打开审计日志文件（append 模式）。失败不阻断启动，仅告警。 */
+async function openAuditFile(file: string): Promise<void> {
+  const fs = await import('node:fs/promises');
+  try {
+    const dir = require('node:path').dirname(file);
+    await fs.mkdir(dir, { recursive: true });
+    auditFileHandle = await fs.open(file, 'a');
+    structLogAudit('info', 'audit file opened', { file });
+  } catch (e: unknown) {
+    structLogAudit('warn', 'audit file open failed', { file, error: e instanceof Error ? e.message : String(e) });
+  }
+}
 
 /** 注册审计接收器（如独立审计库 / SIEM）。传 null 关闭（默认关闭，仅留结构化日志）。 */
 export function setAuditSink(sink: AuditSink | null): void {
@@ -38,16 +54,36 @@ export function setAuditSink(sink: AuditSink | null): void {
 }
 
 /**
+ * 启用审计日志文件落盘（生产环境必须调用一次）。路径为空则关闭。
+ * 仅支持一次初始化（幂等）；重复调用用最新路径覆盖旧文件句柄。
+ */
+export async function enableAuditFile(file: string | null): Promise<void> {
+  if (auditFileHandle) {
+    try { await auditFileHandle.close(); } catch { /* ignore */ }
+    auditFileHandle = null;
+  }
+  auditLogFile = file;
+  if (file) await openAuditFile(file);
+}
+
+/**
  * 写入一条审计记录：始终留一条结构化日志（级别按 outcome 映射），若已注册 sink 则异步转发。
  * sink 抛错只记 warn，不向上传播。
+ * 同时写入已配置的审计日志文件（enableAuditFile）。
  */
-export function audit(e: AuditEvent): void {
+export async function audit(e: AuditEvent): Promise<void> {
   const entry: AuditEvent = { ts: new Date().toISOString(), ...e };
   const level = e.outcome === 'failure' || e.outcome === 'denied' ? 'warn' : 'info';
   structLogAudit(level, `[audit] ${e.action}: ${e.outcome}`, { ...entry });
+  // 落盘审计日志文件（无句柄时静默跳过）。
+  if (auditFileHandle) {
+    try {
+      await auditFileHandle.write(JSON.stringify(entry) + '\n');
+    } catch { /* ignore write errors */ }
+  }
   if (auditSink) {
     try {
-      void Promise.resolve(auditSink(entry)).catch((err: unknown) => {
+      await Promise.resolve(auditSink(entry)).catch((err: unknown) => {
         structLogAudit('warn', 'audit sink failed', { error: err instanceof Error ? err.message : String(err), action: e.action });
       });
     } catch (err: unknown) {

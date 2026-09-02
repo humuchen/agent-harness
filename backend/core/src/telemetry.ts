@@ -18,6 +18,34 @@ let tracer: any = null;
 let meter: any = null;
 let initPromise: Promise<void> | null = null;
 
+// ---------------------------------------------------------------------------
+// 请求级上下文（traceId / 当前运行 jobId）：让所有 structLog 调用自动带上下文，
+// 无需每个调用点手动传递。基于 AsyncLocalStorage，Node 22 原生支持。
+// 使用 require() 兼容 CommonJS 模块系统（避免 top-level await / import.meta）。
+// ---------------------------------------------------------------------------
+const asyncHooks = require('node:async_hooks') as typeof import('node:async_hooks');
+
+export interface RequestContext {
+  /** 请求唯一标识（UUID），由 server 为每次 HTTP 请求生成并跨事件流透传。 */
+  traceId?: string;
+  /** 当前 running job id（同一任务内多条日志共享）。 */
+  jobId?: string;
+  /** 租户 id（若可派生）。 */
+  tenantId?: string;
+}
+
+const requestStore = new asyncHooks.AsyncLocalStorage<RequestContext>();
+
+/** 在当前 async 上下文中设置请求上下文并执行 fn，结束后还原。 */
+export function withRequestContext<T>(ctx: RequestContext, fn: () => T): T {
+  return requestStore.run(ctx, fn);
+}
+
+/** 读取当前 async 上下文中的请求上下文；无上下文时返回空对象。 */
+export function getRequestContext(): RequestContext {
+  return requestStore.getStore() ?? {};
+}
+
 // 可选绑定到真实 OTel meter 的计数器，便于把指标导出到 Collector。
 let otelCounters: Record<string, any> = {};
 let otelHistograms: Record<string, any> = {};
@@ -306,9 +334,20 @@ export function getMetricsByTenant(): Record<string, TenantMetricsSnapshot> {
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
-/** 输出一条结构化 JSON 日志（时间戳 + 级别 + 消息 + 任意字段）。 */
+/** 输出一条结构化 JSON 日志（时间戳 + 级别 + 消息 + 任意字段）。
+ * 自动注入当前请求上下文（traceId / jobId / tenantId），便于一次运行/请求的全链路关联。 */
 export function structLog(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
-  const entry = { ts: new Date().toISOString(), level, msg: message, ...(fields ?? {}) };
+  const ctx = getRequestContext();
+  const entry: Record<string, unknown> = {
+    ts: new Date().toISOString(),
+    level,
+    msg: message,
+    ...(fields ?? {}),
+  };
+  // 仅在有值时注入，避免污染无上下文的生产日志（如 daemon 进程）。
+  if (ctx.traceId) entry['trace.id'] = ctx.traceId;
+  if (ctx.jobId) entry['job.id'] = ctx.jobId;
+  if (ctx.tenantId) entry['tenant.id'] = ctx.tenantId;
   const line = JSON.stringify(entry);
   if (level === 'error' || level === 'fatal') console.error(line);
   else if (level === 'warn') console.warn(line);

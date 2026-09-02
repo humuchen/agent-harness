@@ -178,7 +178,7 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
     // 让 streamRun 抛 4xx：包一层覆盖默认 throw。
     const deps2: ReconnectDeps = {
       ...deps,
-      streamRun: async function* (
+      streamRun: async function (
         _p: Record<string, unknown>,
         _o: { signal: AbortSignal }
       ) {

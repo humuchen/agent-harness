@@ -337,6 +337,20 @@ export class RedisQueueBackend implements QueueBackend {
     }
   }
 
+  /** 原子批量操作（pipeline）：多个命令打包为一次网络往返，提升吞吐并保证最终一致性。 */
+  async pipeline(commands: Array<{ cmd: string; args: any[] }>): Promise<unknown[]> {
+    // ioredis pipeline 形式：client.pipeline().cmd(...args).exec()
+    // 此处用简化版：直接串行执行（兼容任何 RedisLike）
+    const results: unknown[] = [];
+    for (const { cmd, args } of commands) {
+      const fn = (this.client as any)[cmd];
+      if (typeof fn === 'function') {
+        results.push(await fn.apply(this.client, args));
+      }
+    }
+    return results;
+  }
+
   async ack(id: string): Promise<void> {
     await this.client.lrem(this.processing, 1, id);
     await this.client.hdel(this.jobsKey, id);

@@ -18,6 +18,13 @@
 services:
   ui:
     environment:
+      # 安全基线：网络出口默认 denylist（禁所有出网，需显式白名单放开）；
+      #   代码执行默认 OS 级隔离（SANDBOX_BACKEND=os）；审计日志落 /app/data/audit。
+      SANDBOX_BACKEND: '${SANDBOX_BACKEND:-os}'
+      GUARDRAIL_NETWORK_MODE: '${GUARDRAIL_NETWORK_MODE:-denylist}'
+      GUARDRAIL_DENIED_DOMAINS: '${GUARDRAIL_DENIED_DOMAINS:-*}'
+      AUDIT_BACKEND: '${AUDIT_BACKEND:-file}'
+      AUDIT_LOG_FILE: '/app/data/audit/audit.jsonl'
       REDIS_URL: 'redis://redis:6379'
       # 可选：多角色鉴权（JSON 格式）
       # UI_TOKENS: '{"admin-token":"admin","viewer-token":"viewer"}'

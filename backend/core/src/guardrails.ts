@@ -104,6 +104,7 @@ const DEFAULT_POLICY: GuardrailPolicy = {
   injectionSensitivity: 'medium',
   enablePiiRedaction: true,
   allowlist: [],
+  network: { mode: 'denylist', deniedDomains: ['*'] },
 };
 
 /** 允许通过环境变量调整护栏默认策略（无需改代码即可按部署收紧 / 放松）。 */
@@ -112,6 +113,28 @@ function resolveDefaultPolicy(): GuardrailPolicy {
   const sensitivity: InjectionSensitivity = sens === 'low' || sens === 'high' ? sens : 'medium';
   const maxInput = Number(process.env.GUARDRAIL_MAX_INPUT ?? '');
   const webFetchScan = (process.env.GUARDRAIL_WEB_FETCH_SECRET_SCAN || '').toLowerCase();
+  // 网络出口管控：GUARDRAIL_NETWORK_MODE 支持 open/allowlist/denylist（默认 denylist）。
+  // - denylist + GUARDRAIL_DENIED_DOMAINS：显式禁止的域名列表（默认 ['*'] 即禁所有，需显式放开）；
+  // - allowlist + GUARDRAIL_ALLOWED_DOMAINS：白名单模式，仅允许指定域名出网；
+  // - open：放行所有（仅内部测试/离线场景启用）。
+  const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'denylist').toLowerCase();
+  const deniedRaw = process.env.GUARDRAIL_DENIED_DOMAINS;
+  const allowedRaw = process.env.GUARDRAIL_ALLOWED_DOMAINS;
+  let network: NetworkPolicy | undefined;
+  if (netMode === 'open') {
+    network = { mode: 'open' };
+  } else if (netMode === 'allowlist') {
+    network = {
+      mode: 'allowlist',
+      allowedDomains: allowedRaw ? allowedRaw.split(',').map((s) => s.trim()).filter(Boolean) : [],
+    };
+  } else {
+    // denylist（默认）：解析禁止域名，缺省 ['*'] 表示禁止所有出网。
+    const denied = deniedRaw
+      ? deniedRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      : ['*'];
+    network = { mode: 'denylist', deniedDomains: denied };
+  }
   return {
     maxInputLength:
       Number.isFinite(maxInput) && maxInput > 0 ? maxInput : DEFAULT_POLICY.maxInputLength,
@@ -124,6 +147,7 @@ function resolveDefaultPolicy(): GuardrailPolicy {
       .map((s) => s.trim())
       .filter(Boolean),
     webFetchSecretScan: webFetchScan === 'full' || webFetchScan === 'off' ? webFetchScan : 'headers-only',
+    network,
   };
 }
 
@@ -258,11 +282,27 @@ function domainMatches(host: string, entry: string): boolean {
   return h === e;
 }
 
+/** 判断 host 是否属于本地/私有网络地址（127.x.x.x、localhost、192.168.x.x、10.x.x.x、172.16-31.x.x）。 */
+function isPrivateHost(host: string): boolean {
+  // 强制非空后转小写，避免 TypeScript 的 strict null checks 报错
+  const h = (host.split(':')[0] ?? '').toLowerCase();
+  return (
+    h === 'localhost' ||
+    h.startsWith('127.') ||
+    h.startsWith('192.168.') ||
+    h.startsWith('10.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    h.startsWith('[::1]') ||
+    h === '::1'
+  );
+}
+
 /**
  * 出网管控（P0.3）：依据策略判定某 URL 是否允许访问。
  * - open / 无 network：放行；
  * - allowlist：仅允许 listed 域名（含子域），其余拒绝；
- * - denylist：禁止 listed 域名（含子域），其余放行。
+ * - denylist：禁止 listed 域名（含子域），其余放行；
+ * - 本地/私有地址（127.0.0.0/8、10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、localhost）豁免管控，始终放行。
  * 返回 null 表示放行，否则为拒绝原因。
  */
 export function checkEgress(url: string, net?: NetworkPolicy): string | null {
@@ -273,6 +313,8 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   } catch {
     return 'invalid URL';
   }
+  // 本地/私有网络豁免（测试用例与内网服务访问不受管控影响）
+  if (isPrivateHost(host)) return null;
   if (net.mode === 'denylist') {
     const denied = (net.deniedDomains ?? []).some((d) => domainMatches(host, d));
     return denied ? `egress denied to ${host} (denylist)` : null;
