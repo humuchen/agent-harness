@@ -288,3 +288,119 @@ test('Memory: save() 自动 flush 异步摘要（无需手动 flush）', async (
   assert.strictEqual(m2.summary, 'auto-flushed', '落地后的摘要应随记忆恢复');
 });
 
+// P2: 记忆打分机制测试
+const { HeuristicMemoryScorer, createHeuristicScorer } = require('../dist/memory.js');
+
+test('HeuristicMemoryScorer: scoreWindow 返回与消息数量相同的分数', () => {
+  const scorer = new HeuristicMemoryScorer();
+  const msgs = [
+    { role: 'user', content: '你好' },
+    { role: 'assistant', content: '你好！' },
+    { role: 'tool', content: '{ "result": "ok" }' },
+  ];
+  const scores = scorer.scoreWindow(msgs, '你好世界');
+  assert.strictEqual(scores.length, 3);
+  scores.forEach((s) => assert.ok(s >= 0 && s <= 1, '分数应在 0~1 之间'));
+});
+
+test('HeuristicMemoryScorer: user 提问比 tool 结果得更高分', () => {
+  const scorer = new HeuristicMemoryScorer();
+  const msgs = [
+    { role: 'user', content: '帮我查一下天气' },
+    { role: 'tool', content: '{ "weather": "sunny" }' },
+  ];
+  const scores = scorer.scoreWindow(msgs, '帮我查一下天气');
+  assert.ok(scores[0] > scores[1], 'user 消息分数应高于 tool 结果');
+});
+
+test('HeuristicMemoryScorer: 与 context 相关的消息得更高分', () => {
+  const scorer = new HeuristicMemoryScorer();
+  const msgs = [
+    { role: 'user', content: 'python 列表推导式怎么写' },
+    { role: 'user', content: '今天天气不错' },
+  ];
+  const scores = scorer.scoreWindow(msgs, 'python 列表推导式');
+  assert.ok(scores[0] > scores[1], '相关消息应得分更高');
+});
+
+test('HeuristicMemoryScorer: scoreNotes 返回与笔记数量相同的分数', () => {
+  const scorer = new HeuristicMemoryScorer();
+  const notes = ['Python 列表推导式', 'JavaScript 闭包', 'Docker 入门'];
+  const scores = scorer.scoreNotes(notes, 'Python 列表推导式');
+  assert.strictEqual(scores.length, 3);
+  scores.forEach((s) => assert.ok(s >= 0 && s <= 1, '分数应在 0~1 之间'));
+});
+
+test('Memory with scorer: 记忆打分器在 add() 中更新分数', async () => {
+  const m = new Memory({
+    scorer: new HeuristicMemoryScorer(),
+    scoringContext: 'python 列表推导式',
+  });
+  m.add({ role: 'user', content: 'python 列表推导式怎么写' });
+  m.add({ role: 'user', content: '今天天气不错' });
+  assert.ok(m.history().length === 2);
+  // 分数会在 add() 中异步计算，save 时会同步
+  await m.save();
+  assert.ok(m.notesWithScores().length === 0); // 无长期笔记
+});
+
+test('Memory with scorer: systemContextWithScoring 按相关性排序并裁剪', async () => {
+  const m = new Memory({
+    scorer: new HeuristicMemoryScorer(),
+    scoringContext: 'python 列表推导式',
+    notesTopK: 1,
+  });
+  m.remember('Python 列表推导式详解');
+  m.remember('Docker 容器入门');
+  m.remember('JavaScript 闭包讲解');
+  await m.save();
+  const ctx = await m.systemContextWithScoring('python 列表推导式');
+  assert.ok(ctx.includes('Python 列表推导式详解'), '相关笔记应排在前面');
+});
+
+test('Memory with scorer: systemContext 回退到原有行为（无 scorer）', async () => {
+  const m = new Memory();
+  m.remember('笔记A');
+  m.remember('笔记B');
+  const ctx = m.systemContext();
+  assert.ok(ctx.includes('笔记A'));
+  assert.ok(ctx.includes('笔记B'));
+});
+
+test('Memory: 无 scorer 时淘汰仍为 FIFO（向后兼容）', () => {
+  const m = new Memory({ maxWindow: 3 });
+  m.add({ role: 'system', content: 'SYS' });
+  m.add({ role: 'user', content: '1' });
+  m.add({ role: 'user', content: '2' });
+  m.add({ role: 'user', content: '3' });
+  m.add({ role: 'user', content: '4' });
+  assert.strictEqual(m.history().length, 3);
+  // FIFO：最早的用户消息被淘汰
+  assert.ok(!m.history().some((x) => x.content === '1'), '最早的消息应被淘汰');
+});
+
+test('createHeuristicScorer: 从 env 创建打分器', () => {
+  const oldEnv = process.env.MEMORY_SCORE_RELEVANCE;
+  process.env.MEMORY_SCORE_RELEVANCE = '0.8';
+  const scorer = createHeuristicScorer();
+  assert.strictEqual(scorer.relevanceWeight, 0.8);
+  if (oldEnv !== undefined) {
+    process.env.MEMORY_SCORE_RELEVANCE = oldEnv;
+  } else {
+    delete process.env.MEMORY_SCORE_RELEVANCE;
+  }
+});
+
+test('Memory: 持久化保存与恢复带分数的记忆', async () => {
+  const dir = tmpDir();
+  const store = new FileMemoryStore({ dir });
+  const m = new Memory({ store, sessionKey: 'scored', maxWindow: 5 });
+  m.remember('重要笔记');
+  m.remember('普通笔记');
+  await m.save();
+
+  const m2 = new Memory({ store, sessionKey: 'scored' });
+  await m2.load();
+  assert.deepStrictEqual(m2.notes(), ['重要笔记', '普通笔记']);
+});
+
