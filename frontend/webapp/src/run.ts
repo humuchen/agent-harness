@@ -335,6 +335,8 @@ export class AhRun extends LitElement {
     this.session.subscribe((p) => {
       this.running = p === 'running' || p === 'awaiting_approval';
       this.finished = p === 'finished' || p === 'error' || p === 'aborted';
+      // 全局运行中指示器：有任一面板在运行时亮起，全部结束后熄灭。
+      window.dispatchEvent(new Event(this.running ? 'ah:run:start' : 'ah:run:stop'));
     });
   }
 
