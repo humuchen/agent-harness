@@ -145,6 +145,9 @@ import { handleUpload, serveUploaded } from './upload';
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
 
+// P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
+import { installScrubber } from './log-scrub';
+
 import { DEFAULTS } from './config-defaults';
 import { rateLimited } from './rate-limit';
 
@@ -357,6 +360,12 @@ const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
 
 // 启动期配置校验：把「写错但静默启动」的 misconfig 显性化为日志告警（不阻断启动，向后兼容）。
 logConfigValidation();
+
+// P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
+if (process.env.LOG_SCRUB_ENABLED === 'true') {
+  installScrubber({});
+  structLog('info', 'log-scrub', { enabled: true, note: '全局日志脱敏已激活' });
+}
 
 // OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。
 if (AUTH_PROVIDER === 'oidc') {

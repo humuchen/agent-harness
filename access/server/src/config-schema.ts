@@ -197,7 +197,9 @@ export function validateConfig(): ConfigReport {
   return { errors, warnings };
 }
 
-/** 启动早期调用：校验并结构化日志输出，把静默 misconfig 显性化。 */
+/** 校验并结构化日志输出，把静默 misconfig 显性化。
+ * AH_STARTUP_CRITICAL=1 时，critical 字段校验失败直接 throw，阻断启动（生产推荐）。
+ * 默认不阻断（向后兼容），仅记录 error 级日志。 */
 export function logConfigValidation(): void {
   const { errors, warnings } = validateConfig();
   if (errors.length === 0 && warnings.length === 0) {
@@ -207,9 +209,13 @@ export function logConfigValidation(): void {
   for (const e of errors) structLog('error', 'config', { issue: e });
   for (const w of warnings) structLog('warn', 'config', { issue: w });
   if (errors.length > 0) {
+    const criticalErrors = SCHEMA.filter(f => f.critical).map(f => f.key);
     structLog('error', 'config', {
       summary: `${errors.length} 个必需/关键环境变量校验失败，请检查配置`,
       hint: '服务仍会尽量启动（向后兼容），但相关功能可能异常'
     });
+    if (process.env.AH_STARTUP_CRITICAL === '1') {
+      throw new Error(`启动阻断：${errors.length} 项配置校验失败，详见上方日志\n关键项: ${criticalErrors.join(', ')}`);
+    }
   }
 }

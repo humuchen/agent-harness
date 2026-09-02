@@ -29,3 +29,11 @@ data:
   MEMORY_DIR: '/app/data/memory'
   # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
   MA_DATA_DIR: '/app/data/ma-lead'
+  # P2：启动强校验（生产建议开启）
+  AH_STARTUP_CRITICAL: '1'
+  # P2：告警路由
+  ALERT_LOG_PATH: '/app/data/alerts.jsonl'
+  # P2：日志脱敏
+  LOG_SCRUB_ENABLED: 'true'
+  # P2：指标持久化
+  TELEMETRY_FILE: '/app/data/telemetry-metrics.json'

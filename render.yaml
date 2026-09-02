@@ -86,7 +86,7 @@ services:
       #   filesystem / fetch / memory / excel（stdio，npx 拉起）。
       # 运行时仍可通过 /api/mcp/add 或预设市场动态增删，部署重启后从此清单重新加载。
       - key: MCP_SERVERS
-        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"npx","args":["-y","@modelcontextprotocol/server-memory"]},{"name":"excel","command":"npx","args":["--yes","negokaz/excel-mcp-server"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]'
+        value: '[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/cjs/index.js","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-memory/dist/cjs/index.js"]},{"name":"excel","command":"node","args":["access/server/node_modules/@negokaz/excel-mcp-server/dist/index.js"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]'
       - key: RAG_TRANSPORT
         value: mcp
       - key: RAG_TENANT_ID
@@ -122,6 +122,19 @@ services:
         value: admin
       - key: ADMIN_PASSWORD
         value: admin888
+      # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
+      # 生产部署建议开启，避免静默 misconfig 导致功能异常。
+      - key: AH_STARTUP_CRITICAL
+        value: '1'
+      # ── 告警路由（P2）：ALERT_WEBHOOK_URL 推送至 Slack/飞书/钉钉入站 Webhook
+      #   ALERT_LOG_PATH 落盘 JSONL（便于被 Filebeat/Loki 采集）
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: ALERT_LOG_PATH
+        value: /app/data/alerts.jsonl
+      # ── 日志脱敏（P2）：全局 scrubber 激活开关
+      - key: LOG_SCRUB_ENABLED
+        value: 'true'
       # ── GitHub OAuth 登录（按需开启；不配则登录页不显示 GitHub 按钮，功能自动禁用）──
       # CLIENT_ID / CLIENT_SECRET 在 GitHub → Settings → Developer settings → OAuth Apps 获取；
       # Authorization callback URL 填 https://<your-render-domain>/api/account/oauth/github/callback

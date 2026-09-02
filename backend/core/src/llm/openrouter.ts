@@ -16,9 +16,6 @@ export interface OpenRouterConfig {
   //（例如 ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet']）。
   // 设置后会作为 `models` 发送，取代单个 `model` 字段。
   models?: string[];
-  // OpenRouter 建议附加的归因请求头。
-  siteUrl?: string;
-  appName?: string;
   // 可注入的 fetch（便于测试或代理）。默认使用全局 fetch。
   fetchImpl?: typeof fetch;
   // 对退化响应（内容为空且没有工具调用）以及限流/瞬时故障（HTTP 429/5xx）
@@ -33,7 +30,6 @@ export interface OpenRouterConfig {
  * OpenRouter 实现了 OpenAI Chat Completions 协议，因此与 OpenAI 适配器
  * 使用相同的契约，但额外具备：
  *   - 默认 `baseUrl` 为 https://openrouter.ai/api/v1
- *   - 自动附加建议的 HTTP-Referer / X-Title 归因请求头
  *   - 支持 OpenRouter 的 `models` 降级数组
  *   - 使用带提供商前缀的模型标识（例如 `openai/gpt-4o-mini`）
  *
@@ -51,8 +47,6 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     model,
     baseUrl,
     models,
-    siteUrl,
-    appName,
     fetchImpl,
     retries
   } = resolveOpenRouterConfig(config);
@@ -103,12 +97,10 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       body.reasoning = { enabled: true };
     }
 
-    // OpenRouter 归因请求头（建议附加）。
+    // 请求头。
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      'HTTP-Referer': siteUrl,
-      'X-Title': appName
+      Authorization: `Bearer ${apiKey}`
     };
 
     return callOpenAIChat({
