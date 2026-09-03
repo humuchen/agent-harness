@@ -31,12 +31,19 @@ test -f "access/server/dist/server.js"   || { echo "ERROR: access/server/dist/se
 test -f "frontend/webapp/dist/index.html" || { echo "ERROR: frontend/webapp/dist/index.html missing"; exit 1; }
 test -f "backend/core/dist/index.js"      || { echo "ERROR: backend/core/dist/index.js missing"; exit 1; }
 
-# Vercel's @vercel/node builder expects static files in either "dist/" or "public/"
-# at the project root. Copy frontend webapp artifacts to both locations as a safety net.
-rm -rf dist public
-mkdir -p dist public
-cp -r frontend/webapp/dist/. dist/
-cp -r frontend/webapp/dist/. public/
-echo "=== Created dist/ and public/ ($(ls dist/ | wc -l) items each) ==="
+# Copy frontend build output to public/ for Vercel to serve
+# This replaces the original public/ files with the built SPA
+rm -rf public/*
+mkdir -p public/assets
+cp frontend/webapp/dist/assets/* public/assets/
+cp frontend/webapp/dist/*.html public/ 2>/dev/null || true
+cp frontend/webapp/dist/*.js public/ 2>/dev/null || true
+cp frontend/webapp/dist/*.css public/ 2>/dev/null || true
+# Preserve root-level static assets (favicon, logos)
+cp frontend/webapp/dist/favicon.ico public/ 2>/dev/null || true
+cp frontend/webapp/dist/favicon.svg public/ 2>/dev/null || true
+cp frontend/webapp/dist/logo-white.svg public/ 2>/dev/null || true
+cp frontend/webapp/dist/logo.svg public/ 2>/dev/null || true
+echo "=== Frontend copied to public/ ==="
 
 echo "=== Build complete ==="
