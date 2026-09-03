@@ -36,6 +36,7 @@
 # ----------------------------- 构建参数 -----------------------------
 # 默认走 Docker Hub 官方镜像（内容权威、体积更小：约 330MB vs 非 slim 的 1.6GB）。
 ARG NODE_BASE=node
+
 # ⚠️ pnpm@11.9.0 要求 Node>=22.13；基础镜像必须满足条件。
 # 官方 node:22-bookworm-slim 当前为 v22.23.2（满足要求）；若切到 quay.io 源，
 # 请先确认该 tag 的 Node 版本不低于 22.13，否则 pnpm 会因引擎检查失败。
@@ -43,8 +44,10 @@ ARG NODE_TAG=22-bookworm-slim
 
 # ----------------------------- 构建阶段 -----------------------------
 FROM ${NODE_BASE}:${NODE_TAG} AS build
+
 # 依赖安装走国内可达的 npmmirror，规避 npmjs.org 网络限制（同时供 pnpm 自身安装）。
 ENV npm_config_registry=https://registry.npmmirror.com
+
 # 不使用 corepack：本环境经 npmmirror 拉取 pnpm 时 corepack 的签名校验会失败
 # （Cannot find matching keyid）。改为直接用 npm 安装与根 package.json 的 packageManager 一致的 pnpm@11.9.0。
 # 前提：基础镜像 Node>=22.13（见 NODE_TAG）。
@@ -68,7 +71,7 @@ RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
 # 再拷源码并构建部署所需的包（server + 其依赖，以及 webapp + 其依赖，以及 cli）。
 COPY . .
-RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." --filter "@agent-harness/cli..." build
+RUN pnpm --filter "@agent-harness/server..." --filter "@agent-harness/webapp..." --filter "@agent-harness/cli..." --filter "@agent-harness/rag-service..." build
 
 # 编译 OS 级沙箱原生 helper（Linux only）。
 # 生产镜像必须产出 helper：用 HARNESS_NATIVE_STRICT=1 使「非 Linux / 缺编译器 / 缺库」一律失败，
@@ -95,13 +98,30 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/access ./access
 COPY --from=build /app/backend ./backend
 COPY --from=build /app/frontend ./frontend
+# RAG MCP 服务（@agent-harness/rag-service）：内置 MCP 默认清单引用 services/rag/dist/index.js，
+# 必须随镜像带入，否则容器内 MODULE_NOT_FOUND 导致 rag 检索不可用。
+COPY --from=build /app/services ./services
 COPY --from=build /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
 COPY --from=build /app/package.json ./package.json
+
+# 运行期脚本：备份/运维任务由 server 以子进程调用（如 scripts/backup-db.cjs），
+# 必须随镜像分发，否则运行时报 MODULE_NOT_FOUND。
+COPY --from=build /app/scripts ./scripts
+
+# 内置 RAG MCP Server（stdio 模式）：MCP_SERVERS 默认清单以 services/rag/dist/index.js 拉起，
+# 缺失会导致 rag 服务连接失败。
+COPY --from=build /app/services ./services
+
 # 运行期共享库：若 helper 以 libseccomp/libcap 编译，则运行需对应 .so（best-effort，失败不阻断）。
 RUN (apt-get update && apt-get install -y --no-install-recommends libseccomp2 libcap2 && rm -rf /var/lib/apt/lists/*) 2>/dev/null || true
 
 # 以非 root 运行，并施加 OS 级容器安全硬化。
-RUN groupadd -r ah && useradd -r -g ah -d /app -s /usr/sbin/nologin ah && chown -R ah:ah /app
+# 预建数据/备份目录并授予 ah 属主：命名卷首次挂载时会以镜像中该路径的权限初始化；
+# 若不预建（默认属主 root），非 root 的 ah 写入 /app/data 会 EACCES，
+# 导致记忆 / telemetry / 审计日志等持久化全部静默失效。
+RUN groupadd -r ah && useradd -r -g ah -d /app -s /usr/sbin/nologin ah \
+ && mkdir -p /app/data /var/lib/agent-harness/backups /var/log/agent-harness \
+ && chown -R ah:ah /app /var/lib/agent-harness /var/log/agent-harness
 USER ah:ah
 
 # 容器安全加固（P0.3）：只读根文件系统 + 丢弃全部能力 + 禁止提权。

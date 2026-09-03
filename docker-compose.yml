@@ -23,6 +23,10 @@ services:
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPEN_API_KEY: '${OPEN_API_KEY:-}'
       OPEN_MODEL: '${OPEN_MODEL:-}'
+      # 站点 admin 凭证：独立于 LLM 密钥，避免 OPEN_API_KEY 同时充当「LLM 密钥 + admin 凭证」
+      #（server.ts 检测到 ADMIN_API_KEY 缺失时会打印双用途告警）。
+      # 注意：compose 只把 .env 用于 ${VAR} 替换，不会自动注入容器，故需在此显式声明。
+      ADMIN_API_KEY: '${ADMIN_API_KEY:-}'
       # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
       REDIS_URL: '${REDIS_URL:-}'
       # 记忆持久化后端（Phase 4 决策 A）：file 后端落 RWX 风格共享卷 /app/data，
@@ -33,7 +37,7 @@ services:
       MA_DATA_DIR: '/app/data/ma-lead'
       # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
       # 内置默认清单（未设宿主 MCP_SERVERS 时生效）：rag / context7 / filesystem / fetch / memory / excel。
-      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/cjs/index.js","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-memory/dist/cjs/index.js"]},{"name":"excel","command":"node","args":["access/server/node_modules/@negokaz/excel-mcp-server/dist/index.js"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
+      MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/cjs/index.js","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-memory/dist/cjs/index.js"]},{"name":"excel","command":"node","args":["access/server/node_modules/@negokaz/excel-mcp-server/dist/launcher.js"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'
       RAG_TRANSPORT: '${RAG_TRANSPORT:-mcp}'
       RAG_TENANT_ID: '${RAG_TENANT_ID:-default}'
       RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'
@@ -67,6 +71,9 @@ services:
     volumes:
       # 共享记忆卷：ui 容器把记忆与插件数据写入 /app/data（file 后端），重启不丢。
       - data:/app/data
+      # 临时绕过：运行时镜像漏带 services/（Dockerfile 已补 COPY，待下次成功 rebuild 后可移除本挂载）。
+      # rag 服务依赖为空（纯 stdlib），宿主已构建的 dist 直接挂入即可启用内置 RAG MCP。
+      - ./services/rag:/app/services/rag:ro
 
   # 可选：运行队列后端（多副本共享队列 / 跨实例事件桥）。
   # 启用：docker compose --profile redis up
