@@ -59,6 +59,8 @@ const b64urlJson = (obj: unknown): string =>
   b64url(Buffer.from(JSON.stringify(obj), 'utf8'));
 
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+/** Refresh token 有效期（30 天），独立于 access cookie 的 7 天 TTL。 */
+export const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** 重置凭证有效期（15 分钟）。过期需重新申请。 */
 const RESET_TTL_MS = 15 * 60 * 1000;
 
@@ -88,16 +90,28 @@ async function ensureDb(): Promise<void> {
         )`
       );
       await db.exec(
-        `CREATE TABLE IF NOT EXISTS auth_tokens (
-          jti TEXT PRIMARY KEY,
-          username TEXT NOT NULL,
-          expires_at INTEGER NOT NULL,
-          created_at INTEGER NOT NULL
-        )`
-      );
-      await db.exec(
-        `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
-      );
+          `CREATE TABLE IF NOT EXISTS auth_tokens (
+            jti TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )`
+        );
+        await db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(username)`
+        );
+        // Refresh token 表（P1-13 双 token 模式）：长时效，支持显式续期而不重输密码。
+        await db.exec(
+          `CREATE TABLE IF NOT EXISTS refresh_tokens (
+            token TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )`
+        );
+        await db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(username)`
+        );
       // 密码重置凭证表：token 一次性使用，过期由 RESET_TTL_MS 控制。
       await db.exec(
         `CREATE TABLE IF NOT EXISTS password_resets (
@@ -184,24 +198,39 @@ function sign(jti: string, payloadB64: string): string {
   return b64url(mac.digest());
 }
 
-/** 签发：写服务端 token 记录（7 天）+ 返回紧凑 token 串。 */
-export async function issueToken(username: string): Promise<string> {
+/** 签发 access token（Cookie）+ refresh token（客户端存储），双 token 模式（P1-13）。 */
+export async function issueTokens(username: string): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  accessExpiresAt: number;
+}> {
   await ensureDb();
+  // access token：jti.payload.sig（HMAC-SHA256）
   const jti = randomBytes(16).toString('hex');
   const exp = Date.now() + TOKEN_TTL_MS;
-  // 角色随 token 下发（默认 admin，兼容未列 role 的旧库）。
   const row = (await db
     .prepare('SELECT role FROM users WHERE username = ?')
     .get(username)) as { role?: string } | undefined;
-  const role = row?.role || 'viewer'; // P0-A: 兜底改为 viewer，避免公开注册即获 admin
+  const role = row?.role || 'viewer';
   const payloadB64 = b64urlJson({ u: username, exp, r: role });
   const sig = sign(jti, payloadB64);
+  const accessToken = `${jti}.${payloadB64}.${sig}`;
   await db
     .prepare(
       `INSERT INTO auth_tokens (jti, username, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
     .run(jti, username, exp, Date.now());
-  return `${jti}.${payloadB64}.${sig}`;
+
+  // refresh token：随机 32 字节，存 DB，客户端持有，仅用于续期（不提供身份解析能力）。
+  const refreshToken = randomBytes(32).toString('hex');
+  const refreshExp = Date.now() + REFRESH_TTL_MS;
+  await db
+    .prepare(
+      `INSERT INTO refresh_tokens (token, username, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+    .run(refreshToken, username, refreshExp, Date.now());
+
+  return { accessToken, refreshToken, accessExpiresAt: exp };
 }
 
 /** 解析 + 验签 token（不查库）。非法返回 null。 */
@@ -254,6 +283,10 @@ export interface AccountResult {
   error?: string;
   username?: string;
   token?: string;
+  /** refresh token，用于 /api/account/refresh 续期（P1-13）。 */
+  refreshToken?: string;
+  /** access token 过期时间戳（ms），供前端 localStorage 调度自动刷新。 */
+  accessExpiresAt?: number;
   email?: string;
 }
 
@@ -303,8 +336,9 @@ export async function loginUser(
   if (!row || !verifyPassword(password, stored)) {
     return { ok: false, error: '用户名或密码错误' };
   }
-  const token = await issueToken(username);
-  return { ok: true, username, token };
+  // P1-13: 双 token 模式，签发 access + refresh token 对。
+  const tokens = await issueTokens(username);
+  return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
 }
 
 /**
@@ -342,8 +376,8 @@ export async function upsertGithubUser(
           .prepare('UPDATE users SET email = ? WHERE github_id = ?')
           .run(email, githubId);
       }
-      const token = await issueToken(byGh.username);
-      return { ok: true, username: byGh.username, token };
+      const tokens = await issueTokens(byGh.username);
+      return { ok: true, username: byGh.username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
     }
   }
   // ② 未命中 github_id：用户名可能已被「密码/其它来源」账户占用。若该占用账户并非同一 GitHub id，
@@ -357,8 +391,8 @@ export async function upsertGithubUser(
   if (clash) {
     if (clash.github_id && githubId && clash.github_id === githubId) {
       // 防御性兜底：理论上①已命中，这里直接复用避免重复建行。
-      const token = await issueToken(clash.username);
-      return { ok: true, username: clash.username, token };
+      const tokens = await issueTokens(clash.username);
+      return { ok: true, username: clash.username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
     }
     finalName = `${username}_gh${githubId || '0'}`;
   }
@@ -374,8 +408,8 @@ export async function upsertGithubUser(
       'operator',
       githubId || null
     );
-  const token = await issueToken(finalName);
-  return { ok: true, username: finalName, token };
+  const tokens = await issueTokens(finalName);
+  return { ok: true, username: finalName, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
 }
 
 /**
@@ -428,8 +462,8 @@ export async function upsertGoogleUser(
       username
     );
   }
-  const token = await issueToken(username);
-  return { ok: true, username, token };
+  const tokens = await issueTokens(username);
+  return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
 }
 
 // ─── Cookie 辅助 ────────────────────────────────────────────────────────────
@@ -447,14 +481,15 @@ function isLocalhost(req: { headers: Record<string, unknown> }): boolean {
 /** 构造 Set-Cookie 头值：HttpOnly + SameSite=Lax；仅非 localhost 置 Secure（dev 可 http）。 */
 export function authCookieValue(
   req: { headers: Record<string, unknown> },
-  token: string
+  token: string,
+  expiresInMs = TOKEN_TTL_MS
 ): string {
   const parts = [
     `${AUTH_COOKIE}=${token}`,
     'HttpOnly',
     'SameSite=Lax',
     'Path=/',
-    `Max-Age=${TOKEN_TTL_MS / 1000}`
+    `Max-Age=${expiresInMs / 1000}`
   ];
   if (!isLocalhost(req)) parts.push('Secure');
   return parts.join('; ');
@@ -552,10 +587,60 @@ export async function changePassword(
   return { ok: true };
 }
 
-/** 吊销某用户全部登录态（删除 auth_tokens 记录；cookie 由前端/登出接口同步清除）。 */
+/** 吊销某用户全部登录态（删除 auth_tokens + refresh_tokens 记录；cookie 由前端/登出接口同步清除）。 */
 export async function revokeAllTokens(username: string): Promise<void> {
   if (!db) return;
   await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
+  // P1-13: 同时清除所有 refresh token，防止被吊销的 access token 仍能用旧 refresh 续期。
+  await db.prepare('DELETE FROM refresh_tokens WHERE username = ?').run(username);
+}
+
+// ─── Refresh Token（P1-13）────────────────────────────────────────────────────
+
+/**
+ * 验证 refresh token 有效性：存在 + 未过期 + 用户未匹配。
+ * 返回 { username } | null。
+ */
+export async function verifyRefreshToken(
+  token: string
+): Promise<{ username: string } | null> {
+  if (!db) return null;
+  const row = (await db
+    .prepare(
+      'SELECT username, expires_at FROM refresh_tokens WHERE token = ? AND expires_at > ?'
+    )
+    .get(token, Date.now())) as
+    | { username: string; expires_at: number }
+    | undefined;
+  if (!row) return null;
+  return { username: row.username };
+}
+
+/**
+ * 旋转 access token：消耗旧 refresh token，签发新 access + refresh token 对。
+ * 返回 { accessToken, refreshToken, accessExpiresAt }，调用方负责下发 cookie 和存 localStorage。
+ * 原 refresh token 被删除（一次性使用，防止重放）。
+ */
+export async function rotateTokens(
+  refreshToken: string
+): Promise<
+  | { accessToken: string; refreshToken: string; accessExpiresAt: number; username: string }
+  | { ok: false; error: string }
+> {
+  const subject = await verifyRefreshToken(refreshToken);
+  if (!subject) return { ok: false, error: 'refresh token 无效或已过期' };
+
+  // 消费旧 refresh token
+  await db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+
+  // 签发新 token 对
+  const tokens = await issueTokens(subject.username);
+  return {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    accessExpiresAt: tokens.accessExpiresAt,
+    username: subject.username,
+  };
 }
 
 /**

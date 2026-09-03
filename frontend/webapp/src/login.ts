@@ -1647,9 +1647,10 @@ export class AhLogin extends LitElement {
         ok?: boolean;
         error?: string;
         username?: string;
+        refreshToken?: string;
+        accessExpiresAt?: number;
       };
       if (!res.ok || !data.ok) {
-        // 服务端业务错误（用户名已被占用 / 用户名或密码错误…）统一走通知组件。
         notify.error(
           data.error ||
             (this.mode === 'register' ? '注册失败。' : '登录失败。'),
@@ -1657,8 +1658,15 @@ export class AhLogin extends LitElement {
         );
         return;
       }
-      // 服务端已下发 ah_auth cookie；前端仅记录用户名用于双因子 header。
+      // 服务端已下发 ah_auth cookie；前端记录用户名 + access token（用于调度刷新）。
       setSession(data.username || email);
+      if (data.refreshToken && typeof localStorage !== 'undefined') {
+        localStorage.setItem('ah_refresh', data.refreshToken);
+      }
+      if (data.accessExpiresAt) {
+        setToken(data.refreshToken || '');  // 存 refreshToken 作为 scheduleAutoRefresh 依据
+        scheduleAutoRefresh(data.accessExpiresAt);
+      }
       notify.success(
         this.mode === 'register' ? '注册成功，已自动登录' : '登录成功'
       );

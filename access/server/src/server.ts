@@ -188,8 +188,11 @@ import {
   requestPasswordReset,
   resetPassword,
   deleteUser,
+  rotateTokens,
+  verifyRefreshToken,
   type AccountResult
 } from './accounts';
+import { REFRESH_TTL_MS } from './accounts';
 
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
@@ -933,6 +936,30 @@ const server = createServer(
           'cache-control': 'no-store'
         });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
+      if (req.method === 'POST' && path === '/api/account/refresh') {
+        const b = await readBody(req);
+        const refreshToken = typeof b?.refresh_token === 'string' ? b.refresh_token : '';
+        if (!refreshToken) {
+          sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
+          return;
+        }
+        const result = await rotateTokens(refreshToken);
+        if (!('accessToken' in result)) {
+          sendJsonError(res, 401, { error: result.error ?? 'refresh token 无效' }, req);
+          return;
+        }
+        const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
+        const authCookie = authCookieValue(req, accessToken, accessExpiresAt);
+        const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': [authCookie, refreshCookie].join('; '),
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
         return;
       }
       // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
