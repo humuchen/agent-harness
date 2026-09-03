@@ -55,6 +55,12 @@ function getBuildTimeCryptoKey(): Uint8Array {
  * P1-6: 新增 1 字节版本前缀（0x01）+ AAD（tenantId + rowId），支持密钥轮换且不
  * 需全量重加密；同时使 AAD 绑定到业务上下文，防止密文在其他租户/行之间复用。
  */
+/** 当前 AAD 派生逻辑（encrypt 与 decrypt 必须完全一致）。 */
+function buildAad(opts?: { tenantId?: string; rowId?: string }): Buffer {
+  const aadParts = [opts?.tenantId ?? '', opts?.rowId ?? ''];
+  return Buffer.from(aadParts.join('\x00'));
+}
+
 export function encryptApiKey(plaintext: string, opts?: { tenantId?: string; rowId?: string }): string {
   const { createCipheriv, randomBytes } =
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -62,9 +68,7 @@ export function encryptApiKey(plaintext: string, opts?: { tenantId?: string; row
   const key = getBuildTimeCryptoKey();
   const iv = randomBytes(12);
   const version = Buffer.from([0x01]); // 版本前缀
-  // AAD: 将 tenantId 和 rowId 绑定到密文，防止跨租户/行复用
-  const aadParts = [opts?.tenantId ?? '', opts?.rowId ?? ''];
-  const aad = Buffer.from(aadParts.join('\x00'));
+  const aad = buildAad(opts);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   if (aad.length > 0) cipher.setAAD(aad);
   const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -79,7 +83,7 @@ export function encryptApiKey(plaintext: string, opts?: { tenantId?: string; row
  * P1-7: 返回结果区分「未配置」（无密文）与「解密失败」（密文损坏/密钥不匹配），
  * 便于排障。解密失败抛出 Error，调用方可捕获区分处理。
  */
-export function decryptApiKey(payload: unknown): string {
+export function decryptApiKey(payload: unknown, opts?: { tenantId?: string; rowId?: string }): string {
   if (typeof payload !== 'string') return '';
   const raw = Buffer.from(payload, 'base64');
   // 最短合法载荷：1(version) + 12(iv) + 16(tag)，明文可为空但实际 key 不为空。
@@ -96,6 +100,9 @@ export function decryptApiKey(payload: unknown): string {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     require('node:crypto') as typeof import('node:crypto');
   const decipher = createDecipheriv('aes-256-gcm', getBuildTimeCryptoKey(), iv);
+  // P1-6: encrypt 同版本的 AAD 必须在 decrypt 前设置，否则 auth tag 校验始终失败。
+  const aad = buildAad(opts);
+  if (aad.length > 0) decipher.setAAD(aad);
   decipher.setAuthTag(tag);
   try {
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
