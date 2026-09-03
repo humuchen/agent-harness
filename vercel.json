@@ -30,7 +30,6 @@
       "dest": "/access/server/package.json"
     }
   ],
-  "cleanOutputs": false,
   "framework": null,
   "outputDirectory": "frontend/webapp/dist"
 }
