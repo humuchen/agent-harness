@@ -17,9 +17,10 @@
 ### 02 部署 · `02-deployment/`
 | 文档 | 内容 |
 |---|---|
-| [deployment-index.md](02-deployment/deployment-index.md) | 部署决策树总入口（Compose / K8s 选路） |
-| [deployment-self-hosting.md](02-deployment/deployment-self-hosting.md) | 自托管部署（Docker / K8s / 镜像 CI）、环境变量清单、SSO、安全清单、密钥管理 |
-| [docker-deploy-guide.md](02-deployment/docker-deploy-guide.md) | Docker Compose 完整流程（内存模式 / Redis+鉴权 overlay） |
+|| [deployment-index.md](02-deployment/deployment-index.md) | 部署决策树总入口（Compose / K8s 选路） |
+|| [deployment-self-hosting.md](02-deployment/deployment-self-hosting.md) | 自托管部署（Docker / K8s / 镜像 CI）、环境变量清单、SSO、安全清单、密钥管理 |
+|| [vercel-deploy-guide.md](02-deployment/vercel-deploy-guide.md) | **Vercel 部署指南**（Node.js Server 長運行模式） |
+|| [docker-deploy-guide.md](02-deployment/docker-deploy-guide.md) | Docker Compose 完整流程（内存模式 / Redis+鉴權 overlay） |
 | [k8s-deploy-guide.md](02-deployment/k8s-deploy-guide.md) | Kubernetes 完整流程（base + overlays/local） |
 | [multi-instance-runbook.md](02-deployment/multi-instance-runbook.md) | 多实例水平扩展与压测 Runbook（Redis 队列、sticky session、故障注入） |
 | [run-local.md](02-deployment/run-local.md) | 本机一键起服务 + 前端面板（含沙箱绕过、路径坑） |

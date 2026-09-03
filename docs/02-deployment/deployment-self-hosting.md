@@ -71,7 +71,25 @@ docker run -p 4173:4173 \
 - **build**：`corepack enable` + pnpm 安装并 `pnpm -r build`（拓扑序 core → client → server → webapp → cli）。
 - **runtime**：`node:22-bookworm-slim`，非 root 运行，HEALTHCHECK 探活 `/api/v1/state`。
 
-## 4. 镜像 CI（GHCR）
+## 4. Vercel 部署
+
+Vercel 部署使用 **Node.js Server** (長運行模式) —— 非 Serverless Functions，因本項目依賴 SSE 流式、持久化狀態、背景進程。詳見 [Vercel 部署指南](./vercel-deploy-guide.md)。
+
+```bash
+npm i -g vercel
+vercel login
+vercel  # 首次部署
+vercel --prod  # 後續部署
+```
+
+關鍵配置文件：
+- `vercel.json` — builder 配置 + 路由 + includeFiles（捆綁所有 workspace dist 產物）
+- `access/server/package.json` → `"vercel-build": "bash ../../scripts/vercel-build.sh"` — Vercel 部署前執行 `pnpm -r build`
+- `scripts/vercel-build.sh` — 完整 monorepo 構建 + 產物驗證
+
+> **⚠️ 必須使用外部存儲**：Vercel 的 /tmp 臨時，重啟即清空。配置 `DB_BACKEND=turso` + `TURSO_URL`/`TURSO_TOKEN`，否則所有 SQLite 數據（账户、記憶、插件）將丢失。
+
+## 5. 镜像 CI（GHCR）
 
 `.github/workflows/docker.yml` 在推送 `dev`/`main` 或 tag 时，构建并推送至 `ghcr.io/<owner>/agent-harness`（标签含 `latest`、分支名、短 SHA、语义 tag）。`GITHUB_TOKEN` 自动获得推送权限。
 

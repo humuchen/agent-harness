@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/vercel.json",
+  "name": "agent-harness",
+  "builds": [
+    {
+      "src": "access/server/package.json",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "frontend/webapp/dist/**",
+          "backend/core/dist/**",
+          "backend/client/dist/**",
+          "services/rag/dist/**",
+          "plugins/**/dist/**",
+          "scripts/**",
+          "pnpm-workspace.yaml"
+        ],
+        "maxLambdaSize": "50mb"
+      },
+      "id": "agent-harness"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/access/server/package.json"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/access/server/package.json"
+    }
+  ],
+  "cleanOutputs": false,
+  "framework": null,
+  "outputDirectory": "frontend/webapp/dist"
+}
