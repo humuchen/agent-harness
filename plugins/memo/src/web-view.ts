@@ -50,7 +50,7 @@ function esc(s: unknown): string {
  *  找不到 shadow 内的元素（导致「Cannot set properties of null」等报错，或静默失效）。
  *  统一用 this.getRootNode() 取当前根节点（shadow root 或 document），再按 id / 选择器查找。
  *  每条内联处理器开头注入一次本片段，定义 var __r 供后续闭包（如 fetch().then）复用。 */
-const ROOT_REF = "var __r=this.getRootNode?this.getRootNode():document;";
+const ROOT_REF = 'var __r=this.getRootNode?this.getRootNode():document;';
 
 /** 把 epoch ms 格式化为「MM-DD HH:mm」，按 DISPLAY_TZ (默认 Asia/Shanghai) 渲染墙上时间。
  *  服务端渲染时 new Date().getHours() 受进程 TZ 影响；强制使用 tzOffsetMs 校正，
@@ -91,7 +91,15 @@ function selectHtml(opts: {
       <li class="memo-select-option ${
         i.value === opts.value ? 'memo-select-option-selected' : ''
       }"
-          data-value="${esc(i.value)}" onclick="var s=document.getElementById('${opts.id}');if(!s){return;}s.value='${esc(i.value)}';s.dispatchEvent(new Event('change',{bubbles:true}));fetch(${esc(opts.onChangeFetch)}, {credentials:'include',headers:${AUTH_HEADERS_JS}}).then(function(r){return r.json()}).then(function(d){var b=document.getElementById('memo-mgmt-body');if(b)b.innerHTML=d.html})"><span class="memo-select-option-icon">${esc(
+          data-value="${esc(
+            i.value
+          )}" onclick="var s=document.getElementById('${
+        opts.id
+      }');if(!s){return;}s.value='${esc(
+        i.value
+      )}';s.dispatchEvent(new Event('change',{bubbles:true}));fetch(${esc(
+        opts.onChangeFetch
+      )}, {credentials:'include',headers:${AUTH_HEADERS_JS}}).then(function(r){return r.json()}).then(function(d){var b=document.getElementById('memo-mgmt-body');if(b)b.innerHTML=d.html})"><span class="memo-select-option-icon">${esc(
         i.icon ?? '•'
       )}</span> ${esc(i.label)}</li>`
     )
@@ -124,7 +132,9 @@ function delBtn(id: string): string {
   const js = `if(confirm('确认删除这条备忘？')){fetch('/api/plugins/memo/note?id=${encodeURIComponent(
     id
   )}',{method:'DELETE',credentials:'include',headers:${AUTH_HEADERS_JS}}).then(function(){${refreshCurrentJs()}})}`;
-  return `<button class="memo-del" onclick="${ROOT_REF}${esc(js)}">删除</button>`;
+  return `<button class="memo-del" onclick="${ROOT_REF}${esc(
+    js
+  )}">删除</button>`;
 }
 
 /** 表头「全选」：点击切换所有行复选框。
@@ -336,29 +346,8 @@ export const memoBoardView: PluginUIView = {
         <h3>数据管理</h3>
         <div class="memo-mgmt-bar">
           <input id="memo-search" class="memo-search" placeholder="搜索备忘内容 / 标签…" oninput="${ROOT_REF}${esc(
-            goJs(0)
-          )}">
-          ${selectHtml({
-            id: 'memo-tag',
-            placeholder: '全部标签',
-            value: '',
-            onChangeFetch: goJs(0),
-            items: [
-              { value: '', label: '全部标签', icon: '🏷️' },
-              ...tags.map((t) => ({ value: t, label: t }))
-            ]
-          })}
-          ${selectHtml({
-            id: 'memo-sort',
-            placeholder: '最新优先',
-            value: 'newest',
-            onChangeFetch: goJs(0),
-            items: [
-              { value: 'newest', label: '最新优先', icon: '🕒' },
-              { value: 'oldest', label: '最早优先', icon: '⏮️' },
-              { value: 'remind', label: '按提醒时间', icon: '⏰' }
-            ]
-          })}
+      goJs(0)
+    )}">
           <span class="memo-mgmt-actions">
             ${batchDelBtn()}
             ${clearAllBtn()}
