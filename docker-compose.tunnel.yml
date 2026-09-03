@@ -1,0 +1,41 @@
+# docker-compose.tunnel.yml —— Cloudflare Tunnel overlay（路线二：本地服务穿透）
+#
+# 把本地 agent-harness（ui 容器 :4173）经 Cloudflare 加密隧道安全暴露公网。
+# 服务仍运行在本地机器，Cloudflare 仅做反向代理：隐藏真实 IP、自动 HTTPS、免费 DDoS/WAF。
+# 不修改主 docker-compose.yml，叠加即用。
+#
+# 前置（需你在 Cloudflare 侧完成）：
+#   1. 域名 DNS 托管在 Cloudflare（免费版即可）
+#   2. Cloudflare Zero Trust 控制台 → Networks → Tunnels → Create a tunnel
+#      选连接器 Cloudflared，创建后复制生成的 Tunnel Token
+#   3. 在 .env 中写入该 token：  CLOUDFLARE_TUNNEL_TOKEN=eyJ...你的token
+#   4.（关键）在 Tunnel 控制台的 Public Hostname 里加一条：
+#        Subdomain=app   Domain=yourdomain.com   Service=http://ui:4173
+#      Cloudflare 会自动建 DNS 记录并签发证书。
+#      （ui 是 compose 服务名，隧道容器与其同处默认网络，可直接用服务名解析）
+#
+# 启动（叠加本 overlay）：
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+#   若同时需要 Redis 队列：再追加 -f docker-compose.redis.yml --profile redis
+#
+# 验证：
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml logs tunnel
+#   curl -I https://app.yourdomain.com/api/state
+#
+# 安全加固（可选）：
+#   若只想让服务经隧道/localhost 访问、不再直接暴露宿主机端口，
+#   可把主 compose 中 ui 的 ports 由 '4173:4173' 改为 '127.0.0.1:4173:4173'。
+
+services:
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # token 方式：凭据内嵌在 token 中，ingress 路由在 Cloudflare 控制台配置，无需本地 config.yml
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    # 与 ui 同处默认网络（未显式声明 networks 时所有服务自动加入同一默认网络），
+    # 因此可通过 http://ui:4173 直接访问业务容器。
+    depends_on:
+      ui:
+        condition: service_healthy
