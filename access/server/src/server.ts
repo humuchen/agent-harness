@@ -149,7 +149,7 @@ import { logConfigValidation } from './config-schema';
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 import { installScrubber } from './log-scrub';
 
-import { DEFAULTS } from './config-defaults';
+import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
@@ -349,12 +349,13 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
 );
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
-const RATE_LIMIT = Number(
-  process.env.RATE_LIMIT ?? (DEFAULTS.RATE_LIMIT as number)
-);
-const RATE_WINDOW_MS = Number(
-  process.env.RATE_LIMIT_WINDOW_MS ?? (DEFAULTS.RATE_WINDOW_MS as number)
-);
+// 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
+const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
+// P0 修复：原代码误读 DEFAULTS.RATE_WINDOW_MS（该键不存在）→ Number(undefined)=NaN →
+// 桶 resetAt 为 NaN → 一旦超阈值该 IP 永久 429 且 retry-after=NaN。正确键名为 RATE_LIMIT_WINDOW_MS。
+const RATE_WINDOW_MS = cfgNum('RATE_LIMIT_WINDOW_MS', DEFAULTS.RATE_LIMIT_WINDOW_MS as number);
+// 单已登录用户限流（防单账号滥用）；默认 60/60s，0=关闭。原内联读取 `|| 60` 对 env=0 静默变 60（关不掉）。
+const USER_RATE_LIMIT = cfgNum('USER_RATE_LIMIT', DEFAULTS.USER_RATE_LIMIT as number);
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
@@ -499,14 +500,21 @@ async function guard(
     // 将解析后的租户上下文附加到 AuthContext，供下游消费。
     (ctx as AuthContext & { tenantCtx?: TenantContext }).tenantCtx = tenant;
   }
-  // SSE 长连接不计入全局固定窗口：其重连/保活特性会在刷新时产生瞬时请求尖峰，
-  // 与短 API 共享同一 120/60s 桶极易误伤；生产环境仍受连接数/代理层保护。
-  const { limited, retryAfter } = isSseEndpoint(req)
+  // SSE 长连接不计入固定窗口限流：其重连/保活特性会在刷新时产生瞬时请求尖峰，
+  // 与短 API 共享同一 60s 桶极易误伤——故 IP 桶与用户桶都豁免（此前只豁免了 IP 桶，
+  // 用户刷新打开流时仍会被用户桶误伤）。生产环境仍受连接数/代理层保护。
+  const isSse = isSseEndpoint(req);
+  const ipResult = isSse
     ? { limited: false, retryAfter: 0 }
     : rateLimited(ip, RATE_LIMIT, RATE_WINDOW_MS);
-  // P1-5: 已登录用户按 sub 限流（防单账号滥用）
-  const userRateLimit = ctx ? rateLimited(ctx.sub, Number(process.env.USER_RATE_LIMIT ?? 60) || 60, RATE_WINDOW_MS) : { limited: false, retryAfter: 0 };
-  if (limited || (ctx && userRateLimit.limited)) {
+  // P1-5: 已登录用户按 sub 限流（防单账号滥用）；SSE 同样豁免（见上）。
+  const userRateLimit = isSse || !ctx
+    ? { limited: false, retryAfter: 0 }
+    : rateLimited(ctx.sub, USER_RATE_LIMIT, RATE_WINDOW_MS);
+  // retry-after 取两个桶中较大者：用户桶阈值（60）通常比 IP 桶（120）更严、先满，
+  // 若只按 IP 桶剩余时间重试会立刻再撞墙形成风暴；对 SSE 还能刹住「用户桶拦但 retry-after=0 → 立即重连」的螺旋。
+  const retryAfter = Math.max(ipResult.retryAfter, userRateLimit.retryAfter);
+  if (ipResult.limited || (ctx && userRateLimit.limited)) {
     audit({
       kind: 'request',
       method: req.method,

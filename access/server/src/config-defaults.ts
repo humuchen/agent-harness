@@ -19,6 +19,8 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   MAX_BODY_BYTES: 1_048_576,
   RATE_LIMIT: 120,
   RATE_LIMIT_WINDOW_MS: 60_000,
+  // 单已登录用户限流阈值（独立于 IP 桶）；0=关闭。与 RATE_LIMIT 同理，集中单一事实来源。
+  USER_RATE_LIMIT: 60,
   // 鉴权
   AUTH_PROVIDER: 'token',
   ACCOUNT_AUTH: 'on',

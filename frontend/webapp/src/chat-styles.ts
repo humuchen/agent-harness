@@ -3134,7 +3134,7 @@ export const chatStyles = [
     /* 环心数字：分数 + 单位，基线对齐，分数用等级色。 */
     .conf-gauge-num {
       position: absolute;
-      inset: 0;
+      inset: 22px;
       display: flex;
       align-items: baseline;
       justify-content: center;
@@ -3178,7 +3178,11 @@ export const chatStyles = [
     }
     .conf-badge.ok {
       color: var(--ah-success, #34c759);
-      background: color-mix(in srgb, var(--ah-success, #34c759) 14%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--ah-success, #34c759) 14%,
+        transparent
+      );
       border-color: color-mix(
         in srgb,
         var(--ah-success, #34c759) 36%,
@@ -3187,7 +3191,11 @@ export const chatStyles = [
     }
     .conf-badge.err {
       color: var(--ah-danger, #e24b4a);
-      background: color-mix(in srgb, var(--ah-danger, #e24b4a) 14%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--ah-danger, #e24b4a) 14%,
+        transparent
+      );
       border-color: color-mix(
         in srgb,
         var(--ah-danger, #e24b4a) 36%,
@@ -3293,5 +3301,5 @@ export const chatStyles = [
     .conf-note span {
       min-width: 0;
     }
-  `,
+  `
 ];

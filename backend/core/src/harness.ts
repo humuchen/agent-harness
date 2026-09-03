@@ -608,7 +608,7 @@ export class AgentHarness {
             maxSteps: this.opts.maxSteps
           });
 
-          const messages = memory.history();
+          const messages = sanitizeToolPairing(memory.history());
           // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
           // 从全量工具中选出子集，降低简单输入（如问候）首呼时全量工具 schema 的固定开销。
           // 执行仍走全量注册表（this.opts.tools.call），仅「发送给 LLM 的 schema」做裁剪。
@@ -788,7 +788,10 @@ export class AgentHarness {
               promptTokens,
               completionTokens,
               totalTokens: promptTokens + completionTokens,
-              compressed: memory.compressed,
+              // 「自上次用量上报以来」是否发生过上下文压缩：读取即清零，
+              // 避免会话级 sticky 标志导致「已压缩」徽标亮起后永不消失、
+              // 与真实用量变化脱钩。
+              compressed: memory.consumeCompressed(),
               breakdown: {
                 system: Math.round(estSystem * scale),
                 tools: Math.round(estToolsBuiltin * scale),
@@ -943,8 +946,37 @@ export class AgentHarness {
           }
 
           // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
+          //
+          // answeredIds 记录本轮已回传结果的 tool_call id。 assistant 消息在循环前
+          // 就已带着全部 tool_calls 写入记忆，因此任何提前退出（预算截断 / 取消）
+          // 都会留下「声明了调用却没有结果」的孤儿 tool_call —— provider 会直接
+          // 400 拒绝下一次请求，且这份断裂历史会被持久化、污染后续会话。
+          // 收尾时统一补齐占位结果，保证 tool_calls 与结果严格一一对应。
+          const answeredIds = new Set<string>();
+          const fillMissingToolResults = (reason: string): void => {
+            for (const c of resp.tool_calls ?? []) {
+              if (answeredIds.has(c.id)) continue;
+              const content = `${reason}（tool_call_id=${c.id}）`;
+              answeredIds.add(c.id);
+              memory.add({
+                role: 'tool',
+                tool_call_id: c.id,
+                name: c.name,
+                content
+              });
+              emit({
+                type: 'tool:result',
+                step: steps,
+                call: c,
+                result: content,
+                errored: true
+              });
+            }
+          };
+
           for (const call of resp.tool_calls) {
             if (signal.aborted) {
+              fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
               return abortedMessage(signal);
             }
             // 加固：单 step 工具调用预算上限（默认不限制）。达到上限后截断剩余 tool_calls。
@@ -974,6 +1006,7 @@ export class AgentHarness {
                   name: call.name,
                   content: cached.result
                 });
+                answeredIds.add(call.id);
                 lastToolResult = { name: call.name, result: cached.result };
                 continue;
               }
@@ -1055,6 +1088,7 @@ export class AgentHarness {
               name: call.name,
               content: resultStr
             });
+            answeredIds.add(call.id);
             // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
             lastToolResult = { name: call.name, result: resultStr };
             // 加固：将真实执行结果写入去重缓存，供后续相同调用复用。
@@ -1065,6 +1099,9 @@ export class AgentHarness {
               });
             }
           }
+          // 收尾补齐：被「单步调用预算」截断的 tool_calls 也要有结果占位，
+          // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
+          fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
         }
         return '[agent] reached max steps without a final answer';
       });
@@ -1181,4 +1218,59 @@ function collectToolCalls(messages: Message[]): ToolCall[] {
     if (m.role === 'assistant' && m.tool_calls) out.push(...m.tool_calls);
   }
   return out;
+}
+
+/**
+ * 清洗消息序列中的 tool 配对断裂，保证发给 LLM 的请求不会因 id 不匹配被拒。
+ *
+ * OpenAI 兼容协议（OpenRouter / MiniMax / OpenAI 等）对两类断裂都会直接 400：
+ *  - **孤儿 tool 结果**：存在 `role=tool`，但前面没有声明过同 id 的 tool_call
+ *    → `invalid_request_error: tool result 的 tool id 未找到`；
+ *  - **孤儿 tool_call**：assistant 声明了 tool_calls 却没有紧跟对应结果
+ *    → `tool_calls 必须紧跟对应的 tool 消息`。
+ *
+ * 成因不止一种：滑动窗口从「assistant + 其 tool 结果」中间切断、上一轮被中止后
+ * 持久化的半截历史、模型返回重复/缺失的 tool_call id。与其逐个堵，不如在每次
+ * 发送前统一净化一次 —— 只清洗发出去的副本，不动 Memory 里的存储。
+ */
+export function sanitizeToolPairing(messages: Message[]): Message[] {
+  const pending = new Set<string>();
+  const out: Message[] = [];
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      const id = m.tool_call_id ?? '';
+      // 只保留能匹配到「前面已声明且尚未消费」的调用的结果。
+      if (id && pending.has(id)) {
+        pending.delete(id);
+        out.push(m);
+      }
+      continue;
+    }
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      const ids = m.tool_calls
+        .map((tc) => tc.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      if (ids.length === 0) {
+        out.push({ ...m, tool_calls: [] });
+        continue;
+      }
+      out.push(m);
+      for (const id of ids) pending.add(id);
+      continue;
+    }
+    out.push(m);
+  }
+  if (pending.size === 0) return out;
+  // 收尾：把始终没有等来结果的孤儿 tool_call 从 assistant 上摘掉，
+  // 否则「声明了调用却没有结果」同样会被 provider 拒绝。
+  return out.map((m) => {
+    if (
+      m.role === 'assistant' &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => pending.has(tc.id))
+    ) {
+      return { ...m, tool_calls: m.tool_calls.filter((tc) => !pending.has(tc.id)) };
+    }
+    return m;
+  });
 }

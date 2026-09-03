@@ -487,9 +487,12 @@ export class ChatRunRuntime {
               : Number.isFinite(Number(u.window)) && Number(u.window) > 0
               ? Number(u.window)
               : 0;
-          // 会话级累计窗口占用：跨 run 累加，窗口口径变化时重新初始化。
+          // 上下文压缩标记走「自上次用量上报以来」的 per-report 语义（后端
+          // consumeCompressed() 读取即清零），**不**做会话级 OR 累加 —— 否则会重现
+          // 「已压缩徽标亮起后永不消失、与真实用量变化脱钩」的假象。压缩活跃时每步
+          // 上报 true、徽标亮起；窗口回落、若干步不再发生压缩时徽标自动熄灭。
           const prev = this.deps.getBackendUsage();
-          const compressed = (prev?.compressed ?? false) || !!u.compressed;
+          const compressed = !!u.compressed;
           if (prev && prev.window === win && prev.breakdown && u.breakdown) {
             this.deps.setBackendUsage({
               window: win,

@@ -99,6 +99,28 @@ export function safeParseArgs(s: string): Record<string, unknown> {
   }
 }
 
+/**
+ * 归一化 tool_call id：缺失或重复时补一个稳定的唯一 id。
+ *
+ * 部分 provider / 模型（尤其免费档与流式端点）会返回缺失 id 的 tool_call，
+ * 或让多个调用共用同一个 id。id 为空会让回传的 tool 结果变成
+ * `tool_call_id: undefined`，重复 id 则会让多个结果争用同一个调用 ——
+ * 两者都会被 provider 判定为 id 不匹配并直接 400。这里统一兜底。
+ */
+export function normalizeToolCallIds(calls: ToolCall[]): ToolCall[] {
+  const seen = new Set<string>();
+  return calls.map((tc, i) => {
+    const raw = typeof tc.id === 'string' ? tc.id.trim() : '';
+    if (raw && !seen.has(raw)) {
+      seen.add(raw);
+      return tc;
+    }
+    const id = raw ? `${raw}__dup${i}` : `call_${i}_${Date.now().toString(36)}`;
+    seen.add(id);
+    return { ...tc, id };
+  });
+}
+
 export interface ChatCallOptions {
   baseUrl: string;
   headers: Record<string, string>;
@@ -204,11 +226,13 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
 
     const data: any = await resp.json();
     const msg = data?.choices?.[0]?.message ?? {};
-    const toolCalls: ToolCall[] = (msg.tool_calls ?? []).map((c: any) => ({
-      id: c.id,
-      name: c.function.name,
-      arguments: safeParseArgs(c.function.arguments),
-    }));
+    const toolCalls: ToolCall[] = normalizeToolCallIds(
+      (msg.tool_calls ?? []).map((c: any) => ({
+        id: c.id,
+        name: c.function.name,
+        arguments: safeParseArgs(c.function.arguments),
+      }))
+    );
     // 提取 token 用量（OpenAI / OpenRouter 均返回 usage 字段），供成本记账与配额使用。
     const u = data?.usage;
     if (u) {
@@ -390,13 +414,15 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     }
   }
 
-  const toolCalls: ToolCall[] = toolAcc
-    .filter(Boolean)
-    .map((t, i) => ({
-      id: t.id ?? `call_${i}`,
-      name: t.name ?? 'unknown',
-      arguments: safeParseArgs(t.args),
-    }));
+  const toolCalls: ToolCall[] = normalizeToolCallIds(
+    toolAcc
+      .filter(Boolean)
+      .map((t, i) => ({
+        id: t.id ?? `call_${i}`,
+        name: t.name ?? 'unknown',
+        arguments: safeParseArgs(t.args),
+      }))
+  );
 
   // 流式路径同样在开启 PROMPT_CACHE 时记录一次缓存查询与命中情况。
   if (caching) {

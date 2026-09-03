@@ -35,6 +35,7 @@ export const SCHEMA: Field[] = [
   { key: 'MAX_BODY_BYTES', type: 'number', min: 1, desc: '请求体上限（字节）' },
   { key: 'RATE_LIMIT', type: 'number', min: 0, desc: '单 IP 限流阈值（0=关闭）' },
   { key: 'RATE_LIMIT_WINDOW_MS', type: 'number', min: 1, desc: '限流窗口（ms）' },
+  { key: 'USER_RATE_LIMIT', type: 'number', min: 0, desc: '单用户限流阈值（0=关闭）' },
   // 鉴权
   {
     key: 'AUTH_PROVIDER',
