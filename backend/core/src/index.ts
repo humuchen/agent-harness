@@ -11,6 +11,8 @@ export * from './tools';
 export * from './builtins';
 export * from './agents';
 export * from './router';
+export * from './router/confidence-gate';
+export * from './coreference';
 export * from './skills';
 export * from './tenant';
 export * from './run-user';

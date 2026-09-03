@@ -68,6 +68,7 @@ export interface RunDeps {
   getPlanExec(): Record<number, PlanExecState>;
   setPlanExec(v: Record<number, PlanExecState>): void;
   getServerCtxWindow(): number;
+  getServerModelBaseUrl(): string;
   getBackendUsage(): BackendUsage | null;
   setBackendUsage(v: BackendUsage | null): void;
   getMode(): RunMode;
@@ -605,6 +606,7 @@ export class ChatRunRuntime {
     this.deps.saveHistory(sessionId);
 
     const endpoint = await this.deps.customModelEndpoint();
+    const modelBaseUrl = this.deps.getServerModelBaseUrl() || endpoint.modelBaseUrl;
     const input: Record<string, unknown> = {
       mode: this.deps.getMode(),
       prompt: content,
@@ -613,6 +615,7 @@ export class ChatRunRuntime {
         this.deps.getServerCtxWindow() > 0
           ? this.deps.getServerCtxWindow()
           : undefined,
+      ...(modelBaseUrl ? { modelBaseUrl } : {}),
       ...endpoint,
       agentId: this.deps.getAgentId() || undefined,
       sessionId,

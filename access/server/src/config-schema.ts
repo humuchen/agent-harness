@@ -89,6 +89,11 @@ export const SCHEMA: Field[] = [
   // 存储路径（建议绝对路径）
   { key: 'ACCOUNT_DB_FILE', type: 'string', desc: '账户数据库文件路径' },
   { key: 'TELEMETRY_FILE', type: 'string', desc: '指标持久化文件路径（非空即启用自动落盘）' },
+  // 业务 DB 路径（绝对路径，防 cwd 依赖）
+  { key: 'HISTORY_DB_FILE', type: 'string', desc: '聊天记录数据库文件路径' },
+  { key: 'MCP_SERVERS_DB_FILE', type: 'string', desc: 'MCP 服务器数据库文件路径' },
+  { key: 'CUSTOM_MODELS_DB_FILE', type: 'string', desc: '自定义模型数据库文件路径' },
+  { key: 'RAG_DATA_FILE', type: 'string', desc: 'RAG 数据文件路径' },
   // OTLP 导出（留空即不启用导出，故不设 required）
   {
     key: 'OTEL_EXPORTER_OTLP_ENDPOINT',

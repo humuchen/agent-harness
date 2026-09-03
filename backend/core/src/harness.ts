@@ -2,6 +2,7 @@ import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
+import { resolveAndTrack, EntityTracker } from './coreference';
 import {
   checkInput,
   checkOutput,
@@ -12,6 +13,7 @@ import {
   type GuardrailPolicy
 } from './guardrails';
 import { parsePlanOutput } from './plan';
+import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import {
   withSpan,
   incCounter,
@@ -341,6 +343,9 @@ interface ResolvedHarnessOptions {
   planPropose: boolean;
   // 计划任务执行（见 HarnessOptions 注释）。
   planTask: boolean;
+  // P1-10: 可选熔断器（CircuitBreaker）。LLM 持续 5xx 时自动熔断，避免逐个请求硬等超时。
+  // 未传则不启用（向后兼容）。开启后，熔断打开时抛出 CircuitBreakerOpen，调用方可捕获决定重试策略。
+  circuitBreaker?: CircuitBreaker;
 }
 
 let idCounter = 0;
@@ -351,6 +356,9 @@ function nextId(prefix: string): string {
 
 export class AgentHarness {
   private opts: ResolvedHarnessOptions;
+  /** 指代消解实体追踪器（COREF_ENABLED=true 时启用） */
+  private _corefTracker?: EntityTracker;
+  private _corefTurn = 0;
 
   constructor(opts: HarnessOptions) {
     this.opts = {
@@ -371,6 +379,10 @@ export class AgentHarness {
       planPropose: opts.planPropose ?? false,
       planTask: opts.planTask ?? false
     };
+    // 初始化指代消解追踪器（若开启）
+    if (process.env.COREF_ENABLED === 'true') {
+      this._corefTracker = new EntityTracker();
+    }
   }
 
   /** 向长期记忆追加一条笔记（会随下次运行的系统提示词注入给模型）。 */
@@ -442,8 +454,19 @@ export class AgentHarness {
       });
     }
 
+    // 可选指代消解：在输入进入护栏/记忆之前展开代词（COREF_ENABLED=true 时生效）
+    let resolvedInput = userInput;
+    if (process.env.COREF_ENABLED === 'true' && this._corefTracker) {
+      const turn = this._corefTurn++;
+      const { resolved } = resolveAndTrack(resolvedInput, this._corefTracker, turn);
+      if (resolved !== resolvedInput) {
+        emit({ type: 'warn', message: `[coref] expanded: ${userInput} → ${resolved}` });
+      }
+      resolvedInput = resolved;
+    }
+
     const guard = checkInput(
-      userInput,
+      resolvedInput,
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
       // 对称地降级为强信号注入检测 —— 任务步骤合理提到「system prompt」等词不应拦截。
@@ -509,7 +532,7 @@ export class AgentHarness {
       }
       memory.add({ role: 'user', content: contentBlocks as any });
     } else {
-      memory.add({ role: 'user', content: userInput });
+      memory.add({ role: 'user', content: resolvedInput });
     }
 
     let final = '[agent] reached max steps without a final answer';
@@ -636,6 +659,7 @@ export class AgentHarness {
           let streamedTokens = false;
           const llmPromise = this.opts.llm(messages, stepTools, {
             signal,
+            circuitBreaker: this.opts.circuitBreaker,
             ...(this.opts.streamTokens
               ? {
                   onToken: (delta: string) => {
@@ -985,7 +1009,7 @@ export class AgentHarness {
             });
               try {
                 result = await withSpan(`tool.${call.name}`, async () =>
-                  this.opts.tools.call(call.name, call.arguments)
+                  this.opts.tools.call(call.name, call.arguments, { traceId: this.opts.traceId })
                 );
               } catch (e: any) {
                 // 将错误作为工具结果返回，以便模型自行修复。
@@ -1042,10 +1066,17 @@ export class AgentHarness {
     try {
       final = await runLoop();
     } catch (e: any) {
-      logError('agent.run', e, { runId });
-      emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
-      emit({ type: 'error', message: e?.message ?? String(e) });
-      final = `[error] ${e?.message ?? String(e)}`;
+      // P1-10: 熔断打开时直接返回错误，不触发通用告警（避免告警风暴）
+      if (e?.name === 'CircuitBreakerOpen') {
+        const msg = e.message ?? 'circuit breaker open';
+        emit({ type: 'error', message: msg });
+        final = `[circuit-breaker] ${msg}`;
+      } else {
+        logError('agent.run', e, { runId });
+        emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
+        emit({ type: 'error', message: e?.message ?? String(e) });
+        final = `[error] ${e?.message ?? String(e)}`;
+      }
     }
 
     // 运行期自动验证门禁（P0-2）：产出后自动校验；未通过可重试（self-correction）或标记。

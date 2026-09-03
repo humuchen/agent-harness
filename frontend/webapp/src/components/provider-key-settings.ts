@@ -476,9 +476,9 @@ export class AhProviderKeySettings extends LitElement {
       return;
     }
     const baseUrl = this.draftBaseUrl.trim();
-    if (!baseUrl) {
+    if (!baseUrl && this.provider !== 'openrouter') {
       notify.warning('请填写接口地址', {
-        title: 'API Key',
+        title: 'API URL',
         key: 'pk-baseurl-empty'
       });
       return;

@@ -19,8 +19,7 @@ import './login';
 import './components';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
-// 与 app.ts 的 History 路由解耦——这是「是否放行应用」的门户，而非一条普通路由。
-import { getToken, setSession, clearSession } from './api';
+import { getToken, setSession, clearSession, scheduleAutoRefresh } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 
@@ -54,13 +53,17 @@ async function bootstrap(): Promise<void> {
         const data = (await me.json()) as { username?: string };
         if (data.username) {
           setSession(data.username);
+          // OAuth 路径不直接返回 token，但浏览器已持有 ah_auth cookie；
+          // scheduleAutoRefresh 依赖 accessExpiresAt，而 /me 不返回该字段。
+          // 此处暂不调度刷新（OAuth 用户会话由 cookie Max-Age=7d 控制，
+          // 过期后 401 → handleUnauthorized → 重新走 OAuth 流程）。
           history.replaceState(null, '', location.pathname);
           mountApp();
           notify.success('第三方登录成功');
           return;
         }
       }
-      // 带回 ?oauth=success 却拿不到会话：授权流程未走完 / 后端未签发 cookie。
+    // 带回 ?oauth=success 却拿不到会话：授权流程未走完 / 后端未签发 cookie。
       notify.error('第三方登录未能完成，请重新登录。', {
         key: 'oauth-failed'
       });

@@ -49,6 +49,10 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   MAX_COST_PER_WINDOW: 10, // 窗口内最大成本（美元）；0=不限，正数=硬上限
   // 存储路径（生产建议绝对路径；相对路径依赖 cwd 巧合命中卷）
   ACCOUNT_DB_FILE: '/var/lib/agent-harness/accounts.db',
+  HISTORY_DB_FILE: '/var/lib/agent-harness/chat-history.db',
+  MCP_SERVERS_DB_FILE: '/var/lib/agent-harness/mcp-servers.db',
+  CUSTOM_MODELS_DB_FILE: '/var/lib/agent-harness/custom-models.db',
+  RAG_DATA_FILE: '/var/lib/agent-harness/rag-store.json',
   // 可观测性
   TELEMETRY_FILE: '',
   // OTLP 导出

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, appendFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -187,8 +188,11 @@ import {
   requestPasswordReset,
   resetPassword,
   deleteUser,
+  rotateTokens,
+  verifyRefreshToken,
   type AccountResult
 } from './accounts';
+import { REFRESH_TTL_MS } from './accounts';
 
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
 import { loadSecrets } from './secrets';
@@ -893,7 +897,7 @@ const server = createServer(
           JSON.stringify({
             ok: true,
             username: u,
-            role: profile?.role ?? 'admin',
+            role: profile?.role ?? 'viewer', // P0-A: 兜底改为 viewer
             email: profile?.email ?? null
           })
         );
@@ -932,6 +936,30 @@ const server = createServer(
           'cache-control': 'no-store'
         });
         res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
+      if (req.method === 'POST' && path === '/api/account/refresh') {
+        const b = await readBody(req);
+        const refreshToken = typeof b?.refresh_token === 'string' ? b.refresh_token : '';
+        if (!refreshToken) {
+          sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
+          return;
+        }
+        const result = await rotateTokens(refreshToken);
+        if (!('accessToken' in result)) {
+          sendJsonError(res, 401, { error: result.error ?? 'refresh token 无效' }, req);
+          return;
+        }
+        const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
+        const authCookie = authCookieValue(req, accessToken, accessExpiresAt);
+        const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'set-cookie': [authCookie, refreshCookie].join('; '),
+          'cache-control': 'no-store'
+        });
+        res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
         return;
       }
       // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
@@ -1619,21 +1647,72 @@ const server = createServer(
         }
         return sendJson(res, { agent: card }, req);
       }
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询）----
-      if (req.method === 'GET' && path.startsWith('/api/workflows/')) {
-        // 取单个工作流执行快照（含每 step 状态、补偿记录）。受 workflow:read 保护。
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑）----
+      // GET  /api/workflows/:id     → 执行快照
+      // POST /api/workflows/:id/resume → 从断点续跑
+      if (path.startsWith('/api/workflows/')) {
         const ctx = await guard(req, res, 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
         );
-        const run = id ? await workflowStore().get(id) : null;
-        if (!run) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'workflow not found', id }));
+        // POST /resume 路径单独处理
+        if (req.method === 'POST' && id.endsWith('/resume')) {
+          const workflowId = id.slice(0, -'/resume'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          let closed = false;
+          res.on('close', () => { closed = true; });
+          const send = (payload: unknown) => {
+            if (!closed) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+          };
+          try {
+            const store = workflowStore();
+            const existing = await store.get(workflowId);
+            if (!existing) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            // 检查是否可续跑：无 steps 或全部 completed 则无需续跑
+            const steps = (existing as any).steps ?? [];
+            const unfinished = steps.filter((s: any) => s.state !== 'completed' && s.state !== 'skipped');
+            if (unfinished.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no unfinished steps to resume' }));
+              return;
+            }
+            const engine = new DagEngine({
+              store,
+              executor: createWorkflowExecutor({
+                onEvent: (e: any) => {
+                  if (!closed) send({ type: 'harness', event: e });
+                },
+              }),
+              onEvent: (e) => { if (!closed) send(e); },
+            });
+            const run = await engine.resume(workflowId);
+            if (!closed) send({ type: '_wf_done', run });
+            if (!closed) res.end();
+          } catch (e: any) {
+            if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+            if (!closed) res.end();
+          }
           return;
         }
-        return sendJson(res, { workflow: run }, req);
+        // GET 取单个工作流执行快照
+        if (req.method === 'GET') {
+          const run = id ? await workflowStore().get(id) : null;
+          if (!run) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'workflow not found', id }));
+            return;
+          }
+          return sendJson(res, { workflow: run }, req);
+        }
       }
       if (path === '/api/memory') {
         // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
@@ -4077,12 +4156,58 @@ async function bootstrap(): Promise<void> {
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
   }
 
-  // P2：审计日志落盘。AUDIT_LOG 非空时把文件 sink 注入核心 audit()，与 server.ts 自身的 stdout 审计并行。
-  const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
-  if (AUDIT_LOG) {
-    const { enableAuditFile } = await import('@agent-harness/core');
-    await enableAuditFile(AUDIT_LOG);
-    structLog('info', 'audit', { enabled: true, file: AUDIT_LOG });
+  // P0-B 修复：启动时装配 quotaEngine 默认配额，确保 MAX_COST_PER_WINDOW 真正生效。
+  // 若不在此处 setDefault，quotaEngine.admit() 的硬上限分支会因 defaultQuotaCfg.maxCostPerWindow=undefined
+  // 而短路，导致成本硬上限永远不拦截（"看起来有接线、实际完全不工作"）。
+  const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
+  if (maxCostPerWindow > 0) {
+    quotaEngine.setDefault({ maxCostPerWindow });
+    structLog('info', 'quota', {
+      enabled: true,
+      maxCostPerWindow,
+    });
+  }
+
+  // P0-D: 启动时自动运行迁移脚本，确保 schema 与代码版本一致。
+  // AH_MIGRATE_AUTO=on/1/true 时启用，默认关闭（避免开发环境意外执行）。
+  // P1-3: 迁移脚本使用幂等版本检查（SELECT MAX(version)），重复运行安全。
+  const MIGRATE_AUTO = (process.env.AH_MIGRATE_AUTO ?? 'off').toLowerCase();
+  if (['on', '1', 'true'].includes(MIGRATE_AUTO)) {
+    const { execSync } = await import('node:child_process');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const _m = (globalThis as any).import?.meta;
+    const MIGRATE_SCRIPT = join(
+      dirname(_m?.url ? fileURLToPath(_m.url) : __dirname),
+      '..', '..', 'scripts', 'db-migrate.cjs'
+    );
+    try {
+      const result = execSync(`node "${MIGRATE_SCRIPT}" --action up`, {
+        encoding: 'utf8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      structLog('info', 'migration', { status: 'success', output: result.trim() });
+      console.log('[migration] 启动迁移完成:', result.trim());
+    } catch (e: any) {
+      console.error('[migration] 启动迁移失败:', e.message);
+      // 不阻断启动，但记录错误以便运维排查。
+    }
+  } else {
+    console.log('[migration] AH_MIGRATE_AUTO 未启用，跳过启动时迁移（如需启用请设置 AH_MIGRATE_AUTO=on）');
+  }
+
+  // P0-E: 启动定时备份调度器（进程内 setInterval，替代外部 cron 依赖）。
+  const AH_BACKUP_ENABLED = (process.env.AH_BACKUP_ENABLED ?? 'on').toLowerCase();
+  if (['on', '1', 'true'].includes(AH_BACKUP_ENABLED)) {
+    const { scheduleBackup } = await import('./backup-scheduler');
+    scheduleBackup();
+  }
+
+  // P1-8: 启动数据留存调度器（按策略定期清理过期记录）。
+  const AH_RETENTION_ENABLED = (process.env.AH_RETENTION_ENABLED ?? 'on').toLowerCase();
+  if (['on', '1', 'true'].includes(AH_RETENTION_ENABLED)) {
+    const { scheduleRetention } = await import('./retention');
+    scheduleRetention();
   }
 
   server.listen(PORT, HOST, onListening);

@@ -49,48 +49,67 @@ function getBuildTimeCryptoKey(): Uint8Array {
 // ─── 服务端 AES-GCM 解密 ─────────────────────────────────────────────────────
 
 /**
- * 服务端加密：输入明文，输出 base64(iv + ciphertext + authTag)。
+ * 服务端加密：输入明文，输出 base64(version || iv || AAD || ciphertext + authTag)。
  * 与前端 crypto.ts 的 encryptApiKey 配对（同 key、同 iv 长度、同输出格式）。
+ *
+ * P1-6: 新增 1 字节版本前缀（0x01）+ AAD（tenantId + rowId），支持密钥轮换且不
+ * 需全量重加密；同时使 AAD 绑定到业务上下文，防止密文在其他租户/行之间复用。
  */
-export function encryptApiKey(plaintext: string): string {
+/** 当前 AAD 派生逻辑（encrypt 与 decrypt 必须完全一致）。 */
+function buildAad(opts?: { tenantId?: string; rowId?: string }): Buffer {
+  const aadParts = [opts?.tenantId ?? '', opts?.rowId ?? ''];
+  return Buffer.from(aadParts.join('\x00'));
+}
+
+export function encryptApiKey(plaintext: string, opts?: { tenantId?: string; rowId?: string }): string {
   const { createCipheriv, randomBytes } =
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     require('node:crypto') as typeof import('node:crypto');
   const key = getBuildTimeCryptoKey();
   const iv = randomBytes(12);
+  const version = Buffer.from([0x01]); // 版本前缀
+  const aad = buildAad(opts);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
+  if (aad.length > 0) cipher.setAAD(aad);
   const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
-  const combined = Buffer.concat([iv, ct, tag]);
+  const combined = Buffer.concat([version, iv, ct, tag]);
   return combined.toString('base64');
 }
 
 /**
- * 服务端解密：输入 base64(iv + ciphertext)，输出明文 apiKey。
+ * 服务端解密：输入 base64(version || iv || ciphertext + authTag)，输出明文 apiKey。
  *
- * 密文由浏览器 WebCrypto AES-GCM 产生，其输出为 ciphertext || authTag(16B)，
- * 即完整载荷 = iv(12B) || ct(n-28) || tag(16B)。Node 的 createDecipheriv
- * 要求显式 setAuthTag 后 final() 校验才能通过。
+ * P1-7: 返回结果区分「未配置」（无密文）与「解密失败」（密文损坏/密钥不匹配），
+ * 便于排障。解密失败抛出 Error，调用方可捕获区分处理。
  */
-export function decryptApiKey(payload: unknown): string {
+export function decryptApiKey(payload: unknown, opts?: { tenantId?: string; rowId?: string }): string {
   if (typeof payload !== 'string') return '';
   const raw = Buffer.from(payload, 'base64');
-  // 最短合法载荷：12(iv) + 16(tag)，明文可为空但实际 key 不为空。
-  if (raw.length < 12 + 16) return '';
-  const iv = raw.subarray(0, 12);
+  // 最短合法载荷：1(version) + 12(iv) + 16(tag)，明文可为空但实际 key 不为空。
+  if (raw.length < 1 + 12 + 16) return '';
+  // P1-6: 读取版本前缀（当前仅支持 v1）
+  const version = raw[0];
+  if (version !== 0x01) {
+    throw new Error(`unsupported key encryption version: ${version}`);
+  }
+  const iv = raw.subarray(1, 13);
   const tag = raw.subarray(raw.length - 16);
-  const ct = raw.subarray(12, raw.length - 16);
+  const ct = raw.subarray(13, raw.length - 16);
   const { createDecipheriv } =
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     require('node:crypto') as typeof import('node:crypto');
   const decipher = createDecipheriv('aes-256-gcm', getBuildTimeCryptoKey(), iv);
+  // P1-6: encrypt 同版本的 AAD 必须在 decrypt 前设置，否则 auth tag 校验始终失败。
+  const aad = buildAad(opts);
+  if (aad.length > 0) decipher.setAAD(aad);
   decipher.setAuthTag(tag);
   try {
     const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
     return pt.toString('utf8');
   } catch {
-    // tag 校验失败 / key 不匹配：拒绝而非降级。
-    return '';
+    // tag 校验失败 / key 不匹配：拒绝而非降级，抛出明确错误便于排障。
+    throw new Error('api key decryption failed: invalid auth tag or key mismatch');
   }
 }
 
@@ -119,17 +138,13 @@ export interface CustomModelPublic {
 let db: any = null;
 let dbReady: Promise<void> | null = null;
 
-const DEFAULT_DB = join(process.cwd(), 'data', 'custom-models.db');
-
-function getDbFile(): string {
-  return process.env.CUSTOM_MODELS_DB_FILE || DEFAULT_DB;
-}
+const DEFAULT_DB = process.env.CUSTOM_MODELS_DB_FILE || '/var/lib/agent-harness/custom-models.db';
 
 async function ensureDb() {
   if (db) return;
   if (!dbReady) {
     dbReady = (async () => {
-      const file = getDbFile();
+      const file = DEFAULT_DB;
       // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
       db = getDbAdapter({ file });
       await db.exec(

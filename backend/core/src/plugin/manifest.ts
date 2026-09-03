@@ -50,3 +50,49 @@ export interface PluginManifest {
    */
   assembly?: AgentAssembly;
 }
+
+/** 插件清单校验错误。 */
+export interface PluginManifestError {
+  field: string;
+  message: string;
+}
+
+/**
+ * 校验 PluginManifest 必要字段与格式约束。
+ * 返回 errors 列表；空数组表示校验通过。
+ */
+export function validatePluginManifest(
+  manifest: Partial<PluginManifest>
+): PluginManifestError[] {
+  const errors: PluginManifestError[] = [];
+
+  if (!manifest.id || typeof manifest.id !== 'string' || manifest.id.trim() === '') {
+    errors.push({ field: 'id', message: 'required, non-empty string' });
+  }
+  if (typeof manifest.version !== 'string' || manifest.version.trim() === '') {
+    errors.push({ field: 'version', message: 'required, non-empty string (e.g. "1.0.0")' });
+  }
+  if (!Array.isArray(manifest.capabilities)) {
+    errors.push({ field: 'capabilities', message: 'required, must be an array (may be empty)' });
+  }
+  if (manifest.endpoint !== undefined) {
+    if (typeof manifest.endpoint !== 'string' || manifest.endpoint.trim() === '') {
+      errors.push({ field: 'endpoint', message: 'must be a non-empty string' });
+    }
+  }
+  if (manifest.isolation !== undefined) {
+    const allowed: PluginManifest['isolation'][] = ['none', 'local', 'os', 'container'];
+    if (!allowed.includes(manifest.isolation)) {
+      errors.push({ field: 'isolation', message: `must be one of ${allowed.join(', ')}` });
+    }
+  }
+  if (manifest.transport !== undefined && typeof manifest.transport !== 'string') {
+    errors.push({ field: 'transport', message: 'must be a string' });
+  }
+  if (manifest.dependencies !== undefined) {
+    if (!Array.isArray(manifest.dependencies)) {
+      errors.push({ field: 'dependencies', message: 'must be a string[]' });
+    }
+  }
+  return errors;
+}

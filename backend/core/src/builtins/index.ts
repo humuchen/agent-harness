@@ -7,6 +7,7 @@ import { registerWeather } from './weather';
 import { registerDataTransform } from './datatransform';
 import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
 import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
+import { registerRagRetrieve, type RagRetrieveOptions } from './rag-retrieve';
 
 export interface BuiltinOptions {
   /** 总开关；false 时不注册任何内置工具。默认 true。 */
@@ -23,6 +24,8 @@ export interface BuiltinOptions {
   weatherEnabled?: boolean;
   /** 数据转换/ETL 工具（JSON/CSV 解析、文本清洗、聚合）开关。默认开启。 */
   dataTransformEnabled?: boolean;
+  /** RAG 检索工具开关。默认关闭（需配置 RAG_URL 才生效）。 */
+  ragEnabled?: boolean;
   /**
    * 沙箱 shell / 代码执行能力开关。默认关闭（opt-in，危险能力需显式开启）：
    *   - 设为 true 开启；或环境变量 SHELL_ENABLED=true。
@@ -73,6 +76,7 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const datetimeEnabled = options.datetimeEnabled ?? true;
   const weatherEnabled = options.weatherEnabled ?? true;
   const dataTransformEnabled = options.dataTransformEnabled ?? true;
+  const ragEnabled = options.ragEnabled ?? (process.env.RAG_URL ? true : false);
 
   // 沙箱 shell 能力：默认关闭，需显式开启（环境变量 SHELL_ENABLED=true 或调用方传入）。
   const shellEnabled = options.shellEnabled ?? process.env.SHELL_ENABLED === 'true';
@@ -88,6 +92,7 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   if (datetimeEnabled && allow('datetime')) registerDateTime(registry);
   if (weatherEnabled && allow('weather')) registerWeather(registry);
   if (dataTransformEnabled && allow('data_transform')) registerDataTransform(registry);
+  if (ragEnabled && allow('rag_retrieve')) registerRagRetrieve(registry, { baseUrl: process.env.RAG_URL, token: process.env.RAG_TOKEN });
   if (shellEnabled && allow('shell')) {
     const whitelist =
       options.shellWhitelist ??
@@ -127,5 +132,7 @@ export type {
 } from './sandbox';
 export type { FilesystemOptions } from './filesystem';
 export type { WebFetchOptions } from './webfetch';
+export { registerRagRetrieve } from './rag-retrieve';
+export type { RagRetrieveOptions } from './rag-retrieve';
 // OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
 export * from '../sandbox';

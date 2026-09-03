@@ -18,9 +18,10 @@ import { authedFetch } from '../api';
 import { notify } from './ah-notification';
 import { notifyError, errorMessage } from '../utils/errors';
 
-/** 远程模型条目：id + 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
+/** 远程模型条目：id + baseUrl（固化，供 run 时直连）+ 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
   id: string;
+  baseUrl: string;
   ctx: number;
   /** 免费模型（`:free` 变体 / 实际 0 价格）：单独分组展示，默认折叠。 */
   free?: boolean;
@@ -404,6 +405,7 @@ export class AhModelPicker extends LitElement {
         .map((m) => ({
           raw: m,
           id: String(m?.id ?? '').trim(),
+          baseUrl: 'https://openrouter.ai/api/v1',
           ctx: Number(m?.context_length) || 0
         }))
         .filter(
@@ -412,8 +414,9 @@ export class AhModelPicker extends LitElement {
             !(!m.id.endsWith(':free') && isZeroPrice(m.raw?.pricing)) &&
             m.id !== 'openrouter/free'
         )
-        .map(({ id, ctx }) => ({
+        .map(({ id, baseUrl, ctx }) => ({
           id,
+          baseUrl,
           ctx,
           free: id.endsWith(':free')
         }));
@@ -465,15 +468,25 @@ export class AhModelPicker extends LitElement {
     this.toggle(false);
     /**
      * 选择模型。detail.model 为空串表示清除选择（恢复服务端默认）。
+     * detail.baseUrl 携带本次选中的模型专属 baseUrl（OpenRouter 模型固化为 openrouter.ai，
+     * 自定义模型取用户填写的接口地址）；宿主据此覆盖 run 请求里的 modelBaseUrl。
      * 同时携带该模型已知的上下文窗口（0 = 无数据），宿主据此更新/隐藏用量展示。
      */
     this.dispatchEvent(
       new CustomEvent('model-change', {
-        detail: { model: id, ctx: id ? this.ctxFor(id) : 0 },
+        detail: { model: id, ctx: id ? this.ctxFor(id) : 0, baseUrl: id ? this.baseUrlFor(id) : '' },
         bubbles: true,
         composed: true
       })
     );
+  }
+
+  /** 查询某模型的 baseUrl；未命中返回空串（宿主据此使用服务端默认配置）。 */
+  private baseUrlFor(id: string): string {
+    const r = this.remote.find((m) => m.id === id);
+    if (r) return r.baseUrl ?? '';
+    const c = this.customs.find((m) => m.id === id);
+    return c?.baseUrl ?? '';
   }
 
   private toggleThink(e: Event) {

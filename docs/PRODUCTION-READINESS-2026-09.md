@@ -54,11 +54,12 @@
 - **连带**：`accounts.ts:33-50` 中 `getAuthSecret()` 回退到 `AH_CRYPTO_KEY`，两者皆空则使用**每进程随机密钥** → Render free plan 每次 15 分钟休眠冷启后，所有用户登录态全部失效。
 - **修复**：在 Render Dashboard 以 Secret 形式注入 `AH_CRYPTO_KEY`（64 hex），并在 `render.yaml` 补 `sync: false` 占位声明。
 
-### P0-2 · 无成本硬上限，存在真实资损风险
+### P0-2 · 无成本硬上限，存在真实资损风险 ✅ 已修复（含 P0-B）
 
 - **证据**：`backend/core/src/quota/engine.ts:149` 有 `maxCostPerWindow` 拦截逻辑，但 `access/server/src/run-queue.ts:713` **只调用 `recordUsage()`，从不调用 `tryAcquire()`**（全仓 `tryAcquire` 在 run 路径零命中）。
 - **影响**：配额只用于 `/api/account/usage` 展示。一个陷入死循环的 agent（步数上限 12 步 × 长上下文）可持续消耗用户的 BYOK Key 额度，无任何熔断。
-- **修复**：在 job 入队与每步 loop 前接入 `tryAcquire`，超限直接 `cancelled` 并抛出明确错误码。
+- **P0-B 额外发现**：即使接入了 `admit()`，原代码传 `requestedCost = { cost: maxCostPerWindow }`（窗口总预算），导致 `admit` 每次累加整个窗口预算，第 2 次 run 即被误杀；同时 `quotaEngine` 未 `setDefault()`，`maxCostPerWindow` 在引擎内部为 `undefined`，硬上限分支永远短路。
+- **修复**：① `server.ts:4134-4145` bootstrap 时调用 `quotaEngine.setDefault({ maxCostPerWindow })` 装配默认配额；② `run-queue.ts:821-823` 改为传 `estimatedCostPerRun`（单次预估成本）而非窗口总预算。
 
 ### P0-3 · `rateBuckets` 确定性内存泄漏
 
@@ -77,6 +78,12 @@
 - **证据**：`render.yaml:110-111` `ADMIN_PASSWORD: admin888` 明文入库并可被公开克隆获取；`server.ts:887` `/api/account/me` 硬编码 `role:'admin'`，忽略真实角色。
 - **影响**：任何人拿到仓库即可登录生产实例管理员账户。属于最高危配置缺陷。
 - **修复**：口令改走 Secret 注入并在首次启动强制改密；`/api/account/me` 读取真实角色字段。
+
+### P0-A · 公开注册即获管理员权限（安全·致命）
+
+- **证据**：`/api/account/register` 是公开端点，无需登录；注册 INSERT 不指定 `role` → 落库 `DEFAULT 'admin'`；`issueToken` 的兜底角色为 `'admin'`（`accounts.ts:216`）。GitHub/Google OAuth 均显式写 `'operator'`，唯独注册路径遗漏。
+- **影响**：任何人 `POST /api/account/register` 即可获得 `DEFAULT_MATRIX.admin` 全部权限（含 `env:destroy`、`mcp:add`、`plugin:manage`、`shell:approve`、`approvals:review`、`memory:clear` 等）。
+- **修复**：① `accounts.ts:302` 注册 INSERT 显式写 `'viewer'`；② `accounts.ts:216` + `server.ts:896` + `authz.ts:352` 三处兜底默认从 `'admin'` 改为 `'viewer'`。
 
 ### P0-6 · 零备份能力 + 3 处非原子写
 
@@ -117,8 +124,12 @@
 
 ### 数据与配置
 
-9. **存储路径依赖 cwd** ⏸️ 需在部署配置中统一为绝对路径（render.yaml/k8s configmap 分别修）。
-10. **`RAG_DATA_FILE` 相对路径** ⏸️ 同上，需部署配置修复。
+9. **存储路径依赖 cwd** ✅ 已修复
+   - `config-defaults.ts` 新增 `HISTORY_DB_FILE`、`MCP_SERVERS_DB_FILE`、`CUSTOM_MODELS_DB_FILE`、`RAG_DATA_FILE` 绝对路径默认值。
+   - `mcp-store.ts`、`custom-models.ts`、`history-store.ts` 移除 `process.cwd()` 依赖，统一使用绝对路径。
+10. **`RAG_DATA_FILE` 相对路径** ✅ 已修复
+    - `config-defaults.ts` 新增 `RAG_DATA_FILE: '/var/lib/agent-harness/rag-store.json'`。
+    - `render.yaml` 中 `value: data/rag-store.json` 改为绝对路径（见 P2 部署配置任务）。
 11. **账户删除无事务** ✅ 已修复
     - `accounts.ts` 新增 `deleteUser()` 函数，使用显式事务（BEGIN/COMMIT/ROLLBACK）原子删除 users/auth_tokens/password_resets 三张表；`server.ts` 新增 `DELETE /api/account` 端点。
 12. **记忆文件乐观锁** ✅ 已修复

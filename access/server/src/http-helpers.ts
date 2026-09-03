@@ -46,7 +46,10 @@ export function securityHeaders(): Record<string, string> {
     'referrer-policy': 'strict-origin-when-cross-origin',
     'cross-origin-opener-policy': 'same-origin',
     'cross-origin-resource-policy': 'same-origin',
-    'cross-origin-embedder-policy': 'require-corp',
+    // P1-5: require-corp 会阻断无 CORP 头的跨源资源（CDN 图片、第三方嵌入等）。
+    // 改为 none，允许内部资源不经跨源检查；若后续引入第三方 iframe 资源，
+    // 可通过 FORCE_HTTPS=on + 单独配 COEP 收紧。
+    'cross-origin-embedder-policy': 'none',
   };
   if (FORCE_HTTPS === 'on' || FORCE_HTTPS === '1' || FORCE_HTTPS === 'true') {
     headers['strict-transport-security'] = 'max-age=31536000; includeSubDomains';
@@ -66,10 +69,15 @@ export function safeHeaders(
 export function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin;
   if (!origin || UI_CORS_ORIGIN.length === 0) return {};
-  if (UI_CORS_ORIGIN.includes('*'))
-    return { 'access-control-allow-origin': '*' };
+  if (UI_CORS_ORIGIN.includes('*')) {
+    // P1-3: * 与凭证模式不共存——返回 * 时不加 credentials，避免缓存投毒风险。
+    return {
+      'access-control-allow-origin': '*',
+      'vary': 'Origin',
+    };
+  }
   if (UI_CORS_ORIGIN.includes(origin))
-    return { 'access-control-allow-origin': origin };
+    return { 'access-control-allow-origin': origin, 'vary': 'Origin' };
   return {};
 }
 

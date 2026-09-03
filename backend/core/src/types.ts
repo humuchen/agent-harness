@@ -86,6 +86,8 @@ export interface LLMCallOptions {
    * 在 delta 中携带 reasoning 字段，适配器逐段回调，用于渲染「思考过程」折叠块。
    */
   onReasoning?: (delta: string) => void;
+  // P1-10: 可选熔断器。透传给适配器，适配器通过 circuitBreaker.withRequest() 包裹实际 HTTP 调用。
+  circuitBreaker?: import('./circuit-breaker').CircuitBreaker;
 }
 
 export type LLM = (
