@@ -38,6 +38,8 @@ export interface BackendUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+  compressed?: boolean;
   breakdown: {
     system: number;
     tools: number;
@@ -487,12 +489,14 @@ export class ChatRunRuntime {
               : 0;
           // 会话级累计窗口占用：跨 run 累加，窗口口径变化时重新初始化。
           const prev = this.deps.getBackendUsage();
+          const compressed = (prev?.compressed ?? false) || !!u.compressed;
           if (prev && prev.window === win && prev.breakdown && u.breakdown) {
             this.deps.setBackendUsage({
               window: win,
               promptTokens: prev.promptTokens + u.promptTokens,
               completionTokens: prev.completionTokens + u.completionTokens,
               totalTokens: prev.totalTokens + u.totalTokens,
+              compressed,
               breakdown: {
                 system: prev.breakdown.system + (u.breakdown.system ?? 0),
                 tools: prev.breakdown.tools + (u.breakdown.tools ?? 0),
@@ -509,6 +513,7 @@ export class ChatRunRuntime {
               promptTokens: u.promptTokens,
               completionTokens: u.completionTokens,
               totalTokens: u.totalTokens,
+              compressed: !!u.compressed,
               breakdown: u.breakdown
             });
           }
@@ -519,6 +524,7 @@ export class ChatRunRuntime {
             totalTokens: Number(u.totalTokens),
             window: win,
             model: u.model,
+            compressed,
             updatedAt: Date.now()
           });
           // 用量更新后立即镜像落盘。

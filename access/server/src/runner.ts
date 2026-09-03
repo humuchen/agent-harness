@@ -35,6 +35,7 @@ import {
   tenantSessionKey,
   policyEngine,
   type ContentBlock,
+  type GuardrailPolicy,
   getPluginToolRegistry,
   isEnabled
 } from '@agent-harness/core';
@@ -48,6 +49,25 @@ import { getTeamManager, initTeamManager, getAgentRegistry } from '@agent-harnes
 import path from 'node:path';
 
 loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
+
+/**
+ * 业务护栏作用域常量（与 @agent-harness/medical-ad-guard 的 MEDICAL_AD_SCOPE 保持一致）。
+ * 故意在 server 端用字面量申明，避免 server 直接依赖插件包（保持非侵入式解耦）。
+ */
+const MEDICAL_AD_GUARD_SCOPE = 'medical-ad';
+
+/**
+ * 按 agent 卡片领域派生「业务护栏作用域」，实现护栏按 agent 绑定（治本）。
+ * - 无卡片（旧路径 / 无 agent 概念）→ undefined，不收窄，向后兼容；
+ * - 医疗美容域 → 启用 medical-ad 护栏；
+ * - 其他域（含默认 generic）→ 空数组，显式排除一切领域护栏（如 medical-ad），
+ *   既杜绝「默认 agent 被医美护栏误拦」，也避免未来其它领域护栏污染通用 agent。
+ */
+function deriveGuardrailScopes(card?: AgentCard | null): string[] | undefined {
+  if (!card) return undefined;
+  if (card.domain === 'medical-aesthetics') return [MEDICAL_AD_GUARD_SCOPE];
+  return [];
+}
 
 /**
  * 把数据路径解析为绝对路径并做落盘安全校验。
@@ -206,7 +226,8 @@ export function getSessionMemory(
   maxWindow: number,
   summarizer?: MemorySummarizer,
   scorer?: MemoryScorer,
-  notesTopK?: number
+  notesTopK?: number,
+  compressThreshold?: number
 ): Memory {
   let mem = sessionMemories.get(sessionKey);
   if (!mem) {
@@ -216,7 +237,10 @@ export function getSessionMemory(
       maxWindow,
       ...(summarizer ? { summarizer } : {}),
       ...(scorer ? { scorer } : {}),
-      ...(notesTopK ? { notesTopK } : {})
+      ...(notesTopK ? { notesTopK } : {}),
+      ...(typeof compressThreshold === 'number'
+        ? { compressThreshold }
+        : {})
     });
     sessionMemories.set(sessionKey, mem);
   }
@@ -569,6 +593,10 @@ export async function assembleAgent(
   // 经 getMemoryStore() 选出的后端持久化（file/sqlite/volatile）。
   // 滑动窗口 maxWindow 可由 env MEMORY_WINDOW 调整（默认 20）。
   const maxWindow = Number(process.env.MEMORY_WINDOW ?? 20) || 20;
+  // token 级压缩护栏阈值：最近一次 LLM 调用 promptTokens/contextWindow 越过该比例即
+  // 淘汰最旧历史（独立于 CONTEXT_COMPRESSION 特性开关，默认 0.8）。可用
+  // CONTEXT_COMPRESS_THRESHOLD 调小（更早压缩）/ 调大（更晚压缩）。
+  const compressThreshold = Number(process.env.CONTEXT_COMPRESS_THRESHOLD ?? 0.8) || 0.8;
   // 当前 run 的计价/标识模型（modelOverride > env OPEN_MODEL > 内置默认），
   // 供 LLM 摘要器标注与成本明细。
   const accountModel = resolveOpenRouterConfig({ model: modelOverride }).model;
@@ -636,7 +664,7 @@ export async function assembleAgent(
     sessionKey ?? 'anonymous'
   );
   const memory =
-    memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer, memoryScorer, memoryNotesTopK);
+    memoryArg ?? getSessionMemory(effectiveSessionKey, maxWindow, summarizer, memoryScorer, memoryNotesTopK, compressThreshold);
   // 成本/配额：env 可配置单次 run 的 token 与成本上限，超出即熔断（P1-11）。
   const tokenBudget = process.env.MAX_TOKENS_PER_RUN
     ? Number(process.env.MAX_TOKENS_PER_RUN) || undefined
@@ -661,9 +689,16 @@ export async function assembleAgent(
   // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
   // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
   // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
-  const guardrailPolicy = tenantCtx
+  const basePolicy = tenantCtx
     ? policyEngine.getPolicy(tenantCtx.id)
     : policyEngine.getPolicy(undefined);
+  // P0.x 治本：按 agent 卡片领域派生「业务护栏作用域」，使领域护栏（如医疗广告法）
+  // 仅对对应领域 agent 生效。默认/generic agent 显式排除（scopes:[]），
+  // 杜绝「全局注册导致默认 agent 被医美护栏误拦」（见 Clipboard_Screenshot 误报 case）。
+  const guardrailPolicy: GuardrailPolicy = {
+    ...basePolicy,
+    scopes: deriveGuardrailScopes(card)
+  };
   const harness = new AgentHarness({
     llm,
     tools,

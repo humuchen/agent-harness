@@ -224,6 +224,8 @@ export class AhChat extends LitElement {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+    compressed?: boolean;
     breakdown: {
       system: number;
       tools: number;

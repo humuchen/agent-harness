@@ -108,7 +108,11 @@ export function buildConfidence(trace: TraceNode[]): Confidence {
   };
 }
 
-/** 渲染「链路信心」Tab：自检分 / 合成信心 + 拆解条。 */
+/** 环形量表几何常量（r=36，viewBox 88×88）。 */
+const GAUGE_R = 36;
+const GAUGE_C = 2 * Math.PI * GAUGE_R;
+
+/** 渲染「链路信心」Tab：自检分 / 合成信心 + 拆解条（环形量表 + 语义化进度条）。 */
 export function renderConfidence(trace: TraceNode[]): TemplateResult {
   const c = buildConfidence(trace);
   const successRate =
@@ -118,12 +122,36 @@ export function renderConfidence(trace: TraceNode[]): TemplateResult {
   const cachePct = c.cacheHitRate
     ? Math.min(100, Number(String(c.cacheHitRate).replace(/[^\d.]/g, '')) || 0)
     : 0;
+  const offset = GAUGE_C * (1 - c.score / 100);
   return html`
     <div class="confidence level-${c.level}">
       <div class="conf-head">
-        <div class="conf-score">
-          <span class="conf-num">${String(c.score)}</span>
-          <span class="conf-unit">分</span>
+        <div class="conf-gauge" title="综合信心分 ${c.score} / 100">
+          <svg
+            class="conf-gauge-svg"
+            viewBox="0 0 88 88"
+            aria-hidden="true"
+          >
+            <circle
+              class="conf-gauge-bg"
+              cx="44"
+              cy="44"
+              r="${GAUGE_R}"
+            ></circle>
+            <circle
+              class="conf-gauge-fg"
+              cx="44"
+              cy="44"
+              r="${GAUGE_R}"
+              style=${`stroke-dasharray:${GAUGE_C.toFixed(
+                2
+              )};stroke-dashoffset:${offset.toFixed(2)}`}
+            ></circle>
+          </svg>
+          <div class="conf-gauge-num">
+            <span class="conf-num">${String(c.score)}</span>
+            <span class="conf-unit">分</span>
+          </div>
         </div>
         <div class="conf-meta">
           <span class="conf-level">信心 ${c.levelLabel}</span>
@@ -138,14 +166,14 @@ export function renderConfidence(trace: TraceNode[]): TemplateResult {
         <div class="conf-row">
           <span class="conf-name">工具成功率</span>
           <div class="conf-track">
-            <div class="conf-fill" style=${`width:${successRate}%`}></div>
+            <div class="conf-fill ok" style=${`width:${successRate}%`}></div>
           </div>
           <span class="conf-val">${successRate}%</span>
         </div>
         <div class="conf-row">
           <span class="conf-name">缓存命中率</span>
           <div class="conf-track">
-            <div class="conf-fill" style=${`width:${cachePct}%`}></div>
+            <div class="conf-fill info" style=${`width:${cachePct}%`}></div>
           </div>
           <span class="conf-val">${c.cacheHitRate ?? '—'}</span>
         </div>
@@ -169,7 +197,21 @@ export function renderConfidence(trace: TraceNode[]): TemplateResult {
       ${c.hasVerify
         ? nothing
         : html`<div class="conf-note">
-            本次未启用自检（AGENT_AUTO_VERIFY），以下为基于调用链的合成信心。
+            <svg
+              class="conf-note-ico"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="6.2"></circle>
+              <path d="M8 7.3v3.2" stroke-linecap="round"></path>
+              <circle cx="8" cy="5" r="0.95" fill="currentColor" stroke="none"></circle>
+            </svg>
+            <span
+              >本次未启用自检（AGENT_AUTO_VERIFY），以下为基于调用链的合成信心。</span
+            >
           </div>`}
     </div>
   `;

@@ -1,5 +1,6 @@
 import { Message, messageText } from './types';
 import { tokenize } from './tools';
+import { estimateTokens } from './llm/token-estimator';
 import {
   MemoryStore,
   PersistedMemory,
@@ -200,14 +201,32 @@ export interface MemoryOptions {
   scoringContext?: string;
   /** 长期记忆注入系统提示词时的最大笔记数（按分数排序后裁剪）。默认 10。 */
   notesTopK?: number;
+  /**
+   * token 级压缩触发阈值（0~1）：最近一次 LLM 调用的 promptTokens / contextWindow
+   * 越过该比例即触发历史淘汰。独立于 CONTEXT_COMPRESSION 特性开关，作为兜底护栏——
+   * 即便未开启摘要，也会触发 FIFO 淘汰，避免上下文撑爆（原问题根因）。默认 0.8。
+   */
+  compressThreshold?: number;
 }
+
+/** 判断一条消息是否为「历史摘要」节点（role 为 system，且内容以标记前缀开头）。 */
+export const isSummaryNode = (m: Message): boolean =>
+  m.role === 'system' &&
+  typeof m.content === 'string' &&
+  m.content.startsWith('【历史摘要】');
 
 export class Memory {
   private window: Message[] = [];
   private longTerm: string[] = [];
   private longTermScores: number[] = [];
   private windowScores: number[] = [];
-  private opts: { maxWindow: number; summarizer?: MemorySummarizer; scorer?: MemoryScorer; notesTopK: number };
+  private opts: {
+    maxWindow: number;
+    summarizer?: MemorySummarizer;
+    scorer?: MemoryScorer;
+    notesTopK: number;
+    compressThreshold: number;
+  };
   private store: MemoryStore;
   private sessionKey: string;
   // 标记：lastInput 用于打分时的 context
@@ -218,6 +237,12 @@ export class Memory {
   // 待 flushSummary() 后再补入，保证下一轮 history() 已包含压缩结果。
   private pendingSummary: Promise<string> | null = null;
   private hasPendingSummary = false;
+  // token 级压缩护栏：最近一次 LLM 调用的真实上下文占用（由 harness 在发射
+  // llm:usage 时经 setContextUsage 喂入），用于按占用率触发历史淘汰。
+  private lastPromptTokens = 0;
+  private lastWindow = 0;
+  // 累计压缩（淘汰）次数：任一触发条件命中即 +1，供前端「已压缩」指示与运维观测。
+  private _compactCount = 0;
 
   constructor(opts: MemoryOptions = {}) {
     this.opts = {
@@ -225,6 +250,7 @@ export class Memory {
       summarizer: opts.summarizer,
       scorer: opts.scorer,
       notesTopK: opts.notesTopK ?? 10,
+      compressThreshold: opts.compressThreshold ?? 0.8,
     };
     // 解析后端：显式 store > 旧版 persistencePath（单文件）> 纯内存（默认）。
     if (opts.store) {
@@ -257,6 +283,63 @@ export class Memory {
     this.lastInput = input;
   }
 
+  /**
+   * 喂入最近一次 LLM 调用的真实上下文占用，驱动 token 级压缩触发。
+   * harness 在发射 llm:usage 时调用：promptTokens 为输入 token，window 为上下文窗口上限。
+   * 仅需调用一次（每次 LLM 返回 usage 时），Memory 据此判断是否需要淘汰历史。
+   */
+  setContextUsage(promptTokens: number, window: number): void {
+    this.lastPromptTokens = promptTokens;
+    this.lastWindow = window;
+  }
+
+  /** 当前 token 占用率（lastPromptTokens / lastWindow），无数据时为 0。供运维视图与测试观测。 */
+  get usageRatio(): number {
+    return this.lastWindow > 0 ? this.lastPromptTokens / this.lastWindow : 0;
+  }
+
+  /** 是否发生过压缩（淘汰）：任一触发条件命中即记一次，会话级持续为 true。供前端指示。 */
+  get compressed(): boolean {
+    return this.compactCount > 0;
+  }
+
+  /** 累计压缩（淘汰）次数，供运维视图与测试观测。 */
+  get compactCount(): number {
+    return this._compactCount;
+  }
+
+  /**
+   * 目标保留的历史 token 预算：在压缩阈值之上预留固定开销（系统提示 / 工具 / MCP /
+   * 技能 / 输出余量），确保压缩后整体占用明显低于阈值，避免「压完又立刻越界」的抖动。
+   */
+  private tokenTarget(): number {
+    const reserved = 0.25; // 固定开销占比预留
+    const target = this.lastWindow * Math.max(0, this.opts.compressThreshold - reserved);
+    return Math.max(0, Math.floor(target));
+  }
+
+  /**
+   * 从最近（末尾）向最旧（开头）贪心保留历史消息，直到估算 token 累计超过目标预算；
+   * 返回应保留的消息条数。若整窗历史估算已低于目标（超阈值源于固定开销而非历史），
+   * 返回 rest.length（不淘汰）。否则至少保留 1 条、且留 1 条可淘汰空间以保证有进展。
+   */
+  private keepWithinTokenBudget(rest: Message[], targetHist: number): number {
+    // 估算整窗历史 token；若已低于目标，无需淘汰（避免裁掉合法上下文）。
+    let total = 0;
+    for (const m of rest) total += estimateTokens(messageText(m));
+    if (total <= targetHist) return rest.length;
+
+    let keptTokens = 0;
+    let keepCount = 0;
+    for (let i = rest.length - 1; i >= 0; i--) {
+      const t = estimateTokens(messageText(rest[i]));
+      if (keepCount > 0 && keptTokens + t > targetHist) break;
+      keptTokens += t;
+      keepCount++;
+    }
+    return Math.max(1, Math.min(keepCount, rest.length - 1));
+  }
+
   add(msg: Message): void {
     this.window.push(msg);
     // 更新对应消息的分数
@@ -271,20 +354,27 @@ export class Memory {
         this.windowScores = scores;
       }
     }
-    if (this.window.length > this.opts.maxWindow) {
-      // 区分「真实 system 提示词」与「历史摘要」（摘要也是 role:'system'）：前者始终
-      // 保留在最前，后者随压缩回收、只保留最新生成的一条，避免多次压缩堆积多条摘要。
-      const isSummary = (m: Message): boolean =>
-        m.role === 'system' &&
-        typeof m.content === 'string' &&
-        m.content.startsWith('【历史摘要】');
-      // 真实 system 提示词永远在最前
-      const sys = this.window.filter((m) => m.role === 'system' && !isSummary(m));
-      const rest = this.window.filter((m) => !(m.role === 'system' && !isSummary(m)));
+    // 触发条件：消息条数溢出 或 token 占用率越过压缩阈值。
+    // token 级触发是独立于 CONTEXT_COMPRESSION 特性开关的安全护栏——
+    // 即便未开启摘要，也会触发 FIFO 淘汰，避免上下文撑爆（原问题根因）。
+    const sys = this.window.filter((m) => m.role === 'system' && !isSummaryNode(m));
+    const rest = this.window.filter((m) => !(m.role === 'system' && !isSummaryNode(m)));
+
+    const overCount = this.window.length > this.opts.maxWindow;
+    const overTokens =
+      this.lastWindow > 0 &&
+      this.lastPromptTokens / this.lastWindow >= this.opts.compressThreshold;
+
+    if (overCount || overTokens) {
       // 若配置了 summarizer，为其预留 1 个槽位（压缩摘要一旦产生便长期固定保留）。
       const g = this.opts.summarizer ? 1 : 0;
-      const budget = Math.max(0, this.opts.maxWindow - sys.length - g);
+      // 条数溢出：沿用原有 maxWindow 预算；token 溢出：按 token 预算保留最近历史。
+      const budget = overCount
+        ? Math.max(0, this.opts.maxWindow - sys.length - g)
+        : this.keepWithinTokenBudget(rest, this.tokenTarget());
       if (rest.length > budget) {
+        // 任一触发条件命中即记为一次压缩（淘汰），供前端「已压缩」指示。
+        this._compactCount++;
         // 仅淘汰超出预算的最旧轮次（含旧的过期摘要），并将其压缩为最新摘要。
         const evicted = rest.slice(0, rest.length - budget);
         const keptRest = rest.slice(rest.length - budget);
@@ -317,7 +407,7 @@ export class Memory {
           this.window = [...sys, ...keptRest];
         }
       } else {
-        // 仅 system + 摘要占位导致窗口看似溢出，无需淘汰。
+        // 仅 system + 摘要占位导致窗口看似溢出，或 token 预算无需淘汰，重排即可。
         this.window = [...sys, ...rest];
       }
     }
