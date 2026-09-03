@@ -13,7 +13,7 @@
 2. **输入护栏**：`checkInput` 扫描密钥 / 提示词注入 / 超长输入；若本次 run 携带 `guardrailPolicy`（per-tenant / 行业画像覆盖），输入/输出/工具参数校验与脱敏均用该策略而非全局默认。被拦截则 `emit guardrail:blocked` 并直接 `return`，不进入循环。
 3. **记忆加载**：若 `memory.hasPersistence`，从 `FileMemoryStore` / `SqliteMemoryStore` 加载长期笔记（跨 run 学习；默认 `MEMORY_BACKEND=sqlite` 已开启持久化）。
 4. **系统提示注入**：把长期记忆（`memory.systemContext()`）拼进系统提示词，再 `memory.add` 系统 + 用户消息。
-5. **主循环**（`for step < maxSteps`，**默认 12**）：
+5. **主循环**（`for step < maxSteps`，**默认 24**，可经 `MAX_STEPS` 或前端「步数上限」按任务覆盖）：
    - **预算检查**：`tokenBudget` / `costBudget` 超限即熔断 `return`。
    - **LLM 调用**：`opts.llm(messages, schemas, { signal})`，用 `Promise.race` 与 `abortedFlag` 竞速，信号触发即返回 `[timeout]`/`[aborted]`。
    - **记账**：`recordTokens` + `estimateCost`（按 `llm/pricing.ts` 单价表）累计 `runCost` / `runTokens`，发出 `run:cost`，再次查预算。

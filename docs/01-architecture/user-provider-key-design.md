@@ -1,7 +1,7 @@
 # 用户自带 LLM 凭据（BYOK）设计方案
 
 > 目标：移除环境中写死的 `OPEN_API_KEY`，改为「每个登录用户自己去 OpenRouter 取 Key → 在 UI 填入 → 加密落库 → 运行期按用户注入」。
-> 状态：设计稿（待确认后进入实施）。约束：非侵入式，不引入新依赖，core / server / webapp 零业务耦合不变。
+> 状态：**已实现**（`access/server/src/provider-keys.ts`，BYOK 凭据 AES-GCM 落库 `provider-keys.db`，运行期 per-run 注入到 harness，绝不写 `process.env`；`/api/account/provider-keys` 管理；前端 `provider-key-settings` 组件）。约束维持不变：非侵入式、零新增依赖、core / server / webapp 零业务耦合。
 
 ---
 

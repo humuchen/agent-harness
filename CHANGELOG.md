@@ -4,6 +4,27 @@
 
 ---
 
+## [0.3.0] - 2026-09-03
+
+### 📚 文档
+
+全量刷新项目 `*.md` 文档以匹配当前架构与各模块功能（此前文档滞后于多轮代码改动）：
+
+- **README.md**：目录树补齐 3 个业务插件（`customer-service` / `medical-aesthetics-lead` / `memo`）、`skills/`、`migrations/`、`scripts/`、`data/`、额外 `docker-compose*.yml`；核心模块清单补全 `router/` `policy/` `quota/` `workflow/` `a2a/` `plugin/` `sandbox/` `skills/` `builtins/` `subagent/` `teams/` 等；server 源文件由 5 个示例扩写为约 45 个的接入层说明。
+- **修正失效声明**：`.github/workflows/docker.yml`（镜像推送）与 CI 的 SBOM / Dependency Review 作业均不存在——实际仅 `ci.yml`（lint → `pnpm -r build` → `pnpm -r test` → `pnpm audit --audit-level=high`）。
+- **测试计数**：core `101 用例` → 约 `371`（52 测试文件）；全仓约 `681` 用例。
+- **RAG 服务**：描述由「stdio MCP Server」更正为「默认 HTTP（`/v1/retrieve`、`/v1/ingest`），可选 MCP stdio，零运行时依赖」。
+- **新增章节**：「业务插件（Plugins）」与「接入层扩展能力（账户 / OAuth / BYOK / 插件市场 / 多会话）」；基座子系统表补 `subagent/` 与 `teams/`。
+- **`docs/01-architecture/execution.md`**：主循环默认步数 `12` → `24`。
+- **落地状态更正**：`docs/03-plugins/customer-service-agent-modules.md` 标「已实现」（19 源文件、SQLite、4 工具 `ticket`/`kb`/`order`/`handoff`）；`docs/01-architecture/user-provider-key-design.md` BYOK 标「已实现」；`docs/05-analysis/架构落地缺口分析.md` 天气工具缺口更正为已实现（`builtins/weather.ts`）。
+
+### ✨ 架构演进（本轮文档补齐；能力此前已随代码落地）
+
+- 接入层 `access/server` 已落地账户密码登录、OpenRouter OAuth PKCE、BYOK per-run 凭据注入、插件市场 Registry、多会话 Chat + 跨设备 SSE 同步、备忘提醒总线、配置热更新、K8s 健康探针、日志脱敏、副本选择器。
+- 核心 `backend/core` 多智能体基座补 `subagent/`（`SubAgentManager` + `delegate_task`）与 `teams/`（`Team`/`TeamManager`）。
+
+---
+
 ## [0.2.2] - 2026-08-21
 
 ### 🐛 修复（medical-aesthetics-lead 转人工）
