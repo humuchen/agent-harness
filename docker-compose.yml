@@ -23,6 +23,9 @@ services:
       # 真实 LLM（留空则用内置 Mock LLM 离线运行）。
       OPEN_API_KEY: '${OPEN_API_KEY:-}'
       OPEN_MODEL: '${OPEN_MODEL:-}'
+      # 平台兜底 Key（BYOK 架构）：未自带 Key 的用户回退到此；需 ALLOW_PLATFORM_KEY=true 才生效。
+      PLATFORM_OPEN_API_KEY: '${PLATFORM_OPEN_API_KEY:-}'
+      ALLOW_PLATFORM_KEY: '${ALLOW_PLATFORM_KEY:-}'
       # 站点 admin 凭证：独立于 LLM 密钥，避免 OPEN_API_KEY 同时充当「LLM 密钥 + admin 凭证」
       #（server.ts 检测到 ADMIN_API_KEY 缺失时会打印双用途告警）。
       # 注意：compose 只把 .env 用于 ${VAR} 替换，不会自动注入容器，故需在此显式声明。
@@ -43,6 +46,10 @@ services:
       RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'
       # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
       AH_STARTUP_CRITICAL: '1'
+      # 账户 token 签名密钥：缺失则 getAuthSecret() 每进程随机生成，签发/验证密钥不一致 → 登录态全部失效。
+      # 必须透传 .env 的 AH_CRYPTO_KEY（或单独的 AH_AUTH_SECRET）到容器。
+      AH_CRYPTO_KEY: '${AH_CRYPTO_KEY:-}'
+      AH_AUTH_SECRET: '${AH_AUTH_SECRET:-}'
       # ── 成本硬上限（P2 Go-live）：每窗口最大成本（美元），0=不限
       MAX_COST_PER_WINDOW: '10'
       # ── 告警路由（P2）：ALERT_WEBHOOK_URL 推送至 Slack/飞书/钉钉入站 Webhook
