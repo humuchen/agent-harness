@@ -44,8 +44,6 @@ agent-harness/                # 根：private 包 + pnpm workspace
 ├─ package.json
 ├─ Dockerfile / docker-compose.yml   # 自托管交付物（含 --profile redis 多副本队列）
 ├─ render.yaml                # Render 部署 Blueprint（部署 access/server）
-├─ vercel.json              # Vercel 部署配置（Node.js Server 長運行模式）
-└─ scripts/vercel-build.sh  # Vercel 預構建腳本（pnpm monorepo 全構建）
 ```
 
 ## 业务插件（Plugins）

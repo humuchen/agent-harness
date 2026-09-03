@@ -6,7 +6,6 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "vercel-build": "bash ../../scripts/vercel-build.sh",
     "start": "node dist/server.js",
     "registry": "node dist/registry-server.js",
     "dev": "tsc -p tsconfig.json && node dist/server.js",
