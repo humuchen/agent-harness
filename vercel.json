@@ -16,8 +16,7 @@
           "pnpm-workspace.yaml"
         ],
         "maxLambdaSize": "50mb"
-      },
-      "id": "agent-harness"
+      }
     }
   ],
   "routes": [
