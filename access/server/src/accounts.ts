@@ -230,8 +230,8 @@ export function parseToken(raw: string): AccountToken | null {
     };
     if (typeof payload.u !== 'string' || typeof payload.exp !== 'number')
       return null;
-    // 旧 token 无 r → 默认 admin（向后兼容）。
-    const role = typeof payload.r === 'string' ? payload.r : 'admin';
+    // 旧 token 无 r → 默认 viewer（P1-1 兜底角色，避免公开注册即 admin）。
+    const role = typeof payload.r === 'string' ? payload.r : 'viewer';
     return { jti, username: payload.u, exp: payload.exp, sig, role };
   } catch {
     return null;

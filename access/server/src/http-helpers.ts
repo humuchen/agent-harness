@@ -66,10 +66,15 @@ export function safeHeaders(
 export function corsHeaders(req: IncomingMessage): Record<string, string> {
   const origin = req.headers.origin;
   if (!origin || UI_CORS_ORIGIN.length === 0) return {};
-  if (UI_CORS_ORIGIN.includes('*'))
-    return { 'access-control-allow-origin': '*' };
+  if (UI_CORS_ORIGIN.includes('*')) {
+    // P1-3: * 与凭证模式不共存——返回 * 时不加 credentials，避免缓存投毒风险。
+    return {
+      'access-control-allow-origin': '*',
+      'vary': 'Origin',
+    };
+  }
   if (UI_CORS_ORIGIN.includes(origin))
-    return { 'access-control-allow-origin': origin };
+    return { 'access-control-allow-origin': origin, 'vary': 'Origin' };
   return {};
 }
 

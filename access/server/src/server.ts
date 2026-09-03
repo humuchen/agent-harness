@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, appendFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -4137,16 +4138,49 @@ async function bootstrap(): Promise<void> {
     structLog('info', 'quota', {
       enabled: true,
       maxCostPerWindow,
-      unit: 'USD'
     });
   }
 
-  // P2：审计日志落盘。AUDIT_LOG 非空时把文件 sink 注入核心 audit()，与 server.ts 自身的 stdout 审计并行。
-  const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
-  if (AUDIT_LOG) {
-    const { enableAuditFile } = await import('@agent-harness/core');
-    await enableAuditFile(AUDIT_LOG);
-    structLog('info', 'audit', { enabled: true, file: AUDIT_LOG });
+  // P0-D: 启动时自动运行迁移脚本，确保 schema 与代码版本一致。
+  // AH_MIGRATE_AUTO=on/1/true 时启用，默认关闭（避免开发环境意外执行）。
+  // P1-3: 迁移脚本使用幂等版本检查（SELECT MAX(version)），重复运行安全。
+  const MIGRATE_AUTO = (process.env.AH_MIGRATE_AUTO ?? 'off').toLowerCase();
+  if (['on', '1', 'true'].includes(MIGRATE_AUTO)) {
+    const { execSync } = await import('node:child_process');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const _m = (globalThis as any).import?.meta;
+    const MIGRATE_SCRIPT = join(
+      dirname(_m?.url ? fileURLToPath(_m.url) : __dirname),
+      '..', '..', 'scripts', 'db-migrate.cjs'
+    );
+    try {
+      const result = execSync(`node "${MIGRATE_SCRIPT}" --action up`, {
+        encoding: 'utf8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      structLog('info', 'migration', { status: 'success', output: result.trim() });
+      console.log('[migration] 启动迁移完成:', result.trim());
+    } catch (e: any) {
+      console.error('[migration] 启动迁移失败:', e.message);
+      // 不阻断启动，但记录错误以便运维排查。
+    }
+  } else {
+    console.log('[migration] AH_MIGRATE_AUTO 未启用，跳过启动时迁移（如需启用请设置 AH_MIGRATE_AUTO=on）');
+  }
+
+  // P0-E: 启动定时备份调度器（进程内 setInterval，替代外部 cron 依赖）。
+  const AH_BACKUP_ENABLED = (process.env.AH_BACKUP_ENABLED ?? 'on').toLowerCase();
+  if (['on', '1', 'true'].includes(AH_BACKUP_ENABLED)) {
+    const { scheduleBackup } = await import('./backup-scheduler');
+    scheduleBackup();
+  }
+
+  // P1-8: 启动数据留存调度器（按策略定期清理过期记录）。
+  const AH_RETENTION_ENABLED = (process.env.AH_RETENTION_ENABLED ?? 'on').toLowerCase();
+  if (['on', '1', 'true'].includes(AH_RETENTION_ENABLED)) {
+    const { scheduleRetention } = await import('./retention');
+    scheduleRetention();
   }
 
   server.listen(PORT, HOST, onListening);

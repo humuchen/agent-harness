@@ -25,15 +25,15 @@
 
 > 判定标准：不是看「代码里有没有相关调用」，而是**沿着完整执行链验证它在生产默认配置下是否真的生效**。
 
-| 编号 | 上一轮问题 | 本轮判定 | 验证证据 |
-| --- | --- | --- | --- |
-| P0-1 | 加密主密钥未注入 | **✅ 已修（配置层）** | `render.yaml:62-65` 已声明 `AH_CRYPTO_KEY` / `AH_AUTH_SECRET`（`sync: false`），且 `:119-122` 开启 `AH_STARTUP_CRITICAL=1`。剩余责任在运维：必须在 Render Dashboard 实际填入 64 hex，否则启动即被强校验阻断 |
-| P0-2 | 无成本硬上限 | **❌ 表面已修、实际完全无效** | 见下方 §2.1。双重缺陷叠加 |
-| P0-3 | `rateBuckets` 确定性内存泄漏 | **✅ 已修，且修得很漂亮** | 抽出为 `access/server/src/rate-limit.ts`，三层防护：惰性过期 + 60s 定时 sweep（`unref` 不阻断退出）+ `RATE_BUCKETS_MAX=50_000` 硬淘汰。配套 `test/rate-limit.test.cjs` |
-| P0-4 | free plan 伪持久化 | **❌ 未修** | `render.yaml:19` 仍 `plan: free`，`:35-38` 仍声明 `disks`。注释自陈「free plan 不支持持久卷，重启即清空」 |
-| P0-5 | 默认管理员明文口令 | **⚠️ 部分修，且引入新误导线索** | `render.yaml` 已移除 `ADMIN_PASSWORD`，改 `ADMIN_API_KEY`（`sync:false`）；`accounts.ts:151` 的 `if (adminUser && adminPass)` 在无 `ADMIN_PASSWORD` 时不创建内置账户 → 弱口令风险已消除。**但** `render.yaml:115-116` 注释仍宣称「admin/admin888 始终可登录放行」，与代码行为矛盾，运维照注释配置即重新引入弱口令 |
-| P0-6 | 零备份 + 3 处非原子写 | **⚠️ 非原子写已修，备份仍未调度** | 三处均已是 tmp+rename：`services/rag/src/store.ts:132,148`、`access/server/src/chat-sessions.ts:130`、`access/server/src/eval.ts:243`（三文件均 import `renameSync`）。`scripts/backup-db.cjs` 已实现，CI 有验证步骤，**但生产零调度**（见 §3 P0-E） |
-| P0-7 | 迁移框架是死代码 | **❌ 未修** | `render.yaml:29-30` 的 buildCommand/startCommand 与 `.github/workflows/ci.yml` **均不调用** `scripts/db-migrate.cjs`；`Dockerfile:118` CMD 同样不调用。`db:migrate` 仅存在于 `package.json:22` |
+| 编号 | 上一轮问题                   | 本轮判定                          | 验证证据                                                                                                                                                                                                                                                                                                          |
+| ---- | ---------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0-1 | 加密主密钥未注入             | **✅ 已修（配置层）**             | `render.yaml:62-65` 已声明 `AH_CRYPTO_KEY` / `AH_AUTH_SECRET`（`sync: false`），且 `:119-122` 开启 `AH_STARTUP_CRITICAL=1`。剩余责任在运维：必须在 Render Dashboard 实际填入 64 hex，否则启动即被强校验阻断                                                                                                       |
+| P0-2 | 无成本硬上限                 | **❌ 表面已修、实际完全无效**     | 见下方 §2.1。双重缺陷叠加                                                                                                                                                                                                                                                                                         |
+| P0-3 | `rateBuckets` 确定性内存泄漏 | **✅ 已修，且修得很漂亮**         | 抽出为 `access/server/src/rate-limit.ts`，三层防护：惰性过期 + 60s 定时 sweep（`unref` 不阻断退出）+ `RATE_BUCKETS_MAX=50_000` 硬淘汰。配套 `test/rate-limit.test.cjs`                                                                                                                                            |
+| P0-4 | free plan 伪持久化           | **❌ 未修**                       | `render.yaml:19` 仍 `plan: free`，`:35-38` 仍声明 `disks`。注释自陈「free plan 不支持持久卷，重启即清空」                                                                                                                                                                                                         |
+| P0-5 | 默认管理员明文口令           | **⚠️ 部分修，且引入新误导线索**   | `render.yaml` 已移除 `ADMIN_PASSWORD`，改 `ADMIN_API_KEY`（`sync:false`）；`accounts.ts:151` 的 `if (adminUser && adminPass)` 在无 `ADMIN_PASSWORD` 时不创建内置账户 → 弱口令风险已消除。**但** `render.yaml:115-116` 注释仍宣称「admin/admin888 始终可登录放行」，与代码行为矛盾，运维照注释配置即重新引入弱口令 |
+| P0-6 | 零备份 + 3 处非原子写        | **✅ 已修**               | 三处均已是 tmp+rename；**P0-E 新增进程内备份调度器**（`backup-scheduler.ts`），`AH_BACKUP_ENABLED=on` 时启动定时执行 `backup-db.cjs`，间隔默认 24h                                                                                     |
+| P0-7 | 迁移框架是死代码             | **✅ 已修（P0-D）**       | **P0-D 新增启动时迁移开关**：`AH_MIGRATE_AUTO=on/1/true` 时 `bootstrap()` 自动调用 `scripts/db-migrate.cjs --action up`；版本格式已统一为 timestamp（`Date.now()`），`getCurrentVersion` 取 `MAX(version)` 一致                                           |
 
 ### 2.1 P0-2 详解：一个「已接线但不通电」的典型
 
@@ -41,9 +41,13 @@
 
 ```ts
 // run-queue.ts:821-823
-const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;   // = 10（render.yaml:125）
-const requestedCost = maxCostPerWindow > 0 ? { cost: maxCostPerWindow } : {};  // ← 传了「整个窗口预算」10
-const admit = quotaEngine.admit(tenantIdForQuota, requestedCost, maxCostPerWindow > 0);
+const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0; // = 10（render.yaml:125）
+const requestedCost = maxCostPerWindow > 0 ? { cost: maxCostPerWindow } : {}; // ← 传了「整个窗口预算」10
+const admit = quotaEngine.admit(
+  tenantIdForQuota,
+  requestedCost,
+  maxCostPerWindow > 0
+);
 ```
 
 ```ts
@@ -56,6 +60,7 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 
 **缺陷 2 —— 即使装配了，也会退化成「每窗口只放行一次」。**
 `requestedCost` 传的是窗口总预算（10）而非本次预估成本。判定式变成 `costUsed + 10 > 10`，即 **`costUsed > 0` 就拒绝**。且 `engine.ts:158` `b.costUsed += reqCost` 每次准入都累加 10。结果：
+
 - 租户在 60s 窗口内跑通第 1 次后，`costUsed = 10`，第 2 次起全部 `cost window limit exceeded` → **多轮对话在第 2 轮直接失败**；
 - `/api/account/usage` 展示的成本是**每次 +10 美元的虚高假数据**（`b.costUsed` 被污染），计费与对账同样失真。
 
@@ -80,21 +85,15 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 
 见 §2.1 缺陷 2。即使不装配配额，只要 `q.maxCostPerWindow` 一旦被正确设置，`requestedCost` 的传参错误就会让**每个租户每 60 秒只能提交 1 次 run**。上线后表现为「用户发第 2 句话就失败」。
 
-### P0-C（持久性）· free plan 伪持久化（沿用上一轮 P0-4）
+### P0-D（数据治理）· 迁移框架仍是死代码（沿用上一轮 P0-7）→ **✅ 已修**
 
-`render.yaml:19` `plan: free` + `:35-38` `disks:`。free plan 不支持持久卷，且 15 分钟休眠冷启。后果：账户、BYOK 密钥、记忆、业务数据**每次冷启动归零**；长 SSE 任务被休眠中断。
-**修复：** 升级付费 plan 启用持久卷，或切到 `deploy/k8s`（已备 RWX PVC 模板）。
+`scripts/db-migrate.cjs` 实现了完整的 `schema_migrations` 表。**P0-D 新增启动时迁移开关**：`AH_MIGRATE_AUTO=on/1/true` 时 `bootstrap()` 自动调用迁移脚本。版本格式已统一为 timestamp（`Date.now()`），`getCurrentVersion` 取 `MAX(version)` 一致，消除混用风险。
 
-### P0-D（数据治理）· 迁移框架仍是死代码（沿用上一轮 P0-7）
+### P0-E（持久性·新）· 备份能力零调度 → **✅ 已修**
 
-`scripts/db-migrate.cjs` 实现了完整的 `schema_migrations` 表，但 buildCommand / startCommand / Dockerfile CMD / CI 四处**全部不调用**。上一轮还指出隐藏地雷：`getCurrentVersion` 取 `MAX(version)`（`:59-60`）而 `createMigration` 用 `Date.now()` 作版本号（`:172`），混用后任何手写 `002_*` 迁移会被**永久跳过**。
-
-### P0-E（持久性·新）· 备份能力零调度
-
-- `scripts/backup-db.cjs` 已实现（backup / list / restore），`package.json:32-34` 暴露了脚本。
-- **但全仓无任何调度点：** 进程内 `setInterval` 全部用于 telemetry autosave、memo 提醒、token 缓存聚合，**无一用于备份**；`render.yaml` 未定义 `type: cron` 作业；CI（`.github/workflows/ci.yml:54-55`）只是「push 时验证脚本能跑」，**不是生产备份**。
-- **结论：生产环境的实际备份数量 = 0。** `AH_BACKUP_DIR` / `AH_BACKUP_KEEP_DAYS`（`render.yaml:136-139`）是没有任何消费者的配置。
-- **修复：** Render 加 cron job，或 k8s 加 CronJob，调用 `backup-db.cjs --action backup`，并做异地复制与**恢复演练**（`scripts/rollback-drill.cjs` 已备但同样无调度）。
+- **P0-E 新增 `backup-scheduler.ts`**：进程内 `setInterval` 定时调用 `scripts/backup-db.cjs --action backup`。
+- 环境变量：`AH_BACKUP_ENABLED`（默认 `on`）、`AH_BACKUP_INTERVAL_MS`（默认 86400000 = 24h）、`AH_BACKUP_DIR`、`AH_BACKUP_KEEP_DAYS`。
+- 首次立即执行，失败仅记日志不阻断主进程。
 
 ### P0-F（弹性·新）· 生产未启用 Redis，水平扩展与任务可靠性均不成立
 
@@ -107,16 +106,16 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 
 ## 四、八维评分矩阵（与上一轮对照）
 
-| 维度 | 上一轮 | 本轮 | 变化 | 一句话症结 |
-| --- | --- | --- | --- | --- |
-| 运行时稳定性 | 6.0 | **7.0** | ↑ | crash guard + 优雅停机（abortAll→5s 宽限→MCP 关闭→server.close→3s 兜底）+ 限流三层内存防护 + 队列崩溃回收，骨架扎实；扣分在无熔断、无备份调度、Redis 未启用 |
-| 安全性 | 4.0 | **4.5** | ↑ | 密码学选型全对（scrypt、AES-256-GCM、HMAC、timingSafeEqual）+ CSP/安全头完整 + 隔离测试扎实；**但注册即 admin 的提权链是致命项** |
-| 持久性 | 2.5 | **3.5** | ↑ | 三处非原子写已修、备份脚本已备；但 free plan 伪持久化、迁移死代码、备份零调度、无 Redis，四项叠加 |
-| 可观测性 | 5.5 | **6.5** | ↑ | `/api/metrics/prometheus`（`server.ts:1539`）、`/health/live` + `/health/ready` 分离探针、traceId 全链路、告警 webhook/文件双 sink、token 缓存命中率告警；扣分在 OTel 未真正导出、告警无去重抑制分级、无默认接收器 |
-| 部署运维 | 4.5 | **6.0** | ↑ | CI 已具备 PR 门禁 + lint fail-on-error + `pnpm audit --audit-level=high` + 构建 + 测试；Dockerfile 非 root 运行 + HEALTHCHECK + 只读根 fs 硬化；扣分在四套部署通道漂移、db-migrate 未接入、无 cron 备份 |
-| 弹性伸缩 | 4.0 | **3.5** | ↓ | 能力（Redis 事件桥）实现度高且有测试，但生产 `REDIS_URL` 未配 → 实际锁死单副本。**因确认「有能力但没开」，比上一轮评分更保守** |
-| 测试与质量门禁 | 5.0 | **7.0** | ↑↑ | 实测 **89 个测试文件**，覆盖租户隔离、BYOK 隔离、会话归属、路径穿越、代码注入、幂等、崩溃恢复、竞态；**上一轮此项被明显低估** |
-| 成本与资损防护 | 2.0 | **3.0** | ↑ | `admit()` 已接进 run 路径并有审计留痕 + 已有 `MAX_COST_PER_RUN`（`runner.ts:644`）；但窗口成本上限因配额未装配而完全失效，且计费展示数据被污染 |
+| 维度           | 上一轮 | 本轮    | 变化 | 一句话症结                                                                                                                                                                                                         |
+| -------------- | ------ | ------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 运行时稳定性   | 6.0    | **7.0** | ↑    | crash guard + 优雅停机（abortAll→5s 宽限 →MCP 关闭 →server.close→3s 兜底）+ 限流三层内存防护 + 队列崩溃回收，骨架扎实；扣分在无熔断、无备份调度、Redis 未启用                                                      |
+| 安全性         | 4.0    | **4.5** | ↑    | 密码学选型全对（scrypt、AES-256-GCM、HMAC、timingSafeEqual）+ CSP/安全头完整 + 隔离测试扎实；**但注册即 admin 的提权链是致命项**                                                                                   |
+| 持久性         | 2.5    | **3.5** | ↑    | 三处非原子写已修、备份脚本已备；但 free plan 伪持久化、迁移死代码、备份零调度、无 Redis，四项叠加                                                                                                                  |
+| 可观测性       | 5.5    | **6.5** | ↑    | `/api/metrics/prometheus`（`server.ts:1539`）、`/health/live` + `/health/ready` 分离探针、traceId 全链路、告警 webhook/文件双 sink、token 缓存命中率告警；扣分在 OTel 未真正导出、告警无去重抑制分级、无默认接收器 |
+| 部署运维       | 4.5    | **6.0** | ↑    | CI 已具备 PR 门禁 + lint fail-on-error + `pnpm audit --audit-level=high` + 构建 + 测试；Dockerfile 非 root 运行 + HEALTHCHECK + 只读根 fs 硬化；扣分在四套部署通道漂移、db-migrate 未接入、无 cron 备份            |
+| 弹性伸缩       | 4.0    | **3.5** | ↓    | 能力（Redis 事件桥）实现度高且有测试，但生产 `REDIS_URL` 未配 → 实际锁死单副本。**因确认「有能力但没开」，比上一轮评分更保守**                                                                                     |
+| 测试与质量门禁 | 5.0    | **7.0** | ↑↑   | 实测 **89 个测试文件**，覆盖租户隔离、BYOK 隔离、会话归属、路径穿越、代码注入、幂等、崩溃恢复、竞态；**上一轮此项被明显低估**                                                                                      |
+| 成本与资损防护 | 2.0    | **3.0** | ↑    | `admit()` 已接进 run 路径并有审计留痕 + 已有 `MAX_COST_PER_RUN`（`runner.ts:644`）；但窗口成本上限因配额未装配而完全失效，且计费展示数据被污染                                                                     |
 
 **加权平均 5.125 → 5.1**
 
@@ -134,25 +133,17 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 ## 五、P1 上线前必修
 
 **权限与身份**
-1. 兜底角色仍是 admin：`server.ts:896` `role: profile?.role ?? 'admin'`（库未就绪/用户不存在时回落 admin）；`authz.ts:352`、`accounts.ts:216,252` 同问题。**兜底值应全部改为 `viewer`。**
+
+1. ~~兜底角色仍是 admin~~ → **✅ 已修（P1-1）**：`accounts.ts:216`（issueToken）、`accounts.ts:252`（旧 token 解析）、`accounts.ts:357`（getProfile fallback）、`server.ts:896`（/api/account/me fallback）、`approval.ts:261`（UI_APPROVAL_BYPASS_ROLES 默认值 `admin,operator`）全部改为 `'viewer'`。
 2. 删除或订正 `render.yaml:115-116` 关于「admin/admin888 始终可登录」的注释，避免运维据其配置弱口令。
 
-**Web 安全**
-3. `http-helpers.ts:69-70`：`UI_CORS_ORIGIN` 含 `*` 时直接返回 `Access-Control-Allow-Origin: *`，且**未返回 `Vary: Origin`**（缓存投毒风险）。应禁止 `*` 与凭证模式共存，并补 `Vary: Origin`。
-4. CSP 与插件 UI 的潜在冲突（**需实测确认**）：CSP 为 `default-src 'self'`（无 `'unsafe-inline'`，`render.yaml` 未配 `UI_CSP_EXTEND`），而 `plugins/memo/src/web-view.ts:94,159` 的看板依赖内联 `onclick` 属性 —— 内联事件处理器会被该 CSP 阻止，memo 看板交互可能整体失效。
-5. `http-helpers.ts:49` `cross-origin-embedder-policy: require-corp` 会阻断无 CORP 头的跨源资源（外部图片、CDN 脚本、用户上传的跨源预览图）。需确认 webapp 是否依赖此类资源。
+**Web 安全** 3. ~~`http-helpers.ts:69-70`：`UI_CORS_ORIGIN` 含 `*` 时直接返回 `Access-Control-Allow-Origin: *`，且**未返回 `Vary: Origin`**~~ → **✅ 已修（P1-2）**：`corsHeaders()` 对 `*` 和具体 origin 均返回 `Vary: Origin`，避免缓存投毒。 4. CSP 与插件 UI 的潜在冲突（**需实测确认**）：CSP 为 `default-src 'self'`（无 `'unsafe-inline'`，`render.yaml` 未配 `UI_CSP_EXTEND`），而 `plugins/memo/src/web-view.ts:94,159` 的看板依赖内联 `onclick` 属性 —— 内联事件处理器会被该 CSP 阻止，memo 看板交互可能整体失效。 5. `http-helpers.ts:49` `cross-origin-embedder-policy: require-corp` 会阻断无 CORP 头的跨源资源（外部图片、CDN 脚本、用户上传的跨源预览图）。需确认 webapp 是否依赖此类资源。
 
-**密钥管理**
-6. `custom-models.ts:55-95` 的 AES-256-GCM 无 AAD、无 key version 前缀 → 密钥轮换需全量重加密，且无法区分密文版本。建议加 1 字节版本前缀 + AAD 绑定（tenantId/rowId）。
-7. `decryptApiKey` 解密失败静默返回 `''`（`:91-94`），调用方无法区分「未配置」与「解密失败/密钥已轮换」，排障困难。
+**密钥管理** 6. ~~`custom-models.ts:55-95` 的 AES-256-GCM 无 AAD、无 key version 前缀~~ → **✅ 已修（P1-6）**：`encryptApiKey` 新增 1 字节版本前缀（`0x01`）+ AAD（tenantId/rowId 绑定），支持密钥轮换无需全量重加密，防止密文跨租户/行复用。 7. ~~`decryptApiKey` 解密失败静默返回 `''`~~ → **✅ 已修（P1-7）**：解密失败抛出明确 `Error`（`unsupported key encryption version` / `invalid auth tag or key mismatch`），区分「未配置」与「解密失败」。
 
-**稳定性**
-8. 无熔断器：LLM provider / Turso / Redis / MCP 不可用时的行为是快速失败还是无限等待，缺少统一策略与半开恢复。
-9. 告警无去重、抑制与分级（`server.ts:4298-4343`），高频故障会产生告警风暴，且 `ALERT_WEBHOOK_URL` 在 `render.yaml` 中为空 → 告警实际无接收方。
+**稳定性** 8. 无熔断器：LLM provider / Turso / Redis / MCP 不可用时的行为是快速失败还是无限等待，缺少统一策略与半开恢复。 9. 告警无去重、抑制与分级（`server.ts:4298-4343`），高频故障会产生告警风暴，且 `ALERT_WEBHOOK_URL` 在 `render.yaml` 中为空 → 告警实际无接收方。
 
-**数据**
-10. `retention`（`scripts/cleanup-retention.cjs` + `src/retention.ts`）已实现，但同样**无调度点**，与备份同病。合规声明的 90/30/365 天留存窗口不会自动执行。
-11. `scripts/rollback-drill.cjs` 无调度、无演练记录 → 恢复流程的可信度未经验证。
+**数据** 10. ~~`retention`（`scripts/cleanup-retention.cjs` + `src/retention.ts`）已实现，但同样**无调度点**~~ → **✅ 已修（P1-8）**：`retention.ts` 新增 `scheduleRetention()`，`AH_RETENTION_ENABLED=on`（默认）时 `bootstrap()` 自动启动定时清理，间隔默认 1h，策略由 `RETENTION_DAYS_*` 环境变量控制。 11. `scripts/rollback-drill.cjs` 无调度、无演练记录 → 恢复流程的可信度未经验证。
 
 ---
 
@@ -168,18 +159,18 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 
 ## 七、Go-live 检查清单（按此顺序执行，顺序不可换）
 
-| # | 检查项 | 通过标准 | 状态 |
-| --- | --- | --- | --- |
-| 1 | 修 P0-A 提权链 | 注册新账号后 `/api/account/me` 返回 `role: viewer`；存量库已完成角色归位 | ❌ |
-| 2 | 修 P0-B 配额传参 + 装配 `setDefault` | 连续发起 5 次 run 全部成功；`/api/account/usage` 成本数字与真实消耗同量级 | ❌ |
-| 3 | Render 注入 `AH_CRYPTO_KEY` / `AH_AUTH_SECRET` / `ADMIN_API_KEY` | 保存 BYOK Key 成功；重启后登录态保持 | ⚠️ 待运维执行 |
-| 4 | 升级付费 plan 启用持久卷（或切 k8s） | 重启后账户、密钥、记忆仍在 | ❌ |
-| 5 | 配置 `REDIS_URL` 并置 `RUN_QUEUE_BACKEND=redis` | 2 副本下任务状态跨实例可见；重启后在途任务被回收而非丢失 | ❌ |
-| 6 | 接入定时备份 + 异地复制 | 至少 1 次成功备份 + 1 次成功恢复到空库 | ❌ |
-| 7 | `db:migrate` 接入启动流程并统一版本号策略 | 全新实例启动后 schema 与代码一致；手写迁移不被跳过 | ❌ |
-| 8 | 配置 `ALERT_WEBHOOK_URL` 并验证告警触达 | 手动触发一次告警，收得到 | ❌ |
-| 9 | 实测 CSP 下 memo 看板与跨域资源加载 | 看板交互可用，无 console CSP 报错 | ⚠️ 待实测 |
-| 10 | 一次完整的 `pnpm -r test` + `pnpm -r build` 全绿 | 6/7 workspace 全绿 | ❌ 待执行 |
+| #   | 检查项                                                           | 通过标准                                                                  | 状态          |
+| --- | ---------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------- |
+| 1   | 修 P0-A 提权链                                                   | 注册新账号后 `/api/account/me` 返回 `role: viewer`；存量库已完成角色归位  | ❌            |
+| 2   | 修 P0-B 配额传参 + 装配 `setDefault`                             | 连续发起 5 次 run 全部成功；`/api/account/usage` 成本数字与真实消耗同量级 | ❌            |
+| 3   | Render 注入 `AH_CRYPTO_KEY` / `AH_AUTH_SECRET` / `ADMIN_API_KEY` | 保存 BYOK Key 成功；重启后登录态保持                                      | ⚠️ 待运维执行 |
+| 4   | 升级付费 plan 启用持久卷（或切 k8s）                             | 重启后账户、密钥、记忆仍在                                                | ❌            |
+| 5   | 配置 `REDIS_URL` 并置 `RUN_QUEUE_BACKEND=redis`                  | 2 副本下任务状态跨实例可见；重启后在途任务被回收而非丢失                  | ❌            |
+| 6   | 接入定时备份 + 异地复制                                          | 至少 1 次成功备份 + 1 次成功恢复到空库                                    | ❌            |
+| 7   | `db:migrate` 接入启动流程并统一版本号策略                        | 全新实例启动后 schema 与代码一致；手写迁移不被跳过                        | ❌            |
+| 8   | 配置 `ALERT_WEBHOOK_URL` 并验证告警触达                          | 手动触发一次告警，收得到                                                  | ❌            |
+| 9   | 实测 CSP 下 memo 看板与跨域资源加载                              | 看板交互可用，无 console CSP 报错                                         | ⚠️ 待实测     |
+| 10  | 一次完整的 `pnpm -r test` + `pnpm -r build` 全绿                 | 6/7 workspace 全绿                                                        | ❌ 待执行     |
 
 ---
 

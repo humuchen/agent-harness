@@ -88,6 +88,7 @@ function buildHost() {
       calls.push({ op: 'setPlanExec', v });
     },
     getServerCtxWindow: () => 8000,
+    getServerModelBaseUrl: () => '',
     getBackendUsage: () => backendUsage,
     setBackendUsage: (v) => {
       backendUsage = v;

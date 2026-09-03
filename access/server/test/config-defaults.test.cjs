@@ -38,8 +38,13 @@ test('核心默认值与既有文档行为一致', () => {
   assert.strictEqual(DEFAULTS.RATE_LIMIT_WINDOW_MS, 60_000);
   assert.strictEqual(DEFAULTS.AUTH_PROVIDER, 'token');
   assert.strictEqual(DEFAULTS.ACCOUNT_AUTH, 'on');
-  assert.strictEqual(DEFAULTS.MEMORY_DIR, './data/memory');
-  assert.strictEqual(DEFAULTS.MEMORY_SQLITE_FILE, './data/memory.db');
+  // P1-9/10: 路径已改为绝对路径（不再依赖 cwd）
+  assert.strictEqual(DEFAULTS.MEMORY_DIR, '/var/lib/agent-harness/memory');
+  assert.strictEqual(DEFAULTS.MEMORY_SQLITE_FILE, '/var/lib/agent-harness/memory.db');
+  assert.strictEqual(DEFAULTS.HISTORY_DB_FILE, '/var/lib/agent-harness/chat-history.db');
+  assert.strictEqual(DEFAULTS.MCP_SERVERS_DB_FILE, '/var/lib/agent-harness/mcp-servers.db');
+  assert.strictEqual(DEFAULTS.CUSTOM_MODELS_DB_FILE, '/var/lib/agent-harness/custom-models.db');
+  assert.strictEqual(DEFAULTS.RAG_DATA_FILE, '/var/lib/agent-harness/rag-store.json');
 });
 
 test('cfgStr: env 优先，回退 DEFAULTS', () => {

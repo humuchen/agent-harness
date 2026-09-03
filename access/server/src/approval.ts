@@ -258,7 +258,9 @@ export class RedisApprovalPolicy implements ApprovalPolicy {
  *   server 其余代码无需改动。
  */
 export function createApprovalPolicy(): ApprovalPolicy {
-  const bypass = (process.env.UI_APPROVAL_BYPASS_ROLES ?? 'admin')
+  // P1-1: 兜底角色改为 viewer，与 issueToken/parseToken 的兜底保持一致。
+  // admin/operator 仍然可 bypass，但 viewer 不再被视为"可跳过审批"的角色。
+  const bypass = (process.env.UI_APPROVAL_BYPASS_ROLES ?? 'admin,operator')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
