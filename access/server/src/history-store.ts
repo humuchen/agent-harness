@@ -187,7 +187,7 @@ export function getHistoryStore(): ChatHistoryStore {
   try {
     const file =
       process.env.HISTORY_DB_FILE ||
-      require('node:path').join(process.cwd(), 'data', 'chat-history.db');
+      '/var/lib/agent-harness/chat-history.db';
     singleton = new SqliteHistoryStore(file);
   } catch (err) {
     // node:sqlite 不可用 / 文件无法创建：降级为内存实现，服务不因存储层不可用而拒启。

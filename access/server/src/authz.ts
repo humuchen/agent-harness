@@ -349,7 +349,7 @@ export class AccountAuthorizer implements Authorizer {
       if (t && username && username === t.username && await isTokenValidLocally(t)) {
         // 角色随 token 下发（issueToken 写入），OAuth/普通账户据此收窄权限，
         // 不再一律 admin（默认 admin 仅用于向后兼容旧 token）。
-        return { token: t.jti, sub: t.username, role: (t.role ?? 'admin') as Role };
+        return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
       }
     }
     // 账户档未命中（无 cookie / 签错 / 过期）→ 回退到 OIDC / proxy / 静态令牌等其它身份源。

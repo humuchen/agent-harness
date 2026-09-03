@@ -112,7 +112,9 @@ async function ensureDb(): Promise<void> {
       );
       // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则跳过）。
       try {
-        const cols = await db.prepare('PRAGMA table_info(users)').all() as Record<string, unknown>[];
+        const cols = (await db
+          .prepare('PRAGMA table_info(users)')
+          .all()) as Record<string, unknown>[];
         const hasEmail = cols.some((c) => String(c.name) === 'email');
         if (!hasEmail) {
           await db.exec('ALTER TABLE users ADD COLUMN email TEXT');
@@ -123,7 +125,9 @@ async function ensureDb(): Promise<void> {
       // 兼容旧库：新增 role 列（默认 admin，保持既有密码账户行为不变）；新增 github_id 列（唯一，用于按 GitHub ID 关联，杜绝同名账号接管）。
       // 注意：ALTER 加 NOT NULL 列需带 DEFAULT，否则旧行会因无值报错；列已存在则跳过。
       try {
-        const cols = await db.prepare('PRAGMA table_info(users)').all() as Record<string, unknown>[];
+        const cols = (await db
+          .prepare('PRAGMA table_info(users)')
+          .all()) as Record<string, unknown>[];
         const hasRole = cols.some((c) => String(c.name) === 'role');
         if (!hasRole) {
           await db.exec(
@@ -140,30 +144,6 @@ async function ensureDb(): Promise<void> {
         }
       } catch {
         /* 列已存在或 Turso 不支持该 DDL，忽略 */
-      }
-      // ── 部署逃生账户 seeding ──
-      // 若配置了 ADMIN_USERNAME / ADMIN_PASSWORD（默认 admin / admin888），则确保该账户
-      // 常驻本地库：库被清空（如 Render 临时盘重启）或密码变更时自动重建 / 同步。
-      // 这样无论磁盘是否持久化，admin 账户都随时可登录放行，无需手工注册。
-      // 设 ADMIN_PASSWORD=（空）可禁用内置账户。
-      const adminUser = (process.env.ADMIN_USERNAME || 'admin').trim();
-      const adminPass = process.env.ADMIN_PASSWORD;
-      if (adminUser && adminPass) {
-        const exists = await db
-          .prepare('SELECT password FROM users WHERE username = ?')
-          .get(adminUser) as { password: string } | undefined;
-        if (!exists) {
-          await db.prepare(
-            'INSERT INTO users (username, password, email, created_at, role) VALUES (?, ?, ?, ?, ?)'
-          ).run(adminUser, hashPassword(adminPass), null, Date.now(), 'admin');
-        } else if (!verifyPassword(adminPass, exists.password)) {
-          // 环境变量指定的密码与库中不一致（部署改密）→ 同步更新。
-          await db.prepare('UPDATE users SET password = ?, role = ? WHERE username = ?').run(
-            hashPassword(adminPass),
-            'admin',
-            adminUser
-          );
-        }
       }
     })();
   }
@@ -210,15 +190,17 @@ export async function issueToken(username: string): Promise<string> {
   const jti = randomBytes(16).toString('hex');
   const exp = Date.now() + TOKEN_TTL_MS;
   // 角色随 token 下发（默认 admin，兼容未列 role 的旧库）。
-  const row = await db
+  const row = (await db
     .prepare('SELECT role FROM users WHERE username = ?')
-    .get(username) as { role?: string } | undefined;
-  const role = row?.role || 'admin';
+    .get(username)) as { role?: string } | undefined;
+  const role = row?.role || 'viewer'; // P0-A: 兜底改为 viewer，避免公开注册即获 admin
   const payloadB64 = b64urlJson({ u: username, exp, r: role });
   const sig = sign(jti, payloadB64);
-  await db.prepare(
-    `INSERT INTO auth_tokens (jti, username, expires_at, created_at) VALUES (?, ?, ?, ?)`
-  ).run(jti, username, exp, Date.now());
+  await db
+    .prepare(
+      `INSERT INTO auth_tokens (jti, username, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+    .run(jti, username, exp, Date.now());
   return `${jti}.${payloadB64}.${sig}`;
 }
 
@@ -298,9 +280,11 @@ export async function registerUser(
     .prepare('SELECT username FROM users WHERE username = ?')
     .get(username);
   if (existing) return { ok: false, error: '用户名已被占用' };
-  await db.prepare(
-    'INSERT INTO users (username, password, email, created_at) VALUES (?, ?, ?, ?)'
-  ).run(username, hashPassword(password), email || null, Date.now());
+  await db
+    .prepare(
+      'INSERT INTO users (username, password, email, created_at, role) VALUES (?, ?, ?, ?, ?)'
+    )
+    .run(username, hashPassword(password), email || null, Date.now(), 'viewer');
   return { ok: true, username };
 }
 
@@ -310,9 +294,9 @@ export async function loginUser(
 ): Promise<AccountResult> {
   username = (username || '').trim();
   await ensureDb();
-  const row = await db
+  const row = (await db
     .prepare('SELECT password FROM users WHERE username = ?')
-    .get(username) as { password: string } | undefined;
+    .get(username)) as { password: string } | undefined;
   // 统一延迟：用户不存在也走一次哈希比较，避免用户枚举时序差。
   const fake = hashPassword('__nonexistent__');
   const stored = row?.password ?? fake;
@@ -349,12 +333,14 @@ export async function upsertGithubUser(
   // 也无法劫持受害者的 GitHub 登录 —— 同一 GitHub id 永远落在同一行，密码由一次性随机占位，
   // 与 GitHub 账户绑定，攻击者拿不到。
   if (githubId) {
-    const byGh = await db
+    const byGh = (await db
       .prepare('SELECT username FROM users WHERE github_id = ?')
-      .get(githubId) as { username: string } | undefined;
+      .get(githubId)) as { username: string } | undefined;
     if (byGh) {
       if (email) {
-        await db.prepare('UPDATE users SET email = ? WHERE github_id = ?').run(email, githubId);
+        await db
+          .prepare('UPDATE users SET email = ? WHERE github_id = ?')
+          .run(email, githubId);
       }
       const token = await issueToken(byGh.username);
       return { ok: true, username: byGh.username, token };
@@ -362,9 +348,11 @@ export async function upsertGithubUser(
   }
   // ② 未命中 github_id：用户名可能已被「密码/其它来源」账户占用。若该占用账户并非同一 GitHub id，
   // 则绝不能并入（否则等于把 GitHub 登录锚定到他人账户），改为追加 _gh<id> 后缀另建独立行。
-  const clash = await db
+  const clash = (await db
     .prepare('SELECT username, github_id FROM users WHERE username = ?')
-    .get(username) as { username: string; github_id?: number | null } | undefined;
+    .get(username)) as
+    | { username: string; github_id?: number | null }
+    | undefined;
   let finalName = username;
   if (clash) {
     if (clash.github_id && githubId && clash.github_id === githubId) {
@@ -374,16 +362,18 @@ export async function upsertGithubUser(
     }
     finalName = `${username}_gh${githubId || '0'}`;
   }
-  await db.prepare(
-    'INSERT INTO users (username, password, email, created_at, role, github_id) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(
-    finalName,
-    hashPassword(randomBytes(24).toString('hex')),
-    email || null,
-    Date.now(),
-    'operator',
-    githubId || null
-  );
+  await db
+    .prepare(
+      'INSERT INTO users (username, password, email, created_at, role, github_id) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      finalName,
+      hashPassword(randomBytes(24).toString('hex')),
+      email || null,
+      Date.now(),
+      'operator',
+      githubId || null
+    );
   const token = await issueToken(finalName);
   return { ok: true, username: finalName, token };
 }
@@ -401,11 +391,19 @@ export async function upsertGoogleUser(
   name?: string
 ): Promise<AccountResult> {
   // 优先用 name 构造友好用户名；非法字符替换成下划线，截断到 24
-  let base = (name || '').trim().replace(/\s+/g, '_').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24);
-  if (!base || base.length < 3) base = (email.split('@')[0] ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24) || `gg_${sub.slice(-8)}`;
+  let base = (name || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9_]/g, '')
+    .slice(0, 24);
+  if (!base || base.length < 3)
+    base =
+      (email.split('@')[0] ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24) ||
+      `gg_${sub.slice(-8)}`;
   let username = base.startsWith('gg_') ? base : `gg_${base}`;
   username = username.slice(0, 32);
-  if (!validUsername(username)) username = `gg_${sub.replace(/[^A-Za-z0-9_]/g, '').slice(-24)}`;
+  if (!validUsername(username))
+    username = `gg_${sub.replace(/[^A-Za-z0-9_]/g, '').slice(-24)}`;
   if (!validUsername(username)) username = `gg_${sub.slice(-16)}`;
   email = (email || '').trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) email = '';
@@ -417,9 +415,18 @@ export async function upsertGoogleUser(
   if (!existing) {
     db.prepare(
       'INSERT INTO users (username, password, email, created_at, role) VALUES (?, ?, ?, ?, ?)'
-    ).run(username, hashPassword(randomBytes(24).toString('hex')), email || null, Date.now(), 'operator');
+    ).run(
+      username,
+      hashPassword(randomBytes(24).toString('hex')),
+      email || null,
+      Date.now(),
+      'operator'
+    );
   } else if (email) {
-    db.prepare('UPDATE users SET email = ? WHERE username = ?').run(email, username);
+    db.prepare('UPDATE users SET email = ? WHERE username = ?').run(
+      email,
+      username
+    );
   }
   const token = await issueToken(username);
   return { ok: true, username, token };
@@ -474,9 +481,9 @@ export const TOKEN_TTL = TOKEN_TTL_MS;
  * 从请求的 ah_auth cookie 解析出当前已登录用户名（签名/过期/吊销任一失败返回 null）。
  * 供 /api/account/me 等「当前会话」端点使用。
  */
-export async function usernameFromCookie(
-  req: { headers: Record<string, string | string[] | undefined> }
-): Promise<string | null> {
+export async function usernameFromCookie(req: {
+  headers: Record<string, string | string[] | undefined>;
+}): Promise<string | null> {
   const raw = cookieValue(req, AUTH_COOKIE);
   if (!raw) return null;
   const t = parseToken(raw);
@@ -493,14 +500,21 @@ export interface AccountProfile {
 }
 
 /** 读取某用户的基础资料（库未就绪 / 用户不存在返回 null）。 */
-export async function getProfile(username: string): Promise<AccountProfile | null> {
+export async function getProfile(
+  username: string
+): Promise<AccountProfile | null> {
   if (!db) return null;
-  const row = await db
+  const row = (await db
     .prepare(
       'SELECT username, email, role, created_at FROM users WHERE username = ?'
     )
-    .get(username) as
-    | { username: string; email: string | null; role: string; created_at: number }
+    .get(username)) as
+    | {
+        username: string;
+        email: string | null;
+        role: string;
+        created_at: number;
+      }
     | undefined;
   if (!row) return null;
   return {
@@ -526,16 +540,15 @@ export async function changePassword(
     return { ok: false, error: '新密码至少 8 位' };
   // GitHub OAuth 用户：密码为一次性随机占位，无法用旧密码校验，直接拒绝自助改密。
   if (!db) return { ok: false, error: '服务端未就绪' };
-  const row = await db
+  const row = (await db
     .prepare('SELECT password FROM users WHERE username = ?')
-    .get(username) as { password: string } | undefined;
+    .get(username)) as { password: string } | undefined;
   if (!row) return { ok: false, error: '用户不存在' };
   if (!verifyPassword(oldPassword || '', row.password))
     return { ok: false, error: '旧密码错误' };
-  await db.prepare('UPDATE users SET password = ? WHERE username = ?').run(
-    hashPassword(newPassword),
-    username
-  );
+  await db
+    .prepare('UPDATE users SET password = ? WHERE username = ?')
+    .run(hashPassword(newPassword), username);
   return { ok: true };
 }
 
@@ -550,22 +563,34 @@ export async function revokeAllTokens(username: string): Promise<void> {
  * 一次性删除 users / auth_tokens / password_resets 三张表的数据。
  * 任一步骤失败则整体回滚，保证不出现「用户存在但 token 已删」或「用户已删但 token 残留」的半删状态。
  */
-export async function deleteUser(username: string): Promise<{ ok: boolean; error?: string }> {
+export async function deleteUser(
+  username: string
+): Promise<{ ok: boolean; error?: string }> {
   if (!db) return { ok: false, error: '数据库未就绪' };
   // 先校验用户是否存在
-  const exists = await db.prepare('SELECT username FROM users WHERE username = ?').get(username);
+  const exists = await db
+    .prepare('SELECT username FROM users WHERE username = ?')
+    .get(username);
   if (!exists) return { ok: false, error: '用户不存在' };
   try {
     // SQLite 默认开启了外键约束检查（PRAGMA foreign_keys=ON）；此处使用显式事务保证原子性。
     await db.exec('BEGIN TRANSACTION');
-    await db.prepare('DELETE FROM auth_tokens WHERE username = ?').run(username);
-    await db.prepare('DELETE FROM password_resets WHERE username = ?').run(username);
+    await db
+      .prepare('DELETE FROM auth_tokens WHERE username = ?')
+      .run(username);
+    await db
+      .prepare('DELETE FROM password_resets WHERE username = ?')
+      .run(username);
     await db.prepare('DELETE FROM users WHERE username = ?').run(username);
     await db.exec('COMMIT');
     return { ok: true };
   } catch (e: any) {
     // 出错时尝试回滚（若事务已开始）
-    try { await db.exec('ROLLBACK'); } catch { /* 忽略 */ }
+    try {
+      await db.exec('ROLLBACK');
+    } catch {
+      /* 忽略 */
+    }
     return { ok: false, error: e.message ?? '删除用户失败' };
   }
 }
@@ -627,9 +652,7 @@ export async function resetPassword(
   if (newPassword.length < 8) return { ok: false, error: '密码至少 8 位' };
   await ensureDb();
   const rec = (await db
-    .prepare(
-      'SELECT username, expires_at FROM password_resets WHERE token = ?'
-    )
+    .prepare('SELECT username, expires_at FROM password_resets WHERE token = ?')
     .get(token)) as { username: string; expires_at: number } | undefined;
   if (!rec) return { ok: false, error: '重置凭证无效，请重新申请' };
   if (Date.now() >= rec.expires_at)

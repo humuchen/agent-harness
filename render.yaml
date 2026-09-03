@@ -30,8 +30,7 @@ services:
     startCommand: node access/server/dist/server.js
     healthCheckPath: /api/state
     # 持久卷（需付费 plan 才能挂载；free plan 不支持，磁盘临时重启即清空）。
-    # 挂载到 /app/data 后可保留账户 / 记忆 / 医美插件等本地状态；否则依赖下方
-    # ADMIN_USERNAME/ADMIN_PASSWORD 的启动 seeding（admin 账户每次重启自动重建）。
+    # 挂载到 /app/data 后可保留账户 / 记忆 / 医美插件等本地状态；否则依赖下方。
     disks:
       - name: data
         mountPath: /app/data
@@ -112,8 +111,6 @@ services:
       - key: TURSO_TOKEN
         sync: false
       # 账户密码子系统 SQLite 落点：固定到 /app/data（配合上面 disks 持久卷可保留注册账户）。
-      # free plan 无持久卷时，库每次重启清空，但下方 ADMIN_USERNAME/ADMIN_PASSWORD 会在启动时
-      # 自动重建 admin 账户，保证 admin/admin888 始终可登录放行。
       - key: ACCOUNT_DB_FILE
         value: /app/data/accounts.db
       # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动

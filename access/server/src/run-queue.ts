@@ -814,13 +814,16 @@ export class RunQueue {
           return;
         }
 
-        // P0-2: 配额/计费准入：QPS 令牌桶 + 并发信号量 + 成本硬上限。
+        // P0-2 / P0-B: 配额/计费准入：QPS 令牌桶 + 并发信号量 + 成本硬上限。
         // 从环境变量读取 MAX_COST_PER_WINDOW（默认 0=关闭硬上限）。
         // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
         // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
+        // P0-B 修复：requestedCost 传本次预估成本（或 0），而非窗口总预算；
+        // 原代码传 maxCostPerWindow 导致每次 admit 累加整个窗口预算，第 2 次调用即被拒。
         const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
-        const requestedCost = maxCostPerWindow > 0 ? { cost: maxCostPerWindow } : {};
-        const admit = quotaEngine.admit(tenantIdForQuota, requestedCost, maxCostPerWindow > 0);
+        const estimatedCostPerRun = 0.5; // 单轮 run 预估成本（美元），用于配额准入判断
+        const costPerRun = maxCostPerWindow > 0 ? estimatedCostPerRun : 0;
+        const admit = quotaEngine.admit(tenantIdForQuota, { cost: costPerRun }, maxCostPerWindow > 0);
         if (!admit.allowed) {
           emit({
             type: 'warn',

@@ -32,17 +32,13 @@ export interface McpServerRecord {
 let db: any = null;
 let dbReady: Promise<void> | null = null;
 
-const DEFAULT_DB = join(process.cwd(), 'data', 'mcp-servers.db');
-
-function getDbFile(): string {
-  return process.env.MCP_SERVERS_DB_FILE || DEFAULT_DB;
-}
+const DEFAULT_DB = process.env.MCP_SERVERS_DB_FILE || '/var/lib/agent-harness/mcp-servers.db';
 
 async function ensureDb() {
   if (db) return;
   if (!dbReady) {
     dbReady = (async () => {
-      const file = getDbFile();
+      const file = DEFAULT_DB;
       db = getDbAdapter({ file });
       await db.exec(
         `CREATE TABLE IF NOT EXISTS mcp_servers (

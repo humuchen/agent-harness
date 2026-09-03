@@ -893,7 +893,7 @@ const server = createServer(
           JSON.stringify({
             ok: true,
             username: u,
-            role: profile?.role ?? 'admin',
+            role: profile?.role ?? 'viewer', // P0-A: 兜底改为 viewer
             email: profile?.email ?? null
           })
         );
@@ -4126,6 +4126,19 @@ async function bootstrap(): Promise<void> {
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P0-B 修复：启动时装配 quotaEngine 默认配额，确保 MAX_COST_PER_WINDOW 真正生效。
+  // 若不在此处 setDefault，quotaEngine.admit() 的硬上限分支会因 defaultQuotaCfg.maxCostPerWindow=undefined
+  // 而短路，导致成本硬上限永远不拦截（"看起来有接线、实际完全不工作"）。
+  const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
+  if (maxCostPerWindow > 0) {
+    quotaEngine.setDefault({ maxCostPerWindow });
+    structLog('info', 'quota', {
+      enabled: true,
+      maxCostPerWindow,
+      unit: 'USD'
+    });
   }
 
   // P2：审计日志落盘。AUDIT_LOG 非空时把文件 sink 注入核心 audit()，与 server.ts 自身的 stdout 审计并行。

@@ -119,17 +119,13 @@ export interface CustomModelPublic {
 let db: any = null;
 let dbReady: Promise<void> | null = null;
 
-const DEFAULT_DB = join(process.cwd(), 'data', 'custom-models.db');
-
-function getDbFile(): string {
-  return process.env.CUSTOM_MODELS_DB_FILE || DEFAULT_DB;
-}
+const DEFAULT_DB = process.env.CUSTOM_MODELS_DB_FILE || '/var/lib/agent-harness/custom-models.db';
 
 async function ensureDb() {
   if (db) return;
   if (!dbReady) {
     dbReady = (async () => {
-      const file = getDbFile();
+      const file = DEFAULT_DB;
       // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
       db = getDbAdapter({ file });
       await db.exec(
