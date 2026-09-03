@@ -224,14 +224,14 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
             cx="18"
             cy="18"
             r=${R}
-            stroke-width="3"
+            stroke-width="5"
           ></circle>
           <circle
             class="ring-fg ${pct > 80 ? 'warn' : ''}"
             cx="18"
             cy="18"
             r=${R}
-            stroke-width="3"
+            stroke-width="4"
             stroke-dasharray=${C.toFixed(2)}
             stroke-dashoffset=${offset.toFixed(2)}
             transform="rotate(-90 18 18)"

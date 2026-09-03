@@ -290,8 +290,8 @@ export const chatStyles = [
     }
     .ctx-ring {
       display: block;
-      width: 36px;
-      height: 36px;
+      width: 20px;
+      height: 20px;
       padding: 0;
       border: none;
       border-radius: 50%;
@@ -309,7 +309,7 @@ export const chatStyles = [
     }
     .ring-bg {
       fill: none;
-      stroke: var(--ah-surface-3, rgba(255, 255, 255, 0.14));
+      stroke: var(--ah-accent-soft, rgba(255, 255, 255, 0.14));
     }
     .ring-fg {
       fill: none;
