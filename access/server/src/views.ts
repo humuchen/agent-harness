@@ -91,7 +91,7 @@ export function renderErrorsHtml(): string {
   const summary = getErrorSummary();
   const list = getErrorLog({ limit: 500 });
   const pills = Object.entries(summary.byName)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a: [string, number], b: [string, number]) => b[1] - a[1])
     .map(([k, v]) => `<span class="pill">${esc(k)} <b>${v}</b></span>`)
     .join('');
   const rows = list.length

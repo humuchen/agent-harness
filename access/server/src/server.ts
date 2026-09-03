@@ -1692,7 +1692,7 @@ const server = createServer(
                   if (!closed) send({ type: 'harness', event: e });
                 },
               }),
-              onEvent: (e) => { if (!closed) send(e); },
+              onEvent: (e: unknown) => { if (!closed) send(e); },
             });
             const run = await engine.resume(workflowId);
             if (!closed) send({ type: '_wf_done', run });
@@ -2442,7 +2442,7 @@ const server = createServer(
         return sendJson(
           res,
           {
-            plugins: pluginSystem.loader.list().map((r) => ({
+            plugins: pluginSystem.loader.list().map((r: any) => ({
               id: r.manifest.id,
               name: r.manifest.name ?? r.manifest.id,
               version: r.manifest.version,
@@ -2649,7 +2649,7 @@ async function buildState(req: IncomingMessage) {
       health: s.health ?? null,
       reconnectAttempts: s.reconnectAttempts ?? 0,
       toolCount: s.tools.length,
-      tools: s.tools.map((t) => ({
+      tools: s.tools.map((t: any) => ({
         registeredName: t.registeredName,
         originalName: t.originalName,
         description: t.description ?? ''
@@ -3792,7 +3792,7 @@ async function handleWorkflow(
   // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
   engine
     .run(def, body.input)
-    .then((run) => {
+    .then((run: any) => {
       if (!closed) send({ type: '_wf_done', run });
       if (!closed) res.end();
     })
@@ -4406,7 +4406,7 @@ function setupAlerting(): void {
     structLog('info', 'alerting enabled', { sink: 'file', path: file });
   }
   if (sinks.length) {
-    setAlertSink(async (a) => {
+    setAlertSink(async (a: unknown) => {
       for (const s of sinks) await s(a);
     });
   }

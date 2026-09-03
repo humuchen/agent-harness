@@ -951,6 +951,6 @@ function messageText(msg: Message | undefined): string {
       (b): b is ContentBlock & { text: string } =>
         b.type === 'text' && typeof b.text === 'string'
     )
-    .map((b) => b.text)
+    .map((b: ContentBlock & { text: string }) => b.text)
     .join('\n');
 }
