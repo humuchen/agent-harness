@@ -46,7 +46,10 @@ export function securityHeaders(): Record<string, string> {
     'referrer-policy': 'strict-origin-when-cross-origin',
     'cross-origin-opener-policy': 'same-origin',
     'cross-origin-resource-policy': 'same-origin',
-    'cross-origin-embedder-policy': 'require-corp',
+    // P1-5: require-corp 会阻断无 CORP 头的跨源资源（CDN 图片、第三方嵌入等）。
+    // 改为 none，允许内部资源不经跨源检查；若后续引入第三方 iframe 资源，
+    // 可通过 FORCE_HTTPS=on + 单独配 COEP 收紧。
+    'cross-origin-embedder-policy': 'none',
   };
   if (FORCE_HTTPS === 'on' || FORCE_HTTPS === '1' || FORCE_HTTPS === 'true') {
     headers['strict-transport-security'] = 'max-age=31536000; includeSubDomains';

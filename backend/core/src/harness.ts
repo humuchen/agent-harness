@@ -13,6 +13,7 @@ import {
   type GuardrailPolicy
 } from './guardrails';
 import { parsePlanOutput } from './plan';
+import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import {
   withSpan,
   incCounter,
@@ -342,6 +343,9 @@ interface ResolvedHarnessOptions {
   planPropose: boolean;
   // 计划任务执行（见 HarnessOptions 注释）。
   planTask: boolean;
+  // P1-10: 可选熔断器（CircuitBreaker）。LLM 持续 5xx 时自动熔断，避免逐个请求硬等超时。
+  // 未传则不启用（向后兼容）。开启后，熔断打开时抛出 CircuitBreakerOpen，调用方可捕获决定重试策略。
+  circuitBreaker?: CircuitBreaker;
 }
 
 let idCounter = 0;
@@ -655,6 +659,7 @@ export class AgentHarness {
           let streamedTokens = false;
           const llmPromise = this.opts.llm(messages, stepTools, {
             signal,
+            circuitBreaker: this.opts.circuitBreaker,
             ...(this.opts.streamTokens
               ? {
                   onToken: (delta: string) => {
@@ -1061,10 +1066,17 @@ export class AgentHarness {
     try {
       final = await runLoop();
     } catch (e: any) {
-      logError('agent.run', e, { runId });
-      emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
-      emit({ type: 'error', message: e?.message ?? String(e) });
-      final = `[error] ${e?.message ?? String(e)}`;
+      // P1-10: 熔断打开时直接返回错误，不触发通用告警（避免告警风暴）
+      if (e?.name === 'CircuitBreakerOpen') {
+        const msg = e.message ?? 'circuit breaker open';
+        emit({ type: 'error', message: msg });
+        final = `[circuit-breaker] ${msg}`;
+      } else {
+        logError('agent.run', e, { runId });
+        emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
+        emit({ type: 'error', message: e?.message ?? String(e) });
+        final = `[error] ${e?.message ?? String(e)}`;
+      }
     }
 
     // 运行期自动验证门禁（P0-2）：产出后自动校验；未通过可重试（self-correction）或标记。

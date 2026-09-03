@@ -372,6 +372,11 @@ export interface Alert {
 type AlertSink = (alert: Alert) => void | Promise<void>;
 let alertSink: AlertSink | null = null;
 
+// P1-9: 告警去重 — 相同 name 在 ALERT_DEDUP_WINDOW_MS 内只发一次 sink（日志仍全量）。
+// 防止高频故障触发告警风暴。
+const ALERT_DEDUP_WINDOW_MS = Number(process.env.ALERT_DEDUP_WINDOW_MS) || 10_000;
+const alertLastSent: Record<string, number> = Object.create(null);
+
 /**
  * 注册告警接收器（如 Webhook / 日志文件）。传 null 关闭（默认关闭）。
  * 接收器异常被吞掉，绝不影响主业务流程。
@@ -405,10 +410,18 @@ export async function emitAlert(
   }
   structLog(level === 'warn' ? 'warn' : 'error', `[alert] ${name}: ${message}`, fields);
   if (alertSink) {
-    try {
-      await alertSink({ level, name, message, fields, ts: new Date().toISOString() });
-    } catch (e: any) {
-      structLog('warn', 'alert sink failed', { error: e?.message ?? String(e), name });
+    // P1-9: 去重 — 相同 name 在 ALERT_DEDUP_WINDOW_MS 内只发一次 sink（日志仍全量）。
+    const now = Date.now();
+    const lastSent = alertLastSent[name] ?? 0;
+    if (now - lastSent >= ALERT_DEDUP_WINDOW_MS) {
+      alertLastSent[name] = now;
+      try {
+        await alertSink({ level, name, message, fields, ts: new Date().toISOString() });
+      } catch (e: any) {
+        structLog('warn', 'alert sink failed', { error: e?.message ?? String(e), name });
+      }
+    } else {
+      structLog('debug', `alert deduped: ${name} (within ${ALERT_DEDUP_WINDOW_MS}ms)`, fields);
     }
   }
 }

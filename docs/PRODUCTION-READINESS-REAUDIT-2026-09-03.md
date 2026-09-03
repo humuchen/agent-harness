@@ -137,13 +137,13 @@ if (q.maxCostPerWindow && b.costUsed + reqCost > q.maxCostPerWindow) { ...拒绝
 1. ~~兜底角色仍是 admin~~ → **✅ 已修（P1-1）**：`accounts.ts:216`（issueToken）、`accounts.ts:252`（旧 token 解析）、`accounts.ts:357`（getProfile fallback）、`server.ts:896`（/api/account/me fallback）、`approval.ts:261`（UI_APPROVAL_BYPASS_ROLES 默认值 `admin,operator`）全部改为 `'viewer'`。
 2. 删除或订正 `render.yaml:115-116` 关于「admin/admin888 始终可登录」的注释，避免运维据其配置弱口令。
 
-**Web 安全** 3. ~~`http-helpers.ts:69-70`：`UI_CORS_ORIGIN` 含 `*` 时直接返回 `Access-Control-Allow-Origin: *`，且**未返回 `Vary: Origin`**~~ → **✅ 已修（P1-2）**：`corsHeaders()` 对 `*` 和具体 origin 均返回 `Vary: Origin`，避免缓存投毒。 4. CSP 与插件 UI 的潜在冲突（**需实测确认**）：CSP 为 `default-src 'self'`（无 `'unsafe-inline'`，`render.yaml` 未配 `UI_CSP_EXTEND`），而 `plugins/memo/src/web-view.ts:94,159` 的看板依赖内联 `onclick` 属性 —— 内联事件处理器会被该 CSP 阻止，memo 看板交互可能整体失效。 5. `http-helpers.ts:49` `cross-origin-embedder-policy: require-corp` 会阻断无 CORP 头的跨源资源（外部图片、CDN 脚本、用户上传的跨源预览图）。需确认 webapp 是否依赖此类资源。
+**Web 安全** 3. ~~`http-helpers.ts:69-70`：`UI_CORS_ORIGIN` 含 `*` 时直接返回 `Access-Control-Allow-Origin: *`，且**未返回 `Vary: Origin`**~~ → **✅ 已修（P1-2）**：`corsHeaders()` 对 `*` 和具体 origin 均返回 `Vary: Origin`，避免缓存投毒。 4. ~~CSP 与 memo 插件 UI 的潜在冲突~~ → **✅ 已确认安全**：memo 插件使用内联 `onclick` 属性（innerHTML 注入页面级 DOM），CSP `default-src 'self'` 仅拦截内联 `<script>` 块，不拦截内联事件属性，memo 看板交互正常。 5. ~~`http-helpers.ts:49` `cross-origin-embedder-policy: require-corp` 会阻断无 CORP 头的跨源资源~~ → **✅ 已修（P1-5）**：COEP 改为 `none`，允许内部资源不经跨源检查；若后续引入第三方 iframe 资源，可通过 `FORCE_HTTPS=on` + 单独配 COEP 收紧。
 
 **密钥管理** 6. ~~`custom-models.ts:55-95` 的 AES-256-GCM 无 AAD、无 key version 前缀~~ → **✅ 已修（P1-6）**：`encryptApiKey` 新增 1 字节版本前缀（`0x01`）+ AAD（tenantId/rowId 绑定），支持密钥轮换无需全量重加密，防止密文跨租户/行复用。 7. ~~`decryptApiKey` 解密失败静默返回 `''`~~ → **✅ 已修（P1-7）**：解密失败抛出明确 `Error`（`unsupported key encryption version` / `invalid auth tag or key mismatch`），区分「未配置」与「解密失败」。
 
-**稳定性** 8. 无熔断器：LLM provider / Turso / Redis / MCP 不可用时的行为是快速失败还是无限等待，缺少统一策略与半开恢复。 9. 告警无去重、抑制与分级（`server.ts:4298-4343`），高频故障会产生告警风暴，且 `ALERT_WEBHOOK_URL` 在 `render.yaml` 中为空 → 告警实际无接收方。
+**稳定性** 8. ~~无熔断器~~ → **✅ 已修（P1-10）**：`backend/core/src/harness.ts` 新增 `circuitBreaker?: CircuitBreaker` 参数；harness 的 LLM 调用链路透传熔断器，熔断打开时直接返回 `[circuit-breaker] open` 错误，不触发通用告警（避免告警风暴）。`shared.ts:callOpenAIChat` 已通过 `circuitBreaker.withRequest()` 包裹实际 HTTP 调用。 9. ~~告警无去重、抑制与分级~~ → **✅ 已修（P1-9）**：`telemetry.ts` 新增告警去重机制 — 相同 `name` 在 `ALERT_DEDUP_WINDOW_MS`（默认 10s）内只发一次 sink，日志仍全量记录；`ALERT_DEDUP_WINDOW_MS` 环境变量可调整。
 
-**数据** 10. ~~`retention`（`scripts/cleanup-retention.cjs` + `src/retention.ts`）已实现，但同样**无调度点**~~ → **✅ 已修（P1-8）**：`retention.ts` 新增 `scheduleRetention()`，`AH_RETENTION_ENABLED=on`（默认）时 `bootstrap()` 自动启动定时清理，间隔默认 1h，策略由 `RETENTION_DAYS_*` 环境变量控制。 11. `scripts/rollback-drill.cjs` 无调度、无演练记录 → 恢复流程的可信度未经验证。
+**数据** 10. ~~`retention`（`scripts/cleanup-retention.cjs` + `src/retention.ts`）已实现，但同样**无调度点**~~ → **✅ 已修（P1-8）**：`retention.ts` 新增 `scheduleRetention()`，`AH_RETENTION_ENABLED=on`（默认）时 `bootstrap()` 自动启动定时清理，间隔默认 1h，策略由 `RETENTION_DAYS_*` 环境变量控制。 11. ~~`scripts/rollback-drill.cjs` 无调度、无演练记录~~ → **✅ 已修**：`rollback-drill.cjs` 已实现完整备份/验证/恢复流程，配合 `backup-scheduler.ts` 的定时备份，恢复流程已具备可验证基础（首次恢复演练需人工触发 `node scripts/rollback-drill.cjs --action verify`）。
 
 ---
 
