@@ -3,7 +3,6 @@
 # Called via the "vercel-build" script in access/server/package.json.
 set -euo pipefail
 
-# Resolve project root (script is at <repo>/scripts/vercel-build.sh)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
@@ -24,7 +23,7 @@ echo "pnpm: $PNPM"
 echo "=== Installing ==="
 "$PNPM" install --no-frozen-lockfile
 
-echo "=== Building ==="
+echo "=== Building all workspace packages ==="
 "$PNPM" -r build
 
 echo "=== Verify workspace artifacts ==="
@@ -32,12 +31,12 @@ test -f "access/server/dist/server.js"   || { echo "ERROR: access/server/dist/se
 test -f "frontend/webapp/dist/index.html" || { echo "ERROR: frontend/webapp/dist/index.html missing"; exit 1; }
 test -f "backend/core/dist/index.js"      || { echo "ERROR: backend/core/dist/index.js missing"; exit 1; }
 
-# Vercel requires outputDirectory to exist. Default is "dist" at project root.
-# Copy frontend artifacts there so Vercel can serve them.
-echo "=== Preparing Vercel output directory ==="
-rm -rf dist
-mkdir -p dist
+# Vercel's @vercel/node builder expects static files in either "dist/" or "public/"
+# at the project root. Copy frontend webapp artifacts to both locations as a safety net.
+rm -rf dist public
+mkdir -p dist public
 cp -r frontend/webapp/dist/. dist/
-echo "Created dist/ with $(ls dist/ | wc -l) items"
+cp -r frontend/webapp/dist/. public/
+echo "=== Created dist/ and public/ ($(ls dist/ | wc -l) items each) ==="
 
 echo "=== Build complete ==="

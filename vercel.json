@@ -4,20 +4,7 @@
   "builds": [
     {
       "src": "access/server/package.json",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": [
-          "frontend/webapp/dist/**",
-          "backend/core/dist/**",
-          "backend/client/dist/**",
-          "services/rag/dist/**",
-          "plugins/**/dist/**",
-          "scripts/**",
-          "pnpm-workspace.yaml",
-          "package.json"
-        ],
-        "maxLambdaSize": "50mb"
-      }
+      "use": "@vercel/node"
     }
   ],
   "routes": [
