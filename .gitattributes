@@ -1,0 +1,11 @@
+# 换行符规范化
+#
+# 背景：Windows 下 git 默认 core.autocrlf=true，检出时会把 LF 转成 CRLF。
+# shell 脚本若以 CRLF 进入 Linux 容器，`set -euo pipefail\r` 会被 bash 当成非法选项名：
+#   scripts/build-native.sh: line 24: set: pipefail: invalid option name
+# 导致 Docker 构建在最后一步失败。此处强制所有 shell 脚本以 LF 提交并在各平台以 LF 检出。
+*.sh text eol=lf
+
+# 容器/构建相关文件同样强制 LF，避免 heredoc 与换行解析异常。
+Dockerfile text eol=lf
+*.dockerfile text eol=lf

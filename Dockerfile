@@ -22,24 +22,23 @@
 #   相对布局一致、可被 Node 解析。若追求更小体积，可改用 `pnpm deploy`
 #   （见下方注释的进阶方案）。
 #
-# ⚠️ 镜像源说明（网络受限环境）：
-# - 默认 NODE_BASE 使用 quay.io 的 node 镜像（quay.io/nodejs/node），
-#   因为本环境直连 Docker Hub 被网络策略拦截；quay.io 镜像与 Docker Hub
-#   官方 node 镜像内容一致（同为官方 node 构建产物）。
+# ⚠️ 镜像源说明：
+# - 默认 NODE_BASE 使用 Docker Hub 官方 node 镜像（node:22-bookworm-slim）。
 # - 依赖安装走 npmmirror（registry.npmmirror.com），规避 npmjs.org 网络限制。
-# - 若你的生产集群可直连 Docker Hub（或自建 registry 代理），切换回官方镜像并去掉
-#   npmmirror 即可：
+# - 网络受限（直连 Docker Hub 被拦截）时可切到 quay.io 镜像，但需注意：
+#   quay.io/nodejs/node 同步滞后（:22-bookworm 仍停留在 v22.5.1，不满足下方
+#   Node>=22.13 要求），且未提供 -slim 变体；仅在确认该源已同步到新版 Node 时使用：
 #     docker build \
-#
-#       --build-arg NODE_BASE=node \
-#       --build-arg NODE_TAG=22-bookworm-slim \
+#       --build-arg NODE_BASE=quay.io/nodejs/node \
+#       --build-arg NODE_TAG=22-bookworm \
 #       -t agent-harness:local .
 
 # ----------------------------- 构建参数 -----------------------------
-# 默认走 quay.io 镜像（Docker Hub 在本环境被拦截时的可达替代源）。
-ARG NODE_BASE=quay.io/nodejs/node
+# 默认走 Docker Hub 官方镜像（内容权威、体积更小：约 330MB vs 非 slim 的 1.6GB）。
+ARG NODE_BASE=node
 # ⚠️ pnpm@11.9.0 要求 Node>=22.13；基础镜像必须满足条件。
-# 官方/quay 的 22-bookworm-slim 现已提供 >=22.13 的 Node（2026 起），故切到 slim 并统一 pnpm 版本。
+# 官方 node:22-bookworm-slim 当前为 v22.23.2（满足要求）；若切到 quay.io 源，
+# 请先确认该 tag 的 Node 版本不低于 22.13，否则 pnpm 会因引擎检查失败。
 ARG NODE_TAG=22-bookworm-slim
 
 # ----------------------------- 构建阶段 -----------------------------
