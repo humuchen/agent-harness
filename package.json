@@ -1,7 +1,7 @@
 {
   "name": "agent-harness-monorepo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Monorepo for agent-harness: @agent-harness/core (framework) + @agent-harness/server (HTTP+SSE server).",
   "packageManager": "pnpm@11.9.0",
   "engines": {

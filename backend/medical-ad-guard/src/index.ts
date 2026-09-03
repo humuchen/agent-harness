@@ -19,7 +19,9 @@ import {
   type GuardrailResult,
 } from '@agent-harness/core';
 
-/** 医疗广告法违规模式（输入/输出共用同一组）。 */
+/** 医疗广告法违规模式（输入/输出共用同一组）。统一打 scope='medical-ad'，
+ *  使本组规则仅在运行策略的 scopes 含 'medical-ad'（即医美 agent）时生效，
+ *  默认/generic agent 传 scopes:[] 即自动排除，杜绝「没选医美 agent 也被拦」的误伤。 */
 const MEDICAL_AD_RULES: Array<{ re: RegExp; reason: string }> = [
   // 1) 疗效/安全绝对化承诺（带医疗语境）
   {
@@ -50,6 +52,9 @@ const MEDICAL_AD_RULES: Array<{ re: RegExp; reason: string }> = [
     reason: '医疗广告法：不得贬低其他医疗机构或作不实比较',
   },
 ];
+
+/** 本插件注册的所有规则统一作用域标签。 */
+export const MEDICAL_AD_SCOPE = 'medical-ad';
 
 /**
  * 知识库查空硬拦截（输出侧护栏）：当 project_kb_search 返回 found:false（知识库未收录）时，
@@ -107,10 +112,10 @@ let registered = false;
 export function registerMedicalAdGuardrail(): void {
   if (registered) return;
   for (const r of MEDICAL_AD_RULES) {
-    registerInputRule(r.re, r.reason);
-    registerOutputRule(r.re, r.reason);
+    registerInputRule(r.re, r.reason, MEDICAL_AD_SCOPE);
+    registerOutputRule(r.re, r.reason, MEDICAL_AD_SCOPE);
   }
-  registerContextualOutputRule(kbEmptyGuard);
+  registerContextualOutputRule(kbEmptyGuard, MEDICAL_AD_SCOPE);
   registered = true;
 }
 

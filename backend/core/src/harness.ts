@@ -114,6 +114,8 @@ export type HarnessEvent =
       promptTokens: number;
       completionTokens: number;
       totalTokens: number;
+      /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）：用于前端「已压缩」指示。 */
+      compressed?: boolean;
       breakdown: {
         system: number;
         tools: number;
@@ -772,6 +774,9 @@ export class AgentHarness {
               this.opts.contextWindow && this.opts.contextWindow > 0
                 ? this.opts.contextWindow
                 : contextWindowFor(costModel);
+            // 把真实上下文占用喂给记忆，驱动 token 级压缩护栏（在占用率越过阈值时
+            // 于后续 add() 中淘汰最旧历史，避免上下文撑爆导致模型 400）。
+            memory.setContextUsage(promptTokens, window);
             const promptEst =
               estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
             const scale = promptEst > 0 ? promptTokens / promptEst : 0;
@@ -783,6 +788,7 @@ export class AgentHarness {
               promptTokens,
               completionTokens,
               totalTokens: promptTokens + completionTokens,
+              compressed: memory.compressed,
               breakdown: {
                 system: Math.round(estSystem * scale),
                 tools: Math.round(estToolsBuiltin * scale),

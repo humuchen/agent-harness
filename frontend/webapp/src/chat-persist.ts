@@ -14,6 +14,8 @@ export interface BackendUsageLike {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+  compressed?: boolean;
   breakdown: {
     system: number;
     tools: number;
@@ -49,6 +51,7 @@ export function persistHistory(opts: PersistHistoryOpts): void {
           promptTokens: opts.backendUsage.promptTokens,
           completionTokens: opts.backendUsage.completionTokens,
           totalTokens: opts.backendUsage.totalTokens,
+          compressed: opts.backendUsage.compressed,
           breakdown: {
             system: opts.backendUsage.breakdown.system,
             tools: opts.backendUsage.breakdown.tools,

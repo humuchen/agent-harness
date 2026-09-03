@@ -29,6 +29,8 @@ export interface ContextUsageSummary {
   window: number;
   /** 使用模型（可选）。 */
   model?: string;
+  /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+  compressed?: boolean;
   /** 最近一次更新时间戳。 */
   updatedAt: number;
 }

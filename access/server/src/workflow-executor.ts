@@ -33,7 +33,7 @@ export interface WorkflowExecutorOptions {
 
 export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): StepExecutor {
   const mode = opts.mode ?? 'mock';
-  return async (step, input, ctx: RunContext) => {
+  return async (step: any, input: any, ctx: RunContext) => {
     const ref = step.agentRef;
     const card: AgentCard | null =
       typeof ref === 'string' ? await getAgentRegistry().get(ref) : ref;

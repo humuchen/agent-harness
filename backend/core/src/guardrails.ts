@@ -59,6 +59,17 @@ export interface GuardrailPolicy {
   enablePiiRedaction: boolean;
   /** 允许列表：命中这些关键词的输入/输出不会被注入检测拦截（如产品名恰好含 "system prompt"）。 */
   allowlist: string[];
+  /**
+   * 业务护栏作用域（P0.x，治本）：声明本次运行「启用」哪些业务护栏 scope。
+   * 配合 registerInputRule/registerOutputRule 的 scope 参数实现「按 agent 绑定业务护栏」，
+   * 而非进程级全局生效——
+   *   - 未设置（undefined，旧路径/测试）→ 不收窄，所有自定义规则照常生效（向后兼容）；
+   *   - 设为数组 → 未打 scope 的规则始终生效（全局安全底线，如业务方希望某规则全局适用），
+   *     打了 scope 的规则仅当 scope ∈ 本数组时才评估。
+   * 例：默认/generic agent 传 scopes:[] 即排除 medical-ad 等业务护栏；医美 agent 传
+   * scopes:['medical-ad'] 才启用医疗广告法护栏。
+   */
+  scopes?: string[];
   /** 出网管控（P0.3）：约束 web_fetch 可访问域名；缺省 open（全部放行）。 */
   network?: NetworkPolicy;
   /**
@@ -328,22 +339,30 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
 // 自定义输入规则（向后兼容）
 // ---------------------------------------------------------------------------
 
-const customInputRules: { re: RegExp; reason: string }[] = [];
+const customInputRules: { re: RegExp; reason: string; scope?: string }[] = [];
 
-/** 注册一条自定义输入校验规则（命中即拦截）。 */
-export function registerInputRule(re: RegExp, reason: string): void {
-  customInputRules.push({ re, reason });
+/**
+ * 注册一条自定义输入校验规则（命中即拦截）。
+ * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
+ *   `scopes` 包含此标签时才生效；不传则始终生效（全局安全底线）。
+ */
+export function registerInputRule(re: RegExp, reason: string, scope?: string): void {
+  customInputRules.push({ re, reason, scope });
 }
 
 // ---------------------------------------------------------------------------
 // 自定义输出规则（与输入规则对称；供业务插件注册领域合规过滤，如医疗广告法）
 // ---------------------------------------------------------------------------
 
-const customOutputRules: { re: RegExp; reason: string }[] = [];
+const customOutputRules: { re: RegExp; reason: string; scope?: string }[] = [];
 
-/** 注册一条自定义输出校验规则（命中即拦截模型最终输出）。 */
-export function registerOutputRule(re: RegExp, reason: string): void {
-  customOutputRules.push({ re, reason });
+/**
+ * 注册一条自定义输出校验规则（命中即拦截模型最终输出）。
+ * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
+ *   `scopes` 包含此标签时才生效；不传则始终生效（全局安全底线）。
+ */
+export function registerOutputRule(re: RegExp, reason: string, scope?: string): void {
+  customOutputRules.push({ re, reason, scope });
 }
 
 // ---------------------------------------------------------------------------
@@ -361,14 +380,28 @@ export interface GuardrailOutputContext {
 /** 上下文感知输出规则：接收输出文本与上下文，返回拦截结果。 */
 export type ContextualOutputRule = (text: string, ctx: GuardrailOutputContext) => GuardrailResult;
 
-const customContextualOutputRules: ContextualOutputRule[] = [];
+const customContextualOutputRules: { fn: ContextualOutputRule; scope?: string }[] = [];
 
 /**
  * 注册一条上下文感知的输出校验规则（命中即拦截模型最终输出）。
  * 与 registerOutputRule（纯文本正则）互补：可据 recentTool 等上下文做精准判定。
+ * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
+ *   `scopes` 包含此标签时才生效；不传则始终生效。
  */
-export function registerContextualOutputRule(fn: ContextualOutputRule): void {
-  customContextualOutputRules.push(fn);
+export function registerContextualOutputRule(fn: ContextualOutputRule, scope?: string): void {
+  customContextualOutputRules.push({ fn, scope });
+}
+
+/**
+ * 业务自定义规则是否对当前策略生效（按 scope 收窄）。
+ * - 规则未声明 scope → 始终生效（全局安全底线 / 业务方希望全局适用）；
+ * - 调用方未传 scopes（旧路径、测试）→ 不收窄，全部生效（向后兼容）；
+ * - 调用方传了 scopes 数组 → 仅当 ruleScope ∈ scopes 时生效。
+ */
+function ruleInScope(ruleScope: string | undefined, pol?: GuardrailPolicy): boolean {
+  if (!ruleScope) return true;
+  if (!pol || !Array.isArray(pol.scopes)) return true;
+  return pol.scopes.includes(ruleScope);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +497,7 @@ export function checkInput(
   const inj = detectInjection(text, p, strongOnly);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
   for (const r of customInputRules) {
+    if (!ruleInScope(r.scope, p)) continue;
     if (r.re.test(text)) return { ok: false, reason: r.reason };
   }
   return { ok: true };
@@ -484,13 +518,15 @@ export function checkOutput(
   const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
   for (const r of customOutputRules) {
+    if (!ruleInScope(r.scope, p)) continue;
     if (r.re.test(text)) return { ok: false, reason: r.reason };
   }
   // 上下文感知规则：仅当调用方注入了上下文时运行（无 ctx 的旧调用方不受影响），
   // 让领域插件据最近工具结果等业务上下文做精准拦截（如知识库查空后禁止自行推荐）。
   if (ctx) {
     for (const r of customContextualOutputRules) {
-      const res = r(text, ctx);
+      if (!ruleInScope(r.scope, p)) continue;
+      const res = r.fn(text, ctx);
       if (!res.ok) return res;
     }
   }

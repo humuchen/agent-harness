@@ -177,6 +177,38 @@ describe('知识库查空硬拦截', () => {
   });
 });
 
+describe('按 agent 作用域绑定（治本）', () => {
+  // 复用全局已注册的 medical-ad 规则，验证其仅对 scopes 含 'medical-ad' 的运行生效。
+  test('scopes 含 medical-ad 时，医疗话术仍被拦截', () => {
+    const output = checkOutput('我们手术100%成功，绝对安全', { scopes: ['medical-ad'] });
+    assert.ok(!output.ok, '医美 agent 应拦截绝对化疗效承诺');
+    assert.ok(output.reason?.includes('医疗广告'));
+  });
+
+  test('scopes 为 []（默认/generic agent）时，医疗护栏被排除——不再误伤', () => {
+    // 经典误报：编程回答「保证内存安全」此前被规则1（保证...安全）误拦。
+    const safeProgramming = checkOutput('Rust 通过所有权机制在编译期保证内存安全', {
+      scopes: []
+    });
+    assert.ok(safeProgramming.ok, '默认 agent 不应被医美护栏拦截「保证内存安全」');
+
+    // 即便含医美术语，只要 scopes 不含 medical-ad，也不应触发。
+    const medspaButGenericScope = checkOutput('我们保证不留疤', { scopes: [] });
+    assert.ok(medspaButGenericScope.ok, '默认 agent 不应触发医疗广告法护栏');
+  });
+
+  test('scopes 未传（旧路径/测试）时仍走全局，向后兼容', () => {
+    // 不传 scopes → ruleInScope 退化为不收窄，规则照常生效。
+    const output = checkOutput('我们手术100%成功，绝对安全');
+    assert.ok(!output.ok, '旧路径应维持全局拦截行为');
+  });
+
+  test('scopes 为 [] 仍放行正常医美面诊引导（无业务规则误伤）', () => {
+    const output = checkOutput('建议您来院面诊，由专业医生评估', { scopes: [] });
+    assert.ok(output.ok, '默认 agent 正常话术应放行');
+  });
+});
+
 describe('规则导出', () => {
   test('medicalAdRules 导出全部规则', () => {
     assert.ok(Array.isArray(medicalAdRules));

@@ -1,6 +1,6 @@
 # agent-harness
 
-一个**最小化、可直接运行**的 AI Agent harness 骨架：工具调用循环、短期/长期记忆、三层护栏、可选的 OpenTelemetry 追踪。
+一个**最小化、可直接运行**的 AI Agent harness 骨架：工具调用循环、短期/长期记忆、三层护栏、可选的 OpenTelemetry 追踪；在此之上已长出**多智能体基座子系统**（智能体注册/发现、能力感知路由、租户隔离、策略/配额、工作流编排、A2A、插件框架、OS 级沙箱、子智能体、团队），并通过 `access/server` 接入层叠加**账户密码登录 / OpenRouter OAuth / BYOK / 插件市场 / 多会话 Chat** 等纯业务能力，配套 `plugins/` 下的业务插件（智能客服 / 医美客资 / 备忘）与独立的 RAG 服务。
 
 > 📚 完整文档（架构图 / 执行流 / 模块依赖 / 部署 / MCP 服务 / 多实例 Runbook）已统一整理至 **[`docs/`](./docs/README.md)**。本文件为仓库入口。
 
@@ -17,35 +17,48 @@
 
 ```
 agent-harness/                # 根：private 包 + pnpm workspace
-├─ frontend/                  # 前端应用层（页面渲染 / 用户交互 / 业务编排 / 前端逻辑）
-│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（SSE 消费，断网可用）
-│  └─ cli/                    # @agent-harness/cli —— CLI 入口
-├─ access/                    # 接入层（请求接入 / 路由分发 / 负载均衡 / 协议转换 / 鉴权）
-│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core）
-│     └─ src/
-│        ├─ server.ts         // node:http SSE 服务：/api/run、/api/verify、/api/mcp/*、/api/env、/api/state
-│        ├─ runner.ts         // 按模式组装 agent（mock / real / real-mcp）
-│        ├─ verification.ts   // 三大能力的可视化验证（流式事件）
-│        ├─ mcp-manager.ts    // 多 MCP server 单例管理器（共享注册表 + 运行时添加）
-│        └─ env-pipeline.ts   // 环境生命周期状态机 + 流式状态
-├─ backend/                   # 后端工具层（通用工具 / 数据处理 / 第三方封装 / 底层能力）
-│  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖）
-│  │  └─ src/                 // types / telemetry / memory / tools / guardrails / harness / llm / integrations / agents
-│  ├─ client/                 # @agent-harness/client —— 多平台客户端 SDK（离线契约测试 + e2e smoke）
-│  └─ medical-ad-guard/       # 领域库：医疗广告合规护栏（与业务零耦合，可复用）
+├─ frontend/                  # 前端应用层
+│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（消费 /api/v1，断网可用）
+│  └─ cli/                    # @agent-harness/cli —— 零依赖 CLI 客户端（消费 /api/v1）
+├─ access/                    # 接入层（路由 / 鉴权 / 运行队列 / 会话 / OAuth / 账户 / 插件扩展）
+│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core，约 45 个源文件）
+├─ backend/                   # 后端工具层
+│  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖，含多智能体基座子系统）
+│  ├─ client/                 # @agent-harness/client —— 跨运行时 typed HTTP 客户端（Web/Node/Edge）
+│  └─ medical-ad-guard/       # @agent-harness/medical-ad-guard —— 医疗广告合规护栏（可复用领域库）
 ├─ plugins/                   # 业务插件（core/server/webapp 零业务耦合，业务语义 100% 留此）
-│  └─ medical-aesthetics-lead/   # 青岛医美智能客服 Agent 插件（含 SQLite 业务库 + 知识库）
-├─ services/                  # 外部集成 / 底座（独立部署，非 monorepo 三层）
-│  └─ rag/                    # 外部 RAG MCP Server（stdio 模式，由 MCP_SERVERS 接入）
+│  ├─ customer-service/       # @agent-harness/customer-service —— 智能客服 Agent（会话/工单/KB/订单/转人工，SQLite）
+│  ├─ medical-aesthetics-lead/ # @agent-harness/medical-aesthetics-lead —— 医美客资 Agent（获客/初筛/预约/留资，SQLite+外部RAG）
+│  └─ memo/                   # @agent-harness/memo —— 备忘助手（笔记/提醒，SQLite，按 owner 隔离）
+├─ services/                  # 外部集成 / 底座（独立部署）
+│  └─ rag/                    # @agent-harness/rag-service —— RAG 服务（默认 HTTP，可选 MCP stdio，零运行时依赖）
 ├─ examples/                  # @agent-harness/examples —— CLI 示例（消费 core）
-├─ docs/                      # 完整文档（架构图 / 部署 / MCP / 多实例 Runbook）
+├─ skills/                    # 顶层 Skill 文档包（非 npm 包）：ah-platform-evolution / ui-design-conventions
+├─ docs/                      # 完整文档（架构 / 部署 / 插件 / Agent 设计 / 分析）
+├─ migrations/                # SQL 迁移（由 core db-adapter 驱动）
+├─ scripts/                   # 运维脚本（备份 / 留存清理 / 回滚演练 / 负载 / 原生沙箱构建…）
+├─ data/                      # 运行期数据（SQLite / 向量库，gitignore）
 ├─ deploy/                    # k8s（kustomize）/ docker 部署清单
 ├─ pnpm-workspace.yaml
 ├─ tsconfig.base.json
 ├─ package.json
 ├─ Dockerfile / docker-compose.yml   # 自托管交付物（含 --profile redis 多副本队列）
-└─ render.yaml                # Render 部署 Blueprint（部署 access/server）
+├─ render.yaml                # Render 部署 Blueprint（部署 access/server）
 ```
+
+## 业务插件（Plugins）
+
+业务语义 100% 留在 `plugins/`，`core/server/webapp` 三层始终零业务耦合。插件经 `access/server/src/plugin-bootstrap.ts`
+自动扫描 `plugins/` 目录加载（或 `AGENT_PLUGINS` 显式覆盖），每个插件以 `PluginManifest → AgentCard` 注册进
+`AgentRegistry`，并通过 `PluginContext` 调用 core 公开 API（不得修改 core 源码）。当前三个插件：
+
+| 插件 | 包名 | 作用 | 存储 |
+| --- | --- | --- | --- |
+| `customer-service` | `@agent-harness/customer-service` | 智能客服 Agent：会话接待 / 知识库问答 / 工单 / 订单售后查询 / 转人工 | SQLite（会话/工单/KB） |
+| `medical-aesthetics-lead` | `@agent-harness/medical-aesthetics-lead` | 医美客资 Agent：多渠道获客 / 需求初筛 / 项目咨询 / 留资 / 预约到店 / 转人工，含医疗广告合规护栏 | SQLite + 外部 RAG |
+| `memo` | `@agent-harness/memo` | 备忘助手：笔记记录 / 检索 / 删除 + 到点主动提醒（技能落地执行样例） | SQLite（按 owner 隔离） |
+
+插件开发脚手架：`pnpm create:plugin`。插件架构与生命周期详见 [`docs/03-plugins/agent-plugin-er.md`](./docs/03-plugins/agent-plugin-er.md)。
 
 ## 快速开始
 
@@ -597,6 +610,24 @@ guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就
 - `.env.example` 是本地模板，真实密钥请走来源 1/2，切勿提交 `.env`。
 - 多实例部署下每个副本各自装配密钥，无共享密钥存储依赖。
 
+## 接入层扩展能力（账户 / OAuth / BYOK / 插件市场 / 多会话）
+
+`access/server` 在核心之上叠加的纯业务能力（核心 `@agent-harness/core` 不感知），均以「接口 + 默认实现 + 组合工厂」存在：
+
+- **账户密码登录**（`accounts.ts`）：scrypt 哈希 + HMAC 令牌，凭据存 `auth_tokens` SQLite（7 天过期、可吊销）；端点 `/api/account/{register,login,logout,me,refresh,change-password,forgot-password,reset-password}`。
+- **OpenRouter OAuth PKCE**（`oauth.ts`）：`S256` 一键授权，`/api/account/oauth/{github,google}/callback` 换得 token 后走同一加密落库链路；过渡页由 `views.ts` 渲染。
+- **BYOK 凭据注入**（`provider-keys.ts`）：用户 LLM 凭据 AES-GCM 落库（`provider-keys.db`），运行时 per-run 注入到 harness，绝不写 `process.env`；`/api/account/provider-keys` 管理。
+- **插件市场 Registry**（`registry-server.ts`，`pnpm registry`）：最小插件市场（列表/版本/下载/统计/发布鉴权 `REGISTRY_TOKEN`），`/api/registry/{plugins,search,stats}`。
+- **多会话 Chat + 跨设备同步**（`chat-sessions.ts` + `chat-bus.ts`）：用户可见会话列表 + 消息记录（owner 隔离），经 SSE 按 owner fanout，跨标签页/设备/实例实时同步；端点 `/api/chat/sessions`、`/api/chat/stream`、`/api/history`。
+- **备忘提醒总线**（`reminder-bus.ts` + 插件 `memo`）：提醒到点经服务端 bus 按 owner 推送。
+- **配置热更新**（`config-hot-reload.ts`）：JSON 配置文件覆盖 env，`POST /api/config/reload` 或可选轮询；启动期 `config-schema.ts` 校验 80+ 环境变量（warn 级不阻断）。
+- **健康探针**（`health.ts`）：`/health`、`/health/live`、`/health/ready` 供 K8s/Render 探针。
+- **日志脱敏**（`log-scrub.ts`）：全局 JSON 日志脱敏，绝不落密钥/令牌/MCP 认证头。
+- **副本选择器**（`replica-picker.ts`）：接入层 round-robin / least-load / sticky-hash 负载均衡，配合 Redis 运行队列支持多实例水平扩展。
+
+> 这些能力全部落在 `access/server` 业务层；`core` 仅提供框架原语（harness/tools/memory/guardrails + 多智能体基座），
+> 始终零业务耦合、可插拔、可组合。插件经 `plugin-bootstrap.ts` 动态 require，server 不静态 import 任何插件。
+
 ## 已知问题与设计权衡
 
 UI 端实测反馈过两类现象，经排查均为**设计层面的真实问题**（非偶发），现将根因与本仓库已落地的优化记录如下，便于后续评估与演进决策。
@@ -669,6 +700,8 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 | **审计**             | `audit.ts`                                               | 结构化审计事件（接入 RBAC/审批/敏感动作）                                                                      |
 | **特性开关**         | `feature-flags.ts`                                       | 集中管理功能开关（`/api/features` 可查询；`contextCompression` 等已接线）                                      |
 | **错误日志**         | `errorlog.ts`                                            | 统一错误记录 + 计数 + 报告（`/api/errors`）                                                                    |
+| **子智能体**         | `subagent/`                                              | `SubAgentManager`：在当前 run 循环内派生带独立记忆窗口的子 agent；server 侧 `subagent-tools.ts` 注册 `delegate_task` 工具 |
+| **团队**             | `teams/`                                                 | `Team` + `TeamManager`：动态多 agent 团队 + 协作模式，经 `AgentRegistry.executeTeamTask()` 接 workflow 编排              |
 
 > 说明：`core/server/webapp` 三层始终**零业务耦合**；业务语义（如医美客资、医疗广告合规）只存在于 `plugins/` 与可复用领域库（`backend/medical-ad-guard`）。
 
@@ -680,7 +713,7 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 
 ```bash
 pnpm --filter @agent-harness/core run build   # 先构建
-pnpm --filter @agent-harness/core run test    # 跑测试（101 用例）
+pnpm --filter @agent-harness/core run test    # 跑测试（约 371 用例，52 测试文件）
 ```
 
 Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` 子进程，验证鉴权(P0-3)、
@@ -705,9 +738,9 @@ pnpm -r build && \
 e2e 的三种运行姿态：设 `AH_BASE_URL` 直连既有实例（不 spawn）；未设则自举 server；
 server 未构建时默认跳过（exit 0），设 `AH_SMOKE_STRICT=1` 则升级为失败（CI 采用后者）。
 
-CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test → client e2e`，并附两个安全作业：
-`Dependency Audit & SBOM`（`pnpm audit --severity high` + CycloneDX SBOM 产物归档，不阻塞）
-与 PR 的 `Dependency Review`（新增/升级依赖的已知漏洞与许可证合规，high 即失败）。
+CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `lint → pnpm -r build → pnpm -r test → pnpm audit --audit-level=high`，
+并附带 `cleanup-retention` 与 `backup-db` 两个运维步骤。当前**未集成**镜像推送（GHCR）、SBOM（CycloneDX）或
+PR `Dependency Review` 作业——如需准生产供应链可见性，建议后续补齐。
 
 ## 健壮性增强
 
@@ -735,7 +768,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `build → unit test →
 - **`Dockerfile`**（多阶段 pnpm 构建，基础镜像锁定 Node 22，非 root 运行 + HEALTHCHECK）
 - **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
 - **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
-- **`.github/workflows/docker.yml`**（推送 `dev`/`main` 或 tag 时构建并推送镜像到 GHCR）
+- **`.github/workflows/ci.yml`**（push/PR：lint → `pnpm -r build` → `pnpm -r test` → `pnpm audit --audit-level=high`；**当前未集成镜像推送 / SBOM / Dependency Review 作业**）
 - **[`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
 
 > 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。

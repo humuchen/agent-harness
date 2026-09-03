@@ -9,9 +9,9 @@
 
 | 你的场景 | 推荐路径 | 详细文档 |
 |---|---|---|
-| 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式 | [./docker-deploy-guide.md](./docker-deploy-guide.md) §2 |
-| **内网多人低并发（推荐你现在的用法）** | Compose + Redis + 鉴权 overlay | [./docker-deploy-guide.md](./docker-deploy-guide.md) §3、§9 |
-| 外部多人 / 高可用 / 弹性扩缩 | Kubernetes | [./k8s-deploy-guide.md](./k8s-deploy-guide.md) |
+|| 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式 | [./docker-deploy-guide.md](./docker-deploy-guide.md) §2 |
+|| **内网多人低并发（推荐你现在的用法）** | Compose + Redis + 鉴权 overlay | [./docker-deploy-guide.md](./docker-deploy-guide.md) §3、§9 |
+|| 外部多人 / 高可用 / 弹性扩缩 | Kubernetes | [./k8s-deploy-guide.md](./k8s-deploy-guide.md) |
 
 > **结论**：你这次选的是「内网多人」档，所以主线就是 **Compose + Redis overlay + 强随机令牌**，下面「路径一」给的是完整可直接复制的命令。
 
@@ -88,7 +88,7 @@ kubectl -n agent-harness port-forward svc/agent-harness 4173:4173       # 浏览
 | 看状态 | `docker ps` | `kubectl -n agent-harness get pods` |
 | 看日志 | `docker logs -f agent-harness-ts-ui-1` | `kubectl -n agent-harness logs -f deploy/agent-harness` |
 | 重启 | `docker compose restart` | `kubectl -n agent-harness rollout restart deploy/agent-harness` |
-| 停止 | `docker compose down` | `kubectl delete -k deploy/k8s` 或 `kubectl delete -k deploy/overlays/local` |
+| 停止 | `docker compose down` | `kubectl delete -k deploy/k8s` |
 | 验证 Redis 接管 | `docker logs … \| grep queue-backend` | `kubectl … logs \| grep queue-backend` |
 
 **常见坑**（两份指南都有详述）：
@@ -110,5 +110,5 @@ docs/
   docker-deploy-guide.md    # Compose 完整流程（从部署到落地使用）
   k8s-deploy-guide.md       # K8s 完整流程（本地 overlay + 生产集群）
 deploy/k8s/                 # K8s manifests（base + overlays/local）
-Dockerfile                  # 多阶段构建（已修正健康检查为 /api/state）
+| Dockerfile                  | 多阶段构建（已修正健康检查为 /api/state） |
 ```

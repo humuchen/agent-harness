@@ -22,6 +22,8 @@ export interface CtxUsage {
   totalPct: number;
   totalTokens: number;
   window: number;
+  /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+  compressed: boolean;
   items: CtxItem[];
 }
 
@@ -29,6 +31,8 @@ export interface CtxUsage {
 export interface BackendUsageLike {
   window: number;
   promptTokens: number;
+  /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）。 */
+  compressed?: boolean;
   breakdown: {
     system: number;
     tools: number;
@@ -65,7 +69,7 @@ export function estimateContextUsage(opts: {
   messages: ChatMsg[];
 }): CtxUsage {
   if (opts.serverCtxWindow <= 0) {
-    return { totalPct: 0, totalTokens: 0, window: 0, items: [] };
+    return { totalPct: 0, totalTokens: 0, window: 0, compressed: false, items: [] };
   }
   const WINDOW = opts.serverCtxWindow;
   const tok = (s?: string) => (s ? Math.ceil([...s].length / 3) : 0);
@@ -110,7 +114,7 @@ export function estimateContextUsage(opts: {
   const totalTokens = items.reduce((s, it) => s + it.tokens, 0);
   const totalPct = Math.min(100, (totalTokens / WINDOW) * 100);
   for (const it of items) it.pct = (it.tokens / WINDOW) * 100;
-  return { totalPct, totalTokens, window: WINDOW, items };
+  return { totalPct, totalTokens, window: WINDOW, compressed: false, items };
 }
 
 /**
@@ -168,7 +172,7 @@ export function selectContextUsage(opts: {
     const totalTokens = u.promptTokens;
     const totalPct = Math.min(100, (totalTokens / u.window) * 100);
     for (const it of items) it.pct = (it.tokens / u.window) * 100;
-    return { totalPct, totalTokens, window: u.window, items };
+    return { totalPct, totalTokens, window: u.window, compressed: !!u.compressed, items };
   }
   // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，回退到前端粗估。
   return estimateContextUsage({
@@ -235,6 +239,11 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
         >上下文已使用：${pct.toFixed(1)}% -
         ${fmtK(u.totalTokens)}/${fmtK(u.window)}</span
       >
+      ${u.compressed
+        ? html`<span class="ctx-compressed" title="历史上下文已达压缩阈值，最旧对话已被自动压缩/淘汰"
+            >已压缩</span
+          >`
+        : nothing}
       ${showCtxUsage
         ? html`<button
               class="ctx-scrim"

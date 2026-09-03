@@ -116,3 +116,27 @@ test('redactOutput 不被长数字串里的子串误判（身份证/卡 与 手�
   assert.ok(!out.includes('11010119900307891X'));
   assert.ok(!out.includes('13800138000'));
 });
+
+// 业务护栏按 agent 作用域绑定（治本）：scoped 规则仅当运行策略 scopes 含其标签时生效。
+// 用独立 scope 注册，避免污染同文件其它用例（其它用例不传 scopes，scoped 规则默认不触发）。
+const SCOPED_TEST_RULE = /绝对化测试命中/;
+g.registerInputRule(SCOPED_TEST_RULE, 'scoped-rule-blocked', 'unit-test-scope');
+
+test('scoped 规则：scopes 含标签时生效', () => {
+  assert.equal(g.checkInput('绝对化测试命中', { scopes: ['unit-test-scope'] }).ok, false);
+});
+
+test('scoped 规则：scopes 为 []（默认/generic agent）时排除', () => {
+  const r = g.checkInput('绝对化测试命中', { scopes: [] });
+  assert.equal(r.ok, true, '默认 agent 不应触发领域护栏');
+});
+
+test('scoped 规则：scopes 未传（旧路径）时仍走全局，向后兼容', () => {
+  assert.equal(g.checkInput('绝对化测试命中').ok, false);
+});
+
+test('未声明 scope 的规则始终生效（全局安全底线），不受 scopes 收窄影响', () => {
+  // 注入等内置规则本就与 scope 无关；此处验证「无 scope 的自定义规则」在 scopes:[] 下仍生效。
+  g.registerInputRule(/全局底线规则命中/, 'global-baseline-blocked');
+  assert.equal(g.checkInput('全局底线规则命中', { scopes: [] }).ok, false);
+});

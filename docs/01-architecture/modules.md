@@ -62,6 +62,8 @@ examples ──▶ core
 - **`sandbox/`** — `SandboxExecutor` 抽象 + `Local`/`Container`(docker/podman)/`OS`(原生 C helper：命名空间+seccomp+capabilities+rlimit) 三态后端 + 降级；`isolation.ts` 的 `resolveIsolationBackend`（card→租户策略→env 决策链）、`detect`/`profiles`/`args`/`executor` 支撑原生后端；`native/sandbox-exec/sandbox-exec.c` 为 C helper（`build:native.sh` 编译，非 Linux 自动降级）。
 - **`quota/engine.ts`** — `QuotaEngine`（QPS 令牌桶 + 并发信号量 + token/cost 窗口硬限，per-tenant；`admit`/`release` 配对）。
 - **`audit.ts`** — tenantId 维度审计，可插拔 sink。
+- **`subagent/`** — `SubAgentManager`：在当前 run 循环内派生带独立记忆窗口的子 agent（工具侧由 server 的 `subagent-tools.ts` 注册 `delegate_task` 暴露给 LLM）。
+- **`teams/`** — `Team` + `TeamManager`：动态多 agent 团队 + 协作模式，经 `AgentRegistry.executeTeamTask()` 接入 `workflow` 编排。
 
 ## 3. 依赖边（要点）
 
@@ -91,5 +93,11 @@ examples ──▶ core
 | `retention.ts` / `openapi.ts` | 留存/出境策略 + OpenAPI 契约 |
 | `secrets.ts` | 密钥装配（env > SECRETS_FILE > .env） |
 | `verification.ts` | 三大能力自验证（流式事件） |
+| `accounts.ts` / `oauth.ts` / `provider-keys.ts` | 账户密码登录 / OpenRouter OAuth PKCE / BYOK 凭据注入（AES-GCM 落库，per-run 注入，绝不写 `process.env`） |
+| `registry-server.ts` | 插件市场 Registry（独立入口 `pnpm registry`：列表/版本/下载/统计/发布鉴权） |
+| `chat-sessions.ts` / `chat-bus.ts` | 多会话 Chat + 跨设备 SSE 同步（owner 隔离） |
+| `plugin-bootstrap.ts` / `plugin-ext.ts` | 插件引导（动态 require，不静态 import 任何插件）+ 服务端插件扩展宿主（`/api/plugins/:pluginId/*`） |
+| `health.ts` / `config-schema.ts` / `config-hot-reload.ts` | K8s 探针 / 启动期 80+ env 校验（warn 级不阻断）/ 配置热更新 |
+| `redis-client.ts` / `replica-picker.ts` | Redis 封装（自动重连/健康检查）+ 接入层负载均衡（round-robin/least-load/sticky-hash） |
 
 > 原则：**纯业务策略（RBAC/审批/评估）全部在 `server` 业务层；`core` 只承载可复用的平台/基础设施原语（harness/tools/memory/guardrails + 智能体/路由/租户/策略/工作流/A2A/插件/沙箱/配额/审计），始终零业务耦合、可插拔、可组合。**

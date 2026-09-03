@@ -32,7 +32,7 @@ const FEATURE_FLAGS: Record<string, Omit<FeatureFlag, 'key' | 'enabled'>> = {
   // 性能相关
   contextCompression: {
     description: '上下文压缩 - 自动压缩长对话历史以减少token消耗',
-    defaultValue: false,
+    defaultValue: true,
     envVar: 'CONTEXT_COMPRESSION',
     category: 'performance'
   },
