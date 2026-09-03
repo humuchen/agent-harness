@@ -13,22 +13,15 @@
           "services/rag/dist/**",
           "plugins/**/dist/**",
           "scripts/**",
-          "pnpm-workspace.yaml"
+          "pnpm-workspace.yaml",
+          "package.json"
         ],
         "maxLambdaSize": "50mb"
       }
     }
   ],
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/access/server/package.json"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/access/server/package.json"
-    }
-  ],
-  "framework": null,
-  "outputDirectory": "frontend/webapp/dist"
+    { "src": "/api/(.*)", "dest": "/access/server/package.json" },
+    { "src": "/(.*)",       "dest": "/access/server/package.json" }
+  ]
 }
