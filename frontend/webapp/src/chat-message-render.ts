@@ -39,6 +39,8 @@ export interface ChatRenderCtx {
   traceDrawerSection: 'trace' | 'insights' | 'confidence';
   connState: Record<string, 'connected' | 'reconnecting' | 'lost'>;
   jobBy: Record<string, string>;
+  /** 用户手动停止标记（按会话）：true 时空气泡显示「已停止」而非「等待响应…」。 */
+  stopped: Record<string, boolean>;
   planExec: Record<number, PlanExecState>;
   // —— 回调（绑定到 AhChat 对应方法）——
   onEditingInput: (value: string) => void;
@@ -229,6 +231,8 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
     sIdx >= 0 &&
     ctx.messages[sIdx]?.id === m.id &&
     m.role === 'assistant';
+  // 该会话是否已被用户手动停止：用于把空气泡的「等待响应…」切换为「已停止」。
+  const isStopped = ctx.stopped[ctx.activeId] === true;
   // 是否展示思考区：仅当模型确实返回了推理内容（流式首 token 到达即出现）。
   const showThinking = !!m.reasoning;
   const isThinking = isStreamingAssistant && !m.content;
@@ -281,9 +285,17 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         (m.content || isStreamingAssistant)
           ? html`<div class="sep"><span>回答</span></div>`
           : nothing}
-        ${renderAnswer(m, isAnswering, isStreamingAssistant)}
+        ${renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
         ${m.plan ? renderPlanCard(ctx, m) : nothing}
         ${renderExtras(ctx, m, isStreamingAssistant)}
+        ${m.compressed
+          ? html`<div
+              class="msg-compressed"
+              title="历史上下文已达压缩阈值，最旧对话已被自动压缩/淘汰"
+            >
+              已压缩
+            </div>`
+          : nothing}
       </div>
     </div>
   `;
@@ -375,11 +387,13 @@ export function renderThinking(
   `;
 }
 
-/** 渲染最终回答区（合并视图·底部）：随 llm:token 增量逐字显现；流式进行中显示「模型正在回复…」动效。 */
+/** 渲染最终回答区（合并视图·底部）：随 llm:token 增量逐字显现；流式进行中显示「模型正在回复…」动效。
+ *  isStopped：该会话已被用户手动停止。空气泡不再显示「等待响应…」，改为「已停止」以免误导。 */
 export function renderAnswer(
   m: ChatMsg,
   isAnswering: boolean,
-  isStreaming: boolean
+  isStreaming: boolean,
+  isStopped = false
 ): TemplateResult {
   return html`
     <div class="answer">
@@ -395,7 +409,9 @@ export function renderAnswer(
           </div>`
         : nothing}
       ${!m.content && !isStreaming
-        ? html`<div class="msg-text placeholder">等待响应…</div>`
+        ? isStopped
+          ? html`<div class="msg-text placeholder stopped">已停止</div>`
+          : html`<div class="msg-text placeholder">等待响应…</div>`
         : nothing}
     </div>
   `;

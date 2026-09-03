@@ -151,18 +151,33 @@ test('Memory 当前轮次（最后组）永不被切断', () => {
 // ---------------------------------------------------------------------------
 // Bug 1：compressed 为 per-report 语义（消费即清零）
 // ---------------------------------------------------------------------------
-test('Memory.compressed 为 per-report 语义（消费后清零，不 sticky）', () => {
+test('常规 maxWindow 滑动淘汰（无 token 压力）不点亮「已压缩」', () => {
+  // 未调用 setContextUsage → overTokens 恒为 false → 仅 FIFO 轮转，不算压缩。
   const mem = new Memory({ maxWindow: 4 });
   function addGroup(i) {
     mem.add({ role: 'user', content: `u${i}` });
     mem.add({ role: 'assistant', content: '', tool_calls: [{ id: `c${i}`, name: 'f', arguments: {} }] });
     mem.add({ role: 'tool', tool_call_id: `c${i}`, name: 'f', content: `r${i}` });
   }
-  for (let i = 0; i < 5; i++) addGroup(i); // 触发淘汰
-  assert.ok(mem.compactCount > 0, '应发生压缩');
-  assert.strictEqual(mem.consumeCompressed(), true, '首次消费应为 true');
+  for (let i = 0; i < 8; i++) addGroup(i); // 远超 maxWindow → 触发常规淘汰
+  assert.ok(mem.compactCount > 0, '应发生（条数）淘汰');
+  // 关键：常规滑动不代表「已压缩」，徽标不应被点亮。
+  assert.strictEqual(mem.consumeCompressed(), false, '仅 FIFO 滑动不应点亮「已压缩」');
+});
+
+test('token 压力驱动的淘汰/瘦身点亮「已压缩」，消费即清零（per-report）', () => {
+  const mem = new Memory({ maxWindow: 4 });
+  function addGroup(i) {
+    mem.add({ role: 'user', content: `u${i}` });
+    mem.add({ role: 'assistant', content: '', tool_calls: [{ id: `c${i}`, name: 'f', arguments: {} }] });
+    mem.add({ role: 'tool', tool_call_id: `c${i}`, name: 'f', content: `r${i}` });
+  }
+  // 注入真实用量：prompt 占满窗口 → overTokens=true → 触发 token 护栏淘汰/瘦身。
+  mem.setContextUsage(120000, 128000);
+  for (let i = 0; i < 5; i++) addGroup(i);
+  assert.strictEqual(mem.consumeCompressed(), true, 'token 压力驱动的压缩应点亮「已压缩」');
   assert.strictEqual(mem.consumeCompressed(), false, '消费后应清零');
-  // 再次发生压缩仍可重新置位
+  // 再次发生 token 压力驱动的压缩仍可重新置位
   for (let i = 5; i < 8; i++) addGroup(i);
   assert.strictEqual(mem.consumeCompressed(), true, '再次压缩应重新置位');
 });

@@ -338,7 +338,20 @@ export function renderTraceNode(
         ${n.messages?.length
           ? html`<div class="tmsg-list">
               <div class="tmsg-head">
-                消息上下文 · 共 ${n.messages.length} 条
+                <span class="tmsg-head-title"
+                  >消息上下文 · 共 ${n.messages.length} 条</span
+                >
+                <button
+                  type="button"
+                  class="tmsg-collapse-all"
+                  title="折叠全部消息上下文"
+                  @click=${() => {
+                    n.messages!.forEach((msg) => (msg.expanded = false));
+                    onToggle?.();
+                  }}
+                >
+                  折叠全部
+                </button>
               </div>
               ${n.messages.map(
                 (m) => {
@@ -347,7 +360,14 @@ export function renderTraceNode(
                   const preview =
                     flat.length > 48 ? flat.slice(0, 48) + '…' : flat;
                   const previewCount = raw ? ` · ${[...raw].length}字` : '';
-                  return html`<details class="tmsg-item role-${m.role}">
+                  return html`<details
+                    class="tmsg-item role-${m.role}"
+                    ?open=${m.expanded === true}
+                    @toggle=${(e: Event) => {
+                      m.expanded = (e.target as HTMLDetailsElement).open;
+                      onToggle?.();
+                    }}
+                  >
                     <summary class="tmsg-sum">
                       <span class="tmsg-role"
                         >${m.role === 'user'

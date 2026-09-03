@@ -590,11 +590,13 @@ export class Memory {
 
     if (cut > 0) {
       this._compactCount++;
-      // 只要本次真的发生了淘汰（无论条数还是 token 驱动），就按 per-report 点亮，
-      // 上报后由 consumeCompressed() 清零。这样既修掉「低用量时 sticky 误报」，
-      // 又不会漏报真正的压缩活动：每次上报只反映「自上次上报以来是否压缩过」，
-      // 压缩发生时用量确实下降了（或条数被裁掉），与 UI 指示保持一致。
-      this._compressedSinceReport = true;
+      // 仅当「token 压力驱动了额外淘汰」才点亮「已压缩」徽标：
+      // 判断依据 = token 预算比条数预算更紧（tokenBudget < countBudget），
+      // 即本次淘汰超出了 maxWindow 常规滑动所需，是真正的上下文压缩。
+      // 单纯因 maxWindow 超限的 FIFO 轮转（cut>0 但 tokenBudget>=countBudget）
+      // 只是窗口轮转，绝对上下文占用基本不变，不应算作「压缩」——
+      // 否则徽标会随每步滑动永久点亮（每次询问都显示「已压缩」）。
+      if (tokenBudget < countBudget) this._compressedSinceReport = true;
       // 仅淘汰超出预算的最旧轮次（含旧的过期摘要），并将其压缩为最新摘要。
       const evicted = rest.slice(0, cut);
       const keptRest = rest.slice(cut);

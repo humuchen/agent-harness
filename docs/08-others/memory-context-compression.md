@@ -86,8 +86,13 @@ interface PersistedMemory {
 - `_compressedSinceReport`：**自上次用量上报以来**是否压缩过，`consumeCompressed()` 读取即清零
   （per-report 语义）。前端「已压缩」徽标据此渲染，**不做会话级 OR 累加**——否则会重现
   「徽标亮起后永不消失、与真实用量变化脱钩」的假象。
-- 任一真实淘汰/瘦身（无论条数还是 token 驱动）都会置位该标记，因此徽标在压缩活跃时点亮、
-  窗口回落且若干步不再压缩时自动熄灭。
+- **仅「token 压力驱动的额外淘汰/瘦身」会置位该标记**，而非任意淘汰。判定依据：
+  `memory.ts` 的 `add()` 中 `tokenBudget < countBudget`（token 约束比 maxWindow 条数约束更紧，
+  即本次淘汰超出了常规滑动所需），或 token 护栏的内容瘦身（`shrinkToTokenBudget`）、
+  或发送前的主动 `fitToBudget` 真正改动了历史。
+  - 单纯因 `maxWindow` 超限的 FIFO 轮转**不算压缩**，不会点亮徽标——否则窗口填满后每步都滑动，
+    徽标会随每次询问永久点亮（"每次都显示已压缩"的误报正源于此）。
+  - 因此徽标只在「上下文被主动压低」时点亮，窗口回落、无 token 压力时自动熄灭。
 
 ### 工具调用 ↔ 结果配对的「双保险」（修复 tool id 未找到 400）
 

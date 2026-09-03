@@ -2318,6 +2318,7 @@ export class AhChat extends LitElement {
       traceDrawerSection: this.traceDrawerSection,
       connState: this.connState,
       jobBy: this.runRt.jobMap,
+      stopped: this.runRt.stoppedMap,
       planExec: this.planExec,
       onEditingInput: (v: string) => {
         this.editingDraft = v;

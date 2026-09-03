@@ -287,6 +287,7 @@ export const chatStyles = [
       flex: 0 0 auto;
       display: flex;
       align-items: center;
+      margin-right: 5px;
     }
     .ctx-ring {
       display: block;
@@ -363,6 +364,24 @@ export const chatStyles = [
       color: #ffb340;
       font-size: 10.5px;
       line-height: 1.5;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      user-select: none;
+    }
+    /* 「已压缩」标识（迁移版）：不再贴在用量圆环旁，而是随对应气泡显示在其下方，
+       使标识与所属对话的视觉关联清晰准确。沿用与圆环版一致的琥珀色系。 */
+    .msg-compressed {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 8px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 159, 10, 0.55);
+      background: rgba(255, 159, 10, 0.14);
+      color: #ffb340;
+      font-size: 11px;
+      line-height: 1.6;
       font-weight: 600;
       letter-spacing: 0.02em;
       white-space: nowrap;
@@ -781,6 +800,20 @@ export const chatStyles = [
     .msg-text.placeholder {
       color: var(--ah-text-muted);
       font-style: italic;
+    }
+    /* 用户手动停止后的空气泡：以中性「已停止」标识替代「等待响应…」，避免误导仍在等待输入。 */
+    .msg-text.placeholder.stopped {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ah-text-muted);
+      font-style: italic;
+    }
+    .msg-text.placeholder.stopped::before {
+      content: '⏹';
+      font-size: 10px;
+      line-height: 1;
+      color: var(--ah-text-muted);
     }
     .reasoning {
       margin-bottom: 10px;
@@ -1208,11 +1241,44 @@ export const chatStyles = [
       margin-top: 2px;
     }
     .tmsg-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       padding: 6px 10px;
       font-size: 11px;
       color: var(--ah-text-muted);
       background: var(--ah-surface-3, #262a31);
       border-bottom: 1px solid var(--ah-border);
+    }
+    .tmsg-head-title {
+      flex: 1;
+      min-width: 0;
+    }
+    /* 「折叠全部」按钮：一次性收起消息上下文全部条目（默认即收起态，点此回到全折叠）。 */
+    .tmsg-collapse-all {
+      flex: none;
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 9px;
+      font-size: 10.5px;
+      line-height: 1.5;
+      color: var(--ah-text-muted);
+      background: var(--ah-surface-2, #1f2228);
+      border: 1px solid var(--ah-border);
+      border-radius: 999px;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .tmsg-collapse-all:hover {
+      color: var(--ah-accent, #2997ff);
+      border-color: var(--ah-accent, #2997ff);
+    }
+    .tmsg-collapse-all:active {
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 14%,
+        var(--ah-surface-2, #1f2228)
+      );
     }
     .tmsg-item {
       border-bottom: 1px solid var(--ah-border);

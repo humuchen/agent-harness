@@ -229,6 +229,8 @@ export class ChatRunRuntime {
   private keepAliveAbort: Record<string, boolean> = {};
   private lastInputBy: Record<string, Record<string, unknown>> = {};
   private abortBy: Record<string, AbortController> = {};
+  /** 用户手动停止标记：stop() 置 true，新一轮 dispatchPrompt 置 false。仅供渲染层区分「等待响应…」与「已停止」。 */
+  private stoppedBy: Record<string, boolean> = {};
   private watchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private deps: RunDeps, public typewriter: ChatTypewriter) {}
@@ -236,6 +238,11 @@ export class ChatRunRuntime {
   /** 渲染层用（ChatRenderCtx.jobBy）：暴露当前 jobId 映射，供断连横幅判断可否「重新连接」。 */
   get jobMap(): Record<string, string> {
     return this.jobBy;
+  }
+
+  /** 渲染层用（ChatRenderCtx.stopped）：暴露「用户手动停止」标记，供气泡显示「已停止」而非「等待响应…」。 */
+  get stoppedMap(): Record<string, boolean> {
+    return this.stoppedBy;
   }
 
   /* ============================ 断线恢复引擎 ============================ */
@@ -266,7 +273,10 @@ export class ChatRunRuntime {
 
   /** 手动停止当前显示会话的 run（仅中止该会话，不影响其它后台 run）。 */
   stop() {
-    const ac = this.abortBy[this.deps.getActiveId()];
+    const sid = this.deps.getActiveId();
+    // 标记该会话为用户手动停止：渲染层据此把空气泡的「等待响应…」切换为「已停止」。
+    this.stoppedBy[sid] = true;
+    const ac = this.abortBy[sid];
     ac?.abort();
   }
 
@@ -498,6 +508,12 @@ export class ChatRunRuntime {
           // 绝不能累加——否则会把多步用量叠加成单调增长，被 Math.min(100,..) 顶到 100% 后永久
           // 满格，且压缩后单步用量下降也看不出来（这正是「显示已压缩却始终 100%」的根因）。
           const compressed = !!u.compressed;
+          // 把「已压缩」标记挂到本轮流式消息上（而非全局用量浮层），
+          // 使标识随对应气泡显示在其下方，视觉关联准确。
+          if (compressed) {
+            const c = cur();
+            if (c && !c.compressed) this.deps.patchSession(sid, { compressed: true });
+          }
           this.deps.setBackendUsage({
             window: win,
             promptTokens: Number(u.promptTokens) || 0,
@@ -598,6 +614,8 @@ export class ChatRunRuntime {
     this.jobBy[sessionId] = '';
     this.lastSeqBy[sessionId] = -1;
     this.erroredBy[sessionId] = false;
+    // 新一轮 run 由用户主动发起，清除「手动停止」标记（否则气泡会误显「已停止」）。
+    this.stoppedBy[sessionId] = false;
     this.deps.setConn(sessionId, 'connected');
     this.deps.resetTrace(sessionId);
     this.typewriter.stopTypewriter();

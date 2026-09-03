@@ -251,13 +251,6 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
         >上下文已使用：${pct.toFixed(1)}% -
         ${fmtK(u.totalTokens)}/${fmtK(u.window)}</span
       >
-      ${u.compressed
-        ? html`<span
-            class="ctx-compressed"
-            title="历史上下文已达压缩阈值，最旧对话已被自动压缩/淘汰"
-            >已压缩</span
-          >`
-        : nothing}
       ${showCtxUsage
         ? html`<button
               class="ctx-scrim"
