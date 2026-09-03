@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "vercel-build": "bash scripts/vercel-build.sh",
     "build:native": "bash scripts/build-native.sh",
     "verify:sandbox": "bash scripts/verify-sandbox.sh",
     "lint": "eslint .",

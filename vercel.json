@@ -2,14 +2,8 @@
   "$schema": "https://json.schemastore.org/vercel.json",
   "name": "agent-harness",
   "outputDirectory": "public",
-  "builds": [
-    {
-      "src": "access/server/package.json",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/access/server/package.json" },
-    { "src": "/(.*)",       "dest": "/access/server/package.json" }
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
