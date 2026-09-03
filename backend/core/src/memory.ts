@@ -438,7 +438,7 @@ export class Memory {
   }
 
   /** 历史（不含真实系统提示）当前占用的估算 token 数。 */
-  private historyTokens(): number {
+  historyTokens(): number {
     let t = 0;
     for (const m of this.window) {
       if (m.role === 'system' && !isSummaryNode(m)) continue;
@@ -675,6 +675,97 @@ export class Memory {
         this._compressedSinceReport = true;
       }
     }
+  }
+
+  /**
+   * 主动把对话历史压缩到 maxTokens（估计 token）以内。应在「发送前」调用，
+   * 不依赖 LLM 回传 usage——这正是各家主流压缩（Claude 自动压缩 /
+   * LangChain trimMessages）的核心：按真实 payload 估算做预算封顶，而非被动等
+   * 调用失败才补救。返回是否真发生了压缩（供「已压缩」指示）。
+   *
+   * 升级策略（均保持 tool_call ↔ tool 结果配对不破）：
+   *  1) 整组淘汰最旧轮次（atomic group），若配了同步 summarizer 则并入摘要；
+   *  2) 内容瘦身最大消息（保留 tool_call_id / name，只压正文）；
+   *  3) 极端情况下硬性截断超长单条（保证 payload 一定能落回预算）。
+   */
+  fitToBudget(maxTokens: number): boolean {
+    if (!(maxTokens > 0)) return false;
+    if (this.historyTokens() <= maxTokens) return false;
+    let changed = false;
+
+    // 1) 整组淘汰最旧轮次，直到历史落回预算或仅剩当前轮次（无可安全整组淘汰）。
+    //    当前轮次（最后一组）不可淘汰，否则刚拿到的工具结果被自己挤掉。
+    let guard = 0;
+    while (this.historyTokens() > maxTokens && guard++ < 64) {
+      const sys: Message[] = [];
+      const rest: Message[] = [];
+      this.window.forEach((m) => {
+        if (m.role === 'system' && !isSummaryNode(m)) sys.push(m);
+        else rest.push(m);
+      });
+      const cut = this.alignEvictionCut(rest, rest.length);
+      if (cut <= 0) break; // 仅剩当前轮次，无整组可淘汰
+      const evicted = rest.slice(0, cut);
+      const keptRest = rest.slice(cut);
+      if (this.opts.summarizer) {
+        const result = this.opts.summarizer({ previous: this.summaryText, evicted });
+        if (!(result instanceof Promise)) {
+          this.summaryText = result;
+          const summaryNode = this.summaryText
+            ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+            : [];
+          this.window = [...sys, ...summaryNode, ...keptRest];
+        } else {
+          // 异步摘要无法在同步语境等待：直接丢弃，避免阻塞；其正确落地点仍在
+          // flushSummary（由 harness 循环顶部调用）。
+          this.window = [...sys, ...keptRest];
+        }
+      } else {
+        this.window = [...sys, ...keptRest];
+      }
+      changed = true;
+    }
+
+    // 2) 内容瘦身兜底（保留配对）：先保护当前轮次，仍不达标则放行瘦身当前轮次。
+    if (this.historyTokens() > maxTokens) {
+      if (this.shrinkToTokenBudget(maxTokens)) changed = true;
+      if (this.historyTokens() > maxTokens && this.shrinkToTokenBudget(maxTokens, false))
+        changed = true;
+    }
+
+    // 3) 硬性截断超长单条：仅在上述都无效时（例如单条消息本身就超过预算）才触发，
+    //    截断只缩短正文，不动 tool_call_id / name，绝不破坏 tool 配对。
+    if (this.historyTokens() > maxTokens) {
+      let idx = -1;
+      let largest = 0;
+      this.window.forEach((m, i) => {
+        if (m.role === 'system' && !isSummaryNode(m)) return;
+        if (typeof m.content !== 'string') return;
+        const t = estimateTokens(messageText(m));
+        if (t > largest) {
+          largest = t;
+          idx = i;
+        }
+      });
+      if (idx >= 0) {
+        const m = this.window[idx] as Message;
+        const text = messageText(m);
+        // 粗估 1 token ≈ 3.5 字符，留出标记余量。
+        const allowChars = Math.max(200, Math.floor(maxTokens * 3.5));
+        const truncated = text.slice(0, allowChars);
+        this.window[idx] = {
+          ...m,
+          content: `${truncated}\n…[已截断，超出上下文预算]`
+        };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this._compactCount++;
+      this._compressedSinceReport = true;
+    }
+    return changed;
   }
 
   /** 当前上下文压缩摘要（无则 null），供运维视图与测试观测。 */

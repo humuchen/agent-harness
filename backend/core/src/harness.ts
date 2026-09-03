@@ -45,6 +45,31 @@ export function contextWindowFor(model?: string): number {
 }
 
 /**
+ * 判断错误是否由「上下文超出模型窗口」引起（用于压缩后自愈重试）。
+ * 覆盖常见的 400 / 413 及中英文错误文案（部分免费模型如 MiniMax 返回中文报错）。
+ */
+function isContextOverflowError(e: any): boolean {
+  if (!e) return false;
+  const status = e?.status ?? e?.statusCode ?? e?.response?.status;
+  if (status === 413) return true;
+  const text = [
+    e?.message,
+    e?.body,
+    e?.error?.message,
+    typeof e === 'string' ? e : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return /context length|context_length|maximum context|max(imum)? (context|token)|too many tokens|exceeds.*(context|window)|prompt.*too long|reduce.*prompt|token limit|上下文|超出.*(窗口|长度|上下文|限制)/i.test(
+    text
+  );
+}
+
+/** 未知上下文窗口时的保守预算上限：宁可压得多、绝不溢出（模型无回应比多压几条历史更糟）。 */
+const BUDGET_FALLBACK_WINDOW = 32768;
+
+/**
  * Harness 在跑一轮 `run()` 期间发出的事件。
  * 这些事件让外部（CLI 进度条、Web UI、测试探针）无需侵入核心循环即可
  * 实时观察 LLM ↔ 工具 ↔ 记忆 的每一步。纯可选，不影响任何既有行为。
@@ -361,6 +386,16 @@ export class AgentHarness {
   /** 指代消解实体追踪器（COREF_ENABLED=true 时启用） */
   private _corefTracker?: EntityTracker;
   private _corefTurn = 0;
+  // 自适应上下文预算：观测到模型实际接受过的最大 prompt（token）。用于在窗口元数据
+  // 虚高（免费模型 context_length 取不到 → 回落 128K）时仍能压得动历史，避免「按 128K
+  // 算预算、真实只有 32K」导致护栏永不触发、模型 400 / 无回应。
+  private maxAcceptedPrompt = 0;
+  // 上一次发送前估算的 prompt token（用于溢出后把预算压到其 0.6 倍自救）。
+  private lastSendEstimate = 0;
+  // 上一次发送是否因上下文溢出失败，需在下一次发送前强制缩预算。
+  private overflowShrink = false;
+  // 上下文溢出自愈重试计数（整轮上限，防死循环）。
+  private contextRetry = 0;
 
   constructor(opts: HarnessOptions) {
     this.opts = {
@@ -427,6 +462,12 @@ export class AgentHarness {
 
     emit({ type: 'run:start', runId, input: userInput });
     incCounterTenant('agent.run.start', this.opts.tenantId);
+
+    // 重置自适应上下文预算状态（每轮运行独立，避免跨 run 串扰）。
+    this.maxAcceptedPrompt = 0;
+    this.lastSendEstimate = 0;
+    this.overflowShrink = false;
+    this.contextRetry = 0;
 
     // Hook: agent.pre_run — 可用于审计/日志/记录
     void hooks.execute('agent.pre_run', {
@@ -608,7 +649,26 @@ export class AgentHarness {
             maxSteps: this.opts.maxSteps
           });
 
-          const messages = sanitizeToolPairing(memory.history());
+          // 主动上下文压缩（主流做法：发送前按真实 payload 估算封顶，而非被动等
+          // 调用失败再补救）。免费模型真实窗口常远小于回退值 128K，故同时用「已成功
+          // 接收的最大 prompt × 安全系数」做自适应硬上限，避免 100% 卡死无回应。
+          const cw =
+            this.opts.contextWindow && this.opts.contextWindow > 0
+              ? this.opts.contextWindow
+              : contextWindowFor(this.opts.model);
+          const proactiveBudget = Math.floor(cw * 0.8 * 0.85); // 目标占用≈窗口的 68%
+          const adaptiveCap =
+            this.overflowShrink && this.maxAcceptedPrompt > 0
+              ? Math.floor(this.maxAcceptedPrompt * 0.7)
+              : Infinity;
+          const budgetCap = Math.min(proactiveBudget, adaptiveCap);
+          if (memory.fitToBudget(budgetCap)) {
+            structLog('info', 'proactive context compression applied before LLM send', {
+              budgetCap,
+              runId
+            });
+          }
+          let messages = sanitizeToolPairing(memory.history());
           // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
           // 从全量工具中选出子集，降低简单输入（如问候）首呼时全量工具 schema 的固定开销。
           // 执行仍走全量注册表（this.opts.tools.call），仅「发送给 LLM 的 schema」做裁剪。
@@ -659,34 +719,65 @@ export class AgentHarness {
           // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
           // 保证聊天 UI 始终能拿到可渲染的增量事件。
           let streamedTokens = false;
-          const llmPromise = this.opts.llm(messages, stepTools, {
-            signal,
-            circuitBreaker: this.opts.circuitBreaker,
-            ...(this.opts.streamTokens
-              ? {
-                  onToken: (delta: string) => {
-                    streamedTokens = true;
-                    emit({ type: 'llm:token', step: steps, delta });
-                  },
-                  onReasoning: (delta: string) => {
-                    emit({ type: 'llm:reasoning', step: steps, delta });
-                  }
-                }
-              : {})
-          });
           const abortedFlag = new Promise<'__aborted__'>((resolve) => {
             if (signal.aborted) return resolve('__aborted__');
             signal.addEventListener('abort', () => resolve('__aborted__'), {
               once: true
             });
           });
-          const raceResult = await withSpan('llm.call', () =>
-            Promise.race([llmPromise, abortedFlag])
-          );
-          if (raceResult === '__aborted__') {
-            return abortedMessage(signal);
+          // 上下文溢出自愈：LLM 返回「超出上下文窗口」类错误（免费模型真实窗口常远小于
+          // 配置/回退值 128K）时，逐步压缩历史后重试，而非让整轮运行失败、卡死无回应。
+          const OVERFLOW_MAX_RETRIES = 4;
+          let resp: LLMResponse | null = null;
+          for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
+            if (signal.aborted) return abortedMessage(signal);
+            try {
+              const raceResult = await withSpan('llm.call', () =>
+                Promise.race([
+                  this.opts.llm(messages, stepTools, {
+                    signal,
+                    circuitBreaker: this.opts.circuitBreaker,
+                    ...(this.opts.streamTokens
+                      ? {
+                          onToken: (delta: string) => {
+                            streamedTokens = true;
+                            emit({ type: 'llm:token', step: steps, delta });
+                          },
+                          onReasoning: (delta: string) => {
+                            emit({ type: 'llm:reasoning', step: steps, delta });
+                          }
+                        }
+                      : {})
+                  }),
+                  abortedFlag
+                ])
+              );
+              if (raceResult === '__aborted__') return abortedMessage(signal);
+              resp = raceResult as LLMResponse;
+              break;
+            } catch (llmErr: any) {
+              if (isContextOverflowError(llmErr) && llmAttempt < OVERFLOW_MAX_RETRIES) {
+                this.overflowShrink = true;
+                // 自适应收窄：有成功样本用「样本 × 0.6」，否则用当前历史估算的一半，逐次收敛。
+                const basis =
+                  this.maxAcceptedPrompt > 0 ? this.maxAcceptedPrompt : memory.historyTokens();
+                const newBudget = Math.max(256, Math.floor(basis * 0.6));
+                const shrank = memory.fitToBudget(newBudget);
+                structLog('warn', 'context overflow, shrinking history and retrying LLM call', {
+                  attempt: llmAttempt,
+                  newBudget,
+                  shrank,
+                  runId
+                });
+                messages = sanitizeToolPairing(memory.history());
+                continue;
+              }
+              throw llmErr;
+            }
           }
-          const resp: LLMResponse = raceResult;
+          if (!resp) return abortedMessage(signal);
+          // 记录「已成功接收的最大 prompt」，作为后续步的保守预算上限，避免反复溢出。
+          this.maxAcceptedPrompt = Math.max(this.maxAcceptedPrompt, resp.usage?.prompt_tokens ?? 0);
           recordTokensTenant(resp.usage, this.opts.tenantId);
 
           // 成本记账：按实际使用模型（响应优先，回落配置 model）查单价表估算，

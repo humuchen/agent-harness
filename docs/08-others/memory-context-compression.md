@@ -173,10 +173,24 @@ function createLLMSummarizer(llm, modelLabel): MemorySummarizer {
 for (let step = 0; step < maxSteps; step++) {
     await memory.flushSummary();   // ← 每步顶部落地异步摘要
     // ... 预算熔断检查
-    // 发送前经 sanitizeToolPairing 清洗：丢弃孤儿 tool 结果 / 缺 id 的 tool_call，
-    // 剥离末步被截断的孤儿 tool_call（只改发送副本，不动 Memory 存储）
-    const messages = sanitizeToolPairing(memory.history());
-    // ... LLM 调用（解析端经 normalizeToolCallIds 补齐缺失/重复 id）
+
+    // ① 主动压缩（主流做法：发送前按真实 payload 估算封顶，而非被动等调用失败再补救）。
+    //    预算 = min( 窗口 × 0.8 × 0.85, 已成功接收的最大 prompt × 0.7 )。
+    //    免费模型真实窗口常远小于回退值 128K，故用「自适应已接收上限」做硬约束，
+    //    避免 100% 卡死无回应。
+    const budgetCap = ...;
+    if (memory.fitToBudget(budgetCap)) { /* 记录压缩发生 */ }
+
+    // ② 发送前经 sanitizeToolPairing 清洗：丢弃孤儿 tool 结果 / 缺 id 的 tool_call，
+    //    剥离末步被截断的孤儿 tool_call（只改发送副本，不动 Memory 存储）
+    let messages = sanitizeToolPairing(memory.history());
+
+    // ③ LLM 调用（解析端经 normalizeToolCallIds 补齐缺失/重复 id）——
+    //    包在「溢出自愈」重试环里：若 LLM 返回「超出上下文窗口」类错误
+    //    （覆盖 400/413 及中英文文案，含 MiniMax 等免费模型），逐步 fitToBudget
+    //    压缩历史后重试（最多 OVERFLOW_MAX_RETRIES=4 次），而非让整轮运行失败。
+    //    首次成功后将 resp.usage.prompt_tokens 记为 maxAcceptedPrompt，
+    //    后续步直接用其 0.7 倍作为保守预算上限，避免反复溢出。
     // ... tool 执行（超时/取消/预算截断的调用统一回填占位结果，保证一一对应）
     memory.add(userMsg);
     memory.add(assistantMsg);      // assistant(tool_calls) 与 tool 结果以原子组写入
@@ -184,6 +198,16 @@ for (let step = 0; step < maxSteps; step++) {
     // 发射 llm:usage 时经 consumeCompressed() 上报「自上次上报以来是否压缩」，读取即清零
 }
 ```
+
+### 为什么需要「主动压缩 + 溢出自愈」（而非仅依赖被动护栏）
+
+旧实现只在 `memory.add()` 里**被动**触发压缩，且依赖 `setContextUsage` 回灌的
+`promptTokens / window >= 0.8`。但对免费模型（如 `minimax-m2.7:free`），前端模型目录
+取不到真实 `context_length`，后端回退到 `128000`，导致真实已占满 ~32K 窗口时
+`ratio` 仅 ~25%，**压缩护栏永不触发**；而 `maxWindow=20` 只裁条数不裁体积，巨大 tool
+结果仍把真实 payload 撑爆 → 模型 400 / 无回应。主动压缩在**发送前**按真实 payload 估算
+封顶，溢出自愈则在调用失败时按真实 `prompt_tokens` 逐次收窄重试，二者结合彻底消除
+「显示已压缩但用量不变、最终 100% 卡死」的现象。
 
 ## 6. 跨运行记忆恢复
 
