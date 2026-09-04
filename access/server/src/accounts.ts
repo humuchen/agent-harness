@@ -145,7 +145,7 @@ async function ensureDb(): Promise<void> {
         const hasRole = cols.some((c) => String(c.name) === 'role');
         if (!hasRole) {
           await db.exec(
-            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'"
+            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'"
           );
         }
         const hasGh = cols.some((c) => String(c.name) === 'github_id');
