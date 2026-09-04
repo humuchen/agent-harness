@@ -4,7 +4,7 @@
  * parseCostBreakdown / renderInsights 及 Insights 类型。
  */
 import { html, nothing, type TemplateResult } from 'lit';
-import type { TraceNode } from '@agent-harness/client';
+import type { TraceNode, TraceKind } from '@agent-harness/client';
 import { escapeHtml } from './utils/markdown';
 import { renderJsonHtml } from './utils/json-view';
 
@@ -230,22 +230,59 @@ export function countTraceNodes(trace: TraceNode[]): number {
 
 /** 递归渲染单个追踪节点（details 天然形成树状层级，可逐层展开）。
  *  onToggle 用于 LLM 节点的「消息 N / 工具 N」chip 切换后触发父组件重渲染，使展开态持久化（避免流式重渲染丢状态）。 */
+
+/** 可被「折叠全部」按钮统一收敛的节点种类白名单。
+ *  排除 run/step/llm —— run 是入口容器，step/llm 由用户点击头部切换，不由助手操作。 */
+const FOLDABLE_KINDS: ReadonlyArray<TraceKind> = [
+  'tool',
+  'retrieval',
+  'cost',
+  'tokencache',
+  'verify',
+  'guardrail',
+  'budget',
+  'error'
+];
+
+/** 递归收敛追踪树中所有「可折叠」节点的 expanded 字段为 false。
+ *  由「折叠全部」按钮触发：保证点完后回到默认折叠状态，与工具/检索/成本/自检等
+ *  子节点初次进入调用链路时的展示一致（默认折叠）。 */
+function collapseAllFoldable(n: TraceNode): void {
+  if (FOLDABLE_KINDS.includes(n.kind)) {
+    n.expanded = false;
+  }
+  n.children.forEach(collapseAllFoldable);
+}
+
+/** 同步原生 `<details>` toggle 事件到节点的 expanded 字段，供 Lit 受控重渲染。
+ *  原生 details 触发 toggle 时把 open 属性写入 DOM；这里反向把 DOM 状态回写到节点，
+ *  下次重渲染 ?open=${n.expanded === true} 才会与用户操作保持一致。 */
+function syncDetailsToggle(
+  n: TraceNode,
+  e: Event,
+  onToggle?: () => void
+): void {
+  n.expanded = (e.target as HTMLDetailsElement).open;
+  onToggle?.();
+}
+
 export function renderTraceNode(
   n: TraceNode,
   parentKind?: string,
   onToggle?: () => void
 ): TemplateResult {
-  // 成本节点：左侧竖排「成本 / 用量」标签 + 右侧按语义分组的指标。
-  // 分为三组：成本（cost/priced，橙黄）、用量（tokens/系统/工具/历史/输出，蓝）、
-  // 模型（model，中性灰），分组着色 + 竖排成三行，一眼可辨成本与用量。
+  // 成本节点：默认折叠，展示一行紧凑预览（cost / tokens / model），点「展开」再看分项明细。
+  //  这样首次打开调用链路时不会立刻把整个成本卡片摊开——与工具调用/检索的默认折叠行为保持一致。
+  //  折叠指示箭头使用 .tcost-caret（CSS 旋转），与 tmsg-caret 同款语义；按钮显式标注「展开/收起」，
+  //  与「折叠全部」操作语言对齐，避免「成本卡能不能点」的疑问。
   if (n.kind === 'cost') {
     const entries = n.meta ? Object.entries(n.meta) : [];
     const groupOf = (k: string): 'cost' | 'usage' | 'model' =>
       k === 'cost' || k === 'priced'
         ? 'cost'
         : k === 'model'
-        ? 'model'
-        : 'usage';
+          ? 'model'
+          : 'usage';
     const groups: Array<
       ['cost' | 'usage' | 'model', Array<[string, unknown]>]
     > = [
@@ -253,29 +290,67 @@ export function renderTraceNode(
       ['usage', entries.filter(([k]) => groupOf(k) === 'usage')],
       ['model', entries.filter(([k]) => groupOf(k) === 'model')]
     ];
-    return html` <details class="tnode kind-cost status-${n.status}">
+    // 紧凑预览：仅展示「成本 / tokens / model」三项关键值，折叠态下给用户一个快速概览。
+    const previewParts: string[] = [];
+    const costEntry = entries.find(([k]) => k === 'cost');
+    const tokenEntry = entries.find(([k]) => k === 'tokens');
+    const modelEntry = entries.find(([k]) => k === 'model');
+    if (costEntry) previewParts.push(escapeHtml(String(costEntry[1])));
+    if (tokenEntry)
+      previewParts.push(`${escapeHtml(String(tokenEntry[1]))} tok`);
+    if (modelEntry) previewParts.push(escapeHtml(String(modelEntry[1])));
+    const preview = previewParts.join(' · ');
+    const isOpen = n.expanded === true;
+    return html`<details
+      class="tnode kind-cost status-${n.status}"
+      ?open=${isOpen}
+      @toggle=${(e: Event) => syncDetailsToggle(n, e, onToggle)}
+    >
       <summary class="tnode-head">
         <span class="tdot"></span>
         <span class="tlabel">成本 / 用量</span>
-        ${entries.length
-          ? html`<span class="tmetrics"
-              >${groups.map(([g, items]) =>
-                items.length
-                  ? html`<span class="tgrp tgrp-${g}"
-                      >${items.map(
-                        ([k, v]) =>
-                          html`<span class="tchip"
-                            ><b>${escapeHtml(k)}</b> ${escapeHtml(
-                              String(v)
-                            )}</span
-                          >`
-                      )}</span
-                    >`
-                  : nothing
-              )}</span
+        ${preview
+          ? html`<span class="tcost-preview" title="折叠态预览"
+              >${preview}</span
             >`
           : nothing}
+        <button
+          type="button"
+          class="tcost-toggle"
+          title=${isOpen ? '收起成本 / 用量详情' : '展开成本 / 用量详情'}
+          @click=${(e: MouseEvent) => {
+            // 阻止冒泡到 <summary>，避免与原生 toggle 重复切换。
+            e.preventDefault();
+            e.stopPropagation();
+            n.expanded = !isOpen;
+            onToggle?.();
+          }}
+        >
+          ${isOpen ? '收起' : '展开'}
+          <span class="tcost-caret" aria-hidden="true"></span>
+        </button>
       </summary>
+      ${entries.length
+        ? html`<div class="tcost-body">
+            <div class="tmetrics">
+              ${groups.map(
+                ([g, items]) =>
+                  items.length
+                    ? html`<div class="tgrp tgrp-${g}">
+                        ${items.map(
+                          ([k, v]) =>
+                            html`<span class="tchip"
+                              ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                                String(v)
+                              )}</span
+                            >`
+                        )}
+                      </div>`
+                    : nothing
+              )}
+            </div>
+          </div>`
+        : nothing}
       ${n.children.length
         ? html`<div class="tchildren">
             ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
@@ -347,6 +422,10 @@ export function renderTraceNode(
                   title="折叠全部消息上下文"
                   @click=${() => {
                     n.messages!.forEach((msg) => (msg.expanded = false));
+                    // 同步收起该 LLM 调用下的工具/检索/成本/自检等节点，
+                    // 与工具/成本/检索的默认折叠态保持一致——之前只折叠消息上下文，
+                    // 工具卡片与成本卡片仍摊开，造成「按钮无效」的观感。
+                    n.children.forEach(collapseAllFoldable);
                     onToggle?.();
                   }}
                 >
@@ -405,14 +484,20 @@ export function renderTraceNode(
   const hasDetail = !!n.detail && n.detail.trim().length > 0;
   const hasResult = n.result != null && n.result.trim().length > 0;
   const isRetrieval = n.kind === 'retrieval';
-  // run/step 默认展开；LLM 调用下的直接子节点（工具/检索，parentKind==='llm'）也默认展开，
-  // 点击「LLM 调用」标题可一次性看到其下全部调用链路（子节点仍可单独收起）。
-  const defaultOpen =
-    n.kind === 'run' || n.kind === 'step' || parentKind === 'llm';
+  // 仅 run/step 默认展开；工具/检索等可折叠节点默认收起，由用户点击头部逐个展开。
+  // 之前「LLM 调用下的工具/检索默认展开」会让首次进入调用链路就摊出全部工具参数与检索结果，
+  // 视觉噪音大且与「折叠全部」按钮的语义不符；现在统一为「点开看详情」交互。
+  const defaultOpen = n.kind === 'run' || n.kind === 'step';
+  // 受控展开态：n.expanded === true 展开、=== false 收起、undefined 跟随 defaultOpen。
+  // 这里三元优先级：显式 true > 显式 false > defaultOpen，确保「折叠全部」设的 false
+  // 不会被 defaultOpen 反向覆盖。
+  const isOpen =
+    n.expanded === true ? true : n.expanded === false ? false : defaultOpen;
   return html`
     <details
       class="tnode kind-${n.kind} status-${n.status}"
-      ?open=${defaultOpen}
+      ?open=${isOpen}
+      @toggle=${(e: Event) => syncDetailsToggle(n, e, onToggle)}
     >
       <summary class="tnode-head">
         <span class="tdot"></span>
@@ -435,6 +520,7 @@ export function renderTraceNode(
                 )}</span
             >`
           : nothing}
+        <span class="tcaret" aria-hidden="true"></span>
       </summary>
       ${hasDetail
         ? html`<pre class="tdetail">${renderJsonHtml(n.detail!)}</pre>`

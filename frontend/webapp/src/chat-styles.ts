@@ -1321,6 +1321,29 @@ export const chatStyles = [
     .tmsg-item[open] > .tmsg-sum > .tmsg-caret {
       transform: rotate(-180deg);
     }
+    /* 工具/检索/自检等可折叠节点的折叠指示箭头：
+       与 tmsg-caret 同款语义，但挂在 summary 末尾并随 details[open] 旋转。
+       默认折叠态下显示 ▸，点开展开后旋转为 ▾，与「折叠全部」操作语言一致。 */
+    .tnode > summary.tnode-head > .tcaret {
+      width: 0;
+      height: 0;
+      margin-left: 6px;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--ah-text-muted);
+      transition: transform 120ms ease;
+      flex: none;
+      opacity: 0.7;
+    }
+    .tnode[open] > summary.tnode-head > .tcaret {
+      transform: rotate(-180deg);
+      opacity: 0.9;
+    }
+    .tnode > summary.tnode-head:hover > .tcaret {
+      opacity: 1;
+    }
+    /* LLM 节点用受控容器而非原生 details，避免与 .tnode[open] 选择器撞车；
+       它使用 ::after 三角箭头（在原 .kind-llm 样式中已定义），不在此处重复。 */
     .tmsg-role {
       display: inline-block;
       font-size: 10px;
@@ -1569,43 +1592,106 @@ export const chatStyles = [
       padding: 1px 0;
       white-space: nowrap;
     }
-    /* 成本节点右侧：指标按语义竖排成三组，分组着色一眼可辨。 */
-    .tnode.kind-cost > summary .tmetrics {
+    /* 成本节点折叠态预览：cost · tokens · model 三项紧凑摘要，仅在折叠时显示。 */
+    .tnode.kind-cost > summary .tcost-preview {
+      margin-left: auto;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--ah-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 60%;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: color-mix(in srgb, #f0a020 8%, transparent);
+      border: 1px solid color-mix(in srgb, #f0a020 22%, var(--ah-border));
+    }
+    /* 成本节点显式「展开 / 收起」按钮：与「折叠全部」操作语言对齐，
+       给用户一个明显可点的入口，避免「这卡能不能点」的疑问。 */
+    .tnode.kind-cost > summary .tcost-toggle {
+      flex: none;
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 9px;
+      font-size: 10.5px;
+      line-height: 1.5;
+      color: #e8941a;
+      background: color-mix(in srgb, #f0a020 18%, var(--ah-surface-2));
+      border: 1px solid color-mix(in srgb, #f0a020 42%, var(--ah-border));
+      border-radius: 999px;
+      transition: background 0.15s ease, border-color 0.15s ease,
+        color 0.15s ease;
+    }
+    .tnode.kind-cost > summary .tcost-toggle:hover {
+      background: color-mix(in srgb, #f0a020 28%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #f0a020 60%, var(--ah-border));
+    }
+    .tnode.kind-cost > summary .tcost-toggle:active {
+      background: color-mix(in srgb, #f0a020 38%, var(--ah-surface-2));
+    }
+    .tcost-caret {
+      width: 0;
+      height: 0;
+      border-left: 3.5px solid transparent;
+      border-right: 3.5px solid transparent;
+      border-top: 4.5px solid currentColor;
+      transition: transform 120ms ease;
+      flex: none;
+    }
+    .tnode.kind-cost[open] > summary .tcost-caret {
+      transform: rotate(-180deg);
+    }
+    /* 成本节点展开后承载明细的 body 区：左侧留出标题列的宽度，避免与竖排标题重叠。 */
+    .tnode.kind-cost > .tcost-body {
+      padding: 10px 12px 12px 28px;
+      border-left: 1px dashed color-mix(in srgb, #f0a020 30%, var(--ah-border));
+      margin-left: 14px;
+    }
+    .tnode.kind-cost > .tcost-body + .tchildren {
+      padding-left: 14px;
+    }
+    /* 成本节点右侧：指标按语义竖排成三组，分组着色一眼可辨。
+       选择器兼容旧 summary.tmetrics（理论上无）+ 新 .tcost-body .tmetrics。 */
+    .tnode.kind-cost .tmetrics {
       margin-left: auto;
       display: flex;
       flex-direction: column;
       gap: 5px;
       align-items: flex-end;
     }
-    .tnode.kind-cost > summary .tgrp {
+    .tnode.kind-cost .tgrp {
       display: flex;
       flex-wrap: wrap;
       gap: 4px;
       justify-content: flex-end;
     }
     /* 组标题色：成本=橙黄、用量=蓝、模型=中性灰；组内 chip 用对应淡色底。 */
-    .tnode.kind-cost > summary .tgrp-cost .tchip {
+    .tnode.kind-cost .tgrp-cost .tchip {
       background: color-mix(in srgb, #f0a020 16%, var(--ah-surface-2));
       border-color: color-mix(in srgb, #f0a020 40%, var(--ah-border));
       color: #f0a020;
     }
-    .tnode.kind-cost > summary .tgrp-cost .tchip b {
+    .tnode.kind-cost .tgrp-cost .tchip b {
       color: #ffb84d;
     }
-    .tnode.kind-cost > summary .tgrp-usage .tchip {
+    .tnode.kind-cost .tgrp-usage .tchip {
       background: color-mix(in srgb, #2997ff 15%, var(--ah-surface-2));
       border-color: color-mix(in srgb, #2997ff 38%, var(--ah-border));
       color: var(--ah-accent, #2997ff);
     }
-    .tnode.kind-cost > summary .tgrp-usage .tchip b {
+    .tnode.kind-cost .tgrp-usage .tchip b {
       color: #6db5ff;
     }
-    .tnode.kind-cost > summary .tgrp-model .tchip {
+    .tnode.kind-cost .tgrp-model .tchip {
       background: var(--ah-surface-3, var(--ah-surface-2));
       border-color: var(--ah-border);
       color: var(--ah-text-muted);
     }
-    .tnode.kind-cost > summary .tgrp-model .tchip b {
+    .tnode.kind-cost .tgrp-model .tchip b {
       color: var(--ah-text);
     }
     .tnode.kind-tokencache > summary .tdot {
@@ -3200,14 +3286,14 @@ export const chatStyles = [
     /* 环心数字：分数 + 单位，基线对齐，分数用等级色。 */
     .conf-gauge-num {
       position: absolute;
-      inset: 22px;
+      inset: 25px;
       display: flex;
       align-items: baseline;
       justify-content: center;
       gap: 1px;
     }
     .conf-num {
-      font-size: 25px;
+      font-size: 22px;
       font-weight: 800;
       color: var(--conf-c);
       font-variant-numeric: tabular-nums;

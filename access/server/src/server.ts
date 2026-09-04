@@ -300,6 +300,11 @@ function refreshCookieValue(
   return parts.join('; ');
 }
 
+/** 构造 set-cookie 头数组：过滤掉 null（无 refresh token 时不下发该 cookie），产出 HTTP 规范的「每元素一个 Set-Cookie 头」数组。 */
+function setCookies(...cookies: (string | null)[]): string[] {
+  return cookies.filter((c): c is string => !!c);
+}
+
 /** 恒定时间字符串比较，避免 CSRF state 比较泄漏时序差。长度不同直接拒。 */
 function safeEqualString(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -872,10 +877,10 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': [
+          'set-cookie': setCookies(
             authCookieValue(req, lr.token),
             refreshCookieValue(req, lr.refreshToken)
-          ].filter(Boolean).join('; '),
+          ),
           'cache-control': 'no-store'
         });
         res.end(
@@ -900,10 +905,10 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': [
+          'set-cookie': setCookies(
             authCookieValue(req, r.token),
             refreshCookieValue(req, r.refreshToken)
-          ].filter(Boolean).join('; '),
+          ),
           'cache-control': 'no-store'
         });
         res.end(
@@ -1040,7 +1045,7 @@ const server = createServer(
         const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': [authCookie, refreshCookie].join('; '),
+          'set-cookie': setCookies(authCookie, refreshCookie),
           'cache-control': 'no-store'
         });
         res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
@@ -1276,10 +1281,10 @@ const server = createServer(
           const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
           // 先下发 cookie，再返回 HTML 过渡页（带自动跳转），避免空白页
           res.writeHead(200, {
-            'set-cookie': [
+            'set-cookie': setCookies(
               authCookieValue(req, r.token),
               refreshCookieValue(req, r.refreshToken)
-            ].filter(Boolean).join('; '),
+            ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
@@ -1530,10 +1535,10 @@ const server = createServer(
           }
           const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
           res.writeHead(200, {
-            'set-cookie': [
+            'set-cookie': setCookies(
               authCookieValue(req, r.token),
               refreshCookieValue(req, r.refreshToken)
-            ].filter(Boolean).join('; '),
+            ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });

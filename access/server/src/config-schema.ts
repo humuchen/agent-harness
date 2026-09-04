@@ -200,15 +200,17 @@ export function validateConfig(): ConfigReport {
     }
   }
 
-  // 账户 token 签名密钥：AH_AUTH_SECRET 或 AH_CRYPTO_KEY 至少其一需为合法 64 hex。
-  // 缺失 → 退化为每进程随机密钥，登录态随进程重启全部失效（会话提前登出的根因）。
-  // 列入 errors → AH_STARTUP_CRITICAL=1 时阻断启动，把隐蔽故障变为显性启动失败。
+  // 账户 token 签名密钥：AH_AUTH_SECRET / AH_CRYPTO_KEY 为 64 hex 时跨副本一致（多副本首选）；
+  // 缺失时 getAuthSecret() 退化为「持久化文件密钥」（单实例跨重启稳定，落盘 data/.ah_auth_secret）。
+  // 仅当二者皆无且无法落盘时才退化为每进程随机（重启即失效）。
+  // 因已有文件兜底，此处仅作 warning（不再阻断 AH_STARTUP_CRITICAL 启动），避免「无 env → 报错 →
+  // 启动失败 → 文件永不被创建」的死锁；生产多副本仍建议配置 AH_AUTH_SECRET=64hex。
   const secretOk =
     /^[0-9a-fA-F]{64}$/.test((process.env.AH_AUTH_SECRET || '').trim()) ||
     /^[0-9a-fA-F]{64}$/.test((process.env.AH_CRYPTO_KEY || '').trim());
   if (!secretOk) {
-    errors.push(
-      '缺少有效的 AH_AUTH_SECRET / AH_CRYPTO_KEY（需 64 hex）：账户登录态将退化为每进程随机密钥，服务重启即全部失效。生产务必配置其中之一。'
+    warnings.push(
+      '未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY（需 64 hex）：已启用持久化兜底密钥（data/.ah_auth_secret，单实例跨重启稳定）。多副本部署请配置 AH_AUTH_SECRET=64hex 以保证跨实例一致。'
     );
   }
 
