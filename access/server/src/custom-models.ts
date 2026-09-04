@@ -88,29 +88,43 @@ export function decryptApiKey(payload: unknown, opts?: { tenantId?: string; rowI
   const raw = Buffer.from(payload, 'base64');
   // 最短合法载荷：1(version) + 12(iv) + 16(tag)，明文可为空但实际 key 不为空。
   if (raw.length < 1 + 12 + 16) return '';
-  // P1-6: 读取版本前缀（当前仅支持 v1）
-  const version = raw[0];
-  if (version !== 0x01) {
-    throw new Error(`unsupported key encryption version: ${version}`);
+  // P1-6 之后密文带 1 字节版本前缀（0x01）；此前的存量密文为
+  // base64(iv12 ‖ ct ‖ tag16)（无版本前缀、无 AAD）。两者都需向后兼容，
+  // 否则存量自定义模型 / provider key / mcp token 一解密就抛
+  // "unsupported key encryption version"，导致 GET 列表整体 500。
+  const aad = buildAad(opts);
+  // 先按新格式（带版本前缀 + AAD）尝试；首字节恰为 0x01 的旧格式密文
+  // 或 AAD 不匹配会在此抛错，落入下方的旧格式回退。
+  if (raw[0] === 0x01) {
+    try {
+      return tryDecrypt(raw, 1, aad);
+    } catch {
+      /* 落入旧格式回退 */
+    }
   }
-  const iv = raw.subarray(1, 13);
+  // 旧格式回退：base64(iv12 ‖ ct ‖ tag16)，无版本前缀、无 AAD。
+  try {
+    return tryDecrypt(raw, 0, undefined);
+  } catch {
+    // tag 校验失败 / key 不匹配：两种格式都解不开 → 拒绝而非静默降级。
+    throw new Error('api key decryption failed: invalid auth tag or key mismatch');
+  }
+}
+
+/** 核心 GCM 解密：versionOffset 为跳过的版本前缀字节数（新格式=1，旧格式=0）。 */
+function tryDecrypt(raw: Buffer, versionOffset: number, aad?: Buffer): string {
+  const iv = raw.subarray(versionOffset, versionOffset + 12);
   const tag = raw.subarray(raw.length - 16);
-  const ct = raw.subarray(13, raw.length - 16);
+  const ct = raw.subarray(versionOffset + 12, raw.length - 16);
   const { createDecipheriv } =
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     require('node:crypto') as typeof import('node:crypto');
   const decipher = createDecipheriv('aes-256-gcm', getBuildTimeCryptoKey(), iv);
-  // P1-6: encrypt 同版本的 AAD 必须在 decrypt 前设置，否则 auth tag 校验始终失败。
-  const aad = buildAad(opts);
-  if (aad.length > 0) decipher.setAAD(aad);
+  // 仅当 AAD 非空才设置（加密端同样逻辑）；新旧格式在「无 opts」场景下 AAD 均为空，天然一致。
+  if (aad && aad.length > 0) decipher.setAAD(aad);
   decipher.setAuthTag(tag);
-  try {
-    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-    return pt.toString('utf8');
-  } catch {
-    // tag 校验失败 / key 不匹配：拒绝而非降级，抛出明确错误便于排障。
-    throw new Error('api key decryption failed: invalid auth tag or key mismatch');
-  }
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return pt.toString('utf8');
 }
 
 // ─── SQLite 存储 ─────────────────────────────────────────────────────────────
@@ -321,8 +335,13 @@ function storeApiKeyInput(raw?: string): { cipher: string; hint: string } | null
 function toPublicModel(r: CustomModelRow): CustomModelPublic {
   let hint = r.keyHint || '';
   if (!hint && r.apiKey) {
-    const pt = decryptApiKey(r.apiKey);
-    hint = pt ? maskKeyLocal(pt) : '已配置';
+    try {
+      const pt = decryptApiKey(r.apiKey);
+      hint = pt ? maskKeyLocal(pt) : '已配置';
+    } catch {
+      // 单条密文无法解密（密钥不匹配/损坏）→ 不阻断整个列表，仅给占位掩码。
+      hint = '已配置';
+    }
   }
   return {
     id: r.id,
