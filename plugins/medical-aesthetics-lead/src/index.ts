@@ -8,7 +8,7 @@ import { registerHandoffTool } from './tools/handoff';
 import { registerAnalyticsTool } from './tools/analytics';
 import { registerKbTool } from './tools/kb';
 import { leadServerExtension } from './server/routes';
-import { leadDashboardView } from './web/dashboard';
+import { leadDashboardView, analyticsDashboardView } from './web/dashboard';
 import { setRunKey, setPluginContext } from './runtime';
 import { appendTranscript } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
@@ -16,7 +16,8 @@ import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
 import { getDbAsync } from './infra/db';
 import { getTeamManager } from '@agent-harness/core';
 import { consultationBookingWorkflow } from './workflows/conversation';
-import { buildProjectAdvisorPrompt, buildPricingAgentPrompt, buildBookingAgentPrompt, buildCaptureAgentPrompt } from './prompts';
+import { analyticsReportWorkflow } from './workflows/analytics';
+import { buildProjectAdvisorPrompt, buildPricingAgentPrompt, buildBookingAgentPrompt, buildCaptureAgentPrompt, buildAnalyticsAgentPrompt } from './prompts';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;
@@ -52,6 +53,7 @@ export const leadPlugin: PluginModule = {
 
     // 3) 注册前端客资看板视图
     ctx.web?.registerView(leadDashboardView);
+    ctx.web?.registerView(analyticsDashboardView);
 
     // 4) 订阅核心事件
     offEvents = ctx.events.on((e) => {
@@ -140,6 +142,23 @@ export const leadPlugin: PluginModule = {
       isolation: 'os',
     });
 
+    // 7.5) 注册运营分析子 Agent 卡片
+    await reg.register({
+      id: 'operations-analyst',
+      name: '运营分析专家',
+      domain: 'medical-aesthetics',
+      description: '医美运营数据分析专家：擅长渠道效果、院区业绩、项目毛利、客资漏斗留存、号源利用率等运营分析，所有数据来自真实数据库聚合。',
+      capabilities: [{ id: 'analytics' }],
+      transport: 'local',
+      version: '1.0.0',
+      health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
+      assembly: {
+        systemPrompt: buildAnalyticsAgentPrompt(),
+        tools: ['medical-aesthetics-lead__analytics_query'],
+      },
+      isolation: 'os',
+    });
+
     // 8) 注册团队（用于 Workflow parallel step）
     const tm = getTeamManager();
     if (tm) {
@@ -150,10 +169,18 @@ export const leadPlugin: PluginModule = {
         members: ['pricing-agent'],
         domain: 'medical-aesthetics',
       });
+      await tm.register({
+        id: 'analytics-team',
+        name: '运营分析团队',
+        mode: 'parallel',
+        members: ['operations-analyst'],
+        domain: 'medical-aesthetics',
+      });
     }
 
     // 9) 注册 workflow 定义
     ctx.workflow.validate(consultationBookingWorkflow);
+    ctx.workflow.validate(analyticsReportWorkflow);
 
     ctx.logger.info('medical-aesthetics-lead plugin setup complete');
   },

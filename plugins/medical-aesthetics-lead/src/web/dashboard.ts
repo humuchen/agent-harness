@@ -2,6 +2,7 @@ import type { PluginUIView } from '@agent-harness/core';
 import { computeStats, listLeads } from '../repo/lead-repo';
 import { outboxSnapshot } from '../services/outbox-worker';
 import { dbHealth } from '../infra/db';
+import { runAnalyticsQuery } from '../analytics/analytics-service';
 
 /** HTML 转义，避免客资字段注入。 */
 function esc(s: unknown): string {
@@ -344,6 +345,198 @@ export const leadDashboardView: PluginUIView = {
         .ma-card { flex:0 0 100%; }
       }
     </style>`;
+    })();
+  },
+};
+
+/**
+ * 运营分析看板视图（前端 Tab）。
+ * 调用 analytics 服务获取真实聚合数据，渲染 SVG 图表。
+ * 主题色通过 CSS 变量自适应 (var(--ah-text), var(--ah-accent), …)。
+ */
+export const analyticsDashboardView: PluginUIView = {
+  tabId: 'ma-analytics',
+  label: '运营分析',
+  render(): string | Promise<string> {
+    return (async () => {
+      const result = await runAnalyticsQuery({ type: 'full' });
+      const d = result.data as any;
+
+      // --- 漏斗图 ---
+      const funnelData = (d?.funnel ?? []).map((f: any) => ({
+        label: f.stage,
+        value: f.count,
+        pct: f.percentage,
+        avgH: f.avgHoursToNext,
+      }));
+
+      // --- 渠道柱状图 ---
+      const channelData = (d?.channel ?? []).map((c: any) => ({
+        label: c.channel,
+        value: c.leadCount,
+        rate: c.dealRate,
+      }));
+
+      // --- 院区柱状图 ---
+      const clinicData = (d?.clinic ?? []).map((c: any) => ({
+        label: c.clinicName,
+        value: c.dealCount,
+        util: c.slotUtilization,
+      }));
+
+      // --- 项目柱状图 ---
+      const projectData = (d?.project ?? []).map((p: any) => ({
+        label: p.project,
+        value: p.dealCount,
+        rev: p.estimatedRevenue,
+      }));
+
+      // --- 趋势折线 ---
+      const trendData = (d?.trend ?? []).map((t: any) => ({
+        period: t.period,
+        leads: t.leadCount,
+        deals: t.dealCount,
+      }));
+
+      const funnelBars = barChart(
+        funnelData.map((f: any) => ({ label: f.label, value: f.value })),
+        'var(--ah-accent)'
+      );
+
+      const channelBars = barChart(
+        channelData.map((c: any) => ({ label: c.label, value: c.value })),
+        '#5B8FF9'
+      );
+
+      const clinicBars = barChart(
+        clinicData.map((c: any) => ({ label: c.label, value: c.value })),
+        '#5AD8A6'
+      );
+
+      const projectBars = barChart(
+        projectData.map((p: any) => ({ label: p.label, value: p.value })),
+        '#F6BD16'
+      );
+
+      // 趋势折线图
+      const trendMax = Math.max(1, ...trendData.map((t: any) => t.leads));
+      const trendW = 420, trendH = 140, trendPad = { top: 20, right: 10, bottom: 30, left: 40 };
+      const trendX = (i: number) => trendPad.left + (i / Math.max(1, trendData.length - 1)) * (trendW - trendPad.left - trendPad.right);
+      const trendY = (v: number) => trendH - trendPad.bottom - (v / trendMax) * (trendH - trendPad.top - trendPad.bottom);
+      const trendPath = trendData.map((t: any, i: number) => `${trendX(i).toFixed(1)},${trendY(t.leads).toFixed(1)}`).join(' ');
+      const trendLine = `M${trendPath.replace(/ /g, ' L')}`;
+
+      const funnelTable = funnelData.length
+        ? '<table class="ma-table">' +
+          '<thead><tr><th>阶段</th><th>人数</th><th>占比</th><th>平均流转(小时)</th></tr></thead>' +
+          '<tbody>' +
+          funnelData.map((f: any) =>
+            `<tr><td>${esc(f.label)}</td><td>${f.value}</td><td>${f.pct}%</td><td>${f.avgH ?? '-'}</td></tr>`
+          ).join('') +
+          '</tbody></table>'
+        : '<p class="ma-empty">暂无漏斗数据</p>';
+
+      const channelTable = channelData.length
+        ? '<table class="ma-table">' +
+          '<thead><tr><th>渠道</th><th>线索数</th><th>成交率</th></tr></thead>' +
+          '<tbody>' +
+          channelData.map((c: any) =>
+            `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${c.rate}%</td></tr>`
+          ).join('') +
+          '</tbody></table>'
+        : '<p class="ma-empty">暂无渠道数据</p>';
+
+      const clinicTable = clinicData.length
+        ? '<table class="ma-table">' +
+          '<thead><tr><th>院区</th><th>成交数</th><th>号源利用率</th></tr></thead>' +
+          '<tbody>' +
+          clinicData.map((c: any) =>
+            `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${c.util}%</td></tr>`
+          ).join('') +
+          '</tbody></table>'
+        : '<p class="ma-empty">暂无院区数据</p>';
+
+      const projectTable = projectData.length
+        ? '<table class="ma-table">' +
+          '<thead><tr><th>项目</th><th>成交数</th><th>预估收入(元)</th></tr></thead>' +
+          '<tbody>' +
+          projectData.map((p: any) =>
+            `<tr><td>${esc(p.label)}</td><td>${p.value}</td><td>${p.rev.toLocaleString()}</td></tr>`
+          ).join('') +
+          '</tbody></table>'
+        : '<p class="ma-empty">暂无项目数据</p>';
+
+      const trendEmpty = trendData.length === 0;
+
+      return `<div class="ma-analytics">
+  <h2>医美运营分析</h2>
+  <p class="ma-empty" style="font-size:12px; margin-bottom:12px;">数据更新于 ${new Date(result.generatedAt).toLocaleString()} · 全部来自真实数据库聚合</p>
+
+  <div class="ma-grid">
+    <section class="ma-panel">
+      <h3>转化漏斗</h3>
+      ${funnelBars}
+      ${funnelTable}
+    </section>
+    <section class="ma-panel">
+      <h3>渠道业绩</h3>
+      ${channelBars}
+      ${channelTable}
+    </section>
+  </div>
+
+  <div class="ma-grid">
+    <section class="ma-panel">
+      <h3>院区业绩</h3>
+      ${clinicBars}
+      ${clinicTable}
+    </section>
+    <section class="ma-panel">
+      <h3>项目毛利</h3>
+      ${projectBars}
+      ${projectTable}
+    </section>
+  </div>
+
+  <section class="ma-panel">
+    <h3>趋势曲线（日）</h3>
+    ${
+      trendEmpty
+        ? '<p class="ma-empty">暂无趋势数据</p>'
+        : `<svg class="ma-chart" viewBox="0 0 ${trendW} ${trendH}" width="100%" style="max-width:480px">
+          <line x1="${trendPad.left}" y1="${trendH - trendPad.bottom}" x2="${trendW - trendPad.right}" y2="${trendH - trendPad.bottom}" stroke="var(--ah-border)" stroke-width="1"/>
+          <polyline fill="none" stroke="var(--ah-accent)" stroke-width="2" points="${trendPath}"/>
+          ${trendData.map((t: any, i: number) =>
+            `<text class="ma-lab" x="${trendX(i).toFixed(1)}" y="${(trendH - trendPad.bottom + 15).toFixed(1)}" font-size="10" text-anchor="middle">${esc(t.period)}</text>`
+          ).join('')}
+          ${trendData.map((t: any, i: number) =>
+            `<text class="ma-val" x="${trendX(i).toFixed(1)}" y="${(trendY(t.leads) - 4).toFixed(1)}" font-size="10" text-anchor="middle">${t.leads}</text>`
+          ).join('')}
+        </svg>`
+    }
+  </section>
+
+  <style>
+    .ma-analytics { color: var(--ah-text); font-family: var(--ah-font-sans); }
+    .ma-analytics h2 { font-size:18px; margin:0 0 12px; }
+    .ma-analytics h3 { font-size:14px; margin:0 0 10px; color: var(--ah-text-muted); font-weight:600; }
+    .ma-grid { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:16px; }
+    .ma-panel { background: var(--ah-surface-1); border:1px solid var(--ah-border); border-radius:12px; padding:14px; flex:1 1 280px; min-width:260px; }
+    .ma-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .ma-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+    .ma-table th, .ma-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--ah-border); vertical-align:top; }
+    .ma-table th { color: var(--ah-text-muted); font-weight:500; white-space:nowrap; }
+    .ma-empty { color: var(--ah-text-muted); font-size:13px; }
+    .ma-chart .ma-lab { fill: var(--ah-text-muted); }
+    .ma-chart .ma-val { fill: var(--ah-text-faint); }
+    @media (max-width: 600px) {
+      .ma-analytics h2 { font-size:16px; }
+      .ma-grid { gap:10px; }
+      .ma-panel { padding:10px; min-width:0; }
+      .ma-table { font-size:11px; }
+    }
+  </style>
+</div>`;
     })();
   },
 };

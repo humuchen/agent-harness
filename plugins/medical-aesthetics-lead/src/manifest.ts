@@ -20,6 +20,7 @@ export const leadManifest: PluginManifest = {
     { id: 'consult' },
     { id: 'book' },
     { id: 'handoff' },
+    { id: 'analytics' },
   ] as AgentCapability[],
   // 装配配方：注入客资系统提示词（含合规红线），使本插件 agent 走「领域 harness」。
   assembly: { systemPrompt: buildSystemPrompt() },
