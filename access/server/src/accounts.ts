@@ -30,6 +30,17 @@ import { join } from 'node:path';
 import { getDbAdapter } from '@agent-harness/core';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
+let cachedSecret: Uint8Array | null = null;
+
+/**
+ * 签名密钥是否已按生产要求配置（64 hex）。供启动强校验使用。
+ * 缺失 → 退化为每进程固定随机密钥（进程内一致，但重启即失效）。
+ */
+export function isAuthSecretConfigured(): boolean {
+  const raw = (process.env.AH_AUTH_SECRET || process.env.AH_CRYPTO_KEY || '').trim();
+  return !!raw && /^[0-9a-fA-F]{64}$/.test(raw);
+}
+
 function getAuthSecret(): Uint8Array {
   const raw = (
     process.env.AH_AUTH_SECRET ||
@@ -42,11 +53,17 @@ function getAuthSecret(): Uint8Array {
       out[i] = parseInt(raw.slice(i * 2, i * 2 + 2), 16);
     return out;
   }
-  // 演示兜底：每进程随机密钥（重启后旧 token 全部失效）。生产务必配置 AH_AUTH_SECRET。
-  console.warn(
-    '   ⚠️  未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY：账户 token 将使用每进程随机密钥，服务重启后全部登录失效。生产请配置 AH_AUTH_SECRET=64hex。'
-  );
-  return randomBytes(32);
+  // 演示兜底：每【进程】固定一次的随机密钥（至少进程内一致）。
+  // 关键修复：此前为「每次调用生成新随机密钥」，导致登录签发的 token 在下一请求（或并发验签）即验签失败，
+  // 表现为「登录成功、刷新即被强制登出」。现改为进程内缓存，保证同一进程内签发/验签密钥一致。
+  // 注意：进程重启仍会换新密钥 → 旧 token 全部失效；生产务必配置 AH_AUTH_SECRET=64hex。
+  if (!cachedSecret) {
+    cachedSecret = randomBytes(32);
+    console.warn(
+      '   ⚠️  未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY：账户 token 将使用每进程固定随机密钥，服务重启后全部登录失效。生产请配置 AH_AUTH_SECRET=64hex。'
+    );
+  }
+  return cachedSecret;
 }
 
 const b64url = (buf: Buffer): string =>
@@ -489,7 +506,8 @@ export function authCookieValue(
     'HttpOnly',
     'SameSite=Lax',
     'Path=/',
-    `Max-Age=${expiresInMs / 1000}`
+    `Max-Age=${Math.floor(expiresInMs / 1000)}`,
+    `Expires=${new Date(Date.now() + expiresInMs).toUTCString()}`
   ];
   if (!isLocalhost(req)) parts.push('Secure');
   return parts.join('; ');

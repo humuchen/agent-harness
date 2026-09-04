@@ -12,7 +12,7 @@
  */
 import { structLog } from '@agent-harness/core';
 
-type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json';
+type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json' | 'hex64';
 
 interface Field {
   key: string;
@@ -198,6 +198,18 @@ export function validateConfig(): ConfigReport {
     for (const t of TYPO_HINTS) {
       if (t.bad.test(k)) warnings.push(`环境变量 ${k} 疑似拼写错误，应为 ${t.hint}`);
     }
+  }
+
+  // 账户 token 签名密钥：AH_AUTH_SECRET 或 AH_CRYPTO_KEY 至少其一需为合法 64 hex。
+  // 缺失 → 退化为每进程随机密钥，登录态随进程重启全部失效（会话提前登出的根因）。
+  // 列入 errors → AH_STARTUP_CRITICAL=1 时阻断启动，把隐蔽故障变为显性启动失败。
+  const secretOk =
+    /^[0-9a-fA-F]{64}$/.test((process.env.AH_AUTH_SECRET || '').trim()) ||
+    /^[0-9a-fA-F]{64}$/.test((process.env.AH_CRYPTO_KEY || '').trim());
+  if (!secretOk) {
+    errors.push(
+      '缺少有效的 AH_AUTH_SECRET / AH_CRYPTO_KEY（需 64 hex）：账户登录态将退化为每进程随机密钥，服务重启即全部失效。生产务必配置其中之一。'
+    );
   }
 
   return { errors, warnings };

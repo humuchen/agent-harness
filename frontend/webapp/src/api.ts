@@ -122,7 +122,8 @@ export async function refreshToken(): Promise<boolean> {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({})  // refresh token 由 HttpOnly cookie 传递，无需 body
+      // refresh token 由 HttpOnly cookie(ah_refresh) 随同源请求自动携带，无需 body。
+      body: JSON.stringify({})
     });
     if (!res.ok) return false;
     const data = (await res.json()) as { ok?: boolean; username?: string; accessExpiresAt?: number };

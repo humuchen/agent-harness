@@ -187,6 +187,7 @@ import {
   cookieValue,
   authCookieValue,
   clearAuthCookie,
+  isAuthSecretConfigured,
   getProfile,
   changePassword,
   revokeAllTokens,
@@ -281,6 +282,24 @@ function oauthStateCookie(
   return parts.join('; ');
 }
 
+/** 构造 refresh cookie 串（HttpOnly；30 天有效，与 REFRESH_TTL_MS 对齐）。登录 / refresh / OAuth 回调统一复用。无 token 时返回 null（不设置该 cookie）。 */
+function refreshCookieValue(
+  req: { headers?: Record<string, unknown> },
+  refreshToken: string | undefined
+): string | null {
+  if (!refreshToken) return null;
+  const parts = [
+    `ah_refresh=${refreshToken}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    `Max-Age=${REFRESH_TTL_MS / 1000}`,
+    `Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`
+  ];
+  if (!isReqLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}
+
 /** 恒定时间字符串比较，避免 CSRF state 比较泄漏时序差。长度不同直接拒。 */
 function safeEqualString(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -370,6 +389,14 @@ const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
 
 // 启动期配置校验：把「写错但静默启动」的 misconfig 显性化为日志告警（不阻断启动，向后兼容）。
 logConfigValidation();
+
+// 账户 token 签名密钥可见性提示：缺失 → 退化为每进程随机密钥，登录态重启即失效。
+// 关键配置缺失时，上方 logConfigValidation() 在 AH_STARTUP_CRITICAL=1 下已阻断启动。
+if (!isAuthSecretConfigured()) {
+  console.warn(
+    '[auth] ⚠️ AH_AUTH_SECRET / AH_CRYPTO_KEY 未配置：账户登录态将退化为每进程随机密钥，服务重启即全部失效。生产务必配置 64hex 密钥。'
+  );
+}
 
 // P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 if (process.env.LOG_SCRUB_ENABLED === 'true') {
@@ -845,10 +872,20 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': authCookieValue(req, lr.token),
+          'set-cookie': [
+            authCookieValue(req, lr.token),
+            refreshCookieValue(req, lr.refreshToken)
+          ].filter(Boolean).join('; '),
           'cache-control': 'no-store'
         });
-        res.end(JSON.stringify({ ok: true, username: lr.username }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            username: lr.username,
+            accessExpiresAt: lr.accessExpiresAt,
+            refreshToken: lr.refreshToken
+          })
+        );
         return;
       }
       if (path === '/api/account/login' && req.method === 'POST') {
@@ -863,10 +900,20 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': authCookieValue(req, r.token),
+          'set-cookie': [
+            authCookieValue(req, r.token),
+            refreshCookieValue(req, r.refreshToken)
+          ].filter(Boolean).join('; '),
           'cache-control': 'no-store'
         });
-        res.end(JSON.stringify({ ok: true, username: r.username }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            username: r.username,
+            accessExpiresAt: r.accessExpiresAt,
+            refreshToken: r.refreshToken
+          })
+        );
         return;
       }
       // ── 忘记密码 / 重置密码（公开，放在 guard 之前，与 register/login 同区）──
@@ -972,7 +1019,12 @@ const server = createServer(
       // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
       if (req.method === 'POST' && path === '/api/account/refresh') {
         const b = await readBody(req);
-        const refreshToken = typeof b?.refresh_token === 'string' ? b.refresh_token : '';
+        // refresh token 优先取 HttpOnly cookie（登录时下发、前端不可读、防 XSS 窃取），
+        // 兼容旧客户端从请求体携带 refresh_token 的方式。
+        const refreshToken =
+          (typeof b?.refresh_token === 'string' && b.refresh_token) ||
+          cookieValue(req, 'ah_refresh') ||
+          '';
         if (!refreshToken) {
           sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
           return;
@@ -983,7 +1035,8 @@ const server = createServer(
           return;
         }
         const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
-        const authCookie = authCookieValue(req, accessToken, accessExpiresAt);
+        // 注意：authCookieValue 第三参为「剩余时长(ms)」，必须是相对值，不能是绝对时间戳。
+        const authCookie = authCookieValue(req, accessToken, accessExpiresAt - Date.now());
         const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
         res.writeHead(200, {
           'content-type': 'application/json',
@@ -1223,7 +1276,10 @@ const server = createServer(
           const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
           // 先下发 cookie，再返回 HTML 过渡页（带自动跳转），避免空白页
           res.writeHead(200, {
-            'set-cookie': authCookieValue(req, r.token),
+            'set-cookie': [
+              authCookieValue(req, r.token),
+              refreshCookieValue(req, r.refreshToken)
+            ].filter(Boolean).join('; '),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
@@ -1474,7 +1530,10 @@ const server = createServer(
           }
           const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
           res.writeHead(200, {
-            'set-cookie': authCookieValue(req, r.token),
+            'set-cookie': [
+              authCookieValue(req, r.token),
+              refreshCookieValue(req, r.refreshToken)
+            ].filter(Boolean).join('; '),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
