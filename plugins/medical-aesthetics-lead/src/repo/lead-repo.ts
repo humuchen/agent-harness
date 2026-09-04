@@ -33,6 +33,7 @@ function rowToLead(r: Record<string, unknown>): LeadRecord {
     grade: (r.grade as LeadGrade) ?? undefined,
     stage: r.stage as LeadStage,
     reached: r.reached as LeadStage,
+    stageUpdatedAt: r.stage_updated_at != null ? Number(r.stage_updated_at) : undefined,
     name: (r.name as string) ?? undefined,
     phone: (r.phone as string) ?? undefined,
     wechat: (r.wechat as string) ?? undefined,
@@ -72,6 +73,7 @@ export async function leadExists(leadId: string): Promise<boolean> {
 /**
  * upsert 线索：不存在则插入，存在则按 patch 更新非空字段。
  * reached 在应用层单调推进（除 lost 外取 max(reached, stage)）。
+ * 阶段变更时同步写入 ma_lead_stage_log + 更新 stage_updated_at（用于运营留存分析）。
  */
 export async function upsertLead(leadId: string, patch: LeadPatch): Promise<LeadRecord> {
   return await dbCall(async () => {
@@ -82,6 +84,7 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
 
     // 合并当前值与 patch，计算最终 stage/reached
     const cur = existing ? rowToLead(existing) : null;
+    const prevStage = cur?.stage ?? 'new';
     const stage: LeadStage = (patch.stage ?? cur?.stage ?? 'new') as LeadStage;
     let reached: LeadStage = cur?.reached ?? stage;
     if (stage !== 'lost') {
@@ -89,6 +92,10 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
     } else if (!cur) {
       reached = 'lost' as LeadStage;
     }
+
+    // 阶段变更 → 记录 stage_updated_at + 写入 stage_log
+    const stageChanged = stage !== prevStage;
+    const stageUpdatedAt = stageChanged ? now : (cur?.stageUpdatedAt ?? now);
 
     const merged = {
       channel: patch.channel ?? cur?.channel ?? 'unknown',
@@ -99,6 +106,7 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       grade: patch.grade ?? cur?.grade ?? null,
       stage,
       reached,
+      stage_updated_at: stageUpdatedAt,
       name: patch.name ?? cur?.name ?? null,
       phone: patch.phone ?? cur?.phone ?? null,
       wechat: patch.wechat ?? cur?.wechat ?? null,
@@ -119,11 +127,13 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
     db.prepare(
       `INSERT INTO ma_lead (
         lead_id, tenant_id, channel, intent, project, budget, city, grade, stage, reached,
+        stage_updated_at,
         name, phone, wechat, consent_at, clinic_id, clinic_name, booking_date, booking_time,
         appointment_id, handed_off, handoff_reason, consulted_by, crm_id, crm_sync_state, crm_synced_at,
         created_at, updated_at
       ) VALUES (
         :lead_id, :tenant_id, :channel, :intent, :project, :budget, :city, :grade, :stage, :reached,
+        :stage_updated_at,
         :name, :phone, :wechat, :consent_at, :clinic_id, :clinic_name, :booking_date, :booking_time,
         :appointment_id, :handed_off, :handoff_reason, :consulted_by, :crm_id, :crm_sync_state, :crm_synced_at,
         :created_at, :updated_at
@@ -131,7 +141,8 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       ON CONFLICT(lead_id) DO UPDATE SET
         channel=excluded.channel, intent=excluded.intent, project=excluded.project,
         budget=excluded.budget, city=excluded.city, grade=excluded.grade,
-        stage=excluded.stage, reached=excluded.reached, name=excluded.name,
+        stage=excluded.stage, reached=excluded.reached, stage_updated_at=excluded.stage_updated_at,
+        name=excluded.name,
         phone=excluded.phone, wechat=excluded.wechat, consent_at=excluded.consent_at,
         clinic_id=excluded.clinic_id, clinic_name=excluded.clinic_name,
         booking_date=excluded.booking_date, booking_time=excluded.booking_time,
@@ -146,6 +157,14 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       created_at: cur?.createdAt ?? now,
       updated_at: now,
     });
+
+    // 阶段变更时写入流水日志（用于漏斗留存耗时分析）
+    if (stageChanged) {
+      db.prepare(
+        `INSERT INTO ma_lead_stage_log (lead_id, tenant_id, from_stage, to_stage, changed_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(leadId, cfg.tenantId, prevStage, stage, now);
+    }
 
     return (await getLead(leadId))!;
   }, 'upsert 线索');

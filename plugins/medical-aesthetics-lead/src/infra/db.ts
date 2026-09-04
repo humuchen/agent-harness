@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS ma_lead (
   grade           TEXT,
   stage           TEXT NOT NULL DEFAULT 'new',
   reached         TEXT NOT NULL DEFAULT 'new',
+  stage_updated_at INTEGER NOT NULL DEFAULT 0,
   name            TEXT,
   phone           TEXT,
   wechat          TEXT,
@@ -73,16 +74,29 @@ CREATE INDEX IF NOT EXISTS ix_lead_tenant_updated ON ma_lead(tenant_id, updated_
 CREATE INDEX IF NOT EXISTS ix_lead_channel        ON ma_lead(tenant_id, channel);
 CREATE INDEX IF NOT EXISTS ix_lead_handoff        ON ma_lead(tenant_id, handed_off, consulted_by);
 
--- 线索对话消息（已归属线索）
+|-- 线索对话消息（已归属线索）
 CREATE TABLE IF NOT EXISTS ma_lead_message (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id     TEXT NOT NULL,
   run_id      TEXT,
   role        TEXT NOT NULL,
-  text        TEXT NOT NULL,
+  text        NOT NULL,
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_msg_lead ON ma_lead_message(lead_id, id);
+
+|-- 线索阶段变更历史（运营分析用：漏斗留存耗时、阶段到达率）
+CREATE TABLE IF NOT EXISTS ma_lead_stage_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id     TEXT NOT NULL,
+  tenant_id   TEXT NOT NULL DEFAULT 'default',
+  from_stage  TEXT NOT NULL,
+  to_stage    TEXT NOT NULL,
+  changed_at  INTEGER NOT NULL,
+  operated_by TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_log_lead ON ma_lead_stage_log(lead_id, changed_at);
+CREATE INDEX IF NOT EXISTS ix_log_tenant ON ma_lead_stage_log(tenant_id, changed_at);
 
 -- 运行期对话记录（尚未归属线索；lead_qualify 时按 run_key 归集到线索）
 CREATE TABLE IF NOT EXISTS ma_transcript (
@@ -168,6 +182,16 @@ CREATE TABLE IF NOT EXISTS ma_slot (
 );
 CREATE INDEX IF NOT EXISTS ix_slot_lookup ON ma_slot(tenant_id, clinic_id, slot_date, status);
 
+-- 号源缓存（HIS 同步用，TTL 缓存避免抖动）
+CREATE TABLE IF NOT EXISTS slot_cache (
+  clinic_id  TEXT NOT NULL,
+  date       TEXT NOT NULL,
+  tenant_id  TEXT NOT NULL DEFAULT 'default',
+  slots_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, clinic_id, date)
+);
+
 -- 预约单
 CREATE TABLE IF NOT EXISTS ma_appointment (
   appointment_id TEXT PRIMARY KEY,
@@ -180,6 +204,8 @@ CREATE TABLE IF NOT EXISTS ma_appointment (
   status         TEXT NOT NULL DEFAULT 'booked',
   external_id    TEXT,
   external_status TEXT,
+  arrived_at     INTEGER,
+  completed_at   INTEGER,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
 );
@@ -283,11 +309,41 @@ export async function getDb(): Promise<SqliteDatabase> {
  * 仅在列确实缺失时执行，全新库因 CREATE TABLE 已含该列而跳过。
  */
 async function runMigrations(conn: SqliteDatabase): Promise<void> {
+  // --- ma_lead analytics columns ---
+  const leadResult = await conn.prepare(`PRAGMA table_info(ma_lead)`).all();
+  const leadCols = (leadResult as Record<string, unknown>[]).map((r) => String(r.name));
+  if (!leadCols.includes('stage_updated_at')) {
+    await conn.exec(`ALTER TABLE ma_lead ADD COLUMN stage_updated_at INTEGER NOT NULL DEFAULT 0;`);
+  }
+
+  // --- ma_appointment analytics columns ---
   const apptResult = await conn.prepare(`PRAGMA table_info(ma_appointment)`).all();
   const apptCols = (apptResult as Record<string, unknown>[]).map((r) => String(r.name));
   if (!apptCols.includes('external_status')) {
     await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
   }
+  if (!apptCols.includes('arrived_at')) {
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN arrived_at INTEGER;`);
+  }
+  if (!apptCols.includes('completed_at')) {
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN completed_at INTEGER;`);
+  }
+
+  // --- ma_lead_stage_log (analytics stage transition log) ---
+  await conn.exec(`
+    CREATE TABLE IF NOT EXISTS ma_lead_stage_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_id     TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL DEFAULT 'default',
+      from_stage  TEXT NOT NULL,
+      to_stage    TEXT NOT NULL,
+      changed_at  INTEGER NOT NULL,
+      operated_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_log_lead ON ma_lead_stage_log(lead_id, changed_at);
+    CREATE INDEX IF NOT EXISTS ix_log_tenant ON ma_lead_stage_log(tenant_id, changed_at);
+  `);
+
   const projResult = await conn.prepare(`PRAGMA table_info(ma_project)`).all();
   const projCols = (projResult as Record<string, unknown>[]).map((r) => String(r.name));
   const projAdd: Record<string, string> = {
@@ -323,11 +379,41 @@ async function runMigrations(conn: SqliteDatabase): Promise<void> {
 
 /** 异步版 runMigrations（Turso HTTP 模式）。 */
 async function runMigrationsAsync(conn: SqliteDatabase): Promise<void> {
+  // --- ma_lead analytics columns ---
+  const leadResult = await conn.prepare(`PRAGMA table_info(ma_lead)`).all();
+  const leadCols = (leadResult as Record<string, unknown>[]).map((r) => String(r.name));
+  if (!leadCols.includes('stage_updated_at')) {
+    await conn.exec(`ALTER TABLE ma_lead ADD COLUMN stage_updated_at INTEGER NOT NULL DEFAULT 0;`);
+  }
+
+  // --- ma_appointment analytics columns ---
   const apptResult = await conn.prepare(`PRAGMA table_info(ma_appointment)`).all();
   const apptCols = (apptResult as Record<string, unknown>[]).map((r) => String(r.name));
   if (!apptCols.includes('external_status')) {
     await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN external_status TEXT;`);
   }
+  if (!apptCols.includes('arrived_at')) {
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN arrived_at INTEGER;`);
+  }
+  if (!apptCols.includes('completed_at')) {
+    await conn.exec(`ALTER TABLE ma_appointment ADD COLUMN completed_at INTEGER;`);
+  }
+
+  // --- ma_lead_stage_log (analytics stage transition log) ---
+  await conn.exec(`
+    CREATE TABLE IF NOT EXISTS ma_lead_stage_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_id     TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL DEFAULT 'default',
+      from_stage  TEXT NOT NULL,
+      to_stage    TEXT NOT NULL,
+      changed_at  INTEGER NOT NULL,
+      operated_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_log_lead ON ma_lead_stage_log(lead_id, changed_at);
+    CREATE INDEX IF NOT EXISTS ix_log_tenant ON ma_lead_stage_log(tenant_id, changed_at);
+  `);
+
   const projResult = await conn.prepare(`PRAGMA table_info(ma_project)`).all();
   const projCols = (projResult as Record<string, unknown>[]).map((r) => String(r.name));
   const projAdd: Record<string, string> = {

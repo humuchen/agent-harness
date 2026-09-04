@@ -52,6 +52,9 @@ function rowToAppointment(r: Record<string, unknown>): AppointmentRecord {
     status: r.status as AppointmentRecord['status'],
     externalId: (r.external_id as string) ?? undefined,
     externalStatus: (r.external_status as string) ?? undefined,
+    arrivedAt: r.arrived_at != null ? Number(r.arrived_at) : undefined,
+    completedAt: r.completed_at != null ? Number(r.completed_at) : undefined,
+    updatedAt: Number(r.updated_at),
     createdAt: Number(r.created_at),
   };
 }
@@ -153,6 +156,34 @@ export async function bookSlotWithinTx(
       now
     );
   return rowToAppointment(await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), apptId) as Record<string, unknown>);
+}
+
+/** 标记预约单到院（幂等）→ 设置 status='arrived', arrived_at。 */
+export async function markArrived(appointmentId: string): Promise<boolean> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const now = Date.now();
+    const res = await db.prepare(
+      `UPDATE ma_appointment
+       SET status = 'arrived', arrived_at = ?, updated_at = ?
+       WHERE appointment_id = ? AND status IN ('booked', 'arrived', 'completed')`
+    ).run(now, now, appointmentId);
+    return res.changes > 0;
+  }, '标记到院');
+}
+
+/** 标记预约单完成/就诊（幂等）→ 设置 status='completed', completed_at。 */
+export async function markCompleted(appointmentId: string): Promise<boolean> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const now = Date.now();
+    const res = await db.prepare(
+      `UPDATE ma_appointment
+       SET status = 'completed', completed_at = ?, updated_at = ?
+       WHERE appointment_id = ? AND status IN ('arrived', 'completed')`
+    ).run(now, now, appointmentId);
+    return res.changes > 0;
+  }, '标记完成');
 }
 
 /** 便捷封装：自带事务的号源锁定 + 建预约单。 */

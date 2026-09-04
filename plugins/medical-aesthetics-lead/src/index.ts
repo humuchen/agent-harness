@@ -5,6 +5,7 @@ import { registerQualifyTool } from './tools/qualify';
 import { registerCaptureTool } from './tools/capture';
 import { registerBookTool } from './tools/book';
 import { registerHandoffTool } from './tools/handoff';
+import { registerAnalyticsTool } from './tools/analytics';
 import { registerKbTool } from './tools/kb';
 import { leadServerExtension } from './server/routes';
 import { leadDashboardView } from './web/dashboard';
@@ -44,6 +45,7 @@ export const leadPlugin: PluginModule = {
     registerBookTool(ctx.tools);
     registerHandoffTool(ctx.tools);
     registerKbTool(ctx.tools);
+    registerAnalyticsTool(ctx.tools);
 
     // 2) 注册服务端扩展
     ctx.server?.registerExtension(leadServerExtension);

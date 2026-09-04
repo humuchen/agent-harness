@@ -11,6 +11,8 @@ import { verifyWebhook, verifyAdminToken } from '../infra/signature';
 import { toMaError } from '../infra/errors';
 import { getPluginContext } from '../runtime';
 import { makeTaskId } from '@agent-harness/core';
+import { runAnalyticsQuery } from '../analytics/analytics-service';
+import type { AnalyticsQuery } from '../analytics/types';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -339,9 +341,7 @@ const callback: PluginRouteHandler = async (req, res) => {
   }
 };
 
-/**
- * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敛到统一前缀
- * /api/plugins/medical-aesthetics-lead/*。
+/**\n * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敛到统一前缀\n * /api/plugins/medical-aesthetics-lead/*。
  */
 export const leadServerExtension: ServerExtension = {
   id: 'medical-aesthetics-lead',
