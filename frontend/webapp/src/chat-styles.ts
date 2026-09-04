@@ -1564,7 +1564,6 @@ export const chatStyles = [
       background: #f0a020;
     }
     /* 成本节点专属：竖排「成本 / 用量」标签 + 右侧指标卡片。
-       取消树状左边线，改用淡橙黄卡片承载，竖排标签用 writing-mode 直立排列，
        与截图中的视觉意图一致但更精致；圆点带光晕、指标右对齐且不拥挤。 */
     .tnode.kind-cost {
       border-left: none;
@@ -1598,9 +1597,9 @@ export const chatStyles = [
       padding: 0;
       white-space: nowrap;
     }
-    /* 成本节点展开态：竖排「成本 / 用量」标签，撑高 summary 让整卡更醒目（图二）。 */
+
     .tnode.kind-cost[open] > summary .tlabel {
-      writing-mode: vertical-rl;
+      // writing-mode: vertical-rl;
       text-orientation: upright;
       letter-spacing: 3px;
       font-size: 13px;
@@ -1652,8 +1651,8 @@ export const chatStyles = [
     /* 成本节点展开后承载明细的 body 区：左侧留出标题列的宽度，避免与竖排标题重叠。 */
     .tnode.kind-cost > .tcost-body {
       padding: 10px 12px 12px 28px;
-      border-left: 1px dashed color-mix(in srgb, #f0a020 30%, var(--ah-border));
-      margin-left: 14px;
+      border: 1px dashed color-mix(in srgb, #f0a020 30%, var(--ah-border));
+      margin: 5px;
     }
     .tnode.kind-cost > .tcost-body + .tchildren {
       padding-left: 14px;

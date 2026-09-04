@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>医美客服 Agent 落地架构</title>
+</head>
+<body>
+<div style="width:900px;padding:24px;box-sizing:border-box">
+  <style>
+    .row{display:flex;gap:16px;flex-wrap:wrap;margin:8px 0}
+    .col{flex-direction:column}
+    .node{background:var(--card);border:1px solid var(--border);border-radius:10px;
+          padding:12px 14px;font-size:12.5px;line-height:1.5;color:var(--foreground);
+          box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+    .node.b{font-weight:600;border-color:var(--accent);background:color-mix(in srgb,var(--accent)10%,transparent)}
+    .node.g{border-color:#22c57e33;background:color-mix(in srgb,#22c57e12,transparent)}
+    .node.o{border-color:#f59e0b33;background:color-mix(in srgb,#f59e0b12,transparent)}
+    h2{font-size:15px;margin:18px 0 8px;color:var(--foreground)}
+    h3{font-size:13px;margin:12px 0 4px}
+    .arrow{text-align:center;color:var(--muted-foreground);font-size:11px;padding:2px 0}
+    .edge{fill:none;stroke:var(--border);stroke-width:1.2;marker-end:url(#arrowhead)}
+    .edge.bold{stroke:var(--accent);stroke-width:2}
+    .edge.green{stroke:#22c57e;stroke-width:1.8}
+    .edge.orange{stroke:#f59e0b;stroke-width:1.8}
+    .label{font-size:10.5px;fill:var(--muted-foreground)}
+    svg{display:block;width:100%;height:auto}
+    .legend{font-size:11px;color:var(--muted-foreground);margin-top:8px}
+    .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+    .dot-b{background:var(--accent);border:1px solid var(--border)}
+    .dot-g{background:#22c57e;border:1px solid #22c57e33}
+    .dot-o{background:#f59e0b;border:1px solid #f59e0b33}
+    code{background:color-mix(in srgb,var(--foreground)8%,transparent);padding:1px 4px;border-radius:3px;font-size:11px}
+  </style>
+
+  <h2>医美客服 Agent 落地 — 项目结构 & 数据流</h2>
+
+  <h3>1. Agent 注册 & 发现层</h3>
+  <div class="row">
+    <div class="node g">
+      <strong>AgentRegistry</strong><br/>
+      `backend/core/src/agents/registry.ts`<br/>
+      - 倒排索引：<code>capability → agentId</code><br/>
+      - 心跳超时扫描（30s）<br/>
+      - 启动期 <code>preload()</code> 预热
+    </div>
+    <div class="node">
+      <strong>AgentCard</strong><br/>
+      `backend/core/src/agents/types.ts:64`<br/>
+      - <code>id, name, domain</code><br/>
+      - <code>assembly.{systemPrompt, skills, tools, mcpServers}</code><br/>
+      - <code>isolation</code>（none/os/container）
+    </div>
+    <div class="node">
+      <strong>TaskRouter</strong><br/>
+      `backend/core/src/router/router.ts`<br/>
+      路由优先级：<br/>
+      1. <code>agentId</code> 直接寻址<br/>
+      2. <code>domain</code> 过滤 + 打分<br/>
+      3. <code>classify</code> 意图分类<br/>
+      4. <code>fallback</code> → default
+    </div>
+  </div>
+
+  <div class="arrow">↓ 注册 / 查询 API ↓</div>
+
+  <div class="row">
+    <div class="node g">
+      <strong>POST /api/agents</strong><br/>
+      `server.ts:2415`<br/>
+      注册 4 个医美子 agent：<br/>
+      • <code>project-advisor</code><br/>
+      • <code>pricing-agent</code><br/>
+      • <code>booking-agent</code><br/>
+      • <code>lead-capture-agent</code>
+    </div>
+    <div class="node">
+      <strong>GET /api/agents</strong><br/>
+      `server.ts:1724`<br/>
+      支持 <code>?domain=medical-aesthetics</code><br/>
+      和 <code>?capability=...</code> 查询
+    </div>
+    <div class="node g">
+      <strong>POST /api/teams</strong><br/>
+      `server.ts:2427`<br/>
+      定义协作团队：<br/>
+      - <code>pricing-team</code> (parallel)<br/>
+      - <code>consultation-booking</code> workflow
+    </div>
+  </div>
+
+  <h3>2. 运行 & 派发层</h3>
+  <div class="row">
+    <div class="node b">
+      <strong>run-queue</strong><br/>
+      `access/server/src/run-queue.ts`<br/>
+      - 4 优先级：<code>urgent &gt; high &gt; normal &gt; low</code><br/>
+      - 并发上限：<code>RUN_CONCURRENCY=4</code><br/>
+      - 同 sessionKey 串行化<br/>
+      - 事件重放缓冲（<code>RUN_QUEUE_BUFFER=500</code>）
+    </div>
+    <div class="node">
+      <strong>assembleAgent</strong><br/>
+      `access/server/src/runner.ts:259`<br/>
+      - 按 <code>card.assembly</code> 收窄工具面<br/>
+      - 注入 <code>delegate_task</code> 子 agent 工具<br/>
+      - 租户隔离：<code>tenantSessionKey</code><br/>
+      - 护栏作用域：<code>deriveGuardrailScopes(card)</code>
+    </div>
+    <div class="node b">
+      <strong>SSE /api/run</strong><br/>
+      `server.ts:2767`<br/>
+      - <code>job:accepted</code> → jobId<br/>
+      - <code>llm:token</code> → 流式回复<br/>
+      - <code>llm:usage</code> → 上下文用量<br/>
+      - <code>run:end</code> → 终态
+    </div>
+  </div>
+
+  <div class="arrow">↓ delegate_task ↓</div>
+
+  <div class="row">
+    <div class="node">
+      <strong>delegate_task 工具</strong><br/>
+      `subagent-tools.ts:53`<br/>
+      参数：<code>task, agent, maxSteps, timeoutSec</code><br/>
+      - 递归 <code>assembleAgent()</code><br/>
+      - 独立 sessionKey：<code><span style="opacity:0.6">wf:</span>parent::child</span></code><br/>
+      - 独立 AbortController + 超时<br/>
+      - 图片附件透传 ✅
+    </div>
+    <div class="node">
+      <strong>SubAgentManager</strong><br/>
+      `backend/core/src/subagent.ts`<br/>
+      - <code>create / markRunning / complete / fail / cleanup</code><br/>
+      - 单例，支撑 agent 树形追踪
+    </div>
+    <div class="node">
+      <strong>runAgentTask</strong><br/>
+      `access/server/src/agent-run.ts:29`<br/>
+      - 本地执行 agent 任务的最终落点<br/>
+      - 租户隔离 + sessionKey：<code><span style="opacity:0.6">tenant::a2a:</span>card.id</code><br/>
+      - 被 workflow、A2A、handoff 复用
+    </div>
+  </div>
+
+  <h3>3. 工作流编排层</h3>
+  <div class="row">
+    <div class="node o">
+      <strong>DagEngine</strong><br/>
+      `backend/core/src/workflow/dag.ts`（推测）<br/>
+      - 拓扑排序 + 依赖分析<br/>
+      - <code>validateWorkflow()</code> fail-fast<br/>
+      - <code>compensate</code> 回滚支持
+    </div>
+    <div class="node o">
+      <strong>WorkflowExecutor</strong><br/>
+      `access/server/src/workflow-executor.ts:34`<br/>
+      - <code>agentRef</code> → 单 agent 执行<br/>
+      - <code>teamRef</code> → TeamManager 并发执行<br/>
+      - <code>wf:<span style="opacity:0.6">wfId:stepId</span></code> sessionKey 隔离<br/>
+      - 事件透传 SSE
+    </div>
+    <div class="node o">
+      <strong>TeamManager</strong><br/>
+      `backend/core/src/teams/index.ts`<br/>
+      模式：<code>sequential | parallel | round-robin | competitive</code><br/>
+      - 成员存在性校验<br/>
+      - <code>executeTask(teamId, input, dispatch)</code>
+    </div>
+  </div>
+
+  <div class="arrow">↓ /api/workflows ↓</div>
+
+  <div class="row">
+    <div class="node o">
+      <strong>POST /api/workflows</strong><br/>
+      `server.ts:2408`<br/>
+      <code>WorkflowDef = { id, steps }</code><br/>
+      每步：<code>agentRef, inputMapping, dependsOn</code><br/>
+      SSE 直播：<code>wf:step:start/done</code>
+    </div>
+    <div class="node o">
+      <strong>GET /api/workflows/:id</strong><br/>
+      `server.ts:1754`<br/>
+      - 执行快照查询<br/>
+      - <code>POST /api/workflows/:id/resume</code> 断点续跑
+    </div>
+  </div>
+
+  <h3>4. 跨实例通信 & 权限层</h3>
+  <div class="row">
+    <div class="node">
+      <strong>chat-bus</strong><br/>
+      `access/server/src/chat-bus.ts`<br/>
+      - Redis pub/sub 广播<br/>
+      - <code>session:transfer</code> 事件<br/>
+      - <code>lockSession</code> 防重复
+    </div>
+    <div class="node">
+      <strong>RoleBasedAuthorizer</strong><br/>
+      `access/server/src/authz.ts:242`<br/>
+      - admin: 全权限<br/>
+      - operator: 出诊/付款/转接<br/>
+      - viewer: 只读<br/>
+      - <code>UI_ROLE_PERMISSIONS</code> 可自定义
+    </div>
+    <div class="node">
+      <strong>SessionLock</strong><br/>
+      `access/server/src/chat-sessions.ts` 等价实现<br/>
+      - 跨坐席转接时锁定 sessionKey<br/>
+      - 防止竞争写入
+    </div>
+  </div>
+
+  <h3>5. 前端 UI 层</h3>
+  <div class="row">
+    <div class="node">
+      <strong>ah-agent-picker</strong><br/>
+      `frontend/webapp/src/components/agent-picker.ts`<br/>
+      - 下拉胶囊按钮<br/>
+      - <code>client.listAgents()</code> → <code>GET /api/agents</code><br/>
+      - <code>@agent-change</code> 事件 → <code>persistSessionSettings</code>
+    </div>
+    <div class="node">
+      <strong>聊天主界面</strong><br/>
+      `frontend/webapp/src/chat.ts`<br/>
+      - <code>this.agentId</code> → run payload<br/>
+      - <code>refreshAgents()</code> 监听插件变更<br/>
+      - run payload 透传：<code>agentId, sessionId, model, mode, attachments</code>
+    </div>
+    <div class="node">
+      <strong>ChatRunRuntime</strong><br/>
+      `frontend/webapp/src/chat-run-runtime.ts`<br/>
+      - SSE 事件消费<br/>
+      - 断线重传：<code>runWithReconnect</code><br/>
+      - <code>getAgentId()</code> → run payload
+    </div>
+  </div>
+
+  <h3>6. 医美领域扩展（需构建）</h3>
+  <div class="row">
+    <div class="node o">
+      <strong>lead-qualify Skill</strong><br/>
+      ⚠️ <em>未实现</em><br/>
+      注册工具：<code>qualify_lead, handoff_to_consultant</code><br/>
+      通过 <code>SkillRegistry</code> 注入 lead-capture-agent
+    </div>
+    <div class="node o">
+      <strong>MedicalLead 数据模型</strong><br/>
+      ⚠️ <em>未实现</em><br/>
+      字段：<code>id, tenantId, name, phone, project[], budget, grade, stage</code><br/>
+      存储：SQLite / chat-session metadata
+    </div>
+    <div class="node o">
+      <strong>lead API 接口</strong><br/>
+      ⚠️ <em>未实现</em><br/>
+      <code>POST /api/leads</code>（qualify + grade）<br/>
+      <code>POST /api/leads/:id/handoff</code>（chat-bus 转接）
+    </div>
+  </div>
+
+  <h3>7. 数据流闭环</h3>
+  <div style="text-align:center;margin:20px 0">
+    <div style="display:inline-block;text-align:left">
+      <div class="row" style="justify-content:center">
+        <div class="node" style="font-size:11px">
+          <strong>客户私信</strong><br/>
+          → 主 Agent 接待<br/>
+          → 意图识别
+        </div>
+      </div>
+      <div class="arrow">↓ delegate_task ↓</div>
+      <div class="row" style="justify-content:center">
+        <div class="node" style="font-size:11px">
+          <strong>子 Agent 分流</strong><br/>
+          project-advisor / pricing-agent / booking-agent / lead-capture
+        </div>
+      </div>
+      <div class="arrow">↓ Tool 调用 ↓</div>
+      <div class="row" style="justify-content:center">
+        <div class="node" style="font-size:11px">
+          <strong>结果回传</strong><br/>
+          → 主 Agent 整合<br/>
+          → 自然语言回复
+        </div>
+      </div>
+      <div class="arrow">↓ 高意向 A 级 ↓</div>
+      <div class="row" style="justify-content:center">
+        <div class="node" style="font-size:11px">
+          <strong>lead_handoff</strong><br/>
+          → chat-bus:session:transfer<br/>
+          → 咨询师接管
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="dot b"></span> 已实现核心原语
+    <span style="margin-left:12px"><span class="dot g"></span> API 接口层</span>
+    <span style="margin-left:12px"><span class="dot o"></span> 待构建扩展</span>
+  </div>
+
+  <div style="margin-top:8px;font-size:11px;color:var(--muted-foreground)">
+    关键路径：<code>delegate_task</code> → <code>subagent-tools.ts:91</code> → <code>assembleAgent()</code> → <code>AgentCard.assembly</code> → <code>harness.run()</code> → SSE 回传
+    <br/>记忆隔离：<code>tenantSessionKey(tenantId, sessionKey)</code> → <code>SqliteMemoryStore</code>
+    <br/>租户护栏：<code>enforceTenantIsolation</code> → <code>policyEngine</code> → <code>deriveGuardrailScopes(card)</code>
+  </div>
+</div>
+</body>
+</html>
