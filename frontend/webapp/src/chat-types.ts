@@ -55,6 +55,8 @@ export interface ChatMsg {
   attachments?: UploadedFile[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
   plan?: ExecutionPlanView;
+  /** 本轮 run 期间是否触发过上下文压缩（最旧对话被自动压缩/淘汰），用于在该条气泡下方显示「已压缩」标识。 */
+  compressed?: boolean;
 }
 
 export interface SessionView {

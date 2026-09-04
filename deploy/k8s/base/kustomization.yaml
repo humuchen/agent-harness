@@ -38,5 +38,5 @@ resources:
   - service.yaml
   - ingress.yaml
   - hpa.yaml
-  - redis.yaml   # Redis 已默认启用，运行队列走 redis://redis:6379（见 Secret）
+  - redis.yaml   # Redis 单副本（开发/测试）。生产建议用托管 Redis ——详见 overlays/eks/kustomization.yaml 的注释
   - pvc.yaml     # 记忆持久化共享卷（RWX，多副本共享 /app/data）

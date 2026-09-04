@@ -51,6 +51,10 @@ patches:
     target:
       kind: ConfigMap
       name: agent-harness
+  - path: configmap-prod-patch.yaml
+    target:
+      kind: ConfigMap
+      name: agent-harness
 
 # R6：把 deploy-config ConfigMap 的 host 写进 Ingress 的 rules host 与 tls hosts。
 # 改域名只动 deploy-config.yaml 一处，无需改 base ingress.yaml。

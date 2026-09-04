@@ -71,6 +71,8 @@ export interface MirroredMsg {
   /** 用户消息携带的附件（图片/文件预览）。随镜像落盘需在体积上限内（超大图不持久化）。 */
   attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
   error?: boolean;
+  /** 本轮 run 期间是否触发过上下文压缩，随消息落盘以在恢复后于气泡下方还原「已压缩」标识。 */
+  compressed?: boolean;
 }
 
 const clampStr = (v: unknown, cap = MAX_CONTENT): string =>
@@ -172,7 +174,8 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
       ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
       ...sanitizePlanStatus(o.planStatus),
-      ...(o.error === true ? { error: true } : {})
+      ...(o.error === true ? { error: true } : {}),
+      ...(o.compressed === true ? { compressed: true } : {})
     });
   }
   return out;

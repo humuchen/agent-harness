@@ -14,14 +14,17 @@ import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
 import { isRetrievalTool, safeJson } from './utils/chat-utils';
 import { escapeHtml } from './utils/markdown';
+
 // 上下文用量圆环（已抽离到 chat-context-usage.ts，降低 chat.ts 单体规模）。
 import { renderCtxRing, selectContextUsage } from './chat-context-usage';
+
 // 纯渲染/格式化工具（已抽离到 chat-render-utils.ts）。
 import {
   fileIcon,
   formatSize,
   buildPlanStatusLookup
 } from './chat-render-utils';
+
 // 消息渲染簇（已抽离到 chat-message-render.ts，交互态经 ChatRenderCtx 数据+回调 opts 传参，行为不变）。
 import {
   renderConnBanner,
@@ -33,10 +36,13 @@ import {
   renderPlanCard,
   type ChatRenderCtx
 } from './chat-message-render';
+
 // 滚动跟随簇（已抽离到 chat-scroll.ts，作为轻量控制器由 AhChat 持有为 this.scrollCtl）。
 import { ChatScroll } from './chat-scroll';
+
 // 打字机引擎（已抽离到 chat-typewriter.ts，作为轻量控制器由 AhChat 持有为 this.typewriter）。
 import { ChatTypewriter } from './chat-typewriter';
+
 // 运行管线控制器（已抽离到 chat-run-runtime.ts：ingest / dispatchPrompt / resumeLost / stop /
 // 看门狗 / 可见性体检 + 断连重连续传引擎；AhChat 经 RunDeps 桥接领域数据 / 行为方法）。
 import { ChatRunRuntime, type RunDeps } from './chat-run-runtime';
@@ -74,6 +80,7 @@ import type {
 import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
+
 // Slash Command 框架
 import {
   handleSlashCommand,
@@ -84,6 +91,7 @@ import './components/file-upload';
 import './components/model-picker';
 import './components/mode-picker';
 import './components/agent-picker';
+
 // 副作用导入：注册 <ah-command-suggestions> 自定义元素。
 // 不能写成 `import { AhCommandSuggestions }` —— 该类在 chat.ts 里只作为类型
 // 注解（private suggestEl?: AhCommandSuggestions）使用，Vite/esbuild 会把它当作
@@ -119,6 +127,7 @@ export class AhChat extends LitElement {
 
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
+
   /** PC 端侧栏折叠态（默认展开）。 */
   @state() sidebarCollapsed = false;
 
@@ -144,7 +153,8 @@ export class AhChat extends LitElement {
    * 同屏只开一个抽屉，按钮点击即切换目标消息。
    */
   @state() private traceDrawerMsg: ChatMsg | null = null;
-  @state() private traceDrawerSection: 'trace' | 'insights' | 'confidence' = 'trace';
+  @state() private traceDrawerSection: 'trace' | 'insights' | 'confidence' =
+    'trace';
 
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
@@ -161,10 +171,12 @@ export class AhChat extends LitElement {
 
   /** 主输入框（用于选中命令 / 移除胶囊后回收焦点并重算高度）。 */
   // 用 class 精确定位主输入框：页面里还有「全屏编辑」用的 .fe-input textarea。
-  @query('textarea.composer-input') private inputEl?: HTMLTextAreaElement | null;
+  @query('textarea.composer-input')
+  private inputEl?: HTMLTextAreaElement | null;
 
   /** 命令联想组件（用于把输入框的键盘事件转发给它处理）。 */
-  @query('ah-command-suggestions') private suggestEl?: AhCommandSuggestions | null;
+  @query('ah-command-suggestions')
+  private suggestEl?: AhCommandSuggestions | null;
 
   /** 正在编辑的用户消息 id；-1 表示不在编辑态。 */
   @state() private editingMsgId = -1;
@@ -185,8 +197,10 @@ export class AhChat extends LitElement {
   > = new Map();
 
   private nextId = 1;
+
   /** 滚动跟随控制器（Phase 4 抽离到 chat-scroll.ts）：持有 scrollRef / 钉底状态 / 浮动按钮显隐。 */
   private scrollCtl = new ChatScroll(this);
+
   /** 打字机引擎（Phase 3 抽离到 chat-typewriter.ts）：持有 pending/received/finalBy 缓冲 + tick 定时器。 */
   private typewriter = new ChatTypewriter({
     patchSession: (sid, p) => this.patchSession(sid, p),
@@ -531,6 +545,7 @@ export class AhChat extends LitElement {
     // 静默看门狗：可见状态下流式会话超过 60s 无任何事件（read() 可能静默挂死），
     // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
     this.runRt.startWatchdog();
+
     // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
     // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
     const loadList = () =>
@@ -590,20 +605,24 @@ export class AhChat extends LitElement {
     try {
       const state = await client.getState();
       // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
-      this.llmReady = !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
+      this.llmReady =
+        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
       this.mode = this.llmReady ? 'real' : 'mock';
       // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
       // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
     } catch {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
+
     // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
     await this.refreshAgents();
+
     // 插件启用/停用会改变已注册 agent 集合，监听后实时刷新下拉（使已禁用插件的 agent 即时隐藏）。
     window.addEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
     );
+
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
     try {
@@ -612,6 +631,7 @@ export class AhChat extends LitElement {
     } catch {
       /* ignore */
     }
+
     // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
     // 已登录（本地有用户名）才启动；未登录（匿名）无 owner，服务端会 401，无需连接。
     if (getUsername()) {
@@ -628,6 +648,7 @@ export class AhChat extends LitElement {
       'visibilitychange',
       this.runRt.onVisibilityChange
     );
+
     // 跨设备实时同步：组件卸载时停掉常驻 SSE 并移除事件监听（避免泄漏/重复订阅）。
     window.removeEventListener(
       'ah-chat-sync',
@@ -1034,11 +1055,13 @@ export class AhChat extends LitElement {
     this.sidebarOpen = false;
     this.input = '';
     this.cmdName = '';
+
     // 关键修复：切换会话【不再】中止进行中的 run，也不清空其打字机缓冲 / 追踪状态。
     // 进行中的 run 仍向所属会话缓冲写内容，切回时实时恢复（见 this.threads / this.pending / this.traces）。
     // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
     // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
     const localBuf = this.threads[id];
+
     // 会话级用量快照（随历史镜像恢复）；getChatSession 不含 usage，仅 history 镜像携带。
     let recoveredUsage: MirroredUsage | null = null;
     if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
@@ -1065,6 +1088,7 @@ export class AhChat extends LitElement {
               : {})
           }))
         );
+
         // 空消息属正常（新建会话尚未发送任何消息，服务端返回 messages:[]）：
         // 直接按合法空会话走合并/落内存，不再当作恢复失败抛异常。
         // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
@@ -1124,6 +1148,7 @@ export class AhChat extends LitElement {
           );
         } else {
           this.threads[id] = localBuf ?? [];
+
           // 区分「真·服务端不可达（网络/超时/5xx）」与「会话本就为空或不存在（404 且无镜像）」：
           // 后者无数据可恢复、也非故障，不打吓人告警、不打 restoreFailed（避免每次进入空会话都重试弹窗）；
           // 仅前者标记 restoreFailed 并提示，待服务端恢复后再次进入自动重试。
@@ -1144,8 +1169,10 @@ export class AhChat extends LitElement {
     // 恢复历史后补全调用链路中 assistant 消息的内容（修复旧 trace 中 assistant 为空）。
     this.restoreTraceMessages(id);
     this.messages = this.threads[id] ?? [];
+
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
     this.scrollCtl.resetToBottom();
+
     // 用量快照从会话镜像回填（若有），避免刷新/切换后上下文用量归零或回退粗估；
     // 无快照则保持 null，由后续 llm:usage 事件或回退估算补充。
     this.backendUsage = recoveredUsage?.backendUsage ?? null;
@@ -1907,7 +1934,9 @@ export class AhChat extends LitElement {
    * 输入框清空留给参数，并把焦点与光标交还给用户。
    */
   private onCommandSelect(name: string): void {
-    const next = String(name ?? '').trim().replace(/^\//, '');
+    const next = String(name ?? '')
+      .trim()
+      .replace(/^\//, '');
     if (!next) return;
     this.cmdName = next;
     this.input = '';
@@ -2289,6 +2318,7 @@ export class AhChat extends LitElement {
       traceDrawerSection: this.traceDrawerSection,
       connState: this.connState,
       jobBy: this.runRt.jobMap,
+      stopped: this.runRt.stoppedMap,
       planExec: this.planExec,
       onEditingInput: (v: string) => {
         this.editingDraft = v;
@@ -2303,7 +2333,10 @@ export class AhChat extends LitElement {
       resumeLost: (id: string) => void this.runRt.resumeLost(id),
       confirmPlan: (m: ChatMsg) => void this.confirmPlan(m),
       cancelPlan: (msgId: number) => this.cancelPlan(msgId),
-      setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => {
+      setTraceDrawer: (
+        m: ChatMsg | null,
+        section: 'trace' | 'insights' | 'confidence'
+      ) => {
         this.traceDrawerMsg = m;
         this.traceDrawerSection = section;
       },
@@ -2604,7 +2637,8 @@ export class AhChat extends LitElement {
                         style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
                       >
                         <span
-                          >当前使用离线 Mock 模型，配置你的 API Key 后可使用真实模型。</span
+                          >当前使用离线 Mock 模型，配置你的 API Key
+                          后可使用真实模型。</span
                         >
                         <button
                           class="btn ghost"
@@ -2771,7 +2805,8 @@ export class AhChat extends LitElement {
                     // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
                     // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
                     this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
-                    if (typeof d.baseUrl === 'string') this.modelBaseUrl = d.baseUrl;
+                    if (typeof d.baseUrl === 'string')
+                      this.modelBaseUrl = d.baseUrl;
                     try {
                       localStorage.setItem('ah_model', this.model);
                     } catch {

@@ -18,3 +18,4 @@ deploy/k8s/secret.yaml
 # 整个仓库）。仅排除 memory/，注册壳 .workbuddy/skills/ 仍需入库（团队共享的发现入口）。
 # 文件仍保留在本地磁盘，记忆功能不受影响。
 .workbuddy/memory/
+.git.bak/

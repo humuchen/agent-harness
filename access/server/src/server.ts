@@ -149,11 +149,16 @@ import { logConfigValidation } from './config-schema';
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 import { installScrubber } from './log-scrub';
 
-import { DEFAULTS } from './config-defaults';
+import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
-import { resolveTenantContext, type TenantContext } from '@agent-harness/core';
+import {
+  resolveTenantContext,
+  type TenantContext,
+  audit as coreAudit,
+  enableAuditFile as coreEnableAuditFile,
+} from '@agent-harness/core';
 
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
@@ -182,6 +187,7 @@ import {
   cookieValue,
   authCookieValue,
   clearAuthCookie,
+  isAuthSecretConfigured,
   getProfile,
   changePassword,
   revokeAllTokens,
@@ -276,6 +282,29 @@ function oauthStateCookie(
   return parts.join('; ');
 }
 
+/** 构造 refresh cookie 串（HttpOnly；30 天有效，与 REFRESH_TTL_MS 对齐）。登录 / refresh / OAuth 回调统一复用。无 token 时返回 null（不设置该 cookie）。 */
+function refreshCookieValue(
+  req: { headers?: Record<string, unknown> },
+  refreshToken: string | undefined
+): string | null {
+  if (!refreshToken) return null;
+  const parts = [
+    `ah_refresh=${refreshToken}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/',
+    `Max-Age=${REFRESH_TTL_MS / 1000}`,
+    `Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`
+  ];
+  if (!isReqLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/** 构造 set-cookie 头数组：过滤掉 null（无 refresh token 时不下发该 cookie），产出 HTTP 规范的「每元素一个 Set-Cookie 头」数组。 */
+function setCookies(...cookies: (string | null)[]): string[] {
+  return cookies.filter((c): c is string => !!c);
+}
+
 /** 恒定时间字符串比较，避免 CSRF state 比较泄漏时序差。长度不同直接拒。 */
 function safeEqualString(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -349,12 +378,13 @@ const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
 );
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
-const RATE_LIMIT = Number(
-  process.env.RATE_LIMIT ?? (DEFAULTS.RATE_LIMIT as number)
-);
-const RATE_WINDOW_MS = Number(
-  process.env.RATE_LIMIT_WINDOW_MS ?? (DEFAULTS.RATE_WINDOW_MS as number)
-);
+// 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
+const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
+// P0 修复：原代码误读 DEFAULTS.RATE_WINDOW_MS（该键不存在）→ Number(undefined)=NaN →
+// 桶 resetAt 为 NaN → 一旦超阈值该 IP 永久 429 且 retry-after=NaN。正确键名为 RATE_LIMIT_WINDOW_MS。
+const RATE_WINDOW_MS = cfgNum('RATE_LIMIT_WINDOW_MS', DEFAULTS.RATE_LIMIT_WINDOW_MS as number);
+// 单已登录用户限流（防单账号滥用）；默认 60/60s，0=关闭。原内联读取 `|| 60` 对 env=0 静默变 60（关不掉）。
+const USER_RATE_LIMIT = cfgNum('USER_RATE_LIMIT', DEFAULTS.USER_RATE_LIMIT as number);
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
@@ -364,6 +394,14 @@ const authorizer: Authorizer = createAuthorizer(REQUIRE_AUTH);
 
 // 启动期配置校验：把「写错但静默启动」的 misconfig 显性化为日志告警（不阻断启动，向后兼容）。
 logConfigValidation();
+
+// 账户 token 签名密钥可见性提示：缺失 → 退化为每进程随机密钥，登录态重启即失效。
+// 关键配置缺失时，上方 logConfigValidation() 在 AH_STARTUP_CRITICAL=1 下已阻断启动。
+if (!isAuthSecretConfigured()) {
+  console.warn(
+    '[auth] ⚠️ AH_AUTH_SECRET / AH_CRYPTO_KEY 未配置：账户登录态将退化为每进程随机密钥，服务重启即全部失效。生产务必配置 64hex 密钥。'
+  );
+}
 
 // P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 if (process.env.LOG_SCRUB_ENABLED === 'true') {
@@ -410,12 +448,30 @@ function isSseEndpoint(req: IncomingMessage): boolean {
   return path === '/api/events' || path === '/api/chat/stream';
 }
 
-/** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。 */
+/** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。
+ * 委扲 @agent-harness/core 的 audit()（结构化 AuditEvent + enableAuditFile 文件句柄管理），
+ * 取代原先裸写 appendFile 的非结构化实现，支持 pluggable auditSink 与 crash-safe 落盘。 */
 function audit(rec: Record<string, unknown>): void {
+  const outcome = rec.status != null
+    ? (Number(rec.status) >= 400 ? 'failure' : Number(rec.status) >= 300 ? 'denied' : 'success')
+    : (rec.outcome as 'success' | 'failure' | 'denied' | 'info' | undefined) ?? 'info';
+  void coreAudit({
+    tenantId: (rec.tenantId as string | null | undefined) ?? null,
+    actor: (rec.actor as string | null | undefined) ?? (rec.authed ? String(rec.sub ?? 'authenticated') : 'anonymous'),
+    action: (rec.action as string) ?? (rec.kind === 'action' ? String(rec.kind) : 'request'),
+    outcome,
+    target: rec.target ? String(rec.target) : undefined,
+    detail: {
+      method: rec.method,
+      path: rec.path,
+      ip: rec.ip,
+      authed: rec.authed,
+      status: rec.status,
+      ...(rec.detail as Record<string, unknown> | undefined),
+    },
+  });
+  // 向 stdout 同步打印一份 JSON 行，供容器日志采集。
   const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
-  if (AUDIT_LOG) {
-    appendFile(AUDIT_LOG, line + '\n').catch(() => {});
-  }
   console.log('[audit] ' + line);
 }
 
@@ -499,14 +555,21 @@ async function guard(
     // 将解析后的租户上下文附加到 AuthContext，供下游消费。
     (ctx as AuthContext & { tenantCtx?: TenantContext }).tenantCtx = tenant;
   }
-  // SSE 长连接不计入全局固定窗口：其重连/保活特性会在刷新时产生瞬时请求尖峰，
-  // 与短 API 共享同一 120/60s 桶极易误伤；生产环境仍受连接数/代理层保护。
-  const { limited, retryAfter } = isSseEndpoint(req)
+  // SSE 长连接不计入固定窗口限流：其重连/保活特性会在刷新时产生瞬时请求尖峰，
+  // 与短 API 共享同一 60s 桶极易误伤——故 IP 桶与用户桶都豁免（此前只豁免了 IP 桶，
+  // 用户刷新打开流时仍会被用户桶误伤）。生产环境仍受连接数/代理层保护。
+  const isSse = isSseEndpoint(req);
+  const ipResult = isSse
     ? { limited: false, retryAfter: 0 }
     : rateLimited(ip, RATE_LIMIT, RATE_WINDOW_MS);
-  // P1-5: 已登录用户按 sub 限流（防单账号滥用）
-  const userRateLimit = ctx ? rateLimited(ctx.sub, Number(process.env.USER_RATE_LIMIT ?? 60) || 60, RATE_WINDOW_MS) : { limited: false, retryAfter: 0 };
-  if (limited || (ctx && userRateLimit.limited)) {
+  // P1-5: 已登录用户按 sub 限流（防单账号滥用）；SSE 同样豁免（见上）。
+  const userRateLimit = isSse || !ctx
+    ? { limited: false, retryAfter: 0 }
+    : rateLimited(ctx.sub, USER_RATE_LIMIT, RATE_WINDOW_MS);
+  // retry-after 取两个桶中较大者：用户桶阈值（60）通常比 IP 桶（120）更严、先满，
+  // 若只按 IP 桶剩余时间重试会立刻再撞墙形成风暴；对 SSE 还能刹住「用户桶拦但 retry-after=0 → 立即重连」的螺旋。
+  const retryAfter = Math.max(ipResult.retryAfter, userRateLimit.retryAfter);
+  if (ipResult.limited || (ctx && userRateLimit.limited)) {
     audit({
       kind: 'request',
       method: req.method,
@@ -814,10 +877,20 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': authCookieValue(req, lr.token),
+          'set-cookie': setCookies(
+            authCookieValue(req, lr.token),
+            refreshCookieValue(req, lr.refreshToken)
+          ),
           'cache-control': 'no-store'
         });
-        res.end(JSON.stringify({ ok: true, username: lr.username }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            username: lr.username,
+            accessExpiresAt: lr.accessExpiresAt,
+            refreshToken: lr.refreshToken
+          })
+        );
         return;
       }
       if (path === '/api/account/login' && req.method === 'POST') {
@@ -832,10 +905,20 @@ const server = createServer(
         }
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': authCookieValue(req, r.token),
+          'set-cookie': setCookies(
+            authCookieValue(req, r.token),
+            refreshCookieValue(req, r.refreshToken)
+          ),
           'cache-control': 'no-store'
         });
-        res.end(JSON.stringify({ ok: true, username: r.username }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            username: r.username,
+            accessExpiresAt: r.accessExpiresAt,
+            refreshToken: r.refreshToken
+          })
+        );
         return;
       }
       // ── 忘记密码 / 重置密码（公开，放在 guard 之前，与 register/login 同区）──
@@ -941,7 +1024,12 @@ const server = createServer(
       // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
       if (req.method === 'POST' && path === '/api/account/refresh') {
         const b = await readBody(req);
-        const refreshToken = typeof b?.refresh_token === 'string' ? b.refresh_token : '';
+        // refresh token 优先取 HttpOnly cookie（登录时下发、前端不可读、防 XSS 窃取），
+        // 兼容旧客户端从请求体携带 refresh_token 的方式。
+        const refreshToken =
+          (typeof b?.refresh_token === 'string' && b.refresh_token) ||
+          cookieValue(req, 'ah_refresh') ||
+          '';
         if (!refreshToken) {
           sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
           return;
@@ -952,11 +1040,12 @@ const server = createServer(
           return;
         }
         const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
-        const authCookie = authCookieValue(req, accessToken, accessExpiresAt);
+        // 注意：authCookieValue 第三参为「剩余时长(ms)」，必须是相对值，不能是绝对时间戳。
+        const authCookie = authCookieValue(req, accessToken, accessExpiresAt - Date.now());
         const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
         res.writeHead(200, {
           'content-type': 'application/json',
-          'set-cookie': [authCookie, refreshCookie].join('; '),
+          'set-cookie': setCookies(authCookie, refreshCookie),
           'cache-control': 'no-store'
         });
         res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
@@ -1192,7 +1281,10 @@ const server = createServer(
           const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
           // 先下发 cookie，再返回 HTML 过渡页（带自动跳转），避免空白页
           res.writeHead(200, {
-            'set-cookie': authCookieValue(req, r.token),
+            'set-cookie': setCookies(
+              authCookieValue(req, r.token),
+              refreshCookieValue(req, r.refreshToken)
+            ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
@@ -1443,7 +1535,10 @@ const server = createServer(
           }
           const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
           res.writeHead(200, {
-            'set-cookie': authCookieValue(req, r.token),
+            'set-cookie': setCookies(
+              authCookieValue(req, r.token),
+              refreshCookieValue(req, r.refreshToken)
+            ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
           });
@@ -4154,6 +4249,14 @@ async function bootstrap(): Promise<void> {
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P2.a：启用结构化审计日志落盘（委托 @agent-harness/core 的 enableAuditFile）。
+  // AUDIT_LOG 非空即启用 crash-safe 落盘（tmp+rename）；默认关闭仅 stdout。
+  // 生产环境应通过 configmap/Secret 显式设置 AUDIT_LOG=/app/data/audit/audit.jsonl。
+  if (AUDIT_LOG) {
+    await coreEnableAuditFile(AUDIT_LOG);
+    structLog('info', 'audit', { file: AUDIT_LOG });
   }
 
   // P0-B 修复：启动时装配 quotaEngine 默认配额，确保 MAX_COST_PER_WINDOW 真正生效。

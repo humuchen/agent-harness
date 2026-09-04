@@ -1,0 +1,22 @@
+# EKS 生产环境专用 configmap patch：声明生产必需的安全与隔离配置。
+# base 保持中立，仅在生产环境开启租户隔离强制门禁、自动迁移、Redis 共享后端。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: agent-harness
+    patch: |-
+      - op: add
+        path: /data/REQUIRE_TENANT
+        value: 'on'
+      - op: add
+        path: /data/AH_MIGRATE_AUTO
+        value: 'on'
+      - op: add
+        path: /data/RUN_QUEUE_BACKEND
+        value: 'redis'
+      - op: add
+        path: /data/AGENT_STORE
+        value: 'redis'

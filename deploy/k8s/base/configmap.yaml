@@ -41,6 +41,11 @@ data:
   LOG_SCRUB_ENABLED: 'true'
   # P2：指标持久化
   TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
-  # Go-live：备份与恢复配置
+  # P2 Go-live：备份与恢复配置
   AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
   AH_BACKUP_KEEP_DAYS: '30'
+  # ── 生产专用配置（在 overlay 中声明，base 保持中立） ──────────────────
+  # REQUIRE_TENANT=on        # P0.3 租户隔离强制门禁
+  # AH_MIGRATE_AUTO=on       # P0-D 启动时自动数据库迁移
+  # RUN_QUEUE_BACKEND=redis  # 多副本共享运行队列
+  # AGENT_STORE=redis        # 多副本共享 AgentRegistry

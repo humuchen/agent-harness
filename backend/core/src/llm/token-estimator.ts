@@ -24,6 +24,16 @@ const CJK_TOKEN_PER_CHAR = 0.6;
 const WORD_TOKEN_PER_WORD = 0.75;
 /** 其他字符（非 CJK、非英文词）每多少字符折算 1 token。 */
 const OTHER_CHARS_PER_TOKEN = 4;
+/**
+ * 超长「词」（连续无空格的非 CJK 串）的字符数阈值。
+ * BPE 不会把 base64 / 超长 URL / 无空格 JSON 当成一个 token，而是按约 4 字符一片切分；
+ * 此前实现只数「词的个数」不数长度，导致 'x'.repeat(20000) 被算成 1 token ——
+ * 工具结果里的大段 base64 / 压缩 JSON / 长 URL 会让历史 token 被严重低估，
+ * 进而使「上下文占用率」与「按 token 淘汰」的判定双双失真。
+ */
+const LONG_RUN_CHARS = 12;
+/** 超长连续串每多少字符折算 1 token（BPE 对随机串的实测经验值）。 */
+const LONG_RUN_CHARS_PER_TOKEN = 4;
 
 /** 估算一段文本的 token 数。 */
 export function estimateTokens(text: string | undefined | null): number {
@@ -36,14 +46,24 @@ export function estimateTokens(text: string | undefined | null): number {
     rest = text.length - cjk;
   }
   // 英文/数字词按系数折算，其余字符按 OTHER_CHARS_PER_TOKEN 折算。
+  // 注意：长到不正常的「词」（base64 / 长 URL / 无空格 JSON）按字符数折算，
+  // 否则一个 20000 字符的连续串只算 1 token，历史占用会被系统性低估。
   const words = text.match(NON_CJK_WORD);
   const wordChars = words ? words.join('').length : 0;
   const otherChars = Math.max(0, rest - wordChars);
-  const wordTokens = words ? Math.ceil(words.length * WORD_TOKEN_PER_WORD) : 0;
+  let wordTokens = 0;
+  if (words) {
+    for (const w of words) {
+      wordTokens +=
+        w.length > LONG_RUN_CHARS
+          ? w.length / LONG_RUN_CHARS_PER_TOKEN
+          : WORD_TOKEN_PER_WORD;
+    }
+  }
   const otherTokens = Math.ceil(otherChars / OTHER_CHARS_PER_TOKEN);
   // 中文不再按「1 字 = 1 token」，改用标定系数，避免中文 prompt 被系统性高估。
   const cjkTokens = Math.ceil(cjk * CJK_TOKEN_PER_CHAR);
-  return cjkTokens + wordTokens + otherTokens;
+  return cjkTokens + Math.ceil(wordTokens) + otherTokens;
 }
 
 /** 估算一组工具 schema 序列化后的 token 数（用于「工具」项占比）。

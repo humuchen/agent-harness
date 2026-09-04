@@ -69,7 +69,13 @@ export function estimateContextUsage(opts: {
   messages: ChatMsg[];
 }): CtxUsage {
   if (opts.serverCtxWindow <= 0) {
-    return { totalPct: 0, totalTokens: 0, window: 0, compressed: false, items: [] };
+    return {
+      totalPct: 0,
+      totalTokens: 0,
+      window: 0,
+      compressed: false,
+      items: []
+    };
   }
   const WINDOW = opts.serverCtxWindow;
   const tok = (s?: string) => (s ? Math.ceil([...s].length / 3) : 0);
@@ -172,7 +178,13 @@ export function selectContextUsage(opts: {
     const totalTokens = u.promptTokens;
     const totalPct = Math.min(100, (totalTokens / u.window) * 100);
     for (const it of items) it.pct = (it.tokens / u.window) * 100;
-    return { totalPct, totalTokens, window: u.window, compressed: !!u.compressed, items };
+    return {
+      totalPct,
+      totalTokens,
+      window: u.window,
+      compressed: !!u.compressed,
+      items
+    };
   }
   // 后端精确计数暂未到位（mock 模式 / 首屏尚未触发 LLM）时，回退到前端粗估。
   return estimateContextUsage({
@@ -212,19 +224,19 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
             cx="18"
             cy="18"
             r=${R}
-            stroke-width="3"
+            stroke-width="5"
           ></circle>
           <circle
             class="ring-fg ${pct > 80 ? 'warn' : ''}"
             cx="18"
             cy="18"
             r=${R}
-            stroke-width="3"
+            stroke-width="4"
             stroke-dasharray=${C.toFixed(2)}
             stroke-dashoffset=${offset.toFixed(2)}
             transform="rotate(-90 18 18)"
           ></circle>
-          <text
+          <!-- <text
             class="ring-num"
             x="18"
             y="18"
@@ -232,18 +244,13 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
             dominant-baseline="central"
           >
             ${Math.round(pct)}%
-          </text>
+          </text> -->
         </svg>
       </button>
       <span class="ctx-tip"
         >上下文已使用：${pct.toFixed(1)}% -
         ${fmtK(u.totalTokens)}/${fmtK(u.window)}</span
       >
-      ${u.compressed
-        ? html`<span class="ctx-compressed" title="历史上下文已达压缩阈值，最旧对话已被自动压缩/淘汰"
-            >已压缩</span
-          >`
-        : nothing}
       ${showCtxUsage
         ? html`<button
               class="ctx-scrim"

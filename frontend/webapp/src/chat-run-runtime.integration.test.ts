@@ -265,5 +265,63 @@ describe('ChatRunRuntime 集成：dispatchPrompt→ingest→typewriter→flush/d
     expect(m?.error).toBeFalsy();
     const last = [...host.calls].reverse().find((c) => c.op === 'setStreaming');
     expect(last?.v).toBe(false);
+    // 用户手动停止后，stoppedMap 标记 true：供渲染层把空气泡从「等待响应…」切到「已停止」。
+    expect(rt.stoppedMap['s1']).toBe(true);
+  });
+
+  it('3) 新一轮派发复位「已停止」标记：stoppedMap 回到 false', async () => {
+    const host = buildHost();
+    const typewriter = new ChatTypewriter(host.caps);
+    const rt = new ChatRunRuntime(host.deps, typewriter);
+    host.setOnTrace((ev) => {
+      if ((ev as Ev).type === 'stop-now') rt.stop();
+    });
+    host.setEvents([
+      { type: 'job:accepted', jobId: 'job-1', seq: 0 },
+      { type: 'stop-now' }
+    ]);
+    await rt.dispatchPrompt('s1', 'hi');
+    expect(rt.stoppedMap['s1']).toBe(true);
+
+    // 新一轮派发（用户重新发起）应在开头清除标记，否则气泡会误显「已停止」。
+    host.setEvents([{ type: 'run:end', final: '', seq: 0 }]);
+    await rt.dispatchPrompt('s1', 'hi again');
+    expect(rt.stoppedMap['s1']).toBe(false);
+  });
+
+  it('4) llm:usage 携带 compressed:true：对应流式气泡标记 compressed（移出用量浮层、挂到消息）', async () => {
+    const host = buildHost();
+    const typewriter = new ChatTypewriter(host.caps);
+    const rt = new ChatRunRuntime(host.deps, typewriter);
+    host.setEvents([
+      { type: 'job:accepted', jobId: 'job-1', seq: 0 },
+      {
+        type: 'llm:usage',
+        window: 8000,
+        promptTokens: 7000,
+        completionTokens: 5,
+        totalTokens: 7005,
+        compressed: true,
+        model: 'gpt',
+        breakdown: {
+          system: 1,
+          tools: 2,
+          messages: 3,
+          mcp: 0,
+          skills: 1,
+          completion: 8
+        }
+      },
+      { type: 'run:end', final: 'done', seq: 1 }
+    ]);
+
+    const result = await rt.dispatchPrompt('s1', 'hi');
+
+    expect(result).toBe('ok');
+    const m = host.curSession('s1');
+    // 标记随本轮流式消息落库：渲染层据此在该气泡下方显示「已压缩」，而非用量圆环旁。
+    expect(m?.compressed).toBe(true);
+    // 全局用量快照仍记录 compressed（供历史用量回填，不用于浮层徽标渲染）。
+    expect(host.calls.some((c) => c.op === 'setBackendUsage')).toBe(true);
   });
 });

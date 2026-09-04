@@ -12,7 +12,7 @@
  */
 import { structLog } from '@agent-harness/core';
 
-type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json';
+type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json' | 'hex64';
 
 interface Field {
   key: string;
@@ -35,6 +35,7 @@ export const SCHEMA: Field[] = [
   { key: 'MAX_BODY_BYTES', type: 'number', min: 1, desc: '请求体上限（字节）' },
   { key: 'RATE_LIMIT', type: 'number', min: 0, desc: '单 IP 限流阈值（0=关闭）' },
   { key: 'RATE_LIMIT_WINDOW_MS', type: 'number', min: 1, desc: '限流窗口（ms）' },
+  { key: 'USER_RATE_LIMIT', type: 'number', min: 0, desc: '单用户限流阈值（0=关闭）' },
   // 鉴权
   {
     key: 'AUTH_PROVIDER',
@@ -197,6 +198,20 @@ export function validateConfig(): ConfigReport {
     for (const t of TYPO_HINTS) {
       if (t.bad.test(k)) warnings.push(`环境变量 ${k} 疑似拼写错误，应为 ${t.hint}`);
     }
+  }
+
+  // 账户 token 签名密钥：AH_AUTH_SECRET / AH_CRYPTO_KEY 为 64 hex 时跨副本一致（多副本首选）；
+  // 缺失时 getAuthSecret() 退化为「持久化文件密钥」（单实例跨重启稳定，落盘 data/.ah_auth_secret）。
+  // 仅当二者皆无且无法落盘时才退化为每进程随机（重启即失效）。
+  // 因已有文件兜底，此处仅作 warning（不再阻断 AH_STARTUP_CRITICAL 启动），避免「无 env → 报错 →
+  // 启动失败 → 文件永不被创建」的死锁；生产多副本仍建议配置 AH_AUTH_SECRET=64hex。
+  const secretOk =
+    /^[0-9a-fA-F]{64}$/.test((process.env.AH_AUTH_SECRET || '').trim()) ||
+    /^[0-9a-fA-F]{64}$/.test((process.env.AH_CRYPTO_KEY || '').trim());
+  if (!secretOk) {
+    warnings.push(
+      '未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY（需 64 hex）：已启用持久化兜底密钥（data/.ah_auth_secret，单实例跨重启稳定）。多副本部署请配置 AH_AUTH_SECRET=64hex 以保证跨实例一致。'
+    );
   }
 
   return { errors, warnings };

@@ -1,5 +1,5 @@
 /**
- * chat.ts 运行管线抽离（Phase 5 余下 + Phase 6，A+B+C 合并）。
+ * chat.ts 运行管线抽离（P5 余下 + P6 合并）。
  *
  * 把「SSE 消费 + 断连重连续传 + 事件汇入(ingest) + 发送编排(dispatchPrompt) +
  * 断连恢复(resumeLost) + 手动停止(stop) + 看门狗/可见性体检(onVisibilityChange/silentWatchdog)」
@@ -174,17 +174,20 @@ export async function runWithReconnect(
           };
       first = false;
       for await (const ev of deps.streamRun(payload, { signal: ac.signal })) {
-        if (deps.getConnState(sid) !== 'connected') deps.setConn(sid, 'connected');
+        if (deps.getConnState(sid) !== 'connected')
+          deps.setConn(sid, 'connected');
         deps.onEvent(ev, sid);
       }
-      if (deps.getConnState(sid) !== 'connected') deps.setConn(sid, 'connected');
+      if (deps.getConnState(sid) !== 'connected')
+        deps.setConn(sid, 'connected');
       return;
     } catch (rawErr: any) {
       const aborted = ac.signal.aborted;
       const wasKeepAlive = deps.getKeepAliveAbort(sid) === true;
       deps.clearKeepAliveAbort(sid);
       if (aborted && !wasKeepAlive) {
-        if (deps.getConnState(sid) !== 'connected') deps.setConn(sid, 'connected');
+        if (deps.getConnState(sid) !== 'connected')
+          deps.setConn(sid, 'connected');
         throw Object.assign(
           rawErr instanceof Error ? rawErr : new Error(String(rawErr)),
           { name: 'UserStoppedRun' }
@@ -203,7 +206,8 @@ export async function runWithReconnect(
       deps.setConn(sid, 'reconnecting');
       await sleepFn(delay, ac.signal);
       if (ac.signal.aborted && !deps.getKeepAliveAbort(sid)) {
-        if (deps.getConnState(sid) !== 'connected') deps.setConn(sid, 'connected');
+        if (deps.getConnState(sid) !== 'connected')
+          deps.setConn(sid, 'connected');
         throw Object.assign(new Error('user stopped during reconnect'), {
           name: 'UserStoppedRun'
         });
@@ -225,16 +229,20 @@ export class ChatRunRuntime {
   private keepAliveAbort: Record<string, boolean> = {};
   private lastInputBy: Record<string, Record<string, unknown>> = {};
   private abortBy: Record<string, AbortController> = {};
+  /** 用户手动停止标记：stop() 置 true，新一轮 dispatchPrompt 置 false。仅供渲染层区分「等待响应…」与「已停止」。 */
+  private stoppedBy: Record<string, boolean> = {};
   private watchTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(
-    private deps: RunDeps,
-    public typewriter: ChatTypewriter
-  ) {}
+  constructor(private deps: RunDeps, public typewriter: ChatTypewriter) {}
 
   /** 渲染层用（ChatRenderCtx.jobBy）：暴露当前 jobId 映射，供断连横幅判断可否「重新连接」。 */
   get jobMap(): Record<string, string> {
     return this.jobBy;
+  }
+
+  /** 渲染层用（ChatRenderCtx.stopped）：暴露「用户手动停止」标记，供气泡显示「已停止」而非「等待响应…」。 */
+  get stoppedMap(): Record<string, boolean> {
+    return this.stoppedBy;
   }
 
   /* ============================ 断线恢复引擎 ============================ */
@@ -265,7 +273,10 @@ export class ChatRunRuntime {
 
   /** 手动停止当前显示会话的 run（仅中止该会话，不影响其它后台 run）。 */
   stop() {
-    const ac = this.abortBy[this.deps.getActiveId()];
+    const sid = this.deps.getActiveId();
+    // 标记该会话为用户手动停止：渲染层据此把空气泡的「等待响应…」切换为「已停止」。
+    this.stoppedBy[sid] = true;
+    const ac = this.abortBy[sid];
     ac?.abort();
   }
 
@@ -487,36 +498,37 @@ export class ChatRunRuntime {
               : Number.isFinite(Number(u.window)) && Number(u.window) > 0
               ? Number(u.window)
               : 0;
-          // 会话级累计窗口占用：跨 run 累加，窗口口径变化时重新初始化。
-          const prev = this.deps.getBackendUsage();
-          const compressed = (prev?.compressed ?? false) || !!u.compressed;
-          if (prev && prev.window === win && prev.breakdown && u.breakdown) {
-            this.deps.setBackendUsage({
-              window: win,
-              promptTokens: prev.promptTokens + u.promptTokens,
-              completionTokens: prev.completionTokens + u.completionTokens,
-              totalTokens: prev.totalTokens + u.totalTokens,
-              compressed,
-              breakdown: {
-                system: prev.breakdown.system + (u.breakdown.system ?? 0),
-                tools: prev.breakdown.tools + (u.breakdown.tools ?? 0),
-                messages: prev.breakdown.messages + (u.breakdown.messages ?? 0),
-                mcp: prev.breakdown.mcp + (u.breakdown.mcp ?? 0),
-                skills: prev.breakdown.skills + (u.breakdown.skills ?? 0),
-                completion:
-                  prev.breakdown.completion + (u.breakdown.completion ?? 0)
-              }
-            });
-          } else {
-            this.deps.setBackendUsage({
-              window: win,
-              promptTokens: u.promptTokens,
-              completionTokens: u.completionTokens,
-              totalTokens: u.totalTokens,
-              compressed: !!u.compressed,
-              breakdown: u.breakdown
-            });
+          // 上下文压缩标记走「自上次用量上报以来」的 per-report 语义（后端
+          // consumeCompressed() 读取即清零），**不**做会话级 OR 累加 —— 否则会重现
+          // 「已压缩徽标亮起后永不消失、与真实用量变化脱钩」的假象。压缩活跃时每步
+          // 上报 true、徽标亮起；窗口回落、若干步不再发生压缩时徽标自动熄灭。
+          // 每次 llm:usage 的 promptTokens / totalTokens / breakdown 都是「该步的绝对用量」
+          // （resp.usage.prompt_tokens，即本次发送给模型的完整上下文规模），并非相对上一步
+          // 的增量。上下文用量环展示的是「当前这一步」占窗口的比例，因此必须【覆盖】为最新值，
+          // 绝不能累加——否则会把多步用量叠加成单调增长，被 Math.min(100,..) 顶到 100% 后永久
+          // 满格，且压缩后单步用量下降也看不出来（这正是「显示已压缩却始终 100%」的根因）。
+          const compressed = !!u.compressed;
+          // 把「已压缩」标记挂到本轮流式消息上（而非全局用量浮层），
+          // 使标识随对应气泡显示在其下方，视觉关联准确。
+          if (compressed) {
+            const c = cur();
+            if (c && !c.compressed) this.deps.patchSession(sid, { compressed: true });
           }
+          this.deps.setBackendUsage({
+            window: win,
+            promptTokens: Number(u.promptTokens) || 0,
+            completionTokens: Number(u.completionTokens) || 0,
+            totalTokens: Number(u.totalTokens) || 0,
+            compressed,
+            breakdown: {
+              system: Number(u.breakdown.system) || 0,
+              tools: Number(u.breakdown.tools) || 0,
+              messages: Number(u.breakdown.messages) || 0,
+              mcp: Number(u.breakdown.mcp) || 0,
+              skills: Number(u.breakdown.skills) || 0,
+              completion: Number(u.breakdown.completion) || 0
+            }
+          });
           const totalPct =
             win > 0 ? Math.min(100, (Number(u.totalTokens) / win) * 100) : 0;
           agentContext.set('lastContextUsage', {
@@ -586,7 +598,11 @@ export class ChatRunRuntime {
         ? [...opts.attachments]
         : [...this.deps.getAttachments()]
     } as ChatMsg);
-    t.push({ id: this.deps.nextId(), role: 'assistant', content: '' } as ChatMsg);
+    t.push({
+      id: this.deps.nextId(),
+      role: 'assistant',
+      content: ''
+    } as ChatMsg);
     this.deps.setStreamIdx(sessionId, t.length - 1);
     this.deps.setThreads(sessionId, t);
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
@@ -598,6 +614,8 @@ export class ChatRunRuntime {
     this.jobBy[sessionId] = '';
     this.lastSeqBy[sessionId] = -1;
     this.erroredBy[sessionId] = false;
+    // 新一轮 run 由用户主动发起，清除「手动停止」标记（否则气泡会误显「已停止」）。
+    this.stoppedBy[sessionId] = false;
     this.deps.setConn(sessionId, 'connected');
     this.deps.resetTrace(sessionId);
     this.typewriter.stopTypewriter();
@@ -612,7 +630,8 @@ export class ChatRunRuntime {
     this.deps.saveHistory(sessionId);
 
     const endpoint = await this.deps.customModelEndpoint();
-    const modelBaseUrl = this.deps.getServerModelBaseUrl() || endpoint.modelBaseUrl;
+    const modelBaseUrl =
+      this.deps.getServerModelBaseUrl() || endpoint.modelBaseUrl;
     const input: Record<string, unknown> = {
       mode: this.deps.getMode(),
       prompt: content,

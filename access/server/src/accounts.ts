@@ -27,26 +27,91 @@ import {
   createHmac
 } from 'node:crypto';
 import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { getDbAdapter } from '@agent-harness/core';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
-function getAuthSecret(): Uint8Array {
-  const raw = (
-    process.env.AH_AUTH_SECRET ||
-    process.env.AH_CRYPTO_KEY ||
-    ''
-  ).trim();
-  if (raw && /^[0-9a-fA-F]{64}$/.test(raw)) {
-    const out = new Uint8Array(32);
-    for (let i = 0; i < 32; i++)
-      out[i] = parseInt(raw.slice(i * 2, i * 2 + 2), 16);
-    return out;
+let cachedSecret: Uint8Array | null = null;
+
+/** 64 hex → 32 字节密钥；非法返回 null。 */
+function hexToSecret(hex: string): Uint8Array | null {
+  const h = (hex || '').trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(h)) return null;
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+/** 解析密钥持久化文件路径：优先 AH_AUTH_SECRET_FILE，否则落到与 accounts.db 同目录。 */
+function authSecretFilePath(): string {
+  const explicit = process.env.AH_AUTH_SECRET_FILE?.trim();
+  if (explicit) return explicit;
+  return join(process.cwd(), 'data', '.ah_auth_secret');
+}
+
+/** 从持久化文件读取稳定密钥（跨重启/单实例副本复用，避免「重启即全部登出」）。 */
+function loadPersistedSecret(): Uint8Array | null {
+  try {
+    const file = authSecretFilePath();
+    if (existsSync(file)) return hexToSecret(readFileSync(file, 'utf-8'));
+  } catch {
+    /* 读取失败则回退 */
   }
-  // 演示兜底：每进程随机密钥（重启后旧 token 全部失效）。生产务必配置 AH_AUTH_SECRET。
-  console.warn(
-    '   ⚠️  未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY：账户 token 将使用每进程随机密钥，服务重启后全部登录失效。生产请配置 AH_AUTH_SECRET=64hex。'
+  return null;
+}
+
+/**
+ * 签名密钥是否已「稳定配置」：env（64 hex，多副本一致）或持久化文件密钥（单实例跨重启稳定）。
+ * 供启动强校验使用。两者皆无 → 退化为「每进程随机密钥」（仅演示，重启/多副本即失效）。
+ */
+export function isAuthSecretConfigured(): boolean {
+  if (hexToSecret(process.env.AH_AUTH_SECRET || process.env.AH_CRYPTO_KEY || ''))
+    return true;
+  if (loadPersistedSecret()) return true;
+  // 文件可写 → 首次运行会生成并持久化，等价于稳定（单实例场景自愈）。
+  try {
+    const dir = join(process.cwd(), 'data');
+    mkdirSync(dir, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getAuthSecret(): Uint8Array {
+  // 1) 显式 env（生产首选，跨副本一致）：AH_AUTH_SECRET 或 AH_CRYPTO_KEY（64 hex）
+  const envSecret = hexToSecret(
+    process.env.AH_AUTH_SECRET || process.env.AH_CRYPTO_KEY || ''
   );
-  return randomBytes(32);
+  if (envSecret) {
+    cachedSecret = envSecret;
+    return envSecret;
+  }
+  // 2) 持久化文件密钥（跨重启稳定）：已存在则直接复用。
+  const persisted = loadPersistedSecret();
+  if (persisted) {
+    cachedSecret = persisted;
+    return persisted;
+  }
+  // 3) 兜底：每进程随机一次并落盘，使后续重启复用同一密钥（不再「重启即登出」）。
+  //    仅当既无 env、也无历史文件时触发；落盘失败则退化为纯进程内随机（向后兼容旧行为）。
+    if (!cachedSecret) {
+      cachedSecret = randomBytes(32);
+      try {
+        const file = authSecretFilePath();
+        mkdirSync(join(process.cwd(), 'data'), { recursive: true });
+        writeFileSync(file, Buffer.from(cachedSecret).toString('hex'), {
+          mode: 0o600
+        });
+      } catch {
+        /* 无写入权限则仅进程内有效（向后兼容旧行为） */
+      }
+      console.warn(
+      '   ⚠️  未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY：已生成持久化兜底密钥（data/.ah_auth_secret）。' +
+        '该密钥跨重启稳定（单实例），但多副本需共享存储或配置 AH_AUTH_SECRET=64hex。'
+    );
+  }
+  return cachedSecret;
 }
 
 const b64url = (buf: Buffer): string =>
@@ -145,7 +210,7 @@ async function ensureDb(): Promise<void> {
         const hasRole = cols.some((c) => String(c.name) === 'role');
         if (!hasRole) {
           await db.exec(
-            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'"
+            "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'viewer'"
           );
         }
         const hasGh = cols.some((c) => String(c.name) === 'github_id');
@@ -489,7 +554,8 @@ export function authCookieValue(
     'HttpOnly',
     'SameSite=Lax',
     'Path=/',
-    `Max-Age=${expiresInMs / 1000}`
+    `Max-Age=${Math.floor(expiresInMs / 1000)}`,
+    `Expires=${new Date(Date.now() + expiresInMs).toUTCString()}`
   ];
   if (!isLocalhost(req)) parts.push('Secure');
   return parts.join('; ');
