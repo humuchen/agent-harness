@@ -154,7 +154,7 @@ export const leadPlugin: PluginModule = {
       health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
       assembly: {
         systemPrompt: buildAnalyticsAgentPrompt(),
-        tools: ['medical-aesthetics-lead__analytics_query'],
+        tools: ['medical-aesthetics-lead__analytics_query', 'medical-aesthetics-lead__analytics_mark_arrived', 'medical-aesthetics-lead__analytics_mark_completed'],
       },
       isolation: 'os',
     });

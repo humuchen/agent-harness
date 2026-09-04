@@ -7,10 +7,12 @@
  */
 import type { ToolRegistry } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
+import { markArrived, markCompleted } from '../repo/schedule-repo';
 import { errorResult } from '../infra/errors';
 import type { AnalyticsQuery } from '../analytics/types';
 
 export function registerAnalyticsTool(tools: ToolRegistry): void {
+  // 1) 查询工具
   tools.register(
     'analytics_query',
     '执行医美运营分析查询，支持漏斗分析、渠道业绩、院区业绩、项目毛利、时间趋势、阶段留存及全面报表。所有数据来自真实数据库聚合。',
@@ -44,13 +46,56 @@ export function registerAnalyticsTool(tools: ToolRegistry): void {
           channel: args.channel ? String(args.channel) : undefined,
           clinicId: args.clinicId ? String(args.clinicId) : undefined,
           project: args.project ? String(args.project) : undefined,
-          period: args.period ? String(args.period) as 'day' | 'week' | 'month' : undefined,
+          period: args.period ? (String(args.period) as 'day' | 'week' | 'month') : undefined,
         };
         const result = await runAnalyticsQuery(q);
-        return {
-          ok: true,
-          result,
-        };
+        return { ok: true, result };
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  // 2) 标记到院
+  tools.register(
+    'analytics_mark_arrived',
+    '标记预约单为到院状态（幂等）。需要管理员权限。',
+    {
+      type: 'object',
+      properties: {
+        appointmentId: { type: 'string', description: '预约单ID' },
+      },
+      required: ['appointmentId'],
+    },
+    async (args: Record<string, unknown>) => {
+      try {
+        const id = String(args.appointmentId ?? '');
+        if (!id) return { ok: false, error: 'appointmentId required' };
+        const ok = await markArrived(id);
+        return { ok: true, appointmentId: id, marked: 'arrived', result: ok };
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  // 3) 标记完成
+  tools.register(
+    'analytics_mark_completed',
+    '标记预约单为完成/就诊状态（幂等）。需要管理员权限。',
+    {
+      type: 'object',
+      properties: {
+        appointmentId: { type: 'string', description: '预约单ID' },
+      },
+      required: ['appointmentId'],
+    },
+    async (args: Record<string, unknown>) => {
+      try {
+        const id = String(args.appointmentId ?? '');
+        if (!id) return { ok: false, error: 'appointmentId required' };
+        const ok = await markCompleted(id);
+        return { ok: true, appointmentId: id, marked: 'completed', result: ok };
       } catch (e) {
         return errorResult(e);
       }

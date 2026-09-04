@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS ix_lead_tenant_updated ON ma_lead(tenant_id, updated_
 CREATE INDEX IF NOT EXISTS ix_lead_channel        ON ma_lead(tenant_id, channel);
 CREATE INDEX IF NOT EXISTS ix_lead_handoff        ON ma_lead(tenant_id, handed_off, consulted_by);
 
-|-- 线索对话消息（已归属线索）
+-- 线索对话消息（已归属线索）
 CREATE TABLE IF NOT EXISTS ma_lead_message (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id     TEXT NOT NULL,
@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS ma_lead_message (
 );
 CREATE INDEX IF NOT EXISTS ix_msg_lead ON ma_lead_message(lead_id, id);
 
-|-- 线索阶段变更历史（运营分析用：漏斗留存耗时、阶段到达率）
+-- 线索阶段变更历史（运营分析用：漏斗留存耗时、阶段到达率）
 CREATE TABLE IF NOT EXISTS ma_lead_stage_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   lead_id     TEXT NOT NULL,

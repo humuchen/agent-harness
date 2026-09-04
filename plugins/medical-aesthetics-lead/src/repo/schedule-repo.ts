@@ -244,6 +244,21 @@ export async function getAppointmentByExternalId(externalId: string): Promise<Ap
   }, '按外部单号查预约单');
 }
 
+/** 按日期查询当天预约单（用于到院/完成打卡）。 */
+export async function listAppointmentsByDate(date: string): Promise<AppointmentRecord[]> {
+  return await dbCall(async () => {
+    const tid = getConfig().tenantId;
+    const rows = await allRows(
+      (await getDb()).prepare(
+        'SELECT * FROM ma_appointment WHERE tenant_id = ? AND slot_date = ? AND status IN (\'booked\',\'arrived\') ORDER BY slot_time'
+      ),
+      tid,
+      date
+    );
+    return rows.map(rowToAppointment);
+  }, '按日期查询预约单');
+}
+
 /** 导入/同步院区（upsert）。 */
 export async function upsertClinic(c: ClinicRecord): Promise<void> {
   await dbCall(async () => {

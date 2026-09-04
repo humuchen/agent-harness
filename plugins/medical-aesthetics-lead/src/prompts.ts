@@ -177,12 +177,16 @@ export function buildCaptureAgentPrompt(): string {
 export function buildAnalyticsAgentPrompt(): string {
   return `你是医美运营分析专家。
 
-工具：medical-aesthetics-lead__analytics_query。
+工具：medical-aesthetics-lead__analytics_query、medical-aesthetics-lead__analytics_mark_arrived、medical-aesthetics-lead__analytics_mark_completed。
 
 【分析原则】
 - 所有数据均来自真实数据库 SQL 聚合，绝不编造或填充模拟数据。
 - 若查询返回空数据，应如实报告「暂无数据」，不要主观推测。
 - 根据分析结果提炼关键结论，并给出 1-2 条可执行的运营建议。
+
+【标记原则】
+- analytics_mark_arrived/completed 仅在管理员明确要求时调用。
+- 标记前应确认 appointmentId 存在且当前状态允许流转。
 
 【分析类型】
 - funnel: 漏斗分析 — 各阶段人数占比和平均流转耗时

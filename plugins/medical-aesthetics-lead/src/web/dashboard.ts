@@ -3,6 +3,7 @@ import { computeStats, listLeads } from '../repo/lead-repo';
 import { outboxSnapshot } from '../services/outbox-worker';
 import { dbHealth } from '../infra/db';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
+import { listAppointmentsByDate } from '../repo/schedule-repo';
 
 /** HTML 转义，避免客资字段注入。 */
 function esc(s: unknown): string {
@@ -468,6 +469,42 @@ export const analyticsDashboardView: PluginUIView = {
 
       const trendEmpty = trendData.length === 0;
 
+      // --- 当天预约（到院/完成打卡） ---
+      const today = new Date().toISOString().slice(0, 10);
+      const todayAppts = await listAppointmentsByDate(today);
+      const apptRows = todayAppts.length
+        ? todayAppts.map((a) => {
+            const isArrived = a.status === 'arrived';
+            const isCompleted = a.status === 'completed';
+            const markArrivedBtn = isCompleted
+              ? ''
+              : isArrived
+                ? ''
+                : `<form method="POST" action="/api/plugins/medical-aesthetics-lead/appointments/mark" class="ma-claim" style="display:inline">
+                    <input type="hidden" name="appointmentId" value="${esc(a.appointmentId)}"/>
+                    <input type="hidden" name="action" value="arrived"/>
+                    <button type="submit" class="ma-btn" style="padding:2px 8px;font-size:11px">到院</button>
+                  </form>`;
+            const markCompletedBtn = isCompleted
+              ? ''
+              : !isArrived
+                ? ''
+                : `<form method="POST" action="/api/plugins/medical-aesthetics-lead/appointments/mark" class="ma-claim" style="display:inline">
+                    <input type="hidden" name="appointmentId" value="${esc(a.appointmentId)}"/>
+                    <input type="hidden" name="action" value="completed"/>
+                    <button type="submit" class="ma-btn" style="padding:2px 8px;font-size:11px">完成</button>
+                  </form>`;
+            return `<tr>
+              <td><code>${esc(a.appointmentId)}</code></td>
+              <td>${esc(a.leadId)}</td>
+              <td>${esc(a.date)}</td>
+              <td>${esc(a.time)}</td>
+              <td>${esc(a.status === 'arrived' ? '到院' : a.status === 'completed' ? '完成' : a.status)}</td>
+              <td>${markArrivedBtn}${markCompletedBtn}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="6">今日暂无预约</td></tr>';
+
       return `<div class="ma-analytics">
   <h2>医美运营分析</h2>
   <p class="ma-empty" style="font-size:12px; margin-bottom:12px;">数据更新于 ${new Date(result.generatedAt).toLocaleString()} · 全部来自真实数据库聚合</p>
@@ -514,6 +551,25 @@ export const analyticsDashboardView: PluginUIView = {
           ).join('')}
         </svg>`
     }
+  </section>
+
+  <section class="ma-panel">
+    <h3>今日到院打卡</h3>
+    <div class="ma-table-wrap">
+      <table class="ma-table">
+        <thead>
+          <tr>
+            <th>预约单</th>
+            <th>客资</th>
+            <th>日期</th>
+            <th>时间</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>${apptRows}</tbody>
+      </table>
+    </div>
   </section>
 
   <style>
