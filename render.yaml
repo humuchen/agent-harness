@@ -44,6 +44,10 @@ services:
       # 提升到 300/60s；如需严格限流可在 Render Dashboard 覆盖。
       - key: RATE_LIMIT
         value: '300'
+      # 单会话历史镜像序列化体积上限（字节）；默认 512KB。
+      # Render free 计划代理本身有 ~4MB 限制，此值不应超过 MAX_BODY_BYTES。
+      - key: HISTORY_MAX_BYTES
+        value: '524288'
       # ── 管理员鉴权凭证（与 LLM 密钥职责分离，强烈建议设置）──
       # 生成（64 位 hex）：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       # 在 Render Dashboard 的 Secret 里填（sync: false），不要明文写进仓库。

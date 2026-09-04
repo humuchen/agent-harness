@@ -377,6 +377,12 @@ const UI_CORS_ORIGIN = (
 const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
 );
+// 单会话历史镜像序列化上限（字节）；超出后 PUT /api/history 直接 413。
+// 前端据 /api/state 下发的 historyMaxBytes 主动裁剪，避免到服务器才拒绝。
+const HISTORY_MAX_BYTES = cfgNum(
+  'HISTORY_MAX_BYTES',
+  DEFAULTS.HISTORY_MAX_BYTES as number
+);
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
 const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
@@ -2269,8 +2275,6 @@ const server = createServer(
       // 注意按重写后的 /api/history 匹配（/api/v1 -> /api 已在路由前统一重写）。
       {
         const HISTORY_PREFIX = '/api/history/';
-        // 单会话镜像的序列化体积上限：超过即拒绝（防止单行撑爆 SQLite / 内存）。
-        const HISTORY_MAX_BYTES = 512 * 1024;
         const validSid = (sid: string): boolean =>
           !!sid && sid.length <= 128 && /^[A-Za-z0-9_\-]+$/.test(sid);
 
@@ -2733,6 +2737,8 @@ async function buildState(req: IncomingMessage) {
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
+    // 历史镜像体积上限随 state 下发：前端据此在 saveThread 前主动裁剪，避免 413 回来的再裁剪。
+    historyMaxBytes: HISTORY_MAX_BYTES,
     // 上下文窗口上限随 state 下发：前端「上下文用量」粗估回退用它做分母，
     // 与 llm:usage 精确路径共用 contextWindowFor 单一事实源（如 ox-alpha → 1M）。
     contextWindow: contextWindowFor(resolveOpenRouterConfig().model),

@@ -33,6 +33,7 @@ export const SCHEMA: Field[] = [
   { key: 'PORT', type: 'number', min: 1, max: 65535, desc: '监听端口' },
   { key: 'UI_HOST', type: 'string', desc: '监听地址' },
   { key: 'MAX_BODY_BYTES', type: 'number', min: 1, desc: '请求体上限（字节）' },
+  { key: 'HISTORY_MAX_BYTES', type: 'number', min: 1, desc: '单会话历史镜像序列化上限（字节）' },
   { key: 'RATE_LIMIT', type: 'number', min: 0, desc: '单 IP 限流阈值（0=关闭）' },
   { key: 'RATE_LIMIT_WINDOW_MS', type: 'number', min: 1, desc: '限流窗口（ms）' },
   { key: 'USER_RATE_LIMIT', type: 'number', min: 0, desc: '单用户限流阈值（0=关闭）' },

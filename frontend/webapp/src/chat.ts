@@ -323,6 +323,8 @@ export class AhChat extends LitElement {
   /** 当前登录用户是否已配置可用 LLM Key（per-user，来自 /api/state.llm.ready）。
    *  驱动 Mock 提示条与发送前 gating（未配置则真实请求会被服务端 402 拒绝）。 */
   @state() private llmReady = false;
+  /** 历史镜像体积上限（字节），来自 /api/state.historyMaxBytes；用于保存前主动裁剪。 */
+  private historyMaxBytes = 512 * 1024;
 
   /** 不可变更新某会话的连接状态，确保 Lit 触发重渲染。 */
   private setConn(sid: string, val: 'connected' | 'reconnecting' | 'lost') {
@@ -351,7 +353,8 @@ export class AhChat extends LitElement {
       threads: this.threads,
       sessions: this.sessions,
       backendUsage: this.backendUsage,
-      runCumulative: this.runCumulative
+      runCumulative: this.runCumulative,
+      historyMaxBytes: this.historyMaxBytes
     });
   }
 
@@ -608,6 +611,9 @@ export class AhChat extends LitElement {
       this.llmReady =
         !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
       this.mode = this.llmReady ? 'real' : 'mock';
+      this.historyMaxBytes = typeof (state as any)?.historyMaxBytes === 'number'
+        ? (state as any).historyMaxBytes
+        : this.historyMaxBytes;
       // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
       // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
     } catch {

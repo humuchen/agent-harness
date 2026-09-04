@@ -17,6 +17,8 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   PORT: 4173,
   UI_HOST: '0.0.0.0',
   MAX_BODY_BYTES: 1_048_576,
+  /** 单会话历史镜像序列化上限（字节）；超出后前端主动裁剪最旧消息。 */
+  HISTORY_MAX_BYTES: 512 * 1024,
   RATE_LIMIT: 120,
   RATE_LIMIT_WINDOW_MS: 60_000,
   // 单已登录用户限流阈值（独立于 IP 桶）；0=关闭。与 RATE_LIMIT 同理，集中单一事实来源。

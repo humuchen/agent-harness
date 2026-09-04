@@ -34,6 +34,7 @@ test('核心默认值与既有文档行为一致', () => {
   assert.strictEqual(DEFAULTS.PORT, 4173);
   assert.strictEqual(DEFAULTS.UI_HOST, '0.0.0.0');
   assert.strictEqual(DEFAULTS.MAX_BODY_BYTES, 1_048_576);
+  assert.strictEqual(DEFAULTS.HISTORY_MAX_BYTES, 512 * 1024);
   assert.strictEqual(DEFAULTS.RATE_LIMIT, 120);
   assert.strictEqual(DEFAULTS.RATE_LIMIT_WINDOW_MS, 60_000);
   assert.strictEqual(DEFAULTS.AUTH_PROVIDER, 'token');

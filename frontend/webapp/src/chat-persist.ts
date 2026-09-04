@@ -33,6 +33,8 @@ export interface PersistHistoryOpts {
   sessions: SessionView[];
   backendUsage: BackendUsageLike | null;
   runCumulative: { tokens: number; cost: number } | null;
+  /** 服务端下发的历史镜像体积上限（字节）；默认 512KB。 */
+  historyMaxBytes?: number;
 }
 
 /**
@@ -70,6 +72,7 @@ export function persistHistory(opts: PersistHistoryOpts): void {
     opts.sid,
     { title: meta?.title ?? '新对话', updatedAt: Date.now() },
     t,
-    usage
+    usage,
+    opts.historyMaxBytes
   );
 }

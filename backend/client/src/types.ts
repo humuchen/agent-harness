@@ -352,6 +352,8 @@ export interface ServerState {
   /** 当前模型的上下文窗口上限（token），按服务端模型目录解析（含 AH_CONTEXT_WINDOW 覆盖）；
    *  前端「上下文用量」粗估回退以此为分母，避免写死基线导致大窗口模型显示错误。 */
   contextWindow: number;
+  /** 单会话历史镜像序列化上限（字节）；前端据此在保存前主动裁剪消息长度。 */
+  historyMaxBytes: number;
   /** OS 级沙箱能力快照（由 /api/sandbox 同源构建）；null = 未启用或当前平台不支持（macOS/Windows 属此类）。 */
   sandbox: {
     backend: string;

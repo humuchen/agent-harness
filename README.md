@@ -378,6 +378,7 @@ OPEN_API_KEY=your-key node access/server/dist/server.js
 | `ACCOUNT_AUTH`                        | 账户密码身份源开关（on/off）；开则强制要求登录态   | `on` |
 | `UI_CORS_ORIGIN`                      | 跨域白名单（逗号分隔）；留空=仅同源（不再回 `*`） | 空（仅同源）   |
 | `MAX_BODY_BYTES`                      | 请求体上限，防大报文 DoS                          | 1048576（1MB） |
+| `HISTORY_MAX_BYTES`                   | 单会话历史镜像（PUT /api/history）序列化体积上限 | 524288（512KB）|
 | `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭               | 120 / 60000    |
 | `AUDIT_LOG`                           | 审计日志落盘路径；留空则仅输出 stdout（JSON 行）  | 空（stdout）   |
 

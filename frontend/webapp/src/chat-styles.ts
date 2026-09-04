@@ -1588,8 +1588,18 @@ export const chatStyles = [
       height: 9px;
       box-shadow: 0 0 0 3px color-mix(in srgb, #f0a020 18%, transparent);
     }
-    /* 成本节点折叠态（默认）：竖排「成本 / 用量」标签 + 圆点 + 边框，与图一一致。 */
+    /* 成本节点折叠态（默认）：横排「成本 / 用量」标签，与图一展开态一致。 */
     .tnode.kind-cost:not([open]) > summary .tlabel {
+      writing-mode: horizontal-tb;
+      text-orientation: mixed;
+      letter-spacing: normal;
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 0;
+      white-space: nowrap;
+    }
+    /* 成本节点展开态：竖排「成本 / 用量」标签，撑高 summary 让整卡更醒目（图二）。 */
+    .tnode.kind-cost[open] > summary .tlabel {
       writing-mode: vertical-rl;
       text-orientation: upright;
       letter-spacing: 3px;
@@ -1598,16 +1608,6 @@ export const chatStyles = [
       color: #e8941a;
       line-height: 1;
       padding: 1px 0;
-      white-space: nowrap;
-    }
-    /* 成本节点展开态：横排「成本 / 用量」标签，恢复最初版本的默认样式（图二）。 */
-    .tnode.kind-cost[open] > summary .tlabel {
-      writing-mode: horizontal-tb;
-      text-orientation: mixed;
-      letter-spacing: normal;
-      font-size: 12px;
-      line-height: 1.4;
-      padding: 0;
       white-space: nowrap;
     }
     /* 成本节点显式「展开 / 收起」按钮：与「折叠全部」操作语言对齐，
