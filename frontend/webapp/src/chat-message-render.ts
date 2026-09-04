@@ -16,6 +16,7 @@ import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
   countTraceNodes,
   renderTraceNode,
+  collapseEntireTrace,
   buildInsights,
   renderInsights,
   renderConfidence
@@ -515,6 +516,19 @@ export function renderTraceDrawer(ctx: ChatRenderCtx): TemplateResult {
         ? html`<div class="trace-drawer">
             ${ctx.traceDrawerSection === 'trace'
               ? html`<div class="trace-body">
+                  <div class="trace-toolbar">
+                    <button
+                      type="button"
+                      class="trace-collapse-all"
+                      title="折叠整条调用链路中所有可折叠项"
+                      @click=${() => {
+                        collapseEntireTrace(m.trace);
+                        ctx.requestUpdate();
+                      }}
+                    >
+                      折叠全部
+                    </button>
+                  </div>
                   ${m.trace.map((n) =>
                     renderTraceNode(n, undefined, () => ctx.requestUpdate())
                   )}

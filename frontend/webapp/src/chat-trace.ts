@@ -244,14 +244,20 @@ const FOLDABLE_KINDS: ReadonlyArray<TraceKind> = [
   'error'
 ];
 
-/** 递归收敛追踪树中所有「可折叠」节点的 expanded 字段为 false。
- *  由「折叠全部」按钮触发：保证点完后回到默认折叠状态，与工具/检索/成本/自检等
- *  子节点初次进入调用链路时的展示一致（默认折叠）。 */
-function collapseAllFoldable(n: TraceNode): void {
-  if (FOLDABLE_KINDS.includes(n.kind)) {
-    n.expanded = false;
-  }
-  n.children.forEach(collapseAllFoldable);
+/** 折叠整条调用链路：消息上下文、LLM 容器体、以及所有「可折叠」子节点全部收起。
+ *  供「折叠全部」按钮（抽屉级）调用，使整个 trace 树回到最紧凑的默认折叠态，
+ *  与工具/检索/成本/自检等子节点初次进入调用链路时的展示一致。 */
+export function collapseEntireTrace(trace: TraceNode[]): void {
+  const walk = (ns: TraceNode[]): void => {
+    for (const n of ns) {
+      if (n.messages) n.messages.forEach((m) => (m.expanded = false));
+      // LLM 容器体（含消息上下文与工具调用列表）也一并收起。
+      if (n.kind === 'llm') n.expanded = false;
+      if (FOLDABLE_KINDS.includes(n.kind)) n.expanded = false;
+      if (n.children.length) walk(n.children);
+    }
+  };
+  walk(trace);
 }
 
 /** 同步原生 `<details>` toggle 事件到节点的 expanded 字段，供 Lit 受控重渲染。
@@ -271,10 +277,10 @@ export function renderTraceNode(
   parentKind?: string,
   onToggle?: () => void
 ): TemplateResult {
-  // 成本节点：默认折叠，展示一行紧凑预览（cost / tokens / model），点「展开」再看分项明细。
-  //  这样首次打开调用链路时不会立刻把整个成本卡片摊开——与工具调用/检索的默认折叠行为保持一致。
+  // 成本节点：默认折叠，折叠态仅显示「圆点 + 标签 + 展开按钮」的最小边框，
+  //  点「展开」后下方 .tcost-body 才渲染完整分组指标——与工具调用/检索的默认折叠行为保持一致。
   //  折叠指示箭头使用 .tcost-caret（CSS 旋转），与 tmsg-caret 同款语义；按钮显式标注「展开/收起」，
-  //  与「折叠全部」操作语言对齐，避免「成本卡能不能点」的疑问。
+  //  与抽屉级「折叠全部」操作语言对齐，避免「成本卡能不能点」的疑问。
   if (n.kind === 'cost') {
     const entries = n.meta ? Object.entries(n.meta) : [];
     const groupOf = (k: string): 'cost' | 'usage' | 'model' =>
@@ -290,16 +296,8 @@ export function renderTraceNode(
       ['usage', entries.filter(([k]) => groupOf(k) === 'usage')],
       ['model', entries.filter(([k]) => groupOf(k) === 'model')]
     ];
-    // 紧凑预览：仅展示「成本 / tokens / model」三项关键值，折叠态下给用户一个快速概览。
-    const previewParts: string[] = [];
-    const costEntry = entries.find(([k]) => k === 'cost');
-    const tokenEntry = entries.find(([k]) => k === 'tokens');
-    const modelEntry = entries.find(([k]) => k === 'model');
-    if (costEntry) previewParts.push(escapeHtml(String(costEntry[1])));
-    if (tokenEntry)
-      previewParts.push(`${escapeHtml(String(tokenEntry[1]))} tok`);
-    if (modelEntry) previewParts.push(escapeHtml(String(modelEntry[1])));
-    const preview = previewParts.join(' · ');
+    // 折叠态（默认）只保留「圆点 + 标签 + 展开按钮」的最小边框，不展示任何指标预览，
+    // 点「展开」后下方 .tcost-body 才渲染完整分组指标——与工具/检索的折叠语言对齐。
     const isOpen = n.expanded === true;
     return html`<details
       class="tnode kind-cost status-${n.status}"
@@ -309,11 +307,6 @@ export function renderTraceNode(
       <summary class="tnode-head">
         <span class="tdot"></span>
         <span class="tlabel">成本 / 用量</span>
-        ${preview
-          ? html`<span class="tcost-preview" title="折叠态预览"
-              >${preview}</span
-            >`
-          : nothing}
         <button
           type="button"
           class="tcost-toggle"
@@ -411,26 +404,11 @@ export function renderTraceNode(
       </div>
       <div class="tllm-body" ?hidden=${!expanded}>
         ${n.messages?.length
-          ? html`<div class="tmsg-list">
+          ? html`        <div class="tmsg-list">
               <div class="tmsg-head">
                 <span class="tmsg-head-title"
                   >消息上下文 · 共 ${n.messages.length} 条</span
                 >
-                <button
-                  type="button"
-                  class="tmsg-collapse-all"
-                  title="折叠全部消息上下文"
-                  @click=${() => {
-                    n.messages!.forEach((msg) => (msg.expanded = false));
-                    // 同步收起该 LLM 调用下的工具/检索/成本/自检等节点，
-                    // 与工具/成本/检索的默认折叠态保持一致——之前只折叠消息上下文，
-                    // 工具卡片与成本卡片仍摊开，造成「按钮无效」的观感。
-                    n.children.forEach(collapseAllFoldable);
-                    onToggle?.();
-                  }}
-                >
-                  折叠全部
-                </button>
               </div>
               ${n.messages.map(
                 (m) => {

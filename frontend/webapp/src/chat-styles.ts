@@ -1255,13 +1255,20 @@ export const chatStyles = [
       flex: 1;
       min-width: 0;
     }
-    /* 「折叠全部」按钮：一次性收起消息上下文全部条目（默认即收起态，点此回到全折叠）。 */
-    .tmsg-collapse-all {
+    /* 抽屉级「折叠全部」工具栏：一次性收起整条调用链路中所有可折叠项。 */
+    .trace-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      padding: 0 2px 8px;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--ah-border);
+    }
+    .trace-collapse-all {
       flex: none;
       cursor: pointer;
       user-select: none;
-      padding: 2px 9px;
-      font-size: 10.5px;
+      padding: 3px 12px;
+      font-size: 11px;
       line-height: 1.5;
       color: var(--ah-text-muted);
       background: var(--ah-surface-2, #1f2228);
@@ -1269,11 +1276,11 @@ export const chatStyles = [
       border-radius: 999px;
       transition: border-color 0.15s, color 0.15s, background 0.15s;
     }
-    .tmsg-collapse-all:hover {
+    .trace-collapse-all:hover {
       color: var(--ah-accent, #2997ff);
       border-color: var(--ah-accent, #2997ff);
     }
-    .tmsg-collapse-all:active {
+    .trace-collapse-all:active {
       background: color-mix(
         in srgb,
         var(--ah-accent, #2997ff) 14%,
@@ -1592,25 +1599,11 @@ export const chatStyles = [
       padding: 1px 0;
       white-space: nowrap;
     }
-    /* 成本节点折叠态预览：cost · tokens · model 三项紧凑摘要，仅在折叠时显示。 */
-    .tnode.kind-cost > summary .tcost-preview {
-      margin-left: auto;
-      font-size: 11px;
-      line-height: 1.5;
-      color: var(--ah-text-muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 60%;
-      padding: 2px 8px;
-      border-radius: 6px;
-      background: color-mix(in srgb, #f0a020 8%, transparent);
-      border: 1px solid color-mix(in srgb, #f0a020 22%, var(--ah-border));
-    }
     /* 成本节点显式「展开 / 收起」按钮：与「折叠全部」操作语言对齐，
        给用户一个明显可点的入口，避免「这卡能不能点」的疑问。 */
     .tnode.kind-cost > summary .tcost-toggle {
       flex: none;
+      margin-left: auto;
       cursor: pointer;
       user-select: none;
       display: inline-flex;
