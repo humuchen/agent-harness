@@ -90,6 +90,8 @@ export type HarnessEvent =
       step: number;
       content: string;
       toolCalls: ToolCall[];
+      /** 是否为「与模型连接空闲超时」截断的部分响应（中段断流兜底）。前端据此显示「生成中断」提示。 */
+      partial?: boolean;
     }
   /** token 级流式增量（打字机效果）。仅当 HarnessOptions.streamTokens 开启且适配器支持时发出。 */
   | { type: 'llm:token'; step: number; delta: string }
@@ -1000,7 +1002,8 @@ export class AgentHarness {
             type: 'llm:response',
             step: steps,
             content: resp.content,
-            toolCalls: resp.tool_calls
+            toolCalls: resp.tool_calls,
+            partial: resp.partial
           });
           // Hook: agent.post_llm — observe response after LLM call
           void hooks.execute('agent.post_llm', {
@@ -1032,6 +1035,15 @@ export class AgentHarness {
                   '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。'
               });
               continue;
+            }
+            // 中段断流兜底：provider 空闲超时后返回的是部分内容（partial:true）。
+            // 显式追加「生成中断」提示，让用户清楚这是被截断而非完整回答。
+            if (resp.partial) {
+              return (
+                `${resp.content}\n\n` +
+                '⚠️ 生成已中断：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。' +
+                '以上内容仅为已生成的部分结果，请重试以继续。'
+              );
             }
             return resp.content;
           }

@@ -318,17 +318,116 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   // 按 index 重组工具调用增量：{ id?, name?, args }
   const toolAcc: Array<{ id?: string; name?: string; args: string }> = [];
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    raw += decoder.decode(value, { stream: true });
+  // ── 真流式 + 中段空闲超时 ────────────────────────────────────────────────
+  // 原实现先攒完整流再解析（伪流式）：provider 中段挂起时 reader.read() 永久阻塞，
+  // 且已生成内容因尚未解析而全部丢弃，前端表现为「答到一半彻底卡死」。
+  // 现改为：边读边按行增量解析并回调 onToken/onReasoning（真打字机 + 中段可见性），
+  // 并对两次 read 之间设置 LLM_STREAM_IDLE_TIMEOUT_MS 空闲超时，超时即中断 reader，
+  // 以 partial:true 返回已生成内容，避免整次调用失败、内容全失。
+  const IDLE_MS = Number(process.env.LLM_STREAM_IDLE_TIMEOUT_MS ?? 120_000) || 120_000;
+  let stalled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearIdle = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const armIdle = () => {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      stalled = true;
+      reader.cancel().catch(() => {});
+    }, IDLE_MS);
+  };
+
+  // 单行 SSE data 解析（增量与 flush 共用）
+  let sawSse = false;
+  const handleDataLine = (line: string) => {
+    const l = line.trim();
+    if (!l.startsWith('data:')) return;
+    const data = l.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let json: any;
+    try {
+      json = JSON.parse(data);
+    } catch {
+      return;
+    }
+    sawSse = true;
+    if (json.model) usedModel = json.model;
+    if (json.usage) usage = toUsage(json.usage);
+    const choice = json.choices?.[0];
+    if (!choice) return;
+    const delta = choice.delta ?? {};
+    // 部分端点（如 agnes）把思考过程放在「聚合后的 message」而非 delta（常见于最后一个事件）。
+    const msgReasoning =
+      typeof choice.message?.reasoning_content === 'string'
+        ? choice.message.reasoning_content
+        : typeof choice.message?.reasoning === 'string'
+          ? choice.message.reasoning
+          : '';
+    if (msgReasoning) {
+      reasoning += msgReasoning;
+      onReasoning?.(msgReasoning);
+    }
+    if (typeof delta.content === 'string' && delta.content) {
+      fullContent += delta.content;
+      onToken?.(delta.content);
+    }
+    if (typeof delta.reasoning === 'string' && delta.reasoning) {
+      reasoning += delta.reasoning;
+      onReasoning?.(delta.reasoning);
+    }
+    // 部分端点（如 agnes）以 reasoning_content 而非 reasoning 返回思考过程，两种字段名都兼容。
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+      reasoning += delta.reasoning_content;
+      onReasoning?.(delta.reasoning_content);
+    }
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        const i = typeof tc.index === 'number' ? tc.index : 0;
+        if (!toolAcc[i]) toolAcc[i] = { args: '' };
+        if (tc.id) toolAcc[i].id = tc.id;
+        if (tc.function?.name) toolAcc[i].name = tc.function.name;
+        if (typeof tc.function?.arguments === 'string') toolAcc[i].args += tc.function.arguments;
+      }
+    }
+  };
+
+  let sseBuffer = '';
+  try {
+    armIdle();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || stalled) break;
+      armIdle();
+      const chunk = decoder.decode(value, { stream: true });
+      raw += chunk;
+      sseBuffer += chunk;
+      let nl: number;
+      while ((nl = sseBuffer.indexOf('\n')) >= 0) {
+        const line = sseBuffer.slice(0, nl);
+        sseBuffer = sseBuffer.slice(nl + 1);
+        handleDataLine(line);
+      }
+    }
+    clearIdle();
+  } catch (e) {
+    clearIdle();
+    if (!stalled) throw e; // 仅中段空闲超时（reader 已 cancel）兜底；其他错误原样抛出
+    console.warn(
+      `[llm] 流读取空闲超时（${IDLE_MS}ms 无新数据，model=${modelLabel}），返回已生成的部分内容（${fullContent.length} 字符）。`
+    );
   }
+
+  // flush 剩余（最后一段可能无尾随换行）
+  if (sseBuffer) handleDataLine(sseBuffer);
 
   // 兼容：部分端点（如 agnes）即便请求 stream:true，也可能返回「单条非流式」JSON
   // （object=chat.completion，思考过程在 message.reasoning_content 而非 delta）。
-  // 此时没有 SSE 的 `data:` 标记，需按单条响应解析，否则 content 与 reasoning 都会丢失。
-  const isSSE = /^data:/.test(raw.trim()) || raw.includes('\n');
-  if (!isSSE) {
+  // 若整个响应从未出现 data: 行（sawSse=false），按单条 JSON 解析。
+  if (!sawSse && raw) {
     try {
       const data = JSON.parse(raw);
       const msg = data?.choices?.[0]?.message ?? {};
@@ -356,62 +455,6 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     } catch {
       /* 非预期响应体，忽略 */
     }
-  } else {
-    let buffer = raw;
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      let json: any;
-      try {
-        json = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      if (json.model) usedModel = json.model;
-      if (json.usage) usage = toUsage(json.usage);
-      const choice = json.choices?.[0];
-      if (!choice) continue;
-      const delta = choice.delta ?? {};
-      // 部分端点（如 agnes）在流式响应里把思考过程放在「聚合后的 message」而非 delta
-      // （常见于最后一个事件），两种位置都兼容捕获。
-      const msgReasoning =
-        typeof choice.message?.reasoning_content === 'string'
-          ? choice.message.reasoning_content
-          : typeof choice.message?.reasoning === 'string'
-            ? choice.message.reasoning
-            : '';
-      if (msgReasoning) {
-        reasoning += msgReasoning;
-        onReasoning?.(msgReasoning);
-      }
-      if (typeof delta.content === 'string' && delta.content) {
-        fullContent += delta.content;
-        onToken?.(delta.content);
-      }
-      if (typeof delta.reasoning === 'string' && delta.reasoning) {
-        reasoning += delta.reasoning;
-        onReasoning?.(delta.reasoning);
-      }
-      // 部分端点（如 agnes）以 `reasoning_content` 而非 `reasoning` 返回思考过程，
-      // 这里两种字段名都兼容捕获，统一经 onReasoning 回调（驱动「深度思考」打字机）。
-      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-        reasoning += delta.reasoning_content;
-        onReasoning?.(delta.reasoning_content);
-      }
-      if (Array.isArray(delta.tool_calls)) {
-        for (const tc of delta.tool_calls) {
-          const i = typeof tc.index === 'number' ? tc.index : 0;
-          if (!toolAcc[i]) toolAcc[i] = { args: '' };
-          if (tc.id) toolAcc[i].id = tc.id;
-          if (tc.function?.name) toolAcc[i].name = tc.function.name;
-          if (typeof tc.function?.arguments === 'string') toolAcc[i].args += tc.function.arguments;
-        }
-      }
-    }
   }
 
   const toolCalls: ToolCall[] = normalizeToolCallIds(
@@ -435,7 +478,7 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     });
   }
 
-  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel };
+  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel, partial: stalled };
 }
 
 /** 将 provider 用量对象归一为标准 TokenUsage（缺失字段补 0）。 */

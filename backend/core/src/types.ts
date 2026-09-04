@@ -70,6 +70,11 @@ export interface LLMResponse {
   /** 本次调用实际使用的模型标识（来自响应 `data.model`，OpenRouter 多模型降级时可能与请求不同）。
    *  用于按模型计价与可观测；适配器拿不到时留空，由 harness 回落到配置的 model。 */
   model?: string;
+  /**
+   * 是否为「中段被截断」的部分响应。当 LLM 流在 LLM_STREAM_IDLE_TIMEOUT_MS 内无新数据而超时中断时，
+   * 适配器以 partial:true 返回已生成的内容（而非整次失败、内容全丢），供前端提示「生成中断」并保留已生成文本。
+   */
+  partial?: boolean;
 }
 
 /** 每次 LLM 调用可选的附带信息（如取消信号）。第三个参数，调用方可忽略。 */
