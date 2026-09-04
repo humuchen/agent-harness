@@ -153,7 +153,12 @@ import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
-import { resolveTenantContext, type TenantContext } from '@agent-harness/core';
+import {
+  resolveTenantContext,
+  type TenantContext,
+  audit as coreAudit,
+  enableAuditFile as coreEnableAuditFile,
+} from '@agent-harness/core';
 
 // K8s健康检查端点
 import { handleLiveness, handleReadiness } from './health';
@@ -411,12 +416,30 @@ function isSseEndpoint(req: IncomingMessage): boolean {
   return path === '/api/events' || path === '/api/chat/stream';
 }
 
-/** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。 */
+/** 结构化审计：记录 时间/方法/路径/IP/鉴权/状态码 与动作级脱敏字段。
+ * 委扲 @agent-harness/core 的 audit()（结构化 AuditEvent + enableAuditFile 文件句柄管理），
+ * 取代原先裸写 appendFile 的非结构化实现，支持 pluggable auditSink 与 crash-safe 落盘。 */
 function audit(rec: Record<string, unknown>): void {
+  const outcome = rec.status != null
+    ? (Number(rec.status) >= 400 ? 'failure' : Number(rec.status) >= 300 ? 'denied' : 'success')
+    : (rec.outcome as 'success' | 'failure' | 'denied' | 'info' | undefined) ?? 'info';
+  void coreAudit({
+    tenantId: (rec.tenantId as string | null | undefined) ?? null,
+    actor: (rec.actor as string | null | undefined) ?? (rec.authed ? String(rec.sub ?? 'authenticated') : 'anonymous'),
+    action: (rec.action as string) ?? (rec.kind === 'action' ? String(rec.kind) : 'request'),
+    outcome,
+    target: rec.target ? String(rec.target) : undefined,
+    detail: {
+      method: rec.method,
+      path: rec.path,
+      ip: rec.ip,
+      authed: rec.authed,
+      status: rec.status,
+      ...(rec.detail as Record<string, unknown> | undefined),
+    },
+  });
+  // 向 stdout 同步打印一份 JSON 行，供容器日志采集。
   const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
-  if (AUDIT_LOG) {
-    appendFile(AUDIT_LOG, line + '\n').catch(() => {});
-  }
   console.log('[audit] ' + line);
 }
 
@@ -4162,6 +4185,14 @@ async function bootstrap(): Promise<void> {
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P2.a：启用结构化审计日志落盘（委托 @agent-harness/core 的 enableAuditFile）。
+  // AUDIT_LOG 非空即启用 crash-safe 落盘（tmp+rename）；默认关闭仅 stdout。
+  // 生产环境应通过 configmap/Secret 显式设置 AUDIT_LOG=/app/data/audit/audit.jsonl。
+  if (AUDIT_LOG) {
+    await coreEnableAuditFile(AUDIT_LOG);
+    structLog('info', 'audit', { file: AUDIT_LOG });
   }
 
   // P0-B 修复：启动时装配 quotaEngine 默认配额，确保 MAX_COST_PER_WINDOW 真正生效。

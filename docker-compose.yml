@@ -59,9 +59,16 @@ services:
       LOG_SCRUB_ENABLED: 'true'
       # ── 指标持久化（P2）：跨重启保留累计计数 / token / 成本 / 租户维度
       TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
-      # ── Go-live：备份与恢复配置
+      # Go-live：备份与恢复配置
       AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
       AH_BACKUP_KEEP_DAYS: '30'
+      # P0.3 租户隔离强制：生产强合规建议开启
+      REQUIRE_TENANT: 'on'
+      # P0-D：启动时自动运行数据库迁移
+      AH_MIGRATE_AUTO: 'on'
+      # 多副本共享后端（带 redis profile 生效）
+      RUN_QUEUE_BACKEND: 'redis'
+      AGENT_STORE: 'redis'
     restart: unless-stopped
     healthcheck:
       test:
