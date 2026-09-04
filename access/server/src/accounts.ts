@@ -26,7 +26,7 @@ import {
   timingSafeEqual,
   createHmac
 } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { getDbAdapter } from '@agent-harness/core';
 
@@ -146,6 +146,21 @@ async function ensureDb(): Promise<void> {
       const file = getDbFile();
       // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
       db = getDbAdapter({ file });
+      // 自诊断：auth 状态（users/auth_tokens/refresh_tokens）若落在进程工作目录
+      // （Render 等平台为临时 FS），任何重启/重新部署/闲置回收都会清空全部账号与
+      // 登录态 → 表现为「登录成功但刷新即登出」（cookie 的 jti 在 auth_tokens 查无记录）。
+      const resolvedFile = resolve(file).replace(/\\/g, '/');
+      if (
+        resolvedFile.startsWith(process.cwd().replace(/\\/g, '/')) ||
+        resolvedFile.startsWith('/opt/render/')
+      ) {
+        console.warn(
+          `   ⚠️  账户数据库位于临时目录: ${file}\n` +
+            '   重启 / 重新部署 / 闲置回收将清空全部账号与登录态（表现为「刷新即登出」）。\n' +
+            '   生产环境请持久化: DB_BACKEND=turso + TURSO_URL/TURSO_TOKEN，' +
+            '或挂载持久卷并把 ACCOUNT_DB_FILE 指向该卷（如 /var/lib/agent-harness/accounts.db）。'
+        );
+      }
       await db.exec(
         `CREATE TABLE IF NOT EXISTS users (
           username TEXT PRIMARY KEY,
