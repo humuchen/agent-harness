@@ -62,13 +62,12 @@ services:
       # Go-live：备份与恢复配置
       AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
       AH_BACKUP_KEEP_DAYS: '30'
-      # P0.3 租户隔离强制：生产强合规建议开启
-      REQUIRE_TENANT: 'on'
-      # P0-D：启动时自动运行数据库迁移
-      AH_MIGRATE_AUTO: 'on'
-      # 多副本共享后端（带 redis profile 生效）
-      RUN_QUEUE_BACKEND: 'redis'
-      AGENT_STORE: 'redis'
+      # ── 生产模式切换（开发模式默认关闭） ────────────────────────────
+      # 生产部署建议使用 docker-compose.prod.yml 覆盖以下变量：
+      #   REQUIRE_TENANT=on              # P0.3 租户隔离强制门禁
+      #   AH_MIGRATE_AUTO=on             # P0-D 启动时自动数据库迁移
+      #   RUN_QUEUE_BACKEND=redis        # 多副本共享运行队列
+      #   AGENT_STORE=redis              # 多副本共享 AgentRegistry
     restart: unless-stopped
     healthcheck:
       test:

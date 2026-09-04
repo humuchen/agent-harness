@@ -44,11 +44,8 @@ data:
   # P2 Go-live：备份与恢复配置
   AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
   AH_BACKUP_KEEP_DAYS: '30'
-  # P0.3 租户隔离强制：生产强合规建议开启（行业 agent 无租户上下文将被拒绝执行）。
-  # 默认 off 向后兼容；生产环境应设 REQUIRE_TENANT=true。
-  REQUIRE_TENANT: 'on'
-  # P0-D：启动时自动运行数据库迁移，确保 schema 与代码版本一致。
-  AH_MIGRATE_AUTO: 'on'
-  # 生产多副本共享后端（必需于水平扩展）。
-  RUN_QUEUE_BACKEND: 'redis'
-  AGENT_STORE: 'redis'
+  # ── 生产专用配置（在 overlay 中声明，base 保持中立） ──────────────────
+  # REQUIRE_TENANT=on        # P0.3 租户隔离强制门禁
+  # AH_MIGRATE_AUTO=on       # P0-D 启动时自动数据库迁移
+  # RUN_QUEUE_BACKEND=redis  # 多副本共享运行队列
+  # AGENT_STORE=redis        # 多副本共享 AgentRegistry
