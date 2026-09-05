@@ -75,7 +75,7 @@ function rand(min: number, max: number): number {
 
 function pick<T>(arr: T[]): T {
   if (arr.length === 0) throw new Error('pick() received empty array');
-  return arr[Math.floor(Math.random() * arr.length)];
+  return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
 function genPhone(): string {
@@ -159,10 +159,10 @@ export async function seedDemoData(tenantId: string): Promise<{ total: number; [
       JSON.stringify([p.name, ...p.faq.map(f => f.q)]),
       p.summary, p.indications, p.contraindications, p.recovery,
       `¥${p.avgPrice}`, JSON.stringify(p.faq), 'seed', now,
-      JSON.stringify([p.name]), '', '', '', '',
+      JSON.stringify([p.name]), '', '', '',
       p.durationMin, p.painLevel, p.downtimeDays,
       p.category === '注射' ? '1-3 次' : '1 次',
-      p.priceTier, `适用于${p.indications}`, 1
+      p.priceTier, `适用于${p.indications}`
     );
     counts.projects++;
   }
@@ -325,7 +325,8 @@ export async function seedDemoData(tenantId: string): Promise<{ total: number; [
     let fromStage = 'new';
     if (stage === 'lost') {
       const fromIdx = rand(0, 5);
-      fromStage = STAGE_ORDER[fromIdx];
+      fromStage = STAGE_ORDER[fromIdx]!;
+
       await stageLogStmt.run(leadId, tenantId, fromStage, 'lost', Math.floor(createdAt / 1000) + rand(0, 7) * 86400, null);
       counts.stageLogs++;
     } else {

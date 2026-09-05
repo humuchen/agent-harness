@@ -124,6 +124,7 @@ export MA_EMBED_TOKEN=可选
 | `MA_A2A_BASE_URL` | 否 | 空 | 平台 A2A 任务入口。缺省时回退 `AGENT_A2A_BASE_URL`。 |
 | `AGENT_A2A_BASE_URL` | 否 | 空 | `MA_A2A_BASE_URL` 的回退来源（平台统一变量）。 |
 | `MA_A2A_TIMEOUT_MS` | 否 | `60000` | A2A 请求超时。 |
+| `MA_SEED_ON_STARTUP` | 否 | `0`（关闭） | 设为 `1` 时，插件在 `onStart` 时检测到数据表为空，自动写入 200 条模拟客资线索及关联数据（院区、项目、号源、预约、对话、阶段流水、CRM 发件箱、入站消息）。**仅用于开发 / 验证环境，生产环境请务必留空。** |
 
 ---
 

@@ -141,8 +141,9 @@ export function getConfig(): MaConfig {
         .replace(/\/+$/, ''),
       timeoutMs: int('MA_A2A_TIMEOUT_MS', 60000),
     },
+    seedOnStartup: process.env.MA_SEED_ON_STARTUP === '1',
   };
-  return cached;
+  return cached!;
 }
 
 /** 失效配置缓存（测试 / 运行期重载 env 用）。 */
@@ -165,5 +166,6 @@ export function configSummary(): Record<string, unknown> {
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
+    seedOnStartup: c.seedOnStartup,
   };
 }
