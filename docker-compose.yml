@@ -38,8 +38,6 @@ services:
       MEMORY_DIR: '/app/data/memory'
       # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       MA_DATA_DIR: '/app/data/ma-lead'
-      # 启动时自动种子演示数据（开发 / 验证用）：设为 '1' 时插件在 DB 为空时写入 200 条模拟线索
-      MA_SEED_ON_STARTUP: '1'
       # 外部 RAG MCP Server（stdio 模式）：从宿主 .env 注入，子进程继承 RAG_* 顶层 env。
       # 内置默认清单（未设宿主 MCP_SERVERS 时生效）：rag / context7 / filesystem / fetch / memory / excel。
       MCP_SERVERS: '${MCP_SERVERS:-[{"name":"rag","command":"node","args":["services/rag/dist/index.js"]},{"name":"context7","serverUrl":"https://mcp.context7.com/mcp"},{"name":"filesystem","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-filesystem/dist/cjs/index.js","."]},{"name":"fetch","command":"node","args":["access/server/node_modules/@tokenizin/mcp-npx-fetch/dist/index.js"]},{"name":"memory","command":"node","args":["access/server/node_modules/@modelcontextprotocol/server-memory/dist/cjs/index.js"]},{"name":"excel","command":"node","args":["access/server/node_modules/@negokaz/excel-mcp-server/dist/launcher.js"],"env":{"EXCEL_MCP_PAGING_CELLS_LIMIT":"4000"}}]}'

@@ -18,8 +18,6 @@ import { getTeamManager } from '@agent-harness/core';
 import { consultationBookingWorkflow } from './workflows/conversation';
 import { analyticsReportWorkflow } from './workflows/analytics';
 import { buildProjectAdvisorPrompt, buildPricingAgentPrompt, buildBookingAgentPrompt, buildCaptureAgentPrompt, buildAnalyticsAgentPrompt } from './prompts';
-import { getConfig } from './config';
-import { shouldSeed, seedDemoData } from './infra/seed';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;
@@ -189,30 +187,6 @@ export const leadPlugin: PluginModule = {
 
   async onStart(ctx: PluginContext): Promise<void> {
     startOutboxWorker();
-
-    // 自动种子：当 MA_SEED_ON_STARTUP=1 且 DB 为空时写入演示数据
-    // 仅用于开发 / 验证环境，生产环境请勿开启
-    // 种子写入失败不应阻断插件启动：捕获错误仅告警，插件仍正常启用
-    try {
-      const maCfg = getConfig();
-      ctx.logger.info('ma_seed_on_startup: 检查种子条件', {
-        MA_SEED_ON_STARTUP: process.env.MA_SEED_ON_STARTUP,
-        dbFile: maCfg.db.file,
-        tenantId: maCfg.tenantId,
-      });
-      const needSeed = await shouldSeed();
-      ctx.logger.info('ma_seed_on_startup: shouldSeed 结果', { needSeed });
-      if (needSeed) {
-        ctx.logger.info('ma_seed_on_startup: 数据库为空，开始写入演示数据...');
-        const result = await seedDemoData(maCfg.tenantId);
-        ctx.logger.info('ma_seed_on_startup: 演示数据写入完成', { total: result.total });
-      }
-    } catch (e: any) {
-      ctx.logger.error('ma_seed_on_startup: 种子过程出错，插件仍将正常启动', {
-        error: e?.message ?? String(e),
-        stack: e?.stack,
-      });
-    }
 
     ctx.logger.info('medical-aesthetics-lead plugin started');
   },

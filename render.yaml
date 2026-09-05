@@ -96,14 +96,9 @@ services:
         value: default
       - key: RAG_DATA_FILE
         value: data/rag-store.json
-      # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
+      # 医美插件数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       - key: MA_DATA_DIR
         value: /app/data/ma-lead
-      # 医美插件 —— 启动时自动种子演示数据（开发 / 验证用）。
-      # 设为 '1' 时，插件在首次启动且数据表为空时自动写入 200 条模拟线索。
-      # 生产环境请务必留空 / 设为 '0'。
-      - key: MA_SEED_ON_STARTUP
-        value: '1'
       # 插件启用清单（可选覆盖），逗号分隔 .js 绝对路径。
       # 不配则回落 plugin-bootstrap 默认列表（customer-service / medical-aesthetics-lead / memo）。
       # 路径相对 access/server/dist 上溯三级：../../../plugins/<id>/dist/index.js。

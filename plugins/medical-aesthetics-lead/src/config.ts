@@ -66,8 +66,6 @@ export interface MaConfig {
   outbox: { enabled: boolean; intervalMs: number; maxAttempts: number; batchSize: number };
   /** 入站消息触发 agent 的 A2A 入口（平台自身 /api/a2a/tasks）。 */
   a2a: { baseUrl: string; timeoutMs: number };
-  /** 启动时自动种子演示数据：设为 '1' 且 DB 为空时写入模拟客资。仅用于开发 / 验证环境。 */
-  seedOnStartup: boolean;
 }
 
 /** 解析整数 env，非法/缺省时回退。 */
@@ -141,7 +139,6 @@ export function getConfig(): MaConfig {
         .replace(/\/+$/, ''),
       timeoutMs: int('MA_A2A_TIMEOUT_MS', 60000),
     },
-    seedOnStartup: process.env.MA_SEED_ON_STARTUP === '1',
   };
   return cached!;
 }
@@ -166,6 +163,5 @@ export function configSummary(): Record<string, unknown> {
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
-    seedOnStartup: c.seedOnStartup,
   };
 }
