@@ -193,7 +193,9 @@ export const leadPlugin: PluginModule = {
     // 自动种子：当 MA_SEED_ON_STARTUP=1 且 DB 为空时写入演示数据
     // 仅用于开发 / 验证环境，生产环境请勿开启
     // 种子写入失败不应阻断插件启动：捕获错误仅告警，插件仍正常启用
-    if (await shouldSeed()) {
+    const needSeed = await shouldSeed();
+    ctx.logger.info('ma_seed_on_startup: shouldSeed 结果', { needSeed });
+    if (needSeed) {
       try {
         ctx.logger.info('ma_seed_on_startup: 数据库为空，开始写入演示数据...');
         const result = await seedDemoData(getConfig().tenantId);

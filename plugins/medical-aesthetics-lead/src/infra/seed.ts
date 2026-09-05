@@ -115,8 +115,15 @@ export async function shouldSeed(): Promise<boolean> {
   }
 
   const db = await getDb();
-  const rows = await db.prepare('SELECT COUNT(*) AS c FROM ma_lead').get();
-  const count = Number(rows?.c ?? 0);
+  // 检查 ma_lead 表是否存在；若不存在，说明 schema 尚未初始化，应当运行种子
+  let count = 0;
+  try {
+    const rows = await db.prepare('SELECT COUNT(*) AS c FROM ma_lead').get();
+    count = Number(rows?.c ?? 0);
+  } catch {
+    // "no such table: ma_lead" — schema 未就绪，应当运行种子
+    return true;
+  }
   return count === 0;
 }
 
