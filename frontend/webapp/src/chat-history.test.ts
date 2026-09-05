@@ -73,10 +73,9 @@ describe('truncateForSize', () => {
     const msgs = makeMsgs(20, 10_000);
     const limit = 50_000;
     const result = truncateForSize(msgs, null, limit);
-    const serialized = Buffer.byteLength(
-      JSON.stringify({ msgs: result }),
-      'utf-8'
-    );
+    const serialized = new TextEncoder().encode(
+      JSON.stringify({ msgs: result })
+    ).length;
     expect(serialized).toBeLessThanOrEqual(limit);
   });
 });

@@ -32,6 +32,16 @@ const DEFAULT_HISTORY_MAX_BYTES = 512 * 1024;
 
 /* ----------------------------- 工具 ----------------------------- */
 
+/**
+ * 浏览器安全的 UTF-8 字节长度计算。
+ * Buffer.byteLength 是 Node.js API，在浏览器端 Bundle 后会抛出
+ * `ReferenceError: Buffer is not defined`（见 saveHistory 崩溃栈），
+ * 故改用 TextEncoder（浏览器原生，Node 18+ 亦可用）。
+ */
+function byteLength(str: string): number {
+  return new TextEncoder().encode(str).length;
+}
+
 /** 给任意 Promise 加超时（恢复流程要求能处理「加载超时」场景）。 */
 export function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -234,7 +244,7 @@ export function truncateForSize(
 ): MirroredMsg[] {
   if (!msgs.length) return msgs;
   const envelope = (arr: MirroredMsg[]) =>
-    Buffer.byteLength(JSON.stringify(usage ? { msgs: arr, usage } : { msgs: arr }), 'utf-8');
+    byteLength(JSON.stringify(usage ? { msgs: arr, usage } : { msgs: arr }));
   // 已在限制内，无需裁剪。
   if (envelope(msgs) <= limit) return msgs;
   // 从最旧的开始删，直到体积进入限制。
