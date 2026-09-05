@@ -143,15 +143,16 @@ function postRunAndParse(baseUrl: string, apiKey: string, payload: object): Prom
 // 4) 分析 prompt 模板
 // ---------------------------------------------------------------------------
 
-const ANALYSIS_PROMPT = `你是一名医美客服数据分析员。请基于 ma_lead 表中的真实数据，完成以下分析并返回 JSON：
+const ANALYSIS_PROMPT = `你是一名医美客服数据分析员。请基于 ma_lead 表中的真实数据库，使用 analytics_query 工具自动完成以下分析：
 
-1. 筛选出最后一次到院/咨询时间超过 14 天、当前状态在 new~arrived 的客户。
-   - 使用 analytics_query 工具查询 project 类型数据获取项目分布
-   - 计算每个客户距离上次到院/咨询的天数
+**查询方式**：调用 analytics_query，type="inactive"，daysThreshold=14
 
-2. 检查其所属 project 是否有近期活动（activity_start <= now <= activity_end）。
+这将返回一个 JSON 数组，其中每个元素包含：
+- leadId, name, phone, project, lastVisit, daysSince（距上次到院/咨询天数）, activityTitle, activityId
 
-3. 输出格式（严格 JSON，不要 markdown 包裹）：
+**检查活动关联**：检查 project 对应的 ma_project.activity_title / activity_id 是否有近期活动。
+
+**输出格式**（严格 JSON，不要 markdown 包裹）：
 {
   "type": "reminder.inactive_lead",
   "generatedAt": <当前时间戳毫秒>,
@@ -169,12 +170,11 @@ const ANALYSIS_PROMPT = `你是一名医美客服数据分析员。请基于 ma_
   ]
 }
 
-4. 如果没有符合条件的客户，返回 { "type": "reminder.inactive_lead", "generatedAt": ..., "items": [] }
-
-重要：
+**规则**：
 - 所有数据必须来自 analytics_query 工具的真实查询结果，禁止编造
 - 只返回 JSON，不要任何解释文字
-- 字段缺失时用 null 填充`;
+- 字段缺失时用 null 填充
+- 如果没有符合条件的客户，返回 { "type": "reminder.inactive_lead", "generatedAt": ..., "items": [] }`;
 
 // ---------------------------------------------------------------------------
 // 5) 自触发调度器（interval 模式 + slot 幂等 + 重启 catch-up）

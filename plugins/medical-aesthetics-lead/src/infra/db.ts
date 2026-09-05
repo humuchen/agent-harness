@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS ma_project (
   -- P1 合规内建
   compliant_copy       TEXT,
   compliance_reviewed  INTEGER NOT NULL DEFAULT 0,
+  -- P1.5 活动关联（用于未活跃客户提醒）
+  activity_title       TEXT,
+  activity_id          TEXT,
   -- P1 语义检索（JSON 数组文本；未配置嵌入服务时为 NULL）
   embedding         TEXT
 );
@@ -359,6 +362,8 @@ async function runMigrations(conn: SqliteDatabase): Promise<void> {
     compliant_copy: 'TEXT',
     compliance_reviewed: 'INTEGER NOT NULL DEFAULT 0',
     embedding: 'TEXT',
+    activity_title: 'TEXT',
+    activity_id: 'TEXT',
   };
   for (const [col, type] of Object.entries(projAdd)) {
     if (!projCols.includes(col)) {
@@ -429,6 +434,8 @@ async function runMigrationsAsync(conn: SqliteDatabase): Promise<void> {
     compliant_copy: 'TEXT',
     compliance_reviewed: 'INTEGER NOT NULL DEFAULT 0',
     embedding: 'TEXT',
+    activity_title: 'TEXT',
+    activity_id: 'TEXT',
   };
   for (const [col, type] of Object.entries(projAdd)) {
     if (!projCols.includes(col)) {

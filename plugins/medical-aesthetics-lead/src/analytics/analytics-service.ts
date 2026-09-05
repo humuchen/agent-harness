@@ -12,6 +12,7 @@ import type {
   AnalyticsQuery, AnalyticsResult, AnalyticsFullResult,
   FunnelAnalysis, ChannelPerformance, ClinicPerformance,
   ProjectProfitability, TimeTrendPoint, StageRetention,
+  InactiveLead,
 } from './types';
 
 const STAGE_ZH: Record<string, string> = {
@@ -399,6 +400,59 @@ export async function stageRetention(q: AnalyticsQuery): Promise<StageRetention[
   }, '阶段留存分析');
 }
 
+// ─── 未活跃线索分析 ─────────────────────────────────────────────────────
+
+/**
+ * 查询未活跃线索：最后一次到院/咨询距今超过阈值天数的客户。
+ * - last_visit 来源：ma_appointment.arrived_at（如有），否则 ma_appointment.created_at
+ * - daysSince threshold 默认 14 天
+ */
+export async function inactiveLeads(q: AnalyticsQuery & { daysThreshold?: number }): Promise<InactiveLead[]> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const tid = q.tenantId ?? getConfig().tenantId;
+    const daysThreshold = q.daysThreshold ?? 14;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const cutoffSec = nowSec - daysThreshold * 86400;
+
+    // 筛选：当前 stage 在 new~arrived（排除 lost/deal），最后到院/咨询超过阈值
+    // last_visit 使用 appointment.arrived_at 或 created_at
+    const sql = `
+      SELECT
+        l.lead_id AS leadId,
+        l.name,
+        l.phone,
+        l.project,
+        datetime(COALESCE(a.arrived_at, a.created_at), 'unixepoch') AS lastVisit,
+        CAST((? - COALESCE(a.arrived_at, a.created_at)) / 86400 AS INTEGER) AS daysSince,
+        p.activity_title AS activityTitle,
+        p.activity_id AS activityId
+      FROM ma_lead l
+      LEFT JOIN ma_appointment a ON a.lead_id = l.lead_id AND a.tenant_id = l.tenant_id
+      LEFT JOIN ma_project p ON p.project_id = l.project AND p.tenant_id = l.tenant_id
+      WHERE l.tenant_id = ?
+        AND l.stage IN ('new','contacted','qualified','captured','booked','arrived')
+        AND l.stage != 'lost'
+        AND l.stage != 'deal'
+        AND COALESCE(a.arrived_at, a.created_at) <= ?
+      ORDER BY daysSince DESC
+      LIMIT 200
+    `;
+
+    const rows = await db.prepare(sql).all(nowSec, tid, cutoffSec) as Record<string, unknown>[];
+    return rows.map((r): InactiveLead => ({
+      leadId: String(r.leadId),
+      name: r.name ? String(r.name) : null,
+      phone: r.phone ? String(r.phone) : null,
+      project: r.project ? String(r.project) : null,
+      lastVisit: r.lastVisit ? String(r.lastVisit) : null,
+      daysSince: Number(r.daysSince),
+      activityTitle: r.activityTitle ? String(r.activityTitle) : null,
+      activityId: r.activityId ? String(r.activityId) : null,
+    }));
+  }, '未活跃线索分析');
+}
+
 // ─── 统一查询入口 ─────────────────────────────────────────────────────
 
 export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsResult> {
@@ -427,6 +481,10 @@ export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsRes
     }
     case 'retention': {
       const data = await stageRetention(q);
+      return { query: q, generatedAt, data };
+    }
+    case 'inactive': {
+      const data = await inactiveLeads(q as AnalyticsQuery & { daysThreshold?: number });
       return { query: q, generatedAt, data };
     }
     case 'full': {

@@ -72,7 +72,7 @@ export interface StageRetention {
 /** 分析查询参数。 */
 export interface AnalyticsQuery {
   /** 分析类型。 */
-  type: 'funnel' | 'channel' | 'clinic' | 'project' | 'trend' | 'retention' | 'full';
+  type: 'funnel' | 'channel' | 'clinic' | 'project' | 'trend' | 'retention' | 'inactive' | 'full';
   /** 租户 ID。 */
   tenantId?: string;
   /** 时间范围（毫秒时间戳）。 */
@@ -87,13 +87,15 @@ export interface AnalyticsQuery {
   project?: string;
   /** 聚合周期（trend 类型）。'day' | 'week' | 'month'。 */
   period?: 'day' | 'week' | 'month';
+  /** 未活跃阈值天数（inactive 类型）。默认 14。 */
+  daysThreshold?: number;
 }
 
 /** 分析结果（联合类型）。 */
 export interface AnalyticsResult {
   query: AnalyticsQuery;
   generatedAt: number;
-  data: FunnelAnalysis[] | ChannelPerformance[] | ClinicPerformance[] | ProjectProfitability[] | TimeTrendPoint[] | StageRetention[] | AnalyticsFullResult;
+  data: FunnelAnalysis[] | ChannelPerformance[] | ClinicPerformance[] | ProjectProfitability[] | TimeTrendPoint[] | StageRetention[] | InactiveLead[] | AnalyticsFullResult;
 }
 
 /** full 类型的结果（所有分析集合）。 */
@@ -104,4 +106,16 @@ export interface AnalyticsFullResult {
   project: ProjectProfitability[];
   trend: TimeTrendPoint[];
   retention: StageRetention[];
+}
+
+/** 未活跃线索（最后到院/咨询超过 N 天）。 */
+export interface InactiveLead {
+  leadId: string;
+  name: string | null;
+  phone: string | null;
+  project: string | null;
+  lastVisit: string | null;
+  daysSince: number;
+  activityTitle: string | null;
+  activityId: string | null;
 }

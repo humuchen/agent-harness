@@ -114,7 +114,14 @@ export async function shouldSeed(): Promise<boolean> {
     return false;
   }
 
-  const db = await getDb();
+  const db = await getDb().catch((e: any) => {
+    // getDb 失败视为需要种子（schema 可能未初始化）
+    void 0;
+    return undefined;
+  });
+  if (!db) {
+    return true;
+  }
   // 检查 ma_lead 表是否存在；若不存在，说明 schema 尚未初始化，应当运行种子
   let count = 0;
   try {

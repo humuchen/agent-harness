@@ -354,6 +354,7 @@ const analytics: PluginRouteHandler = async (req, res) => {
     clinicId: p.get('clinicId') ?? undefined,
     project: p.get('project') ?? undefined,
     period: (p.get('period') as AnalyticsQuery['period']) ?? undefined,
+    daysThreshold: p.get('daysThreshold') ? Number(p.get('daysThreshold')) : undefined,
   };
   try {
     const result = await runAnalyticsQuery(q);

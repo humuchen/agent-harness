@@ -21,8 +21,8 @@ export function registerAnalyticsTool(tools: ToolRegistry): void {
       properties: {
         type: {
           type: 'string',
-          description: '分析类型：funnel(漏斗) | channel(渠道) | clinic(院区) | project(项目) | trend(趋势) | retention(留存) | full(全面)',
-          enum: ['funnel', 'channel', 'clinic', 'project', 'trend', 'retention', 'full'],
+          description: '分析类型：funnel(漏斗) | channel(渠道) | clinic(院区) | project(项目) | trend(趋势) | retention(留存) | inactive(未活跃) | full(全面)',
+          enum: ['funnel', 'channel', 'clinic', 'project', 'trend', 'retention', 'inactive', 'full'],
         },
         startTime: { type: 'integer', description: '开始时间（毫秒时间戳，UTC）。可选' },
         endTime: { type: 'integer', description: '结束时间（毫秒时间戳，UTC）。可选' },
@@ -34,6 +34,7 @@ export function registerAnalyticsTool(tools: ToolRegistry): void {
           description: '趋势聚合周期（trend 类型专用）',
           enum: ['day', 'week', 'month'],
         },
+        daysThreshold: { type: 'integer', description: '未活跃天数阈值（inactive 类型专用，默认14天）。可选' },
       },
       required: ['type'],
     },
@@ -47,6 +48,7 @@ export function registerAnalyticsTool(tools: ToolRegistry): void {
           clinicId: args.clinicId ? String(args.clinicId) : undefined,
           project: args.project ? String(args.project) : undefined,
           period: args.period ? (String(args.period) as 'day' | 'week' | 'month') : undefined,
+          daysThreshold: args.daysThreshold ? Number(args.daysThreshold) : undefined,
         };
         const result = await runAnalyticsQuery(q);
         return { ok: true, result };
