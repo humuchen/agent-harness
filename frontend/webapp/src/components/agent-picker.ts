@@ -14,7 +14,20 @@ import { customElement, property, state } from 'lit/decorators.js';
 export interface AgentOption {
   id: string;
   name: string;
+  /** 行业领域 / 分类标签（用于分组展示）。 */
+  domain?: string;
+  /** 该 agent 是否禁用（如 viewer 角色不展示运营分析 agent）。 */
+  disabled?: boolean;
 }
+
+/** 行业领域 → 中文标签（用于 Agent 选择器分类标题）。 */
+const domainLabels: Record<string, string> = {
+  'medical-aesthetics': '医美运营分析',
+  finance: '金融',
+  healthcare: '医疗',
+  education: '教育',
+  generic: '通用'
+};
 
 /** 统一机器人图标：所有 Agent 共用，仅名称区分。 */
 const BOT_ICON =
@@ -123,7 +136,7 @@ export class AhAgentPicker extends LitElement {
         margin-bottom: 0;
       }
     }
-    .item:hover {
+    .item:hover:not(.disabled) {
       background: color-mix(
         in srgb,
         var(--ah-text-muted, #999) 12%,
@@ -159,6 +172,25 @@ export class AhAgentPicker extends LitElement {
       font-size: 14px;
     }
 
+    /* 禁用状态：不可点击、降低不透明度 */
+    .item.disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .item.disabled:hover {
+      background: transparent;
+    }
+
+    /* 分类标签（组标题） */
+    .category-label {
+      padding: 4px 10px 2px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--ah-text-muted, #999);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
     /* 遮罩：点击空白处关闭（移动端友好） */
     .scrim {
       position: fixed;
@@ -191,6 +223,28 @@ export class AhAgentPicker extends LitElement {
         composed: true
       })
     );
+  }
+
+  /** 将 Agent 按 domain 分类分组，用于下拉面板展示。 */
+  private get groupedAgents(): { label: string | null; items: AgentOption[] }[] {
+    const groups: { label: string | null; items: AgentOption[] }[] = [];
+    const generic: AgentOption[] = [];
+    const byDomain = new Map<string, AgentOption[]>();
+    for (const a of this.agents) {
+      if (!a.domain || a.domain === 'generic' || a.domain === '') {
+        generic.push(a);
+      } else {
+        const arr = byDomain.get(a.domain) ?? [];
+        arr.push(a);
+        byDomain.set(a.domain, arr);
+      }
+    }
+    if (generic.length) groups.push({ label: null, items: generic });
+    for (const [domain, items] of byDomain) {
+      const label = domainLabels[domain] ?? domain;
+      groups.push({ label, items });
+    }
+    return groups;
   }
 
   render() {
@@ -236,31 +290,39 @@ export class AhAgentPicker extends LitElement {
               @click=${() => (this.open = false)}
             ></button>
             <div class="panel" role="dialog" aria-label="业务 Agent">
-              ${this.agents.map(
-                (a) => html`
-                  <button
-                    class="item ${this.value === a.id ? 'selected' : ''}"
-                    role="option"
-                    aria-selected=${this.value === a.id ? 'true' : 'false'}
-                    title=${a.name}
-                    @click=${() => this.select(a.id)}
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d=${BOT_ICON} />
-                    </svg>
-                    <span class="name">${a.name}</span>
-                    ${this.value === a.id
-                      ? html`<span class="check">✓</span>`
+              ${this.groupedAgents.map(
+                (g) => html`
+                    ${g.label
+                      ? html`<div class="category-label">${g.label}</div>`
                       : nothing}
-                  </button>
-                `
+                    ${g.items.map(
+                      (a) => html`
+                        <button
+                          class="item ${this.value === a.id ? 'selected' : ''} ${a.disabled ? 'disabled' : ''}"
+                          role="option"
+                          aria-selected=${this.value === a.id ? 'true' : 'false'}
+                          aria-disabled=${a.disabled ? 'true' : 'false'}
+                          title=${a.name}
+                          @click=${() => !a.disabled && this.select(a.id)}
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d=${BOT_ICON} />
+                          </svg>
+                          <span class="name">${a.name}</span>
+                          ${this.value === a.id
+                            ? html`<span class="check">✓</span>`
+                            : nothing}
+                        </button>
+                      `
+                    )}
+                  `
               )}
             </div>
           `

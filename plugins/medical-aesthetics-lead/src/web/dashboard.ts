@@ -77,7 +77,9 @@ function pieChart(stages: { label: string; value: number }[]): string {
       if (frac >= 0.9999) {
         // 满环：起止点重合时 SVG 弧不绘制，改用描边圆表示整圈。
         const rmid = (r + ri) / 2;
-        shape = `<circle cx="${cx}" cy="${cy}" r="${rmid}" fill="none" stroke="${color}" stroke-width="${r - ri}"/>`;
+        shape = `<circle cx="${cx}" cy="${cy}" r="${rmid}" fill="none" stroke="${color}" stroke-width="${
+          r - ri
+        }"/>`;
       } else {
         const large = a1 - a > Math.PI ? 1 : 0;
         const x0o = cx + r * Math.sin(a),
@@ -88,7 +90,15 @@ function pieChart(stages: { label: string; value: number }[]): string {
           y0i = cy - ri * Math.cos(a);
         const x1i = cx + ri * Math.sin(a1),
           y1i = cy - ri * Math.cos(a1);
-        shape = `<path d="M${x0o.toFixed(2)},${y0o.toFixed(2)} A${r},${r} 0 ${large} 1 ${x1o.toFixed(2)},${y1o.toFixed(2)} L${x1i.toFixed(2)},${y1i.toFixed(2)} A${ri},${ri} 0 ${large} 0 ${x0i.toFixed(2)},${y0i.toFixed(2)} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+        shape = `<path d="M${x0o.toFixed(2)},${y0o.toFixed(
+          2
+        )} A${r},${r} 0 ${large} 1 ${x1o.toFixed(2)},${y1o.toFixed(
+          2
+        )} L${x1i.toFixed(2)},${y1i.toFixed(
+          2
+        )} A${ri},${ri} 0 ${large} 0 ${x0i.toFixed(2)},${y0i.toFixed(
+          2
+        )} Z" fill="${color}" stroke="#fff" stroke-width="1"/>`;
       }
       a = a1;
       return `${shape}<title>${esc(s.label)}: ${s.value}（${pct}%）</title>`;
@@ -100,17 +110,27 @@ function pieChart(stages: { label: string; value: number }[]): string {
       const pct = Math.round((s.value / total) * 1000) / 10;
       const y = 26 + i * 24;
       return `<g>
-        <rect x="210" y="${y - 12}" width="12" height="12" rx="2" fill="${palette[i % palette.length]}"/>
-        <text class="ma-lab" x="228" y="${y - 1}" font-size="12">${esc(s.label)}</text>
-        <text class="ma-val" x="470" y="${y - 1}" font-size="12" text-anchor="end">${s.value} · ${pct}%</text>
+        <rect x="210" y="${y - 12}" width="12" height="12" rx="2" fill="${
+        palette[i % palette.length]
+      }"/>
+        <text class="ma-lab" x="228" y="${y - 1}" font-size="12">${esc(
+        s.label
+      )}</text>
+        <text class="ma-val" x="470" y="${
+          y - 1
+        }" font-size="12" text-anchor="end">${s.value} · ${pct}%</text>
       </g>`;
     })
     .join('');
   const h = Math.max(200, 26 + stages.length * 24 + 10);
   return `<svg class="ma-chart" viewBox="0 0 480 ${h}" width="100%" preserveAspectRatio="xMinYMin meet" style="max-width:520px">
     ${slices}
-    <text class="ma-donut-center" x="${cx}" y="${cy - 4}" font-size="20" text-anchor="middle">${entered}</text>
-    <text class="ma-donut-sub" x="${cx}" y="${cy + 16}" font-size="11" text-anchor="middle">进入漏斗</text>
+    <text class="ma-donut-center" x="${cx}" y="${
+    cy - 4
+  }" font-size="20" text-anchor="middle">${entered}</text>
+    <text class="ma-donut-sub" x="${cx}" y="${
+    cy + 16
+  }" font-size="11" text-anchor="middle">进入漏斗</text>
     ${legend}
   </svg>`;
 }
@@ -129,49 +149,49 @@ export const leadDashboardView: PluginUIView = {
       const ob = await outboxSnapshot();
       const db = await dbHealth();
 
-    const funnelStages = [
-      'new',
-      'contacted',
-      'qualified',
-      'captured',
-      'booked',
-      'arrived',
-      'deal'
-    ].map((s) => ({
-      label: s,
-      value: stats.funnel[s as keyof typeof stats.funnel] ?? 0
-    }));
+      const funnelStages = [
+        'new',
+        'contacted',
+        'qualified',
+        'captured',
+        'booked',
+        'arrived',
+        'deal'
+      ].map((s) => ({
+        label: s,
+        value: stats.funnel[s as keyof typeof stats.funnel] ?? 0
+      }));
 
-    const channelItems = Object.entries(stats.channelDist)
-      .sort((a, b) => b[1] - a[1])
-      .map(([label, value]) => ({ label, value }));
-    const gradeItems = Object.entries(stats.gradeDist)
-      .sort((a, b) => b[1] - a[1])
-      .map(([label, value]) => ({ label: `${label}级`, value }));
+      const channelItems = Object.entries(stats.channelDist)
+        .sort((a, b) => b[1] - a[1])
+        .map(([label, value]) => ({ label, value }));
+      const gradeItems = Object.entries(stats.gradeDist)
+        .sort((a, b) => b[1] - a[1])
+        .map(([label, value]) => ({ label: `${label}级`, value }));
 
-    const crmItems = Object.entries(stats.crmSync)
-      .filter(([, v]) => v > 0)
-      .map(([label, value]) => ({ label: `CRM·${label}`, value }));
+      const crmItems = Object.entries(stats.crmSync)
+        .filter(([, v]) => v > 0)
+        .map(([label, value]) => ({ label: `CRM·${label}`, value }));
 
-    const cards = [
-      { k: '总客资', v: stats.total },
-      { k: '到店率', v: `${stats.arriveRate}%` },
-      { k: '成交率', v: `${stats.dealRate}%` },
-      { k: '待跟进', v: stats.followupQueue.length },
-      { k: '待认领', v: stats.handoffQueue.length },
-      { k: '同步待投', v: ob.stats.pending }
-    ]
-      .map(
-        (c) =>
-          `<div class="ma-card"><div class="ma-card-v">${esc(
-            c.v
-          )}</div><div class="ma-card-k">${esc(c.k)}</div></div>`
-      )
-      .join('');
+      const cards = [
+        { k: '总客资', v: stats.total },
+        { k: '到店率', v: `${stats.arriveRate}%` },
+        { k: '成交率', v: `${stats.dealRate}%` },
+        { k: '待跟进', v: stats.followupQueue.length },
+        { k: '待认领', v: stats.handoffQueue.length },
+        { k: '同步待投', v: ob.stats.pending }
+      ]
+        .map(
+          (c) =>
+            `<div class="ma-card"><div class="ma-card-v">${esc(
+              c.v
+            )}</div><div class="ma-card-k">${esc(c.k)}</div></div>`
+        )
+        .join('');
 
-    const rows = recs
-      .map(
-        (r) => `<tr>
+      const rows = recs
+        .map(
+          (r) => `<tr>
           <td><code>${esc(r.leadId)}</code></td>
           <td>${esc(r.channel)}</td>
           <td>${esc(r.project ?? '-')}</td>
@@ -188,13 +208,13 @@ export const leadDashboardView: PluginUIView = {
           <td>${esc(r.intent ?? '-')}</td>
           <td>${new Date(r.updatedAt).toLocaleString()}</td>
         </tr>`
-      )
-      .join('');
+        )
+        .join('');
 
-    const handoffRows = stats.handoffQueue.length
-      ? stats.handoffQueue
-          .map(
-            (r) => `<tr>
+      const handoffRows = stats.handoffQueue.length
+        ? stats.handoffQueue
+            .map(
+              (r) => `<tr>
               <td><code>${esc(r.leadId)}</code></td>
               <td>${esc(r.grade ?? '-')}</td>
               <td>${esc(r.project ?? '-')}</td>
@@ -206,32 +226,34 @@ export const leadDashboardView: PluginUIView = {
                 </form>
               </td>
             </tr>`
-          )
-          .join('')
-      : '<tr><td colspan="4">暂无待认领客资</td></tr>';
+            )
+            .join('')
+        : '<tr><td colspan="4">暂无待认领客资</td></tr>';
 
-    const followupRows = stats.followupQueue.length
-      ? stats.followupQueue
-          .map(
-            (r) => `<tr>
+      const followupRows = stats.followupQueue.length
+        ? stats.followupQueue
+            .map(
+              (r) => `<tr>
               <td><code>${esc(r.leadId)}</code></td>
               <td>${esc(r.grade ?? '-')}</td>
               <td>${esc(r.channel)}</td>
               <td>${esc(r.project ?? '-')}</td>
             </tr>`
-          )
-          .join('')
-      : '<tr><td colspan="4">暂无待跟进客资</td></tr>';
+            )
+            .join('')
+        : '<tr><td colspan="4">暂无待跟进客资</td></tr>';
 
-    const syncLine = `CRM 同步：已投 ${ob.stats.sent} / 待投 ${
-      ob.stats.pending
-    } / 失败 ${ob.stats.failed}（CRM ${
-      ob.crmEnabled ? '已配置' : '未配置'
-    } · HIS ${ob.hisEnabled ? '已配置' : '未配置'}）｜ 库行数：${JSON.stringify(
-      (db.counts as Record<string, number>) ?? {}
-    )}`;
+      const syncLine = `CRM 同步：已投 ${ob.stats.sent} / 待投 ${
+        ob.stats.pending
+      } / 失败 ${ob.stats.failed}（CRM ${
+        ob.crmEnabled ? '已配置' : '未配置'
+      } · HIS ${
+        ob.hisEnabled ? '已配置' : '未配置'
+      }）｜ 库行数：${JSON.stringify(
+        (db.counts as Record<string, number>) ?? {}
+      )}`;
 
-    return `<div class="ma-dash">
+      return `<div class="ma-dash">
       <h2>医美客资 · 客资看板</h2>
       <div class="ma-cards">${cards}</div>
 
@@ -347,7 +369,7 @@ export const leadDashboardView: PluginUIView = {
       }
     </style>`;
     })();
-  },
+  }
 };
 
 /**
@@ -368,35 +390,35 @@ export const analyticsDashboardView: PluginUIView = {
         label: f.stage,
         value: f.count,
         pct: f.percentage,
-        avgH: f.avgHoursToNext,
+        avgH: f.avgHoursToNext
       }));
 
       // --- 渠道柱状图 ---
       const channelData = (d?.channel ?? []).map((c: any) => ({
         label: c.channel,
         value: c.leadCount,
-        rate: c.dealRate,
+        rate: c.dealRate
       }));
 
       // --- 院区柱状图 ---
       const clinicData = (d?.clinic ?? []).map((c: any) => ({
         label: c.clinicName,
         value: c.dealCount,
-        util: c.slotUtilization,
+        util: c.slotUtilization
       }));
 
       // --- 项目柱状图 ---
       const projectData = (d?.project ?? []).map((p: any) => ({
         label: p.project,
         value: p.dealCount,
-        rev: p.estimatedRevenue,
+        rev: p.estimatedRevenue
       }));
 
       // --- 趋势折线 ---
       const trendData = (d?.trend ?? []).map((t: any) => ({
         period: t.period,
         leads: t.leadCount,
-        deals: t.dealCount,
+        deals: t.dealCount
       }));
 
       const funnelBars = barChart(
@@ -421,19 +443,37 @@ export const analyticsDashboardView: PluginUIView = {
 
       // 趋势折线图
       const trendMax = Math.max(1, ...trendData.map((t: any) => t.leads));
-      const trendW = 420, trendH = 140, trendPad = { top: 20, right: 10, bottom: 30, left: 40 };
-      const trendX = (i: number) => trendPad.left + (i / Math.max(1, trendData.length - 1)) * (trendW - trendPad.left - trendPad.right);
-      const trendY = (v: number) => trendH - trendPad.bottom - (v / trendMax) * (trendH - trendPad.top - trendPad.bottom);
-      const trendPath = trendData.map((t: any, i: number) => `${trendX(i).toFixed(1)},${trendY(t.leads).toFixed(1)}`).join(' ');
+      const trendW = 420,
+        trendH = 140,
+        trendPad = { top: 20, right: 10, bottom: 30, left: 40 };
+      const trendX = (i: number) =>
+        trendPad.left +
+        (i / Math.max(1, trendData.length - 1)) *
+          (trendW - trendPad.left - trendPad.right);
+      const trendY = (v: number) =>
+        trendH -
+        trendPad.bottom -
+        (v / trendMax) * (trendH - trendPad.top - trendPad.bottom);
+      const trendPath = trendData
+        .map(
+          (t: any, i: number) =>
+            `${trendX(i).toFixed(1)},${trendY(t.leads).toFixed(1)}`
+        )
+        .join(' ');
       const trendLine = `M${trendPath.replace(/ /g, ' L')}`;
 
       const funnelTable = funnelData.length
         ? '<table class="ma-table">' +
           '<thead><tr><th>阶段</th><th>人数</th><th>占比</th><th>平均流转(小时)</th></tr></thead>' +
           '<tbody>' +
-          funnelData.map((f: any) =>
-            `<tr><td>${esc(f.label)}</td><td>${f.value}</td><td>${f.pct}%</td><td>${f.avgH ?? '-'}</td></tr>`
-          ).join('') +
+          funnelData
+            .map(
+              (f: any) =>
+                `<tr><td>${esc(f.label)}</td><td>${f.value}</td><td>${
+                  f.pct
+                }%</td><td>${f.avgH ?? '-'}</td></tr>`
+            )
+            .join('') +
           '</tbody></table>'
         : '<p class="ma-empty">暂无漏斗数据</p>';
 
@@ -441,9 +481,14 @@ export const analyticsDashboardView: PluginUIView = {
         ? '<table class="ma-table">' +
           '<thead><tr><th>渠道</th><th>线索数</th><th>成交率</th></tr></thead>' +
           '<tbody>' +
-          channelData.map((c: any) =>
-            `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${c.rate}%</td></tr>`
-          ).join('') +
+          channelData
+            .map(
+              (c: any) =>
+                `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${
+                  c.rate
+                }%</td></tr>`
+            )
+            .join('') +
           '</tbody></table>'
         : '<p class="ma-empty">暂无渠道数据</p>';
 
@@ -451,9 +496,14 @@ export const analyticsDashboardView: PluginUIView = {
         ? '<table class="ma-table">' +
           '<thead><tr><th>院区</th><th>成交数</th><th>号源利用率</th></tr></thead>' +
           '<tbody>' +
-          clinicData.map((c: any) =>
-            `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${c.util}%</td></tr>`
-          ).join('') +
+          clinicData
+            .map(
+              (c: any) =>
+                `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${
+                  c.util
+                }%</td></tr>`
+            )
+            .join('') +
           '</tbody></table>'
         : '<p class="ma-empty">暂无院区数据</p>';
 
@@ -461,9 +511,14 @@ export const analyticsDashboardView: PluginUIView = {
         ? '<table class="ma-table">' +
           '<thead><tr><th>项目</th><th>成交数</th><th>预估收入(元)</th></tr></thead>' +
           '<tbody>' +
-          projectData.map((p: any) =>
-            `<tr><td>${esc(p.label)}</td><td>${p.value}</td><td>${p.rev.toLocaleString()}</td></tr>`
-          ).join('') +
+          projectData
+            .map(
+              (p: any) =>
+                `<tr><td>${esc(p.label)}</td><td>${
+                  p.value
+                }</td><td>${p.rev.toLocaleString()}</td></tr>`
+            )
+            .join('') +
           '</tbody></table>'
         : '<p class="ma-empty">暂无项目数据</p>';
 
@@ -473,41 +528,55 @@ export const analyticsDashboardView: PluginUIView = {
       const today = new Date().toISOString().slice(0, 10);
       const todayAppts = await listAppointmentsByDate(today);
       const apptRows = todayAppts.length
-        ? todayAppts.map((a) => {
-            const isArrived = a.status === 'arrived';
-            const isCompleted = a.status === 'completed';
-            const markArrivedBtn = isCompleted
-              ? ''
-              : isArrived
+        ? todayAppts
+            .map((a) => {
+              const isArrived = a.status === 'arrived';
+              const isCompleted = a.status === 'completed';
+              const markArrivedBtn = isCompleted
+                ? ''
+                : isArrived
                 ? ''
                 : `<form method="POST" action="/api/plugins/medical-aesthetics-lead/appointments/mark" class="ma-claim" style="display:inline">
-                    <input type="hidden" name="appointmentId" value="${esc(a.appointmentId)}"/>
+                    <input type="hidden" name="appointmentId" value="${esc(
+                      a.appointmentId
+                    )}"/>
                     <input type="hidden" name="action" value="arrived"/>
                     <button type="submit" class="ma-btn" style="padding:2px 8px;font-size:11px">到院</button>
                   </form>`;
-            const markCompletedBtn = isCompleted
-              ? ''
-              : !isArrived
+              const markCompletedBtn = isCompleted
+                ? ''
+                : !isArrived
                 ? ''
                 : `<form method="POST" action="/api/plugins/medical-aesthetics-lead/appointments/mark" class="ma-claim" style="display:inline">
-                    <input type="hidden" name="appointmentId" value="${esc(a.appointmentId)}"/>
+                    <input type="hidden" name="appointmentId" value="${esc(
+                      a.appointmentId
+                    )}"/>
                     <input type="hidden" name="action" value="completed"/>
                     <button type="submit" class="ma-btn" style="padding:2px 8px;font-size:11px">完成</button>
                   </form>`;
-            return `<tr>
+              return `<tr>
               <td><code>${esc(a.appointmentId)}</code></td>
               <td>${esc(a.leadId)}</td>
               <td>${esc(a.date)}</td>
               <td>${esc(a.time)}</td>
-              <td>${esc(a.status === 'arrived' ? '到院' : a.status === 'completed' ? '完成' : a.status)}</td>
+              <td>${esc(
+                a.status === 'arrived'
+                  ? '到院'
+                  : a.status === 'completed'
+                  ? '完成'
+                  : a.status
+              )}</td>
               <td>${markArrivedBtn}${markCompletedBtn}</td>
             </tr>`;
-          }).join('')
+            })
+            .join('')
         : '<tr><td colspan="6">今日暂无预约</td></tr>';
 
       return `<div class="ma-analytics">
   <h2>医美运营分析</h2>
-  <p class="ma-empty" style="font-size:12px; margin-bottom:12px;">数据更新于 ${new Date(result.generatedAt).toLocaleString()} · 全部来自真实数据库聚合</p>
+  <p class="ma-empty" style="font-size:12px; margin-bottom:12px;">数据更新于 ${new Date(
+    result.generatedAt
+  ).toLocaleString()} · 全部来自真实数据库聚合</p>
 
   <div class="ma-grid">
     <section class="ma-panel">
@@ -535,20 +604,40 @@ export const analyticsDashboardView: PluginUIView = {
     </section>
   </div>
 
-  <section class="ma-panel">
+  <section class="ma-panel ma-trend">
     <h3>趋势曲线（日）</h3>
     ${
       trendEmpty
         ? '<p class="ma-empty">暂无趋势数据</p>'
         : `<svg class="ma-chart" viewBox="0 0 ${trendW} ${trendH}" width="100%" style="max-width:480px">
-          <line x1="${trendPad.left}" y1="${trendH - trendPad.bottom}" x2="${trendW - trendPad.right}" y2="${trendH - trendPad.bottom}" stroke="var(--ah-border)" stroke-width="1"/>
+          <line x1="${trendPad.left}" y1="${trendH - trendPad.bottom}" x2="${
+            trendW - trendPad.right
+          }" y2="${
+            trendH - trendPad.bottom
+          }" stroke="var(--ah-border)" stroke-width="1"/>
           <polyline fill="none" stroke="var(--ah-accent)" stroke-width="2" points="${trendPath}"/>
-          ${trendData.map((t: any, i: number) =>
-            `<text class="ma-lab" x="${trendX(i).toFixed(1)}" y="${(trendH - trendPad.bottom + 15).toFixed(1)}" font-size="10" text-anchor="middle">${esc(t.period)}</text>`
-          ).join('')}
-          ${trendData.map((t: any, i: number) =>
-            `<text class="ma-val" x="${trendX(i).toFixed(1)}" y="${(trendY(t.leads) - 4).toFixed(1)}" font-size="10" text-anchor="middle">${t.leads}</text>`
-          ).join('')}
+          ${trendData
+            .map(
+              (t: any, i: number) =>
+                `<text class="ma-lab" x="${trendX(i).toFixed(1)}" y="${(
+                  trendH -
+                  trendPad.bottom +
+                  15
+                ).toFixed(1)}" font-size="10" text-anchor="middle">${esc(
+                  t.period
+                )}</text>`
+            )
+            .join('')}
+          ${trendData
+            .map(
+              (t: any, i: number) =>
+                `<text class="ma-val" x="${trendX(i).toFixed(1)}" y="${(
+                  trendY(t.leads) - 4
+                ).toFixed(1)}" font-size="10" text-anchor="middle">${
+                  t.leads
+                }</text>`
+            )
+            .join('')}
         </svg>`
     }
   </section>
@@ -585,6 +674,9 @@ export const analyticsDashboardView: PluginUIView = {
     .ma-empty { color: var(--ah-text-muted); font-size:13px; }
     .ma-chart .ma-lab { fill: var(--ah-text-muted); }
     .ma-chart .ma-val { fill: var(--ah-text-faint); }
+    .ma-trend{
+      margin-bottom: 16px;
+    }
     @media (max-width: 600px) {
       .ma-analytics h2 { font-size:16px; }
       .ma-grid { gap:10px; }
@@ -594,5 +686,5 @@ export const analyticsDashboardView: PluginUIView = {
   </style>
 </div>`;
     })();
-  },
+  }
 };

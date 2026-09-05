@@ -518,7 +518,7 @@ export class AhApp extends LitElement {
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
             <ah-dashboard ?hidden=${this.tab !== 'dashboard'}></ah-dashboard>
-            <ah-chat ?hidden=${this.tab !== 'chat'}></ah-chat>
+            <ah-chat ?hidden=${this.tab !== 'chat'} role=${this.me?.role ?? ''}></ah-chat>
             <ah-run ?hidden=${this.tab !== 'run'}></ah-run>
             <ah-verify ?hidden=${this.tab !== 'verify'}></ah-verify>
             <ah-env ?hidden=${this.tab !== 'env'}></ah-env>

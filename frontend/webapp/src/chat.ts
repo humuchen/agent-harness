@@ -1,5 +1,5 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
-import { customElement, state, query } from 'lit/decorators.js';
+import { customElement, state, query, property } from 'lit/decorators.js';
 import { ref } from 'lit/directives/ref.js';
 import { client, authedFetch, getUsername } from './api';
 // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
@@ -132,8 +132,10 @@ export class AhChat extends LitElement {
   @state() sidebarCollapsed = false;
 
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
-  @state() agents: { id: string; name: string }[] = [];
+  @state() agents: { id: string; name: string; domain?: string }[] = [];
   @state() agentId = '';
+  /** 当前登录用户的角色（由 app-shell 透传），用于按角色过滤业务 agent。 */
+  @property({ type: String }) role = '';
 
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
@@ -753,16 +755,30 @@ export class AhChat extends LitElement {
       const res = await client.listAgents();
       const raw = ((res?.agents as any[]) ?? []).map((a) => ({
         id: String(a.id),
-        name: String(a.name ?? a.id)
+        name: String(a.name ?? a.id),
+        domain: String(a.domain ?? '') as any
       }));
       const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
+      // viewer 角色：隐藏医美运营分析相关的 agent（保留在列表中但设为 disabled）
+      const isViewer = this.role === 'viewer';
+      const withDisabled = raw.map((a) => ({
+        ...a,
+        disabled: isViewer && a.domain === 'medical-aesthetics'
+      }));
       const next = hasDefault
-        ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
-        : [{ id: '', name: '默认' }, ...raw];
+        ? withDisabled.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
+        : [{ id: '', name: '默认', disabled: false }, ...withDisabled];
       this.agents = next;
       // 当前选中的 agent 若已随插件禁用而从注册表消失，回退到「默认」。
       if (this.agentId && !next.some((a) => a.id === this.agentId)) {
         this.agentId = '';
+      }
+      // 若当前选中的 agent 被禁用，自动回退到「默认」。
+      if (this.agentId) {
+        const selected = next.find((a) => a.id === this.agentId);
+        if (selected?.disabled) {
+          this.agentId = '';
+        }
       }
     } catch (e) {
       // 不阻断聊天（下拉退化为「默认」），但下拉里只剩默认项会让人困惑，给一条提示。
@@ -993,10 +1009,14 @@ export class AhChat extends LitElement {
    * - 超过 10s 无任何事件：视为后台期间连接已被冻结/回收，abort 唤醒挂起的
    *   read()，统一走 runWithReconnect 的续传路径（keepAliveAbort 标记区分用户停止）。
    */
-  protected updated() {
-    this.scrollCtl.scrollToBottom();
-    this.scrollCtl.scrollThinkToBottom();
-  }
+   protected updated(changedProps: Map<string, unknown>) {
+     super.updated(changedProps);
+     if (changedProps.has('role')) {
+       void this.refreshAgents();
+     }
+     this.scrollCtl.scrollToBottom();
+     this.scrollCtl.scrollThinkToBottom();
+   }
 
   /**
    * 上下文用量弹层外点关闭兜底（document 级 pointerdown）：
