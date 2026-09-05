@@ -143,9 +143,32 @@ export MA_EMBED_TOKEN=可选
 MA_RAG_DATA_FILE=/data/ma-lead/rag-store.json node scripts/rag-ingest.cjs
 ```
 
----
+### 9. Seeding Demo Data for Local Testing
 
-## 9. 最小可用配置示例
+The plugin does **not** auto-seed on startup. For local development and testing, use the standalone seed script:
+
+```bash
+# Build plugin first
+pnpm --filter @agent-harness/medical-aesthetics-lead build
+
+# Seed demo data (2,200+ records across 11 tables)
+node plugins/medical-aesthetics-lead/scripts/seed-manual.mjs
+
+# Clean + seed (deletes DB file first, then writes fresh data)
+node plugins/medical-aesthetics-lead/scripts/seed-manual.mjs --clean
+```
+
+Environment variables honored by the script:
+
+| 变量 | 说明 |
+| --- | --- |
+| `MA_TENANT_ID` | 租户标识 (default: `default`) |
+| `MA_DATA_DIR` | 数据目录 (决定 DB 文件位置) |
+| `MA_DB_FILE` | 直接指定 DB 文件路径 (优先级最高) |
+
+Data written: 7 clinics, 4 projects, 200 leads (8 stages: deal/contacted/qualified/booked/captured/arrived/new/lost), 490 time slots, 889 lead messages, 480 stage logs, 57 appointments, 57 outbox entries, 57 inbound messages.
+
+---
 
 仅本地库 + 词面+意图检索（无需任何外部依赖）：
 
