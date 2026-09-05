@@ -771,3 +771,303 @@ export async function seedDemoData(
   const total = Object.values(counts).reduce((sum, v) => sum + v, 0);
   return { total, ...counts };
 }
+
+/**
+ * 写入真实业务数据 (从 JSON 配置文件导入)。
+ * 使用插件已有的 getDb() 连接，SCHEMA 自动执行 (CREATE TABLE IF NOT EXISTS)。
+ *
+ * JSON 格式:
+ * {
+ *   "clinics": [{ "clinic_id": "c1", "name": "...", "city": "...", "address": "...", "phone": "..." }],
+ *   "projects": [{ "project_id": "p1", "name": "...", "category": "...", "summary": "...", ... }],
+ *   "leads": [{ "lead_id": "l1", "channel": "wechat", "name": "...", "phone": "...", "stage": "contacted", ... }],
+ *   "slots": [{ "slot_id": "s1", "clinic_id": "c1", "slot_date": "2025-01-15", "slot_time": "10:00", "doctor": "..." }],
+ *   "appointments": [{ "appointment_id": "a1", "lead_id": "l1", "clinic_id": "c1", "slot_id": "s1", ... }],
+ *   "lead_messages": [{ "lead_id": "l1", "role": "user", "text": "...", "created_at": 1234567890 }],
+ *   "stage_logs": [{ "lead_id": "l1", "from_stage": "new", "to_stage": "contacted", "changed_at": 1234567890, "operated_by": "..." }],
+ *   "inbound_messages": [{ "channel": "wechat", "external_id": "msg1", "lead_key": "l1", "text": "...", "received_at": 1234567890 }],
+ *   "outbox_entries": [{ "topic": "lead.upsert", "idempotency_key": "key1", "payload": "...", "state": "pending", "created_at": 1234567890 }]
+ * }
+ *
+ * 所有表的 tenant_id 统一设置为 tenantId 参数。
+ * 自动填充的字段: created_at / updated_at / active(1) / booked(0) / capacity(1) / status('open') / crm_sync_state('pending')。
+ */
+export interface RealDataItem {
+  [key: string]: unknown;
+}
+export interface RealDataInput {
+  clinics?: RealDataItem[];
+  projects?: RealDataItem[];
+  leads?: RealDataItem[];
+  slots?: RealDataItem[];
+  appointments?: RealDataItem[];
+  lead_messages?: RealDataItem[];
+  stage_logs?: RealDataItem[];
+  inbound_messages?: RealDataItem[];
+  outbox_entries?: RealDataItem[];
+}
+
+export async function seedRealData(
+  tenantId: string,
+  data: RealDataInput
+): Promise<{ total: number; [key: string]: number }> {
+  const db = await getDb();
+  const counts = {
+    clinics: 0,
+    projects: 0,
+    leads: 0,
+    slots: 0,
+    appointments: 0,
+    messages: 0,
+    stageLogs: 0,
+    inbound: 0,
+    outbox: 0,
+  };
+  const now = Date.now();
+
+  // 1. 写入院区
+  if (data.clinics) {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO ma_clinic (clinic_id, tenant_id, name, city, address, phone, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
+    );
+    for (const c of data.clinics) {
+      await stmt.run(
+        c.clinic_id ?? c.id ?? `cl_${counts.clinics + 1}`,
+        tenantId,
+        c.name,
+        c.city ?? null,
+        c.address ?? null,
+        c.phone ?? null,
+        now
+      );
+      counts.clinics++;
+    }
+  }
+
+  // 2. 写入项目
+  if (data.projects) {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO ma_project (
+        project_id, tenant_id, name, category, aliases, summary, indications,
+        contraindications, recovery, price_range, faq, source, active, updated_at,
+        intent_tags, combo_with, audience, seasonality, duration_min, pain_level,
+        downtime_days, course_sessions, avg_price_tier, compliant_copy, compliance_reviewed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    );
+    for (const p of data.projects) {
+      await stmt.run(
+        p.project_id ?? p.id ?? `proj_${counts.projects + 1}`,
+        tenantId,
+        p.name,
+        p.category ?? null,
+        p.aliases ?? null,
+        p.summary ?? '',
+        p.indications ?? null,
+        p.contraindications ?? null,
+        p.recovery ?? null,
+        p.price_range ?? null,
+        p.faq ?? null,
+        p.source ?? null,
+        now,
+        p.intent_tags ?? null,
+        p.combo_with ?? null,
+        p.audience ?? null,
+        p.seasonality ?? null,
+        p.duration_min ?? null,
+        p.pain_level ?? null,
+        p.downtime_days ?? null,
+        p.course_sessions ?? null,
+        p.avg_price_tier ?? null,
+        p.compliant_copy ?? null
+      );
+      counts.projects++;
+    }
+  }
+
+  // 3. 写入线索
+  if (data.leads) {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO ma_lead (
+        lead_id, tenant_id, channel, intent, project, budget, city, grade, stage, reached,
+        stage_updated_at, name, phone, wechat, consent_at, clinic_id, clinic_name,
+        booking_date, booking_time, appointment_id, handed_off, handoff_reason,
+        consulted_by, crm_id, crm_sync_state, crm_synced_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const l of data.leads) {
+      const createdAt = l.created_at ?? l.createdAt ?? now;
+      const updatedAt = l.updated_at ?? l.updatedAt ?? now;
+      const stage = l.stage ?? 'new';
+      const reached = l.reached ?? stage;
+      const stageUpdatedAt = l.stage_updated_at ?? l.stageUpdatedAt ?? now;
+      await stmt.run(
+        l.lead_id ?? l.id ?? `lead_${counts.leads + 1}`,
+        tenantId,
+        l.channel ?? 'wechat',
+        l.intent ?? null,
+        l.project ?? null,
+        l.budget ?? null,
+        l.city ?? null,
+        l.grade ?? null,
+        stage,
+        reached,
+        stageUpdatedAt,
+        l.name ?? null,
+        l.phone ?? null,
+        l.wechat ?? null,
+        l.consent_at ?? l.consentAt ?? now,
+        l.clinic_id ?? null,
+        l.clinic_name ?? null,
+        l.booking_date ?? null,
+        l.booking_time ?? null,
+        l.appointment_id ?? null,
+        0,
+        l.handoff_reason ?? null,
+        l.consulted_by ?? null,
+        l.crm_id ?? null,
+        'pending',
+        l.crm_synced_at ?? null,
+        createdAt,
+        updatedAt
+      );
+      counts.leads++;
+    }
+  }
+
+  // 4. 写入号源
+  if (data.slots) {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO ma_slot (
+        slot_id, tenant_id, clinic_id, slot_date, slot_time, capacity, booked, status, doctor, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const s of data.slots) {
+      await stmt.run(
+        s.slot_id ?? s.id ?? `slot_${counts.slots + 1}`,
+        tenantId,
+        s.clinic_id ?? s.clinicId,
+        s.slot_date ?? s.date,
+        s.slot_time ?? s.time,
+        s.capacity ?? 1,
+        s.booked ?? 0,
+        s.status ?? 'open',
+        s.doctor ?? null,
+        now
+      );
+      counts.slots++;
+    }
+  }
+
+  // 5. 写入预约单
+  if (data.appointments) {
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO ma_appointment (
+        appointment_id, tenant_id, lead_id, clinic_id, slot_id, slot_date, slot_time,
+        status, external_id, external_status, arrived_at, completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const a of data.appointments) {
+      const createdAt = a.created_at ?? a.createdAt ?? now;
+      const updatedAt = a.updated_at ?? a.updatedAt ?? now;
+      await stmt.run(
+        a.appointment_id ?? a.id ?? `appt_${counts.appointments + 1}`,
+        tenantId,
+        a.lead_id ?? a.leadId,
+        a.clinic_id ?? a.clinicId,
+        a.slot_id ?? a.slotId,
+        a.slot_date ?? a.date,
+        a.slot_time ?? a.time,
+        a.status ?? 'booked',
+        a.external_id ?? null,
+        a.external_status ?? null,
+        a.arrived_at ?? a.arrivedAt ?? null,
+        a.completed_at ?? a.completedAt ?? null,
+        createdAt,
+        updatedAt
+      );
+      counts.appointments++;
+    }
+  }
+
+  // 6. 写入线索对话消息
+  if (data.lead_messages) {
+    const stmt = db.prepare(
+      `INSERT INTO ma_lead_message (lead_id, run_id, role, text, created_at) VALUES (?, ?, ?, ?, ?)`
+    );
+    for (const m of data.lead_messages) {
+      await stmt.run(
+        m.lead_id ?? m.leadId,
+        m.run_id ?? m.runId ?? null,
+        m.role,
+        m.text,
+        m.created_at ?? m.createdAt ?? now
+      );
+      counts.messages++;
+    }
+  }
+
+  // 7. 写入阶段变更历史
+  if (data.stage_logs) {
+    const stmt = db.prepare(
+      `INSERT INTO ma_lead_stage_log (lead_id, tenant_id, from_stage, to_stage, changed_at, operated_by) VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const sl of data.stage_logs) {
+      await stmt.run(
+        sl.lead_id ?? sl.leadId,
+        tenantId,
+        sl.from_stage ?? sl.fromStage ?? 'new',
+        sl.to_stage ?? sl.toStage ?? 'contacted',
+        sl.changed_at ?? sl.changedAt ?? now,
+        sl.operated_by ?? sl.operatedBy ?? null
+      );
+      counts.stageLogs++;
+    }
+  }
+
+  // 8. 写入入站消息
+  if (data.inbound_messages) {
+    const stmt = db.prepare(
+      `INSERT INTO ma_inbound_message (tenant_id, channel, external_id, lead_key, text, state, run_id, error, received_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const im of data.inbound_messages) {
+      await stmt.run(
+        tenantId,
+        im.channel,
+        im.external_id ?? im.externalId ?? `inbound_${counts.inbound + 1}`,
+        im.lead_key ?? im.leadKey ?? '',
+        im.text,
+        im.state ?? 'received',
+        im.run_id ?? im.runId ?? null,
+        im.error ?? null,
+        im.received_at ?? im.receivedAt ?? now,
+        im.processed_at ?? im.processedAt ?? null
+      );
+      counts.inbound++;
+    }
+  }
+
+  // 9. 写入发件箱条目
+  if (data.outbox_entries) {
+    const stmt = db.prepare(
+      `INSERT INTO ma_outbox (tenant_id, topic, idempotency_key, payload, state, attempts, last_error, next_retry_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const o of data.outbox_entries) {
+      await stmt.run(
+        tenantId,
+        o.topic,
+        o.idempotency_key ?? o.idempotencyKey ?? `outbox_${counts.outbox + 1}`,
+        o.payload ?? '',
+        o.state ?? 'pending',
+        0,
+        null,
+        0,
+        o.created_at ?? o.createdAt ?? now,
+        o.updated_at ?? o.updatedAt ?? now
+      );
+      counts.outbox++;
+    }
+  }
+
+  const total = Object.values(counts).reduce((sum, v) => sum + v, 0);
+  return { total, ...counts };
+}

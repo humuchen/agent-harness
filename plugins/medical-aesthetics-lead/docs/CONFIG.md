@@ -168,6 +168,53 @@ Environment variables honored by the script:
 
 Data written: 7 clinics, 4 projects, 200 leads (8 stages: deal/contacted/qualified/booked/captured/arrived/new/lost), 490 time slots, 889 lead messages, 480 stage logs, 57 appointments, 57 outbox entries, 57 inbound messages.
 
+### 10. Seeding Real Business Data from JSON
+
+To insert **real business data** (e.g., from your CRM/Excel export) instead of simulated demo data:
+
+```bash
+# 1. Create a JSON file matching your business data
+#    (column names use snake_case; camelCase is also accepted)
+cat > my-data.json << 'EOF'
+{
+  "clinics": [
+    {"clinic_id": "c1", "name": "北京美莱克", "city": "北京", "phone": "010-12345678"}
+  ],
+  "projects": [
+    {"project_id": "p1", "name": "玻尿酸", "category": "注射", "price_range": "2000-4000", "summary": "用于唇部丰满"}
+  ],
+  "leads": [
+    {"lead_id": "l1", "channel": "wechat", "name": "张三", "phone": "13800138001", "city": "北京", "stage": "contacted", "intent": "玻尿酸"}
+  ],
+  "slots": [...],
+  "appointments": [...],
+  "lead_messages": [...],
+  "stage_logs": [...],
+  "inbound_messages": [...],
+  "outbox_entries": [...]
+}
+EOF
+
+# 2. Insert into database
+node plugins/medical-aesthetics-lead/scripts/seed-manual.mjs my-data.json
+```
+
+The script accepts the following top-level keys in the JSON file:
+
+| Key | 描述 | 必填字段 |
+| --- | --- | --- |
+| `clinics` | 院区列表 | `name` |
+| `projects` | 项目列表 | `name`, `summary` |
+| `leads` | 客资线索 | `name` (others optional) |
+| `slots` | 号源列表 | `slot_date`, `slot_time`, `clinic_id` |
+| `appointments` | 预约单 | `lead_id`, `clinic_id`, `slot_id` |
+| `lead_messages` | 对话消息 | `lead_id`, `role`, `text` |
+| `stage_logs` | 阶段变更历史 | `lead_id`, `to_stage` |
+| `inbound_messages` | 入站消息 | `channel`, `external_id`, `text` |
+| `outbox_entries` | CRM 同步发件箱 | `topic`, `payload` |
+
+All `tenant_id` values are automatically set to `MA_TENANT_ID` (default: `default`).
+
 ---
 
 仅本地库 + 词面+意图检索（无需任何外部依赖）：
