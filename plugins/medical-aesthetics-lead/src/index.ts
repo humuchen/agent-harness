@@ -192,10 +192,17 @@ export const leadPlugin: PluginModule = {
 
     // 自动种子：当 MA_SEED_ON_STARTUP=1 且 DB 为空时写入演示数据
     // 仅用于开发 / 验证环境，生产环境请勿开启
+    // 种子写入失败不应阻断插件启动：捕获错误仅告警，插件仍正常启用
     if (await shouldSeed()) {
-      ctx.logger.info('ma_seed_on_startup: 数据库为空，开始写入演示数据...');
-      const result = await seedDemoData(getConfig().tenantId);
-      ctx.logger.info('ma_seed_on_startup: 演示数据写入完成', { total: result.total });
+      try {
+        ctx.logger.info('ma_seed_on_startup: 数据库为空，开始写入演示数据...');
+        const result = await seedDemoData(getConfig().tenantId);
+        ctx.logger.info('ma_seed_on_startup: 演示数据写入完成', { total: result.total });
+      } catch (e: any) {
+        ctx.logger.error('ma_seed_on_startup: 种子写入失败，插件仍将正常启动', {
+          error: e?.message ?? String(e),
+        });
+      }
     }
 
     ctx.logger.info('medical-aesthetics-lead plugin started');

@@ -252,7 +252,8 @@ export async function seedDemoData(tenantId: string): Promise<{ total: number; [
     else if (roll < 0.63) { stage = 'qualified'; reached = 'qualified'; }
     else if (roll < 0.88) { stage = 'contacted'; reached = 'contacted'; }
     else { stage = 'new'; reached = 'new'; }
-    if (roll < 0.08) { stage = 'lost'; reached = 'lost'; }
+    // lost 的概率是 2% (roll >= 0.06 时才可能丢失，非 deal 阶段才覆盖)
+    if (roll >= 0.06 && roll < 0.08) { stage = 'lost'; reached = 'lost'; }
 
     const project = pick(PROJECTS);
     const channel = pick(CHANNELS);
