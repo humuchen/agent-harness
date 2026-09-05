@@ -759,24 +759,23 @@ export class AhChat extends LitElement {
         domain: String(a.domain ?? '') as any
       }));
       const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
-      // viewer 角色：隐藏医美运营分析相关的 agent（保留在列表中但设为 disabled）
+      // viewer 角色：从列表中彻底过滤掉医美运营分析相关的 agent，不显示、不可选、不可调用。
       const isViewer = this.role === 'viewer';
-      const withDisabled = raw.map((a) => ({
-        ...a,
-        disabled: isViewer && a.domain === 'medical-aesthetics'
-      }));
+      const filtered = isViewer
+        ? raw.filter((a) => a.domain !== 'medical-aesthetics')
+        : raw;
       const next = hasDefault
-        ? withDisabled.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
-        : [{ id: '', name: '默认', disabled: false }, ...withDisabled];
+        ? filtered.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
+        : [{ id: '', name: '默认' }, ...filtered];
       this.agents = next;
       // 当前选中的 agent 若已随插件禁用而从注册表消失，回退到「默认」。
       if (this.agentId && !next.some((a) => a.id === this.agentId)) {
         this.agentId = '';
       }
-      // 若当前选中的 agent 被禁用，自动回退到「默认」。
-      if (this.agentId) {
+      // 若当前选中的 agent 被过滤掉，自动回退到「默认」。
+      if (this.agentId && isViewer) {
         const selected = next.find((a) => a.id === this.agentId);
-        if (selected?.disabled) {
+        if (!selected) {
           this.agentId = '';
         }
       }
@@ -1520,7 +1519,15 @@ export class AhChat extends LitElement {
       },
       getMode: () => this.mode,
       getModel: () => this.model,
-      getAgentId: () => this.agentId,
+      getAgentId: () => {
+        // 防御：viewer 角色下不得调用医美运营分析 agent（即使 agentId 被持久化了），
+        // 确保即使列表未刷新的情况下也不会泄露医美数据权限。
+        if (this.role === 'viewer' && this.agentId) {
+          const agent = this.agents.find((a) => a.id === this.agentId);
+          if (agent?.domain === 'medical-aesthetics') return '';
+        }
+        return this.agentId;
+      },
       getWeb: () => this.web,
       getInteractionMode: () => this.interactionMode,
       getAttachments: () => this.attachments,

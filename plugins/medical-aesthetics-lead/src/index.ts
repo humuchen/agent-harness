@@ -18,6 +18,8 @@ import { getTeamManager } from '@agent-harness/core';
 import { consultationBookingWorkflow } from './workflows/conversation';
 import { analyticsReportWorkflow } from './workflows/analytics';
 import { buildProjectAdvisorPrompt, buildPricingAgentPrompt, buildBookingAgentPrompt, buildCaptureAgentPrompt, buildAnalyticsAgentPrompt } from './prompts';
+import { getConfig } from './config';
+import { shouldSeed, seedDemoData } from './infra/seed';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;
@@ -187,6 +189,15 @@ export const leadPlugin: PluginModule = {
 
   async onStart(ctx: PluginContext): Promise<void> {
     startOutboxWorker();
+
+    // 自动种子：当 MA_SEED_ON_STARTUP=1 且 DB 为空时写入演示数据
+    // 仅用于开发 / 验证环境，生产环境请勿开启
+    if (await shouldSeed()) {
+      ctx.logger.info('ma_seed_on_startup: 数据库为空，开始写入演示数据...');
+      const result = await seedDemoData(getConfig().tenantId);
+      ctx.logger.info('ma_seed_on_startup: 演示数据写入完成', { total: result.total });
+    }
+
     ctx.logger.info('medical-aesthetics-lead plugin started');
   },
 

@@ -16,8 +16,6 @@ export interface AgentOption {
   name: string;
   /** 行业领域 / 分类标签（用于分组展示）。 */
   domain?: string;
-  /** 该 agent 是否禁用（如 viewer 角色不展示运营分析 agent）。 */
-  disabled?: boolean;
 }
 
 /** 行业领域 → 中文标签（用于 Agent 选择器分类标题）。 */
@@ -136,7 +134,7 @@ export class AhAgentPicker extends LitElement {
         margin-bottom: 0;
       }
     }
-    .item:hover:not(.disabled) {
+    .item:hover {
       background: color-mix(
         in srgb,
         var(--ah-text-muted, #999) 12%,
@@ -170,15 +168,6 @@ export class AhAgentPicker extends LitElement {
       flex-shrink: 0;
       color: var(--ah-accent, #2997ff);
       font-size: 14px;
-    }
-
-    /* 禁用状态：不可点击、降低不透明度 */
-    .item.disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-    .item.disabled:hover {
-      background: transparent;
     }
 
     /* 分类标签（组标题） */
@@ -298,12 +287,11 @@ export class AhAgentPicker extends LitElement {
                     ${g.items.map(
                       (a) => html`
                         <button
-                          class="item ${this.value === a.id ? 'selected' : ''} ${a.disabled ? 'disabled' : ''}"
+                          class="item ${this.value === a.id ? 'selected' : ''}"
                           role="option"
                           aria-selected=${this.value === a.id ? 'true' : 'false'}
-                          aria-disabled=${a.disabled ? 'true' : 'false'}
                           title=${a.name}
-                          @click=${() => !a.disabled && this.select(a.id)}
+                          @click=${() => this.select(a.id)}
                         >
                           <svg
                             viewBox="0 0 24 24"
