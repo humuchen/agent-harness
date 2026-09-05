@@ -168,11 +168,17 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
       msgs[0].cache_control = { type: 'ephemeral' };
     }
-    // 工具 schema 同为每轮固定开销：在工具数组末项打 cache_control，
+    // 工具 schema 同为每轮固定开销：标记全部工具 schema 为可缓存前缀，
     // 使「系统提示 + 全量工具」作为可缓存前缀，后续 step / 重试命中 provider 前缀缓存。
+    // 优化：原仅在末尾 1 个工具上打 cache_control，可能导致 provider 只缓存最后一条 tool 的描述，
+    // 未命中前缀缓存时需重传全部 schema。统一打标记后 provider 能缓存整个工具数组块。
     const tls = (body as any).tools;
     if (Array.isArray(tls) && tls.length) {
-      tls[tls.length - 1].cache_control = { type: 'ephemeral' };
+      for (const tool of tls) {
+        if (tool && typeof tool === 'object') {
+          tool.cache_control = { type: 'ephemeral' };
+        }
+      }
     }
   }
 

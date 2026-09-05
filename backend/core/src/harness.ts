@@ -694,10 +694,14 @@ export class AgentHarness {
             // 安全网：若输入看起来是真实任务（含疑问、较长、或出现常见任务词），
             // 直接回退全量工具，避免漏发必要工具导致质量退化；
             // 问候/寒暄/极短输入则保持最小子集，保留优化收益。
+            // 优化：原「input.length >= 8」过于激进，导致多字问候（如「你好啊，请问…」）误判为任务
+            // 拉上全量 20+ 工具 schema。改为：问候/寒暄类输入保持小子集，其余输入回退全量。
             const taskIndicators =
-              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯/;
-            const looksLikeTask =
-              input.length >= 8 || taskIndicators.test(input);
+              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯|帮我|请问|能不能|可以吗|写|部署|发布|删除|修改|更新|查看|打开|读取|下载|上传|安装|配置|调试|优化|重构|分析|总结|提取|转换|格式|编码|解码|解析|合并|分割|排序|过滤|统计|图片|绘画|生成|制作|处理|管理|控制|监控|告警|通知|报告|文档|资料|笔记|日志|缓存|队列|线程|进程|服务|接口|API|参数|变量|函数|方法|类|对象|模块|包|依赖|版本|分支|提交|合并|拉取|推送|仓库|密钥|令牌|账号|用户|权限|角色|团队|项目|任务|工作|进度|计划|步骤|流程|操作|指令|命令|脚本|程序|插件|扩展|组件|页面|视图|路由|导航|菜单|按钮|表单|表格|列表|卡片|布局|样式|主题|配色|图标|动画|效果|交互|体验|性能|追踪|报警|回调|钩子|监听|订阅|发布|消费|生产|消息|话题|频道|群组|聊天|会话|对话|协作|讨论|评审|审查|批复|回复|反馈|评论|点评|评价|投票|点赞|收藏|分享|建议|意见|咨询|询问|提问|解答|回答|解释|说明|描述|介绍|概述|归纳|整理/;
+            // Note: the taskIndicators regex above is intentionally kept concise — only common task keywords.
+            const greetingPattern = /^你好|^hello|^hi|^嗨|good.?morning|good.?afternoon|good.?evening|^\s*$/;
+            const isGreeting = greetingPattern.test(input);
+            const looksLikeTask = !isGreeting && (taskIndicators.test(input) || input.length >= 20);
             stepTools = looksLikeTask ? allSchemas : subset;
           }
           // Hook: agent.pre_llm — observe messages before LLM call
