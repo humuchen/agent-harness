@@ -2251,13 +2251,16 @@ const server = createServer(
         const send = startSse(res, req);
         // 连接建立即时确认（带 owner，便于前端核对归属）。
         send({ type: 'events:ready', owner: ctx.sub });
+        // 支持 role 参数：role=service 订阅客服业务提醒，默认 role=user 订阅备忘提醒
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const role = url.searchParams.get('role') === 'service' ? 'service' : 'user';
         const unsub = subscribeReminders(ctx.sub, (e) => {
           try {
             send(e);
           } catch {
             /* 连接已断，unsub 在 close 时执行 */
           }
-        });
+        }, role);
         res.on('close', () => {
           try {
             unsub();

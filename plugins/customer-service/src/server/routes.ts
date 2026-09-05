@@ -7,6 +7,7 @@ import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
 import { searchKb, insertKb } from '../repo/kb-repo';
+import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
 import { getConfig } from '../config';
 
 /** 简单 JSON 响应助手。 */
@@ -100,6 +101,24 @@ export const csServerExtension: ServerExtension = {
       const url = new URL(req.url ?? '', 'http://localhost');
       const q = url.searchParams.get('q') ?? '';
       json(res, 200, q ? searchKb(q, 10) : []);
+    }) as PluginRouteHandler,
+
+    // GET /api/plugins/customer-service/reminders —— 查询待处理提醒
+    '/reminders': (async (_req, res) => {
+      const rows = await Promise.resolve(listPendingReminders(50));
+      json(res, 200, rows);
+    }) as PluginRouteHandler,
+
+    // POST /api/plugins/customer-service/reminders —— 更新提醒状态
+    '/reminder': (async (req, res) => {
+      if (req.method !== 'POST') return json(res, 405, { error: true, message: 'method not allowed' });
+      const body = await readBody(req);
+      const id = String(body.id ?? '');
+      const action = String(body.action ?? 'reminded');
+      if (!id) return json(res, 400, { error: true, message: 'id required' });
+      const status = action === 'ignored' ? 'ignored' : 'reminded';
+      const updated = await Promise.resolve(updateReminderStatus(id, status));
+      json(res, updated ? 200 : 404, updated ? { ok: true, id, status } : { error: true, message: 'not found' });
     }) as PluginRouteHandler,
   },
 };

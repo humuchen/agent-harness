@@ -14,10 +14,12 @@ type ReminderSubscriber = (e: unknown) => void;
 
 interface ReminderConn {
   owner: string;
+  /** 订阅者角色：'user' = 普通登录用户（备忘提醒），'service' = 客服（业务提醒）。 */
+  role: 'user' | 'service';
   fn: ReminderSubscriber;
 }
 
-// 进程内订阅表：每条在线 SSE 连接记录其归属 owner，转发时按 owner 过滤。
+// 进程内订阅表：每条在线 SSE 连接记录其归属 owner + role，转发时按 owner/role 过滤。
 const subscribers = new Set<ReminderConn>();
 
 /**
@@ -30,11 +32,12 @@ function ownerOf(e: unknown): string {
 }
 
 /**
- * 向所有同 owner 订阅者转发一条提醒事件。
+ * 向所有同 owner 订阅者转发一条提醒事件（备忘提醒，按 owner 隔离）。
  */
 export function publishReminder(e: unknown): void {
   const owner = ownerOf(e);
   for (const conn of [...subscribers]) {
+    if (conn.role !== 'user') continue; // 备忘提醒只推给普通用户
     if (conn.owner !== owner) continue; // 跨用户不互见
     try {
       conn.fn(e);
@@ -45,10 +48,32 @@ export function publishReminder(e: unknown): void {
 }
 
 /**
- * 订阅某 owner 的提醒事件流，返回取消订阅函数。
+ * 向所有指定角色的订阅者转发事件（业务提醒，如客服提醒）。
+ * 事件不携带 owner 时推给该角色所有连接。
  */
-export function subscribeReminders(owner: string, fn: ReminderSubscriber): () => void {
-  const conn: ReminderConn = { owner, fn };
+export function publishToRole(role: 'user' | 'service', e: unknown): void {
+  for (const conn of [...subscribers]) {
+    if (conn.role !== role) continue;
+    try {
+      conn.fn(e);
+    } catch {
+      /* 单个订阅者异常不影响其他 */
+    }
+  }
+}
+
+/**
+ * 订阅某 owner 的提醒事件流，返回取消订阅函数。
+ * @param owner 归属用户
+ * @param fn 回调
+ * @param role 角色（默认 'user'）
+ */
+export function subscribeReminders(
+  owner: string,
+  fn: ReminderSubscriber,
+  role: 'user' | 'service' = 'user'
+): () => void {
+  const conn: ReminderConn = { owner, role, fn };
   subscribers.add(conn);
   return () => {
     subscribers.delete(conn);

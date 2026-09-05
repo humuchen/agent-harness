@@ -70,6 +70,26 @@ export function getDb(): SqliteDatabase {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_cs_kb_tenant ON cs_kb(tenant_id);
+
+    -- 客服提醒表：agent 分析产出的待处理提醒项
+    CREATE TABLE IF NOT EXISTS cs_reminder (
+      id             TEXT PRIMARY KEY,
+      tenant_id      TEXT NOT NULL DEFAULT 'default',
+      lead_id        TEXT NOT NULL,
+      name           TEXT,
+      phone          TEXT,
+      project        TEXT,
+      last_visit     TEXT,
+      days_since     INTEGER,
+      activity_title TEXT,
+      activity_id    TEXT,
+      status         TEXT NOT NULL DEFAULT 'pending',
+      source_slot    INTEGER,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, lead_id, source_slot)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cs_reminder_status ON cs_reminder(tenant_id, status, created_at DESC);
   `);
   _db = database;
   return _db;

@@ -8,6 +8,7 @@
 import type { PluginUIView } from '@agent-harness/core';
 import { listTickets } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
+import { listPendingReminders } from '../repo/reminder-repo';
 
 /** HTML 转义。 */
 function esc(s: unknown): string {
@@ -41,6 +42,7 @@ export const csDashboardView: PluginUIView = {
     return (async () => {
       const tickets = await Promise.resolve(listTickets(undefined, 50));
       const sessions = await Promise.resolve(listSessions(50));
+      const reminders = await Promise.resolve(listPendingReminders(20));
       const open = tickets.filter((t) => t.status === 'open').length;
       const handoff = sessions.filter((s) => s.status === 'handoff').length;
       const resolved = tickets.filter((t) => t.status === 'resolved').length;
@@ -50,7 +52,8 @@ export const csDashboardView: PluginUIView = {
         { k: '待处理', v: String(open), highlight: open > 0 },
         { k: '已解决', v: String(resolved) },
         { k: '转人工会话', v: String(handoff) },
-        { k: '会话总数', v: String(sessions.length) }
+        { k: '会话总数', v: String(sessions.length) },
+        { k: '待提醒', v: String(reminders.length), highlight: reminders.length > 0 },
       ]
         .map(
           (c) =>
@@ -87,6 +90,29 @@ export const csDashboardView: PluginUIView = {
           </div>
         </section>
 
+        ${reminders.length > 0 ? `
+        <section class="cs-panel" style="margin-top:16px;border-color:var(--ah-accent);">
+          <h3>📋 待提醒客户 <small style="color:var(--ah-text-muted);font-weight:400;">(agent 自动分析)</small></h3>
+          <div class="cs-table-wrap">
+            <table class="cs-table">
+              <thead><tr><th>客户</th><th>项目</th><th>距上次到院</th><th>关联活动</th><th>操作</th></tr></thead>
+              <tbody>
+                ${reminders.map((r) => `<tr>
+                  <td>${esc(r.name ?? r.leadId)}</td>
+                  <td>${esc(r.project ?? '-')}</td>
+                  <td>${r.daysSince != null ? `<strong style="color:var(--ah-accent)">${r.daysSince} 天</strong>` : '-'}</td>
+                  <td>${esc(r.activityTitle ?? '-')}</td>
+                  <td>
+                    <button class="cs-btn" data-id="${esc(r.id)}" data-action="reminded" onclick="window.handleReminder(this)">已提醒</button>
+                    <button class="cs-btn cs-btn-ghost" data-id="${esc(r.id)}" data-action="ignored" onclick="window.handleReminder(this)">忽略</button>
+                  </td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        ` : ''}
+
         <style>
           .cs-dash, .cs-dash * { box-sizing:border-box; }
           .cs-dash { color: var(--ah-text); font-family: var(--ah-font-sans); }
@@ -114,6 +140,11 @@ export const csDashboardView: PluginUIView = {
           /* 色标徽章（药丸形） */
           .cs-badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:500; line-height:1.6; }
 
+          /* 操作按钮 */
+          .cs-btn { background: var(--ah-accent); color: #fff; border: none; border-radius:6px; padding:4px 10px; font-size:11px; cursor:pointer; }
+          .cs-btn:hover { opacity: 0.9; }
+          .cs-btn-ghost { background: transparent; color: var(--ah-text-muted); border: 1px solid var(--ah-border); box-shadow: none; }
+
           @media (max-width: 600px) {
             .cs-dash h2 { font-size:16px; }
             .cs-card { padding:8px 12px; min-width:0; flex:0 0 calc(50% - 5px); }
@@ -124,6 +155,33 @@ export const csDashboardView: PluginUIView = {
             .cs-card { flex:0 0 100%; }
           }
         </style>
+
+        <script>
+          /** 处理提醒按钮点击（已提醒 / 忽略）。 */
+          window.handleReminder = function(btn) {
+            const id = btn.getAttribute('data-id');
+            const action = btn.getAttribute('data-action');
+            fetch('/api/plugins/customer-service/reminder', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id, action })
+            }).then(r => r.json()).then(() => {
+              // 移除该行或刷新面板
+              const tr = btn.closest('tr');
+              if (tr) tr.remove();
+            }).catch(() => {});
+          };
+
+          /** SSE 监听客服业务提醒（role=service）。 */
+          (function() {
+            const src = new EventSource('/api/events?role=service');
+            src.addEventListener('cs:reminder:analysis_complete', function(e) {
+              // 可播放音效或弹窗
+              const evt = new CustomEvent('ah-cs-reminder', { detail: e.data });
+              window.dispatchEvent(evt);
+            });
+          })();
+        </script>
       </div>`;
     })();
   },
