@@ -28,6 +28,7 @@ import { QueryCache } from './cache';
 import { Metrics, logTrace } from './metrics';
 import { rerankWithApi, mmrRerank } from './rerank';
 import { createRAGEvaluator, type EvalDataset } from './eval';
+import { generateAnswer, createLLM, type LLMProvider } from './generate';
 
 export interface RagServerOptions {
   port?: number;
@@ -40,6 +41,8 @@ export interface RagServerOptions {
   dataFile?: string;
   /** JWT（HS256）校验密钥；未配置则仅静态令牌/开放模式。 */
   jwtSecret?: string;
+  /** LLM 提供商（生成层）；未传则从 env 构建。 */
+  llm?: LLMProvider;
 }
 
 function readJson(req: IncomingMessage): Promise<any> {
@@ -82,6 +85,8 @@ export function createRagServer(opts: RagServerOptions) {
     onDone: (job) => metrics.recordIngest(job.status === 'done'),
   });
 
+  // P2: 生成层 LLM 提供商（可选启用）
+  const llm = opts.llm ?? createLLM();
   const authOpts = { tokens, defaultTenant: opts.defaultTenant, jwtSecret };
 
   const server = createServer(async (req, res) => {
@@ -251,6 +256,52 @@ export function createRagServer(opts: RagServerOptions) {
         }
       }
 
+      // P2: 生成层 — POST /v1/generate — 检索 + LLM 生成一体化
+      if (path === '/v1/generate' && method === 'POST') {
+        const auth = resolveTenant(req, authOpts);
+        if ('error' in auth) return send(res, auth.error, { error: auth.message });
+        if (!llm) {
+          return send(res, 503, {
+            error: 'LLM provider 未配置（RAG_LLM_BASE_URL / RAG_LLM_API_KEY / RAG_LLM_MODEL）',
+          });
+        }
+        const body = await readJson(req);
+        const query = String(body.query ?? '');
+        if (!query) return send(res, 400, { error: 'query required' });
+
+        const t0 = Date.now();
+        try {
+          const result = await generateAnswer(
+            store,
+            provider,
+            llm,
+            {
+              query,
+              top_k: body.top_k,
+              score_threshold: body.score_threshold,
+              filters: body.filters,
+              tenant_id: auth.tenantId,
+              expand: !!body.expand,
+            },
+            {
+              maxTokens: body.max_tokens,
+              temperature: body.temperature,
+              topK: body.top_k,
+              scoreThreshold: body.score_threshold,
+            },
+          );
+          metrics.recordRetrieve(Date.now() - t0, result.cache_hit);
+          logTrace(result.trace_id, 'info', 'generate', {
+            tenant: auth.tenantId,
+            retrieved: result.retrieved,
+            latency_ms: result.latency_ms,
+          });
+          return send(res, 200, result);
+        } catch (e: any) {
+          return send(res, 500, { error: String(e?.message || e) });
+        }
+      }
+
       return send(res, 404, { error: 'not found', path });
     } catch (e: any) {
       return send(res, 500, { error: String(e?.message || e) });
@@ -261,6 +312,7 @@ export function createRagServer(opts: RagServerOptions) {
   return {
     store,
     provider,
+    llm,
     metrics,
     queue,
     cache,

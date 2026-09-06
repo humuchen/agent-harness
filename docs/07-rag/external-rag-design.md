@@ -324,8 +324,8 @@ sequenceDiagram
 | `services/rag/src/server.ts`   | HTTP REST：`/v1/retrieve`、`/v1/ingest(异步)`、`/v1/ingest/:jobId`、`/v1/health`、`/v1/metrics` + JWT/令牌鉴权 + tenant 重写 |
 | `services/rag/src/mcp.ts`      | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest`（带缓存） |
 | `services/rag/src/index.ts`    | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输                                                |
-| `services/rag/src/{auth,bm25,queue,cache,metrics,rerank}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 / cross-encoder 重排（MMR+API） |
-| `services/rag/test/*.test.cjs` | 单测 + 集成（15 用例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展/MMR/cross-encoder API |
+| `services/rag/src/{auth,bm25,queue,cache,metrics,rerank,generate}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 / cross-encoder 重排（MMR+API） / 生成层（检索+LLM生成一体化） |
+| `services/rag/test/*.test.cjs` | 单测 + 集成（21 例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展/MMR/cross-encoder API/生成层（上下文融入/fail-closed/HTTP v1/generate/MCP rag_generate） |
 | `examples/rag-e2e.ts`          | 端到端演示：起 RAG → 注入 → 检索 → 融入生成                                             |
 
 ### 关键实现决策
@@ -348,6 +348,10 @@ sequenceDiagram
     结果带 `rerank_score`。
   - 异步入库队列：新增 `services/rag/src/queue.ts`（并发 worker + job 状态 + drain），
     HTTP ingest 默认 202 + `job_id`，`GET /v1/ingest/:jobId` 查询状态；MCP 保持同步兼容 e2e。
+  - 生成层：新增 `services/rag/src/generate.ts`——`generateAnswer()` 检索 → LLM 生成一体化；
+    HTTP `POST /v1/generate`（需 `RAG_LLM_BASE_URL` / `RAG_LLM_API_KEY`，未配返回 503）；
+    MCP 新增 `rag_generate` 工具；`OpenAIProvider` 接入 OpenAI 兼容接口（OpenRouter / 百度千帆 / 阿里百灵等）；
+    回答带 `[n]` 引用标注 + 来源清单；LLM 失败时 fail-closed 返回检索结果，绝不伪造。
   - 跨租户压测：`test/p2.test.cjs` 覆盖 JWT 401/403/静态令牌兼容、BM25 区分度、队列统计、租户隔离。
 - **P3**：
   - 查询缓存：`services/rag/src/cache.ts`（LRU+TTL），retrieve 响应带 `cache_hit`。
@@ -356,13 +360,16 @@ sequenceDiagram
   - 向量库按租户分片：`store.persist/load(file, shardByTenant)` → `<base>.<tenant>.json`。
   - Pre-retrieval：`expand: true` 返回显著查询扩展词 `expanded_terms`。
 
-### 验证结果（P0+P1+P2+P3）
+### 验证结果（P0+P1+P2+P3+生成层）
 
-- `services/rag` 构建通过（dist 13 模块），`node --test test/*.test.cjs` **15/15 全绿**
-  （原 6 例 + P2 4 例 + P3 1 例 HTTP 集成 + 重排 4 例）。
+- `services/rag` 构建通过（dist 14 模块），`node --test test/*.test.cjs` **21/21 全绿**
+  （原 15 例 + 生成层 6 例）。
 - HTTP 集成链路：JWT 鉴权(401/403) → 异步入库(202+job_id) → 轮询完成 → 检索召回 →
   重复查询 `cache_hit:true` → `/v1/metrics` 含 `rag_retrieve_total`/租户 chunk 计数 →
   `rag.json.acme.json` 分片落盘并可重载 → `expand` 返回扩展词。
+- 生成层端到端：`POST /v1/generate` 检索 → LLM 生成 → 回答带 `[n]` 引用 + 来源清单；
+  LLM 未配置返回 503；LLM 失败时 fail-closed 返回检索结果。
+- MCP `rag_generate` 端到端：tools/list 暴露 → ingest → generate → 回答带引用。
 - `examples/rag-e2e.ts` 端到端：`kb_refund` score 0.580 居首、`kb_hours` 0.000 排后（BM25 融合生效），
   延迟 1ms，子进程无泄漏（演示保持同步入库 `RAG_ASYNC_INGEST=false` 保证确定性）。
 - **真实模型端到端（`examples/rag-live-e2e.ts`，agnes-2.5-flash + OpenRouter）**：
@@ -375,5 +382,6 @@ sequenceDiagram
   并新增回归测试 `test/mcp-stdio-env.test.cjs`（fixture `test/fixtures/mcp-env-probe.cjs` 把 `MCP_PROBE_VAR`
   暴露进工具名；反向验证：回退兜底即失败）。mcp 相关 8/8、core 全量 301 过/3 环境前置失败，无回归。
 - 说明：演示用 `HashEmbedding` 维度有限、哈希碰撞难免，精确语义排序由真实 embedding 保证；
-  生产建议启用 `RAG_EMBEDDING_API_KEY` + 真实 BM25（已就绪）+ 按需接入外部 cross-encoder 重排模型。
+  生产建议启用 `RAG_EMBEDDING_API_KEY` + 真实 BM25（已就绪）+ 按需接入外部 cross-encoder 重排模型 +
+  配置 `RAG_LLM_*` 启用生成层。
   （原「P2/P3 待确认」清单已全部落地，见上。）

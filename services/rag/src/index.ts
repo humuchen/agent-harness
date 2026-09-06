@@ -14,6 +14,7 @@
 import { createRagServer } from './server';
 import { startRagMcpServer } from './mcp';
 export * from './eval';
+export * from './generate';
 
 function parseTokens(): Map<string, string> | undefined {
   const raw = process.env.RAG_TOKENS;

@@ -1,6 +1,6 @@
 # @agent-harness/rag-service — 外部 RAG 服务
 
-独立部署的检索增强生成（RAG）服务，为 agent-harness 提供「入库 → 向量化 → 检索」能力。
+独立部署的检索增强生成（RAG）服务，为 agent-harness 提供「入库 → 向量化 → 检索 → 生成」完整能力。
 对应设计文档：`docs/07-rag/external-rag-design.md`（**P0+P1+P2+P3 已落地**）。
 
 ## 特性
@@ -22,6 +22,9 @@
 - **Pre-retrieval（P3）**：检索请求带 `expand: true` 返回显著查询扩展词。
 - **MCP 协议级实现**：标准 MCP JSON-RPC over stdio，不耦合 agent-harness 的 SDK 版本，
   agent 侧任何标准 MCP client（含现有 `connectMcpServers`）均可对接。
+- **生成层（P2）**：检索 + LLM 生成一体化（`POST /v1/generate` / `rag_generate` MCP 工具），
+  可插拔 OpenAI 兼容 LLM（`RAG_LLM_BASE_URL` / `RAG_LLM_API_KEY` / `RAG_LLM_MODEL`），
+  回答带 `[n]` 引用标注，LLM 失败时 fail-closed 返回检索结果。
 
 ## 构建
 
@@ -43,6 +46,9 @@ RAG_TRANSPORT=http RAG_PORT=8787 \
   RAG_TOKENS="acme:s3cr3t,beta:s3cr3t2" \   # 多租户：secret->tenant 映射
   RAG_JWT_SECRET=your-hmac-secret \         # 可选：启用 JWT(HS256) 鉴权
   RAG_DATA_FILE=./rag-data.json \           # 可选：JSON 持久化（RAG_SHARD_BY_TENANT=true 时分片）
+  RAG_LLM_BASE_URL=https://openrouter.ai/api/v1 \  # 可选：启用生成层
+  RAG_LLM_API_KEY=sk-or-xxx \                      # 可选：LLM API Key
+  RAG_LLM_MODEL=anthropic/claude-3.5-haiku \        # 可选：LLM 模型
   node dist/index.js
 ```
 
@@ -61,9 +67,27 @@ RAG_TRANSPORT=mcp RAG_TENANT_ID=acme node dist/index.js
 | POST | `/v1/ingest`  | 入库（默认异步 202）：`{ doc_id, title?, text, tags?, metadata? }` → `{ accepted, job_id }` |
 | GET  | `/v1/ingest/:jobId` | 查询异步入库任务状态 |
 | POST | `/v1/retrieve`| 检索：`{ query, top_k?, score_threshold?, filters?, expand? }` → `{ results[], trace_id, latency_ms, cache_hit, expanded_terms? }` |
+| POST | `/v1/generate`| 检索+生成一体化：`{ query, top_k?, temperature?, max_tokens?, filters?, expand? }` → `{ answer, trace_id, retrieved, sources[], cache_hit, latency_ms }` |
+| POST | `/v1/eval`    | 批量评估检索+生成质量：`{ name, samples: [{ query, groundTruthChunkIds?, groundTruthAnswer? }] }` |
+
+### 检索返回
 
 检索返回每条 `results[]` 含 `chunk_id / doc_id / title / content / score / rerank_score? / metadata`，
 agent 侧用 `[n]` 引用 `chunk_id` 即可追溯来源。`expand: true` 时返回 `expanded_terms`（Pre-retrieval）。
+
+### 生成返回
+
+`POST /v1/generate` 返回：
+```json
+{
+  "answer": "根据知识库，退款政策是：支持七天无理由退款。[1]\n\n来源：\n[1] 退款政策：支持七天无理由退款，退款原路返回支付账户。",
+  "trace_id": "rag_xxx",
+  "retrieved": 1,
+  "sources": [{ "chunk_id": "kb1#0", "doc_id": "kb1", "title": "退款政策", "content": "...", "score": 0.58 }],
+  "cache_hit": false,
+  "latency_ms": 120
+}
+```
 
 ## 在 agent-harness 中接入（P1，零业务改动）
 
@@ -85,16 +109,17 @@ MCP_SERVERS='[{"name":"rag","command":"node","args":["services/rag/dist/index.js
 > 二选一。真实模型端到端示例见 `examples/rag-live-e2e.ts`。
 
 核心 loop 经 `connectMcpServers` 自动注册，ToolRegistry 生成
-`rag__rag_retrieve` / `rag__rag_ingest`，交由 LLM 自主调用。
+`rag__rag_retrieve` / `rag__rag_ingest` / `rag__rag_generate`，交由 LLM 自主调用。
 `tenant_id` 由 RAG 进程持有，agent 侧无需也不应传递，杜绝越权。
 
 ## 测试
 
 ```bash
 node --test test/*.test.cjs
-# 覆盖（15 例）：入库分块 / 检索召回 / 租户隔离 / 幂等增量 / 阈值过滤 / MCP 端到端
+# 覆盖（21 例）：入库分块 / 检索召回 / 租户隔离 / 幂等增量 / 阈值过滤 / MCP 端到端
 #   / JWT 鉴权（401/403/兼容静态令牌）/ BM25 区分度 / 异步入库队列
 #   / 缓存命中 / metrics / 按租户分片持久化 / 查询扩展 / MMR / cross-encoder API 重排
+#   / 检索融入上下文 / 引用标注 / LLM 失败 fail-closed / HTTP /v1/generate / MCP rag_generate
 ```
 
 ## 环境变量
@@ -118,3 +143,6 @@ node --test test/*.test.cjs
 | `RAG_EMBED_DIM` | `256` | 向量维度（切换 embedding 提供方需保持一致） |
 | `RAG_DATA_FILE` | 空 | JSON 持久化文件路径 |
 | `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_BASE_URL` / `RAG_EMBEDDING_MODEL` | 空 | 真实远程 embedding（缺省降级到 HashEmbedding） |
+| `RAG_LLM_BASE_URL` | 空 | LLM API 地址（OpenAI 兼容，如 OpenRouter / 百度千帆 / 阿里百灵） |
+| `RAG_LLM_API_KEY` | 空 | LLM API 密钥（设置后启用生成层） |
+| `RAG_LLM_MODEL` | `anthropic/claude-3.5-haiku` | LLM 模型名 |

@@ -17,6 +17,7 @@ import { MemoryVectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
+import { generateAnswer, createLLM, LLMProvider } from './generate';
 import { QueryCache } from './cache';
 import { rerankWithApi, mmrRerank } from './rerank';
 
@@ -24,6 +25,8 @@ export interface RagMcpOptions {
   tenantId: string;
   store?: MemoryVectorStore;
   provider?: EmbeddingProvider;
+  /** LLM 提供商（生成层）；未传则从 env 构建。 */
+  llm?: LLMProvider;
 }
 
 const TOOLS = [
@@ -51,9 +54,26 @@ const TOOLS = [
         doc_id: { type: 'string', description: '文档唯一 ID' },
         title: { type: 'string', description: '文档标题' },
         text: { type: 'string', description: '文档正文' },
-        tags: { type: 'array', items: { type: 'string' }, description: '文档标签' },
+        tags: { type: 'array', items: { type: 'string', description: '文档标签' } },
       },
       required: ['doc_id', 'text'],
+    },
+  },
+  {
+    name: 'rag_generate',
+    description:
+      '检索 + LLM 生成一体化：检索知识库后让 LLM 结合片段生成带 [n] 引用的回答。' +
+      '需配置 RAG_LLM_BASE_URL / RAG_LLM_API_KEY / RAG_LLM_MODEL。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '用户问题' },
+        top_k: { type: 'number', description: '检索返回条数，默认 5' },
+        tags: { type: 'array', items: { type: 'string' }, description: '按标签过滤' },
+        temperature: { type: 'number', description: '生成温度，默认 0.3' },
+        max_tokens: { type: 'number', description: '最大生成 tokens，默认 512' },
+      },
+      required: ['query'],
     },
   },
 ];
@@ -64,6 +84,7 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
   if (process.env.RAG_DATA_FILE) store.load(process.env.RAG_DATA_FILE, shard);
   const provider = opts.provider ?? createEmbedder();
   const tenantId = opts.tenantId;
+  const llm = opts.llm ?? createLLM();
   const cacheEnabled = (process.env.RAG_CACHE || 'true').toLowerCase() !== 'false';
   const cache = new QueryCache();
 
@@ -146,6 +167,29 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
           };
           result = await ingestDocument(store, provider, input);
           if (process.env.RAG_DATA_FILE) store.persist(process.env.RAG_DATA_FILE, shard);
+        } else if (name === 'rag_generate') {
+          if (!llm) {
+            send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'LLM provider 未配置（RAG_LLM_BASE_URL / RAG_LLM_API_KEY / RAG_LLM_MODEL）' } });
+            return;
+          }
+          const query = String(args.query ?? '');
+          const genResult = await generateAnswer(
+            store,
+            provider,
+            llm,
+            {
+              query,
+              top_k: args.top_k,
+              tenant_id: tenantId,
+              filters: args.tags ? { tags: args.tags } : undefined,
+            },
+            {
+              temperature: args.temperature,
+              maxTokens: args.max_tokens,
+              topK: args.top_k,
+            },
+          );
+          result = genResult;
         } else {
           send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `unknown tool: ${name}` } });
           return;
