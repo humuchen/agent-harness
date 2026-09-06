@@ -47,6 +47,7 @@ export interface BackendUsage {
     mcp: number;
     skills: number;
     completion: number;
+    cached?: number;
   };
 }
 

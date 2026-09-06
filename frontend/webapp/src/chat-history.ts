@@ -284,6 +284,8 @@ export interface MirroredUsage {
       mcp: number;
       skills: number;
       completion: number;
+      /** 本次供应商侧缓存命中 token，前端可展示节省量。 */
+      cached?: number;
     };
   } | null;
   runCumulative: { tokens: number; cost: number } | null;

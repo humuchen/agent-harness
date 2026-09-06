@@ -249,6 +249,7 @@ export class AhChat extends LitElement {
       mcp: number;
       skills: number;
       completion: number;
+      cached?: number;
     };
   } | null = null;
 

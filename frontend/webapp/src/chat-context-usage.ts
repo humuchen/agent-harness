@@ -39,6 +39,7 @@ export interface BackendUsageLike {
     messages: number;
     mcp: number;
     skills: number;
+    cached?: number;
   };
 }
 

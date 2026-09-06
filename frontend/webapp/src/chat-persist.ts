@@ -23,6 +23,7 @@ export interface BackendUsageLike {
     mcp: number;
     skills: number;
     completion: number;
+    cached?: number;
   };
 }
 

@@ -150,6 +150,8 @@ export type HarnessEvent =
         mcp: number;
         skills: number;
         completion: number;
+        /** 本次供应商侧缓存命中 token，前端可展示节省量。 */
+        cached?: number;
       };
     }
   | {
@@ -874,9 +876,11 @@ export class AgentHarness {
             // 把真实上下文占用喂给记忆，驱动 token 级压缩护栏（在占用率越过阈值时
             // 于后续 add() 中淘汰最旧历史，避免上下文撑爆导致模型 400）。
             memory.setContextUsage(promptTokens, window);
+            // 优化：scale 基于「实际新计费 token」（排除缓存命中），避免 cached_tokens 被归到 tools 占比上
+            const actualPromptTokens = promptTokens - (resp.usage?.cached_tokens ?? 0);
             const promptEst =
               estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
-            const scale = promptEst > 0 ? promptTokens / promptEst : 0;
+            const scale = promptEst > 0 ? actualPromptTokens / promptEst : 0;
             emit({
               type: 'llm:usage',
               step: steps,
@@ -895,7 +899,9 @@ export class AgentHarness {
                 messages: Math.round(estHistory * scale),
                 mcp: Math.round(estMcp * scale),
                 skills: Math.round(estSkills * scale),
-                completion: completionTokens
+                completion: completionTokens,
+                // 新增：本次供应商侧缓存命中 token，前端可展示节省量
+                cached: resp.usage?.cached_tokens ?? 0,
               }
             });
           }
