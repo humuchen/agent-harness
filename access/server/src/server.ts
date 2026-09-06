@@ -3292,10 +3292,11 @@ async function handleRun(
       }
       case 'guardrail:blocked': {
         traceEnsureRoot();
+        const phaseLabel = ev.phase === 'output' ? '输出拦截' : ev.phase === 'input' ? '输入拦截' : ev.phase ?? '';
         traceNode(
           traceRoot!,
           'guardrail',
-          `护栏拦截 · ${ev.phase ?? ''}`,
+          `护栏拦截${phaseLabel ? ' · ' + phaseLabel : ''}`,
           'error',
           {
             detail: String(ev.reason ?? '')
