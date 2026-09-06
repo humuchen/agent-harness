@@ -53,6 +53,55 @@ function handleUnauthorized(): void {
   window.dispatchEvent(new CustomEvent('ah-session-expired'));
 }
 
+// ─── P1-14: 质询式密码保护（客户端 scrypt，不传输明文密码）────────────────────
+
+/** scrypt 参数，必须与服务端 accounts.ts 保持一致。 */
+export const SCRYPT_PARAMS = { n: 16384, r: 8, p: 1, keyLength: 64 };
+
+/**
+ * 浏览器端 scrypt 派生，参数必须与服务端 Node `scryptSync(pw, salt, 64)` 一致。
+ * 输出 hex，供登录/注册/重置时发送 derivedHex 代替明文密码。
+ */
+export async function scryptDerive(
+  password: string,
+  saltHex: string
+): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    { name: 'scrypt' },
+    false,
+    []
+  );
+  const saltBytes = hexToBytes(saltHex);
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: 'scrypt',
+      salt: saltBytes as BufferSource,
+      N: SCRYPT_PARAMS.n,
+      r: SCRYPT_PARAMS.r,
+      p: SCRYPT_PARAMS.p
+    } as any,
+    key,
+    SCRYPT_PARAMS.keyLength * 8
+  );
+  return bytesToHex(new Uint8Array(derived));
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(Math.ceil(hex.length / 2));
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/** 字节数组转 hex 字符串。 */
+export function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ─── Client 实例 ──────────────────────────────────────────────────────────────
 
 export const client = new AgentClient({
@@ -60,6 +109,23 @@ export const client = new AgentClient({
   username: initialUser() || undefined,
   onUnauthorized: handleUnauthorized,
 });
+
+/** P1-14: 获取 scrypt salt，用于浏览器端预先派生密码哈希。 */
+export async function getLoginSalt(
+  username: string
+): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/account/login-salt?username=${encodeURIComponent(username)}`, {
+      method: 'GET',
+      credentials: 'same-origin'
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as { salt?: string };
+    return data.salt || null;
+  } catch {
+    return null;
+  }
+}
 
 /** 写入登录会话：存用户名到 localStorage（cookie 由浏览器托管）。 */
 export function setSession(username: string): void {
@@ -162,13 +228,22 @@ export function scheduleAutoRefresh(accessExpiresAtMs: number): void {
  */
 export async function changePassword(
   oldPassword: string,
-  newPassword: string
+  newPassword: string,
+  opts?: { salt?: string; derivedHex?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    const body: Record<string, unknown> = { oldPassword };
+    if (opts?.salt && opts.derivedHex) {
+      // P1-14: 质询式改密 —— 新密码客户端派生后发送。
+      body.salt = opts.salt;
+      body.derivedHex = opts.derivedHex;
+    } else {
+      body.newPassword = newPassword;
+    }
     const res = await authedFetch('/api/account/change-password', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ oldPassword, newPassword })
+      body: JSON.stringify(body)
     });
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
@@ -217,13 +292,22 @@ export async function requestPasswordReset(
  */
 export async function resetPassword(
   token: string,
-  newPassword: string
+  newPassword: string,
+  opts?: { salt?: string; derivedHex?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    const body: Record<string, unknown> = { token };
+    if (opts?.salt && opts.derivedHex) {
+      // P1-14: 质询式重置 —— 客户端本地 scrypt 派生后发送 derivedHex + salt。
+      body.salt = opts.salt;
+      body.derivedHex = opts.derivedHex;
+    } else {
+      body.newPassword = newPassword;
+    }
     const res = await fetch('/api/account/reset-password', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token, newPassword }),
+      body: JSON.stringify(body),
       credentials: 'same-origin'
     });
     const data = (await res.json().catch(() => ({}))) as {

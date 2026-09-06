@@ -24,7 +24,16 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
-import { setSession, setToken, scheduleAutoRefresh, requestPasswordReset, resetPassword } from './api';
+import {
+  setSession,
+  setToken,
+  scheduleAutoRefresh,
+  requestPasswordReset,
+  resetPassword,
+  getLoginSalt,
+  scryptDerive,
+  bytesToHex
+} from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 import {
@@ -1556,7 +1565,10 @@ export class AhLogin extends LitElement {
     }
     this.submitting = true;
     try {
-      const r = await resetPassword(this.resetToken, password);
+      // P1-14: 质询式密码保护 —— 客户端生成 salt，本地 scrypt 派生，服务器不接触明文密码。
+      const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      const derivedHex = await scryptDerive(password, salt);
+      const r = await resetPassword(this.resetToken, '', { salt, derivedHex });
       if (!r.ok) {
         notify.error(r.error || '重置失败。', { key: 'forgot-form' });
         return;
@@ -1635,8 +1647,26 @@ export class AhLogin extends LitElement {
         this.mode === 'register'
           ? '/api/account/register'
           : '/api/account/login';
+      // P1-14: 质询式密码保护 —— 客户端本地 scrypt 派生，服务器不接管明文密码。
+      let salt: string;
+      if (this.mode === 'login') {
+        salt = await getLoginSalt(username);
+        if (!salt) {
+          notify.error('无法获取安全令牌，请刷新重试。', { key: 'auth-form' });
+          return;
+        }
+      } else {
+        // 注册：新用户无服务端 salt，客户端生成随机 salt。
+        salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      }
+      const derivedHex = await scryptDerive(password, salt);
       // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
-      const body = JSON.stringify({ username, email, password });
+      const body = JSON.stringify({
+        username,
+        email,
+        salt,
+        derivedHex
+      });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

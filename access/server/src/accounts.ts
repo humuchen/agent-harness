@@ -251,22 +251,80 @@ async function ensureDb(): Promise<void> {
 }
 
 // ─── 密码哈希（scrypt 加盐）─────────────────────────────────────────────────
-function hashPassword(pw: string): string {
-  const salt = randomBytes(16);
-  const derived = scryptSync(pw, salt, 64);
-  return `${salt.toString('hex')}:${derived.toString('hex')}`;
+/** scrypt 参数：N=2^14, r=8, p=1，64 字节输出（Node scryptSync / SubtleCrypto 默认）。 */
+export const SCRYPT_PARAMS = { n: 16384, r: 8, p: 1, keyLength: 64 };
+/** scrypt 输出长度。 */
+const SCRYPT_DKLEN = 64;
+
+/** 生成一次性 16 字节盐。 */
+function genSalt(): Buffer {
+  return randomBytes(16);
 }
 
-function verifyPassword(pw: string, stored: string): boolean {
+/** scrypt 推导：客户端可在浏览器 SubtleCrypto 中复现，传入相同的 salt + 参数。 */
+function scryptDerive(pw: string, salt: Buffer): string {
+  return scryptSync(pw, salt, SCRYPT_DKLEN).toString('hex');
+}
+
+/** 哈希密码 → `salt:hash`（hex）。 */
+export function hashPassword(pw: string): string {
+  const salt = genSalt();
+  return `${salt.toString('hex')}:${scryptDerive(pw, salt)}`;
+}
+
+/** 验证明文密码（Legacy，非浏览器客户端）。 */
+export function verifyPassword(pw: string, stored: string): boolean {
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
   const salt = Buffer.from(saltHex, 'hex');
-  const derived = scryptSync(pw, salt, 64);
+  const derived = scryptSync(pw, salt, SCRYPT_DKLEN);
   const expected = Buffer.from(hashHex, 'hex');
   return (
     derived.length === expected.length && timingSafeEqual(derived, expected)
   );
 }
+
+/** 验证客户端预先派生的哈希（浏览器端 scrypt，不传输明文密码）。 */
+export function verifyDerivedHex(
+  providedDerivedHex: string,
+  stored: string
+): boolean {
+  const [saltHex, hashHex] = stored.split(':');
+  if (!saltHex || !hashHex) return false;
+  if (!providedDerivedHex) return false;
+  try {
+    const provided = Buffer.from(providedDerivedHex, 'hex');
+    const expected = Buffer.from(hashHex, 'hex');
+    return (
+      provided.length === expected.length &&
+      timingSafeEqual(provided, expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 获取用户的 scrypt salt（hex）。用于浏览器端预先派生哈希。
+ * 用户不存在时返回固定 dummy salt，避免枚举时序差。
+ */
+export async function getSalt(
+  username: string
+): Promise<{ salt: string } | null> {
+  username = (username || '').trim();
+  await ensureDb();
+  if (!validUsername(username)) return null;
+  const row = (await db
+    .prepare('SELECT password FROM users WHERE username = ?')
+    .get(username)) as { password: string } | undefined;
+  if (!row) return null;
+  const [satHex] = row.password.split(':');
+  if (!satHex) return null;
+  return { salt: satHex };
+}
+
+/** 固定 dummy salt（用户不存在时返回），用于前端派生哈希 —— 服务器仍返回 401。 */
+export const DUMMY_SALT = randomBytes(16).toString('hex');
 
 // ─── token 签发 / 校验 ──────────────────────────────────────────────────────
 export interface AccountToken {
@@ -407,6 +465,36 @@ export async function registerUser(
   return { ok: true, username };
 }
 
+/**
+ * 质询式注册：客户端先 fetch salt，本地 scrypt 派生哈希后发送。
+ * 服务器不接触明文密码，存入 `salt:derived_hex`。
+ */
+export async function registerWithDerivedHex(
+  username: string,
+  salt: string,
+  derivedHex: string,
+  email?: string
+): Promise<AccountResult> {
+  username = (username || '').trim();
+  if (!validUsername(username))
+    return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
+  if (!derivedHex || derivedHex.length !== 128)
+    return { ok: false, error: '密码至少 8 位' };
+  if (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))
+    return { ok: false, error: '邮箱格式不正确' };
+  await ensureDb();
+  const existing = await db
+    .prepare('SELECT username FROM users WHERE username = ?')
+    .get(username);
+  if (existing) return { ok: false, error: '用户名已被占用' };
+  await db
+    .prepare(
+      'INSERT INTO users (username, password, email, created_at, role) VALUES (?, ?, ?, ?, ?)'
+    )
+    .run(username, `${salt}:${derivedHex}`, email || null, Date.now(), 'viewer');
+  return { ok: true, username };
+}
+
 export async function loginUser(
   username: string,
   password: string
@@ -423,6 +511,29 @@ export async function loginUser(
     return { ok: false, error: '用户名或密码错误' };
   }
   // P1-13: 双 token 模式，签发 access + refresh token 对。
+  const tokens = await issueTokens(username);
+  return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
+}
+
+/**
+ * 质询式登录：客户端先 fetch salt，本地 scrypt 派生哈希后发送。
+ * 服务器不接触明文密码，仅比对 derivedHex 与 storored hash。
+ */
+export async function loginWithDerivedHex(
+  username: string,
+  derivedHex: string
+): Promise<AccountResult> {
+  username = (username || '').trim();
+  await ensureDb();
+  const row = (await db
+    .prepare('SELECT password FROM users WHERE username = ?')
+    .get(username)) as { password: string } | undefined;
+  // 用户不存在时仍走一次比较，避免枚举时序差。
+  const fake = hashPassword('__nonexistent__');
+  const stored = row?.password ?? fake;
+  if (!row || !verifyDerivedHex(derivedHex, stored)) {
+    return { ok: false, error: '用户名或密码错误' };
+  }
   const tokens = await issueTokens(username);
   return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
 }
@@ -674,6 +785,32 @@ export async function changePassword(
   return { ok: true };
 }
 
+/**
+ * 质询式修改密码：旧密码以 plaintext 校验（只能通过交互式改密），
+ * 新密码由客户端本地 scrypt 派生后发送 derivedHex + salt，服务器不接触新密码明文。
+ */
+export async function changePasswordWithDerivedHex(
+  username: string,
+  oldPassword: string,
+  salt: string,
+  derivedHex: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!username) return { ok: false, error: '未登录' };
+  if (!derivedHex || derivedHex.length !== 128)
+    return { ok: false, error: '新密码至少 8 位' };
+  if (!db) return { ok: false, error: '服务端未就绪' };
+  const row = (await db
+    .prepare('SELECT password FROM users WHERE username = ?')
+    .get(username)) as { password: string } | undefined;
+  if (!row) return { ok: false, error: '用户不存在' };
+  if (!verifyPassword(oldPassword || '', row.password))
+    return { ok: false, error: '旧密码错误' };
+  await db
+    .prepare('UPDATE users SET password = ? WHERE username = ?')
+    .run(`${salt}:${derivedHex}`, username);
+  return { ok: true };
+}
+
 /** 吊销某用户全部登录态（删除 auth_tokens + refresh_tokens 记录；cookie 由前端/登出接口同步清除）。 */
 export async function revokeAllTokens(username: string): Promise<void> {
   if (!db) return;
@@ -833,6 +970,35 @@ export async function resetPassword(
   await db
     .prepare('UPDATE users SET password = ? WHERE username = ?')
     .run(hashPassword(newPassword), rec.username);
+  await db.prepare('DELETE FROM password_resets WHERE token = ?').run(token);
+  await revokeAllTokens(rec.username);
+  return { ok: true };
+}
+
+/**
+ * 质询式重置密码：客户端本地 scrypt 派生后发送 derivedHex + salt，
+ * 服务器不接触明文密码，直接拼接 `salt:derivedHex` 写入 users.password。
+ */
+export async function resetPasswordWithDerivedHex(
+  token: string,
+  salt: string,
+  derivedHex: string
+): Promise<{ ok: boolean; error?: string }> {
+  token = (token || '').trim();
+  salt = (salt || '').trim();
+  if (!token) return { ok: false, error: '缺少重置凭证' };
+  if (!derivedHex || derivedHex.length !== 128) return { ok: false, error: '密码至少 8 位' };
+  if (!salt) return { ok: false, error: '缺少 salt' };
+  await ensureDb();
+  const rec = (await db
+    .prepare('SELECT username, expires_at FROM password_resets WHERE token = ?')
+    .get(token)) as { username: string; expires_at: number } | undefined;
+  if (!rec) return { ok: false, error: '重置凭证无效，请重新申请' };
+  if (Date.now() >= rec.expires_at)
+    return { ok: false, error: '重置凭证已过期，请重新申请' };
+  await db
+    .prepare('UPDATE users SET password = ? WHERE username = ?')
+    .run(`${salt}:${derivedHex}`, rec.username);
   await db.prepare('DELETE FROM password_resets WHERE token = ?').run(token);
   await revokeAllTokens(rec.username);
   return { ok: true };

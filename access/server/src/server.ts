@@ -180,7 +180,12 @@ import { registerOAuthRoutes } from './oauth';
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
   registerUser,
+  registerWithDerivedHex,
   loginUser,
+  loginWithDerivedHex,
+  getSalt,
+  DUMMY_SALT,
+  verifyDerivedHex,
   upsertGithubUser,
   upsertGoogleUser,
   usernameFromCookie,
@@ -190,9 +195,11 @@ import {
   isAuthSecretConfigured,
   getProfile,
   changePassword,
+  changePasswordWithDerivedHex,
   revokeAllTokens,
   requestPasswordReset,
   resetPassword,
+  resetPasswordWithDerivedHex,
   deleteUser,
   rotateTokens,
   verifyRefreshToken,
@@ -860,20 +867,52 @@ const server = createServer(
         return;
       }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
-      // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦掉，
+      // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
+      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 scrypt 派生哈希，
+      // 服务器仅比对哈希，不接触明文密码。
+      if (req.method === 'GET' && path === '/api/account/login-salt') {
+        const username = (url.searchParams.get('username') || '').trim();
+        if (!username || !/^[A-Za-z0-9_]{3,32}$/.test(username)) {
+          res.writeHead(200, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(JSON.stringify({ salt: DUMMY_SALT }));
+          return;
+        }
+        const result = await getSalt(username);
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
+        res.end(
+          JSON.stringify({ salt: result?.salt ?? DUMMY_SALT })
+        );
+        return;
+      }
       if (path === '/api/account/register' && req.method === 'POST') {
         const b = await readBody(req);
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
-        const r: AccountResult = await registerUser(u, p, b.email);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式注册 —— 客户端本地 scrypt 派生后发送 derivedHex + salt，而非明文密码。
+        let r: AccountResult;
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await registerWithDerivedHex(u, salt, dhx, b.email);
+        } else {
+          r = await registerUser(u, p, b.email);
+        }
         if (!r.ok) {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: r.error }));
           return;
         }
         // 注册成功顺带登录，直接下发 cookie token，减少一次往返。
-        const lr: AccountResult = await loginUser(u, p);
+        const lr: AccountResult = dhx
+          ? await loginWithDerivedHex(u, dhx)
+          : await loginUser(u, p);
         if (!lr.ok || !lr.token) {
           res.writeHead(500, { 'content-type': 'application/json' });
           res.end(
@@ -903,7 +942,11 @@ const server = createServer(
         const b = await readBody(req);
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
-        const r: AccountResult = await loginUser(u, p);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式登录 —— 客户端本地 scrypt 派生后发送 derivedHex，服务器不接触明文密码。
+        const r: AccountResult = dhx
+          ? await loginWithDerivedHex(u, dhx)
+          : await loginUser(u, p);
         if (!r.ok || !r.token) {
           res.writeHead(401, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: r.error ?? '登录失败' }));
@@ -952,7 +995,15 @@ const server = createServer(
         const b = await readBody(req);
         const token = typeof b?.token === 'string' ? b.token : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const r = await resetPassword(token, newPw);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式重置 —— 客户端本地 scrypt 派生后发送 derivedHex + salt。
+        let r: { ok: boolean; error?: string };
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await resetPasswordWithDerivedHex(token, salt, dhx);
+        } else {
+          r = await resetPassword(token, newPw);
+        }
         if (!r.ok) {
           res.writeHead(400, {
             'content-type': 'application/json',
@@ -999,7 +1050,15 @@ const server = createServer(
         const b = await readBody(req);
         const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const r = await changePassword(ctx.sub, oldPw, newPw);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式改密 —— 客户端本地 scrypt 派生后发送 derivedHex + salt。
+        let r: { ok: boolean; error?: string };
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await changePasswordWithDerivedHex(ctx.sub, oldPw, salt, dhx);
+        } else {
+          r = await changePassword(ctx.sub, oldPw, newPw);
+        }
         if (!r.ok) {
           res.writeHead(400, {
             'content-type': 'application/json',
