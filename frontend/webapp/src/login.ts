@@ -24,7 +24,7 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
-import { setSession, setToken, requestPasswordReset, resetPassword } from './api';
+import { setSession, setToken, scheduleAutoRefresh, requestPasswordReset, resetPassword } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 import {

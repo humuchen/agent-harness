@@ -142,7 +142,7 @@ export async function refreshToken(): Promise<boolean> {
  * 调度自动刷新：在 access token 到期前 10% 时间触发 refreshToken()。
  * 每次调用均覆盖上一次的定时器。
  */
-function scheduleAutoRefresh(accessExpiresAtMs: number): void {
+export function scheduleAutoRefresh(accessExpiresAtMs: number): void {
   clearTimeout((window as unknown as Record<string, unknown>).__ah_refresh_timer as number | undefined);
   const delay = Math.max(0, accessExpiresAtMs - Date.now() - (accessExpiresAtMs - Date.now()) * 0.1);
   if (delay <= 0) return;  // 即将过期，立即刷新
