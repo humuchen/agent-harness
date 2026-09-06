@@ -168,18 +168,11 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
       msgs[0].cache_control = { type: 'ephemeral' };
     }
-    // 工具 schema 同为每轮固定开销：标记全部工具 schema 为可缓存前缀，
-    // 使「系统提示 + 全量工具」作为可缓存前缀，后续 step / 重试命中 provider 前缀缓存。
-    // 优化：原仅在末尾 1 个工具上打 cache_control，可能导致 provider 只缓存最后一条 tool 的描述，
-    // 未命中前缀缓存时需重传全部 schema。统一打标记后 provider 能缓存整个工具数组块。
-    const tls = (body as any).tools;
-    if (Array.isArray(tls) && tls.length) {
-      for (const tool of tls) {
-        if (tool && typeof tool === 'object') {
-          tool.cache_control = { type: 'ephemeral' };
-        }
-      }
-    }
+    // 优化：仅对「系统提示词」应用 cache_control，使其作为稳定的缓存前缀。
+    // 工具 schema 因动态裁剪可能变动：若也打 cache_control，每次工具集变化都会
+    // 导致整个前缀缓存失效（cache key 包含完整工具数组）。
+    // 正确做法：系统提示词始终缓存；工具 schema 每次发送但不影响系统提示词的缓存命中。
+    // 这样即使工具集合变化，系统提示词（~2500 tok）仍能命中前缀缓存。
   }
 
   // 仅在开启 prompt caching 时记录缓存查询（关闭则 provider 不会缓存，记了会虚低命中率）。
