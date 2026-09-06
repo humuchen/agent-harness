@@ -31,7 +31,7 @@ import {
   requestPasswordReset,
   resetPassword,
   getLoginSalt,
-  scryptDerive,
+  derivePassword,
   bytesToHex
 } from './api';
 import { notify } from './components/ah-notification';
@@ -1565,9 +1565,9 @@ export class AhLogin extends LitElement {
     }
     this.submitting = true;
     try {
-      // P1-14: 质询式密码保护 —— 客户端生成 salt，本地 scrypt 派生，服务器不接触明文密码。
+      // P1-14: 质询式密码保护 —— 客户端生成 salt，本地 PBKDF2 派生，服务器不接触明文密码。
       const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
-      const derivedHex = await scryptDerive(password, salt);
+      const derivedHex = await derivePassword(password, salt);
       const r = await resetPassword(this.resetToken, '', { salt, derivedHex });
       if (!r.ok) {
         notify.error(r.error || '重置失败。', { key: 'forgot-form' });
@@ -1647,7 +1647,7 @@ export class AhLogin extends LitElement {
         this.mode === 'register'
           ? '/api/account/register'
           : '/api/account/login';
-      // P1-14: 质询式密码保护 —— 客户端本地 scrypt 派生，服务器不接管明文密码。
+      // P1-14: 质询式密码保护 —— 客户端本地 PBKDF2 派生，服务器不接管明文密码。
       let salt: string;
       if (this.mode === 'login') {
         salt = await getLoginSalt(username);
@@ -1659,7 +1659,7 @@ export class AhLogin extends LitElement {
         // 注册：新用户无服务端 salt，客户端生成随机 salt。
         salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
       }
-      const derivedHex = await scryptDerive(password, salt);
+      const derivedHex = await derivePassword(password, salt);
       // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
       const body = JSON.stringify({
         username,

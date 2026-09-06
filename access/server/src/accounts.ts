@@ -23,6 +23,7 @@
 import {
   randomBytes,
   scryptSync,
+  pbkdf2Sync,
   timingSafeEqual,
   createHmac
 } from 'node:crypto';
@@ -250,41 +251,44 @@ async function ensureDb(): Promise<void> {
   await dbReady;
 }
 
-// ─── 密码哈希（scrypt 加盐）─────────────────────────────────────────────────
-/** scrypt 参数：N=2^14, r=8, p=1，64 字节输出（Node scryptSync / SubtleCrypto 默认）。 */
-export const SCRYPT_PARAMS = { n: 16384, r: 8, p: 1, keyLength: 64 };
-/** scrypt 输出长度。 */
-const SCRYPT_DKLEN = 64;
+// ─── 密码哈希（PBKDF2-SHA256 加盐）─────────────────────────────────────────
+/** PBKDF2 参数：100000 迭代，SHA-256，32 字节输出。 */
+export const PBKDF2_PARAMS = { iterations: 100000, hash: 'sha256' as const, dklen: 32 };
 
 /** 生成一次性 16 字节盐。 */
 function genSalt(): Buffer {
   return randomBytes(16);
 }
 
-/** scrypt 推导：客户端可在浏览器 SubtleCrypto 中复现，传入相同的 salt + 参数。 */
-function scryptDerive(pw: string, salt: Buffer): string {
-  return scryptSync(pw, salt, SCRYPT_DKLEN).toString('hex');
+/** PBKDF2 推导：客户端可用 WebCrypto SubtleCrypto 复用相同参数。输出 hex。 */
+function pbkdf2Derive(pw: string, salt: Buffer): string {
+  return pbkdf2Sync(pw, salt, PBKDF2_PARAMS.iterations, PBKDF2_PARAMS.dklen, PBKDF2_PARAMS.hash).toString('hex');
 }
 
 /** 哈希密码 → `salt:hash`（hex）。 */
 export function hashPassword(pw: string): string {
   const salt = genSalt();
-  return `${salt.toString('hex')}:${scryptDerive(pw, salt)}`;
+  return `${salt.toString('hex')}:${pbkdf2Derive(pw, salt)}`;
 }
 
 /** 验证明文密码（Legacy，非浏览器客户端）。 */
 export function verifyPassword(pw: string, stored: string): boolean {
+  // 兼容旧 scrypt 哈希：格式为 `salt:hash`（64 字节），PBKDF2 为 32 字节。
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
   const salt = Buffer.from(saltHex, 'hex');
-  const derived = scryptSync(pw, salt, SCRYPT_DKLEN);
+  // 优先用 PBKDF2 验证（新格式）；若长度不符则尝试 scrypt（旧格式）。
+  if (hashHex.length === PBKDF2_PARAMS.dklen * 2) {
+    const derived = pbkdf2Sync(pw, salt, PBKDF2_PARAMS.iterations, PBKDF2_PARAMS.dklen, PBKDF2_PARAMS.hash);
+    return derived.length === Buffer.from(hashHex, 'hex').length && timingSafeEqual(derived, Buffer.from(hashHex, 'hex'));
+  }
+  // 旧 scrypt 哈希回退
+  const derived = scryptSync(pw, salt, 64);
   const expected = Buffer.from(hashHex, 'hex');
-  return (
-    derived.length === expected.length && timingSafeEqual(derived, expected)
-  );
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
 
-/** 验证客户端预先派生的哈希（浏览器端 scrypt，不传输明文密码）。 */
+/** 验证客户端预先派生的哈希（浏览器端 PBKDF2，不传输明文密码）。 */
 export function verifyDerivedHex(
   providedDerivedHex: string,
   stored: string
@@ -305,7 +309,7 @@ export function verifyDerivedHex(
 }
 
 /**
- * 获取用户的 scrypt salt（hex）。用于浏览器端预先派生哈希。
+ * 获取用户的 PBKDF2 salt（hex）。用于浏览器端预先派生哈希。
  * 用户不存在时返回固定 dummy salt，避免枚举时序差。
  */
 export async function getSalt(
@@ -478,7 +482,7 @@ export async function registerWithDerivedHex(
   username = (username || '').trim();
   if (!validUsername(username))
     return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
-  if (!derivedHex || derivedHex.length !== 128)
+  if (!derivedHex || derivedHex.length !== 64)
     return { ok: false, error: '密码至少 8 位' };
   if (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))
     return { ok: false, error: '邮箱格式不正确' };
@@ -796,7 +800,7 @@ export async function changePasswordWithDerivedHex(
   derivedHex: string
 ): Promise<{ ok: boolean; error?: string }> {
   if (!username) return { ok: false, error: '未登录' };
-  if (!derivedHex || derivedHex.length !== 128)
+  if (!derivedHex || derivedHex.length !== 64)
     return { ok: false, error: '新密码至少 8 位' };
   if (!db) return { ok: false, error: '服务端未就绪' };
   const row = (await db
@@ -987,7 +991,7 @@ export async function resetPasswordWithDerivedHex(
   token = (token || '').trim();
   salt = (salt || '').trim();
   if (!token) return { ok: false, error: '缺少重置凭证' };
-  if (!derivedHex || derivedHex.length !== 128) return { ok: false, error: '密码至少 8 位' };
+  if (!derivedHex || derivedHex.length !== 64) return { ok: false, error: '密码至少 8 位' };
   if (!salt) return { ok: false, error: '缺少 salt' };
   await ensureDb();
   const rec = (await db

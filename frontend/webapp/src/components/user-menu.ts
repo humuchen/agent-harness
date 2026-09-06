@@ -17,7 +17,7 @@
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { fetchMe, logout, changePassword, scryptDerive, bytesToHex } from '../api';
+import { fetchMe, logout, changePassword, derivePassword, bytesToHex } from '../api';
 import { notify } from './ah-notification';
 import { validateChangePassword } from '../utils/auth-validation';
 
@@ -469,9 +469,9 @@ export class AhUserMenu extends LitElement {
       return;
     }
     this.pwBusy = true;
-    // P1-14: 新密码客户端 scrypt 派生，不传输明文。旧密码仍以 plaintext 校验（服务端需验证）。
+    // P1-14: 新密码客户端 PBKDF2 派生，不传输明文。旧密码仍以 plaintext 校验（服务端需验证）。
     const newSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
-    const newDerivedHex = await scryptDerive(this.newPw, newSalt);
+    const newDerivedHex = await derivePassword(this.newPw, newSalt);
     const r = await changePassword(this.oldPw, '', { salt: newSalt, derivedHex: newDerivedHex });
     this.pwBusy = false;
     if (!r.ok) {

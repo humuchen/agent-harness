@@ -869,7 +869,7 @@ const server = createServer(
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
       // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
-      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 scrypt 派生哈希，
+      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 PBKDF2 派生哈希，
       // 服务器仅比对哈希，不接触明文密码。
       if (req.method === 'GET' && path === '/api/account/login-salt') {
         const username = (url.searchParams.get('username') || '').trim();
@@ -896,7 +896,7 @@ const server = createServer(
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
         const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式注册 —— 客户端本地 scrypt 派生后发送 derivedHex + salt，而非明文密码。
+        // P1-14: 质询式注册 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt，而非明文密码。
         let r: AccountResult;
         if (dhx) {
           const salt = typeof b?.salt === 'string' ? b.salt : '';
@@ -943,7 +943,7 @@ const server = createServer(
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
         const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式登录 —— 客户端本地 scrypt 派生后发送 derivedHex，服务器不接触明文密码。
+        // P1-14: 质询式登录 —— 客户端本地 PBKDF2 派生后发送 derivedHex，服务器不接触明文密码。
         const r: AccountResult = dhx
           ? await loginWithDerivedHex(u, dhx)
           : await loginUser(u, p);
@@ -996,7 +996,7 @@ const server = createServer(
         const token = typeof b?.token === 'string' ? b.token : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
         const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式重置 —— 客户端本地 scrypt 派生后发送 derivedHex + salt。
+        // P1-14: 质询式重置 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
         let r: { ok: boolean; error?: string };
         if (dhx) {
           const salt = typeof b?.salt === 'string' ? b.salt : '';
@@ -1051,7 +1051,7 @@ const server = createServer(
         const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
         const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式改密 —— 客户端本地 scrypt 派生后发送 derivedHex + salt。
+        // P1-14: 质询式改密 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
         let r: { ok: boolean; error?: string };
         if (dhx) {
           const salt = typeof b?.salt === 'string' ? b.salt : '';
