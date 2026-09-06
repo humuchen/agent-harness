@@ -74,7 +74,7 @@ export async function derivePassword(
     enc.encode(password),
     { name: 'PBKDF2' },
     false,
-    []
+    ['deriveBits']
   );
   const derived = await crypto.subtle.deriveBits(
     {
