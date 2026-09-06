@@ -1700,6 +1700,108 @@ export const chatStyles = [
     .tnode.kind-tokencache > summary .tdot {
       background: #2dd4bf;
     }
+    /* Token 缓存命中率节点专属：内容样式与 .tnode.kind-cost 一致，
+       颜色沿用 .tdot 的 #2dd4bf，分组 chip 用浅色底 + 对应强色。 */
+    .tnode.kind-tokencache {
+      border-left: none;
+      margin-top: 10px;
+    }
+    .tnode.kind-tokencache > summary.tcache-head {
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, #2dd4bf 9%, var(--ah-surface-2));
+      border: 1px solid color-mix(in srgb, #2dd4bf 30%, var(--ah-border));
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .tnode.kind-tokencache > summary.tcache-head:hover {
+      background: color-mix(in srgb, #2dd4bf 15%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #2dd4bf 45%, var(--ah-border));
+    }
+    .tnode.kind-tokencache > summary .tdot {
+      width: 9px;
+      height: 9px;
+      box-shadow: 0 0 0 3px color-mix(in srgb, #2dd4bf 18%, transparent);
+    }
+    .tnode.kind-tokencache > summary .tlabel {
+      writing-mode: horizontal-tb;
+      text-orientation: mixed;
+      letter-spacing: normal;
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 0;
+      white-space: nowrap;
+    }
+    .tnode.kind-tokencache > summary .tcache-toggle {
+      flex: none;
+      margin-left: auto;
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 9px;
+      font-size: 10.5px;
+      line-height: 1.5;
+      color: #2dd4bf;
+      background: color-mix(in srgb, #2dd4bf 18%, var(--ah-surface-2));
+      border: 1px solid color-mix(in srgb, #2dd4bf 42%, var(--ah-border));
+      border-radius: 999px;
+      transition: background 0.15s ease, border-color 0.15s ease,
+        color 0.15s ease;
+    }
+    .tnode.kind-tokencache > summary .tcache-toggle:hover {
+      background: color-mix(in srgb, #2dd4bf 28%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #2dd4bf 60%, var(--ah-border));
+    }
+    .tnode.kind-tokencache > summary .tcache-toggle:active {
+      background: color-mix(in srgb, #2dd4bf 38%, var(--ah-surface-2));
+    }
+    .tcache-caret {
+      width: 0;
+      height: 0;
+      border-left: 3.5px solid transparent;
+      border-right: 3.5px solid transparent;
+      border-top: 4.5px solid currentColor;
+      transition: transform 120ms ease;
+      flex: none;
+    }
+    .tnode.kind-tokencache[open] > summary .tcache-caret {
+      transform: rotate(-180deg);
+    }
+    .tnode.kind-tokencache > .tcache-body {
+      padding: 10px 12px 12px 28px;
+      border: 1px dashed color-mix(in srgb, #2dd4bf 30%, var(--ah-border));
+      margin: 5px;
+    }
+    .tnode.kind-tokencache > .tcache-body + .tchildren {
+      padding-left: 14px;
+    }
+    .tnode.kind-tokencache .tgrp-hit .tchip {
+      background: color-mix(in srgb, #2dd4bf 16%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, #2dd4bf 40%, var(--ah-border));
+      color: #2dd4bf;
+    }
+    .tnode.kind-tokencache .tgrp-hit .tchip b {
+      color: #5ee9d4;
+    }
+    .tnode.kind-tokencache .tgrp-info .tchip {
+      background: color-mix(in srgb, var(--ah-accent, #2997ff) 15%, var(--ah-surface-2));
+      border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 38%, var(--ah-border));
+      color: var(--ah-accent, #2997ff);
+    }
+    .tnode.kind-tokencache .tgrp-info .tchip b {
+      color: #6db5ff;
+    }
+    .tnode.kind-tokencache .tgrp-model .tchip {
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      border-color: var(--ah-border);
+      color: var(--ah-text-muted);
+    }
+    .tnode.kind-tokencache .tgrp-model .tchip b {
+      color: var(--ah-text);
+    }
     .tnode.kind-verify > summary .tdot {
       background: var(--ah-success, #34c759);
     }

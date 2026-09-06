@@ -351,6 +351,76 @@ export function renderTraceNode(
         : nothing}
     </details>`;
   }
+  // Token 缓存命中率节点：默认折叠，折叠态仅显示「圆点 + 标签 + 展开按钮」的最小边框，
+  //   点「展开」后下方 .tcache-body 才渲染完整分组指标 —— 与成本节点的交互语言保持一致。
+  //   颜色沿用 .tdot 的 #2dd4bf，内容样式与 .tnode.kind-cost 完全一致。
+  if (n.kind === 'tokencache') {
+    const entries = n.meta ? Object.entries(n.meta) : [];
+    const groupOf = (k: string): 'hit' | 'info' | 'model' =>
+      k === '命中率' || k === '命中'
+        ? 'hit'
+        : k === '接口' || k === '分模型'
+          ? 'info'
+          : 'model';
+    const groups: Array<
+      ['hit' | 'info' | 'model', Array<[string, unknown]>]
+    > = [
+      ['hit', entries.filter(([k]) => groupOf(k) === 'hit')],
+      ['info', entries.filter(([k]) => groupOf(k) === 'info')],
+      ['model', entries.filter(([k]) => groupOf(k) === 'model')]
+    ];
+    const isOpen = n.expanded === true;
+    return html`<details
+      class="tnode kind-tokencache status-${n.status}"
+      ?open=${isOpen}
+      @toggle=${(e: Event) => syncDetailsToggle(n, e, onToggle)}
+    >
+      <summary class="tnode-head tcache-head">
+        <span class="tdot"></span>
+        <span class="tlabel">Token 缓存命中率</span>
+        <button
+          type="button"
+          class="tcache-toggle"
+          title=${isOpen ? '收起 Token 缓存命中率详情' : '展开 Token 缓存命中率详情'}
+          @click=${(e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            n.expanded = !isOpen;
+            onToggle?.();
+          }}
+        >
+          ${isOpen ? '收起' : '展开'}
+          <span class="tcache-caret" aria-hidden="true"></span>
+        </button>
+      </summary>
+      ${entries.length
+        ? html`<div class="tcache-body">
+            <div class="tmetrics">
+              ${groups.map(
+                ([g, items]) =>
+                  items.length
+                    ? html`<div class="tgrp tgrp-${g}">
+                        ${items.map(
+                          ([k, v]) =>
+                            html`<span class="tchip"
+                              ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                                String(v)
+                              )}</span
+                            >`
+                        )}
+                      </div>`
+                    : nothing
+              )}
+            </div>
+          </div>`
+        : nothing}
+      ${n.children.length
+        ? html`<div class="tchildren">
+            ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+          </div>`
+        : nothing}
+    </details>`;
+  }
   // LLM 调用节点：点击「LLM 调用」标题统一展开 / 收起其下的消息上下文与工具调用列表。
   // 用受控容器（非原生 <details>），避免点标题时整块折叠闪跳；展开态持久化在 n.expanded 上，
   // 经 onToggle 触发 Lit 重渲染，流式更新不会丢态。
