@@ -24,7 +24,7 @@ import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
 import { getTheme, type Theme } from './theme/tokens';
-import { setSession, requestPasswordReset, resetPassword } from './api';
+import { setSession, setToken, requestPasswordReset, resetPassword } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 import {
@@ -1664,7 +1664,7 @@ export class AhLogin extends LitElement {
         localStorage.setItem('ah_refresh', data.refreshToken);
       }
       if (data.accessExpiresAt) {
-        setToken(data.refreshToken || '');  // 存 refreshToken 作为 scheduleAutoRefresh 依据
+        setToken(data.refreshToken || '');  // 存 refresh token 副本以维持会话存在性判断
         scheduleAutoRefresh(data.accessExpiresAt);
       }
       notify.success(

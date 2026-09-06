@@ -26,8 +26,10 @@ export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || '';
 }
 
-/** 写入 access token（登录 / refresh 成功后调用）。 */
-function setToken(token: string): void {
+/** 写入本地 token 副本（用于会话存在性判断）。
+ * 账户密码模式下后端仅返回 refresh token，故此存 refresh token；
+ * 实际鉴权由 ah_auth cookie 承担。 */
+export function setToken(token: string): void {
   if (typeof localStorage === 'undefined') return;
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
