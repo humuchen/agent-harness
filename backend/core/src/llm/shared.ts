@@ -121,6 +121,62 @@ export function normalizeToolCallIds(calls: ToolCall[]): ToolCall[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 工具 schema 热度缓存（L1 内存缓存）
+// ---------------------------------------------------------------------------
+// 18+ 个工具 schema 序列化后 ≈ 5000+ tok，每次完整传输开销巨大。
+// 优化：缓存最近 50 组工具组合的序列化结果，同时跟踪工具被使用频率。
+// 高频工具在 cache key 命中后可直接复用，避免重复序列化和传输。
+const TOOL_SCHEMA_CACHE = new Map<string, any>();
+const TOOL_FREQ: Record<string, number> = {};
+const MAX_CACHE_ENTRIES = 50;
+
+/**
+ * 序列化工具 schema（带缓存）。
+ * - cache key 基于工具名称组合生成，稳定则命中
+ * - 低频工具 description 被截短（> 100 字符截至 80 字），减少传输体积
+ * - 高频工具保留完整描述，保证语义准确性
+ */
+export function serializeToolsCached(tools: any[]): any[] | undefined {
+  if (!tools || tools.length === 0) return tools;
+
+  // 构建 cache key（基于工具名称排序后拼接）
+  const names = tools.map((t: any) => t?.function?.name || '').sort().join(',');
+  if (TOOL_SCHEMA_CACHE.has(names)) {
+    return TOOL_SCHEMA_CACHE.get(names);
+  }
+
+  // 缓存未命中：序列化并缩减低频工具描述
+  const serialized = tools.map((tool: any) => {
+    const tName = tool?.function?.name || '';
+    const freq = TOOL_FREQ[tName] || 0;
+    const fn = tool?.function || {};
+
+    // 低频工具缩短 description，高频工具保留完整
+    const desc = typeof fn.description === 'string'
+      ? (freq >= 3 ? fn.description : truncate(fn.description, 80))
+      : fn.description;
+
+    return { ...tool, function: { ...fn, description: desc } };
+  });
+
+  // LRU 缓存淘汰
+  if (TOOL_SCHEMA_CACHE.size >= MAX_CACHE_ENTRIES) {
+    const firstKey = TOOL_SCHEMA_CACHE.keys().next().value!;
+    TOOL_SCHEMA_CACHE.delete(firstKey);
+  }
+  TOOL_SCHEMA_CACHE.set(names, serialized);
+
+  // 更新使用频率
+  for (const t of tools) {
+    const tName = t?.function?.name || '';
+    if (tName) TOOL_FREQ[tName] = (TOOL_FREQ[tName] || 0) + 1;
+  }
+
+  return serialized;
+}
+
+// ---------------------------------------------------------------------------
 export interface ChatCallOptions {
   baseUrl: string;
   headers: Record<string, string>;
@@ -163,6 +219,14 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
   const cacheDisabled = process.env.PROMPT_CACHE === 'false' || process.env.PROMPT_CACHE === '0';
   const caching = !cacheDisabled;
+
+  // 优化：缓存工具 schema 序列化结果，缩减低频工具描述以减小传输体积。
+  // (仅在非缓存模式下也生效 — schema 缩减独立于 prompt cache)
+  const tools = (body as any).tools;
+  if (Array.isArray(tools)) {
+    (body as any).tools = serializeToolsCached(tools);
+  }
+
   if (caching) {
     const msgs = (body as any).messages;
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
