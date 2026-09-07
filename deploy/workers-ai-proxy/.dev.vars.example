@@ -1,0 +1,3 @@
+# Local dev variables — DO NOT commit real secrets!
+# Copy to .dev.vars and fill in your values for local testing
+# CF_AI_TOKEN=cfut_your_token_here
