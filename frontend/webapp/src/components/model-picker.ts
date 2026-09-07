@@ -297,9 +297,10 @@ export class AhModelPicker extends LitElement {
       opacity: 0.6;
       cursor: not-allowed;
     }
-    /* 自定义模型条目：主体（选择）+ 右侧操作 icon 按钮 */
+    /* 自定义模型条目 */
     .item.custom-item {
       padding: 0;
+      position: relative; /* 作为 .custom-actions 的绝对定位参照，避免脱到父面板 */
     }
     .custom-main {
       flex: 1 1 auto;
@@ -315,9 +316,13 @@ export class AhModelPicker extends LitElement {
     .custom-actions {
       display: none;
       gap: 2px;
+      position: absolute;
+      right: 4px;
       flex: 0 0 auto;
+      z-index: 1;
     }
-    /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。 */
+    /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。
+       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。 */
     @media (hover: hover) {
       .item.custom-item:hover .custom-actions {
         display: flex;
