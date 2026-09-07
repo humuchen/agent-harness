@@ -313,9 +313,20 @@ export class AhModelPicker extends LitElement {
       word-break: break-all;
     }
     .custom-actions {
-      display: flex;
+      display: none;
       gap: 2px;
       flex: 0 0 auto;
+    }
+    /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。 */
+    @media (hover: hover) {
+      .item.custom-item:hover .custom-actions {
+        display: flex;
+      }
+    }
+    @media (hover: none) {
+      .custom-actions {
+        display: flex;
+      }
     }
     .custom-icon-btn {
       appearance: none;
@@ -580,6 +591,7 @@ export class AhModelPicker extends LitElement {
     // 明文 Key 直接提交，由服务端 AES-GCM 加密落库（前端不再持有任何密钥材料）。
     // 同步到后端 SQLite。
     this.saving = true;
+    let ok = false;
     try {
       const body: Record<string, unknown> = {
         id,
@@ -592,6 +604,7 @@ export class AhModelPicker extends LitElement {
         body: JSON.stringify(body)
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      ok = true;
     } catch (e) {
       // 写库失败必须让用户知道：此前静默忽略会让人误以为已保存，
       // 结果刷新后自定义模型消失。
@@ -603,24 +616,11 @@ export class AhModelPicker extends LitElement {
     } finally {
       this.saving = false;
     }
-    // 本地状态同步。
-    const rest = this.customs.filter((c) => c.id !== id);
-    const prev = editing ? this.customs.find((c) => c.id === id) : undefined;
-    this.customs = [
-      {
-        id,
-        // 编辑态：接口地址与模型名称锁定不可改，保留原值；仅 API Key 可更新。
-        ...(editing
-          ? prev?.baseUrl
-            ? { baseUrl: prev.baseUrl }
-            : {}
-          : baseUrl
-          ? { baseUrl }
-          : {}),
-        ...(apiKey ? { keyHint: '已配置' } : {})
-      },
-      ...rest
-    ];
+    // 保存成功后重新从后端拉取最新自定义模型列表，确保本地状态与服务端一致。
+    // 此前仅做乐观更新，可能因并发 / 缓存而与服务端不一致（如 keyHint 掩码未同步）。
+    if (ok) {
+      await this.loadCustoms();
+    }
     this.draftId = '';
     this.draftBaseUrl = '';
     this.draftApiKey = '';
