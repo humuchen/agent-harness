@@ -96,6 +96,36 @@ function toolsToWorkerFormat(tools?: any[]): any[] {
 }
 
 /**
+ * Workers AI 严格校验输入 schema，会拒绝 OpenAI 专属字段（如 `cache_control`，
+ * 这是 Anthropic/Claude 的字段）。Harness 在 PROMPT_CACHE 开启时（默认开启）
+ * 会往系统消息注入 `cache_control`，若不剥离，GLM-4.7-flash 等严格模型会返回
+ * `Invalid input` (code 8001)。转发前统一剥离这些不兼容字段。
+ */
+function stripIncompatibleFields(messages: any[]): any[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((m) => {
+    if (m && typeof m === 'object') {
+      const { cache_control, ...rest } = m as Record<string, unknown>;
+      return rest;
+    }
+    return m;
+  });
+}
+
+/** 把 OpenAI 工具转换成 Workers AI 格式，并兜底保证 parameters 是合法 JSON Schema 对象。 */
+function sanitizeTools(tools?: any[]): any[] {
+  const converted = toolsToWorkerFormat(tools);
+  return converted.map((t) => {
+    let params = t.parameters && typeof t.parameters === 'object' ? t.parameters : undefined;
+    if (!params || typeof params.type !== 'string') {
+      params = { type: 'object', properties: {}, ...(params || {}) };
+    }
+    const { cache_control, ...restParams } = params as Record<string, unknown>;
+    return { ...t, parameters: restParams };
+  });
+}
+
+/**
  * Build the Workers AI request body from an OpenAI Chat Completions body.
  * Sends `messages` array directly (Workers AI accepts OpenAI format).
  */
@@ -103,8 +133,8 @@ function buildWorkerBody(body: any): Record<string, unknown> {
   const msg = String(body.model || 'llama-3-8b');
   const workerModel = resolveWorkerModel(msg);
   const stream = body.stream === true;
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const tools = toolsToWorkerFormat(body.tools);
+  const messages = stripIncompatibleFields(body.messages);
+  const tools = sanitizeTools(body.tools);
 
   const workerBody: Record<string, unknown> = {
     messages,
