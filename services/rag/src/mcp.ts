@@ -141,7 +141,7 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             }
           }
           if (result === undefined) {
-            let resp: RetrieveResponse = { ...retrieve(store, provider, req), cache_hit: false };
+            let resp: RetrieveResponse = { ...(await retrieve(store, provider, req)), cache_hit: false };
             // RAG_RERANK=api：真实 cross-encoder 重排，失败回退 MMR
             const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
             if (rerankMode === 'api' && resp.results.length > 1) {

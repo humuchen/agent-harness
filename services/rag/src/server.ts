@@ -146,7 +146,7 @@ export function createRagServer(opts: RagServerOptions) {
           }
         }
 
-        let resp: RetrieveResponse = { ...retrieve(store, provider, rreq), cache_hit: false };
+        let resp: RetrieveResponse = { ...(await retrieve(store, provider, rreq)), cache_hit: false };
         // RAG_RERANK=api：真实 cross-encoder 重排（rerank.ts），失败回退 MMR
         const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
         if (rerankMode === 'api' && resp.results.length > 1) {

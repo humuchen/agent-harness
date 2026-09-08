@@ -108,6 +108,20 @@ MCP_SERVERS='[{"name":"rag","command":"node","args":["services/rag/dist/index.js
 > 也可把 `RAG_*` 显式写进条目的 `env` 字段（SDK 按 `{白名单, ...显式env}` 合并，不丢 PATH），
 > 二选一。真实模型端到端示例见 `examples/rag-live-e2e.ts`。
 
+### 对接外部 Docker RAG 栈（embed-server）
+
+`services/rag` 支持通过 `RAG_EMBEDDING_ENDPOINT_URL` 对接外部 embed-server，
+例如 `HermesChat/rag-knowledge` 栈的 `embed-server` 服务（端口 8001）：
+
+```bash
+RAG_EMBEDDING_ENDPOINT_URL=http://localhost:8001/embeddings
+RAG_EMBED_DIM=1024    # 必须与 embed-server 模型输出维度一致（BGE-M3 = 1024）
+```
+
+- **API 格式**：`POST {url}/embeddings`，请求体 `{texts: string[]}`，响应 `{embeddings: number[][]}}`
+- **降级策略**：embed-server 宕机 / 网络异常 / 维度不匹配时，自动降级到本地 HashEmbedding，
+  保证检索闭环不中断（仅查询质量下降，不影响功能）
+
 核心 loop 经 `connectMcpServers` 自动注册，ToolRegistry 生成
 `rag__rag_retrieve` / `rag__rag_ingest` / `rag__rag_generate`，交由 LLM 自主调用。
 `tenant_id` 由 RAG 进程持有，agent 侧无需也不应传递，杜绝越权。
@@ -142,7 +156,8 @@ node --test test/*.test.cjs
 | `RAG_FUSE_DENSE` / `RAG_FUSE_BM25` | `0.6` / `0.4` | 稠密余弦与 BM25 融合权重 |
 | `RAG_EMBED_DIM` | `256` | 向量维度（切换 embedding 提供方需保持一致） |
 | `RAG_DATA_FILE` | 空 | JSON 持久化文件路径 |
-| `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_BASE_URL` / `RAG_EMBEDDING_MODEL` | 空 | 真实远程 embedding（缺省降级到 HashEmbedding） |
+|| `RAG_EMBEDDING_ENDPOINT_URL` | 空 | 远程 embedding API 地址（对接外部 embed-server，如 Docker RAG 栈的 embed-server）。API 格式：POST {url}/embeddings，请求体 {texts: string[]}，响应 {embeddings: number[][]}。未配置/API 失败时自动降级到 HashEmbedding |
+|| `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_BASE_URL` / `RAG_EMBEDDING_MODEL` | 空 | OpenAI 兼容远程 embedding（缺省降级到 HashEmbedding） |
 | `RAG_LLM_BASE_URL` | 空 | LLM API 地址（OpenAI 兼容，如 OpenRouter / 百度千帆 / 阿里百灵） |
 | `RAG_LLM_API_KEY` | 空 | LLM API 密钥（设置后启用生成层） |
 | `RAG_LLM_MODEL` | `anthropic/claude-3.5-haiku` | LLM 模型名 |

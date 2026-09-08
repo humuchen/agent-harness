@@ -144,8 +144,86 @@ export class OpenAIEmbedding implements EmbeddingProvider {
   }
 }
 
-/** 根据 env 构造 embedding 提供方；默认 HashEmbedding。 */
+/**
+ * 远程 embedding 提供商 — 对接外部 embed-server / embed API。
+ *
+ * 与 OpenAIEmbedding 不同，本类适配「自定义 embed-server」的 API 格式：
+ *   POST {baseUrl}/embeddings  { texts: string[] }  →  { embeddings: number[][] }
+ * （例如外部 Docker RAG 栈的 embed-server，或任何 OpenAI-不兼容的嵌入服务。）
+ *
+ * 通过 env 配置：
+ *   RAG_EMBEDDING_ENDPOINT_URL  embed API 地址（如 http://host.docker.internal:8001/embeddings）
+ *   RAG_EMBED_DIM              向量维度（BGE-M3 默认 1024，必须与 embed-server 一致）
+ *
+ * 同步 embed() 不可用（远程是异步），调用方应使用 embedAsync()。
+ * retrieve() 已升级为 async，以支持远程 embedding。
+ */
+export class RemoteEmbedding implements EmbeddingProvider {
+  readonly dim: number;
+  private baseUrl: string;
+  private apiKey: string;
+  private cache = new Map<string, number[]>();
+
+  constructor(opts?: {
+    dim?: number;
+    baseUrl?: string;
+    apiKey?: string;
+  }) {
+    this.dim = opts?.dim ?? Number(process.env.RAG_EMBED_DIM || 1024);
+    this.baseUrl = (opts?.baseUrl ?? process.env.RAG_EMBEDDING_ENDPOINT_URL ?? '').replace(/\/+$/, '');
+    this.apiKey = opts?.apiKey ?? process.env.RAG_EMBEDDING_API_KEY ?? '';
+  }
+
+  embed(_text: string): number[] {
+    throw new Error('RemoteEmbedding 仅支持异步 embedAsync()；请勿在同步路径调用');
+  }
+
+  async embedAsync(text: string): Promise<number[]> {
+    const cached = this.cache.get(text);
+    if (cached) return cached;
+    if (!this.baseUrl) {
+      const fallback = new HashEmbedding(this.dim);
+      const v = fallback.embed(text);
+      this.cache.set(text, v);
+      return v;
+    }
+    try {
+      const resp = await fetch(`${this.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ texts: [text] }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { embeddings?: number[][] };
+        const vec = data.embeddings?.[0];
+        if (vec && vec.length === this.dim) {
+          this.cache.set(text, vec);
+          return vec;
+        }
+        if (vec && vec.length !== this.dim) {
+          throw new Error(`向量维度不匹配：期望 ${this.dim}，远程返回 ${vec.length}`);
+        }
+      }
+    } catch {
+      // 网络错误 / 远程异常 → 降级
+    }
+    // 降级到本地 HashEmbedding，保证检索闭环不中断
+    const fallback = new HashEmbedding(this.dim);
+    const v = fallback.embed(text);
+    this.cache.set(text, v);
+    return v;
+  }
+}
+
+/** 根据 env 构造 embedding 提提供方；默认 HashEmbedding。 */
 export function createEmbedder(): EmbeddingProvider {
+  const endpointUrl = (process.env.RAG_EMBEDDING_ENDPOINT_URL || '').trim();
+  if (endpointUrl) {
+    return new RemoteEmbedding({ baseUrl: endpointUrl });
+  }
   if ((process.env.RAG_EMBEDDING_API_KEY || '').trim()) {
     return new OpenAIEmbedding();
   }

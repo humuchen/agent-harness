@@ -180,7 +180,7 @@ export async function generateAnswer(
   const scoreThreshold = opts?.scoreThreshold ?? 0;
 
   // 1) 检索
-  const ctx = retrieve(store, provider, {
+  const ctx = await retrieve(store, provider, {
     ...req,
     top_k: topK,
     score_threshold: scoreThreshold,
