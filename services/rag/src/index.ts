@@ -55,8 +55,12 @@ async function main(): Promise<void> {
   await srv.listen();
 }
 
-main().catch((e) => {
-  // eslint-disable-next-line no-console
-  console.error('[rag] fatal:', e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    // eslint-disable-next-line no-console
+    console.error('[rag] fatal:', e);
+    process.exit(1);
+  });
+}
+
+export { main, parseTokens };
