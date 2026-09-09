@@ -749,6 +749,11 @@ export class ChatRunRuntime {
       if (!streaming[sid] || this.finishedBy[sid]) continue;
       const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
       const lost = this.deps.getConnState(sid) === 'lost';
+      // 后台期间已沉默很久：直接强制收尾，不再寄希望于重连重放（避免等满 120s 看门狗）。
+      if (silentFor > 120_000) {
+        this.forceFinalizeStuck(sid);
+        continue;
+      }
       if (lost || silentFor > 10_000) {
         this.keepAliveAbort[sid] = true;
         if (this.abortBy[sid]) this.abortBy[sid]?.abort();
@@ -757,13 +762,49 @@ export class ChatRunRuntime {
     }
   };
 
-  /** 静默看门狗：可见状态下流式会话 60s 无事件则强制唤醒重连（防御 read() 静默挂死）。 */
+  /**
+   * 强制收尾卡死的流式会话：SSE 长沉默（>120s）仍无 run:end/_done/error 送达，
+   * 放弃无限重连等待，直接标记为已结束并解开 runWithReconnect 的 for-await 阻塞。
+   *
+   * 触发场景：SSE 的终结事件在断连窗口丢失（典型如长耗时工具期间 RAG 调用 20~60s 触发断连），
+   * 且 runWithReconnect 的重连重放也未补齐——服务端对已结束 job 不再产生新事件，
+   * for-await 因连接未关而永久挂起；仅靠 60s 唤醒重连无法解脱，需要客户端兜底。
+   *
+   * 副作用：setStreaming(false) 立即摘掉「等待响应…」；content 追加一条提示避免用户误以为仍在生成。
+   * runWithReconnect 的 abort 路径：aborted && keepAliveAbort=true && isFinished=true → 直接 return，
+   * 随后 dispatchPrompt 的 finally 收尾（落盘 / 重建 trace）正常执行。
+   */
+  private forceFinalizeStuck(sid: string) {
+    if (this.finishedBy[sid]) return;
+    this.finishedBy[sid] = true;
+    this.erroredBy[sid] = true;
+    this.deps.setStreaming(sid, false);
+    this.keepAliveAbort[sid] = true;
+    this.abortBy[sid]?.abort();
+    const c = this.deps.curSession(sid);
+    const note = '（连接已断开，回复可能不完整）';
+    if (c) {
+      if (c.content && !c.content.includes(note)) {
+        this.deps.patchSession(sid, { content: `${c.content}\n\n*${note}*` });
+      } else if (!c.content) {
+        this.deps.patchSession(sid, { content: `*${note}*` });
+      }
+    }
+  }
+
+  /** 静默看门狗：可见状态下流式会话 60s 无事件则强制唤醒重连；>120s 仍无收尾则强制收尾（兜底）。 */
   silentWatchdog() {
     if (document.visibilityState !== 'visible') return;
     const streaming = this.deps.getStreamingDict();
     for (const sid in streaming) {
       if (!streaming[sid] || this.finishedBy[sid]) continue;
       const silentFor = Date.now() - (this.lastEventAt[sid] ?? Date.now());
+      // 长沉默（>120s）仍无收尾：放弃重连，直接强制收尾（详见 forceFinalizeStuck 注释）。
+      if (silentFor > 120_000) {
+        this.forceFinalizeStuck(sid);
+        continue;
+      }
+      // 60s 沉默：先尝试 abort 唤醒重连（原有逻辑）。
       if (silentFor > 60_000 && !this.keepAliveAbort[sid]) {
         this.keepAliveAbort[sid] = true;
         this.abortBy[sid]?.abort();
