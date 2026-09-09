@@ -232,6 +232,52 @@ export class AhProviderKeySettings extends LitElement {
     .field input:focus {
       border-color: var(--ah-accent);
     }
+    /* API Key 行：输入框 + 右侧小眼睛切换按钮（密码/明文）。 */
+    .key-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .key-row .key-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: var(--ah-surface-2, #1c1c1c);
+      color: var(--ah-text);
+      border: 1px solid var(--ah-border);
+      border-radius: 10px;
+      padding: 9px 36px 9px 11px; /* 右侧留白给小眼睛 */
+      outline: none;
+      font: inherit;
+      font-size: 13px;
+    }
+    .key-row .key-input:focus {
+      border-color: var(--ah-accent);
+    }
+    .key-eye {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
+      cursor: pointer;
+      padding: 2px;
+      position: absolute;
+      right: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .key-eye:hover {
+      color: var(--ah-text);
+    }
+    .key-eye:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .key-eye svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+    }
     .btn {
       min-width: 84px;
       padding: 8px 16px;
@@ -299,6 +345,12 @@ export class AhProviderKeySettings extends LitElement {
   @state() private draftExtraKeys = '';
   @state() private saving = false;
   @state() private verifying = false;
+  /** 编辑态已回显的明文主 Key（服务端 reveal 成功）：true 时小眼睛可展开原始值。 */
+  @state() private apiKeyRevealed = false;
+  /** 小眼睛：展开查看已保存主 Key 明文（默认收起，保持密码样式）。 */
+  @state() private keyVisible = false;
+  /** reveal 请求进行中（避免重复点击小眼睛触发多次拉取）。 */
+  @state() private keyRevealing = false;
   /** P2.2 per-owner 用量快照。 */
   @state() private usage: UsageSnapshot | null = null;
   /** P2.1 OpenRouter OAuth 是否可用（取决于后端是否配置了 client id）。 */
@@ -463,6 +515,63 @@ export class AhProviderKeySettings extends LitElement {
     this.draftApiKey = '';
     this.draftExtraKeys = '';
     this.draftBaseUrl = this.current?.baseUrl ?? '';
+    this.apiKeyRevealed = false;
+    this.keyVisible = false;
+  }
+
+  /** 拉取本账号某 provider 已保存的明文主 Key（编辑回显 / 小眼睛展开用）。 */
+  private async revealApiKey(): Promise<string[]> {
+    this.keyRevealing = true;
+    try {
+      const res = await authedFetch(
+        `/api/account/provider-keys/${encodeURIComponent(
+          this.provider
+        )}/reveal`
+      );
+      if (!res.ok) return [];
+      const data = (await res.json()) as {
+        ok?: boolean;
+        keys?: string[];
+        error?: string;
+      };
+      if (!data.ok) {
+        if (data.error) {
+          notify.warning(data.error, {
+            title: 'API Key',
+            key: 'pk-reveal'
+          });
+        }
+        return [];
+      }
+      return data.keys ?? [];
+    } catch {
+      // 拉取失败不打断编辑：保留当前输入，用户可手动重填。
+      return [];
+    } finally {
+      this.keyRevealing = false;
+    }
+  }
+
+  /** 小眼睛切换：已回显直接切明文/密码态；未回显先拉取旧主 Key 再展开。 */
+  private toggleKeyVisible() {
+    if (this.apiKeyRevealed) {
+      this.keyVisible = !this.keyVisible;
+      return;
+    }
+    const target = this.provider;
+    void (async () => {
+      const keys = await this.revealApiKey();
+      // 拉取期间用户可能已切 provider：回填前校验仍一致。
+      if (this.provider !== target) return;
+      if (!keys.length) {
+        this.keyVisible = true;
+        return;
+      }
+      this.draftApiKey = keys[0] ?? '';
+      this.draftExtraKeys = keys.slice(1).join('\n');
+      this.apiKeyRevealed = true;
+      this.keyVisible = true;
+    })();
   }
 
   /** 保存（PUT）：明文 Key 经 HTTPS 传给服务端加密落库。 */
@@ -692,19 +801,80 @@ export class AhProviderKeySettings extends LitElement {
     this.draftApiKey = '';
     this.draftExtraKeys = '';
     this.draftBaseUrl = this.current?.baseUrl ?? '';
+    this.apiKeyRevealed = false;
+    this.keyVisible = false;
+    // 编辑既有 Key 时回显旧值（服务端 reveal 解密），小眼睛可展开查看原文。
+    if (this.current?.keyCount && this.current.keyCount > 0) {
+      const target = this.provider;
+      void (async () => {
+        const keys = await this.revealApiKey();
+        if (this.provider !== target || !this.editing) return;
+        if (!keys.length) return;
+        this.draftApiKey = keys[0] ?? '';
+        this.draftExtraKeys = keys.slice(1).join('\n');
+        this.apiKeyRevealed = true;
+      })();
+    }
   }
 
   private renderForm(): TemplateResult {
     return html`
       <div class="field">
         <label>API Key（明文仅经 HTTPS 提交，服务端加密落库）</label>
-        <input
-          type="password"
-          placeholder="sk-or-..."
-          .value=${this.draftApiKey}
-          @input=${(e: Event) =>
-            (this.draftApiKey = (e.target as HTMLInputElement).value)}
-        />
+        <div class="key-row">
+          <input
+            class="key-input"
+            .type=${this.keyVisible ? 'text' : 'password'}
+            placeholder="sk-or-..."
+            .value=${this.draftApiKey}
+            @input=${(e: Event) => {
+              this.draftApiKey = (e.target as HTMLInputElement).value;
+              // 用户手动改写过 Key：旧值不再代表当前输入，收起明文展示。
+              this.keyVisible = false;
+            }}
+          />
+          ${this.current?.keyCount && this.current.keyCount > 0
+            ? html`<button
+                type="button"
+                class="key-eye"
+                title=${this.keyVisible
+                  ? '隐藏 API Key'
+                  : '查看已保存的 API Key'}
+                ?disabled=${this.keyRevealing}
+                @click=${() => this.toggleKeyVisible()}
+              >
+                ${this.keyVisible
+                  ? html`<svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
+                      />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>`
+                  : html`<svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4 4"
+                      />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>`}
+              </button>`
+            : nothing}
+        </div>
       </div>
       <div class="field">
         <label

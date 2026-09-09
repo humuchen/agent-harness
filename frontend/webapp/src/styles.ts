@@ -520,8 +520,8 @@ export const sharedStyles = css`
   }
   /* MCP 已接入列表：服务器项 + 工具列表 */
   ,
-  .card.mcp-server-list {
-    max-height: 490px;
+  .mcp-server-list {
+    max-height: 375px;
   }
   .mcp-server-item {
     list-style: none;

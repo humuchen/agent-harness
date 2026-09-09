@@ -255,6 +255,43 @@ export class AhModelPicker extends LitElement {
     .add-row input:focus {
       border-color: var(--ah-accent, #2997ff);
     }
+    /* API Key 行：输入框 + 右侧小眼睛切换按钮（密码/明文）。 */
+    .key-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .key-row input {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-right: 36px; /* 给小眼睛留出空间，避免文字被盖 */
+    }
+    .key-eye {
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--ah-text-muted, #9e9e9e);
+      cursor: pointer;
+      padding: 2px;
+      position: absolute;
+      right: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .key-eye:hover {
+      color: var(--ah-text);
+    }
+    .key-eye:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .key-eye svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+    }
     .add-actions {
       display: flex;
       gap: 10px;
@@ -379,6 +416,13 @@ export class AhModelPicker extends LitElement {
   @state() private draftBaseUrl = '';
   @state() private draftApiKey = '';
   @state() private draftId = '';
+
+  /** 编辑态 API Key 是否已回显旧值（服务端 reveal 成功）：true 时小眼睛可展开原始值。 */
+  @state() private apiKeyRevealed = false;
+  /** 小眼睛切换：展开查看原始 Key 明文（默认收起，保持密码样式）。 */
+  @state() private keyVisible = false;
+  /** reveal 请求进行中（避免重复点击小眼睛触发多次拉取）。 */
+  @state() private keyRevealing = false;
 
   /** 是否正在保存到后端（按钮 loading 态）。 */
   @state() private saving = false;
@@ -576,7 +620,56 @@ export class AhModelPicker extends LitElement {
       this.draftId = '';
       this.draftBaseUrl = '';
       this.draftApiKey = '';
+      this.apiKeyRevealed = false;
+      this.keyVisible = false;
+      this.keyRevealing = false;
     }
+  }
+
+  /** 拉取某自定义模型已保存的明文 Key（编辑回显 / 小眼睛展开用）。 */
+  private async revealApiKey(id: string): Promise<string> {
+    this.keyRevealing = true;
+    try {
+      const res = await authedFetch(`/api/custom-models/${encodeURIComponent(id)}/reveal`);
+      if (!res.ok) return '';
+      const data = (await res.json()) as {
+        ok?: boolean;
+        key?: string;
+        error?: string;
+      };
+      if (!data.ok) {
+        if (data.error) {
+          notify.warning(data.error, {
+            title: 'API Key',
+            key: 'custom-key-reveal'
+          });
+        }
+        return '';
+      }
+      return data.key ?? '';
+    } catch {
+      // 拉取失败不打断编辑：保留当前输入，用户可手动重填。
+      return '';
+    } finally {
+      this.keyRevealing = false;
+    }
+  }
+
+  /** 小眼睛切换：未回显旧值时先拉取一次再展开；已回显直接切换明文/密码态。 */
+  private toggleKeyVisible(id: string) {
+    if (this.apiKeyRevealed) {
+      this.keyVisible = !this.keyVisible;
+      return;
+    }
+    // 尚未拉取：先取回旧值填入表单，同时展开为明文。
+    void (async () => {
+      const key = await this.revealApiKey(id);
+      if (key) {
+        this.draftApiKey = key;
+        this.apiKeyRevealed = true;
+      }
+      this.keyVisible = true;
+    })();
   }
 
   /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。 */
@@ -587,8 +680,19 @@ export class AhModelPicker extends LitElement {
     this.adding = true;
     this.draftId = c.id;
     this.draftBaseUrl = c.baseUrl ?? '';
-    // API Key 不可回显（服务端仅返回掩码），编辑时如需更换 Key 需重新输入。
+    // API Key 默认保持密码态；点「编辑」立即回显旧 Key 填入表单（小眼睛可展开查看原文）。
     this.draftApiKey = '';
+    this.apiKeyRevealed = false;
+    this.keyVisible = false;
+    void (async () => {
+      const key = await this.revealApiKey(id);
+      if (key) {
+        // 组件可能已卸载或已切到别的模型：回填前校验仍是当前编辑项。
+        if (this.editingId !== id) return;
+        this.draftApiKey = key;
+        this.apiKeyRevealed = true;
+      }
+    })();
   }
 
   /** 提交自定义模型（新增/编辑）：明文 Key 直提交，由服务端加密落库。 */
@@ -634,6 +738,8 @@ export class AhModelPicker extends LitElement {
     this.draftId = '';
     this.draftBaseUrl = '';
     this.draftApiKey = '';
+    this.apiKeyRevealed = false;
+    this.keyVisible = false;
     this.adding = false;
     this.editingId = '';
     if (editing) {
@@ -1037,6 +1143,8 @@ export class AhModelPicker extends LitElement {
                     this.draftId = '';
                     this.draftBaseUrl = '';
                     this.draftApiKey = '';
+                    this.apiKeyRevealed = false;
+                    this.keyVisible = false;
                   }}
                 >
                   ${this.adding ? '取消添加' : '添加自定义模型'}
@@ -1070,15 +1178,59 @@ export class AhModelPicker extends LitElement {
                           e.target as HTMLInputElement
                         ).value)}
                     />
-                    <input
-                      placeholder="API Key（可选，将加密保存）"
-                      .value=${this.draftApiKey}
-                      type="password"
-                      @input=${(e: Event) =>
-                        (this.draftApiKey = (
-                          e.target as HTMLInputElement
-                        ).value)}
-                    />
+                    <div class="key-row">
+                      <input
+                        placeholder="API Key（可选，将加密保存）"
+                        .value=${this.draftApiKey}
+                        .type=${this.keyVisible ? 'text' : 'password'}
+                        @input=${(e: Event) => {
+                          this.draftApiKey = (
+                            e.target as HTMLInputElement
+                          ).value;
+                          // 用户手动改写过 Key：旧值不再代表当前输入，收起明文展示。
+                          this.keyVisible = false;
+                        }}
+                      />
+                      ${this.editingId
+                        ? html`<button
+                            type="button"
+                            class="key-eye"
+                            title=${this.keyVisible
+                              ? '隐藏 API Key'
+                              : '查看 API Key'}
+                            ?disabled=${this.keyRevealing}
+                            @click=${() => this.toggleKeyVisible(this.editingId)}
+                          >
+                            ${this.keyVisible
+                              ? html`<svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  aria-hidden="true"
+                                >
+                                  <path
+                                    d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
+                                  />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>`
+                              : html`<svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  aria-hidden="true"
+                                >
+                                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4 4" />
+                                  <line x1="1" y1="1" x2="23" y2="23" />
+                                </svg>`}
+                          </button>`
+                        : nothing}
+                    </div>
                     <div class="add-actions">
                       <button
                         type="button"
@@ -1088,6 +1240,8 @@ export class AhModelPicker extends LitElement {
                           this.draftId = '';
                           this.draftBaseUrl = '';
                           this.draftApiKey = '';
+                          this.apiKeyRevealed = false;
+                          this.keyVisible = false;
                         }}
                       >
                         取消

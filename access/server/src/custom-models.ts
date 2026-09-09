@@ -11,7 +11,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, audit } from '@agent-harness/core';
 
 /** 平台哨兵 owner：单租户时代遗留的自定义模型在 owner 隔离后统一归入此标识，
  *  由 admin/operator（includeLegacy）可见可管；普通用户不可见，避免越权读他人模型。 */
@@ -382,6 +382,50 @@ export async function registerCustomModelRoutes(
     return true;
   }
 
+  // 查看明文 Key（编辑回显 / 小眼睛展开用）。仅当路径命中 :id/reveal 子路径。
+  // 安全约束：仅返回 owner 本人（或 admin/operator 托管的 legacy 行）的密文解密结果，
+  // 越权访问直接 404（与 GET 单行一致，不泄露存在性之外信息）；
+  // 每次查看都写审计日志（action 脱敏，绝不记录 Key 本身）；
+  // 限流由外层 guard 的用户桶兜底，无需本层再加。
+  if (method === 'GET' && /^\/api\/custom-models\/[^/]+\/reveal$/.test(path)) {
+    const seg = path.split('/');
+    const id = decodeURIComponent(seg[seg.length - 2] || '');
+    const row = await getCustomModel(id, owner, includeLegacy);
+    if (!row?.apiKey) {
+      // 无 Key（从未配置或 Key 为空）：回空串而非 404，前端据此提示「未配置」。
+      sendJson(res, { ok: true, key: '', configured: false }, req);
+      return true;
+    }
+    try {
+      const plain = decryptApiKey(row.apiKey);
+      await audit({
+        action: 'custom-model.key.reveal',
+        actor: owner,
+        target: id,
+        outcome: 'success'
+      });
+      sendJson(res, { ok: true, key: plain, configured: true }, req);
+    } catch {
+      // 单条密文无法解密（密钥不匹配/损坏）：不回明文，仅告知已配置但无法展示，
+      // 避免阻断用户重新保存（重新保存会替换密文）。
+      await audit({
+        action: 'custom-model.key.reveal',
+        actor: owner,
+        target: id,
+        outcome: 'failure',
+        detail: { reason: 'decrypt failed' }
+      });
+      // sendJson 固定 200：用 ok:false + error 表达「已配置但无法展示」，
+      // 前端据此提示重新保存，不伪造 HTTP 500。
+      sendJson(
+        res,
+        { ok: false, key: '', configured: true, error: '该 Key 无法解密，请重新保存' },
+        req
+      );
+    }
+    return true;
+  }
+
   if (method === 'POST' && path === '/api/custom-models') {
     const id = String(body?.id ?? '').trim();
     if (!id) {
@@ -393,13 +437,20 @@ export async function registerCustomModelRoutes(
     const apiKey = typeof body?.apiKey === 'string' ? body.apiKey.trim() : undefined;
     // P1.4：明文 Key 由服务端加密（前端不再持密钥）；兼容旧前端残留的密文输入。
     const key = storeApiKeyInput(apiKey);
+    // 编辑既有模型而未携带新 Key 时，保留原密文（防改 baseUrl 等字段误清空 Key）。
+    // 仅当本 owner 视角可读到该行（本人 / admin·operator 托管的 legacy）才回填。
+    const existing = key ? null : await getCustomModel(id, owner, includeLegacy);
     // 等待写入完成再响应，避免「先回 200 后落库」的竞态。
     // owner 强制 = ctx.sub（调用方已 guard），忽略请求体任何 owner 字段（防越权）。
     await putCustomModel({
       id,
       owner,
       ...(baseUrl ? { baseUrl } : {}),
-      ...(key ? { apiKey: key.cipher, keyHint: key.hint } : {}),
+      ...(key
+        ? { apiKey: key.cipher, keyHint: key.hint }
+        : existing?.apiKey
+          ? { apiKey: existing.apiKey } // keyHint 缺省时 GET 层会由密文反解掩码
+          : {}),
     });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));

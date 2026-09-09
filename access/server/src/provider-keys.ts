@@ -17,7 +17,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, audit } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
 
 // ─── provider 默认端点 ───────────────────────────────────────────────────────
@@ -511,16 +511,16 @@ export async function registerProviderKeyRoutes(
     return true;
   }
 
-  // 解析 :provider 段（支持 /verify 子路径）。
+  // 解析 :provider 段（支持 /verify、/reveal 子路径）。
   const rest = path.slice(base.length);
-  const m = /^\/([^/]+)(\/verify)?$/.exec(rest);
+  const m = /^\/([^/]+)(\/(verify|reveal))?$/.exec(rest);
   if (!m) {
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
     return true;
   }
   const provider = decodeURIComponent(m[1] ?? '');
-  const isVerify = !!m[2];
+  const subPath = m[2] ? m[2].slice(1) : ''; // 'verify' | 'reveal' | ''
 
   if (!PROVIDER_WHITELIST.has(provider)) {
     sendJson({ error: `unsupported provider: ${provider}` }, 400);
@@ -528,8 +528,58 @@ export async function registerProviderKeyRoutes(
   }
   const pid = provider as ProviderId;
 
-  // POST /api/account/provider-keys/:provider/verify
-  if (method === 'POST' && isVerify) {
+  // GET /api/account/provider-keys/:provider/reveal → 明文 Key（主 Key + 附加 Key）。
+  // 仅返回 owner 本人；每次查看写审计日志（脱敏）；限流由外层 guard 用户桶兜底。
+  // 前端「配置 API Key」面板编辑时据此回显旧 Key，密码框 + 小眼睛展开查看原始值。
+  if (method === 'GET' && subPath === 'reveal') {
+    const row = await getUserProviderKey(owner, pid);
+    if (!row?.keyCipher) {
+      // 无 Key（尚未配置）：回空数组，前端据此隐藏小眼睛。
+      sendJson({ ok: true, configured: false, keys: [] });
+      return true;
+    }
+    try {
+      const primary = decryptApiKey(row.keyCipher);
+      const extras = row.extraKeys?.length
+        ? row.extraKeys.map((ek) => {
+            try {
+              return decryptApiKey(ek.keyCipher);
+            } catch {
+              return '';
+            }
+          })
+        : [];
+      const keys = [primary, ...extras].filter(Boolean);
+      await audit({
+        action: 'provider-key.reveal',
+        actor: owner,
+        target: provider,
+        outcome: 'success'
+      });
+      sendJson({ ok: true, configured: true, keys });
+    } catch {
+      // 密文无法解密（密钥不匹配/损坏）：不回明文，提示重新保存。
+      await audit({
+        action: 'provider-key.reveal',
+        actor: owner,
+        target: provider,
+        outcome: 'failure',
+        detail: { reason: 'decrypt failed' }
+      });
+      sendJson(
+        {
+          ok: false,
+          configured: true,
+          keys: [],
+          error: '该 Key 无法解密，请重新保存'
+        },
+        200
+      );
+    }
+    return true;
+  }
+
+  if (method === 'POST' && subPath === 'verify') {
     const row = await getUserProviderKey(owner, pid);
     if (!row?.keyCipher) {
       sendJson({ status: 'invalid', error: '尚未保存该 provider 的 Key' }, 404);
