@@ -519,7 +519,7 @@ export const sharedStyles = css`
     margin: 8px 0;
   }
   /* MCP 已接入列表：服务器项 + 工具列表 */
-  ,
+
   .mcp-server-list {
     max-height: 375px;
   }
