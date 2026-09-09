@@ -35,6 +35,13 @@ export interface UpstreamConfig {
   timeoutMs: number;
   /** 失败重试次数（仅对可重试错误：网络异常 / 429 / 5xx）。 */
   retries: number;
+  /**
+   * 外部 RAG 契约风格（仅 rag 上游使用）：
+   * - local（默认）：调本地 services/rag 的 POST /v1/retrieve（纯检索）。
+   * - hermes：调外部 HermesChat RAG 的 POST /api/v1/chat，取 citations 作为检索片段。
+   * 由 MA_RAG_API_STYLE 控制。
+   */
+  apiStyle?: 'local' | 'hermes';
 }
 
 /** 文本嵌入服务配置（语义检索用）。在通用上游基础上增加模型名。 */
@@ -120,7 +127,10 @@ export function getConfig(): MaConfig {
       // 缺省用本地库（运营经导入接口写入 / 由外部 KB 服务同步落库）。
       source: (process.env.MA_KB_SOURCE ?? 'db').trim() === 'http' ? 'http' : 'db',
     },
-    rag: upstream('MA_RAG'),
+    rag: {
+      ...upstream('MA_RAG'),
+      apiStyle: (process.env.MA_RAG_API_STYLE ?? 'local').trim() === 'hermes' ? 'hermes' : 'local',
+    },
     embed: {
       ...upstream('MA_EMBED'),
       model: (process.env.MA_EMBED_MODEL ?? 'text-embedding-3-small').trim(),

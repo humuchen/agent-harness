@@ -87,29 +87,66 @@ async function ragRetrieve(query: string, topK: number): Promise<RagSearchResult
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.rag.timeoutMs || 8000);
   try {
-    const res = await fetch(`${cfg.rag.baseUrl.replace(/\/+$/, '')}/v1/retrieve`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(cfg.rag.token ? { authorization: `Bearer ${cfg.rag.token}` } : {}),
-      },
-      body: JSON.stringify({ query, top_k: topK, score_threshold: 0 }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`RAG 检索失败 HTTP ${res.status}: ${body.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as {
-      results?: {
-        chunk_id: string;
-        title?: string;
-        content: string;
-        score: number;
-        metadata?: Record<string, unknown>;
-      }[];
+    const base = cfg.rag.baseUrl.replace(/\/+$/, '');
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(cfg.rag.token ? { authorization: `Bearer ${cfg.rag.token}` } : {}),
     };
-    const results = data.results ?? [];
+    let citations: {
+      chunk_id: string;
+      title?: string;
+      content: string;
+      score: number;
+      metadata?: Record<string, unknown>;
+    }[] = [];
+
+    if (cfg.rag.apiStyle === 'hermes') {
+      // 外部 HermesChat RAG：POST /api/v1/chat，取 citations 作为检索片段
+      const res = await fetch(`${base}/api/v1/chat`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query, user_tags: ['public'], history: [] }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`RAG 检索失败 HTTP ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const data = (await res.json()) as {
+        citations?: { chunk_id: string; source?: string; content: string; score: number }[];
+      };
+      citations = (data.citations ?? []).slice(0, Math.max(topK, 6)).map((c) => ({
+        chunk_id: c.chunk_id,
+        title: c.source,
+        content: c.content,
+        score: c.score,
+        metadata: { source: c.source ?? 'external', type: 'reference' },
+      }));
+    } else {
+      // 本地 services/rag：POST /v1/retrieve（默认契约）
+      const res = await fetch(`${base}/v1/retrieve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query, top_k: topK, score_threshold: 0 }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`RAG 检索失败 HTTP ${res.status}: ${body.slice(0, 200)}`);
+      }
+      const data = (await res.json()) as {
+        results?: {
+          chunk_id: string;
+          title?: string;
+          content: string;
+          score: number;
+          metadata?: Record<string, unknown>;
+        }[];
+      };
+      citations = data.results ?? [];
+    }
+
+    const results = citations;
     const projects: ProjectRecord[] = [];
     const refs: RagRef[] = [];
     for (const r of results) {
