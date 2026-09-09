@@ -56,11 +56,16 @@ services:
       MA_RAG_API_STYLE: '${MA_RAG_API_STYLE:-}'
       MA_RAG_TOKEN: '${MA_RAG_TOKEN:-}'
       MA_RAG_TIMEOUT_MS: '${MA_RAG_TIMEOUT_MS:-180000}'
+      # 本地 RAG 生成层（services/rag 的 rag_generate）所需 OpenAI 兼容 LLM。
+      # 透传到 ui 容器 → access/server → rag MCP 子进程；不设则 rag_generate 报 MCP -32000。
+      RAG_LLM_BASE_URL: '${RAG_LLM_BASE_URL:-}'
+      RAG_LLM_API_KEY: '${RAG_LLM_API_KEY:-}'
+      RAG_LLM_MODEL: '${RAG_LLM_MODEL:-agnes-3.0-flash}'
       # 外部 Docker RAG 栈的 embed-server（如 HermesChat/rag-knowledge 的 embed-server）。
       # 容器通过 host.docker.internal 访问宿主机端口 8001。
       # embed-server 宕机/模型未就绪时，services/rag 自动降级到 HashEmbedding，检索闭环不中断。
       RAG_EMBEDDING_ENDPOINT_URL: '${RAG_EMBEDDING_ENDPOINT_URL:-http://host.docker.internal:8001/embeddings}'
-      RAG_EMBED_DIM: '${RAG_EMBED_DIM:-1024}'   # BGE-M3 输出 1024 维，必须与 embed-server 一致
+      RAG_EMBED_DIM: '${RAG_EMBED_DIM:-1024}' # BGE-M3 输出 1024 维，必须与 embed-server 一致
       # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
       AH_STARTUP_CRITICAL: '1'
       # 账户 token 签名密钥：缺失则 getAuthSecret() 每进程随机生成，签发/验证密钥不一致 → 登录态全部失效。

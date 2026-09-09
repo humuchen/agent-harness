@@ -888,6 +888,12 @@ export class AhChat extends LitElement {
     };
     const role: 'user' | 'assistant' = m.role === 'user' ? 'user' : 'assistant';
     const content = typeof m.content === 'string' ? m.content : '';
+    const traceVal =
+      Array.isArray(m.trace) && m.trace.length ? (m.trace as TraceNode[]) : undefined;
+    // 已结束/从存储恢复的消息（streaming !== true）做兜底收尾：残留 pending 工具/检索节点
+    // 标记为完成。进行中的实时帧（streaming===true）绝不收尾，避免误标在途工具为完成。
+    const traceFinal =
+      traceVal && m.streaming !== true ? this.normalizeStoredTrace(traceVal) : traceVal;
     const t = this.threadFor(sid);
 
     if (role === 'user') {
@@ -910,9 +916,7 @@ export class AhChat extends LitElement {
         ...(Array.isArray(m.tools) && m.tools.length
           ? { tools: m.tools as ToolView[] }
           : {}),
-        ...(Array.isArray(m.trace) && m.trace.length
-          ? { trace: m.trace as TraceNode[] }
-          : {})
+        ...(traceFinal ? { trace: traceFinal } : {})
       });
       this.threads[sid] = t;
       this.patchSessionMeta(
@@ -941,9 +945,7 @@ export class AhChat extends LitElement {
         ...(Array.isArray(m.tools) && m.tools.length
           ? { tools: m.tools as ToolView[] }
           : {}),
-        ...(Array.isArray(m.trace) && m.trace.length
-          ? { trace: m.trace as TraceNode[] }
-          : {})
+        ...(traceFinal ? { trace: traceFinal } : {})
       };
       t.push(msg);
       this.remoteStreaming[sid] = true; // 标记：后续该会话的增量/终态都作用在这条上
@@ -970,9 +972,7 @@ export class AhChat extends LitElement {
           ...(Array.isArray(m.tools) && m.tools.length
             ? { tools: m.tools as ToolView[] }
             : {}),
-          ...(Array.isArray(m.trace) && m.trace.length
-            ? { trace: m.trace as TraceNode[] }
-            : {})
+          ...(traceFinal ? { trace: traceFinal } : {})
         };
         if (m.streaming) {
           // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧把已揭示文本截断）。
@@ -1626,6 +1626,12 @@ export class AhChat extends LitElement {
       }
       case 'llm:call': {
         this.ensureTraceRoot(sid);
+        // 兜底：把上一轮仍 pending 的工具/检索节点统一标记为成功。
+        // 背景：tool:result 事件可能因 SSE 断连/重连/网络抖动而丢失（尤其 RAG 等长耗时工具
+        // 期间极易发生），此时目标节点会永远停在「进行中」；但 harness 只要发起新一轮
+        // llm:call，说明上一轮的工具链已实际完成（否则不会推进到下一步），所以在此处
+        // 兜底把残留 pending 节点收尾，避免「调用都结束了 UI 还显示进行中」。
+        this.finalizePendingTools(tc);
         const parent = tc.parent ?? tc.root!;
         // 纯前端：把「截至此次调用的会话消息上下文」挂到节点，点击「消息 N」可就地展开回看。
         // 注意这里实时读取 this.threads（而非一次性按 ev.messageCount 截断），
@@ -1858,6 +1864,13 @@ export class AhChat extends LitElement {
         });
         break;
       }
+      case 'run:end': {
+        // 运行收尾兜底：极少数情况下（如 SSE 断连后重连、或运行异常终止）最后一个
+        // tool:result 事件丢失，导致工具/检索节点永远停在「进行中」。运行结束时强制
+        // 把所有残留 pending 节点收尾，保证「调用都结束了 UI 不再显示进行中」。
+        this.finalizePendingTools(tc);
+        break;
+      }
       default:
         break;
     }
@@ -1870,6 +1883,49 @@ export class AhChat extends LitElement {
     ) {
       this.patchSession(sid, { trace: [tc.root] });
     }
+  }
+
+  /**
+   * 兜底收尾：把 trace 树里所有仍处 pending 的工具/检索节点标记为成功（ok）。
+   * 仅在「新一轮 llm:call 已开始」或「run:end」时调用 —— 这两个时机都意味着上一轮
+   * 工具链已实际执行完毕（harness 不会在工具未完成时推进），因此可以安全地把因
+   * SSE 断连/重连/网络抖动而丢失 tool:result 的残留 pending 节点收尾，避免 UI 永久
+   * 卡在「进行中」。
+   */
+  private finalizePendingTools(tc: TraceCtx) {
+    if (!tc.root) return;
+    const sweep = (n: TraceNode): void => {
+      if (
+        (n.kind === 'tool' || n.kind === 'retrieval') &&
+        n.status === 'pending'
+      ) {
+        n.status = 'ok';
+        n.meta = { ...(n.meta ?? {}), status: '成功（兜底）' };
+      }
+      n.children.forEach(sweep);
+    };
+    sweep(tc.root);
+  }
+
+  /**
+   * 还原已结束/从存储恢复的消息时，把残留 pending 工具/检索节点收尾（与 traceHandle
+   * 的兜底逻辑一致）。仅对「非流式（streaming !== true）」的消息调用 —— 进行中的实时帧
+   * 绝不能收尾，否则会把真正在途的工具误标为完成。
+   */
+  private normalizeStoredTrace(trace: TraceNode[] | undefined): TraceNode[] | undefined {
+    if (!trace || !trace.length) return trace;
+    const sweep = (n: TraceNode): void => {
+      if (
+        (n.kind === 'tool' || n.kind === 'retrieval') &&
+        n.status === 'pending'
+      ) {
+        n.status = 'ok';
+        n.meta = { ...(n.meta ?? {}), status: '成功（兜底·恢复）' };
+      }
+      n.children.forEach(sweep);
+    };
+    trace.forEach(sweep);
+    return trace;
   }
 
   /* ----------------------- 渲染辅助 ----------------------- */
