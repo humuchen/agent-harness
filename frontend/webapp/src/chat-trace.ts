@@ -333,7 +333,7 @@ export function renderTraceNode(
                         ${items.map(
                           ([k, v]) =>
                             html`<span class="tchip"
-                              ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                              ><b>${escapeHtml(k)}</b> ~${escapeHtml(
                                 String(v)
                               )}</span
                             >`
@@ -403,7 +403,7 @@ export function renderTraceNode(
                         ${items.map(
                           ([k, v]) =>
                             html`<span class="tchip"
-                              ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                              ><b>${escapeHtml(k)}</b> ~${escapeHtml(
                                 String(v)
                               )}</span
                             >`

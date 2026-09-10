@@ -1811,15 +1811,15 @@ export class AhChat extends LitElement {
         }>(ev.byModel ?? {})
           .map(
             ([m, st]) =>
-              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${
+              `${m}: ~${(Number(st.hitRate) * 100).toFixed(0)}% (~${st.hits}/${
                 st.queries
               })`
           )
           .join(' · ');
         mk(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
           meta: {
-            命中率: `${tcHitPct}%`,
-            命中: `${ev.hits}/${ev.queries}`,
+            命中率: `~${tcHitPct}%`,
+            命中: `~${ev.hits}/${ev.queries}`,
             接口: String(ev.interface ?? 'prompt-cache'),
             ...(ev.model ? { 模型: String(ev.model) } : {}),
             ...(tcByModel ? { 分模型: tcByModel } : {})
@@ -2933,7 +2933,8 @@ export class AhChat extends LitElement {
                     this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
                   }}
                 ></ah-model-picker>
-                ${this.serverCtxWindow <= 0
+                ${this.serverCtxWindow <= 0 ||
+                this.activeId === ''
                   ? nothing
                   : renderCtxRing({
                       usage: selectContextUsage({
