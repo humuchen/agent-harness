@@ -121,7 +121,14 @@ export const leadPlugin: PluginModule = {
       health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
       assembly: {
         systemPrompt: buildBookingAgentPrompt(),
-        tools: ['medical-aesthetics-lead__consultation_book', 'datetime'],
+        // 与提示词对齐：预约失败 → 转人工需 lead_handoff，落库前置需 lead_qualify，
+        // 不放进 allow 集则提示词的「必须调用」在模型函数列表里同样落空（同一类错位）。
+        tools: [
+          'medical-aesthetics-lead__consultation_book',
+          'medical-aesthetics-lead__lead_handoff',
+          'medical-aesthetics-lead__lead_qualify',
+          'datetime'
+        ],
       },
       isolation: 'os',
     });
