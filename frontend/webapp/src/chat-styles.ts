@@ -1797,6 +1797,22 @@ export const chatStyles = [
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    /* 分模型下被拆分的子容器：换行包裹，靠右对齐。 */
+    .tnode.kind-tokencache .tgrp-sub {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    /* 单个模型的缓存统计 chip：沿用中性 model 组配色，
+       避免蓝色链接样式误导用户点击。 */
+    .tnode.kind-tokencache .model-chip {
+      max-width: 140px;
+      background: var(--ah-surface-3, var(--ah-surface-2));
+      border-color: var(--ah-border);
+      color: var(--ah-text-muted);
+    }
     .tnode.kind-tokencache > .tcache-body + .tchildren {
       padding-left: 14px;
     }

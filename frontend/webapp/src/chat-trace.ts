@@ -404,13 +404,26 @@ export function renderTraceNode(
                 items.length
                   ? html`<div class="tgrp tgrp-${g}">
                       ${items.map(
-                        ([k, v]) =>
-                          html`<span class="tchip"
+                        ([k, v]) => {
+                          // 分模型：将「 · 」拼接的多模型字符串拆为独立 chip，
+                          // 避免单条过宽的内容溢出或被截断。
+                          if (k === '分模型') {
+                            const parts = String(v).split(' · ');
+                            return html`<div class="tgrp-sub">
+                              ${parts.map(
+                                (p) => html`<span class="tchip model-chip"
+                                  title=${escapeHtml(p)}
+                                  >${escapeHtml(p)}</span>`
+                              )}
+                            </div>`;
+                          }
+                          return html`<span class="tchip"
                             title=${`${escapeHtml(k)} ${escapeHtml(String(v))}`}
                             ><b>${escapeHtml(k)}</b> ${escapeHtml(
                               String(v)
                             )}</span
-                          >`
+                          >`;
+                        }
                       )}
                     </div>`
                   : nothing
