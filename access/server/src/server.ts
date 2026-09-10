@@ -1811,7 +1811,9 @@ const server = createServer(
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
       if (path.startsWith('/api/workflows/')) {
-        const ctx = await guard(req, res, 'workflow:read');
+        const isResume = req.method === 'POST' && path.endsWith('/resume');
+        // POST /resume 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(req, res, isResume ? 'workflow:run' : 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
@@ -1837,9 +1839,12 @@ const server = createServer(
               res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
               return;
             }
-            // 检查是否可续跑：无 steps 或全部 completed 则无需续跑
-            const steps = (existing as any).steps ?? [];
-            const unfinished = steps.filter((s: any) => s.state !== 'completed' && s.state !== 'skipped');
+            // 检查是否可续跑：steps 是 Record<stepId, StepRun>（非数组）；
+            // 终态 = done / skipped / compensated，存在任何非终态 step 即可续跑。
+            const stepValues = Object.values((existing as any).steps ?? {}) as Array<{ state?: string }>;
+            const unfinished = stepValues.filter(
+              (s) => s.state !== 'done' && s.state !== 'skipped' && s.state !== 'compensated',
+            );
             if (unfinished.length === 0) {
               res.writeHead(400, { 'content-type': 'application/json' });
               res.end(JSON.stringify({ error: 'no unfinished steps to resume' }));
@@ -1855,10 +1860,10 @@ const server = createServer(
               onEvent: (e: unknown) => { if (!closed) send(e); },
             });
             const run = await engine.resume(workflowId);
-            if (!closed) send({ type: '_wf_done', run });
+            if (!closed) send({ type: '_wf_done', workflowId, run });
             if (!closed) res.end();
           } catch (e: any) {
-            if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
             if (!closed) res.end();
           }
           return;
@@ -3957,11 +3962,11 @@ async function handleWorkflow(
   engine
     .run(def, body.input)
     .then((run: any) => {
-      if (!closed) send({ type: '_wf_done', run });
+      if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();
     })
     .catch((e: any) => {
-      if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+      if (!closed) send({ type: 'wf:error', workflowId: def.id, message: e?.message ?? String(e) });
       if (!closed) res.end();
     });
   return;

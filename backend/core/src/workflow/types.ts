@@ -46,12 +46,22 @@ export interface StepDef {
   /** 依赖的 step id（DAG 边）。无依赖则可在首轮并行执行。不允许成环（引擎会抛错）。 */
   dependsOn?: string[];
   /**
+   * @deprecated 已弃用。请使用 `onRolling` 替代。
    * 补偿指令（用于失败时回滚）：
    *   - 若等于同 def 内另一个 step 的 id → 失败时逆序执行该 step 作为补偿动作；
    *   - 若为其它的非空字符串 → 作为字面指令交由同一 agent（executor 的 compensate 标志）执行回滚。
    * 不填则无补偿（仅标记该 step 为 compensated）。
+   * 引擎自动兼容该字段，但新代码应迁移至 `onRolling`。
    */
   compensate?: string;
+  /**
+   * 失败补偿（onFailure 回滚）：本 step 失败（或其所在工作流失败）时，逆序执行这些 step 作为回滚动作。
+   * 取值：同 def 内另一个 step 的 id（补偿 step 受 DAG 拓扑约束排序执行），
+   * 或字面量回滚指令（复用本 step 的 agent 执行，executor 据 ctx.compensate 标志走回滚分支）。
+   * 用于替代旧 `compensate: string` 单值字段（现已弃用，引擎仍兼容）。
+   */
+  onRolling?: string[];
+
   /**
    * 条件分支（P2）：本 step 是否执行的前置条件。
    * - 若为空 / 不填 → 正常执行（向后兼容）

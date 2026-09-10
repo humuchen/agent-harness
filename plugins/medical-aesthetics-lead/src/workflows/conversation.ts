@@ -28,7 +28,7 @@ export const consultationBookingWorkflow: WorkflowDef = {
         projectResult: 'steps.analyze-project.output',
         priceResult: 'steps.price-eval.output',
       },
-      compensate: 'cancel-if-any',
+      onRolling: ['cancel-if-any'],
     },
   ],
 };

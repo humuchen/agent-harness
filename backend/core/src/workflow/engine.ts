@@ -96,6 +96,63 @@ export class DagEngine {
       ids.add(s.id);
     }
     this.topoWaves(def);
+    this.validateReferences(def);
+  }
+
+  /**
+   * 静态校验 steps.<id> 引用（fail-fast，在 POST /api/workflows 阶段拦截）：
+   * - inputMapping 值：`input` / 字面量 / `steps.<id>`（可带 `.output` 后缀，语义相同）；
+   * - condition：`true`/`false` 字面量，或 `steps.<id>.output` / `steps.<id>.state [==|!= '<StepState>']`；
+   * - onRolling / compensate：仅允许引用已存在的 step id（字面量回滚指令已废弃，
+   *   旧数据若仍携带会在此报错，促使迁移为独立补偿 step）。
+   * 未知引用在运行前即拒绝，避免静默取到 undefined 输入 / 条件误判。
+   */
+  private validateReferences(def: WorkflowDef): void {
+    const ids = new Set(def.steps.map((s) => s.id));
+    const stepStates = new Set(['pending', 'running', 'done', 'failed', 'compensated', 'skipped']);
+    for (const s of def.steps) {
+      for (const [key, src] of Object.entries(s.inputMapping ?? {})) {
+        if (src === 'input') continue;
+        const m = /^steps\.([A-Za-z0-9_-]+)(\.output)?$/.exec(src);
+        if (!m) {
+          throw new Error(
+            `step "${s.id}" inputMapping["${key}"] = "${src}" 无法解析：` +
+              `取值须为 "input"、steps.<id>(.output) 或字面量常量（非 steps. 前缀）`,
+          );
+        }
+        if (!ids.has(m[1]!)) throw new Error(`step "${s.id}" inputMapping["${key}"] 引用了未知 step "${m[1]}"`);
+      }
+      if (s.condition) {
+        const c = s.condition.trim();
+        if (c === 'true' || c === 'false') continue;
+        const out = /^steps\.([A-Za-z0-9_-]+)\.output$/.exec(c);
+        if (out) {
+          if (!ids.has(out[1]!)) throw new Error(`step "${s.id}" condition 引用了未知 step "${out[1]}"`);
+          continue;
+        }
+        const st = /^steps\.([A-Za-z0-9_-]+)\.state(\s*(==|!=)\s*['"]?(\w+)['"]?)?$/.exec(c);
+        if (st) {
+          if (!ids.has(st[1]!)) throw new Error(`step "${s.id}" condition 引用了未知 step "${st[1]}"`);
+          const expected = st[4] ?? 'done';
+          if (!stepStates.has(expected)) {
+            throw new Error(`step "${s.id}" condition 使用了未知 step 状态 "${expected}"（合法值：${[...stepStates].join(' / ')}）`);
+          }
+          continue;
+        }
+        throw new Error(
+          `step "${s.id}" condition "${c}" 无法解析：支持 "true"/"false"、steps.<id>.output、steps.<id>.state [==|!= '<状态>']`,
+        );
+      }
+      for (const c of s.onRolling ?? []) {
+        // 允许两种形态：已定义的补偿 step id，或字面量回滚指令（复用本 step 的 agent 执行）。
+        if (typeof c !== 'string' || c.trim() === '') {
+          throw new Error(`step "${s.id}" onRolling 必须是非空字符串（step id 或回滚指令）`);
+        }
+      }
+      if (s.compensate !== undefined && (typeof s.compensate !== 'string' || s.compensate.trim() === '')) {
+        throw new Error(`step "${s.id}" compensate 必须是非空字符串（已废弃：建议迁移到 onRolling）`);
+      }
+    }
   }
 
   /** agentRef 解析为 AgentCard（字符串 → 注册表查询；内联对象 → 直接用）。 */
@@ -114,23 +171,54 @@ export class DagEngine {
   }
 
   /**
-   * 拓扑分层：返回若干「波次」，每波次内的 step 互相无依赖、可并行。
-   * 遇环或缺依赖（dependsOn 指向不存在的 step）抛错（fail-fast，避免静默死锁）。
+   * 输出消费依赖：显式 dependsOn ∪ inputMapping 中对 steps.<id> 的引用。
+   * 这些 step 需要上游的 output 落定；上游被 skip 时本 step 必须级联跳过（否则会拿到 undefined 输入）。
    */
-  private topoWaves(def: WorkflowDef): string[][] {
+  private outputDeps(step: StepDef): string[] {
+    const set = new Set(step.dependsOn ?? []);
+    for (const src of Object.values(step.inputMapping ?? {})) {
+      const m = /^steps\.([A-Za-z0-9_-]+)/.exec(src);
+      if (m) set.add(m[1]!);
+    }
+    return [...set];
+  }
+
+  /**
+   * 有效拓扑依赖 = 输出消费依赖 ∪ condition 对 steps.<id>.state/output 的引用。
+   * 全部参与拓扑分层，消除「引用了 steps.<id> 但未声明 dependsOn」导致同波次并行的竞态
+   * （旧行为：引用落到未落定的上游 → 条件/映射取到 undefined → 静默误判）。
+   */
+  private effectiveDeps(def: WorkflowDef, step: StepDef): string[] {
     const byId = new Map(def.steps.map((s) => [s.id, s]));
-    for (const s of def.steps) {
-      for (const d of s.dependsOn ?? []) {
-        if (!byId.has(d)) throw new Error(`step "${s.id}" depends on unknown step "${d}"`);
+    const set = new Set(this.outputDeps(step));
+    if (step.condition) {
+      const m = /^steps\.([A-Za-z0-9_-]+)\.(?:output|state)/.exec(step.condition.trim());
+      if (m) set.add(m[1]!);
+    }
+    for (const d of set) {
+      if (!byId.has(d)) {
+        throw new Error(`step "${step.id}" references unknown step "${d}" (dependsOn/inputMapping/condition)`);
       }
     }
+    return [...set];
+  }
+
+  /**
+   * 拓扑分层：返回若干「波次」，每波次内的 step 互相无依赖、可并行。
+   * 依赖 = 显式 dependsOn + 隐式引用（inputMapping / condition），见 effectiveDeps()。
+   * 遇环或缺依赖抛错（fail-fast，避免静默死锁）。
+   */
+  private topoWaves(def: WorkflowDef): string[][] {
+    const depsOf = new Map<string, string[]>();
+    for (const s of def.steps) depsOf.set(s.id, this.effectiveDeps(def, s));
+
     const remaining = new Set(def.steps.map((s) => s.id));
     const done = new Set<string>();
     const waves: string[][] = [];
     while (remaining.size > 0) {
       const wave: string[] = [];
       for (const id of remaining) {
-        const deps = byId.get(id)!.dependsOn ?? [];
+        const deps = depsOf.get(id) ?? [];
         if (deps.every((d) => done.has(d))) wave.push(id);
       }
       if (wave.length === 0) {
@@ -183,9 +271,21 @@ export class DagEngine {
           wave.map(async (id) => {
             const step = def.steps.find((s) => s.id === id)!;
 
-            // P2 条件分支：检查前置条件
+            // P2 条件分支：级联跳过 —— 若本 step 的「输出消费依赖」（dependsOn / inputMapping
+            // 引用）中有被跳过的上游，则自动跳过，避免等待一个永远不会产出的 output 而死锁。
+            // 注意：仅 condition 里引用 steps.<id>.state 不构成级联跳过的理由
+            // （state == 'skipped' 的 fallback 分支正是要在上游被跳过时执行）。
+            const depSkipped = this.outputDeps(step).some((d) => skipped.has(d));
+            if (depSkipped) {
+              skipped.add(id);
+              run.steps[id] = { id, state: 'skipped' };
+              await this.store.save(run);
+              this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id });
+              this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id });
+              return;
+            }
             if (step.condition) {
-              const conditionMet = await this.evaluateCondition(step.condition, initialInput, outputs);
+              const conditionMet = await this.evaluateCondition(step.condition, initialInput, outputs, run.steps);
               if (!conditionMet) {
                 skipped.add(id);
                 run.steps[id] = { id, state: 'skipped' };
@@ -197,14 +297,16 @@ export class DagEngine {
             }
 
             const input = this.resolveInput(step, initialInput, outputs);
-            // P1-④：优先处理 teamRef（团队协作），agentRef 作为 fallback
+            // P1-④：teamRef 声明后必须可解析，否则 fail-fast（旧行为静默回落 agentRef，掩盖配置错误）
             const team = await this.resolveTeam(step.teamRef);
-            let card: AgentCard;
+            if (step.teamRef && !team) {
+              throw new Error(
+                `workflow step "${id}": unknown teamRef "${step.teamRef}"（teamRef 与 agentRef 二选一，teamRef 解析失败不再回落 agentRef）`,
+              );
+            }
+            const card = await this.resolveCard(step.agentRef);
             if (team) {
-              card = await this.resolveCard(step.agentRef);
               this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id, teamId: team.id });
-            } else {
-              card = await this.resolveCard(step.agentRef);
             }
             const sr: StepRun = { id, state: 'running', agentId: card.id, input, startedAt: Date.now(), teamId: team?.id };
             run.steps[id] = sr;
@@ -258,13 +360,18 @@ export class DagEngine {
    * 求值条件表达式（P2）。
    * 支持的语法：
    * - `steps.<id>.output` → 引用上游 step 的输出（truthy 则通过）
-   * - `steps.<id>.state`  → 引用上游 step 的状态（'done' 则通过）
+   * - `steps.<id>.state`  → 裸写，等价于 `steps.<id>.state == 'done'`
+   * - `steps.<id>.state == 'done'` / `steps.<id>.state != 'failed'` / `... != 'skipped'` → 显式状态比较
    * - `true` / `false`    → 字面量
+   *
+   * 状态取值来源为真实的 `run.steps`（StepRun.state），而非 outputs 近似：
+   * 被跳过（skipped）的 step 没有 output，旧实现会让条件恒为 falsy，导致依赖链静默死锁。
    */
   private async evaluateCondition(
     condition: string,
     initialInput: unknown,
-    outputs: Record<string, unknown>
+    outputs: Record<string, unknown>,
+    runSteps: Record<string, StepRun>
   ): Promise<boolean> {
     const cond = condition.trim();
 
@@ -272,27 +379,29 @@ export class DagEngine {
     if (cond === 'true') return true;
     if (cond === 'false') return false;
 
-    // 引用上游输出：steps.<id>.output
-    const outputMatch = /^steps\.(\w+)\.output$/.exec(cond);
+    // 引用上游输出：steps.<id>.output（id 允许连字符，与 stepId 命名一致）
+    const outputMatch = /^steps\.([A-Za-z0-9_-]+)\.output$/.exec(cond);
     if (outputMatch) {
       const stepId = outputMatch[1]!;
       const val = outputs[stepId];
       return !!val;
     }
 
-    // 引用上游状态：steps.<id>.state
-    const stateMatch = /^steps\.(\w+)\.state$/.exec(cond);
+    // 引用上游状态：steps.<id>.state [==|!= '<state>']（id 允许连字符）
+    const stateMatch = /^steps\.([A-Za-z0-9_-]+)\.state(\s*(==|!=)\s*['"]?(\w+)['"]?)?$/.exec(cond);
     if (stateMatch) {
       const stepId = stateMatch[1]!;
-      // 需要从 run.steps 获取，这里用 outputs 近似（done 时有 output）
-      return !!outputs[stepId];
+      const op = stateMatch[3] ?? '==';
+      const expected = stateMatch[4] ?? 'done';
+      const actual = runSteps[stepId]?.state ?? 'pending';
+      return op === '==' ? actual === expected : actual !== expected;
     }
 
     // 默认：通过（兼容旧格式）
     return true;
   }
 
-  /** 失败补偿：已完成 step 逆序执行 compensate（解决「副作用无回滚」）。 */
+  /** 失败补偿：已完成 step 逆序执行 onRolling（或旧 compensate）所显式声明的补偿 step。 */
   private async compensate(
     def: WorkflowDef,
     run: WorkflowRun,
@@ -300,13 +409,18 @@ export class DagEngine {
     signal?: AbortSignal
   ): Promise<void> {
     const completed = def.steps.filter((s) => run.steps[s.id]?.state === 'done');
+    const stepById = new Map(def.steps.map((s) => [s.id, s]));
     // 逆序：后完成的先补偿（与提交顺序相反，保证回滚一致性）。
     for (const step of [...completed].reverse()) {
-      const comp = step.compensate;
-      if (!comp) continue;
-      const compStep = def.steps.find((s) => s.id === comp);
+      // onRolling 优先，兼容旧 compensate 单值字段。
+      const declared = step.onRolling ?? (step.compensate ? [step.compensate] : []);
+      if (declared.length === 0) continue;
+      // 区分：声明的是「已定义的补偿 step id」还是「字面量回滚指令」。
+      const compStepIds = declared.filter((c) => stepById.has(c));
+      const literalCmds = declared.filter((c) => !stepById.has(c));
+      // 多个补偿 step 之间若存在 dependsOn，按拓扑序执行（先被依赖者），避免乱序回滚。
+      const ordered = this.sortCompensations(compStepIds, def);
 
-      this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: compStep ? compStep.id : step.id });
       const ctx: RunContext = {
         workflowId: def.id,
         tenantId: def.tenantId,
@@ -315,32 +429,57 @@ export class DagEngine {
         signal,
         compensate: true,
       };
-      try {
-        if (compStep) {
-          // 补偿动作是另一个 step：用其 agent 执行，输入取该 step 已完成的 output。
-          const card = await this.resolveCard(compStep.agentRef);
-          const result = await this.executor(compStep, run.steps[compStep.id]?.output, ctx);
-          run.steps[compStep.id] = {
-            id: compStep.id,
-            ...run.steps[compStep.id],
-            state: 'compensated',
-            output: result,
-            finishedAt: Date.now(),
-          };
-        } else {
-          // 补偿指令为字面量：复用同一 agent（executor 据 compensate 标志回滚）。
-          const card = await this.resolveCard(step.agentRef);
-          const result = await this.executor(step, comp, ctx);
-          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result };
+
+      for (const compId of ordered) {
+        const compStep = stepById.get(compId)!;
+        this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: compId });
+        try {
+          // 补偿 step：用其自身 agent 执行，输入取该 step 已完成的 output（无则 undefined）。
+          await this.resolveCard(compStep.agentRef);
+          const result = await this.executor(compStep, run.steps[compId]?.output, ctx);
+          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, finishedAt: Date.now() };
+        } catch (e2: any) {
+          // 补偿失败：记录但不阻断其余补偿（避免雪崩）。
+          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2) };
         }
-      } catch (e2: any) {
-        // 补偿失败：记录但不阻断其余补偿（避免雪崩）。
-        const sid = compStep ? compStep.id : step.id;
-        run.steps[sid] = { id: sid, ...run.steps[sid], state: 'compensated', error: e2?.message ?? String(e2) };
+        await this.store.save(run);
+        this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compId });
       }
-      await this.store.save(run);
-      this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compStep ? compStep.id : step.id });
+
+      for (const cmd of literalCmds) {
+        // 字面量回滚指令：复用触发 step 的 agent（executor 据 ctx.compensate 走回滚分支）。
+        this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: step.id });
+        try {
+          await this.resolveCard(step.agentRef); // 校验 agentRef 可解析（不可解析则抛出，落入 catch 记录）
+          const result = await this.executor(step, cmd, ctx);
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result };
+        } catch (e2: any) {
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2) };
+        }
+        await this.store.save(run);
+        this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: step.id });
+      }
     }
+  }
+
+  /** 对补偿 step 按 dependsOn 约束逆序排序（避免补偿间死锁）。 */
+  private sortCompensations(ids: string[], def: WorkflowDef): string[] {
+    const byId = new Map(def.steps.map((s) => [s.id, s]));
+    const visited = new Set<string>();
+    const result: string[] = [];
+
+    const visit = (id: string) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      const deps = byId.get(id)?.dependsOn ?? [];
+      for (const d of deps) {
+        if (ids.includes(d)) visit(d);
+      }
+      result.push(id);
+    };
+
+    for (const id of ids) visit(id);
+    return result;
   }
 
   /** 从检查点续跑：仅执行未完成（非 done）的 step，已完成的输出直接复用。 */
@@ -358,12 +497,15 @@ export class DagEngine {
     await this.store.save(run);
     this.emit({ type: 'wf:start', workflowId });
 
+    let stepFailed = false;
     for (const wave of this.topoWaves(run.def)) {
       if (signal?.aborted) break;
       await Promise.all(
         wave.map(async (id) => {
           const sr = run.steps[id];
-          if (sr?.state === 'done') return; // 已完成，跳过
+          // 终态 step 不重跑：done（已完成）、skipped（条件不满足，保持跳过）、
+          // compensated（补偿动作已执行，回滚不应重复）。
+          if (sr?.state === 'done' || sr?.state === 'skipped' || sr?.state === 'compensated') return;
           const step = run.def.steps.find((s) => s.id === id)!;
           const input = this.resolveInput(step, undefined, outputs);
           const card = await this.resolveCard(step.agentRef);
@@ -386,10 +528,28 @@ export class DagEngine {
           } catch (e: any) {
             run.steps[id] = { ...run.steps[id], state: 'failed', error: e?.message ?? String(e) };
             this.emit({ type: 'wf:step:failed', workflowId, stepId: id, error: e?.message ?? String(e) });
+            stepFailed = true;
           }
           await this.store.save(run);
         })
       );
+      if (stepFailed) break;
+    }
+
+    if (signal?.aborted && !stepFailed) {
+      run.state = 'failed';
+      run.error = 'workflow aborted';
+    }
+
+    if (stepFailed) {
+      // 与 run() 一致：任一 step 失败 → 整个 run 标记 failed 并执行补偿（逆序 onRolling / 旧 compensate）。
+      run.state = 'failed';
+      run.error = run.error ?? 'step failed during resume';
+      run.finishedAt = Date.now();
+      await this.store.save(run);
+      await this.compensate(run.def, run, outputs, signal);
+      this.emit({ type: 'wf:failed', workflowId, run });
+      return run;
     }
     run.state = 'done';
     run.finishedAt = Date.now();
