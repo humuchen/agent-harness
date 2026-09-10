@@ -785,7 +785,7 @@ export const sharedStyles = css`
   }
   /* 运行队列 / 记忆会话 等列表：自带滚动区，不再静默截断 */
   .panel-scroll {
-    max-height: 260px;
+    max-height: 150px;
     overflow: auto;
     border-radius: var(--ah-radius-md);
     scrollbar-width: thin;

@@ -232,51 +232,21 @@ export class AhProviderKeySettings extends LitElement {
     .field input:focus {
       border-color: var(--ah-accent);
     }
-    /* API Key 行：输入框 + 右侧小眼睛切换按钮（密码/明文）。 */
-    .key-row {
-      position: relative;
-      display: flex;
-      align-items: center;
-    }
-    .key-row .key-input {
-      flex: 1 1 auto;
-      min-width: 0;
+    /* API Key 输入框：纯密码框（明文永不出网、不可回显，故无小眼睛切换）。 */
+    .field .key-input {
       background: var(--ah-surface-2, #1c1c1c);
       color: var(--ah-text);
       border: 1px solid var(--ah-border);
       border-radius: 10px;
-      padding: 9px 36px 9px 11px; /* 右侧留白给小眼睛 */
+      padding: 9px 11px;
       outline: none;
       font: inherit;
       font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
     }
-    .key-row .key-input:focus {
+    .field .key-input:focus {
       border-color: var(--ah-accent);
-    }
-    .key-eye {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-      cursor: pointer;
-      padding: 2px;
-      position: absolute;
-      right: 8px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .key-eye:hover {
-      color: var(--ah-text);
-    }
-    .key-eye:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-    .key-eye svg {
-      width: 15px;
-      height: 15px;
-      display: block;
     }
     .btn {
       min-width: 84px;
@@ -345,12 +315,6 @@ export class AhProviderKeySettings extends LitElement {
   @state() private draftExtraKeys = '';
   @state() private saving = false;
   @state() private verifying = false;
-  /** 编辑态已回显的明文主 Key（服务端 reveal 成功）：true 时小眼睛可展开原始值。 */
-  @state() private apiKeyRevealed = false;
-  /** 小眼睛：展开查看已保存主 Key 明文（默认收起，保持密码样式）。 */
-  @state() private keyVisible = false;
-  /** reveal 请求进行中（避免重复点击小眼睛触发多次拉取）。 */
-  @state() private keyRevealing = false;
   /** P2.2 per-owner 用量快照。 */
   @state() private usage: UsageSnapshot | null = null;
   /** P2.1 OpenRouter OAuth 是否可用（取决于后端是否配置了 client id）。 */
@@ -515,102 +479,69 @@ export class AhProviderKeySettings extends LitElement {
     this.draftApiKey = '';
     this.draftExtraKeys = '';
     this.draftBaseUrl = this.current?.baseUrl ?? '';
-    this.apiKeyRevealed = false;
-    this.keyVisible = false;
   }
 
-  /** 拉取本账号某 provider 已保存的明文主 Key（编辑回显 / 小眼睛展开用）。 */
-  private async revealApiKey(): Promise<string[]> {
-    this.keyRevealing = true;
-    try {
-      const res = await authedFetch(
-        `/api/account/provider-keys/${encodeURIComponent(
-          this.provider
-        )}/reveal`
-      );
-      if (!res.ok) return [];
-      const data = (await res.json()) as {
-        ok?: boolean;
-        keys?: string[];
-        error?: string;
-      };
-      if (!data.ok) {
-        if (data.error) {
-          notify.warning(data.error, {
-            title: 'API Key',
-            key: 'pk-reveal'
-          });
-        }
-        return [];
-      }
-      return data.keys ?? [];
-    } catch {
-      // 拉取失败不打断编辑：保留当前输入，用户可手动重填。
-      return [];
-    } finally {
-      this.keyRevealing = false;
-    }
-  }
-
-  /** 小眼睛切换：已回显直接切明文/密码态；未回显先拉取旧主 Key 再展开。 */
-  private toggleKeyVisible() {
-    if (this.apiKeyRevealed) {
-      this.keyVisible = !this.keyVisible;
-      return;
-    }
-    const target = this.provider;
-    void (async () => {
-      const keys = await this.revealApiKey();
-      // 拉取期间用户可能已切 provider：回填前校验仍一致。
-      if (this.provider !== target) return;
-      if (!keys.length) {
-        this.keyVisible = true;
-        return;
-      }
-      this.draftApiKey = keys[0] ?? '';
-      this.draftExtraKeys = keys.slice(1).join('\n');
-      this.apiKeyRevealed = true;
-      this.keyVisible = true;
-    })();
-  }
-
-  /** 保存（PUT）：明文 Key 经 HTTPS 传给服务端加密落库。 */
+  /** 保存（PUT）：明文 Key 经 HTTPS 传给服务端加密落库。
+   *  编辑既有 Key 时留空 = 保留已保存的 Key（明文永不出网，无法回显）；
+   *  此时可仅更新接口地址。粘贴新值则全量替换（含附加 Key）。 */
   private async save() {
-    const apiKey = this.draftApiKey.trim();
-    if (!apiKey) {
+    const rawApiKey = this.draftApiKey.trim();
+    // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
+    const extras = this.draftExtraKeys
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const baseUrl = this.draftBaseUrl.trim();
+    const existing =
+      !!this.current?.keyCount && (this.current?.keyCount ?? 0) > 0;
+
+    // 归一最终提交的 keys：
+    //  - 主 Key 非空 → [主 Key, ...附加 Key]（全量替换）；
+    //  - 主 Key 空但填了附加 Key → 以第一个附加 Key 升为主 Key（全量替换）；
+    //  - 全空且有既有 Key → 保留模式（不传 keys，仅按需更新 baseUrl）。
+    const allKeys = rawApiKey
+      ? [rawApiKey, ...extras]
+      : extras.length
+        ? extras
+        : [];
+    const preserved = allKeys.length === 0;
+    if (preserved && !existing) {
       notify.warning('请先粘贴你的 API Key', {
         title: 'API Key',
         key: 'pk-empty'
       });
       return;
     }
-    const baseUrl = this.draftBaseUrl.trim();
-    if (!baseUrl && this.provider !== 'openrouter') {
+    // 非 openrouter provider 的接口地址必填：
+    //  - 首次配置（无既有 Key）必须填写；
+    //  - 保留模式（全空）若清掉已保存地址会令该 provider 失去端点，同样须填写。
+    if (
+      !baseUrl &&
+      this.provider !== 'openrouter' &&
+      (!existing || preserved)
+    ) {
       notify.warning('请填写接口地址', {
         title: 'API URL',
         key: 'pk-baseurl-empty'
       });
       return;
     }
-    // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
-    const extras = this.draftExtraKeys
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const keys = [apiKey, ...extras];
+
     this.saving = true;
     try {
+      const body: Record<string, unknown> = preserved
+        ? { ...(baseUrl ? { baseUrl } : {}) }
+        : preserved === false && allKeys.length > 1
+          ? { keys: allKeys, ...(baseUrl ? { baseUrl } : {}) }
+          : { apiKey: allKeys[0] ?? '', ...(baseUrl ? { baseUrl } : {}) };
+      // 保留模式下 baseUrl 为空且 provider 非 openrouter：服务端只更新已保存行
+      //（base_url 传 undefined 时后端不动该行），无需带 baseUrl。
       const res = await authedFetch(
         `/api/account/provider-keys/${this.provider}`,
         {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          // 多 Key 时传 keys 数组；单 Key 时仍走旧 apiKey 字段（向后兼容）。
-          body: JSON.stringify(
-            extras.length
-              ? { keys, ...(baseUrl ? { baseUrl } : {}) }
-              : { apiKey, ...(baseUrl ? { baseUrl } : {}) }
-          )
+          body: JSON.stringify(body)
         }
       );
       if (!res.ok) {
@@ -619,13 +550,17 @@ export class AhProviderKeySettings extends LitElement {
         } | null;
         throw new Error(err?.error || `HTTP ${res.status}`);
       }
-      notify.success(
-        extras.length
-          ? `「${this.providerLabel(this.provider)}」已保存 ${
-              keys.length
-            } 把 Key`
-          : `「${this.providerLabel(this.provider)}」API Key 已保存`
-      );
+      if (preserved) {
+        notify.success(
+          `「${this.providerLabel(this.provider)}」API Key 已保留`
+        );
+      } else {
+        notify.success(
+          allKeys.length > 1
+            ? `「${this.providerLabel(this.provider)}」已保存 ${allKeys.length} 把 Key`
+            : `「${this.providerLabel(this.provider)}」API Key 已保存`
+        );
+      }
       this.editing = false;
       this.draftApiKey = '';
       this.draftExtraKeys = '';
@@ -637,7 +572,7 @@ export class AhProviderKeySettings extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-      // 保存后自动测试连通性，即时反馈状态。
+      // 保存后自动测试连通性，即时反馈状态（保留模式同样重验，baseUrl 变更会重置状态）。
       void this.verify();
     } catch (e) {
       notifyError(e, {
@@ -801,80 +736,35 @@ export class AhProviderKeySettings extends LitElement {
     this.draftApiKey = '';
     this.draftExtraKeys = '';
     this.draftBaseUrl = this.current?.baseUrl ?? '';
-    this.apiKeyRevealed = false;
-    this.keyVisible = false;
-    // 编辑既有 Key 时回显旧值（服务端 reveal 解密），小眼睛可展开查看原文。
-    if (this.current?.keyCount && this.current.keyCount > 0) {
-      const target = this.provider;
-      void (async () => {
-        const keys = await this.revealApiKey();
-        if (this.provider !== target || !this.editing) return;
-        if (!keys.length) return;
-        this.draftApiKey = keys[0] ?? '';
-        this.draftExtraKeys = keys.slice(1).join('\n');
-        this.apiKeyRevealed = true;
-      })();
-    }
   }
 
   private renderForm(): TemplateResult {
+    const existing = !!this.current?.keyCount && (this.current?.keyCount ?? 0) > 0;
     return html`
       <div class="field">
-        <label>API Key（明文仅经 HTTPS 提交，服务端加密落库）</label>
-        <div class="key-row">
-          <input
-            class="key-input"
-            .type=${this.keyVisible ? 'text' : 'password'}
-            placeholder="sk-or-..."
-            .value=${this.draftApiKey}
-            @input=${(e: Event) => {
-              this.draftApiKey = (e.target as HTMLInputElement).value;
-              // 用户手动改写过 Key：旧值不再代表当前输入，收起明文展示。
-              this.keyVisible = false;
-            }}
-          />
-          ${this.current?.keyCount && this.current.keyCount > 0
-            ? html`<button
-                type="button"
-                class="key-eye"
-                title=${this.keyVisible
-                  ? '隐藏 API Key'
-                  : '查看已保存的 API Key'}
-                ?disabled=${this.keyRevealing}
-                @click=${() => this.toggleKeyVisible()}
-              >
-                ${this.keyVisible
-                  ? html`<svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
-                      />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>`
-                  : html`<svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4 4"
-                      />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </svg>`}
-              </button>`
-            : nothing}
-        </div>
+        <label
+          >API Key（明文仅经 HTTPS 提交，服务端加密落库${
+            existing ? '；留空保留已保存 Key' : ''
+          }）</label
+        >
+        <input
+          class="key-input"
+          type="password"
+          placeholder=${existing
+            ? '留空保留已保存 Key，或粘贴新 Key 全量替换'
+            : 'sk-or-...'}
+          .value=${this.draftApiKey}
+          @input=${(e: Event) => {
+            this.draftApiKey = (e.target as HTMLInputElement).value;
+          }}
+        />
+        ${existing
+          ? html`<span class="hint">
+              已保存：${this.current?.keyHint}。出于安全，明文 Key
+              不回显；如需更换请粘贴新 Key（会全量替换该服务商的全部
+              Key，含附加 Key）。
+            </span>`
+          : nothing}
       </div>
       <div class="field">
         <label
