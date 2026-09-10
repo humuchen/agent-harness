@@ -1775,6 +1775,28 @@ export const chatStyles = [
       border: 1px dashed color-mix(in srgb, #2dd4bf 30%, var(--ah-border));
       margin: 5px;
     }
+    /* token cache 指标分组布局：与成本节点保持一致的 flex 布局，
+       右对齐 + 换行，保证长模型名不挤烂相邻分组。 */
+    .tnode.kind-tokencache .tmetrics {
+      margin-left: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      align-items: flex-end;
+    }
+    .tnode.kind-tokencache .tgrp {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      justify-content: flex-end;
+    }
+    /* 长文本 chip：单行省略，hover 显示完整内容。 */
+    .tnode.kind-tokencache .tchip {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .tnode.kind-tokencache > .tcache-body + .tchildren {
       padding-left: 14px;
     }

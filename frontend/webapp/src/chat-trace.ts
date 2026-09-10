@@ -406,6 +406,7 @@ export function renderTraceNode(
                       ${items.map(
                         ([k, v]) =>
                           html`<span class="tchip"
+                            title=${`${escapeHtml(k)} ${escapeHtml(String(v))}`}
                             ><b>${escapeHtml(k)}</b> ${escapeHtml(
                               String(v)
                             )}</span
