@@ -41,14 +41,14 @@ export interface RunContext {
 
 /** 引擎对外发出的工作流事件（供 SSE / 可观测消费）。 */
 export type WorkflowEvent =
-  | { type: 'wf:start'; workflowId: string }
+  | { type: 'wf:start'; workflowId: string; runId: string }
   | { type: 'wf:step:start'; workflowId: string; stepId: string; agentId?: string; teamId?: string }
   | { type: 'wf:step:done'; workflowId: string; stepId: string; output?: unknown }
   | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
-  | { type: 'wf:done'; workflowId: string; run: WorkflowRun }
-  | { type: 'wf:failed'; workflowId: string; run: WorkflowRun };
+  | { type: 'wf:done'; workflowId: string; runId?: string; run: WorkflowRun }
+  | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun };
 
 export interface DagEngineOptions {
   /** 注册表：解析 agentRef（字符串 id）。缺省用共享单例。 */
@@ -64,6 +64,8 @@ export interface DagEngineOptions {
 }
 
 export class DagEngine {
+  /** 进程内单调自增序号（用于 genRunId 生成同进程内不重复的 runId）。 */
+  private static _seq = 0;
   private readonly registry: AgentRegistry;
   private readonly teamManager: TeamManager | null;
   private readonly store: WorkflowStore;
@@ -83,6 +85,15 @@ export class DagEngine {
 
   private emit(e: WorkflowEvent): void {
     this.onEvent?.(e);
+  }
+
+  /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */
+  private genRunId(): string {
+    DagEngine._seq = (DagEngine._seq ?? 0) + 1;
+    const rand = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+    return `${Date.now().toString(36)}-${DagEngine._seq}-${rand}`;
   }
 
   /**
@@ -250,17 +261,28 @@ export class DagEngine {
    * 完整运行一个工作流（DAG 并行 + 失败补偿 + 条件分支）。
    */
   async run(def: WorkflowDef, initialInput?: unknown, signal?: AbortSignal): Promise<WorkflowRun> {
+    const runId = this.genRunId();
     const run: WorkflowRun = {
       def,
       state: 'running',
+      runId,
       steps: Object.fromEntries(def.steps.map((s) => [s.id, { id: s.id, state: 'pending' } as StepRun])),
       startedAt: Date.now(),
     };
     // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 在 try 之外抛错，
     // 使 run() 以 reject 形式暴露（而非吞成 state=failed），符合「校验错误即失败」。
     this.validateWorkflow(def);
+    // 并发护栏：store 按 def.id 存单检查点。若已存在「另一 runId 且仍在 running」的检查点，
+    // 说明同 def 有并发运行在进行 —— 拒绝启动（fail-fast），避免互相覆盖检查点导致续跑错乱。
+    const existing = await this.store.get(def.id);
+    if (existing && existing.state === 'running' && existing.runId && existing.runId !== runId) {
+      throw new Error(
+        `workflow "${def.id}" already has a running execution (runId=${existing.runId}); ` +
+          `concurrent run rejected to avoid checkpoint overwrite — resume it or wait for it to finish`,
+      );
+    }
     await this.store.save(run);
-    this.emit({ type: 'wf:start', workflowId: def.id });
+    this.emit({ type: 'wf:start', workflowId: def.id, runId });
 
     const outputs: Record<string, unknown> = {};
     const skipped = new Set<string>(); // 被条件跳过的 step id
@@ -432,15 +454,20 @@ export class DagEngine {
 
       for (const compId of ordered) {
         const compStep = stepById.get(compId)!;
+        // 已成功补偿过（前次 run / resume 残留）的 step 不重复回滚（幂等护栏）。
+        if (run.steps[compId]?.state === 'compensated') continue;
         this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: compId });
         try {
-          // 补偿 step：用其自身 agent 执行，输入取该 step 已完成的 output（无则 undefined）。
+          // 补偿 step：用其自身 agent 执行；补偿 step 通常未执行过（无自身 output），
+          // 因此输入取「触发 step 的输出」（副作用现场），同时落盘 compensateInput
+          // 供 resume 重试失败补偿时复用（P2 加固 #8）。
           await this.resolveCard(compStep.agentRef);
-          const result = await this.executor(compStep, run.steps[compId]?.output, ctx);
-          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, finishedAt: Date.now() };
+          const compInput = run.steps[step.id]?.output;
+          const result = await this.executor(compStep, compInput, ctx);
+          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, compensateInput: compInput, finishedAt: Date.now() };
         } catch (e2: any) {
-          // 补偿失败：记录但不阻断其余补偿（避免雪崩）。
-          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2) };
+          // 补偿失败：记录但不阻断其余补偿（避免雪崩）；保留 compensateInput 供重试。
+          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: run.steps[step.id]?.output };
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compId });
@@ -448,13 +475,14 @@ export class DagEngine {
 
       for (const cmd of literalCmds) {
         // 字面量回滚指令：复用触发 step 的 agent（executor 据 ctx.compensate 走回滚分支）。
+        if (run.steps[step.id]?.state === 'compensated') break; // 上一轮已补偿过（幂等护栏）
         this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: step.id });
         try {
           await this.resolveCard(step.agentRef); // 校验 agentRef 可解析（不可解析则抛出，落入 catch 记录）
           const result = await this.executor(step, cmd, ctx);
-          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result };
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result, compensateInput: cmd };
         } catch (e2: any) {
-          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2) };
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: cmd };
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: step.id });
@@ -487,15 +515,27 @@ export class DagEngine {
     const run = await this.store.get(workflowId);
     if (!run) throw new Error(`workflow not found: ${workflowId}`);
     if (run.state === 'done') return run;
+    // 并发护栏：检查点属于另一 runId 且仍在 running（进程可能尚未结束）时拒绝续跑，
+    // 避免两个执行体对同一 def.id 的检查点互相覆盖。
+    const live = await this.store.get(workflowId);
+    if (live && live.state === 'running' && live.runId && live.runId !== run.runId) {
+      throw new Error(
+        `workflow "${workflowId}" checkpoint belongs to a different running execution (runId=${live.runId}); ` +
+          `concurrent resume rejected to avoid checkpoint overwrite`,
+      );
+    }
 
     const outputs: Record<string, unknown> = {};
     for (const s of run.def.steps) {
       if (run.steps[s.id]?.state === 'done') outputs[s.id] = run.steps[s.id]?.output;
     }
 
+    // 续跑保持同一 runId（这是原运行的恢复，不是新运行）；旧快照无 runId 时补齐。
+    const runId = run.runId ?? this.genRunId();
+    run.runId = runId;
     run.state = 'running';
     await this.store.save(run);
-    this.emit({ type: 'wf:start', workflowId });
+    this.emit({ type: 'wf:start', workflowId, runId });
 
     let stepFailed = false;
     for (const wave of this.topoWaves(run.def)) {

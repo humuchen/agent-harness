@@ -133,6 +133,71 @@ test('成环检测：非法 dependsOn 直接抛错（fail-fast）', async () => 
   await assert.rejects(() => engine.run(def, 'x'), /cycle|depends on/);
 });
 
+test('并发护栏：同 def.id 存在另一 runId 的 running 检查点时，新 run 被拒绝（不互相覆盖）', async () => {
+  const store = new VolatileWorkflowStore();
+  const def = { id: 'wf-concurrent', steps: [{ id: 's', agentRef: DEFAULT_AGENT_ID }] };
+  // 模拟：另一个执行体（runId=A）正在跑，检查点落盘为 running。
+  await store.save({ def, state: 'running', runId: 'A', steps: { s: { id: 's', state: 'running' } } });
+  const engine = new DagEngine({ store, executor: makeExecutor() });
+  await assert.rejects(() => engine.run(def, 'go'), /already has a running execution/);
+  // 原执行体正常续跑不受影响。
+  const resumed = await engine.resume('wf-concurrent');
+  assert.strictEqual(resumed.runId, 'A', 'resume 应沿用原 runId');
+  assert.strictEqual(resumed.state, 'done');
+});
+
+test('崩溃残留：同 def.id 有 running 检查点时新 run 仍被拒绝（合法恢复路径只有 resume）', async () => {
+  const store = new VolatileWorkflowStore();
+  const def = { id: 'wf-retry', steps: [{ id: 's', agentRef: DEFAULT_AGENT_ID }] };
+  // 先正常跑一次拿到 runId，再模拟「崩溃残留」：检查点停在 running。
+  const myRunId = await new DagEngine({ store, executor: makeExecutor() }).run(def, 'first')
+    .then((r) => r.runId);
+  assert.ok(myRunId, 'run 快照应携带 runId');
+  await store.save({ def, state: 'running', runId: myRunId, steps: { s: { id: 's', state: 'running' } } });
+  const engine = new DagEngine({ store, executor: makeExecutor() });
+  // 新 run 生成新 runId → 与残留的 running 检查点冲突，必须拒绝（防检查点互踩）。
+  await assert.rejects(() => engine.run(def, 'go'), /already has a running execution/);
+  // resume 是合法恢复路径：沿用原 runId 继续。
+  const resumed = await engine.resume('wf-retry');
+  assert.strictEqual(resumed.runId, myRunId, 'resume 应沿用原 runId');
+  assert.strictEqual(resumed.state, 'done');
+});
+
+test('补偿上下文：compensateInput 落盘，resume 重试时补偿幂等不重复执行', async () => {
+  const store = new VolatileWorkflowStore();
+  const def = {
+    id: 'wf-comp-input',
+    steps: [
+      { id: 's1', agentRef: DEFAULT_AGENT_ID, onRolling: ['c1'] },
+      { id: 's2', agentRef: DEFAULT_AGENT_ID, dependsOn: ['s1'] },
+      { id: 'c1', agentRef: DEFAULT_AGENT_ID, dependsOn: ['s1'] },
+    ],
+  };
+  let compExecutions = 0;
+  let s2Attempts = 0;
+  const executor = async (step, input, ctx) => {
+    // 只统计「补偿语义」调用（ctx.compensate=true），排除 c1 作为普通 DAG step 的正常执行。
+    if (step.id === 'c1' && ctx?.compensate) compExecutions += 1;
+    // 瞬态失败：仅首次执行 s2 时抛错，resume 重试即成功（模拟网络抖动）。
+    if (step.id === 's2' && s2Attempts === 0) {
+      s2Attempts += 1;
+      throw new Error('transient s2 failure');
+    }
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store, executor });
+  const run = await engine.run(def, 'go');
+  assert.strictEqual(run.state, 'failed');
+  assert.strictEqual(run.steps.c1.state, 'compensated');
+  assert.deepStrictEqual(run.steps.c1.compensateInput, { step: 's1' }, '补偿输入应落盘');
+  const firstCount = compExecutions;
+  assert.strictEqual(firstCount, 1);
+  // resume：s2 重新执行（本次成功）→ 整个 run 完成；已 compensated 的 c1 不重复回滚。
+  const run2 = await engine.resume('wf-comp-input');
+  assert.strictEqual(run2.state, 'done');
+  assert.strictEqual(compExecutions, firstCount, '已 compensated 的 step 在 resume 时不重复补偿');
+});
+
 test('WorkflowStore: File 后端 save/get 原子落盘', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-store-'));
   try {

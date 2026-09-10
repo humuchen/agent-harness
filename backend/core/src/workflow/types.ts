@@ -93,6 +93,11 @@ export interface StepRun {
   input?: unknown;
   /** agent 的执行结果（用于下游 inputMapping 取值与补偿输入）。 */
   output?: unknown;
+  /**
+   * 补偿输入（P2 加固）：执行补偿动作时实际交给 executor 的输入。
+   * 落盘后 resume 重试失败补偿时可直接复用，避免补偿上下文丢失。
+   */
+  compensateInput?: unknown;
   error?: string;
   /** 实际选中的 agent id（agentRef 为字符串时解析结果）。 */
   agentId?: string;
@@ -106,6 +111,12 @@ export interface StepRun {
 export interface WorkflowRun {
   def: WorkflowDef;
   state: WorkflowState;
+  /**
+   * 本次运行的唯一 id（def.id 相同的多次并发运行靠它区分 / SSE 去重）。
+   * 由引擎在 run() 启动时生成；store 仍按 def.id 存「最新检查点」，
+   * 但事件与快照携带 runId，消费端可识别并丢弃非本次运行的推送。
+   */
+  runId?: string;
   /** stepId → 运行态。 */
   steps: Record<string, StepRun>;
   startedAt?: number;
