@@ -39,25 +39,36 @@ const TOOLS = [
       properties: {
         query: { type: 'string', description: '检索查询' },
         top_k: { type: 'number', description: '返回条数，默认 5' },
-        tags: { type: 'array', items: { type: 'string' }, description: '按标签过滤' },
-        expand: { type: 'boolean', description: 'Pre-retrieval：返回显著查询扩展词' },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '按标签过滤'
+        },
+        expand: {
+          type: 'boolean',
+          description: 'Pre-retrieval：返回显著查询扩展词'
+        }
       },
-      required: ['query'],
-    },
+      required: ['query']
+    }
   },
   {
     name: 'rag_ingest',
-    description: '向知识库入库一篇文档（自动分块 + 向量化）。返回写入的 chunk 数。',
+    description:
+      '向知识库入库一篇文档（自动分块 + 向量化）。返回写入的 chunk 数。',
     inputSchema: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: '文档唯一 ID' },
         title: { type: 'string', description: '文档标题' },
         text: { type: 'string', description: '文档正文' },
-        tags: { type: 'array', items: { type: 'string', description: '文档标签' } },
+        tags: {
+          type: 'array',
+          items: { type: 'string', description: '文档标签' }
+        }
       },
-      required: ['doc_id', 'text'],
-    },
+      required: ['doc_id', 'text']
+    }
   },
   {
     name: 'rag_generate',
@@ -69,23 +80,31 @@ const TOOLS = [
       properties: {
         query: { type: 'string', description: '用户问题' },
         top_k: { type: 'number', description: '检索返回条数，默认 5' },
-        tags: { type: 'array', items: { type: 'string' }, description: '按标签过滤' },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '按标签过滤'
+        },
         temperature: { type: 'number', description: '生成温度，默认 0.3' },
-        max_tokens: { type: 'number', description: '最大生成 tokens，默认 512' },
+        max_tokens: { type: 'number', description: '最大生成 tokens，默认 512' }
       },
-      required: ['query'],
-    },
-  },
+      required: ['query']
+    }
+  }
 ];
 
 export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
-  const store = opts.store ?? new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
-  const shard = (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
+  const store =
+    opts.store ??
+    new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
+  const shard =
+    (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
   if (process.env.RAG_DATA_FILE) store.load(process.env.RAG_DATA_FILE, shard);
   const provider = opts.provider ?? createEmbedder();
   const tenantId = opts.tenantId;
   const llm = opts.llm ?? createLLM();
-  const cacheEnabled = (process.env.RAG_CACHE || 'true').toLowerCase() !== 'false';
+  const cacheEnabled =
+    (process.env.RAG_CACHE || 'true').toLowerCase() !== 'false';
   const cache = new QueryCache();
 
   const send = (obj: unknown): void => {
@@ -112,8 +131,8 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
           result: {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
-            serverInfo: { name: 'agent-harness-rag', version: '0.1.0' },
-          },
+            serverInfo: { name: 'agent-harness-rag', version: '1.0.0' }
+          }
         });
       } else if (msg.method === 'tools/list') {
         send({ jsonrpc: '2.0', id: msg.id, result: { tools: TOOLS } });
@@ -126,22 +145,35 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             query: String(args.query ?? ''),
             top_k: args.top_k,
             tenant_id: tenantId,
-            expand: !!args.expand,
+            expand: !!args.expand
           };
           if (args.tags) req.filters = { tags: args.tags };
           const t0 = Date.now();
           const ck = cacheEnabled
-            ? cache.key(tenantId, req.query, req.top_k ?? 5, 0, JSON.stringify(req.filters ?? {}))
+            ? cache.key(
+                tenantId,
+                req.query,
+                req.top_k ?? 5,
+                0,
+                JSON.stringify(req.filters ?? {})
+              )
             : '';
           if (cacheEnabled) {
             const hit = cache.get(ck) as RetrieveResponse | undefined;
             if (hit) {
-              const resp: RetrieveResponse = { ...hit, cache_hit: true, latency_ms: Date.now() - t0 };
+              const resp: RetrieveResponse = {
+                ...hit,
+                cache_hit: true,
+                latency_ms: Date.now() - t0
+              };
               result = resp;
             }
           }
           if (result === undefined) {
-            let resp: RetrieveResponse = { ...(await retrieve(store, provider, req)), cache_hit: false };
+            let resp: RetrieveResponse = {
+              ...(await retrieve(store, provider, req)),
+              cache_hit: false
+            };
             // RAG_RERANK=api：真实 cross-encoder 重排，失败回退 MMR
             const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
             if (rerankMode === 'api' && resp.results.length > 1) {
@@ -150,8 +182,12 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
                 resp = { ...resp, results: rr };
               } else {
                 const vectorMap = new Map<string, number[]>();
-                for (const c of store.getChunks(tenantId)) vectorMap.set(c.chunk_id, c.vector);
-                resp = { ...resp, results: mmrRerank(resp.results, vectorMap, 0.5) };
+                for (const c of store.getChunks(tenantId))
+                  vectorMap.set(c.chunk_id, c.vector);
+                resp = {
+                  ...resp,
+                  results: mmrRerank(resp.results, vectorMap, 0.5)
+                };
               }
             }
             if (cacheEnabled) cache.set(ck, resp);
@@ -163,13 +199,22 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
             title: args.title,
             text: String(args.text ?? ''),
             tags: args.tags,
-            tenant_id: tenantId,
+            tenant_id: tenantId
           };
           result = await ingestDocument(store, provider, input);
-          if (process.env.RAG_DATA_FILE) store.persist(process.env.RAG_DATA_FILE, shard);
+          if (process.env.RAG_DATA_FILE)
+            store.persist(process.env.RAG_DATA_FILE, shard);
         } else if (name === 'rag_generate') {
           if (!llm) {
-            send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'LLM provider 未配置（RAG_LLM_BASE_URL / RAG_LLM_API_KEY / RAG_LLM_MODEL）' } });
+            send({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: {
+                code: -32000,
+                message:
+                  'LLM provider 未配置（RAG_LLM_BASE_URL / RAG_LLM_API_KEY / RAG_LLM_MODEL）'
+              }
+            });
             return;
           }
           const query = String(args.query ?? '');
@@ -181,31 +226,45 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
               query,
               top_k: args.top_k,
               tenant_id: tenantId,
-              filters: args.tags ? { tags: args.tags } : undefined,
+              filters: args.tags ? { tags: args.tags } : undefined
             },
             {
               temperature: args.temperature,
               maxTokens: args.max_tokens,
-              topK: args.top_k,
-            },
+              topK: args.top_k
+            }
           );
           result = genResult;
         } else {
-          send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `unknown tool: ${name}` } });
+          send({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32601, message: `unknown tool: ${name}` }
+          });
           return;
         }
         send({
           jsonrpc: '2.0',
           id: msg.id,
-          result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] },
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
+          }
         });
       } else if (msg.method === 'ping') {
         send({ jsonrpc: '2.0', id: msg.id, result: {} });
       } else {
-        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `method not found: ${msg.method}` } });
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32601, message: `method not found: ${msg.method}` }
+        });
       }
     } catch (e: any) {
-      send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: String(e?.message || e) } });
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: { code: -32000, message: String(e?.message || e) }
+      });
     }
   });
 

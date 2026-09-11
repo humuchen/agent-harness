@@ -1,0 +1,28 @@
+{
+  "name": "@agent-harness/mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mobile client (Capacitor) for agent-harness: wraps frontend/webapp/dist in a native iOS/Android shell with push, deep-link, file-upload, biometric auth, and offline cache.",
+  "scripts": {
+    "build": "pnpm --filter @agent-harness/webapp run build && cap sync",
+    "dev": "cap sync && cap open ios",
+    "dev:android": "cap sync && cap open android",
+    "sync": "cap sync",
+    "open:ios": "cap open ios",
+    "open:android": "cap open android",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/preferences": "^6.0.3",
+    "@capacitor/push-notifications": "^6.0.3",
+    "@capacitor/filesystem": "^6.0.2",
+    "@capacitor/camera": "^6.1.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "typescript": "^5.4.5"
+  }
+}

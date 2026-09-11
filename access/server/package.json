@@ -1,6 +1,6 @@
 {
   "name": "@agent-harness/server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "HTTP+SSE server / dashboard for @agent-harness/core (deploys the agent harness and hosts the webapp).",
   "main": "dist/server.js",

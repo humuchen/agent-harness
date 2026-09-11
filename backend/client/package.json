@@ -1,6 +1,6 @@
 {
   "name": "@agent-harness/client",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Zero-dependency, cross-runtime (Web / Node / React Native / Edge) typed HTTP client for the agent-harness /api/v1 server.",
   "type": "module",
   "main": "dist/index.js",
