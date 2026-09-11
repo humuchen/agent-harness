@@ -434,9 +434,7 @@ export class AhApp extends LitElement {
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
             <!-- <span class="brand-text">Agent Harness</span> -->
-            <span class="brand-text"
-              >${this.brand?.productName ?? 'Agent Harness'}</span
-            >
+            <span class="brand-text">${this.brand?.productName ?? 'Agent Harness'}</span>
             <button
               class="sidebar-toggle"
               title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
