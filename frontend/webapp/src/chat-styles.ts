@@ -1449,6 +1449,9 @@ export const chatStyles = [
       padding: 0 6px;
       line-height: 16px;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
     }
     .tchip b {
       color: var(--ah-text);
@@ -2118,7 +2121,9 @@ export const chatStyles = [
          解决窄屏下 chip 因 align-items: flex-end 而按内容固有宽度撑开、顶出 .tcache-body 边框的问题；
        - .tgrp 改为 flex-start：去掉右对齐在窄屏下的拥挤感；
        - .model-chip（分模型拆出的子 chip）缩窄到 110px 以容纳更多 chip；
-       - .tcache-body 减小水平内边距，给 chip 让出横向空间。 */
+       - .tcache-body 减小水平内边距，给 chip 留出横向空间。
+       成本节点（kind-cost）与此完全一致：model chip 名长（如 gpt-4.1-2025-04-14），
+       在窄屏下同样会因 justify-content: flex-end 顶出容器，故镜像相同的窄屏适配。 */
     @media (max-width: 640px) {
       .tnode.kind-tokencache .tmetrics {
         align-items: stretch;
@@ -2130,6 +2135,16 @@ export const chatStyles = [
         max-width: 110px;
       }
       .tnode.kind-tokencache > .tcache-body {
+        padding: 8px 8px 10px 20px;
+        margin: 4px;
+      }
+      .tnode.kind-cost .tmetrics {
+        align-items: stretch;
+      }
+      .tnode.kind-cost .tgrp {
+        justify-content: flex-start;
+      }
+      .tnode.kind-cost > .tcost-body {
         padding: 8px 8px 10px 20px;
         margin: 4px;
       }
