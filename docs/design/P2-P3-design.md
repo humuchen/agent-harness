@@ -47,6 +47,53 @@
 
 ---
 
+## 1b. P2-1 手机端（Mobile Client）
+
+### 目标
+为移动场景提供原生 iOS / Android 外壳，获得：推送通知、 Deep Link 唤起、离线缓存、摄相机/文件选取上传成果物、 biometric 登录快捷。
+
+### 现状
+当前纯 Web SPA，不具备 PWA 安装或原生移动外壳；移动端体验依赖浏览器 PWA（未正式支持）。
+
+### 设计方案
+- **技术选型**：
+  - **方案 A（推荐）**：Capacitor 2.x —— 与既有 Vite/TS/Lit 栈零 friction，原生 API 通过 Capacitor 插件调用，iOS/Android 双平台复用 100% Web 代码。
+  - **方案 B**：React Native 套壳 —— 若团队已有 RN 基建可复用，但 Lit 组件需桥接，成本更高。
+  - **方案 C**：PWA —— 最小成本但功能受限（无法推送、无法访问摄相头文件、iOS 系统通知受限）。
+- **架构**：
+  - `mobile/` 新 workspace：`capacitor.config.ts` + `ios/` / `android/` 原生项目。
+  - Web 层复用 `frontend/webapp` 构建产物（`dist/`），通过 Capacitor 插件桥接原生能力。
+  - Capacitor 插件以 **接口 + 默认实现** 形式存在（`mobile/src/plugins/`），便于测试。
+- **原生能力映射**：
+  | 原生能力 | Capacitor 插件 | 桥接 Web API | 对接 server 端点 |
+  |---|---|---|---|
+  | 推送通知 | `@capacitor/push-notifications` | `PushNotification` JS API | 订阅 P1-2 审计 / IM 回调 |
+  | Deep Link | `@capacitor/app` | `appUrlOpen` 事件 | 唤起 `/chat` 或指定 plan |
+  | 文件/照片 | `@capacitor/filesystem` + `Camera` | `pickFile()` / `getPhoto()` | `POST /api/artifacts` 上传 |
+  | 生物认证 | `@capacitor/fingerprint-auth` | `isAvailable()` / `verify()` | 快捷登录 / 保护敏感操作 |
+  | 离线缓存 | Service Worker + `capacitor-prefs` | `localStorage` + SW | 弱网「只读」视图 |
+- **与既有能力联动**：
+  - 推送 → 订阅 P1-2 审计事件 / IM 回调（P0-2）做系统级推送。
+  - 文件上传 → 调用 P1-5 `POST /api/artifacts`（base64 内容）完成落盘归档。
+  - Deep Link → `piagent://chat/:sessionId` 或 `piagent://plan/:planId` 唤起指定视图。
+
+### 关键接口 / 文件（建议）
+- `mobile/capacitor.config.ts`：App ID、Server URL、插件配置。
+- `mobile/src/plugins/notification.ts`：推送订阅封装。
+- `mobile/src/plugins/deep-link.ts`：Deep Link 路由表。
+- 复用：`frontend/webapp/dist`（构建产物直接被 Capacitor 加载）。
+
+### 实施阶段
+1. Capacitor 脚手架 + 加载既有 webapp；2. 推送通知 + Deep Link；3. 文件/照片上传→档案库；4. 生物认证快捷登录；5. 离线缓存。
+
+### 风险 / 开放问题
+- iOS App Store / Android Play 审核政策（AI 代理类 App 可能需特殊说明）。
+- 推送证书 / Firebase Cloud Messaging 配置成本。
+- Capacitor 插件在 iOS/Android 版本差异，需在真机验证。
+- PWA 方案对 iOS 系统通知受限（需用户手动打开通知开关）。
+
+---
+
 ## 2. P2-2 策略编辑器（Policy Editor）
 
 ### 目标
@@ -209,7 +256,7 @@ P0-2 已完成「单实例真实平台验证」（`ImBridge` + `createImRegistry
 | 中 | P2-3 Plan 协同 | 协同价值高但实现复杂度最高，建议分阶段 |
 | 中 | P2-4 K8s ServiceMonitor | 纯产出物 + 脚本，CI 友好，风险低 |
 | 中 | P3-1 品牌位 | 白标需求常见，改动面可控 |
-| 低 | P2-1 桌面端 | 依赖原生打包与签名，成本最高，可后置 |
+| 低 | P2-1 桌面端 + 手机端 | 依赖原生打包与签名，成本最高，可后置 |
 
 ## 8. 统一待办（进入实现期时）
 
