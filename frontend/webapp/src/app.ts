@@ -445,7 +445,6 @@ export class AhApp extends LitElement {
             >
               ${this.sidebarCollapsed ? '›' : '‹'}
             </button>
-            -->
           </div>
           <nav class="nav">
             ${TABS.map(
