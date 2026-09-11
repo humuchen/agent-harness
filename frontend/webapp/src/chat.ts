@@ -89,8 +89,10 @@ import {
 } from './chat-commands';
 import './components/file-upload';
 import './components/model-picker';
-import './components/mode-picker';
-import './components/agent-picker';
+// 副作用导入：注册 <ah-composer-plus>（输入框「+」统一入口：文件 / 模式 / 专家）。
+// 注：原 ah-mode-picker / ah-agent-picker 的能力已并入该面板，故不再单独引入
+// （组件文件保留在 components/ 下，未被引用即不会注册、不进包）。
+import './components/composer-plus';
 
 // 副作用导入：注册 <ah-command-suggestions> 自定义元素。
 // 不能写成 `import { AhCommandSuggestions }` —— 该类在 chat.ts 里只作为类型
@@ -2059,14 +2061,17 @@ export class AhChat extends LitElement {
     return this.cmdName ? `/${this.cmdName}${arg ? ` ${arg}` : ''}` : arg;
   }
 
-  /** 处理文件选择。读取本地预览并上传到服务端。 */
-  private async onFileSelect(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (!input.files?.length) return;
+  /**
+   * 处理文件选择。读取本地预览并上传到服务端。
+   *
+   * 入参是 File[] 而非 Event —— 「+」面板（ah-composer-plus）既支持点击选择
+   * 也支持拖拽，两者最终都归一成 File[] 经 `files-select` 上抛到这里。
+   */
+  private async handleFiles(picked: File[]): Promise<void> {
+    if (!picked.length) return;
     const maxBytes = 10 * 1024 * 1024; // 10MB 上限
-    const newFiles: UploadedFile[] = [];
 
-    for (const f of Array.from(input.files)) {
+    for (const f of picked) {
       // 前置校验
       if (f.size > maxBytes) {
         notify.warning(`文件过大：${f.name}（上限 10MB）`, {
@@ -2116,8 +2121,7 @@ export class AhChat extends LitElement {
       };
       this.uploadingFiles.set(key, { status: 'uploading' });
 
-      // 立即加入 attachments 显示预览
-      newFiles.push(file);
+      // 立即加入 attachments 显示预览（不可变更新，触发重渲染）
       this.attachments = [...this.attachments, file];
 
       // 上传到服务端
@@ -2157,8 +2161,6 @@ export class AhChat extends LitElement {
         });
       }
     }
-
-    input.value = '';
   }
 
   /** 移除已选附件。 */
@@ -2853,33 +2855,32 @@ export class AhChat extends LitElement {
             </div>
             <div class="composer-footer">
               <div class="composer-footer-left">
-                <label class="attach-btn" title="上传附件">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,.txt,.md,.csv,.json"
-                    style="display:none"
-                    @change=${this.onFileSelect}
-                  />
-                  +
-                </label>
-                <ah-agent-picker
+                <!-- 「+」统一入口：文件 / 模式 / 专家三类能力收口到一个按钮 + 分区面板；
+                     已选的模式与专家以胶囊形式常驻在 + 右侧，点击胶囊可直达对应分区。 -->
+                <ah-composer-plus
                   .agents=${this.agents}
-                  .value=${this.agentId}
+                  .agentId=${this.agentId}
+                  .mode=${this.interactionMode}
+                  .attachments=${this.attachments}
+                  @files-select=${(e: Event) =>
+                    this.handleFiles(
+                      (e as CustomEvent<{ files: File[] }>).detail.files
+                    )}
+                  @remove-attachment=${(e: Event) =>
+                    this.removeAttachment(
+                      (e as CustomEvent<{ index: number }>).detail.index
+                    )}
+                  @mode-change=${(e: Event) =>
+                    this.setInteractionMode(
+                      (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
+                    )}
                   @agent-change=${(e: Event) => {
                     const v = (e as CustomEvent<{ value: string }>).detail
                       .value;
                     this.agentId = v;
                     this.persistSessionSettings({ agentId: v });
                   }}
-                ></ah-agent-picker>
-                <ah-mode-picker
-                  .mode=${this.interactionMode}
-                  @mode-change=${(e: Event) =>
-                    this.setInteractionMode(
-                      (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
-                    )}
-                ></ah-mode-picker>
+                ></ah-composer-plus>
               </div>
               <div class="composer-footer-right">
                 <ah-model-picker

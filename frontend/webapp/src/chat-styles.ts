@@ -2512,10 +2512,10 @@ export const chatStyles = [
         padding: 4px 6px 8px 8px;
         gap: 6px;
       }
-      .attach-btn {
-        width: 36px;
-        height: 36px;
-        font-size: 22px;
+      /* 「+」入口 + 结果胶囊：手机端给足点击热区，并限宽避免顶到右侧模型选择器
+         （胶囊的省略号截断由组件内部媒体查询处理）。 */
+      .composer-footer-left ah-composer-plus {
+        max-width: calc(100vw - 170px);
       }
       .mode-select {
         height: 36px;
@@ -2643,7 +2643,7 @@ export const chatStyles = [
        面板 bottom:calc(100% + 8px) 浮在整个 composer 之上，胶囊条则是
        composer 的第一个 flex 子项（位于输入框上方）。 */
 
-    /* 底部按钮行：固定高度，左 attach / 右 圆环+send */
+    /* 底部按钮行：左侧「+ 统一入口」/ 右侧 模型+圆环+send */
     .composer .composer-footer {
       flex-shrink: 0;
       display: flex;
@@ -2657,11 +2657,23 @@ export const chatStyles = [
       align-items: center;
       gap: 4px;
       min-width: 0;
+      /* 右侧模型选择器固定占位后，剩余宽度全给「+ 入口 + 结果胶囊」。
+         ⚠️ 这里绝不能加 overflow:hidden —— 「+」面板是 absolute 向上浮出
+         footer 的，一旦祖先裁剪，面板会被切掉只剩一条边。
+         截断交给组件内部的 .chips{overflow:hidden} + 胶囊省略号。 */
+      flex: 1 1 auto;
+    }
+    /* 「+」统一入口：可压缩（0 1 auto）以免把右侧模型选择器挤出 composer；
+       面板由组件自身 shadow DOM 绝对定位锚定，宿主不做任何裁剪。 */
+    .composer-footer-left ah-composer-plus {
+      flex: 0 1 auto;
+      min-width: 0;
     }
     .composer-footer-right {
       display: flex;
       align-items: center;
       gap: 4px;
+      flex: 0 0 auto;
     }
     /* 深度思考 / 联网搜索 快捷开关图标（激活态 accent 高亮） */
     .tool-toggle {
@@ -2952,24 +2964,8 @@ export const chatStyles = [
       font-size: 12px;
       color: var(--ah-text);
     }
-    .attach-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: var(--ah-h-sm);
-      border-radius: 50%;
-      cursor: pointer;
-      color: var(--ah-text-muted);
-      transition: color 0.15s, background 0.15s;
-      flex-shrink: 0;
-      font-size: 20px;
-      line-height: 20px;
-    }
-    .attach-btn:hover {
-      color: var(--ah-accent);
-      background: var(--ah-surface-3);
-    }
+    /* 注：原 .attach-btn（裸「+」label）已由 <ah-composer-plus> 取代，
+       上传入口与模式/专家选择一并收口到该组件，此处不再保留其样式。 */
     /* 移动端适配 */
     @media (max-width: 640px) {
       .attach-preview-item {
