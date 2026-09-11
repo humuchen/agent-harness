@@ -658,6 +658,61 @@ export const chatStyles = [
       flex-direction: column;
       // gap: 18px;
     }
+    /* ---- 历史会话加载骨架屏（切换会话时内容区占位）----
+       布局刻意复用 .thread 的宽度/边距 + .msg/.avatar 的排布节奏，
+       使骨架屏与加载完成后的真实消息在视觉上连续，切换时不发生横向跳动。
+       微光动画 .sk-line 来自 sharedStyles，此处只负责排布。 */
+    .sk-thread {
+      padding-top: 4px;
+    }
+    .sk-msg {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 26px;
+    }
+    .sk-msg:last-child {
+      margin-bottom: 0;
+    }
+    /* 用户消息靠右（与 .msg.user 的 row-reverse 视觉等价），助手消息靠左带头像。 */
+    .sk-msg.user {
+      justify-content: flex-end;
+    }
+    .sk-avatar {
+      flex: 0 0 30px;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: linear-gradient(
+        90deg,
+        var(--ah-surface-3) 25%,
+        var(--ah-surface-2) 37%,
+        var(--ah-surface-3) 63%
+      );
+      background-size: 400% 100%;
+      animation: ah-shimmer 1.4s ease infinite;
+    }
+    .sk-bubble {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+    .sk-msg.assistant .sk-bubble {
+      flex: 1 1 auto;
+      max-width: 745px;
+    }
+    .sk-msg.user .sk-bubble {
+      align-items: flex-end;
+      max-width: 62%;
+    }
+    /* 尊重系统「减少动态效果」偏好：关闭微光，保留静态占位。 */
+    @media (prefers-reduced-motion: reduce) {
+      .sk-avatar,
+      .sk-line {
+        animation: none;
+      }
+    }
     .msg {
       display: flex;
       gap: 12px;

@@ -223,6 +223,15 @@ export class AhChat extends LitElement {
 
   @state() sessions: SessionView[] = [];
   @state() activeId = '';
+
+  /**
+   * 历史会话内容加载中（骨架屏开关）。
+   * 点击左侧会话后、服务端历史返回前为 true，内容区渲染骨架屏占位，
+   * 避免出现「长时间空白」或「残留上一会话内容」的中间态。
+   * 仅内存中已有该会话缓冲（本地即时可用）时不置位，切换零等待。
+   */
+  @state() private sessionLoading = false;
+
   @state() messages: ChatMsg[] = [];
   @state() input = '';
   @state() model = '';
@@ -405,6 +414,14 @@ export class AhChat extends LitElement {
    * 空线程不再被当作「已加载」缓存 —— 下次进入该会话自动重试恢复，直到成功。
    */
   private restoreFailed: Record<string, boolean> = {};
+
+  /**
+   * 会话切换请求序号（非响应式，无需触发渲染）。
+   * 每次 selectSession 自增并快照，异步拉取结束后比对：只有「最新一次切换」才允许
+   * 回写 this.messages / 滚动位置 / 用量快照，并负责关闭骨架屏标志。
+   * 由此避免连点多个会话时，先发起但后返回的慢响应覆盖当前会话内容（竞态）。
+   */
+  private sessionLoadSeq = 0;
 
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
@@ -988,6 +1005,10 @@ export class AhChat extends LitElement {
     this.sessions = this.sessions.filter((s) => s.id !== sid);
     if (this.activeId === sid) {
       this.activeId = '';
+      // 作废仍在飞行中的该会话切换请求：否则其返回后会把已删除会话的历史写回
+      // this.messages，视图里会重新出现一条已被删除的会话。
+      this.sessionLoadSeq++;
+      this.sessionLoading = false;
       this.messages = [];
       try {
         localStorage.removeItem('ah_active_id');
@@ -1177,6 +1198,10 @@ export class AhChat extends LitElement {
   private async newChat() {
     // 不中止任何进行中的 run：后台 run 继续写入其所属会话缓冲，新建对话只是切换显示到空线程。
     this.activeId = '';
+    // 作废仍在飞行中的会话切换请求（自增序号使其过期），否则其返回后会把旧会话
+    // 的历史写回 this.messages —— 空白新对话里会突然冒出上一个会话的内容。
+    this.sessionLoadSeq++;
+    this.sessionLoading = false;
     this.messages = [];
     this.input = '';
     this.cmdName = '';
@@ -1200,6 +1225,11 @@ export class AhChat extends LitElement {
   private async selectSession(id: string) {
     if (id === this.activeId) return;
     this.activeId = id;
+    // 本次切换的请求序号：进入即自增，异步返回时据此判定自己是否已过期（见方法尾部）。
+    const seq = ++this.sessionLoadSeq;
+    // 先无条件复位骨架屏：内存中已有该会话缓冲时下方不会再置位，切换零等待直接出内容；
+    // 需要拉取历史时再由下方重新打开。这样快速连点会话时不会残留上一次请求的加载态。
+    this.sessionLoading = false;
     // 加载本会话持久化的设置（交互模式/模型/agent），实现「同一对话两端对齐」。
     // 优先级：本地按会话表 > 列表项（来自服务端元数据）> 保留当前全局值（旧会话无记录时）。
     const sv = this.sessions.find((s) => s.id === id);
@@ -1222,10 +1252,14 @@ export class AhChat extends LitElement {
     // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
     // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
     const localBuf = this.threads[id];
+    // 需要向服务端拉取历史的判定：本实例从未打开过该会话，或上次恢复失败且缓冲为空。
+    // 命中即先亮起骨架屏并覆盖整个 await 全程（含 8s 超时兜底），避免内容区长时间无反馈。
+    const needFetch = !localBuf || (this.restoreFailed[id] && localBuf.length === 0);
 
     // 会话级用量快照（随历史镜像恢复）；getChatSession 不含 usage，仅 history 镜像携带。
     let recoveredUsage: MirroredUsage | null = null;
-    if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
+    if (needFetch) {
+      this.sessionLoading = true;
       try {
         // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
         const s = await withTimeout(
@@ -1327,8 +1361,17 @@ export class AhChat extends LitElement {
         }
       }
     }
+    // 拉取流程结束（成功、降级、失败三条路径均在此汇合）：关闭骨架屏。
+    // 只有最新一次切换有权操作该标志 —— 过期请求不得关闭当前会话的骨架屏。
+    if (seq === this.sessionLoadSeq) this.sessionLoading = false;
+
     // 恢复历史后补全调用链路中 assistant 消息的内容（修复旧 trace 中 assistant 为空）。
     this.restoreTraceMessages(id);
+
+    // 过期请求（用户已切到别的会话）：本次结果仅作为缓存留在 this.threads 中，
+    // 不得回写内容与视图状态，否则会覆盖新会话的消息、滚动位置与用量快照。
+    if (seq !== this.sessionLoadSeq) return;
+
     this.messages = this.threads[id] ?? [];
 
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
@@ -2791,6 +2834,89 @@ export class AhChat extends LitElement {
     };
   }
 
+  /**
+   * 内容区骨架屏（历史会话加载占位）。
+   * 排布刻意对齐真实消息：用户气泡靠右且较窄、助手气泡带头像靠左且较宽，
+   * 并复用 .thread 的宽度/边距与 sharedStyles 的 .sk-line 微光动画，
+   * 使加载态与加载完成后的内容在视觉上连续，切换时不发生横向跳动。
+   */
+  private renderSessionSkeleton() {
+    const line = (w: string) =>
+      html`<div class="sk-line" style="width:${w}"></div>`;
+    return html`
+      <div
+        class="thread sk-thread"
+        role="status"
+        aria-busy="true"
+        aria-label="正在加载历史会话"
+      >
+        <div class="sk-msg user">
+          <div class="sk-bubble">${line('72%')}${line('42%')}</div>
+        </div>
+        <div class="sk-msg assistant">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">
+            ${line('32%')}${line('94%')}${line('88%')}${line('56%')}
+          </div>
+        </div>
+        <div class="sk-msg user">
+          <div class="sk-bubble">${line('54%')}</div>
+        </div>
+        <div class="sk-msg assistant">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">${line('90%')}${line('62%')}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * 内容区渲染：加载历史 → 骨架屏；无消息 → 空态引导；否则渲染消息线程。
+   * 独立成方法并以提前返回表达三种状态，避免模板内出现深层嵌套三元表达式。
+   */
+  private renderContentArea() {
+    if (this.sessionLoading) return this.renderSessionSkeleton();
+    if (this.messages.length === 0) {
+      return html`
+        <div class="empty">
+          <h1>有什么可以帮你的？</h1>
+          <p>
+            基于 agent-harness
+            的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+          </p>
+        </div>
+      `;
+    }
+    return html`<div class="thread">
+      ${this.renderConnBanner()}
+      ${this.llmReady
+        ? ''
+        : html`<div
+            style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
+          >
+            <span
+              >当前使用离线 Mock 模型，配置你的 API Key
+              后可使用真实模型。</span
+            >
+            <button
+              class="btn ghost"
+              style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
+              @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent('ah-goto', {
+                    detail: 'settings',
+                    bubbles: true,
+                    composed: true
+                  })
+                )}
+            >
+              去配置
+            </button>
+          </div>`}
+      ${this.messages.map((m) => this.renderMessage(m))}
+    </div>`;
+  }
+
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
     // 附件预览条：折叠态只渲染前 N 条，余量交给「+N」按钮（渲染与文案同源）。
@@ -3005,44 +3131,7 @@ export class AhChat extends LitElement {
               ${ref(this.scrollCtl.scrollRef)}
               @scroll=${() => this.scrollCtl.onScroll()}
             >
-              ${this.messages.length === 0
-                ? html`
-                    <div class="empty">
-                      <h1>有什么可以帮你的？</h1>
-                      <p>
-                        基于 agent-harness
-                        的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
-                      </p>
-                    </div>
-                  `
-                : html`<div class="thread">
-                    ${this.renderConnBanner()}
-                    ${this.llmReady
-                      ? ''
-                      : html`<div
-                          style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
-                        >
-                          <span
-                            >当前使用离线 Mock 模型，配置你的 API Key
-                            后可使用真实模型。</span
-                          >
-                          <button
-                            class="btn ghost"
-                            style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
-                            @click=${() =>
-                              this.dispatchEvent(
-                                new CustomEvent('ah-goto', {
-                                  detail: 'settings',
-                                  bubbles: true,
-                                  composed: true
-                                })
-                              )}
-                          >
-                            去配置
-                          </button>
-                        </div>`}
-                    ${this.messages.map((m) => this.renderMessage(m))}
-                  </div>`}
+              ${this.renderContentArea()}
             </div>
             ${this.scrollCtl.showScrollDown
               ? html`<button

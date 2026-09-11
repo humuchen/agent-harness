@@ -27,7 +27,7 @@ import {
 } from './telemetry';
 import { estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
-import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
+import { estimateMessageTokens, estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 import { hooks } from './hooks';
 
@@ -829,15 +829,17 @@ export class AgentHarness {
           // 本地拆解四项占比（启发式估算，仅用于链路可视化；权威值仍以 provider 的 usage 为准）。
           // 系统在「系统提示」项，工具 schema 在「工具」项，其余消息累计为「历史」，
           // 模型本次输出（含 tool_calls 参数）计入「输出」项，便于定位高 token 消耗的固定开销来源。
+          //
+          // 多模态计费口径：走 estimateMessageTokens 而非 JSON.stringify + estimateTokens。
+          // 后者会把整段图片 base64 序列化后按「4 字符 = 1 token」折算，一张 1MB 图即约
+          // 34 万虚假 token，使「历史」一项高估 1~2 个数量级（曾出现 858,118 tok 的失真展示）。
+          // 现改为图片按视觉 token 计（low=85 / high=85+170×512 分块数），与真实计费同量级。
           let estSystem = 0;
           let estHistory = 0;
           for (const m of messages) {
-            const c =
-              typeof m.content === 'string'
-                ? m.content
-                : JSON.stringify(m.content ?? '');
-            if (m.role === 'system') estSystem += estimateTokens(c);
-            else estHistory += estimateTokens(c);
+            const t = estimateMessageTokens(m);
+            if (m.role === 'system') estSystem += t;
+            else estHistory += t;
           }
           const estTools = estimateToolsTokens(stepTools);
           // 把工具拆分为「内置工具」与「MCP 工具（名称含 '__' 前缀）」，分别计入

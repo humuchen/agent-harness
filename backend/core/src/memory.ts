@@ -1,6 +1,6 @@
 import { Message, messageText } from './types';
 import { tokenize } from './tools';
-import { estimateTokens } from './llm/token-estimator';
+import { estimateMessageTokens } from './llm/token-estimator';
 import {
   MemoryStore,
   PersistedMemory,
@@ -290,6 +290,36 @@ function shrinkMessage(m: Message): Message {
   };
 }
 
+/**
+ * 多模态内容瘦身：把 `image_url` 块替换为一段文本占位说明，保留原有 text 块的开头。
+ *
+ * 为什么必须单独处理：图片块一旦进历史，此前会被 `typeof m.content !== 'string'`
+ * 直接跳过 —— 既不参与计数（`messageText` 只取 text 块），也不参与改写，却每一轮
+ * 都按视觉 token 真实计费。结果是超大历史永远收敛不到预算，只能靠继续切旧轮次
+ * （受「当前轮次不可切」限制）或直接 400。
+ *
+ * 安全性：只把 `content` 换成字符串（等价于「只含一个 text 块」的合法载荷），
+ * `role` / `tool_calls` / `tool_call_id` / `name` 全部原样保留，因此**绝不破坏
+ * tool_call ↔ tool 结果配对**，与 `shrinkMessage` 同一安全等级。
+ */
+function shrinkMultimodal(m: Message): Message {
+  const blocks = Array.isArray(m.content) ? m.content : [];
+  const nImages = blocks.filter((b) => b.type === 'image_url').length;
+  const text = blocks
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n');
+  const head = text.slice(0, SHRINK_KEEP_HEAD).replace(/\s+/g, ' ').trim();
+  const label =
+    m.role === 'tool' ? '工具结果' : m.role === 'assistant' ? '助手回复' : '用户输入';
+  return {
+    ...m,
+    content:
+      `${SHRUNK_MARK}${label}含 ${nImages} 张图片，已压缩以释放上下文` +
+      (head ? `，文字摘要：${head}` : '')
+  };
+}
+
 export class Memory {
   private window: Message[] = [];
   private longTerm: string[] = [];
@@ -433,16 +463,23 @@ export class Memory {
    */
   private tokenTarget(rest: Message[]): number {
     let histNow = 0;
-    for (const m of rest) histNow += estimateTokens(messageText(m));
+    for (const m of rest) histNow += estimateMessageTokens(m);
     return Math.max(0, histNow - this._tokenOvershoot);
   }
 
-  /** 历史（不含真实系统提示）当前占用的估算 token 数。 */
+  /**
+   * 历史（不含真实系统提示）当前占用的估算 token 数。
+   *
+   * 多模态口径：用 `estimateMessageTokens`（图片计视觉 token）而非
+   * `estimateTokens(messageText(m))`（图片记 0）。后者会让含图历史被系统性低估，
+   * 压缩目标随之算小、`historyTokens()` 也永远收敛不到目标 —— 这正是
+   * 「历史里图片每轮真实计费，却不参与计数与瘦身」的根因。
+   */
   historyTokens(): number {
     let t = 0;
     for (const m of this.window) {
       if (m.role === 'system' && !isSummaryNode(m)) continue;
-      t += estimateTokens(messageText(m));
+      t += estimateMessageTokens(m);
     }
     return t;
   }
@@ -455,13 +492,13 @@ export class Memory {
   private keepWithinTokenBudget(rest: Message[], targetHist: number): number {
     // 估算整窗历史 token；若已低于目标，无需淘汰（避免裁掉合法上下文）。
     let total = 0;
-    for (const m of rest) total += estimateTokens(messageText(m));
+    for (const m of rest) total += estimateMessageTokens(m);
     if (total <= targetHist) return rest.length;
 
     let keptTokens = 0;
     let keepCount = 0;
     for (let i = rest.length - 1; i >= 0; i--) {
-      const t = estimateTokens(messageText(rest[i]));
+      const t = estimateMessageTokens(rest[i]);
       if (keepCount > 0 && keptTokens + t > targetHist) break;
       keptTokens += t;
       keepCount++;
@@ -515,18 +552,29 @@ export class Memory {
       const limit = protectLastGroup
         ? lastGroupStart(this.window) // 当前轮次暂不瘦身
         : this.window.length;
-      let idx = -1;
-      for (let i = 0; i < limit; i++) {
-        const m = this.window[i] as Message;
-        if (m.role === 'system' && !isSummaryNode(m)) continue;
-        if (typeof m.content !== 'string') continue; // 多模态内容不改写
-        if (alreadyShrunk(m)) continue;
-        if (estimateTokens(messageText(m)) < SHRINK_MIN_TOKENS) continue;
-        idx = i;
-        break;
-      }
+      // 分两级挑选候选，优先级明确：
+      //  1) 纯文本消息 —— 与既有行为一致（只压正文，语义损失最小）；
+      //  2) 多模态消息 —— 仅当无纯文本候选时，才把图片块替换为文本占位。
+      // 之所以要补第 2 级：图片块此前被 `typeof m.content !== 'string'` 永久跳过，
+      // 「每轮按视觉 token 真实计费，却既不计数也不瘦身」，含图历史根本压不回预算。
+      const pick = (multimodal: boolean): number => {
+        for (let i = 0; i < limit; i++) {
+          const m = this.window[i] as Message;
+          if (m.role === 'system' && !isSummaryNode(m)) continue;
+          if (alreadyShrunk(m)) continue;
+          if (Array.isArray(m.content) !== multimodal) continue;
+          if (estimateMessageTokens(m) < SHRINK_MIN_TOKENS) continue;
+          return i;
+        }
+        return -1;
+      };
+      let idx = pick(false);
+      if (idx < 0) idx = pick(true);
       if (idx < 0) break; // 没有可再瘦身的消息了
-      this.window[idx] = shrinkMessage(this.window[idx] as Message);
+      const cand = this.window[idx] as Message;
+      this.window[idx] = Array.isArray(cand.content)
+        ? shrinkMultimodal(cand)
+        : shrinkMessage(cand);
       changed = true;
     }
     return changed;
@@ -743,7 +791,7 @@ export class Memory {
       this.window.forEach((m, i) => {
         if (m.role === 'system' && !isSummaryNode(m)) return;
         if (typeof m.content !== 'string') return;
-        const t = estimateTokens(messageText(m));
+        const t = estimateMessageTokens(m);
         if (t > largest) {
           largest = t;
           idx = i;
