@@ -45,6 +45,7 @@ export type Action =
   | 'recipe:save'
   | 'recipe:read'
   | 'policy:read'
+  | 'policy:write'
   | 'approvals:review'
   | 'approvals:read'
   | 'agent:read'
@@ -80,7 +81,11 @@ export type Action =
   // P1-4 浏览器沙箱（为 Agent 提供受控浏览器会话）
   | 'sandbox:use'
   // P1-8 CI 供应链（依赖 / 制品扫描与签名报告）
-  | 'supplychain:read';
+  | 'supplychain:read'
+  // P2-3 Plan 协同（计划文档的 CRUD + 审批式执行）
+  | 'plan:read'
+  | 'plan:write'
+  | 'plan:execute';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -149,10 +154,11 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'eval:run',
     'recipe:save',
     'recipe:read',
-  'policy:read',
-  'approvals:review',
-  'approvals:read',
-  'agent:read',
+    'policy:read',
+    'policy:write',
+    'approvals:review',
+    'approvals:read',
+    'agent:read',
     'agent:register',
     'workflow:run',
     'workflow:read',
@@ -177,7 +183,10 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'datasource:read',
     'datasource:manage',
     'sandbox:use',
-    'supplychain:read'
+    'supplychain:read',
+    'plan:read',
+    'plan:write',
+    'plan:execute'
   ],
   operator: [
     'agent:run:mock',
@@ -199,6 +208,7 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'recipe:save',
     'recipe:read',
     'policy:read',
+    'policy:write',
     'approvals:read',
     'agent:read',
     'agent:register',
@@ -224,7 +234,9 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'datasource:read',
     'datasource:manage',
     'sandbox:use',
-    'supplychain:read'
+    'supplychain:read',
+    'plan:read',
+    'plan:write'
   ],
   viewer: [
     'agent:run:mock',
@@ -248,11 +260,12 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'artifact:read',
     'skill:read',
     'datasource:read',
-    'supplychain:read'
+    'supplychain:read',
+    'plan:read'
   ]
 };
 
-function loadMatrix(): Record<Role, Action[]> {
+export function loadMatrix(): Record<Role, Action[]> {
   const raw = process.env.UI_ROLE_PERMISSIONS;
   if (!raw) return DEFAULT_MATRIX;
   try {

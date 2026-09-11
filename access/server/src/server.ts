@@ -149,13 +149,26 @@ import { getDataSourceRegistry } from './data-source';
 import { getSandboxManager } from './browser-sandbox';
 // P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
 import { getSupplyChainScanner } from './supply-chain';
+// P2-2 策略编辑器：RBAC 矩阵读写 + 预览。
+import { getPolicyStore, validatePolicyDoc, allActions } from './policy-editor';
+// P2-5 IM 多实例状态聚合。
+import { getImStatusAggregator } from './im-status';
+// P2-3 Plan 协同存储。
+import {
+  getPlanStore,
+  type PlanDoc,
+  type PlanDiff,
+  type PlanStore
+} from './plan-store';
+
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
   type Authorizer,
   type AuthContext,
-  type Action
+  type Action,
+  type Role
 } from './authz';
 
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -1779,10 +1792,12 @@ const server = createServer(
         );
       }
       if (req.method === 'GET' && path === '/api/im/status') {
-        // IM 桥接运行态（启用的平台 / 在飞任务 / 去重与处理计数），受 policy:read 保护。
+        // IM 多实例状态聚合（健康 / 连接 / 吞吐 / 心跳 / 故障转移）。
+        // 受 policy:read 保护（复用既有权限，无需新增 Action）。
         const ctx = await guard(req, res, 'policy:read');
         if (!ctx) return;
-        return sendJson(res, imBridge.snapshot(), req);
+        const snapshot = getImStatusAggregator([imBridge]).snapshot();
+        return sendJson(res, snapshot, req);
       }
       if (req.method === 'POST' && path === '/api/features/toggle') {
         // 运行时切换特性开关，受 policy:write 保护。
@@ -1806,7 +1821,179 @@ const server = createServer(
           return res.end(JSON.stringify({ error: e.message }));
         }
       }
-      // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
+      // ── P2-2 策略编辑器：RBAC 矩阵读写 + 预览 ──
+      if (req.method === 'GET' && path === '/api/policy') {
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        const store = getPolicyStore();
+        const doc = await store.read();
+        return sendJson(
+          res,
+          { matrix: doc.matrix, actions: allActions() },
+          req
+        );
+      }
+      if (req.method === 'GET' && path === '/api/policy/preview') {
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        const role = url.searchParams.get('role');
+        const action = url.searchParams.get('action');
+        if (
+          !role ||
+          !action ||
+          !['admin', 'operator', 'viewer'].includes(role) ||
+          !(allActions() as readonly string[]).includes(action)
+        ) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'role and action are required and must be valid' }));
+        }
+        const allowed = await getPolicyStore().preview(
+          role as Role,
+          action as Action
+        );
+        return sendJson(res, { role, action, allowed }, req);
+      }
+      if (req.method === 'POST' && path === '/api/policy') {
+        const ctx = await guard(req, res, 'policy:write');
+        if (!ctx) return;
+        const b = await readBody(req);
+        const matrix = b?.matrix as Record<string, string[]> | undefined;
+        if (!matrix || typeof matrix !== 'object') {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'matrix is required' }));
+        }
+        // 校验 Action 合法性
+        const doc: { matrix: Record<string, Action[]> } = { matrix: {} };
+        for (const role of ['admin', 'operator', 'viewer'] as Role[]) {
+          const acts = matrix[role] ?? [];
+          doc.matrix[role] = acts.map(String) as Action[];
+        }
+        const err = validatePolicyDoc(doc);
+        if (err) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: err }));
+        }
+        try {
+          await getPolicyStore().write(doc);
+          auditAction('policy.write', { role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { ok: true }, req);
+        } catch (e: any) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: e?.message ?? 'write failed' }));
+        }
+      }
+      // ── P2-3 Plan 协同：计划文档 CRUD + 版本 diff + SSE 协同 ──
+      if (path === '/api/plans') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const plans = await getPlanStore().list(ctx.sub);
+          return sendJson(res, { items: plans }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const plan: PlanDoc = {
+            id: b?.id ?? b?.plan?.id ?? '',
+            title: b?.title ?? b?.plan?.title ?? '',
+            nodes: b?.nodes ?? b?.plan?.nodes ?? [],
+            version: b?.version ?? 0,
+            updatedBy: ctx.sub,
+            updatedAt: b?.updatedAt ?? new Date().toISOString(),
+            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
+          };
+          if (!plan.id || !plan.title) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'id and title are required' }));
+          }
+          // 校验节点
+          for (const n of plan.nodes) {
+            if (!n.id || !n.title) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              return res.end(JSON.stringify({ error: 'each node needs id and title' }));
+            }
+          }
+          const saved = await getPlanStore().save(plan);
+          auditAction('plan.save', { planId: saved.id, version: saved.version, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { item: saved }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'method not allowed' }));
+      }
+      if (path.startsWith('/api/plans/')) {
+        const rest = decodeURIComponent(path.slice('/api/plans/'.length));
+        // diff 接口
+        const diffMatch = rest.match(/^([^/]+)\/diff$/);
+        if (diffMatch && req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const otherId = url.searchParams.get('other');
+          if (!otherId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'other param required' }));
+          }
+          try {
+            const result = await getPlanStore().diff(diffMatch[1]!, otherId);
+            return sendJson(res, result, req);
+          } catch (e: any) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: e?.message ?? 'plan not found' }));
+          }
+        }
+        // 单文档 CRUD
+        const id = rest.replace(/\/.*$/, '');
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const plan = await getPlanStore().read(id);
+          if (!plan) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'plan not found' }));
+          }
+          // owner 校验：仅更新人可读（除非 admin）
+          if (ctx.role !== 'admin' && plan.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          return sendJson(res, { item: plan }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const plan: PlanDoc = {
+            id,
+            title: b?.title ?? '',
+            nodes: b?.nodes ?? [],
+            version: b?.version ?? 0,
+            updatedBy: ctx.sub,
+            updatedAt: b?.updatedAt ?? new Date().toISOString(),
+            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
+          };
+          // owner 校验
+          const existing = await getPlanStore().read(id);
+          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          const saved = await getPlanStore().save(plan);
+          auditAction('plan.save', { planId: id, version: saved.version, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { item: saved }, req);
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const existing = await getPlanStore().read(id);
+          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          const ok = await getPlanStore().remove(id);
+          auditAction('plan.delete', { planId: id, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { ok }, req);
+        }
+      }
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
       const readAct = readAction(path);
       if (readAct && req.method === 'GET') {
