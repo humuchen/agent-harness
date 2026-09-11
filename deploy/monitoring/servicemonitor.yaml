@@ -1,0 +1,63 @@
+# ──────────────────────────────────────────────
+# Prometheus ServiceMonitor CRDs for agent-harness K8s 部署。
+#
+# 该文件由 scripts/gen-servicemonitor.mjs 生成 —
+# 手工编辑无效，请修改脚本后重新生成。
+#
+# 部署（需先部署 Prometheus Operator / kube-prometheus-stack）：
+#   kubectl -n agent-harness apply -f deploy/monitoring/servicemonitor.yaml
+#
+# 包含服务：
+#   - agent-harness（主服务，端口 4173，指标路径 /api/metrics/prometheus，15s 间隔）
+#   - rag（RAG MCP 服务，端口 8787，指标路径 /metrics，30s 间隔）
+# ──────────────────────────────────────────────
+---
+# agent-harness — 主服务（ui），暴露应用级指标。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-harness
+  namespaceSelector:
+    matchNames:
+      - agent-harness
+  endpoints:
+    - port: http
+      targetPort: http
+      path: /api/metrics/prometheus
+      interval: 15s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: instance
+---
+# rag — RAG MCP 服务（可选）。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rag
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag
+  namespaceSelector:
+    matchNames:
+      - agent-harness
+  endpoints:
+    - port: http
+      targetPort: http
+      path: /metrics
+      interval: 30s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: instance
