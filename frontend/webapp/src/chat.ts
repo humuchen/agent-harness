@@ -80,7 +80,7 @@ import type {
 import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
-import { compressImage } from './utils/compress-image';
+import { compressImage, compressDataUrl } from './utils/compress-image';
 
 // Slash Command 框架
 import {
