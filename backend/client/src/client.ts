@@ -172,10 +172,40 @@ export class AgentClient {
 
   /* ----------------------------- 多会话 Chat App ----------------------------- */
 
-  /** 列出全部聊天会话（含消息记录），按最近更新倒序。 */
+  /**
+   * 列出全部聊天会话（含消息记录），按最近更新倒序。
+   * 一次性拉全量，仅适合会话很少或需要完整快照的场景；
+   * 左侧列表的分页/滚动加载请用 `listChatSessionsPage()`。
+   */
   listChatSessions(): Promise<ChatSession[]> {
     return this.json<{ sessions: ChatSession[] }>('/api/v1/chat/sessions').then((r) => r.sessions);
   }
+
+  /**
+   * 分页列出聊天会话，按最近更新倒序（左侧历史列表滚动加载用）。
+   * 返回页内条目 + 过滤后全量总数 + 是否还有下一页。
+   * 对老服务端（无分页能力、响应无 total/hasMore）做形状兜底：视为「只有这一页」。
+   */
+  listChatSessionsPage(opts: { limit?: number; offset?: number } = {}): Promise<{
+    sessions: ChatSession[];
+    total: number;
+    hasMore: boolean;
+  }> {
+    const q: string[] = [];
+    if (opts.limit !== undefined) q.push(`limit=${encodeURIComponent(String(opts.limit))}`);
+    if (opts.offset !== undefined) q.push(`offset=${encodeURIComponent(String(opts.offset))}`);
+    const suffix = q.length ? `?${q.join('&')}` : '';
+    return this.json<{
+      sessions: ChatSession[];
+      total?: number;
+      hasMore?: boolean;
+    }>(`/api/v1/chat/sessions${suffix}`).then((r) => ({
+      sessions: r.sessions,
+      total: typeof r.total === 'number' ? r.total : r.sessions.length,
+      hasMore: typeof r.hasMore === 'boolean' ? r.hasMore : false
+    }));
+  }
+
   /** 取单个聊天会话（含消息记录）。 */
   getChatSession(id: string): Promise<ChatSession> {
     return this.json<ChatSession>(`/api/v1/chat/sessions/${encodeURIComponent(id)}`);

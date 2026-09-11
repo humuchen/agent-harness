@@ -124,6 +124,12 @@ export const chatStyles = [
     .sidebar.collapsed .session .acts {
       display: none;
     }
+    /* 折叠态侧栏只有 64px 宽、仅显示状态点：加载更多 / 末尾提示挤不下，
+       整体隐藏（此时 autoFillSessionList 仍在按需续拉，展开后内容已就绪）。 */
+    .sidebar.collapsed .session-more,
+    .sidebar.collapsed .session-end {
+      display: none;
+    }
     .side-head {
       display: flex;
       flex-direction: column;
@@ -164,6 +170,54 @@ export const chatStyles = [
       overflow-y: auto;
       padding: 6px 8px 14px;
       min-height: 0;
+    }
+    /* ---- 会话列表底部：滚动加载状态行 ---- */
+    .session-more {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      margin: 4px 0 2px;
+      padding: 8px 10px;
+      border: 1px dashed var(--ah-border);
+      border-radius: 10px;
+      background: transparent;
+      color: var(--ah-text-muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .session-more:hover {
+      background: var(--ah-surface-2);
+      color: var(--ah-text);
+    }
+    /* 加载中 / 失败重试：非按钮语义，取消指针与悬停反馈 */
+    div.session-more,
+    .session-more.retry {
+      cursor: default;
+    }
+    div.session-more:hover {
+      background: transparent;
+      color: var(--ah-text-muted);
+    }
+    .session-more .spinner {
+      width: 13px;
+      height: 13px;
+      border-width: 2px;
+    }
+    /* 失败态用告警色描边，与普通「加载更多」区分 */
+    .session-more.retry {
+      border-style: solid;
+      border-color: var(--ah-warning);
+      color: var(--ah-warning);
+    }
+    .session-end {
+      margin: 6px 0 2px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--ah-text-faint);
     }
     .session {
       position: relative;

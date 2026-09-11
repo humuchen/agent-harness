@@ -93,7 +93,8 @@ import {
 
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
-  listChatSessions,
+  listChatSessionsPage,
+  parseSessionPageQuery,
   getChatSession,
   peekChatSession,
   createChatSession,
@@ -2183,7 +2184,17 @@ const server = createServer(
             })
           );
         }
-        return sendJson(res, { sessions: listChatSessions(ctx.sub) }, req);
+        // 分页（左侧历史列表滚动加载）：limit/offset 缺省 → 返回全量，
+        // 与改造前契约一致（老客户端不传参时行为不变）；响应额外带 total/hasMore。
+        const { limit, offset } = parseSessionPageQuery({
+          limit: url.searchParams.get('limit'),
+          offset: url.searchParams.get('offset')
+        });
+        return sendJson(
+          res,
+          listChatSessionsPage(ctx.sub, { limit, offset }),
+          req
+        );
       }
       if (req.method === 'POST' && path === '/api/chat/sessions') {
         const b = await readBody(req);

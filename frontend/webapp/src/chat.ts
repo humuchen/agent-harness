@@ -56,6 +56,17 @@ import type {
   SessionView,
   TraceCtx
 } from './chat-types';
+
+// 会话列表分页模型（左侧历史列表「滚动加载」的纯逻辑：步长 / 跨页合并 / 视图映射）。
+import {
+  SESSION_PAGE_SIZE,
+  initialSessionPageCursor,
+  mergeSessionPage,
+  mirrorMetaToSessionView,
+  shouldPrefetchSessions,
+  toSessionView,
+  type SessionPageCursor
+} from './chat-session-page';
 import {
   sanitizeMessages,
   mergeThreadHistories,
@@ -69,7 +80,6 @@ import {
 // 历史持久化（已抽离到 chat-persist.ts，降低 chat.ts 单体规模）。
 import { persistHistory } from './chat-persist';
 import type {
-  ChatSession,
   RunMode,
   StreamEvent,
   TraceNode,
@@ -223,6 +233,18 @@ export class AhChat extends LitElement {
 
   @state() sessions: SessionView[] = [];
   @state() activeId = '';
+
+  /**
+   * 会话列表「还有下一页」——驱动列表底部的加载更多 / 没有更多了提示。
+   * 首屏一次只取 SESSION_PAGE_SIZE 条，滚动到底部再增量拉取（见 loadSessionPage）。
+   */
+  @state() private sessionsHasMore = false;
+
+  /** 正在拉取会话列表（首屏或下一页）；为 true 时列表底部显示加载中并防重入。 */
+  @state() private sessionsLoadingMore = false;
+
+  /** 拉取下一页失败（显示可点重试）；首屏失败走既有降级链路，不置此标志。 */
+  @state() private sessionsMoreError = false;
 
   /**
    * 历史会话内容加载中（骨架屏开关）。
@@ -422,6 +444,28 @@ export class AhChat extends LitElement {
    * 由此避免连点多个会话时，先发起但后返回的慢响应覆盖当前会话内容（竞态）。
    */
   private sessionLoadSeq = 0;
+
+  /**
+   * 会话列表分页游标（非响应式）。
+   * offset / hasMore / serverIds 三者必须同步推进，故打包成一个状态对象整体替换，
+   * 避免出现「offset 已加、serverIds 未加」这类半更新态。驱动渲染的是
+   * this.sessions / this.sessionsHasMore，本字段仅作内部记账。
+   */
+  private sessionPage: SessionPageCursor = initialSessionPageCursor();
+
+  /**
+   * 首屏重载请求序号（非响应式）。
+   * SSE 的 `session:list` 后台重载可能与首屏加载并发，只有最新一次允许写回列表与游标，
+   * 否则先发起但后返回的响应会覆盖更新的列表。
+   */
+  private sessionsReloadSeq = 0;
+
+  /**
+   * 「填充视口」补拉的重入保护（非响应式）。
+   * 首屏一页不足以撑出滚动条时（超长视口 / 会话较少），scroll 事件永远不会触发，
+   * 需要主动续拉；该标志防止 updateComplete → 补拉 → updateComplete 形成无限循环。
+   */
+  private sessionAutoFillBusy = false;
 
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
@@ -704,62 +748,11 @@ export class AhChat extends LitElement {
     // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
     this.runRt.startWatchdog();
 
-    // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
+    // 会话列表首屏（分页）：只取第一页，其余交给滚动加载。
+    // 容错：带超时 + 失败自动重试一次；最终失败也不清空 ——
     // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
-    const loadList = () =>
-      withTimeout(client.listChatSessions(), 6000, '加载会话列表');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const list = await loadList();
-        this.sessions = list.map((s: ChatSession) => ({
-          id: s.id,
-          title: s.title,
-          updatedAt: s.updatedAt,
-          interactionMode: s.interactionMode,
-          model: s.model,
-          agentId: s.agentId
-        }));
-        break;
-      } catch (e) {
-        if (attempt === 1) {
-          // 重试仍失败 → 降级为本地镜像索引，并明确告诉用户「列表可能不完整」，
-          // 而不是像以前那样静默吞掉、让用户以为是自己没有历史会话。
-          notifyError(e, {
-            title: '会话列表',
-            fallback: '会话列表加载失败，已降级为本地缓存（可能不完整）',
-            key: 'chat-sessions'
-          });
-          const idx = await loadIndex();
-          this.sessions = Object.entries(idx).map(([sid, m]) => ({
-            id: sid,
-            title: m.title,
-            updatedAt:
-              typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-            interactionMode: (m as any).interactionMode,
-            model: (m as any).model,
-            agentId: (m as any).agentId
-          }));
-        }
-      }
-    }
-    // 用镜像索引补齐入口（服务端列表为空 / 缺项时，保证历史会话可见）。
-    // 典型场景：服务端重启后 chat-sessions 内存态清空（无 CHAT_SESSIONS_FILE），
-    // 但 history 镜像仍落 SQLite；此处兜底从 /api/history 索引补全。
-    {
-      const known = new Set(this.sessions.map((s) => s.id));
-      const idx = await loadIndex();
-      const extra = Object.entries(idx)
-        .filter(([sid]) => !known.has(sid))
-        .map(([sid, m]) => ({
-          id: sid,
-          title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-          interactionMode: (m as any).interactionMode,
-          model: (m as any).model,
-          agentId: (m as any).agentId
-        }));
-      if (extra.length) this.sessions = [...this.sessions, ...extra];
-    }
+    // 首次进入需要弹错提示，故 notifyOnError = true。
+    await this.reloadSessions(true);
     try {
       const state = await client.getState();
       // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
@@ -836,8 +829,9 @@ export class AhChat extends LitElement {
     if (!e || typeof e !== 'object') return;
     switch (e.type) {
       case 'session:list':
-        // 新建/批量变更：重拉列表（带超时容错），与 connectedCallback 同款降级。
-        void this.refreshSessions();
+        // 新建/批量变更：重拉列表首屏（带超时容错 + 分页游标复位）。
+        // 后台重载不弹错提示：失败时下一次列表交互会自动重试。
+        void this.reloadSessions(false);
         break;
       case 'session:meta':
         // 标题/时间/按会话设置变更：原地更新列表项，无需重拉全量。
@@ -859,40 +853,189 @@ export class AhChat extends LitElement {
     }
   };
 
-  /** 跨设备：重拉会话列表（容错降级，与 connectedCallback 一致）。 */
-  private async refreshSessions() {
-    try {
-      const list = await withTimeout(
-        client.listChatSessions(),
-        6000,
-        '同步会话列表'
-      );
-      const mapped = list.map((s: ChatSession) => ({
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt,
-        interactionMode: s.interactionMode,
-        model: s.model,
-        agentId: s.agentId
-      }));
-      this.sessions = [...mapped];
-      // 用本地镜像索引补齐（服务端列表为空/缺项时历史会话仍可见）。
-      const known = new Set(this.sessions.map((s) => s.id));
-      const idx = await loadIndex();
-      const extra = Object.entries(idx)
-        .filter(([sid]) => !known.has(sid))
-        .map(([sid, m]) => ({
-          id: sid,
-          title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-          interactionMode: (m as any).interactionMode,
-          model: (m as any).model,
-          agentId: (m as any).agentId
-        }));
-      if (extra.length) this.sessions = [...this.sessions, ...extra];
-    } catch {
-      /* 同步失败不阻断：下一次 enter/列表交互会重试 */
+  /**
+   * 重载会话列表首屏（offset 归零）。
+   *
+   * 与改造前（一次性全量）的两点差异：
+   * - 只取第一页（SESSION_PAGE_SIZE 条），其余由滚动加载按需补齐；
+   * - 列表被组织为**两段式**：前段恒为服务端条目、尾部恒为镜像兜底补项。
+   *   这个布局是 mergeSessionPage 计算插入位置的前提，改动前请先读 chat-session-page.ts。
+   *
+   * @param notifyOnError 首屏失败是否弹提示。首次进入（connectedCallback）要提示；
+   *   SSE 触发的后台重载沉默失败即可（下一次列表交互会自动重试）。
+   */
+  private async reloadSessions(notifyOnError: boolean): Promise<void> {
+    // 本次重载的请求序号：SSE 触发的后台重载可能与首屏加载并发，只有最新一次
+    // 允许把结果写回 this.sessions —— 否则过期响应会覆盖更新的列表与游标。
+    const seq = ++this.sessionsReloadSeq;
+    // 首屏重载使既有分页游标失效：先复位，失败时也不会残留「还有下一页」的假象。
+    this.sessionPage = initialSessionPageCursor();
+    this.sessionsHasMore = false;
+    this.sessionsMoreError = false;
+
+    // 首屏同样带重试（超时 6s，最多 2 次），与改造前一致。
+    let page: { sessions: SessionView[]; hasMore: boolean } | null = null;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2 && !page; attempt++) {
+      try {
+        const r = await withTimeout(
+          client.listChatSessionsPage({
+            limit: SESSION_PAGE_SIZE,
+            offset: 0
+          }),
+          6000,
+          '加载会话列表'
+        );
+        page = {
+          sessions: r.sessions.map(toSessionView),
+          hasMore: r.hasMore
+        };
+      } catch (e) {
+        lastErr = e;
+      }
     }
+
+    // 过期响应：期间已发起更新的一次重载，本次结果（含错误提示）直接丢弃。
+    if (seq !== this.sessionsReloadSeq) return;
+
+    if (!page && notifyOnError) {
+      // 重试仍失败 → 明确告知「列表可能不完整」，而不是静默吞掉、
+      // 让用户以为是自己没有历史会话（随后走下方镜像索引降级）。
+      notifyError(lastErr, {
+        title: '会话列表',
+        fallback: '会话列表加载失败，已降级为本地缓存（可能不完整）',
+        key: 'chat-sessions'
+      });
+    }
+
+    if (page) {
+      this.sessions = page.sessions;
+      this.sessionPage = {
+        offset: page.sessions.length,
+        hasMore: page.hasMore,
+        serverIds: new Set(page.sessions.map((s) => s.id))
+      };
+      this.sessionsHasMore = page.hasMore;
+      await this.appendMirrorExtras();
+      await this.updateComplete;
+      void this.autoFillSessionList();
+      return;
+    }
+
+    // 服务端不可达：整表退回本地镜像索引（无分页语义，hasMore 恒 false）。
+    const idx = await loadIndex();
+    // loadIndex 同样是异步的：期间若又发生了一次重载，本次降级结果作废。
+    if (seq !== this.sessionsReloadSeq) return;
+    this.sessions = Object.entries(idx).map(([sid, m]) =>
+      mirrorMetaToSessionView(sid, m)
+    );
+    this.sessionPage = initialSessionPageCursor();
+    this.sessionsHasMore = false;
+  }
+
+  /**
+   * 用历史镜像索引补齐列表尾部（服务端列表为空 / 缺项时历史会话仍可见）。
+   * 典型场景：服务端重启后 chat-sessions 内存态清空（无 CHAT_SESSIONS_FILE），
+   * 但 history 镜像仍落 SQLite；此处兜底从 /api/history 索引补全。
+   * 补项恒排在服务端条目之后 —— 该顺序被 mergeSessionPage 依赖。
+   */
+  private async appendMirrorExtras(): Promise<void> {
+    const known = new Set(this.sessions.map((s) => s.id));
+    const idx = await loadIndex();
+    const extra = Object.entries(idx)
+      .filter(([sid]) => !known.has(sid))
+      .map(([sid, m]) => mirrorMetaToSessionView(sid, m));
+    if (extra.length) this.sessions = [...this.sessions, ...extra];
+  }
+
+  /**
+   * 加载下一页会话（滚动加载的增量入口）。
+   * 四重短路：没有下一页 / 正在加载 / 上次失败待重试 / 已卸载 —— 直接返回，
+   * 使 scroll 事件即使高频触发也不会重复发请求。
+   */
+  private async loadMoreSessions(): Promise<void> {
+    if (!this.sessionsHasMore) return;
+    if (this.sessionsLoadingMore) return;
+    // 失败后暂停自动预取，避免「本来就停在底部 → 又触发 → 再失败」的请求风暴；
+    // 用户点「点击重试」会清掉该标志。
+    if (this.sessionsMoreError) return;
+    this.sessionsLoadingMore = true;
+    // 快照当前游标对象：期间若发生首屏重载（SSE 新建会话），sessionPage 会被整体替换，
+    // 届时本次结果必须作废 —— 否则会用过期游标覆盖新状态，导致后续分页跳条。
+    const cursor = this.sessionPage;
+    try {
+      const offset = cursor.offset;
+      const r = await withTimeout(
+        client.listChatSessionsPage({ limit: SESSION_PAGE_SIZE, offset }),
+        6000,
+        '加载更多会话'
+      );
+      if (this.sessionPage === cursor) {
+        const page = r.sessions.map(toSessionView);
+        const merged = mergeSessionPage(this.sessions, page, cursor.serverIds);
+        this.sessions = merged.list;
+        // 游标按「服务端已消费条数」推进，而非实际插入条数：被去重跳过的条目同样占用了
+        // 服务端的分页区间，按插入数推进会重复取到同一页。
+        this.sessionPage = {
+          offset: offset + page.length,
+          // 服务端称还有下一页、却返回空页时按「没有更多」处理，防御性避免空转。
+          hasMore: r.hasMore && page.length > 0,
+          serverIds: new Set([...cursor.serverIds, ...merged.insertedIds])
+        };
+        this.sessionsHasMore = this.sessionPage.hasMore;
+        this.sessionsMoreError = false;
+      }
+      // else：游标已被整体替换（首屏重载介入）→ 本次结果作废，不写回任何状态。
+    } catch {
+      // 失败不清空已有内容，仅置错误态交给用户手动重试。
+      this.sessionsMoreError = true;
+    } finally {
+      this.sessionsLoadingMore = false;
+    }
+    // 收尾统一补一次「填充视口」检查：覆盖两类情况 ——
+    // 1) 本次真正加载了一页，可能仍不足以撑出滚动条；
+    // 2) 本次被判定过期，而首屏重载发起 autoFill 时本请求尚未结束、那次调用被短路了。
+    void this.autoFillSessionList();
+  }
+
+  /** 会话列表滚动：进入底部预取阈值即拉下一页。 */
+  private onSessionListScroll(e: Event) {
+    const el = e.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (!shouldPrefetchSessions(distance)) return;
+    void this.loadMoreSessions();
+  }
+
+  /**
+   * 「填充视口」补拉：首屏一页不足以撑出滚动条时（超长视口 / 会话较少 / 侧栏很矮），
+   * scroll 事件永远不会被触发 —— 这里主动续拉，直到出现滚动条、没有更多或出错。
+   * 上限 5 轮纯属死循环防御；sessionAutoFillBusy 串行化，
+   * 防止 loadMoreSessions → autoFill → loadMoreSessions 递归失控。
+   */
+  private async autoFillSessionList(): Promise<void> {
+    if (this.sessionAutoFillBusy) return;
+    this.sessionAutoFillBusy = true;
+    try {
+      for (let i = 0; i < 5; i++) {
+        if (!this.sessionsHasMore || this.sessionsMoreError) return;
+        // 有请求在飞：不空转，交给它的收尾再触发一轮（loadMoreSessions 末尾必定回调本方法）。
+        if (this.sessionsLoadingMore) return;
+        const el = this.sessionListEl;
+        if (!el) return;
+        // 已可滚动 → 交回 scroll 事件驱动，不再主动填充。
+        if (el.scrollHeight - el.clientHeight > 4) return;
+        await this.loadMoreSessions();
+        await this.updateComplete;
+      }
+    } finally {
+      this.sessionAutoFillBusy = false;
+    }
+  }
+
+  /** 会话列表滚动容器（用于「是否已撑出滚动条」判定与滚动监听）。 */
+  private get sessionListEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.session-list') ?? null;
   }
 
   /**
@@ -1003,6 +1146,18 @@ export class AhChat extends LitElement {
   /** 跨设备：从列表中移除被他端删除的会话；若正打开则回退到空。 */
   private removeSessionFromList(sid: string) {
     this.sessions = this.sessions.filter((s) => s.id !== sid);
+    // 维护分页不变量：被删的若是一条**已消费的服务端条目**，服务端列表在其之后整体
+    // 前移一位 → offset 同步减 1，否则下一页会跳过一条会话。
+    // 未加载过的条目（不在 serverIds 内）不影响已消费区间，无需调整。
+    if (this.sessionPage.serverIds.has(sid)) {
+      const serverIds = new Set(this.sessionPage.serverIds);
+      serverIds.delete(sid);
+      this.sessionPage = {
+        offset: Math.max(0, this.sessionPage.offset - 1),
+        hasMore: this.sessionPage.hasMore,
+        serverIds
+      };
+    }
     if (this.activeId === sid) {
       this.activeId = '';
       // 作废仍在飞行中的该会话切换请求：否则其返回后会把已删除会话的历史写回
@@ -1486,17 +1641,17 @@ export class AhChat extends LitElement {
         agentId: s.agentId
       }
     };
-    this.sessions = [
-      {
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt,
-        interactionMode: s.interactionMode,
-        model: s.model,
-        agentId: s.agentId
-      },
-      ...this.sessions
-    ];
+    this.sessions = [toSessionView(s), ...this.sessions];
+    // 维护分页不变量：新会话落在服务端列表头部，相当于「已消费区间」整体后移一位。
+    // 一并把 offset 加 1，下一页便不会重复取到本页末条（serverIds 记录它是服务端条目，
+    // 加载更多时新页才会插在它之后、镜像补项之前）。
+    const serverIds = new Set(this.sessionPage.serverIds);
+    serverIds.add(s.id);
+    this.sessionPage = {
+      offset: this.sessionPage.offset + 1,
+      hasMore: this.sessionPage.hasMore,
+      serverIds
+    };
     return s.id;
   }
 
@@ -2835,6 +2990,45 @@ export class AhChat extends LitElement {
   }
 
   /**
+   * 会话列表底部状态行（滚动加载的反馈位）：
+   * 加载中 / 加载失败可重试 / 已到末尾 / 「加载更多」。
+   *
+   * 为何在自动滚动加载之外仍保留手动按钮：自动触发依赖滚动事件，而「首屏不足以撑出
+   * 滚动条」虽有 autoFillSessionList 兜底，但该兜底有轮次上限；按钮是最终安全网，
+   * 同时给键盘 / 读屏用户一条不依赖滚动的入口。
+   */
+  private renderSessionListFooter() {
+    if (this.sessions.length === 0) return nothing;
+    if (this.sessionsLoadingMore) {
+      return html`<div class="session-more" role="status" aria-live="polite">
+        <span class="spinner"></span><span>加载中…</span>
+      </div>`;
+    }
+    if (this.sessionsMoreError) {
+      return html`<button
+        class="session-more retry"
+        @click=${() => {
+          this.sessionsMoreError = false;
+          void this.loadMoreSessions();
+        }}
+      >
+        加载失败，点击重试
+      </button>`;
+    }
+    if (this.sessionsHasMore) {
+      return html`<button
+        class="session-more"
+        @click=${() => void this.loadMoreSessions()}
+      >
+        加载更多
+      </button>`;
+    }
+    // 仅一页（且无更多）时不显示「没有更多了」—— 无信息量，徒增噪音。
+    if (this.sessions.length <= SESSION_PAGE_SIZE) return nothing;
+    return html`<p class="session-end">没有更多了</p>`;
+  }
+
+  /**
    * 内容区骨架屏（历史会话加载占位）。
    * 排布刻意对齐真实消息：用户气泡靠右且较窄、助手气泡带头像靠左且较宽，
    * 并复用 .thread 的宽度/边距与 sharedStyles 的 .sk-line 微光动画，
@@ -2953,13 +3147,19 @@ export class AhChat extends LitElement {
               ＋ 新对话
             </button>
           </div>
-          <div class="session-list">
+          <div
+            class="session-list"
+            role="list"
+            aria-busy=${this.sessionsLoadingMore ? 'true' : 'false'}
+            @scroll=${this.onSessionListScroll}
+          >
             ${this.sessions.length === 0
               ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
               : this.sessions.map(
                   (s) => html`
                     <div
                       class="session ${s.id === this.activeId ? 'active' : ''}"
+                      role="listitem"
                       @click=${() => this.selectSession(s.id)}
                     >
                       <span class="dot"></span>
@@ -2989,6 +3189,7 @@ export class AhChat extends LitElement {
                     </div>
                   `
                 )}
+            ${this.renderSessionListFooter()}
           </div>
         </div>
 

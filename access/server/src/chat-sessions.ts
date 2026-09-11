@@ -150,6 +150,61 @@ export function listChatSessions(owner?: string): ChatSession[] {
 }
 
 /**
+ * 单页条数上限：与 memo / registry 等既有列表接口一致地做钳制，
+ * 防止客户端传超大 limit 把整个会话表（含消息）一次拉走。
+ */
+export const CHAT_SESSION_MAX_PAGE = 200;
+
+/**
+ * 解析列表查询参数（原始字符串来源，容错）。
+ * 非法值（NaN / 负数 / 空串）一律回落到缺省语义：limit 缺省 = 全量、offset 缺省 = 0。
+ * 独立导出以便单测覆盖边界。
+ */
+export function parseSessionPageQuery(q: {
+  limit?: string | null;
+  offset?: string | null;
+}): { limit?: number; offset: number } {
+  const limitRaw = Number(q.limit);
+  // 注意 Number(null) === 0、Number('') === 0，故「未传/空串」自然落入缺省分支。
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(CHAT_SESSION_MAX_PAGE, Math.floor(limitRaw))
+      : undefined;
+  const offsetRaw = Number(q.offset);
+  const offset =
+    Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+  return { limit, offset };
+}
+
+/**
+ * 分页列出会话（按最近更新倒序）——「历史列表滚动加载」的服务端入口。
+ *
+ * - 不传 limit 时返回自 offset 起的全部条目，保持既有「全量」契约向后兼容
+ *   （老客户端不传分页参数时行为与改造前一致）。
+ * - 返回 total / hasMore：total 为过滤后的全量条数（不受分页影响），
+ *   hasMore 由「已取到的末尾是否已到全量末尾」推导，前端据此决定是否继续取下一页。
+ *
+ * 排序键是会变动的 updatedAt，故 offset 分页在「翻页间隙有会话被更新/新建」时
+ * 可能出现个别条目重复或跳过；前端按 id 去重（见 chat-session-page.ts）已覆盖前者。
+ */
+export function listChatSessionsPage(
+  owner?: string,
+  opts: { limit?: number; offset?: number } = {}
+): { sessions: ChatSession[]; total: number; hasMore: boolean } {
+  const sorted = listChatSessions(owner);
+  const total = sorted.length;
+  const rawOffset = Math.floor(opts.offset ?? 0);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+  // 缺省 limit = 「从 offset 到末尾」的全部剩余条目。
+  const limit =
+    opts.limit === undefined
+      ? Math.max(0, total - offset)
+      : Math.max(1, Math.min(CHAT_SESSION_MAX_PAGE, Math.floor(opts.limit) || 0));
+  const page = sorted.slice(offset, offset + limit);
+  return { sessions: page, total, hasMore: offset + page.length < total };
+}
+
+/**
  * 取单个会话（含消息记录）；不存在或 owner 不符时返回 null（不泄露存在性）。
  * @param owner 指定时做归属校验，不符返回 null。
  */
