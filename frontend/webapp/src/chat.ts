@@ -102,6 +102,13 @@ import './components/composer-plus';
 import './components/ah-command-suggestions';
 import type { AhCommandSuggestions } from './components/ah-command-suggestions';
 
+/**
+ * 附件约束（导出以便单测与 UI 文案复用，避免两处写死不一致）。
+ * 拖拽遮罩的提示文案与该强制校验共用同一常量。
+ */
+export const MAX_ATTACHMENTS = 15;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 单个 10MB
+
 /* ------------------------------ Chat ------------------------------ */
 
 @customElement('ah-chat')
@@ -2087,6 +2094,11 @@ export class AhChat extends LitElement {
     return types ? Array.from(types).includes('Files') : false;
   }
 
+  /** 剩余可添加的附件数（0 表示已达上限）。 */
+  private get attachRoom(): number {
+    return Math.max(0, MAX_ATTACHMENTS - this.attachments.length);
+  }
+
   /**
    * 拖拽进入 chat 区域：亮起整屏遮罩。
    * 用 `dragenter`/`dragleave` 计数成对抵消——拖拽过程中光标会在子元素间移动，
@@ -2131,14 +2143,35 @@ export class AhChat extends LitElement {
    */
   private async handleFiles(picked: File[]): Promise<void> {
     if (!picked.length) return;
-    const maxBytes = 10 * 1024 * 1024; // 10MB 上限
 
-    for (const f of picked) {
+    // 数量上限：拖拽遮罩的提示文案（MAX_ATTACHMENTS）在这里才真正生效。
+    // 提示必须同时给出「实际收了多少」和「被挡了多少」——
+    // 只说「已忽略 N 个」用户无法判断到底加进去了几个。
+    const room = MAX_ATTACHMENTS - this.attachments.length;
+    if (room <= 0) {
+      notify.warning(
+        `已达上传上限（${MAX_ATTACHMENTS} 个），请先移除部分文件再添加`,
+        { key: 'chat-upload' }
+      );
+      return;
+    }
+    let list = picked;
+    if (list.length > room) {
+      const skipped = list.length - room;
+      notify.warning(
+        `最多支持上传 ${MAX_ATTACHMENTS} 个文件：本次已添加 ${room} 个，另有 ${skipped} 个未添加`,
+        { key: 'chat-upload' }
+      );
+      list = list.slice(0, room);
+    }
+
+    for (const f of list) {
       // 前置校验
-      if (f.size > maxBytes) {
-        notify.warning(`文件过大：${f.name}（上限 10MB）`, {
-          key: 'chat-upload'
-        });
+      if (f.size > MAX_ATTACHMENT_BYTES) {
+        notify.warning(
+          `文件过大：${f.name}（上限 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB）`,
+          { key: 'chat-upload' }
+        );
         continue;
       }
       const allowedTypes = [
@@ -3116,7 +3149,10 @@ export class AhChat extends LitElement {
       <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
            drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->
       ${this.dragActive
-        ? html`<div class="drop-overlay" aria-hidden="true">
+        ? html`<div
+            class="drop-overlay ${this.attachRoom === 0 ? 'full' : ''}"
+            aria-hidden="true"
+          >
             <div class="drop-overlay-card">
               <div class="drop-overlay-icons">
                 <svg
@@ -3132,10 +3168,18 @@ export class AhChat extends LitElement {
                   />
                 </svg>
               </div>
-              <div class="drop-overlay-title">松开即可添加文件</div>
-              <div class="drop-overlay-hint">
-                最多支持上传 50 个文件，支持常见文件类型
-              </div>
+              <!-- 已达上限时切换为「不可再添加」提示，避免用户松开后才发现加不进去。
+                   剩余额度一并展示，让「还能加几个」一目了然。 -->
+              ${this.attachRoom === 0
+                ? html`<div class="drop-overlay-title">已达上传上限</div>
+                    <div class="drop-overlay-hint">
+                      最多支持 ${MAX_ATTACHMENTS} 个文件，请先移除部分文件再添加
+                    </div>`
+                : html`<div class="drop-overlay-title">松开即可添加文件</div>
+                    <div class="drop-overlay-hint">
+                      最多支持上传 ${MAX_ATTACHMENTS} 个文件（还可添加
+                      ${this.attachRoom} 个），支持常见文件类型
+                    </div>`}
             </div>
           </div>`
         : nothing}

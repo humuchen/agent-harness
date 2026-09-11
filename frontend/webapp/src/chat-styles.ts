@@ -66,6 +66,14 @@ export const chatStyles = [
       border-radius: 14px;
       text-align: center;
     }
+    /* 已达上传上限：卡片描边转警示色，与「松开即可添加」正向态区分 */
+    .drop-overlay.full .drop-overlay-card {
+      border-color: color-mix(in srgb, var(--ah-danger, #ff453a) 55%, transparent);
+    }
+    .drop-overlay.full .drop-overlay-icons,
+    .drop-overlay.full .drop-overlay-title {
+      color: var(--ah-danger, #ff453a);
+    }
     .drop-overlay-icons {
       color: var(--ah-text);
       opacity: 0.85;
