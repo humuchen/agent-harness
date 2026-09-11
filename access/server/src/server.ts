@@ -160,6 +160,8 @@ import {
   type PlanDiff,
   type PlanStore
 } from './plan-store';
+// P3-1 品牌位配置。
+import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
 
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
@@ -1993,6 +1995,10 @@ const server = createServer(
           auditAction('plan.delete', { planId: id, role: ctx.role, sub: ctx.sub });
           return sendJson(res, { ok }, req);
         }
+      }
+      // ── P3-1 品牌位：公开无需鉴权（属展示信息） ──
+      if (req.method === 'GET' && path === '/api/brand') {
+        return sendJson(res, getBrandConfig(), req);
       }
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
       const readAct = readAction(path);

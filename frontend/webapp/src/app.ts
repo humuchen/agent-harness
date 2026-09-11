@@ -4,7 +4,13 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
-import { getTheme, toggleTheme, type Theme } from './theme/tokens';
+import {
+  getTheme,
+  toggleTheme,
+  type Theme,
+  type BrandConfig,
+  BRAND_DEFAULT
+} from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
 import { notifyError } from './utils/errors';
 import {
@@ -47,7 +53,7 @@ const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
  * 2 字 / 3 字，极端情况用完整 label 兜底，保证收起态每个 Tab 的短标签唯一可辨。
  */
 function uniqueShort(label: string, used: Set<string>): string {
-  for (let n = 1; n <= label.length; n++) {
+  for (let n = 2; n <= label.length; n++) {
     const cand = label.slice(0, n);
     if (!used.has(cand)) {
       used.add(cand);
@@ -63,18 +69,17 @@ function uniqueShort(label: string, used: Set<string>): string {
 
 const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'workspace', label: '工作台', short: '台' },
-  { id: 'dashboard', label: '总览', short: '览' },
-  { id: 'chat', label: '对话', short: '话' },
+  { id: 'chat', label: '对话', short: '对话' },
   { id: 'mcp', label: 'MCP', short: 'M' },
   { id: 'observability', label: '可观测', short: '观' },
-  { id: 'audit', label: '审计', short: '审' },
-  { id: 'org', label: '组织', short: '组' },
-  { id: 'artifact', label: '档案', short: '档' },
-  { id: 'skill', label: '技能', short: '能' },
+  { id: 'audit', label: '审计', short: '审计' },
+  { id: 'org', label: '组织', short: '组织' },
+  { id: 'artifact', label: '档案', short: '档案' },
+  { id: 'skill', label: '技能', short: '技能' },
   { id: 'datasource', label: '数据源', short: '源' },
-  { id: 'sandbox', label: '沙箱', short: '沙' },
+  { id: 'sandbox', label: '沙箱', short: '沙箱' },
   { id: 'supplychain', label: '供应链', short: '链' },
-  { id: 'plugins', label: '插件', short: '插' }
+  { id: 'plugins', label: '插件', short: '插件' }
 ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
@@ -171,6 +176,9 @@ const chatShellCss = css`
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
+  // P3-1: 品牌位配置
+  brand: BrandConfig = BRAND_DEFAULT;
+
   static styles = [sharedStyles, navDotCss, chatShellCss];
 
   @state() private tab: string = initialTabFromPath();
@@ -425,7 +433,10 @@ export class AhApp extends LitElement {
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
-            <!-- <span class="brand-text">Agent Harness</span>
+            <!-- <span class="brand-text">Agent Harness</span> -->
+            <span class="brand-text"
+              >${this.brand?.productName ?? 'Agent Harness'}</span
+            >
             <button
               class="sidebar-toggle"
               title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
@@ -433,7 +444,8 @@ export class AhApp extends LitElement {
               aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
               ${this.sidebarCollapsed ? '›' : '‹'}
-            </button> -->
+            </button>
+            -->
           </div>
           <nav class="nav">
             ${TABS.map(
@@ -535,7 +547,10 @@ export class AhApp extends LitElement {
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
             <ah-workspace ?hidden=${this.tab !== 'workspace'}></ah-workspace>
             <ah-dashboard ?hidden=${this.tab !== 'dashboard'}></ah-dashboard>
-            <ah-chat ?hidden=${this.tab !== 'chat'} role=${this.me?.role ?? ''}></ah-chat>
+            <ah-chat
+              ?hidden=${this.tab !== 'chat'}
+              role=${this.me?.role ?? ''}
+            ></ah-chat>
             <ah-run ?hidden=${this.tab !== 'run'}></ah-run>
             <ah-verify ?hidden=${this.tab !== 'verify'}></ah-verify>
             <ah-env ?hidden=${this.tab !== 'env'}></ah-env>
@@ -548,9 +563,13 @@ export class AhApp extends LitElement {
             <ah-org-tree ?hidden=${this.tab !== 'org'}></ah-org-tree>
             <ah-artifacts ?hidden=${this.tab !== 'artifact'}></ah-artifacts>
             <ah-skills ?hidden=${this.tab !== 'skill'}></ah-skills>
-            <ah-datasources ?hidden=${this.tab !== 'datasource'}></ah-datasources>
+            <ah-datasources
+              ?hidden=${this.tab !== 'datasource'}
+            ></ah-datasources>
             <ah-sandbox ?hidden=${this.tab !== 'sandbox'}></ah-sandbox>
-            <ah-supply-chain ?hidden=${this.tab !== 'supplychain'}></ah-supply-chain>
+            <ah-supply-chain
+              ?hidden=${this.tab !== 'supplychain'}
+            ></ah-supply-chain>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             <ah-provider-key-settings
               ?hidden=${this.tab !== 'settings'}
@@ -569,6 +588,7 @@ export class AhApp extends LitElement {
                 </div>`
               : ''}
           </main>
+          <ah-brand-foot></ah-brand-foot>
         </div>
       </div>
     `;

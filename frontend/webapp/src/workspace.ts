@@ -233,7 +233,7 @@ export class AhWorkspace extends LitElement {
   private goto(tab: string): void {
     this.dispatchEvent(
       new CustomEvent('ah-goto', {
-        detail: { tab },
+        detail: tab,
         bubbles: true,
         composed: true,
       })

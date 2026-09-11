@@ -143,10 +143,9 @@ export class AhSkills extends LitElement {
     s.add(skill.id);
     this.busy = s;
     try {
-      const res = await fetch(`/api/skills/${encodeURIComponent(skill.id)}/${action}`, {
+      const res = await authedFetch(`/api/skills/${encodeURIComponent(skill.id)}/${action}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin'
+        headers: { 'content-type': 'application/json' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await this.refresh();

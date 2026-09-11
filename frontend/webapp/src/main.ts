@@ -23,6 +23,7 @@ import './sandbox-console';
 import './supply-chain';
 import './observability';
 import './login';
+import './brand';
 // 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。
 import './components';
 
@@ -50,6 +51,11 @@ function mountLogin(): void {
 // 此时需先打 /api/account/me 用 cookie 回填会话，再进控制台（满足 x-ah-username 双因子）。
 // 注意：OAuth 用户不经过账号密码接口，因此不写入 ah_token；会话存在性仅凭用户名判断。
 const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'success';
+
+// P3-1：加载品牌配置并应用主题色。脱离品牌不影响应用主流程。
+import { initBrand } from './theme/tokens';
+initBrand().catch(() => {});
+
 async function bootstrap(): Promise<void> {
   if (isAuthed()) {
     mountApp();

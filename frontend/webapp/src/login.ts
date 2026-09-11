@@ -23,7 +23,7 @@
 import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
-import { getTheme, type Theme } from './theme/tokens';
+import { getTheme, type Theme, type BrandConfig, BRAND_DEFAULT } from './theme/tokens';
 import {
   setSession,
   setToken,
@@ -181,6 +181,9 @@ function eyeIcon(open: boolean) {
 
 @customElement('ah-login')
 export class AhLogin extends LitElement {
+  // P3-1: 品牌位配置
+  brand: BrandConfig = BRAND_DEFAULT;
+
   static styles = [
     sharedStyles,
     css`
@@ -1865,7 +1868,7 @@ export class AhLogin extends LitElement {
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
-            <span>Agent Harness</span>
+            <span>${this.brand?.productName ?? 'Agent Harness'}</span>
             <span class="brand-ver">v${APP_VERSION}</span>
           </div>
           <div class="status-chip">
@@ -1874,7 +1877,7 @@ export class AhLogin extends LitElement {
         </div>
 
         <div class="brand-head">
-          <h2 class="brand-title">编排、运行、观测<br />你的每一个 AI Agent</h2>
+          <h2 class="brand-title">${this.brand?.loginTagline ?? '编排、运行、观测<br />你的每一个 AI Agent'}</h2>
           <p class="brand-sub">
             统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。
           </p>
@@ -1934,7 +1937,7 @@ export class AhLogin extends LitElement {
               全链路可观测与事件回放
             </li>
           </ul>
-          <div class="brand-foot">Agent Harness 2026 · 私有化部署就绪</div>
+          <div class="brand-foot">${this.brand?.footer ?? 'Agent Harness 2026 · 私有化部署就绪'}</div>
         </div>
 
         <div class="auth-float">

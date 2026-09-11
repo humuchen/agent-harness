@@ -196,9 +196,8 @@ export class AhSandbox extends LitElement {
 
   private async destroySession(id: string): Promise<void> {
     try {
-      const res = await fetch(`/api/sandbox/sessions/${id}`, {
-        method: 'DELETE',
-        credentials: 'same-origin'
+      const res = await authedFetch(`/api/sandbox/sessions/${id}`, {
+        method: 'DELETE'
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await this.refresh();

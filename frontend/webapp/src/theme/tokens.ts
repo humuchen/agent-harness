@@ -139,3 +139,80 @@ export function initTheme(): void {
   installThemeStyles();
   setTheme(getTheme());
 }
+
+// ─── P3-1 品牌位应用 ──────────────────────────────────────────────────────────
+
+export interface BrandConfig {
+  productName: string;
+  logoUrl?: string;
+  faviconUrl?: string;
+  primaryColor?: string;
+  loginTagline?: string;
+  footer?: string;
+}
+
+export const BRAND_DEFAULT: BrandConfig = {
+  productName: 'Agent Harness',
+  primaryColor: '#2997FF',
+  loginTagline: '编排、运行、观测 — 你的每一个 AI Agent',
+  footer: 'Agent Harness 2026 · 私有化部署就绪'
+};
+
+/** 把品牌 primaryColor 写入 CSS 变量 --ah-accent，替换当前主题色。 */
+export function applyBrand(cfg: BrandConfig): void {
+  if (!cfg.primaryColor) return;
+  const root = document.documentElement;
+  // 写入 --ah-accent 及其强弱变体，覆盖主题默认
+  root.style.setProperty('--ah-accent', cfg.primaryColor);
+  // 推导 --ah-accent-strong（+20% 亮度）
+  const strong = lightenHex(cfg.primaryColor, 0.2);
+  if (strong) root.style.setProperty('--ah-accent-strong', strong);
+  // 推导 --ah-accent-soft（透明版本）
+  root.style.setProperty('--ah-accent-soft', hexToRgba(cfg.primaryColor, 0.15));
+}
+
+/** 简单 Hex 亮度调整（用于推导 accent-strong）。 */
+function lightenHex(hex: string, pct: number): string | null {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return null;
+  const num = parseInt(clean, 16);
+  const r = Math.min(255, ((num >> 16) + Math.floor(255 * pct)) | 0);
+  const g = Math.min(255, ((num >> 8 & 0xff) + Math.floor(255 * pct)) | 0);
+  const b = Math.min(255, ((num & 0xff) + Math.floor(255 * pct)) | 0);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/** Hex 转 rgba() 字符串。 */
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length === 6) {
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return `rgba(41, 151, 255, ${alpha})`; // 默认蓝
+}
+
+/** 启动时加载品牌配置并应用。 */
+export async function initBrand(): Promise<BrandConfig> {
+  try {
+    const res = await fetch('/api/brand', { credentials: 'same-origin' });
+    if (res.ok) {
+      const cfg = (await res.json()) as BrandConfig;
+      applyBrand(cfg);
+      // 设置 favicon
+      if (cfg.faviconUrl) {
+        const link = document.querySelector('link[rel="icon"]') || document.createElement('link');
+        link.setAttribute('rel', 'icon');
+        link.setAttribute('href', cfg.faviconUrl);
+        document.head.appendChild(link);
+      }
+      return cfg;
+    }
+  } catch {
+    // 网络错误或脱机 → 使用默认品牌
+  }
+  applyBrand(BRAND_DEFAULT);
+  return BRAND_DEFAULT;
+}
