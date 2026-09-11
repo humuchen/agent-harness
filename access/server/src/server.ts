@@ -8,6 +8,7 @@ import {
   defaultPromptFor,
   getMemoryStore,
   invalidateSessionMemory,
+  assembleAgent,
   type RunMode
 } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
@@ -79,7 +80,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, securityHeaders, sendJsonError } from './http-helpers';
+import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -115,6 +116,17 @@ import { subscribeChatEvents, publishChatEvent } from './chat-bus';
 
 // 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
 import { subscribeReminders } from './reminder-bus';
+
+// IM 桥接（用户层入口）：飞书 / 钉钉 / 企业微信 → agent → 回发。纯业务层，core 零感知。
+import {
+  createImRegistry,
+  logImRegistry,
+  createDedupStore,
+  ImBridge,
+  deriveImIdentity,
+  type ImExecutor,
+  type ImProvider
+} from './im';
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
@@ -709,6 +721,43 @@ function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
 
+// ── IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）──
+// 装配「已配置且启用」的平台适配器；未开 IM_ENABLED 时整体 no-op（零副作用）。
+// agent 执行经注入的 executor 复用既有 assembleAgent + harness 链路（护栏/记忆/配额/审计全生效），
+// 对话按 IM owner 落库 chat-sessions，因此在 Web 工作台「历史会话」中同样可见。
+const imRegistry = createImRegistry();
+logImRegistry(imRegistry);
+
+const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
+  const { owner, sessionId } = deriveImIdentity(msg);
+  const origin = `im:${msg.provider}`;
+  // 落库用户消息（IM 侧输入在 Web 工作台可见）。
+  appendChatMessage(sessionId, { role: 'user', content: prompt, ts: Date.now() }, owner, origin);
+  const mode: RunMode = cfg.defaultMode;
+  const assembled = await assembleAgent(
+    mode,
+    undefined, // onEvent：IM 场景无需流式回推（平台侧按整条消息回复）
+    undefined, // systemPrompt：沿用默认
+    undefined, // modelOverride
+    prompt,
+    `${owner}::${sessionId}`,
+    undefined, // signal
+    cfg.timeoutMs,
+    cfg.maxSteps
+  );
+  const final = await assembled.harness.run(prompt);
+  appendChatMessage(sessionId, { role: 'assistant', content: final, ts: Date.now() }, owner, origin);
+  return final;
+};
+
+const imBridge = new ImBridge(
+  imRegistry.config,
+  imExecutor,
+  { onAudit: (e) => auditAction(e.action, { ...e }) },
+  // 去重后端：配了 REDIS_URL 走 Redis（多副本跨实例去重），否则内存 LRU。
+  createDedupStore()
+);
+
 // 前端统一由 frontend/webapp/dist 托管（见 webappDir）；项目不再包含 public 兜底目录。
 
 // 插件系统：loader + 双宿主（Server/Web）。在 bootstrap()（initAgentRegistry 之后）构造并赋值，
@@ -858,6 +907,35 @@ const server = createServer(
           path
         )
       ) {
+        return;
+      }
+      // ── IM 桥接入站（webhook）──
+      // 无用户登录态，安全闸门是各平台签名校验（在 ImBridge 内完成），故必须放在 guard 之前。
+      //   POST /api/im/:provider/events  —— 消息事件回调
+      //   GET  /api/im/:provider/events  —— URL 验证握手（企业微信 echostr / 飞书 challenge）
+      const imMatch = /^\/api\/im\/(feishu|dingtalk|wecom)\/events\/?$/.exec(path);
+      if (imMatch && (req.method === 'POST' || req.method === 'GET')) {
+        const provider = imMatch[1] as ImProvider;
+        let raw = '';
+        if (req.method === 'POST') {
+          try {
+            // 必须读原始字节：签名校验对字节序敏感，JSON 往返会破坏验签。
+            raw = await readRawBody(req);
+          } catch (e: any) {
+            sendJsonError(res, e?.status ?? 400, { error: e?.message ?? 'bad request' }, req);
+            return;
+          }
+        }
+        const result = await imBridge.handleInbound(provider, {
+          headers: req.headers,
+          rawBody: raw,
+          url
+        });
+        res.writeHead(result.status, {
+          'content-type': result.contentType ?? 'application/json; charset=utf-8',
+          ...securityHeaders()
+        });
+        res.end(typeof result.body === 'string' ? result.body : JSON.stringify(result.body));
         return;
       }
       // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
@@ -1658,11 +1736,16 @@ const server = createServer(
           req
         );
       }
+      if (req.method === 'GET' && path === '/api/im/status') {
+        // IM 桥接运行态（启用的平台 / 在飞任务 / 去重与处理计数），受 policy:read 保护。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        return sendJson(res, imBridge.snapshot(), req);
+      }
       if (req.method === 'POST' && path === '/api/features/toggle') {
         // 运行时切换特性开关，受 policy:write 保护。
         const ctx = await guard(req, res, 'features:write');
-        if (!ctx) return;
-        const b = await readBody(req);
+        if (!ctx) return;        const b = await readBody(req);
         const key = typeof b?.key === 'string' ? b.key : '';
         const enabled = typeof b?.enabled === 'boolean' ? b.enabled : undefined;
         if (!key) {

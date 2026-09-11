@@ -1,0 +1,79 @@
+# ──────────────────────────────────────────────
+# Alertmanager 配置（agent-harness 告警路由）
+#
+# 启动方式（compose 已配置 --config.expand-env=true，支持 ${VAR} 展开）：
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+#
+# 关键环境变量（在 .env 或 shell 中设置）：
+#   ALERTMANAGER_WEBHOOK_URL  告警投递地址。可为：
+#     · 飞书 / 钉钉 / 企业微信群机器人入站 Webhook
+#     · Slack Incoming Webhook（结构不同，建议改用 slack_configs）
+#     · 自研告警网关
+#   注：Alertmanager 的 webhook 载荷是其固定 JSON 结构（非各 IM 原生格式），
+#   若 IM 侧要求原生结构，需在中间加一层轻量转发（或改用 slack_configs 等原生通道）。
+# ──────────────────────────────────────────────
+
+global:
+  # 告警未恢复时，超过该时长后视为已解决（避免「永久 firing」）。
+  resolve_timeout: 5m
+
+route:
+  # 默认接收器。
+  receiver: webhook
+  # 分组维度：同名同级别告警聚合为一条通知，避免风暴。
+  group_by: ['alertname', 'severity']
+  # 新告警组等待 30s 再发（让同批次告警聚齐）。
+  group_wait: 30s
+  # 同组新增告警的合并间隔。
+  group_interval: 5m
+  # 未恢复告警的重复提醒间隔。
+  repeat_interval: 4h
+  routes:
+    # critical：更激进的提醒（10s 聚合、1h 重复）。
+    - matchers: ['severity="critical"']
+      receiver: webhook-critical
+      group_wait: 10s
+      repeat_interval: 1h
+    # info：低频提醒（12h），避免噪声。
+    - matchers: ['severity="info"']
+      receiver: webhook
+      repeat_interval: 12h
+
+# 抑制规则：critical 正在 firing 时，抑制同一 alertname 的 warning，
+# 避免「服务不可达」同时触发一堆衍生告警。
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname']
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['service']
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      - url: '${ALERTMANAGER_WEBHOOK_URL}'
+        # 恢复通知（告警解除）也推送，便于确认问题已闭环。
+        send_resolved: true
+
+  - name: webhook-critical
+    webhook_configs:
+      - url: '${ALERTMANAGER_WEBHOOK_URL}'
+        send_resolved: true
+
+  # ── 可选：Slack 原生通道（结构与 Slack 完全兼容，优于 webhook 中转）──
+  # - name: slack
+  #   slack_configs:
+  #     - api_url: '${ALERTMANAGER_SLACK_WEBHOOK_URL}'
+  #       channel: '#alerts'
+  #       send_resolved: true
+
+  # ── 可选：邮件通道 ──
+  # - name: email
+  #   email_configs:
+  #     - to: '${ALERTMANAGER_EMAIL_TO}'
+  #       from: '${ALERTMANAGER_EMAIL_FROM}'
+  #       smarthost: '${ALERTMANAGER_SMTP}'
+  #       auth_username: '${ALERTMANAGER_SMTP_USER}'
+  #       auth_password: '${ALERTMANAGER_SMTP_PASSWORD}'
+  #       send_resolved: true

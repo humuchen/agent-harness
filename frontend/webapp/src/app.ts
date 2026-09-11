@@ -19,6 +19,7 @@ import './components/provider-key-settings';
 import { TopProgressBar } from './top-progress-bar';
 
 type Tab =
+  | 'workspace'
   | 'dashboard'
   | 'run'
   | 'verify'
@@ -54,6 +55,7 @@ function uniqueShort(label: string, used: Set<string>): string {
 }
 
 const TABS: Array<{ id: Tab; label: string; short: string }> = [
+  { id: 'workspace', label: '工作台', short: '台' },
   { id: 'dashboard', label: '总览', short: '览' },
   { id: 'chat', label: '对话', short: '话' },
   { id: 'mcp', label: 'MCP', short: 'M' },
@@ -64,7 +66,7 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
 function initialTabFromPath(): string {
   const seg = window.location.pathname.replace(/^\/+|\/+$/g, '');
-  return seg || 'dashboard';
+  return seg || 'workspace';
 }
 
 /**
@@ -517,6 +519,7 @@ export class AhApp extends LitElement {
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
+            <ah-workspace ?hidden=${this.tab !== 'workspace'}></ah-workspace>
             <ah-dashboard ?hidden=${this.tab !== 'dashboard'}></ah-dashboard>
             <ah-chat ?hidden=${this.tab !== 'chat'} role=${this.me?.role ?? ''}></ah-chat>
             <ah-run ?hidden=${this.tab !== 'run'}></ah-run>

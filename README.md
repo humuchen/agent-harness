@@ -20,8 +20,9 @@ agent-harness/                # 根：private 包 + pnpm workspace
 ├─ frontend/                  # 前端应用层
 │  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（消费 /api/v1，断网可用）
 │  └─ cli/                    # @agent-harness/cli —— 零依赖 CLI 客户端（消费 /api/v1）
-├─ access/                    # 接入层（路由 / 鉴权 / 运行队列 / 会话 / OAuth / 账户 / 插件扩展）
+├─ access/                    # 接入层（路由 / 鉴权 / 运行队列 / 会话 / OAuth / 账户 / 插件扩展 / IM 桥接）
 │  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core，约 45 个源文件）
+│                             #   im/ 子目录：飞书 / 钉钉 / 企业微信桥接（用户层入口，core 零感知）
 ├─ backend/                   # 后端工具层
 │  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖，含多智能体基座子系统）
 │  ├─ client/                 # @agent-harness/client —— 跨运行时 typed HTTP 客户端（Web/Node/Edge）
@@ -321,6 +322,23 @@ pnpm --filter @agent-harness/server run start            # 编译并启动，默
 - 前端由 `frontend/webapp`（Vite+Lit SPA）构建、`access/server` 同源托管，暗色主题，
   通过 `fetch` + `ReadableStream` 解析 SSE，断网可用。
 
+### 工作台（用户层首页）
+
+Web UI 的默认首页是**工作台**（`frontend/webapp/src/workspace.ts`，Tab `workspace`）——一个面向
+全体员工的**业务视角入口**，与偏工程视角的「总览 / 可观测」并列：
+
+| 宫格 | 数据来源 | 点击去向 |
+| --- | --- | --- |
+| 对话任务 | `listChatSessions()` 会话数 | 对话 |
+| 工作空间 | `listAgents()` + `getMcpServers()`（智能体 / MCP 服务数） | 插件 |
+| 文件资料 | `getSessions()`（记忆后端 + 会话文件数）+ 上传入口 | 对话 |
+| 任务记录 | `getJobs()`（队列深度 + 最近任务数） | 可观测 |
+| 成果物 | `listRecipes()`（运行配方版本数） | 可观测 |
+| 历史会话 | 会话列表（最近 5 条 + 相对时间） | 对话 |
+
+所有数据**实时来自真实接口**（`Promise.allSettled` 并发拉取，单格失败不影响其余格），
+点击卡片经 `ah-goto` 事件切换 Tab，与侧边栏导航同源。
+
 ## 自包含验证（无需真实凭据/服务）
 
 三项核心能力都配了验证脚本：
@@ -430,6 +448,27 @@ OPEN_API_KEY=your-key node access/server/dist/server.js
   * `ALERT_LOG_PATH`：把告警以 JSON 逐行追加到文件，便于 Filebeat / Loki 采集。
   * 多个 sink 可同时启用；sink 异常被吞掉，绝不影响主流程。`/api/metrics` 含 `alerts`、
     `alerts.error`、`alerts.fatal` 等计数器。
+
+### 监控与告警（Prometheus + Grafana，交付即用）
+
+上面的指标此前只能手工 `curl`。现补齐**开箱即用的监控栈**（`deploy/monitoring/`）：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+# Grafana http://localhost:3000（admin/admin，首登改密） · Prometheus http://localhost:9090
+```
+
+- **采集**：`prometheus.yml` 定时抓取 `ui:4173/api/metrics/prometheus`（该端点**无需令牌**，便于抓取）。
+- **看板**：`grafana/dashboards/agent-harness.json`（11 面板：可用性 / 成功率 / 队列深度 / Run 速率 /
+  Token 速率 / 成本趋势 / 护栏拦截 / 错误速率 / 沙箱降级），经 provisioning **自动装配**，无需手工导入。
+- **告警规则**：`alert-rules.yml` 内置 9 条（服务不可达 / 失败率超 20% / 队列积压 / 队列卡死 /
+  护栏激增 / 沙箱降级 / 错误激增 / 成本超阈 / token 燃烧率）。
+- **告警路由**：内置 **Alertmanager**（按 `alertname+severity` 分组、critical 抑制 warning、分级重复节奏），
+  经 `ALERTMANAGER_WEBHOOK_URL` 投递到飞书 / 钉钉 / 企业微信或自研网关；未配置时告警仅在 UI 可见。
+- 详见 [`deploy/monitoring/README.md`](./deploy/monitoring/README.md)（含 K8s 的 ServiceMonitor 方案）。
+
+> 应用内告警（`emitAlert` → `ALERT_WEBHOOK_URL`）与本监控栈是**互补两层**：前者是事件级实时推送，
+> 后者是指标级趋势判定。
 
 ### 运行队列与水平扩展（P1-8 架构解耦）
 
@@ -625,9 +664,71 @@ guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就
 - **健康探针**（`health.ts`）：`/health`、`/health/live`、`/health/ready` 供 K8s/Render 探针。
 - **日志脱敏**（`log-scrub.ts`）：全局 JSON 日志脱敏，绝不落密钥/令牌/MCP 认证头。
 - **副本选择器**（`replica-picker.ts`）：接入层 round-robin / least-load / sticky-hash 负载均衡，配合 Redis 运行队列支持多实例水平扩展。
+- **IM 桥接**（`im/`）：飞书 / 钉钉 / 企业微信作为**用户层入口**，员工在日常 IM 里直接给 agent 派任务、拿结果；入站 webhook 验签 → 去重 → 复用 agent 链路 → 主动回发。端点 `/api/im/:provider/events`、`/api/im/status`（详见下节）。
 
 > 这些能力全部落在 `access/server` 业务层；`core` 仅提供框架原语（harness/tools/memory/guardrails + 多智能体基座），
 > 始终零业务耦合、可插拔、可组合。插件经 `plugin-bootstrap.ts` 动态 require，server 不静态 import 任何插件。
+
+## IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
+
+把 IM 作为**用户层入口**接入：员工在飞书 / 钉钉 / 企业微信里像聊天一样给 agent 派任务，
+agent 跑完后把结果回发到原会话——无需打开 Web 控制台。这是参考架构图「用户层 · 企业微信 / 钉钉 / 飞书」
+的直接落地。
+
+**分层**：全部落在 `access/server/src/im/`（业务层），**不改动 core**；任务执行复用既有
+`assembleAgent` + harness 链路，因此护栏、记忆、配额、审计、成本记账对 IM 任务**自动生效**。
+
+```
+access/server/src/im/
+├─ types.ts            # ImAdapter / ImInboundMessage / ImBridgeConfig 契约
+├─ adapter-feishu.ts   # 飞书：challenge 握手 + AES 解密 + X-Lark-Signature + tenant_access_token
+├─ adapter-dingtalk.ts # 钉钉：HMAC-SHA256 验签 + sessionWebhook 回发（免 token）
+├─ adapter-wecom.ts    # 企业微信：AES-256-CBC 解密 + sha1 验签 + echostr 握手
+├─ registry.ts         # 组合工厂：按 env 装配「已配置且启用」的平台
+├─ dedup.ts            # 有界 LRU 去重（平台 at-least-once 重推防护）
+├─ bridge.ts           # 主体：验签 → 解析 → 去重 → 立即 ack → 后台执行 → 回发
+└─ index.ts            # 对外入口（server 只依赖它）
+```
+
+**端点**：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/im/<provider>/events` | 各平台事件回调（消息）。**无用户登录态**，安全闸门为平台签名校验，故路由位于 guard 之前。 |
+| `GET` | `/api/im/<provider>/events` | URL 验证握手（企业微信 `echostr` / 飞书 `challenge`），原样回显。 |
+| `GET` | `/api/im/status` | 运行态（启用平台 / 在飞任务 / 去重与处理计数），受 `policy:read` 保护。 |
+
+**关键设计**：
+
+- **立即 ack**：IM 平台要求 webhook 数秒内返回 2xx，否则重推。故校验/解析/去重后**立刻回 200**，
+  agent 执行与回复在后台异步进行（`void this.process(...)`），绝不阻塞响应。
+- **验签是唯一入口闸门**：各平台签名算法收敛在 adapter（飞书 `sha256(timestamp+nonce+encryptKey+body)`、
+  钉钉 `HMAC-SHA256`、企业微信 `sha1(sort([token,timestamp,nonce,payload]))`），未通过一律 401，不进 agent。
+- **原始字节验签**：新增 `readRawBody()` 读取原始 body——JSON 往返会改变字节序，破坏验签。
+- **去重（可插拔，支持多实例）**：`DedupStore` 接口 + 两档实现——`MemoryDedupStore`（进程内 LRU，默认）
+  与 `RedisDedupStore`（`SET key 1 NX EX <ttl>` 原子占位，**跨实例**去重）。配了 `REDIS_URL` 自动启用
+  Redis 档：多副本部署下同一消息即便被负载均衡打到不同副本，也只有第一个副本能占位成功、其余丢弃。
+  Redis 不可用时降级放行（去重是优化，不阻断业务）。
+- **会话映射**：IM 用户 → owner `im:<provider>:<senderId>`；会话 → `im-<provider>-<sha256(chatId) 前16位>`，
+  稳定映射到同一 chat session，**IM 对话因此可在 Web 工作台「历史会话」中查看**。
+- **群聊支持**：三平台均已识别群聊——飞书（`chat_type=group` + `mentions`）、钉钉
+  （`conversationType=2` + `isInAtList`）、企业微信（回调含 `<ChatId>`，回复走 `appchat/send`）。
+  `IM_GROUP_REQUIRE_MENTION=true`（默认）时群聊未 @ 机器人则忽略，避免刷屏
+  （企业微信回调不提供 @ 标记，故恒视为已 @，否则会漏掉全部群聊消息）。
+- **配置驱动**：`IM_ENABLED=true` 为总开关；`IM_PROVIDERS` 显式指定或自动探测「凭据齐全」的平台；
+  显式指定却缺凭据时记入 `skipped` 并告警（绝不半配置启动）。完整变量见 `.env.example` 的「IM 桥接」小节。
+
+**接入步骤（以飞书为例）**：
+
+1. 开放平台创建企业自建应用 → 事件订阅，回调地址填 `https://你的域名/api/im/feishu/events`；
+2. 订阅事件 `im.message.receive_v1`；记下 App ID / App Secret / Verification Token（可选 Encrypt Key）；
+3. 写入 `.env`：`IM_ENABLED=true`、`IM_FEISHU_APP_ID=...`、`IM_FEISHU_APP_SECRET=...`、
+   `IM_FEISHU_VERIFICATION_TOKEN=...`（配了加密则加 `IM_FEISHU_ENCRYPT_KEY=...`）；
+4. 重启服务，启动日志出现 `im.bridge.enabled { providers: ['feishu'] }` 即生效；
+5. 在飞书里给机器人发一条消息，agent 回复会回到原会话。
+
+> 钉钉 / 企业微信同理，仅回调路径与凭据变量不同（见 `.env.example`）。
+> 运行态可查 `GET /api/im/status`（需具备 `policy:read` 的令牌）。
 
 ## 已知问题与设计权衡
 

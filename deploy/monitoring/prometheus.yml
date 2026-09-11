@@ -1,0 +1,42 @@
+# ──────────────────────────────────────────────
+# Prometheus 抓取配置（agent-harness 监控栈）
+#
+# agent-harness 暴露 Prometheus 文本格式指标端点（无需令牌，便于抓取）：
+#   GET /api/metrics/prometheus
+# 指标来源见 access/server/src/server.ts 的 `/api/metrics/prometheus` 分支。
+#
+# 用法：docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+# ──────────────────────────────────────────────
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: agent-harness
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+# 告警路由：把 firing 的规则推给 Alertmanager（分组 / 抑制 / 多渠道投递见 alertmanager.yml）。
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  # agent-harness 应用指标（队列 / run / 护栏 / 错误 / token / 成本）。
+  # 注：compose 网络内服务名为 ui；K8s 场景改填 Service DNS（如 agent-harness.agent-harness.svc:4173）。
+  - job_name: agent-harness
+    metrics_path: /api/metrics/prometheus
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['ui:4173']
+        labels:
+          service: agent-harness
+          # 环境标签：Prometheus 不做 ${} 变量替换，请按部署环境手工改为 local / staging / prod。
+          env: local
+
+  # Prometheus 自身（可选，用于自监控）。
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

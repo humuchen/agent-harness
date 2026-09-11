@@ -1,0 +1,109 @@
+# ──────────────────────────────────────────────
+# Prometheus 告警规则（agent-harness）
+#
+# 与 /api/metrics/prometheus 暴露的指标一一对应。
+# 阈值均为保守默认值，请按实际流量与成本预算调整。
+# ──────────────────────────────────────────────
+
+groups:
+  - name: agent-harness-availability
+    rules:
+      - alert: AgentHarnessDown
+        expr: up{job="agent-harness"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'agent-harness 不可达（Prometheus 抓取失败）'
+          description: '目标 {{ $labels.instance }} 已连续 1 分钟无法抓取。检查容器/进程是否存活、端口是否可达。'
+
+      - alert: AgentHarnessNoTraffic
+        expr: rate(harness_run_success_total[15m]) + rate(harness_run_failed_total[15m]) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: 'agent-harness 近 30 分钟无任何 run（可能闲置或接入异常）'
+          description: '若非预期闲置，请检查上游调用方（Web / IM 桥接 / A2A）是否正常。'
+
+  - name: agent-harness-reliability
+    rules:
+      - alert: AgentHarnessHighFailureRate
+        expr: |
+          sum(rate(harness_run_failed_total[5m]))
+            /
+          clamp_min(sum(rate(harness_run_success_total[5m])) + sum(rate(harness_run_failed_total[5m])), 1)
+            > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness run 失败率超过 20%'
+          description: '近 5 分钟失败率 {{ $value | humanizePercentage }}。检查 LLM provider 可用性、密钥配额与工具依赖。'
+
+      - alert: AgentHarnessErrorSpike
+        expr: sum(rate(harness_errors_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness 错误率异常（>1/s）'
+          description: '近 5 分钟错误速率 {{ $value }}/s。可查 /api/errors 定位错误明细。'
+
+      - alert: AgentHarnessGuardrailSpike
+        expr: sum(rate(harness_guardrail_blocked_total[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness 护栏拦截频繁（>0.5/s）'
+          description: '可能是提示词注入攻击、误拦或异常输入。检查护栏策略与 GUARDRAIL_ALLOWLIST。'
+
+      - alert: AgentHarnessSandboxDegraded
+        expr: increase(harness_os_sandbox_degraded_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness OS 沙箱降级为本地进程'
+          description: 'OS 级隔离不可用（非 Linux 或命名空间受限），已降级为硬化本地进程。生产环境应修复隔离能力。'
+
+  - name: agent-harness-capacity
+    rules:
+      - alert: AgentHarnessQueueBacklog
+        expr: harness_queue_pending > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness 运行队列积压（pending > 50）'
+          description: '当前排队 {{ $value }} 个任务。考虑提高 RUN_CONCURRENCY、扩容副本（配 Redis 队列）或排查慢任务。'
+
+      - alert: AgentHarnessQueueStuck
+        expr: harness_queue_processing > 0 and rate(harness_run_success_total[10m]) + rate(harness_run_failed_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'agent-harness 队列疑似卡死（有执行中任务但无完成）'
+          description: '存在 processing 任务但 10 分钟内无任何 run 完成。检查 JOB_TIMEOUT_MS 看门狗、LLM 调用是否挂死。'
+
+  - name: agent-harness-cost
+    rules:
+      - alert: AgentHarnessCostHigh
+        expr: harness_cost_total > 100
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness 累计 LLM 成本超过 100'
+          description: '当前累计成本 {{ $value }}。检查 MAX_COST_PER_RUN / MAX_COST_PER_WINDOW 熔断配置与异常用量。'
+
+      - alert: AgentHarnessTokenBurnRate
+        expr: sum(rate(harness_tokens_total[10m])) * 3600 > 500000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'agent-harness token 消耗速率异常（>50 万/小时）'
+          description: '近 10 分钟折算约 {{ $value | humanize }} tokens/小时。检查是否存在死循环刷工具或超长上下文。'

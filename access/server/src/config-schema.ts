@@ -122,7 +122,27 @@ export const SCHEMA: Field[] = [
     min: 0,
     desc: '配置热更新轮询间隔（ms）'
   },
-  { key: 'CONFIG_PATHS', type: 'string', desc: '热更新配置文件路径（逗号分隔）' }
+  { key: 'CONFIG_PATHS', type: 'string', desc: '热更新配置文件路径（逗号分隔）' },
+  // IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
+  { key: 'IM_ENABLED', type: 'boolean', desc: 'IM 桥接总开关' },
+  { key: 'IM_PROVIDERS', type: 'string', desc: '启用的 IM 平台（逗号分隔：feishu,dingtalk,wecom）' },
+  {
+    key: 'IM_DEFAULT_MODE',
+    type: 'enum',
+    allowed: ['mock', 'real', 'real-mcp'],
+    desc: 'IM 任务默认运行模式'
+  },
+  { key: 'IM_MAX_STEPS', type: 'number', min: 1, desc: 'IM 任务循环步数上限' },
+  { key: 'IM_TIMEOUT_MS', type: 'number', min: 1, desc: 'IM 任务超时（ms）' },
+  { key: 'IM_GROUP_REQUIRE_MENTION', type: 'boolean', desc: '群聊是否需 @机器人 才触发' },
+  { key: 'IM_REPLY_PREFIX', type: 'string', desc: 'IM 回复前缀' },
+  {
+    key: 'IM_DEDUP_BACKEND',
+    type: 'enum',
+    allowed: ['memory', 'redis'],
+    desc: 'IM 消息去重后端（留空=有 REDIS_URL 即 redis，否则 memory）'
+  },
+  { key: 'IM_DEDUP_TTL_SEC', type: 'number', min: 1, desc: 'IM 去重键 TTL（秒）' }
 ];
 
 // 常见拼写错误 → 提示正确变量名（减少「配了但不生效」的静默坑）。

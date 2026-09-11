@@ -70,6 +70,16 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 动态配置
   CONFIG_HOT_RELOAD_INTERVAL_MS: 60_000,
   CONFIG_PATHS: '',
+  // IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
+  IM_ENABLED: false,
+  IM_PROVIDERS: '',
+  IM_DEFAULT_MODE: 'real',
+  IM_MAX_STEPS: 24,
+  IM_TIMEOUT_MS: 180_000,
+  IM_GROUP_REQUIRE_MENTION: true,
+  IM_REPLY_PREFIX: '',
+  IM_DEDUP_BACKEND: '',
+  IM_DEDUP_TTL_SEC: 300,
 };
 
 /** 读取字符串配置：env 优先，缺失回退 DEFAULTS（再回退传入 fallback）。 */
