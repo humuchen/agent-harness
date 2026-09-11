@@ -3114,6 +3114,79 @@ export const chatStyles = [
       font-size: 12px;
       color: var(--ah-text);
     }
+    /* 多图：交错堆叠 + 点击展开 */
+    .attach-stack {
+      position: relative;
+      height: 132px;
+      width: 100%;
+    }
+    .attach-stack .attach-img {
+      margin: 0;
+    }
+    .attach-stack:not(.expanded) .attach-img {
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      width: 172px;
+      height: 116px;
+      margin-left: -86px;
+      cursor: pointer;
+      transform: translate(calc((var(--i) - 2.5) * 22px), calc(var(--i) * 3px))
+        rotate(calc((var(--i) - 2.5) * 5deg));
+      opacity: calc(0.4 + var(--i) * 0.13);
+      z-index: calc(var(--i) + 1);
+      transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1),
+        opacity 0.35s ease;
+    }
+    .attach-stack:not(.expanded) .attach-img img {
+      width: 172px;
+      height: 116px;
+      object-fit: cover;
+      border-radius: var(--ah-radius-sm);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    }
+    .attach-stack:not(.expanded) .attach-img:hover {
+      opacity: 1;
+      filter: brightness(1.08);
+    }
+    .attach-count {
+      position: absolute;
+      right: 6px;
+      bottom: 6px;
+      font-size: 11px;
+      line-height: 1;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 6px;
+      padding: 2px 7px;
+      pointer-events: none;
+    }
+    .attach-stack.expanded {
+      position: static;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      height: auto;
+      width: 100%;
+    }
+    .attach-stack.expanded .attach-img {
+      position: static;
+      transform: none;
+      opacity: 1;
+      width: auto;
+      height: auto;
+      z-index: auto;
+      cursor: zoom-in;
+    }
+    .attach-stack.expanded .attach-img img {
+      width: auto;
+      max-width: 200px;
+      max-height: 200px;
+      box-shadow: none;
+    }
+    .attach-stack.expanded .attach-count {
+      display: none;
+    }
     /* 注：原 .attach-btn（裸「+」label）已由 <ah-composer-plus> 取代，
        上传入口与模式/专家选择一并收口到该组件，此处不再保留其样式。 */
     /* 移动端适配 */

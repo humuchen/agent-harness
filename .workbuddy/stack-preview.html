@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>多图展示 · 交错堆叠预览</title>
+<style>
+  :root {
+    --ah-radius-sm: 8px;
+    --ah-surface-3: #252a3a;
+    --ah-border: rgba(255,255,255,0.15);
+    --ah-text: #e8eaf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: #14181f; color: var(--ah-text);
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  h2 { font-size: 15px; font-weight: 500; margin: 0 0 4px; }
+  p.tip { font-size: 12px; color: #8b92a8; margin: 0 0 20px; }
+  /* —— 以下为落地到项目中的真实样式（chat-styles.ts） —— */
+  .attachments {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;
+    max-width: 640px;
+  }
+  .attach-stack {
+    position: relative; height: 132px; width: 100%;
+  }
+  .attach-stack .attach-img { margin: 0; }
+  .attach-stack:not(.expanded) .attach-img {
+    position: absolute; top: 8px; left: 50%;
+    width: 172px; height: 116px; margin-left: -86px; cursor: pointer;
+    transform: translate(calc((var(--i) - 2.5) * 22px), calc(var(--i) * 3px))
+      rotate(calc((var(--i) - 2.5) * 5deg));
+    opacity: calc(0.4 + var(--i) * 0.13);
+    z-index: calc(var(--i) + 1);
+    transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.35s ease;
+  }
+  .attach-stack:not(.expanded) .attach-img .ph {
+    width: 172px; height: 116px; object-fit: cover;
+    border-radius: var(--ah-radius-sm); box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+  }
+  .attach-stack:not(.expanded) .attach-img:hover { opacity: 1; filter: brightness(1.08); }
+  .attach-count {
+    position: absolute; right: 6px; bottom: 6px; font-size: 11px; line-height: 1;
+    color: #fff; background: rgba(0,0,0,0.5); border-radius: 6px; padding: 2px 7px;
+    pointer-events: none;
+  }
+  .attach-stack.expanded {
+    position: static; display: flex; flex-wrap: wrap; gap: 8px; height: auto; width: 100%;
+  }
+  .attach-stack.expanded .attach-img {
+    position: static; transform: none; opacity: 1; width: auto; height: auto; z-index: auto;
+    cursor: zoom-in;
+  }
+  .attach-stack.expanded .attach-img .ph {
+    width: auto; max-width: 200px; max-height: 200px; box-shadow: none;
+  }
+  .attach-stack.expanded .attach-count { display: none; }
+  .attach-stack.expanded .attach-img.zoom .ph {
+    max-width: 520px; max-height: 360px; box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+  }
+  .ph { display: block; border-radius: var(--ah-radius-sm); }
+</style>
+</head>
+<body>
+  <h2>多图展示 · 交错堆叠</h2>
+  <p class="tip">初始为错位堆叠（点击展开全部）；展开后点击单张放大预览，点击空白收起。</p>
+
+  <div class="attachments has-images">
+    <div class="attach-stack" id="stack">
+      <!-- 占位图：用 SVG 模拟原截图 6 类图 -->
+      <div class="attach-img is-previewable" style="--i:0">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <rect x="24" y="40" width="26" height="56" fill="#c4d94e" rx="3"/>
+          <rect x="73" y="22" width="26" height="74" fill="#9ed65d" rx="3"/>
+          <rect x="122" y="50" width="26" height="46" fill="#5dcaa5" rx="3"/></svg>
+      </div>
+      <div class="attach-img is-previewable" style="--i:1">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <rect x="24" y="34" width="26" height="62" fill="#378add" rx="3"/>
+          <rect x="73" y="48" width="26" height="48" fill="#7f77dd" rx="3"/>
+          <rect x="122" y="26" width="26" height="70" fill="#d4537e" rx="3"/></svg>
+      </div>
+      <div class="attach-img is-previewable" style="--i:2">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <path d="M16 90 Q60 30 110 64 T160 50" fill="none" stroke="#1d9e75" stroke-width="14" stroke-linecap="round"/></svg>
+      </div>
+      <div class="attach-img is-previewable" style="--i:3">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <path d="M16 84 Q58 38 108 70 T160 58" fill="none" stroke="#185fa5" stroke-width="14" stroke-linecap="round"/></svg>
+      </div>
+      <div class="attach-img is-previewable" style="--i:4">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <circle cx="70" cy="58" r="22" fill="#6b4423"/>
+          <circle cx="96" cy="64" r="18" fill="#5a381d"/>
+          <circle cx="106" cy="50" r="20" fill="#7a4f2a"/></svg>
+      </div>
+      <div class="attach-img is-previewable" style="--i:5">
+        <svg class="ph" viewBox="0 0 172 116"><rect width="172" height="116" fill="#1f2633"/>
+          <rect x="20" y="26" width="64" height="14" fill="#185fa5" rx="3"/>
+          <rect x="20" y="50" width="74" height="14" fill="#534ab7" rx="3"/>
+          <rect x="20" y="74" width="54" height="14" fill="#1d9e75" rx="3"/></svg>
+        <span class="attach-count">6 张</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // —— 以下逻辑与项目内 renderAttachments 的 toggleStack / onImgClick 一致 ——
+    const stack = document.getElementById('stack');
+    stack.addEventListener('click', (e) => {
+      const t = e.target;
+      if (stack.classList.contains('expanded') && !t.closest('.attach-img')) {
+        stack.classList.remove('expanded'); return;
+      }
+      if (!stack.classList.contains('expanded')) stack.classList.add('expanded');
+    });
+    stack.querySelectorAll('.attach-img').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        if (!stack.classList.contains('expanded')) return; // 未展开：交给 stack 去展开
+        e.stopPropagation();
+        if (e.ctrlKey || e.metaKey) { stack.classList.remove('expanded'); return; }
+        el.classList.toggle('zoom');
+      });
+    });
+  </script>
+</body>
+</html>

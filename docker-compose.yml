@@ -81,8 +81,13 @@ services:
       LOG_SCRUB_ENABLED: 'true'
       # ── 指标持久化（P2）：跨重启保留累计计数 / token / 成本 / 租户维度
       TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
+      # ── 自定义模型持久化路径（P1 排障修复） ──
+      # 默认 custom-models.db 落在 /var/lib/agent-harness/，该路径未被任何卷挂载，
+      # 容器重建/重启即丢失全部自定义模型。改指到已挂载的持久卷 /app/data 下，
+      # 与记忆/遥测/告警同卷，重启不丢。备份目录一并迁移，避免备份也写在临时层。
+      CUSTOM_MODELS_DB_FILE: '/app/data/custom-models.db'
       # Go-live：备份与恢复配置
-      AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
+      AH_BACKUP_DIR: '/app/data/backups'
       AH_BACKUP_KEEP_DAYS: '30'
       # ── 生产模式切换（开发模式默认关闭） ────────────────────────────
       # 生产部署建议使用 docker-compose.prod.yml 覆盖以下变量：

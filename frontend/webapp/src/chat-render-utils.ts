@@ -51,24 +51,62 @@ export interface RenderAttachmentsOpts {
   onPreview: (f: UploadedFile) => void;
 }
 
-/** 渲染消息附件区：图片走可预览缩略图，其它文件走文字条目。 */
+/**
+ * 渲染消息附件区：
+ * - 单张图片：直接缩略图，点击预览。
+ * - 多张图片：交错堆叠（错位 + 旋转层叠），点击堆叠区展开为平铺网格；
+ *   展开后点击单张预览，点击空白区收起。其它文件走文字条目。
+ */
 export function renderAttachments(opts: RenderAttachmentsOpts): TemplateResult {
   const { files, onPreview } = opts;
   const hasImages = files.some((f) => f.type.startsWith('image/'));
   const images = files.filter((f) => f.type.startsWith('image/'));
   const others = files.filter((f) => !f.type.startsWith('image/'));
+
+  // 多图堆叠：点击堆叠区在「堆叠 ↔ 展开」间切换；展开后单张点击预览。
+  const toggleStack = (e: Event) => {
+    const stack = (e.currentTarget as HTMLElement).closest('.attach-stack');
+    if (!stack) return;
+    const target = e.target as HTMLElement;
+    if (stack.classList.contains('expanded') && !target.closest('.attach-img')) {
+      stack.classList.remove('expanded');
+      return;
+    }
+    if (!stack.classList.contains('expanded')) stack.classList.add('expanded');
+  };
+  const onImgClick = (e: Event, f: UploadedFile) => {
+    const stack = (e.currentTarget as HTMLElement).closest('.attach-stack');
+    if (stack && !stack.classList.contains('expanded')) return; // 未展开：交给 stack 展开
+    e.stopPropagation();
+    onPreview(f);
+  };
+
+  const singleImage = (f: UploadedFile) => html`
+    <div class="attach-img is-previewable" title="点击预览" @click=${() => onPreview(f)}>
+      <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+    </div>
+  `;
+
   return html`
     <div class="attachments ${hasImages ? 'has-images' : ''}">
-      ${images.map(
-        (f) =>
-          html`<div
-            class="attach-img is-previewable"
-            title="点击预览"
-            @click=${() => onPreview(f)}
-          >
-            <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+      ${images.length > 1
+        ? html`<div class="attach-stack" @click=${toggleStack}>
+            ${images.map(
+              (f, i) =>
+                html`<div
+                  class="attach-img is-previewable"
+                  style="--i:${i}"
+                  title="点击展开全部图片"
+                  @click=${(e: Event) => onImgClick(e, f)}
+                >
+                  <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+                  ${i === images.length - 1
+                    ? html`<span class="attach-count">${images.length} 张</span>`
+                    : ''}
+                </div>`
+            )}
           </div>`
-      )}
+        : html`${images.map((f) => singleImage(f))}`}
       ${others.map(
         (f) =>
           html`<div class="attach-file">

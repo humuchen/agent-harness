@@ -28,15 +28,16 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
+import { DEFAULTS } from './config-defaults';
 
 /** 上传目录（相对于进程 cwd 或 DATA_DIR）。 */
 const UPLOAD_DIR =
   process.env.UPLOAD_DIR ||
   join(process.cwd(), 'data', 'uploads');
 
-/** 单文件大小上限（默认 10 MB）。 */
+/** 单文件大小上限（默认 10 MB，与 config-defaults 同源）。 */
 const MAX_BYTES =
-  (Number(process.env.UPLOAD_MAX_MB) || 10) * 1024 * 1024;
+  (Number(process.env.UPLOAD_MAX_MB) || (DEFAULTS.UPLOAD_MAX_MB as number)) * 1024 * 1024;
 
 /** 允许的文件 MIME 白名单（图片 + 常见文本）。 */
 const ALLOWED_MIME = new Set<string>([

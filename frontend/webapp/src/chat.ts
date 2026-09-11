@@ -80,6 +80,7 @@ import type {
 import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
+import { compressImage } from './utils/compress-image';
 
 // Slash Command 框架
 import {
@@ -125,10 +126,12 @@ export const ATTACH_COLLAPSE_LIMIT = 6;
  */
 export const UPLOAD_CONCURRENCY = 4;
 
-/** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 追踪 key。 */
+/** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 实际上传 File + 追踪 key。 */
 export interface PendingUpload {
   meta: UploadedFile;
   raw: File;
+  /** 实际上传的文件；图片可能经过压缩。 */
+  uploadFile: File;
   key: string;
 }
 
@@ -1579,14 +1582,21 @@ export class AhChat extends LitElement {
     // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
     // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
-    const imageAttachments = rawAttachments
-      .filter((f) => f.type.startsWith('image/'))
-      .map((f) => ({
-        url: f.dataUrl || f.serverUrl || '',
-        name: f.name,
-        type: f.type
-      }))
-      .filter((f) => f.url);
+    // 同时压缩 dataUrl，避免多张高清图撑爆 /api/run 的请求体上限。
+    const imageAttachments = (
+      await Promise.all(
+        rawAttachments
+          .filter((f) => f.type.startsWith('image/'))
+          .map(async (f) => {
+            const originalUrl = f.dataUrl || f.serverUrl || '';
+            if (!originalUrl) return null;
+            const url = originalUrl.startsWith('data:')
+              ? await compressDataUrl(originalUrl)
+              : originalUrl;
+            return { url, name: f.name, type: f.type };
+          })
+      )
+    ).filter(Boolean) as Array<{ url: string; name: string; type: string }>;
 
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
@@ -2278,7 +2288,7 @@ export class AhChat extends LitElement {
       list = list.slice(0, room);
     }
 
-    // ---- 阶段一：校验 + 读预览。单个文件读失败只跳过它自己 ----
+    // ---- 阶段一：校验 + 读预览 + 图片压缩。单个文件失败只跳过它自己 ----
     const pending: PendingUpload[] = [];
     for (const f of list) {
       if (f.size > MAX_ATTACHMENT_BYTES) {
@@ -2301,6 +2311,17 @@ export class AhChat extends LitElement {
         continue;
       }
 
+      // 图片在上传前自动压缩，降低 multipart 请求体大小；预览仍用原图 dataUrl。
+      let uploadFile = f;
+      if (f.type.startsWith('image/')) {
+        try {
+          uploadFile = await compressImage(f);
+        } catch {
+          // 压缩失败不影响上传，回退原文件。
+          uploadFile = f;
+        }
+      }
+
       pending.push({
         meta: {
           name: f.name,
@@ -2310,6 +2331,7 @@ export class AhChat extends LitElement {
           uploadStatus: 'uploading'
         },
         raw: f,
+        uploadFile,
         // 追加序号：同名文件在同一毫秒内也能拿到互不相同的 key。
         key: `${f.name}_${Date.now()}_${pending.length}`
       });
@@ -2336,7 +2358,7 @@ export class AhChat extends LitElement {
   private async uploadOne(p: PendingUpload): Promise<void> {
     try {
       const formData = new FormData();
-      formData.append('file', p.raw, p.raw.name);
+      formData.append('file', p.uploadFile, p.uploadFile.name);
       const resp = await authedFetch('/api/upload', {
         method: 'POST',
         body: formData
@@ -2353,13 +2375,17 @@ export class AhChat extends LitElement {
       });
       this.uploadingFiles.set(p.key, { status: 'done' });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '上传失败';
+      let msg = err instanceof Error ? err.message : '上传失败';
+      // 后端 raw body 超过阈值时返回该文案；转换为更友好的提示。
+      if (/request body too large/i.test(msg)) {
+        msg = `图片体积过大，上传被服务端拒绝：${p.raw.name}`;
+      }
       this.patchAttachment(p.meta, {
         uploadStatus: 'error',
         uploadError: msg
       });
       this.uploadingFiles.set(p.key, { status: 'error', error: msg });
-      notifyError(err, {
+      notifyError(new Error(msg), {
         title: '附件上传',
         fallback: `上传失败：${p.raw.name}`,
         key: 'chat-upload'

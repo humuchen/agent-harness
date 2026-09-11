@@ -390,6 +390,10 @@ const HISTORY_MAX_BYTES = cfgNum(
   'HISTORY_MAX_BYTES',
   DEFAULTS.HISTORY_MAX_BYTES as number
 );
+// 文件上传：单文件上限（MB）与 /api/upload 请求体截断阈值（字节）。
+// 请求体上限比单文件限制多 2MB 余量，覆盖 multipart boundary / headers 开销。
+const UPLOAD_MAX_MB = cfgNum('UPLOAD_MAX_MB', DEFAULTS.UPLOAD_MAX_MB as number);
+const UPLOAD_BODY_MAX_BYTES = (UPLOAD_MAX_MB + 2) * 1024 * 1024;
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
 const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
@@ -2679,9 +2683,9 @@ const server = createServer(
           let total = 0;
           for await (const c of req) {
             total += (c as Buffer).length;
-            if (total > 20 * 1024 * 1024) {
+            if (total > UPLOAD_BODY_MAX_BYTES) {
               const err: any = new Error(
-                'request body too large (20 MB limit)'
+                `request body too large (${UPLOAD_MAX_MB + 2} MB limit)`
               );
               err.status = 413;
               throw err;

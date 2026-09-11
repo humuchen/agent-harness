@@ -16,7 +16,10 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 服务绑定
   PORT: 4173,
   UI_HOST: '0.0.0.0',
-  MAX_BODY_BYTES: 1_048_576,
+  // 请求体上限：聊天请求可能携带多张图片的 dataUrl，默认放宽到 10MB。
+  MAX_BODY_BYTES: 10 * 1024 * 1024,
+  /** 单文件上传上限（MB）；同时影响 /api/upload 单文件校验与请求体截断阈值。 */
+  UPLOAD_MAX_MB: 10,
   /** 单会话历史镜像序列化上限（字节）；超出后前端主动裁剪最旧消息。 */
   HISTORY_MAX_BYTES: 512 * 1024,
   RATE_LIMIT: 120,
