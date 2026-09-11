@@ -10,7 +10,12 @@
  * 若实现里的上限或截断规则被改动，本测试会失败，从而起到回归保护作用。
  */
 import { describe, it, expect } from 'vitest';
-import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES } from './chat';
+import {
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BYTES,
+  ATTACH_COLLAPSE_LIMIT,
+  resolveAttachmentView
+} from './chat';
 
 /**
  * 复刻 handleFiles 的准入规则（与 chat.ts 实现保持逐字同构）。
@@ -121,5 +126,105 @@ describe('附件数量上限', () => {
         expect(accepted + rejectedForCount).toBe(incoming);
       }
     }
+  });
+});
+
+/**
+ * 附件预览条溢出展示的行为验证。
+ *
+ * 背景：预览条固定在输入框上方、高度只有一行。条目一多，最后一项会被硬裁在
+ * 容器右缘 —— 既看不出「还有更多」，也不知道总共有几个。这里的契约是：
+ * 折叠态最多渲染 ATTACH_COLLAPSE_LIMIT 条，余量收进「+N」按钮，
+ * 且按钮上的数字必须等于被折叠的真实条数（渲染与文案同源，不允许两处算错）。
+ */
+describe('附件预览条溢出展示', () => {
+  /** 造 n 个占位附件。 */
+  const makeList = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it('折叠阈值为 6', () => {
+    expect(ATTACH_COLLAPSE_LIMIT).toBe(6);
+  });
+
+  it('条目数未达阈值时不折叠，也不出现「+N」按钮', () => {
+    const { visible, collapsedCount } = resolveAttachmentView(makeList(5), false);
+    expect(visible).toHaveLength(5);
+    expect(collapsedCount).toBe(0);
+  });
+
+  it('条目数刚好等于阈值时不折叠（边界：6）', () => {
+    const { visible, collapsedCount } = resolveAttachmentView(makeList(6), false);
+    expect(visible).toHaveLength(6);
+    expect(collapsedCount).toBe(0);
+  });
+
+  it('刚超出阈值 1 个时折叠，按钮显示 +1（边界：7）', () => {
+    const { visible, collapsedCount } = resolveAttachmentView(makeList(7), false);
+    expect(visible).toHaveLength(6);
+    expect(collapsedCount).toBe(1);
+  });
+
+  it('达到附件上限 15 个时，只渲染 6 条、折叠 9 条', () => {
+    // 这是截图里暴露的实际场景。
+    const { visible, collapsedCount } = resolveAttachmentView(
+      makeList(MAX_ATTACHMENTS),
+      false
+    );
+    expect(visible).toHaveLength(6);
+    expect(collapsedCount).toBe(9);
+  });
+
+  it('展开后渲染全部条目，且折叠数仍可算出（供「收起」按钮判断是否该存在）', () => {
+    const { visible, collapsedCount } = resolveAttachmentView(makeList(15), true);
+    expect(visible).toHaveLength(15);
+    // 展开态下这个数字不再代表「隐藏了几条」，而是「是否存在溢出」——
+    // 大于 0 才渲染常驻按钮（此时按钮文案是「收起」）。
+    expect(collapsedCount).toBe(9);
+  });
+
+  it('折叠态的可见项是完整列表的前缀，顺序不被打乱', () => {
+    const list = makeList(15);
+    const { visible } = resolveAttachmentView(list, false);
+    expect(visible).toEqual(list.slice(0, ATTACH_COLLAPSE_LIMIT));
+  });
+
+  it('展开态的可见项是完整列表的副本，不共享引用', () => {
+    const list = makeList(15);
+    const { visible } = resolveAttachmentView(list, true);
+    expect(visible).toEqual(list);
+    expect(visible).not.toBe(list);
+  });
+
+  it('任何条数下都不会丢失条目：可见 + 折叠 == 总数', () => {
+    for (let total = 0; total <= MAX_ATTACHMENTS; total++) {
+      for (const expanded of [false, true]) {
+        const { visible, collapsedCount } = resolveAttachmentView(
+          makeList(total),
+          expanded
+        );
+        if (expanded) {
+          // 展开态：全部渲染，仅剩「是否溢出」的信息
+          expect(visible).toHaveLength(total);
+        } else {
+          // 折叠态：可见条数 + 折叠条数 必须恰好等于总数
+          expect(visible.length + collapsedCount).toBe(total);
+        }
+        expect(visible.length).toBeLessThanOrEqual(total);
+        expect(collapsedCount).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
+  it('空列表不渲染任何条目、也不出现按钮', () => {
+    for (const expanded of [false, true]) {
+      const { visible, collapsedCount } = resolveAttachmentView([], expanded);
+      expect(visible).toHaveLength(0);
+      expect(collapsedCount).toBe(0);
+    }
+  });
+
+  it('支持自定义阈值（不改变默认行为）', () => {
+    const { visible, collapsedCount } = resolveAttachmentView(makeList(10), false, 3);
+    expect(visible).toHaveLength(3);
+    expect(collapsedCount).toBe(7);
   });
 });

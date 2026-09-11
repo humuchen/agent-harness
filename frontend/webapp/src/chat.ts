@@ -109,6 +109,102 @@ import type { AhCommandSuggestions } from './components/ah-command-suggestions';
 export const MAX_ATTACHMENTS = 15;
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 单个 10MB
 
+/**
+ * 附件预览条折叠时最多直接展示的条目数。
+ *
+ * 预览条位于输入框上方、高度固定为一行；条目一多就会把最后一项硬裁在
+ * 容器右缘（既看不出被裁了，也不知道总共几个）。超过本阈值后余量收进
+ * 「+N」按钮，点开再以多行网格展开。
+ */
+export const ATTACH_COLLAPSE_LIMIT = 6;
+
+/**
+ * 批量上传的并发度。
+ * 串行会导致首张慢请求堵死整批；无上限并发则一次拖 15 张会瞬间打出 15 个请求。
+ * 取 4 是两者的折中：显著快于串行，又不至于压垮服务端 / 占满浏览器连接池。
+ */
+export const UPLOAD_CONCURRENCY = 4;
+
+/** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 追踪 key。 */
+export interface PendingUpload {
+  meta: UploadedFile;
+  raw: File;
+  key: string;
+}
+
+/** 允许上传的扩展名（MIME 为空时的兜底判定）。 */
+const ALLOWED_EXTS = ['.txt', '.md', '.csv', '.json'];
+
+/** 文件是否属于允许上传的类型（图片 / 文本 / JSON）。 */
+export function isAllowedAttachment(f: File): boolean {
+  if (f.type) {
+    if (f.type.startsWith('image/') || f.type.startsWith('text/')) return true;
+    if (f.type.includes('json')) return true;
+  }
+  // MIME 缺失时按扩展名兜底（部分来源拖入的文件 type 为空字符串）。
+  const dot = f.name.lastIndexOf('.');
+  return dot >= 0 && ALLOWED_EXTS.includes(f.name.slice(dot).toLowerCase());
+}
+
+/** 读取文件为 DataURL，用于本地预览。 */
+export function readAsDataUrl(f: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(f);
+  });
+}
+
+/**
+ * 以固定并发度执行一组任务。
+ *
+ * 契约：任务自身必须已捕获异常 —— 本函数不兜 reject，
+ * 某任务若抛错会经 Promise.all 冒泡（调用方应保证任务不抛）。
+ * 任务全部执行完才 resolve；并发度会被裁剪到任务数，不会空转。
+ */
+export async function runWithConcurrency(
+  tasks: ReadonlyArray<() => Promise<void>>,
+  limit = UPLOAD_CONCURRENCY
+): Promise<void> {
+  if (!tasks.length || limit <= 0) return;
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, tasks.length) },
+    async () => {
+      while (cursor < tasks.length) {
+        const i = cursor++;
+        const task = tasks[i];
+        if (!task) break;
+        await task();
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
+/**
+ * 按折叠状态解算附件预览条的展示切片。
+ *
+ * 纯函数，供渲染与单测共用 —— 保证「按钮上显示的数字」与「实际渲染的
+ * 条目数」永远一致，不会出现文案说有 N 个、列表却渲染了别的数量。
+ *
+ * @param list     完整附件列表
+ * @param expanded 是否已展开
+ * @param limit    折叠时的最大展示条数
+ * @returns `visible` 本次要渲染的条目；`collapsedCount` 被折叠的条目数
+ *          （为 0 表示无需渲染「+N」按钮）
+ */
+export function resolveAttachmentView<T>(
+  list: readonly T[],
+  expanded: boolean,
+  limit: number = ATTACH_COLLAPSE_LIMIT
+): { visible: T[]; collapsedCount: number } {
+  const collapsedCount = Math.max(0, list.length - limit);
+  const visible = expanded ? list.slice() : list.slice(0, limit);
+  return { visible, collapsedCount };
+}
+
 /* ------------------------------ Chat ------------------------------ */
 
 @customElement('ah-chat')
@@ -148,6 +244,12 @@ export class AhChat extends LitElement {
 
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
+
+  /**
+   * 附件预览条是否处于展开态。
+   * 折叠时最多渲染 ATTACH_COLLAPSE_LIMIT 条，余量收进「+N」按钮。
+   */
+  @state() private attachmentsExpanded = false;
 
   /**
    * 是否有文件正被拖到整个 chat 区域上方（驱动整屏拖拽遮罩）。
@@ -1497,6 +1599,7 @@ export class AhChat extends LitElement {
     this.input = '';
     this.cmdName = '';
     this.attachments = [];
+    this.attachmentsExpanded = false;
     void this.refocusInput();
   }
 
@@ -2140,6 +2243,16 @@ export class AhChat extends LitElement {
    *
    * 入参是 File[] 而非 Event —— 两条入口（「+」面板点击选择 / 拖拽到 chat 区域）
    * 最终都归一成 File[] 汇到这里。
+   *
+   * 三个阶段刻意分开：
+   *   1. 逐个校验 + 读本地预览（失败只跳过该文件，绝不中断整批）；
+   *   2. **整批一次性并入** attachments —— UI 立刻显示全部 N 个；
+   *   3. 受限并发上传 —— 单张失败只影响自己。
+   *
+   * 改成分阶段前这里是「读一个 → 追加一个 → 串行 await 上传一个」的循环，
+   * 两个后果：① 大图逐个慢慢冒出来，视觉上像只加进去了第一个；
+   * ② 串行 await 下首张慢请求（或 FileReader 那次未被捕获的 reject）
+   * 会把后面的文件全部堵死/整批抛出，实际只剩第一个落地。
    */
   private async handleFiles(picked: File[]): Promise<void> {
     if (!picked.length) return;
@@ -2165,8 +2278,9 @@ export class AhChat extends LitElement {
       list = list.slice(0, room);
     }
 
+    // ---- 阶段一：校验 + 读预览。单个文件读失败只跳过它自己 ----
+    const pending: PendingUpload[] = [];
     for (const f of list) {
-      // 前置校验
       if (f.size > MAX_ATTACHMENT_BYTES) {
         notify.warning(
           `文件过大：${f.name}（上限 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB）`,
@@ -2174,94 +2288,108 @@ export class AhChat extends LitElement {
         );
         continue;
       }
-      const allowedTypes = [
-        'image/jpeg',
-        'image/png',
-        'image/gif',
-        'image/webp',
-        'image/bmp',
-        'image/svg+xml',
-        'text/plain',
-        'text/markdown',
-        'text/csv',
-        'application/json'
-      ];
-      if (
-        !f.type.startsWith('image/') &&
-        !f.type.startsWith('text/') &&
-        !f.type.includes('json') &&
-        !['.txt', '.md', '.csv', '.json'].includes(
-          f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
-        )
-      ) {
+      if (!isAllowedAttachment(f)) {
         notify.warning(`不支持的文件类型：${f.name}`, { key: 'chat-upload' });
         continue;
       }
 
-      // 本地预览 DataURL
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result ?? ''));
-        reader.onerror = () => reject(new Error('读取文件失败'));
-        reader.readAsDataURL(f);
-      });
-
-      const key = `${f.name}_${Date.now()}`;
-      const file: UploadedFile = {
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        dataUrl,
-        uploadStatus: 'uploading'
-      };
-      this.uploadingFiles.set(key, { status: 'uploading' });
-
-      // 立即加入 attachments 显示预览（不可变更新，触发重渲染）
-      this.attachments = [...this.attachments, file];
-
-      // 上传到服务端
+      let dataUrl = '';
       try {
-        const formData = new FormData();
-        formData.append('file', f, f.name);
-        const resp = await authedFetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const json = await resp.json();
-        if (json.ok && json.meta?.url) {
-          // 不可变更新：Lit @state() 仅在重新赋值时触发重渲染，
-          // 原地修改数组元素的字段不会刷新 UI（⏳ 会一直卡住）。
-          this.attachments = this.attachments.map((a) =>
-            a === file
-              ? { ...a, serverUrl: json.meta.url, uploadStatus: 'done' }
-              : a
-          );
-          this.uploadingFiles.set(key, { status: 'done' });
-        } else {
-          throw new Error(json.error || '上传失败');
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '上传失败';
-        this.attachments = this.attachments.map((a) =>
-          a === file ? { ...a, uploadStatus: 'error', uploadError: msg } : a
-        );
-        this.uploadingFiles.set(key, {
-          status: 'error',
-          error: msg
-        });
-        notifyError(err, {
-          title: '附件上传',
-          fallback: `上传失败：${f.name}`,
-          key: 'chat-upload'
-        });
+        dataUrl = await readAsDataUrl(f);
+      } catch {
+        notify.warning(`读取失败：${f.name}`, { key: 'chat-upload' });
+        continue;
       }
+
+      pending.push({
+        meta: {
+          name: f.name,
+          size: f.size,
+          type: f.type,
+          dataUrl,
+          uploadStatus: 'uploading'
+        },
+        raw: f,
+        // 追加序号：同名文件在同一毫秒内也能拿到互不相同的 key。
+        key: `${f.name}_${Date.now()}_${pending.length}`
+      });
     }
+    if (!pending.length) return;
+
+    // ---- 阶段二：整批一次性入列，UI 立即显示全部 ----
+    this.attachments = [...this.attachments, ...pending.map((p) => p.meta)];
+    for (const p of pending) {
+      this.uploadingFiles.set(p.key, { status: 'uploading' });
+    }
+
+    // ---- 阶段三：受限并发上传 ----
+    await runWithConcurrency(
+      pending.map((p) => () => this.uploadOne(p)),
+      UPLOAD_CONCURRENCY
+    );
+  }
+
+  /**
+   * 上传单个附件并就地更新其状态。
+   * 失败只标记该文件为 error，绝不影响同批其它文件。
+   */
+  private async uploadOne(p: PendingUpload): Promise<void> {
+    try {
+      const formData = new FormData();
+      formData.append('file', p.raw, p.raw.name);
+      const resp = await authedFetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const json = await resp.json();
+      if (!json?.ok || !json.meta?.url) {
+        throw new Error(json?.error || '上传失败');
+      }
+      // 不可变更新：Lit @state() 仅在重新赋值时触发重渲染，
+      // 原地修改数组元素的字段不会刷新 UI（⏳ 会一直卡住）。
+      this.patchAttachment(p.meta, {
+        serverUrl: json.meta.url,
+        uploadStatus: 'done'
+      });
+      this.uploadingFiles.set(p.key, { status: 'done' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '上传失败';
+      this.patchAttachment(p.meta, {
+        uploadStatus: 'error',
+        uploadError: msg
+      });
+      this.uploadingFiles.set(p.key, { status: 'error', error: msg });
+      notifyError(err, {
+        title: '附件上传',
+        fallback: `上传失败：${p.raw.name}`,
+        key: 'chat-upload'
+      });
+    }
+  }
+
+  /**
+   * 按对象**引用**就地更新某个附件字段。
+   * 用引用而非下标 —— 上传期间用户可能移除其它附件，下标会错位打到别的文件上。
+   */
+  private patchAttachment(target: UploadedFile, patch: Partial<UploadedFile>) {
+    this.attachments = this.attachments.map((a) =>
+      a === target ? { ...a, ...patch } : a
+    );
   }
 
   /** 移除已选附件。 */
   private removeAttachment(i: number) {
     const newAttachments = this.attachments.filter((_, idx) => idx !== i);
     this.attachments = newAttachments;
+    // 移除后若已不再溢出，收起展开态 —— 否则会残留一个无意义的「收起」按钮。
+    if (newAttachments.length <= ATTACH_COLLAPSE_LIMIT) {
+      this.attachmentsExpanded = false;
+    }
+  }
+
+  /** 展开 / 收起附件预览条的多余条目。 */
+  private toggleAttachments(): void {
+    this.attachmentsExpanded = !this.attachmentsExpanded;
   }
 
   /** 文件是否可预览（图片 MIME 或常见图片扩展名）。 */
@@ -2610,6 +2738,11 @@ export class AhChat extends LitElement {
 
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
+    // 附件预览条：折叠态只渲染前 N 条，余量交给「+N」按钮（渲染与文案同源）。
+    const attachView = resolveAttachmentView(
+      this.attachments,
+      this.attachmentsExpanded
+    );
     return html`
       <!-- 整屏拖拽上传：监听挂在 render 根 <div> 上 —— 它在 shadow DOM 内，
            铺满 :host，所以「拖到 chat 组件任意位置」都能被接住。
@@ -2880,58 +3013,99 @@ export class AhChat extends LitElement {
           <div class="composer-wrap">
             <div class="composer">
               ${this.attachments.length > 0
-                ? html`<div class="attachments-preview">
-                    ${this.attachments.map(
-                      (f, i) => html`
-                        <div
-                          class="attach-preview-item ${f.uploadStatus === 'error'
-                            ? 'error'
-                            : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
-                          @click=${() => this.openPreview(f)}
+                ? html`<div
+                    class="attachments-preview ${this.attachmentsExpanded
+                      ? 'expanded'
+                      : 'collapsed'} ${attachView.collapsedCount > 0
+                      ? 'has-more'
+                      : ''}"
+                  >
+                    <div class="attach-strip">
+                      ${attachView.visible.map(
+                        (f, i) => html`
+                          <div
+                            class="attach-preview-item ${f.uploadStatus ===
+                            'error'
+                              ? 'error'
+                              : ''} ${this.isPreviewable(f)
+                              ? 'is-image'
+                              : ''}"
+                            @click=${() => this.openPreview(f)}
+                          >
+                            ${f.type.startsWith('image/')
+                              ? html`<img
+                                  src=${f.dataUrl}
+                                  alt=${escapeHtml(f.name)}
+                                  class="attach-thumb"
+                                />`
+                              : html`<span class="attach-icon"
+                                  >${fileIcon(f)}</span
+                                >`}
+                            <span class="attach-name" title=${f.name}
+                              >${escapeHtml(f.name)}</span
+                            >
+                            ${f.uploadStatus === 'uploading'
+                              ? html`<span
+                                  class="attach-status uploading"
+                                  title="上传中"
+                                  >⏳</span
+                                >`
+                              : f.uploadStatus === 'done'
+                              ? html`<span
+                                  class="attach-status done"
+                                  title="已上传"
+                                  >✓</span
+                                >`
+                              : f.uploadStatus === 'error'
+                              ? html`<span
+                                  class="attach-err"
+                                  title=${f.uploadError || '上传失败'}
+                                ></span>`
+                              : nothing}
+                            <button
+                              type="button"
+                              class="attach-rm"
+                              title="移除"
+                              @click=${(e: Event) => {
+                                // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
+                                e.stopPropagation();
+                                this.removeAttachment(i);
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        `
+                      )}
+                    </div>
+                    ${attachView.collapsedCount > 0
+                      ? html`<button
+                          type="button"
+                          class="attach-more"
+                          title=${this.attachmentsExpanded
+                            ? '收起'
+                            : `另有 ${attachView.collapsedCount} 个附件已折叠，点击展开`}
+                          aria-expanded=${this.attachmentsExpanded
+                            ? 'true'
+                            : 'false'}
+                          @click=${() => this.toggleAttachments()}
                         >
-                          ${f.type.startsWith('image/')
-                            ? html`<img
-                                src=${f.dataUrl}
-                                alt=${escapeHtml(f.name)}
-                                class="attach-thumb"
-                              />`
-                            : html`<span class="attach-icon"
-                                >${fileIcon(f)}</span
-                              >`}
-                          <span class="attach-name" title=${f.name}
-                            >${escapeHtml(f.name)}</span
+                          <svg
+                            class="am-chev"
+                            viewBox="0 0 10 6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
                           >
-                          ${f.uploadStatus === 'uploading'
-                            ? html`<span
-                                class="attach-status uploading"
-                                title="上传中"
-                                >⏳</span
-                              >`
-                            : f.uploadStatus === 'done'
-                            ? html`<span class="attach-status done" title="已上传"
-                                >✓</span
-                              >`
-                            : f.uploadStatus === 'error'
-                            ? html`<span
-                                class="attach-err"
-                                title=${f.uploadError || '上传失败'}
-                              ></span>`
-                            : nothing}
-                          <button
-                            type="button"
-                            class="attach-rm"
-                            title="移除"
-                            @click=${(e: Event) => {
-                              // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
-                              e.stopPropagation();
-                              this.removeAttachment(i);
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      `
-                    )}
+                            <path d="M1 1.5l4 4 4-4" />
+                          </svg>
+                          ${this.attachmentsExpanded
+                            ? '收起'
+                            : `+${attachView.collapsedCount}`}
+                        </button>`
+                      : nothing}
                   </div>`
                 : nothing}
               <!-- Slash Command：选中命令后在此固化为胶囊（hover 显示 × 移除），

@@ -2683,18 +2683,9 @@ export const chatStyles = [
          上下文用量的全视口透明遮罩）都会改以 composer 为包含块，
          遮罩不再铺满视口，「点击空白处关闭」随之失效。 */
     }
-    /* 附件预览条：顶部，横向滚动 */
+    /* 附件预览条：顶部，单行；条目溢出由 .attach-strip / .attach-more 接管 */
     .composer .attachments-preview {
       flex-shrink: 0;
-      display: flex;
-      flex-wrap: nowrap;
-      gap: 8px;
-      padding: 8px 12px;
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: thin;
-      scrollbar-color: color-mix(in srgb, var(--ah-text-muted) 28%, transparent)
-        transparent;
       border-bottom: 1px solid var(--ah-border);
     }
     /* 主体区：textarea 填满剩余高度 */
@@ -2851,17 +2842,91 @@ export const chatStyles = [
       font-size: 11px;
     }
     /* 附件上传区域样式 */
+    /* 外层：条目条 + 「+N」按钮并排。
+       按钮作为独立 flex 兄弟节点而非绝对定位浮层 —— 浮层会盖住条目，
+       并排则无论条目多少、是否滚动，按钮都恒在右侧且绝不遮挡内容。 */
     .attachments-preview {
-      /* 行内横向滚动，不占用固定高度 */
       display: flex;
-      flex-wrap: nowrap;
+      align-items: flex-start;
       gap: 8px;
-      padding: 2px 12px;
+      padding: 8px 12px;
+    }
+    .attach-strip {
+      display: flex;
+      gap: 8px;
+      /* 允许收缩到比内容窄，否则 flex 子项不会产生滚动条而会撑破容器 */
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    /* 折叠态：单行 + 横向滚动（窄屏也不会把条目挤变形） */
+    .attachments-preview.collapsed .attach-strip {
+      flex-wrap: nowrap;
       overflow-x: auto;
       overflow-y: hidden;
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--ah-text-muted) 28%, transparent)
         transparent;
+    }
+    /* 展开态：多行换行 + 容器内纵向滚动（约 4 行后封顶），
+       避免一次性铺开把输入框顶出可视区。 */
+    .attachments-preview.expanded .attach-strip {
+      flex-wrap: wrap;
+      row-gap: 8px;
+      max-height: 168px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--ah-text-muted) 28%, transparent)
+        transparent;
+    }
+    /* 「+N / 收起」：只在条目溢出时出现，恒在右侧 */
+    .attach-more {
+      flex: 0 0 auto;
+      /* 高度与条目首行对齐（条目高 28px，按钮 26px + 1px 上边距居中） */
+      margin-top: 1px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: var(--ah-radius-pill, 999px);
+      border: 1px solid
+        color-mix(in srgb, var(--ah-accent, #2997ff) 42%, var(--ah-border));
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 16%,
+        var(--ah-surface-1)
+      );
+      color: var(--ah-accent, #2997ff);
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .attach-more:hover {
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 28%,
+        var(--ah-surface-1)
+      );
+      border-color: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 62%,
+        var(--ah-border)
+      );
+    }
+    .attach-more .am-chev {
+      width: 9px;
+      height: 6px;
+      flex: 0 0 auto;
+      transition: transform 0.18s ease;
+    }
+    /* 展开后箭头翻转指向上方，与「收起」语义一致 */
+    .attachments-preview.expanded .attach-more .am-chev {
+      transform: rotate(180deg);
     }
     .attach-preview-item {
       display: flex;
@@ -3067,6 +3132,15 @@ export const chatStyles = [
         font-size: 18px;
         width: 24px;
         height: 24px;
+      }
+      /* 窄屏：按钮收窄，展开态高度压缩到约 3 行 */
+      .attach-more {
+        height: 24px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+      .attachments-preview.expanded .attach-strip {
+        max-height: 132px;
       }
     }
     .caret {
