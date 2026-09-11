@@ -17,3 +17,4 @@ export { deepLinkController } from './plugins/deep-link';
 export { fileUploadController } from './plugins/file-upload';
 export { biometricAuthController } from './plugins/biometric-auth';
 export { offlineCacheController } from './plugins/offline-cache';
+export { uploadArtifact, stripDataUrlPrefix } from './plugins/artifacts-client';

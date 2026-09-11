@@ -264,11 +264,23 @@ export class AhApp extends LitElement {
       }
     };
     window.addEventListener('popstate', this.onPopState);
+
+    // 移动端 Deep Link：piagent://chat/:sessionId 或 piagent://plan/:planId
+    // 由移动端原生壳（Capacitor）拦截后转为 ah:deeplink 事件。Web 端不感知移动端，
+    // 仅监听通用自定义事件；非移动端该事件永不派发，无副作用。
+    this.onDeepLink = (e: CustomEvent<{ path: string; raw: string }>) => {
+      const path = e.detail?.path;
+      if (!path) return;
+      const seg = path.replace(/^\/+/, '').split('/')[0];
+      if (seg) this.setTab(seg);
+    };
+    window.addEventListener('ah:deeplink', this.onDeepLink as EventListener);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
+    window.removeEventListener('ah:deeplink', this.onDeepLink as EventListener);
     window.removeEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
@@ -282,6 +294,9 @@ export class AhApp extends LitElement {
 
   /** History 路由的 popstate 处理器引用（disconnectedCallback 解绑用）。 */
   private onPopState = () => {};
+
+  /** 移动端 Deep Link 处理器引用（disconnectedCallback 解绑用）。 */
+  private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
 
   private onPluginsChanged = () => {
     void this.loadPluginViews();
