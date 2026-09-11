@@ -54,8 +54,8 @@ export interface RenderAttachmentsOpts {
 /**
  * 渲染图片附件：作为独立于气泡的附件卡片（调用方负责放在气泡上方，而非气泡内）。
  * - 单张图片：直接缩略图，点击预览。
- * - 多张图片：折叠态显示首图 +「N 张」角标 +「点击展开」提示；点击卡片展开为
- *   平铺网格，展开后单张点击预览，点击卡片空白区收起。
+ * - 多张图片：折叠态为**交错堆叠**（错位 + 旋转层叠）+「N 张」角标，点击展开为
+ *   平铺网格；展开态提供「收起」按钮恢复堆叠；展开后单张点击预览。
  */
 export function renderImageAttachments(
   opts: RenderAttachmentsOpts
@@ -65,63 +65,71 @@ export function renderImageAttachments(
   const first = images[0];
   if (!first) return nothing;
 
-  const singleImage = (f: UploadedFile) => html`
-    <div
-      class="attach-img is-previewable"
-      title="点击预览"
-      @click=${() => onPreview(f)}
-    >
-      <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
-    </div>
-  `;
+  if (images.length === 1) {
+    return html`
+      <div
+        class="attach-img is-previewable"
+        title="点击预览"
+        @click=${() => onPreview(first)}
+      >
+        <img src=${first.dataUrl} alt=${escapeHtml(first.name)} loading="lazy" />
+      </div>
+    `;
+  }
 
-  if (images.length === 1) return singleImage(first);
-
-  // 多图：点击卡片在「折叠 ↔ 展开」间切换；展开后单张点击预览。
-  const toggleCard = (e: Event) => {
+  // 交错堆叠的居中系数：让 --i 围绕中点对称分布（层叠左右均衡）。
+  const mid = (images.length - 1) / 2;
+  const expand = (e: Event) => {
     const card = (e.currentTarget as HTMLElement).closest('.attach-card');
-    if (!card) return;
-    const target = e.target as HTMLElement;
-    if (card.classList.contains('expanded') && !target.closest('.attach-img')) {
-      card.classList.remove('expanded');
-      return;
-    }
-    if (!card.classList.contains('expanded')) card.classList.add('expanded');
+    if (card) card.classList.add('expanded');
+  };
+  const collapse = (e: Event) => {
+    e.stopPropagation();
+    const card = (e.currentTarget as HTMLElement).closest('.attach-card');
+    if (card) card.classList.remove('expanded');
   };
   const onImgClick = (e: Event, f: UploadedFile) => {
-    const card = (e.currentTarget as HTMLElement).closest('.attach-card');
-    if (card && !card.classList.contains('expanded')) return; // 未展开：交给卡片展开
     e.stopPropagation();
     onPreview(f);
   };
 
   return html`
     <div class="attach-card">
-      <div
-        class="attach-card-cover is-previewable"
-        title="点击展开全部图片"
-        @click=${toggleCard}
-      >
-        <img
-          class="attach-card-thumb"
-          src=${first.dataUrl}
-          alt=${escapeHtml(first.name)}
-          loading="lazy"
-        />
-        <span class="attach-card-hint">点击展开</span>
-        <span class="attach-card-badge">${images.length} 张</span>
-      </div>
-      <div class="attach-card-grid">
+      <div class="attach-card-stack" title="点击展开全部图片" @click=${expand}>
         ${images.map(
-          (f) =>
-            html`<div
-              class="attach-img is-previewable"
-              title="点击预览"
-              @click=${(e: Event) => onImgClick(e, f)}
-            >
+          (f, i) =>
+            html`<div class="attach-img" style="--i:${i};--mid:${mid}">
               <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+              ${i === images.length - 1
+                ? html`<span class="attach-card-badge">${images.length} 张</span>`
+                : nothing}
             </div>`
         )}
+      </div>
+      <div class="attach-card-expanded">
+        <div class="attach-card-head">
+          <span>${images.length} 张图片</span>
+          <button
+            type="button"
+            class="attach-card-collapse"
+            title="收起图片"
+            @click=${collapse}
+          >
+            收起
+          </button>
+        </div>
+        <div class="attach-card-grid">
+          ${images.map(
+            (f) =>
+              html`<div
+                class="attach-img is-previewable"
+                title="点击预览"
+                @click=${(e: Event) => onImgClick(e, f)}
+              >
+                <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+              </div>`
+          )}
+        </div>
       </div>
     </div>
   `;

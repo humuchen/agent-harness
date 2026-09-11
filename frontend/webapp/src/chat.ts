@@ -81,6 +81,13 @@ import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
 import { compressImage, compressDataUrl } from './utils/compress-image';
+import {
+  buildAttachmentDigest,
+  compressAttachmentText,
+  dataUrlToText,
+  isTextLike,
+  resolveAttachmentBudget
+} from './utils/compress-text';
 
 // Slash Command 框架
 import {
@@ -1598,9 +1605,31 @@ export class AhChat extends LitElement {
       )
     ).filter(Boolean) as Array<{ url: string; name: string; type: string }>;
 
+    // 文本附件：与图片同一套「UI 原文件 / 模型压缩副本」解耦。
+    // UI 气泡仍展示上传的原始文件；发给模型的是一段「头尾保留、中间省略」的摘要。
+    // 缺少这一步时，一个几 MB 的 .log / .csv 会以完整原文进入上下文，并随历史逐轮重发。
+    const textFiles = rawAttachments.filter(
+      (f) => !f.type.startsWith('image/') && isTextLike(f.name, f.type)
+    );
+    const perItemBudget = resolveAttachmentBudget(textFiles.length);
+    const textDigest = textFiles
+      .map((f) => {
+        const raw = dataUrlToText(f.dataUrl || '');
+        if (raw == null || !raw.trim()) return null;
+        return compressAttachmentText(f.name, f.type, raw, {
+          maxChars: perItemBudget,
+          serverUrl: f.serverUrl
+        });
+      })
+      .filter(Boolean) as Parameters<typeof buildAttachmentDigest>[0];
+    const attachmentDigest = buildAttachmentDigest(textDigest);
+    // 仅追加到「发往模型的 prompt」；UI 消息内容仍为纯用户输入（content 不变）。
+    const modelPrompt = attachmentDigest ? `${content}\n\n${attachmentDigest}` : content;
+
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
-      attachments: rawAttachments
+      attachments: rawAttachments,
+      modelPrompt
     });
   }
 

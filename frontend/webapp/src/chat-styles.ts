@@ -3111,63 +3111,98 @@ export const chatStyles = [
       font-size: 12px;
       color: var(--ah-text);
     }
-    /* 多图：独立附件卡片（置于气泡上方）+ 点击展开网格 */
+    /* 多图：独立附件卡片（置于气泡上方）—— 交错堆叠 ↔ 展开网格 */
     .attach-card {
       width: 100%;
       max-width: 320px;
       margin-bottom: 8px;
     }
-    .attach-card-cover {
+    /* 折叠态：交错堆叠（错位 + 旋转层叠，围绕中点对称） */
+    .attach-card-stack {
       position: relative;
-      width: 168px;
-      height: 112px;
-      border-radius: var(--ah-radius-sm);
-      overflow: hidden;
-      cursor: pointer;
-      background: var(--ah-surface-3);
-      transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-        box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    .attach-card-cover:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
-    }
-    .attach-card-thumb {
+      height: 120px;
       width: 100%;
-      height: 100%;
+      cursor: pointer;
+    }
+    .attach-card-stack .attach-img {
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      width: 148px;
+      height: 100px;
+      margin-left: -74px;
+      transform: translate(
+          calc((var(--i) - var(--mid)) * 20px),
+          calc(var(--i) * 4px)
+        )
+        rotate(calc((var(--i) - var(--mid)) * 4deg));
+      z-index: calc(var(--i) + 1);
+      transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    .attach-card-stack .attach-img img {
+      width: 148px;
+      height: 100px;
       object-fit: cover;
+      border-radius: var(--ah-radius-sm);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.42);
       display: block;
     }
-    .attach-card-hint,
+    .attach-card-stack .attach-img:hover {
+      z-index: 99;
+      filter: brightness(1.08);
+    }
     .attach-card-badge {
       position: absolute;
+      right: 6px;
+      bottom: 6px;
       font-size: 11px;
       line-height: 1;
       color: #fff;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0, 0, 0, 0.55);
       border-radius: 6px;
       padding: 3px 7px;
       pointer-events: none;
     }
-    .attach-card-hint {
-      left: 6px;
-      top: 6px;
+    /* 展开态：头部（含「收起」）+ 平铺网格 */
+    .attach-card-expanded {
+      display: none;
     }
-    .attach-card-badge {
-      right: 6px;
-      bottom: 6px;
+    .attach-card.expanded .attach-card-stack {
+      display: none;
+    }
+    .attach-card.expanded .attach-card-expanded {
+      display: block;
+    }
+    .attach-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--ah-text-dim, #98a2b3);
+    }
+    .attach-card-collapse {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      font-size: 12px;
+      line-height: 1.2;
+      color: var(--ah-text);
+      background: var(--ah-surface-3);
+      border: 1px solid var(--ah-border);
+      border-radius: 7px;
+      cursor: pointer;
+    }
+    .attach-card-collapse:hover {
+      filter: brightness(1.15);
     }
     .attach-card-grid {
-      display: none;
+      display: flex;
       flex-wrap: wrap;
       gap: 8px;
       width: 100%;
-    }
-    .attach-card.expanded .attach-card-cover {
-      display: none;
-    }
-    .attach-card.expanded .attach-card-grid {
-      display: flex;
     }
     .attach-card-grid .attach-img img {
       max-width: 148px;

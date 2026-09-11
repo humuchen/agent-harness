@@ -587,7 +587,7 @@ export class ChatRunRuntime {
     sessionId: string,
     content: string,
     imageAttachments: Array<{ url: string; name: string; type: string }> = [],
-    opts: { planTask?: boolean; attachments?: unknown[] } = {}
+    opts: { planTask?: boolean; attachments?: unknown[]; modelPrompt?: string } = {}
   ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.deps.threadFor(sessionId);
@@ -635,7 +635,9 @@ export class ChatRunRuntime {
       this.deps.getServerModelBaseUrl() || endpoint.modelBaseUrl;
     const input: Record<string, unknown> = {
       mode: this.deps.getMode(),
-      prompt: content,
+      // prompt 发往模型：默认等于 UI 消息内容；文本附件场景下由 modelPrompt 追加
+      // 压缩后的附件摘要（UI 气泡仍用 content，不含摘要）。
+      prompt: opts.modelPrompt ?? content,
       model: this.deps.getModel() || undefined,
       ctxWindow:
         this.deps.getServerCtxWindow() > 0
