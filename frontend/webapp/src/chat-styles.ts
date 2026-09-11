@@ -3083,9 +3083,6 @@ export const chatStyles = [
       gap: 8px;
       margin-bottom: 8px;
     }
-    .attachments.has-images {
-      flex-direction: row;
-    }
     .attach-img.is-previewable {
       cursor: zoom-in;
     }
@@ -3114,78 +3111,67 @@ export const chatStyles = [
       font-size: 12px;
       color: var(--ah-text);
     }
-    /* 多图：交错堆叠 + 点击展开 */
-    .attach-stack {
-      position: relative;
-      height: 132px;
+    /* 多图：独立附件卡片（置于气泡上方）+ 点击展开网格 */
+    .attach-card {
       width: 100%;
+      max-width: 320px;
+      margin-bottom: 8px;
     }
-    .attach-stack .attach-img {
-      margin: 0;
-    }
-    .attach-stack:not(.expanded) .attach-img {
-      position: absolute;
-      top: 8px;
-      left: 50%;
-      width: 172px;
-      height: 116px;
-      margin-left: -86px;
-      cursor: pointer;
-      transform: translate(calc((var(--i) - 2.5) * 22px), calc(var(--i) * 3px))
-        rotate(calc((var(--i) - 2.5) * 5deg));
-      opacity: calc(0.4 + var(--i) * 0.13);
-      z-index: calc(var(--i) + 1);
-      transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1),
-        opacity 0.35s ease;
-    }
-    .attach-stack:not(.expanded) .attach-img img {
-      width: 172px;
-      height: 116px;
-      object-fit: cover;
+    .attach-card-cover {
+      position: relative;
+      width: 168px;
+      height: 112px;
       border-radius: var(--ah-radius-sm);
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+      overflow: hidden;
+      cursor: pointer;
+      background: var(--ah-surface-3);
+      transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+        box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    .attach-stack:not(.expanded) .attach-img:hover {
-      opacity: 1;
-      filter: brightness(1.08);
+    .attach-card-cover:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
     }
-    .attach-count {
+    .attach-card-thumb {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .attach-card-hint,
+    .attach-card-badge {
       position: absolute;
-      right: 6px;
-      bottom: 6px;
       font-size: 11px;
       line-height: 1;
       color: #fff;
       background: rgba(0, 0, 0, 0.5);
       border-radius: 6px;
-      padding: 2px 7px;
+      padding: 3px 7px;
       pointer-events: none;
     }
-    .attach-stack.expanded {
-      position: static;
-      display: flex;
+    .attach-card-hint {
+      left: 6px;
+      top: 6px;
+    }
+    .attach-card-badge {
+      right: 6px;
+      bottom: 6px;
+    }
+    .attach-card-grid {
+      display: none;
       flex-wrap: wrap;
       gap: 8px;
-      height: auto;
       width: 100%;
     }
-    .attach-stack.expanded .attach-img {
-      position: static;
-      transform: none;
-      opacity: 1;
-      width: auto;
-      height: auto;
-      z-index: auto;
-      cursor: zoom-in;
-    }
-    .attach-stack.expanded .attach-img img {
-      width: auto;
-      max-width: 200px;
-      max-height: 200px;
-      box-shadow: none;
-    }
-    .attach-stack.expanded .attach-count {
+    .attach-card.expanded .attach-card-cover {
       display: none;
+    }
+    .attach-card.expanded .attach-card-grid {
+      display: flex;
+    }
+    .attach-card-grid .attach-img img {
+      max-width: 148px;
+      max-height: 148px;
     }
     /* 注：原 .attach-btn（裸「+」label）已由 <ah-composer-plus> 取代，
        上传入口与模式/专家选择一并收口到该组件，此处不再保留其样式。 */

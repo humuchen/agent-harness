@@ -10,7 +10,10 @@
  */
 import { html, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
-import { renderAttachments } from './chat-render-utils';
+import {
+  renderAttachments,
+  renderImageAttachments
+} from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
@@ -96,6 +99,10 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
   // 用户消息：渲染气泡文本 + 附件预览。
   if (m.role === 'user') {
     const hasAttachments = m.attachments && m.attachments.length > 0;
+    // 图片独立成卡片置于气泡上方，与气泡内文本解耦。
+    const hasImages = !!m.attachments?.some((f) =>
+      f.type.startsWith('image/')
+    );
     // 编辑态：气泡原位替换为编辑框（草稿 + 取消/发送），不再展示原文。
     if (ctx.editingMsgId === m.id) {
       return html`
@@ -151,6 +158,12 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       <div class="msg user">
         <div class="avatar">你</div>
         <div class="user-col">
+          ${hasImages
+            ? renderImageAttachments({
+                files: m.attachments!,
+                onPreview: (f: UploadedFile) => ctx.openPreview(f)
+              })
+            : nothing}
           <div class="bubble">
             ${hasAttachments
               ? renderAttachments({
