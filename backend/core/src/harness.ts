@@ -569,13 +569,27 @@ export class AgentHarness {
     }
     // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
     if (imageAttachments && imageAttachments.length > 0) {
+      // 零依赖兜底：对超大 base64 原图强制 detail:'low'，由模型端降采样到 512px，
+      // 覆盖前端压缩被绕过的入口（subagent / workflow / 直接构造 attachments 等）。
+      // 仅体积超限的图受影响，经前端压缩后的图保持原有质量。
+      const forceLowDetail = (url: string): boolean => {
+        if (!url.startsWith('data:image/')) return false;
+        const approx = Math.ceil(((url.split(',')[1] ?? '').length * 3) / 4);
+        return approx > 1.5 * 1024 * 1024;
+      };
       const contentBlocks: Array<
         | { type: 'text'; text?: string }
-        | { type: 'image_url'; image_url?: { url: string } }
+        | { type: 'image_url'; image_url?: { url: string; detail?: 'low' | 'high' | 'auto' } }
       > = [];
       if (userInput) contentBlocks.push({ type: 'text', text: userInput });
       for (const img of imageAttachments) {
-        contentBlocks.push({ type: 'image_url', image_url: { url: img.url } });
+        const url = img.url;
+        const detail = forceLowDetail(url) ? ('low' as const) : undefined;
+        contentBlocks.push(
+          detail
+            ? { type: 'image_url', image_url: { url, detail } }
+            : { type: 'image_url', image_url: { url } }
+        );
       }
       memory.add({ role: 'user', content: contentBlocks as any });
     } else {
