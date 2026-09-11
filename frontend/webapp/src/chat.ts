@@ -142,6 +142,20 @@ export class AhChat extends LitElement {
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
 
+  /**
+   * 是否有文件正被拖到整个 chat 区域上方（驱动整屏拖拽遮罩）。
+   * 仅认 `Files` 类型的拖拽（dataTransfer.types 含 'Files'），
+   * 因此拖选文字/链接经过时不会误触发遮罩。
+   */
+  @state() private dragActive = false;
+
+  /**
+   * 拖拽进入/离开的嵌套计数（非响应式，无需触发渲染）。
+   * 光标在 chat 内部子元素之间移动时 dragenter/dragleave 会成对触发，
+   * 只有计数归零才判定为「真正离开组件」。
+   */
+  private dragDepth = 0;
+
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
 
@@ -2061,11 +2075,59 @@ export class AhChat extends LitElement {
     return this.cmdName ? `/${this.cmdName}${arg ? ` ${arg}` : ''}` : arg;
   }
 
+  /* ------------------- 整屏拖拽上传（覆盖整个 chat 区域） ------------------- */
+
+  /**
+   * 该 drag 事件是否携带文件。
+   * dataTransfer.types 在 dragover 阶段才可读（drop 阶段也可），
+   * 用它把「拖文件」与「拖选文字 / 拖链接」区分开，避免误亮遮罩。
+   */
+  private isFileDrag(e: DragEvent): boolean {
+    const types = e.dataTransfer?.types;
+    return types ? Array.from(types).includes('Files') : false;
+  }
+
+  /**
+   * 拖拽进入 chat 区域：亮起整屏遮罩。
+   * 用 `dragenter`/`dragleave` 计数成对抵消——拖拽过程中光标会在子元素间移动，
+   * 每次都派发 dragenter+dragleave，只用布尔量会在子元素边界处闪烁。
+   */
+  private onDragEnter(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    this.dragDepth += 1;
+    if (!this.dragActive) this.dragActive = true;
+  }
+
+  /** 拖拽在内部元素间移动：持续 preventDefault，否则浏览器会拒收 drop。 */
+  private onDragOver(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    if (!this.dragActive) this.dragActive = true;
+  }
+
+  private onDragLeave(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    this.dragDepth = Math.max(0, this.dragDepth - 1);
+    // 计数归零才认为是真正离开，避免跨越子元素时遮罩闪烁。
+    if (this.dragDepth === 0) this.dragActive = false;
+  }
+
+  /** 在 chat 区域内松开：接管文件并关闭遮罩。 */
+  private onDrop(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    this.dragDepth = 0;
+    this.dragActive = false;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length) void this.handleFiles(files);
+  }
+
   /**
    * 处理文件选择。读取本地预览并上传到服务端。
    *
-   * 入参是 File[] 而非 Event —— 「+」面板（ah-composer-plus）既支持点击选择
-   * 也支持拖拽，两者最终都归一成 File[] 经 `files-select` 上抛到这里。
+   * 入参是 File[] 而非 Event —— 两条入口（「+」面板点击选择 / 拖拽到 chat 区域）
+   * 最终都归一成 File[] 汇到这里。
    */
   private async handleFiles(picked: File[]): Promise<void> {
     if (!picked.length) return;
@@ -2516,459 +2578,470 @@ export class AhChat extends LitElement {
   render() {
     const active = this.sessions.find((s) => s.id === this.activeId);
     return html`
+      <!-- 整屏拖拽上传：监听挂在 render 根 <div> 上 —— 它在 shadow DOM 内，
+           铺满 :host，所以「拖到 chat 组件任意位置」都能被接住。
+           三个事件必须一起绑：只 preventDefault on dragover 才会被浏览器
+           认定为合法放置目标，否则 drop 永远不触发。 -->
       <div
-        class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed
-          ? 'collapsed'
-          : ''}"
+        class="chat-root"
+        @dragenter=${this.onDragEnter}
+        @dragover=${this.onDragOver}
+        @dragleave=${this.onDragLeave}
+        @drop=${this.onDrop}
       >
-        <div class="side-head">
-          <button
-            class="collapse-btn"
-            title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-            @click=${() => this.toggleSidebarCollapse()}
-          >
-            ${this.sidebarCollapsed ? '›' : '‹'}
-          </button>
-          <button class="primary new-btn" @click=${() => this.newChat()}>
-            ＋ 新对话
-          </button>
-        </div>
-        <div class="session-list">
-          ${this.sessions.length === 0
-            ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
-            : this.sessions.map(
-                (s) => html`
-                  <div
-                    class="session ${s.id === this.activeId ? 'active' : ''}"
-                    @click=${() => this.selectSession(s.id)}
-                  >
-                    <span class="dot"></span>
-                    <span class="title">${escapeHtml(s.title)}</span>
-                    <span class="acts">
-                      <button
-                        class="icon-btn"
-                        title="重命名"
-                        @click=${(e: Event) => {
-                          e.stopPropagation();
-                          this.renameSession(s.id);
-                        }}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        class="icon-btn"
-                        title="删除"
-                        @click=${(e: Event) => {
-                          e.stopPropagation();
-                          this.deleteSession(s.id);
-                        }}
-                      >
-                        🗑
-                      </button>
-                    </span>
-                  </div>
-                `
-              )}
-        </div>
-      </div>
-
-      <div class="main">
-        <div class="chat-head">
-          <button
-            class="menu-btn"
-            @click=${() => this.toggleSidebar()}
-            title="会话列表"
-            aria-label="会话列表"
-          >
-            <!-- 对话气泡 + 文字行图标：与外层外壳的导航汉堡 ☰ 区分，语义为「会话/历史列表」 -->
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+        <div
+          class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed
+            ? 'collapsed'
+            : ''}"
+        >
+          <div class="side-head">
+            <button
+              class="collapse-btn"
+              title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+              @click=${() => this.toggleSidebarCollapse()}
             >
-              <path
-                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-              />
-              <path d="M8 9h8M8 13h5" />
-            </svg>
-          </button>
-          <span class="title"
-            >${active ? escapeHtml(active.title) : '新对话'}</span
-          >
-          <span class="spacer"></span>
-          <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，会话内可切换，刷新默认开） -->
-          <button
-            class="tool-toggle ${this.deepThink ? 'on' : ''}"
-            title="深度思考"
-            aria-pressed="${this.deepThink}"
-            @click=${() => {
-              this.deepThink = !this.deepThink;
-              try {
-                localStorage.setItem(
-                  'ah_deep_think',
-                  this.deepThink ? '1' : '0'
-                );
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M9 18h6M10 22h4" />
-              <path
-                d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"
-              />
-            </svg>
-          </button>
-          <button
-            class="tool-toggle ${this.web ? 'on' : ''}"
-            title="联网搜索"
-            aria-pressed="${this.web}"
-            @click=${() => {
-              this.web = !this.web;
-              try {
-                localStorage.setItem('ah_web', this.web ? '1' : '0');
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20" />
-              <path
-                d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-              />
-            </svg>
-          </button>
-          <!-- 自检 / 环境：跳转到原「验证」「环境」面板（菜单已收纳，经 ah-goto 路由） -->
-          <button
-            class="toggle"
-            title="自检 / 验证"
-            aria-label="自检 / 验证"
-            @click=${() => this.gotoPanel('verify')}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-              <polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-          </button>
-          <button
-            class="toggle"
-            title="临时 / 预览环境"
-            aria-label="临时 / 预览环境"
-            @click=${() => this.gotoPanel('env')}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path
-                d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"
-              />
-              <path
-                d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"
-              />
-              <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
-              <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
-            </svg>
-          </button>
-        </div>
-
-        <div class="scroll-region">
-          <div
-            class="scroll"
-            ${ref(this.scrollCtl.scrollRef)}
-            @scroll=${() => this.scrollCtl.onScroll()}
-          >
-            ${this.messages.length === 0
-              ? html`
-                  <div class="empty">
-                    <h1>有什么可以帮你的？</h1>
-                    <p>
-                      基于 agent-harness
-                      的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
-                    </p>
-                  </div>
-                `
-              : html`<div class="thread">
-                  ${this.renderConnBanner()}
-                  ${this.llmReady
-                    ? ''
-                    : html`<div
-                        style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
-                      >
-                        <span
-                          >当前使用离线 Mock 模型，配置你的 API Key
-                          后可使用真实模型。</span
-                        >
-                        <button
-                          class="btn ghost"
-                          style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
-                          @click=${() =>
-                            this.dispatchEvent(
-                              new CustomEvent('ah-goto', {
-                                detail: 'settings',
-                                bubbles: true,
-                                composed: true
-                              })
-                            )}
-                        >
-                          去配置
-                        </button>
-                      </div>`}
-                  ${this.messages.map((m) => this.renderMessage(m))}
-                </div>`}
+              ${this.sidebarCollapsed ? '›' : '‹'}
+            </button>
+            <button class="primary new-btn" @click=${() => this.newChat()}>
+              ＋ 新对话
+            </button>
           </div>
-          ${this.scrollCtl.showScrollDown
-            ? html`<button
-                class="scroll-down"
-                title="回到底部"
-                aria-label="回到底部"
-                @click=${() => this.scrollCtl.scrollToBottomSmooth()}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M12 5v14M19 12l-7 7-7-7" />
-                </svg>
-              </button>`
-            : nothing}
-        </div>
-
-        <div class="composer-wrap">
-          <div class="composer">
-            ${this.attachments.length > 0
-              ? html`<div class="attachments-preview">
-                  ${this.attachments.map(
-                    (f, i) => html`
-                      <div
-                        class="attach-preview-item ${f.uploadStatus === 'error'
-                          ? 'error'
-                          : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
-                        @click=${() => this.openPreview(f)}
-                      >
-                        ${f.type.startsWith('image/')
-                          ? html`<img
-                              src=${f.dataUrl}
-                              alt=${escapeHtml(f.name)}
-                              class="attach-thumb"
-                            />`
-                          : html`<span class="attach-icon"
-                              >${fileIcon(f)}</span
-                            >`}
-                        <span class="attach-name" title=${f.name}
-                          >${escapeHtml(f.name)}</span
-                        >
-                        ${f.uploadStatus === 'uploading'
-                          ? html`<span
-                              class="attach-status uploading"
-                              title="上传中"
-                              >⏳</span
-                            >`
-                          : f.uploadStatus === 'done'
-                          ? html`<span class="attach-status done" title="已上传"
-                              >✓</span
-                            >`
-                          : f.uploadStatus === 'error'
-                          ? html`<span
-                              class="attach-err"
-                              title=${f.uploadError || '上传失败'}
-                            ></span>`
-                          : nothing}
+          <div class="session-list">
+            ${this.sessions.length === 0
+              ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
+              : this.sessions.map(
+                  (s) => html`
+                    <div
+                      class="session ${s.id === this.activeId ? 'active' : ''}"
+                      @click=${() => this.selectSession(s.id)}
+                    >
+                      <span class="dot"></span>
+                      <span class="title">${escapeHtml(s.title)}</span>
+                      <span class="acts">
                         <button
-                          type="button"
-                          class="attach-rm"
-                          title="移除"
+                          class="icon-btn"
+                          title="重命名"
                           @click=${(e: Event) => {
-                            // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
                             e.stopPropagation();
-                            this.removeAttachment(i);
+                            this.renameSession(s.id);
                           }}
                         >
-                          ×
+                          ✎
                         </button>
-                      </div>
-                    `
-                  )}
-                </div>`
-              : nothing}
-            <!-- Slash Command：选中命令后在此固化为胶囊（hover 显示 × 移除），
-                 联想面板则绝对定位浮在整个 composer 之上。常驻渲染，
-                 以便在输入框有焦点时接管 ↑↓ / Enter / Esc 键盘导航。 -->
-            <ah-command-suggestions
-              .value=${this.input}
-              .selected=${this.cmdName}
-              @command-select=${(e: Event) =>
-                this.onCommandSelect(
-                  (e as CustomEvent<{ name: string }>).detail.name
+                        <button
+                          class="icon-btn"
+                          title="删除"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.deleteSession(s.id);
+                          }}
+                        >
+                          🗑
+                        </button>
+                      </span>
+                    </div>
+                  `
                 )}
-              @command-remove=${() => this.onCommandRemove()}
-            ></ah-command-suggestions>
-            <div class="composer-body">
-              <textarea
-                class="composer-input"
-                rows="1"
-                placeholder=${this.cmdName
-                  ? `已选命令 /${this.cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
-                  : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'，'⇧⏎'换行"}
-                .value=${this.input}
-                ?disabled=${this.streaming[this.activeId] === true}
-                @input=${this.onInput}
-                @keydown=${this.onKey}
-              ></textarea>
+          </div>
+        </div>
+
+        <div class="main">
+          <div class="chat-head">
+            <button
+              class="menu-btn"
+              @click=${() => this.toggleSidebar()}
+              title="会话列表"
+              aria-label="会话列表"
+            >
+              <!-- 对话气泡 + 文字行图标：与外层外壳的导航汉堡 ☰ 区分，语义为「会话/历史列表」 -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                />
+                <path d="M8 9h8M8 13h5" />
+              </svg>
+            </button>
+            <span class="title"
+              >${active ? escapeHtml(active.title) : '新对话'}</span
+            >
+            <span class="spacer"></span>
+            <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，会话内可切换，刷新默认开） -->
+            <button
+              class="tool-toggle ${this.deepThink ? 'on' : ''}"
+              title="深度思考"
+              aria-pressed="${this.deepThink}"
+              @click=${() => {
+                this.deepThink = !this.deepThink;
+                try {
+                  localStorage.setItem(
+                    'ah_deep_think',
+                    this.deepThink ? '1' : '0'
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 18h6M10 22h4" />
+                <path
+                  d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"
+                />
+              </svg>
+            </button>
+            <button
+              class="tool-toggle ${this.web ? 'on' : ''}"
+              title="联网搜索"
+              aria-pressed="${this.web}"
+              @click=${() => {
+                this.web = !this.web;
+                try {
+                  localStorage.setItem('ah_web', this.web ? '1' : '0');
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20" />
+                <path
+                  d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+                />
+              </svg>
+            </button>
+            <!-- 自检 / 环境：跳转到原「验证」「环境」面板（菜单已收纳，经 ah-goto 路由） -->
+            <button
+              class="toggle"
+              title="自检 / 验证"
+              aria-label="自检 / 验证"
+              @click=${() => this.gotoPanel('verify')}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+            </button>
+            <button
+              class="toggle"
+              title="临时 / 预览环境"
+              aria-label="临时 / 预览环境"
+              @click=${() => this.gotoPanel('env')}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"
+                />
+                <path
+                  d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"
+                />
+                <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+                <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="scroll-region">
+            <div
+              class="scroll"
+              ${ref(this.scrollCtl.scrollRef)}
+              @scroll=${() => this.scrollCtl.onScroll()}
+            >
+              ${this.messages.length === 0
+                ? html`
+                    <div class="empty">
+                      <h1>有什么可以帮你的？</h1>
+                      <p>
+                        基于 agent-harness
+                        的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+                      </p>
+                    </div>
+                  `
+                : html`<div class="thread">
+                    ${this.renderConnBanner()}
+                    ${this.llmReady
+                      ? ''
+                      : html`<div
+                          style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
+                        >
+                          <span
+                            >当前使用离线 Mock 模型，配置你的 API Key
+                            后可使用真实模型。</span
+                          >
+                          <button
+                            class="btn ghost"
+                            style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
+                            @click=${() =>
+                              this.dispatchEvent(
+                                new CustomEvent('ah-goto', {
+                                  detail: 'settings',
+                                  bubbles: true,
+                                  composed: true
+                                })
+                              )}
+                          >
+                            去配置
+                          </button>
+                        </div>`}
+                    ${this.messages.map((m) => this.renderMessage(m))}
+                  </div>`}
             </div>
-            <div class="composer-footer">
-              <div class="composer-footer-left">
-                <!-- 「+」统一入口：文件 / 模式 / 专家三类能力收口到一个按钮 + 分区面板；
-                     已选的模式与专家以胶囊形式常驻在 + 右侧，点击胶囊可直达对应分区。 -->
-                <ah-composer-plus
-                  .agents=${this.agents}
-                  .agentId=${this.agentId}
-                  .mode=${this.interactionMode}
-                  .attachments=${this.attachments}
-                  @files-select=${(e: Event) =>
-                    this.handleFiles(
-                      (e as CustomEvent<{ files: File[] }>).detail.files
+            ${this.scrollCtl.showScrollDown
+              ? html`<button
+                  class="scroll-down"
+                  title="回到底部"
+                  aria-label="回到底部"
+                  @click=${() => this.scrollCtl.scrollToBottomSmooth()}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M12 5v14M19 12l-7 7-7-7" />
+                  </svg>
+                </button>`
+              : nothing}
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer">
+              ${this.attachments.length > 0
+                ? html`<div class="attachments-preview">
+                    ${this.attachments.map(
+                      (f, i) => html`
+                        <div
+                          class="attach-preview-item ${f.uploadStatus === 'error'
+                            ? 'error'
+                            : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
+                          @click=${() => this.openPreview(f)}
+                        >
+                          ${f.type.startsWith('image/')
+                            ? html`<img
+                                src=${f.dataUrl}
+                                alt=${escapeHtml(f.name)}
+                                class="attach-thumb"
+                              />`
+                            : html`<span class="attach-icon"
+                                >${fileIcon(f)}</span
+                              >`}
+                          <span class="attach-name" title=${f.name}
+                            >${escapeHtml(f.name)}</span
+                          >
+                          ${f.uploadStatus === 'uploading'
+                            ? html`<span
+                                class="attach-status uploading"
+                                title="上传中"
+                                >⏳</span
+                              >`
+                            : f.uploadStatus === 'done'
+                            ? html`<span class="attach-status done" title="已上传"
+                                >✓</span
+                              >`
+                            : f.uploadStatus === 'error'
+                            ? html`<span
+                                class="attach-err"
+                                title=${f.uploadError || '上传失败'}
+                              ></span>`
+                            : nothing}
+                          <button
+                            type="button"
+                            class="attach-rm"
+                            title="移除"
+                            @click=${(e: Event) => {
+                              // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
+                              e.stopPropagation();
+                              this.removeAttachment(i);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      `
                     )}
-                  @remove-attachment=${(e: Event) =>
-                    this.removeAttachment(
-                      (e as CustomEvent<{ index: number }>).detail.index
-                    )}
-                  @mode-change=${(e: Event) =>
-                    this.setInteractionMode(
-                      (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
-                    )}
-                  @agent-change=${(e: Event) => {
-                    const v = (e as CustomEvent<{ value: string }>).detail
-                      .value;
-                    this.agentId = v;
-                    this.persistSessionSettings({ agentId: v });
-                  }}
-                ></ah-composer-plus>
+                  </div>`
+                : nothing}
+              <!-- Slash Command：选中命令后在此固化为胶囊（hover 显示 × 移除），
+                   联想面板则绝对定位浮在整个 composer 之上。常驻渲染，
+                   以便在输入框有焦点时接管 ↑↓ / Enter / Esc 键盘导航。 -->
+              <ah-command-suggestions
+                .value=${this.input}
+                .selected=${this.cmdName}
+                @command-select=${(e: Event) =>
+                  this.onCommandSelect(
+                    (e as CustomEvent<{ name: string }>).detail.name
+                  )}
+                @command-remove=${() => this.onCommandRemove()}
+              ></ah-command-suggestions>
+              <div class="composer-body">
+                <textarea
+                  class="composer-input"
+                  rows="1"
+                  placeholder=${this.cmdName
+                    ? `已选命令 /${this.cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
+                    : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'，'⇧⏎'换行"}
+                  .value=${this.input}
+                  ?disabled=${this.streaming[this.activeId] === true}
+                  @input=${this.onInput}
+                  @keydown=${this.onKey}
+                ></textarea>
               </div>
-              <div class="composer-footer-right">
-                <ah-model-picker
-                  .model=${this.model}
-                  .deepThink=${this.deepThink}
-                  .web=${this.web}
-                  @model-change=${(e: Event) => {
-                    const d = (
-                      e as CustomEvent<{ model: string; ctx?: number }>
-                    ).detail;
-                    this.model = d.model;
-                    // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
-                    // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
-                    // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
-                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
-                    if (typeof d.baseUrl === 'string')
-                      this.modelBaseUrl = d.baseUrl;
-                    try {
-                      localStorage.setItem('ah_model', this.model);
-                    } catch {
-                      /* ignore */
-                    }
-                    this.persistSessionSettings({ model: d.model });
-                  }}
-                  @think-change=${(e: Event) => {
-                    this.deepThink = (
-                      e as CustomEvent<{ value: boolean }>
-                    ).detail.value;
-                    try {
-                      localStorage.setItem(
-                        'ah_deep_think',
-                        this.deepThink ? '1' : '0'
-                      );
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  @web-change=${(e: Event) => {
-                    this.web = (
-                      e as CustomEvent<{ value: boolean }>
-                    ).detail.value;
-                    try {
-                      localStorage.setItem('ah_web', this.web ? '1' : '0');
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  @ctx-change=${(e: Event) => {
-                    const d = (e as CustomEvent<{ ctx: number }>).detail;
-                    // 模型目录回抛的官方上下文窗口：有则显示用量圆环，无则隐藏。
-                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
-                  }}
-                ></ah-model-picker>
-                ${this.serverCtxWindow <= 0 ||
-                this.activeId === ''
-                  ? nothing
-                  : renderCtxRing({
-                      usage: selectContextUsage({
-                        backendUsage: this.backendUsage,
-                        serverCtxWindow: this.serverCtxWindow,
-                        messages: this.messages
-                      }),
-                      showCtxUsage: this.showCtxUsage,
-                      runCumulative: this.runCumulative,
-                      onToggle: () => (this.showCtxUsage = !this.showCtxUsage),
-                      onClose: () => (this.showCtxUsage = false)
-                    })}
-                ${this.streaming[this.activeId] === true
-                  ? html`<button
-                      class="send"
-                      title="停止"
-                      @click=${() => this.runRt.stop()}
-                    >
-                      ■
-                    </button>`
-                  : html`<button
-                      class="send"
-                      title="发送"
-                      ?disabled=${!this.input.trim()}
-                      @click=${() => this.send()}
-                    >
-                      ↑
-                    </button>`}
+              <div class="composer-footer">
+                <div class="composer-footer-left">
+                  <!-- 「+」统一入口：文件 / 模式 / 专家三类能力收口到一个按钮 + 分区面板；
+                       已选的模式与专家以胶囊形式常驻在 + 右侧，点击胶囊可直达对应分区。 -->
+                  <ah-composer-plus
+                    .agents=${this.agents}
+                    .agentId=${this.agentId}
+                    .mode=${this.interactionMode}
+                    .attachments=${this.attachments}
+                    @files-select=${(e: Event) =>
+                      this.handleFiles(
+                        (e as CustomEvent<{ files: File[] }>).detail.files
+                      )}
+                    @remove-attachment=${(e: Event) =>
+                      this.removeAttachment(
+                        (e as CustomEvent<{ index: number }>).detail.index
+                      )}
+                    @mode-change=${(e: Event) =>
+                      this.setInteractionMode(
+                        (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
+                      )}
+                    @agent-change=${(e: Event) => {
+                      const v = (e as CustomEvent<{ value: string }>).detail
+                        .value;
+                      this.agentId = v;
+                      this.persistSessionSettings({ agentId: v });
+                    }}
+                  ></ah-composer-plus>
+                </div>
+                <div class="composer-footer-right">
+                  <ah-model-picker
+                    .model=${this.model}
+                    .deepThink=${this.deepThink}
+                    .web=${this.web}
+                    @model-change=${(e: Event) => {
+                      const d = (
+                        e as CustomEvent<{ model: string; ctx?: number }>
+                      ).detail;
+                      this.model = d.model;
+                      // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
+                      // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
+                      // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
+                      this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
+                      if (typeof d.baseUrl === 'string')
+                        this.modelBaseUrl = d.baseUrl;
+                      try {
+                        localStorage.setItem('ah_model', this.model);
+                      } catch {
+                        /* ignore */
+                      }
+                      this.persistSessionSettings({ model: d.model });
+                    }}
+                    @think-change=${(e: Event) => {
+                      this.deepThink = (
+                        e as CustomEvent<{ value: boolean }>
+                      ).detail.value;
+                      try {
+                        localStorage.setItem(
+                          'ah_deep_think',
+                          this.deepThink ? '1' : '0'
+                        );
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    @web-change=${(e: Event) => {
+                      this.web = (
+                        e as CustomEvent<{ value: boolean }>
+                      ).detail.value;
+                      try {
+                        localStorage.setItem('ah_web', this.web ? '1' : '0');
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    @ctx-change=${(e: Event) => {
+                      const d = (e as CustomEvent<{ ctx: number }>).detail;
+                      // 模型目录回抛的官方上下文窗口：有则显示用量圆环，无则隐藏。
+                      this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
+                    }}
+                  ></ah-model-picker>
+                  ${this.serverCtxWindow <= 0 ||
+                  this.activeId === ''
+                    ? nothing
+                    : renderCtxRing({
+                        usage: selectContextUsage({
+                          backendUsage: this.backendUsage,
+                          serverCtxWindow: this.serverCtxWindow,
+                          messages: this.messages
+                        }),
+                        showCtxUsage: this.showCtxUsage,
+                        runCumulative: this.runCumulative,
+                        onToggle: () => (this.showCtxUsage = !this.showCtxUsage),
+                        onClose: () => (this.showCtxUsage = false)
+                      })}
+                  ${this.streaming[this.activeId] === true
+                    ? html`<button
+                        class="send"
+                        title="停止"
+                        @click=${() => this.runRt.stop()}
+                      >
+                        ■
+                      </button>`
+                    : html`<button
+                        class="send"
+                        title="发送"
+                        ?disabled=${!this.input.trim()}
+                        @click=${() => this.send()}
+                      >
+                        ↑
+                      </button>`}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
       <div
         class="scrim ${this.sidebarOpen ? 'show' : ''}"
@@ -3039,6 +3112,34 @@ export class AhChat extends LitElement {
           </div>`
         : nothing}
       ${this.renderTraceDrawer()}
+
+      <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
+           drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->
+      ${this.dragActive
+        ? html`<div class="drop-overlay" aria-hidden="true">
+            <div class="drop-overlay-card">
+              <div class="drop-overlay-icons">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path
+                    d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                  />
+                </svg>
+              </div>
+              <div class="drop-overlay-title">松开即可添加文件</div>
+              <div class="drop-overlay-hint">
+                最多支持上传 50 个文件，支持常见文件类型
+              </div>
+            </div>
+          </div>`
+        : nothing}
+      </div>
     `;
   }
 }

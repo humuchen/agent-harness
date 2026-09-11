@@ -32,9 +32,6 @@ export interface ComposerAgentOption {
   domain?: string;
 }
 
-/** 面板分区。 */
-type Section = 'file' | 'mode' | 'agent';
-
 /** 运行模式定义：值与宿主 interactionMode 对齐。 */
 interface ModeItem {
   value: 'qa' | 'plan';
@@ -88,9 +85,6 @@ const CLIP_ICON =
 
 /** 非图片附件在面板文件列表里用的通用文件图标。 */
 const FILE_ICON = 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6';
-
-/** 下拉 chevron（胶囊沿用原 picker 的「图标 + 名称 + 箭头」视觉）。 */
-const CHEV_ICON = 'M1 1l4 4 4-4';
 
 @customElement('ah-composer-plus')
 export class AhComposerPlus extends LitElement {
@@ -169,6 +163,11 @@ export class AhComposerPlus extends LitElement {
       min-width: 0;
       overflow: hidden;
     }
+    /* 只读状态胶囊：仅作展示，不响应任何交互。
+       cursor: default（不用 pointer，避免误导为可点击）+ 无 hover 反馈；
+       user-select: none 让它在整块 composer 里不会因为拖选文字被选中。
+       注意：.chips 上的 pointer-events 不做 none —— 那样会让 title 悬浮提示
+       和「附件」胶囊的省略号信息也一并失效，反而不如保留原生 tooltip。 */
     .chip {
       appearance: none;
       border: none;
@@ -178,34 +177,20 @@ export class AhComposerPlus extends LitElement {
       height: 24px;
       padding: 0 9px;
       border-radius: var(--ah-radius-pill, 999px);
-      cursor: pointer;
+      cursor: default;
+      user-select: none;
       display: inline-flex;
       align-items: center;
       gap: 4px;
       max-width: 128px;
       min-width: 0;
       white-space: nowrap;
-      transition: filter 0.15s, background 0.15s;
-    }
-    .chip:hover {
-      filter: brightness(1.22);
-    }
-    .chip.active {
-      box-shadow: 0 0 0 1.5px
-        color-mix(in srgb, var(--ah-accent, #2997ff) 60%, transparent);
+      flex: 0 0 auto;
     }
     .chip svg {
       width: 12px;
       height: 12px;
       flex: 0 0 auto;
-    }
-    /* 下拉箭头：沿用原 picker trigger 的「图标 + 名称 + chevron」三件套，
-       提示胶囊是可点开的下拉，而不只是一块静态标签。 */
-    .chip .chev {
-      width: 9px;
-      height: 6px;
-      flex: 0 0 auto;
-      opacity: 0.65;
     }
     .chip .txt {
       overflow: hidden;
@@ -280,14 +265,6 @@ export class AhComposerPlus extends LitElement {
     .sec {
       padding: 4px 4px 8px;
       border-radius: 10px;
-      transition: background 0.3s ease;
-    }
-    .sec.hl {
-      background: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 10%,
-        transparent
-      );
     }
     .sec + .sec {
       margin-top: 4px;
@@ -330,21 +307,12 @@ export class AhComposerPlus extends LitElement {
       );
       color: var(--ah-text);
     }
-    .drop.over {
-      border-color: var(--ah-accent, #2997ff);
-      background: color-mix(
-        in srgb,
-        var(--ah-accent, #2997ff) 12%,
-        transparent
-      );
-      color: var(--ah-accent, #2997ff);
-    }
     .drop svg {
       width: 20px;
       height: 20px;
     }
-    /* 拖拽高亮防抖：子元素若可命中指针，光标从父节点移到 <span>/<svg> 上会
-       误触发 dragleave → 高亮闪烁。让子节点不吃指针事件即可根除。 */
+    /* 子元素不吃指针事件：拖拽高亮不再由本组件负责，但保留此规则可避免
+       光标落在 <span>/<svg> 上时点击热区判定抖动（一致命中 .drop 本体）。 */
     .drop > * {
       pointer-events: none;
     }
@@ -617,10 +585,6 @@ export class AhComposerPlus extends LitElement {
         padding: 0 8px;
         font-size: 11px;
       }
-      /* 窄屏优先保住名称，箭头让位 */
-      .chip .chev {
-        display: none;
-      }
       .panel {
         width: calc(100vw - 28px);
         max-width: 340px;
@@ -654,15 +618,6 @@ export class AhComposerPlus extends LitElement {
 
   @state() private open = false;
 
-  /** 面板打开时高亮/滚动定位的分区。 */
-  @state() private active: Section = 'file';
-
-  @state() private dragOver = false;
-
-  /** 短暂高亮的分区（点击胶囊直达时给一次视觉落点），900ms 后清除。 */
-  @state() private hl: Section | null = null;
-
-  @query('.panel') private panelEl?: HTMLDivElement | null;
   @query('input[type=file]') private fileInputEl?: HTMLInputElement | null;
 
   connectedCallback(): void {
@@ -687,31 +642,6 @@ export class AhComposerPlus extends LitElement {
 
   private toggle(): void {
     this.open = !this.open;
-    if (this.open) this.active = 'file';
-  }
-
-  /** 点击常驻胶囊：直接把面板打开并定位到对应分区。 */
-  private async openSection(s: Section): Promise<void> {
-    if (this.open && this.active === s) {
-      this.open = false;
-      return;
-    }
-    this.active = s;
-    this.open = true;
-    await this.scrollToSection(s);
-    this.hl = s;
-    window.setTimeout(() => {
-      if (this.hl === s) this.hl = null;
-    }, 900);
-  }
-
-  /** 把目标分区滚到面板顶部（用 scrollTop 而非 scrollIntoView，避免带动整页滚动）。 */
-  private async scrollToSection(s: Section): Promise<void> {
-    await this.updateComplete;
-    const panel = this.panelEl;
-    const sec = this.renderRoot.querySelector<HTMLElement>(`[data-sec="${s}"]`);
-    if (!panel || !sec) return;
-    panel.scrollTop = Math.max(0, sec.offsetTop - 6);
   }
 
   /* --------------------------- 选择回调 --------------------------- */
@@ -754,23 +684,6 @@ export class AhComposerPlus extends LitElement {
     const files = Array.from(input.files ?? []);
     // 立刻清空 value：否则连续选同一个文件不会再触发 change。
     input.value = '';
-    if (files.length) this.emitFiles(files);
-  }
-
-  private onDragOver(e: DragEvent): void {
-    e.preventDefault();
-    this.dragOver = true;
-  }
-
-  private onDragLeave(e: DragEvent): void {
-    e.preventDefault();
-    this.dragOver = false;
-  }
-
-  private onDrop(e: DragEvent): void {
-    e.preventDefault();
-    this.dragOver = false;
-    const files = Array.from(e.dataTransfer?.files ?? []);
     if (files.length) this.emitFiles(files);
   }
 
@@ -869,61 +782,27 @@ export class AhComposerPlus extends LitElement {
         </svg>
       </button>
 
-      <!-- 常驻结果胶囊：关掉面板也能看到当前的模式 / 专家，点击直达对应分区 -->
-      <div class="chips">
-        <button
-          class="chip mode-${mode.value} ${this.open && this.active === 'mode'
-            ? 'active'
-            : ''}"
+      <!-- 常驻结果胶囊：**纯展示**，只反映当前模式 / 专家 / 附件数。
+           用 <span> 而非 <button>：它们不再触发任何交互（切换请走左侧「+」面板），
+           也拿掉了 chevron —— 箭头会暗示「可点开」，与只读定位矛盾。
+           role="status" + aria-live 让屏幕阅读器在切换后播报新状态。 -->
+      <div class="chips" role="status" aria-live="polite">
+        <span
+          class="chip mode-${mode.value}"
           title="运行模式：${mode.title} · ${mode.desc}"
-          @click=${() => this.openSection('mode')}
         >
           ${this.icon(mode.iconPath)}
           <span class="txt">${mode.label}</span>
-          <svg
-            class="chev"
-            viewBox="0 0 10 6"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d=${CHEV_ICON} />
-          </svg>
-        </button>
-        <button
-          class="chip agent ${this.open && this.active === 'agent'
-            ? 'active'
-            : ''}"
-          title="选择专家：${this.currentAgentName}"
-          @click=${() => this.openSection('agent')}
-        >
+        </span>
+        <span class="chip agent" title="当前专家：${this.currentAgentName}">
           ${this.icon(BOT_ICON)}
           <span class="txt">${this.currentAgentName}</span>
-          <svg
-            class="chev"
-            viewBox="0 0 10 6"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d=${CHEV_ICON} />
-          </svg>
-        </button>
+        </span>
         ${fileCount > 0
-          ? html`<button
-              class="chip file ${this.open && this.active === 'file'
-                ? 'active'
-                : ''}"
-              title="已添加 ${fileCount} 个附件"
-              @click=${() => this.openSection('file')}
-            >
+          ? html`<span class="chip file" title="已添加 ${fileCount} 个附件">
               ${this.icon(CLIP_ICON)}
               <span class="txt">${fileCount}</span>
-            </button>`
+            </span>`
           : nothing}
       </div>
 
@@ -936,13 +815,12 @@ export class AhComposerPlus extends LitElement {
             ></button>
             <div class="panel" role="dialog" aria-label="输入选项">
               <!-- 分区 1：文件 -->
-              <div
-                class="sec ${this.hl === 'file' ? 'hl' : ''}"
-                data-sec="file"
-              >
+              <div class="sec" data-sec="file">
                 <div class="sec-title">文件</div>
+                <!-- 点击区只负责「唤起选择器」；拖拽改由 ah-chat 全区域统一接管
+                     （见 chat.ts 的整屏拖拽遮罩），故这里不再挂 dragover/drop。 -->
                 <div
-                  class="drop ${this.dragOver ? 'over' : ''}"
+                  class="drop"
                   role="button"
                   tabindex="0"
                   @click=${() => this.pickFile()}
@@ -952,13 +830,10 @@ export class AhComposerPlus extends LitElement {
                       this.pickFile();
                     }
                   }}
-                  @dragover=${this.onDragOver}
-                  @dragleave=${this.onDragLeave}
-                  @drop=${this.onDrop}
                 >
                   ${this.icon(CLIP_ICON)}
-                  <span class="t1">点击选择文件</span>
-                  <span class="t2">或将文件拖拽到此处 · 单个 ≤ 10MB</span>
+                  <span class="t1">点击选择图片上传</span>
+                  <span class="t2">支持图片、文本与 JSON · 单个 ≤ 10MB</span>
                 </div>
                 <input
                   type="file"
@@ -1012,10 +887,7 @@ export class AhComposerPlus extends LitElement {
               </div>
 
               <!-- 分区 2：模式 -->
-              <div
-                class="sec ${this.hl === 'mode' ? 'hl' : ''}"
-                data-sec="mode"
-              >
+              <div class="sec" data-sec="mode">
                 <div class="sec-title">模式</div>
                 <div class="mode-grid" role="radiogroup" aria-label="运行模式">
                   ${MODES.map(
@@ -1042,10 +914,7 @@ export class AhComposerPlus extends LitElement {
               </div>
 
               <!-- 分区 3：专家 -->
-              <div
-                class="sec ${this.hl === 'agent' ? 'hl' : ''}"
-                data-sec="agent"
-              >
+              <div class="sec" data-sec="agent">
                 <div class="sec-title">专家</div>
                 ${this.agents.length === 0
                   ? html`<div class="empty">暂无可用专家，将使用默认智能体</div>`

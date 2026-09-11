@@ -13,6 +13,83 @@ export const chatStyles = [
       min-height: 0;
       overflow: hidden;
       background: var(--ah-canvas);
+      /* 拖拽遮罩的定位上下文（遮罩 absolute; inset:0 即铺满整个 chat 组件）。
+         ⚠️ 不可加 transform —— 会让内部 position:fixed 的后代改变包含块。 */
+      position: relative;
+    }
+    /* 拖拽事件监听层：铺满 :host，本身不参与布局与视觉；三个拖拽事件绑在它上面，
+       因此「拖到 chat 组件任意位置」都能被接住（含侧栏、消息区、输入区）。 */
+    .chat-root {
+      display: flex;
+      flex-direction: row;
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+    }
+
+    /* ===================== 整屏拖拽上传遮罩 ===================== */
+    .drop-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 90;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* 半透明压暗底层内容，让中央「松开即可添加文件」卡片成为唯一焦点 */
+      background: color-mix(in srgb, var(--ah-canvas) 62%, transparent);
+      backdrop-filter: blur(2px);
+      /* 关键：遮罩只做视觉，不吃指针事件 ——
+         drop 仍由 .chat-root 接住，否则光标停在遮罩上判定不到放置目标。 */
+      pointer-events: none;
+      animation: drop-fade 0.14s ease-out;
+    }
+    @keyframes drop-fade {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+    /* 中央卡片：虚线边框 + 圆角，对应设计稿的拖拽提示框 */
+    .drop-overlay-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: min(460px, calc(100% - 64px));
+      padding: 40px 24px;
+      box-sizing: border-box;
+      border: 1.5px dashed color-mix(in srgb, var(--ah-text) 26%, transparent);
+      border-radius: 14px;
+      text-align: center;
+    }
+    .drop-overlay-icons {
+      color: var(--ah-text);
+      opacity: 0.85;
+      margin-bottom: 8px;
+    }
+    .drop-overlay-icons svg {
+      width: 46px;
+      height: 46px;
+      display: block;
+    }
+    .drop-overlay-title {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--ah-text);
+    }
+    .drop-overlay-hint {
+      font-size: 12.5px;
+      color: var(--ah-text-muted);
+    }
+    /* 尊重「减少动效」系统偏好 */
+    @media (prefers-reduced-motion: reduce) {
+      .drop-overlay {
+        animation: none;
+      }
     }
     .sidebar {
       width: 264px;
