@@ -5,12 +5,13 @@
  * - 通过 @capacitor/preferences 缓存最近一次成功拉取的数据
  * - 网络不可用时回退到缓存数据
  * - 缓存带 TTL，过期后自动标记为 stale
+ * - 通过 @capacitor/network 监听网络状态变化
  *
  * 注意：Service Worker 在 iOS WKWebView 中行为受限，
  * 当前以 Preferences 轻量缓存为主，后续可升级。
  */
 import { getPlugins } from '../bridge/register-plugins';
-import { App } from '@capacitor/app';
+import { Network } from '@capacitor/network';
 
 const CACHE_KEY_PREFIX = 'ah:cache:';
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 分钟
@@ -30,8 +31,10 @@ export interface OfflineCacheController {
   getWithMeta<T>(key: string): Promise<{ data: T; stale: boolean } | null>;
   /** 清除所有缓存 */
   clear(): Promise<void>;
-  /** 检查网络状态（通过 Capacitor App 插件） */
+  /** 检查网络状态 */
   isOnline(): Promise<boolean>;
+  /** 监听网络状态变化 */
+  onNetworkChange(handler: (connected: boolean) => void): Promise<() => void>;
 }
 
 export const offlineCacheController: OfflineCacheController = {
@@ -80,11 +83,15 @@ export const offlineCacheController: OfflineCacheController = {
     await preferences.clear();
   },
   async isOnline() {
-    // Capacitor App 插件不直接提供网络状态，这里通过 navigator.onLine
-    // 实际项目中可引入 @capacitor/network 插件增强
-    if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
-      return navigator.onLine;
-    }
-    return true; // 默认在线
+    const status = await Network.getStatus();
+    return status.connected;
+  },
+  async onNetworkChange(handler) {
+    const handle = await Network.addListener('networkStatusChange', (status) => {
+      handler(status.connected);
+    });
+    return () => {
+      void handle.remove();
+    };
   }
 };
