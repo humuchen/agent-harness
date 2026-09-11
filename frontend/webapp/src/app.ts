@@ -42,6 +42,7 @@ type Tab =
   | 'supplychain'
   | 'chat'
   | 'plugins'
+  | 'plan'
   | 'settings';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
@@ -79,7 +80,8 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'datasource', label: '数据源', short: '源' },
   { id: 'sandbox', label: '沙箱', short: '沙箱' },
   { id: 'supplychain', label: '供应链', short: '链' },
-  { id: 'plugins', label: '插件', short: '插件' }
+  { id: 'plugins', label: '插件', short: '插件' },
+  { id: 'plan', label: '计划', short: '计' }
 ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
@@ -568,6 +570,7 @@ export class AhApp extends LitElement {
               ?hidden=${this.tab !== 'supplychain'}
             ></ah-supply-chain>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
+            <ah-plan-board ?hidden=${this.tab !== 'plan'}></ah-plan-board>
             <ah-provider-key-settings
               ?hidden=${this.tab !== 'settings'}
             ></ah-provider-key-settings>

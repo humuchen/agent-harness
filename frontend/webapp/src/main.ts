@@ -24,6 +24,7 @@ import './supply-chain';
 import './observability';
 import './login';
 import './brand';
+import './plan-board';
 // 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。
 import './components';
 

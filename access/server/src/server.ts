@@ -160,6 +160,8 @@ import {
   type PlanDiff,
   type PlanStore
 } from './plan-store';
+// P2-3 Plan 协同事件总线（SSE 协同）。
+import { subscribePlanEvents, publishPlanEvent } from './plan-bus';
 // P3-1 品牌位配置。
 import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
 
@@ -1917,6 +1919,7 @@ const server = createServer(
             }
           }
           const saved = await getPlanStore().save(plan);
+          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
           auditAction('plan.save', { planId: saved.id, version: saved.version, role: ctx.role, sub: ctx.sub });
           return sendJson(res, { item: saved }, req);
         }
@@ -1980,6 +1983,7 @@ const server = createServer(
             return res.end(JSON.stringify({ error: 'forbidden' }));
           }
           const saved = await getPlanStore().save(plan);
+          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
           auditAction('plan.save', { planId: id, version: saved.version, role: ctx.role, sub: ctx.sub });
           return sendJson(res, { item: saved }, req);
         }
@@ -1992,9 +1996,30 @@ const server = createServer(
             return res.end(JSON.stringify({ error: 'forbidden' }));
           }
           const ok = await getPlanStore().remove(id);
+          publishPlanEvent(id, ctx.sub, { type: 'plan:update', patch: { removed: true } });
           auditAction('plan.delete', { planId: id, role: ctx.role, sub: ctx.sub });
           return sendJson(res, { ok }, req);
         }
+      }
+      // ── P2-3 Plan 协同 SSE 频道 ──
+      if (req.method === 'GET' && path.startsWith('/api/plans/') && path.endsWith('/events')) {
+        const ctx = await guard(req, res, 'plan:read');
+        if (!ctx) return;
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
+        }
+        const planId = decodeURIComponent(path.slice('/api/plans/'.length, -'/events'.length));
+        const send = startSse(res, req);
+        send({ type: 'plan:ready', planId, owner: ctx.sub });
+        const unsub = subscribePlanEvents(planId, ctx.sub, (e) => {
+          try { send(e); } catch { /* 连接已断 */ }
+        });
+        res.on('close', () => {
+          try { unsub(); } catch { /* 重复订阅安全 */ }
+          sseConnectionLock.release();
+        });
+        return;
       }
       // ── P3-1 品牌位：公开无需鉴权（属展示信息） ──
       if (req.method === 'GET' && path === '/api/brand') {
