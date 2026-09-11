@@ -16,6 +16,11 @@ import './dashboard';
 import './workspace';
 import './audit';
 import './org-tree';
+import './artifact-library';
+import './skill-manager';
+import './data-source-ui';
+import './sandbox-console';
+import './supply-chain';
 import './observability';
 import './login';
 // 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。

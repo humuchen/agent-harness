@@ -139,6 +139,16 @@ import {
 // 合规审计查询（读侧）：谁在何时做了什么 / 谁审批了谁 / 越权拦截记录。
 import { queryAuditFile, resolveAuditFile } from './audit-query';
 import { getOrgTree } from './org';
+// P1-5 成果物归档页 / 文件库：Agent 产出物持久化 + 浏览 / 下载 / 删除。
+import { getArtifactStore } from './artifact-store';
+// P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
+import { getSkillRegistry } from './skill-registry';
+// P1-7 企业数据源适配器：数据源注册 + 连通性测试。
+import { getDataSourceRegistry } from './data-source';
+// P1-4 浏览器沙箱：受控浏览器会话生命周期管理。
+import { getSandboxManager } from './browser-sandbox';
+// P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
+import { getSupplyChainScanner } from './supply-chain';
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
@@ -2313,6 +2323,225 @@ const server = createServer(
         const tree = await getOrgTree();
         return sendJson(res, tree, req);
       }
+
+      // ── P1-5 成果物归档页 / 文件库（受 artifact:read / artifact:write 保护）──
+      // 列出 / 详情 / 下载 / 删除；POST 以 base64 内容落盘（便于通过 JSON 走现有网关）。
+      if (path === '/api/artifacts') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'artifact:read');
+          if (!ctx) return;
+          const items = await getArtifactStore().list();
+          return sendJson(res, { items }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'artifact:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const name = typeof b?.name === 'string' ? b.name.trim() : '';
+          const contentB64 = typeof b?.contentBase64 === 'string' ? b.contentBase64 : '';
+          if (!name || !contentB64) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'name and contentBase64 are required' }));
+            return;
+          }
+          const meta = await getArtifactStore().save({
+            name,
+            kind: typeof b?.kind === 'string' && b.kind ? b.kind : 'other',
+            mimeType:
+              typeof b?.mimeType === 'string' && b.mimeType
+                ? b.mimeType
+                : 'application/octet-stream',
+            content: Buffer.from(contentB64, 'base64'),
+            owner: ctx.sub,
+            runId: typeof b?.runId === 'string' ? b.runId : undefined,
+            note: typeof b?.note === 'string' ? b.note : undefined
+          });
+          return sendJson(res, { item: meta }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/artifacts/')) {
+        const id = decodeURIComponent(path.slice('/api/artifacts/'.length).replace(/\/.*$/, ''));
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'artifact:read');
+          if (!ctx) return;
+          const dl = url.searchParams.get('download') === '1';
+          const meta = await getArtifactStore().get(id);
+          if (!meta) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'artifact not found' }));
+            return;
+          }
+          if (!dl) return sendJson(res, { item: meta }, req);
+          const buf = await getArtifactStore().readContent(id);
+          if (!buf) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'artifact content not found' }));
+            return;
+          }
+          res.writeHead(200, {
+            'content-type': meta.mimeType,
+            'content-disposition': `attachment; filename="${encodeURIComponent(meta.name)}"`,
+            'content-length': buf.length
+          });
+          res.end(buf);
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'artifact:write');
+          if (!ctx) return;
+          const ok = await getArtifactStore().remove(id);
+          return sendJson(res, { ok }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-6 企业 Skill 管理（受 skill:read / skill:manage 保护）──
+      if (path === '/api/skills') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'skill:read');
+          if (!ctx) return;
+          const items = await getSkillRegistry().list();
+          return sendJson(res, { items }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/skills/')) {
+        const m = path.slice('/api/skills/'.length).match(/^([^/]+)\/(enable|disable)$/);
+        if (m && req.method === 'POST') {
+          const ctx = await guard(req, res, 'skill:manage');
+          if (!ctx) return;
+          const sid = m[1];
+          const enable = m[2] === 'enable';
+          if (!sid || !m[2]) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid skill path' }));
+            return;
+          }
+          const def = await getSkillRegistry().setEnabled(sid, enable);
+          if (!def) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'skill not found' }));
+            return;
+          }
+          return sendJson(res, { item: def }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-7 企业数据源适配器（受 datasource:read / datasource:manage 保护）──
+      // 连通性测试为只读校验，归 datasource:read；配置变更走 datasource:manage（后续扩展）。
+      if (path === '/api/datasources') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'datasource:read');
+          if (!ctx) return;
+          const items = await getDataSourceRegistry().list();
+          return sendJson(res, { items }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/datasources/')) {
+        const tm = path.slice('/api/datasources/'.length).match(/^([^/]+)\/test$/);
+        if (tm && req.method === 'POST') {
+          const ctx = await guard(req, res, 'datasource:read');
+          if (!ctx) return;
+          const dsid = tm[1];
+          if (!dsid) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid datasource path' }));
+            return;
+          }
+          const result = await getDataSourceRegistry().test(dsid);
+          if (!result) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'datasource not found' }));
+            return;
+          }
+          return sendJson(res, { result }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-4 浏览器沙箱（受 sandbox:use 保护）──
+      if (path === '/api/sandbox/sessions') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          return sendJson(res, { items: getSandboxManager().list() }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const s = await getSandboxManager().create({
+            targetUrl: typeof b?.targetUrl === 'string' ? b.targetUrl : undefined,
+            owner: ctx.sub
+          });
+          return sendJson(res, { item: s }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/sandbox/sessions/')) {
+        const id = decodeURIComponent(
+          path.slice('/api/sandbox/sessions/'.length).replace(/\/.*$/, '')
+        );
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const s = getSandboxManager().get(id);
+          if (!s) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session not found' }));
+            return;
+          }
+          return sendJson(res, { item: s }, req);
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const ok = getSandboxManager().destroy(id);
+          return sendJson(res, { ok }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-8 CI 供应链（受 supplychain:read 保护）──
+      if (path === '/api/supply-chain/report') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'supplychain:read');
+          if (!ctx) return;
+          const repoRoot = resolve(__dirname, '..', '..', '..');
+          const report = await getSupplyChainScanner(repoRoot).scan();
+          return sendJson(res, report, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path === '/api/supply-chain/scan' && req.method === 'POST') {
+        const ctx = await guard(req, res, 'supplychain:read');
+        if (!ctx) return;
+        const repoRoot = resolve(__dirname, '..', '..', '..');
+        const report = await getSupplyChainScanner(repoRoot).scan();
+        return sendJson(res, report, req);
+      }
+
       if (req.method === 'GET' && path === '/api/env') {
         return sendJson(res, { envs: envPipeline.list() }, req);
       }

@@ -127,7 +127,7 @@ export class AhArtifacts extends LitElement {
     }
   }
 
-  private async remove(id: string): Promise<void> {
+  private async deleteArtifact(id: string): Promise<void> {
     try {
       const res = await fetch(`/api/artifacts/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -179,7 +179,7 @@ export class AhArtifacts extends LitElement {
                               <a class="dl" href="/api/artifacts/${a.id}?download=1">下载</a>
                               <button
                                 class="danger"
-                                @click=${() => void this.remove(a.id)}
+                                @click=${() => void this.deleteArtifact(a.id)}
                               >
                                 删除
                               </button>

@@ -29,6 +29,11 @@ type Tab =
   | 'observability'
   | 'audit'
   | 'org'
+  | 'artifact'
+  | 'skill'
+  | 'datasource'
+  | 'sandbox'
+  | 'supplychain'
   | 'chat'
   | 'plugins'
   | 'settings';
@@ -64,6 +69,11 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'observability', label: '可观测', short: '观' },
   { id: 'audit', label: '审计', short: '审' },
   { id: 'org', label: '组织', short: '组' },
+  { id: 'artifact', label: '档案', short: '档' },
+  { id: 'skill', label: '技能', short: '能' },
+  { id: 'datasource', label: '数据源', short: '源' },
+  { id: 'sandbox', label: '沙箱', short: '沙' },
+  { id: 'supplychain', label: '供应链', short: '链' },
   { id: 'plugins', label: '插件', short: '插' }
 ];
 
@@ -536,6 +546,11 @@ export class AhApp extends LitElement {
             ></ah-observability>
             <ah-audit ?hidden=${this.tab !== 'audit'}></ah-audit>
             <ah-org-tree ?hidden=${this.tab !== 'org'}></ah-org-tree>
+            <ah-artifacts ?hidden=${this.tab !== 'artifact'}></ah-artifacts>
+            <ah-skills ?hidden=${this.tab !== 'skill'}></ah-skills>
+            <ah-datasources ?hidden=${this.tab !== 'datasource'}></ah-datasources>
+            <ah-sandbox ?hidden=${this.tab !== 'sandbox'}></ah-sandbox>
+            <ah-supply-chain ?hidden=${this.tab !== 'supplychain'}></ah-supply-chain>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             <ah-provider-key-settings
               ?hidden=${this.tab !== 'settings'}
