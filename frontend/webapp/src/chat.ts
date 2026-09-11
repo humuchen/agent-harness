@@ -3030,13 +3030,18 @@ export class AhChat extends LitElement {
 
   /**
    * 内容区骨架屏（历史会话加载占位）。
-   * 排布刻意对齐真实消息：用户气泡靠右且较窄、助手气泡带头像靠左且较宽，
-   * 并复用 .thread 的宽度/边距与 sharedStyles 的 .sk-line 微光动画，
-   * 使加载态与加载完成后的内容在视觉上连续，切换时不发生横向跳动。
+   *
+   * 与真实消息共用同一套尺寸规格，保证「加载态 → 内容态」不发生位移：
+   * - 结构对齐：用户消息靠右带头像、助手消息靠左带头像，气泡外壳（背景 / 边框 /
+   *   圆角 / 内边距）与 .bubble 逐项相同 —— 加载完成时外壳不会「凭空出现」；
+   * - 高度对齐：每个 .sk-line 是一个完整行盒（14px × 1.65 = 23.1px），可见光条由
+   *   ::before 居中绘制，故气泡总高 = 24 + 23.1 × 行数，与真实气泡逐像素一致；
+   * - 宽度近似：真实用户气泡宽度由内容决定（≤62%），骨架无法预知，故 2 行取 56%、
+   *   单行短句取 38% 作为典型值；助手光条上限 90%，避免读作整块色带。
+   * 行宽写入内联 --w，由 chat-styles 的 .sk-line::before 消费。
    */
   private renderSessionSkeleton() {
-    const line = (w: string) =>
-      html`<div class="sk-line" style="width:${w}"></div>`;
+    const line = (w: string) => html`<div class="sk-line" style="--w:${w}"></div>`;
     return html`
       <div
         class="thread sk-thread"
@@ -3045,20 +3050,22 @@ export class AhChat extends LitElement {
         aria-label="正在加载历史会话"
       >
         <div class="sk-msg user">
-          <div class="sk-bubble">${line('72%')}${line('42%')}</div>
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">${line('100%')}${line('54%')}</div>
         </div>
         <div class="sk-msg assistant">
           <div class="sk-avatar"></div>
           <div class="sk-bubble">
-            ${line('32%')}${line('94%')}${line('88%')}${line('56%')}
+            ${line('86%')}${line('90%')}${line('82%')}${line('50%')}
           </div>
         </div>
         <div class="sk-msg user">
-          <div class="sk-bubble">${line('54%')}</div>
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble short">${line('100%')}</div>
         </div>
         <div class="sk-msg assistant">
           <div class="sk-avatar"></div>
-          <div class="sk-bubble">${line('90%')}${line('62%')}</div>
+          <div class="sk-bubble">${line('88%')}${line('54%')}</div>
         </div>
       </div>
     `;

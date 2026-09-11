@@ -60,7 +60,27 @@ export type Action =
   | 'env:read'
   | 'upload:file'
   | 'provider:manage'
-  | 'features:write';
+  | 'features:write'
+  // 工作空间（参考图能力链路 User → Workspace → Skill → … 的显式载体）
+  | 'workspace:read'
+  | 'workspace:write'
+  // 合规审计查询（谁在何时做了什么 / 谁审批了谁 / 越权拦截记录）
+  | 'audit:read'
+  // 企业组织树（部门 / 成员层级，只读）
+  | 'org:read'
+  // P1-5 成果物归档页 / 文件库（Agent 产出物持久化 + 浏览 / 下载 / 删除）
+  | 'artifact:read'
+  | 'artifact:write'
+  // P1-6 企业 Skill 管理（查看 / 启用 / 禁用企业级技能）
+  | 'skill:read'
+  | 'skill:manage'
+  // P1-7 企业数据源适配器（查看 / 配置 / 连通性测试）
+  | 'datasource:read'
+  | 'datasource:manage'
+  // P1-4 浏览器沙箱（为 Agent 提供受控浏览器会话）
+  | 'sandbox:use'
+  // P1-8 CI 供应链（依赖 / 制品扫描与签名报告）
+  | 'supplychain:read';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -145,7 +165,19 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'env:read',
     'upload:file',
     'provider:manage',
-    'features:write'
+    'features:write',
+    'workspace:read',
+    'workspace:write',
+    'audit:read',
+    'org:read',
+    'artifact:read',
+    'artifact:write',
+    'skill:read',
+    'skill:manage',
+    'datasource:read',
+    'datasource:manage',
+    'sandbox:use',
+    'supplychain:read'
   ],
   operator: [
     'agent:run:mock',
@@ -180,7 +212,19 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'chat:delete',
     'env:read',
     'upload:file',
-    'provider:manage'
+    'provider:manage',
+    'workspace:read',
+    'workspace:write',
+    'audit:read',
+    'org:read',
+    'artifact:read',
+    'artifact:write',
+    'skill:read',
+    'skill:manage',
+    'datasource:read',
+    'datasource:manage',
+    'sandbox:use',
+    'supplychain:read'
   ],
   viewer: [
     'agent:run:mock',
@@ -198,7 +242,13 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'a2a:receive',
     'a2a:send',
     'chat:read',
-    'env:read'
+    'env:read',
+    'workspace:read',
+    'org:read',
+    'artifact:read',
+    'skill:read',
+    'datasource:read',
+    'supplychain:read'
   ]
 };
 

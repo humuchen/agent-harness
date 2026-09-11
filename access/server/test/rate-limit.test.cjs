@@ -6,6 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 const http = require('node:http');
@@ -17,6 +18,32 @@ const RUN = existsSync(SERVER_JS);
 
 function freshPort() {
   return 40000 + Math.floor(Math.random() * 5000);
+}
+
+/** 不阻止父进程退出的 sleep（定时器 unref）。 */
+function delay(ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+}
+
+/**
+ * 优雅停止子进程：SIGTERM → 等待退出（最多 5s）→ 仍未退出则 SIGKILL。
+ *
+ * 为什么需要等待：server 收到 SIGTERM 后会走优雅停机（abortAll + RUN_SHUTDOWN_GRACE_MS 宽限），
+ * 并非瞬时退出。此前只 `kill()` 不等待，残留的子进程句柄会拖住 node --test 进程不退出，
+ * 表现为测试文件级超时（断言其实已全部通过）。
+ */
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill('SIGTERM');
+  await Promise.race([exited, delay(5000)]);
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    await Promise.race([once(child, 'exit'), delay(2000)]).catch(() => {});
+  }
 }
 
 function startServer(rateLimit, windowMs = 1000) {
@@ -129,7 +156,7 @@ test(
       const body = JSON.parse(r3.body || '{}');
       assert.strictEqual(body.error, 'rate limit exceeded');
     } finally {
-      child.kill('SIGTERM');
+      await stopChild(child);
     }
   }
 );
@@ -153,7 +180,7 @@ test(
       const rB1 = await request('GET', '/api/metrics', port, { headers: ipB });
       assert.notStrictEqual(rB1.status, 429, '不同 CF-IP 应独立限流桶');
     } finally {
-      child.kill('SIGTERM');
+      await stopChild(child);
     }
   }
 );
@@ -183,7 +210,7 @@ test(
       });
       assert.notStrictEqual(sse2.status, 429, 'SSE /api/chat/stream 不应 429');
     } finally {
-      child.kill('SIGTERM');
+      await stopChild(child);
     }
   }
 );

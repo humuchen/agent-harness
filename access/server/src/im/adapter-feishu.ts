@@ -55,6 +55,8 @@ export interface FeishuOptions {
   encryptKey?: string;
   /** 机器人自身 open_id（群聊 @ 判定用；缺省时用 mentions 是否存在兜底）。 */
   botOpenId?: string;
+  /** API base URL（默认官方 open.feishu.cn；可覆盖以便私有化部署或端到端验证打桩）。 */
+  baseUrl?: string;
 }
 
 export class FeishuAdapter implements ImAdapter {
@@ -65,6 +67,11 @@ export class FeishuAdapter implements ImAdapter {
 
   constructor(opt: FeishuOptions) {
     this.opt = opt;
+  }
+
+  /** 实际使用的 API base（env 覆盖优先）。 */
+  private get base(): string {
+    return this.opt.baseUrl || FEISHU_BASE;
   }
 
   isConfigured(): boolean {
@@ -213,7 +220,7 @@ export class FeishuAdapter implements ImAdapter {
   private async tenantToken(): Promise<string> {
     const now = Date.now();
     if (this.tokenCache && this.tokenCache.expireAt > now) return this.tokenCache.value;
-    const res = await fetch(`${FEISHU_BASE}/auth/v3/tenant_access_token/internal`, {
+    const res = await fetch(`${this.base}/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
       headers: { 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ app_id: this.opt.appId, app_secret: this.opt.appSecret })
@@ -230,7 +237,7 @@ export class FeishuAdapter implements ImAdapter {
 
   async sendText(target: ImInboundMessage, text: string): Promise<void> {
     const token = await this.tenantToken();
-    const res = await fetch(`${FEISHU_BASE}/im/v1/messages?receive_id_type=chat_id`, {
+    const res = await fetch(`${this.base}/im/v1/messages?receive_id_type=chat_id`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json; charset=utf-8',

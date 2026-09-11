@@ -713,24 +713,33 @@ export const chatStyles = [
       // gap: 18px;
     }
     /* ---- 历史会话加载骨架屏（切换会话时内容区占位）----
-       布局刻意复用 .thread 的宽度/边距 + .msg/.avatar 的排布节奏，
-       使骨架屏与加载完成后的真实消息在视觉上连续，切换时不发生横向跳动。
-       微光动画 .sk-line 来自 sharedStyles，此处只负责排布。 */
+       与真实消息共用同一套尺寸规格，保证「加载态 → 内容态」不发生位移：
+       · 结构对齐：用户消息靠右带头像、助手消息靠左带头像，气泡外壳
+         （背景 / 边框 / 圆角 / 内边距）与 .bubble 逐项相同；
+       · 高度对齐：每个 .sk-line 是一个完整行盒（14px × 1.65 = 23.1px），
+         可见光条由 ::before 居中绘制，故气泡总高 = 24 + 23.1 × 行数，
+         与真实气泡逐像素一致；
+       · 宽度近似：真实用户气泡宽度由内容决定（≤62%），骨架无法预知，
+         取 56% / 短句 38% 作为典型值。
+       行宽由模板写入内联 --w（见 chat.ts 的 renderSessionSkeleton）。 */
     .sk-thread {
-      padding-top: 4px;
+      padding-top: 2px;
     }
     .sk-msg {
       display: flex;
       gap: 12px;
       align-items: flex-start;
-      margin-bottom: 26px;
     }
-    .sk-msg:last-child {
-      margin-bottom: 0;
+    /* 用户 → 助手 20px；助手 → 用户 30px（与 .msg.user 的 margin-top 一致）。 */
+    .sk-msg.assistant {
+      margin-top: 20px;
     }
-    /* 用户消息靠右（与 .msg.user 的 row-reverse 视觉等价），助手消息靠左带头像。 */
     .sk-msg.user {
-      justify-content: flex-end;
+      flex-direction: row-reverse;
+      margin-top: 30px;
+    }
+    .sk-msg.user:first-child {
+      margin-top: 0;
     }
     .sk-avatar {
       flex: 0 0 30px;
@@ -739,31 +748,90 @@ export const chatStyles = [
       border-radius: 50%;
       background: linear-gradient(
         90deg,
-        var(--ah-surface-3) 25%,
-        var(--ah-surface-2) 37%,
-        var(--ah-surface-3) 63%
+        var(--ah-skeleton-base) 25%,
+        var(--ah-skeleton-peak) 37%,
+        var(--ah-skeleton-base) 63%
       );
       background-size: 400% 100%;
       animation: ah-shimmer 1.4s ease infinite;
     }
+    /* 行盒自带首尾半行留白，因此这里不能设 gap。 */
     .sk-bubble {
       display: flex;
       flex-direction: column;
-      gap: 10px;
       min-width: 0;
     }
+    /* 助手：与 .msg.assistant .bubble 同规格，加载完成时外壳不「凭空出现」。 */
     .sk-msg.assistant .sk-bubble {
       flex: 1 1 auto;
       max-width: 745px;
+      padding: 12px 14px;
+      background: var(--ah-surface-1);
+      border: 1px solid var(--ah-border);
+      border-radius: 14px;
+      border-top-left-radius: 4px;
     }
+    /* 用户：与 .msg.user .bubble 同规格（accent 14% 混色底），宽度模拟 1~2 行短消息。 */
     .sk-msg.user .sk-bubble {
-      align-items: flex-end;
-      max-width: 62%;
+      flex: 0 0 auto;
+      width: 56%;
+      max-width: 520px;
+      padding: 12px 14px;
+      background: color-mix(
+        in srgb,
+        var(--ah-accent) 14%,
+        var(--ah-surface-2)
+      );
+      border-radius: 14px;
+      border-top-right-radius: 4px;
+    }
+    .sk-msg.user .sk-bubble.short {
+      width: 38%;
+      min-width: 180px;
+    }
+    /* 每行占一个完整行盒，可见光条由 ::before 垂直居中绘制；
+       宽度取自模板写入的内联 --w。
+       注意：sharedStyles 里的 .sk-line（12px 实体条 + 渐变底，供插件骨架屏使用）
+       会同时命中本元素，因此这里必须把 background / border-radius / animation
+       显式中和，否则会在行盒上再叠出一条 23.1px 高的色带。 */
+    .sk-line {
+      position: relative;
+      flex: 0 0 auto;
+      height: 23.1px;
+      border-radius: 0;
+      background: none;
+      animation: none;
+    }
+    .sk-line::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 6.5px;
+      width: var(--w, 100%);
+      height: 10px;
+      border-radius: 5px;
+      background: linear-gradient(
+        90deg,
+        var(--ah-skeleton-base) 25%,
+        var(--ah-skeleton-peak) 37%,
+        var(--ah-skeleton-base) 63%
+      );
+      background-size: 400% 100%;
+      animation: ah-shimmer 1.4s ease infinite;
+    }
+    .sk-msg.user .sk-line::before {
+      background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--ah-accent) 22%, var(--ah-surface-2)) 25%,
+        color-mix(in srgb, var(--ah-accent) 38%, var(--ah-surface-2)) 37%,
+        color-mix(in srgb, var(--ah-accent) 22%, var(--ah-surface-2)) 63%
+      );
+      background-size: 400% 100%;
     }
     /* 尊重系统「减少动态效果」偏好：关闭微光，保留静态占位。 */
     @media (prefers-reduced-motion: reduce) {
       .sk-avatar,
-      .sk-line {
+      .sk-line::before {
         animation: none;
       }
     }
@@ -771,6 +839,14 @@ export const chatStyles = [
       display: flex;
       gap: 12px;
       align-items: flex-start;
+    }
+    /* 与骨架屏 .sk-msg.assistant 的 20px 对齐：否则历史会话加载完成时
+       助手气泡会向上跳 20px（骨架留了间距、真实消息原本贴合）。 */
+    .msg.assistant {
+      margin-top: 20px;
+    }
+    .msg.assistant:first-child {
+      margin-top: 0;
     }
     .msg.user {
       flex-direction: row-reverse;
@@ -1984,9 +2060,12 @@ export const chatStyles = [
       gap: 4px;
       justify-content: flex-end;
     }
-    /* 长文本 chip：单行省略，hover 显示完整内容。 */
+    /* 长文本 chip：单行省略，hover 显示完整内容。
+       min-width: 0 让 flex 子项按 max-width 收缩（默认 auto 会按内容固有宽度撑开，
+       导致长模型名在窄屏顶出 .tcache-body 虚线边框）。 */
     .tnode.kind-tokencache .tchip {
       max-width: 100%;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -2033,6 +2112,27 @@ export const chatStyles = [
     }
     .tnode.kind-tokencache .tgrp-model .tchip b {
       color: var(--ah-text);
+    }
+    /* 窄屏（≤640px）token cache 节点布局：
+       - .tmetrics 改为 stretch：让每个 .tgrp 占满父容器宽度，
+         解决窄屏下 chip 因 align-items: flex-end 而按内容固有宽度撑开、顶出 .tcache-body 边框的问题；
+       - .tgrp 改为 flex-start：去掉右对齐在窄屏下的拥挤感；
+       - .model-chip（分模型拆出的子 chip）缩窄到 110px 以容纳更多 chip；
+       - .tcache-body 减小水平内边距，给 chip 让出横向空间。 */
+    @media (max-width: 640px) {
+      .tnode.kind-tokencache .tmetrics {
+        align-items: stretch;
+      }
+      .tnode.kind-tokencache .tgrp {
+        justify-content: flex-start;
+      }
+      .tnode.kind-tokencache .model-chip {
+        max-width: 110px;
+      }
+      .tnode.kind-tokencache > .tcache-body {
+        padding: 8px 8px 10px 20px;
+        margin: 4px;
+      }
     }
     .tnode.kind-verify > summary .tdot {
       background: var(--ah-success, #34c759);
@@ -2667,6 +2767,37 @@ export const chatStyles = [
       }
       .msg {
         gap: 9px;
+      }
+      /* 骨架屏同步收窄断点：头像 26px / 间距 9px / 内边距 10px 12px，
+         与上方 .avatar / .bubble / .msg 的 ≤600px 规则逐项对齐。 */
+      .sk-msg {
+        gap: 9px;
+      }
+      .sk-avatar {
+        flex: 0 0 26px;
+        width: 26px;
+        height: 26px;
+      }
+      .sk-msg.assistant .sk-bubble {
+        padding: 10px 12px;
+      }
+      .sk-msg.user .sk-bubble {
+        width: 72%;
+        max-width: none;
+        padding: 10px 12px;
+      }
+      .sk-msg.user .sk-bubble.short {
+        width: 54%;
+        min-width: 0;
+      }
+      /* 轮次间距同步收窄，保持骨架与真实消息一致。 */
+      .sk-msg.assistant,
+      .msg.assistant {
+        margin-top: 14px;
+      }
+      .sk-msg.user,
+      .msg.user {
+        margin-top: 22px;
       }
       .chat-head {
         padding: 8px 10px;

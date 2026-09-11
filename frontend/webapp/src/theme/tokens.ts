@@ -17,6 +17,8 @@ const darkTokens = `
   --ah-surface-1: #121622;
   --ah-surface-2: #171C2B;
   --ah-surface-3: #1C2233;
+  --ah-skeleton-base: #1E2536;
+  --ah-skeleton-peak: #2A3348;
   --ah-border: #262D3D;
   --ah-text: #E6EDF3;
   --ah-text-muted: #9AA6B6;
@@ -50,6 +52,8 @@ const lightTokens = `
   --ah-surface-1: #FFFFFF;
   --ah-surface-2: #EEF1F6;
   --ah-surface-3: #E4E9F2;
+  --ah-skeleton-base: #DCE2ED;
+  --ah-skeleton-peak: #E9EDF5;
   --ah-border: #D8DEE9;
   --ah-text: #1B2330;
   --ah-text-muted: #5B6675;

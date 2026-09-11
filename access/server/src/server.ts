@@ -94,6 +94,7 @@ import {
 
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
+  listChatSessions,
   listChatSessionsPage,
   parseSessionPageQuery,
   getChatSession,
@@ -127,6 +128,17 @@ import {
   type ImExecutor,
   type ImProvider
 } from './im';
+
+// 工作空间（参考图能力链路 User → Workspace → Skill → Tool → Data → Credential → Policy）。
+import {
+  createWorkspaceStore,
+  ensureDefaultWorkspace,
+  type Workspace
+} from './workspace-store';
+
+// 合规审计查询（读侧）：谁在何时做了什么 / 谁审批了谁 / 越权拦截记录。
+import { queryAuditFile, resolveAuditFile } from './audit-query';
+import { getOrgTree } from './org';
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
@@ -757,6 +769,26 @@ const imBridge = new ImBridge(
   // 去重后端：配了 REDIS_URL 走 Redis（多副本跨实例去重），否则内存 LRU。
   createDedupStore()
 );
+
+// 工作空间存储：WORKSPACE_FILE 配置即持久化，否则内存态（默认零行为变更）。
+const workspaceStore = createWorkspaceStore();
+
+/** 空间访问控制：admin 全可见；否则需为成员（owner 天然是成员）。 */
+function canAccessWorkspace(ws: Workspace, sub: string, role: string): boolean {
+  return role === 'admin' || ws.members.includes(sub) || ws.owner === sub;
+}
+
+/** 把查询参数解析为 epoch ms（支持纯数字时间戳或 ISO 字符串）；非法返回 undefined。 */
+function toEpochMs(v: string | null): number | undefined {
+  if (!v) return undefined;
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return n;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/** 合法审计 outcome 白名单。 */
+const AUDIT_OUTCOMES = ['success', 'failure', 'denied', 'info'] as const;
 
 // 前端统一由 frontend/webapp/dist 托管（见 webappDir）；项目不再包含 public 兜底目录。
 
@@ -2161,6 +2193,125 @@ const server = createServer(
         res.writeHead(405, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'method not allowed' }));
         return;
+      }
+      // ── 工作空间（参考图能力链路：User → Workspace → Skill → Tool → Data → Credential → Policy）──
+      // 纯业务层：把「一组会话 / 可用技能 / 成员 / 配额」收拢为显式资源；core 零感知。
+      if (path === '/api/workspaces') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'workspace:read');
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required' }));
+          }
+          // 首次访问自动创建「默认空间」，保证开箱即用（幂等：已有空间则原样返回）。
+          const spaces = ensureDefaultWorkspace(workspaceStore, ctx.sub);
+          return sendJson(res, { workspaces: spaces, store: workspaceStore.kind }, req);
+        }
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          const ctx = await guard(req, res, 'workspace:write', body);
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required' }));
+          }
+          const name = typeof body?.name === 'string' ? body.name.trim() : '';
+          if (!name) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'missing name' }));
+          }
+          const ws = workspaceStore.create({
+            name,
+            owner: ctx.sub,
+            members: Array.isArray(body?.members) ? body.members.map(String) : undefined,
+            skills: Array.isArray(body?.skills) ? body.skills.map(String) : undefined,
+            quota: body?.quota && typeof body.quota === 'object' ? body.quota : undefined,
+            tenantId: ctx.tenantId ?? undefined
+          });
+          auditAction('workspace.create', { id: ws.id, sub: ctx.sub });
+          return sendJson(res, { workspace: ws }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/workspaces/')) {
+        const rest = path.slice('/api/workspaces/'.length).replace(/\/$/, '');
+        // 子资源：/api/workspaces/:id/sessions —— 该空间下的会话列表。
+        const sessionsMatch = /^([^/]+)\/sessions$/.exec(rest);
+        if (sessionsMatch) {
+          const ctx = await guard(req, res, 'workspace:read');
+          if (!ctx) return;
+          const ws = workspaceStore.get(decodeURIComponent(sessionsMatch[1] ?? ''));
+          if (!ws) return sendJson(res, { error: 'not found' }, req);
+          if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
+            return sendJson(res, { error: 'forbidden' }, req);
+          }
+          const sessions = listChatSessions(ctx.sub).filter((s) => s.workspaceId === ws.id);
+          return sendJson(res, { workspaceId: ws.id, sessions }, req);
+        }
+        const wsId = decodeURIComponent(rest);
+        const action: Action = req.method === 'GET' ? 'workspace:read' : 'workspace:write';
+        const ctx = await guard(req, res, action);
+        if (!ctx) return;
+        const ws = workspaceStore.get(wsId);
+        if (!ws) return sendJson(res, { error: 'not found' }, req);
+        if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
+          return sendJson(res, { error: 'forbidden' }, req);
+        }
+        if (req.method === 'GET') return sendJson(res, { workspace: ws }, req);
+        if (req.method === 'PATCH' || req.method === 'PUT') {
+          const body = await readBody(req);
+          const updated = workspaceStore.update(wsId, {
+            ...(body?.name != null ? { name: String(body.name) } : {}),
+            ...(Array.isArray(body?.members) ? { members: body.members.map(String) } : {}),
+            ...(Array.isArray(body?.skills) ? { skills: body.skills.map(String) } : {}),
+            ...(body?.quota !== undefined ? { quota: body.quota } : {})
+          });
+          auditAction('workspace.update', { id: wsId, sub: ctx.sub });
+          return sendJson(res, { workspace: updated }, req);
+        }
+        if (req.method === 'DELETE') {
+          // 仅 owner 或 admin 可删除空间。
+          if (ctx.role !== 'admin' && ws.owner !== ctx.sub) {
+            return sendJson(res, { error: 'forbidden: only owner or admin can delete' }, req);
+          }
+          workspaceStore.remove(wsId);
+          auditAction('workspace.delete', { id: wsId, sub: ctx.sub });
+          return sendJson(res, { ok: true }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      // ── 合规审计查询（谁在何时做了什么 / 谁审批了谁 / 越权拦截记录）──
+      // 数据源为 AUDIT_LOG 落盘的 append-only JSONL（写入侧早已就绪，本路由补齐读取侧）。
+      if (req.method === 'GET' && path === '/api/audit') {
+        const ctx = await guard(req, res, 'audit:read');
+        if (!ctx) return;
+        const outcomeRaw = url.searchParams.get('outcome') ?? '';
+        const outcome = (AUDIT_OUTCOMES as readonly string[]).includes(outcomeRaw)
+          ? (outcomeRaw as 'success' | 'failure' | 'denied' | 'info')
+          : undefined;
+        const result = await queryAuditFile(resolveAuditFile(), {
+          limit: Number(url.searchParams.get('limit')) || undefined,
+          offset: Number(url.searchParams.get('offset')) || undefined,
+          actor: url.searchParams.get('actor') || undefined,
+          action: url.searchParams.get('action') || undefined,
+          outcome,
+          since: toEpochMs(url.searchParams.get('since')),
+          until: toEpochMs(url.searchParams.get('until')),
+          q: url.searchParams.get('q') || undefined
+        });
+        return sendJson(res, result, req);
+      }
+      // ── 企业组织树（P1-3）：部门 / 成员层级，受 org:read 保护 ──
+      if (req.method === 'GET' && path === '/api/org') {
+        const ctx = await guard(req, res, 'org:read');
+        if (!ctx) return;
+        const tree = await getOrgTree();
+        return sendJson(res, tree, req);
       }
       if (req.method === 'GET' && path === '/api/env') {
         return sendJson(res, { envs: envPipeline.list() }, req);

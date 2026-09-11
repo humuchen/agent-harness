@@ -70,6 +70,8 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 动态配置
   CONFIG_HOT_RELOAD_INTERVAL_MS: 60_000,
   CONFIG_PATHS: '',
+  // 工作空间（参考图能力链路 User → Workspace → Skill → …）
+  WORKSPACE_FILE: '',
   // IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
   IM_ENABLED: false,
   IM_PROVIDERS: '',
@@ -80,6 +82,9 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   IM_REPLY_PREFIX: '',
   IM_DEDUP_BACKEND: '',
   IM_DEDUP_TTL_SEC: 300,
+  IM_FEISHU_BASE_URL: '',
+  IM_DINGTALK_BASE_URL: '',
+  IM_WECOM_BASE_URL: '',
 };
 
 /** 读取字符串配置：env 优先，缺失回退 DEFAULTS（再回退传入 fallback）。 */

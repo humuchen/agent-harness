@@ -76,18 +76,23 @@ test('RunQueue + FileQueueBackend: 启动重放未开始任务并清空持久层
 
   // 构造 RunQueue 时传入同一后端 → 应自动重放
   const q = new RunQueue(b);
-  // 重放是异步的（读文件 → 入队 → 清空），等一小段时间
-  await new Promise((r) => setTimeout(r, 80));
-  const jobs = q.list();
-  // list() 出于隐私脱敏只暴露 promptLen / sessionKey，不直接回显 prompt 原文。
-  assert.ok(
-    jobs.some((j) => j.sessionKey === 'sX' && j.promptLen === 'replay-me'.length),
-    '重放后队列应包含持久化的未开始任务'
-  );
+  try {
+    // 重放是异步的（读文件 → 入队 → 清空），等一小段时间
+    await new Promise((r) => setTimeout(r, 80));
+    const jobs = q.list();
+    // list() 出于隐私脱敏只暴露 promptLen / sessionKey，不直接回显 prompt 原文。
+    assert.ok(
+      jobs.some((j) => j.sessionKey === 'sX' && j.promptLen === 'replay-me'.length),
+      '重放后队列应包含持久化的未开始任务'
+    );
 
-  // 持久层应被清空，避免下次重启重复执行
-  const remaining = await b.list();
-  assert.strictEqual(remaining.length, 0, '重放后持久层应清空');
+    // 持久层应被清空，避免下次重启重复执行
+    const remaining = await b.list();
+    assert.strictEqual(remaining.length, 0, '重放后持久层应清空');
+  } finally {
+    // 必须 stop()：否则 claimTimer 残留会阻止 Node 进程退出（测试文件级超时）。
+    q.stop();
+  }
 });
 
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。

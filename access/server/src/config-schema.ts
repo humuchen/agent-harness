@@ -123,6 +123,8 @@ export const SCHEMA: Field[] = [
     desc: '配置热更新轮询间隔（ms）'
   },
   { key: 'CONFIG_PATHS', type: 'string', desc: '热更新配置文件路径（逗号分隔）' },
+  // 工作空间（参考图能力链路 User → Workspace → Skill → …）
+  { key: 'WORKSPACE_FILE', type: 'string', desc: '工作空间持久化文件（留空=内存态）' },
   // IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
   { key: 'IM_ENABLED', type: 'boolean', desc: 'IM 桥接总开关' },
   { key: 'IM_PROVIDERS', type: 'string', desc: '启用的 IM 平台（逗号分隔：feishu,dingtalk,wecom）' },
@@ -142,7 +144,11 @@ export const SCHEMA: Field[] = [
     allowed: ['memory', 'redis'],
     desc: 'IM 消息去重后端（留空=有 REDIS_URL 即 redis，否则 memory）'
   },
-  { key: 'IM_DEDUP_TTL_SEC', type: 'number', min: 1, desc: 'IM 去重键 TTL（秒）' }
+  { key: 'IM_DEDUP_TTL_SEC', type: 'number', min: 1, desc: 'IM 去重键 TTL（秒）' },
+  // IM API base 覆盖（私有化部署 / 端到端验证打桩；留空用官方地址）
+  { key: 'IM_FEISHU_BASE_URL', type: 'url', desc: '飞书 API base（留空=官方 open.feishu.cn）' },
+  { key: 'IM_DINGTALK_BASE_URL', type: 'url', desc: '钉钉 API base（留空=官方 api.dingtalk.com）' },
+  { key: 'IM_WECOM_BASE_URL', type: 'url', desc: '企业微信 API base（留空=官方 qyapi.weixin.qq.com）' }
 ];
 
 // 常见拼写错误 → 提示正确变量名（减少「配了但不生效」的静默坑）。

@@ -97,6 +97,11 @@ export interface ChatSession {
   model?: string;
   /** 定向业务 agent id（空=默认通用 Agent），按会话持久化，供跨设备对齐。 */
   agentId?: string;
+  /**
+   * 归属工作空间 id（参考图能力链路 User → Workspace → …）。
+   * 可选：旧数据 / 未指定时视为「未归类」，由前端归入默认空间展示。
+   */
+  workspaceId?: string;
 }
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
@@ -275,7 +280,8 @@ export function createChatSession(
     owner,
     ...(meta?.interactionMode ? { interactionMode: meta.interactionMode } : {}),
     ...(meta?.model ? { model: meta.model } : {}),
-    ...(meta?.agentId ? { agentId: meta.agentId } : {})
+    ...(meta?.agentId ? { agentId: meta.agentId } : {}),
+    ...(meta?.workspaceId ? { workspaceId: meta.workspaceId } : {})
   };
   sessions.set(session.id, session);
   persist();
@@ -294,6 +300,8 @@ export interface ChatSessionMeta {
   interactionMode?: 'qa' | 'plan';
   model?: string;
   agentId?: string;
+  /** 归属工作空间 id（可选，见 ChatSession.workspaceId）。 */
+  workspaceId?: string;
 }
 
 export async function renameChatSession(
@@ -334,6 +342,7 @@ export async function renameChatSession(
     if (meta.interactionMode !== undefined) s.interactionMode = meta.interactionMode;
     if (meta.model !== undefined) s.model = meta.model;
     if (meta.agentId !== undefined) s.agentId = meta.agentId;
+    if (meta.workspaceId !== undefined) s.workspaceId = meta.workspaceId;
   }
   s.updatedAt = Date.now();
   persist();

@@ -27,6 +27,8 @@ export interface WecomOptions {
   token: string;
   /** 回调配置里的 EncodingAESKey（43 位）。 */
   aesKey: string;
+  /** API base URL（默认官方 qyapi.weixin.qq.com/cgi-bin；可覆盖以便私有化部署或端到端验证打桩）。 */
+  baseUrl?: string;
 }
 
 export class WecomAdapter implements ImAdapter {
@@ -36,6 +38,11 @@ export class WecomAdapter implements ImAdapter {
 
   constructor(opt: WecomOptions) {
     this.opt = opt;
+  }
+
+  /** 实际使用的 API base（env 覆盖优先）。 */
+  private get base(): string {
+    return this.opt.baseUrl || WECOM_API;
   }
 
   isConfigured(): boolean {
@@ -145,7 +152,7 @@ export class WecomAdapter implements ImAdapter {
     const now = Date.now();
     if (this.tokenCache && this.tokenCache.expireAt > now) return this.tokenCache.value;
     const url =
-      `${WECOM_API}/gettoken?corpid=${encodeURIComponent(this.opt.corpId)}` +
+      `${this.base}/gettoken?corpid=${encodeURIComponent(this.opt.corpId)}` +
       `&corpsecret=${encodeURIComponent(this.opt.secret)}`;
     const res = await fetch(url);
     const data = (await res.json()) as { access_token?: string; expires_in?: number; errmsg?: string };
@@ -164,8 +171,8 @@ export class WecomAdapter implements ImAdapter {
     // 平台不允许自建应用直接发言 —— 此时接口返回 errcode != 0，桥接记录告警（不影响主流程）。
     const isGroup = target.isGroup;
     const url = isGroup
-      ? `${WECOM_API}/appchat/send?access_token=${token}`
-      : `${WECOM_API}/message/send?access_token=${token}`;
+      ? `${this.base}/appchat/send?access_token=${token}`
+      : `${this.base}/message/send?access_token=${token}`;
     const body = isGroup
       ? { chatid: target.chatId, msgtype: 'text', text: { content: text } }
       : {

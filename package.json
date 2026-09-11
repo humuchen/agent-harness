@@ -18,6 +18,7 @@
     "test:load:heavy": "node scripts/load-test.cjs -c 50 -r 500",
     "test:sse-reconnect": "node scripts/sse-reconnect-test.cjs",
     "test:capacity": "node scripts/capacity-benchmark.cjs",
+    "verify:im": "node scripts/verify-im.cjs",
     "create:plugin": "node scripts/create-plugin.cjs",
     "db:migrate": "node scripts/db-migrate.cjs",
     "server": "pnpm --filter @agent-harness/server run start",

@@ -39,6 +39,8 @@ export interface DingtalkOptions {
   clientSecret: string;
   /** 机器人编码（主动发消息 API 需要；仅 sessionWebhook 回复时可不填）。 */
   robotCode?: string;
+  /** API base URL（默认官方 api.dingtalk.com；可覆盖以便私有化部署或端到端验证打桩）。 */
+  baseUrl?: string;
 }
 
 export class DingtalkAdapter implements ImAdapter {
@@ -48,6 +50,11 @@ export class DingtalkAdapter implements ImAdapter {
 
   constructor(opt: DingtalkOptions) {
     this.opt = opt;
+  }
+
+  /** 实际使用的 API base（env 覆盖优先）。 */
+  private get base(): string {
+    return this.opt.baseUrl || DINGTALK_API;
   }
 
   isConfigured(): boolean {
@@ -117,7 +124,7 @@ export class DingtalkAdapter implements ImAdapter {
   private async accessToken(): Promise<string> {
     const now = Date.now();
     if (this.tokenCache && this.tokenCache.expireAt > now) return this.tokenCache.value;
-    const res = await fetch(`${DINGTALK_API}/v1.0/oauth2/accessToken`, {
+    const res = await fetch(`${this.base}/v1.0/oauth2/accessToken`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ appKey: this.opt.clientId, appSecret: this.opt.clientSecret })
@@ -151,7 +158,7 @@ export class DingtalkAdapter implements ImAdapter {
       throw new Error('dingtalk: sessionWebhook 不可用且未配置 IM_DINGTALK_ROBOT_CODE，无法主动回复');
     }
     const token = await this.accessToken();
-    const res = await fetch(`${DINGTALK_API}/v1.0/robot/oToMessages/batchSend`, {
+    const res = await fetch(`${this.base}/v1.0/robot/oToMessages/batchSend`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

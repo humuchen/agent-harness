@@ -27,6 +27,8 @@ type Tab =
   | 'mcp'
   | 'approvals'
   | 'observability'
+  | 'audit'
+  | 'org'
   | 'chat'
   | 'plugins'
   | 'settings';
@@ -60,6 +62,8 @@ const TABS: Array<{ id: Tab; label: string; short: string }> = [
   { id: 'chat', label: '对话', short: '话' },
   { id: 'mcp', label: 'MCP', short: 'M' },
   { id: 'observability', label: '可观测', short: '观' },
+  { id: 'audit', label: '审计', short: '审' },
+  { id: 'org', label: '组织', short: '组' },
   { id: 'plugins', label: '插件', short: '插' }
 ];
 
@@ -530,6 +534,8 @@ export class AhApp extends LitElement {
             <ah-observability
               ?hidden=${this.tab !== 'observability'}
             ></ah-observability>
+            <ah-audit ?hidden=${this.tab !== 'audit'}></ah-audit>
+            <ah-org-tree ?hidden=${this.tab !== 'org'}></ah-org-tree>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             <ah-provider-key-settings
               ?hidden=${this.tab !== 'settings'}

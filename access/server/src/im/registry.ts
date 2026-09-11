@@ -36,13 +36,15 @@ function buildAdapter(provider: ImProvider, env: NodeJS.ProcessEnv): ImAdapter {
         appSecret: env.IM_FEISHU_APP_SECRET ?? '',
         verificationToken: env.IM_FEISHU_VERIFICATION_TOKEN ?? '',
         encryptKey: env.IM_FEISHU_ENCRYPT_KEY || undefined,
-        botOpenId: env.IM_FEISHU_BOT_OPEN_ID || undefined
+        botOpenId: env.IM_FEISHU_BOT_OPEN_ID || undefined,
+        baseUrl: env.IM_FEISHU_BASE_URL || undefined
       });
     case 'dingtalk':
       return new DingtalkAdapter({
         clientId: env.IM_DINGTALK_CLIENT_ID ?? '',
         clientSecret: env.IM_DINGTALK_CLIENT_SECRET ?? '',
-        robotCode: env.IM_DINGTALK_ROBOT_CODE || undefined
+        robotCode: env.IM_DINGTALK_ROBOT_CODE || undefined,
+        baseUrl: env.IM_DINGTALK_BASE_URL || undefined
       });
     case 'wecom':
       return new WecomAdapter({
@@ -50,7 +52,8 @@ function buildAdapter(provider: ImProvider, env: NodeJS.ProcessEnv): ImAdapter {
         agentId: env.IM_WECOM_AGENT_ID ?? '',
         secret: env.IM_WECOM_SECRET ?? '',
         token: env.IM_WECOM_TOKEN ?? '',
-        aesKey: env.IM_WECOM_AES_KEY ?? ''
+        aesKey: env.IM_WECOM_AES_KEY ?? '',
+        baseUrl: env.IM_WECOM_BASE_URL || undefined
       });
   }
 }
