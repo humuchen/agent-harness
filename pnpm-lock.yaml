@@ -132,6 +132,9 @@ importers:
       '@agent-harness/client':
         specifier: workspace:*
         version: link:../../backend/client
+      '@humuchen/mac-ui':
+        specifier: ^0.0.3
+        version: 0.0.3(lit@3.3.3)
       dompurify:
         specifier: ^3.1.6
         version: 3.4.13
@@ -564,6 +567,11 @@ packages:
   '@humanwhocodes/retry@0.4.3':
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
+
+  '@humuchen/mac-ui@0.0.3':
+    resolution: {integrity: sha512-bczLJRr+CBoyx5k/M2mEW7v0IhwoEErFXbExlpeCL0dX3hl3ByF01G3iIEwe0QXNTEDbskmbLPxvHGtGuvLrMA==}
+    peerDependencies:
+      lit: ^3.0.0
 
   '@ionic/cli-framework-output@2.2.8':
     resolution: {integrity: sha512-TshtaFQsovB4NWRBydbNFawql6yul7d5bMiW1WYYf17hd99V6xdDdk3vtF51bw6sLkxON3bDQpWsnUc9/hVo3g==}
@@ -2984,6 +2992,10 @@ snapshots:
   '@humanwhocodes/module-importer@1.0.1': {}
 
   '@humanwhocodes/retry@0.4.3': {}
+
+  '@humuchen/mac-ui@0.0.3(lit@3.3.3)':
+    dependencies:
+      lit: 3.3.3
 
   '@ionic/cli-framework-output@2.2.8':
     dependencies:

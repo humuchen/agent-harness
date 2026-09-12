@@ -9,11 +9,11 @@
  * 仅纳入真正通用的 UI 原语；业务/特性组件（如各类 picker、file-upload、suggestions）
  * 仍由各特性模块就近引入。
  */
-// 弹层/模态（历史保留，计划下个迭代删除，详见 ah-popup.ts 顶部说明）。
-import './ah-popup';
-// 统一弹框组件：info / confirm / warning / 自定义内容 + 命令式 API。
+// mac-ui 组件注册（先于 ah-modal/ah-drawer 注册，确保自定义元素可用）
+import '@humuchen/mac-ui';
+// 统一弹框组件（mac-ui 适配层）：info / confirm / warning / 自定义内容 + 命令式 API。
 import './ah-modal';
-// 通用抽屉组件：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
+// 通用抽屉组件（mac-ui 适配层）：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
 import './ah-drawer';
 // 全局通知组件：全站「接口错误 / 操作结果」提示的唯一出口（notify.* 命令式 API）。
 import './ah-notification';
