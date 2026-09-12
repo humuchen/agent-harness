@@ -7,12 +7,10 @@ const config: CapacitorConfig = {
   appName: 'Agent Harness',
   webDir: '../frontend/webapp/dist',
   server: {
-    // 开发环境：指向本机局域网 IP（手机通过 WiFi 访问）
-    // 生产环境：由 AH_API_URL 环境变量覆盖
-    url: process.env.AH_API_URL || 'http://192.168.31.48:4173',
-    androidScheme: 'http',
+    url: process.env.AH_API_URL || 'https://agent-harness-86h5.onrender.com',
+    androidScheme: 'https',
     iosScheme: 'https',
-    allowNavigation: ['localhost', '127.0.0.1', '192.168.31.48']
+    allowNavigation: ['agent-harness-86h5.onrender.com']
   },
   plugins: {
     PushNotifications: {
@@ -29,7 +27,7 @@ const config: CapacitorConfig = {
   },
   android: {
     backgroundColor: '#1a1a1a',
-    allowMixedContent: true
+    allowMixedContent: false
   }
 };
 
