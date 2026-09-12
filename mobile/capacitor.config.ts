@@ -4,7 +4,7 @@ declare const process: { env: Record<string, string | undefined> };
 
 const config: CapacitorConfig = {
   appId: 'com.agentharness.mobile',
-  appName: 'Agent Harness',
+  appName: 'AgentHarness',
   webDir: '../frontend/webapp/dist',
   server: {
     url: process.env.AH_API_URL || 'https://agent-harness-86h5.onrender.com',
