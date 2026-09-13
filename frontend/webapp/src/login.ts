@@ -23,7 +23,12 @@
 import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
-import { getTheme, type Theme, type BrandConfig, BRAND_DEFAULT } from './theme/tokens';
+import {
+  getTheme,
+  type Theme,
+  type BrandConfig,
+  BRAND_DEFAULT
+} from './theme/tokens';
 import {
   setSession,
   setToken,
@@ -1191,7 +1196,7 @@ export class AhLogin extends LitElement {
           box-sizing: border-box;
           overflow-x: hidden;
           overflow-y: auto;
-          padding: 24px 18px;
+          padding: 30px 18px 24px 18px;
           gap: 4px;
         }
         .brand-top,
@@ -1270,7 +1275,7 @@ export class AhLogin extends LitElement {
       /* ---------------------- 窄屏手机（≤480px）细化 ---------------------- */
       @media (max-width: 480px) {
         .login-wrap {
-          padding: 22px 16px;
+          padding: 30px 16px 20px 16px;
           gap: 4px;
         }
         .brand-top {
@@ -1697,7 +1702,7 @@ export class AhLogin extends LitElement {
         localStorage.setItem('ah_refresh', data.refreshToken);
       }
       if (data.accessExpiresAt) {
-        setToken(data.refreshToken || '');  // 存 refresh token 副本以维持会话存在性判断
+        setToken(data.refreshToken || ''); // 存 refresh token 副本以维持会话存在性判断
         scheduleAutoRefresh(data.accessExpiresAt);
       }
       notify.success(
@@ -1877,7 +1882,10 @@ export class AhLogin extends LitElement {
         </div>
 
         <div class="brand-head">
-          <h2 class="brand-title">${this.brand?.loginTagline ?? '编排、运行、观测<br />你的每一个 AI Agent'}</h2>
+          <h2 class="brand-title">
+            ${this.brand?.loginTagline ??
+            '编排、运行、观测<br />你的每一个 AI Agent'}
+          </h2>
           <p class="brand-sub">
             统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。
           </p>
@@ -1937,7 +1945,9 @@ export class AhLogin extends LitElement {
               全链路可观测与事件回放
             </li>
           </ul>
-          <div class="brand-foot">${this.brand?.footer ?? 'Agent Harness 2026 · 私有化部署就绪'}</div>
+          <div class="brand-foot">
+            ${this.brand?.footer ?? 'Agent Harness 2026 · 私有化部署就绪'}
+          </div>
         </div>
 
         <div class="auth-float">

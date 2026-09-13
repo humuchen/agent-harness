@@ -714,7 +714,7 @@ export class AhApp extends LitElement {
               @click=${() => this.setMobileTab('chat')}
             ><span class="ti">💬</span><span class="tl">对话</span></button>
             <button
-              class="m-tab ${this.tab === 'mcp' || this.tab === 'skill' || this.tab === 'datasource' || this.tab === 'plugins' ? 'on' : ''}"
+              class="m-tab ${this.tab === 'mcp' || this.tab === 'skill' || this.tab === 'datasource' ? 'on' : ''}"
               @click=${() => this.setMobileTab('mcp')}
             ><span class="ti">🔌</span><span class="tl">资产</span></button>
             <button
