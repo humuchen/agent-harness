@@ -2710,6 +2710,8 @@ export const chatStyles = [
         transition: transform 220ms ease;
         z-index: 50;
         box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
+        /* 固定 top:0 的会话列表抽屉：顶/底 padding 含安全区，避开状态栏与手势条 */
+        padding: calc(12px + env(safe-area-inset-top, 0px)) 0 calc(12px + env(safe-area-inset-bottom, 0px));
       }
       .sidebar.open {
         transform: none;

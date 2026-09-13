@@ -170,6 +170,7 @@ const chatShellCss = css`
     .shell.chat-mode .topbar {
       flex: 0 0 auto;
       padding: 8px 10px;
+      padding-top: calc(8px + env(safe-area-inset-top, 0px));
       gap: 8px;
     }
     /* 移动端对话页：隐藏刷新按钮，仅留状态与菜单，节省竖向空间 */

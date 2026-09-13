@@ -1438,7 +1438,8 @@ export const sharedStyles = css`
       transition: transform 200ms ease;
       z-index: 50;
       box-shadow: 2px 0 16px rgba(0, 0, 0, 0.45);
-      padding: 20px 14px;
+      /* 顶/底 padding 含安全区：固定 top:0 的抽屉会顶进原生状态栏（时钟/电量）与手势条 */
+      padding: calc(20px + env(safe-area-inset-top, 0px)) 14px calc(16px + env(safe-area-inset-bottom, 0px));
       overflow-y: auto;
     }
     .sidebar.open {
