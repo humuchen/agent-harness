@@ -1,4 +1,4 @@
-import { LitElement, html, css, type TemplateResult } from 'lit';
+import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
@@ -79,21 +79,22 @@ function uniqueShort(label: string, used: Set<string>): string {
  */
 type TabGroup = 'use' | 'ability' | 'observe' | 'govern';
 
-const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> = [
-  { id: 'workspace', label: '工作台', short: '台', group: 'use' },
-  { id: 'chat', label: '对话', short: '对话', group: 'use' },
-  { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
-  { id: 'observability', label: '可观测', short: '观', group: 'observe' },
-  { id: 'audit', label: '审计', short: '审计', group: 'observe' },
-  { id: 'org', label: '组织', short: '组织', group: 'govern' },
-  { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
-  { id: 'skill', label: '技能', short: '技能', group: 'ability' },
-  { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
-  { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
-  { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
-  { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
-  { id: 'plan', label: '计划', short: '计', group: 'use' }
-];
+const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
+  [
+    { id: 'workspace', label: '工作台', short: '台', group: 'use' },
+    { id: 'chat', label: '对话', short: '对话', group: 'use' },
+    { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
+    { id: 'observability', label: '可观测', short: '观', group: 'observe' },
+    { id: 'audit', label: '审计', short: '审计', group: 'observe' },
+    { id: 'org', label: '组织', short: '组织', group: 'govern' },
+    { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
+    { id: 'skill', label: '技能', short: '技能', group: 'ability' },
+    { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
+    { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
+    { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
+    { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
+    { id: 'plan', label: '计划', short: '计', group: 'use' }
+  ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
 function initialTabFromPath(): string {
@@ -179,9 +180,10 @@ const chatShellCss = css`
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
-      /* 固定底栏 Tab（48px + safe-area）压在这层 inset:0 固定壳里，
-         必须留白，否则聊天输入框被遮住 —— 见 sharedStyles .mobile-tabbar */
-      padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+      /* 固定底栏 Tab 总高 = 48px + safe-area；ah-chat height:100% 占满
+         content-box，composer 落在 content-box 底部。要让输入框与底栏之间
+         有 ~16px 呼吸距离 → 留白 = 48 + 16 = 64px（与 sharedStyles .content 一致）。 */
+      padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
     }
   }
 `;
@@ -320,25 +322,38 @@ export class AhApp extends LitElement {
   /** 移动端 Deep Link 处理器引用（disconnectedCallback 解绑用）。 */
   private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
 
-  /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。 */
+  /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。
+   *  左缘激活带 30px、右滑 30px 且竖直漂移 <60px 时触发；
+   *  passive 监听无法 preventDefault，若与 Android 系统返回手势冲突，
+   *  需原生侧关闭边缘返回（见 MainActivity 注释），前端保持宽容阈值兜底。 */
   private edgeStart = 0;
+  private edgeStartY = 0;
+  private edgeFired = false;
   private edgeActive = false;
   private onTouchStart = (e: TouchEvent) => {
-    // 仅在屏幕最左 16px 边缘开始触摸时激活边缘手势
-    if (e.touches.length === 1 && e.touches[0]!.clientX <= 16) {
+    if (e.touches.length === 1 && e.touches[0]!.clientX <= 30) {
       this.edgeActive = true;
+      this.edgeFired = false;
       this.edgeStart = e.touches[0]!.clientX;
+      this.edgeStartY = e.touches[0]!.clientY;
     } else {
       this.edgeActive = false;
     }
   };
   private onEdgeTouchMove = (e: TouchEvent) => {
-    if (!this.edgeActive || e.touches.length !== 1) return;
-    const dx = e.touches[0]!.clientX - this.edgeStart;
-    if (dx > 40 && !this.drawerOpen) this.onToggleDrawer();
+    if (!this.edgeActive || this.edgeFired || e.touches.length !== 1) return;
+    const t = e.touches[0]!;
+    const dx = t.clientX - this.edgeStart;
+    const dy = Math.abs(t.clientY - this.edgeStartY);
+    // 主要向右、竖直漂移不过大，才视为「边缘右滑开抽屉」
+    if (dx > 30 && dy < 60 && !this.drawerOpen) {
+      this.edgeFired = true;
+      this.onToggleDrawer();
+    }
   };
   private onEdgeTouchEnd = () => {
     this.edgeActive = false;
+    this.edgeFired = false;
   };
 
   private onPluginsChanged = () => {
@@ -509,7 +524,9 @@ export class AhApp extends LitElement {
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
             <!-- <span class="brand-text">Agent Harness</span> -->
-            <span class="brand-text">${this.brand?.productName ?? 'Agent Harness'}</span>
+            <span class="brand-text"
+              >${this.brand?.productName ?? 'Agent Harness'}</span
+            >
             <button
               class="sidebar-toggle"
               title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
@@ -539,7 +556,11 @@ export class AhApp extends LitElement {
               for (const g of order) {
                 const items = groups.get(g);
                 if (!items || items.length === 0) continue;
-                children.push(html`<div class="nav-group-title">${GROUP_TITLE[g] ?? g}</div>`);
+                children.push(
+                  html`<div class="nav-group-title">
+                    ${GROUP_TITLE[g] ?? g}
+                  </div>`
+                );
                 for (const t of items) {
                   children.push(
                     html`<button
@@ -605,7 +626,10 @@ export class AhApp extends LitElement {
               class="nav-item nav-mine"
               data-short="我"
               title="我的"
-              @click=${() => { this.setTab('me'); this.closeDrawer(); }}
+              @click=${() => {
+                this.setTab('me');
+                this.closeDrawer();
+              }}
             >
               <span class="nav-text">我的</span>
             </button>
@@ -619,20 +643,26 @@ export class AhApp extends LitElement {
 
         <div class="main">
           <header class="topbar">
-            <button
-              class="menu-btn"
-              title="打开导航"
-              @click=${() => this.onToggleDrawer()}
-              aria-label="打开导航"
-            >
-              ☰
-            </button>
+            ${this.tab !== 'chat'
+              ? html`<button
+                  class="menu-btn"
+                  title="打开导航"
+                  @click=${() => this.onToggleDrawer()}
+                  aria-label="打开导航"
+                >
+                  ☰
+                </button>`
+              : nothing}
             <div class="state">
               ${this.state
                 ? html`
-                    <span class="pill ${this.state.openrouter ? 'ok' : ''}">
-                      LLM ${this.state.openrouter ? 'live' : 'mock'}
-                    </span>
+                    ${this.tab !== 'chat'
+                      ? html`<span
+                          class="pill ${this.state.openrouter ? 'ok' : ''}"
+                        >
+                          LLM ${this.state.openrouter ? 'live' : 'mock'}
+                        </span>`
+                      : nothing}
                     ${this.globalRunning
                       ? html`<span class="pill running">运行中</span>`
                       : ''}
@@ -682,7 +712,10 @@ export class AhApp extends LitElement {
                     standalone
                   ></ah-user-menu>`
                 : html`<div class="me-skeleton">
-                    <div class="sk sk-line" style="width:120px;height:120px;border-radius:50%"></div>
+                    <div
+                      class="sk sk-line"
+                      style="width:120px;height:120px;border-radius:50%"
+                    ></div>
                     <div class="sk sk-line" style="width:40%"></div>
                     <div class="sk sk-line" style="width:60%"></div>
                   </div>`}
@@ -704,27 +737,124 @@ export class AhApp extends LitElement {
           <ah-brand-foot></ah-brand-foot>
 
           <!-- 移动端底栏 Tab（≤760px 显示）：工作台/对话/资产/插件/我的 -->
+          <!-- 图标：线性 SVG（24 viewBox / stroke 2 / round），风格与 App 内部图标一致 -->
           <nav class="mobile-tabbar" role="tablist">
             <button
               class="m-tab ${this.tab === 'workspace' ? 'on' : ''}"
               @click=${() => this.setMobileTab('workspace')}
-            ><span class="ti">🗂</span><span class="tl">工作台</span></button>
+              aria-label="工作台"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                  <rect x="13" y="3" width="8" height="5" rx="1.5" />
+                  <rect x="13" y="10" width="8" height="11" rx="1.5" />
+                  <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                </svg>
+              </span>
+              <!-- <span class="tl">工作台</span>-->
+            </button>
             <button
               class="m-tab ${this.tab === 'chat' ? 'on' : ''}"
               @click=${() => this.setMobileTab('chat')}
-            ><span class="ti">💬</span><span class="tl">对话</span></button>
+              aria-label="对话"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                  />
+                  <path d="M8 9h8M8 13h5" />
+                </svg>
+              </span>
+              <!-- <span class="tl">对话</span> -->
+            </button>
             <button
-              class="m-tab ${this.tab === 'mcp' || this.tab === 'skill' || this.tab === 'datasource' ? 'on' : ''}"
+              class="m-tab ${this.tab === 'mcp' ||
+                this.tab === 'skill' ||
+                this.tab === 'datasource'
+                ? 'on'
+                : ''}"
               @click=${() => this.setMobileTab('mcp')}
-            ><span class="ti">🔌</span><span class="tl">资产</span></button>
+              aria-label="资产"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z" />
+                  <path d="M4 7l8 4 8-4" />
+                  <path d="M12 11v10" />
+                </svg>
+              </span>
+              <!-- <span class="tl">资产</span> -->
+            </button>
             <button
               class="m-tab ${this.tab === 'plugins' ? 'on' : ''}"
               @click=${() => this.setMobileTab('plugins')}
-            ><span class="ti">🧩</span><span class="tl">插件</span></button>
+              aria-label="插件"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M9 4h6a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v1a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-1H5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h2V6a2 2 0 0 1 2-2Z"
+                  />
+                  <path d="M12 4v2M12 18v2M4 12h2M18 12h2" />
+                </svg>
+              </span>
+              <!-- <span class="tl">插件</span> -->
+            </button>
             <button
               class="m-tab ${this.tab === 'me' ? 'on' : ''}"
               @click=${() => this.setMobileTab('me')}
-            ><span class="ti">👤</span><span class="tl">我的</span></button>
+              aria-label="我的"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M5 20a7 7 0 0 1 14 0" />
+                </svg>
+              </span>
+              <!-- <span class="tl">我的</span> -->
+            </button>
           </nav>
         </div>
       </div>

@@ -2736,6 +2736,11 @@ export const chatStyles = [
       .menu-btn {
         display: inline-flex;
       }
+      /* 移动端对话页：会话列表按钮已多余（抽屉/底栏承担导航），
+         与外层顶栏 LLM live 一并移除，chat-head 只留工具开关。 */
+      .chat-head .menu-btn {
+        display: none;
+      }
       .scrim.show {
         display: block;
       }

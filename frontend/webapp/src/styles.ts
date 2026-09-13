@@ -1558,7 +1558,17 @@ export const sharedStyles = css`
       cursor: pointer;
       transition: color 120ms ease, background 120ms ease;
     }
-    .m-tab .ti { font-size: 17px; line-height: 1; }
+    .m-tab .ti {
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .m-tab .ti svg {
+      width: 22px;
+      height: 22px;
+    }
     .m-tab.on,
     .m-tab:hover {
       color: var(--ah-text);
