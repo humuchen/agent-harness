@@ -55,7 +55,7 @@ export const notificationController: NotificationController = {
           title: options.title,
           body: options.body,
           id: Math.floor(Math.random() * 100000),
-          sound: null,
+          sound: undefined,
           smallIcon: 'ic_stat_icon_sample',
         }]
       });

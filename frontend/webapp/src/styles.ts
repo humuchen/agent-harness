@@ -1504,6 +1504,10 @@ export const sharedStyles = css`
       top: 0;
       z-index: 30;
     }
+    /* 移动端隐藏品牌脚：底栏固定在底部，品牌信息在「我的」页呈现 */
+    ah-brand-foot {
+      display: none;
+    }
     /* ── 移动端底栏 Tab（方案 A）── 仅 ≤760px 显示 ── */
     .mobile-tabbar {
       display: flex;
