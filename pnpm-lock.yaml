@@ -187,6 +187,9 @@ importers:
       '@capacitor/push-notifications':
         specifier: ^6.0.3
         version: 6.0.5(@capacitor/core@8.5.1)
+      '@capacitor/status-bar':
+        specifier: ^8.0.3
+        version: 8.0.3(@capacitor/core@8.5.1)
     devDependencies:
       '@capacitor/cli':
         specifier: ^6.2.0
@@ -318,6 +321,11 @@ packages:
     resolution: {integrity: sha512-CsRmb0cnZd9Uwx24ym4My5fNKrQvwI4D51aMEph5pUZy+LAjp6q0y4NJe8DEgwaVdAqVLbb4rqn75AZ4WSiFYg==}
     peerDependencies:
       '@capacitor/core': ^6.0.0
+
+  '@capacitor/status-bar@8.0.3':
+    resolution: {integrity: sha512-csSpfNeN49Hx9JaQBSJEIiEbOLtXg3kcc2IpScq2fu5L520h3AWEvsxoH8Srk1jxfRKepaJ4S4sqSC3foI4AgA==}
+    peerDependencies:
+      '@capacitor/core': '>=8.0.0'
 
   '@csstools/color-helpers@5.1.0':
     resolution: {integrity: sha512-S11EXWJyy0Mz5SYvRmY8nJYTFFd1LCNV+7cXyAgQtOOuzb4EsgfqDufL+9esx72/eLhsRdGZwaldu/h+E4t4BA==}
@@ -2834,6 +2842,10 @@ snapshots:
       '@capacitor/core': 8.5.1
 
   '@capacitor/push-notifications@6.0.5(@capacitor/core@8.5.1)':
+    dependencies:
+      '@capacitor/core': 8.5.1
+
+  '@capacitor/status-bar@8.0.3(@capacitor/core@8.5.1)':
     dependencies:
       '@capacitor/core': 8.5.1
 

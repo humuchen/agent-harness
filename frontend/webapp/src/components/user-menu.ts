@@ -390,6 +390,11 @@ export class AhUserMenu extends LitElement {
   @property({ type: String }) role = 'admin';
   /** 邮箱（可选，来自 /api/account/me）。 */
   @property({ type: String }) email: string | null = null;
+  /**
+   * standalone：移动端「我的」Tab 使用 —— 直接渲染完整账户面板（用户卡片 + 菜单 + 版本脚），
+   * 不带弹出/外部点击收起逻辑。默认 false（顶栏头像按钮 + 下拉）。
+   */
+  @property({ type: Boolean }) standalone = false;
 
   @state() private open = false;
   @state() private showPw = false;
@@ -500,6 +505,18 @@ export class AhUserMenu extends LitElement {
     </svg>`;
   }
 
+  private settingsIcon() {
+    return html`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.6" />
+      <path
+        d="M12 2v3.5M12 18.5V22M5.6 5.6l2.5 2.5M15.9 15.9l2.5 2.5M2 12h3.5M18.5 12H22"
+        stroke="currentColor"
+        stroke-width="1.6"
+        stroke-linecap="round"
+      />
+    </svg>`;
+  }
+
   private logoutIcon() {
     return html`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
@@ -520,6 +537,37 @@ export class AhUserMenu extends LitElement {
 
   render() {
     const initial = avatarInitial(this.username);
+    // standalone：移动端「我的」Tab —— 直接渲染完整面板，无弹出行为。
+    if (this.standalone) {
+      return html`<div class="standalone">
+        <div class="s-head">
+          <span class="ava big">${initial}</span>
+          <div class="meta">
+            <span class="name">${this.username || '未命名用户'}</span>
+            <span class="sub">
+              <span class="role-badge ${this.role}">${roleLabel(this.role)}</span>
+              ${this.email ? html`<span class="email">${this.email}</span>` : ''}
+            </span>
+          </div>
+        </div>
+        <div class="items">
+          <button
+            class="item"
+            role="menuitem"
+            @click=${() => this.openPw()}
+          >
+            ${this.keyIcon()}<span class="label">修改密码</span>
+          </button>
+          <button class="item" role="menuitem" @click=${() => this.dispatchSettings()}>
+            ${this.settingsIcon()}<span class="label">设置</span>
+          </button>
+          <button class="item danger" role="menuitem" @click=${() => this.onLogout()}>
+            ${this.logoutIcon()}<span class="label">退出登录</span>
+          </button>
+        </div>
+        <div class="ver">Agent Harness v${APP_VERSION}</div>
+      </div>`;
+    }
     return html`
       <button
         class="avatar"
@@ -574,6 +622,10 @@ export class AhUserMenu extends LitElement {
         : ''}
       ${this.showPw ? this.renderPwModal() : nothing}
     `;
+  }
+
+  private dispatchSettings() {
+    this.dispatchEvent(new CustomEvent('ah-goto', { detail: 'settings', bubbles: true }));
   }
 
   private renderPwModal() {

@@ -259,23 +259,29 @@ export const sharedStyles = css`
     gap: 8px;
   }
   .main {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    overflow: hidden;
-  }
-  .content {
-    flex: 1 1 0%;
-    min-height: 0;
-    overflow: hidden;
-    padding: 24px 32px;
-    width: 100%;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-  }
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    .topbar {
+      /* 移动端安全区：顶部状态栏（刘海）占用空间 */
+      padding-top: max(12px, env(safe-area-inset-top));
+    }
+    .content {
+      flex: 1 1 0%;
+      min-height: 0;
+      overflow: hidden;
+      padding: 24px 32px;
+      /* 移动端安全区：底部导航条（手势条）占用空间 */
+      padding-bottom: calc(24px + env(safe-area-inset-bottom));
+      width: 100%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+    }
   /* 对话页全幅铺满：去掉外边距与外层滚动，由 ah-chat 内部自管滚动。 */
   .content.chat {
     flex: 1 1 auto;
@@ -925,6 +931,10 @@ export const sharedStyles = css`
   .scrim.show {
     opacity: 1;
   }
+  /* 移动端底栏：桌面默认隐藏，≤760px 启用见 @media 块 */
+  .mobile-tabbar {
+    display: none;
+  }
 
   /* ------------------- 运行时面板（思考 + 结果 双栏） ------------------- */
   .run-head {
@@ -1494,9 +1504,85 @@ export const sharedStyles = css`
       top: 0;
       z-index: 30;
     }
-    /* 运行时双栏在窄屏堆叠为单列 */
-    .run-two {
-      grid-template-columns: 1fr;
+    /* ── 移动端底栏 Tab（方案 A）── 仅 ≤760px 显示 ── */
+    .mobile-tabbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      gap: 4px;
+      flex: 0 0 auto;
+      height: calc(48px + env(safe-area-inset-bottom, 0px));
+      padding: 4px 4px 4px calc(4px + env(safe-area-inset-bottom, 0px) / 3);
+      border-top: 1px solid var(--ah-border);
+      background: var(--ah-surface-1);
+    }
+    .m-tab {
+      flex: 1 1 0;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      padding: 6px 2px 2px;
+      border: none;
+      background: none;
+      border-radius: 10px;
+      font-size: 10px;
+      font-family: var(--ah-font-sans);
+      color: var(--ah-text-faint);
+      cursor: pointer;
+      transition: color 120ms ease, background 120ms ease;
+    }
+    .m-tab .ti { font-size: 17px; line-height: 1; }
+    .m-tab.on,
+    .m-tab:hover {
+      color: var(--ah-text);
+    }
+    .m-tab.on {
+      color: var(--ah-accent);
+      font-weight: 600;
+    }
+    .m-tab.on .ti { color: var(--ah-accent); }
+    .m-tab:focus-visible {
+      outline: 2px solid var(--ah-accent);
+      outline-offset: 2px;
+    }
+
+    /* ── 我的 Tab 的 me-view / me-skeleton ── */
+    .me-view {
+      padding: 4px 12px;
+    }
+    .me-skeleton {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 28px 0;
+    }
+    .me-skeleton .sk {
+      width: 100%;
+      height: 12px;
+      border-radius: 6px;
+      background: linear-gradient(90deg, var(--ah-skeleton-base) 25%, var(--ah-skeleton-peak) 37%, var(--ah-skeleton-base) 63%);
+    }
+
+    /* ── ah-user-menu standalone 模式（移动「我的」页）── */
+    ah-user-menu[standalone] .standalone {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 0 24px;
+    }
+    ah-user-menu[standalone] .s-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 8px 0 8px;
+    }
+    ah-user-menu[standalone] .ava.big {
+      width: 54px;
+      height: 54px;
+      font-size: 20px;
+      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35);
     }
   }
 `;

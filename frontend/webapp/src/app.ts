@@ -68,20 +68,31 @@ function uniqueShort(label: string, used: Set<string>): string {
   return cand;
 }
 
-const TABS: Array<{ id: Tab; label: string; short: string }> = [
-  { id: 'workspace', label: '工作台', short: '台' },
-  { id: 'chat', label: '对话', short: '对话' },
-  { id: 'mcp', label: 'MCP', short: 'M' },
-  { id: 'observability', label: '可观测', short: '观' },
-  { id: 'audit', label: '审计', short: '审计' },
-  { id: 'org', label: '组织', short: '组织' },
-  { id: 'artifact', label: '档案', short: '档案' },
-  { id: 'skill', label: '技能', short: '技能' },
-  { id: 'datasource', label: '数据源', short: '源' },
-  { id: 'sandbox', label: '沙箱', short: '沙箱' },
-  { id: 'supplychain', label: '供应链', short: '链' },
-  { id: 'plugins', label: '插件', short: '插件' },
-  { id: 'plan', label: '计划', short: '计' }
+/**
+ * Tab 归类：移动端抽屉按 group 渲染分组标题；桌面侧边栏仍按扁平 TABS 渲染，忽略 group。
+ * 分组语义：
+ *  - 'use'      使用 · 核心工作流
+ *  - 'ability'  能力 · 资产与集成
+ *  - 'observe'  观测 · 运行与质量
+ *  - 'govern'   治理 · 组织与系统
+ *  - 'mine'     我的 · 账户与偏好（仅底栏专属，不进入抽屉）
+ */
+type TabGroup = 'use' | 'ability' | 'observe' | 'govern';
+
+const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> = [
+  { id: 'workspace', label: '工作台', short: '台', group: 'use' },
+  { id: 'chat', label: '对话', short: '对话', group: 'use' },
+  { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
+  { id: 'observability', label: '可观测', short: '观', group: 'observe' },
+  { id: 'audit', label: '审计', short: '审计', group: 'observe' },
+  { id: 'org', label: '组织', short: '组织', group: 'govern' },
+  { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
+  { id: 'skill', label: '技能', short: '技能', group: 'ability' },
+  { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
+  { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
+  { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
+  { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
+  { id: 'plan', label: '计划', short: '计', group: 'use' }
 ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
@@ -275,12 +286,20 @@ export class AhApp extends LitElement {
       if (seg) this.setTab(seg);
     };
     window.addEventListener('ah:deeplink', this.onDeepLink as EventListener);
+
+    // 移动端左屏边缘右滑 → 打开抽屉
+    this.addEventListener('touchstart', this.onTouchStart, { passive: true });
+    this.addEventListener('touchmove', this.onEdgeTouchMove, { passive: true });
+    this.addEventListener('touchend', this.onEdgeTouchEnd);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('popstate', this.onPopState);
     window.removeEventListener('ah:deeplink', this.onDeepLink as EventListener);
+    this.removeEventListener('touchstart', this.onTouchStart);
+    this.removeEventListener('touchmove', this.onEdgeTouchMove);
+    this.removeEventListener('touchend', this.onEdgeTouchEnd);
     window.removeEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
@@ -297,6 +316,27 @@ export class AhApp extends LitElement {
 
   /** 移动端 Deep Link 处理器引用（disconnectedCallback 解绑用）。 */
   private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
+
+  /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。 */
+  private edgeStart = 0;
+  private edgeActive = false;
+  private onTouchStart = (e: TouchEvent) => {
+    // 仅在屏幕最左 16px 边缘开始触摸时激活边缘手势
+    if (e.touches.length === 1 && e.touches[0]!.clientX <= 16) {
+      this.edgeActive = true;
+      this.edgeStart = e.touches[0]!.clientX;
+    } else {
+      this.edgeActive = false;
+    }
+  };
+  private onEdgeTouchMove = (e: TouchEvent) => {
+    if (!this.edgeActive || e.touches.length !== 1) return;
+    const dx = e.touches[0]!.clientX - this.edgeStart;
+    if (dx > 40 && !this.drawerOpen) this.onToggleDrawer();
+  };
+  private onEdgeTouchEnd = () => {
+    this.edgeActive = false;
+  };
 
   private onPluginsChanged = () => {
     void this.loadPluginViews();
@@ -328,6 +368,21 @@ export class AhApp extends LitElement {
       // 短暂延迟后停止，模拟页面加载完成
       setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
     }
+  }
+
+  /**
+   * 移动端底栏专用 Tab 切换。
+   * - 导航到「资产」时默认落到 MCP（能力分组的首 Tab），因为资产是聚合容器而非单一视图；
+   *   其它 Tab 正常切入对应视图。
+   * - 切换时关闭移动抽屉，保证操作链干净。
+   */
+  private setMobileTab(tab: 'workspace' | 'chat' | 'mcp' | 'plugins' | 'me') {
+    if (tab === 'me') {
+      this.setTab('me');
+    } else {
+      this.setTab(tab);
+    }
+    this.closeDrawer();
   }
 
   /**
@@ -519,6 +574,15 @@ export class AhApp extends LitElement {
                 >${this.theme === 'dark' ? '☾' : '☀'}</span
               >
             </button>
+            <!-- 移动端账户口子节点，抽屉底部「我的」快速入口 -->
+            <button
+              class="nav-item nav-mine"
+              data-short="我"
+              title="我的"
+              @click=${() => { this.setTab('me'); this.closeDrawer(); }}
+            >
+              <span class="nav-text">我的</span>
+            </button>
           </div>
         </aside>
 
@@ -549,13 +613,6 @@ export class AhApp extends LitElement {
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
-            ${this.me
-              ? html`<ah-user-menu
-                  username=${this.me.username}
-                  role=${this.me.role}
-                  email=${this.me.email ?? ''}
-                ></ah-user-menu>`
-              : ''}
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
@@ -589,6 +646,21 @@ export class AhApp extends LitElement {
             <ah-provider-key-settings
               ?hidden=${this.tab !== 'settings'}
             ></ah-provider-key-settings>
+            <!-- 我的 Tab：复用 ah-user-menu，头像＋改密＋退出全部收进来 -->
+            <div class="me-view" ?hidden=${this.tab !== 'me'}>
+              ${this.me
+                ? html`<ah-user-menu
+                    username=${this.me.username}
+                    role=${this.me.role}
+                    email=${this.me.email ?? ''}
+                    standalone
+                  ></ah-user-menu>`
+                : html`<div class="me-skeleton">
+                    <div class="sk sk-line" style="width:120px;height:120px;border-radius:50%"></div>
+                    <div class="sk sk-line" style="width:40%"></div>
+                    <div class="sk sk-line" style="width:60%"></div>
+                  </div>`}
+            </div>
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">
                   ${this.pluginLoading === this.tab
@@ -604,6 +676,30 @@ export class AhApp extends LitElement {
               : ''}
           </main>
           <ah-brand-foot></ah-brand-foot>
+
+          <!-- 移动端底栏 Tab（≤760px 显示）：工作台/对话/资产/插件/我的 -->
+          <nav class="mobile-tabbar" role="tablist">
+            <button
+              class="m-tab ${this.tab === 'workspace' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('workspace')}
+            ><span class="ti">🗂</span><span class="tl">工作台</span></button>
+            <button
+              class="m-tab ${this.tab === 'chat' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('chat')}
+            ><span class="ti">💬</span><span class="tl">对话</span></button>
+            <button
+              class="m-tab ${this.tab === 'mcp' || this.tab === 'skill' || this.tab === 'datasource' || this.tab === 'plugins' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('mcp')}
+            ><span class="ti">🔌</span><span class="tl">资产</span></button>
+            <button
+              class="m-tab ${this.tab === 'plugins' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('plugins')}
+            ><span class="ti">🧩</span><span class="tl">插件</span></button>
+            <button
+              class="m-tab ${this.tab === 'me' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('me')}
+            ><span class="ti">👤</span><span class="tl">我的</span></button>
+          </nav>
         </div>
       </div>
     `;
