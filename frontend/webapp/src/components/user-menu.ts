@@ -388,45 +388,149 @@ export class AhUserMenu extends LitElement {
       outline-offset: 2px;
     }
 
-    /* ── standalone 模式（移动端「我的」Tab 整页渲染）── */
+    /* ── standalone 模式（移动端「我的」Tab 整页渲染）──
+       对齐设计稿 design/mobile-menu-mockups.html 方案 A：
+       渐变用户卡片 + 分组标题（账户/系统/退出）+ 带图标盒与箭头的圆角条目。 */
     .standalone {
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      padding: 8px 0 24px;
+      padding: 4px 4px 24px;
     }
-    .standalone .s-head {
+    /* 用户卡片：渐变背景 + 描边圆角，头像 54px 渐变投影 */
+    .s-card {
       display: flex;
       align-items: center;
       gap: 14px;
-      padding: 8px 0;
+      padding: 18px 16px;
+      border-radius: 16px;
+      background: linear-gradient(160deg, var(--ah-surface-2), var(--ah-surface-1));
+      border: 1px solid var(--ah-border);
+      margin: 2px 0 16px;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
     }
-    .standalone .ava.big {
+    .s-card .ava.big {
       width: 54px;
       height: 54px;
-      font-size: 20px;
+      font-size: 22px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      background: linear-gradient(
+        135deg,
+        var(--ah-accent) 0%,
+        var(--ah-accent-strong) 100%
+      );
+      color: #fff;
+      font-family: var(--ah-font-display);
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--ah-border);
       box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35);
     }
-    .standalone .name {
-      font-size: 17px;
-      font-weight: 700;
-    }
-    .standalone .email {
-      font-size: 11px;
-      color: var(--ah-text-faint);
-    }
-    .standalone .items {
-      padding: 0;
+    .s-card .meta {
+      min-width: 0;
       display: flex;
       flex-direction: column;
-      gap: 2px;
-      margin-top: 12px;
+      gap: 3px;
     }
-    .standalone .ver {
+    .s-card .name {
+      font-size: 17px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .s-card .email {
+      font-size: 11.5px;
+      color: var(--ah-text-faint);
+    }
+    /* 分组标题：账户 / 系统 / 退出 */
+    .s-sec {
+      font-size: 11px;
+      color: var(--ah-text-faint);
+      font-weight: 600;
+      letter-spacing: .4px;
+      padding: 4px 2px 8px;
+      margin-top: 4px;
+    }
+    .s-sec:first-of-type {
+      margin-top: 0;
+    }
+    /* 条目：带图标盒 + 文案 + 右箭头的圆角卡片 */
+    .s-items {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .s-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 14px;
+      border-radius: 11px;
+      background: var(--ah-surface-1);
+      border: 1px solid var(--ah-border);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: var(--ah-font-sans);
+      color: var(--ah-text);
+      text-align: left;
+      width: 100%;
+    }
+    .s-item svg {
+      width: 30px;
+      height: 30px;
+      padding: 7px;
+      border-radius: 9px;
+      background: var(--ah-surface-3);
+      flex: 0 0 auto;
+      color: var(--ah-text-muted);
+    }
+    .s-item:hover svg {
+      color: var(--ah-text);
+    }
+    .s-item .s-lbl {
+      min-width: 0;
+    }
+    .s-item .s-lbl small {
+      display: block;
+      font-weight: 400;
+      color: var(--ah-text-faint);
+      font-size: 10.5px;
+      margin-top: 1px;
+    }
+    .s-item .s-chev {
+      margin-left: auto;
+      color: var(--ah-text-faint);
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    /* 退出条目：danger 配色 */
+    .s-item.danger {
+      color: var(--ah-danger);
+    }
+    .s-item.danger svg {
+      background: var(--ah-danger);
+      color: #fff;
+    }
+    .s-item.danger:hover svg {
+      color: #fff;
+    }
+    .s-item:focus-visible {
+      outline: 2px solid var(--ah-accent);
+      outline-offset: 2px;
+    }
+    /* 版本号脚 */
+    .s-ver {
       margin-top: 14px;
-      border-top: none;
-      padding: 12px 0 0;
       text-align: center;
+      color: var(--ah-text-faint);
+      font-size: 10.5px;
+      font-family: var(--ah-font-mono);
+      padding: 14px 0 4px;
     }
   `;
 
@@ -583,35 +687,48 @@ export class AhUserMenu extends LitElement {
 
   render() {
     const initial = avatarInitial(this.username);
-    // standalone：移动端「我的」Tab —— 直接渲染完整面板，无弹出行为。
+    // standalone：移动端「我的」Tab —— 对齐设计稿方案 A：
+    // 渐变用户卡片 + 分组（账户/系统/退出）条目 + 版本脚。无弹出行为。
     if (this.standalone) {
       return html`<div class="standalone">
-        <div class="s-head">
+        <div class="s-card">
           <span class="ava big">${initial}</span>
           <div class="meta">
-            <span class="name">${this.username || '未命名用户'}</span>
-            <span class="sub">
+            <span class="name">${this.username || '未命名用户'}
               <span class="role-badge ${this.role}">${roleLabel(this.role)}</span>
-              ${this.email ? html`<span class="email">${this.email}</span>` : ''}
             </span>
+            ${this.email ? html`<span class="email">${this.email}</span>` : ''}
           </div>
         </div>
-        <div class="items">
-          <button
-            class="item"
-            role="menuitem"
-            @click=${() => this.openPw()}
-          >
-            ${this.keyIcon()}<span class="label">修改密码</span>
-          </button>
-          <button class="item" role="menuitem" @click=${() => this.dispatchSettings()}>
-            ${this.settingsIcon()}<span class="label">设置</span>
-          </button>
-          <button class="item danger" role="menuitem" @click=${() => this.onLogout()}>
-            ${this.logoutIcon()}<span class="label">退出登录</span>
+
+        <div class="s-sec">账户</div>
+        <div class="s-items">
+          <button class="s-item" role="menuitem" @click=${() => this.openPw()}>
+            ${this.keyIcon()}
+            <span class="s-lbl">修改密码</span>
+            <span class="s-chev">›</span>
           </button>
         </div>
-        <div class="ver">Agent Harness v${APP_VERSION}</div>
+
+        <div class="s-sec">系统</div>
+        <div class="s-items">
+          <button class="s-item" role="menuitem" @click=${() => this.dispatchSettings()}>
+            ${this.settingsIcon()}
+            <span class="s-lbl">设置<small>系统与网络</small></span>
+            <span class="s-chev">›</span>
+          </button>
+        </div>
+
+        <div class="s-sec">退出</div>
+        <div class="s-items">
+          <button class="s-item danger" role="menuitem" @click=${() => this.onLogout()}>
+            ${this.logoutIcon()}
+            <span class="s-lbl">退出登录</span>
+            <span class="s-chev">›</span>
+          </button>
+        </div>
+
+        <div class="s-ver">Agent Harness v${APP_VERSION}</div>
       </div>`;
     }
     return html`

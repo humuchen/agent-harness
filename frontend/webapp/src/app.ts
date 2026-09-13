@@ -179,6 +179,9 @@ const chatShellCss = css`
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
+      /* 固定底栏 Tab（48px + safe-area）压在这层 inset:0 固定壳里，
+         必须留白，否则聊天输入框被遮住 —— 见 sharedStyles .mobile-tabbar */
+      padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
     }
   }
 `;
