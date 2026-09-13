@@ -165,6 +165,10 @@ export const chatStyles = [
       justify-content: center;
       gap: 8px;
     }
+    /* 移动端关闭按钮：桌面侧栏常驻可见（非抽屉），不需要 ✕，隐藏 */
+    .close-btn {
+      display: none;
+    }
     .session-list {
       flex: 1 1 auto;
       overflow-y: auto;
@@ -2734,6 +2738,37 @@ export const chatStyles = [
       }
       .collapse-btn {
         display: none;
+      }
+      /* 移动端侧栏抽屉：新对话按钮 + 关闭按钮横排，会话区占满 */
+      .sidebar .side-head {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 14px;
+      }
+      .sidebar .new-btn {
+        width: auto;
+        flex: 1;
+        padding: 7px 12px;
+      }
+      .sidebar .close-btn {
+        display: inline-flex;
+        flex: 0 0 auto;
+        width: 30px;
+        height: 30px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--ah-border);
+        border-radius: 8px;
+        background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .sidebar .close-btn:hover {
+        color: var(--ah-text);
+        border-color: var(--ah-accent);
       }
       .menu-btn {
         display: inline-flex;

@@ -1196,7 +1196,7 @@ export class AhLogin extends LitElement {
           box-sizing: border-box;
           overflow-x: hidden;
           overflow-y: auto;
-          padding: 40px 18px 24px 18px;
+          padding: 60px 18px 24px 18px;
           gap: 4px;
         }
         .brand-top,
@@ -1275,7 +1275,7 @@ export class AhLogin extends LitElement {
       /* ---------------------- 窄屏手机（≤480px）细化 ---------------------- */
       @media (max-width: 480px) {
         .login-wrap {
-          padding: 40px 16px 20px 16px;
+          padding: 60px 16px 20px 16px;
           gap: 4px;
         }
         .brand-top {

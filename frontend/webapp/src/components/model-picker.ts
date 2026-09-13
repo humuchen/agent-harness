@@ -120,6 +120,16 @@ export class AhModelPicker extends LitElement {
       .trigger > svg:not(.vlogo) {
         display: none;
       }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
     }
     /* 厂商徽标 */
     .vlogo {

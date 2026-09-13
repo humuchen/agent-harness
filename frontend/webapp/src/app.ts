@@ -324,19 +324,25 @@ export class AhApp extends LitElement {
   private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
 
   /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。
-   *  左缘激活带 30px、右滑 30px 且竖直漂移 <60px 时触发；
-   *  passive 监听无法 preventDefault，若与 Android 系统返回手势冲突，
-   *  需原生侧关闭边缘返回（见 MainActivity 注释），前端保持宽容阈值兜底。 */
+   *  触摸点 x 在 0–20% 视口宽范围内即视为「边缘」，右滑 20px 且主要水平位移
+   *  （竖直漂移 <45px）时触发。passive 监听无法 preventDefault；若与 Android
+   *  系统边缘返回手势冲突需原生侧处理（见 MainActivity 注释）。 */
   private edgeStart = 0;
   private edgeStartY = 0;
   private edgeFired = false;
   private edgeActive = false;
   private onTouchStart = (e: TouchEvent) => {
-    if (e.touches.length === 1 && e.touches[0]!.clientX <= 30) {
+    if (e.touches.length !== 1) {
+      this.edgeActive = false;
+      return;
+    }
+    const t = e.touches[0]!;
+    const edgeZone = Math.min(32, Math.max(24, window.innerWidth * 0.2));
+    if (t.clientX <= edgeZone) {
       this.edgeActive = true;
       this.edgeFired = false;
-      this.edgeStart = e.touches[0]!.clientX;
-      this.edgeStartY = e.touches[0]!.clientY;
+      this.edgeStart = t.clientX;
+      this.edgeStartY = t.clientY;
     } else {
       this.edgeActive = false;
     }
@@ -346,8 +352,8 @@ export class AhApp extends LitElement {
     const t = e.touches[0]!;
     const dx = t.clientX - this.edgeStart;
     const dy = Math.abs(t.clientY - this.edgeStartY);
-    // 主要向右、竖直漂移不过大，才视为「边缘右滑开抽屉」
-    if (dx > 30 && dy < 60 && !this.drawerOpen) {
+    // 向右 20px 且竖直漂移不过大 → 视为「边缘右滑开抽屉」，单次滑动只触发一次
+    if (dx > 20 && dy < 45 && !this.drawerOpen) {
       this.edgeFired = true;
       this.onToggleDrawer();
     }

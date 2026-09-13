@@ -1602,5 +1602,16 @@ export const sharedStyles = css`
       border-radius: 6px;
       background: linear-gradient(90deg, var(--ah-skeleton-base) 25%, var(--ah-skeleton-peak) 37%, var(--ah-skeleton-base) 63%);
     }
+    /* 移动端隐藏所有滚动条（Firefox scrollbar-width:none + WebKit 伪元素 display:none），
+       保留可滚动但视觉无条，避免滚动条占宽与原生观感。 */
+    * {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    ::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+    }
   }
 `;

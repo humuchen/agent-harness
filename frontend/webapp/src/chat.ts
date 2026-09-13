@@ -3141,6 +3141,7 @@ export class AhChat extends LitElement {
           class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed
             ? 'collapsed'
             : ''}"
+          @click=${(e: Event) => e.stopPropagation()}
         >
           <div class="side-head">
             <button
@@ -3152,6 +3153,15 @@ export class AhChat extends LitElement {
             </button>
             <button class="primary new-btn" @click=${() => this.newChat()}>
               ＋ 新对话
+            </button>
+            <!-- 移动端关闭按钮：侧边栏为 fixed 抽屉，需要显式关闭入口（≤900px 显示） -->
+            <button
+              class="close-btn"
+              title="关闭会话列表"
+              aria-label="关闭会话列表"
+              @click=${() => this.toggleSidebar()}
+            >
+              ✕
             </button>
           </div>
           <div

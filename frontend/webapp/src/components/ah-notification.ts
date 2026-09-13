@@ -197,18 +197,24 @@ export class AhNotificationHost extends LitElement {
       top: 0;
       right: 0;
       align-items: flex-end;
+      /* 顶部弹出：含顶部安全区，卡片不顶进原生状态栏（时钟/电量），不劫持顶栏点击 */
+      padding-top: calc(16px + env(safe-area-inset-top, 0px));
     }
     :host([placement='top-center']) .layer {
       top: 0;
       left: 50%;
       transform: translateX(-50%);
       align-items: center;
+      /* 顶部弹出：含顶部安全区 */
+      padding-top: calc(16px + env(safe-area-inset-top, 0px));
     }
     :host([placement='bottom-right']) .layer {
       bottom: 0;
       right: 0;
       align-items: flex-end;
       flex-direction: column-reverse;
+      /* 底部弹出：含底部安全区，卡片不贴手势条 */
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     }
     :host([placement='bottom-center']) .layer {
       bottom: 0;
@@ -216,6 +222,18 @@ export class AhNotificationHost extends LitElement {
       transform: translateX(-50%);
       align-items: center;
       flex-direction: column-reverse;
+      /* 底部弹出：含底部安全区 */
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    /* 通知宿主铺满视口（inset:0）：顶/底两端补安全区，顶部卡片不顶进状态栏、
+       底部卡片不贴手势条（否则 pointer-events:auto 的卡片会挡住原生头部/手势区点击） */
+    :host([placement='top-right']) .layer,
+    :host([placement='top-center']) .layer {
+      padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    }
+    :host([placement='bottom-right']) .layer,
+    :host([placement='bottom-center']) .layer {
+      padding-top: calc(16px + env(safe-area-inset-top, 0px));
     }
 
     .item {

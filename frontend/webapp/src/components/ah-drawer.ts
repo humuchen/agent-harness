@@ -99,12 +99,17 @@ export class AhDrawer extends LitElement {
       width: var(--ahd-size, 320px);
       max-width: 100vw;
       height: 100%;
+      /* 全屏定位的左右抽屉：顶/底含安全区，标题不顶进原生状态栏、
+         底边不贴手势条（覆盖层 inset:0 铺满视口）。 */
+      padding: calc(env(safe-area-inset-top, 0px)) 0 calc(env(safe-area-inset-bottom, 0px));
     }
     .top .panel,
     .bottom .panel {
       width: 100%;
       height: var(--ahd-size, 320px);
       max-height: 100dvh;
+      /* 上下抽屉：对应端含安全区（top 抽屉贴状态栏、bottom 抽屉贴手势条） */
+      padding: calc(env(safe-area-inset-top, 0px)) 0 calc(env(safe-area-inset-bottom, 0px));
     }
     @keyframes ahd-slide-in {
       from {
@@ -229,6 +234,16 @@ export class AhDrawer extends LitElement {
       }
       .foot .btn {
         flex: 1;
+      }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
     }
   `;

@@ -476,6 +476,16 @@ export class AhCommandSuggestions extends LitElement {
       .panel {
         width: 100%;
       }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
     }
     /* 尊重系统的「减少动态效果」设置 */
     @media (prefers-reduced-motion: reduce) {

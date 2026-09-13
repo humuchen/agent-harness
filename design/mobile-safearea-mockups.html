@@ -106,7 +106,7 @@
     标注「已达标」与「已修复」，并附修复前后视觉对照。已随代码改动一并验证。
   </p>
 
-  <h2>核对清单 <span class="tag">5 个表面</span></h2>
+  <h2>核对清单 <span class="tag">6 个表面</span></h2>
   <table>
     <tr><th style="width:18%">表面</th><th style="width:34%">位置 / 选择器</th><th style="width:12%">状态</th><th>处理</th></tr>
     <tr>
@@ -131,7 +131,13 @@
       <td><b>会话列表抽屉</b><br><small class="note">chat.ts · position:fixed; top:0</small></td>
       <td class="path">.sidebar（chat）<br><span class="code">padding: calc(12px + env(safe-area-inset-top,0)) 0 calc(12px + env(safe-area-inset-bottom,0))</span></td>
       <td><span class="st fix">已修复</span></td>
-      <td>会话列表「+ 新对话」按钮顶在屏幕最上沿。补顶/底安全区。</td>
+      <td>会话列表「+ 新对话」按钮顶在屏幕最上沿。补顶/底安全区；同时抽屉根节点 stopPropagation，遮罩不穿透导致误关。</td>
+    </tr>
+    <tr>
+      <td><b>通用抽屉 ah-drawer</b><br><small class="note">调用链路 / 关键信息 / 链路信心</small></td>
+      <td class="path">.left/.right/.top/.bottom .panel<br><span class="code">padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom)</span></td>
+      <td><span class="st fix">已修复</span></td>
+      <td>全屏定位面板（overlay inset:0），标题 .head 顶进状态栏、底边贴手势条。四个 placement 的面板顶/底补安全区。</td>
     </tr>
     <tr>
       <td><b>底部 Tab 栏</b><br><small class="note">5 Tab 固定底栏</small></td>
@@ -297,9 +303,9 @@
     </div>
   </div>
 
-  <h2>改动汇总 <span class="tag">3 处 CSS</span></h2>
+  <h2>改动汇总 <span class="tag">4 处 CSS + 2 处交互</span></h2>
   <table>
-    <tr><th style="width:30%">文件</th><th style="width:26%">选择器</th><th>改动</th></tr>
+    <tr><th style="width:30%">文件</th><th style="width:26%">选择器 / 位置</th><th>改动</th></tr>
     <tr>
       <td class="path">frontend/webapp/src/app.ts<br><small class="note">chatShellCss</small></td>
       <td class="path">.shell.chat-mode .topbar</td>
@@ -314,6 +320,21 @@
       <td class="path">frontend/webapp/src/chat-styles.ts<br><small class="note">@media ≤900px</small></td>
       <td class="path">.sidebar</td>
       <td>追加 <span class="code">padding: calc(12px+safe-top) 0 calc(12px+safe-bottom)</span></td>
+    </tr>
+    <tr>
+      <td class="path">frontend/webapp/src/components/ah-drawer.ts</td>
+      <td class="path">.left/.right/.top/.bottom .panel</td>
+      <td>追加 <span class="code">padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom)</span>，四个方向面板避开原生头部/手势条</td>
+    </tr>
+    <tr>
+      <td class="path">frontend/webapp/src/chat.ts<br><small class="note">交互修复</small></td>
+      <td class="path">.sidebar（根节点）</td>
+      <td>补 <span class="code">@click stopPropagation</span>：点会话区不再穿透到底层遮罩导致抽屉误关</td>
+    </tr>
+    <tr>
+      <td class="path">frontend/webapp/src/app.ts<br><small class="note">交互优化</small></td>
+      <td class="path">onTouchStart / onEdgeTouchMove</td>
+      <td>边缘激活区 0–20% 视口宽（约 48px），触发位移降到 20px、竖直漂移 <45px，更易触发</td>
     </tr>
   </table>
 

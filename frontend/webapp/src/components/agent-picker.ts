@@ -92,6 +92,16 @@ export class AhAgentPicker extends LitElement {
         max-width: 2em;
         text-overflow: clip;
       }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
     }
 
     /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
