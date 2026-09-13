@@ -1,4 +1,4 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
@@ -517,21 +517,44 @@ export class AhApp extends LitElement {
             </button>
           </div>
           <nav class="nav">
-            ${TABS.map(
-              (t) => html`
-                <button
-                  class="nav-item ${this.tab === t.id ? 'active' : ''}"
-                  data-short=${t.short}
-                  title=${t.label}
-                  @click=${() => {
-                    this.setTab(t.id);
-                    this.closeDrawer();
-                  }}
-                >
-                  <span class="nav-text">${t.label}</span>
-                </button>
-              `
-            )}
+            ${(() => {
+              // 移动端按 group 分组渲染，桌面忽略（.nav-group-title 仅移动端可见）
+              const GROUP_TITLE: Record<string, string> = {
+                use: '使用 · 工作流',
+                ability: '能力 · 资产',
+                observe: '观测 · 运维',
+                govern: '治理 · 系统'
+              };
+              const groups = new Map<string, typeof TABS>();
+              for (const t of TABS) {
+                const list = groups.get(t.group) ?? [];
+                list.push(t);
+                groups.set(t.group, list);
+              }
+              const order: string[] = ['use', 'ability', 'observe', 'govern'];
+              const children: TemplateResult[] = [];
+              for (const g of order) {
+                const items = groups.get(g);
+                if (!items || items.length === 0) continue;
+                children.push(html`<div class="nav-group-title">${GROUP_TITLE[g] ?? g}</div>`);
+                for (const t of items) {
+                  children.push(
+                    html`<button
+                      class="nav-item ${this.tab === t.id ? 'active' : ''}"
+                      data-short=${t.short}
+                      title=${t.label}
+                      @click=${() => {
+                        this.setTab(t.id);
+                        this.closeDrawer();
+                      }}
+                    >
+                      <span class="nav-text">${t.label}</span>
+                    </button>`
+                  );
+                }
+              }
+              return children;
+            })()}
           </nav>
           ${this.pluginTabs.length
             ? html`<div class="nav-sep"></div>

@@ -20,9 +20,10 @@ const config: CapacitorConfig = {
       faceIDReason: '验证身份以快速登录'
     },
     StatusBar: {
-          // style: 'DARK' = 深色背景 + 浅色（白）图标 — 配合深色主题背景 #0b0e14
+          // style: 'LIGHT' = 浅色图标用于深色背景 — 配合深色主题 #0b0e14
+          // 注意：Android 16+ 忽略 overlaysWebView 和 backgroundColor，改为系统强制 edge-to-edge
           overlaysWebView: true,
-          style: 'DARK',
+          style: 'LIGHT',
           backgroundColor: '#0b0e14'
         }
   },

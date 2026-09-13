@@ -190,6 +190,10 @@ export const sharedStyles = css`
     flex-direction: column;
     gap: 2px;
   }
+  /* 分组标题：桌面侧边栏隐藏（.nav-group-title display:none），移动端抽屉内可见 */
+  .nav-group-title {
+    display: none;
+  }
   .nav-item {
     display: flex;
     align-items: center;
@@ -1440,6 +1444,19 @@ export const sharedStyles = css`
     .sidebar.open {
       transform: none;
     }
+    /* 移动端抽屉内显示分组标题（桌面隐藏） */
+    .sidebar .nav-group-title {
+      display: block;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      color: var(--ah-text-faint);
+      padding: 12px 8px 4px;
+      text-transform: uppercase;
+    }
+    .sidebar .nav-group-title:first-child {
+      padding-top: 0;
+    }
     /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
     .sidebar.collapsed {
       width: 240px;
@@ -1492,7 +1509,7 @@ export const sharedStyles = css`
     }
     /* 内容区改为文档自然滚动（解除固定高度 + 内部滚动），底部留白含安全区 */
     .content {
-      padding: 16px 14px calc(24px + env(safe-area-inset-bottom));
+      padding: 16px 14px calc(64px + env(safe-area-inset-bottom, 0px));
       overflow: visible;
       height: auto;
       flex: none;
@@ -1510,15 +1527,20 @@ export const sharedStyles = css`
     }
     /* ── 移动端底栏 Tab（方案 A）── 仅 ≤760px 显示 ── */
     .mobile-tabbar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 45;
       display: flex;
       align-items: center;
       justify-content: space-around;
       gap: 4px;
-      flex: 0 0 auto;
       height: calc(48px + env(safe-area-inset-bottom, 0px));
-      padding: 4px 4px 4px calc(4px + env(safe-area-inset-bottom, 0px) / 3);
+      padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
       border-top: 1px solid var(--ah-border);
       background: var(--ah-surface-1);
+      box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.30);
     }
     .m-tab {
       flex: 1 1 0;
@@ -1551,7 +1573,8 @@ export const sharedStyles = css`
       outline-offset: 2px;
     }
 
-    /* ── 我的 Tab 的 me-view / me-skeleton ── */
+    /* ── 我的 Tab 的 me-view / me-skeleton（ah-user-menu standalone 组件
+       自带的 shadow 样式，见 user-menu.ts —— 此处只留外部布局壳）── */
     .me-view {
       padding: 4px 12px;
     }
@@ -1567,26 +1590,6 @@ export const sharedStyles = css`
       height: 12px;
       border-radius: 6px;
       background: linear-gradient(90deg, var(--ah-skeleton-base) 25%, var(--ah-skeleton-peak) 37%, var(--ah-skeleton-base) 63%);
-    }
-
-    /* ── ah-user-menu standalone 模式（移动「我的」页）── */
-    ah-user-menu[standalone] .standalone {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 8px 0 24px;
-    }
-    ah-user-menu[standalone] .s-head {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 8px 0 8px;
-    }
-    ah-user-menu[standalone] .ava.big {
-      width: 54px;
-      height: 54px;
-      font-size: 20px;
-      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35);
     }
   }
 `;

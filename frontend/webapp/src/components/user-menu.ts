@@ -54,6 +54,11 @@ export class AhUserMenu extends LitElement {
       align-items: center;
       position: relative;
     }
+    /* standalone 模式：作为移动端「我的」Tab 的根容器，撑满父级宽度 */
+    :host([standalone]) {
+      display: block;
+      width: 100%;
+    }
 
     /* 头像按钮：圆形渐变 + 描边，hover 高亮，打开态加 accent 环。 */
     .avatar {
@@ -381,6 +386,47 @@ export class AhUserMenu extends LitElement {
     .btn:focus-visible {
       outline: 2px solid var(--ah-accent);
       outline-offset: 2px;
+    }
+
+    /* ── standalone 模式（移动端「我的」Tab 整页渲染）── */
+    .standalone {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 0 24px;
+    }
+    .standalone .s-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 8px 0;
+    }
+    .standalone .ava.big {
+      width: 54px;
+      height: 54px;
+      font-size: 20px;
+      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.35);
+    }
+    .standalone .name {
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .standalone .email {
+      font-size: 11px;
+      color: var(--ah-text-faint);
+    }
+    .standalone .items {
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 12px;
+    }
+    .standalone .ver {
+      margin-top: 14px;
+      border-top: none;
+      padding: 12px 0 0;
+      text-align: center;
     }
   `;
 
