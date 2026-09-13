@@ -168,10 +168,11 @@ const chatShellCss = css`
       overflow: hidden;
     }
     .shell.chat-mode .topbar {
-      flex: 0 0 auto;
+      display: none;
+      /* flex: 0 0 auto;
       padding: 8px 10px;
       padding-top: calc(8px + env(safe-area-inset-top, 0px));
-      gap: 8px;
+      gap: 8px; */
     }
     /* 移动端对话页：隐藏刷新按钮，仅留状态与菜单，节省竖向空间 */
     .shell.chat-mode .topbar .ghost {
@@ -794,8 +795,8 @@ export class AhApp extends LitElement {
             </button>
             <button
               class="m-tab ${this.tab === 'mcp' ||
-                this.tab === 'skill' ||
-                this.tab === 'datasource'
+              this.tab === 'skill' ||
+              this.tab === 'datasource'
                 ? 'on'
                 : ''}"
               @click=${() => this.setMobileTab('mcp')}

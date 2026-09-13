@@ -282,29 +282,29 @@ export const sharedStyles = css`
     gap: 8px;
   }
   .main {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      overflow: hidden;
-    }
-    .topbar {
-      /* 移动端安全区：顶部状态栏（刘海）占用空间 */
-      padding-top: max(12px, env(safe-area-inset-top));
-    }
-    .content {
-      flex: 1 1 0%;
-      min-height: 0;
-      overflow: hidden;
-      padding: 24px 32px;
-      /* 移动端安全区：底部导航条（手势条）占用空间 */
-      padding-bottom: calc(24px + env(safe-area-inset-bottom));
-      width: 100%;
-      box-sizing: border-box;
-      display: flex;
-      flex-direction: column;
-    }
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+  .topbar {
+    /* 移动端安全区：顶部状态栏（刘海）占用空间 */
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+  .content {
+    flex: 1 1 0%;
+    min-height: 0;
+    overflow: hidden;
+    padding: 24px 32px;
+    /* 移动端安全区：底部导航条（手势条）占用空间 */
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
   /* 对话页全幅铺满：去掉外边距与外层滚动，由 ah-chat 内部自管滚动。 */
   .content.chat {
     flex: 1 1 auto;
@@ -1460,7 +1460,8 @@ export const sharedStyles = css`
       /* 顶/底 padding 含安全区：固定 top:0 的抽屉会顶进原生状态栏（时钟/电量）与手势条。
          注意 safe-area-inset 仅在 Capacitor/浏览器视口撑满屏（edge-to-edge）时非 0；
          普通浏览器为 0，无副作用。品牌区（Agent Harness + logo）因此不会顶进状态栏。 */
-      padding: calc(20px + env(safe-area-inset-top, 0px)) 14px calc(16px + env(safe-area-inset-bottom, 0px));
+      padding: calc(20px + env(safe-area-inset-top, 0px)) 14px
+        calc(16px + env(safe-area-inset-bottom, 0px));
       overflow-y: auto;
     }
     /* 内容滚动时品牌头部固定：.sidebar 是滚动容器，.brand 用 sticky 钉在滚动顶，
@@ -1482,7 +1483,7 @@ export const sharedStyles = css`
       display: block;
       font-size: 10.5px;
       font-weight: 600;
-      letter-spacing: .4px;
+      letter-spacing: 0.4px;
       color: var(--ah-text-faint);
       padding: 12px 8px 4px;
       text-transform: uppercase;
@@ -1578,7 +1579,7 @@ export const sharedStyles = css`
       padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
       border-top: 1px solid var(--ah-border);
       background: var(--ah-surface-1);
-      box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.30);
+      box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
     }
     .m-tab {
       flex: 1 1 0;
@@ -1595,7 +1596,8 @@ export const sharedStyles = css`
       color: var(--ah-text-faint);
       cursor: pointer;
       /* 切换过渡：颜色 160ms + 图标轻微回弹（scale），更柔和 */
-      transition: color 160ms ease, transform 220ms cubic-bezier(0.34, 1.4, 0.64, 1);
+      transition: color 160ms ease,
+        transform 220ms cubic-bezier(0.34, 1.4, 0.64, 1);
     }
     .m-tab .ti {
       width: 22px;
@@ -1644,7 +1646,12 @@ export const sharedStyles = css`
       width: 100%;
       height: 12px;
       border-radius: 6px;
-      background: linear-gradient(90deg, var(--ah-skeleton-base) 25%, var(--ah-skeleton-peak) 37%, var(--ah-skeleton-base) 63%);
+      background: linear-gradient(
+        90deg,
+        var(--ah-skeleton-base) 25%,
+        var(--ah-skeleton-peak) 37%,
+        var(--ah-skeleton-base) 63%
+      );
     }
     /* 移动端隐藏所有滚动条（Firefox scrollbar-width:none + WebKit 伪元素 display:none），
        保留可滚动但视觉无条，避免滚动条占宽与原生观感。 */
