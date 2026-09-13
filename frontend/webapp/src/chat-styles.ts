@@ -68,7 +68,11 @@ export const chatStyles = [
     }
     /* 已达上传上限：卡片描边转警示色，与「松开即可添加」正向态区分 */
     .drop-overlay.full .drop-overlay-card {
-      border-color: color-mix(in srgb, var(--ah-danger, #ff453a) 55%, transparent);
+      border-color: color-mix(
+        in srgb,
+        var(--ah-danger, #ff453a) 55%,
+        transparent
+      );
     }
     .drop-overlay.full .drop-overlay-icons,
     .drop-overlay.full .drop-overlay-title {
@@ -781,11 +785,7 @@ export const chatStyles = [
       width: 56%;
       max-width: 520px;
       padding: 12px 14px;
-      background: color-mix(
-        in srgb,
-        var(--ah-accent) 14%,
-        var(--ah-surface-2)
-      );
+      background: color-mix(in srgb, var(--ah-accent) 14%, var(--ah-surface-2));
       border-radius: 14px;
       border-top-right-radius: 4px;
     }
@@ -1536,9 +1536,7 @@ export const chatStyles = [
     .trace-toolbar {
       display: flex;
       justify-content: flex-end;
-      padding: 0 2px 8px;
       margin-bottom: 8px;
-      border-bottom: 1px solid var(--ah-border);
     }
     .trace-collapse-all {
       flex: none;
@@ -2105,8 +2103,16 @@ export const chatStyles = [
       color: #5ee9d4;
     }
     .tnode.kind-tokencache .tgrp-info .tchip {
-      background: color-mix(in srgb, var(--ah-accent, #2997ff) 15%, var(--ah-surface-2));
-      border-color: color-mix(in srgb, var(--ah-accent, #2997ff) 38%, var(--ah-border));
+      background: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 15%,
+        var(--ah-surface-2)
+      );
+      border-color: color-mix(
+        in srgb,
+        var(--ah-accent, #2997ff) 38%,
+        var(--ah-border)
+      );
       color: var(--ah-accent, #2997ff);
     }
     .tnode.kind-tokencache .tgrp-info .tchip b {
@@ -2656,7 +2662,6 @@ export const chatStyles = [
 
     /* 移动端「会话列表」按钮与抽屉遮罩（默认隐藏，窄屏媒体查询启用）。 */
     .menu-btn {
-      display: none;
       flex: 0 0 auto;
       width: 34px;
       height: 34px;
@@ -2715,7 +2720,8 @@ export const chatStyles = [
         z-index: 50;
         box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
         /* 固定 top:0 的会话列表抽屉：顶/底 padding 含安全区，避开状态栏与手势条 */
-        padding: calc(12px + env(safe-area-inset-top, 0px)) 0 calc(12px + env(safe-area-inset-bottom, 0px));
+        padding: calc(12px + env(safe-area-inset-top, 0px)) 0
+          calc(12px + env(safe-area-inset-bottom, 0px));
       }
       .sidebar.open {
         transform: none;
@@ -2773,16 +2779,11 @@ export const chatStyles = [
       .menu-btn {
         display: inline-flex;
       }
-      /* 移动端对话页：会话列表按钮已多余（抽屉/底栏承担导航），
-         与外层顶栏 LLM live 一并移除，chat-head 只留工具开关。 */
-      .chat-head .menu-btn {
-        display: none;
-      }
       .scrim.show {
         display: block;
       }
       .chat-head {
-        padding: 10px 12px;
+        padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
         gap: 8px;
       }
       /* 触屏无 hover：会话操作按钮常驻显示，避免点按时按钮在指尖下浮现截获 click
@@ -2857,7 +2858,7 @@ export const chatStyles = [
         margin-top: 22px;
       }
       .chat-head {
-        padding: 8px 10px;
+        padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 8px;
         gap: 6px;
       }
       .title {

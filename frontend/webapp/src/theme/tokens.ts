@@ -99,6 +99,25 @@ html, body {
   background: var(--ah-canvas);
   color: var(--ah-text);
 }
+/* 移动端（窄屏或触屏）：全局隐藏滚动条 + 去除点击蓝色高亮（WebView 默认 :active）。
+   - 滚动条：html/body（文档根，非 shadow）+ 任意滚动容器，三套语法并写。
+   - 点击高亮：-webkit-tap-highlight-color: transparent 吃掉 Android WebView 默认蓝色圆。 */
+@media (max-width: 900px), (pointer: coarse) {
+  html, body, * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  ::-webkit-scrollbar,
+  *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
 `;
 
 const STORAGE_KEY = 'ah-theme';

@@ -34,6 +34,25 @@ export const sharedStyles = css`
   ::-webkit-scrollbar-thumb:hover {
     background: var(--ah-text-muted);
   }
+  /* 移动端（含 Capacitor WebView）整体隐藏滚动条：文档根、所有滚动容器、
+     伪元素全部吃掉。Firefox/WebKit/IE-Edge 三套语法并写。 */
+  @media (max-width: 760px), (pointer: coarse) {
+    * {
+      scrollbar-width: none !important;
+      -ms-overflow-style: none !important;
+    }
+    ::-webkit-scrollbar {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      background: transparent !important;
+    }
+    *::-webkit-scrollbar {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+    }
+  }
   .topbar {
     display: flex;
     align-items: center;
@@ -1438,9 +1457,22 @@ export const sharedStyles = css`
       transition: transform 200ms ease;
       z-index: 50;
       box-shadow: 2px 0 16px rgba(0, 0, 0, 0.45);
-      /* 顶/底 padding 含安全区：固定 top:0 的抽屉会顶进原生状态栏（时钟/电量）与手势条 */
+      /* 顶/底 padding 含安全区：固定 top:0 的抽屉会顶进原生状态栏（时钟/电量）与手势条。
+         注意 safe-area-inset 仅在 Capacitor/浏览器视口撑满屏（edge-to-edge）时非 0；
+         普通浏览器为 0，无副作用。品牌区（Agent Harness + logo）因此不会顶进状态栏。 */
       padding: calc(20px + env(safe-area-inset-top, 0px)) 14px calc(16px + env(safe-area-inset-bottom, 0px));
       overflow-y: auto;
+    }
+    /* 内容滚动时品牌头部固定：.sidebar 是滚动容器，.brand 用 sticky 钉在滚动顶，
+       补背景 + 微阴影，滚过时遮住下方滚动的导航项。 */
+    .sidebar .brand {
+      position: sticky;
+      top: 0;
+      background: var(--ah-surface-1);
+      box-shadow: 0 6px 8px -6px rgba(0, 0, 0, 0.35);
+      z-index: 2;
+      padding-bottom: 8px;
+      margin-bottom: 4px;
     }
     .sidebar.open {
       transform: none;
@@ -1491,6 +1523,11 @@ export const sharedStyles = css`
     }
     .menu-btn {
       display: inline-flex;
+    }
+    /* 对话页顶栏不显示 ☰（由 ah-chat 自绘顶栏承担），但会话列表入口
+       由 chat.ts 的 .menu-btn 承担（见 chat-styles.ts）；外层顶栏此处仅隐藏。 */
+    .shell.chat-mode .menu-btn {
+      display: none;
     }
     .scrim.show {
       display: block;
@@ -1557,7 +1594,8 @@ export const sharedStyles = css`
       font-family: var(--ah-font-sans);
       color: var(--ah-text-faint);
       cursor: pointer;
-      transition: color 120ms ease, background 120ms ease;
+      /* 切换过渡：颜色 160ms + 图标轻微回弹（scale），更柔和 */
+      transition: color 160ms ease, transform 220ms cubic-bezier(0.34, 1.4, 0.64, 1);
     }
     .m-tab .ti {
       width: 22px;
@@ -1565,6 +1603,7 @@ export const sharedStyles = css`
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      transition: transform 220ms cubic-bezier(0.34, 1.4, 0.64, 1);
     }
     .m-tab .ti svg {
       width: 22px;
@@ -1574,11 +1613,16 @@ export const sharedStyles = css`
     .m-tab:hover {
       color: var(--ah-text);
     }
+    /* 选中态：仅颜色高亮（accent），不加任何矩形背景/阴影（去掉“后面的长方形”）。
+       用 icon 轻微上浮 + 回弹体现选中，替代生硬底色。 */
     .m-tab.on {
       color: var(--ah-accent);
       font-weight: 600;
     }
-    .m-tab.on .ti { color: var(--ah-accent); }
+    .m-tab.on .ti {
+      color: var(--ah-accent);
+      transform: translateY(-2px) scale(1.06);
+    }
     .m-tab:focus-visible {
       outline: 2px solid var(--ah-accent);
       outline-offset: 2px;

@@ -759,9 +759,10 @@ export class AhChat extends LitElement {
       this.llmReady =
         !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
       this.mode = this.llmReady ? 'real' : 'mock';
-      this.historyMaxBytes = typeof (state as any)?.historyMaxBytes === 'number'
-        ? (state as any).historyMaxBytes
-        : this.historyMaxBytes;
+      this.historyMaxBytes =
+        typeof (state as any)?.historyMaxBytes === 'number'
+          ? (state as any).historyMaxBytes
+          : this.historyMaxBytes;
       // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
       // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
     } catch {
@@ -1200,11 +1201,15 @@ export class AhChat extends LitElement {
     const role: 'user' | 'assistant' = m.role === 'user' ? 'user' : 'assistant';
     const content = typeof m.content === 'string' ? m.content : '';
     const traceVal =
-      Array.isArray(m.trace) && m.trace.length ? (m.trace as TraceNode[]) : undefined;
+      Array.isArray(m.trace) && m.trace.length
+        ? (m.trace as TraceNode[])
+        : undefined;
     // 已结束/从存储恢复的消息（streaming !== true）做兜底收尾：残留 pending 工具/检索节点
     // 标记为完成。进行中的实时帧（streaming===true）绝不收尾，避免误标在途工具为完成。
     const traceFinal =
-      traceVal && m.streaming !== true ? this.normalizeStoredTrace(traceVal) : traceVal;
+      traceVal && m.streaming !== true
+        ? this.normalizeStoredTrace(traceVal)
+        : traceVal;
     const t = this.threadFor(sid);
 
     if (role === 'user') {
@@ -1320,14 +1325,14 @@ export class AhChat extends LitElement {
    * - 超过 10s 无任何事件：视为后台期间连接已被冻结/回收，abort 唤醒挂起的
    *   read()，统一走 runWithReconnect 的续传路径（keepAliveAbort 标记区分用户停止）。
    */
-   protected updated(changedProps: Map<string, unknown>) {
-     super.updated(changedProps);
-     if (changedProps.has('role')) {
-       void this.refreshAgents();
-     }
-     this.scrollCtl.scrollToBottom();
-     this.scrollCtl.scrollThinkToBottom();
-   }
+  protected updated(changedProps: Map<string, unknown>) {
+    super.updated(changedProps);
+    if (changedProps.has('role')) {
+      void this.refreshAgents();
+    }
+    this.scrollCtl.scrollToBottom();
+    this.scrollCtl.scrollThinkToBottom();
+  }
 
   /**
    * 上下文用量弹层外点关闭兜底（document 级 pointerdown）：
@@ -1409,7 +1414,8 @@ export class AhChat extends LitElement {
     const localBuf = this.threads[id];
     // 需要向服务端拉取历史的判定：本实例从未打开过该会话，或上次恢复失败且缓冲为空。
     // 命中即先亮起骨架屏并覆盖整个 await 全程（含 8s 超时兜底），避免内容区长时间无反馈。
-    const needFetch = !localBuf || (this.restoreFailed[id] && localBuf.length === 0);
+    const needFetch =
+      !localBuf || (this.restoreFailed[id] && localBuf.length === 0);
 
     // 会话级用量快照（随历史镜像恢复）；getChatSession 不含 usage，仅 history 镜像携带。
     let recoveredUsage: MirroredUsage | null = null;
@@ -1822,7 +1828,9 @@ export class AhChat extends LitElement {
       .filter(Boolean) as Parameters<typeof buildAttachmentDigest>[0];
     const attachmentDigest = buildAttachmentDigest(textDigest);
     // 仅追加到「发往模型的 prompt」；UI 消息内容仍为纯用户输入（content 不变）。
-    const modelPrompt = attachmentDigest ? `${content}\n\n${attachmentDigest}` : content;
+    const modelPrompt = attachmentDigest
+      ? `${content}\n\n${attachmentDigest}`
+      : content;
 
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
@@ -2275,7 +2283,9 @@ export class AhChat extends LitElement {
    * 的兜底逻辑一致）。仅对「非流式（streaming !== true）」的消息调用 —— 进行中的实时帧
    * 绝不能收尾，否则会把真正在途的工具误标为完成。
    */
-  private normalizeStoredTrace(trace: TraceNode[] | undefined): TraceNode[] | undefined {
+  private normalizeStoredTrace(
+    trace: TraceNode[] | undefined
+  ): TraceNode[] | undefined {
     if (!trace || !trace.length) return trace;
     const sweep = (n: TraceNode): void => {
       if (
@@ -3041,7 +3051,8 @@ export class AhChat extends LitElement {
    * 行宽写入内联 --w，由 chat-styles 的 .sk-line::before 消费。
    */
   private renderSessionSkeleton() {
-    const line = (w: string) => html`<div class="sk-line" style="--w:${w}"></div>`;
+    const line = (w: string) =>
+      html`<div class="sk-line" style="--w:${w}"></div>`;
     return html`
       <div
         class="thread sk-thread"
@@ -3082,8 +3093,8 @@ export class AhChat extends LitElement {
         <div class="empty">
           <h1>有什么可以帮你的？</h1>
           <p>
-            基于 agent-harness
-            的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
+            基于 agent-harness 的多会话对话。下方输入即可开始，右侧可新建 /
+            切换会话。
           </p>
         </div>
       `;
@@ -3096,8 +3107,7 @@ export class AhChat extends LitElement {
             style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
           >
             <span
-              >当前使用离线 Mock 模型，配置你的 API Key
-              后可使用真实模型。</span
+              >当前使用离线 Mock 模型，配置你的 API Key 后可使用真实模型。</span
             >
             <button
               class="btn ghost"
@@ -3138,7 +3148,8 @@ export class AhChat extends LitElement {
         @drop=${this.onDrop}
       >
         <div
-          class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed
+          class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this
+            .sidebarCollapsed
             ? 'collapsed'
             : ''}"
           @click=${(e: Event) => e.stopPropagation()}
@@ -3389,9 +3400,7 @@ export class AhChat extends LitElement {
                             class="attach-preview-item ${f.uploadStatus ===
                             'error'
                               ? 'error'
-                              : ''} ${this.isPreviewable(f)
-                              ? 'is-image'
-                              : ''}"
+                              : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
                             @click=${() => this.openPreview(f)}
                           >
                             ${f.type.startsWith('image/')
@@ -3488,7 +3497,7 @@ export class AhChat extends LitElement {
                   rows="1"
                   placeholder=${this.cmdName
                     ? `已选命令 /${this.cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
-                    : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'，'⇧⏎'换行"}
+                    : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'"}
                   .value=${this.input}
                   ?disabled=${this.streaming[this.activeId] === true}
                   @input=${this.onInput}
@@ -3514,7 +3523,8 @@ export class AhChat extends LitElement {
                       )}
                     @mode-change=${(e: Event) =>
                       this.setInteractionMode(
-                        (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
+                        (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail
+                          .value
                       )}
                     @agent-change=${(e: Event) => {
                       const v = (e as CustomEvent<{ value: string }>).detail
@@ -3576,8 +3586,7 @@ export class AhChat extends LitElement {
                       this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
                     }}
                   ></ah-model-picker>
-                  ${this.serverCtxWindow <= 0 ||
-                  this.activeId === ''
+                  ${this.serverCtxWindow <= 0 || this.activeId === ''
                     ? nothing
                     : renderCtxRing({
                         usage: selectContextUsage({
@@ -3587,7 +3596,8 @@ export class AhChat extends LitElement {
                         }),
                         showCtxUsage: this.showCtxUsage,
                         runCumulative: this.runCumulative,
-                        onToggle: () => (this.showCtxUsage = !this.showCtxUsage),
+                        onToggle: () =>
+                          (this.showCtxUsage = !this.showCtxUsage),
                         onClose: () => (this.showCtxUsage = false)
                       })}
                   ${this.streaming[this.activeId] === true
@@ -3612,113 +3622,114 @@ export class AhChat extends LitElement {
           </div>
         </div>
 
-      <div
-        class="scrim ${this.sidebarOpen ? 'show' : ''}"
-        @click=${() => {
-          if (this._sidebarJustOpened) return;
-          this.sidebarOpen = false;
-        }}
-      ></div>
-      ${this.fullscreenEditOpen
-        ? html`<div
-            class="fullscreen-edit"
-            @contextmenu=${(e: Event) => e.stopPropagation()}
-          >
-            <div class="fe-head">
-              <span class="fe-title">编辑消息</span>
-              <!-- 收起按钮：CSS 边框画 chevron（旋转 L 形边框）。
-                   SVG 在真机上曾隐形、纯文字方案观感差 —— 盒模型渲染两者兼顾。 -->
-              <button
-                type="button"
-                class="fe-collapse"
-                title="收起"
-                aria-label="收起全屏编辑"
-                @click=${() => this.closeFullscreenEdit()}
-              >
-                <svg
-                  class="chev"
-                  viewBox="0 0 10 6"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M1 1l4 4 4-4"></path>
-                </svg>
-              </button>
-            </div>
-            <textarea
-              class="fe-input"
-              placeholder="输入消息…"
-              .value=${this.editingDraft}
-              @input=${(e: Event) =>
-                (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
-            ></textarea>
-          </div>`
-        : nothing}
-      ${this.previewFile
-        ? html`<div class="lightbox" @click=${() => this.closePreview()}>
-            <button
-              class="lightbox-close"
-              title="关闭 (Esc)"
-              @click=${(e: Event) => {
-                e.stopPropagation();
-                this.closePreview();
-              }}
+        <div
+          class="scrim ${this.sidebarOpen ? 'show' : ''}"
+          @click=${() => {
+            if (this._sidebarJustOpened) return;
+            this.sidebarOpen = false;
+          }}
+        ></div>
+        ${this.fullscreenEditOpen
+          ? html`<div
+              class="fullscreen-edit"
+              @contextmenu=${(e: Event) => e.stopPropagation()}
             >
-              ×
-            </button>
-            <img
-              src=${this.previewFile.dataUrl}
-              alt=${escapeHtml(this.previewFile.name)}
-              @click=${(e: Event) => e.stopPropagation()}
-            />
-            <div class="lightbox-info">
-              ${escapeHtml(this.previewFile.name)} ·
-              ${formatSize(this.previewFile.size)}
-            </div>
-          </div>`
-        : nothing}
-      ${this.renderTraceDrawer()}
-
-      <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
-           drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->
-      ${this.dragActive
-        ? html`<div
-            class="drop-overlay ${this.attachRoom === 0 ? 'full' : ''}"
-            aria-hidden="true"
-          >
-            <div class="drop-overlay-card">
-              <div class="drop-overlay-icons">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
+              <div class="fe-head">
+                <span class="fe-title">编辑消息</span>
+                <!-- 收起按钮：CSS 边框画 chevron（旋转 L 形边框）。
+                   SVG 在真机上曾隐形、纯文字方案观感差 —— 盒模型渲染两者兼顾。 -->
+                <button
+                  type="button"
+                  class="fe-collapse"
+                  title="收起"
+                  aria-label="收起全屏编辑"
+                  @click=${() => this.closeFullscreenEdit()}
                 >
-                  <path
-                    d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
-                  />
-                </svg>
+                  <svg
+                    class="chev"
+                    viewBox="0 0 10 6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M1 1l4 4 4-4"></path>
+                  </svg>
+                </button>
               </div>
-              <!-- 已达上限时切换为「不可再添加」提示，避免用户松开后才发现加不进去。
+              <textarea
+                class="fe-input"
+                placeholder="输入消息…"
+                .value=${this.editingDraft}
+                @input=${(e: Event) =>
+                  (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
+              ></textarea>
+            </div>`
+          : nothing}
+        ${this.previewFile
+          ? html`<div class="lightbox" @click=${() => this.closePreview()}>
+              <button
+                class="lightbox-close"
+                title="关闭 (Esc)"
+                @click=${(e: Event) => {
+                  e.stopPropagation();
+                  this.closePreview();
+                }}
+              >
+                ×
+              </button>
+              <img
+                src=${this.previewFile.dataUrl}
+                alt=${escapeHtml(this.previewFile.name)}
+                @click=${(e: Event) => e.stopPropagation()}
+              />
+              <div class="lightbox-info">
+                ${escapeHtml(this.previewFile.name)} ·
+                ${formatSize(this.previewFile.size)}
+              </div>
+            </div>`
+          : nothing}
+        ${this.renderTraceDrawer()}
+
+        <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
+           drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->
+        ${this.dragActive
+          ? html`<div
+              class="drop-overlay ${this.attachRoom === 0 ? 'full' : ''}"
+              aria-hidden="true"
+            >
+              <div class="drop-overlay-card">
+                <div class="drop-overlay-icons">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    />
+                  </svg>
+                </div>
+                <!-- 已达上限时切换为「不可再添加」提示，避免用户松开后才发现加不进去。
                    剩余额度一并展示，让「还能加几个」一目了然。 -->
-              ${this.attachRoom === 0
-                ? html`<div class="drop-overlay-title">已达上传上限</div>
-                    <div class="drop-overlay-hint">
-                      最多支持 ${MAX_ATTACHMENTS} 个文件，请先移除部分文件再添加
-                    </div>`
-                : html`<div class="drop-overlay-title">松开即可添加文件</div>
-                    <div class="drop-overlay-hint">
-                      最多支持上传 ${MAX_ATTACHMENTS} 个文件（还可添加
-                      ${this.attachRoom} 个），支持常见文件类型
-                    </div>`}
-            </div>
-          </div>`
-        : nothing}
+                ${this.attachRoom === 0
+                  ? html`<div class="drop-overlay-title">已达上传上限</div>
+                      <div class="drop-overlay-hint">
+                        最多支持 ${MAX_ATTACHMENTS}
+                        个文件，请先移除部分文件再添加
+                      </div>`
+                  : html`<div class="drop-overlay-title">松开即可添加文件</div>
+                      <div class="drop-overlay-hint">
+                        最多支持上传 ${MAX_ATTACHMENTS} 个文件（还可添加
+                        ${this.attachRoom} 个），支持常见文件类型
+                      </div>`}
+              </div>
+            </div>`
+          : nothing}
       </div>
     `;
   }

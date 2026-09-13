@@ -101,7 +101,9 @@ export class AhDrawer extends LitElement {
       height: 100%;
       /* 全屏定位的左右抽屉：顶/底含安全区，标题不顶进原生状态栏、
          底边不贴手势条（覆盖层 inset:0 铺满视口）。 */
-      padding: calc(env(safe-area-inset-top, 0px)) 0 calc(env(safe-area-inset-bottom, 0px));
+      padding: calc(env(safe-area-inset-top, 0px)) 0
+        calc(env(safe-area-inset-bottom, 0px));
+      border: none;
     }
     .top .panel,
     .bottom .panel {
@@ -109,7 +111,8 @@ export class AhDrawer extends LitElement {
       height: var(--ahd-size, 320px);
       max-height: 100dvh;
       /* 上下抽屉：对应端含安全区（top 抽屉贴状态栏、bottom 抽屉贴手势条） */
-      padding: calc(env(safe-area-inset-top, 0px)) 0 calc(env(safe-area-inset-bottom, 0px));
+      padding: calc(env(safe-area-inset-top, 0px)) 0
+        calc(env(safe-area-inset-bottom, 0px));
     }
     @keyframes ahd-slide-in {
       from {
@@ -192,7 +195,8 @@ export class AhDrawer extends LitElement {
       cursor: pointer;
       border-radius: var(--ah-radius-md);
       border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+      transition: background 120ms ease, border-color 120ms ease,
+        color 120ms ease;
     }
     .foot .btn.ghost {
       background: transparent;
@@ -292,13 +296,18 @@ export class AhDrawer extends LitElement {
       this.lastFocus = document.activeElement as HTMLElement | null;
       if (this.mask) document.body.style.overflow = 'hidden';
       requestAnimationFrame(() => {
-        const target = this.shadowRoot?.querySelector<HTMLElement>('.close') ??
+        const target =
+          this.shadowRoot?.querySelector<HTMLElement>('.close') ??
           this.shadowRoot?.querySelector<HTMLElement>('.panel');
         target?.focus();
       });
-      this.dispatchEvent(new CustomEvent('ah-open', { bubbles: true, composed: true }));
+      this.dispatchEvent(
+        new CustomEvent('ah-open', { bubbles: true, composed: true })
+      );
     } else if (this.lastFocus) {
-      try { this.lastFocus.focus(); } catch {}
+      try {
+        this.lastFocus.focus();
+      } catch {}
       this.lastFocus = null;
       if (this.mask) document.body.style.overflow = '';
     }
@@ -315,16 +324,20 @@ export class AhDrawer extends LitElement {
     window.setTimeout(() => {
       this.leaving = false;
       this.open = false;
-      this.dispatchEvent(new CustomEvent('close', {
-        detail: reason,
-        bubbles: true,
-        composed: true
-      }));
+      this.dispatchEvent(
+        new CustomEvent('close', {
+          detail: reason,
+          bubbles: true,
+          composed: true
+        })
+      );
     }, LEAVE_MS);
   }
 
   private onConfirm() {
-    this.dispatchEvent(new CustomEvent('ah-confirm', { bubbles: true, composed: true }));
+    this.dispatchEvent(
+      new CustomEvent('ah-confirm', { bubbles: true, composed: true })
+    );
   }
 
   private onKeydown(e: KeyboardEvent) {
@@ -351,20 +364,24 @@ export class AhDrawer extends LitElement {
   }
 
   private getFocusableElements(): HTMLElement[] {
-    const panelEls = this.shadowRoot?.querySelectorAll<HTMLElement>(
-      'button, input, select, textarea, [tabindex]'
-    ) ?? [];
+    const panelEls =
+      this.shadowRoot?.querySelectorAll<HTMLElement>(
+        'button, input, select, textarea, [tabindex]'
+      ) ?? [];
     const slotEls = Array.from(this.children)
-      .filter(c => !(c as HTMLElement).hasAttribute?.('slot'))
-      .flatMap(c =>
+      .filter((c) => !(c as HTMLElement).hasAttribute?.('slot'))
+      .flatMap((c) =>
         c.matches('button, input, select, textarea, a[href], [tabindex]')
           ? [c as HTMLElement]
-          : Array.from(c.querySelectorAll<HTMLElement>(
-              'button, input, select, textarea, a[href], [tabindex]'
-            ))
+          : Array.from(
+              c.querySelectorAll<HTMLElement>(
+                'button, input, select, textarea, a[href], [tabindex]'
+              )
+            )
       );
-    return [...Array.from(panelEls), ...slotEls]
-      .filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+    return [...Array.from(panelEls), ...slotEls].filter(
+      (el) => !el.hasAttribute('disabled') && el.offsetParent !== null
+    );
   }
 
   private renderFooter() {
@@ -374,7 +391,11 @@ export class AhDrawer extends LitElement {
       return html`<div class="foot"><slot name="footer"></slot></div>`;
     }
     return html`<div class="foot">
-      <button type="button" class="btn ghost" @click=${() => this.finish('button')}>
+      <button
+        type="button"
+        class="btn ghost"
+        @click=${() => this.finish('button')}
+      >
         ${this.cancelText}
       </button>
       <button type="button" class="btn primary" @click=${this.onConfirm}>
