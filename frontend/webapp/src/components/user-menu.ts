@@ -17,7 +17,13 @@
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { fetchMe, logout, changePassword, derivePassword, bytesToHex } from '../api';
+import {
+  fetchMe,
+  logout,
+  changePassword,
+  derivePassword,
+  bytesToHex
+} from '../api';
 import { notify } from './ah-notification';
 import { validateChangePassword } from '../utils/auth-validation';
 
@@ -403,7 +409,11 @@ export class AhUserMenu extends LitElement {
       gap: 14px;
       padding: 18px 16px;
       border-radius: 16px;
-      background: linear-gradient(160deg, var(--ah-surface-2), var(--ah-surface-1));
+      background: linear-gradient(
+        160deg,
+        var(--ah-surface-2),
+        var(--ah-surface-1)
+      );
       border: 1px solid var(--ah-border);
       margin: 2px 0 16px;
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
@@ -451,7 +461,7 @@ export class AhUserMenu extends LitElement {
       font-size: 11px;
       color: var(--ah-text-faint);
       font-weight: 600;
-      letter-spacing: .4px;
+      letter-spacing: 0.4px;
       padding: 4px 2px 8px;
       margin-top: 4px;
     }
@@ -468,7 +478,7 @@ export class AhUserMenu extends LitElement {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 11px 14px;
+      padding: 5px 14px;
       border-radius: 11px;
       background: var(--ah-surface-1);
       border: 1px solid var(--ah-border);
@@ -481,8 +491,8 @@ export class AhUserMenu extends LitElement {
       width: 100%;
     }
     .s-item svg {
-      width: 30px;
-      height: 30px;
+      width: 24px;
+      height: 24px;
       padding: 7px;
       border-radius: 9px;
       background: var(--ah-surface-3);
@@ -627,7 +637,10 @@ export class AhUserMenu extends LitElement {
     // P1-14: 新密码客户端 PBKDF2 派生，不传输明文。旧密码仍以 plaintext 校验（服务端需验证）。
     const newSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
     const newDerivedHex = await derivePassword(this.newPw, newSalt);
-    const r = await changePassword(this.oldPw, '', { salt: newSalt, derivedHex: newDerivedHex });
+    const r = await changePassword(this.oldPw, '', {
+      salt: newSalt,
+      derivedHex: newDerivedHex
+    });
     this.pwBusy = false;
     if (!r.ok) {
       // 后端业务错误（旧密码错误 / 新密码太弱 / OAuth 账户不支持…）统一走通知。
@@ -694,8 +707,11 @@ export class AhUserMenu extends LitElement {
         <div class="s-card">
           <span class="ava big">${initial}</span>
           <div class="meta">
-            <span class="name">${this.username || '未命名用户'}
-              <span class="role-badge ${this.role}">${roleLabel(this.role)}</span>
+            <span class="name"
+              >${this.username || '未命名用户'}
+              <span class="role-badge ${this.role}"
+                >${roleLabel(this.role)}</span
+              >
             </span>
             ${this.email ? html`<span class="email">${this.email}</span>` : ''}
           </div>
@@ -712,7 +728,11 @@ export class AhUserMenu extends LitElement {
 
         <div class="s-sec">系统</div>
         <div class="s-items">
-          <button class="s-item" role="menuitem" @click=${() => this.dispatchSettings()}>
+          <button
+            class="s-item"
+            role="menuitem"
+            @click=${() => this.dispatchSettings()}
+          >
             ${this.settingsIcon()}
             <span class="s-lbl">设置<small>系统与网络</small></span>
             <span class="s-chev">›</span>
@@ -721,7 +741,11 @@ export class AhUserMenu extends LitElement {
 
         <div class="s-sec">退出</div>
         <div class="s-items">
-          <button class="s-item danger" role="menuitem" @click=${() => this.onLogout()}>
+          <button
+            class="s-item danger"
+            role="menuitem"
+            @click=${() => this.onLogout()}
+          >
             ${this.logoutIcon()}
             <span class="s-lbl">退出登录</span>
             <span class="s-chev">›</span>
@@ -729,7 +753,9 @@ export class AhUserMenu extends LitElement {
         </div>
 
         <div class="s-ver">Agent Harness v${APP_VERSION}</div>
-      </div>`;
+      </div>
+      ${this.showPw ? this.renderPwModal() : nothing}
+    `;
     }
     return html`
       <button
@@ -788,7 +814,9 @@ export class AhUserMenu extends LitElement {
   }
 
   private dispatchSettings() {
-    this.dispatchEvent(new CustomEvent('ah-goto', { detail: 'settings', bubbles: true }));
+    this.dispatchEvent(
+      new CustomEvent('ah-goto', { detail: 'settings', bubbles: true })
+    );
   }
 
   private renderPwModal() {

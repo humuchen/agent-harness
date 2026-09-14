@@ -92,6 +92,10 @@ export class AhDrawer extends LitElement {
       border: 1px solid var(--md-drawer-border, var(--ah-border));
       box-shadow: var(--ah-shadow);
       overflow: hidden;
+      /* 安全区内边距要算进面板总高，避免大屏刘海机因 padding 顶出视口、
+         底部内容被面板自身 overflow:hidden 裁掉。 */
+      box-sizing: border-box;
+      max-height: 100dvh;
       animation: ahd-slide-in 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
     }
     .left .panel,
@@ -174,6 +178,7 @@ export class AhDrawer extends LitElement {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
+      overscroll-behavior-y: contain;
       padding: 16px;
       font-size: 14px;
       line-height: 1.6;

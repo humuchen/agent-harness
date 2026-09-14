@@ -1532,11 +1532,23 @@ export const chatStyles = [
       flex: 1;
       min-width: 0;
     }
-    /* 抽屉级「折叠全部」工具栏：一次性收起整条调用链路中所有可折叠项。 */
+    /* 抽屉级「折叠全部」工具栏：一次性收起整条调用链路中所有可折叠项。
+       滚动时 sticky 吸顶，方便随时折叠。 */
     .trace-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
       display: flex;
       justify-content: flex-end;
+      gap: 8px;
       margin-bottom: 8px;
+      background: var(--ah-surface-1);
+    }
+    /* 在 ah-drawer 内：工具栏吸到抽屉 body 顶部，并抵消 body 的 16px padding，
+       使按钮与标题栏之间无留白，内容滚动时始终可见。 */
+    .trace-drawer .trace-toolbar {
+      margin: -16px -16px 8px;
+      padding: 12px 16px 4px;
     }
     .trace-collapse-all {
       flex: none;

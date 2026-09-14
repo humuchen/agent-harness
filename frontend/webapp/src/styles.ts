@@ -681,6 +681,7 @@ export const sharedStyles = css`
     font-size: 12px;
     color: var(--ah-text-muted);
   }
+
   /* KPI 卡片网格 */
   .cards {
     display: grid;
@@ -715,6 +716,7 @@ export const sharedStyles = css`
   .kpi .v.warn {
     color: var(--ah-warning);
   }
+
   /* 状态 pill（job / session / env） */
   .pill.running {
     color: var(--ah-accent);
@@ -769,12 +771,14 @@ export const sharedStyles = css`
     justify-content: space-between;
     gap: 12px;
   }
+
   /* RBAC 权限矩阵 */
   .matrix {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
   }
+
   /* 矩阵独立滚动容器：即便外层 .content 滚动受限，矩阵自身也能滚动查看全部行。
      sticky 表头 + 首列在滚动时保持可见，避免「列表没展示全 / 看不到列名」。 */
   .matrix-scroll {
@@ -796,6 +800,7 @@ export const sharedStyles = css`
     background: var(--ah-surface-1);
     border-bottom: 1px solid var(--ah-border);
   }
+
   /* 首列（ACTION）横向滚动时固定，保证行含义始终可读 */
   .matrix .sticky-col {
     position: sticky;
@@ -812,6 +817,7 @@ export const sharedStyles = css`
     padding: 8px 10px;
     border-bottom: 1px solid var(--ah-border);
   }
+
   /* 运行队列 / 记忆会话 等列表：自带滚动区，不再静默截断 */
   .panel-scroll {
     max-height: 150px;
@@ -820,6 +826,7 @@ export const sharedStyles = css`
     scrollbar-width: thin;
     scrollbar-color: var(--ah-border) transparent;
   }
+
   /* 区块标题上的数量徽标 */
   .section-title .count {
     display: inline-block;
@@ -922,6 +929,7 @@ export const sharedStyles = css`
     padding: 0;
     font-family: inherit;
   }
+
   /* 移动端抽屉相关：桌面端默认隐藏，窄屏下由媒体查询启用 */
   .menu-btn {
     display: none;
@@ -954,6 +962,7 @@ export const sharedStyles = css`
   .scrim.show {
     opacity: 1;
   }
+
   /* 移动端底栏：桌面默认隐藏，≤760px 启用见 @media 块 */
   .mobile-tabbar {
     display: none;
@@ -980,6 +989,7 @@ export const sharedStyles = css`
     gap: 10px;
     flex-wrap: wrap;
   }
+
   /* 分段控制（思考 / 结果 / 全览） */
   .seg {
     display: inline-flex;
@@ -1017,6 +1027,7 @@ export const sharedStyles = css`
     gap: 12px;
     margin-top: 12px;
   }
+
   /* 双栏：思考 Trace + 最终结果 */
   .run-two {
     display: grid;
@@ -1037,6 +1048,7 @@ export const sharedStyles = css`
     font-size: 14px;
     color: var(--ah-text);
   }
+
   /* 阶段步进器 */
   .phase-list {
     display: flex;
@@ -1099,6 +1111,7 @@ export const sharedStyles = css`
       box-shadow: 0 0 0 6px var(--ah-accent-soft);
     }
   }
+
   /* 思考轨迹（流式） */
   .trace {
     background: var(--ah-canvas);
@@ -1190,6 +1203,7 @@ export const sharedStyles = css`
       visibility: hidden;
     }
   }
+
   /* 最终结果卡 */
   .result-empty {
     display: flex;
@@ -1445,6 +1459,7 @@ export const sharedStyles = css`
       height: auto;
       overflow: visible;
     }
+
     /* 侧边栏改为离屏抽屉：默认滑出屏幕，.open 时滑入，覆盖在内容之上 */
     .sidebar {
       position: fixed;
@@ -1464,6 +1479,7 @@ export const sharedStyles = css`
         calc(16px + env(safe-area-inset-bottom, 0px));
       overflow-y: auto;
     }
+
     /* 内容滚动时品牌头部固定：.sidebar 是滚动容器，.brand 用 sticky 钉在滚动顶，
        补背景 + 微阴影，滚过时遮住下方滚动的导航项。 */
     .sidebar .brand {
@@ -1477,7 +1493,9 @@ export const sharedStyles = css`
     }
     .sidebar.open {
       transform: none;
+      padding: 40px 10px 20px 10px;
     }
+
     /* 移动端抽屉内显示分组标题（桌面隐藏） */
     .sidebar .nav-group-title {
       display: block;
@@ -1491,6 +1509,7 @@ export const sharedStyles = css`
     .sidebar .nav-group-title:first-child {
       padding-top: 0;
     }
+
     /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
     .sidebar.collapsed {
       width: 240px;
@@ -1525,6 +1544,7 @@ export const sharedStyles = css`
     .menu-btn {
       display: inline-flex;
     }
+
     /* 对话页顶栏不显示 ☰（由 ah-chat 自绘顶栏承担），但会话列表入口
        由 chat.ts 的 .menu-btn 承担（见 chat-styles.ts）；外层顶栏此处仅隐藏。 */
     .shell.chat-mode .menu-btn {
@@ -1533,6 +1553,7 @@ export const sharedStyles = css`
     .scrim.show {
       display: block;
     }
+
     /* 顶栏状态行换行、令牌框与按钮占满宽度 */
     .topbar {
       flex-wrap: wrap;
@@ -1546,6 +1567,7 @@ export const sharedStyles = css`
     .topbar .ghost {
       order: 4;
     }
+
     /* 内容区改为文档自然滚动（解除固定高度 + 内部滚动），底部留白含安全区 */
     .content {
       padding: 16px 14px calc(64px + env(safe-area-inset-bottom, 0px));
@@ -1554,16 +1576,19 @@ export const sharedStyles = css`
       flex: none;
       display: block;
     }
+
     /* 顶栏吸顶，移动端长页面滚动时仍可随时操作 */
     .topbar {
       position: sticky;
       top: 0;
       z-index: 30;
     }
+
     /* 移动端隐藏品牌脚：底栏固定在底部，品牌信息在「我的」页呈现 */
     ah-brand-foot {
       display: none;
     }
+
     /* ── 移动端底栏 Tab（方案 A）── 仅 ≤760px 显示 ── */
     .mobile-tabbar {
       position: fixed;
@@ -1615,6 +1640,7 @@ export const sharedStyles = css`
     .m-tab:hover {
       color: var(--ah-text);
     }
+
     /* 选中态：仅颜色高亮（accent），不加任何矩形背景/阴影（去掉“后面的长方形”）。
        用 icon 轻微上浮 + 回弹体现选中，替代生硬底色。 */
     .m-tab.on {
@@ -1653,6 +1679,7 @@ export const sharedStyles = css`
         var(--ah-skeleton-base) 63%
       );
     }
+
     /* 移动端隐藏所有滚动条（Firefox scrollbar-width:none + WebKit 伪元素 display:none），
        保留可滚动但视觉无条，避免滚动条占宽与原生观感。 */
     * {
