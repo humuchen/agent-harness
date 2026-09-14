@@ -98,6 +98,15 @@ export const base = css`
     display: block;
     color: var(--ah-text);
   }
+  /* 桌面端隐藏侧栏品牌块（logo + 产品名）：品牌不再出现在桌面各页面，统一收敛到
+     「我的」页。此处刻意只做「桌面端隐藏」而不删 DOM —— ≤760px 时 .sidebar-toggle
+     为 display:none，移动端抽屉顶部标题行完全由品牌块承担，删 DOM 会留下一条空白粘性栏。 */
+  @media (min-width: 761px) {
+    .sidebar .brand .logo,
+    .sidebar .brand .brand-text {
+      display: none;
+    }
+  }
   .state {
     display: flex;
     gap: 8px;
@@ -189,7 +198,7 @@ export const base = css`
     display: flex;
     flex-direction: column;
     gap: 6px;
-    height: 100%;
+    // height: 100%;
     box-sizing: border-box;
     overflow-y: auto;
     scrollbar-width: thin;

@@ -10,11 +10,12 @@
  *  - 「修改密码」→ 打开共享的 ah-password-dialog（旧密码 / 新密码 / 确认新密码）。
  *    校验前移到前端（规则同登录/注册，见 utils/auth-validation.ts），校验失败 / 后端报错 /
  *    网络异常一律走 ah-notification，模态内不再保留内联错误条。
- *    （该模态由 user-menu 与 ah-settings-center 共用，见 components/password-dialog.ts。）
+ *    （改密入口全站只有此处：设置中心已移除「账户」分组，不与本页重复。）
  *  - 「退出登录」→ POST /api/account/logout（服务端清 cookie + 吊销 token），本地清会话回登录页。
  *  - 点击外部 / Esc 关闭下拉；模态下 Esc / 遮罩关闭（由 ah-password-dialog 自行处理）。
- *  - standalone 模式（移动端「我的」Tab）：整页渲染账户面板 + 品牌块（品牌信息在该页呈现，
- *    桌面端由全局 ah-brand-foot 呈现；版本号统一收敛到设置中心的「关于」分组）。
+ *  - standalone 模式（「我的」Tab，桌面与移动共用）：整页渲染账户面板 + 品牌块。
+ *    品牌信息在本页统一呈现——桌面侧栏品牌块已隐藏（styles/base.ts）、内容区品牌脚已移除，
+ *    登录页除外；版本号收敛到设置中心的「关于」分组。
  *
  * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / login）一致；深浅主题自适应。
  */
@@ -23,12 +24,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { fetchMe, logout } from '../api';
 import { BRAND_DEFAULT, type BrandConfig } from '../theme/tokens';
 import { avatarInitial, roleLabel } from '../utils/user-display';
-// 改密模态已抽为共享组件（settings-center 的「账户」分组同样复用）。
+// 改密模态：账户相关操作（资料 / 改密 / 退出）全部收在「我的」，故由本组件独占。
 import './password-dialog';
-
-/** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
-// @ts-ignore - vite define 注入
-const APP_VERSION = __APP_VERSION__;
 
 @customElement('ah-user-menu')
 export class AhUserMenu extends LitElement {
@@ -229,19 +226,10 @@ export class AhUserMenu extends LitElement {
       outline-offset: -2px;
     }
 
-    /* 版本信息页脚 */
-    .ver {
-      padding: 7px 12px 9px;
-      border-top: 1px solid var(--ah-border);
-      font-size: 11px;
-      font-family: var(--ah-font-mono);
-      color: var(--ah-text-faint);
-    }
-
     /* 改密模态的视觉与逻辑由 ah-password-dialog 承载（见 password-dialog.ts），
        本组件只负责受控开关，不重复样式，避免两处各写一份。 */
 
-    /* ── standalone 模式（移动端「我的」Tab 整页渲染）──
+    /* ── standalone 模式（「我的」Tab 整页渲染，桌面与移动共用）──
        对齐设计稿 design/mobile-menu-mockups.html 方案 A：
        渐变用户卡片 + 分组标题（账户/系统/退出）+ 带图标盒与箭头的圆角条目。 */
     .standalone {
@@ -412,7 +400,7 @@ export class AhUserMenu extends LitElement {
    */
   @property({ type: Boolean }) standalone = false;
 
-  /** 品牌配置（移动端「我的」页呈现，桌面端由全局 ah-brand-foot 呈现）。 */
+  /** 品牌配置（standalone「我的」页呈现；桌面其它页面已不展示品牌）。 */
   @state() private brand: BrandConfig = BRAND_DEFAULT;
 
   @state() private open = false;
@@ -425,7 +413,7 @@ export class AhUserMenu extends LitElement {
     if (!this.username) {
       void this.refreshMe();
     }
-    // 品牌配置：移动端「我的」页呈现（桌面端由全局 ah-brand-foot 呈现），
+    // 品牌配置：「我的」页呈现（桌面其它页面已不展示品牌），
     // 优先读取启动时注入的全局 BRAND，缺省回退到令牌默认值。
     const g = (globalThis as unknown as { BRAND?: BrandConfig }).BRAND;
     if (g) this.brand = g;
@@ -604,7 +592,6 @@ export class AhUserMenu extends LitElement {
                   <span class="s-chev">›</span>
                 </button>
               </div>
-              <div class="ver">${this.brand.productName} v${APP_VERSION}</div>
             </div>
           `
         : ''}

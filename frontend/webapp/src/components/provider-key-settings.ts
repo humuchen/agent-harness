@@ -301,6 +301,53 @@ export class AhProviderKeySettings extends LitElement {
     .help-link:hover {
       text-decoration: underline;
     }
+
+    /* ── 移动端（≤760px，与 app / 设置中心同断点）──
+       本面板嵌在设置中心的「模型与密钥」分区，此前无任何媒体查询：
+       1) 三宫格用量卡在 320px 屏每格仅 ≈88px，「$0.0000」/ 7 位 token 数会溢出格子；
+       2) 操作区三个按钮各 min-width 84px + gap 20px = 272px，超出卡片内宽（≈268px）横向溢出；
+       3) 卡片 16px 内边距在窄屏吃掉可用宽度。 */
+    @media (max-width: 760px) {
+      .intro {
+        margin-bottom: 14px;
+      }
+      .card,
+      .usage-card {
+        padding: 12px;
+      }
+      .prov-tab {
+        padding: 7px 12px;
+      }
+      /* 三宫格保持一行：用 minmax(0,…) 允许列收缩，长数字换行而非撑破格子 */
+      .usage-grid {
+        gap: 8px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .usage-item {
+        padding: 10px 6px;
+      }
+      .usage-val {
+        font-size: 17px;
+        overflow-wrap: anywhere;
+      }
+      .usage-label {
+        font-size: 11px;
+      }
+      /* 按钮：去掉 84px 最小宽（窄屏放不下三个），允许换行兜底 */
+      .btn {
+        min-width: 0;
+        flex: 1 1 auto;
+        padding: 9px 12px;
+      }
+      .actions {
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      /* 「使用 OpenRouter 授权」等独占按钮回到整行，避免被 flex 拉伸成两列 */
+      .actions .btn.primary:only-child {
+        flex: 1 1 100%;
+      }
+    }
   `;
 
   /** 当前登录用户名（可选，仅用于展示「这是谁的 Key」）。 */

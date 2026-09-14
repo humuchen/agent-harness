@@ -21,7 +21,8 @@ import {
   type ReminderUnread
 } from './plugin-notify';
 import './plugins-console';
-// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 账户 / 模型与密钥 / 系统与网络 / 外观 / 关于。
+// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 模型与密钥 / 系统与网络 / 外观 / 关于。
+// （账户资料 / 修改密码 / 退出登录归「我的」Tab，不在设置中心重复。）
 import './components/settings-center';
 import { TopProgressBar } from './top-progress-bar';
 
@@ -220,7 +221,7 @@ export class AhApp extends LitElement {
    * 序号自增：同一分组被重复请求（例如连续两次从「我的」进设置）也能重新定位，
    * 否则属性值不变、Lit 不会触发下游更新。见 ah-goto 处理与 ah-settings-center。
    */
-  @state() private settingsGroup = 'account';
+  @state() private settingsGroup = 'keys';
   @state() private settingsSeq = 0;
   /** 顶部进度条实例。 */
   private progressBar = TopProgressBar.getInstance();
@@ -278,7 +279,8 @@ export class AhApp extends LitElement {
       }
       if (!d.tab) return;
       // 携带分组：更新目标分组并自增序号，保证重复请求同一分组也能重新定位。
-      this.settingsGroup = d.group ?? 'account';
+      // 默认「模型与密钥」（设置中心首个分组）；未知分组由设置中心自行忽略。
+      this.settingsGroup = d.group ?? 'keys';
       this.settingsSeq += 1;
       this.setTab(d.tab);
     });
@@ -753,9 +755,6 @@ export class AhApp extends LitElement {
               ?hidden=${this.tab !== 'settings'}
               group=${this.settingsGroup}
               groupSeq=${this.settingsSeq}
-              username=${this.me?.username ?? ''}
-              role=${this.me?.role ?? ''}
-              email=${this.me?.email ?? ''}
               ?sidebarCollapsed=${this.sidebarCollapsed}
             ></ah-settings-center>
             <!-- 我的 Tab：复用 ah-user-menu，头像＋改密＋退出全部收进来 -->
@@ -790,7 +789,8 @@ export class AhApp extends LitElement {
                 </div>`
               : ''}
           </main>
-          <ah-brand-foot></ah-brand-foot>
+
+          <!-- 品牌信息已收敛到「我的」页（移动端）与登录页，桌面内容区不再渲染品牌脚。 -->
 
           <!-- 移动端底栏 Tab（≤760px 显示）：工作台/对话/资产/插件/我的 -->
           <!-- 图标：线性 SVG（24 viewBox / stroke 2 / round），风格与 App 内部图标一致 -->

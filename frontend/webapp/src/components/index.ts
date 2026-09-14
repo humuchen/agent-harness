@@ -27,5 +27,6 @@ import './user-menu';
 // 修改密码模态（受控 open）：由 user-menu 与 ah-settings-center 共用。
 import './password-dialog';
 
-// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 账户 / 模型与密钥 / 系统与网络 / 外观 / 关于。
+// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 模型与密钥 / 系统与网络 / 外观 / 关于。
+// （账户资料 / 修改密码 / 退出登录归「我的」页 user-menu，不在设置中心重复。）
 import './settings-center';

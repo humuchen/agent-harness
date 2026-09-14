@@ -2,22 +2,30 @@
  * ah-settings-center：「设置」Tab 的综合设置中心。
  *
  * 由来：「我的 → 设置」原本直接承载 ah-provider-key-settings（仅 BYOK 密钥面板）。
- * 现升级为综合设置中心，分五组：账户 / 模型与密钥 / 系统与网络 / 外观 / 关于，
+ * 现升级为综合设置中心，分四组：模型与密钥 / 系统与网络 / 外观 / 关于，
  * 密钥面板作为「模型与密钥」分区完整保留（直接复用 ah-provider-key-settings）。
+ *
+ * 不做「账户」分组：账户资料 / 修改密码 / 退出登录已由 ah-user-menu 承载
+ * （移动端「我的」Tab 整页、桌面端顶栏头像下拉），此处再放一份即同一功能两处入口；
+ * 且用户资料属「身份」而非「偏好」，归口在「我的」更合理。
  *
  * 版式：
  *  - 分组导航不使用侧栏 / 横滑胶囊，而是窗口顶部「一行等分平铺 Tab」，内容区整宽。
- *  - 桌面：flex 等分（图标在左、全名在右）；移动（≤760px）：grid 五等分（图标在上、短名在下），
- *    保证五个分组一屏可见、无横滑、无溢出菜单。
+ *  - 桌面：flex 等分（图标在左、全名在右）；移动（≤760px）：grid 等分（图标在上、短名在下），
+ *    列数由分组数推导（--set-groups，见 connectedCallback），保证分组一屏可见、无横滑、无溢出菜单。
  *  - 选中态用 accent-soft 底 + accent 字（非实心强调色），全屏唯一强调点仍是密钥面板的「保存」。
+ *  - 窗口宽度与内嵌密钥面板自身的 760px 约束对齐并水平居中：否则宽屏下密钥分区的卡片会比
+ *    其它分组窄一截（内层面板自带 max-width），同一窗口出现两种卡片宽度。
  *
  * 分组定位：父级（app.ts）经 ah-goto 的 `{ tab:'settings', group }` 传 `group` + `groupSeq`
- * （自增序号，保证同一分组被重复请求时也能重新定位）。
+ * （自增序号，保证同一分组被重复请求时也能重新定位）。未知 / 已下线分组一律忽略并保持当前分组，
+ * 避免切到不存在的分组后内容区空白。
  *
  * 内容真实性约定：仅保留「点了确实会发生什么」的行；不做无后端的装饰性开关。
- *  - 账户：账户资料（只读）+ 修改密码（复用 ah-password-dialog）+ 退出登录（真实登出）。
  *  - 系统与网络：服务状态（真实拉取 /api/v1/state）+ 接口地址 + 重新检测 + 清空通知未读。
  *  - 外观：主题（深色 / 浅色 / 跟随系统，真实写入 ah-theme）+ 侧边栏默认收起（父级持有偏好）。
+ *  - 关于：版本号 + 界面语言（只读）。品牌信息不出现在本页——品牌统一收敛到「我的」页，
+ *    故此处不渲染品牌卡与版权脚（桌面侧栏品牌块亦已隐藏，见 styles/base.ts）。
  *
  * 视觉：仅引用 --ah-* 语义令牌，深色 / 浅色主题自适应；图标统一 Lucide 线型隐喻（stroke 1.7–1.8）。
  */
@@ -32,26 +40,27 @@ import {
 } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
-  BRAND_DEFAULT,
   getTheme,
   setTheme,
   THEME_STORAGE_KEY,
-  type BrandConfig,
   type Theme
 } from '../theme/tokens';
-import { client, logout } from '../api';
+import { client } from '../api';
 import { notify } from './ah-notification';
 import { notifyError } from '../utils/errors';
 import { getReminderUnread, clearReminderUnread } from '../plugin-notify';
-import { avatarInitial, roleLabel } from '../utils/user-display';
 import './provider-key-settings';
-import './password-dialog';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
 const APP_VERSION = __APP_VERSION__;
 
-type SettingsGroup = 'account' | 'keys' | 'system' | 'appearance' | 'about';
+/**
+ * 设置中心的分组 id。
+ * 注意：父级经 ah-goto 传来的 `group` 是运行时字符串，可能仍是历史值（如已下线的 account），
+ * 故类型收敛不等于运行期可信，定位前仍必须走 GROUP_IDS 校验（见 willUpdate）。
+ */
+type SettingsGroup = 'keys' | 'system' | 'appearance' | 'about';
 
 /** 主题偏好：dark / light 落 localStorage，system 表示清除偏好、跟随系统。 */
 type ThemeMode = Theme | 'system';
@@ -80,9 +89,6 @@ function svgIcon(body: TemplateResult, strokeWidth = '1.8'): TemplateResult {
 }
 
 // ── 分组图标（顶部 Tab）──
-const ICON_ACCOUNT = svgIcon(
-  svg`<circle cx="12" cy="8" r="4" /><path d="M5 20a7 7 0 0 1 14 0" />`
-);
 const ICON_KEYS = svgIcon(
   svg`<circle cx="8" cy="8" r="4" /><path d="M11 11l8 8M16 16l2-2M19 19l2-2" />`
 );
@@ -107,14 +113,6 @@ const ICON_ABOUT = svgIcon(
 );
 
 // ── 行图标（stroke 1.7，与分组图标同库但更细，形成「导航 > 内容」的层级感）──
-const ICON_LOCK = svgIcon(
-  svg`<rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" />`,
-  '1.7'
-);
-const ICON_LOGOUT = svgIcon(
-  svg`<path d="M15 12H4M4 12l3-3M4 12l3 3" /><path d="M14 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3" />`,
-  '1.7'
-);
 const ICON_ACTIVITY = svgIcon(
   svg`<path d="M22 12h-4l-3 9L9 3l-3 9H2" />`,
   '1.7'
@@ -152,16 +150,21 @@ const GROUPS: Array<{
   id: SettingsGroup;
   /** 桌面 tab 全名 */
   label: string;
-  /** 移动 tab 短名（五等分平铺时不易换行） */
+  /** 移动 tab 短名（等分平铺时不易换行） */
   short: string;
   icon: TemplateResult;
 }> = [
-  { id: 'account', label: '账户', short: '账户', icon: ICON_ACCOUNT },
   { id: 'keys', label: '模型与密钥', short: '密钥', icon: ICON_KEYS },
   { id: 'system', label: '系统与网络', short: '系统', icon: ICON_SYSTEM },
   { id: 'appearance', label: '外观', short: '外观', icon: ICON_APPEARANCE },
   { id: 'about', label: '关于', short: '关于', icon: ICON_ABOUT }
 ];
+
+/** 默认分组 = 首个分组（模型与密钥，设置里最常改的一项）。 */
+const DEFAULT_GROUP: SettingsGroup = GROUPS[0]!.id;
+
+/** 合法分组 id 集合：用于忽略父级传来的未知 / 已下线分组（如已移除的 account）。 */
+const GROUP_IDS = new Set<SettingsGroup>(GROUPS.map((g) => g.id));
 
 @customElement('ah-settings-center')
 export class AhSettingsCenter extends LitElement {
@@ -172,7 +175,11 @@ export class AhSettingsCenter extends LitElement {
       flex: 1 1 auto;
       min-height: 0;
       width: 100%;
-      max-width: 860px;
+      /* 与内嵌 ah-provider-key-settings 的 max-width 对齐：否则密钥分区的卡片
+         会比其它分组窄（内层面板自带 760px 上限），同一窗口出现两种卡片宽度。
+         桌面宽屏下水平居中，避免窗口贴左、右侧留大片空白。 */
+      max-width: 760px;
+      margin-inline: auto;
       font-family: var(--ah-font-sans);
       color: var(--ah-text);
     }
@@ -300,65 +307,6 @@ export class AhSettingsCenter extends LitElement {
       margin-bottom: 12px;
     }
 
-    /* 账户资料：渐变头像 + 名称 / 角色 / 邮箱 */
-    .profile {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 14px 0;
-    }
-    .p-avatar {
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      flex: 0 0 auto;
-      background: linear-gradient(
-        135deg,
-        var(--ah-accent) 0%,
-        var(--ah-accent-strong) 100%
-      );
-      color: #fff;
-      font-family: var(--ah-font-display);
-      font-weight: 700;
-      font-size: 20px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .p-meta {
-      min-width: 0;
-      flex: 1 1 auto;
-    }
-    .p-name {
-      font-size: 15px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .p-mail {
-      font-size: 12px;
-      color: var(--ah-text-faint);
-      margin-top: 3px;
-      word-break: break-all;
-    }
-    .role-badge {
-      display: inline-block;
-      padding: 1px 8px;
-      border-radius: var(--ah-radius-pill);
-      font-size: 10px;
-      font-family: var(--ah-font-mono);
-      background: var(--ah-surface-3);
-      border: 1px solid var(--ah-border);
-      color: var(--ah-text-muted);
-    }
-    .role-badge.admin {
-      color: var(--ah-accent);
-      border-color: color-mix(in srgb, var(--ah-accent) 40%, transparent);
-      background: var(--ah-accent-soft);
-    }
-
     /* 通用设置行：图标盒 + 文案 + 右侧控件 */
     .row {
       display: flex;
@@ -404,10 +352,6 @@ export class AhSettingsCenter extends LitElement {
       width: 16px;
       height: 16px;
     }
-    .ri.danger {
-      background: var(--ah-danger);
-      color: #fff;
-    }
     .rc {
       flex: 1 1 auto;
       min-width: 0;
@@ -429,18 +373,6 @@ export class AhSettingsCenter extends LitElement {
     .rd.mono {
       font-family: var(--ah-font-mono);
       font-size: 11px;
-    }
-    .chev {
-      color: var(--ah-text-faint);
-      font-size: 16px;
-      line-height: 1;
-      flex: 0 0 auto;
-    }
-    .row.danger .rl {
-      color: var(--ah-danger);
-    }
-    .row.danger {
-      color: var(--ah-danger);
     }
 
     /* 状态徽标 / 次要按钮 */
@@ -559,64 +491,9 @@ export class AhSettingsCenter extends LitElement {
       outline-offset: 2px;
     }
 
-    /* 关于：品牌卡 + 版权脚 */
-    .brand-card {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 18px 14px;
-      border: 1px solid var(--ah-border);
-      background: linear-gradient(
-        160deg,
-        var(--ah-surface-2),
-        var(--ah-surface-1)
-      );
-      border-radius: var(--ah-radius-md);
-      margin-bottom: 12px;
-    }
-    .b-logo {
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
-      flex: 0 0 auto;
-      background: linear-gradient(
-        135deg,
-        var(--ah-accent) 0%,
-        var(--ah-accent-strong) 100%
-      );
-      color: #fff;
-      font-family: var(--ah-font-display);
-      font-weight: 700;
-      font-size: 18px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-    }
-    .b-logo img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-    }
-    .b-name {
-      font-family: var(--ah-font-display);
-      font-size: 15px;
-      font-weight: 700;
-    }
-    .b-tag {
-      font-size: 11.5px;
-      color: var(--ah-text-faint);
-      margin-top: 3px;
-    }
-    .about-foot {
-      text-align: center;
-      font-size: 11px;
-      color: var(--ah-text-faint);
-      font-family: var(--ah-font-mono);
-      padding: 6px 0 2px;
-    }
-
-    /* ── 移动端（≤760px，与 app 断点一致）：五等分网格平铺 ── */
+    /* ── 移动端（≤760px，与 app 断点一致）：等分网格平铺 ──
+       列数取 --set-groups（= 分组数，由 connectedCallback 写入），
+       避免「分组增删、这里的列数忘了同步」把网格空出一格或挤出第二行。 */
     @media (max-width: 760px) {
       .setwin {
         border-radius: 14px;
@@ -634,7 +511,7 @@ export class AhSettingsCenter extends LitElement {
       }
       .tabs {
         display: grid;
-        grid-template-columns: repeat(5, 1fr);
+        grid-template-columns: repeat(var(--set-groups, 4), minmax(0, 1fr));
         gap: 4px;
       }
       .ttab {
@@ -660,8 +537,31 @@ export class AhSettingsCenter extends LitElement {
       .pane {
         padding: 14px 12px 18px;
       }
+      /* 触控目标：行与图标盒略放大，便于手指命中（≥44px 行高） */
       .row {
         gap: 10px;
+        padding: 13px 0;
+        flex-wrap: wrap;
+      }
+      .ri {
+        width: 32px;
+        height: 32px;
+      }
+      .btn {
+        padding: 8px 14px;
+      }
+      /* 分段控件独占一行：三段（深色/浅色/跟随系统）在 320px 屏上约占 190px，
+         与说明文字同行会把文案挤成竖排（每行 2–3 字的窄柱）。
+         换行后左缩进对齐文案起点（图标盒 32px + gap 10px），三段时间等分整行。 */
+      .seg {
+        flex: 1 1 100%;
+        margin-left: 42px;
+        margin-top: 2px;
+      }
+      .seg button {
+        flex: 1 1 0;
+        padding: 8px 6px;
+        text-align: center;
       }
     }
   `;
@@ -669,22 +569,16 @@ export class AhSettingsCenter extends LitElement {
   /**
    * 目标分组（由父级经 ah-goto 传入）。配合 groupSeq 使用：
    * 仅当 groupSeq 变化时才重新定位，避免用户手动切 Tab 后被父级渲染覆盖。
+   * 未知 / 已下线分组（如已移除的 account）一律忽略，保持当前分组不出现空白内容区。
    */
-  @property({ type: String }) group: SettingsGroup = 'account';
+  @property({ type: String }) group: SettingsGroup = DEFAULT_GROUP;
   /** 定位序号：父级每次请求定位分组时自增，保证重复请求同一分组也能生效。 */
   @property({ type: Number }) groupSeq = 0;
 
-  /** 当前登录用户名（账户资料展示）。 */
-  @property({ type: String }) username = '';
-  /** 当前登录用户角色（admin / operator / viewer）。 */
-  @property({ type: String }) role = '';
-  /** 当前登录用户邮箱（可选）。 */
-  @property({ type: String }) email: string | null = null;
   /** 侧边栏收起偏好（由父级持有并持久化，本组件只负责 UI 与派发变更）。 */
   @property({ type: Boolean }) sidebarCollapsed = true;
 
-  @state() private active: SettingsGroup = 'account';
-  @state() private pwOpen = false;
+  @state() private active: SettingsGroup = DEFAULT_GROUP;
   @state() private themeMode: ThemeMode = 'system';
   /** 系统与网络：服务端 LLM 连通状态（null = 尚未检测）。 */
   @state() private llmLive: boolean | null = null;
@@ -693,13 +587,13 @@ export class AhSettingsCenter extends LitElement {
   @state() private unread = 0;
 
   /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。 */
-  private mounted = new Set<SettingsGroup>(['account']);
-
-  /** 品牌配置（关于分组展示，与「我的」页 / ah-brand-foot 同源）。 */
-  @state() private brand: BrandConfig = BRAND_DEFAULT;
+  private mounted = new Set<SettingsGroup>([DEFAULT_GROUP]);
 
   connectedCallback() {
     super.connectedCallback();
+    // 移动端 Tab 网格列数 = 分组数：由 JS 下发，避免「分组增删但媒体查询里列数忘了改」
+    // （本组件曾因此把 5 列写死，移除一个分组后网格右侧空出一格）。
+    this.style.setProperty('--set-groups', String(GROUPS.length));
     // 主题偏好：有显式存储值则为 dark / light，否则视为跟随系统。
     const stored =
       typeof localStorage !== 'undefined'
@@ -708,14 +602,11 @@ export class AhSettingsCenter extends LitElement {
     this.themeMode =
       stored === 'dark' || stored === 'light' ? stored : 'system';
     this.unread = getReminderUnread().count;
-    // 品牌配置：优先读取启动时注入的全局 BRAND，缺省回退令牌默认值。
-    const g = (globalThis as unknown as { BRAND?: BrandConfig }).BRAND;
-    if (g) this.brand = g;
   }
 
   protected willUpdate(changed: PropertyValues): void {
     // 父级每次经 ah-goto 请求定位分组都会自增 groupSeq：只有此时才覆盖用户手动选择。
-    if (changed.has('groupSeq') && this.group) {
+    if (changed.has('groupSeq') && GROUP_IDS.has(this.group)) {
       this.active = this.group;
     }
     this.mounted.add(this.active);
@@ -804,12 +695,7 @@ export class AhSettingsCenter extends LitElement {
     notify.success('已清空通知未读');
   }
 
-  private async onLogout() {
-    await logout();
-  }
-
   render(): TemplateResult {
-    const initial = avatarInitial(this.username);
     return html`
       <div class="setwin">
         <div class="head">
@@ -851,52 +737,6 @@ export class AhSettingsCenter extends LitElement {
         </div>
 
         <div class="pane">
-          ${this.mounted.has('account')
-            ? html`<section
-                data-group="account"
-                ?hidden=${this.active !== 'account'}
-              >
-                <div class="card">
-                  <div class="profile">
-                    <span class="p-avatar">${initial}</span>
-                    <div class="p-meta">
-                      <div class="p-name">
-                        ${this.username || '未命名用户'}
-                        ${this.role
-                          ? html`<span class="role-badge ${this.role}"
-                              >${roleLabel(this.role)}</span
-                            >`
-                          : nothing}
-                      </div>
-                      ${this.email
-                        ? html`<div class="p-mail">${this.email}</div>`
-                        : nothing}
-                    </div>
-                  </div>
-                </div>
-
-                <div class="sec-title">安全</div>
-                <div class="card">
-                  <button class="row" @click=${() => (this.pwOpen = true)}>
-                    <span class="ri">${ICON_LOCK}</span>
-                    <span class="rc">
-                      <span class="rl">修改密码</span>
-                      <span class="rd">定期更换以保障账户安全</span>
-                    </span>
-                    <span class="chev">›</span>
-                  </button>
-                </div>
-
-                <div class="sec-title">会话</div>
-                <div class="card">
-                  <button class="row danger" @click=${() => this.onLogout()}>
-                    <span class="ri danger">${ICON_LOGOUT}</span>
-                    <span class="rc"><span class="rl">退出登录</span></span>
-                    <span class="chev">›</span>
-                  </button>
-                </div>
-              </section>`
-            : nothing}
           ${this.mounted.has('keys')
             ? html`<section data-group="keys" ?hidden=${this.active !== 'keys'}>
                 <ah-provider-key-settings></ah-provider-key-settings>
@@ -1037,22 +877,6 @@ export class AhSettingsCenter extends LitElement {
                 data-group="about"
                 ?hidden=${this.active !== 'about'}
               >
-                <div class="brand-card">
-                  <span class="b-logo"
-                    >${this.brand.logoUrl
-                      ? html`<img
-                          src=${this.brand.logoUrl}
-                          alt=${this.brand.productName}
-                        />`
-                      : (this.brand.productName[0] ?? 'A').toUpperCase()}</span
-                  >
-                  <div>
-                    <div class="b-name">${this.brand.productName}</div>
-                    <div class="b-tag">
-                      ${this.brand.loginTagline ?? BRAND_DEFAULT.loginTagline}
-                    </div>
-                  </div>
-                </div>
                 <div class="card">
                   <div class="row">
                     <span class="ri">${ICON_TAG}</span>
@@ -1069,19 +893,10 @@ export class AhSettingsCenter extends LitElement {
                     </span>
                   </div>
                 </div>
-                <div class="about-foot">
-                  © ${new Date().getFullYear()} ·
-                  ${this.brand.footer ?? BRAND_DEFAULT.footer}
-                </div>
               </section>`
             : nothing}
         </div>
       </div>
-
-      <ah-password-dialog
-        ?open=${this.pwOpen}
-        @ah-pw-close=${() => (this.pwOpen = false)}
-      ></ah-password-dialog>
     `;
   }
 }
