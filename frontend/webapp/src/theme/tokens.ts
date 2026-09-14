@@ -207,11 +207,30 @@ export function syncNativeStatusBar(theme: Theme): void {
         };
       }
     ).Capacitor;
-    if (!cap?.isNativePlatform?.() || !cap.Plugins?.StatusBar) return;
+    if (!cap?.isNativePlatform?.()) return;
+    if (!cap.Plugins?.StatusBar) {
+      // 首屏：initTheme 可能先于 Capacitor 桥注册完成而执行（isNativePlatform
+      // 已为 true 但 Plugins.StatusBar 尚未注入）。短延迟重试 3 次（200ms 间隔），
+      // 避免首次同步被静默吞掉 → 黑主题状态栏停在系统默认黑图标。
+      let tries = 0;
+      const retry = (): void => {
+        if (tries++ >= 3) return;
+        const bar = (globalThis as unknown as { Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } } }).Capacitor?.Plugins?.StatusBar;
+        if (!bar) {
+          window.setTimeout(retry, 200);
+          return;
+        }
+        void bar.setStyle({ style: theme === 'dark' ? 'LIGHT' : 'DARK' });
+      };
+      window.setTimeout(retry, 200);
+      return;
+    }
     void cap.Plugins.StatusBar.setStyle({
-      // @capacitor/status-bar 的 Style 枚举是字符串枚举：'Light'=浅色文字（配深底）、
-      // 'Dark'=深色文字（配浅底）——注意这里的命名指的是**文字**颜色，不是背景。
-      style: theme === 'dark' ? 'Light' : 'Dark'
+      // @capacitor/status-bar 的 Style 是字符串枚举，native 端按**全大写**校验：
+      // 'LIGHT' = 浅色图标（配深色主题背景）、'DARK' = 深色图标（配浅色主题背景）。
+      // 此前误传 'Light'/'Dark'（首字母大写），native 校验失败被 catch 静默吞掉，
+      // 黑主题下状态栏停在系统默认黑图标 → 黑底上不可见（用户实测）。
+      style: theme === 'dark' ? 'LIGHT' : 'DARK'
     });
   } catch {
     /* 插件桥不可用 / 桥调用失败：状态栏保持启动配置，不影响页面功能 */
