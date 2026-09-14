@@ -90,6 +90,10 @@ export const responsive = css`
     .menu-btn {
       display: inline-flex;
     }
+    /* 移动端：顶栏显示「新对话」快捷按钮（桌面隐藏） */
+    .new-chat-btn {
+      display: inline-flex;
+    }
     .scrim.show {
       display: block;
     }

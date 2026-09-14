@@ -93,6 +93,28 @@ export const extras = css`
     .menu-btn:hover {
       border-color: var(--ah-accent, #2997ff);
     }
+    /* 新对话按钮：桌面隐藏（会话列表抽屉内有「＋ 新对话」入口），移动端顶栏启用（见 responsive.ts） */
+    .new-chat-btn {
+      display: none;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: none;
+      border-radius: 9px;
+      background: none;
+      color: var(--ah-text-muted);
+      cursor: pointer;
+    }
+    .new-chat-btn svg {
+      width: 19px;
+      height: 19px;
+    }
+    .new-chat-btn:hover {
+      color: var(--ah-accent, #2997ff);
+    }
     .scrim {
       display: none;
       position: fixed;

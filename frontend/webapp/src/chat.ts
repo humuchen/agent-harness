@@ -2832,16 +2832,6 @@ export class AhChat extends LitElement {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   }
 
-  /**
-   * 跳转到指定功能面板（自检 / 环境等）：经 ah-goto 事件冒泡到顶层 ah-app
-   * 的 Tab 路由。这些入口已从侧边菜单收纳为聊天页顶栏的快捷按钮。
-   */
-  private gotoPanel(tab: string) {
-    this.dispatchEvent(
-      new CustomEvent('ah-goto', { detail: tab, bubbles: true, composed: true })
-    );
-  }
-
   /** 断连恢复横幅：reconnecting 显示自动恢复中提示；lost 给出「重新连接」手动入口。 */
   private renderConnBanner() {
     return renderConnBanner(this.renderCtx());
@@ -3248,6 +3238,30 @@ export class AhChat extends LitElement {
               >${active ? escapeHtml(active.title) : '新对话'}</span
             >
             <span class="spacer"></span>
+            <!-- 新对话：仅移动端显示（≤900px，见 chat-styles.ts .new-chat-btn），
+                 桌面端顶部已有会话列表抽屉入口，无需重复。 -->
+            <button
+              class="new-chat-btn"
+              title="新对话"
+              aria-label="新对话"
+              @click=${() => this.newChat()}
+            >
+              <!-- 气泡 + 加号：语义「新开一段对话」，与左侧会话列表按钮（气泡+文字行）区分 -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                />
+                <path d="M12 6v6M9 9h6" />
+              </svg>
+            </button>
             <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，会话内可切换，刷新默认开） -->
             <button
               class="tool-toggle ${this.deepThink ? 'on' : ''}"
@@ -3307,49 +3321,6 @@ export class AhChat extends LitElement {
                 <path
                   d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
                 />
-              </svg>
-            </button>
-            <!-- 自检 / 环境：跳转到原「验证」「环境」面板（菜单已收纳，经 ah-goto 路由） -->
-            <button
-              class="toggle"
-              title="自检 / 验证"
-              aria-label="自检 / 验证"
-              @click=${() => this.gotoPanel('verify')}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                <polyline points="22 4 12 14.01 9 11.01" />
-              </svg>
-            </button>
-            <button
-              class="toggle"
-              title="临时 / 预览环境"
-              aria-label="临时 / 预览环境"
-              @click=${() => this.gotoPanel('env')}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path
-                  d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"
-                />
-                <path
-                  d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"
-                />
-                <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
-                <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
               </svg>
             </button>
           </div>

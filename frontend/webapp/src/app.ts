@@ -93,6 +93,8 @@ const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
     { id: 'skill', label: '技能', short: '技能', group: 'ability' },
     { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
     { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
+    { id: 'verify', label: '自检', short: '验', group: 'observe' },
+    { id: 'env', label: '环境', short: '环', group: 'observe' },
     { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
     { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
     { id: 'plan', label: '计划', short: '计', group: 'use' }
