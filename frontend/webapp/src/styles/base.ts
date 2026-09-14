@@ -298,7 +298,6 @@ export const base = css`
     min-width: 0;
     display: flex;
     flex-direction: column;
-    height: 100%;
     overflow: hidden;
   }
   .topbar {

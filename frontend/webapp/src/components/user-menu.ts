@@ -289,6 +289,7 @@ export class AhUserMenu extends LitElement {
     }
     .s-card .email {
       font-size: 11.5px;
+      max-width: 200px;
       color: var(--ah-text-faint);
     }
 
