@@ -8,6 +8,7 @@
  * 事件抛出（detail.value 为 agent id）。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 
 /** 宿主传入的 Agent 条目。 */
@@ -33,7 +34,7 @@ const BOT_ICON =
 
 @customElement('ah-agent-picker')
 export class AhAgentPicker extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-block;
       position: relative;
@@ -202,7 +203,7 @@ export class AhAgentPicker extends LitElement {
       padding: 0;
       cursor: default;
     }
-  `;
+  `, mobilePill];
 
   /** 可选 Agent 列表（由宿主持有）。 */
   @property({ attribute: false }) agents: AgentOption[] = [];

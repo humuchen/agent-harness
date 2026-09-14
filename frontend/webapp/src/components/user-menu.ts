@@ -20,6 +20,7 @@
  * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / login）一致；深浅主题自适应。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { fetchMe, logout } from '../api';
 import { BRAND_DEFAULT, type BrandConfig } from '../theme/tokens';
@@ -29,7 +30,7 @@ import './password-dialog';
 
 @customElement('ah-user-menu')
 export class AhUserMenu extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-flex;
       align-items: center;
@@ -387,7 +388,7 @@ export class AhUserMenu extends LitElement {
       color: var(--ah-text-faint);
       font-family: var(--ah-font-mono);
     }
-  `;
+  `, mobilePill];
 
   /** 用户名（本地 localStorage 已有，亦可由 setMe 覆盖）。 */
   @property({ type: String }) username = '';

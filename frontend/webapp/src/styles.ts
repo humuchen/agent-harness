@@ -6,6 +6,7 @@ import { mobileDrawer } from './styles/mobile-drawer';
 import { runtime } from './styles/runtime';
 import { richtext } from './styles/richtext';
 import { responsive } from './styles/responsive';
+import { mobilePill } from './styles/mobile-pill';
 
 /**
  * 全局共享样式：顶部栏、Tab、表单、事件流。各组件通过 static styles 复用。
@@ -14,10 +15,14 @@ import { responsive } from './styles/responsive';
  * 真正的色值由 src/theme/tokens.ts 按 [data-theme] 注入 <head>，组件随主题自动切换。
  * 若要新增主题，只改 tokens.ts，本文件无需变动。
  *
- * 实现说明：sharedStyles 由 ./styles/ 下 7 个聚焦模块按原顺序组合而成
- * （base → mcp → dashboard → mobileDrawer → runtime → richtext → responsive），
- * 组合结果与历史单一 css 字面量逐字节一致，CSS 层叠顺序不变；
+ * 实现说明：sharedStyles 由 ./styles/ 下 8 个聚焦模块按顺序组合而成
+ * （base → mcp → dashboard → mobileDrawer → runtime → richtext → responsive → mobilePill），
+ * 前 7 项的组合结果与历史单一 css 字面量逐字节一致，CSS 层叠顺序不变；
  * 19 个消费者组件的 `import { sharedStyles }` 与 `static styles = [sharedStyles, ...]` 无需改动。
+ *
+ * mobilePill 必须保持在**最后**（详见其文件头）：它是移动端按钮胶囊化的强制覆盖层，
+ * 依赖 !important + 位于组件自有规则之前仍能胜出的特性；顺序变动不影响正确性，
+ * 但请勿把它前置到 base 之前，以免后续维护者误判层叠意图。
  *
  * ── P3 审计结论 ──
  * 对 7 个模块的选择器归属统计：`.pill`(8 文件)、`.content`(7)、`.kpi`(4) 为多组件共享，
@@ -39,4 +44,5 @@ export const sharedStyles = css`
   ${runtime}
   ${richtext}
   ${responsive}
+  ${mobilePill}
 `;

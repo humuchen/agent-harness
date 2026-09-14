@@ -13,6 +13,7 @@
  * 按钮经 ah-goto（detail: { tab:'settings', group:'keys' }）直达该面板。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
@@ -58,7 +59,7 @@ const PROVIDERS: Array<{ id: string; label: string; docUrl: string }> = [
 
 @customElement('ah-provider-key-settings')
 export class AhProviderKeySettings extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
       font-family: var(--ah-font-sans);
@@ -348,7 +349,7 @@ export class AhProviderKeySettings extends LitElement {
         flex: 1 1 100%;
       }
     }
-  `;
+  `, mobilePill];
 
   /** 当前登录用户名（可选，仅用于展示「这是谁的 Key」）。 */
   @property({ attribute: false }) username = '';

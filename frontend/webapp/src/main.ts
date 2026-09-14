@@ -109,3 +109,10 @@ window.addEventListener('ah-session-expired', () => {
     duration: 0
   });
 });
+
+// 设置页「清除数据」：本地凭据已被清空 → 切回登录页。
+// 不做整页 reload：既更快，也不会把「已清除」的结果提示一起刷掉（提示由设置页自己弹）。
+window.addEventListener('ah-session-cleared', () => {
+  clearSession();
+  mountLogin();
+});

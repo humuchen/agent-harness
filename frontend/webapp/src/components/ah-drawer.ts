@@ -11,6 +11,7 @@
  * 内自行渲染抽屉面板，仅复用 mac-ui 的视觉令牌（--md-drawer-*）。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { PropertyValues } from 'lit';
 
@@ -22,7 +23,7 @@ const LEAVE_MS = 220;
 
 @customElement('ah-drawer')
 export class AhDrawer extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: none;
     }
@@ -255,7 +256,7 @@ export class AhDrawer extends LitElement {
         height: 0;
       }
     }
-  `;
+  `, mobilePill];
 
   @property({ type: Boolean, reflect: true })
   open = false;

@@ -13,6 +13,7 @@
  * 思考开关经 `think-change` 事件抛出（detail.value）。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
@@ -57,7 +58,7 @@ function normalizeCustom(raw: unknown): CustomModel[] {
 
 @customElement('ah-model-picker')
 export class AhModelPicker extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-block;
       font-family: inherit;
@@ -374,7 +375,7 @@ export class AhModelPicker extends LitElement {
       height: 14px;
       display: block;
     }
-  `;
+  `, mobilePill];
 
   @property({ attribute: false }) model = '';
   @property({ attribute: false }) deepThink = false;

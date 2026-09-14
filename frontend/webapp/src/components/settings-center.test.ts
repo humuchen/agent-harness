@@ -10,8 +10,9 @@
  *    并广播 ah:theme-changed 让顶层同步；
  *  - 侧边栏收起偏好向父级派发 ah-sidebar-collapsed；
  *  - 移动端滑动指示条的下标（--tab-i）跟随当前分组；
- *  - 「系统与网络 → 存储空间」两行齐全，且「清理」只清视图缓存，
- *    必须保留登录凭据（ah_token）与用户偏好（ah-theme）。
+ *  - 「存储空间」六行齐全（总计 / 应用 / 数据 / 清除数据 / 缓存 / 清除缓存）：
+ *    「清除缓存」无需确认且完全不动本地数据，「清除数据」必须经二次确认后连登录凭据一起清；
+ *  - 原生壳（Capacitor）下四行改按目录口径取数（用假的 window.Capacitor.Plugins.Filesystem 覆盖）。
  *
  * 网络层整体 mock：本组件（及其内嵌的密钥面板）访问的 /api/* 在单测中不应真连服务端。
  */
@@ -30,6 +31,11 @@ vi.mock('../api', async (importOriginal) => {
 
 import './settings-center';
 import type { AhSettingsCenter } from './settings-center';
+
+// 「清除数据」的二次确认弹框：这里只验证「是否调用 + 是否尊重返回值」，
+// 弹框自身由 mac-ui-adapter 测试覆盖，故 mock 掉，避免依赖其内部 DOM 结构。
+const { confirmMock } = vi.hoisted(() => ({ confirmMock: vi.fn() }));
+vi.mock('./ah-modal', () => ({ AhModal: { confirm: confirmMock } }));
 
 type El = AhSettingsCenter & { updateComplete: Promise<unknown> };
 
@@ -69,16 +75,34 @@ function mountedGroups(el: El): Array<string | null> {
   );
 }
 
-/** 取「系统与网络」分组内指定行（按 .rl 文案匹配）的详述 .rd 文本。 */
-function systemRowDetail(el: El, label: string): string {
+/** 取「系统与网络」分组内指定行（按 .rl 文案匹配）。 */
+function sysRow(el: El, label: string): HTMLElement {
   const sec = el.shadowRoot?.querySelector('section[data-group="system"]');
-  if (!sec) return '';
-  for (const row of Array.from(sec.querySelectorAll('.row'))) {
-    if (row.querySelector('.rl')?.textContent?.trim() === label) {
-      return row.querySelector('.rd')?.textContent?.trim() ?? '';
+  if (sec) {
+    for (const row of Array.from(sec.querySelectorAll('.row'))) {
+      if (row.querySelector('.rl')?.textContent?.trim() === label) {
+        return row as HTMLElement;
+      }
     }
   }
-  return '';
+  throw new Error(`未找到行：${label}`);
+}
+
+/** 行内详述文案（.rd）。 */
+function systemRowDetail(el: El, label: string): string {
+  return sysRow(el, label).querySelector('.rd')?.textContent?.trim() ?? '';
+}
+
+/** 行右侧数值（.sv，存储四项的数值列）。 */
+function sysRowValue(el: El, label: string): string {
+  return sysRow(el, label).querySelector('.sv')?.textContent?.trim() ?? '';
+}
+
+/** 行内操作按钮（.btn）。 */
+function sysRowButton(el: El, label: string): HTMLElement {
+  const btn = sysRow(el, label).querySelector<HTMLElement>('.btn');
+  if (!btn) throw new Error(`行内没有按钮：${label}`);
+  return btn;
 }
 
 /** 轮询等待断言通过：清缓存与存储测量是异步的，轮询比猜固定 tick 数更稳。 */
@@ -247,52 +271,187 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     expect(tabIndex()).toMatch(/--tab-i:\s*0/);
   });
 
-  it('系统与网络：存储空间两行齐全，且清理只清视图缓存、保留登录与偏好', async () => {
-    // 预置：两个可清理键（视图 / 会话态）+ 两个受保护键（凭据 / 偏好）
-    localStorage.setItem('ah_model', 'gpt-4o');
-    localStorage.setItem('ah_active_id', 'sess-1');
+  it('存储空间：六行齐全；清除缓存不动本地数据，清除数据经二次确认后清空并返回登录页', async () => {
+    localStorage.clear();
     localStorage.setItem('ah_token', 'secret-token');
     localStorage.setItem('ah-theme', 'dark');
+    confirmMock.mockReset();
 
-    const el = await mount();
-    el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[1]!.click(); // 系统与网络
-    await el.updateComplete;
-    // 存储占用是异步测量，等它落地
-    await until(() => {
-      expect(systemRowDetail(el, '缓存占用')).toBeTruthy();
-    });
+    // 假的 CacheStorage：覆盖 Web 侧「缓存」口径与清除路径
+    const cacheDeleted: string[] = [];
+    (window as unknown as { caches?: unknown }).caches = {
+      keys: async () => ['ah-v1'],
+      open: async () => ({ keys: async () => [], match: async () => undefined }),
+      delete: async (n: string) => {
+        cacheDeleted.push(n);
+        return true;
+      }
+    };
+    // 「清除数据」完成后应广播 ah-session-cleared（入口层据此切回登录页）
+    const cleared: number[] = [];
+    const onCleared = () => cleared.push(1);
+    window.addEventListener('ah-session-cleared', onCleared);
 
-    const sec = q<HTMLElement>(el, 'section[data-group="system"]');
-    const labels = Array.from(sec.querySelectorAll('.rl')).map((n) =>
-      n.textContent?.trim()
-    );
-    expect(labels).toEqual(
-      expect.arrayContaining(['缓存占用', '清理缓存'])
-    );
-    // 「清理缓存」详述如实说明清什么、不清什么
-    expect(systemRowDetail(el, '清理缓存')).toContain('不影响登录状态');
-    // 系统分组共三个操作：检测 / 清空 / 清理
-    const btns = Array.from(sec.querySelectorAll<HTMLElement>('.btn'));
-    expect(btns).toHaveLength(3);
+    try {
+      const el = await mount();
+      el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[1]!.click(); // 系统与网络
+      await el.updateComplete;
+      await until(() => {
+        expect(sysRowValue(el, '总计')).not.toBe('—');
+      });
 
-    btns[2]!.click(); // 清理
-    await until(() => {
-      expect(localStorage.getItem('ah_model')).toBeNull();
-    });
+      const labels = Array.from(
+        q<HTMLElement>(el, 'section[data-group="system"]').querySelectorAll(
+          '.rl'
+        )
+      ).map((n) => n.textContent?.trim());
+      expect(labels).toEqual(
+        expect.arrayContaining([
+          '总计',
+          '应用',
+          '数据',
+          '清除数据',
+          '缓存',
+          '清除缓存'
+        ])
+      );
+      // 数据 = 本地存储（已预置键，故不是「—」）；缓存 = 假 CacheStorage 无条目 → 0 B
+      expect(sysRowValue(el, '数据')).not.toBe('—');
+      expect(sysRowValue(el, '缓存')).toBe('0 B');
+      // 文案边界：清除缓存不影响登录；清除数据需要重新登录
+      expect(systemRowDetail(el, '清除缓存')).toContain('不影响登录状态');
+      expect(systemRowDetail(el, '清除数据')).toContain('重新登录');
 
-    // 可清理键已清掉
-    expect(localStorage.getItem('ah_active_id')).toBeNull();
-    // 受保护键必须原样保留 —— 这是「清理缓存」的安全边界
-    expect(localStorage.getItem('ah_token')).toBe('secret-token');
-    expect(localStorage.getItem('ah-theme')).toBe('dark');
+      // ① 清除缓存：不弹确认框，且完全不动本地数据
+      sysRowButton(el, '清除缓存').click();
+      await until(() => {
+        expect(cacheDeleted).toEqual(['ah-v1']);
+      });
+      expect(confirmMock).not.toHaveBeenCalled();
+      expect(localStorage.getItem('ah_token')).toBe('secret-token');
+      expect(localStorage.getItem('ah-theme')).toBe('dark');
 
-    // 清完刷新计数（不再残留已清的项）
-    await until(() => {
-      expect(systemRowDetail(el, '清理缓存')).toContain('0 项');
-    });
+      // ② 清除数据：取消 → 什么都不清
+      confirmMock.mockResolvedValue(false);
+      sysRowButton(el, '清除数据').click();
+      await until(() => {
+        expect(confirmMock).toHaveBeenCalledTimes(1);
+      });
+      expect(localStorage.getItem('ah_token')).toBe('secret-token');
+      // 取消不应广播，也不该有任何清理
+      expect(cleared).toHaveLength(0);
 
-    for (const k of ['ah_model', 'ah_active_id', 'ah_token', 'ah_theme']) {
-      localStorage.removeItem(k);
+      // ③ 清除数据：确认 → 连登录凭据一起清掉，并广播会话已清除
+      confirmMock.mockResolvedValue(true);
+      sysRowButton(el, '清除数据').click();
+      await until(() => {
+        expect(localStorage.getItem('ah_token')).toBeNull();
+      });
+      expect(localStorage.getItem('ah-theme')).toBeNull();
+      expect(confirmMock).toHaveBeenCalledTimes(2);
+      await until(() => {
+        expect(cleared).toHaveLength(1);
+      });
+    } finally {
+      window.removeEventListener('ah-session-cleared', onCleared);
+      delete (window as unknown as { caches?: unknown }).caches;
+    }
+  });
+
+  it('原生壳：应用/数据/缓存按各自口径取数，且两个清除动作的作用域不同', async () => {
+    type Entry = { name: string; type: 'file' | 'directory'; size: number };
+    // 目录树：DATA 40 KB；CACHE 1 MiB + 512 KiB = 1.5 MB（量级与移动端反馈一致）
+    const tree: Record<string, Record<string, Entry[]>> = {
+      DATA: { '': [{ name: 'app.db', type: 'file', size: 40 * 1024 }] },
+      CACHE: {
+        '': [
+          { name: 'WebView', type: 'directory', size: 0 },
+          { name: 'tmp.bin', type: 'file', size: 512 * 1024 }
+        ],
+        WebView: [{ name: 'HTTP Cache', type: 'directory', size: 0 }],
+        'WebView/HTTP Cache': [
+          { name: 'data_0', type: 'file', size: 1024 * 1024 }
+        ]
+      }
+    };
+    const removed: string[] = [];
+    localStorage.clear();
+    confirmMock.mockReset();
+    confirmMock.mockResolvedValue(true);
+    const cleared: number[] = [];
+    const onCleared = () => cleared.push(1);
+    window.addEventListener('ah-session-cleared', onCleared);
+
+    // 假的 Capacitor 全局：沿用项目既有约定 window.Capacitor.Plugins.<Plugin>
+    (window as unknown as { Capacitor?: unknown }).Capacitor = {
+      isNativePlatform: () => true,
+      Plugins: {
+        Filesystem: {
+          readdir: async ({
+            path,
+            directory
+          }: {
+            path: string;
+            directory: string;
+          }) => ({ files: tree[directory]?.[path] ?? [] }),
+          rmdir: async ({
+            path,
+            directory
+          }: {
+            path: string;
+            directory: string;
+          }) => {
+            removed.push(`${directory}:${path}`);
+            const list = tree[directory]?.[''];
+            if (list) {
+              tree[directory]![''] = list.filter((e) => e.name !== path);
+            }
+            delete tree[directory]?.[path];
+          }
+        }
+      }
+    };
+
+    try {
+      const el = await mount();
+      el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[1]!.click(); // 系统与网络
+      await el.updateComplete;
+
+      // 数据 = 私有文件目录（40 KB）+ 网页层本地存储（此处为空）
+      await until(() => {
+        expect(sysRowValue(el, '数据')).toBe('40.0 KB');
+      });
+      // 缓存 = 缓存目录递归合计
+      expect(sysRowValue(el, '缓存')).toBe('1.5 MB');
+      // 应用体积来自 Resource Timing：jsdom 无资源条目 → 如实显示「—」，不编数字
+      expect(sysRowValue(el, '应用')).toBe('—');
+      // 原生下文案指向应用自己的目录，而不是浏览器口径
+      expect(systemRowDetail(el, '数据')).toContain('应用私有文件');
+      expect(systemRowDetail(el, '缓存')).toContain('应用缓存目录');
+
+      // ① 清除缓存：只清 CACHE，不碰 DATA
+      sysRowButton(el, '清除缓存').click();
+      await until(() => {
+        expect(sysRowValue(el, '缓存')).toBe('0 B');
+      });
+      expect(removed).toEqual(
+        expect.arrayContaining(['CACHE:WebView', 'CACHE:tmp.bin'])
+      );
+      expect(removed.some((r) => r.startsWith('DATA:'))).toBe(false);
+
+      // ② 清除数据：DATA 与 CACHE 都清（对齐 Android「清除存储」语义）
+      sysRowButton(el, '清除数据').click();
+      await until(() => {
+        expect(removed).toContain('DATA:app.db');
+      });
+      expect(confirmMock).toHaveBeenCalledTimes(1);
+      // 清除数据后会离开本页（不再重新测量数值），故只断言目录确被清空 + 已广播会话清除
+      await until(() => {
+        expect(cleared).toHaveLength(1);
+      });
+    } finally {
+      window.removeEventListener('ah-session-cleared', onCleared);
+      delete (window as unknown as { Capacitor?: unknown }).Capacitor;
     }
   });
 });

@@ -8,6 +8,7 @@
  * 状态由宿主持有并持久化 —— 组件本身不保存选择结果。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 
 /** 运行模式定义：值与宿主 interactionMode 对齐。 */
@@ -37,7 +38,7 @@ const MODES: ModeItem[] = [
 
 @customElement('ah-mode-picker')
 export class AhModePicker extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-block;
       position: relative;
@@ -167,7 +168,7 @@ export class AhModePicker extends LitElement {
       padding: 0;
       cursor: default;
     }
-  `;
+  `, mobilePill];
 
   /** 当前模式（状态由宿主持有并透传）。 */
   @property({ type: String }) mode: 'qa' | 'plan' = 'qa';

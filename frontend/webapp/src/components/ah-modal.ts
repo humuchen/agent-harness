@@ -15,6 +15,7 @@
  * prompt 通过 MacConfirm + 自定义插槽（含 input）实现。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property } from 'lit/decorators.js';
 import { MacConfirm } from '@humuchen/mac-ui';
 import type { ConfirmOptions } from '@humuchen/mac-ui';
@@ -40,14 +41,14 @@ export interface AhModalOptions {
 
 @customElement('ah-modal')
 export class AhModal extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: none;
     }
     :host([open]) {
       display: block;
     }
-  `;
+  `, mobilePill];
 
   @property({ type: Boolean, reflect: true })
   open = false;

@@ -15,6 +15,7 @@
  *   el.addEventListener('files-changed', (e) => agentContext.set('files', e.detail));
  */
 import { LitElement, html, css } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { UploadedFile } from '../agent-context';
 import { uploadFileToApi } from '../utils/upload';
@@ -32,7 +33,7 @@ interface UploadedFileWithStatus extends UploadedFile {
 
 @customElement('ah-file-upload')
 export class AhFileUpload extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
     }
@@ -177,7 +178,7 @@ export class AhFileUpload extends LitElement {
         font-size: 16px;
       }
     }
-  `;
+  `, mobilePill];
 
   /** 当前已选附件（受控：父组件也可直接写入）。 */
   @property({ type: Array })

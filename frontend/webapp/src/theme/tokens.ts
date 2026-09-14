@@ -118,6 +118,34 @@ html, body {
     -webkit-tap-highlight-color: transparent;
   }
 }
+/* 移动端按钮胶囊化：外部组件库 @humuchen/mac-ui 的按钮圆角覆盖。
+   为什么必须写在文档级（此处）而不是业务组件的 shadow 样式里：
+   mac-ui 的按钮有两个来源，二者都不在业务组件的 shadow root 内 ——
+   1) mac-confirm / mac-dialog 自带 footer 里的 mac-button（在库自身 shadow root 内）；
+   2) ah-modal 通过 <div slot="footer"> 注入的 mac-button（被 slot 投影到 light DOM，
+      最终作为 mac-confirm 的 light 子节点挂在 document 上）。
+   故只能由文档级样式表命中其宿主元素。
+   mac-ui 把 --{size}-button-radius 声明在自身 :host 内，外层普通声明无法覆盖，
+   必须 !important（对影子宿主，外层 important 优先于影子树普通声明）。
+   需要覆盖的是「按钮相关」令牌，而非底层的 --md-radius-md ——
+   后者同时驱动输入框 / 菜单 / 卡片圆角，改它会连带圆掉非按钮元素：
+   - --{sm|md|lg}-button-radius：mac-button（三个尺寸类会互相重指向，须全给）；
+   - --md-confirm-btn-radius   ：mac-confirm 自带 footer 的 <button class="footer-btn">；
+   - --md-modal-footer-btn-radius：mac-modal footer 同理（同一套库令牌，一并给上）；
+   - --md-confirm/modal-footer-cancel-border：取消按钮的 0.5px 描边色 → 透明（去边框）。
+   注：用 * 而非罗列 mac-* 标签名 —— 后者需逐一猜测库内组件名，漏一个即失效；
+   自定义属性本就靠继承向下传递，写在通配选择器上最稳妥。 */
+@media (max-width: 760px), (pointer: coarse) {
+  * {
+    --md-button-radius: 999px !important;
+    --sm-button-radius: 999px !important;
+    --lg-button-radius: 999px !important;
+    --md-confirm-btn-radius: 999px !important;
+    --md-modal-footer-btn-radius: 999px !important;
+    --md-confirm-cancel-border: transparent !important;
+    --md-modal-footer-cancel-border: transparent !important;
+  }
+}
 `;
 
 /**

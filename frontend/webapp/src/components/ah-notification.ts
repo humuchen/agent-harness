@@ -29,6 +29,7 @@
  *   notify.close(id); notify.clear();
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
@@ -170,7 +171,7 @@ function iconSvg(type: NotificationType) {
 
 @customElement('ah-notification-host')
 export class AhNotificationHost extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       position: fixed;
       inset: 0;
@@ -393,7 +394,7 @@ export class AhNotificationHost extends LitElement {
         opacity: 0;
       }
     }
-  `;
+  `, mobilePill];
 
   /** 弹出位置，作为 attribute 供 CSS 选择器使用。 */
   @property({ type: String, reflect: true })

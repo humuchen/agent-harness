@@ -25,10 +25,11 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { changePassword, derivePassword, bytesToHex } from '../api';
 import { notify } from './ah-notification';
 import { validateChangePassword } from '../utils/auth-validation';
+import { mobilePill } from '../styles/mobile-pill';
 
 @customElement('ah-password-dialog')
 export class AhPasswordDialog extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: contents;
     }
@@ -171,7 +172,7 @@ export class AhPasswordDialog extends LitElement {
       outline: 2px solid var(--ah-accent);
       outline-offset: 2px;
     }
-  `;
+  `, mobilePill];
 
   /** 受控打开态：由父组件绑定（?open），内部关闭时派发 ah-pw-close。 */
   @property({ type: Boolean }) open = false;

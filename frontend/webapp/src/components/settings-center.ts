@@ -27,8 +27,11 @@
  *
  * 内容真实性约定：仅保留「点了确实会发生什么」的行；不做无后端的装饰性开关。
  *  - 系统与网络：服务状态（真实拉取 /api/v1/state）+ 接口地址 + 重新检测 + 清空通知未读
- *    + 存储空间（navigator.storage.estimate() 真实占用；「清理」只清 CLEARABLE_KEYS 里的
- *    视图 / 会话态与 CacheStorage，不碰登录凭据与主题 / 侧边栏偏好）。
+ *    + 存储空间。存储按 **总计 / 应用 / 数据 / 缓存** 四项展示，口径与环境相关（原生壳走
+ *    Capacitor Filesystem 量私有目录与缓存目录，与系统「应用信息」同源；纯 Web 走本地存储
+ *    与 CacheStorage；「应用」为应用自身网页资源体积，见 utils/storage-usage.ts）。
+ *    两个动作：「清除缓存」只清缓存、无需确认；**「清除数据」会抹掉登录状态与全部偏好，
+ *    必须先经 AhModal 二次确认**，完成后广播 `ah-session-cleared` 由入口层切回登录页。
  *  - 外观：主题（深色 / 浅色 / 跟随系统，真实写入 ah-theme）+ 侧边栏默认收起（父级持有偏好）。
  *  - 关于：版本号 + 界面语言（只读）。品牌信息不出现在本页——品牌统一收敛到「我的」页，
  *    故此处不渲染品牌卡与版权脚（桌面侧栏品牌块亦已隐藏，见 styles/base.ts）。
@@ -52,10 +55,18 @@ import {
   type Theme
 } from '../theme/tokens';
 import { client } from '../api';
+import { AhModal } from './ah-modal';
 import { notify } from './ah-notification';
 import { notifyError } from '../utils/errors';
+import {
+  clearCache,
+  clearData,
+  measureStorage,
+  type StorageBreakdown
+} from '../utils/storage-usage';
 import { getReminderUnread, clearReminderUnread } from '../plugin-notify';
 import './provider-key-settings';
+import { mobilePill } from '../styles/mobile-pill';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
@@ -161,36 +172,28 @@ const ICON_TRASH = svgIcon(
   svg`<path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 13.5A2.5 2.5 0 0 1 15.5 22h-7A2.5 2.5 0 0 1 6 19.5L5 6" />`,
   '1.7'
 );
+// ── 存储空间四行：应用 / 数据 / 缓存 / 危险动作 ──
+const ICON_APP = svgIcon(
+  svg`<path d="M12 3l8 4.4v9.2L12 21l-8-4.4V7.4L12 3Z" /><path d="M12 12l8-4.4M12 12v9M12 12L4 7.6" />`,
+  '1.7'
+);
+const ICON_DATA = svgIcon(
+  svg`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />`,
+  '1.7'
+);
+const ICON_CACHE = svgIcon(
+  svg`<rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" /><path d="M10 13h4" />`,
+  '1.7'
+);
+const ICON_ALERT = svgIcon(
+  svg`<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" />`,
+  '1.7'
+);
 
 /**
- * 可安全清理的本地键：全部是「视图 / 会话态」，清掉只是回到默认视图。
- * 刻意**不含**登录凭据（token / refresh / user）与用户偏好（主题、侧边栏、未读计数），
- * 避免「清理缓存」把用户登录状态或偏好一起抹掉。
+ * 人读字节数；null / 不可用显示为破折号。
+ * 存储四行（总计 / 应用 / 数据 / 缓存）与清理结果提示共用。
  */
-const CLEARABLE_KEYS = [
-  'ah_active_id',
-  'ah_conversation_id',
-  'ah_model',
-  'ah_interaction_mode',
-  'ah_web'
-] as const;
-
-/** 统计可清理键在 localStorage 中的占用与条目数（UTF-16，按 2 字节/字符估算）。 */
-function localCacheStats(): { count: number; bytes: number } {
-  if (typeof localStorage === 'undefined') return { count: 0, bytes: 0 };
-  let count = 0;
-  let bytes = 0;
-  for (const k of CLEARABLE_KEYS) {
-    const v = localStorage.getItem(k);
-    if (v !== null) {
-      count += 1;
-      bytes += (k.length + v.length) * 2;
-    }
-  }
-  return { count, bytes };
-}
-
-/** 人读字节数；null / 不可用显示为破折号。 */
 function formatBytes(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '—';
   if (n < 1024) return `${Math.round(n)} B`;
@@ -226,7 +229,7 @@ const GROUP_IDS = new Set<SettingsGroup>(GROUPS.map((g) => g.id));
 
 @customElement('ah-settings-center')
 export class AhSettingsCenter extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: flex;
       flex-direction: column;
@@ -540,6 +543,29 @@ export class AhSettingsCenter extends LitElement {
       outline-offset: 2px;
     }
 
+    /* 存储空间：右侧数值列（等宽字体、右对齐，便于纵向比对四项大小） */
+    .sv {
+      flex: 0 0 auto;
+      font-family: var(--ah-font-mono);
+      font-size: 12px;
+      color: var(--ah-text-muted);
+      white-space: nowrap;
+    }
+    /* 破坏性操作（清除数据）：danger 着色但不做实心色块，避免与唯一强调点「保存」抢视觉 */
+    .ri.danger {
+      color: var(--ah-danger);
+      background: color-mix(in srgb, var(--ah-danger) 14%, transparent);
+    }
+    .btn.danger {
+      color: var(--ah-danger);
+      border-color: color-mix(in srgb, var(--ah-danger) 45%, transparent);
+    }
+    .btn.danger:hover:not(:disabled) {
+      color: var(--ah-danger);
+      border-color: var(--ah-danger);
+      background: color-mix(in srgb, var(--ah-danger) 10%, transparent);
+    }
+
     /* 分段控件 */
     .seg {
       display: inline-flex;
@@ -716,7 +742,7 @@ export class AhSettingsCenter extends LitElement {
         animation: none;
       }
     }
-  `;
+  `, mobilePill];
 
   /**
    * 目标分组（由父级经 ah-goto 传入）。配合 groupSeq 使用：
@@ -737,15 +763,10 @@ export class AhSettingsCenter extends LitElement {
   @state() private checking = false;
   /** 系统与网络：本地未读提醒数。 */
   @state() private unread = 0;
-  /** 存储空间：浏览器口径的已用 / 可用字节（null = 尚未检测或环境不支持）。 */
-  @state() private storageUsed: number | null = null;
-  @state() private storageQuota: number | null = null;
-  /** 存储空间：可清理的本地视图缓存占用（项数 + 字节）。 */
-  @state() private cacheStats: { count: number; bytes: number } = {
-    count: 0,
-    bytes: 0
-  };
-  @state() private clearing = false;
+  /** 存储空间：总计 / 应用 / 数据 / 缓存 四项占用（null = 尚未测量）。 */
+  @state() private storage: StorageBreakdown | null = null;
+  @state() private clearingCache = false;
+  @state() private clearingData = false;
 
   /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。 */
   private mounted = new Set<SettingsGroup>([DEFAULT_GROUP]);
@@ -774,7 +795,7 @@ export class AhSettingsCenter extends LitElement {
     if (changed.has('active') && this.active === 'system') {
       void this.checkServer();
       // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
-      void this.measureStorage();
+      void this.refreshStorage();
       this.unread = getReminderUnread().count;
     }
   }
@@ -858,79 +879,75 @@ export class AhSettingsCenter extends LitElement {
     notify.success('已清空通知未读');
   }
 
-  /**
-   * 测量存储占用：
-   *  - storageUsed / storageQuota 取 `navigator.storage.estimate()`（浏览器口径，含缓存与本地库）；
-   *  - cacheStats 只统计本组件真正能清理的那几项本地视图缓存。
-   * 隐私模式 / 老浏览器可能不支持 estimate：此时保持 null，UI 显示「—」，不做假数据。
-   */
-  private async measureStorage() {
-    this.cacheStats = localCacheStats();
-    try {
-      const est = await navigator.storage?.estimate?.();
-      this.storageUsed = est?.usage ?? null;
-      this.storageQuota = est?.quota ?? null;
-    } catch {
-      this.storageUsed = null;
-      this.storageQuota = null;
-    }
+  /** 重新测量存储四项占用（进入「系统与网络」时、以及每次清理后调用）。 */
+  private async refreshStorage() {
+    this.storage = await measureStorage();
   }
 
-  /**
-   * 清理本地缓存：仅清除 CLEARABLE_KEYS 中的视图 / 会话态，并清空 CacheStorage
-   * （当前项目无 Service Worker，该分支为将来接入预留，空时无副作用）。
-   * 登录凭据与主题 / 侧边栏偏好不在清理范围内 —— 文案已如实说明。
-   */
-  private async clearCaches() {
-    if (this.clearing) return;
-    this.clearing = true;
+  /** 「清除缓存」：只清缓存（原生缓存目录 + CacheStorage），不动登录状态与偏好，无需二次确认。 */
+  private async onClearCache() {
+    if (this.clearingCache) return;
+    this.clearingCache = true;
     try {
-      const before = localCacheStats();
-      let removed = 0;
-      if (typeof localStorage !== 'undefined') {
-        for (const k of CLEARABLE_KEYS) {
-          if (localStorage.getItem(k) !== null) {
-            localStorage.removeItem(k);
-            removed += 1;
-          }
-        }
+      const r = await clearCache();
+      await this.refreshStorage();
+      if (!r.ran) {
+        notify.info('当前环境没有可清除的缓存');
+        return;
       }
-      if (typeof caches !== 'undefined') {
-        const names = await caches.keys();
-        await Promise.all(names.map((n) => caches.delete(n)));
-      }
-      await this.measureStorage();
       notify.success(
-        removed
-          ? `已清理 ${removed} 项本地缓存（约 ${formatBytes(before.bytes)}）`
-          : '本地缓存已是空的'
+        r.bytes ? `已清除缓存（约 ${formatBytes(r.bytes)}）` : '已清除缓存'
       );
     } catch (e) {
       notifyError(e, {
         title: '存储空间',
-        fallback: '清理本地缓存失败',
+        fallback: '清除缓存失败',
         key: 'settings-cache'
       });
     } finally {
-      this.clearing = false;
+      this.clearingCache = false;
     }
   }
 
-  /** 「缓存占用」详述（不支持 estimate 的环境如实说明，不编造数字）。 */
-  private get storageDetail(): string {
-    if (this.storageUsed === null && this.storageQuota === null) {
-      return '当前环境不支持检测占用';
-    }
-    return `浏览器口径 已用 ${formatBytes(
-      this.storageUsed
-    )} / 可用 ${formatBytes(this.storageQuota)}`;
-  }
+  /**
+   * 「清除数据」：二次确认后清空本地数据 + 缓存，随后重载回登录页。
+   *
+   * 该动作会抹掉登录凭据与全部偏好（对齐 Android「清除存储」语义），
+   * 故用带破坏性红色按钮的确认弹框拦截误触；确认文案明确写出「需要重新登录」。
+   */
+  private async onClearData() {
+    if (this.clearingData) return;
+    const ok = await AhModal.confirm({
+      variant: 'warning',
+      danger: true,
+      title: '清除数据',
+      message:
+        '将删除本地全部数据与缓存（登录状态、主题偏好、会话与模型选择等），清除后需要重新登录。此操作不可恢复。',
+      confirmText: '清除数据',
+      cancelText: '取消',
+      maskClosable: false
+    });
+    if (!ok) return;
 
-  /** 「清理缓存」详述：说明清的是哪些、不清哪些。 */
-  private get cacheDetail(): string {
-    return `本地视图缓存 ${this.cacheStats.count} 项 · 约 ${formatBytes(
-      this.cacheStats.bytes
-    )}；不影响登录状态与主题偏好`;
+    this.clearingData = true;
+    try {
+      const r = await clearData();
+      notify.success(
+        r.bytes
+          ? `已清除本地数据（约 ${formatBytes(r.bytes)}），即将返回登录页`
+          : '已清除本地数据，即将返回登录页'
+      );
+      // 本地凭据已清空：广播给入口层（main.ts）切回登录页，而不是整页 reload
+      // —— 更快，也不会把刚弹出的结果提示一起刷掉。
+      window.dispatchEvent(new CustomEvent('ah-session-cleared'));
+    } catch (e) {
+      notifyError(e, {
+        title: '存储空间',
+        fallback: '清除数据失败',
+        key: 'settings-data'
+      });
+      this.clearingData = false;
+    }
   }
 
   /** 当前分组的列下标：驱动移动端滑动指示条的位移（找不到时退回 0）。 */
@@ -1075,22 +1092,71 @@ export class AhSettingsCenter extends LitElement {
                   <div class="row">
                     <span class="ri">${ICON_STORAGE}</span>
                     <span class="rc">
-                      <span class="rl">缓存占用</span>
-                      <span class="rd">${this.storageDetail}</span>
+                      <span class="rl">总计</span>
+                      <span class="rd">应用 + 数据 + 缓存</span>
                     </span>
+                    <span class="sv">${formatBytes(this.storage?.total)}</span>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_APP}</span>
+                    <span class="rc">
+                      <span class="rl">应用</span>
+                      <span class="rd">应用自身加载的网页资源（JS / CSS）</span>
+                    </span>
+                    <span class="sv">${formatBytes(this.storage?.app)}</span>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_DATA}</span>
+                    <span class="rc">
+                      <span class="rl">数据</span>
+                      <span class="rd"
+                        >${this.storage?.native
+                          ? '应用私有文件与网页层本地存储'
+                          : '浏览器本地存储'}</span
+                      >
+                    </span>
+                    <span class="sv">${formatBytes(this.storage?.data)}</span>
+                  </div>
+                  <div class="row">
+                    <span class="ri danger">${ICON_ALERT}</span>
+                    <span class="rc">
+                      <span class="rl">清除数据</span>
+                      <span class="rd"
+                        >删除全部本地数据与缓存，清除后需重新登录</span
+                      >
+                    </span>
+                    <button
+                      class="btn danger"
+                      ?disabled=${this.clearingData}
+                      @click=${() => this.onClearData()}
+                    >
+                      ${this.clearingData ? '清除中…' : '清除'}
+                    </button>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_CACHE}</span>
+                    <span class="rc">
+                      <span class="rl">缓存</span>
+                      <span class="rd"
+                        >${this.storage?.native
+                          ? '应用缓存目录，可安全清理'
+                          : '浏览器资源缓存'}</span
+                      >
+                    </span>
+                    <span class="sv">${formatBytes(this.storage?.cache)}</span>
                   </div>
                   <div class="row">
                     <span class="ri">${ICON_TRASH}</span>
                     <span class="rc">
-                      <span class="rl">清理缓存</span>
-                      <span class="rd">${this.cacheDetail}</span>
+                      <span class="rl">清除缓存</span>
+                      <span class="rd">只清缓存，不影响登录状态与偏好</span>
                     </span>
                     <button
                       class="btn"
-                      ?disabled=${this.clearing}
-                      @click=${() => this.clearCaches()}
+                      ?disabled=${this.clearingCache}
+                      @click=${() => this.onClearCache()}
                     >
-                      ${this.clearing ? '清理中…' : '清理'}
+                      ${this.clearingCache ? '清除中…' : '清除'}
                     </button>
                   </div>
                 </div>

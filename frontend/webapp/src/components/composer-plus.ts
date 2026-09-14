@@ -22,6 +22,7 @@
  */
 import { LitElement, html, css, nothing, type CSSResultGroup } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
+import { mobilePill } from '../styles/mobile-pill';
 import type { UploadedFile } from '../agent-context';
 
 /** 宿主传入的智能体条目（与 agent-picker 的 AgentOption 保持一致）。 */
@@ -88,7 +89,7 @@ const FILE_ICON = 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14
 
 @customElement('ah-composer-plus')
 export class AhComposerPlus extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-flex;
       align-items: center;
@@ -609,7 +610,7 @@ export class AhComposerPlus extends LitElement {
         height: 0;
       }
     }
-  ` as CSSResultGroup;
+  `, mobilePill] as CSSResultGroup;
 
   /** 可选智能体列表（由宿主持有）。 */
   @property({ attribute: false }) agents: ComposerAgentOption[] = [];
