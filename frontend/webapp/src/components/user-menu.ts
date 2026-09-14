@@ -456,6 +456,7 @@ export class AhUserMenu extends LitElement {
       font-size: 11.5px;
       color: var(--ah-text-faint);
     }
+
     /* 分组标题：账户 / 系统 / 退出 */
     .s-sec {
       font-size: 11px;
@@ -468,6 +469,7 @@ export class AhUserMenu extends LitElement {
     .s-sec:first-of-type {
       margin-top: 0;
     }
+
     /* 条目：带图标盒 + 文案 + 右箭头的圆角卡片 */
     .s-items {
       display: flex;
@@ -478,10 +480,10 @@ export class AhUserMenu extends LitElement {
       display: flex;
       align-items: center;
       gap: 12px;
-      padding: 5px 14px;
+      padding: 12px 14px;
       border-radius: 11px;
       background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
+      border: none;
       cursor: pointer;
       font-size: 13px;
       font-weight: 600;
@@ -489,18 +491,6 @@ export class AhUserMenu extends LitElement {
       color: var(--ah-text);
       text-align: left;
       width: 100%;
-    }
-    .s-item svg {
-      width: 24px;
-      height: 24px;
-      padding: 7px;
-      border-radius: 9px;
-      background: var(--ah-surface-3);
-      flex: 0 0 auto;
-      color: var(--ah-text-muted);
-    }
-    .s-item:hover svg {
-      color: var(--ah-text);
     }
     .s-item .s-lbl {
       min-width: 0;
@@ -515,7 +505,7 @@ export class AhUserMenu extends LitElement {
     .s-item .s-chev {
       margin-left: auto;
       color: var(--ah-text-faint);
-      font-size: 12px;
+      font-size: 18px;
       flex: 0 0 auto;
     }
     /* 退出条目：danger 配色 */
@@ -656,106 +646,66 @@ export class AhUserMenu extends LitElement {
     await logout();
   }
 
-  private keyIcon() {
-    return html`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="4" stroke="currentColor" stroke-width="1.6" />
-      <path
-        d="M11 11l8 8M16 16l2-2M19 19l2-2"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-      />
-    </svg>`;
-  }
-
-  private settingsIcon() {
-    return html`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.6" />
-      <path
-        d="M12 2v3.5M12 18.5V22M5.6 5.6l2.5 2.5M15.9 15.9l2.5 2.5M2 12h3.5M18.5 12H22"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-      />
-    </svg>`;
-  }
-
-  private logoutIcon() {
-    return html`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M15 12H4M4 12l3-3M4 12l3 3"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M14 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-      />
-    </svg>`;
-  }
-
   render() {
     const initial = avatarInitial(this.username);
-    // standalone：移动端「我的」Tab —— 对齐设计稿方案 A：
+    // standalone：移动端「我的」Tab —— 对齐设计稿方案
     // 渐变用户卡片 + 分组（账户/系统/退出）条目 + 版本脚。无弹出行为。
     if (this.standalone) {
       return html`<div class="standalone">
-        <div class="s-card">
-          <span class="ava big">${initial}</span>
-          <div class="meta">
-            <span class="name"
-              >${this.username || '未命名用户'}
-              <span class="role-badge ${this.role}"
-                >${roleLabel(this.role)}</span
-              >
-            </span>
-            ${this.email ? html`<span class="email">${this.email}</span>` : ''}
+          <div class="s-card">
+            <span class="ava big">${initial}</span>
+            <div class="meta">
+              <span class="name"
+                >${this.username || '未命名用户'}
+                <span class="role-badge ${this.role}"
+                  >${roleLabel(this.role)}</span
+                >
+              </span>
+              ${this.email
+                ? html`<span class="email">${this.email}</span>`
+                : ''}
+            </div>
           </div>
-        </div>
 
-        <div class="s-sec">账户</div>
-        <div class="s-items">
-          <button class="s-item" role="menuitem" @click=${() => this.openPw()}>
-            ${this.keyIcon()}
-            <span class="s-lbl">修改密码</span>
-            <span class="s-chev">›</span>
-          </button>
-        </div>
+          <div class="s-sec">账户</div>
+          <div class="s-items">
+            <button
+              class="s-item"
+              role="menuitem"
+              @click=${() => this.openPw()}
+            >
+              <span class="s-lbl">修改密码</span>
+              <span class="s-chev">›</span>
+            </button>
+          </div>
 
-        <div class="s-sec">系统</div>
-        <div class="s-items">
-          <button
-            class="s-item"
-            role="menuitem"
-            @click=${() => this.dispatchSettings()}
-          >
-            ${this.settingsIcon()}
-            <span class="s-lbl">设置<small>系统与网络</small></span>
-            <span class="s-chev">›</span>
-          </button>
-        </div>
+          <div class="s-sec">系统</div>
+          <div class="s-items">
+            <button
+              class="s-item"
+              role="menuitem"
+              @click=${() => this.dispatchSettings()}
+            >
+              <span class="s-lbl">设置<small>系统与网络</small></span>
+              <span class="s-chev">›</span>
+            </button>
+          </div>
 
-        <div class="s-sec">退出</div>
-        <div class="s-items">
-          <button
-            class="s-item danger"
-            role="menuitem"
-            @click=${() => this.onLogout()}
-          >
-            ${this.logoutIcon()}
-            <span class="s-lbl">退出登录</span>
-            <span class="s-chev">›</span>
-          </button>
-        </div>
+          <div class="s-sec">退出</div>
+          <div class="s-items">
+            <button
+              class="s-item danger"
+              role="menuitem"
+              @click=${() => this.onLogout()}
+            >
+              <span class="s-lbl">退出登录</span>
+              <span class="s-chev">›</span>
+            </button>
+          </div>
 
-        <div class="s-ver">Agent Harness v${APP_VERSION}</div>
-      </div>
-      ${this.showPw ? this.renderPwModal() : nothing}
-    `;
+          <div class="s-ver">Agent Harness v${APP_VERSION}</div>
+        </div>
+        ${this.showPw ? this.renderPwModal() : nothing} `;
     }
     return html`
       <button
@@ -795,14 +745,16 @@ export class AhUserMenu extends LitElement {
                   role="menuitem"
                   @click=${() => this.openPw()}
                 >
-                  ${this.keyIcon()}<span class="label">修改密码</span>
+                  <span class="label">修改密码</span>
+                  <span class="s-chev">›</span>
                 </button>
                 <button
                   class="item danger"
                   role="menuitem"
                   @click=${() => this.onLogout()}
                 >
-                  ${this.logoutIcon()}<span class="label">退出登录</span>
+                  <span class="label">退出登录</span>
+                  <span class="s-chev">›</span>
                 </button>
               </div>
               <div class="ver">Agent Harness v${APP_VERSION}</div>
