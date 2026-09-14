@@ -18,6 +18,18 @@ import { responsive } from './styles/responsive';
  * （base → mcp → dashboard → mobileDrawer → runtime → richtext → responsive），
  * 组合结果与历史单一 css 字面量逐字节一致，CSS 层叠顺序不变；
  * 19 个消费者组件的 `import { sharedStyles }` 与 `static styles = [sharedStyles, ...]` 无需改动。
+ *
+ * ── P3 审计结论 ──
+ * 对 7 个模块的选择器归属统计：`.pill`(8 文件)、`.content`(7)、`.kpi`(4) 为多组件共享，
+ * 必须留在共享层；`preset`/`server-list`/`run-col`/`matrix-scroll`/`mobile-tabbar` 各仅 1 文件引用。
+ * 多数选择器本质属于 app-shell / 基础组件（全局），真正单页专属者极少。将页面模块回迁各组件
+ * 需改动全部 19 个消费者文件，且 Shadow DOM 下漏引会导致 build 无法捕捉的视觉回归，收益
+ * （减少每页无关 CSS 注入）远低于风险。当前拆分已彻底解决「单文件过大、难维护」的原始诉求。
+ *
+ * 渐进瘦身路径（如需）：某组件确定不需要某页面模块时，将其 `import { sharedStyles }`
+ * 改为 `import { base } from './styles/base'` 并仅追加所需模块（如 `dashboard`），随后真机回归。
+ * 注意：chat 与 plan-board 的计划卡片 pill 分别用 `chat/plan-mode` 与 `base`+`dashboard` 两套定义
+ * （硬编码 rgba vs CSS 变量），属设计语言分裂但功能正常；统一前需真机比对视觉。
  */
 export const sharedStyles = css`
   ${base}
