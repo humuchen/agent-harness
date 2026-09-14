@@ -507,8 +507,11 @@ export class AhApp extends LitElement {
   }
 
   /**
-   * 拉取服务端状态。失败时除保留顶栏 pill 文案外，额外弹一条通知
-   * （此前只把错误静默写进 pill，用户切到别的 Tab 就完全看不到）。
+   * 拉取服务端状态。成功只用于顶栏「运行中」指示的前置判断，失败则保留 err 文案
+   * 并额外弹一条通知（此前只把错误静默写进 pill，用户切到别的 Tab 就完全看不到）。
+   *
+   * 注：顶栏原有的「LLM live / mock」胶囊已按需求下线 —— 服务端 LLM 状态改到
+   * 设置中心的「系统与网络 → 服务状态」查看，避免全局常驻的状态噪音。
    */
   private refreshState() {
     client
@@ -707,13 +710,6 @@ export class AhApp extends LitElement {
             <div class="state">
               ${this.state
                 ? html`
-                    ${this.tab !== 'chat'
-                      ? html`<span
-                          class="pill ${this.state.openrouter ? 'ok' : ''}"
-                        >
-                          LLM ${this.state.openrouter ? 'live' : 'mock'}
-                        </span>`
-                      : nothing}
                     ${this.globalRunning
                       ? html`<span class="pill running">运行中</span>`
                       : ''}

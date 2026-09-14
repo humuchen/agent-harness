@@ -14,6 +14,10 @@
  *  - 桌面：flex 等分（图标在左、全名在右）；移动（≤760px）：grid 等分（图标在上、短名在下），
  *    列数由分组数推导（--set-groups，见 connectedCallback），保证分组一屏可见、无横滑、无溢出菜单。
  *  - 选中态用 accent-soft 底 + accent 字（非实心强调色），全屏唯一强调点仍是密钥面板的「保存」。
+ *  - 移动端（≤760px）刻意**不用底色块与边框**表达选中：改为一条 18px 的滑动指示条
+ *    （.tab-ink，宽度 = 一列，靠 translateX(下标 × 100%) 平移）+ 图标弹入 + 内容淡入上移。
+ *    因此移动端 .tabs 必须 gap:0 —— 等分列无缝，位移距离才与列宽对齐。
+ *    全部动效在 `prefers-reduced-motion: reduce` 下关闭。
  *  - 窗口宽度与内嵌密钥面板自身的 760px 约束对齐并水平居中：否则宽屏下密钥分区的卡片会比
  *    其它分组窄一截（内层面板自带 max-width），同一窗口出现两种卡片宽度。
  *
@@ -22,7 +26,9 @@
  * 避免切到不存在的分组后内容区空白。
  *
  * 内容真实性约定：仅保留「点了确实会发生什么」的行；不做无后端的装饰性开关。
- *  - 系统与网络：服务状态（真实拉取 /api/v1/state）+ 接口地址 + 重新检测 + 清空通知未读。
+ *  - 系统与网络：服务状态（真实拉取 /api/v1/state）+ 接口地址 + 重新检测 + 清空通知未读
+ *    + 存储空间（navigator.storage.estimate() 真实占用；「清理」只清 CLEARABLE_KEYS 里的
+ *    视图 / 会话态与 CacheStorage，不碰登录凭据与主题 / 侧边栏偏好）。
  *  - 外观：主题（深色 / 浅色 / 跟随系统，真实写入 ah-theme）+ 侧边栏默认收起（父级持有偏好）。
  *  - 关于：版本号 + 界面语言（只读）。品牌信息不出现在本页——品牌统一收敛到「我的」页，
  *    故此处不渲染品牌卡与版权脚（桌面侧栏品牌块亦已隐藏，见 styles/base.ts）。
@@ -145,6 +151,58 @@ const ICON_LANG = svgIcon(
   svg`<circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />`,
   '1.7'
 );
+
+// ── 存储空间行图标 ──
+const ICON_STORAGE = svgIcon(
+  svg`<ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" /><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3" />`,
+  '1.7'
+);
+const ICON_TRASH = svgIcon(
+  svg`<path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6l-1 13.5A2.5 2.5 0 0 1 15.5 22h-7A2.5 2.5 0 0 1 6 19.5L5 6" />`,
+  '1.7'
+);
+
+/**
+ * 可安全清理的本地键：全部是「视图 / 会话态」，清掉只是回到默认视图。
+ * 刻意**不含**登录凭据（token / refresh / user）与用户偏好（主题、侧边栏、未读计数），
+ * 避免「清理缓存」把用户登录状态或偏好一起抹掉。
+ */
+const CLEARABLE_KEYS = [
+  'ah_active_id',
+  'ah_conversation_id',
+  'ah_model',
+  'ah_interaction_mode',
+  'ah_web'
+] as const;
+
+/** 统计可清理键在 localStorage 中的占用与条目数（UTF-16，按 2 字节/字符估算）。 */
+function localCacheStats(): { count: number; bytes: number } {
+  if (typeof localStorage === 'undefined') return { count: 0, bytes: 0 };
+  let count = 0;
+  let bytes = 0;
+  for (const k of CLEARABLE_KEYS) {
+    const v = localStorage.getItem(k);
+    if (v !== null) {
+      count += 1;
+      bytes += (k.length + v.length) * 2;
+    }
+  }
+  return { count, bytes };
+}
+
+/** 人读字节数；null / 不可用显示为破折号。 */
+function formatBytes(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+  if (n < 1024) return `${Math.round(n)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
 
 const GROUPS: Array<{
   id: SettingsGroup;
@@ -278,6 +336,31 @@ export class AhSettingsCenter extends LitElement {
     }
     .tl.short {
       display: none;
+    }
+    /* 移动端激活指示条：桌面端沿用 accent-soft 底色块，故默认不渲染。 */
+    .tab-ink {
+      display: none;
+    }
+    /* 移动端切页动画（关键帧全局定义，仅 ≤760px 使用）。 */
+    @keyframes set-tab-pop {
+      from {
+        transform: scale(0.86);
+        opacity: 0.55;
+      }
+      to {
+        transform: none;
+        opacity: 1;
+      }
+    }
+    @keyframes set-pane-in {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
     }
 
     /* ── 内容区 ── */
@@ -528,6 +611,64 @@ export class AhSettingsCenter extends LitElement {
         width: 17px;
         height: 17px;
       }
+      /* ── 顶部 Tab：移动端去掉底色与边框，改用滑动指示条 + 切换动画 ──
+         等分列宽必须无缝（gap:0），否则指示条的位移距离与列宽对不上。 */
+      .tabs {
+        position: relative;
+        gap: 0;
+      }
+      .ttab {
+        position: relative;
+        z-index: 1;
+        background: transparent;
+        border-color: transparent;
+        border-radius: 0;
+        transition: color 180ms ease, transform 140ms ease;
+      }
+      .ttab:hover {
+        background: transparent;
+        color: var(--ah-text-muted);
+      }
+      .ttab.on {
+        background: transparent;
+        border-color: transparent;
+        color: var(--ah-accent);
+      }
+      .ttab:active {
+        transform: scale(0.94);
+      }
+      /* 选中项图标轻微弹入（class 切换即重放） */
+      .ttab.on svg {
+        animation: set-tab-pop 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+      }
+      /* 滑动指示条：宽度 = 一列，靠 translateX(下标 × 100%) 平移到当前列 */
+      .tab-ink {
+        display: block;
+        position: absolute;
+        left: 0;
+        top: 0;
+        z-index: 0;
+        width: calc(100% / var(--set-groups, 4));
+        height: 100%;
+        pointer-events: none;
+        transform: translateX(calc(var(--tab-i, 0) * 100%));
+        transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+      }
+      .tab-ink::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        bottom: 0;
+        width: 18px;
+        height: 2px;
+        margin-left: -9px;
+        border-radius: 2px;
+        background: var(--ah-accent);
+      }
+      /* 内容切页：section 由 hidden 变可见时会重放该动画 */
+      section[data-group] {
+        animation: set-pane-in 220ms ease-out both;
+      }
       .tl.full {
         display: none;
       }
@@ -564,6 +705,17 @@ export class AhSettingsCenter extends LitElement {
         text-align: center;
       }
     }
+
+    /* 降低动效偏好：关掉移动端的滑条位移、图标弹入与切页动画（无障碍） */
+    @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
+      .tab-ink,
+      .ttab,
+      .ttab.on svg,
+      section[data-group] {
+        transition: none;
+        animation: none;
+      }
+    }
   `;
 
   /**
@@ -585,6 +737,15 @@ export class AhSettingsCenter extends LitElement {
   @state() private checking = false;
   /** 系统与网络：本地未读提醒数。 */
   @state() private unread = 0;
+  /** 存储空间：浏览器口径的已用 / 可用字节（null = 尚未检测或环境不支持）。 */
+  @state() private storageUsed: number | null = null;
+  @state() private storageQuota: number | null = null;
+  /** 存储空间：可清理的本地视图缓存占用（项数 + 字节）。 */
+  @state() private cacheStats: { count: number; bytes: number } = {
+    count: 0,
+    bytes: 0
+  };
+  @state() private clearing = false;
 
   /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。 */
   private mounted = new Set<SettingsGroup>([DEFAULT_GROUP]);
@@ -612,6 +773,8 @@ export class AhSettingsCenter extends LitElement {
     this.mounted.add(this.active);
     if (changed.has('active') && this.active === 'system') {
       void this.checkServer();
+      // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
+      void this.measureStorage();
       this.unread = getReminderUnread().count;
     }
   }
@@ -695,6 +858,87 @@ export class AhSettingsCenter extends LitElement {
     notify.success('已清空通知未读');
   }
 
+  /**
+   * 测量存储占用：
+   *  - storageUsed / storageQuota 取 `navigator.storage.estimate()`（浏览器口径，含缓存与本地库）；
+   *  - cacheStats 只统计本组件真正能清理的那几项本地视图缓存。
+   * 隐私模式 / 老浏览器可能不支持 estimate：此时保持 null，UI 显示「—」，不做假数据。
+   */
+  private async measureStorage() {
+    this.cacheStats = localCacheStats();
+    try {
+      const est = await navigator.storage?.estimate?.();
+      this.storageUsed = est?.usage ?? null;
+      this.storageQuota = est?.quota ?? null;
+    } catch {
+      this.storageUsed = null;
+      this.storageQuota = null;
+    }
+  }
+
+  /**
+   * 清理本地缓存：仅清除 CLEARABLE_KEYS 中的视图 / 会话态，并清空 CacheStorage
+   * （当前项目无 Service Worker，该分支为将来接入预留，空时无副作用）。
+   * 登录凭据与主题 / 侧边栏偏好不在清理范围内 —— 文案已如实说明。
+   */
+  private async clearCaches() {
+    if (this.clearing) return;
+    this.clearing = true;
+    try {
+      const before = localCacheStats();
+      let removed = 0;
+      if (typeof localStorage !== 'undefined') {
+        for (const k of CLEARABLE_KEYS) {
+          if (localStorage.getItem(k) !== null) {
+            localStorage.removeItem(k);
+            removed += 1;
+          }
+        }
+      }
+      if (typeof caches !== 'undefined') {
+        const names = await caches.keys();
+        await Promise.all(names.map((n) => caches.delete(n)));
+      }
+      await this.measureStorage();
+      notify.success(
+        removed
+          ? `已清理 ${removed} 项本地缓存（约 ${formatBytes(before.bytes)}）`
+          : '本地缓存已是空的'
+      );
+    } catch (e) {
+      notifyError(e, {
+        title: '存储空间',
+        fallback: '清理本地缓存失败',
+        key: 'settings-cache'
+      });
+    } finally {
+      this.clearing = false;
+    }
+  }
+
+  /** 「缓存占用」详述（不支持 estimate 的环境如实说明，不编造数字）。 */
+  private get storageDetail(): string {
+    if (this.storageUsed === null && this.storageQuota === null) {
+      return '当前环境不支持检测占用';
+    }
+    return `浏览器口径 已用 ${formatBytes(
+      this.storageUsed
+    )} / 可用 ${formatBytes(this.storageQuota)}`;
+  }
+
+  /** 「清理缓存」详述：说明清的是哪些、不清哪些。 */
+  private get cacheDetail(): string {
+    return `本地视图缓存 ${this.cacheStats.count} 项 · 约 ${formatBytes(
+      this.cacheStats.bytes
+    )}；不影响登录状态与主题偏好`;
+  }
+
+  /** 当前分组的列下标：驱动移动端滑动指示条的位移（找不到时退回 0）。 */
+  private get activeIndex(): number {
+    const i = GROUPS.findIndex((g) => g.id === this.active);
+    return i < 0 ? 0 : i;
+  }
+
   render(): TemplateResult {
     return html`
       <div class="setwin">
@@ -717,7 +961,11 @@ export class AhSettingsCenter extends LitElement {
             </button>
             设置
           </div>
-          <div class="tabs" role="tablist">
+          <div
+            class="tabs"
+            role="tablist"
+            style="--tab-i: ${this.activeIndex}"
+          >
             ${GROUPS.map(
               (g) => html`
                 <button
@@ -733,6 +981,8 @@ export class AhSettingsCenter extends LitElement {
                 </button>
               `
             )}
+            <!-- 移动端滑动指示条：装饰性，故 aria-hidden；位移由 --tab-i 驱动 -->
+            <span class="tab-ink" aria-hidden="true"></span>
           </div>
         </div>
 
@@ -816,6 +1066,31 @@ export class AhSettingsCenter extends LitElement {
                       @click=${() => this.clearUnread()}
                     >
                       清空
+                    </button>
+                  </div>
+                </div>
+
+                <div class="sec-title">存储空间</div>
+                <div class="card">
+                  <div class="row">
+                    <span class="ri">${ICON_STORAGE}</span>
+                    <span class="rc">
+                      <span class="rl">缓存占用</span>
+                      <span class="rd">${this.storageDetail}</span>
+                    </span>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_TRASH}</span>
+                    <span class="rc">
+                      <span class="rl">清理缓存</span>
+                      <span class="rd">${this.cacheDetail}</span>
+                    </span>
+                    <button
+                      class="btn"
+                      ?disabled=${this.clearing}
+                      @click=${() => this.clearCaches()}
+                    >
+                      ${this.clearing ? '清理中…' : '清理'}
                     </button>
                   </div>
                 </div>
