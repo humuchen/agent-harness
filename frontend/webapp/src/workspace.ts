@@ -183,6 +183,22 @@ export class AhWorkspace extends LitElement {
         color: var(--ah-text-faint);
         font-size: 12px;
       }
+      .recent-more {
+        margin-top: 10px;
+        padding: 8px 12px;
+        width: 100%;
+        border: 1px solid var(--ah-border);
+        border-radius: var(--ah-radius-md);
+        background: var(--ah-surface-2);
+        color: var(--ah-text-muted);
+        font-size: 13px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .recent-more:hover {
+        color: var(--ah-accent);
+        border-color: var(--ah-accent);
+      }
     `,
   ];
 
@@ -270,9 +286,10 @@ export class AhWorkspace extends LitElement {
     const recipeCount = this.recipes.length;
     const memBackend = this.memSessions?.backend ?? '—';
     const memCount = this.memSessions?.sessions?.length ?? 0;
+    const RECENT_LIMIT = 10;
     const recent = [...this.sessions]
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-      .slice(0, 5);
+      .slice(0, RECENT_LIMIT);
 
     return html`
       <section style="border:none;background:none;box-shadow:none;padding:0">
@@ -372,6 +389,14 @@ export class AhWorkspace extends LitElement {
                   `
                 )}
           </section>
+          ${this.sessions.length > RECENT_LIMIT
+            ? html`<button
+                class="recent-more"
+                @click=${() => this.goto('chat')}
+              >
+                查看全部 ${this.sessions.length} 条会话 →
+              </button>`
+            : ''}
         </div>
       </section>
     `;

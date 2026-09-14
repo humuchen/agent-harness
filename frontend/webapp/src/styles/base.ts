@@ -2,16 +2,6 @@ import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 12-484 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
 export const base = css`
-    display: block;
-    background: var(--ah-canvas);
-    color: var(--ah-text);
-    font-family: var(--ah-font-sans);
-    font-size: 14px;
-    line-height: 1.5;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-  }
   /* 滚动条：细轨道、圆角滑块，hover 才高亮，保持界面干净 */
   ::-webkit-scrollbar {
     width: 8px;
@@ -164,10 +154,15 @@ export const base = css`
     border-radius: var(--ah-radius-md);
   }
   /* 应用骨架：左侧 240 导航 + 右侧主区（顶栏 + 内容），对齐设计稿。
-     整个 shell 占满视口；内容区按内容自然高度，超出可视区时内部滚动，避免 body 全局滚动条。 */
+     整个 shell 占满视口；内容区按内容自然高度，超出可视区时内部滚动，避免 body 全局滚动条。
+     background/color 用 --ah-canvas 等语义令牌，随 [data-theme] 切换，
+     确保移动端 WebView（不渲染 html/body 背景）下内容区也能正确亮/暗。 */
   .shell {
     display: flex;
     height: 100%;
+    min-height: 100dvh;
+    background: var(--ah-canvas);
+    color: var(--ah-text);
     overflow: hidden;
   }
   .sidebar {

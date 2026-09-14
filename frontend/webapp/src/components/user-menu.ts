@@ -26,6 +26,7 @@ import {
 } from '../api';
 import { notify } from './ah-notification';
 import { validateChangePassword } from '../utils/auth-validation';
+import { BRAND_DEFAULT, type BrandConfig } from '../theme/tokens';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
@@ -523,14 +524,33 @@ export class AhUserMenu extends LitElement {
       outline: 2px solid var(--ah-accent);
       outline-offset: 2px;
     }
-    /* 版本号脚 */
-    .s-ver {
-      margin-top: 14px;
+    /* 品牌脚（移动端「我的」页呈现，替换原版本号脚） */
+    .s-brand {
+      margin-top: 18px;
+      padding: 16px 0 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
       text-align: center;
-      color: var(--ah-text-faint);
+    }
+    .s-logo {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      object-fit: contain;
+      margin-bottom: 2px;
+    }
+    .s-brand-name {
+      font-family: var(--ah-font-display);
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--ah-text-muted);
+    }
+    .s-brand-foot {
       font-size: 10.5px;
+      color: var(--ah-text-faint);
       font-family: var(--ah-font-mono);
-      padding: 14px 0 4px;
     }
   `;
 
@@ -546,6 +566,9 @@ export class AhUserMenu extends LitElement {
    */
   @property({ type: Boolean }) standalone = false;
 
+  /** 品牌配置（移动端「我的」页呈现，桌面端由全局 ah-brand-foot 呈现）。 */
+  @state() private brand: BrandConfig = BRAND_DEFAULT;
+
   @state() private open = false;
   @state() private showPw = false;
   @state() private oldPw = '';
@@ -559,6 +582,10 @@ export class AhUserMenu extends LitElement {
     if (!this.username) {
       void this.refreshMe();
     }
+    // 品牌配置：移动端「我的」页呈现（桌面端由全局 ah-brand-foot 呈现），
+    // 优先读取启动时注入的全局 BRAND，缺省回退到令牌默认值。
+    const g = (globalThis as unknown as { BRAND?: BrandConfig }).BRAND;
+    if (g) this.brand = g;
     document.addEventListener('click', this.onDocClick, true);
     window.addEventListener('keydown', this.onKeydown);
   }
@@ -703,7 +730,20 @@ export class AhUserMenu extends LitElement {
             </button>
           </div>
 
-          <div class="s-ver">Agent Harness v${APP_VERSION}</div>
+          <div class="s-brand">
+            ${this.brand.logoUrl
+              ? html`<img
+                  class="s-logo"
+                  src=${this.brand.logoUrl}
+                  alt=${this.brand.productName}
+                />`
+              : nothing}
+            <span class="s-brand-name">${this.brand.productName}</span>
+            <span class="s-brand-foot"
+              >© ${new Date().getFullYear()} ·
+              ${this.brand.footer ?? BRAND_DEFAULT.footer}</span
+            >
+          </div>
         </div>
         ${this.showPw ? this.renderPwModal() : nothing} `;
     }
