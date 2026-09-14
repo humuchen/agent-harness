@@ -25,7 +25,12 @@ export const responsive = css`
         transition: transform 220ms ease;
         z-index: 50;
         box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
-        /* 固定 top:0 的会话列表抽屉：顶/底 padding 含安全区，避开状态栏与手势条 */
+        /* 固定 top:0 的会话列表抽屉：顶/底 padding 含安全区，避开状态栏与手势条。
+           box-sizing 必须显式声明：content-box 下 height:100% 是「内容高」，
+           再叠加安全区 padding 会让抽屉总高超出视口 (24px + safe-top + safe-bottom)，
+           滚动到底时最后若干条会话被推出屏幕且无法回滚到。
+           改为 border-box 后 padding 计入 100%，抽屉正好铺满视口，末条可达。 */
+        box-sizing: border-box;
         padding: calc(12px + env(safe-area-inset-top, 0px)) 0
           calc(12px + env(safe-area-inset-bottom, 0px));
       }

@@ -120,7 +120,13 @@ html, body {
 }
 `;
 
-const STORAGE_KEY = 'ah-theme';
+/**
+ * 主题偏好的 localStorage 键。
+ * 导出原因：设置中心的「跟随系统」需要清除该键以回落到系统偏好（见 settings-center.ts）。
+ */
+export const THEME_STORAGE_KEY = 'ah-theme';
+
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 export function installThemeStyles(): void {
   if (typeof document === 'undefined') return;

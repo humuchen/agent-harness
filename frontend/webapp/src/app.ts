@@ -21,7 +21,8 @@ import {
   type ReminderUnread
 } from './plugin-notify';
 import './plugins-console';
-import './components/provider-key-settings';
+// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 账户 / 模型与密钥 / 系统与网络 / 外观 / 关于。
+import './components/settings-center';
 import { TopProgressBar } from './top-progress-bar';
 
 type Tab =
@@ -214,6 +215,13 @@ export class AhApp extends LitElement {
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
   /** 全局运行中指示器：任意面板（chat / run）发起运行即亮起，全部结束后熄灭。 */
   @state() private globalRunning = false;
+  /**
+   * 设置中心的目标分组 + 定位序号。
+   * 序号自增：同一分组被重复请求（例如连续两次从「我的」进设置）也能重新定位，
+   * 否则属性值不变、Lit 不会触发下游更新。见 ah-goto 处理与 ah-settings-center。
+   */
+  @state() private settingsGroup = 'account';
+  @state() private settingsSeq = 0;
   /** 顶部进度条实例。 */
   private progressBar = TopProgressBar.getInstance();
   @state() private drawerOpen = false;
@@ -258,11 +266,38 @@ export class AhApp extends LitElement {
     );
     // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
     startPluginNotify();
-    // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
+    // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组。
     this.addEventListener('ah-goto', (e) => {
-      const t = (e as CustomEvent<string>).detail;
-      if (t) this.setTab(t);
+      const d = (
+        e as CustomEvent<string | { tab?: string; group?: string }>
+      ).detail;
+      if (!d) return;
+      if (typeof d === 'string') {
+        this.setTab(d);
+        return;
+      }
+      if (!d.tab) return;
+      // 携带分组：更新目标分组并自增序号，保证重复请求同一分组也能重新定位。
+      this.settingsGroup = d.group ?? 'account';
+      this.settingsSeq += 1;
+      this.setTab(d.tab);
     });
+    // 设置中心切换主题 / 侧边栏偏好 → 回填顶层状态（顶栏主题按钮、侧栏收起态由本壳持有）。
+    this.onThemeChanged = () => {
+      this.theme = getTheme();
+    };
+    this.onSidebarCollapsed = (e: Event) => {
+      const collapsed = !!(
+        e as CustomEvent<{ collapsed?: boolean }>
+      ).detail?.collapsed;
+      this.sidebarCollapsed = collapsed;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+    };
+    window.addEventListener('ah:theme-changed', this.onThemeChanged);
+    this.addEventListener(
+      'ah-sidebar-collapsed',
+      this.onSidebarCollapsed as EventListener
+    );
     // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
     window.addEventListener('ah:run:start', () => {
       this.globalRunning = true;
@@ -323,6 +358,12 @@ export class AhApp extends LitElement {
 
   /** 移动端 Deep Link 处理器引用（disconnectedCallback 解绑用）。 */
   private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
+
+  /** 设置中心改主题后的同步处理器（顶栏主题按钮文案 / 图标由本壳持有）。 */
+  private onThemeChanged = () => {};
+
+  /** 设置中心改「侧边栏默认收起」偏好后的处理器（持久化 + 回填本壳状态）。 */
+  private onSidebarCollapsed = (_e: Event) => {};
 
   /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。
    *  触摸点 x 在 0–20% 视口宽范围内即视为「边缘」，右滑 20px 且主要水平位移
@@ -707,9 +748,16 @@ export class AhApp extends LitElement {
             ></ah-supply-chain>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
             <ah-plan-board ?hidden=${this.tab !== 'plan'}></ah-plan-board>
-            <ah-provider-key-settings
+            <!-- 设置 Tab：综合设置中心（顶部平铺分组 Tab；「模型与密钥」内嵌 BYOK 面板） -->
+            <ah-settings-center
               ?hidden=${this.tab !== 'settings'}
-            ></ah-provider-key-settings>
+              group=${this.settingsGroup}
+              groupSeq=${this.settingsSeq}
+              username=${this.me?.username ?? ''}
+              role=${this.me?.role ?? ''}
+              email=${this.me?.email ?? ''}
+              ?sidebarCollapsed=${this.sidebarCollapsed}
+            ></ah-settings-center>
             <!-- 我的 Tab：复用 ah-user-menu，头像＋改密＋退出全部收进来 -->
             <div class="me-view" ?hidden=${this.tab !== 'me'}>
               ${this.me

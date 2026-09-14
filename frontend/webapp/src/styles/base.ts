@@ -2,6 +2,21 @@ import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 12-484 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
 export const base = css`
+  /* 组件根盒：修复样式模块化拆分时丢失 :host 选择器前缀导致整条规则失效的问题。
+     缺 display:block 时自定义元素退回 display:inline；缺令牌则组件不随 [data-theme]
+     切换（亮色主题下根背景仍为暗色）且丢失 Inter / 14px 基准排版。
+     注意：此处刻意不写 height/overflow —— 移动端已在 responsive.ts 的
+     @media (max-width:760px) 内改为文档自然滚动（:host height:auto / overflow:visible），
+     .shell 与 .content 各自管理高度与滚动；若在 :host 上锁定 100dvh + overflow:hidden，
+     反而会在内容超高时把底部内容裁掉且无法滚动。 */
+  :host {
+    display: block;
+    background: var(--ah-canvas);
+    color: var(--ah-text);
+    font-family: var(--ah-font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
   /* 滚动条：细轨道、圆角滑块，hover 才高亮，保持界面干净 */
   ::-webkit-scrollbar {
     width: 8px;

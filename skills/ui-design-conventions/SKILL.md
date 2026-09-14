@@ -133,6 +133,32 @@ agent_created: true
 - **纯图标按钮必须有 `aria-label` 和 tooltip**。
 - 识别度存疑（> 20% 用户可能猜错）→ **图标 + 文字**，不要为了省空间牺牲识别。
 
+### 实现陷阱：Lit 内联 SVG 必须用 `svg` 标签（易致「图标写了却看不见」）
+
+Lit 项目里把图标拆成「helper 包一层 + 图形片段」时，图形片段**必须**用 `svg\`...\`` 而不是 `html\`...\``：
+
+```ts
+import { html, svg } from 'lit';
+
+// ✅ 正确：图形片段用 svg 标签构造
+const icon = (body: TemplateResult) => html`<svg viewBox="0 0 24 24" ...>${body}</svg>`;
+const ICON_KEY = icon(svg`<circle cx="8" cy="8" r="4" /><path d="M11 11l8 8" />`);
+
+// ❌ 错误：图形片段用 html 标签 → 图标区域留白，但 DOM 里确实有 <svg>
+const ICON_KEY = icon(html`<circle cx="8" cy="8" r="4" /><path d="M11 11l8 8" />`);
+```
+
+原因：`html` 模板在没有 `<svg>` 上下文的裸 `<template>` 里按 **HTML** 解析，于是
+1. 自闭合被忽略 → `<circle/>` 未闭合，后面的 `<path>` 被吞成它的子节点（`circle` 不允许子元素，于是什么都不画）；
+2. 图形元素落在 **HTML 命名空间** → 塞进 `<svg>` 后浏览器不绘制。
+
+自查方法（一次就能定位）：在页面里读
+`tabs.querySelector('.ttab svg circle').namespaceURI` 应为 `http://www.w3.org/2000/svg`，
+且 `circle.children.length === 0`。若 `namespaceURI` 为 `http://www.w3.org/1999/xhtml` 或子元素数 > 0，就是踩了这个坑。
+
+注：直接写在一个完整 `<svg>…</svg>` 模板里的自闭合图形是安全的（此时解析器已进入 SVG 上下文）；
+只有「独立成片、被插进别处」的图形片段才必须用 `svg` 标签。
+
 ---
 
 ## §5 层级表达：手段有优先级

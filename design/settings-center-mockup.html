@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Agent Harness · 设置中心设计稿</title>
+<style>
+  :root {
+    --canvas: #0B0E14;
+    --s1: #121622;
+    --s2: #171C2B;
+    --s3: #1C2233;
+    --border: #262D3D;
+    --text: #E6EDF3;
+    --muted: #9AA6B6;
+    --faint: #5D6675;
+    --accent: #2997FF;
+    --accent-strong: #0A84FF;
+    --accent-soft: rgba(41,151,255,.15);
+    --ok: #30D158;
+    --warn: #FFD60A;
+    --danger: #FF453A;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--canvas); color: var(--text); font-family: var(--font);
+    padding: 28px 32px 60px; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  .head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+  .head h1 { font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+  .head .tag { font-family: var(--mono); font-size: 11px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; max-width: 880px; line-height: 1.7; }
+
+  .switcher { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 26px; }
+  .sw {
+    border: 1px solid var(--border); background: var(--s1); color: var(--muted);
+    border-radius: 10px; padding: 8px 14px; font-size: 13px; font-family: var(--font);
+    cursor: pointer; transition: all .15s ease; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .sw:hover { border-color: var(--accent); color: var(--text); }
+  .sw.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .sw .k { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .sw.on .k { color: var(--accent); }
+
+  /* ── 展示区 ── */
+  .showcase { display: flex; gap: 44px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { display: none; }
+  .panel.on { display: flex; gap: 44px; align-items: flex-start; flex-wrap: wrap; }
+
+  /* ── 桌面：设置中心窗口（侧栏 + 内容） ── */
+  .setwin {
+    width: 720px; flex: 0 0 auto; background: var(--s1); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden; display: grid; grid-template-columns: 196px 1fr;
+    min-height: 560px;
+  }
+  .set-side { border-right: 1px solid var(--border); padding: 14px 10px; background: var(--s1); }
+  .set-side .s-title { font-size: 11px; color: var(--faint); font-weight: 600; letter-spacing: .4px; padding: 4px 10px 8px; }
+  .s-nav {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+    border: none; background: none; border-radius: 10px; color: var(--muted); font-size: 13px;
+    font-family: var(--font); cursor: pointer; text-align: left;
+  }
+  .s-nav .si { width: 26px; height: 26px; border-radius: 8px; background: var(--s3); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--muted); }
+  .s-nav .si svg { width: 15px; height: 15px; }
+  .s-nav:hover { background: var(--s2); color: var(--text); }
+  .s-nav.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .s-nav.on .si { background: var(--accent); color: #fff; }
+
+  /* ── 方案 B：顶部平铺 Tab ── */
+  .setwin.flat { grid-template-columns: 1fr; }
+  .flat-head { border-bottom: 1px solid var(--border); padding: 14px 14px 10px; }
+  .flat-head .fh-title { font-size: 15px; font-weight: 700; padding: 0 4px 10px; }
+  .top-tabs { display: flex; gap: 6px; }
+  .ttab {
+    flex: 1 1 0; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 9px 8px; border-radius: 9px; border: 1px solid transparent; background: transparent;
+    color: var(--muted); font-size: 13px; font-family: var(--font); cursor: pointer; white-space: nowrap;
+    transition: background .12s ease, color .12s ease;
+  }
+  .ttab:hover { background: var(--s2); color: var(--text); }
+  .ttab.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .ttab svg { width: 15px; height: 15px; flex: 0 0 auto; }
+  /* 移动端：五等分网格平铺，图标在上、短名在下 */
+  .top-tabs.mob { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 2px 12px 10px; flex: 0 0 auto; }
+  .top-tabs.mob .ttab { flex-direction: column; gap: 3px; padding: 9px 2px; font-size: 10.5px; border-radius: 10px; line-height: 1.15; }
+  .top-tabs.mob .ttab svg { width: 17px; height: 17px; }
+
+  .set-content { padding: 18px 20px 26px; overflow-y: auto; }
+  .set-content .c-head { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+  .set-content .c-sub { font-size: 12px; color: var(--faint); margin-bottom: 16px; }
+  .sec { display: none; }
+  .sec.on { display: block; }
+
+  .sec-title { font-size: 11px; color: var(--faint); font-weight: 600; letter-spacing: .4px; padding: 4px 2px 8px; margin-top: 14px; }
+  .sec-title:first-of-type { margin-top: 0; }
+  .card { border: 1px solid var(--border); background: var(--s1); border-radius: 12px; padding: 4px 14px; margin-bottom: 12px; }
+
+  /* 账户资料行 */
+  .profile { display: flex; align-items: center; gap: 14px; padding: 14px 0; }
+  .p-avatar { width: 48px; height: 48px; border-radius: 50%; flex: 0 0 auto; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #fff; font-weight: 700; font-size: 20px; display: inline-flex; align-items: center; justify-content: center; }
+  .p-meta { min-width: 0; flex: 1; }
+  .p-name { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .role-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 10px; font-family: var(--mono); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent); }
+  .p-mail { font-size: 12px; color: var(--faint); margin-top: 3px; }
+  .link { border: none; background: none; color: var(--accent); font-size: 13px; cursor: pointer; font-family: var(--font); padding: 6px 8px; border-radius: 8px; }
+  .link:hover { background: var(--accent-soft); }
+
+  /* 通用设置行 */
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .row:first-child { border-top: none; }
+  .row .ri { width: 30px; height: 30px; border-radius: 9px; background: var(--s3); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--muted); }
+  .row .ri svg { width: 16px; height: 16px; }
+  .row .ri.danger { background: var(--danger); color: #fff; }
+  .row .rc { flex: 1; min-width: 0; }
+  .row .rl { font-size: 13.5px; font-weight: 600; }
+  .row .rd { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .row .chev { color: var(--faint); font-size: 14px; flex: 0 0 auto; }
+  .row.danger .rl { color: var(--danger); }
+
+  /* 开关 */
+  .toggle { position: relative; width: 40px; height: 23px; border-radius: 999px; background: var(--s3); border: 1px solid var(--border); cursor: pointer; flex: 0 0 auto; transition: background .15s ease; }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: var(--muted); transition: transform .15s ease, background .15s ease; }
+  .toggle.on { background: var(--accent); border-color: var(--accent); }
+  .toggle.on::after { transform: translateX(17px); background: #fff; }
+
+  /* 分段控件 */
+  .seg { display: inline-flex; gap: 4px; padding: 3px; background: var(--s2); border: 1px solid var(--border); border-radius: 10px; }
+  .seg button { border: none; background: none; color: var(--muted); font-size: 12.5px; padding: 6px 12px; border-radius: 7px; cursor: pointer; font-family: var(--font); }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+  /* 色板 */
+  .swatches { display: flex; gap: 8px; }
+  .swatch { width: 24px; height: 24px; border-radius: 7px; cursor: pointer; border: 2px solid transparent; }
+  .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--canvas) inset; }
+
+  /* 下拉 */
+  .select { appearance: none; background: var(--s2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 7px 12px; font-size: 13px; font-family: var(--font); cursor: pointer; }
+  .btn-ghost { border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 13px; padding: 7px 14px; border-radius: 10px; cursor: pointer; font-family: var(--font); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--faint); }
+
+  /* 模型与密钥 */
+  .intro { font-size: 12.5px; line-height: 1.7; color: var(--muted); margin: 0 0 14px; }
+  .intro b { color: var(--text); }
+  .prov-tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .prov-tab { appearance: none; border: 1px solid var(--border); background: var(--s1); color: var(--muted); font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 999px; cursor: pointer; }
+  .prov-tab.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .status-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0 12px; }
+  .badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+  .badge.valid { color: var(--ok); background: rgba(48,209,88,.15); }
+  .badge.multi { color: var(--accent); background: var(--accent-soft); }
+  .badge.ok { color: var(--accent); background: var(--accent-soft); }
+  .hint { font-size: 11.5px; color: var(--faint); font-family: var(--mono); }
+  .actions { display: flex; gap: 8px; padding-bottom: 4px; }
+  .help-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--accent); text-decoration: none; padding: 8px 0 4px; }
+  .usage-card { margin-top: 4px; border: 1px solid var(--border); background: var(--s1); border-radius: 12px; padding: 14px; }
+  .usage-title { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; }
+  .usage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .usage-item { background: var(--s2); border-radius: 10px; padding: 12px; text-align: center; }
+  .usage-val { font-size: 18px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .usage-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* 关于 */
+  .brand-card { display: flex; align-items: center; gap: 14px; padding: 18px 14px; border: 1px solid var(--border); background: linear-gradient(160deg, var(--s2), var(--s1)); border-radius: 12px; margin-bottom: 12px; }
+  .b-logo { width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .b-logo svg { width: 22px; height: 22px; color: #fff; }
+  .b-name { font-size: 16px; font-weight: 700; font-family: var(--font); }
+  .b-tag { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .about-foot { text-align: center; color: var(--faint); font-size: 11px; font-family: var(--mono); padding: 14px 0 2px; }
+
+  /* ── 手机框 ── */
+  .phone { width: 340px; flex: 0 0 auto; border-radius: 42px; background: #05070C; border: 1px solid #1F2636; padding: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.55); }
+  .p-screen { position: relative; border-radius: 32px; overflow: hidden; height: 660px; background: var(--canvas); display: flex; flex-direction: column; }
+  .sb-notch { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); width: 88px; height: 16px; background: #000; border-radius: 10px; z-index: 30; }
+  .m-topbar { display: flex; align-items: center; gap: 10px; padding: 36px 14px 10px; flex: 0 0 auto; }
+  .m-back { width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--border); background: var(--s2); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .m-title { font-size: 15px; font-weight: 700; }
+  .m-subnav { display: flex; gap: 6px; padding: 4px 12px 10px; overflow-x: auto; flex: 0 0 auto; scrollbar-width: none; }
+  .m-subnav::-webkit-scrollbar { display: none; }
+  .m-pill { flex: 0 0 auto; border: 1px solid var(--border); background: var(--s1); color: var(--muted); border-radius: 999px; padding: 6px 13px; font-size: 12px; font-family: var(--font); cursor: pointer; white-space: nowrap; }
+  .m-pill.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .m-content { flex: 1; overflow-y: auto; padding: 4px 12px 20px; }
+  .m-content .sec { display: none; }
+  .m-content .sec.on { display: block; }
+
+  /* 设计说明 */
+  .notes { flex: 1 1 300px; min-width: 260px; }
+  .notes h3 { font-size: 17px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .notes h3 .k { font-family: var(--mono); font-size: 12px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-soft); padding: 2px 8px; border-radius: 999px; }
+  .notes .desc { color: var(--muted); font-size: 13px; line-height: 1.75; margin-bottom: 14px; }
+  .notes .tags { display: flex; flex-direction: column; gap: 6px; }
+  .note-tag { display: flex; gap: 10px; font-size: 12.5px; line-height: 1.6; }
+  .note-tag .n { width: 22px; height: 20px; flex: 0 0 auto; border-radius: 6px; font-size: 10.5px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; margin-top: 1px; }
+  .note-tag.pro .n { background: rgba(48,209,88,.15); color: var(--ok); }
+  .note-tag.con .n { background: rgba(255,69,58,.15); color: var(--danger); }
+  .note-tag .n em { font-style: normal; }
+  .decide { margin-top: 34px; background: linear-gradient(180deg, var(--s1), var(--s2)); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; }
+  .decide h3 { font-size: 15px; margin-bottom: 10px; color: var(--accent); }
+  .decide p { font-size: 13px; color: var(--muted); line-height: 1.8; }
+  .decide b { color: var(--text); }
+  .decide code { font-family: var(--mono); font-size: 12px; background: var(--s3); border: 1px solid var(--border); padding: 1px 6px; border-radius: 6px; color: var(--accent); }
+  .footnote { margin-top: 22px; color: var(--faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <h1>Agent Harness · 设置中心设计稿</h1>
+    <span class="tag">方案 B · 顶部平铺 Tab</span>
+  </div>
+  <p class="sub">
+    综合设置中心，五分组：<b>账户 / 模型与密钥 / 系统与网络 / 外观 / 关于</b>，版本号收敛到「关于」。
+    本稿新增 <b>方案 B：把分组导航从侧栏 / 横滑胶囊改为「顶部平铺 Tab」</b>——所有分组一屏平铺、无横滑、
+    无二级跳转；方案 A（侧栏）保留作对照。API Key（BYOK）作为「模型与密钥」分区完整保留。
+  </p>
+
+  <div class="switcher">
+    <button class="sw" data-d="A"><span class="k">A</span> 桌面 · 侧栏 + 内容</button>
+    <button class="sw on" data-d="B"><span class="k">B</span> 顶部平铺 Tab</button>
+  </div>
+
+  <div class="showcase">
+    <!-- ═══════════ A：侧栏 + 内容（对照） ═══════════ -->
+    <div class="panel" id="P-A">
+      <div class="setwin">
+        <aside class="set-side">
+          <div class="s-title">设置</div>
+          <button class="s-nav on" data-group="account">
+            <span class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></span>账户
+          </button>
+          <button class="s-nav" data-group="keys">
+            <span class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 16l2-2M19 19l2-2"/></svg></span>模型与密钥
+          </button>
+          <button class="s-nav" data-group="system">
+            <span class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M18 7h2M4 17h2M9 17h11"/><circle cx="16" cy="7" r="2.2"/><circle cx="6" cy="17" r="2.2"/></svg></span>系统与网络
+          </button>
+          <button class="s-nav" data-group="appearance">
+            <span class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10" r="1"/></svg></span>外观
+          </button>
+          <button class="s-nav" data-group="about">
+            <span class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span>关于
+          </button>
+        </aside>
+
+        <div class="set-content">
+          <!-- 账户 -->
+          <section class="sec on" data-group="account">
+            <div class="c-head">账户</div>
+            <div class="c-sub">你的个人资料与登录安全</div>
+            <div class="card">
+              <div class="profile">
+                <span class="p-avatar">A</span>
+                <div class="p-meta">
+                  <div class="p-name">admin <span class="role-badge">管理员</span></div>
+                  <div class="p-mail">admin@agentharness.io</div>
+                </div>
+                <button class="link">编辑</button>
+              </div>
+            </div>
+            <div class="sec-title">安全</div>
+            <div class="card">
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
+                <div class="rc"><div class="rl">修改密码</div><div class="rd">定期更换以保障账户安全</div></div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.5 21a2 2 0 0 0 3 0"/></svg></span>
+                <div class="rc"><div class="rl">消息通知</div><div class="rd">新消息与运行完成提醒</div></div>
+                <span class="toggle on"></span>
+              </div>
+            </div>
+            <div class="sec-title">会话</div>
+            <div class="card">
+              <div class="row danger">
+                <span class="ri danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4M4 12l3-3M4 12l3 3"/><path d="M14 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/></svg></span>
+                <div class="rc"><div class="rl">退出登录</div></div>
+                <span class="chev">›</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 模型与密钥 -->
+          <section class="sec" data-group="keys">
+            <div class="c-head">模型与密钥</div>
+            <div class="c-sub">配置你自己的大模型凭据（BYOK）</div>
+            <p class="intro">
+              配置你自己的大模型 API Key 后，对话将使用 <b>真实模型</b>（按你的账号计费）。 Key
+              按账号加密保存、跨设备可用，平台不托管、看不到明文。未配置时使用离线 Mock 模型。
+            </p>
+            <div class="prov-tabs">
+              <button class="prov-tab on">OpenRouter</button>
+              <button class="prov-tab">OpenAI</button>
+              <button class="prov-tab">自定义兼容端点</button>
+            </div>
+            <div class="card">
+              <div class="status-row">
+                <span class="badge valid">有效</span>
+                <span class="hint">sk-or-••••3f9a</span>
+                <span class="badge multi">2 把 Key</span>
+                <span class="hint">· https://openrouter.ai/api/v1</span>
+              </div>
+              <div class="actions">
+                <button class="btn-ghost">测试连通</button>
+                <button class="btn-ghost">编辑</button>
+                <button class="btn-ghost" style="color:var(--danger)">删除</button>
+              </div>
+              <a class="help-link" href="#">前往 OpenRouter 获取 Key ↗</a>
+            </div>
+            <div class="usage-card">
+              <div class="usage-title">本账号用量（滚动窗口）</div>
+              <div class="usage-grid">
+                <div class="usage-item"><div class="usage-val">128K</div><div class="usage-label">Token 用量</div></div>
+                <div class="usage-item"><div class="usage-val">$0.42</div><div class="usage-label">成本（估算）</div></div>
+                <div class="usage-item"><div class="usage-val">2</div><div class="usage-label">当前并发</div></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 系统与网络 -->
+          <section class="sec" data-group="system">
+            <div class="c-head">系统与网络</div>
+            <div class="c-sub">运行环境与数据偏好</div>
+            <div class="card">
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span>
+                <div class="rc"><div class="rl">网络代理</div><div class="rd">通过代理访问外部模型服务</div></div>
+                <span class="toggle"></span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h16"/><path d="M9 5v14M15 5v14"/></svg></span>
+                <div class="rc"><div class="rl">语言 / 地区</div></div>
+                <select class="select"><option>简体中文</option><option>English</option></select>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></span>
+                <div class="rc"><div class="rl">跨设备同步设置</div><div class="rd">在登录设备上保持一致</div></div>
+                <span class="toggle on"></span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span>
+                <div class="rc"><div class="rl">清除本地缓存</div><div class="rd">释放浏览器本地存储</div></div>
+                <button class="btn-ghost">清除</button>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+                <div class="rc"><div class="rl">实验功能</div><div class="rd">启用 Beta 能力（可能不稳定）</div></div>
+                <span class="toggle"></span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 外观 -->
+          <section class="sec" data-group="appearance">
+            <div class="c-head">外观</div>
+            <div class="c-sub">主题与界面密度</div>
+            <div class="card">
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span>
+                <div class="rc"><div class="rl">主题</div></div>
+                <span class="seg"><button class="on">深色</button><button>浅色</button><button>跟随系统</button></span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/></svg></span>
+                <div class="rc"><div class="rl">强调色</div></div>
+                <span class="swatches">
+                  <span class="swatch on" style="background:#2997FF"></span>
+                  <span class="swatch" style="background:#30D158"></span>
+                  <span class="swatch" style="background:#FFD60A"></span>
+                  <span class="swatch" style="background:#FF453A"></span>
+                  <span class="swatch" style="background:#BF5AF2"></span>
+                </span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7v10M4 17h16M15 17V7"/></svg></span>
+                <div class="rc"><div class="rl">字体大小</div></div>
+                <span class="seg"><button>小</button><button class="on">标准</button><button>大</button></span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M3 8h5M3 16h5M16 3l5 5-5 5M21 16h-5M16 21l-5-5"/></svg></span>
+                <div class="rc"><div class="rl">紧凑模式</div><div class="rd">减小列表与卡片间距</div></div>
+                <span class="toggle"></span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 关于 -->
+          <section class="sec" data-group="about">
+            <div class="c-head">关于</div>
+            <div class="c-sub">产品信息与法律</div>
+            <div class="brand-card">
+              <span class="b-logo"><svg viewBox="0 0 100 100" fill="currentColor"><path d="M50 6 L84 20 L50 34 L16 20 Z"/><path d="M50 36 L84 50 L50 64 L16 50 Z"/><path d="M50 66 L84 80 L50 94 L16 80 Z"/></svg></span>
+              <div>
+                <div class="b-name">Agent Harness</div>
+                <div class="b-tag">编排、运行、观测 — 你的每一个 AI Agent</div>
+              </div>
+            </div>
+            <div class="card">
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M9 12V4h6v8M9 12h6"/></svg></span>
+                <div class="rc"><div class="rl">版本</div><div class="rd">v1.4.2 · build 20260914</div></div>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></span>
+                <div class="rc"><div class="rl">使用文档</div></div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></span>
+                <div class="rc"><div class="rl">隐私政策</div></div>
+                <span class="chev">›</span>
+              </div>
+              <div class="row">
+                <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6v18h12V8z"/><path d="M14 3v5h5"/></svg></span>
+                <div class="rc"><div class="rl">开源许可</div></div>
+                <span class="chev">›</span>
+              </div>
+            </div>
+            <div class="about-foot">© 2026 Agent Harness · 私有化部署就绪</div>
+          </section>
+        </div>
+      </div>
+
+      <div class="notes">
+        <h3>方案 A · 侧栏 + 内容 <span class="k">对照</span></h3>
+        <p class="desc">
+          桌面端 <b>左侧分组导航 + 右侧内容</b>（GitHub / Notion Settings 范式）：分组常驻侧栏、点击切换、无二级跳转。
+          作为与方案 B 的对照保留。版本号仅出现在「关于」区，不再占用「我的」页底部。
+        </p>
+        <div class="tags">
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>设置类界面默认收敛：单列分组、标签左对齐、单一主操作（API Key「保存」），符合 §1/§3</div>
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>图标统一用 Lucide 线型隐喻（用户/钥匙/滑块/调色板/信息），stroke 1.7–1.8，同屏一致</div>
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>辅助开关/分段默认中性色，hover 才提亮；开关实底仅在「开」态用强调色，不抢视觉中心</div>
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>API Key 区完整保留既有的「掩码 / 状态 / 多 Key / 用量看板」，功能零损失</div>
+          <div class="note-tag con"><span class="n"><em>✗</em></span>分组比当前单面板多，首屏信息密度上升——靠侧栏收纳，内容区仍单列低密度</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ B：顶部平铺 Tab ═══════════ -->
+    <div class="panel on" id="P-B">
+      <!-- 桌面：分组顶部平铺，内容整宽 -->
+      <div class="setwin flat">
+        <div class="flat-head">
+          <div class="fh-title">设置</div>
+          <div class="top-tabs">
+            <button class="ttab on" data-group="account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>账户</button>
+            <button class="ttab" data-group="keys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 16l2-2M19 19l2-2"/></svg>模型与密钥</button>
+            <button class="ttab" data-group="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M18 7h2M4 17h2M9 17h11"/><circle cx="16" cy="7" r="2.2"/><circle cx="6" cy="17" r="2.2"/></svg>系统与网络</button>
+            <button class="ttab" data-group="appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10" r="1"/></svg>外观</button>
+            <button class="ttab" data-group="about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>关于</button>
+          </div>
+        </div>
+        <div class="set-content">
+          <section class="sec on" data-group="account">
+            <div class="card"><div class="profile"><span class="p-avatar">A</span><div class="p-meta"><div class="p-name">admin <span class="role-badge">管理员</span></div><div class="p-mail">admin@agentharness.io</div></div><button class="link">编辑</button></div></div>
+            <div class="sec-title">安全</div>
+            <div class="card">
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span><div class="rc"><div class="rl">修改密码</div><div class="rd">定期更换以保障账户安全</div></div><span class="chev">›</span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.5 21a2 2 0 0 0 3 0"/></svg></span><div class="rc"><div class="rl">消息通知</div><div class="rd">新消息与运行完成提醒</div></div><span class="toggle on"></span></div>
+            </div>
+            <div class="sec-title">会话</div>
+            <div class="card"><div class="row danger"><span class="ri danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4M4 12l3-3M4 12l3 3"/><path d="M14 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/></svg></span><div class="rc"><div class="rl">退出登录</div></div><span class="chev">›</span></div></div>
+          </section>
+          <section class="sec" data-group="keys">
+            <p class="intro">配置你自己的大模型 API Key 后，对话将使用 <b>真实模型</b>（按你的账号计费）。 Key 按账号加密保存、平台看不到明文；未配置时使用离线 Mock 模型。</p>
+            <div class="prov-tabs"><button class="prov-tab on">OpenRouter</button><button class="prov-tab">OpenAI</button><button class="prov-tab">自定义兼容端点</button></div>
+            <div class="card">
+              <div class="status-row"><span class="badge valid">有效</span><span class="hint">sk-or-••••3f9a</span><span class="badge multi">2 把 Key</span></div>
+              <div class="actions"><button class="btn-ghost">测试连通</button><button class="btn-ghost">编辑</button><button class="btn-ghost" style="color:var(--danger)">删除</button></div>
+              <a class="help-link" href="#">前往 OpenRouter 获取 Key ↗</a>
+            </div>
+            <div class="usage-card"><div class="usage-title">本账号用量（滚动窗口）</div><div class="usage-grid"><div class="usage-item"><div class="usage-val">128K</div><div class="usage-label">Token 用量</div></div><div class="usage-item"><div class="usage-val">$0.42</div><div class="usage-label">成本（估算）</div></div><div class="usage-item"><div class="usage-val">2</div><div class="usage-label">当前并发</div></div></div></div>
+          </section>
+          <section class="sec" data-group="system">
+            <div class="card">
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><div class="rc"><div class="rl">网络代理</div><div class="rd">通过代理访问外部模型服务</div></div><span class="toggle"></span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h16"/><path d="M9 5v14M15 5v14"/></svg></span><div class="rc"><div class="rl">语言 / 地区</div></div><select class="select"><option>简体中文</option><option>English</option></select></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></span><div class="rc"><div class="rl">跨设备同步设置</div><div class="rd">在登录设备上保持一致</div></div><span class="toggle on"></span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span><div class="rc"><div class="rl">清除本地缓存</div><div class="rd">释放浏览器本地存储</div></div><button class="btn-ghost">清除</button></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span><div class="rc"><div class="rl">实验功能</div><div class="rd">启用 Beta 能力（可能不稳定）</div></div><span class="toggle"></span></div>
+            </div>
+          </section>
+          <section class="sec" data-group="appearance">
+            <div class="card">
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><div class="rc"><div class="rl">主题</div></div><span class="seg"><button class="on">深色</button><button>浅色</button><button>跟随系统</button></span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/></svg></span><div class="rc"><div class="rl">强调色</div></div><span class="swatches"><span class="swatch on" style="background:#2997FF"></span><span class="swatch" style="background:#30D158"></span><span class="swatch" style="background:#FFD60A"></span><span class="swatch" style="background:#FF453A"></span><span class="swatch" style="background:#BF5AF2"></span></span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7v10M4 17h16M15 17V7"/></svg></span><div class="rc"><div class="rl">字体大小</div></div><span class="seg"><button>小</button><button class="on">标准</button><button>大</button></span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M3 8h5M3 16h5M16 3l5 5-5 5M21 16h-5M16 21l-5-5"/></svg></span><div class="rc"><div class="rl">紧凑模式</div><div class="rd">减小列表与卡片间距</div></div><span class="toggle"></span></div>
+            </div>
+          </section>
+          <section class="sec" data-group="about">
+            <div class="brand-card"><span class="b-logo"><svg viewBox="0 0 100 100" fill="currentColor"><path d="M50 6 L84 20 L50 34 L16 20 Z"/><path d="M50 36 L84 50 L50 64 L16 50 Z"/><path d="M50 66 L84 80 L50 94 L16 80 Z"/></svg></span><div><div class="b-name">Agent Harness</div><div class="b-tag">编排、运行、观测 — 你的每一个 AI Agent</div></div></div>
+            <div class="card">
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M9 12V4h6v8M9 12h6"/></svg></span><div class="rc"><div class="rl">版本</div><div class="rd">v1.4.2 · build 20260914</div></div></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></span><div class="rc"><div class="rl">使用文档</div></div><span class="chev">›</span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></span><div class="rc"><div class="rl">隐私政策</div></div><span class="chev">›</span></div>
+              <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6v18h12V8z"/><path d="M14 3v5h5"/></svg></span><div class="rc"><div class="rl">开源许可</div></div><span class="chev">›</span></div>
+            </div>
+            <div class="about-foot">© 2026 Agent Harness · 私有化部署就绪</div>
+          </section>
+        </div>
+      </div>
+
+      <!-- 移动：五等分网格平铺，图标在上 -->
+      <div class="phone">
+        <div class="p-screen">
+          <div class="sb-notch"></div>
+          <div class="m-topbar">
+            <button class="m-back" title="返回">‹</button>
+            <span class="m-title">设置</span>
+          </div>
+          <div class="top-tabs mob">
+            <button class="ttab on" data-group="account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>账户</button>
+            <button class="ttab" data-group="keys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 16l2-2M19 19l2-2"/></svg>密钥</button>
+            <button class="ttab" data-group="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h11M18 7h2M4 17h2M9 17h11"/><circle cx="16" cy="7" r="2.2"/><circle cx="6" cy="17" r="2.2"/></svg>系统</button>
+            <button class="ttab" data-group="appearance"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="12" cy="7.5" r="1"/><circle cx="16.5" cy="10" r="1"/></svg>外观</button>
+            <button class="ttab" data-group="about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>关于</button>
+          </div>
+          <div class="m-content">
+            <!-- 账户 -->
+            <section class="sec on" data-group="account">
+              <div class="card">
+                <div class="profile">
+                  <span class="p-avatar">A</span>
+                  <div class="p-meta">
+                    <div class="p-name">admin <span class="role-badge">管理员</span></div>
+                    <div class="p-mail">admin@agentharness.io</div>
+                  </div>
+                  <button class="link">编辑</button>
+                </div>
+              </div>
+              <div class="sec-title">安全</div>
+              <div class="card">
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>
+                  <div class="rc"><div class="rl">修改密码</div></div>
+                  <span class="chev">›</span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.5 21a2 2 0 0 0 3 0"/></svg></span>
+                  <div class="rc"><div class="rl">消息通知</div></div>
+                  <span class="toggle on"></span>
+                </div>
+              </div>
+              <div class="sec-title">会话</div>
+              <div class="card">
+                <div class="row danger">
+                  <span class="ri danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 12H4M4 12l3-3M4 12l3 3"/><path d="M14 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3"/></svg></span>
+                  <div class="rc"><div class="rl">退出登录</div></div>
+                  <span class="chev">›</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 模型与密钥 -->
+            <section class="sec" data-group="keys">
+              <div class="sec-title">模型与密钥</div>
+              <div class="prov-tabs">
+                <button class="prov-tab on">OpenRouter</button>
+                <button class="prov-tab">OpenAI</button>
+                <button class="prov-tab">自定义</button>
+              </div>
+              <div class="card">
+                <div class="status-row">
+                  <span class="badge valid">有效</span>
+                  <span class="hint">sk-or-••••3f9a</span>
+                </div>
+                <div class="status-row"><span class="badge multi">2 把 Key</span><span class="hint">· openrouter.ai</span></div>
+                <div class="actions">
+                  <button class="btn-ghost">测试连通</button>
+                  <button class="btn-ghost">编辑</button>
+                  <button class="btn-ghost" style="color:var(--danger)">删除</button>
+                </div>
+                <a class="help-link" href="#">前往获取 Key ↗</a>
+              </div>
+              <div class="usage-card">
+                <div class="usage-title">本账号用量</div>
+                <div class="usage-grid">
+                  <div class="usage-item"><div class="usage-val">128K</div><div class="usage-label">Token</div></div>
+                  <div class="usage-item"><div class="usage-val">$0.42</div><div class="usage-label">成本</div></div>
+                  <div class="usage-item"><div class="usage-val">2</div><div class="usage-label">并发</div></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 系统与网络 -->
+            <section class="sec" data-group="system">
+              <div class="sec-title">系统与网络</div>
+              <div class="card">
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span>
+                  <div class="rc"><div class="rl">网络代理</div></div>
+                  <span class="toggle"></span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h16"/><path d="M9 5v14M15 5v14"/></svg></span>
+                  <div class="rc"><div class="rl">语言 / 地区</div></div>
+                  <select class="select"><option>简体中文</option><option>English</option></select>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg></span>
+                  <div class="rc"><div class="rl">跨设备同步</div></div>
+                  <span class="toggle on"></span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span>
+                  <div class="rc"><div class="rl">清除缓存</div></div>
+                  <button class="btn-ghost">清除</button>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+                  <div class="rc"><div class="rl">实验功能</div></div>
+                  <span class="toggle"></span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 外观 -->
+            <section class="sec" data-group="appearance">
+              <div class="sec-title">外观</div>
+              <div class="card">
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span>
+                  <div class="rc"><div class="rl">主题</div></div>
+                  <span class="seg"><button class="on">深</button><button>浅</button><button>系统</button></span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-1 1.3-1.9-.4-1 .3-2 1.3-2H17a3 3 0 0 0 3-3c0-5-4-9-8-9Z"/></svg></span>
+                  <div class="rc"><div class="rl">强调色</div></div>
+                  <span class="swatches">
+                    <span class="swatch on" style="background:#2997FF"></span>
+                    <span class="swatch" style="background:#30D158"></span>
+                    <span class="swatch" style="background:#FFD60A"></span>
+                    <span class="swatch" style="background:#FF453A"></span>
+                    <span class="swatch" style="background:#BF5AF2"></span>
+                  </span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7v10M4 17h16M15 17V7"/></svg></span>
+                  <div class="rc"><div class="rl">字体大小</div></div>
+                  <span class="seg"><button>小</button><button class="on">标准</button><button>大</button></span>
+                </div>
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v18M3 8h5M3 16h5M16 3l5 5-5 5M21 16h-5M16 21l-5-5"/></svg></span>
+                  <div class="rc"><div class="rl">紧凑模式</div></div>
+                  <span class="toggle"></span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 关于 -->
+            <section class="sec" data-group="about">
+              <div class="sec-title">关于</div>
+              <div class="brand-card">
+                <span class="b-logo"><svg viewBox="0 0 100 100" fill="currentColor"><path d="M50 6 L84 20 L50 34 L16 20 Z"/><path d="M50 36 L84 50 L50 64 L16 50 Z"/><path d="M50 66 L84 80 L50 94 L16 80 Z"/></svg></span>
+                <div>
+                  <div class="b-name">Agent Harness</div>
+                  <div class="b-tag">编排、运行、观测 — 你的每一个 AI Agent</div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="row">
+                  <span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M9 12V4h6v8M9 12h6"/></svg></span>
+                  <div class="rc"><div class="rl">版本</div><div class="rd">v1.4.2 · build 20260914</div></div>
+                </div>
+                <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></span><div class="rc"><div class="rl">使用文档</div></div><span class="chev">›</span></div>
+                <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></span><div class="rc"><div class="rl">隐私政策</div></div><span class="chev">›</span></div>
+                <div class="row"><span class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6v18h12V8z"/><path d="M14 3v5h5"/></svg></span><div class="rc"><div class="rl">开源许可</div></div><span class="chev">›</span></div>
+              </div>
+              <div class="about-foot">© 2026 Agent Harness · 私有化部署就绪</div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <h3>方案 B · 顶部平铺 Tab <span class="k">本次方向</span></h3>
+        <p class="desc">
+          分组导航不再竖排在侧栏、也不再横滑，而是 <b>平铺在顶部</b>：桌面为一行五等分 Tab（图标 + 全名），
+          移动为五等分网格（图标在上、短名在下）。全部一屏可见、无滚动、无二级跳转；切换即换内容区。
+          从「我的 → 设置」进入，顶栏「‹ 返回」回到「我的」。
+        </p>
+        <div class="tags">
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>所有分组一屏平铺、零横滑、零溢出菜单，入口永不隐藏</div>
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>桌面 / 移动共用同一「顶部平铺」范式，仅列数与图标朝向随断点变化，心智一致</div>
+          <div class="note-tag pro"><span class="n"><em>✓</em></span>内容区整宽（去掉 196px 侧栏），表单更舒展；沿用「我的」页令牌</div>
+          <div class="note-tag con"><span class="n"><em>✗</em></span>分组增多（&gt; 6）时横排会变挤，需降级为两行网格 —— 当前 5 组无压力</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="decide">
+    <h3>📐 方案 B 设计说明</h3>
+    <p>
+      <b>类型与参照</b>：设置页 → <b>顶部平铺 Tab + 单列内容</b>（Tab 采用等分平铺，不用横滑、不用侧栏）。<br />
+      <b>平铺规则</b>：桌面 <code>flex:1 1 0</code> 五等分（图标在左、全名在右）；移动 <code>grid-template-columns: repeat(5,1fr)</code> 五等分网格（图标在上、短名在下）。分组一屏可见、无滚动。<br />
+      <b>尺寸间距</b>：以卡片行（13.5px 正文 / 12px 行内距 / 30px 图标盒）为锚点，Tab 高 36px、图标 15–17px，与行内元素同一档；内容区整宽。<br />
+      <b>主操作</b>：每屏仅 API Key「保存」为强调实底；Tab 选中态用 accent-soft 底 + accent 字，非实心强调色，不抢内容。<br />
+      <b>辅助入口收敛</b>：「‹ 返回」为中性描边小按钮；行内删除用 danger 文字；chevron 表层级。<br />
+      <b>图标来源</b>：Lucide 线型隐喻（用户 / 钥匙 / 滑块 / 调色板 / 信息），stroke 1.8，同屏同库同风格。<br />
+      <b>落地建议</b>：新建 <code>ah-settings-center</code> 组件（顶部平铺 Tab + 内容区切换），「模型与密钥」分区直接复用现有 <code>ah-provider-key-settings</code>；
+      由 <code>ah-goto detail:'settings'</code> 进入，可选携带 <code>group</code> 参数定位分组。
+    </p>
+  </div>
+
+  <div class="footnote">* 设计稿基于 Agent Harness dark 令牌（#0B0E14 / accent #2997FF），浅色主题由 --ah-* 令牌自动映射，无需单独适配。</div>
+</div>
+
+<script>
+  // 桌面 / 移动 布局切换
+  document.querySelectorAll('.sw').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.sw').forEach(b => b.classList.remove('on'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('on'));
+      btn.classList.add('on');
+      document.getElementById('P-' + btn.dataset.d).classList.add('on');
+    });
+  });
+
+  // 分组切换（侧栏 / 顶部平铺 Tab）
+  function bindNav(scope) {
+    const root = document.getElementById(scope);
+    const navs = root.querySelectorAll('[data-group]');
+    navs.forEach(n => {
+      n.addEventListener('click', () => {
+        const g = n.dataset.group;
+        root.querySelectorAll('.s-nav, .m-pill, .ttab').forEach(x => x.classList.toggle('on', x.dataset.group === g));
+        root.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.group === g));
+      });
+    });
+  }
+  bindNav('P-A');
+  bindNav('P-B');
+
+  // 开关视觉切换
+  document.querySelectorAll('.toggle').forEach(t => {
+    t.addEventListener('click', () => t.classList.toggle('on'));
+  });
+  // 分段控件
+  document.querySelectorAll('.seg').forEach(seg => {
+    seg.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', () => {
+        seg.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+      });
+    });
+  });
+  // 色板选中
+  document.querySelectorAll('.swatches').forEach(w => {
+    w.querySelectorAll('.swatch').forEach(s => {
+      s.addEventListener('click', () => {
+        w.querySelectorAll('.swatch').forEach(x => x.classList.remove('on'));
+        s.classList.add('on');
+      });
+    });
+  });
+  // Provider 标签
+  document.querySelectorAll('.prov-tabs').forEach(pt => {
+    pt.querySelectorAll('.prov-tab').forEach(b => {
+      b.addEventListener('click', () => {
+        pt.querySelectorAll('.prov-tab').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+      });
+    });
+  });
+</script>
+</body>
+</html>

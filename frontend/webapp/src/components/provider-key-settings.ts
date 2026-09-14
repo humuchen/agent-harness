@@ -9,7 +9,8 @@
  *  - GET 仅回掩码 key_hint + 状态，密文 / 明文永不出网。
  *  - 样式全部走 --ah-* 令牌；提示统一走 notify.* / notifyError，禁止内联红条。
  *
- * 该组件被「设置」Tab 承载；model-picker 底部「配置 API Key」按钮经 ah-goto 事件切到该 Tab。
+ * 该组件由 ah-settings-center 的「模型与密钥」分组承载；model-picker 底部「配置 API Key」
+ * 按钮经 ah-goto（detail: { tab:'settings', group:'keys' }）直达该面板。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';

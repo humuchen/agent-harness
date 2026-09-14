@@ -35,8 +35,6 @@ interface CustomModel {
   keyHint?: string;
 }
 
-const CUSTOM_KEY = 'ah_custom_models';
-
 /** 自定义模型的持久化形态兼容旧版（旧版存 string[]，读取时自动升级为对象）。 */
 function normalizeCustom(raw: unknown): CustomModel[] {
   try {
@@ -1062,7 +1060,8 @@ export class AhModelPicker extends LitElement {
                   @click=${() =>
                     this.dispatchEvent(
                       new CustomEvent('ah-goto', {
-                        detail: 'settings',
+                        // 直达设置中心的「模型与密钥」分组（密钥面板所在分区）。
+                        detail: { tab: 'settings', group: 'keys' },
                         bubbles: true,
                         composed: true
                       })
@@ -1094,14 +1093,13 @@ export class AhModelPicker extends LitElement {
                         : 'API Key（可选，将加密保存）'}
                       .value=${this.draftApiKey}
                       @input=${(e: Event) => {
-                        this.draftApiKey = (
-                          e.target as HTMLInputElement
-                        ).value;
+                        this.draftApiKey = (e.target as HTMLInputElement).value;
                       }}
                     />
                     ${this.editingId
                       ? html`<span class="hint">
-                          已保存 Key 不回显；留空即保留原 Key，粘贴新值则全量替换。
+                          已保存 Key 不回显；留空即保留原
+                          Key，粘贴新值则全量替换。
                         </span>`
                       : nothing}
                     <div class="add-actions">

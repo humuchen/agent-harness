@@ -7,51 +7,28 @@
  * 交互：
  *  - 点击头像 → 切换下拉：头部展示「用户名 · 角色徽标」（含 email 可选），
  *    菜单含「修改密码」「退出登录」两项。
- *  - 「修改密码」→ 弹出模态（旧密码 / 新密码 / 确认新密码），复用 --ah-* 令牌与 ah-modal 视觉。
+ *  - 「修改密码」→ 打开共享的 ah-password-dialog（旧密码 / 新密码 / 确认新密码）。
  *    校验前移到前端（规则同登录/注册，见 utils/auth-validation.ts），校验失败 / 后端报错 /
  *    网络异常一律走 ah-notification，模态内不再保留内联错误条。
+ *    （该模态由 user-menu 与 ah-settings-center 共用，见 components/password-dialog.ts。）
  *  - 「退出登录」→ POST /api/account/logout（服务端清 cookie + 吊销 token），本地清会话回登录页。
- *  - 点击外部 / Esc 关闭下拉；模态下 Esc / 遮罩关闭。
+ *  - 点击外部 / Esc 关闭下拉；模态下 Esc / 遮罩关闭（由 ah-password-dialog 自行处理）。
+ *  - standalone 模式（移动端「我的」Tab）：整页渲染账户面板 + 品牌块（品牌信息在该页呈现，
+ *    桌面端由全局 ah-brand-foot 呈现；版本号统一收敛到设置中心的「关于」分组）。
  *
  * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / login）一致；深浅主题自适应。
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import {
-  fetchMe,
-  logout,
-  changePassword,
-  derivePassword,
-  bytesToHex
-} from '../api';
-import { notify } from './ah-notification';
-import { validateChangePassword } from '../utils/auth-validation';
+import { fetchMe, logout } from '../api';
 import { BRAND_DEFAULT, type BrandConfig } from '../theme/tokens';
+import { avatarInitial, roleLabel } from '../utils/user-display';
+// 改密模态已抽为共享组件（settings-center 的「账户」分组同样复用）。
+import './password-dialog';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
 const APP_VERSION = __APP_VERSION__;
-
-// 角色 → 中文 + 徽标配色（延续 styles.ts 的 .role-badge 视觉）。
-const ROLE_LABEL: Record<string, string> = {
-  admin: '管理员',
-  operator: '操作员',
-  viewer: '访客'
-};
-
-function roleLabel(role: string): string {
-  return ROLE_LABEL[role] ?? role;
-}
-
-/** 取用户名首字母（中文取首字，英文取首 1-2 字母）作头像占位。 */
-function avatarInitial(name: string): string {
-  const n = (name || '?').trim();
-  if (!n) return '?';
-  // 中文/日文等：取首字
-  if (/[一-龥぀-ヿ]/.test(n[0]!)) return n[0]!;
-  // 英文：首字母大写
-  return n.slice(0, 2).toUpperCase();
-}
 
 @customElement('ah-user-menu')
 export class AhUserMenu extends LitElement {
@@ -261,139 +238,8 @@ export class AhUserMenu extends LitElement {
       color: var(--ah-text-faint);
     }
 
-    /* ── 改密模态（内联，复用 ah-modal 视觉，自行控制校验/关闭）── */
-    .pw-scrim {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-      background: rgba(0, 0, 0, 0.55);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      animation: aum-fade 0.16s ease;
-    }
-    @keyframes aum-fade {
-      from {
-        opacity: 0;
-      }
-    }
-    .pw-panel {
-      width: min(calc(100vw - 32px), 420px);
-      background: var(--ah-surface-1);
-      color: var(--ah-text);
-      border: 1px solid var(--ah-border);
-      border-radius: var(--ah-radius-lg);
-      box-shadow: var(--ah-shadow);
-      overflow: hidden;
-      animation: aum-pop-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.2);
-    }
-    @keyframes aum-pop-in {
-      from {
-        opacity: 0;
-        transform: scale(0.96) translateY(6px);
-      }
-    }
-    .pw-head {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 16px 18px 0;
-    }
-    .pw-title {
-      font-family: var(--ah-font-display);
-      font-weight: 600;
-      font-size: 15px;
-    }
-    .pw-close {
-      margin-left: auto;
-      border: none;
-      background: none;
-      color: var(--ah-text-faint);
-      font-size: 18px;
-      line-height: 1;
-      cursor: pointer;
-      padding: 2px 8px;
-      border-radius: var(--ah-radius-sm);
-    }
-    .pw-close:hover {
-      color: var(--ah-text);
-      background: var(--ah-surface-2);
-    }
-    .pw-body {
-      padding: 12px 18px 4px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-    }
-    .field label {
-      font-size: 12px;
-      color: var(--ah-text-muted);
-    }
-    .field input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 9px 12px;
-      font-size: 14px;
-      font-family: var(--ah-font-sans);
-      color: var(--ah-text);
-      background: var(--ah-surface-2);
-      border: 1px solid var(--ah-border);
-      border-radius: var(--ah-radius-md);
-      outline: none;
-    }
-    .field input:focus {
-      border-color: var(--ah-accent);
-      box-shadow: 0 0 0 3px var(--ah-accent-soft);
-    }
-    .pw-foot {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      padding: 16px 18px 18px;
-    }
-    .btn {
-      min-width: 76px;
-      padding: 8px 16px;
-      font-size: 13px;
-      font-family: var(--ah-font-sans);
-      cursor: pointer;
-      border-radius: var(--ah-radius-md);
-      border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease,
-        color 120ms ease;
-    }
-    .btn.ghost {
-      background: transparent;
-      color: var(--ah-text-muted);
-    }
-    .btn.ghost:hover {
-      color: var(--ah-text);
-      border-color: var(--ah-text-faint);
-    }
-    .btn.primary {
-      background: var(--ah-accent);
-      border-color: var(--ah-accent);
-      color: #fff;
-      font-weight: 600;
-    }
-    .btn.primary:hover {
-      background: var(--ah-accent-strong);
-      border-color: var(--ah-accent-strong);
-    }
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    .btn:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
+    /* 改密模态的视觉与逻辑由 ah-password-dialog 承载（见 password-dialog.ts），
+       本组件只负责受控开关，不重复样式，避免两处各写一份。 */
 
     /* ── standalone 模式（移动端「我的」Tab 整页渲染）──
        对齐设计稿 design/mobile-menu-mockups.html 方案 A：
@@ -570,11 +416,8 @@ export class AhUserMenu extends LitElement {
   @state() private brand: BrandConfig = BRAND_DEFAULT;
 
   @state() private open = false;
+  /** 改密模态开关（模态本体为 ah-password-dialog，受控 open）。 */
   @state() private showPw = false;
-  @state() private oldPw = '';
-  @state() private newPw = '';
-  @state() private confirmPw = '';
-  @state() private pwBusy = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -614,9 +457,9 @@ export class AhUserMenu extends LitElement {
   };
 
   private onKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      if (this.showPw) this.closePw();
-      else if (this.open) this.open = false;
+    // 改密模态的 Esc 由 ah-password-dialog 自行处理（其 busy 态需拦截关闭），此处只管下拉。
+    if (e.key === 'Escape' && !this.showPw && this.open) {
+      this.open = false;
     }
   };
 
@@ -625,47 +468,8 @@ export class AhUserMenu extends LitElement {
   }
 
   private openPw() {
-    this.oldPw = '';
-    this.newPw = '';
-    this.confirmPw = '';
-    this.pwBusy = false;
     this.open = false;
     this.showPw = true;
-  }
-
-  private closePw() {
-    if (this.pwBusy) return;
-    this.showPw = false;
-  }
-
-  private async submitPw() {
-    if (this.pwBusy) return;
-    // 前端校验（规则与后端一致，见 utils/auth-validation.ts）：不发请求即给出反馈。
-    const invalid = validateChangePassword({
-      oldPassword: this.oldPw,
-      newPassword: this.newPw,
-      confirm: this.confirmPw
-    });
-    if (invalid) {
-      notify.warning(invalid, { key: 'change-password' });
-      return;
-    }
-    this.pwBusy = true;
-    // P1-14: 新密码客户端 PBKDF2 派生，不传输明文。旧密码仍以 plaintext 校验（服务端需验证）。
-    const newSalt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
-    const newDerivedHex = await derivePassword(this.newPw, newSalt);
-    const r = await changePassword(this.oldPw, '', {
-      salt: newSalt,
-      derivedHex: newDerivedHex
-    });
-    this.pwBusy = false;
-    if (!r.ok) {
-      // 后端业务错误（旧密码错误 / 新密码太弱 / OAuth 账户不支持…）统一走通知。
-      notify.error(r.error ?? '修改失败。', { key: 'change-password' });
-      return;
-    }
-    this.showPw = false;
-    notify.success('密码已修改，下次登录请使用新密码');
   }
 
   private async onLogout() {
@@ -713,7 +517,7 @@ export class AhUserMenu extends LitElement {
               role="menuitem"
               @click=${() => this.dispatchSettings()}
             >
-              <span class="s-lbl">设置<small>系统与网络</small></span>
+              <span class="s-lbl">设置</span>
               <span class="s-chev">›</span>
             </button>
           </div>
@@ -745,7 +549,10 @@ export class AhUserMenu extends LitElement {
             >
           </div>
         </div>
-        ${this.showPw ? this.renderPwModal() : nothing} `;
+        <ah-password-dialog
+          ?open=${this.showPw}
+          @ah-pw-close=${() => (this.showPw = false)}
+        ></ah-password-dialog> `;
     }
     return html`
       <button
@@ -797,107 +604,25 @@ export class AhUserMenu extends LitElement {
                   <span class="s-chev">›</span>
                 </button>
               </div>
-              <div class="ver">Agent Harness v${APP_VERSION}</div>
+              <div class="ver">${this.brand.productName} v${APP_VERSION}</div>
             </div>
           `
         : ''}
-      ${this.showPw ? this.renderPwModal() : nothing}
+      <ah-password-dialog
+        ?open=${this.showPw}
+        @ah-pw-close=${() => (this.showPw = false)}
+      ></ah-password-dialog>
     `;
   }
 
+  /** 「我的 → 设置」：定位到综合设置中心的「系统与网络」分组，与条目所在分组一致。 */
   private dispatchSettings() {
     this.dispatchEvent(
-      new CustomEvent('ah-goto', { detail: 'settings', bubbles: true })
+      new CustomEvent('ah-goto', {
+        detail: { tab: 'settings', group: 'system' },
+        bubbles: true,
+        composed: true
+      })
     );
-  }
-
-  private renderPwModal() {
-    return html`
-      <div
-        class="pw-scrim"
-        @click=${(e: MouseEvent) => {
-          if (e.target === e.currentTarget) this.closePw();
-        }}
-      >
-        <div
-          class="pw-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-label="修改密码"
-        >
-          <div class="pw-head">
-            <span class="pw-title">修改密码</span>
-            <button
-              class="pw-close"
-              title="关闭"
-              aria-label="关闭"
-              @click=${() => this.closePw()}
-            >
-              ×
-            </button>
-          </div>
-          <div class="pw-body">
-            <div class="field">
-              <label for="pw-old">当前密码</label>
-              <input
-                id="pw-old"
-                type="password"
-                autocomplete="current-password"
-                placeholder="请输入当前密码"
-                .value=${this.oldPw}
-                @input=${(e: InputEvent) =>
-                  (this.oldPw = (e.target as HTMLInputElement).value)}
-              />
-            </div>
-            <div class="field">
-              <label for="pw-new">新密码（至少 8 位）</label>
-              <input
-                id="pw-new"
-                type="password"
-                placeholder="请输入新密码"
-                autocomplete="new-password"
-                .value=${this.newPw}
-                @input=${(e: InputEvent) =>
-                  (this.newPw = (e.target as HTMLInputElement).value)}
-              />
-            </div>
-            <div class="field">
-              <label for="pw-confirm">确认新密码</label>
-              <input
-                id="pw-confirm"
-                type="password"
-                autocomplete="new-password"
-                placeholder="请输入确认密码"
-                .value=${this.confirmPw}
-                @input=${(e: InputEvent) =>
-                  (this.confirmPw = (e.target as HTMLInputElement).value)}
-                @keydown=${(e: KeyboardEvent) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    void this.submitPw();
-                  }
-                }}
-              />
-            </div>
-          </div>
-          <div class="pw-foot">
-            <button
-              class="btn ghost"
-              @click=${() => this.closePw()}
-              ?disabled=${this.pwBusy}
-            >
-              取消
-            </button>
-            <button
-              class="btn primary"
-              @click=${() => this.submitPw()}
-              ?disabled=${this.pwBusy}
-            >
-              ${this.pwBusy ? '提交中…' : '修改'}
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
   }
 }
