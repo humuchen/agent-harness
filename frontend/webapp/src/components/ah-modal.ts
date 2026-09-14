@@ -13,12 +13,21 @@
  *   warning → MacConfirm（danger 红色强调）
  *
  * prompt 通过 MacConfirm + 自定义插槽（含 input）实现。
+ *
+ * 主题：mac-ui 不读 `<html data-theme>`，故本适配层把应用主题显式下发给弹框宿主
+ * （声明式走 `theme` 绑定、命令式走 bindMacTheme），并订阅 ah:theme-changed 让
+ * 已打开的弹框跟随切换 —— 否则暗色主题下弹框会是浅色（详见下方「主题契约」）。
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { mobilePill } from '../styles/mobile-pill';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
+// 副作用导入：确保 mac-confirm / mac-button 已注册。
+// （上面那种只用作类型的具名导入会被 esbuild 整体擦除，不触发库的注册副作用；
+//   若只依赖 components/index.ts 的全局注册，单独引用本文件的页面/探针会拿到未升级元素。）
+import '@humuchen/mac-ui';
 import { MacConfirm } from '@humuchen/mac-ui';
 import type { ConfirmOptions } from '@humuchen/mac-ui';
+import { getTheme, type Theme } from '../theme/tokens';
 
 export type ModalVariant = 'info' | 'confirm' | 'warning';
 export type ModalSize = 'sm' | 'md' | 'lg';
@@ -28,6 +37,40 @@ const SIZE_WIDTH: Record<ModalSize, string> = {
   md: '480px',
   lg: '640px'
 };
+
+/**
+ * ── mac-ui 的主题契约（@humuchen/mac-ui v0.0.3）──
+ * 库内配色靠 `:host([data-theme='dark'])` 覆盖（全库 92 处；仅菜单 portal 读过一次
+ * 文档级属性）。也就是说：**组件只认自身 `theme` 属性 / 宿主上的 data-theme 属性，
+ * 或 `mac-config-provider` 祖先下发的值，不读 `<html data-theme>`**。
+ *
+ * 本适配层的两种用法都拿不到主题，必须由这里显式喂入：
+ *   1) 命令式弹框（confirm/alert/prompt）挂在 `document.body` 上，没有 config-provider 祖先；
+ *   2) 声明式弹框在 `ah-modal` 的 shadow root 内，`parentElement` 链到 shadow 边界即中断，
+ *      同样找不到文档级 provider。
+ * 若不喂，弹框会一直用库内默认的浅色令牌 —— 即暗色主题下出现「白底深字」的突兀弹框。
+ *
+ * 注：库基类会在 update 时用 `theme ?? 父 provider 的 data-theme` 回写自身 data-theme，
+ * 值为空时**移除**该属性；所以不能只手工 `setAttribute('data-theme')`（会被抹掉），
+ * 必须走 `theme` 属性。
+ */
+
+/** 可被 mac-ui 主题化的元素（库的 BaseElement 均带 `theme?: 'light' | 'dark'`）。 */
+type Themeable = { theme?: Theme };
+
+/**
+ * 把当前应用主题写给一个或多个 mac-ui 元素，并订阅主题变更（切主题时已打开的弹框跟随）。
+ * @returns 解绑函数；弹框销毁时务必调用，避免 window 监听泄漏。
+ */
+function bindMacTheme(...els: Themeable[]): () => void {
+  const sync = () => {
+    const theme = getTheme();
+    for (const el of els) el.theme = theme;
+  };
+  sync();
+  window.addEventListener('ah:theme-changed', sync);
+  return () => window.removeEventListener('ah:theme-changed', sync);
+}
 
 export interface AhModalOptions {
   title?: string;
@@ -95,12 +138,31 @@ export class AhModal extends LitElement {
   @property({ type: Boolean })
   danger = false;
 
+  /** 当前应用主题：mac-ui 不读文档级属性，须显式下发给弹框宿主（见文件头「主题契约」）。 */
+  @state() private macTheme: Theme = getTheme();
+
+  private onThemeChanged = () => {
+    this.macTheme = getTheme();
+  };
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.macTheme = getTheme();
+    window.addEventListener('ah:theme-changed', this.onThemeChanged);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('ah:theme-changed', this.onThemeChanged);
+  }
+
   render() {
     if (!this.open) return nothing;
     const width = this.width || SIZE_WIDTH[this.size];
     return html`
       <mac-confirm
         ?visible=${this.open}
+        theme=${this.macTheme}
         title=${this.title}
         content=${this.message}
         confirm-text=${this.confirmText}
@@ -190,10 +252,13 @@ export class AhModal extends LitElement {
         maskClosable: opts.maskClosable ?? true,
         visible: false,
       });
+      // 弹框挂在 body，拿不到文档级主题，须显式喂入（见文件头「主题契约」）
+      const stopTheme = bindMacTheme(el);
       let done = false;
       const finish = (v: boolean) => {
         if (done) return;
         done = true;
+        stopTheme();
         resolve(v);
         el.remove();
       };
@@ -225,10 +290,15 @@ export class AhModal extends LitElement {
       footerSlot.innerHTML = `<mac-button variant="primary" id="mac-alert-ok">${opts.confirmText ?? '知道了'}</mac-button>`;
       el.appendChild(footerSlot);
 
+      // 自定义 footer 里的 mac-button 是 el 的 light DOM 子节点，同样拿不到文档级主题
+      const okBtn = footerSlot.querySelector('mac-button') as Themeable | null;
+      const stopTheme = okBtn ? bindMacTheme(el, okBtn) : bindMacTheme(el);
+
       let done = false;
       const finish = () => {
         if (done) return;
         done = true;
+        stopTheme();
         resolve();
         el.remove();
       };
@@ -287,10 +357,14 @@ export class AhModal extends LitElement {
       `;
       el.appendChild(input);
 
+      // 弹框挂在 body，拿不到文档级主题，须显式喂入（见文件头「主题契约」）
+      const stopTheme = bindMacTheme(el);
+
       let done = false;
       const finish = (v: string | null) => {
         if (done) return;
         done = true;
+        stopTheme();
         resolve(v);
         el.remove();
       };

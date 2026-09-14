@@ -304,6 +304,44 @@ describe('mac-ui 适配层测试', () => {
         drawer.remove();
       }
     });
+
+    it('声明式：mac-confirm 跟随 <html data-theme> 拿到 theme 属性', async () => {
+      // mac-ui 不读文档级属性（见 ah-modal.ts「主题契约」），适配层须显式下发
+      document.documentElement.setAttribute('data-theme', 'dark');
+      const el = document.createElement('ah-modal');
+      el.open = true;
+      document.body.appendChild(el);
+      await el.updateComplete;
+      const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+      expect(confirm?.theme).toBe('dark');
+
+      // 模拟用户切主题（app / settings-center 会广播该事件）
+      document.documentElement.setAttribute('data-theme', 'light');
+      window.dispatchEvent(new CustomEvent('ah:theme-changed'));
+      await el.updateComplete;
+      expect(confirm?.theme).toBe('light');
+
+      el.remove();
+      document.documentElement.setAttribute('data-theme', 'dark');
+    });
+
+    it('命令式：confirm 弹框挂在 body 上也能拿到主题并跟随切换', async () => {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      const p = AhModal.confirm({ variant: 'confirm', title: '确认' });
+      await new Promise((r) => setTimeout(r, 0));
+      const confirm = document.querySelector('mac-confirm') as any;
+      expect(confirm).toBeTruthy();
+      expect(confirm?.theme).toBe('dark');
+
+      // 弹框打开时切主题 → 跟随（「暗色下打开、切浅色」的场景）
+      document.documentElement.setAttribute('data-theme', 'light');
+      window.dispatchEvent(new CustomEvent('ah:theme-changed'));
+      expect(confirm?.theme).toBe('light');
+
+      confirm?.dispatchEvent(new CustomEvent('mac-confirm-ok'));
+      expect(await p).toBe(true);
+      document.documentElement.setAttribute('data-theme', 'dark');
+    });
   });
 
   describe('PC / 移动端响应式', () => {

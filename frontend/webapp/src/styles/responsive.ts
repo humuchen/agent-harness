@@ -176,7 +176,6 @@ export const responsive = css`
       box-sizing: border-box;
       height: var(--ah-tabbar-h, calc(48px + env(safe-area-inset-bottom, 0px)));
       padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
-      border-top: 1px solid var(--ah-border);
       background: var(--ah-surface-1);
       box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
     }

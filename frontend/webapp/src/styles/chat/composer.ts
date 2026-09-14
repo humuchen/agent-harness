@@ -5,7 +5,7 @@ export const composer = css`
     /* 悬浮输入：去除底部背景块与顶部分隔线，让输入框像卡片一样浮在对话区之上。 */
     border-top: none;
     background: transparent;
-    padding: 10px 18px 0;
+    padding: 0 10px 15px;
   }
   .composer {
     max-width: 820px;

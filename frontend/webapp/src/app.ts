@@ -186,8 +186,8 @@ const chatShellCss = css`
       overflow: hidden;
       /* 固定底栏 Tab 总高 = 48px + safe-area；ah-chat height:100% 占满
          content-box，composer 落在 content-box 底部。要让输入框与底栏之间
-         有 ~16px 呼吸距离 → 留白 = 48 + 16 = 64px（与 sharedStyles .content 一致）。 */
-      padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+         有 ~16px 呼吸距离 → 留白 = 48px（与 sharedStyles .content 一致）。 */
+      padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px));
     }
   }
 `;
@@ -269,9 +269,8 @@ export class AhApp extends LitElement {
     startPluginNotify();
     // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组。
     this.addEventListener('ah-goto', (e) => {
-      const d = (
-        e as CustomEvent<string | { tab?: string; group?: string }>
-      ).detail;
+      const d = (e as CustomEvent<string | { tab?: string; group?: string }>)
+        .detail;
       if (!d) return;
       if (typeof d === 'string') {
         this.setTab(d);
@@ -289,9 +288,8 @@ export class AhApp extends LitElement {
       this.theme = getTheme();
     };
     this.onSidebarCollapsed = (e: Event) => {
-      const collapsed = !!(
-        e as CustomEvent<{ collapsed?: boolean }>
-      ).detail?.collapsed;
+      const collapsed = !!(e as CustomEvent<{ collapsed?: boolean }>).detail
+        ?.collapsed;
       this.sidebarCollapsed = collapsed;
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
     };
