@@ -51,6 +51,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import {
   getTheme,
   setTheme,
+  syncNativeStatusBar,
   THEME_STORAGE_KEY,
   type Theme
 } from '../theme/tokens';
@@ -847,7 +848,9 @@ export class AhSettingsCenter extends LitElement {
         matchMedia('(prefers-color-scheme: light)').matches
           ? 'light'
           : 'dark';
+      // 只落 DOM 属性，不写存储；原生状态栏同步随 setTheme 的兄弟路径补上（见 tokens.ts）。
       document.documentElement.setAttribute('data-theme', sys);
+      syncNativeStatusBar(sys);
     } else {
       setTheme(mode);
     }

@@ -22,7 +22,11 @@
  */
 import { LitElement, html, css, nothing, type CSSResultGroup } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
-import { mobilePill } from '../styles/mobile-pill';
+// 注意：本组件**刻意不引入** styles/mobile-pill.ts 的移动端胶囊化覆盖层。
+// 面板内的 .mode-card（问答/计划）是「卡片」、.agent-item 是「列表行」——
+// 它们的 10px/8px 小圆角 + 1px 描边承担卡片轮廓与选中态边框，胶囊化
+// （radius:999px + border 透明）会让模式卡片变成胶囊、选中描边被吞掉，
+// 与文件/专家分区的观感割裂（用户实测反馈，已还原为原始造型）。
 import type { UploadedFile } from '../agent-context';
 
 /** 宿主传入的智能体条目（与 agent-picker 的 AgentOption 保持一致）。 */
@@ -610,7 +614,7 @@ export class AhComposerPlus extends LitElement {
         height: 0;
       }
     }
-  `, mobilePill] as CSSResultGroup;
+  `] as CSSResultGroup;
 
   /** 可选智能体列表（由宿主持有）。 */
   @property({ attribute: false }) agents: ComposerAgentOption[] = [];

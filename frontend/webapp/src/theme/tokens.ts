@@ -179,6 +179,43 @@ export function setTheme(theme: Theme): void {
   if (typeof document === 'undefined') return;
   document.documentElement.setAttribute('data-theme', theme);
   if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, theme);
+  syncNativeStatusBar(theme);
+}
+
+/**
+ * 原生壳（Capacitor）下让系统状态栏图标跟随主题：
+ *  - 深色主题 → `Style.Light`（浅色图标，配深色背景）；
+ *  - 浅色主题 → `Style.Dark`（深色图标，配浅色背景）。
+ * 背景：capacitor.config.ts 里 StatusBar 只能写一份**启动默认值**（写的是深色主题的
+ * `style: 'LIGHT'`）；切到白色主题后 WebView 背景变浅而状态栏图标仍是白色，
+ * 在 `overlaysWebView: true`（Android 16+ 强制 edge-to-edge）下就是「白字白底」，
+ * 时间 / 电量等原生头部信息全部看不见 —— 用户实测反馈。故主题写入路径统一在此同步。
+ * 约定：走全局 `window.Capacitor.Plugins`（webapp 不依赖 @capacitor/*），纯 Web 安全降级。
+ *
+ * 导出原因：settings-center 的「跟随系统」分支绕过 setTheme 直接写 data-theme（不落存储），
+ * 需单独调用本函数保持状态栏同步；其余主题写入路径（initTheme / setTheme / toggleTheme）
+ * 已在 setTheme 内统一覆盖，无需重复调用。
+ */
+export function syncNativeStatusBar(theme: Theme): void {
+  try {
+    type StatusBarLike = { setStyle(opts: { style: string }): Promise<void> };
+    const cap = (
+      globalThis as unknown as {
+        Capacitor?: {
+          isNativePlatform?: () => boolean;
+          Plugins?: { StatusBar?: StatusBarLike };
+        };
+      }
+    ).Capacitor;
+    if (!cap?.isNativePlatform?.() || !cap.Plugins?.StatusBar) return;
+    void cap.Plugins.StatusBar.setStyle({
+      // @capacitor/status-bar 的 Style 枚举是字符串枚举：'Light'=浅色文字（配深底）、
+      // 'Dark'=深色文字（配浅底）——注意这里的命名指的是**文字**颜色，不是背景。
+      style: theme === 'dark' ? 'Light' : 'Dark'
+    });
+  } catch {
+    /* 插件桥不可用 / 桥调用失败：状态栏保持启动配置，不影响页面功能 */
+  }
 }
 
 export function toggleTheme(): Theme {

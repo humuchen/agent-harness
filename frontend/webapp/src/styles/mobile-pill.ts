@@ -32,6 +32,9 @@ import { css } from 'lit';
  *   不是按钮轮廓，故显式保留。
  * - `button.row`（settings-center）不在覆盖范围：它是历史死规则 —— 模板里 `.row` 是 <div>。
  *   同类的 `.session` 亦非 button。二者若被误伤会破坏列表行分隔线。
+ * - `composer-plus` **整体退出**本覆盖层（其 static styles 不再引入 mobilePill）：
+ *   面板内的 `.mode-card`（问答/计划）与 `.agent-item` 是卡片/列表行而非按钮语义，
+ *   胶囊化会吞掉卡片圆角与选中描边（用户实测反馈，2026-09-14 还原）。
  * - `mac-button`（@humuchen/mac-ui）**不在本文件的覆盖范围内**：它要么在库自身 shadow root、
  *   要么被 slot 投影到 document（light DOM），都不在本样式表作用的树中。
  *   其圆角覆盖写在 theme/tokens.ts 的 THEME_CSS（文档级），见该处注释。

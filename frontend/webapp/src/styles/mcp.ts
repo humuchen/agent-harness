@@ -16,8 +16,8 @@ export const mcp = css`
     margin: 0 0 14px !important;
     padding: 12px 14px;
     background: var(--ah-surface-1);
-    border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-md);
+    box-shadow: rgba(0, 0, 0, 0.3) 0 3px 15px;
   }
   .preset-head {
     display: flex;
@@ -127,5 +127,4 @@ export const mcp = css`
   .ghost-link:hover {
     text-decoration: underline;
   }
-
 `;
