@@ -53,6 +53,7 @@ import {
   setTheme,
   syncNativeStatusBar,
   THEME_STORAGE_KEY,
+  withThemeAnimation,
   type Theme
 } from '../theme/tokens';
 import { client } from '../api';
@@ -587,9 +588,15 @@ export class AhSettingsCenter extends LitElement {
       border-radius: 7px;
       cursor: pointer;
       white-space: nowrap;
+      /* 点击微交互：选中态背景/字重平滑过渡 + 按下回缩 */
+      transition: color 0.18s ease, background 0.18s ease,
+        transform 0.12s ease, border-color 0.18s ease;
     }
     .seg button:hover {
       color: var(--ah-text);
+    }
+    .seg button:active {
+      transform: scale(0.94);
     }
     .seg button.on {
       background: var(--ah-accent);
@@ -849,7 +856,10 @@ export class AhSettingsCenter extends LitElement {
           ? 'light'
           : 'dark';
       // 只落 DOM 属性，不写存储；原生状态栏同步随 setTheme 的兄弟路径补上（见 tokens.ts）。
-      document.documentElement.setAttribute('data-theme', sys);
+      // 绕过 setTheme 直接写 data-theme，故手动走 withThemeAnimation 保持颜色过渡一致。
+      withThemeAnimation(() => {
+        document.documentElement.setAttribute('data-theme', sys);
+      });
       syncNativeStatusBar(sys);
     } else {
       setTheme(mode);

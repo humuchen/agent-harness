@@ -158,10 +158,35 @@ export const base = css`
     align-items: center;
     justify-content: center;
     gap: 6px;
+    /* 点击微交互：悬停变色 + 按下回缩，过渡柔和 */
+    transition: color 0.18s ease, border-color 0.18s ease,
+      transform 0.12s ease, background 0.18s ease;
   }
   .theme-toggle:hover {
     color: var(--ah-text);
     border-color: var(--ah-accent);
+  }
+  .theme-toggle:active {
+    transform: scale(0.92);
+  }
+  /* 切换瞬间图标翻转一次（仅折叠态：展开态图标 display:none 不显示；
+     由 app.ts 在 setTheme 后给按钮临时挂 .spun 类触发，500ms 后移除）。 */
+  .sidebar.collapsed .theme-toggle .theme-icon {
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .sidebar.collapsed .theme-toggle.spun .theme-icon {
+    animation: ah-theme-spin 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  @keyframes ah-theme-spin {
+    0% {
+      transform: rotateY(0deg) scale(1);
+    }
+    50% {
+      transform: rotateY(90deg) scale(0.7);
+    }
+    100% {
+      transform: rotateY(0deg) scale(1);
+    }
   }
   .theme-icon {
     display: none;

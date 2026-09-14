@@ -3082,10 +3082,7 @@ export class AhChat extends LitElement {
       return html`
         <div class="empty">
           <h1>有什么可以帮你的？</h1>
-          <p>
-            基于 agent-harness 的多会话对话。下方输入即可开始，右侧可新建 /
-            切换会话。
-          </p>
+          <p>基于 agent-harness 的多会话对话。下方输入即可开始。</p>
         </div>
       `;
     }

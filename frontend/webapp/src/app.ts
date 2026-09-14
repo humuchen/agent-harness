@@ -288,6 +288,7 @@ export class AhApp extends LitElement {
     // 设置中心切换主题 / 侧边栏偏好 → 回填顶层状态（顶栏主题按钮、侧栏收起态由本壳持有）。
     this.onThemeChanged = () => {
       this.theme = getTheme();
+      this.spinThemeIcon(); // 设置面板改主题时，侧栏主题按钮图标同步翻转一次
     };
     this.onSidebarCollapsed = (e: Event) => {
       const collapsed = !!(e as CustomEvent<{ collapsed?: boolean }>).detail
@@ -534,6 +535,23 @@ export class AhApp extends LitElement {
 
   private onToggleTheme() {
     this.theme = toggleTheme();
+    this.spinThemeIcon();
+  }
+
+  /**
+   * 主题切换时侧栏主题按钮的图标翻转动画：
+   * 给 .theme-toggle 临时挂 .spun 类触发 ah-theme-spin 关键帧（CSS 见 styles/base.ts），
+   * 500ms 后移除以便下次切换可重新播放。
+   * 同时监听 ah:theme-changed —— 从「设置」面板切主题时也翻转图标，保持入口一致。
+   */
+  private spinThemeIcon() {
+    const btn = this.shadowRoot?.querySelector<HTMLElement>('.theme-toggle');
+    if (!btn) return;
+    btn.classList.remove('spun');
+    // 强制 reflow 后再加类，保证连点也能重启动画
+    void btn.offsetWidth;
+    btn.classList.add('spun');
+    window.setTimeout(() => btn.classList.remove('spun'), 520);
   }
 
   private onToggleSidebar() {

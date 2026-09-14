@@ -83,6 +83,60 @@ const lightTokens = `
 
 /** 注入 <head> 的全局主题样式：默认兜底 dark，dark/light 显式可切换。 */
 export const THEME_CSS = `
+/* ── 主题切换颜色过渡 ────────────────────────────────────────────────
+   把所有「深色/浅色取值不同」的颜色令牌注册为 @property（带 <color> 语法），
+   使其计算值可被浏览器插值；切换 data-theme 时在 <html> 上临时挂
+   .ah-theme-anim 类（见 withThemeAnimation），对这批自定义属性做 0.45s 过渡。
+   自定义属性沿继承向下传递 —— 过渡期间每一帧 html 上的插值都会重新解析
+   所有消费方的 var(--ah-*)（含 shadow DOM 内部），因此整页颜色平滑渐变，
+   而不是瞬间跳变。
+   - initial-value 取 dark 值（与 :root 默认块一致）。
+   - 不支持 @property 的旧引擎静默降级为即时切换，无副作用。
+   - 取值在两个主题间完全相同的令牌（radius / 字号 / 字体 / 高度）无需注册。 */
+@property --ah-canvas        { syntax: '<color>';  inherits: true; initial-value: #0B0E14; }
+@property --ah-surface-1     { syntax: '<color>';  inherits: true; initial-value: #121622; }
+@property --ah-surface-2     { syntax: '<color>';  inherits: true; initial-value: #171C2B; }
+@property --ah-surface-3     { syntax: '<color>';  inherits: true; initial-value: #1C2233; }
+@property --ah-skeleton-base { syntax: '<color>';  inherits: true; initial-value: #1E2536; }
+@property --ah-skeleton-peak { syntax: '<color>';  inherits: true; initial-value: #2A3348; }
+@property --ah-border        { syntax: '<color>';  inherits: true; initial-value: #262D3D; }
+@property --ah-text          { syntax: '<color>';  inherits: true; initial-value: #E6EDF3; }
+@property --ah-text-muted    { syntax: '<color>';  inherits: true; initial-value: #9AA6B6; }
+@property --ah-text-faint    { syntax: '<color>';  inherits: true; initial-value: #5D6675; }
+@property --ah-accent        { syntax: '<color>';  inherits: true; initial-value: #2997FF; }
+@property --ah-accent-strong { syntax: '<color>';  inherits: true; initial-value: #0A84FF; }
+@property --ah-accent-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(41,151,255,0.15); }
+@property --ah-success       { syntax: '<color>';  inherits: true; initial-value: #30D158; }
+@property --ah-success-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(48,209,88,0.15); }
+@property --ah-warning       { syntax: '<color>';  inherits: true; initial-value: #FFD60A; }
+@property --ah-warning-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(255,214,10,0.15); }
+@property --ah-danger        { syntax: '<color>';  inherits: true; initial-value: #FF453A; }
+@property --ah-danger-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(255,69,58,0.15); }
+/* 门控过渡：仅 .ah-theme-anim 挂类期间（withThemeAnimation 的 600ms 窗口内）
+   才启用颜色插值，避免首屏加载 / 无主题变更时产生多余过渡。
+   过渡声明在 <html>（= 令牌实际变更的元素）上，消费方 var() 随帧重解析。 */
+html.ah-theme-anim {
+  transition:
+    --ah-canvas        0.45s ease,
+    --ah-surface-1     0.45s ease,
+    --ah-surface-2     0.45s ease,
+    --ah-surface-3     0.45s ease,
+    --ah-skeleton-base 0.45s ease,
+    --ah-skeleton-peak 0.45s ease,
+    --ah-border        0.45s ease,
+    --ah-text          0.45s ease,
+    --ah-text-muted    0.45s ease,
+    --ah-text-faint    0.45s ease,
+    --ah-accent        0.45s ease,
+    --ah-accent-strong 0.45s ease,
+    --ah-accent-soft   0.45s ease,
+    --ah-success       0.45s ease,
+    --ah-success-soft  0.45s ease,
+    --ah-warning       0.45s ease,
+    --ah-warning-soft  0.45s ease,
+    --ah-danger        0.45s ease,
+    --ah-danger-soft   0.45s ease;
+}
 :root {
 ${darkTokens}
 }
@@ -177,9 +231,36 @@ export function getTheme(): Theme {
 
 export function setTheme(theme: Theme): void {
   if (typeof document === 'undefined') return;
-  document.documentElement.setAttribute('data-theme', theme);
+  // 切换主题前挂过渡类、切换后 600ms 移除：整页颜色在 withThemeAnimation 窗口内平滑渐变。
+  withThemeAnimation(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  });
   if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, theme);
   syncNativeStatusBar(theme);
+}
+
+/**
+ * 主题切换颜色过渡包装器：把「改 data-theme」这件事包在一个带过渡类的窗口里执行。
+ *
+ * 原理（配合 THEME_CSS）：
+ *  - 进入时给 <html> 加 `.ah-theme-anim`（启用 `html.ah-theme-anim` 上的
+ *    自定义属性 transition），再改 `data-theme`；
+ *  - 浏览器对已注册（@property）的 `--ah-*` 自定义属性做 0.45s 插值，
+ *    沿继承传到所有消费方（含 shadow DOM），实现整页平滑变色而非跳变；
+ *  - 600ms 后移除过渡类，避免过渡状态常驻影响后续布局 / 动画。
+ *
+ * 旧引擎（不支持 @property / 自定义属性 transition）：类与规则均静默失效，
+ * 退化为即时切换，无副作用。
+ *
+ * 供 setTheme 与 settings-center「跟随系统」分支共用 —— 后者绕过 setTheme
+ * 直接写 data-theme，需单独调用本函数保持一致的过渡体验。
+ */
+export function withThemeAnimation(mutate: () => void): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.add('ah-theme-anim');
+  mutate();
+  window.setTimeout(() => root.classList.remove('ah-theme-anim'), 600);
 }
 
 /**
