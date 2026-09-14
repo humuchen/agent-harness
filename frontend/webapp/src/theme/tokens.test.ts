@@ -31,22 +31,22 @@ describe('theme tokens：原生状态栏同步', () => {
     document.documentElement.removeAttribute('data-theme');
   });
 
-  it('setTheme(dark) → 浅色图标（Style.LIGHT，配深色背景）', () => {
+  it('setTheme(dark) → 深色背景浅色图标（Style.DARK，配深色主题）', () => {
     const { spy, remove } = fakeNative();
     try {
       setTheme('dark');
       expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-      expect(spy).toHaveBeenCalledWith({ style: 'LIGHT' });
+      expect(spy).toHaveBeenCalledWith({ style: 'DARK' });
     } finally {
       remove();
     }
   });
 
-  it('setTheme(light) → 深色图标（Style.DARK，配浅色背景）', () => {
+  it('setTheme(light) → 浅色背景深色图标（Style.LIGHT，配浅色主题）', () => {
     const { spy, remove } = fakeNative();
     try {
       setTheme('light');
-      expect(spy).toHaveBeenCalledWith({ style: 'DARK' });
+      expect(spy).toHaveBeenCalledWith({ style: 'LIGHT' });
     } finally {
       remove();
     }

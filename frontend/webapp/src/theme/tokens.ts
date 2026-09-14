@@ -208,6 +208,11 @@ export function syncNativeStatusBar(theme: Theme): void {
       }
     ).Capacitor;
     if (!cap?.isNativePlatform?.()) return;
+    // native 端 StatusBar.setStyle(style) 实际语义（StatusBar.java:51）：
+    //   style='DARK'  → setAppearanceLightStatusBars(false) → 深色背景 + 浅色图标（白字）→ 配深色主题
+    //   style='LIGHT' → setAppearanceLightStatusBars(true)  → 浅色背景 + 深色图标（黑字）→ 配浅色主题
+    // 因此 web 端映射：深色主题传 'DARK'，浅色主题传 'LIGHT'。
+    const nativeStyle = theme === 'dark' ? 'DARK' : 'LIGHT';
     if (!cap.Plugins?.StatusBar) {
       // 首屏：initTheme 可能先于 Capacitor 桥注册完成而执行（isNativePlatform
       // 已为 true 但 Plugins.StatusBar 尚未注入）。短延迟重试 3 次（200ms 间隔），
@@ -220,18 +225,12 @@ export function syncNativeStatusBar(theme: Theme): void {
           window.setTimeout(retry, 200);
           return;
         }
-        void bar.setStyle({ style: theme === 'dark' ? 'LIGHT' : 'DARK' });
+        void bar.setStyle({ style: nativeStyle });
       };
       window.setTimeout(retry, 200);
       return;
     }
-    void cap.Plugins.StatusBar.setStyle({
-      // @capacitor/status-bar 的 Style 是字符串枚举，native 端按**全大写**校验：
-      // 'LIGHT' = 浅色图标（配深色主题背景）、'DARK' = 深色图标（配浅色主题背景）。
-      // 此前误传 'Light'/'Dark'（首字母大写），native 校验失败被 catch 静默吞掉，
-      // 黑主题下状态栏停在系统默认黑图标 → 黑底上不可见（用户实测）。
-      style: theme === 'dark' ? 'LIGHT' : 'DARK'
-    });
+    void cap.Plugins.StatusBar.setStyle({ style: nativeStyle });
   } catch {
     /* 插件桥不可用 / 桥调用失败：状态栏保持启动配置，不影响页面功能 */
   }
