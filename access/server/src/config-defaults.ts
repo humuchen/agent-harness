@@ -16,7 +16,12 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 服务绑定
   PORT: 4173,
   UI_HOST: '0.0.0.0',
-  MAX_BODY_BYTES: 1_048_576,
+  // 请求体上限：聊天请求可能携带多张图片的 dataUrl，默认放宽到 10MB。
+  MAX_BODY_BYTES: 10 * 1024 * 1024,
+  /** 单文件上传上限（MB）；同时影响 /api/upload 单文件校验与请求体截断阈值。 */
+  UPLOAD_MAX_MB: 10,
+  /** 单会话历史镜像序列化上限（字节）；超出后前端主动裁剪最旧消息。 */
+  HISTORY_MAX_BYTES: 512 * 1024,
   RATE_LIMIT: 120,
   RATE_LIMIT_WINDOW_MS: 60_000,
   // 单已登录用户限流阈值（独立于 IP 桶）；0=关闭。与 RATE_LIMIT 同理，集中单一事实来源。
@@ -65,6 +70,21 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 动态配置
   CONFIG_HOT_RELOAD_INTERVAL_MS: 60_000,
   CONFIG_PATHS: '',
+  // 工作空间（参考图能力链路 User → Workspace → Skill → …）
+  WORKSPACE_FILE: '',
+  // IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）
+  IM_ENABLED: false,
+  IM_PROVIDERS: '',
+  IM_DEFAULT_MODE: 'real',
+  IM_MAX_STEPS: 24,
+  IM_TIMEOUT_MS: 180_000,
+  IM_GROUP_REQUIRE_MENTION: true,
+  IM_REPLY_PREFIX: '',
+  IM_DEDUP_BACKEND: '',
+  IM_DEDUP_TTL_SEC: 300,
+  IM_FEISHU_BASE_URL: '',
+  IM_DINGTALK_BASE_URL: '',
+  IM_WECOM_BASE_URL: '',
 };
 
 /** 读取字符串配置：env 优先，缺失回退 DEFAULTS（再回退传入 fallback）。 */

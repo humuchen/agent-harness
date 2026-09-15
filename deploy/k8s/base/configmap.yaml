@@ -15,6 +15,7 @@ data:
   UI_CORS_ORIGIN: ''
   # 安全加固（可按需调小）。
   MAX_BODY_BYTES: '1048576' # 1MB
+  HISTORY_MAX_BYTES: '524288' # 512KB，单会话历史镜像序列化上限
   RATE_LIMIT: '120' # 单 IP 窗口内请求数（<=0 关闭）
   RATE_LIMIT_WINDOW_MS: '60000'
   AUDIT_LOG: '' # 留空=审计仅落 stdout(JSON 行)

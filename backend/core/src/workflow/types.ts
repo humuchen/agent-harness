@@ -46,12 +46,22 @@ export interface StepDef {
   /** 依赖的 step id（DAG 边）。无依赖则可在首轮并行执行。不允许成环（引擎会抛错）。 */
   dependsOn?: string[];
   /**
+   * @deprecated 已弃用。请使用 `onRolling` 替代。
    * 补偿指令（用于失败时回滚）：
    *   - 若等于同 def 内另一个 step 的 id → 失败时逆序执行该 step 作为补偿动作；
    *   - 若为其它的非空字符串 → 作为字面指令交由同一 agent（executor 的 compensate 标志）执行回滚。
    * 不填则无补偿（仅标记该 step 为 compensated）。
+   * 引擎自动兼容该字段，但新代码应迁移至 `onRolling`。
    */
   compensate?: string;
+  /**
+   * 失败补偿（onFailure 回滚）：本 step 失败（或其所在工作流失败）时，逆序执行这些 step 作为回滚动作。
+   * 取值：同 def 内另一个 step 的 id（补偿 step 受 DAG 拓扑约束排序执行），
+   * 或字面量回滚指令（复用本 step 的 agent 执行，executor 据 ctx.compensate 标志走回滚分支）。
+   * 用于替代旧 `compensate: string` 单值字段（现已弃用，引擎仍兼容）。
+   */
+  onRolling?: string[];
+
   /**
    * 条件分支（P2）：本 step 是否执行的前置条件。
    * - 若为空 / 不填 → 正常执行（向后兼容）
@@ -83,6 +93,11 @@ export interface StepRun {
   input?: unknown;
   /** agent 的执行结果（用于下游 inputMapping 取值与补偿输入）。 */
   output?: unknown;
+  /**
+   * 补偿输入（P2 加固）：执行补偿动作时实际交给 executor 的输入。
+   * 落盘后 resume 重试失败补偿时可直接复用，避免补偿上下文丢失。
+   */
+  compensateInput?: unknown;
   error?: string;
   /** 实际选中的 agent id（agentRef 为字符串时解析结果）。 */
   agentId?: string;
@@ -96,6 +111,12 @@ export interface StepRun {
 export interface WorkflowRun {
   def: WorkflowDef;
   state: WorkflowState;
+  /**
+   * 本次运行的唯一 id（def.id 相同的多次并发运行靠它区分 / SSE 去重）。
+   * 由引擎在 run() 启动时生成；store 仍按 def.id 存「最新检查点」，
+   * 但事件与快照携带 runId，消费端可识别并丢弃非本次运行的推送。
+   */
+  runId?: string;
   /** stepId → 运行态。 */
   steps: Record<string, StepRun>;
   startedAt?: number;

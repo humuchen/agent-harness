@@ -5,8 +5,8 @@
  * 构造 `MirroredUsage` 用量快照后落盘。抽为纯函数 `persistHistory(opts)`，
  * 由调用方传入 threads / sessions / 用量快照，零 this.* 依赖，便于单测与复用。
  */
-import { saveThread, type MirroredUsage } from './chat-history';
-import type { ChatMsg, SessionView } from './chat-types';
+import { saveThread, type MirroredUsage, type MirroredMsg } from './chat-history';
+import type { ChatMsg, SessionView, PlanExecState } from './chat-types';
 
 /** 后端经 SSE `llm:usage` 下发的精确上下文用量结构（与 AhChat.backendUsage 对齐）。 */
 export interface BackendUsageLike {
@@ -23,6 +23,7 @@ export interface BackendUsageLike {
     mcp: number;
     skills: number;
     completion: number;
+    cached?: number;
   };
 }
 
@@ -33,6 +34,54 @@ export interface PersistHistoryOpts {
   sessions: SessionView[];
   backendUsage: BackendUsageLike | null;
   runCumulative: { tokens: number; cost: number } | null;
+  /** 服务端下发的历史镜像体积上限（字节）；默认 512KB。 */
+  historyMaxBytes?: number;
+  /**
+   * 计划执行状态（key = 携带计划的消息 id）。前端是计划进度的首发权威：
+   * confirmPlan 跑完全部任务后在这里置 done，而服务端镜像没有「任务总数」概念、
+   * 只能推出「当前任务完成」，无法判定整体完成。故落盘时把本状态写穿到消息的
+   * planStatus 字段，避免刷新 / 服务端重启后计划卡片丢失执行结果。
+   */
+  planExec?: Record<number, PlanExecState>;
+}
+
+/**
+ * 计划执行状态 → 历史镜像形态（PlanExecMirror，done 为 id 数组）。
+ * pending（尚未确认执行）在镜像契约里没有对应状态 —— 服务端镜像只有
+ * running/done/failed/cancelled，返回 null 由调用方丢弃该字段，
+ * 避免把「未确认」误写成「执行中」。
+ */
+export function toMirrorPlanStatus(
+  st: PlanExecState
+): MirroredMsg['planStatus'] | null {
+  if (st.status === 'pending') return null;
+  return {
+    status: st.status,
+    ...(st.currentTaskId ? { currentTaskId: st.currentTaskId } : {}),
+    ...(st.failedTaskId ? { failedTaskId: st.failedTaskId } : {}),
+    done: Object.keys(st.done ?? {}).filter((id) => st.done[id])
+  };
+}
+
+/**
+ * 把本端的计划进度写穿到待落盘消息上：仅处理「携带计划」的消息，
+ * 其余消息原样返回（零拷贝路径保持）。未确认执行时清掉可能残留的旧镜像字段。
+ */
+export function stampPlanStatus(
+  msgs: readonly ChatMsg[],
+  planExec?: Record<number, PlanExecState>
+): unknown[] {
+  if (!planExec) return [...msgs];
+  return msgs.map((m) => {
+    if (!m.plan) return m;
+    const st = planExec[m.id];
+    if (!st) return m;
+    const mirrored = toMirrorPlanStatus(st);
+    const { planStatus: _stale, ...rest } = m as ChatMsg & {
+      planStatus?: unknown;
+    };
+    return mirrored ? { ...rest, planStatus: mirrored } : rest;
+  });
 }
 
 /**
@@ -69,7 +118,8 @@ export function persistHistory(opts: PersistHistoryOpts): void {
   void saveThread(
     opts.sid,
     { title: meta?.title ?? '新对话', updatedAt: Date.now() },
-    t,
-    usage
+    stampPlanStatus(t, opts.planExec),
+    usage,
+    opts.historyMaxBytes
   );
 }

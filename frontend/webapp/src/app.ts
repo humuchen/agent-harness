@@ -1,10 +1,16 @@
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
 import type { ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
-import { getTheme, toggleTheme, type Theme } from './theme/tokens';
+import {
+  getTheme,
+  toggleTheme,
+  type Theme,
+  type BrandConfig,
+  BRAND_DEFAULT
+} from './theme/tokens';
 import { pluginUIRegistry } from './plugin-ui-registry';
 import { notifyError } from './utils/errors';
 import {
@@ -15,10 +21,14 @@ import {
   type ReminderUnread
 } from './plugin-notify';
 import './plugins-console';
-import './components/provider-key-settings';
+// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 模型与密钥 / 系统与网络 / 外观 / 关于。
+// （账户资料 / 修改密码 / 退出登录归「我的」Tab，不在设置中心重复。）
+import './components/settings-center';
 import { TopProgressBar } from './top-progress-bar';
+import { PullToRefreshController } from './pull-refresh';
 
 type Tab =
+  | 'workspace'
   | 'dashboard'
   | 'run'
   | 'verify'
@@ -26,11 +36,21 @@ type Tab =
   | 'mcp'
   | 'approvals'
   | 'observability'
+  | 'audit'
+  | 'org'
+  | 'artifact'
+  | 'skill'
+  | 'datasource'
+  | 'sandbox'
+  | 'supplychain'
   | 'chat'
   | 'plugins'
+  | 'plan'
   | 'settings';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
+/** 深度思考收起偏好（设置-外观）：开启后对话中深度思考默认折叠。默认 false（展开）。 */
+const DEEP_THINK_COLLAPSED_KEY = 'ah:deep-think-collapsed';
 
 /**
  * 侧边栏收起态只显示「短标签」(data-short)。不同 Tab 的首字可能相同
@@ -39,7 +59,7 @@ const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
  * 2 字 / 3 字，极端情况用完整 label 兜底，保证收起态每个 Tab 的短标签唯一可辨。
  */
 function uniqueShort(label: string, used: Set<string>): string {
-  for (let n = 1; n <= label.length; n++) {
+  for (let n = 2; n <= label.length; n++) {
     const cand = label.slice(0, n);
     if (!used.has(cand)) {
       used.add(cand);
@@ -53,18 +73,40 @@ function uniqueShort(label: string, used: Set<string>): string {
   return cand;
 }
 
-const TABS: Array<{ id: Tab; label: string; short: string }> = [
-  { id: 'dashboard', label: '总览', short: '览' },
-  { id: 'chat', label: '对话', short: '话' },
-  { id: 'mcp', label: 'MCP', short: 'M' },
-  { id: 'observability', label: '可观测', short: '观' },
-  { id: 'plugins', label: '插件', short: '插' }
-];
+/**
+ * Tab 归类：PC 侧边栏与移动端抽屉**一致**按 group 渲染分组标题，不再区分端。
+ * 分组语义：
+ *  - 'use'      使用 · 核心工作流
+ *  - 'ability'  能力 · 资产与集成
+ *  - 'observe'  观测 · 运行与质量
+ *  - 'govern'   治理 · 组织与系统
+ *  - 'mine'     我的 · 账户与偏好（仅底栏专属，不进入抽屉）
+ */
+type TabGroup = 'use' | 'ability' | 'observe' | 'govern';
+
+const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
+  [
+    { id: 'workspace', label: '工作台', short: '台', group: 'use' },
+    { id: 'chat', label: '对话', short: '对话', group: 'use' },
+    { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
+    { id: 'observability', label: '可观测', short: '观', group: 'observe' },
+    { id: 'audit', label: '审计', short: '审计', group: 'observe' },
+    { id: 'org', label: '组织', short: '组织', group: 'govern' },
+    { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
+    { id: 'skill', label: '技能', short: '技能', group: 'ability' },
+    { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
+    { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
+    { id: 'verify', label: '自检', short: '验', group: 'observe' },
+    { id: 'env', label: '环境', short: '环', group: 'observe' },
+    { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
+    { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
+    { id: 'plan', label: '计划', short: '计', group: 'use' }
+  ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
 function initialTabFromPath(): string {
   const seg = window.location.pathname.replace(/^\/+|\/+$/g, '');
-  return seg || 'dashboard';
+  return seg || 'workspace';
 }
 
 /**
@@ -111,6 +153,62 @@ const navDotCss = css`
   }
 `;
 
+const desktopShellCss = css`
+  /* 桌面端恢复 :host 视口锁定：移动端适配为解除 100dvh + overflow:hidden
+     改走文档自然滚动，但 PC 端失去锁定后会出现外层 body 滚动条，
+     左侧侧边栏会随页面一起滚动。此处仅在桌面端恢复，
+     ≤760px 仍由 sharedStyles 的 responsive.ts 覆盖为 auto/visible。 */
+  @media (min-width: 761px) {
+    :host {
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+    }
+  }
+`;
+
+/**
+ * 移动端下拉刷新指示器样式。指示器由 PullToRefreshController 动态挂载到 .main，
+ * 用 position:fixed 钉在顶栏正下方，随下拉距离长高；仅触摸手势触发，桌面无副作用。
+ */
+const ptrCss = css`
+  .ptr-indicator {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--ah-text-dim, #8b93a7);
+    font-size: 13px;
+    z-index: 25;
+    pointer-events: none;
+    background: transparent;
+  }
+  .ptr-indicator .ptr-spin {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--ah-border, #3a3f4b);
+    border-top-color: var(--ah-accent, #4c8dff);
+    border-radius: 50%;
+    animation: ptr-spin 0.7s linear infinite;
+  }
+  @keyframes ptr-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ptr-indicator .ptr-spin {
+      animation-duration: 1.4s;
+    }
+  }
+`;
+
 const chatShellCss = css`
   /* ?hidden 绑定用于 Tab 切换时隐藏非激活面板。:host 的 display:block 会盖过
      浏览器默认的 [hidden] 样式，必须加 !important 保险。 */
@@ -133,9 +231,11 @@ const chatShellCss = css`
       overflow: hidden;
     }
     .shell.chat-mode .topbar {
-      flex: 0 0 auto;
+      display: none;
+      /* flex: 0 0 auto;
       padding: 8px 10px;
-      gap: 8px;
+      padding-top: calc(8px + env(safe-area-inset-top, 0px));
+      gap: 8px; */
     }
     /* 移动端对话页：隐藏刷新按钮，仅留状态与菜单，节省竖向空间 */
     .shell.chat-mode .topbar .ghost {
@@ -145,6 +245,10 @@ const chatShellCss = css`
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
+      /* 固定底栏 Tab 总高 = 48px + safe-area；ah-chat height:100% 占满
+         content-box，composer 落在 content-box 底部。要让输入框与底栏之间
+         有 ~16px 呼吸距离 → 留白 = 48px（与 sharedStyles .content 一致）。 */
+      padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px));
     }
   }
 `;
@@ -155,7 +259,10 @@ const chatShellCss = css`
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
-  static styles = [sharedStyles, navDotCss, chatShellCss];
+  // P3-1: 品牌位配置
+  brand: BrandConfig = BRAND_DEFAULT;
+
+  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, ptrCss];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
@@ -168,8 +275,18 @@ export class AhApp extends LitElement {
   } | null = null;
   @state() private sidebarCollapsed =
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
+  /** 深度思考收起偏好（设置-外观）：默认 false（深度思考默认展开）。 */
+  @state() private deepThinkCollapsed =
+    localStorage.getItem(DEEP_THINK_COLLAPSED_KEY) === 'true';
   /** 全局运行中指示器：任意面板（chat / run）发起运行即亮起，全部结束后熄灭。 */
   @state() private globalRunning = false;
+  /**
+   * 设置中心的目标分组 + 定位序号。
+   * 序号自增：同一分组被重复请求（例如连续两次从「我的」进设置）也能重新定位，
+   * 否则属性值不变、Lit 不会触发下游更新。见 ah-goto 处理与 ah-settings-center。
+   */
+  @state() private settingsGroup = 'keys';
+  @state() private settingsSeq = 0;
   /** 顶部进度条实例。 */
   private progressBar = TopProgressBar.getInstance();
   @state() private drawerOpen = false;
@@ -186,6 +303,8 @@ export class AhApp extends LitElement {
    * tabId 由事件 detail 带出，本壳只做匹配、不认识具体是哪个业务插件。
    */
   @state() private reminderUnread: ReminderUnread = { tabId: '', count: 0 };
+  /** 移动端下拉刷新控制器（首次渲染后挂载，disconnected 时解绑）。 */
+  private ptr?: PullToRefreshController;
 
   connectedCallback() {
     super.connectedCallback();
@@ -214,11 +333,55 @@ export class AhApp extends LitElement {
     );
     // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
     startPluginNotify();
-    // 子面板（如 Dashboard）请求切换 Tab（含插件动态 Tab 的 id）。
+    // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组，
+    // 或 { tab: 'chat', sessionId } 用于从工作台打开指定会话。
     this.addEventListener('ah-goto', (e) => {
-      const t = (e as CustomEvent<string>).detail;
-      if (t) this.setTab(t);
+      const d = (e as CustomEvent<
+        string | { tab?: string; group?: string; sessionId?: string }
+      >).detail;
+      if (!d) return;
+      if (typeof d === 'string') {
+        this.setTab(d);
+        return;
+      }
+      if (!d.tab) return;
+      // 从工作台打开指定会话：切到对话页后通知 ah-chat 选中该会话。
+      if (d.tab === 'chat' && d.sessionId) {
+        void this.openChatSession(d.sessionId);
+        return;
+      }
+      // 携带分组：更新目标分组并自增序号，保证重复请求同一分组也能重新定位。
+      // 默认「模型与密钥」（设置中心首个分组）；未知分组由设置中心自行忽略。
+      this.settingsGroup = d.group ?? 'keys';
+      this.settingsSeq += 1;
+      this.setTab(d.tab);
     });
+    // 设置中心切换主题 / 侧边栏偏好 → 回填顶层状态（顶栏主题按钮、侧栏收起态由本壳持有）。
+    this.onThemeChanged = () => {
+      this.theme = getTheme();
+      this.spinThemeIcon(); // 设置面板改主题时，侧栏主题按钮图标同步翻转一次
+    };
+    this.onSidebarCollapsed = (e: Event) => {
+      const collapsed = !!(e as CustomEvent<{ collapsed?: boolean }>).detail
+        ?.collapsed;
+      this.sidebarCollapsed = collapsed;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+    };
+    this.onDeepThinkCollapsed = (e: Event) => {
+      const collapsed = !!(e as CustomEvent<{ collapsed?: boolean }>).detail
+        ?.collapsed;
+      this.deepThinkCollapsed = collapsed;
+      localStorage.setItem(DEEP_THINK_COLLAPSED_KEY, String(collapsed));
+    };
+    window.addEventListener('ah:theme-changed', this.onThemeChanged);
+    this.addEventListener(
+      'ah-sidebar-collapsed',
+      this.onSidebarCollapsed as EventListener
+    );
+    this.addEventListener(
+      'ah-deep-think-collapsed',
+      this.onDeepThinkCollapsed as EventListener
+    );
     // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
     window.addEventListener('ah:run:start', () => {
       this.globalRunning = true;
@@ -231,18 +394,44 @@ export class AhApp extends LitElement {
       const prevTab = this.tab;
       this.tab = initialTabFromPath();
       this.closeDrawer();
+      // 浏览器后退/前进时同步关闭所有覆盖层，防止移动端侧滑返回后抽屉/模态残留。
+      this.closeAllOverlays();
       // 路由切换时显示顶部进度条
       if (prevTab !== this.tab) {
         window.dispatchEvent(new Event('ah:bar:start'));
         setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
       }
+      // 浏览器前进/后退切到新 Tab 时，补拉该面板数据。
+      void this.activatePanel(this.tab);
     };
     window.addEventListener('popstate', this.onPopState);
+
+    // 移动端 Deep Link：piagent://chat/:sessionId 或 piagent://plan/:planId
+    // 由移动端原生壳（Capacitor）拦截后转为 ah:deeplink 事件。Web 端不感知移动端，
+    // 仅监听通用自定义事件；非移动端该事件永不派发，无副作用。
+    this.onDeepLink = (e: CustomEvent<{ path: string; raw: string }>) => {
+      const path = e.detail?.path;
+      if (!path) return;
+      const seg = path.replace(/^\/+/, '').split('/')[0];
+      if (seg) this.setTab(seg);
+    };
+    window.addEventListener('ah:deeplink', this.onDeepLink as EventListener);
+
+    // 移动端左屏边缘右滑 → 打开抽屉
+    this.addEventListener('touchstart', this.onTouchStart, { passive: true });
+    this.addEventListener('touchmove', this.onEdgeTouchMove, { passive: true });
+    this.addEventListener('touchend', this.onEdgeTouchEnd);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.ptr?.detach();
+    this.ptr = undefined;
     window.removeEventListener('popstate', this.onPopState);
+    window.removeEventListener('ah:deeplink', this.onDeepLink as EventListener);
+    this.removeEventListener('touchstart', this.onTouchStart);
+    this.removeEventListener('touchmove', this.onEdgeTouchMove);
+    this.removeEventListener('touchend', this.onEdgeTouchEnd);
     window.removeEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
@@ -256,6 +445,58 @@ export class AhApp extends LitElement {
 
   /** History 路由的 popstate 处理器引用（disconnectedCallback 解绑用）。 */
   private onPopState = () => {};
+
+  /** 移动端 Deep Link 处理器引用（disconnectedCallback 解绑用）。 */
+  private onDeepLink = (_e: CustomEvent<{ path: string; raw: string }>) => {};
+
+  /** 设置中心改主题后的同步处理器（顶栏主题按钮文案 / 图标由本壳持有）。 */
+  private onThemeChanged = () => {};
+
+  /** 设置中心改「侧边栏默认收起」偏好后的处理器（持久化 + 回填本壳状态）。 */
+  private onSidebarCollapsed = (_e: Event) => {};
+
+  /** 设置中心改「深度思考收起」偏好后的处理器（持久化 + 回填本壳状态）。 */
+  private onDeepThinkCollapsed = (_e: Event) => {};
+
+  /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。
+   *  触摸点 x 在 0–20% 视口宽范围内即视为「边缘」，右滑 20px 且主要水平位移
+   *  （竖直漂移 <45px）时触发。passive 监听无法 preventDefault；若与 Android
+   *  系统边缘返回手势冲突需原生侧处理（见 MainActivity 注释）。 */
+  private edgeStart = 0;
+  private edgeStartY = 0;
+  private edgeFired = false;
+  private edgeActive = false;
+  private onTouchStart = (e: TouchEvent) => {
+    if (e.touches.length !== 1) {
+      this.edgeActive = false;
+      return;
+    }
+    const t = e.touches[0]!;
+    const edgeZone = Math.min(32, Math.max(24, window.innerWidth * 0.2));
+    if (t.clientX <= edgeZone) {
+      this.edgeActive = true;
+      this.edgeFired = false;
+      this.edgeStart = t.clientX;
+      this.edgeStartY = t.clientY;
+    } else {
+      this.edgeActive = false;
+    }
+  };
+  private onEdgeTouchMove = (e: TouchEvent) => {
+    if (!this.edgeActive || this.edgeFired || e.touches.length !== 1) return;
+    const t = e.touches[0]!;
+    const dx = t.clientX - this.edgeStart;
+    const dy = Math.abs(t.clientY - this.edgeStartY);
+    // 向右 20px 且竖直漂移不过大 → 视为「边缘右滑开抽屉」，单次滑动只触发一次
+    if (dx > 20 && dy < 45 && !this.drawerOpen) {
+      this.edgeFired = true;
+      this.onToggleDrawer();
+    }
+  };
+  private onEdgeTouchEnd = () => {
+    this.edgeActive = false;
+    this.edgeFired = false;
+  };
 
   private onPluginsChanged = () => {
     void this.loadPluginViews();
@@ -283,10 +524,48 @@ export class AhApp extends LitElement {
     }
     // 路由切换时显示顶部进度条，加载完成后隐藏
     if (prevTab !== tab) {
+      // 切换 Tab 时关闭所有覆盖层，避免旧抽屉/模态悬浮到新页面。
+      this.closeAllOverlays();
       window.dispatchEvent(new Event('ah:bar:start'));
       // 短暂延迟后停止，模拟页面加载完成
       setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
+      // 新激活的面板此前在隐藏态挂载时跳过了首屏请求，此处补拉一次（见各面板 refresh() 守卫）。
+      void this.activatePanel(tab);
     }
+  }
+
+  /**
+   * 工作台/侧栏请求打开指定会话：切到对话 Tab 后向 ah-chat 派发选择事件。
+   * 等待一次更新完成，确保 ah-chat 已解除 hidden 再派发事件，避免监听未就绪。
+   */
+  private async openChatSession(sessionId: string): Promise<void> {
+    this.setTab('chat');
+    await this.updateComplete;
+    const chat = this.shadowRoot?.querySelector('ah-chat');
+    if (chat) {
+      chat.dispatchEvent(
+        new CustomEvent('ah-select-session', {
+          detail: sessionId,
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+  }
+
+  /**
+   * 移动端底栏专用 Tab 切换。
+   * - 导航到「资产」时默认落到 MCP（能力分组的首 Tab），因为资产是聚合容器而非单一视图；
+   *   其它 Tab 正常切入对应视图。
+   * - 切换时关闭移动抽屉，保证操作链干净。
+   */
+  private setMobileTab(tab: 'workspace' | 'chat' | 'mcp' | 'plugins' | 'me') {
+    if (tab === 'me') {
+      this.setTab('me');
+    } else {
+      this.setTab(tab);
+    }
+    this.closeDrawer();
   }
 
   /**
@@ -342,8 +621,11 @@ export class AhApp extends LitElement {
   }
 
   /**
-   * 拉取服务端状态。失败时除保留顶栏 pill 文案外，额外弹一条通知
-   * （此前只把错误静默写进 pill，用户切到别的 Tab 就完全看不到）。
+   * 拉取服务端状态。成功只用于顶栏「运行中」指示的前置判断，失败则保留 err 文案
+   * 并额外弹一条通知（此前只把错误静默写进 pill，用户切到别的 Tab 就完全看不到）。
+   *
+   * 注：顶栏原有的「LLM live / mock」胶囊已按需求下线 —— 服务端 LLM 状态改到
+   * 设置中心的「系统与网络 → 服务状态」查看，避免全局常驻的状态噪音。
    */
   private refreshState() {
     client
@@ -366,6 +648,23 @@ export class AhApp extends LitElement {
 
   private onToggleTheme() {
     this.theme = toggleTheme();
+    this.spinThemeIcon();
+  }
+
+  /**
+   * 主题切换时侧栏主题按钮的图标翻转动画：
+   * 给 .theme-toggle 临时挂 .spun 类触发 ah-theme-spin 关键帧（CSS 见 styles/base.ts），
+   * 500ms 后移除以便下次切换可重新播放。
+   * 同时监听 ah:theme-changed —— 从「设置」面板切主题时也翻转图标，保持入口一致。
+   */
+  private spinThemeIcon() {
+    const btn = this.shadowRoot?.querySelector<HTMLElement>('.theme-toggle');
+    if (!btn) return;
+    btn.classList.remove('spun');
+    // 强制 reflow 后再加类，保证连点也能重启动画
+    void btn.offsetWidth;
+    btn.classList.add('spun');
+    window.setTimeout(() => btn.classList.remove('spun'), 520);
   }
 
   private onToggleSidebar() {
@@ -384,9 +683,122 @@ export class AhApp extends LitElement {
     this.syncBodyScroll();
   }
 
+  /**
+   * 关闭所有覆盖层（抽屉、模态、密码框等）。
+   * 路由切换或浏览器后退/前进时派发全局事件，各组件订阅后自行关闭，
+   * 避免移动端侧滑返回后旧覆盖层仍悬浮在新页面上。
+   */
+  private closeAllOverlays() {
+    window.dispatchEvent(new CustomEvent('ah:close-overlays'));
+  }
+
   /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */
   private syncBodyScroll() {
     document.body.style.overflow = this.drawerOpen ? 'hidden' : '';
+  }
+
+  /**
+   * 首次渲染后挂载下拉刷新控制器：此时 .content / .main 已在 shadow DOM 中稳定存在。
+   * 控制器引用的是模板静态节点（Lit 不会重建），可安全长期持有。
+   */
+  protected firstUpdated(changedProperties: PropertyValues): void {
+    super.firstUpdated(changedProperties);
+    const root = this.shadowRoot;
+    if (!root) return;
+    const content = root.querySelector('.content') as HTMLElement | null;
+    const main = root.querySelector('.main') as HTMLElement | null;
+    if (content && main && !this.ptr) {
+      this.ptr = new PullToRefreshController({
+        content,
+        mount: main,
+        isEnabled: () => this.ptrEnabled(),
+        onRefresh: () => this.refreshActivePanel()
+      });
+      this.ptr.attach();
+    }
+  }
+
+  /** 是否允许下拉刷新：触摸设备 + 抽屉关闭 + 当前非对话/我的页。 */
+  private ptrEnabled(): boolean {
+    if (!this.isTouchDevice()) return false;
+    if (this.drawerOpen) return false;
+    if (this.tab === 'chat' || this.tab === 'me') return false;
+    return true;
+  }
+
+  /** 当前可视（未 hidden）的面板节点；插件视图与「我的」用特型容器承载。 */
+  private visiblePanel(): HTMLElement | null {
+    const content = this.shadowRoot?.querySelector('.content');
+    if (!content) return null;
+    for (const node of Array.from(content.children)) {
+      const el = node as HTMLElement;
+      if (el.hasAttribute('hidden')) continue;
+      const tag = el.tagName.toLowerCase();
+      if (
+        tag.startsWith('ah-') ||
+        el.classList.contains('plugin-view') ||
+        el.classList.contains('me-view')
+      ) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 下拉刷新触发：调用当前激活面板的 refresh()（多数面板已有该公开方法，
+   * 在 connectedCallback 中同样用于首屏数据加载）；插件视图改为重拉服务端渲染；
+   * 同时刷新顶栏服务端状态。对话/我的页由 ptrEnabled 已排除，此处仅兜底。
+   */
+  private async refreshActivePanel(): Promise<void> {
+    const active = this.visiblePanel();
+    if (!active) return;
+    const el = active as HTMLElement;
+    if (el.classList.contains('me-view')) return;
+    if (el.classList.contains('plugin-view')) {
+      void this.loadPluginViews();
+      return;
+    }
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    if (typeof fn === 'function') {
+      try {
+        await fn.call(el);
+      } catch (e) {
+        notifyError(e, { title: '刷新失败', key: 'ptr-refresh' });
+      }
+    }
+    this.refreshState();
+  }
+
+  /**
+   * 激活某 Tab 后补拉对应面板数据。面板随应用壳一起挂载，但隐藏态（非当前 Tab）
+   * 时各面板 refresh() 顶部有 `if (this.hidden) return;` 守卫、不会发起首屏请求；
+   * 切到该 Tab（可见）后由本方法触发一次 refresh()，避免「打开页面却是空数据」。
+   * 仅对当前可见面板生效（visiblePanel 已按 ?hidden 过滤）。
+   */
+  private async activatePanel(_tab: string) {
+    await this.updateComplete;
+    const el = this.visiblePanel();
+    if (!el) return;
+    const node = el as HTMLElement;
+    if (node.classList.contains('me-view')) return;
+    if (node.classList.contains('plugin-view')) {
+      void this.loadPluginViews();
+      return;
+    }
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    if (typeof fn === 'function') {
+      try {
+        await fn.call(el);
+      } catch (e) {
+        notifyError(e, { title: '加载失败', key: 'tab-activate' });
+      }
+    }
+  }
+
+  /** 是否为触摸设备（仅触摸才需要下拉刷新手势）。 */
+  private isTouchDevice(): boolean {
+    return 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0;
   }
 
   render() {
@@ -409,7 +821,10 @@ export class AhApp extends LitElement {
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
-            <!-- <span class="brand-text">Agent Harness</span>
+            <!-- <span class="brand-text">Agent Harness</span> -->
+            <span class="brand-text"
+              >${this.brand?.productName ?? 'Agent Harness'}</span
+            >
             <button
               class="sidebar-toggle"
               title=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
@@ -417,24 +832,51 @@ export class AhApp extends LitElement {
               aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
               ${this.sidebarCollapsed ? '›' : '‹'}
-            </button> -->
+            </button>
           </div>
           <nav class="nav">
-            ${TABS.map(
-              (t) => html`
-                <button
-                  class="nav-item ${this.tab === t.id ? 'active' : ''}"
-                  data-short=${t.short}
-                  title=${t.label}
-                  @click=${() => {
-                    this.setTab(t.id);
-                    this.closeDrawer();
-                  }}
-                >
-                  <span class="nav-text">${t.label}</span>
-                </button>
-              `
-            )}
+            ${(() => {
+              // 按 group 分组渲染（PC 侧边栏与移动端抽屉一致；仅收起为图标轨时由 CSS 隐藏标题）
+              const GROUP_TITLE: Record<string, string> = {
+                use: '使用 · 工作流',
+                ability: '能力 · 资产',
+                observe: '观测 · 运维',
+                govern: '治理 · 系统'
+              };
+              const groups = new Map<string, typeof TABS>();
+              for (const t of TABS) {
+                const list = groups.get(t.group) ?? [];
+                list.push(t);
+                groups.set(t.group, list);
+              }
+              const order: string[] = ['use', 'ability', 'observe', 'govern'];
+              const children: TemplateResult[] = [];
+              for (const g of order) {
+                const items = groups.get(g);
+                if (!items || items.length === 0) continue;
+                children.push(
+                  html`<div class="nav-group-title">
+                    ${GROUP_TITLE[g] ?? g}
+                  </div>`
+                );
+                for (const t of items) {
+                  children.push(
+                    html`<button
+                      class="nav-item ${this.tab === t.id ? 'active' : ''}"
+                      data-short=${t.short}
+                      title=${t.label}
+                      @click=${() => {
+                        this.setTab(t.id);
+                        this.closeDrawer();
+                      }}
+                    >
+                      <span class="nav-text">${t.label}</span>
+                    </button>`
+                  );
+                }
+              }
+              return children;
+            })()}
           </nav>
           ${this.pluginTabs.length
             ? html`<div class="nav-sep"></div>
@@ -477,6 +919,18 @@ export class AhApp extends LitElement {
                 >${this.theme === 'dark' ? '☾' : '☀'}</span
               >
             </button>
+            <!-- 移动端账户口子节点，抽屉底部「我的」快速入口 -->
+            <button
+              class="nav-item nav-mine"
+              data-short="我"
+              title="我的"
+              @click=${() => {
+                this.setTab('me');
+                this.closeDrawer();
+              }}
+            >
+              <span class="nav-text">我的</span>
+            </button>
           </div>
         </aside>
 
@@ -487,38 +941,35 @@ export class AhApp extends LitElement {
 
         <div class="main">
           <header class="topbar">
-            <button
-              class="menu-btn"
-              title="打开导航"
-              @click=${() => this.onToggleDrawer()}
-              aria-label="打开导航"
-            >
-              ☰
-            </button>
+            ${this.tab !== 'chat'
+              ? html`<button
+                  class="menu-btn"
+                  title="打开导航"
+                  @click=${() => this.onToggleDrawer()}
+                  aria-label="打开导航"
+                >
+                  ☰
+                </button>`
+              : nothing}
             <div class="state">
               ${this.state
                 ? html`
-                    <span class="pill ${this.state.openrouter ? 'ok' : ''}">
-                      LLM ${this.state.openrouter ? 'live' : 'mock'}
-                    </span>
                     ${this.globalRunning
                       ? html`<span class="pill running">运行中</span>`
                       : ''}
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
-            ${this.me
-              ? html`<ah-user-menu
-                  username=${this.me.username}
-                  role=${this.me.role}
-                  email=${this.me.email ?? ''}
-                ></ah-user-menu>`
-              : ''}
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">
+            <ah-workspace ?hidden=${this.tab !== 'workspace'}></ah-workspace>
             <ah-dashboard ?hidden=${this.tab !== 'dashboard'}></ah-dashboard>
-            <ah-chat ?hidden=${this.tab !== 'chat'}></ah-chat>
+            <ah-chat
+              ?hidden=${this.tab !== 'chat'}
+              role=${this.me?.role ?? ''}
+              ?deepThinkCollapsed=${this.deepThinkCollapsed}
+            ></ah-chat>
             <ah-run ?hidden=${this.tab !== 'run'}></ah-run>
             <ah-verify ?hidden=${this.tab !== 'verify'}></ah-verify>
             <ah-env ?hidden=${this.tab !== 'env'}></ah-env>
@@ -527,10 +978,45 @@ export class AhApp extends LitElement {
             <ah-observability
               ?hidden=${this.tab !== 'observability'}
             ></ah-observability>
+            <ah-audit ?hidden=${this.tab !== 'audit'}></ah-audit>
+            <ah-org-tree ?hidden=${this.tab !== 'org'}></ah-org-tree>
+            <ah-artifacts ?hidden=${this.tab !== 'artifact'}></ah-artifacts>
+            <ah-skills ?hidden=${this.tab !== 'skill'}></ah-skills>
+            <ah-datasources
+              ?hidden=${this.tab !== 'datasource'}
+            ></ah-datasources>
+            <ah-sandbox ?hidden=${this.tab !== 'sandbox'}></ah-sandbox>
+            <ah-supply-chain
+              ?hidden=${this.tab !== 'supplychain'}
+            ></ah-supply-chain>
             <ah-plugins ?hidden=${this.tab !== 'plugins'}></ah-plugins>
-            <ah-provider-key-settings
+            <ah-plan-board ?hidden=${this.tab !== 'plan'}></ah-plan-board>
+            <!-- 设置 Tab：综合设置中心（顶部平铺分组 Tab；「模型与密钥」内嵌 BYOK 面板） -->
+            <ah-settings-center
               ?hidden=${this.tab !== 'settings'}
-            ></ah-provider-key-settings>
+              group=${this.settingsGroup}
+              groupSeq=${this.settingsSeq}
+              ?sidebarCollapsed=${this.sidebarCollapsed}
+              ?deepThinkCollapsed=${this.deepThinkCollapsed}
+            ></ah-settings-center>
+            <!-- 我的 Tab：复用 ah-user-menu，头像＋改密＋退出全部收进来 -->
+            <div class="me-view" ?hidden=${this.tab !== 'me'}>
+              ${this.me
+                ? html`<ah-user-menu
+                    username=${this.me.username}
+                    role=${this.me.role}
+                    email=${this.me.email ?? ''}
+                    standalone
+                  ></ah-user-menu>`
+                : html`<div class="me-skeleton">
+                    <div
+                      class="sk sk-line"
+                      style="width:120px;height:120px;border-radius:50%"
+                    ></div>
+                    <div class="sk sk-line" style="width:40%"></div>
+                    <div class="sk sk-line" style="width:60%"></div>
+                  </div>`}
+            </div>
             ${this.pluginTabs.some((t) => t.id === this.tab)
               ? html`<div class="plugin-view">
                   ${this.pluginLoading === this.tab
@@ -545,6 +1031,129 @@ export class AhApp extends LitElement {
                 </div>`
               : ''}
           </main>
+
+          <!-- 品牌信息已收敛到「我的」页（移动端）与登录页，桌面内容区不再渲染品牌脚。 -->
+
+          <!-- 移动端底栏 Tab（≤760px 显示）：工作台/对话/资产/插件/我的 -->
+          <!-- 图标：线性 SVG（24 viewBox / stroke 2 / round），风格与 App 内部图标一致 -->
+          <nav class="mobile-tabbar" role="tablist">
+            <button
+              class="m-tab ${this.tab === 'workspace' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('workspace')}
+              aria-label="工作台"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="3" width="8" height="8" rx="1.5" />
+                  <rect x="13" y="3" width="8" height="5" rx="1.5" />
+                  <rect x="13" y="10" width="8" height="11" rx="1.5" />
+                  <rect x="3" y="13" width="8" height="8" rx="1.5" />
+                </svg>
+              </span>
+              <!-- <span class="tl">工作台</span>-->
+            </button>
+            <button
+              class="m-tab ${this.tab === 'chat' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('chat')}
+              aria-label="对话"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                  />
+                  <path d="M8 9h8M8 13h5" />
+                </svg>
+              </span>
+              <!-- <span class="tl">对话</span> -->
+            </button>
+            <button
+              class="m-tab ${this.tab === 'mcp' ||
+              this.tab === 'skill' ||
+              this.tab === 'datasource'
+                ? 'on'
+                : ''}"
+              @click=${() => this.setMobileTab('mcp')}
+              aria-label="资产"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z" />
+                  <path d="M4 7l8 4 8-4" />
+                  <path d="M12 11v10" />
+                </svg>
+              </span>
+              <!-- <span class="tl">资产</span> -->
+            </button>
+            <button
+              class="m-tab ${this.tab === 'plugins' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('plugins')}
+              aria-label="插件"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M9 4h6a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v1a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-1H5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h2V6a2 2 0 0 1 2-2Z"
+                  />
+                  <path d="M12 4v2M12 18v2M4 12h2M18 12h2" />
+                </svg>
+              </span>
+              <!-- <span class="tl">插件</span> -->
+            </button>
+            <button
+              class="m-tab ${this.tab === 'me' ? 'on' : ''}"
+              @click=${() => this.setMobileTab('me')}
+              aria-label="我的"
+            >
+              <span class="ti">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M5 20a7 7 0 0 1 14 0" />
+                </svg>
+              </span>
+              <!-- <span class="tl">我的</span> -->
+            </button>
+          </nav>
         </div>
       </div>
     `;

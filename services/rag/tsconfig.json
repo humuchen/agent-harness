@@ -12,7 +12,7 @@
     "declaration": false,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "typeRoots": ["../../backend/core/node_modules/@types", "../../node_modules/@types"]
   },
   "include": ["src/**/*.ts"]

@@ -355,6 +355,96 @@ test(
   }
 );
 
+// 左侧历史列表「滚动加载」的端到端契约：GET /api/chat/sessions 支持 limit/offset，
+// 并返回 total/hasMore 供前端判断是否续拉；不传参时保持「全量」旧契约。
+// 刻意只建会话、不跑 /api/run —— 本用例验证的是分页接线，跑真实 run 只会拖慢套件。
+test(
+  '会话列表分页：limit/offset 切片 + total/hasMore（scroll 加载契约）',
+  { skip: !RUN, timeout: 60000 },
+  async () => {
+    const { child, port } = await startServer();
+    const req = makeReq(port);
+    try {
+      // 同一 token → 同一 owner，建 5 个会话。
+      const created = [];
+      for (let i = 0; i < 5; i++) {
+        const r = await req('POST', '/api/chat/sessions', {
+          headers: auth(),
+          body: { title: `paging-${i}` }
+        });
+        assert.equal(r.status, 200, `创建第 ${i} 个会话应 200`);
+        created.push(JSON.parse(r.body).id);
+      }
+
+      // 1) 不传分页参数 → 全量，保持向后兼容（老客户端行为不变）。
+      const allRes = await req('GET', '/api/chat/sessions', { headers: auth() });
+      assert.equal(allRes.status, 200);
+      const all = JSON.parse(allRes.body);
+      assert.ok(Array.isArray(all.sessions), 'sessions 应为数组');
+      assert.equal(all.total, all.sessions.length, '缺省 limit 应返回全量');
+      assert.equal(all.hasMore, false, '全量返回时 hasMore 必须为 false');
+      for (const id of created) {
+        assert.ok(
+          all.sessions.some((s) => s.id === id),
+          `全量列表应含刚创建的会话 ${id}`
+        );
+      }
+
+      // 2) 显式分页：逐页拼接应无重复、无遗漏，且顺序与全量一致。
+      const expected = all.sessions.map((s) => s.id);
+      const seen = [];
+      let offset = 0;
+      let hasMore = true;
+      for (let round = 0; round < 50 && hasMore; round++) {
+        const r = await req(
+          'GET',
+          `/api/chat/sessions?limit=2&offset=${offset}`,
+          { headers: auth() }
+        );
+        assert.equal(r.status, 200, '分页请求应 200');
+        const p = JSON.parse(r.body);
+        assert.equal(p.total, expected.length, 'total 不应随分页变化');
+        assert.ok(p.sessions.length <= 2, 'limit=2 时单页不得超过 2 条');
+        seen.push(...p.sessions.map((s) => s.id));
+        offset += p.sessions.length;
+        hasMore = p.hasMore;
+        if (hasMore) {
+          assert.equal(p.sessions.length, 2, 'hasMore=true 时单页应为满页');
+        }
+      }
+      assert.equal(hasMore, false, '分页必须在取完末尾时收敛');
+      assert.equal(new Set(seen).size, seen.length, '分页拼接不得出现重复会话');
+      assert.deepEqual(seen, expected, '分页拼接应逐条覆盖全量且顺序一致');
+
+      // 3) offset 越界 → 空页 + hasMore=false（前端据此停止续拉）。
+      const over = await req(
+        'GET',
+        '/api/chat/sessions?limit=2&offset=9999',
+        { headers: auth() }
+      );
+      assert.equal(over.status, 200);
+      const overPage = JSON.parse(over.body);
+      assert.equal(overPage.sessions.length, 0, 'offset 越界应返回空页');
+      assert.equal(overPage.hasMore, false, 'offset 越界应无下一页');
+
+      // 4) 非法参数必须回落全量而不是 500（前端可能传来被截断的参数）。
+      const bad = await req(
+        'GET',
+        '/api/chat/sessions?limit=abc&offset=-3',
+        { headers: auth() }
+      );
+      assert.equal(bad.status, 200, '非法分页参数应回落全量而非报错');
+      const badPage = JSON.parse(bad.body);
+      assert.equal(badPage.sessions.length, expected.length);
+      assert.equal(badPage.hasMore, false);
+    } finally {
+      try {
+        child.kill('SIGTERM');
+      } catch {}
+    }
+  }
+);
+
 // dist 未构建时给出明确失败提示，而非静默跳过整个套件。
 test('dist 未构建时显式提示', { skip: RUN }, () => {
   assert.fail(

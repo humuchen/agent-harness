@@ -36,7 +36,7 @@ test('retrieve: 召回相关片段且 score>0', async () => {
     title: '配送时效',
     text: '标准配送需要三到五天，偏远地区可能延迟送达。',
   });
-  const resp = retrieve(store, provider, { query: '退款怎么操作', tenant_id: 'tA', top_k: 3 });
+  const resp = await retrieve(store, provider, { query: '退款怎么操作', tenant_id: 'tA', top_k: 3 });
   assert.ok(resp.results.length >= 1);
   assert.ok(resp.results[0].score > 0);
   // 演示用 HashEmbedding 维度有限、哈希碰撞难免，不保证严格排序；
@@ -54,7 +54,7 @@ test('tenant 隔离: 跨租户不可见', async () => {
     title: '机密',
     text: '只有租户 A 能看到的退款条款与金额。',
   });
-  const resp = retrieve(store, provider, { query: '退款条款', tenant_id: 'tB', top_k: 5 });
+  const resp = await retrieve(store, provider, { query: '退款条款', tenant_id: 'tB', top_k: 5 });
   assert.equal(resp.results.length, 0, '租户 B 不应看到 A 的 chunk');
   assert.equal(store.count('tB'), 0);
 });
@@ -82,6 +82,6 @@ test('score_threshold 过滤低分结果', async () => {
     tenant_id: 'tA',
     text: '关于猫咪的饲养与日常护理知识分享。',
   });
-  const resp = retrieve(store, provider, { query: '火箭发射原理', tenant_id: 'tA', top_k: 5, score_threshold: 0.5 });
+  const resp = await retrieve(store, provider, { query: '火箭发射原理', tenant_id: 'tA', top_k: 5, score_threshold: 0.5 });
   assert.equal(resp.results.length, 0);
 });

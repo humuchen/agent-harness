@@ -23,3 +23,19 @@ const MD_HINT =
 export function isMarkdownLike(text: string): boolean {
   return MD_HINT.test(text);
 }
+
+// 块级 HTML 标签：模型常直接输出 <table>/<ul> 等「原文」而非 Markdown 语法。
+// 这类文本若走纯文本分支会被整体转义，表格将以源码形式显示在气泡里（已确认缺陷）。
+// 刻意只收「结构性容器」，不含 div/span/code/p/hr 等高噪声标签 ——
+// 讲解 HTML 的正文（如「用 <p> 标签分段」）不该被渲染成真实元素。
+const HTML_BLOCK_HINT =
+  /<(table|thead|tbody|tfoot|tr|th|td|caption|ul|ol|li|dl|dt|dd|pre|blockquote|h[1-6]|details|summary|figure|figcaption)\b/i;
+
+/**
+ * 判断文本是否含块级 HTML 标签。
+ * 注意：该判定**不参与** isMarkdownLike 的既有语义，由调用方按来源决定是否启用 ——
+ * 助手输出启用（修复 HTML 表格降级），用户输入不启用（避免把用户粘贴内容当富文本渲染）。
+ */
+export function hasHtmlBlock(text: string): boolean {
+  return HTML_BLOCK_HINT.test(text);
+}

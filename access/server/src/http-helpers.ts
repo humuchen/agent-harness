@@ -153,3 +153,25 @@ export async function readBody(req: IncomingMessage): Promise<any> {
     throw err;
   }
 }
+
+/**
+ * 读取请求体的**原始字符串**（不做 JSON 解析）。
+ *
+ * 为什么单独提供：IM 桥接（飞书/钉钉/企业微信）的签名校验必须基于「原始字节」
+ * 计算摘要，任何 JSON.parse + 重新序列化都会改变字节序（键顺序/空白），导致验签失败。
+ * 同样适用于其它需要原文校验的 webhook 场景。
+ */
+export async function readRawBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).length;
+    if (total > MAX_BODY_BYTES) {
+      const err: any = new Error('request body too large');
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}

@@ -121,6 +121,62 @@ export function normalizeToolCallIds(calls: ToolCall[]): ToolCall[] {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 工具 schema 热度缓存（L1 内存缓存）
+// ---------------------------------------------------------------------------
+// 18+ 个工具 schema 序列化后 ≈ 5000+ tok，每次完整传输开销巨大。
+// 优化：缓存最近 50 组工具组合的序列化结果，同时跟踪工具被使用频率。
+// 高频工具在 cache key 命中后可直接复用，避免重复序列化和传输。
+const TOOL_SCHEMA_CACHE = new Map<string, any>();
+const TOOL_FREQ: Record<string, number> = {};
+const MAX_CACHE_ENTRIES = 50;
+
+/**
+ * 序列化工具 schema（带缓存）。
+ * - cache key 基于工具名称组合生成，稳定则命中
+ * - 低频工具 description 被截短（> 100 字符截至 80 字），减少传输体积
+ * - 高频工具保留完整描述，保证语义准确性
+ */
+export function serializeToolsCached(tools: any[]): any[] | undefined {
+  if (!tools || tools.length === 0) return tools;
+
+  // 构建 cache key（基于工具名称排序后拼接）
+  const names = tools.map((t: any) => t?.function?.name || '').sort().join(',');
+  if (TOOL_SCHEMA_CACHE.has(names)) {
+    return TOOL_SCHEMA_CACHE.get(names);
+  }
+
+  // 缓存未命中：序列化并缩减低频工具描述
+  const serialized = tools.map((tool: any) => {
+    const tName = tool?.function?.name || '';
+    const freq = TOOL_FREQ[tName] || 0;
+    const fn = tool?.function || {};
+
+    // 低频工具缩短 description，高频工具保留完整
+    const desc = typeof fn.description === 'string'
+      ? (freq >= 3 ? fn.description : truncate(fn.description, 80))
+      : fn.description;
+
+    return { ...tool, function: { ...fn, description: desc } };
+  });
+
+  // LRU 缓存淘汰
+  if (TOOL_SCHEMA_CACHE.size >= MAX_CACHE_ENTRIES) {
+    const firstKey = TOOL_SCHEMA_CACHE.keys().next().value!;
+    TOOL_SCHEMA_CACHE.delete(firstKey);
+  }
+  TOOL_SCHEMA_CACHE.set(names, serialized);
+
+  // 更新使用频率
+  for (const t of tools) {
+    const tName = t?.function?.name || '';
+    if (tName) TOOL_FREQ[tName] = (TOOL_FREQ[tName] || 0) + 1;
+  }
+
+  return serialized;
+}
+
+// ---------------------------------------------------------------------------
 export interface ChatCallOptions {
   baseUrl: string;
   headers: Record<string, string>;
@@ -163,17 +219,24 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
   const cacheDisabled = process.env.PROMPT_CACHE === 'false' || process.env.PROMPT_CACHE === '0';
   const caching = !cacheDisabled;
+
+  // 优化：缓存工具 schema 序列化结果，缩减低频工具描述以减小传输体积。
+  // (仅在非缓存模式下也生效 — schema 缩减独立于 prompt cache)
+  const tools = (body as any).tools;
+  if (Array.isArray(tools)) {
+    (body as any).tools = serializeToolsCached(tools);
+  }
+
   if (caching) {
     const msgs = (body as any).messages;
     if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
       msgs[0].cache_control = { type: 'ephemeral' };
     }
-    // 工具 schema 同为每轮固定开销：在工具数组末项打 cache_control，
-    // 使「系统提示 + 全量工具」作为可缓存前缀，后续 step / 重试命中 provider 前缀缓存。
-    const tls = (body as any).tools;
-    if (Array.isArray(tls) && tls.length) {
-      tls[tls.length - 1].cache_control = { type: 'ephemeral' };
-    }
+    // 优化：仅对「系统提示词」应用 cache_control，使其作为稳定的缓存前缀。
+    // 工具 schema 因动态裁剪可能变动：若也打 cache_control，每次工具集变化都会
+    // 导致整个前缀缓存失效（cache key 包含完整工具数组）。
+    // 正确做法：系统提示词始终缓存；工具 schema 每次发送但不影响系统提示词的缓存命中。
+    // 这样即使工具集合变化，系统提示词（~2500 tok）仍能命中前缀缓存。
   }
 
   // 仅在开启 prompt caching 时记录缓存查询（关闭则 provider 不会缓存，记了会虚低命中率）。
@@ -318,17 +381,116 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   // 按 index 重组工具调用增量：{ id?, name?, args }
   const toolAcc: Array<{ id?: string; name?: string; args: string }> = [];
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    raw += decoder.decode(value, { stream: true });
+  // ── 真流式 + 中段空闲超时 ────────────────────────────────────────────────
+  // 原实现先攒完整流再解析（伪流式）：provider 中段挂起时 reader.read() 永久阻塞，
+  // 且已生成内容因尚未解析而全部丢弃，前端表现为「答到一半彻底卡死」。
+  // 现改为：边读边按行增量解析并回调 onToken/onReasoning（真打字机 + 中段可见性），
+  // 并对两次 read 之间设置 LLM_STREAM_IDLE_TIMEOUT_MS 空闲超时，超时即中断 reader，
+  // 以 partial:true 返回已生成内容，避免整次调用失败、内容全失。
+  const IDLE_MS = Number(process.env.LLM_STREAM_IDLE_TIMEOUT_MS ?? 120_000) || 120_000;
+  let stalled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearIdle = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const armIdle = () => {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      stalled = true;
+      reader.cancel().catch(() => {});
+    }, IDLE_MS);
+  };
+
+  // 单行 SSE data 解析（增量与 flush 共用）
+  let sawSse = false;
+  const handleDataLine = (line: string) => {
+    const l = line.trim();
+    if (!l.startsWith('data:')) return;
+    const data = l.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let json: any;
+    try {
+      json = JSON.parse(data);
+    } catch {
+      return;
+    }
+    sawSse = true;
+    if (json.model) usedModel = json.model;
+    if (json.usage) usage = toUsage(json.usage);
+    const choice = json.choices?.[0];
+    if (!choice) return;
+    const delta = choice.delta ?? {};
+    // 部分端点（如 agnes）把思考过程放在「聚合后的 message」而非 delta（常见于最后一个事件）。
+    const msgReasoning =
+      typeof choice.message?.reasoning_content === 'string'
+        ? choice.message.reasoning_content
+        : typeof choice.message?.reasoning === 'string'
+          ? choice.message.reasoning
+          : '';
+    if (msgReasoning) {
+      reasoning += msgReasoning;
+      onReasoning?.(msgReasoning);
+    }
+    if (typeof delta.content === 'string' && delta.content) {
+      fullContent += delta.content;
+      onToken?.(delta.content);
+    }
+    if (typeof delta.reasoning === 'string' && delta.reasoning) {
+      reasoning += delta.reasoning;
+      onReasoning?.(delta.reasoning);
+    }
+    // 部分端点（如 agnes）以 reasoning_content 而非 reasoning 返回思考过程，两种字段名都兼容。
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+      reasoning += delta.reasoning_content;
+      onReasoning?.(delta.reasoning_content);
+    }
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        const i = typeof tc.index === 'number' ? tc.index : 0;
+        if (!toolAcc[i]) toolAcc[i] = { args: '' };
+        if (tc.id) toolAcc[i].id = tc.id;
+        if (tc.function?.name) toolAcc[i].name = tc.function.name;
+        if (typeof tc.function?.arguments === 'string') toolAcc[i].args += tc.function.arguments;
+      }
+    }
+  };
+
+  let sseBuffer = '';
+  try {
+    armIdle();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || stalled) break;
+      armIdle();
+      const chunk = decoder.decode(value, { stream: true });
+      raw += chunk;
+      sseBuffer += chunk;
+      let nl: number;
+      while ((nl = sseBuffer.indexOf('\n')) >= 0) {
+        const line = sseBuffer.slice(0, nl);
+        sseBuffer = sseBuffer.slice(nl + 1);
+        handleDataLine(line);
+      }
+    }
+    clearIdle();
+  } catch (e) {
+    clearIdle();
+    if (!stalled) throw e; // 仅中段空闲超时（reader 已 cancel）兜底；其他错误原样抛出
+    console.warn(
+      `[llm] 流读取空闲超时（${IDLE_MS}ms 无新数据，model=${modelLabel}），返回已生成的部分内容（${fullContent.length} 字符）。`
+    );
   }
+
+  // flush 剩余（最后一段可能无尾随换行）
+  if (sseBuffer) handleDataLine(sseBuffer);
 
   // 兼容：部分端点（如 agnes）即便请求 stream:true，也可能返回「单条非流式」JSON
   // （object=chat.completion，思考过程在 message.reasoning_content 而非 delta）。
-  // 此时没有 SSE 的 `data:` 标记，需按单条响应解析，否则 content 与 reasoning 都会丢失。
-  const isSSE = /^data:/.test(raw.trim()) || raw.includes('\n');
-  if (!isSSE) {
+  // 若整个响应从未出现 data: 行（sawSse=false），按单条 JSON 解析。
+  if (!sawSse && raw) {
     try {
       const data = JSON.parse(raw);
       const msg = data?.choices?.[0]?.message ?? {};
@@ -356,62 +518,6 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     } catch {
       /* 非预期响应体，忽略 */
     }
-  } else {
-    let buffer = raw;
-    let nl: number;
-    while ((nl = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
-      let json: any;
-      try {
-        json = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      if (json.model) usedModel = json.model;
-      if (json.usage) usage = toUsage(json.usage);
-      const choice = json.choices?.[0];
-      if (!choice) continue;
-      const delta = choice.delta ?? {};
-      // 部分端点（如 agnes）在流式响应里把思考过程放在「聚合后的 message」而非 delta
-      // （常见于最后一个事件），两种位置都兼容捕获。
-      const msgReasoning =
-        typeof choice.message?.reasoning_content === 'string'
-          ? choice.message.reasoning_content
-          : typeof choice.message?.reasoning === 'string'
-            ? choice.message.reasoning
-            : '';
-      if (msgReasoning) {
-        reasoning += msgReasoning;
-        onReasoning?.(msgReasoning);
-      }
-      if (typeof delta.content === 'string' && delta.content) {
-        fullContent += delta.content;
-        onToken?.(delta.content);
-      }
-      if (typeof delta.reasoning === 'string' && delta.reasoning) {
-        reasoning += delta.reasoning;
-        onReasoning?.(delta.reasoning);
-      }
-      // 部分端点（如 agnes）以 `reasoning_content` 而非 `reasoning` 返回思考过程，
-      // 这里两种字段名都兼容捕获，统一经 onReasoning 回调（驱动「深度思考」打字机）。
-      if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-        reasoning += delta.reasoning_content;
-        onReasoning?.(delta.reasoning_content);
-      }
-      if (Array.isArray(delta.tool_calls)) {
-        for (const tc of delta.tool_calls) {
-          const i = typeof tc.index === 'number' ? tc.index : 0;
-          if (!toolAcc[i]) toolAcc[i] = { args: '' };
-          if (tc.id) toolAcc[i].id = tc.id;
-          if (tc.function?.name) toolAcc[i].name = tc.function.name;
-          if (typeof tc.function?.arguments === 'string') toolAcc[i].args += tc.function.arguments;
-        }
-      }
-    }
   }
 
   const toolCalls: ToolCall[] = normalizeToolCallIds(
@@ -435,7 +541,7 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     });
   }
 
-  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel };
+  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel, partial: stalled };
 }
 
 /** 将 provider 用量对象归一为标准 TokenUsage（缺失字段补 0）。 */

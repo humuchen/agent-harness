@@ -144,16 +144,23 @@ export function registerSubAgentTool(
         manager.markRunning(inst.id);
 
         // 递归调用 assembleAgent，创建子 agent
+        // 透传 subCard 作为 card 参数，使assembleAgent 能正确派生 guardrail scopes
+        // （如 medical-aesthetics domain → scopes:['medical-ad']），避免子 agent
+        // 活着在「无 scop 缩窄的全局规则」模式下绕开护栏作用域绑定。
         const assembled = await assembleAgentFn(
           opts.mode,
           undefined, // onEvent —— 子 agent 不透传事件
-          '',
-          subCard?.assembly?.systemPrompt,
+          subCard?.assembly?.systemPrompt, // systemPrompt
+          undefined, // modelOverride
           task,
           subSessionKey,
           subController.signal,
           timeoutSec * 1000,
-          maxSteps
+          maxSteps,
+          undefined, // memoryArg
+          undefined, // verifier
+          undefined, // verifyMaxRetries
+          subCard // card —— 驱动 deriveGuardrailScopes + assembly 收窄
         );
 
         // 调用子 agent 的 harness.run()，透传父 agent 的图片附件

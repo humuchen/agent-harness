@@ -43,6 +43,8 @@ export interface LeadRecord {
   grade?: LeadGrade;
   stage: LeadStage;
   reached: LeadStage;
+  /** 线索阶段最后变更时间戳（用于漏斗留存分析）。 */
+  stageUpdatedAt?: number;
   name?: string;
   phone?: string;
   wechat?: string;
@@ -206,5 +208,10 @@ export interface AppointmentRecord {
   status: 'booked' | 'cancelled' | 'arrived' | 'completed';
   externalId?: string;
   externalStatus?: string;
+  /** 到院时间戳（用于到店转化率分析）。 */
+  arrivedAt?: number;
+  /** 完成/就诊时间戳（用于成交周期分析）。 */
+  completedAt?: number;
+  updatedAt: number;
   createdAt: number;
 }

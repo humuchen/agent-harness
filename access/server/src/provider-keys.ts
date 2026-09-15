@@ -285,6 +285,31 @@ export async function saveUserProviderKey(
   return { keyHint: primaryHint, status: 'unverified' };
 }
 
+/**
+ * 保留模式专用：仅按需更新某 provider 的 base_url，不触碰已保存的主 Key 密文、
+ * 附加 Key 与验证状态语义（除 baseUrl 变化需重验外）。
+ * - baseUrl 传 undefined：纯「保留」操作，一行不动（base_url / status 全保留）。
+ * - baseUrl 传 string（含空串）：更新 base_url（空串落 null，回退服务商默认端点），
+ *   因端点变更旧验证结果可能失效，将 status 重置为 unverified 清空验证记录。
+ * 无既有 Key 行时静默 no-op（调用方已先行校验存在性）。
+ */
+export async function updateProviderKeyBaseUrl(
+  owner: string,
+  provider: string,
+  baseUrl?: string
+): Promise<void> {
+  if (baseUrl === undefined) return;
+  await ensureDb();
+  const trimmed = baseUrl.trim();
+  await db
+    .prepare(
+      `UPDATE user_provider_keys
+       SET base_url = ?, status = 'unverified', last_verified_at = NULL, last_error = NULL, updated_at = ?
+       WHERE owner = ? AND provider = ?`
+    )
+    .run(trimmed || null, Date.now(), owner, provider);
+}
+
 export async function deleteUserProviderKey(
   owner: string,
   provider: string
@@ -513,14 +538,14 @@ export async function registerProviderKeyRoutes(
 
   // 解析 :provider 段（支持 /verify 子路径）。
   const rest = path.slice(base.length);
-  const m = /^\/([^/]+)(\/verify)?$/.exec(rest);
+  const m = /^\/([^/]+)(\/(verify))?$/.exec(rest);
   if (!m) {
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
     return true;
   }
   const provider = decodeURIComponent(m[1] ?? '');
-  const isVerify = !!m[2];
+  const subPath = m[2] ? m[2].slice(1) : ''; // 'verify' | ''
 
   if (!PROVIDER_WHITELIST.has(provider)) {
     sendJson({ error: `unsupported provider: ${provider}` }, 400);
@@ -528,8 +553,7 @@ export async function registerProviderKeyRoutes(
   }
   const pid = provider as ProviderId;
 
-  // POST /api/account/provider-keys/:provider/verify
-  if (method === 'POST' && isVerify) {
+  if (method === 'POST' && subPath === 'verify') {
     const row = await getUserProviderKey(owner, pid);
     if (!row?.keyCipher) {
       sendJson({ status: 'invalid', error: '尚未保存该 provider 的 Key' }, 404);
@@ -553,21 +577,40 @@ export async function registerProviderKeyRoutes(
       : [];
     const singleApiKey =
       typeof body?.apiKey === 'string' ? body.apiKey.trim() : '';
-    if (keys.length === 0 && !singleApiKey) {
+    const baseUrl =
+      typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : undefined;
+
+    // 全量替换模式：传了至少一个 Key → 覆盖主 Key + 附加 Key。
+    if (keys.length > 0 || singleApiKey) {
+      try {
+        const saved = await saveUserProviderKey(owner, pid, {
+          ...(keys.length ? { keys } : { apiKey: singleApiKey }),
+          ...(baseUrl ? { baseUrl } : {})
+        });
+        sendJson({ ok: true, keyCount: keys.length || 1, ...saved });
+      } catch (e) {
+        sendJson(
+          { error: e instanceof Error ? e.message : '加密保存失败' },
+          400
+        );
+      }
+      return true;
+    }
+
+    // 保留模式：未携带任何 Key（明文永不出网、无法回显，编辑既有 Key 时
+    // 留空 = 保留已保存密文）→ 仅按需更新 baseUrl，密文 / 附加 Key / 状态
+    // 一律不动。无既有 Key（首次配置）则拒绝，避免空写。
+    const row = await getUserProviderKey(owner, pid);
+    if (!row?.keyCipher) {
       sendJson({ error: 'apiKey required' }, 400);
       return true;
     }
-    const baseUrl =
-      typeof body?.baseUrl === 'string' ? body.baseUrl.trim() : undefined;
     try {
-      const saved = await saveUserProviderKey(owner, pid, {
-        ...(keys.length ? { keys } : { apiKey: singleApiKey }),
-        ...(baseUrl ? { baseUrl } : {})
-      });
-      sendJson({ ok: true, keyCount: keys.length || 1, ...saved });
+      await updateProviderKeyBaseUrl(owner, pid, baseUrl);
+      sendJson({ ok: true, keyCount: 1 + (row.extraKeys?.length ?? 0), preserved: true });
     } catch (e) {
       sendJson(
-        { error: e instanceof Error ? e.message : '加密保存失败' },
+        { error: e instanceof Error ? e.message : '更新失败' },
         400
       );
     }

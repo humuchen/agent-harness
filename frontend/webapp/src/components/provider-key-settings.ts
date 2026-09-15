@@ -9,9 +9,11 @@
  *  - GET 仅回掩码 key_hint + 状态，密文 / 明文永不出网。
  *  - 样式全部走 --ah-* 令牌；提示统一走 notify.* / notifyError，禁止内联红条。
  *
- * 该组件被「设置」Tab 承载；model-picker 底部「配置 API Key」按钮经 ah-goto 事件切到该 Tab。
+ * 该组件由 ah-settings-center 的「模型与密钥」分组承载；model-picker 底部「配置 API Key」
+ * 按钮经 ah-goto（detail: { tab:'settings', group:'keys' }）直达该面板。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
@@ -57,7 +59,7 @@ const PROVIDERS: Array<{ id: string; label: string; docUrl: string }> = [
 
 @customElement('ah-provider-key-settings')
 export class AhProviderKeySettings extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
       font-family: var(--ah-font-sans);
@@ -232,6 +234,22 @@ export class AhProviderKeySettings extends LitElement {
     .field input:focus {
       border-color: var(--ah-accent);
     }
+    /* API Key 输入框：纯密码框（明文永不出网、不可回显，故无小眼睛切换）。 */
+    .field .key-input {
+      background: var(--ah-surface-2, #1c1c1c);
+      color: var(--ah-text);
+      border: 1px solid var(--ah-border);
+      border-radius: 10px;
+      padding: 9px 11px;
+      outline: none;
+      font: inherit;
+      font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .field .key-input:focus {
+      border-color: var(--ah-accent);
+    }
     .btn {
       min-width: 84px;
       padding: 8px 16px;
@@ -284,7 +302,54 @@ export class AhProviderKeySettings extends LitElement {
     .help-link:hover {
       text-decoration: underline;
     }
-  `;
+
+    /* ── 移动端（≤760px，与 app / 设置中心同断点）──
+       本面板嵌在设置中心的「模型与密钥」分区，此前无任何媒体查询：
+       1) 三宫格用量卡在 320px 屏每格仅 ≈88px，「$0.0000」/ 7 位 token 数会溢出格子；
+       2) 操作区三个按钮各 min-width 84px + gap 20px = 272px，超出卡片内宽（≈268px）横向溢出；
+       3) 卡片 16px 内边距在窄屏吃掉可用宽度。 */
+    @media (max-width: 760px) {
+      .intro {
+        margin-bottom: 14px;
+      }
+      .card,
+      .usage-card {
+        padding: 12px;
+      }
+      .prov-tab {
+        padding: 7px 12px;
+      }
+      /* 三宫格保持一行：用 minmax(0,…) 允许列收缩，长数字换行而非撑破格子 */
+      .usage-grid {
+        gap: 8px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .usage-item {
+        padding: 10px 6px;
+      }
+      .usage-val {
+        font-size: 17px;
+        overflow-wrap: anywhere;
+      }
+      .usage-label {
+        font-size: 11px;
+      }
+      /* 按钮：去掉 84px 最小宽（窄屏放不下三个），允许换行兜底 */
+      .btn {
+        min-width: 0;
+        flex: 1 1 auto;
+        padding: 9px 12px;
+      }
+      .actions {
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      /* 「使用 OpenRouter 授权」等独占按钮回到整行，避免被 flex 拉伸成两列 */
+      .actions .btn.primary:only-child {
+        flex: 1 1 100%;
+      }
+    }
+  `, mobilePill];
 
   /** 当前登录用户名（可选，仅用于展示「这是谁的 Key」）。 */
   @property({ attribute: false }) username = '';
@@ -465,43 +530,67 @@ export class AhProviderKeySettings extends LitElement {
     this.draftBaseUrl = this.current?.baseUrl ?? '';
   }
 
-  /** 保存（PUT）：明文 Key 经 HTTPS 传给服务端加密落库。 */
+  /** 保存（PUT）：明文 Key 经 HTTPS 传给服务端加密落库。
+   *  编辑既有 Key 时留空 = 保留已保存的 Key（明文永不出网，无法回显）；
+   *  此时可仅更新接口地址。粘贴新值则全量替换（含附加 Key）。 */
   private async save() {
-    const apiKey = this.draftApiKey.trim();
-    if (!apiKey) {
+    const rawApiKey = this.draftApiKey.trim();
+    // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
+    const extras = this.draftExtraKeys
+      .split(/[\n,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const baseUrl = this.draftBaseUrl.trim();
+    const existing =
+      !!this.current?.keyCount && (this.current?.keyCount ?? 0) > 0;
+
+    // 归一最终提交的 keys：
+    //  - 主 Key 非空 → [主 Key, ...附加 Key]（全量替换）；
+    //  - 主 Key 空但填了附加 Key → 以第一个附加 Key 升为主 Key（全量替换）；
+    //  - 全空且有既有 Key → 保留模式（不传 keys，仅按需更新 baseUrl）。
+    const allKeys = rawApiKey
+      ? [rawApiKey, ...extras]
+      : extras.length
+        ? extras
+        : [];
+    const preserved = allKeys.length === 0;
+    if (preserved && !existing) {
       notify.warning('请先粘贴你的 API Key', {
         title: 'API Key',
         key: 'pk-empty'
       });
       return;
     }
-    const baseUrl = this.draftBaseUrl.trim();
-    if (!baseUrl && this.provider !== 'openrouter') {
+    // 非 openrouter provider 的接口地址必填：
+    //  - 首次配置（无既有 Key）必须填写；
+    //  - 保留模式（全空）若清掉已保存地址会令该 provider 失去端点，同样须填写。
+    if (
+      !baseUrl &&
+      this.provider !== 'openrouter' &&
+      (!existing || preserved)
+    ) {
       notify.warning('请填写接口地址', {
         title: 'API URL',
         key: 'pk-baseurl-empty'
       });
       return;
     }
-    // P2.4 多 Key：把主 Key + 附加 Key 归一为 keys 数组（逗号 / 换行分隔，去空白去空）。
-    const extras = this.draftExtraKeys
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const keys = [apiKey, ...extras];
+
     this.saving = true;
     try {
+      const body: Record<string, unknown> = preserved
+        ? { ...(baseUrl ? { baseUrl } : {}) }
+        : preserved === false && allKeys.length > 1
+          ? { keys: allKeys, ...(baseUrl ? { baseUrl } : {}) }
+          : { apiKey: allKeys[0] ?? '', ...(baseUrl ? { baseUrl } : {}) };
+      // 保留模式下 baseUrl 为空且 provider 非 openrouter：服务端只更新已保存行
+      //（base_url 传 undefined 时后端不动该行），无需带 baseUrl。
       const res = await authedFetch(
         `/api/account/provider-keys/${this.provider}`,
         {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          // 多 Key 时传 keys 数组；单 Key 时仍走旧 apiKey 字段（向后兼容）。
-          body: JSON.stringify(
-            extras.length
-              ? { keys, ...(baseUrl ? { baseUrl } : {}) }
-              : { apiKey, ...(baseUrl ? { baseUrl } : {}) }
-          )
+          body: JSON.stringify(body)
         }
       );
       if (!res.ok) {
@@ -510,13 +599,17 @@ export class AhProviderKeySettings extends LitElement {
         } | null;
         throw new Error(err?.error || `HTTP ${res.status}`);
       }
-      notify.success(
-        extras.length
-          ? `「${this.providerLabel(this.provider)}」已保存 ${
-              keys.length
-            } 把 Key`
-          : `「${this.providerLabel(this.provider)}」API Key 已保存`
-      );
+      if (preserved) {
+        notify.success(
+          `「${this.providerLabel(this.provider)}」API Key 已保留`
+        );
+      } else {
+        notify.success(
+          allKeys.length > 1
+            ? `「${this.providerLabel(this.provider)}」已保存 ${allKeys.length} 把 Key`
+            : `「${this.providerLabel(this.provider)}」API Key 已保存`
+        );
+      }
       this.editing = false;
       this.draftApiKey = '';
       this.draftExtraKeys = '';
@@ -528,7 +621,7 @@ export class AhProviderKeySettings extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-      // 保存后自动测试连通性，即时反馈状态。
+      // 保存后自动测试连通性，即时反馈状态（保留模式同样重验，baseUrl 变更会重置状态）。
       void this.verify();
     } catch (e) {
       notifyError(e, {
@@ -695,16 +788,32 @@ export class AhProviderKeySettings extends LitElement {
   }
 
   private renderForm(): TemplateResult {
+    const existing = !!this.current?.keyCount && (this.current?.keyCount ?? 0) > 0;
     return html`
       <div class="field">
-        <label>API Key（明文仅经 HTTPS 提交，服务端加密落库）</label>
+        <label
+          >API Key（明文仅经 HTTPS 提交，服务端加密落库${
+            existing ? '；留空保留已保存 Key' : ''
+          }）</label
+        >
         <input
+          class="key-input"
           type="password"
-          placeholder="sk-or-..."
+          placeholder=${existing
+            ? '留空保留已保存 Key，或粘贴新 Key 全量替换'
+            : 'sk-or-...'}
           .value=${this.draftApiKey}
-          @input=${(e: Event) =>
-            (this.draftApiKey = (e.target as HTMLInputElement).value)}
+          @input=${(e: Event) => {
+            this.draftApiKey = (e.target as HTMLInputElement).value;
+          }}
         />
+        ${existing
+          ? html`<span class="hint">
+              已保存：${this.current?.keyHint}。出于安全，明文 Key
+              不回显；如需更换请粘贴新 Key（会全量替换该服务商的全部
+              Key，含附加 Key）。
+            </span>`
+          : nothing}
       </div>
       <div class="field">
         <label

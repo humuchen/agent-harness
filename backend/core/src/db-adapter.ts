@@ -238,7 +238,9 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
     if (url) {
       try {
         adapter = new TursoAdapter(url, token);
-        console.log(`[db-adapter] 后端：Turso (${url.startsWith('libsql:') ? 'local' : 'remote'})`);
+        // libsql://、https://、wss:// 均为远端库；仅 file: 前缀是本地文件（libsql 本地模式）。
+        const isRemote = /^(libsql|https|wss):\/\//.test(url);
+        console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? url : ''}`);
       } catch (e: any) {
         console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e.message}`);
       }

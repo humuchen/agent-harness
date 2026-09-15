@@ -53,6 +53,22 @@ export function buildOpenApiSpec(): Record<string, unknown> {
         responses: { '200': jsonResponse('指标'), '401': jsonResponse('未鉴权'), '403': jsonResponse('无权限') },
       },
     },
+    '/api/v1/im/status': {
+      get: {
+        summary: 'IM 桥接运行态（启用平台 / 在飞任务 / 去重与处理计数）',
+        ...bearer(),
+        responses: { '200': jsonResponse('IM 桥接状态'), '401': jsonResponse('未鉴权'), '403': jsonResponse('无权限') },
+      },
+    },
+    '/api/v1/im/{provider}/events': {
+      post: {
+        summary: 'IM 事件回调（无用户令牌，安全闸门为平台签名校验）',
+        parameters: [
+          { name: 'provider', in: 'path', required: true, schema: { type: 'string', enum: ['feishu', 'dingtalk', 'wecom'] } },
+        ],
+        responses: { '200': jsonResponse('已接收'), '401': jsonResponse('签名校验失败') },
+      },
+    },
     '/api/v1/jobs': {
       get: {
         summary: '运行队列脱敏状态（排队/执行数、最近任务）',

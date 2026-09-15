@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>agent-harness</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16 32x32 48x48 256x256" />
@@ -12,8 +12,40 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+    <script>
+      /* 主题首屏引导：在任何样式生效前落好 <html data-theme>，避免「先暗后亮」跳变，
+         并与 tokens.ts 的 THEME_STORAGE_KEY('ah-theme') 保持一致。 */
+      (function () {
+        try {
+          var t = localStorage.getItem('ah-theme');
+          if (t !== 'light' && t !== 'dark') {
+            t =
+              window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          /* localStorage 不可用（隐私模式等）时保持默认暗色 */
+        }
+      })();
+    </script>
+    <style>
+      /* 首屏兜底画布色：仅用于主题令牌（由 tokens.ts 注入 <head>）生效前的那一帧。
+         注意不能用内联 style 硬编码暗色 —— 内联样式优先级高于 THEME_CSS 的
+         `html, body { background: var(--ah-canvas) }`，会让亮色主题下文档根背景
+         永远是暗色（移动端 WebView 会把它绘在内容与安全区之下，表现为
+         「切到亮色后页面背景仍是暗色」）。 */
+      html {
+        margin: 0;
+        background: #0b0e14;
+      }
+      html[data-theme='light'] {
+        background: #f4f6fa;
+      }
+    </style>
   </head>
-  <body style="margin: 0; background: #0b0e14">
+  <body style="margin: 0">
     <!-- 应用根由 main.ts 按鉴权状态挂载（无 token 直接挂登录页），此处不预置元素，避免未登录时控制台闪现。 -->
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -11,6 +11,7 @@
  *   el.addEventListener('suggestion-picked', (e) => { this.prompt = e.detail; });
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property } from 'lit/decorators.js';
 
 export interface SuggestionItem {
@@ -33,7 +34,7 @@ function normalize(items: Array<string | SuggestionItem>): SuggestionItem[] {
 
 @customElement('ah-suggestions')
 export class AhSuggestions extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
     }
@@ -63,7 +64,7 @@ export class AhSuggestions extends LitElement {
       opacity: 0.5;
       cursor: not-allowed;
     }
-  `;
+  `, mobilePill];
 
   /** 建议列表：裸字符串或 {label,prompt} 对象。 */
   @property({ type: Array })

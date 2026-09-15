@@ -26,8 +26,10 @@ export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || '';
 }
 
-/** 写入 access token（登录 / refresh 成功后调用）。 */
-function setToken(token: string): void {
+/** 写入本地 token 副本（用于会话存在性判断）。
+ * 账户密码模式下后端仅返回 refresh token，故此存 refresh token；
+ * 实际鉴权由 ah_auth cookie 承担。 */
+export function setToken(token: string): void {
   if (typeof localStorage === 'undefined') return;
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
@@ -51,6 +53,54 @@ function handleUnauthorized(): void {
   window.dispatchEvent(new CustomEvent('ah-session-expired'));
 }
 
+// ─── P1-14: 质询式密码保护（客户端 PBKDF2，不传输明文密码）───────────────────
+
+/** PBKDF2 参数，必须与服务端 accounts.ts 保持一致。 */
+export const PBKDF2_PARAMS = { iterations: 100000, hash: 'SHA-256' as const, dklen: 32 };
+
+/**
+ * 浏览器端 PBKDF2 派生，参数必须与服务端 Node `pbkdf2Sync(pw, salt, iterations, 32, 'sha256')` 一致。
+ * 输出 hex，供登录/注册/重置时发送 derivedHex 代替明文密码。
+ * 使用 WebCrypto SubtleCrypto（PBKDF2 被所有现代浏览器/Electron 支持）。
+ */
+export async function derivePassword(
+  password: string,
+  saltHex: string
+): Promise<string> {
+  const enc = new TextEncoder();
+  const saltBytes = hexToBytes(saltHex);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: saltBytes as BufferSource,
+      iterations: PBKDF2_PARAMS.iterations,
+      hash: PBKDF2_PARAMS.hash
+    },
+    key,
+    PBKDF2_PARAMS.dklen * 8
+  );
+  return bytesToHex(new Uint8Array(derived));
+}
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(Math.ceil(hex.length / 2));
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/** 字节数组转 hex 字符串。 */
+export function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ─── Client 实例 ──────────────────────────────────────────────────────────────
 
 export const client = new AgentClient({
@@ -58,6 +108,23 @@ export const client = new AgentClient({
   username: initialUser() || undefined,
   onUnauthorized: handleUnauthorized,
 });
+
+/** P1-14: 获取 PBKDF2 salt，用于浏览器端预先派生密码哈希。 */
+export async function getLoginSalt(
+  username: string
+): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/account/login-salt?username=${encodeURIComponent(username)}`, {
+      method: 'GET',
+      credentials: 'same-origin'
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as { salt?: string };
+    return data.salt || null;
+  } catch {
+    return null;
+  }
+}
 
 /** 写入登录会话：存用户名到 localStorage（cookie 由浏览器托管）。 */
 export function setSession(username: string): void {
@@ -140,7 +207,7 @@ export async function refreshToken(): Promise<boolean> {
  * 调度自动刷新：在 access token 到期前 10% 时间触发 refreshToken()。
  * 每次调用均覆盖上一次的定时器。
  */
-function scheduleAutoRefresh(accessExpiresAtMs: number): void {
+export function scheduleAutoRefresh(accessExpiresAtMs: number): void {
   clearTimeout((window as unknown as Record<string, unknown>).__ah_refresh_timer as number | undefined);
   const delay = Math.max(0, accessExpiresAtMs - Date.now() - (accessExpiresAtMs - Date.now()) * 0.1);
   if (delay <= 0) return;  // 即将过期，立即刷新
@@ -160,13 +227,22 @@ function scheduleAutoRefresh(accessExpiresAtMs: number): void {
  */
 export async function changePassword(
   oldPassword: string,
-  newPassword: string
+  newPassword: string,
+  opts?: { salt?: string; derivedHex?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    const body: Record<string, unknown> = { oldPassword };
+    if (opts?.salt && opts.derivedHex) {
+      // P1-14: 质询式改密 —— 新密码客户端派生后发送。
+      body.salt = opts.salt;
+      body.derivedHex = opts.derivedHex;
+    } else {
+      body.newPassword = newPassword;
+    }
     const res = await authedFetch('/api/account/change-password', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ oldPassword, newPassword })
+      body: JSON.stringify(body)
     });
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
@@ -215,13 +291,22 @@ export async function requestPasswordReset(
  */
 export async function resetPassword(
   token: string,
-  newPassword: string
+  newPassword: string,
+  opts?: { salt?: string; derivedHex?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    const body: Record<string, unknown> = { token };
+    if (opts?.salt && opts.derivedHex) {
+      // P1-14: 质询式重置 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
+      body.salt = opts.salt;
+      body.derivedHex = opts.derivedHex;
+    } else {
+      body.newPassword = newPassword;
+    }
     const res = await fetch('/api/account/reset-password', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token, newPassword }),
+      body: JSON.stringify(body),
       credentials: 'same-origin'
     });
     const data = (await res.json().catch(() => ({}))) as {

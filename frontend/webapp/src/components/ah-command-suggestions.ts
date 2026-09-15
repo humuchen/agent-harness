@@ -25,6 +25,7 @@
  */
 
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
   getCommands,
@@ -140,7 +141,7 @@ function groupCommands(commands: SlashCommand[]): CommandGroup[] {
 
 @customElement('ah-command-suggestions')
 export class AhCommandSuggestions extends LitElement {
-  static styles = css`
+  static styles = [css`
     /* 宿主不参与布局：两个子节点（胶囊条 / 面板）直接挂进宿主的
        flex 容器（.composer），胶囊条占位、面板绝对定位浮起。 */
     :host {
@@ -476,6 +477,16 @@ export class AhCommandSuggestions extends LitElement {
       .panel {
         width: 100%;
       }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
     }
     /* 尊重系统的「减少动态效果」设置 */
     @media (prefers-reduced-motion: reduce) {
@@ -488,7 +499,7 @@ export class AhCommandSuggestions extends LitElement {
         transition: none;
       }
     }
-  `;
+  `, mobilePill];
 
   /* ================================================================
    * ③ 状态层

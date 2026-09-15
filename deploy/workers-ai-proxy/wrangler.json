@@ -1,0 +1,9 @@
+{
+  "name": "workers-ai-proxy",
+  "main": "src/index.ts",
+  "account_id": "d00685aea56f42f202f10a20117b4151",
+  "compatibility_date": "2024-09-01",
+  "vars": {
+    "CF_AI_ACCOUNT_ID": "d00685aea56f42f202f10a20117b4151"
+  }
+}

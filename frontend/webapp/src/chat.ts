@@ -1,5 +1,5 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
-import { customElement, state, query } from 'lit/decorators.js';
+import { customElement, state, query, property } from 'lit/decorators.js';
 import { ref } from 'lit/directives/ref.js';
 import { client, authedFetch, getUsername } from './api';
 // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
@@ -22,7 +22,8 @@ import { renderCtxRing, selectContextUsage } from './chat-context-usage';
 import {
   fileIcon,
   formatSize,
-  buildPlanStatusLookup
+  buildPlanStatusLookup,
+  derivePlanExecFromMessages
 } from './chat-render-utils';
 
 // 消息渲染簇（已抽离到 chat-message-render.ts，交互态经 ChatRenderCtx 数据+回调 opts 传参，行为不变）。
@@ -40,6 +41,14 @@ import {
 // 滚动跟随簇（已抽离到 chat-scroll.ts，作为轻量控制器由 AhChat 持有为 this.scrollCtl）。
 import { ChatScroll } from './chat-scroll';
 
+// 富文本块折叠的判定逻辑（已抽离到 chat-block-fold.ts，组件侧只负责 DOM 读写）。
+import {
+  effectiveBlockFolded,
+  foldButtonLabel,
+  foldKey,
+  toggledBlockFolded
+} from './chat-block-fold';
+
 // 打字机引擎（已抽离到 chat-typewriter.ts，作为轻量控制器由 AhChat 持有为 this.typewriter）。
 import { ChatTypewriter } from './chat-typewriter';
 
@@ -56,6 +65,17 @@ import type {
   SessionView,
   TraceCtx
 } from './chat-types';
+
+// 会话列表分页模型（左侧历史列表「滚动加载」的纯逻辑：步长 / 跨页合并 / 视图映射）。
+import {
+  SESSION_PAGE_SIZE,
+  initialSessionPageCursor,
+  mergeSessionPage,
+  mirrorMetaToSessionView,
+  shouldPrefetchSessions,
+  toSessionView,
+  type SessionPageCursor
+} from './chat-session-page';
 import {
   sanitizeMessages,
   mergeThreadHistories,
@@ -69,7 +89,6 @@ import {
 // 历史持久化（已抽离到 chat-persist.ts，降低 chat.ts 单体规模）。
 import { persistHistory } from './chat-persist';
 import type {
-  ChatSession,
   RunMode,
   StreamEvent,
   TraceNode,
@@ -80,6 +99,14 @@ import type {
 import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
+import { compressImage, compressDataUrl } from './utils/compress-image';
+import {
+  buildAttachmentDigest,
+  compressAttachmentText,
+  dataUrlToText,
+  isTextLike,
+  resolveAttachmentBudget
+} from './utils/compress-text';
 
 // Slash Command 框架
 import {
@@ -89,8 +116,10 @@ import {
 } from './chat-commands';
 import './components/file-upload';
 import './components/model-picker';
-import './components/mode-picker';
-import './components/agent-picker';
+// 副作用导入：注册 <ah-composer-plus>（输入框「+」统一入口：文件 / 模式 / 专家）。
+// 注：原 ah-mode-picker / ah-agent-picker 的能力已并入该面板，故不再单独引入
+// （组件文件保留在 components/ 下，未被引用即不会注册、不进包）。
+import './components/composer-plus';
 
 // 副作用导入：注册 <ah-command-suggestions> 自定义元素。
 // 不能写成 `import { AhCommandSuggestions }` —— 该类在 chat.ts 里只作为类型
@@ -100,6 +129,111 @@ import './components/agent-picker';
 import './components/ah-command-suggestions';
 import type { AhCommandSuggestions } from './components/ah-command-suggestions';
 
+/**
+ * 附件约束（导出以便单测与 UI 文案复用，避免两处写死不一致）。
+ * 拖拽遮罩的提示文案与该强制校验共用同一常量。
+ */
+export const MAX_ATTACHMENTS = 15;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 单个 10MB
+
+/**
+ * 附件预览条折叠时最多直接展示的条目数。
+ *
+ * 预览条位于输入框上方、高度固定为一行；条目一多就会把最后一项硬裁在
+ * 容器右缘（既看不出被裁了，也不知道总共几个）。超过本阈值后余量收进
+ * 「+N」按钮，点开再以多行网格展开。
+ */
+export const ATTACH_COLLAPSE_LIMIT = 6;
+
+/**
+ * 批量上传的并发度。
+ * 串行会导致首张慢请求堵死整批；无上限并发则一次拖 15 张会瞬间打出 15 个请求。
+ * 取 4 是两者的折中：显著快于串行，又不至于压垮服务端 / 占满浏览器连接池。
+ */
+export const UPLOAD_CONCURRENCY = 4;
+
+/** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 实际上传 File + 追踪 key。 */
+export interface PendingUpload {
+  meta: UploadedFile;
+  raw: File;
+  /** 实际上传的文件；图片可能经过压缩。 */
+  uploadFile: File;
+  key: string;
+}
+
+/** 允许上传的扩展名（MIME 为空时的兜底判定）。 */
+const ALLOWED_EXTS = ['.txt', '.md', '.csv', '.json'];
+
+/** 文件是否属于允许上传的类型（图片 / 文本 / JSON）。 */
+export function isAllowedAttachment(f: File): boolean {
+  if (f.type) {
+    if (f.type.startsWith('image/') || f.type.startsWith('text/')) return true;
+    if (f.type.includes('json')) return true;
+  }
+  // MIME 缺失时按扩展名兜底（部分来源拖入的文件 type 为空字符串）。
+  const dot = f.name.lastIndexOf('.');
+  return dot >= 0 && ALLOWED_EXTS.includes(f.name.slice(dot).toLowerCase());
+}
+
+/** 读取文件为 DataURL，用于本地预览。 */
+export function readAsDataUrl(f: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(f);
+  });
+}
+
+/**
+ * 以固定并发度执行一组任务。
+ *
+ * 契约：任务自身必须已捕获异常 —— 本函数不兜 reject，
+ * 某任务若抛错会经 Promise.all 冒泡（调用方应保证任务不抛）。
+ * 任务全部执行完才 resolve；并发度会被裁剪到任务数，不会空转。
+ */
+export async function runWithConcurrency(
+  tasks: ReadonlyArray<() => Promise<void>>,
+  limit = UPLOAD_CONCURRENCY
+): Promise<void> {
+  if (!tasks.length || limit <= 0) return;
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, tasks.length) },
+    async () => {
+      while (cursor < tasks.length) {
+        const i = cursor++;
+        const task = tasks[i];
+        if (!task) break;
+        await task();
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
+/**
+ * 按折叠状态解算附件预览条的展示切片。
+ *
+ * 纯函数，供渲染与单测共用 —— 保证「按钮上显示的数字」与「实际渲染的
+ * 条目数」永远一致，不会出现文案说有 N 个、列表却渲染了别的数量。
+ *
+ * @param list     完整附件列表
+ * @param expanded 是否已展开
+ * @param limit    折叠时的最大展示条数
+ * @returns `visible` 本次要渲染的条目；`collapsedCount` 被折叠的条目数
+ *          （为 0 表示无需渲染「+N」按钮）
+ */
+export function resolveAttachmentView<T>(
+  list: readonly T[],
+  expanded: boolean,
+  limit: number = ATTACH_COLLAPSE_LIMIT
+): { visible: T[]; collapsedCount: number } {
+  const collapsedCount = Math.max(0, list.length - limit);
+  const visible = expanded ? list.slice() : list.slice(0, limit);
+  return { visible, collapsedCount };
+}
+
 /* ------------------------------ Chat ------------------------------ */
 
 @customElement('ah-chat')
@@ -108,6 +242,27 @@ export class AhChat extends LitElement {
 
   @state() sessions: SessionView[] = [];
   @state() activeId = '';
+
+  /**
+   * 会话列表「还有下一页」——驱动列表底部的加载更多 / 没有更多了提示。
+   * 首屏一次只取 SESSION_PAGE_SIZE 条，滚动到底部再增量拉取（见 loadSessionPage）。
+   */
+  @state() private sessionsHasMore = false;
+
+  /** 正在拉取会话列表（首屏或下一页）；为 true 时列表底部显示加载中并防重入。 */
+  @state() private sessionsLoadingMore = false;
+
+  /** 拉取下一页失败（显示可点重试）；首屏失败走既有降级链路，不置此标志。 */
+  @state() private sessionsMoreError = false;
+
+  /**
+   * 历史会话内容加载中（骨架屏开关）。
+   * 点击左侧会话后、服务端历史返回前为 true，内容区渲染骨架屏占位，
+   * 避免出现「长时间空白」或「残留上一会话内容」的中间态。
+   * 仅内存中已有该会话缓冲（本地即时可用）时不置位，切换零等待。
+   */
+  @state() private sessionLoading = false;
+
   @state() messages: ChatMsg[] = [];
   @state() input = '';
   @state() model = '';
@@ -121,9 +276,24 @@ export class AhChat extends LitElement {
   @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
+  /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 true（收起）。 */
+  @property({ type: Boolean }) deepThinkCollapsed = true;
 
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
   @state() thinkCollapsed: Record<string, boolean> = {};
+
+  /**
+   * 富文本块（超长代码块 / 表格）的折叠态覆盖表，key 为 `${scope}/${blockKey}`。
+   *
+   * 为什么必须放在组件状态，而不是点击时直接改 DOM 上的 class：
+   * `.msg-text` 经 unsafeHTML 注入，lit 无法 diff 其内部 —— 任何一次组件更新
+   * （hover、其他消息追加、流式 token 到达）都会重建整段 DOM，写在 DOM 上的状态
+   * 必然被抹掉，「点开又自己合上」。
+   * 同理也不能把用户的选择写进渲染产物字符串：产物是按文本内容缓存的纯函数结果，
+   * 把交互态混进去会让缓存命中率归零，且流式中每帧都会弹回默认值。
+   * 缺省（key 不存在）= 可折叠块默认折叠，见 applyFolds。
+   */
+  @state() mdFolded: Record<string, boolean> = {};
 
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
@@ -132,11 +302,33 @@ export class AhChat extends LitElement {
   @state() sidebarCollapsed = false;
 
   /** 可选的定向业务 agent：为空则走默认通用 Agent。Web 端用它把对话路由到具体插件 agent（如医美客资）。 */
-  @state() agents: { id: string; name: string }[] = [];
+  @state() agents: { id: string; name: string; domain?: string }[] = [];
   @state() agentId = '';
+  /** 当前登录用户的角色（由 app-shell 透传），用于按角色过滤业务 agent。 */
+  @property({ type: String }) role = '';
 
   /** 待发送附件（本地预览用，不在 server 上传时以 DataURL 嵌入消息）。 */
   @state() attachments: UploadedFile[] = [];
+
+  /**
+   * 附件预览条是否处于展开态。
+   * 折叠时最多渲染 ATTACH_COLLAPSE_LIMIT 条，余量收进「+N」按钮。
+   */
+  @state() private attachmentsExpanded = false;
+
+  /**
+   * 是否有文件正被拖到整个 chat 区域上方（驱动整屏拖拽遮罩）。
+   * 仅认 `Files` 类型的拖拽（dataTransfer.types 含 'Files'），
+   * 因此拖选文字/链接经过时不会误触发遮罩。
+   */
+  @state() private dragActive = false;
+
+  /**
+   * 拖拽进入/离开的嵌套计数（非响应式，无需触发渲染）。
+   * 光标在 chat 内部子元素之间移动时 dragenter/dragleave 会成对触发，
+   * 只有计数归零才判定为「真正离开组件」。
+   */
+  private dragDepth = 0;
 
   /** 当前全屏预览的附件；null 表示未打开预览。 */
   @state() private previewFile: UploadedFile | null = null;
@@ -247,6 +439,7 @@ export class AhChat extends LitElement {
       mcp: number;
       skills: number;
       completion: number;
+      cached?: number;
     };
   } | null = null;
 
@@ -267,6 +460,43 @@ export class AhChat extends LitElement {
    * 空线程不再被当作「已加载」缓存 —— 下次进入该会话自动重试恢复，直到成功。
    */
   private restoreFailed: Record<string, boolean> = {};
+
+  /**
+   * 会话切换请求序号（非响应式，无需触发渲染）。
+   * 每次 selectSession 自增并快照，异步拉取结束后比对：只有「最新一次切换」才允许
+   * 回写 this.messages / 滚动位置 / 用量快照，并负责关闭骨架屏标志。
+   * 由此避免连点多个会话时，先发起但后返回的慢响应覆盖当前会话内容（竞态）。
+   */
+  private sessionLoadSeq = 0;
+
+  /**
+   * 外部入口（工作台「最近会话」）请求打开的会话 id 缓存。
+   * 事件到达时若本面板仍处隐藏态，先暂存于此，待 refresh()（面板转可见后由
+   * app.ts activatePanel 触发）执行到末尾时消费，保证点击不丢。
+   */
+  private pendingSelectId = '';
+
+  /**
+   * 会话列表分页游标（非响应式）。
+   * offset / hasMore / serverIds 三者必须同步推进，故打包成一个状态对象整体替换，
+   * 避免出现「offset 已加、serverIds 未加」这类半更新态。驱动渲染的是
+   * this.sessions / this.sessionsHasMore，本字段仅作内部记账。
+   */
+  private sessionPage: SessionPageCursor = initialSessionPageCursor();
+
+  /**
+   * 首屏重载请求序号（非响应式）。
+   * SSE 的 `session:list` 后台重载可能与首屏加载并发，只有最新一次允许写回列表与游标，
+   * 否则先发起但后返回的响应会覆盖更新的列表。
+   */
+  private sessionsReloadSeq = 0;
+
+  /**
+   * 「填充视口」补拉的重入保护（非响应式）。
+   * 首屏一页不足以撑出滚动条时（超长视口 / 会话较少），scroll 事件永远不会触发，
+   * 需要主动续拉；该标志防止 updateComplete → 补拉 → updateComplete 形成无限循环。
+   */
+  private sessionAutoFillBusy = false;
 
   /** 每个会话当前正在流式的 assistant 消息下标（send 时写入，run 结束后保留，供切回识别）。 */
   private streamIdx: Record<string, number> = {};
@@ -323,6 +553,8 @@ export class AhChat extends LitElement {
   /** 当前登录用户是否已配置可用 LLM Key（per-user，来自 /api/state.llm.ready）。
    *  驱动 Mock 提示条与发送前 gating（未配置则真实请求会被服务端 402 拒绝）。 */
   @state() private llmReady = false;
+  /** 历史镜像体积上限（字节），来自 /api/state.historyMaxBytes；用于保存前主动裁剪。 */
+  private historyMaxBytes = 512 * 1024;
 
   /** 不可变更新某会话的连接状态，确保 Lit 触发重渲染。 */
   private setConn(sid: string, val: 'connected' | 'reconnecting' | 'lost') {
@@ -351,7 +583,10 @@ export class AhChat extends LitElement {
       threads: this.threads,
       sessions: this.sessions,
       backendUsage: this.backendUsage,
-      runCumulative: this.runCumulative
+      runCumulative: this.runCumulative,
+      historyMaxBytes: this.historyMaxBytes,
+      // 计划进度写穿：本端是「计划整体完成」的唯一知情方（见 PersistHistoryOpts.planExec）。
+      planExec: this.planExec
     });
   }
 
@@ -546,82 +781,28 @@ export class AhChat extends LitElement {
     // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
     this.runRt.startWatchdog();
 
-    // 会话列表加载（容错）：带超时 + 失败自动重试一次；最终失败也不清空 ——
-    // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
-    const loadList = () =>
-      withTimeout(client.listChatSessions(), 6000, '加载会话列表');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const list = await loadList();
-        this.sessions = list.map((s: ChatSession) => ({
-          id: s.id,
-          title: s.title,
-          updatedAt: s.updatedAt,
-          interactionMode: s.interactionMode,
-          model: s.model,
-          agentId: s.agentId
-        }));
-        break;
-      } catch (e) {
-        if (attempt === 1) {
-          // 重试仍失败 → 降级为本地镜像索引，并明确告诉用户「列表可能不完整」，
-          // 而不是像以前那样静默吞掉、让用户以为是自己没有历史会话。
-          notifyError(e, {
-            title: '会话列表',
-            fallback: '会话列表加载失败，已降级为本地缓存（可能不完整）',
-            key: 'chat-sessions'
-          });
-          const idx = await loadIndex();
-          this.sessions = Object.entries(idx).map(([sid, m]) => ({
-            id: sid,
-            title: m.title,
-            updatedAt:
-              typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-            interactionMode: (m as any).interactionMode,
-            model: (m as any).model,
-            agentId: (m as any).agentId
-          }));
-        }
-      }
-    }
-    // 用镜像索引补齐入口（服务端列表为空 / 缺项时，保证历史会话可见）。
-    // 典型场景：服务端重启后 chat-sessions 内存态清空（无 CHAT_SESSIONS_FILE），
-    // 但 history 镜像仍落 SQLite；此处兜底从 /api/history 索引补全。
-    {
-      const known = new Set(this.sessions.map((s) => s.id));
-      const idx = await loadIndex();
-      const extra = Object.entries(idx)
-        .filter(([sid]) => !known.has(sid))
-        .map(([sid, m]) => ({
-          id: sid,
-          title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-          interactionMode: (m as any).interactionMode,
-          model: (m as any).model,
-          agentId: (m as any).agentId
-        }));
-      if (extra.length) this.sessions = [...this.sessions, ...extra];
-    }
-    try {
-      const state = await client.getState();
-      // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
-      this.llmReady =
-        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
-      this.mode = this.llmReady ? 'real' : 'mock';
-      // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
-      // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
-    } catch {
-      /* 离线/未启动：发送时按 mock 兜底 */
-    }
-
-    // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
-    await this.refreshAgents();
+    // 首屏数据加载（会话列表 / 状态 / agent 列表）抽到 refresh()，便于
+    // 隐藏态挂载时跳过请求、并在切到对话 Tab 时由 app.ts 的 activatePanel 补拉。
+    // 注意：本组件的监听注册、看门狗、SSE 等副作用仍在上方无条件初始化，不受影响。
+    void this.refresh();
 
     // 插件启用/停用会改变已注册 agent 集合，监听后实时刷新下拉（使已禁用插件的 agent 即时隐藏）。
     window.addEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
     );
+
+    // 工作台/全局入口请求打开指定会话：直接选中并加载消息。
+    this.addEventListener(
+      'ah-select-session',
+      this.onSelectSession as EventListener
+    );
+
+    // 路由变化（Tab 切换 / 浏览器后退前进）时收起对话页内的浮层（上下文用量面板等）。
+    // 本组件随应用壳常驻，切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+    // 移动端侧滑返回后再次进入对话页会看到上次遗留的展开面板。
+    // 统一约定见 ah-app.closeAllOverlays（各 ah-* 覆盖层同样订阅该事件）。
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
 
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
@@ -640,9 +821,39 @@ export class AhChat extends LitElement {
     }
   }
 
+  /**
+   * 首屏数据加载：会话列表首屏、服务端状态（LLM 就绪 / 模式）、agent 列表。
+   * 顶部 `if (this.hidden) return;` 守卫：本面板随应用壳一起挂载，但隐藏态
+   * （非对话 Tab）时不发起请求；切到对话 Tab 时由 app.ts 调用本方法补拉。
+   */
+  async refresh() {
+    if (this.hidden) return;
+    await this.reloadSessions(true);
+    try {
+      const state = await client.getState();
+      // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
+      this.llmReady =
+        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
+      this.mode = this.llmReady ? 'real' : 'mock';
+      this.historyMaxBytes =
+        typeof (state as any)?.historyMaxBytes === 'number'
+          ? (state as any).historyMaxBytes
+          : this.historyMaxBytes;
+      // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
+      // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
+    } catch {
+      /* 离线/未启动：发送时按 mock 兜底 */
+    }
+    await this.refreshAgents();
+    // 面板转可见后（由 app.ts activatePanel 触发本方法），消费此前因隐藏态
+    // 没能立即执行的「打开指定会话」请求，保证外部入口点击不丢。
+    this.consumePendingSelect();
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener(
       'visibilitychange',
@@ -661,6 +872,10 @@ export class AhChat extends LitElement {
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
     );
+    this.removeEventListener(
+      'ah-select-session',
+      this.onSelectSession as EventListener
+    );
   }
 
   /**
@@ -675,8 +890,9 @@ export class AhChat extends LitElement {
     if (!e || typeof e !== 'object') return;
     switch (e.type) {
       case 'session:list':
-        // 新建/批量变更：重拉列表（带超时容错），与 connectedCallback 同款降级。
-        void this.refreshSessions();
+        // 新建/批量变更：重拉列表首屏（带超时容错 + 分页游标复位）。
+        // 后台重载不弹错提示：失败时下一次列表交互会自动重试。
+        void this.reloadSessions(false);
         break;
       case 'session:meta':
         // 标题/时间/按会话设置变更：原地更新列表项，无需重拉全量。
@@ -698,40 +914,213 @@ export class AhChat extends LitElement {
     }
   };
 
-  /** 跨设备：重拉会话列表（容错降级，与 connectedCallback 一致）。 */
-  private async refreshSessions() {
-    try {
-      const list = await withTimeout(
-        client.listChatSessions(),
-        6000,
-        '同步会话列表'
-      );
-      const mapped = list.map((s: ChatSession) => ({
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt,
-        interactionMode: s.interactionMode,
-        model: s.model,
-        agentId: s.agentId
-      }));
-      this.sessions = [...mapped];
-      // 用本地镜像索引补齐（服务端列表为空/缺项时历史会话仍可见）。
-      const known = new Set(this.sessions.map((s) => s.id));
-      const idx = await loadIndex();
-      const extra = Object.entries(idx)
-        .filter(([sid]) => !known.has(sid))
-        .map(([sid, m]) => ({
-          id: sid,
-          title: m.title,
-          updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : m.savedAt,
-          interactionMode: (m as any).interactionMode,
-          model: (m as any).model,
-          agentId: (m as any).agentId
-        }));
-      if (extra.length) this.sessions = [...this.sessions, ...extra];
-    } catch {
-      /* 同步失败不阻断：下一次 enter/列表交互会重试 */
+  /**
+   * 外部入口（工作台「最近会话」等）请求打开指定会话。
+   * app.ts 在切到对话 Tab 并完成一次渲染后派发 `ah-select-session`，
+   * 此处直接复用 selectSession（选中 + 拉取历史消息 + 滚动到底）。
+   * 若组件尚处隐藏态（异步时序兜底），先缓存 id，待可见时再消费。
+   */
+  private onSelectSession = (ev: Event) => {
+    const id = (ev as CustomEvent<string>).detail;
+    if (typeof id !== 'string' || !id) return;
+    if (this.hidden) {
+      this.pendingSelectId = id;
+      return;
     }
+    void this.selectSession(id);
+  };
+
+  /** 消费隐藏态缓存的会话选择请求（面板转可见后调用）。 */
+  private consumePendingSelect(): void {
+    const id = this.pendingSelectId;
+    if (!id || this.hidden) return;
+    this.pendingSelectId = '';
+    void this.selectSession(id);
+  }
+
+  /**
+   * 重载会话列表首屏（offset 归零）。
+   *
+   * 与改造前（一次性全量）的两点差异：
+   * - 只取第一页（SESSION_PAGE_SIZE 条），其余由滚动加载按需补齐；
+   * - 列表被组织为**两段式**：前段恒为服务端条目、尾部恒为镜像兜底补项。
+   *   这个布局是 mergeSessionPage 计算插入位置的前提，改动前请先读 chat-session-page.ts。
+   *
+   * @param notifyOnError 首屏失败是否弹提示。首次进入（connectedCallback）要提示；
+   *   SSE 触发的后台重载沉默失败即可（下一次列表交互会自动重试）。
+   */
+  private async reloadSessions(notifyOnError: boolean): Promise<void> {
+    // 本次重载的请求序号：SSE 触发的后台重载可能与首屏加载并发，只有最新一次
+    // 允许把结果写回 this.sessions —— 否则过期响应会覆盖更新的列表与游标。
+    const seq = ++this.sessionsReloadSeq;
+    // 首屏重载使既有分页游标失效：先复位，失败时也不会残留「还有下一页」的假象。
+    this.sessionPage = initialSessionPageCursor();
+    this.sessionsHasMore = false;
+    this.sessionsMoreError = false;
+
+    // 首屏同样带重试（超时 6s，最多 2 次），与改造前一致。
+    let page: { sessions: SessionView[]; hasMore: boolean } | null = null;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2 && !page; attempt++) {
+      try {
+        const r = await withTimeout(
+          client.listChatSessionsPage({
+            limit: SESSION_PAGE_SIZE,
+            offset: 0
+          }),
+          6000,
+          '加载会话列表'
+        );
+        page = {
+          sessions: r.sessions.map(toSessionView),
+          hasMore: r.hasMore
+        };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    // 过期响应：期间已发起更新的一次重载，本次结果（含错误提示）直接丢弃。
+    if (seq !== this.sessionsReloadSeq) return;
+
+    if (!page && notifyOnError) {
+      // 重试仍失败 → 明确告知「列表可能不完整」，而不是静默吞掉、
+      // 让用户以为是自己没有历史会话（随后走下方镜像索引降级）。
+      notifyError(lastErr, {
+        title: '会话列表',
+        fallback: '会话列表加载失败，已降级为本地缓存（可能不完整）',
+        key: 'chat-sessions'
+      });
+    }
+
+    if (page) {
+      this.sessions = page.sessions;
+      this.sessionPage = {
+        offset: page.sessions.length,
+        hasMore: page.hasMore,
+        serverIds: new Set(page.sessions.map((s) => s.id))
+      };
+      this.sessionsHasMore = page.hasMore;
+      await this.appendMirrorExtras();
+      await this.updateComplete;
+      void this.autoFillSessionList();
+      return;
+    }
+
+    // 服务端不可达：整表退回本地镜像索引（无分页语义，hasMore 恒 false）。
+    const idx = await loadIndex();
+    // loadIndex 同样是异步的：期间若又发生了一次重载，本次降级结果作废。
+    if (seq !== this.sessionsReloadSeq) return;
+    this.sessions = Object.entries(idx).map(([sid, m]) =>
+      mirrorMetaToSessionView(sid, m)
+    );
+    this.sessionPage = initialSessionPageCursor();
+    this.sessionsHasMore = false;
+  }
+
+  /**
+   * 用历史镜像索引补齐列表尾部（服务端列表为空 / 缺项时历史会话仍可见）。
+   * 典型场景：服务端重启后 chat-sessions 内存态清空（无 CHAT_SESSIONS_FILE），
+   * 但 history 镜像仍落 SQLite；此处兜底从 /api/history 索引补全。
+   * 补项恒排在服务端条目之后 —— 该顺序被 mergeSessionPage 依赖。
+   */
+  private async appendMirrorExtras(): Promise<void> {
+    const known = new Set(this.sessions.map((s) => s.id));
+    const idx = await loadIndex();
+    const extra = Object.entries(idx)
+      .filter(([sid]) => !known.has(sid))
+      .map(([sid, m]) => mirrorMetaToSessionView(sid, m));
+    if (extra.length) this.sessions = [...this.sessions, ...extra];
+  }
+
+  /**
+   * 加载下一页会话（滚动加载的增量入口）。
+   * 四重短路：没有下一页 / 正在加载 / 上次失败待重试 / 已卸载 —— 直接返回，
+   * 使 scroll 事件即使高频触发也不会重复发请求。
+   */
+  private async loadMoreSessions(): Promise<void> {
+    if (!this.sessionsHasMore) return;
+    if (this.sessionsLoadingMore) return;
+    // 失败后暂停自动预取，避免「本来就停在底部 → 又触发 → 再失败」的请求风暴；
+    // 用户点「点击重试」会清掉该标志。
+    if (this.sessionsMoreError) return;
+    this.sessionsLoadingMore = true;
+    // 快照当前游标对象：期间若发生首屏重载（SSE 新建会话），sessionPage 会被整体替换，
+    // 届时本次结果必须作废 —— 否则会用过期游标覆盖新状态，导致后续分页跳条。
+    const cursor = this.sessionPage;
+    try {
+      const offset = cursor.offset;
+      const r = await withTimeout(
+        client.listChatSessionsPage({ limit: SESSION_PAGE_SIZE, offset }),
+        6000,
+        '加载更多会话'
+      );
+      if (this.sessionPage === cursor) {
+        const page = r.sessions.map(toSessionView);
+        const merged = mergeSessionPage(this.sessions, page, cursor.serverIds);
+        this.sessions = merged.list;
+        // 游标按「服务端已消费条数」推进，而非实际插入条数：被去重跳过的条目同样占用了
+        // 服务端的分页区间，按插入数推进会重复取到同一页。
+        this.sessionPage = {
+          offset: offset + page.length,
+          // 服务端称还有下一页、却返回空页时按「没有更多」处理，防御性避免空转。
+          hasMore: r.hasMore && page.length > 0,
+          serverIds: new Set([...cursor.serverIds, ...merged.insertedIds])
+        };
+        this.sessionsHasMore = this.sessionPage.hasMore;
+        this.sessionsMoreError = false;
+      }
+      // else：游标已被整体替换（首屏重载介入）→ 本次结果作废，不写回任何状态。
+    } catch {
+      // 失败不清空已有内容，仅置错误态交给用户手动重试。
+      this.sessionsMoreError = true;
+    } finally {
+      this.sessionsLoadingMore = false;
+    }
+    // 收尾统一补一次「填充视口」检查：覆盖两类情况 ——
+    // 1) 本次真正加载了一页，可能仍不足以撑出滚动条；
+    // 2) 本次被判定过期，而首屏重载发起 autoFill 时本请求尚未结束、那次调用被短路了。
+    void this.autoFillSessionList();
+  }
+
+  /** 会话列表滚动：进入底部预取阈值即拉下一页。 */
+  private onSessionListScroll(e: Event) {
+    const el = e.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (!shouldPrefetchSessions(distance)) return;
+    void this.loadMoreSessions();
+  }
+
+  /**
+   * 「填充视口」补拉：首屏一页不足以撑出滚动条时（超长视口 / 会话较少 / 侧栏很矮），
+   * scroll 事件永远不会被触发 —— 这里主动续拉，直到出现滚动条、没有更多或出错。
+   * 上限 5 轮纯属死循环防御；sessionAutoFillBusy 串行化，
+   * 防止 loadMoreSessions → autoFill → loadMoreSessions 递归失控。
+   */
+  private async autoFillSessionList(): Promise<void> {
+    if (this.sessionAutoFillBusy) return;
+    this.sessionAutoFillBusy = true;
+    try {
+      for (let i = 0; i < 5; i++) {
+        if (!this.sessionsHasMore || this.sessionsMoreError) return;
+        // 有请求在飞：不空转，交给它的收尾再触发一轮（loadMoreSessions 末尾必定回调本方法）。
+        if (this.sessionsLoadingMore) return;
+        const el = this.sessionListEl;
+        if (!el) return;
+        // 已可滚动 → 交回 scroll 事件驱动，不再主动填充。
+        if (el.scrollHeight - el.clientHeight > 4) return;
+        await this.loadMoreSessions();
+        await this.updateComplete;
+      }
+    } finally {
+      this.sessionAutoFillBusy = false;
+    }
+  }
+
+  /** 会话列表滚动容器（用于「是否已撑出滚动条」判定与滚动监听）。 */
+  private get sessionListEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.session-list') ?? null;
   }
 
   /**
@@ -747,16 +1136,29 @@ export class AhChat extends LitElement {
       const res = await client.listAgents();
       const raw = ((res?.agents as any[]) ?? []).map((a) => ({
         id: String(a.id),
-        name: String(a.name ?? a.id)
+        name: String(a.name ?? a.id),
+        domain: String(a.domain ?? '') as any
       }));
       const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
+      // viewer 角色：从列表中彻底过滤掉医美运营分析相关的 agent，不显示、不可选、不可调用。
+      const isViewer = this.role === 'viewer';
+      const filtered = isViewer
+        ? raw.filter((a) => a.domain !== 'medical-aesthetics')
+        : raw;
       const next = hasDefault
-        ? raw.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
-        : [{ id: '', name: '默认' }, ...raw];
+        ? filtered.map((a) => (a.id === 'default' ? { ...a, id: '' } : a))
+        : [{ id: '', name: '默认' }, ...filtered];
       this.agents = next;
       // 当前选中的 agent 若已随插件禁用而从注册表消失，回退到「默认」。
       if (this.agentId && !next.some((a) => a.id === this.agentId)) {
         this.agentId = '';
+      }
+      // 若当前选中的 agent 被过滤掉，自动回退到「默认」。
+      if (this.agentId && isViewer) {
+        const selected = next.find((a) => a.id === this.agentId);
+        if (!selected) {
+          this.agentId = '';
+        }
       }
     } catch (e) {
       // 不阻断聊天（下拉退化为「默认」），但下拉里只剩默认项会让人困惑，给一条提示。
@@ -829,8 +1231,24 @@ export class AhChat extends LitElement {
   /** 跨设备：从列表中移除被他端删除的会话；若正打开则回退到空。 */
   private removeSessionFromList(sid: string) {
     this.sessions = this.sessions.filter((s) => s.id !== sid);
+    // 维护分页不变量：被删的若是一条**已消费的服务端条目**，服务端列表在其之后整体
+    // 前移一位 → offset 同步减 1，否则下一页会跳过一条会话。
+    // 未加载过的条目（不在 serverIds 内）不影响已消费区间，无需调整。
+    if (this.sessionPage.serverIds.has(sid)) {
+      const serverIds = new Set(this.sessionPage.serverIds);
+      serverIds.delete(sid);
+      this.sessionPage = {
+        offset: Math.max(0, this.sessionPage.offset - 1),
+        hasMore: this.sessionPage.hasMore,
+        serverIds
+      };
+    }
     if (this.activeId === sid) {
       this.activeId = '';
+      // 作废仍在飞行中的该会话切换请求：否则其返回后会把已删除会话的历史写回
+      // this.messages，视图里会重新出现一条已被删除的会话。
+      this.sessionLoadSeq++;
+      this.sessionLoading = false;
       this.messages = [];
       try {
         localStorage.removeItem('ah_active_id');
@@ -866,6 +1284,16 @@ export class AhChat extends LitElement {
     };
     const role: 'user' | 'assistant' = m.role === 'user' ? 'user' : 'assistant';
     const content = typeof m.content === 'string' ? m.content : '';
+    const traceVal =
+      Array.isArray(m.trace) && m.trace.length
+        ? (m.trace as TraceNode[])
+        : undefined;
+    // 已结束/从存储恢复的消息（streaming !== true）做兜底收尾：残留 pending 工具/检索节点
+    // 标记为完成。进行中的实时帧（streaming===true）绝不收尾，避免误标在途工具为完成。
+    const traceFinal =
+      traceVal && m.streaming !== true
+        ? this.normalizeStoredTrace(traceVal)
+        : traceVal;
     const t = this.threadFor(sid);
 
     if (role === 'user') {
@@ -888,9 +1316,7 @@ export class AhChat extends LitElement {
         ...(Array.isArray(m.tools) && m.tools.length
           ? { tools: m.tools as ToolView[] }
           : {}),
-        ...(Array.isArray(m.trace) && m.trace.length
-          ? { trace: m.trace as TraceNode[] }
-          : {})
+        ...(traceFinal ? { trace: traceFinal } : {})
       });
       this.threads[sid] = t;
       this.patchSessionMeta(
@@ -919,9 +1345,7 @@ export class AhChat extends LitElement {
         ...(Array.isArray(m.tools) && m.tools.length
           ? { tools: m.tools as ToolView[] }
           : {}),
-        ...(Array.isArray(m.trace) && m.trace.length
-          ? { trace: m.trace as TraceNode[] }
-          : {})
+        ...(traceFinal ? { trace: traceFinal } : {})
       };
       t.push(msg);
       this.remoteStreaming[sid] = true; // 标记：后续该会话的增量/终态都作用在这条上
@@ -948,9 +1372,7 @@ export class AhChat extends LitElement {
           ...(Array.isArray(m.tools) && m.tools.length
             ? { tools: m.tools as ToolView[] }
             : {}),
-          ...(Array.isArray(m.trace) && m.trace.length
-            ? { trace: m.trace as TraceNode[] }
-            : {})
+          ...(traceFinal ? { trace: traceFinal } : {})
         };
         if (m.streaming) {
           // 进行中快照：仅当新内容更长时覆盖（防乱序/重复帧把已揭示文本截断）。
@@ -987,7 +1409,13 @@ export class AhChat extends LitElement {
    * - 超过 10s 无任何事件：视为后台期间连接已被冻结/回收，abort 唤醒挂起的
    *   read()，统一走 runWithReconnect 的续传路径（keepAliveAbort 标记区分用户停止）。
    */
-  protected updated() {
+  protected updated(changedProps: Map<string, unknown>) {
+    super.updated(changedProps);
+    if (changedProps.has('role')) {
+      void this.refreshAgents();
+    }
+    // 必须在滚动之前：折叠会改变内容高度，同步重排后 scrollToBottom 才取到正确值。
+    this.applyFolds();
     this.scrollCtl.scrollToBottom();
     this.scrollCtl.scrollThinkToBottom();
   }
@@ -1011,11 +1439,35 @@ export class AhChat extends LitElement {
     if (!inside) this.showCtxUsage = false;
   };
 
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起对话页内所有浮层。
+   *
+   * 本页有三处自持打开态的浮层，都属「切 Tab 只是被父级 hidden、组件不销毁」
+   * 的情形，必须在路由变化时主动归零，否则移动端侧滑返回后再次进入对话页
+   * 会看到上次遗留的展开面板 / 全屏层：
+   *   - previewFile       图片附件全屏预览（.lightbox）
+   *   - fullscreenEditOpen 长按输入框打开的全屏编辑器
+   *   - showCtxUsage      上下文用量弹层
+   * 注意此处直接改状态位，不走 closeFullscreenEdit() —— 后者会把焦点还给
+   * 气泡内的编辑框，而路由变化时该气泡已被切走，聚焦会出错。
+   * 调用链路抽屉由 ah-drawer 自行关闭，撰写区的模式 / 智能体 / 模型 / 附件面板
+   * 由各自组件自行关闭（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = () => {
+    if (this.previewFile) this.previewFile = null;
+    if (this.fullscreenEditOpen) this.fullscreenEditOpen = false;
+    if (this.showCtxUsage) this.showCtxUsage = false;
+  };
+
   /* ----------------------- 会话管理 ----------------------- */
 
   private async newChat() {
     // 不中止任何进行中的 run：后台 run 继续写入其所属会话缓冲，新建对话只是切换显示到空线程。
     this.activeId = '';
+    // 作废仍在飞行中的会话切换请求（自增序号使其过期），否则其返回后会把旧会话
+    // 的历史写回 this.messages —— 空白新对话里会突然冒出上一个会话的内容。
+    this.sessionLoadSeq++;
+    this.sessionLoading = false;
     this.messages = [];
     this.input = '';
     this.cmdName = '';
@@ -1039,6 +1491,11 @@ export class AhChat extends LitElement {
   private async selectSession(id: string) {
     if (id === this.activeId) return;
     this.activeId = id;
+    // 本次切换的请求序号：进入即自增，异步返回时据此判定自己是否已过期（见方法尾部）。
+    const seq = ++this.sessionLoadSeq;
+    // 先无条件复位骨架屏：内存中已有该会话缓冲时下方不会再置位，切换零等待直接出内容；
+    // 需要拉取历史时再由下方重新打开。这样快速连点会话时不会残留上一次请求的加载态。
+    this.sessionLoading = false;
     // 加载本会话持久化的设置（交互模式/模型/agent），实现「同一对话两端对齐」。
     // 优先级：本地按会话表 > 列表项（来自服务端元数据）> 保留当前全局值（旧会话无记录时）。
     const sv = this.sessions.find((s) => s.id === id);
@@ -1061,10 +1518,15 @@ export class AhChat extends LitElement {
     // 优先用本地内存中的会话缓冲；否则向服务端拉取历史（仅当该会话从未在本会话实例中打开过，
     // 或上次恢复失败且缓冲为空 —— 空线程不缓存为「已加载」，下次进入自动重试）。
     const localBuf = this.threads[id];
+    // 需要向服务端拉取历史的判定：本实例从未打开过该会话，或上次恢复失败且缓冲为空。
+    // 命中即先亮起骨架屏并覆盖整个 await 全程（含 8s 超时兜底），避免内容区长时间无反馈。
+    const needFetch =
+      !localBuf || (this.restoreFailed[id] && localBuf.length === 0);
 
     // 会话级用量快照（随历史镜像恢复）；getChatSession 不含 usage，仅 history 镜像携带。
     let recoveredUsage: MirroredUsage | null = null;
-    if (!localBuf || (this.restoreFailed[id] && localBuf.length === 0)) {
+    if (needFetch) {
+      this.sessionLoading = true;
       try {
         // 恢复流程带超时（加载失败 / 数据不完整 / 超时均视为异常走降级，绝不清空本地记录）。
         const s = await withTimeout(
@@ -1140,6 +1602,9 @@ export class AhChat extends LitElement {
               : {}),
             id: this.nextId++
           })) as ChatMsg[];
+          // 降级路径同样还原计划进度（镜像字段 + 线程反推），否则已执行完成的计划
+          // 会退回「待确认」并重新显示「确认执行 / 取消」。
+          this.applyPlanStatusLookup(id, buildPlanStatusLookup(mirrored.msgs));
           notify.warning(
             '服务端历史拉取失败，已从历史镜像恢复（可能非最新）。',
             {
@@ -1166,8 +1631,17 @@ export class AhChat extends LitElement {
         }
       }
     }
+    // 拉取流程结束（成功、降级、失败三条路径均在此汇合）：关闭骨架屏。
+    // 只有最新一次切换有权操作该标志 —— 过期请求不得关闭当前会话的骨架屏。
+    if (seq === this.sessionLoadSeq) this.sessionLoading = false;
+
     // 恢复历史后补全调用链路中 assistant 消息的内容（修复旧 trace 中 assistant 为空）。
     this.restoreTraceMessages(id);
+
+    // 过期请求（用户已切到别的会话）：本次结果仅作为缓存留在 this.threads 中，
+    // 不得回写内容与视图状态，否则会覆盖新会话的消息、滚动位置与用量快照。
+    if (seq !== this.sessionLoadSeq) return;
+
     this.messages = this.threads[id] ?? [];
 
     // 切换会话：回到该会话最新消息底部，并恢复「钉底」跟随。
@@ -1180,20 +1654,30 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 把镜像里的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
-   * 仅当内存中没有该消息的状态时写入，不覆盖本实例正在进行的执行状态；
-   * 镜像里的 running 态说明上次执行被中断（刷新/断连），收敛为 failed ——
-   * 卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默自动重放。
+   * 把持久化的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
+   * 仅当内存中没有该消息的状态时写入，不覆盖本实例正在进行的执行状态。
+   *
+   * 两级来源：
+   * 1. 服务端 `planStatus` 镜像（权威）—— running 态说明上次执行被中断（刷新/断连），
+   *    收敛为 failed，卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默重放；
+   * 2. 镜像缺失时（旧数据未带该字段 / 镜像被整包覆盖 / 服务端重启后回落）从线程反推
+   *    （见 derivePlanExecFromMessages）—— 否则已执行完成的计划会退回默认的「待确认」，
+   *    向用户重新暴露「确认执行 / 取消」（实测反馈的显示缺陷）。
    */
   private applyPlanStatusLookup(
     sid: string,
     lookup: Map<string, PlanExecMirror>
   ) {
-    if (!lookup.size) return;
-    for (const m of this.threads[sid] ?? []) {
+    const thread = this.threads[sid];
+    if (!thread?.length) return;
+    for (const m of thread) {
       if (!m.plan || this.planExec[m.id]) continue;
       const ps = lookup.get(m.plan.goal);
-      if (!ps) continue;
+      if (!ps) {
+        const derived = derivePlanExecFromMessages(m.plan, thread);
+        if (derived) this.planExec = { ...this.planExec, [m.id]: derived };
+        continue;
+      }
       const doneMap: Record<string, boolean> = {};
       for (const tid of ps.done ?? []) doneMap[tid] = true;
       // running = 上次执行中断：保留已完成集合，但置 failed 等待用户显式继续。
@@ -1282,17 +1766,17 @@ export class AhChat extends LitElement {
         agentId: s.agentId
       }
     };
-    this.sessions = [
-      {
-        id: s.id,
-        title: s.title,
-        updatedAt: s.updatedAt,
-        interactionMode: s.interactionMode,
-        model: s.model,
-        agentId: s.agentId
-      },
-      ...this.sessions
-    ];
+    this.sessions = [toSessionView(s), ...this.sessions];
+    // 维护分页不变量：新会话落在服务端列表头部，相当于「已消费区间」整体后移一位。
+    // 一并把 offset 加 1，下一页便不会重复取到本页末条（serverIds 记录它是服务端条目，
+    // 加载更多时新页才会插在它之后、镜像补项之前）。
+    const serverIds = new Set(this.sessionPage.serverIds);
+    serverIds.add(s.id);
+    this.sessionPage = {
+      offset: this.sessionPage.offset + 1,
+      hasMore: this.sessionPage.hasMore,
+      serverIds
+    };
     return s.id;
   }
 
@@ -1428,18 +1912,49 @@ export class AhChat extends LitElement {
     // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
     // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
-    const imageAttachments = rawAttachments
-      .filter((f) => f.type.startsWith('image/'))
-      .map((f) => ({
-        url: f.dataUrl || f.serverUrl || '',
-        name: f.name,
-        type: f.type
-      }))
-      .filter((f) => f.url);
+    // 同时压缩 dataUrl，避免多张高清图撑爆 /api/run 的请求体上限。
+    const imageAttachments = (
+      await Promise.all(
+        rawAttachments
+          .filter((f) => f.type.startsWith('image/'))
+          .map(async (f) => {
+            const originalUrl = f.dataUrl || f.serverUrl || '';
+            if (!originalUrl) return null;
+            const url = originalUrl.startsWith('data:')
+              ? await compressDataUrl(originalUrl)
+              : originalUrl;
+            return { url, name: f.name, type: f.type };
+          })
+      )
+    ).filter(Boolean) as Array<{ url: string; name: string; type: string }>;
+
+    // 文本附件：与图片同一套「UI 原文件 / 模型压缩副本」解耦。
+    // UI 气泡仍展示上传的原始文件；发给模型的是一段「头尾保留、中间省略」的摘要。
+    // 缺少这一步时，一个几 MB 的 .log / .csv 会以完整原文进入上下文，并随历史逐轮重发。
+    const textFiles = rawAttachments.filter(
+      (f) => !f.type.startsWith('image/') && isTextLike(f.name, f.type)
+    );
+    const perItemBudget = resolveAttachmentBudget(textFiles.length);
+    const textDigest = textFiles
+      .map((f) => {
+        const raw = dataUrlToText(f.dataUrl || '');
+        if (raw == null || !raw.trim()) return null;
+        return compressAttachmentText(f.name, f.type, raw, {
+          maxChars: perItemBudget,
+          serverUrl: f.serverUrl
+        });
+      })
+      .filter(Boolean) as Parameters<typeof buildAttachmentDigest>[0];
+    const attachmentDigest = buildAttachmentDigest(textDigest);
+    // 仅追加到「发往模型的 prompt」；UI 消息内容仍为纯用户输入（content 不变）。
+    const modelPrompt = attachmentDigest
+      ? `${content}\n\n${attachmentDigest}`
+      : content;
 
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
-      attachments: rawAttachments
+      attachments: rawAttachments,
+      modelPrompt
     });
   }
 
@@ -1448,6 +1963,7 @@ export class AhChat extends LitElement {
     this.input = '';
     this.cmdName = '';
     this.attachments = [];
+    this.attachmentsExpanded = false;
     void this.refocusInput();
   }
 
@@ -1494,7 +2010,15 @@ export class AhChat extends LitElement {
       },
       getMode: () => this.mode,
       getModel: () => this.model,
-      getAgentId: () => this.agentId,
+      getAgentId: () => {
+        // 防御：viewer 角色下不得调用医美运营分析 agent（即使 agentId 被持久化了），
+        // 确保即使列表未刷新的情况下也不会泄露医美数据权限。
+        if (this.role === 'viewer' && this.agentId) {
+          const agent = this.agents.find((a) => a.id === this.agentId);
+          if (agent?.domain === 'medical-aesthetics') return '';
+        }
+        return this.agentId;
+      },
       getWeb: () => this.web,
       getInteractionMode: () => this.interactionMode,
       getAttachments: () => this.attachments,
@@ -1592,6 +2116,12 @@ export class AhChat extends LitElement {
       }
       case 'llm:call': {
         this.ensureTraceRoot(sid);
+        // 兜底：把上一轮仍 pending 的工具/检索节点统一标记为成功。
+        // 背景：tool:result 事件可能因 SSE 断连/重连/网络抖动而丢失（尤其 RAG 等长耗时工具
+        // 期间极易发生），此时目标节点会永远停在「进行中」；但 harness 只要发起新一轮
+        // llm:call，说明上一轮的工具链已实际完成（否则不会推进到下一步），所以在此处
+        // 兜底把残留 pending 节点收尾，避免「调用都结束了 UI 还显示进行中」。
+        this.finalizePendingTools(tc);
         const parent = tc.parent ?? tc.root!;
         // 纯前端：把「截至此次调用的会话消息上下文」挂到节点，点击「消息 N」可就地展开回看。
         // 注意这里实时读取 this.threads（而非一次性按 ev.messageCount 截断），
@@ -1771,15 +2301,15 @@ export class AhChat extends LitElement {
         }>(ev.byModel ?? {})
           .map(
             ([m, st]) =>
-              `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${
+              `${m}: ~${(Number(st.hitRate) * 100).toFixed(0)}% (~${st.hits}/${
                 st.queries
               })`
           )
           .join(' · ');
         mk(parent, 'tokencache', 'Token 缓存命中率', 'ok', {
           meta: {
-            命中率: `${tcHitPct}%`,
-            命中: `${ev.hits}/${ev.queries}`,
+            命中率: `~${tcHitPct}%`,
+            命中: `~${ev.hits}/${ev.queries}`,
             接口: String(ev.interface ?? 'prompt-cache'),
             ...(ev.model ? { 模型: String(ev.model) } : {}),
             ...(tcByModel ? { 分模型: tcByModel } : {})
@@ -1824,6 +2354,13 @@ export class AhChat extends LitElement {
         });
         break;
       }
+      case 'run:end': {
+        // 运行收尾兜底：极少数情况下（如 SSE 断连后重连、或运行异常终止）最后一个
+        // tool:result 事件丢失，导致工具/检索节点永远停在「进行中」。运行结束时强制
+        // 把所有残留 pending 节点收尾，保证「调用都结束了 UI 不再显示进行中」。
+        this.finalizePendingTools(tc);
+        break;
+      }
       default:
         break;
     }
@@ -1836,6 +2373,51 @@ export class AhChat extends LitElement {
     ) {
       this.patchSession(sid, { trace: [tc.root] });
     }
+  }
+
+  /**
+   * 兜底收尾：把 trace 树里所有仍处 pending 的工具/检索节点标记为成功（ok）。
+   * 仅在「新一轮 llm:call 已开始」或「run:end」时调用 —— 这两个时机都意味着上一轮
+   * 工具链已实际执行完毕（harness 不会在工具未完成时推进），因此可以安全地把因
+   * SSE 断连/重连/网络抖动而丢失 tool:result 的残留 pending 节点收尾，避免 UI 永久
+   * 卡在「进行中」。
+   */
+  private finalizePendingTools(tc: TraceCtx) {
+    if (!tc.root) return;
+    const sweep = (n: TraceNode): void => {
+      if (
+        (n.kind === 'tool' || n.kind === 'retrieval') &&
+        n.status === 'pending'
+      ) {
+        n.status = 'ok';
+        n.meta = { ...(n.meta ?? {}), status: '成功（兜底）' };
+      }
+      n.children.forEach(sweep);
+    };
+    sweep(tc.root);
+  }
+
+  /**
+   * 还原已结束/从存储恢复的消息时，把残留 pending 工具/检索节点收尾（与 traceHandle
+   * 的兜底逻辑一致）。仅对「非流式（streaming !== true）」的消息调用 —— 进行中的实时帧
+   * 绝不能收尾，否则会把真正在途的工具误标为完成。
+   */
+  private normalizeStoredTrace(
+    trace: TraceNode[] | undefined
+  ): TraceNode[] | undefined {
+    if (!trace || !trace.length) return trace;
+    const sweep = (n: TraceNode): void => {
+      if (
+        (n.kind === 'tool' || n.kind === 'retrieval') &&
+        n.status === 'pending'
+      ) {
+        n.status = 'ok';
+        n.meta = { ...(n.meta ?? {}), status: '成功（兜底·恢复）' };
+      }
+      n.children.forEach(sweep);
+    };
+    trace.forEach(sweep);
+    return trace;
   }
 
   /* ----------------------- 渲染辅助 ----------------------- */
@@ -1969,112 +2551,227 @@ export class AhChat extends LitElement {
     return this.cmdName ? `/${this.cmdName}${arg ? ` ${arg}` : ''}` : arg;
   }
 
-  /** 处理文件选择。读取本地预览并上传到服务端。 */
-  private async onFileSelect(e: Event) {
-    const input = e.target as HTMLInputElement;
-    if (!input.files?.length) return;
-    const maxBytes = 10 * 1024 * 1024; // 10MB 上限
-    const newFiles: UploadedFile[] = [];
+  /* ------------------- 整屏拖拽上传（覆盖整个 chat 区域） ------------------- */
 
-    for (const f of Array.from(input.files)) {
-      // 前置校验
-      if (f.size > maxBytes) {
-        notify.warning(`文件过大：${f.name}（上限 10MB）`, {
-          key: 'chat-upload'
-        });
+  /**
+   * 该 drag 事件是否携带文件。
+   * dataTransfer.types 在 dragover 阶段才可读（drop 阶段也可），
+   * 用它把「拖文件」与「拖选文字 / 拖链接」区分开，避免误亮遮罩。
+   */
+  private isFileDrag(e: DragEvent): boolean {
+    const types = e.dataTransfer?.types;
+    return types ? Array.from(types).includes('Files') : false;
+  }
+
+  /** 剩余可添加的附件数（0 表示已达上限）。 */
+  private get attachRoom(): number {
+    return Math.max(0, MAX_ATTACHMENTS - this.attachments.length);
+  }
+
+  /**
+   * 拖拽进入 chat 区域：亮起整屏遮罩。
+   * 用 `dragenter`/`dragleave` 计数成对抵消——拖拽过程中光标会在子元素间移动，
+   * 每次都派发 dragenter+dragleave，只用布尔量会在子元素边界处闪烁。
+   */
+  private onDragEnter(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    this.dragDepth += 1;
+    if (!this.dragActive) this.dragActive = true;
+  }
+
+  /** 拖拽在内部元素间移动：持续 preventDefault，否则浏览器会拒收 drop。 */
+  private onDragOver(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    if (!this.dragActive) this.dragActive = true;
+  }
+
+  private onDragLeave(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    this.dragDepth = Math.max(0, this.dragDepth - 1);
+    // 计数归零才认为是真正离开，避免跨越子元素时遮罩闪烁。
+    if (this.dragDepth === 0) this.dragActive = false;
+  }
+
+  /** 在 chat 区域内松开：接管文件并关闭遮罩。 */
+  private onDrop(e: DragEvent): void {
+    if (!this.isFileDrag(e)) return;
+    e.preventDefault();
+    this.dragDepth = 0;
+    this.dragActive = false;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length) void this.handleFiles(files);
+  }
+
+  /**
+   * 处理文件选择。读取本地预览并上传到服务端。
+   *
+   * 入参是 File[] 而非 Event —— 两条入口（「+」面板点击选择 / 拖拽到 chat 区域）
+   * 最终都归一成 File[] 汇到这里。
+   *
+   * 三个阶段刻意分开：
+   *   1. 逐个校验 + 读本地预览（失败只跳过该文件，绝不中断整批）；
+   *   2. **整批一次性并入** attachments —— UI 立刻显示全部 N 个；
+   *   3. 受限并发上传 —— 单张失败只影响自己。
+   *
+   * 改成分阶段前这里是「读一个 → 追加一个 → 串行 await 上传一个」的循环，
+   * 两个后果：① 大图逐个慢慢冒出来，视觉上像只加进去了第一个；
+   * ② 串行 await 下首张慢请求（或 FileReader 那次未被捕获的 reject）
+   * 会把后面的文件全部堵死/整批抛出，实际只剩第一个落地。
+   */
+  private async handleFiles(picked: File[]): Promise<void> {
+    if (!picked.length) return;
+
+    // 数量上限：拖拽遮罩的提示文案（MAX_ATTACHMENTS）在这里才真正生效。
+    // 提示必须同时给出「实际收了多少」和「被挡了多少」——
+    // 只说「已忽略 N 个」用户无法判断到底加进去了几个。
+    const room = MAX_ATTACHMENTS - this.attachments.length;
+    if (room <= 0) {
+      notify.warning(
+        `已达上传上限（${MAX_ATTACHMENTS} 个），请先移除部分文件再添加`,
+        { key: 'chat-upload' }
+      );
+      return;
+    }
+    let list = picked;
+    if (list.length > room) {
+      const skipped = list.length - room;
+      notify.warning(
+        `最多支持上传 ${MAX_ATTACHMENTS} 个文件：本次已添加 ${room} 个，另有 ${skipped} 个未添加`,
+        { key: 'chat-upload' }
+      );
+      list = list.slice(0, room);
+    }
+
+    // ---- 阶段一：校验 + 读预览 + 图片压缩。单个文件失败只跳过它自己 ----
+    const pending: PendingUpload[] = [];
+    for (const f of list) {
+      if (f.size > MAX_ATTACHMENT_BYTES) {
+        notify.warning(
+          `文件过大：${f.name}（上限 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB）`,
+          { key: 'chat-upload' }
+        );
         continue;
       }
-      const allowedTypes = [
-        'image/jpeg',
-        'image/png',
-        'image/gif',
-        'image/webp',
-        'image/bmp',
-        'image/svg+xml',
-        'text/plain',
-        'text/markdown',
-        'text/csv',
-        'application/json'
-      ];
-      if (
-        !f.type.startsWith('image/') &&
-        !f.type.startsWith('text/') &&
-        !f.type.includes('json') &&
-        !['.txt', '.md', '.csv', '.json'].includes(
-          f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
-        )
-      ) {
+      if (!isAllowedAttachment(f)) {
         notify.warning(`不支持的文件类型：${f.name}`, { key: 'chat-upload' });
         continue;
       }
 
-      // 本地预览 DataURL
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result ?? ''));
-        reader.onerror = () => reject(new Error('读取文件失败'));
-        reader.readAsDataURL(f);
-      });
-
-      const key = `${f.name}_${Date.now()}`;
-      const file: UploadedFile = {
-        name: f.name,
-        size: f.size,
-        type: f.type,
-        dataUrl,
-        uploadStatus: 'uploading'
-      };
-      this.uploadingFiles.set(key, { status: 'uploading' });
-
-      // 立即加入 attachments 显示预览
-      newFiles.push(file);
-      this.attachments = [...this.attachments, file];
-
-      // 上传到服务端
+      let dataUrl = '';
       try {
-        const formData = new FormData();
-        formData.append('file', f, f.name);
-        const resp = await authedFetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const json = await resp.json();
-        if (json.ok && json.meta?.url) {
-          // 不可变更新：Lit @state() 仅在重新赋值时触发重渲染，
-          // 原地修改数组元素的字段不会刷新 UI（⏳ 会一直卡住）。
-          this.attachments = this.attachments.map((a) =>
-            a === file
-              ? { ...a, serverUrl: json.meta.url, uploadStatus: 'done' }
-              : a
-          );
-          this.uploadingFiles.set(key, { status: 'done' });
-        } else {
-          throw new Error(json.error || '上传失败');
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : '上传失败';
-        this.attachments = this.attachments.map((a) =>
-          a === file ? { ...a, uploadStatus: 'error', uploadError: msg } : a
-        );
-        this.uploadingFiles.set(key, {
-          status: 'error',
-          error: msg
-        });
-        notifyError(err, {
-          title: '附件上传',
-          fallback: `上传失败：${f.name}`,
-          key: 'chat-upload'
-        });
+        dataUrl = await readAsDataUrl(f);
+      } catch {
+        notify.warning(`读取失败：${f.name}`, { key: 'chat-upload' });
+        continue;
       }
+
+      // 图片在上传前自动压缩，降低 multipart 请求体大小；预览仍用原图 dataUrl。
+      let uploadFile = f;
+      if (f.type.startsWith('image/')) {
+        try {
+          uploadFile = await compressImage(f);
+        } catch {
+          // 压缩失败不影响上传，回退原文件。
+          uploadFile = f;
+        }
+      }
+
+      pending.push({
+        meta: {
+          name: f.name,
+          size: f.size,
+          type: f.type,
+          dataUrl,
+          uploadStatus: 'uploading'
+        },
+        raw: f,
+        uploadFile,
+        // 追加序号：同名文件在同一毫秒内也能拿到互不相同的 key。
+        key: `${f.name}_${Date.now()}_${pending.length}`
+      });
+    }
+    if (!pending.length) return;
+
+    // ---- 阶段二：整批一次性入列，UI 立即显示全部 ----
+    this.attachments = [...this.attachments, ...pending.map((p) => p.meta)];
+    for (const p of pending) {
+      this.uploadingFiles.set(p.key, { status: 'uploading' });
     }
 
-    input.value = '';
+    // ---- 阶段三：受限并发上传 ----
+    await runWithConcurrency(
+      pending.map((p) => () => this.uploadOne(p)),
+      UPLOAD_CONCURRENCY
+    );
+  }
+
+  /**
+   * 上传单个附件并就地更新其状态。
+   * 失败只标记该文件为 error，绝不影响同批其它文件。
+   */
+  private async uploadOne(p: PendingUpload): Promise<void> {
+    try {
+      const formData = new FormData();
+      formData.append('file', p.uploadFile, p.uploadFile.name);
+      const resp = await authedFetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const json = await resp.json();
+      if (!json?.ok || !json.meta?.url) {
+        throw new Error(json?.error || '上传失败');
+      }
+      // 不可变更新：Lit @state() 仅在重新赋值时触发重渲染，
+      // 原地修改数组元素的字段不会刷新 UI（⏳ 会一直卡住）。
+      this.patchAttachment(p.meta, {
+        serverUrl: json.meta.url,
+        uploadStatus: 'done'
+      });
+      this.uploadingFiles.set(p.key, { status: 'done' });
+    } catch (err) {
+      let msg = err instanceof Error ? err.message : '上传失败';
+      // 后端 raw body 超过阈值时返回该文案；转换为更友好的提示。
+      if (/request body too large/i.test(msg)) {
+        msg = `图片体积过大，上传被服务端拒绝：${p.raw.name}`;
+      }
+      this.patchAttachment(p.meta, {
+        uploadStatus: 'error',
+        uploadError: msg
+      });
+      this.uploadingFiles.set(p.key, { status: 'error', error: msg });
+      notifyError(new Error(msg), {
+        title: '附件上传',
+        fallback: `上传失败：${p.raw.name}`,
+        key: 'chat-upload'
+      });
+    }
+  }
+
+  /**
+   * 按对象**引用**就地更新某个附件字段。
+   * 用引用而非下标 —— 上传期间用户可能移除其它附件，下标会错位打到别的文件上。
+   */
+  private patchAttachment(target: UploadedFile, patch: Partial<UploadedFile>) {
+    this.attachments = this.attachments.map((a) =>
+      a === target ? { ...a, ...patch } : a
+    );
   }
 
   /** 移除已选附件。 */
   private removeAttachment(i: number) {
     const newAttachments = this.attachments.filter((_, idx) => idx !== i);
     this.attachments = newAttachments;
+    // 移除后若已不再溢出，收起展开态 —— 否则会残留一个无意义的「收起」按钮。
+    if (newAttachments.length <= ATTACH_COLLAPSE_LIMIT) {
+      this.attachmentsExpanded = false;
+    }
+  }
+
+  /** 展开 / 收起附件预览条的多余条目。 */
+  private toggleAttachments(): void {
+    this.attachmentsExpanded = !this.attachmentsExpanded;
   }
 
   /** 文件是否可预览（图片 MIME 或常见图片扩展名）。 */
@@ -2155,6 +2852,14 @@ export class AhChat extends LitElement {
     }
   };
 
+  /** 某条消息深度思考区的有效折叠态：显式覆盖优先，否则取「深度思考收起」全局偏好。 */
+  private effectiveThinkCollapsed(id: number): boolean {
+    const k = String(id);
+    return k in this.thinkCollapsed
+      ? !!this.thinkCollapsed[k]
+      : this.deepThinkCollapsed;
+  }
+
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
   private toggleThink(id: number) {
     const k = String(id);
@@ -2166,23 +2871,136 @@ export class AhChat extends LitElement {
       this.messages[sIdx]?.id === id &&
       !c?.content;
     if (isThinking) return;
+    // 相对「有效折叠态」取反，写入显式覆盖（这样偏好切换后用户的手动选择可被反向操作解除）。
+    const cur = this.effectiveThinkCollapsed(id);
     this.thinkCollapsed = {
       ...this.thinkCollapsed,
-      [k]: !this.thinkCollapsed[k]
+      [k]: !cur
     };
+  }
+
+  /* ── 富文本块折叠（超长代码块 / 表格） ──────────────────────────────────
+     三处状态必须同步：容器上的 is-folded 类（驱动裁切与渐隐）、按钮文案、
+     以及 aria-expanded。统一由 applyFolds 在每次渲染后按 mdFolded 重放，
+     而不是在点击时改 DOM —— 后者的结果会被下一次重渲染抹掉（原因见 mdFolded 声明处）。 */
+
+  /**
+   * 把 mdFolded 重放到当前 DOM。
+   * 每次 updated 都会全量重放：DOM 是刚重建的，不存在「已同步」的捷径。
+   * 成本可忽略 —— 一个会话里的可折叠块数量级是十位。
+   */
+  private applyFolds() {
+    const root = this.renderRoot;
+    if (!root) return;
+    root.querySelectorAll<HTMLElement>('[data-md-block]').forEach((el) => {
+      // 块归属哪个作用域（哪条消息的哪一区）由最近的 [data-md-scope] 决定，
+      // 因此渲染产物本身无需知道消息 id，缓存才能只按文本内容建立。
+      const scope = el.closest<HTMLElement>('[data-md-scope]')?.dataset.mdScope;
+      const block = el.dataset.mdBlock;
+      if (!scope || !block) return;
+      // 未超阈值（非可折叠）的块永远展开；可折叠块缺省即折叠。语义见 chat-block-fold.ts。
+      const folded = effectiveBlockFolded(
+        this.mdFolded,
+        scope,
+        block,
+        el.dataset.mdFoldable === '1'
+      );
+      el.classList.toggle('is-folded', folded);
+      const btn = el.querySelector<HTMLElement>('.md-fold');
+      if (!btn) return;
+      btn.textContent = foldButtonLabel(folded);
+      btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    });
+  }
+
+  /** 切换某块的折叠态：以 DOM 当前态取反，不依赖对缺省值的猜测。 */
+  private toggleFold(el: HTMLElement) {
+    const scope = el.closest<HTMLElement>('[data-md-scope]')?.dataset.mdScope;
+    const block = el.dataset.mdBlock;
+    if (!scope || !block) return;
+    this.mdFolded = {
+      ...this.mdFolded,
+      [foldKey(scope, block)]: toggledBlockFolded(
+        el.classList.contains('is-folded')
+      )
+    };
+  }
+
+  /**
+   * 富文本块内按钮的事件委托（复制代码 / 折叠）。
+   *
+   * 为什么必须走委托，而不是给按钮绑 @click：
+   * 这些按钮由 toRichHtml 生成为 HTML 字符串、经 unsafeHTML 注入，不参与 lit 的
+   * 事件绑定体系；且每次重渲染都会重建节点，逐个 addEventListener 只会泄漏。
+   * 委托挂在消息列表容器（.thread）上，靠冒泡一次覆盖全部历史与后续消息。
+   * 事件顺序上先判折叠、再判复制：两者互斥且折叠判定更廉价。
+   */
+  private onRichClick = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    if (!target?.closest) return;
+
+    const foldBtn = target.closest<HTMLElement>('.md-fold');
+    if (foldBtn) {
+      const block = foldBtn.closest<HTMLElement>('[data-md-block]');
+      if (block) this.toggleFold(block);
+      return;
+    }
+
+    const copyBtn = target.closest<HTMLElement>('.md-copy');
+    if (copyBtn) {
+      // 从 DOM 取原文而非在按钮上存副本：流式重渲染会替换节点，
+      // 只有代码元素本身的 textContent 才是「此刻的完整内容」。
+      const code = copyBtn
+        .closest<HTMLElement>('.md-code')
+        ?.querySelector('code');
+      void this.copyCodeText(copyBtn, code?.textContent ?? '');
+    }
+  };
+
+  /** 复制代码块内容：复用与消息复制一致的剪贴板兜底链路，成功后在按钮上就地反馈。 */
+  private async copyCodeText(btn: HTMLElement, text: string) {
+    if (!text) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // 非安全上下文 / 权限被拒：退回 execCommand，链路与 copyMsgText 相同。
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (document.execCommand('copy')) ok = true;
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+    if (!ok) return;
+    btn.classList.add('is-copied');
+    btn.textContent = '已复制';
+    window.setTimeout(() => {
+      // 按钮可能已被重渲染替换，此时操作的是游离节点，无副作用。
+      btn.classList.remove('is-copied');
+      btn.textContent = '复制';
+    }, 1500);
   }
 
   /**
    * 深度思考结束自动折叠本轮思考面板：
    * 在首个回答 token 到达时调用（非流式回退路径由 run 收尾兜底再调一次，已折叠则跳过）。
-   * 仅当本轮确实产出过推理内容（思考面板实际展示）才折叠；用户此前手动折叠过则保持不动。
+   * 仅当本轮确实产出过推理内容（思考面板实际展示）才折叠；若已折叠（显式或偏好默认）则保持不动。
    */
   private autoCollapseThink(sid: string) {
     const sIdx = this.streamIdx[sid] ?? -1;
     const m = sIdx >= 0 ? (this.threads[sid] ?? [])[sIdx] : undefined;
     if (!m?.reasoning) return;
     const k = String(m.id);
-    if (this.thinkCollapsed[k]) return;
+    // 已折叠（含偏好默认）则不重复折叠；未折叠（含用户手动展开）才折叠。
+    if (this.effectiveThinkCollapsed(m.id)) return;
     this.thinkCollapsed = { ...this.thinkCollapsed, [k]: true };
   }
 
@@ -2254,16 +3072,6 @@ export class AhChat extends LitElement {
     this.sidebarCollapsed = !this.sidebarCollapsed;
   }
 
-  /**
-   * 跳转到指定功能面板（自检 / 环境等）：经 ah-goto 事件冒泡到顶层 ah-app
-   * 的 Tab 路由。这些入口已从侧边菜单收纳为聊天页顶栏的快捷按钮。
-   */
-  private gotoPanel(tab: string) {
-    this.dispatchEvent(
-      new CustomEvent('ah-goto', { detail: tab, bubbles: true, composed: true })
-    );
-  }
-
   /** 断连恢复横幅：reconnecting 显示自动恢复中提示；lost 给出「重新连接」手动入口。 */
   private renderConnBanner() {
     return renderConnBanner(this.renderCtx());
@@ -2314,6 +3122,7 @@ export class AhChat extends LitElement {
       copiedMsgId: this.copiedMsgId,
       deepThink: this.deepThink,
       thinkCollapsed: this.thinkCollapsed,
+      deepThinkCollapsed: this.deepThinkCollapsed,
       traceDrawerMsg: this.traceDrawerMsg,
       traceDrawerSection: this.traceDrawerSection,
       connState: this.connState,
@@ -2421,532 +3230,716 @@ export class AhChat extends LitElement {
     };
   }
 
-  render() {
-    const active = this.sessions.find((s) => s.id === this.activeId);
+  /**
+   * 会话列表底部状态行（滚动加载的反馈位）：
+   * 加载中 / 加载失败可重试 / 已到末尾 / 「加载更多」。
+   *
+   * 为何在自动滚动加载之外仍保留手动按钮：自动触发依赖滚动事件，而「首屏不足以撑出
+   * 滚动条」虽有 autoFillSessionList 兜底，但该兜底有轮次上限；按钮是最终安全网，
+   * 同时给键盘 / 读屏用户一条不依赖滚动的入口。
+   */
+  private renderSessionListFooter() {
+    if (this.sessions.length === 0) return nothing;
+    if (this.sessionsLoadingMore) {
+      return html`<div class="session-more" role="status" aria-live="polite">
+        <span class="spinner"></span><span>加载中…</span>
+      </div>`;
+    }
+    if (this.sessionsMoreError) {
+      return html`<button
+        class="session-more retry"
+        @click=${() => {
+          this.sessionsMoreError = false;
+          void this.loadMoreSessions();
+        }}
+      >
+        加载失败，点击重试
+      </button>`;
+    }
+    if (this.sessionsHasMore) {
+      return html`<button
+        class="session-more"
+        @click=${() => void this.loadMoreSessions()}
+      >
+        加载更多
+      </button>`;
+    }
+    // 仅一页（且无更多）时不显示「没有更多了」—— 无信息量，徒增噪音。
+    if (this.sessions.length <= SESSION_PAGE_SIZE) return nothing;
+    return html`<p class="session-end">没有更多了</p>`;
+  }
+
+  /**
+   * 内容区骨架屏（历史会话加载占位）。
+   *
+   * 与真实消息共用同一套尺寸规格，保证「加载态 → 内容态」不发生位移：
+   * - 结构对齐：用户消息靠右带头像、助手消息靠左带头像，气泡外壳（背景 / 边框 /
+   *   圆角 / 内边距）与 .bubble 逐项相同 —— 加载完成时外壳不会「凭空出现」；
+   * - 高度对齐：每个 .sk-line 是一个完整行盒（14px × 1.65 = 23.1px），可见光条由
+   *   ::before 居中绘制，故气泡总高 = 24 + 23.1 × 行数，与真实气泡逐像素一致；
+   * - 宽度近似：真实用户气泡宽度由内容决定（≤62%），骨架无法预知，故 2 行取 56%、
+   *   单行短句取 38% 作为典型值；助手光条上限 90%，避免读作整块色带。
+   * 行宽写入内联 --w，由 chat-styles 的 .sk-line::before 消费。
+   */
+  private renderSessionSkeleton() {
+    const line = (w: string) =>
+      html`<div class="sk-line" style="--w:${w}"></div>`;
     return html`
       <div
-        class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this.sidebarCollapsed
-          ? 'collapsed'
-          : ''}"
+        class="thread sk-thread"
+        role="status"
+        aria-busy="true"
+        aria-label="正在加载历史会话"
       >
-        <div class="side-head">
-          <button
-            class="collapse-btn"
-            title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
-            @click=${() => this.toggleSidebarCollapse()}
-          >
-            ${this.sidebarCollapsed ? '›' : '‹'}
-          </button>
-          <button class="primary new-btn" @click=${() => this.newChat()}>
-            ＋ 新对话
-          </button>
+        <div class="sk-msg user">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">${line('100%')}${line('54%')}</div>
         </div>
-        <div class="session-list">
-          ${this.sessions.length === 0
-            ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
-            : this.sessions.map(
-                (s) => html`
-                  <div
-                    class="session ${s.id === this.activeId ? 'active' : ''}"
-                    @click=${() => this.selectSession(s.id)}
-                  >
-                    <span class="dot"></span>
-                    <span class="title">${escapeHtml(s.title)}</span>
-                    <span class="acts">
-                      <button
-                        class="icon-btn"
-                        title="重命名"
-                        @click=${(e: Event) => {
-                          e.stopPropagation();
-                          this.renameSession(s.id);
-                        }}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        class="icon-btn"
-                        title="删除"
-                        @click=${(e: Event) => {
-                          e.stopPropagation();
-                          this.deleteSession(s.id);
-                        }}
-                      >
-                        🗑
-                      </button>
-                    </span>
-                  </div>
-                `
-              )}
+        <div class="sk-msg assistant">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">
+            ${line('86%')}${line('90%')}${line('82%')}${line('50%')}
+          </div>
+        </div>
+        <div class="sk-msg user">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble short">${line('100%')}</div>
+        </div>
+        <div class="sk-msg assistant">
+          <div class="sk-avatar"></div>
+          <div class="sk-bubble">${line('88%')}${line('54%')}</div>
         </div>
       </div>
+    `;
+  }
 
-      <div class="main">
-        <div class="chat-head">
-          <button
-            class="menu-btn"
-            @click=${() => this.toggleSidebar()}
-            title="会话列表"
-            aria-label="会话列表"
-          >
-            <!-- 对话气泡 + 文字行图标：与外层外壳的导航汉堡 ☰ 区分，语义为「会话/历史列表」 -->
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path
-                d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
-              />
-              <path d="M8 9h8M8 13h5" />
-            </svg>
-          </button>
-          <span class="title"
-            >${active ? escapeHtml(active.title) : '新对话'}</span
-          >
-          <span class="spacer"></span>
-          <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，会话内可切换，刷新默认开） -->
-          <button
-            class="tool-toggle ${this.deepThink ? 'on' : ''}"
-            title="深度思考"
-            aria-pressed="${this.deepThink}"
-            @click=${() => {
-              this.deepThink = !this.deepThink;
-              try {
-                localStorage.setItem(
-                  'ah_deep_think',
-                  this.deepThink ? '1' : '0'
-                );
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M9 18h6M10 22h4" />
-              <path
-                d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"
-              />
-            </svg>
-          </button>
-          <button
-            class="tool-toggle ${this.web ? 'on' : ''}"
-            title="联网搜索"
-            aria-pressed="${this.web}"
-            @click=${() => {
-              this.web = !this.web;
-              try {
-                localStorage.setItem('ah_web', this.web ? '1' : '0');
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20" />
-              <path
-                d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
-              />
-            </svg>
-          </button>
-          <!-- 自检 / 环境：跳转到原「验证」「环境」面板（菜单已收纳，经 ah-goto 路由） -->
-          <button
-            class="toggle"
-            title="自检 / 验证"
-            aria-label="自检 / 验证"
-            @click=${() => this.gotoPanel('verify')}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-              <polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-          </button>
-          <button
-            class="toggle"
-            title="临时 / 预览环境"
-            aria-label="临时 / 预览环境"
-            @click=${() => this.gotoPanel('env')}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path
-                d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"
-              />
-              <path
-                d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"
-              />
-              <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
-              <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
-            </svg>
-          </button>
+  /**
+   * 内容区渲染：加载历史 → 骨架屏；无消息 → 空态引导；否则渲染消息线程。
+   * 独立成方法并以提前返回表达三种状态，避免模板内出现深层嵌套三元表达式。
+   */
+  private renderContentArea() {
+    if (this.sessionLoading) return this.renderSessionSkeleton();
+    if (this.messages.length === 0) {
+      return html`
+        <div class="empty">
+          <h1>有什么可以帮你的？</h1>
+          <p>基于 agent-harness 的多会话对话。下方输入即可开始。</p>
         </div>
-
-        <div class="scroll-region">
-          <div
-            class="scroll"
-            ${ref(this.scrollCtl.scrollRef)}
-            @scroll=${() => this.scrollCtl.onScroll()}
+      `;
+    }
+    return html`<div class="thread" @click=${this.onRichClick}>
+      ${this.renderConnBanner()}
+      ${this.llmReady
+        ? ''
+        : html`<div
+            style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
           >
-            ${this.messages.length === 0
-              ? html`
-                  <div class="empty">
-                    <h1>有什么可以帮你的？</h1>
-                    <p>
-                      基于 agent-harness
-                      的多会话对话。下方输入即可开始，右侧可新建 / 切换会话。
-                    </p>
-                  </div>
-                `
-              : html`<div class="thread">
-                  ${this.renderConnBanner()}
-                  ${this.llmReady
-                    ? ''
-                    : html`<div
-                        style="display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border:1px solid var(--ah-warning);background:var(--ah-warning-soft);color:var(--ah-warning);border-radius:var(--ah-radius-md,10px);font-size:13px;line-height:1.4;"
-                      >
-                        <span
-                          >当前使用离线 Mock 模型，配置你的 API Key
-                          后可使用真实模型。</span
-                        >
-                        <button
-                          class="btn ghost"
-                          style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
-                          @click=${() =>
-                            this.dispatchEvent(
-                              new CustomEvent('ah-goto', {
-                                detail: 'settings',
-                                bubbles: true,
-                                composed: true
-                              })
-                            )}
-                        >
-                          去配置
-                        </button>
-                      </div>`}
-                  ${this.messages.map((m) => this.renderMessage(m))}
-                </div>`}
+            <span
+              >当前使用离线 Mock 模型，配置你的 API Key 后可使用真实模型。</span
+            >
+            <button
+              class="btn ghost"
+              style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
+              @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent('ah-goto', {
+                    detail: 'settings',
+                    bubbles: true,
+                    composed: true
+                  })
+                )}
+            >
+              去配置
+            </button>
+          </div>`}
+      ${this.messages.map((m) => this.renderMessage(m))}
+    </div>`;
+  }
+
+  render() {
+    const active = this.sessions.find((s) => s.id === this.activeId);
+    // 附件预览条：折叠态只渲染前 N 条，余量交给「+N」按钮（渲染与文案同源）。
+    const attachView = resolveAttachmentView(
+      this.attachments,
+      this.attachmentsExpanded
+    );
+    return html`
+      <!-- 整屏拖拽上传：监听挂在 render 根 <div> 上 —— 它在 shadow DOM 内，
+           铺满 :host，所以「拖到 chat 组件任意位置」都能被接住。
+           三个事件必须一起绑：只 preventDefault on dragover 才会被浏览器
+           认定为合法放置目标，否则 drop 永远不触发。 -->
+      <div
+        class="chat-root"
+        @dragenter=${this.onDragEnter}
+        @dragover=${this.onDragOver}
+        @dragleave=${this.onDragLeave}
+        @drop=${this.onDrop}
+      >
+        <div
+          class="sidebar ${this.sidebarOpen ? 'open' : ''} ${this
+            .sidebarCollapsed
+            ? 'collapsed'
+            : ''}"
+          @click=${(e: Event) => e.stopPropagation()}
+        >
+          <div class="side-head">
+            <button
+              class="collapse-btn"
+              title=${this.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}
+              @click=${() => this.toggleSidebarCollapse()}
+            >
+              ${this.sidebarCollapsed ? '›' : '‹'}
+            </button>
+            <button class="primary new-btn" @click=${() => this.newChat()}>
+              ＋ 新对话
+            </button>
+            <!-- 移动端关闭按钮：侧边栏为 fixed 抽屉，需要显式关闭入口（≤900px 显示） -->
+            <button
+              class="close-btn"
+              title="关闭会话列表"
+              aria-label="关闭会话列表"
+              @click=${() => this.toggleSidebar()}
+            >
+              ✕
+            </button>
           </div>
-          ${this.scrollCtl.showScrollDown
-            ? html`<button
-                class="scroll-down"
-                title="回到底部"
-                aria-label="回到底部"
-                @click=${() => this.scrollCtl.scrollToBottomSmooth()}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M12 5v14M19 12l-7 7-7-7" />
-                </svg>
-              </button>`
-            : nothing}
-        </div>
-
-        <div class="composer-wrap">
-          <div class="composer">
-            ${this.attachments.length > 0
-              ? html`<div class="attachments-preview">
-                  ${this.attachments.map(
-                    (f, i) => html`
-                      <div
-                        class="attach-preview-item ${f.uploadStatus === 'error'
-                          ? 'error'
-                          : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
-                        @click=${() => this.openPreview(f)}
-                      >
-                        ${f.type.startsWith('image/')
-                          ? html`<img
-                              src=${f.dataUrl}
-                              alt=${escapeHtml(f.name)}
-                              class="attach-thumb"
-                            />`
-                          : html`<span class="attach-icon"
-                              >${fileIcon(f)}</span
-                            >`}
-                        <span class="attach-name" title=${f.name}
-                          >${escapeHtml(f.name)}</span
-                        >
-                        ${f.uploadStatus === 'uploading'
-                          ? html`<span
-                              class="attach-status uploading"
-                              title="上传中"
-                              >⏳</span
-                            >`
-                          : f.uploadStatus === 'done'
-                          ? html`<span class="attach-status done" title="已上传"
-                              >✓</span
-                            >`
-                          : f.uploadStatus === 'error'
-                          ? html`<span
-                              class="attach-err"
-                              title=${f.uploadError || '上传失败'}
-                            ></span>`
-                          : nothing}
+          <div
+            class="session-list"
+            role="list"
+            aria-busy=${this.sessionsLoadingMore ? 'true' : 'false'}
+            @scroll=${this.onSessionListScroll}
+          >
+            ${this.sessions.length === 0
+              ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
+              : this.sessions.map(
+                  (s) => html`
+                    <div
+                      class="session ${s.id === this.activeId ? 'active' : ''}"
+                      role="listitem"
+                      @click=${() => this.selectSession(s.id)}
+                    >
+                      <span class="dot"></span>
+                      <span class="title">${escapeHtml(s.title)}</span>
+                      <span class="acts">
                         <button
-                          type="button"
-                          class="attach-rm"
-                          title="移除"
+                          class="icon-btn"
+                          title="重命名"
                           @click=${(e: Event) => {
-                            // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
                             e.stopPropagation();
-                            this.removeAttachment(i);
+                            this.renameSession(s.id);
                           }}
                         >
-                          ×
+                          ✎
                         </button>
-                      </div>
-                    `
-                  )}
-                </div>`
-              : nothing}
-            <!-- Slash Command：选中命令后在此固化为胶囊（hover 显示 × 移除），
-                 联想面板则绝对定位浮在整个 composer 之上。常驻渲染，
-                 以便在输入框有焦点时接管 ↑↓ / Enter / Esc 键盘导航。 -->
-            <ah-command-suggestions
-              .value=${this.input}
-              .selected=${this.cmdName}
-              @command-select=${(e: Event) =>
-                this.onCommandSelect(
-                  (e as CustomEvent<{ name: string }>).detail.name
+                        <button
+                          class="icon-btn"
+                          title="删除"
+                          @click=${(e: Event) => {
+                            e.stopPropagation();
+                            this.deleteSession(s.id);
+                          }}
+                        >
+                          🗑
+                        </button>
+                      </span>
+                    </div>
+                  `
                 )}
-              @command-remove=${() => this.onCommandRemove()}
-            ></ah-command-suggestions>
-            <div class="composer-body">
-              <textarea
-                class="composer-input"
-                rows="1"
-                placeholder=${this.cmdName
-                  ? `已选命令 /${this.cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
-                  : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'，'⇧⏎'换行"}
-                .value=${this.input}
-                ?disabled=${this.streaming[this.activeId] === true}
-                @input=${this.onInput}
-                @keydown=${this.onKey}
-              ></textarea>
+            ${this.renderSessionListFooter()}
+          </div>
+        </div>
+
+        <div class="main">
+          <div class="chat-head">
+            <button
+              class="menu-btn"
+              @click=${() => this.toggleSidebar()}
+              title="会话列表"
+              aria-label="会话列表"
+            >
+              <!-- 对话气泡 + 文字行图标：与外层外壳的导航汉堡 ☰ 区分，语义为「会话/历史列表」 -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                />
+                <path d="M8 9h8M8 13h5" />
+              </svg>
+            </button>
+            <span class="title"
+              >${active ? escapeHtml(active.title) : '新对话'}</span
+            >
+            <span class="spacer"></span>
+            <!-- 新对话：仅移动端显示（≤900px，见 chat-styles.ts .new-chat-btn），
+                 桌面端顶部已有会话列表抽屉入口，无需重复。 -->
+            <button
+              class="new-chat-btn"
+              title="新对话"
+              aria-label="新对话"
+              @click=${() => this.newChat()}
+            >
+              <!-- 气泡 + 加号：语义「新开一段对话」，与左侧会话列表按钮（气泡+文字行）区分 -->
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
+                />
+                <path d="M12 6v6M9 9h6" />
+              </svg>
+            </button>
+            <!-- 深度思考 / 联网搜索 快捷开关（激活态 accent 高亮，会话内可切换，刷新默认开） -->
+            <button
+              class="tool-toggle ${this.deepThink ? 'on' : ''}"
+              title="深度思考"
+              aria-pressed="${this.deepThink}"
+              @click=${() => {
+                this.deepThink = !this.deepThink;
+                try {
+                  localStorage.setItem(
+                    'ah_deep_think',
+                    this.deepThink ? '1' : '0'
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 18h6M10 22h4" />
+                <path
+                  d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z"
+                />
+              </svg>
+            </button>
+            <button
+              class="tool-toggle ${this.web ? 'on' : ''}"
+              title="联网搜索"
+              aria-pressed="${this.web}"
+              @click=${() => {
+                this.web = !this.web;
+                try {
+                  localStorage.setItem('ah_web', this.web ? '1' : '0');
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20" />
+                <path
+                  d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+                />
+              </svg>
+            </button>
+          </div>
+
+          <div class="scroll-region">
+            <div
+              class="scroll"
+              ${ref(this.scrollCtl.scrollRef)}
+              @scroll=${() => this.scrollCtl.onScroll()}
+            >
+              ${this.renderContentArea()}
             </div>
-            <div class="composer-footer">
-              <div class="composer-footer-left">
-                <label class="attach-btn" title="上传附件">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,.txt,.md,.csv,.json"
-                    style="display:none"
-                    @change=${this.onFileSelect}
-                  />
-                  +
-                </label>
-                <ah-agent-picker
-                  .agents=${this.agents}
-                  .value=${this.agentId}
-                  @agent-change=${(e: Event) => {
-                    const v = (e as CustomEvent<{ value: string }>).detail
-                      .value;
-                    this.agentId = v;
-                    this.persistSessionSettings({ agentId: v });
-                  }}
-                ></ah-agent-picker>
-                <ah-mode-picker
-                  .mode=${this.interactionMode}
-                  @mode-change=${(e: Event) =>
-                    this.setInteractionMode(
-                      (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail.value
-                    )}
-                ></ah-mode-picker>
+            ${this.scrollCtl.showScrollDown
+              ? html`<button
+                  class="scroll-down"
+                  title="回到底部"
+                  aria-label="回到底部"
+                  @click=${() => this.scrollCtl.scrollToBottomSmooth()}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M12 5v14M19 12l-7 7-7-7" />
+                  </svg>
+                </button>`
+              : nothing}
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer">
+              ${this.attachments.length > 0
+                ? html`<div
+                    class="attachments-preview ${this.attachmentsExpanded
+                      ? 'expanded'
+                      : 'collapsed'} ${attachView.collapsedCount > 0
+                      ? 'has-more'
+                      : ''}"
+                  >
+                    <div class="attach-strip">
+                      ${attachView.visible.map(
+                        (f, i) => html`
+                          <div
+                            class="attach-preview-item ${f.uploadStatus ===
+                            'error'
+                              ? 'error'
+                              : ''} ${this.isPreviewable(f) ? 'is-image' : ''}"
+                            @click=${() => this.openPreview(f)}
+                          >
+                            ${f.type.startsWith('image/')
+                              ? html`<img
+                                  src=${f.dataUrl}
+                                  alt=${escapeHtml(f.name)}
+                                  class="attach-thumb"
+                                />`
+                              : html`<span class="attach-icon"
+                                  >${fileIcon(f)}</span
+                                >`}
+                            <span class="attach-name" title=${f.name}
+                              >${escapeHtml(f.name)}</span
+                            >
+                            ${f.uploadStatus === 'uploading'
+                              ? html`<span
+                                  class="attach-status uploading"
+                                  title="上传中"
+                                  >⏳</span
+                                >`
+                              : f.uploadStatus === 'done'
+                              ? html`<span
+                                  class="attach-status done"
+                                  title="已上传"
+                                  >✓</span
+                                >`
+                              : f.uploadStatus === 'error'
+                              ? html`<span
+                                  class="attach-err"
+                                  title=${f.uploadError || '上传失败'}
+                                ></span>`
+                              : nothing}
+                            <button
+                              type="button"
+                              class="attach-rm"
+                              title="移除"
+                              @click=${(e: Event) => {
+                                // 阻止冒泡到外层卡片的 openPreview（点删除不应触发预览）。
+                                e.stopPropagation();
+                                this.removeAttachment(i);
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        `
+                      )}
+                    </div>
+                    ${attachView.collapsedCount > 0
+                      ? html`<button
+                          type="button"
+                          class="attach-more"
+                          title=${this.attachmentsExpanded
+                            ? '收起'
+                            : `另有 ${attachView.collapsedCount} 个附件已折叠，点击展开`}
+                          aria-expanded=${this.attachmentsExpanded
+                            ? 'true'
+                            : 'false'}
+                          @click=${() => this.toggleAttachments()}
+                        >
+                          <svg
+                            class="am-chev"
+                            viewBox="0 0 10 6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d="M1 1.5l4 4 4-4" />
+                          </svg>
+                          ${this.attachmentsExpanded
+                            ? '收起'
+                            : `+${attachView.collapsedCount}`}
+                        </button>`
+                      : nothing}
+                  </div>`
+                : nothing}
+              <!-- Slash Command：选中命令后在此固化为胶囊（hover 显示 × 移除），
+                   联想面板则绝对定位浮在整个 composer 之上。常驻渲染，
+                   以便在输入框有焦点时接管 ↑↓ / Enter / Esc 键盘导航。 -->
+              <ah-command-suggestions
+                .value=${this.input}
+                .selected=${this.cmdName}
+                @command-select=${(e: Event) =>
+                  this.onCommandSelect(
+                    (e as CustomEvent<{ name: string }>).detail.name
+                  )}
+                @command-remove=${() => this.onCommandRemove()}
+              ></ah-command-suggestions>
+              <div class="composer-body">
+                <textarea
+                  class="composer-input"
+                  rows="1"
+                  placeholder=${this.cmdName
+                    ? `已选命令 /${this.cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
+                    : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'"}
+                  .value=${this.input}
+                  ?disabled=${this.streaming[this.activeId] === true}
+                  @input=${this.onInput}
+                  @keydown=${this.onKey}
+                ></textarea>
               </div>
-              <div class="composer-footer-right">
-                <ah-model-picker
-                  .model=${this.model}
-                  .deepThink=${this.deepThink}
-                  .web=${this.web}
-                  @model-change=${(e: Event) => {
-                    const d = (
-                      e as CustomEvent<{ model: string; ctx?: number }>
-                    ).detail;
-                    this.model = d.model;
-                    // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
-                    // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
-                    // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
-                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
-                    if (typeof d.baseUrl === 'string')
-                      this.modelBaseUrl = d.baseUrl;
-                    try {
-                      localStorage.setItem('ah_model', this.model);
-                    } catch {
-                      /* ignore */
-                    }
-                    this.persistSessionSettings({ model: d.model });
-                  }}
-                  @think-change=${(e: Event) => {
-                    this.deepThink = (
-                      e as CustomEvent<{ value: boolean }>
-                    ).detail.value;
-                    try {
-                      localStorage.setItem(
-                        'ah_deep_think',
-                        this.deepThink ? '1' : '0'
-                      );
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  @web-change=${(e: Event) => {
-                    this.web = (
-                      e as CustomEvent<{ value: boolean }>
-                    ).detail.value;
-                    try {
-                      localStorage.setItem('ah_web', this.web ? '1' : '0');
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  @ctx-change=${(e: Event) => {
-                    const d = (e as CustomEvent<{ ctx: number }>).detail;
-                    // 模型目录回抛的官方上下文窗口：有则显示用量圆环，无则隐藏。
-                    this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
-                  }}
-                ></ah-model-picker>
-                ${this.serverCtxWindow <= 0
-                  ? nothing
-                  : renderCtxRing({
-                      usage: selectContextUsage({
-                        backendUsage: this.backendUsage,
-                        serverCtxWindow: this.serverCtxWindow,
-                        messages: this.messages
-                      }),
-                      showCtxUsage: this.showCtxUsage,
-                      runCumulative: this.runCumulative,
-                      onToggle: () => (this.showCtxUsage = !this.showCtxUsage),
-                      onClose: () => (this.showCtxUsage = false)
-                    })}
-                ${this.streaming[this.activeId] === true
-                  ? html`<button
-                      class="send"
-                      title="停止"
-                      @click=${() => this.runRt.stop()}
-                    >
-                      ■
-                    </button>`
-                  : html`<button
-                      class="send"
-                      title="发送"
-                      ?disabled=${!this.input.trim()}
-                      @click=${() => this.send()}
-                    >
-                      ↑
-                    </button>`}
+              <div class="composer-footer">
+                <div class="composer-footer-left">
+                  <!-- 「+」统一入口：文件 / 模式 / 专家三类能力收口到一个按钮 + 分区面板；
+                       已选的模式与专家以胶囊形式常驻在 + 右侧，点击胶囊可直达对应分区。 -->
+                  <ah-composer-plus
+                    .agents=${this.agents}
+                    .agentId=${this.agentId}
+                    .mode=${this.interactionMode}
+                    .attachments=${this.attachments}
+                    @files-select=${(e: Event) =>
+                      this.handleFiles(
+                        (e as CustomEvent<{ files: File[] }>).detail.files
+                      )}
+                    @remove-attachment=${(e: Event) =>
+                      this.removeAttachment(
+                        (e as CustomEvent<{ index: number }>).detail.index
+                      )}
+                    @mode-change=${(e: Event) =>
+                      this.setInteractionMode(
+                        (e as CustomEvent<{ value: 'qa' | 'plan' }>).detail
+                          .value
+                      )}
+                    @agent-change=${(e: Event) => {
+                      const v = (e as CustomEvent<{ value: string }>).detail
+                        .value;
+                      this.agentId = v;
+                      this.persistSessionSettings({ agentId: v });
+                    }}
+                  ></ah-composer-plus>
+                </div>
+                <div class="composer-footer-right">
+                  <ah-model-picker
+                    .model=${this.model}
+                    .deepThink=${this.deepThink}
+                    .web=${this.web}
+                    @model-change=${(e: Event) => {
+                      const d = (
+                        e as CustomEvent<{ model: string; ctx?: number }>
+                      ).detail;
+                      this.model = d.model;
+                      // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
+                      // 默认模型 / 自定义模型的窗口未知，hideCtxRing 据此隐藏用量展示。
+                      // （不再回填 defaultCtxWindow，避免 128K 兜底伪装成真实数据。）
+                      this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
+                      if (typeof d.baseUrl === 'string')
+                        this.modelBaseUrl = d.baseUrl;
+                      try {
+                        localStorage.setItem('ah_model', this.model);
+                      } catch {
+                        /* ignore */
+                      }
+                      this.persistSessionSettings({ model: d.model });
+                    }}
+                    @think-change=${(e: Event) => {
+                      this.deepThink = (
+                        e as CustomEvent<{ value: boolean }>
+                      ).detail.value;
+                      try {
+                        localStorage.setItem(
+                          'ah_deep_think',
+                          this.deepThink ? '1' : '0'
+                        );
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    @web-change=${(e: Event) => {
+                      this.web = (
+                        e as CustomEvent<{ value: boolean }>
+                      ).detail.value;
+                      try {
+                        localStorage.setItem('ah_web', this.web ? '1' : '0');
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    @ctx-change=${(e: Event) => {
+                      const d = (e as CustomEvent<{ ctx: number }>).detail;
+                      // 模型目录回抛的官方上下文窗口：有则显示用量圆环，无则隐藏。
+                      this.serverCtxWindow = d.ctx && d.ctx > 0 ? d.ctx : 0;
+                    }}
+                  ></ah-model-picker>
+                  ${this.serverCtxWindow <= 0 || this.activeId === ''
+                    ? nothing
+                    : renderCtxRing({
+                        usage: selectContextUsage({
+                          backendUsage: this.backendUsage,
+                          serverCtxWindow: this.serverCtxWindow,
+                          messages: this.messages
+                        }),
+                        showCtxUsage: this.showCtxUsage,
+                        runCumulative: this.runCumulative,
+                        onToggle: () =>
+                          (this.showCtxUsage = !this.showCtxUsage),
+                        onClose: () => (this.showCtxUsage = false)
+                      })}
+                  ${this.streaming[this.activeId] === true
+                    ? html`<button
+                        class="send"
+                        title="停止"
+                        @click=${() => this.runRt.stop()}
+                      >
+                        ■
+                      </button>`
+                    : html`<button
+                        class="send"
+                        title="发送"
+                        ?disabled=${!this.input.trim()}
+                        @click=${() => this.send()}
+                      >
+                        ↑
+                      </button>`}
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div
-        class="scrim ${this.sidebarOpen ? 'show' : ''}"
-        @click=${() => {
-          if (this._sidebarJustOpened) return;
-          this.sidebarOpen = false;
-        }}
-      ></div>
-      ${this.fullscreenEditOpen
-        ? html`<div
-            class="fullscreen-edit"
-            @contextmenu=${(e: Event) => e.stopPropagation()}
-          >
-            <div class="fe-head">
-              <span class="fe-title">编辑消息</span>
-              <!-- 收起按钮：CSS 边框画 chevron（旋转 L 形边框）。
-                   SVG 在真机上曾隐形、纯文字方案观感差 —— 盒模型渲染两者兼顾。 -->
-              <button
-                type="button"
-                class="fe-collapse"
-                title="收起"
-                aria-label="收起全屏编辑"
-                @click=${() => this.closeFullscreenEdit()}
-              >
-                <svg
-                  class="chev"
-                  viewBox="0 0 10 6"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M1 1l4 4 4-4"></path>
-                </svg>
-              </button>
-            </div>
-            <textarea
-              class="fe-input"
-              placeholder="输入消息…"
-              .value=${this.editingDraft}
-              @input=${(e: Event) =>
-                (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
-            ></textarea>
-          </div>`
-        : nothing}
-      ${this.previewFile
-        ? html`<div class="lightbox" @click=${() => this.closePreview()}>
-            <button
-              class="lightbox-close"
-              title="关闭 (Esc)"
-              @click=${(e: Event) => {
-                e.stopPropagation();
-                this.closePreview();
-              }}
+        <div
+          class="scrim ${this.sidebarOpen ? 'show' : ''}"
+          @click=${() => {
+            if (this._sidebarJustOpened) return;
+            this.sidebarOpen = false;
+          }}
+        ></div>
+        ${this.fullscreenEditOpen
+          ? html`<div
+              class="fullscreen-edit"
+              @contextmenu=${(e: Event) => e.stopPropagation()}
             >
-              ×
-            </button>
-            <img
-              src=${this.previewFile.dataUrl}
-              alt=${escapeHtml(this.previewFile.name)}
-              @click=${(e: Event) => e.stopPropagation()}
-            />
-            <div class="lightbox-info">
-              ${escapeHtml(this.previewFile.name)} ·
-              ${formatSize(this.previewFile.size)}
-            </div>
-          </div>`
-        : nothing}
-      ${this.renderTraceDrawer()}
+              <div class="fe-head">
+                <span class="fe-title">编辑消息</span>
+                <!-- 收起按钮：CSS 边框画 chevron（旋转 L 形边框）。
+                   SVG 在真机上曾隐形、纯文字方案观感差 —— 盒模型渲染两者兼顾。 -->
+                <button
+                  type="button"
+                  class="fe-collapse"
+                  title="收起"
+                  aria-label="收起全屏编辑"
+                  @click=${() => this.closeFullscreenEdit()}
+                >
+                  <svg
+                    class="chev"
+                    viewBox="0 0 10 6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M1 1l4 4 4-4"></path>
+                  </svg>
+                </button>
+              </div>
+              <textarea
+                class="fe-input"
+                placeholder="输入消息…"
+                .value=${this.editingDraft}
+                @input=${(e: Event) =>
+                  (this.editingDraft = (e.target as HTMLTextAreaElement).value)}
+              ></textarea>
+            </div>`
+          : nothing}
+        ${this.previewFile
+          ? html`<div class="lightbox" @click=${() => this.closePreview()}>
+              <button
+                class="lightbox-close"
+                title="关闭 (Esc)"
+                @click=${(e: Event) => {
+                  e.stopPropagation();
+                  this.closePreview();
+                }}
+              >
+                ×
+              </button>
+              <img
+                src=${this.previewFile.dataUrl}
+                alt=${escapeHtml(this.previewFile.name)}
+                @click=${(e: Event) => e.stopPropagation()}
+              />
+              <div class="lightbox-info">
+                ${escapeHtml(this.previewFile.name)} ·
+                ${formatSize(this.previewFile.size)}
+              </div>
+            </div>`
+          : nothing}
+        ${this.renderTraceDrawer()}
+
+        <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
+           drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->
+        ${this.dragActive
+          ? html`<div
+              class="drop-overlay ${this.attachRoom === 0 ? 'full' : ''}"
+              aria-hidden="true"
+            >
+              <div class="drop-overlay-card">
+                <div class="drop-overlay-icons">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+                    />
+                  </svg>
+                </div>
+                <!-- 已达上限时切换为「不可再添加」提示，避免用户松开后才发现加不进去。
+                   剩余额度一并展示，让「还能加几个」一目了然。 -->
+                ${this.attachRoom === 0
+                  ? html`<div class="drop-overlay-title">已达上传上限</div>
+                      <div class="drop-overlay-hint">
+                        最多支持 ${MAX_ATTACHMENTS}
+                        个文件，请先移除部分文件再添加
+                      </div>`
+                  : html`<div class="drop-overlay-title">松开即可添加文件</div>
+                      <div class="drop-overlay-hint">
+                        最多支持上传 ${MAX_ATTACHMENTS} 个文件（还可添加
+                        ${this.attachRoom} 个），支持常见文件类型
+                      </div>`}
+              </div>
+            </div>`
+          : nothing}
+      </div>
     `;
   }
 }

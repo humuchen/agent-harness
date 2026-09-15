@@ -1,6 +1,6 @@
 {
   "name": "@agent-harness/rag-service",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "External RAG (retrieval-augmented generation) service for agent-harness: ingest + vector store + retrieve over HTTP/MCP.",
   "license": "MIT",

@@ -8,6 +8,7 @@ import {
   defaultPromptFor,
   getMemoryStore,
   invalidateSessionMemory,
+  assembleAgent,
   type RunMode
 } from './runner';
 import { runVerification, type VerifyEvent } from './verification';
@@ -79,7 +80,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, securityHeaders, sendJsonError } from './http-helpers';
+import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -94,6 +95,8 @@ import {
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
   listChatSessions,
+  listChatSessionsPage,
+  parseSessionPageQuery,
   getChatSession,
   peekChatSession,
   createChatSession,
@@ -101,6 +104,7 @@ import {
   deleteChatSession,
   appendChatMessage,
   updatePlanStatus,
+  extractPlanTaskId,
   type StoredTool,
   type TraceNode,
   type ChatMessage
@@ -115,12 +119,63 @@ import { subscribeChatEvents, publishChatEvent } from './chat-bus';
 // 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
 import { subscribeReminders } from './reminder-bus';
 
+// IM 桥接（用户层入口）：飞书 / 钉钉 / 企业微信 → agent → 回发。纯业务层，core 零感知。
+import {
+  createImRegistry,
+  logImRegistry,
+  createDedupStore,
+  ImBridge,
+  deriveImIdentity,
+  type ImExecutor,
+  type ImProvider
+} from './im';
+
+// 工作空间（参考图能力链路 User → Workspace → Skill → Tool → Data → Credential → Policy）。
+import {
+  createWorkspaceStore,
+  ensureDefaultWorkspace,
+  type Workspace
+} from './workspace-store';
+
+// 合规审计查询（读侧）：谁在何时做了什么 / 谁审批了谁 / 越权拦截记录。
+import { queryAuditFile, resolveAuditFile } from './audit-query';
+import { getOrgTree } from './org';
+// P1-5 成果物归档页 / 文件库：Agent 产出物持久化 + 浏览 / 下载 / 删除。
+import { getArtifactStore } from './artifact-store';
+// P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
+import { getSkillRegistry } from './skill-registry';
+// P1-7 企业数据源适配器：数据源注册 + 连通性测试。
+import { getDataSourceRegistry } from './data-source';
+// P1-4 浏览器沙箱：受控浏览器会话生命周期管理。
+import { getSandboxManager } from './browser-sandbox';
+// P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
+import { getSupplyChainScanner } from './supply-chain';
+// P2-2 策略编辑器：RBAC 矩阵读写 + 预览。
+import { getPolicyStore, validatePolicyDoc, allActions } from './policy-editor';
+// P2-5 IM 多实例状态聚合。
+import { getImStatusAggregator } from './im-status';
+// P2-3 Plan 协同存储。
+import {
+  getPlanStore,
+  type PlanDoc,
+  type PlanDiff,
+  type PlanStore
+} from './plan-store';
+// P2-3 Plan 协同事件总线（SSE 协同）。
+import { subscribePlanEvents, publishPlanEvent } from './plan-bus';
+// P3-1 品牌位配置。
+import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
+// P2-1 手机端：设备推送令牌存储。
+import { getDeviceStore } from './device-store';
+
+
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
   type Authorizer,
   type AuthContext,
-  type Action
+  type Action,
+  type Role
 } from './authz';
 
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
@@ -180,7 +235,12 @@ import { registerOAuthRoutes } from './oauth';
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
   registerUser,
+  registerWithDerivedHex,
   loginUser,
+  loginWithDerivedHex,
+  getSalt,
+  DUMMY_SALT,
+  verifyDerivedHex,
   upsertGithubUser,
   upsertGoogleUser,
   usernameFromCookie,
@@ -190,9 +250,11 @@ import {
   isAuthSecretConfigured,
   getProfile,
   changePassword,
+  changePasswordWithDerivedHex,
   revokeAllTokens,
   requestPasswordReset,
   resetPassword,
+  resetPasswordWithDerivedHex,
   deleteUser,
   rotateTokens,
   verifyRefreshToken,
@@ -377,6 +439,16 @@ const UI_CORS_ORIGIN = (
 const MAX_BODY_BYTES = Number(
   process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
 );
+// 单会话历史镜像序列化上限（字节）；超出后 PUT /api/history 直接 413。
+// 前端据 /api/state 下发的 historyMaxBytes 主动裁剪，避免到服务器才拒绝。
+const HISTORY_MAX_BYTES = cfgNum(
+  'HISTORY_MAX_BYTES',
+  DEFAULTS.HISTORY_MAX_BYTES as number
+);
+// 文件上传：单文件上限（MB）与 /api/upload 请求体截断阈值（字节）。
+// 请求体上限比单文件限制多 2MB 余量，覆盖 multipart boundary / headers 开销。
+const UPLOAD_MAX_MB = cfgNum('UPLOAD_MAX_MB', DEFAULTS.UPLOAD_MAX_MB as number);
+const UPLOAD_BODY_MAX_BYTES = (UPLOAD_MAX_MB + 2) * 1024 * 1024;
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
 const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
@@ -691,6 +763,63 @@ function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
 
+// ── IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）──
+// 装配「已配置且启用」的平台适配器；未开 IM_ENABLED 时整体 no-op（零副作用）。
+// agent 执行经注入的 executor 复用既有 assembleAgent + harness 链路（护栏/记忆/配额/审计全生效），
+// 对话按 IM owner 落库 chat-sessions，因此在 Web 工作台「历史会话」中同样可见。
+const imRegistry = createImRegistry();
+logImRegistry(imRegistry);
+
+const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
+  const { owner, sessionId } = deriveImIdentity(msg);
+  const origin = `im:${msg.provider}`;
+  // 落库用户消息（IM 侧输入在 Web 工作台可见）。
+  appendChatMessage(sessionId, { role: 'user', content: prompt, ts: Date.now() }, owner, origin);
+  const mode: RunMode = cfg.defaultMode;
+  const assembled = await assembleAgent(
+    mode,
+    undefined, // onEvent：IM 场景无需流式回推（平台侧按整条消息回复）
+    undefined, // systemPrompt：沿用默认
+    undefined, // modelOverride
+    prompt,
+    `${owner}::${sessionId}`,
+    undefined, // signal
+    cfg.timeoutMs,
+    cfg.maxSteps
+  );
+  const final = await assembled.harness.run(prompt);
+  appendChatMessage(sessionId, { role: 'assistant', content: final, ts: Date.now() }, owner, origin);
+  return final;
+};
+
+const imBridge = new ImBridge(
+  imRegistry.config,
+  imExecutor,
+  { onAudit: (e) => auditAction(e.action, { ...e }) },
+  // 去重后端：配了 REDIS_URL 走 Redis（多副本跨实例去重），否则内存 LRU。
+  createDedupStore()
+);
+
+// 工作空间存储：WORKSPACE_FILE 配置即持久化，否则内存态（默认零行为变更）。
+const workspaceStore = createWorkspaceStore();
+
+/** 空间访问控制：admin 全可见；否则需为成员（owner 天然是成员）。 */
+function canAccessWorkspace(ws: Workspace, sub: string, role: string): boolean {
+  return role === 'admin' || ws.members.includes(sub) || ws.owner === sub;
+}
+
+/** 把查询参数解析为 epoch ms（支持纯数字时间戳或 ISO 字符串）；非法返回 undefined。 */
+function toEpochMs(v: string | null): number | undefined {
+  if (!v) return undefined;
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return n;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/** 合法审计 outcome 白名单。 */
+const AUDIT_OUTCOMES = ['success', 'failure', 'denied', 'info'] as const;
+
 // 前端统一由 frontend/webapp/dist 托管（见 webappDir）；项目不再包含 public 兜底目录。
 
 // 插件系统：loader + 双宿主（Server/Web）。在 bootstrap()（initAgentRegistry 之后）构造并赋值，
@@ -842,6 +971,35 @@ const server = createServer(
       ) {
         return;
       }
+      // ── IM 桥接入站（webhook）──
+      // 无用户登录态，安全闸门是各平台签名校验（在 ImBridge 内完成），故必须放在 guard 之前。
+      //   POST /api/im/:provider/events  —— 消息事件回调
+      //   GET  /api/im/:provider/events  —— URL 验证握手（企业微信 echostr / 飞书 challenge）
+      const imMatch = /^\/api\/im\/(feishu|dingtalk|wecom)\/events\/?$/.exec(path);
+      if (imMatch && (req.method === 'POST' || req.method === 'GET')) {
+        const provider = imMatch[1] as ImProvider;
+        let raw = '';
+        if (req.method === 'POST') {
+          try {
+            // 必须读原始字节：签名校验对字节序敏感，JSON 往返会破坏验签。
+            raw = await readRawBody(req);
+          } catch (e: any) {
+            sendJsonError(res, e?.status ?? 400, { error: e?.message ?? 'bad request' }, req);
+            return;
+          }
+        }
+        const result = await imBridge.handleInbound(provider, {
+          headers: req.headers,
+          rawBody: raw,
+          url
+        });
+        res.writeHead(result.status, {
+          'content-type': result.contentType ?? 'application/json; charset=utf-8',
+          ...securityHeaders()
+        });
+        res.end(typeof result.body === 'string' ? result.body : JSON.stringify(result.body));
+        return;
+      }
       // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
       if (req.method === 'GET' && path === '/errors') {
         const ctx = await guard(req, res, 'errors:read');
@@ -854,20 +1012,52 @@ const server = createServer(
         return;
       }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
-      // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦掉，
+      // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
+      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 PBKDF2 派生哈希，
+      // 服务器仅比对哈希，不接触明文密码。
+      if (req.method === 'GET' && path === '/api/account/login-salt') {
+        const username = (url.searchParams.get('username') || '').trim();
+        if (!username || !/^[A-Za-z0-9_]{3,32}$/.test(username)) {
+          res.writeHead(200, {
+            'content-type': 'application/json',
+            'cache-control': 'no-store'
+          });
+          res.end(JSON.stringify({ salt: DUMMY_SALT }));
+          return;
+        }
+        const result = await getSalt(username);
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store'
+        });
+        res.end(
+          JSON.stringify({ salt: result?.salt ?? DUMMY_SALT })
+        );
+        return;
+      }
       if (path === '/api/account/register' && req.method === 'POST') {
         const b = await readBody(req);
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
-        const r: AccountResult = await registerUser(u, p, b.email);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式注册 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt，而非明文密码。
+        let r: AccountResult;
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await registerWithDerivedHex(u, salt, dhx, b.email);
+        } else {
+          r = await registerUser(u, p, b.email);
+        }
         if (!r.ok) {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: r.error }));
           return;
         }
         // 注册成功顺带登录，直接下发 cookie token，减少一次往返。
-        const lr: AccountResult = await loginUser(u, p);
+        const lr: AccountResult = dhx
+          ? await loginWithDerivedHex(u, dhx)
+          : await loginUser(u, p);
         if (!lr.ok || !lr.token) {
           res.writeHead(500, { 'content-type': 'application/json' });
           res.end(
@@ -897,7 +1087,11 @@ const server = createServer(
         const b = await readBody(req);
         const u = typeof b?.username === 'string' ? b.username : '';
         const p = typeof b?.password === 'string' ? b.password : '';
-        const r: AccountResult = await loginUser(u, p);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式登录 —— 客户端本地 PBKDF2 派生后发送 derivedHex，服务器不接触明文密码。
+        const r: AccountResult = dhx
+          ? await loginWithDerivedHex(u, dhx)
+          : await loginUser(u, p);
         if (!r.ok || !r.token) {
           res.writeHead(401, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ ok: false, error: r.error ?? '登录失败' }));
@@ -946,7 +1140,15 @@ const server = createServer(
         const b = await readBody(req);
         const token = typeof b?.token === 'string' ? b.token : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const r = await resetPassword(token, newPw);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式重置 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
+        let r: { ok: boolean; error?: string };
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await resetPasswordWithDerivedHex(token, salt, dhx);
+        } else {
+          r = await resetPassword(token, newPw);
+        }
         if (!r.ok) {
           res.writeHead(400, {
             'content-type': 'application/json',
@@ -993,7 +1195,15 @@ const server = createServer(
         const b = await readBody(req);
         const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
         const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const r = await changePassword(ctx.sub, oldPw, newPw);
+        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
+        // P1-14: 质询式改密 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
+        let r: { ok: boolean; error?: string };
+        if (dhx) {
+          const salt = typeof b?.salt === 'string' ? b.salt : '';
+          r = await changePasswordWithDerivedHex(ctx.sub, oldPw, salt, dhx);
+        } else {
+          r = await changePassword(ctx.sub, oldPw, newPw);
+        }
         if (!r.ok) {
           res.writeHead(400, {
             'content-type': 'application/json',
@@ -1071,6 +1281,27 @@ const server = createServer(
         });
         res.end(JSON.stringify({ ok: true }));
         return;
+      }
+      // ── P2-1 手机端：设备推送令牌注册 ──
+      // 移动端在启动时注册 FCM/APNs 设备令牌，供服务端推送通知使用。
+      // 受 chat:read 保护（已登录用户才能注册自己的设备）。
+      if (path === '/api/devices' && req.method === 'POST') {
+        const ctx = await guard(req, res, 'chat:read');
+        if (!ctx) return;
+        const b = await readBody(req);
+        const token = typeof b?.token === 'string' ? b.token.trim() : '';
+        const platform = b?.platform === 'android' ? 'android' : 'ios';
+        if (!token) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'token is required' }));
+          return;
+        }
+        const device = await getDeviceStore().register({
+          owner: ctx.sub,
+          token,
+          platform
+        });
+        return sendJson(res, { device }, req);
       }
       // ── GitHub OAuth 授权码流（后端持有 client_secret）──
       // 1) 前端按钮跳转这里 → 302 到 GitHub 授权页（带 CSRF state，存于 HttpOnly cookie）。
@@ -1588,11 +1819,18 @@ const server = createServer(
           req
         );
       }
+      if (req.method === 'GET' && path === '/api/im/status') {
+        // IM 多实例状态聚合（健康 / 连接 / 吞吐 / 心跳 / 故障转移）。
+        // 受 policy:read 保护（复用既有权限，无需新增 Action）。
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        const snapshot = getImStatusAggregator([imBridge]).snapshot();
+        return sendJson(res, snapshot, req);
+      }
       if (req.method === 'POST' && path === '/api/features/toggle') {
         // 运行时切换特性开关，受 policy:write 保护。
         const ctx = await guard(req, res, 'features:write');
-        if (!ctx) return;
-        const b = await readBody(req);
+        if (!ctx) return;        const b = await readBody(req);
         const key = typeof b?.key === 'string' ? b.key : '';
         const enabled = typeof b?.enabled === 'boolean' ? b.enabled : undefined;
         if (!key) {
@@ -1611,7 +1849,206 @@ const server = createServer(
           return res.end(JSON.stringify({ error: e.message }));
         }
       }
-      // 只读 GET 端点集中准入：鉴权 + 限流 + 角色授权（审批对该类动作不适用）。
+      // ── P2-2 策略编辑器：RBAC 矩阵读写 + 预览 ──
+      if (req.method === 'GET' && path === '/api/policy') {
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        const store = getPolicyStore();
+        const doc = await store.read();
+        return sendJson(
+          res,
+          { matrix: doc.matrix, actions: allActions() },
+          req
+        );
+      }
+      if (req.method === 'GET' && path === '/api/policy/preview') {
+        const ctx = await guard(req, res, 'policy:read');
+        if (!ctx) return;
+        const role = url.searchParams.get('role');
+        const action = url.searchParams.get('action');
+        if (
+          !role ||
+          !action ||
+          !['admin', 'operator', 'viewer'].includes(role) ||
+          !(allActions() as readonly string[]).includes(action)
+        ) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'role and action are required and must be valid' }));
+        }
+        const allowed = await getPolicyStore().preview(
+          role as Role,
+          action as Action
+        );
+        return sendJson(res, { role, action, allowed }, req);
+      }
+      if (req.method === 'POST' && path === '/api/policy') {
+        const ctx = await guard(req, res, 'policy:write');
+        if (!ctx) return;
+        const b = await readBody(req);
+        const matrix = b?.matrix as Record<string, string[]> | undefined;
+        if (!matrix || typeof matrix !== 'object') {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'matrix is required' }));
+        }
+        // 校验 Action 合法性
+        const doc: { matrix: Record<string, Action[]> } = { matrix: {} };
+        for (const role of ['admin', 'operator', 'viewer'] as Role[]) {
+          const acts = matrix[role] ?? [];
+          doc.matrix[role] = acts.map(String) as Action[];
+        }
+        const err = validatePolicyDoc(doc);
+        if (err) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: err }));
+        }
+        try {
+          await getPolicyStore().write(doc);
+          auditAction('policy.write', { role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { ok: true }, req);
+        } catch (e: any) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: e?.message ?? 'write failed' }));
+        }
+      }
+      // ── P2-3 Plan 协同：计划文档 CRUD + 版本 diff + SSE 协同 ──
+      if (path === '/api/plans') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const plans = await getPlanStore().list(ctx.sub);
+          return sendJson(res, { items: plans }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const plan: PlanDoc = {
+            id: b?.id ?? b?.plan?.id ?? '',
+            title: b?.title ?? b?.plan?.title ?? '',
+            nodes: b?.nodes ?? b?.plan?.nodes ?? [],
+            version: b?.version ?? 0,
+            updatedBy: ctx.sub,
+            updatedAt: b?.updatedAt ?? new Date().toISOString(),
+            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
+          };
+          if (!plan.id || !plan.title) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'id and title are required' }));
+          }
+          // 校验节点
+          for (const n of plan.nodes) {
+            if (!n.id || !n.title) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              return res.end(JSON.stringify({ error: 'each node needs id and title' }));
+            }
+          }
+          const saved = await getPlanStore().save(plan);
+          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
+          auditAction('plan.save', { planId: saved.id, version: saved.version, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { item: saved }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'method not allowed' }));
+      }
+      if (path.startsWith('/api/plans/')) {
+        const rest = decodeURIComponent(path.slice('/api/plans/'.length));
+        // diff 接口
+        const diffMatch = rest.match(/^([^/]+)\/diff$/);
+        if (diffMatch && req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const otherId = url.searchParams.get('other');
+          if (!otherId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'other param required' }));
+          }
+          try {
+            const result = await getPlanStore().diff(diffMatch[1]!, otherId);
+            return sendJson(res, result, req);
+          } catch (e: any) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: e?.message ?? 'plan not found' }));
+          }
+        }
+        // 单文档 CRUD
+        const id = rest.replace(/\/.*$/, '');
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'plan:read');
+          if (!ctx) return;
+          const plan = await getPlanStore().read(id);
+          if (!plan) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'plan not found' }));
+          }
+          // owner 校验：仅更新人可读（除非 admin）
+          if (ctx.role !== 'admin' && plan.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          return sendJson(res, { item: plan }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const plan: PlanDoc = {
+            id,
+            title: b?.title ?? '',
+            nodes: b?.nodes ?? [],
+            version: b?.version ?? 0,
+            updatedBy: ctx.sub,
+            updatedAt: b?.updatedAt ?? new Date().toISOString(),
+            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
+          };
+          // owner 校验
+          const existing = await getPlanStore().read(id);
+          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          const saved = await getPlanStore().save(plan);
+          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
+          auditAction('plan.save', { planId: id, version: saved.version, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { item: saved }, req);
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'plan:write');
+          if (!ctx) return;
+          const existing = await getPlanStore().read(id);
+          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
+            res.writeHead(403, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'forbidden' }));
+          }
+          const ok = await getPlanStore().remove(id);
+          publishPlanEvent(id, ctx.sub, { type: 'plan:update', patch: { removed: true } });
+          auditAction('plan.delete', { planId: id, role: ctx.role, sub: ctx.sub });
+          return sendJson(res, { ok }, req);
+        }
+      }
+      // ── P2-3 Plan 协同 SSE 频道 ──
+      if (req.method === 'GET' && path.startsWith('/api/plans/') && path.endsWith('/events')) {
+        const ctx = await guard(req, res, 'plan:read');
+        if (!ctx) return;
+        if (!sseConnectionLock.acquire()) {
+          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
+          return;
+        }
+        const planId = decodeURIComponent(path.slice('/api/plans/'.length, -'/events'.length));
+        const send = startSse(res, req);
+        send({ type: 'plan:ready', planId, owner: ctx.sub });
+        const unsub = subscribePlanEvents(planId, ctx.sub, (e) => {
+          try { send(e); } catch { /* 连接已断 */ }
+        });
+        res.on('close', () => {
+          try { unsub(); } catch { /* 重复订阅安全 */ }
+          sseConnectionLock.release();
+        });
+        return;
+      }
+      // ── P3-1 品牌位：公开无需鉴权（属展示信息） ──
+      if (req.method === 'GET' && path === '/api/brand') {
+        return sendJson(res, getBrandConfig(), req);
+      }
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
       const readAct = readAction(path);
       if (readAct && req.method === 'GET') {
@@ -1746,7 +2183,9 @@ const server = createServer(
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
       if (path.startsWith('/api/workflows/')) {
-        const ctx = await guard(req, res, 'workflow:read');
+        const isResume = req.method === 'POST' && path.endsWith('/resume');
+        // POST /resume 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(req, res, isResume ? 'workflow:run' : 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
@@ -1772,9 +2211,12 @@ const server = createServer(
               res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
               return;
             }
-            // 检查是否可续跑：无 steps 或全部 completed 则无需续跑
-            const steps = (existing as any).steps ?? [];
-            const unfinished = steps.filter((s: any) => s.state !== 'completed' && s.state !== 'skipped');
+            // 检查是否可续跑：steps 是 Record<stepId, StepRun>（非数组）；
+            // 终态 = done / skipped / compensated，存在任何非终态 step 即可续跑。
+            const stepValues = Object.values((existing as any).steps ?? {}) as Array<{ state?: string }>;
+            const unfinished = stepValues.filter(
+              (s) => s.state !== 'done' && s.state !== 'skipped' && s.state !== 'compensated',
+            );
             if (unfinished.length === 0) {
               res.writeHead(400, { 'content-type': 'application/json' });
               res.end(JSON.stringify({ error: 'no unfinished steps to resume' }));
@@ -1790,10 +2232,10 @@ const server = createServer(
               onEvent: (e: unknown) => { if (!closed) send(e); },
             });
             const run = await engine.resume(workflowId);
-            if (!closed) send({ type: '_wf_done', run });
+            if (!closed) send({ type: '_wf_done', workflowId, run });
             if (!closed) res.end();
           } catch (e: any) {
-            if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
             if (!closed) res.end();
           }
           return;
@@ -2004,6 +2446,344 @@ const server = createServer(
         res.end(JSON.stringify({ error: 'method not allowed' }));
         return;
       }
+      // ── 工作空间（参考图能力链路：User → Workspace → Skill → Tool → Data → Credential → Policy）──
+      // 纯业务层：把「一组会话 / 可用技能 / 成员 / 配额」收拢为显式资源；core 零感知。
+      if (path === '/api/workspaces') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'workspace:read');
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required' }));
+          }
+          // 首次访问自动创建「默认空间」，保证开箱即用（幂等：已有空间则原样返回）。
+          const spaces = ensureDefaultWorkspace(workspaceStore, ctx.sub);
+          return sendJson(res, { workspaces: spaces, store: workspaceStore.kind }, req);
+        }
+        if (req.method === 'POST') {
+          const body = await readBody(req);
+          const ctx = await guard(req, res, 'workspace:write', body);
+          if (!ctx) return;
+          if (ctx.sub === 'anon') {
+            res.writeHead(401, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'authentication required' }));
+          }
+          const name = typeof body?.name === 'string' ? body.name.trim() : '';
+          if (!name) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'missing name' }));
+          }
+          const ws = workspaceStore.create({
+            name,
+            owner: ctx.sub,
+            members: Array.isArray(body?.members) ? body.members.map(String) : undefined,
+            skills: Array.isArray(body?.skills) ? body.skills.map(String) : undefined,
+            quota: body?.quota && typeof body.quota === 'object' ? body.quota : undefined,
+            tenantId: ctx.tenantId ?? undefined
+          });
+          auditAction('workspace.create', { id: ws.id, sub: ctx.sub });
+          return sendJson(res, { workspace: ws }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/workspaces/')) {
+        const rest = path.slice('/api/workspaces/'.length).replace(/\/$/, '');
+        // 子资源：/api/workspaces/:id/sessions —— 该空间下的会话列表。
+        const sessionsMatch = /^([^/]+)\/sessions$/.exec(rest);
+        if (sessionsMatch) {
+          const ctx = await guard(req, res, 'workspace:read');
+          if (!ctx) return;
+          const ws = workspaceStore.get(decodeURIComponent(sessionsMatch[1] ?? ''));
+          if (!ws) return sendJson(res, { error: 'not found' }, req);
+          if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
+            return sendJson(res, { error: 'forbidden' }, req);
+          }
+          const sessions = listChatSessions(ctx.sub).filter((s) => s.workspaceId === ws.id);
+          return sendJson(res, { workspaceId: ws.id, sessions }, req);
+        }
+        const wsId = decodeURIComponent(rest);
+        const action: Action = req.method === 'GET' ? 'workspace:read' : 'workspace:write';
+        const ctx = await guard(req, res, action);
+        if (!ctx) return;
+        const ws = workspaceStore.get(wsId);
+        if (!ws) return sendJson(res, { error: 'not found' }, req);
+        if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
+          return sendJson(res, { error: 'forbidden' }, req);
+        }
+        if (req.method === 'GET') return sendJson(res, { workspace: ws }, req);
+        if (req.method === 'PATCH' || req.method === 'PUT') {
+          const body = await readBody(req);
+          const updated = workspaceStore.update(wsId, {
+            ...(body?.name != null ? { name: String(body.name) } : {}),
+            ...(Array.isArray(body?.members) ? { members: body.members.map(String) } : {}),
+            ...(Array.isArray(body?.skills) ? { skills: body.skills.map(String) } : {}),
+            ...(body?.quota !== undefined ? { quota: body.quota } : {})
+          });
+          auditAction('workspace.update', { id: wsId, sub: ctx.sub });
+          return sendJson(res, { workspace: updated }, req);
+        }
+        if (req.method === 'DELETE') {
+          // 仅 owner 或 admin 可删除空间。
+          if (ctx.role !== 'admin' && ws.owner !== ctx.sub) {
+            return sendJson(res, { error: 'forbidden: only owner or admin can delete' }, req);
+          }
+          workspaceStore.remove(wsId);
+          auditAction('workspace.delete', { id: wsId, sub: ctx.sub });
+          return sendJson(res, { ok: true }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      // ── 合规审计查询（谁在何时做了什么 / 谁审批了谁 / 越权拦截记录）──
+      // 数据源为 AUDIT_LOG 落盘的 append-only JSONL（写入侧早已就绪，本路由补齐读取侧）。
+      if (req.method === 'GET' && path === '/api/audit') {
+        const ctx = await guard(req, res, 'audit:read');
+        if (!ctx) return;
+        const outcomeRaw = url.searchParams.get('outcome') ?? '';
+        const outcome = (AUDIT_OUTCOMES as readonly string[]).includes(outcomeRaw)
+          ? (outcomeRaw as 'success' | 'failure' | 'denied' | 'info')
+          : undefined;
+        const result = await queryAuditFile(resolveAuditFile(), {
+          limit: Number(url.searchParams.get('limit')) || undefined,
+          offset: Number(url.searchParams.get('offset')) || undefined,
+          actor: url.searchParams.get('actor') || undefined,
+          action: url.searchParams.get('action') || undefined,
+          outcome,
+          since: toEpochMs(url.searchParams.get('since')),
+          until: toEpochMs(url.searchParams.get('until')),
+          q: url.searchParams.get('q') || undefined
+        });
+        return sendJson(res, result, req);
+      }
+      // ── 企业组织树（P1-3）：部门 / 成员层级，受 org:read 保护 ──
+      if (req.method === 'GET' && path === '/api/org') {
+        const ctx = await guard(req, res, 'org:read');
+        if (!ctx) return;
+        const tree = await getOrgTree();
+        return sendJson(res, tree, req);
+      }
+
+      // ── P1-5 成果物归档页 / 文件库（受 artifact:read / artifact:write 保护）──
+      // 列出 / 详情 / 下载 / 删除；POST 以 base64 内容落盘（便于通过 JSON 走现有网关）。
+      if (path === '/api/artifacts') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'artifact:read');
+          if (!ctx) return;
+          const items = await getArtifactStore().list();
+          return sendJson(res, { items }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'artifact:write');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const name = typeof b?.name === 'string' ? b.name.trim() : '';
+          const contentB64 = typeof b?.contentBase64 === 'string' ? b.contentBase64 : '';
+          if (!name || !contentB64) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'name and contentBase64 are required' }));
+            return;
+          }
+          const meta = await getArtifactStore().save({
+            name,
+            kind: typeof b?.kind === 'string' && b.kind ? b.kind : 'other',
+            mimeType:
+              typeof b?.mimeType === 'string' && b.mimeType
+                ? b.mimeType
+                : 'application/octet-stream',
+            content: Buffer.from(contentB64, 'base64'),
+            owner: ctx.sub,
+            runId: typeof b?.runId === 'string' ? b.runId : undefined,
+            note: typeof b?.note === 'string' ? b.note : undefined
+          });
+          return sendJson(res, { item: meta }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/artifacts/')) {
+        const id = decodeURIComponent(path.slice('/api/artifacts/'.length).replace(/\/.*$/, ''));
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'artifact:read');
+          if (!ctx) return;
+          const dl = url.searchParams.get('download') === '1';
+          const meta = await getArtifactStore().get(id);
+          if (!meta) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'artifact not found' }));
+            return;
+          }
+          if (!dl) return sendJson(res, { item: meta }, req);
+          const buf = await getArtifactStore().readContent(id);
+          if (!buf) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'artifact content not found' }));
+            return;
+          }
+          res.writeHead(200, {
+            'content-type': meta.mimeType,
+            'content-disposition': `attachment; filename="${encodeURIComponent(meta.name)}"`,
+            'content-length': buf.length
+          });
+          res.end(buf);
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'artifact:write');
+          if (!ctx) return;
+          const ok = await getArtifactStore().remove(id);
+          return sendJson(res, { ok }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-6 企业 Skill 管理（受 skill:read / skill:manage 保护）──
+      if (path === '/api/skills') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'skill:read');
+          if (!ctx) return;
+          const items = await getSkillRegistry().list();
+          return sendJson(res, { items }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/skills/')) {
+        const m = path.slice('/api/skills/'.length).match(/^([^/]+)\/(enable|disable)$/);
+        if (m && req.method === 'POST') {
+          const ctx = await guard(req, res, 'skill:manage');
+          if (!ctx) return;
+          const sid = m[1];
+          const enable = m[2] === 'enable';
+          if (!sid || !m[2]) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid skill path' }));
+            return;
+          }
+          const def = await getSkillRegistry().setEnabled(sid, enable);
+          if (!def) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'skill not found' }));
+            return;
+          }
+          return sendJson(res, { item: def }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-7 企业数据源适配器（受 datasource:read / datasource:manage 保护）──
+      // 连通性测试为只读校验，归 datasource:read；配置变更走 datasource:manage（后续扩展）。
+      if (path === '/api/datasources') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'datasource:read');
+          if (!ctx) return;
+          const items = await getDataSourceRegistry().list();
+          return sendJson(res, { items }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/datasources/')) {
+        const tm = path.slice('/api/datasources/'.length).match(/^([^/]+)\/test$/);
+        if (tm && req.method === 'POST') {
+          const ctx = await guard(req, res, 'datasource:read');
+          if (!ctx) return;
+          const dsid = tm[1];
+          if (!dsid) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid datasource path' }));
+            return;
+          }
+          const result = await getDataSourceRegistry().test(dsid);
+          if (!result) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'datasource not found' }));
+            return;
+          }
+          return sendJson(res, { result }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-4 浏览器沙箱（受 sandbox:use 保护）──
+      if (path === '/api/sandbox/sessions') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          return sendJson(res, { items: getSandboxManager().list() }, req);
+        }
+        if (req.method === 'POST') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const b = await readBody(req);
+          const s = await getSandboxManager().create({
+            targetUrl: typeof b?.targetUrl === 'string' ? b.targetUrl : undefined,
+            owner: ctx.sub
+          });
+          return sendJson(res, { item: s }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path.startsWith('/api/sandbox/sessions/')) {
+        const id = decodeURIComponent(
+          path.slice('/api/sandbox/sessions/'.length).replace(/\/.*$/, '')
+        );
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const s = getSandboxManager().get(id);
+          if (!s) {
+            res.writeHead(404, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'session not found' }));
+            return;
+          }
+          return sendJson(res, { item: s }, req);
+        }
+        if (req.method === 'DELETE') {
+          const ctx = await guard(req, res, 'sandbox:use');
+          if (!ctx) return;
+          const ok = getSandboxManager().destroy(id);
+          return sendJson(res, { ok }, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+
+      // ── P1-8 CI 供应链（受 supplychain:read 保护）──
+      if (path === '/api/supply-chain/report') {
+        if (req.method === 'GET') {
+          const ctx = await guard(req, res, 'supplychain:read');
+          if (!ctx) return;
+          const repoRoot = resolve(__dirname, '..', '..', '..');
+          const report = await getSupplyChainScanner(repoRoot).scan();
+          return sendJson(res, report, req);
+        }
+        res.writeHead(405, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'method not allowed' }));
+        return;
+      }
+      if (path === '/api/supply-chain/scan' && req.method === 'POST') {
+        const ctx = await guard(req, res, 'supplychain:read');
+        if (!ctx) return;
+        const repoRoot = resolve(__dirname, '..', '..', '..');
+        const report = await getSupplyChainScanner(repoRoot).scan();
+        return sendJson(res, report, req);
+      }
+
       if (req.method === 'GET' && path === '/api/env') {
         return sendJson(res, { envs: envPipeline.list() }, req);
       }
@@ -2109,7 +2889,17 @@ const server = createServer(
             })
           );
         }
-        return sendJson(res, { sessions: listChatSessions(ctx.sub) }, req);
+        // 分页（左侧历史列表滚动加载）：limit/offset 缺省 → 返回全量，
+        // 与改造前契约一致（老客户端不传参时行为不变）；响应额外带 total/hasMore。
+        const { limit, offset } = parseSessionPageQuery({
+          limit: url.searchParams.get('limit'),
+          offset: url.searchParams.get('offset')
+        });
+        return sendJson(
+          res,
+          listChatSessionsPage(ctx.sub, { limit, offset }),
+          req
+        );
       }
       if (req.method === 'POST' && path === '/api/chat/sessions') {
         const b = await readBody(req);
@@ -2245,13 +3035,16 @@ const server = createServer(
         const send = startSse(res, req);
         // 连接建立即时确认（带 owner，便于前端核对归属）。
         send({ type: 'events:ready', owner: ctx.sub });
+        // 支持 role 参数：role=service 订阅客服业务提醒，默认 role=user 订阅备忘提醒
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const role = url.searchParams.get('role') === 'service' ? 'service' : 'user';
         const unsub = subscribeReminders(ctx.sub, (e) => {
           try {
             send(e);
           } catch {
             /* 连接已断，unsub 在 close 时执行 */
           }
-        });
+        }, role);
         res.on('close', () => {
           try {
             unsub();
@@ -2269,8 +3062,6 @@ const server = createServer(
       // 注意按重写后的 /api/history 匹配（/api/v1 -> /api 已在路由前统一重写）。
       {
         const HISTORY_PREFIX = '/api/history/';
-        // 单会话镜像的序列化体积上限：超过即拒绝（防止单行撑爆 SQLite / 内存）。
-        const HISTORY_MAX_BYTES = 512 * 1024;
         const validSid = (sid: string): boolean =>
           !!sid && sid.length <= 128 && /^[A-Za-z0-9_\-]+$/.test(sid);
 
@@ -2608,9 +3399,9 @@ const server = createServer(
           let total = 0;
           for await (const c of req) {
             total += (c as Buffer).length;
-            if (total > 20 * 1024 * 1024) {
+            if (total > UPLOAD_BODY_MAX_BYTES) {
               const err: any = new Error(
-                'request body too large (20 MB limit)'
+                `request body too large (${UPLOAD_MAX_MB + 2} MB limit)`
               );
               err.status = 413;
               throw err;
@@ -2733,6 +3524,8 @@ async function buildState(req: IncomingMessage) {
     harnessKey: !!process.env.HARNESS_API_KEY,
     harnessDryRun: !process.env.HARNESS_API_KEY,
     model: resolveOpenRouterConfig().model,
+    // 历史镜像体积上限随 state 下发：前端据此在 saveThread 前主动裁剪，避免 413 回来的再裁剪。
+    historyMaxBytes: HISTORY_MAX_BYTES,
     // 上下文窗口上限随 state 下发：前端「上下文用量」粗估回退用它做分母，
     // 与 llm:usage 精确路径共用 contextWindowFor 单一事实源（如 ox-alpha → 1M）。
     contextWindow: contextWindowFor(resolveOpenRouterConfig().model),
@@ -3283,10 +4076,11 @@ async function handleRun(
       }
       case 'guardrail:blocked': {
         traceEnsureRoot();
+        const phaseLabel = ev.phase === 'output' ? '输出拦截' : ev.phase === 'input' ? '输入拦截' : ev.phase ?? '';
         traceNode(
           traceRoot!,
           'guardrail',
-          `护栏拦截 · ${ev.phase ?? ''}`,
+          `护栏拦截${phaseLabel ? ' · ' + phaseLabel : ''}`,
           'error',
           {
             detail: String(ev.reason ?? '')
@@ -3475,10 +4269,9 @@ async function handleRun(
           body.origin || ''
         );
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
-        // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
-        const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
-        if (!isPlanPropose && taskMatch) {
-          const taskId = taskMatch[1];
+        // input 是「【计划任务 <id>】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
+        const taskId = extractPlanTaskId(ev.input);
+        if (!isPlanPropose && taskId) {
           updatePlanStatus(
             chatSessionId,
             (prev) => ({
@@ -3888,11 +4681,11 @@ async function handleWorkflow(
   engine
     .run(def, body.input)
     .then((run: any) => {
-      if (!closed) send({ type: '_wf_done', run });
+      if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();
     })
     .catch((e: any) => {
-      if (!closed) send({ type: 'wf:error', message: e?.message ?? String(e) });
+      if (!closed) send({ type: 'wf:error', workflowId: def.id, message: e?.message ?? String(e) });
       if (!closed) res.end();
     });
   return;

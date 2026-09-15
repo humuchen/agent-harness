@@ -348,4 +348,89 @@ describe('医美客资插件 E2E', () => {
     assert.strictEqual(direct.externalId, 'HIS20260904A');
     assert.strictEqual(direct.externalStatus, 'confirmed');
   });
+
+  test('多Agent编排工作流：项目咨询 → 价格评估 → 预约', async () => {
+    const { DagEngine, getAgentRegistry } = require('@agent-harness/core');
+    const sched = require('../dist/repo/schedule-repo');
+    const schedSvc = require('../dist/services/schedule-service');
+    const leadSvc = require('../dist/services/lead-service');
+    const lead = require('../dist/repo/lead-repo');
+
+    // 1. 导入号源
+    await sched.upsertClinic({
+      clinicId: 'wf_c1',
+      name: '工作流测试院区',
+      city: '苏州',
+      active: true
+    });
+    await sched.upsertSlot({
+      slotId: 'wf_s1',
+      clinicId: 'wf_c1',
+      date: '2026-09-20',
+      time: '14:30',
+      capacity: 2
+    });
+
+    // 2. 预先创建客资（确保预约步骤能成功）
+    await leadSvc.qualifyLead({
+      leadId: 'lead_workflow_001',
+      channel: '抖音',
+      project: '双眼皮',
+      city: '苏州',
+      grade: 'A',
+      intent: '咨询双眼皮'
+    });
+    await leadSvc.captureLead({
+      leadId: 'lead_workflow_001',
+      consent: true,
+      wechat: 'wx_workflow_test'
+    });
+
+    // 3. 创建 workflow executor（mock LLM，不调用真实 API）
+    // 直接传递 AgentCard（而非字符串 agentRef），避免 registry 解析
+    const executor = async (step, input, ctx) => {
+      // step.agentRef 可以是字符串或 AgentCard；这里使用字符串执行逻辑
+      const agentId = typeof step.agentRef === 'string' ? step.agentRef : step.agentRef.id;
+      switch (agentId) {
+        case 'project-advisor':
+          return Promise.resolve(`项目咨询结果: 客户咨询 "${input}" → 双眼皮项目适合，恢复期约7天，价格区间3800-8800元`);
+        case 'pricing-agent':
+          return Promise.resolve(`价格评估结果: 双眼皮手术价格区间为3800-8800元起，具体费用因个体差异而异`);
+        case 'booking-agent':
+          const booking = await schedSvc.bookConsultation({
+            leadId: 'lead_workflow_001',
+            clinic: '工作流测试院区',
+            date: '2026-09-20',
+            time: '14:30'
+          });
+          return Promise.resolve(JSON.stringify({ ok: true, ...booking, clinic: '工作流测试院区', date: '2026-09-20', time: '14:30' }));
+        default:
+          return Promise.resolve(`未知Agent: ${agentId}`);
+      }
+    };
+
+    // 4. 运行工作流（直接使用 AgentCard 对象，避免 registry 解析）
+    const engine = new DagEngine({ executor });
+    const run = await engine.run({
+      id: 'consultation-booking-test',
+      steps: [
+        { id: 'analyze-project', agentRef: { id: 'project-advisor', name: '项目咨询', domain: 'medical-aesthetics', capabilities: [], transport: 'local', version: '1.0.0', health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 } }, inputMapping: { requirement: 'input' } },
+        { id: 'price-eval', agentRef: { id: 'pricing-agent', name: '价格评估', domain: 'medical-aesthetics', capabilities: [], transport: 'local', version: '1.0.0', health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 } }, dependsOn: ['analyze-project'], inputMapping: { projectResult: 'steps.analyze-project.output' } },
+        { id: 'book-consultation', agentRef: { id: 'booking-agent', name: '预约管理', domain: 'medical-aesthetics', capabilities: [], transport: 'local', version: '1.0.0', health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 } }, dependsOn: ['analyze-project', 'price-eval'], inputMapping: { projectResult: 'steps.analyze-project.output', priceResult: 'steps.price-eval.output' } },
+      ]
+    }, '客户问：我想做双眼皮，大概多少钱？苏州有号吗？', { tenantId: 'test' });
+
+    // 5. 验证工作流执行结果
+    assert.strictEqual(run.state, 'done', `工作流状态应为 done，实际为 ${run.state}, 错误: ${run.error}`);
+    assert.ok(run.steps['analyze-project'].output.includes('双眼皮'), '项目咨询应返回双眼皮相关结果');
+    assert.ok(run.steps['price-eval'].output.includes('3800-8800'), '价格评估应返回价格区间');
+    const bookingOutput = JSON.parse(run.steps['book-consultation'].output);
+    assert.ok(bookingOutput.ok, '预约应成功');
+
+    // 6. 验证客资状态已更新为 booked
+    const leadRecord = await lead.getLead('lead_workflow_001');
+    assert.ok(leadRecord, '客资应被录入');
+    assert.ok(leadRecord.project?.includes('双眼皮'), '项目应为双眼皮');
+    assert.strictEqual(leadRecord.stage, 'booked', `客资阶段应为 booked，实际为 ${leadRecord.stage}`);
+  });
 });

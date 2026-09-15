@@ -3,7 +3,7 @@ import { computeStats, listLeads, assignConsultant } from '../repo/lead-repo';
 import { saveInbound, markInboundState } from '../repo/inbound-repo';
 import { outboxSnapshot } from '../services/outbox-worker';
 import { importProjects, listKnowledge } from '../services/kb-service';
-import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment } from '../repo/schedule-repo';
+import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment, markArrived, markCompleted, listAppointmentsByDate } from '../repo/schedule-repo';
 import { markCrmSync } from '../repo/lead-repo';
 import { getConfig, configSummary } from '../config';
 import { dbHealth } from '../infra/db';
@@ -11,6 +11,8 @@ import { verifyWebhook, verifyAdminToken } from '../infra/signature';
 import { toMaError } from '../infra/errors';
 import { getPluginContext } from '../runtime';
 import { makeTaskId } from '@agent-harness/core';
+import { runAnalyticsQuery } from '../analytics/analytics-service';
+import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -339,9 +341,121 @@ const callback: PluginRouteHandler = async (req, res) => {
   }
 };
 
+/** GET /analytics —— 运营分析查询（真实 SQL 聚合）。 */
+const analytics: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const p = url.searchParams;
+  const q: AnalyticsQuery = {
+    type: (p.get('type') as AnalyticsQuery['type']) ?? 'full',
+    startTime: p.get('startTime') ? Number(p.get('startTime')) : undefined,
+    endTime: p.get('endTime') ? Number(p.get('endTime')) : undefined,
+    channel: p.get('channel') ?? undefined,
+    clinicId: p.get('clinicId') ?? undefined,
+    project: p.get('project') ?? undefined,
+    period: (p.get('period') as AnalyticsQuery['period']) ?? undefined,
+    daysThreshold: p.get('daysThreshold') ? Number(p.get('daysThreshold')) : undefined,
+  };
+  try {
+    const result = await runAnalyticsQuery(q);
+    send(res, 200, result);
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /analytics/export —— 导出 CSV。 */
+const analyticsExport: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  const { json } = await readRawBody(req);
+  const q = json as unknown as AnalyticsQuery;
+  try {
+    const result = await runAnalyticsQuery(q);
+    const csv = analyticsToCsv(result);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="analytics_${Date.now()}.csv"`);
+    res.end(csv);
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** 将分析结果转换为 CSV 字符串。 */
+function analyticsToCsv(result: AnalyticsResult): string {
+  const rows: string[] = ['section,fields,values'];
+  const data = result.data as unknown;
+  if (Array.isArray(data)) {
+    for (const item of data as Record<string, unknown>[]) {
+      const keys = Object.keys(item).join('|');
+      const vals = Object.values(item).join('|');
+      rows.push(`row,${keys},${vals}`);
+    }
+  } else if (data && typeof data === 'object') {
+    for (const [section, arr] of Object.entries(data as Record<string, unknown[]>)) {
+      for (const item of arr as Record<string, unknown>[]) {
+        const keys = Object.keys(item).join('|');
+        const vals = Object.values(item).join('|');
+        rows.push(`${section},${keys},${vals}`);
+      }
+    }
+  }
+  return rows.join('\n');
+}
+
+/** POST /appointments/mark —— 标记预约到院/完成（表单提交）。 */
+const markAppointment: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const { json } = await readRawBody(req);
+  const appointmentId = String(json.appointmentId ?? '');
+  const action = String(json.action ?? '');
+  if (!appointmentId || !action) return send(res, 400, { error: 'appointmentId + action required' });
+  try {
+    if (action === 'arrived') {
+      const ok = await markArrived(appointmentId);
+      send(res, 200, { ok, appointmentId, action: 'arrived' });
+    } else if (action === 'completed') {
+      const ok = await markCompleted(appointmentId);
+      send(res, 200, { ok, appointmentId, action: 'completed' });
+    } else {
+      send(res, 400, { error: 'action must be "arrived" or "completed"' });
+    }
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /appointments —— 按日期查询当天预约单（用于到院/完成打卡）。 */
+const listAppointments: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const date = url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10);
+  try {
+    const appts = await listAppointmentsByDate(date);
+    send(res, 200, { date, count: appts.length, appointments: appts });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /**
- * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敛到统一前缀
- * /api/plugins/medical-aesthetics-lead/*。
+ * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敮到统一前缀
+ * /api/plugins/medical-aesthetics-lead/*.
  */
 export const leadServerExtension: ServerExtension = {
   id: 'medical-aesthetics-lead',
@@ -360,5 +474,9 @@ export const leadServerExtension: ServerExtension = {
     '/slots/import': slotImport,
     '/webhook': webhook,
     '/callback': callback,
+    '/analytics': analytics,
+    '/analytics/export': analyticsExport,
+    '/appointments': listAppointments,
+    '/appointments/mark': markAppointment,
   },
 };

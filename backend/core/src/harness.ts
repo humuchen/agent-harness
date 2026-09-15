@@ -27,7 +27,7 @@ import {
 } from './telemetry';
 import { estimateCostDetailed } from './llm/pricing';
 import { getTokenCacheStats } from './llm/token-cache-metrics';
-import { estimateTokens, estimateToolsTokens } from './llm/token-estimator';
+import { estimateMessageTokens, estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 import { hooks } from './hooks';
 
@@ -90,6 +90,8 @@ export type HarnessEvent =
       step: number;
       content: string;
       toolCalls: ToolCall[];
+      /** 是否为「与模型连接空闲超时」截断的部分响应（中段断流兜底）。前端据此显示「生成中断」提示。 */
+      partial?: boolean;
     }
   /** token 级流式增量（打字机效果）。仅当 HarnessOptions.streamTokens 开启且适配器支持时发出。 */
   | { type: 'llm:token'; step: number; delta: string }
@@ -148,6 +150,8 @@ export type HarnessEvent =
         mcp: number;
         skills: number;
         completion: number;
+        /** 本次供应商侧缓存命中 token，前端可展示节省量。 */
+        cached?: number;
       };
     }
   | {
@@ -565,13 +569,27 @@ export class AgentHarness {
     }
     // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
     if (imageAttachments && imageAttachments.length > 0) {
+      // 零依赖兜底：对超大 base64 原图强制 detail:'low'，由模型端降采样到 512px，
+      // 覆盖前端压缩被绕过的入口（subagent / workflow / 直接构造 attachments 等）。
+      // 仅体积超限的图受影响，经前端压缩后的图保持原有质量。
+      const forceLowDetail = (url: string): boolean => {
+        if (!url.startsWith('data:image/')) return false;
+        const approx = Math.ceil(((url.split(',')[1] ?? '').length * 3) / 4);
+        return approx > 1.5 * 1024 * 1024;
+      };
       const contentBlocks: Array<
         | { type: 'text'; text?: string }
-        | { type: 'image_url'; image_url?: { url: string } }
+        | { type: 'image_url'; image_url?: { url: string; detail?: 'low' | 'high' | 'auto' } }
       > = [];
       if (userInput) contentBlocks.push({ type: 'text', text: userInput });
       for (const img of imageAttachments) {
-        contentBlocks.push({ type: 'image_url', image_url: { url: img.url } });
+        const url = img.url;
+        const detail = forceLowDetail(url) ? ('low' as const) : undefined;
+        contentBlocks.push(
+          detail
+            ? { type: 'image_url', image_url: { url, detail } }
+            : { type: 'image_url', image_url: { url } }
+        );
       }
       memory.add({ role: 'user', content: contentBlocks as any });
     } else {
@@ -692,10 +710,14 @@ export class AgentHarness {
             // 安全网：若输入看起来是真实任务（含疑问、较长、或出现常见任务词），
             // 直接回退全量工具，避免漏发必要工具导致质量退化；
             // 问候/寒暄/极短输入则保持最小子集，保留优化收益。
+            // 优化：原「input.length >= 8」过于激进，导致多字问候（如「你好啊，请问…」）误判为任务
+            // 拉上全量 20+ 工具 schema。改为：问候/寒暄类输入保持小子集，其余输入回退全量。
             const taskIndicators =
-              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯/;
-            const looksLikeTask =
-              input.length >= 8 || taskIndicators.test(input);
+              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯|帮我|请问|能不能|可以吗|写|部署|发布|删除|修改|更新|查看|打开|读取|下载|上传|安装|配置|调试|优化|重构|分析|总结|提取|转换|格式|编码|解码|解析|合并|分割|排序|过滤|统计|图片|绘画|生成|制作|处理|管理|控制|监控|告警|通知|报告|文档|资料|笔记|日志|缓存|队列|线程|进程|服务|接口|API|参数|变量|函数|方法|类|对象|模块|包|依赖|版本|分支|提交|合并|拉取|推送|仓库|密钥|令牌|账号|用户|权限|角色|团队|项目|任务|工作|进度|计划|步骤|流程|操作|指令|命令|脚本|程序|插件|扩展|组件|页面|视图|路由|导航|菜单|按钮|表单|表格|列表|卡片|布局|样式|主题|配色|图标|动画|效果|交互|体验|性能|追踪|报警|回调|钩子|监听|订阅|发布|消费|生产|消息|话题|频道|群组|聊天|会话|对话|协作|讨论|评审|审查|批复|回复|反馈|评论|点评|评价|投票|点赞|收藏|分享|建议|意见|咨询|询问|提问|解答|回答|解释|说明|描述|介绍|概述|归纳|整理/;
+            // Note: the taskIndicators regex above is intentionally kept concise — only common task keywords.
+            const greetingPattern = /^你好|^hello|^hi|^嗨|good.?morning|good.?afternoon|good.?evening|^\s*$/;
+            const isGreeting = greetingPattern.test(input);
+            const looksLikeTask = !isGreeting && (taskIndicators.test(input) || input.length >= 20);
             stepTools = looksLikeTask ? allSchemas : subset;
           }
           // Hook: agent.pre_llm — observe messages before LLM call
@@ -807,15 +829,17 @@ export class AgentHarness {
           // 本地拆解四项占比（启发式估算，仅用于链路可视化；权威值仍以 provider 的 usage 为准）。
           // 系统在「系统提示」项，工具 schema 在「工具」项，其余消息累计为「历史」，
           // 模型本次输出（含 tool_calls 参数）计入「输出」项，便于定位高 token 消耗的固定开销来源。
+          //
+          // 多模态计费口径：走 estimateMessageTokens 而非 JSON.stringify + estimateTokens。
+          // 后者会把整段图片 base64 序列化后按「4 字符 = 1 token」折算，一张 1MB 图即约
+          // 34 万虚假 token，使「历史」一项高估 1~2 个数量级（曾出现 858,118 tok 的失真展示）。
+          // 现改为图片按视觉 token 计（low=85 / high=85+170×512 分块数），与真实计费同量级。
           let estSystem = 0;
           let estHistory = 0;
           for (const m of messages) {
-            const c =
-              typeof m.content === 'string'
-                ? m.content
-                : JSON.stringify(m.content ?? '');
-            if (m.role === 'system') estSystem += estimateTokens(c);
-            else estHistory += estimateTokens(c);
+            const t = estimateMessageTokens(m);
+            if (m.role === 'system') estSystem += t;
+            else estHistory += t;
           }
           const estTools = estimateToolsTokens(stepTools);
           // 把工具拆分为「内置工具」与「MCP 工具（名称含 '__' 前缀）」，分别计入
@@ -868,9 +892,11 @@ export class AgentHarness {
             // 把真实上下文占用喂给记忆，驱动 token 级压缩护栏（在占用率越过阈值时
             // 于后续 add() 中淘汰最旧历史，避免上下文撑爆导致模型 400）。
             memory.setContextUsage(promptTokens, window);
+            // 优化：scale 基于「实际新计费 token」（排除缓存命中），避免 cached_tokens 被归到 tools 占比上
+            const actualPromptTokens = promptTokens - (resp.usage?.cached_tokens ?? 0);
             const promptEst =
               estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
-            const scale = promptEst > 0 ? promptTokens / promptEst : 0;
+            const scale = promptEst > 0 ? actualPromptTokens / promptEst : 0;
             emit({
               type: 'llm:usage',
               step: steps,
@@ -889,7 +915,9 @@ export class AgentHarness {
                 messages: Math.round(estHistory * scale),
                 mcp: Math.round(estMcp * scale),
                 skills: Math.round(estSkills * scale),
-                completion: completionTokens
+                completion: completionTokens,
+                // 新增：本次供应商侧缓存命中 token，前端可展示节省量
+                cached: resp.usage?.cached_tokens ?? 0,
               }
             });
           }
@@ -1000,7 +1028,8 @@ export class AgentHarness {
             type: 'llm:response',
             step: steps,
             content: resp.content,
-            toolCalls: resp.tool_calls
+            toolCalls: resp.tool_calls,
+            partial: resp.partial
           });
           // Hook: agent.post_llm — observe response after LLM call
           void hooks.execute('agent.post_llm', {
@@ -1032,6 +1061,15 @@ export class AgentHarness {
                   '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。'
               });
               continue;
+            }
+            // 中段断流兜底：provider 空闲超时后返回的是部分内容（partial:true）。
+            // 显式追加「生成中断」提示，让用户清楚这是被截断而非完整回答。
+            if (resp.partial) {
+              return (
+                `${resp.content}\n\n` +
+                '⚠️ 生成已中断：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。' +
+                '以上内容仅为已生成的部分结果，请重试以继续。'
+              );
             }
             return resp.content;
           }

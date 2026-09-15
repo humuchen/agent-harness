@@ -275,7 +275,9 @@ export class AhMcp extends LitElement {
     }
   }
 
-  private async refresh(silent = false) {
+  async refresh(silent = false) {
+    // 隐藏态挂载（非当前 Tab）时不发起首屏请求；切到本 Tab 时由 app.ts 的 activatePanel 补拉。
+    if (this.hidden) return;
     try {
       const [s, p] = await Promise.all([
         client.getMcpServers(),
@@ -766,7 +768,9 @@ export class AhApprovals extends LitElement {
     this.refresh();
   }
 
-  private async refresh() {
+  async refresh() {
+    // 隐藏态挂载（非当前 Tab）时不发起首屏请求；切到本 Tab 时由 app.ts 的 activatePanel 补拉。
+    if (this.hidden) return;
     try {
       this.items = (await client.listApprovals()).tickets;
     } catch (e: any) {

@@ -10,12 +10,16 @@
  */
 import { html, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
-import { renderAttachments } from './chat-render-utils';
+import {
+  renderAttachments,
+  renderImageAttachments
+} from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
   countTraceNodes,
   renderTraceNode,
+  collapseEntireTrace,
   buildInsights,
   renderInsights,
   renderConfidence
@@ -35,6 +39,8 @@ export interface ChatRenderCtx {
   copiedMsgId: number;
   deepThink: boolean;
   thinkCollapsed: Record<string, boolean>;
+  /** 深度思考收起偏好：开启时深度思考默认折叠（无显式覆盖时）。 */
+  deepThinkCollapsed: boolean;
   traceDrawerMsg: ChatMsg | null;
   traceDrawerSection: 'trace' | 'insights' | 'confidence';
   connState: Record<string, 'connected' | 'reconnecting' | 'lost'>;
@@ -95,6 +101,10 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
   // 用户消息：渲染气泡文本 + 附件预览。
   if (m.role === 'user') {
     const hasAttachments = m.attachments && m.attachments.length > 0;
+    // 图片独立成卡片置于气泡上方，与气泡内文本解耦。
+    const hasImages = !!m.attachments?.some((f) =>
+      f.type.startsWith('image/')
+    );
     // 编辑态：气泡原位替换为编辑框（草稿 + 取消/发送），不再展示原文。
     if (ctx.editingMsgId === m.id) {
       return html`
@@ -150,6 +160,12 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       <div class="msg user">
         <div class="avatar">你</div>
         <div class="user-col">
+          ${hasImages
+            ? renderImageAttachments({
+                files: m.attachments!,
+                onPreview: (f: UploadedFile) => ctx.openPreview(f)
+              })
+            : nothing}
           <div class="bubble">
             ${hasAttachments
               ? renderAttachments({
@@ -313,7 +329,15 @@ export function renderThinking(
 ): TemplateResult {
   const parsed =
     m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
-  const collapsed = !!ctx.thinkCollapsed[String(m.id)];
+  // 有效折叠态：显式覆盖优先，否则取「深度思考收起」偏好默认；
+  // 思考中强制展开（保证实时推理可见，与 toggleThink 的守卫一致）。
+  const k = String(m.id);
+  const collapsed =
+    isThinking
+      ? false
+      : k in ctx.thinkCollapsed
+        ? ctx.thinkCollapsed[k]
+        : ctx.deepThinkCollapsed;
   return html`
     <div
       class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}"
@@ -398,8 +422,15 @@ export function renderAnswer(
   return html`
     <div class="answer">
       ${m.content && m.content.trim()
-        ? html`<div class="msg-text">
-            ${unsafeHTML(toRichHtml(m.content))}
+        ? html`<div class="msg-text" data-md-scope="ans-${m.id}">
+            ${unsafeHTML(
+              toRichHtml(m.content, {
+                htmlBlocks: true,
+                richBlocks: true,
+                // 流式中不提供折叠入口：内容还在增长，中途收起会丢失阅读位置。
+                finalize: !isStreaming
+              })
+            )}
           </div>`
         : nothing}
       ${isAnswering ? html`<span class="caret"></span>` : nothing}
@@ -515,6 +546,19 @@ export function renderTraceDrawer(ctx: ChatRenderCtx): TemplateResult {
         ? html`<div class="trace-drawer">
             ${ctx.traceDrawerSection === 'trace'
               ? html`<div class="trace-body">
+                  <div class="trace-toolbar">
+                    <button
+                      type="button"
+                      class="trace-collapse-all"
+                      title="折叠整条调用链路中所有可折叠项"
+                      @click=${() => {
+                        collapseEntireTrace(m.trace);
+                        ctx.requestUpdate();
+                      }}
+                    >
+                      折叠全部
+                    </button>
+                  </div>
                   ${m.trace.map((n) =>
                     renderTraceNode(n, undefined, () => ctx.requestUpdate())
                   )}

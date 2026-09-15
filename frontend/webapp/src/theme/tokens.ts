@@ -17,6 +17,8 @@ const darkTokens = `
   --ah-surface-1: #121622;
   --ah-surface-2: #171C2B;
   --ah-surface-3: #1C2233;
+  --ah-skeleton-base: #1E2536;
+  --ah-skeleton-peak: #2A3348;
   --ah-border: #262D3D;
   --ah-text: #E6EDF3;
   --ah-text-muted: #9AA6B6;
@@ -30,6 +32,28 @@ const darkTokens = `
   --ah-warning-soft: rgba(255, 214, 10, 0.15);
   --ah-danger: #FF453A;
   --ah-danger-soft: rgba(255, 69, 58, 0.15);
+  /* 代码语法高亮（hljs token → 语义色映射）。
+     hljs 只输出 <span class>，不输出内联样式 —— 因此配色可以完全由这套令牌接管，
+     这也是选它而非 Shiki 的原因（Shiki 倾向内联 style，会迫使净化层放开 style 白名单）。
+     取值参考 GitHub Dark，与 canvas #0B0E14 的对比度已核对。 */
+  --ah-code-bg: #0F1420;
+  --ah-hl-kw: #FF7B72;
+  --ah-hl-str: #A5D6FF;
+  --ah-hl-num: #79C0FF;
+  --ah-hl-com: #8B949E;
+  --ah-hl-fn: #D2A8FF;
+  --ah-hl-attr: #79C0FF;
+  --ah-hl-type: #FFA657;
+  --ah-hl-tag: #7EE787;
+  --ah-hl-ins: #7EE787;
+  --ah-hl-ins-bg: rgba(46, 160, 67, 0.15);
+  --ah-hl-del: #FFA198;
+  --ah-hl-del-bg: rgba(248, 81, 73, 0.15);
+  /* 横向滚动容器的边缘阴影（.md-table-wrap 等）：
+     用于提示「右侧还有内容」，因为本产品在 ≤760px 全局隐藏了滚动条。
+     阴影画在内容**下方**（背景层），文字本身不会被淡化，因此需要较高不透明度
+     才能在 #121622 上形成一眼可辨的暗带 —— 取值经像素采样核对。 */
+  --ah-scroll-shadow: rgba(0, 0, 0, 0.82);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -50,6 +74,8 @@ const lightTokens = `
   --ah-surface-1: #FFFFFF;
   --ah-surface-2: #EEF1F6;
   --ah-surface-3: #E4E9F2;
+  --ah-skeleton-base: #DCE2ED;
+  --ah-skeleton-peak: #E9EDF5;
   --ah-border: #D8DEE9;
   --ah-text: #1B2330;
   --ah-text-muted: #5B6675;
@@ -63,6 +89,23 @@ const lightTokens = `
   --ah-warning-soft: rgba(176, 116, 0, 0.12);
   --ah-danger: #D4261A;
   --ah-danger-soft: rgba(212, 38, 26, 0.12);
+  /* 代码高亮浅色映射：GitHub Light。亮色下关键字/字符串若沿用暗色的高亮色，
+     在白底上会出现明显不足的对比度（如 #A5D6FF 接近不可读），故必须独立取值。 */
+  --ah-code-bg: #F4F6FA;
+  --ah-hl-kw: #CF222E;
+  --ah-hl-str: #0A3069;
+  --ah-hl-num: #0550AE;
+  --ah-hl-com: #6E7781;
+  --ah-hl-fn: #8250DF;
+  --ah-hl-attr: #0550AE;
+  --ah-hl-type: #953800;
+  --ah-hl-tag: #116329;
+  --ah-hl-ins: #116329;
+  --ah-hl-ins-bg: rgba(46, 160, 67, 0.12);
+  --ah-hl-del: #82071E;
+  --ah-hl-del-bg: rgba(248, 81, 73, 0.12);
+  /* 见暗色同名令牌说明。亮色底本身已足够亮，0.16 即可形成可辨边缘。 */
+  --ah-scroll-shadow: rgba(0, 0, 0, 0.16);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -79,6 +122,76 @@ const lightTokens = `
 
 /** 注入 <head> 的全局主题样式：默认兜底 dark，dark/light 显式可切换。 */
 export const THEME_CSS = `
+/* ── 主题切换颜色过渡 ────────────────────────────────────────────────
+   把所有「深色/浅色取值不同」的颜色令牌注册为 @property（带 <color> 语法），
+   使其计算值可被浏览器插值；切换 data-theme 时在 <html> 上临时挂
+   .ah-theme-anim 类（见 withThemeAnimation），对这批自定义属性做 0.45s 过渡。
+   自定义属性沿继承向下传递 —— 过渡期间每一帧 html 上的插值都会重新解析
+   所有消费方的 var(--ah-*)（含 shadow DOM 内部），因此整页颜色平滑渐变，
+   而不是瞬间跳变。
+   - initial-value 取 dark 值（与 :root 默认块一致）。
+   - 不支持 @property 的旧引擎静默降级为即时切换，无副作用。
+   - 取值在两个主题间完全相同的令牌（radius / 字号 / 字体 / 高度）无需注册。 */
+@property --ah-canvas        { syntax: '<color>';  inherits: true; initial-value: #0B0E14; }
+@property --ah-surface-1     { syntax: '<color>';  inherits: true; initial-value: #121622; }
+@property --ah-surface-2     { syntax: '<color>';  inherits: true; initial-value: #171C2B; }
+@property --ah-surface-3     { syntax: '<color>';  inherits: true; initial-value: #1C2233; }
+@property --ah-skeleton-base { syntax: '<color>';  inherits: true; initial-value: #1E2536; }
+@property --ah-skeleton-peak { syntax: '<color>';  inherits: true; initial-value: #2A3348; }
+@property --ah-border        { syntax: '<color>';  inherits: true; initial-value: #262D3D; }
+@property --ah-text          { syntax: '<color>';  inherits: true; initial-value: #E6EDF3; }
+@property --ah-text-muted    { syntax: '<color>';  inherits: true; initial-value: #9AA6B6; }
+@property --ah-text-faint    { syntax: '<color>';  inherits: true; initial-value: #5D6675; }
+@property --ah-accent        { syntax: '<color>';  inherits: true; initial-value: #2997FF; }
+@property --ah-accent-strong { syntax: '<color>';  inherits: true; initial-value: #0A84FF; }
+@property --ah-accent-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(41,151,255,0.15); }
+@property --ah-success       { syntax: '<color>';  inherits: true; initial-value: #30D158; }
+@property --ah-success-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(48,209,88,0.15); }
+@property --ah-warning       { syntax: '<color>';  inherits: true; initial-value: #FFD60A; }
+@property --ah-warning-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(255,214,10,0.15); }
+@property --ah-danger        { syntax: '<color>';  inherits: true; initial-value: #FF453A; }
+@property --ah-danger-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(255,69,58,0.15); }
+/* 代码高亮令牌同样注册，否则主题切换时代码块颜色会瞬间跳变，
+   与页面其余部分的 0.45s 过渡不一致（代码块面积大，跳变很显眼）。 */
+@property --ah-code-bg   { syntax: '<color>';  inherits: true; initial-value: #0F1420; }
+@property --ah-hl-kw     { syntax: '<color>';  inherits: true; initial-value: #FF7B72; }
+@property --ah-hl-str    { syntax: '<color>';  inherits: true; initial-value: #A5D6FF; }
+@property --ah-hl-num    { syntax: '<color>';  inherits: true; initial-value: #79C0FF; }
+@property --ah-hl-com    { syntax: '<color>';  inherits: true; initial-value: #8B949E; }
+@property --ah-hl-fn     { syntax: '<color>';  inherits: true; initial-value: #D2A8FF; }
+@property --ah-hl-attr   { syntax: '<color>';  inherits: true; initial-value: #79C0FF; }
+@property --ah-hl-type   { syntax: '<color>';  inherits: true; initial-value: #FFA657; }
+@property --ah-hl-tag    { syntax: '<color>';  inherits: true; initial-value: #7EE787; }
+@property --ah-hl-ins    { syntax: '<color>';  inherits: true; initial-value: #7EE787; }
+@property --ah-hl-ins-bg { syntax: '<color>';  inherits: true; initial-value: rgba(46,160,67,0.15); }
+@property --ah-hl-del    { syntax: '<color>';  inherits: true; initial-value: #FFA198; }
+@property --ah-hl-del-bg { syntax: '<color>';  inherits: true; initial-value: rgba(248,81,73,0.15); }
+/* 门控过渡：仅 .ah-theme-anim 挂类期间（withThemeAnimation 的 600ms 窗口内）
+   才启用颜色插值，避免首屏加载 / 无主题变更时产生多余过渡。
+   过渡声明在 <html>（= 令牌实际变更的元素）上，消费方 var() 随帧重解析。 */
+html.ah-theme-anim {
+  transition:
+    --ah-canvas        0.45s ease,
+    --ah-surface-1     0.45s ease,
+    --ah-surface-2     0.45s ease,
+    --ah-surface-3     0.45s ease,
+    --ah-skeleton-base 0.45s ease,
+    --ah-skeleton-peak 0.45s ease,
+    --ah-border        0.45s ease,
+    --ah-text          0.45s ease,
+    --ah-text-muted    0.45s ease,
+    --ah-text-faint    0.45s ease,
+    --ah-accent        0.45s ease,
+    --ah-accent-strong 0.45s ease,
+    --ah-accent-soft   0.45s ease,
+    --ah-success       0.45s ease,
+    --ah-success-soft  0.45s ease,
+    --ah-warning       0.45s ease,
+    --ah-warning-soft  0.45s ease,
+    --ah-danger        0.45s ease,
+    --ah-danger-soft   0.45s ease,
+    --ah-scroll-shadow 0.45s ease;
+}
 :root {
 ${darkTokens}
 }
@@ -95,9 +208,62 @@ html, body {
   background: var(--ah-canvas);
   color: var(--ah-text);
 }
+/* 移动端（窄屏或触屏）：全局隐藏滚动条 + 去除点击蓝色高亮（WebView 默认 :active）。
+   - 滚动条：html/body（文档根，非 shadow）+ 任意滚动容器，三套语法并写。
+   - 点击高亮：-webkit-tap-highlight-color: transparent 吃掉 Android WebView 默认蓝色圆。 */
+@media (max-width: 900px), (pointer: coarse) {
+  html, body, * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  ::-webkit-scrollbar,
+  *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+/* 移动端按钮胶囊化：外部组件库 @humuchen/mac-ui 的按钮圆角覆盖。
+   为什么必须写在文档级（此处）而不是业务组件的 shadow 样式里：
+   mac-ui 的按钮有两个来源，二者都不在业务组件的 shadow root 内 ——
+   1) mac-confirm / mac-dialog 自带 footer 里的 mac-button（在库自身 shadow root 内）；
+   2) ah-modal 通过 <div slot="footer"> 注入的 mac-button（被 slot 投影到 light DOM，
+      最终作为 mac-confirm 的 light 子节点挂在 document 上）。
+   故只能由文档级样式表命中其宿主元素。
+   mac-ui 把 --{size}-button-radius 声明在自身 :host 内，外层普通声明无法覆盖，
+   必须 !important（对影子宿主，外层 important 优先于影子树普通声明）。
+   需要覆盖的是「按钮相关」令牌，而非底层的 --md-radius-md ——
+   后者同时驱动输入框 / 菜单 / 卡片圆角，改它会连带圆掉非按钮元素：
+   - --{sm|md|lg}-button-radius：mac-button（三个尺寸类会互相重指向，须全给）；
+   - --md-confirm-btn-radius   ：mac-confirm 自带 footer 的 <button class="footer-btn">；
+   - --md-modal-footer-btn-radius：mac-modal footer 同理（同一套库令牌，一并给上）；
+   - --md-confirm/modal-footer-cancel-border：取消按钮的 0.5px 描边色 → 透明（去边框）。
+   注：用 * 而非罗列 mac-* 标签名 —— 后者需逐一猜测库内组件名，漏一个即失效；
+   自定义属性本就靠继承向下传递，写在通配选择器上最稳妥。 */
+@media (max-width: 760px), (pointer: coarse) {
+  * {
+    --md-button-radius: 999px !important;
+    --sm-button-radius: 999px !important;
+    --lg-button-radius: 999px !important;
+    --md-confirm-btn-radius: 999px !important;
+    --md-modal-footer-btn-radius: 999px !important;
+    --md-confirm-cancel-border: transparent !important;
+    --md-modal-footer-cancel-border: transparent !important;
+  }
+}
 `;
 
-const STORAGE_KEY = 'ah-theme';
+/**
+ * 主题偏好的 localStorage 键。
+ * 导出原因：设置中心的「跟随系统」需要清除该键以回落到系统偏好（见 settings-center.ts）。
+ */
+export const THEME_STORAGE_KEY = 'ah-theme';
+
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 export function installThemeStyles(): void {
   if (typeof document === 'undefined') return;
@@ -120,8 +286,90 @@ export function getTheme(): Theme {
 
 export function setTheme(theme: Theme): void {
   if (typeof document === 'undefined') return;
-  document.documentElement.setAttribute('data-theme', theme);
+  // 切换主题前挂过渡类、切换后 600ms 移除：整页颜色在 withThemeAnimation 窗口内平滑渐变。
+  withThemeAnimation(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  });
   if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, theme);
+  syncNativeStatusBar(theme);
+}
+
+/**
+ * 主题切换颜色过渡包装器：把「改 data-theme」这件事包在一个带过渡类的窗口里执行。
+ *
+ * 原理（配合 THEME_CSS）：
+ *  - 进入时给 <html> 加 `.ah-theme-anim`（启用 `html.ah-theme-anim` 上的
+ *    自定义属性 transition），再改 `data-theme`；
+ *  - 浏览器对已注册（@property）的 `--ah-*` 自定义属性做 0.45s 插值，
+ *    沿继承传到所有消费方（含 shadow DOM），实现整页平滑变色而非跳变；
+ *  - 600ms 后移除过渡类，避免过渡状态常驻影响后续布局 / 动画。
+ *
+ * 旧引擎（不支持 @property / 自定义属性 transition）：类与规则均静默失效，
+ * 退化为即时切换，无副作用。
+ *
+ * 供 setTheme 与 settings-center「跟随系统」分支共用 —— 后者绕过 setTheme
+ * 直接写 data-theme，需单独调用本函数保持一致的过渡体验。
+ */
+export function withThemeAnimation(mutate: () => void): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.add('ah-theme-anim');
+  mutate();
+  window.setTimeout(() => root.classList.remove('ah-theme-anim'), 600);
+}
+
+/**
+ * 原生壳（Capacitor）下让系统状态栏图标跟随主题：
+ *  - 深色主题 → `Style.Light`（浅色图标，配深色背景）；
+ *  - 浅色主题 → `Style.Dark`（深色图标，配浅色背景）。
+ * 背景：capacitor.config.ts 里 StatusBar 只能写一份**启动默认值**（写的是深色主题的
+ * `style: 'LIGHT'`）；切到白色主题后 WebView 背景变浅而状态栏图标仍是白色，
+ * 在 `overlaysWebView: true`（Android 16+ 强制 edge-to-edge）下就是「白字白底」，
+ * 时间 / 电量等原生头部信息全部看不见 —— 用户实测反馈。故主题写入路径统一在此同步。
+ * 约定：走全局 `window.Capacitor.Plugins`（webapp 不依赖 @capacitor/*），纯 Web 安全降级。
+ *
+ * 导出原因：settings-center 的「跟随系统」分支绕过 setTheme 直接写 data-theme（不落存储），
+ * 需单独调用本函数保持状态栏同步；其余主题写入路径（initTheme / setTheme / toggleTheme）
+ * 已在 setTheme 内统一覆盖，无需重复调用。
+ */
+export function syncNativeStatusBar(theme: Theme): void {
+  try {
+    type StatusBarLike = { setStyle(opts: { style: string }): Promise<void> };
+    const cap = (
+      globalThis as unknown as {
+        Capacitor?: {
+          isNativePlatform?: () => boolean;
+          Plugins?: { StatusBar?: StatusBarLike };
+        };
+      }
+    ).Capacitor;
+    if (!cap?.isNativePlatform?.()) return;
+    // native 端 StatusBar.setStyle(style) 实际语义（StatusBar.java:51）：
+    //   style='DARK'  → setAppearanceLightStatusBars(false) → 深色背景 + 浅色图标（白字）→ 配深色主题
+    //   style='LIGHT' → setAppearanceLightStatusBars(true)  → 浅色背景 + 深色图标（黑字）→ 配浅色主题
+    // 因此 web 端映射：深色主题传 'DARK'，浅色主题传 'LIGHT'。
+    const nativeStyle = theme === 'dark' ? 'DARK' : 'LIGHT';
+    if (!cap.Plugins?.StatusBar) {
+      // 首屏：initTheme 可能先于 Capacitor 桥注册完成而执行（isNativePlatform
+      // 已为 true 但 Plugins.StatusBar 尚未注入）。短延迟重试 3 次（200ms 间隔），
+      // 避免首次同步被静默吞掉 → 黑主题状态栏停在系统默认黑图标。
+      let tries = 0;
+      const retry = (): void => {
+        if (tries++ >= 3) return;
+        const bar = (globalThis as unknown as { Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } } }).Capacitor?.Plugins?.StatusBar;
+        if (!bar) {
+          window.setTimeout(retry, 200);
+          return;
+        }
+        void bar.setStyle({ style: nativeStyle });
+      };
+      window.setTimeout(retry, 200);
+      return;
+    }
+    void cap.Plugins.StatusBar.setStyle({ style: nativeStyle });
+  } catch {
+    /* 插件桥不可用 / 桥调用失败：状态栏保持启动配置，不影响页面功能 */
+  }
 }
 
 export function toggleTheme(): Theme {
@@ -134,4 +382,81 @@ export function toggleTheme(): Theme {
 export function initTheme(): void {
   installThemeStyles();
   setTheme(getTheme());
+}
+
+// ─── P3-1 品牌位应用 ──────────────────────────────────────────────────────────
+
+export interface BrandConfig {
+  productName: string;
+  logoUrl?: string;
+  faviconUrl?: string;
+  primaryColor?: string;
+  loginTagline?: string;
+  footer?: string;
+}
+
+export const BRAND_DEFAULT: BrandConfig = {
+  productName: 'Agent Harness',
+  primaryColor: '#2997FF',
+  loginTagline: '编排、运行、观测 — 你的每一个 AI Agent',
+  footer: 'Agent Harness 2026 · 私有化部署就绪'
+};
+
+/** 把品牌 primaryColor 写入 CSS 变量 --ah-accent，替换当前主题色。 */
+export function applyBrand(cfg: BrandConfig): void {
+  if (!cfg.primaryColor) return;
+  const root = document.documentElement;
+  // 写入 --ah-accent 及其强弱变体，覆盖主题默认
+  root.style.setProperty('--ah-accent', cfg.primaryColor);
+  // 推导 --ah-accent-strong（+20% 亮度）
+  const strong = lightenHex(cfg.primaryColor, 0.2);
+  if (strong) root.style.setProperty('--ah-accent-strong', strong);
+  // 推导 --ah-accent-soft（透明版本）
+  root.style.setProperty('--ah-accent-soft', hexToRgba(cfg.primaryColor, 0.15));
+}
+
+/** 简单 Hex 亮度调整（用于推导 accent-strong）。 */
+function lightenHex(hex: string, pct: number): string | null {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return null;
+  const num = parseInt(clean, 16);
+  const r = Math.min(255, ((num >> 16) + Math.floor(255 * pct)) | 0);
+  const g = Math.min(255, ((num >> 8 & 0xff) + Math.floor(255 * pct)) | 0);
+  const b = Math.min(255, ((num & 0xff) + Math.floor(255 * pct)) | 0);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/** Hex 转 rgba() 字符串。 */
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length === 6) {
+    const r = parseInt(clean.slice(0, 2), 16);
+    const g = parseInt(clean.slice(2, 4), 16);
+    const b = parseInt(clean.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  return `rgba(41, 151, 255, ${alpha})`; // 默认蓝
+}
+
+/** 启动时加载品牌配置并应用。 */
+export async function initBrand(): Promise<BrandConfig> {
+  try {
+    const res = await fetch('/api/brand', { credentials: 'same-origin' });
+    if (res.ok) {
+      const cfg = (await res.json()) as BrandConfig;
+      applyBrand(cfg);
+      // 设置 favicon
+      if (cfg.faviconUrl) {
+        const link = document.querySelector('link[rel="icon"]') || document.createElement('link');
+        link.setAttribute('rel', 'icon');
+        link.setAttribute('href', cfg.faviconUrl);
+        document.head.appendChild(link);
+      }
+      return cfg;
+    }
+  } catch {
+    // 网络错误或脱机 → 使用默认品牌
+  }
+  applyBrand(BRAND_DEFAULT);
+  return BRAND_DEFAULT;
 }

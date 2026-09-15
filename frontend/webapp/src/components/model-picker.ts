@@ -13,10 +13,15 @@
  * 思考开关经 `think-change` 事件抛出（detail.value）。
  */
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
 import { notifyError, errorMessage } from '../utils/errors';
+// 「配置 API Key」整屏抽屉（复用通用 ah-drawer）与综合设置中心（ah-settings-center）。
+// 二者已在 components/index.ts 全局注册，此处副作用导入仅为显式声明依赖、保证独立渲染可用。
+import './ah-drawer';
+import './settings-center';
 
 /** 远程模型条目：id + baseUrl（固化，供 run 时直连）+ 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -34,8 +39,6 @@ interface CustomModel {
   /** 脱敏掩码（首尾若干字符），由服务端回传；明文/密文永不出网。 */
   keyHint?: string;
 }
-
-const CUSTOM_KEY = 'ah_custom_models';
 
 /** 自定义模型的持久化形态兼容旧版（旧版存 string[]，读取时自动升级为对象）。 */
 function normalizeCustom(raw: unknown): CustomModel[] {
@@ -59,291 +62,369 @@ function normalizeCustom(raw: unknown): CustomModel[] {
 
 @customElement('ah-model-picker')
 export class AhModelPicker extends LitElement {
-  static styles = css`
-    :host {
-      display: inline-block;
-      font-family: inherit;
-      color: var(--ah-text);
-    }
-    /* 面板锚定基准：absolute 弹层必须相对本组件定位 */
-    .wrap {
-      position: relative;
-      display: inline-block;
-    }
-    /* 触发按钮：胶囊形（图标+文字+chevron） */
-    .trigger {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: inherit;
-      font: inherit;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      border-radius: 999px;
-      transition: background 0.15s ease;
-      max-width: 46vw;
-    }
-    .trigger:hover {
-      background: rgba(125, 125, 125, 0.18);
-    }
-    .trigger:active {
-      background: rgba(125, 125, 125, 0.28);
-    }
-    .trigger .name {
-      font-size: 13px;
-      line-height: 20px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .trigger > svg:not(.vlogo) {
-      width: 16px;
-      height: 16px;
-      opacity: 0.85;
-      flex: 0 0 auto;
-    }
-    /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
-    @media (max-width: 600px) {
+  static styles = [
+    css`
+      :host {
+        display: inline-block;
+        font-family: inherit;
+        color: var(--ah-text);
+      }
+      /* 面板锚定基准：absolute 弹层必须相对本组件定位 */
+      .wrap {
+        position: relative;
+        display: inline-block;
+      }
+      /* 触发按钮：胶囊形（图标+文字+chevron） */
       .trigger {
-        max-width: 40px;
-        padding: 0;
-        justify-content: center;
-        overflow: hidden;
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        transition: background 0.15s ease;
+        max-width: 46vw;
       }
       .trigger:hover {
-        padding: 0;
+        background: rgba(125, 125, 125, 0.18);
       }
-      .trigger .name,
+      .trigger:active {
+        background: rgba(125, 125, 125, 0.28);
+      }
+      .trigger .name {
+        font-size: 13px;
+        line-height: 20px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .trigger > svg:not(.vlogo) {
-        display: none;
+        width: 16px;
+        height: 16px;
+        opacity: 0.85;
+        flex: 0 0 auto;
       }
-    }
-    /* 厂商徽标 */
-    .vlogo {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 700;
-      color: #fff;
-      flex: 0 0 auto;
-      line-height: 1;
-    }
-    .vlogo-sys {
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-    }
-    /* 面板容器 */
-    .panel {
-      position: absolute;
-      bottom: calc(100% + 8px);
-      right: 0;
-      width: min(92vw, 300px);
-      max-height: min(70vh, 460px);
-      background: var(--ah-surface-2, #1c1c1c);
-      border: 1px solid var(--ah-border, #2a2a2a);
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      z-index: 30;
-    }
-    .panel-head {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--ah-border, #2a2a2a);
-    }
-    .panel-head input {
-      width: 100%;
-      box-sizing: border-box;
-      background: transparent;
-      color: var(--ah-text);
-      border: none;
-      outline: none;
-      font: inherit;
-      font-size: 14px;
-    }
-    .panel-body {
-      overflow-y: auto;
-      padding: 6px 0;
-    }
-    /* 分组标题 */
-    .group-title {
-      font-size: 11px;
-      color: var(--ah-text-muted, #9e9e9e);
-      padding: 8px 14px 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      cursor: pointer;
-      user-select: none;
-    }
-    /* 模型条目 */
-    .item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7px 12px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .item:hover {
-      background: rgba(125, 125, 125, 0.12);
-    }
-    .item .name {
-      flex: 1 1 auto;
-      min-width: 0;
-      font-size: 13px;
-      line-height: 18px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .item .check {
-      width: 18px;
-      height: 18px;
-      color: var(--ah-accent, #2997ff);
-      flex: 0 0 auto;
-    }
-    /* 底部操作行 */
-    .footer {
-      display: flex;
-      border-top: 1px solid var(--ah-border, #2a2a2a);
-    }
-    .footer button {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-      font: inherit;
-      font-size: 12px;
-      cursor: pointer;
-      padding: 10px 0;
-      flex: 1 1 auto;
-    }
-    .footer button:hover {
-      color: var(--ah-text);
-      background: rgba(125, 125, 125, 0.1);
-    }
-    .footer button + button {
-      border-left: 1px solid var(--ah-border, #2a2a2a);
-    }
-    /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
-    .add-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--ah-border, #2a2a2a);
-    }
-    .add-row input {
-      background: transparent;
-      color: var(--ah-text);
-      border: 1px solid var(--ah-border, #2a2a2a);
-      border-radius: 10px;
-      padding: 8px 10px;
-      outline: none;
-      font: inherit;
-      font-size: 13px;
-    }
-    .add-row input:focus {
-      border-color: var(--ah-accent, #2997ff);
-    }
-    .add-actions {
-      display: flex;
-      gap: 10px;
-      justify-content: flex-end;
-    }
-    /* 复用全应用统一 .btn 体系（与 ah-modal / ah-drawer 一致），保证视觉统一。 */
-    .add-actions .btn {
-      min-width: 76px;
-      padding: 8px 16px;
-      font-size: 13px;
-      font-family: var(--ah-font-sans);
-      cursor: pointer;
-      border-radius: var(--ah-radius-md);
-      border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease,
-        color 120ms ease;
-    }
-    .add-actions .btn.ghost {
-      background: transparent;
-      color: var(--ah-text-muted);
-    }
-    .add-actions .btn.ghost:hover {
-      color: var(--ah-text);
-      border-color: var(--ah-text-faint);
-    }
-    .add-actions .btn.primary {
-      background: var(--ah-accent);
-      border-color: var(--ah-accent);
-      color: #fff;
-      font-weight: 600;
-    }
-    .add-actions .btn.primary:hover {
-      background: var(--ah-accent-strong);
-      border-color: var(--ah-accent-strong);
-    }
-    .add-actions .btn:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-    .add-actions .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    /* 自定义模型条目：主体（选择）+ 右侧操作 icon 按钮 */
-    .item.custom-item {
-      padding: 0;
-    }
-    .custom-main {
-      flex: 1 1 auto;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7px 12px;
-      text-align: left;
-      cursor: pointer;
-      word-break: break-all;
-    }
-    .custom-actions {
-      display: flex;
-      gap: 2px;
-      flex: 0 0 auto;
-    }
-    .custom-icon-btn {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-      cursor: pointer;
-      padding: 6px 8px;
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: color 100ms ease, background 100ms ease;
-    }
-    .custom-icon-btn:hover {
-      color: var(--ah-text);
-      background: rgba(125, 125, 125, 0.15);
-    }
-    .custom-icon-btn.delete:hover {
-      color: var(--ah-danger);
-      background: var(--ah-danger-soft);
-    }
-    .custom-icon-btn svg {
-      width: 14px;
-      height: 14px;
-      display: block;
-    }
-  `;
+      /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
+      @media (max-width: 600px) {
+        .trigger {
+          max-width: 40px;
+          padding: 0;
+          justify-content: center;
+          overflow: hidden;
+        }
+        .trigger:hover {
+          padding: 0;
+        }
+        .trigger .name,
+        .trigger > svg:not(.vlogo) {
+          display: none;
+        }
+        /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      }
+      /* 厂商徽标 */
+      .vlogo {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fff;
+        flex: 0 0 auto;
+        line-height: 1;
+      }
+      .vlogo-sys {
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+      }
+      /* 面板容器 */
+      .panel {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        right: 0;
+        width: min(92vw, 300px);
+        max-height: min(70vh, 460px);
+        background: var(--ah-surface-2, #1c1c1c);
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 14px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 30;
+      }
+      .panel-head {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--ah-border, #2a2a2a);
+      }
+      /* 搜索框：独立圆角容器 + 前缀图标，从面板中清晰独立出来（原先几乎与背景融为一体）。 */
+      .panel-head .search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--ah-surface-3, rgba(125, 125, 125, 0.1));
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 10px;
+        padding: 7px 10px;
+        transition: border-color 0.15s ease;
+      }
+      .panel-head .search:focus-within {
+        border-color: var(--ah-accent, #2997ff);
+      }
+      .panel-head .search > svg {
+        width: 15px;
+        height: 15px;
+        color: var(--ah-text-muted, #9e9e9e);
+        flex: 0 0 auto;
+      }
+      .panel-head input {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        background: transparent;
+        color: var(--ah-text);
+        border: none;
+        outline: none;
+        font: inherit;
+        font-size: 13px;
+      }
+      .panel-body {
+        overflow-y: auto;
+        padding: 6px 0;
+      }
+      /* 分组标题 */
+      .group-title {
+        font-size: 11px;
+        color: var(--ah-text-muted, #9e9e9e);
+        padding: 8px 14px 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        user-select: none;
+      }
+      /* 模型条目 */
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 12px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .item:hover {
+        background: rgba(125, 125, 125, 0.12);
+      }
+      /* 选中态：低饱和强调色背景 + 左侧 3px 强调线（inset，不挤压布局），
+       避免原先「红色描边」易被误读为错误提示的观感；明暗主题自适应。 */
+      .item.active {
+        background: var(--ah-accent-soft, rgba(41, 151, 255, 0.14));
+        box-shadow: inset 3px 0 0 0 var(--ah-accent, #2997ff);
+      }
+      .item.active:hover {
+        background: color-mix(in srgb, var(--ah-accent) 20%, transparent);
+      }
+      .item.active .name {
+        font-weight: 500;
+      }
+      .item .name {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 13px;
+        line-height: 32px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 15px;
+      }
+      .item .check {
+        width: 16px;
+        height: 16px;
+        color: var(--ah-accent, #2997ff);
+        flex: 0 0 auto;
+      }
+      /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
+       否则二者在触屏端（常显）会重叠。 */
+      .item.custom-item.active {
+        padding-right: 68px;
+      }
+      /* 底部操作行 */
+      .footer {
+        display: flex;
+        border-top: 1px solid var(--ah-border, #2a2a2a);
+      }
+      .footer button {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+        font: inherit;
+        font-size: 12px;
+        line-height: 16px;
+        cursor: pointer;
+        padding: 11px 4px;
+        flex: 1 1 auto;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .footer button:hover {
+        color: var(--ah-text);
+        background: rgba(125, 125, 125, 0.1);
+      }
+      .footer button + button {
+        border-left: 1px solid var(--ah-border, #2a2a2a);
+      }
+      /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
+      .add-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--ah-border, #2a2a2a);
+      }
+      .add-row input {
+        background: transparent;
+        color: var(--ah-text);
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 10px;
+        padding: 8px 10px;
+        outline: none;
+        font: inherit;
+        font-size: 13px;
+      }
+      .add-row input:focus {
+        border-color: var(--ah-accent, #2997ff);
+      }
+      /* 编辑态下「已保存 Key 不回显，留空即保留」的辅助提示。 */
+      .add-row .hint {
+        font-size: 12px;
+        color: var(--ah-text-muted, #9e9e9e);
+        line-height: 1.5;
+      }
+      .add-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+      /* 复用全应用统一 .btn 体系（与 ah-modal / ah-drawer 一致），保证视觉统一。 */
+      .add-actions .btn {
+        min-width: 76px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-family: var(--ah-font-sans);
+        cursor: pointer;
+        border-radius: var(--ah-radius-md);
+        border: 1px solid var(--ah-border);
+        transition: background 120ms ease, border-color 120ms ease,
+          color 120ms ease;
+      }
+      .add-actions .btn.ghost {
+        background: transparent;
+        color: var(--ah-text-muted);
+      }
+      .add-actions .btn.ghost:hover {
+        color: var(--ah-text);
+        border-color: var(--ah-text-faint);
+      }
+      .add-actions .btn.primary {
+        background: var(--ah-accent);
+        border-color: var(--ah-accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .add-actions .btn.primary:hover {
+        background: var(--ah-accent-strong);
+        border-color: var(--ah-accent-strong);
+      }
+      .add-actions .btn:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
+      .add-actions .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      /* 自定义模型条目 */
+      .item.custom-item {
+        padding: 0;
+        position: relative; /* 作为 .custom-actions 的绝对定位参照，避免脱到父面板 */
+      }
+      .custom-main {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 12px;
+        text-align: left;
+        cursor: pointer;
+        word-break: break-all;
+      }
+      .custom-actions {
+        display: none;
+        position: absolute;
+        right: 4px;
+        flex: 0 0 auto;
+        z-index: 1;
+      }
+      /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。
+       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。 */
+      @media (hover: hover) {
+        .item.custom-item:hover .custom-actions {
+          display: flex;
+        }
+      }
+      @media (hover: none) {
+        .custom-actions {
+          display: flex;
+        }
+      }
+      .custom-icon-btn {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: color 100ms ease, background 100ms ease;
+      }
+      .custom-icon-btn:hover {
+        color: var(--ah-text);
+        background: rgba(125, 125, 125, 0.15);
+      }
+      .custom-icon-btn.delete:hover {
+        color: var(--ah-danger);
+        background: var(--ah-danger-soft);
+      }
+      .custom-icon-btn svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
+    `,
+    mobilePill
+  ];
 
   @property({ attribute: false }) model = '';
   @property({ attribute: false }) deepThink = false;
@@ -365,6 +446,9 @@ export class AhModelPicker extends LitElement {
 
   /** 是否正在保存到后端（按钮 loading 态）。 */
   @state() private saving = false;
+
+  /** 「配置 API Key」整屏抽屉开关（替代原 ah-goto 切 Tab 行为，直达「模型与密钥」分组）。 */
+  @state() private keyDrawerOpen = false;
 
   /**
    * 「刷新」拉取在线模型清单（含官方上下文窗口；失败为空、回退本地清单）。
@@ -474,7 +558,11 @@ export class AhModelPicker extends LitElement {
      */
     this.dispatchEvent(
       new CustomEvent('model-change', {
-        detail: { model: id, ctx: id ? this.ctxFor(id) : 0, baseUrl: id ? this.baseUrlFor(id) : '' },
+        detail: {
+          model: id,
+          ctx: id ? this.ctxFor(id) : 0,
+          baseUrl: id ? this.baseUrlFor(id) : ''
+        },
         bubbles: true,
         composed: true
       })
@@ -558,7 +646,9 @@ export class AhModelPicker extends LitElement {
     }
   }
 
-  /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。 */
+  /** 打开编辑框：预填该自定义模型的现有配置（仅 API Key 可改）。
+   *  明文 Key 永不出网、不能回显：已保存 Key 以掩码提示，留空即保留原 Key，
+   *  粘贴新值则全量替换。 */
   private startEdit(id: string) {
     const c = this.customs.find((x) => x.id === id);
     if (!c) return;
@@ -566,7 +656,6 @@ export class AhModelPicker extends LitElement {
     this.adding = true;
     this.draftId = c.id;
     this.draftBaseUrl = c.baseUrl ?? '';
-    // API Key 不可回显（服务端仅返回掩码），编辑时如需更换 Key 需重新输入。
     this.draftApiKey = '';
   }
 
@@ -580,6 +669,7 @@ export class AhModelPicker extends LitElement {
     // 明文 Key 直接提交，由服务端 AES-GCM 加密落库（前端不再持有任何密钥材料）。
     // 同步到后端 SQLite。
     this.saving = true;
+    let ok = false;
     try {
       const body: Record<string, unknown> = {
         id,
@@ -592,6 +682,7 @@ export class AhModelPicker extends LitElement {
         body: JSON.stringify(body)
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      ok = true;
     } catch (e) {
       // 写库失败必须让用户知道：此前静默忽略会让人误以为已保存，
       // 结果刷新后自定义模型消失。
@@ -603,24 +694,11 @@ export class AhModelPicker extends LitElement {
     } finally {
       this.saving = false;
     }
-    // 本地状态同步。
-    const rest = this.customs.filter((c) => c.id !== id);
-    const prev = editing ? this.customs.find((c) => c.id === id) : undefined;
-    this.customs = [
-      {
-        id,
-        // 编辑态：接口地址与模型名称锁定不可改，保留原值；仅 API Key 可更新。
-        ...(editing
-          ? prev?.baseUrl
-            ? { baseUrl: prev.baseUrl }
-            : {}
-          : baseUrl
-          ? { baseUrl }
-          : {}),
-        ...(apiKey ? { keyHint: '已配置' } : {})
-      },
-      ...rest
-    ];
+    // 保存成功后重新从后端拉取最新自定义模型列表，确保本地状态与服务端一致。
+    // 此前仅做乐观更新，可能因并发 / 缓存而与服务端不一致（如 keyHint 掩码未同步）。
+    if (ok) {
+      await this.loadCustoms();
+    }
     this.draftId = '';
     this.draftBaseUrl = '';
     this.draftApiKey = '';
@@ -840,7 +918,9 @@ export class AhModelPicker extends LitElement {
                 const active = this.model === id;
                 return html`
                   <div
-                    class="item ${this.isCustom(id) ? 'custom-item' : ''}"
+                    class="item ${this.isCustom(id)
+                      ? 'custom-item'
+                      : ''} ${active ? 'active' : ''}"
                     @click=${() => this.pick(id)}
                   >
                     ${this.isCustom(id)
@@ -853,9 +933,21 @@ export class AhModelPicker extends LitElement {
                               this.startEdit(id);
                             }}
                           >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
+                              />
+                              <path
+                                d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
+                              />
                             </svg>
                           </button>
                           <button
@@ -867,12 +959,22 @@ export class AhModelPicker extends LitElement {
                               this.deleteCustom(id);
                             }}
                           >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <polyline points="3 6 5 6 21 6"/>
-                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                              <path d="M10 11v6"/>
-                              <path d="M14 11v6"/>
-                              <path d="M9 6V4h6v2"/>
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <polyline points="3 6 5 6 21 6" />
+                              <path
+                                d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
+                              />
+                              <path d="M10 11v6" />
+                              <path d="M14 11v6" />
+                              <path d="M9 6V4h6v2" />
                             </svg>
                           </button>
                         </span>`
@@ -977,12 +1079,26 @@ export class AhModelPicker extends LitElement {
         ${this.open
           ? html`<div class="panel" role="listbox">
               <div class="panel-head">
-                <input
-                  placeholder="搜索模型…"
-                  .value=${this.query}
-                  @input=${(e: Event) =>
-                    (this.query = (e.target as HTMLInputElement).value)}
-                />
+                <div class="search">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                  <input
+                    placeholder="搜索模型…"
+                    .value=${this.query}
+                    @input=${(e: Event) =>
+                      (this.query = (e.target as HTMLInputElement).value)}
+                  />
+                </div>
               </div>
               <div class="panel-body">
                 ${showFree
@@ -1009,16 +1125,7 @@ export class AhModelPicker extends LitElement {
                 >
                   ${this.adding ? '取消添加' : '添加自定义模型'}
                 </button>
-                <button
-                  @click=${() =>
-                    this.dispatchEvent(
-                      new CustomEvent('ah-goto', {
-                        detail: 'settings',
-                        bubbles: true,
-                        composed: true
-                      })
-                    )}
-                >
+                <button @click=${() => (this.keyDrawerOpen = true)}>
                   配置 API Key
                 </button>
               </div>
@@ -1039,14 +1146,21 @@ export class AhModelPicker extends LitElement {
                         ).value)}
                     />
                     <input
-                      placeholder="API Key（可选，将加密保存）"
-                      .value=${this.draftApiKey}
                       type="password"
-                      @input=${(e: Event) =>
-                        (this.draftApiKey = (
-                          e.target as HTMLInputElement
-                        ).value)}
+                      placeholder=${this.editingId
+                        ? 'API Key（可选；留空保留已保存 Key）'
+                        : 'API Key（可选，将加密保存）'}
+                      .value=${this.draftApiKey}
+                      @input=${(e: Event) => {
+                        this.draftApiKey = (e.target as HTMLInputElement).value;
+                      }}
                     />
+                    ${this.editingId
+                      ? html`<span class="hint">
+                          已保存 Key 不回显；留空即保留原
+                          Key，粘贴新值则全量替换。
+                        </span>`
+                      : nothing}
                     <div class="add-actions">
                       <button
                         type="button"
@@ -1074,6 +1188,24 @@ export class AhModelPicker extends LitElement {
             </div>`
           : nothing}
       </div>
+      ${this.keyDrawerOpen
+        ? html`<ah-drawer
+            .open=${this.keyDrawerOpen}
+            placement="right"
+            title="设置"
+            size="100vw"
+            ?mask=${true}
+            ?esc-closable=${true}
+            ?show-close=${true}
+            ?fullscreen=${true}
+            @close=${() => (this.keyDrawerOpen = false)}
+          >
+            <ah-settings-center
+              group="keys"
+              .groupSeq=${1}
+            ></ah-settings-center>
+          </ah-drawer>`
+        : ''}
     `;
   }
 
@@ -1102,11 +1234,22 @@ export class AhModelPicker extends LitElement {
       if (!inside) this.toggle(false);
     };
     document.addEventListener('pointerdown', this.onDocPointerDown, true);
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this.onDocPointerDown)
       document.removeEventListener('pointerdown', this.onDocPointerDown, true);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
   }
+
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起浮层。
+   * 本组件常驻在对话页、切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+   * 侧滑返回后再次进入对话页会看到上次遗留的展开下拉（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = () => {
+    if (this.open) this.toggle(false);
+  };
 }

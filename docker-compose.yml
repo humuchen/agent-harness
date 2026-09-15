@@ -44,6 +44,28 @@ services:
       RAG_TRANSPORT: '${RAG_TRANSPORT:-mcp}'
       RAG_TENANT_ID: '${RAG_TENANT_ID:-default}'
       RAG_DATA_FILE: '${RAG_DATA_FILE:-data/rag-store.json}'
+      # ── 外部 HermesChat RAG 接入（经 host.docker.internal 访问宿主外部栈）──
+      # 核心内置检索工具 builtin__rag_retrieve 指向外部 /api/v1/chat（RAG_API_STYLE=hermes 时取 citations 回灌）。
+      RAG_URL: '${RAG_URL:-}'
+      RAG_API_STYLE: '${RAG_API_STYLE:-}'
+      RAG_TOKEN: '${RAG_TOKEN:-}'
+      # 外部 /api/v1/chat 在本机 CPU-only ollama 下约 100s+，务必放宽超时避免检索被中断。
+      RAG_TIMEOUT_MS: '${RAG_TIMEOUT_MS:-180000}'
+      # 医美插件 project_kb_search 走外部 /api/v1/chat。
+      MA_RAG_BASE_URL: '${MA_RAG_BASE_URL:-}'
+      MA_RAG_API_STYLE: '${MA_RAG_API_STYLE:-}'
+      MA_RAG_TOKEN: '${MA_RAG_TOKEN:-}'
+      MA_RAG_TIMEOUT_MS: '${MA_RAG_TIMEOUT_MS:-180000}'
+      # 本地 RAG 生成层（services/rag 的 rag_generate）所需 OpenAI 兼容 LLM。
+      # 透传到 ui 容器 → access/server → rag MCP 子进程；不设则 rag_generate 报 MCP -32000。
+      RAG_LLM_BASE_URL: '${RAG_LLM_BASE_URL:-}'
+      RAG_LLM_API_KEY: '${RAG_LLM_API_KEY:-}'
+      RAG_LLM_MODEL: '${RAG_LLM_MODEL:-agnes-3.0-flash}'
+      # 外部 Docker RAG 栈的 embed-server（如 HermesChat/rag-knowledge 的 embed-server）。
+      # 容器通过 host.docker.internal 访问宿主机端口 8001。
+      # embed-server 宕机/模型未就绪时，services/rag 自动降级到 HashEmbedding，检索闭环不中断。
+      RAG_EMBEDDING_ENDPOINT_URL: '${RAG_EMBEDDING_ENDPOINT_URL:-http://host.docker.internal:8001/embeddings}'
+      RAG_EMBED_DIM: '${RAG_EMBED_DIM:-1024}' # BGE-M3 输出 1024 维，必须与 embed-server 一致
       # ── 启动强校验（P2）：AH_STARTUP_CRITICAL=1 时关键配置校验失败直接阻断启动
       AH_STARTUP_CRITICAL: '1'
       # 账户 token 签名密钥：缺失则 getAuthSecret() 每进程随机生成，签发/验证密钥不一致 → 登录态全部失效。
@@ -59,8 +81,13 @@ services:
       LOG_SCRUB_ENABLED: 'true'
       # ── 指标持久化（P2）：跨重启保留累计计数 / token / 成本 / 租户维度
       TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
+      # ── 自定义模型持久化路径（P1 排障修复） ──
+      # 默认 custom-models.db 落在 /var/lib/agent-harness/，该路径未被任何卷挂载，
+      # 容器重建/重启即丢失全部自定义模型。改指到已挂载的持久卷 /app/data 下，
+      # 与记忆/遥测/告警同卷，重启不丢。备份目录一并迁移，避免备份也写在临时层。
+      CUSTOM_MODELS_DB_FILE: '/app/data/custom-models.db'
       # Go-live：备份与恢复配置
-      AH_BACKUP_DIR: '/var/lib/agent-harness/backups'
+      AH_BACKUP_DIR: '/app/data/backups'
       AH_BACKUP_KEEP_DAYS: '30'
       # ── 生产模式切换（开发模式默认关闭） ────────────────────────────
       # 生产部署建议使用 docker-compose.prod.yml 覆盖以下变量：

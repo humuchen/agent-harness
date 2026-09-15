@@ -13,13 +13,23 @@ import './panels';
 import './run';
 import './chat';
 import './dashboard';
+import './workspace';
+import './audit';
+import './org-tree';
+import './artifact-library';
+import './skill-manager';
+import './data-source-ui';
+import './sandbox-console';
+import './supply-chain';
 import './observability';
 import './login';
+import './brand';
+import './plan-board';
 // 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。
 import './components';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
-import { getToken, setSession, clearSession, scheduleAutoRefresh } from './api';
+import { isAuthed, setSession, clearSession, scheduleAutoRefresh } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 
@@ -37,12 +47,18 @@ function mountLogin(): void {
   document.body.appendChild(document.createElement('ah-login'));
 }
 
-// 首屏按当前 token 落地：未登录 → 登录页；已登录 → 控制台。
+// 首屏按当前会话落地：已登录（本地有用户名）→ 控制台；否则→ 登录页。
 // OAuth 回调场景：浏览器带 ah_auth cookie 回到 ?oauth=success，但本地尚无用户名记录，
 // 此时需先打 /api/account/me 用 cookie 回填会话，再进控制台（满足 x-ah-username 双因子）。
+// 注意：OAuth 用户不经过账号密码接口，因此不写入 ah_token；会话存在性仅凭用户名判断。
 const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'success';
+
+// P3-1：加载品牌配置并应用主题色。脱离品牌不影响应用主流程。
+import { initBrand } from './theme/tokens';
+initBrand().catch(() => {});
+
 async function bootstrap(): Promise<void> {
-  if (getToken()) {
+  if (isAuthed()) {
     mountApp();
     return;
   }
@@ -92,4 +108,11 @@ window.addEventListener('ah-session-expired', () => {
     key: 'session-expired',
     duration: 0
   });
+});
+
+// 设置页「清除数据」：本地凭据已被清空 → 切回登录页。
+// 不做整页 reload：既更快，也不会把「已清除」的结果提示一起刷掉（提示由设置页自己弹）。
+window.addEventListener('ah-session-cleared', () => {
+  clearSession();
+  mountLogin();
 });

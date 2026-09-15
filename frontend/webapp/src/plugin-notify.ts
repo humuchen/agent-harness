@@ -86,13 +86,30 @@ function ensureDesktopPermission(): NotificationPermission {
  * @returns 是否真的弹出了桌面通知——false 表示「只有应用内 toast 兜底」，
  *          调用方据此升级提示强度并累加未读（后台标签页看不到 toast，容易整个错过）。
  */
-function fireDesktop(r: ReminderDto): boolean {
+async function fireDesktop(r: ReminderDto): Promise<boolean> {
+  // Capacitor 原生环境：使用 Capacitor LocalNotifications
+  if (typeof window !== 'undefined' && (window as any).Capacitor?.isNativePlatform?.()) {
+    try {
+      const { LocalNotifications } = (window as any).Capacitor.Plugins;
+      await LocalNotifications.requestPermissions();
+      await LocalNotifications.schedule({
+        notifications: [{
+          title: '备忘提醒',
+          body: r.tag ? `[${r.tag}] ${r.text}` : r.text,
+          id: Math.floor(Math.random() * 100000),
+        }]
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  // 浏览器环境
   if (ensureDesktopPermission() !== 'granted') return false;
   try {
     const n = new Notification('备忘提醒', {
       body: r.tag ? `[${r.tag}] ${r.text}` : r.text,
       tag: `memo-remind-${r.id}`,
-      // 桌面通知常驻等待用户处理：它不占页面空间，无需像 toast 那样急着消失。
       requireInteraction: true,
     });
     n.onclick = () => {
@@ -101,13 +118,12 @@ function fireDesktop(r: ReminderDto): boolean {
     };
     return true;
   } catch {
-    /* 非用户手势下构造 Notification 可能抛错，降级为仅应用内 toast */
     return false;
   }
 }
 
 /** 弹应用内通知 + 桌面通知，并 ack 服务端落盘（幂等）。 */
-function surface(r: ReminderDto): void {
+async function surface(r: ReminderDto): Promise<void> {
   if (shown.has(r.id)) return;
   shown.add(r.id);
 
@@ -116,7 +132,7 @@ function surface(r: ReminderDto): void {
   const title = when ? `备忘提醒 · ${when}` : '备忘提醒';
 
   // 先尝试桌面通知：它能在标签页后台时触达用户，是「不漏提醒」的主通道。
-  const desktopOk = fireDesktop(r);
+  const desktopOk = await fireDesktop(r);
 
   if (desktopOk) {
     notify.info(body, {
@@ -182,10 +198,10 @@ export function clearReminderUnread(): void {
 }
 
 /** 处理一条提醒事件（SSE 或轮询均走此入口）。 */
-function handleReminder(e: unknown): void {
+async function handleReminder(e: unknown): Promise<void> {
   const r = e as ReminderDto & { type?: string };
   if (!r || typeof r.id !== 'string') return;
-  surface(r);
+  await surface(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +221,9 @@ async function pollOnce(): Promise<void> {
     });
     if (!res.ok) return;
     const data = (await res.json()) as { pending?: ReminderDto[] };
-    for (const r of data.pending ?? []) handleReminder(r);
+    for (const r of data.pending ?? []) {
+      await handleReminder(r);
+    }
   } catch {
     /* 网络/鉴权失败静默：下次轮询继续 */
   } finally {
@@ -283,7 +301,7 @@ function startSse(): void {
             try {
               const parsed = JSON.parse(data) as { type?: string };
               if (parsed.type === 'memo:reminder') {
-                handleReminder(parsed);
+                void handleReminder(parsed);
               }
             } catch {
               /* 坏消息跳过 */

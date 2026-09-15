@@ -15,9 +15,11 @@
  *   el.addEventListener('files-changed', (e) => agentContext.set('files', e.detail));
  */
 import { LitElement, html, css } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { UploadedFile } from '../agent-context';
 import { uploadFileToApi } from '../utils/upload';
+import { compressImage } from '../utils/compress-image';
 
 /** 上传状态枚举。 */
 type UploadStatus = 'pending' | 'uploading' | 'done' | 'error';
@@ -31,7 +33,7 @@ interface UploadedFileWithStatus extends UploadedFile {
 
 @customElement('ah-file-upload')
 export class AhFileUpload extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: block;
     }
@@ -176,7 +178,7 @@ export class AhFileUpload extends LitElement {
         font-size: 16px;
       }
     }
-  `;
+  `, mobilePill];
 
   /** 当前已选附件（受控：父组件也可直接写入）。 */
   @property({ type: Array })
@@ -285,7 +287,7 @@ export class AhFileUpload extends LitElement {
                     const idx = this.files.findIndex((u) => u === base);
                     if (idx >= 0) {
                       this.files = this.files.map((u, i) =>
-                        i === idx ? { ...u, status: ok ? 'done' : 'error', error: ok ? undefined : '上传失败' } : u
+                        i === idx ? { ...u, status: ok ? 'done' : 'error' } : u
                       );
                       this.emit();
                     }
@@ -312,11 +314,17 @@ export class AhFileUpload extends LitElement {
   /** 把文件 POST 到 /api/upload，返回是否成功，并回填 serverUrl。 */
   private async uploadToServer(file: UploadedFileWithStatus): Promise<boolean> {
     if (!file.file) return false;
-    const res = await uploadFileToApi(file.file);
+    const uploadFile = file.file.type.startsWith('image/')
+      ? await compressImage(file.file)
+      : file.file;
+    const res = await uploadFileToApi(uploadFile);
     if (res.ok && res.url) {
       file.serverUrl = res.url;
       return true;
     }
+    file.error = res.error && /request body too large/i.test(res.error)
+      ? '图片体积过大，被服务端拒绝'
+      : res.error || '上传失败';
     return false;
   }
 

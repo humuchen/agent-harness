@@ -97,6 +97,11 @@ export interface ChatSession {
   model?: string;
   /** 定向业务 agent id（空=默认通用 Agent），按会话持久化，供跨设备对齐。 */
   agentId?: string;
+  /**
+   * 归属工作空间 id（参考图能力链路 User → Workspace → …）。
+   * 可选：旧数据 / 未指定时视为「未归类」，由前端归入默认空间展示。
+   */
+  workspaceId?: string;
 }
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
@@ -147,6 +152,61 @@ export function listChatSessions(owner?: string): ChatSession[] {
   const all = [...sessions.values()];
   const filtered = owner ? all.filter((s) => s.owner === owner) : all;
   return filtered.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * 单页条数上限：与 memo / registry 等既有列表接口一致地做钳制，
+ * 防止客户端传超大 limit 把整个会话表（含消息）一次拉走。
+ */
+export const CHAT_SESSION_MAX_PAGE = 200;
+
+/**
+ * 解析列表查询参数（原始字符串来源，容错）。
+ * 非法值（NaN / 负数 / 空串）一律回落到缺省语义：limit 缺省 = 全量、offset 缺省 = 0。
+ * 独立导出以便单测覆盖边界。
+ */
+export function parseSessionPageQuery(q: {
+  limit?: string | null;
+  offset?: string | null;
+}): { limit?: number; offset: number } {
+  const limitRaw = Number(q.limit);
+  // 注意 Number(null) === 0、Number('') === 0，故「未传/空串」自然落入缺省分支。
+  const limit =
+    Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(CHAT_SESSION_MAX_PAGE, Math.floor(limitRaw))
+      : undefined;
+  const offsetRaw = Number(q.offset);
+  const offset =
+    Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+  return { limit, offset };
+}
+
+/**
+ * 分页列出会话（按最近更新倒序）——「历史列表滚动加载」的服务端入口。
+ *
+ * - 不传 limit 时返回自 offset 起的全部条目，保持既有「全量」契约向后兼容
+ *   （老客户端不传分页参数时行为与改造前一致）。
+ * - 返回 total / hasMore：total 为过滤后的全量条数（不受分页影响），
+ *   hasMore 由「已取到的末尾是否已到全量末尾」推导，前端据此决定是否继续取下一页。
+ *
+ * 排序键是会变动的 updatedAt，故 offset 分页在「翻页间隙有会话被更新/新建」时
+ * 可能出现个别条目重复或跳过；前端按 id 去重（见 chat-session-page.ts）已覆盖前者。
+ */
+export function listChatSessionsPage(
+  owner?: string,
+  opts: { limit?: number; offset?: number } = {}
+): { sessions: ChatSession[]; total: number; hasMore: boolean } {
+  const sorted = listChatSessions(owner);
+  const total = sorted.length;
+  const rawOffset = Math.floor(opts.offset ?? 0);
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+  // 缺省 limit = 「从 offset 到末尾」的全部剩余条目。
+  const limit =
+    opts.limit === undefined
+      ? Math.max(0, total - offset)
+      : Math.max(1, Math.min(CHAT_SESSION_MAX_PAGE, Math.floor(opts.limit) || 0));
+  const page = sorted.slice(offset, offset + limit);
+  return { sessions: page, total, hasMore: offset + page.length < total };
 }
 
 /**
@@ -220,7 +280,8 @@ export function createChatSession(
     owner,
     ...(meta?.interactionMode ? { interactionMode: meta.interactionMode } : {}),
     ...(meta?.model ? { model: meta.model } : {}),
-    ...(meta?.agentId ? { agentId: meta.agentId } : {})
+    ...(meta?.agentId ? { agentId: meta.agentId } : {}),
+    ...(meta?.workspaceId ? { workspaceId: meta.workspaceId } : {})
   };
   sessions.set(session.id, session);
   persist();
@@ -239,6 +300,8 @@ export interface ChatSessionMeta {
   interactionMode?: 'qa' | 'plan';
   model?: string;
   agentId?: string;
+  /** 归属工作空间 id（可选，见 ChatSession.workspaceId）。 */
+  workspaceId?: string;
 }
 
 export async function renameChatSession(
@@ -279,6 +342,7 @@ export async function renameChatSession(
     if (meta.interactionMode !== undefined) s.interactionMode = meta.interactionMode;
     if (meta.model !== undefined) s.model = meta.model;
     if (meta.agentId !== undefined) s.agentId = meta.agentId;
+    if (meta.workspaceId !== undefined) s.workspaceId = meta.workspaceId;
   }
   s.updatedAt = Date.now();
   persist();
@@ -403,6 +467,21 @@ export function appendChatMessage(
 }
 
 /**
+ * 计划任务派发消息前缀：`【计划任务 <id>】标题`，由 webapp `confirmPlan` 生成。
+ * 两侧格式必须保持一致；此处对 id 宽匹配（`t1` / `1` / `task-1` 均可）——
+ * planner 提示词只「建议」用 tN 命名，旧实现只认 `t\d+`，会把其它命名的计划
+ * 任务全部漏记，镜像恒空 → 刷新后计划卡片回落为「待确认」。
+ */
+const PLAN_TASK_DISPATCH_RE = /^【计划任务\s*([^】]+)】/;
+
+/** 从 run:start 的 input 提取计划任务 id；非「计划任务派发」返回 null。 */
+export function extractPlanTaskId(input: unknown): string | null {
+  const m = PLAN_TASK_DISPATCH_RE.exec(typeof input === 'string' ? input : '');
+  const id = m?.[1]?.trim();
+  return id ? id : null;
+}
+
+/**
  * 计划模式（P0）：更新会话内携带计划的最新一条 assistant 消息的执行进度镜像。
  * 服务端在任务派发/完成/失败事件时调用，把任务级状态随消息持久化 ——
  * 前端刷新 / 切回 / 服务重启后据此还原计划卡片并支持「从失败任务继续」。
@@ -425,9 +504,38 @@ export function updatePlanStatus(
         status: 'running',
         done: []
       };
-      m.planStatus = mutate({ ...prev, done: [...prev.done] });
+      m.planStatus = finalizePlanStatus(
+        mutate({ ...prev, done: [...prev.done] }),
+        (m.plan.tasks ?? []).map((t) => t.id)
+      );
       persist();
       return;
     }
   }
+}
+
+/**
+ * 计划状态收敛：全部任务均已完成后固化 `done`。
+ *
+ * 为什么必须由服务端补这一步：任务派发 / 完成事件只携带「当前任务」，服务端据此推出
+ * 的 done 集合已足以判定整体完成 —— 但此前恒返回 `running`，镜像永远表达不出「已完成」。
+ * 后果是刷新 / 换设备恢复时前端只能把 running 收敛为 failed（视为执行中断），
+ * 已成功的计划被显示成「执行失败」。
+ *
+ * 仅当计划任务 id 全部落在 done 内才固化；任一状态为 failed 时保持 failed（不掩盖错误）。
+ */
+export function finalizePlanStatus(
+  st: PlanExecMirror,
+  taskIds: readonly string[]
+): PlanExecMirror {
+  if (st.status === 'failed' || st.status === 'cancelled') return st;
+  const ids = taskIds.filter((t): t is string => typeof t === 'string' && !!t);
+  if (!ids.length) return st;
+  if (!ids.every((tid) => st.done.includes(tid))) return st;
+  return {
+    status: 'done',
+    done: [...st.done],
+    currentTaskId: undefined,
+    failedTaskId: undefined
+  };
 }

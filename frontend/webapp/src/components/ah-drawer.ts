@@ -1,51 +1,37 @@
-import { basename } from 'node:path';
 /**
- * ah-drawer：通用抽屉组件（components 目录 · 全应用唯一的侧滑抽屉原语）。
+ * ah-drawer：通用抽屉组件（mac-ui 适配层）
+ * ---------------------------------------------------------------
+ * 基于 @humuchen/mac-ui 的 MacDrawer 实现，保持原有 AhDrawer 公开 API 不变：
+ *   - 四个滑入方向：left / right（默认）/ top / bottom
+ *   - 声明式 API：<ah-drawer ?open placement title size mask mask-closable esc-closable show-close>
+ *   - 事件：@close(detail: "esc"|"mask"|"button"), @ah-open, @ah-confirm
  *
- * 取代散落在各处的移动端侧栏 / 临时浮层抽屉，提供：
- * - 四个滑入方向：left（左侧滑入）/ right（右侧滑入，默认）/ top（顶部下拉）/ bottom（底部上拉）。
- * - 声明式 API：
- *     <ah-drawer ?open placement title size mask mask-closable esc-closable show-close
- *       @ah-open=... @close=...>
- *       <p>默认插槽：抽屉主体内容</p>
- *       <div slot="footer">底部操作区</div>
- *     </ah-drawer>
- * - 关闭途径：Esc（escClosable 可关）/ 遮罩点击（mask + maskClosable 可关）/ × 按钮（showClose）。
- *   组件先播离场动画再置 open=false 并派发 close，调用方只需在 @close 里复位自己的 open 状态。
- * - 无障碍：role=dialog + aria-modal + aria-labelledby；打开时焦点移入面板（有标题则聚焦关闭按钮、
- *   否则聚焦面板）、Tab 焦点圈闭环、关闭后焦点归还触发元素、prefers-reduced-motion 下禁用动画。
- * - 滚动锁定：仅当显示遮罩（mask）时锁定 document.body 滚动，关闭后还原（与 app.ts 移动端抽屉一致）。
- * - 主题：仅引用 --ah-* 令牌，深浅色主题与全应用一致。
+ * 实现方式：由于 MacDrawer 使用 portal 机制将子节点移到 document.body，导致
+ * shadow DOM 内的样式（chat-styles.ts 等）全部丢失。因此本组件在 shadow DOM
+ * 内自行渲染抽屉面板，仅复用 mac-ui 的视觉令牌（--md-drawer-*）。
  *
- * 命名空间与 ah-modal 对齐：打开完成派发 `ah-open`，关闭完成派发 `close`（detail 为发起方式
- * "esc" | "mask" | "button"），调用方通常 @close=${() => (this.open = false)}。
- *
- * 用法示例：
- *   <ah-drawer
- *     ?open=${this.showFilter}
- *     placement="right"
- *     title="筛选"
- *     size="360px"
- *     @close=${() => (this.showFilter = false)}
- *   >
- *     <div class="filter-body">…</div>
- *     <div slot="footer"><button @click=${this.apply}>应用</button></div>
- *   </ah-drawer>
+ * 路由联动（统一约定，见 ah-app 的 closeAllOverlays）：
+ *   ah-app 在 Tab 切换 / 浏览器后退前进时向 window 广播 `ah:close-overlays`，
+ *   本组件收到后立即关闭并派发 close 事件（跳过离场动画）。
+ *   原因：移动端侧滑返回只改 history、不动组件内部状态，抽屉宿主往往不会收到任何
+ *   回调（如「我的」面板被父级 hidden，ah-user-menu 不会重新渲染），导致抽屉
+ *   「悬浮」到新页面上。所有 ah-* 覆盖层组件（ah-drawer / ah-modal /
+ *   ah-password-dialog）都订阅同一事件，保证关闭行为一致。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { PropertyValues } from 'lit';
 
 export type DrawerPlacement = 'left' | 'right' | 'top' | 'bottom';
-/** 关闭发起方式，随 close 事件 detail 派发，便于调用方区分场景。 */
 export type DrawerCloseReason = 'esc' | 'mask' | 'button';
 
-/** 离场动画时长（ms），与 CSS .leaving 过渡保持一致。 */
+/** 离场动画时长（ms），与 mac-ui 保持一致。 */
 const LEAVE_MS = 220;
 
 @customElement('ah-drawer')
 export class AhDrawer extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: none;
     }
@@ -65,7 +51,7 @@ export class AhDrawer extends LitElement {
     .scrim {
       position: absolute;
       inset: 0;
-      background: rgba(0, 0, 0, 0.45);
+      background: var(--md-drawer-mask-bg, rgba(0, 0, 0, 0.45));
       pointer-events: auto;
       opacity: 0;
       animation: ahd-scrim-in 0.22s ease forwards;
@@ -110,11 +96,15 @@ export class AhDrawer extends LitElement {
       pointer-events: auto;
       display: flex;
       flex-direction: column;
-      background: var(--ah-surface-1);
+      background: var(--md-drawer-bg, var(--ah-surface-1));
       color: var(--ah-text);
-      border: 1px solid var(--ah-border);
+      border: 1px solid var(--md-drawer-border, var(--ah-border));
       box-shadow: var(--ah-shadow);
       overflow: hidden;
+      /* 安全区内边距要算进面板总高，避免大屏刘海机因 padding 顶出视口、
+         底部内容被面板自身 overflow:hidden 裁掉。 */
+      box-sizing: border-box;
+      max-height: 100dvh;
       animation: ahd-slide-in 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
     }
     .left .panel,
@@ -122,19 +112,26 @@ export class AhDrawer extends LitElement {
       width: var(--ahd-size, 320px);
       max-width: 100vw;
       height: 100%;
+      /* 全屏定位的左右抽屉：顶/底含安全区，标题不顶进原生状态栏、
+         底边不贴手势条（覆盖层 inset:0 铺满视口）。 */
+      padding: calc(env(safe-area-inset-top, 0px)) 0
+        calc(env(safe-area-inset-bottom, 0px));
+      border: none;
     }
     .top .panel,
     .bottom .panel {
       width: 100%;
       height: var(--ahd-size, 320px);
       max-height: 100dvh;
+      /* 上下抽屉：对应端含安全区（top 抽屉贴状态栏、bottom 抽屉贴手势条） */
+      padding: calc(env(safe-area-inset-top, 0px)) 0
+        calc(env(safe-area-inset-bottom, 0px));
     }
     @keyframes ahd-slide-in {
       from {
         transform: var(--ahd-from);
       }
     }
-    /* 离场：滑回屏幕外 + 淡出；.leaving 由 finish() 在关闭时挂上。 */
     .leaving .panel {
       transform: var(--ahd-from);
       transition: transform ${LEAVE_MS}ms cubic-bezier(0.4, 0, 0.2, 1),
@@ -142,7 +139,6 @@ export class AhDrawer extends LitElement {
       opacity: 0;
     }
 
-    /* 无障碍：用户偏好减少动效时禁用所有过渡/动画 */
     @media (prefers-reduced-motion: reduce) {
       .scrim,
       .panel,
@@ -158,7 +154,7 @@ export class AhDrawer extends LitElement {
       align-items: center;
       gap: 10px;
       padding: 7.5px 16px;
-      border-bottom: 1px solid var(--ah-border);
+      border-bottom: 1px solid var(--md-drawer-header-border, var(--ah-border));
       flex: 0 0 auto;
     }
     .title {
@@ -169,13 +165,14 @@ export class AhDrawer extends LitElement {
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1 1 auto;
+      color: var(--md-drawer-title-color, var(--ah-text));
     }
     .close {
       flex: none;
       margin-left: auto;
       border: none;
       background: none;
-      color: var(--ah-text-faint);
+      color: var(--md-drawer-close-color, var(--ah-text-faint));
       font-size: 22px;
       line-height: 1;
       cursor: pointer;
@@ -183,13 +180,14 @@ export class AhDrawer extends LitElement {
       border-radius: var(--ah-radius-sm);
     }
     .close:hover {
-      color: var(--ah-text);
+      background: var(--md-drawer-close-hover-bg, var(--ah-surface-2));
     }
 
     .body {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
+      overscroll-behavior-y: contain;
       padding: 16px;
       font-size: 14px;
       line-height: 1.6;
@@ -200,10 +198,9 @@ export class AhDrawer extends LitElement {
       justify-content: flex-end;
       gap: 10px;
       padding: 12px 16px;
-      border-top: 1px solid var(--ah-border);
+      border-top: 1px solid var(--md-drawer-footer-border, var(--ah-border));
       flex: 0 0 auto;
     }
-    /* footer 按钮：复用全应用统一 .btn 体系（与 ah-modal 一致），保证视觉统一。 */
     .foot .btn {
       min-width: 76px;
       padding: 8px 16px;
@@ -239,7 +236,6 @@ export class AhDrawer extends LitElement {
     }
 
     @media (max-width: 600px) {
-      /* 窄屏下侧滑/上下抽屉尽量占满，避免内容被挤。 */
       .left .panel,
       .right .panel {
         width: min(88vw, var(--ahd-size, 320px));
@@ -257,63 +253,79 @@ export class AhDrawer extends LitElement {
       .foot .btn {
         flex: 1;
       }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
     }
-  `;
 
-  /** 是否打开（reflect，供 :host([open]) 与外部状态绑定）。 */
+    /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
+       实现真正整页覆盖；同时去除圆角与边框，贴合「整屏抽屉」语义。 */
+    .fullscreen.left .panel,
+    .fullscreen.right .panel {
+      width: 100vw;
+      max-width: 100vw;
+    }
+    .fullscreen.top .panel,
+    .fullscreen.bottom .panel {
+      height: 100dvh;
+      max-height: 100dvh;
+    }
+    .fullscreen .panel {
+      border: none;
+      border-radius: 0;
+    }
+  `, mobilePill];
+
   @property({ type: Boolean, reflect: true })
   open = false;
 
-  /** 滑入方向：left / right（默认）/ top / bottom。 */
   @property({ type: String })
   placement: DrawerPlacement = 'right';
 
-  /** 标题；为空且 showClose=false 时不渲染头部。 */
   @property({ type: String })
   title = '';
 
-  /** 尺寸：左右方向为宽度、上下方向为高度（CSS 值，如 "320px" / "40vh"）。 */
   @property({ type: String })
   size = '320px';
 
-  /** 是否显示遮罩（false 时为非模态抽屉，外部点击穿透）。 */
   @property({ type: Boolean })
   mask = true;
 
-  /** 点击遮罩是否关闭（需 mask=true 才有遮罩可点）。 */
   @property({ type: Boolean, attribute: 'mask-closable' })
   maskClosable = true;
 
-  /** 按下 Esc 是否关闭。 */
   @property({ type: Boolean, attribute: 'esc-closable' })
   escClosable = true;
 
-  /** 是否显示右上角 × 按钮。 */
   @property({ type: Boolean, attribute: 'show-close' })
   showClose = true;
 
-  /** 默认 footer 的确认按钮文案（调用方未通过 footer 插槽自定义时生效）。 */
   @property({ type: String, attribute: 'confirm-text' })
   confirmText = '确定';
 
-  /** 默认 footer 的取消按钮文案。 */
   @property({ type: String, attribute: 'cancel-text' })
   cancelText = '取消';
 
-  /**
-   * 是否显示底部操作区。默认 false（不显示 footer）——调用方需显式开启：
-   * - 传 `show-footer`（无值属性，或 ?show-footer=${true}）→ 渲染默认「取消 / 确定」按钮；
-   * - 或在默认插槽外另传 <div slot="footer">…</div> 自定义按钮（优先级高于默认按钮）；
-   * - 不传 slot 也不传 show-footer → 彻底不渲染 footer（满足「不设 slot 也能关掉」）。
-   */
   @property({ type: Boolean, attribute: 'show-footer' })
   showFooter = false;
 
-  /** 离场动画进行中标记。 */
+  /**
+   * 全屏模式：左右抽屉宽 100vw、上下抽屉高 100dvh，真正整页覆盖。
+   * 优先级高于移动端媒体查询里的 88vw / 70dvh 限制（见下方 .fullscreen 规则）。
+   */
+  @property({ type: Boolean })
+  fullscreen = false;
+
   @state()
   private leaving = false;
 
-  /** 打开前聚焦的元素，关闭后归还焦点。 */
   private lastFocus: HTMLElement | null = null;
 
   updated(changed: PropertyValues) {
@@ -321,10 +333,9 @@ export class AhDrawer extends LitElement {
     if (this.open) {
       this.lastFocus = document.activeElement as HTMLElement | null;
       if (this.mask) document.body.style.overflow = 'hidden';
-      // 等一帧让面板渲染完成后再移焦（有标题优先聚焦关闭按钮，否则聚焦面板）。
       requestAnimationFrame(() => {
         const target =
-          (this.shadowRoot?.querySelector<HTMLElement>('.close') ?? null) ||
+          this.shadowRoot?.querySelector<HTMLElement>('.close') ??
           this.shadowRoot?.querySelector<HTMLElement>('.panel');
         target?.focus();
       });
@@ -334,19 +345,33 @@ export class AhDrawer extends LitElement {
     } else if (this.lastFocus) {
       try {
         this.lastFocus.focus();
-      } catch {
-        /* 触发元素已被移除等场景忽略 */
-      }
+      } catch {}
       this.lastFocus = null;
       if (this.mask) document.body.style.overflow = '';
     }
   }
 
-  /** 发起关闭：播放离场动画 → open=false + 派发 close（detail 为关闭方式）。 */
-  private finish(reason: DrawerCloseReason) {
+  connectedCallback() {
+    super.connectedCallback();
+    // 订阅全局「关闭所有覆盖层」信号（Tab 切换 / 浏览器后退前进），见文件头「路由联动」。
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.mask) document.body.style.overflow = '';
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  /** 路由变化时的强制关闭：跳过离场动画，但仍派发 close 让宿主同步自身状态。 */
+  private onCloseOverlays = () => {
+    if (this.open) this.finish('button', true);
+  };
+
+  private finish(reason: DrawerCloseReason, skipAnimation = false) {
     if (!this.open || this.leaving) return;
     this.leaving = true;
-    window.setTimeout(() => {
+    const dispatch = () => {
       this.leaving = false;
       this.open = false;
       this.dispatchEvent(
@@ -356,14 +381,14 @@ export class AhDrawer extends LitElement {
           composed: true
         })
       );
-    }, LEAVE_MS);
+    };
+    if (skipAnimation) {
+      dispatch();
+    } else {
+      window.setTimeout(dispatch, LEAVE_MS);
+    }
   }
 
-  /**
-   * 默认 footer 的「确定」按钮：仅派发 ah-confirm 事件，不直接关闭抽屉，
-   * 由调用方在 @ah-confirm 里执行确认逻辑（保存 / 提交等），需要关闭时
-   * 自行置 open=false（或复用 close 事件复位）。取消按钮则直接 finish('button') 关闭。
-   */
   private onConfirm() {
     this.dispatchEvent(
       new CustomEvent('ah-confirm', { bubbles: true, composed: true })
@@ -378,29 +403,12 @@ export class AhDrawer extends LitElement {
       return;
     }
     if (e.key !== 'Tab') return;
-    // 焦点圈闭环：Tab 循环限制在面板内（shadow 控件 + 插槽内容里的可聚焦元素）。
-    const focusables: HTMLElement[] = [
-      ...(this.shadowRoot?.querySelectorAll<HTMLElement>(
-        '.panel button, .panel input, .panel select, .panel textarea, .panel [tabindex]'
-      ) ?? []),
-      ...Array.from(this.children)
-        .filter((c) => !(c as HTMLElement).hasAttribute?.('slot'))
-        .flatMap((c) =>
-          c.matches('button, input, select, textarea, a[href], [tabindex]')
-            ? [c as HTMLElement]
-            : Array.from(
-                c.querySelectorAll<HTMLElement>(
-                  'button, input, select, textarea, a[href], [tabindex]'
-                )
-              )
-        )
-    ].filter((el) => !el.hasAttribute('disabled'));
+    const focusables = this.getFocusableElements();
     if (!focusables.length) return;
     const first = focusables[0]!;
     const last = focusables[focusables.length - 1]!;
     const active = this.shadowRoot?.activeElement as HTMLElement | null;
-    const activeIn =
-      active !== null && focusables.includes(active as HTMLElement);
+    const activeIn = active !== null && focusables.includes(active);
     if (e.shiftKey && (active === first || !activeIn)) {
       e.preventDefault();
       last.focus();
@@ -410,11 +418,56 @@ export class AhDrawer extends LitElement {
     }
   }
 
+  private getFocusableElements(): HTMLElement[] {
+    const panelEls =
+      this.shadowRoot?.querySelectorAll<HTMLElement>(
+        'button, input, select, textarea, [tabindex]'
+      ) ?? [];
+    const slotEls = Array.from(this.children)
+      .filter((c) => !(c as HTMLElement).hasAttribute?.('slot'))
+      .flatMap((c) =>
+        c.matches('button, input, select, textarea, a[href], [tabindex]')
+          ? [c as HTMLElement]
+          : Array.from(
+              c.querySelectorAll<HTMLElement>(
+                'button, input, select, textarea, a[href], [tabindex]'
+              )
+            )
+      );
+    return [...Array.from(panelEls), ...slotEls].filter(
+      (el) => !el.hasAttribute('disabled') && el.offsetParent !== null
+    );
+  }
+
+  private renderFooter() {
+    if (!this.showFooter) return nothing;
+    const footerSlot = this.querySelector('[slot="footer"]');
+    if (footerSlot) {
+      return html`<div class="foot"><slot name="footer"></slot></div>`;
+    }
+    return html`<div class="foot">
+      <button
+        type="button"
+        class="btn ghost"
+        @click=${() => this.finish('button')}
+      >
+        ${this.cancelText}
+      </button>
+      <button type="button" class="btn primary" @click=${this.onConfirm}>
+        ${this.confirmText}
+      </button>
+    </div>`;
+  }
+
   render() {
     if (!this.open) return nothing;
     const showHead = !!this.title || this.showClose;
     return html`
-      <div class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''}">
+      <div
+        class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''} ${
+          this.fullscreen ? 'fullscreen' : ''
+        }"
+      >
         ${this.mask
           ? html`<div
               class="scrim"
@@ -436,7 +489,7 @@ export class AhDrawer extends LitElement {
           ${showHead
             ? html`<div class="head">
                 ${this.title
-                  ? html`<div class="title" id="ahd-title">${this.title}</div>`
+                  ? html`<div class="title">${this.title}</div>`
                   : ''}
                 <slot name="header"></slot>
                 ${this.showClose
@@ -453,27 +506,7 @@ export class AhDrawer extends LitElement {
               </div>`
             : nothing}
           <div class="body"><slot></slot></div>
-
-          ${this.showFooter
-            ? this.querySelector('[slot="footer"]')
-              ? html` <div class="foot"><slot name="footer"></slot></div>`
-              : html` <div class="foot">
-                  <button
-                    type="button"
-                    class="btn ghost"
-                    @click=${() => this.finish('button')}
-                  >
-                    ${this.cancelText}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn primary"
-                    @click=${this.onConfirm}
-                  >
-                    ${this.confirmText}
-                  </button>
-                </div>`
-            : nothing}
+          ${this.renderFooter()}
         </aside>
       </div>
     `;

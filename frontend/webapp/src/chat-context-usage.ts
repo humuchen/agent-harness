@@ -39,6 +39,7 @@ export interface BackendUsageLike {
     messages: number;
     mcp: number;
     skills: number;
+    cached?: number;
   };
 }
 
@@ -52,9 +53,9 @@ const SYS_BASE = 1400; // 系统提示词 + Agent 卡片基线
 const MCP_BASE = 60; // 连接器及 MCP 注册信息基线
 const SKILL_BASE = 80; // 技能基线
 
-/** token 数缩写：78700 → "78.7K"（hover 提示 / 弹层用）。 */
+/** token 数缩写 + 近似标记：78700 → "~78.7K"（hover 提示 / 弹层用）。 */
 export function fmtK(n: number): string {
-  return `${(n / 1000).toFixed(1)}K`;
+  return `~${(n / 1000).toFixed(1)}K`;
 }
 
 /**
@@ -248,7 +249,7 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
         </svg>
       </button>
       <span class="ctx-tip"
-        >上下文已使用：${pct.toFixed(1)}% -
+        >上下文已使用：~${pct.toFixed(1)}% -
         ${fmtK(u.totalTokens)}/${fmtK(u.window)}</span
       >
       ${showCtxUsage
@@ -270,7 +271,7 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
                 </button>
               </div>
               <div class="ctx-bar-meta">
-                <span class="ctx-bar-pct">${u.totalPct.toFixed(1)}%</span>
+                <span class="ctx-bar-pct">~${u.totalPct.toFixed(1)}%</span>
                 <span class="ctx-bar-total">
                   已使用 ${fmtK(u.totalTokens)} / ${fmtK(u.window)}</span
                 >
@@ -280,7 +281,7 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
                   (it) => html`<span
                     class="ctx-seg-i ${it.cls}"
                     style="width:${it.pct}%"
-                    title="${it.label} ${it.pct.toFixed(1)}%"
+                    title="${it.label} ~${it.pct.toFixed(1)}%"
                   ></span>`
                 )}
               </div>
@@ -289,7 +290,7 @@ export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
                   (it) => html`<li>
                     <span class="ctx-dot ${it.cls}"></span>
                     <span class="ctx-label">${it.label}</span>
-                    <span class="ctx-val">${it.pct.toFixed(1)}%</span>
+                    <span class="ctx-val">~${it.pct.toFixed(1)}%</span>
                   </li>`
                 )}
                 ${runCumulative

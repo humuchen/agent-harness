@@ -8,13 +8,25 @@
  * 事件抛出（detail.value 为 agent id）。
  */
 import { LitElement, html, css, nothing } from 'lit';
+import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 
 /** 宿主传入的 Agent 条目。 */
 export interface AgentOption {
   id: string;
   name: string;
+  /** 行业领域 / 分类标签（用于分组展示）。 */
+  domain?: string;
 }
+
+/** 行业领域 → 中文标签（用于 Agent 选择器分类标题）。 */
+const domainLabels: Record<string, string> = {
+  'medical-aesthetics': '医美运营分析',
+  finance: '金融',
+  healthcare: '医疗',
+  education: '教育',
+  generic: '通用'
+};
 
 /** 统一机器人图标：所有 Agent 共用，仅名称区分。 */
 const BOT_ICON =
@@ -22,7 +34,7 @@ const BOT_ICON =
 
 @customElement('ah-agent-picker')
 export class AhAgentPicker extends LitElement {
-  static styles = css`
+  static styles = [css`
     :host {
       display: inline-block;
       position: relative;
@@ -80,6 +92,16 @@ export class AhAgentPicker extends LitElement {
       .trigger .name {
         max-width: 2em;
         text-overflow: clip;
+      }
+      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
     }
 
@@ -159,6 +181,16 @@ export class AhAgentPicker extends LitElement {
       font-size: 14px;
     }
 
+    /* 分类标签（组标题） */
+    .category-label {
+      padding: 4px 10px 2px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--ah-text-muted, #999);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
     /* 遮罩：点击空白处关闭（移动端友好） */
     .scrim {
       position: fixed;
@@ -171,7 +203,7 @@ export class AhAgentPicker extends LitElement {
       padding: 0;
       cursor: default;
     }
-  `;
+  `, mobilePill];
 
   /** 可选 Agent 列表（由宿主持有）。 */
   @property({ attribute: false }) agents: AgentOption[] = [];
@@ -180,6 +212,25 @@ export class AhAgentPicker extends LitElement {
   @property({ type: String }) value = '';
 
   @state() private open = false;
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起浮层。
+   * 本组件常驻在对话页、切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+   * 侧滑返回后再次进入对话页会看到上次遗留的展开下拉（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = () => {
+    if (this.open) this.open = false;
+  };
 
   private select(id: string) {
     this.open = false;
@@ -191,6 +242,28 @@ export class AhAgentPicker extends LitElement {
         composed: true
       })
     );
+  }
+
+  /** 将 Agent 按 domain 分类分组，用于下拉面板展示。 */
+  private get groupedAgents(): { label: string | null; items: AgentOption[] }[] {
+    const groups: { label: string | null; items: AgentOption[] }[] = [];
+    const generic: AgentOption[] = [];
+    const byDomain = new Map<string, AgentOption[]>();
+    for (const a of this.agents) {
+      if (!a.domain || a.domain === 'generic' || a.domain === '') {
+        generic.push(a);
+      } else {
+        const arr = byDomain.get(a.domain) ?? [];
+        arr.push(a);
+        byDomain.set(a.domain, arr);
+      }
+    }
+    if (generic.length) groups.push({ label: null, items: generic });
+    for (const [domain, items] of byDomain) {
+      const label = domainLabels[domain] ?? domain;
+      groups.push({ label, items });
+    }
+    return groups;
   }
 
   render() {
@@ -236,31 +309,38 @@ export class AhAgentPicker extends LitElement {
               @click=${() => (this.open = false)}
             ></button>
             <div class="panel" role="dialog" aria-label="业务 Agent">
-              ${this.agents.map(
-                (a) => html`
-                  <button
-                    class="item ${this.value === a.id ? 'selected' : ''}"
-                    role="option"
-                    aria-selected=${this.value === a.id ? 'true' : 'false'}
-                    title=${a.name}
-                    @click=${() => this.select(a.id)}
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    >
-                      <path d=${BOT_ICON} />
-                    </svg>
-                    <span class="name">${a.name}</span>
-                    ${this.value === a.id
-                      ? html`<span class="check">✓</span>`
+              ${this.groupedAgents.map(
+                (g) => html`
+                    ${g.label
+                      ? html`<div class="category-label">${g.label}</div>`
                       : nothing}
-                  </button>
-                `
+                    ${g.items.map(
+                      (a) => html`
+                        <button
+                          class="item ${this.value === a.id ? 'selected' : ''}"
+                          role="option"
+                          aria-selected=${this.value === a.id ? 'true' : 'false'}
+                          title=${a.name}
+                          @click=${() => this.select(a.id)}
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d=${BOT_ICON} />
+                          </svg>
+                          <span class="name">${a.name}</span>
+                          ${this.value === a.id
+                            ? html`<span class="check">✓</span>`
+                            : nothing}
+                        </button>
+                      `
+                    )}
+                  `
               )}
             </div>
           `

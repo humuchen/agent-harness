@@ -23,8 +23,22 @@
 import { LitElement, html, nothing, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { sharedStyles } from './styles';
-import { getTheme, type Theme } from './theme/tokens';
-import { setSession, requestPasswordReset, resetPassword } from './api';
+import {
+  getTheme,
+  type Theme,
+  type BrandConfig,
+  BRAND_DEFAULT
+} from './theme/tokens';
+import {
+  setSession,
+  setToken,
+  scheduleAutoRefresh,
+  requestPasswordReset,
+  resetPassword,
+  getLoginSalt,
+  derivePassword,
+  bytesToHex
+} from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 import {
@@ -172,6 +186,9 @@ function eyeIcon(open: boolean) {
 
 @customElement('ah-login')
 export class AhLogin extends LitElement {
+  // P3-1: 品牌位配置
+  brand: BrandConfig = BRAND_DEFAULT;
+
   static styles = [
     sharedStyles,
     css`
@@ -1179,7 +1196,7 @@ export class AhLogin extends LitElement {
           box-sizing: border-box;
           overflow-x: hidden;
           overflow-y: auto;
-          padding: 24px 18px;
+          padding: 60px 18px 24px 18px;
           gap: 4px;
         }
         .brand-top,
@@ -1258,7 +1275,7 @@ export class AhLogin extends LitElement {
       /* ---------------------- 窄屏手机（≤480px）细化 ---------------------- */
       @media (max-width: 480px) {
         .login-wrap {
-          padding: 22px 16px;
+          padding: 60px 16px 20px 16px;
           gap: 4px;
         }
         .brand-top {
@@ -1556,7 +1573,10 @@ export class AhLogin extends LitElement {
     }
     this.submitting = true;
     try {
-      const r = await resetPassword(this.resetToken, password);
+      // P1-14: 质询式密码保护 —— 客户端生成 salt，本地 PBKDF2 派生，服务器不接触明文密码。
+      const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      const derivedHex = await derivePassword(password, salt);
+      const r = await resetPassword(this.resetToken, '', { salt, derivedHex });
       if (!r.ok) {
         notify.error(r.error || '重置失败。', { key: 'forgot-form' });
         return;
@@ -1635,8 +1655,26 @@ export class AhLogin extends LitElement {
         this.mode === 'register'
           ? '/api/account/register'
           : '/api/account/login';
+      // P1-14: 质询式密码保护 —— 客户端本地 PBKDF2 派生，服务器不接管明文密码。
+      let salt: string;
+      if (this.mode === 'login') {
+        salt = await getLoginSalt(username);
+        if (!salt) {
+          notify.error('无法获取安全令牌，请刷新重试。', { key: 'auth-form' });
+          return;
+        }
+      } else {
+        // 注册：新用户无服务端 salt，客户端生成随机 salt。
+        salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+      }
+      const derivedHex = await derivePassword(password, salt);
       // 登录支持邮箱或用户名；注册用邮箱作为登录名（后端 username 即登录标识）。
-      const body = JSON.stringify({ username, email, password });
+      const body = JSON.stringify({
+        username,
+        email,
+        salt,
+        derivedHex
+      });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1664,7 +1702,7 @@ export class AhLogin extends LitElement {
         localStorage.setItem('ah_refresh', data.refreshToken);
       }
       if (data.accessExpiresAt) {
-        setToken(data.refreshToken || '');  // 存 refreshToken 作为 scheduleAutoRefresh 依据
+        setToken(data.refreshToken || ''); // 存 refresh token 副本以维持会话存在性判断
         scheduleAutoRefresh(data.accessExpiresAt);
       }
       notify.success(
@@ -1835,7 +1873,7 @@ export class AhLogin extends LitElement {
               <path d="M50 36 L84 50 L50 64 L16 50 Z" />
               <path d="M50 66 L84 80 L50 94 L16 80 Z" />
             </svg>
-            <span>Agent Harness</span>
+            <span>${this.brand?.productName ?? 'Agent Harness'}</span>
             <span class="brand-ver">v${APP_VERSION}</span>
           </div>
           <div class="status-chip">
@@ -1844,7 +1882,10 @@ export class AhLogin extends LitElement {
         </div>
 
         <div class="brand-head">
-          <h2 class="brand-title">编排、运行、观测<br />你的每一个 AI Agent</h2>
+          <h2 class="brand-title">
+            ${this.brand?.loginTagline ??
+            '编排、运行、观测<br />你的每一个 AI Agent'}
+          </h2>
           <p class="brand-sub">
             统一接入 MCP 工具生态，实时追踪思考链路，把精力留给真正的业务价值。
           </p>
@@ -1904,7 +1945,9 @@ export class AhLogin extends LitElement {
               全链路可观测与事件回放
             </li>
           </ul>
-          <div class="brand-foot">Agent Harness 2026 · 私有化部署就绪</div>
+          <div class="brand-foot">
+            ${this.brand?.footer ?? 'Agent Harness 2026 · 私有化部署就绪'}
+          </div>
         </div>
 
         <div class="auth-float">

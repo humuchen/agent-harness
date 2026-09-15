@@ -72,11 +72,13 @@ export function buildConfidence(trace: TraceNode[]): Confidence {
   let level: Confidence['level'];
   if (verify) {
     const raw = Number(String(verify.meta?.score ?? '').replace(/[^\d.]/g, ''));
-    score = Number.isFinite(raw) && raw > 0 ? Math.min(100, Math.round(raw)) : 0;
+    score =
+      Number.isFinite(raw) && raw > 0 ? Math.min(100, Math.round(raw)) : 0;
   } else {
     // 合成：工具成功率为主，错误节点扣分，缓存命中率加分。
     const toolTotal = tools.length;
-    const successRate = toolTotal > 0 ? (toolTotal - toolErrors) / toolTotal : 1;
+    const successRate =
+      toolTotal > 0 ? (toolTotal - toolErrors) / toolTotal : 1;
     const errPenalty = Math.min(40, errorNodes * 12);
     let cacheBonus = 0;
     if (ins.cacheHitRate) {
@@ -127,11 +129,7 @@ export function renderConfidence(trace: TraceNode[]): TemplateResult {
     <div class="confidence level-${c.level}">
       <div class="conf-head">
         <div class="conf-gauge" title="综合信心分 ${c.score} / 100">
-          <svg
-            class="conf-gauge-svg"
-            viewBox="0 0 88 88"
-            aria-hidden="true"
-          >
+          <svg class="conf-gauge-svg" viewBox="0 0 88 88" aria-hidden="true">
             <circle
               class="conf-gauge-bg"
               cx="44"
@@ -207,7 +205,13 @@ export function renderConfidence(trace: TraceNode[]): TemplateResult {
             >
               <circle cx="8" cy="8" r="6.2"></circle>
               <path d="M8 7.3v3.2" stroke-linecap="round"></path>
-              <circle cx="8" cy="5" r="0.95" fill="currentColor" stroke="none"></circle>
+              <circle
+                cx="8"
+                cy="5"
+                r="0.95"
+                fill="currentColor"
+                stroke="none"
+              ></circle>
             </svg>
             <span
               >本次未启用自检（AGENT_AUTO_VERIFY），以下为基于调用链的合成信心。</span
@@ -244,14 +248,20 @@ const FOLDABLE_KINDS: ReadonlyArray<TraceKind> = [
   'error'
 ];
 
-/** 递归收敛追踪树中所有「可折叠」节点的 expanded 字段为 false。
- *  由「折叠全部」按钮触发：保证点完后回到默认折叠状态，与工具/检索/成本/自检等
- *  子节点初次进入调用链路时的展示一致（默认折叠）。 */
-function collapseAllFoldable(n: TraceNode): void {
-  if (FOLDABLE_KINDS.includes(n.kind)) {
-    n.expanded = false;
-  }
-  n.children.forEach(collapseAllFoldable);
+/** 折叠整条调用链路：消息上下文、LLM 容器体、以及所有「可折叠」子节点全部收起。
+ *  供「折叠全部」按钮（抽屉级）调用，使整个 trace 树回到最紧凑的默认折叠态，
+ *  与工具/检索/成本/自检等子节点初次进入调用链路时的展示一致。 */
+export function collapseEntireTrace(trace: TraceNode[]): void {
+  const walk = (ns: TraceNode[]): void => {
+    for (const n of ns) {
+      if (n.messages) n.messages.forEach((m) => (m.expanded = false));
+      // LLM 容器体（含消息上下文与工具调用列表）也一并收起。
+      if (n.kind === 'llm') n.expanded = false;
+      if (FOLDABLE_KINDS.includes(n.kind)) n.expanded = false;
+      if (n.children.length) walk(n.children);
+    }
+  };
+  walk(trace);
 }
 
 /** 同步原生 `<details>` toggle 事件到节点的 expanded 字段，供 Lit 受控重渲染。
@@ -271,18 +281,18 @@ export function renderTraceNode(
   parentKind?: string,
   onToggle?: () => void
 ): TemplateResult {
-  // 成本节点：默认折叠，展示一行紧凑预览（cost / tokens / model），点「展开」再看分项明细。
-  //  这样首次打开调用链路时不会立刻把整个成本卡片摊开——与工具调用/检索的默认折叠行为保持一致。
+  // 成本节点：默认折叠，折叠态仅显示「圆点 + 标签 + 展开按钮」的最小边框，
+  //  点「展开」后下方 .tcost-body 才渲染完整分组指标——与工具调用/检索的默认折叠行为保持一致。
   //  折叠指示箭头使用 .tcost-caret（CSS 旋转），与 tmsg-caret 同款语义；按钮显式标注「展开/收起」，
-  //  与「折叠全部」操作语言对齐，避免「成本卡能不能点」的疑问。
+  //  与抽屉级「折叠全部」操作语言对齐，避免「成本卡能不能点」的疑问。
   if (n.kind === 'cost') {
     const entries = n.meta ? Object.entries(n.meta) : [];
     const groupOf = (k: string): 'cost' | 'usage' | 'model' =>
       k === 'cost' || k === 'priced'
         ? 'cost'
         : k === 'model'
-          ? 'model'
-          : 'usage';
+        ? 'model'
+        : 'usage';
     const groups: Array<
       ['cost' | 'usage' | 'model', Array<[string, unknown]>]
     > = [
@@ -290,16 +300,8 @@ export function renderTraceNode(
       ['usage', entries.filter(([k]) => groupOf(k) === 'usage')],
       ['model', entries.filter(([k]) => groupOf(k) === 'model')]
     ];
-    // 紧凑预览：仅展示「成本 / tokens / model」三项关键值，折叠态下给用户一个快速概览。
-    const previewParts: string[] = [];
-    const costEntry = entries.find(([k]) => k === 'cost');
-    const tokenEntry = entries.find(([k]) => k === 'tokens');
-    const modelEntry = entries.find(([k]) => k === 'model');
-    if (costEntry) previewParts.push(escapeHtml(String(costEntry[1])));
-    if (tokenEntry)
-      previewParts.push(`${escapeHtml(String(tokenEntry[1]))} tok`);
-    if (modelEntry) previewParts.push(escapeHtml(String(modelEntry[1])));
-    const preview = previewParts.join(' · ');
+    // 折叠态（默认）只保留「圆点 + 标签 + 展开按钮」的最小边框，不展示任何指标预览，
+    // 点「展开」后下方 .tcost-body 才渲染完整分组指标——与工具/检索的折叠语言对齐。
     const isOpen = n.expanded === true;
     return html`<details
       class="tnode kind-cost status-${n.status}"
@@ -309,11 +311,6 @@ export function renderTraceNode(
       <summary class="tnode-head">
         <span class="tdot"></span>
         <span class="tlabel">成本 / 用量</span>
-        ${preview
-          ? html`<span class="tcost-preview" title="折叠态预览"
-              >${preview}</span
-            >`
-          : nothing}
         <button
           type="button"
           class="tcost-toggle"
@@ -333,20 +330,106 @@ export function renderTraceNode(
       ${entries.length
         ? html`<div class="tcost-body">
             <div class="tmetrics">
-              ${groups.map(
-                ([g, items]) =>
-                  items.length
-                    ? html`<div class="tgrp tgrp-${g}">
-                        ${items.map(
-                          ([k, v]) =>
-                            html`<span class="tchip"
-                              ><b>${escapeHtml(k)}</b> ${escapeHtml(
-                                String(v)
-                              )}</span
-                            >`
-                        )}
-                      </div>`
-                    : nothing
+              ${groups.map(([g, items]) =>
+                items.length
+                  ? html`<div class="tgrp tgrp-${g}">
+                      ${items.map(
+                        ([k, v]) =>
+                          html`<span
+                            class="tchip"
+                            title=${`${escapeHtml(k)} ${escapeHtml(String(v))}`}
+                            ><b>${escapeHtml(k)}</b> ~${escapeHtml(
+                              String(v)
+                            )}</span
+                          >`
+                      )}
+                    </div>`
+                  : nothing
+              )}
+            </div>
+          </div>`
+        : nothing}
+      ${n.children.length
+        ? html`<div class="tchildren">
+            ${n.children.map((c) => renderTraceNode(c, n.kind, onToggle))}
+          </div>`
+        : nothing}
+    </details>`;
+  }
+  // Token 缓存命中率节点：默认折叠，折叠态仅显示「圆点 + 标签 + 展开按钮」的最小边框，
+  //   点「展开」后下方 .tcache-body 才渲染完整分组指标 —— 与成本节点的交互语言保持一致。
+  //   颜色沿用 .tdot 的 #2dd4bf，内容样式与 .tnode.kind-cost 完全一致。
+  if (n.kind === 'tokencache') {
+    const entries = n.meta ? Object.entries(n.meta) : [];
+    const groupOf = (k: string): 'hit' | 'info' | 'model' =>
+      k === '命中率' || k === '命中'
+        ? 'hit'
+        : k === '接口' || k === '分模型'
+        ? 'info'
+        : 'model';
+    const groups: Array<['hit' | 'info' | 'model', Array<[string, unknown]>]> =
+      [
+        ['hit', entries.filter(([k]) => groupOf(k) === 'hit')],
+        ['info', entries.filter(([k]) => groupOf(k) === 'info')],
+        ['model', entries.filter(([k]) => groupOf(k) === 'model')]
+      ];
+    const isOpen = n.expanded === true;
+    return html`<details
+      class="tnode kind-tokencache status-${n.status}"
+      ?open=${isOpen}
+      @toggle=${(e: Event) => syncDetailsToggle(n, e, onToggle)}
+    >
+      <summary class="tnode-head tcache-head">
+        <span class="tdot"></span>
+        <span class="tlabel">Token 缓存命中率</span>
+        <button
+          type="button"
+          class="tcache-toggle"
+          title=${isOpen
+            ? '收起 Token 缓存命中率详情'
+            : '展开 Token 缓存命中率详情'}
+          @click=${(e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            n.expanded = !isOpen;
+            onToggle?.();
+          }}
+        >
+          ${isOpen ? '收起' : '展开'}
+          <span class="tcache-caret" aria-hidden="true"></span>
+        </button>
+      </summary>
+      ${entries.length
+        ? html`<div class="tcache-body">
+            <div class="tmetrics">
+              ${groups.map(([g, items]) =>
+                items.length
+                  ? html`<div class="tgrp tgrp-${g}">
+                      ${items.map(([k, v]) => {
+                        // 分模型：将「 · 」拼接的多模型字符串拆为独立 chip，
+                        // 避免单条过宽的内容溢出或被截断。
+                        if (k === '分模型') {
+                          const parts = String(v).split(' · ');
+                          return html`<div class="tgrp-sub">
+                            ${parts.map(
+                              (p) => html`<span
+                                class="tchip model-chip"
+                                title=${escapeHtml(p)}
+                                >${escapeHtml(p)}</span
+                              >`
+                            )}
+                          </div>`;
+                        }
+                        return html`<span
+                          class="tchip"
+                          title=${`${escapeHtml(k)} ${escapeHtml(String(v))}`}
+                          ><b>${escapeHtml(k)}</b> ${escapeHtml(
+                            String(v)
+                          )}</span
+                        >`;
+                      })}
+                    </div>`
+                  : nothing
               )}
             </div>
           </div>`
@@ -391,86 +474,67 @@ export function renderTraceNode(
           ? html`<span class="tbadge pend">进行中</span>`
           : nothing}
         ${html`<span class="tchips"
-              >${n.meta
-                ? Object.entries(n.meta)
-                    // tools 是「注入模型的可用工具数」，不是本次真实执行数；
-                    // 旧落盘 trace 可能仍带此字段，过滤掉避免与下方真实执行计数混淆。
-                    .filter(([k]) => k !== 'tools')
-                    .map(
-                      ([k, v]) =>
-                        html`<span class="tchip"
-                          ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
-                        >`
-                    )
-                : nothing}${n.children.length
-                ? html`<span class="tchip"
-                    ><b>工具</b> ${n.children.length}</span
-                  >`
-                : nothing}</span
-            >`}
+          >${n.meta
+            ? Object.entries(n.meta)
+                // tools 是「注入模型的可用工具数」，不是本次真实执行数；
+                // 旧落盘 trace 可能仍带此字段，过滤掉避免与下方真实执行计数混淆。
+                .filter(([k]) => k !== 'tools')
+                .map(
+                  ([k, v]) =>
+                    html`<span class="tchip"
+                      ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
+                    >`
+                )
+            : nothing}${n.children.length
+            ? html`<span class="tchip"><b>工具</b> ${n.children.length}</span>`
+            : nothing}</span
+        >`}
       </div>
       <div class="tllm-body" ?hidden=${!expanded}>
         ${n.messages?.length
-          ? html`<div class="tmsg-list">
+          ? html` <div class="tmsg-list">
               <div class="tmsg-head">
                 <span class="tmsg-head-title"
                   >消息上下文 · 共 ${n.messages.length} 条</span
                 >
-                <button
-                  type="button"
-                  class="tmsg-collapse-all"
-                  title="折叠全部消息上下文"
-                  @click=${() => {
-                    n.messages!.forEach((msg) => (msg.expanded = false));
-                    // 同步收起该 LLM 调用下的工具/检索/成本/自检等节点，
-                    // 与工具/成本/检索的默认折叠态保持一致——之前只折叠消息上下文，
-                    // 工具卡片与成本卡片仍摊开，造成「按钮无效」的观感。
-                    n.children.forEach(collapseAllFoldable);
+              </div>
+              ${n.messages.map((m) => {
+                const raw = m.content ?? '';
+                const flat = raw.replace(/\s+/g, ' ').trim();
+                const preview =
+                  flat.length > 48 ? flat.slice(0, 48) + '…' : flat;
+                const previewCount = raw ? ` · ${[...raw].length}字` : '';
+                return html`<details
+                  class="tmsg-item role-${m.role}"
+                  ?open=${m.expanded === true}
+                  @toggle=${(e: Event) => {
+                    m.expanded = (e.target as HTMLDetailsElement).open;
                     onToggle?.();
                   }}
                 >
-                  折叠全部
-                </button>
-              </div>
-              ${n.messages.map(
-                (m) => {
-                  const raw = m.content ?? '';
-                  const flat = raw.replace(/\s+/g, ' ').trim();
-                  const preview =
-                    flat.length > 48 ? flat.slice(0, 48) + '…' : flat;
-                  const previewCount = raw ? ` · ${[...raw].length}字` : '';
-                  return html`<details
-                    class="tmsg-item role-${m.role}"
-                    ?open=${m.expanded === true}
-                    @toggle=${(e: Event) => {
-                      m.expanded = (e.target as HTMLDetailsElement).open;
-                      onToggle?.();
-                    }}
-                  >
-                    <summary class="tmsg-sum">
-                      <span class="tmsg-role"
-                        >${m.role === 'user'
-                          ? '用户'
-                          : m.role === 'assistant'
-                          ? '助手'
-                          : '系统'}</span
-                      >
-                      <span class="tmsg-preview">${preview}${previewCount}</span>
-                      <span class="tmsg-caret"></span>
-                    </summary>
-                    <div class="tmsg-body">
-                      ${m.content
-                        ? escapeHtml(m.content)
-                        : html`<span class="tmsg-empty">（空内容）</span>`}
-                    </div>
-                    ${m.reasoning
-                      ? html`<div class="tmsg-reason">
-                          ${escapeHtml(m.reasoning)}
-                        </div>`
-                      : nothing}
-                  </details>`;
-                }
-              )}
+                  <summary class="tmsg-sum">
+                    <span class="tmsg-role"
+                      >${m.role === 'user'
+                        ? '用户'
+                        : m.role === 'assistant'
+                        ? '助手'
+                        : '系统'}</span
+                    >
+                    <span class="tmsg-preview">${preview}${previewCount}</span>
+                    <span class="tmsg-caret"></span>
+                  </summary>
+                  <div class="tmsg-body">
+                    ${m.content
+                      ? escapeHtml(m.content)
+                      : html`<span class="tmsg-empty">（空内容）</span>`}
+                  </div>
+                  ${m.reasoning
+                    ? html`<div class="tmsg-reason">
+                        ${escapeHtml(m.reasoning)}
+                      </div>`
+                    : nothing}
+                </details>`;
+              })}
             </div>`
           : nothing}
         ${n.children.length
@@ -664,7 +728,9 @@ export function renderInsights(ins: Insights) {
           <div
             class="ins-bd-title"
             title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
-          >Token 拆解 <span class="ins-bd-est">估算</span></div>
+          >
+            Token 拆解 <span class="ins-bd-est">估算</span>
+          </div>
           <div class="ins-bd-bars">
             ${ins.costBreakdown.map(
               (b) => html`<div class="ins-bd-row">
@@ -693,7 +759,9 @@ export function renderInsights(ins: Insights) {
           <div
             class="ins-bd-title"
             title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
-          >Token 拆解 <span class="ins-bd-est">估算</span></div>
+          >
+            Token 拆解 <span class="ins-bd-est">估算</span>
+          </div>
           <div class="ins-bd-bars">
             <div class="ins-bd-empty">
               暂无分项数据（本次运行未返回拆解明细）
@@ -707,7 +775,7 @@ export function renderInsights(ins: Insights) {
           ${ins.retrievals.map(
             (r) => html`<details
               class="ins-ret-card ins-ret-fold"
-              ?open=${r.result.length <= 240}
+              ?open=${false}
             >
               <summary title="点击展开 / 收起">
                 <span class="ins-ret-name">${escapeHtml(r.label)}</span>

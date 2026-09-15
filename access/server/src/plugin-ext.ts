@@ -18,7 +18,7 @@ import type {
   WebExtensionHost,
   PluginUIView,
 } from '@agent-harness/core';
-import { publishReminder } from './reminder-bus';
+import { publishReminder, publishToRole } from './reminder-bus';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -74,6 +74,10 @@ export class ServerPluginHost implements ServerExtensionHost {
     // 事件携带 owner（= 归属用户），reminder-bus 按订阅连接的 owner 过滤后转发。
     if (e.type === 'memo:reminder') {
       publishReminder(e);
+    }
+    // 客服业务提醒：分析完成事件 → 推送给所有客服角色的在线 SSE 连接
+    if (e.type === 'cs:reminder:analysis_complete') {
+      publishToRole('service', e);
     }
   }
 

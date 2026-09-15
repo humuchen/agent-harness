@@ -341,6 +341,10 @@ export class RunQueue {
     this.claimTimer = setInterval(() => {
       void this.sweepOnce();
     }, intervalMs);
+    // 后台轮询定时器**不应阻止进程退出**：否则测试 / 优雅停机场景下 Node 会因该 handle
+    // 一直保持事件循环活跃而挂住（表现为测试文件级超时）。unref 后定时器照常触发，
+    // 仅不再充当「进程存活」的引用。
+    this.claimTimer.unref?.();
     // 立即扫一次，缩短启动后首任务延迟。
     void this.sweepOnce();
   }
@@ -389,6 +393,10 @@ export class RunQueue {
     job.status = 'running';
     job.startedAt = Date.now();
     void this.execute(job).finally(() => {
+      // 与 pump() 的 finally 一致：必须先清 per-job 内存监控定时器（否则 redis 共享模式下
+      // 任务结束后该 interval 仍残留在 memoryCheckTimers 中，造成泄漏——stop() 虽会兜底全清，
+      // 但应在任务维度及时释放）。
+      this.stopMemoryCheck(job.id);
       this.running -= 1;
       this.pump();
       this.sweepOnce();
@@ -585,6 +593,12 @@ export class RunQueue {
       clearInterval(this.claimTimer);
       this.claimTimer = undefined;
     }
+    // 清理所有 per-job 内存监控定时器。此前 stop() 遗漏此处：若任务在执行中被 stop
+    // （或测试未等任务结束），这些定时器会残留并阻止 Node 进程退出 —— 即测试文件级超时的根因之一。
+    for (const [jobId, timer] of this.memoryCheckTimers) {
+      clearInterval(timer);
+      this.memoryCheckTimers.delete(jobId);
+    }
     const backend = this.backend as unknown as { close?: () => Promise<void> };
     if (typeof backend.close === 'function') {
       void backend.close().catch(() => {});
@@ -672,6 +686,8 @@ export class RunQueue {
     check();
     // 周期性检查
     const timer = setInterval(check, MEMORY_CHECK_INTERVAL_MS);
+    // 同上：后台内存监控定时器不应阻止进程退出。
+    timer.unref?.();
     this.memoryCheckTimers.set(job.id, timer);
   }
 
@@ -735,6 +751,9 @@ export class RunQueue {
         /* 忽略 */
       }
     }, JOB_TIMEOUT_MS);
+    // 看门狗最长可达 JOB_TIMEOUT_MS（默认 300s），若测试 / 停机时任务未结束会长期持有
+    // 事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
+    watchdog.unref?.();
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
     const tenantIdForQuota = job.tenantId ?? 'anonymous';

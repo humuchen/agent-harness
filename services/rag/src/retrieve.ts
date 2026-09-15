@@ -54,15 +54,16 @@ function newTraceId(): string {
   return 'rag_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-export function retrieve(
+export async function retrieve(
   store: MemoryVectorStore,
   provider: EmbeddingProvider,
   req: RetrieveRequest,
-): RetrieveResponse {
+): Promise<RetrieveResponse> {
   const t0 = Date.now();
   const topK = Math.min(Math.max(req.top_k ?? 5, 1), 50);
   const threshold = req.score_threshold ?? 0;
-  const queryVec = provider.embed(req.query);
+  // 远程 embedding（RemoteEmbedding/OpenAIEmbedding）仅支持异步；HashEmbedding 同步。
+  const queryVec = provider.embedAsync ? await provider.embedAsync(req.query) : provider.embed(req.query);
   const queryTerms = tokenize(req.query);
   // 复用外部 trace_id 或生成新的
   const traceId = req.trace_id ?? newTraceId();

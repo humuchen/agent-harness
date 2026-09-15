@@ -23,8 +23,24 @@ import { client } from './api';
 const MAX_MSGS = 200;
 /** 单条消息内容在镜像中的字符上限。 */
 const MAX_CONTENT = 100_000;
+/**
+ * 单会话历史镜像序列化体积上限（字节）。
+ * 与服务端 DEFAULTS.HISTORY_MAX_BYTES / server.ts 中的 HISTORY_MAX_BYTES 保持一致；
+ * 服务端 /api/state 会下发实际值，运行时以服务端为准（见 saveThread 中的 historyMaxBytes）。
+ */
+const DEFAULT_HISTORY_MAX_BYTES = 512 * 1024;
 
 /* ----------------------------- 工具 ----------------------------- */
+
+/**
+ * 浏览器安全的 UTF-8 字节长度计算。
+ * Buffer.byteLength 是 Node.js API，在浏览器端 Bundle 后会抛出
+ * `ReferenceError: Buffer is not defined`（见 saveHistory 崩溃栈），
+ * 故改用 TextEncoder（浏览器原生，Node 18+ 亦可用）。
+ */
+function byteLength(str: string): number {
+  return new TextEncoder().encode(str).length;
+}
 
 /** 给任意 Promise 加超时（恢复流程要求能处理「加载超时」场景）。 */
 export function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise<T> {
@@ -211,6 +227,34 @@ export function mergeThreadHistories(server: MirroredMsg[], local: MirroredMsg[]
   return [...server.slice(0, server.length - overlap), ...local];
 }
 
+/**
+ * 序列化并截断消息列表，使其在给定字节上限内。
+ * 从最旧的消息开始删除，直到序列化后的 { msgs, usage } 信封体积 <= limit。
+ * 若连 0 条消息都超限（单条消息本身超过上限），保留最后 1 条并信赖服务端 413。
+ *
+ * @param msgs 已消毒的消息数组
+ * @param usage 可选的用量快照
+ * @param limit 字节上限（默认 DEFAULT_HISTORY_MAX_BYTES）
+ * @returns 裁剪后的消息数组
+ */
+export function truncateForSize(
+  msgs: MirroredMsg[],
+  usage: MirroredUsage | null,
+  limit = DEFAULT_HISTORY_MAX_BYTES
+): MirroredMsg[] {
+  if (!msgs.length) return msgs;
+  const envelope = (arr: MirroredMsg[]) =>
+    byteLength(JSON.stringify(usage ? { msgs: arr, usage } : { msgs: arr }));
+  // 已在限制内，无需裁剪。
+  if (envelope(msgs) <= limit) return msgs;
+  // 从最旧的开始删，直到体积进入限制。
+  let start = 0;
+  while (start < msgs.length - 1 && envelope(msgs.slice(start)) > limit) {
+    start++;
+  }
+  return msgs.slice(start);
+}
+
 /* --------------------- 会话镜像读写（接口层） --------------------- */
 
 export interface MirrorMeta {
@@ -240,6 +284,8 @@ export interface MirroredUsage {
       mcp: number;
       skills: number;
       completion: number;
+      /** 本次供应商侧缓存命中 token，前端可展示节省量。 */
+      cached?: number;
     };
   } | null;
   runCumulative: { tokens: number; cost: number } | null;
@@ -254,21 +300,25 @@ export async function saveThread(
   sid: string,
   meta: { title: string; updatedAt?: number },
   rawMsgs: unknown[],
-  usage?: MirroredUsage | null
+  usage?: MirroredUsage | null,
+  historyMaxBytes?: number
 ): Promise<boolean> {
   if (!sid) return false;
   const msgs = sanitizeMessages(rawMsgs).slice(-MAX_MSGS);
   if (!msgs.length) return false;
+  // 主动裁剪：确保序列化体积不超过服务端上限，避免 413 回来再裁剪。
+  const limit = historyMaxBytes ?? DEFAULT_HISTORY_MAX_BYTES;
+  const trimmed = truncateForSize(msgs, usage ?? null, limit);
   const updatedAt = typeof meta.updatedAt === 'number' ? meta.updatedAt : Date.now();
   const savedAt = Date.now();
-  memThreads.set(sid, msgs);
+  memThreads.set(sid, trimmed);
   memIndex.set(sid, { title: meta.title, updatedAt, savedAt });
   try {
     await withTimeout(
       client.putHistoryThread(sid, {
         title: meta.title,
         updatedAt,
-        msgs: msgs as unknown[],
+        msgs: trimmed as unknown[],
         ...(usage ? { usage } : {})
       }),
       6000,

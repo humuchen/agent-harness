@@ -1,0 +1,98 @@
+# ──────────────────────────────────────────────
+# 监控栈 overlay（Prometheus + Grafana + Alertmanager）
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+#
+# 访问：
+#   Grafana        http://localhost:3000   （默认 admin / admin，首次登录请改密）
+#   Prometheus     http://localhost:9090
+#   Alertmanager   http://localhost:9093
+#
+# 说明：
+#   - 抓取目标为 compose 网络内的 `ui:4173`，指标端点 /api/metrics/prometheus（无需令牌）。
+#   - Grafana 数据源与看板经 provisioning 自动装配（无需手工导入）。
+#   - 告警链路：Prometheus 规则 → Alertmanager（分组/抑制）→ ALERTMANAGER_WEBHOOK_URL。
+#     未配置 webhook 时告警仅在 Alertmanager UI 可见（不对外投递）。
+#   - K8s 部署请改用 deploy/k8s/ 下的 ServiceMonitor / Prometheus Operator 方案，或直接抓取 Service DNS。
+# ──────────────────────────────────────────────
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:9090/-/healthy']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    # --config.expand-env=true：允许配置里用 ${VAR} 引用环境变量（0.22+ 特性）。
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--config.expand-env=true'
+    environment:
+      # 告警投递地址（飞书/钉钉/企业微信群机器人 Webhook 或自研网关）。
+      # 未配置时指向 discard 端口（告警仅在 Alertmanager UI 可见，不对外投递）。
+      ALERTMANAGER_WEBHOOK_URL: '${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9/noop}'
+    ports:
+      - '9093:9093'
+    volumes:
+      - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:9093/-/healthy']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # 生产部署务必覆盖默认口令（可用 .env 的 GRAFANA_ADMIN_PASSWORD）。
+      GF_SECURITY_ADMIN_USER: '${GRAFANA_ADMIN_USER:-admin}'
+      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_ADMIN_PASSWORD:-admin}'
+      # 关闭匿名访问；看板以 provisioning 只读装配。
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ALERTING_ENABLED: 'false'
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://127.0.0.1:3000/api/health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

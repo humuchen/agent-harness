@@ -1,11 +1,10 @@
-/**
- * 院区 / 号源 / 预约单仓储（防超卖核心）。
- *
+/** 院区 / 号源 / 预约单仓储（防超卖核心）。
+
  * 关键约束：
  * - 号源占用走**事务 + 条件更新**（booked < capacity 才 +1），天然防超卖；
  * - 预约单建单与号源占用在**同一事务**内完成，保证原子性；
  * - 唯一索引 ux_appt_slot_active 防止同一 (slot, lead) 重复建有效预约单。
- *
+
  * 与过去 book.ts 的差异：过去无论号源是否存在都返回 ok:true（假成功）。
  * 现在号源满/已约/不存在均抛 MaError（CONFLICT/NOT_FOUND），由工具层据实回灌模型。
  */
@@ -53,6 +52,9 @@ function rowToAppointment(r: Record<string, unknown>): AppointmentRecord {
     status: r.status as AppointmentRecord['status'],
     externalId: (r.external_id as string) ?? undefined,
     externalStatus: (r.external_status as string) ?? undefined,
+    arrivedAt: r.arrived_at != null ? Number(r.arrived_at) : undefined,
+    completedAt: r.completed_at != null ? Number(r.completed_at) : undefined,
+    updatedAt: Number(r.updated_at),
     createdAt: Number(r.created_at),
   };
 }
@@ -156,6 +158,34 @@ export async function bookSlotWithinTx(
   return rowToAppointment(await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), apptId) as Record<string, unknown>);
 }
 
+/** 标记预约单到院（幂等）→ 设置 status='arrived', arrived_at。 */
+export async function markArrived(appointmentId: string): Promise<boolean> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const now = Date.now();
+    const res = await db.prepare(
+      `UPDATE ma_appointment
+       SET status = 'arrived', arrived_at = ?, updated_at = ?
+       WHERE appointment_id = ? AND status IN ('booked', 'arrived', 'completed')`
+    ).run(now, now, appointmentId);
+    return res.changes > 0;
+  }, '标记到院');
+}
+
+/** 标记预约单完成/就诊（幂等）→ 设置 status='completed', completed_at。 */
+export async function markCompleted(appointmentId: string): Promise<boolean> {
+  return await dbCall(async () => {
+    const db = await getDb();
+    const now = Date.now();
+    const res = await db.prepare(
+      `UPDATE ma_appointment
+       SET status = 'completed', completed_at = ?, updated_at = ?
+       WHERE appointment_id = ? AND status IN ('arrived', 'completed')`
+    ).run(now, now, appointmentId);
+    return res.changes > 0;
+  }, '标记完成');
+}
+
 /** 便捷封装：自带事务的号源锁定 + 建预约单。 */
 export async function bookSlotTx(args: {
   leadId: string;
@@ -214,6 +244,21 @@ export async function getAppointmentByExternalId(externalId: string): Promise<Ap
   }, '按外部单号查预约单');
 }
 
+/** 按日期查询当天预约单（用于到院/完成打卡）。 */
+export async function listAppointmentsByDate(date: string): Promise<AppointmentRecord[]> {
+  return await dbCall(async () => {
+    const tid = getConfig().tenantId;
+    const rows = await allRows(
+      (await getDb()).prepare(
+        'SELECT * FROM ma_appointment WHERE tenant_id = ? AND slot_date = ? AND status IN (\'booked\',\'arrived\') ORDER BY slot_time'
+      ),
+      tid,
+      date
+    );
+    return rows.map(rowToAppointment);
+  }, '按日期查询预约单');
+}
+
 /** 导入/同步院区（upsert）。 */
 export async function upsertClinic(c: ClinicRecord): Promise<void> {
   await dbCall(async () => {
@@ -266,4 +311,63 @@ export async function upsertSlot(s: {
       updated_at: Date.now(),
     });
   }, '导入号源');
+}
+
+/**
+ * 从缓存或实时查询获取号源（带 TTL 缓存，防抖动）。
+ */
+export async function getCachedSlots(clinicId: string, date: string): Promise<{
+  slots: SlotRecord[];
+  source: 'cache' | 'his';
+  updatedAt: number;
+}> {
+  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟缓存
+
+  // 先查本地缓存
+  const cached = await dbCall(async () => {
+    const db = await getDb();
+    const row = await db.prepare(
+      `SELECT slots_json, updated_at FROM slot_cache 
+       WHERE clinic_id = ? AND date = ? AND tenant_id = ?`
+    ).get(getConfig().tenantId, clinicId, date);
+    return row as { slots_json: string; updated_at: number } | undefined;
+  }, '查询号源缓存');
+
+  if (cached && Date.now() - cached.updated_at < CACHE_TTL_MS) {
+    const slots = JSON.parse(cached.slots_json) as SlotRecord[];
+    return { slots, source: 'cache', updatedAt: cached.updated_at };
+  }
+
+  // 缓存过期或不存在 → 重查（保持原有行为）
+  const slots = await listSlots(clinicId, date);
+  const result = { slots, source: 'his' as const, updatedAt: Date.now() };
+
+  // 写入缓存（幂等更新）
+  await dbCall(async () => {
+    const db = await getDb();
+    db.prepare(
+      `INSERT OR REPLACE INTO slot_cache (clinic_id, date, tenant_id, slots_json, updated_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(clinicId, date, getConfig().tenantId, JSON.stringify(slots), Date.now());
+  }, '写入号源缓存');
+
+  return result;
+}
+
+/**
+ * 清除号源缓存（手动触发重查时调用）。
+ */
+export async function clearSlotCache(clinicId: string, date?: string): Promise<void> {
+  await dbCall(async () => {
+    const db = await getDb();
+    if (date) {
+      db.prepare(
+        `DELETE FROM slot_cache WHERE clinic_id = ? AND date = ? AND tenant_id = ?`
+      ).run(clinicId, date, getConfig().tenantId);
+    } else {
+      db.prepare(
+        `DELETE FROM slot_cache WHERE clinic_id = ? AND tenant_id = ?`
+      ).run(clinicId, getConfig().tenantId);
+    }
+  }, '清除号源缓存');
 }

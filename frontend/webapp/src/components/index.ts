@@ -9,13 +9,24 @@
  * 仅纳入真正通用的 UI 原语；业务/特性组件（如各类 picker、file-upload、suggestions）
  * 仍由各特性模块就近引入。
  */
-// 弹层/模态（历史保留，计划下个迭代删除，详见 ah-popup.ts 顶部说明）。
-import './ah-popup';
-// 统一弹框组件：info / confirm / warning / 自定义内容 + 命令式 API。
+// mac-ui 组件注册（先于 ah-modal/ah-drawer 注册，确保自定义元素可用）
+import '@humuchen/mac-ui';
+
+// 统一弹框组件（mac-ui 适配层）：info / confirm / warning / 自定义内容 + 命令式 API。
 import './ah-modal';
-// 通用抽屉组件：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
+
+// 通用抽屉组件（mac-ui 适配层）：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
 import './ah-drawer';
+
 // 全局通知组件：全站「接口错误 / 操作结果」提示的唯一出口（notify.* 命令式 API）。
 import './ah-notification';
+
 // 顶栏用户菜单（头像 + 下拉：用户·角色 / 修改密码 / 退出登录）。
 import './user-menu';
+
+// 修改密码模态（受控 open）：由 user-menu 与 ah-settings-center 共用。
+import './password-dialog';
+
+// 综合设置中心（「设置」Tab）：顶部平铺分组 Tab + 模型与密钥 / 系统与网络 / 外观 / 关于。
+// （账户资料 / 修改密码 / 退出登录归「我的」页 user-menu，不在设置中心重复。）
+import './settings-center';
