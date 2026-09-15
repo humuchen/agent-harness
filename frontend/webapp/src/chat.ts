@@ -1297,14 +1297,14 @@ export class AhChat extends LitElement {
     const t = this.threadFor(sid);
 
     if (role === 'user') {
-      const last = t[t.length - 1];
-      if (
-        last &&
-        last.role === 'user' &&
-        (last.content ?? '') === content &&
-        content.length > 0
-      ) {
-        return; // 重复，跳过
+      // 去重：沿线程末尾回扫（跳过流式中的 assistant 占位 / 工具卡片），
+      // 若最近一条 user 消息内容完全相同则跳过。编辑重发场景下他端可能
+      // 先落了 assistant、本端又收到同内容 user 回声，仅查 t[last] 会漏判。
+      for (let i = t.length - 1; i >= 0; i--) {
+        const c = t[i];
+        if (!c || c.role !== 'user') continue;
+        if ((c.content ?? '') === content && content.length > 0) return; // 重复，跳过
+        break; // 只看最近一条 user，避免把「隔轮重发同文本」误判为重复
       }
       t.push({
         id: this.nextId++,
@@ -2465,11 +2465,17 @@ export class AhChat extends LitElement {
   /**
    * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
    * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   *
+   * 重入防御：ensureSession 是异步的，await 期间若用户连点「发送 ↑」或
+   * Enter 与点击叠加，第二次调用会带着同一草稿再次派发 dispatchPrompt，
+   * 历史里立刻多出一条重复消息。进入时立即清掉编辑态标志作为提交锁，
+   * 后续调用因 editingMsgId === -1 直接 return，仅首次生效。
    */
   private async sendEdit(_msgId: number) {
+    if (this.editingMsgId < 0) return; // 非编辑态 / 本次已提交（提交锁）
     const draft = this.editingDraft.trim();
     if (!draft || this.streaming[this.activeId] === true) return;
-    this.cancelEdit();
+    this.cancelEdit(); // 立即清 editingMsgId + editingDraft：UI 退回普通气泡，后续重入被上方拦截
     const sessionId = await this.ensureSession();
     this.input = draft;
     await this.send();
