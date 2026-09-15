@@ -467,6 +467,21 @@ export function appendChatMessage(
 }
 
 /**
+ * 计划任务派发消息前缀：`【计划任务 <id>】标题`，由 webapp `confirmPlan` 生成。
+ * 两侧格式必须保持一致；此处对 id 宽匹配（`t1` / `1` / `task-1` 均可）——
+ * planner 提示词只「建议」用 tN 命名，旧实现只认 `t\d+`，会把其它命名的计划
+ * 任务全部漏记，镜像恒空 → 刷新后计划卡片回落为「待确认」。
+ */
+const PLAN_TASK_DISPATCH_RE = /^【计划任务\s*([^】]+)】/;
+
+/** 从 run:start 的 input 提取计划任务 id；非「计划任务派发」返回 null。 */
+export function extractPlanTaskId(input: unknown): string | null {
+  const m = PLAN_TASK_DISPATCH_RE.exec(typeof input === 'string' ? input : '');
+  const id = m?.[1]?.trim();
+  return id ? id : null;
+}
+
+/**
  * 计划模式（P0）：更新会话内携带计划的最新一条 assistant 消息的执行进度镜像。
  * 服务端在任务派发/完成/失败事件时调用，把任务级状态随消息持久化 ——
  * 前端刷新 / 切回 / 服务重启后据此还原计划卡片并支持「从失败任务继续」。
@@ -489,9 +504,38 @@ export function updatePlanStatus(
         status: 'running',
         done: []
       };
-      m.planStatus = mutate({ ...prev, done: [...prev.done] });
+      m.planStatus = finalizePlanStatus(
+        mutate({ ...prev, done: [...prev.done] }),
+        (m.plan.tasks ?? []).map((t) => t.id)
+      );
       persist();
       return;
     }
   }
+}
+
+/**
+ * 计划状态收敛：全部任务均已完成后固化 `done`。
+ *
+ * 为什么必须由服务端补这一步：任务派发 / 完成事件只携带「当前任务」，服务端据此推出
+ * 的 done 集合已足以判定整体完成 —— 但此前恒返回 `running`，镜像永远表达不出「已完成」。
+ * 后果是刷新 / 换设备恢复时前端只能把 running 收敛为 failed（视为执行中断），
+ * 已成功的计划被显示成「执行失败」。
+ *
+ * 仅当计划任务 id 全部落在 done 内才固化；任一状态为 failed 时保持 failed（不掩盖错误）。
+ */
+export function finalizePlanStatus(
+  st: PlanExecMirror,
+  taskIds: readonly string[]
+): PlanExecMirror {
+  if (st.status === 'failed' || st.status === 'cancelled') return st;
+  const ids = taskIds.filter((t): t is string => typeof t === 'string' && !!t);
+  if (!ids.length) return st;
+  if (!ids.every((tid) => st.done.includes(tid))) return st;
+  return {
+    status: 'done',
+    done: [...st.done],
+    currentTaskId: undefined,
+    failedTaskId: undefined
+  };
 }

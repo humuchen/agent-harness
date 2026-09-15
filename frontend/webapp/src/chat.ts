@@ -22,7 +22,8 @@ import { renderCtxRing, selectContextUsage } from './chat-context-usage';
 import {
   fileIcon,
   formatSize,
-  buildPlanStatusLookup
+  buildPlanStatusLookup,
+  derivePlanExecFromMessages
 } from './chat-render-utils';
 
 // 消息渲染簇（已抽离到 chat-message-render.ts，交互态经 ChatRenderCtx 数据+回调 opts 传参，行为不变）。
@@ -448,6 +449,13 @@ export class AhChat extends LitElement {
   private sessionLoadSeq = 0;
 
   /**
+   * 外部入口（工作台「最近会话」）请求打开的会话 id 缓存。
+   * 事件到达时若本面板仍处隐藏态，先暂存于此，待 refresh()（面板转可见后由
+   * app.ts activatePanel 触发）执行到末尾时消费，保证点击不丢。
+   */
+  private pendingSelectId = '';
+
+  /**
    * 会话列表分页游标（非响应式）。
    * offset / hasMore / serverIds 三者必须同步推进，故打包成一个状态对象整体替换，
    * 避免出现「offset 已加、serverIds 未加」这类半更新态。驱动渲染的是
@@ -555,7 +563,9 @@ export class AhChat extends LitElement {
       sessions: this.sessions,
       backendUsage: this.backendUsage,
       runCumulative: this.runCumulative,
-      historyMaxBytes: this.historyMaxBytes
+      historyMaxBytes: this.historyMaxBytes,
+      // 计划进度写穿：本端是「计划整体完成」的唯一知情方（见 PersistHistoryOpts.planExec）。
+      planExec: this.planExec
     });
   }
 
@@ -761,6 +771,18 @@ export class AhChat extends LitElement {
       this.onPluginsChanged as EventListener
     );
 
+    // 工作台/全局入口请求打开指定会话：直接选中并加载消息。
+    this.addEventListener(
+      'ah-select-session',
+      this.onSelectSession as EventListener
+    );
+
+    // 路由变化（Tab 切换 / 浏览器后退前进）时收起对话页内的浮层（上下文用量面板等）。
+    // 本组件随应用壳常驻，切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+    // 移动端侧滑返回后再次进入对话页会看到上次遗留的展开面板。
+    // 统一约定见 ah-app.closeAllOverlays（各 ah-* 覆盖层同样订阅该事件）。
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
     try {
@@ -802,11 +824,15 @@ export class AhChat extends LitElement {
       /* 离线/未启动：发送时按 mock 兜底 */
     }
     await this.refreshAgents();
+    // 面板转可见后（由 app.ts activatePanel 触发本方法），消费此前因隐藏态
+    // 没能立即执行的「打开指定会话」请求，保证外部入口点击不丢。
+    this.consumePendingSelect();
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener(
       'visibilitychange',
@@ -824,6 +850,10 @@ export class AhChat extends LitElement {
     window.removeEventListener(
       'ah-plugins-changed',
       this.onPluginsChanged as EventListener
+    );
+    this.removeEventListener(
+      'ah-select-session',
+      this.onSelectSession as EventListener
     );
   }
 
@@ -862,6 +892,30 @@ export class AhChat extends LitElement {
         break;
     }
   };
+
+  /**
+   * 外部入口（工作台「最近会话」等）请求打开指定会话。
+   * app.ts 在切到对话 Tab 并完成一次渲染后派发 `ah-select-session`，
+   * 此处直接复用 selectSession（选中 + 拉取历史消息 + 滚动到底）。
+   * 若组件尚处隐藏态（异步时序兜底），先缓存 id，待可见时再消费。
+   */
+  private onSelectSession = (ev: Event) => {
+    const id = (ev as CustomEvent<string>).detail;
+    if (typeof id !== 'string' || !id) return;
+    if (this.hidden) {
+      this.pendingSelectId = id;
+      return;
+    }
+    void this.selectSession(id);
+  };
+
+  /** 消费隐藏态缓存的会话选择请求（面板转可见后调用）。 */
+  private consumePendingSelect(): void {
+    const id = this.pendingSelectId;
+    if (!id || this.hidden) return;
+    this.pendingSelectId = '';
+    void this.selectSession(id);
+  }
 
   /**
    * 重载会话列表首屏（offset 归零）。
@@ -1362,6 +1416,26 @@ export class AhChat extends LitElement {
     if (!inside) this.showCtxUsage = false;
   };
 
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起对话页内所有浮层。
+   *
+   * 本页有三处自持打开态的浮层，都属「切 Tab 只是被父级 hidden、组件不销毁」
+   * 的情形，必须在路由变化时主动归零，否则移动端侧滑返回后再次进入对话页
+   * 会看到上次遗留的展开面板 / 全屏层：
+   *   - previewFile       图片附件全屏预览（.lightbox）
+   *   - fullscreenEditOpen 长按输入框打开的全屏编辑器
+   *   - showCtxUsage      上下文用量弹层
+   * 注意此处直接改状态位，不走 closeFullscreenEdit() —— 后者会把焦点还给
+   * 气泡内的编辑框，而路由变化时该气泡已被切走，聚焦会出错。
+   * 调用链路抽屉由 ah-drawer 自行关闭，撰写区的模式 / 智能体 / 模型 / 附件面板
+   * 由各自组件自行关闭（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = () => {
+    if (this.previewFile) this.previewFile = null;
+    if (this.fullscreenEditOpen) this.fullscreenEditOpen = false;
+    if (this.showCtxUsage) this.showCtxUsage = false;
+  };
+
   /* ----------------------- 会话管理 ----------------------- */
 
   private async newChat() {
@@ -1505,6 +1579,9 @@ export class AhChat extends LitElement {
               : {}),
             id: this.nextId++
           })) as ChatMsg[];
+          // 降级路径同样还原计划进度（镜像字段 + 线程反推），否则已执行完成的计划
+          // 会退回「待确认」并重新显示「确认执行 / 取消」。
+          this.applyPlanStatusLookup(id, buildPlanStatusLookup(mirrored.msgs));
           notify.warning(
             '服务端历史拉取失败，已从历史镜像恢复（可能非最新）。',
             {
@@ -1554,20 +1631,30 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * 把镜像里的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
-   * 仅当内存中没有该消息的状态时写入，不覆盖本实例正在进行的执行状态；
-   * 镜像里的 running 态说明上次执行被中断（刷新/断连），收敛为 failed ——
-   * 卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默自动重放。
+   * 把持久化的计划进度应用到恢复后的线程（按 goal 对齐新消息 id）。
+   * 仅当内存中没有该消息的状态时写入，不覆盖本实例正在进行的执行状态。
+   *
+   * 两级来源：
+   * 1. 服务端 `planStatus` 镜像（权威）—— running 态说明上次执行被中断（刷新/断连），
+   *    收敛为 failed，卡片出现「从失败任务继续」，等用户指令后再续跑，绝不静默重放；
+   * 2. 镜像缺失时（旧数据未带该字段 / 镜像被整包覆盖 / 服务端重启后回落）从线程反推
+   *    （见 derivePlanExecFromMessages）—— 否则已执行完成的计划会退回默认的「待确认」，
+   *    向用户重新暴露「确认执行 / 取消」（实测反馈的显示缺陷）。
    */
   private applyPlanStatusLookup(
     sid: string,
     lookup: Map<string, PlanExecMirror>
   ) {
-    if (!lookup.size) return;
-    for (const m of this.threads[sid] ?? []) {
+    const thread = this.threads[sid];
+    if (!thread?.length) return;
+    for (const m of thread) {
       if (!m.plan || this.planExec[m.id]) continue;
       const ps = lookup.get(m.plan.goal);
-      if (!ps) continue;
+      if (!ps) {
+        const derived = derivePlanExecFromMessages(m.plan, thread);
+        if (derived) this.planExec = { ...this.planExec, [m.id]: derived };
+        continue;
+      }
       const doneMap: Record<string, boolean> = {};
       for (const tid of ps.done ?? []) doneMap[tid] = true;
       // running = 上次执行中断：保留已完成集合，但置 failed 等待用户显式继续。

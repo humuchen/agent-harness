@@ -291,6 +291,7 @@ export const base = css`
     padding-top: 0;
   }
 
+  .sidebar.collapsed .nav-group-title,
   .sidebar.collapsed .nav-text {
     display: none;
   }

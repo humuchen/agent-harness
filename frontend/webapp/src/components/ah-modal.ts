@@ -149,12 +149,23 @@ export class AhModal extends LitElement {
     super.connectedCallback();
     this.macTheme = getTheme();
     window.addEventListener('ah:theme-changed', this.onThemeChanged);
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('ah:theme-changed', this.onThemeChanged);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
   }
+
+  /** 路由切换或浏览器后退/前进时关闭声明式弹窗。 */
+  private onCloseOverlays = () => {
+    if (!this.open) return;
+    this.open = false;
+    this.dispatchEvent(
+      new CustomEvent('close', { bubbles: true, composed: true })
+    );
+  };
 
   render() {
     if (!this.open) return nothing;
@@ -260,8 +271,13 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve(v);
+        window.removeEventListener('ah:close-overlays', onOverlayClose);
         el.remove();
       };
+      // 注意：事件在 window 上派发，不会向下传播到 body 子元素，
+      // 故必须监听 window 而不是弹框元素本身。
+      const onOverlayClose = () => finish(false);
+      window.addEventListener('ah:close-overlays', onOverlayClose);
       el.addEventListener('mac-confirm-ok', () => finish(true));
       el.addEventListener('mac-confirm-cancel', () => finish(false));
       el.addEventListener('mac-confirm-close', () => finish(false));
@@ -300,8 +316,12 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve();
+        window.removeEventListener('ah:close-overlays', onOverlayClose);
         el.remove();
       };
+      // 事件在 window 上派发，不会向下传播到 body 子元素 → 监听 window。
+      const onOverlayClose = () => finish();
+      window.addEventListener('ah:close-overlays', onOverlayClose);
       el.addEventListener('mac-confirm-open', () => {
         // 等 DOM 渲染后绑定按钮事件
         requestAnimationFrame(() => {
@@ -366,8 +386,12 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve(v);
+        window.removeEventListener('ah:close-overlays', onOverlayClose);
         el.remove();
       };
+      // 事件在 window 上派发，不会向下传播到 body 子元素 → 监听 window。
+      const onOverlayClose = () => finish(null);
+      window.addEventListener('ah:close-overlays', onOverlayClose);
       el.addEventListener('mac-confirm-ok', () => finish(input.value));
       el.addEventListener('mac-confirm-cancel', () => finish(null));
       el.addEventListener('mac-confirm-close', () => finish(null));

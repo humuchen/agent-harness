@@ -9,6 +9,14 @@
  * 实现方式：由于 MacDrawer 使用 portal 机制将子节点移到 document.body，导致
  * shadow DOM 内的样式（chat-styles.ts 等）全部丢失。因此本组件在 shadow DOM
  * 内自行渲染抽屉面板，仅复用 mac-ui 的视觉令牌（--md-drawer-*）。
+ *
+ * 路由联动（统一约定，见 ah-app 的 closeAllOverlays）：
+ *   ah-app 在 Tab 切换 / 浏览器后退前进时向 window 广播 `ah:close-overlays`，
+ *   本组件收到后立即关闭并派发 close 事件（跳过离场动画）。
+ *   原因：移动端侧滑返回只改 history、不动组件内部状态，抽屉宿主往往不会收到任何
+ *   回调（如「我的」面板被父级 hidden，ah-user-menu 不会重新渲染），导致抽屉
+ *   「悬浮」到新页面上。所有 ah-* 覆盖层组件（ah-drawer / ah-modal /
+ *   ah-password-dialog）都订阅同一事件，保证关闭行为一致。
  */
 import { LitElement, html, css, nothing } from 'lit';
 import { mobilePill } from '../styles/mobile-pill';
@@ -343,15 +351,27 @@ export class AhDrawer extends LitElement {
     }
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // 订阅全局「关闭所有覆盖层」信号（Tab 切换 / 浏览器后退前进），见文件头「路由联动」。
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this.mask) document.body.style.overflow = '';
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
-  private finish(reason: DrawerCloseReason) {
+  /** 路由变化时的强制关闭：跳过离场动画，但仍派发 close 让宿主同步自身状态。 */
+  private onCloseOverlays = () => {
+    if (this.open) this.finish('button', true);
+  };
+
+  private finish(reason: DrawerCloseReason, skipAnimation = false) {
     if (!this.open || this.leaving) return;
     this.leaving = true;
-    window.setTimeout(() => {
+    const dispatch = () => {
       this.leaving = false;
       this.open = false;
       this.dispatchEvent(
@@ -361,7 +381,12 @@ export class AhDrawer extends LitElement {
           composed: true
         })
       );
-    }, LEAVE_MS);
+    };
+    if (skipAnimation) {
+      dispatch();
+    } else {
+      window.setTimeout(dispatch, LEAVE_MS);
+    }
   }
 
   private onConfirm() {

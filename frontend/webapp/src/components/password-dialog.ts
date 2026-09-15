@@ -185,12 +185,19 @@ export class AhPasswordDialog extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onKeydown);
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onKeydown);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
   }
+
+  /** 路由切换或浏览器后退/前进时关闭模态（提交中不响应，避免请求悬挂）。 */
+  private onCloseOverlays = () => {
+    if (this.open) this.close();
+  };
 
   /** 每次「打开」都重置草稿与忙碌态，避免上次输入残留。 */
   protected willUpdate(changed: PropertyValues): void {

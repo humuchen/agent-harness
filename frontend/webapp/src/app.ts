@@ -333,16 +333,23 @@ export class AhApp extends LitElement {
     );
     // 启动插件主动提醒轮询（备忘到点后应用内 toast + 桌面通知）。
     startPluginNotify();
-    // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组。
+    // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组，
+    // 或 { tab: 'chat', sessionId } 用于从工作台打开指定会话。
     this.addEventListener('ah-goto', (e) => {
-      const d = (e as CustomEvent<string | { tab?: string; group?: string }>)
-        .detail;
+      const d = (e as CustomEvent<
+        string | { tab?: string; group?: string; sessionId?: string }
+      >).detail;
       if (!d) return;
       if (typeof d === 'string') {
         this.setTab(d);
         return;
       }
       if (!d.tab) return;
+      // 从工作台打开指定会话：切到对话页后通知 ah-chat 选中该会话。
+      if (d.tab === 'chat' && d.sessionId) {
+        void this.openChatSession(d.sessionId);
+        return;
+      }
       // 携带分组：更新目标分组并自增序号，保证重复请求同一分组也能重新定位。
       // 默认「模型与密钥」（设置中心首个分组）；未知分组由设置中心自行忽略。
       this.settingsGroup = d.group ?? 'keys';
@@ -387,6 +394,8 @@ export class AhApp extends LitElement {
       const prevTab = this.tab;
       this.tab = initialTabFromPath();
       this.closeDrawer();
+      // 浏览器后退/前进时同步关闭所有覆盖层，防止移动端侧滑返回后抽屉/模态残留。
+      this.closeAllOverlays();
       // 路由切换时显示顶部进度条
       if (prevTab !== this.tab) {
         window.dispatchEvent(new Event('ah:bar:start'));
@@ -515,11 +524,32 @@ export class AhApp extends LitElement {
     }
     // 路由切换时显示顶部进度条，加载完成后隐藏
     if (prevTab !== tab) {
+      // 切换 Tab 时关闭所有覆盖层，避免旧抽屉/模态悬浮到新页面。
+      this.closeAllOverlays();
       window.dispatchEvent(new Event('ah:bar:start'));
       // 短暂延迟后停止，模拟页面加载完成
       setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
       // 新激活的面板此前在隐藏态挂载时跳过了首屏请求，此处补拉一次（见各面板 refresh() 守卫）。
       void this.activatePanel(tab);
+    }
+  }
+
+  /**
+   * 工作台/侧栏请求打开指定会话：切到对话 Tab 后向 ah-chat 派发选择事件。
+   * 等待一次更新完成，确保 ah-chat 已解除 hidden 再派发事件，避免监听未就绪。
+   */
+  private async openChatSession(sessionId: string): Promise<void> {
+    this.setTab('chat');
+    await this.updateComplete;
+    const chat = this.shadowRoot?.querySelector('ah-chat');
+    if (chat) {
+      chat.dispatchEvent(
+        new CustomEvent('ah-select-session', {
+          detail: sessionId,
+          bubbles: true,
+          composed: true,
+        })
+      );
     }
   }
 
@@ -651,6 +681,15 @@ export class AhApp extends LitElement {
     if (!this.drawerOpen) return;
     this.drawerOpen = false;
     this.syncBodyScroll();
+  }
+
+  /**
+   * 关闭所有覆盖层（抽屉、模态、密码框等）。
+   * 路由切换或浏览器后退/前进时派发全局事件，各组件订阅后自行关闭，
+   * 避免移动端侧滑返回后旧覆盖层仍悬浮在新页面上。
+   */
+  private closeAllOverlays() {
+    window.dispatchEvent(new CustomEvent('ah:close-overlays'));
   }
 
   /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */

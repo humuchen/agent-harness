@@ -258,6 +258,17 @@ export class AhWorkspace extends LitElement {
     );
   }
 
+  /** 点击最近会话条目：切换到对话 Tab 并携带目标会话 id。 */
+  private gotoSession(s: ChatSessionLite): void {
+    this.dispatchEvent(
+      new CustomEvent('ah-goto', {
+        detail: { tab: 'chat', sessionId: s.id },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   private icon(name: string) {
     const paths: Record<string, string> = {
       chat: 'M4 5h16v11H7l-3 3V5z',
@@ -380,7 +391,7 @@ export class AhWorkspace extends LitElement {
                   (s) => html`
                     <div
                       class="recent-item"
-                      @click=${() => this.goto('chat')}
+                      @click=${() => this.gotoSession(s)}
                       title=${s.title}
                     >
                       <span class="recent-title">${s.title || '未命名会话'}</span>

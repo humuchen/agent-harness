@@ -427,12 +427,14 @@ export class AhUserMenu extends LitElement {
     if (g) this.brand = g;
     document.addEventListener('click', this.onDocClick, true);
     window.addEventListener('keydown', this.onKeydown);
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('click', this.onDocClick, true);
     window.removeEventListener('keydown', this.onKeydown);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   /** 外部（ah-app）在拿到 /me 后调用，回填头像所需资料。 */
@@ -457,6 +459,20 @@ export class AhUserMenu extends LitElement {
     if (e.key === 'Escape' && !this.showPw && this.open) {
       this.open = false;
     }
+  };
+
+  /**
+   * 路由切换或浏览器后退/前进时，关闭本组件内所有覆盖层（设置抽屉、改密模态、下拉）。
+   *
+   * 背景：移动端侧滑返回只改变 history，不会动组件内部状态；而「我的」面板被父级
+   * 隐藏（`.me-view[hidden]`）时本组件不会收到任何回调，内部 `settingsOpen` 会一直为 true。
+   * 结果是切到别的 Tab 后再点「我的」，设置抽屉会「自己冒出来」。故由 ah-app 在
+   * 路由变化时广播 ah:close-overlays，这里统一归零 —— 这是唯一可靠的关闭时机。
+   */
+  private onCloseOverlays = () => {
+    if (this.settingsOpen) this.settingsOpen = false;
+    if (this.showPw) this.showPw = false;
+    if (this.open) this.open = false;
   };
 
   private toggle() {

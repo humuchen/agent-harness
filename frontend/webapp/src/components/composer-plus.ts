@@ -638,12 +638,23 @@ export class AhComposerPlus extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener('keydown', this.onDocKey, true);
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
   }
 
   disconnectedCallback(): void {
     document.removeEventListener('keydown', this.onDocKey, true);
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
     super.disconnectedCallback();
   }
+
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起面板。
+   * 本组件常驻在对话页、切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+   * 侧滑返回后再次进入对话页会看到上次遗留的展开面板（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = (): void => {
+    if (this.open) this.open = false;
+  };
 
   /** Esc 关闭面板（捕获阶段，避免被输入框的键盘处理吃掉）。 */
   private onDocKey = (e: KeyboardEvent): void => {

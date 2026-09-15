@@ -213,6 +213,25 @@ export class AhAgentPicker extends LitElement {
 
   @state() private open = false;
 
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+  }
+
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起浮层。
+   * 本组件常驻在对话页、切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+   * 侧滑返回后再次进入对话页会看到上次遗留的展开下拉（统一约定见 ah-app.closeAllOverlays）。
+   */
+  private onCloseOverlays = () => {
+    if (this.open) this.open = false;
+  };
+
   private select(id: string) {
     this.open = false;
     if (id === this.value) return;

@@ -104,6 +104,7 @@ import {
   deleteChatSession,
   appendChatMessage,
   updatePlanStatus,
+  extractPlanTaskId,
   type StoredTool,
   type TraceNode,
   type ChatMessage
@@ -4268,10 +4269,9 @@ async function handleRun(
           body.origin || ''
         );
         // 计划模式任务派发镜像：confirmPlan 按普通问答派发每个任务，run:start 的
-        // input 是「【计划任务 tX】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
-        const taskMatch = String(ev.input).match(/^【计划任务 (t\d+)】/);
-        if (!isPlanPropose && taskMatch) {
-          const taskId = taskMatch[1];
+        // input 是「【计划任务 <id>】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
+        const taskId = extractPlanTaskId(ev.input);
+        if (!isPlanPropose && taskId) {
           updatePlanStatus(
             chatSessionId,
             (prev) => ({

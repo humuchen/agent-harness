@@ -277,6 +277,115 @@ describe('mac-ui 适配层测试', () => {
     });
   });
 
+  /**
+   * 路由联动：ah-app 在 Tab 切换 / 浏览器后退前进时广播 `ah:close-overlays`，
+   * 所有 ah-* 覆盖层必须据此关闭自身。
+   * 回归背景：移动端侧滑返回只改 history，宿主组件（如被父级 hidden 的
+   * ah-user-menu）不会收到任何回调，覆盖层会「悬浮」到新页面上。
+   */
+  describe('路由联动：ah:close-overlays 统一关闭覆盖层', () => {
+    /** 模拟 ah-app 的路由变化广播。 */
+    const signalRouteChange = () =>
+      window.dispatchEvent(new CustomEvent('ah:close-overlays'));
+
+    it('ah-drawer：打开态收到信号立即关闭并派发 close（跳过离场动画）', async () => {
+      const el = document.createElement('ah-drawer');
+      el.open = true;
+      document.body.appendChild(el);
+      await el.updateComplete;
+
+      const reasons: string[] = [];
+      el.addEventListener('close', (e: any) => reasons.push(e.detail));
+
+      signalRouteChange();
+      await el.updateComplete;
+
+      expect(el.open).toBe(false);
+      expect(reasons).toEqual(['button']);
+      el.remove();
+    });
+
+    it('ah-drawer：未打开时收到信号不派发 close', async () => {
+      const el = document.createElement('ah-drawer');
+      document.body.appendChild(el);
+      await el.updateComplete;
+
+      let closed = 0;
+      el.addEventListener('close', () => { closed += 1; });
+
+      signalRouteChange();
+      await el.updateComplete;
+
+      expect(closed).toBe(0);
+      el.remove();
+    });
+
+    it('ah-drawer：卸载后监听已解绑，不再响应信号', async () => {
+      const el = document.createElement('ah-drawer');
+      el.open = true;
+      document.body.appendChild(el);
+      await el.updateComplete;
+      el.remove();
+      await el.updateComplete;
+
+      let closed = 0;
+      el.addEventListener('close', () => { closed += 1; });
+
+      signalRouteChange();
+
+      expect(closed).toBe(0);
+    });
+
+    it('声明式 ah-modal：打开态收到信号关闭并派发 close', async () => {
+      const el = document.createElement('ah-modal');
+      el.open = true;
+      el.title = '测试';
+      document.body.appendChild(el);
+      await el.updateComplete;
+
+      let closed = 0;
+      el.addEventListener('close', () => { closed += 1; });
+
+      signalRouteChange();
+      await el.updateComplete;
+
+      expect(el.open).toBe(false);
+      expect(closed).toBe(1);
+      el.remove();
+    });
+
+    it('命令式 AhModal.confirm()：收到信号视为取消，resolve false 并移除弹框', async () => {
+      const p = AhModal.confirm({ variant: 'confirm', title: '确认' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(document.querySelector('mac-confirm')).toBeTruthy();
+
+      signalRouteChange();
+
+      expect(await p).toBe(false);
+      expect(document.querySelector('mac-confirm')).toBeFalsy();
+    }, 10000);
+
+    it('命令式 AhModal.prompt()：收到信号 resolve null 并移除弹框', async () => {
+      const p = AhModal.prompt({ title: '输入' });
+      await new Promise((r) => setTimeout(r, 0));
+      signalRouteChange();
+
+      expect(await p).toBeNull();
+      expect(document.querySelector('mac-confirm')).toBeFalsy();
+    }, 10000);
+
+    it('命令式 AhModal.alert()：收到信号 resolve 并移除弹框', async () => {
+      const p = AhModal.alert({ title: '提示' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(document.querySelector('mac-confirm')).toBeTruthy();
+
+      signalRouteChange();
+
+      await expect(p).resolves.toBeUndefined();
+      expect(document.querySelector('mac-confirm')).toBeFalsy();
+    }, 10000);
+  });
+
   describe('主题切换', () => {
     it('dark/light data-theme 属性生效', () => {
       document.documentElement.setAttribute('data-theme', 'dark');

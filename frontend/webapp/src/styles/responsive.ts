@@ -64,20 +64,6 @@ export const responsive = css`
       padding: 40px 10px 20px 10px;
     }
 
-    /* 移动端抽屉内显示分组标题（桌面隐藏） */
-    // .sidebar .nav-group-title {
-    //   display: block;
-    //   font-size: 10.5px;
-    //   font-weight: 600;
-    //   letter-spacing: 0.4px;
-    //   color: var(--ah-text-faint);
-    //   padding: 12px 8px 4px;
-    //   text-transform: uppercase;
-    // }
-    // .sidebar .nav-group-title:first-child {
-    //   padding-top: 0;
-    // }
-
     /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
     .sidebar.collapsed {
       width: 240px;
