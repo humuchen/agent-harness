@@ -74,10 +74,11 @@ export const responsive = css`
     .sidebar.collapsed .theme-text {
       display: inline;
     }
-    /* 分组标题：base.ts 的 `.sidebar.collapsed .nav-group-title{display:none}` 是给
-       桌面收起态用的，但移动端抽屉默认就是折叠态（app.ts 里 sidebarCollapsed 缺省为
-       true），若不一并覆盖回 block，抽屉里的「使用 · 工作流」等分组标题会整片消失。
-       必须是 block（不能并入上面的 inline 组）：标题的上下 padding 依赖块级盒模型，
+    /* 分组标题：base 的「.sidebar.collapsed .nav-group-title{display:none}」是给
+       桌面 64px 图标轨用的；移动端抽屉同样带 collapsed 类（app.ts 里
+       sidebarCollapsed 缺省为 true），但抽屉是完整文字形态、分组标题必须显示，
+       故此处覆盖回 block —— 与上面 .nav-text 覆盖回 inline 是同一个理由。
+       必须单独写 block（不能并入上面的 inline 组）：标题的上下 padding 依赖块级盒模型，
        改成 inline 会让分组间距塌掉。两条规则特异性相同，靠 responsive 排在 base 之后取胜。 */
     .sidebar.collapsed .nav-group-title {
       display: block;

@@ -74,7 +74,7 @@ function uniqueShort(label: string, used: Set<string>): string {
 }
 
 /**
- * Tab 归类：移动端抽屉按 group 渲染分组标题；桌面侧边栏仍按扁平 TABS 渲染，忽略 group。
+ * Tab 归类：PC 侧边栏与移动端抽屉**一致**按 group 渲染分组标题，不再区分端。
  * 分组语义：
  *  - 'use'      使用 · 核心工作流
  *  - 'ability'  能力 · 资产与集成
@@ -836,7 +836,7 @@ export class AhApp extends LitElement {
           </div>
           <nav class="nav">
             ${(() => {
-              // 移动端按 group 分组渲染，桌面忽略（.nav-group-title 仅移动端可见）
+              // 按 group 分组渲染（PC 侧边栏与移动端抽屉一致；仅收起为图标轨时由 CSS 隐藏标题）
               const GROUP_TITLE: Record<string, string> = {
                 use: '使用 · 工作流',
                 ability: '能力 · 资产',

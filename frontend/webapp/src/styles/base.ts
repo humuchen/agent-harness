@@ -246,13 +246,21 @@ export const base = css`
     flex-direction: column;
     gap: 2px;
   }
-  /* 分组标题（分组见 app.ts 的 GROUP_TITLE）：
-     基础态隐藏，实际可见性由下面两条决定 —— 展开态 `.sidebar .nav-group-title` 显示，
-     收起态 `.sidebar.collapsed .nav-group-title` 隐藏。
-     注意收起态那条**同时命中移动端抽屉**（移动端侧边栏常处于 collapsed），
-     故 responsive.ts 的 ≤760px 分支里必须再覆盖回 block，不要在此处放宽条件。 */
+  /* 分组标题（分组定义见 app.ts 的 GROUP_TITLE）：
+     PC 侧边栏与移动端抽屉**一致显示**，不再按端区分。
+     唯二不显示的场景：① 侧边栏收起为图标轨（.sidebar.collapsed，见下）；
+     ② 该分组在 TABS 里没有条目（app.ts 渲染时直接不产出节点）。 */
   .nav-group-title {
-    display: none;
+    display: block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: var(--ah-text-faint);
+    padding: 12px 8px 4px;
+    text-transform: uppercase;
+  }
+  .nav-group-title:first-child {
+    padding-top: 0;
   }
   .nav-item {
     display: flex;
@@ -282,22 +290,11 @@ export const base = css`
     border-radius: 0 10px 10px 0;
     padding-left: 9px;
   }
-  .sidebar .nav-group-title {
-    display: block;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.4px;
-    color: var(--ah-text-faint);
-    padding: 12px 8px 4px;
-    text-transform: uppercase;
-  }
-  .sidebar .nav-group-title:first-child {
-    padding-top: 0;
-  }
-
-  /* 收起态：文字与分组标题一起隐藏（桌面只剩图标胶囊）。
-     移动端抽屉虽也带 collapsed 类，但抽屉需要完整文字 + 分组标题，
-     已在 responsive.ts 内对这两项分别覆盖为 inline / block。 */
+  /* 收起态（64px 图标轨）：导航文字被首字字形替代，分组标题同步隐藏 ——
+     文字都没了，标题在这条 44px 内容宽里只会折行成噪点。
+     注意此条**也会命中移动端抽屉**（移动端侧边栏同样带 collapsed 类），
+     抽屉是完整文字形态、需要分组标题，故 responsive.ts 的 ≤760px 分支里
+     仍要把标题覆盖回 block（文字则由 .nav-text 覆盖回 inline）。 */
   .sidebar.collapsed .nav-group-title,
   .sidebar.collapsed .nav-text {
     display: none;
