@@ -222,3 +222,50 @@ test('signal 已中断时 SSE 迭代立即安全退出', async () => {
   for await (const ev of parseSse(res, { signal: ac.signal })) out.push(ev);
   assert.deepEqual(out, []);
 });
+
+/* ------------------------- 工作流（plan 来源 / P3） ------------------------- */
+
+test('streamWorkflowFromPlan POST /api/v1/workflows 带 { plan, agentRef, mode }，SSE 逐帧产出', async () => {
+  const plan = { goal: 'g', tasks: [{ id: 't1', title: 'x', steps: [], dependsOn: [], expectedOutput: 'o' }] };
+  const { impl, calls } = fakeFetch(
+    sseRes([frame({ type: 'wf:start', workflowId: 'plan-1' }), frame({ type: 'wf:done', workflowId: 'plan-1', run: {} })])
+  );
+  const client = new AgentClient({ baseUrl: 'http://h.test', fetchImpl: impl });
+  const out = [];
+  for await (const ev of client.streamWorkflowFromPlan(plan, { agentRef: 'agent-a', mode: 'real' })) out.push(ev.type);
+  assert.deepEqual(out, ['wf:start', 'wf:done']);
+  assert.equal(calls[0].url, 'http://h.test/api/v1/workflows');
+  assert.deepEqual(JSON.parse(calls[0].init.body).plan, plan);
+  assert.equal(JSON.parse(calls[0].init.body).agentRef, 'agent-a');
+  assert.equal(JSON.parse(calls[0].init.body).mode, 'real');
+});
+
+test('streamWorkflowFromPlan 全空 opts 时 body 仅 { plan }（服务端回落默认 agent / mock 模式）', async () => {
+  const { impl, calls } = fakeFetch(sseRes([frame({ type: 'wf:done', workflowId: 'w', run: {} })]));
+  const client = new AgentClient({ baseUrl: 'http://h.test', fetchImpl: impl });
+  const out = [];
+  for await (const _ of client.streamWorkflowFromPlan({ goal: 'g', tasks: [] })) out.push(_);
+  const body = JSON.parse(calls[0].init.body);
+  assert.deepEqual(Object.keys(body), ['plan']);
+});
+
+test('streamWorkflowFromPlan 非 2xx 抛 ApiError', async () => {
+  const { impl } = fakeFetch(new Response('bad plan', { status: 400 }));
+  const client = new AgentClient({ baseUrl: 'http://h.test', fetchImpl: impl });
+  await assert.rejects(
+    async () => {
+      for await (const _ of client.streamWorkflowFromPlan({ goal: 'g' })) void _;
+    },
+    (e) => e instanceof ApiError && e.status === 400
+  );
+});
+
+test('streamWorkflowResume POST /api/v1/workflows/:id/resume，SSE 逐帧产出', async () => {
+  const { impl, calls } = fakeFetch(sseRes([frame({ type: 'wf:done', workflowId: 'plan-9', run: {} })]));
+  const client = new AgentClient({ baseUrl: 'http://h.test', fetchImpl: impl });
+  const out = [];
+  for await (const ev of client.streamWorkflowResume('plan-9')) out.push(ev.type);
+  assert.deepEqual(out, ['wf:done']);
+  assert.equal(calls[0].url, 'http://h.test/api/v1/workflows/plan-9/resume');
+  assert.equal(calls[0].init.method, 'POST');
+});

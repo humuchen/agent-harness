@@ -194,14 +194,48 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 | R7 引擎校验修正（`workflow/engine.ts`） | ✅ 已实现 | 字面量 inputMapping 合法化，对齐 `resolveInput` 运行时 |
 | `plan-to-workflow.test.cjs`（9 项） | ✅ 全绿 | 纯映射 5 项 + DagEngine 集成 4 项（成功路径并发、黑板取值、失败 all-or-nothing、resume 复用） |
 | DoD 第 2 条「独立分支正常跑完」 | ⚠️ 与现状引擎差异 | 见 R8，all-or-nothing 已用测试钉死；是否升级 per-branch 取消待决策 |
-| DoD 第 3/4 条（前端 + 全仓测试） | ⏳ P2/P3 | 本 P1 范围未触及 |
 
-**P1 结论**：映射桥验证通过——`ExecutionPlan` 能正确生成**合法** `WorkflowDef`（含黑板 `upstream_*` 取值 + `taskMeta` 字面量），DagEngine 能端到端执行并保证「下游拿到上游真实产出」。R8（失败语义）是唯一需要人工决策的开放点。
+**P1 结论**：映射桥验证通过——`ExecutionPlan` 能正确生成**合法** `WorkflowDef`（含黑板 `upstream_*` 取值 + `taskMeta` 字面量），DagEngine 能端到端执行并保证「下游拿到上游真实产出」。
 
-## 10. 分期落地建议
+## 9.2 P2 落地状态（服务端端到端，已实现 + 测试）
 
-- **P1（先做）**：`planToWorkflowDef` + 单测（mock executor 验证映射正确性）——零运行链路风险。
-- **P2**：`handleWorkflow` 支持 plan 来源 + executor prompt 装配——服务端可端到端跑通 DAG。
-- **P3**：前端 `confirmPlan` 改走 workflow + SSE 卡片 + 回退开关——闭环，回归面最大，最后动。
+| 项 | 状态 | 说明 |
+|---|---|---|
+| executor prompt 装配 `formatStepInput`（`workflow-executor.ts`） | ✅ 已实现 | 识别 `{goal, taskMeta, upstream_*}` 对象 → 装配设计文档 §5 约定的可读 prompt；`string`/普通对象原行为零回归；`compensate` 前缀保留；`taskMeta` 解析失败不阻断 |
+| `handleWorkflow` plan 来源（`server.ts`） | ✅ 已实现 | body 可带 `plan`（+ `agentRef?` / `mode?`），经 `planToWorkflowDef` 生成 def；`mode` 透传 executor（与 `/api/run` 同款白名单，默认 mock）；unknown `agentRef` fail-fast 400（对齐 `server.ts:3729`）；初始输入取 `plan.goal` |
+| `workflow-executor-format.test.cjs`（6 项） | ✅ 全绿 | plan 装配 / 上游真实产出注入 / string 透传 / 对象回退 / compensate 前缀 / taskMeta 解析失败 |
 
-> 每阶段独立可验收、可回退；P1 完成即证明「ExecutionPlan 能生成合法 WorkflowDef」，是整条链的安全基线。
+**P2 结论**：服务端链路打通——`POST /api/v1/workflows` 携带 `{plan, agentRef, mode}` 即可驱动多 agent DAG 执行 + 共享黑板，SSE 直播 `wf:step:*`。server 全量测试无回归。
+
+## 9.3 P3 落地状态（前端闭环，已实现 + 测试）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| client `streamWorkflowFromPlan`（`backend/client`） | ✅ 已实现 + 18/18 测试 | 同 `streamWorkflow` SSE 范式，POST `{plan, agentRef?, mode?}`；`streamWorkflowResume` 断点续跑 |
+| 状态机 `applyPlanWfEvent`（`chat-render-utils.ts`） | ✅ 已实现 + 单测 | wf:step:start/done/failed + wf:done/failed → `PlanExecState` 纯函数叠加；未知 task/无关事件同引用返回（`next !== prev` 判重渲染）；`chat-plan-wf-state.test.ts` 10 项 |
+| 特性开关 `isPlanDagEnabled`（localStorage `ah_plan_dag`） | ✅ 已实现 | **默认开**；用户显式置 `ah_plan_dag='0'` 可关（回退串行）；localStorage 不可用安全回落「开」；非浏览器/隐私模式保守回退串行 |
+| `confirmPlan` DAG 门控（`chat.ts`） | ✅ 已实现 | 开关开 + 首次确认（pending）走 `confirmPlanViaWorkflow`；传输层失败（unknown agent/5xx/断连/wf:error）整体回退已验证串行路径兜底；failed 态「从失败任务继续」统一走串行 resume |
+| `confirmPlanViaWorkflow` + `appendPlanDagSummary`（`chat.ts`） | ✅ 已实现 | SSE 消费 `wf:step:*` 驱动卡片；`wf:done/wf:failed` 回挂执行摘要到线程（R1：卡片级紧凑摘要，不污染会话气泡）；用户停止→cancelled，传输层异常→pending 回退；`saveHistory` 落盘 |
+| 停止按钮接入（`chat.ts` 渲染） | ✅ 已实现 | DAG 运行中（`planWfAbort` 非空）优先 `abort()` 中止 DAG 流，否则 `runRt.stop()`（两者互斥） |
+| `chat-plan-wf-state.test.ts`（10 项） | ✅ 全绿 | 状态机 6 项 + 特性开关 4 项 |
+
+**P3 结论**：前端闭环——计划卡片「确认执行」可走多 agent DAG（开关门控），`wf:step:*` 实时驱动卡片状态，终态回挂摘要，失败/停止/断连均有明确处置，全程可回退串行。**默认开**（用户可显式 `ah_plan_dag='0'` 关闭），传输层失败自动回退已验证串行路径兜底。
+
+### 回归验证（P2/P3 落地后）
+- webapp `vitest`：294 项全绿（含新增 10 项）；`vite build` 通过；`tsc --noEmit` 9 条 error **全 pre-existing**（stash 基线对比确认，零新增）
+- server：全量测试无回归；client 18/18
+- 全仓 `pnpm run test`：见执行记录
+
+## 10. 分期落地建议（P1–P3 均已完成）
+
+- **P1（✅ 已完成，commit `14b0457`/`344f0f0`）**：`planToWorkflowDef` + 单测 + R7 引擎校验修正——零运行链路风险的安全基线。
+- **P2（✅ 已完成）**：`handleWorkflow` plan 来源 + `formatStepInput` 装配 + `mode` 透传 + agentRef fail-fast——服务端端到端跑通 DAG。
+- **P3（✅ 已完成）**：前端 `confirmPlan` DAG 门控 + 状态机 + SSE 卡片 + 回退开关 + 摘要回挂——闭环，默认开，用户可 `ah_plan_dag='0'` 回退串行。
+
+### P4（后续，未实施）
+- **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。
+- **DAG 断点续跑入口**：前端 `failed` 态经 `streamWorkflowResume(workflowId)` 从检查点续跑（P3 目前 failed 走串行 resume）。
+- **黑板体积护栏（R5）**：`upstream_*` 大产出截断 + 监控 `workflowStore` 体积。
+- **P3 观察反馈收集**：默认开后的线上/自测观察期，若 DAG 路径暴露真实模型环境下的问题（R5 黑板体积、R8 all-or-nothing），经 `ah_plan_dag='0'` 可即时回退串行；稳定后可移除开关。
+
+> 每阶段独立可验收、可回退；P1 完成即证明「ExecutionPlan 能生成合法 WorkflowDef」，P2/P3 分别打通服务端与前端链路，全程不破坏已验证的串行回退路径。

@@ -53,6 +53,110 @@ export function buildPlanStatusLookup(
  */
 export const PLAN_TASK_DISPATCH_RE = /^【计划任务\s*([^】]+)】/;
 
+/* ------------------------------------------------------------------ */
+/* P3 多 agent DAG 计划执行：wf:* 事件 → 计划卡片状态（纯函数）        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 计划卡片 DAG 路径消费的 wf:* 事件最小形态（只含状态机用到的字段；
+ * 与 @agent-harness/client 的 WorkflowEvent 结构兼容，此处不 import 以避免
+ * 状态机纯函数耦合 client 包，便于独立测试与复用）。
+ */
+export interface PlanWfEvent {
+  type: string;
+  /** wf:step:* 携带的 step id（= 计划 task id，planToWorkflowDef 按 task.id 建 step）。 */
+  stepId?: string;
+  workflowId?: string;
+  /** wf:failed 时携带的完整 run（step 终态快照，用于定位失败 task）。 */
+  run?: {
+    state?: string;
+    steps?: Record<string, { state?: string; id?: string }>;
+  };
+}
+
+/**
+ * 把一条 wf:* 事件叠加到计划卡片的执行状态上（P3 DAG 路径，纯函数，零副作用）。
+ *
+ * 只处理「本计划已知 task 的 step 事件」（stepId ∈ knownTaskIds），其它 step /
+ * 无关事件原样返回 prev（同引用，便于调用方以 `next !== prev` 判重渲染）。
+ *
+ * 语义（对齐 design/plan-mode-multiagent.md §6 + R8 引擎 all-or-nothing 现状）：
+ * - wf:step:start  → running + currentTaskId；
+ * - wf:step:done   → done[stepId] = true（状态保持 running，直至 wf:done）；
+ * - wf:step:failed → failed + failedTaskId（引擎该波次中止，独立分支可能被放弃）；
+ * - wf:done        → 整体 done，清 current/failed；
+ * - wf:failed      → 整体 failed；failedTaskId 取 run.steps 中首个 failed step；
+ * - 其它（harness 嵌套事件 / wf:compensate:* / wf:start）→ 不变更（同引用返回）。
+ */
+export function applyPlanWfEvent(
+  prev: PlanExecState,
+  ev: PlanWfEvent,
+  knownTaskIds: ReadonlySet<string>
+): PlanExecState {
+  if (!ev || typeof ev.type !== 'string') return prev;
+  switch (ev.type) {
+    case 'wf:step:start': {
+      if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
+      return { ...prev, status: 'running', currentTaskId: ev.stepId };
+    }
+    case 'wf:step:done': {
+      if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
+      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true } };
+    }
+    case 'wf:step:failed': {
+      if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
+      return {
+        ...prev,
+        status: 'failed',
+        failedTaskId: ev.stepId,
+        currentTaskId: ev.stepId
+      };
+    }
+    case 'wf:done':
+      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined };
+    case 'wf:failed': {
+      // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
+      // run.steps 中首个 state==='failed' 的 step（step id = task id）。
+      const firstFailed = Object.values(ev.run?.steps ?? {}).find(
+        (s) => s?.state === 'failed'
+      );
+      return {
+        ...prev,
+        status: 'failed',
+        failedTaskId: firstFailed?.id ?? prev.failedTaskId,
+        currentTaskId: undefined
+      };
+    }
+    default:
+      // wf:start / wf:compensate:* / 嵌套 harness 事件 / _wf_done / wf:error（SSE 终结帧）：
+      // 卡片状态机不消费（wf:error 即请求级失败，由调用方 catch 兜底回退串行路径）。
+      return prev;
+  }
+}
+
+/** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */
+export interface PlanWfRunSnapshot {
+  state?: string;
+  steps?: Record<string, { state?: string; id?: string; output?: unknown }>;
+}
+
+/**
+ * P3（多 agent DAG 计划执行）特性开关。
+ * 开启后计划确认走服务端 DagEngine（拓扑波次并行 + 共享黑板），传输层失败自动回退已验证的
+ * 串行路径兜底。**默认开**；localStorage 显式置 `ah_plan_dag='0'` 可关闭（回退串行）。
+ * 回退链完整：unknown agent / 5xx / 断连 / wf:error → 串行路径，failed 态「从失败任务继续」
+ * 亦走串行 resume（见 design/plan-mode-multiagent.md §9.3 / R8）。
+ */
+export function isPlanDagEnabled(): boolean {
+  try {
+    // 默认开：仅当用户显式写入 '0' 时关闭。
+    return localStorage.getItem('ah_plan_dag') !== '0';
+  } catch {
+    // localStorage 不可用（隐私模式 / 非浏览器 / 读取抛错）→ 取默认值「开」。
+    return true;
+  }
+}
+
 /** derivePlanExecFromMessages 的只读消息形状（ChatMsg / MirroredMsg 均满足）。 */
 export interface PlanDeriveMsg {
   role: 'user' | 'assistant' | string;

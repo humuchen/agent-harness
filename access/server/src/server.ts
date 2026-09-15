@@ -4634,8 +4634,22 @@ async function handleWorkflow(
   // goal:'input' 映射到各 step 的 goal 键）。agentRef 缺省回落 DEFAULT_AGENT_ID。
   let def = body.def as WorkflowDef | undefined;
   if (body.plan && !def) {
-    const agentRef =
-      body.agentRef ?? (body.plan as ExecutionPlan & Record<string, unknown>).agentRef ?? DEFAULT_AGENT_ID;
+    // agentRef 归一化：前端 agentId 缺省为 ''（走默认 agent），'' 与 undefined 一律回落
+    // DEFAULT_AGENT_ID（?? 只拦 null/undefined，拦不住空串）。
+    const agentRef: string =
+      typeof body.agentRef === 'string' && body.agentRef.trim()
+        ? body.agentRef
+        : DEFAULT_AGENT_ID;
+    // 与 /api/run 同款 fail-fast（server.ts:3729）：unknown agentRef 立即 400，
+    // 不拖到 executor 运行期才抛错（那时 SSE 已开、计划卡片已置 running）。
+    if (agentRef !== DEFAULT_AGENT_ID) {
+      const card = await getAgentRegistry().get(agentRef);
+      if (!card) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: `unknown agentRef: ${agentRef}` }));
+        return;
+      }
+    }
     def = planToWorkflowDef(body.plan as ExecutionPlan, {
       agentRef,
       workflowId:
@@ -4665,6 +4679,11 @@ async function handleWorkflow(
   const initialInput: unknown = body.plan ? (body.plan as ExecutionPlan).goal ?? body.input : body.input;
 
   // SSE 发送器延迟绑定：先声明 no-op，校验通过后再挂真实 SSE；校验失败时根本不开 SSE。
+  // mode 与 /api/run 同款白名单（server.ts:3567）：plan DAG 需按发起会话的运行模式
+  // （前端透传）执行，默认 mock（离线）——保证「计划确认」与「当前聊天模式」语义一致。
+  const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode)
+    ? (body.mode as RunMode)
+    : 'mock';
   let send: (payload: unknown) => void = () => {};
   const onHarnessEvent = (e: any) => {
     if (!closed) send({ type: 'harness', event: e });
@@ -4672,7 +4691,7 @@ async function handleWorkflow(
   const onWfEvent = (e: WorkflowEvent) => {
     if (!closed) send(e);
   };
-  const executor = createWorkflowExecutor({ onEvent: onHarnessEvent });
+  const executor = createWorkflowExecutor({ onEvent: onHarnessEvent, mode });
   const engine = new DagEngine({
     store: workflowStore(),
     executor,

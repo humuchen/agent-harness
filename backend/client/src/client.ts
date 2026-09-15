@@ -484,6 +484,58 @@ export class AgentClient {
       yield ev as WorkflowEvent;
     }
   }
+
+  /**
+   * 以 Plan 模式的结构化执行计划（ExecutionPlan）驱动多 agent DAG 执行（P3，plan 来源）。
+   * 服务端 handleWorkflow 接收 { plan, agentRef?, mode? }：经 planToWorkflowDef 生成
+   * WorkflowDef 后按拓扑波次并行执行，下游 step 经共享黑板取上游真实产出
+   * （见 docs/design/plan-mode-multiagent.md §4/§5/§6）。
+   * 事件通道与 streamWorkflow 相同（wf:* 编排事件 + 嵌套 harness 事件 + _wf_done / wf:error 终结帧）。
+   * @param plan ExecutionPlan（client 不依赖 core，按 unknown 结构透传，由服务端收敛校验）
+   * @param opts.agentRef 每个 task 默认使用的 agent id（缺省服务端回落 DEFAULT_AGENT_ID）
+   * @param opts.mode 运行模式（与当前聊天会话一致；缺省服务端回落 mock）
+   */
+  async *streamWorkflowFromPlan(
+    plan: unknown,
+    opts: { agentRef?: string; mode?: RunMode; signal?: AbortSignal } = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const body: Record<string, unknown> = { plan };
+    if (opts.agentRef) body.agentRef = opts.agentRef;
+    if (opts.mode) body.mode = opts.mode;
+    const res = await this.request('/api/v1/workflows', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
+
+  /**
+   * 从断点续跑某次 plan/workflow 执行（P3：计划卡片「从失败任务继续」的 DAG 回退路径）。
+   * 对应服务端 POST /api/workflows/:id/resume（检查点存于 WorkflowStore）。
+   */
+  async *streamWorkflowResume(
+    id: string,
+    opts: SseOptions = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', signal: opts.signal }
+    );
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
 }
 
 export type { RunMode, EnvHandle };

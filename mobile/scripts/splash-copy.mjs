@@ -16,7 +16,8 @@ import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = join(fileURLToPath(new URL('.', import.meta.url)), '');
-const mobileDir = __dirname;
+// 脚本位于 mobile/scripts/，其父目录是 mobile/，仓库根再上一层。
+const mobileDir = join(__dirname, '..');
 const assetsDir = join(mobileDir, '../assets');
 const androidDir = join(mobileDir, 'android/app/src/main/res');
 const iosDir = join(mobileDir, 'ios/App/App/Assets.xcassets/LaunchScreen.imageset');
