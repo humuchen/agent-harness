@@ -146,14 +146,33 @@ export interface PlanWfRunSnapshot {
  * 串行路径兜底。**默认开**；localStorage 显式置 `ah_plan_dag='0'` 可关闭（回退串行）。
  * 回退链完整：unknown agent / 5xx / 断连 / wf:error → 串行路径，failed 态「从失败任务继续」
  * 亦走串行 resume（见 design/plan-mode-multiagent.md §9.3 / R8）。
+ *
+ * 可视化入口：「我的 → 设置 → 外观 → 对话」的开关（settings-center 读 isPlanDagEnabled 初始化，
+ * 切换经 setPlanDagEnabled 写回同一 key）。chat.ts 的 confirmPlan 每次确认时实时读
+ * isPlanDagEnabled()（不缓存），设置页改完即生效，无需跨组件事件总线。
  */
+export const PLAN_DAG_STORAGE_KEY = 'ah_plan_dag';
+
 export function isPlanDagEnabled(): boolean {
   try {
     // 默认开：仅当用户显式写入 '0' 时关闭。
-    return localStorage.getItem('ah_plan_dag') !== '0';
+    return localStorage.getItem(PLAN_DAG_STORAGE_KEY) !== '0';
   } catch {
     // localStorage 不可用（隐私模式 / 非浏览器 / 读取抛错）→ 取默认值「开」。
     return true;
+  }
+}
+
+/**
+ * 设置开关（设置中心 toggle 用）。on=true 时**移除** key（回到「默认开」语义，不留脏值）；
+ * on=false 显式写 '0'。localStorage 不可用时静默忽略——此时 isPlanDagEnabled() 恒为默认「开」。
+ */
+export function setPlanDagEnabled(on: boolean): void {
+  try {
+    if (on) localStorage.removeItem(PLAN_DAG_STORAGE_KEY);
+    else localStorage.setItem(PLAN_DAG_STORAGE_KEY, '0');
+  } catch {
+    /* 隐私模式 / 非浏览器：开关回落到默认「开」，与 isPlanDagEnabled 的 catch 分支一致。 */
   }
 }
 

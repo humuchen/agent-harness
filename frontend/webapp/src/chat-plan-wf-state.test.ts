@@ -11,6 +11,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   applyPlanWfEvent,
   isPlanDagEnabled,
+  setPlanDagEnabled,
+  PLAN_DAG_STORAGE_KEY,
   type PlanWfEvent
 } from './chat-render-utils';
 import type { PlanExecState } from './chat-types';
@@ -97,7 +99,7 @@ describe('applyPlanWfEvent', () => {
 describe('isPlanDagEnabled', () => {
   afterEach(() => {
     try {
-      localStorage.removeItem('ah_plan_dag');
+      localStorage.removeItem(PLAN_DAG_STORAGE_KEY);
     } catch {
       /* 非浏览器环境无 localStorage */
     }
@@ -109,7 +111,7 @@ describe('isPlanDagEnabled', () => {
 
   it("localStorage 置 '0' 时关", () => {
     try {
-      localStorage.setItem('ah_plan_dag', '0');
+      localStorage.setItem(PLAN_DAG_STORAGE_KEY, '0');
       expect(isPlanDagEnabled()).toBe(false);
     } catch {
       /* skip: 环境无 localStorage（node 默认环境），此时实现安全回落「开」 */
@@ -118,9 +120,9 @@ describe('isPlanDagEnabled', () => {
 
   it("localStorage 置 '1' 或其它值时开（仅 '0' 关闭）", () => {
     try {
-      localStorage.setItem('ah_plan_dag', '1');
+      localStorage.setItem(PLAN_DAG_STORAGE_KEY, '1');
       expect(isPlanDagEnabled()).toBe(true);
-      localStorage.setItem('ah_plan_dag', 'x');
+      localStorage.setItem(PLAN_DAG_STORAGE_KEY, 'x');
       expect(isPlanDagEnabled()).toBe(true);
     } catch {
       /* skip: 环境无 localStorage */
@@ -137,6 +139,55 @@ describe('isPlanDagEnabled', () => {
       configurable: true
     });
     try {
+      expect(isPlanDagEnabled()).toBe(true);
+    } finally {
+      if (orig) Object.defineProperty(globalThis, 'localStorage', orig);
+      else delete (globalThis as Record<string, unknown>).localStorage;
+    }
+  });
+});
+
+describe('setPlanDagEnabled（设置中心 toggle 的写入口）', () => {
+  afterEach(() => {
+    try {
+      localStorage.removeItem(PLAN_DAG_STORAGE_KEY);
+    } catch {
+      /* 非浏览器环境无 localStorage */
+    }
+  });
+
+  it("关（on=false）显式写 '0'，isPlanDagEnabled 回落 false", () => {
+    try {
+      setPlanDagEnabled(false);
+      expect(localStorage.getItem(PLAN_DAG_STORAGE_KEY)).toBe('0');
+      expect(isPlanDagEnabled()).toBe(false);
+    } catch {
+      /* skip: 环境无 localStorage */
+    }
+  });
+
+  it('开（on=true）移除 key（回到「默认开」，不留脏值），isPlanDagEnabled 恒 true', () => {
+    try {
+      localStorage.setItem(PLAN_DAG_STORAGE_KEY, '0');
+      expect(isPlanDagEnabled()).toBe(false);
+      setPlanDagEnabled(true);
+      expect(localStorage.getItem(PLAN_DAG_STORAGE_KEY)).toBeNull();
+      expect(isPlanDagEnabled()).toBe(true);
+    } catch {
+      /* skip: 环境无 localStorage */
+    }
+  });
+
+  it('localStorage 不可用时不抛错（静默忽略，读取方回落默认「开」）', () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      get: () => {
+        throw new Error('no storage');
+      },
+      configurable: true
+    });
+    try {
+      expect(() => setPlanDagEnabled(false)).not.toThrow();
       expect(isPlanDagEnabled()).toBe(true);
     } finally {
       if (orig) Object.defineProperty(globalThis, 'localStorage', orig);
