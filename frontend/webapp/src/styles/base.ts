@@ -159,8 +159,8 @@ export const base = css`
     justify-content: center;
     gap: 6px;
     /* 点击微交互：悬停变色 + 按下回缩，过渡柔和 */
-    transition: color 0.18s ease, border-color 0.18s ease,
-      transform 0.12s ease, background 0.18s ease;
+    transition: color 0.18s ease, border-color 0.18s ease, transform 0.12s ease,
+      background 0.18s ease;
   }
   .theme-toggle:hover {
     color: var(--ah-text);
@@ -278,6 +278,19 @@ export const base = css`
     border-radius: 0 10px 10px 0;
     padding-left: 9px;
   }
+  .sidebar .nav-group-title {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: var(--ah-text-faint);
+    padding: 12px 8px 4px;
+    text-transform: uppercase;
+  }
+  .sidebar .nav-group-title:first-child {
+    padding-top: 0;
+  }
+
   .sidebar.collapsed .nav-text {
     display: none;
   }

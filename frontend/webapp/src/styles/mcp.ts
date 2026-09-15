@@ -30,6 +30,10 @@ export const mcp = css`
     font-size: 12px;
     line-height: 1.5;
   }
+  .preset .row {
+    justify-content: flex-end;
+  }
+
   .chip {
     display: inline-flex;
     align-items: center;

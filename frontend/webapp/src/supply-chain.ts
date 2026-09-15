@@ -127,6 +127,8 @@ export class AhSupplyChain extends LitElement {
   }
 
   async refresh(): Promise<void> {
+    // 隐藏态挂载（非当前 Tab）时不发起首屏请求；切到本 Tab 时由 app.ts 的 activatePanel 补拉。
+    if (this.hidden) return;
     this.loading = true;
     try {
       const res = await authedFetch('/api/supply-chain/report');

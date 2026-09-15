@@ -392,6 +392,8 @@ export class AhApp extends LitElement {
         window.dispatchEvent(new Event('ah:bar:start'));
         setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
       }
+      // 浏览器前进/后退切到新 Tab 时，补拉该面板数据。
+      void this.activatePanel(this.tab);
     };
     window.addEventListener('popstate', this.onPopState);
 
@@ -516,6 +518,8 @@ export class AhApp extends LitElement {
       window.dispatchEvent(new Event('ah:bar:start'));
       // 短暂延迟后停止，模拟页面加载完成
       setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
+      // 新激活的面板此前在隐藏态挂载时跳过了首屏请求，此处补拉一次（见各面板 refresh() 守卫）。
+      void this.activatePanel(tab);
     }
   }
 
@@ -725,6 +729,32 @@ export class AhApp extends LitElement {
       }
     }
     this.refreshState();
+  }
+
+  /**
+   * 激活某 Tab 后补拉对应面板数据。面板随应用壳一起挂载，但隐藏态（非当前 Tab）
+   * 时各面板 refresh() 顶部有 `if (this.hidden) return;` 守卫、不会发起首屏请求；
+   * 切到该 Tab（可见）后由本方法触发一次 refresh()，避免「打开页面却是空数据」。
+   * 仅对当前可见面板生效（visiblePanel 已按 ?hidden 过滤）。
+   */
+  private async activatePanel(_tab: string) {
+    await this.updateComplete;
+    const el = this.visiblePanel();
+    if (!el) return;
+    const node = el as HTMLElement;
+    if (node.classList.contains('me-view')) return;
+    if (node.classList.contains('plugin-view')) {
+      void this.loadPluginViews();
+      return;
+    }
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    if (typeof fn === 'function') {
+      try {
+        await fn.call(el);
+      } catch (e) {
+        notifyError(e, { title: '加载失败', key: 'tab-activate' });
+      }
+    }
   }
 
   /** 是否为触摸设备（仅触摸才需要下拉刷新手势）。 */

@@ -216,6 +216,8 @@ export class AhWorkspace extends LitElement {
   }
 
   async refresh(): Promise<void> {
+    // 隐藏态挂载（非当前 Tab）时不发起首屏请求；切到本 Tab 时由 app.ts 的 activatePanel 补拉。
+    if (this.hidden) return;
     this.loading = true;
     // 各数据源相互独立：任一失败不影响其余格（用 allSettled 而非 all）。
     const [sessions, jobs, recipes, agents, mcp, mem] = await Promise.allSettled([

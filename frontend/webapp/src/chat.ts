@@ -750,29 +750,10 @@ export class AhChat extends LitElement {
     // 强制中止走统一重连。恢复按 seq 游标续传，误触发无副作用，仅多一次重订阅。
     this.runRt.startWatchdog();
 
-    // 会话列表首屏（分页）：只取第一页，其余交给滚动加载。
-    // 容错：带超时 + 失败自动重试一次；最终失败也不清空 ——
-    // 降级为本地镜像索引渲染入口，保证服务端不可达 / 曾发生恢复失败时历史会话仍可见可打开。
-    // 首次进入需要弹错提示，故 notifyOnError = true。
-    await this.reloadSessions(true);
-    try {
-      const state = await client.getState();
-      // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
-      this.llmReady =
-        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
-      this.mode = this.llmReady ? 'real' : 'mock';
-      this.historyMaxBytes =
-        typeof (state as any)?.historyMaxBytes === 'number'
-          ? (state as any).historyMaxBytes
-          : this.historyMaxBytes;
-      // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
-      // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
-    } catch {
-      /* 离线/未启动：发送时按 mock 兜底 */
-    }
-
-    // 拉取 agent 列表（失败不影响聊天，selector 退化为仅「默认 Agent」）。
-    await this.refreshAgents();
+    // 首屏数据加载（会话列表 / 状态 / agent 列表）抽到 refresh()，便于
+    // 隐藏态挂载时跳过请求、并在切到对话 Tab 时由 app.ts 的 activatePanel 补拉。
+    // 注意：本组件的监听注册、看门狗、SSE 等副作用仍在上方无条件初始化，不受影响。
+    void this.refresh();
 
     // 插件启用/停用会改变已注册 agent 集合，监听后实时刷新下拉（使已禁用插件的 agent 即时隐藏）。
     window.addEventListener(
@@ -795,6 +776,32 @@ export class AhChat extends LitElement {
       window.addEventListener('ah-chat-sync', this.onChatSync as EventListener);
       startChatSync(getUsername());
     }
+  }
+
+  /**
+   * 首屏数据加载：会话列表首屏、服务端状态（LLM 就绪 / 模式）、agent 列表。
+   * 顶部 `if (this.hidden) return;` 守卫：本面板随应用壳一起挂载，但隐藏态
+   * （非对话 Tab）时不发起请求；切到对话 Tab 时由 app.ts 调用本方法补拉。
+   */
+  async refresh() {
+    if (this.hidden) return;
+    await this.reloadSessions(true);
+    try {
+      const state = await client.getState();
+      // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
+      this.llmReady =
+        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
+      this.mode = this.llmReady ? 'real' : 'mock';
+      this.historyMaxBytes =
+        typeof (state as any)?.historyMaxBytes === 'number'
+          ? (state as any).historyMaxBytes
+          : this.historyMaxBytes;
+      // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
+      // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
+    } catch {
+      /* 离线/未启动：发送时按 mock 兜底 */
+    }
+    await this.refreshAgents();
   }
 
   disconnectedCallback() {

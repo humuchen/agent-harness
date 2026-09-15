@@ -69,6 +69,8 @@ export class AhObservability extends LitElement {
   }
 
   async refresh() {
+    // 隐藏态挂载（非当前 Tab）时不发起首屏请求；切到本 Tab 时由 app.ts 的 activatePanel 补拉。
+    if (this.hidden) return;
     this.loading = true;
     try {
       const [m, j, se, r] = await Promise.all([

@@ -134,10 +134,7 @@ export const responsive = css`
       border: none !important;
     }
     .avatar {
-      flex: 0 0 26px;
-      width: 26px;
-      height: var(--ah-h-md);
-      font-size: 12px;
+      display: none;
     }
     .msg {
       gap: 9px;

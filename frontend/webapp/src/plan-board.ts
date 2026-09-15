@@ -178,6 +178,8 @@ export class AhPlanBoard extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    // 隐藏态挂载（非计划 Tab）时跳过首屏加载；切到计划 Tab 时由 app.ts 调用 refresh() 补拉。
+    if (this.hidden) return;
     const params = new URLSearchParams(window.location.search);
     const planId = params.get('id') ?? params.get('plan');
     if (!planId) {
@@ -210,11 +212,18 @@ export class AhPlanBoard extends LitElement {
     }
   }
 
-  /** 下拉刷新：重载当前计划文档（保留既有 SSE 连接）。 */
+  /** 下拉刷新 / 切到计划 Tab 时补拉：加载当前计划文档，并在 SSE 未建立时启动实时更新。 */
   refresh() {
+    // 隐藏态（非计划 Tab）不加载；切到本 Tab 时才由 app.ts 的 activatePanel 调用。
+    if (this.hidden) return;
     const params = new URLSearchParams(window.location.search);
     const planId = this.plan?.id ?? params.get('id') ?? params.get('plan');
-    if (planId) void this.loadPlan(planId);
+    if (!planId) return;
+    // 计划尚未加载或切换了计划时，重新拉取并（重）建立 SSE 连接。
+    if (!this.plan || this.plan.id !== planId) {
+      void this.loadPlan(planId);
+      this.startSse(planId);
+    }
   }
 
   private async loadDiff(id: string, otherId: string) {
