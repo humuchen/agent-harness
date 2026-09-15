@@ -150,6 +150,20 @@ const navDotCss = css`
   }
 `;
 
+const desktopShellCss = css`
+  /* 桌面端恢复 :host 视口锁定：移动端适配为解除 100dvh + overflow:hidden
+     改走文档自然滚动，但 PC 端失去锁定后会出现外层 body 滚动条，
+     左侧侧边栏会随页面一起滚动。此处仅在桌面端恢复，
+     ≤760px 仍由 sharedStyles 的 responsive.ts 覆盖为 auto/visible。 */
+  @media (min-width: 761px) {
+    :host {
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+    }
+  }
+`;
+
 const chatShellCss = css`
   /* ?hidden 绑定用于 Tab 切换时隐藏非激活面板。:host 的 display:block 会盖过
      浏览器默认的 [hidden] 样式，必须加 !important 保险。 */
@@ -203,7 +217,7 @@ export class AhApp extends LitElement {
   // P3-1: 品牌位配置
   brand: BrandConfig = BRAND_DEFAULT;
 
-  static styles = [sharedStyles, navDotCss, chatShellCss];
+  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
