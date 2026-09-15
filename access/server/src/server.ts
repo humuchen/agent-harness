@@ -54,6 +54,9 @@ import {
   features,
   buildPlannerPrompt,
   parsePlanOutput,
+  planToWorkflowDef,
+  type ExecutionPlan,
+  DEFAULT_AGENT_ID,
   contextWindowFor,
   enableTelemetryAutosave,
   getTeamManager,
@@ -4624,7 +4627,25 @@ async function handleWorkflow(
     return;
   }
 
-  const def = body.def as WorkflowDef | undefined;
+  // P2（plan 来源，见 docs/design/plan-mode-multiagent.md §4/§5）：
+  // 请求可携带 `def`（已映射的 WorkflowDef）或 `plan`（ExecutionPlan，前端确认计划时直接发）。
+  // `plan` 经 planToWorkflowDef 生成 def（每个 task 一个 step，dependsOn 透传 DAG，
+  // 黑板 inputMapping 取上游真实产出）；初始输入默认取 plan.goal（buildInputMapping 的
+  // goal:'input' 映射到各 step 的 goal 键）。agentRef 缺省回落 DEFAULT_AGENT_ID。
+  let def = body.def as WorkflowDef | undefined;
+  if (body.plan && !def) {
+    const agentRef =
+      body.agentRef ?? (body.plan as ExecutionPlan & Record<string, unknown>).agentRef ?? DEFAULT_AGENT_ID;
+    def = planToWorkflowDef(body.plan as ExecutionPlan, {
+      agentRef,
+      workflowId:
+        typeof body.workflowId === 'string' && body.workflowId
+          ? body.workflowId
+          : undefined,
+      tenantId: typeof body.tenantId === 'string' ? body.tenantId : undefined,
+      traceId: typeof body.traceId === 'string' ? body.traceId : undefined
+    });
+  }
   if (
     !def ||
     typeof def.id !== 'string' ||
@@ -4634,11 +4655,14 @@ async function handleWorkflow(
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({
-        error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] }'
+        error: 'invalid workflow def: 需要 { id: string, steps: StepDef[] } 或 { plan, agentRef? }'
       })
     );
     return;
   }
+
+  // plan 来源：初始输入默认取 plan.goal（buildInputMapping 的 goal:'input' 映射到各 step 的 goal 键）。
+  const initialInput: unknown = body.plan ? (body.plan as ExecutionPlan).goal ?? body.input : body.input;
 
   // SSE 发送器延迟绑定：先声明 no-op，校验通过后再挂真实 SSE；校验失败时根本不开 SSE。
   let send: (payload: unknown) => void = () => {};
@@ -4678,8 +4702,10 @@ async function handleWorkflow(
   });
 
   // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
+  // initialInput：plan 来源时 = plan.goal（buildInputMapping 的 goal:'input' 映射到各 step 的 goal 键）；
+  // def 来源时 = body.input（保持现有行为）。
   engine
-    .run(def, body.input)
+    .run(def, initialInput)
     .then((run: any) => {
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();

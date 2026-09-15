@@ -1,12 +1,18 @@
 /**
  * 问答 / 计划模式（P0）—— 计划模式的结构化原语。
  *
- * 职责边界：core 只提供「计划契约 + planner 提示词 + 容错解析器」三件纯函数级能力，
- * 不感知 UI、不感知交互模式语义（那属于 webapp）；server 只做透传与落盘。
+ * 职责边界：core 只提供「计划契约 + planner 提示词 + 容错解析器 + 计划→工作流映射」
+ * 四件纯函数级能力，不感知 UI、不感知交互模式语义（那属于 webapp）；server 只做透传与落盘。
  * 「计划生成」本身是一次普通 run：planner 提示词约束模型输出计划 JSON，
  * 服务端在 run:end 时用 parsePlanOutput 解析并补发 plan:proposed 事件。
+ * 「计划→工作流映射」（planToWorkflowDef / buildInputMapping）把 ExecutionPlan 转成
+ * WorkflowDef，供 DagEngine 多 agent 并行执行 + 共享黑板传递真实产出
+ * （见 docs/design/plan-mode-multiagent.md）。
 
  */
+
+import type { StepDef, WorkflowDef } from './workflow/types';
+import type { AgentCard } from './agents/types';
 
 /** 单个计划任务：任务拆解的最小单元。 */
 export interface PlanTask {
@@ -145,4 +151,89 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
   }
 
   return { goal, tasks: order };
+}
+
+/** planToWorkflowDef 的选项（见设计文档 §4 映射契约）。 */
+export interface PlanToWorkflowOptions {
+  /** 每个 task 默认使用的 agent（字符串 id 经 AgentRegistry 解析，或内联 AgentCard）。必填。 */
+  agentRef: string | AgentCard;
+  /** 按 task.id 覆盖默认 agent（可选，实现「不同 task 不同 agent」）。 */
+  agentRefByTask?: Record<string, string | AgentCard>;
+  /**
+   * 工作流 id（设计文档 R4：建议每次确认唯一，避免 DagEngine 拒绝并发运行）。
+   * 缺省自动生成 `plan:<ts>-<rand>`。
+   */
+  workflowId?: string;
+  /** 全局租户标识（可选，透传给每个 step 的记忆分区与护栏策略）。 */
+  tenantId?: string;
+  /** 全局追踪 id（可选，贯穿所有 step 的 agent 调用，OTel 跨 agent 关联）。 */
+  traceId?: string;
+}
+
+/**
+ * 把一个 PlanTask 映射成 StepDef 的 inputMapping（设计文档 §4 黑板契约）：
+ * - `goal`：`'input'` → 取工作流全局初始输入（= plan.goal，由 engine.run(def, goal) 传入）；
+ * - `taskMeta`：字面量源，内联本 task 的 title/steps/expectedOutput（JSON 字符串），
+ *   供 executor 装配 prompt —— 不经 prompt 压缩，零 token 膨胀；
+ * - `upstream_<dep>`：`'steps.<dep>'` → 取上游 step 的**真实**产出（共享黑板，见 engine outputs），
+ *   直接修掉旧隔离方案的「摘要有损 + token O(任务数)」两个坑。
+ *
+ * 返回的映射交给 DagEngine.resolveInput 解析：值为 `'input'` 取初始输入，`'steps.<id>'` 取上游输出，
+ * 其它字符串按字面量原样注入（taskMeta 即此分支）。
+ */
+export function buildInputMapping(task: PlanTask): Record<string, string> {
+  const map: Record<string, string> = {
+    goal: 'input',
+    taskMeta: JSON.stringify({
+      id: task.id,
+      title: task.title,
+      steps: task.steps,
+      expectedOutput: task.expectedOutput,
+    }),
+  };
+  for (const d of task.dependsOn) {
+    map[`upstream_${d}`] = `steps.${d}`;
+  }
+  return map;
+}
+
+/**
+ * 把 ExecutionPlan 映射为可被 DagEngine 执行的 WorkflowDef（设计文档 §4 的核心桥）。
+ * - 每个 PlanTask → 一个 StepDef（task.id → step.id，dependsOn 直接透传为 DAG 边）；
+ * - 黑板语义：下游 step 经 inputMapping 的 upstream_<dep> 读取上游真实产出；
+ * - fail-fast：空 tasks 或无 agentRef 直接抛错（与 DagEngine.validateWorkflow 对齐）。
+ *
+ * 纯函数、零运行时依赖（type import 编译后擦除），可独立单测；执行由 server 注入的
+ * createWorkflowExecutor 完成（设计文档 §5 prompt 装配约定）。
+ */
+export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptions): WorkflowDef {
+  if (!plan || !Array.isArray(plan.tasks) || plan.tasks.length === 0) {
+    throw new Error('planToWorkflowDef: plan must carry a non-empty tasks[]');
+  }
+  if (!opts || !opts.agentRef) {
+    throw new Error('planToWorkflowDef: agentRef (default agent for all tasks) is required');
+  }
+  const byTask = opts.agentRefByTask ?? {};
+  const steps: StepDef[] = plan.tasks.map((task) => ({
+    id: task.id,
+    agentRef: byTask[task.id] ?? opts.agentRef,
+    dependsOn: task.dependsOn,
+    inputMapping: buildInputMapping(task),
+  }));
+  const def: WorkflowDef = {
+    id: opts.workflowId || genPlanWorkflowId(),
+    steps,
+  };
+  if (opts.tenantId) def.tenantId = opts.tenantId;
+  if (opts.traceId) def.traceId = opts.traceId;
+  return def;
+}
+
+/** 生成 plan 工作流 id（时间戳 + 随机后缀，R4 防并发拒绝；与 DagEngine.genRunId 同款，无需 uuid 依赖）。 */
+function genPlanWorkflowId(): string {
+  const rand =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(36).slice(2, 10);
+  return `plan:${Date.now().toString(36)}-${rand}`;
 }

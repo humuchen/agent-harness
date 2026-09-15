@@ -151,20 +151,29 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 | `frontend/webapp/src/chat.ts` | `confirmPlan` 改走 `POST /api/workflows` + SSE 订阅；保留串行回退路径（开关门控） |
 | `frontend/webapp/src/chat-run-runtime.ts` | 计划卡片确认按钮发 workflow 请求；消费 `wf:step:*` 驱动卡片 |
 
-### 复用（零改动）
+### 复用（引擎已具备，仅一处校验修正）
 `backend/core/src/workflow/engine.ts`、`backend/core/src/workflow/types.ts`、
 `access/server/src/plan-store.ts`、既有 `POST/GET /api/workflows` 端点。
+
+> P1 实现中发现并修正一处引擎校验 bug：`DagEngine.validateReferences`
+> （`workflow/engine.ts:121`）此前把 `inputMapping` 里**非 `steps.` 前缀的字面量常量**
+> 一律拒绝（报「无法解析」），与 `types.ts` 文档及 `resolveInput` 运行时行为
+> （else 分支原样注入字面量）矛盾。已修正为：仅 `steps.` 前缀须匹配 `steps.<id>(.output)`
+> 且引用已知 step，其余字符串按字面量合法。此修正使 `buildInputMapping` 的 `taskMeta`
+> 字面量源（R2 选择方案 a）得以通过校验，非步骤引用的 inputMapping 全量回归 431 项无影响。
 
 ## 8. 风险与对策
 
 | # | 风险 | 对策 |
 |---|---|---|
 | R1 | `POST /api/workflows` 走独立 sessionKey 隔离记忆，与 chat 会话历史割裂，用户看不到「中间过程」在聊天流里 | executor `onEvent` 已透传 `harness` 事件；前端按 `wf:step:*` + `harness` 事件把每 step 产出**回挂**到计划卡片（非普通气泡），避免污染会话历史 |
-| R2 | task 元数据（title/steps/expectedOutput）如何进 StepDef 未定 | 二选一：(a) 映射时塞进 `inputMapping` 的 `taskMeta` 字面量源（需 executor 解析）；(b) 扩展 `StepDef` 加 `taskMeta` 字段（改 `types.ts` + 引擎透传，向后兼容）。**倾向 (a)**：不动引擎，只动映射 + executor |
+| R2 | task 元数据（title/steps/expectedOutput）如何进 StepDef 未定 | **已定 (a)**：映射时塞进 `inputMapping` 的 `taskMeta` 字面量源（JSON 字符串），executor 解析后装配 prompt。不动引擎结构，仅依赖 R7 的校验修正 |
 | R3 | `DagEngine` 并发 = 波次内全量 `Promise.all`，无并发上限，task 多时打满 LLM 配额 / `RUN_CONCURRENCY` | 波次内加并发上限（如 `RUN_CONCURRENCY`），或限制 planner 单波 task 数（`plan.ts` 提示词已约束 2~6 task，通常够用）；超限走队列排队 |
-| R4 | 同 `def.id` 并发运行被 `engine.ts:277` 拒（防检查点覆盖） | plan 的 `def.id` 必须**每次确认唯一**（含 `chatSessionId + ts`），不得复用 |
+| R4 | 同 `def.id` 并发运行被 `engine.ts:277` 拒（防检查点覆盖） | plan 的 `def.id` 必须**每次确认唯一**（`genPlanWorkflowId` 已含 `ts+rand`，实测多次调用互不相同） |
 | R5 | 黑板 `outputs` 存大对象可能撑爆 store（FileWorkflowStore 单文件） | 上游产出过大时截断 + 提示；或按 `expectedOutput` 约束产出体量；监控 `workflowStore` 体积 |
 | R6 | planner 产出的 task 粒度过粗/过细，影响并行度与产出质量 | 本期不改 planner；若需，`buildPlannerPrompt` 增「任务间尽量少依赖、可独立验收」提示（独立迭代，不在本期） |
+| R7 | `validateReferences` 拒绝字面量 inputMapping，与 `resolveInput`/`types.ts` 矛盾，`taskMeta` 方案无法过校验 | **已修**（P1）：非 `steps.` 前缀按字面量放行；仅 `steps.` 前缀做引用校验。回归 431 项全绿 |
+| R8 | **引擎失败语义是 all-or-nothing**：`Promise.all(wave)` 中任一 step reject，run 进 catch、后续波次不再调度（配合补偿）。与 §9 DoD 第 2 条「失败 task 仅级联取消其下游、独立分支正常跑完」不一致 | P1 测试已钉死现状（all-or-nothing + 补偿）。若产品要求「独立分支继续跑完、仅失败分支下游跳过」，需 P2/P3 改造引擎为 per-branch 级联取消（`Promise.allSettled` + 依赖图按分支剪枝）——**需人工决策是否接受现状或升级** |
 
 ## 9. 验收标准（DoD）
 
@@ -176,6 +185,18 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
    - `resume` 从断点续跑不重复已完成 step。
 3. 前端：计划卡片「确认执行」触发 `POST /api/workflows`，`wf:step:*` 驱动卡片状态；关闭开关回退串行路径仍可用。
 4. `pnpm run test` / `pnpm run lint` / `pnpm run build` 全绿。
+
+## 9.1 P1 落地状态（已实现 + 测试）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `planToWorkflowDef` + `buildInputMapping`（`plan.ts`） | ✅ 已实现 | 纯函数、零运行时依赖；task→step 映射、dependsOn 透传、agentRef 默认/按 task 覆盖、`genPlanWorkflowId` 唯一 id |
+| R7 引擎校验修正（`workflow/engine.ts`） | ✅ 已实现 | 字面量 inputMapping 合法化，对齐 `resolveInput` 运行时 |
+| `plan-to-workflow.test.cjs`（9 项） | ✅ 全绿 | 纯映射 5 项 + DagEngine 集成 4 项（成功路径并发、黑板取值、失败 all-or-nothing、resume 复用） |
+| DoD 第 2 条「独立分支正常跑完」 | ⚠️ 与现状引擎差异 | 见 R8，all-or-nothing 已用测试钉死；是否升级 per-branch 取消待决策 |
+| DoD 第 3/4 条（前端 + 全仓测试） | ⏳ P2/P3 | 本 P1 范围未触及 |
+
+**P1 结论**：映射桥验证通过——`ExecutionPlan` 能正确生成**合法** `WorkflowDef`（含黑板 `upstream_*` 取值 + `taskMeta` 字面量），DagEngine 能端到端执行并保证「下游拿到上游真实产出」。R8（失败语义）是唯一需要人工决策的开放点。
 
 ## 10. 分期落地建议
 

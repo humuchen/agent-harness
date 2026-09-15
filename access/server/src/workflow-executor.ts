@@ -16,6 +16,62 @@ import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamMana
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 
+/**
+ * 把 step 的 input 对象（由 planToWorkflowDef.buildInputMapping 生成的
+ * `{ goal, taskMeta, upstream_<dep>* }` 结构）装配成可读 prompt。
+ *
+ * 语义（见 design/plan-mode-multiagent.md §5）：
+ * - `goal`：来自 inputMapping 的 `'input'`（= plan.goal，由 engine.run(def, goal) 传入）；
+ * - `taskMeta`：字面量源（= JSON.stringify({id,title,steps[],expectedOutput})），
+ *   本 helper 内 parse 后再格式化，**不** 把原始 JSON 字符串丢给模型；
+ * - `upstream_<dep>`：来自 `'steps.<dep>'`（= 上游 step 的真实 output，原样保留，零有损）。
+ *
+ * 兼容现有 workflow 的 step input（任意 JSON 可序列化值 / 字符串）：
+ * - string → 原样（保持 /api/workflows 现有行为）；
+ * - 对象带 `goal` 或 `taskMeta` 键 → 走 plan 装配路径（可识别）；
+ * - 其它对象 → `JSON.stringify`（保持现有回退，零回归）。
+ */
+export function formatStepInput(input: unknown, compensate?: boolean): string {
+  const comp = !!compensate;
+  if (typeof input === 'string') return comp ? `（回滚补偿）${input}` : input;
+  if (input && typeof input === 'object') {
+    const rec = input as Record<string, unknown>;
+    // Plan 来源（buildInputMapping 产出的形状）：必须同时有 goal + taskMeta。
+    if ('goal' in rec && 'taskMeta' in rec) {
+      const lines: string[] = [];
+      let meta: { id?: string; title?: string; steps?: unknown[]; expectedOutput?: string } | null;
+      try {
+        meta = typeof rec.taskMeta === 'string' ? JSON.parse(rec.taskMeta) : null;
+      } catch {
+        meta = null; // taskMeta 解析失败时不阻断 step，仅少打 task 头
+      }
+      if (meta?.title) {
+        lines.push(`【计划任务 ${meta.id ?? '(未命名)'}】${meta.title}`);
+        if (Array.isArray(meta.steps) && meta.steps.length) {
+          lines.push('步骤：');
+          meta.steps.forEach((s, i) => lines.push(`${i + 1}. ${String(s)}`));
+        }
+        if (meta.expectedOutput) lines.push(`预期产出：${meta.expectedOutput}`);
+      }
+      lines.push(`目标：${String(rec.goal ?? '')}`);
+      // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经
+      // inputMapping 的 `steps.<dep>` 取上游 outputs[dep]），原样注入 → 零摘要、零有损。
+      for (const [k, v] of Object.entries(rec)) {
+        if (!k.startsWith('upstream_')) continue;
+        const dep = k.slice('upstream_'.length);
+        lines.push(`上游 ${dep} 产出：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+      }
+      const body = lines.join('\n');
+      return comp ? `（回滚补偿）${body}` : body;
+    }
+    // 其它对象：保持现有 workflow 行为（JSON.stringify），零回归。
+    const dumped = JSON.stringify(rec, null, 2) ?? '';
+    return comp ? `（回滚补偿）${dumped}` : dumped;
+  }
+  return '';
+}
+
+
 export interface WorkflowExecutorOptions {
   /** harness 事件透传（SSE 直播）。 */
   onEvent?: (e: HarnessEvent) => void;
@@ -91,12 +147,10 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     }
 
     const sessionKey = `wf:${ctx.workflowId}:${step.id}`;
-    const prompt = ctx.compensate
-      ? // 补偿语义：以「回滚指令 / 已完成输出」作为本轮输入，交给 agent 执行回滚。
-        `（回滚补偿）${typeof input === 'string' ? input : JSON.stringify(input ?? '')}`
-      : typeof input === 'string'
-        ? input
-        : JSON.stringify(input ?? '');
+    // plan 来源 step：input 是 { goal, taskMeta, upstream_* } 对象 → 经 formatStepInput
+    // 装配成设计文档 §5 约定的可读 prompt；其它 workflow step（string / 任意对象）保持
+    // 原行为不变（零回归）。补偿路径同用 helper，回滚指令前缀保留。
+    const prompt = formatStepInput(input, ctx.compensate);
 
     const assembled = await assembleAgent(
       mode,
