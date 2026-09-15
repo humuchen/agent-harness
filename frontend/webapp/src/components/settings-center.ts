@@ -760,7 +760,7 @@ export class AhSettingsCenter extends LitElement {
   /** 侧边栏收起偏好（由父级持有并持久化，本组件只负责 UI 与派发变更）。 */
   @property({ type: Boolean }) sidebarCollapsed = true;
   /** 深度思考收起偏好（由父级持有并持久化）：开启后对话中深度思考默认折叠，不展开推理过程。 */
-  @property({ type: Boolean }) deepThinkCollapsed = false;
+  @property({ type: Boolean }) deepThinkCollapsed = true;
 
   @state() private active: SettingsGroup = DEFAULT_GROUP;
   @state() private themeMode: ThemeMode = 'system';

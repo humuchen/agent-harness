@@ -41,6 +41,12 @@ export const messageBubble = css`
       font-size: 14px;
       max-width: 745px;
       overflow-wrap: anywhere;
+      /* 必须显式归零：.bubble 是 .msg（flex 行）的 flex item，其 min-width 默认为
+         auto —— 意思是「不得窄于内容的最小宽度」。宽表格（每列 min-width:84px）
+         的最小宽度轻易超过可用宽度，于是气泡被顶宽、整条消息撑出容器，
+         页面出现横向滚动，表现是表格右侧被直接裁掉、而不是在气泡内横向滚动。
+         归零后内容才真正被限制在气泡宽度内，交给 .md-table-wrap 自行滚动。 */
+      min-width: 0;
     }
     .msg.assistant .bubble {
       /* 固定宽度：撑满可用空间并封顶，避免流式打字时气泡宽度随内容从窄到宽跳变。 */

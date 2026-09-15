@@ -276,8 +276,8 @@ export class AhChat extends LitElement {
   @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
-  /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 false（展开）。 */
-  @property({ type: Boolean }) deepThinkCollapsed = false;
+  /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 true（收起）。 */
+  @property({ type: Boolean }) deepThinkCollapsed = true;
 
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
   @state() thinkCollapsed: Record<string, boolean> = {};
@@ -2920,7 +2920,9 @@ export class AhChat extends LitElement {
     if (!scope || !block) return;
     this.mdFolded = {
       ...this.mdFolded,
-      [foldKey(scope, block)]: toggledBlockFolded(el.classList.contains('is-folded'))
+      [foldKey(scope, block)]: toggledBlockFolded(
+        el.classList.contains('is-folded')
+      )
     };
   }
 
@@ -2948,7 +2950,9 @@ export class AhChat extends LitElement {
     if (copyBtn) {
       // 从 DOM 取原文而非在按钮上存副本：流式重渲染会替换节点，
       // 只有代码元素本身的 textContent 才是「此刻的完整内容」。
-      const code = copyBtn.closest<HTMLElement>('.md-code')?.querySelector('code');
+      const code = copyBtn
+        .closest<HTMLElement>('.md-code')
+        ?.querySelector('code');
       void this.copyCodeText(copyBtn, code?.textContent ?? '');
     }
   };

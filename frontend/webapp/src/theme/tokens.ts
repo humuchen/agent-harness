@@ -49,6 +49,11 @@ const darkTokens = `
   --ah-hl-ins-bg: rgba(46, 160, 67, 0.15);
   --ah-hl-del: #FFA198;
   --ah-hl-del-bg: rgba(248, 81, 73, 0.15);
+  /* 横向滚动容器的边缘阴影（.md-table-wrap 等）：
+     用于提示「右侧还有内容」，因为本产品在 ≤760px 全局隐藏了滚动条。
+     阴影画在内容**下方**（背景层），文字本身不会被淡化，因此需要较高不透明度
+     才能在 #121622 上形成一眼可辨的暗带 —— 取值经像素采样核对。 */
+  --ah-scroll-shadow: rgba(0, 0, 0, 0.82);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -99,6 +104,8 @@ const lightTokens = `
   --ah-hl-ins-bg: rgba(46, 160, 67, 0.12);
   --ah-hl-del: #82071E;
   --ah-hl-del-bg: rgba(248, 81, 73, 0.12);
+  /* 见暗色同名令牌说明。亮色底本身已足够亮，0.16 即可形成可辨边缘。 */
+  --ah-scroll-shadow: rgba(0, 0, 0, 0.16);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -182,7 +189,8 @@ html.ah-theme-anim {
     --ah-warning       0.45s ease,
     --ah-warning-soft  0.45s ease,
     --ah-danger        0.45s ease,
-    --ah-danger-soft   0.45s ease;
+    --ah-danger-soft   0.45s ease,
+    --ah-scroll-shadow 0.45s ease;
 }
 :root {
 ${darkTokens}

@@ -21,8 +21,24 @@ export const markdownRichText = css`
     overflow-x: auto;
     border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-sm);
-    background: var(--ah-surface-1);
-    scrollbar-width: thin;
+    /* 横向滚动提示：纯 CSS「滚动阴影」，无需 JS、不占布局空间。
+       为什么不用滚动条：本产品在 ≤760px 用「*{scrollbar-width:none !important}」+
+       「::-webkit-scrollbar{display:none !important}」全局隐藏滚动条（styles/base.ts，
+       刻意如此以贴近原生观感），同权重 !important 覆盖不安全；且移动端覆盖式
+       滚动条本就不常驻，即使放开也未必可见（实测 scrollbar-width 计算值为 none）。
+       机制：cover 用 local 附着（随内容滚动），滚到该侧尽头时正好盖住对应阴影；
+       shadow 用 scroll 附着（钉在元素上），只在「该方向还有内容」时露出。
+       内容装得下时两侧 cover 与元素边缘重合，阴影被盖住、不会误报可滑。 */
+    background-color: var(--ah-surface-1);
+    background-image:
+      linear-gradient(to right, var(--ah-surface-1) 30%, transparent),
+      linear-gradient(to left, var(--ah-surface-1) 30%, transparent),
+      radial-gradient(farthest-side at 0% 50%, var(--ah-scroll-shadow), transparent),
+      radial-gradient(farthest-side at 100% 50%, var(--ah-scroll-shadow), transparent);
+    background-position: left center, right center, left center, right center;
+    background-repeat: no-repeat;
+    background-size: 44px 100%, 44px 100%, 26px 100%, 26px 100%;
+    background-attachment: local, local, scroll, scroll;
   }
   .msg-text .md-table-wrap > table {
     width: 100%;
@@ -278,6 +294,9 @@ export const markdownRichText = css`
     .msg-text .md-table-wrap tbody tr:hover td:first-child {
       background: var(--ah-surface-2);
     }
+    /* 表格在窄屏保留横向滚动（折行会破坏行列对应关系，压窄又会退化成竖排），
+       「右侧还有内容」的提示由 .md-table-wrap 的滚动阴影承担（见上方表格段），
+       此处不重复处理滚动条 —— 全局 !important 隐藏规则不可覆盖。 */
     /* 窄屏屏幕高度更紧张，折叠上限收紧，让一个代码块不至于占满整屏。 */
     .msg-text .md-code.is-folded .md-code-body {
       max-height: 260px;
@@ -288,6 +307,33 @@ export const markdownRichText = css`
     .msg-text .md-code-head {
       padding: 4px 6px 4px 10px;
       gap: 6px;
+    }
+
+    /* ==================== 窄屏代码块：取消横滑，改为自动折行 ====================
+       问题（实测反馈）：手机上没有滚动条提示、惯性滑动易误触，被藏到右侧的长行
+       实际处于「既看不见也不知道它存在」的状态 —— 用户会把被截断的代码块当成内容已结束。
+       手机屏幕只有 300px 左右可用宽度，靠横滑逐行对照代码的成本远高于折行。
+
+       折行的前提是本产品**不做行号**：行号与折行后的视觉行不再一一对应。
+       若将来增加行号，此处必须改回横滑、或改为逐行包裹后再折行。
+
+       必须同时解开三处，缺任意一处都仍会横滑或被内容撑宽：
+       ① .md-code-body 的 overflow-x —— 它才是滚动容器（增强态）；
+       ② 其 pre 的 width:max-content —— 撑宽的直接原因；
+       ③ pre 自身的 white-space:pre 与上一段显式归位过的 overflow-wrap。
+       裸代码块（用户消息等未增强容器）只受 ③ 影响，同样一并生效，保持两条链路一致。 */
+    .msg-text .md-code-body {
+      overflow: hidden;
+    }
+    .msg-text .md-code-body > pre {
+      width: auto;
+    }
+    .msg-text pre {
+      white-space: pre-wrap;
+      /* anywhere 而非 break-word：前者参与 min-content 宽度计算，
+         长标识符/长 URL 才能真正在列内断开，而不是先把容器顶宽再溢出。 */
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
   }
 `;
