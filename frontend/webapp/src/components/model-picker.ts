@@ -62,367 +62,369 @@ function normalizeCustom(raw: unknown): CustomModel[] {
 
 @customElement('ah-model-picker')
 export class AhModelPicker extends LitElement {
-  static styles = [css`
-    :host {
-      display: inline-block;
-      font-family: inherit;
-      color: var(--ah-text);
-    }
-    /* 面板锚定基准：absolute 弹层必须相对本组件定位 */
-    .wrap {
-      position: relative;
-      display: inline-block;
-    }
-    /* 触发按钮：胶囊形（图标+文字+chevron） */
-    .trigger {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: inherit;
-      font: inherit;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      border-radius: 999px;
-      transition: background 0.15s ease;
-      max-width: 46vw;
-    }
-    .trigger:hover {
-      background: rgba(125, 125, 125, 0.18);
-    }
-    .trigger:active {
-      background: rgba(125, 125, 125, 0.28);
-    }
-    .trigger .name {
-      font-size: 13px;
-      line-height: 20px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .trigger > svg:not(.vlogo) {
-      width: 16px;
-      height: 16px;
-      opacity: 0.85;
-      flex: 0 0 auto;
-    }
-    /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
-    @media (max-width: 600px) {
+  static styles = [
+    css`
+      :host {
+        display: inline-block;
+        font-family: inherit;
+        color: var(--ah-text);
+      }
+      /* 面板锚定基准：absolute 弹层必须相对本组件定位 */
+      .wrap {
+        position: relative;
+        display: inline-block;
+      }
+      /* 触发按钮：胶囊形（图标+文字+chevron） */
       .trigger {
-        max-width: 40px;
-        padding: 0;
-        justify-content: center;
-        overflow: hidden;
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        transition: background 0.15s ease;
+        max-width: 46vw;
       }
       .trigger:hover {
-        padding: 0;
+        background: rgba(125, 125, 125, 0.18);
       }
-      .trigger .name,
+      .trigger:active {
+        background: rgba(125, 125, 125, 0.28);
+      }
+      .trigger .name {
+        font-size: 13px;
+        line-height: 20px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .trigger > svg:not(.vlogo) {
-        display: none;
+        width: 16px;
+        height: 16px;
+        opacity: 0.85;
+        flex: 0 0 auto;
       }
-      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
-      * {
-        scrollbar-width: none;
-        -ms-overflow-style: none;
+      /* 移动端（≤600px，宿主媒体查询配合）：隐藏文字与箭头，仅展示厂商 logo */
+      @media (max-width: 600px) {
+        .trigger {
+          max-width: 40px;
+          padding: 0;
+          justify-content: center;
+          overflow: hidden;
+        }
+        .trigger:hover {
+          padding: 0;
+        }
+        .trigger .name,
+        .trigger > svg:not(.vlogo) {
+          display: none;
+        }
+        /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
       }
-      ::-webkit-scrollbar {
-        display: none;
-        width: 0;
-        height: 0;
+      /* 厂商徽标 */
+      .vlogo {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 700;
+        color: #fff;
+        flex: 0 0 auto;
+        line-height: 1;
       }
-    }
-    /* 厂商徽标 */
-    .vlogo {
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 700;
-      color: #fff;
-      flex: 0 0 auto;
-      line-height: 1;
-    }
-    .vlogo-sys {
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-    }
-    /* 面板容器 */
-    .panel {
-      position: absolute;
-      bottom: calc(100% + 8px);
-      right: 0;
-      width: min(92vw, 300px);
-      max-height: min(70vh, 460px);
-      background: var(--ah-surface-2, #1c1c1c);
-      border: 1px solid var(--ah-border, #2a2a2a);
-      border-radius: 14px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      z-index: 30;
-    }
-    .panel-head {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--ah-border, #2a2a2a);
-    }
-    /* 搜索框：独立圆角容器 + 前缀图标，从面板中清晰独立出来（原先几乎与背景融为一体）。 */
-    .panel-head .search {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: var(--ah-surface-3, rgba(125, 125, 125, 0.1));
-      border: 1px solid var(--ah-border, #2a2a2a);
-      border-radius: 10px;
-      padding: 7px 10px;
-      transition: border-color 0.15s ease;
-    }
-    .panel-head .search:focus-within {
-      border-color: var(--ah-accent, #2997ff);
-    }
-    .panel-head .search > svg {
-      width: 15px;
-      height: 15px;
-      color: var(--ah-text-muted, #9e9e9e);
-      flex: 0 0 auto;
-    }
-    .panel-head input {
-      flex: 1 1 auto;
-      width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
-      background: transparent;
-      color: var(--ah-text);
-      border: none;
-      outline: none;
-      font: inherit;
-      font-size: 13px;
-    }
-    .panel-body {
-      overflow-y: auto;
-      padding: 6px 0;
-    }
-    /* 分组标题 */
-    .group-title {
-      font-size: 11px;
-      color: var(--ah-text-muted, #9e9e9e);
-      padding: 8px 14px 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      cursor: pointer;
-      user-select: none;
-    }
-    /* 模型条目 */
-    .item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7px 12px;
-      cursor: pointer;
-      user-select: none;
-    }
-    .item:hover {
-      background: rgba(125, 125, 125, 0.12);
-    }
-    /* 选中态：低饱和强调色背景 + 左侧 3px 强调线（inset，不挤压布局），
+      .vlogo-sys {
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+      }
+      /* 面板容器 */
+      .panel {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        right: 0;
+        width: min(92vw, 300px);
+        max-height: min(70vh, 460px);
+        background: var(--ah-surface-2, #1c1c1c);
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 14px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 30;
+      }
+      .panel-head {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--ah-border, #2a2a2a);
+      }
+      /* 搜索框：独立圆角容器 + 前缀图标，从面板中清晰独立出来（原先几乎与背景融为一体）。 */
+      .panel-head .search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--ah-surface-3, rgba(125, 125, 125, 0.1));
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 10px;
+        padding: 7px 10px;
+        transition: border-color 0.15s ease;
+      }
+      .panel-head .search:focus-within {
+        border-color: var(--ah-accent, #2997ff);
+      }
+      .panel-head .search > svg {
+        width: 15px;
+        height: 15px;
+        color: var(--ah-text-muted, #9e9e9e);
+        flex: 0 0 auto;
+      }
+      .panel-head input {
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+        background: transparent;
+        color: var(--ah-text);
+        border: none;
+        outline: none;
+        font: inherit;
+        font-size: 13px;
+      }
+      .panel-body {
+        overflow-y: auto;
+        padding: 6px 0;
+      }
+      /* 分组标题 */
+      .group-title {
+        font-size: 11px;
+        color: var(--ah-text-muted, #9e9e9e);
+        padding: 8px 14px 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        user-select: none;
+      }
+      /* 模型条目 */
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 12px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .item:hover {
+        background: rgba(125, 125, 125, 0.12);
+      }
+      /* 选中态：低饱和强调色背景 + 左侧 3px 强调线（inset，不挤压布局），
        避免原先「红色描边」易被误读为错误提示的观感；明暗主题自适应。 */
-    .item.active {
-      background: var(--ah-accent-soft, rgba(41, 151, 255, 0.14));
-      box-shadow: inset 3px 0 0 0 var(--ah-accent, #2997ff);
-    }
-    .item.active:hover {
-      background: color-mix(in srgb, var(--ah-accent) 20%, transparent);
-    }
-    .item.active .name {
-      font-weight: 500;
-    }
-    .item .name {
-      flex: 1 1 auto;
-      min-width: 0;
-      font-size: 13px;
-      line-height: 18px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      padding: 0 15px;
-    }
-    .item .check {
-      width: 16px;
-      height: 16px;
-      color: var(--ah-accent, #2997ff);
-      flex: 0 0 auto;
-    }
-    /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
+      .item.active {
+        background: var(--ah-accent-soft, rgba(41, 151, 255, 0.14));
+        box-shadow: inset 3px 0 0 0 var(--ah-accent, #2997ff);
+      }
+      .item.active:hover {
+        background: color-mix(in srgb, var(--ah-accent) 20%, transparent);
+      }
+      .item.active .name {
+        font-weight: 500;
+      }
+      .item .name {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 13px;
+        line-height: 32px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 15px;
+      }
+      .item .check {
+        width: 16px;
+        height: 16px;
+        color: var(--ah-accent, #2997ff);
+        flex: 0 0 auto;
+      }
+      /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
        否则二者在触屏端（常显）会重叠。 */
-    .item.custom-item.active {
-      padding-right: 68px;
-    }
-    /* 底部操作行 */
-    .footer {
-      display: flex;
-      border-top: 1px solid var(--ah-border, #2a2a2a);
-    }
-    .footer button {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-      font: inherit;
-      font-size: 12px;
-      line-height: 16px;
-      cursor: pointer;
-      padding: 11px 4px;
-      flex: 1 1 auto;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .footer button:hover {
-      color: var(--ah-text);
-      background: rgba(125, 125, 125, 0.1);
-    }
-    .footer button + button {
-      border-left: 1px solid var(--ah-border, #2a2a2a);
-    }
-    /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
-    .add-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px 14px;
-      border-bottom: 1px solid var(--ah-border, #2a2a2a);
-    }
-    .add-row input {
-      background: transparent;
-      color: var(--ah-text);
-      border: 1px solid var(--ah-border, #2a2a2a);
-      border-radius: 10px;
-      padding: 8px 10px;
-      outline: none;
-      font: inherit;
-      font-size: 13px;
-    }
-    .add-row input:focus {
-      border-color: var(--ah-accent, #2997ff);
-    }
-    /* 编辑态下「已保存 Key 不回显，留空即保留」的辅助提示。 */
-    .add-row .hint {
-      font-size: 12px;
-      color: var(--ah-text-muted, #9e9e9e);
-      line-height: 1.5;
-    }
-    .add-actions {
-      display: flex;
-      gap: 10px;
-      justify-content: flex-end;
-    }
-    /* 复用全应用统一 .btn 体系（与 ah-modal / ah-drawer 一致），保证视觉统一。 */
-    .add-actions .btn {
-      min-width: 76px;
-      padding: 8px 16px;
-      font-size: 13px;
-      font-family: var(--ah-font-sans);
-      cursor: pointer;
-      border-radius: var(--ah-radius-md);
-      border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease,
-        color 120ms ease;
-    }
-    .add-actions .btn.ghost {
-      background: transparent;
-      color: var(--ah-text-muted);
-    }
-    .add-actions .btn.ghost:hover {
-      color: var(--ah-text);
-      border-color: var(--ah-text-faint);
-    }
-    .add-actions .btn.primary {
-      background: var(--ah-accent);
-      border-color: var(--ah-accent);
-      color: #fff;
-      font-weight: 600;
-    }
-    .add-actions .btn.primary:hover {
-      background: var(--ah-accent-strong);
-      border-color: var(--ah-accent-strong);
-    }
-    .add-actions .btn:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-    .add-actions .btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    /* 自定义模型条目 */
-    .item.custom-item {
-      padding: 0;
-      position: relative; /* 作为 .custom-actions 的绝对定位参照，避免脱到父面板 */
-    }
-    .custom-main {
-      flex: 1 1 auto;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7px 12px;
-      text-align: left;
-      cursor: pointer;
-      word-break: break-all;
-    }
-    .custom-actions {
-      display: none;
-      gap: 2px;
-      position: absolute;
-      right: 4px;
-      flex: 0 0 auto;
-      z-index: 1;
-    }
-    /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。
-       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。 */
-    @media (hover: hover) {
-      .item.custom-item:hover .custom-actions {
-        display: flex;
+      .item.custom-item.active {
+        padding-right: 68px;
       }
-    }
-    @media (hover: none) {
+      /* 底部操作行 */
+      .footer {
+        display: flex;
+        border-top: 1px solid var(--ah-border, #2a2a2a);
+      }
+      .footer button {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+        font: inherit;
+        font-size: 12px;
+        line-height: 16px;
+        cursor: pointer;
+        padding: 11px 4px;
+        flex: 1 1 auto;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .footer button:hover {
+        color: var(--ah-text);
+        background: rgba(125, 125, 125, 0.1);
+      }
+      .footer button + button {
+        border-left: 1px solid var(--ah-border, #2a2a2a);
+      }
+      /* 自定义添加行：点「添加自定义模型」后展开（接口地址 / API Key / 模型名称 三项纵向堆叠） */
+      .add-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--ah-border, #2a2a2a);
+      }
+      .add-row input {
+        background: transparent;
+        color: var(--ah-text);
+        border: 1px solid var(--ah-border, #2a2a2a);
+        border-radius: 10px;
+        padding: 8px 10px;
+        outline: none;
+        font: inherit;
+        font-size: 13px;
+      }
+      .add-row input:focus {
+        border-color: var(--ah-accent, #2997ff);
+      }
+      /* 编辑态下「已保存 Key 不回显，留空即保留」的辅助提示。 */
+      .add-row .hint {
+        font-size: 12px;
+        color: var(--ah-text-muted, #9e9e9e);
+        line-height: 1.5;
+      }
+      .add-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+      /* 复用全应用统一 .btn 体系（与 ah-modal / ah-drawer 一致），保证视觉统一。 */
+      .add-actions .btn {
+        min-width: 76px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-family: var(--ah-font-sans);
+        cursor: pointer;
+        border-radius: var(--ah-radius-md);
+        border: 1px solid var(--ah-border);
+        transition: background 120ms ease, border-color 120ms ease,
+          color 120ms ease;
+      }
+      .add-actions .btn.ghost {
+        background: transparent;
+        color: var(--ah-text-muted);
+      }
+      .add-actions .btn.ghost:hover {
+        color: var(--ah-text);
+        border-color: var(--ah-text-faint);
+      }
+      .add-actions .btn.primary {
+        background: var(--ah-accent);
+        border-color: var(--ah-accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .add-actions .btn.primary:hover {
+        background: var(--ah-accent-strong);
+        border-color: var(--ah-accent-strong);
+      }
+      .add-actions .btn:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
+      .add-actions .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      /* 自定义模型条目 */
+      .item.custom-item {
+        padding: 0;
+        position: relative; /* 作为 .custom-actions 的绝对定位参照，避免脱到父面板 */
+      }
+      .custom-main {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 12px;
+        text-align: left;
+        cursor: pointer;
+        word-break: break-all;
+      }
       .custom-actions {
-        display: flex;
+        display: none;
+        position: absolute;
+        right: 4px;
+        flex: 0 0 auto;
+        z-index: 1;
       }
-    }
-    .custom-icon-btn {
-      appearance: none;
-      border: none;
-      background: transparent;
-      color: var(--ah-text-muted, #9e9e9e);
-      cursor: pointer;
-      padding: 6px 8px;
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: color 100ms ease, background 100ms ease;
-    }
-    .custom-icon-btn:hover {
-      color: var(--ah-text);
-      background: rgba(125, 125, 125, 0.15);
-    }
-    .custom-icon-btn.delete:hover {
-      color: var(--ah-danger);
-      background: var(--ah-danger-soft);
-    }
-    .custom-icon-btn svg {
-      width: 16px;
-      height: 16px;
-      display: block;
-    }
-  `, mobilePill];
+      /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。
+       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。 */
+      @media (hover: hover) {
+        .item.custom-item:hover .custom-actions {
+          display: flex;
+        }
+      }
+      @media (hover: none) {
+        .custom-actions {
+          display: flex;
+        }
+      }
+      .custom-icon-btn {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: var(--ah-text-muted, #9e9e9e);
+        cursor: pointer;
+        padding: 6px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: color 100ms ease, background 100ms ease;
+      }
+      .custom-icon-btn:hover {
+        color: var(--ah-text);
+        background: rgba(125, 125, 125, 0.15);
+      }
+      .custom-icon-btn.delete:hover {
+        color: var(--ah-danger);
+        background: var(--ah-danger-soft);
+      }
+      .custom-icon-btn svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
+    `,
+    mobilePill
+  ];
 
   @property({ attribute: false }) model = '';
   @property({ attribute: false }) deepThink = false;
@@ -916,9 +918,9 @@ export class AhModelPicker extends LitElement {
                 const active = this.model === id;
                 return html`
                   <div
-                    class="item ${this.isCustom(id) ? 'custom-item' : ''} ${active
-                      ? 'active'
-                      : ''}"
+                    class="item ${this.isCustom(id)
+                      ? 'custom-item'
+                      : ''} ${active ? 'active' : ''}"
                     @click=${() => this.pick(id)}
                   >
                     ${this.isCustom(id)
@@ -1123,9 +1125,7 @@ export class AhModelPicker extends LitElement {
                 >
                   ${this.adding ? '取消添加' : '添加自定义模型'}
                 </button>
-                <button
-                  @click=${() => (this.keyDrawerOpen = true)}
-                >
+                <button @click=${() => (this.keyDrawerOpen = true)}>
                   配置 API Key
                 </button>
               </div>
@@ -1200,7 +1200,10 @@ export class AhModelPicker extends LitElement {
             ?fullscreen=${true}
             @close=${() => (this.keyDrawerOpen = false)}
           >
-            <ah-settings-center group="keys" .groupSeq=${1}></ah-settings-center>
+            <ah-settings-center
+              group="keys"
+              .groupSeq=${1}
+            ></ah-settings-center>
           </ah-drawer>`
         : ''}
     `;
