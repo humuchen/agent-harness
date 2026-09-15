@@ -27,6 +27,10 @@ import { BRAND_DEFAULT, type BrandConfig } from '../theme/tokens';
 import { avatarInitial, roleLabel } from '../utils/user-display';
 // 改密模态：账户相关操作（资料 / 改密 / 退出）全部收在「我的」，故由本组件独占。
 import './password-dialog';
+// 「我的 → 设置」整屏抽屉（复用通用 ah-drawer）与综合设置中心（ah-settings-center）。
+// 二者已在 components/index.ts 全局注册，此处副作用导入仅为显式声明依赖、保证独立渲染可用。
+import './ah-drawer';
+import './settings-center';
 
 @customElement('ah-user-menu')
 export class AhUserMenu extends LitElement {
@@ -408,6 +412,8 @@ export class AhUserMenu extends LitElement {
   @state() private open = false;
   /** 改密模态开关（模态本体为 ah-password-dialog，受控 open）。 */
   @state() private showPw = false;
+  /** 「我的 → 设置」整屏抽屉开关（替代原 ah-goto 切 Tab 行为）。 */
+  @state() private settingsOpen = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -505,7 +511,7 @@ export class AhUserMenu extends LitElement {
             <button
               class="s-item"
               role="menuitem"
-              @click=${() => this.dispatchSettings()}
+              @click=${() => (this.settingsOpen = true)}
             >
               <span class="s-lbl">设置</span>
               <span class="s-chev">›</span>
@@ -604,14 +610,4 @@ export class AhUserMenu extends LitElement {
     `;
   }
 
-  /** 「我的 → 设置」：定位到综合设置中心的「系统与网络」分组，与条目所在分组一致。 */
-  private dispatchSettings() {
-    this.dispatchEvent(
-      new CustomEvent('ah-goto', {
-        detail: { tab: 'settings', group: 'system' },
-        bubbles: true,
-        composed: true
-      })
-    );
-  }
 }

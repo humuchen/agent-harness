@@ -256,6 +256,23 @@ export class AhDrawer extends LitElement {
         height: 0;
       }
     }
+
+    /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
+       实现真正整页覆盖；同时去除圆角与边框，贴合「整屏抽屉」语义。 */
+    .fullscreen.left .panel,
+    .fullscreen.right .panel {
+      width: 100vw;
+      max-width: 100vw;
+    }
+    .fullscreen.top .panel,
+    .fullscreen.bottom .panel {
+      height: 100dvh;
+      max-height: 100dvh;
+    }
+    .fullscreen .panel {
+      border: none;
+      border-radius: 0;
+    }
   `, mobilePill];
 
   @property({ type: Boolean, reflect: true })
@@ -290,6 +307,13 @@ export class AhDrawer extends LitElement {
 
   @property({ type: Boolean, attribute: 'show-footer' })
   showFooter = false;
+
+  /**
+   * 全屏模式：左右抽屉宽 100vw、上下抽屉高 100dvh，真正整页覆盖。
+   * 优先级高于移动端媒体查询里的 88vw / 70dvh 限制（见下方 .fullscreen 规则）。
+   */
+  @property({ type: Boolean })
+  fullscreen = false;
 
   @state()
   private leaving = false;
@@ -414,7 +438,11 @@ export class AhDrawer extends LitElement {
     if (!this.open) return nothing;
     const showHead = !!this.title || this.showClose;
     return html`
-      <div class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''}">
+      <div
+        class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''} ${
+          this.fullscreen ? 'fullscreen' : ''
+        }"
+      >
         ${this.mask
           ? html`<div
               class="scrim"

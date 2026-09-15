@@ -1121,7 +1121,7 @@ export class AhSettingsCenter extends LitElement {
                     <span class="ri">${ICON_APP}</span>
                     <span class="rc">
                       <span class="rl">应用</span>
-                      <span class="rd">应用自身加载的网页资源（JS / CSS）</span>
+                      <span class="rd">应用自身加载的相关资源</span>
                     </span>
                     <span class="sv">${formatBytes(this.storage?.app)}</span>
                   </div>
@@ -1131,7 +1131,7 @@ export class AhSettingsCenter extends LitElement {
                       <span class="rl">数据</span>
                       <span class="rd"
                         >${this.storage?.native
-                          ? '应用私有文件与网页层本地存储'
+                          ? '应用私有文件与本地存储'
                           : '浏览器本地存储'}</span
                       >
                     </span>
