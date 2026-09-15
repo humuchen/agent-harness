@@ -548,7 +548,22 @@ export class AhUserMenu extends LitElement {
         <ah-password-dialog
           ?open=${this.showPw}
           @ah-pw-close=${() => (this.showPw = false)}
-        ></ah-password-dialog> `;
+        ></ah-password-dialog>
+        ${this.settingsOpen
+          ? html`<ah-drawer
+              .open=${this.settingsOpen}
+              placement="right"
+              title="设置"
+              size="100vw"
+              ?mask=${true}
+              ?esc-closable=${true}
+              ?show-close=${true}
+              ?fullscreen=${true}
+              @close=${() => (this.settingsOpen = false)}
+            >
+              <ah-settings-center group="system"></ah-settings-center>
+            </ah-drawer>`
+          : ''} `;
     }
     return html`
       <button
