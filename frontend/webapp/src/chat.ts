@@ -41,6 +41,14 @@ import {
 // 滚动跟随簇（已抽离到 chat-scroll.ts，作为轻量控制器由 AhChat 持有为 this.scrollCtl）。
 import { ChatScroll } from './chat-scroll';
 
+// 富文本块折叠的判定逻辑（已抽离到 chat-block-fold.ts，组件侧只负责 DOM 读写）。
+import {
+  effectiveBlockFolded,
+  foldButtonLabel,
+  foldKey,
+  toggledBlockFolded
+} from './chat-block-fold';
+
 // 打字机引擎（已抽离到 chat-typewriter.ts，作为轻量控制器由 AhChat 持有为 this.typewriter）。
 import { ChatTypewriter } from './chat-typewriter';
 
@@ -273,6 +281,19 @@ export class AhChat extends LitElement {
 
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
   @state() thinkCollapsed: Record<string, boolean> = {};
+
+  /**
+   * 富文本块（超长代码块 / 表格）的折叠态覆盖表，key 为 `${scope}/${blockKey}`。
+   *
+   * 为什么必须放在组件状态，而不是点击时直接改 DOM 上的 class：
+   * `.msg-text` 经 unsafeHTML 注入，lit 无法 diff 其内部 —— 任何一次组件更新
+   * （hover、其他消息追加、流式 token 到达）都会重建整段 DOM，写在 DOM 上的状态
+   * 必然被抹掉，「点开又自己合上」。
+   * 同理也不能把用户的选择写进渲染产物字符串：产物是按文本内容缓存的纯函数结果，
+   * 把交互态混进去会让缓存命中率归零，且流式中每帧都会弹回默认值。
+   * 缺省（key 不存在）= 可折叠块默认折叠，见 applyFolds。
+   */
+  @state() mdFolded: Record<string, boolean> = {};
 
   /** 移动端侧栏抽屉开合态（≤900px 生效）。 */
   @state() sidebarOpen = false;
@@ -1393,6 +1414,8 @@ export class AhChat extends LitElement {
     if (changedProps.has('role')) {
       void this.refreshAgents();
     }
+    // 必须在滚动之前：折叠会改变内容高度，同步重排后 scrollToBottom 才取到正确值。
+    this.applyFolds();
     this.scrollCtl.scrollToBottom();
     this.scrollCtl.scrollThinkToBottom();
   }
@@ -2856,6 +2879,112 @@ export class AhChat extends LitElement {
     };
   }
 
+  /* ── 富文本块折叠（超长代码块 / 表格） ──────────────────────────────────
+     三处状态必须同步：容器上的 is-folded 类（驱动裁切与渐隐）、按钮文案、
+     以及 aria-expanded。统一由 applyFolds 在每次渲染后按 mdFolded 重放，
+     而不是在点击时改 DOM —— 后者的结果会被下一次重渲染抹掉（原因见 mdFolded 声明处）。 */
+
+  /**
+   * 把 mdFolded 重放到当前 DOM。
+   * 每次 updated 都会全量重放：DOM 是刚重建的，不存在「已同步」的捷径。
+   * 成本可忽略 —— 一个会话里的可折叠块数量级是十位。
+   */
+  private applyFolds() {
+    const root = this.renderRoot;
+    if (!root) return;
+    root.querySelectorAll<HTMLElement>('[data-md-block]').forEach((el) => {
+      // 块归属哪个作用域（哪条消息的哪一区）由最近的 [data-md-scope] 决定，
+      // 因此渲染产物本身无需知道消息 id，缓存才能只按文本内容建立。
+      const scope = el.closest<HTMLElement>('[data-md-scope]')?.dataset.mdScope;
+      const block = el.dataset.mdBlock;
+      if (!scope || !block) return;
+      // 未超阈值（非可折叠）的块永远展开；可折叠块缺省即折叠。语义见 chat-block-fold.ts。
+      const folded = effectiveBlockFolded(
+        this.mdFolded,
+        scope,
+        block,
+        el.dataset.mdFoldable === '1'
+      );
+      el.classList.toggle('is-folded', folded);
+      const btn = el.querySelector<HTMLElement>('.md-fold');
+      if (!btn) return;
+      btn.textContent = foldButtonLabel(folded);
+      btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    });
+  }
+
+  /** 切换某块的折叠态：以 DOM 当前态取反，不依赖对缺省值的猜测。 */
+  private toggleFold(el: HTMLElement) {
+    const scope = el.closest<HTMLElement>('[data-md-scope]')?.dataset.mdScope;
+    const block = el.dataset.mdBlock;
+    if (!scope || !block) return;
+    this.mdFolded = {
+      ...this.mdFolded,
+      [foldKey(scope, block)]: toggledBlockFolded(el.classList.contains('is-folded'))
+    };
+  }
+
+  /**
+   * 富文本块内按钮的事件委托（复制代码 / 折叠）。
+   *
+   * 为什么必须走委托，而不是给按钮绑 @click：
+   * 这些按钮由 toRichHtml 生成为 HTML 字符串、经 unsafeHTML 注入，不参与 lit 的
+   * 事件绑定体系；且每次重渲染都会重建节点，逐个 addEventListener 只会泄漏。
+   * 委托挂在消息列表容器（.thread）上，靠冒泡一次覆盖全部历史与后续消息。
+   * 事件顺序上先判折叠、再判复制：两者互斥且折叠判定更廉价。
+   */
+  private onRichClick = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    if (!target?.closest) return;
+
+    const foldBtn = target.closest<HTMLElement>('.md-fold');
+    if (foldBtn) {
+      const block = foldBtn.closest<HTMLElement>('[data-md-block]');
+      if (block) this.toggleFold(block);
+      return;
+    }
+
+    const copyBtn = target.closest<HTMLElement>('.md-copy');
+    if (copyBtn) {
+      // 从 DOM 取原文而非在按钮上存副本：流式重渲染会替换节点，
+      // 只有代码元素本身的 textContent 才是「此刻的完整内容」。
+      const code = copyBtn.closest<HTMLElement>('.md-code')?.querySelector('code');
+      void this.copyCodeText(copyBtn, code?.textContent ?? '');
+    }
+  };
+
+  /** 复制代码块内容：复用与消息复制一致的剪贴板兜底链路，成功后在按钮上就地反馈。 */
+  private async copyCodeText(btn: HTMLElement, text: string) {
+    if (!text) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // 非安全上下文 / 权限被拒：退回 execCommand，链路与 copyMsgText 相同。
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (document.execCommand('copy')) ok = true;
+      } catch {
+        /* ignore */
+      }
+      ta.remove();
+    }
+    if (!ok) return;
+    btn.classList.add('is-copied');
+    btn.textContent = '已复制';
+    window.setTimeout(() => {
+      // 按钮可能已被重渲染替换，此时操作的是游离节点，无副作用。
+      btn.classList.remove('is-copied');
+      btn.textContent = '复制';
+    }, 1500);
+  }
+
   /**
    * 深度思考结束自动折叠本轮思考面板：
    * 在首个回答 token 到达时调用（非流式回退路径由 run 收尾兜底再调一次，已折叠则跳过）。
@@ -3194,7 +3323,7 @@ export class AhChat extends LitElement {
         </div>
       `;
     }
-    return html`<div class="thread">
+    return html`<div class="thread" @click=${this.onRichClick}>
       ${this.renderConnBanner()}
       ${this.llmReady
         ? ''

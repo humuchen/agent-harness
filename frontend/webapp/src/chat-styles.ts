@@ -20,6 +20,7 @@ import { responsive } from './styles/chat/responsive';
 import { composer } from './styles/chat/composer';
 import { planMode } from './styles/chat/plan-mode';
 import { confidence } from './styles/chat/confidence';
+import { markdownRichText } from './styles/chat/markdown';
 
 export const chatStyles = [
   layout,
@@ -33,4 +34,7 @@ export const chatStyles = [
   composer,
   planMode,
   confidence,
+  /* 表格与代码元素规范：选择器全部限定在 .msg-text 下且为新增选择器，
+     追加到末尾不影响前面任何模块的层叠结果。 */
+  markdownRichText,
 ];

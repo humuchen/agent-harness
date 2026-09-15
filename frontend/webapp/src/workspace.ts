@@ -85,6 +85,11 @@ export class AhWorkspace extends LitElement {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
+      @media (max-width: 760px) {
+        .refresh {
+          display: none;
+        }
+      }
       @media (max-width: 680px) {
         .tiles {
           grid-template-columns: minmax(0, 1fr);
@@ -100,7 +105,8 @@ export class AhWorkspace extends LitElement {
         border-radius: var(--ah-radius-lg);
         background: var(--ah-surface, rgba(255, 255, 255, 0.02));
         cursor: pointer;
-        transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+        transition: border-color 0.15s ease, transform 0.15s ease,
+          box-shadow 0.15s ease;
         font: inherit;
         color: inherit;
         width: 100%;
@@ -199,7 +205,7 @@ export class AhWorkspace extends LitElement {
         color: var(--ah-accent);
         border-color: var(--ah-accent);
       }
-    `,
+    `
   ];
 
   @state() sessions: ChatSessionLite[] = [];
@@ -220,19 +226,23 @@ export class AhWorkspace extends LitElement {
     if (this.hidden) return;
     this.loading = true;
     // 各数据源相互独立：任一失败不影响其余格（用 allSettled 而非 all）。
-    const [sessions, jobs, recipes, agents, mcp, mem] = await Promise.allSettled([
-      client.listChatSessions() as Promise<ChatSessionLite[]>,
-      client.getJobs() as Promise<JobsView>,
-      client.listRecipes() as Promise<{ recipes: RecipeLite[] }>,
-      client.listAgents() as Promise<{ agents: unknown[] }>,
-      client.getMcpServers() as Promise<{ servers: unknown[] }>,
-      client.getSessions() as Promise<SessionsView>,
-    ]);
+    const [sessions, jobs, recipes, agents, mcp, mem] =
+      await Promise.allSettled([
+        client.listChatSessions() as Promise<ChatSessionLite[]>,
+        client.getJobs() as Promise<JobsView>,
+        client.listRecipes() as Promise<{ recipes: RecipeLite[] }>,
+        client.listAgents() as Promise<{ agents: unknown[] }>,
+        client.getMcpServers() as Promise<{ servers: unknown[] }>,
+        client.getSessions() as Promise<SessionsView>
+      ]);
     if (sessions.status === 'fulfilled') this.sessions = sessions.value ?? [];
     if (jobs.status === 'fulfilled') this.jobs = jobs.value;
-    if (recipes.status === 'fulfilled') this.recipes = recipes.value?.recipes ?? [];
-    if (agents.status === 'fulfilled') this.agentCount = agents.value?.agents?.length ?? 0;
-    if (mcp.status === 'fulfilled') this.mcpCount = mcp.value?.servers?.length ?? 0;
+    if (recipes.status === 'fulfilled')
+      this.recipes = recipes.value?.recipes ?? [];
+    if (agents.status === 'fulfilled')
+      this.agentCount = agents.value?.agents?.length ?? 0;
+    if (mcp.status === 'fulfilled')
+      this.mcpCount = mcp.value?.servers?.length ?? 0;
     if (mem.status === 'fulfilled') this.memSessions = mem.value;
     // 全部失败才提示（部分失败属正常降级，不打扰用户）。
     const allFailed = [sessions, jobs, recipes, agents, mcp, mem].every(
@@ -241,7 +251,7 @@ export class AhWorkspace extends LitElement {
     if (allFailed) {
       notifyError((sessions as PromiseRejectedResult).reason, {
         title: '工作台',
-        key: 'workspace',
+        key: 'workspace'
       });
     }
     this.loading = false;
@@ -253,7 +263,7 @@ export class AhWorkspace extends LitElement {
       new CustomEvent('ah-goto', {
         detail: tab,
         bubbles: true,
-        composed: true,
+        composed: true
       })
     );
   }
@@ -264,7 +274,7 @@ export class AhWorkspace extends LitElement {
       new CustomEvent('ah-goto', {
         detail: { tab: 'chat', sessionId: s.id },
         bubbles: true,
-        composed: true,
+        composed: true
       })
     );
   }
@@ -276,7 +286,7 @@ export class AhWorkspace extends LitElement {
       files: 'M6 2h8l4 4v16H6V2zm8 0v4h4',
       tasks: 'M4 6h16M4 12h16M4 18h10',
       artifacts: 'M12 2l3 6 6 1-4.5 4.5L18 20l-6-3-6 3 1.5-6.5L3 9l6-1 3-6z',
-      history: 'M12 8v5l3 2M3.05 11a9 9 0 1 0 2.6-6.4L3 7M3 3v4h4',
+      history: 'M12 8v5l3 2M3.05 11a9 9 0 1 0 2.6-6.4L3 7M3 3v4h4'
     };
     return html`<svg
       width="20"
@@ -294,7 +304,8 @@ export class AhWorkspace extends LitElement {
 
   render() {
     const sessionCount = this.sessions.length;
-    const queueDepth = (this.jobs?.queue?.queued ?? 0) + (this.jobs?.queue?.running ?? 0);
+    const queueDepth =
+      (this.jobs?.queue?.queued ?? 0) + (this.jobs?.queue?.running ?? 0);
     const jobCount = this.jobs?.jobs?.length ?? 0;
     const recipeCount = this.recipes.length;
     const memBackend = this.memSessions?.backend ?? '—';
@@ -313,7 +324,7 @@ export class AhWorkspace extends LitElement {
               对话、任务、资料与成果的统一入口 · 数据实时来自服务端
             </div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>
+          <button class="ghost refresh" @click=${() => this.refresh()}>
             ${this.loading ? '刷新中…' : '刷新'}
           </button>
         </div>
@@ -325,7 +336,9 @@ export class AhWorkspace extends LitElement {
             <span class="tile-body">
               <span class="tile-title">对话任务</span>
               <span class="tile-metric">${sessionCount}</span>
-              <span class="tile-desc">与 agent 对话、下达任务、查看实时执行</span>
+              <span class="tile-desc"
+                >与 agent 对话、下达任务、查看实时执行</span
+              >
             </span>
           </button>
 
@@ -337,7 +350,9 @@ export class AhWorkspace extends LitElement {
               <span class="tile-metric small">
                 ${this.agentCount} 智能体 · ${this.mcpCount} MCP
               </span>
-              <span class="tile-desc">已注册能力与工具服务，供对话与工作流调用</span>
+              <span class="tile-desc"
+                >已注册能力与工具服务，供对话与工作流调用</span
+              >
             </span>
           </button>
 
@@ -346,8 +361,12 @@ export class AhWorkspace extends LitElement {
             <span class="tile-icon">${this.icon('files')}</span>
             <span class="tile-body">
               <span class="tile-title">文件资料</span>
-              <span class="tile-metric small">${memBackend} · ${memCount} 会话</span>
-              <span class="tile-desc">上传图片 / 文本随对话引用，记忆按会话隔离持久化</span>
+              <span class="tile-metric small"
+                >${memBackend} · ${memCount} 会话</span
+              >
+              <span class="tile-desc"
+                >上传图片 / 文本随对话引用，记忆按会话隔离持久化</span
+              >
             </span>
           </button>
 
@@ -357,7 +376,9 @@ export class AhWorkspace extends LitElement {
             <span class="tile-body">
               <span class="tile-title">任务记录</span>
               <span class="tile-metric">${queueDepth}</span>
-              <span class="tile-desc">运行队列深度 · 最近 ${jobCount} 条任务可回看</span>
+              <span class="tile-desc"
+                >运行队列深度 · 最近 ${jobCount} 条任务可回看</span
+              >
             </span>
           </button>
 
@@ -367,7 +388,9 @@ export class AhWorkspace extends LitElement {
             <span class="tile-body">
               <span class="tile-title">成果物</span>
               <span class="tile-metric">${recipeCount}</span>
-              <span class="tile-desc">已保存的运行配方版本，支持回归比对与复用</span>
+              <span class="tile-desc"
+                >已保存的运行配方版本，支持回归比对与复用</span
+              >
             </span>
           </button>
 
@@ -377,7 +400,9 @@ export class AhWorkspace extends LitElement {
             <span class="tile-body">
               <span class="tile-title">历史会话</span>
               <span class="tile-metric">${sessionCount}</span>
-              <span class="tile-desc">跨设备同步的会话记录，含 IM 渠道来源的对话</span>
+              <span class="tile-desc"
+                >跨设备同步的会话记录，含 IM 渠道来源的对话</span
+              >
             </span>
           </button>
         </div>
@@ -386,7 +411,9 @@ export class AhWorkspace extends LitElement {
           <div class="section-title">最近会话</div>
           <section>
             ${recent.length === 0
-              ? html`<div class="muted">暂无会话，点击「对话任务」开始第一次对话。</div>`
+              ? html`<div class="muted">
+                  暂无会话，点击「对话任务」开始第一次对话。
+                </div>`
               : recent.map(
                   (s) => html`
                     <div
@@ -394,7 +421,9 @@ export class AhWorkspace extends LitElement {
                       @click=${() => this.gotoSession(s)}
                       title=${s.title}
                     >
-                      <span class="recent-title">${s.title || '未命名会话'}</span>
+                      <span class="recent-title"
+                        >${s.title || '未命名会话'}</span
+                      >
                       <span class="recent-age">
                         ${s.updatedAt ? fmtAge(s.updatedAt) : nothing}
                       </span>

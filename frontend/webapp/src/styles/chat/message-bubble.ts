@@ -205,28 +205,11 @@ export const messageBubble = css`
     .msg-text {
       font-size: 14px;
       line-height: 1.65;
-      /* 防溢出三件套：长单词/URL/连续标点在任意位置折行，杜绝气泡内横向滚动条。
-         pre/code/table 由下方子规则单独处理（内部滚动而非撑破气泡）。 */
+      /* 防溢出：长单词/URL/连续标点在任意位置折行，杜绝气泡内横向滚动条。
+         代码块与表格由 styles/chat/markdown.ts 单独适配（内部滚动而非撑破气泡）。 */
       overflow-wrap: anywhere;
       word-break: break-word;
       min-width: 0;
-    }
-    /* 富文本内的代码块 / 表格：限制在气泡宽度内，自身横向滚动，不撑破外层。 */
-    .msg-text pre,
-    .msg-text code {
-      max-width: 100%;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .msg-text pre {
-      overflow-x: auto;
-      scrollbar-width: thin;
-    }
-    .msg-text table {
-      display: block;
-      max-width: 100%;
-      overflow-x: auto;
-      scrollbar-width: thin;
     }
     .msg-text img,
     .msg-text video {

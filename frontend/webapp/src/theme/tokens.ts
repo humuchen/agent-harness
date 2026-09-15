@@ -32,6 +32,23 @@ const darkTokens = `
   --ah-warning-soft: rgba(255, 214, 10, 0.15);
   --ah-danger: #FF453A;
   --ah-danger-soft: rgba(255, 69, 58, 0.15);
+  /* 代码语法高亮（hljs token → 语义色映射）。
+     hljs 只输出 <span class>，不输出内联样式 —— 因此配色可以完全由这套令牌接管，
+     这也是选它而非 Shiki 的原因（Shiki 倾向内联 style，会迫使净化层放开 style 白名单）。
+     取值参考 GitHub Dark，与 canvas #0B0E14 的对比度已核对。 */
+  --ah-code-bg: #0F1420;
+  --ah-hl-kw: #FF7B72;
+  --ah-hl-str: #A5D6FF;
+  --ah-hl-num: #79C0FF;
+  --ah-hl-com: #8B949E;
+  --ah-hl-fn: #D2A8FF;
+  --ah-hl-attr: #79C0FF;
+  --ah-hl-type: #FFA657;
+  --ah-hl-tag: #7EE787;
+  --ah-hl-ins: #7EE787;
+  --ah-hl-ins-bg: rgba(46, 160, 67, 0.15);
+  --ah-hl-del: #FFA198;
+  --ah-hl-del-bg: rgba(248, 81, 73, 0.15);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -67,6 +84,21 @@ const lightTokens = `
   --ah-warning-soft: rgba(176, 116, 0, 0.12);
   --ah-danger: #D4261A;
   --ah-danger-soft: rgba(212, 38, 26, 0.12);
+  /* 代码高亮浅色映射：GitHub Light。亮色下关键字/字符串若沿用暗色的高亮色，
+     在白底上会出现明显不足的对比度（如 #A5D6FF 接近不可读），故必须独立取值。 */
+  --ah-code-bg: #F4F6FA;
+  --ah-hl-kw: #CF222E;
+  --ah-hl-str: #0A3069;
+  --ah-hl-num: #0550AE;
+  --ah-hl-com: #6E7781;
+  --ah-hl-fn: #8250DF;
+  --ah-hl-attr: #0550AE;
+  --ah-hl-type: #953800;
+  --ah-hl-tag: #116329;
+  --ah-hl-ins: #116329;
+  --ah-hl-ins-bg: rgba(46, 160, 67, 0.12);
+  --ah-hl-del: #82071E;
+  --ah-hl-del-bg: rgba(248, 81, 73, 0.12);
   --ah-radius-sm: 8px;
   --ah-radius-md: 12px;
   --ah-radius-lg: 16px;
@@ -112,6 +144,21 @@ export const THEME_CSS = `
 @property --ah-warning-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(255,214,10,0.15); }
 @property --ah-danger        { syntax: '<color>';  inherits: true; initial-value: #FF453A; }
 @property --ah-danger-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(255,69,58,0.15); }
+/* 代码高亮令牌同样注册，否则主题切换时代码块颜色会瞬间跳变，
+   与页面其余部分的 0.45s 过渡不一致（代码块面积大，跳变很显眼）。 */
+@property --ah-code-bg   { syntax: '<color>';  inherits: true; initial-value: #0F1420; }
+@property --ah-hl-kw     { syntax: '<color>';  inherits: true; initial-value: #FF7B72; }
+@property --ah-hl-str    { syntax: '<color>';  inherits: true; initial-value: #A5D6FF; }
+@property --ah-hl-num    { syntax: '<color>';  inherits: true; initial-value: #79C0FF; }
+@property --ah-hl-com    { syntax: '<color>';  inherits: true; initial-value: #8B949E; }
+@property --ah-hl-fn     { syntax: '<color>';  inherits: true; initial-value: #D2A8FF; }
+@property --ah-hl-attr   { syntax: '<color>';  inherits: true; initial-value: #79C0FF; }
+@property --ah-hl-type   { syntax: '<color>';  inherits: true; initial-value: #FFA657; }
+@property --ah-hl-tag    { syntax: '<color>';  inherits: true; initial-value: #7EE787; }
+@property --ah-hl-ins    { syntax: '<color>';  inherits: true; initial-value: #7EE787; }
+@property --ah-hl-ins-bg { syntax: '<color>';  inherits: true; initial-value: rgba(46,160,67,0.15); }
+@property --ah-hl-del    { syntax: '<color>';  inherits: true; initial-value: #FFA198; }
+@property --ah-hl-del-bg { syntax: '<color>';  inherits: true; initial-value: rgba(248,81,73,0.15); }
 /* 门控过渡：仅 .ah-theme-anim 挂类期间（withThemeAnimation 的 600ms 窗口内）
    才启用颜色插值，避免首屏加载 / 无主题变更时产生多余过渡。
    过渡声明在 <html>（= 令牌实际变更的元素）上，消费方 var() 随帧重解析。 */

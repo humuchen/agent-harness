@@ -246,7 +246,11 @@ export const base = css`
     flex-direction: column;
     gap: 2px;
   }
-  /* 分组标题：桌面侧边栏隐藏（.nav-group-title display:none），移动端抽屉内可见 */
+  /* 分组标题（分组见 app.ts 的 GROUP_TITLE）：
+     基础态隐藏，实际可见性由下面两条决定 —— 展开态 `.sidebar .nav-group-title` 显示，
+     收起态 `.sidebar.collapsed .nav-group-title` 隐藏。
+     注意收起态那条**同时命中移动端抽屉**（移动端侧边栏常处于 collapsed），
+     故 responsive.ts 的 ≤760px 分支里必须再覆盖回 block，不要在此处放宽条件。 */
   .nav-group-title {
     display: none;
   }
@@ -291,6 +295,9 @@ export const base = css`
     padding-top: 0;
   }
 
+  /* 收起态：文字与分组标题一起隐藏（桌面只剩图标胶囊）。
+     移动端抽屉虽也带 collapsed 类，但抽屉需要完整文字 + 分组标题，
+     已在 responsive.ts 内对这两项分别覆盖为 inline / block。 */
   .sidebar.collapsed .nav-group-title,
   .sidebar.collapsed .nav-text {
     display: none;
@@ -531,5 +538,83 @@ export const base = css`
   }
   .list li {
     margin: 4px 0;
+  }
+
+  /* ── 代码语法高亮（highlight.js token → 语义令牌）───────────────────────
+     放在共享层（sharedStyles 的 base 段）而非对话样式内：同一份 token 配色要同时
+     服务对话气泡（.msg-text）与运行详情（.codeblock.rich）两套容器，
+     分两处维护必然漂移。此处只声明「颜色」这一跨容器不变的语义，
+     容器各自的底色 / 内距 / 圆角仍由各容器样式决定。
+     刻意不引入 hljs 官方主题 CSS：那是写死色值的单主题方案，无法跟随 [data-theme]。
+     选择器不加容器前缀，靠 --ah-hl-* 随主题切换，零重复。 */
+  .hljs {
+    /* 兜底：hljs 主题缺省不设置背景，避免误继承到 code 的行内胶囊底色。 */
+    background: none;
+    color: inherit;
+  }
+  .hljs-comment,
+  .hljs-quote {
+    color: var(--ah-hl-com);
+    font-style: italic;
+  }
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-doctag,
+  .hljs-formula {
+    color: var(--ah-hl-kw);
+  }
+  .hljs-string,
+  .hljs-regexp,
+  .hljs-meta .hljs-string {
+    color: var(--ah-hl-str);
+  }
+  .hljs-number,
+  .hljs-literal,
+  .hljs-symbol,
+  .hljs-bullet,
+  .hljs-link {
+    color: var(--ah-hl-num);
+  }
+  .hljs-title,
+  .hljs-section {
+    color: var(--ah-hl-fn);
+  }
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-property,
+  .hljs-meta,
+  .hljs-params,
+  .hljs-selector-attr {
+    color: var(--ah-hl-attr);
+  }
+  .hljs-type,
+  .hljs-built_in,
+  .hljs-class .hljs-title,
+  .hljs-title.class_ {
+    color: var(--ah-hl-type);
+  }
+  .hljs-tag,
+  .hljs-name,
+  .hljs-selector-id,
+  .hljs-selector-class,
+  .hljs-selector-pseudo {
+    color: var(--ah-hl-tag);
+  }
+  /* diff：新增 / 删除行的整行底色，是 diff 可读性的主要来源。 */
+  .hljs-addition {
+    color: var(--ah-hl-ins);
+    background: var(--ah-hl-ins-bg);
+  }
+  .hljs-deletion {
+    color: var(--ah-hl-del);
+    background: var(--ah-hl-del-bg);
+  }
+  .hljs-emphasis {
+    font-style: italic;
+  }
+  .hljs-strong {
+    font-weight: 600;
   }
 `;

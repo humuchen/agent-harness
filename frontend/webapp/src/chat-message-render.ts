@@ -422,8 +422,15 @@ export function renderAnswer(
   return html`
     <div class="answer">
       ${m.content && m.content.trim()
-        ? html`<div class="msg-text">
-            ${unsafeHTML(toRichHtml(m.content))}
+        ? html`<div class="msg-text" data-md-scope="ans-${m.id}">
+            ${unsafeHTML(
+              toRichHtml(m.content, {
+                htmlBlocks: true,
+                richBlocks: true,
+                // 流式中不提供折叠入口：内容还在增长，中途收起会丢失阅读位置。
+                finalize: !isStreaming
+              })
+            )}
           </div>`
         : nothing}
       ${isAnswering ? html`<span class="caret"></span>` : nothing}
