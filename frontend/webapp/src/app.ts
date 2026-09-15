@@ -49,6 +49,8 @@ type Tab =
   | 'settings';
 
 const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
+/** 深度思考收起偏好（设置-外观）：开启后对话中深度思考默认折叠。默认 false（展开）。 */
+const DEEP_THINK_COLLAPSED_KEY = 'ah:deep-think-collapsed';
 
 /**
  * 侧边栏收起态只显示「短标签」(data-short)。不同 Tab 的首字可能相同
@@ -273,6 +275,9 @@ export class AhApp extends LitElement {
   } | null = null;
   @state() private sidebarCollapsed =
     localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
+  /** 深度思考收起偏好（设置-外观）：默认 false（深度思考默认展开）。 */
+  @state() private deepThinkCollapsed =
+    localStorage.getItem(DEEP_THINK_COLLAPSED_KEY) === 'true';
   /** 全局运行中指示器：任意面板（chat / run）发起运行即亮起，全部结束后熄灭。 */
   @state() private globalRunning = false;
   /**
@@ -355,10 +360,20 @@ export class AhApp extends LitElement {
       this.sidebarCollapsed = collapsed;
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
     };
+    this.onDeepThinkCollapsed = (e: Event) => {
+      const collapsed = !!(e as CustomEvent<{ collapsed?: boolean }>).detail
+        ?.collapsed;
+      this.deepThinkCollapsed = collapsed;
+      localStorage.setItem(DEEP_THINK_COLLAPSED_KEY, String(collapsed));
+    };
     window.addEventListener('ah:theme-changed', this.onThemeChanged);
     this.addEventListener(
       'ah-sidebar-collapsed',
       this.onSidebarCollapsed as EventListener
+    );
+    this.addEventListener(
+      'ah-deep-think-collapsed',
+      this.onDeepThinkCollapsed as EventListener
     );
     // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
     window.addEventListener('ah:run:start', () => {
@@ -428,6 +443,9 @@ export class AhApp extends LitElement {
 
   /** 设置中心改「侧边栏默认收起」偏好后的处理器（持久化 + 回填本壳状态）。 */
   private onSidebarCollapsed = (_e: Event) => {};
+
+  /** 设置中心改「深度思考收起」偏好后的处理器（持久化 + 回填本壳状态）。 */
+  private onDeepThinkCollapsed = (_e: Event) => {};
 
   /** 屏幕左边沿手势 —— 边缘右滑打开侧栏抽屉。
    *  触摸点 x 在 0–20% 视口宽范围内即视为「边缘」，右滑 20px 且主要水平位移
@@ -881,6 +899,7 @@ export class AhApp extends LitElement {
             <ah-chat
               ?hidden=${this.tab !== 'chat'}
               role=${this.me?.role ?? ''}
+              ?deepThinkCollapsed=${this.deepThinkCollapsed}
             ></ah-chat>
             <ah-run ?hidden=${this.tab !== 'run'}></ah-run>
             <ah-verify ?hidden=${this.tab !== 'verify'}></ah-verify>
@@ -909,6 +928,7 @@ export class AhApp extends LitElement {
               group=${this.settingsGroup}
               groupSeq=${this.settingsSeq}
               ?sidebarCollapsed=${this.sidebarCollapsed}
+              ?deepThinkCollapsed=${this.deepThinkCollapsed}
             ></ah-settings-center>
             <!-- 我的 Tab：复用 ah-user-menu，头像＋改密＋退出全部收进来 -->
             <div class="me-view" ?hidden=${this.tab !== 'me'}>

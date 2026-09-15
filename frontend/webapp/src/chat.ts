@@ -267,6 +267,8 @@ export class AhChat extends LitElement {
   @state() private planExec: Record<number, PlanExecState> = {};
   @state() deepThink = true;
   @state() web = false;
+  /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 false（展开）。 */
+  @property({ type: Boolean }) deepThinkCollapsed = false;
 
   /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
   @state() thinkCollapsed: Record<string, boolean> = {};
@@ -2733,6 +2735,14 @@ export class AhChat extends LitElement {
     }
   };
 
+  /** 某条消息深度思考区的有效折叠态：显式覆盖优先，否则取「深度思考收起」全局偏好。 */
+  private effectiveThinkCollapsed(id: number): boolean {
+    const k = String(id);
+    return k in this.thinkCollapsed
+      ? !!this.thinkCollapsed[k]
+      : this.deepThinkCollapsed;
+  }
+
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
   private toggleThink(id: number) {
     const k = String(id);
@@ -2744,23 +2754,26 @@ export class AhChat extends LitElement {
       this.messages[sIdx]?.id === id &&
       !c?.content;
     if (isThinking) return;
+    // 相对「有效折叠态」取反，写入显式覆盖（这样偏好切换后用户的手动选择可被反向操作解除）。
+    const cur = this.effectiveThinkCollapsed(id);
     this.thinkCollapsed = {
       ...this.thinkCollapsed,
-      [k]: !this.thinkCollapsed[k]
+      [k]: !cur
     };
   }
 
   /**
    * 深度思考结束自动折叠本轮思考面板：
    * 在首个回答 token 到达时调用（非流式回退路径由 run 收尾兜底再调一次，已折叠则跳过）。
-   * 仅当本轮确实产出过推理内容（思考面板实际展示）才折叠；用户此前手动折叠过则保持不动。
+   * 仅当本轮确实产出过推理内容（思考面板实际展示）才折叠；若已折叠（显式或偏好默认）则保持不动。
    */
   private autoCollapseThink(sid: string) {
     const sIdx = this.streamIdx[sid] ?? -1;
     const m = sIdx >= 0 ? (this.threads[sid] ?? [])[sIdx] : undefined;
     if (!m?.reasoning) return;
     const k = String(m.id);
-    if (this.thinkCollapsed[k]) return;
+    // 已折叠（含偏好默认）则不重复折叠；未折叠（含用户手动展开）才折叠。
+    if (this.effectiveThinkCollapsed(m.id)) return;
     this.thinkCollapsed = { ...this.thinkCollapsed, [k]: true };
   }
 
@@ -2882,6 +2895,7 @@ export class AhChat extends LitElement {
       copiedMsgId: this.copiedMsgId,
       deepThink: this.deepThink,
       thinkCollapsed: this.thinkCollapsed,
+      deepThinkCollapsed: this.deepThinkCollapsed,
       traceDrawerMsg: this.traceDrawerMsg,
       traceDrawerSection: this.traceDrawerSection,
       connState: this.connState,

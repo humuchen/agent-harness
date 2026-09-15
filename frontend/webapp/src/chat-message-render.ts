@@ -39,6 +39,8 @@ export interface ChatRenderCtx {
   copiedMsgId: number;
   deepThink: boolean;
   thinkCollapsed: Record<string, boolean>;
+  /** 深度思考收起偏好：开启时深度思考默认折叠（无显式覆盖时）。 */
+  deepThinkCollapsed: boolean;
   traceDrawerMsg: ChatMsg | null;
   traceDrawerSection: 'trace' | 'insights' | 'confidence';
   connState: Record<string, 'connected' | 'reconnecting' | 'lost'>;
@@ -327,7 +329,15 @@ export function renderThinking(
 ): TemplateResult {
   const parsed =
     m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
-  const collapsed = !!ctx.thinkCollapsed[String(m.id)];
+  // 有效折叠态：显式覆盖优先，否则取「深度思考收起」偏好默认；
+  // 思考中强制展开（保证实时推理可见，与 toggleThink 的守卫一致）。
+  const k = String(m.id);
+  const collapsed =
+    isThinking
+      ? false
+      : k in ctx.thinkCollapsed
+        ? ctx.thinkCollapsed[k]
+        : ctx.deepThinkCollapsed;
   return html`
     <div
       class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}"

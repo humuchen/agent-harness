@@ -18,6 +18,10 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
 import { notifyError, errorMessage } from '../utils/errors';
+// 「配置 API Key」整屏抽屉（复用通用 ah-drawer）与综合设置中心（ah-settings-center）。
+// 二者已在 components/index.ts 全局注册，此处副作用导入仅为显式声明依赖、保证独立渲染可用。
+import './ah-drawer';
+import './settings-center';
 
 /** 远程模型条目：id + baseUrl（固化，供 run 时直连）+ 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -168,15 +172,37 @@ export class AhModelPicker extends LitElement {
       padding: 10px 12px;
       border-bottom: 1px solid var(--ah-border, #2a2a2a);
     }
+    /* 搜索框：独立圆角容器 + 前缀图标，从面板中清晰独立出来（原先几乎与背景融为一体）。 */
+    .panel-head .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--ah-surface-3, rgba(125, 125, 125, 0.1));
+      border: 1px solid var(--ah-border, #2a2a2a);
+      border-radius: 10px;
+      padding: 7px 10px;
+      transition: border-color 0.15s ease;
+    }
+    .panel-head .search:focus-within {
+      border-color: var(--ah-accent, #2997ff);
+    }
+    .panel-head .search > svg {
+      width: 15px;
+      height: 15px;
+      color: var(--ah-text-muted, #9e9e9e);
+      flex: 0 0 auto;
+    }
     .panel-head input {
+      flex: 1 1 auto;
       width: 100%;
+      min-width: 0;
       box-sizing: border-box;
       background: transparent;
       color: var(--ah-text);
       border: none;
       outline: none;
       font: inherit;
-      font-size: 14px;
+      font-size: 13px;
     }
     .panel-body {
       overflow-y: auto;
@@ -204,6 +230,18 @@ export class AhModelPicker extends LitElement {
     .item:hover {
       background: rgba(125, 125, 125, 0.12);
     }
+    /* 选中态：低饱和强调色背景 + 左侧 3px 强调线（inset，不挤压布局），
+       避免原先「红色描边」易被误读为错误提示的观感；明暗主题自适应。 */
+    .item.active {
+      background: var(--ah-accent-soft, rgba(41, 151, 255, 0.14));
+      box-shadow: inset 3px 0 0 0 var(--ah-accent, #2997ff);
+    }
+    .item.active:hover {
+      background: color-mix(in srgb, var(--ah-accent) 20%, transparent);
+    }
+    .item.active .name {
+      font-weight: 500;
+    }
     .item .name {
       flex: 1 1 auto;
       min-width: 0;
@@ -215,10 +253,15 @@ export class AhModelPicker extends LitElement {
       padding: 0 15px;
     }
     .item .check {
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       color: var(--ah-accent, #2997ff);
       flex: 0 0 auto;
+    }
+    /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
+       否则二者在触屏端（常显）会重叠。 */
+    .item.custom-item.active {
+      padding-right: 68px;
     }
     /* 底部操作行 */
     .footer {
@@ -232,9 +275,13 @@ export class AhModelPicker extends LitElement {
       color: var(--ah-text-muted, #9e9e9e);
       font: inherit;
       font-size: 12px;
+      line-height: 16px;
       cursor: pointer;
-      padding: 10px 0;
+      padding: 11px 4px;
       flex: 1 1 auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .footer button:hover {
       color: var(--ah-text);
@@ -371,8 +418,8 @@ export class AhModelPicker extends LitElement {
       background: var(--ah-danger-soft);
     }
     .custom-icon-btn svg {
-      width: 14px;
-      height: 14px;
+      width: 16px;
+      height: 16px;
       display: block;
     }
   `, mobilePill];
@@ -397,6 +444,9 @@ export class AhModelPicker extends LitElement {
 
   /** 是否正在保存到后端（按钮 loading 态）。 */
   @state() private saving = false;
+
+  /** 「配置 API Key」整屏抽屉开关（替代原 ah-goto 切 Tab 行为，直达「模型与密钥」分组）。 */
+  @state() private keyDrawerOpen = false;
 
   /**
    * 「刷新」拉取在线模型清单（含官方上下文窗口；失败为空、回退本地清单）。
@@ -866,7 +916,9 @@ export class AhModelPicker extends LitElement {
                 const active = this.model === id;
                 return html`
                   <div
-                    class="item ${this.isCustom(id) ? 'custom-item' : ''}"
+                    class="item ${this.isCustom(id) ? 'custom-item' : ''} ${active
+                      ? 'active'
+                      : ''}"
                     @click=${() => this.pick(id)}
                   >
                     ${this.isCustom(id)
@@ -1025,12 +1077,26 @@ export class AhModelPicker extends LitElement {
         ${this.open
           ? html`<div class="panel" role="listbox">
               <div class="panel-head">
-                <input
-                  placeholder="搜索模型…"
-                  .value=${this.query}
-                  @input=${(e: Event) =>
-                    (this.query = (e.target as HTMLInputElement).value)}
-                />
+                <div class="search">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="11" cy="11" r="8" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                  <input
+                    placeholder="搜索模型…"
+                    .value=${this.query}
+                    @input=${(e: Event) =>
+                      (this.query = (e.target as HTMLInputElement).value)}
+                  />
+                </div>
               </div>
               <div class="panel-body">
                 ${showFree
@@ -1058,15 +1124,7 @@ export class AhModelPicker extends LitElement {
                   ${this.adding ? '取消添加' : '添加自定义模型'}
                 </button>
                 <button
-                  @click=${() =>
-                    this.dispatchEvent(
-                      new CustomEvent('ah-goto', {
-                        // 直达设置中心的「模型与密钥」分组（密钥面板所在分区）。
-                        detail: { tab: 'settings', group: 'keys' },
-                        bubbles: true,
-                        composed: true
-                      })
-                    )}
+                  @click=${() => (this.keyDrawerOpen = true)}
                 >
                   配置 API Key
                 </button>
@@ -1130,6 +1188,21 @@ export class AhModelPicker extends LitElement {
             </div>`
           : nothing}
       </div>
+      ${this.keyDrawerOpen
+        ? html`<ah-drawer
+            .open=${this.keyDrawerOpen}
+            placement="right"
+            title="设置"
+            size="100vw"
+            ?mask=${true}
+            ?esc-closable=${true}
+            ?show-close=${true}
+            ?fullscreen=${true}
+            @close=${() => (this.keyDrawerOpen = false)}
+          >
+            <ah-settings-center group="keys" .groupSeq=${1}></ah-settings-center>
+          </ah-drawer>`
+        : ''}
     `;
   }
 

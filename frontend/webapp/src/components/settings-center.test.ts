@@ -9,6 +9,7 @@
  *  - 「外观」主题分段真实写 localStorage(ah-theme) 与 <html data-theme>，
  *    并广播 ah:theme-changed 让顶层同步；
  *  - 侧边栏收起偏好向父级派发 ah-sidebar-collapsed；
+ *  - 「外观」内「深度思考收起」偏好向父级派发 ah-deep-think-collapsed；
  *  - 移动端滑动指示条的下标（--tab-i）跟随当前分组；
  *  - 「存储空间」六行齐全（总计 / 应用 / 数据 / 清除数据 / 缓存 / 清除缓存）：
  *    「清除缓存」无需确认且完全不动本地数据，「清除数据」必须经二次确认后连登录凭据一起清；
@@ -124,11 +125,13 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     document.body.innerHTML = '';
     document.documentElement.setAttribute('data-theme', 'dark');
     localStorage.removeItem('ah-theme');
+    localStorage.removeItem('ah:deep-think-collapsed');
   });
 
   afterEach(() => {
     document.body.innerHTML = '';
     localStorage.removeItem('ah-theme');
+    localStorage.removeItem('ah:deep-think-collapsed');
   });
 
   it('渲染四个分组 Tab，且默认停在「模型与密钥」', async () => {
@@ -248,6 +251,26 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     q<HTMLElement>(el, '.toggle').click();
     await el.updateComplete;
     expect(seen).toEqual([false]); // 默认收起 true → 切换为 false
+  });
+
+  it('深度思考收起偏好变更向父级派发 ah-deep-think-collapsed', async () => {
+    const el = await mount();
+    const seen: boolean[] = [];
+    el.addEventListener('ah-deep-think-collapsed', (e) => {
+      seen.push((e as CustomEvent<{ collapsed: boolean }>).detail.collapsed);
+    });
+    el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[2]!.click(); // 外观
+    await el.updateComplete;
+
+    // 「外观」分组内有两个开关（侧边栏默认收起 / 深度思考收起），按行文案精确定位后者
+    const sec = el.shadowRoot!.querySelector('section[data-group="appearance"]')!;
+    const row = Array.from(sec.querySelectorAll('.row')).find(
+      (r) => r.querySelector('.rl')?.textContent?.trim() === '深度思考收起'
+    )!;
+    (row.querySelector('.toggle') as HTMLElement).click();
+    await el.updateComplete;
+
+    expect(seen).toEqual([true]); // 默认展开 false → 切换为 true（收起）
   });
 
   it('移动端滑动指示条：--tab-i 跟随当前分组，且标记为装饰性', async () => {

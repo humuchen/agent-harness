@@ -84,6 +84,9 @@ type SettingsGroup = 'keys' | 'system' | 'appearance' | 'about';
 /** 主题偏好：dark / light 落 localStorage，system 表示清除偏好、跟随系统。 */
 type ThemeMode = Theme | 'system';
 
+/** 「深度思考收起」偏好的本地存储键（与 app.ts 的 DEEP_THINK_COLLAPSED_KEY 一致）。 */
+const DEEP_THINK_COLLAPSED_KEY = 'ah:deep-think-collapsed';
+
 /**
  * 统一包一层 Lucide 线型 SVG（同屏同库同风格：24 viewBox / currentColor / round）。
  *
@@ -217,8 +220,8 @@ const GROUPS: Array<{
   short: string;
   icon: TemplateResult;
 }> = [
-  { id: 'keys', label: '模型与密钥', short: '密钥', icon: ICON_KEYS },
   { id: 'system', label: '系统与网络', short: '系统', icon: ICON_SYSTEM },
+  { id: 'keys', label: '模型与密钥', short: '密钥', icon: ICON_KEYS },
   { id: 'appearance', label: '外观', short: '外观', icon: ICON_APPEARANCE },
   { id: 'about', label: '关于', short: '关于', icon: ICON_ABOUT }
 ];
@@ -260,7 +263,6 @@ export class AhSettingsCenter extends LitElement {
         flex-direction: column;
         flex: 1 1 auto;
         min-height: 0;
-        border: 1px solid var(--ah-border);
         border-radius: var(--ah-radius-lg);
         background: var(--ah-surface-1);
         overflow: hidden;
@@ -272,15 +274,7 @@ export class AhSettingsCenter extends LitElement {
         padding: 14px 14px 10px;
         flex: 0 0 auto;
       }
-      .h-title {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-family: var(--ah-font-display);
-        font-size: 15px;
-        font-weight: 700;
-        padding: 0 4px 10px;
-      }
+
       /* 移动端返回「我的」入口（桌面无此需求，隐藏） */
       .h-back {
         display: none;
@@ -616,15 +610,7 @@ export class AhSettingsCenter extends LitElement {
           border-radius: 14px;
         }
         .head {
-          padding: 10px 10px 8px;
-        }
-        .h-title {
-          font-size: 14px;
-          padding: 0 2px 8px;
-        }
-        .h-back {
-          display: inline-flex;
-          align-items: center;
+          padding: 10px 0 8px;
         }
         .tabs {
           display: grid;
@@ -765,6 +751,8 @@ export class AhSettingsCenter extends LitElement {
 
   /** 侧边栏收起偏好（由父级持有并持久化，本组件只负责 UI 与派发变更）。 */
   @property({ type: Boolean }) sidebarCollapsed = true;
+  /** 深度思考收起偏好（由父级持有并持久化）：开启后对话中深度思考默认折叠，不展开推理过程。 */
+  @property({ type: Boolean }) deepThinkCollapsed = false;
 
   @state() private active: SettingsGroup = DEFAULT_GROUP;
   @state() private themeMode: ThemeMode = 'system';
@@ -793,6 +781,13 @@ export class AhSettingsCenter extends LitElement {
         : null;
     this.themeMode =
       stored === 'dark' || stored === 'light' ? stored : 'system';
+    // 深度思考收起偏好：与主题同理从存储取初值 —— 抽屉里的设置中心（「我的 → 设置」
+    // 「配置 API Key」）不绑定该属性，靠此处保证开关显示与真实偏好一致。
+    // 设置 Tab 由父级绑定该属性，绑定值即存储值的镜像，二者一致。
+    if (typeof localStorage !== 'undefined') {
+      this.deepThinkCollapsed =
+        localStorage.getItem(DEEP_THINK_COLLAPSED_KEY) === 'true';
+    }
     this.unread = getReminderUnread().count;
   }
 
@@ -876,6 +871,17 @@ export class AhSettingsCenter extends LitElement {
     this.dispatchEvent(
       new CustomEvent('ah-sidebar-collapsed', {
         detail: { collapsed: !this.sidebarCollapsed },
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+
+  /** 深度思考收起偏好变更：派发给父级持久化（默认折叠时，对话中深度思考不再默认展开）。 */
+  private toggleDeepThinkCollapsed() {
+    this.dispatchEvent(
+      new CustomEvent('ah-deep-think-collapsed', {
+        detail: { collapsed: !this.deepThinkCollapsed },
         bubbles: true,
         composed: true
       })
@@ -984,24 +990,6 @@ export class AhSettingsCenter extends LitElement {
     return html`
       <div class="setwin">
         <div class="head">
-          <div class="h-title">
-            <button
-              class="h-back"
-              title="返回"
-              aria-label="返回"
-              @click=${() =>
-                this.dispatchEvent(
-                  new CustomEvent('ah-goto', {
-                    detail: 'me',
-                    bubbles: true,
-                    composed: true
-                  })
-                )}
-            >
-              ‹
-            </button>
-            设置
-          </div>
           <div class="tabs" role="tablist" style="--tab-i: ${this.activeIndex}">
             ${GROUPS.map(
               (g) => html`
@@ -1228,6 +1216,25 @@ export class AhSettingsCenter extends LitElement {
                       aria-checked=${this.sidebarCollapsed ? 'true' : 'false'}
                       aria-label="侧边栏默认收起"
                       @click=${() => this.toggleSidebar()}
+                    ></button>
+                  </div>
+                </div>
+                <div class="sec-title">对话</div>
+                <div class="card">
+                  <div class="row">
+                    <span class="ri">${ICON_APPEARANCE}</span>
+                    <span class="rc">
+                      <span class="rl">深度思考收起</span>
+                      <span class="rd"
+                        >开启后对话中的深度思考默认折叠，不展开推理过程</span
+                      >
+                    </span>
+                    <button
+                      class="toggle ${this.deepThinkCollapsed ? 'on' : ''}"
+                      role="switch"
+                      aria-checked=${this.deepThinkCollapsed ? 'true' : 'false'}
+                      aria-label="深度思考收起"
+                      @click=${() => this.toggleDeepThinkCollapsed()}
                     ></button>
                   </div>
                 </div>

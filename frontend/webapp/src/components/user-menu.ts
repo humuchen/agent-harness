@@ -561,7 +561,7 @@ export class AhUserMenu extends LitElement {
               ?fullscreen=${true}
               @close=${() => (this.settingsOpen = false)}
             >
-              <ah-settings-center group="system"></ah-settings-center>
+              <ah-settings-center group="system" .groupSeq=${1}></ah-settings-center>
             </ah-drawer>`
           : ''} `;
     }
