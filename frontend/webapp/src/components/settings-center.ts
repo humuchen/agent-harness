@@ -84,6 +84,8 @@ type SettingsGroup = 'keys' | 'system' | 'appearance' | 'about';
 /** 主题偏好：dark / light 落 localStorage，system 表示清除偏好、跟随系统。 */
 type ThemeMode = Theme | 'system';
 
+/** 「侧边栏默认收起」偏好的本地存储键（与 app.ts 的 SIDEBAR_COLLAPSED_KEY 一致）。 */
+const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 /** 「深度思考收起」偏好的本地存储键（与 app.ts 的 DEEP_THINK_COLLAPSED_KEY 一致）。 */
 const DEEP_THINK_COLLAPSED_KEY = 'ah:deep-think-collapsed';
 
@@ -488,6 +490,7 @@ export class AhSettingsCenter extends LitElement {
         padding: 6px 13px;
         border-radius: var(--ah-radius-md);
         cursor: pointer;
+        white-space: nowrap;
         transition: color 120ms ease, border-color 120ms ease;
       }
       .btn:hover:not(:disabled) {
@@ -698,10 +701,15 @@ export class AhSettingsCenter extends LitElement {
         .pane {
           padding: 14px 12px 18px;
         }
-        /* 触控目标：行与图标盒略放大，便于手指命中（≥44px 行高） */
+        /* 触控目标：行与图标盒略放大，便于手指命中（≥44px 行高）。
+         默认不允许行内控件换行，避免移动端出现「标签独占一行、按钮/开关另起一行」的碎裂观感；
+         分段控件（主题选择）需要独占整行，单独加 .seg-row 放行换行。 */
         .row {
           gap: 10px;
           padding: 13px 0;
+          flex-wrap: nowrap;
+        }
+        .row.seg-row {
           flex-wrap: wrap;
         }
         .ri {
@@ -781,10 +789,12 @@ export class AhSettingsCenter extends LitElement {
         : null;
     this.themeMode =
       stored === 'dark' || stored === 'light' ? stored : 'system';
-    // 深度思考收起偏好：与主题同理从存储取初值 —— 抽屉里的设置中心（「我的 → 设置」
-    // 「配置 API Key」）不绑定该属性，靠此处保证开关显示与真实偏好一致。
-    // 设置 Tab 由父级绑定该属性，绑定值即存储值的镜像，二者一致。
+    // 侧边栏 / 深度思考收起偏好：与主题同理从存储取初值 —— 抽屉里的设置中心
+    // （「我的 → 设置」「配置 API Key」）不绑定这些属性，靠此处保证开关显示
+    // 与真实偏好一致。设置 Tab 由父级绑定，绑定值即存储值的镜像，二者一致。
     if (typeof localStorage !== 'undefined') {
+      this.sidebarCollapsed =
+        localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
       this.deepThinkCollapsed =
         localStorage.getItem(DEEP_THINK_COLLAPSED_KEY) === 'true';
     }
@@ -868,9 +878,11 @@ export class AhSettingsCenter extends LitElement {
   }
 
   private toggleSidebar() {
+    const collapsed = !this.sidebarCollapsed;
+    this.sidebarCollapsed = collapsed;
     this.dispatchEvent(
       new CustomEvent('ah-sidebar-collapsed', {
-        detail: { collapsed: !this.sidebarCollapsed },
+        detail: { collapsed },
         bubbles: true,
         composed: true
       })
@@ -879,9 +891,11 @@ export class AhSettingsCenter extends LitElement {
 
   /** 深度思考收起偏好变更：派发给父级持久化（默认折叠时，对话中深度思考不再默认展开）。 */
   private toggleDeepThinkCollapsed() {
+    const collapsed = !this.deepThinkCollapsed;
+    this.deepThinkCollapsed = collapsed;
     this.dispatchEvent(
       new CustomEvent('ah-deep-think-collapsed', {
-        detail: { collapsed: !this.deepThinkCollapsed },
+        detail: { collapsed },
         bubbles: true,
         composed: true
       })
@@ -1177,7 +1191,7 @@ export class AhSettingsCenter extends LitElement {
               >
                 <div class="sec-title">主题</div>
                 <div class="card">
-                  <div class="row">
+                  <div class="row seg-row">
                     <span class="ri">${ICON_THEME}</span>
                     <span class="rc">
                       <span class="rl">主题</span>

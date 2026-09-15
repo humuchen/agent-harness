@@ -125,6 +125,7 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     document.body.innerHTML = '';
     document.documentElement.setAttribute('data-theme', 'dark');
     localStorage.removeItem('ah-theme');
+    localStorage.removeItem('ah:sidebar-collapsed');
     localStorage.removeItem('ah:deep-think-collapsed');
   });
 
@@ -239,7 +240,23 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     window.removeEventListener('ah:theme-changed', onTheme);
   });
 
-  it('侧边栏偏好变更向父级派发 ah-sidebar-collapsed', async () => {
+  it('侧边栏开关初始态读取 localStorage，无显式偏好时默认收起', async () => {
+    localStorage.setItem('ah:sidebar-collapsed', 'false');
+    const el = await mount();
+    el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[2]!.click();
+    await el.updateComplete;
+
+    const toggle = q<HTMLElement>(el, '.toggle');
+    expect(toggle.classList.contains('on')).toBe(false);
+
+    localStorage.removeItem('ah:sidebar-collapsed');
+    const el2 = await mount();
+    el2.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[2]!.click();
+    await el2.updateComplete;
+    expect(q<HTMLElement>(el2, '.toggle').classList.contains('on')).toBe(true);
+  });
+
+  it('侧边栏偏好变更向父级派发 ah-sidebar-collapsed，且 UI 同步刷新', async () => {
     const el = await mount();
     const seen: boolean[] = [];
     el.addEventListener('ah-sidebar-collapsed', (e) => {
@@ -248,12 +265,15 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     el.shadowRoot!.querySelectorAll<HTMLElement>('.ttab')[2]!.click();
     await el.updateComplete;
 
-    q<HTMLElement>(el, '.toggle').click();
+    const toggle = q<HTMLElement>(el, '.toggle');
+    expect(toggle.classList.contains('on')).toBe(true);
+    toggle.click();
     await el.updateComplete;
     expect(seen).toEqual([false]); // 默认收起 true → 切换为 false
+    expect(toggle.classList.contains('on')).toBe(false);
   });
 
-  it('深度思考收起偏好变更向父级派发 ah-deep-think-collapsed', async () => {
+  it('深度思考收起偏好变更向父级派发 ah-deep-think-collapsed，且 UI 同步刷新', async () => {
     const el = await mount();
     const seen: boolean[] = [];
     el.addEventListener('ah-deep-think-collapsed', (e) => {
@@ -267,10 +287,13 @@ describe('ah-settings-center（方案 B 顶部平铺 Tab）', () => {
     const row = Array.from(sec.querySelectorAll('.row')).find(
       (r) => r.querySelector('.rl')?.textContent?.trim() === '深度思考收起'
     )!;
-    (row.querySelector('.toggle') as HTMLElement).click();
+    const toggle = row.querySelector('.toggle') as HTMLElement;
+    expect(toggle.classList.contains('on')).toBe(false);
+    toggle.click();
     await el.updateComplete;
 
     expect(seen).toEqual([true]); // 默认展开 false → 切换为 true（收起）
+    expect(toggle.classList.contains('on')).toBe(true);
   });
 
   it('移动端滑动指示条：--tab-i 跟随当前分组，且标记为装饰性', async () => {
