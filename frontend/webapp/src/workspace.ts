@@ -215,7 +215,7 @@ export class AhWorkspace extends LitElement {
     void this.refresh();
   }
 
-  private async refresh(): Promise<void> {
+  async refresh(): Promise<void> {
     this.loading = true;
     // 各数据源相互独立：任一失败不影响其余格（用 allSettled 而非 all）。
     const [sessions, jobs, recipes, agents, mcp, mem] = await Promise.allSettled([

@@ -68,7 +68,7 @@ export class AhObservability extends LitElement {
     this.refresh();
   }
 
-  private async refresh() {
+  async refresh() {
     this.loading = true;
     try {
       const [m, j, se, r] = await Promise.all([

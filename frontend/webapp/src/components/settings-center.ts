@@ -231,526 +231,528 @@ const GROUP_IDS = new Set<SettingsGroup>(GROUPS.map((g) => g.id));
 
 @customElement('ah-settings-center')
 export class AhSettingsCenter extends LitElement {
-  static styles = [css`
-    :host {
-      display: flex;
-      flex-direction: column;
-      flex: 1 1 auto;
-      min-height: 0;
-      width: 100%;
-      /* 与内嵌 ah-provider-key-settings 的 max-width 对齐：否则密钥分区的卡片
+  static styles = [
+    css`
+      :host {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        /* 与内嵌 ah-provider-key-settings 的 max-width 对齐：否则密钥分区的卡片
          会比其它分组窄（内层面板自带 760px 上限），同一窗口出现两种卡片宽度。
          桌面宽屏下水平居中，避免窗口贴左、右侧留大片空白。 */
-      max-width: 760px;
-      margin-inline: auto;
-      font-family: var(--ah-font-sans);
-      color: var(--ah-text);
-    }
-    /* 惰性挂载：非激活分组保留在 DOM（不丢已加载状态）但隐藏。
+        max-width: 760px;
+        margin-inline: auto;
+        font-family: var(--ah-font-sans);
+        color: var(--ah-text);
+      }
+      /* 惰性挂载：非激活分组保留在 DOM（不丢已加载状态）但隐藏。
        :host 的 display:flex 会盖过浏览器默认 [hidden]，加 !important 保险。 */
-    [hidden] {
-      display: none !important;
-    }
+      [hidden] {
+        display: none !important;
+      }
 
-    /* 设置窗口：与 design/settings-center-mockup.html 方案 B 一致。
+      /* 设置窗口：与 design/settings-center-mockup.html 方案 B 一致。
        桌面撑满内容区、内容区自身滚动；移动端高度自适应、由页面滚动。 */
-    .setwin {
-      display: flex;
-      flex-direction: column;
-      flex: 1 1 auto;
-      min-height: 0;
-      border: 1px solid var(--ah-border);
-      border-radius: var(--ah-radius-lg);
-      background: var(--ah-surface-1);
-      overflow: hidden;
-    }
-
-    /* ── 顶部平铺 Tab ── */
-    .head {
-      border-bottom: 1px solid var(--ah-border);
-      padding: 14px 14px 10px;
-      flex: 0 0 auto;
-    }
-    .h-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--ah-font-display);
-      font-size: 15px;
-      font-weight: 700;
-      padding: 0 4px 10px;
-    }
-    /* 移动端返回「我的」入口（桌面无此需求，隐藏） */
-    .h-back {
-      display: none;
-      border: none;
-      background: none;
-      color: var(--ah-text-muted);
-      font-size: 18px;
-      line-height: 1;
-      padding: 2px 6px;
-      margin-left: -4px;
-      border-radius: var(--ah-radius-sm);
-      cursor: pointer;
-    }
-    .h-back:hover {
-      color: var(--ah-text);
-      background: var(--ah-surface-2);
-    }
-    .tabs {
-      display: flex;
-      gap: 6px;
-    }
-    .ttab {
-      flex: 1 1 0;
-      min-width: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      padding: 9px 8px;
-      border-radius: 9px;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--ah-text-muted);
-      font-size: 13px;
-      font-family: var(--ah-font-sans);
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 120ms ease, color 120ms ease,
-        border-color 120ms ease;
-    }
-    .ttab:hover {
-      background: var(--ah-surface-2);
-      color: var(--ah-text);
-    }
-    .ttab.on {
-      background: var(--ah-accent-soft);
-      color: var(--ah-accent);
-      font-weight: 600;
-      border-color: color-mix(in srgb, var(--ah-accent) 30%, transparent);
-    }
-    .ttab:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-    .ttab svg {
-      width: 15px;
-      height: 15px;
-      flex: 0 0 auto;
-    }
-    .tl.short {
-      display: none;
-    }
-    /* 移动端激活指示条：桌面端沿用 accent-soft 底色块，故默认不渲染。 */
-    .tab-ink {
-      display: none;
-    }
-    /* 移动端切页动画（关键帧全局定义，仅 ≤760px 使用）。 */
-    @keyframes set-tab-pop {
-      from {
-        transform: scale(0.86);
-        opacity: 0.55;
-      }
-      to {
-        transform: none;
-        opacity: 1;
-      }
-    }
-    @keyframes set-pane-in {
-      from {
-        opacity: 0;
-        transform: translateY(6px);
-      }
-      to {
-        opacity: 1;
-        transform: none;
-      }
-    }
-
-    /* ── 内容区 ── */
-    .pane {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 18px 20px 24px;
-    }
-
-    .sec-title {
-      font-size: 11px;
-      color: var(--ah-text-faint);
-      font-weight: 600;
-      letter-spacing: 0.4px;
-      padding: 4px 2px 8px;
-      margin-top: 14px;
-    }
-    .sec-title:first-of-type {
-      margin-top: 0;
-    }
-    .card {
-      border: 1px solid var(--ah-border);
-      background: var(--ah-surface-1);
-      border-radius: var(--ah-radius-md);
-      padding: 4px 14px;
-      margin-bottom: 12px;
-    }
-
-    /* 通用设置行：图标盒 + 文案 + 右侧控件 */
-    .row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      width: 100%;
-      padding: 12px 0;
-      border-top: 1px solid var(--ah-border);
-      background: none;
-      border-left: none;
-      border-right: none;
-      border-bottom: none;
-      color: inherit;
-      font-family: var(--ah-font-sans);
-      text-align: left;
-    }
-    .row:first-child {
-      border-top: none;
-    }
-    button.row {
-      cursor: pointer;
-      border-radius: var(--ah-radius-sm);
-    }
-    button.row:hover {
-      background: var(--ah-surface-2);
-    }
-    button.row:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: -2px;
-    }
-    .ri {
-      width: 30px;
-      height: 30px;
-      border-radius: 9px;
-      background: var(--ah-surface-3);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-      color: var(--ah-text-muted);
-    }
-    .ri svg {
-      width: 16px;
-      height: 16px;
-    }
-    .rc {
-      flex: 1 1 auto;
-      min-width: 0;
-    }
-    .rl {
-      font-size: 13.5px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .rd {
-      font-size: 11.5px;
-      color: var(--ah-text-faint);
-      margin-top: 2px;
-      word-break: break-all;
-    }
-    .rd.mono {
-      font-family: var(--ah-font-mono);
-      font-size: 11px;
-    }
-
-    /* 状态徽标 / 次要按钮 */
-    .badge {
-      font-size: 11px;
-      font-weight: 600;
-      padding: 3px 10px;
-      border-radius: var(--ah-radius-pill);
-      flex: 0 0 auto;
-    }
-    .badge.ok {
-      color: var(--ah-success);
-      background: var(--ah-success-soft);
-    }
-    .badge.warn {
-      color: var(--ah-warning);
-      background: var(--ah-warning-soft);
-    }
-    .badge.muted {
-      color: var(--ah-text-muted);
-      background: var(--ah-surface-3);
-    }
-    .btn {
-      flex: 0 0 auto;
-      border: 1px solid var(--ah-border);
-      background: transparent;
-      color: var(--ah-text-muted);
-      font-size: 12.5px;
-      font-family: var(--ah-font-sans);
-      padding: 6px 13px;
-      border-radius: var(--ah-radius-md);
-      cursor: pointer;
-      transition: color 120ms ease, border-color 120ms ease;
-    }
-    .btn:hover:not(:disabled) {
-      color: var(--ah-text);
-      border-color: var(--ah-text-faint);
-    }
-    .btn:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-    .btn:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-
-    /* 开关 */
-    .toggle {
-      position: relative;
-      width: 40px;
-      height: 23px;
-      flex: 0 0 auto;
-      border-radius: var(--ah-radius-pill);
-      background: var(--ah-surface-3);
-      border: 1px solid var(--ah-border);
-      cursor: pointer;
-      padding: 0;
-      transition: background 150ms ease, border-color 150ms ease;
-    }
-    .toggle::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 17px;
-      height: 17px;
-      border-radius: 50%;
-      background: var(--ah-text-muted);
-      transition: transform 150ms ease, background 150ms ease;
-    }
-    .toggle.on {
-      background: var(--ah-accent);
-      border-color: var(--ah-accent);
-    }
-    .toggle.on::after {
-      transform: translateX(17px);
-      background: #fff;
-    }
-    .toggle:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-
-    /* 存储空间：右侧数值列（等宽字体、右对齐，便于纵向比对四项大小） */
-    .sv {
-      flex: 0 0 auto;
-      font-family: var(--ah-font-mono);
-      font-size: 12px;
-      color: var(--ah-text-muted);
-      white-space: nowrap;
-    }
-    /* 破坏性操作（清除数据）：danger 着色但不做实心色块，避免与唯一强调点「保存」抢视觉 */
-    .ri.danger {
-      color: var(--ah-danger);
-      background: color-mix(in srgb, var(--ah-danger) 14%, transparent);
-    }
-    .btn.danger {
-      color: var(--ah-danger);
-      border-color: color-mix(in srgb, var(--ah-danger) 45%, transparent);
-    }
-    .btn.danger:hover:not(:disabled) {
-      color: var(--ah-danger);
-      border-color: var(--ah-danger);
-      background: color-mix(in srgb, var(--ah-danger) 10%, transparent);
-    }
-
-    /* 分段控件 */
-    .seg {
-      display: inline-flex;
-      gap: 4px;
-      padding: 3px;
-      background: var(--ah-surface-2);
-      border: 1px solid var(--ah-border);
-      border-radius: 10px;
-      flex: 0 0 auto;
-    }
-    .seg button {
-      border: none;
-      background: none;
-      color: var(--ah-text-muted);
-      font-size: 12.5px;
-      font-family: var(--ah-font-sans);
-      padding: 6px 12px;
-      border-radius: 7px;
-      cursor: pointer;
-      white-space: nowrap;
-      /* 点击微交互：选中态背景/字重平滑过渡 + 按下回缩 */
-      transition: color 0.18s ease, background 0.18s ease,
-        transform 0.12s ease, border-color 0.18s ease;
-    }
-    .seg button:hover {
-      color: var(--ah-text);
-    }
-    .seg button:active {
-      transform: scale(0.94);
-    }
-    .seg button.on {
-      background: var(--ah-accent);
-      color: #fff;
-      font-weight: 600;
-    }
-    .seg button:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-
-    /* ── 移动端（≤760px，与 app 断点一致）：等分网格平铺 ──
-       列数取 --set-groups（= 分组数，由 connectedCallback 写入），
-       避免「分组增删、这里的列数忘了同步」把网格空出一格或挤出第二行。 */
-    @media (max-width: 760px) {
       .setwin {
-        border-radius: 14px;
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        border: 1px solid var(--ah-border);
+        border-radius: var(--ah-radius-lg);
+        background: var(--ah-surface-1);
+        overflow: hidden;
       }
+
+      /* ── 顶部平铺 Tab ── */
       .head {
-        padding: 10px 10px 8px;
+        border-bottom: 1px solid var(--ah-border);
+        padding: 14px 14px 10px;
+        flex: 0 0 auto;
       }
       .h-title {
-        font-size: 14px;
-        padding: 0 2px 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--ah-font-display);
+        font-size: 15px;
+        font-weight: 700;
+        padding: 0 4px 10px;
       }
+      /* 移动端返回「我的」入口（桌面无此需求，隐藏） */
       .h-back {
+        display: none;
+        border: none;
+        background: none;
+        color: var(--ah-text-muted);
+        font-size: 18px;
+        line-height: 1;
+        padding: 2px 6px;
+        margin-left: -4px;
+        border-radius: var(--ah-radius-sm);
+        cursor: pointer;
+      }
+      .h-back:hover {
+        color: var(--ah-text);
+        background: var(--ah-surface-2);
+      }
+      .tabs {
+        display: flex;
+        gap: 6px;
+      }
+      .ttab {
+        flex: 1 1 0;
+        min-width: 0;
         display: inline-flex;
         align-items: center;
-      }
-      .tabs {
-        display: grid;
-        grid-template-columns: repeat(var(--set-groups, 4), minmax(0, 1fr));
-        gap: 4px;
-      }
-      .ttab {
-        flex-direction: column;
-        gap: 3px;
-        padding: 8px 2px;
-        font-size: 10.5px;
-        line-height: 1.15;
-        border-radius: 10px;
-        white-space: normal;
-        text-align: center;
-      }
-      .ttab svg {
-        width: 17px;
-        height: 17px;
-      }
-      /* ── 顶部 Tab：移动端去掉底色与边框，改用滑动指示条 + 切换动画 ──
-         等分列宽必须无缝（gap:0），否则指示条的位移距离与列宽对不上。 */
-      .tabs {
-        position: relative;
-        gap: 0;
-      }
-      .ttab {
-        position: relative;
-        z-index: 1;
-        background: transparent;
-        border-color: transparent;
-        border-radius: 0;
-        transition: color 180ms ease, transform 140ms ease;
-      }
-      .ttab:hover {
+        justify-content: center;
+        gap: 7px;
+        padding: 9px 8px;
+        border-radius: 9px;
+        border: 1px solid transparent;
         background: transparent;
         color: var(--ah-text-muted);
+        font-size: 13px;
+        font-family: var(--ah-font-sans);
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 120ms ease, color 120ms ease,
+          border-color 120ms ease;
+      }
+      .ttab:hover {
+        background: var(--ah-surface-2);
+        color: var(--ah-text);
       }
       .ttab.on {
-        background: transparent;
-        border-color: transparent;
+        background: var(--ah-accent-soft);
         color: var(--ah-accent);
+        font-weight: 600;
+        border-color: color-mix(in srgb, var(--ah-accent) 30%, transparent);
       }
-      .ttab:active {
-        transform: scale(0.94);
+      .ttab:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
       }
-      /* 选中项图标轻微弹入（class 切换即重放） */
-      .ttab.on svg {
-        animation: set-tab-pop 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
-      }
-      /* 滑动指示条：宽度 = 一列，靠 translateX(下标 × 100%) 平移到当前列 */
-      .tab-ink {
-        display: block;
-        position: absolute;
-        left: 0;
-        top: 0;
-        z-index: 0;
-        width: calc(100% / var(--set-groups, 4));
-        height: 100%;
-        pointer-events: none;
-        transform: translateX(calc(var(--tab-i, 0) * 100%));
-        transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
-      }
-      .tab-ink::after {
-        content: '';
-        position: absolute;
-        left: 50%;
-        bottom: 0;
-        width: 18px;
-        height: 2px;
-        margin-left: -9px;
-        border-radius: 2px;
-        background: var(--ah-accent);
-      }
-      /* 内容切页：section 由 hidden 变可见时会重放该动画 */
-      section[data-group] {
-        animation: set-pane-in 220ms ease-out both;
-      }
-      .tl.full {
-        display: none;
+      .ttab svg {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 auto;
       }
       .tl.short {
-        display: inline;
+        display: none;
       }
+      /* 移动端激活指示条：桌面端沿用 accent-soft 底色块，故默认不渲染。 */
+      .tab-ink {
+        display: none;
+      }
+      /* 移动端切页动画（关键帧全局定义，仅 ≤760px 使用）。 */
+      @keyframes set-tab-pop {
+        from {
+          transform: scale(0.86);
+          opacity: 0.55;
+        }
+        to {
+          transform: none;
+          opacity: 1;
+        }
+      }
+      @keyframes set-pane-in {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* ── 内容区 ── */
       .pane {
-        padding: 14px 12px 18px;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 18px 20px 24px;
       }
-      /* 触控目标：行与图标盒略放大，便于手指命中（≥44px 行高） */
+
+      .sec-title {
+        font-size: 11px;
+        color: var(--ah-text-faint);
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        padding: 4px 2px 8px;
+        margin-top: 14px;
+      }
+      .sec-title:first-of-type {
+        margin-top: 0;
+      }
+      .card {
+        border: 1px solid var(--ah-border);
+        background: var(--ah-surface-1);
+        border-radius: var(--ah-radius-md);
+        padding: 4px 14px;
+        margin-bottom: 12px;
+      }
+
+      /* 通用设置行：图标盒 + 文案 + 右侧控件 */
       .row {
-        gap: 10px;
-        padding: 13px 0;
-        flex-wrap: wrap;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 12px 0;
+        border-top: 1px solid var(--ah-border);
+        background: none;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+        color: inherit;
+        font-family: var(--ah-font-sans);
+        text-align: left;
+      }
+      .row:first-child {
+        border-top: none;
+      }
+      button.row {
+        cursor: pointer;
+        border-radius: var(--ah-radius-sm);
+      }
+      button.row:hover {
+        background: var(--ah-surface-2);
+      }
+      button.row:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: -2px;
       }
       .ri {
-        width: 32px;
-        height: 32px;
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        background: var(--ah-surface-3);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        color: var(--ah-text-muted);
+      }
+      .ri svg {
+        width: 16px;
+        height: 16px;
+      }
+      .rc {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .rl {
+        font-size: 13.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .rd {
+        font-size: 11.5px;
+        color: var(--ah-text-faint);
+        margin-top: 2px;
+        word-break: break-all;
+      }
+      .rd.mono {
+        font-family: var(--ah-font-mono);
+        font-size: 11px;
+      }
+
+      /* 状态徽标 / 次要按钮 */
+      .badge {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: var(--ah-radius-pill);
+        flex: 0 0 auto;
+      }
+      .badge.ok {
+        color: var(--ah-success);
+        background: var(--ah-success-soft);
+      }
+      .badge.warn {
+        color: var(--ah-warning);
+        background: var(--ah-warning-soft);
+      }
+      .badge.muted {
+        color: var(--ah-text-muted);
+        background: var(--ah-surface-3);
       }
       .btn {
-        padding: 8px 14px;
+        flex: 0 0 auto;
+        border: 1px solid var(--ah-border);
+        background: transparent;
+        color: var(--ah-text-muted);
+        font-size: 12.5px;
+        font-family: var(--ah-font-sans);
+        padding: 6px 13px;
+        border-radius: var(--ah-radius-md);
+        cursor: pointer;
+        transition: color 120ms ease, border-color 120ms ease;
       }
-      /* 分段控件独占一行：三段（深色/浅色/跟随系统）在 320px 屏上约占 190px，
-         与说明文字同行会把文案挤成竖排（每行 2–3 字的窄柱）。
-         换行后左缩进对齐文案起点（图标盒 32px + gap 10px），三段时间等分整行。 */
+      .btn:hover:not(:disabled) {
+        color: var(--ah-text);
+        border-color: var(--ah-text-faint);
+      }
+      .btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .btn:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
+
+      /* 开关 */
+      .toggle {
+        position: relative;
+        width: 40px;
+        height: 23px;
+        flex: 0 0 auto;
+        border-radius: var(--ah-radius-pill);
+        background: var(--ah-surface-3);
+        border: 1px solid var(--ah-border);
+        cursor: pointer;
+        padding: 0;
+        transition: background 150ms ease, border-color 150ms ease;
+      }
+      .toggle::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        background: var(--ah-text-muted);
+        transition: transform 150ms ease, background 150ms ease;
+      }
+      .toggle.on {
+        background: var(--ah-accent);
+        border-color: var(--ah-accent);
+      }
+      .toggle.on::after {
+        transform: translateX(17px);
+        background: #fff;
+      }
+      .toggle:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
+
+      /* 存储空间：右侧数值列（等宽字体、右对齐，便于纵向比对四项大小） */
+      .sv {
+        flex: 0 0 auto;
+        font-family: var(--ah-font-mono);
+        font-size: 12px;
+        color: var(--ah-text-muted);
+        white-space: nowrap;
+      }
+      /* 破坏性操作（清除数据）：danger 着色但不做实心色块，避免与唯一强调点「保存」抢视觉 */
+      .ri.danger {
+        color: var(--ah-danger);
+        background: color-mix(in srgb, var(--ah-danger) 14%, transparent);
+      }
+      .btn.danger {
+        color: var(--ah-danger);
+        border-color: color-mix(in srgb, var(--ah-danger) 45%, transparent);
+      }
+      .btn.danger:hover:not(:disabled) {
+        color: var(--ah-danger);
+        border-color: var(--ah-danger);
+        background: color-mix(in srgb, var(--ah-danger) 10%, transparent);
+      }
+
+      /* 分段控件 */
       .seg {
-        flex: 1 1 100%;
-        margin-left: 42px;
-        margin-top: 2px;
+        display: inline-flex;
+        gap: 4px;
+        padding: 3px;
+        background: var(--ah-surface-2);
+        border-radius: 10px;
+        flex: 0 0 auto;
       }
       .seg button {
-        flex: 1 1 0;
-        padding: 8px 6px;
-        text-align: center;
+        border: none;
+        background: none;
+        color: var(--ah-text-muted);
+        font-size: 12.5px;
+        font-family: var(--ah-font-sans);
+        padding: 6px 12px;
+        border-radius: 7px;
+        cursor: pointer;
+        white-space: nowrap;
+        /* 点击微交互：选中态背景/字重平滑过渡 + 按下回缩 */
+        transition: color 0.18s ease, background 0.18s ease,
+          transform 0.12s ease, border-color 0.18s ease;
       }
-    }
+      .seg button:hover {
+        color: var(--ah-text);
+      }
+      .seg button:active {
+        transform: scale(0.94);
+      }
+      .seg button.on {
+        background: var(--ah-accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .seg button:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
 
-    /* 降低动效偏好：关掉移动端的滑条位移、图标弹入与切页动画（无障碍） */
-    @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
-      .tab-ink,
-      .ttab,
-      .ttab.on svg,
-      section[data-group] {
-        transition: none;
-        animation: none;
+      /* ── 移动端（≤760px，与 app 断点一致）：等分网格平铺 ──
+       列数取 --set-groups（= 分组数，由 connectedCallback 写入），
+       避免「分组增删、这里的列数忘了同步」把网格空出一格或挤出第二行。 */
+      @media (max-width: 760px) {
+        .setwin {
+          border-radius: 14px;
+        }
+        .head {
+          padding: 10px 10px 8px;
+        }
+        .h-title {
+          font-size: 14px;
+          padding: 0 2px 8px;
+        }
+        .h-back {
+          display: inline-flex;
+          align-items: center;
+        }
+        .tabs {
+          display: grid;
+          grid-template-columns: repeat(var(--set-groups, 4), minmax(0, 1fr));
+          gap: 4px;
+        }
+        .ttab {
+          flex-direction: column;
+          gap: 3px;
+          padding: 8px 2px;
+          font-size: 10.5px;
+          line-height: 1.15;
+          border-radius: 10px;
+          white-space: normal;
+          text-align: center;
+        }
+        .ttab svg {
+          width: 17px;
+          height: 17px;
+        }
+        /* ── 顶部 Tab：移动端去掉底色与边框，改用滑动指示条 + 切换动画 ──
+         等分列宽必须无缝（gap:0），否则指示条的位移距离与列宽对不上。 */
+        .tabs {
+          position: relative;
+          gap: 0;
+        }
+        .ttab {
+          position: relative;
+          z-index: 1;
+          background: transparent;
+          border-color: transparent;
+          border-radius: 0;
+          transition: color 180ms ease, transform 140ms ease;
+        }
+        .ttab:hover {
+          background: transparent;
+          color: var(--ah-text-muted);
+        }
+        .ttab.on {
+          background: transparent;
+          border-color: transparent;
+          color: var(--ah-accent);
+        }
+        .ttab:active {
+          transform: scale(0.94);
+        }
+        /* 选中项图标轻微弹入（class 切换即重放） */
+        .ttab.on svg {
+          animation: set-tab-pop 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+        }
+        /* 滑动指示条：宽度 = 一列，靠 translateX(下标 × 100%) 平移到当前列 */
+        .tab-ink {
+          display: block;
+          position: absolute;
+          left: 0;
+          top: 0;
+          z-index: 0;
+          width: calc(100% / var(--set-groups, 4));
+          height: 100%;
+          pointer-events: none;
+          transform: translateX(calc(var(--tab-i, 0) * 100%));
+          transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+        }
+        .tab-ink::after {
+          content: '';
+          position: absolute;
+          left: 50%;
+          bottom: 0;
+          width: 18px;
+          height: 2px;
+          margin-left: -9px;
+          border-radius: 2px;
+          background: var(--ah-accent);
+        }
+        /* 内容切页：section 由 hidden 变可见时会重放该动画 */
+        section[data-group] {
+          animation: set-pane-in 220ms ease-out both;
+        }
+        .tl.full {
+          display: none;
+        }
+        .tl.short {
+          display: inline;
+        }
+        .pane {
+          padding: 14px 12px 18px;
+        }
+        /* 触控目标：行与图标盒略放大，便于手指命中（≥44px 行高） */
+        .row {
+          gap: 10px;
+          padding: 13px 0;
+          flex-wrap: wrap;
+        }
+        .ri {
+          width: 32px;
+          height: 32px;
+        }
+        .btn {
+          padding: 8px 14px;
+        }
+        /* 分段控件独占一行：三段（深色/浅色/跟随系统）在 320px 屏上约占 190px，
+         与说明文字同行会把文案挤成竖排（每行 2–3 字的窄柱）。
+         换行后左缩进对齐文案起点（图标盒 32px + gap 10px），三段时间等分整行。 */
+        .seg {
+          flex: 1 1 100%;
+          margin-left: 42px;
+          margin-top: 2px;
+        }
+        .seg button {
+          flex: 1 1 0;
+          padding: 8px 6px;
+          text-align: center;
+        }
       }
-    }
-  `, mobilePill];
+
+      /* 降低动效偏好：关掉移动端的滑条位移、图标弹入与切页动画（无障碍） */
+      @media (max-width: 760px) and (prefers-reduced-motion: reduce) {
+        .tab-ink,
+        .ttab,
+        .ttab.on svg,
+        section[data-group] {
+          transition: none;
+          animation: none;
+        }
+      }
+    `,
+    mobilePill
+  ];
 
   /**
    * 目标分组（由父级经 ah-goto 传入）。配合 groupSeq 使用：
@@ -892,6 +894,15 @@ export class AhSettingsCenter extends LitElement {
     notify.success('已清空通知未读');
   }
 
+  /** 下拉刷新：按当前激活分组重载数据（系统组重测服务状态 + 存储占用）。 */
+  async refresh() {
+    this.unread = getReminderUnread().count;
+    if (this.active === 'system') {
+      void this.checkServer();
+      void this.refreshStorage();
+    }
+  }
+
   /** 重新测量存储四项占用（进入「系统与网络」时、以及每次清理后调用）。 */
   private async refreshStorage() {
     this.storage = await measureStorage();
@@ -991,11 +1002,7 @@ export class AhSettingsCenter extends LitElement {
             </button>
             设置
           </div>
-          <div
-            class="tabs"
-            role="tablist"
-            style="--tab-i: ${this.activeIndex}"
-          >
+          <div class="tabs" role="tablist" style="--tab-i: ${this.activeIndex}">
             ${GROUPS.map(
               (g) => html`
                 <button

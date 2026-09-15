@@ -85,7 +85,7 @@ export class AhOrgTree extends LitElement {
     void this.refresh();
   }
 
-  private async refresh(): Promise<void> {
+  async refresh(): Promise<void> {
     this.loading = true;
     try {
       const res = await authedFetch('/api/org');

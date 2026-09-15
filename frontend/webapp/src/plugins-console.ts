@@ -177,7 +177,7 @@ export class AhPlugins extends LitElement {
     void this.refresh();
   }
 
-  private async refresh() {
+  async refresh() {
     this.loading = true;
     try {
       const res = await authedFetch('/api/plugins');

@@ -112,7 +112,7 @@ export class AhArtifacts extends LitElement {
     return `${(kb / 1024).toFixed(2)} MB`;
   }
 
-  private async refresh(): Promise<void> {
+  async refresh(): Promise<void> {
     this.loading = true;
     try {
       const res = await authedFetch('/api/artifacts');

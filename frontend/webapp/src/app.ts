@@ -1,4 +1,4 @@
-import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
@@ -25,6 +25,7 @@ import './plugins-console';
 // （账户资料 / 修改密码 / 退出登录归「我的」Tab，不在设置中心重复。）
 import './components/settings-center';
 import { TopProgressBar } from './top-progress-bar';
+import { PullToRefreshController } from './pull-refresh';
 
 type Tab =
   | 'workspace'
@@ -164,6 +165,48 @@ const desktopShellCss = css`
   }
 `;
 
+/**
+ * 移动端下拉刷新指示器样式。指示器由 PullToRefreshController 动态挂载到 .main，
+ * 用 position:fixed 钉在顶栏正下方，随下拉距离长高；仅触摸手势触发，桌面无副作用。
+ */
+const ptrCss = css`
+  .ptr-indicator {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--ah-text-dim, #8b93a7);
+    font-size: 13px;
+    z-index: 25;
+    pointer-events: none;
+    background: transparent;
+  }
+  .ptr-indicator .ptr-spin {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--ah-border, #3a3f4b);
+    border-top-color: var(--ah-accent, #4c8dff);
+    border-radius: 50%;
+    animation: ptr-spin 0.7s linear infinite;
+  }
+  @keyframes ptr-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ptr-indicator .ptr-spin {
+      animation-duration: 1.4s;
+    }
+  }
+`;
+
 const chatShellCss = css`
   /* ?hidden 绑定用于 Tab 切换时隐藏非激活面板。:host 的 display:block 会盖过
      浏览器默认的 [hidden] 样式，必须加 !important 保险。 */
@@ -217,7 +260,7 @@ export class AhApp extends LitElement {
   // P3-1: 品牌位配置
   brand: BrandConfig = BRAND_DEFAULT;
 
-  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss];
+  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, ptrCss];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
@@ -255,6 +298,8 @@ export class AhApp extends LitElement {
    * tabId 由事件 detail 带出，本壳只做匹配、不认识具体是哪个业务插件。
    */
   @state() private reminderUnread: ReminderUnread = { tabId: '', count: 0 };
+  /** 移动端下拉刷新控制器（首次渲染后挂载，disconnected 时解绑）。 */
+  private ptr?: PullToRefreshController;
 
   connectedCallback() {
     super.connectedCallback();
@@ -354,6 +399,8 @@ export class AhApp extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.ptr?.detach();
+    this.ptr = undefined;
     window.removeEventListener('popstate', this.onPopState);
     window.removeEventListener('ah:deeplink', this.onDeepLink as EventListener);
     this.removeEventListener('touchstart', this.onTouchStart);
@@ -587,6 +634,84 @@ export class AhApp extends LitElement {
   /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */
   private syncBodyScroll() {
     document.body.style.overflow = this.drawerOpen ? 'hidden' : '';
+  }
+
+  /**
+   * 首次渲染后挂载下拉刷新控制器：此时 .content / .main 已在 shadow DOM 中稳定存在。
+   * 控制器引用的是模板静态节点（Lit 不会重建），可安全长期持有。
+   */
+  protected firstUpdated(changedProperties: PropertyValues): void {
+    super.firstUpdated(changedProperties);
+    const root = this.shadowRoot;
+    if (!root) return;
+    const content = root.querySelector('.content') as HTMLElement | null;
+    const main = root.querySelector('.main') as HTMLElement | null;
+    if (content && main && !this.ptr) {
+      this.ptr = new PullToRefreshController({
+        content,
+        mount: main,
+        isEnabled: () => this.ptrEnabled(),
+        onRefresh: () => this.refreshActivePanel()
+      });
+      this.ptr.attach();
+    }
+  }
+
+  /** 是否允许下拉刷新：触摸设备 + 抽屉关闭 + 当前非对话/我的页。 */
+  private ptrEnabled(): boolean {
+    if (!this.isTouchDevice()) return false;
+    if (this.drawerOpen) return false;
+    if (this.tab === 'chat' || this.tab === 'me') return false;
+    return true;
+  }
+
+  /** 当前可视（未 hidden）的面板节点；插件视图与「我的」用特型容器承载。 */
+  private visiblePanel(): HTMLElement | null {
+    const content = this.shadowRoot?.querySelector('.content');
+    if (!content) return null;
+    for (const node of Array.from(content.children)) {
+      const el = node as HTMLElement;
+      if (el.hasAttribute('hidden')) continue;
+      const tag = el.tagName.toLowerCase();
+      if (
+        tag.startsWith('ah-') ||
+        el.classList.contains('plugin-view') ||
+        el.classList.contains('me-view')
+      ) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 下拉刷新触发：调用当前激活面板的 refresh()（多数面板已有该公开方法，
+   * 在 connectedCallback 中同样用于首屏数据加载）；插件视图改为重拉服务端渲染；
+   * 同时刷新顶栏服务端状态。对话/我的页由 ptrEnabled 已排除，此处仅兜底。
+   */
+  private async refreshActivePanel(): Promise<void> {
+    const active = this.visiblePanel();
+    if (!active) return;
+    const el = active as HTMLElement;
+    if (el.classList.contains('me-view')) return;
+    if (el.classList.contains('plugin-view')) {
+      void this.loadPluginViews();
+      return;
+    }
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    if (typeof fn === 'function') {
+      try {
+        await fn.call(el);
+      } catch (e) {
+        notifyError(e, { title: '刷新失败', key: 'ptr-refresh' });
+      }
+    }
+    this.refreshState();
+  }
+
+  /** 是否为触摸设备（仅触摸才需要下拉刷新手势）。 */
+  private isTouchDevice(): boolean {
+    return 'ontouchstart' in window || (navigator.maxTouchPoints ?? 0) > 0;
   }
 
   render() {

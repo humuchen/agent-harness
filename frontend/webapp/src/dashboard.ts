@@ -89,7 +89,7 @@ export class AhDashboard extends LitElement {
     this.refresh();
   }
 
-  private async refresh() {
+  async refresh() {
     this.loading = true;
     try {
       const [s, m, j, a] = await Promise.all([

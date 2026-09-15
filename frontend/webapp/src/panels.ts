@@ -275,7 +275,7 @@ export class AhMcp extends LitElement {
     }
   }
 
-  private async refresh(silent = false) {
+  async refresh(silent = false) {
     try {
       const [s, p] = await Promise.all([
         client.getMcpServers(),
@@ -766,7 +766,7 @@ export class AhApprovals extends LitElement {
     this.refresh();
   }
 
-  private async refresh() {
+  async refresh() {
     try {
       this.items = (await client.listApprovals()).tickets;
     } catch (e: any) {

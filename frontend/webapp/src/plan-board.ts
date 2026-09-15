@@ -210,6 +210,13 @@ export class AhPlanBoard extends LitElement {
     }
   }
 
+  /** 下拉刷新：重载当前计划文档（保留既有 SSE 连接）。 */
+  refresh() {
+    const params = new URLSearchParams(window.location.search);
+    const planId = this.plan?.id ?? params.get('id') ?? params.get('plan');
+    if (planId) void this.loadPlan(planId);
+  }
+
   private async loadDiff(id: string, otherId: string) {
     try {
       const res = await authedFetch(`/api/plans/${encodeURIComponent(id)}/diff?other=${encodeURIComponent(otherId)}`);

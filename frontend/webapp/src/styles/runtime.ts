@@ -30,7 +30,6 @@ export const runtime = css`
     gap: 2px;
     padding: 3px;
     background: var(--ah-surface-2);
-    border: 1px solid var(--ah-border);
     border-radius: var(--ah-radius-pill);
   }
   .seg button {
