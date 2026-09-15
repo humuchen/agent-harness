@@ -33,11 +33,39 @@ import { isAuthed, setSession, clearSession, scheduleAutoRefresh } from './api';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
 
+/**
+ * 首屏占位（ah-splash）：HTML 首帧即渲染品牌启动画面（logo + 品牌名 + "正在启动…"），
+ * 消灭「打开 App → 黑屏 → 才显示页面」的卡顿感。
+ * 原生侧另有 @capacitor/splash-screen 启动图覆盖冷启动，两者叠加后
+ * 从原生 splash 淡出 → web 占位 → 控制台/登录页，全程无黑屏。
+ */
+import './splash';
+
+/** 立即把品牌占位挂到 body（幂等）。必须在 bootstrap() 之前调用。
+ *  同时摘除 index.html 的内联静态占位（#ah-splash-static）——
+ *  它只在 JS bundle 尚未执行时兜底，本函数执行说明 JS 已就位，
+ *  由 Lit 占位 ah-splash 接管，避免两者视觉重叠。 */
+function mountSplash(): void {
+  document.getElementById('ah-splash-static')?.remove();
+  if (document.querySelector('ah-splash')) return;
+  document.body.appendChild(document.createElement('ah-splash'));
+}
+
+/** 淡出并摘除占位（由 mountApp / mountLogin 在挂载真实页面后调用）。 */
+function hideSplash(): void {
+  const el = document.querySelector('ah-splash') as HTMLElement | null;
+  if (el) {
+    el.setAttribute('hiding', '');
+    window.setTimeout(() => el.remove(), 220);
+  }
+}
+
 /** 把控制台挂到 body（幂等：已存在则不重复创建）。 */
 function mountApp(): void {
   if (document.querySelector('ah-app')) return;
   document.querySelector('ah-login')?.remove();
   document.body.appendChild(document.createElement('ah-app'));
+  hideSplash();
 }
 
 /** 把全屏登录页挂到 body（幂等：已存在则不重复创建）。 */
@@ -45,6 +73,7 @@ function mountLogin(): void {
   if (document.querySelector('ah-login')) return;
   document.querySelector('ah-app')?.remove();
   document.body.appendChild(document.createElement('ah-login'));
+  hideSplash();
 }
 
 // 首屏按当前会话落地：已登录（本地有用户名）→ 控制台；否则→ 登录页。
@@ -63,6 +92,9 @@ async function bootstrap(): Promise<void> {
     return;
   }
   if (oauthSuccess) {
+    // OAuth 回调需要 fetch 才挂控制台：等待期间先挂登录页占位（避免黑屏），
+    // fetch 成功替换为控制台，失败则保留登录页并提示。
+    mountLogin();
     try {
       const me = await fetch('/api/account/me', { credentials: 'same-origin' });
       if (me.ok) {
@@ -79,7 +111,7 @@ async function bootstrap(): Promise<void> {
           return;
         }
       }
-    // 带回 ?oauth=success 却拿不到会话：授权流程未走完 / 后端未签发 cookie。
+      // 带回 ?oauth=success 却拿不到会话：授权流程未走完 / 后端未签发 cookie。
       notify.error('第三方登录未能完成，请重新登录。', {
         key: 'oauth-failed'
       });
@@ -89,9 +121,17 @@ async function bootstrap(): Promise<void> {
         key: 'oauth-failed'
       });
     }
+    return;
   }
   mountLogin();
 }
+
+// 立即挂载占位 UI（不等 fetch），消灭白屏/黑屏。
+// - 已登录且非 OAuth 回调：mountApp() 同步挂载，body 立即有内容。
+// - 未登录且非 OAuth：mountLogin() 同步挂载，立即显示登录页。
+// - OAuth 回调场景：先挂登录页占位，fetch 成功后替换为控制台（见上）。
+// 在 bootstrap() 之前先挂品牌占位 ah-splash，确保 JS 执行期间 body 始终有内容。
+mountSplash();
 bootstrap();
 
 // 登录页派发 ah-login-success 后进入控制台。
