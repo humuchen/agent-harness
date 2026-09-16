@@ -72,6 +72,12 @@ export interface StepDef {
    * 条件不满足时，本 step 标记为 'skipped'，下游依赖本 step 的 step 会被跳过。
    */
   condition?: string;
+  /**
+   * P3 人工审批门：标记为 true 的 step 在执行前会暂停整个工作流（run.state → 'awaiting'），
+   * 直至调用方把 stepId 写入 `WorkflowRun.approvals` 并 resume 后才放行执行。
+   * 未标记的 step 行为与旧版完全一致（零回归面）。
+   */
+  requireApproval?: boolean;
 }
 
 /** 工作流定义（DAG）。 */
@@ -122,4 +128,9 @@ export interface WorkflowRun {
   finishedAt?: number;
   /** 失败时的根因信息。 */
   error?: string;
+  /**
+   * P3 人工审批门：已批准放行的 step id 列表（随检查点持久化）。
+   * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。
+   */
+  approvals?: string[];
 }

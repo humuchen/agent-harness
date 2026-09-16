@@ -597,6 +597,58 @@ export class AgentClient {
       yield ev as WorkflowEvent;
     }
   }
+
+  /**
+   * P3（人工审批门）：批准放行处于 awaiting 的 plan/workflow 执行。
+   * 对应服务端 POST /api/workflows/:id/approve —— 把 stepId 写入检查点 run.approvals
+   * 后触发 DagEngine.resume；引擎据此跳过审批门继续执行（可能再次暂停在下一道门）。
+   *
+   * body：`stepId`（单节点放行）与 `all`（放行当前所有 awaiting 节点）二选一；
+   * BYOK 字段与 streamWorkflowResume 同构（检查点不落明文凭据，服务端按 owner 重新解析，
+   * real 模式无 Key 402 快速失败；旧客户端不带 body 时默认 mock，向后兼容）。
+   */
+  async *streamWorkflowApprove(
+    id: string,
+    opts: SseOptions & {
+      /** 放行的单个 step/任务 id（= 计划 task id）。与 all 互斥。 */
+      stepId?: string;
+      /** 放行当前所有 awaiting 节点（等价于逐个批准）。 */
+      all?: boolean;
+      mode?: RunMode;
+      model?: string;
+      modelBaseUrl?: string;
+      modelApiKey?: string;
+      ctxWindow?: number;
+      web?: boolean;
+      verify?: unknown;
+      autoVerify?: boolean;
+      sessionId?: string;
+    } = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const body: Record<string, unknown> = {};
+    if (opts.stepId) body.stepId = opts.stepId;
+    if (opts.all) body.all = true;
+    if (opts.mode) body.mode = opts.mode;
+    if (opts.model) body.model = opts.model;
+    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
+    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
+    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
+    if (opts.web) body.web = true;
+    if (opts.verify) body.verify = opts.verify;
+    if (typeof opts.autoVerify === 'boolean') body.autoVerify = opts.autoVerify;
+    if (opts.sessionId) body.sessionId = opts.sessionId;
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/approve`,
+      { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
+    );
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
 }
 
 export type { RunMode, EnvHandle };

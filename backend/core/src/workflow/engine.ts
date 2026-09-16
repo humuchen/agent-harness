@@ -47,6 +47,8 @@ export type WorkflowEvent =
   | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
+  /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
+  | { type: 'wf:awaiting-approval'; workflowId: string; runId?: string; stepIds: string[]; run: WorkflowRun }
   | { type: 'wf:done'; workflowId: string; runId?: string; run: WorkflowRun }
   | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun };
 
@@ -289,9 +291,29 @@ export class DagEngine {
 
     const outputs: Record<string, unknown> = {};
     const skipped = new Set<string>(); // 被条件跳过的 step id
+    const defById = new Map(def.steps.map((s) => [s.id, s]));
+    const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step
     try {
       for (const wave of this.topoWaves(def)) {
         if (signal?.aborted) throw new Error('workflow aborted');
+        // P3 审批门（波次边界）：当前波次内存在「requireApproval 且未批准」的 step 时，
+        // 整个 run 暂停进入 awaiting（不落 failed、不执行补偿）。这些 step 标记 awaiting，
+        // 同波次其它 step 保持 pending；批准后 resume 放行整波次。未标记的 def 行为不变。
+        // 级联跳过预判：输出依赖已被跳过的 step 本波次必然 skipped，不参与审批门。
+        const gated = wave.filter((id) => {
+          const step = defById.get(id)!;
+          if (!step.requireApproval || approved.has(id)) return false;
+          if (this.outputDeps(step).some((d) => skipped.has(d))) return false;
+          return true;
+        });
+        if (gated.length > 0) {
+          for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+          run.state = 'awaiting';
+          delete run.finishedAt;
+          await this.store.save(run);
+          this.emit({ type: 'wf:awaiting-approval', workflowId: def.id, runId, stepIds: gated, run });
+          return run;
+        }
         await Promise.all(
           wave.map(async (id) => {
             const step = def.steps.find((s) => s.id === id)!;
@@ -541,8 +563,29 @@ export class DagEngine {
     this.emit({ type: 'wf:start', workflowId, runId });
 
     let stepFailed = false;
+    const defById = new Map(run.def.steps.map((s) => [s.id, s]));
+    const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step（approve 路由写入检查点后随 resume 生效）
+    const skippedIds = new Set(
+      run.def.steps.filter((s) => run.steps[s.id]?.state === 'skipped').map((s) => s.id)
+    );
     for (const wave of this.topoWaves(run.def)) {
       if (signal?.aborted) break;
+      // P3 审批门（与 run() 同语义）：未批准的 requireApproval step 使 run 再次暂停；
+      // 已批准（写入 run.approvals）或已被级联跳过的 step 放行。
+      const gated = wave.filter((id) => {
+        const step = defById.get(id)!;
+        if (!step.requireApproval || approved.has(id)) return false;
+        if (this.outputDeps(step).some((d) => skippedIds.has(d))) return false;
+        return true;
+      });
+      if (gated.length > 0) {
+        for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+        run.state = 'awaiting';
+        delete run.finishedAt;
+        await this.store.save(run);
+        this.emit({ type: 'wf:awaiting-approval', workflowId, runId, stepIds: gated, run });
+        return run;
+      }
       await Promise.all(
         wave.map(async (id) => {
           const sr = run.steps[id];

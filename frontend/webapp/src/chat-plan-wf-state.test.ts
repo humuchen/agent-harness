@@ -88,6 +88,41 @@ describe('applyPlanWfEvent', () => {
     expect(st2.failedTaskId).toBe('t9');
   });
 
+  it('P3：wf:awaiting-approval → status=awaiting + awaitingTaskIds 收集，done 集合保留', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    const gated = applyPlanWfEvent(
+      st,
+      { type: 'wf:awaiting-approval', stepIds: ['t2', 't3'] },
+      KNOWN
+    );
+    expect(gated.status).toBe('awaiting');
+    expect(gated.awaitingTaskIds).toEqual(['t2', 't3']);
+    // 已完成集合不因暂停丢失（继续执行时依赖它判断「哪些任务可跳」）。
+    expect(gated.done).toEqual({ t1: true });
+  });
+
+  it('P3：批准放行后 wf:step:start 清掉 awaitingTaskIds（重新进入 running）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:awaiting-approval', stepIds: ['t2'] }, KNOWN);
+    expect(st.status).toBe('awaiting');
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    expect(st.status).toBe('running');
+    expect(st.currentTaskId).toBe('t2');
+    expect(st.awaitingTaskIds).toBeUndefined();
+  });
+
+  it('P3：awaiting 态收到 wf:done → 收敛 done（清 awaitingTaskIds，保留 done 集合）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:awaiting-approval', stepIds: ['t2'] }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:done' }, KNOWN);
+    expect(st.status).toBe('done');
+    expect(st.awaitingTaskIds).toBeUndefined();
+    expect(st.done).toEqual({ t1: true });
+  });
+
   it('无关事件（harness 嵌套 / compensate / start / 坏帧）原样返回 prev（同引用）', () => {
     const same = [
       { type: 'wf:start' },

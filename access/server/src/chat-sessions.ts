@@ -30,10 +30,12 @@ export interface StoredTool {
 
 /** 计划执行进度镜像（与 @agent-harness/client 的 PlanExecMirror 形状一致，本地镜像避免包耦合）。 */
 export interface PlanExecMirror {
-  status: 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
   currentTaskId?: string;
   failedTaskId?: string;
   done: string[];
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaiting?: string[];
 }
 
 /** 调用链路追踪节点（结构与 @agent-harness/client 的 TraceNode 一致，本地镜像避免包耦合）。 */

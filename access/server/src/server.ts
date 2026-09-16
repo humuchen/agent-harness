@@ -2217,13 +2217,15 @@ const server = createServer(
         }
         return sendJson(res, { agent: card }, req);
       }
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑）----
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
+      // POST /api/workflows/:id/approve → P3 人工审批放行（写入检查点 approvals 后续跑）
       if (path.startsWith('/api/workflows/')) {
         const isResume = req.method === 'POST' && path.endsWith('/resume');
-        // POST /resume 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
-        const ctx = await guard(req, res, isResume ? 'workflow:run' : 'workflow:read');
+        const isApprove = req.method === 'POST' && path.endsWith('/approve');
+        // POST /resume、POST /approve 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(req, res, isResume || isApprove ? 'workflow:run' : 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
@@ -2300,6 +2302,112 @@ const server = createServer(
             });
             const run = await engine.resume(workflowId);
             if (!closed) send({ type: '_wf_done', workflowId, run });
+            if (!closed) res.end();
+          } catch (e: any) {
+            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
+            if (!closed) res.end();
+          }
+          return;
+        }
+        // P3（人工审批门）：POST /api/workflows/:id/approve —— 把 stepId 写入检查点
+        // run.approvals 后触发 DagEngine.resume（引擎据此跳过审批门继续执行，可能再次
+        // 暂停在下一道门并再发 wf:awaiting-approval）。骨架与 /resume 同款（共享
+        // resolveWorkflowRunOpts 的 BYOK 解析 + startSse + planSync + 审计）。
+        if (req.method === 'POST' && id.endsWith('/approve')) {
+          const workflowId = id.slice(0, -'/approve'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          let closed = false;
+          res.on('close', () => { closed = true; });
+          const body = await readBody(req);
+          const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
+          if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
+          let send: (payload: unknown) => void = () => {};
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            // 终态工作流不可审批放行（无未决门）。
+            if (run.state === 'done' || run.state === 'compensated') {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: `workflow in terminal state ${run.state}; nothing to approve` }));
+              return;
+            }
+            // 审批目标：stepId（单节点）/ all:true（当前所有未决门节点）二选一。
+            // 候选 = 检查点中非终态（awaiting / pending / running / failed）的 step：
+            // awaiting 是正在等放行的门；failed 经审批同样可放行重试（配合旧语义的
+            // 断点续跑）；pending/running 放行无害（下一波次自然执行）。
+            const stepStates = Object.values((run as unknown as { steps?: Record<string, { state?: string }> }).steps ?? {}) as Array<{ state?: string; id?: string }>;
+            const openIds = stepStates.filter((s) => s.state !== 'done' && s.state !== 'skipped' && s.state !== 'compensated').map((s) => s.id!).filter(Boolean);
+            const stepId = typeof body.stepId === 'string' && body.stepId ? body.stepId : undefined;
+            let approved: string[];
+            if (body.all === true) {
+              approved = openIds;
+            } else if (stepId) {
+              if (!openIds.includes(stepId)) {
+                res.writeHead(400, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: `step "${stepId}" is not open (state: ${(run as unknown as { steps?: Record<string, { state?: string }> }).steps?.[stepId]?.state ?? 'absent'})` }));
+                return;
+              }
+              approved = [stepId];
+            } else {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'approve requires body.stepId (single node) or body.all=true (all open gates)' }));
+              return;
+            }
+            if (approved.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no open steps to approve' }));
+              return;
+            }
+            // 写入检查点（随 FileWorkflowStore 持久化，跨重启保留放行决定）：
+            // 去重合并，同 id 重复审批幂等。
+            const prev = new Set(Array.isArray(run.approvals) ? run.approvals : []);
+            for (const id2 of approved) prev.add(id2);
+            (run as unknown as { approvals?: string[] }).approvals = [...prev];
+            await store.save(run);
+            auditAction('workflow.approve', {
+              workflowId,
+              approved,
+              all: body.all === true,
+              mode: execOpts.mode,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            send = startSse(res, req);
+            const planSync = createPlanTaskSync(
+              typeof body.sessionId === 'string' ? body.sessionId : undefined,
+              ctx.sub
+            );
+            const engine = new DagEngine({
+              store,
+              executor: createWorkflowExecutor({
+                onEvent: (e: any) => {
+                  if (!closed) send({ type: 'harness', event: e });
+                },
+                // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传。
+                mode: execOpts.mode,
+                ...execOpts.opts,
+              }),
+              onEvent: (e: unknown) => {
+                // 审批放行后续跑同样产生 wf:* 事件（含下一道门的 wf:awaiting-approval）→ 审计 + 看板对齐。
+                if (e && typeof e === 'object' && 'type' in e) {
+                  const ev = e as WorkflowEvent;
+                  auditWfEvent(ev, ctx);
+                  planSync?.sync(ev);
+                }
+                if (!closed) send(e);
+              },
+            });
+            const run2 = await engine.resume(workflowId);
+            if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
             if (!closed) res.end();
           } catch (e: any) {
             if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
@@ -4896,6 +5004,18 @@ function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
       role: ctx.role,
       sub: ctx.sub,
       error: String(e.error).slice(0, 500)
+    });
+    return;
+  }
+  if (e.type === 'wf:awaiting-approval') {
+    // P3（人工审批门）：run 在波次边界暂停等待人工批准。审计暂停点与待批节点集合，
+    // 供 Render 服务日志回溯「哪个计划卡在哪个门、已等待多久」。
+    auditAction('workflow.awaiting-approval', {
+      workflowId: e.workflowId,
+      runId: e.runId,
+      stepIds: e.stepIds,
+      role: ctx.role,
+      sub: ctx.sub
     });
     return;
   }

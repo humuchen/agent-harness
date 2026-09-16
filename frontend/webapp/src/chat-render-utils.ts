@@ -67,6 +67,8 @@ export interface PlanWfEvent {
   /** wf:step:* 携带的 step id（= 计划 task id，planToWorkflowDef 按 task.id 建 step）。 */
   stepId?: string;
   workflowId?: string;
+  /** P3：wf:awaiting-approval 携带的待审批 step id 列表。 */
+  stepIds?: string[];
   /** wf:failed 时携带的完整 run（step 终态快照，用于定位失败 task）。 */
   run?: {
     state?: string;
@@ -97,7 +99,8 @@ export function applyPlanWfEvent(
   switch (ev.type) {
     case 'wf:step:start': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
-      return { ...prev, status: 'running', currentTaskId: ev.stepId };
+      // P3：审批放行后重新进入 running —— 清掉 awaiting 标记。
+      return { ...prev, status: 'running', currentTaskId: ev.stepId, awaitingTaskIds: undefined };
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
@@ -112,8 +115,15 @@ export function applyPlanWfEvent(
         currentTaskId: ev.stepId
       };
     }
+    case 'wf:awaiting-approval': {
+      // P3 审批门：引擎在波次边界暂停（run.state → awaiting）。stepIds 与本计划 task 求交集
+      // （补偿 step / 非本计划的 def 演化不进入卡片状态机）。
+      const ids = (ev.stepIds ?? []).filter((s) => s && knownTaskIds.has(s));
+      if (!ids.length) return prev;
+      return { ...prev, status: 'awaiting', currentTaskId: undefined, awaitingTaskIds: ids };
+    }
     case 'wf:done':
-      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined };
+      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined, awaitingTaskIds: undefined };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
       // run.steps 中首个 state==='failed' 的 step（step id = task id）。
@@ -195,7 +205,7 @@ export function derivePlanWfId(sessionId: string, plan: ExecutionPlanView): stri
     sessionId,
     plan?.goal ?? '',
     (plan?.tasks ?? [])
-      .map((t) => `${t.id}:${(t.dependsOn ?? []).join(',')}`)
+      .map((t) => `${t.id}:${(t.dependsOn ?? []).join(',')}${t.requireApproval === true ? ':A' : ''}`)
       .join('|')
   ].join('\u0000');
   // FNV-1a（32 位）：输入为 ASCII（会话 id / task id），charCodeAt & 0xff 等价逐字节。
@@ -234,7 +244,8 @@ const REPLAY_MARK: Record<string, string> = {
   running: '⏳',
   pending: '⬜',
   skipped: '⏭',
-  compensated: '♻️'
+  compensated: '♻️',
+  awaiting: '🔒'
 };
 
 /** step 状态 → 展示标签（状态机外的未知值原样展示，防引擎新增状态后 UI 空白）。 */
@@ -245,7 +256,8 @@ export function planWfReplayStateLabel(state: string): string {
     running: '执行中',
     pending: '待执行',
     skipped: '已跳过',
-    compensated: '已补偿'
+    compensated: '已补偿',
+    awaiting: '待审批'
   };
   return label[state] ?? state;
 }

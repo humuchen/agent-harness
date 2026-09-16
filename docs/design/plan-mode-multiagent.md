@@ -253,14 +253,14 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 | P0 校验/反思 | ✅ 已实现 | DAG executor 接 `createVerifier` + `AGENT_VERIFY_MAX_RETRIES`（与 `/api/run` 同款优先级 `body.verify > body.autoVerify > AGENT_AUTO_VERIFY`）；`workflow-verify.test.cjs` 3 项实证反思循环 |
 | P1 断点续跑 | ✅ 已实现 | 确定性检查点键 `derivePlanWfId`（FNV-1a，结构键不含文案，跨刷新可重算）；server 抽共享 `resolveWorkflowRunOpts`（BYOK+verify+402 收敛，执行/续跑路由共用）；`streamWorkflowResume` 补 BYOK body；failed 卡片「从失败任务继续」优先 DAG 续跑，404/5xx/断连自动回退串行 resume |
 | P2 轨迹回放 | ✅ 已实现 | **零引擎改动**——`WorkflowRun` 检查点快照本身即轨迹（每 step 带 agentId/output/error/时间戳）。计划卡片非 pending 态显示「执行详情」→ 侧滑抽屉经 `client.getWorkflow(derivePlanWfId)` 水合快照 → `buildPlanWfReplayRows`（纯函数，可测）渲染步骤时间线（状态/agent/耗时/可折叠产出·错误）；404 无检查点 → 友好提示并指向「断点续跑 / 重新执行」兜底。样式独立追加于 `styles/chat/plan-mode.ts` |
-| P3 节点级人工门 | ⬜ 未实施 | 见下方 P4 待办（需动引擎核心循环） |
+| P3 节点级人工门 | ✅ 已实现 | `StepDef.requireApproval`（plan `requireApproval` 严格布尔映射，零回归）+ `WorkflowRun.approvals: string[]` + 引擎波次边界门（`run()`/`resume()` 双门，flagged 且未批准 step 标 `awaiting`、暂停并 emit `wf:awaiting-approval` + `store.save` 持久化）+ `POST /api/workflows/:id/approve`（BYOK 经共享 `resolveWorkflowRunOpts`，`{stepId?, all?}` 二选一放行写 `run.approvals` 后 `engine.resume`）。前端：`PlanExecState` 增 `awaiting`/`awaitingTaskIds`，`applyPlanWfEvent` 处理 `wf:awaiting-approval`（收集 stepIds、保留 done 集合）与放行后 `wf:step:start` 清 awaiting；卡片「待审批」+「批准并继续」（全部未决门）+ 🔒 任务标记，抽屉行级单节点批准；`derivePlanWfId` 结构键纳入审批标志（`requireApproval===true` 拼 `:A`）；mirror 链 client/server/webapp 三处 `planStatus` 收敛 `awaiting`。三级测试：core `workflow-approval.test.cjs`（引擎门 5 项）、server `workflow-approval.test.cjs`（e2e 8 断言）、webapp `chat-plan-wf-state.test.ts` P3 用例 |
 
-**回归基线（P0–P2 落地后）**：server 273/0 fail；client 18/18；webapp 316/316（含 derivePlanWfId + 回放纯函数新增 12 项）；三端 build 0；lint 0 error（仅 pre-existing warning）；webapp `tsc --noEmit` 9 条全 pre-existing（与 P1 前基线一致，零新增）。
+**回归基线（P0–P3 落地后）**：core 引擎门 5/5；server P3 e2e 1/1（含 404/400×3/401 边界）；webapp 状态机 + 结构键 + 回放全绿；三端 build 0；lint 0 新增 error。
 
 ### P4（后续，未实施）
 - **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。
 - ~~DAG 断点续跑入口~~ → **已由 P1 实现**（§9.5）：failed 态经 `resumePlanViaWorkflow` → `streamWorkflowResume(derivePlanWfId)` 从检查点续跑，不可达自动回退串行。
-- **P3 节点级人工门**：`StepDef.requireApproval` + `WorkflowRun.approvals` + 引擎在 flagged step 前暂停并 emit `wf:awaiting-approval` + `POST /api/workflows/:id/approve` 放行续跑。**需动引擎核心执行循环**（当前「不改核心循环」约束需明确解除后方可启动，风险最高，排最后）。
+- ~~P3 节点级人工门~~ → **已由 P3 改进项实现**（§9.5）：引擎双门暂停 + `POST /:id/approve` 放行 + 前端审批卡片/抽屉闭环。
 - **黑板体积护栏（R5）**：`upstream_*` 大产出截断 + 监控 `workflowStore` 体积。
 - **P3 观察反馈收集**：默认开后的线上/自测观察期，若 DAG 路径暴露真实模型环境下的问题（R5 黑板体积、R8 all-or-nothing），经 `ah_plan_dag='0'` 可即时回退串行；稳定后可移除开关。
 

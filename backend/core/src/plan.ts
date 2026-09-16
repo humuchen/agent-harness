@@ -25,6 +25,12 @@ export interface PlanTask {
   dependsOn: string[];
   /** 预期产出描述。 */
   expectedOutput: string;
+  /**
+   * P3 人工审批门：执行该任务前需用户显式批准（默认 false，零回归面）。
+   * 映射为 StepDef.requireApproval 后，引擎在该任务所在波次前暂停 run（state → awaiting），
+   * 用户经 approve 接口放行后 resume 才继续执行。
+   */
+  requireApproval?: boolean;
 }
 
 /** 结构化执行计划（plan:proposed 事件的 payload 契约）。 */
@@ -40,10 +46,11 @@ export function buildPlannerPrompt(userInput: string): string {
     '',
     '硬性要求：',
     '1. 只输出一个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容。',
-    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string}]}',
+    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean}]}',
     '3. task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
     '4. 每个任务的 steps 是该任务内的有序执行步骤；expectedOutput 描述该任务完成后的可验证产出。',
     '5. 任务粒度以「一次对话可独立完成」为准，通常 2~6 个任务。',
+    '6. 仅当某任务涉及不可逆或高风险操作（删除数据、发布、金钱相关等）时，才为该任务设置 "requireApproval": true（执行前需用户人工批准）；其余任务一律省略该字段（缺省 = 无需批准）。',
     '',
     `用户需求：${userInput}`,
   ].join('\n');
@@ -104,7 +111,16 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
       : [];
     const expectedOutput =
       typeof t.expectedOutput === 'string' ? t.expectedOutput.trim() : '';
-    tasks.push({ id, title, steps, dependsOn, expectedOutput });
+    // P3：仅当模型显式给出布尔 true 时保留审批门（缺省/非法值一律视为无需批准，零回归面）。
+    const requireApproval = t.requireApproval === true;
+    tasks.push({
+      id,
+      title,
+      steps,
+      dependsOn,
+      expectedOutput,
+      ...(requireApproval ? { requireApproval: true } : {})
+    });
   }
 
   // dependsOn 引用必须存在；用 Kahn 拓扑排序检测环。
@@ -219,6 +235,8 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     agentRef: byTask[task.id] ?? opts.agentRef,
     dependsOn: task.dependsOn,
     inputMapping: buildInputMapping(task),
+    // P3：人工审批门透传（未标记任务零回归面）——引擎在该 step 所在波次前暂停 run。
+    ...(task.requireApproval === true ? { requireApproval: true } : {})
   }));
   const def: WorkflowDef = {
     id: opts.workflowId || genPlanWorkflowId(),

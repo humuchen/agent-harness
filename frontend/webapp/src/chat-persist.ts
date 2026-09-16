@@ -59,7 +59,11 @@ export function toMirrorPlanStatus(
     status: st.status,
     ...(st.currentTaskId ? { currentTaskId: st.currentTaskId } : {}),
     ...(st.failedTaskId ? { failedTaskId: st.failedTaskId } : {}),
-    done: Object.keys(st.done ?? {}).filter((id) => st.done[id])
+    done: Object.keys(st.done ?? {}).filter((id) => st.done[id]),
+    // P3：awaiting 时把待审批任务 id 列表写进镜像（刷新 / 重启后卡片可还原「待审批」态）。
+    ...(Array.isArray(st.awaitingTaskIds) && st.awaitingTaskIds.length
+      ? { awaiting: st.awaitingTaskIds }
+      : {})
   };
 }
 

@@ -79,10 +79,12 @@ export interface MirroredMsg {
   plan?: unknown;
   /** 计划模式：任务级执行进度镜像（服务端维护），恢复时还原卡片状态并支持续跑。 */
   planStatus?: {
-    status: 'running' | 'done' | 'failed' | 'cancelled';
+    status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
     currentTaskId?: string;
     failedTaskId?: string;
     done: string[];
+    /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+    awaiting?: string[];
   };
   /** 用户消息携带的附件（图片/文件预览）。随镜像落盘需在体积上限内（超大图不持久化）。 */
   attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
@@ -102,7 +104,7 @@ function sanitizePlanStatus(
   const o = v as Record<string, unknown>;
   const status = o.status;
   if (
-    (status !== 'running' && status !== 'done' && status !== 'failed' && status !== 'cancelled') ||
+    (status !== 'running' && status !== 'done' && status !== 'failed' && status !== 'cancelled' && status !== 'awaiting') ||
     !Array.isArray(o.done)
   ) {
     return {};
@@ -112,7 +114,10 @@ function sanitizePlanStatus(
       status,
       ...(typeof o.currentTaskId === 'string' ? { currentTaskId: o.currentTaskId } : {}),
       ...(typeof o.failedTaskId === 'string' ? { failedTaskId: o.failedTaskId } : {}),
-      done: o.done.filter((x): x is string => typeof x === 'string')
+      done: o.done.filter((x): x is string => typeof x === 'string'),
+      ...(Array.isArray(o.awaiting)
+        ? { awaiting: o.awaiting.filter((x): x is string => typeof x === 'string') }
+        : {})
     }
   };
 }

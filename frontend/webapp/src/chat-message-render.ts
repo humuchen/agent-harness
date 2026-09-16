@@ -69,6 +69,8 @@ export interface ChatRenderCtx {
   resumeLost: (id: string) => void;
   confirmPlan: (m: ChatMsg) => void;
   cancelPlan: (msgId: number) => void;
+  /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
+  approvePlan: (m: ChatMsg, stepId?: string) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
   requestUpdate: () => void;
   onComposerPointerDown: (e: PointerEvent) => void;
@@ -604,6 +606,8 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       ? '已完成'
       : st.status === 'failed'
       ? `执行失败 · ${st.failedTaskId ?? ''}`
+      : st.status === 'awaiting'
+      ? `待审批 · ${(st.awaitingTaskIds ?? []).join('、')}`
       : '已取消';
   return html`<div class="plan-card">
     <div class="plan-head">
@@ -615,16 +619,21 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         const done = !!st.done[t.id];
         const active = st.status === 'running' && st.currentTaskId === t.id;
         const failed = st.status === 'failed' && st.failedTaskId === t.id;
+        // P3：审批门任务标记（卡片显示 🔒）；awaiting 态下命中待审批列表的高亮。
+        const awaitingNode = st.status === 'awaiting' && (st.awaitingTaskIds ?? []).includes(t.id);
         return html`<li
           class="plan-task ${done ? 'done' : ''} ${active ? 'active' : ''} ${
           failed ? 'failed' : ''
-        }"
+        } ${awaitingNode ? 'awaiting' : ''}"
         >
           <div class="pt-head">
             <span class="pt-mark"
-              >${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span
+              >${done ? '✓' : active ? '⏳' : failed ? '✗' : awaitingNode ? '🔒' : i + 1}</span
             >
             <b>${escapeHtml(t.title)}</b>
+            ${t.requireApproval
+              ? html`<span class="pt-approval" title="执行前需人工批准">🔒 需审批</span>`
+              : nothing}
           </div>
           ${t.steps.length
             ? html`<ol class="pt-steps">
@@ -657,6 +666,15 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
           ${st.status === 'failed'
             ? html`<button class="plan-btn" @click=${() => ctx.confirmPlan(m)}>
                 从失败任务继续
+              </button>`
+            : nothing}
+          ${st.status === 'awaiting'
+            ? html`<button
+                class="plan-btn"
+                title="批准当前全部待审批节点并继续执行"
+                @click=${() => ctx.approvePlan(m)}
+              >
+                批准并继续
               </button>`
             : nothing}
           ${st.status !== 'pending'
@@ -702,8 +720,11 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
     running: '执行中',
     done: '已完成',
     failed: '失败',
-    pending: '待执行'
+    pending: '待执行',
+    awaiting: '待审批'
   };
+  // P3：审批门暂停 —— 顶部「批准并继续」（全部未决门）+ 每行 awaiting 节点的单节点批准。
+  const awaitingRows = rows.filter((r) => r.state === 'awaiting');
   return html`
     <ah-drawer
       ?open=${true}
@@ -733,6 +754,16 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
               >
               ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
             </div>
+            ${run.state === 'awaiting'
+              ? html`<div class="wf-replay-approve">
+                  <button class="plan-btn" @click=${() => ctx.approvePlan(m)}>
+                    批准并继续
+                  </button>
+                  <span class="wf-replay-approve-hint">
+                    将放行 ${awaitingRows.length} 个待审批节点后继续执行（检查点已记录，刷新 / 重启后仍可审批）
+                  </span>
+                </div>`
+              : nothing}
             <ol class="wf-replay-timeline">
               ${rows.map(
                 (r) =>
@@ -745,6 +776,16 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                         >${planWfReplayStateLabel(r.state)} · ${formatPlanWfDuration(r.durationMs)}</span
                       >
                     </div>
+                    ${r.state === 'awaiting'
+                      ? html`<div class="wf-replay-approve">
+                          <button
+                            class="plan-btn ghost"
+                            @click=${() => ctx.approvePlan(m, r.id)}
+                          >
+                            批准此节点
+                          </button>
+                        </div>`
+                      : nothing}
                     ${r.detail
                       ? html`<details class="wf-replay-detail">
                           <summary>产出 / 错误</summary>

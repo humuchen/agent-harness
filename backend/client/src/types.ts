@@ -173,10 +173,12 @@ export interface ChatMessage {
 
 /** 计划执行进度镜像（JSON 友好：done 用 id 数组而非对象）。 */
 export interface PlanExecMirror {
-  status: 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
   currentTaskId?: string;
   failedTaskId?: string;
   done: string[];
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaiting?: string[];
 }
 
 export interface ChatSession {
@@ -455,7 +457,7 @@ export interface A2ARequest {
 
 /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
 
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
 
 export interface StepDef {
   id: string;
@@ -466,6 +468,8 @@ export interface StepDef {
   dependsOn?: string[];
   /** 该 step 失败时逆序执行的补偿 step id。 */
   compensate?: string;
+  /** P3：执行前需人工批准（引擎暂停 run 进入 awaiting，审批放行后 resume 才执行）。 */
+  requireApproval?: boolean;
 }
 
 export interface WorkflowDef {
@@ -486,11 +490,13 @@ export interface StepRun {
 
 export interface WorkflowRun {
   def: WorkflowDef;
-  state: 'running' | 'done' | 'failed';
+  state: 'running' | 'done' | 'failed' | 'awaiting';
   steps: Record<string, StepRun>;
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  /** P3：已批准放行的 step id 列表（随检查点持久化，resume 时跳过审批门）。 */
+  approvals?: string[];
 }
 
 /** 工作流 SSE 事件。与 harness 事件同通道：wf:* 为编排事件；harness 事件以 { type:'harness', event } 包裹。 */
@@ -501,6 +507,8 @@ export type WorkflowEvent =
   | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
+  /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
+  | { type: 'wf:awaiting-approval'; workflowId: string; stepIds: string[]; run: WorkflowRun }
   | { type: 'wf:done'; workflowId: string; run: WorkflowRun }
   | { type: 'wf:failed'; workflowId: string; run: WorkflowRun }
   | { type: 'wf:error'; workflowId: string; error: string }

@@ -1,4 +1,11 @@
-import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from 'lit';
+import {
+  LitElement,
+  html,
+  css,
+  nothing,
+  type TemplateResult,
+  type PropertyValues
+} from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
@@ -96,11 +103,11 @@ const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
     { id: 'skill', label: '技能', short: '技能', group: 'ability' },
     { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
     { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
-    { id: 'verify', label: '自检', short: '验', group: 'observe' },
-    { id: 'env', label: '环境', short: '环', group: 'observe' },
+    { id: 'verify', label: '自检', short: '自检', group: 'observe' },
+    { id: 'env', label: '环境', short: '环境', group: 'observe' },
     { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
     { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
-    { id: 'plan', label: '计划', short: '计', group: 'use' }
+    { id: 'plan', label: '计划', short: '计划', group: 'use' }
   ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
@@ -296,7 +303,14 @@ export class AhApp extends LitElement {
   // P3-1: 品牌位配置
   brand: BrandConfig = BRAND_DEFAULT;
 
-  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, mobileShellCss, ptrCss];
+  static styles = [
+    sharedStyles,
+    navDotCss,
+    chatShellCss,
+    desktopShellCss,
+    mobileShellCss,
+    ptrCss
+  ];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
@@ -370,9 +384,11 @@ export class AhApp extends LitElement {
     // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组，
     // 或 { tab: 'chat', sessionId } 用于从工作台打开指定会话。
     this.addEventListener('ah-goto', (e) => {
-      const d = (e as CustomEvent<
-        string | { tab?: string; group?: string; sessionId?: string }
-      >).detail;
+      const d = (
+        e as CustomEvent<
+          string | { tab?: string; group?: string; sessionId?: string }
+        >
+      ).detail;
       if (!d) return;
       if (typeof d === 'string') {
         this.setTab(d);
@@ -581,7 +597,7 @@ export class AhApp extends LitElement {
         new CustomEvent('ah-select-session', {
           detail: sessionId,
           bubbles: true,
-          composed: true,
+          composed: true
         })
       );
     }
@@ -793,7 +809,8 @@ export class AhApp extends LitElement {
       void this.loadPluginViews();
       return;
     }
-    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void })
+      .refresh;
     if (typeof fn === 'function') {
       try {
         await fn.call(el);
@@ -820,7 +837,8 @@ export class AhApp extends LitElement {
       void this.loadPluginViews();
       return;
     }
-    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void })
+      .refresh;
     if (typeof fn === 'function') {
       try {
         await fn.call(el);

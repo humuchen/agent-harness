@@ -1832,15 +1832,21 @@ export class AhChat extends LitElement {
       }
       const doneMap: Record<string, boolean> = {};
       for (const tid of ps.done ?? []) doneMap[tid] = true;
+      // P3：awaiting = 合法暂停（审批门）—— 原样还原「待审批」态与待审批任务列表，
+      // 刷新 / 重启后卡片仍可点「批准并继续」放行（检查点 approvals 跨重启保留）。
+      const awaitingState = ps.status === 'awaiting';
       // running = 上次执行中断：保留已完成集合，但置 failed 等待用户显式继续。
-      const interrupted = ps.status === 'running';
+      const interrupted = !awaitingState && ps.status === 'running';
       this.planExec = {
         ...this.planExec,
         [m.id]: {
-          status: interrupted ? 'failed' : ps.status,
+          status: awaitingState ? 'awaiting' : interrupted ? 'failed' : ps.status,
           currentTaskId: interrupted ? ps.currentTaskId : undefined,
           failedTaskId: interrupted ? ps.currentTaskId : ps.failedTaskId,
-          done: doneMap
+          done: doneMap,
+          ...(awaitingState && Array.isArray(ps.awaiting)
+            ? { awaitingTaskIds: ps.awaiting }
+            : {})
         }
       };
     }
@@ -3345,6 +3351,9 @@ export class AhChat extends LitElement {
       resumeLost: (id: string) => void this.runRt.resumeLost(id),
       confirmPlan: (m: ChatMsg) => void this.confirmPlan(m),
       cancelPlan: (msgId: number) => this.cancelPlan(msgId),
+      // P3（人工审批门）：awaiting 态卡片「批准并继续」（全部未决门）/ 抽屉单节点批准。
+      approvePlan: (m: ChatMsg, stepId?: string) =>
+        void this.approvePlanAction(m, stepId),
       setTraceDrawer: (
         m: ChatMsg | null,
         section: 'trace' | 'insights' | 'confidence'
@@ -3460,6 +3469,21 @@ export class AhChat extends LitElement {
   }
 
   /**
+   * P3（人工审批门）：卡片 / 抽屉「批准并继续」入口。
+   * awaiting 态时经确定性检查点键 locatePlanWfId 走服务端 approve 路由；
+   * 非 awaiting 或 DAG 关闭时静默忽略（按钮本身仅在 awaiting 态渲染，此处是防御）。
+   */
+  private async approvePlanAction(m: ChatMsg, stepId?: string): Promise<void> {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    if (!st || st.status !== 'awaiting') return;
+    if (!isPlanDagEnabled()) return;
+    const wfId = derivePlanWfId(sid, m.plan);
+    await this.approvePlanViaWorkflow(m, st, sid, wfId, stepId);
+  }
+
+  /**
    * P3（多 agent DAG）：把确认后的 ExecutionPlan 发给服务端 DagEngine 并行执行，
    * 逐条消费 wf:step:* 事件驱动卡片状态机（applyPlanWfEvent），终态时把执行摘要
    * 回挂线程并落盘（产物回挂，见 design/plan-mode-multiagent.md §6 / R1）。
@@ -3499,7 +3523,7 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, false);
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'first');
     } finally {
       this.planWfAbort = null;
       this.streaming = { ...this.streaming, [sid]: false };
@@ -3542,7 +3566,57 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, true);
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'resume');
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * P3（人工审批门）：awaiting 态经服务端 POST /api/workflows/:id/approve 放行审批门。
+   * 把目标 stepId（或全部未决门）写入检查点 run.approvals 后触发 DagEngine.resume，
+   * 引擎跳过已放行的门继续执行；若计划还有下一道门，引擎再次暂停并下发
+   * wf:awaiting-approval —— 卡片收敛回「待审批」态，用户逐门放行直至 wf:done。
+   *
+   * 与 resumePlanViaWorkflow 的区别：kind='approve' —— 传输层异常保留 awaiting
+   * （不回退串行：串行路径无审批门，回落等于绕过用户审批决定）。
+   *
+   * @param stepId 指定时只放行该节点（抽屉里「批准此节点」）；缺省放行全部未决门
+   *               （卡片「批准并继续」）。
+   * @returns true = 审批流进入终态；false = 传输层异常，卡片保持「待审批」可重试。
+   */
+  private async approvePlanViaWorkflow(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    wfId: string,
+    stepId?: string
+  ): Promise<boolean> {
+    if (!m.plan) return false;
+    const taskIds = new Set(m.plan.tasks.map((t) => t.id));
+    const ac = new AbortController();
+    this.planWfAbort = ac;
+    this.streaming = { ...this.streaming, [sid]: true };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined } };
+    let terminal = false;
+    try {
+      const byok = await this.planWfByok();
+      const source: AsyncGenerator<unknown> = client.streamWorkflowApprove(
+        wfId,
+        {
+          stepId,
+          all: !stepId,
+          mode: this.mode,
+          ...byok,
+          sessionId: sid,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'approve');
     } finally {
       this.planWfAbort = null;
       this.streaming = { ...this.streaming, [sid]: false };
@@ -3592,7 +3666,7 @@ export class AhChat extends LitElement {
     taskIds: Set<string>,
     ac: AbortController,
     source: AsyncGenerator<unknown>,
-    resume: boolean
+    kind: 'first' | 'resume' | 'approve'
   ): Promise<boolean> {
     let terminal = false;
     try {
@@ -3619,13 +3693,26 @@ export class AhChat extends LitElement {
           // 此分支兜底「终态帧被 SSE 解析丢失」时仍能从 run 快照还原摘要）。
           const run = e.run;
           const s = this.planExec[m.id] ?? st;
-          if (run?.steps) this.appendPlanDagSummary(sid, m, run);
+          // P3：审批门暂停不是编排终态 —— run.state==='awaiting' 时不回挂完成摘要，
+          // 卡片收敛为「待审批」态（awaitingTaskIds 取自快照中 awaiting 的 step）。
+          const rs = run?.state;
+          const awaitingIds =
+            rs === 'awaiting'
+              ? Object.values(run?.steps ?? {})
+                  .filter((x) => x?.state === 'awaiting')
+                  .map((x) => x.id ?? '')
+                  .filter(Boolean)
+              : [];
+          if (run?.steps && rs !== 'awaiting') this.appendPlanDagSummary(sid, m, run);
           this.planExec = {
             ...this.planExec,
             [m.id]: {
               ...s,
-              status: run && run.state === 'done' ? 'done' : 'failed',
-              currentTaskId: undefined
+              status: rs === 'done' ? 'done' : rs === 'awaiting' ? 'awaiting' : 'failed',
+              currentTaskId: undefined,
+              ...(rs === 'awaiting' && awaitingIds.length
+                ? { awaitingTaskIds: awaitingIds }
+                : {})
             }
           };
           terminal = true;
@@ -3634,16 +3721,18 @@ export class AhChat extends LitElement {
         if (e.type === 'wf:error') {
           // 请求级失败（SSE 已开后服务端报错，如 402 无 Key / 检查点 400/404）：
           // 首跑重置可重入 pending（回退串行派发）；续跑保留 failed（回退串行 resume，
-          // 从失败任务重派发——done 集合不动，已完成产出保留）。
+          // 从失败任务重派发——done 集合不动，已完成产出保留）；
+          // P3 审批路径保留 awaiting（串行路径无审批门，回落等于绕过审批——宁可原地重试）。
           this.planExec = {
             ...this.planExec,
             [m.id]: {
               ...(this.planExec[m.id] ?? st),
-              status: resume ? 'failed' : 'pending',
+              status:
+                kind === 'first' ? 'pending' : kind === 'resume' ? 'failed' : 'awaiting',
               currentTaskId: undefined
             }
           };
-          terminal = !resume;
+          terminal = kind !== 'resume';
           break;
         }
       }
@@ -3685,7 +3774,20 @@ export class AhChat extends LitElement {
           }
         };
         terminal = true;
-      } else if (resume) {
+      } else if (kind === 'approve') {
+        // P3 审批路径传输层异常（404 检查点丢失 / 5xx / 断连）：保留 awaiting（done 集合不动），
+        // 不回退串行（串行无审批门，回落等于绕过审批）；terminal=false → 卡片保持「待审批」
+        // 可再次点「批准并继续」重试。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'awaiting',
+            currentTaskId: undefined
+          }
+        };
+        terminal = false;
+      } else if (kind === 'resume') {
         // 续跑传输层异常（404 无检查点 / 5xx / 断连）：不 toast 打扰（旧 run / 检查点
         // 丢失属可预期路径），保留 failed → 调用方回退串行 resume 兜底。
         this.planExec = {

@@ -23,6 +23,8 @@ export interface PlanTaskView {
   steps: string[];
   dependsOn: string[];
   expectedOutput: string;
+  /** P3：执行该任务前需用户人工批准（planner 对高风险任务标记；卡片以 🔒 呈现）。 */
+  requireApproval?: boolean;
 }
 export interface ExecutionPlanView {
   goal: string;
@@ -30,13 +32,15 @@ export interface ExecutionPlanView {
 }
 /** 计划执行状态（key 为携带计划的消息 id）。 */
 export interface PlanExecState {
-  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed' | 'awaiting';
   /** 正在执行的任务 id（running 时有效）。 */
   currentTaskId?: string;
   /** 失败的任务 id（failed 时有效）：恢复执行时从此任务重跑，已完成任务跳过。 */
   failedTaskId?: string;
   /** 已完成任务 id 集合。 */
   done: Record<string, boolean>;
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaitingTaskIds?: string[];
 }
 
 export interface ChatMsg {

@@ -54,6 +54,10 @@ export const planMode = css`
     background: rgba(248, 113, 113, 0.16);
     color: #f87171;
   }
+  .pill.awaiting {
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+  }
   .plan-btn {
     border: none;
     padding: 5px 14px;
@@ -138,6 +142,27 @@ export const planMode = css`
     background: rgba(248, 113, 113, 0.18);
     color: #f87171;
     border-color: transparent;
+  }
+  /* P3：待审批任务行（琥珀色高亮，与 pill.awaiting 同色系）。 */
+  .plan-task.awaiting {
+    background: rgba(251, 191, 36, 0.07);
+    border-radius: 8px;
+  }
+  .plan-task.awaiting .pt-mark {
+    background: rgba(251, 191, 36, 0.18);
+    color: #fbbf24;
+    border-color: transparent;
+  }
+  /* P3：任务标题旁的「🔒 需审批」徽章（requireApproval 任务静态标记）。 */
+  .pt-approval {
+    margin-left: 8px;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(251, 191, 36, 0.14);
+    color: #fbbf24;
+    vertical-align: middle;
+    white-space: nowrap;
   }
   .pt-steps {
     margin: 6px 0 0 30px;
@@ -228,6 +253,23 @@ export const planMode = css`
   }
   .wf-replay-row.done {
     border-color: rgba(52, 211, 153, 0.3);
+  }
+  /* P3：待审批行（琥珀色边框 + 底色）。 */
+  .wf-replay-row.awaiting {
+    border-color: rgba(251, 191, 36, 0.4);
+    background: rgba(251, 191, 36, 0.05);
+  }
+  /* P3：抽屉内「批准并继续 / 批准此节点」操作区。 */
+  .wf-replay-approve {
+    margin: 8px 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .wf-replay-approve-hint {
+    font-size: 12px;
+    color: var(--ah-muted, #94a3b8);
   }
   .wf-replay-row-head {
     display: flex;
