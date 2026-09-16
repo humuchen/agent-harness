@@ -95,54 +95,6 @@ export function nativeFilesystem(): NativeFilesystem | null {
   return fs;
 }
 
-/** 「默认工作空间路径」的本地存储键（设置中心读写，单一事实源）。 */
-export const WORKSPACE_PATH_KEY = 'ah:workspace-path';
-
-/** 默认工作空间目录名（拼接在用户主目录之后）。 */
-export const WORKSPACE_DIR_NAME = 'AgentHarness';
-
-/** 拼出带分隔符的路径片段，避免「C:/Users」之类的裸拼接。 */
-function joinPath(base: string, tail: string): string {
-  const sep = base.includes('\\') ? '\\' : '/';
-  const trimmed = base.replace(/[\\/]+$/, '');
-  return tail ? `${trimmed}${sep}${tail}` : trimmed;
-}
-
-/**
- * 推断「当前设备主目录」，用于拼出默认工作空间路径（如 /Users/huyang/AgentHarness）。
- * 浏览器无法直接读文件系统，故取**可确定**的环境信号：
- *  - Capacitor 原生壳：经 `@capacitor/filesystem` 的 `getAbsolutePath` 读 EXTERNAL_ROOT
- *    的绝对路径（Android /storage/emulated/0、iOS 为外部存储根，即用户主目录）；
- *  - 纯 Web / 插件缺失 / 推断失败：返回 null，由调用方显示占位符而非编造路径。
- * 推断结果缓存一次（异步，避免每次进设置页都重复读盘）。
- */
-let homeDirCache: string | null | undefined;
-async function inferHomeDir(): Promise<string | null> {
-  if (homeDirCache !== undefined) return homeDirCache;
-  const g = globalThis as unknown as {
-    Capacitor?: {
-      isNativePlatform?: () => boolean;
-      Plugins?: Record<string, { getAbsolutePath?: (opts: { path: string; directory: string }) => Promise<{ uri: string }> }>;
-    };
-  };
-  const cap = g.Capacitor;
-  if (cap?.isNativePlatform?.() && cap.Plugins?.Filesystem?.getAbsolutePath) {
-    try {
-      const { uri } = await cap.Plugins.Filesystem.getAbsolutePath({
-        path: '',
-        directory: 'EXTERNAL_ROOT'
-      });
-      homeDirCache = uri || null;
-      return homeDirCache;
-    } catch {
-      homeDirCache = null;
-      return null;
-    }
-  }
-  homeDirCache = null;
-  return homeDirCache;
-}
-
 /** 限时等待：超时或异常都返回 null，把「尽力而为」的语义显式化。 */
 function withTimeout<T>(
   p: Promise<T>,
@@ -421,40 +373,3 @@ export async function clearData(): Promise<ClearOutcome> {
   return { ran, bytes };
 }
 
-// ───────────────────────── 默认工作空间路径 ─────────────────────────
-
-/** 读取已保存的自定义工作空间路径（localStorage 不可用 / 未设置时返回 null）。 */
-export function getWorkspacePath(): string | null {
-  try {
-    return localStorage.getItem(WORKSPACE_PATH_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/** 保存自定义工作空间路径；传 null / 空串表示清除、回到默认。 */
-export function setWorkspacePath(path: string | null): void {
-  try {
-    if (path === null || path === '') {
-      localStorage.removeItem(WORKSPACE_PATH_KEY);
-    } else {
-      localStorage.setItem(WORKSPACE_PATH_KEY, path);
-    }
-  } catch {
-    /* 隐私模式下 localStorage 不可用：静默降级（设置「改完即生效」，不抛错） */
-  }
-}
-
-/**
- * 计算「默认工作空间」的展示路径（用户未自定义时显示在设置行里）：
- *  - 有已保存自定义值 → 直接返回它；
- *  - 原生壳：设备主目录（Capacitor Filesystem EXTERNAL_ROOT 绝对路径）+ /AgentHarness；
- *  - 纯 Web 且无法推断主目录 → 返回 null（UI 显示占位符，不编造路径）。
- */
-export async function resolveDefaultWorkspacePath(): Promise<string | null> {
-  const custom = getWorkspacePath();
-  if (custom) return custom;
-  const home = await inferHomeDir();
-  if (!home) return null;
-  return joinPath(home, WORKSPACE_DIR_NAME);
-}

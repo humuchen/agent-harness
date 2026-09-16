@@ -761,7 +761,6 @@ export const composer = css`
     background: var(--ah-accent, #2997ff);
     color: #fff;
     border: none;
-    border-radius: 9px;
     padding: 8px 14px;
     font-size: 13px;
     cursor: pointer;
@@ -770,7 +769,6 @@ export const composer = css`
     background: transparent;
     border: 1px solid var(--ah-border);
     color: var(--ah-text);
-    border-radius: 9px;
     padding: 8px 14px;
     font-size: 13px;
     cursor: pointer;

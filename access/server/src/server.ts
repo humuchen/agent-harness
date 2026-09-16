@@ -2232,7 +2232,11 @@ const server = createServer(
                   if (!closed) send({ type: 'harness', event: e });
                 },
               }),
-              onEvent: (e: unknown) => { if (!closed) send(e); },
+              onEvent: (e: unknown) => {
+                // 断点续跑同样产生 wf:step:failed / wf:done / wf:failed → 节点级审计对齐（见 auditWfEvent）。
+                if (e && typeof e === 'object' && 'type' in e) auditWfEvent(e as WorkflowEvent, ctx);
+                if (!closed) send(e);
+              },
             });
             const run = await engine.resume(workflowId);
             if (!closed) send({ type: '_wf_done', workflowId, run });
@@ -4608,6 +4612,48 @@ async function handleAgentDeregister(
  * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
  * 每个 step 经 createWorkflowExecutor 复用 /api/run 同一套 assembleAgent + harness 装配。
  */
+
+/**
+ * 工作流 SSE 事件的节点级审计（P3 可观测补强，配 WORKFLOW_STORE_DIR 检查点落盘）：
+ * - wf:step:failed → `workflow.step.failed`（stepId + 错误摘要，500 字符截断防超大堆栈刷屏）；
+ * - wf:done / wf:failed → `workflow.done` / `workflow.failed`（run 快照：各节点状态分布 +
+ *   根因 error + 总耗时 durationMs，来自 run.startedAt/finishedAt）。
+ * wf:step:start / wf:step:done / wf:compensate:* 与嵌套 harness 事件**不**进 stdout 审计——
+ * 逐节点全量 input/output/error/时间戳已在 FileWorkflowStore 检查点（WORKFLOW_STORE_DIR）里，
+ * stdout 审计只记「哪步失败 / 结果与耗时」，供 Render 服务日志事后回溯（对应 audit 面板查不到
+ * 节点级明细的缺口）。审计不依赖连接是否已关：即便 SSE 客户端先断（!closed），也照记。
+ */
+function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
+  if (e.type === 'wf:step:failed') {
+    auditAction('workflow.step.failed', {
+      workflowId: e.workflowId,
+      stepId: e.stepId,
+      role: ctx.role,
+      sub: ctx.sub,
+      error: String(e.error).slice(0, 500)
+    });
+    return;
+  }
+  if (e.type === 'wf:done' || e.type === 'wf:failed') {
+    const run = e.run;
+    const stepStates = Object.entries(run?.steps ?? {})
+      .map(([id, s]) => `${id}=${s.state}`)
+      .join(' ');
+    const durationMs =
+      run?.startedAt && run?.finishedAt ? run.finishedAt - run.startedAt : undefined;
+    auditAction(e.type === 'wf:done' ? 'workflow.done' : 'workflow.failed', {
+      workflowId: e.workflowId,
+      runId: e.runId,
+      state: run?.state,
+      stepStates,
+      durationMs,
+      ...(run?.error ? { error: String(run.error).slice(0, 500) } : {}),
+      role: ctx.role,
+      sub: ctx.sub
+    });
+  }
+}
+
 async function handleWorkflow(
   req: IncomingMessage,
   res: ServerResponse
@@ -4689,6 +4735,9 @@ async function handleWorkflow(
     if (!closed) send({ type: 'harness', event: e });
   };
   const onWfEvent = (e: WorkflowEvent) => {
+    // 节点级审计（独立于 SSE 连接状态）：step 失败 / run 终态 → stdout 审计日志（见 auditWfEvent）；
+    // 逐节点全量明细（input/output/error/时间戳）由 FileWorkflowStore 检查点落盘（WORKFLOW_STORE_DIR）。
+    auditWfEvent(e, ctx);
     if (!closed) send(e);
   };
   const executor = createWorkflowExecutor({ onEvent: onHarnessEvent, mode });

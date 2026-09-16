@@ -84,6 +84,13 @@ services:
         value: file
       - key: MEMORY_DIR
         value: /app/data/memory
+      # 工作流（DAG）检查点存储：FileWorkflowStore 每 workflow 一个 JSON 文件落盘，
+      # 保留节点级 output / error / startedAt / finishedAt（见 backend/core/src/workflow/store.ts）。
+      # 不配则用进程内 VolatileWorkflowStore —— 重启 / 闲置回收后检查点全丢，
+      # 断点续跑（POST /api/workflows/:id/resume）与快照查询（GET /api/workflows/:id）无数据可读。
+      # 挂在持久卷（disks → /app/data）下可跨重启保留；free 盘部署重置仍会清空（同 MEMORY_DIR 语义）。
+      - key: WORKFLOW_STORE_DIR
+        value: /app/data/workflows
       # 外部 MCP 服务清单（多 server 声明式，启动时自动接入）：
       #   rag（stdio，本仓库 RAG 服务）/ context7（远程，免 key）/
       #   filesystem / fetch / memory / excel（stdio，npx 拉起）。
