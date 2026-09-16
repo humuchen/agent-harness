@@ -135,6 +135,19 @@ export class AhModelPicker extends LitElement {
           height: 0;
         }
       }
+      /* 断点扩展到 760px（与 app 壳移动断点一致）：上方 600px 块之外，
+         601–760px（Android 大机型）的弹层滚动容器仍会显示滚动条，此处补齐。 */
+      @media (max-width: 760px), (pointer: coarse) {
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      }
       /* 厂商徽标 */
       .vlogo {
         width: 20px;

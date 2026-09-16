@@ -663,6 +663,19 @@ export class AhComposerPlus extends LitElement {
         height: 0;
       }
     }
+    /* 断点扩展到 760px（与 app 壳移动断点一致）：.agent-list / .skill-list 等
+       弹层滚动容器在 601–760px（Android 大机型）仍会显示滚动条，补齐。 */
+    @media (max-width: 760px), (pointer: coarse) {
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+    }
   `] as CSSResultGroup;
 
   /** 可选智能体列表（由宿主持有）。 */

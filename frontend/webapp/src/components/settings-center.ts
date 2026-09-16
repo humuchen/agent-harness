@@ -615,15 +615,24 @@ export class AhSettingsCenter extends LitElement {
        列数取 --set-groups（= 分组数，由 connectedCallback 写入），
        避免「分组增删、这里的列数忘了同步」把网格空出一格或挤出第二行。 */
       @media (max-width: 760px) {
+        /* 移动端：host 撑满 drawer .body 可视区（100%），
+           使 .setwin 占满剩余高度、.pane 内部滚动，
+           从而 .head 天然固定在视口内，不随 .body 整体滚动带走。 */
+        :host {
+          height: 100%;
+        }
         .setwin {
           border-radius: 14px;
+          height: 100%;
         }
-        /* 内容区滚动时头部 Tab 固定：.head 钉在滚动容器顶部，
+        /* .head 固定：.pane 内部滚动（overflow-y:auto）时，
+           .head 在 .setwin 顶部 flex:0 0 auto，始终可见，
            补背景色遮住下方滚过的内容。 */
         .head {
           position: sticky;
           top: 0;
           z-index: 2;
+          flex: 0 0 auto;
           background: var(--ah-surface-1);
           padding: 10px 0 8px;
         }
@@ -743,6 +752,17 @@ export class AhSettingsCenter extends LitElement {
           flex: 1 1 0;
           padding: 8px 6px;
           text-align: center;
+        }
+        /* 移动端隐藏滚动条（保留 .pane 可滚动）：本组件未引入 sharedStyles，
+           不受 base.ts 的 ≤760px 隐藏块约束，必须自带；断点与 app 壳一致。 */
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
         }
       }
 

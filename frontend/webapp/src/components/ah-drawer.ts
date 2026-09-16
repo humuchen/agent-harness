@@ -264,6 +264,19 @@ export class AhDrawer extends LitElement {
         height: 0;
       }
     }
+    /* 断点扩展到 760px（与 app 壳移动断点一致）：抽屉 .panel 在 601–760px
+       （Android 大机型）仍会显示滚动条，补齐。 */
+    @media (max-width: 760px), (pointer: coarse) {
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+    }
 
     /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
        实现真正整页覆盖；同时去除圆角与边框，贴合「整屏抽屉」语义。 */
