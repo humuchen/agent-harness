@@ -10,7 +10,21 @@ const config: CapacitorConfig = {
     url: process.env.AH_API_URL || 'https://agent-harness-86h5.onrender.com',
     androidScheme: 'https',
     iosScheme: 'https',
-    allowNavigation: ['agent-harness-86h5.onrender.com']
+    // allowNavigation 白名单：Capacitor Android 的 Bridge.launchIntent()（所有
+    // shouldOverrideUrlLoading 跳转都走这里）会拦截 app 域与白名单外的导航，
+    // 触发 Intent.ACTION_VIEW 把页面甩到系统外部浏览器（Chrome）——cookie 存储
+    // 是隔离的，外部浏览器里拿不到 WebView 内 Set-Cookie 的 ah_oauth_state，
+    // GitHub/Google OAuth 回调就会报「OAuth state 校验失败（CSRF/过期）」。
+    // 因此必须把第三方授权页域（github.com / accounts.google.com）加入白名单，
+    // 让整条 OAuth 链路（授权 → 登录 → 回跳 callback）都留在 APP 的 WebView 内完成，
+    // 同一 cookie 存储里 state cookie 才能被回调请求读到。
+    // 注意：allowNavigation 是精确主机匹配（HostMask），需列出授权页实际会访问的域；
+    // 若日后新增其他第三方登录，须同步扩展此列表。
+    allowNavigation: [
+      'agent-harness-86h5.onrender.com',
+      'github.com',
+      'accounts.google.com'
+    ]
   },
   plugins: {
     PushNotifications: {

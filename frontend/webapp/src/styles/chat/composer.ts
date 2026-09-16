@@ -112,7 +112,7 @@ export const composer = css`
   .composer-footer-right {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 10px;
     flex: 0 0 auto;
   }
   /* 深度思考 / 联网搜索 快捷开关图标（激活态 accent 高亮） */
