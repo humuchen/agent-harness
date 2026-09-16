@@ -19,6 +19,12 @@ import { authedFetch } from './api';
 import { sharedStyles } from './styles';
 import { notify } from './components/ah-notification';
 import { notifyError } from './utils/errors';
+import {
+  PLAN_COLUMNS,
+  PLAN_COLUMN_LABELS,
+  groupNodesByStatus,
+  planProgress
+} from './plan-board-utils';
 
 export type PlanNodeStatus = 'todo' | 'doing' | 'done' | 'blocked';
 
@@ -79,13 +85,10 @@ const STATUS_ICON: Record<PlanNodeStatus, string> = {
   blocked: '⛔'
 };
 
-const COLUMN_LABELS: Record<PlanNodeStatus, string> = {
-  todo: '待办',
-  doing: '进行中',
-  done: '已完成',
-  blocked: '阻塞'
-};
-const COLUMNS: PlanNodeStatus[] = ['todo', 'doing', 'done', 'blocked'];
+/**
+ * 泳道列序 / 标签 / 分组 / 完成度统一由 plan-board-utils 提供
+ * （桌面横向列序与移动端纵向分区序必须一致，故不在此处重复定义）。
+ */
 
 @customElement('ah-plan-board')
 export class AhPlanBoard extends LitElement {
@@ -179,6 +182,38 @@ export class AhPlanBoard extends LitElement {
       font-size: 12px;
       color: var(--ah-text-muted);
     }
+    /* 进度摘要：桌面藏在样式里（表头一行已够紧凑），窄屏才显示 —— 见文件末尾
+       移动端媒体查询。用 display 而非条件渲染，保证桌面 DOM 与历史完全一致。 */
+    .plan-progress {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--ah-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .plan-progress .pp-bar {
+      flex: 1 1 auto;
+      min-width: 60px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--ah-surface-3);
+      overflow: hidden;
+    }
+    .plan-progress .pp-bar i {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--ah-accent);
+    }
+    /* 空泳道占位文案：桌面固定列宽本身已表达「空」，窄屏才需要文案说明 */
+    .column-empty {
+      display: none;
+    }
+    /* 卡片内的状态选择器：桌面有拖拽，隐藏；触摸端拖拽不生效，窄屏改由它承担 */
+    .move-row {
+      display: none;
+    }
     .diff-view {
       padding: 16px;
     }
@@ -254,6 +289,117 @@ export class AhPlanBoard extends LitElement {
     }
     .btn-new:hover {
       opacity: 0.85;
+    }
+
+    /* ------------------- 移动端（≤760px）-------------------
+       桌面是「横向四列泳道」，窄屏下这套布局会退化成：列宽 4×280px + 间隙
+       ≫ 视口宽，且 .board 默认 align-items:stretch 会把每个列拉到「最高列」
+       的高度 —— 于是首屏只看到一整屏高、内容为空的「待办」列，真实任务全部
+       躺在屏外（必须横滑才可能发现）。以下五条按此逐项修正。 */
+    @media (max-width: 760px) {
+      /* ① 解除 responsive.ts 给所有共享样式组件注入的 min-height:100dvh。
+         它会让本组件永远至少撑满一屏；再叠加 ② 的列高拉伸，空列就成了整屏空白。 */
+      :host {
+        height: auto;
+        min-height: 0;
+        overflow: visible;
+      }
+
+      /* ② 表头改纵向：窄屏下「标题 + v22 · 最后更新:xxx」挤在一行，标题被压成
+         三行、版本号被切成两行。纵向排列后各占整行，摘要条也能完整展示。
+         左右内边距归零 —— 外层 .content 在窄屏已有 14px，叠加会白扔 28px 宽度。 */
+      .header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 0 0 12px;
+      }
+      .header h2 {
+        font-size: 15px;
+        line-height: 1.45;
+      }
+      .header .version {
+        font-size: 11px;
+      }
+      .plan-progress {
+        display: flex;
+      }
+
+      /* ③ 泳道由横向四列改为纵向四分区：无横向滚动，与 .content 的文档流滚动
+         同向，四个泳道一次可见（不再需要「横滑探索」）。 */
+      .board {
+        flex-direction: column;
+        gap: 12px;
+        height: auto;
+        padding: 0 0 8px;
+        overflow: visible;
+      }
+      .column {
+        flex: none;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      /* ④ 空泳道收拢成「标题 + 暂无任务」一行，不再占据整屏 */
+      .column.is-empty {
+        padding: 10px 12px 12px;
+      }
+      .column-empty {
+        display: block;
+        padding-top: 2px;
+        font-size: 12px;
+        color: var(--ah-text-faint);
+      }
+
+      /* ⑤ 触摸端没有 HTML5 dragstart，卡片内补一个显式状态选择器；
+         同时把卡片内边距加大到触摸友好的尺寸。 */
+      .node-card {
+        padding: 12px;
+        cursor: default;
+      }
+      .move-row {
+        display: flex;
+        /* base.ts 的全局 label 是 column 布局，此处必须显式改回 row，
+           否则「状态」二字会独占一行把选择器挤到下一行。 */
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        margin-top: 8px;
+        font-size: 11px;
+      }
+      .move-row > span {
+        flex: 0 0 auto;
+      }
+      .move-row select {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      /* 计划列表态：条目原为「标题 + 进度 + 版本」一行三列，窄屏下标题会被挤成
+         省略号。改为标题独占一行（最多两行），元信息换行到第二行。 */
+      .list {
+        padding: 0 0 8px;
+      }
+      .list-item {
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        padding: 12px;
+      }
+      .list-item .li-title {
+        flex: 1 1 100%;
+        white-space: normal;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+
+      /* 加载 / 错误 / 空态：窄屏不需要 48px 内边距 */
+      .empty {
+        padding: 32px 12px;
+      }
     }
   `];
 
@@ -437,11 +583,21 @@ export class AhPlanBoard extends LitElement {
   }
 
   private async onDrop(status: PlanNodeStatus) {
-    if (!this.dragNode || !this.plan) return;
-    const updated: PlanNode = { ...this.dragNode, status };
-    const nodes = this.plan.nodes.map((n) =>
-      n.id === this.dragNode!.id ? updated : n
-    );
+    const node = this.dragNode;
+    this.dragNode = null;
+    if (node) await this.moveNode(node, status);
+  }
+
+  /**
+   * 把节点移动到目标泳道并落盘（桌面拖拽与移动端状态选择器共用同一路径，
+   * 避免两套实现各写一遍乐观更新 / 版本号自增）。
+   */
+  private async moveNode(node: PlanNode, status: PlanNodeStatus) {
+    if (!this.plan) return;
+    // 原地「移动」不做任何事：否则会白白自增版本号并触发一次无意义的写盘。
+    if (node.status === status) return;
+    const updated: PlanNode = { ...node, status };
+    const nodes = this.plan.nodes.map((n) => (n.id === node.id ? updated : n));
     const updatedPlan: PlanDoc = {
       ...this.plan,
       nodes,
@@ -461,8 +617,6 @@ export class AhPlanBoard extends LitElement {
       notify.success('节点已更新', { key: 'plan-drop' });
     } catch (e) {
       notifyError(e, { fallback: '保存节点失败' });
-    } finally {
-      this.dragNode = null;
     }
   }
 
@@ -580,42 +734,75 @@ export class AhPlanBoard extends LitElement {
     }
     if (!this.plan) return nothing;
 
+    const plan = this.plan;
+    const grouped = groupNodesByStatus(plan.nodes);
+    const progress = planProgress(plan.nodes);
+
     return html`
       <div class="header">
-        <h2>${this.plan.title}</h2>
-        <span class="version">v${this.plan.version} · 最后更新: ${this.plan.updatedBy}</span>
+        <h2>${plan.title}</h2>
+        <span class="version">v${plan.version} · 最后更新: ${plan.updatedBy}</span>
+        <div
+          class="plan-progress"
+          role="img"
+          aria-label="已完成 ${progress.done} / ${progress.total} 个任务"
+        >
+          <span>已完成 ${progress.done}/${progress.total}</span>
+          <span class="pp-bar"><i style="width:${progress.percent}%"></i></span>
+          <span>${progress.percent}%</span>
+        </div>
       </div>
       <div class="board">
-        ${COLUMNS.map((col) => html`
-          <div class="column" @dragover=${(e: DragEvent) => e.preventDefault()} @drop=${() => this.onDrop(col)}>
-            <div class="column-header">
-              ${COLUMN_LABELS[col]}
-              <span class="count">${this.plan!.nodes.filter((n) => n.status === col).length}</span>
+        ${PLAN_COLUMNS.map((col) => {
+          const items = grouped[col];
+          return html`
+            <div
+              class="column ${items.length === 0 ? 'is-empty' : ''}"
+              @dragover=${(e: DragEvent) => e.preventDefault()}
+              @drop=${() => this.onDrop(col)}
+            >
+              <div class="column-header">
+                ${PLAN_COLUMN_LABELS[col]}
+                <span class="count">${items.length}</span>
+              </div>
+              ${items.length === 0
+                ? html`<div class="column-empty">暂无任务</div>`
+                : items.map((node) => html`
+                    <div class="node-card" draggable="true" @dragstart=${() => this.onDragStart(node)}>
+                      <div class="node-title">${node.title}</div>
+                      <div class="node-meta">
+                        ${node.assignee
+                          ? html`<span class="node-assignee">@${node.assignee}</span>`
+                          : ''}
+                        ${node.dependsOn.length > 0
+                          ? html`<span class="dep-chip">依赖 ${node.dependsOn.length}</span>`
+                          : ''}
+                      </div>
+                      ${node.comments && node.comments.length > 0
+                        ? html`<div class="node-meta">
+                            <span class="dep-chip">💬 ${node.comments.length}</span>
+                          </div>`
+                        : ''}
+                      <!-- 触摸端无 HTML5 拖拽，改由本选择器移动节点（桌面 CSS 隐藏） -->
+                      <label class="move-row">
+                        <span>状态</span>
+                        <select
+                          aria-label="调整「${node.title}」的状态"
+                          @change=${(e: Event) =>
+                            void this.moveNode(node, (e.target as HTMLSelectElement).value as PlanNodeStatus)}
+                        >
+                          ${PLAN_COLUMNS.map(
+                            (s) => html`<option value=${s} ?selected=${s === node.status}>
+                              ${PLAN_COLUMN_LABELS[s]}
+                            </option>`
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                  `)}
             </div>
-            ${this.plan!.nodes
-              .filter((n) => n.status === col)
-              .map((node) => html`
-                <div class="node-card"
-                     draggable="true"
-                     @dragstart=${() => this.onDragStart(node)}>
-                  <div class="node-title">${node.title}</div>
-                  <div class="node-meta">
-                    ${node.assignee
-                      ? html`<span class="node-assignee">@${node.assignee}</span>`
-                      : ''}
-                    ${node.dependsOn.length > 0
-                      ? html`<span class="dep-chip">依赖 ${node.dependsOn.length}</span>`
-                      : ''}
-                  </div>
-                  ${node.comments && node.comments.length > 0
-                    ? html`<div class="node-meta">
-                        <span class="dep-chip">💬 ${node.comments.length}</span>
-                      </div>`
-                    : ''}
-                </div>
-              `)}
-          </div>
-        `)}
+          `;
+        })}
       </div>
     `;
   }
