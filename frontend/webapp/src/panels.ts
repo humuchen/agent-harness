@@ -297,7 +297,9 @@ export class AhMcp extends LitElement {
     // 先取名字（重置表单前），避免「未命名」误报。
     const addedName = this.addForm.name.trim() || '未命名';
     const envEntries = Object.entries(this.addForm.envs).filter(([k]) => k);
-    const headerEntries = Object.entries(this.addForm.headers).filter(([k]) => k);
+    const headerEntries = Object.entries(this.addForm.headers).filter(
+      ([k]) => k
+    );
     try {
       if (this.addForm.type === 'http') {
         await client.addMcpServer({
@@ -432,30 +434,30 @@ export class AhMcp extends LitElement {
               </div>
               ${af.type === 'http'
                 ? html`<label class="grow"
-                    >URL<input
-                      .value=${af.url}
-                      @input=${(e: Event) =>
-                        (this.addForm = {
-                          ...this.addForm,
-                          url: (e.target as HTMLInputElement).value
-                        })}
-                      placeholder="https://..."
-                  /></label>
-                  <label class="grow"
-                    >传输类型<select
-                      .value=${af.transportType}
-                      @change=${(e: Event) =>
-                        (this.addForm = {
-                          ...this.addForm,
-                          transportType: (e.target as HTMLSelectElement)
-                            .value as 'auto' | 'sse' | 'streamable-http'
-                        })}
-                    >
-                      <option value="auto">自动探测</option>
-                      <option value="sse">SSE</option>
-                      <option value="streamable-http">Streamable HTTP</option>
-                    </select></label
-                  >`
+                      >URL<input
+                        .value=${af.url}
+                        @input=${(e: Event) =>
+                          (this.addForm = {
+                            ...this.addForm,
+                            url: (e.target as HTMLInputElement).value
+                          })}
+                        placeholder="https://..."
+                    /></label>
+                    <label class="grow"
+                      >传输类型<select
+                        .value=${af.transportType}
+                        @change=${(e: Event) =>
+                          (this.addForm = {
+                            ...this.addForm,
+                            transportType: (e.target as HTMLSelectElement)
+                              .value as 'auto' | 'sse' | 'streamable-http'
+                          })}
+                      >
+                        <option value="auto">自动探测</option>
+                        <option value="sse">SSE</option>
+                        <option value="streamable-http">Streamable HTTP</option>
+                      </select></label
+                    >`
                 : html`<label class="grow"
                     >Command<input
                       .value=${af.command}
@@ -535,7 +537,9 @@ export class AhMcp extends LitElement {
                   </div>`
                 : nothing}
               ${af.type === 'http'
-                ? html`<div class="section-sub">自定义请求头（如鉴权 Bearer）</div>
+                ? html`<div class="section-sub">
+                      自定义请求头（如鉴权 Bearer）
+                    </div>
                     ${Object.keys(af.headers).length > 0
                       ? html`<div class="env-list">
                           ${Object.entries(af.headers).map(
@@ -604,7 +608,10 @@ export class AhMcp extends LitElement {
                 <button @click=${() => this.add()} ?disabled=${this.adding}>
                   ${this.adding ? '连接中...' : '添加'}
                 </button>
-                <button class="ghost" @click=${() => this.refresh()}>
+                <button
+                  class="ghost refresh-btn"
+                  @click=${() => this.refresh()}
+                >
                   刷新
                 </button>
               </div>

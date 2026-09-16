@@ -172,7 +172,7 @@ export class AhAudit extends LitElement {
                 : nothing}
             </div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>
+          <button class="ghost refresh-btn" @click=${() => this.refresh()}>
             ${this.loading ? '加载中…' : '刷新'}
           </button>
         </div>

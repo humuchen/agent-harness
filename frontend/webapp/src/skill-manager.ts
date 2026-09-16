@@ -204,7 +204,9 @@ export class AhSkills extends LitElement {
             <div class="section-title" style="margin:0">技能管理</div>
             <div class="muted-sm">启停企业 Agent 平台的技能目录</div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+          <button class="ghost refresh-btn" @click=${() => this.refresh()}>
+            刷新
+          </button>
         </div>
         <div class="grid">${this.items.map((s) => this.renderSkill(s))}</div>
       </section>

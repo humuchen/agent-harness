@@ -672,11 +672,7 @@ export const composer = css`
     box-sizing: border-box;
   }
   .fe-input:focus {
-    border-color: color-mix(
-      in srgb,
-      var(--ah-accent, #2997ff) 45%,
-      var(--ah-border)
-    );
+    border-color: var(--ah-accent, #2997ff);
   }
 
   /* 图片预览 Lightbox */

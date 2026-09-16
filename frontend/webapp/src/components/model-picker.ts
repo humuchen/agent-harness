@@ -224,7 +224,7 @@ export class AhModelPicker extends LitElement {
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 7px 12px;
+        padding: 0 12px;
         cursor: pointer;
         user-select: none;
       }
