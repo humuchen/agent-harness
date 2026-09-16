@@ -484,6 +484,87 @@ export class AgentClient {
       yield ev as WorkflowEvent;
     }
   }
+
+  /**
+   * 以 Plan 模式的结构化执行计划（ExecutionPlan）驱动多 agent DAG 执行（P3，plan 来源）。
+   * 服务端 handleWorkflow 接收 { plan, agentRef?, mode? }：经 planToWorkflowDef 生成
+   * WorkflowDef 后按拓扑波次并行执行，下游 step 经共享黑板取上游真实产出
+   * （见 docs/design/plan-mode-multiagent.md §4/§5/§6）。
+   * 事件通道与 streamWorkflow 相同（wf:* 编排事件 + 嵌套 harness 事件 + _wf_done / wf:error 终结帧）。
+   * @param plan ExecutionPlan（client 不依赖 core，按 unknown 结构透传，由服务端收敛校验）
+   * @param opts.agentRef 每个 task 默认使用的 agent id（缺省服务端回落 DEFAULT_AGENT_ID）
+   * @param opts.mode 运行模式（与当前聊天会话一致；缺省服务端回落 mock）
+   */
+  async *streamWorkflowFromPlan(
+    plan: unknown,
+    opts: {
+      agentRef?: string;
+      mode?: RunMode;
+      /** BYOK 模型名（对齐 /api/run 的 model 字段）：服务端据此解析用户 provider Key。 */
+      model?: string;
+      /** 自定义模型专属端点 base URL（对齐 /api/run 的 modelBaseUrl）。 */
+      modelBaseUrl?: string;
+      /** 自定义模型专属 API Key（AES-GCM 加密传输，服务端 decryptApiKey，对齐 /api/run）。 */
+      modelApiKey?: string;
+      /** 所选模型官方上下文窗口（token），对齐 /api/run 的 ctxWindow。 */
+      ctxWindow?: number;
+      /** 联网搜索开关，对齐 /api/run 的 web（缺省 false 不出网）。 */
+      web?: boolean;
+      /**
+       * P2-3：来源聊天会话 id（= 计划文档落库键 `plan:<sessionId>`）。
+       * 携带后服务端把 DAG 执行进度同步到 PlanStore 节点状态（看板实时刷新）；
+       * 缺省则服务端跳过计划同步（纯 def 工作流不受影响）。
+       */
+      sessionId?: string;
+      signal?: AbortSignal;
+    } = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const body: Record<string, unknown> = { plan };
+    if (opts.agentRef) body.agentRef = opts.agentRef;
+    if (opts.mode) body.mode = opts.mode;
+    // BYOK 透传（t1 根因修复）：DAG 路径此前不带任何模型/凭据字段，服务端 real 模式
+    // 无 Key 可用 → 首 step LLM 调用即失败。现在与 /api/run 同构：服务端按 owner 解析
+    // （provider Keys 主链路 / 自定义模型 / 请求自带 Key），明文仅在执行期内存中使用。
+    if (opts.model) body.model = opts.model;
+    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
+    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
+    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
+    if (opts.web) body.web = true;
+    if (opts.sessionId) body.sessionId = opts.sessionId;
+    const res = await this.request('/api/v1/workflows', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
+
+  /**
+   * 从断点续跑某次 plan/workflow 执行（P3：计划卡片「从失败任务继续」的 DAG 回退路径）。
+   * 对应服务端 POST /api/workflows/:id/resume（检查点存于 WorkflowStore）。
+   */
+  async *streamWorkflowResume(
+    id: string,
+    opts: SseOptions = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', signal: opts.signal }
+    );
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
 }
 
 export type { RunMode, EnvHandle };

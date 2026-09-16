@@ -316,7 +316,7 @@ export class AhWorkspace extends LitElement {
       .slice(0, RECENT_LIMIT);
 
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="ws-head">
           <div>
             <div class="ws-title">工作台</div>

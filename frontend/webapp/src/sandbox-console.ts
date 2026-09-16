@@ -1,7 +1,7 @@
 /**
- * 浏览器沙箱控制台（ah-sandbox）。
+ * 沙箱控制台（ah-sandbox）。
  *
- * 管理 Agent 可用的受控浏览器会话：创建 / 列举 / 销毁。
+ * 管理 Agent 可用的受控会话：创建 / 列举 / 销毁。
  * 数据来自后端 `browser-sandbox.ts`（会话管理器），通过
  * `GET /api/sandbox/sessions` 与 `POST|DELETE /api/sandbox/sessions[/<id>]` 交互。
  *
@@ -146,7 +146,7 @@ export class AhSandbox extends LitElement {
         text-align: center;
         color: var(--ah-text-muted);
       }
-    `,
+    `
   ];
 
   @state() items: SandboxSession[] = [];
@@ -169,7 +169,7 @@ export class AhSandbox extends LitElement {
       const data = (await res.json()) as SessionList;
       this.items = data.items ?? [];
     } catch (e: any) {
-      notifyError(e, { title: '浏览器沙箱', key: 'sandbox' });
+      notifyError(e, { title: '沙箱', key: 'sandbox' });
       this.items = [];
     } finally {
       this.loading = false;
@@ -215,11 +215,11 @@ export class AhSandbox extends LitElement {
   render() {
     if (this.loading) return html`<div class="muted">加载中…</div>`;
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
-            <div class="section-title" style="margin:0">浏览器沙箱</div>
-            <div class="muted-sm">受控浏览器会话 · 创建 / 列举 / 销毁</div>
+            <div class="section-title" style="margin:0">沙箱</div>
+            <div class="muted-sm">受控会话 · 创建 / 列举 / 销毁</div>
           </div>
           <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
@@ -229,17 +229,24 @@ export class AhSandbox extends LitElement {
             type="text"
             placeholder="目标 URL（可留空 → about:blank）"
             .value=${this.targetUrl}
-            @input=${(e: Event) => (this.targetUrl = (e.target as HTMLInputElement).value)}
+            @input=${(e: Event) =>
+              (this.targetUrl = (e.target as HTMLInputElement).value)}
             @keydown=${(e: KeyboardEvent) => {
               if (e.key === 'Enter') void this.createSession();
             }}
           />
-          <button class="primary" ?disabled=${this.busy} @click=${() => this.createSession()}>
+          <button
+            class="primary"
+            ?disabled=${this.busy}
+            @click=${() => this.createSession()}
+          >
             创建会话
           </button>
         </div>
         ${this.items.length === 0
-          ? html`<div class="empty">暂无沙箱会话，输入目标 URL 后点击「创建会话」。</div>`
+          ? html`<div class="empty">
+              暂无沙箱会话，输入目标 URL 后点击「创建会话」。
+            </div>`
           : html`<ul class="sessions">
               ${this.items.map(
                 (s) => html`
@@ -249,8 +256,13 @@ export class AhSandbox extends LitElement {
                     <span class="url" title=${s.targetUrl ?? 'about:blank'}
                       >${s.targetUrl ?? 'about:blank'}</span
                     >
-                    <span class="meta">${new Date(s.createdAt).toLocaleString()}</span>
-                    <button class="destroy" @click=${() => this.destroySession(s.id)}>
+                    <span class="meta"
+                      >${new Date(s.createdAt).toLocaleString()}</span
+                    >
+                    <button
+                      class="destroy"
+                      @click=${() => this.destroySession(s.id)}
+                    >
                       销毁
                     </button>
                   </li>

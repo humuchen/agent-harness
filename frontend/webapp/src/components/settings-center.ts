@@ -57,6 +57,7 @@ import {
   type Theme
 } from '../theme/tokens';
 import { client } from '../api';
+import { isPlanDagEnabled, setPlanDagEnabled } from '../chat-render-utils';
 import { AhModal } from './ah-modal';
 import { notify } from './ah-notification';
 import { notifyError } from '../utils/errors';
@@ -194,6 +195,11 @@ const ICON_CACHE = svgIcon(
 );
 const ICON_ALERT = svgIcon(
   svg`<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><path d="M12 9v4M12 17h.01" />`,
+  '1.7'
+);
+/** 计划多 Agent 执行行图标：DAG 拓扑节点（一源节点分叉到两个下游节点）。 */
+const ICON_PLAN_DAG = svgIcon(
+  svg`<circle cx="5" cy="6" r="2.2" /><circle cx="17" cy="4.5" r="2.2" /><circle cx="17" cy="12" r="2.2" /><circle cx="13" cy="19" r="2.2" /><path d="M7 6.8l8 6.6M7 5.4l8-1.5M13 16.8V14.2" />`,
   '1.7'
 );
 
@@ -764,6 +770,11 @@ export class AhSettingsCenter extends LitElement {
 
   @state() private active: SettingsGroup = DEFAULT_GROUP;
   @state() private themeMode: ThemeMode = 'system';
+  /** 计划多 Agent 执行开关（P3）：直接持久化到 localStorage key `ah_plan_dag`，
+   * 不走父级持有——chat.ts 的 confirmPlan 每次确认时实时读 isPlanDagEnabled()，
+   * 设置页改完即生效，无需跨组件事件总线；两入口（设置 Tab / 我的→设置抽屉）
+   * 各持一个组件实例，均从同一 key 初始化，重新进入即读到最新值。 */
+  @state() private planDagEnabled = true;
   /** 系统与网络：服务端 LLM 连通状态（null = 尚未检测）。 */
   @state() private llmLive: boolean | null = null;
   @state() private checking = false;
@@ -797,6 +808,8 @@ export class AhSettingsCenter extends LitElement {
         localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false';
       this.deepThinkCollapsed =
         localStorage.getItem(DEEP_THINK_COLLAPSED_KEY) === 'true';
+      // 计划多 Agent 执行开关：单一事实源 isPlanDagEnabled()（localStorage 不可用时恒为默认「开」）。
+      this.planDagEnabled = isPlanDagEnabled();
     }
     this.unread = getReminderUnread().count;
   }
@@ -812,6 +825,11 @@ export class AhSettingsCenter extends LitElement {
       // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
       void this.refreshStorage();
       this.unread = getReminderUnread().count;
+    }
+    if (changed.has('active') && this.active === 'appearance') {
+      // 计划多 Agent 开关：实例可能比开关变更更早挂载（抽屉常驻 / 两入口各一实例），
+      // 每次进入「外观」从同一 key 重新对齐，避免显示陈旧值。
+      this.planDagEnabled = isPlanDagEnabled();
     }
   }
 
@@ -900,6 +918,18 @@ export class AhSettingsCenter extends LitElement {
         composed: true
       })
     );
+  }
+
+  /**
+   * 计划多 Agent 执行开关变更：即时持久化到 localStorage key（单一事实源），
+   * 并提示下次计划确认时生效。不走父级事件——chat.ts 的 confirmPlan 每次确认时
+   * 实时读 isPlanDagEnabled()，改完即生效，无需跨组件事件总线。
+   */
+  private togglePlanDag() {
+    const on = !this.planDagEnabled;
+    this.planDagEnabled = on;
+    setPlanDagEnabled(on);
+    notify.success(on ? '计划多 Agent 执行已开启' : '计划多 Agent 执行已关闭');
   }
 
   private clearUnread() {
@@ -1249,6 +1279,22 @@ export class AhSettingsCenter extends LitElement {
                       aria-checked=${this.deepThinkCollapsed ? 'true' : 'false'}
                       aria-label="深度思考收起"
                       @click=${() => this.toggleDeepThinkCollapsed()}
+                    ></button>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_PLAN_DAG}</span>
+                    <span class="rc">
+                      <span class="rl">计划多 Agent 执行</span>
+                      <span class="rd"
+                        >开启后「计划」确认时按任务依赖并行执行、共享中间产物（默认开；关闭则逐任务串行执行）</span
+                      >
+                    </span>
+                    <button
+                      class="toggle ${this.planDagEnabled ? 'on' : ''}"
+                      role="switch"
+                      aria-checked=${this.planDagEnabled ? 'true' : 'false'}
+                      aria-label="计划多 Agent 执行"
+                      @click=${() => this.togglePlanDag()}
                     ></button>
                   </div>
                 </div>

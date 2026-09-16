@@ -101,7 +101,7 @@ export class AhAudit extends LitElement {
         font-size: 13px;
         margin-bottom: 12px;
       }
-    `,
+    `
   ];
 
   @state() data: AuditResult | null = null;
@@ -161,13 +161,15 @@ export class AhAudit extends LitElement {
     const canNext = this.offset + PAGE < total;
 
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">合规审计</div>
             <div class="muted-sm">
               谁在何时做了什么 · 谁审批了谁 · 越权拦截记录
-              ${d?.file ? html`· 源文件 <span class="mono">${d.file}</span>` : nothing}
+              ${d?.file
+                ? html`· 源文件 <span class="mono">${d.file}</span>`
+                : nothing}
             </div>
           </div>
           <button class="ghost" @click=${() => this.refresh()}>
@@ -178,20 +180,34 @@ export class AhAudit extends LitElement {
         ${d && !d.file
           ? html`<div class="warn-banner">
               审计日志未落盘：未配置 <code>AUDIT_LOG</code>，或文件尚未产生。
-              配置后此处将显示完整审计时间线（鉴权 / 审批 / 敏感动作 / 配额拒绝）。
+              配置后此处将显示完整审计时间线（鉴权 / 审批 / 敏感动作 /
+              配额拒绝）。
             </div>`
           : nothing}
         ${d && d.truncatedLines > 0
           ? html`<div class="warn-banner">
-              审计文件较大，已忽略更早的 ${d.truncatedLines} 行（仅展示最新窗口）。
+              审计文件较大，已忽略更早的 ${d.truncatedLines}
+              行（仅展示最新窗口）。
             </div>`
           : nothing}
 
         <div class="cards">
-          <div class="kpi"><div class="v">${total}</div><div class="k">命中事件</div></div>
-          <div class="kpi"><div class="v ${denied ? 'warn' : 'ok'}">${denied}</div><div class="k">越权/拒绝</div></div>
-          <div class="kpi"><div class="v ${failure ? 'warn' : 'ok'}">${failure}</div><div class="k">失败</div></div>
-          <div class="kpi"><div class="v accent">${actors}</div><div class="k">参与主体</div></div>
+          <div class="kpi">
+            <div class="v">${total}</div>
+            <div class="k">命中事件</div>
+          </div>
+          <div class="kpi">
+            <div class="v ${denied ? 'warn' : 'ok'}">${denied}</div>
+            <div class="k">越权/拒绝</div>
+          </div>
+          <div class="kpi">
+            <div class="v ${failure ? 'warn' : 'ok'}">${failure}</div>
+            <div class="k">失败</div>
+          </div>
+          <div class="kpi">
+            <div class="v accent">${actors}</div>
+            <div class="k">参与主体</div>
+          </div>
         </div>
 
         <div class="filter-bar">
@@ -199,13 +215,15 @@ export class AhAudit extends LitElement {
             placeholder="主体（actor）"
             .value=${this.fActor}
             @input=${(e: any) => (this.fActor = e.target.value)}
-            @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && this.applyFilters()}
+            @keydown=${(e: KeyboardEvent) =>
+              e.key === 'Enter' && this.applyFilters()}
           />
           <input
             placeholder="动作（如 agent.run）"
             .value=${this.fAction}
             @input=${(e: any) => (this.fAction = e.target.value)}
-            @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && this.applyFilters()}
+            @keydown=${(e: KeyboardEvent) =>
+              e.key === 'Enter' && this.applyFilters()}
           />
           <select @change=${(e: any) => (this.fOutcome = e.target.value)}>
             <option value="">全部结果</option>
@@ -219,9 +237,12 @@ export class AhAudit extends LitElement {
             placeholder="自由文本（动作 / 主体 / 目标 / 详情）"
             .value=${this.fQ}
             @input=${(e: any) => (this.fQ = e.target.value)}
-            @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && this.applyFilters()}
+            @keydown=${(e: KeyboardEvent) =>
+              e.key === 'Enter' && this.applyFilters()}
           />
-          <button class="ghost" @click=${() => this.applyFilters()}>查询</button>
+          <button class="ghost" @click=${() => this.applyFilters()}>
+            查询
+          </button>
           <button
             class="ghost"
             @click=${() => {
@@ -262,7 +283,10 @@ export class AhAudit extends LitElement {
                         </span>
                       </td>
                       <td class="meta">${e.target ?? '—'}</td>
-                      <td class="meta mono" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                      <td
+                        class="meta mono"
+                        style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                      >
                         ${e.detail ? JSON.stringify(e.detail) : '—'}
                       </td>
                     </tr>
@@ -279,11 +303,28 @@ export class AhAudit extends LitElement {
             </table>
           </div>
           <div class="pager">
-            <span>共 ${total} 条 · 第 ${Math.floor(this.offset / PAGE) + 1} 页</span>
-            <button class="ghost" ?disabled=${!canPrev} @click=${() => { this.offset = Math.max(0, this.offset - PAGE); void this.refresh(); }}>
+            <span
+              >共 ${total} 条 · 第 ${Math.floor(this.offset / PAGE) + 1}
+              页</span
+            >
+            <button
+              class="ghost"
+              ?disabled=${!canPrev}
+              @click=${() => {
+                this.offset = Math.max(0, this.offset - PAGE);
+                void this.refresh();
+              }}
+            >
               上一页
             </button>
-            <button class="ghost" ?disabled=${!canNext} @click=${() => { this.offset += PAGE; void this.refresh(); }}>
+            <button
+              class="ghost"
+              ?disabled=${!canNext}
+              @click=${() => {
+                this.offset += PAGE;
+                void this.refresh();
+              }}
+            >
               下一页
             </button>
           </div>

@@ -23,7 +23,11 @@ import {
   fileIcon,
   formatSize,
   buildPlanStatusLookup,
-  derivePlanExecFromMessages
+  derivePlanExecFromMessages,
+  applyPlanWfEvent,
+  isPlanDagEnabled,
+  type PlanWfEvent,
+  type PlanWfRunSnapshot
 } from './chat-render-utils';
 
 // 消息渲染簇（已抽离到 chat-message-render.ts，交互态经 ChatRenderCtx 数据+回调 opts 传参，行为不变）。
@@ -274,6 +278,9 @@ export class AhChat extends LitElement {
 
   /** 计划执行状态（key 为携带计划的消息 id）。 */
   @state() private planExec: Record<number, PlanExecState> = {};
+  /** P3（多 agent DAG 计划执行）：当前正在跑的 plan workflow 中止句柄。
+   * 非空时「停止」按钮中止 DAG 流（置 running 为 cancelled），否则走 runRt.stop()。 */
+  @state() private planWfAbort: AbortController | null = null;
   @state() deepThink = true;
   @state() web = false;
   /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 true（收起）。 */
@@ -1297,14 +1304,14 @@ export class AhChat extends LitElement {
     const t = this.threadFor(sid);
 
     if (role === 'user') {
-      const last = t[t.length - 1];
-      if (
-        last &&
-        last.role === 'user' &&
-        (last.content ?? '') === content &&
-        content.length > 0
-      ) {
-        return; // 重复，跳过
+      // 去重：沿线程末尾回扫（跳过流式中的 assistant 占位 / 工具卡片），
+      // 若最近一条 user 消息内容完全相同则跳过。编辑重发场景下他端可能
+      // 先落了 assistant、本端又收到同内容 user 回声，仅查 t[last] 会漏判。
+      for (let i = t.length - 1; i >= 0; i--) {
+        const c = t[i];
+        if (!c || c.role !== 'user') continue;
+        if ((c.content ?? '') === content && content.length > 0) return; // 重复，跳过
+        break; // 只看最近一条 user，避免把「隔轮重发同文本」误判为重复
       }
       t.push({
         id: this.nextId++,
@@ -2465,11 +2472,17 @@ export class AhChat extends LitElement {
   /**
    * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
    * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   *
+   * 重入防御：ensureSession 是异步的，await 期间若用户连点「发送 ↑」或
+   * Enter 与点击叠加，第二次调用会带着同一草稿再次派发 dispatchPrompt，
+   * 历史里立刻多出一条重复消息。进入时立即清掉编辑态标志作为提交锁，
+   * 后续调用因 editingMsgId === -1 直接 return，仅首次生效。
    */
   private async sendEdit(_msgId: number) {
+    if (this.editingMsgId < 0) return; // 非编辑态 / 本次已提交（提交锁）
     const draft = this.editingDraft.trim();
     if (!draft || this.streaming[this.activeId] === true) return;
-    this.cancelEdit();
+    this.cancelEdit(); // 立即清 editingMsgId + editingDraft：UI 退回普通气泡，后续重入被上方拦截
     const sessionId = await this.ensureSession();
     this.input = draft;
     await this.send();
@@ -3165,6 +3178,18 @@ export class AhChat extends LitElement {
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
+    // P3（多 agent DAG）：开关开启时，首次确认（pending）走服务端 DagEngine 并行执行 + 共享黑板；
+    // 传输层失败（unknown agent / 5xx / 断连 / wf:error）整体回退串行路径，保证已验证行为兜底。
+    // failed 态的「从失败任务继续」统一走串行 resume（DAG 的 per-task 检查点续跑是 P4，见 design R8）。
+    if (isPlanDagEnabled() && st.status === 'pending') {
+      const ok = await this.confirmPlanViaWorkflow(m, st, sid);
+      if (ok) return;
+      // 回退：DAG 未进入终态 → 重置为可重入 pending，继续走下方串行派发。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+      };
+    }
     let cur: PlanExecState = { ...st, status: 'running' };
     this.planExec = { ...this.planExec, [m.id]: cur };
     for (const task of m.plan.tasks) {
@@ -3228,6 +3253,179 @@ export class AhChat extends LitElement {
       ...this.planExec,
       [msgId]: { ...st, status: 'cancelled' }
     };
+  }
+
+  /**
+   * P3（多 agent DAG）：把确认后的 ExecutionPlan 发给服务端 DagEngine 并行执行，
+   * 逐条消费 wf:step:* 事件驱动卡片状态机（applyPlanWfEvent），终态时把执行摘要
+   * 回挂线程并落盘（产物回挂，见 design/plan-mode-multiagent.md §6 / R1）。
+   *
+   * @returns true = DAG 进入终态（done / failed / cancelled），调用方**不应**再走串行路径；
+   *          false = 传输层失败（未知 agent / 5xx / SSE 中断 / wf:error），调用方重置 pending
+   *          并回退已验证的串行路径兜底。
+   */
+  private async confirmPlanViaWorkflow(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string
+  ): Promise<boolean> {
+    if (!m.plan) return false;
+    const taskIds = new Set(m.plan.tasks.map((t) => t.id));
+    const ac = new AbortController();
+    this.planWfAbort = ac;
+    // 复用「流式中」标记：停止按钮亮起、发送按钮隐藏（避免计划执行中并发发起普通 run）。
+    this.streaming = { ...this.streaming, [sid]: true };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    let terminal = false;
+    try {
+      // BYOK 透传（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）同构——
+      // model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
+      // 服务端 handleWorkflow 按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；
+      // 自定义模型路径才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。
+      const endpoint = await this.customModelEndpoint();
+      const byok = {
+        model: this.model || undefined,
+        ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
+        modelBaseUrl: endpoint.modelBaseUrl,
+        modelApiKey: endpoint.modelApiKey,
+        web: this.web || undefined
+      };
+      for await (const ev of client.streamWorkflowFromPlan(m.plan, {
+        agentRef: this.agentId || undefined,
+        mode: this.mode,
+        ...byok,
+        // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
+        // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
+        sessionId: sid,
+        signal: ac.signal
+      })) {
+        if (ac.signal.aborted) break;
+        const e = ev as unknown as PlanWfEvent & {
+          run?: PlanWfRunSnapshot;
+          message?: string;
+        };
+        // wf:step:* 驱动卡片状态机（harness 嵌套事件 / wf:compensate:* 原样跳过）。
+        const prev = this.planExec[m.id] ?? st;
+        const next = applyPlanWfEvent(prev, e, taskIds);
+        if (next !== prev) {
+          this.planExec = { ...this.planExec, [m.id]: next };
+        }
+        if (e.type === 'wf:done' || e.type === 'wf:failed') {
+          // 编排终态：回挂摘要并停止消费后续帧（_wf_done 收尾帧无需再处理）。
+          this.appendPlanDagSummary(sid, m, e.run);
+          terminal = true;
+          break;
+        }
+        if (e.type === '_wf_done') {
+          // 服务端收尾帧（正常路径 wf:done/wf:failed 已先行到达并 break；
+          // 此分支兜底「终态帧被 SSE 解析丢失」时仍能从 run 快照还原摘要）。
+          const run = e.run;
+          const s = this.planExec[m.id] ?? st;
+          if (run?.steps) this.appendPlanDagSummary(sid, m, run);
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: {
+              ...s,
+              status: run && run.state === 'done' ? 'done' : 'failed',
+              currentTaskId: undefined
+            }
+          };
+          terminal = true;
+          break;
+        }
+        if (e.type === 'wf:error') {
+          // 请求级失败（SSE 已开后服务端报错）：重置可重入 pending，回退串行路径。
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+          };
+          terminal = false;
+          break;
+        }
+      }
+      // 用户手动停止（停止按钮 → planWfAbort.abort()）：保留已完成任务（done 集合），
+      // 标 cancelled —— 这是合法终态，不回退串行。
+      if (ac.signal.aborted) {
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'cancelled',
+            currentTaskId: undefined
+          }
+        };
+        terminal = true;
+      } else if (!terminal) {
+        // 流自然结束但未收到任何终态帧（服务端进程重启 / 网络静默断开）：
+        // 保守标记 failed（而非静默 done），用户可经「从失败任务继续」重试。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'failed',
+            currentTaskId: undefined
+          }
+        };
+        terminal = true;
+      }
+    } catch (e: unknown) {
+      if (ac.signal.aborted) {
+        // 用户手动停止（SSE 迭代在 abort 时抛 AbortError 路径）：保留已完成任务，
+        // 标 cancelled —— 合法终态，不回退串行（terminal=true 使调用方不再派发）。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'cancelled',
+            currentTaskId: undefined
+          }
+        };
+        terminal = true;
+      } else {
+        // 传输层异常（unknown agentRef / 5xx / 断连）：提示 + 重置 pending，回退串行路径。
+        notifyError(e, { title: '计划执行中断', key: `plan-wf-${m.id}` });
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+        };
+      }
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * P3：把计划 DAG 执行摘要回挂线程（卡片级紧凑摘要，见 design R1 —— 不把每 step
+   * 明细重铺进会话气泡，避免历史膨胀）。run 快照缺失时仍给出按 task 的状态清单。
+   */
+  private appendPlanDagSummary(
+    sid: string,
+    m: ChatMsg,
+    run: PlanWfRunSnapshot | undefined
+  ): void {
+    if (!m.plan) return;
+    const steps = run?.steps ?? {};
+    const lines: string[] = [
+      `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
+    ];
+    for (const t of m.plan.tasks) {
+      const sr = steps[t.id];
+      const state = sr?.state ?? 'pending';
+      const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
+      lines.push(`${mark} ${t.id} ${t.title}（${state}）`);
+      const out = sr?.output;
+      if (out && typeof out === 'string' && out.trim()) {
+        lines.push(`   ${out.length > 300 ? out.slice(0, 300) + '…' : out}`);
+      }
+    }
+    const t = this.threadFor(sid);
+    t.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    this.threads[sid] = t;
+    if (this.activeId === sid) this.messages = t;
   }
 
   /**
@@ -3813,7 +4011,10 @@ export class AhChat extends LitElement {
                     ? html`<button
                         class="send"
                         title="停止"
-                        @click=${() => this.runRt.stop()}
+                        @click=${() =>
+                          // P3：计划 DAG 执行中优先中止 DAG 流（planWfAbort），
+                          // 普通 run 才走 runRt.stop()。两者互斥（同一时刻仅一个在跑）。
+                          (this.planWfAbort ? this.planWfAbort.abort() : this.runRt.stop())}
                       >
                         ■
                       </button>`

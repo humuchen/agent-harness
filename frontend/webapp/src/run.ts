@@ -336,7 +336,9 @@ export class AhRun extends LitElement {
       this.running = p === 'running' || p === 'awaiting_approval';
       this.finished = p === 'finished' || p === 'error' || p === 'aborted';
       // 全局运行中指示器：有任一面板在运行时亮起，全部结束后熄灭。
-      window.dispatchEvent(new Event(this.running ? 'ah:run:start' : 'ah:run:stop'));
+      window.dispatchEvent(
+        new Event(this.running ? 'ah:run:start' : 'ah:run:stop')
+      );
     });
   }
 
@@ -468,7 +470,9 @@ export class AhRun extends LitElement {
     // 运行失败：错误文案已由通知组件弹出（见 run() 的 catch），这里只留一条
     // 状态提示，避免在结果区重复渲染同一份错误（全站错误提示统一出口）。
     if (this.error) {
-      return html`<div class="muted">运行失败，详见通知提示与左侧思考 Trace。</div>`;
+      return html`<div class="muted">
+        运行失败，详见通知提示与左侧思考 Trace。
+      </div>`;
     }
     return html`
       <div class="deliverable">
@@ -502,7 +506,7 @@ export class AhRun extends LitElement {
     const showResult = this.view === 'result' || this.view === 'all';
 
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="run-head">
           <h2 class="run-title">运行时</h2>
           <div class="run-head-right">

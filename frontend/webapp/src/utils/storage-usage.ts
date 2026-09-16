@@ -372,3 +372,4 @@ export async function clearData(): Promise<ClearOutcome> {
 
   return { ran, bytes };
 }
+

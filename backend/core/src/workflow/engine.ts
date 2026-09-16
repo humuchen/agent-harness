@@ -124,14 +124,17 @@ export class DagEngine {
     for (const s of def.steps) {
       for (const [key, src] of Object.entries(s.inputMapping ?? {})) {
         if (src === 'input') continue;
+        // 字面量常量（非 steps. 前缀）：resolveInput 按 else 分支原样注入，无需校验。
+        // 与 types.ts「取值语法」一致：仅 steps. 前缀须匹配 steps.<id>(.output) 且引用已知 step。
+        if (!src.startsWith('steps.')) continue;
         const m = /^steps\.([A-Za-z0-9_-]+)(\.output)?$/.exec(src);
         if (!m) {
           throw new Error(
             `step "${s.id}" inputMapping["${key}"] = "${src}" 无法解析：` +
-              `取值须为 "input"、steps.<id>(.output) 或字面量常量（非 steps. 前缀）`,
+              `steps. 前缀取值须为 steps.<id>(.output)；其它字符串按字面量常量注入（非 steps. 前缀）`,
           );
         }
-        if (!ids.has(m[1]!)) throw new Error(`step "${s.id}" inputMapping["${key}"] 引用了未知 step "${m[1]}"`);
+        if (!ids.has(m[1]!)) throw new Error(`step "${s.id}" inputMapping["${key}"] 引用了未知 step "${m[1]!}"`);
       }
       if (s.condition) {
         const c = s.condition.trim();

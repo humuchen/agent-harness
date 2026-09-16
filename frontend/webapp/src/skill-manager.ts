@@ -110,7 +110,7 @@ export class AhSkills extends LitElement {
         text-align: center;
         color: var(--ah-text-muted);
       }
-    `,
+    `
   ];
 
   @state() items: SkillDef[] = [];
@@ -145,10 +145,13 @@ export class AhSkills extends LitElement {
     s.add(skill.id);
     this.busy = s;
     try {
-      const res = await authedFetch(`/api/skills/${encodeURIComponent(skill.id)}/${action}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' }
-      });
+      const res = await authedFetch(
+        `/api/skills/${encodeURIComponent(skill.id)}/${action}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' }
+        }
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await this.refresh();
     } catch {
@@ -167,11 +170,15 @@ export class AhSkills extends LitElement {
       <div class="skill">
         <div class="head">
           <span class="name">${skill.name}</span>
-          <span class="chip ${isOn ? 'ok' : ''}">${skill.source || 'builtin'}</span>
+          <span class="chip ${isOn ? 'ok' : ''}"
+            >${skill.source || 'builtin'}</span
+          >
         </div>
         <div class="desc">${skill.description || ''}</div>
         <div class="foot">
-          <span class="chip ${isOn ? 'ok' : ''}">${isOn ? '已启用' : '已禁用'}</span>
+          <span class="chip ${isOn ? 'ok' : ''}"
+            >${isOn ? '已启用' : '已禁用'}</span
+          >
           <button
             class="toggle ${isOn ? 'on' : 'off'}"
             ?disabled=${isBusy}
@@ -187,9 +194,11 @@ export class AhSkills extends LitElement {
   render() {
     if (this.loading) return html`<div class="muted">加载中…</div>`;
     if (!this.items.length)
-      return html`<div class="empty">暂无技能。企业可在此注册并启停自定义技能。</div>`;
+      return html`<div class="empty">
+        暂无技能。企业可在此注册并启停自定义技能。
+      </div>`;
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">技能管理</div>
@@ -197,9 +206,7 @@ export class AhSkills extends LitElement {
           </div>
           <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
-        <div class="grid">
-          ${this.items.map((s) => this.renderSkill(s))}
-        </div>
+        <div class="grid">${this.items.map((s) => this.renderSkill(s))}</div>
       </section>
     `;
   }

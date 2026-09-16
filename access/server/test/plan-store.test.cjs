@@ -139,3 +139,81 @@ test('getPlanStore: 多次 read 不影响 version', async () => {
   const r2 = await store.read('p1');
   assert.strictEqual(r1?.version, r2?.version);
 });
+
+// ── SQLite 实现（默认后端） ──
+test('SqlitePlanStore: save / read / list / diff / remove（PLAN_STORE_BACKEND=sqlite）', async () => {
+  process.env.PLAN_STORE_BACKEND = 'sqlite';
+  process.env.PLAN_DB_FILE = path.join(tmpDir, 'plans.db');
+  const fsP = require('fs/promises');
+  await fsP.mkdir(tmpDir, { recursive: true });
+
+  mod.setPlanStore(null);
+  const store = mod.getPlanStore();
+
+  // save + read
+  const saved = await store.save(makePlan('s1', 'Sqlite Plan'));
+  assert.strictEqual(saved.version, 1);
+  const read = await store.read('s1');
+  assert.ok(read);
+  assert.strictEqual(read.title, 'Sqlite Plan');
+  assert.strictEqual(read.nodes.length, 0);
+
+  // version 递增
+  const saved2 = await store.save(makePlan('s1', 'Sqlite Plan v2'));
+  assert.strictEqual(saved2.version, 2);
+
+  // list（owner 过滤）
+  await store.save(makePlan('s2', 'Other Plan'));
+  const listAll = await store.list();
+  assert.strictEqual(listAll.length, 2);
+  const listOwner = await store.list('admin');
+  assert.strictEqual(listOwner.length, 2);
+
+  // diff
+  const p3 = makePlan('s3', 'Diff B');
+  await store.save(p3);
+  const d = await store.diff('s1', 's3');
+  assert.strictEqual(d.fromVersion, 2);
+  assert.strictEqual(d.toVersion, 1);
+
+  // remove
+  const ok = await store.remove('s1');
+  assert.strictEqual(ok, true);
+  assert.strictEqual(await store.read('s1'), null);
+
+  // 清理
+  mod.setPlanStore(null);
+  delete process.env.PLAN_STORE_BACKEND;
+  delete process.env.PLAN_DB_FILE;
+});
+
+test('SqlitePlanStore: 节点状态持久化（status 字段往返）', async () => {
+  process.env.PLAN_STORE_BACKEND = 'sqlite';
+  process.env.PLAN_DB_FILE = path.join(tmpDir, 'plans2.db');
+  mod.setPlanStore(null);
+  const store = mod.getPlanStore();
+
+  const plan = makePlan('n1', 'Node Status Roundtrip', [
+    mod.makePlanNode('a', 'Alpha', 'todo'),
+    mod.makePlanNode('b', 'Beta', 'doing', { dependsOn: ['a'] }),
+    mod.makePlanNode('c', 'Gamma', 'done', { dependsOn: ['a', 'b'] })
+  ]);
+  const saved = await store.save(plan);
+  const read = await store.read('n1');
+  assert.strictEqual(read.nodes.length, 3);
+  assert.strictEqual(read.nodes[1].status, 'doing');
+  assert.deepStrictEqual(read.nodes[2].dependsOn, ['a', 'b']);
+
+  // 模拟 DAG 同步：改状态后 save，再读回
+  read.nodes = read.nodes.map((n) =>
+    n.id === 'b' ? { ...n, status: 'blocked' } : n
+  );
+  await store.save(read);
+  const r2 = await store.read('n1');
+  assert.strictEqual(r2.nodes.find((n) => n.id === 'b').status, 'blocked');
+  assert.strictEqual(r2.version, 2);
+
+  mod.setPlanStore(null);
+  delete process.env.PLAN_STORE_BACKEND;
+  delete process.env.PLAN_DB_FILE;
+});

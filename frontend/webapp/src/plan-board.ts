@@ -50,13 +50,42 @@ export interface PlanDiff {
   toVersion: number;
 }
 
-const COLUMNS: PlanNodeStatus[] = ['todo', 'doing', 'done', 'blocked'];
+/** 计划文档列表项（GET /api/plans 的精简形状）。 */
+export interface PlanSummary {
+  id: string;
+  title: string;
+  version: number;
+  updatedBy: string;
+  updatedAt: string;
+  nodeCount: number;
+  doneCount: number;
+}
+
+/** 节点卡片（看板 / 列表共用）。 */
+export interface PlanNodeCard {
+  id: string;
+  title: string;
+  status: PlanNodeStatus;
+  assignee?: string;
+  dependsOn: string[];
+  note?: string;
+}
+
+/** 状态 → 徽标 emoji（列表与看板统一视觉）。 */
+const STATUS_ICON: Record<PlanNodeStatus, string> = {
+  todo: '⬜',
+  doing: '🔄',
+  done: '✅',
+  blocked: '⛔'
+};
+
 const COLUMN_LABELS: Record<PlanNodeStatus, string> = {
   todo: '待办',
   doing: '进行中',
   done: '已完成',
   blocked: '阻塞'
 };
+const COLUMNS: PlanNodeStatus[] = ['todo', 'doing', 'done', 'blocked'];
 
 @customElement('ah-plan-board')
 export class AhPlanBoard extends LitElement {
@@ -165,6 +194,67 @@ export class AhPlanBoard extends LitElement {
       padding: 48px;
       color: var(--ah-text-faint);
     }
+    /* 计划列表态（无 ?id 参数时） */
+    .list {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .list-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 0 8px;
+    }
+    .list-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--ah-surface-2);
+      border: 1px solid var(--ah-border);
+      border-radius: var(--ah-radius-sm);
+      padding: 12px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s ease;
+    }
+    .list-item:hover {
+      border-color: var(--ah-accent);
+    }
+    .list-item .li-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--ah-text);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .list-item .li-progress {
+      font-size: 12px;
+      color: var(--ah-text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .list-item .li-meta {
+      font-size: 11px;
+      color: var(--ah-text-faint);
+    }
+    .btn-new {
+      background: var(--ah-accent, #4c8dff);
+      color: #fff;
+      border: none;
+      border-radius: var(--ah-radius-sm, 6px);
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+    .btn-new:hover {
+      opacity: 0.85;
+    }
   `];
 
   @state() private plan: PlanDoc | null = null;
@@ -172,6 +262,9 @@ export class AhPlanBoard extends LitElement {
   @state() private loading = true;
   @state() private error: string | null = null;
   @state() private showDiff = false;
+  /** 计划列表面板（无 ?id 参数时展示；进入具体计划后为 null）。 */
+  @state() private plans: PlanSummary[] | null = null;
+  @state() private listLoading = false;
 
   private es: EventSource | null = null;
   private dragNode: PlanNode | null = null;
@@ -180,15 +273,21 @@ export class AhPlanBoard extends LitElement {
     super.connectedCallback();
     // 隐藏态挂载（非计划 Tab）时跳过首屏加载；切到计划 Tab 时由 app.ts 调用 refresh() 补拉。
     if (this.hidden) return;
-    const params = new URLSearchParams(window.location.search);
-    const planId = params.get('id') ?? params.get('plan');
+    const planId = this.currentPlanId();
     if (!planId) {
-      this.error = '缺少 plan 参数';
+      // 无指定计划：进入列表态（计划 Tab 首页 = 我的计划文档列表 + 新建入口）。
       this.loading = false;
+      void this.loadPlanList();
       return;
     }
     this.loadPlan(planId);
     this.startSse(planId);
+  }
+
+  /** 当前 URL 指定的计划 id（?id / ?plan）；无参数时走列表态。 */
+  private currentPlanId(): string | null {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('id') ?? params.get('plan');
   }
 
   disconnectedCallback() {
@@ -216,13 +315,83 @@ export class AhPlanBoard extends LitElement {
   refresh() {
     // 隐藏态（非计划 Tab）不加载；切到本 Tab 时才由 app.ts 的 activatePanel 调用。
     if (this.hidden) return;
-    const params = new URLSearchParams(window.location.search);
-    const planId = this.plan?.id ?? params.get('id') ?? params.get('plan');
-    if (!planId) return;
+    const planId = this.currentPlanId();
+    if (!planId) {
+      // 列表态：补拉计划列表（新建 / AI 生成后进入本 Tab 时刷新）。
+      void this.loadPlanList();
+      return;
+    }
     // 计划尚未加载或切换了计划时，重新拉取并（重）建立 SSE 连接。
     if (!this.plan || this.plan.id !== planId) {
       void this.loadPlan(planId);
       this.startSse(planId);
+    }
+  }
+
+  /** 拉取计划文档列表（GET /api/plans）。 */
+  private async loadPlanList() {
+    this.listLoading = true;
+    this.error = null;
+    try {
+      const res = await authedFetch('/api/plans');
+      if (!res.ok) throw new Error(`加载计划列表失败 (${res.status})`);
+      const data = await res.json();
+      // GET /api/plans 返回的是完整 PlanDoc 数组（含 nodes），这里收敛为列表展示需要的精简形状。
+      const items: Array<Record<string, unknown>> = data.items ?? [];
+      this.plans = items.map((it) => {
+        const nodes = Array.isArray(it.nodes) ? (it.nodes as Array<{ status?: string }>) : [];
+        return {
+          id: String(it.id ?? ''),
+          title: String(it.title ?? ''),
+          version: Number(it.version ?? 0),
+          updatedBy: String(it.updatedBy ?? ''),
+          updatedAt: String(it.updatedAt ?? ''),
+          nodeCount: nodes.length,
+          doneCount: nodes.filter((n) => n.status === 'done').length
+        };
+      });
+    } catch (e) {
+      this.error = (e as Error).message;
+      this.plans = [];
+      notifyError(e, { fallback: '加载计划列表失败' });
+    } finally {
+      this.listLoading = false;
+    }
+  }
+
+  /** 进入具体计划看板（推入 URL 参数，复用看板态 + SSE）。 */
+  private openPlan(planId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('id', planId);
+    window.history.pushState(null, '', url.toString());
+    this.plans = null;
+    this.error = null;
+    this.loadPlan(planId);
+    this.startSse(planId);
+  }
+
+  /** 新建空计划文档：POST /api/plans，成功后进入其看板。 */
+  private async newPlan() {
+    const title = (window.prompt('计划标题', '') ?? '').trim();
+    if (!title) return;
+    const id = `plan-manual-${Date.now().toString(36)}`;
+    try {
+      const res = await authedFetch('/api/plans', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          title,
+          nodes: [],
+          version: 0
+        })
+      });
+      if (!res.ok) throw new Error(`创建失败 (${res.status})`);
+      const data = await res.json();
+      notify.success('计划已创建', { key: 'plan-new' });
+      this.openPlan(data.item?.id ?? id);
+    } catch (e) {
+      notifyError(e, { fallback: '创建计划失败' });
     }
   }
 
@@ -347,7 +516,45 @@ export class AhPlanBoard extends LitElement {
     }
   }
 
+  /** 列表态渲染：我的计划文档（按更新时间倒序）+ 新建入口 + 空态引导。 */
+  private renderList() {
+    if (this.listLoading && !this.plans) {
+      return html`<div class="empty">加载计划中…</div>`;
+    }
+    const plans = this.plans ?? [];
+    return html`
+      <div class="list">
+        <div class="list-header">
+          <h2>计划</h2>
+          <button class="btn-new" @click=${() => void this.newPlan()}>+ 新建计划</button>
+        </div>
+        ${plans.length === 0
+          ? html`
+              <div class="empty">
+                暂无计划文档<br />
+                <span style="font-size: 12px">
+                  在「对话」中切换到计划模式发起任务，AI 生成的计划会自动出现在这里；也可手动新建。
+                </span>
+              </div>
+            `
+          : plans.map(
+              (p) => html`
+                <div class="list-item" @click=${() => this.openPlan(p.id)}>
+                  <span class="li-title">${p.title}</span>
+                  <span class="li-progress">${p.doneCount}/${p.nodeCount} 完成</span>
+                  <span class="li-meta">v${p.version} · ${p.updatedBy}</span>
+                </div>
+              `
+            )}
+      </div>
+    `;
+  }
+
   render() {
+    // 列表态（无 ?id 参数）：计划文档列表 + 新建入口。
+    if (this.plans !== null || this.currentPlanId() === null) {
+      return this.renderList();
+    }
     if (this.loading) {
       return html`<div class="empty">加载计划中…</div>`;
     }

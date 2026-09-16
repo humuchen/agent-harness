@@ -427,6 +427,20 @@ export function appendChatMessage(
     s = { id, title: '新对话', createdAt: now, updatedAt: now, messages: [], owner };
     sessions.set(id, s);
   }
+  // 源头去重：紧邻上一条消息同 role+同内容则跳过（编辑重发/断连重连重放等场景
+  // 会把同一 user 内容二次写入，若在此放任落库，刷新与跨设备恢复后重复永远跟着走）。
+  // 只比对「紧邻上一条」：隔了 assistant 回复再发相同文本属合法重问，必须保留。
+  const lastMsg = s.messages[s.messages.length - 1];
+  if (
+    lastMsg &&
+    lastMsg.role === msg.role &&
+    (lastMsg.content ?? '') === (msg.content ?? '') &&
+    (msg.content ?? '').length > 0
+  ) {
+    s.updatedAt = Date.now();
+    persist();
+    return s;
+  }
   s.messages.push(msg);
   s.updatedAt = Date.now();
   let titleChanged = false;

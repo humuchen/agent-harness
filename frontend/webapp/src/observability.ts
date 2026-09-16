@@ -25,7 +25,14 @@ interface Metrics {
 }
 interface JobsView {
   queue: QueueStats;
-  jobs: Array<{ id: string; status: string; mode: string; enqueuedAt: number; startedAt: number | null; finishedAt: number | null }>;
+  jobs: Array<{
+    id: string;
+    status: string;
+    mode: string;
+    enqueuedAt: number;
+    startedAt: number | null;
+    finishedAt: number | null;
+  }>;
 }
 interface RolesView {
   mode: 'off' | 'on';
@@ -77,7 +84,7 @@ export class AhObservability extends LitElement {
         client.getMetrics() as Promise<Metrics>,
         client.getJobs() as Promise<JobsView>,
         client.getSessions(),
-        client.getRoles() as Promise<RolesView>,
+        client.getRoles() as Promise<RolesView>
       ]);
       this.metrics = m;
       this.jobs = j;
@@ -100,7 +107,8 @@ export class AhObservability extends LitElement {
     const r = this.roles;
     if (!r) return [];
     if (Array.isArray(r.roles) && r.roles.length > 0) return r.roles;
-    if (r.permissions && typeof r.permissions === 'object') return Object.keys(r.permissions);
+    if (r.permissions && typeof r.permissions === 'object')
+      return Object.keys(r.permissions);
     return [];
   }
 
@@ -114,14 +122,16 @@ export class AhObservability extends LitElement {
       // 接口可能返回 null / 非数组（字段缺失或数据不完整），需防御。
       if (Array.isArray(list)) list.forEach((a) => actions.add(a));
     }
-    return [...actions]
-      .sort()
-      .map((action) => ({
-        action,
-        byRole: Object.fromEntries(
-          roles.map((role) => [role, Array.isArray(r.permissions[role]) && r.permissions[role].includes(action)])
-        ),
-      }));
+    return [...actions].sort().map((action) => ({
+      action,
+      byRole: Object.fromEntries(
+        roles.map((role) => [
+          role,
+          Array.isArray(r.permissions[role]) &&
+            r.permissions[role].includes(action)
+        ])
+      )
+    }));
   }
 
   render() {
@@ -132,30 +142,51 @@ export class AhObservability extends LitElement {
     const j = this.jobs;
     const errCount = m?.counters?.errors ?? 0;
     const cost = m ? `$${m.cost.toFixed(2)}` : '—';
-    const queueDepth = (m?.queue?.queued ?? j?.queue.queued ?? 0) + (m?.queue?.running ?? j?.queue.running ?? 0);
+    const queueDepth =
+      (m?.queue?.queued ?? j?.queue.queued ?? 0) +
+      (m?.queue?.running ?? j?.queue.running ?? 0);
     const rows = this.matrixRows();
     const roleCols = this.roleColumns();
 
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="cards">
-          <div class="kpi"><div class="v">${avgLatency(m)}ms</div><div class="k">平均延迟</div></div>
-          <div class="kpi"><div class="v ${errCount ? 'warn' : 'ok'}">${errCount}</div><div class="k">错误数</div></div>
-          <div class="kpi"><div class="v">${cost}</div><div class="k">累计花费</div></div>
-          <div class="kpi"><div class="v accent">${queueDepth}</div><div class="k">队列深度</div></div>
+          <div class="kpi">
+            <div class="v">${avgLatency(m)}ms</div>
+            <div class="k">平均延迟</div>
+          </div>
+          <div class="kpi">
+            <div class="v ${errCount ? 'warn' : 'ok'}">${errCount}</div>
+            <div class="k">错误数</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${cost}</div>
+            <div class="k">累计花费</div>
+          </div>
+          <div class="kpi">
+            <div class="v accent">${queueDepth}</div>
+            <div class="k">队列深度</div>
+          </div>
         </div>
 
         <div class="two">
           <div>
             <div class="section-title">
               运行队列
-              ${j?.jobs?.length ? html`<span class="count">${j.jobs.length}</span>` : nothing}
+              ${j?.jobs?.length
+                ? html`<span class="count">${j.jobs.length}</span>`
+                : nothing}
             </div>
             <section>
               <div class="panel-scroll">
                 <table class="matrix">
                   <thead>
-                    <tr><th>JOB</th><th>MODE</th><th>STATUS</th><th>AGE</th></tr>
+                    <tr>
+                      <th>JOB</th>
+                      <th>MODE</th>
+                      <th>STATUS</th>
+                      <th>AGE</th>
+                    </tr>
                   </thead>
                   <tbody>
                     ${(j?.jobs ?? []).map(
@@ -163,12 +194,22 @@ export class AhObservability extends LitElement {
                         <tr>
                           <td class="act">${job.id}</td>
                           <td class="muted-sm">${job.mode}</td>
-                          <td><span class="pill ${job.status}">${job.status}</span></td>
-                          <td class="meta">${fmtAge(job.startedAt ?? job.enqueuedAt)}</td>
+                          <td>
+                            <span class="pill ${job.status}"
+                              >${job.status}</span
+                            >
+                          </td>
+                          <td class="meta">
+                            ${fmtAge(job.startedAt ?? job.enqueuedAt)}
+                          </td>
                         </tr>
                       `
                     )}
-                    ${(j?.jobs ?? []).length === 0 ? html`<tr><td colspan="4" class="muted">队列为空</td></tr>` : nothing}
+                    ${(j?.jobs ?? []).length === 0
+                      ? html`<tr>
+                          <td colspan="4" class="muted">队列为空</td>
+                        </tr>`
+                      : nothing}
                   </tbody>
                 </table>
               </div>
@@ -178,17 +219,31 @@ export class AhObservability extends LitElement {
           <div>
             <div class="section-title">
               记忆会话
-              ${this.sessions?.sessions?.length ? html`<span class="count">${this.sessions.sessions.length}</span>` : nothing}
+              ${this.sessions?.sessions?.length
+                ? html`<span class="count"
+                    >${this.sessions.sessions.length}</span
+                  >`
+                : nothing}
             </div>
             <section>
               <div class="kv">
-                <div class="item"><span class="m">后端</span><span>${this.sessions?.backend ?? '—'}</span></div>
-                <div class="item"><span class="m">会话数</span><span>${this.sessions?.sessions.length ?? 0}</span></div>
+                <div class="item">
+                  <span class="m">后端</span
+                  ><span>${this.sessions?.backend ?? '—'}</span>
+                </div>
+                <div class="item">
+                  <span class="m">会话数</span
+                  ><span>${this.sessions?.sessions.length ?? 0}</span>
+                </div>
               </div>
               <div class="panel-scroll" style="margin-top:10px">
                 <ul class="list">
-                  ${(this.sessions?.sessions ?? []).map((k) => html`<li class="meta">${k}</li>`)}
-                  ${(this.sessions?.sessions ?? []).length === 0 ? html`<li class="muted">暂无会话</li>` : nothing}
+                  ${(this.sessions?.sessions ?? []).map(
+                    (k) => html`<li class="meta">${k}</li>`
+                  )}
+                  ${(this.sessions?.sessions ?? []).length === 0
+                    ? html`<li class="muted">暂无会话</li>`
+                    : nothing}
                 </ul>
               </div>
             </section>
@@ -199,10 +254,13 @@ export class AhObservability extends LitElement {
         <section>
           <div class="row-between" style="margin-bottom:10px">
             <span class="muted-sm">
-              鉴权模式 <span class="role-badge">${this.roles?.mode ?? '—'}</span> ·
-              身份源 <span class="role-badge">${this.roles?.provider ?? '—'}</span>
+              鉴权模式
+              <span class="role-badge">${this.roles?.mode ?? '—'}</span> ·
+              身份源
+              <span class="role-badge">${this.roles?.provider ?? '—'}</span>
               ${rows.length || roleCols.length
-                ? html`· <b class="accent-sm">${rows.length}</b> 个动作 / <b class="accent-sm">${roleCols.length}</b> 个角色`
+                ? html`· <b class="accent-sm">${rows.length}</b> 个动作 /
+                    <b class="accent-sm">${roleCols.length}</b> 个角色`
                 : nothing}
             </span>
             <button class="ghost" @click=${() => this.refresh()}>刷新</button>
@@ -210,7 +268,8 @@ export class AhObservability extends LitElement {
           ${this.roles?.mode === 'off'
             ? html`<div class="note" style="margin-bottom:10px">
                 开放模式（未强制鉴权）：以下为<b>默认角色权限参考</b>，当前所有请求默认拥有完整权限。配置
-                <code>UI_TOKENS</code> / <code>UI_ROLE_PERMISSIONS</code> 后此处将显示实际生效的矩阵。
+                <code>UI_TOKENS</code> /
+                <code>UI_ROLE_PERMISSIONS</code> 后此处将显示实际生效的矩阵。
               </div>`
             : nothing}
           <div class="matrix-scroll">
@@ -218,7 +277,12 @@ export class AhObservability extends LitElement {
               <thead>
                 <tr>
                   <th class="sticky-col">ACTION</th>
-                  ${roleCols.map((r) => html`<th style="text-align:center">${r.toUpperCase()}</th>`)}
+                  ${roleCols.map(
+                    (r) =>
+                      html`<th style="text-align:center">
+                        ${r.toUpperCase()}
+                      </th>`
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -227,23 +291,33 @@ export class AhObservability extends LitElement {
                     <tr>
                       <td class="act sticky-col">${row.action}</td>
                       ${roleCols.map(
-                        (r) => html`<td class="center">${row.byRole[r] ? html`<span class="check">✓</span>` : html`<span class="dash">—</span>`}</td>`
+                        (r) =>
+                          html`<td class="center">
+                            ${row.byRole[r]
+                              ? html`<span class="check">✓</span>`
+                              : html`<span class="dash">—</span>`}
+                          </td>`
                       )}
                     </tr>
                   `
                 )}
                 ${rows.length === 0
-                  ? html`<tr><td colspan="${roleCols.length + 1}" class="muted">${
-                      this.roles && (this.roles.mode === 'off' || roleCols.length === 0)
-                        ? '鉴权未启用（开放模式）：所有请求默认拥有完整权限（等效 admin）'
-                        : '无权限数据'
-                    }</td></tr>`
+                  ? html`<tr>
+                      <td colspan="${roleCols.length + 1}" class="muted">
+                        ${this.roles &&
+                        (this.roles.mode === 'off' || roleCols.length === 0)
+                          ? '鉴权未启用（开放模式）：所有请求默认拥有完整权限（等效 admin）'
+                          : '无权限数据'}
+                      </td>
+                    </tr>`
                   : nothing}
               </tbody>
             </table>
           </div>
           ${rows.length > 12
-            ? html`<div class="scroll-hint">↓ 矩阵较长，可在上方区域内滚动查看全部 ${rows.length} 个动作</div>`
+            ? html`<div class="scroll-hint">
+                ↓ 矩阵较长，可在上方区域内滚动查看全部 ${rows.length} 个动作
+              </div>`
             : nothing}
         </section>
       </section>
