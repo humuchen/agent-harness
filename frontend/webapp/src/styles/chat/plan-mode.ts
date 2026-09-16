@@ -182,4 +182,101 @@ export const planMode = css`
     color: var(--ah-text);
     border: none;
   }
+
+  /* ---- P2（轨迹回放）：计划「执行详情」抽屉 ---- */
+  .wf-replay {
+    padding: 4px 2px;
+    color: var(--ah-text);
+    font-size: 13px;
+  }
+  .wf-replay-hint {
+    color: var(--ah-text-muted);
+    line-height: 1.7;
+    padding: 8px 2px;
+  }
+  .wf-replay-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .wf-replay-total {
+    color: var(--ah-text-muted);
+    font-size: 12px;
+  }
+  .wf-replay-err {
+    width: 100%;
+    color: #f87171;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .wf-replay-timeline {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .wf-replay-row {
+    border: 1px solid var(--ah-border);
+    border-radius: 10px;
+    background: var(--ah-surface-1);
+    padding: 10px 12px;
+    margin: 0 0 8px;
+  }
+  .wf-replay-row.failed {
+    border-color: rgba(248, 113, 113, 0.4);
+  }
+  .wf-replay-row.done {
+    border-color: rgba(52, 211, 153, 0.3);
+  }
+  .wf-replay-row-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .wf-replay-row-head b {
+    flex: 1;
+    min-width: 80px;
+  }
+  .wf-replay-agent {
+    font-size: 11px;
+    color: var(--ah-text-muted);
+    background: var(--ah-surface-2);
+    border-radius: 999px;
+    padding: 1px 8px;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wf-replay-state {
+    font-size: 12px;
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+  }
+  .wf-replay-detail {
+    margin-top: 8px;
+  }
+  .wf-replay-detail summary {
+    cursor: pointer;
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    user-select: none;
+  }
+  .wf-replay-detail summary:hover {
+    color: var(--ah-accent);
+  }
+  .wf-replay-detail pre {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: var(--ah-surface-2);
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow: auto;
+  }
 `;

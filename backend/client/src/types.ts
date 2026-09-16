@@ -455,7 +455,7 @@ export interface A2ARequest {
 
 /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
 
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
 
 export interface StepDef {
   id: string;
@@ -480,6 +480,8 @@ export interface StepRun {
   error?: string;
   startedAt?: number;
   finishedAt?: number;
+  /** 实际选中的 agent id（服务端快照实有该字段；轨迹回放据此展示每个节点的执行者）。 */
+  agentId?: string;
 }
 
 export interface WorkflowRun {

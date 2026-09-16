@@ -244,9 +244,23 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 - **P2（✅ 已完成）**：`handleWorkflow` plan 来源 + `formatStepInput` 装配 + `mode` 透传 + agentRef fail-fast——服务端端到端跑通 DAG。
 - **P3（✅ 已完成）**：前端 `confirmPlan` DAG 门控 + 状态机 + SSE 卡片 + 回退开关 + 摘要回挂——闭环，默认开，用户可 `ah_plan_dag='0'` 回退串行。
 
+### 9.5 P0–P3 改进项落地状态（校验反思 / 断点续跑 / 轨迹回放 / 节点级人工门）
+
+改进项命名（P0–P3）与本节上半部的「分期落地 P1–P3」是两套编号，勿混淆：上半部 P1–P3 = 多 agent DAG 的分期上线；本节 P0–P3 = 上线后的体验改进。
+
+| 改进项 | 状态 | 说明 |
+|---|---|---|
+| P0 校验/反思 | ✅ 已实现 | DAG executor 接 `createVerifier` + `AGENT_VERIFY_MAX_RETRIES`（与 `/api/run` 同款优先级 `body.verify > body.autoVerify > AGENT_AUTO_VERIFY`）；`workflow-verify.test.cjs` 3 项实证反思循环 |
+| P1 断点续跑 | ✅ 已实现 | 确定性检查点键 `derivePlanWfId`（FNV-1a，结构键不含文案，跨刷新可重算）；server 抽共享 `resolveWorkflowRunOpts`（BYOK+verify+402 收敛，执行/续跑路由共用）；`streamWorkflowResume` 补 BYOK body；failed 卡片「从失败任务继续」优先 DAG 续跑，404/5xx/断连自动回退串行 resume |
+| P2 轨迹回放 | ✅ 已实现 | **零引擎改动**——`WorkflowRun` 检查点快照本身即轨迹（每 step 带 agentId/output/error/时间戳）。计划卡片非 pending 态显示「执行详情」→ 侧滑抽屉经 `client.getWorkflow(derivePlanWfId)` 水合快照 → `buildPlanWfReplayRows`（纯函数，可测）渲染步骤时间线（状态/agent/耗时/可折叠产出·错误）；404 无检查点 → 友好提示并指向「断点续跑 / 重新执行」兜底。样式独立追加于 `styles/chat/plan-mode.ts` |
+| P3 节点级人工门 | ⬜ 未实施 | 见下方 P4 待办（需动引擎核心循环） |
+
+**回归基线（P0–P2 落地后）**：server 273/0 fail；client 18/18；webapp 316/316（含 derivePlanWfId + 回放纯函数新增 12 项）；三端 build 0；lint 0 error（仅 pre-existing warning）；webapp `tsc --noEmit` 9 条全 pre-existing（与 P1 前基线一致，零新增）。
+
 ### P4（后续，未实施）
 - **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。
-- **DAG 断点续跑入口**：前端 `failed` 态经 `streamWorkflowResume(workflowId)` 从检查点续跑（P3 目前 failed 走串行 resume）。
+- ~~DAG 断点续跑入口~~ → **已由 P1 实现**（§9.5）：failed 态经 `resumePlanViaWorkflow` → `streamWorkflowResume(derivePlanWfId)` 从检查点续跑，不可达自动回退串行。
+- **P3 节点级人工门**：`StepDef.requireApproval` + `WorkflowRun.approvals` + 引擎在 flagged step 前暂停并 emit `wf:awaiting-approval` + `POST /api/workflows/:id/approve` 放行续跑。**需动引擎核心执行循环**（当前「不改核心循环」约束需明确解除后方可启动，风险最高，排最后）。
 - **黑板体积护栏（R5）**：`upstream_*` 大产出截断 + 监控 `workflowStore` 体积。
 - **P3 观察反馈收集**：默认开后的线上/自测观察期，若 DAG 路径暴露真实模型环境下的问题（R5 黑板体积、R8 all-or-nothing），经 `ah_plan_dag='0'` 可即时回退串行；稳定后可移除开关。
 
