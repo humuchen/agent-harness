@@ -321,6 +321,15 @@ function edgeRouteDeps(): EdgeRouteDeps {
 
 // OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 // 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
+//
+// SameSite=None; Secure 而非 Lax：OAuth 回调从 github.com / accounts.google.com
+// 跨站跳回本服务，WebView（含 Capacitor）判定为跨站上下文，Lax cookie 在跨站
+// GET 时虽按规范允许携带，但部分 WebView 实现（尤其 iOS WKWebView 旧版、Android
+// WebView 在 allowNavigation 白名单受限场景）会严格按 site 判定丢弃，导致回调
+// 请求里读不到 ah_oauth_state 而报「OAuth state 校验失败（CSRF/过期）」。
+// 改为 None+Secure 后跨站 top-level 导航明确携带，Web 浏览器行为不变（None 在
+// 同站场景与 Lax 等价可用），仅要求 HTTPS（本服务生产均为 https，dev localhost
+// 走 isReqLocalhost 分支可豁免 Secure）。
 const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 
 /** 请求是否来自 localhost（dev 可走 http，不置 Secure）。 */
@@ -333,7 +342,11 @@ function isReqLocalhost(req: { headers?: Record<string, unknown> }): boolean {
   );
 }
 
-/** 构造 OAuth state cookie 串：HttpOnly + SameSite=Lax + 10min，非 localhost 追加 Secure。 */
+/**
+ * 构造 OAuth state cookie 串：HttpOnly + SameSite=None + Secure + 10min。
+ * 非 localhost 追加 Secure（dev 可 http，不置 Secure 以便本地测试）。
+ * OAuth 跨站回调需要 None 才能被 WebView 携带，见上方注释。
+ */
 function oauthStateCookie(
   req: { headers?: Record<string, unknown> },
   name: string,
@@ -342,7 +355,26 @@ function oauthStateCookie(
   const parts = [
     `${name}=${value}`,
     'HttpOnly',
-    'SameSite=Lax',
+    'SameSite=None',
+    'Path=/',
+    'Max-Age=600'
+  ];
+  if (!isReqLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/**
+ * 构造 PKCE code_verifier cookie 串（Google OAuth 专用）：与 oauthStateCookie
+ * 同策略（SameSite=None + Secure），否则 WebView 跨站回调时同样读不到。
+ */
+function oauthCodeVerifierCookie(
+  req: { headers?: Record<string, unknown> },
+  value: string
+): string {
+  const parts = [
+    `ah_oauth_cv=${value}`,
+    'HttpOnly',
+    'SameSite=None',
     'Path=/',
     'Max-Age=600'
   ];
@@ -1578,7 +1610,7 @@ const server = createServer(
         res.writeHead(302, {
           'set-cookie': [
             oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
-            `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
+            oauthCodeVerifierCookie(req, codeVerifier)
           ],
           'cache-control': 'no-store',
           location: googleUrl

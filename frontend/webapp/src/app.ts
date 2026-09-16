@@ -171,6 +171,32 @@ const desktopShellCss = css`
 `;
 
 /**
+ * 移动端顶层壳 :host 覆盖（仅注入 ah-app 自身 shadow root）。
+ * 历史实现曾把这段 :host 规则写在 sharedStyles（responsive.ts）里 ——
+ * 但 sharedStyles 会被 19 个面板组件（ah-workspace / ah-run / ah-chat…）
+ * 各自编译进自己的 shadow DOM，:host 随之泄漏到每个面板 host 上：
+ * 每个面板 host 都被强制 min-height:100dvh，空数据页面板即使内容只有
+ * ~400px 也撑满整屏，把 .content 顶到 924px、文档 983px > 844px，
+ * 产生 139px 幽灵滚动与最外层滚动条（「没有数据也能上下滚」的根因）。
+ * 这里与 desktopShellCss 严格互斥：同条件谓词（≤760px 或 横屏矮屏），
+ * 桌面锁定与移动解锁二选一，无重叠窗口。
+ */
+const mobileShellCss = css`
+  @media (max-width: 760px), (orientation: landscape) and (max-height: 760px) {
+    :host {
+      /* 底部固定栏高度：单一来源，供 .content 底部留白引用，
+         避免「底栏实际高度」与「内容区留白」两处魔法数字各自漂移。
+         自定义属性从 ah-app host 沿 DOM 向下继承，面板组件内的
+         calc(var(--ah-tabbar-h)) 消费不受 shadow 边界影响（继承跨边界）。 */
+      --ah-tabbar-h: calc(48px + env(safe-area-inset-bottom, 0px));
+      height: auto;
+      min-height: 100dvh;
+      overflow: visible;
+    }
+  }
+`;
+
+/**
  * 移动端下拉刷新指示器样式。指示器由 PullToRefreshController 动态挂载到 .main，
  * 用 position:fixed 钉在顶栏正下方，随下拉距离长高；仅触摸手势触发，桌面无副作用。
  */
@@ -270,7 +296,7 @@ export class AhApp extends LitElement {
   // P3-1: 品牌位配置
   brand: BrandConfig = BRAND_DEFAULT;
 
-  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, ptrCss];
+  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, mobileShellCss, ptrCss];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;

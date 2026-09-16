@@ -126,6 +126,11 @@ function assert(cond, msg) {
   assert(/127\.0\.0\.1%3A/.test(start.location), 'redirect_uri 回指本地回调（协议自适应 http）');
   const state = cookieVal(start.setCookie, 'ah_oauth_state');
   assert(!!state, '写入 ah_oauth_state CSRF cookie');
+  // OAuth 跨站回调需要 SameSite=None 才能在 WebView（Capacitor）中携带 cookie；
+  // localhost 走 http，不应附加 Secure（否则本地测试环境 cookie 被拒）。
+  const stateCookieStr = (start.setCookie.find((c) => c.startsWith('ah_oauth_state=')) || '');
+  assert(/SameSite=None/.test(stateCookieStr), 'ah_oauth_state 使用 SameSite=None（WebView 跨站回调可携带）');
+  assert(!/Secure/.test(stateCookieStr), 'localhost 分支不附加 Secure（dev http 可写 cookie）');
 
   console.log('\n[2] GET /api/account/oauth/github/callback（回调换 token + upsert）');
   const cb = await req(

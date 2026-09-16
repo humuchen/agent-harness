@@ -5,10 +5,10 @@ export const base = css`
   /* 组件根盒：修复样式模块化拆分时丢失 :host 选择器前缀导致整条规则失效的问题。
      缺 display:block 时自定义元素退回 display:inline；缺令牌则组件不随 [data-theme]
      切换（亮色主题下根背景仍为暗色）且丢失 Inter / 14px 基准排版。
-     注意：此处刻意不写 height/overflow —— 移动端已在 responsive.ts 的
-     @media (max-width:760px) 内改为文档自然滚动（:host height:auto / overflow:visible），
-     .shell 与 .content 各自管理高度与滚动；若在 :host 上锁定 100dvh + overflow:hidden，
-     反而会在内容超高时把底部内容裁掉且无法滚动。 */
+     注意：此处刻意不写 height/overflow —— 移动端顶层壳 ah-app 的
+     :host height:auto / min-height:100dvh / overflow:visible 在 app.ts 的
+     mobileShellCss（仅注入 ah-app 自身 shadow root）；sharedStyles 被 19 个
+     面板组件共用，:host 规则若写在共享层会泄漏到每个面板 host。 */
   :host {
     display: block;
     background: var(--ah-canvas);

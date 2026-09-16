@@ -10,17 +10,12 @@ export const responsive = css`
      只命中「横屏且视口矮」的手机；桌面 / 平板横屏（高度≥761）仍走桌面内部滚动，
      见 app.ts 的 desktopShellCss 与 base.ts 品牌隐藏处的对称排除。 */
   @media (max-width: 760px), (orientation: landscape) and (max-height: 760px) {
-    /* 移动端解除 100dvh 锁定 + overflow:hidden：子组件（ah-run 等）内容超高时
-       原锁定会把底部裁掉且自身无内部滚动，导致「拉到最低展示不全」。
-       改为文档自然滚动，底部始终可达；桌面端布局不受影响。 */
-    :host {
-      /* 底部固定栏高度：单一来源，供 .content 底部留白引用，
-         避免「底栏实际高度」与「内容区留白」两处魔法数字各自漂移。 */
-      --ah-tabbar-h: calc(48px + env(safe-area-inset-bottom, 0px));
-      height: auto;
-      min-height: 100dvh;
-      overflow: visible;
-    }
+    /* 注意：本媒体块刻意不含 :host 规则。顶层 ah-app 的 :host 移动端覆盖
+       （height:auto / min-height:100dvh / overflow:visible / --ah-tabbar-h）
+       放在 app.ts 的 mobileShellCss（仅注入 ah-app 自身 shadow root）。
+       若写在本文件：sharedStyles 会被 19 个面板组件各自的 shadow DOM 编译，
+       :host 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
+       仍撑满整屏 → .content 被顶高 → 文档超出视口 ~139px 幽灵滚动。 */
     .shell {
       height: auto;
       overflow: visible;
