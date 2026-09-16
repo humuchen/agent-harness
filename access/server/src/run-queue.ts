@@ -158,7 +158,7 @@ const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
 // 计划任务执行（planTask run）专用超时：重任务（源码精读 / 体系化输出等）在真实
 // 模型上常超默认 5 分钟（实测 stealth/ox-alpha 单次推理 >300s 被看门狗掐断），
 // 默认放宽到 10 分钟，可用 PLAN_TASK_TIMEOUT_MS 环境变量覆盖。
-const PLAN_TASK_TIMEOUT_MS =
+export const PLAN_TASK_TIMEOUT_MS =
   Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
 // jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
 const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;

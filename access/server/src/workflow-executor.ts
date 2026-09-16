@@ -15,6 +15,7 @@ import type { StepExecutor, RunContext } from '@agent-harness/core';
 import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, type TeamManager, type AgentCard, type TenantContext } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
+import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
 
 /**
  * 把 step 的 input 对象（由 planToWorkflowDef.buildInputMapping 生成的
@@ -85,6 +86,54 @@ export interface WorkflowExecutorOptions {
    * 类型与 `AgentHarness.run` 的第 2 参完全一致。
    */
   attachments?: Array<{ url: string; name: string; type: string }>;
+  /**
+   * BYOK 模型与凭据透传（P3：plan DAG real 模式修复）：与 /api/run（run-queue）对齐，
+   * 让每个 step 的 assembleAgent 拿到调用方当前会话的模型名 / 自定义端点 / 上下文窗口。
+   * 缺省（undefined）时行为与旧版完全一致——real 模式回落到服务端默认凭证解析，
+   * mock 模式无影响。
+   */
+  model?: string;
+  modelBaseUrl?: string;
+  modelApiKey?: string;
+  apiKeys?: string[];
+  ctxWindow?: number;
+  /** 联网搜索开关（/api/run 的 job.web 语义）：true 注册 web_fetch + 联网检索技能。缺省关闭。 */
+  webEnabled?: boolean;
+}
+
+/**
+ * 把 WorkflowExecutorOptions 的 BYOK 参数展开为 assembleAgent 的 15–23 号位置参数
+ * （timeoutMs / 略 3 个 / card / tenantCtx 之外的尾部参数组），供 team 路径与主路径共用，
+ * 避免两处 24 参调用各自维护、易漏。
+ *
+ * 参数序（assembleAgent 签名，1-indexed）：
+ *  8  timeoutMs        9  maxSteps       10  memoryArg
+ * 11  verifier         12  verifyMaxRetries  13  card        14  tenantCtx
+ * 15  sandboxBackend   16  streamTokens   17  webEnabled    18  planPropose
+ * 19  planTask         20  modelBaseUrl   21  modelApiKey   22  ctxWindow
+ * 23  apiKeys
+ */
+function tailArgs(
+  o: WorkflowExecutorOptions,
+  card: AgentCard | null,
+  tenantCtx: TenantContext | null
+): unknown[] {
+  // 工作流 step 属计划任务执行（语义等价 run-queue 的 isPlanTaskRun）：
+  // - timeoutMs 放宽到 PLAN_TASK_TIMEOUT_MS（默认 10 分钟），重任务不被 5 分钟看门狗掐断；
+  // - planTask=true → 输出走 checkTaskOutput 宽松扫描（研报 / 综述类产出含
+  //   「system prompt」等弱信号短语时不被 medium 注入护栏误拦成兜底话术）；
+  // - webEnabled 沿用 /api/run 语义（显式开启才出网，缺省 false 不出网）。
+  return [
+    undefined, // 15 sandboxBackend：沿用 SANDBOX_BACKEND 全局值（per-step 隔离后端 P2.d 未接入工作流）
+    undefined, // 16 streamTokens：默认开启（受 AGENT_STREAM_TOKENS 控制）
+    o.webEnabled ?? false, // 17 webEnabled
+    false, // 18 planPropose：step 执行的是具体任务，非计划生成阶段
+    true, // 19 planTask：计划任务执行（输出宽松扫描）
+    o.modelBaseUrl, // 20
+    o.modelApiKey, // 21
+    o.ctxWindow, // 22
+    o.apiKeys && o.apiKeys.length > 0 ? o.apiKeys : undefined // 23
+  ];
 }
 
 export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): StepExecutor {
