@@ -12,7 +12,11 @@ import { html, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import {
   renderAttachments,
-  renderImageAttachments
+  renderImageAttachments,
+  buildPlanWfReplayRows,
+  planWfReplayMark,
+  planWfReplayStateLabel,
+  formatPlanWfDuration
 } from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
@@ -24,7 +28,7 @@ import {
   renderInsights,
   renderConfidence
 } from './chat-trace';
-import type { ChatMsg, PlanExecState } from './chat-types';
+import type { ChatMsg, PlanExecState, PlanWfReplayState } from './chat-types';
 import type { UploadedFile } from './agent-context';
 
 /** 渲染函数所需的交互态快照 + 回调闭包。由 AhChat.renderCtx() 构造。 */
@@ -48,6 +52,12 @@ export interface ChatRenderCtx {
   /** 用户手动停止标记（按会话）：true 时空气泡显示「已停止」而非「等待响应…」。 */
   stopped: Record<string, boolean>;
   planExec: Record<number, PlanExecState>;
+  /** P2（轨迹回放）：计划「执行详情」抽屉瞬态（key=消息 id）与开/关回调。 */
+  planWfReplay: Record<number, PlanWfReplayState>;
+  /** P2：当前打开回放抽屉的计划消息（null=未打开；存引用以便快照回流后实时刷新）。 */
+  planWfReplayMsg: ChatMsg | null;
+  openPlanWfReplay: (m: ChatMsg) => void;
+  closePlanWfReplay: () => void;
   // —— 回调（绑定到 AhChat 对应方法）——
   onEditingInput: (value: string) => void;
   sendEdit: (id: number) => void;
@@ -649,8 +659,103 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
                 从失败任务继续
               </button>`
             : nothing}
+          ${st.status !== 'pending'
+            ? html`<button
+                class="plan-btn ghost"
+                title="查看各任务执行轨迹（检查点快照回放）"
+                @click=${() => ctx.openPlanWfReplay(m)}
+              >
+                执行详情
+              </button>`
+            : nothing}
         </div>
       </div>`
     }
   </div>`;
+}
+
+/**
+ * P2（轨迹回放）：计划「执行详情」侧滑抽屉。
+ *
+ * 数据源 = 服务端检查点快照（client.getWorkflow(derivePlanWfId(sid, plan)) → WorkflowRun），
+ * 快照本身即轨迹：每 step 带 agent / 状态 / 起止时间 / 产出 / 错误。抽屉只负责「把快照
+ * 收敛成步骤级时间线」——行数据由纯函数 buildPlanWfReplayRows 产出（可独立测试），
+ * 本函数零引擎改动。
+ *
+ * 三种态：
+ * - loading：抽屉已开、快照在途（「正在加载执行轨迹…」）；
+ * - error/无快照：404（旧串行 run / 检查点未落盘 / 服务端重启丢了 Volatile 检查点）→
+ *   提示不可回放，并指向兜底路径（「从失败任务继续」断点续跑 / 重新确认执行）；
+ * - 有快照：时间线（每 task 一行：状态图标 / agent / 状态标签 / 耗时 / 可折叠产出·错误）。
+ */
+export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
+  const m = ctx.planWfReplayMsg;
+  if (!m || !m.plan) {
+    return html`<ah-drawer ?open=${false} placement="right" title="执行详情" size="500px"></ah-drawer>`;
+  }
+  const rs: PlanWfReplayState | undefined = ctx.planWfReplay[m.id];
+  const run = rs?.snapshot ?? null;
+  const rows = buildPlanWfReplayRows(m.plan, run);
+  const totalMs =
+    run?.startedAt && run.finishedAt ? Math.max(0, run.finishedAt - run.startedAt) : undefined;
+  const stateLabel: Record<string, string> = {
+    running: '执行中',
+    done: '已完成',
+    failed: '失败',
+    pending: '待执行'
+  };
+  return html`
+    <ah-drawer
+      ?open=${true}
+      placement="right"
+      title="执行详情"
+      size="500px"
+      @close=${() => ctx.closePlanWfReplay()}
+    >
+      <div class="wf-replay">
+        ${rs?.loading
+          ? html`<div class="wf-replay-hint">正在加载执行轨迹…</div>`
+          : nothing}
+        ${!rs?.loading && !run
+          ? html`<div class="wf-replay-hint">
+              ${rs?.error
+                ? html`暂无可回放的执行轨迹：${escapeHtml(rs.error)}。<br />
+                    可能是检查点尚未落盘或已被清理。<br />
+                    可点卡片上的「从失败任务继续 / 确认执行」重新拉起 DAG 执行。`
+                : '该计划暂无执行记录（尚未开始，或为串行路径执行——串行 run 不落检查点）。'}
+              </div>`
+          : nothing}
+        ${run
+          ? html`<div class="wf-replay-head">
+              <span class="pill ${run.state}">${stateLabel[run.state] ?? run.state}</span>
+              <span class="wf-replay-total"
+                >共 ${rows.length} 步${totalMs !== undefined ? html` · ${formatPlanWfDuration(totalMs)}` : ''}</span
+              >
+              ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
+            </div>
+            <ol class="wf-replay-timeline">
+              ${rows.map(
+                (r) =>
+                  html`<li class="wf-replay-row ${r.state}">
+                    <div class="wf-replay-row-head">
+                      <span class="wf-replay-mark">${planWfReplayMark(r.state)}</span>
+                      <b>${escapeHtml(r.title)}</b>
+                      <span class="wf-replay-agent">${r.agentId ? escapeHtml(r.agentId) : '—'}</span>
+                      <span class="wf-replay-state"
+                        >${planWfReplayStateLabel(r.state)} · ${formatPlanWfDuration(r.durationMs)}</span
+                      >
+                    </div>
+                    ${r.detail
+                      ? html`<details class="wf-replay-detail">
+                          <summary>产出 / 错误</summary>
+                          <pre>${escapeHtml(r.detail)}</pre>
+                        </details>`
+                      : nothing}
+                  </li>`
+              )}
+            </ol>`
+          : nothing}
+      </div>
+    </ah-drawer>
+  `;
 }

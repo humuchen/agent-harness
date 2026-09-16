@@ -40,6 +40,7 @@ import {
   renderExtras,
   renderTraceDrawer,
   renderPlanCard,
+  renderPlanWfReplayDrawer,
   type ChatRenderCtx
 } from './chat-message-render';
 
@@ -66,6 +67,7 @@ import type {
   ToolView,
   ExecutionPlanView,
   PlanExecState,
+  PlanWfReplayState,
   ChatMsg,
   SessionView,
   TraceCtx
@@ -99,7 +101,8 @@ import type {
   TraceNode,
   TraceKind,
   PlanExecMirror,
-  ChatMessage
+  ChatMessage,
+  WorkflowRun
 } from '@agent-harness/client';
 import { agentContext, type UploadedFile } from './agent-context';
 import { notifyError } from './utils/errors';
@@ -371,6 +374,10 @@ export class AhChat extends LitElement {
   @state() private traceDrawerMsg: ChatMsg | null = null;
   @state() private traceDrawerSection: 'trace' | 'insights' | 'confidence' =
     'trace';
+
+  /** P2（轨迹回放）：计划「执行详情」抽屉——当前打开的计划消息（null=未开）+ 各消息的快照瞬态。 */
+  @state() private planWfReplayMsg: ChatMsg | null = null;
+  @state() private planWfReplay: Record<number, PlanWfReplayState> = {};
 
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
@@ -3256,6 +3263,47 @@ export class AhChat extends LitElement {
     return renderPlanCard(this.renderCtx(), m);
   }
 
+  private renderPlanWfReplayDrawer(): TemplateResult {
+    return renderPlanWfReplayDrawer(this.renderCtx());
+  }
+
+  /**
+   * P2（轨迹回放）：打开计划「执行详情」抽屉。
+   * 开抽屉即按确定性键 derivePlanWfId(activeId, plan) 拉取服务端检查点快照
+   * （GET /api/workflows/:id，零引擎改动——快照本身即轨迹）；
+   * 404 / 网络错误 → error 态（抽屉内友好提示并指向「断点续跑 / 重新执行」兜底）。
+   */
+  private openPlanWfReplay(m: ChatMsg): void {
+    if (!m.plan) return;
+    const sid = this.activeId;
+    if (!sid) return;
+    this.planWfReplayMsg = m;
+    this.planWfReplay = { ...this.planWfReplay, [m.id]: { loading: true, snapshot: null } };
+    void (async () => {
+      const wfId = derivePlanWfId(sid, m.plan!);
+      let st: PlanWfReplayState;
+      try {
+        const res = await client.getWorkflow(wfId);
+        st = { loading: false, snapshot: res.workflow ?? null };
+      } catch (e: unknown) {
+        st = {
+          loading: false,
+          snapshot: null,
+          error: e instanceof Error ? e.message : String(e)
+        };
+      }
+      // 抽屉已关闭 / 已切到别的计划消息时不写回（防旧请求回流覆盖最新交互态）。
+      if (this.planWfReplayMsg?.id === m.id) {
+        this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      }
+    })();
+  }
+
+  /** P2：关闭「执行详情」抽屉（快照缓存保留，重开时即时水合后仍可重拉）。 */
+  private closePlanWfReplay(): void {
+    this.planWfReplayMsg = null;
+  }
+
   /**
    * 构造渲染簇所需的「数据 + 回调」快照（ChatRenderCtx）。
    * 把当前交互态与各交互方法的绑定一次性打包，供 chat-message-render.ts 的纯函数使用，
@@ -3280,6 +3328,10 @@ export class AhChat extends LitElement {
       jobBy: this.runRt.jobMap,
       stopped: this.runRt.stoppedMap,
       planExec: this.planExec,
+      planWfReplay: this.planWfReplay,
+      planWfReplayMsg: this.planWfReplayMsg,
+      openPlanWfReplay: (m: ChatMsg) => this.openPlanWfReplay(m),
+      closePlanWfReplay: () => this.closePlanWfReplay(),
       onEditingInput: (v: string) => {
         this.editingDraft = v;
       },
@@ -4375,6 +4427,7 @@ export class AhChat extends LitElement {
             </div>`
           : nothing}
         ${this.renderTraceDrawer()}
+        ${this.renderPlanWfReplayDrawer()}
 
         <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
            drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->

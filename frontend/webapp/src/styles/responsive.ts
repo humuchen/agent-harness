@@ -149,6 +149,20 @@ export const responsive = css`
       display: block;
     }
 
+    /* 各页面根 section 跟随文档自然滚动：base.ts 的桌面规则给
+       section 锁了 flex:1 1 0% + min-height:0 + overflow:auto（内部滚动容器）。
+       移动端 .content 高度已解除后，flex-basis:0% 仍会撑出 >0 的盒，
+       空数据页（如「暂无会话」）section 高度 > 内容高度 → 内部也能上下滚；
+       文档可滚区又让最外层出现滚动条。此处恢复自然高度，
+       滚动全部交给文档，无数据时不可滚、也不产生外层滚动。
+       高度足够大的页面内容仍超出视口，文档自然滚动可达底。 */
+    section {
+      flex: none;
+      height: auto;
+      min-height: 0;
+      overflow: visible;
+    }
+
     /* 顶栏吸顶，移动端长页面滚动时仍可随时操作 */
     .topbar {
       position: sticky;

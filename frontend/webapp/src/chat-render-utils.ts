@@ -207,6 +207,110 @@ export function derivePlanWfId(sessionId: string, plan: ExecutionPlanView): stri
   return `plan-${h.toString(16).padStart(8, '0')}`;
 }
 
+/* ────────────────────────────────────────────────────────────────────
+ * P2（轨迹回放）：把服务端检查点快照（WorkflowRun）收敛为「步骤级时间线行」，
+ * 供计划卡片「执行详情」抽屉渲染。纯函数（零 this / 零 DOM），可独立测试。
+ * 快照本身即轨迹：每 step 带 agentId / state / 时间戳 / output / error，
+ * 由引擎在每次状态迁移后落 WorkflowStore（见 engine.ts 的 store.save 节奏），
+ * 前端刷新 / 重启后经 GET /api/workflows/:id（client.getWorkflow）可完整重建。
+ * ──────────────────────────────────────────────────────────────────── */
+
+/** 时间线一行：某 task（step）的执行者 / 终态 / 耗时 / 可折叠正文（产出或错误）。 */
+export interface PlanWfReplayRow {
+  /** task id（= step id，= ExecutionPlanView.tasks[].id）。 */
+  id: string;
+  title: string;
+  agentId?: string;
+  state: string;
+  /** 耗时（ms）：startedAt/finishedAt 缺失时 undefined（抽屉端显示「—」）。 */
+  durationMs?: number;
+  /** 折叠正文：done/skipped 展示产出（若为空则说明无产出），failed/compensated 展示错误。 */
+  detail?: string;
+}
+
+const REPLAY_MARK: Record<string, string> = {
+  done: '✅',
+  failed: '❌',
+  running: '⏳',
+  pending: '⬜',
+  skipped: '⏭',
+  compensated: '♻️'
+};
+
+/** step 状态 → 展示标签（状态机外的未知值原样展示，防引擎新增状态后 UI 空白）。 */
+export function planWfReplayStateLabel(state: string): string {
+  const label: Record<string, string> = {
+    done: '完成',
+    failed: '失败',
+    running: '执行中',
+    pending: '待执行',
+    skipped: '已跳过',
+    compensated: '已补偿'
+  };
+  return label[state] ?? state;
+}
+
+/** 折叠正文长度上限（与 appendPlanDagSummary 的 300 字截断同款纪律，避免历史膨胀）。 */
+const REPLAY_DETAIL_MAX = 600;
+
+/** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、超长截断、空白视为无内容）。 */
+export function formatPlanWfOutput(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  let s: string;
+  if (typeof v === 'string') s = v;
+  else s = JSON.stringify(v, null, 2);
+  s = s.trim();
+  if (!s) return undefined;
+  return s.length > REPLAY_DETAIL_MAX ? `${s.slice(0, REPLAY_DETAIL_MAX)}…` : s;
+}
+
+/**
+ * 由（计划任务清单，WorkflowRun 快照）构建时间线行。
+ * 行序 = 计划 tasks 序（拓扑合法的计划序即可读执行序）；快照缺失的 task 记 pending。
+ * 快照 steps 里多出的 step（def 演化 / 补偿 step）不额外占行，避免与任务清单错位。
+ */
+export function buildPlanWfReplayRows(
+  plan: ExecutionPlanView,
+  run: { steps?: Record<string, { state?: string; agentId?: string; output?: unknown; error?: string; startedAt?: number; finishedAt?: number }> } | null | undefined
+): PlanWfReplayRow[] {
+  const steps = run?.steps ?? {};
+  return (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
+    const sr = steps[t.id];
+    const state = sr?.state ?? 'pending';
+    const durationMs =
+      sr?.startedAt && sr.finishedAt ? Math.max(0, sr.finishedAt - sr.startedAt) : undefined;
+    let detail: string | undefined;
+    if (state === 'failed' || state === 'compensated') {
+      detail = formatPlanWfOutput(sr?.error);
+    } else {
+      // done / running / pending：展示已落盘的产出（running 时可能尚无）；
+      // skipped 无产出语义 → 仅当快照显式记录了才展示。
+      detail = state === 'skipped' ? undefined : formatPlanWfOutput(sr?.output);
+    }
+    return {
+      id: t.id,
+      title: t.title,
+      agentId: sr?.agentId,
+      state,
+      durationMs,
+      detail
+    };
+  });
+}
+
+/** 时间线行 → 单行状态图标（渲染端直接用，避免与 buildPlanWfReplayRows 的 state 语义漂移）。 */
+export function planWfReplayMark(state: string): string {
+  return REPLAY_MARK[state] ?? '•';
+}
+
+/** 耗时（ms）→ 人类可读（<1s 显示 ms，否则秒、两位小数按需截断）。缺省（undefined）→ '—'。 */
+export function formatPlanWfDuration(ms: number | undefined): string {
+  if (ms === undefined || Number.isNaN(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+}
+
 /** derivePlanExecFromMessages 的只读消息形状（ChatMsg / MirroredMsg 均满足）。 */
 export interface PlanDeriveMsg {
   role: 'user' | 'assistant' | string;

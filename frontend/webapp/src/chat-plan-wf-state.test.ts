@@ -13,6 +13,11 @@ import {
   isPlanDagEnabled,
   setPlanDagEnabled,
   derivePlanWfId,
+  buildPlanWfReplayRows,
+  formatPlanWfOutput,
+  formatPlanWfDuration,
+  planWfReplayStateLabel,
+  planWfReplayMark,
   PLAN_DAG_STORAGE_KEY,
   type PlanWfEvent
 } from './chat-render-utils';
@@ -263,5 +268,109 @@ describe('derivePlanWfId（P1 断点续跑：确定性检查点键）', () => {
     expect(key.replace(/[^a-zA-Z0-9._-]/g, '_')).toBe(key);
     // 与旧随机键前缀 plan:（冒号）区分——旧 run 无法被确定性定位（resume 404 → 回退串行）。
     expect(key.startsWith('plan:')).toBe(false);
+  });
+});
+
+describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等纯函数）', () => {
+  const p: ExecutionPlanView = {
+    goal: '上线',
+    tasks: [
+      { id: 't1', title: '写核心逻辑', steps: [], dependsOn: [], expectedOutput: '核心模块' },
+      { id: 't2', title: '写测试', steps: [], dependsOn: ['t1'], expectedOutput: '全绿测试' }
+    ]
+  };
+  // 快照形状与 buildPlanWfReplayRows 第二参对齐（步骤最小结构），便于字面量构造。
+  type SnapStep = {
+    state?: string;
+    agentId?: string;
+    output?: unknown;
+    error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+  };
+  const snap = (steps: Record<string, SnapStep>) => ({ steps });
+
+  it('快照缺失 → 全部 task 记 pending（无 agent / 无耗时 / 无正文）', () => {
+    const rows = buildPlanWfReplayRows(p, null);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      id: 't1',
+      title: '写核心逻辑',
+      agentId: undefined,
+      state: 'pending',
+      durationMs: undefined,
+      detail: undefined
+    });
+  });
+
+  it('done 行：产出作为折叠正文，耗时 = finishedAt - startedAt，agentId 透出', () => {
+    const rows = buildPlanWfReplayRows(
+      p,
+      snap({
+        t1: {
+          state: 'done',
+          agentId: 'agent-a',
+          output: '核心模块 v1',
+          startedAt: 1000,
+          finishedAt: 3500
+        },
+        t2: { state: 'running', agentId: 'agent-b', startedAt: 3500 }
+      })
+    );
+    expect(rows[0]).toEqual({
+      id: 't1',
+      title: '写核心逻辑',
+      agentId: 'agent-a',
+      state: 'done',
+      durationMs: 2500,
+      detail: '核心模块 v1'
+    });
+    // running 尚无产出 → detail 为 undefined；缺 finishedAt → 无耗时。
+    const r1 = rows[1];
+    expect(r1?.state).toBe('running');
+    expect(r1?.detail).toBeUndefined();
+    expect(r1?.durationMs).toBeUndefined();
+  });
+
+  it('failed 行：错误信息作为折叠正文（而非产出）', () => {
+    const rows = buildPlanWfReplayRows(
+      p,
+      snap({ t1: { state: 'failed', error: 'LLM 401 无 Key', startedAt: 1, finishedAt: 2 } })
+    );
+    expect(rows[0]?.detail).toBe('LLM 401 无 Key');
+  });
+
+  it('skipped 行：无产出语义 → 即便快照记录了 output 也不展示', () => {
+    const rows = buildPlanWfReplayRows(p, snap({ t2: { state: 'skipped', output: '不应展示' } }));
+    expect(rows[1]?.state).toBe('skipped');
+    expect(rows[1]?.detail).toBeUndefined();
+  });
+
+  it('对象产出 → JSON 化；超长截断到 600 字并加省略号', () => {
+    expect(formatPlanWfOutput({ a: 1, b: [2, 3] }) ?? '').toContain('"a"');
+    const long = 'x'.repeat(1000);
+    const out = formatPlanWfOutput(long);
+    expect(out).not.toBeUndefined();
+    expect(out?.length).toBe(601); // 600 + '…'
+    expect(out).toBe(`${long.slice(0, 600)}…`);
+    expect(formatPlanWfOutput('   ')).toBeUndefined();
+    expect(formatPlanWfOutput(null)).toBeUndefined();
+  });
+
+  it('耗时格式化：ms / 秒 / 取整 + 缺省「—」', () => {
+    expect(formatPlanWfDuration(0)).toBe('0ms');
+    expect(formatPlanWfDuration(800)).toBe('800ms');
+    expect(formatPlanWfDuration(1500)).toBe('1.5s');
+    expect(formatPlanWfDuration(25600)).toBe('26s');
+    expect(formatPlanWfDuration(undefined)).toBe('—');
+    expect(formatPlanWfDuration(-5)).toBe('—');
+  });
+
+  it('状态标签 / 图标：已知状态映射，未知状态原样透出（引擎新增状态后 UI 不空白）', () => {
+    expect(planWfReplayStateLabel('done')).toBe('完成');
+    expect(planWfReplayStateLabel('skipped')).toBe('已跳过');
+    expect(planWfReplayStateLabel('weird')).toBe('weird');
+    expect(planWfReplayMark('done')).toBe('✅');
+    expect(planWfReplayMark('weird')).toBe('•');
   });
 });

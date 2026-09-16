@@ -6,7 +6,7 @@
  * 解耦（core 类型从 @agent-harness/client 引入）。集中后 chat.ts 体积下降、类型单一
  * 可寻址，且便于 plan/trace 等子模块在需要时复用（见可维护性审计 P2：降低 chat.ts 单体规模）。
  */
-import type { TraceNode } from '@agent-harness/client';
+import type { TraceNode, WorkflowRun } from '@agent-harness/client';
 import type { UploadedFile } from './agent-context';
 
 export interface ToolView {
@@ -80,4 +80,19 @@ export interface TraceCtx {
   /** 按 tool:start/tool:result 事件携带的 call.id 索引工具节点，避免并行工具结果误挂到单指针 lastTool。 */
   toolByCallId: Record<string, TraceNode>;
   seq: number;
+}
+
+/**
+ * P2（轨迹回放）：计划「执行详情」抽屉的瞬态。
+ * key 为携带计划的消息 id；打开时经 client.getWorkflow(derivePlanWfId) 拉取检查点快照，
+ * 服务端重启 / 旧串行 run / 检查点未落盘时 snapshot 为 null（抽屉显示「不可回放」提示，
+ * 并指向「断点续跑」兜底路径，见 design/plan-mode-multiagent.md §9.5）。
+ */
+export interface PlanWfReplayState {
+  /** 正在拉取快照（抽屉已开、请求在途）。 */
+  loading: boolean;
+  /** 拉取失败原因（404 无检查点 / 网络错误）；成功时 undefined。 */
+  error?: string;
+  /** 服务端检查点快照（WorkflowRun 本身即轨迹）；缺失为 null。 */
+  snapshot: WorkflowRun | null;
 }
