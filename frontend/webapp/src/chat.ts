@@ -25,6 +25,7 @@ import {
   buildPlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
+  derivePlanWfId,
   isPlanDagEnabled,
   type PlanWfEvent,
   type PlanWfRunSnapshot
@@ -3315,16 +3316,30 @@ export class AhChat extends LitElement {
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
+    // P1（断点续跑）：确定性检查点键（sessionId + 计划结构键 → FNV-1a）。刷新 / 重启后
+    // 可由同输入重算，无需把 wfId 写进持久化镜像；DAG 首跑与断点续跑共用同一键定位检查点。
+    const wfId = derivePlanWfId(sid, m.plan);
     // P3（多 agent DAG）：开关开启时，首次确认（pending）走服务端 DagEngine 并行执行 + 共享黑板；
     // 传输层失败（unknown agent / 5xx / 断连 / wf:error）整体回退串行路径，保证已验证行为兜底。
-    // failed 态的「从失败任务继续」统一走串行 resume（DAG 的 per-task 检查点续跑是 P4，见 design R8）。
     if (isPlanDagEnabled() && st.status === 'pending') {
-      const ok = await this.confirmPlanViaWorkflow(m, st, sid);
+      const ok = await this.confirmPlanViaWorkflow(m, st, sid, wfId);
       if (ok) return;
       // 回退：DAG 未进入终态 → 重置为可重入 pending，继续走下方串行派发。
       this.planExec = {
         ...this.planExec,
         [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+      };
+    }
+    // P1（断点续跑）：failed 态「从失败任务继续」优先走 DAG 检查点续跑（保留并行 + 共享黑板，
+    // 从断点仅重跑未完成任务）；DAG 不可达（404 无检查点 / 5xx / 断连 / wf:error）回退已验证的
+    // 串行 resume（见 design/plan-mode-multiagent.md §9.3 / R8）。
+    if (isPlanDagEnabled() && st.status === 'failed') {
+      const ok = await this.resumePlanViaWorkflow(m, st, sid, wfId);
+      if (ok) return;
+      // 回退：DAG 续跑未进入终态 → 保留 failed（done 集合不动），继续走下方串行从失败任务重派发。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...st, status: 'failed', currentTaskId: undefined }
       };
     }
     let cur: PlanExecState = { ...st, status: 'running' };
@@ -3404,7 +3419,8 @@ export class AhChat extends LitElement {
   private async confirmPlanViaWorkflow(
     m: ChatMsg,
     st: PlanExecState,
-    sid: string
+    sid: string,
+    wfId: string
   ): Promise<boolean> {
     if (!m.plan) return false;
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
@@ -3415,27 +3431,120 @@ export class AhChat extends LitElement {
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
-      // BYOK 透传（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）同构——
-      // model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
-      // 服务端 handleWorkflow 按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；
-      // 自定义模型路径才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。
-      const endpoint = await this.customModelEndpoint();
-      const byok = {
-        model: this.model || undefined,
-        ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
-        modelBaseUrl: endpoint.modelBaseUrl,
-        modelApiKey: endpoint.modelApiKey,
-        web: this.web || undefined
-      };
-      for await (const ev of client.streamWorkflowFromPlan(m.plan, {
-        agentRef: this.agentId || undefined,
-        mode: this.mode,
-        ...byok,
-        // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
-        // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
-        sessionId: sid,
-        signal: ac.signal
-      })) {
+      const byok = await this.planWfByok();
+      const source: AsyncGenerator<unknown> = client.streamWorkflowFromPlan(
+        m.plan,
+        {
+          agentRef: this.agentId || undefined,
+          mode: this.mode,
+          ...byok,
+          // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
+          // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
+          sessionId: sid,
+          // P1（断点续跑）：确定性检查点键 → 服务端按此 id 落检查点，
+          // failed 态可经 resumePlanViaWorkflow 按同一键从断点续跑。
+          workflowId: wfId,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, false);
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * P1（断点续跑）：failed 态经服务端 POST /api/workflows/:id/resume 从检查点续跑
+   * （DagEngine.resume 跳过已完成 step，仅重跑未完成任务；BYOK 经服务端按 owner 重新解析，
+   * 检查点本身不落明文凭据）。事件消费与首跑共用 consumePlanWfStream（状态机幂等——
+   * 续跑流只重发未完成 step 的 wf:step:*，已完成任务保留在 prev.done）。
+   *
+   * @returns true = 续跑进入终态（done/failed/cancelled，或不可续跑时的 400/404）；
+   *          false = 传输层异常（5xx / 断连 / fetch 抛错）→ 调用方回退串行 resume 兜底。
+   */
+  private async resumePlanViaWorkflow(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    wfId: string
+  ): Promise<boolean> {
+    if (!m.plan) return false;
+    const taskIds = new Set(m.plan.tasks.map((t) => t.id));
+    const ac = new AbortController();
+    this.planWfAbort = ac;
+    this.streaming = { ...this.streaming, [sid]: true };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    let terminal = false;
+    try {
+      const byok = await this.planWfByok();
+      const source: AsyncGenerator<unknown> = client.streamWorkflowResume(
+        wfId,
+        {
+          mode: this.mode,
+          ...byok,
+          sessionId: sid,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, true);
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * 共享的 BYOK 载荷构造（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）
+   * 同构——model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
+   * 服务端按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；自定义模型路径
+   * 才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。首跑与续跑复用。
+   */
+  private async planWfByok(): Promise<{
+    model?: string;
+    modelBaseUrl?: string;
+    modelApiKey?: string;
+    ctxWindow?: number;
+    web?: boolean;
+  }> {
+    const endpoint = await this.customModelEndpoint();
+    return {
+      model: this.model || undefined,
+      ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
+      modelBaseUrl: endpoint.modelBaseUrl,
+      modelApiKey: endpoint.modelApiKey,
+      web: this.web || undefined
+    };
+  }
+
+  /**
+   * 共享事件流消费器（confirmPlanViaWorkflow 首跑 / resumePlanViaWorkflow 续跑共用）：
+   * 逐帧驱动卡片状态机（applyPlanWfEvent），编排终态回挂摘要，终结帧/异常按首跑 vs
+   * 续跑语义收敛终态。
+   *
+   * @param resume true = 续跑模式：wf:error / 流静默结束保留 failed（不回 pending），
+   *        调用方据返回 false 回退串行 resume；false = 首跑模式：wf:error / 传输异常
+   *        重置 pending 后回退串行派发。
+   * @returns 是否进入终态（调用方 true 时不再走串行路径）。
+   */
+  private async consumePlanWfStream(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    taskIds: Set<string>,
+    ac: AbortController,
+    source: AsyncGenerator<unknown>,
+    resume: boolean
+  ): Promise<boolean> {
+    let terminal = false;
+    try {
+      for await (const ev of source) {
         if (ac.signal.aborted) break;
         const e = ev as unknown as PlanWfEvent & {
           run?: PlanWfRunSnapshot;
@@ -3471,12 +3580,18 @@ export class AhChat extends LitElement {
           break;
         }
         if (e.type === 'wf:error') {
-          // 请求级失败（SSE 已开后服务端报错）：重置可重入 pending，回退串行路径。
+          // 请求级失败（SSE 已开后服务端报错，如 402 无 Key / 检查点 400/404）：
+          // 首跑重置可重入 pending（回退串行派发）；续跑保留 failed（回退串行 resume，
+          // 从失败任务重派发——done 集合不动，已完成产出保留）。
           this.planExec = {
             ...this.planExec,
-            [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+            [m.id]: {
+              ...(this.planExec[m.id] ?? st),
+              status: resume ? 'failed' : 'pending',
+              currentTaskId: undefined
+            }
           };
-          terminal = false;
+          terminal = !resume;
           break;
         }
       }
@@ -3518,20 +3633,31 @@ export class AhChat extends LitElement {
           }
         };
         terminal = true;
+      } else if (resume) {
+        // 续跑传输层异常（404 无检查点 / 5xx / 断连）：不 toast 打扰（旧 run / 检查点
+        // 丢失属可预期路径），保留 failed → 调用方回退串行 resume 兜底。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'failed',
+            currentTaskId: undefined
+          }
+        };
+        terminal = false;
       } else {
-        // 传输层异常（unknown agentRef / 5xx / 断连）：提示 + 重置 pending，回退串行路径。
+        // 首跑传输层异常（unknown agentRef / 5xx / 断连）：提示 + 重置 pending，回退串行路径。
         notifyError(e, { title: '计划执行中断', key: `plan-wf-${m.id}` });
         this.planExec = {
           ...this.planExec,
-          [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'pending',
+            currentTaskId: undefined
+          }
         };
       }
-    } finally {
-      this.planWfAbort = null;
-      this.streaming = { ...this.streaming, [sid]: false };
-      this.requestUpdate();
     }
-    if (terminal) this.saveHistory(sid);
     return terminal;
   }
 
