@@ -103,8 +103,7 @@ export interface WorkflowExecutorOptions {
 
 /**
  * 把 WorkflowExecutorOptions 的 BYOK 参数展开为 assembleAgent 的 15–23 号位置参数
- * （timeoutMs / 略 3 个 / card / tenantCtx 之外的尾部参数组），供 team 路径与主路径共用，
- * 避免两处 24 参调用各自维护、易漏。
+ * 组成的元组（team 路径与主路径共用），避免两处 24 参调用各自维护、易漏。
  *
  * 参数序（assembleAgent 签名，1-indexed）：
  *  8  timeoutMs        9  maxSteps       10  memoryArg
@@ -113,16 +112,26 @@ export interface WorkflowExecutorOptions {
  * 19  planTask         20  modelBaseUrl   21  modelApiKey   22  ctxWindow
  * 23  apiKeys
  */
-function tailArgs(
-  o: WorkflowExecutorOptions,
-  card: AgentCard | null,
-  tenantCtx: TenantContext | null
-): unknown[] {
+/** 15–23 号位置参数元组（与 assembleAgent 签名一一对应，保证 spread 类型安全）。 */
+type AssembleAgentTail = [
+  string | null | undefined, // 15 sandboxBackend
+  boolean | undefined, // 16 streamTokens
+  boolean, // 17 webEnabled
+  boolean, // 18 planPropose
+  boolean, // 19 planTask
+  string | undefined, // 20 modelBaseUrl
+  string | undefined, // 21 modelApiKey
+  number | undefined, // 22 ctxWindow
+  string[] | undefined // 23 apiKeys
+];
+
+function tailArgs(o: WorkflowExecutorOptions): AssembleAgentTail {
   // 工作流 step 属计划任务执行（语义等价 run-queue 的 isPlanTaskRun）：
   // - timeoutMs 放宽到 PLAN_TASK_TIMEOUT_MS（默认 10 分钟），重任务不被 5 分钟看门狗掐断；
   // - planTask=true → 输出走 checkTaskOutput 宽松扫描（研报 / 综述类产出含
   //   「system prompt」等弱信号短语时不被 medium 注入护栏误拦成兜底话术）；
   // - webEnabled 沿用 /api/run 语义（显式开启才出网，缺省 false 不出网）。
+  // 注：8 号位 timeoutMs 与 4 号位 modelOverride 不在本元组内，由调用点按序直传。
   return [
     undefined, // 15 sandboxBackend：沿用 SANDBOX_BACKEND 全局值（per-step 隔离后端 P2.d 未接入工作流）
     undefined, // 16 streamTokens：默认开启（受 AGENT_STREAM_TOKENS 控制）
@@ -166,17 +175,18 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           mode,
           opts.onEvent,
           undefined,
-          undefined,
+          opts.model,
           task,
           subSessionKey,
           ctx.signal,
-          undefined,
+          PLAN_TASK_TIMEOUT_MS,
           undefined,
           undefined,
           undefined,
           undefined,
           card,
-          tenantCtx
+          tenantCtx,
+          ...tailArgs(opts)
         );
         return assembled.harness.run(task, opts.attachments);
       };
@@ -205,17 +215,18 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       mode,
       opts.onEvent,
       undefined,
-      undefined,
+      opts.model,
       prompt,
       sessionKey,
       ctx.signal,
-      undefined,
+      PLAN_TASK_TIMEOUT_MS,
       undefined,
       undefined,
       undefined,
       undefined,
       card,
-      tenantCtx
+      tenantCtx,
+      ...tailArgs(opts)
     );
     return assembled.harness.run(prompt, opts.attachments);
   };

@@ -162,6 +162,8 @@ import {
   getPlanStore,
   type PlanDoc,
   type PlanDiff,
+  type PlanNode,
+  type PlanNodeStatus,
   type PlanStore
 } from './plan-store';
 // P2-3 Plan 协同事件总线（SSE 协同）。
@@ -226,7 +228,8 @@ import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
 
 import {
   registerProviderKeyRoutes,
-  resolveRunCredential
+  resolveRunCredential,
+  type CredentialResult
 } from './provider-keys';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
@@ -4161,6 +4164,11 @@ async function handleRun(
         const finalStr = String((e as { final?: unknown }).final ?? '');
         const plan = parsePlanOutput(finalStr);
         if (plan) {
+          // 计划产物落库（P2-3）：以会话为键持久化 PlanDoc，供「计划」Tab 看板随时打开；
+          // 重复 propose（同一会话再次生成计划）幂等覆盖为最新文档（version +1），并广播协同事件。
+          if (chatSessionId) {
+            void persistProposedPlan(chatSessionId, plan, ctx.sub).catch(() => {});
+          }
           runQueue.emitSynthetic(jobId, { type: 'plan:proposed', plan });
           runQueue.emitSynthetic(jobId, {
             ...(e as object),
@@ -4279,6 +4287,9 @@ async function handleRun(
         // input 是「【计划任务 <id>】标题」形状 —— 据此把 currentTaskId 写入进度镜像。
         const taskId = extractPlanTaskId(ev.input);
         if (!isPlanPropose && taskId) {
+          // 串行执行路径的计划节点同步（P2-3）：看板节点 → doing（与 DAG 路径的
+          // createPlanTaskSync 语义一致）。落库失败仅告警，不影响聊天链路。
+          if (chatSessionId) syncPlanTaskStatus(chatSessionId, taskId, 'doing', ctx.sub);
           updatePlanStatus(
             chatSessionId,
             (prev) => ({
@@ -4293,6 +4304,11 @@ async function handleRun(
       } else if (ev.type === 'error') {
         // 计划任务执行失败：进度镜像标记 failed + 失败节点，前端恢复时据此续跑。
         if (!isPlanPropose) {
+          // 看板节点同步：失败任务 → blocked（与 DAG 路径 createPlanTaskSync 语义一致）。
+          const prevFailedTaskId = peekPlanCurrentTaskId(chatSessionId);
+          if (chatSessionId && prevFailedTaskId) {
+            syncPlanTaskStatus(chatSessionId, prevFailedTaskId, 'blocked', ctx.sub);
+          }
           updatePlanStatus(
             chatSessionId,
             (prev) => ({
@@ -4353,6 +4369,9 @@ async function handleRun(
         }
         // 计划任务完成镜像：把刚跑完的 currentTaskId 标记为 done；全部任务完成则置 done 态。
         if (!isPlanPropose) {
+          // 看板节点同步：刚完成的任务 → done（updatePlanStatus 先于同步执行以清空 currentTaskId，
+          // 故取「即将被标记 done 的那个 id」= mutate 前的 currentTaskId）。
+          const completedTaskId = peekPlanCurrentTaskId(chatSessionId ?? '');
           updatePlanStatus(
             chatSessionId,
             (prev) => {
@@ -4368,6 +4387,9 @@ async function handleRun(
             },
             ctx.sub
           );
+          if (chatSessionId && completedTaskId) {
+            syncPlanTaskStatus(chatSessionId, completedTaskId, 'done', ctx.sub);
+          }
         }
         if (!(last && last.role === 'assistant' && last.content === finalStr)) {
           appendChatMessage(
@@ -4412,6 +4434,192 @@ async function handleRun(
     }
   });
   return;
+}
+
+/**
+ * 计划产物落库（P2-3 补全）：把 plan:proposed 解析出的 ExecutionPlan 持久化为 PlanDoc。
+ *
+ * - id 语义：`plan:<sessionId>` —— 同一会话再次 propose 时幂等覆盖为最新文档
+ *   （version +1），会话与计划文档一一对应，看板按会话即可定位；
+ * - nodes 由 PlanTask 直接映射（id/title/dependsOn 透传，steps + expectedOutput 入 note）；
+ * - 落库后经 publishPlanEvent 广播协同事件，已打开的看板实时刷新；
+ * - 落库失败仅告警，不阻断计划卡片下发（计划主流程 = 会话消息落盘，已先行完成）。
+ */
+async function persistProposedPlan(
+  sessionId: string,
+  plan: ExecutionPlan,
+  sub: string
+): Promise<void> {
+  const doc: PlanDoc = {
+    id: `plan:${sessionId}`,
+    title: plan.goal || '计划',
+    nodes: plan.tasks.map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: 'todo' as const,
+      dependsOn: t.dependsOn,
+      ...(t.expectedOutput ? { note: t.expectedOutput } : {})
+    })),
+    version: 0,
+    updatedBy: sub,
+    updatedAt: new Date().toISOString(),
+    sessionId
+  };
+  const store = getPlanStore();
+  const saved = await store.save(doc);
+  publishPlanEvent(saved.id, sub, { type: 'plan:update', patch: saved });
+  auditAction('plan.persist', {
+    planId: saved.id,
+    sessionId,
+    taskCount: plan.tasks.length,
+    sub
+  });
+}
+
+/** PlanTaskSync：plan 来源 DAG 执行的节点状态同步器契约（见 createPlanTaskSync）。 */
+interface PlanTaskSync {
+  sync(e: WorkflowEvent): void;
+}
+
+/**
+ * P2-3 补全：plan 来源的 DAG 执行进度同步器。
+ *
+ * 把 wf:step:* / wf:done / wf:failed 事件映射到 PlanDoc 节点状态并落库：
+ * - step 开始 → doing；完成 → done；失败 → blocked；
+ * - 失败时把该 task 的所有未决下游（传递依赖）一并置 blocked；
+ * - run 终态（wf:done / wf:failed）→ 全节点收敛终态。
+ *
+ * 定位 PlanDoc：`plan:<sessionId>`（与 persistProposedPlan 同键）；无 sessionId 或文档
+ * 不存在（该计划从未 propose 落库）时静默跳过，不影响执行链路。
+ * 同步失败仅告警——看板是旁路视图，不能反过来阻断 DAG 执行。
+ */
+function createPlanTaskSync(sessionId: string | undefined, sub: string): PlanTaskSync | null {
+  if (!sessionId) return null;
+  const planId = `plan:${sessionId}`;
+  // 幂等节流：同一步骤状态连续重复事件（resume 重放等）不重复落库。
+  let lastState = '';
+  const store = getPlanStore();
+  const log = (msg: string) => {
+    console.warn(`[plan-store] 节点状态同步失败（${planId}）：${msg}`);
+  };
+
+  return {
+    sync(e: WorkflowEvent): void {
+      void (async () => {
+        const doc = await store.read(planId);
+        if (!doc) return; // 计划文档不存在（非 plan 来源 / 未 propose），跳过。
+        const stepStates: Record<string, PlanNodeStatus> = {};
+        switch (e.type) {
+          case 'wf:step:start':
+            stepStates[e.stepId] = 'doing';
+            break;
+          case 'wf:step:done':
+            stepStates[e.stepId] = 'done';
+            break;
+          case 'wf:step:failed':
+            stepStates[e.stepId] = 'blocked';
+            // 失败传播：该 task 的未决下游（传递依赖）一并置 blocked。
+            for (const n of doc.nodes) {
+              if (n.id === e.stepId) continue;
+              if (transitivelyBlocked(n.id, e.stepId, doc.nodes)) stepStates[n.id] = 'blocked';
+            }
+            break;
+          case 'wf:done':
+          case 'wf:failed': {
+            const failed = e.type === 'wf:failed';
+            for (const [id, s] of Object.entries(e.run?.steps ?? {})) {
+              if (s.state === 'done') stepStates[id] = 'done';
+              else if (s.state === 'failed') stepStates[id] = 'blocked';
+              else if (failed) stepStates[id] = 'blocked';
+            }
+            break;
+          }
+          default:
+            return;
+        }
+        if (!Object.keys(stepStates).length) return;
+        // 幂等节流：状态集合不变时跳过落库。
+        const key = Object.entries(stepStates)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ');
+        if (key === lastState) return;
+        lastState = key;
+        const nodes: PlanNode[] = doc.nodes.map((n) => {
+          const s = stepStates[n.id];
+          return s ? { ...n, status: s } : n;
+        });
+        await store.save({ ...doc, nodes });
+        publishPlanEvent(planId, sub, {
+          type: 'plan:update',
+          patch: { nodes, version: doc.version + 1 }
+        });
+      })().catch((err) => log(err?.message ?? String(err)));
+    }
+  };
+}
+
+/** 某节点是否因 failedId 失败而被阻塞（沿 dependsOn 传递闭包判定）。 */
+function transitivelyBlocked(nodeId: string, failedId: string, nodes: PlanNode[]): boolean {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const stack = [nodeId];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (id === failedId) return true;
+    const deps = byId.get(id)?.dependsOn;
+    if (deps) stack.push(...deps);
+  }
+  return false;
+}
+
+/**
+ * P2-3 补全：读会话最近一条计划消息的进度镜像中 currentTaskId（任务级状态机当前节点）。
+ * 供 error 事件时把「正在跑的那个任务」同步为 blocked；无计划消息 / 无镜像 / 已清空
+ * currentTaskId 时返回 null（调用方跳过同步）。
+ */
+function peekPlanCurrentTaskId(sessionId: string): string | null {
+  const s = peekChatSession(sessionId);
+  if (!s) return null;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i];
+    if (!m || m.role !== 'assistant' || !m.plan) continue;
+    return m.planStatus?.currentTaskId ?? null;
+  }
+  return null;
+}
+
+/**
+ * P2-3 补全：串行执行路径的计划节点同步（与 createPlanTaskSync 的 DAG 路径语义一致）。
+ *
+ * 调用点：
+ * - run:start 计划任务派发 → doing；
+ * - error 事件 → blocked；
+ * - run:end 任务完成 → done。
+ * 定位 PlanDoc：`plan:<sessionId>`；文档不存在（该会话从未 propose 落库）时静默跳过。
+ * 落库失败仅告警，不影响聊天链路。
+ */
+function syncPlanTaskStatus(
+  sessionId: string,
+  taskId: string,
+  status: PlanNodeStatus,
+  sub: string
+): void {
+  const planId = `plan:${sessionId}`;
+  void (async () => {
+    const store = getPlanStore();
+    const doc = await store.read(planId);
+    if (!doc) return;
+    const nodes: PlanNode[] = doc.nodes.map((n) =>
+      n.id === taskId ? { ...n, status } : n
+    );
+    const saved = await store.save({ ...doc, nodes });
+    publishPlanEvent(planId, sub, { type: 'plan:update', patch: saved });
+  })().catch((err) => {
+    console.warn(`[plan-store] 节点状态同步失败（${planId}）：${err?.message ?? String(err)}`);
+  });
 }
 
 /**
@@ -4730,17 +4938,92 @@ async function handleWorkflow(
   const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode)
     ? (body.mode as RunMode)
     : 'mock';
+
+  // ── BYOK 凭据解析（t1 根因修复，与 /api/run 提交期 3676 同款语义）──
+  // DAG 路径此前完全不带模型/凭据参数：executor 的 assembleAgent 停在 14 号位置参数，
+  // real 模式下 runner.ts:459 直接 throw「真实模式需要有效的 LLM API Key」→ 首 step 即失败。
+  // 现在：前端随请求带上 model / 自定义模型端点（密钥为 AES-GCM 密文，同 /api/run），
+  // 服务端按登录 owner（ctx.sub，不可伪造）走 resolveRunCredential 解析链
+  // （自定义模型 → 用户 provider Key → 请求自带 Key → 平台兜底 → none），
+  // 明文 Key 仅在请求期内存中流转、绝不落日志 / 审计 / 检查点（[REDACTED] 纪律）。
+  const model: string | undefined = body.model
+    ? String(body.model).trim()
+    : undefined;
+  const modelBaseUrl: string | undefined = body.modelBaseUrl
+    ? String(body.modelBaseUrl).trim()
+    : undefined;
+  const modelApiKey: string | undefined = (() => {
+    const raw = body.modelApiKey ? String(body.modelApiKey).trim() : '';
+    if (!raw) return undefined;
+    try {
+      return decryptApiKey(raw);
+    } catch {
+      return undefined;
+    }
+  })();
+  const ctxWindow: number | undefined =
+    Number.isFinite(Number(body.ctxWindow)) && Number(body.ctxWindow) > 0
+      ? Math.floor(Number(body.ctxWindow))
+      : undefined;
+  const webEnabled: boolean = body.web === true;
+  let cred: CredentialResult = { source: 'none' };
+  if (mode !== 'mock') {
+    cred = await resolveRunCredential(ctx.sub, {
+      model,
+      modelBaseUrl,
+      modelApiKey
+    });
+    if (!cred.apiKey) {
+      res.writeHead(402, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'provider_key_required',
+          hint: '当前账号未配置可用的 LLM API Key，请到「设置 → 模型服务商」填入你的 Key 后再确认执行计划。'
+        })
+      );
+      return;
+    }
+  }
+  // 与 run-queue.ts:985-994 同款收敛：解析出的 baseUrl 优先于请求自带值；
+  // 多 Key（主 + 附加）一并透传，单 Key 时退化为旧行为。
+  const effectiveBaseUrl = cred.baseUrl ?? modelBaseUrl;
+  const effectiveApiKey = cred.apiKey;
+  const effectiveApiKeys =
+    cred.apiKeys && cred.apiKeys.length
+      ? cred.apiKeys
+      : effectiveApiKey
+        ? [effectiveApiKey]
+        : undefined;
+
   let send: (payload: unknown) => void = () => {};
   const onHarnessEvent = (e: any) => {
     if (!closed) send({ type: 'harness', event: e });
   };
+  // P2-3 补全：plan 来源的 DAG 执行进度同步到 PlanStore（节点 doing/done/blocked + 文档终态），
+  // 失败仅告警——执行链路（SSE 直播 / 审计）不依赖计划看板可用性。
+  // sessionId 缺省按 body.plan 的会话关联回落：仅当请求显式携带 sessionId 才建同步器，
+  // 避免 def 来源（非 plan 工作流）误写计划文档。
+  const planSync: PlanTaskSync | null = createPlanTaskSync(
+    typeof body.sessionId === 'string' ? body.sessionId : undefined,
+    ctx.sub
+  );
   const onWfEvent = (e: WorkflowEvent) => {
-    // 节点级审计（独立于 SSE 连接状态）：step 失败 / run 终态 → stdout 审计日志（见 auditWfEvent）；
-    // 逐节点全量明细（input/output/error/时间戳）由 FileWorkflowStore 检查点落盘（WORKFLOW_STORE_DIR）。
     auditWfEvent(e, ctx);
+    planSync?.sync(e);
     if (!closed) send(e);
   };
-  const executor = createWorkflowExecutor({ onEvent: onHarnessEvent, mode });
+  const executor = createWorkflowExecutor({
+    onEvent: onHarnessEvent,
+    mode,
+    // BYOK 透传（t1 根因修复）：与 /api/run（run-queue.ts:996）同款的模型/端点/凭据/上下文窗口/联网开关，
+    // 经 executor → assembleAgent 的 20–23 号位置参数进入每个 step 的 LLM 装配。
+    model,
+    modelBaseUrl: effectiveBaseUrl,
+    modelApiKey: effectiveApiKey,
+    apiKeys: effectiveApiKeys,
+    ctxWindow,
+    webEnabled
+  });
   const engine = new DagEngine({
     store: workflowStore(),
     executor,

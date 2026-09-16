@@ -221,6 +221,18 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 
 **P3 结论**：前端闭环——计划卡片「确认执行」可走多 agent DAG（开关门控），`wf:step:*` 实时驱动卡片状态，终态回挂摘要，失败/停止/断连均有明确处置，全程可回退串行。**默认开**（用户可显式 `ah_plan_dag='0'` 关闭），传输层失败自动回退已验证串行路径兜底。
 
+### 9.4 节点级可追踪 / 可记录（已实现）
+
+开启 `ah_plan_dag` 后，每个 DAG 节点的执行信息按三层可追踪 / 可记录：
+
+| 层 | 载体 | 记录内容 | 持久性 |
+|---|---|---|---|
+| 实时（SSE） | `wf:step:start/done/failed` + 嵌套 harness 事件 | 每节点 stepId / agentId / error 文本，驱动卡片 ⏳/✅/❌ | 会话内 |
+| 检查点 | `FileWorkflowStore`（`WORKFLOW_STORE_DIR`，render.yaml 已配 `/app/data/workflows`，挂载持久卷） | 每 workflow 一个 JSON：`StepRun` 的 `input`（解析后实际喂入）/`output`/`error`/`agentId`/`startedAt`/`finishedAt`；支持 `GET /api/workflows/:id` 快照查询与 `POST .../resume` 断点续跑 | **跨重启**（render 持久卷） |
+| 审计日志 | `auditWfEvent`（`server.ts`，`stdout` JSON 行） | run 终态 `workflow.done`（ok/failed/cancelled + 每步 status/agentId/durationMs）、`workflow.step.failed`（stepId/agentId/error 截断 500）；resume 路径同样接审计 | render 服务日志，可 `grep` 逐节点回溯 |
+
+**关键事实**：`DagEngine` 在 `engine.ts:336` 落 `StepRun.startedAt`、`engine.ts:352/368` 落 `finishedAt`，故审计 `durationMs` 可靠。检查点在 `FileWorkflowStore` 自动 `mkdirSync(递归)` 建目录，render 初始不存在 `/app/data/workflows` 无碍。run 起点审计（`workflow.run`，`server.ts:4716`）保留，与节点级审计互补。
+
 ### 回归验证（P2/P3 落地后）
 - webapp `vitest`：294 项全绿（含新增 10 项）；`vite build` 通过；`tsc --noEmit` 9 条 error **全 pre-existing**（stash 基线对比确认，零新增）
 - server：全量测试无回归；client 18/18

@@ -3278,9 +3278,25 @@ export class AhChat extends LitElement {
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
+      // BYOK 透传（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）同构——
+      // model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
+      // 服务端 handleWorkflow 按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；
+      // 自定义模型路径才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。
+      const endpoint = await this.customModelEndpoint();
+      const byok = {
+        model: this.model || undefined,
+        ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
+        modelBaseUrl: endpoint.modelBaseUrl,
+        modelApiKey: endpoint.modelApiKey,
+        web: this.web || undefined
+      };
       for await (const ev of client.streamWorkflowFromPlan(m.plan, {
         agentRef: this.agentId || undefined,
         mode: this.mode,
+        ...byok,
+        // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
+        // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
+        sessionId: sid,
         signal: ac.signal
       })) {
         if (ac.signal.aborted) break;
