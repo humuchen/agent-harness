@@ -169,10 +169,51 @@ export const layout = css`
       display: none;
     }
     .session-list {
+      position: relative;
       flex: 1 1 auto;
       overflow-y: auto;
+      /* 阻止原生下拉刷新 / 橡皮筋与自定义手势争抢（移动端触屏） */
+      overscroll-behavior: contain;
       padding: 6px 8px 14px;
       min-height: 0;
+    }
+    /* 下拉刷新内容包裹层：手势中整体下移（橡皮筋），仅 transform、不触发重排 */
+    .session-inner {
+      will-change: transform;
+    }
+    /* ---- 会话列表下拉刷新指示器（触屏在列表顶部下拉时滑入）---- */
+    .pull-refresh {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--ah-text-muted);
+      font-size: 12px;
+      transform: translateY(-48px);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .pull-refresh .spinner {
+      width: 16px;
+      height: 16px;
+      border-width: 2px;
+    }
+    /* 已达阈值：提示「松开刷新」并高亮，给出明确的可释放反馈 */
+    .pull-refresh.armed .pull-hint {
+      color: var(--ah-accent);
+    }
+    .pull-refresh.refreshing .pull-hint {
+      color: var(--ah-text-muted);
+    }
+    /* 折叠态（图标轨）无会话列表，隐藏下拉刷新指示器 */
+    .sidebar.collapsed .pull-refresh {
+      display: none;
     }
     /* ---- 会话列表底部：滚动加载状态行 ---- */
     .session-more {

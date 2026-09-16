@@ -259,6 +259,22 @@ export class AhChat extends LitElement {
   /** 拉取下一页失败（显示可点重试）；首屏失败走既有降级链路，不置此标志。 */
   @state() private sessionsMoreError = false;
 
+  // ────────── 会话列表下拉刷新（移动端触屏手势）──────────
+  /** 下拉刷新进行中（防重入 + 抑制手势）；非响应式，不触发渲染。 */
+  private pullRefreshing = false;
+  /** 手势起始触摸 Y（仅 scrollTop<=0 时记录）。 */
+  private pullStartY = 0;
+  /** 当前已下拉位移（px，含阻尼）；非响应式，手势中直接操作 DOM，不触发渲染。 */
+  private pullDist = 0;
+  /** 是否处于「可下拉」手势中（手指压在顶部且向下拖）。 */
+  private pullPulling = false;
+  /** 下拉阻尼系数：可视位移 = 实际拖动 × 系数，越拉越「重」。 */
+  private readonly pullDamping = 0.5;
+  /** 下拉可视位移上限（px），超过不再继续拉长。 */
+  private readonly pullMax = 88;
+  /** 触发刷新的下拉阈值（px）。 */
+  private readonly pullThreshold = 60;
+
   /**
    * 历史会话内容加载中（骨架屏开关）。
    * 点击左侧会话后、服务端历史返回前为 true，内容区渲染骨架屏占位，
@@ -1099,6 +1115,112 @@ export class AhChat extends LitElement {
     void this.loadMoreSessions();
   }
 
+  // ────────── 下拉刷新手势（仅触屏、仅在列表顶部向下拖）──────────
+  private onSessionListTouchStart = (e: TouchEvent) => {
+    const el = e.currentTarget as HTMLElement | null;
+    // 折叠态（64px 图标轨）没有可下拉的会话列表，跳过手势。
+    if (!el || this.pullRefreshing || this.sidebarCollapsed) return;
+    // 仅当列表已滚到顶时才允许下拉，避免与正常上滑滚动冲突。
+    if (el.scrollTop > 0) {
+      this.pullPulling = false;
+      return;
+    }
+    this.pullPulling = true;
+    const t0 = e.touches[0];
+    if (!t0) return;
+    this.pullStartY = t0.clientY;
+    this.pullDist = 0;
+  };
+
+  private onSessionListTouchMove = (e: TouchEvent) => {
+    if (!this.pullPulling || this.pullRefreshing) return;
+    const el = e.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const t0 = e.touches[0];
+    if (!t0) return;
+    const delta = t0.clientY - this.pullStartY;
+    // 手指上移（正常向下滚动内容）或已离开顶部：取消下拉，交回原生滚动。
+    if (delta <= 0 || el.scrollTop > 0) {
+      if (this.pullDist !== 0) this.applyPullTransform(0);
+      this.pullPulling = el.scrollTop <= 0 && delta > 0;
+      return;
+    }
+    // 顶部向下拖：阻止原生回弹，呈现自定义阻尼下拉。
+    e.preventDefault();
+    const dist = Math.min(delta * this.pullDamping, this.pullMax);
+    this.applyPullTransform(dist);
+  };
+
+  private onSessionListTouchEnd = () => {
+    if (!this.pullPulling || this.pullRefreshing) {
+      this.pullPulling = false;
+      return;
+    }
+    this.pullPulling = false;
+    if (this.pullDist >= this.pullThreshold) {
+      void this.triggerPullRefresh();
+    } else {
+      this.applyPullTransform(0, true);
+    }
+  };
+
+  /**
+   * 把下拉位移同步到 DOM（内容下移 + 顶部指示器滑入）。
+   * 直接操作 inline style，不触发 Lit 重渲染，保证拖动手感顺滑。
+   * @param animate 松手/收起时补一段回弹过渡。
+   */
+  private applyPullTransform(dist: number, animate = false) {
+    this.pullDist = dist;
+    const inner = this.sessionInnerEl;
+    const ind = this.pullIndicatorEl;
+    const hint = this.pullHintEl;
+    const t = animate ? 'transform 0.25s ease' : 'none';
+    if (inner) {
+      inner.style.transition = t;
+      inner.style.transform = dist > 0 ? `translateY(${dist}px)` : '';
+    }
+    if (ind) {
+      ind.style.transition = t;
+      ind.style.opacity = dist > 0 || this.pullRefreshing ? '1' : '0';
+      ind.style.transform = `translateY(${Math.min(dist, this.pullMax) - 48}px)`;
+      ind.classList.toggle('armed', dist >= this.pullThreshold && !this.pullRefreshing);
+    }
+    if (hint) hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
+  }
+
+  /** 触发下拉刷新：重拉首屏会话列表（显式用户操作，失败弹提示）。 */
+  private async triggerPullRefresh() {
+    this.pullRefreshing = true;
+    const inner = this.sessionInnerEl;
+    const ind = this.pullIndicatorEl;
+    const hint = this.pullHintEl;
+    if (inner) {
+      inner.style.transition = 'transform 0.2s ease';
+    }
+    if (ind) {
+      ind.style.transition = 'transform 0.2s ease';
+      ind.classList.add('refreshing');
+      ind.classList.remove('armed');
+      ind.style.opacity = '1';
+      ind.style.transform = 'translateY(0)';
+    }
+    if (hint) hint.textContent = '刷新中…';
+    try {
+      await this.reloadSessions(true);
+    } finally {
+      this.pullRefreshing = false;
+      this.pullDist = 0;
+      if (ind) ind.classList.remove('refreshing');
+      if (inner) inner.style.transform = '';
+      if (ind) {
+        ind.style.opacity = '0';
+        ind.style.transform = 'translateY(-48px)';
+      }
+      if (hint) hint.textContent = '下拉刷新';
+      if (inner) inner.style.transition = 'transform 0.3s ease';
+    }
+  }
+
   /**
    * 「填充视口」补拉：首屏一页不足以撑出滚动条时（超长视口 / 会话较少 / 侧栏很矮），
    * scroll 事件永远不会被触发 —— 这里主动续拉，直到出现滚动条、没有更多或出错。
@@ -1128,6 +1250,21 @@ export class AhChat extends LitElement {
   /** 会话列表滚动容器（用于「是否已撑出滚动条」判定与滚动监听）。 */
   private get sessionListEl(): HTMLElement | null {
     return this.renderRoot?.querySelector<HTMLElement>('.session-list') ?? null;
+  }
+
+  /** 会话列表内容包裹层（下拉时整体下移，呈现橡皮筋效果）。 */
+  private get sessionInnerEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null;
+  }
+
+  /** 顶部下拉刷新指示器。 */
+  private get pullIndicatorEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.pull-refresh') ?? null;
+  }
+
+  /** 下拉刷新指示器文案。 */
+  private get pullHintEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.pull-hint') ?? null;
   }
 
   /**
@@ -3606,7 +3743,17 @@ export class AhChat extends LitElement {
             role="list"
             aria-busy=${this.sessionsLoadingMore ? 'true' : 'false'}
             @scroll=${this.onSessionListScroll}
+            @touchstart=${this.onSessionListTouchStart}
+            @touchmove=${this.onSessionListTouchMove}
+            @touchend=${this.onSessionListTouchEnd}
+            @touchcancel=${this.onSessionListTouchEnd}
           >
+            <!-- 下拉刷新指示器：触屏在列表顶部下拉时滑入；桌面端 opacity:0 不可见、不响应 -->
+            <div class="pull-refresh" aria-hidden="true">
+              <span class="spinner"></span>
+              <span class="pull-hint">下拉刷新</span>
+            </div>
+            <div class="session-inner">
             ${this.sessions.length === 0
               ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
               : this.sessions.map(
@@ -3644,6 +3791,7 @@ export class AhChat extends LitElement {
                   `
                 )}
             ${this.renderSessionListFooter()}
+            </div>
           </div>
         </div>
 
