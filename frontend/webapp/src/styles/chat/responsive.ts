@@ -56,6 +56,12 @@ export const responsive = css`
     }
     .sidebar.collapsed .session .acts {
       display: flex;
+      position: static;
+      flex: 0 0 auto;
+      background: transparent;
+    }
+    .sidebar.collapsed .session .title {
+      min-width: 0;
     }
     .collapse-btn {
       display: none;
@@ -106,9 +112,19 @@ export const responsive = css`
       gap: 8px;
     }
     /* 触屏无 hover：会话操作按钮常驻显示，避免点按时按钮在指尖下浮现截获 click
-         （选会话误触发重命名弹框的根因）。 */
+         （选会话误触发重命名弹框的根因）。
+         同时把桌面端「绝对定位悬浮覆盖」改为行内静态排列：绝对定位未设 top，
+         在移动端会渲染成 ✎/🗑 错位两行并压住标题；静态流式排列后按钮跟在
+         截断标题右侧，单行对齐。 */
     .session .acts {
       display: flex;
+      position: static;
+      flex: 0 0 auto;
+      background: transparent;
+      padding-right: 2px;
+    }
+    .session .title {
+      min-width: 0; /* 允许 flex 子项收缩，长标题正常省略号截断 */
     }
     .session .acts .icon-btn {
       padding: 6px 8px; /* 触屏加大点击热区 */
