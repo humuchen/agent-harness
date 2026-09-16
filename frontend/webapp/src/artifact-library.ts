@@ -94,7 +94,7 @@ export class AhArtifacts extends LitElement {
         border-radius: var(--ah-radius-sm);
         padding: 4px 12px;
       }
-    `,
+    `
   ];
 
   @state() items: ArtifactMeta[] = [];
@@ -142,18 +142,21 @@ export class AhArtifacts extends LitElement {
   render() {
     if (this.loading) return html`<div class="muted">加载中…</div>`;
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">工件库</div>
             <div class="muted-sm">
-              运行产物 / 导出文件 · <span class="mono">${this.items.length}</span> 项
+              运行产物 / 导出文件 ·
+              <span class="mono">${this.items.length}</span> 项
             </div>
           </div>
           <button class="ghost" @click=${() => this.refresh()}>刷新</button>
         </div>
         ${this.items.length === 0
-          ? html`<div class="muted">暂无工件。运行任务产生的产物会显示在这里。</div>`
+          ? html`<div class="muted">
+              暂无工件。运行任务产生的产物会显示在这里。
+            </div>`
           : html`
               <div class="card" style="padding:0">
                 <table class="lib-table">
@@ -178,7 +181,11 @@ export class AhArtifacts extends LitElement {
                           <td class="mono">${a.createdAt}</td>
                           <td>
                             <div class="actions">
-                              <a class="dl" href="/api/artifacts/${a.id}?download=1">下载</a>
+                              <a
+                                class="dl"
+                                href="/api/artifacts/${a.id}?download=1"
+                                >下载</a
+                              >
                               <button
                                 class="danger"
                                 @click=${() => void this.deleteArtifact(a.id)}

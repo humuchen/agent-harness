@@ -133,7 +133,7 @@ export class AhDashboard extends LitElement {
     const cost = m ? `$${m.cost.toFixed(2)}` : '—';
 
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="hero">
           <h2>Agent Harness 控制台</h2>
           <div class="hero-sub">

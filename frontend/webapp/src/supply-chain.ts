@@ -114,7 +114,7 @@ export class AhSupplyChain extends LitElement {
         border-radius: var(--ah-radius-sm);
         padding: 8px 12px;
       }
-    `,
+    `
   ];
 
   @state() report: SupplyChainReport | null = null;
@@ -145,7 +145,9 @@ export class AhSupplyChain extends LitElement {
     if (this.scanning) return;
     this.scanning = true;
     try {
-      const res = await authedFetch('/api/supply-chain/scan', { method: 'POST' });
+      const res = await authedFetch('/api/supply-chain/scan', {
+        method: 'POST'
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await this.refresh();
     } catch (e: unknown) {
@@ -166,7 +168,7 @@ export class AhSupplyChain extends LitElement {
 
     const { summary, dependencies, signature } = this.report;
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">CI 供应链</div>
@@ -185,59 +187,66 @@ export class AhSupplyChain extends LitElement {
         </div>
 
         <div class="chips">
-          <div class="kpi"><div class="v">${summary.total}</div><div class="k">依赖总数</div></div>
           <div class="kpi">
-            <div class="v accent">${summary.withIntegrity}</div><div class="k">含完整性</div>
+            <div class="v">${summary.total}</div>
+            <div class="k">依赖总数</div>
           </div>
-          <div class="kpi"><div class="v">${summary.dev}</div><div class="k">dev</div></div>
-          <div class="kpi"><div class="v">${summary.prod}</div><div class="k">prod</div></div>
+          <div class="kpi">
+            <div class="v accent">${summary.withIntegrity}</div>
+            <div class="k">含完整性</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${summary.dev}</div>
+            <div class="k">dev</div>
+          </div>
+          <div class="kpi">
+            <div class="v">${summary.prod}</div>
+            <div class="k">prod</div>
+          </div>
         </div>
 
-        ${
-          dependencies.length === 0
-            ? html`<div class="muted">未检测到依赖（dependencies / devDependencies 均为空）。</div>`
-            : html`
-                <table class="deps">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>版本</th>
-                      <th>类型</th>
-                      <th>完整性（sha512）</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${dependencies.map(
-                      (d) => html`
-                        <tr>
-                          <td class="mono">${d.name}</td>
-                          <td class="mono">${d.version}</td>
-                          <td>
-                            <span class="badge ${d.dev ? 'dev' : 'prod'}"
-                              >${d.dev ? 'dev' : 'prod'}</span
-                            >
-                          </td>
-                          <td class="mono" title=${d.integrity ?? ''}>
-                            ${d.integrity ? this.truncate(d.integrity) : '—'}
-                          </td>
-                        </tr>
-                      `
-                    )}
-                  </tbody>
-                </table>
-              `
-        }
-
-        ${
-          signature
-            ? html`<div class="sig">
-                <div class="muted-sm" style="margin-bottom:4px">
-                  报告签名（HMAC-SHA256，防篡改）
-                </div>
-                ${signature}
-              </div>`
-            : nothing
-        }
+        ${dependencies.length === 0
+          ? html`<div class="muted">
+              未检测到依赖（dependencies / devDependencies 均为空）。
+            </div>`
+          : html`
+              <table class="deps">
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>版本</th>
+                    <th>类型</th>
+                    <th>完整性（sha512）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${dependencies.map(
+                    (d) => html`
+                      <tr>
+                        <td class="mono">${d.name}</td>
+                        <td class="mono">${d.version}</td>
+                        <td>
+                          <span class="badge ${d.dev ? 'dev' : 'prod'}"
+                            >${d.dev ? 'dev' : 'prod'}</span
+                          >
+                        </td>
+                        <td class="mono" title=${d.integrity ?? ''}>
+                          ${d.integrity ? this.truncate(d.integrity) : '—'}
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            `}
+        ${signature
+          ? html`<div class="sig">
+              <div class="muted-sm" style="margin-bottom:4px">
+                报告签名（HMAC-SHA256，防篡改）
+              </div>
+              ${signature}
+            </div>`
+          : nothing}
       </section>
     `;
   }

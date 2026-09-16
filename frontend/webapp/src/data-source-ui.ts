@@ -94,7 +94,7 @@ export class AhDataSources extends LitElement {
         color: var(--ah-text-faint);
         font-size: 12px;
       }
-    `,
+    `
   ];
 
   @state() items: DataSourceDef[] = [];
@@ -128,9 +128,12 @@ export class AhDataSources extends LitElement {
     s.add(id);
     this.testing = s;
     try {
-      const res = await authedFetch(`/api/datasources/${encodeURIComponent(id)}/test`, {
-        method: 'POST'
-      });
+      const res = await authedFetch(
+        `/api/datasources/${encodeURIComponent(id)}/test`,
+        {
+          method: 'POST'
+        }
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const result = (await res.json()) as ConnectionResult;
       const next = new Map(this.results);
@@ -153,7 +156,7 @@ export class AhDataSources extends LitElement {
       return html`<div class="muted">暂无数据源</div>`;
     }
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">数据源</div>

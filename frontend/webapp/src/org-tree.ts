@@ -73,7 +73,7 @@ export class AhOrgTree extends LitElement {
         font-family: var(--ah-font-mono);
         font-size: 12px;
       }
-    `,
+    `
   ];
 
   @state() tree: OrgTree | null = null;
@@ -119,9 +119,13 @@ export class AhOrgTree extends LitElement {
             @click=${hasChildren ? () => this.toggle(node.id) : nothing}
             >${hasChildren ? (isCollapsed ? '▶' : '▼') : ''}</span
           >
-          <span class="badge ${isDept ? 'dept' : ''}">${isDept ? '部门' : '成员'}</span>
+          <span class="badge ${isDept ? 'dept' : ''}"
+            >${isDept ? '部门' : '成员'}</span
+          >
           <span class="name">${node.name}</span>
-          ${node.title ? html`<span class="meta">· ${node.title}</span>` : nothing}
+          ${node.title
+            ? html`<span class="meta">· ${node.title}</span>`
+            : nothing}
           ${node.email
             ? html`<span class="meta mono">· ${node.email}</span>`
             : nothing}
@@ -142,12 +146,13 @@ export class AhOrgTree extends LitElement {
     if (this.loading) return html`<div class="muted">加载中…</div>`;
     if (!this.tree) return html`<div class="muted">无组织数据</div>`;
     return html`
-      <section style="border:none;background:none;box-shadow:none;padding:0">
+      <section style="border:none;background:none;box-shadow:none;padding:8px">
         <div class="row-between" style="margin-bottom:14px">
           <div>
             <div class="section-title" style="margin:0">企业组织树</div>
             <div class="muted-sm">
-              部门 / 成员层级 · 数据源 <span class="mono">${this.tree.source}</span>
+              部门 / 成员层级 · 数据源
+              <span class="mono">${this.tree.source}</span>
             </div>
           </div>
           <button class="ghost" @click=${() => this.refresh()}>刷新</button>
