@@ -4966,6 +4966,26 @@ async function handleWorkflow(
       ? Math.floor(Number(body.ctxWindow))
       : undefined;
   const webEnabled: boolean = body.web === true;
+
+  // ── 校验/反思门禁（P0-2，与 /api/run 3778 同款优先级）──
+  // body.verify（完整配置）> body.autoVerify（开关）> 服务端 AGENT_AUTO_VERIFY 默认。
+  // 解析出的 VerifyConfig 经 executor → createVerifier → 每个 step 的 harness 产出门禁；
+  // AGENT_VERIFY_MAX_RETRIES>0 时未通过触发自检重跑（反思循环）。缺省全关 = 零回归。
+  let verifyConfig: VerifyConfig | undefined;
+  const envAutoVerify =
+    process.env.AGENT_AUTO_VERIFY === 'true' ||
+    process.env.AGENT_AUTO_VERIFY === '1';
+  if (
+    body.verify &&
+    typeof body.verify === 'object' &&
+    !Array.isArray(body.verify)
+  ) {
+    verifyConfig = body.verify as VerifyConfig;
+  } else if (typeof body.autoVerify === 'boolean') {
+    verifyConfig = body.autoVerify ? { auto: true } : undefined;
+  } else if (envAutoVerify) {
+    verifyConfig = { auto: true };
+  }
   let cred: CredentialResult = { source: 'none' };
   if (mode !== 'mock') {
     cred = await resolveRunCredential(ctx.sub, {
@@ -5022,7 +5042,10 @@ async function handleWorkflow(
     modelApiKey: effectiveApiKey,
     apiKeys: effectiveApiKeys,
     ctxWindow,
-    webEnabled
+    webEnabled,
+    // 校验/反思门禁（P0-2）：与 /api/run 同款优先级解析出的 VerifyConfig →
+    // 每个 step 产出经 createVerifier 门禁 + AGENT_VERIFY_MAX_RETRIES 自检重跑。
+    verify: verifyConfig
   });
   const engine = new DagEngine({
     store: workflowStore(),
