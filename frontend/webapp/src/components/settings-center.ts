@@ -65,6 +65,9 @@ import {
   clearCache,
   clearData,
   measureStorage,
+  getWorkspacePath,
+  setWorkspacePath,
+  resolveDefaultWorkspacePath,
   type StorageBreakdown
 } from '../utils/storage-usage';
 import { getReminderUnread, clearReminderUnread } from '../plugin-notify';
@@ -191,6 +194,11 @@ const ICON_DATA = svgIcon(
 );
 const ICON_CACHE = svgIcon(
   svg`<rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8" /><path d="M10 13h4" />`,
+  '1.7'
+);
+/** 默认工作空间路径行图标：文件夹 + 加号（「新建」隐喻，与「更改」动作对应）。 */
+const ICON_FOLDER = svgIcon(
+  svg`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /><path d="M12 11v4M10 13h4" />`,
   '1.7'
 );
 const ICON_ALERT = svgIcon(
@@ -557,6 +565,11 @@ export class AhSettingsCenter extends LitElement {
         color: var(--ah-text-muted);
         white-space: nowrap;
       }
+      /* 默认工作空间路径列：路径可能很长，允许换行并限制最大宽，避免把「更改」按钮挤出可视区 */
+      .wp {
+        max-width: 46%;
+        overflow-wrap: anywhere;
+      }
       /* 破坏性操作（清除数据）：danger 着色但不做实心色块，避免与唯一强调点「保存」抢视觉 */
       .ri.danger {
         color: var(--ah-danger);
@@ -784,6 +797,8 @@ export class AhSettingsCenter extends LitElement {
   @state() private storage: StorageBreakdown | null = null;
   @state() private clearingCache = false;
   @state() private clearingData = false;
+  /** 默认工作空间路径的展示值（null = 尚未解析；原生壳按设备主目录推断，纯 Web 无法推断时占位）。 */
+  @state() private workspacePath: string | null = null;
 
   /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。 */
   private mounted = new Set<SettingsGroup>([DEFAULT_GROUP]);
@@ -824,6 +839,8 @@ export class AhSettingsCenter extends LitElement {
       void this.checkServer();
       // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
       void this.refreshStorage();
+      // 默认工作空间路径：已自定义值同步读取（localStorage）；未自定义时按设备主目录惰性推断。
+      void this.refreshWorkspacePath();
       this.unread = getReminderUnread().count;
     }
     if (changed.has('active') && this.active === 'appearance') {
@@ -950,12 +967,60 @@ export class AhSettingsCenter extends LitElement {
     if (this.active === 'system') {
       void this.checkServer();
       void this.refreshStorage();
+      void this.refreshWorkspacePath();
     }
   }
 
   /** 重新测量存储四项占用（进入「系统与网络」时、以及每次清理后调用）。 */
   private async refreshStorage() {
     this.storage = await measureStorage();
+  }
+
+  /**
+   * 刷新「默认工作空间路径」展示值：已自定义（localStorage 有值）直接同步读取；
+   * 未自定义时走 resolveDefaultWorkspacePath（原生壳按设备主目录推断 /AgentHarness，纯 Web 不可推断时 null → UI 占位）。
+   */
+  private async refreshWorkspacePath() {
+    const custom = getWorkspacePath();
+    if (custom !== null) {
+      this.workspacePath = custom;
+      return;
+    }
+    this.workspacePath = await resolveDefaultWorkspacePath();
+  }
+
+  /**
+   * 「更改」默认工作空间路径：AhModal.prompt 让用户输入目标路径。
+   *  - 输入合法（非空、以 / 或盘符开头）→ 持久化到 localStorage，改完即生效；
+   *  - 输入「恢复默认」（或清空）→ 清除自定义值，回落到按设备推断的默认路径。
+   * 修改只影响**新建**任务 / 工作空间的落盘位置，不迁移已有数据（与 UI 说明一致）。
+   */
+  private async changeWorkspacePath() {
+    const current = getWorkspacePath() ?? this.workspacePath ?? '';
+    const v = await AhModal.prompt({
+      title: '更改默认工作空间路径',
+      message: '新建任务、工作空间时将自动存放在该路径下；修改后不影响已有数据。输入「恢复默认」可清除自定义路径。',
+      confirmText: '保存',
+      cancelText: '取消',
+      inputValue: current,
+      inputPlaceholder: '例如 /Users/you/AgentHarness'
+    });
+    if (v === null) return; // 取消 / 关闭弹框
+    const trimmed = v.trim();
+    if (trimmed === '恢复默认' || trimmed === '') {
+      setWorkspacePath(null);
+      await this.refreshWorkspacePath();
+      notify.success('已恢复默认工作空间路径');
+      return;
+    }
+    // 校验：至少像一条绝对路径（unix 以 / 开头、Windows 以盘符开头）；不校验文件真实存在（Web 层无 FS API）
+    if (!/^(\/|[A-Za-z]:[\\/])/.test(trimmed)) {
+      notify.info('路径需为绝对路径（如 /Users/you/AgentHarness 或 D:\\AgentHarness）');
+      return;
+    }
+    setWorkspacePath(trimmed);
+    this.workspacePath = trimmed;
+    notify.success('默认工作空间路径已更新');
   }
 
   /** 「清除缓存」：只清缓存（原生缓存目录 + CacheStorage），不动登录状态与偏好，无需二次确认。 */
@@ -1148,6 +1213,24 @@ export class AhSettingsCenter extends LitElement {
                       <span class="rd">应用 + 数据 + 缓存</span>
                     </span>
                     <span class="sv">${formatBytes(this.storage?.total)}</span>
+                  </div>
+                  <div class="row">
+                    <span class="ri">${ICON_FOLDER}</span>
+                    <span class="rc">
+                      <span class="rl">默认工作空间路径</span>
+                      <span class="rd">
+                        ${this.workspacePath !== null
+                          ? '新建任务、工作空间时自动存放于此；修改不影响已有数据'
+                          : '新建任务、工作空间时自动存放于此（当前设备未推断到默认路径）'}
+                      </span>
+                    </span>
+                    <span class="rd mono wp">${this.workspacePath ?? '—'}</span>
+                    <button
+                      class="btn"
+                      @click=${() => this.changeWorkspacePath()}
+                    >
+                      更改
+                    </button>
                   </div>
                   <div class="row">
                     <span class="ri">${ICON_APP}</span>
