@@ -99,9 +99,10 @@ export const base = css`
     color: var(--ah-text);
   }
   /* 桌面端隐藏侧栏品牌块（logo + 产品名）：品牌不再出现在桌面各页面，统一收敛到
-     「我的」页。此处刻意只做「桌面端隐藏」而不删 DOM —— ≤760px 时 .sidebar-toggle
-     为 display:none，移动端抽屉顶部标题行完全由品牌块承担，删 DOM 会留下一条空白粘性栏。 */
-  @media (min-width: 761px) {
+     「我的」页。此处刻意只做「桌面 / 平板隐藏」而不删 DOM —— 手机（含横屏矮屏）抽屉
+     顶部标题行完全由品牌块承担，删 DOM 会留下一条空白粘性栏，故手机横屏排除在外。
+     对称排除条件见 app.ts desktopShellCss。 */
+  @media (min-width: 761px) and (min-height: 761px) {
     .sidebar .brand .logo,
     .sidebar .brand .brand-text {
       display: none;

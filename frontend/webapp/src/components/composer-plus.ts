@@ -18,7 +18,8 @@
  *   直接把面板打开并定位到对应分区 —— 少一次点击。
  *
  * 移动端（≤600px）：面板收窄为 calc(100vw - 28px)、高度限 60vh 内部滚动，
- * 胶囊做省略号截断，保证 footer 不换行、不被右侧模型选择器挤爆。
+ * 胶囊做省略号截断，保证 footer 不换行、不被右侧模型选择器挤爆；
+ * 文件区的大号居中拖放框压成单行「图标 + 左对齐文案」，节省纵向空间。
  */
 import { LitElement, html, css, nothing, type CSSResultGroup } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
@@ -321,6 +322,13 @@ export class AhComposerPlus extends LitElement {
     .drop > * {
       pointer-events: none;
     }
+    /* 文案列：桌面端居中堆叠；移动端改为行内布局时左对齐 */
+    .drop-txt {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+    }
     .drop .t1 {
       font-size: 12.5px;
       font-weight: 500;
@@ -597,8 +605,49 @@ export class AhComposerPlus extends LitElement {
         bottom: calc(100% + 8px);
         padding: 6px;
       }
-      .mode-grid {
-        grid-template-columns: 1fr 1fr;
+      /* --- 移动端紧凑化：压缩各分区留白，核心是文件区 --- */
+      .sec {
+        padding: 2px 2px 6px;
+      }
+      .sec + .sec {
+        margin-top: 2px;
+        padding-top: 7px;
+      }
+      .sec-title {
+        padding: 0 6px 5px;
+      }
+      /* 文件区：大号居中拖放框压成一行「图标 + 文案」，纵向省 ~40px。
+         点击热区仍是整行，t2 提示保留但缩小并随文案列左对齐。 */
+      .drop {
+        flex-direction: row;
+        justify-content: flex-start;
+        gap: 9px;
+        padding: 8px 10px;
+        text-align: left;
+      }
+      .drop svg {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 auto;
+      }
+      .drop-txt {
+        align-items: flex-start;
+        gap: 1px;
+        min-width: 0;
+      }
+      .drop .t1 {
+        font-size: 12px;
+      }
+      .drop .t2 {
+        font-size: 10px;
+      }
+      /* 模式卡片：收紧内边距，说明文字缩到 10px（保留——是两种模式的核心区分信息） */
+      .mode-card {
+        padding: 7px 9px;
+        gap: 2px;
+      }
+      .mode-card .md {
+        font-size: 10px;
       }
       .agent-list {
         max-height: 150px;
@@ -858,8 +907,10 @@ export class AhComposerPlus extends LitElement {
                   }}
                 >
                   ${this.icon(CLIP_ICON)}
-                  <span class="t1">点击选择图片上传</span>
-                  <span class="t2">支持图片、文本与 JSON · 单个 ≤ 10MB</span>
+                  <span class="drop-txt">
+                    <span class="t1">点击选择图片上传</span>
+                    <span class="t2">支持图片、文本与 JSON · 单个 ≤ 10MB</span>
+                  </span>
                 </div>
                 <input
                   type="file"

@@ -328,7 +328,6 @@ export const composer = css`
       var(--ah-border)
     );
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28), 0 1px 3px rgba(0, 0, 0, 0.18);
-    transform: translateY(-2px);
   }
   .attach-thumb {
     width: 18px;
