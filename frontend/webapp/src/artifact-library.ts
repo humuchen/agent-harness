@@ -151,7 +151,9 @@ export class AhArtifacts extends LitElement {
               <span class="mono">${this.items.length}</span> 项
             </div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+          <button class="ghost refresh-btn" @click=${() => this.refresh()}>
+            刷新
+          </button>
         </div>
         ${this.items.length === 0
           ? html`<div class="muted">

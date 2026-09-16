@@ -65,6 +65,10 @@ export const mobilePill = css`
       border-color: transparent !important;
     }
 
+    .refresh-btn {
+      display: none;
+    }
+
     /* ═══ 2) 幽灵按钮补填充底 ═══
        仅收录「原本 background 为 transparent/none 且依赖 1px 描边提供轮廓」的类。
        它们各自的语义变体（.primary/.danger/.active）在下方 §4 还原，

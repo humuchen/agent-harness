@@ -67,6 +67,15 @@ export const composer = css`
     width: 100%;
     box-sizing: border-box;
   }
+  /* 对话输入框不参与全局表单聚焦蓝框（base.ts input/textarea:focus）：
+     它是无边框悬浮卡片，聚焦态由 .composer:focus-within 的柔和光晕表达。 */
+  .composer textarea:focus,
+  .composer input:focus,
+  .composer select:focus {
+    border: none;
+    outline: none;
+    box-shadow: none;
+  }
   /* 注：ah-command-suggestions（联想面板 + 命令胶囊条）的视觉全部在其自身
        static styles（shadow DOM）内，与 ah-agent-picker 视觉对齐；本文件原
        .command-suggestions / .cmd-* 块已失效删除。
@@ -672,11 +681,7 @@ export const composer = css`
     box-sizing: border-box;
   }
   .fe-input:focus {
-    border-color: color-mix(
-      in srgb,
-      var(--ah-accent, #2997ff) 45%,
-      var(--ah-border)
-    );
+    border-color: var(--ah-accent, #2997ff);
   }
 
   /* 图片预览 Lightbox */

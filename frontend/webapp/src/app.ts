@@ -218,7 +218,12 @@ const chatShellCss = css`
   [hidden] {
     display: none !important;
   }
-  @media (max-width: 900px) {
+  /* 对话 Tab 外壳锁定条件与 sharedStyles 的移动端判定保持同一谓词：
+     ≤900px（平板/手机竖屏），或「横屏且视口矮」的手机（大屏手机横屏宽度
+     可达 950px+，如 iPhone 16 Pro Max 横屏 956×440 —— 宽度越过 900 但高度
+     远小于 761，若不纳入会落回桌面对话布局，而移动壳的 .content 无固定
+     高度链，内部滚动失效 → 显示不全且无法滚动）。 */
+  @media (max-width: 900px), (orientation: landscape) and (max-height: 760px) {
     .shell.chat-mode {
       position: fixed;
       inset: 0;

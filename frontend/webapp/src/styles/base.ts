@@ -447,6 +447,14 @@ export const base = css`
     font-size: 13px;
     font-family: inherit;
   }
+  /* 聚焦态统一为主题蓝（--ah-accent），替代浏览器默认的白色 focus 描边 */
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--ah-accent);
+    box-shadow: 0 0 0 3px var(--ah-accent-soft);
+  }
   textarea {
     resize: vertical;
   }

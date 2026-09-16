@@ -263,7 +263,9 @@ export class AhObservability extends LitElement {
                     <b class="accent-sm">${roleCols.length}</b> 个角色`
                 : nothing}
             </span>
-            <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+            <button class="ghost refresh-btn" @click=${() => this.refresh()}>
+              刷新
+            </button>
           </div>
           ${this.roles?.mode === 'off'
             ? html`<div class="note" style="margin-bottom:10px">

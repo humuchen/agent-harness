@@ -12,10 +12,11 @@ import {
   applyPlanWfEvent,
   isPlanDagEnabled,
   setPlanDagEnabled,
+  derivePlanWfId,
   PLAN_DAG_STORAGE_KEY,
   type PlanWfEvent
 } from './chat-render-utils';
-import type { PlanExecState } from './chat-types';
+import type { ExecutionPlanView, PlanExecState } from './chat-types';
 
 const KNOWN = new Set(['t1', 't2', 't3']);
 const base: PlanExecState = { status: 'running', done: {} };
@@ -193,5 +194,74 @@ describe('setPlanDagEnabled（设置中心 toggle 的写入口）', () => {
       if (orig) Object.defineProperty(globalThis, 'localStorage', orig);
       else delete (globalThis as Record<string, unknown>).localStorage;
     }
+  });
+});
+
+describe('derivePlanWfId（P1 断点续跑：确定性检查点键）', () => {
+  const planA: ExecutionPlanView = {
+    goal: '上线新功能',
+    tasks: [
+      {
+        id: 't1',
+        title: '写核心逻辑',
+        steps: ['实现 A', '实现 B'],
+        dependsOn: [],
+        expectedOutput: '可编译的核心模块'
+      },
+      {
+        id: 't2',
+        title: '写测试',
+        steps: ['单测'],
+        dependsOn: ['t1'],
+        expectedOutput: '全绿测试'
+      }
+    ]
+  };
+
+  it('同输入恒同输出（刷新 / 重启后可重算，无需持久化 wfId）', () => {
+    expect(derivePlanWfId('sess-1', planA)).toBe(derivePlanWfId('sess-1', planA));
+  });
+
+  it('不同会话 → 不同键（检查点隔离，跨会话同文案计划互不覆盖）', () => {
+    expect(derivePlanWfId('sess-1', planA)).not.toBe(derivePlanWfId('sess-2', planA));
+  });
+
+  it('结构键不变（仅任务文案变化）→ 同一键：改文案后仍能定位原检查点续跑', () => {
+    const relit: ExecutionPlanView = {
+      goal: planA.goal,
+      tasks: planA.tasks.map((t, i) =>
+        i === 1 ? { ...t, title: '写集成测试', steps: ['e2e'], expectedOutput: 'e2e 全绿' } : t
+      )
+    };
+    expect(derivePlanWfId('sess-1', relit)).toBe(derivePlanWfId('sess-1', planA));
+  });
+
+  it('结构变化（增删任务 / 依赖边 / goal）→ 不同键', () => {
+    const addTask: ExecutionPlanView = {
+      goal: planA.goal,
+      tasks: [
+        ...planA.tasks,
+        { id: 't3', title: '部署', steps: [], dependsOn: ['t2'], expectedOutput: '上线' }
+      ]
+    };
+    const reparent: ExecutionPlanView = {
+      goal: planA.goal,
+      tasks: planA.tasks.map((t) =>
+        t.id === 't2' ? { ...t, dependsOn: [] } : t
+      )
+    };
+    const reGoal: ExecutionPlanView = { ...planA, goal: '上线别的功能' };
+    expect(derivePlanWfId('sess-1', addTask)).not.toBe(derivePlanWfId('sess-1', planA));
+    expect(derivePlanWfId('sess-1', reparent)).not.toBe(derivePlanWfId('sess-1', planA));
+    expect(derivePlanWfId('sess-1', reGoal)).not.toBe(derivePlanWfId('sess-1', planA));
+  });
+
+  it('输出形如 plan-<8位hex>，经 sanitizeKey（仅留 [a-zA-Z0-9._-]）后原样不变 → 可安全作检查点文件名', () => {
+    const key = derivePlanWfId('sess-1', planA);
+    expect(key).toMatch(/^plan-[0-9a-f]{8}$/);
+    // 与服务端 FileWorkflowStore.sanitizeKey 同款规则对齐：本键零字符被替换。
+    expect(key.replace(/[^a-zA-Z0-9._-]/g, '_')).toBe(key);
+    // 与旧随机键前缀 plan:（冒号）区分——旧 run 无法被确定性定位（resume 404 → 回退串行）。
+    expect(key.startsWith('plan:')).toBe(false);
   });
 });

@@ -2,8 +2,12 @@ import { css } from 'lit';
 
 export const responsive = css`
   /* ===================== 响应式适配 ===================== */
-  /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。 */
-  @media (max-width: 900px) {
+  /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。
+     第二个条件覆盖「横屏且视口矮」的大屏手机（如 iPhone 16 Pro Max 横屏
+     956×440）：宽度越过 900 会落回桌面对话布局，但外层移动壳的 .content
+     没有固定高度链，桌面内部滚动模型失效 → 显示不全且无法滚动。
+     谓词与 app.ts chatShellCss / sharedStyles 的移动端判定保持一致。 */
+  @media (max-width: 900px), (orientation: landscape) and (max-height: 760px) {
     :host {
       /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
              .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
@@ -248,8 +252,10 @@ export const responsive = css`
       margin: 4px 0 8px;
     }
   }
-  /* 中屏（901–1100px）：侧栏收窄但常驻，兼顾 iPad 横屏与窄笔记本。 */
-  @media (min-width: 901px) and (max-width: 1100px) {
+  /* 中屏（901–1100px）：侧栏收窄但常驻，兼顾 iPad 横屏与窄笔记本。
+     限定 min-height:761px：手机横屏（矮视口）已由上方扩展条件接管为抽屉，
+     不排除的话本规则的 220px 常驻侧栏会与抽屉规则同特异性冲突且胜出。 */
+  @media (min-width: 901px) and (max-width: 1100px) and (min-height: 761px) {
     .sidebar {
       width: 220px;
       flex-basis: 220px;

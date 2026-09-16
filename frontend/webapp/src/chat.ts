@@ -25,6 +25,7 @@ import {
   buildPlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
+  derivePlanWfId,
   isPlanDagEnabled,
   type PlanWfEvent,
   type PlanWfRunSnapshot
@@ -258,6 +259,22 @@ export class AhChat extends LitElement {
 
   /** 拉取下一页失败（显示可点重试）；首屏失败走既有降级链路，不置此标志。 */
   @state() private sessionsMoreError = false;
+
+  // ────────── 会话列表下拉刷新（移动端触屏手势）──────────
+  /** 下拉刷新进行中（防重入 + 抑制手势）；非响应式，不触发渲染。 */
+  private pullRefreshing = false;
+  /** 手势起始触摸 Y（仅 scrollTop<=0 时记录）。 */
+  private pullStartY = 0;
+  /** 当前已下拉位移（px，含阻尼）；非响应式，手势中直接操作 DOM，不触发渲染。 */
+  private pullDist = 0;
+  /** 是否处于「可下拉」手势中（手指压在顶部且向下拖）。 */
+  private pullPulling = false;
+  /** 下拉阻尼系数：可视位移 = 实际拖动 × 系数，越拉越「重」。 */
+  private readonly pullDamping = 0.5;
+  /** 下拉可视位移上限（px），超过不再继续拉长。 */
+  private readonly pullMax = 88;
+  /** 触发刷新的下拉阈值（px）。 */
+  private readonly pullThreshold = 60;
 
   /**
    * 历史会话内容加载中（骨架屏开关）。
@@ -1099,6 +1116,112 @@ export class AhChat extends LitElement {
     void this.loadMoreSessions();
   }
 
+  // ────────── 下拉刷新手势（仅触屏、仅在列表顶部向下拖）──────────
+  private onSessionListTouchStart = (e: TouchEvent) => {
+    const el = e.currentTarget as HTMLElement | null;
+    // 折叠态（64px 图标轨）没有可下拉的会话列表，跳过手势。
+    if (!el || this.pullRefreshing || this.sidebarCollapsed) return;
+    // 仅当列表已滚到顶时才允许下拉，避免与正常上滑滚动冲突。
+    if (el.scrollTop > 0) {
+      this.pullPulling = false;
+      return;
+    }
+    this.pullPulling = true;
+    const t0 = e.touches[0];
+    if (!t0) return;
+    this.pullStartY = t0.clientY;
+    this.pullDist = 0;
+  };
+
+  private onSessionListTouchMove = (e: TouchEvent) => {
+    if (!this.pullPulling || this.pullRefreshing) return;
+    const el = e.currentTarget as HTMLElement | null;
+    if (!el) return;
+    const t0 = e.touches[0];
+    if (!t0) return;
+    const delta = t0.clientY - this.pullStartY;
+    // 手指上移（正常向下滚动内容）或已离开顶部：取消下拉，交回原生滚动。
+    if (delta <= 0 || el.scrollTop > 0) {
+      if (this.pullDist !== 0) this.applyPullTransform(0);
+      this.pullPulling = el.scrollTop <= 0 && delta > 0;
+      return;
+    }
+    // 顶部向下拖：阻止原生回弹，呈现自定义阻尼下拉。
+    e.preventDefault();
+    const dist = Math.min(delta * this.pullDamping, this.pullMax);
+    this.applyPullTransform(dist);
+  };
+
+  private onSessionListTouchEnd = () => {
+    if (!this.pullPulling || this.pullRefreshing) {
+      this.pullPulling = false;
+      return;
+    }
+    this.pullPulling = false;
+    if (this.pullDist >= this.pullThreshold) {
+      void this.triggerPullRefresh();
+    } else {
+      this.applyPullTransform(0, true);
+    }
+  };
+
+  /**
+   * 把下拉位移同步到 DOM（内容下移 + 顶部指示器滑入）。
+   * 直接操作 inline style，不触发 Lit 重渲染，保证拖动手感顺滑。
+   * @param animate 松手/收起时补一段回弹过渡。
+   */
+  private applyPullTransform(dist: number, animate = false) {
+    this.pullDist = dist;
+    const inner = this.sessionInnerEl;
+    const ind = this.pullIndicatorEl;
+    const hint = this.pullHintEl;
+    const t = animate ? 'transform 0.25s ease' : 'none';
+    if (inner) {
+      inner.style.transition = t;
+      inner.style.transform = dist > 0 ? `translateY(${dist}px)` : '';
+    }
+    if (ind) {
+      ind.style.transition = t;
+      ind.style.opacity = dist > 0 || this.pullRefreshing ? '1' : '0';
+      ind.style.transform = `translateY(${Math.min(dist, this.pullMax) - 48}px)`;
+      ind.classList.toggle('armed', dist >= this.pullThreshold && !this.pullRefreshing);
+    }
+    if (hint) hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
+  }
+
+  /** 触发下拉刷新：重拉首屏会话列表（显式用户操作，失败弹提示）。 */
+  private async triggerPullRefresh() {
+    this.pullRefreshing = true;
+    const inner = this.sessionInnerEl;
+    const ind = this.pullIndicatorEl;
+    const hint = this.pullHintEl;
+    if (inner) {
+      inner.style.transition = 'transform 0.2s ease';
+    }
+    if (ind) {
+      ind.style.transition = 'transform 0.2s ease';
+      ind.classList.add('refreshing');
+      ind.classList.remove('armed');
+      ind.style.opacity = '1';
+      ind.style.transform = 'translateY(0)';
+    }
+    if (hint) hint.textContent = '刷新中…';
+    try {
+      await this.reloadSessions(true);
+    } finally {
+      this.pullRefreshing = false;
+      this.pullDist = 0;
+      if (ind) ind.classList.remove('refreshing');
+      if (inner) inner.style.transform = '';
+      if (ind) {
+        ind.style.opacity = '0';
+        ind.style.transform = 'translateY(-48px)';
+      }
+      if (hint) hint.textContent = '下拉刷新';
+      if (inner) inner.style.transition = 'transform 0.3s ease';
+    }
+  }
+
   /**
    * 「填充视口」补拉：首屏一页不足以撑出滚动条时（超长视口 / 会话较少 / 侧栏很矮），
    * scroll 事件永远不会被触发 —— 这里主动续拉，直到出现滚动条、没有更多或出错。
@@ -1128,6 +1251,21 @@ export class AhChat extends LitElement {
   /** 会话列表滚动容器（用于「是否已撑出滚动条」判定与滚动监听）。 */
   private get sessionListEl(): HTMLElement | null {
     return this.renderRoot?.querySelector<HTMLElement>('.session-list') ?? null;
+  }
+
+  /** 会话列表内容包裹层（下拉时整体下移，呈现橡皮筋效果）。 */
+  private get sessionInnerEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null;
+  }
+
+  /** 顶部下拉刷新指示器。 */
+  private get pullIndicatorEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.pull-refresh') ?? null;
+  }
+
+  /** 下拉刷新指示器文案。 */
+  private get pullHintEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>('.pull-hint') ?? null;
   }
 
   /**
@@ -3178,16 +3316,30 @@ export class AhChat extends LitElement {
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
+    // P1（断点续跑）：确定性检查点键（sessionId + 计划结构键 → FNV-1a）。刷新 / 重启后
+    // 可由同输入重算，无需把 wfId 写进持久化镜像；DAG 首跑与断点续跑共用同一键定位检查点。
+    const wfId = derivePlanWfId(sid, m.plan);
     // P3（多 agent DAG）：开关开启时，首次确认（pending）走服务端 DagEngine 并行执行 + 共享黑板；
     // 传输层失败（unknown agent / 5xx / 断连 / wf:error）整体回退串行路径，保证已验证行为兜底。
-    // failed 态的「从失败任务继续」统一走串行 resume（DAG 的 per-task 检查点续跑是 P4，见 design R8）。
     if (isPlanDagEnabled() && st.status === 'pending') {
-      const ok = await this.confirmPlanViaWorkflow(m, st, sid);
+      const ok = await this.confirmPlanViaWorkflow(m, st, sid, wfId);
       if (ok) return;
       // 回退：DAG 未进入终态 → 重置为可重入 pending，继续走下方串行派发。
       this.planExec = {
         ...this.planExec,
         [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+      };
+    }
+    // P1（断点续跑）：failed 态「从失败任务继续」优先走 DAG 检查点续跑（保留并行 + 共享黑板，
+    // 从断点仅重跑未完成任务）；DAG 不可达（404 无检查点 / 5xx / 断连 / wf:error）回退已验证的
+    // 串行 resume（见 design/plan-mode-multiagent.md §9.3 / R8）。
+    if (isPlanDagEnabled() && st.status === 'failed') {
+      const ok = await this.resumePlanViaWorkflow(m, st, sid, wfId);
+      if (ok) return;
+      // 回退：DAG 续跑未进入终态 → 保留 failed（done 集合不动），继续走下方串行从失败任务重派发。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...st, status: 'failed', currentTaskId: undefined }
       };
     }
     let cur: PlanExecState = { ...st, status: 'running' };
@@ -3267,7 +3419,8 @@ export class AhChat extends LitElement {
   private async confirmPlanViaWorkflow(
     m: ChatMsg,
     st: PlanExecState,
-    sid: string
+    sid: string,
+    wfId: string
   ): Promise<boolean> {
     if (!m.plan) return false;
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
@@ -3278,27 +3431,120 @@ export class AhChat extends LitElement {
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
-      // BYOK 透传（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）同构——
-      // model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
-      // 服务端 handleWorkflow 按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；
-      // 自定义模型路径才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。
-      const endpoint = await this.customModelEndpoint();
-      const byok = {
-        model: this.model || undefined,
-        ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
-        modelBaseUrl: endpoint.modelBaseUrl,
-        modelApiKey: endpoint.modelApiKey,
-        web: this.web || undefined
-      };
-      for await (const ev of client.streamWorkflowFromPlan(m.plan, {
-        agentRef: this.agentId || undefined,
-        mode: this.mode,
-        ...byok,
-        // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
-        // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
-        sessionId: sid,
-        signal: ac.signal
-      })) {
+      const byok = await this.planWfByok();
+      const source: AsyncGenerator<unknown> = client.streamWorkflowFromPlan(
+        m.plan,
+        {
+          agentRef: this.agentId || undefined,
+          mode: this.mode,
+          ...byok,
+          // P2-3：来源会话 id（= 计划文档落库键 plan:<sessionId>），服务端据此把
+          // DAG 执行进度同步到 PlanStore 节点状态，「计划」Tab 看板实时刷新。
+          sessionId: sid,
+          // P1（断点续跑）：确定性检查点键 → 服务端按此 id 落检查点，
+          // failed 态可经 resumePlanViaWorkflow 按同一键从断点续跑。
+          workflowId: wfId,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, false);
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * P1（断点续跑）：failed 态经服务端 POST /api/workflows/:id/resume 从检查点续跑
+   * （DagEngine.resume 跳过已完成 step，仅重跑未完成任务；BYOK 经服务端按 owner 重新解析，
+   * 检查点本身不落明文凭据）。事件消费与首跑共用 consumePlanWfStream（状态机幂等——
+   * 续跑流只重发未完成 step 的 wf:step:*，已完成任务保留在 prev.done）。
+   *
+   * @returns true = 续跑进入终态（done/failed/cancelled，或不可续跑时的 400/404）；
+   *          false = 传输层异常（5xx / 断连 / fetch 抛错）→ 调用方回退串行 resume 兜底。
+   */
+  private async resumePlanViaWorkflow(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    wfId: string
+  ): Promise<boolean> {
+    if (!m.plan) return false;
+    const taskIds = new Set(m.plan.tasks.map((t) => t.id));
+    const ac = new AbortController();
+    this.planWfAbort = ac;
+    this.streaming = { ...this.streaming, [sid]: true };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    let terminal = false;
+    try {
+      const byok = await this.planWfByok();
+      const source: AsyncGenerator<unknown> = client.streamWorkflowResume(
+        wfId,
+        {
+          mode: this.mode,
+          ...byok,
+          sessionId: sid,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, true);
+    } finally {
+      this.planWfAbort = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * 共享的 BYOK 载荷构造（t1 根因修复）：与串行 run 载荷（chat-run-runtime.ts 的 startRun）
+   * 同构——model / 自定义模型端点（密钥为 DB 密文，服务端 decryptApiKey）/ 上下文窗口 / 联网开关。
+   * 服务端按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；自定义模型路径
+   * 才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。首跑与续跑复用。
+   */
+  private async planWfByok(): Promise<{
+    model?: string;
+    modelBaseUrl?: string;
+    modelApiKey?: string;
+    ctxWindow?: number;
+    web?: boolean;
+  }> {
+    const endpoint = await this.customModelEndpoint();
+    return {
+      model: this.model || undefined,
+      ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
+      modelBaseUrl: endpoint.modelBaseUrl,
+      modelApiKey: endpoint.modelApiKey,
+      web: this.web || undefined
+    };
+  }
+
+  /**
+   * 共享事件流消费器（confirmPlanViaWorkflow 首跑 / resumePlanViaWorkflow 续跑共用）：
+   * 逐帧驱动卡片状态机（applyPlanWfEvent），编排终态回挂摘要，终结帧/异常按首跑 vs
+   * 续跑语义收敛终态。
+   *
+   * @param resume true = 续跑模式：wf:error / 流静默结束保留 failed（不回 pending），
+   *        调用方据返回 false 回退串行 resume；false = 首跑模式：wf:error / 传输异常
+   *        重置 pending 后回退串行派发。
+   * @returns 是否进入终态（调用方 true 时不再走串行路径）。
+   */
+  private async consumePlanWfStream(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    taskIds: Set<string>,
+    ac: AbortController,
+    source: AsyncGenerator<unknown>,
+    resume: boolean
+  ): Promise<boolean> {
+    let terminal = false;
+    try {
+      for await (const ev of source) {
         if (ac.signal.aborted) break;
         const e = ev as unknown as PlanWfEvent & {
           run?: PlanWfRunSnapshot;
@@ -3334,12 +3580,18 @@ export class AhChat extends LitElement {
           break;
         }
         if (e.type === 'wf:error') {
-          // 请求级失败（SSE 已开后服务端报错）：重置可重入 pending，回退串行路径。
+          // 请求级失败（SSE 已开后服务端报错，如 402 无 Key / 检查点 400/404）：
+          // 首跑重置可重入 pending（回退串行派发）；续跑保留 failed（回退串行 resume，
+          // 从失败任务重派发——done 集合不动，已完成产出保留）。
           this.planExec = {
             ...this.planExec,
-            [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+            [m.id]: {
+              ...(this.planExec[m.id] ?? st),
+              status: resume ? 'failed' : 'pending',
+              currentTaskId: undefined
+            }
           };
-          terminal = false;
+          terminal = !resume;
           break;
         }
       }
@@ -3381,20 +3633,31 @@ export class AhChat extends LitElement {
           }
         };
         terminal = true;
+      } else if (resume) {
+        // 续跑传输层异常（404 无检查点 / 5xx / 断连）：不 toast 打扰（旧 run / 检查点
+        // 丢失属可预期路径），保留 failed → 调用方回退串行 resume 兜底。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'failed',
+            currentTaskId: undefined
+          }
+        };
+        terminal = false;
       } else {
-        // 传输层异常（unknown agentRef / 5xx / 断连）：提示 + 重置 pending，回退串行路径。
+        // 首跑传输层异常（unknown agentRef / 5xx / 断连）：提示 + 重置 pending，回退串行路径。
         notifyError(e, { title: '计划执行中断', key: `plan-wf-${m.id}` });
         this.planExec = {
           ...this.planExec,
-          [m.id]: { ...st, status: 'pending', currentTaskId: undefined }
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'pending',
+            currentTaskId: undefined
+          }
         };
       }
-    } finally {
-      this.planWfAbort = null;
-      this.streaming = { ...this.streaming, [sid]: false };
-      this.requestUpdate();
     }
-    if (terminal) this.saveHistory(sid);
     return terminal;
   }
 
@@ -3606,7 +3869,17 @@ export class AhChat extends LitElement {
             role="list"
             aria-busy=${this.sessionsLoadingMore ? 'true' : 'false'}
             @scroll=${this.onSessionListScroll}
+            @touchstart=${this.onSessionListTouchStart}
+            @touchmove=${this.onSessionListTouchMove}
+            @touchend=${this.onSessionListTouchEnd}
+            @touchcancel=${this.onSessionListTouchEnd}
           >
+            <!-- 下拉刷新指示器：触屏在列表顶部下拉时滑入；桌面端 opacity:0 不可见、不响应 -->
+            <div class="pull-refresh" aria-hidden="true">
+              <span class="spinner"></span>
+              <span class="pull-hint">下拉刷新</span>
+            </div>
+            <div class="session-inner">
             ${this.sessions.length === 0
               ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
               : this.sessions.map(
@@ -3644,6 +3917,7 @@ export class AhChat extends LitElement {
                   `
                 )}
             ${this.renderSessionListFooter()}
+            </div>
           </div>
         </div>
 

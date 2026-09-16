@@ -1,3 +1,4 @@
+import { ref } from 'lit/directives/ref.js';
 /**
  * CI 供应链（ah-supply-chain）。
  *
@@ -178,7 +179,7 @@ export class AhSupplyChain extends LitElement {
             </div>
           </div>
           <button
-            class="ghost"
+            class="ghost refresh-btn"
             ?disabled=${this.scanning}
             @click=${() => void this.rescan()}
           >

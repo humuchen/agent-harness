@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, type TeamManager, type AgentCard, type TenantContext } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
@@ -99,6 +99,13 @@ export interface WorkflowExecutorOptions {
   ctxWindow?: number;
   /** 联网搜索开关（/api/run 的 job.web 语义）：true 注册 web_fetch + 联网检索技能。缺省关闭。 */
   webEnabled?: boolean;
+  /**
+   * 运行期自动验证门禁（P0-2，与 /api/run 的 job.verify 同语义）：传入 VerifyConfig
+   * （如 { auto: true }）时，每个 step 的 harness 产出后经 createVerifier 装配的规则门禁
+   * 校验「运行健康度」；未通过且 AGENT_VERIFY_MAX_RETRIES>0 时注入自检提示重跑（反思循环）。
+   * 缺省 undefined 行为与旧版完全一致（门禁关闭，零回归）。
+   */
+  verify?: VerifyConfig;
 }
 
 /**
@@ -147,6 +154,14 @@ function tailArgs(o: WorkflowExecutorOptions): AssembleAgentTail {
 
 export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): StepExecutor {
   const mode = opts.mode ?? 'mock';
+  // 校验/反思门禁（P0-2）：与 /api/run（run-queue.ts:773）同款装配——
+  // createVerifier(verifyConfig) 生成组合验证器；verifyMaxRetries 取 AGENT_VERIFY_MAX_RETRIES
+  // （默认 0 = 仅校验+标记，不自动重跑；>0 时 harness 注入自检提示重跑 = 反思循环）。
+  // 在 executor 级构建一次，所有 step 共享（语义等价串行 run 的 per-run 装配）。
+  const verifier = createVerifier(opts.verify);
+  const verifyMaxRetries = verifier
+    ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
+    : 0;
   return async (step: any, input: any, ctx: RunContext) => {
     const ref = step.agentRef;
     const card: AgentCard | null =
@@ -182,8 +197,8 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           PLAN_TASK_TIMEOUT_MS,
           undefined,
           undefined,
-          undefined,
-          undefined,
+          verifier,
+          verifyMaxRetries,
           card,
           tenantCtx,
           ...tailArgs(opts)
@@ -222,8 +237,8 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       PLAN_TASK_TIMEOUT_MS,
       undefined,
       undefined,
-      undefined,
-      undefined,
+      verifier,
+      verifyMaxRetries,
       card,
       tenantCtx,
       ...tailArgs(opts)

@@ -69,7 +69,7 @@ import {
   getErrorSummary,
   formatErrorReport
 } from '@agent-harness/core';
-import { createWorkflowExecutor, workflowStore } from './workflow-executor';
+import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
 import { runAgentTask } from './agent-run';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
@@ -2206,9 +2206,14 @@ const server = createServer(
           }
           let closed = false;
           res.on('close', () => { closed = true; });
-          const send = (payload: unknown) => {
-            if (!closed) res.write(`data: ${JSON.stringify(payload)}\n\n`);
-          };
+          // P1（断点续跑）：resume body 与执行端点同构（mode / BYOK 模型凭据 / ctxWindow /
+          // web / verify / sessionId）——检查点按 P1.3 纪律不存明文凭据，续跑时按登录 owner
+          // 重新解析凭据；real 模式无 Key 在 SSE 开启前 402 快速失败。旧客户端不带 body 时
+          // readBody 返回 {} → 默认 mock，向后兼容。
+          const body = await readBody(req);
+          const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
+          if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
+          let send: (payload: unknown) => void = () => {};
           try {
             const store = workflowStore();
             const existing = await store.get(workflowId);
@@ -2228,16 +2233,36 @@ const server = createServer(
               res.end(JSON.stringify({ error: 'no unfinished steps to resume' }));
               return;
             }
+            send = startSse(res, req);
+            // plan 来源工作流续跑同样同步计划看板（P2-3，幂等节流）；仅当请求显式携带 sessionId。
+            const planSync = createPlanTaskSync(
+              typeof body.sessionId === 'string' ? body.sessionId : undefined,
+              ctx.sub
+            );
+            auditAction('workflow.resume', {
+              workflowId,
+              mode: execOpts.mode,
+              role: ctx.role,
+              sub: ctx.sub
+            });
             const engine = new DagEngine({
               store,
               executor: createWorkflowExecutor({
                 onEvent: (e: any) => {
                   if (!closed) send({ type: 'harness', event: e });
                 },
+                // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传（此前缺失 →
+                // real 部署下续跑首 step 复现 t1 同款 401/无 Key 故障）。
+                mode: execOpts.mode,
+                ...execOpts.opts,
               }),
               onEvent: (e: unknown) => {
                 // 断点续跑同样产生 wf:step:failed / wf:done / wf:failed → 节点级审计对齐（见 auditWfEvent）。
-                if (e && typeof e === 'object' && 'type' in e) auditWfEvent(e as WorkflowEvent, ctx);
+                if (e && typeof e === 'object' && 'type' in e) {
+                  const ev = e as WorkflowEvent;
+                  auditWfEvent(ev, ctx);
+                  planSync?.sync(ev);
+                }
                 if (!closed) send(e);
               },
             });
@@ -4862,6 +4887,109 @@ function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
   }
 }
 
+/**
+ * P1（断点续跑）：/api/workflows 执行路径（handleWorkflow + POST /:id/resume + /:id/approve）
+ * 共享的执行器选项解析——BYOK 凭据 + 校验门禁 + 与 /api/run 完全同款语义收敛。
+ *
+ * 抽出 helper 的原因：resume/approve 路由此前不带任何模型/凭据参数（executor 默认 mock、
+ * 无 Key）→ real 模式部署下「断点续跑」会复现 t1 同款故障（首 step LLM 调用 401/无 Key）。
+ * 检查点按 P1.3 纪律不存明文凭据，执行期一律按登录 owner 重新 resolveRunCredential。
+ *
+ * @returns 解析结果（mode + 可直接展开进 createWorkflowExecutor 的选项）；
+ *          非 mock 模式无可用 Key 时已写 402 并返回 null（调用方立即 return，SSE 未开）。
+ */
+async function resolveWorkflowRunOpts(
+  body: Record<string, unknown>,
+  ctx: AuthContext,
+  res: ServerResponse
+): Promise<{ mode: RunMode; opts: Omit<WorkflowExecutorOptions, 'onEvent'> } | null> {
+  const mode: RunMode =
+    ['mock', 'real', 'real-mcp'].includes(String(body.mode ?? ''))
+      ? (body.mode as RunMode)
+      : 'mock';
+
+  // BYOK 字段（与 handleRun 3653 同款读取 + 前端 AES-GCM 密文解密，明文仅请求期内存中流转）。
+  const model: string | undefined = body.model
+    ? String(body.model).trim()
+    : undefined;
+  const modelBaseUrl: string | undefined = body.modelBaseUrl
+    ? String(body.modelBaseUrl).trim()
+    : undefined;
+  const modelApiKey: string | undefined = (() => {
+    const raw = body.modelApiKey ? String(body.modelApiKey).trim() : '';
+    if (!raw) return undefined;
+    try {
+      return decryptApiKey(raw);
+    } catch {
+      return undefined;
+    }
+  })();
+  const ctxWindow: number | undefined =
+    Number.isFinite(Number(body.ctxWindow)) && Number(body.ctxWindow) > 0
+      ? Math.floor(Number(body.ctxWindow))
+      : undefined;
+  const webEnabled: boolean = body.web === true;
+
+  // 校验/反思门禁（P0-2，与 /api/run 同款优先级）：body.verify > body.autoVerify > env 默认。
+  let verifyConfig: VerifyConfig | undefined;
+  const envAutoVerify =
+    process.env.AGENT_AUTO_VERIFY === 'true' ||
+    process.env.AGENT_AUTO_VERIFY === '1';
+  if (
+    body.verify &&
+    typeof body.verify === 'object' &&
+    !Array.isArray(body.verify)
+  ) {
+    verifyConfig = body.verify as VerifyConfig;
+  } else if (typeof body.autoVerify === 'boolean') {
+    verifyConfig = body.autoVerify ? { auto: true } : undefined;
+  } else if (envAutoVerify) {
+    verifyConfig = { auto: true };
+  }
+
+  // 凭据解析（per-owner，绝不写 process.env）：非 mock 且无 Key → 402 引导配置（与 /api/run 一致）。
+  let cred: CredentialResult = { source: 'none' };
+  if (mode !== 'mock') {
+    cred = await resolveRunCredential(ctx.sub, {
+      model,
+      modelBaseUrl,
+      modelApiKey
+    });
+    if (!cred.apiKey) {
+      res.writeHead(402, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: 'provider_key_required',
+          hint: '当前账号未配置可用的 LLM API Key，请到「设置 → 模型服务商」填入你的 Key 后再继续。'
+        })
+      );
+      return null;
+    }
+  }
+  // 与 run-queue.ts:985-994 同款收敛：解析出的 baseUrl 优先于请求自带值；多 Key 一并透传。
+  const effectiveBaseUrl = cred.baseUrl ?? modelBaseUrl;
+  const effectiveApiKey = cred.apiKey;
+  const effectiveApiKeys =
+    cred.apiKeys && cred.apiKeys.length
+      ? cred.apiKeys
+      : effectiveApiKey
+        ? [effectiveApiKey]
+        : undefined;
+
+  return {
+    mode,
+    opts: {
+      model,
+      modelBaseUrl: effectiveBaseUrl,
+      modelApiKey: effectiveApiKey,
+      apiKeys: effectiveApiKeys,
+      ctxWindow,
+      webEnabled,
+      verify: verifyConfig
+    }
+  };
+}
+
 async function handleWorkflow(
   req: IncomingMessage,
   res: ServerResponse
@@ -4935,66 +5063,15 @@ async function handleWorkflow(
   // SSE 发送器延迟绑定：先声明 no-op，校验通过后再挂真实 SSE；校验失败时根本不开 SSE。
   // mode 与 /api/run 同款白名单（server.ts:3567）：plan DAG 需按发起会话的运行模式
   // （前端透传）执行，默认 mock（离线）——保证「计划确认」与「当前聊天模式」语义一致。
-  const mode: RunMode = ['mock', 'real', 'real-mcp'].includes(body.mode)
-    ? (body.mode as RunMode)
-    : 'mock';
-
-  // ── BYOK 凭据解析（t1 根因修复，与 /api/run 提交期 3676 同款语义）──
-  // DAG 路径此前完全不带模型/凭据参数：executor 的 assembleAgent 停在 14 号位置参数，
-  // real 模式下 runner.ts:459 直接 throw「真实模式需要有效的 LLM API Key」→ 首 step 即失败。
-  // 现在：前端随请求带上 model / 自定义模型端点（密钥为 AES-GCM 密文，同 /api/run），
+  // P1（断点续跑）：BYOK 凭据 + 校验门禁收敛到共享 helper resolveWorkflowRunOpts
+  // （与 resume / approve 路由同款语义，消灭「两处 24 参各自维护」陷阱）。
+  // 前端随请求带上 model / 自定义模型端点（密钥为 AES-GCM 密文，同 /api/run），
   // 服务端按登录 owner（ctx.sub，不可伪造）走 resolveRunCredential 解析链
   // （自定义模型 → 用户 provider Key → 请求自带 Key → 平台兜底 → none），
-  // 明文 Key 仅在请求期内存中流转、绝不落日志 / 审计 / 检查点（[REDACTED] 纪律）。
-  const model: string | undefined = body.model
-    ? String(body.model).trim()
-    : undefined;
-  const modelBaseUrl: string | undefined = body.modelBaseUrl
-    ? String(body.modelBaseUrl).trim()
-    : undefined;
-  const modelApiKey: string | undefined = (() => {
-    const raw = body.modelApiKey ? String(body.modelApiKey).trim() : '';
-    if (!raw) return undefined;
-    try {
-      return decryptApiKey(raw);
-    } catch {
-      return undefined;
-    }
-  })();
-  const ctxWindow: number | undefined =
-    Number.isFinite(Number(body.ctxWindow)) && Number(body.ctxWindow) > 0
-      ? Math.floor(Number(body.ctxWindow))
-      : undefined;
-  const webEnabled: boolean = body.web === true;
-  let cred: CredentialResult = { source: 'none' };
-  if (mode !== 'mock') {
-    cred = await resolveRunCredential(ctx.sub, {
-      model,
-      modelBaseUrl,
-      modelApiKey
-    });
-    if (!cred.apiKey) {
-      res.writeHead(402, { 'content-type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: 'provider_key_required',
-          hint: '当前账号未配置可用的 LLM API Key，请到「设置 → 模型服务商」填入你的 Key 后再确认执行计划。'
-        })
-      );
-      return;
-    }
-  }
-  // 与 run-queue.ts:985-994 同款收敛：解析出的 baseUrl 优先于请求自带值；
-  // 多 Key（主 + 附加）一并透传，单 Key 时退化为旧行为。
-  const effectiveBaseUrl = cred.baseUrl ?? modelBaseUrl;
-  const effectiveApiKey = cred.apiKey;
-  const effectiveApiKeys =
-    cred.apiKeys && cred.apiKeys.length
-      ? cred.apiKeys
-      : effectiveApiKey
-        ? [effectiveApiKey]
-        : undefined;
-
+  // 明文 Key 仅在请求期内存中流转、绝不落日志 / 审计 / 检查点。
+  const execOpts = await resolveWorkflowRunOpts(body as Record<string, unknown>, ctx, res);
+  if (!execOpts) return; // 非 mock 无 Key 时 402 已写出（SSE 未开，不进入执行）
+  const mode = execOpts.mode;
   let send: (payload: unknown) => void = () => {};
   const onHarnessEvent = (e: any) => {
     if (!closed) send({ type: 'harness', event: e });
@@ -5015,14 +5092,10 @@ async function handleWorkflow(
   const executor = createWorkflowExecutor({
     onEvent: onHarnessEvent,
     mode,
-    // BYOK 透传（t1 根因修复）：与 /api/run（run-queue.ts:996）同款的模型/端点/凭据/上下文窗口/联网开关，
+    // P1（断点续跑）：BYOK 模型/凭据 + 校验门禁 + 上下文窗口 + 联网开关，经共享
+    // resolveWorkflowRunOpts 解析（与 /api/run、resume 路由完全同款语义），
     // 经 executor → assembleAgent 的 20–23 号位置参数进入每个 step 的 LLM 装配。
-    model,
-    modelBaseUrl: effectiveBaseUrl,
-    modelApiKey: effectiveApiKey,
-    apiKeys: effectiveApiKeys,
-    ctxWindow,
-    webEnabled
+    ...execOpts.opts
   });
   const engine = new DagEngine({
     store: workflowStore(),

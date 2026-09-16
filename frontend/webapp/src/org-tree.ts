@@ -155,7 +155,9 @@ export class AhOrgTree extends LitElement {
               <span class="mono">${this.tree.source}</span>
             </div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+          <button class="ghost refresh-btn" @click=${() => this.refresh()}>
+            刷新
+          </button>
         </div>
         <div class="tree">
           <ul class="tree-list root">

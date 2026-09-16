@@ -221,7 +221,9 @@ export class AhSandbox extends LitElement {
             <div class="section-title" style="margin:0">沙箱</div>
             <div class="muted-sm">受控会话 · 创建 / 列举 / 销毁</div>
           </div>
-          <button class="ghost" @click=${() => this.refresh()}>刷新</button>
+          <button class="ghost refresh-btn" @click=${() => this.refresh()}>
+            刷新
+          </button>
         </div>
         <div class="toolbar">
           <input

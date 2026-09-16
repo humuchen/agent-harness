@@ -516,12 +516,19 @@ export class AgentClient {
        * 缺省则服务端跳过计划同步（纯 def 工作流不受影响）。
        */
       sessionId?: string;
+      /**
+       * P1（断点续跑）：确定性工作流 id。前端经 derivePlanWfId(sessionId, plan) 生成
+       * （FNV-1a 哈希，跨刷新稳定）→ 服务端按此 id 落检查点；「断点续跑 / 轨迹回放 /
+       * 审计」在刷新与重启后仍可按同一键定位检查点。缺省服务端回落随机 `plan:<ts>-<rand>`。
+       */
+      workflowId?: string;
       signal?: AbortSignal;
     } = {}
   ): AsyncGenerator<WorkflowEvent> {
     const body: Record<string, unknown> = { plan };
     if (opts.agentRef) body.agentRef = opts.agentRef;
     if (opts.mode) body.mode = opts.mode;
+    if (opts.workflowId) body.workflowId = opts.workflowId;
     // BYOK 透传（t1 根因修复）：DAG 路径此前不带任何模型/凭据字段，服务端 real 模式
     // 无 Key 可用 → 首 step LLM 调用即失败。现在与 /api/run 同构：服务端按 owner 解析
     // （provider Keys 主链路 / 自定义模型 / 请求自带 Key），明文仅在执行期内存中使用。
@@ -548,14 +555,39 @@ export class AgentClient {
   /**
    * 从断点续跑某次 plan/workflow 执行（P3：计划卡片「从失败任务继续」的 DAG 回退路径）。
    * 对应服务端 POST /api/workflows/:id/resume（检查点存于 WorkflowStore）。
+   *
+   * P1（断点续跑）：body 与 streamWorkflowFromPlan 同构（mode/BYOK 模型凭据/ctxWindow/web/
+   * verify 开关/sessionId）——检查点按 P1.3 纪律不存明文凭据，续跑时服务端按登录 owner
+   * 重新 resolveRunCredential；real 模式无 Key 由服务端 402 拒绝（前端 catch 回退串行路径）。
+   * 不带任何字段的旧调用（空 body）行为不变：默认 mock，向后兼容。
    */
   async *streamWorkflowResume(
     id: string,
-    opts: SseOptions = {}
+    opts: SseOptions & {
+      mode?: RunMode;
+      model?: string;
+      modelBaseUrl?: string;
+      modelApiKey?: string;
+      ctxWindow?: number;
+      web?: boolean;
+      verify?: unknown;
+      autoVerify?: boolean;
+      sessionId?: string;
+    } = {}
   ): AsyncGenerator<WorkflowEvent> {
+    const body: Record<string, unknown> = {};
+    if (opts.mode) body.mode = opts.mode;
+    if (opts.model) body.model = opts.model;
+    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
+    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
+    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
+    if (opts.web) body.web = true;
+    if (opts.verify) body.verify = opts.verify;
+    if (typeof opts.autoVerify === 'boolean') body.autoVerify = opts.autoVerify;
+    if (opts.sessionId) body.sessionId = opts.sessionId;
     const res = await this.request(
       `/api/v1/workflows/${encodeURIComponent(id)}/resume`,
-      { method: 'POST', signal: opts.signal }
+      { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
     );
     if (!res.ok) {
       const data = await res.text().catch(() => '');

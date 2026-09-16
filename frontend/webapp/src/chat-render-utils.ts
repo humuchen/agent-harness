@@ -8,7 +8,7 @@ import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
 import type { PlanExecMirror } from '@agent-harness/client';
-import type { PlanExecState } from './chat-types';
+import type { ExecutionPlanView, PlanExecState } from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
 export function fileIcon(f: UploadedFile): string {
@@ -174,6 +174,37 @@ export function setPlanDagEnabled(on: boolean): void {
   } catch {
     /* 隐私模式 / 非浏览器：开关回落到默认「开」，与 isPlanDagEnabled 的 catch 分支一致。 */
   }
+}
+
+/**
+ * P1（断点续跑）：由（会话 id，计划结构）推导**确定性**工作流检查点键。
+ *
+ * 对计划「结构键」做 FNV-1a 32 位哈希：goal + 各 task id + 依赖边（dependsOn）。
+ * **不含**任务文本内容（title / steps / expectedOutput）——用户调整任务文案后结构键
+ * 不变，仍能定位原检查点续跑（已完成任务保留产出，未完成任务按当前文本重执行）。
+ * 结果形如 `plan-<8位hex>`：纯 ASCII 字母数字/连字符，经服务端 sanitizeKey
+ * （仅保留 [a-zA-Z0-9._-]）后原样不变，可安全作 FileWorkflowStore 检查点文件名；
+ * 前缀与旧随机键 `plan:<ts>-<rand>` 区分（旧 run 无法被确定性定位 → resume 404 →
+ * 前端自动回退串行路径，行为安全）。
+ *
+ * 同输入恒同输出 → 刷新 / 重启后可重算（sessionId 稳定、计划随镜像持久化），
+ * 无需把 wfId 写入持久化镜像。
+ */
+export function derivePlanWfId(sessionId: string, plan: ExecutionPlanView): string {
+  const s = [
+    sessionId,
+    plan?.goal ?? '',
+    (plan?.tasks ?? [])
+      .map((t) => `${t.id}:${(t.dependsOn ?? []).join(',')}`)
+      .join('|')
+  ].join('\u0000');
+  // FNV-1a（32 位）：输入为 ASCII（会话 id / task id），charCodeAt & 0xff 等价逐字节。
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i) & 0xff;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `plan-${h.toString(16).padStart(8, '0')}`;
 }
 
 /** derivePlanExecFromMessages 的只读消息形状（ChatMsg / MirroredMsg 均满足）。 */
