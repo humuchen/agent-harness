@@ -14,10 +14,9 @@ import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
 
 /** 单个 step 的运行态。 */
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
-
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
 /** 整个工作流的运行态。 */
-export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
+export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'awaiting';
 
 /** 单个步骤定义（DAG 中的一个节点）。 */
 export interface StepDef {

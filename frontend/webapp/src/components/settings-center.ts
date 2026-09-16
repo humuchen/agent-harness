@@ -278,9 +278,13 @@ export class AhSettingsCenter extends LitElement {
 
       /* ── 顶部平铺 Tab ── */
       .head {
+        position: sticky;
+        top: 0;
+        z-index: 2;
         border-bottom: 1px solid var(--ah-border);
         padding: 14px 14px 10px;
         flex: 0 0 auto;
+        background: var(--ah-surface-1);
       }
 
       /* 移动端返回「我的」入口（桌面无此需求，隐藏） */
