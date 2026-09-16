@@ -18,6 +18,10 @@ import './ah-modal';
 // 通用抽屉组件（mac-ui 适配层）：四向滑入 + 遮罩/ Esc / 关闭按钮 + 焦点圈闭环。
 import './ah-drawer';
 
+// 通用「滑动露出操作」列表项：触屏左滑露出右侧操作按钮（组排他 / tap-close /
+// 纯指针设备自动隐藏操作区）。宿主用法见组件文件头。
+import './ah-swipe-item';
+
 // 全局通知组件：全站「接口错误 / 操作结果」提示的唯一出口（notify.* 命令式 API）。
 import './ah-notification';
 

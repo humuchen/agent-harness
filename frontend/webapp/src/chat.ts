@@ -10,6 +10,7 @@ import {
   type ChatSyncEvent
 } from './chat-sync';
 import { AhModal } from './components/ah-modal';
+import './components/ah-swipe-item';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
 import { isRetrievalTool, safeJson } from './utils/chat-utils';
@@ -1124,6 +1125,8 @@ export class AhChat extends LitElement {
   }
 
   // ────────── 下拉刷新手势（仅触屏、仅在列表顶部向下拖）──────────
+  /** 手势起始触摸 X（轴向守卫用：横滑会话行时让出给 ah-swipe-item，见 touchmove）。 */
+  private pullStartX = 0;
   private onSessionListTouchStart = (e: TouchEvent) => {
     const el = e.currentTarget as HTMLElement | null;
     // 折叠态（64px 图标轨）没有可下拉的会话列表，跳过手势。
@@ -1136,6 +1139,7 @@ export class AhChat extends LitElement {
     this.pullPulling = true;
     const t0 = e.touches[0];
     if (!t0) return;
+    this.pullStartX = t0.clientX;
     this.pullStartY = t0.clientY;
     this.pullDist = 0;
   };
@@ -1146,6 +1150,14 @@ export class AhChat extends LitElement {
     if (!el) return;
     const t0 = e.touches[0];
     if (!t0) return;
+    // 轴向守卫：横向位移明显占优时是「会话行滑动操作」（ah-swipe-item 的
+    // touchmove 已 preventDefault，本处理器仅被动跟随），撤销下拉态防止
+    // 松手误触发刷新、内容层残留位移。
+    if (Math.abs(t0.clientX - this.pullStartX) > 12) {
+      if (this.pullDist !== 0) this.applyPullTransform(0);
+      this.pullPulling = false;
+      return;
+    }
     const delta = t0.clientY - this.pullStartY;
     // 手指上移（正常向下滚动内容）或已离开顶部：取消下拉，交回原生滚动。
     if (delta <= 0 || el.scrollTop > 0) {
@@ -1662,6 +1674,7 @@ export class AhChat extends LitElement {
     else if (sv?.agentId !== undefined) this.agentId = sv.agentId;
     this.persistActiveId(id);
     this.sidebarOpen = false;
+    this.closeAllSessionSwipes();
     this.input = '';
     this.cmdName = '';
 
@@ -3228,7 +3241,17 @@ export class AhChat extends LitElement {
       setTimeout(() => {
         this._sidebarJustOpened = false;
       }, 300);
+    } else {
+      this.closeAllSessionSwipes();
     }
+  }
+
+  /** 全组收起会话列表的滑动操作区（ah-swipe-item 组排他信号，不带 id）：
+   * 避免「抽屉关了 / 已切会话、某行还摊开」的悬浮态，列表回到默认外观。 */
+  private closeAllSessionSwipes() {
+    window.dispatchEvent(
+      new CustomEvent('ah:swipe-close', { detail: { group: 'chat-sessions' } })
+    );
   }
 
   /** 切换 PC 端侧栏折叠态（展开/收起）。 */
@@ -4038,36 +4061,59 @@ export class AhChat extends LitElement {
               ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
               : this.sessions.map(
                   (s) => html`
-                    <div
-                      class="session ${s.id === this.activeId ? 'active' : ''}"
-                      role="listitem"
-                      @click=${() => this.selectSession(s.id)}
-                    >
-                      <span class="dot"></span>
-                      <span class="title">${escapeHtml(s.title)}</span>
-                      <span class="acts">
+                    <!-- 通用滑动项（ah-swipe-item，components/index.ts 注册）：
+                         触屏左滑行内容露出右侧「重命名/删除」操作区；桌面 hover 设备
+                         自动隐藏操作区，沿用行内 .acts hover 入口（见 session-swipe.ts）。 -->
+                    <ah-swipe-item id=${s.id} group="chat-sessions">
+                      <div
+                        class="session ${s.id === this.activeId ? 'active' : ''}"
+                        role="listitem"
+                        @click=${() => this.selectSession(s.id)}
+                      >
+                        <span class="dot"></span>
+                        <span class="title">${escapeHtml(s.title)}</span>
+                        <span class="acts">
+                          <button
+                            class="icon-btn"
+                            title="重命名"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.renameSession(s.id);
+                            }}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            class="icon-btn"
+                            title="删除"
+                            @click=${(e: Event) => {
+                              e.stopPropagation();
+                              this.deleteSession(s.id);
+                            }}
+                          >
+                            🗑
+                          </button>
+                        </span>
+                      </div>
+                      <div slot="actions">
                         <button
-                          class="icon-btn"
+                          class="swipe-act"
                           title="重命名"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this.renameSession(s.id);
-                          }}
+                          aria-label="重命名会话"
+                          @click=${() => this.renameSession(s.id)}
                         >
-                          ✎
+                          ✎ 重命名
                         </button>
                         <button
-                          class="icon-btn"
+                          class="swipe-act danger"
                           title="删除"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this.deleteSession(s.id);
-                          }}
+                          aria-label="删除会话"
+                          @click=${() => this.deleteSession(s.id)}
                         >
-                          🗑
+                          🗑 删除
                         </button>
-                      </span>
-                    </div>
+                      </div>
+                    </ah-swipe-item>
                   `
                 )}
             ${this.renderSessionListFooter()}
