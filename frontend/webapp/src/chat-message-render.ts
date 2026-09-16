@@ -14,6 +14,7 @@ import {
   renderAttachments,
   renderImageAttachments,
   buildPlanWfReplayRows,
+  buildPlanWfTraceLines,
   planWfReplayMark,
   planWfReplayStateLabel,
   formatPlanWfDuration
@@ -792,6 +793,30 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                           <pre>${escapeHtml(r.detail)}</pre>
                         </details>`
                       : nothing}
+                    ${(() => {
+                      // P2.5 调用链路：该 step 运行过程中的关键事件（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+                      // 来自检查点 StepRun.trace（旧快照无该字段 → lines 为空 → 不渲染，零回归）。
+                      const lines = buildPlanWfTraceLines(r.trace);
+                      if (lines.length === 0) return nothing;
+                      return html`<details class="wf-replay-trace">
+                        <summary>调用链路 · ${lines.length} 步</summary>
+                        <ol class="wf-trace-lines">
+                          ${lines.map(
+                            (l) =>
+                              html`<li class="wf-trace-line ${l.status ?? 'ok'}">
+                                <span class="wf-trace-icon">${l.icon}</span>
+                                <span class="wf-trace-label">${escapeHtml(l.label)}</span>
+                                ${l.at
+                                  ? html`<span class="wf-trace-at">+${escapeHtml(l.at)}</span>`
+                                  : nothing}
+                                ${l.detail
+                                  ? html`<pre class="wf-trace-detail">${escapeHtml(l.detail)}</pre>`
+                                  : nothing}
+                              </li>`
+                          )}
+                        </ol>
+                      </details>`;
+                    })()}
                   </li>`
               )}
             </ol>`

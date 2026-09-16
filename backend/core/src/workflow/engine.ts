@@ -16,7 +16,7 @@ import { getAgentRegistry, type AgentRegistry } from '../agents/registry';
 import type { AgentCard } from '../agents/types';
 import { getTeamManager, type TeamManager } from '../teams';
 import type { Team } from '../teams';
-import type { StepDef, StepRun, WorkflowDef, WorkflowRun } from './types';
+import type { StepDef, StepRun, StepTraceNode, WorkflowDef, WorkflowRun } from './types';
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
 
 /** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
@@ -37,7 +37,19 @@ export interface RunContext {
   signal?: AbortSignal;
   /** 本次执行是否为「补偿」语义（executor 据以调用回滚工具 / 走回滚分支）。 */
   compensate?: boolean;
+  /**
+   * P2.5 调用链路捕获通道：executor 在本 step 执行期间把捕获到的 harness 事件序列
+   * （LLM 调用 / 工具 / 护栏 / 校验 / 收尾）写入此字段；引擎在 step 收尾（成功或失败）
+   * 将其合并进 `StepRun.trace` 并随检查点持久化。旧 executor 不写 → 引擎合并 undefined →
+   * trace 缺省，零回归。引擎按节点上限截断（保早期调用），避免检查点膨胀。
+   */
+  trace?: StepTraceNode[];
 }
+
+/** 单 step 调用链路节点数上限（R5 体积护栏）：超出截断保留早期调用，防止检查点膨胀。 */
+export const STEP_TRACE_MAX_NODES = 500;
+/** 调用链路单节点 detail 长度上限（截断存储，避免单条长产出拖垮检查点）。 */
+export const STEP_TRACE_DETAIL_MAX = 500;
 
 /** 引擎对外发出的工作流事件（供 SSE / 可观测消费）。 */
 export type WorkflowEvent =
@@ -87,6 +99,26 @@ export class DagEngine {
 
   private emit(e: WorkflowEvent): void {
     this.onEvent?.(e);
+  }
+
+  /**
+   * P2.5 调用链路合并：把 executor 经 `ctx.trace` 附挂的 harness 事件序列合并进
+   * `StepRun.trace`（节点数上限截断，保早期调用；detail 已在采集端按
+   * STEP_TRACE_DETAIL_MAX 截断，此处对超长 detail 再兜底一次）。
+   *
+   * 零回归：ctx.trace 缺省（旧 executor / 测试 mock）时直接 no-op，StepRun 不写 trace 字段。
+   * 成功 / 失败 / 补偿三条路径统一调用 —— 失败 step 的链路正是排障最需要的关键信息。
+   */
+  private mergeStepTrace(sr: StepRun, ctx: RunContext): void {
+    const nodes = ctx.trace;
+    if (!nodes || nodes.length === 0) return;
+    const kept = nodes.slice(0, STEP_TRACE_MAX_NODES);
+    sr.trace = kept.map((n) => {
+      if (typeof n.detail === 'string' && n.detail.length > STEP_TRACE_DETAIL_MAX) {
+        return { ...n, detail: n.detail.slice(0, STEP_TRACE_DETAIL_MAX) + '…' };
+      }
+      return n;
+    });
   }
 
   /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */
@@ -373,12 +405,14 @@ export class DagEngine {
               sr.state = 'done';
               sr.finishedAt = Date.now();
               outputs[id] = result;
+              this.mergeStepTrace(sr, ctx); // P2.5 调用链路落检查点（缺省 no-op）
               await this.store.save(run);
               this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id, output: result });
             } catch (e: any) {
               const errMsg: string = e?.message ?? String(e);
               sr.state = 'failed';
               sr.error = errMsg;
+              this.mergeStepTrace(sr, ctx); // P2.5：失败 step 的链路是排障关键信息
               await this.store.save(run);
               this.emit({ type: 'wf:step:failed', workflowId: def.id, stepId: id, error: errMsg });
               throw e;
@@ -490,9 +524,11 @@ export class DagEngine {
           const compInput = run.steps[step.id]?.output;
           const result = await this.executor(compStep, compInput, ctx);
           run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, compensateInput: compInput, finishedAt: Date.now() };
+          this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5 补偿 step 链路同样落检查点
         } catch (e2: any) {
           // 补偿失败：记录但不阻断其余补偿（避免雪崩）；保留 compensateInput 供重试。
           run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: run.steps[step.id]?.output };
+          this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5：失败的补偿链路是排障关键信息
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compId });
@@ -506,8 +542,10 @@ export class DagEngine {
           await this.resolveCard(step.agentRef); // 校验 agentRef 可解析（不可解析则抛出，落入 catch 记录）
           const result = await this.executor(step, cmd, ctx);
           run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result, compensateInput: cmd };
+          this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         } catch (e2: any) {
           run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: cmd };
+          this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: step.id });
@@ -610,9 +648,11 @@ export class DagEngine {
             const result = await this.executor(step, input, ctx);
             run.steps[id] = { ...run.steps[id], state: 'done', output: result, finishedAt: Date.now() };
             outputs[id] = result;
+            this.mergeStepTrace(run.steps[id], ctx); // P2.5 续跑 step 的链路同样落检查点
             this.emit({ type: 'wf:step:done', workflowId, stepId: id, output: result });
           } catch (e: any) {
             run.steps[id] = { ...run.steps[id], state: 'failed', error: e?.message ?? String(e) };
+            this.mergeStepTrace(run.steps[id], ctx); // P2.5：失败 step 的链路是排障关键信息
             this.emit({ type: 'wf:step:failed', workflowId, stepId: id, error: e?.message ?? String(e) });
             stepFailed = true;
           }

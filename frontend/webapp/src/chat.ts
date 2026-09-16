@@ -1202,10 +1202,16 @@ export class AhChat extends LitElement {
     if (ind) {
       ind.style.transition = t;
       ind.style.opacity = dist > 0 || this.pullRefreshing ? '1' : '0';
-      ind.style.transform = `translateY(${Math.min(dist, this.pullMax) - 48}px)`;
-      ind.classList.toggle('armed', dist >= this.pullThreshold && !this.pullRefreshing);
+      ind.style.transform = `translateY(${
+        Math.min(dist, this.pullMax) - 48
+      }px)`;
+      ind.classList.toggle(
+        'armed',
+        dist >= this.pullThreshold && !this.pullRefreshing
+      );
     }
-    if (hint) hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
+    if (hint)
+      hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
   }
 
   /** 触发下拉刷新：重拉首屏会话列表（显式用户操作，失败弹提示）。 */
@@ -1274,7 +1280,9 @@ export class AhChat extends LitElement {
 
   /** 会话列表内容包裹层（下拉时整体下移，呈现橡皮筋效果）。 */
   private get sessionInnerEl(): HTMLElement | null {
-    return this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null;
+    return (
+      this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null
+    );
   }
 
   /** 顶部下拉刷新指示器。 */
@@ -1853,7 +1861,11 @@ export class AhChat extends LitElement {
       this.planExec = {
         ...this.planExec,
         [m.id]: {
-          status: awaitingState ? 'awaiting' : interrupted ? 'failed' : ps.status,
+          status: awaitingState
+            ? 'awaiting'
+            : interrupted
+            ? 'failed'
+            : ps.status,
           currentTaskId: interrupted ? ps.currentTaskId : undefined,
           failedTaskId: interrupted ? ps.currentTaskId : ps.failedTaskId,
           done: doneMap,
@@ -3307,7 +3319,10 @@ export class AhChat extends LitElement {
     const sid = this.activeId;
     if (!sid) return;
     this.planWfReplayMsg = m;
-    this.planWfReplay = { ...this.planWfReplay, [m.id]: { loading: true, snapshot: null } };
+    this.planWfReplay = {
+      ...this.planWfReplay,
+      [m.id]: { loading: true, snapshot: null }
+    };
     void (async () => {
       const wfId = derivePlanWfId(sid, m.plan!);
       let st: PlanWfReplayState;
@@ -3546,7 +3561,15 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'first');
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'first'
+      );
     } finally {
       this.planWfAbort = null;
       this.streaming = { ...this.streaming, [sid]: false };
@@ -3589,7 +3612,15 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'resume');
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'resume'
+      );
     } finally {
       this.planWfAbort = null;
       this.streaming = { ...this.streaming, [sid]: false };
@@ -3624,7 +3655,10 @@ export class AhChat extends LitElement {
     const ac = new AbortController();
     this.planWfAbort = ac;
     this.streaming = { ...this.streaming, [sid]: true };
-    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined } };
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined }
+    };
     let terminal = false;
     try {
       const byok = await this.planWfByok();
@@ -3639,7 +3673,15 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, 'approve');
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'approve'
+      );
     } finally {
       this.planWfAbort = null;
       this.streaming = { ...this.streaming, [sid]: false };
@@ -3726,12 +3768,18 @@ export class AhChat extends LitElement {
                   .map((x) => x.id ?? '')
                   .filter(Boolean)
               : [];
-          if (run?.steps && rs !== 'awaiting') this.appendPlanDagSummary(sid, m, run);
+          if (run?.steps && rs !== 'awaiting')
+            this.appendPlanDagSummary(sid, m, run);
           this.planExec = {
             ...this.planExec,
             [m.id]: {
               ...s,
-              status: rs === 'done' ? 'done' : rs === 'awaiting' ? 'awaiting' : 'failed',
+              status:
+                rs === 'done'
+                  ? 'done'
+                  : rs === 'awaiting'
+                  ? 'awaiting'
+                  : 'failed',
               currentTaskId: undefined,
               ...(rs === 'awaiting' && awaitingIds.length
                 ? { awaitingTaskIds: awaitingIds }
@@ -3751,7 +3799,11 @@ export class AhChat extends LitElement {
             [m.id]: {
               ...(this.planExec[m.id] ?? st),
               status:
-                kind === 'first' ? 'pending' : kind === 'resume' ? 'failed' : 'awaiting',
+                kind === 'first'
+                  ? 'pending'
+                  : kind === 'resume'
+                  ? 'failed'
+                  : 'awaiting',
               currentTaskId: undefined
             }
           };
@@ -4057,66 +4109,68 @@ export class AhChat extends LitElement {
               <span class="pull-hint">下拉刷新</span>
             </div>
             <div class="session-inner">
-            ${this.sessions.length === 0
-              ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
-              : this.sessions.map(
-                  (s) => html`
-                    <!-- 通用滑动项（ah-swipe-item，components/index.ts 注册）：
+              ${this.sessions.length === 0
+                ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
+                : this.sessions.map(
+                    (s) => html`
+                      <!-- 通用滑动项（ah-swipe-item，components/index.ts 注册）：
                          触屏左滑行内容露出右侧「重命名/删除」操作区；桌面 hover 设备
                          自动隐藏操作区，沿用行内 .acts hover 入口（见 session-swipe.ts）。 -->
-                    <ah-swipe-item id=${s.id} group="chat-sessions">
-                      <div
-                        class="session ${s.id === this.activeId ? 'active' : ''}"
-                        role="listitem"
-                        @click=${() => this.selectSession(s.id)}
-                      >
-                        <span class="dot"></span>
-                        <span class="title">${escapeHtml(s.title)}</span>
-                        <span class="acts">
+                      <ah-swipe-item id=${s.id} group="chat-sessions">
+                        <div
+                          class="session ${s.id === this.activeId
+                            ? 'active'
+                            : ''}"
+                          role="listitem"
+                          @click=${() => this.selectSession(s.id)}
+                        >
+                          <span class="dot"></span>
+                          <span class="title">${escapeHtml(s.title)}</span>
+                          <span class="acts">
+                            <button
+                              class="icon-btn"
+                              title="重命名"
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this.renameSession(s.id);
+                              }}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              class="icon-btn"
+                              title="删除"
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this.deleteSession(s.id);
+                              }}
+                            >
+                              🗑
+                            </button>
+                          </span>
+                        </div>
+                        <div slot="actions">
                           <button
-                            class="icon-btn"
+                            class="swipe-act"
                             title="重命名"
-                            @click=${(e: Event) => {
-                              e.stopPropagation();
-                              this.renameSession(s.id);
-                            }}
+                            aria-label="重命名会话"
+                            @click=${() => this.renameSession(s.id)}
                           >
-                            ✎
+                            重命名
                           </button>
                           <button
-                            class="icon-btn"
+                            class="swipe-act danger"
                             title="删除"
-                            @click=${(e: Event) => {
-                              e.stopPropagation();
-                              this.deleteSession(s.id);
-                            }}
+                            aria-label="删除会话"
+                            @click=${() => this.deleteSession(s.id)}
                           >
-                            🗑
+                            删除
                           </button>
-                        </span>
-                      </div>
-                      <div slot="actions">
-                        <button
-                          class="swipe-act"
-                          title="重命名"
-                          aria-label="重命名会话"
-                          @click=${() => this.renameSession(s.id)}
-                        >
-                          ✎ 重命名
-                        </button>
-                        <button
-                          class="swipe-act danger"
-                          title="删除"
-                          aria-label="删除会话"
-                          @click=${() => this.deleteSession(s.id)}
-                        >
-                          🗑 删除
-                        </button>
-                      </div>
-                    </ah-swipe-item>
-                  `
-                )}
-            ${this.renderSessionListFooter()}
+                        </div>
+                      </ah-swipe-item>
+                    `
+                  )}
+              ${this.renderSessionListFooter()}
             </div>
           </div>
         </div>
@@ -4488,7 +4542,9 @@ export class AhChat extends LitElement {
                         @click=${() =>
                           // P3：计划 DAG 执行中优先中止 DAG 流（planWfAbort），
                           // 普通 run 才走 runRt.stop()。两者互斥（同一时刻仅一个在跑）。
-                          (this.planWfAbort ? this.planWfAbort.abort() : this.runRt.stop())}
+                          this.planWfAbort
+                            ? this.planWfAbort.abort()
+                            : this.runRt.stop()}
                       >
                         ■
                       </button>`
@@ -4574,8 +4630,7 @@ export class AhChat extends LitElement {
               </div>
             </div>`
           : nothing}
-        ${this.renderTraceDrawer()}
-        ${this.renderPlanWfReplayDrawer()}
+        ${this.renderTraceDrawer()} ${this.renderPlanWfReplayDrawer()}
 
         <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
            drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->

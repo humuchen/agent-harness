@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
@@ -109,6 +109,179 @@ export interface WorkflowExecutorOptions {
 }
 
 /**
+ * P2.5 调用链路采集器（workflow-executor 专用）：把 step 执行期间流过的 harness 事件
+ * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / 校验 / 用量 / 收尾），
+ * 由 executor 写入 `ctx.trace`，引擎在 step 收尾合并进 `StepRun.trace` 并随检查点持久化 ——
+ * 使「执行详情」抽屉能看到每个节点的运行过程，而不只是完成后的耗时。
+ *
+ * 纪律：
+ * - **白名单捕获**：只记录关键事件；token 级流式增量（llm:token / llm:reasoning）与高频噪声
+ *   （run:tools / step:start / run:meta / run:token-cache / plan:proposed）不落盘；
+ * - **截断**：detail 超 STEP_TRACE_DETAIL_MAX 截断（保首段）；节点数超 STEP_TRACE_MAX_NODES 停采
+ *   （引擎合并侧同样兜底，双保险）；
+ * - **BYOK 红线**：只记模型名，modelBaseUrl / apiKeys 永不进入节点（事件流本就不携带凭据）；
+ * - **per-step 隔离**：每个 workflow step 各建一个实例（波次内并行 step 不互相串流）。
+ */
+export class StepTraceCollector {
+  private readonly traceNodes: StepTraceNode[] = [];
+
+  /** 观察一个 harness 事件；白名单命中即追加节点（超限后静默丢弃）。 */
+  observe(e: HarnessEvent): void {
+    if (this.traceNodes.length >= STEP_TRACE_MAX_NODES) return;
+    const ts = Date.now();
+    switch (e.type) {
+      case 'run:start':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: '任务开始',
+          detail: clip(e.input),
+        });
+        return;
+      case 'guardrail:blocked':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `护栏拦截（${e.phase}）`,
+          detail: clip(e.reason),
+          status: 'blocked',
+          meta: e.tool ? { tool: e.tool } : undefined,
+        });
+        return;
+      case 'llm:call':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: 'LLM 调用',
+          meta: { msgs: String(e.messageCount), tools: String(e.toolCount) },
+        });
+        return;
+      case 'llm:response': {
+        const toolNames = e.toolCalls.map((c) => c.name).filter(Boolean);
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: e.partial ? '模型响应（中断截断）' : toolNames.length ? `响应 → 调用工具 [${toolNames.join(', ')}]` : '模型响应',
+          status: e.partial ? 'error' : 'ok',
+          detail: clip(e.content || toolNames.map((n) => `调用 ${n}`).join(' ')),
+          meta: e.partial ? { partial: 'true' } : undefined,
+        });
+        return;
+      }
+      case 'tool:start':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name}`,
+          detail: clip(e.call.arguments),
+        });
+        return;
+      case 'tool:result':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name} 结果`,
+          status: e.errored ? 'error' : 'ok',
+          detail: clip(e.result),
+        });
+        return;
+      case 'tool:deduped':
+        this.traceNodes.push({
+          type: 'tool:result', // 归一为结果节点（回放端按 status + label 区分）
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name} 结果（缓存复用）`,
+          status: e.errored ? 'error' : 'ok',
+          detail: clip(e.result),
+        });
+        return;
+      case 'run:cost':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: '用量',
+          meta: {
+            ...(e.model ? { model: e.model } : {}),
+            tokens: String(e.usage?.total_tokens ?? 0),
+            cost: e.stepCost.toFixed(4),
+            ...(e.priced === false ? { priced: 'est' } : {})
+          },
+        });
+        return;
+      case 'llm:usage':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: e.compressed ? '上下文用量（已压缩）' : '上下文用量',
+          meta: {
+            ...(e.model ? { model: e.model } : {}),
+            prompt: String(e.promptTokens),
+            completion: String(e.completionTokens),
+            window: String(e.window)
+          },
+        });
+        return;
+      case 'budget:exceeded':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `预算熔断（${e.kind}）`,
+          detail: `已用 ${e.used} / 上限 ${e.limit}`,
+          status: 'error'
+        });
+        return;
+      case 'verify:result':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: e.passed ? '自动验证通过' : `自动验证未通过（第 ${e.attempt} 次, 得分 ${e.score}）`,
+          status: e.passed ? 'ok' : 'error',
+          detail: e.reasons.length ? clip(e.reasons.join('；')) : undefined
+        });
+        return;
+      case 'run:end':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: '任务结束',
+          status: 'ok',
+          detail: clip(e.final),
+          meta: { steps: String(e.steps) }
+        });
+        return;
+      default:
+        // 白名单外的纯流式 / 元数据事件不落盘（控体积，保关键信息）。
+        return;
+    }
+  }
+
+  /** 已捕获的节点序列（引擎合并侧还会做截断 + detail 兜底）。 */
+  nodes(): StepTraceNode[] {
+    return this.traceNodes;
+  }
+}
+
+/** detail 截断（与引擎 STEP_TRACE_DETAIL_MAX 同上限，双保险保早期内容）。 */
+function clip(s: unknown, max: number = STEP_TRACE_DETAIL_MAX): string | undefined {
+  if (s == null) return undefined;
+  let t: string;
+  try {
+    t = typeof s === 'string' ? s : JSON.stringify(s);
+  } catch {
+    t = String(s);
+  }
+  t = t.trim();
+  if (!t) return undefined;
+  return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+/**
  * 把 WorkflowExecutorOptions 的 BYOK 参数展开为 assembleAgent 的 15–23 号位置参数
  * 组成的元组（team 路径与主路径共用），避免两处 24 参调用各自维护、易漏。
  *
@@ -163,6 +336,16 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
     : 0;
   return async (step: any, input: any, ctx: RunContext) => {
+    // P2.5 调用链路采集（per-step 隔离）：波次内并行 step 各自持有 collector，
+    // 经包装的 traceOnEvent 汇入本 step 专属序列（同时保留原 SSE 直播）；
+    // step 收尾（成功 / 失败）把节点写 ctx.trace，引擎合并进 StepRun.trace 随检查点持久化。
+    const col = new StepTraceCollector();
+    const traceOnEvent = opts.onEvent
+      ? (e: HarnessEvent) => {
+          opts.onEvent?.(e);
+          col.observe(e);
+        }
+      : (e: HarnessEvent) => col.observe(e);
     const ref = step.agentRef;
     const card: AgentCard | null =
       typeof ref === 'string' ? await getAgentRegistry().get(ref) : ref;
@@ -188,7 +371,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
         const subSessionKey = `wf:${ctx.workflowId}:${step.id}:${card.id}`;
         const assembled = await assembleAgent(
           mode,
-          opts.onEvent,
+          traceOnEvent,
           undefined,
           opts.model,
           task,
@@ -207,7 +390,12 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       };
 
       const task = typeof input === 'string' ? input : JSON.stringify(input ?? '');
-      const result = await teamManager.executeTask(step.teamRef, task, dispatchAgentTask);
+      let result: string | string[];
+      try {
+        result = await teamManager.executeTask(step.teamRef, task, dispatchAgentTask);
+      } finally {
+        ctx.trace = col.nodes(); // P2.5 链路附挂（成功/失败均落，失败路径排障价值最高）
+      }
       return result;
     }
 
@@ -228,7 +416,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
 
     const assembled = await assembleAgent(
       mode,
-      opts.onEvent,
+      traceOnEvent,
       undefined,
       opts.model,
       prompt,
@@ -243,7 +431,13 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       tenantCtx,
       ...tailArgs(opts)
     );
-    return assembled.harness.run(prompt, opts.attachments);
+    let result: string;
+    try {
+      result = await assembled.harness.run(prompt, opts.attachments);
+    } finally {
+      ctx.trace = col.nodes(); // P2.5 链路附挂（成功/失败均落，失败路径排障价值最高）
+    }
+    return result;
   };
 }
 

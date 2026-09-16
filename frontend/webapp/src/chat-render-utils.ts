@@ -7,7 +7,7 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
-import type { PlanExecMirror } from '@agent-harness/client';
+import type { PlanExecMirror, StepTraceNode } from '@agent-harness/client';
 import type { ExecutionPlanView, PlanExecState } from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
@@ -236,6 +236,12 @@ export interface PlanWfReplayRow {
   durationMs?: number;
   /** 折叠正文：done/skipped 展示产出（若为空则说明无产出），failed/compensated 展示错误。 */
   detail?: string;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾）。
+   * 来自服务端检查点 StepRun.trace（StepTraceCollector 采集、引擎按上限合并）；
+   * 旧快照 / 无链路捕获时为 undefined（抽屉不渲染「调用链路」区，零回归）。
+   */
+  trace?: StepTraceNode[];
 }
 
 const REPLAY_MARK: Record<string, string> = {
@@ -283,7 +289,7 @@ export function formatPlanWfOutput(v: unknown): string | undefined {
  */
 export function buildPlanWfReplayRows(
   plan: ExecutionPlanView,
-  run: { steps?: Record<string, { state?: string; agentId?: string; output?: unknown; error?: string; startedAt?: number; finishedAt?: number }> } | null | undefined
+  run: { steps?: Record<string, { state?: string; agentId?: string; output?: unknown; error?: string; startedAt?: number; finishedAt?: number; trace?: StepTraceNode[] }> } | null | undefined
 ): PlanWfReplayRow[] {
   const steps = run?.steps ?? {};
   return (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
@@ -305,8 +311,62 @@ export function buildPlanWfReplayRows(
       agentId: sr?.agentId,
       state,
       durationMs,
-      detail
+      detail,
+      // P2.5 调用链路：非终态（skipped/awaiting）无执行过程可回放，不透传。
+      trace: sr?.trace && sr.trace.length ? sr.trace : undefined
     };
+  });
+}
+
+/**
+ * P2.5 调用链路 → 抽屉展示行（纯函数，供渲染端与测试共用）。
+ * 把 StepTraceNode 序列归一为「图标 + 标签 + 时间（相对 step 起点）+ 详情 + 状态」的展示行。
+ * 相对时间以序列首个节点为 0；无状态/未知的 status 默认 ok（不红色误报）。
+ */
+export interface PlanWfTraceLine {
+  icon: string;
+  label: string;
+  /** 相对本 step 起点的时间（如 "+2.3s"；首节点 0s 不显示前缀）。 */
+  at?: string;
+  detail?: string;
+  /** ok | error | blocked（渲染端按此着色；缺省 ok）。 */
+  status?: string;
+}
+
+const TRACE_ICON: Record<string, string> = {
+  'run:start': '▶️',
+  'llm:call': '🧠',
+  'llm:response': '💬',
+  'tool:start': '🔧',
+  'tool:result': '🔧',
+  'guardrail:blocked': '🛡',
+  'verify:result': '✅',
+  'budget:exceeded': '⚠️',
+  'run:cost': '📊',
+  'llm:usage': '📊',
+  'run:end': '🏁'
+};
+
+/** 调用链路单行详情上限（折叠正文由 <pre> 承接，超长截断避免抽屉膨胀）。 */
+const TRACE_LINE_DETAIL_MAX = 400;
+
+export function buildPlanWfTraceLines(
+  trace: StepTraceNode[] | undefined
+): PlanWfTraceLine[] {
+  if (!trace || trace.length === 0) return [];
+  const t0 = trace[0]?.ts ?? 0;
+  return trace.map((n): PlanWfTraceLine => {
+    const rel = n.ts - t0;
+    const line: PlanWfTraceLine = {
+      icon: TRACE_ICON[n.type] ?? '•',
+      label: n.label || n.type,
+      status: n.status
+    };
+    if (rel > 0) line.at = formatPlanWfDuration(rel);
+    if (n.detail) {
+      line.detail = n.detail.length > TRACE_LINE_DETAIL_MAX ? `${n.detail.slice(0, TRACE_LINE_DETAIL_MAX)}…` : n.detail;
+    }
+    return line;
   });
 }
 

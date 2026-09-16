@@ -18,7 +18,6 @@ export const swipeActStyles = css`
     justify-content: center;
     gap: 6px;
     min-width: 56px;
-    padding: 0 14px;
     border: none;
     background: var(--ah-surface-2);
     color: var(--ah-text);
@@ -30,8 +29,7 @@ export const swipeActStyles = css`
     touch-action: manipulation;
     opacity: 0;
     transform: translateX(10px) scale(0.96);
-    transition:
-      opacity 0.16s ease,
+    transition: opacity 0.16s ease,
       transform 0.24s cubic-bezier(0.22, 1.2, 0.36, 1);
   }
   .swipe-act:active {

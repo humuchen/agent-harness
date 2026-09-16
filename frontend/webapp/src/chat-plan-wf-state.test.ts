@@ -14,6 +14,7 @@ import {
   setPlanDagEnabled,
   derivePlanWfId,
   buildPlanWfReplayRows,
+  buildPlanWfTraceLines,
   formatPlanWfOutput,
   formatPlanWfDuration,
   planWfReplayStateLabel,
@@ -322,6 +323,7 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     error?: string;
     startedAt?: number;
     finishedAt?: number;
+    trace?: import('@agent-harness/client').StepTraceNode[];
   };
   const snap = (steps: Record<string, SnapStep>) => ({ steps });
 
@@ -407,5 +409,65 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     expect(planWfReplayStateLabel('weird')).toBe('weird');
     expect(planWfReplayMark('done')).toBe('✅');
     expect(planWfReplayMark('weird')).toBe('•');
+  });
+});
+
+describe('P2.5 调用链路：step 运行过程回放（buildPlanWfReplayRows.trace + buildPlanWfTraceLines）', () => {
+  const p: ExecutionPlanView = {
+    goal: '上线',
+    tasks: [{ id: 't1', title: '写核心逻辑', steps: [], dependsOn: [], expectedOutput: '核心模块' }]
+  };
+
+  it('buildPlanWfReplayRows 透传 StepRun.trace 到行（空 / 缺失 → undefined，抽屉不渲染链路区）', () => {
+    const rows = buildPlanWfReplayRows(
+      p,
+      {
+        steps: {
+          t1: {
+            state: 'done',
+            trace: [{ type: 'llm:call', ts: 1000, label: 'LLM 调用' }]
+          }
+        }
+      }
+    );
+    expect(rows[0]?.trace).toEqual([{ type: 'llm:call', ts: 1000, label: 'LLM 调用' }]);
+    // 空数组 / 无 trace 键（旧快照）→ undefined（零回归：抽屉不渲染「调用链路」）。
+    const rowsEmpty = buildPlanWfReplayRows(p, { steps: { t1: { state: 'done', trace: [] } } });
+    expect(rowsEmpty[0]?.trace).toBeUndefined();
+    const rowsNone = buildPlanWfReplayRows(p, { steps: { t1: { state: 'done' } } });
+    expect(rowsNone[0]?.trace).toBeUndefined();
+  });
+
+  it('buildPlanWfTraceLines：图标 / 相对时间 / detail 截断 / 状态透传', () => {
+    const lines = buildPlanWfTraceLines([
+      { type: 'run:start', ts: 1000, label: '任务开始', detail: '做核心逻辑' },
+      { type: 'llm:call', ts: 1500, step: 1, label: 'LLM 调用', meta: { msgs: '1' } },
+      { type: 'tool:result', ts: 2300, step: 1, label: '工具 web_fetch 结果', status: 'error', detail: 'timeout' },
+      { type: 'run:end', ts: 2500, label: '任务结束' }
+    ]);
+    expect(lines).toHaveLength(4);
+    // 首节点相对 0 → 无 at；后续节点相对首节点。
+    expect(lines[0]?.at).toBeUndefined();
+    expect(lines[1]?.at).toBe('500ms');
+    expect(lines[3]?.at).toBe('1.5s');
+    // 图标 / 状态透传。
+    expect(lines[0]?.icon).toBe('▶️');
+    expect(lines[2]?.icon).toBe('🔧');
+    expect(lines[2]?.status).toBe('error');
+    expect(lines[0]?.detail).toBe('做核心逻辑');
+  });
+
+  it('buildPlanWfTraceLines：超长 detail 截断到 400 字 + 省略号；空 / undefined 返回 []', () => {
+    const long = 'x'.repeat(600);
+    const lines = buildPlanWfTraceLines([{ type: 'llm:response', ts: 1, label: '模型响应', detail: long }]);
+    expect(lines[0]?.detail).toBe(`${long.slice(0, 400)}…`);
+    expect(buildPlanWfTraceLines([])).toEqual([]);
+    expect(buildPlanWfTraceLines(undefined)).toEqual([]);
+  });
+
+  it('未知事件类型 → 通用图标「•」（采集端新增事件后 UI 不空白）', () => {
+    const lines = buildPlanWfTraceLines([{ type: 'wf:something-new', ts: 1, label: '新事件' }]);
+    expect(lines[0]?.icon).toBe('•');
+    expect(lines[0]?.label).toBe('新事件');
   });
 });

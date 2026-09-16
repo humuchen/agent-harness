@@ -321,4 +321,76 @@ export const planMode = css`
     max-height: 220px;
     overflow: auto;
   }
+
+  /* P2.5 调用链路：每个 step 运行过程中的关键事件时间线（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+     比「完成后的耗时」更细一层——让用户看到节点内部发生了什么。 */
+  .wf-replay-trace {
+    margin-top: 8px;
+  }
+  .wf-replay-trace summary {
+    cursor: pointer;
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    user-select: none;
+  }
+  .wf-replay-trace summary:hover {
+    color: var(--ah-accent);
+  }
+  .wf-trace-lines {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .wf-trace-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: var(--ah-surface-2);
+  }
+  .wf-trace-icon {
+    flex: 0 0 auto;
+    width: 16px;
+    text-align: center;
+    user-select: none;
+  }
+  .wf-trace-label {
+    flex: 0 1 auto;
+    min-width: 60px;
+    color: var(--ah-text);
+  }
+  .wf-trace-at {
+    flex: 0 0 auto;
+    color: var(--ah-text-muted);
+    font-size: 11px;
+  }
+  .wf-trace-detail {
+    flex: 1 1 auto;
+    margin: 0;
+    font-size: 11px;
+    color: var(--ah-text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow: auto;
+  }
+  /* 状态着色：error/blocked 行提亮，其余默认 surface。 */
+  .wf-trace-line.error {
+    background: rgba(248, 113, 113, 0.1);
+  }
+  .wf-trace-line.error .wf-trace-label {
+    color: #f87171;
+  }
+  .wf-trace-line.blocked {
+    background: rgba(251, 191, 36, 0.12);
+  }
+  .wf-trace-line.blocked .wf-trace-label {
+    color: #fbbf24;
+  }
 `;

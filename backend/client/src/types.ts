@@ -486,6 +486,33 @@ export interface StepRun {
   finishedAt?: number;
   /** 实际选中的 agent id（服务端快照实有该字段；轨迹回放据此展示每个节点的执行者）。 */
   agentId?: string;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+   * 由服务端 StepTraceCollector 采集、引擎按上限合并后随检查点持久化。
+   * 「执行详情」抽屉据此展示每个节点的运行过程（此前只有完成后的耗时）。旧快照无该字段。
+   */
+  trace?: StepTraceNode[];
+}
+
+/**
+ * P2.5 每 step 调用链路节点（与 @agent-harness/core 的 StepTraceNode 形状一致，本地镜像避免包耦合）。
+ * 白名单捕获 + detail 截断 + 不落凭据（仅记模型名，modelBaseUrl/apiKey 永不写入）。
+ */
+export interface StepTraceNode {
+  /** 源事件类型（run:start / llm:call / llm:response / tool:start / tool:result / ...）。 */
+  type: string;
+  /** agent 内部 step 序号（harness 自身步数，非工作流 stepId）。 */
+  step?: number;
+  /** 捕获时间（epoch ms），回放可算相对时间轴。 */
+  ts: number;
+  /** 一行摘要（工具名 / 「LLM 调用」/ 结论标签）。 */
+  label?: string;
+  /** 关键详情（响应摘要 / 工具参数 / 错误原因 / 校验理由，截断存储）。 */
+  detail?: string;
+  /** ok | error | blocked。 */
+  status?: 'ok' | 'error' | 'blocked';
+  /** 快速元数据（model / tokens / cost 等）。 */
+  meta?: Record<string, string>;
 }
 
 export interface WorkflowRun {

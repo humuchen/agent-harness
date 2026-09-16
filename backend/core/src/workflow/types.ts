@@ -90,6 +90,33 @@ export interface WorkflowDef {
   traceId?: string;
 }
 
+/**
+ * P2.5 每 step 调用链路节点：step 执行期间发生的关键事件（LLM 调用 / 工具 / 护栏 / 校验 / 收尾）
+ * 的紧凑结构化记录，随检查点持久化，供「执行详情」抽屉回放（此前只有耗时）。
+ *
+ * 纪律（与 R5 黑板体积护栏一致）：
+ * - 节点数有上限（引擎 mergeTrace 超上限截断，保早期调用）；
+ * - detail 截断存储；token 级流式增量（llm:token / llm:reasoning）不落盘；
+ * - 不落任何凭据：仅记模型名，modelBaseUrl / apiKeys 永不写入（BYOK 红线）。
+ */
+export interface StepTraceNode {
+  /** 源事件类型（run:start / agent:step / llm:call / llm:response / tool:start / tool:result /
+   *  guardrail:blocked / verify:result / budget:exceeded / run:cost / run:end / tool:deduped → 归一 tool:result）。 */
+  type: string;
+  /** agent 内部 step 序号（harness 自身步数，非工作流 stepId）。 */
+  step?: number;
+  /** 捕获时间（epoch ms），回放可算相对时间轴。 */
+  ts: number;
+  /** 一行摘要（工具名 / 「LLM 调用」/ 结论标签）。 */
+  label?: string;
+  /** 关键详情（响应摘要 / 工具参数 / 错误原因 / 校验理由，截断存储）。 */
+  detail?: string;
+  /** ok | error | blocked。 */
+  status?: 'ok' | 'error' | 'blocked';
+  /** 快速元数据（model / tokens / cost / 命中缓存 等）。 */
+  meta?: Record<string, string>;
+}
+
 /** 单个 step 的运行态快照（随工作流进度持久化）。 */
 export interface StepRun {
   id: string;
@@ -110,6 +137,12 @@ export interface StepRun {
   teamId?: string;
   startedAt?: number;
   finishedAt?: number;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+   * 由 executor 经 `RunContext.attachTrace` 附挂，引擎按节点上限合并并随检查点持久化。
+   * 旧 executor（不附挂）与旧检查点（无该字段）行为零回归。
+   */
+  trace?: StepTraceNode[];
 }
 
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */
