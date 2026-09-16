@@ -156,9 +156,12 @@ const navDotCss = css`
 const desktopShellCss = css`
   /* 桌面端恢复 :host 视口锁定：移动端适配为解除 100dvh + overflow:hidden
      改走文档自然滚动，但 PC 端失去锁定后会出现外层 body 滚动条，
-     左侧侧边栏会随页面一起滚动。此处仅在桌面端恢复，
-     ≤760px 仍由 sharedStyles 的 responsive.ts 覆盖为 auto/visible。 */
-  @media (min-width: 761px) {
+     左侧侧边栏会随页面一起滚动。此处仅在「桌面 / 平板」恢复；
+     手机横屏（orientation:landscape 且 max-height:760px）由 responsive.ts 的
+     扩展条件接管为自然滚动，不在此锁定，否则会「横屏无法滚动、展示不全」。
+     对称排除用 (min-width:761px 且 min-height:761px)：手机横屏宽度≥761 但高度<761，
+     故不命中；桌面 / 平板（高度≥761）仍走此锁定。 */
+  @media (min-width: 761px) and (min-height: 761px) {
     :host {
       height: 100vh;
       height: 100dvh;

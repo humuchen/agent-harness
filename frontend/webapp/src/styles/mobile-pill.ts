@@ -106,7 +106,6 @@ export const mobilePill = css`
        若不还原，实心主按钮/危险按钮会被一并染成浅灰底。 */
     .primary,
     .btn.primary,
-    .plan-btn,
     .edit-btn.primary {
       background: var(--ah-accent) !important;
     }
@@ -122,7 +121,11 @@ export const mobilePill = css`
     }
     .btn.danger:hover:not(:disabled),
     button.destroy:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--ah-danger) 24%, transparent) !important;
+      background: color-mix(
+        in srgb,
+        var(--ah-danger) 24%,
+        transparent
+      ) !important;
     }
     /* 厂商 Tab 选中态：原为 accent 实心，属 important 同级、特异性更高，此处显式声明以便阅读 */
     .prov-tab.active {

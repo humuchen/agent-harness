@@ -2,8 +2,14 @@ import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 1444-1694 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
 export const responsive = css`
-  /* ------------------- 移动端适配（≤760px） ------------------- */
-  @media (max-width: 760px) {
+  /* ------------------- 移动端适配（≤760px 或 横屏矮屏） -------------------
+     横屏矮屏：手机横屏后 CSS 宽度变成长边（常见 800–930px），会越过 760px
+     落到桌面壳的 100dvh + overflow:hidden 锁定，表现为「上下无法滚动、展示不全」。
+     故把移动端「自然滚动 + 底部 Tab + 离屏抽屉」的适配条件扩展为
+     (max-width:760px) 或 (orientation:landscape 且 max-height:760px)——
+     只命中「横屏且视口矮」的手机；桌面 / 平板横屏（高度≥761）仍走桌面内部滚动，
+     见 app.ts 的 desktopShellCss 与 base.ts 品牌隐藏处的对称排除。 */
+  @media (max-width: 760px), (orientation: landscape) and (max-height: 760px) {
     /* 移动端解除 100dvh 锁定 + overflow:hidden：子组件（ah-run 等）内容超高时
        原锁定会把底部裁掉且自身无内部滚动，导致「拉到最低展示不全」。
        改为文档自然滚动，底部始终可达；桌面端布局不受影响。 */
