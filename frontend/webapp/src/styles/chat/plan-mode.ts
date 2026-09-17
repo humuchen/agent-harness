@@ -373,7 +373,7 @@ export const planMode = css`
     gap: 6px;
     font-size: 12px;
     line-height: 1.5;
-    padding: 4px 8px;
+    padding: 8px;
     border-radius: 8px;
     background: var(--ah-surface-2);
   }
