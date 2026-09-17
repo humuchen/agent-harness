@@ -106,6 +106,7 @@ import {
   renameChatSession,
   deleteChatSession,
   appendChatMessage,
+  applyPlanWfTerminal,
   updatePlanStatus,
   extractPlanTaskId,
   type StoredTool,
