@@ -54,3 +54,101 @@ test('断言必失败 + AGENT_VERIFY_MAX_RETRIES=1：反思循环产生 2 次 ve
     else process.env.AGENT_VERIFY_MAX_RETRIES = prev;
   }
 });
+
+/* ---------- P4.5 逐 task 结果断言（taskMeta.outputChecks → per-step contains 断言） ---------- */
+
+// 与 planToWorkflowDef.buildInputMapping 产出对齐的 step 形状（携带 inputMapping.taskMeta）。
+function planStepWithChecks(id, checks, extra) {
+  const meta = { id, title: '任务', steps: ['执行'], expectedOutput: '产出', ...(extra ?? {}) };
+  if (checks) meta.outputChecks = checks;
+  return {
+    id,
+    agentRef: 'default',
+    inputMapping: { goal: 'input', taskMeta: JSON.stringify(meta), ...(checks ? {} : {}) }
+  };
+}
+
+test('P4.5：planOutputChecks 开启 + outputChecks 命中 → verify 通过（per-step 装配）', async () => {
+  const { out, verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
+    planStepWithChecks('t1', ['Mock 离线应答']),
+    '调研一个主题并给出结论'
+  );
+  assert.ok(out);
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, true, 'mock 通用应答含「Mock 离线应答」→ contains 命中');
+});
+
+test('P4.5：outputChecks 未命中 → verify 失败（跑题 / 缺关键章节被拦）', async () => {
+  const { verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
+    planStepWithChecks('t1', ['__IMPOSSIBLE_CHECK_X__'])
+  );
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, false, '断言未命中 → 不通过（[verify:failed] 标记保留产出）');
+});
+
+test('P4.5：同一 executor 两个 step 的 outputChecks 互不串染（per-step 隔离）', async () => {
+  const ex = createWorkflowExecutor({ mode: 'mock', verify: { auto: true }, planOutputChecks: true });
+  const ctx = { workflowId: 'wf-p45', outputs: {}, signal: undefined, compensate: false };
+  // 同一 executor 实例先后跑两个不同 checks 的 step：A 的 checks 命中、B 的未命中。
+  await ex(planStepWithChecks('t1', ['Mock 离线应答']), '调研一个主题并给出结论', ctx);
+  const outB = await ex(planStepWithChecks('t2', ['__IMPOSSIBLE_CHECK_Y__']), '调研一个主题并给出结论', ctx);
+  // 重试预算缺省 0 → B 断言未过只标记不重跑：产出带 [verify:failed]。
+  // 若 A 的 checks 串染进 B（装配了闭包共享状态），B 的判定会与 A 同向——此断言钉死 per-step 计算。
+  assert.ok(typeof outB === 'string' && outB.includes('[verify:failed]'), `B 应按自身 checks 判失败: ${String(outB).slice(0, 80)}`);
+});
+
+test('P4.5：无 taskMeta 的普通 step + planOutputChecks → 回落 executor 级验证器（零回归）', async () => {
+  const { verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
+    { id: 'plain', agentRef: 'default' }
+  );
+  // 行为与无 planOutputChecks 完全一致：仅规则过程门禁（1 次事件）。
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, true, 'mock 通用应答通过规则门禁');
+});
+
+test('P4.5：未开 planOutputChecks 时 outputChecks 不生效（开关门控，零回归）', async () => {
+  const { verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true } }, // 无 planOutputChecks
+    planStepWithChecks('t1', ['__IMPOSSIBLE_CHECK__'])
+  );
+  // 开关关：taskMeta.outputChecks 被忽略，仅规则门禁 → 1 次事件且通过。
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, true);
+});
+
+test('P4.5：taskMeta 非法 JSON + planOutputChecks → 不阻断，回落 executor 级验证器', async () => {
+  const step = {
+    id: 'bad',
+    agentRef: 'default',
+    inputMapping: { taskMeta: '{not-json' }
+  };
+  const { out, verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
+    step
+  );
+  assert.ok(out, 'step 正常完成');
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, true, '回落规则门禁');
+});
+
+test('P4.5：verifyMaxRetries 选项优先于 AGENT_VERIFY_MAX_RETRIES env', async () => {
+  const prev = process.env.AGENT_VERIFY_MAX_RETRIES;
+  process.env.AGENT_VERIFY_MAX_RETRIES = '3';
+  try {
+    // env 说 3 次，opts 说 0 次 → 以 opts 为准（plan 桥由 server 注入 AGENT_PLAN_VERIFY_RETRIES 值）。
+    const { verifyEvents } = await runExecutor(
+      {
+        mode: 'mock',
+        verify: { assertions: [{ contains: '__UNPOSSIBLE_SUBSTRING__' }] },
+        verifyMaxRetries: 0
+      }
+    );
+    assert.strictEqual(verifyEvents.length, 1, 'opts.verifyMaxRetries=0 覆盖 env=3 → 仅标记不重跑');
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_VERIFY_MAX_RETRIES;
+    else process.env.AGENT_VERIFY_MAX_RETRIES = prev;
+  }
+});

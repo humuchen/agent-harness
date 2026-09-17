@@ -31,6 +31,14 @@ export interface PlanTask {
    * 用户经 approve 接口放行后 resume 才继续执行。
    */
   requireApproval?: boolean;
+  /**
+   * P4.5 结果断言词表：2~4 个「该任务最终产出必须包含」的短词，planner 依据
+   * expectedOutput 的验收检查点提取。经 taskMeta 透传给 executor，逐项生成
+   * contains 断言（与执行器级验证器组合，全部满足才算通过）——产出跑题 / 缺
+   * 少关键章节（任一词缺失）即判失败。可选：无明确关键词可提取的任务缺省不填
+   * （缺省 = 不启用结果断言，零回归面）。
+   */
+  outputChecks?: string[];
 }
 
 /** 结构化执行计划（plan:proposed 事件的 payload 契约）。 */
@@ -46,11 +54,14 @@ export function buildPlannerPrompt(userInput: string): string {
     '',
     '硬性要求：',
     '1. 只输出一个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容。',
-    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean}]}',
+    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean, "outputChecks"?: string[]}]}',
     '3. task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
     '4. 每个任务的 steps 是该任务内的有序执行步骤；expectedOutput 描述该任务完成后的可验证产出。',
     '5. 任务粒度以「一次对话可独立完成」为准，通常 2~6 个任务。',
     '6. 仅当某任务涉及不可逆或高风险操作（删除数据、发布、金钱相关等）时，才为该任务设置 "requireApproval": true（执行前需用户人工批准）；其余任务一律省略该字段（缺省 = 无需批准）。',
+    '7. expectedOutput 必须包含可验收的检查点（章节结构 / 关键数据项 / 产出体量），禁止「完成分析」「内容完整」式模糊描述。',
+    '8. 需要外部信息（搜索报告 / 数据 / 网页）的任务，steps 必须包含降级路径：检索失败或来源不可得时，降级整合上游任务产出并在产出中显式标注数据缺口，禁止以「无法找到，请用户自行查阅」式放弃收尾。',
+    '9. 为每个任务提供 outputChecks：2~4 个该任务最终产出中必须出现的短词（验证门禁自动按「产出必须包含」逐条断言），从 expectedOutput 的验收检查点提取；无法提取明确关键词的任务省略该字段。',
     '',
     `用户需求：${userInput}`,
   ].join('\n');
@@ -113,13 +124,20 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
       typeof t.expectedOutput === 'string' ? t.expectedOutput.trim() : '';
     // P3：仅当模型显式给出布尔 true 时保留审批门（缺省/非法值一律视为无需批准，零回归面）。
     const requireApproval = t.requireApproval === true;
+    // P4.5：结果断言词表——非字符串项剔除、空白项剔除、上限 8 条（防膨胀）；
+    // 全空 / 非数组一律缺省丢弃（不整单作废，零回归面）。
+    const rawChecks = Array.isArray(t.outputChecks)
+      ? (t.outputChecks as unknown[]).map((s) => String(s).trim()).filter(Boolean)
+      : [];
+    const outputChecks = rawChecks.slice(0, 8);
     tasks.push({
       id,
       title,
       steps,
       dependsOn,
       expectedOutput,
-      ...(requireApproval ? { requireApproval: true } : {})
+      ...(requireApproval ? { requireApproval: true } : {}),
+      ...(outputChecks.length > 0 ? { outputChecks } : {})
     });
   }
 
@@ -205,6 +223,8 @@ export function buildInputMapping(task: PlanTask): Record<string, string> {
       title: task.title,
       steps: task.steps,
       expectedOutput: task.expectedOutput,
+      // P4.5：结果断言词表（缺省时不带键，executor 装配侧零感知 = 零回归面）。
+      ...(task.outputChecks && task.outputChecks.length > 0 ? { outputChecks: task.outputChecks } : {})
     }),
   };
   for (const d of task.dependsOn) {
@@ -241,6 +261,10 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
   const def: WorkflowDef = {
     id: opts.workflowId || genPlanWorkflowId(),
     steps,
+    // P4.5：计划任务以「交付真实产出」为完成标准——无效产出（空 / 模型中断 partial /
+    // 护栏兜底话术）按失败处置（可断点续跑），不再以 5/5 ✅ 掩盖缺失的交付物。
+    // 该 flag 仅由本映射桥写入，存量手工 WorkflowDef 缺省不开（零回归面）。
+    failOnInvalidOutput: true,
   };
   if (opts.tenantId) def.tenantId = opts.tenantId;
   if (opts.traceId) def.traceId = opts.traceId;

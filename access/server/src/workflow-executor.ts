@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, composeVerifiers, specsVerifier, inspectStepOutput, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, type Verifier, type AssertSpec, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
@@ -57,10 +57,32 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
       lines.push(`目标：${String(rec.goal ?? '')}`);
       // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经
       // inputMapping 的 `steps.<dep>` 取上游 outputs[dep]），原样注入 → 零摘要、零有损。
+      // P4.5 上游注记：产出经 inspectStepOutput 判为无效（空 / 中断 / 护栏兜底）时显式
+      // 标注 + 降级指引，让下游「知情」，不再静默喂垃圾（跑题级联的放大点）。
       for (const [k, v] of Object.entries(rec)) {
         if (!k.startsWith('upstream_')) continue;
         const dep = k.slice('upstream_'.length);
-        lines.push(`上游 ${dep} 产出：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+        const insp = inspectStepOutput(v);
+        if (insp.issue === 'ok') {
+          lines.push(`上游 ${dep} 产出：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+          continue;
+        }
+        if (insp.issue === 'empty') {
+          lines.push(
+            `上游 ${dep} 产出：（空）——上游 ${dep} 未产出有效结果。请基于「目标」与本任务步骤独立执行；` +
+            `若外部检索失败，降级整合其它上游产出并在产出中显式标注数据缺口，不得以道歉或放弃收尾。`
+          );
+        } else if (insp.issue === 'partial') {
+          lines.push(
+            `上游 ${dep} 产出（⚠️ 该产出在中途截断，仅作参考）：${String(v)}\n` +
+            `提示：上游 ${dep} 结果不完整，请基于「目标」与本任务步骤自行补齐，并在产出中标注引用了不完整来源。`
+          );
+        } else {
+          lines.push(
+            `上游 ${dep} 产出：（被安全护栏拦截，无实质内容）——请基于「目标」与本任务步骤独立执行，` +
+            `不得转述被拦截内容；数据缺口在产出中显式标注。`
+          );
+        }
       }
       const body = lines.join('\n');
       return comp ? `（回滚补偿）${body}` : body;
@@ -106,6 +128,19 @@ export interface WorkflowExecutorOptions {
    * 缺省 undefined 行为与旧版完全一致（门禁关闭，零回归）。
    */
   verify?: VerifyConfig;
+  /**
+   * P4.5 验证重试预算覆盖：仅当 executor 级 verifier 存在时生效（优先于 AGENT_VERIFY_MAX_RETRIES）。
+   * plan 桥路径由 server 按 AGENT_PLAN_VERIFY_RETRIES（默认 1）注入；非 plan 路径缺省 undefined →
+   * 回落 AGENT_VERIFY_MAX_RETRIES（存量语义不变）。
+   */
+  verifyMaxRetries?: number;
+  /**
+   * P4.5 结果断言：逐 task 的「产出必须包含」短词（taskMeta.outputChecks，planner 生成）
+   * 自动转 contains 断言，与本 executor 的 verify 验证器组合为 per-step 验证器。
+   * 无 taskMeta / 无 outputChecks 的 step 用 executor 级验证器（零回归）；
+   * 仅 plan 桥 step 携带该字段，手工 workflow 不受影响。
+   */
+  planOutputChecks?: boolean;
 }
 
 /**
@@ -340,13 +375,51 @@ function tailArgs(o: WorkflowExecutorOptions): AssembleAgentTail {
 export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): StepExecutor {
   const mode = opts.mode ?? 'mock';
   // 校验/反思门禁（P0-2）：与 /api/run（run-queue.ts:773）同款装配——
-  // createVerifier(verifyConfig) 生成组合验证器；verifyMaxRetries 取 AGENT_VERIFY_MAX_RETRIES
-  // （默认 0 = 仅校验+标记，不自动重跑；>0 时 harness 注入自检提示重跑 = 反思循环）。
-  // 在 executor 级构建一次，所有 step 共享（语义等价串行 run 的 per-run 装配）。
-  const verifier = createVerifier(opts.verify);
-  const verifyMaxRetries = verifier
-    ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
+  // createVerifier(verifyConfig) 生成组合验证器；重试预算优先取 opts.verifyMaxRetries
+  // （P4.5 plan 桥注入），缺省回落 AGENT_VERIFY_MAX_RETRIES（默认 0 = 仅校验+标记，
+  // >0 时 harness 注入自检提示重跑 = 反思循环）。executor 级验证器在装配期构建一次。
+  const baseVerifier = createVerifier(opts.verify);
+  const baseRetries = baseVerifier
+    ? (opts.verifyMaxRetries ?? (Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0))
     : 0;
+
+  /**
+   * P4.5 结果断言（per-step）：plan 桥 step 的 inputMapping.taskMeta 携带
+   * outputChecks（planner 生成的「产出必须包含」短词）时，逐项转 contains 断言
+   * 与 executor 级验证器组合成本 step 专属验证器；无 taskMeta / 无 outputChecks /
+   * 解析失败 → 原样回落 baseVerifier（零回归，不阻断 step）。
+   * 注：纯断言（base 缺省未开）时保守「只标记不重跑」——反思循环需 executor 级
+   * 验证器存在（plan 默认路径由 server 保证 auto 开启）。
+   */
+  const buildStepVerifier = (step: any): { verifier: Verifier | undefined; retries: number } => {
+    if (!opts.planOutputChecks) return { verifier: baseVerifier, retries: baseRetries };
+    const taskMetaRaw: string | undefined = step?.inputMapping?.taskMeta;
+    if (!taskMetaRaw || typeof taskMetaRaw !== 'string') {
+      return { verifier: baseVerifier, retries: baseRetries };
+    }
+    let meta: { outputChecks?: unknown } | null;
+    try {
+      const parsed: unknown = JSON.parse(taskMetaRaw);
+      meta = parsed && typeof parsed === 'object' ? (parsed as { outputChecks?: unknown }) : null;
+    } catch {
+      return { verifier: baseVerifier, retries: baseRetries }; // taskMeta 非法：不阻断，少装配
+    }
+    const specs: AssertSpec[] = Array.isArray(meta?.outputChecks)
+      ? (meta!.outputChecks as unknown[])
+          .map((c) => ({ contains: String(c).trim() }))
+          .filter((s) => s.contains !== '')
+      : [];
+    if (specs.length === 0) return { verifier: baseVerifier, retries: baseRetries };
+    if (baseVerifier) {
+      return {
+        verifier: composeVerifiers(baseVerifier, specsVerifier(specs)),
+        retries: baseRetries,
+      };
+    }
+    // 无 executor 级验证器（verify 未传）：仅装配结果断言，重试预算保守取 0。
+    return { verifier: specsVerifier(specs), retries: 0 };
+  };
+
   return async (step: any, input: any, ctx: RunContext) => {
     // P2.5 调用链路采集（per-step 隔离）：波次内并行 step 各自持有 collector，
     // 经包装的 traceOnEvent 汇入本 step 专属序列（同时保留原 SSE 直播）；
@@ -358,6 +431,8 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           col.observe(e);
         }
       : (e: HarnessEvent) => col.observe(e);
+    // P4.5：本 step 专属验证器（outputChecks 逐 task 结果断言；非 plan step 回落 base）。
+    const stepVerify = buildStepVerifier(step);
     const ref = step.agentRef;
     const card: AgentCard | null =
       typeof ref === 'string' ? await getAgentRegistry().get(ref) : ref;
@@ -392,8 +467,8 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           PLAN_TASK_TIMEOUT_MS,
           undefined,
           undefined,
-          verifier,
-          verifyMaxRetries,
+          stepVerify.verifier,
+          stepVerify.retries,
           card,
           tenantCtx,
           ...tailArgs(opts)
@@ -438,8 +513,8 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       PLAN_TASK_TIMEOUT_MS,
       undefined,
       undefined,
-      verifier,
-      verifyMaxRetries,
+      stepVerify.verifier,
+      stepVerify.retries,
       card,
       tenantCtx,
       ...tailArgs(opts)

@@ -69,12 +69,14 @@ export class AhSupplyChain extends LitElement {
         border-collapse: collapse;
         font-size: 13px;
         margin-top: 4px;
+        background: var(--ah-surface-1);
+        border-radius: var(--ah-radius-md);
       }
       table.deps th,
       table.deps td {
         text-align: left;
         padding: 8px 10px;
-        border-bottom: 1px solid var(--ah-border);
+        // border-bottom: 1px solid var(--ah-border);
       }
       table.deps thead th {
         font-family: var(--ah-font-mono);

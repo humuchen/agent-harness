@@ -103,7 +103,7 @@ export class AhWorkspace extends LitElement {
         padding: 18px;
         border: 1px solid var(--ah-border);
         border-radius: var(--ah-radius-lg);
-        background: var(--ah-surface, rgba(255, 255, 255, 0.02));
+        background: var(--ah-surface-1);
         cursor: pointer;
         transition: border-color 0.15s ease, transform 0.15s ease,
           box-shadow 0.15s ease;

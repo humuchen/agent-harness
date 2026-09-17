@@ -1,5 +1,6 @@
 import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
+import { GUARDRAIL_FALLBACK_PREFIX, PARTIAL_NOTICE } from './workflow/step-output';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
@@ -1015,7 +1016,8 @@ export class AgentHarness {
             }
 
             // 3) 重试仍不通过 / 无 safeReply → 中性安全兜底，绝不暴露内部拦截文本。
-            return '抱歉，我暂时无法提供该内容的回复。如有进一步需求，建议您通过官方正规渠道咨询。';
+            // P4.5：兜底话术前缀与 step-output 检测器共享同一常量（单源，防字面量漂移）。
+            return GUARDRAIL_FALLBACK_PREFIX + '。如有进一步需求，建议您通过官方正规渠道咨询。';
           }
 
           // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
@@ -1064,10 +1066,11 @@ export class AgentHarness {
             }
             // 中段断流兜底：provider 空闲超时后返回的是部分内容（partial:true）。
             // 显式追加「生成中断」提示，让用户清楚这是被截断而非完整回答。
+            // P4.5：中断标记与 step-output 检测器共享同一常量（引擎闸门 / 黑板注记认它）。
             if (resp.partial) {
               return (
                 `${resp.content}\n\n` +
-                '⚠️ 生成已中断：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。' +
+                `${PARTIAL_NOTICE}：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。` +
                 '以上内容仅为已生成的部分结果，请重试以继续。'
               );
             }

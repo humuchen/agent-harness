@@ -71,3 +71,58 @@ test('taskMeta 解析失败：不阻断，缺 task 头但仍打目标/上游', (
   assert.ok(out.includes('目标：g'), out);
   assert.ok(out.includes('上游 t1 产出：real-out'), out);
 });
+
+/* ---------- P4.5 上游注记（无效产出不静默喂垃圾） ---------- */
+
+test('上游注记：空产出 → 显式标注 + 降级指引（不静默喂空）', () => {
+  const p = planStepInput(
+    { id: 't2', title: '写测试', steps: ['单测'], expectedOutput: '全绿测试' },
+    { t1: '' }
+  );
+  const out = formatStepInput(p);
+  assert.ok(out.includes('上游 t1 产出：（空）'), out);
+  assert.ok(out.includes('不得以道歉或放弃收尾'), out);
+});
+
+test('上游注记：null/undefined 产出 → 同空标注', () => {
+  const p = planStepInput(
+    { id: 't2', title: '写测试', steps: ['单测'], expectedOutput: '全绿测试' },
+    { t1: null }
+  );
+  const out = formatStepInput(p);
+  assert.ok(out.includes('上游 t1 产出：（空）'), out);
+});
+
+test('上游注记：截断产出（含生成中断标记）→ 标注不完整 + 自行补齐', () => {
+  const partial = '半份产出…\n\n⚠️ 生成已中断：与模型的连接空闲超时';
+  const p = planStepInput(
+    { id: 't2', title: '写测试', steps: ['单测'], expectedOutput: '全绿测试' },
+    { t1: partial }
+  );
+  const out = formatStepInput(p);
+  assert.ok(out.includes('该产出在中途截断，仅作参考'), out);
+  assert.ok(out.includes('自行补齐'), out);
+});
+
+test('上游注记：护栏兜底产出 → 标注被拦截 + 独立执行', () => {
+  const fallback = '抱歉，我暂时无法提供该内容的回复。如有进一步需求，建议您通过官方正规渠道咨询。';
+  const p = planStepInput(
+    { id: 't2', title: '写测试', steps: ['单测'], expectedOutput: '全绿测试' },
+    { t1: fallback }
+  );
+  const out = formatStepInput(p);
+  assert.ok(out.includes('（被安全护栏拦截，无实质内容）'), out);
+});
+
+test('上游注记：干净产出保持原样（零回归钉死）', () => {
+  const p = planStepInput(
+    { id: 't2', title: '写测试', steps: ['单测'], expectedOutput: '全绿测试' },
+    { t1: 'output-of-t1', t9: '正常长文产出，无任何标记' }
+  );
+  const out = formatStepInput(p);
+  assert.ok(out.includes('上游 t1 产出：output-of-t1'), out);
+  assert.ok(out.includes('上游 t9 产出：正常长文产出，无任何标记'), out);
+  // 无注记文案泄漏。
+  assert.ok(!out.includes('（空）'), out);
+  assert.ok(!out.includes('截断'), out);
+});

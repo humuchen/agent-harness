@@ -12,6 +12,7 @@
 
 import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
+import type { OutputIssue } from './step-output';
 
 /** 单个 step 的运行态。 */
 export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
@@ -88,6 +89,13 @@ export interface WorkflowDef {
   tenantId?: string;
   /** 全局追踪 id：贯穿所有 step 的 agent 调用，OTel span 跨 agent 关联。 */
   traceId?: string;
+  /**
+   * P4.5 产出有效性闸门：开启后，step 产出经 inspectStepOutput 判定为无效
+   * （空 / 中断标记 / 护栏兜底话术）时，该 step 标记 failed（走补偿与级联，同真失败），
+   * 而非把无效产出写入黑板并标记 done。缺省 false（存量工作流零回归）；
+   * 仅计划桥生成的 def（planToWorkflowDef）默认开启。
+   */
+  failOnInvalidOutput?: boolean;
 }
 
 /**
@@ -143,6 +151,11 @@ export interface StepRun {
    * 旧 executor（不附挂）与旧检查点（无该字段）行为零回归。
    */
   trace?: StepTraceNode[];
+  /**
+   * P4.5 产出有效性分类：inspectStepOutput 的 issue（仅 issue != 'ok' 时写入），
+   * 随检查点持久化供审计 / 执行详情抽屉展示。是否阻断由 def.failOnInvalidOutput 决定。
+   */
+  outputIssue?: Exclude<OutputIssue, 'ok'>;
 }
 
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */

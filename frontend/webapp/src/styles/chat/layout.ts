@@ -273,7 +273,7 @@ export const layout = css`
     cursor: pointer;
     color: var(--ah-text);
     margin-bottom: 10px;
-    background: var(--ah-surface-3, var(--ah-surface-2));
+    // background: var(--ah-surface-3, var(--ah-surface-2));
     transition: background 0.15s ease;
   }
   .session:last-child {

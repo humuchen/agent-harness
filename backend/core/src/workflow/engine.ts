@@ -18,6 +18,7 @@ import { getTeamManager, type TeamManager } from '../teams';
 import type { Team } from '../teams';
 import type { StepDef, StepRun, StepTraceNode, WorkflowDef, WorkflowRun } from './types';
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
+import { inspectStepOutput } from './step-output';
 
 /** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
 export type StepExecutor = (
@@ -119,6 +120,22 @@ export class DagEngine {
       }
       return n;
     });
+  }
+
+  /**
+   * P4.5 产出有效性闸门（step 成功出口）：检视 executor 返回值。
+   * - 分类非 ok 时始终记录到 sr.outputIssue（审计 / 抽屉可见，不因闸门开关丢失）；
+   * - 仅当 def.failOnInvalidOutput 开启且分类非 ok → 返回失败原因（调用方据此按
+   *   失败路径处置：run() 抛出进既有 catch（failed + 补偿 + 级联）；resume() 置
+   *   stepFailed 并级联），消灭「无效产出被当成功写黑板」。
+   * - 缺省（存量 def 未开闸门）返回 undefined → 行为与旧版逐字一致（零回归）。
+   */
+  private inspectOutputGate(def: WorkflowDef, sr: StepRun, result: unknown): string | undefined {
+    const insp = inspectStepOutput(result);
+    if (insp.issue === 'ok') return undefined;
+    sr.outputIssue = insp.issue;
+    if (!def.failOnInvalidOutput) return undefined;
+    return `无效产出（${insp.issue}）${insp.detail ? `：${insp.detail}` : ''}`;
   }
 
   /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */
@@ -402,6 +419,11 @@ export class DagEngine {
             try {
               const result = await this.executor(step, input, ctx);
               sr.output = result;
+              // P4.5 产出有效性闸门：无效产出（空 / 中断 / 护栏兜底）不再「静默成功」——
+              // 开启 def.failOnInvalidOutput 时按失败处置（进下方 catch → failed + 补偿 + 级联），
+              // 未开启仅记录 outputIssue（存量零回归）。
+              const gateError = this.inspectOutputGate(def, sr, result);
+              if (gateError) throw new Error(gateError);
               sr.state = 'done';
               sr.finishedAt = Date.now();
               outputs[id] = result;
@@ -646,6 +668,10 @@ export class DagEngine {
           };
           try {
             const result = await this.executor(step, input, ctx);
+            // P4.5 产出有效性闸门（与 run() 同语义）：分类非 ok 记录 outputIssue，
+            // 且 run.def.failOnInvalidOutput 开启时按失败处置（进 catch → stepFailed + 级联 + 补偿）。
+            const gateError = this.inspectOutputGate(run.def, run.steps[id], result);
+            if (gateError) throw new Error(gateError);
             run.steps[id] = { ...run.steps[id], state: 'done', output: result, finishedAt: Date.now() };
             outputs[id] = result;
             this.mergeStepTrace(run.steps[id], ctx); // P2.5 续跑 step 的链路同样落检查点

@@ -102,6 +102,45 @@ test('buildInputMapping: goal/taskMeta/upstream_* 三类源', () => {
   assert.deepStrictEqual(Object.keys(m1).sort(), ['goal', 'taskMeta']);
 });
 
+/* ---------- P4.5 结果断言词表（outputChecks）映射 ---------- */
+
+test('buildInputMapping：outputChecks 非空时内联进 taskMeta；缺省不带键（零回归面）', () => {
+  const task = {
+    id: 't5',
+    title: '整合研报',
+    steps: ['撰写'],
+    dependsOn: ['t2'],
+    expectedOutput: '研报全文',
+    outputChecks: ['市场规模', '竞争格局']
+  };
+  const m = buildInputMapping(task);
+  const meta = JSON.parse(m.taskMeta);
+  assert.deepStrictEqual(meta.outputChecks, ['市场规模', '竞争格局']);
+  // 缺省 task：taskMeta 不含 outputChecks 键。
+  const m2 = buildInputMapping(samplePlan.tasks[0]);
+  assert.strictEqual('outputChecks' in JSON.parse(m2.taskMeta), false);
+});
+
+test('normalizePlan（parsePlanOutput）：outputChecks 清洗 —— trim / 剔空白 / 上限 8 / 非法丢弃不整单作废', () => {
+  const { parsePlanOutput } = require('../dist/plan.js');
+  const json = {
+    goal: 'g',
+    tasks: [
+      { id: 't1', title: 'a', steps: [], dependsOn: [], expectedOutput: 'x', outputChecks: [' 医美 ', '', '市场规模', 123, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] },
+      { id: 't2', title: 'b', steps: [], dependsOn: [], expectedOutput: 'y', outputChecks: 'not-array' },
+      { id: 't3', title: 'c', steps: [], dependsOn: [], expectedOutput: 'z', outputChecks: [] }
+    ]
+  };
+  const planOut = parsePlanOutput(JSON.stringify(json));
+  assert.ok(planOut, '解析成功');
+  const t1 = planOut.tasks.find((t) => t.id === 't1');
+  // trim + String() + 剔空白 + slice(0,8)：['医美','市场规模','123','a','b','c','d','e','f'] → 前 8
+  assert.deepStrictEqual(t1.outputChecks, ['医美', '市场规模', '123', 'a', 'b', 'c', 'd', 'e']);
+  // 非数组 / 空数组 → 缺省丢弃（不带键）。
+  assert.strictEqual(planOut.tasks.find((t) => t.id === 't2').outputChecks, undefined);
+  assert.strictEqual(planOut.tasks.find((t) => t.id === 't3').outputChecks, undefined);
+});
+
 /* ---------- DagEngine 集成（mock executor） ---------- */
 
 test('DagEngine 集成：下游 step 的 input 含 goal + taskMeta + 上游真实 output', async () => {

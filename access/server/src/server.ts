@@ -70,6 +70,7 @@ import {
   formatErrorReport
 } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
+import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify';
 import { runAgentTask } from './agent-run';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
@@ -2246,12 +2247,25 @@ const server = createServer(
           // 重新解析凭据；real 模式无 Key 在 SSE 开启前 402 快速失败。旧客户端不带 body 时
           // readBody 返回 {} → 默认 mock，向后兼容。
           const body = await readBody(req);
-          const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
+          // P4.5：前置读检查点 def，判定续跑是否沿用 plan 桥语义（默认验证门禁 +
+          // 逐 task 结果断言 + 重试预算）；手工工作流（def 无 failOnInvalidOutput）零回归。
+          // 读失败保守按未命中（非 plan），下方原有 try 块的 404 / wf:error 语义不变。
+          const store = workflowStore();
+          let existing: unknown;
+          try {
+            existing = await store.get(workflowId);
+          } catch {
+            existing = undefined;
+          }
+          const isPlanWorkflow = !!(
+            existing &&
+            typeof existing === 'object' &&
+            (existing as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput
+          );
+          const execOpts = await resolveWorkflowRunOpts(body, ctx, res, isPlanWorkflow);
           if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
           let send: (payload: unknown) => void = () => {};
           try {
-            const store = workflowStore();
-            const existing = await store.get(workflowId);
             if (!existing) {
               res.writeHead(404, { 'content-type': 'application/json' });
               res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
@@ -5067,7 +5081,8 @@ function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
 async function resolveWorkflowRunOpts(
   body: Record<string, unknown>,
   ctx: AuthContext,
-  res: ServerResponse
+  res: ServerResponse,
+  isPlan = false
 ): Promise<{ mode: RunMode; opts: Omit<WorkflowExecutorOptions, 'onEvent'> } | null> {
   const mode: RunMode =
     ['mock', 'real', 'real-mcp'].includes(String(body.mode ?? ''))
@@ -5096,22 +5111,21 @@ async function resolveWorkflowRunOpts(
       : undefined;
   const webEnabled: boolean = body.web === true;
 
-  // 校验/反思门禁（P0-2，与 /api/run 同款优先级）：body.verify > body.autoVerify > env 默认。
-  let verifyConfig: VerifyConfig | undefined;
-  const envAutoVerify =
-    process.env.AGENT_AUTO_VERIFY === 'true' ||
-    process.env.AGENT_AUTO_VERIFY === '1';
-  if (
-    body.verify &&
-    typeof body.verify === 'object' &&
-    !Array.isArray(body.verify)
-  ) {
-    verifyConfig = body.verify as VerifyConfig;
-  } else if (typeof body.autoVerify === 'boolean') {
-    verifyConfig = body.autoVerify ? { auto: true } : undefined;
-  } else if (envAutoVerify) {
-    verifyConfig = { auto: true };
-  }
+  // 校验/反思门禁（P0-2，与 /api/run 同款优先级）+ P4.5 plan 桥默认门禁：
+  // 纯决策经 resolvePlanVerify（plan-verify.ts）——body.verify > body.autoVerify >
+  // env AGENT_AUTO_VERIFY > plan 桥确定性默认（auto + 结果断言 + 逐 task outputChecks）。
+  // 用户显式 autoVerify:false 视为选择退出；非 plan 路径行为与旧版逐字一致（零回归）。
+  const planVerifyRetries = parsePlanVerifyRetries(process.env.AGENT_PLAN_VERIFY_RETRIES);
+  const { verifyConfig, verifyMaxRetries: planVerifyRetriesOverride, planOutputChecks } =
+    resolvePlanVerify({
+      isPlan,
+      bodyVerify: body.verify,
+      bodyAutoVerify: body.autoVerify,
+      envAutoVerify:
+        process.env.AGENT_AUTO_VERIFY === 'true' ||
+        process.env.AGENT_AUTO_VERIFY === '1',
+      planVerifyRetries
+    });
 
   // 凭据解析（per-owner，绝不写 process.env）：非 mock 且无 Key → 402 引导配置（与 /api/run 一致）。
   let cred: CredentialResult = { source: 'none' };
@@ -5151,7 +5165,13 @@ async function resolveWorkflowRunOpts(
       apiKeys: effectiveApiKeys,
       ctxWindow,
       webEnabled,
-      verify: verifyConfig
+      verify: verifyConfig,
+      // P4.5：plan 桥逐 task 结果断言开关（outputChecks → per-step contains 断言）；
+      // 非 plan 路径不传（executor 侧零感知，零回归）。
+      ...(planOutputChecks ? { planOutputChecks: true } : {}),
+      // P4.5：plan 默认门禁的重试预算（仅 plan 默认路径注入；显式 body.verify 保持
+      // AGENT_VERIFY_MAX_RETRIES 存量语义，不覆盖）。
+      ...(planVerifyRetriesOverride !== undefined ? { verifyMaxRetries: planVerifyRetriesOverride } : {})
     }
   };
 }
@@ -5235,7 +5255,12 @@ async function handleWorkflow(
   // 服务端按登录 owner（ctx.sub，不可伪造）走 resolveRunCredential 解析链
   // （自定义模型 → 用户 provider Key → 请求自带 Key → 平台兜底 → none），
   // 明文 Key 仅在请求期内存中流转、绝不落日志 / 审计 / 检查点。
-  const execOpts = await resolveWorkflowRunOpts(body as Record<string, unknown>, ctx, res);
+  const execOpts = await resolveWorkflowRunOpts(
+    body as Record<string, unknown>,
+    ctx,
+    res,
+    !!body.plan // P4.5：plan 桥路径启用默认验证门禁 + 逐 task 结果断言
+  );
   if (!execOpts) return; // 非 mock 无 Key 时 402 已写出（SSE 未开，不进入执行）
   const mode = execOpts.mode;
   let send: (payload: unknown) => void = () => {};
