@@ -390,9 +390,8 @@ export const planMode = css`
   }
   .wf-trace-at {
     flex: 0 0 auto;
-    margin-left: auto;
     color: var(--ah-text-muted);
-    font-size: 11px;
+    font-size: 12px;
   }
   /* 链路行 meta 区（模型 / 用量 / 参数）：独立可折叠子行，此前被 buildPlanWfTraceLines 丢弃导致数据不可见。
      按用户标注「用量和模型信息需要单独一行展示，点击才能展开/折叠，在它的下面」实现。 */
