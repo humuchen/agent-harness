@@ -27,6 +27,7 @@ import {
   derivePlanExecFromMessages,
   applyPlanWfEvent,
   derivePlanWfId,
+  compactPlanWfSnapshot,
   isPlanDagEnabled,
   type PlanWfEvent,
   type PlanWfRunSnapshot
@@ -69,6 +70,7 @@ import type {
   ExecutionPlanView,
   PlanExecState,
   PlanWfReplayState,
+  PlanWfRunMirror,
   ChatMsg,
   SessionView,
   TraceCtx
@@ -1871,6 +1873,14 @@ export class AhChat extends LitElement {
           done: doneMap,
           ...(awaitingState && Array.isArray(ps.awaiting)
             ? { awaitingTaskIds: ps.awaiting }
+            : {}),
+          // P2.6：紧凑 run 快照（检查点丢失后「执行详情」抽屉的镜像回退数据源）。
+          // 形状校验：需为含 steps 对象的结构，宁缺勿错。
+          ...(ps.wfSnapshot &&
+          typeof ps.wfSnapshot === 'object' &&
+          (ps.wfSnapshot as { steps?: unknown }).steps &&
+          typeof (ps.wfSnapshot as { steps?: unknown }).steps === 'object'
+            ? { wfSnapshot: ps.wfSnapshot as PlanWfRunMirror }
             : {})
         }
       };
@@ -3330,11 +3340,32 @@ export class AhChat extends LitElement {
         const res = await client.getWorkflow(wfId);
         st = { loading: false, snapshot: res.workflow ?? null };
       } catch (e: unknown) {
-        st = {
-          loading: false,
-          snapshot: null,
-          error: e instanceof Error ? e.message : String(e)
-        };
+        // P2.6：检查点丢失（服务重启 / Render free 盘清理 → 404）→ 回退到
+        // 随 planStatus 镜像持久化的紧凑 run 快照（执行时捕获，applyPlanStatusLookup 恢复）。
+        const mirror =
+          this.planExec[m.id]?.wfSnapshot ??
+          ((m as ChatMsg & { planStatus?: { wfSnapshot?: unknown } }).planStatus
+            ?.wfSnapshot as PlanWfRunMirror | undefined);
+        if (
+          mirror &&
+          typeof mirror === 'object' &&
+          mirror.steps &&
+          typeof mirror.steps === 'object'
+        ) {
+          st = {
+            loading: false,
+            snapshot: null,
+            mirrorSnapshot: mirror,
+            fromMirror: true,
+            error: e instanceof Error ? e.message : String(e)
+          };
+        } else {
+          st = {
+            loading: false,
+            snapshot: null,
+            error: e instanceof Error ? e.message : String(e)
+          };
+        }
       }
       // 抽屉已关闭 / 已切到别的计划消息时不写回（防旧请求回流覆盖最新交互态）。
       if (this.planWfReplayMsg?.id === m.id) {
@@ -3750,6 +3781,11 @@ export class AhChat extends LitElement {
         if (e.type === 'wf:done' || e.type === 'wf:failed') {
           // 编排终态：回挂摘要并停止消费后续帧（_wf_done 收尾帧无需再处理）。
           this.appendPlanDagSummary(sid, m, e.run);
+          // P2.6：终态快照紧凑化落入 planExec（随 saveHistory 写穿到 planStatus 镜像）——
+          // 检查点在服务重启 / free 盘清理后丢失时，「执行详情」抽屉据此回退水合。
+          const snap = compactPlanWfSnapshot(e.run);
+          const cur = this.planExec[m.id] ?? st;
+          this.planExec = { ...this.planExec, [m.id]: { ...cur, ...(snap ? { wfSnapshot: snap } : {}) } };
           terminal = true;
           break;
         }
@@ -3770,6 +3806,9 @@ export class AhChat extends LitElement {
               : [];
           if (run?.steps && rs !== 'awaiting')
             this.appendPlanDagSummary(sid, m, run);
+          // P2.6：收尾帧兜底同样落快照（含 awaiting 暂停态的 partial 快照——审批等待中
+          // 刷新后抽屉仍可回看已执行节点的轨迹）。
+          const snap = compactPlanWfSnapshot(run);
           this.planExec = {
             ...this.planExec,
             [m.id]: {
@@ -3783,7 +3822,8 @@ export class AhChat extends LitElement {
               currentTaskId: undefined,
               ...(rs === 'awaiting' && awaitingIds.length
                 ? { awaitingTaskIds: awaitingIds }
-                : {})
+                : {}),
+              ...(snap ? { wfSnapshot: snap } : {})
             }
           };
           terminal = true;

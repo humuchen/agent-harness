@@ -139,6 +139,18 @@ test('P2.5 e2e：step 检查点快照携带调用链路（trace）', { skip: !RU
       const dumped = JSON.stringify(snap);
       assert.ok(!dumped.includes('apiKeys'), '快照不得携带 apiKeys');
       assert.ok(!dumped.includes('modelBaseUrl'), '快照不得携带 modelBaseUrl');
+      // P2.5 模型可见性：LLM 调用节点（llm:call）的 meta 若带 model（real/指定 override 时注入
+      // assembled.accountModel），则必须非空且不含凭据/端点字样（BYOK 红线）。
+      // mock 离线模式无默认模型 → accountModel 为空 → meta 不带 model（设计内降级，非 bug）。
+      const llmCallNodes = trace.filter((n) => n.type === 'llm:call');
+      assert.ok(llmCallNodes.length > 0, `step ${id} 应含 llm:call 节点`);
+      for (const n of llmCallNodes) {
+        const m = n.meta?.model;
+        if (m !== undefined) {
+          assert.ok(typeof m === 'string' && m.length > 0, `step ${id} 的 llm:call model meta 不得为空串`);
+          assert.ok(!m.includes('http') && !m.includes('key'), 'model meta 不得含端点/凭据');
+        }
+      }
     }
   } finally {
     child.kill();

@@ -63,7 +63,10 @@ export function toMirrorPlanStatus(
     // P3：awaiting 时把待审批任务 id 列表写进镜像（刷新 / 重启后卡片可还原「待审批」态）。
     ...(Array.isArray(st.awaitingTaskIds) && st.awaitingTaskIds.length
       ? { awaiting: st.awaitingTaskIds }
-      : {})
+      : {}),
+    // P2.6：紧凑 run 快照随镜像落会话历史——检查点丢失（服务重启 / free 盘清理）后
+    // 「执行详情」抽屉按此回退水合（404 → 历史快照）。
+    ...(st.wfSnapshot ? { wfSnapshot: st.wfSnapshot } : {})
   };
 }
 

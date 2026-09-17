@@ -179,6 +179,11 @@ export interface PlanExecMirror {
   done: string[];
   /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
   awaiting?: string[];
+  /**
+   * P2.6：紧凑 run 快照（前端 compactPlanWfSnapshot 产出，形状见 webapp PlanWfRunMirror；
+   * 此处用 unknown 保持 client 包零 webapp 耦合）。检查点丢失时抽屉据此回退水合。
+   */
+  wfSnapshot?: unknown;
 }
 
 export interface ChatSession {

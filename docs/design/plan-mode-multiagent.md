@@ -257,7 +257,9 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 
 | P2.5 节点调用链路 | ✅ 已实现 | 此前回放只有「完成后的耗时」，补上每个节点运行过程中的关键信息：`StepRun.trace?: StepTraceNode[]`（随检查点持久化）+ 引擎 `RunContext.trace` 附挂通道（`mergeStepTrace` 在成功/失败/补偿三条路径合并，节点上限 500、detail 500 截断，R5 体积护栏）。server `StepTraceCollector` 白名单采集 harness 事件（run:start / llm:call / llm:response / tool:start / tool:result / guardrail:blocked / verify:result / budget:exceeded / run:cost / llm:usage / run:end；token 级流式增量不落盘；BYOK 红线：仅记模型名，apiKeys/modelBaseUrl 永不进节点），per-step 隔离捕获（波次并行不混流），executor 经 `ctx.trace` 附挂（finally 保证成功/失败均落）。前端：`buildPlanWfReplayRows` 透传 trace + `buildPlanWfTraceLines`（纯函数）→ 抽屉每行「调用链路 · N 步」折叠区（图标/标签/相对时间/详情，error/blocked 着色）；旧快照无 trace → 不渲染（零回归）。测试：core `workflow-step-trace.test.cjs` 4 项（合并/截断/失败落盘/零回归）、server `workflow-step-trace.test.cjs` e2e（检查点快照 trace 非空 + 首尾 run:start/end + 无凭据字段）、webapp P2.5 纯函数 4 项 |
 
-**回归基线（P0–P3 + P2.5 落地后）**：core 444/444（含引擎门 5 + 调用链路 4）；server P3 e2e 1/1 + P2.5 e2e 1/1；webapp 335/335（含 P2.5 纯函数 4 项）；四端 build 0；lint 0 新增 error。
+| P2.6 镜像回退水合 | ✅ 已实现 | 用户报告「执行完的计划，刷新页面重进后执行详情抽屉没有任何数据」——根因：抽屉唯一数据源是服务端检查点（GET /api/workflows/:wfId），而检查点寿命受 store 形态约束（本地 dev 未配 WORKFLOW_STORE_DIR → VolatileWorkflowStore 进程重启即丢；Render free 层 /app/data 临时盘，闲置唤醒/部署重置清空）→ 404 → 空抽屉（卡片能恢复是 planStatus 镜像走了会话历史，但镜像没有 run 快照）。修复（零引擎改动，P3 同款三端 mirror 范式）：终态帧 run 经 `compactPlanWfSnapshot`（纯函数，output/error 2000 字 + trace 30 节点/200 字二级限幅，形状非法 → undefined 零回归）落入 `PlanExecState.wfSnapshot` → `toMirrorPlanStatus` 写穿 `planStatus.wfSnapshot` → 会话历史持久化（跨重启）；`applyPlanStatusLookup` 恢复（含形状校验宁缺勿错）；`openPlanWfReplay` GET 404 时回退镜像水合（`mirrorSnapshot` + `fromMirror` 标注），抽屉头部「检查点已过期，以下为执行时保留的历史镜像快照」提示 + 镜像态隐藏审批按钮（检查点丢失后 approve 路由 404，避免死按钮）；awaiting 暂停态 partial 快照同样落镜像（审批等待中刷新可回看已执行节点） |
+
+**回归基线（P0–P3 + P2.5 + P2.6 落地后）**：core 444/444；client 18/18；server 275 tests / 273 pass / 2 skip（含 P3 e2e + P2.5 e2e）；webapp 346/346（含 P2.6 compactPlanWfSnapshot 6 项 + 镜像写穿 2 项）；四端 build 0；lint 71 条全部 pre-existing（P2.6 改动文件 0 新增 error）。
 
 ### P4（后续，未实施）
 - **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。

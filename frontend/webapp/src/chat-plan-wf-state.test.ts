@@ -15,14 +15,18 @@ import {
   derivePlanWfId,
   buildPlanWfReplayRows,
   buildPlanWfTraceLines,
+  compactPlanWfSnapshot,
   formatPlanWfOutput,
   formatPlanWfDuration,
   planWfReplayStateLabel,
   planWfReplayMark,
+  planWfTraceMetaLabel,
+  planWfTraceMetaRowTitle,
   PLAN_DAG_STORAGE_KEY,
   type PlanWfEvent
 } from './chat-render-utils';
 import type { ExecutionPlanView, PlanExecState } from './chat-types';
+import { toMirrorPlanStatus } from './chat-persist';
 
 const KNOWN = new Set(['t1', 't2', 't3']);
 const base: PlanExecState = { status: 'running', done: {} };
@@ -465,9 +469,175 @@ describe('P2.5 调用链路：step 运行过程回放（buildPlanWfReplayRows.tr
     expect(buildPlanWfTraceLines(undefined)).toEqual([]);
   });
 
+  it('buildPlanWfTraceLines：meta 透传为 [键, 值] 对（用量 / 模型数据此前被丢弃 → 抽屉不可见）；空 / 全空值 meta 不透传', () => {
+    const lines = buildPlanWfTraceLines([
+      {
+        type: 'run:cost',
+        ts: 1000,
+        label: '用量',
+        meta: { model: 'deepseek-v4', tokens: '1280', cost: '0.0032' }
+      },
+      { type: 'llm:usage', ts: 1200, label: '上下文用量', meta: { prompt: '1000', completion: '280', window: '' } },
+      { type: 'llm:call', ts: 1400, label: 'LLM 调用' }
+    ]);
+    expect(lines[0]?.meta).toEqual([
+      ['model', 'deepseek-v4'],
+      ['tokens', '1280'],
+      ['cost', '0.0032']
+    ]);
+    // 空值键被过滤（window: '' 不进 chip，避免渲染空数据行）。
+    expect(lines[1]?.meta).toEqual([
+      ['prompt', '1000'],
+      ['completion', '280']
+    ]);
+    // 无 meta 的行 → undefined（渲染端不画空 chip 区）。
+    expect(lines[2]?.meta).toBeUndefined();
+  });
+
+  it('planWfTraceMetaLabel：已知键 → 中文标签，未知键原样透出（采集端新增 meta 键后 UI 不空白）', () => {
+    expect(planWfTraceMetaLabel('model')).toBe('模型');
+    expect(planWfTraceMetaLabel('tokens')).toBe('Token');
+    expect(planWfTraceMetaLabel('prompt')).toBe('输入');
+    expect(planWfTraceMetaLabel('weird-key')).toBe('weird-key');
+  });
+
+  it('planWfTraceMetaRowTitle：含用量/模型键 → 「模型 / 用量」，仅参数键 → 「参数」（独立 meta 行标题语义）', () => {
+    // run:cost 行：model/tokens/cost 全在用量键集合。
+    expect(planWfTraceMetaRowTitle([['model', 'deepseek-v4'], ['tokens', '1280']])).toBe('模型 / 用量');
+    // llm:usage 行：prompt/completion/window。
+    expect(planWfTraceMetaRowTitle([['prompt', '1000'], ['window', '128000']])).toBe('模型 / 用量');
+    // llm:call 行：msgs/tools 属参数键（无用量键）→「参数」。
+    expect(planWfTraceMetaRowTitle([['msgs', '2'], ['tools', '5']])).toBe('参数');
+    // 混合格（llm:response 带 partial）：无用量键 → 参数。
+    expect(planWfTraceMetaRowTitle([['partial', 'true']])).toBe('参数');
+  });
+
   it('未知事件类型 → 通用图标「•」（采集端新增事件后 UI 不空白）', () => {
     const lines = buildPlanWfTraceLines([{ type: 'wf:something-new', ts: 1, label: '新事件' }]);
     expect(lines[0]?.icon).toBe('•');
     expect(lines[0]?.label).toBe('新事件');
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────
+ * P2.6 镜像回退：紧凑 run 快照（compactPlanWfSnapshot）+ 检查点 404 → 历史镜像水合。
+ * 根因：「执行详情」抽屉唯一数据源是服务端检查点（GET /api/workflows/:wfId），而检查点
+ * 寿命受 store 形态约束——本地 dev 未配 WORKFLOW_STORE_DIR 是 VolatileWorkflowStore
+ * （进程重启即丢），Render free 层 /app/data 是临时盘（闲置唤醒 / 部署重置清空）。
+ * 执行完 → 服务重启 → 刷新重进 → getWorkflow 404 → 抽屉「没有任何数据」。
+ * 修复：终态帧的 run 快照经 compactPlanWfSnapshot 紧凑化，随 planStatus 镜像落会话历史
+ * （SQLite / Turso，跨重启保留）；抽屉 404 时回退镜像水合并标注来源。
+ * ──────────────────────────────────────────────────────────────────── */
+describe('P2.6 镜像回退：compactPlanWfSnapshot（终态 run → 紧凑快照，随 planStatus 镜像持久化）', () => {
+  const mkRun = (over: Record<string, unknown> = {}) => ({
+    state: 'done',
+    startedAt: 1000,
+    finishedAt: 5000,
+    steps: {
+      t1: {
+        state: 'done',
+        agentId: 'a1',
+        startedAt: 1000,
+        finishedAt: 3000,
+        output: 't1 产出',
+        trace: [{ type: 'run:start', ts: 1000, label: '开始' }]
+      },
+      t2: {
+        state: 'done',
+        agentId: 'a2',
+        startedAt: 3000,
+        finishedAt: 5000,
+        output: 't2 产出'
+      }
+    },
+    ...over
+  });
+
+  it('正常终态 run → 保留回放字段（state/时间戳/每 step state/agentId/时间戳/output/trace）', () => {
+    const snap = compactPlanWfSnapshot(mkRun());
+    expect(snap?.state).toBe('done');
+    expect(snap?.startedAt).toBe(1000);
+    expect(snap?.finishedAt).toBe(5000);
+    expect(snap?.steps.t1?.state).toBe('done');
+    expect(snap?.steps.t1?.agentId).toBe('a1');
+    expect(snap?.steps.t1?.output).toBe('t1 产出');
+    expect(snap?.steps.t1?.trace?.[0]?.type).toBe('run:start');
+    // 非字符串 output → JSON 化后保留。
+    const obj = compactPlanWfSnapshot(
+      mkRun({ steps: { t1: { state: 'done', output: { k: 1 } } } })
+    );
+    expect(obj?.steps.t1?.output).toBe('{"k":1}');
+  });
+
+  it('形状非法 / 无 steps → undefined（调用方不落镜像字段，零回归面）', () => {
+    expect(compactPlanWfSnapshot(undefined)).toBeUndefined();
+    expect(compactPlanWfSnapshot(null)).toBeUndefined();
+    expect(compactPlanWfSnapshot('x')).toBeUndefined();
+    expect(compactPlanWfSnapshot({ state: 'done' })).toBeUndefined(); // 缺 steps
+    expect(compactPlanWfSnapshot({ state: 'done', steps: null })).toBeUndefined();
+  });
+
+  it('run.state 缺失 → 收敛为 done（避免镜像出现非法状态）', () => {
+    const snap = compactPlanWfSnapshot({ steps: {} });
+    expect(snap?.state).toBe('done');
+  });
+
+  it('output / error 超长截断（REPLAY_MIRROR_OUTPUT_MAX=2000 + 省略号）', () => {
+    const big = 'a'.repeat(3000);
+    const snap = compactPlanWfSnapshot(
+      mkRun({
+        error: big,
+        steps: { t1: { state: 'failed', error: big } }
+      })
+    );
+    expect(snap?.error?.length).toBeLessThanOrEqual(2000 + 1);
+    expect(snap?.error?.endsWith('…')).toBe(true);
+    expect(snap?.steps.t1?.error?.endsWith('…')).toBe(true);
+  });
+
+  it('trace 二级限幅：节点超 30 截断 + detail 超 200 截断（控制历史信封体积）', () => {
+    const nodes = Array.from({ length: 40 }, (_, i) => ({
+      type: 'llm:call',
+      ts: i,
+      label: `n${i}`,
+      detail: 'd'.repeat(500)
+    }));
+    const snap = compactPlanWfSnapshot(
+      mkRun({ steps: { t1: { state: 'done', trace: nodes } } })
+    );
+    expect(snap?.steps.t1?.trace?.length).toBe(30);
+    expect(snap?.steps.t1?.trace?.[0]?.detail?.length).toBeLessThanOrEqual(200 + 1);
+  });
+
+  it('awaiting partial 快照：保留 run.state=awaiting + 已执行 step（审批等待中刷新可回看）', () => {
+    const snap = compactPlanWfSnapshot(
+      mkRun({ state: 'awaiting', finishedAt: undefined, steps: { t1: { state: 'done' } } })
+    );
+    expect(snap?.state).toBe('awaiting');
+    expect(snap?.finishedAt).toBeUndefined();
+    expect(snap?.steps.t1?.state).toBe('done');
+  });
+});
+
+describe('P2.6 镜像回退：toMirrorPlanStatus 写穿 wfSnapshot（随 planStatus 落会话历史）', () => {
+  it('PlanExecState 带 wfSnapshot → 镜像含该字段（刷新后 applyPlanStatusLookup 可恢复）', () => {
+    const st: PlanExecState = {
+      status: 'done',
+      done: { t1: true },
+      wfSnapshot: {
+        state: 'done',
+        startedAt: 1,
+        finishedAt: 2,
+        steps: { t1: { state: 'done', agentId: 'a1' } }
+      }
+    };
+    const out = toMirrorPlanStatus(st) as Record<string, unknown>;
+    expect(out.wfSnapshot).toEqual(st.wfSnapshot);
+  });
+
+  it('无 wfSnapshot（旧计划 / 串行路径）→ 镜像不含该字段（零回归）', () => {
+    const st: PlanExecState = { status: 'done', done: { t1: true } };
+    const out = toMirrorPlanStatus(st) as Record<string, unknown>;
+    expect('wfSnapshot' in out).toBe(false);
   });
 });

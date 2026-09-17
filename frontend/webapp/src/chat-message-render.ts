@@ -17,10 +17,13 @@ import {
   buildPlanWfTraceLines,
   planWfReplayMark,
   planWfReplayStateLabel,
+  planWfTraceMetaLabel,
+  planWfTraceMetaRowTitle,
   formatPlanWfDuration
 } from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
+import { renderJsonHtml } from './utils/json-view';
 import {
   countTraceNodes,
   renderTraceNode,
@@ -31,6 +34,7 @@ import {
 } from './chat-trace';
 import type { ChatMsg, PlanExecState, PlanWfReplayState } from './chat-types';
 import type { UploadedFile } from './agent-context';
+import type { WorkflowRun } from '@agent-harness/client';
 
 /** 渲染函数所需的交互态快照 + 回调闭包。由 AhChat.renderCtx() 构造。 */
 export interface ChatRenderCtx {
@@ -713,7 +717,10 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
     return html`<ah-drawer ?open=${false} placement="right" title="执行详情" size="500px"></ah-drawer>`;
   }
   const rs: PlanWfReplayState | undefined = ctx.planWfReplay[m.id];
-  const run = rs?.snapshot ?? null;
+  // P2.6：实时检查点缺失（404）时回退 planStatus 历史镜像快照（形状兼容，buildPlanWfReplayRows 直接消费）。
+  const mirror = rs?.mirrorSnapshot ? (rs.mirrorSnapshot as unknown as WorkflowRun) : null;
+  const run = rs?.snapshot ?? mirror;
+  const fromMirror = !rs?.snapshot && !!mirror;
   const rows = buildPlanWfReplayRows(m.plan, run);
   const totalMs =
     run?.startedAt && run.finishedAt ? Math.max(0, run.finishedAt - run.startedAt) : undefined;
@@ -742,10 +749,15 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
           ? html`<div class="wf-replay-hint">
               ${rs?.error
                 ? html`暂无可回放的执行轨迹：${escapeHtml(rs.error)}。<br />
-                    可能是检查点尚未落盘或已被清理。<br />
+                    检查点可能尚未落盘或已被清理（服务重启 / 磁盘重置）。<br />
                     可点卡片上的「从失败任务继续 / 确认执行」重新拉起 DAG 执行。`
                 : '该计划暂无执行记录（尚未开始，或为串行路径执行——串行 run 不落检查点）。'}
               </div>`
+          : nothing}
+        ${fromMirror
+          ? html`<div class="wf-replay-mirror-hint">
+              检查点已过期，以下为执行时保留的历史镜像快照（节点状态 / 耗时 / 产出 / 调用链路）。
+            </div>`
           : nothing}
         ${run
           ? html`<div class="wf-replay-head">
@@ -755,7 +767,7 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
               >
               ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
             </div>
-            ${run.state === 'awaiting'
+            ${run.state === 'awaiting' && !fromMirror
               ? html`<div class="wf-replay-approve">
                   <button class="plan-btn" @click=${() => ctx.approvePlan(m)}>
                     批准并继续
@@ -777,7 +789,7 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                         >${planWfReplayStateLabel(r.state)} · ${formatPlanWfDuration(r.durationMs)}</span
                       >
                     </div>
-                    ${r.state === 'awaiting'
+                    ${r.state === 'awaiting' && !fromMirror
                       ? html`<div class="wf-replay-approve">
                           <button
                             class="plan-btn ghost"
@@ -790,12 +802,14 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                     ${r.detail
                       ? html`<details class="wf-replay-detail">
                           <summary>产出 / 错误</summary>
-                          <pre>${escapeHtml(r.detail)}</pre>
+                          <div class="wf-detail-body">${renderJsonHtml(r.detail)}</div>
                         </details>`
                       : nothing}
                     ${(() => {
                       // P2.5 调用链路：该 step 运行过程中的关键事件（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
                       // 来自检查点 StepRun.trace（旧快照无该字段 → lines 为空 → 不渲染，零回归）。
+                      // 用户标注要求：每行 = 独立标题行（图标 + 标签 + 时间），点击标题在下方展开/折叠
+                      // 「模型 / 用量」「参数」「详情」各自成行（原生 details），不再摊在标题行内。
                       const lines = buildPlanWfTraceLines(r.trace);
                       if (lines.length === 0) return nothing;
                       return html`<details class="wf-replay-trace">
@@ -804,14 +818,45 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                           ${lines.map(
                             (l) =>
                               html`<li class="wf-trace-line ${l.status ?? 'ok'}">
-                                <span class="wf-trace-icon">${l.icon}</span>
-                                <span class="wf-trace-label">${escapeHtml(l.label)}</span>
-                                ${l.at
-                                  ? html`<span class="wf-trace-at">+${escapeHtml(l.at)}</span>`
-                                  : nothing}
-                                ${l.detail
-                                  ? html`<pre class="wf-trace-detail">${escapeHtml(l.detail)}</pre>`
-                                  : nothing}
+                                <details class="wf-trace-item">
+                                  <summary class="wf-trace-item-head">
+                                    <span class="wf-trace-icon">${l.icon}</span>
+                                    <span class="wf-trace-label">${escapeHtml(l.label)}</span>
+                                    ${l.at
+                                      ? html`<span class="wf-trace-at">+${escapeHtml(l.at)}</span>`
+                                      : nothing}
+                                    <span class="wf-trace-caret" aria-hidden="true"></span>
+                                  </summary>
+                                  ${l.meta && l.meta.length
+                                    ? html`<details class="wf-trace-sub">
+                                        <summary class="wf-trace-sub-head">
+                                          ${escapeHtml(
+                                            planWfTraceMetaRowTitle(l.meta)
+                                          )}
+                                          <span class="wf-trace-sub-caret" aria-hidden="true"></span>
+                                        </summary>
+                                        <div class="wf-trace-meta">
+                                          ${l.meta.map(
+                                            ([k, v]) =>
+                                              html`<span
+                                                class="wf-trace-meta-chip"
+                                                title=${escapeHtml(
+                                                  `${planWfTraceMetaLabel(k)}: ${v}`
+                                                )}
+                                                ><b>${escapeHtml(
+                                                  planWfTraceMetaLabel(k)
+                                                )}</b>
+                                                ${escapeHtml(v)}</span
+                                              >`)}
+                                        </div>
+                                      </details>`
+                                    : nothing}
+                                  ${l.detail
+                                    ? html`<div class="wf-trace-detail">
+                                        ${renderJsonHtml(l.detail)}
+                                      </div>`
+                                    : nothing}
+                                </details>
                               </li>`
                           )}
                         </ol>

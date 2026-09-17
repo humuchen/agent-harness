@@ -36,6 +36,8 @@ export interface PlanExecMirror {
   done: string[];
   /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
   awaiting?: string[];
+  /** P2.6：紧凑 run 快照（前端落盘，服务端随信封透传，不做形状校验）。 */
+  wfSnapshot?: unknown;
 }
 
 /** 调用链路追踪节点（结构与 @agent-harness/client 的 TraceNode 一致，本地镜像避免包耦合）。 */
@@ -552,6 +554,8 @@ export function finalizePlanStatus(
     status: 'done',
     done: [...st.done],
     currentTaskId: undefined,
-    failedTaskId: undefined
+    failedTaskId: undefined,
+    // P2.6：紧凑 run 快照由前端随镜像写入（DAG 路径），服务端固化时保留透传。
+    ...(st.wfSnapshot ? { wfSnapshot: st.wfSnapshot } : {})
   };
 }

@@ -124,6 +124,8 @@ export interface WorkflowExecutorOptions {
  */
 export class StepTraceCollector {
   private readonly traceNodes: StepTraceNode[] = [];
+  /** 本 step 实际使用的模型名（AssembledAgent.accountModel，仅模型名——BYOK 红线不变）。 */
+  private model?: string;
 
   /** 观察一个 harness 事件；白名单命中即追加节点（超限后静默丢弃）。 */
   observe(e: HarnessEvent): void {
@@ -154,7 +156,11 @@ export class StepTraceCollector {
           step: e.step,
           ts,
           label: 'LLM 调用',
-          meta: { msgs: String(e.messageCount), tools: String(e.toolCount) },
+          meta: {
+            ...(this.model ? { model: this.model } : {}),
+            msgs: String(e.messageCount),
+            tools: String(e.toolCount)
+          },
         });
         return;
       case 'llm:response': {
@@ -264,6 +270,12 @@ export class StepTraceCollector {
   /** 已捕获的节点序列（引擎合并侧还会做截断 + detail 兜底）。 */
   nodes(): StepTraceNode[] {
     return this.traceNodes;
+  }
+
+  /** 注入本 step 实际使用的模型名（AssembledAgent.accountModel）。
+   *  仅模型名，无 base URL / apiKey——BYOK 红线不变。缺省（未注入）时 LLM 调用行不带模型 chip。 */
+  setModel(model: string | null | undefined): void {
+    this.model = model || undefined;
   }
 }
 
@@ -386,6 +398,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           tenantCtx,
           ...tailArgs(opts)
         );
+        col.setModel(assembled.accountModel); // P2.5 LLM 调用行带出本成员实际模型名
         return assembled.harness.run(task, opts.attachments);
       };
 
@@ -433,6 +446,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     );
     let result: string;
     try {
+      col.setModel(assembled.accountModel); // P2.5 LLM 调用行带出本 step 实际模型名
       result = await assembled.harness.run(prompt, opts.attachments);
     } finally {
       ctx.trace = col.nodes(); // P2.5 链路附挂（成功/失败均落，失败路径排障价值最高）

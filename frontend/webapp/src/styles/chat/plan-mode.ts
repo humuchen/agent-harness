@@ -219,6 +219,17 @@ export const planMode = css`
     line-height: 1.7;
     padding: 8px 2px;
   }
+  /* P2.6：镜像回退来源标注（检查点 404 后从 planStatus 历史镜像水合）。 */
+  .wf-replay-mirror-hint {
+    border: 1px solid var(--ah-amber, rgba(245, 158, 11, 0.45));
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--ah-text);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 8px 10px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+  }
   .wf-replay-head {
     display: flex;
     align-items: center;
@@ -321,6 +332,18 @@ export const planMode = css`
     max-height: 220px;
     overflow: auto;
   }
+  /* 「产出 / 错误」正文走 JSON 高亮视图（长文本独立一行、点击展开后下方折叠区呈现）。 */
+  .wf-replay-detail .wf-detail-body {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    background: var(--ah-surface-2);
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-word;
+    max-height: 220px;
+    overflow: auto;
+  }
 
   /* P2.5 调用链路：每个 step 运行过程中的关键事件时间线（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
      比「完成后的耗时」更细一层——让用户看到节点内部发生了什么。 */
@@ -367,17 +390,113 @@ export const planMode = css`
   }
   .wf-trace-at {
     flex: 0 0 auto;
+    margin-left: auto;
     color: var(--ah-text-muted);
     font-size: 11px;
   }
-  .wf-trace-detail {
-    flex: 1 1 auto;
-    margin: 0;
+  /* 链路行 meta 区（模型 / 用量 / 参数）：独立可折叠子行，此前被 buildPlanWfTraceLines 丢弃导致数据不可见。
+     按用户标注「用量和模型信息需要单独一行展示，点击才能展开/折叠，在它的下面」实现。 */
+  .wf-trace-sub {
+    margin-top: 2px;
+  }
+  .wf-trace-sub-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
     font-size: 11px;
     color: var(--ah-text-muted);
-    white-space: pre-wrap;
+    padding: 2px 8px;
+    border-radius: 6px;
+  }
+  .wf-trace-sub-head::-webkit-details-marker,
+  .wf-trace-sub-head::marker {
+    display: none;
+    content: '';
+  }
+  .wf-trace-sub-head:hover {
+    color: var(--ah-accent);
+  }
+  .wf-trace-sub-caret {
+    width: 7px;
+    height: 7px;
+    margin-left: auto;
+    border-right: 1.5px solid var(--ah-text-muted);
+    border-bottom: 1.5px solid var(--ah-text-muted);
+    transform: rotate(-45deg);
+    transition: transform 0.15s ease;
+  }
+  .wf-trace-sub[open] > .wf-trace-sub-head .wf-trace-sub-caret {
+    transform: rotate(45deg);
+  }
+  .wf-trace-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 8px 2px 20px;
+  }
+  .wf-trace-meta-chip {
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--ah-text-muted);
+    background: var(--ah-surface-3, var(--ah-surface-2));
+    border: 1px solid var(--ah-border);
+    border-radius: 999px;
+    padding: 0 7px;
+    white-space: nowrap;
+  }
+  .wf-trace-meta-chip b {
+    color: var(--ah-text);
+    font-weight: 600;
+    margin-right: 3px;
+  }
+  /* 有详情的行：原生 details 折叠 —— 标题单行（图标 + 标签 + 时间），点击在下方展开详情。 */
+  .wf-trace-item {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .wf-trace-item-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  /* 隐藏原生 <summary> 折叠箭头（视觉指示统一走 .wf-trace-caret 的 CSS 旋转）。 */
+  .wf-trace-item-head::-webkit-details-marker,
+  .wf-trace-item-head::marker {
+    display: none;
+    content: '';
+  }
+  .wf-trace-item-head:hover .wf-trace-label {
+    color: var(--ah-accent);
+  }
+  /* 展开指示箭头：CSS 旋转，与 .tcaret 同款语义。 */
+  .wf-trace-caret {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    margin-left: auto;
+    border-right: 1.5px solid var(--ah-text-muted);
+    border-bottom: 1.5px solid var(--ah-text-muted);
+    transform: rotate(-45deg);
+    transition: transform 0.15s ease;
+  }
+  .wf-trace-item[open] > .wf-trace-item-head .wf-trace-caret {
+    transform: rotate(45deg);
+  }
+  /* 详情正文：独立一行，JSON 高亮（非 JSON 原文回退），超长滚动。 */
+  .wf-trace-detail {
+    margin: 4px 0 0 22px;
+    padding: 8px 10px;
+    background: var(--ah-surface-2);
+    border-radius: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ah-text-muted);
     word-break: break-word;
-    max-height: 120px;
+    max-height: 160px;
     overflow: auto;
   }
   /* 状态着色：error/blocked 行提亮，其余默认 surface。 */

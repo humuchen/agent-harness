@@ -8,7 +8,7 @@ import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
 import type { PlanExecMirror, StepTraceNode } from '@agent-harness/client';
-import type { ExecutionPlanView, PlanExecState } from './chat-types';
+import type { ExecutionPlanView, PlanExecState, PlanWfRunMirror } from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
 export function fileIcon(f: UploadedFile): string {
@@ -148,6 +148,78 @@ export function applyPlanWfEvent(
 export interface PlanWfRunSnapshot {
   state?: string;
   steps?: Record<string, { state?: string; id?: string; output?: unknown }>;
+}
+
+/**
+ * P2.6：把 WF 终态帧（wf:done / wf:failed / _wf_done）携带的 run 快照紧凑化，
+ * 随 planStatus 镜像写入会话历史——检查点在服务重启 / Render free 盘清理后丢失时，
+ * 「执行详情」抽屉据此回退水合（404 → 历史镜像）。
+ *
+ * 限幅纪律（历史信封有字节预算，PUT /api/history 超限 413）：
+ * - 只保留回放用到的字段（state / 时间戳 / error / 每 step 的 output / trace），不落 def（任务标题/依赖来自 m.plan）；
+ * - output 截断至 REPLAY_MIRROR_OUTPUT_MAX；trace 限 REPLAY_MIRROR_TRACE_MAX 节点、detail 200 字（服务端采集端已限 50/500，这里是二级限幅）；
+ * - 纯函数（零 this / 零 DOM），可独立测试；run 为 undefined / 非对象 / 无 steps → undefined（调用方不落镜像字段）。
+ */
+export const REPLAY_MIRROR_OUTPUT_MAX = 2000;
+export const REPLAY_MIRROR_TRACE_MAX = 30;
+export const REPLAY_MIRROR_TRACE_DETAIL_MAX = 200;
+
+export function compactPlanWfSnapshot(run: unknown): PlanWfRunMirror | undefined {
+  if (!run || typeof run !== 'object') return undefined;
+  const r = run as {
+    state?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    error?: string;
+    steps?: Record<string, unknown>;
+  };
+  if (!r.steps || typeof r.steps !== 'object') return undefined;
+  const steps: PlanWfRunMirror['steps'] = {};
+  for (const [sid, sRaw] of Object.entries(r.steps)) {
+    if (!sRaw || typeof sRaw !== 'object') continue;
+    const s = sRaw as {
+      state?: string;
+      agentId?: string;
+      error?: string;
+      startedAt?: number;
+      finishedAt?: number;
+      output?: unknown;
+      trace?: StepTraceNode[];
+    };
+    const out: PlanWfRunMirror['steps'][string] = { state: s.state };
+    if (s.agentId) out.agentId = s.agentId;
+    if (typeof s.error === 'string' && s.error) {
+      out.error = s.error.length > REPLAY_MIRROR_OUTPUT_MAX ? `${s.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : s.error;
+    }
+    if (typeof s.startedAt === 'number') out.startedAt = s.startedAt;
+    if (typeof s.finishedAt === 'number') out.finishedAt = s.finishedAt;
+    // output：非字符串先 JSON 化再截断（与 formatPlanWfOutput 一致的展示面，但这里预截断控制镜像体积）。
+    if (s.output !== undefined && s.output !== null) {
+      const so = typeof s.output === 'string' ? s.output : JSON.stringify(s.output);
+      if (so) out.output = so.length > REPLAY_MIRROR_OUTPUT_MAX ? `${so.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : so;
+    }
+    // trace：只保留白名单节点形状（服务端 StepTraceNode 已白名单采集，这里做二级限幅 + 字段收敛）。
+    if (Array.isArray(s.trace) && s.trace.length) {
+      const nodes = s.trace.slice(0, REPLAY_MIRROR_TRACE_MAX).map((n) => {
+        const t: StepTraceNode = { type: n.type, ts: n.ts };
+        if (n.step !== undefined) t.step = n.step;
+        if (n.label) t.label = n.label;
+        if (n.detail) t.detail = n.detail.length > REPLAY_MIRROR_TRACE_DETAIL_MAX ? `${n.detail.slice(0, REPLAY_MIRROR_TRACE_DETAIL_MAX)}…` : n.detail;
+        if (n.status) t.status = n.status;
+        if (n.meta && Object.keys(n.meta).length) t.meta = n.meta;
+        return t;
+      });
+      out.trace = nodes;
+    }
+    steps[sid] = out;
+  }
+  return {
+    state: typeof r.state === 'string' ? r.state : 'done',
+    ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
+    ...(typeof r.finishedAt === 'number' ? { finishedAt: r.finishedAt } : {}),
+    ...(typeof r.error === 'string' && r.error ? { error: r.error.length > REPLAY_MIRROR_OUTPUT_MAX ? `${r.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : r.error } : {}),
+    steps
+  };
 }
 
 /**
@@ -331,6 +403,8 @@ export interface PlanWfTraceLine {
   detail?: string;
   /** ok | error | blocked（渲染端按此着色；缺省 ok）。 */
   status?: string;
+  /** 快速元数据（model / tokens / cost …）→ [键, 值] 对，渲染端做行内 chip 展示（此前被丢弃，用量/模型信息在抽屉里不可见）。 */
+  meta?: [string, string][];
 }
 
 const TRACE_ICON: Record<string, string> = {
@@ -366,8 +440,51 @@ export function buildPlanWfTraceLines(
     if (n.detail) {
       line.detail = n.detail.length > TRACE_LINE_DETAIL_MAX ? `${n.detail.slice(0, TRACE_LINE_DETAIL_MAX)}…` : n.detail;
     }
+    // 元数据透传（用量 / 模型 / tokens …）：此前只取 icon/label/at/detail/status，
+    // meta 被丢弃导致「LLM 调用」「用量」行的模型与用量数据在抽屉里不可见。
+    const meta = n.meta ? (Object.entries(n.meta) as [string, string][]).filter(([, v]) => v != null && String(v) !== '') : undefined;
+    if (meta && meta.length > 0) line.meta = meta;
     return line;
   });
+}
+
+/** 链路 meta 键 → 中文标签（未知键原样透出，采集端新增 meta 键后 UI 不空白）。 */
+const TRACE_META_LABEL: Record<string, string> = {
+  model: '模型',
+  msgs: '消息',
+  tools: '工具',
+  tokens: 'Token',
+  cost: '成本',
+  priced: '定价',
+  prompt: '输入',
+  completion: '输出',
+  window: '上下文窗口',
+  partial: '截断',
+  steps: '步数'
+};
+
+/** meta 对 → 展示标签（值缺失时省略）。 */
+export function planWfTraceMetaLabel(k: string): string {
+  return TRACE_META_LABEL[k] ?? k;
+}
+
+/** meta 键属「模型 / 用量」语义的集合（其余键归「参数」）。 */
+const META_USAGE_KEYS: ReadonlySet<string> = new Set([
+  'model',
+  'tokens',
+  'cost',
+  'priced',
+  'prompt',
+  'completion',
+  'window'
+]);
+
+/**
+ * 独立 meta 行的标题：含任一用量/模型键 → 「模型 / 用量」（如 LLM 调用的 msgs/tools 行 → 「参数」）。
+ * 独立行按用户标注「用量和模型信息需要单独一行展示，点击才能展开/折叠，在它的下面」实现。
+ */
+export function planWfTraceMetaRowTitle(meta: [string, string][]): string {
+  return meta.some(([k]) => META_USAGE_KEYS.has(k)) ? '模型 / 用量' : '参数';
 }
 
 /** 时间线行 → 单行状态图标（渲染端直接用，避免与 buildPlanWfReplayRows 的 state 语义漂移）。 */

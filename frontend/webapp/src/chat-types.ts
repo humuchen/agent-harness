@@ -6,7 +6,7 @@
  * 解耦（core 类型从 @agent-harness/client 引入）。集中后 chat.ts 体积下降、类型单一
  * 可寻址，且便于 plan/trace 等子模块在需要时复用（见可维护性审计 P2：降低 chat.ts 单体规模）。
  */
-import type { TraceNode, WorkflowRun } from '@agent-harness/client';
+import type { StepTraceNode, TraceNode, WorkflowRun } from '@agent-harness/client';
 import type { UploadedFile } from './agent-context';
 
 export interface ToolView {
@@ -41,6 +41,35 @@ export interface PlanExecState {
   done: Record<string, boolean>;
   /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
   awaitingTaskIds?: string[];
+  /**
+   * P2.6：紧凑 run 快照（wf:done/wf:failed/_wf_done 帧的 run 经 compactPlanWfSnapshot 收敛）。
+   * 随 planStatus 镜像落会话历史（见 chat-persist.toMirrorPlanStatus）：检查点在服务重启 /
+   * Render free 盘清理后丢失时，「执行详情」抽屉按此镜像回退水合（404 → 历史快照）。
+   */
+  wfSnapshot?: PlanWfRunMirror;
+}
+
+/**
+ * P2.6：run 快照的紧凑镜像形态（写入 planStatus 镜像随会话历史持久化）。
+ * 与 WorkflowRun 形状兼容（buildPlanWfReplayRows 直接消费），但只保留回放用到的字段：
+ * - output 截断（REPLAY_MIRROR_OUTPUT_MAX）/ trace 限幅（REPLAY_MIRROR_TRACE_MAX 节点、detail 200 字）
+ *   —— 控制历史信封体积（PUT /api/history 有字节预算，超限 413）；
+ * - 不落 def（任务标题/依赖来自 m.plan 本身）、不落凭据（StepTraceNode 服务端采集端已红线）。
+ */
+export interface PlanWfRunMirror {
+  state: string;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+  steps: Record<string, {
+    state?: string;
+    agentId?: string;
+    error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    output?: string;
+    trace?: StepTraceNode[];
+  }>;
 }
 
 export interface ChatMsg {
@@ -99,4 +128,14 @@ export interface PlanWfReplayState {
   error?: string;
   /** 服务端检查点快照（WorkflowRun 本身即轨迹）；缺失为 null。 */
   snapshot: WorkflowRun | null;
+  /**
+   * P2.6：快照来自 planStatus 历史镜像回退（compactPlanWfSnapshot 紧凑形态，检查点 404 后水合）。
+   * 非镜像回退（实时检查点）时为 undefined。
+   */
+  mirrorSnapshot?: PlanWfRunMirror;
+  /**
+   * P2.6：true = 快照来自 planStatus 历史镜像回退（检查点 404 后从会话历史水合），
+   * 抽屉头部标注「检查点已过期，以下为历史镜像快照」；来自实时检查点时为 undefined。
+   */
+  fromMirror?: boolean;
 }

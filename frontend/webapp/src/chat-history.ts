@@ -85,6 +85,8 @@ export interface MirroredMsg {
     done: string[];
     /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
     awaiting?: string[];
+    /** P2.6：紧凑 run 快照（前端落盘，形状见 webapp PlanWfRunMirror；此处 unknown 避免镜像层耦合 webapp 类型）。 */
+    wfSnapshot?: unknown;
   };
   /** 用户消息携带的附件（图片/文件预览）。随镜像落盘需在体积上限内（超大图不持久化）。 */
   attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
@@ -117,7 +119,10 @@ function sanitizePlanStatus(
       done: o.done.filter((x): x is string => typeof x === 'string'),
       ...(Array.isArray(o.awaiting)
         ? { awaiting: o.awaiting.filter((x): x is string => typeof x === 'string') }
-        : {})
+        : {}),
+      // P2.6：紧凑 run 快照（检查点丢失后抽屉回退水合的数据源）：对象原样透传，
+      // 形状非法（非对象）丢弃——宁缺勿错。
+      ...(o.wfSnapshot && typeof o.wfSnapshot === 'object' ? { wfSnapshot: o.wfSnapshot } : {})
     }
   };
 }
