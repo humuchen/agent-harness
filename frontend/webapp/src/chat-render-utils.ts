@@ -574,8 +574,122 @@ export function derivePlanExecFromMessages(
 
 export interface RenderAttachmentsOpts {
   files: UploadedFile[];
-  /** 点击图片缩略图时的预览回调（原组件内 this.openPreview）。 */
+  /** 点击图片缩略图的预览回调（原组件内 this.openPreview）。 */
   onPreview: (f: UploadedFile) => void;
+}
+
+/* ------------------------------------------------------------------ */
+/* P2.7（修复）：计划数据「权威源 vs 历史镜像」对账纯函数（恢复路径用）  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * P2.7：planStatus 的「进度等级」——刷新 / 切回会话时权威源（getChatSession）与
+ * 历史镜像（loadThread）可能不同步：DAG 路径终态此前只写镜像（前端 saveHistory
+ * 落 SQLite），权威源缺 planStatus → 卡片退回「待确认」、执行摘要缺失。
+ * 对账规则 = 取进度更高等级的一方（宁取更完整者，不覆盖更新鲜的 running/awaiting）：
+ * done > cancelled > failed > awaiting > running > 缺失(0)。
+ * 等级相同时保持权威源（调用方 merge 时不写回），避免旧镜像回退新权威。
+ */
+export function planStatusProgressRank(ps?: {
+  status?: string;
+} | null): number {
+  if (!ps) return 0;
+  switch (ps.status) {
+    case 'done':
+      return 5;
+    case 'cancelled':
+      return 4;
+    case 'failed':
+      return 3;
+    case 'awaiting':
+      return 2;
+    case 'running':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * P2.7：把历史镜像的 planStatus 对账进权威源查找表（按 plan.goal 对齐，
+ * buildPlanStatusLookup 的同一键空间）。纯函数，零 this 依赖：
+ * - 镜像等级**严格高于**权威 → 该 goal 改用镜像值（权威缺 planStatus / 落后于镜像）；
+ * - 等级相同或缺失 → 保持权威（权威缺失时镜像是唯一来源，直接补上）；
+ * - wfSnapshot 只进不出：选中值缺 wfSnapshot 而另一份有 → 补（「执行详情」抽屉
+ *   镜像回退数据源不因对账丢失）。
+ */
+export function mergePlanStatusLookup(
+  authoritative: Map<string, PlanExecMirror>,
+  mirrored: Map<string, PlanExecMirror>
+): Map<string, PlanExecMirror> {
+  if (!mirrored.size) return authoritative;
+  const out = new Map(authoritative);
+  for (const [goal, m] of mirrored) {
+    const a = out.get(goal);
+    if (!a) {
+      out.set(goal, m);
+      continue;
+    }
+    const rankM = planStatusProgressRank(m);
+    const rankA = planStatusProgressRank(a);
+    if (rankM > rankA) {
+      out.set(goal, { ...a, ...m });
+    } else if (m.wfSnapshot && !a.wfSnapshot) {
+      // 同级：不降级权威，仅补快照（重启 / 413 裁剪后权威可能丢 wfSnapshot）。
+      out.set(goal, { ...a, wfSnapshot: m.wfSnapshot });
+    }
+  }
+  return out;
+}
+
+/** 「📋 计划执行摘要」消息的内容前缀（与 chat.ts appendPlanDagSummary 的生成格式一致）。 */
+export const PLAN_DAG_SUMMARY_PREFIX = '📋 计划执行摘要：';
+
+/**
+ * P2.7：从「计划执行摘要」消息正文提取 goal（首行 `📋 计划执行摘要：${goal}（共 N 个任务）`）。
+ * 摘要缺失 / 非摘要消息返回 null；goal 提取失败（首行被截断）也返回 null（宁缺勿错，
+ * 调用方不插入 → 不产生无法对齐的孤儿摘要）。
+ */
+export function planDagSummaryGoal(content: string): string | null {
+  if (!content.startsWith(PLAN_DAG_SUMMARY_PREFIX)) return null;
+  const rest = content.slice(PLAN_DAG_SUMMARY_PREFIX.length);
+  const idx = rest.indexOf('（共 ');
+  const goal = (idx >= 0 ? rest.slice(0, idx) : rest).trim();
+  return goal || null;
+}
+
+/**
+ * P2.7：找出「权威源缺失、镜像存在」的计划执行摘要消息内容（按 goal 去重）。
+ *
+ * 背景：DAG 路径的执行摘要由前端 appendPlanDagSummary 生成、仅落历史镜像（权威源
+ * getChatSession 无此消息）——服务端重启 / 权威源落后时刷新后「执行结果」整段缺失。
+ * 恢复时按 goal 判重：权威源已含同 goal 摘要（服务端 P2.7 修复后 applyPlanWfTerminal
+ * 会把摘要追加进权威源，双源一致）→ 不再插入，避免双份摘要。
+ *
+ * @param authoritative 恢复后的线程（新 id 重建后的 ChatMsg[]）
+ * @param mirrored 历史镜像消息（loadThread 消毒后的 MirroredMsg[]）
+ * @returns 需补回线程的摘要内容（镜像顺序，每 goal 至多一份）
+ */
+export function missingPlanSummaries(
+  authoritative: readonly Array<{ content?: string }>,
+  mirrored: readonly Array<{ role?: string; content?: string }>
+): string[] {
+  // 权威源已覆盖的 goal（摘要消息，或 plan 消息本身已带更高进度不算——只看摘要行）。
+  const covered = new Set<string>();
+  for (const m of authoritative) {
+    const g = planDagSummaryGoal(m.content ?? '');
+    if (g) covered.add(g);
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of mirrored) {
+    if (m.role !== 'assistant' || !m.content) continue;
+    const g = planDagSummaryGoal(m.content);
+    if (!g || covered.has(g) || seen.has(g)) continue;
+    seen.add(g);
+    out.push(m.content);
+  }
+  return out;
 }
 
 /**

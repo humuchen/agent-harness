@@ -4657,6 +4657,12 @@ interface PlanTaskSync {
  * 定位 PlanDoc：`plan:<sessionId>`（与 persistProposedPlan 同键）；无 sessionId 或文档
  * 不存在（该计划从未 propose 落库）时静默跳过，不影响执行链路。
  * 同步失败仅告警——看板是旁路视图，不能反过来阻断 DAG 执行。
+ *
+ * P2.7（修复）：终态帧（wf:done / wf:failed）额外把执行结果写入**会话权威源**
+ * （applyPlanWfTerminal：planStatus 固化 + 执行摘要消息追加）。此前 DAG 路径只写
+ * 看板旁路视图，权威源缺 planStatus/摘要 → 前端刷新（getChatSession 内存命中）
+ * 计划卡片退回「待确认」、执行结果「消失」。权威源写入独立于 PlanDoc（文档缺失
+ * 不阻断；仅依赖会话的 plan 消息存在，owner 不符时静默跳过）。
  */
 function createPlanTaskSync(sessionId: string | undefined, sub: string): PlanTaskSync | null {
   if (!sessionId) return null;
@@ -4670,6 +4676,13 @@ function createPlanTaskSync(sessionId: string | undefined, sub: string): PlanTas
 
   return {
     sync(e: WorkflowEvent): void {
+      // P2.7：终态写权威源（独立 IIFE——PlanDoc 缺失时仍须执行；幂等由
+      // appendChatMessage 紧邻同内容去重 + planStatus 单调收敛保证，resume 重放不重复落库）。
+      if (e.type === 'wf:done' || e.type === 'wf:failed') {
+        void applyPlanWfTerminal(sessionId, e, sub).catch(
+          (err) => log(`权威源终态写入失败：${err?.message ?? String(err)}`)
+        );
+      }
       void (async () => {
         const doc = await store.read(planId);
         if (!doc) return; // 计划文档不存在（非 plan 来源 / 未 propose），跳过。
