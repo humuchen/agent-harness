@@ -93,10 +93,10 @@ type TabGroup = 'use' | 'ability' | 'observe' | 'govern';
 
 const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
   [
-    { id: 'workspace', label: '工作台', short: '台', group: 'use' },
+    { id: 'workspace', label: '工作台', short: '总览', group: 'use' },
     { id: 'chat', label: '对话', short: '对话', group: 'use' },
     { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
-    { id: 'observability', label: '可观测', short: '观', group: 'observe' },
+    { id: 'observability', label: '可观测', short: '观测', group: 'observe' },
     { id: 'audit', label: '审计', short: '审计', group: 'observe' },
     { id: 'org', label: '组织', short: '组织', group: 'govern' },
     { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
@@ -105,7 +105,7 @@ const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
     { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
     { id: 'verify', label: '自检', short: '自检', group: 'observe' },
     { id: 'env', label: '环境', short: '环境', group: 'observe' },
-    { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
+    { id: 'supplychain', label: '供应链', short: 'CI', group: 'govern' },
     { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
     { id: 'plan', label: '计划', short: '计划', group: 'use' }
   ];

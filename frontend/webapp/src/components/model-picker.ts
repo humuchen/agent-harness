@@ -268,12 +268,6 @@ export class AhModelPicker extends LitElement {
         text-overflow: ellipsis;
         padding: 0 15px;
       }
-      .item .check {
-        width: 16px;
-        height: 16px;
-        color: var(--ah-accent, #2997ff);
-        flex: 0 0 auto;
-      }
 
       /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
        否则二者在触屏端（常显）会重叠。 */
@@ -1036,19 +1030,6 @@ export class AhModelPicker extends LitElement {
                         </span>`
                       : nothing}
                     <span class="name">${this.displayName(id)}</span>
-                    ${active
-                      ? html`<svg
-                          class="check"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2.5"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        >
-                          <path d="M20 6L9 17l-5-5" />
-                        </svg>`
-                      : nothing}
                   </div>
                 `;
                 // 通用滑动项（ah-swipe-item）：触屏左滑自定义模型行 → 右侧露出
