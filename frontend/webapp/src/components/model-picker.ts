@@ -996,7 +996,9 @@ export class AhModelPicker extends LitElement {
                 const custom = this.isCustom(id);
                 const row = html`
                   <div
-                    class="item ${custom ? 'custom-item' : ''} ${active ? 'active' : ''}"
+                    class="item ${custom ? 'custom-item' : ''} ${active
+                      ? 'active'
+                      : ''}"
                     @click=${() => this.pick(id)}
                   >
                     ${custom
@@ -1054,7 +1056,6 @@ export class AhModelPicker extends LitElement {
                         aria-label="编辑自定义模型"
                         @click=${() => this.startEdit(id)}
                       >
-                        ${this.renderPencilIcon()}
                         编辑
                       </button>
                       <button
@@ -1064,7 +1065,6 @@ export class AhModelPicker extends LitElement {
                         ?disabled=${this.deletingId === id}
                         @click=${() => this.deleteCustom(id)}
                       >
-                        ${this.renderTrashIcon()}
                         删除
                       </button>
                     </div>
