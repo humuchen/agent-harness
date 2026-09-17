@@ -62,7 +62,18 @@ export const responsive = css`
     }
     .sidebar.open {
       transform: none;
-      padding: 40px 10px 20px 10px;
+      /* 顶部 40px 让位给品牌区，不能留在滚动容器上：
+         sticky 元素按「滚动容器的 padding 边」夹取，若 40px 顶 padding 在容器上，
+         品牌区 sticky top:0 实际停在 40px 处，容器最顶 0–40px 那条带子没有背景盖住，
+         上滑的导航项（分组标题「能力·资产」、菜单「计划」…）就从品牌区上方这条空隙
+         穿透出来 —— 即「滚动时品牌区上方仍能看到穿过文字」。把顶 inset 挪到品牌区自身，
+         其不透明背景即可铺满到滚动口真正的 0，空隙随之消失。 */
+      padding: 0 10px 20px 10px;
+    }
+    /* 打开态：把原本的 40px 顶部间距挂到品牌区自身（内容仍落点 40px，视觉不变；
+       但品牌区盒子从 0 起铺满，sticky 背景盖住顶部空隙，滚过的导航项不再穿透。 */
+    .sidebar.open .brand {
+      padding-top: 40px;
     }
 
     /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
