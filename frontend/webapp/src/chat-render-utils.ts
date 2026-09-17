@@ -671,8 +671,8 @@ export function planDagSummaryGoal(content: string): string | null {
  * @returns 需补回线程的摘要内容（镜像顺序，每 goal 至多一份）
  */
 export function missingPlanSummaries(
-  authoritative: readonly Array<{ content?: string }>,
-  mirrored: readonly Array<{ role?: string; content?: string }>
+  authoritative: ReadonlyArray<{ content?: string }>,
+  mirrored: ReadonlyArray<{ role?: string; content?: string }>
 ): string[] {
   // 权威源已覆盖的 goal（摘要消息，或 plan 消息本身已带更高进度不算——只看摘要行）。
   const covered = new Set<string>();
