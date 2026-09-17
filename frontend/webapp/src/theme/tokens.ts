@@ -9,8 +9,6 @@
 
 export type Theme = 'dark' | 'light';
 
-const THEMES: Theme[] = ['dark', 'light'];
-
 // dark：对齐 Ardot 设计稿（canvas #0B0E14 / accent #2997FF）
 const darkTokens = `
   --ah-canvas: #0B0E14;
@@ -166,6 +164,7 @@ export const THEME_CSS = `
 @property --ah-hl-ins-bg { syntax: '<color>';  inherits: true; initial-value: rgba(46,160,67,0.15); }
 @property --ah-hl-del    { syntax: '<color>';  inherits: true; initial-value: #FFA198; }
 @property --ah-hl-del-bg { syntax: '<color>';  inherits: true; initial-value: rgba(248,81,73,0.15); }
+
 /* 门控过渡：仅 .ah-theme-anim 挂类期间（withThemeAnimation 的 600ms 窗口内）
    才启用颜色插值，避免首屏加载 / 无主题变更时产生多余过渡。
    过渡声明在 <html>（= 令牌实际变更的元素）上，消费方 var() 随帧重解析。 */
@@ -208,6 +207,7 @@ html, body {
   background: var(--ah-canvas);
   color: var(--ah-text);
 }
+
 /* 移动端（窄屏或触屏）：全局隐藏滚动条 + 去除点击蓝色高亮（WebView 默认 :active）。
    - 滚动条：html/body（文档根，非 shadow）+ 任意滚动容器，三套语法并写。
    - 点击高亮：-webkit-tap-highlight-color: transparent 吃掉 Android WebView 默认蓝色圆。 */
@@ -253,6 +253,9 @@ html, body {
     --md-modal-footer-btn-radius: 999px !important;
     --md-confirm-cancel-border: transparent !important;
     --md-modal-footer-cancel-border: transparent !important;
+    --md-font-size-base: 14px !important;
+    --md-modal-footer-btn-padding: 3.5px 18px !important;
+    --md-confirm-dark-bg: var(--ah-surface-1)
   }
 }
 `;
@@ -278,9 +281,16 @@ export function getTheme(): Theme {
   if (typeof document === 'undefined') return 'dark';
   const attr = document.documentElement.getAttribute('data-theme');
   if (attr === 'dark' || attr === 'light') return attr;
-  const stored = typeof localStorage !== 'undefined' ? (localStorage.getItem(STORAGE_KEY) as Theme | null) : null;
+  const stored =
+    typeof localStorage !== 'undefined'
+      ? (localStorage.getItem(STORAGE_KEY) as Theme | null)
+      : null;
   if (stored === 'dark' || stored === 'light') return stored;
-  if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+  if (
+    typeof matchMedia !== 'undefined' &&
+    matchMedia('(prefers-color-scheme: light)').matches
+  )
+    return 'light';
   return 'dark';
 }
 
@@ -290,7 +300,8 @@ export function setTheme(theme: Theme): void {
   withThemeAnimation(() => {
     document.documentElement.setAttribute('data-theme', theme);
   });
-  if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, theme);
+  if (typeof localStorage !== 'undefined')
+    localStorage.setItem(STORAGE_KEY, theme);
   syncNativeStatusBar(theme);
 }
 
@@ -356,7 +367,11 @@ export function syncNativeStatusBar(theme: Theme): void {
       let tries = 0;
       const retry = (): void => {
         if (tries++ >= 3) return;
-        const bar = (globalThis as unknown as { Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } } }).Capacitor?.Plugins?.StatusBar;
+        const bar = (
+          globalThis as unknown as {
+            Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } };
+          }
+        ).Capacitor?.Plugins?.StatusBar;
         if (!bar) {
           window.setTimeout(retry, 200);
           return;
@@ -421,7 +436,7 @@ function lightenHex(hex: string, pct: number): string | null {
   if (clean.length !== 6) return null;
   const num = parseInt(clean, 16);
   const r = Math.min(255, ((num >> 16) + Math.floor(255 * pct)) | 0);
-  const g = Math.min(255, ((num >> 8 & 0xff) + Math.floor(255 * pct)) | 0);
+  const g = Math.min(255, (((num >> 8) & 0xff) + Math.floor(255 * pct)) | 0);
   const b = Math.min(255, ((num & 0xff) + Math.floor(255 * pct)) | 0);
   return `rgb(${r}, ${g}, ${b})`;
 }
@@ -447,7 +462,9 @@ export async function initBrand(): Promise<BrandConfig> {
       applyBrand(cfg);
       // 设置 favicon
       if (cfg.faviconUrl) {
-        const link = document.querySelector('link[rel="icon"]') || document.createElement('link');
+        const link =
+          document.querySelector('link[rel="icon"]') ||
+          document.createElement('link');
         link.setAttribute('rel', 'icon');
         link.setAttribute('href', cfg.faviconUrl);
         document.head.appendChild(link);

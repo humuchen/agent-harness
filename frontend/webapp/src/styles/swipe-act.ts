@@ -22,7 +22,7 @@ export const swipeActStyles = css`
     background: var(--ah-surface-2);
     color: var(--ah-text);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
