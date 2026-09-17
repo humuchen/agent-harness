@@ -13,7 +13,7 @@ import { css } from 'lit';
  */
 export const sessionSwipe = css`
   .session-inner ah-swipe-item {
-    margin-bottom: 10px;
+    margin-bottom: 0;
     /* 与行圆角对齐：host overflow:hidden 裁切操作区时保持 10px 圆角，
        展开态按钮区边缘与行外观一致。 */
     border-radius: 10px;
@@ -23,9 +23,9 @@ export const sessionSwipe = css`
   }
   /* 行内 margin 归零（host 承担行间距）；两条规则同特异度且均高于
      .session 基础与 :last-child 规则，保证任何顺序下宿主行距正确。 */
-  .session-inner ah-swipe-item .session {
-    margin-bottom: 0;
-  }
+  // .session-inner ah-swipe-item .session {
+  //   margin-bottom: 0;
+  // }
   .session-inner ah-swipe-item .session:last-child {
     margin-bottom: 0;
   }
