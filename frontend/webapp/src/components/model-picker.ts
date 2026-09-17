@@ -262,7 +262,7 @@ export class AhModelPicker extends LitElement {
         flex: 1 1 auto;
         min-width: 0;
         font-size: 13px;
-        line-height: 32px;
+        line-height: 38px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -274,6 +274,11 @@ export class AhModelPicker extends LitElement {
         color: var(--ah-accent, #2997ff);
         flex: 0 0 auto;
       }
+
+      .swipe-act {
+        line-height: 30px;
+      }
+
       /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
        否则二者在触屏端（常显）会重叠。 */
       .item.custom-item.active {
