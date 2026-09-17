@@ -47,6 +47,7 @@ import {
   type AgentStoreRedis,
   DagEngine,
   type WorkflowDef,
+  type WorkflowRun,
   type WorkflowEvent,
   type TaskEnvelope,
   type TaskResult,
@@ -147,6 +148,7 @@ import { queryAuditFile, resolveAuditFile } from './audit-query';
 import { getOrgTree } from './org';
 // P1-5 成果物归档页 / 文件库：Agent 产出物持久化 + 浏览 / 下载 / 删除。
 import { getArtifactStore } from './artifact-store';
+import { archivePlanArtifacts } from './plan-artifacts';
 // P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
 import { getSkillRegistry } from './skill-registry';
 // P1-7 企业数据源适配器：数据源注册 + 连通性测试。
@@ -2316,6 +2318,10 @@ const server = createServer(
               },
             });
             const run = await engine.resume(workflowId);
+            // P4.6：续跑终态同样归档交付文件（按 runId+stepId 幂等去重，首跑已归档的自动跳过）。
+            await archivePlanArtifacts({ def: run.def, run, owner: ctx.sub }).catch((e) => {
+              console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+            });
             if (!closed) send({ type: '_wf_done', workflowId, run });
             if (!closed) res.end();
           } catch (e: any) {
@@ -2422,6 +2428,10 @@ const server = createServer(
               },
             });
             const run2 = await engine.resume(workflowId);
+            // P4.6：审批放行续跑终态同样归档交付文件（幂等去重，前序已归档的自动跳过）。
+            await archivePlanArtifacts({ def: run2.def, run: run2, owner: ctx.sub }).catch((e) => {
+              console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+            });
             if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
             if (!closed) res.end();
           } catch (e: any) {
@@ -2762,7 +2772,10 @@ const server = createServer(
         if (req.method === 'GET') {
           const ctx = await guard(req, res, 'artifact:read');
           if (!ctx) return;
-          const items = await getArtifactStore().list();
+          // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）；
+          // 缺省（无参）行为与旧版逐字一致——全量列表（成果物归档页零回归）。
+          const runIdFilter = url.searchParams.get('runId') || undefined;
+          const items = await getArtifactStore().list(runIdFilter);
           return sendJson(res, { items }, req);
         }
         if (req.method === 'POST') {
@@ -2800,13 +2813,16 @@ const server = createServer(
           const ctx = await guard(req, res, 'artifact:read');
           if (!ctx) return;
           const dl = url.searchParams.get('download') === '1';
+          // P4.6：?preview=1 在线打开（content-disposition: inline，浏览器直接渲染/查看文本）；
+          // 缺省（无 preview/download 参数）行为与旧版逐字一致——返回 JSON 元数据（成果物归档页零回归）。
+          const preview = url.searchParams.get('preview') === '1';
           const meta = await getArtifactStore().get(id);
           if (!meta) {
             res.writeHead(404, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: 'artifact not found' }));
             return;
           }
-          if (!dl) return sendJson(res, { item: meta }, req);
+          if (!dl && !preview) return sendJson(res, { item: meta }, req);
           const buf = await getArtifactStore().readContent(id);
           if (!buf) {
             res.writeHead(404, { 'content-type': 'application/json' });
@@ -2814,8 +2830,8 @@ const server = createServer(
             return;
           }
           res.writeHead(200, {
-            'content-type': meta.mimeType,
-            'content-disposition': `attachment; filename="${encodeURIComponent(meta.name)}"`,
+            'content-type': preview && meta.mimeType === 'text/markdown' ? 'text/plain; charset=utf-8' : meta.mimeType,
+            'content-disposition': `${dl ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
             'content-length': buf.length
           });
           res.end(buf);
@@ -5321,7 +5337,12 @@ async function handleWorkflow(
   // def 来源时 = body.input（保持现有行为）。
   engine
     .run(def, initialInput)
-    .then((run: any) => {
+    .then(async (run: any) => {
+      // P4.6：plan 桥终态先归档「交付文件」（幂等、无效产出跳过、绝不抛错），
+      // 归档完成再发 _wf_done 终态帧——前端在终态帧后拉 GET /api/artifacts?runId=<wfId> 必然命中。
+      await archivePlanArtifacts({ def, run: run as WorkflowRun, owner: ctx.sub }).catch((e) => {
+        console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+      });
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();
     })

@@ -343,6 +343,44 @@ export function planWfReplayStateLabel(state: string): string {
 /** 折叠正文长度上限（与 appendPlanDagSummary 的 300 字截断同款纪律，避免历史膨胀）。 */
 const REPLAY_DETAIL_MAX = 600;
 
+/** P4.6：交付文件条目（/api/artifacts 返回的 ArtifactMeta 前端所需最小面，本地镜像避免跨层 import）。 */
+export interface PlanArtifactItem {
+  id: string;
+  name: string;
+  sizeBytes: number;
+}
+
+/** markdown 链接转义：文件名里的 `[]|` 与换行会破坏链接语法，统一替换。 */
+function escapeLinkLabel(s: string): string {
+  return s.replace(/[\[\]|\\]/g, (c) => `\\${c}`).replace(/\n/g, ' ');
+}
+
+/** 人类可读文件大小（B / KB / MB），交付文件区展示用。 */
+export function formatPlanArtifactSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(2)} MB`;
+}
+
+/**
+ * P4.6：生成「📎 交付文件」区 markdown 文本（计划执行摘要最下方追加）。
+ * 每个文件给「打开（preview=1 inline）+ 下载（download=1 attachment）」两个链接，
+ * 经既有 toRichHtml（marked gfm）渲染为可点链接。空清单返回 ''（不追加区块）。
+ */
+export function buildPlanArtifactSection(items: PlanArtifactItem[] | null | undefined): string {
+  const list = (items ?? []).filter((a) => a && typeof a.id === 'string' && a.id);
+  if (list.length === 0) return '';
+  const lines: string[] = ['', `**📎 交付文件（${list.length} 个）**`];
+  for (const a of list) {
+    const label = escapeLinkLabel(String(a.name ?? a.id));
+    lines.push(
+      `- [📄 ${label}](/api/artifacts/${a.id}?preview=1)（${formatPlanArtifactSize(a.sizeBytes ?? 0)}） ｜ [下载](/api/artifacts/${a.id}?download=1)`
+    );
+  }
+  return lines.join('\n');
+}
+
 /** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、超长截断、空白视为无内容）。 */
 export function formatPlanWfOutput(v: unknown): string | undefined {
   if (v === undefined || v === null) return undefined;

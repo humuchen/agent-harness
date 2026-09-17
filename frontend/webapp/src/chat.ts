@@ -29,6 +29,7 @@ import {
   derivePlanWfId,
   compactPlanWfSnapshot,
   isPlanDagEnabled,
+  buildPlanArtifactSection,
   type PlanWfEvent,
   type PlanWfRunSnapshot
 } from './chat-render-utils';
@@ -3765,6 +3766,10 @@ export class AhChat extends LitElement {
     kind: 'first' | 'resume' | 'approve'
   ): Promise<boolean> {
     let terminal = false;
+    // P4.6：终态交付文件拉取状态——记录已回挂摘要的 msgId 与本 run 的 wfId；
+    // 只在 _wf_done（服务端归档完成后发出）时拉取，避免与归档竞态。
+    let summaryMsgId: number | undefined;
+    let wfIdForArtifacts: string | undefined;
     try {
       for await (const ev of source) {
         if (ac.signal.aborted) break;
@@ -3938,8 +3943,8 @@ export class AhChat extends LitElement {
     sid: string,
     m: ChatMsg,
     run: PlanWfRunSnapshot | undefined
-  ): void {
-    if (!m.plan) return;
+  ): number | undefined {
+    if (!m.plan) return undefined;
     const steps = run?.steps ?? {};
     const lines: string[] = [
       `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
@@ -3955,9 +3960,51 @@ export class AhChat extends LitElement {
       }
     }
     const t = this.threadFor(sid);
-    t.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    const msgId = this.nextId++;
+    t.push({ id: msgId, role: 'assistant', content: lines.join('\n') });
     this.threads[sid] = t;
     if (this.activeId === sid) this.messages = t;
+    return msgId;
+  }
+
+  /**
+   * P4.6：终态后拉取本 plan run 归档的「交付文件」并追加到执行摘要消息最下方
+   * （每文件 打开 /api/artifacts/<id>?preview=1 + 下载 ?download=1，markdown 渲染为可点链接）。
+   * 仅全成功（planExec.status==='done'）且无失败时展示——与后端「仅 done run 归档」同语义。
+   * 拉取 / 渲染失败静默降级（console.warn），绝不影响计划主流程与已 push 的摘要。
+   * @returns 是否成功追加了文件区（供 saveHistory 判断是否需落盘更新）。
+   */
+  private async appendPlanDagArtifactSection(
+    sid: string,
+    m: ChatMsg,
+    summaryMsgId: number | undefined,
+    wfId: string | undefined
+  ): Promise<boolean> {
+    if (summaryMsgId == null || !wfId) return false;
+    // 仅成功完成的计划才展示交付文件（后端对 failed run 不归档）。
+    const status = this.planExec[m.id]?.status;
+    if (status !== 'done') return false;
+    let items: import('./chat-render-utils').PlanArtifactItem[];
+    try {
+      const res = await authedFetch(`/api/artifacts?runId=${encodeURIComponent(wfId)}`);
+      if (!res.ok) return false;
+      const data = (await res.json()) as { items?: Array<{ id: string; name: string; sizeBytes: number }> };
+      items = Array.isArray(data.items)
+        ? data.items.map((a) => ({ id: a.id, name: a.name, sizeBytes: a.sizeBytes }))
+        : [];
+    } catch (e) {
+      console.warn(`[plan-artifacts] 拉取交付文件失败（不阻断）：${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+    const section = buildPlanArtifactSection(items);
+    if (!section) return false; // 无文件 → 不追加区块
+    const t = this.threadFor(sid);
+    const msg = t.find((x) => x.id === summaryMsgId);
+    if (!msg) return false;
+    msg.content = `${msg.content}${section}`;
+    this.threads[sid] = t;
+    if (this.activeId === sid) this.messages = t;
+    return true;
   }
 
   /**
