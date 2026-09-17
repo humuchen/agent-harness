@@ -275,10 +275,6 @@ export class AhModelPicker extends LitElement {
         flex: 0 0 auto;
       }
 
-      .swipe-act {
-        line-height: 30px;
-      }
-
       /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
        否则二者在触屏端（常显）会重叠。 */
       .item.custom-item.active {
@@ -470,6 +466,14 @@ export class AhModelPicker extends LitElement {
       }
     `,
     swipeActStyles,
+    /* 「编辑/删除」滑动操作按钮行高 30px：必须置于 swipeActStyles 之后 ——
+       共享基类的 .swipe-act { font: inherit } 简写会隐式重置 line-height，
+       同特异性（0,1,0）后声明者胜出，写在自有样式块（数组第 1 位）里是死规则。 */
+    css`
+      .swipe-act {
+        line-height: 30px;
+      }
+    `,
     mobilePill
   ];
 
