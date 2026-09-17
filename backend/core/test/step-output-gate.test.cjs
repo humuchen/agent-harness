@@ -67,6 +67,25 @@ test('inspectStepOutput：以护栏兜底话术开头 → fallback', () => {
   assert.strictEqual(inspectStepOutput('正常内容开头…' + FALLBACK_LIKE).issue, 'ok');
 });
 
+test('inspectStepOutput：异常前缀产出（P4.5 加固）→ failed', () => {
+  const { VERIFY_FAILED_PREFIX, TIMEOUT_NOTICE, ERROR_PREFIX, ABORTED_PREFIX, CIRCUIT_BREAKER_PREFIX, MAX_STEPS_NOTICE } = require('../dist/workflow/index.js');
+  // 每个前缀以「开头」判定 → failed（t1 [verify:failed] / t4 [timeout] 的同型缺陷回归点）。
+  assert.strictEqual(inspectStepOutput(VERIFY_FAILED_PREFIX + ' 断言 #1 未通过').issue, 'failed');
+  assert.strictEqual(inspectStepOutput(TIMEOUT_NOTICE).issue, 'failed');
+  assert.strictEqual(inspectStepOutput(ERROR_PREFIX + ' provider 500').issue, 'failed');
+  assert.strictEqual(inspectStepOutput(ABORTED_PREFIX + ' run cancelled').issue, 'failed');
+  assert.strictEqual(inspectStepOutput(CIRCUIT_BREAKER_PREFIX + ' rate limit').issue, 'failed');
+  assert.strictEqual(inspectStepOutput(MAX_STEPS_NOTICE).issue, 'failed');
+  // detail 非空（审计 / 抽屉可解释）。
+  assert.ok(inspectStepOutput(TIMEOUT_NOTICE).detail && inspectStepOutput(TIMEOUT_NOTICE).detail.length > 0);
+});
+
+test('inspectStepOutput：异常前缀嵌在正文中间不误伤（以开头为准）', () => {
+  const { TIMEOUT_NOTICE } = require('../dist/workflow/index.js');
+  // 正文引用了 [timeout] 文案但产出有实质内容 → 仍 ok（前缀判定不越界做内容判断）。
+  assert.strictEqual(inspectStepOutput('执行记录：' + TIMEOUT_NOTICE + '。经重试后恢复，最终产出如下：…').issue, 'ok');
+});
+
 /* ---------- 引擎闸门（计划桥 def：failOnInvalidOutput=true） ---------- */
 
 async function runPlanWithExecutor(exec) {
@@ -103,6 +122,21 @@ test('闸门开（plan def）：护栏兜底产出 → step failed（消灭 5/5 
   assert.strictEqual(run.state, 'failed');
   assert.strictEqual(run.steps.t2.state, 'failed');
   assert.strictEqual(run.steps.t2.outputIssue, 'fallback');
+});
+
+test('闸门开（plan def）：异常前缀产出（[timeout] / [verify:failed]）→ step failed（P4.5 加固：t4 超时不再假 ✅）', async () => {
+  const { TIMEOUT_NOTICE, VERIFY_FAILED_PREFIX } = require('../dist/workflow/index.js');
+  // t4 同型：step 超时中止（harness return [timeout] 文案）—— 旧版 inspectStepOutput 判 ok → 假 done。
+  const runT = await runPlanWithExecutor(async (step) => (step.id === 't2' ? TIMEOUT_NOTICE : `output-of-${step.id}`));
+  assert.strictEqual(runT.state, 'failed');
+  assert.strictEqual(runT.steps.t2.state, 'failed');
+  assert.strictEqual(runT.steps.t2.outputIssue, 'failed');
+  // 下游 t3 级联失败（不再拿上游垃圾继续跑 —— 1145s 空转放大点）。
+  assert.notStrictEqual(runT.steps.t3.state, 'done');
+  // t1 同型：[verify:failed] 前缀产出同样判 failed。
+  const runV = await runPlanWithExecutor(async (step) => (step.id === 't2' ? VERIFY_FAILED_PREFIX + ' 断言未过' : `output-of-${step.id}`));
+  assert.strictEqual(runV.state, 'failed');
+  assert.strictEqual(runV.steps.t2.outputIssue, 'failed');
 });
 
 test('planToWorkflowDef：生成的 def 默认开启 failOnInvalidOutput', () => {

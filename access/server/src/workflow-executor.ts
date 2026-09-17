@@ -77,6 +77,13 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
             `上游 ${dep} 产出（⚠️ 该产出在中途截断，仅作参考）：${String(v)}\n` +
             `提示：上游 ${dep} 结果不完整，请基于「目标」与本任务步骤自行补齐，并在产出中标注引用了不完整来源。`
           );
+        } else if (insp.issue === 'failed') {
+          // P4.5 加固：异常前缀产出（[timeout] / [error] / [verify:failed] / [aborted] /
+          // [circuit-breaker] / maxSteps 哨兵）——上游 step 本身已失败，产出无实质内容。
+          lines.push(
+            `上游 ${dep} 产出：（上游 step 执行失败：${insp.detail ?? '无有效产出'}）——请基于「目标」与本任务步骤独立执行；` +
+            `若外部检索失败，降级整合其它上游产出并在产出中显式标注数据缺口，不得以道歉或放弃收尾。`
+          );
         } else {
           lines.push(
             `上游 ${dep} 产出：（被安全护栏拦截，无实质内容）——请基于「目标」与本任务步骤独立执行，` +
@@ -412,12 +419,14 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     if (specs.length === 0) return { verifier: baseVerifier, retries: baseRetries };
     if (baseVerifier) {
       return {
-        verifier: composeVerifiers(baseVerifier, specsVerifier(specs)),
+        // 任务验收组打组标签，与 executor 级默认门禁组（assertionLabel「默认门禁」）
+        // 在 reasons 拼接时区分，消除「全部 3 项通过; 断言 #1 未通过」的矛盾读法。
+        verifier: composeVerifiers(baseVerifier, specsVerifier(specs, '任务验收')),
         retries: baseRetries,
       };
     }
     // 无 executor 级验证器（verify 未传）：仅装配结果断言，重试预算保守取 0。
-    return { verifier: specsVerifier(specs), retries: 0 };
+    return { verifier: specsVerifier(specs, '任务验收'), retries: 0 };
   };
 
   return async (step: any, input: any, ctx: RunContext) => {

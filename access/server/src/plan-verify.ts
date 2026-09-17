@@ -72,7 +72,7 @@ export function resolvePlanVerify(inp: PlanVerifyInput): PlanVerifyResult {
   // P4.5：plan 默认门禁（仅当 plan 且未显式指定 verify 时回落）。
   let verifyMaxRetries: number | undefined;
   if (inp.isPlan && !verifyExplicit && verifyConfig === undefined) {
-    verifyConfig = { auto: true, assertions: PLAN_DEFAULT_ASSERTIONS };
+    verifyConfig = { auto: true, assertions: PLAN_DEFAULT_ASSERTIONS, assertionLabel: '默认门禁' };
     verifyMaxRetries = inp.planVerifyRetries;
   }
 

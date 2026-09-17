@@ -85,8 +85,13 @@ export const RuleBasedVerifier: Verifier = (ctx) => {
 /** 断言函数：基于上下文返回是否通过。 */
 export type Assertion = (ctx: VerifyContext) => boolean | Promise<boolean>;
 
-/** 基于断言列表的验证器（结果正确性校验）。全部断言通过才算通过。 */
-export function assertionsVerifier(assertions: Assertion[]): Verifier {
+/** 基于断言列表的验证器（结果正确性校验）。全部断言通过才算通过。
+ * @param label 可选的组标签（如「默认门禁」/「任务验收」）：per-step 验证器是「默认门禁断言组
+ * + 任务验收断言组」两个 specsVerifier 的组合，各组合输出 reasons 后拼接，无标签时两组行号
+ * 各自从 1 起算，读起来自相矛盾（「全部 3 项通过; 断言 #1 未通过」）——加组标签消歧。
+ */
+export function assertionsVerifier(assertions: Assertion[], label?: string): Verifier {
+  const tag = label ? `${label}：` : '';
   return async (ctx) => {
     const reasons: string[] = [];
     let passed = true;
@@ -101,11 +106,11 @@ export function assertionsVerifier(assertions: Assertion[]): Verifier {
       }
       if (!ok) {
         passed = false;
-        reasons.push(`断言 #${n} 未通过`);
+        reasons.push(`${tag}断言 #${n} 未通过`);
       }
     }
-    if (assertions.length === 0) reasons.push('无断言（跳过结果校验）');
-    else if (passed) reasons.push(`全部 ${assertions.length} 项断言通过`);
+    if (assertions.length === 0) reasons.push(`${tag}无断言（跳过结果校验）`);
+    else if (passed) reasons.push(`${tag}全部 ${assertions.length} 项断言通过`);
     return {
       passed,
       score: assertions.length === 0 ? 1 : passed ? 1 : 0,
@@ -146,9 +151,9 @@ function specToPredicate(spec: AssertSpec): Assertion {
   };
 }
 
-/** 由可序列化规格列表构建验证器。 */
-export function specsVerifier(specs: AssertSpec[]): Verifier {
-  return assertionsVerifier(specs.map(specToPredicate));
+/** 由可序列化规格列表构建验证器。@param label 可选组标签（reasons 行前缀，多组合并时消歧）。 */
+export function specsVerifier(specs: AssertSpec[], label?: string): Verifier {
+  return assertionsVerifier(specs.map(specToPredicate), label);
 }
 
 /** 组合多个验证器：全部通过才通过，分数取最低。 */
@@ -175,6 +180,13 @@ export interface VerifyConfig {
   ruleBased?: boolean;
   /** 结果断言规格（校验「结果正确性」）。 */
   assertions?: AssertSpec[];
+  /**
+   * 结果断言组的 reasons 行前缀标签（如「默认门禁」/「任务验收」）。
+   * per-step 验证器 = 默认门禁断言组 + 任务验收断言组两个 specsVerifier 组合，
+   * 各组合输出 reasons 后拼接，无标签时两组行号各自从 1 起算、读起来自相矛盾
+   * （「全部 3 项通过; 断言 #1 未通过」）——按组打标签消歧。
+   */
+  assertionLabel?: string;
 }
 
 /** 从配置装配验证器；无任何启用项时返回 undefined（harness 据此关闭门禁）。 */
@@ -182,7 +194,7 @@ export function createVerifier(cfg: VerifyConfig | undefined): Verifier | undefi
   if (!cfg) return undefined;
   const parts: Verifier[] = [];
   if (cfg.auto || cfg.ruleBased) parts.push(RuleBasedVerifier);
-  if (cfg.assertions && cfg.assertions.length) parts.push(specsVerifier(cfg.assertions));
+  if (cfg.assertions && cfg.assertions.length) parts.push(specsVerifier(cfg.assertions, cfg.assertionLabel));
   if (parts.length === 0) return undefined;
   return composeVerifiers(...parts);
 }

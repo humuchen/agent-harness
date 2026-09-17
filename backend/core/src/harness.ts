@@ -1,6 +1,15 @@
 import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
-import { GUARDRAIL_FALLBACK_PREFIX, PARTIAL_NOTICE } from './workflow/step-output';
+import {
+  GUARDRAIL_FALLBACK_PREFIX,
+  PARTIAL_NOTICE,
+  VERIFY_FAILED_PREFIX,
+  TIMEOUT_NOTICE,
+  ERROR_PREFIX,
+  ABORTED_PREFIX,
+  CIRCUIT_BREAKER_PREFIX,
+  MAX_STEPS_NOTICE
+} from './workflow/step-output';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
@@ -597,7 +606,7 @@ export class AgentHarness {
       memory.add({ role: 'user', content: resolvedInput });
     }
 
-    let final = '[agent] reached max steps without a final answer';
+    let final = MAX_STEPS_NOTICE;
     let steps = 0;
     // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
     let guardrailsBlocked = 0;
@@ -1235,7 +1244,7 @@ export class AgentHarness {
           // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
           fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
         }
-        return '[agent] reached max steps without a final answer';
+        return MAX_STEPS_NOTICE;
       });
 
     try {
@@ -1245,12 +1254,12 @@ export class AgentHarness {
       if (e?.name === 'CircuitBreakerOpen') {
         const msg = e.message ?? 'circuit breaker open';
         emit({ type: 'error', message: msg });
-        final = `[circuit-breaker] ${msg}`;
+        final = `${CIRCUIT_BREAKER_PREFIX} ${msg}`;
       } else {
         logError('agent.run', e, { runId });
         emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
         emit({ type: 'error', message: e?.message ?? String(e) });
-        final = `[error] ${e?.message ?? String(e)}`;
+        final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
       }
     }
 
@@ -1288,7 +1297,7 @@ export class AgentHarness {
             final = await runLoop();
           } catch (e: any) {
             logError('agent.run.retry', e, { runId });
-            final = `[error] ${e?.message ?? String(e)}`;
+            final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
           }
           outcome = await this.opts.verify(buildCtx());
           emit({
@@ -1303,7 +1312,7 @@ export class AgentHarness {
         }
       }
       if (!outcome.passed) {
-        final = `[verify:failed] ${outcome.reasons.join('; ')}\n\n${final}`;
+        final = `${VERIFY_FAILED_PREFIX} ${outcome.reasons.join('; ')}\n\n${final}`;
       }
     }
 
@@ -1338,9 +1347,9 @@ export class AgentHarness {
 /** 根据中止原因生成人类可读的结果提示。 */
 function abortedMessage(signal: AbortSignal): string {
   const reason = (signal as { reason?: unknown }).reason;
-  if (reason === 'timeout') return '[timeout] run exceeded time limit';
-  if (reason === 'external') return '[aborted] run cancelled by caller';
-  return '[aborted] run cancelled';
+  if (reason === 'timeout') return TIMEOUT_NOTICE;
+  if (reason === 'external') return `${ABORTED_PREFIX} run cancelled by caller`;
+  return `${ABORTED_PREFIX} run cancelled`;
 }
 
 /** 从对话历史收集所有工具调用（供验证上下文统计）。 */

@@ -103,6 +103,19 @@ test('specsVerifier 坏正则不崩溃（按失败处理）', async () => {
   assert.strictEqual(r.passed, false);
 });
 
+test('组标签：多组断言 reasons 带组前缀（P4.5 消歧——「全部 N 项通过 / 断言 #k 未通过」不再自相矛盾）', async () => {
+  // 模拟 per-step 双组：默认门禁组（3 条全过）+ 任务验收组（1 条挂）——旧版 reasons 拼接为
+  // 「全部 3 项断言通过; 断言 #1 未通过」读起来自相矛盾；加组标签后可区分。
+  const v = composeVerifiers(
+    specsVerifier([{ contains: 'x' }, { minLength: 1 }, { notContains: 'Z' }], '默认门禁'),
+    specsVerifier([{ contains: 'NOPE' }], '任务验收')
+  );
+  const r = await v(ctx({ final: 'x' }));
+  assert.strictEqual(r.passed, false);
+  assert.ok(r.reasons.some((x) => x === '默认门禁：全部 3 项断言通过'), `reasons=${r.reasons}`);
+  assert.ok(r.reasons.some((x) => x === '任务验收：断言 #1 未通过'), `reasons=${r.reasons}`);
+});
+
 // ---------------------------------------------------------------------------
 // composeVerifiers（AND 组合）
 // ---------------------------------------------------------------------------
