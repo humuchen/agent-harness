@@ -411,6 +411,9 @@ export class AhChat extends LitElement {
   /** 编辑中的草稿文本。 */
   @state() private editingDraft = '';
 
+  /** 进入编辑态时原始消息内容，用于判断用户是否做过实质改动。 */
+  private editingOriginalContent = '';
+
   /** 最近一次复制成功的消息 id + 时间戳：按钮短暂变为「已复制 ✓」。 */
   @state() private copiedMsgId = -1;
 
@@ -2055,54 +2058,18 @@ export class AhChat extends LitElement {
     };
   }
 
-  private async send() {
-    // 命令胶囊 + 输入框参数拼成最终提示词（无胶囊时即普通文本）。
-    const prompt = this.buildPrompt();
-    // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
-    if (!prompt && this.attachments.length === 0) return;
-
-    // BYOK 发送前 gating：选中真实模式但当前账号未配置可用 Key → 拦截，
-    // 引导去「设置 → 模型服务商」配置（服务端也会以 402 兜底拒绝）。
-    if (this.mode === 'real' && !this.llmReady) {
-      notify.warning(
-        '尚未配置可用的 LLM API Key，无法发起真实对话。请到「设置 → 模型服务商」填入你的 OpenRouter Key。',
-        { title: '需要 API Key', key: 'pk-required' }
-      );
-      this.dispatchEvent(
-        new CustomEvent('ah-goto', {
-          detail: 'settings',
-          bubbles: true,
-          composed: true
-        })
-      );
-      return;
-    }
-
-    // Slash Command 拦截：如果输入是 /command，处理后不发送到 /api/run
-    if (handleSlashCommand(prompt, this._makeCommandContext())) {
-      this.clearComposer();
-      return;
-    }
-
-    // 会话创建是接口调用：失败时给出明确提示，而不是静默地什么都不发生
-    // （此前这里没有 try/catch，失败会变成未捕获的 Promise rejection）。
-    let sessionId: string;
-    try {
-      sessionId = await this.ensureSession();
-    } catch (e: any) {
-      notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
-      return;
-    }
-
-    // 构造用户消息内容：只发送纯文本提示词给 LLM。
-    // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
-    const content = prompt;
-
-    // 在清空 this.attachments 之前保留完整附件副本（含 dataUrl），
-    // 用于回显到 user 气泡；否则消息写入时附件已被清空，气泡里图片不显示。
-    const rawAttachments = [...this.attachments];
-
-    // 为每个图片构建结构化附件信息。
+  /**
+   * 把附件列表转换成 dispatchPrompt 需要的两类内容：
+   * - imageAttachments：压缩后的 dataUrl / serverUrl，直接发给模型视觉输入。
+   * - modelPrompt：在原始 prompt 后追加文本附件摘要，仅用于模型请求，不影响 UI 气泡内容。
+   */
+  private async buildAttachmentDispatchOpts(
+    content: string,
+    rawAttachments: UploadedFile[]
+  ): Promise<{
+    imageAttachments: Array<{ url: string; name: string; type: string }>;
+    modelPrompt: string;
+  }> {
     // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
     // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
@@ -2144,6 +2111,57 @@ export class AhChat extends LitElement {
     const modelPrompt = attachmentDigest
       ? `${content}\n\n${attachmentDigest}`
       : content;
+
+    return { imageAttachments, modelPrompt };
+  }
+
+  private async send() {
+    // 命令胶囊 + 输入框参数拼成最终提示词（无胶囊时即普通文本）。
+    const prompt = this.buildPrompt();
+    // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
+    if (!prompt && this.attachments.length === 0) return;
+
+    // BYOK 发送前 gating：选中真实模式但当前账号未配置可用 Key → 拦截，
+    // 引导去「设置 → 模型服务商」配置（服务端也会以 402 兜底拒绝）。
+    if (this.mode === 'real' && !this.llmReady) {
+      notify.warning(
+        '尚未配置可用的 LLM API Key，无法发起真实对话。请到「设置 → 模型服务商」填入你的 OpenRouter Key。',
+        { title: '需要 API Key', key: 'pk-required' }
+      );
+      this.dispatchEvent(
+        new CustomEvent('ah-goto', {
+          detail: 'settings',
+          bubbles: true,
+          composed: true
+        })
+      );
+      return;
+    }
+
+    // Slash Command 拦截：如果输入是 /command，处理后不发送到 /api/run
+    if (handleSlashCommand(prompt, this._makeCommandContext())) {
+      this.clearComposer();
+      return;
+    }
+
+    // 会话创建是接口调用：失败时给出明确提示，而不是静默地什么都不发生
+    // （此前这里没有 try/catch，失败会变成未捕获的 Promise rejection）。
+    let sessionId: string;
+    try {
+      sessionId = await this.ensureSession();
+    } catch (e: any) {
+      notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
+      return;
+    }
+
+    // 构造用户消息内容：只发送纯文本提示词给 LLM。
+    const content = prompt;
+
+    // 在清空 this.attachments 之前保留完整附件副本（含 dataUrl），
+    // 用于回显到 user 气泡；否则消息写入时附件已被清空，气泡里图片不显示。
+    const rawAttachments = [...this.attachments];
+    const { imageAttachments, modelPrompt } =
+      await this.buildAttachmentDispatchOpts(content, rawAttachments);
 
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
@@ -2647,6 +2665,7 @@ export class AhChat extends LitElement {
   private startEdit(msgId: number, content: string) {
     this.editingMsgId = msgId;
     this.editingDraft = content;
+    this.editingOriginalContent = content;
     this.hoverUserMsgId = -1;
   }
 
@@ -2654,25 +2673,97 @@ export class AhChat extends LitElement {
   private cancelEdit() {
     this.editingMsgId = -1;
     this.editingDraft = '';
+    this.editingOriginalContent = '';
   }
 
   /**
-   * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
-   * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   * 编辑后重新发送：
+   * 1. 草稿与原文一致时直接返回（UI 已通过 disabled 拦截，此处作兜底）。
+   * 2. 截断被编辑消息之后的所有消息，替换被编辑消息内容为新草稿。
+   * 3. 在末尾添加 assistant 占位并继续派发，服务端收到 editFrom 后会同步
+   *    截断会话存储并清空后续记忆，确保模型基于新的上下文生成。
    *
    * 重入防御：ensureSession 是异步的，await 期间若用户连点「发送 ↑」或
-   * Enter 与点击叠加，第二次调用会带着同一草稿再次派发 dispatchPrompt，
-   * 历史里立刻多出一条重复消息。进入时立即清掉编辑态标志作为提交锁，
-   * 后续调用因 editingMsgId === -1 直接 return，仅首次生效。
+   * Enter 与点击叠加，第二次调用会因 editingMsgId === -1 直接 return，仅首次生效。
    */
-  private async sendEdit(_msgId: number) {
+  private async sendEdit(msgId: number) {
     if (this.editingMsgId < 0) return; // 非编辑态 / 本次已提交（提交锁）
     const draft = this.editingDraft.trim();
     if (!draft || this.streaming[this.activeId] === true) return;
-    this.cancelEdit(); // 立即清 editingMsgId + editingDraft：UI 退回普通气泡，后续重入被上方拦截
+    // 没有任何变动：不发送，保持编辑态让用户继续编辑。
+    if (draft === this.editingOriginalContent.trim()) return;
+
+    // 立即清编辑态标志作为提交锁。
+    this.cancelEdit();
+    this.fullscreenEditOpen = false;
+    this.cancelComposerLongPress();
+
     const sessionId = await this.ensureSession();
-    this.input = draft;
-    await this.send();
+    const t = this.threadFor(sessionId);
+    const idx = t.findIndex((m) => m.id === msgId && m.role === 'user');
+    if (idx < 0) {
+      // 找不到原消息：降级为普通追加发送。
+      this.input = draft;
+      await this.send();
+      return;
+    }
+
+    const editedMsg = t[idx];
+    if (!editedMsg) {
+      this.input = draft;
+      await this.send();
+      return;
+    }
+
+    // 截断被编辑消息之后的所有消息，并用新草稿替换被编辑消息内容。
+    const next = t.slice(0, idx + 1);
+    next[idx] = { ...editedMsg, content: draft };
+
+    // 清理被截断消息衍生的前端状态，避免残留 plan / 回放 / 折叠态。
+    for (let i = idx + 1; i < t.length; i++) {
+      const removedId = t[i]?.id;
+      if (removedId == null) continue;
+      if (this.planExec[removedId]) {
+        const { [removedId]: _, ...rest } = this.planExec;
+        this.planExec = rest;
+      }
+      if (this.planWfReplay[removedId]) {
+        const { [removedId]: _, ...rest } = this.planWfReplay;
+        this.planWfReplay = rest;
+      }
+      if (this.thinkCollapsed[removedId]) {
+        const { [removedId]: _, ...rest } = this.thinkCollapsed;
+        this.thinkCollapsed = rest;
+      }
+    }
+
+    // 如果当前打开的抽屉/回放属于被截断的消息，关闭它们。
+    if (this.traceDrawerMsg && this.traceDrawerMsg.id > msgId) {
+      this.traceDrawerMsg = null;
+    }
+    if (this.planWfReplayMsg && this.planWfReplayMsg.id > msgId) {
+      this.planWfReplayMsg = null;
+    }
+
+    // 在截断后的线程末尾追加 assistant 占位，准备接收新回复。
+    next.push({ id: this.nextId++, role: 'assistant', content: '' });
+    this.threads[sessionId] = next;
+    if (this.activeId === sessionId) {
+      this.messages = next;
+    }
+    this.streamIdx[sessionId] = next.length - 1;
+    this.setStreaming(sessionId, false);
+
+    // 保留被编辑消息的附件；若原消息无附件则透空数组。
+    const rawAttachments = editedMsg.attachments ? [...editedMsg.attachments] : [];
+    const { imageAttachments, modelPrompt } =
+      await this.buildAttachmentDispatchOpts(draft, rawAttachments);
+
+    await this.runRt.dispatchPrompt(sessionId, draft, imageAttachments, {
+      attachments: rawAttachments,
+      modelPrompt,
+      editFrom: { sessionId, msgId, index: idx }
+    });
   }
 
   private onInput(e: Event) {
@@ -3393,6 +3484,7 @@ export class AhChat extends LitElement {
       streamIdx: this.streamIdx,
       editingMsgId: this.editingMsgId,
       editingDraft: this.editingDraft,
+      editingOriginalContent: this.editingOriginalContent,
       hoverUserMsgId: this.hoverUserMsgId,
       copiedMsgId: this.copiedMsgId,
       deepThink: this.deepThink,

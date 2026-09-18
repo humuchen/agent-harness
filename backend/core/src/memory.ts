@@ -954,4 +954,36 @@ export class Memory {
     this.hasPendingSummary = false;
     await this.store.delete(this.sessionKey);
   }
+
+  /**
+   * 编辑重发：用截断后的历史消息直接替换当前窗口，并清空摘要 / 分数 / 压缩计数等派生状态。
+   *
+   * 仅保留核心字段（role / content，以及 tool 配对所需的 tool_calls / tool_call_id / name），
+   * 避免把聊天展示层字段（ts / reasoning / tools / trace / plan 等）带入上下文窗口。
+   * 调用方负责随后调用 `save()` 把新窗口持久化到后端，保证跨进程 / 重启后记忆一致。
+   */
+  replaceWindow(messages: Message[]): void {
+    this.window = messages.map((m) => {
+      const next: Message = { role: m.role, content: m.content };
+      if ((m as { tool_calls?: unknown }).tool_calls) {
+        (next as { tool_calls?: unknown }).tool_calls = (m as {
+          tool_calls?: unknown;
+        }).tool_calls;
+      }
+      const tcid = (m as { tool_call_id?: unknown }).tool_call_id;
+      if (tcid) (next as { tool_call_id?: unknown }).tool_call_id = tcid;
+      const nm = (m as { name?: unknown }).name;
+      if (nm) (next as { name?: unknown }).name = nm;
+      return next;
+    });
+    this.longTerm = [];
+    this.longTermScores = [];
+    this.windowScores = [];
+    this.summaryText = null;
+    this.pendingSummary = null;
+    this.hasPendingSummary = false;
+    this._compactCount = 0;
+    this._compressedSinceReport = false;
+    this._tokenOvershoot = 0;
+  }
 }

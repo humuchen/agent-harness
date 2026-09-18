@@ -255,6 +255,24 @@ export function invalidateSessionMemory(sessionKey: string): void {
   sessionLastUsed.delete(sessionKey);
 }
 
+/**
+ * 编辑重发：用截断后的历史消息直接重置指定会话的进程内 + 持久化记忆窗口，
+ * 使 LLM 重新生成时仅基于「编辑消息之前」的上下文，丢弃被截断部分。
+ * 返回是否成功重置（会话记忆实例存在且已重建）。
+ */
+export async function resetSessionMemory(
+  sessionKey: string,
+  messages: Array<{ role: string; content: string }>
+): Promise<boolean> {
+  const mem =
+    sessionMemories.get(sessionKey) ??
+    new Memory({ store: getMemoryStore(), sessionKey });
+  mem.replaceWindow(messages as Message[]);
+  sessionMemories.set(sessionKey, mem);
+  await mem.save();
+  return true;
+}
+
 /** 根据运行模式组装一个带事件回调的 Agent。 */
 export async function assembleAgent(
   mode: RunMode,

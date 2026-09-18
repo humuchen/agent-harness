@@ -44,6 +44,8 @@ export interface ChatRenderCtx {
   streamIdx: Record<string, number>;
   editingMsgId: number;
   editingDraft: string;
+  /** 进入编辑态时的原始消息内容，用于禁用「无改动发送」。 */
+  editingOriginalContent: string;
   hoverUserMsgId: number;
   copiedMsgId: number;
   deepThink: boolean;
@@ -74,6 +76,10 @@ export interface ChatRenderCtx {
   resumeLost: (id: string) => void;
   confirmPlan: (m: ChatMsg) => void;
   cancelPlan: (msgId: number) => void;
+  /** 计划模式（P0）：需求澄清卡中用户的补充/确认输入（key=消息 id）。 */
+  clarifyDraft: Record<number, string>;
+  /** 计划模式（P0）：用户在目标澄清卡点「确认并继续」→ 服务端再次 propose。 */
+  confirmClarify: (m: ChatMsg) => void;
   /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
   approvePlan: (m: ChatMsg, stepId?: string) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
@@ -163,7 +169,8 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
                 class="edit-btn primary"
                 title="发送 (Enter)"
                 ?disabled=${!ctx.editingDraft.trim() ||
-                ctx.streaming[ctx.activeId] === true}
+                ctx.streaming[ctx.activeId] === true ||
+                ctx.editingDraft.trim() === ctx.editingOriginalContent.trim()}
                 @click=${() => ctx.sendEdit(m.id)}
               >
                 发送 ↑
@@ -310,8 +317,12 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
           </button>`
         : nothing}
       <div class="bubble">
-        ${showThinking && ctx.deepThink
-          ? renderThinking(ctx, m, isThinking)
+        ${m.planPhase && !m.plan && !m.clarify
+          ? renderPlanPhase(m.planPhase, isStreamingAssistant)
+          : nothing}
+        ${(showThinking && ctx.deepThink) ||
+        (m.planPhase && !!m.reasoning)
+          ? renderThinking(ctx, m, isThinking, m.planPhase ? 'plan' : 'think')
           : nothing}
         ${showThinking &&
         ctx.deepThink &&
@@ -319,6 +330,7 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
           ? html`<div class="sep"><span>回答</span></div>`
           : nothing}
         ${renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
+        ${m.clarify ? renderClarifyCard(ctx, m) : nothing}
         ${m.plan ? renderPlanCard(ctx, m) : nothing}
         ${renderExtras(ctx, m, isStreamingAssistant)}
         ${m.compressed
@@ -342,7 +354,8 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
 export function renderThinking(
   ctx: ChatRenderCtx,
   m: ChatMsg,
-  isThinking: boolean
+  isThinking: boolean,
+  mode: 'think' | 'plan' = 'think'
 ): TemplateResult {
   const parsed =
     m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
@@ -378,11 +391,12 @@ export function renderThinking(
             d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
           />
         </svg>
-        <span class="think-title">深度思考</span>
+        <span class="think-title">${mode === 'plan' ? '规划思考' : '深度思考'}</span>
         ${isThinking
           ? html`<span class="think-status"
-              >思考中<span class="dots"><i></i><i></i><i></i></span
-            ></span>`
+              >${mode === 'plan' ? '规划中' : '思考中'}<span class="dots"
+                ><i></i><i></i><i></i></span
+              ></span>`
           : nothing}
         ${collapsed && m.reasoning
           ? html`<span class="think-count">${m.reasoning.length} 字</span>`
@@ -423,6 +437,76 @@ export function renderThinking(
               ${isThinking ? '模型正在思考…' : '（模型未返回推理内容）'}
             </div>`}
         ${isThinking ? html`<span class="caret"></span>` : nothing}
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 计划模式（P0）：propose 阶段进度条（理解需求 → 调研中 → 生成计划）。
+ * 让用户在等待计划生成时看到真实进展，替代永久「模型正在思考…」。
+ */
+export function renderPlanPhase(phase: string, live: boolean): TemplateResult {
+  const stages = ['理解需求', '调研中', '生成计划'];
+  const idx = stages.indexOf(phase);
+  return html`
+    <div class="plan-phase" role="status" aria-label="计划生成进度">
+      ${stages.map(
+        (s, i) => html`
+          <span
+            class="pp-step ${i <= idx ? 'on' : ''} ${i === idx && live
+              ? 'cur'
+              : ''}"
+            >${s}</span
+          >${i < stages.length - 1
+            ? html`<span class="pp-arrow">→</span>`
+            : nothing}
+        `
+      )}
+    </div>
+  `;
+}
+
+/**
+ * 计划模式（P0）：需求澄清卡（plan:clarify）。展示模型对目标的理解草稿与待确认问题，
+ * 用户补充/确认后点「确认并继续生成计划」→ 服务端再次 propose（基于已确认目标拆分）。
+ */
+export function renderClarifyCard(
+  ctx: ChatRenderCtx,
+  m: ChatMsg
+): TemplateResult {
+  const c = m.clarify;
+  if (!c) return html``;
+  return html`
+    <div class="clarify-card">
+      <div class="clarify-head">❓ 需要确认目标</div>
+      ${c.goalDraft
+        ? html`<div class="clarify-goal">
+            <span class="cg-label">目标草稿</span>
+            <div class="cg-text">${escapeHtml(c.goalDraft)}</div>
+          </div>`
+        : nothing}
+      ${c.questions && c.questions.length
+        ? html`<ol class="clarify-q">
+            ${c.questions.map((q) => html`<li>${escapeHtml(q)}</li>`)}
+          </ol>`
+        : nothing}
+      ${c.needs
+        ? html`<div class="clarify-needs">
+            缺失信息：${escapeHtml(c.needs)}
+          </div>`
+        : nothing}
+      <textarea
+        class="clarify-input"
+        placeholder="补充信息或确认目标（可留空，按上方草稿继续）"
+        @input=${(e: Event) => {
+          ctx.clarifyDraft[m.id] = (e.target as HTMLTextAreaElement).value;
+        }}
+      ></textarea>
+      <div class="clarify-actions">
+        <button class="plan-btn" @click=${() => ctx.confirmClarify(m)}>
+          确认并继续生成计划
+        </button>
       </div>
     </div>
   `;

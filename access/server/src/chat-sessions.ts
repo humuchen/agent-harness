@@ -80,6 +80,8 @@ export interface ChatMessage {
   trace?: TraceNode[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时随消息落盘，刷新/切回可还原计划卡片）。 */
   plan?: import('@agent-harness/core').ExecutionPlan;
+  /** 计划模式（P0）：需求不清时携带的澄清结果（plan:clarify 时随消息落盘，刷新/切回可还原目标确认卡）。 */
+  clarify?: import('@agent-harness/core').PlanClarify;
   /** 计划模式：任务级执行进度镜像（服务端随任务派发/完成/失败事件维护），供前端恢复计划卡片状态。 */
   planStatus?: PlanExecMirror;
   /** 用户消息携带的附件（图片/文件预览）。url 兼容本地 dataUrl 或服务端上传地址，
@@ -482,6 +484,40 @@ export function appendChatMessage(
     });
   }
   return s;
+}
+
+/**
+ * 编辑重发：把会话中第 `index` 条消息（须为 user）替换为新内容，并删除其后的
+ * 所有消息——那些是基于旧内容的无用上下文，需要基于保留下来的前文重新生成回复。
+ *
+ * 返回截断后的消息数组（调用方据此重建 LLM 记忆窗口）；以下情况返回 null：
+ *   - 会话不存在 / 归属不符；
+ *   - index 越界；
+ *   - 下标指向的消息不是 user（防止误截断 assistant 回复）。
+ *
+ * 仅持久化内存态；编辑发起端已本地截断，跨端一致性由刷新兜底，故不广播截断事件。
+ */
+export function replaceAndTruncateMessages(
+  id: string,
+  index: number,
+  newContent: string,
+  owner = LEGACY_OWNER
+): ChatMessage[] | null {
+  load();
+  const s = sessions.get(id);
+  if (!s) return null;
+  if (owner && owner !== LEGACY_OWNER && s.owner !== owner) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= s.messages.length) {
+    return null;
+  }
+  const target = s.messages[index];
+  if (!target || target.role !== 'user') return null;
+  const kept = s.messages.slice(0, index + 1);
+  kept[index] = { ...target, content: newContent };
+  s.messages = kept;
+  s.updatedAt = Date.now();
+  persist();
+  return kept;
 }
 
 /**

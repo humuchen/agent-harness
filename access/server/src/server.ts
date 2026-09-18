@@ -8,6 +8,7 @@ import {
   defaultPromptFor,
   getMemoryStore,
   invalidateSessionMemory,
+  resetSessionMemory,
   assembleAgent,
   type RunMode
 } from './runner';
@@ -55,8 +56,10 @@ import {
   features,
   buildPlannerPrompt,
   parsePlanOutput,
+  parsePlanOrClarify,
   planToWorkflowDef,
   type ExecutionPlan,
+  type PlanClarify,
   DEFAULT_AGENT_ID,
   contextWindowFor,
   enableTelemetryAutosave,
@@ -108,6 +111,7 @@ import {
   renameChatSession,
   deleteChatSession,
   appendChatMessage,
+  replaceAndTruncateMessages,
   applyPlanWfTerminal,
   updatePlanStatus,
   extractPlanTaskId,
@@ -3917,6 +3921,33 @@ async function handleRun(
     ? String(body.chatSessionId).trim()
     : '';
 
+  // 编辑重发：截断会话存储到被编辑消息为止（替换其内容为最新草稿），并用截断后的历史
+  // 重置该会话的 LLM 记忆窗口，使重新生成时仅基于「编辑消息之前」的上下文，丢弃其后的
+  // 无用上下文。截断成功后置 isEditMsg=true，后续 run:start 不再重复写入 user 消息（已就位）。
+  let isEditMsg = false;
+  if (
+    chatSessionId &&
+    body.editFrom &&
+    typeof body.editFrom === 'object' &&
+    typeof body.editFrom.sessionId === 'string' &&
+    Number.isInteger(body.editFrom.index) &&
+    (body.editFrom.index as number) >= 0
+  ) {
+    const kept = replaceAndTruncateMessages(
+      body.editFrom.sessionId,
+      body.editFrom.index as number,
+      prompt,
+      ctx.sub
+    );
+    if (kept && kept.length > 0) {
+      await resetSessionMemory(
+        sessionKey,
+        kept.map((m) => ({ role: m.role, content: m.content }))
+      );
+      isEditMsg = true;
+    }
+  }
+
   // 交互模式（P0 计划模式）：白名单校验，非法值回退 qa（= 现状）。
   const interactionMode: 'qa' | 'plan' =
     body.interactionMode === 'plan' ? 'plan' : 'qa';
@@ -4333,6 +4364,18 @@ async function handleRun(
   let unsub: () => void = () => {};
   // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
   let planEndHandled = false;
+  // 计划模式 propose：阶段进度（理解需求 → 调研中 → 生成计划），仅向前推进，变化时下发 plan:phase。
+  const PLAN_PHASES = ['理解需求', '调研中', '生成计划'] as const;
+  let planPhaseIdx = -1;
+  const emitPlanPhase = (idx: number) => {
+    if (idx <= planPhaseIdx) return;
+    planPhaseIdx = idx;
+    runQueue.emitSynthetic(jobId, {
+      type: 'plan:phase',
+      phase: PLAN_PHASES[idx],
+      ts: Date.now()
+    });
+  };
   unsub = runQueue.subscribe(jobId, (e) => {
     // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
     // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
@@ -4358,8 +4401,9 @@ async function handleRun(
       if (!planEndHandled) {
         planEndHandled = true;
         const finalStr = String((e as { final?: unknown }).final ?? '');
-        const plan = parsePlanOutput(finalStr);
-        if (plan) {
+        const parsed = parsePlanOrClarify(finalStr);
+        if (parsed?.kind === 'plan') {
+          const plan = parsed.plan;
           // 计划产物落库（P2-3）：以会话为键持久化 PlanDoc，供「计划」Tab 看板随时打开；
           // 重复 propose（同一会话再次生成计划）幂等覆盖为最新文档（version +1），并广播协同事件。
           if (chatSessionId) {
@@ -4387,6 +4431,31 @@ async function handleRun(
           }
           return;
         }
+        if (parsed?.kind === 'clarify') {
+          const clarify = parsed.clarify as PlanClarify;
+          // 澄清分支：不落 PlanDoc（尚非计划），仅把「目标确认」问题下发，等用户回答后再次 propose。
+          runQueue.emitSynthetic(jobId, { type: 'plan:clarify', clarify });
+          runQueue.emitSynthetic(jobId, {
+            ...(e as object),
+            __synthetic: true,
+            final: `已提出需确认的目标问题${clarify.goalDraft ? `（目标草稿：${clarify.goalDraft}）` : ''}。请回答后继续生成计划。`
+          });
+          if (chatSessionId) {
+            traceHandle(e);
+            appendChatMessage(
+              chatSessionId,
+              {
+                role: 'assistant',
+                content: `❓ 需要确认目标：${clarify.goalDraft || '请确认以下要点'}`,
+                ts: Date.now(),
+                clarify
+              },
+              ctx.sub,
+              body.origin || ''
+            );
+          }
+          return;
+        }
         runQueue.emitSynthetic(jobId, {
           type: 'warn',
           message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
@@ -4400,15 +4469,20 @@ async function handleRun(
       }
     }
 
-    // 计划模式 propose：抑制原始 JSON token/reasoning/response 流（避免计划 JSON 打字机外泄），
-    // 其余事件照常；最终内容由 run:end 分支以友好摘要替换后下发。
-    if (
-      isPlanPropose &&
-      ((e as { type?: string }).type === 'llm:token' ||
-        (e as { type?: string }).type === 'llm:reasoning' ||
-        (e as { type?: string }).type === 'llm:response')
-    ) {
-      return;
+    // 计划模式 propose：仅抑制原始 JSON 的 token/response 流（避免计划 JSON 打字机外泄），
+    // 但放行 llm:reasoning（规划思考）与 tool:*（调研过程），并据事件类型下发阶段进度，
+    // 让前端展示「规划中」的真实进展而非永久「模型正在思考…」。最终内容由 run:end 以友好摘要替换。
+    if (isPlanPropose) {
+      const et = (e as { type?: string }).type;
+      if (et === 'run:start') emitPlanPhase(0);
+      else if (et === 'tool:start') emitPlanPhase(1);
+      else if (et === 'llm:reasoning') {
+        if (planPhaseIdx < 0) emitPlanPhase(0);
+      } else if (et === 'llm:token' || et === 'llm:response') {
+        emitPlanPhase(2);
+        return; // 抑制原始 JSON 流
+      }
+      // 其余事件（含 llm:reasoning / tool:*）照常下发。
     }
     send(e);
     // 跨设备广播（进行中增量 / 终态全文）：与 send(e) 并列，仅影响其他连接。
@@ -4442,7 +4516,7 @@ async function handleRun(
             : JSON.stringify(a.result ?? {});
         t.errored = !!a.errored;
         toolMap.set(String(c.id), t);
-      } else if (ev.type === 'run:start' && ev.input != null) {
+      } else if (ev.type === 'run:start' && ev.input != null && !isEditMsg) {
         appendChatMessage(
           chatSessionId,
           {
