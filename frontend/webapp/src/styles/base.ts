@@ -97,11 +97,17 @@ export const base = css`
     cursor: pointer;
     font-family: inherit;
   }
-  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线） */
+  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线）。
+     收起态旋转 180°（竖直分隔线从左侧转到右侧），配合 sidebar 宽度过渡：
+     图标翻转与面板收窄同步进行，方向语义（朝向侧栏内侧）保持一致。 */
   .sidebar-toggle .toggle-icon {
     width: 16px;
     height: 14px;
     display: block;
+    transition: transform 180ms ease;
+  }
+  .sidebar.collapsed .sidebar-toggle .toggle-icon {
+    transform: rotate(180deg);
   }
   .sidebar-toggle:hover {
     color: var(--ah-text);
@@ -337,6 +343,45 @@ export const base = css`
     height: 18px;
     border-radius: 0 2px 2px 0;
     background: var(--ah-accent);
+  }
+  /* 展开/收起文字过渡：宽度过渡在 .sidebar 上，但 .brand-text / .nav-text /
+     .nav-group-title 在收起态是 display:none，无法用 transition 参与动画
+     （display 切换不可过渡）。改为仅在展开态（:not(.collapsed)）挂 fade-in
+     关键帧 —— display:none → 恢复显示时元素重新渲染，动画随之重放，
+     文字在面板展开的同时淡入，不再瞬间闪现。收起态不挂动画（display:none
+     移除无过渡可言，宽度收窄本身就足够顺滑）。
+     仅限 :not(.collapsed) 还有一层意图：移动端抽屉带 collapsed 类但覆盖回
+     完整文字形态，此处不命中即不给抽屉文字加动画，避免误伤。 */
+  @keyframes ah-nav-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .sidebar:not(.collapsed) .brand-text,
+  .sidebar:not(.collapsed) .nav-text,
+  .sidebar:not(.collapsed) .nav-group-title {
+    animation: ah-nav-fade 200ms ease both;
+  }
+  /* 桌面展开态的 logo 在收起时被隐藏（见上方媒体块），展开恢复显示时同样淡入。 */
+  @media (min-width: 761px) and (min-height: 761px) {
+    .sidebar:not(.collapsed) .brand .logo {
+      animation: ah-nav-fade 200ms ease both;
+    }
+  }
+  /* 尊重「减少动效」系统偏好：文字淡入与图标翻转一并关闭。 */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar:not(.collapsed) .brand-text,
+    .sidebar:not(.collapsed) .nav-text,
+    .sidebar:not(.collapsed) .nav-group-title,
+    .sidebar:not(.collapsed) .brand .logo {
+      animation: none;
+    }
+    .sidebar-toggle .toggle-icon {
+      transition: none;
+    }
   }
   .sidebar.collapsed .nav-item::before {
     content: attr(data-short);

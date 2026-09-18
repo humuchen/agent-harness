@@ -127,6 +127,9 @@ export const responsive = css`
     }
     .scrim.show {
       display: block;
+      /* 抽屉唤出时遮罩淡入（display:none 切换不可过渡，用关键帧兜底；
+         ah-nav-fade 定义在同 shadow root 的 styles/base.ts）。 */
+      animation: ah-nav-fade 200ms ease both;
     }
 
     /* 顶栏状态行换行、令牌框与按钮占满宽度 */

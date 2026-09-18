@@ -3177,10 +3177,14 @@ export class AhChat extends LitElement {
     if (isThinking) return;
     // 相对「有效折叠态」取反，写入显式覆盖（这样偏好切换后用户的手动选择可被反向操作解除）。
     const cur = this.effectiveThinkCollapsed(id);
+    const next = !cur;
     this.thinkCollapsed = {
       ...this.thinkCollapsed,
-      [k]: !cur
+      [k]: next
     };
+    // 手动展开时把思考区正文滚到底部（对齐 live 流式时的钉底视角；
+    // 默认收起偏好下展开旧思考，直接看到推理结尾而不是停在顶部）。
+    if (!next) this.scrollCtl.scrollThinkBlockToBottom(k);
   }
 
   /* ── 富文本块折叠（超长代码块 / 表格） ──────────────────────────────────

@@ -429,6 +429,7 @@ export function renderThinking(
   return html`
     <div
       class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}"
+      data-mid=${String(m.id)}
     >
       <div
         class="think-head"

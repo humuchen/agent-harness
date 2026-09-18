@@ -129,6 +129,33 @@ export const layout = css`
   .sidebar.collapsed .session-end {
     display: none;
   }
+  /* 展开/收起文字过渡：会话标题 / 新建按钮在收起态是 display:none，
+     transition 无法参与（display 切换不可过渡），改用展开态关键帧淡入 ——
+     display:none 恢复显示时元素重新渲染、动画重放，文字随面板展开淡入，
+     不再瞬间闪现。与 app 壳侧栏（styles/base.ts 的 ah-nav-fade）同一手法。 */
+  @keyframes ah-nav-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .sidebar:not(.collapsed) .session .title,
+  .sidebar:not(.collapsed) .new-btn,
+  .sidebar:not(.collapsed) .session-more,
+  .sidebar:not(.collapsed) .session-end {
+    animation: ah-nav-fade 200ms ease both;
+  }
+  /* 尊重「减少动效」系统偏好 */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar:not(.collapsed) .session .title,
+    .sidebar:not(.collapsed) .new-btn,
+    .sidebar:not(.collapsed) .session-more,
+    .sidebar:not(.collapsed) .session-end {
+      animation: none;
+    }
+  }
   .side-head {
     display: flex;
     flex-direction: column;
