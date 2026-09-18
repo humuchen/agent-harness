@@ -82,8 +82,9 @@ export function buildProposeUnderstandPrompt(userInput: string): string {
     '- queries 最多 3 条，每条是一句可直接执行的检索意图；能不查就不查，宁缺毋滥。',
     '',
     '3. 需求模糊 / 关键前提缺失 / 涉及不可逆或高风险操作且目标未对齐：',
-    '{"clarify": true, "goalDraft": "你对目标的初步理解草稿", "questions": ["需用户确认的具体问题1"], "needs": "缺失的关键信息（可选）"}',
-    '- questions 1~5 条，必须具体，不要泛泛而问。'
+    '{"clarify": true, "goalDraft": "你对目标的初步理解草稿", "questions": [{"q": "需用户确认的具体问题", "options": ["候选答案1", "候选答案2"]}], "needs": "缺失的关键信息（可选）"}',
+    '- questions 1~5 条，必须具体，不要泛泛而问。',
+    '- 每个问题必须附 options：2~4 个最常见的候选答案（短词/短语，覆盖典型场景），供用户直接点选。'
   ].join('\n');
 }
 

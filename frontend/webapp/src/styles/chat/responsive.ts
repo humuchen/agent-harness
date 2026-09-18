@@ -67,6 +67,7 @@ export const responsive = css`
       justify-content: space-between;
       gap: 8px;
       padding: 12px 14px;
+      margin-top: 35px;
     }
     .sidebar .new-btn {
       width: auto;

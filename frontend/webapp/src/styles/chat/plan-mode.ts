@@ -622,8 +622,68 @@ export const planMode = css`
     margin: 0 0 8px;
     padding-left: 20px;
     display: grid;
-    gap: 4px;
+    gap: 10px;
     font-size: 0.95em;
+  }
+  /* 逐题卡片：问题文本 + 候选选项 chips + 自定义补充输入。 */
+  .cq-item {
+    display: grid;
+    gap: 6px;
+  }
+  .cq-text {
+    line-height: 1.5;
+  }
+  .cq-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .cq-chip {
+    border: 1px solid var(--ah-border);
+    border-radius: 999px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    padding: 3px 12px;
+    cursor: pointer;
+    transition:
+      color 0.15s,
+      border-color 0.15s,
+      background 0.15s;
+  }
+  .cq-chip:hover {
+    border-color: rgba(41, 151, 255, 0.5);
+    color: var(--ah-text);
+  }
+  .cq-chip.on {
+    background: rgba(41, 151, 255, 0.18);
+    border-color: rgba(41, 151, 255, 0.6);
+    color: #2997ff;
+    font-weight: 600;
+  }
+  .cq-chip:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .cq-custom {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--ah-border);
+    border-radius: 8px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text);
+    padding: 5px 10px;
+    font-size: 12.5px;
+    font-family: inherit;
+  }
+  .cq-custom:focus {
+    outline: none;
+    border-color: rgba(41, 151, 255, 0.6);
+  }
+  .cq-custom::placeholder,
+  .clarify-input::placeholder {
+    color: var(--ah-text-muted);
+    opacity: 0.65;
   }
   .clarify-needs {
     font-size: 12px;

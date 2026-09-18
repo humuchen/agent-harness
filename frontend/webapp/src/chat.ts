@@ -44,6 +44,7 @@ import {
   renderTraceDrawer,
   renderPlanCard,
   renderPlanWfReplayDrawer,
+  normalizeClarifyQuestions,
   type ChatRenderCtx
 } from './chat-message-render';
 
@@ -74,7 +75,8 @@ import type {
   PlanWfRunMirror,
   ChatMsg,
   SessionView,
-  TraceCtx
+  TraceCtx,
+  ClarifyDraftState
 } from './chat-types';
 
 // 会话列表分页模型（左侧历史列表「滚动加载」的纯逻辑：步长 / 跨页合并 / 视图映射）。
@@ -303,7 +305,8 @@ export class AhChat extends LitElement {
   /** 计划执行状态（key 为携带计划的消息 id）。 */
   @state() private planExec: Record<number, PlanExecState> = {};
   /** 计划模式（P0）：目标澄清卡中用户的补充/确认输入（key=消息 id）。 */
-  @state() private clarifyDraft: Record<number, string> = {};
+  /** 计划模式（P0）：澄清卡用户输入状态（key=消息 id：逐题点选/自定义 + 整体补充）。 */
+  @state() private clarifyDraft: Record<number, ClarifyDraftState> = {};
   /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），防止重复提交。 */
   @state() private clarifyAnswered: Record<number, boolean> = {};
   /** P3（多 agent DAG 计划执行）：当前正在跑的 plan workflow 中止句柄。
@@ -3519,9 +3522,15 @@ export class AhChat extends LitElement {
       resumeLost: (id: string) => void this.runRt.resumeLost(id),
       confirmPlan: (m: ChatMsg) => void this.confirmPlan(m),
       cancelPlan: (msgId: number) => this.cancelPlan(msgId),
-      // 计划模式（P0）：目标澄清卡（plan:clarify）输入与确认继续。
+      // 计划模式（P0）：目标澄清卡（plan:clarify）逐题点选/自定义 + 整体补充 + 确认继续。
       clarifyDraft: this.clarifyDraft,
       clarifyAnswered: this.clarifyAnswered,
+      toggleClarifyPick: (msgId: number, qIdx: number, opt: string) =>
+        this.toggleClarifyPick(msgId, qIdx, opt),
+      setClarifyText: (msgId: number, qIdx: number, val: string) =>
+        this.setClarifyText(msgId, qIdx, val),
+      setClarifyExtra: (msgId: number, val: string) =>
+        this.setClarifyExtra(msgId, val),
       confirmClarify: (m: ChatMsg) => void this.confirmClarify(m),
       // P3（人工审批门）：awaiting 态卡片「批准并继续」（全部未决门）/ 抽屉单节点批准。
       approvePlan: (m: ChatMsg, stepId?: string) =>
@@ -3542,10 +3551,45 @@ export class AhChat extends LitElement {
       }
     };
   }
+  /** 取某条澄清卡的输入状态（惰性建卡：首次读写即落进 clarifyDraft，键为字符串题号）。 */
+  private clarifyState(msgId: number): ClarifyDraftState {
+    let st = this.clarifyDraft[msgId];
+    if (!st) {
+      st = { picks: {}, texts: {}, extra: '' };
+      this.clarifyDraft[msgId] = st;
+    }
+    return st;
+  }
+
+  /** 点选/取消一个候选选项：重建状态对象触发重渲染以反映选中态（文本输入不受影响，值已入库）。 */
+  private toggleClarifyPick(msgId: number, qIdx: number, opt: string) {
+    if (this.clarifyAnswered[msgId]) return;
+    const prev = this.clarifyState(msgId);
+    const key = String(qIdx);
+    const cur = prev.picks[key] ?? [];
+    const next = cur.includes(opt)
+      ? cur.filter((x) => x !== opt)
+      : [...cur, opt];
+    this.clarifyDraft = {
+      ...this.clarifyDraft,
+      [msgId]: { ...prev, picks: { ...prev.picks, [key]: next } }
+    };
+  }
+
+  /** 某题自定义补充：就地写入不触发重渲染（避免输入框失焦/光标跳动）。 */
+  private setClarifyText(msgId: number, qIdx: number, val: string) {
+    this.clarifyState(msgId).texts[String(qIdx)] = val;
+  }
+
+  /** 整体补充：就地写入不触发重渲染。 */
+  private setClarifyExtra(msgId: number, val: string) {
+    this.clarifyState(msgId).extra = val;
+  }
+
   /**
-   * 计划模式（P0）：目标澄清卡「确认并继续」。把原需求 + 模型目标草稿 + 用户补充拼成
-   * 新的 propose 输入再次派发（interactionMode 仍为 plan → 服务端走 planner 第二轮），
-   * 基于已确认目标产出计划。派发期间澄清卡按钮置灰防重复提交。
+   * 计划模式（P0）：目标澄清卡「确认并继续」。把原需求 + 模型目标草稿 + 用户逐题
+   * 点选/自定义回答 + 整体补充拼成新的 propose 输入再次派发（interactionMode 仍为
+   * plan → 服务端走 planner 第二轮），基于已确认目标产出计划。派发期间澄清卡按钮置灰防重复提交。
    */
   private async confirmClarify(m: ChatMsg) {
     const sid = this.activeId;
@@ -3563,13 +3607,30 @@ export class AhChat extends LitElement {
         break;
       }
     }
-    const draft = (this.clarifyDraft[m.id] ?? '').trim();
+    // 逐题拼装：点选选项 + 自定义输入（任一非空才算回答，否则记「跳过」）。
+    const st = this.clarifyState(m.id);
+    const questions = normalizeClarifyQuestions(m.clarify.questions);
+    const answerLines = questions
+      .map((item, i) => {
+        const picks = st.picks[String(i)] ?? [];
+        const custom = (st.texts[String(i)] ?? '').trim();
+        const chosen = [...picks, custom ? `其他：${custom}` : '']
+          .filter(Boolean)
+          .join('；');
+        return chosen ? `${i + 1}. ${item.q} → ${chosen}` : null;
+      })
+      .filter((x): x is string => x !== null);
+    const extra = st.extra.trim();
+    const answered = answerLines.length > 0 || extra.length > 0;
     const parts = [
       origNeed || '（原需求见上文）',
       '—— 目标澄清回复 ——',
       m.clarify.goalDraft ? `目标草稿：${m.clarify.goalDraft}` : '',
-      draft
-        ? `用户补充/确认：${draft}`
+      answerLines.length ? '用户逐题确认：' : '',
+      ...answerLines,
+      extra ? `用户补充：${extra}` : '',
+      answered
+        ? ''
         : '用户确认：按上述目标草稿继续，无需修改。'
     ].filter(Boolean);
     await this.runRt.dispatchPrompt(sid, parts.join('\n\n'), [], {});

@@ -76,13 +76,22 @@ export function buildPlannerPrompt(userInput: string): string {
     '- 为每个任务提供 outputChecks：2~4 个该任务最终产出中必须出现的短词（验收门禁按「产出必须包含」逐条断言），从 expectedOutput 的验收检查点提取；无法提取明确关键词的任务省略该字段。',
     '',
     'B. 澄清（需求不清时）：',
-    '{"clarify": true, "goalDraft": string, "questions": string[], "needs"?: string}',
+    '{"clarify": true, "goalDraft": string, "questions": [{"q": string, "options": string[]}], "needs"?: string}',
     '- goalDraft：你对目标的初步理解草稿（供用户确认或修正）。',
     '- questions：需要用户回答 / 确认的 1~5 个关键问题（具体问题，不要泛泛而问）。',
+    '- 每个问题必须附 options：2~4 个该问题最常见的候选答案（短词或短语，覆盖典型场景），供用户直接点选；用户也可自行输入其他答案。',
     '- needs（可选）：你认为缺失的关键信息或前置条件。',
     '',
     `用户需求：${userInput}`,
   ].join('\n');
+}
+
+/** 澄清问题（可附候选选项供用户点选，也允许用户自行输入）。 */
+export interface PlanClarifyQuestion {
+  /** 问题文本。 */
+  q: string;
+  /** 2~4 个典型候选答案（可选，供用户点选）。 */
+  options?: string[];
 }
 
 /** 澄清结果（plan:clarify 事件的 payload 契约）：模型认为需求不清、需先确认目标。 */
@@ -91,8 +100,8 @@ export interface PlanClarify {
   clarify: true;
   /** 模型对目标的初步理解草稿，供用户确认或修正。 */
   goalDraft: string;
-  /** 需要用户回答 / 确认的关键问题（1~5 条）。 */
-  questions: string[];
+  /** 需要用户回答 / 确认的关键问题（1~5 条），可附候选选项。 */
+  questions: PlanClarifyQuestion[];
   /** 模型判断缺失的关键信息或前置条件（可选）。 */
   needs?: string;
 }
@@ -127,10 +136,29 @@ export function parseClarifyOutput(text: string): PlanClarify | null {
     const d = data as Record<string, unknown>;
     if (d.clarify !== true) continue;
     const goalDraft = typeof d.goalDraft === 'string' ? d.goalDraft.trim() : '';
+    // questions 兼容两种形态：旧格式 string[]（历史落盘）与新格式 [{q, options}]（可点选）。
     const questions = Array.isArray(d.questions)
       ? (d.questions as unknown[])
-          .map((q) => String(q).trim())
-          .filter(Boolean)
+          .map((item) => {
+            if (typeof item === 'string') {
+              const q = item.trim();
+              return q ? { q } : null;
+            }
+            if (item && typeof item === 'object') {
+              const o = item as Record<string, unknown>;
+              const q = typeof o.q === 'string' ? o.q.trim() : '';
+              if (!q) return null;
+              const options = Array.isArray(o.options)
+                ? (o.options as unknown[])
+                    .map((x) => String(x).trim())
+                    .filter(Boolean)
+                    .slice(0, 4)
+                : [];
+              return options.length ? { q, options } : { q };
+            }
+            return null;
+          })
+          .filter((x): x is { q: string; options?: string[] } => x !== null)
           .slice(0, 5)
       : [];
     const needs = typeof d.needs === 'string' ? d.needs.trim() : '';

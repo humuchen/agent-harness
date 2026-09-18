@@ -30,13 +30,30 @@ export interface ExecutionPlanView {
   goal: string;
   tasks: PlanTaskView[];
 }
+/** 计划模式（P0）：澄清问题（可附候选选项供点选；历史落盘可能为纯字符串，渲染前归一化）。 */
+export interface PlanClarifyQuestionView {
+  q: string;
+  /** 2~4 个典型候选答案，用户可点选（可多选）。 */
+  options?: string[];
+}
+
+/** 计划模式（P0）：澄清卡的用户输入状态（key 为题号字符串，便于对象字面量展开）。 */
+export interface ClarifyDraftState {
+  /** 每题勾选的选项（题号 → 已选选项文本数组）。 */
+  picks: Record<string, string[]>;
+  /** 每题的自定义补充输入。 */
+  texts: Record<string, string>;
+  /** 底部整体补充。 */
+  extra: string;
+}
+
 /** 计划模式（P0）：需求不清时的澄清结果（plan:clarify 契约，与 core PlanClarify 一致）。 */
 export interface PlanClarifyView {
   clarify: true;
   /** 模型对目标的初步理解草稿，供用户确认或修正。 */
   goalDraft: string;
-  /** 需要用户回答 / 确认的关键问题。 */
-  questions: string[];
+  /** 需要用户回答 / 确认的关键问题（可附候选选项）。 */
+  questions: PlanClarifyQuestionView[];
   /** 模型判断缺失的关键信息或前置条件（可选）。 */
   needs?: string;
 }

@@ -34,7 +34,40 @@ import {
   renderInsights,
   renderConfidence
 } from './chat-trace';
-import type { ChatMsg, PlanExecState, PlanWfReplayState } from './chat-types';
+import type {
+  ChatMsg,
+  PlanExecState,
+  PlanWfReplayState,
+  PlanClarifyQuestionView,
+  ClarifyDraftState
+} from './chat-types';
+
+/**
+ * 计划模式（P0）：归一化澄清问题列表 —— 兼容历史落盘的 string[] 与新契约 [{q, options}]，
+ * 供渲染与确认拼装两处共用（历史消息不落盘时无法在入口归一化）。
+ */
+export function normalizeClarifyQuestions(raw: unknown): PlanClarifyQuestionView[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[])
+    .map((item) => {
+      if (typeof item === 'string') {
+        const q = item.trim();
+        return q ? { q } : null;
+      }
+      if (item && typeof item === 'object') {
+        const o = item as Record<string, unknown>;
+        const q = typeof o.q === 'string' ? o.q.trim() : '';
+        if (!q) return null;
+        const options = Array.isArray(o.options)
+          ? (o.options as unknown[]).map((x) => String(x)).filter(Boolean).slice(0, 4)
+          : undefined;
+        return options && options.length ? { q, options } : { q };
+      }
+      return null;
+    })
+    .filter((x): x is PlanClarifyQuestionView => x !== null)
+    .slice(0, 5);
+}
 import type { UploadedFile } from './agent-context';
 import type { WorkflowRun } from '@agent-harness/client';
 
@@ -78,10 +111,16 @@ export interface ChatRenderCtx {
   resumeLost: (id: string) => void;
   confirmPlan: (m: ChatMsg) => void;
   cancelPlan: (msgId: number) => void;
-  /** 计划模式（P0）：需求澄清卡中用户的补充/确认输入（key=消息 id）。 */
-  clarifyDraft: Record<number, string>;
+  /** 计划模式（P0）：需求澄清卡的用户输入状态（key=消息 id：逐题点选/补充 + 整体补充）。 */
+  clarifyDraft: Record<number, ClarifyDraftState>;
   /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），按钮置灰防重复提交。 */
   clarifyAnswered: Record<number, boolean>;
+  /** 计划模式（P0）：点选/取消一个候选选项（触发重渲染以反映选中态）。 */
+  toggleClarifyPick: (msgId: number, qIdx: number, opt: string) => void;
+  /** 计划模式（P0）：某题的自定义补充输入（就地写入，不触发重渲染防丢焦点）。 */
+  setClarifyText: (msgId: number, qIdx: number, val: string) => void;
+  /** 计划模式（P0）：澄清卡底部整体补充输入（就地写入，不触发重渲染防丢焦点）。 */
+  setClarifyExtra: (msgId: number, val: string) => void;
   /** 计划模式（P0）：用户在目标澄清卡点「确认并继续」→ 服务端再次 propose。 */
   confirmClarify: (m: ChatMsg) => void;
   /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
@@ -526,6 +565,9 @@ export function renderClarifyCard(
 ): TemplateResult {
   const c = m.clarify;
   if (!c) return html``;
+  const questions = normalizeClarifyQuestions(c.questions);
+  const draft =
+    ctx.clarifyDraft[m.id] ?? { picks: {}, texts: {}, extra: '' };
   return html`
     <div class="clarify-card">
       <div class="clarify-head">❓ 需要确认目标</div>
@@ -535,9 +577,48 @@ export function renderClarifyCard(
             <div class="cg-text">${escapeHtml(c.goalDraft)}</div>
           </div>`
         : nothing}
-      ${c.questions && c.questions.length
+      ${questions.length
         ? html`<ol class="clarify-q">
-            ${c.questions.map((q) => html`<li>${escapeHtml(q)}</li>`)}
+            ${questions.map(
+              (item, i) => html`
+                <li class="cq-item">
+                  <div class="cq-text">${escapeHtml(item.q)}</div>
+                  ${item.options && item.options.length
+                    ? html`<div class="cq-opts">
+                        ${item.options.map(
+                          (opt) => html`
+                            <button
+                              type="button"
+                              class="cq-chip ${(draft.picks[String(i)] ?? []).includes(
+                                opt
+                              )
+                                ? 'on'
+                                : ''}"
+                              ?disabled=${ctx.clarifyAnswered[m.id] === true}
+                              @click=${() => ctx.toggleClarifyPick(m.id, i, opt)}
+                            >
+                              ${escapeHtml(opt)}
+                            </button>
+                          `
+                        )}
+                      </div>`
+                    : nothing}
+                  <input
+                    class="cq-custom"
+                    type="text"
+                    placeholder="其他 / 自定义补充（可留空）"
+                    .value=${draft.texts[String(i)] ?? ''}
+                    ?disabled=${ctx.clarifyAnswered[m.id] === true}
+                    @input=${(e: Event) =>
+                      ctx.setClarifyText(
+                        m.id,
+                        i,
+                        (e.target as HTMLInputElement).value
+                      )}
+                  />
+                </li>
+              `
+            )}
           </ol>`
         : nothing}
       ${c.needs
@@ -547,9 +628,11 @@ export function renderClarifyCard(
         : nothing}
       <textarea
         class="clarify-input"
-        placeholder="补充信息或确认目标（可留空，按上方草稿继续）"
+        placeholder="整体补充说明（可留空）"
+        .value=${draft.extra}
+        ?disabled=${ctx.clarifyAnswered[m.id] === true}
         @input=${(e: Event) => {
-          ctx.clarifyDraft[m.id] = (e.target as HTMLTextAreaElement).value;
+          ctx.setClarifyExtra(m.id, (e.target as HTMLTextAreaElement).value);
         }}
       ></textarea>
       <div class="clarify-actions">

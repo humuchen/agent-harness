@@ -92,11 +92,14 @@ test('buildPlannerPrompt: 包含用户需求与硬性要求标记', () => {
 const validClarify = {
   clarify: true,
   goalDraft: '为医美机构生成一份竞品分析报告',
-  questions: ['目标机构所在城市？', '报告需要覆盖哪些竞品？'],
+  questions: [
+    { q: '目标机构所在城市？', options: ['北京', '上海', '广州'] },
+    { q: '报告需要覆盖哪些竞品？', options: ['A 机构', 'B 机构'] }
+  ],
   needs: '缺少竞品名单'
 };
 
-test('parseClarifyOutput: 合法澄清 JSON 直接通过', () => {
+test('parseClarifyOutput: 合法澄清 JSON 直接通过（含候选选项）', () => {
   if (!plan) return;
   const c = plan.parseClarifyOutput(JSON.stringify(validClarify));
   assert.ok(c);
@@ -104,6 +107,34 @@ test('parseClarifyOutput: 合法澄清 JSON 直接通过', () => {
   assert.equal(c.goalDraft, '为医美机构生成一份竞品分析报告');
   assert.deepEqual(c.questions, validClarify.questions);
   assert.equal(c.needs, '缺少竞品名单');
+});
+
+test('parseClarifyOutput: questions 兼容旧格式 string[] → 归一化为 {q}', () => {
+  if (!plan) return;
+  const c = plan.parseClarifyOutput(
+    JSON.stringify({ clarify: true, goalDraft: 'g', questions: ['q1', 'q2'] })
+  );
+  assert.ok(c);
+  assert.deepEqual(c.questions, [{ q: 'q1' }, { q: 'q2' }]);
+});
+
+test('parseClarifyOutput: options 超额截断至 4、空白项剔除；缺 q 的条目丢弃', () => {
+  if (!plan) return;
+  const c = plan.parseClarifyOutput(
+    JSON.stringify({
+      clarify: true,
+      goalDraft: 'g',
+      questions: [
+        { q: '问题', options: ['a', '', 'b', 'c', 'd', 'e'] },
+        { options: ['无问题文本'] },
+        '纯字符串问题'
+      ]
+    })
+  );
+  assert.ok(c);
+  assert.equal(c.questions.length, 2);
+  assert.deepEqual(c.questions[0], { q: '问题', options: ['a', 'b', 'c', 'd'] });
+  assert.deepEqual(c.questions[1], { q: '纯字符串问题' });
 });
 
 test('parseClarifyOutput: 围栏/夹杂文字可提取；needs 缺省不落键', () => {
