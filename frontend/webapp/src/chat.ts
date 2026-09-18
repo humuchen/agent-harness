@@ -302,6 +302,10 @@ export class AhChat extends LitElement {
 
   /** 计划执行状态（key 为携带计划的消息 id）。 */
   @state() private planExec: Record<number, PlanExecState> = {};
+  /** 计划模式（P0）：目标澄清卡中用户的补充/确认输入（key=消息 id）。 */
+  @state() private clarifyDraft: Record<number, string> = {};
+  /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），防止重复提交。 */
+  @state() private clarifyAnswered: Record<number, boolean> = {};
   /** P3（多 agent DAG 计划执行）：当前正在跑的 plan workflow 中止句柄。
    * 非空时「停止」按钮中止 DAG 流（置 running 为 cancelled），否则走 runRt.stop()。 */
   @state() private planWfAbort: AbortController | null = null;
@@ -1723,6 +1727,8 @@ export class AhChat extends LitElement {
             trace: m.trace,
             plan: m.plan,
             planStatus: (m as any).planStatus,
+            // 计划模式（P0）：目标澄清结果透传，刷新 / 切回后还原目标确认卡。
+            clarify: (m as any).clarify,
             // 服务端落盘的附件（图片/文件预览）原样透传，刷新 / 切回后还原气泡内图片。
             ...(m.attachments && m.attachments.length
               ? { attachments: m.attachments }
@@ -3513,6 +3519,10 @@ export class AhChat extends LitElement {
       resumeLost: (id: string) => void this.runRt.resumeLost(id),
       confirmPlan: (m: ChatMsg) => void this.confirmPlan(m),
       cancelPlan: (msgId: number) => this.cancelPlan(msgId),
+      // 计划模式（P0）：目标澄清卡（plan:clarify）输入与确认继续。
+      clarifyDraft: this.clarifyDraft,
+      clarifyAnswered: this.clarifyAnswered,
+      confirmClarify: (m: ChatMsg) => void this.confirmClarify(m),
       // P3（人工审批门）：awaiting 态卡片「批准并继续」（全部未决门）/ 抽屉单节点批准。
       approvePlan: (m: ChatMsg, stepId?: string) =>
         void this.approvePlanAction(m, stepId),
@@ -3531,6 +3541,38 @@ export class AhChat extends LitElement {
         if (this.longPressTimer) e.preventDefault();
       }
     };
+  }
+  /**
+   * 计划模式（P0）：目标澄清卡「确认并继续」。把原需求 + 模型目标草稿 + 用户补充拼成
+   * 新的 propose 输入再次派发（interactionMode 仍为 plan → 服务端走 planner 第二轮），
+   * 基于已确认目标产出计划。派发期间澄清卡按钮置灰防重复提交。
+   */
+  private async confirmClarify(m: ChatMsg) {
+    const sid = this.activeId;
+    if (!sid || !m.clarify || this.clarifyAnswered[m.id]) return;
+    if (this.streaming[sid]) return;
+    this.clarifyAnswered = { ...this.clarifyAnswered, [m.id]: true };
+    // 找澄清消息前面最近的一条用户消息 = 原始需求。
+    const thread = this.threads[sid] ?? [];
+    const idx = thread.findIndex((p) => p.id === m.id);
+    let origNeed = '';
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const prev = thread[i];
+      if (prev?.role === 'user') {
+        origNeed = prev.content;
+        break;
+      }
+    }
+    const draft = (this.clarifyDraft[m.id] ?? '').trim();
+    const parts = [
+      origNeed || '（原需求见上文）',
+      '—— 目标澄清回复 ——',
+      m.clarify.goalDraft ? `目标草稿：${m.clarify.goalDraft}` : '',
+      draft
+        ? `用户补充/确认：${draft}`
+        : '用户确认：按上述目标草稿继续，无需修改。'
+    ].filter(Boolean);
+    await this.runRt.dispatchPrompt(sid, parts.join('\n\n'), [], {});
   }
   /** 确认/恢复计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；任一任务失败或用户停止即立即中止，等待用户指令后再继续。 */
   private async confirmPlan(m: ChatMsg) {

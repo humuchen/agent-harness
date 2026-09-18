@@ -22,6 +22,7 @@ import { ApiError, StreamEvent, RunMode } from '@agent-harness/client';
 import {
   ChatMsg,
   ExecutionPlanView,
+  PlanClarifyView,
   TraceCtx,
   PlanExecState
 } from './chat-types';

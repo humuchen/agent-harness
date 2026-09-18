@@ -30,6 +30,16 @@ export interface ExecutionPlanView {
   goal: string;
   tasks: PlanTaskView[];
 }
+/** 计划模式（P0）：需求不清时的澄清结果（plan:clarify 契约，与 core PlanClarify 一致）。 */
+export interface PlanClarifyView {
+  clarify: true;
+  /** 模型对目标的初步理解草稿，供用户确认或修正。 */
+  goalDraft: string;
+  /** 需要用户回答 / 确认的关键问题。 */
+  questions: string[];
+  /** 模型判断缺失的关键信息或前置条件（可选）。 */
+  needs?: string;
+}
 /** 计划执行状态（key 为携带计划的消息 id）。 */
 export interface PlanExecState {
   status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed' | 'awaiting';
@@ -88,6 +98,10 @@ export interface ChatMsg {
   attachments?: UploadedFile[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
   plan?: ExecutionPlanView;
+  /** 计划模式（P0）：propose 阶段进度（理解需求 / 调研中 / 生成计划），用于渲染阶段进度条。 */
+  planPhase?: string;
+  /** 计划模式（P0）：需求不清时携带的澄清结果（plan:clarify 时写入），渲染目标确认卡。 */
+  clarify?: PlanClarifyView;
   /** 本轮 run 期间是否触发过上下文压缩（最旧对话被自动压缩/淘汰），用于在该条气泡下方显示「已压缩」标识。 */
   compressed?: boolean;
 }

@@ -78,6 +78,8 @@ export interface ChatRenderCtx {
   cancelPlan: (msgId: number) => void;
   /** 计划模式（P0）：需求澄清卡中用户的补充/确认输入（key=消息 id）。 */
   clarifyDraft: Record<number, string>;
+  /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），按钮置灰防重复提交。 */
+  clarifyAnswered: Record<number, boolean>;
   /** 计划模式（P0）：用户在目标澄清卡点「确认并继续」→ 服务端再次 propose。 */
   confirmClarify: (m: ChatMsg) => void;
   /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
@@ -504,8 +506,14 @@ export function renderClarifyCard(
         }}
       ></textarea>
       <div class="clarify-actions">
-        <button class="plan-btn" @click=${() => ctx.confirmClarify(m)}>
-          确认并继续生成计划
+        <button
+          class="plan-btn"
+          ?disabled=${ctx.clarifyAnswered[m.id] === true}
+          @click=${() => ctx.confirmClarify(m)}
+        >
+          ${ctx.clarifyAnswered[m.id] === true
+            ? '已确认，正在重新生成计划…'
+            : '确认并继续生成计划'}
         </button>
       </div>
     </div>

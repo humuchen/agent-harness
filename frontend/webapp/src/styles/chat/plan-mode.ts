@@ -511,4 +511,106 @@ export const planMode = css`
   .wf-trace-line.blocked .wf-trace-label {
     color: #fbbf24;
   }
+
+  /* ---- 计划模式（P0）：propose 阶段进度条（理解需求 → 调研中 → 生成计划） ---- */
+  .plan-phase {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 2px 0 8px;
+    font-size: 12px;
+  }
+  .pp-step {
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+  }
+  .pp-step.on {
+    color: #2997ff;
+    border-color: rgba(41, 151, 255, 0.5);
+    background: rgba(41, 151, 255, 0.1);
+  }
+  .pp-step.cur {
+    background: rgba(41, 151, 255, 0.2);
+    font-weight: 600;
+  }
+  .pp-arrow {
+    color: var(--ah-text-muted);
+    opacity: 0.7;
+  }
+
+  /* ---- 计划模式（P0）：目标澄清卡（plan:clarify） ---- */
+  .clarify-card {
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    border-radius: 12px;
+    background: rgba(251, 191, 36, 0.06);
+    padding: 14px 16px;
+    margin: 6px 0;
+  }
+  .clarify-head {
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .clarify-goal {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-bottom: 8px;
+  }
+  .cg-label {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(41, 151, 255, 0.15);
+    color: #2997ff;
+    white-space: nowrap;
+  }
+  .cg-text {
+    font-size: 0.95em;
+    opacity: 0.9;
+  }
+  .clarify-q {
+    margin: 0 0 8px;
+    padding-left: 20px;
+    display: grid;
+    gap: 4px;
+    font-size: 0.95em;
+  }
+  .clarify-needs {
+    font-size: 12px;
+    color: var(--ah-text-muted);
+    margin-bottom: 8px;
+  }
+  .clarify-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 56px;
+    resize: vertical;
+    border: 1px solid var(--ah-border);
+    border-radius: 8px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text);
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    margin-bottom: 8px;
+  }
+  .clarify-input:focus {
+    outline: none;
+    border-color: rgba(41, 151, 255, 0.6);
+  }
+  .clarify-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .clarify-actions .plan-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+    filter: none;
+  }
 `;

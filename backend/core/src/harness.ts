@@ -208,6 +208,10 @@ export type HarnessEvent =
   /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
    *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
   | { type: 'plan:proposed'; plan: import('./plan').ExecutionPlan }
+  /** 计划模式（P0）：需求不清时由服务端解析澄清 JSON 补发的旁路事件，等用户确认目标后再 propose。 */
+  | { type: 'plan:clarify'; clarify: import('./plan').PlanClarify }
+  /** 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），供前端展示真实进展。 */
+  | { type: 'plan:phase'; phase: string; ts: number }
   /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
   | { type: 'warn'; message: string }
   | { type: 'error'; message: string };
@@ -1011,8 +1015,9 @@ export class AgentHarness {
                 content: this.opts.planPropose
                   ? '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
                     (outGuard.reason ?? '合规校验未通过') +
-                    '）。请重新生成：仍然只输出一个符合格式要求的计划 JSON 对象' +
-                    '（{"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}），' +
+                    '）。请重新生成：仍然只输出一个符合格式要求的 JSON 对象——' +
+                    '需求清晰时输出计划 {"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}，' +
+                    '需求不清时输出澄清 {"clarify": true, "goalDraft": string, "questions": string[]}。' +
                     '不要输出解释文字或 markdown 围栏；任务描述仅陈述有事实依据的内容，' +
                     '不要包含绝对化功效承诺、固定价格承诺或任何未经确认的信息。'
                   : '（系统提示）你上一条回复触发了内容安全护栏（原因：' +

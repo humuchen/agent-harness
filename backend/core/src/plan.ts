@@ -47,24 +47,114 @@ export interface ExecutionPlan {
   tasks: PlanTask[];
 }
 
-/** planner 系统提示词：约束模型输出可解析的计划 JSON（不夹带 markdown 围栏/解释文字）。 */
+/**
+ * planner 系统提示词：两态工作流——需求清晰时「理解目标 → 调研 → 拆分」产出结构化计划；
+ * 需求模糊 / 关键前提缺失 / 高风险未对齐时「澄清」分支产出 goalDraft + questions，等用户确认目标后再拆。
+ * 提示词仅作为 user turn 注入（system prompt 仍是 harness 通用助手），工具（web_fetch / 读文件等）
+ * 在 propose 阶段本就可用，这里显式鼓励调研，并以阶段约束让规划过程「有思考、有依据、有确认」。
+ */
 export function buildPlannerPrompt(userInput: string): string {
   return [
-    '你是资深任务规划师。请根据用户需求产出一份结构化执行计划。',
+    '你是资深任务规划师。请先理解用户需求，再产出执行计划；若需求不清则先澄清目标。',
     '',
-    '硬性要求：',
-    '1. 只输出一个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容。',
-    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean, "outputChecks"?: string[]}]}',
-    '3. task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
-    '4. 每个任务的 steps 是该任务内的有序执行步骤；expectedOutput 描述该任务完成后的可验证产出。',
-    '5. 任务粒度以「一次对话可独立完成」为准，通常 2~6 个任务。',
-    '6. 仅当某任务涉及不可逆或高风险操作（删除数据、发布、金钱相关等）时，才为该任务设置 "requireApproval": true（执行前需用户人工批准）；其余任务一律省略该字段（缺省 = 无需批准）。',
-    '7. expectedOutput 必须包含可验收的检查点（章节结构 / 关键数据项 / 产出体量），禁止「完成分析」「内容完整」式模糊描述。',
-    '8. 需要外部信息（搜索报告 / 数据 / 网页）的任务，steps 必须包含降级路径：检索失败或来源不可得时，降级整合上游任务产出并在产出中显式标注数据缺口，禁止以「无法找到，请用户自行查阅」式放弃收尾。',
-    '9. 为每个任务提供 outputChecks：2~4 个该任务最终产出中必须出现的短词（验证门禁自动按「产出必须包含」逐条断言），从 expectedOutput 的验收检查点提取；无法提取明确关键词的任务省略该字段。',
+    '严格按顺序执行：',
+    '1. 理解目标：用一句话复述用户的真实目标与关键约束。',
+    '2. 判断清晰度：',
+    '   - 若需求模糊、关键前提缺失、或涉及不可逆/高风险操作且目标尚未对齐 → 进入「澄清」分支（见格式 B），不要强行出计划。',
+    '   - 否则进入「调研 + 拆分」分支。',
+    '3. 调研（仅「调研 + 拆分」分支、且计划依赖外部事实时才做）：如计划需要外部资料 / 网页 / 文件 / 数据，先调用可用工具（web_fetch / 读文件等）获取依据，把结论沉淀进任务的 steps 与 expectedOutput；检索失败须显式标注数据缺口，禁止以「无法找到，请自行查阅」式放弃收尾。',
+    '4. 拆分：围绕已确认目标，把任务拆成「一次对话可独立完成、可独立验收」的单元（通常 2~6 个）。',
+    '',
+    '输出格式（二选一，必须是单个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容）：',
+    '',
+    'A. 计划（需求清晰时）：',
+    '{"goal": string, "tasks": [{"id": "t1", "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean, "outputChecks"?: string[]}]}',
+    '- goal：用户已确认的目标（一句话，可验收）。',
+    '- task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
+    '- expectedOutput 必须包含可验收的检查点（章节结构 / 关键数据项 / 产出体量），禁止「完成分析」「内容完整」式模糊描述。',
+    '- 仅当某任务涉及不可逆或高风险操作（删除数据、发布、金钱相关等）时，才设置 "requireApproval": true（执行前需用户人工批准）；其余任务一律省略该字段。',
+    '- 为每个任务提供 outputChecks：2~4 个该任务最终产出中必须出现的短词（验收门禁按「产出必须包含」逐条断言），从 expectedOutput 的验收检查点提取；无法提取明确关键词的任务省略该字段。',
+    '',
+    'B. 澄清（需求不清时）：',
+    '{"clarify": true, "goalDraft": string, "questions": string[], "needs"?: string}',
+    '- goalDraft：你对目标的初步理解草稿（供用户确认或修正）。',
+    '- questions：需要用户回答 / 确认的 1~5 个关键问题（具体问题，不要泛泛而问）。',
+    '- needs（可选）：你认为缺失的关键信息或前置条件。',
     '',
     `用户需求：${userInput}`,
   ].join('\n');
+}
+
+/** 澄清结果（plan:clarify 事件的 payload 契约）：模型认为需求不清、需先确认目标。 */
+export interface PlanClarify {
+  /** 固定 true，用于与计划 JSON 区分。 */
+  clarify: true;
+  /** 模型对目标的初步理解草稿，供用户确认或修正。 */
+  goalDraft: string;
+  /** 需要用户回答 / 确认的关键问题（1~5 条）。 */
+  questions: string[];
+  /** 模型判断缺失的关键信息或前置条件（可选）。 */
+  needs?: string;
+}
+
+/** 计划 / 澄清联合解析结果。 */
+export type PlanParseResult =
+  | { kind: 'plan'; plan: ExecutionPlan }
+  | { kind: 'clarify'; clarify: PlanClarify }
+  | null;
+
+/**
+ * 从模型输出中容错提取澄清 JSON（与 parsePlanOutput 同级容错：直接 parse → 去围栏 → 截取首尾括号）。
+ * 仅当 `clarify === true` 且 goalDraft / questions 至少其一非空才视为有效澄清，否则返回 null。
+ */
+export function parseClarifyOutput(text: string): PlanClarify | null {
+  if (!text || !text.trim()) return null;
+  const candidates: string[] = [text];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1] ?? '');
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first !== -1 && last > first) candidates.push(text.slice(first, last + 1));
+
+  for (const raw of candidates) {
+    let data: unknown;
+    try {
+      data = JSON.parse(raw.trim());
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== 'object') continue;
+    const d = data as Record<string, unknown>;
+    if (d.clarify !== true) continue;
+    const goalDraft = typeof d.goalDraft === 'string' ? d.goalDraft.trim() : '';
+    const questions = Array.isArray(d.questions)
+      ? (d.questions as unknown[])
+          .map((q) => String(q).trim())
+          .filter(Boolean)
+          .slice(0, 5)
+      : [];
+    const needs = typeof d.needs === 'string' ? d.needs.trim() : '';
+    if (!goalDraft && questions.length === 0) continue;
+    return {
+      clarify: true,
+      goalDraft,
+      questions,
+      ...(needs ? { needs } : {})
+    };
+  }
+  return null;
+}
+
+/**
+ * 计划 / 澄清联合解析：先试计划 JSON，失败再试澄清 JSON。
+ * 用于 propose 阶段 run:end 的二分支分发（plan:proposed vs plan:clarify）。
+ */
+export function parsePlanOrClarify(text: string): PlanParseResult {
+  const plan = parsePlanOutput(text);
+  if (plan) return { kind: 'plan', plan };
+  const clarify = parseClarifyOutput(text);
+  if (clarify) return { kind: 'clarify', clarify };
+  return null;
 }
 
 /**

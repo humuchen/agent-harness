@@ -262,6 +262,21 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 
 **回归基线（P0–P3 + P2.5 + P2.6 + P4.5 落地后）**：core 453/453；client 18/18；server 295 tests / 293 pass / 2 skip（含 P3 e2e + P2.5 e2e + P4.5 确定性验证 e2e）；webapp 346/346；四端 build 0；改动文件 0 新增 lint error（server.ts / engine.ts / harness.ts / plan.ts / workflow-executor.ts / step-output.ts / plan-verify.ts 均 0 error）。
 
+### P5 propose 阶段体验改造（调研 + 目标澄清 + 流式可见，已实现）
+
+针对「① 规划期模型不思考、一直等待；② 计划默认拆几步、不调研也不确认目标」两项问题（2026-09）：
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 两态 planner 提示词（`buildPlannerPrompt`） | ✅ | 重写为「理解目标 → 判断清晰度 → 调研 → 拆分」：需求模糊/高风险未对齐时输出澄清 JSON `{"clarify":true,"goalDraft","questions","needs"?}`，否则先调工具调研再产出计划（goal 显式可验收）；`parseClarifyOutput` + `parsePlanOrClarify` 联合解析（计划优先、澄清次之）；护栏重试提示同步允许澄清分支 |
+| 服务端流策略（`server.ts` propose 订阅） | ✅ | 抑制范围收窄为仅 `llm:token`/`llm:response`（防计划 JSON 打字机外泄），**放行 `llm:reasoning`（规划思考）与 `tool:*`（调研过程）**；新增 `plan:phase` 阶段进度事件（理解需求→调研中→生成计划，仅向前推进）；run:end 处按 `parsePlanOrClarify` 二分支分发 `plan:proposed` / `plan:clarify`（澄清不落 PlanDoc，随消息落 `ChatMessage.clarify` 供刷新还原） |
+| 前端渲染 | ✅ | 计划气泡：`plan:phase` 驱动阶段进度条；`llm:reasoning` 渲染「规划思考」折叠块（不受 deepThink 偏好门控，作为可展开原始草稿）；`plan:clarify` 渲染目标澄清卡（goalDraft + questions + 补充输入 + 确认按钮）；计划卡照旧 |
+| 澄清多轮闭环 | ✅ | 澄清卡「确认并继续」→ `confirmClarify` 把「原需求 + 目标草稿 + 用户补充」拼为新一轮 propose 输入再次派发（仍走 planner，产出基于已确认目标的计划）；`clarifyAnswered` 防重复提交；clarify 随 `sanitizeMessages`/历史镜像透传，刷新可还原 |
+
+回归基线：core 463/463（含 `plan-parse.test.cjs` 新增 7 项 clarify/联合解析用例）；webapp tsc 9 条全 pre-existing、vitest 346/346、vite build 通过；server build 通过、293 pass / 2 skip；改动文件 eslint 0 error。执行侧（DAG 确认执行）零改动。
+
+
+
 ### P4（P4.5 已实施，余下后续未实施）
 - ~~产出有效性闸门~~ → **已由 P4.5 实现**（§9.5 表格）：引擎出口闸门 + 计划桥默认验证门禁 + 黑板注记 + planner 词表断言，「无效产出不再假成功」，默认对 plan 桥开启、手工工作流零回归。
 - **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。
