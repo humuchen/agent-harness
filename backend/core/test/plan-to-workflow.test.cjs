@@ -121,8 +121,8 @@ test('buildInputMapping：outputChecks 非空时内联进 taskMeta；缺省不�
   assert.strictEqual('outputChecks' in JSON.parse(m2.taskMeta), false);
 });
 
-test('normalizePlan（parsePlanOutput）：outputChecks 清洗 —— trim / 剔空白 / 上限 8 / 非法丢弃不整单作废', () => {
-  const { parsePlanOutput } = require('../dist/plan.js');
+test('normalizePlan（parsePlanOutput）：outputChecks 清洗 —— trim / 剔空白 / 上限 4（P4.7）/ 非法丢弃不整单作废', () => {
+  const { parsePlanOutput, PLAN_OUTPUT_CHECK_MAX, pickOutputChecks } = require('../dist/plan.js');
   const json = {
     goal: 'g',
     tasks: [
@@ -134,11 +134,16 @@ test('normalizePlan（parsePlanOutput）：outputChecks 清洗 —— trim / 剔
   const planOut = parsePlanOutput(JSON.stringify(json));
   assert.ok(planOut, '解析成功');
   const t1 = planOut.tasks.find((t) => t.id === 't1');
-  // trim + String() + 剔空白 + slice(0,8)：['医美','市场规模','123','a','b','c','d','e','f'] → 前 8
-  assert.deepStrictEqual(t1.outputChecks, ['医美', '市场规模', '123', 'a', 'b', 'c', 'd', 'e']);
+  // trim + String() + 剔空白 + slice(0, PLAN_OUTPUT_CHECK_MAX=4)：['医美','市场规模','123','a','b','c','d','e','f'] → 前 4
+  assert.strictEqual(PLAN_OUTPUT_CHECK_MAX, 4, '上限与 planner 提示词「2~4 个」契约对齐');
+  assert.deepStrictEqual(t1.outputChecks, ['医美', '市场规模', '123', 'a']);
   // 非数组 / 空数组 → 缺省丢弃（不带键）。
   assert.strictEqual(planOut.tasks.find((t) => t.id === 't2').outputChecks, undefined);
   assert.strictEqual(planOut.tasks.find((t) => t.id === 't3').outputChecks, undefined);
+  // pickOutputChecks 是注入侧与断言侧共用的唯一收敛入口（同源同上限）。
+  assert.deepStrictEqual(pickOutputChecks([' a ', '', 'b', 'c', 'd', 'e']), ['a', 'b', 'c', 'd']);
+  assert.deepStrictEqual(pickOutputChecks('not-array'), []);
+  assert.deepStrictEqual(pickOutputChecks(undefined), []);
 });
 
 /* ---------- DagEngine 集成（mock executor） ---------- */

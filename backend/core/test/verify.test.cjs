@@ -144,6 +144,81 @@ test('P4.6 失败原因带具体词：自检重试可定向补齐', async () => 
 });
 
 // ---------------------------------------------------------------------------
+// P4.7 验收主题词容错匹配（同义改写不再误判）
+// ---------------------------------------------------------------------------
+
+test('P4.7 topicHit：严格子串命中优先', () => {
+  const { topicHit } = require('../dist/verify.js');
+  assert.strictEqual(topicHit('本节给出市场规模数据', '市场规模'), true);
+});
+
+test('P4.7 topicHit：同义改写的小节标题按「主题前缀」命中（≥2 连续汉字）', () => {
+  const { topicHit } = require('../dist/verify.js');
+  // 真实模型高频改写：planner 出「市场规模」，executor 写「市场概况与容量估算」——
+  // 主题前缀「市场」命中；不再触发无谓的自检重跑。
+  assert.strictEqual(topicHit('## 市场概况与容量估算\n正文…', '市场规模'), true);
+  assert.strictEqual(topicHit('## 主要参与者与竞争态势', '竞争格局'), true);
+  // 真正跑题（主题前缀完全不出现）仍判未命中。
+  assert.strictEqual(topicHit('## 完全无关的内容\n天气与交通', '市场规模'), false);
+});
+
+test('P4.7 topicHit：拉丁词不做前缀容错（避免 AI→air 这类误命中）', () => {
+  const { topicHit } = require('../dist/verify.js');
+  assert.strictEqual(topicHit('the air quality report', 'AI Agent'), false);
+  assert.strictEqual(topicHit('AI Agent 落地路径', 'AI Agent'), true);
+});
+
+test('P4.7 contains 断言走容错匹配（specsVerifier 层）', async () => {
+  const v = specsVerifier([{ contains: '市场规模' }, { contains: '竞争格局' }], '任务验收', true);
+  const r = await v(ctx({ final: '## 市场概况\n## 竞争者分析' }));
+  // 「竞争格局」的前缀是「竞争」→ 命中；两条均命中 → 通过。
+  assert.strictEqual(r.passed, true, `reasons=${r.reasons}`);
+});
+
+// ---------------------------------------------------------------------------
+// P4.7 软性门禁（soft）：只告警不阻断，但仍参与 AND 与软性传播
+// ---------------------------------------------------------------------------
+
+test('P4.7 软性断言组未通过：passed=false 且 soft=true', async () => {
+  const v = specsVerifier([{ contains: '绝不可能出现的词' }], '任务验收', true);
+  const r = await v(ctx());
+  assert.strictEqual(r.passed, false);
+  assert.strictEqual(r.soft, true, '声明为软性组 → 未通过时标记 soft');
+});
+
+test('P4.7 硬性断言组未通过：不带 soft（存量语义不变）', async () => {
+  const v = specsVerifier([{ contains: '绝不可能出现的词' }], '默认门禁');
+  const r = await v(ctx());
+  assert.strictEqual(r.passed, false);
+  assert.strictEqual(r.soft, undefined, '未声明软性 → 硬性未通过');
+});
+
+test('P4.7 composeVerifiers 软性传播：全软组失败 → soft=true', async () => {
+  const ok = specsVerifier([{ contains: 'done' }], '默认门禁');
+  const soft = specsVerifier([{ contains: '绝不可能出现的词' }], '任务验收', true);
+  const r = await composeVerifiers(ok, soft)(ctx());
+  assert.strictEqual(r.passed, false);
+  assert.strictEqual(r.soft, true, '唯一的失败方是软组 → 整体可软性化');
+});
+
+test('P4.7 composeVerifiers 硬性优先：硬组失败压过软组失败（soft 不生效）', async () => {
+  const hard = specsVerifier([{ minLength: 999 }], '默认门禁');
+  const soft = specsVerifier([{ contains: '绝不可能出现的词' }], '任务验收', true);
+  const r = await composeVerifiers(hard, soft)(ctx());
+  assert.strictEqual(r.passed, false);
+  assert.strictEqual(r.soft, undefined, '任一硬组失败 → 不得软性化（空/兜底产出不会被漏拦）');
+});
+
+test('P4.7 composeVerifiers 全部通过：不带 soft', async () => {
+  const r = await composeVerifiers(
+    specsVerifier([{ contains: 'done' }], '默认门禁'),
+    specsVerifier([{ contains: 'done' }], '任务验收', true)
+  )(ctx());
+  assert.strictEqual(r.passed, true);
+  assert.strictEqual(r.soft, undefined);
+});
+
+// ---------------------------------------------------------------------------
 // composeVerifiers（AND 组合）
 // ---------------------------------------------------------------------------
 

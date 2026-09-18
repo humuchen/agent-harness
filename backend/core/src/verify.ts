@@ -8,11 +8,15 @@ import type { ToolCall } from './types';
  *     有最终回答 / 调用了工具 / 有步骤），作为默认过程门禁。
  *   - assertionsVerifier / specsVerifier：基于断言校验「结果正确性」（如最终回答需包含某串、
  *     匹配某正则、长度区间）——这是原评估体系缺失的「结果级」校验。
- *   - composeVerifiers：多验证器 AND 组合。
+ *   - composeVerifiers：多验证器 AND 组合（软性传播见 VerifyOutcome.soft）。
  *   - createVerifier：从可序列化配置装配（供 server 经 run job 透传）。
  *
  * 该契约与具体 LLM/业务无关，可由 harness 在产出最终答案后自动调用；未通过时 harness
  * 可据此重试（self-correction）或标记返回，使「自验证」从运维手动触发变为运行期自动门禁。
+ *
+ * P4.7：引入「软性未通过」（VerifyOutcome.soft）——启发式验收（如跨 LLM 调用匹配的
+ * 验收关键词）未命中时只告警 + 一次自检重试，不再把切题产出改写成 `[verify:failed]`
+ * 并让 step 失败；硬性门禁（护栏 / 预算 / 空产出 / 无最终回答）语义不变。
  */
 
 /** 验证上下文：harness 在收尾时把本轮关键信号喂给验证器。 */
@@ -38,6 +42,24 @@ export interface VerifyOutcome {
   score: number;
   /** 可解释的原因列表。 */
   reasons: string[];
+  /**
+   * 软性未通过（advisory）：**只告警、不阻断**。
+   *
+   * 语义：未通过时仍走自检重试（给模型一次定向补齐的机会），但重试后仍未通过时
+   * harness **不**追加 `[verify:failed]` 前缀 —— 产出原样保留（不被引擎出口闸门判为
+   * 无效产出，step 记为 done）。
+   *
+   * 为什么需要它（P4.7 根因修复）：计划模式逐 task 的「验收词 contains 断言」是
+   * **跨调用**匹配——planner（A 次 LLM 调用）产出的关键词，要求 executor（B 次 LLM 调用）
+   * 的产出逐字包含。LLM 的同义改写（「市场规模」→「市场概况与容量」）会让**切题且完整**
+   * 的产出判为未通过 → 重试 → 仍不通过 → `[verify:failed]` → 引擎按无效产出判 step 失败
+   * → 整个 run 失败。这正是「单步对话正常、计划模式必失败」的症状来源。
+   *
+   * 硬性未通过（护栏拦截 / 预算熔断 / 无最终回答 / 空产出）仍由 RuleBasedVerifier 与
+   * 引擎出口闸门（failOnInvalidOutput + inspectStepOutput）如实拦截，不因软性化而漏。
+   * 缺省（undefined）= 硬性未通过（存量语义，零回归）。
+   */
+  soft?: boolean;
 }
 
 /** 验证器契约：输入上下文，输出通过与否与原因。可同步或异步。 */
@@ -96,10 +118,13 @@ export interface NamedAssertion {
  * @param label 可选的组标签（如「默认门禁」/「任务验收」）：per-step 验证器是「默认门禁断言组
  * + 任务验收断言组」两个 specsVerifier 的组合，各组合输出 reasons 后拼接，无标签时两组行号
  * 各自从 1 起算，读起来自相矛盾（「全部 3 项通过; 断言 #1 未通过」）——加组标签消歧。
+ * @param soft 软性组（见 VerifyOutcome.soft）：未通过时只告警不阻断（软组仍参与 compose
+ * 的 AND，但 compose 会把「全部失败方都是软组」标记为 soft=true）。
  */
 export function assertionsVerifier(
   assertions: (Assertion | NamedAssertion)[],
-  label?: string
+  label?: string,
+  soft?: boolean
 ): Verifier {
   const tag = label ? `${label}：` : '';
   return async (ctx) => {
@@ -127,6 +152,7 @@ export function assertionsVerifier(
       passed,
       score: assertions.length === 0 ? 1 : passed ? 1 : 0,
       reasons,
+      ...(passed || !soft ? {} : { soft: true }),
     };
   };
 }
@@ -170,10 +196,42 @@ function normalizeForIncludes(s: string): string {
   return out.toLowerCase();
 }
 
+/**
+ * 取字符串开头的「主题前缀」：首个连续的汉字串中前 2 个字。
+ * 非汉字开头（纯拉丁 / 数字 / 符号）返回 null —— 拉丁词 2 字符前缀过松
+ * （「AI」会命中「air」），故不做容错，仍要求整词命中。
+ */
+function topicPrefixCjk(s: string): string | null {
+  const m = /^([\u4e00-\u9fff]{2,})/.exec(s);
+  return m ? m[1]!.slice(0, 2) : null;
+}
+
+/**
+ * 「验收主题词」命中判定（P4.7 容错）：
+ *   1) 规范化子串命中（双方小写化 / 全半角归一 / 去空白）——严格命中；
+ *   2) 否则「主题前缀」命中：验收词的首 2 个汉字作为主题信号出现在产出中即视为命中。
+ *
+ * 动机：验收词由 planner 一次 LLM 调用产出、由 executor 另一次 LLM 调用的产出校验，
+ * 两者对同一主题的表述高频不一致（「市场规模」vs「市场概况与容量」、「竞争格局」vs
+ * 「主要参与者与竞争态势」）。严格子串会把**切题产出**判为未通过 → 触发无谓的自检重跑
+ * （多一次完整生成，既费钱又改写了好产出）→ 重试后仍不通过即判 step 失败。
+ * 取「≥2 连续汉字」作为主题信号下限：容忍同义改写，又能拦住真正跑题（整个主题词不出现）。
+ *
+ * 仅作用于 `contains`（正向覆盖）；`notContains` 仍为严格子串（禁用词不做容错放宽）。
+ */
+export function topicHit(text: string, check: string): boolean {
+  const t = normalizeForIncludes(text);
+  const c = normalizeForIncludes(check);
+  if (!c) return true;
+  if (t.includes(c)) return true;
+  const prefix = topicPrefixCjk(c);
+  return prefix != null && t.includes(prefix);
+}
+
 function specToPredicate(spec: AssertSpec): Assertion {
   return (ctx) => {
     const t = normalizeForIncludes(ctx.final);
-    if (spec.contains != null && !t.includes(normalizeForIncludes(spec.contains))) return false;
+    if (spec.contains != null && !topicHit(ctx.final, spec.contains)) return false;
     if (spec.notContains != null && t.includes(normalizeForIncludes(spec.notContains))) return false;
     if (spec.matches != null) {
       try {
@@ -188,31 +246,52 @@ function specToPredicate(spec: AssertSpec): Assertion {
   };
 }
 
-/** 由可序列化规格列表构建验证器。@param label 可选组标签（reasons 行前缀，多组合并时消歧）。 */
-export function specsVerifier(specs: AssertSpec[], label?: string): Verifier {
+/** 由可序列化规格列表构建验证器。
+ * @param label 可选组标签（reasons 行前缀，多组合并时消歧）。
+ * @param soft 软性组：未通过只告警不阻断（见 VerifyOutcome.soft）。
+ */
+export function specsVerifier(specs: AssertSpec[], label?: string, soft?: boolean): Verifier {
   return assertionsVerifier(
     specs.map((spec) => {
       const assert = specToPredicate(spec);
       const describe = spec.contains != null ? `产出未包含「${spec.contains}」` : undefined;
       return { assert, describe };
     }),
-    label
+    label,
+    soft
   );
 }
 
-/** 组合多个验证器：全部通过才通过，分数取最低。 */
+/**
+ * 组合多个验证器：全部通过才通过，分数取最低。
+ *
+ * 软性传播（P4.7）：整体未通过时，`soft` 仅当**每一组失败方都是软性**才为 true。
+ * 即「硬性组失败」永远压过「软性组失败」——保证空产出 / 护栏拦截 / 无最终回答这类
+ * 硬失败不会被软性组（如验收关键词）掩盖成「只告警」。
+ */
 export function composeVerifiers(...verifiers: Verifier[]): Verifier {
   return async (ctx) => {
     const reasons: string[] = [];
     let passed = true;
     let score = 1;
+    let allFailingSoft = true;
+    let anyFailed = false;
     for (const v of verifiers) {
       const r = await v(ctx);
       passed = passed && r.passed;
       score = Math.min(score, r.score);
       reasons.push(...r.reasons);
+      if (!r.passed) {
+        anyFailed = true;
+        if (r.soft !== true) allFailingSoft = false;
+      }
     }
-    return { passed, score, reasons };
+    return {
+      passed,
+      score,
+      reasons,
+      ...(anyFailed && allFailingSoft ? { soft: true } : {}),
+    };
   };
 }
 

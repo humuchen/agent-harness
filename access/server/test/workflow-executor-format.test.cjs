@@ -152,3 +152,23 @@ test('验收要求：无 outputChecks 的 taskMeta 不注入该行（零回归�
   );
   assert.ok(!out.includes('验收要求'), out);
 });
+
+test('P4.7 验收要求：注入词表与断言词表同源同上限（超过上限的词不得只断言不告知）', () => {
+  const { pickOutputChecks, PLAN_OUTPUT_CHECK_MAX } = require('@agent-harness/core');
+  const meta = {
+    id: 't1',
+    title: 'X',
+    steps: [],
+    expectedOutput: 'Y',
+    // planner 越界给了 6 个（契约 2~4）——第 5/6 个此前只被门禁断言、从不告知模型 → 必然失败。
+    outputChecks: ['市场规模', '竞争格局', '技术趋势', '商业模式', '监管合规', '风险提示']
+  };
+  const out = formatStepInput({ goal: 'g', taskMeta: JSON.stringify(meta) });
+  const effective = pickOutputChecks(meta.outputChecks);
+  assert.strictEqual(PLAN_OUTPUT_CHECK_MAX, 4);
+  assert.deepStrictEqual(effective, ['市场规模', '竞争格局', '技术趋势', '商业模式']);
+  // 注入 prompt 的词表 = 生效词表（逐词出现）。
+  for (const c of effective) assert.ok(out.includes(c), `应告知「${c}」`);
+  // 超限词既不断言也不告知（保持两侧一致，消除「注定失败」的硬性要求）。
+  for (const c of ['监管合规', '风险提示']) assert.ok(!out.includes(c), `超限词「${c}」不应出现`);
+});

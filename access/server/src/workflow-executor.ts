@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, composeVerifiers, specsVerifier, inspectStepOutput, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, type Verifier, type AssertSpec, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, composeVerifiers, specsVerifier, pickOutputChecks, inspectStepOutput, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, type Verifier, type AssertSpec, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
@@ -63,9 +63,11 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
         // 但此前这些词从不进 prompt —— 执行模型不知道门禁在断言什么，命中全凭运气，
         // 是「计划任务总在验证门禁失败、单步回复正常」的主根因。此处显式告知，
         // 让模型在产出中主动写明这些关键词（检索失败时也须在数据缺口说明中提及）。
-        const checks = Array.isArray(meta?.outputChecks)
-          ? (meta!.outputChecks as unknown[]).map((c) => String(c).trim()).filter(Boolean).slice(0, 4)
-          : [];
+        //
+        // P4.7：词表经 pickOutputChecks 收敛（唯一入口），与断言侧**同源同上限** ——
+        // 历史上此处 slice(0,4)、断言侧不截断，导致第 5~8 个词是模型从未被告知却必须
+        // 满足的硬性要求（无论多顺从都必然失败）。
+        const checks = pickOutputChecks(meta?.outputChecks);
         if (checks.length) {
           lines.push(
             `验收要求（硬性）：最终产出必须明确包含以下关键词（逐词断言，缺一即验证不通过）：${checks.join('、')}。` +
@@ -307,8 +309,14 @@ export class StepTraceCollector {
         this.traceNodes.push({
           type: e.type,
           ts,
-          label: e.passed ? '自动验证通过' : `自动验证未通过（第 ${e.attempt} 次, 得分 ${e.score}）`,
-          status: e.passed ? 'ok' : 'error',
+          label: e.passed
+            ? '自动验证通过'
+            : e.soft
+              ? '验收告警（软性，不影响产出）'
+              : `自动验证未通过（第 ${e.attempt} 次, 得分 ${e.score}）`,
+          // 软性未通过不阻断 step：链路里以 ok 呈现，避免与真正失败的红色混淆；
+          // 文字已显式标注「告警」，验收缺口仍完整保留在 detail 中可查。
+          status: e.passed || e.soft ? 'ok' : 'error',
           detail: e.reasons.length ? clip(e.reasons.join('；')) : undefined
         });
         return;
@@ -414,6 +422,18 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
    * outputChecks（planner 生成的「产出必须包含」短词）时，逐项转 contains 断言
    * 与 executor 级验证器组合成本 step 专属验证器；无 taskMeta / 无 outputChecks /
    * 解析失败 → 原样回落 baseVerifier（零回归，不阻断 step）。
+   *
+   * P4.7 两处修复：
+   *  1. **同源同上限**：词表走 pickOutputChecks（与 prompt 注入同一入口与上限），
+   *     消灭「提示只给 4 个、门禁却断言 8 个」的必然失败；
+   *  2. **降级为软性门禁（soft=true）**：这些词由 planner 调用产出、由 executor 另一次
+   *     调用逐字匹配，属跨调用启发式校验 —— 同义改写（「市场规模」→「市场概况」）即未命中。
+   *     此前未命中会追加 [verify:failed] → 引擎出口闸门判无效产出 → step failed → run 失败，
+   *     而单步对话无此门禁故一切正常（用户可见症状）。现在未命中仍触发一次自检重试
+   *     （给模型定向补齐的机会），但重试后仍不通过只告警、不改写产出、不判 step 失败。
+   *     真正的无效产出（空 / 护栏兜底 / 中断 / 异常前缀）仍由引擎 failOnInvalidOutput
+   *     + inspectStepOutput 硬拦，不因软性化而漏。
+   *
    * 注：纯断言（base 缺省未开）时保守「只标记不重跑」——反思循环需 executor 级
    * 验证器存在（plan 默认路径由 server 保证 auto 开启）。
    */
@@ -430,22 +450,18 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     } catch {
       return { verifier: baseVerifier, retries: baseRetries }; // taskMeta 非法：不阻断，少装配
     }
-    const specs: AssertSpec[] = Array.isArray(meta?.outputChecks)
-      ? (meta!.outputChecks as unknown[])
-          .map((c) => ({ contains: String(c).trim() }))
-          .filter((s) => s.contains !== '')
-      : [];
+    const specs: AssertSpec[] = pickOutputChecks(meta?.outputChecks).map((c) => ({ contains: c }));
     if (specs.length === 0) return { verifier: baseVerifier, retries: baseRetries };
     if (baseVerifier) {
       return {
-        // 任务验收组打组标签，与 executor 级默认门禁组（assertionLabel「默认门禁」）
-        // 在 reasons 拼接时区分，消除「全部 3 项通过; 断言 #1 未通过」的矛盾读法。
-        verifier: composeVerifiers(baseVerifier, specsVerifier(specs, '任务验收')),
+        // 任务验收组打组标签（与 executor 级默认门禁组「默认门禁」在 reasons 拼接时区分），
+        // 并标记为软性组（未通过只告警不阻断）。
+        verifier: composeVerifiers(baseVerifier, specsVerifier(specs, '任务验收', true)),
         retries: baseRetries,
       };
     }
-    // 无 executor 级验证器（verify 未传）：仅装配结果断言，重试预算保守取 0。
-    return { verifier: specsVerifier(specs, '任务验收'), retries: 0 };
+    // 无 executor 级验证器（verify 未传）：仅装配结果断言，同样软性、重试预算保守取 0。
+    return { verifier: specsVerifier(specs, '任务验收', true), retries: 0 };
   };
 
   return async (step: any, input: any, ctx: RunContext) => {

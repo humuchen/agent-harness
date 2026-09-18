@@ -33,10 +33,12 @@ export interface PlanTask {
   requireApproval?: boolean;
   /**
    * P4.5 结果断言词表：2~4 个「该任务最终产出必须包含」的短词，planner 依据
-   * expectedOutput 的验收检查点提取。经 taskMeta 透传给 executor，逐项生成
-   * contains 断言（与执行器级验证器组合，全部满足才算通过）——产出跑题 / 缺
-   * 少关键章节（任一词缺失）即判失败。可选：无明确关键词可提取的任务缺省不填
-   * （缺省 = 不启用结果断言，零回归面）。
+   * expectedOutput 的验收检查点提取。经 taskMeta 透传给 executor：
+   *  - 注入执行 prompt 的「验收要求」（告知模型该写哪些词）；
+   *  - 逐项生成 contains 断言（**软性门禁**：未命中触发一次自检重试，仍不通过只告警不阻断）。
+   * 两条链路共用 pickOutputChecks 收敛（上限 PLAN_OUTPUT_CHECK_MAX），保证
+   * 「模型被告知的词」与「门禁断言的词」严格一致（P4.7 修复）。
+   * 可选：无明确关键词可提取的任务缺省不填（缺省 = 不启用结果断言，零回归面）。
    */
   outputChecks?: string[];
 }
@@ -45,6 +47,32 @@ export interface PlanTask {
 export interface ExecutionPlan {
   goal: string;
   tasks: PlanTask[];
+}
+
+/**
+ * 计划任务验收词上限（P4.7 单一事实源）。
+ *
+ * 为什么必须是常量而不是各处各写一个数字：验收词有**两个消费方**——执行 prompt 的
+ * 「验收要求（硬性）」注入（告知模型该写哪些词）与 per-step 结果断言（校验产出是否含这些词）。
+ * 二者若用不同上限，就会出现「门禁断言了模型从未被告知的词」→ **无论模型多顺从都必然失败**。
+ * 历史缺陷：注入侧 `.slice(0, 4)`、断言侧不截断（planner 最多可给 8 个）→ 第 5~8 个词
+ * 是永远无法满足的硬性要求。现在两侧统一走 pickOutputChecks() + 本上限。
+ *
+ * 取值 4 与 buildPlannerPrompt 的「2~4 个验收主题词」契约对齐。
+ */
+export const PLAN_OUTPUT_CHECK_MAX = 4;
+
+/**
+ * 收敛 taskMeta.outputChecks → 最终生效的验收词表（注入与断言共用的唯一入口）。
+ * - 非数组 → []；逐项 String().trim()，剔除空串；
+ * - 截断到 PLAN_OUTPUT_CHECK_MAX（保证「被告知的词」= 「被断言的词」）。
+ */
+export function pickOutputChecks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => String(c).trim())
+    .filter(Boolean)
+    .slice(0, PLAN_OUTPUT_CHECK_MAX);
 }
 
 /**
@@ -243,12 +271,9 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
       typeof t.expectedOutput === 'string' ? t.expectedOutput.trim() : '';
     // P3：仅当模型显式给出布尔 true 时保留审批门（缺省/非法值一律视为无需批准，零回归面）。
     const requireApproval = t.requireApproval === true;
-    // P4.5：结果断言词表——非字符串项剔除、空白项剔除、上限 8 条（防膨胀）；
-    // 全空 / 非数组一律缺省丢弃（不整单作废，零回归面）。
-    const rawChecks = Array.isArray(t.outputChecks)
-      ? (t.outputChecks as unknown[]).map((s) => String(s).trim()).filter(Boolean)
-      : [];
-    const outputChecks = rawChecks.slice(0, 8);
+    // P4.5：结果断言词表——非字符串项剔除、空白项剔除、上限 PLAN_OUTPUT_CHECK_MAX（防膨胀，
+    // 且与执行 prompt 的注入上限严格一致：模型被告知的词 = 门禁断言的词，P4.7 修复）。
+    const outputChecks = pickOutputChecks(t.outputChecks);
     tasks.push({
       id,
       title,

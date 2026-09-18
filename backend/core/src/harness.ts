@@ -204,6 +204,11 @@ export type HarnessEvent =
       passed: boolean;
       score: number;
       reasons: string[];
+      /**
+       * 软性未通过（P4.7）：只告警、不阻断 —— 产出原样保留、不追加 [verify:failed]、
+       * step 不判失败。见 verify.ts 的 VerifyOutcome.soft。
+       */
+      soft?: boolean;
     }
   /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
    *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
@@ -1312,12 +1317,14 @@ export class AgentHarness {
         attempt,
         passed: outcome.passed,
         score: outcome.score,
-        reasons: outcome.reasons
+        reasons: outcome.reasons,
+        ...(outcome.soft ? { soft: true } : {})
       });
       while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
         attempt += 1;
         if (this.opts.verifySelfCorrect) {
           // 注入自检提示，让模型根据失败原因修正后重新跑一轮（自动重试 / 自愈）。
+          // 软性未通过同样重试一次（定向补齐成本低、收益明确），只是重试后仍不通过时不阻断。
           memory.add({
             role: 'user',
             content:
@@ -1337,14 +1344,28 @@ export class AgentHarness {
             attempt,
             passed: outcome.passed,
             score: outcome.score,
-            reasons: outcome.reasons
+            reasons: outcome.reasons,
+            ...(outcome.soft ? { soft: true } : {})
           });
         } else {
           break;
         }
       }
       if (!outcome.passed) {
-        final = `${VERIFY_FAILED_PREFIX} ${outcome.reasons.join('; ')}\n\n${final}`;
+        if (outcome.soft) {
+          // P4.7 软性未通过：只告警、不改写产出。
+          // 症状背景：计划模式逐 task 的验收关键词断言是「planner 调用 A 出词 → executor 调用 B
+          // 的产出逐字包含」的跨调用匹配，同义改写即未命中；此前会追加 [verify:failed] 前缀，
+          // 被引擎出口闸门判为无效产出 → step failed → 整个 run 失败（而单步对话无此门禁，故正常）。
+          // 现在保留模型原始产出，让内容正常交付、下游正常消费，验收缺口由 verify:result 事件
+          // （soft=true）与调用链路抽屉呈现，不再牺牲整个 run。
+          emit({
+            type: 'warn',
+            message: `验收告警（不影响产出）：${outcome.reasons.join('；')}`
+          });
+        } else {
+          final = `${VERIFY_FAILED_PREFIX} ${outcome.reasons.join('; ')}\n\n${final}`;
+        }
       }
     }
 

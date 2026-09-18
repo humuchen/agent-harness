@@ -82,24 +82,42 @@ test('P4.5：planOutputChecks 开启 + outputChecks 命中 → verify 通过（p
   assert.strictEqual(verifyEvents[0].passed, true, 'mock 通用应答含「Mock 离线应答」→ contains 命中');
 });
 
-test('P4.5：outputChecks 未命中 → verify 失败（跑题 / 缺关键章节被拦）', async () => {
-  const { verifyEvents } = await runExecutor(
+test('P4.7：outputChecks 未命中 → 软性未通过（只告警，产出不被改写、step 不判失败）', async () => {
+  const { out, verifyEvents } = await runExecutor(
     { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
     planStepWithChecks('t1', ['__IMPOSSIBLE_CHECK_X__'])
   );
   assert.strictEqual(verifyEvents.length, 1);
-  assert.strictEqual(verifyEvents[0].passed, false, '断言未命中 → 不通过（[verify:failed] 标记保留产出）');
+  assert.strictEqual(verifyEvents[0].passed, false, '断言未命中 → 未通过');
+  assert.strictEqual(verifyEvents[0].soft, true, '任务验收组是软性组 → soft=true');
+  // 关键：产出不被追加 [verify:failed]，否则引擎出口闸门会判无效产出 → step failed → run failed。
+  assert.ok(
+    typeof out === 'string' && !out.includes('[verify:failed]'),
+    `软性未通过不得改写产出: ${String(out).slice(0, 80)}`
+  );
 });
 
-test('P4.5：同一 executor 两个 step 的 outputChecks 互不串染（per-step 隔离）', async () => {
-  const ex = createWorkflowExecutor({ mode: 'mock', verify: { auto: true }, planOutputChecks: true });
+test('P4.7：outputChecks 命中 → 通过（软性组不影响通过语义）', async () => {
+  const { verifyEvents } = await runExecutor(
+    { mode: 'mock', verify: { auto: true }, planOutputChecks: true },
+    planStepWithChecks('t1', ['Mock 离线应答'])
+  );
+  assert.strictEqual(verifyEvents.length, 1);
+  assert.strictEqual(verifyEvents[0].passed, true);
+  assert.strictEqual(verifyEvents[0].soft, undefined);
+});
+
+test('P4.7：同一 executor 两个 step 的 outputChecks 互不串染（per-step 隔离）', async () => {
   const ctx = { workflowId: 'wf-p45', outputs: {}, signal: undefined, compensate: false };
-  // 同一 executor 实例先后跑两个不同 checks 的 step：A 的 checks 命中、B 的未命中。
-  await ex(planStepWithChecks('t1', ['Mock 离线应答']), '调研一个主题并给出结论', ctx);
-  const outB = await ex(planStepWithChecks('t2', ['__IMPOSSIBLE_CHECK_Y__']), '调研一个主题并给出结论', ctx);
-  // 重试预算缺省 0 → B 断言未过只标记不重跑：产出带 [verify:failed]。
-  // 若 A 的 checks 串染进 B（装配了闭包共享状态），B 的判定会与 A 同向——此断言钉死 per-step 计算。
-  assert.ok(typeof outB === 'string' && outB.includes('[verify:failed]'), `B 应按自身 checks 判失败: ${String(outB).slice(0, 80)}`);
+  const evA = [];
+  const evB = [];
+  const exA = createWorkflowExecutor({ mode: 'mock', verify: { auto: true }, planOutputChecks: true, onEvent: (e) => evA.push(e) });
+  await exA(planStepWithChecks('t1', ['Mock 离线应答']), '调研一个主题并给出结论', ctx);
+  const exB = createWorkflowExecutor({ mode: 'mock', verify: { auto: true }, planOutputChecks: true, onEvent: (e) => evB.push(e) });
+  await exB(planStepWithChecks('t2', ['__IMPOSSIBLE_CHECK_Y__']), '调研一个主题并给出结论', ctx);
+  // A 命中、B 未命中 —— 若 A 的 checks 串染进 B（闭包共享状态），B 的判定会与 A 同向；此断言钉死 per-step 计算。
+  assert.strictEqual(evA.find((e) => e.type === 'verify:result').passed, true, 'A 的 checks 命中');
+  assert.strictEqual(evB.find((e) => e.type === 'verify:result').passed, false, 'B 按自身 checks 判未通过');
 });
 
 test('P4.5：无 taskMeta 的普通 step + planOutputChecks → 回落 executor 级验证器（零回归）', async () => {

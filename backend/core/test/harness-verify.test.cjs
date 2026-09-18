@@ -104,6 +104,60 @@ test('verify 失败且 verifyMaxRetries=0：加 [verify:failed] 标记、不重�
 });
 
 // ---------------------------------------------------------------------------
+// 场景 5（P4.7）：软性未通过 → 只告警、不改写产出、不加 [verify:failed]
+// ---------------------------------------------------------------------------
+
+test('软性门禁未通过（重试后仍不通过）：产出原样保留，不追加 [verify:failed]，发告警', async () => {
+  const events = [];
+  const content = '一份切题且完整的产出，只是没有逐字复述验收词。';
+  const harness = makeHarness({
+    llm: makeConstantLlm(content),
+    onEvent: (e) => events.push(e),
+    verify: specsVerifier([{ contains: '__IMPOSSIBLE__' }], '任务验收', true),
+    verifyMaxRetries: 1,
+    verifySelfCorrect: true,
+  });
+  const final = await harness.run('do X');
+  // 核心：产出不被改写（此前会变成 '[verify:failed] …' → 引擎出口闸门判无效产出 → step 失败）。
+  assert.strictEqual(final, content, '软性未通过不得改写产出');
+  assert.ok(!final.includes('[verify:failed]'), '不得追加失败标记');
+  const vr = events.filter((e) => e.type === 'verify:result');
+  assert.strictEqual(vr.length, 2, '仍走一次自检重试（首次 + 重试后）');
+  assert.strictEqual(vr[0].passed, false);
+  assert.strictEqual(vr[0].soft, true, 'verify:result 带 soft=true 供 UI 呈现为告警');
+  assert.ok(
+    events.some((e) => e.type === 'warn' && String(e.message).includes('验收告警')),
+    '应发告警事件（验收缺口不静默丢失）'
+  );
+});
+
+test('软性门禁首次通过：不加 soft 字段、发一次 verify:result', async () => {
+  const events = [];
+  const harness = makeHarness({
+    llm: makeConstantLlm('含验收词 市场规模 的产出'),
+    onEvent: (e) => events.push(e),
+    verify: specsVerifier([{ contains: '市场规模' }], '任务验收', true),
+    verifyMaxRetries: 1,
+    verifySelfCorrect: true,
+  });
+  const final = await harness.run('do X');
+  assert.ok(final.includes('市场规模'));
+  const vr = events.filter((e) => e.type === 'verify:result');
+  assert.strictEqual(vr.length, 1, '首次通过不重试');
+  assert.strictEqual(vr[0].soft, undefined);
+});
+
+test('硬性门禁未通过仍照旧追加 [verify:failed]（软性化不外溢到硬门禁）', async () => {
+  const harness = makeHarness({
+    llm: makeConstantLlm('一份产出'),
+    verify: specsVerifier([{ contains: '__IMPOSSIBLE__' }], '默认门禁'), // 非软性
+    verifyMaxRetries: 0,
+  });
+  const final = await harness.run('do X');
+  assert.ok(final.startsWith('[verify:failed]'), '硬性未通过保持原语义');
+});
+
+// ---------------------------------------------------------------------------
 // 场景 4：未配置验证器 → 不发出 verify:result，行为等同于原 run
 // ---------------------------------------------------------------------------
 

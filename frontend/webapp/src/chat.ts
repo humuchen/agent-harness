@@ -2547,10 +2547,12 @@ export class AhChat extends LitElement {
       }
       case 'verify:result': {
         this.ensureTraceRoot(sid);
-        mk(tc.root!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
+        // 软性未通过（soft）只告警不阻断：链路里不算失败，避免与真正被拦的产出混淆。
+        const soft = !ev.passed && ev.soft === true;
+        mk(tc.root!, 'verify', soft ? '验收告警' : '自检', ev.passed || soft ? 'ok' : 'error', {
           meta: {
             score: String(ev.score ?? '?'),
-            passed: ev.passed ? '通过' : '未通过'
+            passed: ev.passed ? '通过' : soft ? '未通过（不阻断）' : '未通过'
           },
           result: (ev.reasons ?? []).join('\n')
         });
