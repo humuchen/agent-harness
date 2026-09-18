@@ -16,6 +16,7 @@ import {
   type TaskEnvelope,
   type TaskResult,
   type VerifyConfig,
+  runPlanPropose,
   withRequestContext,
   type RequestContext
 } from '@agent-harness/core';
@@ -1055,9 +1056,32 @@ export class RunQueue {
         // 归属用户注入（数据绑定）：整个 agent 循环（含工具执行）都在 runWithUser 上下文内，
         // 插件工具（如 memo note_save）经 getRunUser() 拿到 owner，把产出数据绑定到登录用户。
         // owner 缺省（旧 job / 内部派发）时保持无上下文，由工具侧自行兜底匿名桶。
+        // 计划 propose（P5 彻底重构）：默认走「两段式规划管线」（理解 → 受限调研 → 生成计划），
+        // 结构上保证必然产出计划/澄清 JSON，杜绝「预算耗尽无产出、调研 token 白烧」。
+        // 回退开关 PLAN_PROPOSE_PIPELINE=false 走旧 harness 自由循环；mock 模式保持旧路径
+        // （mock 输出非 JSON，管线只会多跑空阶段，无意义）。
+        const isPlanPropose =
+          job.interactionMode === 'plan' && job.planPhase !== 'execute';
+        const useProposePipeline =
+          isPlanPropose &&
+          assembled.llmKind === 'openrouter' &&
+          process.env.PLAN_PROPOSE_PIPELINE !== 'false';
         const finalText = await runWithUser(
           job.owner ? { sub: job.owner } : null,
-          () => assembled.harness.run(job.prompt, job.attachments)
+          () =>
+            useProposePipeline
+              ? runPlanPropose({
+                  llm: assembled.llm,
+                  tools: assembled.tools,
+                  userInput: job.prompt,
+                  emit: onEvent,
+                  signal,
+                  systemPrompt: assembled.systemPrompt,
+                  memory: assembled.memory,
+                  streamTokens: true,
+                  guardPolicy: assembled.guardrailPolicy
+                })
+              : assembled.harness.run(job.prompt, job.attachments)
         );
 
         // 运行完成闸门（P2-13 延伸）：自动评估本轮质量，据 HARNESS_EVAL_GATE 决定告警或拦截。

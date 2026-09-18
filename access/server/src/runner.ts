@@ -96,6 +96,12 @@ export interface AssembledAgent {
   harness: AgentHarness;
   tools: ToolRegistry;
   memory: Memory;
+  /** LLM 适配器实例（计划 propose 两段式管线复用同一实例）。 */
+  llm: LLM;
+  /** 本次 run 的系统提示词（管线与 harness 保持同一人格基线）。 */
+  systemPrompt: string;
+  /** 解析后的护栏策略（管线阶段2 工具参数校验 / 出网管控复用）。 */
+  guardrailPolicy: GuardrailPolicy;
   llmKind: 'mock' | 'openrouter';
   dryRun: boolean;
   mcpConnected: boolean;
@@ -811,7 +817,10 @@ export async function assembleAgent(
     harness,
     tools,
     memory,
+    llm,
     llmKind,
+    systemPrompt: finalSystemPrompt,
+    guardrailPolicy,
     dryRun,
     mcpConnected,
     notes,

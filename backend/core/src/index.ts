@@ -26,6 +26,7 @@ export * from './subagent';
 export * from './teams';
 export * from './harness';
 export * from './plan';
+export * from './plan-propose';
 export * from './verify';
 export * from './quota/engine';
 export * from './audit';

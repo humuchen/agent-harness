@@ -1249,6 +1249,33 @@ export class AgentHarness {
           // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
           fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
         }
+        // 计划 propose 收尾（P5 优化）：预算耗尽时调研往往已消耗大量 token，若直接返回
+        // MAX_STEPS_NOTICE，服务端解析不出计划 JSON，整轮调研白烧、用户只能从头重试。
+        // 这里补一次「强制收尾」LLM 调用（不带工具，逼模型立即产出），基于已获取的
+        // 信息直接输出计划/澄清 JSON；仅当收尾调用失败或仍无内容时才回退默认提示。
+        if (this.opts.planPropose && !signal.aborted) {
+          try {
+            memory.add({
+              role: 'user',
+              content:
+                '（系统提示）规划预算已用尽，请立即停止调研。基于以上已获取的信息直接输出最终结果：' +
+                '需求清晰时输出计划 JSON（信息不足的任务在 expectedOutput 中显式标注数据缺口），' +
+                '需求不清时输出澄清 JSON（{"clarify": true, "goalDraft": string, "questions": string[]}）。' +
+                '只输出一个 JSON 对象，不要任何其他文字。'
+            });
+            const finResp = await this.opts.llm(
+              sanitizeToolPairing(memory.history()),
+              [],
+              { signal, circuitBreaker: this.opts.circuitBreaker }
+            );
+            if (finResp?.content && finResp.content.trim()) {
+              memory.add({ role: 'assistant', content: finResp.content });
+              return finResp.content;
+            }
+          } catch {
+            // 收尾调用失败（网络/熔断等）：回退到默认 MAX_STEPS_NOTICE。
+          }
+        }
         return MAX_STEPS_NOTICE;
       });
 

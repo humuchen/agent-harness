@@ -4367,6 +4367,9 @@ async function handleRun(
   // 计划模式 propose：阶段进度（理解需求 → 调研中 → 生成计划），仅向前推进，变化时下发 plan:phase。
   const PLAN_PHASES = ['理解需求', '调研中', '生成计划'] as const;
   let planPhaseIdx = -1;
+  // 是否已见到「真实」plan:phase（两段式规划管线在真实阶段边界下发）；
+  // 见到后停用事件类型启发式（避免管线阶段1 的 token 把进度误推到「生成计划」）。
+  let planPhaseReal = false;
   const emitPlanPhase = (idx: number) => {
     if (idx <= planPhaseIdx) return;
     planPhaseIdx = idx;
@@ -4470,19 +4473,25 @@ async function handleRun(
     }
 
     // 计划模式 propose：仅抑制原始 JSON 的 token/response 流（避免计划 JSON 打字机外泄），
-    // 但放行 llm:reasoning（规划思考）与 tool:*（调研过程），并据事件类型下发阶段进度，
-    // 让前端展示「规划中」的真实进展而非永久「模型正在思考…」。最终内容由 run:end 以友好摘要替换。
+    // 放行 llm:reasoning（规划思考）、tool:*（调研过程）与 plan:phase。
+    // 阶段进度：默认走两段式规划管线（run-queue）在真实阶段边界下发 plan:phase —— 见到
+    // 真实事件后启发式全部停用；仅当走旧 harness 回退路径（无真实 plan:phase）时，
+    // 才按事件类型启发式猜阶段。最终内容由 run:end 以友好摘要替换。
     if (isPlanPropose) {
       const et = (e as { type?: string }).type;
-      if (et === 'run:start') emitPlanPhase(0);
-      else if (et === 'tool:start') emitPlanPhase(1);
-      else if (et === 'llm:reasoning') {
-        if (planPhaseIdx < 0) emitPlanPhase(0);
-      } else if (et === 'llm:token' || et === 'llm:response') {
-        emitPlanPhase(2);
+      if (et === 'plan:phase') planPhaseReal = true;
+      if (et === 'llm:token' || et === 'llm:response') {
+        if (!planPhaseReal) emitPlanPhase(2);
         return; // 抑制原始 JSON 流
       }
-      // 其余事件（含 llm:reasoning / tool:*）照常下发。
+      if (!planPhaseReal) {
+        if (et === 'run:start') emitPlanPhase(0);
+        else if (et === 'tool:start') emitPlanPhase(1);
+        else if (et === 'llm:reasoning') {
+          if (planPhaseIdx < 0) emitPlanPhase(0);
+        }
+      }
+      // 其余事件（含 plan:phase / llm:reasoning / tool:*）照常下发。
     }
     send(e);
     // 跨设备广播（进行中增量 / 终态全文）：与 send(e) 并列，仅影响其他连接。
