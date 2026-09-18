@@ -363,8 +363,10 @@ export class DagEngine {
           this.emit({ type: 'wf:awaiting-approval', workflowId: def.id, runId, stepIds: gated, run });
           return run;
         }
-        await Promise.all(
-          wave.map(async (id) => {
+        // P5 串行执行模式：def.execMode==='serial' 时波次内逐个 await（单步发送语义：
+        // 上一 step 完成后才派发下一个），缺省 parallel 波次内并行（存量零回归）。
+        // 串行只改调度顺序，验证门禁 / 补偿 / 审批门 / 检查点语义与并行完全一致。
+        const runWaveStep = async (id: string): Promise<void> => {
             const step = def.steps.find((s) => s.id === id)!;
 
             // P2 条件分支：级联跳过 —— 若本 step 的「输出消费依赖」（dependsOn / inputMapping
@@ -439,8 +441,12 @@ export class DagEngine {
               this.emit({ type: 'wf:step:failed', workflowId: def.id, stepId: id, error: errMsg });
               throw e;
             }
-          })
-        );
+        };
+        if (def.execMode === 'serial') {
+          for (const id of wave) await runWaveStep(id);
+        } else {
+          await Promise.all(wave.map(runWaveStep));
+        }
       }
       run.state = 'done';
       run.finishedAt = Date.now();
@@ -646,8 +652,8 @@ export class DagEngine {
         this.emit({ type: 'wf:awaiting-approval', workflowId, runId, stepIds: gated, run });
         return run;
       }
-      await Promise.all(
-        wave.map(async (id) => {
+      // P5 串行执行模式（与 run() 同语义）：serial 时波次内逐个 await，缺省并行。
+      const resumeWaveStep = async (id: string): Promise<void> => {
           const sr = run.steps[id];
           // 终态 step 不重跑：done（已完成）、skipped（条件不满足，保持跳过）、
           // compensated（补偿动作已执行，回滚不应重复）。
@@ -683,8 +689,12 @@ export class DagEngine {
             stepFailed = true;
           }
           await this.store.save(run);
-        })
-      );
+      };
+      if (run.def.execMode === 'serial') {
+        for (const id of wave) await resumeWaveStep(id);
+      } else {
+        await Promise.all(wave.map(resumeWaveStep));
+      }
       if (stepFailed) break;
     }
 

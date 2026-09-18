@@ -102,6 +102,12 @@ export interface RunDeps {
     payload: Record<string, unknown>,
     opts: { signal: AbortSignal }
   ): AsyncIterable<unknown>;
+
+  /**
+   * P5 静默计划执行（可选）：quiet run 期间的 llm:reasoning 增量回调 ——
+   * 由 AhChat 叠进计划卡「当前任务思考面板」。非 quiet run 不回调。
+   */
+  onPlanThinking?(sid: string, delta: string): void;
 }
 
 /**
@@ -228,6 +234,8 @@ export class ChatRunRuntime {
   private lastEventAt: Record<string, number> = {};
   private finishedBy: Record<string, boolean> = {};
   private erroredBy: Record<string, boolean> = {};
+  /** P5 静默计划执行：本会话当前 run 是否为 quiet（llm:reasoning 改道思考面板）。 */
+  private quietBy: Record<string, boolean> = {};
   private keepAliveAbort: Record<string, boolean> = {};
   private lastInputBy: Record<string, Record<string, unknown>> = {};
   private abortBy: Record<string, AbortController> = {};
@@ -451,6 +459,10 @@ export class ChatRunRuntime {
           const p = this.typewriter.pending[sid];
           if (p) p.reasoning += String((ev as any).delta ?? '');
           this.typewriter.ensureTypewriter();
+          // P5 静默计划执行：quiet run 的思考增量改道计划卡思考面板（气泡本身隐藏）。
+          if (this.quietBy[sid]) {
+            this.deps.onPlanThinking?.(sid, String((ev as any).delta ?? ''));
+          }
         }
         break;
       }
@@ -616,6 +628,11 @@ export class ChatRunRuntime {
       web?: boolean;
       attachments?: unknown[];
       modelPrompt?: string;
+      /**
+       * P5 静默计划执行：quiet run —— user/assistant 消息对标记 quiet（不渲染、不落历史镜像），
+       * 思考增量经 deps.onPlanThinking 改道计划卡思考面板；产出由调用方读取后移除消息对。
+       */
+      quiet?: boolean;
       /** 编辑重发模式：通知服务端截断会话与记忆，从该消息重新生成。
        *  index 为该消息在会话消息列表中的下标（截断位点）。 */
       editFrom?: { sessionId: string; msgId: number; index: number };
@@ -632,6 +649,7 @@ export class ChatRunRuntime {
         id: this.deps.nextId(),
         role: 'user',
         content,
+        ...(opts.quiet ? { quiet: true } : {}),
         attachments: opts.attachments
           ? [...opts.attachments]
           : [...this.deps.getAttachments()]
@@ -639,10 +657,13 @@ export class ChatRunRuntime {
       t.push({
         id: this.deps.nextId(),
         role: 'assistant',
-        content: ''
+        content: '',
+        ...(opts.quiet ? { quiet: true } : {})
       } as ChatMsg);
       this.deps.setStreamIdx(sessionId, t.length - 1);
     }
+    // P5：记录本 run 的 quiet 语义（ingest 的 llm:reasoning 据此改道思考面板）。
+    this.quietBy[sessionId] = !!opts.quiet;
     this.deps.setThreads(sessionId, t);
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.typewriter.received[sessionId] = false;
@@ -760,6 +781,8 @@ export class ChatRunRuntime {
       }
       this.deps.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
+      // P5：run 收尾解除 quiet 标记（下一轮普通 run 的思考回到气泡内折叠块）。
+      this.quietBy[sessionId] = false;
       if (this.deps.getActiveId() === sessionId)
         this.deps.setMessages(this.deps.getThreads(sessionId) ?? []);
       // 容错持久化：run 收尾把最终消息镜像落盘。

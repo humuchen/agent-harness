@@ -69,6 +69,11 @@ export interface PlanExecState {
   /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
   awaitingTaskIds?: string[];
   /**
+   * P5 静默执行：当前任务的思考过程（llm:reasoning 增量累积，随 wf:step:start 重置、
+   * wf:step:done/failed/awaiting/终态清空）。瞬态字段 —— 不落 planStatus 镜像（刷新即清）。
+   */
+  thinking?: { taskId?: string; text: string };
+  /**
    * P2.6：紧凑 run 快照（wf:done/wf:failed/_wf_done 帧的 run 经 compactPlanWfSnapshot 收敛）。
    * 随 planStatus 镜像落会话历史（见 chat-persist.toMirrorPlanStatus）：检查点在服务重启 /
    * Render free 盘清理后丢失时，「执行详情」抽屉按此镜像回退水合（404 → 历史快照）。
@@ -125,6 +130,11 @@ export interface ChatMsg {
   clarify?: PlanClarifyView;
   /** 本轮 run 期间是否触发过上下文压缩（最旧对话被自动压缩/淘汰），用于在该条气泡下方显示「已压缩」标识。 */
   compressed?: boolean;
+  /**
+   * P5 静默计划执行（串行回退路径）：本条消息是计划任务的隐藏消息对（user 提示 + assistant 产出），
+   * 不在会话线程渲染、不落历史镜像；产出在编排终态随「计划执行摘要 + 最终结果」一次性输出。
+   */
+  quiet?: boolean;
 }
 
 export interface SessionView {

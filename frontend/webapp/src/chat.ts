@@ -26,6 +26,7 @@ import {
   buildPlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
+  applyPlanThinking,
   derivePlanWfId,
   compactPlanWfSnapshot,
   isPlanDagEnabled,
@@ -450,6 +451,12 @@ export class AhChat extends LitElement {
    *  看门狗 / 可见性体检 + 断连重连续传引擎。运行内部簿记状态由本控制器持有，
    *  领域数据 / 渲染状态 / 行为方法经 RunDeps 桥接（render 与组件其余路径零改动）。 */
   private runRt = new ChatRunRuntime(this.makeRunDeps(), this.typewriter);
+
+  /**
+   * P5 静默计划执行（串行回退路径）：quiet run 进行中的思考面板 sink（携带计划的消息 id）。
+   * confirmPlan 逐任务派发前置位、循环结束（含失败/取消）复位；onPlanThinking 据此路由。
+   */
+  private quietPlanSink: { msgId: number } | null = null;
 
   /** 侧栏打开瞬间标记：防止打开后立即被 scrim 点击关闭。 */
   private _sidebarJustOpened = false;
@@ -2267,7 +2274,19 @@ export class AhChat extends LitElement {
       requestUpdate: () => this.requestUpdate(),
 
       /* ----- SSE 客户端 ----- */
-      streamRun: (payload, opts) => client.streamRun(payload as any, opts)
+      streamRun: (payload, opts) => client.streamRun(payload as any, opts),
+
+      /* ----- P5 静默计划执行：quiet run 的思考增量 → 当前计划卡思考面板 ----- */
+      onPlanThinking: (sid, delta) => {
+        const sink = this.quietPlanSink;
+        if (!sink) return;
+        const prev = this.planExec[sink.msgId];
+        if (!prev || prev.status !== 'running') return;
+        const next = applyPlanThinking(prev, delta);
+        if (next !== prev) {
+          this.planExec = { ...this.planExec, [sink.msgId]: next };
+        }
+      }
     };
   }
 
@@ -3678,60 +3697,138 @@ export class AhChat extends LitElement {
     }
     let cur: PlanExecState = { ...st, status: 'running' };
     this.planExec = { ...this.planExec, [m.id]: cur };
-    for (const task of m.plan.tasks) {
-      // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
-      if (cur.done[task.id]) continue;
-      // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
-      cur = { ...cur, status: 'running', currentTaskId: task.id };
-      this.planExec = { ...this.planExec, [m.id]: cur };
-      const parts = [`【计划任务 ${task.id}】${task.title}`];
-      if (task.steps.length) {
-        parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
-      }
-      parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
-      const result = await this.runRt.dispatchPrompt(
-        sid,
-        parts.join('\n'),
-        [],
-        {
-          planTask: true,
-          // 联网能力对齐：任务执行继承 propose 时的联网开关（planWeb），
-          // 避免「计划要求外部数据、执行环境无检索工具」导致验收必败。
-          web: this.web || m.planWeb === true || undefined
-        }
-      );
-      if (result !== 'ok') {
-        if (result === 'error') {
-          // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
-          // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
-          // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
-          cur = {
-            ...cur,
-            status: 'failed',
-            failedTaskId: task.id,
-            currentTaskId: undefined
-          };
-        } else {
-          // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
-          cur = { ...cur, status: 'cancelled', currentTaskId: undefined };
-        }
+    // P5 静默执行：串行路径同样不把任务消息进气泡 —— 每个任务以 quiet 消息对
+    // （user 提示 + assistant 产出）在后台执行，思考增量进计划卡思考面板，
+    // 产出在全部任务完成后随「摘要 + 最终结果」一次性输出。
+    const taskOutputs: Record<string, string> = {};
+    this.quietPlanSink = { msgId: m.id };
+    try {
+      for (const task of m.plan.tasks) {
+        // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
+        if (cur.done[task.id]) continue;
+        // 每个任务派发前刷新当前任务标记 + 重置思考面板（驱动卡片 ⏳ 状态与 💭 思考流）。
+        cur = {
+          ...cur,
+          status: 'running',
+          currentTaskId: task.id,
+          thinking: { taskId: task.id, text: '' }
+        };
         this.planExec = { ...this.planExec, [m.id]: cur };
-        return;
+        const parts = [`【计划任务 ${task.id}】${task.title}`];
+        if (task.steps.length) {
+          parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
+        }
+        parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
+        const result = await this.runRt.dispatchPrompt(
+          sid,
+          parts.join('\n'),
+          [],
+          {
+            planTask: true,
+            // 联网能力对齐：任务执行继承 propose 时的联网开关（planWeb），
+            // 避免「计划要求外部数据、执行环境无检索工具」导致验收必败。
+            web: this.web || m.planWeb === true || undefined,
+            // P5 静默执行：任务消息对标记 quiet（不渲染 / 不落历史镜像）。
+            quiet: true
+          }
+        );
+        if (result !== 'ok') {
+          // 中断的部分产出不再展示（quiet 对移出线程）；DAG 检查点续跑为主恢复路径。
+          this.stripQuietTail(sid);
+          if (result === 'error') {
+            // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
+            // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
+            // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
+            cur = {
+              ...cur,
+              status: 'failed',
+              failedTaskId: task.id,
+              currentTaskId: undefined,
+              thinking: undefined
+            };
+          } else {
+            // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
+            cur = {
+              ...cur,
+              status: 'cancelled',
+              currentTaskId: undefined,
+              thinking: undefined
+            };
+          }
+          this.planExec = { ...this.planExec, [m.id]: cur };
+          return;
+        }
+        // 抽取本任务产出（隐藏 assistant 消息正文），随后把 quiet 消息对移出线程。
+        const tOut = this.threadFor(sid);
+        const outMsg = tOut[tOut.length - 1];
+        taskOutputs[task.id] = typeof outMsg?.content === 'string' ? outMsg.content : '';
+        this.stripQuietTail(sid);
+        cur = {
+          ...cur,
+          done: { ...cur.done, [task.id]: true },
+          failedTaskId: undefined,
+          thinking: undefined
+        };
+        this.planExec = { ...this.planExec, [m.id]: cur };
       }
-      cur = {
-        ...cur,
-        done: { ...cur.done, [task.id]: true },
-        failedTaskId: undefined
-      };
-      this.planExec = { ...this.planExec, [m.id]: cur };
+    } finally {
+      this.quietPlanSink = null;
     }
+    // 全部完成：回挂「摘要 + 最终结果」（P5：只在最后输出一次结果）。
+    // 前缀与 appendPlanDagSummary 同源（PLAN_DAG_SUMMARY_PREFIX 解析器兼容）。
+    const lines = [
+      `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
+    ];
+    let finalOut = '';
+    let finalTask: { id: string; title: string } | undefined;
+    for (const task of m.plan.tasks) {
+      const ok = !!cur.done[task.id];
+      lines.push(
+        `${ok ? '✅' : '⏭'} ${task.id} ${task.title}（${ok ? 'done' : 'skipped'}）`
+      );
+      const out = taskOutputs[task.id];
+      if (ok && out.trim()) {
+        finalOut = out;
+        finalTask = { id: task.id, title: task.title };
+      }
+    }
+    if (finalTask && finalOut.trim()) {
+      lines.push(
+        '',
+        `—— 最终结果（任务 ${finalTask.id}：${finalTask.title}）——`,
+        finalOut
+      );
+    }
+    const tFinal = this.threadFor(sid);
+    tFinal.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    this.threads[sid] = tFinal;
+    if (this.activeId === sid) this.messages = tFinal;
     cur = {
       ...cur,
       status: 'done',
       currentTaskId: undefined,
-      failedTaskId: undefined
+      failedTaskId: undefined,
+      thinking: undefined
     };
     this.planExec = { ...this.planExec, [m.id]: cur };
+  }
+
+  /**
+   * P5 静默执行：把线程尾部连续的 quiet 消息（最多 user + assistant 两条）移出线程。
+   * 串行回退路径在每个任务收尾（成功 / 失败 / 取消）调用 —— 隐藏消息对的产出已被
+   * 读取进 taskOutputs（或确认丢弃），线程中不留痕迹，历史镜像也从不落 quiet 消息。
+   */
+  private stripQuietTail(sid: string) {
+    const t = this.threadFor(sid);
+    let removed = 0;
+    while (t.length && t[t.length - 1]?.quiet && removed < 2) {
+      t.pop();
+      removed++;
+    }
+    if (removed) {
+      this.threads[sid] = t;
+      if (this.activeId === sid) this.messages = t;
+    }
   }
 
   /** 取消计划：不再执行任何任务。 */
@@ -3991,6 +4088,17 @@ export class AhChat extends LitElement {
         if (next !== prev) {
           this.planExec = { ...this.planExec, [m.id]: next };
         }
+        // P5 静默执行：嵌套 harness 事件中只消费 llm:reasoning —— 增量叠进「当前任务
+        // 思考面板」（串行模式下与 currentTaskId 一一对应）；llm:token 等其余流式内容
+        // 静默丢弃（服务端 plan 桥已抑制 llm:token，此处是双保险），步骤消息不进气泡。
+        const he = (e as { event?: { type?: string; delta?: unknown } }).event;
+        if (he?.type === 'llm:reasoning') {
+          const prevT = this.planExec[m.id] ?? st;
+          const nextT = applyPlanThinking(prevT, String(he.delta ?? ''));
+          if (nextT !== prevT) {
+            this.planExec = { ...this.planExec, [m.id]: nextT };
+          }
+        }
         if (e.type === 'wf:done' || e.type === 'wf:failed') {
           // 编排终态：回挂摘要并停止消费后续帧（_wf_done 收尾帧无需再处理）。
           this.appendPlanDagSummary(sid, m, e.run);
@@ -4149,6 +4257,8 @@ export class AhChat extends LitElement {
   /**
    * P3：把计划 DAG 执行摘要回挂线程（卡片级紧凑摘要，见 design R1 —— 不把每 step
    * 明细重铺进会话气泡，避免历史膨胀）。run 快照缺失时仍给出按 task 的状态清单。
+   * P5 静默执行：步骤消息不再进会话气泡 —— 本消息即「最终结果」的输出位：
+   * 状态清单之后追加拓扑序最后一个成功任务的**完整产出**（不截断），只在最后输出一次。
    */
   private appendPlanDagSummary(
     sid: string,
@@ -4160,15 +4270,33 @@ export class AhChat extends LitElement {
     const lines: string[] = [
       `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
     ];
+    let finalOut = '';
+    let finalTask: { id: string; title: string } | undefined;
     for (const t of m.plan.tasks) {
       const sr = steps[t.id];
       const state = sr?.state ?? 'pending';
       const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
       lines.push(`${mark} ${t.id} ${t.title}（${state}）`);
       const out = sr?.output;
-      if (out && typeof out === 'string' && out.trim()) {
-        lines.push(`   ${out.length > 300 ? out.slice(0, 300) + '…' : out}`);
+      // P5：记录拓扑序最后一个成功任务的完整产出（循环按 plan.tasks 顺序，天然取末位）。
+      if (state === 'done' && typeof out === 'string' && out.trim()) {
+        finalOut = out;
+        finalTask = { id: t.id, title: t.title };
+      } else if (state === 'done' && out != null && typeof out !== 'string') {
+        try {
+          finalOut = JSON.stringify(out, null, 2);
+          finalTask = { id: t.id, title: t.title };
+        } catch {
+          /* 不可序列化产出跳过 */
+        }
       }
+    }
+    if (finalTask && finalOut.trim()) {
+      lines.push(
+        '',
+        `—— 最终结果（任务 ${finalTask.id}：${finalTask.title}）——`,
+        finalOut
+      );
     }
     const t = this.threadFor(sid);
     const msgId = this.nextId++;
@@ -4352,7 +4480,9 @@ export class AhChat extends LitElement {
               去配置
             </button>
           </div>`}
-      ${this.messages.map((m) => this.renderMessage(m))}
+      ${this.messages
+        .filter((m) => !m.quiet)
+        .map((m) => this.renderMessage(m))}
     </div>`;
   }
 

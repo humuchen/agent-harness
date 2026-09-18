@@ -10,6 +10,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   applyPlanWfEvent,
+  applyPlanThinking,
   isPlanDagEnabled,
   setPlanDagEnabled,
   derivePlanWfId,
@@ -23,6 +24,7 @@ import {
   planWfTraceMetaLabel,
   planWfTraceMetaRowTitle,
   PLAN_DAG_STORAGE_KEY,
+  PLAN_THINKING_MAX,
   type PlanWfEvent
 } from './chat-render-utils';
 import type { ExecutionPlanView, PlanExecState } from './chat-types';
@@ -35,9 +37,29 @@ describe('applyPlanWfEvent', () => {
   it('wf:step:start → running + currentTaskId（未知 task 原样返回）', () => {
     const next = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
     expect(next).not.toBe(base);
-    expect(next).toEqual({ status: 'running', currentTaskId: 't2', done: {} });
+    // P5 静默执行：任务开始时建立空思考槽位（llm:reasoning 增量随后叠入）。
+    expect(next).toEqual({
+      status: 'running',
+      currentTaskId: 't2',
+      done: {},
+      thinking: { taskId: 't2', text: '' }
+    });
     expect(applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 'nope' }, KNOWN)).toBe(base);
     expect(applyPlanWfEvent(base, { type: 'wf:step:start' }, KNOWN)).toBe(base);
+  });
+
+  it('P5：思考面板生命周期 —— step:start 建立空槽，step:done/failed/wf:done 清空', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    expect(st.thinking).toEqual({ taskId: 't1', text: '' });
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    expect(st.thinking?.taskId).toBe('t2');
+    st = applyPlanWfEvent(st, { type: 'wf:step:failed', stepId: 't2' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
+    st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:done' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
   });
 
   it('wf:step:done → done 集合累加，状态保持 running（多任务并行时不提前 done）', () => {
@@ -139,6 +161,35 @@ describe('applyPlanWfEvent', () => {
       { type: 42 } as unknown as PlanWfEvent
     ];
     for (const ev of same) expect(applyPlanWfEvent(base, ev, KNOWN)).toBe(base);
+  });
+});
+
+describe('applyPlanThinking（P5 静默执行：思考增量叠加）', () => {
+  it('running 且有 thinking 槽位 → 增量叠入 text', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const next = applyPlanThinking(st, '分析目标…');
+    expect(next).not.toBe(st);
+    expect(next.thinking).toEqual({ taskId: 't1', text: '分析目标…' });
+    const next2 = applyPlanThinking(next, '，检索数据中');
+    expect(next2.thinking?.text).toBe('分析目标…，检索数据中');
+  });
+
+  it('非 running / 无 thinking 槽位 / 空增量 → 同引用返回（no-op）', () => {
+    expect(applyPlanThinking(base, 'x')).toBe(base);
+    const done: PlanExecState = { status: 'done', done: {} };
+    expect(applyPlanThinking(done, 'x')).toBe(done);
+    const runningNoThink: PlanExecState = { status: 'running', done: {} };
+    expect(applyPlanThinking(runningNoThink, 'x')).toBe(runningNoThink);
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    expect(applyPlanThinking(st, '')).toBe(st);
+  });
+
+  it('超上限截尾保新（tail 展示语义）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const big = 'a'.repeat(PLAN_THINKING_MAX + 100);
+    const next = applyPlanThinking(st, big);
+    expect(next.thinking?.text.length).toBe(PLAN_THINKING_MAX);
+    expect(next.thinking?.text.startsWith('a')).toBe(true);
   });
 });
 

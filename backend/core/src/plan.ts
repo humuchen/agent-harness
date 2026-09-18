@@ -346,6 +346,12 @@ export interface PlanToWorkflowOptions {
   tenantId?: string;
   /** 全局追踪 id（可选，贯穿所有 step 的 agent 调用，OTel 跨 agent 关联）。 */
   traceId?: string;
+  /**
+   * P5 执行顺序（可选）：缺省 'serial' —— 计划任务按拓扑序「单步发送」逐个执行
+   * （每步思考过程与当前任务一一对应，前端静默展示的前提）；显式传 'parallel'
+   * 可回到波次并行。手工 WorkflowDef 不经过本桥，缺省仍是 parallel（零回归）。
+   */
+  execMode?: 'parallel' | 'serial';
 }
 
 /**
@@ -409,6 +415,10 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     // 护栏兜底话术）按失败处置（可断点续跑），不再以 5/5 ✅ 掩盖缺失的交付物。
     // 该 flag 仅由本映射桥写入，存量手工 WorkflowDef 缺省不开（零回归面）。
     failOnInvalidOutput: true,
+    // P5 静默计划执行：默认「单步发送」串行执行 —— 按拓扑序逐 task 派发，每步是独立的
+    // harness 调用（独立 sessionKey / 验证门禁 / 10min 预算），思考过程与当前任务一一对应；
+    // 前端据此把步骤消息静默化（计划卡 + 思考面板 + 仅最终结果）。显式 execMode 可回并行。
+    execMode: opts.execMode ?? 'serial',
   };
   if (opts.tenantId) def.tenantId = opts.tenantId;
   if (opts.traceId) def.traceId = opts.traceId;

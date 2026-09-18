@@ -92,6 +92,29 @@ export const planMode = css`
     align-items: center;
     gap: 8px;
   }
+  /* P5 静默执行：当前任务思考面板（llm:reasoning 增量的 tail 展示）。 */
+  .plan-thinking {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px dashed var(--ah-border);
+    border-radius: 8px;
+    background: var(--ah-bg-soft, rgba(127, 127, 127, 0.06));
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .pt-think-label {
+    font-size: 12px;
+    color: var(--ah-text-dim, var(--ah-text));
+    opacity: 0.75;
+    margin-bottom: 4px;
+  }
+  .pt-think-text {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ah-text-dim, var(--ah-text));
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .plan-tasks {
     margin: 0;
     padding-left: 4px;

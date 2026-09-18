@@ -2303,7 +2303,9 @@ const server = createServer(
             const engine = new DagEngine({
               store,
               executor: createWorkflowExecutor({
+                // P5 静默展示（plan 桥工作流续跑同首跑语义）：抑制 llm:token 流式内容。
                 onEvent: (e: any) => {
+                  if (isPlanWorkflow && e?.type === 'llm:token') return;
                   if (!closed) send({ type: 'harness', event: e });
                 },
                 // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传（此前缺失 →
@@ -2414,7 +2416,10 @@ const server = createServer(
             const engine = new DagEngine({
               store,
               executor: createWorkflowExecutor({
+                // P5 静默展示（plan 桥工作流审批续跑同首跑语义）：抑制 llm:token 流式内容。
                 onEvent: (e: any) => {
+                  const isPlanWf = !!(run as unknown as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput;
+                  if (isPlanWf && e?.type === 'llm:token') return;
                   if (!closed) send({ type: 'harness', event: e });
                 },
                 // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传。
@@ -5324,7 +5329,10 @@ async function handleWorkflow(
           ? body.workflowId
           : undefined,
       tenantId: typeof body.tenantId === 'string' ? body.tenantId : undefined,
-      traceId: typeof body.traceId === 'string' ? body.traceId : undefined
+      traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+      // P5 执行顺序：缺省串行（单步发送，桥内默认）；显式 execMode:'parallel' 回波次并行。
+      execMode:
+        body.execMode === 'parallel' ? 'parallel' : undefined
     });
   }
   if (
@@ -5363,7 +5371,14 @@ async function handleWorkflow(
   if (!execOpts) return; // 非 mock 无 Key 时 402 已写出（SSE 未开，不进入执行）
   const mode = execOpts.mode;
   let send: (payload: unknown) => void = () => {};
+  // P5 静默展示策略（仅 plan 桥路径）：抑制 token 级流式事件（llm:token）——
+  // 计划执行过程中 UI 不直播各 step 的回答内容，仅经 wf:step:* 驱动计划卡状态、
+  // 经 llm:reasoning 驱动「当前任务思考面板」，最终结果在编排终态一次性输出。
+  // llm:token 不在 StepTraceCollector 白名单内，此处过滤对调用链路落盘零影响；
+  // 非 plan 工作流（def 来源）保持全量直播，行为不变。
+  const quietPresentation = !!body.plan;
   const onHarnessEvent = (e: any) => {
+    if (quietPresentation && e?.type === 'llm:token') return;
     if (!closed) send({ type: 'harness', event: e });
   };
   // P2-3 补全：plan 来源的 DAG 执行进度同步到 PlanStore（节点 doing/done/blocked + 文档终态），

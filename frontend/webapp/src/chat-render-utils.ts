@@ -100,11 +100,19 @@ export function applyPlanWfEvent(
     case 'wf:step:start': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
       // P3：审批放行后重新进入 running —— 清掉 awaiting 标记。
-      return { ...prev, status: 'running', currentTaskId: ev.stepId, awaitingTaskIds: undefined };
+      // P5 静默执行：每个任务开始时重置思考面板（新任务 → 新的空思考流）。
+      return {
+        ...prev,
+        status: 'running',
+        currentTaskId: ev.stepId,
+        awaitingTaskIds: undefined,
+        thinking: { taskId: ev.stepId, text: '' }
+      };
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
-      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true } };
+      // P5：任务完成即收起思考面板。
+      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true }, thinking: undefined };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
@@ -112,7 +120,8 @@ export function applyPlanWfEvent(
         ...prev,
         status: 'failed',
         failedTaskId: ev.stepId,
-        currentTaskId: ev.stepId
+        currentTaskId: ev.stepId,
+        thinking: undefined
       };
     }
     case 'wf:awaiting-approval': {
@@ -120,10 +129,10 @@ export function applyPlanWfEvent(
       // （补偿 step / 非本计划的 def 演化不进入卡片状态机）。
       const ids = (ev.stepIds ?? []).filter((s) => s && knownTaskIds.has(s));
       if (!ids.length) return prev;
-      return { ...prev, status: 'awaiting', currentTaskId: undefined, awaitingTaskIds: ids };
+      return { ...prev, status: 'awaiting', currentTaskId: undefined, awaitingTaskIds: ids, thinking: undefined };
     }
     case 'wf:done':
-      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined, awaitingTaskIds: undefined };
+      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined, awaitingTaskIds: undefined, thinking: undefined };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
       // run.steps 中首个 state==='failed' 的 step（step id = task id）。
@@ -134,7 +143,8 @@ export function applyPlanWfEvent(
         ...prev,
         status: 'failed',
         failedTaskId: firstFailed?.id ?? prev.failedTaskId,
-        currentTaskId: undefined
+        currentTaskId: undefined,
+        thinking: undefined
       };
     }
     default:
@@ -142,6 +152,24 @@ export function applyPlanWfEvent(
       // 卡片状态机不消费（wf:error 即请求级失败，由调用方 catch 兜底回退串行路径）。
       return prev;
   }
+}
+
+/** P5 思考面板文本上限（超出截尾保新，避免超长思考流拖垮渲染与内存）。 */
+export const PLAN_THINKING_MAX = 40_000;
+
+/**
+ * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的「当前任务思考面板」。
+ * - 仅 running 且已有 thinking 槽位（wf:step:start 建立）时消费；其它状态原样返回 prev（同引用判重）。
+ * - 文本超 PLAN_THINKING_MAX 时保留尾部（最新思考），与 UI 面板「tail 展示」语义一致。
+ * - 空增量 no-op（同引用返回，避免无谓重渲染）。
+ */
+export function applyPlanThinking(
+  prev: PlanExecState,
+  delta: string
+): PlanExecState {
+  if (!delta || prev.status !== 'running' || !prev.thinking) return prev;
+  const text = (prev.thinking.text + delta).slice(-PLAN_THINKING_MAX);
+  return { ...prev, thinking: { ...prev.thinking, text } };
 }
 
 /** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */

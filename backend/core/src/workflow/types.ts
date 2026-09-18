@@ -96,6 +96,13 @@ export interface WorkflowDef {
    * 仅计划桥生成的 def（planToWorkflowDef）默认开启。
    */
   failOnInvalidOutput?: boolean;
+  /**
+   * P5 执行顺序：parallel（缺省）= 拓扑波次内并行（存量语义）；serial = 拓扑序逐 step
+   * 「单步发送」串行执行（上一 step 完成后才派发下一个）。计划桥（planToWorkflowDef）
+   * 默认 serial —— 串行模式下每步的思考过程与「当前任务」一一对应，是前端静默展示
+   * （不直播 step 消息、只展示计划卡 + 思考面板 + 最终结果）的前提。手工工作流不受影响。
+   */
+  execMode?: 'parallel' | 'serial';
 }
 
 /**

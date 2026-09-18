@@ -73,6 +73,65 @@ test('DAG: 无依赖的 step 并行执行', async () => {
   assert.deepStrictEqual(order.sort(), ['a', 'b']);
 });
 
+test('P5 serial: execMode=serial 时无依赖 step 也按定义顺序逐个执行（单步发送）', async () => {
+  const def = {
+    id: 'wf-serial',
+    execMode: 'serial',
+    steps: [
+      { id: 'a', agentRef: DEFAULT_AGENT_ID },
+      { id: 'b', agentRef: DEFAULT_AGENT_ID },
+      { id: 'c', agentRef: DEFAULT_AGENT_ID },
+    ],
+  };
+  const order = [];
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const executor = async (step) => {
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    order.push(step.id);
+    // 人为让出事件循环：并行模式下 a/b/c 会交错（maxConcurrent>1），串行必然逐个。
+    await new Promise((r) => setTimeout(r, 5));
+    concurrent -= 1;
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor });
+  const run = await engine.run(def, 'x');
+  assert.strictEqual(run.state, 'done');
+  // 严格按定义顺序（无依赖 → 同一波次，串行按波内声明序）。
+  assert.deepStrictEqual(order, ['a', 'b', 'c']);
+  assert.strictEqual(maxConcurrent, 1, '任一时刻至多一个 step 在执行');
+});
+
+test('P5 serial: resume 同样串行执行且只重跑未完成 step', async () => {
+  const def = {
+    id: 'wf-serial-resume',
+    execMode: 'serial',
+    steps: [
+      { id: 'a', agentRef: DEFAULT_AGENT_ID },
+      { id: 'b', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+    ],
+  };
+  const store = new VolatileWorkflowStore();
+  // 首跑 b 失败（a 完成）。
+  let failB = true;
+  const executor = async (step) => {
+    if (step.id === 'b' && failB) throw new Error('b failed');
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store, executor });
+  const run1 = await engine.run(def, 'x');
+  assert.strictEqual(run1.state, 'failed');
+  assert.strictEqual(run1.steps.a.state, 'done');
+  assert.strictEqual(run1.steps.b.state, 'failed');
+  // 续跑：b 修复后完成（串行语义不影响断点续跑）。
+  failB = false;
+  const run2 = await engine.resume('wf-serial-resume');
+  assert.strictEqual(run2.state, 'done');
+  assert.strictEqual(run2.steps.a.state, 'done');
+  assert.strictEqual(run2.steps.b.state, 'done');
+});
+
 test('失败补偿：完成 step 逆序执行 compensate', async () => {
   const def = {
     id: 'wf-comp',

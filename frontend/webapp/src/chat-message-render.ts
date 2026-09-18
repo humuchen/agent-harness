@@ -876,6 +876,20 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       })}
     </ol>
     ${
+      /* P5 静默执行：当前任务思考面板（llm:reasoning 增量，tail 展示最新思考）。
+         仅 running 且有思考流时渲染；任务完成/失败随状态机清空。 */
+      st.status === 'running' && st.thinking && st.thinking.text.trim()
+        ? html`<div class="plan-thinking">
+            <div class="pt-think-label">
+              💭 思考中 · ${escapeHtml(st.thinking.taskId ?? st.currentTaskId ?? '')}
+            </div>
+            <div class="pt-think-text">
+              ${escapeHtml(st.thinking.text.slice(-4000))}
+            </div>
+          </div>`
+        : nothing
+    }
+    ${
       /* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */
       html`<div class="plan-actions">
         <span class="pill ${st.status}">${statusLabel}</span>
