@@ -92,7 +92,7 @@ export const base = css`
     justify-content: center;
     border-radius: var(--ah-radius-sm);
     background: var(--ah-surface-2);
-    border: 1px solid var(--ah-border);
+    border: none;
     color: var(--ah-text-muted);
     cursor: pointer;
     font-family: inherit;
@@ -118,9 +118,6 @@ export const base = css`
      展开态（240px）放出 logo；收起为 64px 图标轨时 22+8+26=56px 放不下，隐藏。
      手机抽屉不命中本媒体块，仍显示 logo + 产品名（见 app.ts 的对称排除说明）。 */
   @media (min-width: 761px) and (min-height: 761px) {
-    .sidebar .brand .brand-text {
-      display: none;
-    }
     .sidebar.collapsed .brand .logo {
       display: none;
     }

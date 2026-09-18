@@ -313,7 +313,7 @@ export class AhChat extends LitElement {
    * 非空时「停止」按钮中止 DAG 流（置 running 为 cancelled），否则走 runRt.stop()。 */
   @state() private planWfAbort: AbortController | null = null;
   @state() deepThink = true;
-  @state() web = false;
+  @state() web = true;
   /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 true（收起）。 */
   @property({ type: Boolean }) deepThinkCollapsed = true;
 
@@ -1729,6 +1729,8 @@ export class AhChat extends LitElement {
             tools: m.tools,
             trace: m.trace,
             plan: m.plan,
+            // propose 当时的联网开关：随计划卡片透传，执行（含刷新后续跑）继承。
+            planWeb: (m as any).planWeb === true ? true : undefined,
             planStatus: (m as any).planStatus,
             // 计划模式（P0）：目标澄清结果透传，刷新 / 切回后还原目标确认卡。
             clarify: (m as any).clarify,
@@ -2764,7 +2766,9 @@ export class AhChat extends LitElement {
     this.setStreaming(sessionId, false);
 
     // 保留被编辑消息的附件；若原消息无附件则透空数组。
-    const rawAttachments = editedMsg.attachments ? [...editedMsg.attachments] : [];
+    const rawAttachments = editedMsg.attachments
+      ? [...editedMsg.attachments]
+      : [];
     const { imageAttachments, modelPrompt } =
       await this.buildAttachmentDispatchOpts(draft, rawAttachments);
 
@@ -3629,9 +3633,7 @@ export class AhChat extends LitElement {
       answerLines.length ? '用户逐题确认：' : '',
       ...answerLines,
       extra ? `用户补充：${extra}` : '',
-      answered
-        ? ''
-        : '用户确认：按上述目标草稿继续，无需修改。'
+      answered ? '' : '用户确认：按上述目标草稿继续，无需修改。'
     ].filter(Boolean);
     await this.runRt.dispatchPrompt(sid, parts.join('\n\n'), [], {});
   }
@@ -3686,7 +3688,10 @@ export class AhChat extends LitElement {
         parts.join('\n'),
         [],
         {
-          planTask: true
+          planTask: true,
+          // 联网能力对齐：任务执行继承 propose 时的联网开关（planWeb），
+          // 避免「计划要求外部数据、执行环境无检索工具」导致验收必败。
+          web: this.web || m.planWeb === true || undefined
         }
       );
       if (result !== 'ok') {
@@ -3772,7 +3777,7 @@ export class AhChat extends LitElement {
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
-      const byok = await this.planWfByok();
+      const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowFromPlan(
         m.plan,
         {
@@ -3829,7 +3834,7 @@ export class AhChat extends LitElement {
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
-      const byok = await this.planWfByok();
+      const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowResume(
         wfId,
         {
@@ -3888,7 +3893,7 @@ export class AhChat extends LitElement {
     };
     let terminal = false;
     try {
-      const byok = await this.planWfByok();
+      const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowApprove(
         wfId,
         {
@@ -3924,7 +3929,7 @@ export class AhChat extends LitElement {
    * 服务端按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；自定义模型路径
    * 才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。首跑与续跑复用。
    */
-  private async planWfByok(): Promise<{
+  private async planWfByok(m?: ChatMsg): Promise<{
     model?: string;
     modelBaseUrl?: string;
     modelApiKey?: string;
@@ -3937,7 +3942,9 @@ export class AhChat extends LitElement {
       ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
       modelBaseUrl: endpoint.modelBaseUrl,
       modelApiKey: endpoint.modelApiKey,
-      web: this.web || undefined
+      // 联网能力对齐：计划执行继承 propose 当时的开关（planWeb）——生成计划时若已
+      // 授权出网，任务执行自动带联网；当前开关与继承均无才不出网。
+      web: this.web || m?.planWeb === true || undefined
     };
   }
 
@@ -3985,7 +3992,10 @@ export class AhChat extends LitElement {
           // 检查点在服务重启 / free 盘清理后丢失时，「执行详情」抽屉据此回退水合。
           const snap = compactPlanWfSnapshot(e.run);
           const cur = this.planExec[m.id] ?? st;
-          this.planExec = { ...this.planExec, [m.id]: { ...cur, ...(snap ? { wfSnapshot: snap } : {}) } };
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: { ...cur, ...(snap ? { wfSnapshot: snap } : {}) }
+          };
           terminal = true;
           break;
         }
@@ -4181,14 +4191,26 @@ export class AhChat extends LitElement {
     if (status !== 'done') return false;
     let items: import('./chat-render-utils').PlanArtifactItem[];
     try {
-      const res = await authedFetch(`/api/artifacts?runId=${encodeURIComponent(wfId)}`);
+      const res = await authedFetch(
+        `/api/artifacts?runId=${encodeURIComponent(wfId)}`
+      );
       if (!res.ok) return false;
-      const data = (await res.json()) as { items?: Array<{ id: string; name: string; sizeBytes: number }> };
+      const data = (await res.json()) as {
+        items?: Array<{ id: string; name: string; sizeBytes: number }>;
+      };
       items = Array.isArray(data.items)
-        ? data.items.map((a) => ({ id: a.id, name: a.name, sizeBytes: a.sizeBytes }))
+        ? data.items.map((a) => ({
+            id: a.id,
+            name: a.name,
+            sizeBytes: a.sizeBytes
+          }))
         : [];
     } catch (e) {
-      console.warn(`[plan-artifacts] 拉取交付文件失败（不阻断）：${e instanceof Error ? e.message : String(e)}`);
+      console.warn(
+        `[plan-artifacts] 拉取交付文件失败（不阻断）：${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
       return false;
     }
     const section = buildPlanArtifactSection(items);

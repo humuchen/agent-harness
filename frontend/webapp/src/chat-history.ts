@@ -77,6 +77,8 @@ export interface MirroredMsg {
   trace?: unknown;
   /** 计划模式：结构化执行计划原样透传（JSON 安全值），恢复时还原计划卡片。 */
   plan?: unknown;
+  /** 计划模式：propose 当时的联网开关（计划执行继承之），恢复时随计划卡片还原。 */
+  planWeb?: unknown;
   /** 计划模式：目标澄清结果原样透传（JSON 安全值），恢复时还原目标确认卡。 */
   clarify?: unknown;
   /** 计划模式：任务级执行进度镜像（服务端维护），恢复时还原卡片状态并支持续跑。 */
@@ -201,6 +203,7 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
       ...(attachments && attachments.length ? { attachments } : {}),
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
       ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
+      ...(o.planWeb === true ? { planWeb: true } : {}),
       ...(o.clarify != null && typeof o.clarify === 'object'
         ? { clarify: o.clarify }
         : {}),

@@ -392,6 +392,9 @@ export class ChatRunRuntime {
           );
         patch({
           plan,
+          // 记录 propose 当时的联网开关：计划执行（DAG / 串行）继承之，
+          // 消除「计划要求外部数据、执行环境却无检索工具」的验收死锁。
+          planWeb: this.deps.getWeb(),
           ...(c.content?.trim()
             ? {}
             : {
@@ -609,6 +612,8 @@ export class ChatRunRuntime {
     imageAttachments: Array<{ url: string; name: string; type: string }> = [],
     opts: {
       planTask?: boolean;
+      /** 联网开关覆盖：计划任务执行继承 propose 时的开关（planWeb），缺省用当前全局开关。 */
+      web?: boolean;
       attachments?: unknown[];
       modelPrompt?: string;
       /** 编辑重发模式：通知服务端截断会话与记忆，从该消息重新生成。
@@ -682,15 +687,21 @@ export class ChatRunRuntime {
       sessionId,
       chatSessionId: sessionId,
       attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
-      web: this.deps.getWeb() || undefined,
-      // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
+      // 联网开关：计划任务派发可覆盖（继承 propose 时的 planWeb）；其余用全局开关。
+      web: (opts.web ?? this.deps.getWeb()) || undefined,
+      // 交互模式（P0 计划模式）：propose = 用户手动选择 plan 且非任务执行派发；
+      // 任务执行派发（planTask）必须显式声明 plan+execute —— 服务端 isPlanTaskRun
+      // 据此启用计划任务语义（验证门禁 / 宽松输出扫描 / 专用超时），漏传会退化为
+      // 普通单步 run（「从失败任务继续」串行回退路径曾因此丢失计划任务契约）。
       interactionMode:
-        this.deps.getInteractionMode() === 'plan' && !opts.planTask
+        this.deps.getInteractionMode() === 'plan'
           ? 'plan'
           : undefined,
       planPhase:
-        this.deps.getInteractionMode() === 'plan' && !opts.planTask
-          ? 'propose'
+        this.deps.getInteractionMode() === 'plan'
+          ? opts.planTask
+            ? 'execute'
+            : 'propose'
           : undefined,
       // 设备指纹：服务端跨设备广播据此区分本端回声与他端消息，前端按 origin 去重。
       origin: MY_ORIGIN,

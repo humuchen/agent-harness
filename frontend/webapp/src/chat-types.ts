@@ -115,6 +115,8 @@ export interface ChatMsg {
   attachments?: UploadedFile[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
   plan?: ExecutionPlanView;
+  /** 计划生成（propose）当时的联网开关：计划执行继承之——生成时若已授权出网，执行任务自动带联网，避免「计划要求外部数据、执行却无检索工具」的验收死锁。 */
+  planWeb?: boolean;
   /** 计划模式（P0）：propose 阶段进度（理解需求 / 调研中 / 生成计划），用于渲染阶段进度条。 */
   planPhase?: string;
   /** 计划模式（P0）：propose 开始时间戳（毫秒），驱动「已进行 Xs」实时计时器。 */
