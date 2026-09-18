@@ -97,17 +97,11 @@ export const base = css`
     cursor: pointer;
     font-family: inherit;
   }
-  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线）。
-     收起态旋转 180°（竖直分隔线从左侧转到右侧），配合 sidebar 宽度过渡：
-     图标翻转与面板收窄同步进行，方向语义（朝向侧栏内侧）保持一致。 */
+  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线） */
   .sidebar-toggle .toggle-icon {
     width: 16px;
     height: 14px;
     display: block;
-    transition: transform 180ms ease;
-  }
-  .sidebar.collapsed .sidebar-toggle .toggle-icon {
-    transform: rotate(180deg);
   }
   .sidebar-toggle:hover {
     color: var(--ah-text);
@@ -251,7 +245,14 @@ export const base = css`
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--ah-border) transparent;
-    transition: width 180ms ease, padding 180ms ease;
+    /* 展开收起过渡：.sidebar 是 .shell 的 flex 子项，实际宽度由 flex-basis
+       决定（flex: 0 0 240px → 0 0 64px），width 声明不参与布局。过渡必须
+       覆盖 flex-basis，否则收起/展开时面板宽度瞬间跳变（width 的过渡
+       永远不会生效，因为布局尺寸根本不看它）。 */
+    transition:
+      width 180ms ease,
+      flex-basis 180ms ease,
+      padding 180ms ease;
   }
   .sidebar.collapsed {
     flex: 0 0 64px;
@@ -371,16 +372,13 @@ export const base = css`
       animation: ah-nav-fade 200ms ease both;
     }
   }
-  /* 尊重「减少动效」系统偏好：文字淡入与图标翻转一并关闭。 */
+  /* 尊重「减少动效」系统偏好：文字淡入一并关闭。 */
   @media (prefers-reduced-motion: reduce) {
     .sidebar:not(.collapsed) .brand-text,
     .sidebar:not(.collapsed) .nav-text,
     .sidebar:not(.collapsed) .nav-group-title,
     .sidebar:not(.collapsed) .brand .logo {
       animation: none;
-    }
-    .sidebar-toggle .toggle-icon {
-      transition: none;
     }
   }
   .sidebar.collapsed .nav-item::before {
