@@ -23,6 +23,8 @@ import {
 } from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
+// 副作用导入：注册 <plan-elapsed>（propose 阶段实时计时器，模板中使用）。
+import './plan-elapsed';
 import { renderJsonHtml } from './utils/json-view';
 import {
   countTraceNodes,
@@ -320,7 +322,7 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         : nothing}
       <div class="bubble">
         ${m.planPhase && !m.plan && !m.clarify
-          ? renderPlanPhase(m.planPhase, isStreamingAssistant)
+          ? renderPlanPhase(m, isStreamingAssistant)
           : nothing}
         ${(showThinking && ctx.deepThink) ||
         (m.planPhase && !!m.reasoning)
@@ -331,7 +333,14 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         (m.content || isStreamingAssistant)
           ? html`<div class="sep"><span>回答</span></div>`
           : nothing}
-        ${renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
+        ${m.planPhase &&
+        !m.plan &&
+        !m.clarify &&
+        isStreamingAssistant &&
+        !m.content
+          ? // 计划 propose 进行中：阶段面板已提供实时反馈，不再叠加「模型正在回复…」占位。
+            nothing
+          : renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
         ${m.clarify ? renderClarifyCard(ctx, m) : nothing}
         ${m.plan ? renderPlanCard(ctx, m) : nothing}
         ${renderExtras(ctx, m, isStreamingAssistant)}
@@ -448,23 +457,53 @@ export function renderThinking(
  * 计划模式（P0）：propose 阶段进度条（理解需求 → 调研中 → 生成计划）。
  * 让用户在等待计划生成时看到真实进展，替代永久「模型正在思考…」。
  */
-export function renderPlanPhase(phase: string, live: boolean): TemplateResult {
+export function renderPlanPhase(m: ChatMsg, live: boolean): TemplateResult {
   const stages = ['理解需求', '调研中', '生成计划'];
-  const idx = stages.indexOf(phase);
+  const idx = stages.indexOf(m.planPhase ?? '');
+  // 实时动作行：优先反映真实事件（调研工具调用 > 阶段启发式），避免规划期「零反馈空等」。
+  // 调研工具卡只在「调用链路」抽屉里可见，这里把最近一次工具调用内联出来。
+  const tools = m.tools ?? [];
+  const last = tools[tools.length - 1];
+  let activity: string;
+  if (idx <= 0) activity = '正在理解需求、确认目标…';
+  else if (idx === 1) {
+    if (last && !last.result && !last.errored) activity = `正在调用 ${last.name}…`;
+    else if (last) activity = `已完成 ${tools.length} 次调研调用，正在分析结果…`;
+    else activity = '正在检索相关资料…';
+  } else {
+    activity = '正在汇总调研结果、生成结构化计划…';
+  }
   return html`
     <div class="plan-phase" role="status" aria-label="计划生成进度">
-      ${stages.map(
-        (s, i) => html`
-          <span
-            class="pp-step ${i <= idx ? 'on' : ''} ${i === idx && live
-              ? 'cur'
-              : ''}"
-            >${s}</span
-          >${i < stages.length - 1
-            ? html`<span class="pp-arrow">→</span>`
-            : nothing}
-        `
-      )}
+      <div class="pp-steps">
+        ${stages.map(
+          (s, i) => html`
+            <span
+              class="pp-step ${i <= idx ? 'on' : ''} ${i === idx && live
+                ? 'cur'
+                : ''}"
+              >${s}</span
+            >${i < stages.length - 1
+              ? html`<span class="pp-arrow">→</span>`
+              : nothing}
+          `
+        )}
+      </div>
+      ${live
+        ? html`
+            <div class="plan-activity">
+              <span class="pa-spin"></span>
+              <span class="pa-text">${activity}</span>
+              <plan-elapsed class="plan-elapsed" ts=${String(m.planStartedAt ?? 0)}
+              ></plan-elapsed>
+            </div>
+            ${idx <= 0 && !m.reasoning && tools.length === 0
+              ? html`<div class="pp-hint">
+                  深度规划通常需要 1~2 分钟；调研与思考进展可展开下方「调用链路」查看
+                </div>`
+              : nothing}
+          `
+        : nothing}
     </div>
   `;
 }

@@ -100,6 +100,8 @@ export interface ChatMsg {
   plan?: ExecutionPlanView;
   /** 计划模式（P0）：propose 阶段进度（理解需求 / 调研中 / 生成计划），用于渲染阶段进度条。 */
   planPhase?: string;
+  /** 计划模式（P0）：propose 开始时间戳（毫秒），驱动「已进行 Xs」实时计时器。 */
+  planStartedAt?: number;
   /** 计划模式（P0）：需求不清时携带的澄清结果（plan:clarify 时写入），渲染目标确认卡。 */
   clarify?: PlanClarifyView;
   /** 本轮 run 期间是否触发过上下文压缩（最旧对话被自动压缩/淘汰），用于在该条气泡下方显示「已压缩」标识。 */

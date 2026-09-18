@@ -515,11 +515,16 @@ export const planMode = css`
   /* ---- 计划模式（P0）：propose 阶段进度条（理解需求 → 调研中 → 生成计划） ---- */
   .plan-phase {
     display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 2px 0 8px;
+    font-size: 12px;
+  }
+  .pp-steps {
+    display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
-    margin: 2px 0 8px;
-    font-size: 12px;
   }
   .pp-step {
     padding: 2px 10px;
@@ -541,6 +546,40 @@ export const planMode = css`
   .pp-arrow {
     color: var(--ah-text-muted);
     opacity: 0.7;
+  }
+  /* 实时活动行：当前动作 + 计时器（解决规划期「零反馈空等」）。 */
+  .plan-activity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ah-text-muted);
+  }
+  .pa-spin {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    border: 2px solid rgba(41, 151, 255, 0.25);
+    border-top-color: #2997ff;
+    animation: pa-rotate 0.9s linear infinite;
+  }
+  .pa-text {
+    color: #2997ff;
+  }
+  .plan-elapsed {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+  .pp-hint {
+    color: var(--ah-text-muted);
+    opacity: 0.7;
+  }
+  @keyframes pa-rotate {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* ---- 计划模式（P0）：目标澄清卡（plan:clarify） ---- */

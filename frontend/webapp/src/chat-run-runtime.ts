@@ -413,9 +413,14 @@ export class ChatRunRuntime {
       }
       case 'plan:phase': {
         // 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），挂到流式消息渲染进度条。
+        // 首次到达时记录起始时间戳，驱动「已进行 Xs」实时计时器。
         const c = cur();
         const phase = (anyEv as { phase?: string }).phase;
-        if (c && phase) patch({ planPhase: phase });
+        if (c && phase)
+          patch({
+            planPhase: phase,
+            ...(c.planStartedAt ? {} : { planStartedAt: Date.now() })
+          });
         break;
       }
       case 'plan:clarify': {
