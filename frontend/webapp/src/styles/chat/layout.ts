@@ -158,11 +158,16 @@ export const layout = css`
   }
   .side-head {
     display: flex;
-    flex-direction: column;
+    flex-direction: row-reverse;
     gap: 8px;
-    padding: 0 14px 10px;
+    padding: 10px 0 10px 14px;
     align-items: center;
   }
+
+  .sidebar.collapsed .side-head {
+    padding: 10px;
+  }
+
   .collapse-btn {
     width: 28px;
     height: var(--ah-h-lg);
@@ -180,9 +185,9 @@ export const layout = css`
   }
   .collapse-btn:hover {
     color: var(--ah-text);
-    border-color: var(--ah-accent);
     background: var(--ah-surface-3);
   }
+
   // .side-head {
   //   padding: 14px 14px 10px;
   // }
