@@ -5857,6 +5857,38 @@ async function bootstrap(): Promise<void> {
 function onListening(): void {
   const registry = getAgentRegistry();
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
+  // 构建新鲜度自检（防「改了源码但跑的是旧 dist」排障陷阱）：
+  // 打印本文件的构建时间，并在启动前发现源码晚于构建时显式告警。
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { statSync, readdirSync } = require('node:fs') as typeof import('node:fs');
+    const { join, dirname } = require('node:path') as typeof import('node:path');
+    const distServer = __filename;
+    const builtAt = statSync(distServer).mtime;
+    console.log(`   📦 后端构建时间：${builtAt.toLocaleString('zh-CN', { hour12: false })}（dist/server.js）`);
+    // 以 src 目录最新 mtime 粗略对比：src 比构建新 → 提醒重新 build（informational，不阻断）。
+    const srcDir = join(dirname(__dirname), 'src');
+    let newestSrc = 0;
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, name.name);
+        if (name.isDirectory()) walk(p);
+        else if (name.name.endsWith('.ts')) {
+          const m = statSync(p).mtimeMs;
+          if (m > newestSrc) newestSrc = m;
+        }
+      }
+    };
+    walk(srcDir);
+    if (newestSrc > builtAt.getTime()) {
+      console.warn(
+        `   ⚠️  检测到 src/ 源码比 dist/ 构建产物新 —— 当前运行的是旧代码！` +
+          `请先执行构建（如 pnpm --filter @agent-harness/core --filter @agent-harness/server run build）再启动。`
+      );
+    }
+  } catch {
+    /* 自检失败不影响启动 */
+  }
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
     const prov =
