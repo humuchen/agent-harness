@@ -62,7 +62,7 @@ export interface OutputInspection {
 /** 「异常前缀」判定表（开头匹配，最确定的信号；partial 的「包含」判定排在其后）。 */
 const FAILED_PREFIXES: Array<{ prefix: string; detail: string }> = [
   { prefix: VERIFY_FAILED_PREFIX, detail: '产出未通过运行期验证门禁（verify:failed）' },
-  { prefix: TIMEOUT_NOTICE, detail: 'step 超时中止（看门狗掐断，无最终产出）' },
+  { prefix: TIMEOUT_NOTICE, detail: 'step 超时中止（超出时间预算，且无可保留的实质产出）' },
   { prefix: ERROR_PREFIX, detail: 'step 运行抛异常（[error] 前缀）' },
   { prefix: ABORTED_PREFIX, detail: 'step 被外部取消（[aborted] 前缀）' },
   { prefix: CIRCUIT_BREAKER_PREFIX, detail: 'step 被熔断拦截（[circuit-breaker] 前缀）' },
@@ -92,7 +92,10 @@ export function inspectStepOutput(result: unknown): OutputInspection {
     return { issue: 'failed', detail: '达到最大步数无最终回答（[agent] max steps 哨兵）' };
   }
   if (t.includes(PARTIAL_NOTICE)) {
-    return { issue: 'partial', detail: '产出含生成中断标记（模型流式超时，仅部分内容）' };
+    return {
+      issue: 'partial',
+      detail: '产出含生成中断标记（流式空闲超时或整步时间预算耗尽，仅部分内容）'
+    };
   }
   return { issue: 'ok' };
 }

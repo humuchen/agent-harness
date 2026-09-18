@@ -662,13 +662,108 @@ export class AgentHarness {
       emit({ type: 'budget:exceeded', kind, limit, used });
       return `[budget] ${kind} exceeded: used ${used} / limit ${limit}`;
     };
+
+    // ── P4.8 时间预算治理：治「等很久 → 硬超时 → 无产出」三处结构性缺陷 ──────────
+    // 症状：计划模式单步执行等待极长，随后 step 超时中止且没有任何产出。
+    // 三个独立成因（均已复现）：
+    //  (a) 工具执行是裸 await —— 工具挂死时看门狗 abort 无法生效，循环卡在 await 上，
+    //      时间远超 step 预算后才返回（见下方工具调用竞速 + 单次工具超时）；
+    //  (b) 到点后只返回固定提示文案 —— 已生成（甚至已流式产出）的内容被整体丢弃，
+    //      且发生在验证重试期间时会把第一轮产出覆盖成超时提示（见 abortedResult）；
+    //  (c) 验证重试不检查剩余预算 —— 第一轮用掉大半预算后仍启动完整第二轮，
+    //      必然撞超时并销毁第一轮产出（见下方重试预算守卫）。
+    const startedAt = Date.now();
+    const runTimeoutMs =
+      this.opts.timeoutMs && this.opts.timeoutMs > 0 ? this.opts.timeoutMs : 0;
+    const deadlineAt = runTimeoutMs > 0 ? startedAt + runTimeoutMs : Infinity;
+    // 软截止：剩余预算低于该阈值时主动要求模型收尾（替代硬超时砍掉产出）。置 0 关闭。
+    // 缺省 90s，并强制收敛到总预算的 1/4 以内 —— 否则「总超时 60s 而软截止 90s」会让
+    // 收尾指令在第一步就触发，等于剥夺模型的正常执行过程。
+    const softDeadlineCfg = Math.max(
+      0,
+      Number(process.env.AGENT_SOFT_DEADLINE_MS ?? 90_000) || 0
+    );
+    const softDeadlineMs =
+      runTimeoutMs > 0 ? Math.min(softDeadlineCfg, Math.floor(runTimeoutMs / 4)) : softDeadlineCfg;
+    let wrapUpRequested = false;
+    // 收尾提示是否已注入记忆（注入点固定在 LLM 调用前，与「跳过工具」判定解耦）。
+    let wrapUpPromptPushed = false;
+    let wrapUpRounds = 0;
+    /** 是否已进入软截止窗口（剩余预算不足以再跑完一轮工具 + LLM）。 */
+    const isPastSoftDeadline = (): boolean =>
+      softDeadlineMs > 0 &&
+      Number.isFinite(deadlineAt) &&
+      Date.now() >= deadlineAt - softDeadlineMs;
+    // 单次工具调用超时：挂死的工具不再拖垮整步 —— 超时即放弃等待，把「工具超时」
+    // 作为工具结果回传，模型可据此改道或基于已有信息继续。置 0 关闭。缺省 5 分钟。
+    const toolCallTimeoutMs = Math.max(
+      0,
+      Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 300_000) || 0
+    );
+    // 中止竞速用的一次性 promise（run 级共用，避免每步新增监听器）。
+    const abortPromise = new Promise<'__aborted__'>((resolve) => {
+      if (signal.aborted) return resolve('__aborted__');
+      signal.addEventListener('abort', () => resolve('__aborted__'), {
+        once: true
+      });
+    });
+    // 本次 run 已流式产出的内容（每次 LLM 调用前重置）；硬中止时据此抢救部分产出。
+    let streamBuffer = '';
+    /** 抢救「已生成但未成为最终答案」的内容：优先流式缓冲，其次记忆里最后一条 assistant。 */
+    const salvagePartial = (): string => {
+      if (streamBuffer.trim()) return streamBuffer.trim();
+      const hist = memory.history();
+      for (let i = hist.length - 1; i >= 0; i--) {
+        const m = hist[i];
+        if (!m) continue;
+        if (
+          m.role === 'assistant' &&
+          typeof m.content === 'string' &&
+          m.content.trim()
+        ) {
+          return m.content.trim();
+        }
+      }
+      return '';
+    };
+    /** 硬中止（超时 / 取消）时的返回值：有实质产出则连内容一起返回，不再只回固定提示。 */
+    const abortedResult = (): string => {
+      const notice = abortedMessage(signal);
+      const salvaged = salvagePartial();
+      // 过短的内容（模型刚开口就被砍）不值得冒充「部分产出」，仍回提示文案。
+      if (salvaged.length < 40) return notice;
+      const reason =
+        (signal as { reason?: unknown }).reason === 'timeout'
+          ? `本次运行超出时间预算（${Math.round(runTimeoutMs / 1000)}s）被中止`
+          : '本次运行被取消';
+      return (
+        `${salvaged}\n\n${PARTIAL_NOTICE}：${reason}。` +
+        '以上为已生成的部分结果（内容已保留，可据此继续或仅重跑剩余部分）。'
+      );
+    };
     // 把主循环抽成函数，便于「验证失败后自动重试」复用同一 maxSteps 预算重跑。
     const runLoop = (): Promise<string> =>
       withSpan('agent.run', async () => {
         for (let step = 0; step < this.opts.maxSteps; step++) {
           // 进入下一步前先检查取消信号，避免对已中止的运行继续消耗工具/LLM。
           if (signal.aborted) {
-            return abortedMessage(signal);
+            return abortedResult();
+          }
+          // 软截止收尾（P4.8）：剩余预算不足时注入收尾指令，让模型基于已有信息直接给
+          // 最终结果 —— 把「硬超时砍掉产出」变成「主动收尾交付」，这是「等很久之后
+          // 什么都没有」的主要治本手段。
+          // 注入点固定在「LLM 调用之前」：保证 assistant(tool_calls)→tool 的配对不被
+          // 中间插入的 user 消息打断（否则部分 provider 直接 400）。
+          if (!wrapUpPromptPushed && isPastSoftDeadline()) {
+            wrapUpRequested = true;
+            wrapUpPromptPushed = true;
+            memory.add({ role: 'user', content: WRAP_UP_PROMPT });
+            emit({
+              type: 'warn',
+              message: `时间预算剩余不足 ${Math.round(
+                softDeadlineMs / 1000
+              )}s：已要求模型立即收尾输出最终结果（避免硬超时丢弃已产出内容）`
+            });
           }
           // 若上一步溢出触发了异步（LLM）摘要，先落地摘要节点，保证本轮喂给模型的
           // 历史已包含压缩结果（同步摘要器此步为 no-op，无额外开销）。
@@ -760,18 +855,14 @@ export class AgentHarness {
           // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
           // 保证聊天 UI 始终能拿到可渲染的增量事件。
           let streamedTokens = false;
-          const abortedFlag = new Promise<'__aborted__'>((resolve) => {
-            if (signal.aborted) return resolve('__aborted__');
-            signal.addEventListener('abort', () => resolve('__aborted__'), {
-              once: true
-            });
-          });
+          // P4.8：本步流式产出缓冲（硬中止时抢救用）——每次 LLM 调用前重置。
+          streamBuffer = '';
           // 上下文溢出自愈：LLM 返回「超出上下文窗口」类错误（免费模型真实窗口常远小于
           // 配置/回退值 128K）时，逐步压缩历史后重试，而非让整轮运行失败、卡死无回应。
           const OVERFLOW_MAX_RETRIES = 4;
           let resp: LLMResponse | null = null;
           for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
-            if (signal.aborted) return abortedMessage(signal);
+            if (signal.aborted) return abortedResult();
             try {
               const raceResult = await withSpan('llm.call', () =>
                 Promise.race([
@@ -782,6 +873,7 @@ export class AgentHarness {
                       ? {
                           onToken: (delta: string) => {
                             streamedTokens = true;
+                            streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
                             emit({ type: 'llm:token', step: steps, delta });
                           },
                           onReasoning: (delta: string) => {
@@ -790,10 +882,10 @@ export class AgentHarness {
                         }
                       : {})
                   }),
-                  abortedFlag
+                  abortPromise
                 ])
               );
-              if (raceResult === '__aborted__') return abortedMessage(signal);
+              if (raceResult === '__aborted__') return abortedResult();
               resp = raceResult as LLMResponse;
               break;
             } catch (llmErr: any) {
@@ -816,7 +908,7 @@ export class AgentHarness {
               throw llmErr;
             }
           }
-          if (!resp) return abortedMessage(signal);
+          if (!resp) return abortedResult();
           // 记录「已成功接收的最大 prompt」，作为后续步的保守预算上限，避免反复溢出。
           this.maxAcceptedPrompt = Math.max(this.maxAcceptedPrompt, resp.usage?.prompt_tokens ?? 0);
           recordTokensTenant(resp.usage, this.opts.tenantId);
@@ -1125,10 +1217,33 @@ export class AgentHarness {
             }
           };
 
+          // P4.8 软截止：预算已转紧（含「本轮 LLM 调用期间才转紧」）时不再启动新工具轮，
+          // 免得把仅剩的预算烧在一轮必然跑不完的工具调用上。注意此处只置标志、不注入
+          // 收尾提示 —— 提示统一在下一轮 LLM 调用前注入，避免打断 tool 配对。
+          if (!wrapUpRequested && isPastSoftDeadline()) {
+            wrapUpRequested = true;
+            emit({
+              type: 'warn',
+              message: '时间预算已转紧：跳过本轮工具调用，要求模型立即收尾输出最终结果'
+            });
+          }
+          if (wrapUpRequested) {
+            fillMissingToolResults('[skipped] 时间预算即将耗尽，该工具未执行');
+            wrapUpRounds += 1;
+            if (resp.content && resp.content.trim()) return resp.content;
+            if (wrapUpRounds >= 2) {
+              // 模型连续两轮仍只调工具：用已产出内容兜底，避免走到硬超时把产出丢光。
+              const salv = salvagePartial();
+              if (salv) return salv;
+              return MAX_STEPS_NOTICE;
+            }
+            continue;
+          }
+
           for (const call of resp.tool_calls) {
             if (signal.aborted) {
               fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
-              return abortedMessage(signal);
+              return abortedResult();
             }
             // 加固：单 step 工具调用预算上限（默认不限制）。达到上限后截断剩余 tool_calls。
             if (maxCallsPerStep > 0 && stepToolCalls >= maxCallsPerStep) {
@@ -1198,9 +1313,50 @@ export class AgentHarness {
               toolCall: { name: call.name, arguments: call.arguments },
             });
               try {
-                result = await withSpan(`tool.${call.name}`, async () =>
-                  this.opts.tools.call(call.name, call.arguments, { traceId: this.opts.traceId })
-                );
+                // P4.8：工具执行纳入「中止 + 单次超时」竞速。此前这里是裸 await ——
+                // 工具挂死时看门狗 abort 无法生效，整个 step 会一直阻塞到该工具自己返回，
+                // 用户表现为「等待时间很长，然后才报 step 超时中止」。现在：
+                //  - 运行被中止（超时/取消）→ 立即放弃等待并走中止路径（内容不再丢）；
+                //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
+                //    回传，模型可改道或基于已有信息继续，而不是拖垮整步。
+                let toolTimer: ReturnType<typeof setTimeout> | null = null;
+                const racers: Array<Promise<{ kind: string; value?: unknown }>> = [
+                  withSpan(`tool.${call.name}`, async () => ({
+                    kind: 'ok',
+                    value: await this.opts.tools.call(call.name, call.arguments, {
+                      traceId: this.opts.traceId
+                    })
+                  })),
+                  abortPromise.then(() => ({ kind: 'aborted' as const }))
+                ];
+                if (toolCallTimeoutMs > 0) {
+                  racers.push(
+                    new Promise<{ kind: string }>((resolve) => {
+                      toolTimer = setTimeout(
+                        () => resolve({ kind: 'timeout' }),
+                        toolCallTimeoutMs
+                      );
+                    })
+                  );
+                }
+                let raced: { kind: string; value?: unknown };
+                try {
+                  raced = await Promise.race(racers);
+                } finally {
+                  if (toolTimer) clearTimeout(toolTimer);
+                }
+                if (raced.kind === 'aborted') {
+                  fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
+                  return abortedResult();
+                }
+                if (raced.kind === 'timeout') {
+                  result =
+                    `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
+                    '已放弃等待；请改用其它方式获取信息，或基于已有信息继续）';
+                  errored = true;
+                } else {
+                  result = raced.value;
+                }
               } catch (e: any) {
                 // 将错误作为工具结果返回，以便模型自行修复。
                 result = `tool error: ${e?.message ?? String(e)}`;
@@ -1301,7 +1457,13 @@ export class AgentHarness {
     }
 
     // 运行期自动验证门禁（P0-2）：产出后自动校验；未通过可重试（self-correction）或标记。
-    if (this.opts.verify) {
+    //
+    // P4.8：**被中止的运行不再跑校验**。原因：中止意味着产出已知不完整（超时/取消），
+    // 对它做「完整性断言」既无意义、又产生两个副作用 —— ① 白等一轮校验；② 计划默认
+    // 门禁的 notContains(PARTIAL_NOTICE) 会给已抢救回来的部分产出再加上 [verify:failed]
+    // 前缀，把「超时中断」误标成「验证失败」，掩盖真实的失败原因与已保留的内容。
+    // 中止路径的语义由产出有效性闸门（inspectStepOutput → partial）如实承担。
+    if (this.opts.verify && !signal.aborted) {
       const buildCtx = (): VerifyContext => ({
         input: userInput,
         final,
@@ -1323,6 +1485,28 @@ export class AgentHarness {
       while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
         attempt += 1;
         if (this.opts.verifySelfCorrect) {
+          // P4.8 重试预算守卫：剩余时间不足以跑完一轮时不再重试。
+          // 此前无条件重跑：第一轮已耗尽大半预算时，第二轮的硬超时会把**第一轮已经
+          // 产出的完整内容整个覆盖**成超时提示 —— 用户等到超时后什么也拿不到。
+          // 宁可保留第一轮产出（可能只是验收词未逐字命中），也不做毁灭性的重试。
+          const remainMs = Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : Infinity;
+          // 重试所需的最低剩余预算：缺省 60s，并收敛到总预算的 1/4 以内（与软截止同款
+          // 口径）—— 否则「总预算 60s」时任何重试都会被判为「剩余不足」而永不执行。
+          const minRetryCfg = Math.max(
+            0,
+            Number(process.env.AGENT_VERIFY_MIN_RETRY_MS ?? 60_000) || 0
+          );
+          const minRetryMs =
+            runTimeoutMs > 0
+              ? Math.min(minRetryCfg, Math.floor(runTimeoutMs / 4))
+              : minRetryCfg;
+          if (remainMs <= minRetryMs) {
+            emit({
+              type: 'warn',
+              message: `剩余时间不足（${Number.isFinite(remainMs) ? Math.max(0, Math.round(remainMs / 1000)) : '∞'}s），跳过自检重试并保留当前产出`
+            });
+            break;
+          }
           // 注入自检提示，让模型根据失败原因修正后重新跑一轮（自动重试 / 自愈）。
           // 软性未通过同样重试一次（定向补齐成本低、收益明确），只是重试后仍不通过时不阻断。
           memory.add({
@@ -1396,6 +1580,16 @@ export class AgentHarness {
     return final;
   }
 }
+
+/**
+ * P4.8 软截止收尾提示：接近时间预算时注入，让模型基于已有信息直接给最终结果。
+ * 目的是把「硬超时砍掉产出」变成「主动收尾交付」；同时要求显式标注数据缺口，
+ * 保持与 planner/executor 既有「数据不足如实说明、禁止编造」约定一致。
+ */
+const WRAP_UP_PROMPT =
+  '（系统提示）本次运行的时间预算即将耗尽，请立即停止进一步调研与工具调用，' +
+  '基于已获取的信息直接输出最终结果：把已确认的内容完整写出，' +
+  '尚未获取到的部分在结果中显式标注「数据缺口」说明，不要编造。';
 
 /** 根据中止原因生成人类可读的结果提示。 */
 function abortedMessage(signal: AbortSignal): string {

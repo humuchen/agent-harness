@@ -745,15 +745,19 @@ export class RunQueue {
       emit(e);
     };
     // 看门狗：整体超时后中止 controller，harness 在下一检查点退出，worker 槽位必然释放。
+    // P4.8 修复：此前无条件用 JOB_TIMEOUT_MS（默认 300s），而计划任务执行在 harness 侧
+    // 拿到的是 PLAN_TASK_TIMEOUT_MS（默认 600s）—— 看门狗会在 5 分钟就把「预算 10 分钟」
+    // 的计划任务掐断，是「等待很久 → step 超时中止」的一个确定性来源。两者必须同源。
+    const watchdogMs = isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS;
     const watchdog = setTimeout(() => {
       try {
         job.controller.abort('timeout');
       } catch {
         /* 忽略 */
       }
-    }, JOB_TIMEOUT_MS);
-    // 看门狗最长可达 JOB_TIMEOUT_MS（默认 300s），若测试 / 停机时任务未结束会长期持有
-    // 事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
+    }, watchdogMs);
+    // 看门狗最长可达 PLAN_TASK_TIMEOUT_MS（默认 600s），若测试 / 停机时任务未结束会长期
+    // 持有事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
     watchdog.unref?.();
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。

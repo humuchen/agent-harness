@@ -300,20 +300,41 @@ function makeResilientExecutor(config: McpConnectionConfig, originalName: string
     const live = liveClients.get(key);
     if (!live || live.closed) throw new Error(`MCP server '${key}' not connected`);
     try {
-      return await callAndStringify(live.client, originalName, args);
+      return await callAndStringify(live.client, originalName, args, key);
     } catch (e) {
       const recovered = await performReconnect(key);
       if (recovered) {
         const live2 = liveClients.get(key);
-        if (live2 && !live2.closed) return await callAndStringify(live2.client, originalName, args);
+        if (live2 && !live2.closed) return await callAndStringify(live2.client, originalName, args, key);
       }
       throw e;
     }
   };
 }
 
-async function callAndStringify(client: Client, originalName: string, args: any): Promise<string> {
-  const res = await client.callTool({ name: originalName, arguments: args });
+async function callAndStringify(
+  client: Client,
+  originalName: string,
+  args: any,
+  serverLabel = 'mcp'
+): Promise<string> {
+  // P4.8：MCP 的连接 / 工具列举本来就有超时包装，唯独真正的 callTool 没有 —— 远端
+  // server 无响应时该 Promise 永不 settle，整个 agent step 会一直挂到上层看门狗，
+  // 用户表现为「等待时间很长，然后 step 超时中止且无产出」。这里补上调用超时
+  // （MCP_CALL_TIMEOUT_MS，默认 180s；置 0 关闭）。
+  const callTimeoutMs = Math.max(
+    0,
+    Number(process.env.MCP_CALL_TIMEOUT_MS ?? 180_000) || 0
+  );
+  const res: any =
+    callTimeoutMs > 0
+      ? await withMcpTimeout(
+          client.callTool({ name: originalName, arguments: args }),
+          callTimeoutMs,
+          serverLabel,
+          'callTool'
+        )
+      : await client.callTool({ name: originalName, arguments: args });
   if ((res as any).isError) {
     throw new Error('MCP tool error: ' + JSON.stringify(res.content));
   }
@@ -466,7 +487,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * 包装 MCP 连接 / 工具列表请求的超时。
+ * 包装 MCP 连接 / 工具列表 / 工具调用的超时。
  * 在超时或出错时抛出包含 serverLabel + 操作阶段的明确错误信息，
  * 便于用户在 UI 上快速定位是哪个服务卡住。
  */
@@ -474,7 +495,7 @@ async function withMcpTimeout<T>(
   p: Promise<T>,
   ms: number,
   serverLabel: string,
-  stage: 'connect' | 'listTools'
+  stage: 'connect' | 'listTools' | 'callTool'
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`Request timed out (>${ms}ms) during ${stage}`)), ms);
