@@ -85,19 +85,31 @@ export const RuleBasedVerifier: Verifier = (ctx) => {
 /** 断言函数：基于上下文返回是否通过。 */
 export type Assertion = (ctx: VerifyContext) => boolean | Promise<boolean>;
 
+/** 带描述的断言：失败时 reason 写 describe（让自检重试「定向补齐」而非盲猜）。 */
+export interface NamedAssertion {
+  assert: Assertion;
+  /** 失败原因描述（如「产出未包含『市场规模』」）。 */
+  describe?: string;
+}
+
 /** 基于断言列表的验证器（结果正确性校验）。全部断言通过才算通过。
  * @param label 可选的组标签（如「默认门禁」/「任务验收」）：per-step 验证器是「默认门禁断言组
  * + 任务验收断言组」两个 specsVerifier 的组合，各组合输出 reasons 后拼接，无标签时两组行号
  * 各自从 1 起算，读起来自相矛盾（「全部 3 项通过; 断言 #1 未通过」）——加组标签消歧。
  */
-export function assertionsVerifier(assertions: Assertion[], label?: string): Verifier {
+export function assertionsVerifier(
+  assertions: (Assertion | NamedAssertion)[],
+  label?: string
+): Verifier {
   const tag = label ? `${label}：` : '';
   return async (ctx) => {
     const reasons: string[] = [];
     let passed = true;
     let n = 0;
-    for (const a of assertions) {
+    for (const raw of assertions) {
       n += 1;
+      const a = typeof raw === 'function' ? raw : raw.assert;
+      const describe = typeof raw === 'function' ? undefined : raw.describe;
       let ok = false;
       try {
         ok = await a(ctx);
@@ -106,7 +118,7 @@ export function assertionsVerifier(assertions: Assertion[], label?: string): Ver
       }
       if (!ok) {
         passed = false;
-        reasons.push(`${tag}断言 #${n} 未通过`);
+        reasons.push(`${tag}断言 #${n} 未通过${describe ? `（${describe}）` : ''}`);
       }
     }
     if (assertions.length === 0) reasons.push(`${tag}无断言（跳过结果校验）`);
@@ -133,27 +145,59 @@ export interface AssertSpec {
   maxLength?: number;
 }
 
+/**
+ * 断言子串匹配的归一化：小写化 + 全角→半角 + 去除全部空白。
+ * 背景（P4.6 修复）：此前 contains 是大小写敏感的裸 `includes` —— planner 的验收词
+ * 与模型产出的表述只要存在大小写（TAM/tam）、全半角（（）/()）或换行空格差异即判不通过，
+ * 是计划任务高频 verify:failed 的工程性根因之一。双方同函数归一化，消除表述性差异；
+ * 去空白使中英混排（「AI Agent」/「AI　Agent」/跨行）也能命中，误判面可控（子串匹配变宽松）。
+ */
+function normalizeForIncludes(s: string): string {
+  let out = '';
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    // 全角 ASCII（！＂＃…～　）与全角数字字母 → 半角
+    if (code >= 0xff01 && code <= 0xff5e) {
+      out += String.fromCharCode(code - 0xfee0);
+    } else if (code === 0x3000) {
+      // 全角空格
+    } else if (/\s/u.test(ch)) {
+      // 各类空白（空格/制表/换行）全部去掉
+    } else {
+      out += ch;
+    }
+  }
+  return out.toLowerCase();
+}
+
 function specToPredicate(spec: AssertSpec): Assertion {
   return (ctx) => {
-    const t = ctx.final;
-    if (spec.contains != null && !t.includes(spec.contains)) return false;
-    if (spec.notContains != null && t.includes(spec.notContains)) return false;
+    const t = normalizeForIncludes(ctx.final);
+    if (spec.contains != null && !t.includes(normalizeForIncludes(spec.contains))) return false;
+    if (spec.notContains != null && t.includes(normalizeForIncludes(spec.notContains))) return false;
     if (spec.matches != null) {
       try {
-        if (!new RegExp(spec.matches).test(t)) return false;
+        if (!new RegExp(spec.matches).test(ctx.final)) return false;
       } catch {
         return false;
       }
     }
-    if (spec.minLength != null && t.length < spec.minLength) return false;
-    if (spec.maxLength != null && t.length > spec.maxLength) return false;
+    if (spec.minLength != null && ctx.final.length < spec.minLength) return false;
+    if (spec.maxLength != null && ctx.final.length > spec.maxLength) return false;
     return true;
   };
 }
 
 /** 由可序列化规格列表构建验证器。@param label 可选组标签（reasons 行前缀，多组合并时消歧）。 */
 export function specsVerifier(specs: AssertSpec[], label?: string): Verifier {
-  return assertionsVerifier(specs.map(specToPredicate), label);
+  return assertionsVerifier(
+    specs.map((spec) => {
+      const assert = specToPredicate(spec);
+      const describe = spec.contains != null ? `产出未包含「${spec.contains}」` : undefined;
+      return { assert, describe };
+    }),
+    label
+  );
 }
 
 /** 组合多个验证器：全部通过才通过，分数取最低。 */

@@ -126,3 +126,29 @@ test('上游注记：干净产出保持原样（零回归钉死）', () => {
   assert.ok(!out.includes('（空）'), out);
   assert.ok(!out.includes('截断'), out);
 });
+
+/* ---------- P4.6 验收知情：outputChecks 注入执行 prompt ---------- */
+
+test('验收要求：taskMeta.outputChecks 注入 prompt（执行模型不再对门禁盲写）', () => {
+  const meta = {
+    id: 't1',
+    title: '补充检索',
+    steps: ['检索'],
+    expectedOutput: '市场规模数据',
+    outputChecks: ['市场规模', '监管合规']
+  };
+  const out = formatStepInput({
+    goal: 'g',
+    taskMeta: JSON.stringify(meta)
+  });
+  assert.ok(out.includes('验收要求'), out);
+  assert.ok(out.includes('市场规模、监管合规'), out);
+  assert.ok(out.includes('数据缺口'), out, '检索失败时也须在缺口说明中写出关键词');
+});
+
+test('验收要求：无 outputChecks 的 taskMeta 不注入该行（零回归）', () => {
+  const out = formatStepInput(
+    planStepInput({ id: 't1', title: 'X', steps: [], expectedOutput: 'Y' })
+  );
+  assert.ok(!out.includes('验收要求'), out);
+});

@@ -38,7 +38,7 @@ test('verify:{auto:true}：规则门禁生效，verify:result 事件流出', asy
   assert.strictEqual(typeof verifyEvents[0].score, 'number');
 });
 
-test('断言必失败 + AGENT_VERIFY_MAX_RETRIES=1：反思循环产生 2 次 verify:result', async () => {
+test('断言必失败 + AGENT_VERIFY_MAX_RETRIES=1：自检重试定向补齐（P4.6：reasons 带具体缺失词）', async () => {
   const prev = process.env.AGENT_VERIFY_MAX_RETRIES;
   process.env.AGENT_VERIFY_MAX_RETRIES = '1';
   try {
@@ -47,8 +47,11 @@ test('断言必失败 + AGENT_VERIFY_MAX_RETRIES=1：反思循环产生 2 次 ve
       verify: { assertions: [{ contains: '__UNPOSSIBLE_SUBSTRING__' }] }
     });
     assert.strictEqual(verifyEvents.length, 2, '初次校验 + 1 次自检重跑');
-    assert.ok(verifyEvents.every((e) => e.passed === false), '不可能的断言两次都应不通过');
-    assert.ok(typeof out === 'string' && out.length > 0, 'step 仍返回产出（未通过时标记 [verify:failed]）');
+    assert.strictEqual(verifyEvents[0].passed, false, '首查不通过');
+    // P4.6 后自检提示带「产出未包含『__UNPOSSIBLE_SUBSTRING__』」——模型（含 mock 回显）
+    // 按提示定向补齐关键词，重跑后通过。这正是自愈循环的设计目的（不再盲猜）。
+    assert.strictEqual(verifyEvents[1].passed, true, '自检重跑后定向补齐 → 通过');
+    assert.ok(typeof out === 'string' && out.length > 0, 'step 返回产出');
   } finally {
     if (prev === undefined) delete process.env.AGENT_VERIFY_MAX_RETRIES;
     else process.env.AGENT_VERIFY_MAX_RETRIES = prev;

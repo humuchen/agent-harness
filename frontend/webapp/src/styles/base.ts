@@ -60,6 +60,12 @@ export const base = css`
     border-bottom: 1px solid var(--ah-border);
     flex: 0 0 auto;
   }
+  /* 品牌行（logo + 展开/收起按钮）：PC 侧栏与移动抽屉一致，作为侧栏滚动容器的
+     粘性头 —— 导航项上滑时 logo 与按钮固定在顶部不随滚动走。
+     关键：sticky 按「滚动口的 padding 边」夹取，所以侧栏顶部那 20px 内边距
+     必须挂在品牌行自身（.sidebar 顶 padding 归零，见下），而不是留在滚动容器上；
+     否则品牌行 top:0 实际停在 20px 处，滚动口最顶 20px 带子没有背景盖住，
+     上滑的导航项会从品牌行上方穿透出来。同一处理见 responsive.ts 移动分支。 */
   .brand {
     display: flex;
     align-items: center;
@@ -69,6 +75,12 @@ export const base = css`
     font-size: 16px;
     white-space: nowrap;
     justify-content: center;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--ah-surface-1);
+    padding: 20px 0 0;
+    box-shadow: 0 6px 8px -6px rgba(0, 0, 0, 0.35);
   }
   .sidebar-toggle {
     margin-left: auto;
@@ -82,10 +94,14 @@ export const base = css`
     background: var(--ah-surface-2);
     border: 1px solid var(--ah-border);
     color: var(--ah-text-muted);
-    font-size: 16px;
-    line-height: 1;
     cursor: pointer;
     font-family: inherit;
+  }
+  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线） */
+  .sidebar-toggle .toggle-icon {
+    width: 16px;
+    height: 14px;
+    display: block;
   }
   .sidebar-toggle:hover {
     color: var(--ah-text);
@@ -98,13 +114,14 @@ export const base = css`
     display: block;
     color: var(--ah-text);
   }
-  /* 桌面端隐藏侧栏品牌块（logo + 产品名）：品牌不再出现在桌面各页面，统一收敛到
-     「我的」页。此处刻意只做「桌面 / 平板隐藏」而不删 DOM —— 手机（含横屏矮屏）抽屉
-     顶部标题行完全由品牌块承担，删 DOM 会留下一条空白粘性栏，故手机横屏排除在外。
-     对称排除条件见 app.ts desktopShellCss。 */
+  /* 桌面端隐藏侧栏产品名（品牌文字统一收敛到「我的」页），但 logo 保留：
+     展开态（240px）放出 logo；收起为 64px 图标轨时 22+8+26=56px 放不下，隐藏。
+     手机抽屉不命中本媒体块，仍显示 logo + 产品名（见 app.ts 的对称排除说明）。 */
   @media (min-width: 761px) and (min-height: 761px) {
-    .sidebar .brand .logo,
     .sidebar .brand .brand-text {
+      display: none;
+    }
+    .sidebar.collapsed .brand .logo {
       display: none;
     }
   }
@@ -220,7 +237,9 @@ export const base = css`
     width: 240px;
     background: var(--ah-surface-1);
     border-right: 1px solid var(--ah-border);
-    padding: 20px 14px;
+    /* 顶内边距为 0：那 20px 挪到 .brand 自身（见上），否则粘性品牌行会被
+       夹在 20px 处，滚动时导航项从品牌行上方穿透。 */
+    padding: 0 14px 20px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -234,7 +253,7 @@ export const base = css`
   .sidebar.collapsed {
     flex: 0 0 64px;
     width: 64px;
-    padding: 20px 10px;
+    padding: 0 10px 20px;
   }
   .sidebar.collapsed .brand-text {
     display: none;

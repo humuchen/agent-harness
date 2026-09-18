@@ -40,7 +40,13 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
     // Plan 来源（buildInputMapping 产出的形状）：必须同时有 goal + taskMeta。
     if ('goal' in rec && 'taskMeta' in rec) {
       const lines: string[] = [];
-      let meta: { id?: string; title?: string; steps?: unknown[]; expectedOutput?: string } | null;
+      let meta: {
+        id?: string;
+        title?: string;
+        steps?: unknown[];
+        expectedOutput?: string;
+        outputChecks?: unknown;
+      } | null;
       try {
         meta = typeof rec.taskMeta === 'string' ? JSON.parse(rec.taskMeta) : null;
       } catch {
@@ -53,6 +59,19 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
           meta.steps.forEach((s, i) => lines.push(`${i + 1}. ${String(s)}`));
         }
         if (meta.expectedOutput) lines.push(`预期产出：${meta.expectedOutput}`);
+        // P4.6 修复（验收知情）：验证门禁按 outputChecks 逐词断言「产出必须包含」，
+        // 但此前这些词从不进 prompt —— 执行模型不知道门禁在断言什么，命中全凭运气，
+        // 是「计划任务总在验证门禁失败、单步回复正常」的主根因。此处显式告知，
+        // 让模型在产出中主动写明这些关键词（检索失败时也须在数据缺口说明中提及）。
+        const checks = Array.isArray(meta?.outputChecks)
+          ? (meta!.outputChecks as unknown[]).map((c) => String(c).trim()).filter(Boolean).slice(0, 4)
+          : [];
+        if (checks.length) {
+          lines.push(
+            `验收要求（硬性）：最终产出必须明确包含以下关键词（逐词断言，缺一即验证不通过）：${checks.join('、')}。` +
+              `请在对应内容/小节标题中原样使用这些词；若某项数据/资料确实无法获取，仍须在「数据缺口」说明中写出该关键词并说明原因。`
+          );
+        }
       }
       lines.push(`目标：${String(rec.goal ?? '')}`);
       // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经

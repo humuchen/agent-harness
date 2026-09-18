@@ -883,7 +883,18 @@ export class AhApp extends LitElement {
               @click=${() => this.onToggleSidebar()}
               aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
-              ${this.sidebarCollapsed ? '›' : '‹'}
+              <svg
+                class="toggle-icon"
+                viewBox="0 0 16 14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="0.8" y="0.8" width="14.4" height="12.4" rx="2.4" />
+                <path d="M5.4 0.8v12.4" />
+              </svg>
             </button>
           </div>
           <nav class="nav">
