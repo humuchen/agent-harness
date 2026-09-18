@@ -333,13 +333,21 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         (m.content || isStreamingAssistant)
           ? html`<div class="sep"><span>回答</span></div>`
           : nothing}
-        ${m.planPhase &&
-        !m.plan &&
-        !m.clarify &&
-        isStreamingAssistant &&
-        !m.content
+        ${m.planPhase && !m.plan && !m.clarify && isStreamingAssistant && !m.content
           ? // 计划 propose 进行中：阶段面板已提供实时反馈，不再叠加「模型正在回复…」占位。
             nothing
+          : m.planPhase &&
+            !m.plan &&
+            !m.clarify &&
+            !isStreamingAssistant &&
+            !m.content
+          ? // 规划中断态：流已结束但计划/回答均未产出（连接断开、超时或服务中断）。
+            // 明确告知而非永远「等待响应…」，用户可重发需求或重新进入计划模式。
+            html`<div class="answer">
+              <div class="msg-text placeholder plan-aborted">
+                规划未完成：连接可能已中断或处理超时，请重新发送需求重试
+              </div>
+            </div>`
           : renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
         ${m.clarify ? renderClarifyCard(ctx, m) : nothing}
         ${m.plan ? renderPlanCard(ctx, m) : nothing}

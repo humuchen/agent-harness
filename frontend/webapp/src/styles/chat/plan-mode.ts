@@ -576,6 +576,11 @@ export const planMode = css`
     color: var(--ah-text-muted);
     opacity: 0.7;
   }
+  /* 规划中断态：流结束但计划未产出（断线/超时），明确提示可重试。 */
+  .plan-aborted {
+    color: #fbbf24;
+    opacity: 0.9;
+  }
   @keyframes pa-rotate {
     to {
       transform: rotate(360deg);

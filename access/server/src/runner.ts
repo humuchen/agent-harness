@@ -693,12 +693,21 @@ export async function assembleAgent(
   // 闭环步数上限：显式 maxSteps 优先 > env MAX_STEPS > 默认 24（原为硬编码 12，
   // 复杂任务常被提前截断）。工具结果截断降低每步重发的 token 成本。
   const envMaxSteps = Number(process.env.MAX_STEPS);
-  const effectiveMaxSteps =
+  const effectiveMaxStepsRaw =
     typeof maxSteps === 'number' && maxSteps > 0
       ? maxSteps
       : Number.isFinite(envMaxSteps) && envMaxSteps > 0
       ? envMaxSteps
       : 24;
+  // 计划模式 propose（P5 实测优化）：规划只是「理解目标 → 有限调研 → 拆分」，不是完整
+  // 执行。若沿用普通 run 的步数上限（默认 24），planner 会陷入长调研循环（实测 42 个
+  // 链路节点、数分钟无产出）。这里为 propose 设独立上限（env PLAN_PROPOSE_MAX_STEPS
+  // 可调，默认 6），超限即收敛产出计划。
+  const planProposeMaxSteps =
+    Number(process.env.PLAN_PROPOSE_MAX_STEPS) || 6;
+  const effectiveMaxSteps = planPropose
+    ? Math.min(effectiveMaxStepsRaw, planProposeMaxSteps)
+    : effectiveMaxStepsRaw;
   const maxToolResultChars =
     Number(process.env.MAX_TOOL_RESULT_CHARS ?? 16000) || 16000;
   const requireCompletion =
@@ -751,8 +760,11 @@ export async function assembleAgent(
     // - enableToolDedup：同 run 内「同名 + 相同归一化参数」的重复工具调用直接复用首次结果，
     //   砍掉模型反复请求同一工具导致的调用爆炸（如截图 26 次 → 1 次），降低 token 成本。
     // - maxToolCallsPerStep：单 step 工具调用预算封顶（MAX_TOOL_CALLS_PER_STEP，默认 0 不限制）。
+    //   计划 propose 单 step 封顶 2（可 env 覆盖）：调研要快、防长循环（见上方步数上限注释）。
     enableToolDedup: process.env.TOOL_DEDUP !== 'false',
-    maxToolCallsPerStep: Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
+    maxToolCallsPerStep: planPropose
+      ? Number(process.env.PLAN_PROPOSE_TOOL_CALLS_PER_STEP ?? 2) || 2
+      : Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
     // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
     ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
     // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
