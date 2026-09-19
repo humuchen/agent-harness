@@ -84,6 +84,7 @@ export class ChatScroll {
    */
   scrollThinkToBottom() {
     requestAnimationFrame(() => {
+      // ① 深度思考面板（原逻辑）。
       const tb = this.host.renderRoot.querySelector(
         '.think.live .think-body'
       ) as HTMLElement | null;
@@ -91,10 +92,22 @@ export class ChatScroll {
       if (!tb || tb.closest('.think.collapsed')) {
         // 离场（思考结束 / 折叠）后重置跟随意图，下次进入重新钉底。
         this.thinkStick = true;
-        return;
+      } else {
+        this.bindThinkScroll(tb);
+        if (this.thinkStick) tb.scrollTop = tb.scrollHeight;
       }
-      this.bindThinkScroll(tb);
-      if (this.thinkStick) tb.scrollTop = tb.scrollHeight;
+      // ② P5 计划思考面板：同一套钉底跟随（标题固定头，正文独立滚动）。
+      //    与深度思考面板不会同时 live（计划执行 vs 普通对话流式），thinkStick 共用安全。
+      const pb = this.host.renderRoot.querySelector(
+        '.plan-thinking .pt-think-body'
+      ) as HTMLElement | null;
+      if (pb) {
+        this.bindThinkScroll(pb);
+        if (this.thinkStick) pb.scrollTop = pb.scrollHeight;
+      } else if (!tb) {
+        // 两个面板都离场：重置跟随意图（bindThinkScroll 按元素 dataset 去重，重绑安全）。
+        this.thinkStick = true;
+      }
     });
   }
 

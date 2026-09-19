@@ -92,21 +92,31 @@ export const planMode = css`
     align-items: center;
     gap: 8px;
   }
-  /* P5 静默执行：当前任务思考面板（llm:reasoning 增量的 tail 展示）。 */
+  /* P5 静默执行：当前任务思考面板（llm:reasoning 增量的 tail 展示）。
+     纵向 flex：标题固定头（flex:none，不随滚动），滚动集中在正文容器。 */
   .plan-thinking {
     margin-top: 10px;
-    padding: 8px 10px;
     border: 1px dashed var(--ah-border);
     border-radius: 8px;
     background: var(--ah-bg-soft, rgba(127, 127, 127, 0.06));
-    max-height: 180px;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
   .pt-think-label {
+    flex: none;
     font-size: 12px;
     color: var(--ah-text-dim, var(--ah-text));
     opacity: 0.75;
-    margin-bottom: 4px;
+    padding: 8px 10px 4px;
+    border-bottom: 1px dashed var(--ah-border);
+  }
+  /* 正文滚动容器：max-height 移到这里，标题始终可见。 */
+  .pt-think-body {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 6px 10px 8px;
+    overscroll-behavior: contain;
   }
   .pt-think-text {
     font-size: 12px;

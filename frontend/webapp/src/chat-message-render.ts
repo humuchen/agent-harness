@@ -877,14 +877,18 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
     </ol>
     ${
       /* P5 静默执行：当前任务思考面板（llm:reasoning 增量，tail 展示最新思考）。
-         仅 running 且有思考流时渲染；任务完成/失败随状态机清空。 */
+         仅 running 且有思考流时渲染；任务完成/失败随状态机清空。
+         结构：标题为固定头（不随滚动），正文 .pt-think-body 独立滚动 ——
+         打字流式时由 ChatScroll 钉底跟随（用户上滚暂停、滚回底部恢复）。 */
       st.status === 'running' && st.thinking && st.thinking.text.trim()
         ? html`<div class="plan-thinking">
             <div class="pt-think-label">
               💭 思考中 · ${escapeHtml(st.thinking.taskId ?? st.currentTaskId ?? '')}
             </div>
-            <div class="pt-think-text">
-              ${escapeHtml(st.thinking.text.slice(-4000))}
+            <div class="pt-think-body">
+              <div class="pt-think-text">
+                ${escapeHtml(st.thinking.text.slice(-4000))}
+              </div>
             </div>
           </div>`
         : nothing
