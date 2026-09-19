@@ -27,9 +27,10 @@ export class ChatScroll {
   stickToBottom = true;
   /** 浮动「回到底部」按钮是否可见（未钉底时显示）。 */
   showScrollDown = false;
-  /** 思考区内滚动的「钉底」状态：流式期间用户在思考区内向上滚动即暂停跟随，
-   *  滚回底部后恢复。避免每个 token 都强制回底、把用户的滚轮操作"吃掉"。 */
-  private thinkStick = true;
+  // 思考区内滚动的「钉底」状态不再用共享布尔，而是挂在每个滚动容器自身
+  // （dataset.thinkStick）：深度思考面板与计划思考面板（P5）各自维护独立状态，
+  // 互不干扰。避免「某类面板不存在时把共享 thinkStick 误重置为 true」导致另一
+  // 面板被强制回底、把用户的滚轮操作"吃掉"。
 
   private host: ScrollHost;
 
@@ -84,29 +85,22 @@ export class ChatScroll {
    */
   scrollThinkToBottom() {
     requestAnimationFrame(() => {
-      // ① 深度思考面板（原逻辑）。
-      const tb = this.host.renderRoot.querySelector(
-        '.think.live .think-body'
-      ) as HTMLElement | null;
-      // 折叠时不跟随滚动（用户主动隐藏），展开时才自动滚到底
-      if (!tb || tb.closest('.think.collapsed')) {
-        // 离场（思考结束 / 折叠）后重置跟随意图，下次进入重新钉底。
-        this.thinkStick = true;
-      } else {
+      // 两类「思考区正文」滚动容器：深度思考面板（普通对话流式）与计划思考面板
+      // （P5 静默执行）。二者不会同时 live（计划执行 vs 普通对话流式），但各自维护
+      // 独立的钉底状态（dataset.thinkStick），互不干扰——杜绝共享布尔被误重置。
+      const targets = [
+        this.host.renderRoot.querySelector(
+          '.think.live .think-body'
+        ) as HTMLElement | null,
+        this.host.renderRoot.querySelector(
+          '.plan-thinking .pt-think-body'
+        ) as HTMLElement | null,
+      ].filter(
+        (x): x is HTMLElement => !!x && !x.closest('.think.collapsed')
+      );
+      for (const tb of targets) {
         this.bindThinkScroll(tb);
-        if (this.thinkStick) tb.scrollTop = tb.scrollHeight;
-      }
-      // ② P5 计划思考面板：同一套钉底跟随（标题固定头，正文独立滚动）。
-      //    与深度思考面板不会同时 live（计划执行 vs 普通对话流式），thinkStick 共用安全。
-      const pb = this.host.renderRoot.querySelector(
-        '.plan-thinking .pt-think-body'
-      ) as HTMLElement | null;
-      if (pb) {
-        this.bindThinkScroll(pb);
-        if (this.thinkStick) pb.scrollTop = pb.scrollHeight;
-      } else if (!tb) {
-        // 两个面板都离场：重置跟随意图（bindThinkScroll 按元素 dataset 去重，重绑安全）。
-        this.thinkStick = true;
+        if (this.thinkSticks(tb)) tb.scrollTop = tb.scrollHeight;
       }
     });
   }
@@ -122,7 +116,8 @@ export class ChatScroll {
         `.think[data-mid="${msgId}"] .think-body`
       ) as HTMLElement | null;
       if (!tb || tb.closest('.think.collapsed')) return;
-      this.thinkStick = true;
+      // 用户主动展开旧思考：钉底对齐结尾（dataset 钉底状态置 true）。
+      tb.dataset.thinkStick = '1';
       tb.scrollTop = tb.scrollHeight;
       setTimeout(() => {
         if (tb.isConnected && !tb.closest('.think.collapsed'))
@@ -133,15 +128,22 @@ export class ChatScroll {
 
   /**
    * 给思考区正文绑 scroll 监听（每次重渲染 DOM 重建，按需重绑）：
-   * 用户滚离底部 → 暂停钉底（thinkStick=false）；滚回底部 → 恢复跟随。
-   * 程序回底触发的 scroll 事件距底为 0，不会误判为用户上滚。
+   * 钉底状态挂在元素自身 dataset.thinkStick（缺省 '1'=钉底）。用户滚离底部 →
+   * 置 '0' 暂停跟随；滚回底部 → 置 '1' 恢复。程序回底触发的 scroll 事件距底为 0，
+   * 不会误判为用户上滚。
    */
   private bindThinkScroll(tb: HTMLElement) {
     if (tb.dataset.thinkScrollBound === '1') return;
     tb.dataset.thinkScrollBound = '1';
+    tb.dataset.thinkStick = '1';
     tb.addEventListener('scroll', () => {
       const distance = tb.scrollHeight - tb.scrollTop - tb.clientHeight;
-      this.thinkStick = distance <= AT_BOTTOM_THRESHOLD;
+      tb.dataset.thinkStick = distance <= AT_BOTTOM_THRESHOLD ? '1' : '0';
     });
+  }
+
+  /** 该思考区是否处于钉底跟随：dataset.thinkStick 非 '0' 即视为钉底（缺省 true）。 */
+  private thinkSticks(tb: HTMLElement): boolean {
+    return tb.dataset.thinkStick !== '0';
   }
 }

@@ -222,14 +222,15 @@ export const runtime = css`
     border-left: 2px solid var(--ah-border);
   }
   .caret {
-    display: inline-block;
+    display: none;
+    /* display: inline-block;
     width: 7px;
     height: 1.05em;
     background: var(--ah-accent);
     border-radius: 1px;
     vertical-align: text-bottom;
     margin-left: 2px;
-    animation: ah-blink 1s steps(2, start) infinite;
+    animation: ah-blink 1s steps(2, start) infinite; */
   }
   @keyframes ah-blink {
     to {

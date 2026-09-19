@@ -589,13 +589,14 @@ export const composer = css`
     }
   }
   .caret {
-    display: inline-block;
+    display: none;
+    /* display: inline-block;
     width: 8px;
     height: 14px;
     margin-left: 2px;
     vertical-align: text-bottom;
     background: var(--ah-text);
-    animation: blink 1s steps(2, start) infinite;
+    animation: blink 1s steps(2, start) infinite; */
   }
   @keyframes blink {
     to {
