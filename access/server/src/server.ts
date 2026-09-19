@@ -2225,15 +2225,17 @@ const server = createServer(
         }
         return sendJson(res, { agent: card }, req);
       }
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行）----
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
       // POST /api/workflows/:id/approve → P3 人工审批放行（写入检查点 approvals 后续跑）
+      // POST /api/workflows/:id/cancel → P5.4 显式取消（abort 活动 run；断连不再隐式中止）
       if (path.startsWith('/api/workflows/')) {
         const isResume = req.method === 'POST' && path.endsWith('/resume');
         const isApprove = req.method === 'POST' && path.endsWith('/approve');
-        // POST /resume、POST /approve 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
-        const ctx = await guard(req, res, isResume || isApprove ? 'workflow:run' : 'workflow:read');
+        const isCancel = req.method === 'POST' && path.endsWith('/cancel');
+        // POST /resume、/approve、/cancel 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(req, res, isResume || isApprove || isCancel ? 'workflow:run' : 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
@@ -2247,12 +2249,11 @@ const server = createServer(
             return;
           }
           let closed = false;
-          // P5.3 断连即中止（同首跑语义）：续跑期间客户端断开 → 中止引擎 run，避免后台
-          // 续跑与客户端断连误判的「失败」形成双执行 / 抽屉与思考面板不同源。
+          // P5.4 断连不再中止（同首跑语义）：续跑期间客户端断开（后台标签节流 / 网络抖动），
+          // 服务端 run 继续跑完并落检查点；显式取消走 POST /:id/cancel（活动 run 注册表）。
           const runAbort = new AbortController();
           res.on('close', () => {
             closed = true;
-            if (!res.writableEnded) runAbort.abort();
           });
           // P1（断点续跑）：resume body 与执行端点同构（mode / BYOK 模型凭据 / ctxWindow /
           // web / verify / sessionId）——检查点按 P1.3 纪律不存明文凭据，续跑时按登录 owner
@@ -2329,7 +2330,11 @@ const server = createServer(
                 if (!closed) send(e);
               },
             });
-            const run = await engine.resume(workflowId, runAbort.signal);
+            // P5.4：登记活动 run（显式取消通道），终态时移除（finally 透传原结果/异常）。
+            activeWorkflowAborts.set(workflowId, runAbort);
+            const run = await engine
+              .resume(workflowId, runAbort.signal)
+              .finally(() => activeWorkflowAborts.delete(workflowId));
             // P4.6：续跑终态同样归档交付文件（按 runId+stepId 幂等去重，首跑已归档的自动跳过）。
             await archivePlanArtifacts({ def: run.def, run, owner: ctx.sub }).catch((e) => {
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
@@ -2447,7 +2452,11 @@ const server = createServer(
                 if (!closed) send(e);
               },
             });
-            const run2 = await engine.resume(workflowId, runAbort.signal);
+            // P5.4：登记活动 run（显式取消通道），终态时移除（finally 透传原结果/异常）。
+            activeWorkflowAborts.set(workflowId, runAbort);
+            const run2 = await engine
+              .resume(workflowId, runAbort.signal)
+              .finally(() => activeWorkflowAborts.delete(workflowId));
             // P4.6：审批放行续跑终态同样归档交付文件（幂等去重，前序已归档的自动跳过）。
             await archivePlanArtifacts({ def: run2.def, run: run2, owner: ctx.sub }).catch((e) => {
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
@@ -2459,6 +2468,32 @@ const server = createServer(
             if (!closed) res.end();
           }
           return;
+        }
+        // P5.4 显式取消：abort 活动 run 的引擎 signal。引擎捕获 abort → 检查点落 failed
+        // （step 保留已完成状态），用户可经「从失败任务继续」从断点续跑。仅取消「本进程
+        // 正在运行」的 run —— 无活动 run（已终态 / 服务重启后只剩检查点）时直接 ok 返回，
+        // 幂等不报错（前端取消语义不受影响：卡片已本地置 cancelled）。
+        if (isCancel) {
+          const workflowId = id.slice(0, -'/cancel'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const ctrl = activeWorkflowAborts.get(workflowId);
+          if (ctrl) {
+            ctrl.abort();
+            auditAction('workflow.cancel', {
+              workflowId,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+          }
+          return sendJson(
+            res,
+            { ok: true, workflowId, cancelled: !!ctrl },
+            req
+          );
         }
         // GET 取单个工作流执行快照
         if (req.method === 'GET') {
@@ -5303,20 +5338,28 @@ async function resolveWorkflowRunOpts(
   };
 }
 
+/**
+ * P5.4 活动 DAG run 注册表：workflowId → 运行中的 AbortController。
+ * 断连不再中止 run（见 handleWorkflow 注释）后，「停止」按钮需要显式取消通道 ——
+ * POST /api/workflows/:id/cancel 据此 abort 引擎 signal。run 终态（含被取消）时移除。
+ * 进程内单例即可：DagEngine 检查点本就落在本进程 workflowStore。
+ */
+const activeWorkflowAborts = new Map<string, AbortController>();
+
 async function handleWorkflow(
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<void> {
   let closed = false;
-  // P5.3 断连即中止：客户端 SSE 断开（标签页关闭 / 刷新 / 网络中断）时，立即中止正在运行
-  // 的 DAG run —— 否则服务端 run 在后台继续推进，客户端却把断连误判为「失败」停在旧任务，
-  // 而抽屉（读服务端检查点）显示后续任务已完成 → 思考面板与执行详情不同源（双执行残留）。
-  // 中止后检查点落 failed，用户「从失败任务继续」经 resume 从检查点干净重跑未完成步骤。
-  // 仅在客户端主动断开时中止（res 尚未 end），正常终态 res.end() 后不再中止已完成的 run。
+  // P5.3 反转（P5.4）：计划执行期间客户端 SSE 断开（后台标签页节流 / 网络抖动 / 刷新）
+  // 不再中止服务端 DAG run。计划是「服务端后台任务」，应在断连后继续跑完并把检查点落盘；
+  // 重连的客户端经检查点轮询（GET /api/workflows/:id）读到权威终态（done/failed）。
+  // 此前「断连即中止」使串行模式（执行更久、暴露窗口更长）下任何瞬时断连都把进行中的
+  // 计划判 failed → 表现为「很容易 timeout」。客户端不会在断连/刷新后自动重派发（confirmPlan
+  // 仅由按钮触发），故不中止也不会产生双执行；中止仅在服务优雅停机（shuttingDown）时发生。
   const runAbort = new AbortController();
   res.on('close', () => {
     closed = true;
-    if (!res.writableEnded) runAbort.abort();
   });
 
   const body = await readBody(req);
@@ -5465,6 +5508,8 @@ async function handleWorkflow(
   // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
   // initialInput：plan 来源时 = plan.goal（buildInputMapping 的 goal:'input' 映射到各 step 的 goal 键）；
   // def 来源时 = body.input（保持现有行为）。
+  // P5.4：登记活动 run，供 POST /:id/cancel 显式取消（终态时移除）。
+  activeWorkflowAborts.set(def.id, runAbort);
   engine
     .run(def, initialInput, runAbort.signal)
     .then(async (run: any) => {
@@ -5479,6 +5524,9 @@ async function handleWorkflow(
     .catch((e: any) => {
       if (!closed) send({ type: 'wf:error', workflowId: def.id, message: e?.message ?? String(e) });
       if (!closed) res.end();
+    })
+    .finally(() => {
+      activeWorkflowAborts.delete(def.id);
     });
   return;
 }

@@ -463,6 +463,23 @@ export class AgentClient {
   }
 
   /**
+   * P5.4 显式取消一个运行中的工作流（POST /api/workflows/:id/cancel）。
+   * 服务端 abort 引擎 signal → 检查点落 failed（已完成 step 保留），可从断点续跑。
+   * 幂等：run 已终态 / 不在本进程运行时服务端直接 ok（cancelled:false）。
+   */
+  async cancelWorkflow(id: string): Promise<{ ok: boolean; workflowId: string; cancelled: boolean }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST', body: '{}' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as { ok: boolean; workflowId: string; cancelled: boolean };
+  }
+
+  /**
    * 定义并运行一个 DAG 工作流，返回编排事件异步迭代器（与 harness 事件同通道）。
    * wf:* 为编排事件；嵌套的 harness 事件以 { type: 'harness', event } 包裹。
    */

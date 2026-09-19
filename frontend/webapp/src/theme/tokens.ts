@@ -323,10 +323,70 @@ export function setTheme(theme: Theme): void {
  */
 export function withThemeAnimation(mutate: () => void): void {
   if (typeof document === 'undefined') return;
+  // 原生壳（Capacitor APP）不走 @property 自定义属性过渡 —— APP 上切换主题会整页
+  // 闪烁（用户实测反馈，桌面浏览器正常）。原因：
+  //  1) `html.ah-theme-anim` 的过渡让浏览器对约 20 个**继承型**注册自定义属性逐帧插值，
+  //     每一帧都要重算全文档所有 var(--ah-*) 消费方（含全部 shadow root）并重绘；
+  //     桌面 Chrome 合成器扛得住，移动端 WebView 算力不足 → 掉帧 + 图块渐进绘制，
+  //     视觉上就是新旧配色交错的「闪烁」而非平滑渐变。
+  //  2) color-scheme 不在 @property 注册表里（不可插值），dark↔light 瞬间翻转：
+  //     WebView 根层底色/原生绘制区域先跳到新配色，而颜色令牌还在半途 → 错色帧。
+  //  3) APP 独有：过渡中途 syncNativeStatusBar 触发原生状态栏重绘，放大观感。
+  // 替代方案（合成器友好）：瞬时切换 + 旧画布色幕布淡出 —— 唯一一次重绘被不透明
+  // 幕布完全遮住，幕布淡出是纯 opacity 合成层动画，零重排零重绘。
+  if (isNativeWebView()) {
+    playNativeThemeCrossfade(mutate);
+    return;
+  }
   const root = document.documentElement;
   root.classList.add('ah-theme-anim');
   mutate();
   window.setTimeout(() => root.classList.remove('ah-theme-anim'), 600);
+}
+
+/** 原生 WebView（Capacitor APP）判定：webapp 不依赖 @capacitor/*，纯 Web 无此全局。 */
+function isNativeWebView(): boolean {
+  try {
+    return !!(
+      globalThis as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor?.isNativePlatform?.();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * APP 主题切换：瞬时切换 + 旧画布色幕布淡出（crossfade）。
+ *  - 幕布用**旧** --ah-canvas 的字面量值（切换后 var() 会重新解析成新值，不能引用）；
+ *  - mutate() 的那一次全文档重绘发生在幕布之下，任何错色/渐进绘制帧都被遮住；
+ *  - 双 rAF 确认新主题首帧已实际绘制后再开始 0.28s 淡出（纯 opacity 合成动画）；
+ *  - data-theme 未实际变化（如启动时 initTheme 幂等落值）→ 立即摘幕布，不闪不淡出。
+ */
+function playNativeThemeCrossfade(mutate: () => void): void {
+  const root = document.documentElement;
+  const prev = root.getAttribute('data-theme');
+  const oldCanvas =
+    getComputedStyle(root).getPropertyValue('--ah-canvas').trim() || '#0B0E14';
+  const veil = document.createElement('div');
+  veil.setAttribute('data-ah-theme-veil', '');
+  veil.style.cssText =
+    'position:fixed;inset:0;z-index:2147483647;pointer-events:none;' +
+    `background:${oldCanvas};opacity:1;will-change:opacity;` +
+    'transform:translateZ(0);transition:opacity 0.28s ease;';
+  document.body.appendChild(veil);
+  mutate();
+  if (root.getAttribute('data-theme') === prev) {
+    veil.remove();
+    return;
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      veil.style.opacity = '0';
+      window.setTimeout(() => veil.remove(), 340);
+    });
+  });
 }
 
 /**

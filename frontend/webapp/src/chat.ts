@@ -398,6 +398,22 @@ export class AhChat extends LitElement {
    */
   private planWfReplayTimer: number | null = null;
 
+  /**
+   * P5.4 断连自愈轮询：计划 SSE 流在「未收到终态帧」时静默结束（客户端断连 / 后台标签
+   * 节流 / 网络抖动）—— 此时服务端 run 仍在后台跑（P5.4 不再因断连中止）。为每个计划消息
+   * 维护一个 2.5s 轮询定时器，读取检查点（GET /api/workflows/:id）把卡片收敛到权威终态
+   * （running→done/failed；awaiting 继续轮询）；终态或消息被新执行取代即清除。
+   * 键 = 计划卡片消息 id（同一会话通常只有一个活动计划，但用 map 避免误清）。
+   */
+  private planWfReconcileTimers: Record<string, number> = {};
+
+  /**
+   * P5.4 当前活动计划 run 的检查点 id（confirmPlanViaWorkflow / resume / approve 派发期间
+   * 非空）。「停止」按钮据此调用 POST /api/workflows/:id/cancel 显式取消服务端 run ——
+   * 断连已不再隐式中止（P5.4），显式取消必须走专门通道。
+   */
+  private planWfActiveId: string | null = null;
+
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
 
@@ -3565,6 +3581,84 @@ export class AhChat extends LitElement {
     this.planWfReplayMsg = null;
   }
 
+  /** P5.4：停止某计划消息的断连自愈轮询（终态 / 被新执行取代 / 卡片清理时调用）。 */
+  private stopPlanWfReconcile(msgId: number): void {
+    const t = this.planWfReconcileTimers[msgId];
+    if (t != null) {
+      clearInterval(t);
+      const next = { ...this.planWfReconcileTimers };
+      delete next[msgId];
+      this.planWfReconcileTimers = next;
+    }
+  }
+
+  /**
+   * P5.4 断连自愈：SSE 流静默结束（未收到终态帧）时调用。服务端 run 在断连后仍会跑完并
+   * 落检查点，故按 2.5s 轮询 GET /api/workflows/:id，把卡片收敛到权威状态：
+   *   - running / 其它        → 保持 running（继续轮询，不误判 failed）；
+   *   - awaiting              → 置 awaiting（审批门，继续轮询，审批后引擎恢复执行）；
+   *   - done / failed         → 收敛到该终态并停轮询（done 仍回挂执行摘要）。
+   * 仅当检查点也不可达（服务重启 / 盘清理）时保持 running 续轮询，不立即判 failed —— 杜绝
+   * 「断连 + 服务抖动」双重误判。消息被新执行（confirmPlan / resume / approve）取代时，调用
+   * 方应已 stopPlanWfReconcile 清除本定时器，poll 内的 msgId 守卫进一步防旧帧回流。
+   */
+  private reconcilePlanWfOnDisconnect(m: ChatMsg, sid: string): void {
+    if (!m.plan) return;
+    const wfId = derivePlanWfId(sid, m.plan);
+    const cur = this.planExec[m.id];
+    if (cur) {
+      // 先置「执行中断·重连中」过渡态：区别于 failed，且不被 saveHistory 当终态固化。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...cur, status: 'running', currentTaskId: undefined, thinking: undefined }
+      };
+    }
+    const poll = async (): Promise<void> => {
+      const now = this.planExec[m.id];
+      if (!now) return; // 已被新执行 / 清理取代
+      let run: PlanWfRunSnapshot | null | undefined;
+      try {
+        const res = await client.getWorkflow(wfId);
+        run = res.workflow;
+      } catch {
+        // 检查点暂不可达：保持 running 续轮询（下一轮再试），不立即判 failed。
+        return;
+      }
+      const state = run?.state;
+      if (state === 'done' || state === 'failed') {
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...now,
+            status: state,
+            currentTaskId: undefined,
+            ...(run ? { wfSnapshot: compactPlanWfSnapshot(run) } : {})
+          }
+        };
+        if (state === 'done' && run) this.appendPlanDagSummary(sid, m, run);
+        this.stopPlanWfReconcile(m.id);
+      } else if (state === 'awaiting') {
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...now, status: 'awaiting', currentTaskId: undefined }
+        };
+        // awaiting 仍需继续轮询（审批后引擎恢复执行，state 会变回 running→done）
+      } else {
+        // running / 其它：保持 running，继续轮询
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...now, status: 'running', currentTaskId: undefined }
+        };
+      }
+    };
+    this.stopPlanWfReconcile(m.id);
+    void poll();
+    this.planWfReconcileTimers = {
+      ...this.planWfReconcileTimers,
+      [m.id]: window.setInterval(() => void poll(), 2500)
+    };
+  }
+
   /**
    * 构造渲染簇所需的「数据 + 回调」快照（ChatRenderCtx）。
    * 把当前交互态与各交互方法的绑定一次性打包，供 chat-message-render.ts 的纯函数使用，
@@ -3722,6 +3816,9 @@ export class AhChat extends LitElement {
   private async confirmPlan(m: ChatMsg) {
     const sid = this.activeId;
     if (!sid || !m.plan) return;
+    // P5.4：用户主动重派发（确认 / 从失败任务继续）前，清除该计划的断连自愈轮询，
+    // 避免它与新起的 SSE 流争夺 planExec 状态。
+    this.stopPlanWfReconcile(m.id);
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
@@ -3891,6 +3988,28 @@ export class AhChat extends LitElement {
   }
 
   /** 取消计划：不再执行任何任务。 */
+  /**
+   * P5.4 停止按钮统一入口：计划 DAG 执行中优先中止 DAG 流（planWfAbort），普通 run 才走
+   * runRt.stop()。两者互斥（同一时刻仅一个在跑）。
+   *
+   * 与 P5.3 的差异：断连已不再隐式中止服务端 run（P5.4），因此计划路径除了 abort 本地
+   * 流读取（触发 consumePlanWfStream 的 cancelled 分支），还必须显式调用
+   * POST /api/workflows/:id/cancel 通知服务端 abort 引擎 —— 否则「停止」只断开了观看，
+   * 服务端会继续把整个计划跑完。取消请求尽力而为（失败不影响本地 cancelled 终态，
+   * 卡片状态由用户操作权威决定）。
+   */
+  private stopActiveRun(): void {
+    if (this.planWfAbort) {
+      const wfId = this.planWfActiveId;
+      this.planWfAbort.abort();
+      if (wfId) {
+        void client.cancelWorkflow(wfId).catch(() => {});
+      }
+      return;
+    }
+    this.runRt.stop();
+  }
+
   private cancelPlan(msgId: number) {
     const st = this.planExec[msgId];
     if (!st || st.status !== 'pending') return;
@@ -3934,6 +4053,7 @@ export class AhChat extends LitElement {
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
     const ac = new AbortController();
     this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
     // 复用「流式中」标记：停止按钮亮起、发送按钮隐藏（避免计划执行中并发发起普通 run）。
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
@@ -3966,6 +4086,7 @@ export class AhChat extends LitElement {
       );
     } finally {
       this.planWfAbort = null;
+      this.planWfActiveId = null;
       this.streaming = { ...this.streaming, [sid]: false };
       this.requestUpdate();
     }
@@ -3992,6 +4113,7 @@ export class AhChat extends LitElement {
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
     const ac = new AbortController();
     this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', thinking: undefined } };
     let terminal = false;
@@ -4017,6 +4139,7 @@ export class AhChat extends LitElement {
       );
     } finally {
       this.planWfAbort = null;
+      this.planWfActiveId = null;
       this.streaming = { ...this.streaming, [sid]: false };
       this.requestUpdate();
     }
@@ -4048,6 +4171,7 @@ export class AhChat extends LitElement {
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
     const ac = new AbortController();
     this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = {
       ...this.planExec,
@@ -4078,6 +4202,7 @@ export class AhChat extends LitElement {
       );
     } finally {
       this.planWfAbort = null;
+      this.planWfActiveId = null;
       this.streaming = { ...this.streaming, [sid]: false };
       this.requestUpdate();
     }
@@ -4243,8 +4368,10 @@ export class AhChat extends LitElement {
         }
       }
       // 用户手动停止（停止按钮 → planWfAbort.abort()）：保留已完成任务（done 集合），
-      // 标 cancelled —— 这是合法终态，不回退串行。
+      // 标 cancelled —— 这是合法终态，不回退串行。同时停掉断连自愈轮询（如有），
+      // 防止它把本地 cancelled 覆盖回服务端检查点状态。
       if (ac.signal.aborted) {
+        this.stopPlanWfReconcile(m.id);
         this.planExec = {
           ...this.planExec,
           [m.id]: {
@@ -4256,24 +4383,19 @@ export class AhChat extends LitElement {
         };
         terminal = true;
       } else if (!terminal) {
-        // 流自然结束但未收到任何终态帧（服务端进程重启 / 网络静默断开）：
-        // 保守标记 failed（而非静默 done），用户可经「从失败任务继续」重试。
-        this.planExec = {
-          ...this.planExec,
-          [m.id]: {
-            ...(this.planExec[m.id] ?? st),
-            status: 'failed',
-            currentTaskId: undefined,
-            // P5.3：断连误判 failed 时清掉残留思考标签（见 wf:error 分支注释）。
-            thinking: undefined
-          }
-        };
+        // 流静默结束但未收到任何终态帧（客户端断连 / 后台标签节流 / 网络抖动）：
+        // P5.4 不再武断标 failed —— 服务端计划 run 在断连后仍会跑完并落检查点，故启动
+        // 检查点轮询把卡片收敛到权威终态（running→done/failed）；仅当检查点本身确认失败 /
+        // 丢失才回落 failed（用户可「从失败任务继续」）。这消除了「串行模式执行更久、断连
+        // 窗口更长 → 任何瞬时断连都把进行中计划判 failed（用户视角 = 很容易 timeout）」的现象。
         terminal = true;
+        this.reconcilePlanWfOnDisconnect(m, sid);
       }
     } catch (e: unknown) {
       if (ac.signal.aborted) {
         // 用户手动停止（SSE 迭代在 abort 时抛 AbortError 路径）：保留已完成任务，
         // 标 cancelled —— 合法终态，不回退串行（terminal=true 使调用方不再派发）。
+        this.stopPlanWfReconcile(m.id);
         this.planExec = {
           ...this.planExec,
           [m.id]: {
@@ -5050,12 +5172,7 @@ export class AhChat extends LitElement {
                     ? html`<button
                         class="send"
                         title="停止"
-                        @click=${() =>
-                          // P3：计划 DAG 执行中优先中止 DAG 流（planWfAbort），
-                          // 普通 run 才走 runRt.stop()。两者互斥（同一时刻仅一个在跑）。
-                          this.planWfAbort
-                            ? this.planWfAbort.abort()
-                            : this.runRt.stop()}
+                        @click=${() => this.stopActiveRun()}
                       >
                         ■
                       </button>`
