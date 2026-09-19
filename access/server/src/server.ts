@@ -2247,7 +2247,13 @@ const server = createServer(
             return;
           }
           let closed = false;
-          res.on('close', () => { closed = true; });
+          // P5.3 断连即中止（同首跑语义）：续跑期间客户端断开 → 中止引擎 run，避免后台
+          // 续跑与客户端断连误判的「失败」形成双执行 / 抽屉与思考面板不同源。
+          const runAbort = new AbortController();
+          res.on('close', () => {
+            closed = true;
+            if (!res.writableEnded) runAbort.abort();
+          });
           // P1（断点续跑）：resume body 与执行端点同构（mode / BYOK 模型凭据 / ctxWindow /
           // web / verify / sessionId）——检查点按 P1.3 纪律不存明文凭据，续跑时按登录 owner
           // 重新解析凭据；real 模式无 Key 在 SSE 开启前 402 快速失败。旧客户端不带 body 时
@@ -2323,7 +2329,7 @@ const server = createServer(
                 if (!closed) send(e);
               },
             });
-            const run = await engine.resume(workflowId);
+            const run = await engine.resume(workflowId, runAbort.signal);
             // P4.6：续跑终态同样归档交付文件（按 runId+stepId 幂等去重，首跑已归档的自动跳过）。
             await archivePlanArtifacts({ def: run.def, run, owner: ctx.sub }).catch((e) => {
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
@@ -2348,7 +2354,12 @@ const server = createServer(
             return;
           }
           let closed = false;
-          res.on('close', () => { closed = true; });
+          // P5.3 断连即中止（同首跑 / resume 语义）：审批放行后的续跑期间客户端断开 → 中止引擎 run。
+          const runAbort = new AbortController();
+          res.on('close', () => {
+            closed = true;
+            if (!res.writableEnded) runAbort.abort();
+          });
           const body = await readBody(req);
           const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
           if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
@@ -2436,7 +2447,7 @@ const server = createServer(
                 if (!closed) send(e);
               },
             });
-            const run2 = await engine.resume(workflowId);
+            const run2 = await engine.resume(workflowId, runAbort.signal);
             // P4.6：审批放行续跑终态同样归档交付文件（幂等去重，前序已归档的自动跳过）。
             await archivePlanArtifacts({ def: run2.def, run: run2, owner: ctx.sub }).catch((e) => {
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
@@ -5285,8 +5296,15 @@ async function handleWorkflow(
   res: ServerResponse
 ): Promise<void> {
   let closed = false;
+  // P5.3 断连即中止：客户端 SSE 断开（标签页关闭 / 刷新 / 网络中断）时，立即中止正在运行
+  // 的 DAG run —— 否则服务端 run 在后台继续推进，客户端却把断连误判为「失败」停在旧任务，
+  // 而抽屉（读服务端检查点）显示后续任务已完成 → 思考面板与执行详情不同源（双执行残留）。
+  // 中止后检查点落 failed，用户「从失败任务继续」经 resume 从检查点干净重跑未完成步骤。
+  // 仅在客户端主动断开时中止（res 尚未 end），正常终态 res.end() 后不再中止已完成的 run。
+  const runAbort = new AbortController();
   res.on('close', () => {
     closed = true;
+    if (!res.writableEnded) runAbort.abort();
   });
 
   const body = await readBody(req);
@@ -5436,7 +5454,7 @@ async function handleWorkflow(
   // initialInput：plan 来源时 = plan.goal（buildInputMapping 的 goal:'input' 映射到各 step 的 goal 键）；
   // def 来源时 = body.input（保持现有行为）。
   engine
-    .run(def, initialInput)
+    .run(def, initialInput, runAbort.signal)
     .then(async (run: any) => {
       // P4.6：plan 桥终态先归档「交付文件」（幂等、无效产出跳过、绝不抛错），
       // 归档完成再发 _wf_done 终态帧——前端在终态帧后拉 GET /api/artifacts?runId=<wfId> 必然命中。

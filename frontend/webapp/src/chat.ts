@@ -3959,7 +3959,7 @@ export class AhChat extends LitElement {
     const ac = new AbortController();
     this.planWfAbort = ac;
     this.streaming = { ...this.streaming, [sid]: true };
-    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', thinking: undefined } };
     let terminal = false;
     try {
       const byok = await this.planWfByok(m);
@@ -4017,7 +4017,7 @@ export class AhChat extends LitElement {
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = {
       ...this.planExec,
-      [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined }
+      [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined, thinking: undefined }
     };
     let terminal = false;
     try {
@@ -4198,7 +4198,10 @@ export class AhChat extends LitElement {
                   : kind === 'resume'
                   ? 'failed'
                   : 'awaiting',
-              currentTaskId: undefined
+              currentTaskId: undefined,
+              // P5.3：终态/失败分支一律清掉思考面板残留标签——避免「失败/断连误判」把
+              // 旧任务的思考流遗留到续跑/重派发，导致思考标签与执行详情（服务端检查点）不同源。
+              thinking: undefined
             }
           };
           terminal = kind !== 'resume';
@@ -4213,7 +4216,8 @@ export class AhChat extends LitElement {
           [m.id]: {
             ...(this.planExec[m.id] ?? st),
             status: 'cancelled',
-            currentTaskId: undefined
+            currentTaskId: undefined,
+            thinking: undefined
           }
         };
         terminal = true;
@@ -4225,7 +4229,9 @@ export class AhChat extends LitElement {
           [m.id]: {
             ...(this.planExec[m.id] ?? st),
             status: 'failed',
-            currentTaskId: undefined
+            currentTaskId: undefined,
+            // P5.3：断连误判 failed 时清掉残留思考标签（见 wf:error 分支注释）。
+            thinking: undefined
           }
         };
         terminal = true;
@@ -4239,7 +4245,8 @@ export class AhChat extends LitElement {
           [m.id]: {
             ...(this.planExec[m.id] ?? st),
             status: 'cancelled',
-            currentTaskId: undefined
+            currentTaskId: undefined,
+            thinking: undefined
           }
         };
         terminal = true;
