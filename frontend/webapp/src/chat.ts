@@ -31,6 +31,8 @@ import {
   compactPlanWfSnapshot,
   isPlanDagEnabled,
   buildPlanArtifactSection,
+  filterPlanSingleStep,
+  recoverPlanFinalResult,
   type PlanWfEvent,
   type PlanWfRunSnapshot
 } from './chat-render-utils';
@@ -1753,16 +1755,45 @@ export class AhChat extends LitElement {
           }))
         );
 
-        // 空消息属正常（新建会话尚未发送任何消息，服务端返回 messages:[]）：
-        // 直接按合法空会话走合并/落内存，不再当作恢复失败抛异常。
-        // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
+        // 计划会话恢复：服务端会话存储（串行回退路径）会混入「单步任务」user/assistant
+        // 消息，且「最终执行结果」摘要仅本端历史镜像持有（旧串行路径未落服务端）。故计划会话
+        // 优先采用干净的历史镜像（已过滤 quiet 单步、含摘要），单步残留仅作防御性过滤；
+        // 计划进度（planStatus）仍以服务端为权威源（实时性更强，尤其进行中 / 刚完成）。
+        const mirrored = await loadThread(id);
+        const isPlanSession =
+          clean.some((m) => (m as any).plan) ||
+          !!(mirrored && mirrored.msgs.some((m) => (m as any).plan));
+        // 先取计划进度镜像查找表（以服务端为权威源）；待线程按新 id 重建后再应用。
         const planStatusLookup = buildPlanStatusLookup(clean);
+        let base: ChatMsg[];
+        if (isPlanSession) {
+          const mirrorMsgs =
+            mirrored && mirrored.msgs.length
+              ? (sanitizeMessages(mirrored.msgs as ChatMsg[]) as ChatMsg[])
+              : [];
+          const hasSummary = mirrorMsgs.some(
+            (m) =>
+              typeof m.content === 'string' &&
+              m.content.startsWith('📋 计划执行摘要')
+          );
+          if (mirrorMsgs.length && hasSummary) {
+            // 镜像含摘要（DAG 路径 / 新串行路径）：干净源，直接采用并过滤任何残余单步噪声。
+            base = filterPlanSingleStep(mirrorMsgs);
+            recoveredUsage = mirrored?.usage ?? null;
+          } else {
+            // 镜像缺失 / 无摘要（如本修复前的已完成串行会话）：退回服务端存储，滤掉单步
+            // 派发噪声，并从最后一条任务产出回收「最终结果」作为兜底展示（与摘要末位任务语义一致）。
+            base = filterPlanSingleStep(clean);
+            base = recoverPlanFinalResult(base, clean);
+          }
+        } else {
+          base = clean;
+        }
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
-        // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
         const merged =
           localBuf && localBuf.length
-            ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
-            : clean;
+            ? mergeThreadHistories(base, sanitizeMessages(localBuf))
+            : base;
         this.threads[id] = merged.map((m) => ({
           ...m,
           // 恢复源附件为 {name,type,url?,serverUrl?} 形状，渲染需 UploadedFile（dataUrl）。
@@ -3828,6 +3859,9 @@ export class AhChat extends LitElement {
     tFinal.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
     this.threads[sid] = tFinal;
     if (this.activeId === sid) this.messages = tFinal;
+    // P5：串行回退路径「摘要 + 最终结果」需落历史镜像，否则刷新后服务端会话存储
+    // （不含摘要、混有单步噪声）会覆盖本端干净线程，导致刷新丢失最终结果 / 复现单步气泡。
+    this.saveHistory(sid);
     cur = {
       ...cur,
       status: 'done',

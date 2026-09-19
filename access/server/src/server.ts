@@ -3970,6 +3970,10 @@ async function handleRun(
   const planPhase: 'propose' | 'execute' =
     body.planPhase === 'execute' ? 'execute' : 'propose';
   const isPlanPropose = interactionMode === 'plan' && planPhase === 'propose';
+  // P5 静默计划执行：计划任务派发（execute）的逐任务 user/assistant 消息属于「单步信息」，
+  // 不应落会话存储（前端刷新/切回会以其为权威源复现单步气泡）。仅保留 planStatus 进度同步
+  // （updatePlanStatus / syncPlanTaskStatus），「最终执行结果」由前端摘要/服务端 applyPlanWfTerminal 承载。
+  const isPlanExecute = interactionMode === 'plan' && planPhase === 'execute';
   // 计划生成本身是一次普通 run：用 planner 提示词包装用户需求，约束模型输出计划 JSON。
   const effectivePrompt = isPlanPropose ? buildPlannerPrompt(prompt) : prompt;
 
@@ -4541,7 +4545,12 @@ async function handleRun(
             : JSON.stringify(a.result ?? {});
         t.errored = !!a.errored;
         toolMap.set(String(c.id), t);
-      } else if (ev.type === 'run:start' && ev.input != null && !isEditMsg) {
+      } else if (
+        ev.type === 'run:start' &&
+        ev.input != null &&
+        !isEditMsg &&
+        !isPlanExecute
+      ) {
         appendChatMessage(
           chatSessionId,
           {
@@ -4686,7 +4695,10 @@ async function handleRun(
             syncPlanTaskStatus(chatSessionId, completedTaskId, 'done', ctx.sub);
           }
         }
-        if (!(last && last.role === 'assistant' && last.content === finalStr)) {
+        if (
+          !(last && last.role === 'assistant' && last.content === finalStr) &&
+          !isPlanExecute
+        ) {
           appendChatMessage(
             chatSessionId,
             {

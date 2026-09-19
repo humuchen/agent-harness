@@ -8,7 +8,7 @@ import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
 import type { PlanExecMirror, StepTraceNode } from '@agent-harness/client';
-import type { ExecutionPlanView, PlanExecState, PlanWfRunMirror } from './chat-types';
+import type { ChatMsg, ExecutionPlanView, PlanExecState, PlanWfRunMirror } from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
 export function fileIcon(f: UploadedFile): string {
@@ -44,6 +44,70 @@ export function buildPlanStatusLookup(
     if (!out.has(plan.goal)) out.set(plan.goal, m.planStatus);
   }
   return out;
+}
+
+/**
+ * P5 刷新恢复：过滤计划会话里的「单步任务」消息对。串行回退路径曾把每个任务的
+ * 派发提示（user：`【计划任务 <id>】…`）与产出（紧随其后的 assistant）写进会话存储，
+ * 刷新后以其为权威源会复现为单步气泡。此处丢弃「派发提示 + 紧随其产出」这对，
+ * 仅保留用户原始需求、计划卡片与最终摘要（或回收的最终结果）。纯函数。
+ */
+export function filterPlanSingleStep(msgs: ChatMsg[]): ChatMsg[] {
+  const out: ChatMsg[] = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const isDispatch =
+      m.role === 'user' &&
+      typeof m.content === 'string' &&
+      /^【计划任务/.test(m.content);
+    if (isDispatch) continue; // 丢弃单步派发提示
+    const prev = msgs[i - 1];
+    const prevWasDispatch =
+      !!prev &&
+      prev.role === 'user' &&
+      typeof prev.content === 'string' &&
+      /^【计划任务/.test(prev.content);
+    if (m.role === 'assistant' && prevWasDispatch) continue; // 丢弃对应任务产出
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * P5 刷新恢复（兜底）：镜像缺摘要的已完成串行会话，从服务端原始存储回收最后一条
+ * 任务产出作为「最终结果」追加展示（与摘要「取拓扑序末位成功任务产出」语义一致）。
+ * 若 base 已含摘要则原样返回。纯函数。
+ */
+export function recoverPlanFinalResult(
+  base: ChatMsg[],
+  clean: Array<{ role: string; content?: unknown; plan?: unknown; clarify?: unknown }>
+): ChatMsg[] {
+  const hasSummary = base.some(
+    (m) =>
+      typeof m.content === 'string' && m.content.startsWith('📋 计划执行摘要')
+  );
+  if (hasSummary) return base;
+  let lastOut = '';
+  for (const m of clean) {
+    if (
+      m.role === 'assistant' &&
+      !m.plan &&
+      !m.clarify &&
+      typeof m.content === 'string' &&
+      !m.content.startsWith('📋 计划执行摘要')
+    ) {
+      lastOut = m.content;
+    }
+  }
+  if (!lastOut.trim()) return base;
+  return [
+    ...base,
+    {
+      id: -1,
+      role: 'assistant',
+      content: `—— 最终结果 ——\n${lastOut}`
+    } as ChatMsg
+  ];
 }
 
 /**
