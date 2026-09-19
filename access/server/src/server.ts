@@ -2304,9 +2304,9 @@ const server = createServer(
               store,
               executor: createWorkflowExecutor({
                 // P5 静默展示（plan 桥工作流续跑同首跑语义）：抑制 llm:token 流式内容。
-                onEvent: (e: any) => {
+                onEvent: (e: any, stepId: string) => {
                   if (isPlanWorkflow && e?.type === 'llm:token') return;
-                  if (!closed) send({ type: 'harness', event: e });
+                  if (!closed) send({ type: 'harness', event: e, stepId });
                 },
                 // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传（此前缺失 →
                 // real 部署下续跑首 step 复现 t1 同款 401/无 Key 故障）。
@@ -2417,10 +2417,10 @@ const server = createServer(
               store,
               executor: createWorkflowExecutor({
                 // P5 静默展示（plan 桥工作流审批续跑同首跑语义）：抑制 llm:token 流式内容。
-                onEvent: (e: any) => {
+                onEvent: (e: any, stepId: string) => {
                   const isPlanWf = !!(run as unknown as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput;
                   if (isPlanWf && e?.type === 'llm:token') return;
-                  if (!closed) send({ type: 'harness', event: e });
+                  if (!closed) send({ type: 'harness', event: e, stepId });
                 },
                 // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传。
                 mode: execOpts.mode,
@@ -5377,9 +5377,11 @@ async function handleWorkflow(
   // llm:token 不在 StepTraceCollector 白名单内，此处过滤对调用链路落盘零影响；
   // 非 plan 工作流（def 来源）保持全量直播，行为不变。
   const quietPresentation = !!body.plan;
-  const onHarnessEvent = (e: any) => {
+  const onHarnessEvent = (e: any, stepId?: string) => {
     if (quietPresentation && e?.type === 'llm:token') return;
-    if (!closed) send({ type: 'harness', event: e });
+    // P5.1 同步修复：外层帧携带 stepId —— 前端思考面板据此把 llm:reasoning 归因到
+    // 正确任务（wf:step:start 丢失/乱序时自愈，不再错挂旧任务标签）。
+    if (!closed) send(stepId ? { type: 'harness', event: e, stepId } : { type: 'harness', event: e });
   };
   // P2-3 补全：plan 来源的 DAG 执行进度同步到 PlanStore（节点 doing/done/blocked + 文档终态），
   // 失败仅告警——执行链路（SSE 直播 / 审计）不依赖计划看板可用性。

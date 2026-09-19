@@ -124,8 +124,14 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
 
 
 export interface WorkflowExecutorOptions {
-  /** harness 事件透传（SSE 直播）。 */
-  onEvent?: (e: HarnessEvent) => void;
+  /**
+   * harness 事件透传（SSE 直播）。
+   * P5.1 同步修复：第二参 stepId —— 嵌套 harness 事件（llm:reasoning 等）本身不携带
+   * step 归属，前端思考面板靠「最近一次 wf:step:start」归因；一旦该帧丢失/乱序
+   * （断线重连 resume 不重放已完成 step 的 wf:step:*），思考流会错挂到旧任务标签上。
+   * 注入 stepId 后前端可按 stepId 自愈归因（详见 chat-render-utils.applyPlanThinking）。
+   */
+  onEvent?: (e: HarnessEvent, stepId: string) => void;
   /** 运行模式：默认 mock（离线）。真实多 agent 协同可设 real / real-mcp。 */
   mode?: RunMode;
   /** 外部取消信号。 */
@@ -471,7 +477,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     const col = new StepTraceCollector();
     const traceOnEvent = opts.onEvent
       ? (e: HarnessEvent) => {
-          opts.onEvent?.(e);
+          opts.onEvent?.(e, step.id);
           col.observe(e);
         }
       : (e: HarnessEvent) => col.observe(e);

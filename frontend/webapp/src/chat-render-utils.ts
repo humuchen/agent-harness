@@ -111,8 +111,11 @@ export function applyPlanWfEvent(
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
-      // P5：任务完成即收起思考面板。
-      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true }, thinking: undefined };
+      // P5：任务完成即收起思考面板。P5.1 精准清槽：只清「本任务」的思考流 ——
+      // 若事件乱序（done(t3) 迟到而思考面板已自愈切到 t4），不得误清新任务的思考流。
+      const thinking =
+        prev.thinking && prev.thinking.taskId !== ev.stepId ? prev.thinking : undefined;
+      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true }, thinking };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
@@ -159,17 +162,33 @@ export const PLAN_THINKING_MAX = 40_000;
 
 /**
  * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的「当前任务思考面板」。
- * - 仅 running 且已有 thinking 槽位（wf:step:start 建立）时消费；其它状态原样返回 prev（同引用判重）。
+ * - 仅 running 时消费；其它状态原样返回 prev（同引用判重）。
  * - 文本超 PLAN_THINKING_MAX 时保留尾部（最新思考），与 UI 面板「tail 展示」语义一致。
  * - 空增量 no-op（同引用返回，避免无谓重渲染）。
+ *
+ * P5.1 同步自愈（执行详情 vs 思考面板不同步修复）：stepId 为服务端注入的事件归属
+ * （workflow-executor onEvent 第二参 → SSE 外层帧）。此前归因全靠「最近一次
+ * wf:step:start 建立的槽位」——该帧丢失/乱序（断线重连 resume 不重放已完成 step 的
+ * wf:step:*）时，新任务的思考流会错挂旧任务标签（「t3 已完成仍显示思考中·t3」）。
+ * 现在：
+ * - 带 stepId 且与当前槽位不一致 → 丢弃旧槽、以该 stepId 重建槽位（自愈切换）；
+ * - 带 stepId 且无槽位（如刷新恢复后思考面板为空）→ 直接建槽，思考流不再被丢弃；
+ * - 不带 stepId（旧服务端帧）→ 保持原行为（仅追加到已有槽位）。
  */
 export function applyPlanThinking(
   prev: PlanExecState,
-  delta: string
+  delta: string,
+  stepId?: string
 ): PlanExecState {
-  if (!delta || prev.status !== 'running' || !prev.thinking) return prev;
-  const text = (prev.thinking.text + delta).slice(-PLAN_THINKING_MAX);
-  return { ...prev, thinking: { ...prev.thinking, text } };
+  if (!delta || prev.status !== 'running') return prev;
+  let slot = prev.thinking;
+  if (stepId && (!slot || slot.taskId !== stepId)) {
+    slot = { taskId: stepId, text: '' };
+  }
+  if (!slot) return prev;
+  const text = (slot.text + delta).slice(-PLAN_THINKING_MAX);
+  if (slot === prev.thinking && text === prev.thinking?.text) return prev;
+  return { ...prev, thinking: { ...slot, text } };
 }
 
 /** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */

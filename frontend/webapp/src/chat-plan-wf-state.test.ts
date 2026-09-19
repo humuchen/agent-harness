@@ -30,7 +30,7 @@ import {
 import type { ExecutionPlanView, PlanExecState } from './chat-types';
 import { toMirrorPlanStatus } from './chat-persist';
 
-const KNOWN = new Set(['t1', 't2', 't3']);
+const KNOWN = new Set(['t1', 't2', 't3', 't4']);
 const base: PlanExecState = { status: 'running', done: {} };
 
 describe('applyPlanWfEvent', () => {
@@ -190,6 +190,35 @@ describe('applyPlanThinking（P5 静默执行：思考增量叠加）', () => {
     const next = applyPlanThinking(st, big);
     expect(next.thinking?.text.length).toBe(PLAN_THINKING_MAX);
     expect(next.thinking?.text.startsWith('a')).toBe(true);
+  });
+
+  // P5.1 同步自愈：思考流按服务端注入的 stepId 归因（wf:step:start 丢失/乱序时不再错挂旧任务）。
+  it('stepId 与当前槽位不一致 → 丢弃旧槽、按事件归属重建（自愈切换）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    const withT3 = applyPlanThinking(st, 't3 的思考…');
+    const healed = applyPlanThinking(withT3, 't4 的思考…', 't4');
+    expect(healed.thinking).toEqual({ taskId: 't4', text: 't4 的思考…' });
+    const grown = applyPlanThinking(healed, ' 继续', 't4');
+    expect(grown.thinking?.text).toBe('t4 的思考… 继续');
+  });
+
+  it('running 且无槽位但带 stepId → 直接建槽（刷新恢复后思考流不再被丢弃）', () => {
+    const runningNoThink: PlanExecState = { status: 'running', done: {} };
+    const next = applyPlanThinking(runningNoThink, '恢复后的思考…', 't4');
+    expect(next.thinking).toEqual({ taskId: 't4', text: '恢复后的思考…' });
+    // 不带 stepId 保持原行为：无槽位 no-op。
+    expect(applyPlanThinking(runningNoThink, 'x')).toBe(runningNoThink);
+  });
+
+  it('wf:step:done 只清本任务槽位：乱序的 done(t3) 不误删已自愈到 t4 的思考流', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    const withT4 = applyPlanThinking(st, 't4 的思考…', 't4');
+    const afterLateDone = applyPlanWfEvent(withT4, { type: 'wf:step:done', stepId: 't3' }, KNOWN);
+    expect(afterLateDone.done['t3']).toBe(true);
+    expect(afterLateDone.thinking?.taskId).toBe('t4');
+    // 本任务的 done 仍正常清槽。
+    const afterOwnDone = applyPlanWfEvent(withT4, { type: 'wf:step:done', stepId: 't4' }, KNOWN);
+    expect(afterOwnDone.thinking).toBeUndefined();
   });
 });
 

@@ -390,6 +390,11 @@ export class AhChat extends LitElement {
   /** P2（轨迹回放）：计划「执行详情」抽屉——当前打开的计划消息（null=未开）+ 各消息的快照瞬态。 */
   @state() private planWfReplayMsg: ChatMsg | null = null;
   @state() private planWfReplay: Record<number, PlanWfReplayState> = {};
+  /**
+   * P5.1 同步修复：抽屉打开期间的轮询定时器（2.5s 拉取检查点快照，执行中状态不再
+   * 冻结在打开瞬间；run 终态或抽屉关闭即清除）。null = 未在轮询。
+   */
+  private planWfReplayTimer: number | null = null;
 
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
@@ -3458,12 +3463,19 @@ export class AhChat extends LitElement {
     if (!m.plan) return;
     const sid = this.activeId;
     if (!sid) return;
+    // P5.1 同步修复：执行中打开抽屉后快照冻结在打开瞬间（此前一次性拉取），
+    // 与左侧实时卡片/思考面板出现「t3 已完成仍在思考 t3」式的观感错位。
+    // 打开期间轮询刷新（2.5s），run 进入终态后自动停止。
+    if (this.planWfReplayTimer != null) {
+      clearInterval(this.planWfReplayTimer);
+      this.planWfReplayTimer = null;
+    }
     this.planWfReplayMsg = m;
     this.planWfReplay = {
       ...this.planWfReplay,
       [m.id]: { loading: true, snapshot: null }
     };
-    void (async () => {
+    const fetchSnapshot = async (): Promise<void> => {
       const wfId = derivePlanWfId(sid, m.plan!);
       let st: PlanWfReplayState;
       try {
@@ -3498,14 +3510,27 @@ export class AhChat extends LitElement {
         }
       }
       // 抽屉已关闭 / 已切到别的计划消息时不写回（防旧请求回流覆盖最新交互态）。
-      if (this.planWfReplayMsg?.id === m.id) {
-        this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      if (this.planWfReplayMsg?.id !== m.id) return;
+      this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      // P5.1：run 已终态（done/failed）→ 停止轮询（awaiting 仍需继续：审批后引擎恢复执行）。
+      const state = st.snapshot?.state ?? (st.mirrorSnapshot as { state?: string } | null)?.state;
+      if ((state === 'done' || state === 'failed') && this.planWfReplayTimer != null) {
+        clearInterval(this.planWfReplayTimer);
+        this.planWfReplayTimer = null;
       }
-    })();
+    };
+    void fetchSnapshot();
+    this.planWfReplayTimer = window.setInterval(() => {
+      void fetchSnapshot();
+    }, 2500);
   }
 
   /** P2：关闭「执行详情」抽屉（快照缓存保留，重开时即时水合后仍可重拉）。 */
   private closePlanWfReplay(): void {
+    if (this.planWfReplayTimer != null) {
+      clearInterval(this.planWfReplayTimer);
+      this.planWfReplayTimer = null;
+    }
     this.planWfReplayMsg = null;
   }
 
@@ -4091,10 +4116,15 @@ export class AhChat extends LitElement {
         // P5 静默执行：嵌套 harness 事件中只消费 llm:reasoning —— 增量叠进「当前任务
         // 思考面板」（串行模式下与 currentTaskId 一一对应）；llm:token 等其余流式内容
         // 静默丢弃（服务端 plan 桥已抑制 llm:token，此处是双保险），步骤消息不进气泡。
+        // P5.1 同步自愈：外层帧携带 stepId（服务端 executor 注入）→ 思考流按事件归属
+        // 归因；wf:step:start 丢失/乱序时自动切换槽位，不再错挂旧任务标签。
         const he = (e as { event?: { type?: string; delta?: unknown } }).event;
         if (he?.type === 'llm:reasoning') {
+          const heStepId = (e as { stepId?: string }).stepId;
+          // 非本计划任务的思考流（补偿 step 等）不进面板。
+          const sidOk = !heStepId || taskIds.has(heStepId);
           const prevT = this.planExec[m.id] ?? st;
-          const nextT = applyPlanThinking(prevT, String(he.delta ?? ''));
+          const nextT = sidOk ? applyPlanThinking(prevT, String(he.delta ?? ''), heStepId) : prevT;
           if (nextT !== prevT) {
             this.planExec = { ...this.planExec, [m.id]: nextT };
           }
