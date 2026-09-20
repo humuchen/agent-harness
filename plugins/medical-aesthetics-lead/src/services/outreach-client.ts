@@ -44,4 +44,21 @@ export class OutreachClient {
     });
     return { messageId: res?.messageId ?? res?.id ?? undefined };
   }
+
+  /**
+   * 内容发布载荷（平台图文/口播稿）。
+   * text 必须是过审终稿（服务层已在末尾追加风险提示），网关按 platform 路由到对应发布通道。
+   */
+  async publishContent(
+    content: { contentId: string; platform: string; title: string; text: string; project?: string },
+    idempotencyKey: string
+  ): Promise<{ ref?: string }> {
+    const res = await this.client.json<{ ok?: boolean; postId?: string; id?: string }>({
+      method: 'POST',
+      path: '/v1/content/publish',
+      body: { tenantId: getConfig().tenantId, ...content, topic: 'content.publish' },
+      idempotencyKey,
+    });
+    return { ref: res?.postId ?? res?.id ?? undefined };
+  }
 }

@@ -31,6 +31,7 @@ import {
 } from '../repo/schedule-job-repo';
 import { enqueue } from '../repo/outbox-repo';
 import { buildWelcomeText, buildRecallText } from './outreach-templates';
+import { resolveAbText, withRiskHint } from './ab-service';
 import { medicalAdRules } from '@agent-harness/medical-ad-guard';
 
 let timer: NodeJS.Timeout | null = null;
@@ -271,6 +272,8 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
 
   let topic: string;
   let text: string;
+  let abExperimentId: string | undefined;
+  let abVariant: string | undefined;
   if (job.jobType === 'welcome') {
     topic = 'welcome';
     text = buildWelcomeText(payload.name as string | undefined, payload.project as string | undefined);
@@ -288,6 +291,17 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
     text = custom;
   }
 
+  // A/B 分流（E 组）：该 topic 有活跃实验 → 按 sticky 分流取变体文案（创建时已过合规筛查，
+  // 发送侧补风险提示）；无实验/已停止 → 保持默认模板，零回归。手动排期任务自带文案，不参与分流。
+  if (job.jobType === 'welcome' || job.jobType === 'recall') {
+    const ab = await resolveAbText(topic, job.leadId);
+    if (ab) {
+      text = withRiskHint(ab.text);
+      abExperimentId = ab.experimentId;
+      abVariant = ab.variantKey;
+    }
+  }
+
   // 入发件箱（幂等键 = 任务键，重跑不会重复产出）；真实投递由 outbox worker 完成。
   await enqueue('outreach.send', `outreach:${job.scheduledKey}`, {
     leadId: job.leadId,
@@ -296,6 +310,7 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
     to: payload.to ?? { name: lead.name ?? undefined, phone: lead.phone ?? undefined, wechat: lead.wechat ?? undefined },
     text,
     jobId: job.id,
+    ...(abExperimentId ? { abExperimentId, abVariant } : {}),
   });
   await markJobFinished(job.id, 'done');
 }

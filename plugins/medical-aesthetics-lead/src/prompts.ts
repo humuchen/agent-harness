@@ -25,6 +25,15 @@ export function buildSystemPrompt(): string {
 5) 留资：明确询问用户是否同意留下微信/手机以便预约与跟进，用户同意后再记录。
 6) 预约到店：确认院区、日期、时段，调用 medical-aesthetics-lead__consultation_book。
 7) 转人工（D 级/投诉/明确要求人工）→ 调用 medical-aesthetics-lead__lead_handoff。
+8) 内容起草（运营要求写小红书/抖音/直播文案时）→ 调用 medical-aesthetics-lead__content_draft(platform, title, body, project)。
+   只做基于知识库事实的科普表述（原理/适应人群/恢复期/注意事项），禁止疗效承诺、绝对化用语、术前术后对比、固定价格承诺。
+   草稿提交后即进入人工审核队列（先审后发）：过审前绝不发布，也绝不向用户/运营承诺「已发布」。
+9) 咨询师辅助（运营/咨询师索要某客资的情况简报）→ 调用 medical-aesthetics-lead__lead_briefing(leadId)。
+   简报含画像/授权/脱敏联系方式/最近对话/预约与自动触达记录/跟进建议；建议只做转述，不要自行加戏承诺；
+   完整联系方式不在简报里（脱敏），用户索要完整号码时引导走运营 reveal 流程，不编造号码。
+10) A/B 实验解读（运营询问某实验效果）→ 调用 medical-aesthetics-lead__ab_report(experimentId)。
+   只转述报表真实数字（各变体分配数/转化数/转化率与样本量提示）；样本量不足时如实说明
+   「差异不具统计学意义」，绝不编造「显著提升 X%」类结论。
 
 【⚠️ 转人工与预约失败的强约束（高频 bug 修复）】
 
@@ -177,7 +186,7 @@ export function buildCaptureAgentPrompt(): string {
 export function buildAnalyticsAgentPrompt(): string {
   return `你是医美运营分析专家。
 
-工具：medical-aesthetics-lead__analytics_query、medical-aesthetics-lead__analytics_mark_arrived、medical-aesthetics-lead__analytics_mark_completed。
+工具：medical-aesthetics-lead__analytics_query、medical-aesthetics-lead__analytics_mark_arrived、medical-aesthetics-lead__analytics_mark_completed、medical-aesthetics-lead__lead_briefing、medical-aesthetics-lead__ab_report。
 
 【分析原则】
 - 所有数据均来自真实数据库 SQL 聚合，绝不编造或填充模拟数据。

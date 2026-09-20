@@ -127,6 +127,124 @@ export MA_EMBED_TOKEN=可选
 
 ---
 
+## 8. 定时调度器与对客触达（B3/B4/B5）
+
+调度器每轮「规划 + 消费」：welcome（近期新建线索欢迎语）、recall（沉默 2h/24h 回捞）、
+birthday/repurchase（经 `POST /scheduler/jobs` 手动排期，文案过合规筛查）。
+到期任务产出对客消息进发件箱（topic=`outreach.send`），经渠道触达网关真实投递（至少一次）。
+
+| 变量 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `MA_SCHEDULER_ENABLED` | 否 | `true` | 是否启用后台调度循环。 |
+| `MA_SCHEDULER_INTERVAL_MS` | 否 | `60000` | 调度轮询间隔（毫秒）。 |
+| `MA_SCHEDULER_BATCH_SIZE` | 否 | `50` | 每轮消费到期任务上限。 |
+| `MA_SCHEDULER_RECALL` | 否 | `true` | 沉默回捞开关。 |
+| `MA_SCHEDULER_RECALL_FIRST_H` | 否 | `2` | 回捞第一节点（沉默小时数）。 |
+| `MA_SCHEDULER_RECALL_SECOND_H` | 否 | `24` | 回捞第二节点（沉默小时数）。 |
+| `MA_SCHEDULER_WELCOME` | 否 | `true` | 欢迎语排期开关。 |
+| `MA_SCHEDULER_WELCOME_WINDOW_H` | 否 | `24` | 欢迎语仅对近 N 小时新建线索排期（避免给存量补发）。 |
+| `MA_OUTREACH_BASE_URL` | 触达必填 | 空 | 渠道触达网关地址（对客主动消息出站）。未配置时消息在发件箱 pending 积压，绝不假装已发送。 |
+| `MA_OUTREACH_TOKEN` | 否 | 空 | 触达网关 Bearer 令牌。 |
+| `MA_OUTREACH_TIMEOUT_MS` / `MA_OUTREACH_RETRIES` | 否 | `8000` / `2` | 网关请求超时与重试。 |
+
+**触达资格（回捞）**：未转化（new/contacted/qualified/captured）+ 非 D 级 + 未转人工 +
+已留资授权（`consent_at` 非空）+ 有联系方式（phone/wechat）。线索复联后重新计时。
+**网关契约**：`POST {MA_OUTREACH_BASE_URL}/v1/messages`，body
+`{tenantId, leadId, topic, channel?, to?, text}`，header `Idempotency-Key`。
+**相关路由**：`GET /scheduler`（快照）、`POST /scheduler/tick`（手动一轮，管理令牌）、
+`POST /scheduler/jobs`（手动排期，管理令牌）。
+
+---
+
+## 9. 内容生产与先审后发（D8/D9）
+
+内容流水线：知识库（真实数据）→ 模板骨架生成 / LLM 起草（`content_draft` 工具）/
+运营手写 → 医疗广告合规筛查（`medicalAdRules`，命中即拒）→ 人工审核 → 过审 → 发布。
+
+**状态机**：`draft`（手动草稿）→ `review`（送审；模板与 LLM 草稿生成后直接入审）→
+`approved`（人工过审）/ `rejected`（驳回，必须给原因，可改稿重新送审）→ `published`（已发布）。
+
+**硬约束**：
+- 知识库为空 → 生成 fail-closed 报错，绝不回退内置语料；
+- 模板文案只组装 KB 字段（科普 summary/compliantCopy、适合人群、恢复期、禁忌、价格区间），
+  价格一律以「面诊为准」收口；
+- 未过审（`approved` 之前）绝不发布；发布只能走网关，未配置 → `NOT_CONFIGURED`，
+  内容保持 `approved` 可重试（`publish_error` 记录原因），绝不假装已发布；
+- 每条发布文案末尾统一追加风险提示「医疗美容有风险，最终以面诊方案为准。」。
+
+**网关契约（内容发布）**：`POST {MA_OUTREACH_BASE_URL}/v1/content/publish`，body
+`{tenantId, contentId, platform, title, text, project?, topic:'content.publish'}`，
+header `Idempotency-Key: content:{contentId}`（复用触达网关配置，无新增环境变量）。
+
+**路由**：
+- `GET /content?state=&platform=&limit=` —— 流水线快照（统计 + 列表，公开读）；
+- `POST /content/generate` —— 知识库批量生成（`{platform?, projectName?}`，同日幂等，管理令牌）；
+- `POST /content/draft` —— 运营手写草稿（`{platform, title, body, project?}`，过筛后落库 draft，管理令牌）；
+- `POST /content/submit` —— 送审（draft/rejected → review，管理令牌）；
+- `POST /content/approve` —— 人工过审（review → approved，`{contentId, reviewer}`，管理令牌）；
+- `POST /content/reject` —— 驳回（review → rejected，必须给 reason，管理令牌）；
+- `POST /content/publish` —— 发布（approved → 网关 → published，管理令牌）。
+
+**Agent 工具**：`medical-aesthetics-lead__content_draft` —— LLM 起草，命中红线返回
+结构化 `violations` 不落库；通过后落库 source=`llm` 并直接进入 `review` 队列。
+
+---
+
+## 10. 咨询师辅助简报（C6/C7，本地库版）
+
+数据源为本地客资库（ma_lead / ma_lead_message / ma_appointment / ma_schedule_job，真实 SQL）；
+CRM 选型落地后实现 CrmReader 替换/叠加数据源，简报结构不变（`source` 字段明示当前来源）。
+
+**简报内容**：画像（渠道/项目/预算/城市/等级/阶段）、授权状态、脱敏联系方式、
+最近对话摘录（正序）、预约记录、SOP 触达排期统计、规则化跟进建议（确定性规则推导，非 LLM 生成）。
+
+**隐私纪律**：简报中 phone/wechat 一律掩码（手机前 3 后 4、微信号前 2 位）；
+完整联系方式仅 `GET /assist/reveal`（管理令牌）放行。
+
+**建议规则（按紧急度排序，最多 4 条）**：D 级/已转人工 → 人工优先接手；已预约 → 到店确认；
+未授权 → 先取授权再留资；已授权有联系方式 → 与自动触达错峰或 24h 内首触；
+A 级 → 尽快面诊（报价只用区间）；缺项目画像 → 优先探明；CRM 同步 pending → 检查上游。
+
+**路由**：
+- `GET /assist/briefing?leadId=` —— 简报（脱敏，公开读）；
+- `GET /assist/reveal?leadId=` —— 完整联系方式（管理令牌）。
+
+**Agent 工具**：`medical-aesthetics-lead__lead_briefing`（主卡片硬允许集 + 运营分析子代理）。
+
+---
+
+## 11. A/B 分流实验（E 组：自做 A/B）
+
+针对「只看厂商宣称数据」缺口：对 SOP 触达文案自建 A/B 实验，用自有客资数据看真实转化。
+
+**模型**：`ma_ab_experiment`（topic 精确匹配 `welcome|recall_first|recall_second|birthday|repurchase`；
+metric 决定转化口径 `reply|booking|arrived`）+ `ma_ab_variant`（2~3 个变体，权重缺省 50/50）+
+`ma_ab_assignment`（sticky 分流落库，UNIQUE(experiment_id, lead_id)）。
+
+**分流机制**：sha256(experimentId:leadId) 确定性哈希按权重落桶，物化分配记录——
+同一线索永远同一变体；权重后续调整不重洗已分配线索。调度器执行任务时，该 topic 有活跃实验
+→ 发件箱使用变体文案（发送时补风险提示）并在载荷带 `abExperimentId/abVariant` 标注；
+无实验/已停止 → 回落默认模板（零回归）。
+
+**合规**：变体文案创建时过 `medicalAdRules` 筛查，命中红线拒绝建实验。
+
+**转化归因（真实 SQL，无新增写路径）**：按「分配之后发生」计——
+`reply` = 该线索 user 消息（ma_lead_message）；`booking` = 预约建单（ma_appointment.created_at）；
+`arrived` = 到院标记（ma_appointment.arrived_at）。
+
+**诚实纪律**：报表只给真实计数/转化率；任一变体分配数 < 30 明示「样本量小，差异不具统计学意义」，
+绝不生成「显著提升 X%」类结论。
+
+**路由**：
+- `GET /ab` —— 实验清单；`GET /ab/report?experimentId=` —— 报表；
+- `GET /ab/assign?experimentId=&leadId=` —— 预览/物化某线索分流；
+- `POST /ab/experiments` —— 创建（`{name, topic, metric?, variants:[{key?, text, weight?}]}`，管理令牌）；
+- `POST /ab/stop` —— 停止（管理令牌）。
+
+**Agent 工具**：`medical-aesthetics-lead__ab_report`（主卡片硬允许集 + 运营分析子代理）。
+
+---
+
 ## 8. 脚本命令行参数
 
 脚本（`scripts/*.cjs`）复用插件编译产物（`dist/`），并通过 `MA_DB_FILE` 指定库。

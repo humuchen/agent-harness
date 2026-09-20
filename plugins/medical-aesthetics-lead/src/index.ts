@@ -7,6 +7,9 @@ import { registerBookTool } from './tools/book';
 import { registerHandoffTool } from './tools/handoff';
 import { registerAnalyticsTool } from './tools/analytics';
 import { registerKbTool } from './tools/kb';
+import { registerContentTool } from './tools/content';
+import { registerAssistTool } from './tools/assist';
+import { registerAbTool } from './tools/ab';
 import { leadServerExtension } from './server/routes';
 import { leadDashboardView, analyticsDashboardView } from './web/dashboard';
 import { setRunKey, setPluginContext } from './runtime';
@@ -48,6 +51,9 @@ export const leadPlugin: PluginModule = {
     registerHandoffTool(ctx.tools);
     registerKbTool(ctx.tools);
     registerAnalyticsTool(ctx.tools);
+    registerContentTool(ctx.tools);
+    registerAssistTool(ctx.tools);
+    registerAbTool(ctx.tools);
 
     // 2) 注册服务端扩展
     ctx.server?.registerExtension(leadServerExtension);
@@ -162,7 +168,7 @@ export const leadPlugin: PluginModule = {
       health: { status: 'healthy', lastHeartbeat: Date.now(), load: 0 },
       assembly: {
         systemPrompt: buildAnalyticsAgentPrompt(),
-        tools: ['medical-aesthetics-lead__analytics_query', 'medical-aesthetics-lead__analytics_mark_arrived', 'medical-aesthetics-lead__analytics_mark_completed'],
+        tools: ['medical-aesthetics-lead__analytics_query', 'medical-aesthetics-lead__analytics_mark_arrived', 'medical-aesthetics-lead__analytics_mark_completed', 'medical-aesthetics-lead__lead_briefing', 'medical-aesthetics-lead__ab_report'],
       },
       isolation: 'os',
     });
