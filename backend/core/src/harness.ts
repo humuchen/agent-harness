@@ -43,6 +43,7 @@ import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateMessageTokens, estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 import { hooks } from './hooks';
+import { runWithEventSink } from './run-events';
 
 /** 上下文窗口上限（token）：用于「上下文用量」占比分母。
  *  已废弃按模型名硬编码的猜测表 —— 各模型真实 context_length 由前端从
@@ -220,6 +221,24 @@ export type HarnessEvent =
   | { type: 'plan:clarify'; clarify: import('./plan').PlanClarify }
   /** 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），供前端展示真实进展。 */
   | { type: 'plan:phase'; phase: string; ts: number }
+  /** TypeSafe AI Jev 决策模型调用旁路事件：子系统直连路径（注入门禁/上下文压缩等）与
+   *  builtin__jev_decide 工具路径统一经 run-events 通道上报，让「typesafe 后台有调用量」
+   *  在 run 调用链可观测。仅当 jevDecide 的 HTTP 调用发生在 run 异步链路内时发出。
+   *  注意：caller==='tool' 的调用已有 tool:start/tool:result 节点，前端不重复建节点。 */
+  | {
+      type: 'jev:call';
+      /** 调用方标签：'tool'(LLM 工具路径) / 'injection-gate' / 'context-compress' / 'router' 等。 */
+      caller: string;
+      ok: boolean;
+      /** 本次 HTTP 调用耗时（ms）。 */
+      latencyMs: number;
+      /** 本次提问数（一次 systemone 调用可携带多个问题）。 */
+      questions?: number;
+      /** TypeSafe 侧 usage（若响应体携带）；未携带则缺省，成本体系暂不计入。 */
+      tokens?: { input: number; output: number };
+      /** ok=false 时的错误摘要（HTTP 状态或网络错误信息，不含密钥）。 */
+      error?: string;
+    }
   /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
   | { type: 'warn'; message: string }
   | { type: 'error'; message: string };
@@ -458,7 +477,22 @@ export class AgentHarness {
     return this.opts.memory.notes();
   }
 
+  /**
+   * 运行入口：先把子系统旁路事件通道（run-events ALS）接到 onEvent，再进入主循环。
+   * Jev 决策模型等在 run 链路内的直连调用（护栏门禁 / 上下文压缩 / 内置工具）经此汇入事件流，
+   * 对外事件行为与既往完全一致（sink 仅新增事件，不改动既有事件序列）。
+   */
   async run(
+    userInput: string,
+    imageAttachments?: Array<{ url: string; name: string; type: string }>
+  ): Promise<string> {
+    return runWithEventSink(
+      (e) => this.opts.onEvent?.(e as HarnessEvent),
+      () => this.runInner(userInput, imageAttachments)
+    );
+  }
+
+  private async runInner(
     userInput: string,
     imageAttachments?: Array<{ url: string; name: string; type: string }>
   ): Promise<string> {

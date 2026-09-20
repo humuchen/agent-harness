@@ -13,6 +13,9 @@ const {
   resolveJevCreds
 } = require('../dist/builtins/index.js');
 const { runWithUser } = require('../dist/run-user.js');
+const { runWithEventSink, getRunEventSink } = require('../dist/run-events.js');
+const { AgentHarness } = require('../dist/harness.js');
+const { Memory } = require('../dist/memory.js');
 const { checkInputAsync, registerInjectionScorer } = require('../dist/guardrails.js');
 
 /** 用 opts.apiKey 注册 Jev 工具，返回注册表。 */
@@ -309,5 +312,166 @@ test('checkInputAsync：语义打分器异常/零分时回落基线（不阻断�
     assert.equal(r2.ok, true);
   } finally {
     scorerMode = 'neutral';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 旁路事件通道（jev:call）：让「typesafe 后台有调用量」在 run 调用链可观测。
+// 机制：harness.run 以 runWithEventSink 包裹主循环，jevDecide 的 HTTP 调用经
+// emitRunEvent 上报；SSE 全量转发，server/前端 traceHandle 建轻量节点（集成层自证）。
+// ---------------------------------------------------------------------------
+
+test('run-events：runWithEventSink 链路内成功调用发一条 jev:call（含 caller/latency/questions/tokens）', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      answers: { a: { noul: 0.4 } },
+      usage: { prompt_tokens: 120, completion_tokens: 30 }
+    })
+  });
+  const events = [];
+  try {
+    process.env.TYPESAFE_API_KEY = 'env_key';
+    await runWithEventSink((e) => events.push(e), () =>
+      jevDecide('s', { a: { type: 'noul' } }, { caller: 'injection-gate' })
+    );
+    assert.equal(events.length, 1, '成功调用应恰好发一条旁路事件');
+    const ev = events[0];
+    assert.equal(ev.type, 'jev:call');
+    assert.equal(ev.caller, 'injection-gate');
+    assert.equal(ev.ok, true);
+    assert.ok(typeof ev.latencyMs === 'number' && ev.latencyMs >= 0);
+    assert.equal(ev.questions, 1);
+    assert.deepEqual(ev.tokens, { input: 120, output: 30 });
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
+test('run-events：非 2xx 失败只发一条 ok=false 事件（throw 落 catch 不重复上报）', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 429, text: async () => 'rate limited' });
+  const events = [];
+  try {
+    process.env.TYPESAFE_API_KEY = 'env_key';
+    await assert.rejects(() =>
+      runWithEventSink((e) => events.push(e), () =>
+        jevDecide('s', { a: { type: 'noul' } })
+      )
+    );
+    assert.equal(events.length, 1, '!resp.ok 的 throw 不应在 catch 里重复发事件');
+    assert.equal(events[0].ok, false);
+    assert.match(String(events[0].error), /HTTP 429/);
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
+test('run-events：网络异常发一条 ok=false 事件；链路外（无 sink）静默不发不抛', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+  const events = [];
+  try {
+    process.env.TYPESAFE_API_KEY = 'env_key';
+    await assert.rejects(() =>
+      runWithEventSink((e) => events.push(e), () =>
+        jevDecide('s', { a: { type: 'noul' } })
+      )
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0].ok, false);
+    assert.match(String(events[0].error), /ECONNREFUSED/);
+    // 链路外：无 sink → emitRunEvent 静默 no-op，jevDecide 照常工作/抛错（不因通道缺失而变行为）。
+    assert.equal(getRunEventSink(), null);
+    await assert.rejects(() => jevDecide('s', { a: { type: 'noul' } }), /ECONNREFUSED/);
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
+test('run-events：无 usage 的响应不发 tokens 字段（不虚构）；sink 抛错不影响主流程', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ answers: { a: { choice: 'x', confidence: 0.5 } } })
+  });
+  const events = [];
+  const boomSink = () => { throw new Error('sink down'); };
+  try {
+    process.env.TYPESAFE_API_KEY = 'env_key';
+    await runWithEventSink((e) => events.push(e), () =>
+      jevDecide('s', { a: { type: 'choice', options: ['x'] } })
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0].tokens, undefined, '响应无 usage 时不应有 tokens 字段');
+    // sink 抛错被吞：jevDecide 正常返回。
+    const d = await runWithEventSink(boomSink, () =>
+      jevDecide('s', { a: { type: 'choice', options: ['x'] } })
+    );
+    assert.equal(d.answers.a.choice, 'x');
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
+test('端到端：harness.run 链路内 LLM 调用 builtin__jev_decide，jev:call 经 onEvent 发出（caller=tool）', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      answers: { a: { noul: 0.3 } },
+      usage: { input_tokens: 50, output_tokens: 5 }
+    })
+  });
+  try {
+    const reg = new ToolRegistry();
+    registerJevDecide(reg, { apiKey: 'ts_test_key' });
+    let n = 0;
+    const usage = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 };
+    const llm = async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          content: '',
+          tool_calls: [{
+            id: 'c1',
+            name: 'builtin__jev_decide',
+            arguments: { state: 's', questions: { a: { type: 'noul' } } }
+          }]
+        };
+      }
+      return { content: 'done', tool_calls: [] };
+    };
+    const events = [];
+    const h = new AgentHarness({
+      llm,
+      tools: reg,
+      memory: new Memory(),
+      systemPrompt: '',
+      onEvent: (e) => events.push(e),
+      model: 'gpt-test'
+    });
+    const out = await h.run('hi');
+    assert.equal(out, 'done');
+    const jevEvents = events.filter((e) => e.type === 'jev:call');
+    assert.equal(jevEvents.length, 1, '工具路径应恰好发一条 jev:call');
+    assert.equal(jevEvents[0].caller, 'tool');
+    assert.equal(jevEvents[0].ok, true);
+    assert.deepEqual(jevEvents[0].tokens, { input: 50, output: 5 });
+    // 既有事件序列不受影响：run:start / step / tool / run:end 齐全
+    // （注意 run:tools 仅存在于类型定义，harness 从不 emit，勿断言）。
+    for (const t of ['run:start', 'step:start', 'tool:start', 'tool:result', 'run:end']) {
+      assert.ok(events.some((e) => e.type === t), `应保留既有 ${t} 事件`);
+    }
+  } finally {
+    globalThis.fetch = origFetch;
   }
 });

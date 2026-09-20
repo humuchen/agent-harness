@@ -30,6 +30,7 @@
 import { objectParams, ToolRegistry } from '../tools';
 import { structLog } from '../telemetry';
 import { getRunUser } from '../run-user';
+import { emitRunEvent } from '../run-events';
 
 export type JevQuestionType = 'choice' | 'score' | 'noul';
 
@@ -179,6 +180,29 @@ function inferType(a: Record<string, unknown>): JevQuestionType {
 }
 
 /**
+ * 从 systemone 响应体提取 usage（若携带）。兼容常见三种命名：
+ * prompt_tokens/input_tokens/inputTokens × completion_tokens/output_tokens/outputTokens。
+ * 未携带或不可解析时返回 undefined（旁路事件缺省 tokens 字段，不虚构）。
+ */
+function extractJevUsage(data: unknown): { input: number; output: number } | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const u = (data as Record<string, unknown>).usage;
+  if (!u || typeof u !== 'object') return undefined;
+  const o = u as Record<string, unknown>;
+  const pick = (...keys: string[]): number | undefined => {
+    for (const k of keys) {
+      const v = o[k];
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+    }
+    return undefined;
+  };
+  const input = pick('prompt_tokens', 'input_tokens', 'inputTokens');
+  const output = pick('completion_tokens', 'output_tokens', 'outputTokens');
+  if (input == null && output == null) return undefined;
+  return { input: input ?? 0, output: output ?? 0 };
+}
+
+/**
  * 直调 Jev System One（核心客户端）。
  * 供子系统在「LLM 调用工具」之外直接做结构化决策。
  * 未配置 Key / 网络错误 / 非 2xx 一律抛出 Error，调用方 catch 后回落旧逻辑（兜底）。
@@ -215,6 +239,8 @@ export async function jevDecide(
   const url = `${creds.baseUrl}/systemone`;
   const model = 'jev-latest';
   const t0 = Date.now();
+  // 旁路事件去重标记：!resp.ok 的 throw 会落进下方 catch，避免同一次失败发两次 jev:call。
+  let reported = false;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), creds.timeoutMs);
@@ -230,7 +256,17 @@ export async function jevDecide(
     clearTimeout(timer);
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
+      const latencyMs = Date.now() - t0;
       structLog('warn', 'jevDecide: non-2xx response', { status: resp.status });
+      // 旁路上报（失败）：让门禁/压缩等直连路径的失败调用同样在 run 调用链可见。
+      reported = true;
+      emitRunEvent({
+        type: 'jev:call',
+        caller,
+        ok: false,
+        latencyMs,
+        error: `HTTP ${resp.status}`
+      });
       throw new Error(`Jev API error: ${resp.status} ${errText.slice(0, 200)}`);
     }
     const data = (await resp.json()) as unknown;
@@ -245,6 +281,18 @@ export async function jevDecide(
       n: Object.keys(questions).length,
       latency_ms: latencyMs,
     });
+    // 旁路上报（成功）：jev:call 进当前 run 事件流（trace 树/前端调用链可见）。
+    // usage 若响应体携带则一并透传（TypeSafe 侧计费口径；本系统成本体系暂不计入）。
+    reported = true;
+    const usage = extractJevUsage(data);
+    emitRunEvent({
+      type: 'jev:call',
+      caller,
+      ok: true,
+      latencyMs,
+      questions: Object.keys(questions).length,
+      ...(usage ? { tokens: usage } : {})
+    });
     return {
       model,
       answers: normalizeAnswers(data),
@@ -257,6 +305,16 @@ export async function jevDecide(
     jevStats.lastCalledAt = Date.now();
     jevStats.lastCaller = caller;
     structLog('error', 'jevDecide failed', { error: msg, caller });
+    // 仅补发未被 !resp.ok 分支上报过的失败（网络异常 / 超时中止 / 响应解析失败）。
+    if (!reported) {
+      emitRunEvent({
+        type: 'jev:call',
+        caller,
+        ok: false,
+        latencyMs: Date.now() - t0,
+        error: msg.slice(0, 200)
+      });
+    }
     throw e instanceof Error ? e : new Error(msg);
   }
 }

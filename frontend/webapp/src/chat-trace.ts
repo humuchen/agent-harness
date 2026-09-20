@@ -23,6 +23,13 @@ export interface Insights {
   cacheHitRate?: string;
   cacheHits?: string;
 
+  /**
+   * TypeSafe Jev 决策模型直连调用摘要（'N' 或 'N · M tok'）。
+   * 来源为 jev:call 旁路事件（注入门禁/上下文压缩等子系统路径）；工具路径（builtin__jev_decide）
+   * 已计入工具调用数，不在此重复统计。
+   */
+  jevCalls?: string;
+
   /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
   costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
   retrievals: Array<{ label: string; result: string }>;
@@ -61,7 +68,10 @@ export function buildConfidence(trace: TraceNode[]): Confidence {
     });
   walk(trace);
   const verify = flat.find((n) => n.kind === 'verify');
-  const tools = flat.filter((n) => n.kind === 'tool');
+  // Jev 决策节点（meta.jev）不是常规工具：其失败会兜底回落基线，不计入工具成功率。
+  const tools = flat.filter(
+    (n) => n.kind === 'tool' && n.meta?.jev !== 'true'
+  );
   const toolErrors = tools.filter((n) => n.status === 'error').length;
   const errorNodes = flat.filter(
     (n) => n.status === 'error' || n.kind === 'error'
@@ -485,9 +495,19 @@ export function renderTraceNode(
                       ><b>${escapeHtml(k)}</b> ${escapeHtml(v)}</span
                     >`
                 )
-            : nothing}${n.children.length
-            ? html`<span class="tchip"><b>工具</b> ${n.children.length}</span>`
-            : nothing}</span
+            : nothing}${(() => {
+              // 「工具」chip 计数排除 Jev 决策节点（meta.jev）——它们是子系统直连调用，
+              // 与 buildInsights 的工具口径保持一致，避免 chip 数字虚高。
+              const toolChildren = n.children.filter(
+                (c) => c.meta?.jev !== 'true'
+              ).length;
+              return toolChildren
+                ? html`<span class="tchip"
+                    ><b>工具</b> ${toolChildren}</span
+                  >
+                `
+                : nothing;
+            })()}</span
         >`}
       </div>
       <div class="tllm-body" ?hidden=${!expanded}>
@@ -624,15 +644,31 @@ export function buildInsights(trace: TraceNode[]): Insights {
   };
   walk(root?.children ?? []);
   const steps = flat.filter((n) => n.kind === 'step').length;
+  // jev 节点（meta.jev==='true'）是 Jev 决策模型的子系统直连调用，不是常规工具：
+  // 不计入「工具调用」（避免虚高），也不参与链路信成的工具成功率（门禁失败会兜底回落，
+  // 不代表回答质量下降）；单独聚合成「Jev 调用」指标展示。
+  const isJevNode = (n: TraceNode): boolean => n.meta?.jev === 'true';
   // 「工具调用」计数只统计真实执行的工具节点；被去重复用（meta.reused）的请求不计入，
   // 以免 UI 数字虚高（但 trace 树里仍保留这些复用节点供复盘）。
   const tools = flat.filter(
-    (n) => n.kind === 'tool' && !(n.meta && n.meta.reused)
+    (n) => n.kind === 'tool' && !(n.meta && n.meta.reused) && !isJevNode(n)
   );
   const retrievals = flat.filter((n) => n.kind === 'retrieval');
   const cost = flat.find((n) => n.kind === 'cost');
   const cacheNode = flat.find((n) => n.kind === 'tokencache');
   const meta = root?.meta ?? {};
+  // Jev 直连调用聚合：次数 + tokens（meta.tokens 形如 "120+30"，input+output）。
+  const jevNodes = flat.filter(isJevNode);
+  let jevTokensTotal = 0;
+  for (const jn of jevNodes) {
+    const m = /^(\d+)\+(\d+)$/.exec(String(jn.meta?.tokens ?? ''));
+    if (m) jevTokensTotal += Number(m[1]) + Number(m[2]);
+  }
+  const jevCalls = jevNodes.length
+    ? jevTokensTotal > 0
+      ? `${jevNodes.length} · ${jevTokensTotal} tok`
+      : String(jevNodes.length)
+    : undefined;
   return {
     model: meta.model,
     agent: meta.agent,
@@ -644,6 +680,7 @@ export function buildInsights(trace: TraceNode[]): Insights {
     costPriced: cost?.meta?.priced,
     cacheHitRate: cacheNode?.meta?.命中率,
     cacheHits: cacheNode?.meta?.命中,
+    jevCalls,
     costBreakdown: parseCostBreakdown(cost?.meta),
     retrievals: retrievals.map((n) => ({
       label: n.label,
@@ -702,6 +739,7 @@ export function renderInsights(ins: Insights) {
   push('模式', ins.mode);
   push('步骤', ins.steps ? String(ins.steps) : undefined);
   push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
+  push('Jev 调用', ins.jevCalls);
   push('Token', ins.costTokens);
   push('缓存命中率', ins.cacheHitRate);
   // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。

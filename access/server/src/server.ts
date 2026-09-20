@@ -4381,6 +4381,27 @@ async function handleRun(
         });
         break;
       }
+      case 'jev:call': {
+        // TypeSafe Jev 决策模型旁路上报：子系统直连调用（注入门禁/上下文压缩等）的调用事实。
+        // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点。
+        if (ev.caller === 'tool') break;
+        traceEnsureRoot();
+        const jParent = traceLlm ?? traceParent ?? traceRoot!;
+        const jMeta: Record<string, string> = {
+          jev: 'true',
+          调用方: String(ev.caller ?? '?'),
+          延迟: `${Number(ev.latencyMs ?? 0)}ms`,
+          ...(ev.questions != null ? { 问题数: String(ev.questions) } : {}),
+          ...(ev.tokens
+            ? { tokens: `${Number(ev.tokens.input ?? 0)}+${Number(ev.tokens.output ?? 0)}` }
+            : {})
+        };
+        traceNode(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
+          ...(ev.error ? { result: String(ev.error) } : {}),
+          meta: jMeta
+        });
+        break;
+      }
       case 'run:token-cache': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
