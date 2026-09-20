@@ -488,6 +488,19 @@ export class AhCommandSuggestions extends LitElement {
         height: 0;
       }
     }
+    /* 断点扩展到 760px（与 app 壳移动断点一致）：.panel 滚动条在 561–760px
+       （Android 大机型）仍会显示，补齐。 */
+    @media (max-width: 760px), (pointer: coarse) {
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+    }
     /* 尊重系统的「减少动态效果」设置 */
     @media (prefers-reduced-motion: reduce) {
       .panel {

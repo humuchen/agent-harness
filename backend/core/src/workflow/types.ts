@@ -12,12 +12,12 @@
 
 import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
+import type { OutputIssue } from './step-output';
 
 /** 单个 step 的运行态。 */
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
-
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
 /** 整个工作流的运行态。 */
-export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated';
+export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'awaiting';
 
 /** 单个步骤定义（DAG 中的一个节点）。 */
 export interface StepDef {
@@ -73,6 +73,12 @@ export interface StepDef {
    * 条件不满足时，本 step 标记为 'skipped'，下游依赖本 step 的 step 会被跳过。
    */
   condition?: string;
+  /**
+   * P3 人工审批门：标记为 true 的 step 在执行前会暂停整个工作流（run.state → 'awaiting'），
+   * 直至调用方把 stepId 写入 `WorkflowRun.approvals` 并 resume 后才放行执行。
+   * 未标记的 step 行为与旧版完全一致（零回归面）。
+   */
+  requireApproval?: boolean;
 }
 
 /** 工作流定义（DAG）。 */
@@ -83,6 +89,47 @@ export interface WorkflowDef {
   tenantId?: string;
   /** 全局追踪 id：贯穿所有 step 的 agent 调用，OTel span 跨 agent 关联。 */
   traceId?: string;
+  /**
+   * P4.5 产出有效性闸门：开启后，step 产出经 inspectStepOutput 判定为无效
+   * （空 / 中断标记 / 护栏兜底话术）时，该 step 标记 failed（走补偿与级联，同真失败），
+   * 而非把无效产出写入黑板并标记 done。缺省 false（存量工作流零回归）；
+   * 仅计划桥生成的 def（planToWorkflowDef）默认开启。
+   */
+  failOnInvalidOutput?: boolean;
+  /**
+   * P5 执行顺序：parallel（缺省）= 拓扑波次内并行（存量语义）；serial = 拓扑序逐 step
+   * 「单步发送」串行执行（上一 step 完成后才派发下一个）。计划桥（planToWorkflowDef）
+   * 默认 serial —— 串行模式下每步的思考过程与「当前任务」一一对应，是前端静默展示
+   * （不直播 step 消息、只展示计划卡 + 思考面板 + 最终结果）的前提。手工工作流不受影响。
+   */
+  execMode?: 'parallel' | 'serial';
+}
+
+/**
+ * P2.5 每 step 调用链路节点：step 执行期间发生的关键事件（LLM 调用 / 工具 / 护栏 / 校验 / 收尾）
+ * 的紧凑结构化记录，随检查点持久化，供「执行详情」抽屉回放（此前只有耗时）。
+ *
+ * 纪律（与 R5 黑板体积护栏一致）：
+ * - 节点数有上限（引擎 mergeTrace 超上限截断，保早期调用）；
+ * - detail 截断存储；token 级流式增量（llm:token / llm:reasoning）不落盘；
+ * - 不落任何凭据：仅记模型名，modelBaseUrl / apiKeys 永不写入（BYOK 红线）。
+ */
+export interface StepTraceNode {
+  /** 源事件类型（run:start / agent:step / llm:call / llm:response / tool:start / tool:result /
+   *  guardrail:blocked / verify:result / budget:exceeded / run:cost / run:end / tool:deduped → 归一 tool:result）。 */
+  type: string;
+  /** agent 内部 step 序号（harness 自身步数，非工作流 stepId）。 */
+  step?: number;
+  /** 捕获时间（epoch ms），回放可算相对时间轴。 */
+  ts: number;
+  /** 一行摘要（工具名 / 「LLM 调用」/ 结论标签）。 */
+  label?: string;
+  /** 关键详情（响应摘要 / 工具参数 / 错误原因 / 校验理由，截断存储）。 */
+  detail?: string;
+  /** ok | error | blocked。 */
+  status?: 'ok' | 'error' | 'blocked';
+  /** 快速元数据（model / tokens / cost / 命中缓存 等）。 */
+  meta?: Record<string, string>;
 }
 
 /** 单个 step 的运行态快照（随工作流进度持久化）。 */
@@ -105,6 +152,17 @@ export interface StepRun {
   teamId?: string;
   startedAt?: number;
   finishedAt?: number;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+   * 由 executor 经 `RunContext.attachTrace` 附挂，引擎按节点上限合并并随检查点持久化。
+   * 旧 executor（不附挂）与旧检查点（无该字段）行为零回归。
+   */
+  trace?: StepTraceNode[];
+  /**
+   * P4.5 产出有效性分类：inspectStepOutput 的 issue（仅 issue != 'ok' 时写入），
+   * 随检查点持久化供审计 / 执行详情抽屉展示。是否阻断由 def.failOnInvalidOutput 决定。
+   */
+  outputIssue?: Exclude<OutputIssue, 'ok'>;
 }
 
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */
@@ -123,4 +181,9 @@ export interface WorkflowRun {
   finishedAt?: number;
   /** 失败时的根因信息。 */
   error?: string;
+  /**
+   * P3 人工审批门：已批准放行的 step id 列表（随检查点持久化）。
+   * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。
+   */
+  approvals?: string[];
 }

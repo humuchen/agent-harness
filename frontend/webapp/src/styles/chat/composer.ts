@@ -112,7 +112,7 @@ export const composer = css`
   .composer-footer-right {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 10px;
     flex: 0 0 auto;
   }
   /* 深度思考 / 联网搜索 快捷开关图标（激活态 accent 高亮） */
@@ -589,13 +589,14 @@ export const composer = css`
     }
   }
   .caret {
-    display: inline-block;
+    display: none;
+    /* display: inline-block;
     width: 8px;
     height: 14px;
     margin-left: 2px;
     vertical-align: text-bottom;
     background: var(--ah-text);
-    animation: blink 1s steps(2, start) infinite;
+    animation: blink 1s steps(2, start) infinite; */
   }
   @keyframes blink {
     to {

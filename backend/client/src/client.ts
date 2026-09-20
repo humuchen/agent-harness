@@ -463,6 +463,23 @@ export class AgentClient {
   }
 
   /**
+   * P5.4 显式取消一个运行中的工作流（POST /api/workflows/:id/cancel）。
+   * 服务端 abort 引擎 signal → 检查点落 failed（已完成 step 保留），可从断点续跑。
+   * 幂等：run 已终态 / 不在本进程运行时服务端直接 ok（cancelled:false）。
+   */
+  async cancelWorkflow(id: string): Promise<{ ok: boolean; workflowId: string; cancelled: boolean }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST', body: '{}' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as { ok: boolean; workflowId: string; cancelled: boolean };
+  }
+
+  /**
    * 定义并运行一个 DAG 工作流，返回编排事件异步迭代器（与 harness 事件同通道）。
    * wf:* 为编排事件；嵌套的 harness 事件以 { type: 'harness', event } 包裹。
    */
@@ -587,6 +604,58 @@ export class AgentClient {
     if (opts.sessionId) body.sessionId = opts.sessionId;
     const res = await this.request(
       `/api/v1/workflows/${encodeURIComponent(id)}/resume`,
+      { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
+    );
+    if (!res.ok) {
+      const data = await res.text().catch(() => '');
+      throw new ApiError(res.status, data || `HTTP ${res.status}`);
+    }
+    for await (const ev of parseSse(res, opts)) {
+      yield ev as WorkflowEvent;
+    }
+  }
+
+  /**
+   * P3（人工审批门）：批准放行处于 awaiting 的 plan/workflow 执行。
+   * 对应服务端 POST /api/workflows/:id/approve —— 把 stepId 写入检查点 run.approvals
+   * 后触发 DagEngine.resume；引擎据此跳过审批门继续执行（可能再次暂停在下一道门）。
+   *
+   * body：`stepId`（单节点放行）与 `all`（放行当前所有 awaiting 节点）二选一；
+   * BYOK 字段与 streamWorkflowResume 同构（检查点不落明文凭据，服务端按 owner 重新解析，
+   * real 模式无 Key 402 快速失败；旧客户端不带 body 时默认 mock，向后兼容）。
+   */
+  async *streamWorkflowApprove(
+    id: string,
+    opts: SseOptions & {
+      /** 放行的单个 step/任务 id（= 计划 task id）。与 all 互斥。 */
+      stepId?: string;
+      /** 放行当前所有 awaiting 节点（等价于逐个批准）。 */
+      all?: boolean;
+      mode?: RunMode;
+      model?: string;
+      modelBaseUrl?: string;
+      modelApiKey?: string;
+      ctxWindow?: number;
+      web?: boolean;
+      verify?: unknown;
+      autoVerify?: boolean;
+      sessionId?: string;
+    } = {}
+  ): AsyncGenerator<WorkflowEvent> {
+    const body: Record<string, unknown> = {};
+    if (opts.stepId) body.stepId = opts.stepId;
+    if (opts.all) body.all = true;
+    if (opts.mode) body.mode = opts.mode;
+    if (opts.model) body.model = opts.model;
+    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
+    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
+    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
+    if (opts.web) body.web = true;
+    if (opts.verify) body.verify = opts.verify;
+    if (typeof opts.autoVerify === 'boolean') body.autoVerify = opts.autoVerify;
+    if (opts.sessionId) body.sessionId = opts.sessionId;
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/approve`,
       { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
     );
     if (!res.ok) {

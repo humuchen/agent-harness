@@ -25,6 +25,22 @@ export interface PlanTask {
   dependsOn: string[];
   /** 预期产出描述。 */
   expectedOutput: string;
+  /**
+   * P3 人工审批门：执行该任务前需用户显式批准（默认 false，零回归面）。
+   * 映射为 StepDef.requireApproval 后，引擎在该任务所在波次前暂停 run（state → awaiting），
+   * 用户经 approve 接口放行后 resume 才继续执行。
+   */
+  requireApproval?: boolean;
+  /**
+   * P4.5 结果断言词表：2~4 个「该任务最终产出必须包含」的短词，planner 依据
+   * expectedOutput 的验收检查点提取。经 taskMeta 透传给 executor：
+   *  - 注入执行 prompt 的「验收要求」（告知模型该写哪些词）；
+   *  - 逐项生成 contains 断言（**软性门禁**：未命中触发一次自检重试，仍不通过只告警不阻断）。
+   * 两条链路共用 pickOutputChecks 收敛（上限 PLAN_OUTPUT_CHECK_MAX），保证
+   * 「模型被告知的词」与「门禁断言的词」严格一致（P4.7 修复）。
+   * 可选：无明确关键词可提取的任务缺省不填（缺省 = 不启用结果断言，零回归面）。
+   */
+  outputChecks?: string[];
 }
 
 /** 结构化执行计划（plan:proposed 事件的 payload 契约）。 */
@@ -33,20 +49,169 @@ export interface ExecutionPlan {
   tasks: PlanTask[];
 }
 
-/** planner 系统提示词：约束模型输出可解析的计划 JSON（不夹带 markdown 围栏/解释文字）。 */
+/**
+ * 计划任务验收词上限（P4.7 单一事实源）。
+ *
+ * 为什么必须是常量而不是各处各写一个数字：验收词有**两个消费方**——执行 prompt 的
+ * 「验收要求（硬性）」注入（告知模型该写哪些词）与 per-step 结果断言（校验产出是否含这些词）。
+ * 二者若用不同上限，就会出现「门禁断言了模型从未被告知的词」→ **无论模型多顺从都必然失败**。
+ * 历史缺陷：注入侧 `.slice(0, 4)`、断言侧不截断（planner 最多可给 8 个）→ 第 5~8 个词
+ * 是永远无法满足的硬性要求。现在两侧统一走 pickOutputChecks() + 本上限。
+ *
+ * 取值 4 与 buildPlannerPrompt 的「2~4 个验收主题词」契约对齐。
+ */
+export const PLAN_OUTPUT_CHECK_MAX = 4;
+
+/**
+ * 收敛 taskMeta.outputChecks → 最终生效的验收词表（注入与断言共用的唯一入口）。
+ * - 非数组 → []；逐项 String().trim()，剔除空串；
+ * - 截断到 PLAN_OUTPUT_CHECK_MAX（保证「被告知的词」= 「被断言的词」）。
+ */
+export function pickOutputChecks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((c) => String(c).trim())
+    .filter(Boolean)
+    .slice(0, PLAN_OUTPUT_CHECK_MAX);
+}
+
+/**
+ * planner 系统提示词：两态工作流——需求清晰时「理解目标 → 调研 → 拆分」产出结构化计划；
+ * 需求模糊 / 关键前提缺失 / 高风险未对齐时「澄清」分支产出 goalDraft + questions，等用户确认目标后再拆。
+ * 提示词仅作为 user turn 注入（system prompt 仍是 harness 通用助手），工具（web_fetch / 读文件等）
+ * 在 propose 阶段本就可用，这里显式鼓励调研，并以阶段约束让规划过程「有思考、有依据、有确认」。
+ */
 export function buildPlannerPrompt(userInput: string): string {
   return [
-    '你是资深任务规划师。请根据用户需求产出一份结构化执行计划。',
+    '你是资深任务规划师。请先理解用户需求，再产出执行计划；若需求不清则先澄清目标。',
     '',
-    '硬性要求：',
-    '1. 只输出一个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容。',
-    '2. JSON 形如 {"goal": string, "tasks": [{"id": string, "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string}]}',
-    '3. task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
-    '4. 每个任务的 steps 是该任务内的有序执行步骤；expectedOutput 描述该任务完成后的可验证产出。',
-    '5. 任务粒度以「一次对话可独立完成」为准，通常 2~6 个任务。',
+    '严格按顺序执行：',
+    '1. 理解目标：用一句话复述用户的真实目标与关键约束。',
+    '2. 判断清晰度：',
+    '   - 若需求模糊、关键前提缺失、或涉及不可逆/高风险操作且目标尚未对齐 → 进入「澄清」分支（见格式 B），不要强行出计划。',
+    '   - 否则进入「调研 + 拆分」分支。',
+    '3. 调研（仅「调研 + 拆分」分支、且计划依赖外部事实时才做）：如计划需要外部资料 / 网页 / 文件 / 数据，先调用可用工具（web_fetch / 读文件等）获取依据，把结论沉淀进任务的 steps 与 expectedOutput。**调研预算：最多调用 3 次工具、总预算 1 次规划内完成**——信息足够拆分即停，信息不足就在产出中标注数据缺口；禁止为「更全面」反复检索，这会拖垮规划时效。检索失败须显式标注数据缺口，禁止以「无法找到，请自行查阅」式放弃收尾。',
+    '4. 拆分：围绕已确认目标，把任务拆成「一次对话可独立完成、可独立验收」的单元（通常 2~6 个）。',
+    '4a. 联网能力对齐：若调研未执行、失败或纪要存在「数据缺口」（执行环境可能无联网检索工具），任务不得把「真实外部数据 / 实时引用 / 具体统计数字」设为硬性验收条件——相关 steps 写明「无联网时以【数据缺口：待补充项】占位」，expectedOutput 只要求结构性内容 + 缺口标注完整，outputChecks 只放宽泛主题词。',
+    '',
+    '输出格式（二选一，必须是单个 JSON 对象，不要输出任何解释文字、markdown 围栏或多余内容）：',
+    '',
+    'A. 计划（需求清晰时）：',
+    '{"goal": string, "tasks": [{"id": "t1", "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string, "requireApproval"?: boolean, "outputChecks"?: string[]}]}',
+    '- goal：用户已确认的目标（一句话，可验收）。',
+    '- task.id 用 t1/t2/… 命名；dependsOn 只能引用已定义的任务 id，且不得形成循环依赖。',
+    '- expectedOutput 必须包含可验收的检查点（章节结构 / 关键数据项 / 产出体量），禁止「完成分析」「内容完整」式模糊描述。',
+    '- 仅当某任务涉及不可逆或高风险操作（删除数据、发布、金钱相关等）时，才设置 "requireApproval": true（执行前需用户人工批准）；其余任务一律省略该字段。',
+    '- 为每个任务提供 outputChecks：2~4 个「验收主题词」，硬性要求：① 每个词不超过 8 个字，是主题/实体/章节名（如「市场规模」「监管合规」「竞品对比」），禁止长句、数字指标或易被改写的短语；② 该词必须会作为小节标题或核心术语原样出现在产出中；③ 检索/调研类任务的验收词用宽泛主题词（如「市场规模」），并确保产出即使标注「数据缺口：市场规模未能获取」也能命中（缺口说明须含该词）。验收门禁按这些词对产出逐条断言，无法给出稳定主题词的任务省略该字段。',
+    '',
+    'B. 澄清（需求不清时）：',
+    '{"clarify": true, "goalDraft": string, "questions": [{"q": string, "options": string[]}], "needs"?: string}',
+    '- goalDraft：你对目标的初步理解草稿（供用户确认或修正）。',
+    '- questions：需要用户回答 / 确认的 1~5 个关键问题（具体问题，不要泛泛而问）。',
+    '- 每个问题必须附 options：2~4 个该问题最常见的候选答案（短词或短语，覆盖典型场景），供用户直接点选；用户也可自行输入其他答案。',
+    '- needs（可选）：你认为缺失的关键信息或前置条件。',
     '',
     `用户需求：${userInput}`,
   ].join('\n');
+}
+
+/** 澄清问题（可附候选选项供用户点选，也允许用户自行输入）。 */
+export interface PlanClarifyQuestion {
+  /** 问题文本。 */
+  q: string;
+  /** 2~4 个典型候选答案（可选，供用户点选）。 */
+  options?: string[];
+}
+
+/** 澄清结果（plan:clarify 事件的 payload 契约）：模型认为需求不清、需先确认目标。 */
+export interface PlanClarify {
+  /** 固定 true，用于与计划 JSON 区分。 */
+  clarify: true;
+  /** 模型对目标的初步理解草稿，供用户确认或修正。 */
+  goalDraft: string;
+  /** 需要用户回答 / 确认的关键问题（1~5 条），可附候选选项。 */
+  questions: PlanClarifyQuestion[];
+  /** 模型判断缺失的关键信息或前置条件（可选）。 */
+  needs?: string;
+}
+
+/** 计划 / 澄清联合解析结果。 */
+export type PlanParseResult =
+  | { kind: 'plan'; plan: ExecutionPlan }
+  | { kind: 'clarify'; clarify: PlanClarify }
+  | null;
+
+/**
+ * 从模型输出中容错提取澄清 JSON（与 parsePlanOutput 同级容错：直接 parse → 去围栏 → 截取首尾括号）。
+ * 仅当 `clarify === true` 且 goalDraft / questions 至少其一非空才视为有效澄清，否则返回 null。
+ */
+export function parseClarifyOutput(text: string): PlanClarify | null {
+  if (!text || !text.trim()) return null;
+  const candidates: string[] = [text];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1] ?? '');
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first !== -1 && last > first) candidates.push(text.slice(first, last + 1));
+
+  for (const raw of candidates) {
+    let data: unknown;
+    try {
+      data = JSON.parse(raw.trim());
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== 'object') continue;
+    const d = data as Record<string, unknown>;
+    if (d.clarify !== true) continue;
+    const goalDraft = typeof d.goalDraft === 'string' ? d.goalDraft.trim() : '';
+    // questions 兼容两种形态：旧格式 string[]（历史落盘）与新格式 [{q, options}]（可点选）。
+    const questions = Array.isArray(d.questions)
+      ? (d.questions as unknown[])
+          .map((item) => {
+            if (typeof item === 'string') {
+              const q = item.trim();
+              return q ? { q } : null;
+            }
+            if (item && typeof item === 'object') {
+              const o = item as Record<string, unknown>;
+              const q = typeof o.q === 'string' ? o.q.trim() : '';
+              if (!q) return null;
+              const options = Array.isArray(o.options)
+                ? (o.options as unknown[])
+                    .map((x) => String(x).trim())
+                    .filter(Boolean)
+                    .slice(0, 4)
+                : [];
+              return options.length ? { q, options } : { q };
+            }
+            return null;
+          })
+          .filter((x): x is { q: string; options?: string[] } => x !== null)
+          .slice(0, 5)
+      : [];
+    const needs = typeof d.needs === 'string' ? d.needs.trim() : '';
+    if (!goalDraft && questions.length === 0) continue;
+    return {
+      clarify: true,
+      goalDraft,
+      questions,
+      ...(needs ? { needs } : {})
+    };
+  }
+  return null;
+}
+
+/**
+ * 计划 / 澄清联合解析：先试计划 JSON，失败再试澄清 JSON。
+ * 用于 propose 阶段 run:end 的二分支分发（plan:proposed vs plan:clarify）。
+ */
+export function parsePlanOrClarify(text: string): PlanParseResult {
+  const plan = parsePlanOutput(text);
+  if (plan) return { kind: 'plan', plan };
+  const clarify = parseClarifyOutput(text);
+  if (clarify) return { kind: 'clarify', clarify };
+  return null;
 }
 
 /**
@@ -104,7 +269,20 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
       : [];
     const expectedOutput =
       typeof t.expectedOutput === 'string' ? t.expectedOutput.trim() : '';
-    tasks.push({ id, title, steps, dependsOn, expectedOutput });
+    // P3：仅当模型显式给出布尔 true 时保留审批门（缺省/非法值一律视为无需批准，零回归面）。
+    const requireApproval = t.requireApproval === true;
+    // P4.5：结果断言词表——非字符串项剔除、空白项剔除、上限 PLAN_OUTPUT_CHECK_MAX（防膨胀，
+    // 且与执行 prompt 的注入上限严格一致：模型被告知的词 = 门禁断言的词，P4.7 修复）。
+    const outputChecks = pickOutputChecks(t.outputChecks);
+    tasks.push({
+      id,
+      title,
+      steps,
+      dependsOn,
+      expectedOutput,
+      ...(requireApproval ? { requireApproval: true } : {}),
+      ...(outputChecks.length > 0 ? { outputChecks } : {})
+    });
   }
 
   // dependsOn 引用必须存在；用 Kahn 拓扑排序检测环。
@@ -168,6 +346,12 @@ export interface PlanToWorkflowOptions {
   tenantId?: string;
   /** 全局追踪 id（可选，贯穿所有 step 的 agent 调用，OTel 跨 agent 关联）。 */
   traceId?: string;
+  /**
+   * P5 执行顺序（可选）：缺省 'serial' —— 计划任务按拓扑序「单步发送」逐个执行
+   * （每步思考过程与当前任务一一对应，前端静默展示的前提）；显式传 'parallel'
+   * 可回到波次并行。手工 WorkflowDef 不经过本桥，缺省仍是 parallel（零回归）。
+   */
+  execMode?: 'parallel' | 'serial';
 }
 
 /**
@@ -189,6 +373,8 @@ export function buildInputMapping(task: PlanTask): Record<string, string> {
       title: task.title,
       steps: task.steps,
       expectedOutput: task.expectedOutput,
+      // P4.5：结果断言词表（缺省时不带键，executor 装配侧零感知 = 零回归面）。
+      ...(task.outputChecks && task.outputChecks.length > 0 ? { outputChecks: task.outputChecks } : {})
     }),
   };
   for (const d of task.dependsOn) {
@@ -219,10 +405,20 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     agentRef: byTask[task.id] ?? opts.agentRef,
     dependsOn: task.dependsOn,
     inputMapping: buildInputMapping(task),
+    // P3：人工审批门透传（未标记任务零回归面）——引擎在该 step 所在波次前暂停 run。
+    ...(task.requireApproval === true ? { requireApproval: true } : {})
   }));
   const def: WorkflowDef = {
     id: opts.workflowId || genPlanWorkflowId(),
     steps,
+    // P4.5：计划任务以「交付真实产出」为完成标准——无效产出（空 / 模型中断 partial /
+    // 护栏兜底话术）按失败处置（可断点续跑），不再以 5/5 ✅ 掩盖缺失的交付物。
+    // 该 flag 仅由本映射桥写入，存量手工 WorkflowDef 缺省不开（零回归面）。
+    failOnInvalidOutput: true,
+    // P5 静默计划执行：默认「单步发送」串行执行 —— 按拓扑序逐 task 派发，每步是独立的
+    // harness 调用（独立 sessionKey / 验证门禁 / 10min 预算），思考过程与当前任务一一对应；
+    // 前端据此把步骤消息静默化（计划卡 + 思考面板 + 仅最终结果）。显式 execMode 可回并行。
+    execMode: opts.execMode ?? 'serial',
   };
   if (opts.tenantId) def.tenantId = opts.tenantId;
   if (opts.traceId) def.traceId = opts.traceId;

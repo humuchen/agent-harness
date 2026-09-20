@@ -14,12 +14,18 @@ import {
   renderAttachments,
   renderImageAttachments,
   buildPlanWfReplayRows,
+  buildPlanWfTraceLines,
   planWfReplayMark,
   planWfReplayStateLabel,
+  planWfTraceMetaLabel,
+  planWfTraceMetaRowTitle,
   formatPlanWfDuration
 } from './chat-render-utils';
 import { parseDeepThinking } from './utils/chat-utils';
 import { toRichHtml, escapeHtml } from './utils/markdown';
+// 副作用导入：注册 <plan-elapsed>（propose 阶段实时计时器，模板中使用）。
+import './plan-elapsed';
+import { renderJsonHtml } from './utils/json-view';
 import {
   countTraceNodes,
   renderTraceNode,
@@ -28,8 +34,42 @@ import {
   renderInsights,
   renderConfidence
 } from './chat-trace';
-import type { ChatMsg, PlanExecState, PlanWfReplayState } from './chat-types';
+import type {
+  ChatMsg,
+  PlanExecState,
+  PlanWfReplayState,
+  PlanClarifyQuestionView,
+  ClarifyDraftState
+} from './chat-types';
+
+/**
+ * 计划模式（P0）：归一化澄清问题列表 —— 兼容历史落盘的 string[] 与新契约 [{q, options}]，
+ * 供渲染与确认拼装两处共用（历史消息不落盘时无法在入口归一化）。
+ */
+export function normalizeClarifyQuestions(raw: unknown): PlanClarifyQuestionView[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as unknown[])
+    .map((item) => {
+      if (typeof item === 'string') {
+        const q = item.trim();
+        return q ? { q } : null;
+      }
+      if (item && typeof item === 'object') {
+        const o = item as Record<string, unknown>;
+        const q = typeof o.q === 'string' ? o.q.trim() : '';
+        if (!q) return null;
+        const options = Array.isArray(o.options)
+          ? (o.options as unknown[]).map((x) => String(x)).filter(Boolean).slice(0, 4)
+          : undefined;
+        return options && options.length ? { q, options } : { q };
+      }
+      return null;
+    })
+    .filter((x): x is PlanClarifyQuestionView => x !== null)
+    .slice(0, 5);
+}
 import type { UploadedFile } from './agent-context';
+import type { WorkflowRun } from '@agent-harness/client';
 
 /** 渲染函数所需的交互态快照 + 回调闭包。由 AhChat.renderCtx() 构造。 */
 export interface ChatRenderCtx {
@@ -39,6 +79,8 @@ export interface ChatRenderCtx {
   streamIdx: Record<string, number>;
   editingMsgId: number;
   editingDraft: string;
+  /** 进入编辑态时的原始消息内容，用于禁用「无改动发送」。 */
+  editingOriginalContent: string;
   hoverUserMsgId: number;
   copiedMsgId: number;
   deepThink: boolean;
@@ -69,6 +111,20 @@ export interface ChatRenderCtx {
   resumeLost: (id: string) => void;
   confirmPlan: (m: ChatMsg) => void;
   cancelPlan: (msgId: number) => void;
+  /** 计划模式（P0）：需求澄清卡的用户输入状态（key=消息 id：逐题点选/补充 + 整体补充）。 */
+  clarifyDraft: Record<number, ClarifyDraftState>;
+  /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），按钮置灰防重复提交。 */
+  clarifyAnswered: Record<number, boolean>;
+  /** 计划模式（P0）：点选/取消一个候选选项（触发重渲染以反映选中态）。 */
+  toggleClarifyPick: (msgId: number, qIdx: number, opt: string) => void;
+  /** 计划模式（P0）：某题的自定义补充输入（就地写入，不触发重渲染防丢焦点）。 */
+  setClarifyText: (msgId: number, qIdx: number, val: string) => void;
+  /** 计划模式（P0）：澄清卡底部整体补充输入（就地写入，不触发重渲染防丢焦点）。 */
+  setClarifyExtra: (msgId: number, val: string) => void;
+  /** 计划模式（P0）：用户在目标澄清卡点「确认并继续」→ 服务端再次 propose。 */
+  confirmClarify: (m: ChatMsg) => void;
+  /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
+  approvePlan: (m: ChatMsg, stepId?: string) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
   requestUpdate: () => void;
   onComposerPointerDown: (e: PointerEvent) => void;
@@ -156,7 +212,8 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
                 class="edit-btn primary"
                 title="发送 (Enter)"
                 ?disabled=${!ctx.editingDraft.trim() ||
-                ctx.streaming[ctx.activeId] === true}
+                ctx.streaming[ctx.activeId] === true ||
+                ctx.editingDraft.trim() === ctx.editingOriginalContent.trim()}
                 @click=${() => ctx.sendEdit(m.id)}
               >
                 发送 ↑
@@ -303,15 +360,35 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
           </button>`
         : nothing}
       <div class="bubble">
-        ${showThinking && ctx.deepThink
-          ? renderThinking(ctx, m, isThinking)
+        ${m.planPhase && !m.plan && !m.clarify
+          ? renderPlanPhase(m, isStreamingAssistant)
+          : nothing}
+        ${(showThinking && ctx.deepThink) ||
+        (m.planPhase && !!m.reasoning)
+          ? renderThinking(ctx, m, isThinking, m.planPhase ? 'plan' : 'think')
           : nothing}
         ${showThinking &&
         ctx.deepThink &&
         (m.content || isStreamingAssistant)
           ? html`<div class="sep"><span>回答</span></div>`
           : nothing}
-        ${renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
+        ${m.planPhase && !m.plan && !m.clarify && isStreamingAssistant && !m.content
+          ? // 计划 propose 进行中：阶段面板已提供实时反馈，不再叠加「模型正在回复…」占位。
+            nothing
+          : m.planPhase &&
+            !m.plan &&
+            !m.clarify &&
+            !isStreamingAssistant &&
+            !m.content
+          ? // 规划中断态：流已结束但计划/回答均未产出（连接断开、超时或服务中断）。
+            // 明确告知而非永远「等待响应…」，用户可重发需求或重新进入计划模式。
+            html`<div class="answer">
+              <div class="msg-text placeholder plan-aborted">
+                规划未完成：连接可能已中断或处理超时，请重新发送需求重试
+              </div>
+            </div>`
+          : renderAnswer(m, isAnswering, isStreamingAssistant, isStopped)}
+        ${m.clarify ? renderClarifyCard(ctx, m) : nothing}
         ${m.plan ? renderPlanCard(ctx, m) : nothing}
         ${renderExtras(ctx, m, isStreamingAssistant)}
         ${m.compressed
@@ -335,7 +412,8 @@ export function renderMessage(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
 export function renderThinking(
   ctx: ChatRenderCtx,
   m: ChatMsg,
-  isThinking: boolean
+  isThinking: boolean,
+  mode: 'think' | 'plan' = 'think'
 ): TemplateResult {
   const parsed =
     m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null;
@@ -351,6 +429,7 @@ export function renderThinking(
   return html`
     <div
       class="think ${isThinking ? 'live' : ''} ${collapsed ? 'collapsed' : ''}"
+      data-mid=${String(m.id)}
     >
       <div
         class="think-head"
@@ -371,11 +450,12 @@ export function renderThinking(
             d="M12 3a6 6 0 0 0-3.8 10.7c.6.5.8 1.2.8 2.3h6c0-1.1.2-1.8.8-2.3A6 6 0 0 0 12 3z"
           />
         </svg>
-        <span class="think-title">深度思考</span>
+        <span class="think-title">${mode === 'plan' ? '规划思考' : '深度思考'}</span>
         ${isThinking
           ? html`<span class="think-status"
-              >思考中<span class="dots"><i></i><i></i><i></i></span
-            ></span>`
+              >${mode === 'plan' ? '规划中' : '思考中'}<span class="dots"
+                ><i></i><i></i><i></i></span
+              ></span>`
           : nothing}
         ${collapsed && m.reasoning
           ? html`<span class="think-count">${m.reasoning.length} 字</span>`
@@ -416,6 +496,156 @@ export function renderThinking(
               ${isThinking ? '模型正在思考…' : '（模型未返回推理内容）'}
             </div>`}
         ${isThinking ? html`<span class="caret"></span>` : nothing}
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 计划模式（P0）：propose 阶段进度条（理解需求 → 调研中 → 生成计划）。
+ * 让用户在等待计划生成时看到真实进展，替代永久「模型正在思考…」。
+ */
+export function renderPlanPhase(m: ChatMsg, live: boolean): TemplateResult {
+  const stages = ['理解需求', '调研中', '生成计划'];
+  const idx = stages.indexOf(m.planPhase ?? '');
+  // 实时动作行：优先反映真实事件（调研工具调用 > 阶段启发式），避免规划期「零反馈空等」。
+  // 调研工具卡只在「调用链路」抽屉里可见，这里把最近一次工具调用内联出来。
+  const tools = m.tools ?? [];
+  const last = tools[tools.length - 1];
+  let activity: string;
+  if (idx <= 0) activity = '正在理解需求、确认目标…';
+  else if (idx === 1) {
+    if (last && !last.result && !last.errored) activity = `正在调用 ${last.name}…`;
+    else if (last) activity = `已完成 ${tools.length} 次调研调用，正在分析结果…`;
+    else activity = '正在检索相关资料…';
+  } else {
+    activity = '正在汇总调研结果、生成结构化计划…';
+  }
+  return html`
+    <div class="plan-phase" role="status" aria-label="计划生成进度">
+      <div class="pp-steps">
+        ${stages.map(
+          (s, i) => html`
+            <span
+              class="pp-step ${i <= idx ? 'on' : ''} ${i === idx && live
+                ? 'cur'
+                : ''}"
+              >${s}</span
+            >${i < stages.length - 1
+              ? html`<span class="pp-arrow">→</span>`
+              : nothing}
+          `
+        )}
+      </div>
+      ${live
+        ? html`
+            <div class="plan-activity">
+              <span class="pa-spin"></span>
+              <span class="pa-text">${activity}</span>
+              <plan-elapsed class="plan-elapsed" ts=${String(m.planStartedAt ?? 0)}
+              ></plan-elapsed>
+            </div>
+            ${idx <= 0 && !m.reasoning && tools.length === 0
+              ? html`<div class="pp-hint">
+                  深度规划通常需要 1~2 分钟；调研与思考进展可展开下方「调用链路」查看
+                </div>`
+              : nothing}
+          `
+        : nothing}
+    </div>
+  `;
+}
+
+/**
+ * 计划模式（P0）：需求澄清卡（plan:clarify）。展示模型对目标的理解草稿与待确认问题，
+ * 用户补充/确认后点「确认并继续生成计划」→ 服务端再次 propose（基于已确认目标拆分）。
+ */
+export function renderClarifyCard(
+  ctx: ChatRenderCtx,
+  m: ChatMsg
+): TemplateResult {
+  const c = m.clarify;
+  if (!c) return html``;
+  const questions = normalizeClarifyQuestions(c.questions);
+  const draft =
+    ctx.clarifyDraft[m.id] ?? { picks: {}, texts: {}, extra: '' };
+  return html`
+    <div class="clarify-card">
+      <div class="clarify-head">❓ 需要确认目标</div>
+      ${c.goalDraft
+        ? html`<div class="clarify-goal">
+            <span class="cg-label">目标草稿</span>
+            <div class="cg-text">${escapeHtml(c.goalDraft)}</div>
+          </div>`
+        : nothing}
+      ${questions.length
+        ? html`<ol class="clarify-q">
+            ${questions.map(
+              (item, i) => html`
+                <li class="cq-item">
+                  <div class="cq-text">${escapeHtml(item.q)}</div>
+                  ${item.options && item.options.length
+                    ? html`<div class="cq-opts">
+                        ${item.options.map(
+                          (opt) => html`
+                            <button
+                              type="button"
+                              class="cq-chip ${(draft.picks[String(i)] ?? []).includes(
+                                opt
+                              )
+                                ? 'on'
+                                : ''}"
+                              ?disabled=${ctx.clarifyAnswered[m.id] === true}
+                              @click=${() => ctx.toggleClarifyPick(m.id, i, opt)}
+                            >
+                              ${escapeHtml(opt)}
+                            </button>
+                          `
+                        )}
+                      </div>`
+                    : nothing}
+                  <input
+                    class="cq-custom"
+                    type="text"
+                    placeholder="其他 / 自定义补充（可留空）"
+                    .value=${draft.texts[String(i)] ?? ''}
+                    ?disabled=${ctx.clarifyAnswered[m.id] === true}
+                    @input=${(e: Event) =>
+                      ctx.setClarifyText(
+                        m.id,
+                        i,
+                        (e.target as HTMLInputElement).value
+                      )}
+                  />
+                </li>
+              `
+            )}
+          </ol>`
+        : nothing}
+      ${c.needs
+        ? html`<div class="clarify-needs">
+            缺失信息：${escapeHtml(c.needs)}
+          </div>`
+        : nothing}
+      <textarea
+        class="clarify-input"
+        placeholder="整体补充说明（可留空）"
+        .value=${draft.extra}
+        ?disabled=${ctx.clarifyAnswered[m.id] === true}
+        @input=${(e: Event) => {
+          ctx.setClarifyExtra(m.id, (e.target as HTMLTextAreaElement).value);
+        }}
+      ></textarea>
+      <div class="clarify-actions">
+        <button
+          class="plan-btn"
+          ?disabled=${ctx.clarifyAnswered[m.id] === true}
+          @click=${() => ctx.confirmClarify(m)}
+        >
+          ${ctx.clarifyAnswered[m.id] === true
+            ? '已确认，正在重新生成计划…'
+            : '确认并继续生成计划'}
+        </button>
       </div>
     </div>
   `;
@@ -604,6 +834,8 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       ? '已完成'
       : st.status === 'failed'
       ? `执行失败 · ${st.failedTaskId ?? ''}`
+      : st.status === 'awaiting'
+      ? `待审批 · ${(st.awaitingTaskIds ?? []).join('、')}`
       : '已取消';
   return html`<div class="plan-card">
     <div class="plan-head">
@@ -615,16 +847,21 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         const done = !!st.done[t.id];
         const active = st.status === 'running' && st.currentTaskId === t.id;
         const failed = st.status === 'failed' && st.failedTaskId === t.id;
+        // P3：审批门任务标记（卡片显示 🔒）；awaiting 态下命中待审批列表的高亮。
+        const awaitingNode = st.status === 'awaiting' && (st.awaitingTaskIds ?? []).includes(t.id);
         return html`<li
           class="plan-task ${done ? 'done' : ''} ${active ? 'active' : ''} ${
           failed ? 'failed' : ''
-        }"
+        } ${awaitingNode ? 'awaiting' : ''}"
         >
           <div class="pt-head">
             <span class="pt-mark"
-              >${done ? '✓' : active ? '⏳' : failed ? '✗' : i + 1}</span
+              >${done ? '✓' : active ? '⏳' : failed ? '✗' : awaitingNode ? '🔒' : i + 1}</span
             >
             <b>${escapeHtml(t.title)}</b>
+            ${t.requireApproval
+              ? html`<span class="pt-approval" title="执行前需人工批准">🔒 需审批</span>`
+              : nothing}
           </div>
           ${t.steps.length
             ? html`<ol class="pt-steps">
@@ -638,6 +875,24 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
         </li>`;
       })}
     </ol>
+    ${
+      /* P5 静默执行：当前任务思考面板（llm:reasoning 增量，tail 展示最新思考）。
+         仅 running 且有思考流时渲染；任务完成/失败随状态机清空。
+         结构：标题为固定头（不随滚动），正文 .pt-think-body 独立滚动 ——
+         打字流式时由 ChatScroll 钉底跟随（用户上滚暂停、滚回底部恢复）。 */
+      st.status === 'running' && st.thinking && st.thinking.text.trim()
+        ? html`<div class="plan-thinking">
+            <div class="pt-think-label">
+              💭 思考中 · ${escapeHtml(st.thinking.taskId ?? st.currentTaskId ?? '')}
+            </div>
+            <div class="pt-think-body">
+              <div class="pt-think-text">
+                ${escapeHtml(st.thinking.text.slice(-4000))}
+              </div>
+            </div>
+          </div>`
+        : nothing
+    }
     ${
       /* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */
       html`<div class="plan-actions">
@@ -657,6 +912,15 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
           ${st.status === 'failed'
             ? html`<button class="plan-btn" @click=${() => ctx.confirmPlan(m)}>
                 从失败任务继续
+              </button>`
+            : nothing}
+          ${st.status === 'awaiting'
+            ? html`<button
+                class="plan-btn"
+                title="批准当前全部待审批节点并继续执行"
+                @click=${() => ctx.approvePlan(m)}
+              >
+                批准并继续
               </button>`
             : nothing}
           ${st.status !== 'pending'
@@ -694,7 +958,10 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
     return html`<ah-drawer ?open=${false} placement="right" title="执行详情" size="500px"></ah-drawer>`;
   }
   const rs: PlanWfReplayState | undefined = ctx.planWfReplay[m.id];
-  const run = rs?.snapshot ?? null;
+  // P2.6：实时检查点缺失（404）时回退 planStatus 历史镜像快照（形状兼容，buildPlanWfReplayRows 直接消费）。
+  const mirror = rs?.mirrorSnapshot ? (rs.mirrorSnapshot as unknown as WorkflowRun) : null;
+  const run = rs?.snapshot ?? mirror;
+  const fromMirror = !rs?.snapshot && !!mirror;
   const rows = buildPlanWfReplayRows(m.plan, run);
   const totalMs =
     run?.startedAt && run.finishedAt ? Math.max(0, run.finishedAt - run.startedAt) : undefined;
@@ -702,8 +969,11 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
     running: '执行中',
     done: '已完成',
     failed: '失败',
-    pending: '待执行'
+    pending: '待执行',
+    awaiting: '待审批'
   };
+  // P3：审批门暂停 —— 顶部「批准并继续」（全部未决门）+ 每行 awaiting 节点的单节点批准。
+  const awaitingRows = rows.filter((r) => r.state === 'awaiting');
   return html`
     <ah-drawer
       ?open=${true}
@@ -720,10 +990,15 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
           ? html`<div class="wf-replay-hint">
               ${rs?.error
                 ? html`暂无可回放的执行轨迹：${escapeHtml(rs.error)}。<br />
-                    可能是检查点尚未落盘或已被清理。<br />
+                    检查点可能尚未落盘或已被清理（服务重启 / 磁盘重置）。<br />
                     可点卡片上的「从失败任务继续 / 确认执行」重新拉起 DAG 执行。`
                 : '该计划暂无执行记录（尚未开始，或为串行路径执行——串行 run 不落检查点）。'}
               </div>`
+          : nothing}
+        ${fromMirror
+          ? html`<div class="wf-replay-mirror-hint">
+              检查点已过期，以下为执行时保留的历史镜像快照（节点状态 / 耗时 / 产出 / 调用链路）。
+            </div>`
           : nothing}
         ${run
           ? html`<div class="wf-replay-head">
@@ -733,6 +1008,16 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
               >
               ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
             </div>
+            ${run.state === 'awaiting' && !fromMirror
+              ? html`<div class="wf-replay-approve">
+                  <button class="plan-btn" @click=${() => ctx.approvePlan(m)}>
+                    批准并继续
+                  </button>
+                  <span class="wf-replay-approve-hint">
+                    将放行 ${awaitingRows.length} 个待审批节点后继续执行（检查点已记录，刷新 / 重启后仍可审批）
+                  </span>
+                </div>`
+              : nothing}
             <ol class="wf-replay-timeline">
               ${rows.map(
                 (r) =>
@@ -745,12 +1030,79 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                         >${planWfReplayStateLabel(r.state)} · ${formatPlanWfDuration(r.durationMs)}</span
                       >
                     </div>
+                    ${r.state === 'awaiting' && !fromMirror
+                      ? html`<div class="wf-replay-approve">
+                          <button
+                            class="plan-btn ghost"
+                            @click=${() => ctx.approvePlan(m, r.id)}
+                          >
+                            批准此节点
+                          </button>
+                        </div>`
+                      : nothing}
                     ${r.detail
                       ? html`<details class="wf-replay-detail">
                           <summary>产出 / 错误</summary>
-                          <pre>${escapeHtml(r.detail)}</pre>
+                          <div class="wf-detail-body">${renderJsonHtml(r.detail)}</div>
                         </details>`
                       : nothing}
+                    ${(() => {
+                      // P2.5 调用链路：该 step 运行过程中的关键事件（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+                      // 来自检查点 StepRun.trace（旧快照无该字段 → lines 为空 → 不渲染，零回归）。
+                      // 用户标注要求：每行 = 独立标题行（图标 + 标签 + 时间），点击标题在下方展开/折叠
+                      // 「模型 / 用量」「参数」「详情」各自成行（原生 details），不再摊在标题行内。
+                      const lines = buildPlanWfTraceLines(r.trace);
+                      if (lines.length === 0) return nothing;
+                      return html`<details class="wf-replay-trace">
+                        <summary>调用链路 · ${lines.length} 步</summary>
+                        <ol class="wf-trace-lines">
+                          ${lines.map(
+                            (l) =>
+                              html`<li class="wf-trace-line ${l.status ?? 'ok'}">
+                                <details class="wf-trace-item">
+                                  <summary class="wf-trace-item-head">
+                                    <span class="wf-trace-icon">${l.icon}</span>
+                                    <span class="wf-trace-label">${escapeHtml(l.label)}</span>
+                                    ${l.at
+                                      ? html`<span class="wf-trace-at">+${escapeHtml(l.at)}</span>`
+                                      : nothing}
+                                    <span class="wf-trace-caret" aria-hidden="true"></span>
+                                  </summary>
+                                  ${l.meta && l.meta.length
+                                    ? html`<details class="wf-trace-sub">
+                                        <summary class="wf-trace-sub-head">
+                                          ${escapeHtml(
+                                            planWfTraceMetaRowTitle(l.meta)
+                                          )}
+                                          <span class="wf-trace-sub-caret" aria-hidden="true"></span>
+                                        </summary>
+                                        <div class="wf-trace-meta">
+                                          ${l.meta.map(
+                                            ([k, v]) =>
+                                              html`<span
+                                                class="wf-trace-meta-chip"
+                                                title=${escapeHtml(
+                                                  `${planWfTraceMetaLabel(k)}: ${v}`
+                                                )}
+                                                ><b>${escapeHtml(
+                                                  planWfTraceMetaLabel(k)
+                                                )}</b>
+                                                ${escapeHtml(v)}</span
+                                              >`)}
+                                        </div>
+                                      </details>`
+                                    : nothing}
+                                  ${l.detail
+                                    ? html`<div class="wf-trace-detail">
+                                        ${renderJsonHtml(l.detail)}
+                                      </div>`
+                                    : nothing}
+                                </details>
+                              </li>`
+                          )}
+                        </ol>
+                      </details>`;
+                    })()}
                   </li>`
               )}
             </ol>`

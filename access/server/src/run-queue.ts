@@ -16,6 +16,7 @@ import {
   type TaskEnvelope,
   type TaskResult,
   type VerifyConfig,
+  runPlanPropose,
   withRequestContext,
   type RequestContext
 } from '@agent-harness/core';
@@ -26,7 +27,7 @@ import {
   type QueueBackend,
   type JobDescriptor
 } from './queue-backend';
-import { resolveRunCredential } from './provider-keys';
+import { resolveRunCredential, resolveJevCredential } from './provider-keys';
 import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
 
 /** 内存监控阈值（MB）：超过此值触发告警，OOM 前预警。 */
@@ -744,15 +745,19 @@ export class RunQueue {
       emit(e);
     };
     // 看门狗：整体超时后中止 controller，harness 在下一检查点退出，worker 槽位必然释放。
+    // P4.8 修复：此前无条件用 JOB_TIMEOUT_MS（默认 300s），而计划任务执行在 harness 侧
+    // 拿到的是 PLAN_TASK_TIMEOUT_MS（默认 600s）—— 看门狗会在 5 分钟就把「预算 10 分钟」
+    // 的计划任务掐断，是「等待很久 → step 超时中止」的一个确定性来源。两者必须同源。
+    const watchdogMs = isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS;
     const watchdog = setTimeout(() => {
       try {
         job.controller.abort('timeout');
       } catch {
         /* 忽略 */
       }
-    }, JOB_TIMEOUT_MS);
-    // 看门狗最长可达 JOB_TIMEOUT_MS（默认 300s），若测试 / 停机时任务未结束会长期持有
-    // 事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
+    }, watchdogMs);
+    // 看门狗最长可达 PLAN_TASK_TIMEOUT_MS（默认 600s），若测试 / 停机时任务未结束会长期
+    // 持有事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
     watchdog.unref?.();
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
@@ -958,6 +963,9 @@ export class RunQueue {
           modelBaseUrl: job.modelBaseUrl,
           modelApiKey: job.modelApiKey
         });
+        // TypeSafe AI Jev 决策工具按用户 BYOK：与 LLM Key 同源解析，按 owner 隔离，
+        // 运行期注入 assembleAgent（绝不写入 process.env）。无则回落 env / 不注册。
+        const jevCred = await resolveJevCredential(job.owner ?? 'anonymous');
         if (job.mode !== 'mock' && !cred.apiKey) {
           // 重放 / 跨实例领取后，用户可能已删除 Key：拒绝执行（与提交期 402 一致），
           // 不回退为无 Key 静默跑，避免裸奔调用上游。
@@ -1030,7 +1038,9 @@ export class RunQueue {
           effectiveBaseUrl,
           effectiveApiKey,
           job.ctxWindow,
-          effectiveApiKeys
+          effectiveApiKeys,
+          jevCred.apiKey,
+          jevCred.baseUrl
         );
         const model = resolveOpenRouterConfig({ model: job.model }).model;
         emit({
@@ -1055,9 +1065,38 @@ export class RunQueue {
         // 归属用户注入（数据绑定）：整个 agent 循环（含工具执行）都在 runWithUser 上下文内，
         // 插件工具（如 memo note_save）经 getRunUser() 拿到 owner，把产出数据绑定到登录用户。
         // owner 缺省（旧 job / 内部派发）时保持无上下文，由工具侧自行兜底匿名桶。
+        // 计划 propose（P5 彻底重构）：默认走「两段式规划管线」（理解 → 受限调研 → 生成计划），
+        // 结构上保证必然产出计划/澄清 JSON，杜绝「预算耗尽无产出、调研 token 白烧」。
+        // 回退开关 PLAN_PROPOSE_PIPELINE=false 走旧 harness 自由循环；mock 模式保持旧路径
+        // （mock 输出非 JSON，管线只会多跑空阶段，无意义）。
+        const isPlanPropose =
+          job.interactionMode === 'plan' && job.planPhase !== 'execute';
+        const useProposePipeline =
+          isPlanPropose &&
+          assembled.llmKind === 'openrouter' &&
+          process.env.PLAN_PROPOSE_PIPELINE !== 'false';
         const finalText = await runWithUser(
-          job.owner ? { sub: job.owner } : null,
-          () => assembled.harness.run(job.prompt, job.attachments)
+          job.owner
+            ? {
+                sub: job.owner,
+                jevApiKey: jevCred.apiKey,
+                jevBaseUrl: jevCred.baseUrl
+              }
+            : null,
+          () =>
+            useProposePipeline
+              ? runPlanPropose({
+                  llm: assembled.llm,
+                  tools: assembled.tools,
+                  userInput: job.prompt,
+                  emit: onEvent,
+                  signal,
+                  systemPrompt: assembled.systemPrompt,
+                  memory: assembled.memory,
+                  streamTokens: true,
+                  guardPolicy: assembled.guardrailPolicy
+                })
+              : assembled.harness.run(job.prompt, job.attachments)
         );
 
         // 运行完成闸门（P2-13 延伸）：自动评估本轮质量，据 HARNESS_EVAL_GATE 决定告警或拦截。

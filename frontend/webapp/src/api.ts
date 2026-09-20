@@ -1,14 +1,15 @@
 /**
- * 与 @agent-harness/client 的薄封装：同源单例 + 会话本地持久化。
- * 所有面板都从这里拿 client，不再手写 fetch / SSE。
- *
- * 鉴权说明（账户密码模式，P1-13 双 token 模式）：
- *  - ah_auth cookie：HttpOnly，前端不可读，由浏览器自动随同源请求带上。
- *  - ah_refresh cookie：HttpOnly，服务端签发，前端不可读（用于 POST /api/account/refresh）。
- *  - localStorage['ah_token']：access token 副本（仅用于调度刷新定时器，不用于鉴权）。
- *  - localStorage['ah_user']：登录用户名（用于 x-ah-username 双因子头）。
- *  - 任何 401 会触发全局 ah-session-expired → 清会话并重回登录页。
- */
+ /** 与 @agent-harness/client 的薄封装：同源单例 + 会话本地持久化。
+  * 所有面板都从这里拿 client，不再手写 fetch / SSE。
+  *
+  * 鉴权说明（账户密码模式，P1-13 双 token 模式）：
+  *  - ah_auth cookie：HttpOnly，前端不可读，由浏览器自动随请求带上。
+  *    在 Capacitor WebView 中使用 credentials: 'include' 确保 cookie 正常发送。
+  *  - ah_refresh cookie：HttpOnly，服务端签发，前端不可读（用于 POST /api/account/refresh）。
+  *  - localStorage['ah_token']：access token 副本（仅用于调度刷新定时器，不用于鉴权）。
+  *  - localStorage['ah_user']：登录用户名（用于 x-ah-username 双因子头）。
+  *  - 任何 401 会触发全局 ah-session-expired → 清会话并重回登录页。
+  */
 import { AgentClient } from '@agent-harness/client';
 
 const baseUrl =
@@ -153,9 +154,10 @@ export interface MeInfo {
 }
 
 /**
- * 拉取当前登录态资料：GET /api/account/me（仅依赖 ah_auth cookie）。
- * 返回 null 表示未登录 / 会话失效。
- */
+ /** 拉取当前登录态资料：GET /api/account/me（仅依赖 ah_auth cookie）。
+  * 返回 null 表示未登录 / 会话失效。
+  * 在 Capacitor WebView 中使用 credentials: 'include' 确保 cookie 正常发送。
+  */
 export async function fetchMe(): Promise<MeInfo | null> {
   try {
     const res = await fetch('/api/account/me', {

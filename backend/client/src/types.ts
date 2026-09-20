@@ -173,10 +173,17 @@ export interface ChatMessage {
 
 /** 计划执行进度镜像（JSON 友好：done 用 id 数组而非对象）。 */
 export interface PlanExecMirror {
-  status: 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
   currentTaskId?: string;
   failedTaskId?: string;
   done: string[];
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaiting?: string[];
+  /**
+   * P2.6：紧凑 run 快照（前端 compactPlanWfSnapshot 产出，形状见 webapp PlanWfRunMirror；
+   * 此处用 unknown 保持 client 包零 webapp 耦合）。检查点丢失时抽屉据此回退水合。
+   */
+  wfSnapshot?: unknown;
 }
 
 export interface ChatSession {
@@ -455,7 +462,7 @@ export interface A2ARequest {
 
 /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
 
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped';
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
 
 export interface StepDef {
   id: string;
@@ -466,6 +473,8 @@ export interface StepDef {
   dependsOn?: string[];
   /** 该 step 失败时逆序执行的补偿 step id。 */
   compensate?: string;
+  /** P3：执行前需人工批准（引擎暂停 run 进入 awaiting，审批放行后 resume 才执行）。 */
+  requireApproval?: boolean;
 }
 
 export interface WorkflowDef {
@@ -482,15 +491,44 @@ export interface StepRun {
   finishedAt?: number;
   /** 实际选中的 agent id（服务端快照实有该字段；轨迹回放据此展示每个节点的执行者）。 */
   agentId?: string;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾），
+   * 由服务端 StepTraceCollector 采集、引擎按上限合并后随检查点持久化。
+   * 「执行详情」抽屉据此展示每个节点的运行过程（此前只有完成后的耗时）。旧快照无该字段。
+   */
+  trace?: StepTraceNode[];
+}
+
+/**
+ * P2.5 每 step 调用链路节点（与 @agent-harness/core 的 StepTraceNode 形状一致，本地镜像避免包耦合）。
+ * 白名单捕获 + detail 截断 + 不落凭据（仅记模型名，modelBaseUrl/apiKey 永不写入）。
+ */
+export interface StepTraceNode {
+  /** 源事件类型（run:start / llm:call / llm:response / tool:start / tool:result / ...）。 */
+  type: string;
+  /** agent 内部 step 序号（harness 自身步数，非工作流 stepId）。 */
+  step?: number;
+  /** 捕获时间（epoch ms），回放可算相对时间轴。 */
+  ts: number;
+  /** 一行摘要（工具名 / 「LLM 调用」/ 结论标签）。 */
+  label?: string;
+  /** 关键详情（响应摘要 / 工具参数 / 错误原因 / 校验理由，截断存储）。 */
+  detail?: string;
+  /** ok | error | blocked。 */
+  status?: 'ok' | 'error' | 'blocked';
+  /** 快速元数据（model / tokens / cost 等）。 */
+  meta?: Record<string, string>;
 }
 
 export interface WorkflowRun {
   def: WorkflowDef;
-  state: 'running' | 'done' | 'failed';
+  state: 'running' | 'done' | 'failed' | 'awaiting';
   steps: Record<string, StepRun>;
   startedAt: number;
   finishedAt?: number;
   error?: string;
+  /** P3：已批准放行的 step id 列表（随检查点持久化，resume 时跳过审批门）。 */
+  approvals?: string[];
 }
 
 /** 工作流 SSE 事件。与 harness 事件同通道：wf:* 为编排事件；harness 事件以 { type:'harness', event } 包裹。 */
@@ -501,6 +539,8 @@ export type WorkflowEvent =
   | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
+  /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
+  | { type: 'wf:awaiting-approval'; workflowId: string; stepIds: string[]; run: WorkflowRun }
   | { type: 'wf:done'; workflowId: string; run: WorkflowRun }
   | { type: 'wf:failed'; workflowId: string; run: WorkflowRun }
   | { type: 'wf:error'; workflowId: string; error: string }

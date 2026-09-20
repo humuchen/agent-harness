@@ -1,4 +1,11 @@
-import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from 'lit';
+import {
+  LitElement,
+  html,
+  css,
+  nothing,
+  type TemplateResult,
+  type PropertyValues
+} from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client, authedFetch, fetchMe } from './api';
@@ -53,6 +60,15 @@ const SIDEBAR_COLLAPSED_KEY = 'ah:sidebar-collapsed';
 const DEEP_THINK_COLLAPSED_KEY = 'ah:deep-think-collapsed';
 
 /**
+ * 移动端文档滚动 + 下拉刷新依赖「进页即顶部」：浏览器默认 scrollRestoration=auto
+ * 会在刷新后恢复上次的滚动位置，看板类长页面恢复到中部时下拉刷新手势
+ * （要求页面在顶部）会被静默拦截，表现为「下拉刷新没生效」。改为手动管理。
+ */
+if (typeof history !== 'undefined' && 'scrollRestoration' in history) {
+  history.scrollRestoration = 'manual';
+}
+
+/**
  * 侧边栏收起态只显示「短标签」(data-short)。不同 Tab 的首字可能相同
  * （如「客资看板」与「客服后台」首字都是「客」），若直接取首字会在收起态
  * 出现两个一模一样的字。这里做全局去重：优先 1 字，冲突则逐步加长到
@@ -86,21 +102,21 @@ type TabGroup = 'use' | 'ability' | 'observe' | 'govern';
 
 const TABS: Array<{ id: Tab; label: string; short: string; group: TabGroup }> =
   [
-    { id: 'workspace', label: '工作台', short: '台', group: 'use' },
+    { id: 'workspace', label: '工作台', short: '总览', group: 'use' },
     { id: 'chat', label: '对话', short: '对话', group: 'use' },
     { id: 'mcp', label: 'MCP', short: 'M', group: 'ability' },
-    { id: 'observability', label: '可观测', short: '观', group: 'observe' },
+    { id: 'observability', label: '可观测', short: '观测', group: 'observe' },
     { id: 'audit', label: '审计', short: '审计', group: 'observe' },
     { id: 'org', label: '组织', short: '组织', group: 'govern' },
     { id: 'artifact', label: '档案', short: '档案', group: 'observe' },
     { id: 'skill', label: '技能', short: '技能', group: 'ability' },
     { id: 'datasource', label: '数据源', short: '源', group: 'ability' },
     { id: 'sandbox', label: '沙箱', short: '沙箱', group: 'observe' },
-    { id: 'verify', label: '自检', short: '验', group: 'observe' },
-    { id: 'env', label: '环境', short: '环', group: 'observe' },
-    { id: 'supplychain', label: '供应链', short: '链', group: 'govern' },
+    { id: 'verify', label: '自检', short: '自检', group: 'observe' },
+    { id: 'env', label: '环境', short: '环境', group: 'observe' },
+    { id: 'supplychain', label: '供应链', short: 'CI', group: 'govern' },
     { id: 'plugins', label: '插件', short: '插件', group: 'ability' },
-    { id: 'plan', label: '计划', short: '计', group: 'use' }
+    { id: 'plan', label: '计划', short: '计划', group: 'use' }
   ];
 
 /** History 路由：从 location.pathname 解析初始 Tab（如 /chat → chat）。 */
@@ -171,6 +187,32 @@ const desktopShellCss = css`
 `;
 
 /**
+ * 移动端顶层壳 :host 覆盖（仅注入 ah-app 自身 shadow root）。
+ * 历史实现曾把这段 :host 规则写在 sharedStyles（responsive.ts）里 ——
+ * 但 sharedStyles 会被 19 个面板组件（ah-workspace / ah-run / ah-chat…）
+ * 各自编译进自己的 shadow DOM，:host 随之泄漏到每个面板 host 上：
+ * 每个面板 host 都被强制 min-height:100dvh，空数据页面板即使内容只有
+ * ~400px 也撑满整屏，把 .content 顶到 924px、文档 983px > 844px，
+ * 产生 139px 幽灵滚动与最外层滚动条（「没有数据也能上下滚」的根因）。
+ * 这里与 desktopShellCss 严格互斥：同条件谓词（≤760px 或 横屏矮屏），
+ * 桌面锁定与移动解锁二选一，无重叠窗口。
+ */
+const mobileShellCss = css`
+  @media (max-width: 760px), (orientation: landscape) and (max-height: 760px) {
+    :host {
+      /* 底部固定栏高度：单一来源，供 .content 底部留白引用，
+         避免「底栏实际高度」与「内容区留白」两处魔法数字各自漂移。
+         自定义属性从 ah-app host 沿 DOM 向下继承，面板组件内的
+         calc(var(--ah-tabbar-h)) 消费不受 shadow 边界影响（继承跨边界）。 */
+      --ah-tabbar-h: calc(48px + env(safe-area-inset-bottom, 0px));
+      height: auto;
+      min-height: 100dvh;
+      overflow: visible;
+    }
+  }
+`;
+
+/**
  * 移动端下拉刷新指示器样式。指示器由 PullToRefreshController 动态挂载到 .main，
  * 用 position:fixed 钉在顶栏正下方，随下拉距离长高；仅触摸手势触发，桌面无副作用。
  */
@@ -208,6 +250,45 @@ const ptrCss = css`
   @media (prefers-reduced-motion: reduce) {
     .ptr-indicator .ptr-spin {
       animation-duration: 1.4s;
+    }
+  }
+  /* 顶栏显式刷新按钮（移动端显示）：下拉刷新要求页面在顶部，用户浏览到
+     看板中部时没有刷新出口 —— 该按钮提供与滚动位置无关的可靠刷新入口。
+     桌面隐藏（无下拉刷新预期，各面板自带刷新入口）。 */
+  .topbar-refresh {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--ah-radius-sm);
+    background: var(--ah-surface-2);
+    border: 1px solid var(--ah-border);
+    color: var(--ah-text-muted);
+    cursor: pointer;
+    padding: 0;
+    font-family: inherit;
+    transition:
+      color 0.15s,
+      border-color 0.15s;
+  }
+  .topbar-refresh:hover {
+    color: var(--ah-text);
+    border-color: var(--ah-accent);
+  }
+  .topbar-refresh svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+  /* 顶栏刷新按钮点击后的旋转反馈：加载期间持续旋转，提示刷新已在进行 */
+  .topbar-refresh.spinning svg {
+    animation: ptr-spin 0.7s linear infinite;
+  }
+  @media (min-width: 761px) {
+    .topbar-refresh {
+      display: none;
     }
   }
 `;
@@ -270,7 +351,14 @@ export class AhApp extends LitElement {
   // P3-1: 品牌位配置
   brand: BrandConfig = BRAND_DEFAULT;
 
-  static styles = [sharedStyles, navDotCss, chatShellCss, desktopShellCss, ptrCss];
+  static styles = [
+    sharedStyles,
+    navDotCss,
+    chatShellCss,
+    desktopShellCss,
+    mobileShellCss,
+    ptrCss
+  ];
 
   @state() private tab: string = initialTabFromPath();
   @state() private state: ServerState | null = null;
@@ -298,6 +386,8 @@ export class AhApp extends LitElement {
   /** 顶部进度条实例。 */
   private progressBar = TopProgressBar.getInstance();
   @state() private drawerOpen = false;
+  /** 顶栏刷新按钮的加载态：点击后旋转图标直到 refreshActivePanel 完成。 */
+  @state() private pageRefreshing = false;
   /** 插件动态 Tab（来自服务端 /api/plugins，无业务词）。short 为去重后的收起态短标签。 */
   @state() private pluginTabs: Array<{
     id: string;
@@ -344,9 +434,11 @@ export class AhApp extends LitElement {
     // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组，
     // 或 { tab: 'chat', sessionId } 用于从工作台打开指定会话。
     this.addEventListener('ah-goto', (e) => {
-      const d = (e as CustomEvent<
-        string | { tab?: string; group?: string; sessionId?: string }
-      >).detail;
+      const d = (
+        e as CustomEvent<
+          string | { tab?: string; group?: string; sessionId?: string }
+        >
+      ).detail;
       if (!d) return;
       if (typeof d === 'string') {
         this.setTab(d);
@@ -555,7 +647,7 @@ export class AhApp extends LitElement {
         new CustomEvent('ah-select-session', {
           detail: sessionId,
           bubbles: true,
-          composed: true,
+          composed: true
         })
       );
     }
@@ -764,10 +856,13 @@ export class AhApp extends LitElement {
     const el = active as HTMLElement;
     if (el.classList.contains('me-view')) return;
     if (el.classList.contains('plugin-view')) {
-      void this.loadPluginViews();
+      // 必须 await：顶栏刷新按钮的旋转反馈与下拉刷新的 loading 指示
+      // 都依赖本 Promise 真实等待数据回来（fire-and-forget 会让反馈一闪而过）。
+      await this.loadPluginViews();
       return;
     }
-    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void })
+      .refresh;
     if (typeof fn === 'function') {
       try {
         await fn.call(el);
@@ -776,6 +871,21 @@ export class AhApp extends LitElement {
       }
     }
     this.refreshState();
+  }
+
+  /**
+   * 顶栏刷新按钮：与滚动位置无关的显式刷新入口（移动端）。
+   * 下拉刷新手势要求页面在顶部，浏览到看板中部时用户缺少刷新出口；
+   * 此按钮始终可点，刷新进行中图标持续旋转防重复触发。
+   */
+  private async onTopbarRefresh(): Promise<void> {
+    if (this.pageRefreshing) return;
+    this.pageRefreshing = true;
+    try {
+      await this.refreshActivePanel();
+    } finally {
+      this.pageRefreshing = false;
+    }
   }
 
   /**
@@ -794,7 +904,8 @@ export class AhApp extends LitElement {
       void this.loadPluginViews();
       return;
     }
-    const fn = (el as unknown as { refresh?: () => Promise<void> | void }).refresh;
+    const fn = (el as unknown as { refresh?: () => Promise<void> | void })
+      .refresh;
     if (typeof fn === 'function') {
       try {
         await fn.call(el);
@@ -839,7 +950,18 @@ export class AhApp extends LitElement {
               @click=${() => this.onToggleSidebar()}
               aria-label=${this.sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
             >
-              ${this.sidebarCollapsed ? '›' : '‹'}
+              <svg
+                class="toggle-icon"
+                viewBox="0 0 16 14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="0.8" y="0.8" width="14.4" height="12.4" rx="2.4" />
+                <path d="M5.4 0.8v12.4" />
+              </svg>
             </button>
           </div>
           <nav class="nav">
@@ -968,6 +1090,32 @@ export class AhApp extends LitElement {
                   `
                 : html`<span class="pill err">${this.err ?? '连接中…'}</span>`}
             </div>
+            <!-- 移动端显式刷新入口（桌面 CSS 隐藏）：与滚动位置无关，覆盖
+                 「浏览到看板中部、下拉刷新手势不可用」的场景。对话页有自己的
+                 会话刷新路径、「我的」页无数据可刷，均不渲染。 -->
+            ${this.tab !== 'chat' && this.tab !== 'me'
+              ? html`<button
+                  class="topbar-refresh ${this.pageRefreshing
+                    ? 'spinning'
+                    : ''}"
+                  title="刷新当前页"
+                  aria-label="刷新当前页"
+                  @click=${() => void this.onTopbarRefresh()}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                    <path d="M21 3v6h-6" />
+                  </svg>
+                </button>`
+              : nothing}
           </header>
 
           <main class="content ${this.tab === 'chat' ? 'chat' : ''}">

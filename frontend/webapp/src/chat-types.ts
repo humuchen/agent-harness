@@ -6,7 +6,7 @@
  * 解耦（core 类型从 @agent-harness/client 引入）。集中后 chat.ts 体积下降、类型单一
  * 可寻址，且便于 plan/trace 等子模块在需要时复用（见可维护性审计 P2：降低 chat.ts 单体规模）。
  */
-import type { TraceNode, WorkflowRun } from '@agent-harness/client';
+import type { StepTraceNode, TraceNode, WorkflowRun } from '@agent-harness/client';
 import type { UploadedFile } from './agent-context';
 
 export interface ToolView {
@@ -23,20 +23,85 @@ export interface PlanTaskView {
   steps: string[];
   dependsOn: string[];
   expectedOutput: string;
+  /** P3：执行该任务前需用户人工批准（planner 对高风险任务标记；卡片以 🔒 呈现）。 */
+  requireApproval?: boolean;
 }
 export interface ExecutionPlanView {
   goal: string;
   tasks: PlanTaskView[];
 }
+/** 计划模式（P0）：澄清问题（可附候选选项供点选；历史落盘可能为纯字符串，渲染前归一化）。 */
+export interface PlanClarifyQuestionView {
+  q: string;
+  /** 2~4 个典型候选答案，用户可点选（可多选）。 */
+  options?: string[];
+}
+
+/** 计划模式（P0）：澄清卡的用户输入状态（key 为题号字符串，便于对象字面量展开）。 */
+export interface ClarifyDraftState {
+  /** 每题勾选的选项（题号 → 已选选项文本数组）。 */
+  picks: Record<string, string[]>;
+  /** 每题的自定义补充输入。 */
+  texts: Record<string, string>;
+  /** 底部整体补充。 */
+  extra: string;
+}
+
+/** 计划模式（P0）：需求不清时的澄清结果（plan:clarify 契约，与 core PlanClarify 一致）。 */
+export interface PlanClarifyView {
+  clarify: true;
+  /** 模型对目标的初步理解草稿，供用户确认或修正。 */
+  goalDraft: string;
+  /** 需要用户回答 / 确认的关键问题（可附候选选项）。 */
+  questions: PlanClarifyQuestionView[];
+  /** 模型判断缺失的关键信息或前置条件（可选）。 */
+  needs?: string;
+}
 /** 计划执行状态（key 为携带计划的消息 id）。 */
 export interface PlanExecState {
-  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'cancelled' | 'failed' | 'awaiting';
   /** 正在执行的任务 id（running 时有效）。 */
   currentTaskId?: string;
   /** 失败的任务 id（failed 时有效）：恢复执行时从此任务重跑，已完成任务跳过。 */
   failedTaskId?: string;
   /** 已完成任务 id 集合。 */
   done: Record<string, boolean>;
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaitingTaskIds?: string[];
+  /**
+   * P5 静默执行：当前任务的思考过程（llm:reasoning 增量累积，随 wf:step:start 重置、
+   * wf:step:done/failed/awaiting/终态清空）。瞬态字段 —— 不落 planStatus 镜像（刷新即清）。
+   */
+  thinking?: { taskId?: string; text: string };
+  /**
+   * P2.6：紧凑 run 快照（wf:done/wf:failed/_wf_done 帧的 run 经 compactPlanWfSnapshot 收敛）。
+   * 随 planStatus 镜像落会话历史（见 chat-persist.toMirrorPlanStatus）：检查点在服务重启 /
+   * Render free 盘清理后丢失时，「执行详情」抽屉按此镜像回退水合（404 → 历史快照）。
+   */
+  wfSnapshot?: PlanWfRunMirror;
+}
+
+/**
+ * P2.6：run 快照的紧凑镜像形态（写入 planStatus 镜像随会话历史持久化）。
+ * 与 WorkflowRun 形状兼容（buildPlanWfReplayRows 直接消费），但只保留回放用到的字段：
+ * - output 截断（REPLAY_MIRROR_OUTPUT_MAX）/ trace 限幅（REPLAY_MIRROR_TRACE_MAX 节点、detail 200 字）
+ *   —— 控制历史信封体积（PUT /api/history 有字节预算，超限 413）；
+ * - 不落 def（任务标题/依赖来自 m.plan 本身）、不落凭据（StepTraceNode 服务端采集端已红线）。
+ */
+export interface PlanWfRunMirror {
+  state: string;
+  startedAt?: number;
+  finishedAt?: number;
+  error?: string;
+  steps: Record<string, {
+    state?: string;
+    agentId?: string;
+    error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    output?: string;
+    trace?: StepTraceNode[];
+  }>;
 }
 
 export interface ChatMsg {
@@ -55,8 +120,21 @@ export interface ChatMsg {
   attachments?: UploadedFile[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时写入）。 */
   plan?: ExecutionPlanView;
+  /** 计划生成（propose）当时的联网开关：计划执行继承之——生成时若已授权出网，执行任务自动带联网，避免「计划要求外部数据、执行却无检索工具」的验收死锁。 */
+  planWeb?: boolean;
+  /** 计划模式（P0）：propose 阶段进度（理解需求 / 调研中 / 生成计划），用于渲染阶段进度条。 */
+  planPhase?: string;
+  /** 计划模式（P0）：propose 开始时间戳（毫秒），驱动「已进行 Xs」实时计时器。 */
+  planStartedAt?: number;
+  /** 计划模式（P0）：需求不清时携带的澄清结果（plan:clarify 时写入），渲染目标确认卡。 */
+  clarify?: PlanClarifyView;
   /** 本轮 run 期间是否触发过上下文压缩（最旧对话被自动压缩/淘汰），用于在该条气泡下方显示「已压缩」标识。 */
   compressed?: boolean;
+  /**
+   * P5 静默计划执行（串行回退路径）：本条消息是计划任务的隐藏消息对（user 提示 + assistant 产出），
+   * 不在会话线程渲染、不落历史镜像；产出在编排终态随「计划执行摘要 + 最终结果」一次性输出。
+   */
+  quiet?: boolean;
 }
 
 export interface SessionView {
@@ -95,4 +173,14 @@ export interface PlanWfReplayState {
   error?: string;
   /** 服务端检查点快照（WorkflowRun 本身即轨迹）；缺失为 null。 */
   snapshot: WorkflowRun | null;
+  /**
+   * P2.6：快照来自 planStatus 历史镜像回退（compactPlanWfSnapshot 紧凑形态，检查点 404 后水合）。
+   * 非镜像回退（实时检查点）时为 undefined。
+   */
+  mirrorSnapshot?: PlanWfRunMirror;
+  /**
+   * P2.6：true = 快照来自 planStatus 历史镜像回退（检查点 404 后从会话历史水合），
+   * 抽屉头部标注「检查点已过期，以下为历史镜像快照」；来自实时检查点时为 undefined。
+   */
+  fromMirror?: boolean;
 }

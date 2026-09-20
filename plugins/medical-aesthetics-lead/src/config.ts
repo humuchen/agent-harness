@@ -12,7 +12,8 @@
  * 全部环境变量见 docs/CONFIG.md。
  */
 
-import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 /** 关系库配置（线索/知识库/号源/预约/发件箱的系统记录）。 */
 export interface DbConfig {
@@ -96,13 +97,36 @@ function upstream(prefix: string, defaults: { timeoutMs?: number; retries?: numb
 }
 
 /**
- * 数据目录优先级（与既有约定一致）：
- * MA_DATA_DIR > MEMORY_DIR/plugins/medical-aesthetics-lead > ./data/ma-lead
+ * 数据目录优先级：
+ * 1. MA_DATA_DIR —— 部署显式指定（Render 持久盘 /app/data/ma-lead、docker-compose 同）；
+ *    配置了云端数据库（DB_BACKEND=turso + TURSO_URL/TOKEN）时全部数据落云端库，
+ *    本地目录仅在未配置 / turso 初始化失败回退时使用（兜底）。
+ * 2. <仓库根>/access/server/data/ma-lead —— 本地兜底目录。锚定本文件位置向上找仓库根
+ *    （src/ 与 dist/ 距仓库根层级相同，均为 3 级），不受进程 cwd 影响——
+ *    修复「从仓库根启动 vs 从 access/server 启动解析出两份库」的问题。
+ * 3. MEMORY_DIR/plugins/medical-aesthetics-lead —— 平台内存目录兜底。
+ * 4. ./data/ma-lead —— cwd 相对路径，最后手段。
  */
 function resolveDataDir(): string {
   if (process.env.MA_DATA_DIR) return process.env.MA_DATA_DIR;
+  const repoDir = findRepoServerDataDir();
+  if (repoDir) return repoDir;
   if (process.env.MEMORY_DIR) return join(process.env.MEMORY_DIR, 'plugins', 'medical-aesthetics-lead');
   return join(process.cwd(), 'data', 'ma-lead');
+}
+
+/** 向上查找仓库根（以存在 access/server 目录为判定），返回 access/server/data/ma-lead 绝对路径。 */
+function findRepoServerDataDir(): string | null {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'access', 'server'))) {
+      return join(dir, 'access', 'server', 'data', 'ma-lead');
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
 }
 
 let cached: MaConfig | null = null;

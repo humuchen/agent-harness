@@ -31,257 +31,274 @@ const LEAVE_MS = 220;
 
 @customElement('ah-drawer')
 export class AhDrawer extends LitElement {
-  static styles = [css`
-    :host {
-      display: none;
-    }
-    :host([open]) {
-      display: block;
-    }
+  static styles = [
+    css`
+      :host {
+        display: none;
+      }
+      :host([open]) {
+        display: block;
+      }
 
-    /* 全屏定位层：默认不拦截指针，仅遮罩与面板各自开启 pointer-events，
+      /* 全屏定位层：默认不拦截指针，仅遮罩与面板各自开启 pointer-events，
        这样 mask=false 时抽屉为非模态，外部点击可穿透到下层页面。 */
-    .overlay {
-      position: fixed;
-      inset: 0;
-      z-index: var(--ahd-z, 1060);
-      display: flex;
-      pointer-events: none;
-    }
-    .scrim {
-      position: absolute;
-      inset: 0;
-      background: var(--md-drawer-mask-bg, rgba(0, 0, 0, 0.45));
-      pointer-events: auto;
-      opacity: 0;
-      animation: ahd-scrim-in 0.22s ease forwards;
-    }
-    .leaving .scrim {
-      opacity: 0;
-      transition: opacity ${LEAVE_MS}ms ease;
-    }
-    @keyframes ahd-scrim-in {
-      to {
-        opacity: 1;
+      .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: var(--ahd-z, 1060);
+        display: flex;
+        pointer-events: none;
       }
-    }
+      .scrim {
+        position: absolute;
+        inset: 0;
+        background: var(--md-drawer-mask-bg, rgba(0, 0, 0, 0.45));
+        pointer-events: auto;
+        opacity: 0;
+        animation: ahd-scrim-in 0.22s ease forwards;
+      }
+      .leaving .scrim {
+        opacity: 0;
+        transition: opacity ${LEAVE_MS}ms ease;
+      }
+      @keyframes ahd-scrim-in {
+        to {
+          opacity: 1;
+        }
+      }
 
-    /* 方向布局：overlay 用 flex 把面板贴到对应边缘；面板非动画态 transform 为 none。 */
-    .left {
-      align-items: stretch;
-      justify-content: flex-start;
-      --ahd-from: translateX(-100%);
-    }
-    .right {
-      align-items: stretch;
-      justify-content: flex-end;
-      --ahd-from: translateX(100%);
-    }
-    .top {
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: flex-start;
-      --ahd-from: translateY(-100%);
-    }
-    .bottom {
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: flex-end;
-      --ahd-from: translateY(100%);
-    }
+      /* 方向布局：overlay 用 flex 把面板贴到对应边缘；面板非动画态 transform 为 none。 */
+      .left {
+        align-items: stretch;
+        justify-content: flex-start;
+        --ahd-from: translateX(-100%);
+      }
+      .right {
+        align-items: stretch;
+        justify-content: flex-end;
+        --ahd-from: translateX(100%);
+      }
+      .top {
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+        --ahd-from: translateY(-100%);
+      }
+      .bottom {
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-end;
+        --ahd-from: translateY(100%);
+      }
 
-    .panel {
-      position: relative;
-      z-index: 1;
-      pointer-events: auto;
-      display: flex;
-      flex-direction: column;
-      background: var(--md-drawer-bg, var(--ah-surface-1));
-      color: var(--ah-text);
-      border: 1px solid var(--md-drawer-border, var(--ah-border));
-      box-shadow: var(--ah-shadow);
-      overflow: hidden;
-      /* 安全区内边距要算进面板总高，避免大屏刘海机因 padding 顶出视口、
+      .panel {
+        position: relative;
+        z-index: 1;
+        pointer-events: auto;
+        display: flex;
+        flex-direction: column;
+        background: var(--md-drawer-bg, var(--ah-surface-1));
+        color: var(--ah-text);
+        border: 1px solid var(--md-drawer-border, var(--ah-border));
+        box-shadow: var(--ah-shadow);
+        overflow: hidden;
+        /* 安全区内边距要算进面板总高，避免大屏刘海机因 padding 顶出视口、
          底部内容被面板自身 overflow:hidden 裁掉。 */
-      box-sizing: border-box;
-      max-height: 100dvh;
-      animation: ahd-slide-in 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
-    }
-    .left .panel,
-    .right .panel {
-      width: var(--ahd-size, 320px);
-      max-width: 100vw;
-      height: 100%;
-      /* 全屏定位的左右抽屉：顶/底含安全区，标题不顶进原生状态栏、
-         底边不贴手势条（覆盖层 inset:0 铺满视口）。 */
-      padding: calc(env(safe-area-inset-top, 0px)) 0
-        calc(env(safe-area-inset-bottom, 0px));
-      border: none;
-    }
-    .top .panel,
-    .bottom .panel {
-      width: 100%;
-      height: var(--ahd-size, 320px);
-      max-height: 100dvh;
-      /* 上下抽屉：对应端含安全区（top 抽屉贴状态栏、bottom 抽屉贴手势条） */
-      padding: calc(env(safe-area-inset-top, 0px)) 0
-        calc(env(safe-area-inset-bottom, 0px));
-    }
-    @keyframes ahd-slide-in {
-      from {
-        transform: var(--ahd-from);
+        box-sizing: border-box;
+        max-height: 100dvh;
+        animation: ahd-slide-in 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
       }
-    }
-    .leaving .panel {
-      transform: var(--ahd-from);
-      transition: transform ${LEAVE_MS}ms cubic-bezier(0.4, 0, 0.2, 1),
-        opacity ${LEAVE_MS}ms ease;
-      opacity: 0;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .scrim,
-      .panel,
-      .leaving .scrim,
-      .leaving .panel {
-        animation: none !important;
-        transition: none !important;
-      }
-    }
-
-    .head {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 7.5px 16px;
-      border-bottom: 1px solid var(--md-drawer-header-border, var(--ah-border));
-      flex: 0 0 auto;
-    }
-    .title {
-      font-family: var(--ah-font-display);
-      font-weight: 600;
-      font-size: 15px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1 1 auto;
-      color: var(--md-drawer-title-color, var(--ah-text));
-    }
-    .close {
-      flex: none;
-      margin-left: auto;
-      border: none;
-      background: none;
-      color: var(--md-drawer-close-color, var(--ah-text-faint));
-      font-size: 22px;
-      line-height: 1;
-      cursor: pointer;
-      padding: 0 8px;
-      border-radius: var(--ah-radius-sm);
-    }
-    .close:hover {
-      background: var(--md-drawer-close-hover-bg, var(--ah-surface-2));
-    }
-
-    .body {
-      flex: 1 1 auto;
-      min-height: 0;
-      overflow-y: auto;
-      overscroll-behavior-y: contain;
-      padding: 16px;
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--ah-text);
-    }
-    .foot {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      padding: 12px 16px;
-      border-top: 1px solid var(--md-drawer-footer-border, var(--ah-border));
-      flex: 0 0 auto;
-    }
-    .foot .btn {
-      min-width: 76px;
-      padding: 8px 16px;
-      font-size: 13px;
-      font-family: var(--ah-font-sans);
-      cursor: pointer;
-      border-radius: var(--ah-radius-md);
-      border: 1px solid var(--ah-border);
-      transition: background 120ms ease, border-color 120ms ease,
-        color 120ms ease;
-    }
-    .foot .btn.ghost {
-      background: transparent;
-      color: var(--ah-text-muted);
-    }
-    .foot .btn.ghost:hover {
-      color: var(--ah-text);
-      border-color: var(--ah-text-faint);
-    }
-    .foot .btn.primary {
-      background: var(--ah-accent);
-      border-color: var(--ah-accent);
-      color: #fff;
-      font-weight: 600;
-    }
-    .foot .btn.primary:hover {
-      background: var(--ah-accent-strong);
-      border-color: var(--ah-accent-strong);
-    }
-    .foot .btn:focus-visible {
-      outline: 2px solid var(--ah-accent);
-      outline-offset: 2px;
-    }
-
-    @media (max-width: 600px) {
       .left .panel,
       .right .panel {
-        width: min(88vw, var(--ahd-size, 320px));
+        width: var(--ahd-size, 320px);
+        max-width: 100vw;
+        height: 100%;
+        /* 全屏定位的左右抽屉：顶/底含安全区，标题不顶进原生状态栏、
+         底边不贴手势条（覆盖层 inset:0 铺满视口）。 */
+        padding: calc(env(safe-area-inset-top, 0px)) 0
+          calc(env(safe-area-inset-bottom, 0px));
+        border: none;
       }
       .top .panel,
       .bottom .panel {
-        height: min(70dvh, var(--ahd-size, 320px));
+        width: 100%;
+        height: var(--ahd-size, 320px);
+        max-height: 100dvh;
+        /* 上下抽屉：对应端含安全区（top 抽屉贴状态栏、bottom 抽屉贴手势条） */
+        padding: calc(env(safe-area-inset-top, 0px)) 0
+          calc(env(safe-area-inset-bottom, 0px));
+      }
+      @keyframes ahd-slide-in {
+        from {
+          transform: var(--ahd-from);
+        }
+      }
+      .leaving .panel {
+        transform: var(--ahd-from);
+        transition: transform ${LEAVE_MS}ms cubic-bezier(0.4, 0, 0.2, 1),
+          opacity ${LEAVE_MS}ms ease;
+        opacity: 0;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .scrim,
+        .panel,
+        .leaving .scrim,
+        .leaving .panel {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7.5px 16px;
+        border-bottom: 1px solid
+          var(--md-drawer-header-border, var(--ah-border));
+        flex: 0 0 auto;
+      }
+      .title {
+        font-family: var(--ah-font-display);
+        font-weight: 600;
+        font-size: 15px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1 1 auto;
+        color: var(--md-drawer-title-color, var(--ah-text));
+      }
+      .close {
+        flex: none;
+        margin-left: auto;
+        border: none;
+        background: none;
+        color: var(--md-drawer-close-color, var(--ah-text-faint));
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0 8px;
+        border-radius: var(--ah-radius-sm);
+      }
+      .close:hover {
+        background: var(--md-drawer-close-hover-bg, var(--ah-surface-2));
+      }
+
+      .body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+        padding: 16px;
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--ah-text);
       }
       .foot {
-        flex-direction: row-reverse;
-      }
-      .foot > ::slotted(*) {
-        flex: 1;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--md-drawer-footer-border, var(--ah-border));
+        flex: 0 0 auto;
       }
       .foot .btn {
-        flex: 1;
+        min-width: 76px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-family: var(--ah-font-sans);
+        cursor: pointer;
+        border-radius: var(--ah-radius-md);
+        border: 1px solid var(--ah-border);
+        transition: background 120ms ease, border-color 120ms ease,
+          color 120ms ease;
       }
-      /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
-      * {
-        scrollbar-width: none;
-        -ms-overflow-style: none;
+      .foot .btn.ghost {
+        background: transparent;
+        color: var(--ah-text-muted);
       }
-      ::-webkit-scrollbar {
-        display: none;
-        width: 0;
-        height: 0;
+      .foot .btn.ghost:hover {
+        color: var(--ah-text);
+        border-color: var(--ah-text-faint);
       }
-    }
+      .foot .btn.primary {
+        background: var(--ah-accent);
+        border-color: var(--ah-accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      .foot .btn.primary:hover {
+        background: var(--ah-accent-strong);
+        border-color: var(--ah-accent-strong);
+      }
+      .foot .btn:focus-visible {
+        outline: 2px solid var(--ah-accent);
+        outline-offset: 2px;
+      }
 
-    /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
+      @media (max-width: 600px) {
+        .left .panel,
+        .right .panel {
+          width: min(100vw, var(--ahd-size, 320px));
+        }
+        .top .panel,
+        .bottom .panel {
+          height: min(70dvh, var(--ahd-size, 320px));
+        }
+        .foot {
+          flex-direction: row-reverse;
+        }
+        .foot > ::slotted(*) {
+          flex: 1;
+        }
+        .foot .btn {
+          flex: 1;
+        }
+        /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      }
+      /* 断点扩展到 760px（与 app 壳移动断点一致）：抽屉 .panel 在 601–760px
+       （Android 大机型）仍会显示滚动条，补齐。 */
+      @media (max-width: 760px), (pointer: coarse) {
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      }
+
+      /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
        实现真正整页覆盖；同时去除圆角与边框，贴合「整屏抽屉」语义。 */
-    .fullscreen.left .panel,
-    .fullscreen.right .panel {
-      width: 100vw;
-      max-width: 100vw;
-    }
-    .fullscreen.top .panel,
-    .fullscreen.bottom .panel {
-      height: 100dvh;
-      max-height: 100dvh;
-    }
-    .fullscreen .panel {
-      border: none;
-      border-radius: 0;
-    }
-  `, mobilePill];
+      .fullscreen.left .panel,
+      .fullscreen.right .panel {
+        width: 100vw;
+        max-width: 100vw;
+      }
+      .fullscreen.top .panel,
+      .fullscreen.bottom .panel {
+        height: 100dvh;
+        max-height: 100dvh;
+      }
+      .fullscreen .panel {
+        border: none;
+        border-radius: 0;
+      }
+    `,
+    mobilePill
+  ];
 
   @property({ type: Boolean, reflect: true })
   open = false;
@@ -464,9 +481,10 @@ export class AhDrawer extends LitElement {
     const showHead = !!this.title || this.showClose;
     return html`
       <div
-        class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''} ${
-          this.fullscreen ? 'fullscreen' : ''
-        }"
+        class="overlay ${this.placement} ${this.leaving ? 'leaving' : ''} ${this
+          .fullscreen
+          ? 'fullscreen'
+          : ''}"
       >
         ${this.mask
           ? html`<div

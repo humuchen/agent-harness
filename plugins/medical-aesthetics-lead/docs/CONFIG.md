@@ -15,7 +15,7 @@
 | `MA_DATA_DIR` | 否 | 见下 | 数据目录**最高优先级**。 |
 | `MEMORY_DIR` | 否 | 见下 | 数据目录第二优先级 → `MEMORY_DIR/plugins/medical-aesthetics-lead`。 |
 
-数据目录解析优先级：`MA_DATA_DIR` > `MEMORY_DIR/plugins/medical-aesthetics-lead` > `./data/ma-lead`（cwd 相对）。
+数据目录解析优先级：`MA_DATA_DIR`（部署显式指定；配置了 `DB_BACKEND=turso` 时全部数据落云端库，本地仅兜底）> `<仓库根>/access/server/data/ma-lead`（本地兜底，锚定插件文件位置向上找仓库根，不受 cwd 影响）> `MEMORY_DIR/plugins/medical-aesthetics-lead` > `./data/ma-lead`（cwd 相对，最后手段）。
 当 `MA_DB_FILE` 缺省时，库文件为 `<数据目录>/ma-lead.db`。
 
 ---

@@ -22,6 +22,8 @@ import { notifyError, errorMessage } from '../utils/errors';
 // 二者已在 components/index.ts 全局注册，此处副作用导入仅为显式声明依赖、保证独立渲染可用。
 import './ah-drawer';
 import './settings-center';
+import './ah-swipe-item';
+import { swipeActStyles } from '../styles/swipe-act';
 
 /** 远程模型条目：id + baseUrl（固化，供 run 时直连）+ 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -125,6 +127,19 @@ export class AhModelPicker extends LitElement {
           display: none;
         }
         /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动 */
+        * {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        ::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      }
+      /* 断点扩展到 760px（与 app 壳移动断点一致）：上方 600px 块之外，
+         601–760px（Android 大机型）的弹层滚动容器仍会显示滚动条，此处补齐。 */
+      @media (max-width: 760px), (pointer: coarse) {
         * {
           scrollbar-width: none;
           -ms-overflow-style: none;
@@ -247,18 +262,13 @@ export class AhModelPicker extends LitElement {
         flex: 1 1 auto;
         min-width: 0;
         font-size: 13px;
-        line-height: 32px;
+        line-height: 38px;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         padding: 0 15px;
       }
-      .item .check {
-        width: 16px;
-        height: 16px;
-        color: var(--ah-accent, #2997ff);
-        flex: 0 0 auto;
-      }
+
       /* 自定义选中项：右侧编辑/删除按钮为绝对定位，若与选中对勾同屏需预留空间，
        否则二者在触屏端（常显）会重叠。 */
       .item.custom-item.active {
@@ -365,6 +375,34 @@ export class AhModelPicker extends LitElement {
       .item.custom-item {
         padding: 0;
         position: relative; /* 作为 .custom-actions 的绝对定位参照，避免脱到父面板 */
+        /* 不透明底色：ah-swipe-item 左滑时行内容随内容层位移，
+           底色盖住底下的操作区，收起/展开状态视觉才正确。 */
+        background: var(--ah-surface-2, #1c1c1c);
+      }
+      /* 选中态覆盖：保留强调感但保持不透明（半透明 accent-soft 会在
+         展开态透出操作按钮）。 */
+      .item.custom-item.active {
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 16%,
+          var(--ah-surface-2, #1c1c1c)
+        );
+      }
+      .item.custom-item.active:hover {
+        background: color-mix(
+          in srgb,
+          var(--ah-accent, #2997ff) 24%,
+          var(--ah-surface-2, #1c1c1c)
+        );
+      }
+      /* 非选中悬停：不透明微亮化（与 .item:hover 的半透明灰同观感，
+         但保持不透明以防展开态透出操作按钮；(0,3,0) 特异性压过基础底色规则）。 */
+      .item.custom-item:hover {
+        background: color-mix(
+          in srgb,
+          var(--ah-text, #fff) 7%,
+          var(--ah-surface-2, #1c1c1c)
+        );
       }
       .custom-main {
         flex: 1 1 auto;
@@ -384,15 +422,13 @@ export class AhModelPicker extends LitElement {
         flex: 0 0 auto;
         z-index: 1;
       }
-      /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现；触屏端常显。
-       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。 */
+      /* 鼠标悬停显示编辑/删除按钮：仅真实 hover 设备浮现。
+       使用 absolute 定位铺在右侧，避免在 hover 出现时挤压 .name 文本。
+       纯触屏设备（hover:none）不再常显 —— 改由通用滑动项 ah-swipe-item 的
+       左滑操作区承接（组件内 (hover:hover)+(pointer:fine) 时自动隐藏 .bg，
+       本组件 hover 浮现入口随之恢复，双端各取所需、不重叠）。 */
       @media (hover: hover) {
         .item.custom-item:hover .custom-actions {
-          display: flex;
-        }
-      }
-      @media (hover: none) {
-        .custom-actions {
           display: flex;
         }
       }
@@ -421,6 +457,15 @@ export class AhModelPicker extends LitElement {
         width: 16px;
         height: 16px;
         display: block;
+      }
+    `,
+    swipeActStyles,
+    /* 「编辑/删除」滑动操作按钮行高 30px：必须置于 swipeActStyles 之后 ——
+       共享基类的 .swipe-act { font: inherit } 简写会隐式重置 line-height，
+       同特异性（0,1,0）后声明者胜出，写在自有样式块（数组第 1 位）里是死规则。 */
+    css`
+      .swipe-act {
+        line-height: 30px;
       }
     `,
     mobilePill
@@ -875,6 +920,41 @@ export class AhModelPicker extends LitElement {
     return id.endsWith(':free');
   }
 
+  /** 编辑（铅笔）图标：行内 .custom-actions 与滑动操作区共用，避免两处重复 SVG。 */
+  private renderPencilIcon() {
+    return html`<svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>`;
+  }
+
+  /** 删除（垃圾桶）图标：同上共用。 */
+  private renderTrashIcon() {
+    return html`<svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4h6v2" />
+    </svg>`;
+  }
+
   /**
    * 渲染一个可折叠面板（标题行 + 展开后的模型列表）。
    * @param name 面板标题
@@ -916,15 +996,16 @@ export class AhModelPicker extends LitElement {
           : html`<div class="panel-body">
               ${items.map((id) => {
                 const active = this.model === id;
-                return html`
+                const custom = this.isCustom(id);
+                const row = html`
                   <div
-                    class="item ${this.isCustom(id)
-                      ? 'custom-item'
-                      : ''} ${active ? 'active' : ''}"
+                    class="item ${custom ? 'custom-item' : ''} ${active
+                      ? 'active'
+                      : ''}"
                     @click=${() => this.pick(id)}
                   >
-                    ${this.isCustom(id)
-                      ? html` <span class="custom-actions">
+                    ${custom
+                      ? html`<span class="custom-actions">
                           <button
                             class="custom-icon-btn"
                             title="编辑自定义模型"
@@ -933,22 +1014,7 @@ export class AhModelPicker extends LitElement {
                               this.startEdit(id);
                             }}
                           >
-                            <svg
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path
-                                d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
-                              />
-                              <path
-                                d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
-                              />
-                            </svg>
+                            ${this.renderPencilIcon()}
                           </button>
                           <button
                             class="custom-icon-btn delete"
@@ -959,41 +1025,40 @@ export class AhModelPicker extends LitElement {
                               this.deleteCustom(id);
                             }}
                           >
-                            <svg
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <polyline points="3 6 5 6 21 6" />
-                              <path
-                                d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"
-                              />
-                              <path d="M10 11v6" />
-                              <path d="M14 11v6" />
-                              <path d="M9 6V4h6v2" />
-                            </svg>
+                            ${this.renderTrashIcon()}
                           </button>
                         </span>`
                       : nothing}
                     <span class="name">${this.displayName(id)}</span>
-                    ${active
-                      ? html`<svg
-                          class="check"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2.5"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        >
-                          <path d="M20 6L9 17l-5-5" />
-                        </svg>`
-                      : nothing}
                   </div>
+                `;
+                // 通用滑动项（ah-swipe-item）：触屏左滑自定义模型行 → 右侧露出
+                // 「编辑/删除」操作区；桌面 hover 设备组件自动隐藏操作区，
+                // 沿用原 .custom-actions hover 浮现入口（见样式节注释）。
+                if (!custom) return row;
+                return html`
+                  <ah-swipe-item id=${id} group="model-customs">
+                    ${row}
+                    <div slot="actions">
+                      <button
+                        class="swipe-act"
+                        title="编辑自定义模型"
+                        aria-label="编辑自定义模型"
+                        @click=${() => this.startEdit(id)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        class="swipe-act danger"
+                        title="删除自定义模型"
+                        aria-label="删除自定义模型"
+                        ?disabled=${this.deletingId === id}
+                        @click=${() => this.deleteCustom(id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </ah-swipe-item>
                 `;
               })}
             </div>`}

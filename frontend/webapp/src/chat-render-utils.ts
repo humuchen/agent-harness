@@ -7,8 +7,13 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
-import type { PlanExecMirror } from '@agent-harness/client';
-import type { ExecutionPlanView, PlanExecState } from './chat-types';
+import type { PlanExecMirror, StepTraceNode } from '@agent-harness/client';
+import type {
+  ChatMsg,
+  ExecutionPlanView,
+  PlanExecState,
+  PlanWfRunMirror
+} from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
 export function fileIcon(f: UploadedFile): string {
@@ -47,6 +52,75 @@ export function buildPlanStatusLookup(
 }
 
 /**
+ * P5 刷新恢复：过滤计划会话里的「单步任务」消息对。串行回退路径曾把每个任务的
+ * 派发提示（user：`【计划任务 <id>】…`）与产出（紧随其后的 assistant）写进会话存储，
+ * 刷新后以其为权威源会复现为单步气泡。此处丢弃「派发提示 + 紧随其产出」这对，
+ * 仅保留用户原始需求、计划卡片与最终摘要（或回收的最终结果）。纯函数。
+ */
+export function filterPlanSingleStep(msgs: ChatMsg[]): ChatMsg[] {
+  const out: ChatMsg[] = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const isDispatch =
+      m.role === 'user' &&
+      typeof m.content === 'string' &&
+      /^【计划任务/.test(m.content);
+    if (isDispatch) continue; // 丢弃单步派发提示
+    const prev = msgs[i - 1];
+    const prevWasDispatch =
+      !!prev &&
+      prev.role === 'user' &&
+      typeof prev.content === 'string' &&
+      /^【计划任务/.test(prev.content);
+    if (m.role === 'assistant' && prevWasDispatch) continue; // 丢弃对应任务产出
+    out.push(m);
+  }
+  return out;
+}
+
+/**
+ * P5 刷新恢复（兜底）：镜像缺摘要的已完成串行会话，从服务端原始存储回收最后一条
+ * 任务产出作为「最终结果」追加展示（与摘要「取拓扑序末位成功任务产出」语义一致）。
+ * 若 base 已含摘要则原样返回。纯函数。
+ */
+export function recoverPlanFinalResult(
+  base: ChatMsg[],
+  clean: Array<{
+    role: string;
+    content?: unknown;
+    plan?: unknown;
+    clarify?: unknown;
+  }>
+): ChatMsg[] {
+  const hasSummary = base.some(
+    (m) =>
+      typeof m.content === 'string' && m.content.startsWith('📋 计划执行摘要')
+  );
+  if (hasSummary) return base;
+  let lastOut = '';
+  for (const m of clean) {
+    if (
+      m.role === 'assistant' &&
+      !m.plan &&
+      !m.clarify &&
+      typeof m.content === 'string' &&
+      !m.content.startsWith('📋 计划执行摘要')
+    ) {
+      lastOut = m.content;
+    }
+  }
+  if (!lastOut.trim()) return base;
+  return [
+    ...base,
+    {
+      id: -1,
+      role: 'assistant',
+      content: `—— 最终结果 ——\n${lastOut}`
+    } as ChatMsg
+  ];
+}
+
+/**
  * 计划任务派发消息的前缀：`【计划任务 tX】任务标题`。
  * 必须与 chat.ts confirmPlan 的派发格式、以及服务端 run:start 的进度镜像识别保持一致
  * （宽匹配任务 id：planner 生成的 id 并不总是 tN，见 derivePlanExecFromMessages 注释）。
@@ -67,6 +141,8 @@ export interface PlanWfEvent {
   /** wf:step:* 携带的 step id（= 计划 task id，planToWorkflowDef 按 task.id 建 step）。 */
   stepId?: string;
   workflowId?: string;
+  /** P3：wf:awaiting-approval 携带的待审批 step id 列表。 */
+  stepIds?: string[];
   /** wf:failed 时携带的完整 run（step 终态快照，用于定位失败 task）。 */
   run?: {
     state?: string;
@@ -97,11 +173,30 @@ export function applyPlanWfEvent(
   switch (ev.type) {
     case 'wf:step:start': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
-      return { ...prev, status: 'running', currentTaskId: ev.stepId };
+      // P3：审批放行后重新进入 running —— 清掉 awaiting 标记。
+      // P5 静默执行：每个任务开始时重置思考面板（新任务 → 新的空思考流）。
+      return {
+        ...prev,
+        status: 'running',
+        currentTaskId: ev.stepId,
+        awaitingTaskIds: undefined,
+        thinking: { taskId: ev.stepId, text: '' }
+      };
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
-      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true } };
+      // P5：任务完成即收起思考面板。P5.1 精准清槽：只清「本任务」的思考流 ——
+      // 若事件乱序（done(t3) 迟到而思考面板已自愈切到 t4），不得误清新任务的思考流。
+      const thinking =
+        prev.thinking && prev.thinking.taskId !== ev.stepId
+          ? prev.thinking
+          : undefined;
+      return {
+        ...prev,
+        status: 'running',
+        done: { ...prev.done, [ev.stepId]: true },
+        thinking
+      };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
@@ -109,11 +204,32 @@ export function applyPlanWfEvent(
         ...prev,
         status: 'failed',
         failedTaskId: ev.stepId,
-        currentTaskId: ev.stepId
+        currentTaskId: ev.stepId,
+        thinking: undefined
+      };
+    }
+    case 'wf:awaiting-approval': {
+      // P3 审批门：引擎在波次边界暂停（run.state → awaiting）。stepIds 与本计划 task 求交集
+      // （补偿 step / 非本计划的 def 演化不进入卡片状态机）。
+      const ids = (ev.stepIds ?? []).filter((s) => s && knownTaskIds.has(s));
+      if (!ids.length) return prev;
+      return {
+        ...prev,
+        status: 'awaiting',
+        currentTaskId: undefined,
+        awaitingTaskIds: ids,
+        thinking: undefined
       };
     }
     case 'wf:done':
-      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined };
+      return {
+        ...prev,
+        status: 'done',
+        currentTaskId: undefined,
+        failedTaskId: undefined,
+        awaitingTaskIds: undefined,
+        thinking: undefined
+      };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
       // run.steps 中首个 state==='failed' 的 step（step id = task id）。
@@ -124,7 +240,8 @@ export function applyPlanWfEvent(
         ...prev,
         status: 'failed',
         failedTaskId: firstFailed?.id ?? prev.failedTaskId,
-        currentTaskId: undefined
+        currentTaskId: undefined,
+        thinking: undefined
       };
     }
     default:
@@ -134,10 +251,137 @@ export function applyPlanWfEvent(
   }
 }
 
+/** P5 思考面板文本上限（超出截尾保新，避免超长思考流拖垮渲染与内存）。 */
+export const PLAN_THINKING_MAX = 40_000;
+
+/**
+ * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的「当前任务思考面板」。
+ * - 仅 running 时消费；其它状态原样返回 prev（同引用判重）。
+ * - 文本超 PLAN_THINKING_MAX 时保留尾部（最新思考），与 UI 面板「tail 展示」语义一致。
+ * - 空增量 no-op（同引用返回，避免无谓重渲染）。
+ *
+ * P5.1 同步自愈（执行详情 vs 思考面板不同步修复）：stepId 为服务端注入的事件归属
+ * （workflow-executor onEvent 第二参 → SSE 外层帧）。此前归因全靠「最近一次
+ * wf:step:start 建立的槽位」——该帧丢失/乱序（断线重连 resume 不重放已完成 step 的
+ * wf:step:*）时，新任务的思考流会错挂旧任务标签（「t3 已完成仍显示思考中·t3」）。
+ * 现在：
+ * - 带 stepId 且与当前槽位不一致 → 丢弃旧槽、以该 stepId 重建槽位（自愈切换）；
+ * - 带 stepId 且无槽位（如刷新恢复后思考面板为空）→ 直接建槽，思考流不再被丢弃；
+ * - 不带 stepId（旧服务端帧）→ 保持原行为（仅追加到已有槽位）。
+ */
+export function applyPlanThinking(
+  prev: PlanExecState,
+  delta: string,
+  stepId?: string
+): PlanExecState {
+  if (!delta || prev.status !== 'running') return prev;
+  let slot = prev.thinking;
+  if (stepId && (!slot || slot.taskId !== stepId)) {
+    slot = { taskId: stepId, text: '' };
+  }
+  if (!slot) return prev;
+  const text = (slot.text + delta).slice(-PLAN_THINKING_MAX);
+  if (slot === prev.thinking && text === prev.thinking?.text) return prev;
+  return { ...prev, thinking: { ...slot, text } };
+}
+
 /** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */
 export interface PlanWfRunSnapshot {
   state?: string;
   steps?: Record<string, { state?: string; id?: string; output?: unknown }>;
+}
+
+/**
+ * P2.6：把 WF 终态帧（wf:done / wf:failed / _wf_done）携带的 run 快照紧凑化，
+ * 随 planStatus 镜像写入会话历史——检查点在服务重启 / Render free 盘清理后丢失时，
+ * 「执行详情」抽屉据此回退水合（404 → 历史镜像）。
+ *
+ * 限幅纪律（历史信封有字节预算，PUT /api/history 超限 413）：
+ * - 只保留回放用到的字段（state / 时间戳 / error / 每 step 的 output / trace），不落 def（任务标题/依赖来自 m.plan）；
+ * - output 截断至 REPLAY_MIRROR_OUTPUT_MAX；trace 限 REPLAY_MIRROR_TRACE_MAX 节点、detail 200 字（服务端采集端已限 50/500，这里是二级限幅）；
+ * - 纯函数（零 this / 零 DOM），可独立测试；run 为 undefined / 非对象 / 无 steps → undefined（调用方不落镜像字段）。
+ */
+export const REPLAY_MIRROR_OUTPUT_MAX = 2000;
+export const REPLAY_MIRROR_TRACE_MAX = 30;
+export const REPLAY_MIRROR_TRACE_DETAIL_MAX = 200;
+
+export function compactPlanWfSnapshot(
+  run: unknown
+): PlanWfRunMirror | undefined {
+  if (!run || typeof run !== 'object') return undefined;
+  const r = run as {
+    state?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    error?: string;
+    steps?: Record<string, unknown>;
+  };
+  if (!r.steps || typeof r.steps !== 'object') return undefined;
+  const steps: PlanWfRunMirror['steps'] = {};
+  for (const [sid, sRaw] of Object.entries(r.steps)) {
+    if (!sRaw || typeof sRaw !== 'object') continue;
+    const s = sRaw as {
+      state?: string;
+      agentId?: string;
+      error?: string;
+      startedAt?: number;
+      finishedAt?: number;
+      output?: unknown;
+      trace?: StepTraceNode[];
+    };
+    const out: PlanWfRunMirror['steps'][string] = { state: s.state };
+    if (s.agentId) out.agentId = s.agentId;
+    if (typeof s.error === 'string' && s.error) {
+      out.error =
+        s.error.length > REPLAY_MIRROR_OUTPUT_MAX
+          ? `${s.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+          : s.error;
+    }
+    if (typeof s.startedAt === 'number') out.startedAt = s.startedAt;
+    if (typeof s.finishedAt === 'number') out.finishedAt = s.finishedAt;
+    // output：非字符串先 JSON 化再截断（与 formatPlanWfOutput 一致的展示面，但这里预截断控制镜像体积）。
+    if (s.output !== undefined && s.output !== null) {
+      const so =
+        typeof s.output === 'string' ? s.output : JSON.stringify(s.output);
+      if (so)
+        out.output =
+          so.length > REPLAY_MIRROR_OUTPUT_MAX
+            ? `${so.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+            : so;
+    }
+    // trace：只保留白名单节点形状（服务端 StepTraceNode 已白名单采集，这里做二级限幅 + 字段收敛）。
+    if (Array.isArray(s.trace) && s.trace.length) {
+      const nodes = s.trace.slice(0, REPLAY_MIRROR_TRACE_MAX).map((n) => {
+        const t: StepTraceNode = { type: n.type, ts: n.ts };
+        if (n.step !== undefined) t.step = n.step;
+        if (n.label) t.label = n.label;
+        if (n.detail)
+          t.detail =
+            n.detail.length > REPLAY_MIRROR_TRACE_DETAIL_MAX
+              ? `${n.detail.slice(0, REPLAY_MIRROR_TRACE_DETAIL_MAX)}…`
+              : n.detail;
+        if (n.status) t.status = n.status;
+        if (n.meta && Object.keys(n.meta).length) t.meta = n.meta;
+        return t;
+      });
+      out.trace = nodes;
+    }
+    steps[sid] = out;
+  }
+  return {
+    state: typeof r.state === 'string' ? r.state : 'done',
+    ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
+    ...(typeof r.finishedAt === 'number' ? { finishedAt: r.finishedAt } : {}),
+    ...(typeof r.error === 'string' && r.error
+      ? {
+          error:
+            r.error.length > REPLAY_MIRROR_OUTPUT_MAX
+              ? `${r.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+              : r.error
+        }
+      : {}),
+    steps
+  };
 }
 
 /**
@@ -190,12 +434,20 @@ export function setPlanDagEnabled(on: boolean): void {
  * 同输入恒同输出 → 刷新 / 重启后可重算（sessionId 稳定、计划随镜像持久化），
  * 无需把 wfId 写入持久化镜像。
  */
-export function derivePlanWfId(sessionId: string, plan: ExecutionPlanView): string {
+export function derivePlanWfId(
+  sessionId: string,
+  plan: ExecutionPlanView
+): string {
   const s = [
     sessionId,
     plan?.goal ?? '',
     (plan?.tasks ?? [])
-      .map((t) => `${t.id}:${(t.dependsOn ?? []).join(',')}`)
+      .map(
+        (t) =>
+          `${t.id}:${(t.dependsOn ?? []).join(',')}${
+            t.requireApproval === true ? ':A' : ''
+          }`
+      )
       .join('|')
   ].join('\u0000');
   // FNV-1a（32 位）：输入为 ASCII（会话 id / task id），charCodeAt & 0xff 等价逐字节。
@@ -226,6 +478,12 @@ export interface PlanWfReplayRow {
   durationMs?: number;
   /** 折叠正文：done/skipped 展示产出（若为空则说明无产出），failed/compensated 展示错误。 */
   detail?: string;
+  /**
+   * P2.5 调用链路：本 step 执行期间捕获的关键事件序列（LLM 调用 / 工具 / 护栏 / 校验 / 收尾）。
+   * 来自服务端检查点 StepRun.trace（StepTraceCollector 采集、引擎按上限合并）；
+   * 旧快照 / 无链路捕获时为 undefined（抽屉不渲染「调用链路」区，零回归）。
+   */
+  trace?: StepTraceNode[];
 }
 
 const REPLAY_MARK: Record<string, string> = {
@@ -234,7 +492,8 @@ const REPLAY_MARK: Record<string, string> = {
   running: '⏳',
   pending: '⬜',
   skipped: '⏭',
-  compensated: '♻️'
+  compensated: '♻️',
+  awaiting: '🔒'
 };
 
 /** step 状态 → 展示标签（状态机外的未知值原样展示，防引擎新增状态后 UI 空白）。 */
@@ -245,15 +504,75 @@ export function planWfReplayStateLabel(state: string): string {
     running: '执行中',
     pending: '待执行',
     skipped: '已跳过',
-    compensated: '已补偿'
+    compensated: '已补偿',
+    awaiting: '待审批'
   };
   return label[state] ?? state;
 }
 
-/** 折叠正文长度上限（与 appendPlanDagSummary 的 300 字截断同款纪律，避免历史膨胀）。 */
-const REPLAY_DETAIL_MAX = 600;
+/**
+ * 折叠正文兜底上限。
+ *
+ * 此前 600 字截断把「执行详情」抽屉里每个任务的完整产出砍成开头一段 + 「…」，
+ * 用户感知为「执行完成了但输出不完整」——而数据源（实时检查点 GET /api/workflows/:id
+ * 与 wf:done 终态帧）本身就是无损全文，截断纯发生在展示层，属于白白丢数据。
+ * 现展示层不破坏产出：正文渲染在 <details> 折叠区 + .wf-detail-body（max-height 220px
+ * 滚动容器）内，长文本不撑爆抽屉布局。仅保留一个远超正常研报体量的兜底上限，
+ * 防病态超长 JSON dump（如整个对象树 stringify）拖垮 DOM。
+ *
+ * 注意：历史镜像路径（compactPlanWfSnapshot → REPLAY_MIRROR_OUTPUT_MAX=2000）仍是有损的，
+ * 那是 PUT /api/history 字节预算（HISTORY_MAX_BYTES，默认 512KB）下的持久化取舍，
+ * 与本展示层上限语义不同，勿混淆。
+ */
+export const REPLAY_DETAIL_MAX = 200_000;
 
-/** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、超长截断、空白视为无内容）。 */
+/** P4.6：交付文件条目（/api/artifacts 返回的 ArtifactMeta 前端所需最小面，本地镜像避免跨层 import）。 */
+export interface PlanArtifactItem {
+  id: string;
+  name: string;
+  sizeBytes: number;
+}
+
+/** markdown 链接转义：文件名里的 `[]|` 与换行会破坏链接语法，统一替换。 */
+function escapeLinkLabel(s: string): string {
+  return s.replace(/[\[\]|\\]/g, (c) => `\\${c}`).replace(/\n/g, ' ');
+}
+
+/** 人类可读文件大小（B / KB / MB），交付文件区展示用。 */
+export function formatPlanArtifactSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(2)} MB`;
+}
+
+/**
+ * P4.6：生成「📎 交付文件」区 markdown 文本（计划执行摘要最下方追加）。
+ * 每个文件给「打开（preview=1 inline）+ 下载（download=1 attachment）」两个链接，
+ * 经既有 toRichHtml（marked gfm）渲染为可点链接。空清单返回 ''（不追加区块）。
+ */
+export function buildPlanArtifactSection(
+  items: PlanArtifactItem[] | null | undefined
+): string {
+  const list = (items ?? []).filter(
+    (a) => a && typeof a.id === 'string' && a.id
+  );
+  if (list.length === 0) return '';
+  const lines: string[] = ['', `**📎 交付文件（${list.length} 个）**`];
+  for (const a of list) {
+    const label = escapeLinkLabel(String(a.name ?? a.id));
+    lines.push(
+      `- [📄 ${label}](/api/artifacts/${
+        a.id
+      }?preview=1)（${formatPlanArtifactSize(
+        a.sizeBytes ?? 0
+      )}） ｜ [下载](/api/artifacts/${a.id}?download=1)`
+    );
+  }
+  return lines.join('\n');
+}
+
+/** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、仅对病态超长做兜底截断、空白视为无内容）。 */
 export function formatPlanWfOutput(v: unknown): string | undefined {
   if (v === undefined || v === null) return undefined;
   let s: string;
@@ -271,14 +590,32 @@ export function formatPlanWfOutput(v: unknown): string | undefined {
  */
 export function buildPlanWfReplayRows(
   plan: ExecutionPlanView,
-  run: { steps?: Record<string, { state?: string; agentId?: string; output?: unknown; error?: string; startedAt?: number; finishedAt?: number }> } | null | undefined
+  run:
+    | {
+        steps?: Record<
+          string,
+          {
+            state?: string;
+            agentId?: string;
+            output?: unknown;
+            error?: string;
+            startedAt?: number;
+            finishedAt?: number;
+            trace?: StepTraceNode[];
+          }
+        >;
+      }
+    | null
+    | undefined
 ): PlanWfReplayRow[] {
   const steps = run?.steps ?? {};
   return (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
     const sr = steps[t.id];
     const state = sr?.state ?? 'pending';
     const durationMs =
-      sr?.startedAt && sr.finishedAt ? Math.max(0, sr.finishedAt - sr.startedAt) : undefined;
+      sr?.startedAt && sr.finishedAt
+        ? Math.max(0, sr.finishedAt - sr.startedAt)
+        : undefined;
     let detail: string | undefined;
     if (state === 'failed' || state === 'compensated') {
       detail = formatPlanWfOutput(sr?.error);
@@ -293,9 +630,115 @@ export function buildPlanWfReplayRows(
       agentId: sr?.agentId,
       state,
       durationMs,
-      detail
+      detail,
+      // P2.5 调用链路：非终态（skipped/awaiting）无执行过程可回放，不透传。
+      trace: sr?.trace && sr.trace.length ? sr.trace : undefined
     };
   });
+}
+
+/**
+ * P2.5 调用链路 → 抽屉展示行（纯函数，供渲染端与测试共用）。
+ * 把 StepTraceNode 序列归一为「图标 + 标签 + 时间（相对 step 起点）+ 详情 + 状态」的展示行。
+ * 相对时间以序列首个节点为 0；无状态/未知的 status 默认 ok（不红色误报）。
+ */
+export interface PlanWfTraceLine {
+  icon: string;
+  label: string;
+  /** 相对本 step 起点的时间（如 "+2.3s"；首节点 0s 不显示前缀）。 */
+  at?: string;
+  detail?: string;
+  /** ok | error | blocked（渲染端按此着色；缺省 ok）。 */
+  status?: string;
+  /** 快速元数据（model / tokens / cost …）→ [键, 值] 对，渲染端做行内 chip 展示（此前被丢弃，用量/模型信息在抽屉里不可见）。 */
+  meta?: [string, string][];
+}
+
+const TRACE_ICON: Record<string, string> = {
+  'run:start': '▶️',
+  'llm:call': '🧠',
+  'llm:response': '💬',
+  'tool:start': '🔧',
+  'tool:result': '🔧',
+  'guardrail:blocked': '🛡',
+  'verify:result': '✅',
+  'budget:exceeded': '⚠️',
+  'run:cost': '📊',
+  'llm:usage': '📊',
+  'run:end': '🏁'
+};
+
+/** 调用链路单行详情上限（折叠正文由 <pre> 承接，超长截断避免抽屉膨胀）。 */
+const TRACE_LINE_DETAIL_MAX = 400;
+
+export function buildPlanWfTraceLines(
+  trace: StepTraceNode[] | undefined
+): PlanWfTraceLine[] {
+  if (!trace || trace.length === 0) return [];
+  const t0 = trace[0]?.ts ?? 0;
+  return trace.map((n): PlanWfTraceLine => {
+    const rel = n.ts - t0;
+    const line: PlanWfTraceLine = {
+      icon: TRACE_ICON[n.type] ?? '•',
+      label: n.label || n.type,
+      status: n.status
+    };
+    if (rel > 0) line.at = formatPlanWfDuration(rel);
+    if (n.detail) {
+      line.detail =
+        n.detail.length > TRACE_LINE_DETAIL_MAX
+          ? `${n.detail.slice(0, TRACE_LINE_DETAIL_MAX)}…`
+          : n.detail;
+    }
+    // 元数据透传（用量 / 模型 / tokens …）：此前只取 icon/label/at/detail/status，
+    // meta 被丢弃导致「LLM 调用」「用量」行的模型与用量数据在抽屉里不可见。
+    const meta = n.meta
+      ? (Object.entries(n.meta) as [string, string][]).filter(
+          ([, v]) => v != null && String(v) !== ''
+        )
+      : undefined;
+    if (meta && meta.length > 0) line.meta = meta;
+    return line;
+  });
+}
+
+/** 链路 meta 键 → 中文标签（未知键原样透出，采集端新增 meta 键后 UI 不空白）。 */
+const TRACE_META_LABEL: Record<string, string> = {
+  model: '模型',
+  msgs: '消息',
+  tools: '工具',
+  tokens: 'Token',
+  cost: '成本',
+  priced: '定价',
+  prompt: '输入',
+  completion: '输出',
+  window: '上下文窗口',
+  partial: '截断',
+  steps: '步数'
+};
+
+/** meta 对 → 展示标签（值缺失时省略）。 */
+export function planWfTraceMetaLabel(k: string): string {
+  return TRACE_META_LABEL[k] ?? k;
+}
+
+/** meta 键属「模型 / 用量」语义的集合（其余键归「参数」）。 */
+const META_USAGE_KEYS: ReadonlySet<string> = new Set([
+  'model',
+  'tokens',
+  'cost',
+  'priced',
+  'prompt',
+  'completion',
+  'window'
+]);
+
+/**
+ * 独立 meta 行的标题：含任一用量/模型键 → 「模型 / 用量」（如 LLM 调用的 msgs/tools 行 → 「参数」）。
+ * 独立行按用户标注「用量和模型信息需要单独一行展示，点击才能展开/折叠，在它的下面」实现。
+ */
+export function planWfTraceMetaRowTitle(meta: [string, string][]): string {
+  return meta.some(([k]) => META_USAGE_KEYS.has(k)) ? '模型 / 用量' : '参数';
 }
 
 /** 时间线行 → 单行状态图标（渲染端直接用，避免与 buildPlanWfReplayRows 的 state 语义漂移）。 */
@@ -385,8 +828,124 @@ export function derivePlanExecFromMessages(
 
 export interface RenderAttachmentsOpts {
   files: UploadedFile[];
-  /** 点击图片缩略图时的预览回调（原组件内 this.openPreview）。 */
+  /** 点击图片缩略图的预览回调（原组件内 this.openPreview）。 */
   onPreview: (f: UploadedFile) => void;
+}
+
+/* ------------------------------------------------------------------ */
+/* P2.7（修复）：计划数据「权威源 vs 历史镜像」对账纯函数（恢复路径用）  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * P2.7：planStatus 的「进度等级」——刷新 / 切回会话时权威源（getChatSession）与
+ * 历史镜像（loadThread）可能不同步：DAG 路径终态此前只写镜像（前端 saveHistory
+ * 落 SQLite），权威源缺 planStatus → 卡片退回「待确认」、执行摘要缺失。
+ * 对账规则 = 取进度更高等级的一方（宁取更完整者，不覆盖更新鲜的 running/awaiting）：
+ * done > cancelled > failed > awaiting > running > 缺失(0)。
+ * 等级相同时保持权威源（调用方 merge 时不写回），避免旧镜像回退新权威。
+ */
+export function planStatusProgressRank(
+  ps?: {
+    status?: string;
+  } | null
+): number {
+  if (!ps) return 0;
+  switch (ps.status) {
+    case 'done':
+      return 5;
+    case 'cancelled':
+      return 4;
+    case 'failed':
+      return 3;
+    case 'awaiting':
+      return 2;
+    case 'running':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * P2.7：把历史镜像的 planStatus 对账进权威源查找表（按 plan.goal 对齐，
+ * buildPlanStatusLookup 的同一键空间）。纯函数，零 this 依赖：
+ * - 镜像等级**严格高于**权威 → 该 goal 改用镜像值（权威缺 planStatus / 落后于镜像）；
+ * - 等级相同或缺失 → 保持权威（权威缺失时镜像是唯一来源，直接补上）；
+ * - wfSnapshot 只进不出：选中值缺 wfSnapshot 而另一份有 → 补（「执行详情」抽屉
+ *   镜像回退数据源不因对账丢失）。
+ */
+export function mergePlanStatusLookup(
+  authoritative: Map<string, PlanExecMirror>,
+  mirrored: Map<string, PlanExecMirror>
+): Map<string, PlanExecMirror> {
+  if (!mirrored.size) return authoritative;
+  const out = new Map(authoritative);
+  for (const [goal, m] of mirrored) {
+    const a = out.get(goal);
+    if (!a) {
+      out.set(goal, m);
+      continue;
+    }
+    const rankM = planStatusProgressRank(m);
+    const rankA = planStatusProgressRank(a);
+    if (rankM > rankA) {
+      out.set(goal, { ...a, ...m });
+    } else if (m.wfSnapshot && !a.wfSnapshot) {
+      // 同级：不降级权威，仅补快照（重启 / 413 裁剪后权威可能丢 wfSnapshot）。
+      out.set(goal, { ...a, wfSnapshot: m.wfSnapshot });
+    }
+  }
+  return out;
+}
+
+/** 「📋 计划执行摘要」消息的内容前缀（与 chat.ts appendPlanDagSummary 的生成格式一致）。 */
+export const PLAN_DAG_SUMMARY_PREFIX = '📋 计划执行摘要：';
+
+/**
+ * P2.7：从「计划执行摘要」消息正文提取 goal（首行 `📋 计划执行摘要：${goal}（共 N 个任务）`）。
+ * 摘要缺失 / 非摘要消息返回 null；goal 提取失败（首行被截断）也返回 null（宁缺勿错，
+ * 调用方不插入 → 不产生无法对齐的孤儿摘要）。
+ */
+export function planDagSummaryGoal(content: string): string | null {
+  if (!content.startsWith(PLAN_DAG_SUMMARY_PREFIX)) return null;
+  const rest = content.slice(PLAN_DAG_SUMMARY_PREFIX.length);
+  const idx = rest.indexOf('（共 ');
+  const goal = (idx >= 0 ? rest.slice(0, idx) : rest).trim();
+  return goal || null;
+}
+
+/**
+ * P2.7：找出「权威源缺失、镜像存在」的计划执行摘要消息内容（按 goal 去重）。
+ *
+ * 背景：DAG 路径的执行摘要由前端 appendPlanDagSummary 生成、仅落历史镜像（权威源
+ * getChatSession 无此消息）——服务端重启 / 权威源落后时刷新后「执行结果」整段缺失。
+ * 恢复时按 goal 判重：权威源已含同 goal 摘要（服务端 P2.7 修复后 applyPlanWfTerminal
+ * 会把摘要追加进权威源，双源一致）→ 不再插入，避免双份摘要。
+ *
+ * @param authoritative 恢复后的线程（新 id 重建后的 ChatMsg[]）
+ * @param mirrored 历史镜像消息（loadThread 消毒后的 MirroredMsg[]）
+ * @returns 需补回线程的摘要内容（镜像顺序，每 goal 至多一份）
+ */
+export function missingPlanSummaries(
+  authoritative: ReadonlyArray<{ content?: string }>,
+  mirrored: ReadonlyArray<{ role?: string; content?: string }>
+): string[] {
+  // 权威源已覆盖的 goal（摘要消息，或 plan 消息本身已带更高进度不算——只看摘要行）。
+  const covered = new Set<string>();
+  for (const m of authoritative) {
+    const g = planDagSummaryGoal(m.content ?? '');
+    if (g) covered.add(g);
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of mirrored) {
+    if (m.role !== 'assistant' || !m.content) continue;
+    const g = planDagSummaryGoal(m.content);
+    if (!g || covered.has(g) || seen.has(g)) continue;
+    seen.add(g);
+    out.push(m.content);
+  }
+  return out;
 }
 
 /**
@@ -410,7 +969,11 @@ export function renderImageAttachments(
         title="点击预览"
         @click=${() => onPreview(first)}
       >
-        <img src=${first.dataUrl} alt=${escapeHtml(first.name)} loading="lazy" />
+        <img
+          src=${first.dataUrl}
+          alt=${escapeHtml(first.name)}
+          loading="lazy"
+        />
       </div>
     `;
   }
@@ -439,7 +1002,9 @@ export function renderImageAttachments(
             html`<div class="attach-img" style="--i:${i};--mid:${mid}">
               <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
               ${i === images.length - 1
-                ? html`<span class="attach-card-badge">${images.length} 张</span>`
+                ? html`<span class="attach-card-badge"
+                    >${images.length} 张</span
+                  >`
                 : nothing}
             </div>`
         )}
@@ -464,7 +1029,11 @@ export function renderImageAttachments(
                 title="点击预览"
                 @click=${(e: Event) => onImgClick(e, f)}
               >
-                <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+                <img
+                  src=${f.dataUrl}
+                  alt=${escapeHtml(f.name)}
+                  loading="lazy"
+                />
               </div>`
           )}
         </div>

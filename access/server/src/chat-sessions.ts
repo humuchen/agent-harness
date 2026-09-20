@@ -30,10 +30,14 @@ export interface StoredTool {
 
 /** 计划执行进度镜像（与 @agent-harness/client 的 PlanExecMirror 形状一致，本地镜像避免包耦合）。 */
 export interface PlanExecMirror {
-  status: 'running' | 'done' | 'failed' | 'cancelled';
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
   currentTaskId?: string;
   failedTaskId?: string;
   done: string[];
+  /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+  awaiting?: string[];
+  /** P2.6：紧凑 run 快照（前端落盘，服务端随信封透传，不做形状校验）。 */
+  wfSnapshot?: unknown;
 }
 
 /** 调用链路追踪节点（结构与 @agent-harness/client 的 TraceNode 一致，本地镜像避免包耦合）。 */
@@ -76,6 +80,8 @@ export interface ChatMessage {
   trace?: TraceNode[];
   /** 计划模式（P0）：本条消息携带的结构化执行计划（plan:proposed 时随消息落盘，刷新/切回可还原计划卡片）。 */
   plan?: import('@agent-harness/core').ExecutionPlan;
+  /** 计划模式（P0）：需求不清时携带的澄清结果（plan:clarify 时随消息落盘，刷新/切回可还原目标确认卡）。 */
+  clarify?: import('@agent-harness/core').PlanClarify;
   /** 计划模式：任务级执行进度镜像（服务端随任务派发/完成/失败事件维护），供前端恢复计划卡片状态。 */
   planStatus?: PlanExecMirror;
   /** 用户消息携带的附件（图片/文件预览）。url 兼容本地 dataUrl 或服务端上传地址，
@@ -481,6 +487,40 @@ export function appendChatMessage(
 }
 
 /**
+ * 编辑重发：把会话中第 `index` 条消息（须为 user）替换为新内容，并删除其后的
+ * 所有消息——那些是基于旧内容的无用上下文，需要基于保留下来的前文重新生成回复。
+ *
+ * 返回截断后的消息数组（调用方据此重建 LLM 记忆窗口）；以下情况返回 null：
+ *   - 会话不存在 / 归属不符；
+ *   - index 越界；
+ *   - 下标指向的消息不是 user（防止误截断 assistant 回复）。
+ *
+ * 仅持久化内存态；编辑发起端已本地截断，跨端一致性由刷新兜底，故不广播截断事件。
+ */
+export function replaceAndTruncateMessages(
+  id: string,
+  index: number,
+  newContent: string,
+  owner = LEGACY_OWNER
+): ChatMessage[] | null {
+  load();
+  const s = sessions.get(id);
+  if (!s) return null;
+  if (owner && owner !== LEGACY_OWNER && s.owner !== owner) return null;
+  if (!Number.isInteger(index) || index < 0 || index >= s.messages.length) {
+    return null;
+  }
+  const target = s.messages[index];
+  if (!target || target.role !== 'user') return null;
+  const kept = s.messages.slice(0, index + 1);
+  kept[index] = { ...target, content: newContent };
+  s.messages = kept;
+  s.updatedAt = Date.now();
+  persist();
+  return kept;
+}
+
+/**
  * 计划任务派发消息前缀：`【计划任务 <id>】标题`，由 webapp `confirmPlan` 生成。
  * 两侧格式必须保持一致；此处对 id 宽匹配（`t1` / `1` / `task-1` 均可）——
  * planner 提示词只「建议」用 tN 命名，旧实现只认 `t\d+`，会把其它命名的计划
@@ -550,6 +590,126 @@ export function finalizePlanStatus(
     status: 'done',
     done: [...st.done],
     currentTaskId: undefined,
-    failedTaskId: undefined
+    failedTaskId: undefined,
+    // P2.6：紧凑 run 快照由前端随镜像写入（DAG 路径），服务端固化时保留透传。
+    ...(st.wfSnapshot ? { wfSnapshot: st.wfSnapshot } : {})
   };
+}
+
+/**
+ * DAG 终态事件的最小形态（本地镜像，避免为此引入 core 的 WorkflowEvent 全量类型；
+ * core 的 wf:done / wf:failed 事件结构上兼容本形状，多余字段透传无碍）。
+ */
+export interface PlanWfTerminalEvent {
+  type: 'wf:done' | 'wf:failed';
+  run?: { steps?: Record<string, { state?: string; id?: string; output?: unknown }> };
+}
+
+/**
+ * P2.7（修复）：把 DAG 计划执行的终态写入会话权威源（planStatus 固化 + 执行摘要追加）。
+ *
+ * 根因背景：DAG 路径（/api/workflows from-plan → DagEngine）此前只同步「计划」Tab 看板
+ * （PlanStore 旁路视图），从不调用 updatePlanStatus / appendChatMessage —— 会话权威源
+ * （内存 Map / CHAT_SESSIONS_FILE）里永远只有「计划提案」消息，既无 planStatus 也无执行
+ * 摘要。前端刷新走 getChatSession 内存命中（不回退镜像）→ 卡片退回「待确认」、执行结果
+ * 看似「消失」；数据实际在前端历史镜像里，故服务端重启后（镜像回退分支命中）又能恢复 ——
+ * 刷新 / 重新登录结果不对称的直接来源。
+ *
+ * 调用点：server.ts createPlanTaskSync 的 wf:done / wf:failed 终态帧（首跑 / 续跑 / 审批
+ * 放行三个端点共用）。旁路纪律：失败仅告警，绝不阻断 DAG 执行（由调用方 catch）。
+ * 幂等：appendChatMessage 的紧邻同 role 同内容去重保证终态帧重放（resume）不产生重复摘要。
+ * 摘要文本与前端 appendPlanDagSummary 逐字节一致（同一 run 快照同格式），跨源对账 /
+ * 跨设备回声去重均可按内容匹配。
+ */
+export async function applyPlanWfTerminal(
+  id: string,
+  e: PlanWfTerminalEvent,
+  owner?: string
+): Promise<void> {
+  // 内存未命中时回退镜像（服务端刚重启的会话）；owner 不符 / 不存在时 getChatSession 返回 null。
+  const sess = await getChatSession(id, owner);
+  if (!sess) return;
+  const ownerName = sess.owner;
+  let planMsg: ChatMessage | undefined;
+  for (let i = sess.messages.length - 1; i >= 0; i--) {
+    const m = sess.messages[i];
+    if (m && m.role === 'assistant' && m.plan) {
+      planMsg = m;
+      break;
+    }
+  }
+  if (!planMsg?.plan) return;
+  const plan = planMsg.plan;
+  const tasks = plan.tasks ?? [];
+  const taskIds = tasks.map((t) => t.id).filter((t): t is string => typeof t === 'string' && !!t);
+  if (!taskIds.length) return;
+  const failed = e.type === 'wf:failed';
+  const steps = e.run?.steps ?? {};
+  const stepStateOf = (tid: string): string | undefined => steps[tid]?.state;
+  // 已完成任务（done/skipped/compensated 均算「已走完」；与前端 applyPlanWfEvent 的
+  // 卡片终态语义一致 —— failed 时保留已完成集合，卡片出现「从失败任务继续」）。
+  const doneIds = taskIds.filter((tid) => {
+    const st = stepStateOf(tid);
+    return st === 'done' || st === 'skipped' || st === 'compensated';
+  });
+  let failedTaskId: string | undefined;
+  if (failed) {
+    // 首个 failed step；无则首个未完成 task（与前端 wf:failed 的 failedTaskId 定位一致）。
+    failedTaskId =
+      taskIds.find((tid) => stepStateOf(tid) === 'failed') ??
+      taskIds.find((tid) => !doneIds.includes(tid));
+  }
+  updatePlanStatus(
+    id,
+    (prev) => ({
+      ...prev,
+      status: failed ? 'failed' : 'done',
+      ...(failed ? { failedTaskId } : { failedTaskId: undefined }),
+      currentTaskId: undefined,
+      done: Array.from(new Set([...prev.done, ...doneIds]))
+    }),
+    ownerName
+  );
+  // 执行摘要：与前端 appendPlanDagSummary 逐字节一致（行格式 / ✅❌⏭ / 输出 300 字截断）。
+  const lines: string[] = [`📋 计划执行摘要：${plan.goal}（共 ${tasks.length} 个任务）`];
+  for (const t of tasks) {
+    if (typeof t.id !== 'string') continue;
+    const state = stepStateOf(t.id) ?? 'pending';
+    const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
+    lines.push(`${mark} ${t.id} ${t.title}（${state}）`);
+    const out = steps[t.id]?.output;
+    if (out != null && typeof out === 'string' && out.trim()) {
+      lines.push(`   ${out.length > 300 ? out.slice(0, 300) + '…' : out}`);
+    }
+  }
+  appendChatMessage(
+    id,
+    { role: 'assistant', content: lines.join('\n'), ts: Date.now() },
+    ownerName,
+    'plan-wf-terminal'
+  );
+  // 镜像写回（与 renameChatSession 同款纪律）：权威源（内存 Map）在服务端重启后
+  // 由镜像回退恢复（getChatSession fallback）——若终态固化只写内存，重启后权威源
+  // 永远缺 planStatus/摘要（刷新丢结果的根因在重启态复现）。此处把当前会话消息整体
+  // 写回历史镜像（幂等 upsert），重启态恢复路径与热运行态一致。
+  // 信封 usage 保留既有值（服务端无会话用量快照；覆盖写 null 会抹掉前端落盘的用量快照，
+  // 恢复后上下文用量浮层归零）：读现有镜像的 usage 原样带回。
+  try {
+    const existing = await getHistoryStore().get(id, ownerName);
+    let usage: unknown = null;
+    if (existing) {
+      try {
+        usage = (JSON.parse(existing.data) as { usage?: unknown }).usage ?? null;
+      } catch {
+        usage = null;
+      }
+    }
+    await getHistoryStore().upsert(
+      { sid: id, title: sess.title, updatedAt: sess.updatedAt, savedAt: Date.now() },
+      JSON.stringify({ msgs: sess.messages, usage }),
+      ownerName
+    );
+  } catch {
+    /* 镜像写回失败不致命：内存态已更新，下次前端 saveHistory 会重新对齐 */
+  }
 }

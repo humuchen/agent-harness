@@ -12,7 +12,7 @@
  */
 
 import type { StepExecutor, RunContext } from '@agent-harness/core';
-import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig } from '@agent-harness/core';
+import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, composeVerifiers, specsVerifier, pickOutputChecks, inspectStepOutput, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, type Verifier, type AssertSpec, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
 import { assembleAgent, type RunMode } from './runner';
 import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
@@ -40,7 +40,13 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
     // Plan 来源（buildInputMapping 产出的形状）：必须同时有 goal + taskMeta。
     if ('goal' in rec && 'taskMeta' in rec) {
       const lines: string[] = [];
-      let meta: { id?: string; title?: string; steps?: unknown[]; expectedOutput?: string } | null;
+      let meta: {
+        id?: string;
+        title?: string;
+        steps?: unknown[];
+        expectedOutput?: string;
+        outputChecks?: unknown;
+      } | null;
       try {
         meta = typeof rec.taskMeta === 'string' ? JSON.parse(rec.taskMeta) : null;
       } catch {
@@ -53,14 +59,65 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
           meta.steps.forEach((s, i) => lines.push(`${i + 1}. ${String(s)}`));
         }
         if (meta.expectedOutput) lines.push(`预期产出：${meta.expectedOutput}`);
+        // 产出自包含铁律（与 webapp 串行派发 prompt 同源，见 chat.ts confirmPlan）：
+        // 本 step 的回复正文就是黑板里被下游引用的产出。执行模型若只给文件路径 /
+        // 摘要，或要求用户「把 t1–t4 的产出贴过来」，下游整合 step 就会断粮。
+        lines.push(
+          '执行要求（硬性）：把本任务产出完整写入你的回复正文，不要只给出文件路径或摘要；' +
+            '禁止要求用户粘贴、搬运或补充任何上游任务产出 —— 上游产出要么已在下方注入，要么基于任务目标自行合理补全。'
+        );
+        // P4.6 修复（验收知情）：验证门禁按 outputChecks 逐词断言「产出必须包含」，
+        // 但此前这些词从不进 prompt —— 执行模型不知道门禁在断言什么，命中全凭运气，
+        // 是「计划任务总在验证门禁失败、单步回复正常」的主根因。此处显式告知，
+        // 让模型在产出中主动写明这些关键词（检索失败时也须在数据缺口说明中提及）。
+        //
+        // P4.7：词表经 pickOutputChecks 收敛（唯一入口），与断言侧**同源同上限** ——
+        // 历史上此处 slice(0,4)、断言侧不截断，导致第 5~8 个词是模型从未被告知却必须
+        // 满足的硬性要求（无论多顺从都必然失败）。
+        const checks = pickOutputChecks(meta?.outputChecks);
+        if (checks.length) {
+          lines.push(
+            `验收要求（硬性）：最终产出必须明确包含以下关键词（逐词断言，缺一即验证不通过）：${checks.join('、')}。` +
+              `请在对应内容/小节标题中原样使用这些词；若某项数据/资料确实无法获取，仍须在「数据缺口」说明中写出该关键词并说明原因。`
+          );
+        }
       }
       lines.push(`目标：${String(rec.goal ?? '')}`);
       // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经
       // inputMapping 的 `steps.<dep>` 取上游 outputs[dep]），原样注入 → 零摘要、零有损。
+      // P4.5 上游注记：产出经 inspectStepOutput 判为无效（空 / 中断 / 护栏兜底）时显式
+      // 标注 + 降级指引，让下游「知情」，不再静默喂垃圾（跑题级联的放大点）。
       for (const [k, v] of Object.entries(rec)) {
         if (!k.startsWith('upstream_')) continue;
         const dep = k.slice('upstream_'.length);
-        lines.push(`上游 ${dep} 产出：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+        const insp = inspectStepOutput(v);
+        if (insp.issue === 'ok') {
+          lines.push(`上游 ${dep} 产出：${typeof v === 'string' ? v : JSON.stringify(v)}`);
+          continue;
+        }
+        if (insp.issue === 'empty') {
+          lines.push(
+            `上游 ${dep} 产出：（空）——上游 ${dep} 未产出有效结果。请基于「目标」与本任务步骤独立执行；` +
+            `若外部检索失败，降级整合其它上游产出并在产出中显式标注数据缺口，不得以道歉或放弃收尾。`
+          );
+        } else if (insp.issue === 'partial') {
+          lines.push(
+            `上游 ${dep} 产出（⚠️ 该产出在中途截断，仅作参考）：${String(v)}\n` +
+            `提示：上游 ${dep} 结果不完整，请基于「目标」与本任务步骤自行补齐，并在产出中标注引用了不完整来源。`
+          );
+        } else if (insp.issue === 'failed') {
+          // P4.5 加固：异常前缀产出（[timeout] / [error] / [verify:failed] / [aborted] /
+          // [circuit-breaker] / maxSteps 哨兵）——上游 step 本身已失败，产出无实质内容。
+          lines.push(
+            `上游 ${dep} 产出：（上游 step 执行失败：${insp.detail ?? '无有效产出'}）——请基于「目标」与本任务步骤独立执行；` +
+            `若外部检索失败，降级整合其它上游产出并在产出中显式标注数据缺口，不得以道歉或放弃收尾。`
+          );
+        } else {
+          lines.push(
+            `上游 ${dep} 产出：（被安全护栏拦截，无实质内容）——请基于「目标」与本任务步骤独立执行，` +
+            `不得转述被拦截内容；数据缺口在产出中显式标注。`
+          );
+        }
       }
       const body = lines.join('\n');
       return comp ? `（回滚补偿）${body}` : body;
@@ -74,8 +131,14 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
 
 
 export interface WorkflowExecutorOptions {
-  /** harness 事件透传（SSE 直播）。 */
-  onEvent?: (e: HarnessEvent) => void;
+  /**
+   * harness 事件透传（SSE 直播）。
+   * P5.1 同步修复：第二参 stepId —— 嵌套 harness 事件（llm:reasoning 等）本身不携带
+   * step 归属，前端思考面板靠「最近一次 wf:step:start」归因；一旦该帧丢失/乱序
+   * （断线重连 resume 不重放已完成 step 的 wf:step:*），思考流会错挂到旧任务标签上。
+   * 注入 stepId 后前端可按 stepId 自愈归因（详见 chat-render-utils.applyPlanThinking）。
+   */
+  onEvent?: (e: HarnessEvent, stepId: string) => void;
   /** 运行模式：默认 mock（离线）。真实多 agent 协同可设 real / real-mcp。 */
   mode?: RunMode;
   /** 外部取消信号。 */
@@ -106,6 +169,210 @@ export interface WorkflowExecutorOptions {
    * 缺省 undefined 行为与旧版完全一致（门禁关闭，零回归）。
    */
   verify?: VerifyConfig;
+  /**
+   * P4.5 验证重试预算覆盖：仅当 executor 级 verifier 存在时生效（优先于 AGENT_VERIFY_MAX_RETRIES）。
+   * plan 桥路径由 server 按 AGENT_PLAN_VERIFY_RETRIES（默认 1）注入；非 plan 路径缺省 undefined →
+   * 回落 AGENT_VERIFY_MAX_RETRIES（存量语义不变）。
+   */
+  verifyMaxRetries?: number;
+  /**
+   * P4.5 结果断言：逐 task 的「产出必须包含」短词（taskMeta.outputChecks，planner 生成）
+   * 自动转 contains 断言，与本 executor 的 verify 验证器组合为 per-step 验证器。
+   * 无 taskMeta / 无 outputChecks 的 step 用 executor 级验证器（零回归）；
+   * 仅 plan 桥 step 携带该字段，手工 workflow 不受影响。
+   */
+  planOutputChecks?: boolean;
+}
+
+/**
+ * P2.5 调用链路采集器（workflow-executor 专用）：把 step 执行期间流过的 harness 事件
+ * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / 校验 / 用量 / 收尾），
+ * 由 executor 写入 `ctx.trace`，引擎在 step 收尾合并进 `StepRun.trace` 并随检查点持久化 ——
+ * 使「执行详情」抽屉能看到每个节点的运行过程，而不只是完成后的耗时。
+ *
+ * 纪律：
+ * - **白名单捕获**：只记录关键事件；token 级流式增量（llm:token / llm:reasoning）与高频噪声
+ *   （run:tools / step:start / run:meta / run:token-cache / plan:proposed）不落盘；
+ * - **截断**：detail 超 STEP_TRACE_DETAIL_MAX 截断（保首段）；节点数超 STEP_TRACE_MAX_NODES 停采
+ *   （引擎合并侧同样兜底，双保险）；
+ * - **BYOK 红线**：只记模型名，modelBaseUrl / apiKeys 永不进入节点（事件流本就不携带凭据）；
+ * - **per-step 隔离**：每个 workflow step 各建一个实例（波次内并行 step 不互相串流）。
+ */
+export class StepTraceCollector {
+  private readonly traceNodes: StepTraceNode[] = [];
+  /** 本 step 实际使用的模型名（AssembledAgent.accountModel，仅模型名——BYOK 红线不变）。 */
+  private model?: string;
+
+  /** 观察一个 harness 事件；白名单命中即追加节点（超限后静默丢弃）。 */
+  observe(e: HarnessEvent): void {
+    if (this.traceNodes.length >= STEP_TRACE_MAX_NODES) return;
+    const ts = Date.now();
+    switch (e.type) {
+      case 'run:start':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: '任务开始',
+          detail: clip(e.input),
+        });
+        return;
+      case 'guardrail:blocked':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `护栏拦截（${e.phase}）`,
+          detail: clip(e.reason),
+          status: 'blocked',
+          meta: e.tool ? { tool: e.tool } : undefined,
+        });
+        return;
+      case 'llm:call':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: 'LLM 调用',
+          meta: {
+            ...(this.model ? { model: this.model } : {}),
+            msgs: String(e.messageCount),
+            tools: String(e.toolCount)
+          },
+        });
+        return;
+      case 'llm:response': {
+        const toolNames = e.toolCalls.map((c) => c.name).filter(Boolean);
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: e.partial ? '模型响应（中断截断）' : toolNames.length ? `响应 → 调用工具 [${toolNames.join(', ')}]` : '模型响应',
+          status: e.partial ? 'error' : 'ok',
+          detail: clip(e.content || toolNames.map((n) => `调用 ${n}`).join(' ')),
+          meta: e.partial ? { partial: 'true' } : undefined,
+        });
+        return;
+      }
+      case 'tool:start':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name}`,
+          detail: clip(e.call.arguments),
+        });
+        return;
+      case 'tool:result':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name} 结果`,
+          status: e.errored ? 'error' : 'ok',
+          detail: clip(e.result),
+        });
+        return;
+      case 'tool:deduped':
+        this.traceNodes.push({
+          type: 'tool:result', // 归一为结果节点（回放端按 status + label 区分）
+          step: e.step,
+          ts,
+          label: `工具 ${e.call.name} 结果（缓存复用）`,
+          status: e.errored ? 'error' : 'ok',
+          detail: clip(e.result),
+        });
+        return;
+      case 'run:cost':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: '用量',
+          meta: {
+            ...(e.model ? { model: e.model } : {}),
+            tokens: String(e.usage?.total_tokens ?? 0),
+            cost: e.stepCost.toFixed(4),
+            ...(e.priced === false ? { priced: 'est' } : {})
+          },
+        });
+        return;
+      case 'llm:usage':
+        this.traceNodes.push({
+          type: e.type,
+          step: e.step,
+          ts,
+          label: e.compressed ? '上下文用量（已压缩）' : '上下文用量',
+          meta: {
+            ...(e.model ? { model: e.model } : {}),
+            prompt: String(e.promptTokens),
+            completion: String(e.completionTokens),
+            window: String(e.window)
+          },
+        });
+        return;
+      case 'budget:exceeded':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `预算熔断（${e.kind}）`,
+          detail: `已用 ${e.used} / 上限 ${e.limit}`,
+          status: 'error'
+        });
+        return;
+      case 'verify:result':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: e.passed
+            ? '自动验证通过'
+            : e.soft
+              ? '验收告警（软性，不影响产出）'
+              : `自动验证未通过（第 ${e.attempt} 次, 得分 ${e.score}）`,
+          // 软性未通过不阻断 step：链路里以 ok 呈现，避免与真正失败的红色混淆；
+          // 文字已显式标注「告警」，验收缺口仍完整保留在 detail 中可查。
+          status: e.passed || e.soft ? 'ok' : 'error',
+          detail: e.reasons.length ? clip(e.reasons.join('；')) : undefined
+        });
+        return;
+      case 'run:end':
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: '任务结束',
+          status: 'ok',
+          detail: clip(e.final),
+          meta: { steps: String(e.steps) }
+        });
+        return;
+      default:
+        // 白名单外的纯流式 / 元数据事件不落盘（控体积，保关键信息）。
+        return;
+    }
+  }
+
+  /** 已捕获的节点序列（引擎合并侧还会做截断 + detail 兜底）。 */
+  nodes(): StepTraceNode[] {
+    return this.traceNodes;
+  }
+
+  /** 注入本 step 实际使用的模型名（AssembledAgent.accountModel）。
+   *  仅模型名，无 base URL / apiKey——BYOK 红线不变。缺省（未注入）时 LLM 调用行不带模型 chip。 */
+  setModel(model: string | null | undefined): void {
+    this.model = model || undefined;
+  }
+}
+
+/** detail 截断（与引擎 STEP_TRACE_DETAIL_MAX 同上限，双保险保早期内容）。 */
+function clip(s: unknown, max: number = STEP_TRACE_DETAIL_MAX): string | undefined {
+  if (s == null) return undefined;
+  let t: string;
+  try {
+    t = typeof s === 'string' ? s : JSON.stringify(s);
+  } catch {
+    t = String(s);
+  }
+  t = t.trim();
+  if (!t) return undefined;
+  return t.length > max ? t.slice(0, max) + '…' : t;
 }
 
 /**
@@ -155,14 +422,74 @@ function tailArgs(o: WorkflowExecutorOptions): AssembleAgentTail {
 export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): StepExecutor {
   const mode = opts.mode ?? 'mock';
   // 校验/反思门禁（P0-2）：与 /api/run（run-queue.ts:773）同款装配——
-  // createVerifier(verifyConfig) 生成组合验证器；verifyMaxRetries 取 AGENT_VERIFY_MAX_RETRIES
-  // （默认 0 = 仅校验+标记，不自动重跑；>0 时 harness 注入自检提示重跑 = 反思循环）。
-  // 在 executor 级构建一次，所有 step 共享（语义等价串行 run 的 per-run 装配）。
-  const verifier = createVerifier(opts.verify);
-  const verifyMaxRetries = verifier
-    ? Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0
+  // createVerifier(verifyConfig) 生成组合验证器；重试预算优先取 opts.verifyMaxRetries
+  // （P4.5 plan 桥注入），缺省回落 AGENT_VERIFY_MAX_RETRIES（默认 0 = 仅校验+标记，
+  // >0 时 harness 注入自检提示重跑 = 反思循环）。executor 级验证器在装配期构建一次。
+  const baseVerifier = createVerifier(opts.verify);
+  const baseRetries = baseVerifier
+    ? (opts.verifyMaxRetries ?? (Number(process.env.AGENT_VERIFY_MAX_RETRIES ?? 0) || 0))
     : 0;
+
+  /**
+   * P4.5 结果断言（per-step）：plan 桥 step 的 inputMapping.taskMeta 携带
+   * outputChecks（planner 生成的「产出必须包含」短词）时，逐项转 contains 断言
+   * 与 executor 级验证器组合成本 step 专属验证器；无 taskMeta / 无 outputChecks /
+   * 解析失败 → 原样回落 baseVerifier（零回归，不阻断 step）。
+   *
+   * P4.7 两处修复：
+   *  1. **同源同上限**：词表走 pickOutputChecks（与 prompt 注入同一入口与上限），
+   *     消灭「提示只给 4 个、门禁却断言 8 个」的必然失败；
+   *  2. **降级为软性门禁（soft=true）**：这些词由 planner 调用产出、由 executor 另一次
+   *     调用逐字匹配，属跨调用启发式校验 —— 同义改写（「市场规模」→「市场概况」）即未命中。
+   *     此前未命中会追加 [verify:failed] → 引擎出口闸门判无效产出 → step failed → run 失败，
+   *     而单步对话无此门禁故一切正常（用户可见症状）。现在未命中仍触发一次自检重试
+   *     （给模型定向补齐的机会），但重试后仍不通过只告警、不改写产出、不判 step 失败。
+   *     真正的无效产出（空 / 护栏兜底 / 中断 / 异常前缀）仍由引擎 failOnInvalidOutput
+   *     + inspectStepOutput 硬拦，不因软性化而漏。
+   *
+   * 注：纯断言（base 缺省未开）时保守「只标记不重跑」——反思循环需 executor 级
+   * 验证器存在（plan 默认路径由 server 保证 auto 开启）。
+   */
+  const buildStepVerifier = (step: any): { verifier: Verifier | undefined; retries: number } => {
+    if (!opts.planOutputChecks) return { verifier: baseVerifier, retries: baseRetries };
+    const taskMetaRaw: string | undefined = step?.inputMapping?.taskMeta;
+    if (!taskMetaRaw || typeof taskMetaRaw !== 'string') {
+      return { verifier: baseVerifier, retries: baseRetries };
+    }
+    let meta: { outputChecks?: unknown } | null;
+    try {
+      const parsed: unknown = JSON.parse(taskMetaRaw);
+      meta = parsed && typeof parsed === 'object' ? (parsed as { outputChecks?: unknown }) : null;
+    } catch {
+      return { verifier: baseVerifier, retries: baseRetries }; // taskMeta 非法：不阻断，少装配
+    }
+    const specs: AssertSpec[] = pickOutputChecks(meta?.outputChecks).map((c) => ({ contains: c }));
+    if (specs.length === 0) return { verifier: baseVerifier, retries: baseRetries };
+    if (baseVerifier) {
+      return {
+        // 任务验收组打组标签（与 executor 级默认门禁组「默认门禁」在 reasons 拼接时区分），
+        // 并标记为软性组（未通过只告警不阻断）。
+        verifier: composeVerifiers(baseVerifier, specsVerifier(specs, '任务验收', true)),
+        retries: baseRetries,
+      };
+    }
+    // 无 executor 级验证器（verify 未传）：仅装配结果断言，同样软性、重试预算保守取 0。
+    return { verifier: specsVerifier(specs, '任务验收', true), retries: 0 };
+  };
+
   return async (step: any, input: any, ctx: RunContext) => {
+    // P2.5 调用链路采集（per-step 隔离）：波次内并行 step 各自持有 collector，
+    // 经包装的 traceOnEvent 汇入本 step 专属序列（同时保留原 SSE 直播）；
+    // step 收尾（成功 / 失败）把节点写 ctx.trace，引擎合并进 StepRun.trace 随检查点持久化。
+    const col = new StepTraceCollector();
+    const traceOnEvent = opts.onEvent
+      ? (e: HarnessEvent) => {
+          opts.onEvent?.(e, step.id);
+          col.observe(e);
+        }
+      : (e: HarnessEvent) => col.observe(e);
+    // P4.5：本 step 专属验证器（outputChecks 逐 task 结果断言；非 plan step 回落 base）。
+    const stepVerify = buildStepVerifier(step);
     const ref = step.agentRef;
     const card: AgentCard | null =
       typeof ref === 'string' ? await getAgentRegistry().get(ref) : ref;
@@ -188,7 +515,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
         const subSessionKey = `wf:${ctx.workflowId}:${step.id}:${card.id}`;
         const assembled = await assembleAgent(
           mode,
-          opts.onEvent,
+          traceOnEvent,
           undefined,
           opts.model,
           task,
@@ -197,17 +524,23 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
           PLAN_TASK_TIMEOUT_MS,
           undefined,
           undefined,
-          verifier,
-          verifyMaxRetries,
+          stepVerify.verifier,
+          stepVerify.retries,
           card,
           tenantCtx,
           ...tailArgs(opts)
         );
+        col.setModel(assembled.accountModel); // P2.5 LLM 调用行带出本成员实际模型名
         return assembled.harness.run(task, opts.attachments);
       };
 
       const task = typeof input === 'string' ? input : JSON.stringify(input ?? '');
-      const result = await teamManager.executeTask(step.teamRef, task, dispatchAgentTask);
+      let result: string | string[];
+      try {
+        result = await teamManager.executeTask(step.teamRef, task, dispatchAgentTask);
+      } finally {
+        ctx.trace = col.nodes(); // P2.5 链路附挂（成功/失败均落，失败路径排障价值最高）
+      }
       return result;
     }
 
@@ -228,7 +561,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
 
     const assembled = await assembleAgent(
       mode,
-      opts.onEvent,
+      traceOnEvent,
       undefined,
       opts.model,
       prompt,
@@ -237,13 +570,20 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
       PLAN_TASK_TIMEOUT_MS,
       undefined,
       undefined,
-      verifier,
-      verifyMaxRetries,
+      stepVerify.verifier,
+      stepVerify.retries,
       card,
       tenantCtx,
       ...tailArgs(opts)
     );
-    return assembled.harness.run(prompt, opts.attachments);
+    let result: string;
+    try {
+      col.setModel(assembled.accountModel); // P2.5 LLM 调用行带出本 step 实际模型名
+      result = await assembled.harness.run(prompt, opts.attachments);
+    } finally {
+      ctx.trace = col.nodes(); // P2.5 链路附挂（成功/失败均落，失败路径排障价值最高）
+    }
+    return result;
   };
 }
 

@@ -16,8 +16,9 @@ import { getAgentRegistry, type AgentRegistry } from '../agents/registry';
 import type { AgentCard } from '../agents/types';
 import { getTeamManager, type TeamManager } from '../teams';
 import type { Team } from '../teams';
-import type { StepDef, StepRun, WorkflowDef, WorkflowRun } from './types';
+import type { StepDef, StepRun, StepTraceNode, WorkflowDef, WorkflowRun } from './types';
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
+import { inspectStepOutput } from './step-output';
 
 /** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
 export type StepExecutor = (
@@ -37,7 +38,19 @@ export interface RunContext {
   signal?: AbortSignal;
   /** 本次执行是否为「补偿」语义（executor 据以调用回滚工具 / 走回滚分支）。 */
   compensate?: boolean;
+  /**
+   * P2.5 调用链路捕获通道：executor 在本 step 执行期间把捕获到的 harness 事件序列
+   * （LLM 调用 / 工具 / 护栏 / 校验 / 收尾）写入此字段；引擎在 step 收尾（成功或失败）
+   * 将其合并进 `StepRun.trace` 并随检查点持久化。旧 executor 不写 → 引擎合并 undefined →
+   * trace 缺省，零回归。引擎按节点上限截断（保早期调用），避免检查点膨胀。
+   */
+  trace?: StepTraceNode[];
 }
+
+/** 单 step 调用链路节点数上限（R5 体积护栏）：超出截断保留早期调用，防止检查点膨胀。 */
+export const STEP_TRACE_MAX_NODES = 500;
+/** 调用链路单节点 detail 长度上限（截断存储，避免单条长产出拖垮检查点）。 */
+export const STEP_TRACE_DETAIL_MAX = 500;
 
 /** 引擎对外发出的工作流事件（供 SSE / 可观测消费）。 */
 export type WorkflowEvent =
@@ -47,6 +60,8 @@ export type WorkflowEvent =
   | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
+  /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
+  | { type: 'wf:awaiting-approval'; workflowId: string; runId?: string; stepIds: string[]; run: WorkflowRun }
   | { type: 'wf:done'; workflowId: string; runId?: string; run: WorkflowRun }
   | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun };
 
@@ -85,6 +100,42 @@ export class DagEngine {
 
   private emit(e: WorkflowEvent): void {
     this.onEvent?.(e);
+  }
+
+  /**
+   * P2.5 调用链路合并：把 executor 经 `ctx.trace` 附挂的 harness 事件序列合并进
+   * `StepRun.trace`（节点数上限截断，保早期调用；detail 已在采集端按
+   * STEP_TRACE_DETAIL_MAX 截断，此处对超长 detail 再兜底一次）。
+   *
+   * 零回归：ctx.trace 缺省（旧 executor / 测试 mock）时直接 no-op，StepRun 不写 trace 字段。
+   * 成功 / 失败 / 补偿三条路径统一调用 —— 失败 step 的链路正是排障最需要的关键信息。
+   */
+  private mergeStepTrace(sr: StepRun, ctx: RunContext): void {
+    const nodes = ctx.trace;
+    if (!nodes || nodes.length === 0) return;
+    const kept = nodes.slice(0, STEP_TRACE_MAX_NODES);
+    sr.trace = kept.map((n) => {
+      if (typeof n.detail === 'string' && n.detail.length > STEP_TRACE_DETAIL_MAX) {
+        return { ...n, detail: n.detail.slice(0, STEP_TRACE_DETAIL_MAX) + '…' };
+      }
+      return n;
+    });
+  }
+
+  /**
+   * P4.5 产出有效性闸门（step 成功出口）：检视 executor 返回值。
+   * - 分类非 ok 时始终记录到 sr.outputIssue（审计 / 抽屉可见，不因闸门开关丢失）；
+   * - 仅当 def.failOnInvalidOutput 开启且分类非 ok → 返回失败原因（调用方据此按
+   *   失败路径处置：run() 抛出进既有 catch（failed + 补偿 + 级联）；resume() 置
+   *   stepFailed 并级联），消灭「无效产出被当成功写黑板」。
+   * - 缺省（存量 def 未开闸门）返回 undefined → 行为与旧版逐字一致（零回归）。
+   */
+  private inspectOutputGate(def: WorkflowDef, sr: StepRun, result: unknown): string | undefined {
+    const insp = inspectStepOutput(result);
+    if (insp.issue === 'ok') return undefined;
+    sr.outputIssue = insp.issue;
+    if (!def.failOnInvalidOutput) return undefined;
+    return `无效产出（${insp.issue}）${insp.detail ? `：${insp.detail}` : ''}`;
   }
 
   /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */
@@ -289,11 +340,33 @@ export class DagEngine {
 
     const outputs: Record<string, unknown> = {};
     const skipped = new Set<string>(); // 被条件跳过的 step id
+    const defById = new Map(def.steps.map((s) => [s.id, s]));
+    const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step
     try {
       for (const wave of this.topoWaves(def)) {
         if (signal?.aborted) throw new Error('workflow aborted');
-        await Promise.all(
-          wave.map(async (id) => {
+        // P3 审批门（波次边界）：当前波次内存在「requireApproval 且未批准」的 step 时，
+        // 整个 run 暂停进入 awaiting（不落 failed、不执行补偿）。这些 step 标记 awaiting，
+        // 同波次其它 step 保持 pending；批准后 resume 放行整波次。未标记的 def 行为不变。
+        // 级联跳过预判：输出依赖已被跳过的 step 本波次必然 skipped，不参与审批门。
+        const gated = wave.filter((id) => {
+          const step = defById.get(id)!;
+          if (!step.requireApproval || approved.has(id)) return false;
+          if (this.outputDeps(step).some((d) => skipped.has(d))) return false;
+          return true;
+        });
+        if (gated.length > 0) {
+          for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+          run.state = 'awaiting';
+          delete run.finishedAt;
+          await this.store.save(run);
+          this.emit({ type: 'wf:awaiting-approval', workflowId: def.id, runId, stepIds: gated, run });
+          return run;
+        }
+        // P5 串行执行模式：def.execMode==='serial' 时波次内逐个 await（单步发送语义：
+        // 上一 step 完成后才派发下一个），缺省 parallel 波次内并行（存量零回归）。
+        // 串行只改调度顺序，验证门禁 / 补偿 / 审批门 / 检查点语义与并行完全一致。
+        const runWaveStep = async (id: string): Promise<void> => {
             const step = def.steps.find((s) => s.id === id)!;
 
             // P2 条件分支：级联跳过 —— 若本 step 的「输出消费依赖」（dependsOn / inputMapping
@@ -348,21 +421,32 @@ export class DagEngine {
             try {
               const result = await this.executor(step, input, ctx);
               sr.output = result;
+              // P4.5 产出有效性闸门：无效产出（空 / 中断 / 护栏兜底）不再「静默成功」——
+              // 开启 def.failOnInvalidOutput 时按失败处置（进下方 catch → failed + 补偿 + 级联），
+              // 未开启仅记录 outputIssue（存量零回归）。
+              const gateError = this.inspectOutputGate(def, sr, result);
+              if (gateError) throw new Error(gateError);
               sr.state = 'done';
               sr.finishedAt = Date.now();
               outputs[id] = result;
+              this.mergeStepTrace(sr, ctx); // P2.5 调用链路落检查点（缺省 no-op）
               await this.store.save(run);
               this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id, output: result });
             } catch (e: any) {
               const errMsg: string = e?.message ?? String(e);
               sr.state = 'failed';
               sr.error = errMsg;
+              this.mergeStepTrace(sr, ctx); // P2.5：失败 step 的链路是排障关键信息
               await this.store.save(run);
               this.emit({ type: 'wf:step:failed', workflowId: def.id, stepId: id, error: errMsg });
               throw e;
             }
-          })
-        );
+        };
+        if (def.execMode === 'serial') {
+          for (const id of wave) await runWaveStep(id);
+        } else {
+          await Promise.all(wave.map(runWaveStep));
+        }
       }
       run.state = 'done';
       run.finishedAt = Date.now();
@@ -468,9 +552,11 @@ export class DagEngine {
           const compInput = run.steps[step.id]?.output;
           const result = await this.executor(compStep, compInput, ctx);
           run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, compensateInput: compInput, finishedAt: Date.now() };
+          this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5 补偿 step 链路同样落检查点
         } catch (e2: any) {
           // 补偿失败：记录但不阻断其余补偿（避免雪崩）；保留 compensateInput 供重试。
           run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: run.steps[step.id]?.output };
+          this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5：失败的补偿链路是排障关键信息
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compId });
@@ -484,8 +570,10 @@ export class DagEngine {
           await this.resolveCard(step.agentRef); // 校验 agentRef 可解析（不可解析则抛出，落入 catch 记录）
           const result = await this.executor(step, cmd, ctx);
           run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result, compensateInput: cmd };
+          this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         } catch (e2: any) {
           run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: cmd };
+          this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: step.id });
@@ -541,10 +629,31 @@ export class DagEngine {
     this.emit({ type: 'wf:start', workflowId, runId });
 
     let stepFailed = false;
+    const defById = new Map(run.def.steps.map((s) => [s.id, s]));
+    const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step（approve 路由写入检查点后随 resume 生效）
+    const skippedIds = new Set(
+      run.def.steps.filter((s) => run.steps[s.id]?.state === 'skipped').map((s) => s.id)
+    );
     for (const wave of this.topoWaves(run.def)) {
       if (signal?.aborted) break;
-      await Promise.all(
-        wave.map(async (id) => {
+      // P3 审批门（与 run() 同语义）：未批准的 requireApproval step 使 run 再次暂停；
+      // 已批准（写入 run.approvals）或已被级联跳过的 step 放行。
+      const gated = wave.filter((id) => {
+        const step = defById.get(id)!;
+        if (!step.requireApproval || approved.has(id)) return false;
+        if (this.outputDeps(step).some((d) => skippedIds.has(d))) return false;
+        return true;
+      });
+      if (gated.length > 0) {
+        for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+        run.state = 'awaiting';
+        delete run.finishedAt;
+        await this.store.save(run);
+        this.emit({ type: 'wf:awaiting-approval', workflowId, runId, stepIds: gated, run });
+        return run;
+      }
+      // P5 串行执行模式（与 run() 同语义）：serial 时波次内逐个 await，缺省并行。
+      const resumeWaveStep = async (id: string): Promise<void> => {
           const sr = run.steps[id];
           // 终态 step 不重跑：done（已完成）、skipped（条件不满足，保持跳过）、
           // compensated（补偿动作已执行，回滚不应重复）。
@@ -565,17 +674,27 @@ export class DagEngine {
           };
           try {
             const result = await this.executor(step, input, ctx);
+            // P4.5 产出有效性闸门（与 run() 同语义）：分类非 ok 记录 outputIssue，
+            // 且 run.def.failOnInvalidOutput 开启时按失败处置（进 catch → stepFailed + 级联 + 补偿）。
+            const gateError = this.inspectOutputGate(run.def, run.steps[id], result);
+            if (gateError) throw new Error(gateError);
             run.steps[id] = { ...run.steps[id], state: 'done', output: result, finishedAt: Date.now() };
             outputs[id] = result;
+            this.mergeStepTrace(run.steps[id], ctx); // P2.5 续跑 step 的链路同样落检查点
             this.emit({ type: 'wf:step:done', workflowId, stepId: id, output: result });
           } catch (e: any) {
             run.steps[id] = { ...run.steps[id], state: 'failed', error: e?.message ?? String(e) };
+            this.mergeStepTrace(run.steps[id], ctx); // P2.5：失败 step 的链路是排障关键信息
             this.emit({ type: 'wf:step:failed', workflowId, stepId: id, error: e?.message ?? String(e) });
             stepFailed = true;
           }
           await this.store.save(run);
-        })
-      );
+      };
+      if (run.def.execMode === 'serial') {
+        for (const id of wave) await resumeWaveStep(id);
+      } else {
+        await Promise.all(wave.map(resumeWaveStep));
+      }
       if (stepFailed) break;
     }
 

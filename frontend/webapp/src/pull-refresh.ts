@@ -31,6 +31,13 @@ const THRESHOLD = 64;
 const DAMPING = 0.5;
 /** 下拉最大可视距离（px），防止橡皮筋过度。 */
 const MAX_PULL = 96;
+/**
+ * 「页面在顶部」的判定容差（px）。
+ * 手机惯性滚动停下的瞬间 scrollY 可能残留亚像素/1px 余量，
+ * 用 `> 0` 精确判定会让刚回顶的下拉被静默拦截（表现为"下拉刷新偶尔没反应"）。
+ * 2px 以内视为仍在顶部；一旦真正离开顶部（>2px）手势立即交还原生滚动。
+ */
+const TOP_EPSILON = 2;
 
 export class PullToRefreshController {
   private readonly content: HTMLElement;
@@ -90,8 +97,8 @@ export class PullToRefreshController {
 
   private readonly touchStart = (e: TouchEvent): void => {
     if (!this.isEnabled() || this.refreshing) return;
-    // 仅当页面已滚到最顶（文档滚动容器 scrollY<=0）才允许下拉。
-    if (window.scrollY > 0) return;
+    // 仅当页面已滚到最顶（文档滚动容器 scrollY 在容差内）才允许下拉。
+    if (window.scrollY > TOP_EPSILON) return;
     if (e.touches.length !== 1) return;
     this.startY = e.touches[0]!.clientY;
     this.pulling = true;
@@ -103,8 +110,8 @@ export class PullToRefreshController {
     const y = e.touches[0]!.clientY;
     const delta = y - this.startY;
 
-    // 手指上移或页面已离开顶部 → 取消本次下拉，交还原生滚动。
-    if (delta <= 0 || window.scrollY > 0) {
+    // 手指上移或页面已真正离开顶部 → 取消本次下拉，交还原生滚动。
+    if (delta <= 0 || window.scrollY > TOP_EPSILON) {
       if (this.dist !== 0) {
         this.dist = 0;
         this.setPhase('idle');
@@ -116,6 +123,8 @@ export class PullToRefreshController {
 
     // 命中下拉：阻止原生滚动/回弹，施加阻尼位移。
     e.preventDefault();
+    // 归零顶部残量（惯性滚动停下的 1-2px），避免橡皮筋下移时顶上露出一条背景缝。
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
     this.topbarH = this.topbarHeight();
     this.dist = Math.min(delta * DAMPING, MAX_PULL);
     this.setPhase(this.dist >= THRESHOLD ? 'ready' : 'pull');

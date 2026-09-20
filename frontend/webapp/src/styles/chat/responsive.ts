@@ -67,6 +67,7 @@ export const responsive = css`
       justify-content: space-between;
       gap: 8px;
       padding: 12px 14px;
+      margin-top: 40px;
     }
     .sidebar .new-btn {
       width: auto;
@@ -100,6 +101,8 @@ export const responsive = css`
     }
     .scrim.show {
       display: block;
+      /* 抽屉唤出时遮罩淡入（display:none 切换不可过渡，用关键帧兜底）。 */
+      animation: ah-nav-fade 200ms ease both;
     }
     .chat-head {
       padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;

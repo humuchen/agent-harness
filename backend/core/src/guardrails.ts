@@ -1,6 +1,7 @@
 // 内容安全护栏（企业级可配置策略引擎）。
 //
 import type { IsolationLevel } from './sandbox/types';
+import { jevScoreInjection } from './builtins/typesafe-jev';
 
 // 三个层面：输入校验、输出校验、工具参数校验。相比早期纯正则版本，本版增强：
 //   1) 可配置策略（configureGuardrails）：开关 / 敏感度 / 最大长度 / 允许列表；
@@ -245,11 +246,28 @@ function normalizeForScan(s: string): string {
 }
 
 // 外部语义级注入打分器（可接分类模型 / 第三方服务），得分 > 0.5 视为注入。
-const customInjectionScorers: ((text: string) => number)[] = [];
+// 支持同步 (text)=>number 或异步 (text)=>Promise<number>；同步路径（checkInput 等）
+// 仅消费数值结果（异步打分器在同步路径下被忽略，由 async 变体 await）。
+type InjectionScorer = (text: string) => number | Promise<number>;
+const customInjectionScorers: InjectionScorer[] = [];
 
 /** 注册一个语义级注入打分器（返回 0~1）。返回 >0.5 即视为注入。 */
-export function registerInjectionScorer(fn: (text: string) => number): void {
+export function registerInjectionScorer(fn: InjectionScorer): void {
   customInjectionScorers.push(fn);
+}
+
+let jevInjectionEnabled = false;
+/**
+ * 启用 Jev 语义级注入打分（危险操作门禁增强）。
+ * 仅在 JEV_INJECTION_GATE 开启时由 server 调用；注册一个异步打分器，复用
+ * jevScoreInjection（未配置 Key / 出错时返回 0，天然回落正则基线）。
+ * 旧的正则 / 短语基线始终先执行（check*Async 先跑同步分支），Jev 仅作语义层增补；
+ * Jev 出错或超时也回落基线，符合「旧逻辑兜底」。
+ */
+export function enableJevInjection(): void {
+  if (jevInjectionEnabled) return;
+  jevInjectionEnabled = true;
+  registerInjectionScorer(async (text) => jevScoreInjection(text));
 }
 
 function isAllowlisted(textNorm: string, pol: GuardrailPolicy): boolean {
@@ -272,8 +290,47 @@ function detectInjection(
     }
   }
   for (const sc of customInjectionScorers) {
+    // 异步打分器（如 Jev）由 detectInjectionAsync 专职 await；同步路径跳过，
+    // 否则会「发起调用但丢弃结果」，造成门禁对 Jev 的重复调用（已实测）。
+    if (sc.constructor.name === 'AsyncFunction') continue;
     try {
-      if (sc(text) > 0.5) return 'semantic-injection';
+      const r = sc(text);
+      // 兜底：同步函数若返回 Promise（罕见），吞掉 rejection 避免 unhandledRejection。
+      if (r && typeof (r as Promise<unknown>).catch === 'function') {
+        (r as Promise<unknown>).catch(() => {});
+        continue;
+      }
+      if (typeof r === 'number' && r > 0.5) return 'semantic-injection';
+    } catch {
+      /* 打分器异常不影响主流程 */
+    }
+  }
+  return null;
+}
+
+/**
+ * 异步语义注入检测：await 所有（含异步）打分器。同步打分器同步即得，
+ * 异步打分器（如 Jev）等待返回。用于 check*Async 变体，使危险操作门禁可叠加
+ * 语义级判定；正则/短语基线仍优先（见 detectInjectionAsync 调用方）。
+ */
+async function detectInjectionAsync(
+  text: string,
+  pol: GuardrailPolicy,
+  strongOnly = false
+): Promise<string | null> {
+  if (!pol.enableInjectionScan) return null;
+  const norm = normalizeForScan(text);
+  if (isAllowlisted(norm, pol)) return null;
+  const phrases = strongOnly ? PHRASES_LOW : phraseSet(pol.injectionSensitivity);
+  for (const p of phrases) {
+    if (norm.includes(normalizeForScan(p))) {
+      return p;
+    }
+  }
+  for (const sc of customInjectionScorers) {
+    try {
+      const r = await sc(text);
+      if (typeof r === 'number' && r > 0.5) return 'semantic-injection';
     } catch {
       /* 打分器异常不影响主流程 */
     }
@@ -645,5 +702,51 @@ export function checkToolArgs(
     const eg = checkEgress(String(args.url), p.network);
     if (eg) return { ok: false, reason: `network egress blocked: ${eg}` };
   }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// 异步校验变体（叠加 Jev 语义层）：旧逻辑（正则/短语/secret/规则）先执行作为基线，
+// 仅当旧逻辑放行时再跑异步语义打分（如 Jev）；Jev 缺配/出错/超时返回 0，不阻断，
+// 自动回落旧逻辑。供 harness 主循环（异步上下文）调用，非异步调用方仍用同步 check*。
+// ---------------------------------------------------------------------------
+
+/** 异步输入校验：旧逻辑先判，Jev 语义注入打分增补（失败回落基线）。 */
+export async function checkInputAsync(
+  text: string,
+  pol?: GuardrailPolicy,
+  strongOnly = false
+): Promise<GuardrailResult> {
+  const sync = checkInput(text, pol, strongOnly);
+  if (!sync.ok) return sync; // 旧逻辑已拦截，直接返回
+  const inj = await detectInjectionAsync(text, pol ?? policy, strongOnly);
+  if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
+  return { ok: true };
+}
+
+/** 异步输出校验：旧逻辑先判，Jev 语义注入打分增补（失败回落基线）。 */
+export async function checkOutputAsync(
+  text: string,
+  pol?: GuardrailPolicy,
+  ctx?: GuardrailOutputContext
+): Promise<GuardrailResult> {
+  const sync = checkOutput(text, pol, ctx);
+  if (!sync.ok) return sync;
+  const inj = await detectInjectionAsync(text, pol ?? policy);
+  if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
+  return { ok: true };
+}
+
+/** 异步工具参数校验：旧逻辑先判，Jev 语义注入打分增补（失败回落基线）。 */
+export async function checkToolArgsAsync(
+  name: string,
+  args: Record<string, unknown>,
+  pol?: GuardrailPolicy
+): Promise<GuardrailResult> {
+  const sync = checkToolArgs(name, args, pol);
+  if (!sync.ok) return sync;
+  const inj = await detectInjectionAsync(JSON.stringify(args), pol ?? policy);
+  if (inj)
+    return { ok: false, reason: `possible injection in tool args for ${name} (matched: ${inj})` };
   return { ok: true };
 }

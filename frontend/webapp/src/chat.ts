@@ -10,9 +10,10 @@ import {
   type ChatSyncEvent
 } from './chat-sync';
 import { AhModal } from './components/ah-modal';
+import './components/ah-swipe-item';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
-import { isRetrievalTool, safeJson } from './utils/chat-utils';
+import { isRetrievalTool, safeJson, toolDisplayName, summarizeJevDecision } from './utils/chat-utils';
 import { escapeHtml } from './utils/markdown';
 
 // 上下文用量圆环（已抽离到 chat-context-usage.ts，降低 chat.ts 单体规模）。
@@ -25,8 +26,13 @@ import {
   buildPlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
+  applyPlanThinking,
   derivePlanWfId,
+  compactPlanWfSnapshot,
   isPlanDagEnabled,
+  buildPlanArtifactSection,
+  filterPlanSingleStep,
+  recoverPlanFinalResult,
   type PlanWfEvent,
   type PlanWfRunSnapshot
 } from './chat-render-utils';
@@ -41,6 +47,7 @@ import {
   renderTraceDrawer,
   renderPlanCard,
   renderPlanWfReplayDrawer,
+  normalizeClarifyQuestions,
   type ChatRenderCtx
 } from './chat-message-render';
 
@@ -68,9 +75,11 @@ import type {
   ExecutionPlanView,
   PlanExecState,
   PlanWfReplayState,
+  PlanWfRunMirror,
   ChatMsg,
   SessionView,
-  TraceCtx
+  TraceCtx,
+  ClarifyDraftState
 } from './chat-types';
 
 // 会话列表分页模型（左侧历史列表「滚动加载」的纯逻辑：步长 / 跨页合并 / 视图映射）。
@@ -159,6 +168,13 @@ export const ATTACH_COLLAPSE_LIMIT = 6;
  * 取 4 是两者的折中：显著快于串行，又不至于压垮服务端 / 占满浏览器连接池。
  */
 export const UPLOAD_CONCURRENCY = 4;
+
+/**
+ * 串行派发计划任务时，注入派发 prompt 的单条上游产出字符上限。
+ * 超长产出（如整章文档）截断保头并标注「已截断」，防止下游整合任务的
+ * 上下文被单个上游产出撑爆（多个依赖叠加时按 6k × 依赖数渐进增长，可接受）。
+ */
+const PLAN_UPSTREAM_OUTPUT_MAX = 6000;
 
 /** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 实际上传 File + 追踪 key。 */
 export interface PendingUpload {
@@ -298,11 +314,16 @@ export class AhChat extends LitElement {
 
   /** 计划执行状态（key 为携带计划的消息 id）。 */
   @state() private planExec: Record<number, PlanExecState> = {};
+  /** 计划模式（P0）：目标澄清卡中用户的补充/确认输入（key=消息 id）。 */
+  /** 计划模式（P0）：澄清卡用户输入状态（key=消息 id：逐题点选/自定义 + 整体补充）。 */
+  @state() private clarifyDraft: Record<number, ClarifyDraftState> = {};
+  /** 计划模式（P0）：已确认过的澄清卡（key=消息 id），防止重复提交。 */
+  @state() private clarifyAnswered: Record<number, boolean> = {};
   /** P3（多 agent DAG 计划执行）：当前正在跑的 plan workflow 中止句柄。
    * 非空时「停止」按钮中止 DAG 流（置 running 为 cancelled），否则走 runRt.stop()。 */
   @state() private planWfAbort: AbortController | null = null;
   @state() deepThink = true;
-  @state() web = false;
+  @state() web = true;
   /** 深度思考收起偏好（由父级经设置-外观下发并持久化）：开启时深度思考默认折叠。默认 true（收起）。 */
   @property({ type: Boolean }) deepThinkCollapsed = true;
 
@@ -378,6 +399,27 @@ export class AhChat extends LitElement {
   /** P2（轨迹回放）：计划「执行详情」抽屉——当前打开的计划消息（null=未开）+ 各消息的快照瞬态。 */
   @state() private planWfReplayMsg: ChatMsg | null = null;
   @state() private planWfReplay: Record<number, PlanWfReplayState> = {};
+  /**
+   * P5.1 同步修复：抽屉打开期间的轮询定时器（2.5s 拉取检查点快照，执行中状态不再
+   * 冻结在打开瞬间；run 终态或抽屉关闭即清除）。null = 未在轮询。
+   */
+  private planWfReplayTimer: number | null = null;
+
+  /**
+   * P5.4 断连自愈轮询：计划 SSE 流在「未收到终态帧」时静默结束（客户端断连 / 后台标签
+   * 节流 / 网络抖动）—— 此时服务端 run 仍在后台跑（P5.4 不再因断连中止）。为每个计划消息
+   * 维护一个 2.5s 轮询定时器，读取检查点（GET /api/workflows/:id）把卡片收敛到权威终态
+   * （running→done/failed；awaiting 继续轮询）；终态或消息被新执行取代即清除。
+   * 键 = 计划卡片消息 id（同一会话通常只有一个活动计划，但用 map 避免误清）。
+   */
+  private planWfReconcileTimers: Record<string, number> = {};
+
+  /**
+   * P5.4 当前活动计划 run 的检查点 id（confirmPlanViaWorkflow / resume / approve 派发期间
+   * 非空）。「停止」按钮据此调用 POST /api/workflows/:id/cancel 显式取消服务端 run ——
+   * 断连已不再隐式中止（P5.4），显式取消必须走专门通道。
+   */
+  private planWfActiveId: string | null = null;
 
   /** 悬停显示操作按钮的用户消息 id（复制 / 编辑）；-1 表示无。 */
   @state() private hoverUserMsgId = -1;
@@ -406,6 +448,9 @@ export class AhChat extends LitElement {
 
   /** 编辑中的草稿文本。 */
   @state() private editingDraft = '';
+
+  /** 进入编辑态时原始消息内容，用于判断用户是否做过实质改动。 */
+  private editingOriginalContent = '';
 
   /** 最近一次复制成功的消息 id + 时间戳：按钮短暂变为「已复制 ✓」。 */
   @state() private copiedMsgId = -1;
@@ -436,6 +481,12 @@ export class AhChat extends LitElement {
    *  看门狗 / 可见性体检 + 断连重连续传引擎。运行内部簿记状态由本控制器持有，
    *  领域数据 / 渲染状态 / 行为方法经 RunDeps 桥接（render 与组件其余路径零改动）。 */
   private runRt = new ChatRunRuntime(this.makeRunDeps(), this.typewriter);
+
+  /**
+   * P5 静默计划执行（串行回退路径）：quiet run 进行中的思考面板 sink（携带计划的消息 id）。
+   * confirmPlan 逐任务派发前置位、循环结束（含失败/取消）复位；onPlanThinking 据此路由。
+   */
+  private quietPlanSink: { msgId: number } | null = null;
 
   /** 侧栏打开瞬间标记：防止打开后立即被 scrim 点击关闭。 */
   private _sidebarJustOpened = false;
@@ -1124,6 +1175,8 @@ export class AhChat extends LitElement {
   }
 
   // ────────── 下拉刷新手势（仅触屏、仅在列表顶部向下拖）──────────
+  /** 手势起始触摸 X（轴向守卫用：横滑会话行时让出给 ah-swipe-item，见 touchmove）。 */
+  private pullStartX = 0;
   private onSessionListTouchStart = (e: TouchEvent) => {
     const el = e.currentTarget as HTMLElement | null;
     // 折叠态（64px 图标轨）没有可下拉的会话列表，跳过手势。
@@ -1136,6 +1189,7 @@ export class AhChat extends LitElement {
     this.pullPulling = true;
     const t0 = e.touches[0];
     if (!t0) return;
+    this.pullStartX = t0.clientX;
     this.pullStartY = t0.clientY;
     this.pullDist = 0;
   };
@@ -1146,6 +1200,14 @@ export class AhChat extends LitElement {
     if (!el) return;
     const t0 = e.touches[0];
     if (!t0) return;
+    // 轴向守卫：横向位移明显占优时是「会话行滑动操作」（ah-swipe-item 的
+    // touchmove 已 preventDefault，本处理器仅被动跟随），撤销下拉态防止
+    // 松手误触发刷新、内容层残留位移。
+    if (Math.abs(t0.clientX - this.pullStartX) > 12) {
+      if (this.pullDist !== 0) this.applyPullTransform(0);
+      this.pullPulling = false;
+      return;
+    }
     const delta = t0.clientY - this.pullStartY;
     // 手指上移（正常向下滚动内容）或已离开顶部：取消下拉，交回原生滚动。
     if (delta <= 0 || el.scrollTop > 0) {
@@ -1190,10 +1252,16 @@ export class AhChat extends LitElement {
     if (ind) {
       ind.style.transition = t;
       ind.style.opacity = dist > 0 || this.pullRefreshing ? '1' : '0';
-      ind.style.transform = `translateY(${Math.min(dist, this.pullMax) - 48}px)`;
-      ind.classList.toggle('armed', dist >= this.pullThreshold && !this.pullRefreshing);
+      ind.style.transform = `translateY(${
+        Math.min(dist, this.pullMax) - 48
+      }px)`;
+      ind.classList.toggle(
+        'armed',
+        dist >= this.pullThreshold && !this.pullRefreshing
+      );
     }
-    if (hint) hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
+    if (hint)
+      hint.textContent = dist >= this.pullThreshold ? '松开刷新' : '下拉刷新';
   }
 
   /** 触发下拉刷新：重拉首屏会话列表（显式用户操作，失败弹提示）。 */
@@ -1262,7 +1330,9 @@ export class AhChat extends LitElement {
 
   /** 会话列表内容包裹层（下拉时整体下移，呈现橡皮筋效果）。 */
   private get sessionInnerEl(): HTMLElement | null {
-    return this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null;
+    return (
+      this.renderRoot?.querySelector<HTMLElement>('.session-inner') ?? null
+    );
   }
 
   /** 顶部下拉刷新指示器。 */
@@ -1662,6 +1732,7 @@ export class AhChat extends LitElement {
     else if (sv?.agentId !== undefined) this.agentId = sv.agentId;
     this.persistActiveId(id);
     this.sidebarOpen = false;
+    this.closeAllSessionSwipes();
     this.input = '';
     this.cmdName = '';
 
@@ -1695,7 +1766,11 @@ export class AhChat extends LitElement {
             tools: m.tools,
             trace: m.trace,
             plan: m.plan,
+            // propose 当时的联网开关：随计划卡片透传，执行（含刷新后续跑）继承。
+            planWeb: (m as any).planWeb === true ? true : undefined,
             planStatus: (m as any).planStatus,
+            // 计划模式（P0）：目标澄清结果透传，刷新 / 切回后还原目标确认卡。
+            clarify: (m as any).clarify,
             // 服务端落盘的附件（图片/文件预览）原样透传，刷新 / 切回后还原气泡内图片。
             ...(m.attachments && m.attachments.length
               ? { attachments: m.attachments }
@@ -1703,16 +1778,45 @@ export class AhChat extends LitElement {
           }))
         );
 
-        // 空消息属正常（新建会话尚未发送任何消息，服务端返回 messages:[]）：
-        // 直接按合法空会话走合并/落内存，不再当作恢复失败抛异常。
-        // 先取计划进度镜像查找表；待线程按新 id 重建后再应用（见下）。
+        // 计划会话恢复：服务端会话存储（串行回退路径）会混入「单步任务」user/assistant
+        // 消息，且「最终执行结果」摘要仅本端历史镜像持有（旧串行路径未落服务端）。故计划会话
+        // 优先采用干净的历史镜像（已过滤 quiet 单步、含摘要），单步残留仅作防御性过滤；
+        // 计划进度（planStatus）仍以服务端为权威源（实时性更强，尤其进行中 / 刚完成）。
+        const mirrored = await loadThread(id);
+        const isPlanSession =
+          clean.some((m) => (m as any).plan) ||
+          !!(mirrored && mirrored.msgs.some((m) => (m as any).plan));
+        // 先取计划进度镜像查找表（以服务端为权威源）；待线程按新 id 重建后再应用。
         const planStatusLookup = buildPlanStatusLookup(clean);
+        let base: ChatMsg[];
+        if (isPlanSession) {
+          const mirrorMsgs =
+            mirrored && mirrored.msgs.length
+              ? (sanitizeMessages(mirrored.msgs as ChatMsg[]) as ChatMsg[])
+              : [];
+          const hasSummary = mirrorMsgs.some(
+            (m) =>
+              typeof m.content === 'string' &&
+              m.content.startsWith('📋 计划执行摘要')
+          );
+          if (mirrorMsgs.length && hasSummary) {
+            // 镜像含摘要（DAG 路径 / 新串行路径）：干净源，直接采用并过滤任何残余单步噪声。
+            base = filterPlanSingleStep(mirrorMsgs);
+            recoveredUsage = mirrored?.usage ?? null;
+          } else {
+            // 镜像缺失 / 无摘要（如本修复前的已完成串行会话）：退回服务端存储，滤掉单步
+            // 派发噪声，并从最后一条任务产出回收「最终结果」作为兜底展示（与摘要末位任务语义一致）。
+            base = filterPlanSingleStep(clean);
+            base = recoverPlanFinalResult(base, clean);
+          }
+        } else {
+          base = clean;
+        }
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
-        // 合并结果统一补发新 id（渲染以 id 为 key，不能缺省）。
         const merged =
           localBuf && localBuf.length
-            ? mergeThreadHistories(clean, sanitizeMessages(localBuf))
-            : clean;
+            ? mergeThreadHistories(base, sanitizeMessages(localBuf))
+            : base;
         this.threads[id] = merged.map((m) => ({
           ...m,
           // 恢复源附件为 {name,type,url?,serverUrl?} 形状，渲染需 UploadedFile（dataUrl）。
@@ -1832,15 +1936,33 @@ export class AhChat extends LitElement {
       }
       const doneMap: Record<string, boolean> = {};
       for (const tid of ps.done ?? []) doneMap[tid] = true;
+      // P3：awaiting = 合法暂停（审批门）—— 原样还原「待审批」态与待审批任务列表，
+      // 刷新 / 重启后卡片仍可点「批准并继续」放行（检查点 approvals 跨重启保留）。
+      const awaitingState = ps.status === 'awaiting';
       // running = 上次执行中断：保留已完成集合，但置 failed 等待用户显式继续。
-      const interrupted = ps.status === 'running';
+      const interrupted = !awaitingState && ps.status === 'running';
       this.planExec = {
         ...this.planExec,
         [m.id]: {
-          status: interrupted ? 'failed' : ps.status,
+          status: awaitingState
+            ? 'awaiting'
+            : interrupted
+            ? 'failed'
+            : ps.status,
           currentTaskId: interrupted ? ps.currentTaskId : undefined,
           failedTaskId: interrupted ? ps.currentTaskId : ps.failedTaskId,
-          done: doneMap
+          done: doneMap,
+          ...(awaitingState && Array.isArray(ps.awaiting)
+            ? { awaitingTaskIds: ps.awaiting }
+            : {}),
+          // P2.6：紧凑 run 快照（检查点丢失后「执行详情」抽屉的镜像回退数据源）。
+          // 形状校验：需为含 steps 对象的结构，宁缺勿错。
+          ...(ps.wfSnapshot &&
+          typeof ps.wfSnapshot === 'object' &&
+          (ps.wfSnapshot as { steps?: unknown }).steps &&
+          typeof (ps.wfSnapshot as { steps?: unknown }).steps === 'object'
+            ? { wfSnapshot: ps.wfSnapshot as PlanWfRunMirror }
+            : {})
         }
       };
     }
@@ -2013,54 +2135,18 @@ export class AhChat extends LitElement {
     };
   }
 
-  private async send() {
-    // 命令胶囊 + 输入框参数拼成最终提示词（无胶囊时即普通文本）。
-    const prompt = this.buildPrompt();
-    // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
-    if (!prompt && this.attachments.length === 0) return;
-
-    // BYOK 发送前 gating：选中真实模式但当前账号未配置可用 Key → 拦截，
-    // 引导去「设置 → 模型服务商」配置（服务端也会以 402 兜底拒绝）。
-    if (this.mode === 'real' && !this.llmReady) {
-      notify.warning(
-        '尚未配置可用的 LLM API Key，无法发起真实对话。请到「设置 → 模型服务商」填入你的 OpenRouter Key。',
-        { title: '需要 API Key', key: 'pk-required' }
-      );
-      this.dispatchEvent(
-        new CustomEvent('ah-goto', {
-          detail: 'settings',
-          bubbles: true,
-          composed: true
-        })
-      );
-      return;
-    }
-
-    // Slash Command 拦截：如果输入是 /command，处理后不发送到 /api/run
-    if (handleSlashCommand(prompt, this._makeCommandContext())) {
-      this.clearComposer();
-      return;
-    }
-
-    // 会话创建是接口调用：失败时给出明确提示，而不是静默地什么都不发生
-    // （此前这里没有 try/catch，失败会变成未捕获的 Promise rejection）。
-    let sessionId: string;
-    try {
-      sessionId = await this.ensureSession();
-    } catch (e: any) {
-      notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
-      return;
-    }
-
-    // 构造用户消息内容：只发送纯文本提示词给 LLM。
-    // 图片附件通过 m.attachments 传给前端单独渲染，同时通过 attachments 字段传给服务端。
-    const content = prompt;
-
-    // 在清空 this.attachments 之前保留完整附件副本（含 dataUrl），
-    // 用于回显到 user 气泡；否则消息写入时附件已被清空，气泡里图片不显示。
-    const rawAttachments = [...this.attachments];
-
-    // 为每个图片构建结构化附件信息。
+  /**
+   * 把附件列表转换成 dispatchPrompt 需要的两类内容：
+   * - imageAttachments：压缩后的 dataUrl / serverUrl，直接发给模型视觉输入。
+   * - modelPrompt：在原始 prompt 后追加文本附件摘要，仅用于模型请求，不影响 UI 气泡内容。
+   */
+  private async buildAttachmentDispatchOpts(
+    content: string,
+    rawAttachments: UploadedFile[]
+  ): Promise<{
+    imageAttachments: Array<{ url: string; name: string; type: string }>;
+    modelPrompt: string;
+  }> {
     // 关键修复：直接把本地 dataUrl（完整 data: URI）作为图片内容发给模型，
     // 而非依赖服务端返回的 serverUrl（相对路径 /api/uploads/*，模型提供方无法 fetch）。
     // 这样即使服务端上传失败、或部署在 localhost，模型也能直接解码看到图片。
@@ -2102,6 +2188,57 @@ export class AhChat extends LitElement {
     const modelPrompt = attachmentDigest
       ? `${content}\n\n${attachmentDigest}`
       : content;
+
+    return { imageAttachments, modelPrompt };
+  }
+
+  private async send() {
+    // 命令胶囊 + 输入框参数拼成最终提示词（无胶囊时即普通文本）。
+    const prompt = this.buildPrompt();
+    // 仅阻止「同一会话正在流式时重复发送」；其它会话（含后台进行中的 run）不受影响，可并发。
+    if (!prompt && this.attachments.length === 0) return;
+
+    // BYOK 发送前 gating：选中真实模式但当前账号未配置可用 Key → 拦截，
+    // 引导去「设置 → 模型服务商」配置（服务端也会以 402 兜底拒绝）。
+    if (this.mode === 'real' && !this.llmReady) {
+      notify.warning(
+        '尚未配置可用的 LLM API Key，无法发起真实对话。请到「设置 → 模型服务商」填入你的 OpenRouter Key。',
+        { title: '需要 API Key', key: 'pk-required' }
+      );
+      this.dispatchEvent(
+        new CustomEvent('ah-goto', {
+          detail: 'settings',
+          bubbles: true,
+          composed: true
+        })
+      );
+      return;
+    }
+
+    // Slash Command 拦截：如果输入是 /command，处理后不发送到 /api/run
+    if (handleSlashCommand(prompt, this._makeCommandContext())) {
+      this.clearComposer();
+      return;
+    }
+
+    // 会话创建是接口调用：失败时给出明确提示，而不是静默地什么都不发生
+    // （此前这里没有 try/catch，失败会变成未捕获的 Promise rejection）。
+    let sessionId: string;
+    try {
+      sessionId = await this.ensureSession();
+    } catch (e: any) {
+      notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
+      return;
+    }
+
+    // 构造用户消息内容：只发送纯文本提示词给 LLM。
+    const content = prompt;
+
+    // 在清空 this.attachments 之前保留完整附件副本（含 dataUrl），
+    // 用于回显到 user 气泡；否则消息写入时附件已被清空，气泡里图片不显示。
+    const rawAttachments = [...this.attachments];
+    const { imageAttachments, modelPrompt } =
+      await this.buildAttachmentDispatchOpts(content, rawAttachments);
 
     this.clearComposer();
     await this.runRt.dispatchPrompt(sessionId, content, imageAttachments, {
@@ -2196,7 +2333,19 @@ export class AhChat extends LitElement {
       requestUpdate: () => this.requestUpdate(),
 
       /* ----- SSE 客户端 ----- */
-      streamRun: (payload, opts) => client.streamRun(payload as any, opts)
+      streamRun: (payload, opts) => client.streamRun(payload as any, opts),
+
+      /* ----- P5 静默计划执行：quiet run 的思考增量 → 当前计划卡思考面板 ----- */
+      onPlanThinking: (sid, delta) => {
+        const sink = this.quietPlanSink;
+        if (!sink) return;
+        const prev = this.planExec[sink.msgId];
+        if (!prev || prev.status !== 'running') return;
+        const next = applyPlanThinking(prev, delta);
+        if (next !== prev) {
+          this.planExec = { ...this.planExec, [sink.msgId]: next };
+        }
+      }
     };
   }
 
@@ -2320,7 +2469,7 @@ export class AhChat extends LitElement {
         const node = mk(
           tc.llm,
           retrieval ? 'retrieval' : 'tool',
-          retrieval ? `检索 · ${name}` : name,
+          retrieval ? `检索 · ${name}` : toolDisplayName(name),
           'pending',
           {
             detail:
@@ -2344,7 +2493,7 @@ export class AhChat extends LitElement {
         const node = mk(
           tc.llm,
           retrieval ? 'retrieval' : 'tool',
-          retrieval ? `检索 · ${name}` : name,
+          retrieval ? `检索 · ${name}` : toolDisplayName(name),
           ev.errored ? 'error' : 'ok',
           {
             detail:
@@ -2374,10 +2523,22 @@ export class AhChat extends LitElement {
               ? ev.result
               : JSON.stringify(ev.result ?? {});
           target.status = ev.errored ? 'error' : 'ok';
-          target.meta = {
+          // Jev 决策工具：从结构化结果中提炼一行可读摘要，直接挂在节点 meta，
+          // 让「是否执行 + 决策结论」在链路上无需展开 JSON 即可辨识。
+          const evCallName = (ev as { call?: { name?: unknown } }).call?.name;
+          const meta: Record<string, string> = {
             ...(target.meta ?? {}),
             status: ev.errored ? '失败' : '成功'
           };
+          if (
+            evCallName === 'builtin__jev_decide' &&
+            !ev.errored &&
+            typeof target.result === 'string'
+          ) {
+            const d = summarizeJevDecision(target.result);
+            if (d) meta['决策'] = d;
+          }
+          target.meta = meta;
         }
         break;
       }
@@ -2442,6 +2603,30 @@ export class AhChat extends LitElement {
         });
         break;
       }
+      case 'jev:call': {
+        // TypeSafe Jev 决策模型旁路上报：子系统直连调用（注入门禁/上下文压缩等）的调用事实。
+        // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点。
+        if (ev.caller === 'tool') break;
+        this.ensureTraceRoot(sid);
+        const jParent = tc.llm ?? tc.parent ?? tc.root!;
+        mk(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
+          ...(ev.error ? { result: String(ev.error) } : {}),
+          meta: {
+            jev: 'true',
+            调用方: String(ev.caller ?? '?'),
+            延迟: `${Number(ev.latencyMs ?? 0)}ms`,
+            ...(ev.questions != null ? { 问题数: String(ev.questions) } : {}),
+            ...(ev.tokens
+              ? {
+                  tokens: `${Number(ev.tokens.input ?? 0)}+${Number(
+                    ev.tokens.output ?? 0
+                  )}`
+                }
+              : {})
+          }
+        });
+        break;
+      }
       case 'run:token-cache': {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
@@ -2476,10 +2661,12 @@ export class AhChat extends LitElement {
       }
       case 'verify:result': {
         this.ensureTraceRoot(sid);
-        mk(tc.root!, 'verify', '自检', ev.passed ? 'ok' : 'error', {
+        // 软性未通过（soft）只告警不阻断：链路里不算失败，避免与真正被拦的产出混淆。
+        const soft = !ev.passed && ev.soft === true;
+        mk(tc.root!, 'verify', soft ? '验收告警' : '自检', ev.passed || soft ? 'ok' : 'error', {
           meta: {
             score: String(ev.score ?? '?'),
-            passed: ev.passed ? '通过' : '未通过'
+            passed: ev.passed ? '通过' : soft ? '未通过（不阻断）' : '未通过'
           },
           result: (ev.reasons ?? []).join('\n')
         });
@@ -2605,6 +2792,7 @@ export class AhChat extends LitElement {
   private startEdit(msgId: number, content: string) {
     this.editingMsgId = msgId;
     this.editingDraft = content;
+    this.editingOriginalContent = content;
     this.hoverUserMsgId = -1;
   }
 
@@ -2612,25 +2800,99 @@ export class AhChat extends LitElement {
   private cancelEdit() {
     this.editingMsgId = -1;
     this.editingDraft = '';
+    this.editingOriginalContent = '';
   }
 
   /**
-   * 编辑后重新发送：把新内容作为一条新消息派发（历史保留原对话上下文，
-   * 与主流聊天应用一致 —— 不回滚已生成的回复，只追加一轮新问答）。
+   * 编辑后重新发送：
+   * 1. 草稿与原文一致时直接返回（UI 已通过 disabled 拦截，此处作兜底）。
+   * 2. 截断被编辑消息之后的所有消息，替换被编辑消息内容为新草稿。
+   * 3. 在末尾添加 assistant 占位并继续派发，服务端收到 editFrom 后会同步
+   *    截断会话存储并清空后续记忆，确保模型基于新的上下文生成。
    *
    * 重入防御：ensureSession 是异步的，await 期间若用户连点「发送 ↑」或
-   * Enter 与点击叠加，第二次调用会带着同一草稿再次派发 dispatchPrompt，
-   * 历史里立刻多出一条重复消息。进入时立即清掉编辑态标志作为提交锁，
-   * 后续调用因 editingMsgId === -1 直接 return，仅首次生效。
+   * Enter 与点击叠加，第二次调用会因 editingMsgId === -1 直接 return，仅首次生效。
    */
-  private async sendEdit(_msgId: number) {
+  private async sendEdit(msgId: number) {
     if (this.editingMsgId < 0) return; // 非编辑态 / 本次已提交（提交锁）
     const draft = this.editingDraft.trim();
     if (!draft || this.streaming[this.activeId] === true) return;
-    this.cancelEdit(); // 立即清 editingMsgId + editingDraft：UI 退回普通气泡，后续重入被上方拦截
+    // 没有任何变动：不发送，保持编辑态让用户继续编辑。
+    if (draft === this.editingOriginalContent.trim()) return;
+
+    // 立即清编辑态标志作为提交锁。
+    this.cancelEdit();
+    this.fullscreenEditOpen = false;
+    this.cancelComposerLongPress();
+
     const sessionId = await this.ensureSession();
-    this.input = draft;
-    await this.send();
+    const t = this.threadFor(sessionId);
+    const idx = t.findIndex((m) => m.id === msgId && m.role === 'user');
+    if (idx < 0) {
+      // 找不到原消息：降级为普通追加发送。
+      this.input = draft;
+      await this.send();
+      return;
+    }
+
+    const editedMsg = t[idx];
+    if (!editedMsg) {
+      this.input = draft;
+      await this.send();
+      return;
+    }
+
+    // 截断被编辑消息之后的所有消息，并用新草稿替换被编辑消息内容。
+    const next = t.slice(0, idx + 1);
+    next[idx] = { ...editedMsg, content: draft };
+
+    // 清理被截断消息衍生的前端状态，避免残留 plan / 回放 / 折叠态。
+    for (let i = idx + 1; i < t.length; i++) {
+      const removedId = t[i]?.id;
+      if (removedId == null) continue;
+      if (this.planExec[removedId]) {
+        const { [removedId]: _, ...rest } = this.planExec;
+        this.planExec = rest;
+      }
+      if (this.planWfReplay[removedId]) {
+        const { [removedId]: _, ...rest } = this.planWfReplay;
+        this.planWfReplay = rest;
+      }
+      if (this.thinkCollapsed[removedId]) {
+        const { [removedId]: _, ...rest } = this.thinkCollapsed;
+        this.thinkCollapsed = rest;
+      }
+    }
+
+    // 如果当前打开的抽屉/回放属于被截断的消息，关闭它们。
+    if (this.traceDrawerMsg && this.traceDrawerMsg.id > msgId) {
+      this.traceDrawerMsg = null;
+    }
+    if (this.planWfReplayMsg && this.planWfReplayMsg.id > msgId) {
+      this.planWfReplayMsg = null;
+    }
+
+    // 在截断后的线程末尾追加 assistant 占位，准备接收新回复。
+    next.push({ id: this.nextId++, role: 'assistant', content: '' });
+    this.threads[sessionId] = next;
+    if (this.activeId === sessionId) {
+      this.messages = next;
+    }
+    this.streamIdx[sessionId] = next.length - 1;
+    this.setStreaming(sessionId, false);
+
+    // 保留被编辑消息的附件；若原消息无附件则透空数组。
+    const rawAttachments = editedMsg.attachments
+      ? [...editedMsg.attachments]
+      : [];
+    const { imageAttachments, modelPrompt } =
+      await this.buildAttachmentDispatchOpts(draft, rawAttachments);
+
+    await this.runRt.dispatchPrompt(sessionId, draft, imageAttachments, {
+      attachments: rawAttachments,
+      modelPrompt,
+      editFrom: { sessionId, msgId, index: idx }
+    });
   }
 
   private onInput(e: Event) {
@@ -3031,10 +3293,14 @@ export class AhChat extends LitElement {
     if (isThinking) return;
     // 相对「有效折叠态」取反，写入显式覆盖（这样偏好切换后用户的手动选择可被反向操作解除）。
     const cur = this.effectiveThinkCollapsed(id);
+    const next = !cur;
     this.thinkCollapsed = {
       ...this.thinkCollapsed,
-      [k]: !cur
+      [k]: next
     };
+    // 手动展开时把思考区正文滚到底部（对齐 live 流式时的钉底视角；
+    // 默认收起偏好下展开旧思考，直接看到推理结尾而不是停在顶部）。
+    if (!next) this.scrollCtl.scrollThinkBlockToBottom(k);
   }
 
   /* ── 富文本块折叠（超长代码块 / 表格） ──────────────────────────────────
@@ -3222,7 +3488,17 @@ export class AhChat extends LitElement {
       setTimeout(() => {
         this._sidebarJustOpened = false;
       }, 300);
+    } else {
+      this.closeAllSessionSwipes();
     }
+  }
+
+  /** 全组收起会话列表的滑动操作区（ah-swipe-item 组排他信号，不带 id）：
+   * 避免「抽屉关了 / 已切会话、某行还摊开」的悬浮态，列表回到默认外观。 */
+  private closeAllSessionSwipes() {
+    window.dispatchEvent(
+      new CustomEvent('ah:swipe-close', { detail: { group: 'chat-sessions' } })
+    );
   }
 
   /** 切换 PC 端侧栏折叠态（展开/收起）。 */
@@ -3277,31 +3553,153 @@ export class AhChat extends LitElement {
     if (!m.plan) return;
     const sid = this.activeId;
     if (!sid) return;
+    // P5.1 同步修复：执行中打开抽屉后快照冻结在打开瞬间（此前一次性拉取），
+    // 与左侧实时卡片/思考面板出现「t3 已完成仍在思考 t3」式的观感错位。
+    // 打开期间轮询刷新（2.5s），run 进入终态后自动停止。
+    if (this.planWfReplayTimer != null) {
+      clearInterval(this.planWfReplayTimer);
+      this.planWfReplayTimer = null;
+    }
     this.planWfReplayMsg = m;
-    this.planWfReplay = { ...this.planWfReplay, [m.id]: { loading: true, snapshot: null } };
-    void (async () => {
+    this.planWfReplay = {
+      ...this.planWfReplay,
+      [m.id]: { loading: true, snapshot: null }
+    };
+    const fetchSnapshot = async (): Promise<void> => {
       const wfId = derivePlanWfId(sid, m.plan!);
       let st: PlanWfReplayState;
       try {
         const res = await client.getWorkflow(wfId);
         st = { loading: false, snapshot: res.workflow ?? null };
       } catch (e: unknown) {
-        st = {
-          loading: false,
-          snapshot: null,
-          error: e instanceof Error ? e.message : String(e)
-        };
+        // P2.6：检查点丢失（服务重启 / Render free 盘清理 → 404）→ 回退到
+        // 随 planStatus 镜像持久化的紧凑 run 快照（执行时捕获，applyPlanStatusLookup 恢复）。
+        const mirror =
+          this.planExec[m.id]?.wfSnapshot ??
+          ((m as ChatMsg & { planStatus?: { wfSnapshot?: unknown } }).planStatus
+            ?.wfSnapshot as PlanWfRunMirror | undefined);
+        if (
+          mirror &&
+          typeof mirror === 'object' &&
+          mirror.steps &&
+          typeof mirror.steps === 'object'
+        ) {
+          st = {
+            loading: false,
+            snapshot: null,
+            mirrorSnapshot: mirror,
+            fromMirror: true,
+            error: e instanceof Error ? e.message : String(e)
+          };
+        } else {
+          st = {
+            loading: false,
+            snapshot: null,
+            error: e instanceof Error ? e.message : String(e)
+          };
+        }
       }
       // 抽屉已关闭 / 已切到别的计划消息时不写回（防旧请求回流覆盖最新交互态）。
-      if (this.planWfReplayMsg?.id === m.id) {
-        this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      if (this.planWfReplayMsg?.id !== m.id) return;
+      this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      // P5.1：run 已终态（done/failed）→ 停止轮询（awaiting 仍需继续：审批后引擎恢复执行）。
+      const state = st.snapshot?.state ?? (st.mirrorSnapshot as { state?: string } | null)?.state;
+      if ((state === 'done' || state === 'failed') && this.planWfReplayTimer != null) {
+        clearInterval(this.planWfReplayTimer);
+        this.planWfReplayTimer = null;
       }
-    })();
+    };
+    void fetchSnapshot();
+    this.planWfReplayTimer = window.setInterval(() => {
+      void fetchSnapshot();
+    }, 2500);
   }
 
   /** P2：关闭「执行详情」抽屉（快照缓存保留，重开时即时水合后仍可重拉）。 */
   private closePlanWfReplay(): void {
+    if (this.planWfReplayTimer != null) {
+      clearInterval(this.planWfReplayTimer);
+      this.planWfReplayTimer = null;
+    }
     this.planWfReplayMsg = null;
+  }
+
+  /** P5.4：停止某计划消息的断连自愈轮询（终态 / 被新执行取代 / 卡片清理时调用）。 */
+  private stopPlanWfReconcile(msgId: number): void {
+    const t = this.planWfReconcileTimers[msgId];
+    if (t != null) {
+      clearInterval(t);
+      const next = { ...this.planWfReconcileTimers };
+      delete next[msgId];
+      this.planWfReconcileTimers = next;
+    }
+  }
+
+  /**
+   * P5.4 断连自愈：SSE 流静默结束（未收到终态帧）时调用。服务端 run 在断连后仍会跑完并
+   * 落检查点，故按 2.5s 轮询 GET /api/workflows/:id，把卡片收敛到权威状态：
+   *   - running / 其它        → 保持 running（继续轮询，不误判 failed）；
+   *   - awaiting              → 置 awaiting（审批门，继续轮询，审批后引擎恢复执行）；
+   *   - done / failed         → 收敛到该终态并停轮询（done 仍回挂执行摘要）。
+   * 仅当检查点也不可达（服务重启 / 盘清理）时保持 running 续轮询，不立即判 failed —— 杜绝
+   * 「断连 + 服务抖动」双重误判。消息被新执行（confirmPlan / resume / approve）取代时，调用
+   * 方应已 stopPlanWfReconcile 清除本定时器，poll 内的 msgId 守卫进一步防旧帧回流。
+   */
+  private reconcilePlanWfOnDisconnect(m: ChatMsg, sid: string): void {
+    if (!m.plan) return;
+    const wfId = derivePlanWfId(sid, m.plan);
+    const cur = this.planExec[m.id];
+    if (cur) {
+      // 先置「执行中断·重连中」过渡态：区别于 failed，且不被 saveHistory 当终态固化。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...cur, status: 'running', currentTaskId: undefined, thinking: undefined }
+      };
+    }
+    const poll = async (): Promise<void> => {
+      const now = this.planExec[m.id];
+      if (!now) return; // 已被新执行 / 清理取代
+      let run: PlanWfRunSnapshot | null | undefined;
+      try {
+        const res = await client.getWorkflow(wfId);
+        run = res.workflow;
+      } catch {
+        // 检查点暂不可达：保持 running 续轮询（下一轮再试），不立即判 failed。
+        return;
+      }
+      const state = run?.state;
+      if (state === 'done' || state === 'failed') {
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...now,
+            status: state,
+            currentTaskId: undefined,
+            ...(run ? { wfSnapshot: compactPlanWfSnapshot(run) } : {})
+          }
+        };
+        if (state === 'done' && run) this.appendPlanDagSummary(sid, m, run);
+        this.stopPlanWfReconcile(m.id);
+      } else if (state === 'awaiting') {
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...now, status: 'awaiting', currentTaskId: undefined }
+        };
+        // awaiting 仍需继续轮询（审批后引擎恢复执行，state 会变回 running→done）
+      } else {
+        // running / 其它：保持 running，继续轮询
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: { ...now, status: 'running', currentTaskId: undefined }
+        };
+      }
+    };
+    this.stopPlanWfReconcile(m.id);
+    void poll();
+    this.planWfReconcileTimers = {
+      ...this.planWfReconcileTimers,
+      [m.id]: window.setInterval(() => void poll(), 2500)
+    };
   }
 
   /**
@@ -3317,6 +3715,7 @@ export class AhChat extends LitElement {
       streamIdx: this.streamIdx,
       editingMsgId: this.editingMsgId,
       editingDraft: this.editingDraft,
+      editingOriginalContent: this.editingOriginalContent,
       hoverUserMsgId: this.hoverUserMsgId,
       copiedMsgId: this.copiedMsgId,
       deepThink: this.deepThink,
@@ -3345,6 +3744,19 @@ export class AhChat extends LitElement {
       resumeLost: (id: string) => void this.runRt.resumeLost(id),
       confirmPlan: (m: ChatMsg) => void this.confirmPlan(m),
       cancelPlan: (msgId: number) => this.cancelPlan(msgId),
+      // 计划模式（P0）：目标澄清卡（plan:clarify）逐题点选/自定义 + 整体补充 + 确认继续。
+      clarifyDraft: this.clarifyDraft,
+      clarifyAnswered: this.clarifyAnswered,
+      toggleClarifyPick: (msgId: number, qIdx: number, opt: string) =>
+        this.toggleClarifyPick(msgId, qIdx, opt),
+      setClarifyText: (msgId: number, qIdx: number, val: string) =>
+        this.setClarifyText(msgId, qIdx, val),
+      setClarifyExtra: (msgId: number, val: string) =>
+        this.setClarifyExtra(msgId, val),
+      confirmClarify: (m: ChatMsg) => void this.confirmClarify(m),
+      // P3（人工审批门）：awaiting 态卡片「批准并继续」（全部未决门）/ 抽屉单节点批准。
+      approvePlan: (m: ChatMsg, stepId?: string) =>
+        void this.approvePlanAction(m, stepId),
       setTraceDrawer: (
         m: ChatMsg | null,
         section: 'trace' | 'insights' | 'confidence'
@@ -3361,10 +3773,95 @@ export class AhChat extends LitElement {
       }
     };
   }
+  /** 取某条澄清卡的输入状态（惰性建卡：首次读写即落进 clarifyDraft，键为字符串题号）。 */
+  private clarifyState(msgId: number): ClarifyDraftState {
+    let st = this.clarifyDraft[msgId];
+    if (!st) {
+      st = { picks: {}, texts: {}, extra: '' };
+      this.clarifyDraft[msgId] = st;
+    }
+    return st;
+  }
+
+  /** 点选/取消一个候选选项：重建状态对象触发重渲染以反映选中态（文本输入不受影响，值已入库）。 */
+  private toggleClarifyPick(msgId: number, qIdx: number, opt: string) {
+    if (this.clarifyAnswered[msgId]) return;
+    const prev = this.clarifyState(msgId);
+    const key = String(qIdx);
+    const cur = prev.picks[key] ?? [];
+    const next = cur.includes(opt)
+      ? cur.filter((x) => x !== opt)
+      : [...cur, opt];
+    this.clarifyDraft = {
+      ...this.clarifyDraft,
+      [msgId]: { ...prev, picks: { ...prev.picks, [key]: next } }
+    };
+  }
+
+  /** 某题自定义补充：就地写入不触发重渲染（避免输入框失焦/光标跳动）。 */
+  private setClarifyText(msgId: number, qIdx: number, val: string) {
+    this.clarifyState(msgId).texts[String(qIdx)] = val;
+  }
+
+  /** 整体补充：就地写入不触发重渲染。 */
+  private setClarifyExtra(msgId: number, val: string) {
+    this.clarifyState(msgId).extra = val;
+  }
+
+  /**
+   * 计划模式（P0）：目标澄清卡「确认并继续」。把原需求 + 模型目标草稿 + 用户逐题
+   * 点选/自定义回答 + 整体补充拼成新的 propose 输入再次派发（interactionMode 仍为
+   * plan → 服务端走 planner 第二轮），基于已确认目标产出计划。派发期间澄清卡按钮置灰防重复提交。
+   */
+  private async confirmClarify(m: ChatMsg) {
+    const sid = this.activeId;
+    if (!sid || !m.clarify || this.clarifyAnswered[m.id]) return;
+    if (this.streaming[sid]) return;
+    this.clarifyAnswered = { ...this.clarifyAnswered, [m.id]: true };
+    // 找澄清消息前面最近的一条用户消息 = 原始需求。
+    const thread = this.threads[sid] ?? [];
+    const idx = thread.findIndex((p) => p.id === m.id);
+    let origNeed = '';
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const prev = thread[i];
+      if (prev?.role === 'user') {
+        origNeed = prev.content;
+        break;
+      }
+    }
+    // 逐题拼装：点选选项 + 自定义输入（任一非空才算回答，否则记「跳过」）。
+    const st = this.clarifyState(m.id);
+    const questions = normalizeClarifyQuestions(m.clarify.questions);
+    const answerLines = questions
+      .map((item, i) => {
+        const picks = st.picks[String(i)] ?? [];
+        const custom = (st.texts[String(i)] ?? '').trim();
+        const chosen = [...picks, custom ? `其他：${custom}` : '']
+          .filter(Boolean)
+          .join('；');
+        return chosen ? `${i + 1}. ${item.q} → ${chosen}` : null;
+      })
+      .filter((x): x is string => x !== null);
+    const extra = st.extra.trim();
+    const answered = answerLines.length > 0 || extra.length > 0;
+    const parts = [
+      origNeed || '（原需求见上文）',
+      '—— 目标澄清回复 ——',
+      m.clarify.goalDraft ? `目标草稿：${m.clarify.goalDraft}` : '',
+      answerLines.length ? '用户逐题确认：' : '',
+      ...answerLines,
+      extra ? `用户补充：${extra}` : '',
+      answered ? '' : '用户确认：按上述目标草稿继续，无需修改。'
+    ].filter(Boolean);
+    await this.runRt.dispatchPrompt(sid, parts.join('\n\n'), [], {});
+  }
   /** 确认/恢复计划：按拓扑序（parsePlanOutput 已保证）逐任务派发；任一任务失败或用户停止即立即中止，等待用户指令后再继续。 */
   private async confirmPlan(m: ChatMsg) {
     const sid = this.activeId;
     if (!sid || !m.plan) return;
+    // P5.4：用户主动重派发（确认 / 从失败任务继续）前，清除该计划的断连自愈轮询，
+    // 避免它与新起的 SSE 流争夺 planExec 状态。
+    this.stopPlanWfReconcile(m.id);
     const st = this.planExec[m.id];
     // pending=首次确认；failed=失败后从失败节点恢复。running/done/cancelled 不再进入。
     if (!st || (st.status !== 'pending' && st.status !== 'failed')) return;
@@ -3396,60 +3893,194 @@ export class AhChat extends LitElement {
     }
     let cur: PlanExecState = { ...st, status: 'running' };
     this.planExec = { ...this.planExec, [m.id]: cur };
-    for (const task of m.plan.tasks) {
-      // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
-      if (cur.done[task.id]) continue;
-      // 每个任务派发前刷新当前任务标记（驱动卡片 ⏳ 状态）。
-      cur = { ...cur, status: 'running', currentTaskId: task.id };
-      this.planExec = { ...this.planExec, [m.id]: cur };
-      const parts = [`【计划任务 ${task.id}】${task.title}`];
-      if (task.steps.length) {
-        parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
-      }
-      parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
-      const result = await this.runRt.dispatchPrompt(
-        sid,
-        parts.join('\n'),
-        [],
-        {
-          planTask: true
-        }
-      );
-      if (result !== 'ok') {
-        if (result === 'error') {
-          // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
-          // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
-          // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
-          cur = {
-            ...cur,
-            status: 'failed',
-            failedTaskId: task.id,
-            currentTaskId: undefined
-          };
-        } else {
-          // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
-          cur = { ...cur, status: 'cancelled', currentTaskId: undefined };
-        }
+    // P5 静默执行：串行路径同样不把任务消息进气泡 —— 每个任务以 quiet 消息对
+    // （user 提示 + assistant 产出）在后台执行，思考增量进计划卡思考面板，
+    // 产出在全部任务完成后随「摘要 + 最终结果」一次性输出。
+    const taskOutputs: Record<string, string> = {};
+    this.quietPlanSink = { msgId: m.id };
+    try {
+      for (const task of m.plan.tasks) {
+        // 已完成的任务（上次成功跑完的）直接跳过：恢复执行只重跑失败节点及其后续。
+        if (cur.done[task.id]) continue;
+        // 每个任务派发前刷新当前任务标记 + 重置思考面板（驱动卡片 ⏳ 状态与 💭 思考流）。
+        cur = {
+          ...cur,
+          status: 'running',
+          currentTaskId: task.id,
+          thinking: { taskId: task.id, text: '' }
+        };
         this.planExec = { ...this.planExec, [m.id]: cur };
-        return;
+        const parts = [`【计划任务 ${task.id}】${task.title}`];
+        if (task.steps.length) {
+          parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
+        }
+        parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
+        // 产出自包含铁律：串行路径里，任务的回复正文就是下游任务的唯一上游输入
+        // （读取进 taskOutputs 后 quiet 消息对即被移出线程）。执行模型若只给路径、
+        // 摘要，或反过来要求用户「把 t1–t4 的产出贴过来」，下游整合任务就会断粮。
+        // 因此每个任务派发时都带上硬性执行要求，把「向用户甩锅」的出口提前堵死。
+        parts.push(
+          '执行要求（硬性）：把本任务产出完整写入你的回复正文，不要只给出文件路径或摘要；',
+          '禁止要求用户粘贴、搬运或补充任何上游任务产出 —— 上游产出要么已在下方注入，要么基于任务目标自行合理补全。'
+        );
+        // 串行路径的共享黑板：把已完成的依赖任务产出注入派发 prompt（与 DAG 路径
+        // inputMapping `upstream_*` 的语义对齐，见 workflow-executor.ts）。断点续跑
+        // 「从失败任务继续」时，早前完成的上游产出不在本次 taskOutputs 中 —— 明确
+        // 告知执行模型「未留存、自行补全」，而不是留它向用户索要。
+        const upstreamDeps = task.dependsOn ?? [];
+        if (upstreamDeps.length) {
+          parts.push('上游任务产出（自动注入，直接使用，勿向用户索要）：');
+          for (const dep of upstreamDeps) {
+            const out = (taskOutputs[dep] ?? '').trim();
+            parts.push(
+              out
+                ? `--- ${dep} ---\n${
+                    out.length > PLAN_UPSTREAM_OUTPUT_MAX
+                      ? out.slice(0, PLAN_UPSTREAM_OUTPUT_MAX) + '…（已截断）'
+                      : out
+                  }`
+                : `--- ${dep} ---（本次未留存该上游产出：请勿向用户索要，按任务目标自行补全相关内容。）`
+            );
+          }
+        }
+        const result = await this.runRt.dispatchPrompt(
+          sid,
+          parts.join('\n'),
+          [],
+          {
+            planTask: true,
+            // 联网能力对齐：任务执行继承 propose 时的联网开关（planWeb），
+            // 避免「计划要求外部数据、执行环境无检索工具」导致验收必败。
+            web: this.web || m.planWeb === true || undefined,
+            // P5 静默执行：任务消息对标记 quiet（不渲染 / 不落历史镜像）。
+            quiet: true
+          }
+        );
+        if (result !== 'ok') {
+          // 中断的部分产出不再展示（quiet 对移出线程）；DAG 检查点续跑为主恢复路径。
+          this.stripQuietTail(sid);
+          if (result === 'error') {
+            // 任务执行失败（模型报错 / 断连）：立即中止后续所有任务派发，
+            // 记录失败节点并置 failed 态 —— 卡片出现「从失败任务继续」按钮，
+            // 等待用户给出指令（重试 / 调整）后从该节点拉起继续执行。
+            cur = {
+              ...cur,
+              status: 'failed',
+              failedTaskId: task.id,
+              currentTaskId: undefined,
+              thinking: undefined
+            };
+          } else {
+            // 用户手动停止：中止剩余任务并标记取消，已完成任务的产出保留在会话中。
+            cur = {
+              ...cur,
+              status: 'cancelled',
+              currentTaskId: undefined,
+              thinking: undefined
+            };
+          }
+          this.planExec = { ...this.planExec, [m.id]: cur };
+          return;
+        }
+        // 抽取本任务产出（隐藏 assistant 消息正文），随后把 quiet 消息对移出线程。
+        const tOut = this.threadFor(sid);
+        const outMsg = tOut[tOut.length - 1];
+        taskOutputs[task.id] = typeof outMsg?.content === 'string' ? outMsg.content : '';
+        this.stripQuietTail(sid);
+        cur = {
+          ...cur,
+          done: { ...cur.done, [task.id]: true },
+          failedTaskId: undefined,
+          thinking: undefined
+        };
+        this.planExec = { ...this.planExec, [m.id]: cur };
       }
-      cur = {
-        ...cur,
-        done: { ...cur.done, [task.id]: true },
-        failedTaskId: undefined
-      };
-      this.planExec = { ...this.planExec, [m.id]: cur };
+    } finally {
+      this.quietPlanSink = null;
     }
+    // 全部完成：回挂「摘要 + 最终结果」（P5：只在最后输出一次结果）。
+    // 前缀与 appendPlanDagSummary 同源（PLAN_DAG_SUMMARY_PREFIX 解析器兼容）。
+    const lines = [
+      `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
+    ];
+    let finalOut = '';
+    let finalTask: { id: string; title: string } | undefined;
+    for (const task of m.plan.tasks) {
+      const ok = !!cur.done[task.id];
+      lines.push(
+        `${ok ? '✅' : '⏭'} ${task.id} ${task.title}（${ok ? 'done' : 'skipped'}）`
+      );
+      const out = taskOutputs[task.id];
+      if (ok && out.trim()) {
+        finalOut = out;
+        finalTask = { id: task.id, title: task.title };
+      }
+    }
+    if (finalTask && finalOut.trim()) {
+      lines.push(
+        '',
+        `—— 最终结果（任务 ${finalTask.id}：${finalTask.title}）——`,
+        finalOut
+      );
+    }
+    const tFinal = this.threadFor(sid);
+    tFinal.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    this.threads[sid] = tFinal;
+    if (this.activeId === sid) this.messages = tFinal;
+    // P5：串行回退路径「摘要 + 最终结果」需落历史镜像，否则刷新后服务端会话存储
+    // （不含摘要、混有单步噪声）会覆盖本端干净线程，导致刷新丢失最终结果 / 复现单步气泡。
+    this.saveHistory(sid);
     cur = {
       ...cur,
       status: 'done',
       currentTaskId: undefined,
-      failedTaskId: undefined
+      failedTaskId: undefined,
+      thinking: undefined
     };
     this.planExec = { ...this.planExec, [m.id]: cur };
   }
 
+  /**
+   * P5 静默执行：把线程尾部连续的 quiet 消息（最多 user + assistant 两条）移出线程。
+   * 串行回退路径在每个任务收尾（成功 / 失败 / 取消）调用 —— 隐藏消息对的产出已被
+   * 读取进 taskOutputs（或确认丢弃），线程中不留痕迹，历史镜像也从不落 quiet 消息。
+   */
+  private stripQuietTail(sid: string) {
+    const t = this.threadFor(sid);
+    let removed = 0;
+    while (t.length && t[t.length - 1]?.quiet && removed < 2) {
+      t.pop();
+      removed++;
+    }
+    if (removed) {
+      this.threads[sid] = t;
+      if (this.activeId === sid) this.messages = t;
+    }
+  }
+
   /** 取消计划：不再执行任何任务。 */
+  /**
+   * P5.4 停止按钮统一入口：计划 DAG 执行中优先中止 DAG 流（planWfAbort），普通 run 才走
+   * runRt.stop()。两者互斥（同一时刻仅一个在跑）。
+   *
+   * 与 P5.3 的差异：断连已不再隐式中止服务端 run（P5.4），因此计划路径除了 abort 本地
+   * 流读取（触发 consumePlanWfStream 的 cancelled 分支），还必须显式调用
+   * POST /api/workflows/:id/cancel 通知服务端 abort 引擎 —— 否则「停止」只断开了观看，
+   * 服务端会继续把整个计划跑完。取消请求尽力而为（失败不影响本地 cancelled 终态，
+   * 卡片状态由用户操作权威决定）。
+   */
+  private stopActiveRun(): void {
+    if (this.planWfAbort) {
+      const wfId = this.planWfActiveId;
+      this.planWfAbort.abort();
+      if (wfId) {
+        void client.cancelWorkflow(wfId).catch(() => {});
+      }
+      return;
+    }
+    this.runRt.stop();
+  }
+
   private cancelPlan(msgId: number) {
     const st = this.planExec[msgId];
     if (!st || st.status !== 'pending') return;
@@ -3457,6 +4088,21 @@ export class AhChat extends LitElement {
       ...this.planExec,
       [msgId]: { ...st, status: 'cancelled' }
     };
+  }
+
+  /**
+   * P3（人工审批门）：卡片 / 抽屉「批准并继续」入口。
+   * awaiting 态时经确定性检查点键 locatePlanWfId 走服务端 approve 路由；
+   * 非 awaiting 或 DAG 关闭时静默忽略（按钮本身仅在 awaiting 态渲染，此处是防御）。
+   */
+  private async approvePlanAction(m: ChatMsg, stepId?: string): Promise<void> {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    if (!st || st.status !== 'awaiting') return;
+    if (!isPlanDagEnabled()) return;
+    const wfId = derivePlanWfId(sid, m.plan);
+    await this.approvePlanViaWorkflow(m, st, sid, wfId, stepId);
   }
 
   /**
@@ -3478,12 +4124,13 @@ export class AhChat extends LitElement {
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
     const ac = new AbortController();
     this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
     // 复用「流式中」标记：停止按钮亮起、发送按钮隐藏（避免计划执行中并发发起普通 run）。
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
     let terminal = false;
     try {
-      const byok = await this.planWfByok();
+      const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowFromPlan(
         m.plan,
         {
@@ -3499,9 +4146,18 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, false);
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'first'
+      );
     } finally {
       this.planWfAbort = null;
+      this.planWfActiveId = null;
       this.streaming = { ...this.streaming, [sid]: false };
       this.requestUpdate();
     }
@@ -3528,11 +4184,12 @@ export class AhChat extends LitElement {
     const taskIds = new Set(m.plan.tasks.map((t) => t.id));
     const ac = new AbortController();
     this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
     this.streaming = { ...this.streaming, [sid]: true };
-    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
+    this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', thinking: undefined } };
     let terminal = false;
     try {
-      const byok = await this.planWfByok();
+      const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowResume(
         wfId,
         {
@@ -3542,9 +4199,81 @@ export class AhChat extends LitElement {
           signal: ac.signal
         }
       );
-      terminal = await this.consumePlanWfStream(m, st, sid, taskIds, ac, source, true);
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'resume'
+      );
     } finally {
       this.planWfAbort = null;
+      this.planWfActiveId = null;
+      this.streaming = { ...this.streaming, [sid]: false };
+      this.requestUpdate();
+    }
+    if (terminal) this.saveHistory(sid);
+    return terminal;
+  }
+
+  /**
+   * P3（人工审批门）：awaiting 态经服务端 POST /api/workflows/:id/approve 放行审批门。
+   * 把目标 stepId（或全部未决门）写入检查点 run.approvals 后触发 DagEngine.resume，
+   * 引擎跳过已放行的门继续执行；若计划还有下一道门，引擎再次暂停并下发
+   * wf:awaiting-approval —— 卡片收敛回「待审批」态，用户逐门放行直至 wf:done。
+   *
+   * 与 resumePlanViaWorkflow 的区别：kind='approve' —— 传输层异常保留 awaiting
+   * （不回退串行：串行路径无审批门，回落等于绕过用户审批决定）。
+   *
+   * @param stepId 指定时只放行该节点（抽屉里「批准此节点」）；缺省放行全部未决门
+   *               （卡片「批准并继续」）。
+   * @returns true = 审批流进入终态；false = 传输层异常，卡片保持「待审批」可重试。
+   */
+  private async approvePlanViaWorkflow(
+    m: ChatMsg,
+    st: PlanExecState,
+    sid: string,
+    wfId: string,
+    stepId?: string
+  ): Promise<boolean> {
+    if (!m.plan) return false;
+    const taskIds = new Set(m.plan.tasks.map((t) => t.id));
+    const ac = new AbortController();
+    this.planWfAbort = ac;
+    this.planWfActiveId = wfId;
+    this.streaming = { ...this.streaming, [sid]: true };
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined, thinking: undefined }
+    };
+    let terminal = false;
+    try {
+      const byok = await this.planWfByok(m);
+      const source: AsyncGenerator<unknown> = client.streamWorkflowApprove(
+        wfId,
+        {
+          stepId,
+          all: !stepId,
+          mode: this.mode,
+          ...byok,
+          sessionId: sid,
+          signal: ac.signal
+        }
+      );
+      terminal = await this.consumePlanWfStream(
+        m,
+        st,
+        sid,
+        taskIds,
+        ac,
+        source,
+        'approve'
+      );
+    } finally {
+      this.planWfAbort = null;
+      this.planWfActiveId = null;
       this.streaming = { ...this.streaming, [sid]: false };
       this.requestUpdate();
     }
@@ -3558,7 +4287,7 @@ export class AhChat extends LitElement {
    * 服务端按 (ctx.sub, model) 走 resolveRunCredential 主链路解析用户 Key；自定义模型路径
    * 才需前端带 modelBaseUrl/modelApiKey（与 /api/run 完全一致的凭据语义）。首跑与续跑复用。
    */
-  private async planWfByok(): Promise<{
+  private async planWfByok(m?: ChatMsg): Promise<{
     model?: string;
     modelBaseUrl?: string;
     modelApiKey?: string;
@@ -3571,7 +4300,9 @@ export class AhChat extends LitElement {
       ctxWindow: this.serverCtxWindow > 0 ? this.serverCtxWindow : undefined,
       modelBaseUrl: endpoint.modelBaseUrl,
       modelApiKey: endpoint.modelApiKey,
-      web: this.web || undefined
+      // 联网能力对齐：计划执行继承 propose 当时的开关（planWeb）——生成计划时若已
+      // 授权出网，任务执行自动带联网；当前开关与继承均无才不出网。
+      web: this.web || m?.planWeb === true || undefined
     };
   }
 
@@ -3592,9 +4323,13 @@ export class AhChat extends LitElement {
     taskIds: Set<string>,
     ac: AbortController,
     source: AsyncGenerator<unknown>,
-    resume: boolean
+    kind: 'first' | 'resume' | 'approve'
   ): Promise<boolean> {
     let terminal = false;
+    // P4.6：终态交付文件拉取状态——记录已回挂摘要的 msgId 与本 run 的 wfId；
+    // 只在 _wf_done（服务端归档完成后发出）时拉取，避免与归档竞态。
+    let summaryMsgId: number | undefined;
+    let wfIdForArtifacts: string | undefined;
     try {
       for await (const ev of source) {
         if (ac.signal.aborted) break;
@@ -3608,9 +4343,33 @@ export class AhChat extends LitElement {
         if (next !== prev) {
           this.planExec = { ...this.planExec, [m.id]: next };
         }
+        // P5 静默执行：嵌套 harness 事件中只消费 llm:reasoning —— 增量叠进「当前任务
+        // 思考面板」（串行模式下与 currentTaskId 一一对应）；llm:token 等其余流式内容
+        // 静默丢弃（服务端 plan 桥已抑制 llm:token，此处是双保险），步骤消息不进气泡。
+        // P5.1 同步自愈：外层帧携带 stepId（服务端 executor 注入）→ 思考流按事件归属
+        // 归因；wf:step:start 丢失/乱序时自动切换槽位，不再错挂旧任务标签。
+        const he = (e as { event?: { type?: string; delta?: unknown } }).event;
+        if (he?.type === 'llm:reasoning') {
+          const heStepId = (e as { stepId?: string }).stepId;
+          // 非本计划任务的思考流（补偿 step 等）不进面板。
+          const sidOk = !heStepId || taskIds.has(heStepId);
+          const prevT = this.planExec[m.id] ?? st;
+          const nextT = sidOk ? applyPlanThinking(prevT, String(he.delta ?? ''), heStepId) : prevT;
+          if (nextT !== prevT) {
+            this.planExec = { ...this.planExec, [m.id]: nextT };
+          }
+        }
         if (e.type === 'wf:done' || e.type === 'wf:failed') {
           // 编排终态：回挂摘要并停止消费后续帧（_wf_done 收尾帧无需再处理）。
           this.appendPlanDagSummary(sid, m, e.run);
+          // P2.6：终态快照紧凑化落入 planExec（随 saveHistory 写穿到 planStatus 镜像）——
+          // 检查点在服务重启 / free 盘清理后丢失时，「执行详情」抽屉据此回退水合。
+          const snap = compactPlanWfSnapshot(e.run);
+          const cur = this.planExec[m.id] ?? st;
+          this.planExec = {
+            ...this.planExec,
+            [m.id]: { ...cur, ...(snap ? { wfSnapshot: snap } : {}) }
+          };
           terminal = true;
           break;
         }
@@ -3619,13 +4378,36 @@ export class AhChat extends LitElement {
           // 此分支兜底「终态帧被 SSE 解析丢失」时仍能从 run 快照还原摘要）。
           const run = e.run;
           const s = this.planExec[m.id] ?? st;
-          if (run?.steps) this.appendPlanDagSummary(sid, m, run);
+          // P3：审批门暂停不是编排终态 —— run.state==='awaiting' 时不回挂完成摘要，
+          // 卡片收敛为「待审批」态（awaitingTaskIds 取自快照中 awaiting 的 step）。
+          const rs = run?.state;
+          const awaitingIds =
+            rs === 'awaiting'
+              ? Object.values(run?.steps ?? {})
+                  .filter((x) => x?.state === 'awaiting')
+                  .map((x) => x.id ?? '')
+                  .filter(Boolean)
+              : [];
+          if (run?.steps && rs !== 'awaiting')
+            this.appendPlanDagSummary(sid, m, run);
+          // P2.6：收尾帧兜底同样落快照（含 awaiting 暂停态的 partial 快照——审批等待中
+          // 刷新后抽屉仍可回看已执行节点的轨迹）。
+          const snap = compactPlanWfSnapshot(run);
           this.planExec = {
             ...this.planExec,
             [m.id]: {
               ...s,
-              status: run && run.state === 'done' ? 'done' : 'failed',
-              currentTaskId: undefined
+              status:
+                rs === 'done'
+                  ? 'done'
+                  : rs === 'awaiting'
+                  ? 'awaiting'
+                  : 'failed',
+              currentTaskId: undefined,
+              ...(rs === 'awaiting' && awaitingIds.length
+                ? { awaitingTaskIds: awaitingIds }
+                : {}),
+              ...(snap ? { wfSnapshot: snap } : {})
             }
           };
           terminal = true;
@@ -3634,58 +4416,81 @@ export class AhChat extends LitElement {
         if (e.type === 'wf:error') {
           // 请求级失败（SSE 已开后服务端报错，如 402 无 Key / 检查点 400/404）：
           // 首跑重置可重入 pending（回退串行派发）；续跑保留 failed（回退串行 resume，
-          // 从失败任务重派发——done 集合不动，已完成产出保留）。
+          // 从失败任务重派发——done 集合不动，已完成产出保留）；
+          // P3 审批路径保留 awaiting（串行路径无审批门，回落等于绕过审批——宁可原地重试）。
           this.planExec = {
             ...this.planExec,
             [m.id]: {
               ...(this.planExec[m.id] ?? st),
-              status: resume ? 'failed' : 'pending',
-              currentTaskId: undefined
+              status:
+                kind === 'first'
+                  ? 'pending'
+                  : kind === 'resume'
+                  ? 'failed'
+                  : 'awaiting',
+              currentTaskId: undefined,
+              // P5.3：终态/失败分支一律清掉思考面板残留标签——避免「失败/断连误判」把
+              // 旧任务的思考流遗留到续跑/重派发，导致思考标签与执行详情（服务端检查点）不同源。
+              thinking: undefined
             }
           };
-          terminal = !resume;
+          terminal = kind !== 'resume';
           break;
         }
       }
       // 用户手动停止（停止按钮 → planWfAbort.abort()）：保留已完成任务（done 集合），
-      // 标 cancelled —— 这是合法终态，不回退串行。
+      // 标 cancelled —— 这是合法终态，不回退串行。同时停掉断连自愈轮询（如有），
+      // 防止它把本地 cancelled 覆盖回服务端检查点状态。
       if (ac.signal.aborted) {
+        this.stopPlanWfReconcile(m.id);
         this.planExec = {
           ...this.planExec,
           [m.id]: {
             ...(this.planExec[m.id] ?? st),
             status: 'cancelled',
-            currentTaskId: undefined
+            currentTaskId: undefined,
+            thinking: undefined
           }
         };
         terminal = true;
       } else if (!terminal) {
-        // 流自然结束但未收到任何终态帧（服务端进程重启 / 网络静默断开）：
-        // 保守标记 failed（而非静默 done），用户可经「从失败任务继续」重试。
-        this.planExec = {
-          ...this.planExec,
-          [m.id]: {
-            ...(this.planExec[m.id] ?? st),
-            status: 'failed',
-            currentTaskId: undefined
-          }
-        };
+        // 流静默结束但未收到任何终态帧（客户端断连 / 后台标签节流 / 网络抖动）：
+        // P5.4 不再武断标 failed —— 服务端计划 run 在断连后仍会跑完并落检查点，故启动
+        // 检查点轮询把卡片收敛到权威终态（running→done/failed）；仅当检查点本身确认失败 /
+        // 丢失才回落 failed（用户可「从失败任务继续」）。这消除了「串行模式执行更久、断连
+        // 窗口更长 → 任何瞬时断连都把进行中计划判 failed（用户视角 = 很容易 timeout）」的现象。
         terminal = true;
+        this.reconcilePlanWfOnDisconnect(m, sid);
       }
     } catch (e: unknown) {
       if (ac.signal.aborted) {
         // 用户手动停止（SSE 迭代在 abort 时抛 AbortError 路径）：保留已完成任务，
         // 标 cancelled —— 合法终态，不回退串行（terminal=true 使调用方不再派发）。
+        this.stopPlanWfReconcile(m.id);
         this.planExec = {
           ...this.planExec,
           [m.id]: {
             ...(this.planExec[m.id] ?? st),
             status: 'cancelled',
-            currentTaskId: undefined
+            currentTaskId: undefined,
+            thinking: undefined
           }
         };
         terminal = true;
-      } else if (resume) {
+      } else if (kind === 'approve') {
+        // P3 审批路径传输层异常（404 检查点丢失 / 5xx / 断连）：保留 awaiting（done 集合不动），
+        // 不回退串行（串行无审批门，回落等于绕过审批）；terminal=false → 卡片保持「待审批」
+        // 可再次点「批准并继续」重试。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: {
+            ...(this.planExec[m.id] ?? st),
+            status: 'awaiting',
+            currentTaskId: undefined
+          }
+        };
+        terminal = false;
+      } else if (kind === 'resume') {
         // 续跑传输层异常（404 无检查点 / 5xx / 断连）：不 toast 打扰（旧 run / 检查点
         // 丢失属可预期路径），保留 failed → 调用方回退串行 resume 兜底。
         this.planExec = {
@@ -3716,31 +4521,105 @@ export class AhChat extends LitElement {
   /**
    * P3：把计划 DAG 执行摘要回挂线程（卡片级紧凑摘要，见 design R1 —— 不把每 step
    * 明细重铺进会话气泡，避免历史膨胀）。run 快照缺失时仍给出按 task 的状态清单。
+   * P5 静默执行：步骤消息不再进会话气泡 —— 本消息即「最终结果」的输出位：
+   * 状态清单之后追加拓扑序最后一个成功任务的**完整产出**（不截断），只在最后输出一次。
    */
   private appendPlanDagSummary(
     sid: string,
     m: ChatMsg,
     run: PlanWfRunSnapshot | undefined
-  ): void {
-    if (!m.plan) return;
+  ): number | undefined {
+    if (!m.plan) return undefined;
     const steps = run?.steps ?? {};
     const lines: string[] = [
       `📋 计划执行摘要：${m.plan.goal}（共 ${m.plan.tasks.length} 个任务）`
     ];
+    let finalOut = '';
+    let finalTask: { id: string; title: string } | undefined;
     for (const t of m.plan.tasks) {
       const sr = steps[t.id];
       const state = sr?.state ?? 'pending';
       const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
       lines.push(`${mark} ${t.id} ${t.title}（${state}）`);
       const out = sr?.output;
-      if (out && typeof out === 'string' && out.trim()) {
-        lines.push(`   ${out.length > 300 ? out.slice(0, 300) + '…' : out}`);
+      // P5：记录拓扑序最后一个成功任务的完整产出（循环按 plan.tasks 顺序，天然取末位）。
+      if (state === 'done' && typeof out === 'string' && out.trim()) {
+        finalOut = out;
+        finalTask = { id: t.id, title: t.title };
+      } else if (state === 'done' && out != null && typeof out !== 'string') {
+        try {
+          finalOut = JSON.stringify(out, null, 2);
+          finalTask = { id: t.id, title: t.title };
+        } catch {
+          /* 不可序列化产出跳过 */
+        }
       }
     }
+    if (finalTask && finalOut.trim()) {
+      lines.push(
+        '',
+        `—— 最终结果（任务 ${finalTask.id}：${finalTask.title}）——`,
+        finalOut
+      );
+    }
     const t = this.threadFor(sid);
-    t.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    const msgId = this.nextId++;
+    t.push({ id: msgId, role: 'assistant', content: lines.join('\n') });
     this.threads[sid] = t;
     if (this.activeId === sid) this.messages = t;
+    return msgId;
+  }
+
+  /**
+   * P4.6：终态后拉取本 plan run 归档的「交付文件」并追加到执行摘要消息最下方
+   * （每文件 打开 /api/artifacts/<id>?preview=1 + 下载 ?download=1，markdown 渲染为可点链接）。
+   * 仅全成功（planExec.status==='done'）且无失败时展示——与后端「仅 done run 归档」同语义。
+   * 拉取 / 渲染失败静默降级（console.warn），绝不影响计划主流程与已 push 的摘要。
+   * @returns 是否成功追加了文件区（供 saveHistory 判断是否需落盘更新）。
+   */
+  private async appendPlanDagArtifactSection(
+    sid: string,
+    m: ChatMsg,
+    summaryMsgId: number | undefined,
+    wfId: string | undefined
+  ): Promise<boolean> {
+    if (summaryMsgId == null || !wfId) return false;
+    // 仅成功完成的计划才展示交付文件（后端对 failed run 不归档）。
+    const status = this.planExec[m.id]?.status;
+    if (status !== 'done') return false;
+    let items: import('./chat-render-utils').PlanArtifactItem[];
+    try {
+      const res = await authedFetch(
+        `/api/artifacts?runId=${encodeURIComponent(wfId)}`
+      );
+      if (!res.ok) return false;
+      const data = (await res.json()) as {
+        items?: Array<{ id: string; name: string; sizeBytes: number }>;
+      };
+      items = Array.isArray(data.items)
+        ? data.items.map((a) => ({
+            id: a.id,
+            name: a.name,
+            sizeBytes: a.sizeBytes
+          }))
+        : [];
+    } catch (e) {
+      console.warn(
+        `[plan-artifacts] 拉取交付文件失败（不阻断）：${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+      return false;
+    }
+    const section = buildPlanArtifactSection(items);
+    if (!section) return false; // 无文件 → 不追加区块
+    const t = this.threadFor(sid);
+    const msg = t.find((x) => x.id === summaryMsgId);
+    if (!msg) return false;
+    msg.content = `${msg.content}${section}`;
+    this.threads[sid] = t;
+    if (this.activeId === sid) this.messages = t;
+    return true;
   }
 
   /**
@@ -3865,7 +4744,9 @@ export class AhChat extends LitElement {
               去配置
             </button>
           </div>`}
-      ${this.messages.map((m) => this.renderMessage(m))}
+      ${this.messages
+        .filter((m) => !m.quiet)
+        .map((m) => this.renderMessage(m))}
     </div>`;
   }
 
@@ -3932,43 +4813,68 @@ export class AhChat extends LitElement {
               <span class="pull-hint">下拉刷新</span>
             </div>
             <div class="session-inner">
-            ${this.sessions.length === 0
-              ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
-              : this.sessions.map(
-                  (s) => html`
-                    <div
-                      class="session ${s.id === this.activeId ? 'active' : ''}"
-                      role="listitem"
-                      @click=${() => this.selectSession(s.id)}
-                    >
-                      <span class="dot"></span>
-                      <span class="title">${escapeHtml(s.title)}</span>
-                      <span class="acts">
-                        <button
-                          class="icon-btn"
-                          title="重命名"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this.renameSession(s.id);
-                          }}
+              ${this.sessions.length === 0
+                ? html`<p class="muted">暂无会话，发送消息即自动创建。</p>`
+                : this.sessions.map(
+                    (s) => html`
+                      <!-- 通用滑动项（ah-swipe-item，components/index.ts 注册）：
+                         触屏左滑行内容露出右侧「重命名/删除」操作区；桌面 hover 设备
+                         自动隐藏操作区，沿用行内 .acts hover 入口（见 session-swipe.ts）。 -->
+                      <ah-swipe-item id=${s.id} group="chat-sessions">
+                        <div
+                          class="session ${s.id === this.activeId
+                            ? 'active'
+                            : ''}"
+                          role="listitem"
+                          @click=${() => this.selectSession(s.id)}
                         >
-                          ✎
-                        </button>
-                        <button
-                          class="icon-btn"
-                          title="删除"
-                          @click=${(e: Event) => {
-                            e.stopPropagation();
-                            this.deleteSession(s.id);
-                          }}
-                        >
-                          🗑
-                        </button>
-                      </span>
-                    </div>
-                  `
-                )}
-            ${this.renderSessionListFooter()}
+                          <span class="dot"></span>
+                          <span class="title">${escapeHtml(s.title)}</span>
+                          <span class="acts">
+                            <button
+                              class="icon-btn"
+                              title="重命名"
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this.renameSession(s.id);
+                              }}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              class="icon-btn"
+                              title="删除"
+                              @click=${(e: Event) => {
+                                e.stopPropagation();
+                                this.deleteSession(s.id);
+                              }}
+                            >
+                              🗑
+                            </button>
+                          </span>
+                        </div>
+                        <div slot="actions">
+                          <button
+                            class="swipe-act"
+                            title="重命名"
+                            aria-label="重命名会话"
+                            @click=${() => this.renameSession(s.id)}
+                          >
+                            重命名
+                          </button>
+                          <button
+                            class="swipe-act danger"
+                            title="删除"
+                            aria-label="删除会话"
+                            @click=${() => this.deleteSession(s.id)}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </ah-swipe-item>
+                    `
+                  )}
+              ${this.renderSessionListFooter()}
             </div>
           </div>
         </div>
@@ -4337,10 +5243,7 @@ export class AhChat extends LitElement {
                     ? html`<button
                         class="send"
                         title="停止"
-                        @click=${() =>
-                          // P3：计划 DAG 执行中优先中止 DAG 流（planWfAbort），
-                          // 普通 run 才走 runRt.stop()。两者互斥（同一时刻仅一个在跑）。
-                          (this.planWfAbort ? this.planWfAbort.abort() : this.runRt.stop())}
+                        @click=${() => this.stopActiveRun()}
                       >
                         ■
                       </button>`
@@ -4426,8 +5329,7 @@ export class AhChat extends LitElement {
               </div>
             </div>`
           : nothing}
-        ${this.renderTraceDrawer()}
-        ${this.renderPlanWfReplayDrawer()}
+        ${this.renderTraceDrawer()} ${this.renderPlanWfReplayDrawer()}
 
         <!-- 整屏拖拽遮罩：覆盖整个 chat 区域；pointer-events:none 保证不干扰
            drop 事件的命中测试（遮罩只是视觉层，事件仍落在 .chat-root 上）。 -->

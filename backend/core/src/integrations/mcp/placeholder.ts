@@ -281,7 +281,7 @@ async function establishConnection(
       registeredName,
       config.transportProvided ? description : `[${config.name}] ${description}`,
       parameters,
-      makeResilientExecutor(config, tool.name),
+      makeResilientExecutor(config, tool.name, tool.inputSchema),
       `mcp:${config.name}`
     );
     toolsInfo.push({ registeredName, originalName: tool.name, description });
@@ -294,26 +294,83 @@ async function establishConnection(
  * 生成 MCP 工具执行器：调用失败时先尝试一次自动重连，成功则重试，
  * 使远端 server 重启 / 连接抖动对运行中的 agent 透明自愈。
  */
-function makeResilientExecutor(config: McpConnectionConfig, originalName: string): (args: any) => Promise<string> {
+function makeResilientExecutor(
+  config: McpConnectionConfig,
+  originalName: string,
+  schema?: Record<string, unknown>
+): (args: any) => Promise<string> {
   const key = config.name;
   return async (args) => {
     const live = liveClients.get(key);
     if (!live || live.closed) throw new Error(`MCP server '${key}' not connected`);
     try {
-      return await callAndStringify(live.client, originalName, args);
+      return await callAndStringify(live.client, originalName, args, key, schema);
     } catch (e) {
       const recovered = await performReconnect(key);
       if (recovered) {
         const live2 = liveClients.get(key);
-        if (live2 && !live2.closed) return await callAndStringify(live2.client, originalName, args);
+        if (live2 && !live2.closed)
+          return await callAndStringify(live2.client, originalName, args, key, schema);
       }
       throw e;
     }
   };
 }
 
-async function callAndStringify(client: Client, originalName: string, args: any): Promise<string> {
-  const res = await client.callTool({ name: originalName, arguments: args });
+/**
+ * 按服务端声明的 inputSchema 预检「必填参数」。
+ *
+ * 模型有时漏传工具参数，或把工具参数 JSON 在流式输出中截断（safeParseArgs 回退为 {}），
+ * 使 `content` 等在到达 MCP server 时变成 undefined，被服务端 Zod 校验以不透明的
+ * `-32602: expected string, received undefined` 拒绝。这里在发起真实调用前先用清晰、
+ * 可被模型理解并重试的报错替换它，避免浪费一轮工具调用、也避免把底层校验噪声回传给模型。
+ *
+ * 仅当字段为 undefined/null 时判定缺失；空字符串 "" 视为合法（write_file 可用它清空/新建文件）。
+ */
+export function missingRequiredArgs(schema: any, args: any): string[] {
+  const required: string[] = Array.isArray(schema?.required) ? schema.required : [];
+  if (required.length === 0) return [];
+  const obj = args && typeof args === 'object' ? args : {};
+  const missing: string[] = [];
+  for (const key of required) {
+    if (obj[key] === undefined || obj[key] === null) missing.push(key);
+  }
+  return missing;
+}
+
+async function callAndStringify(
+  client: Client,
+  originalName: string,
+  args: any,
+  serverLabel = 'mcp',
+  schema?: Record<string, unknown>
+): Promise<string> {
+  // 预检必填参数：把服务端的 -32602 校验错误提前转换成模型可理解的中文报错。
+  const missing = missingRequiredArgs(schema, args);
+  if (missing.length > 0) {
+    const msg =
+      originalName === 'write_file'
+        ? "write_file 缺少必填参数 content（必须是 string）。若意图创建或清空文件，请传 content: ''；否则请提供完整文件内容后重试。"
+        : `工具 ${originalName} 缺少必填参数: ${missing.join(', ')}。请补全这些参数后重试。`;
+    throw new Error(msg);
+  }
+  // P4.8：MCP 的连接 / 工具列举本来就有超时包装，唯独真正的 callTool 没有 —— 远端
+  // server 无响应时该 Promise 永不 settle，整个 agent step 会一直挂到上层看门狗，
+  // 用户表现为「等待时间很长，然后 step 超时中止且无产出」。这里补上调用超时
+  // （MCP_CALL_TIMEOUT_MS，默认 180s；置 0 关闭）。
+  const callTimeoutMs = Math.max(
+    0,
+    Number(process.env.MCP_CALL_TIMEOUT_MS ?? 180_000) || 0
+  );
+  const res: any =
+    callTimeoutMs > 0
+      ? await withMcpTimeout(
+          client.callTool({ name: originalName, arguments: args }),
+          callTimeoutMs,
+          serverLabel,
+          'callTool'
+        )
+      : await client.callTool({ name: originalName, arguments: args });
   if ((res as any).isError) {
     throw new Error('MCP tool error: ' + JSON.stringify(res.content));
   }
@@ -466,7 +523,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * 包装 MCP 连接 / 工具列表请求的超时。
+ * 包装 MCP 连接 / 工具列表 / 工具调用的超时。
  * 在超时或出错时抛出包含 serverLabel + 操作阶段的明确错误信息，
  * 便于用户在 UI 上快速定位是哪个服务卡住。
  */
@@ -474,7 +531,7 @@ async function withMcpTimeout<T>(
   p: Promise<T>,
   ms: number,
   serverLabel: string,
-  stage: 'connect' | 'listTools'
+  stage: 'connect' | 'listTools' | 'callTool'
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`Request timed out (>${ms}ms) during ${stage}`)), ms);

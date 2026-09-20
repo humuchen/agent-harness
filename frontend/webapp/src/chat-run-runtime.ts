@@ -22,6 +22,7 @@ import { ApiError, StreamEvent, RunMode } from '@agent-harness/client';
 import {
   ChatMsg,
   ExecutionPlanView,
+  PlanClarifyView,
   TraceCtx,
   PlanExecState
 } from './chat-types';
@@ -101,6 +102,12 @@ export interface RunDeps {
     payload: Record<string, unknown>,
     opts: { signal: AbortSignal }
   ): AsyncIterable<unknown>;
+
+  /**
+   * P5 静默计划执行（可选）：quiet run 期间的 llm:reasoning 增量回调 ——
+   * 由 AhChat 叠进计划卡「当前任务思考面板」。非 quiet run 不回调。
+   */
+  onPlanThinking?(sid: string, delta: string): void;
 }
 
 /**
@@ -227,6 +234,8 @@ export class ChatRunRuntime {
   private lastEventAt: Record<string, number> = {};
   private finishedBy: Record<string, boolean> = {};
   private erroredBy: Record<string, boolean> = {};
+  /** P5 静默计划执行：本会话当前 run 是否为 quiet（llm:reasoning 改道思考面板）。 */
+  private quietBy: Record<string, boolean> = {};
   private keepAliveAbort: Record<string, boolean> = {};
   private lastInputBy: Record<string, Record<string, unknown>> = {};
   private abortBy: Record<string, AbortController> = {};
@@ -391,6 +400,9 @@ export class ChatRunRuntime {
           );
         patch({
           plan,
+          // 记录 propose 当时的联网开关：计划执行（DAG / 串行）继承之，
+          // 消除「计划要求外部数据、执行环境却无检索工具」的验收死锁。
+          planWeb: this.deps.getWeb(),
           ...(c.content?.trim()
             ? {}
             : {
@@ -408,6 +420,25 @@ export class ChatRunRuntime {
               }
             : { status: 'pending', done: {} }
         });
+        break;
+      }
+      case 'plan:phase': {
+        // 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），挂到流式消息渲染进度条。
+        // 首次到达时记录起始时间戳，驱动「已进行 Xs」实时计时器。
+        const c = cur();
+        const phase = (anyEv as { phase?: string }).phase;
+        if (c && phase)
+          patch({
+            planPhase: phase,
+            ...(c.planStartedAt ? {} : { planStartedAt: Date.now() })
+          });
+        break;
+      }
+      case 'plan:clarify': {
+        // 计划模式（P0）：需求不清，服务端下发澄清结果 —— 挂到流式消息渲染目标确认卡。
+        const c = cur();
+        const clarify = (anyEv as { clarify?: PlanClarifyView }).clarify;
+        if (c && clarify && clarify.clarify === true) patch({ clarify });
         break;
       }
       case 'llm:token': {
@@ -428,6 +459,10 @@ export class ChatRunRuntime {
           const p = this.typewriter.pending[sid];
           if (p) p.reasoning += String((ev as any).delta ?? '');
           this.typewriter.ensureTypewriter();
+          // P5 静默计划执行：quiet run 的思考增量改道计划卡思考面板（气泡本身隐藏）。
+          if (this.quietBy[sid]) {
+            this.deps.onPlanThinking?.(sid, String((ev as any).delta ?? ''));
+          }
         }
         break;
       }
@@ -587,24 +622,48 @@ export class ChatRunRuntime {
     sessionId: string,
     content: string,
     imageAttachments: Array<{ url: string; name: string; type: string }> = [],
-    opts: { planTask?: boolean; attachments?: unknown[]; modelPrompt?: string } = {}
+    opts: {
+      planTask?: boolean;
+      /** 联网开关覆盖：计划任务执行继承 propose 时的开关（planWeb），缺省用当前全局开关。 */
+      web?: boolean;
+      attachments?: unknown[];
+      modelPrompt?: string;
+      /**
+       * P5 静默计划执行：quiet run —— user/assistant 消息对标记 quiet（不渲染、不落历史镜像），
+       * 思考增量经 deps.onPlanThinking 改道计划卡思考面板；产出由调用方读取后移除消息对。
+       */
+      quiet?: boolean;
+      /** 编辑重发模式：通知服务端截断会话与记忆，从该消息重新生成。
+       *  index 为该消息在会话消息列表中的下标（截断位点）。 */
+      editFrom?: { sessionId: string; msgId: number; index: number };
+    } = {}
   ): Promise<'ok' | 'stopped' | 'error'> {
     // 当前会话消息缓冲：追加 user + assistant(空)，并记录流式下标。
     const t = this.deps.threadFor(sessionId);
-    t.push({
-      id: this.deps.nextId(),
-      role: 'user',
-      content,
-      attachments: opts.attachments
-        ? [...opts.attachments]
-        : [...this.deps.getAttachments()]
-    } as ChatMsg);
-    t.push({
-      id: this.deps.nextId(),
-      role: 'assistant',
-      content: ''
-    } as ChatMsg);
-    this.deps.setStreamIdx(sessionId, t.length - 1);
+    if (opts.editFrom) {
+      // 编辑重发：user 消息已由 sendEdit 截断后置入线程，末尾 assistant 占位也已就位，
+      // 此处仅刷新流式下标指向该占位，不再重复 push（否则与 sendEdit 的截断态重复）。
+      this.deps.setStreamIdx(sessionId, t.length - 1);
+    } else {
+      t.push({
+        id: this.deps.nextId(),
+        role: 'user',
+        content,
+        ...(opts.quiet ? { quiet: true } : {}),
+        attachments: opts.attachments
+          ? [...opts.attachments]
+          : [...this.deps.getAttachments()]
+      } as ChatMsg);
+      t.push({
+        id: this.deps.nextId(),
+        role: 'assistant',
+        content: '',
+        ...(opts.quiet ? { quiet: true } : {})
+      } as ChatMsg);
+      this.deps.setStreamIdx(sessionId, t.length - 1);
+    }
+    // P5：记录本 run 的 quiet 语义（ingest 的 llm:reasoning 据此改道思考面板）。
+    this.quietBy[sessionId] = !!opts.quiet;
     this.deps.setThreads(sessionId, t);
     // 重置该会话的流式状态（防御上轮残留的缓冲 / 定时器泄漏到本轮）。
     this.typewriter.received[sessionId] = false;
@@ -649,18 +708,26 @@ export class ChatRunRuntime {
       sessionId,
       chatSessionId: sessionId,
       attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
-      web: this.deps.getWeb() || undefined,
-      // 交互模式（P0 计划模式）：仅用户手动选择 plan 且非任务执行派发时进入 propose 阶段。
+      // 联网开关：计划任务派发可覆盖（继承 propose 时的 planWeb）；其余用全局开关。
+      web: (opts.web ?? this.deps.getWeb()) || undefined,
+      // 交互模式（P0 计划模式）：propose = 用户手动选择 plan 且非任务执行派发；
+      // 任务执行派发（planTask）必须显式声明 plan+execute —— 服务端 isPlanTaskRun
+      // 据此启用计划任务语义（验证门禁 / 宽松输出扫描 / 专用超时），漏传会退化为
+      // 普通单步 run（「从失败任务继续」串行回退路径曾因此丢失计划任务契约）。
       interactionMode:
-        this.deps.getInteractionMode() === 'plan' && !opts.planTask
+        this.deps.getInteractionMode() === 'plan'
           ? 'plan'
           : undefined,
       planPhase:
-        this.deps.getInteractionMode() === 'plan' && !opts.planTask
-          ? 'propose'
+        this.deps.getInteractionMode() === 'plan'
+          ? opts.planTask
+            ? 'execute'
+            : 'propose'
           : undefined,
       // 设备指纹：服务端跨设备广播据此区分本端回声与他端消息，前端按 origin 去重。
-      origin: MY_ORIGIN
+      origin: MY_ORIGIN,
+      // 编辑重发模式：服务端据此截断会话存储并重置该会话记忆。
+      ...(opts.editFrom ? { editFrom: opts.editFrom } : {})
     };
     // 断连后「重新连接」按钮需要原始入参。
     this.lastInputBy[sessionId] = input;
@@ -714,6 +781,8 @@ export class ChatRunRuntime {
       }
       this.deps.setStreaming(sessionId, false);
       this.abortBy[sessionId] = undefined as any;
+      // P5：run 收尾解除 quiet 标记（下一轮普通 run 的思考回到气泡内折叠块）。
+      this.quietBy[sessionId] = false;
       if (this.deps.getActiveId() === sessionId)
         this.deps.setMessages(this.deps.getThreads(sessionId) ?? []);
       // 容错持久化：run 收尾把最终消息镜像落盘。

@@ -127,5 +127,8 @@ export const extras = css`
     .scrim.show {
       opacity: 1;
       display: block;
+      /* 从 display:none 恢复时 transition 不可靠，用关键帧保证淡入必然发生
+         （ah-nav-fade 定义在同 shadow root 的 styles/chat/layout.ts）。 */
+      animation: ah-nav-fade 200ms ease both;
     }
 `;

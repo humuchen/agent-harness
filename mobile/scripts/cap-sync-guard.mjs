@@ -39,9 +39,13 @@ if (!hasNative) {
 
 // 本地存在原生工程：跑完整 sync 链（cap sync 重生成资源 → splash-copy 覆写品牌启动图）。
 // 用 `pnpm exec cap` 显式解析 workspace 内的 @capacitor/cli，避免裸 `cap` 的 PATH 歧义。
+// Windows 上 pnpm 是 .cmd shim，Node spawn 不做 PATHEXT 展开须 shell:true 才能解析；
+// Linux/Render（且无原生目录时早已 exit 0）无此需求，故仅 win32 开启 shell，行为不变。
+const useShell = process.platform === 'win32';
 const sync = spawnSync('pnpm', ['exec', 'cap', 'sync'], {
   stdio: 'inherit',
-  cwd: mobileDir
+  cwd: mobileDir,
+  shell: useShell
 });
 if (sync.status !== 0) {
   console.error(`[cap-sync-guard] cap sync 失败（exit ${sync.status ?? 1}），中止构建`);

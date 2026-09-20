@@ -10,6 +10,8 @@
  * - chat.ts 仍以 `static styles = [sharedStyles, chatStyles]` 采纳，import 不变。
  */
 import { layout } from './styles/chat/layout';
+import { sessionSwipe } from './styles/chat/session-swipe';
+import { swipeActStyles } from './styles/swipe-act';
 import { messageArea } from './styles/chat/message-area';
 import { messageBubble } from './styles/chat/message-bubble';
 import { trace } from './styles/chat/trace';
@@ -24,6 +26,9 @@ import { markdownRichText } from './styles/chat/markdown';
 
 export const chatStyles = [
   layout,
+  /* 通用滑动操作区按钮外观（ah-swipe-item actions slot 的投影内容）：
+     早于 responsive / sessionSwipe，保证宿主覆盖层叠正确。 */
+  swipeActStyles,
   messageArea,
   messageBubble,
   trace,
@@ -37,4 +42,8 @@ export const chatStyles = [
   /* 表格与代码元素规范：选择器全部限定在 .msg-text 下且为新增选择器，
      追加到末尾不影响前面任何模块的层叠结果。 */
   markdownRichText,
+  /* 会话列表滑动操作（ah-swipe-item 宿主布局）：必须在 responsive 之后 ——
+     responsive ≤900px 的「触屏常驻 .acts」规则同选择器且靠后时生效，
+     本模块按设备判定隐藏 .acts，需排在最末层叠覆盖。 */
+  sessionSwipe,
 ];

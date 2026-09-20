@@ -104,6 +104,19 @@ export class AhAgentPicker extends LitElement {
         height: 0;
       }
     }
+    /* 断点扩展到 760px（与 app 壳移动断点一致）：弹层 .list 滚动条在
+       601–760px（Android 大机型）仍会显示，补齐。布局不受影响（仅隐藏滚动条）。 */
+    @media (max-width: 760px), (pointer: coarse) {
+      * {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      ::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+    }
 
     /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
     .panel {

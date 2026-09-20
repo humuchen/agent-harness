@@ -8,6 +8,7 @@ import {
   defaultPromptFor,
   getMemoryStore,
   invalidateSessionMemory,
+  resetSessionMemory,
   assembleAgent,
   type RunMode
 } from './runner';
@@ -47,6 +48,7 @@ import {
   type AgentStoreRedis,
   DagEngine,
   type WorkflowDef,
+  type WorkflowRun,
   type WorkflowEvent,
   type TaskEnvelope,
   type TaskResult,
@@ -54,8 +56,10 @@ import {
   features,
   buildPlannerPrompt,
   parsePlanOutput,
+  parsePlanOrClarify,
   planToWorkflowDef,
   type ExecutionPlan,
+  type PlanClarify,
   DEFAULT_AGENT_ID,
   contextWindowFor,
   enableTelemetryAutosave,
@@ -70,6 +74,7 @@ import {
   formatErrorReport
 } from '@agent-harness/core';
 import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
+import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify';
 import { runAgentTask } from './agent-run';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
@@ -106,6 +111,8 @@ import {
   renameChatSession,
   deleteChatSession,
   appendChatMessage,
+  replaceAndTruncateMessages,
+  applyPlanWfTerminal,
   updatePlanStatus,
   extractPlanTaskId,
   type StoredTool,
@@ -145,6 +152,7 @@ import { queryAuditFile, resolveAuditFile } from './audit-query';
 import { getOrgTree } from './org';
 // P1-5 成果物归档页 / 文件库：Agent 产出物持久化 + 浏览 / 下载 / 删除。
 import { getArtifactStore } from './artifact-store';
+import { archivePlanArtifacts } from './plan-artifacts';
 // P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
 import { getSkillRegistry } from './skill-registry';
 // P1-7 企业数据源适配器：数据源注册 + 连通性测试。
@@ -218,6 +226,8 @@ import {
   type TenantContext,
   audit as coreAudit,
   enableAuditFile as coreEnableAuditFile,
+  enableJevInjection,
+  getJevStats,
 } from '@agent-harness/core';
 
 // K8s健康检查端点
@@ -229,6 +239,7 @@ import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
 import {
   registerProviderKeyRoutes,
   resolveRunCredential,
+  resolveJevCredential,
   type CredentialResult
 } from './provider-keys';
 
@@ -321,6 +332,15 @@ function edgeRouteDeps(): EdgeRouteDeps {
 
 // OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
 // 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
+//
+// SameSite=None; Secure 而非 Lax：OAuth 回调从 github.com / accounts.google.com
+// 跨站跳回本服务，WebView（含 Capacitor）判定为跨站上下文，Lax cookie 在跨站
+// GET 时虽按规范允许携带，但部分 WebView 实现（尤其 iOS WKWebView 旧版、Android
+// WebView 在 allowNavigation 白名单受限场景）会严格按 site 判定丢弃，导致回调
+// 请求里读不到 ah_oauth_state 而报「OAuth state 校验失败（CSRF/过期）」。
+// 改为 None+Secure 后跨站 top-level 导航明确携带，Web 浏览器行为不变（None 在
+// 同站场景与 Lax 等价可用），仅要求 HTTPS（本服务生产均为 https，dev localhost
+// 走 isReqLocalhost 分支可豁免 Secure）。
 const OAUTH_STATE_COOKIE = 'ah_oauth_state';
 
 /** 请求是否来自 localhost（dev 可走 http，不置 Secure）。 */
@@ -333,7 +353,11 @@ function isReqLocalhost(req: { headers?: Record<string, unknown> }): boolean {
   );
 }
 
-/** 构造 OAuth state cookie 串：HttpOnly + SameSite=Lax + 10min，非 localhost 追加 Secure。 */
+/**
+ * 构造 OAuth state cookie 串：HttpOnly + SameSite=None + Secure + 10min。
+ * 非 localhost 追加 Secure（dev 可 http，不置 Secure 以便本地测试）。
+ * OAuth 跨站回调需要 None 才能被 WebView 携带，见上方注释。
+ */
 function oauthStateCookie(
   req: { headers?: Record<string, unknown> },
   name: string,
@@ -342,7 +366,26 @@ function oauthStateCookie(
   const parts = [
     `${name}=${value}`,
     'HttpOnly',
-    'SameSite=Lax',
+    'SameSite=None',
+    'Path=/',
+    'Max-Age=600'
+  ];
+  if (!isReqLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}
+
+/**
+ * 构造 PKCE code_verifier cookie 串（Google OAuth 专用）：与 oauthStateCookie
+ * 同策略（SameSite=None + Secure），否则 WebView 跨站回调时同样读不到。
+ */
+function oauthCodeVerifierCookie(
+  req: { headers?: Record<string, unknown> },
+  value: string
+): string {
+  const parts = [
+    `ah_oauth_cv=${value}`,
+    'HttpOnly',
+    'SameSite=None',
     'Path=/',
     'Max-Age=600'
   ];
@@ -769,6 +812,12 @@ function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
 
+// 危险操作门禁：Jev 语义级注入打分增强（JEV_INJECTION_GATE=off 默认关闭，零行为变更）。
+// 开启后，正则/短语基线仍先执行；仅当基线放行时再跑 Jev 语义打分，出错/缺配回落基线（兜底）。
+if ((process.env.JEV_INJECTION_GATE || 'off').toLowerCase() === 'on') {
+  enableJevInjection();
+}
+
 // ── IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）──
 // 装配「已配置且启用」的平台适配器；未开 IM_ENABLED 时整体 no-op（零副作用）。
 // agent 执行经注入的 executor 复用既有 assembleAgent + harness 链路（护栏/记忆/配额/审计全生效），
@@ -781,6 +830,8 @@ const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
   const origin = `im:${msg.provider}`;
   // 落库用户消息（IM 侧输入在 Web 工作台可见）。
   appendChatMessage(sessionId, { role: 'user', content: prompt, ts: Date.now() }, owner, origin);
+  // TypeSafe AI Jev 决策工具按用户 BYOK：与 LLM Key 同源、按 owner 隔离解析。
+  const jevCred = await resolveJevCredential(owner);
   const mode: RunMode = cfg.defaultMode;
   const assembled = await assembleAgent(
     mode,
@@ -791,7 +842,23 @@ const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
     `${owner}::${sessionId}`,
     undefined, // signal
     cfg.timeoutMs,
-    cfg.maxSteps
+    cfg.maxSteps,
+    undefined, // memoryArg
+    undefined, // verifier
+    undefined, // verifyMaxRetries
+    undefined, // card
+    undefined, // tenantCtx
+    undefined, // sandboxBackend
+    undefined, // streamTokens
+    undefined, // webEnabled
+    undefined, // planPropose
+    undefined, // planTask
+    undefined, // modelBaseUrl
+    undefined, // modelApiKey
+    undefined, // ctxWindow
+    undefined, // apiKeys
+    jevCred.apiKey,
+    jevCred.baseUrl
   );
   const final = await assembled.harness.run(prompt);
   appendChatMessage(sessionId, { role: 'assistant', content: final, ts: Date.now() }, owner, origin);
@@ -1578,7 +1645,7 @@ const server = createServer(
         res.writeHead(302, {
           'set-cookie': [
             oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
-            `ah_oauth_cv=${codeVerifier}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`
+            oauthCodeVerifierCookie(req, codeVerifier)
           ],
           'cache-control': 'no-store',
           location: googleUrl
@@ -2185,13 +2252,17 @@ const server = createServer(
         }
         return sendJson(res, { agent: card }, req);
       }
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑）----
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
+      // POST /api/workflows/:id/approve → P3 人工审批放行（写入检查点 approvals 后续跑）
+      // POST /api/workflows/:id/cancel → P5.4 显式取消（abort 活动 run；断连不再隐式中止）
       if (path.startsWith('/api/workflows/')) {
         const isResume = req.method === 'POST' && path.endsWith('/resume');
-        // POST /resume 会重新执行 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
-        const ctx = await guard(req, res, isResume ? 'workflow:run' : 'workflow:read');
+        const isApprove = req.method === 'POST' && path.endsWith('/approve');
+        const isCancel = req.method === 'POST' && path.endsWith('/cancel');
+        // POST /resume、/approve、/cancel 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(req, res, isResume || isApprove || isCancel ? 'workflow:run' : 'workflow:read');
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
@@ -2205,18 +2276,36 @@ const server = createServer(
             return;
           }
           let closed = false;
-          res.on('close', () => { closed = true; });
+          // P5.4 断连不再中止（同首跑语义）：续跑期间客户端断开（后台标签节流 / 网络抖动），
+          // 服务端 run 继续跑完并落检查点；显式取消走 POST /:id/cancel（活动 run 注册表）。
+          const runAbort = new AbortController();
+          res.on('close', () => {
+            closed = true;
+          });
           // P1（断点续跑）：resume body 与执行端点同构（mode / BYOK 模型凭据 / ctxWindow /
           // web / verify / sessionId）——检查点按 P1.3 纪律不存明文凭据，续跑时按登录 owner
           // 重新解析凭据；real 模式无 Key 在 SSE 开启前 402 快速失败。旧客户端不带 body 时
           // readBody 返回 {} → 默认 mock，向后兼容。
           const body = await readBody(req);
-          const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
+          // P4.5：前置读检查点 def，判定续跑是否沿用 plan 桥语义（默认验证门禁 +
+          // 逐 task 结果断言 + 重试预算）；手工工作流（def 无 failOnInvalidOutput）零回归。
+          // 读失败保守按未命中（非 plan），下方原有 try 块的 404 / wf:error 语义不变。
+          const store = workflowStore();
+          let existing: unknown;
+          try {
+            existing = await store.get(workflowId);
+          } catch {
+            existing = undefined;
+          }
+          const isPlanWorkflow = !!(
+            existing &&
+            typeof existing === 'object' &&
+            (existing as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput
+          );
+          const execOpts = await resolveWorkflowRunOpts(body, ctx, res, isPlanWorkflow);
           if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
           let send: (payload: unknown) => void = () => {};
           try {
-            const store = workflowStore();
-            const existing = await store.get(workflowId);
             if (!existing) {
               res.writeHead(404, { 'content-type': 'application/json' });
               res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
@@ -2248,8 +2337,10 @@ const server = createServer(
             const engine = new DagEngine({
               store,
               executor: createWorkflowExecutor({
-                onEvent: (e: any) => {
-                  if (!closed) send({ type: 'harness', event: e });
+                // P5 静默展示（plan 桥工作流续跑同首跑语义）：抑制 llm:token 流式内容。
+                onEvent: (e: any, stepId: string) => {
+                  if (isPlanWorkflow && e?.type === 'llm:token') return;
+                  if (!closed) send({ type: 'harness', event: e, stepId });
                 },
                 // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传（此前缺失 →
                 // real 部署下续跑首 step 复现 t1 同款 401/无 Key 故障）。
@@ -2266,7 +2357,15 @@ const server = createServer(
                 if (!closed) send(e);
               },
             });
-            const run = await engine.resume(workflowId);
+            // P5.4：登记活动 run（显式取消通道），终态时移除（finally 透传原结果/异常）。
+            activeWorkflowAborts.set(workflowId, runAbort);
+            const run = await engine
+              .resume(workflowId, runAbort.signal)
+              .finally(() => activeWorkflowAborts.delete(workflowId));
+            // P4.6：续跑终态同样归档交付文件（按 runId+stepId 幂等去重，首跑已归档的自动跳过）。
+            await archivePlanArtifacts({ def: run.def, run, owner: ctx.sub }).catch((e) => {
+              console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+            });
             if (!closed) send({ type: '_wf_done', workflowId, run });
             if (!closed) res.end();
           } catch (e: any) {
@@ -2274,6 +2373,154 @@ const server = createServer(
             if (!closed) res.end();
           }
           return;
+        }
+        // P3（人工审批门）：POST /api/workflows/:id/approve —— 把 stepId 写入检查点
+        // run.approvals 后触发 DagEngine.resume（引擎据此跳过审批门继续执行，可能再次
+        // 暂停在下一道门并再发 wf:awaiting-approval）。骨架与 /resume 同款（共享
+        // resolveWorkflowRunOpts 的 BYOK 解析 + startSse + planSync + 审计）。
+        if (req.method === 'POST' && id.endsWith('/approve')) {
+          const workflowId = id.slice(0, -'/approve'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          let closed = false;
+          // P5.3 断连即中止（同首跑 / resume 语义）：审批放行后的续跑期间客户端断开 → 中止引擎 run。
+          const runAbort = new AbortController();
+          res.on('close', () => {
+            closed = true;
+            if (!res.writableEnded) runAbort.abort();
+          });
+          const body = await readBody(req);
+          const execOpts = await resolveWorkflowRunOpts(body, ctx, res);
+          if (!execOpts) return; // 402 已写出（SSE 未开，不进入异步执行）
+          let send: (payload: unknown) => void = () => {};
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            // 终态工作流不可审批放行（无未决门）。
+            if (run.state === 'done' || run.state === 'compensated') {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: `workflow in terminal state ${run.state}; nothing to approve` }));
+              return;
+            }
+            // 审批目标：stepId（单节点）/ all:true（当前所有未决门节点）二选一。
+            // 候选 = 检查点中非终态（awaiting / pending / running / failed）的 step：
+            // awaiting 是正在等放行的门；failed 经审批同样可放行重试（配合旧语义的
+            // 断点续跑）；pending/running 放行无害（下一波次自然执行）。
+            const stepStates = Object.values((run as unknown as { steps?: Record<string, { state?: string }> }).steps ?? {}) as Array<{ state?: string; id?: string }>;
+            const openIds = stepStates.filter((s) => s.state !== 'done' && s.state !== 'skipped' && s.state !== 'compensated').map((s) => s.id!).filter(Boolean);
+            const stepId = typeof body.stepId === 'string' && body.stepId ? body.stepId : undefined;
+            let approved: string[];
+            if (body.all === true) {
+              approved = openIds;
+            } else if (stepId) {
+              if (!openIds.includes(stepId)) {
+                res.writeHead(400, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: `step "${stepId}" is not open (state: ${(run as unknown as { steps?: Record<string, { state?: string }> }).steps?.[stepId]?.state ?? 'absent'})` }));
+                return;
+              }
+              approved = [stepId];
+            } else {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'approve requires body.stepId (single node) or body.all=true (all open gates)' }));
+              return;
+            }
+            if (approved.length === 0) {
+              res.writeHead(400, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'no open steps to approve' }));
+              return;
+            }
+            // 写入检查点（随 FileWorkflowStore 持久化，跨重启保留放行决定）：
+            // 去重合并，同 id 重复审批幂等。
+            const prev = new Set(Array.isArray(run.approvals) ? run.approvals : []);
+            for (const id2 of approved) prev.add(id2);
+            (run as unknown as { approvals?: string[] }).approvals = [...prev];
+            await store.save(run);
+            auditAction('workflow.approve', {
+              workflowId,
+              approved,
+              all: body.all === true,
+              mode: execOpts.mode,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            send = startSse(res, req);
+            const planSync = createPlanTaskSync(
+              typeof body.sessionId === 'string' ? body.sessionId : undefined,
+              ctx.sub
+            );
+            const engine = new DagEngine({
+              store,
+              executor: createWorkflowExecutor({
+                // P5 静默展示（plan 桥工作流审批续跑同首跑语义）：抑制 llm:token 流式内容。
+                onEvent: (e: any, stepId: string) => {
+                  const isPlanWf = !!(run as unknown as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput;
+                  if (isPlanWf && e?.type === 'llm:token') return;
+                  if (!closed) send({ type: 'harness', event: e, stepId });
+                },
+                // P1（断点续跑）：BYOK / verify / mode 与执行端点共享解析结果透传。
+                mode: execOpts.mode,
+                ...execOpts.opts,
+              }),
+              onEvent: (e: unknown) => {
+                // 审批放行后续跑同样产生 wf:* 事件（含下一道门的 wf:awaiting-approval）→ 审计 + 看板对齐。
+                if (e && typeof e === 'object' && 'type' in e) {
+                  const ev = e as WorkflowEvent;
+                  auditWfEvent(ev, ctx);
+                  planSync?.sync(ev);
+                }
+                if (!closed) send(e);
+              },
+            });
+            // P5.4：登记活动 run（显式取消通道），终态时移除（finally 透传原结果/异常）。
+            activeWorkflowAborts.set(workflowId, runAbort);
+            const run2 = await engine
+              .resume(workflowId, runAbort.signal)
+              .finally(() => activeWorkflowAborts.delete(workflowId));
+            // P4.6：审批放行续跑终态同样归档交付文件（幂等去重，前序已归档的自动跳过）。
+            await archivePlanArtifacts({ def: run2.def, run: run2, owner: ctx.sub }).catch((e) => {
+              console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+            });
+            if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
+            if (!closed) res.end();
+          } catch (e: any) {
+            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
+            if (!closed) res.end();
+          }
+          return;
+        }
+        // P5.4 显式取消：abort 活动 run 的引擎 signal。引擎捕获 abort → 检查点落 failed
+        // （step 保留已完成状态），用户可经「从失败任务继续」从断点续跑。仅取消「本进程
+        // 正在运行」的 run —— 无活动 run（已终态 / 服务重启后只剩检查点）时直接 ok 返回，
+        // 幂等不报错（前端取消语义不受影响：卡片已本地置 cancelled）。
+        if (isCancel) {
+          const workflowId = id.slice(0, -'/cancel'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const ctrl = activeWorkflowAborts.get(workflowId);
+          if (ctrl) {
+            ctrl.abort();
+            auditAction('workflow.cancel', {
+              workflowId,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+          }
+          return sendJson(
+            res,
+            { ok: true, workflowId, cancelled: !!ctrl },
+            req
+          );
         }
         // GET 取单个工作流执行快照
         if (req.method === 'GET') {
@@ -2607,7 +2854,10 @@ const server = createServer(
         if (req.method === 'GET') {
           const ctx = await guard(req, res, 'artifact:read');
           if (!ctx) return;
-          const items = await getArtifactStore().list();
+          // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）；
+          // 缺省（无参）行为与旧版逐字一致——全量列表（成果物归档页零回归）。
+          const runIdFilter = url.searchParams.get('runId') || undefined;
+          const items = await getArtifactStore().list(runIdFilter);
           return sendJson(res, { items }, req);
         }
         if (req.method === 'POST') {
@@ -2645,13 +2895,16 @@ const server = createServer(
           const ctx = await guard(req, res, 'artifact:read');
           if (!ctx) return;
           const dl = url.searchParams.get('download') === '1';
+          // P4.6：?preview=1 在线打开（content-disposition: inline，浏览器直接渲染/查看文本）；
+          // 缺省（无 preview/download 参数）行为与旧版逐字一致——返回 JSON 元数据（成果物归档页零回归）。
+          const preview = url.searchParams.get('preview') === '1';
           const meta = await getArtifactStore().get(id);
           if (!meta) {
             res.writeHead(404, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: 'artifact not found' }));
             return;
           }
-          if (!dl) return sendJson(res, { item: meta }, req);
+          if (!dl && !preview) return sendJson(res, { item: meta }, req);
           const buf = await getArtifactStore().readContent(id);
           if (!buf) {
             res.writeHead(404, { 'content-type': 'application/json' });
@@ -2659,8 +2912,8 @@ const server = createServer(
             return;
           }
           res.writeHead(200, {
-            'content-type': meta.mimeType,
-            'content-disposition': `attachment; filename="${encodeURIComponent(meta.name)}"`,
+            'content-type': preview && meta.mimeType === 'text/markdown' ? 'text/plain; charset=utf-8' : meta.mimeType,
+            'content-disposition': `${dl ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
             'content-length': buf.length
           });
           res.end(buf);
@@ -2887,6 +3140,37 @@ const server = createServer(
           if (await registerOAuthRoutes(req, res, path, req.method ?? 'GET'))
             return;
         }
+      }
+
+      // Jev（TypeSafe AI 决策模型）状态自检：凭据来源 / 子系统开关 / 进程内调用统计。
+      // 不回传任何密钥明文，用于回答「Jev 是否已配置、是否真的被调用过」。
+      if (req.method === 'GET' && path === '/api/jev/status') {
+        const ctx = await guard(req, res, 'provider:manage');
+        if (!ctx) return;
+        const userCred = await resolveJevCredential(ctx.sub).catch(() => null);
+        const source =
+          userCred?.apiKey ? 'user' : process.env.TYPESAFE_API_KEY ? 'env' : 'none';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify(
+            {
+              configured: source !== 'none',
+              credentialSource: source,
+              baseUrl: process.env.TYPESAFE_BASE_URL || 'https://api.typesafe.ai/v1',
+              switches: {
+                // 三开关默认 off：off 时各子系统完全走旧逻辑（零 Jev 调用）。
+                injectionGate: (process.env.JEV_INJECTION_GATE || 'off').toLowerCase() === 'on',
+                routing: (process.env.JEV_ROUTING || 'off').toLowerCase() === 'on',
+                contextCompress:
+                  (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on'
+              },
+              // lastCalledAt === null 表示本进程启动以来 Jev 从未被调用过。
+              stats: getJevStats()
+            },
+            null,
+            2
+          )
+        );
       }
 
       // 用户自带 LLM 凭据（BYOK）：/api/account/provider-keys*。
@@ -3746,12 +4030,43 @@ async function handleRun(
     ? String(body.chatSessionId).trim()
     : '';
 
+  // 编辑重发：截断会话存储到被编辑消息为止（替换其内容为最新草稿），并用截断后的历史
+  // 重置该会话的 LLM 记忆窗口，使重新生成时仅基于「编辑消息之前」的上下文，丢弃其后的
+  // 无用上下文。截断成功后置 isEditMsg=true，后续 run:start 不再重复写入 user 消息（已就位）。
+  let isEditMsg = false;
+  if (
+    chatSessionId &&
+    body.editFrom &&
+    typeof body.editFrom === 'object' &&
+    typeof body.editFrom.sessionId === 'string' &&
+    Number.isInteger(body.editFrom.index) &&
+    (body.editFrom.index as number) >= 0
+  ) {
+    const kept = replaceAndTruncateMessages(
+      body.editFrom.sessionId,
+      body.editFrom.index as number,
+      prompt,
+      ctx.sub
+    );
+    if (kept && kept.length > 0) {
+      await resetSessionMemory(
+        sessionKey,
+        kept.map((m) => ({ role: m.role, content: m.content }))
+      );
+      isEditMsg = true;
+    }
+  }
+
   // 交互模式（P0 计划模式）：白名单校验，非法值回退 qa（= 现状）。
   const interactionMode: 'qa' | 'plan' =
     body.interactionMode === 'plan' ? 'plan' : 'qa';
   const planPhase: 'propose' | 'execute' =
     body.planPhase === 'execute' ? 'execute' : 'propose';
   const isPlanPropose = interactionMode === 'plan' && planPhase === 'propose';
+  // P5 静默计划执行：计划任务派发（execute）的逐任务 user/assistant 消息属于「单步信息」，
+  // 不应落会话存储（前端刷新/切回会以其为权威源复现单步气泡）。仅保留 planStatus 进度同步
+  // （updatePlanStatus / syncPlanTaskStatus），「最终执行结果」由前端摘要/服务端 applyPlanWfTerminal 承载。
+  const isPlanExecute = interactionMode === 'plan' && planPhase === 'execute';
   // 计划生成本身是一次普通 run：用 planner 提示词包装用户需求，约束模型输出计划 JSON。
   const effectivePrompt = isPlanPropose ? buildPlannerPrompt(prompt) : prompt;
 
@@ -4066,6 +4381,27 @@ async function handleRun(
         });
         break;
       }
+      case 'jev:call': {
+        // TypeSafe Jev 决策模型旁路上报：子系统直连调用（注入门禁/上下文压缩等）的调用事实。
+        // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点。
+        if (ev.caller === 'tool') break;
+        traceEnsureRoot();
+        const jParent = traceLlm ?? traceParent ?? traceRoot!;
+        const jMeta: Record<string, string> = {
+          jev: 'true',
+          调用方: String(ev.caller ?? '?'),
+          延迟: `${Number(ev.latencyMs ?? 0)}ms`,
+          ...(ev.questions != null ? { 问题数: String(ev.questions) } : {}),
+          ...(ev.tokens
+            ? { tokens: `${Number(ev.tokens.input ?? 0)}+${Number(ev.tokens.output ?? 0)}` }
+            : {})
+        };
+        traceNode(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
+          ...(ev.error ? { result: String(ev.error) } : {}),
+          meta: jMeta
+        });
+        break;
+      }
       case 'run:token-cache': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
@@ -4162,6 +4498,21 @@ async function handleRun(
   let unsub: () => void = () => {};
   // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
   let planEndHandled = false;
+  // 计划模式 propose：阶段进度（理解需求 → 调研中 → 生成计划），仅向前推进，变化时下发 plan:phase。
+  const PLAN_PHASES = ['理解需求', '调研中', '生成计划'] as const;
+  let planPhaseIdx = -1;
+  // 是否已见到「真实」plan:phase（两段式规划管线在真实阶段边界下发）；
+  // 见到后停用事件类型启发式（避免管线阶段1 的 token 把进度误推到「生成计划」）。
+  let planPhaseReal = false;
+  const emitPlanPhase = (idx: number) => {
+    if (idx <= planPhaseIdx) return;
+    planPhaseIdx = idx;
+    runQueue.emitSynthetic(jobId, {
+      type: 'plan:phase',
+      phase: PLAN_PHASES[idx],
+      ts: Date.now()
+    });
+  };
   unsub = runQueue.subscribe(jobId, (e) => {
     // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
     // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
@@ -4187,8 +4538,9 @@ async function handleRun(
       if (!planEndHandled) {
         planEndHandled = true;
         const finalStr = String((e as { final?: unknown }).final ?? '');
-        const plan = parsePlanOutput(finalStr);
-        if (plan) {
+        const parsed = parsePlanOrClarify(finalStr);
+        if (parsed?.kind === 'plan') {
+          const plan = parsed.plan;
           // 计划产物落库（P2-3）：以会话为键持久化 PlanDoc，供「计划」Tab 看板随时打开；
           // 重复 propose（同一会话再次生成计划）幂等覆盖为最新文档（version +1），并广播协同事件。
           if (chatSessionId) {
@@ -4216,6 +4568,31 @@ async function handleRun(
           }
           return;
         }
+        if (parsed?.kind === 'clarify') {
+          const clarify = parsed.clarify as PlanClarify;
+          // 澄清分支：不落 PlanDoc（尚非计划），仅把「目标确认」问题下发，等用户回答后再次 propose。
+          runQueue.emitSynthetic(jobId, { type: 'plan:clarify', clarify });
+          runQueue.emitSynthetic(jobId, {
+            ...(e as object),
+            __synthetic: true,
+            final: `已提出需确认的目标问题${clarify.goalDraft ? `（目标草稿：${clarify.goalDraft}）` : ''}。请回答后继续生成计划。`
+          });
+          if (chatSessionId) {
+            traceHandle(e);
+            appendChatMessage(
+              chatSessionId,
+              {
+                role: 'assistant',
+                content: `❓ 需要确认目标：${clarify.goalDraft || '请确认以下要点'}`,
+                ts: Date.now(),
+                clarify
+              },
+              ctx.sub,
+              body.origin || ''
+            );
+          }
+          return;
+        }
         runQueue.emitSynthetic(jobId, {
           type: 'warn',
           message: '计划生成失败（模型未返回有效计划 JSON），已回退为普通回答'
@@ -4229,15 +4606,26 @@ async function handleRun(
       }
     }
 
-    // 计划模式 propose：抑制原始 JSON token/reasoning/response 流（避免计划 JSON 打字机外泄），
-    // 其余事件照常；最终内容由 run:end 分支以友好摘要替换后下发。
-    if (
-      isPlanPropose &&
-      ((e as { type?: string }).type === 'llm:token' ||
-        (e as { type?: string }).type === 'llm:reasoning' ||
-        (e as { type?: string }).type === 'llm:response')
-    ) {
-      return;
+    // 计划模式 propose：仅抑制原始 JSON 的 token/response 流（避免计划 JSON 打字机外泄），
+    // 放行 llm:reasoning（规划思考）、tool:*（调研过程）与 plan:phase。
+    // 阶段进度：默认走两段式规划管线（run-queue）在真实阶段边界下发 plan:phase —— 见到
+    // 真实事件后启发式全部停用；仅当走旧 harness 回退路径（无真实 plan:phase）时，
+    // 才按事件类型启发式猜阶段。最终内容由 run:end 以友好摘要替换。
+    if (isPlanPropose) {
+      const et = (e as { type?: string }).type;
+      if (et === 'plan:phase') planPhaseReal = true;
+      if (et === 'llm:token' || et === 'llm:response') {
+        if (!planPhaseReal) emitPlanPhase(2);
+        return; // 抑制原始 JSON 流
+      }
+      if (!planPhaseReal) {
+        if (et === 'run:start') emitPlanPhase(0);
+        else if (et === 'tool:start') emitPlanPhase(1);
+        else if (et === 'llm:reasoning') {
+          if (planPhaseIdx < 0) emitPlanPhase(0);
+        }
+      }
+      // 其余事件（含 plan:phase / llm:reasoning / tool:*）照常下发。
     }
     send(e);
     // 跨设备广播（进行中增量 / 终态全文）：与 send(e) 并列，仅影响其他连接。
@@ -4271,7 +4659,12 @@ async function handleRun(
             : JSON.stringify(a.result ?? {});
         t.errored = !!a.errored;
         toolMap.set(String(c.id), t);
-      } else if (ev.type === 'run:start' && ev.input != null) {
+      } else if (
+        ev.type === 'run:start' &&
+        ev.input != null &&
+        !isEditMsg &&
+        !isPlanExecute
+      ) {
         appendChatMessage(
           chatSessionId,
           {
@@ -4416,7 +4809,10 @@ async function handleRun(
             syncPlanTaskStatus(chatSessionId, completedTaskId, 'done', ctx.sub);
           }
         }
-        if (!(last && last.role === 'assistant' && last.content === finalStr)) {
+        if (
+          !(last && last.role === 'assistant' && last.content === finalStr) &&
+          !isPlanExecute
+        ) {
           appendChatMessage(
             chatSessionId,
             {
@@ -4517,6 +4913,12 @@ interface PlanTaskSync {
  * 定位 PlanDoc：`plan:<sessionId>`（与 persistProposedPlan 同键）；无 sessionId 或文档
  * 不存在（该计划从未 propose 落库）时静默跳过，不影响执行链路。
  * 同步失败仅告警——看板是旁路视图，不能反过来阻断 DAG 执行。
+ *
+ * P2.7（修复）：终态帧（wf:done / wf:failed）额外把执行结果写入**会话权威源**
+ * （applyPlanWfTerminal：planStatus 固化 + 执行摘要消息追加）。此前 DAG 路径只写
+ * 看板旁路视图，权威源缺 planStatus/摘要 → 前端刷新（getChatSession 内存命中）
+ * 计划卡片退回「待确认」、执行结果「消失」。权威源写入独立于 PlanDoc（文档缺失
+ * 不阻断；仅依赖会话的 plan 消息存在，owner 不符时静默跳过）。
  */
 function createPlanTaskSync(sessionId: string | undefined, sub: string): PlanTaskSync | null {
   if (!sessionId) return null;
@@ -4530,6 +4932,13 @@ function createPlanTaskSync(sessionId: string | undefined, sub: string): PlanTas
 
   return {
     sync(e: WorkflowEvent): void {
+      // P2.7：终态写权威源（独立 IIFE——PlanDoc 缺失时仍须执行；幂等由
+      // appendChatMessage 紧邻同内容去重 + planStatus 单调收敛保证，resume 重放不重复落库）。
+      if (e.type === 'wf:done' || e.type === 'wf:failed') {
+        void applyPlanWfTerminal(sessionId, e, sub).catch(
+          (err) => log(`权威源终态写入失败：${err?.message ?? String(err)}`)
+        );
+      }
       void (async () => {
         const doc = await store.read(planId);
         if (!doc) return; // 计划文档不存在（非 plan 来源 / 未 propose），跳过。
@@ -4867,6 +5276,18 @@ function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
     });
     return;
   }
+  if (e.type === 'wf:awaiting-approval') {
+    // P3（人工审批门）：run 在波次边界暂停等待人工批准。审计暂停点与待批节点集合，
+    // 供 Render 服务日志回溯「哪个计划卡在哪个门、已等待多久」。
+    auditAction('workflow.awaiting-approval', {
+      workflowId: e.workflowId,
+      runId: e.runId,
+      stepIds: e.stepIds,
+      role: ctx.role,
+      sub: ctx.sub
+    });
+    return;
+  }
   if (e.type === 'wf:done' || e.type === 'wf:failed') {
     const run = e.run;
     const stepStates = Object.entries(run?.steps ?? {})
@@ -4901,7 +5322,8 @@ function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
 async function resolveWorkflowRunOpts(
   body: Record<string, unknown>,
   ctx: AuthContext,
-  res: ServerResponse
+  res: ServerResponse,
+  isPlan = false
 ): Promise<{ mode: RunMode; opts: Omit<WorkflowExecutorOptions, 'onEvent'> } | null> {
   const mode: RunMode =
     ['mock', 'real', 'real-mcp'].includes(String(body.mode ?? ''))
@@ -4930,22 +5352,21 @@ async function resolveWorkflowRunOpts(
       : undefined;
   const webEnabled: boolean = body.web === true;
 
-  // 校验/反思门禁（P0-2，与 /api/run 同款优先级）：body.verify > body.autoVerify > env 默认。
-  let verifyConfig: VerifyConfig | undefined;
-  const envAutoVerify =
-    process.env.AGENT_AUTO_VERIFY === 'true' ||
-    process.env.AGENT_AUTO_VERIFY === '1';
-  if (
-    body.verify &&
-    typeof body.verify === 'object' &&
-    !Array.isArray(body.verify)
-  ) {
-    verifyConfig = body.verify as VerifyConfig;
-  } else if (typeof body.autoVerify === 'boolean') {
-    verifyConfig = body.autoVerify ? { auto: true } : undefined;
-  } else if (envAutoVerify) {
-    verifyConfig = { auto: true };
-  }
+  // 校验/反思门禁（P0-2，与 /api/run 同款优先级）+ P4.5 plan 桥默认门禁：
+  // 纯决策经 resolvePlanVerify（plan-verify.ts）——body.verify > body.autoVerify >
+  // env AGENT_AUTO_VERIFY > plan 桥确定性默认（auto + 结果断言 + 逐 task outputChecks）。
+  // 用户显式 autoVerify:false 视为选择退出；非 plan 路径行为与旧版逐字一致（零回归）。
+  const planVerifyRetries = parsePlanVerifyRetries(process.env.AGENT_PLAN_VERIFY_RETRIES);
+  const { verifyConfig, verifyMaxRetries: planVerifyRetriesOverride, planOutputChecks } =
+    resolvePlanVerify({
+      isPlan,
+      bodyVerify: body.verify,
+      bodyAutoVerify: body.autoVerify,
+      envAutoVerify:
+        process.env.AGENT_AUTO_VERIFY === 'true' ||
+        process.env.AGENT_AUTO_VERIFY === '1',
+      planVerifyRetries
+    });
 
   // 凭据解析（per-owner，绝不写 process.env）：非 mock 且无 Key → 402 引导配置（与 /api/run 一致）。
   let cred: CredentialResult = { source: 'none' };
@@ -4985,16 +5406,37 @@ async function resolveWorkflowRunOpts(
       apiKeys: effectiveApiKeys,
       ctxWindow,
       webEnabled,
-      verify: verifyConfig
+      verify: verifyConfig,
+      // P4.5：plan 桥逐 task 结果断言开关（outputChecks → per-step contains 断言）；
+      // 非 plan 路径不传（executor 侧零感知，零回归）。
+      ...(planOutputChecks ? { planOutputChecks: true } : {}),
+      // P4.5：plan 默认门禁的重试预算（仅 plan 默认路径注入；显式 body.verify 保持
+      // AGENT_VERIFY_MAX_RETRIES 存量语义，不覆盖）。
+      ...(planVerifyRetriesOverride !== undefined ? { verifyMaxRetries: planVerifyRetriesOverride } : {})
     }
   };
 }
+
+/**
+ * P5.4 活动 DAG run 注册表：workflowId → 运行中的 AbortController。
+ * 断连不再中止 run（见 handleWorkflow 注释）后，「停止」按钮需要显式取消通道 ——
+ * POST /api/workflows/:id/cancel 据此 abort 引擎 signal。run 终态（含被取消）时移除。
+ * 进程内单例即可：DagEngine 检查点本就落在本进程 workflowStore。
+ */
+const activeWorkflowAborts = new Map<string, AbortController>();
 
 async function handleWorkflow(
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<void> {
   let closed = false;
+  // P5.3 反转（P5.4）：计划执行期间客户端 SSE 断开（后台标签页节流 / 网络抖动 / 刷新）
+  // 不再中止服务端 DAG run。计划是「服务端后台任务」，应在断连后继续跑完并把检查点落盘；
+  // 重连的客户端经检查点轮询（GET /api/workflows/:id）读到权威终态（done/failed）。
+  // 此前「断连即中止」使串行模式（执行更久、暴露窗口更长）下任何瞬时断连都把进行中的
+  // 计划判 failed → 表现为「很容易 timeout」。客户端不会在断连/刷新后自动重派发（confirmPlan
+  // 仅由按钮触发），故不中止也不会产生双执行；中止仅在服务优雅停机（shuttingDown）时发生。
+  const runAbort = new AbortController();
   res.on('close', () => {
     closed = true;
   });
@@ -5039,7 +5481,10 @@ async function handleWorkflow(
           ? body.workflowId
           : undefined,
       tenantId: typeof body.tenantId === 'string' ? body.tenantId : undefined,
-      traceId: typeof body.traceId === 'string' ? body.traceId : undefined
+      traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
+      // P5 执行顺序：缺省串行（单步发送，桥内默认）；显式 execMode:'parallel' 回波次并行。
+      execMode:
+        body.execMode === 'parallel' ? 'parallel' : undefined
     });
   }
   if (
@@ -5069,12 +5514,26 @@ async function handleWorkflow(
   // 服务端按登录 owner（ctx.sub，不可伪造）走 resolveRunCredential 解析链
   // （自定义模型 → 用户 provider Key → 请求自带 Key → 平台兜底 → none），
   // 明文 Key 仅在请求期内存中流转、绝不落日志 / 审计 / 检查点。
-  const execOpts = await resolveWorkflowRunOpts(body as Record<string, unknown>, ctx, res);
+  const execOpts = await resolveWorkflowRunOpts(
+    body as Record<string, unknown>,
+    ctx,
+    res,
+    !!body.plan // P4.5：plan 桥路径启用默认验证门禁 + 逐 task 结果断言
+  );
   if (!execOpts) return; // 非 mock 无 Key 时 402 已写出（SSE 未开，不进入执行）
   const mode = execOpts.mode;
   let send: (payload: unknown) => void = () => {};
-  const onHarnessEvent = (e: any) => {
-    if (!closed) send({ type: 'harness', event: e });
+  // P5 静默展示策略（仅 plan 桥路径）：抑制 token 级流式事件（llm:token）——
+  // 计划执行过程中 UI 不直播各 step 的回答内容，仅经 wf:step:* 驱动计划卡状态、
+  // 经 llm:reasoning 驱动「当前任务思考面板」，最终结果在编排终态一次性输出。
+  // llm:token 不在 StepTraceCollector 白名单内，此处过滤对调用链路落盘零影响；
+  // 非 plan 工作流（def 来源）保持全量直播，行为不变。
+  const quietPresentation = !!body.plan;
+  const onHarnessEvent = (e: any, stepId?: string) => {
+    if (quietPresentation && e?.type === 'llm:token') return;
+    // P5.1 同步修复：外层帧携带 stepId —— 前端思考面板据此把 llm:reasoning 归因到
+    // 正确任务（wf:step:start 丢失/乱序时自愈，不再错挂旧任务标签）。
+    if (!closed) send(stepId ? { type: 'harness', event: e, stepId } : { type: 'harness', event: e });
   };
   // P2-3 补全：plan 来源的 DAG 执行进度同步到 PlanStore（节点 doing/done/blocked + 文档终态），
   // 失败仅告警——执行链路（SSE 直播 / 审计）不依赖计划看板可用性。
@@ -5128,15 +5587,25 @@ async function handleWorkflow(
   // 后台运行；SSE 已随 step 进度推送。完成后推送 _wf_done 并关闭。
   // initialInput：plan 来源时 = plan.goal（buildInputMapping 的 goal:'input' 映射到各 step 的 goal 键）；
   // def 来源时 = body.input（保持现有行为）。
+  // P5.4：登记活动 run，供 POST /:id/cancel 显式取消（终态时移除）。
+  activeWorkflowAborts.set(def.id, runAbort);
   engine
-    .run(def, initialInput)
-    .then((run: any) => {
+    .run(def, initialInput, runAbort.signal)
+    .then(async (run: any) => {
+      // P4.6：plan 桥终态先归档「交付文件」（幂等、无效产出跳过、绝不抛错），
+      // 归档完成再发 _wf_done 终态帧——前端在终态帧后拉 GET /api/artifacts?runId=<wfId> 必然命中。
+      await archivePlanArtifacts({ def, run: run as WorkflowRun, owner: ctx.sub }).catch((e) => {
+        console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
+      });
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();
     })
     .catch((e: any) => {
       if (!closed) send({ type: 'wf:error', workflowId: def.id, message: e?.message ?? String(e) });
       if (!closed) res.end();
+    })
+    .finally(() => {
+      activeWorkflowAborts.delete(def.id);
     });
   return;
 }
@@ -5562,6 +6031,38 @@ async function bootstrap(): Promise<void> {
 function onListening(): void {
   const registry = getAgentRegistry();
   console.log(`\n🚀 Agent Harness UI 已启动： http://localhost:${PORT}`);
+  // 构建新鲜度自检（防「改了源码但跑的是旧 dist」排障陷阱）：
+  // 打印本文件的构建时间，并在启动前发现源码晚于构建时显式告警。
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { statSync, readdirSync } = require('node:fs') as typeof import('node:fs');
+    const { join, dirname } = require('node:path') as typeof import('node:path');
+    const distServer = __filename;
+    const builtAt = statSync(distServer).mtime;
+    console.log(`   📦 后端构建时间：${builtAt.toLocaleString('zh-CN', { hour12: false })}（dist/server.js）`);
+    // 以 src 目录最新 mtime 粗略对比：src 比构建新 → 提醒重新 build（informational，不阻断）。
+    const srcDir = join(dirname(__dirname), 'src');
+    let newestSrc = 0;
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, name.name);
+        if (name.isDirectory()) walk(p);
+        else if (name.name.endsWith('.ts')) {
+          const m = statSync(p).mtimeMs;
+          if (m > newestSrc) newestSrc = m;
+        }
+      }
+    };
+    walk(srcDir);
+    if (newestSrc > builtAt.getTime()) {
+      console.warn(
+        `   ⚠️  检测到 src/ 源码比 dist/ 构建产物新 —— 当前运行的是旧代码！` +
+          `请先执行构建（如 pnpm --filter @agent-harness/core --filter @agent-harness/server run build）再启动。`
+      );
+    }
+  } catch {
+    /* 自检失败不影响启动 */
+  }
   console.log(`   模式：Mock（离线）/ Real LLM / Real + MCP`);
   if (REQUIRE_AUTH) {
     const prov =

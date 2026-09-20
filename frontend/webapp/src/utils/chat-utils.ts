@@ -10,6 +10,59 @@ export function isRetrievalTool(name: string): boolean {
   return RETRIEVAL_RE.test(name);
 }
 
+/**
+ * 内置工具显示名映射：链路节点用「人话标签」替代原始 builtin__xxx 名，
+ * 让「是否被调用」在调用链里一眼可辨（如 Jev 显示为「Jev 决策 · TypeSafe」）。
+ */
+const BUILTIN_TOOL_LABELS: Record<string, string> = {
+  builtin__jev_decide: 'Jev 决策 · TypeSafe',
+  builtin__rag_retrieve: '知识检索 · RAG'
+};
+
+export function toolDisplayName(name: string): string {
+  if (BUILTIN_TOOL_LABELS[name]) return BUILTIN_TOOL_LABELS[name];
+  // 兜底：剥掉 builtin__ 前缀，保留可读部分。
+  return name.startsWith('builtin__') ? name.slice('builtin__'.length) : name;
+}
+
+/**
+ * 从 Jev 决策工具返回的 JSON 中提炼一行可读摘要，供链路节点 meta 直接展示
+ * （如「category=billing (0.92) · urgency=78」）。
+ * Jev 响应为结构化决策（answers: { 问题名 -> { type, choice|score|noul, ... } }），
+ * 此函数防御式兜底：取不到精确字段时返回 undefined，由调用方退化为完整 JSON。
+ */
+export function summarizeJevDecision(resultStr: string): string | undefined {
+  let data: unknown;
+  try {
+    data = JSON.parse(resultStr);
+  } catch {
+    return undefined;
+  }
+  if (!data || typeof data !== 'object') return undefined;
+  const root = data as Record<string, unknown>;
+  const answersRaw = root['answers'];
+  const answers =
+    answersRaw && typeof answersRaw === 'object' && !Array.isArray(answersRaw)
+      ? (answersRaw as Record<string, unknown>)
+      : root;
+  const parts: string[] = [];
+  for (const [q, a] of Object.entries(answers)) {
+    if (!a || typeof a !== 'object') continue;
+    const av = a as Record<string, unknown>;
+    if ('choice' in av) {
+      const conf = typeof av['confidence'] === 'number' ? ` (${av['confidence']})` : '';
+      parts.push(`${q}=${String(av['choice'])}${conf}`);
+    } else if ('score' in av) {
+      parts.push(`${q}=${String(av['score'] ?? av['value'])}`);
+    } else if ('noul' in av) {
+      parts.push(`${q}=${String(av['noul'])}`);
+    } else if ('value' in av) {
+      parts.push(`${q}=${String(av['value'])}`);
+    }
+  }
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
 /** 把任意值安全转成单行/多行 JSON 预览，失败则原样字符串化。 */
 export function safeJson(v: unknown): string {
   if (v === undefined || v === null) return '';

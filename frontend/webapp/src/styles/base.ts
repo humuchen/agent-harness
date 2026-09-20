@@ -5,10 +5,10 @@ export const base = css`
   /* 组件根盒：修复样式模块化拆分时丢失 :host 选择器前缀导致整条规则失效的问题。
      缺 display:block 时自定义元素退回 display:inline；缺令牌则组件不随 [data-theme]
      切换（亮色主题下根背景仍为暗色）且丢失 Inter / 14px 基准排版。
-     注意：此处刻意不写 height/overflow —— 移动端已在 responsive.ts 的
-     @media (max-width:760px) 内改为文档自然滚动（:host height:auto / overflow:visible），
-     .shell 与 .content 各自管理高度与滚动；若在 :host 上锁定 100dvh + overflow:hidden，
-     反而会在内容超高时把底部内容裁掉且无法滚动。 */
+     注意：此处刻意不写 height/overflow —— 移动端顶层壳 ah-app 的
+     :host height:auto / min-height:100dvh / overflow:visible 在 app.ts 的
+     mobileShellCss（仅注入 ah-app 自身 shadow root）；sharedStyles 被 19 个
+     面板组件共用，:host 规则若写在共享层会泄漏到每个面板 host。 */
   :host {
     display: block;
     background: var(--ah-canvas);
@@ -60,6 +60,12 @@ export const base = css`
     border-bottom: 1px solid var(--ah-border);
     flex: 0 0 auto;
   }
+  /* 品牌行（logo + 展开/收起按钮）：PC 侧栏与移动抽屉一致，作为侧栏滚动容器的
+     粘性头 —— 导航项上滑时 logo 与按钮固定在顶部不随滚动走。
+     关键：sticky 按「滚动口的 padding 边」夹取，所以侧栏顶部那 20px 内边距
+     必须挂在品牌行自身（.sidebar 顶 padding 归零，见下），而不是留在滚动容器上；
+     否则品牌行 top:0 实际停在 20px 处，滚动口最顶 20px 带子没有背景盖住，
+     上滑的导航项会从品牌行上方穿透出来。同一处理见 responsive.ts 移动分支。 */
   .brand {
     display: flex;
     align-items: center;
@@ -69,6 +75,12 @@ export const base = css`
     font-size: 16px;
     white-space: nowrap;
     justify-content: center;
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--ah-surface-1);
+    padding: 20px 0 0;
+    box-shadow: 0 6px 8px -6px rgba(0, 0, 0, 0.35);
   }
   .sidebar-toggle {
     margin-left: auto;
@@ -80,12 +92,16 @@ export const base = css`
     justify-content: center;
     border-radius: var(--ah-radius-sm);
     background: var(--ah-surface-2);
-    border: 1px solid var(--ah-border);
+    border: none;
     color: var(--ah-text-muted);
-    font-size: 16px;
-    line-height: 1;
     cursor: pointer;
     font-family: inherit;
+  }
+  /* 展开/收起图标（面板左栏样式：圆角矩形＋左侧竖直分隔线） */
+  .sidebar-toggle .toggle-icon {
+    width: 16px;
+    height: 14px;
+    display: block;
   }
   .sidebar-toggle:hover {
     color: var(--ah-text);
@@ -98,13 +114,11 @@ export const base = css`
     display: block;
     color: var(--ah-text);
   }
-  /* 桌面端隐藏侧栏品牌块（logo + 产品名）：品牌不再出现在桌面各页面，统一收敛到
-     「我的」页。此处刻意只做「桌面 / 平板隐藏」而不删 DOM —— 手机（含横屏矮屏）抽屉
-     顶部标题行完全由品牌块承担，删 DOM 会留下一条空白粘性栏，故手机横屏排除在外。
-     对称排除条件见 app.ts desktopShellCss。 */
+  /* 桌面端隐藏侧栏产品名（品牌文字统一收敛到「我的」页），但 logo 保留：
+     展开态（240px）放出 logo；收起为 64px 图标轨时 22+8+26=56px 放不下，隐藏。
+     手机抽屉不命中本媒体块，仍显示 logo + 产品名（见 app.ts 的对称排除说明）。 */
   @media (min-width: 761px) and (min-height: 761px) {
-    .sidebar .brand .logo,
-    .sidebar .brand .brand-text {
+    .sidebar.collapsed .brand .logo {
       display: none;
     }
   }
@@ -220,7 +234,9 @@ export const base = css`
     width: 240px;
     background: var(--ah-surface-1);
     border-right: 1px solid var(--ah-border);
-    padding: 20px 14px;
+    /* 顶内边距为 0：那 20px 挪到 .brand 自身（见上），否则粘性品牌行会被
+       夹在 20px 处，滚动时导航项从品牌行上方穿透。 */
+    padding: 0 14px 20px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -229,12 +245,19 @@ export const base = css`
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--ah-border) transparent;
-    transition: width 180ms ease, padding 180ms ease;
+    /* 展开收起过渡：.sidebar 是 .shell 的 flex 子项，实际宽度由 flex-basis
+       决定（flex: 0 0 240px → 0 0 64px），width 声明不参与布局。过渡必须
+       覆盖 flex-basis，否则收起/展开时面板宽度瞬间跳变（width 的过渡
+       永远不会生效，因为布局尺寸根本不看它）。 */
+    transition:
+      width 180ms ease,
+      flex-basis 180ms ease,
+      padding 180ms ease;
   }
   .sidebar.collapsed {
     flex: 0 0 64px;
     width: 64px;
-    padding: 20px 10px;
+    padding: 0 10px 20px;
   }
   .sidebar.collapsed .brand-text {
     display: none;
@@ -321,6 +344,42 @@ export const base = css`
     height: 18px;
     border-radius: 0 2px 2px 0;
     background: var(--ah-accent);
+  }
+  /* 展开/收起文字过渡：宽度过渡在 .sidebar 上，但 .brand-text / .nav-text /
+     .nav-group-title 在收起态是 display:none，无法用 transition 参与动画
+     （display 切换不可过渡）。改为仅在展开态（:not(.collapsed)）挂 fade-in
+     关键帧 —— display:none → 恢复显示时元素重新渲染，动画随之重放，
+     文字在面板展开的同时淡入，不再瞬间闪现。收起态不挂动画（display:none
+     移除无过渡可言，宽度收窄本身就足够顺滑）。
+     仅限 :not(.collapsed) 还有一层意图：移动端抽屉带 collapsed 类但覆盖回
+     完整文字形态，此处不命中即不给抽屉文字加动画，避免误伤。 */
+  @keyframes ah-nav-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .sidebar:not(.collapsed) .brand-text,
+  .sidebar:not(.collapsed) .nav-text,
+  .sidebar:not(.collapsed) .nav-group-title {
+    animation: ah-nav-fade 200ms ease both;
+  }
+  /* 桌面展开态的 logo 在收起时被隐藏（见上方媒体块），展开恢复显示时同样淡入。 */
+  @media (min-width: 761px) and (min-height: 761px) {
+    .sidebar:not(.collapsed) .brand .logo {
+      animation: ah-nav-fade 200ms ease both;
+    }
+  }
+  /* 尊重「减少动效」系统偏好：文字淡入一并关闭。 */
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar:not(.collapsed) .brand-text,
+    .sidebar:not(.collapsed) .nav-text,
+    .sidebar:not(.collapsed) .nav-group-title,
+    .sidebar:not(.collapsed) .brand .logo {
+      animation: none;
+    }
   }
   .sidebar.collapsed .nav-item::before {
     content: attr(data-short);

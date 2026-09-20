@@ -21,8 +21,8 @@ const MAX_CHILDREN = 8;
 /** 每层缩进像素。 */
 const INDENT_PX = 14;
 
-/** 与 chat.ts formatToolJson 相同的实体解码（防御服务端已转义的输入）。 */
-function decodeEntities(raw: string): string {
+/** 与 chat.ts formatToolJson 相同的实体解码（防御服务端已转义的输入）。导出供回退路径复用。 */
+export function decodeEntities(raw: string): string {
   return raw
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
@@ -138,7 +138,9 @@ export function renderJsonHtml(raw: string): TemplateResult {
   try {
     data = JSON.parse(decodeEntities(raw));
   } catch {
-    return html`${raw}`;
+    // 非 JSON（或截断破损）：解码实体后原文回退（Lit 插值自动 HTML 转义），
+    // 避免把采集端捕获的 &quot; 等实体原样摊给用户看。
+    return html`${decodeEntities(raw)}`;
   }
   return html`<span class="jv">${renderValue(data, 1)}</span>`;
 }

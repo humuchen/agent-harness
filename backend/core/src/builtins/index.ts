@@ -8,6 +8,7 @@ import { registerDataTransform } from './datatransform';
 import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
 import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
 import { registerRagRetrieve, type RagRetrieveOptions } from './rag-retrieve';
+import { registerJevDecide, type JevDecideOptions } from './typesafe-jev';
 
 export interface BuiltinOptions {
   /** 总开关；false 时不注册任何内置工具。默认 true。 */
@@ -26,6 +27,20 @@ export interface BuiltinOptions {
   dataTransformEnabled?: boolean;
   /** RAG 检索工具开关。默认关闭（需配置 RAG_URL 才生效）。 */
   ragEnabled?: boolean;
+  /**
+   * TypeSafe AI Jev 决策工具开关。默认关闭（需配置 TYPESAFE_API_KEY 或传入 jevApiKey 才生效）。
+   * Jev 是「System One 决策模型」，不是文本 LLM，走独立 /systemone 端点，
+   * 与聊天模型链路（OpenRouter / OpenAI）互不替换。
+   */
+  jevEnabled?: boolean;
+  /**
+   * 按用户 BYOK 注入的 TypeSafe API Key（明文，运行期由服务端从加密库解密后传入）。
+   * 传入时覆盖 env 的 TYPESAFE_API_KEY，使 Jev 工具按用户隔离启用；
+   * 不传则回落 env（服务端级配置）。两者皆无则不注册工具。
+   */
+  jevApiKey?: string;
+  /** 按用户 BYOK 注入的 TypeSafe 接口地址（优先于 env 的 TYPESAFE_BASE_URL）。 */
+  jevBaseUrl?: string;
   /**
    * 沙箱 shell / 代码执行能力开关。默认关闭（opt-in，危险能力需显式开启）：
    *   - 设为 true 开启；或环境变量 SHELL_ENABLED=true。
@@ -77,6 +92,8 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const weatherEnabled = options.weatherEnabled ?? true;
   const dataTransformEnabled = options.dataTransformEnabled ?? true;
   const ragEnabled = options.ragEnabled ?? (process.env.RAG_URL ? true : false);
+  // jevEnabled 默认：env 配置 或 按用户 BYOK 注入了 Key 任一成立即启用。
+  const jevEnabled = options.jevEnabled ?? (!!process.env.TYPESAFE_API_KEY || !!options.jevApiKey);
 
   // 沙箱 shell 能力：默认关闭，需显式开启（环境变量 SHELL_ENABLED=true 或调用方传入）。
   const shellEnabled = options.shellEnabled ?? process.env.SHELL_ENABLED === 'true';
@@ -93,6 +110,12 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   if (weatherEnabled && allow('weather')) registerWeather(registry);
   if (dataTransformEnabled && allow('data_transform')) registerDataTransform(registry);
   if (ragEnabled && allow('rag_retrieve')) registerRagRetrieve(registry, { baseUrl: process.env.RAG_URL, token: process.env.RAG_TOKEN });
+  if (jevEnabled && allow('jev')) {
+    // 按用户 BYOK 注入的 Key/地址优先于 env；两者皆无时回落 env（registerJevDecide 内部再判空）。
+    const jevKey = options.jevApiKey ?? process.env.TYPESAFE_API_KEY;
+    const jevUrl = options.jevBaseUrl ?? process.env.TYPESAFE_BASE_URL;
+    registerJevDecide(registry, { baseUrl: jevUrl, apiKey: jevKey });
+  }
   if (shellEnabled && allow('shell')) {
     const whitelist =
       options.shellWhitelist ??
@@ -134,5 +157,22 @@ export type { FilesystemOptions } from './filesystem';
 export type { WebFetchOptions } from './webfetch';
 export { registerRagRetrieve } from './rag-retrieve';
 export type { RagRetrieveOptions } from './rag-retrieve';
+export { registerJevDecide } from './typesafe-jev';
+export {
+  jevDecide,
+  jevScoreInjection,
+  jevClassifyDomain,
+  jevScoreChunk,
+  resolveJevCreds,
+  getJevStats,
+  resetJevStats
+} from './typesafe-jev';
+export type {
+  JevDecideOptions,
+  JevQuestionSpec,
+  JevQuestionType,
+  JevAnswer,
+  JevDecision
+} from './typesafe-jev';
 // OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
 export * from '../sandbox';

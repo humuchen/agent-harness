@@ -39,7 +39,8 @@ export interface SaveArtifactInput {
 }
 
 export interface ArtifactStore {
-  list(): Promise<ArtifactMeta[]>;
+  /** 列出全部工件（最新在前）；传 runId 时仅返回该 run 归档的工件（P4.6 计划桥交付文件按 run 拉取）。 */
+  list(runId?: string): Promise<ArtifactMeta[]>;
   get(id: string): Promise<ArtifactMeta | null>;
   save(input: SaveArtifactInput): Promise<ArtifactMeta>;
   readContent(id: string): Promise<Buffer | null>;
@@ -92,10 +93,11 @@ export class LocalArtifactStore implements ArtifactStore {
     await writeFile(this.indexPath, JSON.stringify(items, null, 2), 'utf-8');
   }
 
-  async list(): Promise<ArtifactMeta[]> {
+  async list(runId?: string): Promise<ArtifactMeta[]> {
     const items = await this.readIndex();
     // 最新创建在前。
     return items
+      .filter((m) => (runId ? m.runId === runId : true))
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   }

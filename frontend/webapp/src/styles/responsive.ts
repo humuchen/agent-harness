@@ -10,17 +10,12 @@ export const responsive = css`
      只命中「横屏且视口矮」的手机；桌面 / 平板横屏（高度≥761）仍走桌面内部滚动，
      见 app.ts 的 desktopShellCss 与 base.ts 品牌隐藏处的对称排除。 */
   @media (max-width: 760px), (orientation: landscape) and (max-height: 760px) {
-    /* 移动端解除 100dvh 锁定 + overflow:hidden：子组件（ah-run 等）内容超高时
-       原锁定会把底部裁掉且自身无内部滚动，导致「拉到最低展示不全」。
-       改为文档自然滚动，底部始终可达；桌面端布局不受影响。 */
-    :host {
-      /* 底部固定栏高度：单一来源，供 .content 底部留白引用，
-         避免「底栏实际高度」与「内容区留白」两处魔法数字各自漂移。 */
-      --ah-tabbar-h: calc(48px + env(safe-area-inset-bottom, 0px));
-      height: auto;
-      min-height: 100dvh;
-      overflow: visible;
-    }
+    /* 注意：本媒体块刻意不含 :host 规则。顶层 ah-app 的 :host 移动端覆盖
+       （height:auto / min-height:100dvh / overflow:visible / --ah-tabbar-h）
+       放在 app.ts 的 mobileShellCss（仅注入 ah-app 自身 shadow root）。
+       若写在本文件：sharedStyles 会被 19 个面板组件各自的 shadow DOM 编译，
+       :host 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
+       仍撑满整屏 → .content 被顶高 → 文档超出视口 ~139px 幽灵滚动。 */
     .shell {
       height: auto;
       overflow: visible;
@@ -67,7 +62,18 @@ export const responsive = css`
     }
     .sidebar.open {
       transform: none;
-      padding: 40px 10px 20px 10px;
+      /* 顶部 40px 让位给品牌区，不能留在滚动容器上：
+         sticky 元素按「滚动容器的 padding 边」夹取，若 40px 顶 padding 在容器上，
+         品牌区 sticky top:0 实际停在 40px 处，容器最顶 0–40px 那条带子没有背景盖住，
+         上滑的导航项（分组标题「能力·资产」、菜单「计划」…）就从品牌区上方这条空隙
+         穿透出来 —— 即「滚动时品牌区上方仍能看到穿过文字」。把顶 inset 挪到品牌区自身，
+         其不透明背景即可铺满到滚动口真正的 0，空隙随之消失。 */
+      padding: 0 10px 20px 10px;
+    }
+    /* 打开态：把原本的 40px 顶部间距挂到品牌区自身（内容仍落点 40px，视觉不变；
+       但品牌区盒子从 0 起铺满，sticky 背景盖住顶部空隙，滚过的导航项不再穿透。 */
+    .sidebar.open .brand {
+      padding-top: 40px;
     }
 
     /* 移动端忽略桌面折叠态：始终展示完整导航文字而非首字 */
@@ -121,6 +127,9 @@ export const responsive = css`
     }
     .scrim.show {
       display: block;
+      /* 抽屉唤出时遮罩淡入（display:none 切换不可过渡，用关键帧兜底；
+         ah-nav-fade 定义在同 shadow root 的 styles/base.ts）。 */
+      animation: ah-nav-fade 200ms ease both;
     }
 
     /* 顶栏状态行换行、令牌框与按钮占满宽度 */

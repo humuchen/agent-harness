@@ -10,29 +10,57 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   applyPlanWfEvent,
+  applyPlanThinking,
   isPlanDagEnabled,
   setPlanDagEnabled,
   derivePlanWfId,
   buildPlanWfReplayRows,
+  buildPlanWfTraceLines,
+  compactPlanWfSnapshot,
   formatPlanWfOutput,
   formatPlanWfDuration,
   planWfReplayStateLabel,
   planWfReplayMark,
+  planWfTraceMetaLabel,
+  planWfTraceMetaRowTitle,
+  REPLAY_DETAIL_MAX,
   PLAN_DAG_STORAGE_KEY,
+  PLAN_THINKING_MAX,
   type PlanWfEvent
 } from './chat-render-utils';
 import type { ExecutionPlanView, PlanExecState } from './chat-types';
+import { toMirrorPlanStatus } from './chat-persist';
 
-const KNOWN = new Set(['t1', 't2', 't3']);
+const KNOWN = new Set(['t1', 't2', 't3', 't4']);
 const base: PlanExecState = { status: 'running', done: {} };
 
 describe('applyPlanWfEvent', () => {
   it('wf:step:start → running + currentTaskId（未知 task 原样返回）', () => {
     const next = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
     expect(next).not.toBe(base);
-    expect(next).toEqual({ status: 'running', currentTaskId: 't2', done: {} });
+    // P5 静默执行：任务开始时建立空思考槽位（llm:reasoning 增量随后叠入）。
+    expect(next).toEqual({
+      status: 'running',
+      currentTaskId: 't2',
+      done: {},
+      thinking: { taskId: 't2', text: '' }
+    });
     expect(applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 'nope' }, KNOWN)).toBe(base);
     expect(applyPlanWfEvent(base, { type: 'wf:step:start' }, KNOWN)).toBe(base);
+  });
+
+  it('P5：思考面板生命周期 —— step:start 建立空槽，step:done/failed/wf:done 清空', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    expect(st.thinking).toEqual({ taskId: 't1', text: '' });
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    expect(st.thinking?.taskId).toBe('t2');
+    st = applyPlanWfEvent(st, { type: 'wf:step:failed', stepId: 't2' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
+    st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:done' }, KNOWN);
+    expect(st.thinking).toBeUndefined();
   });
 
   it('wf:step:done → done 集合累加，状态保持 running（多任务并行时不提前 done）', () => {
@@ -88,6 +116,41 @@ describe('applyPlanWfEvent', () => {
     expect(st2.failedTaskId).toBe('t9');
   });
 
+  it('P3：wf:awaiting-approval → status=awaiting + awaitingTaskIds 收集，done 集合保留', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    const gated = applyPlanWfEvent(
+      st,
+      { type: 'wf:awaiting-approval', stepIds: ['t2', 't3'] },
+      KNOWN
+    );
+    expect(gated.status).toBe('awaiting');
+    expect(gated.awaitingTaskIds).toEqual(['t2', 't3']);
+    // 已完成集合不因暂停丢失（继续执行时依赖它判断「哪些任务可跳」）。
+    expect(gated.done).toEqual({ t1: true });
+  });
+
+  it('P3：批准放行后 wf:step:start 清掉 awaitingTaskIds（重新进入 running）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:awaiting-approval', stepIds: ['t2'] }, KNOWN);
+    expect(st.status).toBe('awaiting');
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    expect(st.status).toBe('running');
+    expect(st.currentTaskId).toBe('t2');
+    expect(st.awaitingTaskIds).toBeUndefined();
+  });
+
+  it('P3：awaiting 态收到 wf:done → 收敛 done（清 awaitingTaskIds，保留 done 集合）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't1' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:awaiting-approval', stepIds: ['t2'] }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:done' }, KNOWN);
+    expect(st.status).toBe('done');
+    expect(st.awaitingTaskIds).toBeUndefined();
+    expect(st.done).toEqual({ t1: true });
+  });
+
   it('无关事件（harness 嵌套 / compensate / start / 坏帧）原样返回 prev（同引用）', () => {
     const same = [
       { type: 'wf:start' },
@@ -99,6 +162,64 @@ describe('applyPlanWfEvent', () => {
       { type: 42 } as unknown as PlanWfEvent
     ];
     for (const ev of same) expect(applyPlanWfEvent(base, ev, KNOWN)).toBe(base);
+  });
+});
+
+describe('applyPlanThinking（P5 静默执行：思考增量叠加）', () => {
+  it('running 且有 thinking 槽位 → 增量叠入 text', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const next = applyPlanThinking(st, '分析目标…');
+    expect(next).not.toBe(st);
+    expect(next.thinking).toEqual({ taskId: 't1', text: '分析目标…' });
+    const next2 = applyPlanThinking(next, '，检索数据中');
+    expect(next2.thinking?.text).toBe('分析目标…，检索数据中');
+  });
+
+  it('非 running / 无 thinking 槽位 / 空增量 → 同引用返回（no-op）', () => {
+    expect(applyPlanThinking(base, 'x')).toBe(base);
+    const done: PlanExecState = { status: 'done', done: {} };
+    expect(applyPlanThinking(done, 'x')).toBe(done);
+    const runningNoThink: PlanExecState = { status: 'running', done: {} };
+    expect(applyPlanThinking(runningNoThink, 'x')).toBe(runningNoThink);
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    expect(applyPlanThinking(st, '')).toBe(st);
+  });
+
+  it('超上限截尾保新（tail 展示语义）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const big = 'a'.repeat(PLAN_THINKING_MAX + 100);
+    const next = applyPlanThinking(st, big);
+    expect(next.thinking?.text.length).toBe(PLAN_THINKING_MAX);
+    expect(next.thinking?.text.startsWith('a')).toBe(true);
+  });
+
+  // P5.1 同步自愈：思考流按服务端注入的 stepId 归因（wf:step:start 丢失/乱序时不再错挂旧任务）。
+  it('stepId 与当前槽位不一致 → 丢弃旧槽、按事件归属重建（自愈切换）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    const withT3 = applyPlanThinking(st, 't3 的思考…');
+    const healed = applyPlanThinking(withT3, 't4 的思考…', 't4');
+    expect(healed.thinking).toEqual({ taskId: 't4', text: 't4 的思考…' });
+    const grown = applyPlanThinking(healed, ' 继续', 't4');
+    expect(grown.thinking?.text).toBe('t4 的思考… 继续');
+  });
+
+  it('running 且无槽位但带 stepId → 直接建槽（刷新恢复后思考流不再被丢弃）', () => {
+    const runningNoThink: PlanExecState = { status: 'running', done: {} };
+    const next = applyPlanThinking(runningNoThink, '恢复后的思考…', 't4');
+    expect(next.thinking).toEqual({ taskId: 't4', text: '恢复后的思考…' });
+    // 不带 stepId 保持原行为：无槽位 no-op。
+    expect(applyPlanThinking(runningNoThink, 'x')).toBe(runningNoThink);
+  });
+
+  it('wf:step:done 只清本任务槽位：乱序的 done(t3) 不误删已自愈到 t4 的思考流', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    const withT4 = applyPlanThinking(st, 't4 的思考…', 't4');
+    const afterLateDone = applyPlanWfEvent(withT4, { type: 'wf:step:done', stepId: 't3' }, KNOWN);
+    expect(afterLateDone.done['t3']).toBe(true);
+    expect(afterLateDone.thinking?.taskId).toBe('t4');
+    // 本任务的 done 仍正常清槽。
+    const afterOwnDone = applyPlanWfEvent(withT4, { type: 'wf:step:done', stepId: 't4' }, KNOWN);
+    expect(afterOwnDone.thinking).toBeUndefined();
   });
 });
 
@@ -287,6 +408,7 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     error?: string;
     startedAt?: number;
     finishedAt?: number;
+    trace?: import('@agent-harness/client').StepTraceNode[];
   };
   const snap = (steps: Record<string, SnapStep>) => ({ steps });
 
@@ -346,13 +468,18 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     expect(rows[1]?.detail).toBeUndefined();
   });
 
-  it('对象产出 → JSON 化；超长截断到 600 字并加省略号', () => {
+  it('对象产出 → JSON 化；正常体量全文保留（不再 600 字截断），仅病态超长兜底', () => {
     expect(formatPlanWfOutput({ a: 1, b: [2, 3] }) ?? '').toContain('"a"');
+    // 研报级体量（数千~数万字）必须完整回到抽屉，不得出现省略号（2026-09-20 放宽）。
     const long = 'x'.repeat(1000);
-    const out = formatPlanWfOutput(long);
-    expect(out).not.toBeUndefined();
-    expect(out?.length).toBe(601); // 600 + '…'
-    expect(out).toBe(`${long.slice(0, 600)}…`);
+    expect(formatPlanWfOutput(long)).toBe(long);
+    const chapter = '研'.repeat(50_000);
+    expect(formatPlanWfOutput(chapter)).toBe(chapter);
+    // 兜底上限 REPLAY_DETAIL_MAX=200_000：仅防病态 JSON dump 拖垮 DOM。
+    const pathological = 'y'.repeat(REPLAY_DETAIL_MAX + 1);
+    const capped = formatPlanWfOutput(pathological);
+    expect(capped?.length).toBe(REPLAY_DETAIL_MAX + 1); // 上限 + '…'
+    expect(capped).toBe(`${'y'.repeat(REPLAY_DETAIL_MAX)}…`);
     expect(formatPlanWfOutput('   ')).toBeUndefined();
     expect(formatPlanWfOutput(null)).toBeUndefined();
   });
@@ -372,5 +499,231 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     expect(planWfReplayStateLabel('weird')).toBe('weird');
     expect(planWfReplayMark('done')).toBe('✅');
     expect(planWfReplayMark('weird')).toBe('•');
+  });
+});
+
+describe('P2.5 调用链路：step 运行过程回放（buildPlanWfReplayRows.trace + buildPlanWfTraceLines）', () => {
+  const p: ExecutionPlanView = {
+    goal: '上线',
+    tasks: [{ id: 't1', title: '写核心逻辑', steps: [], dependsOn: [], expectedOutput: '核心模块' }]
+  };
+
+  it('buildPlanWfReplayRows 透传 StepRun.trace 到行（空 / 缺失 → undefined，抽屉不渲染链路区）', () => {
+    const rows = buildPlanWfReplayRows(
+      p,
+      {
+        steps: {
+          t1: {
+            state: 'done',
+            trace: [{ type: 'llm:call', ts: 1000, label: 'LLM 调用' }]
+          }
+        }
+      }
+    );
+    expect(rows[0]?.trace).toEqual([{ type: 'llm:call', ts: 1000, label: 'LLM 调用' }]);
+    // 空数组 / 无 trace 键（旧快照）→ undefined（零回归：抽屉不渲染「调用链路」）。
+    const rowsEmpty = buildPlanWfReplayRows(p, { steps: { t1: { state: 'done', trace: [] } } });
+    expect(rowsEmpty[0]?.trace).toBeUndefined();
+    const rowsNone = buildPlanWfReplayRows(p, { steps: { t1: { state: 'done' } } });
+    expect(rowsNone[0]?.trace).toBeUndefined();
+  });
+
+  it('buildPlanWfTraceLines：图标 / 相对时间 / detail 截断 / 状态透传', () => {
+    const lines = buildPlanWfTraceLines([
+      { type: 'run:start', ts: 1000, label: '任务开始', detail: '做核心逻辑' },
+      { type: 'llm:call', ts: 1500, step: 1, label: 'LLM 调用', meta: { msgs: '1' } },
+      { type: 'tool:result', ts: 2300, step: 1, label: '工具 web_fetch 结果', status: 'error', detail: 'timeout' },
+      { type: 'run:end', ts: 2500, label: '任务结束' }
+    ]);
+    expect(lines).toHaveLength(4);
+    // 首节点相对 0 → 无 at；后续节点相对首节点。
+    expect(lines[0]?.at).toBeUndefined();
+    expect(lines[1]?.at).toBe('500ms');
+    expect(lines[3]?.at).toBe('1.5s');
+    // 图标 / 状态透传。
+    expect(lines[0]?.icon).toBe('▶️');
+    expect(lines[2]?.icon).toBe('🔧');
+    expect(lines[2]?.status).toBe('error');
+    expect(lines[0]?.detail).toBe('做核心逻辑');
+  });
+
+  it('buildPlanWfTraceLines：超长 detail 截断到 400 字 + 省略号；空 / undefined 返回 []', () => {
+    const long = 'x'.repeat(600);
+    const lines = buildPlanWfTraceLines([{ type: 'llm:response', ts: 1, label: '模型响应', detail: long }]);
+    expect(lines[0]?.detail).toBe(`${long.slice(0, 400)}…`);
+    expect(buildPlanWfTraceLines([])).toEqual([]);
+    expect(buildPlanWfTraceLines(undefined)).toEqual([]);
+  });
+
+  it('buildPlanWfTraceLines：meta 透传为 [键, 值] 对（用量 / 模型数据此前被丢弃 → 抽屉不可见）；空 / 全空值 meta 不透传', () => {
+    const lines = buildPlanWfTraceLines([
+      {
+        type: 'run:cost',
+        ts: 1000,
+        label: '用量',
+        meta: { model: 'deepseek-v4', tokens: '1280', cost: '0.0032' }
+      },
+      { type: 'llm:usage', ts: 1200, label: '上下文用量', meta: { prompt: '1000', completion: '280', window: '' } },
+      { type: 'llm:call', ts: 1400, label: 'LLM 调用' }
+    ]);
+    expect(lines[0]?.meta).toEqual([
+      ['model', 'deepseek-v4'],
+      ['tokens', '1280'],
+      ['cost', '0.0032']
+    ]);
+    // 空值键被过滤（window: '' 不进 chip，避免渲染空数据行）。
+    expect(lines[1]?.meta).toEqual([
+      ['prompt', '1000'],
+      ['completion', '280']
+    ]);
+    // 无 meta 的行 → undefined（渲染端不画空 chip 区）。
+    expect(lines[2]?.meta).toBeUndefined();
+  });
+
+  it('planWfTraceMetaLabel：已知键 → 中文标签，未知键原样透出（采集端新增 meta 键后 UI 不空白）', () => {
+    expect(planWfTraceMetaLabel('model')).toBe('模型');
+    expect(planWfTraceMetaLabel('tokens')).toBe('Token');
+    expect(planWfTraceMetaLabel('prompt')).toBe('输入');
+    expect(planWfTraceMetaLabel('weird-key')).toBe('weird-key');
+  });
+
+  it('planWfTraceMetaRowTitle：含用量/模型键 → 「模型 / 用量」，仅参数键 → 「参数」（独立 meta 行标题语义）', () => {
+    // run:cost 行：model/tokens/cost 全在用量键集合。
+    expect(planWfTraceMetaRowTitle([['model', 'deepseek-v4'], ['tokens', '1280']])).toBe('模型 / 用量');
+    // llm:usage 行：prompt/completion/window。
+    expect(planWfTraceMetaRowTitle([['prompt', '1000'], ['window', '128000']])).toBe('模型 / 用量');
+    // llm:call 行：msgs/tools 属参数键（无用量键）→「参数」。
+    expect(planWfTraceMetaRowTitle([['msgs', '2'], ['tools', '5']])).toBe('参数');
+    // 混合格（llm:response 带 partial）：无用量键 → 参数。
+    expect(planWfTraceMetaRowTitle([['partial', 'true']])).toBe('参数');
+  });
+
+  it('未知事件类型 → 通用图标「•」（采集端新增事件后 UI 不空白）', () => {
+    const lines = buildPlanWfTraceLines([{ type: 'wf:something-new', ts: 1, label: '新事件' }]);
+    expect(lines[0]?.icon).toBe('•');
+    expect(lines[0]?.label).toBe('新事件');
+  });
+});
+
+/* ────────────────────────────────────────────────────────────────────
+ * P2.6 镜像回退：紧凑 run 快照（compactPlanWfSnapshot）+ 检查点 404 → 历史镜像水合。
+ * 根因：「执行详情」抽屉唯一数据源是服务端检查点（GET /api/workflows/:wfId），而检查点
+ * 寿命受 store 形态约束——本地 dev 未配 WORKFLOW_STORE_DIR 是 VolatileWorkflowStore
+ * （进程重启即丢），Render free 层 /app/data 是临时盘（闲置唤醒 / 部署重置清空）。
+ * 执行完 → 服务重启 → 刷新重进 → getWorkflow 404 → 抽屉「没有任何数据」。
+ * 修复：终态帧的 run 快照经 compactPlanWfSnapshot 紧凑化，随 planStatus 镜像落会话历史
+ * （SQLite / Turso，跨重启保留）；抽屉 404 时回退镜像水合并标注来源。
+ * ──────────────────────────────────────────────────────────────────── */
+describe('P2.6 镜像回退：compactPlanWfSnapshot（终态 run → 紧凑快照，随 planStatus 镜像持久化）', () => {
+  const mkRun = (over: Record<string, unknown> = {}) => ({
+    state: 'done',
+    startedAt: 1000,
+    finishedAt: 5000,
+    steps: {
+      t1: {
+        state: 'done',
+        agentId: 'a1',
+        startedAt: 1000,
+        finishedAt: 3000,
+        output: 't1 产出',
+        trace: [{ type: 'run:start', ts: 1000, label: '开始' }]
+      },
+      t2: {
+        state: 'done',
+        agentId: 'a2',
+        startedAt: 3000,
+        finishedAt: 5000,
+        output: 't2 产出'
+      }
+    },
+    ...over
+  });
+
+  it('正常终态 run → 保留回放字段（state/时间戳/每 step state/agentId/时间戳/output/trace）', () => {
+    const snap = compactPlanWfSnapshot(mkRun());
+    expect(snap?.state).toBe('done');
+    expect(snap?.startedAt).toBe(1000);
+    expect(snap?.finishedAt).toBe(5000);
+    expect(snap?.steps.t1?.state).toBe('done');
+    expect(snap?.steps.t1?.agentId).toBe('a1');
+    expect(snap?.steps.t1?.output).toBe('t1 产出');
+    expect(snap?.steps.t1?.trace?.[0]?.type).toBe('run:start');
+    // 非字符串 output → JSON 化后保留。
+    const obj = compactPlanWfSnapshot(
+      mkRun({ steps: { t1: { state: 'done', output: { k: 1 } } } })
+    );
+    expect(obj?.steps.t1?.output).toBe('{"k":1}');
+  });
+
+  it('形状非法 / 无 steps → undefined（调用方不落镜像字段，零回归面）', () => {
+    expect(compactPlanWfSnapshot(undefined)).toBeUndefined();
+    expect(compactPlanWfSnapshot(null)).toBeUndefined();
+    expect(compactPlanWfSnapshot('x')).toBeUndefined();
+    expect(compactPlanWfSnapshot({ state: 'done' })).toBeUndefined(); // 缺 steps
+    expect(compactPlanWfSnapshot({ state: 'done', steps: null })).toBeUndefined();
+  });
+
+  it('run.state 缺失 → 收敛为 done（避免镜像出现非法状态）', () => {
+    const snap = compactPlanWfSnapshot({ steps: {} });
+    expect(snap?.state).toBe('done');
+  });
+
+  it('output / error 超长截断（REPLAY_MIRROR_OUTPUT_MAX=2000 + 省略号）', () => {
+    const big = 'a'.repeat(3000);
+    const snap = compactPlanWfSnapshot(
+      mkRun({
+        error: big,
+        steps: { t1: { state: 'failed', error: big } }
+      })
+    );
+    expect(snap?.error?.length).toBeLessThanOrEqual(2000 + 1);
+    expect(snap?.error?.endsWith('…')).toBe(true);
+    expect(snap?.steps.t1?.error?.endsWith('…')).toBe(true);
+  });
+
+  it('trace 二级限幅：节点超 30 截断 + detail 超 200 截断（控制历史信封体积）', () => {
+    const nodes = Array.from({ length: 40 }, (_, i) => ({
+      type: 'llm:call',
+      ts: i,
+      label: `n${i}`,
+      detail: 'd'.repeat(500)
+    }));
+    const snap = compactPlanWfSnapshot(
+      mkRun({ steps: { t1: { state: 'done', trace: nodes } } })
+    );
+    expect(snap?.steps.t1?.trace?.length).toBe(30);
+    expect(snap?.steps.t1?.trace?.[0]?.detail?.length).toBeLessThanOrEqual(200 + 1);
+  });
+
+  it('awaiting partial 快照：保留 run.state=awaiting + 已执行 step（审批等待中刷新可回看）', () => {
+    const snap = compactPlanWfSnapshot(
+      mkRun({ state: 'awaiting', finishedAt: undefined, steps: { t1: { state: 'done' } } })
+    );
+    expect(snap?.state).toBe('awaiting');
+    expect(snap?.finishedAt).toBeUndefined();
+    expect(snap?.steps.t1?.state).toBe('done');
+  });
+});
+
+describe('P2.6 镜像回退：toMirrorPlanStatus 写穿 wfSnapshot（随 planStatus 落会话历史）', () => {
+  it('PlanExecState 带 wfSnapshot → 镜像含该字段（刷新后 applyPlanStatusLookup 可恢复）', () => {
+    const st: PlanExecState = {
+      status: 'done',
+      done: { t1: true },
+      wfSnapshot: {
+        state: 'done',
+        startedAt: 1,
+        finishedAt: 2,
+        steps: { t1: { state: 'done', agentId: 'a1' } }
+      }
+    };
+    const out = toMirrorPlanStatus(st) as Record<string, unknown>;
+    expect(out.wfSnapshot).toEqual(st.wfSnapshot);
+  });
+
+  it('无 wfSnapshot（旧计划 / 串行路径）→ 镜像不含该字段（零回归）', () => {
+    const st: PlanExecState = { status: 'done', done: { t1: true } };
+    const out = toMirrorPlanStatus(st) as Record<string, unknown>;
+    expect('wfSnapshot' in out).toBe(false);
   });
 });

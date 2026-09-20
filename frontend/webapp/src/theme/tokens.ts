@@ -9,8 +9,6 @@
 
 export type Theme = 'dark' | 'light';
 
-const THEMES: Theme[] = ['dark', 'light'];
-
 // dark：对齐 Ardot 设计稿（canvas #0B0E14 / accent #2997FF）
 const darkTokens = `
   --ah-canvas: #0B0E14;
@@ -166,6 +164,7 @@ export const THEME_CSS = `
 @property --ah-hl-ins-bg { syntax: '<color>';  inherits: true; initial-value: rgba(46,160,67,0.15); }
 @property --ah-hl-del    { syntax: '<color>';  inherits: true; initial-value: #FFA198; }
 @property --ah-hl-del-bg { syntax: '<color>';  inherits: true; initial-value: rgba(248,81,73,0.15); }
+
 /* 门控过渡：仅 .ah-theme-anim 挂类期间（withThemeAnimation 的 600ms 窗口内）
    才启用颜色插值，避免首屏加载 / 无主题变更时产生多余过渡。
    过渡声明在 <html>（= 令牌实际变更的元素）上，消费方 var() 随帧重解析。 */
@@ -208,6 +207,7 @@ html, body {
   background: var(--ah-canvas);
   color: var(--ah-text);
 }
+
 /* 移动端（窄屏或触屏）：全局隐藏滚动条 + 去除点击蓝色高亮（WebView 默认 :active）。
    - 滚动条：html/body（文档根，非 shadow）+ 任意滚动容器，三套语法并写。
    - 点击高亮：-webkit-tap-highlight-color: transparent 吃掉 Android WebView 默认蓝色圆。 */
@@ -253,6 +253,9 @@ html, body {
     --md-modal-footer-btn-radius: 999px !important;
     --md-confirm-cancel-border: transparent !important;
     --md-modal-footer-cancel-border: transparent !important;
+    --md-font-size-base: 14px !important;
+    --md-modal-footer-btn-padding: 3.5px 18px !important;
+    --md-confirm-dark-bg: var(--ah-surface-1)
   }
 }
 `;
@@ -278,9 +281,16 @@ export function getTheme(): Theme {
   if (typeof document === 'undefined') return 'dark';
   const attr = document.documentElement.getAttribute('data-theme');
   if (attr === 'dark' || attr === 'light') return attr;
-  const stored = typeof localStorage !== 'undefined' ? (localStorage.getItem(STORAGE_KEY) as Theme | null) : null;
+  const stored =
+    typeof localStorage !== 'undefined'
+      ? (localStorage.getItem(STORAGE_KEY) as Theme | null)
+      : null;
   if (stored === 'dark' || stored === 'light') return stored;
-  if (typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+  if (
+    typeof matchMedia !== 'undefined' &&
+    matchMedia('(prefers-color-scheme: light)').matches
+  )
+    return 'light';
   return 'dark';
 }
 
@@ -290,7 +300,8 @@ export function setTheme(theme: Theme): void {
   withThemeAnimation(() => {
     document.documentElement.setAttribute('data-theme', theme);
   });
-  if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_KEY, theme);
+  if (typeof localStorage !== 'undefined')
+    localStorage.setItem(STORAGE_KEY, theme);
   syncNativeStatusBar(theme);
 }
 
@@ -312,10 +323,70 @@ export function setTheme(theme: Theme): void {
  */
 export function withThemeAnimation(mutate: () => void): void {
   if (typeof document === 'undefined') return;
+  // 原生壳（Capacitor APP）不走 @property 自定义属性过渡 —— APP 上切换主题会整页
+  // 闪烁（用户实测反馈，桌面浏览器正常）。原因：
+  //  1) `html.ah-theme-anim` 的过渡让浏览器对约 20 个**继承型**注册自定义属性逐帧插值，
+  //     每一帧都要重算全文档所有 var(--ah-*) 消费方（含全部 shadow root）并重绘；
+  //     桌面 Chrome 合成器扛得住，移动端 WebView 算力不足 → 掉帧 + 图块渐进绘制，
+  //     视觉上就是新旧配色交错的「闪烁」而非平滑渐变。
+  //  2) color-scheme 不在 @property 注册表里（不可插值），dark↔light 瞬间翻转：
+  //     WebView 根层底色/原生绘制区域先跳到新配色，而颜色令牌还在半途 → 错色帧。
+  //  3) APP 独有：过渡中途 syncNativeStatusBar 触发原生状态栏重绘，放大观感。
+  // 替代方案（合成器友好）：瞬时切换 + 旧画布色幕布淡出 —— 唯一一次重绘被不透明
+  // 幕布完全遮住，幕布淡出是纯 opacity 合成层动画，零重排零重绘。
+  if (isNativeWebView()) {
+    playNativeThemeCrossfade(mutate);
+    return;
+  }
   const root = document.documentElement;
   root.classList.add('ah-theme-anim');
   mutate();
   window.setTimeout(() => root.classList.remove('ah-theme-anim'), 600);
+}
+
+/** 原生 WebView（Capacitor APP）判定：webapp 不依赖 @capacitor/*，纯 Web 无此全局。 */
+function isNativeWebView(): boolean {
+  try {
+    return !!(
+      globalThis as unknown as {
+        Capacitor?: { isNativePlatform?: () => boolean };
+      }
+    ).Capacitor?.isNativePlatform?.();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * APP 主题切换：瞬时切换 + 旧画布色幕布淡出（crossfade）。
+ *  - 幕布用**旧** --ah-canvas 的字面量值（切换后 var() 会重新解析成新值，不能引用）；
+ *  - mutate() 的那一次全文档重绘发生在幕布之下，任何错色/渐进绘制帧都被遮住；
+ *  - 双 rAF 确认新主题首帧已实际绘制后再开始 0.28s 淡出（纯 opacity 合成动画）；
+ *  - data-theme 未实际变化（如启动时 initTheme 幂等落值）→ 立即摘幕布，不闪不淡出。
+ */
+function playNativeThemeCrossfade(mutate: () => void): void {
+  const root = document.documentElement;
+  const prev = root.getAttribute('data-theme');
+  const oldCanvas =
+    getComputedStyle(root).getPropertyValue('--ah-canvas').trim() || '#0B0E14';
+  const veil = document.createElement('div');
+  veil.setAttribute('data-ah-theme-veil', '');
+  veil.style.cssText =
+    'position:fixed;inset:0;z-index:2147483647;pointer-events:none;' +
+    `background:${oldCanvas};opacity:1;will-change:opacity;` +
+    'transform:translateZ(0);transition:opacity 0.28s ease;';
+  document.body.appendChild(veil);
+  mutate();
+  if (root.getAttribute('data-theme') === prev) {
+    veil.remove();
+    return;
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      veil.style.opacity = '0';
+      window.setTimeout(() => veil.remove(), 340);
+    });
+  });
 }
 
 /**
@@ -356,7 +427,11 @@ export function syncNativeStatusBar(theme: Theme): void {
       let tries = 0;
       const retry = (): void => {
         if (tries++ >= 3) return;
-        const bar = (globalThis as unknown as { Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } } }).Capacitor?.Plugins?.StatusBar;
+        const bar = (
+          globalThis as unknown as {
+            Capacitor?: { Plugins?: { StatusBar?: StatusBarLike } };
+          }
+        ).Capacitor?.Plugins?.StatusBar;
         if (!bar) {
           window.setTimeout(retry, 200);
           return;
@@ -421,7 +496,7 @@ function lightenHex(hex: string, pct: number): string | null {
   if (clean.length !== 6) return null;
   const num = parseInt(clean, 16);
   const r = Math.min(255, ((num >> 16) + Math.floor(255 * pct)) | 0);
-  const g = Math.min(255, ((num >> 8 & 0xff) + Math.floor(255 * pct)) | 0);
+  const g = Math.min(255, (((num >> 8) & 0xff) + Math.floor(255 * pct)) | 0);
   const b = Math.min(255, ((num & 0xff) + Math.floor(255 * pct)) | 0);
   return `rgb(${r}, ${g}, ${b})`;
 }
@@ -447,7 +522,9 @@ export async function initBrand(): Promise<BrandConfig> {
       applyBrand(cfg);
       // 设置 favicon
       if (cfg.faviconUrl) {
-        const link = document.querySelector('link[rel="icon"]') || document.createElement('link');
+        const link =
+          document.querySelector('link[rel="icon"]') ||
+          document.createElement('link');
         link.setAttribute('rel', 'icon');
         link.setAttribute('href', cfg.faviconUrl);
         document.head.appendChild(link);

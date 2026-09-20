@@ -12,6 +12,8 @@ import { describe, it, expect } from 'vitest';
 import {
   derivePlanExecFromMessages,
   PLAN_TASK_DISPATCH_RE,
+  filterPlanSingleStep,
+  recoverPlanFinalResult,
   type PlanDeriveMsg
 } from './chat-render-utils';
 import { stampPlanStatus, toMirrorPlanStatus } from './chat-persist';
@@ -120,6 +122,92 @@ describe('derivePlanExecFromMessages（镜像缺失时从线程反推）', () =>
     expect(PLAN_TASK_DISPATCH_RE.test('【计划任务 t 12】提取文本')).toBe(true);
     expect(PLAN_TASK_DISPATCH_RE.test('【计划任务 task-1】提取文本')).toBe(true);
     expect(PLAN_TASK_DISPATCH_RE.test('普通用户消息')).toBe(false);
+  });
+});
+
+describe('filterPlanSingleStep（刷新恢复：丢弃单步任务消息对）', () => {
+  const planCard: ChatMsg = {
+    id: 2,
+    role: 'assistant',
+    content: '📋 分析报告',
+    plan
+  };
+
+  it('保留用户需求、计划卡片，丢弃每个「派发提示 + 任务产出」对', () => {
+    const msgs: ChatMsg[] = [
+      { id: 1, role: 'user', content: '帮我做分析报告' },
+      planCard,
+      { id: 3, role: 'user', content: '【计划任务 t1】文本' },
+      { id: 4, role: 'assistant', content: 't1 的产出' },
+      { id: 5, role: 'user', content: '【计划任务 t2】插画' },
+      { id: 6, role: 'assistant', content: 't2 的产出' }
+    ];
+    const out = filterPlanSingleStep(msgs);
+    expect(out.map((m) => m.id)).toEqual([1, 2]);
+  });
+
+  it('任务派发后无产出（中断）也只丢弃派发提示', () => {
+    const msgs: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      planCard,
+      { id: 3, role: 'user', content: '【计划任务 t1】文本' }
+    ];
+    expect(filterPlanSingleStep(msgs).map((m) => m.id)).toEqual([1, 2]);
+  });
+
+  it('非计划单步的普通 assistant 消息不被误删（相邻无派发提示）', () => {
+    const msgs: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      { id: 2, role: 'assistant', content: '普通回答' }
+    ];
+    expect(filterPlanSingleStep(msgs).map((m) => m.id)).toEqual([1, 2]);
+  });
+});
+
+describe('recoverPlanFinalResult（刷新恢复：兜底回收最终结果）', () => {
+  const planCard: ChatMsg = {
+    id: 2,
+    role: 'assistant',
+    content: '📋 分析报告',
+    plan
+  };
+
+  it('base 已含摘要 → 原样返回', () => {
+    const base: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      planCard,
+      { id: 9, role: 'assistant', content: '📋 计划执行摘要：…' }
+    ];
+    const out = recoverPlanFinalResult(base, []);
+    expect(out).toBe(base);
+  });
+
+  it('base 无摘要 → 从 clean 回收最后一条任务产出作为最终结果', () => {
+    const base: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      planCard
+    ];
+    const clean: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      planCard,
+      { id: 3, role: 'user', content: '【计划任务 t1】文本' },
+      { id: 4, role: 'assistant', content: 't1 产出' },
+      { id: 5, role: 'user', content: '【计划任务 t2】插画' },
+      { id: 6, role: 'assistant', content: 't2 产出（最终）' }
+    ];
+    const out = recoverPlanFinalResult(base, clean);
+    expect(out.length).toBe(3);
+    expect(out[2].role).toBe('assistant');
+    expect(out[2].content).toContain('t2 产出（最终）');
+  });
+
+  it('clean 中无任务产出 → 原样返回（不追加空结果）', () => {
+    const base: ChatMsg[] = [
+      { id: 1, role: 'user', content: 'hi' },
+      planCard
+    ];
+    const out = recoverPlanFinalResult(base, base);
+    expect(out).toBe(base);
   });
 });
 

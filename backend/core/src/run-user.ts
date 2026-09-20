@@ -22,6 +22,14 @@ export interface RunUser {
   sub: string;
   /** 展示名（可选）。 */
   name?: string;
+  /**
+   * 按用户 BYOK 的 TypeSafe AI（Jev 决策模型）Key（明文，服务端从加密库解密后注入）。
+   * 子系统（护栏 / 路由 / RAG / 上下文压缩）直调 Jev 时优先使用；缺省回落 env 的
+   * TYPESAFE_API_KEY。绝不写入 process.env（避免跨用户泄露）。
+   */
+  jevApiKey?: string;
+  /** 按用户 BYOK 的 TypeSafe 接口地址（优先于 env 的 TYPESAFE_BASE_URL）。 */
+  jevBaseUrl?: string;
 }
 
 const storage = new AsyncLocalStorage<RunUser>();

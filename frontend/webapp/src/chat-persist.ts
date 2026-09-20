@@ -59,7 +59,14 @@ export function toMirrorPlanStatus(
     status: st.status,
     ...(st.currentTaskId ? { currentTaskId: st.currentTaskId } : {}),
     ...(st.failedTaskId ? { failedTaskId: st.failedTaskId } : {}),
-    done: Object.keys(st.done ?? {}).filter((id) => st.done[id])
+    done: Object.keys(st.done ?? {}).filter((id) => st.done[id]),
+    // P3：awaiting 时把待审批任务 id 列表写进镜像（刷新 / 重启后卡片可还原「待审批」态）。
+    ...(Array.isArray(st.awaitingTaskIds) && st.awaitingTaskIds.length
+      ? { awaiting: st.awaitingTaskIds }
+      : {}),
+    // P2.6：紧凑 run 快照随镜像落会话历史——检查点丢失（服务重启 / free 盘清理）后
+    // 「执行详情」抽屉按此回退水合（404 → 历史快照）。
+    ...(st.wfSnapshot ? { wfSnapshot: st.wfSnapshot } : {})
   };
 }
 
@@ -90,7 +97,11 @@ export function stampPlanStatus(
  * - 异步 fire-and-forget：内部吞掉网络/校验异常并降级进程内缓存（见 chat-history.ts），绝不阻塞 UI。
  */
 export function persistHistory(opts: PersistHistoryOpts): void {
-  const t = opts.threads[opts.sid];
+  // P5 静默计划执行：quiet 消息（计划任务的隐藏 user/assistant 对）不落历史镜像 ——
+  // 镜像消毒（sanitizeMessages）不保留 quiet 标记，若落盘刷新后会以普通气泡复现；
+  // 任务产出改由「计划执行摘要 + 最终结果」消息承载（confirmPlan 终态追加）。
+  const live = (opts.threads[opts.sid] ?? []).filter((m) => !m.quiet);
+  const t = live;
   if (!t || !t.length) return;
   const meta = opts.sessions.find((s) => s.id === opts.sid);
   const usage: MirroredUsage | null = {

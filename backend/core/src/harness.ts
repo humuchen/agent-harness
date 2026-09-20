@@ -1,5 +1,15 @@
 import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
 import { type Verifier, type VerifyContext } from './verify';
+import {
+  GUARDRAIL_FALLBACK_PREFIX,
+  PARTIAL_NOTICE,
+  VERIFY_FAILED_PREFIX,
+  TIMEOUT_NOTICE,
+  ERROR_PREFIX,
+  ABORTED_PREFIX,
+  CIRCUIT_BREAKER_PREFIX,
+  MAX_STEPS_NOTICE
+} from './workflow/step-output';
 import { ToolRegistry } from './tools';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
@@ -9,6 +19,9 @@ import {
   checkStructuredOutput,
   checkTaskOutput,
   checkToolArgs,
+  checkInputAsync,
+  checkOutputAsync,
+  checkToolArgsAsync,
   redactOutput,
   type GuardrailPolicy
 } from './guardrails';
@@ -30,6 +43,7 @@ import { getTokenCacheStats } from './llm/token-cache-metrics';
 import { estimateMessageTokens, estimateTokens, estimateToolsTokens } from './llm/token-estimator';
 import { selectToolsForInput } from './tools';
 import { hooks } from './hooks';
+import { runWithEventSink } from './run-events';
 
 /** 上下文窗口上限（token）：用于「上下文用量」占比分母。
  *  已废弃按模型名硬编码的猜测表 —— 各模型真实 context_length 由前端从
@@ -194,10 +208,37 @@ export type HarnessEvent =
       passed: boolean;
       score: number;
       reasons: string[];
+      /**
+       * 软性未通过（P4.7）：只告警、不阻断 —— 产出原样保留、不追加 [verify:failed]、
+       * step 不判失败。见 verify.ts 的 VerifyOutcome.soft。
+       */
+      soft?: boolean;
     }
   /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
    *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
   | { type: 'plan:proposed'; plan: import('./plan').ExecutionPlan }
+  /** 计划模式（P0）：需求不清时由服务端解析澄清 JSON 补发的旁路事件，等用户确认目标后再 propose。 */
+  | { type: 'plan:clarify'; clarify: import('./plan').PlanClarify }
+  /** 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），供前端展示真实进展。 */
+  | { type: 'plan:phase'; phase: string; ts: number }
+  /** TypeSafe AI Jev 决策模型调用旁路事件：子系统直连路径（注入门禁/上下文压缩等）与
+   *  builtin__jev_decide 工具路径统一经 run-events 通道上报，让「typesafe 后台有调用量」
+   *  在 run 调用链可观测。仅当 jevDecide 的 HTTP 调用发生在 run 异步链路内时发出。
+   *  注意：caller==='tool' 的调用已有 tool:start/tool:result 节点，前端不重复建节点。 */
+  | {
+      type: 'jev:call';
+      /** 调用方标签：'tool'(LLM 工具路径) / 'injection-gate' / 'context-compress' / 'router' 等。 */
+      caller: string;
+      ok: boolean;
+      /** 本次 HTTP 调用耗时（ms）。 */
+      latencyMs: number;
+      /** 本次提问数（一次 systemone 调用可携带多个问题）。 */
+      questions?: number;
+      /** TypeSafe 侧 usage（若响应体携带）；未携带则缺省，成本体系暂不计入。 */
+      tokens?: { input: number; output: number };
+      /** ok=false 时的错误摘要（HTTP 状态或网络错误信息，不含密钥）。 */
+      error?: string;
+    }
   /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
   | { type: 'warn'; message: string }
   | { type: 'error'; message: string };
@@ -436,7 +477,22 @@ export class AgentHarness {
     return this.opts.memory.notes();
   }
 
+  /**
+   * 运行入口：先把子系统旁路事件通道（run-events ALS）接到 onEvent，再进入主循环。
+   * Jev 决策模型等在 run 链路内的直连调用（护栏门禁 / 上下文压缩 / 内置工具）经此汇入事件流，
+   * 对外事件行为与既往完全一致（sink 仅新增事件，不改动既有事件序列）。
+   */
   async run(
+    userInput: string,
+    imageAttachments?: Array<{ url: string; name: string; type: string }>
+  ): Promise<string> {
+    return runWithEventSink(
+      (e) => this.opts.onEvent?.(e as HarnessEvent),
+      () => this.runInner(userInput, imageAttachments)
+    );
+  }
+
+  private async runInner(
     userInput: string,
     imageAttachments?: Array<{ url: string; name: string; type: string }>
   ): Promise<string> {
@@ -512,7 +568,7 @@ export class AgentHarness {
       resolvedInput = resolved;
     }
 
-    const guard = checkInput(
+    const guard = await checkInputAsync(
       resolvedInput,
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
@@ -596,7 +652,7 @@ export class AgentHarness {
       memory.add({ role: 'user', content: resolvedInput });
     }
 
-    let final = '[agent] reached max steps without a final answer';
+    let final = MAX_STEPS_NOTICE;
     let steps = 0;
     // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
     let guardrailsBlocked = 0;
@@ -643,13 +699,108 @@ export class AgentHarness {
       emit({ type: 'budget:exceeded', kind, limit, used });
       return `[budget] ${kind} exceeded: used ${used} / limit ${limit}`;
     };
+
+    // ── P4.8 时间预算治理：治「等很久 → 硬超时 → 无产出」三处结构性缺陷 ──────────
+    // 症状：计划模式单步执行等待极长，随后 step 超时中止且没有任何产出。
+    // 三个独立成因（均已复现）：
+    //  (a) 工具执行是裸 await —— 工具挂死时看门狗 abort 无法生效，循环卡在 await 上，
+    //      时间远超 step 预算后才返回（见下方工具调用竞速 + 单次工具超时）；
+    //  (b) 到点后只返回固定提示文案 —— 已生成（甚至已流式产出）的内容被整体丢弃，
+    //      且发生在验证重试期间时会把第一轮产出覆盖成超时提示（见 abortedResult）；
+    //  (c) 验证重试不检查剩余预算 —— 第一轮用掉大半预算后仍启动完整第二轮，
+    //      必然撞超时并销毁第一轮产出（见下方重试预算守卫）。
+    const startedAt = Date.now();
+    const runTimeoutMs =
+      this.opts.timeoutMs && this.opts.timeoutMs > 0 ? this.opts.timeoutMs : 0;
+    const deadlineAt = runTimeoutMs > 0 ? startedAt + runTimeoutMs : Infinity;
+    // 软截止：剩余预算低于该阈值时主动要求模型收尾（替代硬超时砍掉产出）。置 0 关闭。
+    // 缺省 90s，并强制收敛到总预算的 1/4 以内 —— 否则「总超时 60s 而软截止 90s」会让
+    // 收尾指令在第一步就触发，等于剥夺模型的正常执行过程。
+    const softDeadlineCfg = Math.max(
+      0,
+      Number(process.env.AGENT_SOFT_DEADLINE_MS ?? 90_000) || 0
+    );
+    const softDeadlineMs =
+      runTimeoutMs > 0 ? Math.min(softDeadlineCfg, Math.floor(runTimeoutMs / 4)) : softDeadlineCfg;
+    let wrapUpRequested = false;
+    // 收尾提示是否已注入记忆（注入点固定在 LLM 调用前，与「跳过工具」判定解耦）。
+    let wrapUpPromptPushed = false;
+    let wrapUpRounds = 0;
+    /** 是否已进入软截止窗口（剩余预算不足以再跑完一轮工具 + LLM）。 */
+    const isPastSoftDeadline = (): boolean =>
+      softDeadlineMs > 0 &&
+      Number.isFinite(deadlineAt) &&
+      Date.now() >= deadlineAt - softDeadlineMs;
+    // 单次工具调用超时：挂死的工具不再拖垮整步 —— 超时即放弃等待，把「工具超时」
+    // 作为工具结果回传，模型可据此改道或基于已有信息继续。置 0 关闭。缺省 5 分钟。
+    const toolCallTimeoutMs = Math.max(
+      0,
+      Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 300_000) || 0
+    );
+    // 中止竞速用的一次性 promise（run 级共用，避免每步新增监听器）。
+    const abortPromise = new Promise<'__aborted__'>((resolve) => {
+      if (signal.aborted) return resolve('__aborted__');
+      signal.addEventListener('abort', () => resolve('__aborted__'), {
+        once: true
+      });
+    });
+    // 本次 run 已流式产出的内容（每次 LLM 调用前重置）；硬中止时据此抢救部分产出。
+    let streamBuffer = '';
+    /** 抢救「已生成但未成为最终答案」的内容：优先流式缓冲，其次记忆里最后一条 assistant。 */
+    const salvagePartial = (): string => {
+      if (streamBuffer.trim()) return streamBuffer.trim();
+      const hist = memory.history();
+      for (let i = hist.length - 1; i >= 0; i--) {
+        const m = hist[i];
+        if (!m) continue;
+        if (
+          m.role === 'assistant' &&
+          typeof m.content === 'string' &&
+          m.content.trim()
+        ) {
+          return m.content.trim();
+        }
+      }
+      return '';
+    };
+    /** 硬中止（超时 / 取消）时的返回值：有实质产出则连内容一起返回，不再只回固定提示。 */
+    const abortedResult = (): string => {
+      const notice = abortedMessage(signal);
+      const salvaged = salvagePartial();
+      // 过短的内容（模型刚开口就被砍）不值得冒充「部分产出」，仍回提示文案。
+      if (salvaged.length < 40) return notice;
+      const reason =
+        (signal as { reason?: unknown }).reason === 'timeout'
+          ? `本次运行超出时间预算（${Math.round(runTimeoutMs / 1000)}s）被中止`
+          : '本次运行被取消';
+      return (
+        `${salvaged}\n\n${PARTIAL_NOTICE}：${reason}。` +
+        '以上为已生成的部分结果（内容已保留，可据此继续或仅重跑剩余部分）。'
+      );
+    };
     // 把主循环抽成函数，便于「验证失败后自动重试」复用同一 maxSteps 预算重跑。
     const runLoop = (): Promise<string> =>
       withSpan('agent.run', async () => {
         for (let step = 0; step < this.opts.maxSteps; step++) {
           // 进入下一步前先检查取消信号，避免对已中止的运行继续消耗工具/LLM。
           if (signal.aborted) {
-            return abortedMessage(signal);
+            return abortedResult();
+          }
+          // 软截止收尾（P4.8）：剩余预算不足时注入收尾指令，让模型基于已有信息直接给
+          // 最终结果 —— 把「硬超时砍掉产出」变成「主动收尾交付」，这是「等很久之后
+          // 什么都没有」的主要治本手段。
+          // 注入点固定在「LLM 调用之前」：保证 assistant(tool_calls)→tool 的配对不被
+          // 中间插入的 user 消息打断（否则部分 provider 直接 400）。
+          if (!wrapUpPromptPushed && isPastSoftDeadline()) {
+            wrapUpRequested = true;
+            wrapUpPromptPushed = true;
+            memory.add({ role: 'user', content: WRAP_UP_PROMPT });
+            emit({
+              type: 'warn',
+              message: `时间预算剩余不足 ${Math.round(
+                softDeadlineMs / 1000
+              )}s：已要求模型立即收尾输出最终结果（避免硬超时丢弃已产出内容）`
+            });
           }
           // 若上一步溢出触发了异步（LLM）摘要，先落地摘要节点，保证本轮喂给模型的
           // 历史已包含压缩结果（同步摘要器此步为 no-op，无额外开销）。
@@ -680,9 +831,17 @@ export class AgentHarness {
               ? Math.floor(this.maxAcceptedPrompt * 0.7)
               : Infinity;
           const budgetCap = Math.min(proactiveBudget, adaptiveCap);
-          if (memory.fitToBudget(budgetCap)) {
+          // 上下文压缩：默认走确定性预算剪枝（fitToBudget）；开启 JEV_CONTEXT_COMPRESS 时，
+          // 在预算剪枝之「后」用 Jev 重要性打分优先淘汰低分消息（旧逻辑为兜底，Jev 缺配/出错回落）。
+          const useJevCompress =
+            (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on';
+          const compressed = useJevCompress
+            ? await memory.compressByImportance(budgetCap)
+            : memory.fitToBudget(budgetCap);
+          if (compressed) {
             structLog('info', 'proactive context compression applied before LLM send', {
               budgetCap,
+              jev: useJevCompress,
               runId
             });
           }
@@ -741,18 +900,14 @@ export class AgentHarness {
           // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
           // 保证聊天 UI 始终能拿到可渲染的增量事件。
           let streamedTokens = false;
-          const abortedFlag = new Promise<'__aborted__'>((resolve) => {
-            if (signal.aborted) return resolve('__aborted__');
-            signal.addEventListener('abort', () => resolve('__aborted__'), {
-              once: true
-            });
-          });
+          // P4.8：本步流式产出缓冲（硬中止时抢救用）——每次 LLM 调用前重置。
+          streamBuffer = '';
           // 上下文溢出自愈：LLM 返回「超出上下文窗口」类错误（免费模型真实窗口常远小于
           // 配置/回退值 128K）时，逐步压缩历史后重试，而非让整轮运行失败、卡死无回应。
           const OVERFLOW_MAX_RETRIES = 4;
           let resp: LLMResponse | null = null;
           for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
-            if (signal.aborted) return abortedMessage(signal);
+            if (signal.aborted) return abortedResult();
             try {
               const raceResult = await withSpan('llm.call', () =>
                 Promise.race([
@@ -763,6 +918,7 @@ export class AgentHarness {
                       ? {
                           onToken: (delta: string) => {
                             streamedTokens = true;
+                            streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
                             emit({ type: 'llm:token', step: steps, delta });
                           },
                           onReasoning: (delta: string) => {
@@ -771,10 +927,10 @@ export class AgentHarness {
                         }
                       : {})
                   }),
-                  abortedFlag
+                  abortPromise
                 ])
               );
-              if (raceResult === '__aborted__') return abortedMessage(signal);
+              if (raceResult === '__aborted__') return abortedResult();
               resp = raceResult as LLMResponse;
               break;
             } catch (llmErr: any) {
@@ -797,7 +953,7 @@ export class AgentHarness {
               throw llmErr;
             }
           }
-          if (!resp) return abortedMessage(signal);
+          if (!resp) return abortedResult();
           // 记录「已成功接收的最大 prompt」，作为后续步的保守预算上限，避免反复溢出。
           this.maxAcceptedPrompt = Math.max(this.maxAcceptedPrompt, resp.usage?.prompt_tokens ?? 0);
           recordTokensTenant(resp.usage, this.opts.tenantId);
@@ -961,7 +1117,7 @@ export class AgentHarness {
             ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
             : this.opts.planTask
             ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
-            : checkOutput(
+            : await checkOutputAsync(
                 resp.content,
                 this.opts.guardrailPolicy,
                 lastToolResult ? { recentTool: lastToolResult } : undefined
@@ -1001,8 +1157,9 @@ export class AgentHarness {
                 content: this.opts.planPropose
                   ? '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
                     (outGuard.reason ?? '合规校验未通过') +
-                    '）。请重新生成：仍然只输出一个符合格式要求的计划 JSON 对象' +
-                    '（{"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}），' +
+                    '）。请重新生成：仍然只输出一个符合格式要求的 JSON 对象——' +
+                    '需求清晰时输出计划 {"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}，' +
+                    '需求不清时输出澄清 {"clarify": true, "goalDraft": string, "questions": string[]}。' +
                     '不要输出解释文字或 markdown 围栏；任务描述仅陈述有事实依据的内容，' +
                     '不要包含绝对化功效承诺、固定价格承诺或任何未经确认的信息。'
                   : '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
@@ -1015,7 +1172,8 @@ export class AgentHarness {
             }
 
             // 3) 重试仍不通过 / 无 safeReply → 中性安全兜底，绝不暴露内部拦截文本。
-            return '抱歉，我暂时无法提供该内容的回复。如有进一步需求，建议您通过官方正规渠道咨询。';
+            // P4.5：兜底话术前缀与 step-output 检测器共享同一常量（单源，防字面量漂移）。
+            return GUARDRAIL_FALLBACK_PREFIX + '。如有进一步需求，建议您通过官方正规渠道咨询。';
           }
 
           // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
@@ -1064,10 +1222,11 @@ export class AgentHarness {
             }
             // 中段断流兜底：provider 空闲超时后返回的是部分内容（partial:true）。
             // 显式追加「生成中断」提示，让用户清楚这是被截断而非完整回答。
+            // P4.5：中断标记与 step-output 检测器共享同一常量（引擎闸门 / 黑板注记认它）。
             if (resp.partial) {
               return (
                 `${resp.content}\n\n` +
-                '⚠️ 生成已中断：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。' +
+                `${PARTIAL_NOTICE}：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。` +
                 '以上内容仅为已生成的部分结果，请重试以继续。'
               );
             }
@@ -1103,10 +1262,33 @@ export class AgentHarness {
             }
           };
 
+          // P4.8 软截止：预算已转紧（含「本轮 LLM 调用期间才转紧」）时不再启动新工具轮，
+          // 免得把仅剩的预算烧在一轮必然跑不完的工具调用上。注意此处只置标志、不注入
+          // 收尾提示 —— 提示统一在下一轮 LLM 调用前注入，避免打断 tool 配对。
+          if (!wrapUpRequested && isPastSoftDeadline()) {
+            wrapUpRequested = true;
+            emit({
+              type: 'warn',
+              message: '时间预算已转紧：跳过本轮工具调用，要求模型立即收尾输出最终结果'
+            });
+          }
+          if (wrapUpRequested) {
+            fillMissingToolResults('[skipped] 时间预算即将耗尽，该工具未执行');
+            wrapUpRounds += 1;
+            if (resp.content && resp.content.trim()) return resp.content;
+            if (wrapUpRounds >= 2) {
+              // 模型连续两轮仍只调工具：用已产出内容兜底，避免走到硬超时把产出丢光。
+              const salv = salvagePartial();
+              if (salv) return salv;
+              return MAX_STEPS_NOTICE;
+            }
+            continue;
+          }
+
           for (const call of resp.tool_calls) {
             if (signal.aborted) {
               fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
-              return abortedMessage(signal);
+              return abortedResult();
             }
             // 加固：单 step 工具调用预算上限（默认不限制）。达到上限后截断剩余 tool_calls。
             if (maxCallsPerStep > 0 && stepToolCalls >= maxCallsPerStep) {
@@ -1142,7 +1324,7 @@ export class AgentHarness {
             }
             // 记录已用工具，供后续步骤动态选择时并入硬允许集（见本步 llm:call 前）。
             usedTools.add(call.name);
-            const argGuard = checkToolArgs(
+            const argGuard = await checkToolArgsAsync(
               call.name,
               call.arguments,
               this.opts.guardrailPolicy
@@ -1176,9 +1358,50 @@ export class AgentHarness {
               toolCall: { name: call.name, arguments: call.arguments },
             });
               try {
-                result = await withSpan(`tool.${call.name}`, async () =>
-                  this.opts.tools.call(call.name, call.arguments, { traceId: this.opts.traceId })
-                );
+                // P4.8：工具执行纳入「中止 + 单次超时」竞速。此前这里是裸 await ——
+                // 工具挂死时看门狗 abort 无法生效，整个 step 会一直阻塞到该工具自己返回，
+                // 用户表现为「等待时间很长，然后才报 step 超时中止」。现在：
+                //  - 运行被中止（超时/取消）→ 立即放弃等待并走中止路径（内容不再丢）；
+                //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
+                //    回传，模型可改道或基于已有信息继续，而不是拖垮整步。
+                let toolTimer: ReturnType<typeof setTimeout> | null = null;
+                const racers: Array<Promise<{ kind: string; value?: unknown }>> = [
+                  withSpan(`tool.${call.name}`, async () => ({
+                    kind: 'ok',
+                    value: await this.opts.tools.call(call.name, call.arguments, {
+                      traceId: this.opts.traceId
+                    })
+                  })),
+                  abortPromise.then(() => ({ kind: 'aborted' as const }))
+                ];
+                if (toolCallTimeoutMs > 0) {
+                  racers.push(
+                    new Promise<{ kind: string }>((resolve) => {
+                      toolTimer = setTimeout(
+                        () => resolve({ kind: 'timeout' }),
+                        toolCallTimeoutMs
+                      );
+                    })
+                  );
+                }
+                let raced: { kind: string; value?: unknown };
+                try {
+                  raced = await Promise.race(racers);
+                } finally {
+                  if (toolTimer) clearTimeout(toolTimer);
+                }
+                if (raced.kind === 'aborted') {
+                  fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
+                  return abortedResult();
+                }
+                if (raced.kind === 'timeout') {
+                  result =
+                    `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
+                    '已放弃等待；请改用其它方式获取信息，或基于已有信息继续）';
+                  errored = true;
+                } else {
+                  result = raced.value;
+                }
               } catch (e: any) {
                 // 将错误作为工具结果返回，以便模型自行修复。
                 result = `tool error: ${e?.message ?? String(e)}`;
@@ -1232,7 +1455,34 @@ export class AgentHarness {
           // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
           fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
         }
-        return '[agent] reached max steps without a final answer';
+        // 计划 propose 收尾（P5 优化）：预算耗尽时调研往往已消耗大量 token，若直接返回
+        // MAX_STEPS_NOTICE，服务端解析不出计划 JSON，整轮调研白烧、用户只能从头重试。
+        // 这里补一次「强制收尾」LLM 调用（不带工具，逼模型立即产出），基于已获取的
+        // 信息直接输出计划/澄清 JSON；仅当收尾调用失败或仍无内容时才回退默认提示。
+        if (this.opts.planPropose && !signal.aborted) {
+          try {
+            memory.add({
+              role: 'user',
+              content:
+                '（系统提示）规划预算已用尽，请立即停止调研。基于以上已获取的信息直接输出最终结果：' +
+                '需求清晰时输出计划 JSON（信息不足的任务在 expectedOutput 中显式标注数据缺口），' +
+                '需求不清时输出澄清 JSON（{"clarify": true, "goalDraft": string, "questions": string[]}）。' +
+                '只输出一个 JSON 对象，不要任何其他文字。'
+            });
+            const finResp = await this.opts.llm(
+              sanitizeToolPairing(memory.history()),
+              [],
+              { signal, circuitBreaker: this.opts.circuitBreaker }
+            );
+            if (finResp?.content && finResp.content.trim()) {
+              memory.add({ role: 'assistant', content: finResp.content });
+              return finResp.content;
+            }
+          } catch {
+            // 收尾调用失败（网络/熔断等）：回退到默认 MAX_STEPS_NOTICE。
+          }
+        }
+        return MAX_STEPS_NOTICE;
       });
 
     try {
@@ -1242,17 +1492,23 @@ export class AgentHarness {
       if (e?.name === 'CircuitBreakerOpen') {
         const msg = e.message ?? 'circuit breaker open';
         emit({ type: 'error', message: msg });
-        final = `[circuit-breaker] ${msg}`;
+        final = `${CIRCUIT_BREAKER_PREFIX} ${msg}`;
       } else {
         logError('agent.run', e, { runId });
         emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
         emit({ type: 'error', message: e?.message ?? String(e) });
-        final = `[error] ${e?.message ?? String(e)}`;
+        final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
       }
     }
 
     // 运行期自动验证门禁（P0-2）：产出后自动校验；未通过可重试（self-correction）或标记。
-    if (this.opts.verify) {
+    //
+    // P4.8：**被中止的运行不再跑校验**。原因：中止意味着产出已知不完整（超时/取消），
+    // 对它做「完整性断言」既无意义、又产生两个副作用 —— ① 白等一轮校验；② 计划默认
+    // 门禁的 notContains(PARTIAL_NOTICE) 会给已抢救回来的部分产出再加上 [verify:failed]
+    // 前缀，把「超时中断」误标成「验证失败」，掩盖真实的失败原因与已保留的内容。
+    // 中止路径的语义由产出有效性闸门（inspectStepOutput → partial）如实承担。
+    if (this.opts.verify && !signal.aborted) {
       const buildCtx = (): VerifyContext => ({
         input: userInput,
         final,
@@ -1268,12 +1524,36 @@ export class AgentHarness {
         attempt,
         passed: outcome.passed,
         score: outcome.score,
-        reasons: outcome.reasons
+        reasons: outcome.reasons,
+        ...(outcome.soft ? { soft: true } : {})
       });
       while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
         attempt += 1;
         if (this.opts.verifySelfCorrect) {
+          // P4.8 重试预算守卫：剩余时间不足以跑完一轮时不再重试。
+          // 此前无条件重跑：第一轮已耗尽大半预算时，第二轮的硬超时会把**第一轮已经
+          // 产出的完整内容整个覆盖**成超时提示 —— 用户等到超时后什么也拿不到。
+          // 宁可保留第一轮产出（可能只是验收词未逐字命中），也不做毁灭性的重试。
+          const remainMs = Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : Infinity;
+          // 重试所需的最低剩余预算：缺省 60s，并收敛到总预算的 1/4 以内（与软截止同款
+          // 口径）—— 否则「总预算 60s」时任何重试都会被判为「剩余不足」而永不执行。
+          const minRetryCfg = Math.max(
+            0,
+            Number(process.env.AGENT_VERIFY_MIN_RETRY_MS ?? 60_000) || 0
+          );
+          const minRetryMs =
+            runTimeoutMs > 0
+              ? Math.min(minRetryCfg, Math.floor(runTimeoutMs / 4))
+              : minRetryCfg;
+          if (remainMs <= minRetryMs) {
+            emit({
+              type: 'warn',
+              message: `剩余时间不足（${Number.isFinite(remainMs) ? Math.max(0, Math.round(remainMs / 1000)) : '∞'}s），跳过自检重试并保留当前产出`
+            });
+            break;
+          }
           // 注入自检提示，让模型根据失败原因修正后重新跑一轮（自动重试 / 自愈）。
+          // 软性未通过同样重试一次（定向补齐成本低、收益明确），只是重试后仍不通过时不阻断。
           memory.add({
             role: 'user',
             content:
@@ -1285,7 +1565,7 @@ export class AgentHarness {
             final = await runLoop();
           } catch (e: any) {
             logError('agent.run.retry', e, { runId });
-            final = `[error] ${e?.message ?? String(e)}`;
+            final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
           }
           outcome = await this.opts.verify(buildCtx());
           emit({
@@ -1293,14 +1573,28 @@ export class AgentHarness {
             attempt,
             passed: outcome.passed,
             score: outcome.score,
-            reasons: outcome.reasons
+            reasons: outcome.reasons,
+            ...(outcome.soft ? { soft: true } : {})
           });
         } else {
           break;
         }
       }
       if (!outcome.passed) {
-        final = `[verify:failed] ${outcome.reasons.join('; ')}\n\n${final}`;
+        if (outcome.soft) {
+          // P4.7 软性未通过：只告警、不改写产出。
+          // 症状背景：计划模式逐 task 的验收关键词断言是「planner 调用 A 出词 → executor 调用 B
+          // 的产出逐字包含」的跨调用匹配，同义改写即未命中；此前会追加 [verify:failed] 前缀，
+          // 被引擎出口闸门判为无效产出 → step failed → 整个 run 失败（而单步对话无此门禁，故正常）。
+          // 现在保留模型原始产出，让内容正常交付、下游正常消费，验收缺口由 verify:result 事件
+          // （soft=true）与调用链路抽屉呈现，不再牺牲整个 run。
+          emit({
+            type: 'warn',
+            message: `验收告警（不影响产出）：${outcome.reasons.join('；')}`
+          });
+        } else {
+          final = `${VERIFY_FAILED_PREFIX} ${outcome.reasons.join('; ')}\n\n${final}`;
+        }
       }
     }
 
@@ -1332,12 +1626,22 @@ export class AgentHarness {
   }
 }
 
+/**
+ * P4.8 软截止收尾提示：接近时间预算时注入，让模型基于已有信息直接给最终结果。
+ * 目的是把「硬超时砍掉产出」变成「主动收尾交付」；同时要求显式标注数据缺口，
+ * 保持与 planner/executor 既有「数据不足如实说明、禁止编造」约定一致。
+ */
+const WRAP_UP_PROMPT =
+  '（系统提示）本次运行的时间预算即将耗尽，请立即停止进一步调研与工具调用，' +
+  '基于已获取的信息直接输出最终结果：把已确认的内容完整写出，' +
+  '尚未获取到的部分在结果中显式标注「数据缺口」说明，不要编造。';
+
 /** 根据中止原因生成人类可读的结果提示。 */
 function abortedMessage(signal: AbortSignal): string {
   const reason = (signal as { reason?: unknown }).reason;
-  if (reason === 'timeout') return '[timeout] run exceeded time limit';
-  if (reason === 'external') return '[aborted] run cancelled by caller';
-  return '[aborted] run cancelled';
+  if (reason === 'timeout') return TIMEOUT_NOTICE;
+  if (reason === 'external') return `${ABORTED_PREFIX} run cancelled by caller`;
+  return `${ABORTED_PREFIX} run cancelled`;
 }
 
 /** 从对话历史收集所有工具调用（供验证上下文统计）。 */

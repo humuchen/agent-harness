@@ -73,6 +73,13 @@ test('planToWorkflowDef: agentRefByTask 按 task 覆盖默认 agent', () => {
   assert.strictEqual(def.steps.find((s) => s.id === 't2').agentRef, 'agent-test-special');
 });
 
+test('planToWorkflowDef: P5 缺省 execMode=serial（单步发送），显式 parallel 可回并行', () => {
+  const d1 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X });
+  assert.strictEqual(d1.execMode, 'serial');
+  const d2 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, execMode: 'parallel' });
+  assert.strictEqual(d2.execMode, 'parallel');
+});
+
 test('planToWorkflowDef: 缺省 workflowId 自动生成且可多次不同（R4 防并发拒绝）', () => {
   const a = planToWorkflowDef(samplePlan, { agentRef: AGENT_X });
   const b = planToWorkflowDef(samplePlan, { agentRef: AGENT_X });
@@ -100,6 +107,50 @@ test('buildInputMapping: goal/taskMeta/upstream_* 三类源', () => {
   // 无依赖 task 只有 goal + taskMeta 两个键。
   const m1 = buildInputMapping(samplePlan.tasks[0]);
   assert.deepStrictEqual(Object.keys(m1).sort(), ['goal', 'taskMeta']);
+});
+
+/* ---------- P4.5 结果断言词表（outputChecks）映射 ---------- */
+
+test('buildInputMapping：outputChecks 非空时内联进 taskMeta；缺省不带键（零回归面）', () => {
+  const task = {
+    id: 't5',
+    title: '整合研报',
+    steps: ['撰写'],
+    dependsOn: ['t2'],
+    expectedOutput: '研报全文',
+    outputChecks: ['市场规模', '竞争格局']
+  };
+  const m = buildInputMapping(task);
+  const meta = JSON.parse(m.taskMeta);
+  assert.deepStrictEqual(meta.outputChecks, ['市场规模', '竞争格局']);
+  // 缺省 task：taskMeta 不含 outputChecks 键。
+  const m2 = buildInputMapping(samplePlan.tasks[0]);
+  assert.strictEqual('outputChecks' in JSON.parse(m2.taskMeta), false);
+});
+
+test('normalizePlan（parsePlanOutput）：outputChecks 清洗 —— trim / 剔空白 / 上限 4（P4.7）/ 非法丢弃不整单作废', () => {
+  const { parsePlanOutput, PLAN_OUTPUT_CHECK_MAX, pickOutputChecks } = require('../dist/plan.js');
+  const json = {
+    goal: 'g',
+    tasks: [
+      { id: 't1', title: 'a', steps: [], dependsOn: [], expectedOutput: 'x', outputChecks: [' 医美 ', '', '市场规模', 123, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] },
+      { id: 't2', title: 'b', steps: [], dependsOn: [], expectedOutput: 'y', outputChecks: 'not-array' },
+      { id: 't3', title: 'c', steps: [], dependsOn: [], expectedOutput: 'z', outputChecks: [] }
+    ]
+  };
+  const planOut = parsePlanOutput(JSON.stringify(json));
+  assert.ok(planOut, '解析成功');
+  const t1 = planOut.tasks.find((t) => t.id === 't1');
+  // trim + String() + 剔空白 + slice(0, PLAN_OUTPUT_CHECK_MAX=4)：['医美','市场规模','123','a','b','c','d','e','f'] → 前 4
+  assert.strictEqual(PLAN_OUTPUT_CHECK_MAX, 4, '上限与 planner 提示词「2~4 个」契约对齐');
+  assert.deepStrictEqual(t1.outputChecks, ['医美', '市场规模', '123', 'a']);
+  // 非数组 / 空数组 → 缺省丢弃（不带键）。
+  assert.strictEqual(planOut.tasks.find((t) => t.id === 't2').outputChecks, undefined);
+  assert.strictEqual(planOut.tasks.find((t) => t.id === 't3').outputChecks, undefined);
+  // pickOutputChecks 是注入侧与断言侧共用的唯一收敛入口（同源同上限）。
+  assert.deepStrictEqual(pickOutputChecks([' a ', '', 'b', 'c', 'd', 'e']), ['a', 'b', 'c', 'd']);
+  assert.deepStrictEqual(pickOutputChecks('not-array'), []);
+  assert.deepStrictEqual(pickOutputChecks(undefined), []);
 });
 
 /* ---------- DagEngine 集成（mock executor） ---------- */
@@ -130,8 +181,9 @@ test('DagEngine 集成：下游 step 的 input 含 goal + taskMeta + 上游真�
   assert.strictEqual(inputs.t2.taskMeta && JSON.parse(inputs.t2.taskMeta).id, 't2');
 });
 
-test('DagEngine 集成（成功路径）：无依赖的独立 task 同波次并行（maxConcurrent ≥ 2）', async () => {
-  const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-par' });
+test('DagEngine 集成（成功路径）：无依赖的独立 task 同波次并行（maxConcurrent ≥ 2，显式 parallel）', async () => {
+  // P5：计划桥缺省 execMode=serial（单步发送），并行需显式声明 —— 本测试锁住并行路径行为。
+  const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-par', execMode: 'parallel' });
   const running = new Set();
   let maxConcurrent = 0;
   // 每个 step 进入时先记录在途数，再 await 一段放大重叠窗口——这样同波次的
@@ -152,6 +204,29 @@ test('DagEngine 集成（成功路径）：无依赖的独立 task 同波次并�
     Object.values(run.steps).map((s) => s.state).sort(),
     ['done', 'done', 'done']
   );
+});
+
+test('DagEngine 集成（P5 缺省 serial）：无依赖的独立 task 也逐个执行（maxConcurrent === 1）', async () => {
+  // P5 静默计划执行的执行侧契约：plan 桥缺省「单步发送」—— t2/t3 虽无依赖也串行跑，
+  // 任一时刻至多一个 task 在执行（思考过程与当前任务一一对应的执行前提）。
+  const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-serial' });
+  assert.strictEqual(def.execMode, 'serial');
+  const running = new Set();
+  let maxConcurrent = 0;
+  const order = [];
+  const mockExec = async (step) => {
+    running.add(step.id);
+    maxConcurrent = Math.max(maxConcurrent, running.size);
+    order.push(step.id);
+    await new Promise((r) => setTimeout(r, 10));
+    running.delete(step.id);
+    return `output-of-${step.id}`;
+  };
+  const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor: mockExec });
+  const run = await engine.run(def, samplePlan.goal);
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(maxConcurrent, 1, `expected serial execution, maxConcurrent=${maxConcurrent}`);
+  assert.deepStrictEqual(order, ['t1', 't2', 't3']);
 });
 
 test('DagEngine 集成（失败语义）：某 task 失败 → 整个 run 标记 failed，下游不再调度', async () => {

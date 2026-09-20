@@ -253,14 +253,35 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 | P0 校验/反思 | ✅ 已实现 | DAG executor 接 `createVerifier` + `AGENT_VERIFY_MAX_RETRIES`（与 `/api/run` 同款优先级 `body.verify > body.autoVerify > AGENT_AUTO_VERIFY`）；`workflow-verify.test.cjs` 3 项实证反思循环 |
 | P1 断点续跑 | ✅ 已实现 | 确定性检查点键 `derivePlanWfId`（FNV-1a，结构键不含文案，跨刷新可重算）；server 抽共享 `resolveWorkflowRunOpts`（BYOK+verify+402 收敛，执行/续跑路由共用）；`streamWorkflowResume` 补 BYOK body；failed 卡片「从失败任务继续」优先 DAG 续跑，404/5xx/断连自动回退串行 resume |
 | P2 轨迹回放 | ✅ 已实现 | **零引擎改动**——`WorkflowRun` 检查点快照本身即轨迹（每 step 带 agentId/output/error/时间戳）。计划卡片非 pending 态显示「执行详情」→ 侧滑抽屉经 `client.getWorkflow(derivePlanWfId)` 水合快照 → `buildPlanWfReplayRows`（纯函数，可测）渲染步骤时间线（状态/agent/耗时/可折叠产出·错误）；404 无检查点 → 友好提示并指向「断点续跑 / 重新执行」兜底。样式独立追加于 `styles/chat/plan-mode.ts` |
-| P3 节点级人工门 | ⬜ 未实施 | 见下方 P4 待办（需动引擎核心循环） |
+| P3 节点级人工门 | ✅ 已实现 | `StepDef.requireApproval`（plan `requireApproval` 严格布尔映射，零回归）+ `WorkflowRun.approvals: string[]` + 引擎波次边界门（`run()`/`resume()` 双门，flagged 且未批准 step 标 `awaiting`、暂停并 emit `wf:awaiting-approval` + `store.save` 持久化）+ `POST /api/workflows/:id/approve`（BYOK 经共享 `resolveWorkflowRunOpts`，`{stepId?, all?}` 二选一放行写 `run.approvals` 后 `engine.resume`）。前端：`PlanExecState` 增 `awaiting`/`awaitingTaskIds`，`applyPlanWfEvent` 处理 `wf:awaiting-approval`（收集 stepIds、保留 done 集合）与放行后 `wf:step:start` 清 awaiting；卡片「待审批」+「批准并继续」（全部未决门）+ 🔒 任务标记，抽屉行级单节点批准；`derivePlanWfId` 结构键纳入审批标志（`requireApproval===true` 拼 `:A`）；mirror 链 client/server/webapp 三处 `planStatus` 收敛 `awaiting`。三级测试：core `workflow-approval.test.cjs`（引擎门 5 项）、server `workflow-approval.test.cjs`（e2e 8 断言）、webapp `chat-plan-wf-state.test.ts` P3 用例 |
 
-**回归基线（P0–P2 落地后）**：server 273/0 fail；client 18/18；webapp 316/316（含 derivePlanWfId + 回放纯函数新增 12 项）；三端 build 0；lint 0 error（仅 pre-existing warning）；webapp `tsc --noEmit` 9 条全 pre-existing（与 P1 前基线一致，零新增）。
+| P2.5 节点调用链路 | ✅ 已实现 | 此前回放只有「完成后的耗时」，补上每个节点运行过程中的关键信息：`StepRun.trace?: StepTraceNode[]`（随检查点持久化）+ 引擎 `RunContext.trace` 附挂通道（`mergeStepTrace` 在成功/失败/补偿三条路径合并，节点上限 500、detail 500 截断，R5 体积护栏）。server `StepTraceCollector` 白名单采集 harness 事件（run:start / llm:call / llm:response / tool:start / tool:result / guardrail:blocked / verify:result / budget:exceeded / run:cost / llm:usage / run:end；token 级流式增量不落盘；BYOK 红线：仅记模型名，apiKeys/modelBaseUrl 永不进节点），per-step 隔离捕获（波次并行不混流），executor 经 `ctx.trace` 附挂（finally 保证成功/失败均落）。前端：`buildPlanWfReplayRows` 透传 trace + `buildPlanWfTraceLines`（纯函数）→ 抽屉每行「调用链路 · N 步」折叠区（图标/标签/相对时间/详情，error/blocked 着色）；旧快照无 trace → 不渲染（零回归）。测试：core `workflow-step-trace.test.cjs` 4 项（合并/截断/失败落盘/零回归）、server `workflow-step-trace.test.cjs` e2e（检查点快照 trace 非空 + 首尾 run:start/end + 无凭据字段）、webapp P2.5 纯函数 4 项 |
 
-### P4（后续，未实施）
+| P2.6 镜像回退水合 | ✅ 已实现 | 用户报告「执行完的计划，刷新页面重进后执行详情抽屉没有任何数据」——根因：抽屉唯一数据源是服务端检查点（GET /api/workflows/:wfId），而检查点寿命受 store 形态约束（本地 dev 未配 WORKFLOW_STORE_DIR → VolatileWorkflowStore 进程重启即丢；Render free 层 /app/data 临时盘，闲置唤醒/部署重置清空）→ 404 → 空抽屉（卡片能恢复是 planStatus 镜像走了会话历史，但镜像没有 run 快照）。修复（零引擎改动，P3 同款三端 mirror 范式）：终态帧 run 经 `compactPlanWfSnapshot`（纯函数，output/error 2000 字 + trace 30 节点/200 字二级限幅，形状非法 → undefined 零回归）落入 `PlanExecState.wfSnapshot` → `toMirrorPlanStatus` 写穿 `planStatus.wfSnapshot` → 会话历史持久化（跨重启）；`applyPlanStatusLookup` 恢复（含形状校验宁缺勿错）；`openPlanWfReplay` GET 404 时回退镜像水合（`mirrorSnapshot` + `fromMirror` 标注），抽屉头部「检查点已过期，以下为执行时保留的历史镜像快照」提示 + 镜像态隐藏审批按钮（检查点丢失后 approve 路由 404，避免死按钮）；awaiting 暂停态 partial 快照同样落镜像（审批等待中刷新可回看已执行节点） |
+| P4.5 产出有效性闸门 | ✅ 已实现 | 用户报告「医美研报计划 5 个 task 全 ✅，但 t2 只有空壳数据、t4 输出跑题成大模型榜单、t5 没有交付物」——根因：`DagEngine` 成功出口只看「executor 有返回」，空串 / 护栏兜底话术 / 模型中断的 partial 产出都以 `done` 写入共享黑板并透明传播下游。三层修复（共享基座 `workflow/step-output.ts` 的 `inspectStepOutput` 纯检测器 + 单源常量 `PARTIAL_NOTICE`/`GUARDRAIL_FALLBACK_PREFIX` 防漂移）：① 引擎闸门——`WorkflowDef.failOnInvalidOutput`（run + resume 双路径），非 ok 产出按失败处置（step failed + 级联 + 检查点，可断点续跑）；`planToWorkflowDef` 默认开启，手工 def 缺省关闭零回归；分类仅记录（`StepRun.outputIssue`）不影响旧行为。② 计划桥默认验证门禁——`plan-verify.ts` 纯决策模块（`resolvePlanVerify`/`parsePlanVerifyRetries`，无副作用可单测）：plan 桥未显式 verify 时回落确定性断言（`assertions` = 无效标记 notContains + 最小体量 minLength 32，零 LLM 成本）+ `AGENT_PLAN_VERIFY_RETRIES=1`；executor `planOutputChecks` 逐 task 组装器（per-step 隔离，taskMeta 缺失/解析失败零回归），与既有 autoVerify 组成链组合。③ 黑板注记——`formatStepInput` 上游产出前标注有效性（ok/empty/partial/fallback/unknown + 处理指令：上游失败时本任务应产出明确失败的报告，禁止伪造数据），下游不再被假成功污染。④ planner 提示词（阶段 D）——`PlanTask.outputChecks?` 词表（2~4 个主题词，解析容错上限 8）经 taskMeta 透传为逐 task contains 断言 + 「数据不足如实说明、禁止跑题」约束。测试矩阵：core `step-output-gate.test.cjs` 12 项（检测器 6 + 引擎闸门 6）、`plan-to-workflow.test.cjs` 新增 4 项、server `plan-verify.test.cjs` 9 项、`workflow-executor-format.test.cjs` 新增 4 项、`workflow-verify.test.cjs` 新增 3 项 |
+
+**回归基线（P0–P3 + P2.5 + P2.6 + P4.5 落地后）**：core 453/453；client 18/18；server 295 tests / 293 pass / 2 skip（含 P3 e2e + P2.5 e2e + P4.5 确定性验证 e2e）；webapp 346/346；四端 build 0；改动文件 0 新增 lint error（server.ts / engine.ts / harness.ts / plan.ts / workflow-executor.ts / step-output.ts / plan-verify.ts 均 0 error）。
+
+### P5 propose 阶段体验改造（调研 + 目标澄清 + 流式可见，已实现）
+
+针对「① 规划期模型不思考、一直等待；② 计划默认拆几步、不调研也不确认目标」两项问题（2026-09）：
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 两态 planner 提示词（`buildPlannerPrompt`） | ✅ | 重写为「理解目标 → 判断清晰度 → 调研 → 拆分」：需求模糊/高风险未对齐时输出澄清 JSON `{"clarify":true,"goalDraft","questions","needs"?}`，否则先调工具调研再产出计划（goal 显式可验收）；`parseClarifyOutput` + `parsePlanOrClarify` 联合解析（计划优先、澄清次之）；护栏重试提示同步允许澄清分支 |
+| 服务端流策略（`server.ts` propose 订阅） | ✅ | 抑制范围收窄为仅 `llm:token`/`llm:response`（防计划 JSON 打字机外泄），**放行 `llm:reasoning`（规划思考）与 `tool:*`（调研过程）**；新增 `plan:phase` 阶段进度事件（理解需求→调研中→生成计划，仅向前推进）；run:end 处按 `parsePlanOrClarify` 二分支分发 `plan:proposed` / `plan:clarify`（澄清不落 PlanDoc，随消息落 `ChatMessage.clarify` 供刷新还原） |
+| 前端渲染 | ✅ | 计划气泡：`plan:phase` 驱动阶段进度条；`llm:reasoning` 渲染「规划思考」折叠块（不受 deepThink 偏好门控，作为可展开原始草稿）；`plan:clarify` 渲染目标澄清卡（goalDraft + questions + 补充输入 + 确认按钮）；计划卡照旧 |
+| 澄清多轮闭环 | ✅ | 澄清卡「确认并继续」→ `confirmClarify` 把「原需求 + 目标草稿 + 用户补充」拼为新一轮 propose 输入再次派发（仍走 planner，产出基于已确认目标的计划）；`clarifyAnswered` 防重复提交；clarify 随 `sanitizeMessages`/历史镜像透传，刷新可还原 |
+
+回归基线：core 463/463（含 `plan-parse.test.cjs` 新增 7 项 clarify/联合解析用例）；webapp tsc 9 条全 pre-existing、vitest 346/346、vite build 通过；server build 通过、293 pass / 2 skip；改动文件 eslint 0 error。执行侧（DAG 确认执行）零改动。
+
+
+
+### P4（P4.5 已实施，余下后续未实施）
+- ~~产出有效性闸门~~ → **已由 P4.5 实现**（§9.5 表格）：引擎出口闸门 + 计划桥默认验证门禁 + 黑板注记 + planner 词表断言，「无效产出不再假成功」，默认对 plan 桥开启、手工工作流零回归。
 - **R8 引擎 per-branch 级联取消**：`Promise.all` → `Promise.allSettled` + 依赖图按分支剪枝，使「失败 task 仅取消其下游、独立分支正常跑完」，消除 all-or-nothing。动核心执行循环，需补引擎回归测试。
 - ~~DAG 断点续跑入口~~ → **已由 P1 实现**（§9.5）：failed 态经 `resumePlanViaWorkflow` → `streamWorkflowResume(derivePlanWfId)` 从检查点续跑，不可达自动回退串行。
-- **P3 节点级人工门**：`StepDef.requireApproval` + `WorkflowRun.approvals` + 引擎在 flagged step 前暂停并 emit `wf:awaiting-approval` + `POST /api/workflows/:id/approve` 放行续跑。**需动引擎核心执行循环**（当前「不改核心循环」约束需明确解除后方可启动，风险最高，排最后）。
+- ~~P3 节点级人工门~~ → **已由 P3 改进项实现**（§9.5）：引擎双门暂停 + `POST /:id/approve` 放行 + 前端审批卡片/抽屉闭环。
 - **黑板体积护栏（R5）**：`upstream_*` 大产出截断 + 监控 `workflowStore` 体积。
 - **P3 观察反馈收集**：默认开后的线上/自测观察期，若 DAG 路径暴露真实模型环境下的问题（R5 黑板体积、R8 all-or-nothing），经 `ah_plan_dag='0'` 可即时回退串行；稳定后可移除开关。
 

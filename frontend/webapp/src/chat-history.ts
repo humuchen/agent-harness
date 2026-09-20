@@ -77,12 +77,20 @@ export interface MirroredMsg {
   trace?: unknown;
   /** 计划模式：结构化执行计划原样透传（JSON 安全值），恢复时还原计划卡片。 */
   plan?: unknown;
+  /** 计划模式：propose 当时的联网开关（计划执行继承之），恢复时随计划卡片还原。 */
+  planWeb?: unknown;
+  /** 计划模式：目标澄清结果原样透传（JSON 安全值），恢复时还原目标确认卡。 */
+  clarify?: unknown;
   /** 计划模式：任务级执行进度镜像（服务端维护），恢复时还原卡片状态并支持续跑。 */
   planStatus?: {
-    status: 'running' | 'done' | 'failed' | 'cancelled';
+    status: 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting';
     currentTaskId?: string;
     failedTaskId?: string;
     done: string[];
+    /** P3：当前等待人工审批的任务 id 列表（status==='awaiting' 时有效）。 */
+    awaiting?: string[];
+    /** P2.6：紧凑 run 快照（前端落盘，形状见 webapp PlanWfRunMirror；此处 unknown 避免镜像层耦合 webapp 类型）。 */
+    wfSnapshot?: unknown;
   };
   /** 用户消息携带的附件（图片/文件预览）。随镜像落盘需在体积上限内（超大图不持久化）。 */
   attachments?: Array<{ name: string; type: string; url?: string; serverUrl?: string }>;
@@ -102,7 +110,7 @@ function sanitizePlanStatus(
   const o = v as Record<string, unknown>;
   const status = o.status;
   if (
-    (status !== 'running' && status !== 'done' && status !== 'failed' && status !== 'cancelled') ||
+    (status !== 'running' && status !== 'done' && status !== 'failed' && status !== 'cancelled' && status !== 'awaiting') ||
     !Array.isArray(o.done)
   ) {
     return {};
@@ -112,7 +120,13 @@ function sanitizePlanStatus(
       status,
       ...(typeof o.currentTaskId === 'string' ? { currentTaskId: o.currentTaskId } : {}),
       ...(typeof o.failedTaskId === 'string' ? { failedTaskId: o.failedTaskId } : {}),
-      done: o.done.filter((x): x is string => typeof x === 'string')
+      done: o.done.filter((x): x is string => typeof x === 'string'),
+      ...(Array.isArray(o.awaiting)
+        ? { awaiting: o.awaiting.filter((x): x is string => typeof x === 'string') }
+        : {}),
+      // P2.6：紧凑 run 快照（检查点丢失后抽屉回退水合的数据源）：对象原样透传，
+      // 形状非法（非对象）丢弃——宁缺勿错。
+      ...(o.wfSnapshot && typeof o.wfSnapshot === 'object' ? { wfSnapshot: o.wfSnapshot } : {})
     }
   };
 }
@@ -189,6 +203,10 @@ export function sanitizeMessages(raw: unknown): MirroredMsg[] {
       ...(attachments && attachments.length ? { attachments } : {}),
       ...(o.trace != null && typeof o.trace === 'object' ? { trace: o.trace } : {}),
       ...(o.plan != null && typeof o.plan === 'object' ? { plan: o.plan } : {}),
+      ...(o.planWeb === true ? { planWeb: true } : {}),
+      ...(o.clarify != null && typeof o.clarify === 'object'
+        ? { clarify: o.clarify }
+        : {}),
       ...sanitizePlanStatus(o.planStatus),
       ...(o.error === true ? { error: true } : {}),
       ...(o.compressed === true ? { compressed: true } : {})
