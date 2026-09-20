@@ -227,6 +227,7 @@ import {
   audit as coreAudit,
   enableAuditFile as coreEnableAuditFile,
   enableJevInjection,
+  getJevStats,
 } from '@agent-harness/core';
 
 // K8s健康检查端点
@@ -3139,6 +3140,37 @@ const server = createServer(
           if (await registerOAuthRoutes(req, res, path, req.method ?? 'GET'))
             return;
         }
+      }
+
+      // Jev（TypeSafe AI 决策模型）状态自检：凭据来源 / 子系统开关 / 进程内调用统计。
+      // 不回传任何密钥明文，用于回答「Jev 是否已配置、是否真的被调用过」。
+      if (req.method === 'GET' && path === '/api/jev/status') {
+        const ctx = await guard(req, res, 'provider:manage');
+        if (!ctx) return;
+        const userCred = await resolveJevCredential(ctx.sub).catch(() => null);
+        const source =
+          userCred?.apiKey ? 'user' : process.env.TYPESAFE_API_KEY ? 'env' : 'none';
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(
+          JSON.stringify(
+            {
+              configured: source !== 'none',
+              credentialSource: source,
+              baseUrl: process.env.TYPESAFE_BASE_URL || 'https://api.typesafe.ai/v1',
+              switches: {
+                // 三开关默认 off：off 时各子系统完全走旧逻辑（零 Jev 调用）。
+                injectionGate: (process.env.JEV_INJECTION_GATE || 'off').toLowerCase() === 'on',
+                routing: (process.env.JEV_ROUTING || 'off').toLowerCase() === 'on',
+                contextCompress:
+                  (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on'
+              },
+              // lastCalledAt === null 表示本进程启动以来 Jev 从未被调用过。
+              stats: getJevStats()
+            },
+            null,
+            2
+          )
+        );
       }
 
       // 用户自带 LLM 凭据（BYOK）：/api/account/provider-keys*。

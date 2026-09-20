@@ -163,7 +163,9 @@ export {
   jevScoreInjection,
   jevClassifyDomain,
   jevScoreChunk,
-  resolveJevCreds
+  resolveJevCreds,
+  getJevStats,
+  resetJevStats
 } from './typesafe-jev';
 export type {
   JevDecideOptions,

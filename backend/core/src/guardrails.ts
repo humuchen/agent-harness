@@ -290,15 +290,17 @@ function detectInjection(
     }
   }
   for (const sc of customInjectionScorers) {
+    // 异步打分器（如 Jev）由 detectInjectionAsync 专职 await；同步路径跳过，
+    // 否则会「发起调用但丢弃结果」，造成门禁对 Jev 的重复调用（已实测）。
+    if (sc.constructor.name === 'AsyncFunction') continue;
     try {
       const r = sc(text);
-      // 同步路径只消费数值结果；异步打分器（如 Jev）返回 Promise，交由 detectInjectionAsync 处理。
-      if (typeof r === 'number' && r > 0.5) return 'semantic-injection';
-      // 异步打分器的 Promise 在同步路径不被 await，必须显式吞掉 rejection，
-      // 否则 Jev 等异步源失败时会产生 unhandledRejection。
+      // 兜底：同步函数若返回 Promise（罕见），吞掉 rejection 避免 unhandledRejection。
       if (r && typeof (r as Promise<unknown>).catch === 'function') {
         (r as Promise<unknown>).catch(() => {});
+        continue;
       }
+      if (typeof r === 'number' && r > 0.5) return 'semantic-injection';
     } catch {
       /* 打分器异常不影响主流程 */
     }

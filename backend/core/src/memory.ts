@@ -858,7 +858,8 @@ export class Memory {
                 max: 100,
                 instructions: '该消息对理解用户意图 / 继续任务的重要程度'
               }
-            }
+            },
+            { caller: 'context-compress' }
           );
           const s = d.answers.importance?.score;
           return typeof s === 'number' ? s : 50;
