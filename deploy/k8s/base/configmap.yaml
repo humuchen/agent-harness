@@ -32,6 +32,19 @@ data:
   # 医美插件（medical-aesthetics-lead）数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
   MA_DATA_DIR: '/app/data/ma-lead'
   ACCOUNT_DB_FILE: '/app/data/accounts.db'
+  # P5.7：成果物工件落点（LocalArtifactStore 的 index.json + files/<id>）。
+  # 不配默认 `.data/artifacts`（相对启动 cwd，落容器可写层）→ pod 重建即丢、
+  # 多副本各自为政（副本 A 归档的工件副本 B 查不到，前端报 artifact not found）。
+  # 必须固定到共享 RWX 卷（与 ACCOUNT_DB_FILE 同卷语义）。
+  ARTIFACT_DIR: '/app/data/artifacts'
+  # P5.7：工作流（DAG）检查点存储（FileWorkflowStore，每 workflow 一个 JSON 落盘）。
+  # 不配则用进程内 VolatileWorkflowStore —— pod 重启/重建后检查点全丢，
+  # 断点续跑（POST /api/workflows/:id/resume）与快照查询（GET /api/workflows/:id）无数据可读。
+  WORKFLOW_STORE_DIR: '/app/data/workflows'
+  # 成果物工件后端：local（默认，落 ARTIFACT_DIR）| s3（S3 兼容对象存储）。
+  # 切 s3 时在 Secret agent-harness 注入 S3_BUCKET / S3_ACCESS_KEY_ID /
+  # S3_SECRET_ACCESS_KEY（可选 S3_REGION / S3_ENDPOINT / S3_PREFIX）。
+  # ARTIFACT_STORE: 's3'
   # P2：启动强校验（生产建议开启）
   AH_STARTUP_CRITICAL: '1'
   # P2 Go-live：成本硬上限（每窗口最大成本美元，0=不限）

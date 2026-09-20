@@ -76,6 +76,8 @@ import {
 import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
 import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify';
 import { runAgentTask } from './agent-run';
+// md 交付文件预览（?preview=1）的服务端格式转换：markdown → HTML。
+import { markdownPreviewHtml } from './markdown-preview';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
 import {
@@ -2911,8 +2913,20 @@ const server = createServer(
             res.end(JSON.stringify({ error: 'artifact content not found' }));
             return;
           }
+          // md 预览：服务端转成 HTML 渲染页（下载仍返回原始 markdown）。
+          if (preview && meta.mimeType === 'text/markdown') {
+            const html = markdownPreviewHtml(buf.toString('utf8'), meta.name);
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'content-disposition': `inline; filename="${encodeURIComponent(meta.name)}"`,
+              'content-length': Buffer.byteLength(html)
+            });
+            res.end(html);
+            return;
+          }
+          // 其余类型（txt/csv/json 等）维持原行为：inline 按原 mimeType 打开。
           res.writeHead(200, {
-            'content-type': preview && meta.mimeType === 'text/markdown' ? 'text/plain; charset=utf-8' : meta.mimeType,
+            'content-type': meta.mimeType,
             'content-disposition': `${dl ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
             'content-length': buf.length
           });
