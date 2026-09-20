@@ -16,6 +16,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 export interface LoadSecretsOptions {
   /** 是否加载本地 `.env`（默认 true，仅开发便利）。生产无此文件即跳过。 */
@@ -23,6 +24,24 @@ export interface LoadSecretsOptions {
 }
 
 let loaded = false;
+
+/**
+ * 从 cwd 向上逐级查找最近的 `.env`（到文件系统根为止）。
+ * 背景：服务既可能从仓库根启动（`pnpm server`），也可能从包目录启动
+ * （`pnpm --filter @agent-harness/server dev`）——后者 cwd 下没有 `.env`，
+ * 若只查 cwd 会导致插件等按 cwd 解析相对路径的配置拿到另一套默认值
+ * （实测产生过「一库两份」：root data/ma-lead 与 access/server/data/ma-lead）。
+ */
+function findNearestEnvFile(): string | null {
+  let dir = resolve(process.cwd());
+  for (;;) {
+    const candidate = resolve(dir, '.env');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null; // 已到根
+    dir = parent;
+  }
+}
 
 /** 极简 `.env` 解析：支持 `KEY=VALUE`、注释(#)、空行、首尾引号剥离。不做变量插值。 */
 function parseDotenv(text: string): Record<string, string> {
@@ -71,7 +90,10 @@ export function loadSecrets(opts: LoadSecretsOptions = {}): void {
 
   const sources: string[] = [];
   if (process.env.SECRETS_FILE) sources.push(process.env.SECRETS_FILE);
-  if ((opts.dotenv ?? true) && existsSync('.env')) sources.push('.env');
+  if (opts.dotenv ?? true) {
+    const envFile = findNearestEnvFile();
+    if (envFile) sources.push(envFile);
+  }
 
   for (const file of sources) {
     try {
