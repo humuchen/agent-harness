@@ -40,8 +40,8 @@ export interface Intent {
   intent: string;
   /** 该任务所需的领域能力 id 列表（供 AgentSelector 做能力匹配）。 */
   requiredCapabilities: string[];
-  /** 分类来源：rule（规则引擎）/ llm（小模型分类），便于追踪与缓存。 */
-  source: 'rule' | 'llm';
+  /** 分类来源：rule（规则引擎）/ llm（小模型分类）/ jev（TypeSafe Jev 决策模型），便于追踪与缓存。 */
+  source: 'rule' | 'llm' | 'jev';
 }
 
 /** 选择器上下文：影响评分的额外信号（租户亲和、目标 domain 等）。 */

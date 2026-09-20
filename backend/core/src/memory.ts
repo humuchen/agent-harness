@@ -7,6 +7,7 @@ import {
   VolatileMemoryStore,
   sanitizeKey,
 } from './memory-store';
+import { jevDecide, resolveJevCreds } from './builtins/typesafe-jev';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。
@@ -816,6 +817,74 @@ export class Memory {
       this._compressedSinceReport = true;
     }
     return changed;
+  }
+
+  /**
+   * Jev 重要性淘汰（上下文压缩增强，可选）：在 `fitToBudget` 的确定性预算剪枝之「后」介入。
+   * 设计原则 —— 旧逻辑永远是第一兜底：
+   *   1) 先跑 `fitToBudget`（纯 token 预算 + 时间序淘汰，零网络，保证一定能压回预算）；
+   *   2) 若仍超预算且 Jev 已配置（Key 可解析），对最旧候选消息做重要性打分（score 0~100），
+   *      优先淘汰最低分消息（而非纯按时间），使「重要但较早」的消息得以保留；
+   *   3) 任一失败 / 缺配 → 回落 `fitToBudget` 结果，绝不破坏确定性基线。
+   * 该方法为异步（需联网调 Jev），仅当上层显式开启 JEV_CONTEXT_COMPRESS 时由 harness 调用；
+   * 默认路径（未开启）仍走同步 `fitToBudget`，零行为变更。
+   */
+  async compressByImportance(maxTokens: number): Promise<boolean> {
+    // 1) 确定性兜底基线：先保证能压回预算。
+    const base = this.fitToBudget(maxTokens);
+    if (this.historyTokens() <= maxTokens) return base;
+    // 2) Jev 增强仅在已配置时介入。
+    if (!resolveJevCreds()) return base;
+    // 候选：最旧的非 system / 非摘要消息（最多 16 条，至少保留当前轮）。
+    const sys: Message[] = [];
+    const rest: Message[] = [];
+    this.window.forEach((m) => {
+      if (m.role === 'system' && !isSummaryNode(m)) sys.push(m);
+      else rest.push(m);
+    });
+    if (rest.length <= 1) return base; // 仅剩当前轮，无安全淘汰对象
+    const K = Math.min(16, rest.length - 1);
+    const head = rest.slice(0, K);
+    try {
+      const scored = await Promise.all(
+        head.map(async (m) => {
+          const text = messageText(m);
+          const d = await jevDecide(
+            `评估以下对话消息对当前任务的关键程度（0~100，越高越重要）：\n${text.slice(0, 1500)}`,
+            {
+              importance: {
+                type: 'score',
+                min: 0,
+                max: 100,
+                instructions: '该消息对理解用户意图 / 继续任务的重要程度'
+              }
+            }
+          );
+          const s = d.answers.importance?.score;
+          return typeof s === 'number' ? s : 50;
+        })
+      );
+      // 选最低分者淘汰（并列取最旧）。
+      let victim = 0;
+      let lowest = Infinity;
+      for (let i = 0; i < scored.length; i++) {
+        const s = scored[i];
+        if (s !== undefined && s < lowest) {
+          lowest = s;
+          victim = i;
+        }
+      }
+      const evicted = head[victim];
+      const keptRest = rest.filter((m) => m !== evicted);
+      this.window = [...sys, ...keptRest];
+      this._compactCount++;
+      this._compressedSinceReport = true;
+      // 3) 再跑一次确定性剪枝兜底（处理剩余超限）。
+      this.fitToBudget(maxTokens);
+      return true;
+    } catch {
+      return base; // Jev 出错 → 保持 fitToBudget 结果
+    }
   }
 
   /** 当前上下文压缩摘要（无则 null），供运维视图与测试观测。 */

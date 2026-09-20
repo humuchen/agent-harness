@@ -13,7 +13,7 @@ import { AhModal } from './components/ah-modal';
 import './components/ah-swipe-item';
 import { sharedStyles } from './styles';
 import { chatStyles } from './chat-styles';
-import { isRetrievalTool, safeJson } from './utils/chat-utils';
+import { isRetrievalTool, safeJson, toolDisplayName, summarizeJevDecision } from './utils/chat-utils';
 import { escapeHtml } from './utils/markdown';
 
 // 上下文用量圆环（已抽离到 chat-context-usage.ts，降低 chat.ts 单体规模）。
@@ -2462,7 +2462,7 @@ export class AhChat extends LitElement {
         const node = mk(
           tc.llm,
           retrieval ? 'retrieval' : 'tool',
-          retrieval ? `检索 · ${name}` : name,
+          retrieval ? `检索 · ${name}` : toolDisplayName(name),
           'pending',
           {
             detail:
@@ -2486,7 +2486,7 @@ export class AhChat extends LitElement {
         const node = mk(
           tc.llm,
           retrieval ? 'retrieval' : 'tool',
-          retrieval ? `检索 · ${name}` : name,
+          retrieval ? `检索 · ${name}` : toolDisplayName(name),
           ev.errored ? 'error' : 'ok',
           {
             detail:
@@ -2516,10 +2516,22 @@ export class AhChat extends LitElement {
               ? ev.result
               : JSON.stringify(ev.result ?? {});
           target.status = ev.errored ? 'error' : 'ok';
-          target.meta = {
+          // Jev 决策工具：从结构化结果中提炼一行可读摘要，直接挂在节点 meta，
+          // 让「是否执行 + 决策结论」在链路上无需展开 JSON 即可辨识。
+          const evCallName = (ev as { call?: { name?: unknown } }).call?.name;
+          const meta: Record<string, string> = {
             ...(target.meta ?? {}),
             status: ev.errored ? '失败' : '成功'
           };
+          if (
+            evCallName === 'builtin__jev_decide' &&
+            !ev.errored &&
+            typeof target.result === 'string'
+          ) {
+            const d = summarizeJevDecision(target.result);
+            if (d) meta['决策'] = d;
+          }
+          target.meta = meta;
         }
         break;
       }

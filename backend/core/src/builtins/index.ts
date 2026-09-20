@@ -158,6 +158,19 @@ export type { WebFetchOptions } from './webfetch';
 export { registerRagRetrieve } from './rag-retrieve';
 export type { RagRetrieveOptions } from './rag-retrieve';
 export { registerJevDecide } from './typesafe-jev';
-export type { JevDecideOptions, JevQuestionSpec, JevQuestionType } from './typesafe-jev';
+export {
+  jevDecide,
+  jevScoreInjection,
+  jevClassifyDomain,
+  jevScoreChunk,
+  resolveJevCreds
+} from './typesafe-jev';
+export type {
+  JevDecideOptions,
+  JevQuestionSpec,
+  JevQuestionType,
+  JevAnswer,
+  JevDecision
+} from './typesafe-jev';
 // OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
 export * from '../sandbox';

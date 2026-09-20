@@ -19,6 +19,9 @@ import {
   checkStructuredOutput,
   checkTaskOutput,
   checkToolArgs,
+  checkInputAsync,
+  checkOutputAsync,
+  checkToolArgsAsync,
   redactOutput,
   type GuardrailPolicy
 } from './guardrails';
@@ -531,7 +534,7 @@ export class AgentHarness {
       resolvedInput = resolved;
     }
 
-    const guard = checkInput(
+    const guard = await checkInputAsync(
       resolvedInput,
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
@@ -794,9 +797,17 @@ export class AgentHarness {
               ? Math.floor(this.maxAcceptedPrompt * 0.7)
               : Infinity;
           const budgetCap = Math.min(proactiveBudget, adaptiveCap);
-          if (memory.fitToBudget(budgetCap)) {
+          // 上下文压缩：默认走确定性预算剪枝（fitToBudget）；开启 JEV_CONTEXT_COMPRESS 时，
+          // 在预算剪枝之「后」用 Jev 重要性打分优先淘汰低分消息（旧逻辑为兜底，Jev 缺配/出错回落）。
+          const useJevCompress =
+            (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on';
+          const compressed = useJevCompress
+            ? await memory.compressByImportance(budgetCap)
+            : memory.fitToBudget(budgetCap);
+          if (compressed) {
             structLog('info', 'proactive context compression applied before LLM send', {
               budgetCap,
+              jev: useJevCompress,
               runId
             });
           }
@@ -1072,7 +1083,7 @@ export class AgentHarness {
             ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
             : this.opts.planTask
             ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
-            : checkOutput(
+            : await checkOutputAsync(
                 resp.content,
                 this.opts.guardrailPolicy,
                 lastToolResult ? { recentTool: lastToolResult } : undefined
@@ -1279,7 +1290,7 @@ export class AgentHarness {
             }
             // 记录已用工具，供后续步骤动态选择时并入硬允许集（见本步 llm:call 前）。
             usedTools.add(call.name);
-            const argGuard = checkToolArgs(
+            const argGuard = await checkToolArgsAsync(
               call.name,
               call.arguments,
               this.opts.guardrailPolicy

@@ -226,6 +226,7 @@ import {
   type TenantContext,
   audit as coreAudit,
   enableAuditFile as coreEnableAuditFile,
+  enableJevInjection,
 } from '@agent-harness/core';
 
 // K8s健康检查端点
@@ -809,6 +810,12 @@ function unauthorized(res: ServerResponse, req?: IncomingMessage): void {
 
 // 启动时从环境变量加载并接入已配置的 MCP 服务（后台进行，不阻塞监听）。
 mcpManager.init();
+
+// 危险操作门禁：Jev 语义级注入打分增强（JEV_INJECTION_GATE=off 默认关闭，零行为变更）。
+// 开启后，正则/短语基线仍先执行；仅当基线放行时再跑 Jev 语义打分，出错/缺配回落基线（兜底）。
+if ((process.env.JEV_INJECTION_GATE || 'off').toLowerCase() === 'on') {
+  enableJevInjection();
+}
 
 // ── IM 桥接（用户层入口：飞书 / 钉钉 / 企业微信）──
 // 装配「已配置且启用」的平台适配器；未开 IM_ENABLED 时整体 no-op（零副作用）。

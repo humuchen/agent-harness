@@ -11,6 +11,7 @@
 
 import { objectParams, ToolRegistry } from '../tools';
 import { structLog } from '../telemetry';
+import { jevScoreChunk, resolveJevCreds } from './typesafe-jev';
 
 export type RagApiStyle = 'local' | 'hermes';
 
@@ -37,6 +38,30 @@ function getBaseUrl(opts: RagRetrieveOptions): string {
 
 function getToken(opts: RagRetrieveOptions): string {
   return opts.token ?? process.env.RAG_TOKEN ?? '';
+}
+
+/**
+ * 用 Jev 对检索片段做「是否有用 / 线索强度」二次判定（RAG 有用性 / 线索打分）。
+ * 仅当 Jev 已配置（Key 可解析：参数 > 运行级 BYOK > 环境变量）时生效；
+ * 任一片段打分失败/超时则回落原 RAG score（旧逻辑兜底），不阻断检索主流程。
+ * 返回带 jev_useful(0~1) / jev_score(0~100) 字段的结果数组；Jev 未配置时原样返回。
+ */
+type RagChunk = { chunk_id: string; score: number; content: string; metadata?: Record<string, unknown> };
+async function scoreChunksWithJev(
+  query: string,
+  results: RagChunk[]
+): Promise<Array<RagChunk & { jev_useful?: number; jev_score?: number }>> {
+  if (results.length === 0 || !resolveJevCreds()) return results;
+  const out: Array<RagChunk & { jev_useful?: number; jev_score?: number }> = [];
+  for (const r of results) {
+    try {
+      const { useful, score } = await jevScoreChunk(r.content, query);
+      out.push({ ...r, jev_useful: useful, jev_score: score });
+    } catch {
+      out.push(r); // 回落：保留原始 RAG score
+    }
+  }
+  return out;
 }
 
 export function registerRagRetrieve(registry: ToolRegistry, opts: RagRetrieveOptions = {}): void {
@@ -117,20 +142,23 @@ export function registerRagRetrieve(registry: ToolRegistry, opts: RagRetrieveOpt
               content: c.content,
               metadata: { source: c.source ?? 'external', title: c.source ?? 'external' },
             }));
+          // RAG 有用性 / 线索打分（Jev 二次判定）：仅在 Jev 配置时生效，失败回落原 score。
+          const scored = await scoreChunksWithJev(query, results);
 
           structLog('info', 'rag_retrieve(hermes)', {
             query: query.slice(0, 100),
             n: results.length,
+            jev_scored: scored.some((r) => r.jev_useful !== undefined),
             latency_ms: latencyMs,
             trace_id: traceId,
           });
 
           return JSON.stringify({
             trace_id: traceId,
-            n_results: results.length,
+            n_results: scored.length,
             latency_ms: latencyMs,
             generated_answer: data.answer ?? '',
-            results,
+            results: scored,
           });
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -177,23 +205,28 @@ export function registerRagRetrieve(registry: ToolRegistry, opts: RagRetrieveOpt
         const data = await resp.json() as { results?: Array<{ chunk_id: string; content: string; score: number; metadata?: Record<string, unknown> }>; trace_id?: string };
         const latencyMs = Date.now() - t0;
 
+        const baseResults = (data.results ?? []).map((r) => ({
+          chunk_id: r.chunk_id,
+          score: r.score,
+          content: r.content,
+          metadata: r.metadata,
+        }));
+        // RAG 有用性 / 线索打分（Jev 二次判定）：仅在 Jev 配置时生效，失败回落原 score。
+        const scored = await scoreChunksWithJev(query, baseResults);
+
         structLog('info', 'rag_retrieve', {
           query: query.slice(0, 100),
-          n: data.results?.length ?? 0,
+          n: baseResults.length,
+          jev_scored: scored.some((r) => r.jev_useful !== undefined),
           latency_ms: latencyMs,
           trace_id: data.trace_id ?? traceId,
         });
 
         return JSON.stringify({
           trace_id: data.trace_id ?? traceId,
-          n_results: data.results?.length ?? 0,
+          n_results: scored.length,
           latency_ms: latencyMs,
-          results: (data.results ?? []).map((r) => ({
-            chunk_id: r.chunk_id,
-            score: r.score,
-            content: r.content,
-            metadata: r.metadata,
-          })),
+          results: scored,
         });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);

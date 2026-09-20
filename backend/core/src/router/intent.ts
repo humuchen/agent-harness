@@ -13,6 +13,7 @@
 
 import type { IndustryDomain } from '../agents/types';
 import type { Intent } from './types';
+import { jevClassifyDomain, resolveJevCreds } from '../builtins/typesafe-jev';
 
 /** 领域词典：领域 → 中英文关键词（命中越多越可能是该领域）。 */
 const DOMAIN_KEYWORDS: Record<Exclude<IndustryDomain, 'generic'>, string[]> = {
@@ -180,6 +181,23 @@ const ACTION_CAPABILITY_KEYWORDS: Array<{
   }
 ];
 
+/**
+ * Jev 路由增强开关（默认 off，零行为变更）。开启后，规则/小模型分类结果会再用 Jev 的
+ * choice 决策做一次领域确认/覆盖；Jev 缺配、出错或置信度不足时回落 rule/llm（旧逻辑兜底）。
+ * 注意：路由发生在 run 派发阶段（非 run-user 异步链路上），此处只使用服务端级 env Key，
+ * 不读按用户 BYOK（与 LLM Key 的路由语义一致）。
+ */
+const JEV_ROUTER_ON = (process.env.JEV_ROUTING || 'off').toLowerCase() === 'on';
+
+/** 路由候选领域（含 generic 作兜底选项）。 */
+const KNOWN_DOMAINS: IndustryDomain[] = [
+  'medical-aesthetics',
+  'finance',
+  'healthcare',
+  'education',
+  'generic'
+];
+
 /** 意图标签启发式。 */
 function labelIntent(prompt: string): string {
   const p = prompt.toLowerCase();
@@ -283,6 +301,22 @@ export class IntentRouter {
       );
     } else {
       intent = classifyByRule(prompt);
+    }
+    // Jev 路由增强：用 Jev choice 决策对领域做一次语义确认/覆盖（仅在开关开启且 Key 可解析时）。
+    // 旧逻辑（rule/llm）始终先得出 intent；Jev 仅在置信度 ≥ 0.6 时覆盖 domain，否则回落旧逻辑。
+    if (JEV_ROUTER_ON && resolveJevCreds()) {
+      try {
+        const jd = await jevClassifyDomain(prompt, KNOWN_DOMAINS as string[]);
+        if (jd && jd.confidence >= 0.6 && jd.domain !== 'generic') {
+          intent = {
+            ...intent,
+            domain: jd.domain as IndustryDomain,
+            source: 'jev'
+          };
+        }
+      } catch {
+        /* Jev 出错 → 保持旧逻辑（rule/llm）结果 */
+      }
     }
     // 有界缓存：超上限时清掉最旧一项。
     if (this.cache.size >= this.cacheSize) {

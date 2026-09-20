@@ -1076,7 +1076,13 @@ export class RunQueue {
           assembled.llmKind === 'openrouter' &&
           process.env.PLAN_PROPOSE_PIPELINE !== 'false';
         const finalText = await runWithUser(
-          job.owner ? { sub: job.owner } : null,
+          job.owner
+            ? {
+                sub: job.owner,
+                jevApiKey: jevCred.apiKey,
+                jevBaseUrl: jevCred.baseUrl
+              }
+            : null,
           () =>
             useProposePipeline
               ? runPlanPropose({
