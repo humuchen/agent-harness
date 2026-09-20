@@ -181,3 +181,48 @@ test('会话无计划消息：不做任何事（普通问答不受影响）', ()
   const msgs = mod.peekChatSession(s.id, OWNER).messages;
   assert.strictEqual(msgs.every((m) => m.planStatus === undefined), true);
 });
+
+/** 复刻 server.ts run 事件流 error 分支的镜像写入（t6 失败场景，前端刷新恢复的权威源）。 */
+function failCurrent(sid) {
+  mod.updatePlanStatus(
+    sid,
+    (prev) => ({
+      ...prev,
+      status: 'failed',
+      failedTaskId: prev.currentTaskId,
+      currentTaskId: undefined
+    }),
+    OWNER
+  );
+}
+
+test('任务失败（error 事件）：镜像置 failed + failedTaskId，done 保留已完成集合', () => {
+  const sid = sessionWithPlan();
+  // t1-t2 顺序完成，t3 失败（贴近实测 t6 失败场景的最小等价）。
+  for (const id of ['t1', 't2']) {
+    dispatch(sid, id);
+    finishCurrent(sid);
+  }
+  dispatch(sid, 't3');
+  failCurrent(sid);
+  const ps = mirrorOf(sid);
+  assert.strictEqual(ps.status, 'failed');
+  assert.strictEqual(ps.failedTaskId, 't3');
+  assert.strictEqual(ps.currentTaskId, undefined);
+  assert.deepStrictEqual(ps.done, ['t1', 't2']);
+});
+
+test('失败后的 run:end（final 带错误前缀）：currentTaskId 已空 → done 不重复记、failed 不被覆盖', () => {
+  const sid = sessionWithPlan();
+  dispatch(sid, 't1');
+  finishCurrent(sid);
+  dispatch(sid, 't2');
+  failCurrent(sid);
+  // harness 失败时先 emit error 再 emit run:end（final = ERROR_PREFIX + message）；
+  // run:end 的完成 mutate 必须因 currentTaskId 已空而原样返回。
+  finishCurrent(sid);
+  const ps = mirrorOf(sid);
+  assert.strictEqual(ps.status, 'failed');
+  assert.strictEqual(ps.failedTaskId, 't2');
+  assert.deepStrictEqual(ps.done, ['t1']);
+});

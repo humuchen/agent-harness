@@ -14,6 +14,9 @@ import {
   PLAN_TASK_DISPATCH_RE,
   filterPlanSingleStep,
   recoverPlanFinalResult,
+  buildPlanStatusLookup,
+  mergePlanStatusLookup,
+  planStatusProgressRank,
   type PlanDeriveMsg
 } from './chat-render-utils';
 import { stampPlanStatus, toMirrorPlanStatus } from './chat-persist';
@@ -278,5 +281,138 @@ describe('计划进度写穿落盘（前端是「整体完成」的唯一知情�
     const before = JSON.stringify(planMsg);
     stampPlanStatus([planMsg], { 7: { status: 'done', done: { t1: true } } });
     expect(JSON.stringify(planMsg)).toBe(before);
+  });
+});
+
+describe('P2.7 对账合并（mergePlanStatusLookup：服务端权威 vs 本地镜像）', () => {
+  it('进度等级排序：done > cancelled > failed > awaiting > running > 缺失', () => {
+    expect(planStatusProgressRank({ status: 'done' })).toBe(5);
+    expect(planStatusProgressRank({ status: 'cancelled' })).toBe(4);
+    expect(planStatusProgressRank({ status: 'failed' })).toBe(3);
+    expect(planStatusProgressRank({ status: 'awaiting' })).toBe(2);
+    expect(planStatusProgressRank({ status: 'running' })).toBe(1);
+    expect(planStatusProgressRank(undefined)).toBe(0);
+    expect(planStatusProgressRank(null)).toBe(0);
+  });
+
+  it('权威缺失该 goal → 镜像值直接补上（服务端丢 planStatus 时唯一来源）', () => {
+    const mirrored = buildPlanStatusLookup([
+      { plan, planStatus: { status: 'failed', failedTaskId: 't6', done: ['t1'] } }
+    ]);
+    const merged = mergePlanStatusLookup(new Map(), mirrored);
+    expect(merged.get(plan.goal)).toEqual({
+      status: 'failed',
+      failedTaskId: 't6',
+      done: ['t1']
+    });
+  });
+
+  it('镜像等级严格更高 → 采用镜像（权威落后于本地时兜底）', () => {
+    const authoritative = buildPlanStatusLookup([
+      { plan, planStatus: { status: 'running', done: [] } }
+    ]);
+    const mirrored = buildPlanStatusLookup([
+      { plan, planStatus: { status: 'done', done: ['t1', 't2', 't3'] } }
+    ]);
+    const merged = mergePlanStatusLookup(authoritative, mirrored);
+    expect(merged.get(plan.goal)!.status).toBe('done');
+    expect(merged.get(plan.goal)!.done).toEqual(['t1', 't2', 't3']);
+  });
+
+  it('同级或镜像更低 → 保留权威（不回退新权威）；wfSnapshot 只进不出', () => {
+    const authoritative = buildPlanStatusLookup([
+      { plan, planStatus: { status: 'failed', failedTaskId: 't2', done: ['t1'] } }
+    ]);
+    const mirrored = buildPlanStatusLookup([
+      { plan, planStatus: { status: 'running', done: [] } }
+    ]);
+    const merged = mergePlanStatusLookup(authoritative, mirrored);
+    expect(merged.get(plan.goal)!.status).toBe('failed');
+    expect(merged.get(plan.goal)!.failedTaskId).toBe('t2');
+
+    // 同级（均 failed）：保留权威，但补镜像独有的 wfSnapshot（抽屉回退数据源）。
+    const mirrorWithSnap = buildPlanStatusLookup([
+      {
+        plan,
+        planStatus: {
+          status: 'failed',
+          failedTaskId: 't2',
+          done: ['t1'],
+          wfSnapshot: { state: 'failed', steps: {} } as never
+        }
+      }
+    ]);
+    const merged2 = mergePlanStatusLookup(authoritative, mirrorWithSnap);
+    expect(merged2.get(plan.goal)!.status).toBe('failed');
+    expect(merged2.get(plan.goal)!.wfSnapshot).toEqual({
+      state: 'failed',
+      steps: {}
+    });
+  });
+});
+
+describe('核心回归：串行执行中断（t6 失败 → 切走重开）不得回退 t1 全量重跑', () => {
+  it('派发前落盘的 running 镜像含完整 done 集合与当前任务（恢复收敛为 failed+t6）', () => {
+    // confirmPlan 派发 t6 前的 planExec（saveHistory 写穿落盘）：
+    const exec: PlanExecState = {
+      status: 'running',
+      currentTaskId: 't6',
+      done: { t1: true, t2: true, t3: true, t4: true, t5: true }
+    };
+    // t1-t6 七任务计划（比文件顶部的三任务 plan 多几个，贴近实测场景）。
+    const plan6: ExecutionPlanView = {
+      goal: '多任务报告',
+      tasks: ['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => ({
+        id,
+        title: `任务 ${id}`,
+        steps: [],
+        dependsOn: [],
+        expectedOutput: 'x'
+      }))
+    };
+    const planCard: ChatMsg = { id: 7, role: 'assistant', content: 'x', plan: plan6 };
+    // 落盘：stampPlanStatus 把 running+t6+done[t1..t5] 写穿到计划卡消息。
+    const stamped = stampPlanStatus([planCard], { 7: exec }) as Array<
+      Record<string, unknown>
+    >;
+    // 恢复：服务端权威缺失（重启回落 / 未配 CHAT_SESSIONS_FILE / 拉取失败降级），
+    // 本地镜像是唯一来源 —— mergePlanStatusLookup 接线后 lookup 必须命中。
+    const lookup = mergePlanStatusLookup(
+      new Map(),
+      buildPlanStatusLookup(stamped as never)
+    );
+    const ps = lookup.get(plan6.goal)!;
+    expect(ps.status).toBe('running');
+    expect(ps.currentTaskId).toBe('t6');
+    expect(ps.done).toEqual(['t1', 't2', 't3', 't4', 't5']);
+    // chat.ts applyPlanStatusLookup 对 running 的收敛语义（中断 ≠ 丢失）：
+    // failed + failedTaskId=currentTaskId，done 集合原样保留 → 「从失败任务继续」
+    // 在串行循环里凭 done map 跳过 t1-t5，从 t6 续跑。
+    const restored: PlanExecState = {
+      status: 'failed',
+      failedTaskId: ps.currentTaskId,
+      done: Object.fromEntries((ps.done ?? []).map((id) => [id, true]))
+    };
+    expect(restored.failedTaskId).toBe('t6');
+    expect(restored.done['t1']).toBe(true);
+    expect(restored.done['t5']).toBe(true);
+    expect(restored.done['t6']).toBeUndefined();
+  });
+
+  it('失败终态落盘的镜像：failed+failedTaskId 原样还原（不收敛不降级）', () => {
+    const exec: PlanExecState = {
+      status: 'failed',
+      failedTaskId: 't6',
+      done: { t1: true, t2: true, t3: true, t4: true, t5: true }
+    };
+    const planCard: ChatMsg = { id: 7, role: 'assistant', content: 'x', plan };
+    const stamped = stampPlanStatus([planCard], { 7: exec }) as Array<
+      Record<string, unknown>
+    >;
+    const lookup = buildPlanStatusLookup(stamped as never);
+    const ps = lookup.get(plan.goal)!;
+    expect(ps.status).toBe('failed');
+    expect(ps.failedTaskId).toBe('t6');
+    expect(ps.done).toEqual(['t1', 't2', 't3', 't4', 't5']);
   });
 });

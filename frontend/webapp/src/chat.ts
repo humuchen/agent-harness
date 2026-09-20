@@ -24,6 +24,7 @@ import {
   fileIcon,
   formatSize,
   buildPlanStatusLookup,
+  mergePlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
   applyPlanThinking,
@@ -1792,7 +1793,16 @@ export class AhChat extends LitElement {
           clean.some((m) => (m as any).plan) ||
           !!(mirrored && mirrored.msgs.some((m) => (m as any).plan));
         // 先取计划进度镜像查找表（以服务端为权威源）；待线程按新 id 重建后再应用。
-        const planStatusLookup = buildPlanStatusLookup(clean);
+        // P2.7 对账接线（修复「定义了但零调用点」）：本地历史镜像的 planStatus 参与
+        // 合并（mergePlanStatusLookup 取进度等级更高的一方）。服务端会话存储丢
+        // planStatus（重启回落 / 未配 CHAT_SESSIONS_FILE）或拉取失败时，本地镜像
+        // 是唯一进度来源 —— 缺它则恢复链整体失效 → 卡片回退「待确认」→ 从 t1 全量重跑。
+        const planStatusLookup = mirrored?.msgs?.length
+          ? mergePlanStatusLookup(
+              buildPlanStatusLookup(clean),
+              buildPlanStatusLookup(mirrored.msgs as ChatMsg[])
+            )
+          : buildPlanStatusLookup(clean);
         let base: ChatMsg[];
         if (isPlanSession) {
           const mirrorMsgs =
@@ -3934,6 +3944,10 @@ export class AhChat extends LitElement {
           thinking: { taskId: task.id, text: '' }
         };
         this.planExec = { ...this.planExec, [m.id]: cur };
+        // 派发前落盘进度：镜像永远表达「正在执行 tX + 之前已完成」。中断（刷新 /
+        // 断连 / 崩溃）恢复时 running 收敛为 failed + failedTaskId=tX，done 集合
+        // 完整保留 —— 「从失败任务继续」从真实断点续跑，而不是回退 t1 全量重跑。
+        this.saveHistory(sid);
         const parts = [`【计划任务 ${task.id}】${task.title}`];
         if (task.steps.length) {
           parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
@@ -4004,6 +4018,11 @@ export class AhChat extends LitElement {
             };
           }
           this.planExec = { ...this.planExec, [m.id]: cur };
+          // 终态必须落历史镜像（saveHistory 经 stampPlanStatus 把 planStatus 写穿到
+          // 计划卡消息，双写本地镜像 + 服务端历史存储）。否则刷新 / 重开后若服务端
+          // 拉取失败走本地镜像降级，镜像停留在执行前 —— planExec 恢复缺失 → 卡片
+          // 回退「待确认」，点「确认执行」即从 t1 全量重跑（实测反馈缺陷）。
+          this.saveHistory(sid);
           return;
         }
         // 抽取本任务产出（隐藏 assistant 消息正文），随后把 quiet 消息对移出线程。
