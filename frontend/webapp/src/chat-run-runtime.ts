@@ -514,14 +514,19 @@ export class ChatRunRuntime {
       }
       case 'guardrail:blocked': {
         const c = cur();
-        if (c)
+        if (c) {
+          const phase = String((ev as any).phase ?? '');
+          // 护栏拦截的内部原因（如「医疗广告法：project_kb_search 返回 found:false」）
+          // 属诊断信息，仅记入调用链路（chat.ts 的 trace detail），不直接暴露给终端用户；
+          // 这里只给出一条中性的合规提示，避免泄露内部合规判定细节。
+          const note =
+            phase === 'input'
+              ? '您的输入触发了内容安全策略，本轮未发送。'
+              : '回复内容已触发内容安全策略，已按合规要求调整。';
           patch({
-            content:
-              c.content +
-              `\n\n> ⚠️ 护栏拦截（${escapeHtml(
-                String((ev as any).phase ?? '')
-              )}）：${escapeHtml(String((ev as any).reason ?? ''))}`
+            content: c.content + `\n\n> ⚠️ ${escapeHtml(note)}`
           });
+        }
         break;
       }
       case 'llm:usage': {

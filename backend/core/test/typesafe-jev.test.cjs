@@ -345,6 +345,33 @@ test('run-events：runWithEventSink 链路内成功调用发一条 jev:call（�
     assert.ok(typeof ev.latencyMs === 'number' && ev.latencyMs >= 0);
     assert.equal(ev.questions, 1);
     assert.deepEqual(ev.tokens, { input: 120, output: 30 });
+    // 问题规格与决策输出应一并透传，供调用链节点展开「问题 + 输出记录」。
+    assert.ok(ev.questionSpec && typeof ev.questionSpec === 'object', '应携带 questionSpec（问题）');
+    assert.deepEqual(ev.questionSpec, { a: { type: 'noul' } }, 'questionSpec 应为原始问题映射');
+    assert.ok(ev.answers && typeof ev.answers === 'object', '应携带 answers（输出记录）');
+    assert.deepEqual(ev.answers, { a: { type: 'noul', noul: 0.4 } }, 'answers 应为归一化决策');
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.TYPESAFE_API_KEY;
+  }
+});
+
+test('run-events：失败事件同样携带 questionSpec（便于回溯提问）', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 429, text: async () => 'rate limited' });
+  const events = [];
+  try {
+    process.env.TYPESAFE_API_KEY = 'env_key';
+    await assert.rejects(() =>
+      runWithEventSink((e) => events.push(e), () =>
+        jevDecide('s', { a: { type: 'noul' } })
+      )
+    );
+    assert.equal(events.length, 1, '!resp.ok 的 throw 不应在 catch 里重复发事件');
+    assert.equal(events[0].ok, false);
+    assert.match(String(events[0].error), /HTTP 429/);
+    assert.deepEqual(events[0].questionSpec, { a: { type: 'noul' } }, '失败事件也应携带 questionSpec');
+    assert.ok(!('answers' in events[0]), '失败事件不应携带 answers');
   } finally {
     globalThis.fetch = origFetch;
     delete process.env.TYPESAFE_API_KEY;

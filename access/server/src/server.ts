@@ -4387,6 +4387,16 @@ async function handleRun(
         if (ev.caller === 'tool') break;
         traceEnsureRoot();
         const jParent = traceLlm ?? traceParent ?? traceRoot!;
+        // 问题（输入）与输出（决策）记录：展开在调用链节点内，便于直接看清「问了什么 / 回了什么」。
+        // 仅在存在时附带，失败时回落为 error 文本（与既有行为一致）。
+        const jDetail =
+          ev.questionSpec && typeof ev.questionSpec === 'object'
+            ? JSON.stringify(ev.questionSpec, null, 2)
+            : undefined;
+        const jResultOk =
+          ev.ok !== false && ev.answers && typeof ev.answers === 'object'
+            ? JSON.stringify(ev.answers, null, 2)
+            : undefined;
         const jMeta: Record<string, string> = {
           jev: 'true',
           调用方: String(ev.caller ?? '?'),
@@ -4398,6 +4408,8 @@ async function handleRun(
         };
         traceNode(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
           ...(ev.error ? { result: String(ev.error) } : {}),
+          ...(jDetail ? { detail: jDetail } : {}),
+          ...(jResultOk ? { result: jResultOk } : {}),
           meta: jMeta
         });
         break;

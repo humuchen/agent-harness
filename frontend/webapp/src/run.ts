@@ -193,9 +193,14 @@ export class AhRun extends LitElement {
         });
         break;
       case 'guardrail:blocked':
+        // 护栏拦截的内部原因属诊断信息，仅记入调用链路（trace detail / 服务端日志），
+        // 不在运行面板直接展示；这里只给一条中性合规提示。
         this.push({
           kind: 'warn',
-          text: `护栏拦截(${(ev as any).phase})：${(ev as any).reason ?? ''}`
+          text:
+            (ev as any).phase === 'input'
+              ? '输入触发内容安全策略，本轮未发送'
+              : '回复触发内容安全策略，已按合规要求调整'
         });
         break;
       case 'run:cost':

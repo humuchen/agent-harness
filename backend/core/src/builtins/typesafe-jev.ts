@@ -265,12 +265,15 @@ export async function jevDecide(
         caller,
         ok: false,
         latencyMs,
+        questions: Object.keys(questions).length,
+        questionSpec: questions,
         error: `HTTP ${resp.status}`
       });
       throw new Error(`Jev API error: ${resp.status} ${errText.slice(0, 200)}`);
     }
     const data = (await resp.json()) as unknown;
     const latencyMs = Date.now() - t0;
+    const answers = normalizeAnswers(data);
     jevStats.calls++;
     jevStats.lastLatencyMs = latencyMs;
     jevStats.lastCalledAt = Date.now();
@@ -282,6 +285,7 @@ export async function jevDecide(
       latency_ms: latencyMs,
     });
     // 旁路上报（成功）：jev:call 进当前 run 事件流（trace 树/前端调用链可见）。
+    // 同时透传 questionSpec（问题）与 answers（输出记录），供调用链节点展开回溯。
     // usage 若响应体携带则一并透传（TypeSafe 侧计费口径；本系统成本体系暂不计入）。
     reported = true;
     const usage = extractJevUsage(data);
@@ -291,11 +295,13 @@ export async function jevDecide(
       ok: true,
       latencyMs,
       questions: Object.keys(questions).length,
+      questionSpec: questions,
+      answers,
       ...(usage ? { tokens: usage } : {})
     });
     return {
       model,
-      answers: normalizeAnswers(data),
+      answers,
       raw: data,
       latencyMs,
     };
@@ -312,6 +318,8 @@ export async function jevDecide(
         caller,
         ok: false,
         latencyMs: Date.now() - t0,
+        questions: Object.keys(questions).length,
+        questionSpec: questions,
         error: msg.slice(0, 200)
       });
     }
