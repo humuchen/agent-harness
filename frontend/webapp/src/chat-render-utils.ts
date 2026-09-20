@@ -8,7 +8,12 @@ import { html, nothing, type TemplateResult } from 'lit';
 import { escapeHtml } from './utils/markdown';
 import type { UploadedFile } from './agent-context';
 import type { PlanExecMirror, StepTraceNode } from '@agent-harness/client';
-import type { ChatMsg, ExecutionPlanView, PlanExecState, PlanWfRunMirror } from './chat-types';
+import type {
+  ChatMsg,
+  ExecutionPlanView,
+  PlanExecState,
+  PlanWfRunMirror
+} from './chat-types';
 
 /** 按文件类型返回展示图标（emoji）。 */
 export function fileIcon(f: UploadedFile): string {
@@ -80,7 +85,12 @@ export function filterPlanSingleStep(msgs: ChatMsg[]): ChatMsg[] {
  */
 export function recoverPlanFinalResult(
   base: ChatMsg[],
-  clean: Array<{ role: string; content?: unknown; plan?: unknown; clarify?: unknown }>
+  clean: Array<{
+    role: string;
+    content?: unknown;
+    plan?: unknown;
+    clarify?: unknown;
+  }>
 ): ChatMsg[] {
   const hasSummary = base.some(
     (m) =>
@@ -178,8 +188,15 @@ export function applyPlanWfEvent(
       // P5：任务完成即收起思考面板。P5.1 精准清槽：只清「本任务」的思考流 ——
       // 若事件乱序（done(t3) 迟到而思考面板已自愈切到 t4），不得误清新任务的思考流。
       const thinking =
-        prev.thinking && prev.thinking.taskId !== ev.stepId ? prev.thinking : undefined;
-      return { ...prev, status: 'running', done: { ...prev.done, [ev.stepId]: true }, thinking };
+        prev.thinking && prev.thinking.taskId !== ev.stepId
+          ? prev.thinking
+          : undefined;
+      return {
+        ...prev,
+        status: 'running',
+        done: { ...prev.done, [ev.stepId]: true },
+        thinking
+      };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
@@ -196,10 +213,23 @@ export function applyPlanWfEvent(
       // （补偿 step / 非本计划的 def 演化不进入卡片状态机）。
       const ids = (ev.stepIds ?? []).filter((s) => s && knownTaskIds.has(s));
       if (!ids.length) return prev;
-      return { ...prev, status: 'awaiting', currentTaskId: undefined, awaitingTaskIds: ids, thinking: undefined };
+      return {
+        ...prev,
+        status: 'awaiting',
+        currentTaskId: undefined,
+        awaitingTaskIds: ids,
+        thinking: undefined
+      };
     }
     case 'wf:done':
-      return { ...prev, status: 'done', currentTaskId: undefined, failedTaskId: undefined, awaitingTaskIds: undefined, thinking: undefined };
+      return {
+        ...prev,
+        status: 'done',
+        currentTaskId: undefined,
+        failedTaskId: undefined,
+        awaitingTaskIds: undefined,
+        thinking: undefined
+      };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
       // run.steps 中首个 state==='failed' 的 step（step id = task id）。
@@ -275,7 +305,9 @@ export const REPLAY_MIRROR_OUTPUT_MAX = 2000;
 export const REPLAY_MIRROR_TRACE_MAX = 30;
 export const REPLAY_MIRROR_TRACE_DETAIL_MAX = 200;
 
-export function compactPlanWfSnapshot(run: unknown): PlanWfRunMirror | undefined {
+export function compactPlanWfSnapshot(
+  run: unknown
+): PlanWfRunMirror | undefined {
   if (!run || typeof run !== 'object') return undefined;
   const r = run as {
     state?: string;
@@ -300,14 +332,22 @@ export function compactPlanWfSnapshot(run: unknown): PlanWfRunMirror | undefined
     const out: PlanWfRunMirror['steps'][string] = { state: s.state };
     if (s.agentId) out.agentId = s.agentId;
     if (typeof s.error === 'string' && s.error) {
-      out.error = s.error.length > REPLAY_MIRROR_OUTPUT_MAX ? `${s.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : s.error;
+      out.error =
+        s.error.length > REPLAY_MIRROR_OUTPUT_MAX
+          ? `${s.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+          : s.error;
     }
     if (typeof s.startedAt === 'number') out.startedAt = s.startedAt;
     if (typeof s.finishedAt === 'number') out.finishedAt = s.finishedAt;
     // output：非字符串先 JSON 化再截断（与 formatPlanWfOutput 一致的展示面，但这里预截断控制镜像体积）。
     if (s.output !== undefined && s.output !== null) {
-      const so = typeof s.output === 'string' ? s.output : JSON.stringify(s.output);
-      if (so) out.output = so.length > REPLAY_MIRROR_OUTPUT_MAX ? `${so.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : so;
+      const so =
+        typeof s.output === 'string' ? s.output : JSON.stringify(s.output);
+      if (so)
+        out.output =
+          so.length > REPLAY_MIRROR_OUTPUT_MAX
+            ? `${so.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+            : so;
     }
     // trace：只保留白名单节点形状（服务端 StepTraceNode 已白名单采集，这里做二级限幅 + 字段收敛）。
     if (Array.isArray(s.trace) && s.trace.length) {
@@ -315,7 +355,11 @@ export function compactPlanWfSnapshot(run: unknown): PlanWfRunMirror | undefined
         const t: StepTraceNode = { type: n.type, ts: n.ts };
         if (n.step !== undefined) t.step = n.step;
         if (n.label) t.label = n.label;
-        if (n.detail) t.detail = n.detail.length > REPLAY_MIRROR_TRACE_DETAIL_MAX ? `${n.detail.slice(0, REPLAY_MIRROR_TRACE_DETAIL_MAX)}…` : n.detail;
+        if (n.detail)
+          t.detail =
+            n.detail.length > REPLAY_MIRROR_TRACE_DETAIL_MAX
+              ? `${n.detail.slice(0, REPLAY_MIRROR_TRACE_DETAIL_MAX)}…`
+              : n.detail;
         if (n.status) t.status = n.status;
         if (n.meta && Object.keys(n.meta).length) t.meta = n.meta;
         return t;
@@ -328,7 +372,14 @@ export function compactPlanWfSnapshot(run: unknown): PlanWfRunMirror | undefined
     state: typeof r.state === 'string' ? r.state : 'done',
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.finishedAt === 'number' ? { finishedAt: r.finishedAt } : {}),
-    ...(typeof r.error === 'string' && r.error ? { error: r.error.length > REPLAY_MIRROR_OUTPUT_MAX ? `${r.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…` : r.error } : {}),
+    ...(typeof r.error === 'string' && r.error
+      ? {
+          error:
+            r.error.length > REPLAY_MIRROR_OUTPUT_MAX
+              ? `${r.error.slice(0, REPLAY_MIRROR_OUTPUT_MAX)}…`
+              : r.error
+        }
+      : {}),
     steps
   };
 }
@@ -383,12 +434,20 @@ export function setPlanDagEnabled(on: boolean): void {
  * 同输入恒同输出 → 刷新 / 重启后可重算（sessionId 稳定、计划随镜像持久化），
  * 无需把 wfId 写入持久化镜像。
  */
-export function derivePlanWfId(sessionId: string, plan: ExecutionPlanView): string {
+export function derivePlanWfId(
+  sessionId: string,
+  plan: ExecutionPlanView
+): string {
   const s = [
     sessionId,
     plan?.goal ?? '',
     (plan?.tasks ?? [])
-      .map((t) => `${t.id}:${(t.dependsOn ?? []).join(',')}${t.requireApproval === true ? ':A' : ''}`)
+      .map(
+        (t) =>
+          `${t.id}:${(t.dependsOn ?? []).join(',')}${
+            t.requireApproval === true ? ':A' : ''
+          }`
+      )
       .join('|')
   ].join('\u0000');
   // FNV-1a（32 位）：输入为 ASCII（会话 id / task id），charCodeAt & 0xff 等价逐字节。
@@ -451,8 +510,21 @@ export function planWfReplayStateLabel(state: string): string {
   return label[state] ?? state;
 }
 
-/** 折叠正文长度上限（与 appendPlanDagSummary 的 300 字截断同款纪律，避免历史膨胀）。 */
-const REPLAY_DETAIL_MAX = 600;
+/**
+ * 折叠正文兜底上限。
+ *
+ * 此前 600 字截断把「执行详情」抽屉里每个任务的完整产出砍成开头一段 + 「…」，
+ * 用户感知为「执行完成了但输出不完整」——而数据源（实时检查点 GET /api/workflows/:id
+ * 与 wf:done 终态帧）本身就是无损全文，截断纯发生在展示层，属于白白丢数据。
+ * 现展示层不破坏产出：正文渲染在 <details> 折叠区 + .wf-detail-body（max-height 220px
+ * 滚动容器）内，长文本不撑爆抽屉布局。仅保留一个远超正常研报体量的兜底上限，
+ * 防病态超长 JSON dump（如整个对象树 stringify）拖垮 DOM。
+ *
+ * 注意：历史镜像路径（compactPlanWfSnapshot → REPLAY_MIRROR_OUTPUT_MAX=2000）仍是有损的，
+ * 那是 PUT /api/history 字节预算（HISTORY_MAX_BYTES，默认 512KB）下的持久化取舍，
+ * 与本展示层上限语义不同，勿混淆。
+ */
+export const REPLAY_DETAIL_MAX = 200_000;
 
 /** P4.6：交付文件条目（/api/artifacts 返回的 ArtifactMeta 前端所需最小面，本地镜像避免跨层 import）。 */
 export interface PlanArtifactItem {
@@ -479,20 +551,28 @@ export function formatPlanArtifactSize(bytes: number): string {
  * 每个文件给「打开（preview=1 inline）+ 下载（download=1 attachment）」两个链接，
  * 经既有 toRichHtml（marked gfm）渲染为可点链接。空清单返回 ''（不追加区块）。
  */
-export function buildPlanArtifactSection(items: PlanArtifactItem[] | null | undefined): string {
-  const list = (items ?? []).filter((a) => a && typeof a.id === 'string' && a.id);
+export function buildPlanArtifactSection(
+  items: PlanArtifactItem[] | null | undefined
+): string {
+  const list = (items ?? []).filter(
+    (a) => a && typeof a.id === 'string' && a.id
+  );
   if (list.length === 0) return '';
   const lines: string[] = ['', `**📎 交付文件（${list.length} 个）**`];
   for (const a of list) {
     const label = escapeLinkLabel(String(a.name ?? a.id));
     lines.push(
-      `- [📄 ${label}](/api/artifacts/${a.id}?preview=1)（${formatPlanArtifactSize(a.sizeBytes ?? 0)}） ｜ [下载](/api/artifacts/${a.id}?download=1)`
+      `- [📄 ${label}](/api/artifacts/${
+        a.id
+      }?preview=1)（${formatPlanArtifactSize(
+        a.sizeBytes ?? 0
+      )}） ｜ [下载](/api/artifacts/${a.id}?download=1)`
     );
   }
   return lines.join('\n');
 }
 
-/** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、超长截断、空白视为无内容）。 */
+/** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、仅对病态超长做兜底截断、空白视为无内容）。 */
 export function formatPlanWfOutput(v: unknown): string | undefined {
   if (v === undefined || v === null) return undefined;
   let s: string;
@@ -510,14 +590,32 @@ export function formatPlanWfOutput(v: unknown): string | undefined {
  */
 export function buildPlanWfReplayRows(
   plan: ExecutionPlanView,
-  run: { steps?: Record<string, { state?: string; agentId?: string; output?: unknown; error?: string; startedAt?: number; finishedAt?: number; trace?: StepTraceNode[] }> } | null | undefined
+  run:
+    | {
+        steps?: Record<
+          string,
+          {
+            state?: string;
+            agentId?: string;
+            output?: unknown;
+            error?: string;
+            startedAt?: number;
+            finishedAt?: number;
+            trace?: StepTraceNode[];
+          }
+        >;
+      }
+    | null
+    | undefined
 ): PlanWfReplayRow[] {
   const steps = run?.steps ?? {};
   return (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
     const sr = steps[t.id];
     const state = sr?.state ?? 'pending';
     const durationMs =
-      sr?.startedAt && sr.finishedAt ? Math.max(0, sr.finishedAt - sr.startedAt) : undefined;
+      sr?.startedAt && sr.finishedAt
+        ? Math.max(0, sr.finishedAt - sr.startedAt)
+        : undefined;
     let detail: string | undefined;
     if (state === 'failed' || state === 'compensated') {
       detail = formatPlanWfOutput(sr?.error);
@@ -587,11 +685,18 @@ export function buildPlanWfTraceLines(
     };
     if (rel > 0) line.at = formatPlanWfDuration(rel);
     if (n.detail) {
-      line.detail = n.detail.length > TRACE_LINE_DETAIL_MAX ? `${n.detail.slice(0, TRACE_LINE_DETAIL_MAX)}…` : n.detail;
+      line.detail =
+        n.detail.length > TRACE_LINE_DETAIL_MAX
+          ? `${n.detail.slice(0, TRACE_LINE_DETAIL_MAX)}…`
+          : n.detail;
     }
     // 元数据透传（用量 / 模型 / tokens …）：此前只取 icon/label/at/detail/status，
     // meta 被丢弃导致「LLM 调用」「用量」行的模型与用量数据在抽屉里不可见。
-    const meta = n.meta ? (Object.entries(n.meta) as [string, string][]).filter(([, v]) => v != null && String(v) !== '') : undefined;
+    const meta = n.meta
+      ? (Object.entries(n.meta) as [string, string][]).filter(
+          ([, v]) => v != null && String(v) !== ''
+        )
+      : undefined;
     if (meta && meta.length > 0) line.meta = meta;
     return line;
   });
@@ -739,9 +844,11 @@ export interface RenderAttachmentsOpts {
  * done > cancelled > failed > awaiting > running > 缺失(0)。
  * 等级相同时保持权威源（调用方 merge 时不写回），避免旧镜像回退新权威。
  */
-export function planStatusProgressRank(ps?: {
-  status?: string;
-} | null): number {
+export function planStatusProgressRank(
+  ps?: {
+    status?: string;
+  } | null
+): number {
   if (!ps) return 0;
   switch (ps.status) {
     case 'done':
@@ -862,7 +969,11 @@ export function renderImageAttachments(
         title="点击预览"
         @click=${() => onPreview(first)}
       >
-        <img src=${first.dataUrl} alt=${escapeHtml(first.name)} loading="lazy" />
+        <img
+          src=${first.dataUrl}
+          alt=${escapeHtml(first.name)}
+          loading="lazy"
+        />
       </div>
     `;
   }
@@ -891,7 +1002,9 @@ export function renderImageAttachments(
             html`<div class="attach-img" style="--i:${i};--mid:${mid}">
               <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
               ${i === images.length - 1
-                ? html`<span class="attach-card-badge">${images.length} 张</span>`
+                ? html`<span class="attach-card-badge"
+                    >${images.length} 张</span
+                  >`
                 : nothing}
             </div>`
         )}
@@ -916,7 +1029,11 @@ export function renderImageAttachments(
                 title="点击预览"
                 @click=${(e: Event) => onImgClick(e, f)}
               >
-                <img src=${f.dataUrl} alt=${escapeHtml(f.name)} loading="lazy" />
+                <img
+                  src=${f.dataUrl}
+                  alt=${escapeHtml(f.name)}
+                  loading="lazy"
+                />
               </div>`
           )}
         </div>

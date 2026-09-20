@@ -23,6 +23,7 @@ import {
   planWfReplayMark,
   planWfTraceMetaLabel,
   planWfTraceMetaRowTitle,
+  REPLAY_DETAIL_MAX,
   PLAN_DAG_STORAGE_KEY,
   PLAN_THINKING_MAX,
   type PlanWfEvent
@@ -467,13 +468,18 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     expect(rows[1]?.detail).toBeUndefined();
   });
 
-  it('对象产出 → JSON 化；超长截断到 600 字并加省略号', () => {
+  it('对象产出 → JSON 化；正常体量全文保留（不再 600 字截断），仅病态超长兜底', () => {
     expect(formatPlanWfOutput({ a: 1, b: [2, 3] }) ?? '').toContain('"a"');
+    // 研报级体量（数千~数万字）必须完整回到抽屉，不得出现省略号（2026-09-20 放宽）。
     const long = 'x'.repeat(1000);
-    const out = formatPlanWfOutput(long);
-    expect(out).not.toBeUndefined();
-    expect(out?.length).toBe(601); // 600 + '…'
-    expect(out).toBe(`${long.slice(0, 600)}…`);
+    expect(formatPlanWfOutput(long)).toBe(long);
+    const chapter = '研'.repeat(50_000);
+    expect(formatPlanWfOutput(chapter)).toBe(chapter);
+    // 兜底上限 REPLAY_DETAIL_MAX=200_000：仅防病态 JSON dump 拖垮 DOM。
+    const pathological = 'y'.repeat(REPLAY_DETAIL_MAX + 1);
+    const capped = formatPlanWfOutput(pathological);
+    expect(capped?.length).toBe(REPLAY_DETAIL_MAX + 1); // 上限 + '…'
+    expect(capped).toBe(`${'y'.repeat(REPLAY_DETAIL_MAX)}…`);
     expect(formatPlanWfOutput('   ')).toBeUndefined();
     expect(formatPlanWfOutput(null)).toBeUndefined();
   });
