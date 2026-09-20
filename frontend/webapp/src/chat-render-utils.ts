@@ -593,7 +593,7 @@ export function buildPlanArtifactSection(
     (a) => a && typeof a.id === 'string' && a.id
   );
   if (list.length === 0) return '';
-  const lines: string[] = ['', `**📎 交付文件（${list.length} 个）**`];
+  const lines: string[] = ['', `**${PLAN_ARTIFACT_SECTION_MARK}（${list.length} 个）**`];
   for (const a of list) {
     const label = escapeLinkLabel(String(a.name ?? a.id));
     lines.push(
@@ -605,6 +605,22 @@ export function buildPlanArtifactSection(
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * 「📎 交付文件」区块的单源标记（与 buildPlanArtifactSection 的标题行同源）。
+ * 恢复自愈（chat.ts: reattachPlanDeliverables）据此判断摘要 content 是否已带
+ * 交付区——幂等防重挂，勿在别处硬编码同文案。
+ */
+export const PLAN_ARTIFACT_SECTION_MARK = '📎 交付文件';
+
+/** 摘要 content 是否已含「📎 交付文件」区块（恢复自愈的幂等检测，纯函数）。 */
+export function hasPlanArtifactSection(
+  content: string | undefined | null
+): boolean {
+  return (
+    typeof content === 'string' && content.includes(PLAN_ARTIFACT_SECTION_MARK)
+  );
 }
 
 /* ─────────────── P4.6 延伸：计划执行报告（汇总交付文件） ─────────────── */

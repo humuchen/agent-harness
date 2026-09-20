@@ -34,6 +34,7 @@ import {
   buildPlanReportFileName,
   buildPlanFinalReport,
   planOutputsFromRun,
+  hasPlanArtifactSection,
   PLAN_FINAL_ARTIFACT_NOTE,
   filterPlanSingleStep,
   recoverPlanFinalResult,
@@ -1839,6 +1840,9 @@ export class AhChat extends LitElement {
         })) as ChatMsg[];
         // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
         this.applyPlanStatusLookup(id, planStatusLookup);
+        // P4.6 恢复自愈：planExec 就位后重挂「📎 交付文件」区（镜像 content 缺区块时自愈，
+        // 幂等 + 失败静默，见 reattachPlanDeliverables）。
+        await this.reattachPlanDeliverables(id);
         this.restoreFailed[id] = false;
       } catch (err) {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
@@ -1865,6 +1869,8 @@ export class AhChat extends LitElement {
           // 降级路径同样还原计划进度（镜像字段 + 线程反推），否则已执行完成的计划
           // 会退回「待确认」并重新显示「确认执行 / 取消」。
           this.applyPlanStatusLookup(id, buildPlanStatusLookup(mirrored.msgs));
+          // 降级路径同样自愈重挂交付文件区（与主路径同语义）。
+          await this.reattachPlanDeliverables(id);
           notify.warning(
             '服务端历史拉取失败，已从历史镜像恢复（可能非最新）。',
             {
@@ -4738,6 +4744,61 @@ export class AhChat extends LitElement {
     this.threads[sid] = t;
     if (this.activeId === sid) this.messages = t;
     return true;
+  }
+
+  /**
+   * P4.6 恢复自愈：刷新 / 切回会话后，把「📎 交付文件」区重挂到已完成计划的执行摘要上。
+   *
+   * 为何需要：交付区在 run 终态由 attachPlanDeliverables 拼进摘要 content、再随
+   * saveHistory 落历史镜像——这条链路是异步尽力而为（镜像写入 6s 超时静默降级 /
+   * 服务端重启丢 SQLite 临时库 / 会话超限裁剪），任一环节缺失即表现为
+   * 「刷新后交付文件区消失」（用户实测反馈）。
+   *
+   * 语义：与归档解耦（本方法**只 GET + 拼接**，绝不重复归档——汇总报告幂等键
+   * note=__plan_final__ 的检查与 POST 只存在于 attachPlanDeliverables）；幂等
+   * （content 已含区块标记则跳过）；失败静默（恢复自愈绝不打断会话还原、不弹错）。
+   * 无已完成计划的会话零网络请求（先扫描再拉取）。
+   */
+  private async reattachPlanDeliverables(sid: string): Promise<void> {
+    const t = this.threads[sid];
+    if (!t?.length) return;
+    // 先扫描需要自愈的（plan + status==='done' + content 尚无交付区）消息，避免无关会话白发请求。
+    const targets = t.filter(
+      (m) =>
+        !!m.plan &&
+        this.planExec[m.id]?.status === 'done' &&
+        !hasPlanArtifactSection(m.content)
+    );
+    if (!targets.length) return;
+    let changed = false;
+    for (const m of targets) {
+      try {
+        const wfId = derivePlanWfId(sid, m.plan!);
+        const res = await authedFetch(
+          `/api/artifacts?runId=${encodeURIComponent(wfId)}`
+        );
+        if (!res.ok) continue;
+        const data = (await res.json()) as {
+          items?: Array<{ id: string; name: string; sizeBytes: number }>;
+        };
+        const section = buildPlanArtifactSection(
+          Array.isArray(data.items) ? data.items : []
+        );
+        if (!section) continue;
+        // 双检：await 期间消息可能已被并发 attach（断连自愈 poll 等）——再查一次标记。
+        const cur = this.threads[sid]?.find((x) => x.id === m.id);
+        if (!cur || hasPlanArtifactSection(cur.content)) continue;
+        cur.content = `${cur.content}${section}`;
+        changed = true;
+      } catch {
+        /* 静默：镜像/接口任一环失败都不打断恢复 */
+      }
+    }
+    if (changed) {
+      // 触发 Lit 重渲染（threads 数组替换引用；active 会话同步 messages）。
+      this.threads[sid] = [...(this.threads[sid] ?? [])];
+      if (this.activeId === sid) this.messages = this.threads[sid];
+    }
   }
 
   /**

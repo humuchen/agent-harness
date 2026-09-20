@@ -11,6 +11,9 @@ import {
   buildPlanReportFileName,
   buildPlanFinalReport,
   planOutputsFromRun,
+  buildPlanArtifactSection,
+  hasPlanArtifactSection,
+  PLAN_ARTIFACT_SECTION_MARK,
   PLAN_FINAL_ARTIFACT_NOTE,
   PLAN_REPORT_TASK_MAX
 } from './chat-render-utils';
@@ -99,5 +102,33 @@ describe('buildPlanFinalReport', () => {
 
   it('幂等键常量：__plan_final__（与服务端去重语义共用，防漂移钉死）', () => {
     expect(PLAN_FINAL_ARTIFACT_NOTE).toBe('__plan_final__');
+  });
+});
+
+describe('hasPlanArtifactSection（恢复自愈的幂等检测）', () => {
+  it('buildPlanArtifactSection 的产物必然含单源标记（生成与检测同源防漂移）', () => {
+    const section = buildPlanArtifactSection([
+      { id: 'a1', name: '计划报告-整理资料.md', sizeBytes: 2048 }
+    ]);
+    expect(hasPlanArtifactSection(section)).toBe(true);
+    expect(section).toContain(PLAN_ARTIFACT_SECTION_MARK);
+  });
+
+  it('普通摘要 content 无标记 → false（需要自愈重挂）', () => {
+    expect(hasPlanArtifactSection('📋 计划执行摘要：……\n✅ t1 done')).toBe(false);
+    expect(hasPlanArtifactSection('')).toBe(false);
+    expect(hasPlanArtifactSection(undefined)).toBe(false);
+    expect(hasPlanArtifactSection(null)).toBe(false);
+  });
+
+  it('已含标记的 content → true（自愈跳过，防重复重挂）', () => {
+    expect(
+      hasPlanArtifactSection('摘要正文\n**📎 交付文件（2 个）**\n- [📄 a](/x)')
+    ).toBe(true);
+  });
+
+  it('空 items 产出空区块（不追加、也不会被误判为已挂）', () => {
+    expect(buildPlanArtifactSection([])).toBe('');
+    expect(buildPlanArtifactSection(null)).toBe('');
   });
 });
