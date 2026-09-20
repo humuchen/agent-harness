@@ -169,6 +169,13 @@ export const ATTACH_COLLAPSE_LIMIT = 6;
  */
 export const UPLOAD_CONCURRENCY = 4;
 
+/**
+ * 串行派发计划任务时，注入派发 prompt 的单条上游产出字符上限。
+ * 超长产出（如整章文档）截断保头并标注「已截断」，防止下游整合任务的
+ * 上下文被单个上游产出撑爆（多个依赖叠加时按 6k × 依赖数渐进增长，可接受）。
+ */
+const PLAN_UPSTREAM_OUTPUT_MAX = 6000;
+
 /** 已通过校验、待上传的条目：本地预览元信息 + 原始 File + 实际上传 File + 追踪 key。 */
 export interface PendingUpload {
   meta: UploadedFile;
@@ -3884,6 +3891,34 @@ export class AhChat extends LitElement {
           parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
         }
         parts.push(`预期产出：${task.expectedOutput || '—（按任务目标交付）'}`);
+        // 产出自包含铁律：串行路径里，任务的回复正文就是下游任务的唯一上游输入
+        // （读取进 taskOutputs 后 quiet 消息对即被移出线程）。执行模型若只给路径、
+        // 摘要，或反过来要求用户「把 t1–t4 的产出贴过来」，下游整合任务就会断粮。
+        // 因此每个任务派发时都带上硬性执行要求，把「向用户甩锅」的出口提前堵死。
+        parts.push(
+          '执行要求（硬性）：把本任务产出完整写入你的回复正文，不要只给出文件路径或摘要；',
+          '禁止要求用户粘贴、搬运或补充任何上游任务产出 —— 上游产出要么已在下方注入，要么基于任务目标自行合理补全。'
+        );
+        // 串行路径的共享黑板：把已完成的依赖任务产出注入派发 prompt（与 DAG 路径
+        // inputMapping `upstream_*` 的语义对齐，见 workflow-executor.ts）。断点续跑
+        // 「从失败任务继续」时，早前完成的上游产出不在本次 taskOutputs 中 —— 明确
+        // 告知执行模型「未留存、自行补全」，而不是留它向用户索要。
+        const upstreamDeps = task.dependsOn ?? [];
+        if (upstreamDeps.length) {
+          parts.push('上游任务产出（自动注入，直接使用，勿向用户索要）：');
+          for (const dep of upstreamDeps) {
+            const out = (taskOutputs[dep] ?? '').trim();
+            parts.push(
+              out
+                ? `--- ${dep} ---\n${
+                    out.length > PLAN_UPSTREAM_OUTPUT_MAX
+                      ? out.slice(0, PLAN_UPSTREAM_OUTPUT_MAX) + '…（已截断）'
+                      : out
+                  }`
+                : `--- ${dep} ---（本次未留存该上游产出：请勿向用户索要，按任务目标自行补全相关内容。）`
+            );
+          }
+        }
         const result = await this.runRt.dispatchPrompt(
           sid,
           parts.join('\n'),

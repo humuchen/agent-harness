@@ -34,6 +34,17 @@ export interface SubAgentAssembleOpts {
   modelBaseUrl?: string;
   modelApiKey?: string;
   /**
+   * 多 Key 负载/故障转移（P2.4）：父 agent 本次 run 可用的全部明文 Key（主 Key + 附加 Key）。
+   * 透传给子 agent 的 assembleAgent，使 delegate_task 派生路径与主 run 的 BYOK 多 Key 策略一致。
+   */
+  apiKeys?: string[];
+  /**
+   * TypeSafe AI Jev 决策工具按用户 BYOK 注入的 Key/地址（明文）。透传给子 agent，
+   * 避免 builtin__jev_decide 在子 agent 内回落 env 造成跨用户串号。
+   */
+  jevApiKey?: string;
+  jevBaseUrl?: string;
+  /**
    * 图片附件透传（图片上传修复）：父 agent 带来的图片经本字段下发给子 agent 的
    * harness.run 第 2 参，确保 delegate_task 派生的子 agent 同样具备多模态上下文
    * （此前漏传 → 子 agent 拿不到图片）。类型与 `AgentHarness.run` 的第 2 参一致。
@@ -147,11 +158,14 @@ export function registerSubAgentTool(
         // 透传 subCard 作为 card 参数，使assembleAgent 能正确派生 guardrail scopes
         // （如 medical-aesthetics domain → scopes:['medical-ad']），避免子 agent
         // 活着在「无 scop 缩窄的全局规则」模式下绕开护栏作用域绑定。
+        // BYOK 修复：必须把父 agent 的模型凭据（modelOverride/modelBaseUrl/modelApiKey/
+        // ctxWindow/apiKeys/jev*）一并透传，否则 real / real-mcp 模式下子 agent 因缺 Key
+        // 抛「真实模式需要有效的 LLM API Key」并包装为「子 agent 出错」。
         const assembled = await assembleAgentFn(
           opts.mode,
           undefined, // onEvent —— 子 agent 不透传事件
           subCard?.assembly?.systemPrompt, // systemPrompt
-          undefined, // modelOverride
+          opts.modelOverride, // modelOverride —— 父 agent 所选自定义模型下发
           task,
           subSessionKey,
           subController.signal,
@@ -160,7 +174,19 @@ export function registerSubAgentTool(
           undefined, // memoryArg
           undefined, // verifier
           undefined, // verifyMaxRetries
-          subCard // card —— 驱动 deriveGuardrailScopes + assembly 收窄
+          subCard, // card —— 驱动 deriveGuardrailScopes + assembly 收窄
+          undefined, // tenantCtx
+          undefined, // sandboxBackend
+          undefined, // streamTokens
+          undefined, // webEnabled
+          undefined, // planPropose
+          undefined, // planTask
+          opts.modelBaseUrl, // modelBaseUrl —— 自定义 OpenAI 兼容端点
+          opts.modelApiKey, // modelApiKey —— BYOK 按用户注入的 LLM Key
+          opts.ctxWindow, // ctxWindow —— 上下文窗口上限
+          opts.apiKeys, // apiKeys —— 多 Key 负载/故障转移
+          opts.jevApiKey, // jevApiKey —— Jev 决策工具 BYOK
+          opts.jevBaseUrl // jevBaseUrl
         );
 
         // 调用子 agent 的 harness.run()，透传父 agent 的图片附件

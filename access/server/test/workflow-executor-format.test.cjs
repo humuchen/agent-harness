@@ -32,8 +32,20 @@ test('plan 来源（无上游）：装配出 task 头 + 步骤 + 预期产出 + 
   assert.ok(out.includes('1. 实现 A') && out.includes('2. 实现 B'), out);
   assert.ok(out.includes('预期产出：可编译的核心模块'), out);
   assert.ok(out.includes('目标：上线一个新功能'), out);
-  // 无上游时不出现「上游」段。
-  assert.ok(!out.includes('上游'), out);
+  // 无上游时不出现「上游产出」段（执行要求里的「禁止索要上游」提示语除外，
+  // 该行按 <dep> 具名段落判定，不含具体任务 id 即视为无上游注入）。
+  assert.ok(!/上游 \S+ 产出/.test(out), out);
+});
+
+/* ---------- 产出自包含铁律：禁止向用户索要上游产出 ---------- */
+
+test('执行要求：产出自包含硬性要求注入 prompt（堵死「请把产出贴过来」出口）', () => {
+  const out = formatStepInput(
+    planStepInput({ id: 't5', title: '整合', steps: ['汇总'], expectedOutput: '终稿' })
+  );
+  assert.ok(out.includes('执行要求（硬性）'), out);
+  assert.ok(out.includes('完整写入你的回复正文'), out);
+  assert.ok(out.includes('禁止要求用户粘贴'), out);
 });
 
 test('plan 来源（有上游）：upstream_* 注入真实产出（原样字符串 / 对象序列化）', () => {

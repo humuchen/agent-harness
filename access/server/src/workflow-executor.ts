@@ -59,6 +59,13 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
           meta.steps.forEach((s, i) => lines.push(`${i + 1}. ${String(s)}`));
         }
         if (meta.expectedOutput) lines.push(`预期产出：${meta.expectedOutput}`);
+        // 产出自包含铁律（与 webapp 串行派发 prompt 同源，见 chat.ts confirmPlan）：
+        // 本 step 的回复正文就是黑板里被下游引用的产出。执行模型若只给文件路径 /
+        // 摘要，或要求用户「把 t1–t4 的产出贴过来」，下游整合 step 就会断粮。
+        lines.push(
+          '执行要求（硬性）：把本任务产出完整写入你的回复正文，不要只给出文件路径或摘要；' +
+            '禁止要求用户粘贴、搬运或补充任何上游任务产出 —— 上游产出要么已在下方注入，要么基于任务目标自行合理补全。'
+        );
         // P4.6 修复（验收知情）：验证门禁按 outputChecks 逐词断言「产出必须包含」，
         // 但此前这些词从不进 prompt —— 执行模型不知道门禁在断言什么，命中全凭运气，
         // 是「计划任务总在验证门禁失败、单步回复正常」的主根因。此处显式告知，

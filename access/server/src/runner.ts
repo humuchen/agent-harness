@@ -463,7 +463,10 @@ export async function assembleAgent(
     timeoutMs,
     ctxWindow,
     modelBaseUrl,
-    modelApiKey
+    modelApiKey,
+    apiKeys,
+    jevApiKey,
+    jevBaseUrl
   }, assembleAgent);
 
   // P1-④：初始化 Agent Teams 管理器（进程单例）。
