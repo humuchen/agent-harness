@@ -607,6 +607,131 @@ export function buildPlanArtifactSection(
   return lines.join('\n');
 }
 
+/* ─────────────── P4.6 延伸：计划执行报告（汇总交付文件） ─────────────── */
+
+/**
+ * 汇总报告在 artifact-store 里的 note 标记（幂等键）：前端串行路径与
+ * 服务端 DAG 归档共用该语义 —— 同一 runId 下至多一份汇总报告，
+ * 重复接线（resume / 兜底帧 / 断连自愈收敛）不重复归档。
+ */
+export const PLAN_FINAL_ARTIFACT_NOTE = '__plan_final__';
+
+/**
+ * 汇总报告里单任务产出的字符上限。与 REPLAY_DETAIL_MAX 同数量级但语义独立：
+ * 报告是落盘交付物，宁全勿缺；单个任务产出超此上限按「截断保头」处理，
+ * 并在报告里标注（防止单个失控任务把整份报告撑到几十 MB）。
+ */
+export const PLAN_REPORT_TASK_MAX = 200_000;
+
+/** 文件名安全化：去文件系统/URL 非法字符，限长，空则回落固定名。 */
+function sanitizeArtifactName(s: string, fallback: string): string {
+  const safe = s
+    .replace(/[\\/:*?"<>|\u0000-\u001f#%&{}$!'@+=`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40);
+  return safe || fallback;
+}
+
+/** 汇总报告文件名：`计划报告-<goal 截断安全化>.md`。纯函数（便于单测）。 */
+export function buildPlanReportFileName(goal: string): string {
+  return `计划报告-${sanitizeArtifactName(goal, '执行结果')}.md`;
+}
+
+/**
+ * 把 plan run 快照里的 step 产出提取为 { taskId → 产出全文 }：
+ * - 仅提取 state==='done' 且产出非空的 step（failed/pending/空产出不进报告）；
+ * - 非字符串产出按 JSON 序列化（与 appendPlanDagSummary 的兜底同语义）。
+ * 纯函数，串行路径（taskOutputs 直传）与 DAG 路径（run 快照提取）共用。
+ */
+export function planOutputsFromRun(
+  run:
+    | {
+        steps?: Record<
+          string,
+          { state?: string; output?: unknown } | null | undefined
+        >;
+      }
+    | null
+    | undefined
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const steps = run?.steps ?? {};
+  for (const [id, sr] of Object.entries(steps)) {
+    if (!sr || sr.state !== 'done') continue;
+    const v = sr.output;
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string') {
+      if (v.trim()) out[id] = v;
+    } else {
+      try {
+        const s = JSON.stringify(v, null, 2);
+        if (s && s.trim()) out[id] = s;
+      } catch {
+        /* 不可序列化产出跳过 */
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 生成「计划执行报告」markdown 全文（plan 结束后归档为可下载交付文件）：
+ * 标题 + 元信息 + 执行状态清单 + 逐任务产出全文。纯函数（便于单测）。
+ *
+ * @param goal    计划目标（报告标题）
+ * @param tasks   计划任务视图（id/title + 可选状态，用于状态清单与章节排序）
+ * @param outputs taskId → 产出全文（done 任务才有；缺产出任务在报告中显式标注）
+ */
+export function buildPlanFinalReport(
+  goal: string,
+  tasks: Array<{ id: string; title: string; state?: string }>,
+  outputs: Record<string, string>
+): string {
+  const lines: string[] = [];
+  const doneCount = tasks.filter((t) => (t.state ?? 'done') === 'done').length;
+  lines.push(`# 计划执行报告：${goal}`);
+  lines.push('');
+  lines.push(
+    `> 由计划模式自动归档 · 共 ${tasks.length} 个任务，完成 ${doneCount} 个`
+  );
+  lines.push('');
+  lines.push('## 执行状态');
+  lines.push('');
+  for (const t of tasks) {
+    const state = t.state ?? 'done';
+    const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
+    lines.push(`- ${mark} **${t.id}** ${t.title}（${state}）`);
+  }
+  lines.push('');
+  lines.push('## 任务产出');
+  for (const t of tasks) {
+    const state = t.state ?? 'done';
+    lines.push('');
+    lines.push(`### ${t.id} · ${t.title}`);
+    lines.push('');
+    const out = (outputs[t.id] ?? '').trim();
+    if (!out) {
+      lines.push(
+        state === 'done'
+          ? '（该任务已完成，但未产出可归档的内容。）'
+          : `（该任务状态为 ${state}，无产出。）`
+      );
+      continue;
+    }
+    if (out.length > PLAN_REPORT_TASK_MAX) {
+      lines.push(
+        out.slice(0, PLAN_REPORT_TASK_MAX) +
+          '\n\n…（产出超长已截断，完整内容见会话中该任务的回复）'
+      );
+    } else {
+      lines.push(out);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
 /** 把 step 的产出 / 错误归一为可展示文本（对象 JSON 化、仅对病态超长做兜底截断、空白视为无内容）。 */
 export function formatPlanWfOutput(v: unknown): string | undefined {
   if (v === undefined || v === null) return undefined;
