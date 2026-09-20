@@ -13,6 +13,7 @@ import { setAppointmentExternal } from '../repo/schedule-repo';
 import { getConfig } from '../config';
 import { CrmClient } from './crm-client';
 import { HisClient } from './his-client';
+import { OutreachClient } from './outreach-client';
 import { MaError } from '../infra/errors';
 
 let timer: NodeJS.Timeout | null = null;
@@ -43,6 +44,11 @@ async function deliverOne(
     if (res.externalId && apptId) {
       await setAppointmentExternal(apptId, res.externalId, 'confirmed');
     }
+  } else if (topic === 'outreach.send') {
+    // 对客触达消息（回捞/欢迎/生日/复购提醒）：经渠道触达网关真实发送。
+    const client = new OutreachClient(); // 未配置抛 NOT_CONFIGURED → 失败重试，积压保留
+    await client.sendMessage(payload as never, idempotencyKey);
+    await markSent(id);
   } else {
     // 未知 topic：直接标记已发送，避免卡死队列
     await markSent(id);
@@ -52,7 +58,7 @@ async function deliverOne(
 async function tick(): Promise<void> {
   const cfg = getConfig();
   if (!cfg.outbox.enabled) return;
-  if (!cfg.crm.enabled && !cfg.his.enabled) return; // 无上游可投：跳过（积压保留）
+  if (!cfg.crm.enabled && !cfg.his.enabled && !cfg.outreach.enabled) return; // 无上游可投：跳过（积压保留）
   try {
     const due = await dueBatch(cfg.outbox.batchSize, Date.now());
     for (const row of due) {
@@ -88,6 +94,11 @@ export function stopOutboxWorker(): void {
     clearInterval(timer);
     timer = null;
   }
+}
+
+/** 手动执行一轮投递（运维 flush / 测试钩子）：与后台 tick 完全同逻辑。 */
+export async function runOutboxOnce(): Promise<void> {
+  await tick();
 }
 
 /** 看板/运维快照：发件箱健康。 */

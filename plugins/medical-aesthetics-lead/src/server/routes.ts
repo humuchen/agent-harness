@@ -13,6 +13,7 @@ import { getPluginContext } from '../runtime';
 import { makeTaskId } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
+import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -453,6 +454,73 @@ const listAppointments: PluginRouteHandler = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// 定时调度器（B3）与对客触达（B4/B5）
+// ---------------------------------------------------------------------------
+
+/** GET /scheduler —— 调度器快照（配置 + 任务统计 + 触达消息统计）。 */
+const schedulerRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    send(res, 200, await schedulerSnapshot());
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /scheduler/tick —— 手动触发一轮「规划 + 消费」（需管理令牌；后台循环之外的对账入口）。 */
+const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  try {
+    send(res, 200, await schedulerTick());
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /scheduler/jobs —— 运营手动排期任务（需管理令牌）。
+ * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall', leadId, dueAt?, text?, key? }
+ * birthday/repurchase 必须提供运营自拟文案 text（入队前过医疗广告合规筛查）。
+ */
+const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const { json } = await readRawBody(req);
+  const jobType = String(json.jobType ?? '');
+  const leadId = String(json.leadId ?? '');
+  if (!leadId) return send(res, 400, { error: 'leadId required' });
+  if (!['welcome', 'recall', 'birthday', 'repurchase'].includes(jobType)) {
+    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase' });
+  }
+  try {
+    const r = await scheduleManualJob({
+      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase',
+      leadId,
+      dueAt: typeof json.dueAt === 'number' ? json.dueAt : undefined,
+      text: json.text ? String(json.text) : undefined,
+      key: json.key ? String(json.key) : undefined,
+    });
+    send(res, 200, { ok: true, ...r });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /**
  * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敮到统一前缀
  * /api/plugins/medical-aesthetics-lead/*.
@@ -478,5 +546,8 @@ export const leadServerExtension: ServerExtension = {
     '/analytics/export': analyticsExport,
     '/appointments': listAppointments,
     '/appointments/mark': markAppointment,
+    '/scheduler': schedulerRoute,
+    '/scheduler/tick': schedulerTickRoute,
+    '/scheduler/jobs': schedulerJobRoute,
   },
 };

@@ -248,6 +248,26 @@ CREATE TABLE IF NOT EXISTS ma_inbound_message (
   UNIQUE(tenant_id, channel, external_id)
 );
 CREATE INDEX IF NOT EXISTS ix_inbound_state ON ma_inbound_message(state, received_at);
+
+-- 定时任务（回捞 2h/24h / 欢迎语 / 生日 / 复购提醒）。
+-- scheduled_key UNIQUE 保证同一（线索, 节点）只排一次；到期由 scheduler tick 消费，
+-- 产出对客消息进 ma_outbox（topic=outreach.send）走至少一次投递。
+CREATE TABLE IF NOT EXISTS ma_schedule_job (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  job_type      TEXT NOT NULL,
+  lead_id       TEXT NOT NULL,
+  scheduled_key TEXT NOT NULL UNIQUE,
+  due_at        INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  payload       TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sched_due  ON ma_schedule_job(tenant_id, status, due_at);
+CREATE INDEX IF NOT EXISTS ix_sched_lead ON ma_schedule_job(tenant_id, lead_id, job_type);
 `;
 
 /**
@@ -533,6 +553,7 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
       'ma_appointment',
       'ma_outbox',
       'ma_inbound_message',
+      'ma_schedule_job',
     ]) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);

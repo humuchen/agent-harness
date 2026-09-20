@@ -12,6 +12,7 @@ import { leadDashboardView, analyticsDashboardView } from './web/dashboard';
 import { setRunKey, setPluginContext } from './runtime';
 import { appendTranscript } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
+import { startScheduler, stopScheduler } from './services/scheduler-service';
 import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
 import { getDbAsync } from './infra/db';
 import { getTeamManager } from '@agent-harness/core';
@@ -194,17 +195,20 @@ export const leadPlugin: PluginModule = {
 
   async onStart(ctx: PluginContext): Promise<void> {
     startOutboxWorker();
+    startScheduler();
 
     ctx.logger.info('medical-aesthetics-lead plugin started');
   },
 
   async onStop(ctx: PluginContext): Promise<void> {
     stopOutboxWorker();
+    stopScheduler();
     ctx.logger.info('medical-aesthetics-lead plugin stopped');
   },
 
   async onUnload(ctx: PluginContext): Promise<void> {
     stopOutboxWorker();
+    stopScheduler();
     offEvents?.();
     offEvents = undefined;
     offTranscript?.();
