@@ -39,11 +39,14 @@ describe('applyPlanWfEvent', () => {
     const next = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
     expect(next).not.toBe(base);
     // P5 静默执行：任务开始时建立空思考槽位（llm:reasoning 增量随后叠入）。
+    // 并行（2026-09-20）：同时聚合 runningTaskIds + 建立分槽 thinkingByTask。
     expect(next).toEqual({
       status: 'running',
       currentTaskId: 't2',
       done: {},
-      thinking: { taskId: 't2', text: '' }
+      runningTaskIds: ['t2'],
+      thinking: { taskId: 't2', text: '' },
+      thinkingByTask: { t2: '' }
     });
     expect(applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 'nope' }, KNOWN)).toBe(base);
     expect(applyPlanWfEvent(base, { type: 'wf:step:start' }, KNOWN)).toBe(base);
@@ -220,6 +223,69 @@ describe('applyPlanThinking（P5 静默执行：思考增量叠加）', () => {
     // 本任务的 done 仍正常清槽。
     const afterOwnDone = applyPlanWfEvent(withT4, { type: 'wf:step:done', stepId: 't4' }, KNOWN);
     expect(afterOwnDone.thinking).toBeUndefined();
+  });
+});
+
+describe('P5 并行执行：多任务同波（runningTaskIds / thinkingByTask 分槽）', () => {
+  it('同波两个 start → runningTaskIds 聚合，各建独立思考槽（单槽 mirror 保持最近启动）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    expect(st.status).toBe('running');
+    expect(st.runningTaskIds).toEqual(['t2', 't3']);
+    expect(st.currentTaskId).toBe('t3');
+    expect(st.thinkingByTask).toEqual({ t2: '', t3: '' });
+    expect(st.thinking).toEqual({ taskId: 't3', text: '' });
+  });
+
+  it('交错思考增量归因各自分槽，互不覆盖（并行核心语义）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    st = applyPlanThinking(st, 't2 第一段', 't2');
+    st = applyPlanThinking(st, 't3 第一段', 't3');
+    st = applyPlanThinking(st, 't2 第二段', 't2');
+    expect(st.thinkingByTask?.['t2']).toBe('t2 第一段t2 第二段');
+    expect(st.thinkingByTask?.['t3']).toBe('t3 第一段');
+    // 单槽 mirror = 最近接收增量的任务（t2），仅兼容面（并行渲染不读它）。
+    expect(st.thinking?.taskId).toBe('t2');
+    expect(st.thinking?.text).toBe('t2 第二段');
+  });
+
+  it('本任务 done 只清本槽：t2 完成后 t3 思考流与在跑标记保留', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    st = applyPlanThinking(st, 't2 思考', 't2');
+    st = applyPlanThinking(st, 't3 思考', 't3');
+    st = applyPlanWfEvent(st, { type: 'wf:step:done', stepId: 't2' }, KNOWN);
+    expect(st.done).toEqual({ t2: true });
+    expect(st.status).toBe('running');
+    expect(st.runningTaskIds).toEqual(['t3']);
+    expect(st.thinkingByTask?.['t2']).toBeUndefined();
+    expect(st.thinkingByTask?.['t3']).toBe('t3 思考');
+  });
+
+  it('本任务 failed → 整卡 failed，在跑集合 / 分槽思考全清（引擎 all-or-nothing）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't2' }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't3' }, KNOWN);
+    st = applyPlanThinking(st, 't3 思考', 't3');
+    st = applyPlanWfEvent(st, { type: 'wf:step:failed', stepId: 't2' }, KNOWN);
+    expect(st.status).toBe('failed');
+    expect(st.failedTaskId).toBe('t2');
+    expect(st.runningTaskIds).toBeUndefined();
+    expect(st.thinkingByTask).toBeUndefined();
+  });
+
+  it('applyPlanThinking 旧帧（无 stepId）→ 增量落入单槽对应分槽键（旧服务端兼容）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const next = applyPlanThinking(st, '旧帧思考');
+    expect(next.thinking?.text).toBe('旧帧思考');
+    expect(next.thinkingByTask?.['t1']).toBe('旧帧思考');
+  });
+
+  it('超上限截尾同样作用于分槽（tail 语义一致）', () => {
+    const st = applyPlanWfEvent(base, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    const big = 'b'.repeat(PLAN_THINKING_MAX + 10);
+    const next = applyPlanThinking(st, big, 't1');
+    expect(next.thinkingByTask?.['t1']?.length).toBe(PLAN_THINKING_MAX);
   });
 });
 

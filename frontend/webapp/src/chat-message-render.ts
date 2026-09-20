@@ -829,7 +829,11 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
     st.status === 'pending'
       ? '待确认'
       : st.status === 'running'
-      ? `执行中 · ${st.currentTaskId ?? ''}`
+      ? `执行中 · ${
+          st.runningTaskIds?.length
+            ? st.runningTaskIds.join('、')
+            : st.currentTaskId ?? ''
+        }`
       : st.status === 'done'
       ? '已完成'
       : st.status === 'failed'
@@ -837,6 +841,9 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       : st.status === 'awaiting'
       ? `待审批 · ${(st.awaitingTaskIds ?? []).join('、')}`
       : '已取消';
+  // 并行（2026-09-20）：在跑任务集合（旧态/恢复缺省时以 currentTaskId 兜底，串行等价）。
+  const runningIds =
+    st.runningTaskIds ?? (st.currentTaskId ? [st.currentTaskId] : []);
   return html`<div class="plan-card">
     <div class="plan-head">
       <span class="plan-title">📋 执行计划</span>
@@ -845,7 +852,7 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
     <ol class="plan-tasks">
       ${plan.tasks.map((t, i) => {
         const done = !!st.done[t.id];
-        const active = st.status === 'running' && st.currentTaskId === t.id;
+        const active = st.status === 'running' && runningIds.includes(t.id);
         const failed = st.status === 'failed' && st.failedTaskId === t.id;
         // P3：审批门任务标记（卡片显示 🔒）；awaiting 态下命中待审批列表的高亮。
         const awaitingNode = st.status === 'awaiting' && (st.awaitingTaskIds ?? []).includes(t.id);
@@ -876,22 +883,42 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
       })}
     </ol>
     ${
-      /* P5 静默执行：当前任务思考面板（llm:reasoning 增量，tail 展示最新思考）。
-         仅 running 且有思考流时渲染；任务完成/失败随状态机清空。
+      /* P5 静默执行：思考面板（llm:reasoning 增量，tail 展示最新思考）。
+         并行（2026-09-20）：按 plan.tasks 序堆叠展示各在跑任务的分槽思考块
+         （thinkingByTask，多任务并发思考互不覆盖）；仅 running 且有内容时渲染，
+         任务完成/失败随状态机清槽。旧态（无分槽，如刷新恢复）回落单槽 thinking。
          结构：标题为固定头（不随滚动），正文 .pt-think-body 独立滚动 ——
          打字流式时由 ChatScroll 钉底跟随（用户上滚暂停、滚回底部恢复）。 */
-      st.status === 'running' && st.thinking && st.thinking.text.trim()
-        ? html`<div class="plan-thinking">
-            <div class="pt-think-label">
-              💭 思考中 · ${escapeHtml(st.thinking.taskId ?? st.currentTaskId ?? '')}
-            </div>
-            <div class="pt-think-body">
-              <div class="pt-think-text">
-                ${escapeHtml(st.thinking.text.slice(-4000))}
+      (() => {
+        if (st.status !== 'running') return nothing;
+        const slots = plan.tasks
+          .map((t) => t.id)
+          .filter((id) => (st.thinkingByTask?.[id] ?? '').trim());
+        if (slots.length > 0) {
+          return html`${slots.map(
+            (id) => html`<div class="plan-thinking">
+              <div class="pt-think-label">💭 思考中 · ${escapeHtml(id)}</div>
+              <div class="pt-think-body">
+                <div class="pt-think-text">
+                  ${escapeHtml((st.thinkingByTask?.[id] ?? '').slice(-4000))}
+                </div>
               </div>
-            </div>
-          </div>`
-        : nothing
+            </div>`
+          )}`;
+        }
+        return st.thinking && st.thinking.text.trim()
+          ? html`<div class="plan-thinking">
+              <div class="pt-think-label">
+                💭 思考中 · ${escapeHtml(st.thinking.taskId ?? st.currentTaskId ?? '')}
+              </div>
+              <div class="pt-think-body">
+                <div class="pt-think-text">
+                  ${escapeHtml(st.thinking.text.slice(-4000))}
+                </div>
+              </div>
+            </div>`
+          : nothing;
+      })()
     }
     ${
       /* 状态 + 操作：置于卡片右下角一行，状态在操作按钮之前。 */

@@ -2,6 +2,7 @@
 // - DAG 拓扑并行 + 依赖顺序 + inputMapping 取上游输出
 // - 失败补偿（completed step 逆序执行 compensate）
 // - 检查点续跑（resume 从断点继续，已完成 step 不被重跑）
+// - P5 有界并发（maxConcurrency 工作池：峰值锁定 / 非法值回落不限并发 / fail-fast 不拉新 / resume 同样有界）
 // - 成环检测（fail-fast）
 // - WorkflowStore（Volatile / File）save/get
 // - HarnessEvent 的 run:meta 元数据通道（agentId/workflowId/traceId/tenantId）
@@ -130,6 +131,136 @@ test('P5 serial: resume 同样串行执行且只重跑未完成 step', async () 
   assert.strictEqual(run2.state, 'done');
   assert.strictEqual(run2.steps.a.state, 'done');
   assert.strictEqual(run2.steps.b.state, 'done');
+});
+
+test('P5 有界并发: maxConcurrency=2 时同波次 4 个 step 峰值并发恰为 2（工作池保序补位）', async () => {
+  const def = {
+    id: 'wf-bounded',
+    execMode: 'parallel',
+    maxConcurrency: 2,
+    steps: [
+      { id: 'a', agentRef: DEFAULT_AGENT_ID },
+      { id: 'b', agentRef: DEFAULT_AGENT_ID },
+      { id: 'c', agentRef: DEFAULT_AGENT_ID },
+      { id: 'd', agentRef: DEFAULT_AGENT_ID },
+    ],
+  };
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const order = [];
+  const executor = async (step) => {
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    order.push(step.id);
+    await new Promise((r) => setTimeout(r, 15));
+    concurrent -= 1;
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor });
+  const run = await engine.run(def, 'x');
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(maxConcurrent, 2, `期望峰值并发恰为 2，实际 ${maxConcurrent}`);
+  // 工作池按波内声明序保序取任务、完成一个补一个：单线程事件循环下取任务顺序确定。
+  assert.deepStrictEqual(order, ['a', 'b', 'c', 'd']);
+});
+
+test('P5 有界并发: 非法 maxConcurrency 回落为不限并发（存量全并行语义零回归）', async () => {
+  for (const bad of [0, -3, NaN, Infinity]) {
+    const def = {
+      id: 'wf-bounded-bad',
+      execMode: 'parallel',
+      maxConcurrency: bad,
+      steps: [
+        { id: 'a', agentRef: DEFAULT_AGENT_ID },
+        { id: 'b', agentRef: DEFAULT_AGENT_ID },
+        { id: 'c', agentRef: DEFAULT_AGENT_ID },
+        { id: 'd', agentRef: DEFAULT_AGENT_ID },
+      ],
+    };
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const executor = async (step) => {
+      concurrent += 1;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await new Promise((r) => setTimeout(r, 10));
+      concurrent -= 1;
+      return { step: step.id };
+    };
+    // 每轮独立 store，避免 def.id 撞 running 检查点。
+    const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor });
+    const run = await engine.run(def, 'x');
+    assert.strictEqual(run.state, 'done', `bad=${bad}`);
+    assert.strictEqual(maxConcurrent, 4, `bad=${bad} 时应回落为全并发（峰值 4）`);
+  }
+});
+
+test('P5 有界并发: 某 step 失败后工作池 fail-fast，不再拉起新任务（在途自然跑完）', async () => {
+  const def = {
+    id: 'wf-bounded-failfast',
+    execMode: 'parallel',
+    maxConcurrency: 2,
+    steps: ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, agentRef: DEFAULT_AGENT_ID })),
+  };
+  const executed = [];
+  const executor = async (step) => {
+    executed.push(step.id);
+    if (step.id === 'a') throw new Error('a failed');
+    await new Promise((r) => setTimeout(r, 20));
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store: new VolatileWorkflowStore(), executor });
+  const run = await engine.run(def, 'x');
+  assert.strictEqual(run.state, 'failed');
+  assert.ok(run.error && run.error.includes('a failed'));
+  assert.strictEqual(run.steps.a.state, 'failed');
+  // 两个 worker 先各拉取一个任务（同步取任务先于任何 microtask），a 立即失败置 failed；
+  // 在途的 b 自然跑完；c-f 不再被拉起。
+  assert.ok(executed.includes('b'), '已拉起的在途任务应自然跑完');
+  for (const id of ['c', 'd', 'e', 'f']) {
+    assert.strictEqual(run.steps[id].state, 'pending', `${id} 不应在 fail-fast 后被拉起`);
+  }
+  assert.ok(executed.length <= 2, `fail-fast 后最多执行 a+b 两个，实际 ${executed.length}`);
+});
+
+test('P5 有界并发: resume 同样走工作池（maxConcurrency=2，已完成 step 复用不被重跑）', async () => {
+  const def = {
+    id: 'wf-bounded-resume',
+    execMode: 'parallel',
+    maxConcurrency: 2,
+    steps: [
+      { id: 'a', agentRef: DEFAULT_AGENT_ID },
+      { id: 'b', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+      { id: 'c', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+      { id: 'd', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+    ],
+  };
+  const store = new VolatileWorkflowStore();
+  // 植入「a 已完成、b/c/d pending」检查点。
+  await store.save({
+    def,
+    state: 'running',
+    steps: {
+      a: { id: 'a', state: 'done', output: 'done-out' },
+      b: { id: 'b', state: 'pending' },
+      c: { id: 'c', state: 'pending' },
+      d: { id: 'd', state: 'pending' },
+    },
+    startedAt: Date.now(),
+  });
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const executor = async (step) => {
+    concurrent += 1;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    await new Promise((r) => setTimeout(r, 10));
+    concurrent -= 1;
+    return { step: step.id };
+  };
+  const engine = new DagEngine({ store, executor });
+  const run = await engine.resume('wf-bounded-resume');
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(run.steps.a.output, 'done-out', '已完成的 a 输出应被复用，不被重跑');
+  assert.strictEqual(maxConcurrent, 2, 'b/c/d 同波次，峰值并发应为 2');
 });
 
 test('失败补偿：完成 step 逆序执行 compensate', async () => {

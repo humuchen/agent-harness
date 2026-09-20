@@ -331,6 +331,49 @@ function normalizePlan(data: unknown): ExecutionPlan | null {
   return { goal, tasks: order };
 }
 
+/** 计划桥并行波次的缺省并发上限（保护 BYOK 速率限制 / token 预算；可经 opts.maxConcurrency 覆盖）。 */
+export const PLAN_WAVE_CONCURRENCY_DEFAULT = 3;
+
+/**
+ * 按任务 dependsOn 分层（与引擎 topoWaves 同语义：依赖全落在前几层的任务进同层），
+ * 返回最大层宽 —— 计划桥自动串/并决策的依据：> 1 说明计划里存在可并行的独立分支。
+ *
+ * 输入 plan 已由 normalizePlan 保证「无环、依赖引用合法」；此处对环 / 未知依赖做
+ * 防御性处理（环 → 返回 tasks.length，与引擎拓扑校验 fail-fast 的结局一致；
+ * 未知依赖不计数，避免层宽被脏数据虚增）。
+ */
+export function planMaxWaveWidth(plan: ExecutionPlan): number {
+  const tasks = plan?.tasks ?? [];
+  if (tasks.length === 0) return 0;
+  const known = new Set(tasks.map((t) => t.id));
+  const indeg = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const t of tasks) {
+    const deps = t.dependsOn.filter((d) => d !== t.id && known.has(d));
+    indeg.set(t.id, deps.length);
+    for (const d of deps) {
+      dependents.set(d, [...(dependents.get(d) ?? []), t.id]);
+    }
+  }
+  let wave = tasks.filter((t) => (indeg.get(t.id) ?? 0) === 0).map((t) => t.id);
+  let width = 0;
+  let visited = 0;
+  while (wave.length) {
+    width = Math.max(width, wave.length);
+    visited += wave.length;
+    const next: string[] = [];
+    for (const id of wave) {
+      for (const nxt of dependents.get(id) ?? []) {
+        const v = (indeg.get(nxt) ?? 0) - 1;
+        indeg.set(nxt, v);
+        if (v === 0) next.push(nxt);
+      }
+    }
+    wave = next;
+  }
+  return visited < tasks.length ? tasks.length : width; // 环：防御性全宽（上游已拒绝环计划）
+}
+
 /** planToWorkflowDef 的选项（见设计文档 §4 映射契约）。 */
 export interface PlanToWorkflowOptions {
   /** 每个 task 默认使用的 agent（字符串 id 经 AgentRegistry 解析，或内联 AgentCard）。必填。 */
@@ -347,11 +390,19 @@ export interface PlanToWorkflowOptions {
   /** 全局追踪 id（可选，贯穿所有 step 的 agent 调用，OTel 跨 agent 关联）。 */
   traceId?: string;
   /**
-   * P5 执行顺序（可选）：缺省 'serial' —— 计划任务按拓扑序「单步发送」逐个执行
-   * （每步思考过程与当前任务一一对应，前端静默展示的前提）；显式传 'parallel'
-   * 可回到波次并行。手工 WorkflowDef 不经过本桥，缺省仍是 parallel（零回归）。
+   * P5 执行顺序（可选，2026-09-20 起缺省**自动决策**）：不传时按 DAG 形状 ——
+   * `planMaxWaveWidth(plan) > 1` → 'parallel'（存在可并行的独立分支，波次内并行显著提速）；
+   * 纯链状计划（波宽恒 1）→ 'serial'（并行无收益，且串行保持「每步思考 ↔ 当前任务」
+   * 一一对应的静默展示语义）。显式传 'parallel' / 'serial' 覆盖自动决策。
+   * 手工 WorkflowDef 不经过本桥，缺省仍是 parallel（零回归）。
    */
   execMode?: 'parallel' | 'serial';
+  /**
+   * 并行波次内最大并发 step 数（可选）。缺省 PLAN_WAVE_CONCURRENCY_DEFAULT（3）——
+   * 有界并发保护 BYOK 速率限制与 token 预算不被同波任务同时打满；仅在最终 execMode
+   * 为 parallel 时写入 def.maxConcurrency。传 0 / 负数 / 非有限数按缺省处理。
+   */
+  maxConcurrency?: number;
 }
 
 /**
@@ -408,6 +459,12 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     // P3：人工审批门透传（未标记任务零回归面）——引擎在该 step 所在波次前暂停 run。
     ...(task.requireApproval === true ? { requireApproval: true } : {})
   }));
+  // P5 执行顺序（2026-09-20 起自动决策）：显式 opts.execMode 优先；缺省按 DAG 形状 ——
+  // 波宽 > 1 → parallel（独立分支波次内并行提速 + 有界并发），纯链 → serial（无并行收益，
+  // 保持「思考流 ↔ 当前任务」一一对应的静默展示）。串/并只改调度顺序，验证门禁 /
+  // 补偿 / 审批门 / 检查点 / 黑板语义完全一致。
+  const execMode =
+    opts.execMode ?? (planMaxWaveWidth(plan) > 1 ? 'parallel' : 'serial');
   const def: WorkflowDef = {
     id: opts.workflowId || genPlanWorkflowId(),
     steps,
@@ -415,10 +472,20 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     // 护栏兜底话术）按失败处置（可断点续跑），不再以 5/5 ✅ 掩盖缺失的交付物。
     // 该 flag 仅由本映射桥写入，存量手工 WorkflowDef 缺省不开（零回归面）。
     failOnInvalidOutput: true,
-    // P5 静默计划执行：默认「单步发送」串行执行 —— 按拓扑序逐 task 派发，每步是独立的
-    // harness 调用（独立 sessionKey / 验证门禁 / 10min 预算），思考过程与当前任务一一对应；
-    // 前端据此把步骤消息静默化（计划卡 + 思考面板 + 仅最终结果）。显式 execMode 可回并行。
-    execMode: opts.execMode ?? 'serial',
+    execMode,
+    // 并行即带并发上限（缺省 3）：同波任务并发调 LLM，无界并发会同时打满 BYOK
+    // 速率限制与 token 预算。仅 parallel 写入；serial 忽略该字段（引擎不读）。
+    ...(execMode === 'parallel'
+      ? {
+          // 非法值（0 / 负数 / 非有限数）按缺省处理（与 opts 注释契约一致），合法值向下取整。
+          maxConcurrency:
+            typeof opts.maxConcurrency === 'number' &&
+            Number.isFinite(opts.maxConcurrency) &&
+            opts.maxConcurrency >= 1
+              ? Math.floor(opts.maxConcurrency)
+              : PLAN_WAVE_CONCURRENCY_DEFAULT
+        }
+      : {})
   };
   if (opts.tenantId) def.tenantId = opts.tenantId;
   if (opts.traceId) def.traceId = opts.traceId;

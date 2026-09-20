@@ -175,37 +175,56 @@ export function applyPlanWfEvent(
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
       // P3：审批放行后重新进入 running —— 清掉 awaiting 标记。
       // P5 静默执行：每个任务开始时重置思考面板（新任务 → 新的空思考流）。
+      // 并行（2026-09-20）：runningTaskIds 聚合在跑任务（串行时长度恒 1，语义不变）；
+      // thinkingByTask 为该任务建独立空槽（已有槽位重置为空 —— start 即重新执行）。
+      const running = new Set(prev.runningTaskIds ?? []);
+      running.delete(ev.stepId);
+      running.add(ev.stepId);
       return {
         ...prev,
         status: 'running',
         currentTaskId: ev.stepId,
         awaitingTaskIds: undefined,
-        thinking: { taskId: ev.stepId, text: '' }
+        runningTaskIds: [...running],
+        thinking: { taskId: ev.stepId, text: '' },
+        thinkingByTask: { ...(prev.thinkingByTask ?? {}), [ev.stepId]: '' }
       };
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
       // P5：任务完成即收起思考面板。P5.1 精准清槽：只清「本任务」的思考流 ——
       // 若事件乱序（done(t3) 迟到而思考面板已自愈切到 t4），不得误清新任务的思考流。
+      // 并行（2026-09-20）：只把本任务移出在跑集合 / 删本任务分槽，兄弟任务不受影响。
       const thinking =
         prev.thinking && prev.thinking.taskId !== ev.stepId
           ? prev.thinking
           : undefined;
+      const runningTaskIds = (prev.runningTaskIds ?? []).filter(
+        (id) => id !== ev.stepId
+      );
+      const thinkingByTask = { ...(prev.thinkingByTask ?? {}) };
+      delete thinkingByTask[ev.stepId];
       return {
         ...prev,
         status: 'running',
         done: { ...prev.done, [ev.stepId]: true },
-        thinking
+        thinking,
+        runningTaskIds,
+        thinkingByTask
       };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
+      // 引擎 all-or-nothing：任一 step 失败整 run 收敛 failed（并行时兄弟任务在途结果
+      // 由检查点记录，断点续跑可复用）。卡片整体转 failed，思考面板 / 在跑集合全清。
       return {
         ...prev,
         status: 'failed',
         failedTaskId: ev.stepId,
         currentTaskId: ev.stepId,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     case 'wf:awaiting-approval': {
@@ -218,7 +237,9 @@ export function applyPlanWfEvent(
         status: 'awaiting',
         currentTaskId: undefined,
         awaitingTaskIds: ids,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     case 'wf:done':
@@ -228,7 +249,9 @@ export function applyPlanWfEvent(
         currentTaskId: undefined,
         failedTaskId: undefined,
         awaitingTaskIds: undefined,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
@@ -241,7 +264,9 @@ export function applyPlanWfEvent(
         status: 'failed',
         failedTaskId: firstFailed?.id ?? prev.failedTaskId,
         currentTaskId: undefined,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     default:
@@ -255,7 +280,7 @@ export function applyPlanWfEvent(
 export const PLAN_THINKING_MAX = 40_000;
 
 /**
- * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的「当前任务思考面板」。
+ * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的思考面板。
  * - 仅 running 时消费；其它状态原样返回 prev（同引用判重）。
  * - 文本超 PLAN_THINKING_MAX 时保留尾部（最新思考），与 UI 面板「tail 展示」语义一致。
  * - 空增量 no-op（同引用返回，避免无谓重渲染）。
@@ -268,6 +293,12 @@ export const PLAN_THINKING_MAX = 40_000;
  * - 带 stepId 且与当前槽位不一致 → 丢弃旧槽、以该 stepId 重建槽位（自愈切换）；
  * - 带 stepId 且无槽位（如刷新恢复后思考面板为空）→ 直接建槽，思考流不再被丢弃；
  * - 不带 stepId（旧服务端帧）→ 保持原行为（仅追加到已有槽位）。
+ *
+ * 并行双写（2026-09-20）：单槽 thinking 在多任务并发时会互相覆盖（A、B 交替增量导致
+ * 单槽来回重建丢文本），故同时把增量累积进 **按任务分槽** 的 thinkingByTask ——
+ * 渲染面按 plan.tasks 序分块展示，各任务思考互不覆盖；单槽保持原语义（最近接收
+ * 增量的任务），兼容旧渲染 / 测试 / 恢复路径。stepId 缺省（旧帧）时增量同时落入
+ * 单槽对应的分槽键，保证旧服务端帧也能进入分块渲染。
  */
 export function applyPlanThinking(
   prev: PlanExecState,
@@ -280,9 +311,13 @@ export function applyPlanThinking(
     slot = { taskId: stepId, text: '' };
   }
   if (!slot) return prev;
+  const key = slot.taskId;
+  if (!key) return prev; // 无归属任务（理论不可达：槽位必带 taskId），防御不落脏数据
   const text = (slot.text + delta).slice(-PLAN_THINKING_MAX);
+  const byTask = { ...(prev.thinkingByTask ?? {}) };
+  byTask[key] = ((byTask[key] ?? '') + delta).slice(-PLAN_THINKING_MAX);
   if (slot === prev.thinking && text === prev.thinking?.text) return prev;
-  return { ...prev, thinking: { ...slot, text } };
+  return { ...prev, thinking: { ...slot, text }, thinkingByTask: byTask };
 }
 
 /** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */

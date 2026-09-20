@@ -5482,9 +5482,12 @@ async function handleWorkflow(
           : undefined,
       tenantId: typeof body.tenantId === 'string' ? body.tenantId : undefined,
       traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-      // P5 执行顺序：缺省串行（单步发送，桥内默认）；显式 execMode:'parallel' 回波次并行。
+      // P5 执行顺序（2026-09-20 起自动决策）：缺省（未传）由计划桥按 DAG 形状决定
+      // （波宽 > 1 → 有界并行；纯链 → 串行）；显式 'parallel' / 'serial' 覆盖自动决策。
       execMode:
-        body.execMode === 'parallel' ? 'parallel' : undefined
+        body.execMode === 'parallel' || body.execMode === 'serial'
+          ? body.execMode
+          : undefined
     });
   }
   if (

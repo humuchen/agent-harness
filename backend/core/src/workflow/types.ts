@@ -98,11 +98,18 @@ export interface WorkflowDef {
   failOnInvalidOutput?: boolean;
   /**
    * P5 执行顺序：parallel（缺省）= 拓扑波次内并行（存量语义）；serial = 拓扑序逐 step
-   * 「单步发送」串行执行（上一 step 完成后才派发下一个）。计划桥（planToWorkflowDef）
-   * 默认 serial —— 串行模式下每步的思考过程与「当前任务」一一对应，是前端静默展示
-   * （不直播 step 消息、只展示计划卡 + 思考面板 + 最终结果）的前提。手工工作流不受影响。
+   * 「单步发送」串行执行（上一 step 完成后才派发下一个）。
+   * 计划桥（planToWorkflowDef）自 2026-09-20 起「按 DAG 形状自动决策」：最大拓扑波宽
+   * > 1 → parallel（带 maxConcurrency 有界并发），纯链状计划 → serial（并行无收益，
+   * 且串行保持「思考流 ↔ 当前任务」一一对应）。显式传入仍优先。手工工作流不受影响。
    */
   execMode?: 'parallel' | 'serial';
+  /**
+   * parallel 波次内最大并发 step 数（正整数；缺省 / 非法 = 不限并发，存量语义零回归）。
+   * 计划桥生成的 def 自动携带缺省上限（PLAN_WAVE_CONCURRENCY_DEFAULT），保护 BYOK
+   * 速率限制与 token 预算不被同波任务同时打满。serial 模式忽略该字段。
+   */
+  maxConcurrency?: number;
 }
 
 /**
