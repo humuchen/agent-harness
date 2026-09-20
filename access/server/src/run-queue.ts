@@ -27,7 +27,7 @@ import {
   type QueueBackend,
   type JobDescriptor
 } from './queue-backend';
-import { resolveRunCredential } from './provider-keys';
+import { resolveRunCredential, resolveJevCredential } from './provider-keys';
 import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
 
 /** 内存监控阈值（MB）：超过此值触发告警，OOM 前预警。 */
@@ -963,6 +963,9 @@ export class RunQueue {
           modelBaseUrl: job.modelBaseUrl,
           modelApiKey: job.modelApiKey
         });
+        // TypeSafe AI Jev 决策工具按用户 BYOK：与 LLM Key 同源解析，按 owner 隔离，
+        // 运行期注入 assembleAgent（绝不写入 process.env）。无则回落 env / 不注册。
+        const jevCred = await resolveJevCredential(job.owner ?? 'anonymous');
         if (job.mode !== 'mock' && !cred.apiKey) {
           // 重放 / 跨实例领取后，用户可能已删除 Key：拒绝执行（与提交期 402 一致），
           // 不回退为无 Key 静默跑，避免裸奔调用上游。
@@ -1035,7 +1038,9 @@ export class RunQueue {
           effectiveBaseUrl,
           effectiveApiKey,
           job.ctxWindow,
-          effectiveApiKeys
+          effectiveApiKeys,
+          jevCred.apiKey,
+          jevCred.baseUrl
         );
         const model = resolveOpenRouterConfig({ model: job.model }).model;
         emit({

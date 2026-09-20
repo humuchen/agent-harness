@@ -237,6 +237,7 @@ import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
 import {
   registerProviderKeyRoutes,
   resolveRunCredential,
+  resolveJevCredential,
   type CredentialResult
 } from './provider-keys';
 
@@ -821,6 +822,8 @@ const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
   const origin = `im:${msg.provider}`;
   // 落库用户消息（IM 侧输入在 Web 工作台可见）。
   appendChatMessage(sessionId, { role: 'user', content: prompt, ts: Date.now() }, owner, origin);
+  // TypeSafe AI Jev 决策工具按用户 BYOK：与 LLM Key 同源、按 owner 隔离解析。
+  const jevCred = await resolveJevCredential(owner);
   const mode: RunMode = cfg.defaultMode;
   const assembled = await assembleAgent(
     mode,
@@ -831,7 +834,23 @@ const imExecutor: ImExecutor = async (msg, prompt, cfg) => {
     `${owner}::${sessionId}`,
     undefined, // signal
     cfg.timeoutMs,
-    cfg.maxSteps
+    cfg.maxSteps,
+    undefined, // memoryArg
+    undefined, // verifier
+    undefined, // verifyMaxRetries
+    undefined, // card
+    undefined, // tenantCtx
+    undefined, // sandboxBackend
+    undefined, // streamTokens
+    undefined, // webEnabled
+    undefined, // planPropose
+    undefined, // planTask
+    undefined, // modelBaseUrl
+    undefined, // modelApiKey
+    undefined, // ctxWindow
+    undefined, // apiKeys
+    jevCred.apiKey,
+    jevCred.baseUrl
   );
   const final = await assembled.harness.run(prompt);
   appendChatMessage(sessionId, { role: 'assistant', content: final, ts: Date.now() }, owner, origin);

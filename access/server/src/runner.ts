@@ -360,7 +360,15 @@ export async function assembleAgent(
    * 长度 ≤ 1 时退化为单 Key 行为（与旧逻辑完全一致，向后兼容）。
    * 缺省不传 → 回落到 modelApiKey 单 Key。
    */
-  apiKeys?: string[]
+  apiKeys?: string[],
+  /**
+   * TypeSafe AI Jev 决策工具按用户 BYOK 注入的 Key/地址（明文）。
+   * 传入时覆盖 env 的 TYPESAFE_API_KEY / TYPESAFE_BASE_URL，使 builtin__jev_decide
+   * 按用户隔离启用；不传则回落 env（服务端级配置）。与 LLM Key 同样绝不在 process.env 串号。
+   */
+  jevApiKey?: string,
+  /** 按用户 BYOK 注入的 TypeSafe 接口地址（优先于 env 的 TYPESAFE_BASE_URL）。 */
+  jevBaseUrl?: string
 ): Promise<AssembledAgent> {
   const tools = new ToolRegistry();
   const envPlatform: EnvPlatform = createEnvPlatform(); // 按 ENV_PLATFORM 选择后端（默认 harness，无 key 时 dry-run）
@@ -406,7 +414,11 @@ export async function assembleAgent(
     // 已含 card/租户/env 升级逻辑），缺省回退全局 SANDBOX_BACKEND（local 硬化 / container 隔离）。
     sandboxBackend: sandboxBackend ?? process.env.SANDBOX_BACKEND,
     // P0.1：按 AgentCard.assembly.tools 收窄内置工具面（undefined/空 → 全部）。
-    ...(assemblyTools ? { tools: assemblyTools } : {})
+    ...(assemblyTools ? { tools: assemblyTools } : {}),
+    // TypeSafe AI Jev 决策工具：按用户 BYOK 注入的 Key/地址优先于 env。
+    ...(jevApiKey !== undefined || jevBaseUrl !== undefined
+      ? { jevApiKey, jevBaseUrl }
+      : {})
   });
 
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。

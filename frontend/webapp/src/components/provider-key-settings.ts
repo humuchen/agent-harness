@@ -54,6 +54,11 @@ const PROVIDERS: Array<{ id: string; label: string; docUrl: string }> = [
     id: 'custom',
     label: '自定义兼容端点',
     docUrl: 'https://openrouter.ai/keys'
+  },
+  {
+    id: 'typesafe',
+    label: 'TypeSafe AI (Jev)',
+    docUrl: 'https://typesafe.ai'
   }
 ];
 
@@ -824,6 +829,8 @@ export class AhProviderKeySettings extends LitElement {
         <input
           placeholder="${this.provider === 'openrouter'
             ? 'https://openrouter.ai/api/v1'
+            : this.provider === 'typesafe'
+            ? 'https://api.typesafe.ai/v1'
             : `https://${this.provider}.com/v1`}"
           .value=${this.draftBaseUrl}
           @input=${(e: Event) =>

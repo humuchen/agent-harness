@@ -21,15 +21,22 @@ import { getDbAdapter } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
 
 // ─── provider 默认端点 ───────────────────────────────────────────────────────
-export type ProviderId = 'openrouter' | 'openai' | 'custom';
+export type ProviderId = 'openrouter' | 'openai' | 'custom' | 'typesafe';
 
 const PROVIDER_BASE_URL: Record<ProviderId, string> = {
   openrouter: 'https://openrouter.ai/api/v1',
   openai: 'https://api.openai.com/v1',
-  custom: ''
+  custom: '',
+  // TypeSafe AI Jev「System One 决策模型」端点（非 LLM，独立 /systemone）。
+  typesafe: 'https://api.typesafe.ai/v1'
 };
 
-const PROVIDER_WHITELIST = new Set<string>(['openrouter', 'openai', 'custom']);
+const PROVIDER_WHITELIST = new Set<string>([
+  'openrouter',
+  'openai',
+  'custom',
+  'typesafe'
+]);
 
 // ─── P2.3 密钥轮换提醒阈值 ────────────────────────────────────────────────────
 // 超过该天数未更新（即未重新保存）的 Key 标记为 needs_rotation，前端提示用户轮换。
@@ -445,6 +452,31 @@ export async function resolveRunCredential(
 
   // 5. 无凭据。
   return { source: 'none' };
+}
+
+// ─── TypeSafe AI（Jev）按用户凭据解析 ─────────────────────────────────────────
+/**
+ * 解析某用户存储的 TypeSafe AI（Jev 决策模型）Key，用于按用户隔离地启用
+ * builtin__jev_decide 工具（前端 BYOK 面板存 Key，运行期注入，绝不写入 process.env）。
+ * 与 resolveRunCredential 解耦：Jev 不是 LLM，不经过 model/provider 推断。
+ *
+ * @returns 解密后的明文 Key 与用户填写的 baseUrl；无则回空（调用方回落 env 或保持未注册）。
+ */
+export async function resolveJevCredential(
+  owner: string
+): Promise<{ apiKey?: string; baseUrl?: string }> {
+  try {
+    const row = await getUserProviderKey(owner, 'typesafe');
+    if (row?.keyCipher) {
+      const plain = decryptApiKey(row.keyCipher);
+      if (plain) {
+        return { apiKey: plain, baseUrl: row.baseUrl || undefined };
+      }
+    }
+  } catch {
+    /* DB 未就绪等：回落 env（builtins 内部仍读 TYPESAFE_API_KEY） */
+  }
+  return {};
 }
 
 // ─── 连通性校验（OpenRouter /key）────────────────────────────────────────────
