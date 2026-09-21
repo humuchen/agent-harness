@@ -76,6 +76,8 @@ import {
 import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
 import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify';
 import { runAgentTask } from './agent-run';
+// md 交付文件预览（?preview=1）的服务端格式转换：markdown → HTML。
+import { markdownPreviewHtml } from './markdown-preview';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
 import {
@@ -2911,8 +2913,20 @@ const server = createServer(
             res.end(JSON.stringify({ error: 'artifact content not found' }));
             return;
           }
+          // md 预览：服务端转成 HTML 渲染页（下载仍返回原始 markdown）。
+          if (preview && meta.mimeType === 'text/markdown') {
+            const html = markdownPreviewHtml(buf.toString('utf8'), meta.name);
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'content-disposition': `inline; filename="${encodeURIComponent(meta.name)}"`,
+              'content-length': Buffer.byteLength(html)
+            });
+            res.end(html);
+            return;
+          }
+          // 其余类型（txt/csv/json 等）维持原行为：inline 按原 mimeType 打开。
           res.writeHead(200, {
-            'content-type': preview && meta.mimeType === 'text/markdown' ? 'text/plain; charset=utf-8' : meta.mimeType,
+            'content-type': meta.mimeType,
             'content-disposition': `${dl ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
             'content-length': buf.length
           });
@@ -4387,6 +4401,16 @@ async function handleRun(
         if (ev.caller === 'tool') break;
         traceEnsureRoot();
         const jParent = traceLlm ?? traceParent ?? traceRoot!;
+        // 问题（输入）与输出（决策）记录：展开在调用链节点内，便于直接看清「问了什么 / 回了什么」。
+        // 仅在存在时附带，失败时回落为 error 文本（与既有行为一致）。
+        const jDetail =
+          ev.questionSpec && typeof ev.questionSpec === 'object'
+            ? JSON.stringify(ev.questionSpec, null, 2)
+            : undefined;
+        const jResultOk =
+          ev.ok !== false && ev.answers && typeof ev.answers === 'object'
+            ? JSON.stringify(ev.answers, null, 2)
+            : undefined;
         const jMeta: Record<string, string> = {
           jev: 'true',
           调用方: String(ev.caller ?? '?'),
@@ -4398,6 +4422,8 @@ async function handleRun(
         };
         traceNode(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
           ...(ev.error ? { result: String(ev.error) } : {}),
+          ...(jDetail ? { detail: jDetail } : {}),
+          ...(jResultOk ? { result: jResultOk } : {}),
           meta: jMeta
         });
         break;
@@ -5482,9 +5508,12 @@ async function handleWorkflow(
           : undefined,
       tenantId: typeof body.tenantId === 'string' ? body.tenantId : undefined,
       traceId: typeof body.traceId === 'string' ? body.traceId : undefined,
-      // P5 执行顺序：缺省串行（单步发送，桥内默认）；显式 execMode:'parallel' 回波次并行。
+      // P5 执行顺序（2026-09-20 起自动决策）：缺省（未传）由计划桥按 DAG 形状决定
+      // （波宽 > 1 → 有界并行；纯链 → 串行）；显式 'parallel' / 'serial' 覆盖自动决策。
       execMode:
-        body.execMode === 'parallel' ? 'parallel' : undefined
+        body.execMode === 'parallel' || body.execMode === 'serial'
+          ? body.execMode
+          : undefined
     });
   }
   if (

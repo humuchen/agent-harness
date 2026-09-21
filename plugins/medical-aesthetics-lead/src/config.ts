@@ -72,6 +72,24 @@ export interface MaConfig {
   adminToken: string;
   /** CRM 同步发件箱（至少一次投递）。 */
   outbox: { enabled: boolean; intervalMs: number; maxAttempts: number; batchSize: number };
+  /** 渠道触达网关（对客主动消息出站：回捞/欢迎/生日/复购提醒）。未配置时消息积压 pending，绝不假装已发送。 */
+  outreach: UpstreamConfig;
+  /** 定时调度器（B3）：SOP 任务规划 + 到期任务消费。 */
+  scheduler: {
+    enabled: boolean;
+    intervalMs: number;
+    batchSize: number;
+    /** 沉默回捞第一节点（小时，默认 2h）。 */
+    recallFirstHours: number;
+    /** 沉默回捞第二节点（小时，默认 24h）。 */
+    recallSecondHours: number;
+    /** 回捞开关。 */
+    recallEnabled: boolean;
+    /** 欢迎语开关。 */
+    welcomeEnabled: boolean;
+    /** 欢迎语仅对近期新建线索排期（小时窗口），避免给历史存量线索补发欢迎语。 */
+    welcomeWindowHours: number;
+  };
   /** 入站消息触发 agent 的 A2A 入口（平台自身 /api/a2a/tasks）。 */
   a2a: { baseUrl: string; timeoutMs: number };
 }
@@ -167,6 +185,17 @@ export function getConfig(): MaConfig {
       maxAttempts: int('MA_OUTBOX_MAX_ATTEMPTS', 8),
       batchSize: int('MA_OUTBOX_BATCH_SIZE', 20),
     },
+    outreach: upstream('MA_OUTREACH'),
+    scheduler: {
+      enabled: process.env.MA_SCHEDULER_ENABLED !== 'false',
+      intervalMs: int('MA_SCHEDULER_INTERVAL_MS', 60000),
+      batchSize: int('MA_SCHEDULER_BATCH_SIZE', 50),
+      recallFirstHours: int('MA_SCHEDULER_RECALL_FIRST_H', 2),
+      recallSecondHours: int('MA_SCHEDULER_RECALL_SECOND_H', 24),
+      recallEnabled: process.env.MA_SCHEDULER_RECALL !== 'false',
+      welcomeEnabled: process.env.MA_SCHEDULER_WELCOME !== 'false',
+      welcomeWindowHours: int('MA_SCHEDULER_WELCOME_WINDOW_H', 24),
+    },
     a2a: {
       baseUrl: (process.env.MA_A2A_BASE_URL ?? process.env.AGENT_A2A_BASE_URL ?? '')
         .trim()
@@ -196,6 +225,13 @@ export function configSummary(): Record<string, unknown> {
     webhook: { configured: c.webhookSecret.length > 0 },
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,
+    outreach: { enabled: c.outreach.enabled, baseUrl: c.outreach.baseUrl || null, hasToken: c.outreach.token.length > 0 },
+    scheduler: {
+      enabled: c.scheduler.enabled,
+      intervalMs: c.scheduler.intervalMs,
+      recall: { enabled: c.scheduler.recallEnabled, firstHours: c.scheduler.recallFirstHours, secondHours: c.scheduler.recallSecondHours },
+      welcome: { enabled: c.scheduler.welcomeEnabled, windowHours: c.scheduler.welcomeWindowHours },
+    },
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
   };
 }

@@ -24,6 +24,7 @@ import {
   fileIcon,
   formatSize,
   buildPlanStatusLookup,
+  mergePlanStatusLookup,
   derivePlanExecFromMessages,
   applyPlanWfEvent,
   applyPlanThinking,
@@ -31,6 +32,11 @@ import {
   compactPlanWfSnapshot,
   isPlanDagEnabled,
   buildPlanArtifactSection,
+  buildPlanReportFileName,
+  buildPlanFinalReport,
+  planOutputsFromRun,
+  hasPlanArtifactSection,
+  PLAN_FINAL_ARTIFACT_NOTE,
   filterPlanSingleStep,
   recoverPlanFinalResult,
   type PlanWfEvent,
@@ -1787,7 +1793,16 @@ export class AhChat extends LitElement {
           clean.some((m) => (m as any).plan) ||
           !!(mirrored && mirrored.msgs.some((m) => (m as any).plan));
         // 先取计划进度镜像查找表（以服务端为权威源）；待线程按新 id 重建后再应用。
-        const planStatusLookup = buildPlanStatusLookup(clean);
+        // P2.7 对账接线（修复「定义了但零调用点」）：本地历史镜像的 planStatus 参与
+        // 合并（mergePlanStatusLookup 取进度等级更高的一方）。服务端会话存储丢
+        // planStatus（重启回落 / 未配 CHAT_SESSIONS_FILE）或拉取失败时，本地镜像
+        // 是唯一进度来源 —— 缺它则恢复链整体失效 → 卡片回退「待确认」→ 从 t1 全量重跑。
+        const planStatusLookup = mirrored?.msgs?.length
+          ? mergePlanStatusLookup(
+              buildPlanStatusLookup(clean),
+              buildPlanStatusLookup(mirrored.msgs as ChatMsg[])
+            )
+          : buildPlanStatusLookup(clean);
         let base: ChatMsg[];
         if (isPlanSession) {
           const mirrorMsgs =
@@ -1835,6 +1850,9 @@ export class AhChat extends LitElement {
         })) as ChatMsg[];
         // 线程已按新 id 重建：把服务端镜像里的计划进度还原到 planExec（新消息 id 对齐）。
         this.applyPlanStatusLookup(id, planStatusLookup);
+        // P4.6 恢复自愈：planExec 就位后重挂「📎 交付文件」区（镜像 content 缺区块时自愈，
+        // 幂等 + 失败静默，见 reattachPlanDeliverables）。
+        await this.reattachPlanDeliverables(id);
         this.restoreFailed[id] = false;
       } catch (err) {
         // 恢复失败：绝不清空 / 覆盖本地已有记录。降级阶梯：
@@ -1861,6 +1879,8 @@ export class AhChat extends LitElement {
           // 降级路径同样还原计划进度（镜像字段 + 线程反推），否则已执行完成的计划
           // 会退回「待确认」并重新显示「确认执行 / 取消」。
           this.applyPlanStatusLookup(id, buildPlanStatusLookup(mirrored.msgs));
+          // 降级路径同样自愈重挂交付文件区（与主路径同语义）。
+          await this.reattachPlanDeliverables(id);
           notify.warning(
             '服务端历史拉取失败，已从历史镜像恢复（可能非最新）。',
             {
@@ -3678,7 +3698,21 @@ export class AhChat extends LitElement {
             ...(run ? { wfSnapshot: compactPlanWfSnapshot(run) } : {})
           }
         };
-        if (state === 'done' && run) this.appendPlanDagSummary(sid, m, run);
+        if (state === 'done' && run) {
+          const summaryMsgId = this.appendPlanDagSummary(sid, m, run);
+          // P4.6 交付文件闭环（断连自愈收敛路径）：补齐汇总报告 + 文件区；
+          // 此入口无调用方统一落盘，attach 修改了摘要消息时就地 saveHistory。
+          if (
+            await this.attachPlanDeliverables(
+              sid,
+              m,
+              summaryMsgId,
+              planOutputsFromRun(run)
+            )
+          ) {
+            this.saveHistory(sid);
+          }
+        }
         this.stopPlanWfReconcile(m.id);
       } else if (state === 'awaiting') {
         this.planExec = {
@@ -3910,6 +3944,10 @@ export class AhChat extends LitElement {
           thinking: { taskId: task.id, text: '' }
         };
         this.planExec = { ...this.planExec, [m.id]: cur };
+        // 派发前落盘进度：镜像永远表达「正在执行 tX + 之前已完成」。中断（刷新 /
+        // 断连 / 崩溃）恢复时 running 收敛为 failed + failedTaskId=tX，done 集合
+        // 完整保留 —— 「从失败任务继续」从真实断点续跑，而不是回退 t1 全量重跑。
+        this.saveHistory(sid);
         const parts = [`【计划任务 ${task.id}】${task.title}`];
         if (task.steps.length) {
           parts.push('步骤：', ...task.steps.map((s, i) => `${i + 1}. ${s}`));
@@ -3980,6 +4018,11 @@ export class AhChat extends LitElement {
             };
           }
           this.planExec = { ...this.planExec, [m.id]: cur };
+          // 终态必须落历史镜像（saveHistory 经 stampPlanStatus 把 planStatus 写穿到
+          // 计划卡消息，双写本地镜像 + 服务端历史存储）。否则刷新 / 重开后若服务端
+          // 拉取失败走本地镜像降级，镜像停留在执行前 —— planExec 恢复缺失 → 卡片
+          // 回退「待确认」，点「确认执行」即从 t1 全量重跑（实测反馈缺陷）。
+          this.saveHistory(sid);
           return;
         }
         // 抽取本任务产出（隐藏 assistant 消息正文），随后把 quiet 消息对移出线程。
@@ -4024,12 +4067,13 @@ export class AhChat extends LitElement {
       );
     }
     const tFinal = this.threadFor(sid);
-    tFinal.push({ id: this.nextId++, role: 'assistant', content: lines.join('\n') });
+    const summaryMsgId = this.nextId++;
+    tFinal.push({ id: summaryMsgId, role: 'assistant', content: lines.join('\n') });
     this.threads[sid] = tFinal;
     if (this.activeId === sid) this.messages = tFinal;
-    // P5：串行回退路径「摘要 + 最终结果」需落历史镜像，否则刷新后服务端会话存储
-    // （不含摘要、混有单步噪声）会覆盖本端干净线程，导致刷新丢失最终结果 / 复现单步气泡。
-    this.saveHistory(sid);
+    // 先置 done 再 attach：attachPlanDeliverables 仅在 planExec.status==='done' 时
+    // 工作（与后端「仅 done run 归档」同语义），旧顺序（saveHistory 后才置 done）
+    // 会让交付文件归档/渲染被 status 门禁挡掉。
     cur = {
       ...cur,
       status: 'done',
@@ -4038,6 +4082,11 @@ export class AhChat extends LitElement {
       thinking: undefined
     };
     this.planExec = { ...this.planExec, [m.id]: cur };
+    // P4.6 交付文件闭环：归档「计划执行报告」汇总文件 + 在摘要底部追加「📎 交付文件」区。
+    await this.attachPlanDeliverables(sid, m, summaryMsgId, taskOutputs);
+    // P5：串行回退路径「摘要 + 最终结果」需落历史镜像，否则刷新后服务端会话存储
+    // （不含摘要、混有单步噪声）会覆盖本端干净线程，导致刷新丢失最终结果 / 复现单步气泡。
+    this.saveHistory(sid);
   }
 
   /**
@@ -4361,7 +4410,17 @@ export class AhChat extends LitElement {
         }
         if (e.type === 'wf:done' || e.type === 'wf:failed') {
           // 编排终态：回挂摘要并停止消费后续帧（_wf_done 收尾帧无需再处理）。
-          this.appendPlanDagSummary(sid, m, e.run);
+          const summaryMsgId = this.appendPlanDagSummary(sid, m, e.run);
+          // P4.6 交付文件闭环：done 时归档汇总报告 + 把「📎 交付文件」区追加到摘要。
+          // 修改摘要发生在调用方 terminal 后的 saveHistory 之前，落盘自然带上文件区。
+          if (e.type === 'wf:done') {
+            await this.attachPlanDeliverables(
+              sid,
+              m,
+              summaryMsgId,
+              planOutputsFromRun(e.run)
+            );
+          }
           // P2.6：终态快照紧凑化落入 planExec（随 saveHistory 写穿到 planStatus 镜像）——
           // 检查点在服务重启 / free 盘清理后丢失时，「执行详情」抽屉据此回退水合。
           const snap = compactPlanWfSnapshot(e.run);
@@ -4388,8 +4447,24 @@ export class AhChat extends LitElement {
                   .map((x) => x.id ?? '')
                   .filter(Boolean)
               : [];
-          if (run?.steps && rs !== 'awaiting')
-            this.appendPlanDagSummary(sid, m, run);
+          if (run?.steps && rs !== 'awaiting') {
+            const summaryMsgId = this.appendPlanDagSummary(sid, m, run);
+            // P4.6 交付文件闭环（兜底帧同主路径）：先收敛 planExec 终态再 attach——
+            // attach 仅在 status==='done' 时工作，此分支的置 done 在下方统一进行，
+            // 故 done 时先就地置位再调用（与串行路径同款时序修正）。
+            if (rs === 'done') {
+              this.planExec = {
+                ...this.planExec,
+                [m.id]: { ...s, status: 'done', currentTaskId: undefined }
+              };
+              await this.attachPlanDeliverables(
+                sid,
+                m,
+                summaryMsgId,
+                planOutputsFromRun(run)
+              );
+            }
+          }
           // P2.6：收尾帧兜底同样落快照（含 awaiting 暂停态的 partial 快照——审批等待中
           // 刷新后抽屉仍可回看已执行节点的轨迹）。
           const snap = compactPlanWfSnapshot(run);
@@ -4571,22 +4646,90 @@ export class AhChat extends LitElement {
   }
 
   /**
-   * P4.6：终态后拉取本 plan run 归档的「交付文件」并追加到执行摘要消息最下方
-   * （每文件 打开 /api/artifacts/<id>?preview=1 + 下载 ?download=1，markdown 渲染为可点链接）。
-   * 仅全成功（planExec.status==='done'）且无失败时展示——与后端「仅 done run 归档」同语义。
-   * 拉取 / 渲染失败静默降级（console.warn），绝不影响计划主流程与已 push 的摘要。
-   * @returns 是否成功追加了文件区（供 saveHistory 判断是否需落盘更新）。
+   * P4.6（交付文件闭环）：plan 终态后把「可下载结果文件」接到执行摘要消息上。
+   *
+   * 两步：
+   * 1. 幂等归档「计划执行报告」汇总文件（note=__plan_final__）——串行路径此前完全
+   *    没有归档、DAG 路径只归档逐任务文件而缺一份「拿走全部」的汇总，用户拿不到
+   *    可下载的结果文件；此处由前端统一生成（goal 只在前端可得，服务端 def 无该字段），
+   *    POST /api/artifacts 落盘。resume / 兜底帧 / 断连自愈多重接线靠 note 去重，不重复归档。
+   * 2. 拉取本 run（runId=derivePlanWfId，与 DAG 归档同键）名下全部交付文件，
+   *    追加「📎 交付文件」区到执行摘要消息最下方（打开 preview=1 + 下载 download=1）。
+   *
+   * 仅全成功（planExec.status==='done'）才执行——与后端「仅 done run 归档」同语义；
+   * 归档 / 拉取 / 渲染失败静默降级（console.warn），绝不影响计划主流程与已 push 的摘要。
+   * @param outputs taskId → 产出全文（串行传 taskOutputs；DAG 传 planOutputsFromRun(run) 提取结果）。
+   * @returns 是否修改了摘要消息（供调用方判断是否需要 saveHistory 落盘）。
    */
-  private async appendPlanDagArtifactSection(
+  private async attachPlanDeliverables(
     sid: string,
     m: ChatMsg,
     summaryMsgId: number | undefined,
-    wfId: string | undefined
+    outputs: Record<string, string>
   ): Promise<boolean> {
-    if (summaryMsgId == null || !wfId) return false;
-    // 仅成功完成的计划才展示交付文件（后端对 failed run 不归档）。
+    if (summaryMsgId == null || !m.plan) return false;
+    // 仅成功完成的计划才交付文件（failed / cancelled 无「最终交付物」，与后端同语义）。
     const status = this.planExec[m.id]?.status;
     if (status !== 'done') return false;
+    const wfId = derivePlanWfId(sid, m.plan);
+    const hasOutput = Object.values(outputs).some((s) => s && s.trim());
+    if (hasOutput) {
+      try {
+        // 幂等检查：本 runId 已有汇总报告（resume 重放 / 多重接线）则跳过归档。
+        let alreadyArchived = false;
+        const listRes = await authedFetch(
+          `/api/artifacts?runId=${encodeURIComponent(wfId)}`
+        );
+        if (listRes.ok) {
+          const data = (await listRes.json()) as {
+            items?: Array<{ note?: string }>;
+          };
+          alreadyArchived = (data.items ?? []).some(
+            (a) => a?.note === PLAN_FINAL_ARTIFACT_NOTE
+          );
+        }
+        if (!alreadyArchived) {
+          // attach 仅在 status==='done' 时到达 → 报告状态清单全部按 done 呈现。
+          const report = buildPlanFinalReport(
+            m.plan.goal,
+            m.plan.tasks.map((t) => ({
+              id: t.id,
+              title: t.title,
+              state: 'done' as const
+            })),
+            outputs
+          );
+          // UTF-8 安全的 base64（btoa 仅接受 latin1，先经 TextEncoder 逐字节桥接）。
+          const bytes = new TextEncoder().encode(report);
+          let bin = '';
+          for (const b of bytes) bin += String.fromCharCode(b);
+          const postRes = await authedFetch('/api/artifacts', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              name: buildPlanReportFileName(m.plan.goal),
+              // 与服务端 plan-artifacts 归档同 kind：前端按 runId 聚合时同区展示。
+              kind: 'plan-step-output',
+              mimeType: 'text/markdown',
+              contentBase64: btoa(bin),
+              runId: wfId,
+              note: PLAN_FINAL_ARTIFACT_NOTE
+            })
+          });
+          if (!postRes.ok) {
+            console.warn(
+              `[plan-artifacts] 汇总报告归档失败（不阻断）：HTTP ${postRes.status}`
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(
+          `[plan-artifacts] 汇总报告归档失败（不阻断）：${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+    }
     let items: import('./chat-render-utils').PlanArtifactItem[];
     try {
       const res = await authedFetch(
@@ -4620,6 +4763,61 @@ export class AhChat extends LitElement {
     this.threads[sid] = t;
     if (this.activeId === sid) this.messages = t;
     return true;
+  }
+
+  /**
+   * P4.6 恢复自愈：刷新 / 切回会话后，把「📎 交付文件」区重挂到已完成计划的执行摘要上。
+   *
+   * 为何需要：交付区在 run 终态由 attachPlanDeliverables 拼进摘要 content、再随
+   * saveHistory 落历史镜像——这条链路是异步尽力而为（镜像写入 6s 超时静默降级 /
+   * 服务端重启丢 SQLite 临时库 / 会话超限裁剪），任一环节缺失即表现为
+   * 「刷新后交付文件区消失」（用户实测反馈）。
+   *
+   * 语义：与归档解耦（本方法**只 GET + 拼接**，绝不重复归档——汇总报告幂等键
+   * note=__plan_final__ 的检查与 POST 只存在于 attachPlanDeliverables）；幂等
+   * （content 已含区块标记则跳过）；失败静默（恢复自愈绝不打断会话还原、不弹错）。
+   * 无已完成计划的会话零网络请求（先扫描再拉取）。
+   */
+  private async reattachPlanDeliverables(sid: string): Promise<void> {
+    const t = this.threads[sid];
+    if (!t?.length) return;
+    // 先扫描需要自愈的（plan + status==='done' + content 尚无交付区）消息，避免无关会话白发请求。
+    const targets = t.filter(
+      (m) =>
+        !!m.plan &&
+        this.planExec[m.id]?.status === 'done' &&
+        !hasPlanArtifactSection(m.content)
+    );
+    if (!targets.length) return;
+    let changed = false;
+    for (const m of targets) {
+      try {
+        const wfId = derivePlanWfId(sid, m.plan!);
+        const res = await authedFetch(
+          `/api/artifacts?runId=${encodeURIComponent(wfId)}`
+        );
+        if (!res.ok) continue;
+        const data = (await res.json()) as {
+          items?: Array<{ id: string; name: string; sizeBytes: number }>;
+        };
+        const section = buildPlanArtifactSection(
+          Array.isArray(data.items) ? data.items : []
+        );
+        if (!section) continue;
+        // 双检：await 期间消息可能已被并发 attach（断连自愈 poll 等）——再查一次标记。
+        const cur = this.threads[sid]?.find((x) => x.id === m.id);
+        if (!cur || hasPlanArtifactSection(cur.content)) continue;
+        cur.content = `${cur.content}${section}`;
+        changed = true;
+      } catch {
+        /* 静默：镜像/接口任一环失败都不打断恢复 */
+      }
+    }
+    if (changed) {
+      // 触发 Lit 重渲染（threads 数组替换引用；active 会话同步 messages）。
+      this.threads[sid] = [...(this.threads[sid] ?? [])];
+      if (this.activeId === sid) this.messages = this.threads[sid];
+    }
   }
 
   /**

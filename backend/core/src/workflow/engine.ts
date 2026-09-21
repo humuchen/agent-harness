@@ -445,7 +445,7 @@ export class DagEngine {
         if (def.execMode === 'serial') {
           for (const id of wave) await runWaveStep(id);
         } else {
-          await Promise.all(wave.map(runWaveStep));
+          await this.runWaveParallel(def, wave, runWaveStep);
         }
       }
       run.state = 'done';
@@ -693,7 +693,7 @@ export class DagEngine {
       if (run.def.execMode === 'serial') {
         for (const id of wave) await resumeWaveStep(id);
       } else {
-        await Promise.all(wave.map(resumeWaveStep));
+        await this.runWaveParallel(run.def, wave, resumeWaveStep);
       }
       if (stepFailed) break;
     }
@@ -718,6 +718,58 @@ export class DagEngine {
     await this.store.save(run);
     this.emit({ type: 'wf:done', workflowId, run });
     return run;
+  }
+
+  /**
+   * 波次并行执行（带可选并发上限，P5 自动串/并决策的健壮性配套）。
+   *
+   * - `def.maxConcurrency` 为正整数时走**工作池**模式：保序取任务、完成一个补一个；
+   *   缺省 / 非法值 = `Promise.all` 全并发（存量手工工作流零回归）。
+   * - 失败语义与全并发一致：
+   *   - run() 路径 `runStep` 抛错（fail-fast）→ 首个异常经 Promise.all 传播给引擎 catch
+   *     （补偿 + wf:failed）；此后工作池**不再拉起新任务**（在途 step 自然跑完并落检查点，
+   *     resume 时按已完成状态跳过，不浪费已产出的结果）。
+   *   - resume 路径 `runStep` 不抛错（内部以 stepFailed 标记），池会把波次内剩余任务
+   *     正常消费完 —— 与原 Promise.all 语义一致（收集完本波再收敛 failed）。
+   * - 单线程事件循环保证波次内并发 step 对 `outputs` 的写入互不竞争（key 各异）；
+   *   跨波依赖仍由 topoWaves 顺序保证（本波全部完成才进下一波）。
+   */
+  private async runWaveParallel(
+    def: WorkflowDef,
+    wave: string[],
+    runStep: (id: string) => Promise<void>
+  ): Promise<void> {
+    const raw = def.maxConcurrency;
+    const limit =
+      typeof raw === 'number' && Number.isFinite(raw) && raw >= 1
+        ? Math.floor(raw)
+        : Infinity;
+    if (limit >= wave.length) {
+      await Promise.all(wave.map(runStep));
+      return;
+    }
+    let next = 0;
+    let failed = false;
+    const workerCount = Math.min(limit, wave.length);
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < workerCount; i++) {
+      workers.push(
+        (async () => {
+          while (next < wave.length) {
+            if (failed) break; // fail-fast：不再拉起新任务（在途的自然跑完）
+            const id = wave[next++];
+            if (id === undefined) break; // noUncheckedIndexedAccess 防御
+            try {
+              await runStep(id);
+            } catch (e) {
+              failed = true;
+              throw e;
+            }
+          }
+        })()
+      );
+    }
+    await Promise.all(workers);
   }
 }
 

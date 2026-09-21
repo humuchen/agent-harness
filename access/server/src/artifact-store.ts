@@ -5,7 +5,9 @@
  * 设计沿用本项目一贯的「接口 + 默认实现 + 组合工厂」：
  * - `ArtifactStore` 是契约（list / get / save / readContent / remove）；
  * - 默认实现 `LocalArtifactStore` 把索引写 `<ARTIFACT_DIR>/index.json`、把字节写 `<ARTIFACT_DIR>/files/<id>`；
- * - 后续可新增 `S3ArtifactStore` / `GcsArtifactStore` 实现同一接口，路由层零改动。
+ * - `S3ArtifactStore`（`./artifact-store-s3.js`）把同一模型落到 S3 兼容对象存储，
+ *   供 Render 等临时盘环境跨重启保留工件（P5.7）；
+ * - 工厂按环境变量选择后端：`ARTIFACT_STORE=s3` 且配置了 S3_BUCKET 时用 S3，否则本地盘。
  *
  * 安全：id 仅接受合法 UUID（`crypto.randomUUID()`），所有按 id 的文件访问都经过 `safeId` 校验，
  * 杜绝 `../` 路径遍历；模块自包含，不 import 任何其它项目模块。
@@ -161,11 +163,30 @@ export class LocalArtifactStore implements ArtifactStore {
 
 let storeSingleton: ArtifactStore | null = null;
 
-/** 组合工厂：按环境变量 ARTIFACT_DIR 选择落盘目录（默认 `.data/artifacts`）。 */
+/**
+ * 组合工厂：按环境变量选择后端（P5.7）。
+ * - `ARTIFACT_STORE=s3` 且 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY 齐备
+ *   → `S3ArtifactStore`（S3 兼容对象存储，跨重启 / 临时盘环境保留工件）；
+ * - 否则 → `LocalArtifactStore`，落盘目录 `ARTIFACT_DIR`（默认 `.data/artifacts`）。
+ * 切换后端不迁移历史数据（两种后端索引格式一致，本地旧工件需手动导入）。
+ */
 export function getArtifactStore(env: NodeJS.ProcessEnv = process.env): ArtifactStore {
   if (!storeSingleton) {
-    const dir = env.ARTIFACT_DIR || '.data/artifacts';
-    storeSingleton = new LocalArtifactStore(dir);
+    if (env.ARTIFACT_STORE === 's3') {
+      // 惰性 require：仅 S3 后端加载该模块，避免本地部署无谓加载（同时规避静态循环依赖）。
+      const { S3ArtifactStore } =
+        require('./artifact-store-s3.js') as typeof import('./artifact-store-s3.js');
+      const s3 = S3ArtifactStore.fromEnv(env);
+      if (!s3) {
+        throw new Error(
+          'ARTIFACT_STORE=s3 但缺少 S3_BUCKET / S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY 配置'
+        );
+      }
+      storeSingleton = s3;
+    } else {
+      const dir = env.ARTIFACT_DIR || '.data/artifacts';
+      storeSingleton = new LocalArtifactStore(dir);
+    }
   }
   return storeSingleton;
 }

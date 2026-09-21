@@ -39,6 +39,9 @@ export const leadManifest: PluginManifest = {
       'medical-aesthetics-lead__lead_capture',
       'medical-aesthetics-lead__consultation_book',
       'medical-aesthetics-lead__lead_handoff',
+      'medical-aesthetics-lead__content_draft',
+      'medical-aesthetics-lead__lead_briefing',
+      'medical-aesthetics-lead__ab_report',
       'delegate_task',
     ],
     // 空数组 = 不启用任何通用技能（math / files / repo-verify 等开发向技能）。

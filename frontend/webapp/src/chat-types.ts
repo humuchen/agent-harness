@@ -71,8 +71,21 @@ export interface PlanExecState {
   /**
    * P5 静默执行：当前任务的思考过程（llm:reasoning 增量累积，随 wf:step:start 重置、
    * wf:step:done/failed/awaiting/终态清空）。瞬态字段 —— 不落 planStatus 镜像（刷新即清）。
+   * 并行执行时该单槽保持「最近接收增量的任务」语义（兼容面），渲染面以 thinkingByTask 为准。
    */
   thinking?: { taskId?: string; text: string };
+  /**
+   * P5 并行执行（2026-09-20）：按任务分槽的思考流（stepId → 文本累积）。
+   * 多任务同波并发时各任务思考互不覆盖；串行时仅一个槽位，与 thinking 单槽一致。
+   * 渲染面：thinkingByTask 非空时按 plan.tasks 序分块展示；空/缺省回落 thinking 单槽
+   * （刷新恢复的旧态）。瞬态字段，不落 planStatus 镜像。
+   */
+  thinkingByTask?: Record<string, string>;
+  /**
+   * P5 并行执行（2026-09-20）：在跑任务集合（串行时长度 ≤ 1，与 currentTaskId 一致；
+   * 旧态/恢复缺省时渲染以 currentTaskId 兜底）。瞬态字段，不落 planStatus 镜像。
+   */
+  runningTaskIds?: string[];
   /**
    * P2.6：紧凑 run 快照（wf:done/wf:failed/_wf_done 帧的 run 经 compactPlanWfSnapshot 收敛）。
    * 随 planStatus 镜像落会话历史（见 chat-persist.toMirrorPlanStatus）：检查点在服务重启 /

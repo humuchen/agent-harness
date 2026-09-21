@@ -248,6 +248,89 @@ CREATE TABLE IF NOT EXISTS ma_inbound_message (
   UNIQUE(tenant_id, channel, external_id)
 );
 CREATE INDEX IF NOT EXISTS ix_inbound_state ON ma_inbound_message(state, received_at);
+
+-- 定时任务（回捞 2h/24h / 欢迎语 / 生日 / 复购提醒）。
+-- scheduled_key UNIQUE 保证同一（线索, 节点）只排一次；到期由 scheduler tick 消费，
+-- 产出对客消息进 ma_outbox（topic=outreach.send）走至少一次投递。
+CREATE TABLE IF NOT EXISTS ma_schedule_job (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  job_type      TEXT NOT NULL,
+  lead_id       TEXT NOT NULL,
+  scheduled_key TEXT NOT NULL UNIQUE,
+  due_at        INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  payload       TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sched_due  ON ma_schedule_job(tenant_id, status, due_at);
+CREATE INDEX IF NOT EXISTS ix_sched_lead ON ma_schedule_job(tenant_id, lead_id, job_type);
+
+-- 内容生产与先审后发（D8/D9）：草稿 → 送审 → 过审/驳回 → 发布。
+-- 状态机：draft（手动草稿）→ review（送审/模板与 LLM 直接入审）→ approved / rejected → published。
+-- 约束：所有入审文案必须先过 medicalAdRules 筛查；未过审（approved 之前）绝不发布；
+-- 发布经渠道网关 POST /v1/content/publish，幂等键 content:{content_id}，失败保留 approved 可重试。
+CREATE TABLE IF NOT EXISTS ma_content (
+  content_id     TEXT PRIMARY KEY,
+  tenant_id      TEXT NOT NULL DEFAULT 'default',
+  platform       TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  body           TEXT NOT NULL,
+  project        TEXT,
+  source         TEXT NOT NULL DEFAULT 'manual',
+  state          TEXT NOT NULL DEFAULT 'draft',
+  review_reason  TEXT,
+  reviewed_by    TEXT,
+  reviewed_at    INTEGER,
+  published_at   INTEGER,
+  publish_ref    TEXT,
+  publish_error  TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_content_state    ON ma_content(tenant_id, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS ix_content_platform ON ma_content(tenant_id, platform, state);
+
+-- A/B 分流实验（E 组：只看厂商宣称数据 → 自做 A/B）。
+-- experiment：实验定义（topic 精确匹配 SOP 任务 topic：welcome / recall_first / recall_second /
+--   birthday / repurchase；metric 决定转化口径 reply|booking|arrived）。
+-- variant：变体文案（入表前过医疗广告合规筛查；发送时统一追加风险提示）。
+-- assignment：sticky 分流落库（确定性哈希 + UNIQUE(experiment_id, lead_id)——同一线索永远同一变体）。
+-- 转化不落独立事件表：报表按 assignment 时间 join 既有真实表（ma_lead_message / ma_appointment），
+-- 不改预约/消息写路径，杜绝双写漂移。
+CREATE TABLE IF NOT EXISTS ma_ab_experiment (
+  experiment_id TEXT PRIMARY KEY,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  name          TEXT NOT NULL,
+  topic         TEXT NOT NULL,
+  metric        TEXT NOT NULL DEFAULT 'booking',
+  status        TEXT NOT NULL DEFAULT 'running',
+  created_at    INTEGER NOT NULL,
+  stopped_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_ab_exp_topic ON ma_ab_experiment(tenant_id, topic, status);
+
+CREATE TABLE IF NOT EXISTS ma_ab_variant (
+  experiment_id TEXT NOT NULL,
+  variant_key   TEXT NOT NULL,
+  text          TEXT NOT NULL,
+  weight        INTEGER NOT NULL DEFAULT 50,
+  PRIMARY KEY (experiment_id, variant_key)
+);
+
+CREATE TABLE IF NOT EXISTS ma_ab_assignment (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  experiment_id TEXT NOT NULL,
+  lead_id       TEXT NOT NULL,
+  variant_key   TEXT NOT NULL,
+  assigned_at   INTEGER NOT NULL,
+  UNIQUE(experiment_id, lead_id)
+);
+CREATE INDEX IF NOT EXISTS ix_ab_assign_exp ON ma_ab_assignment(tenant_id, experiment_id, variant_key);
 `;
 
 /**
@@ -533,6 +616,9 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
       'ma_appointment',
       'ma_outbox',
       'ma_inbound_message',
+      'ma_schedule_job',
+      'ma_content',
+      'ma_ab_experiment',
     ]) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);

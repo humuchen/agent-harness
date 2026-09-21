@@ -373,23 +373,34 @@ export class RoleBasedAuthorizer implements Authorizer {
 // 账户密码身份源（注册/登录 + 服务端签发 7 天 token + cookie）
 // ---------------------------------------------------------------------------
 
-/** 从请求读取账户 token：优先 Cookie（浏览器自动带），其次 Authorization Bearer，再次 ?token=（API 客户端兼容）。 */
-function accountTokenRaw(req: IncomingMessage): string | null {
+/** 账户 token 读取结果：raw 值 + 携带来源（cookie / Authorization 头 / ?token= 查询参数）。 */
+type AccountTokenSource = 'cookie' | 'header' | 'query';
+
+/** 来源标记的消费语义（AccountAuthorizer.authenticate）：浏览器直接导航（<a> 点击、window.open、
+ * 地址栏）只自动携带 HttpOnly cookie，物理上无法附加 x-ah-username 自定义头；cookie 来源因此
+ * 跳过双因子头校验（HttpOnly cookie 即会话凭据，JS 不可读、无法在会话外重放，不扩大攻击面）。
+ * header / query 来源仍要求 x-ah-username 头与 token 内签名 username 一致（防泄漏 token 被冒用）。 */
+function accountTokenRaw(
+  req: IncomingMessage
+): { raw: string; source: AccountTokenSource } | null {
   const fromCookie = cookieValue(req, AUTH_COOKIE);
-  if (fromCookie) return fromCookie;
+  if (fromCookie) return { raw: fromCookie, source: 'cookie' };
   const auth = req.headers['authorization'];
   if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
-    return auth.slice(7).trim();
+    return { raw: auth.slice(7).trim(), source: 'header' };
   }
   const q = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.get('token');
-  return q;
+  return q ? { raw: q, source: 'query' } : null;
 }
 
 /**
  * AccountAuthorizer：账户密码档的鉴权器。
- * - token 取自 Cookie / Authorization / ?token；
- * - 必须同时存在 x-ah-username 头，且头中 username 与 token 内签名 username 一致
- *   （防客户端只伪造 username 头绕过；服务端以签名为准）；
+ * - token 取自 Cookie / Authorization / ?token（来源见 accountTokenRaw）；
+ * - **cookie 来源**（浏览器直接导航的唯一通道）：验签 + 服务端 token 记录有效即放行，
+ *   不要求 x-ah-username 头——<a> 直连下载/预览（如 /api/artifacts/:id?preview=1）此前
+ *   因此 401（「unauthorized: missing or invalid token」）；
+ * - **header / query 来源**：必须同时存在 x-ah-username 头，且头中 username 与 token 内
+ *   签名 username 一致（防客户端只伪造 username 头绕过；服务端以签名为准）；
  * - 验签 + 服务端 token 记录仍有效（7 天 TTL / 吊销）。
  * 失败返回 null（调用方 401）。
  */
@@ -403,16 +414,24 @@ export class AccountAuthorizer implements Authorizer {
   }
 
   async authenticate(req: IncomingMessage): Promise<AuthContext | null> {
-    const raw = accountTokenRaw(req);
-    if (raw) {
-      const t = parseToken(raw);
-      // 头中的 username 必须存在且与 token 内 username 一致（签名不可伪造，头仅作双因子校验）。
-      const headerUser = req.headers['x-ah-username'];
-      const username = Array.isArray(headerUser) ? headerUser[0] : headerUser;
-      if (t && username && username === t.username && await isTokenValidLocally(t)) {
-        // 角色随 token 下发（issueToken 写入），OAuth/普通账户据此收窄权限，
-        // 不再一律 admin（默认 admin 仅用于向后兼容旧 token）。
-        return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
+    const from = accountTokenRaw(req);
+    if (from) {
+      const t = parseToken(from.raw);
+      if (from.source === 'cookie') {
+        // 浏览器直接导航只带 HttpOnly cookie（带不了自定义头）→ 跳过 username 头校验。
+        if (t && (await isTokenValidLocally(t))) {
+          return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
+        }
+      } else {
+        // Authorization / ?token= 来源维持双因子：头中的 username 必须存在且与 token 内
+        // username 一致（签名不可伪造，头仅作双因子校验）。
+        const headerUser = req.headers['x-ah-username'];
+        const username = Array.isArray(headerUser) ? headerUser[0] : headerUser;
+        if (t && username && username === t.username && await isTokenValidLocally(t)) {
+          // 角色随 token 下发（issueToken 写入），OAuth/普通账户据此收窄权限，
+          // 不再一律 admin（默认 admin 仅用于向后兼容旧 token）。
+          return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
+        }
       }
     }
     // 账户档未命中（无 cookie / 签错 / 过期）→ 回退到 OIDC / proxy / 静态令牌等其它身份源。

@@ -234,6 +234,16 @@ export type HarnessEvent =
       latencyMs: number;
       /** 本次提问数（一次 systemone 调用可携带多个问题）。 */
       questions?: number;
+      /**
+       * 逐问题规格（问题名 -> 问题定义），用于调用链节点展开「问题」记录。
+       * 与 questions(数量) 并存：后者供聚合统计，前者供单条回溯。
+       */
+      questionSpec?: Record<string, unknown>;
+      /**
+       * 归一化后的逐问题决策输出（问题名 -> { type, choice?, probabilities?, score?, noul?, confidence?, criteria? }），
+       * 用于调用链节点展开「输出记录」。失败时缺省（节点改显 error）。
+       */
+      answers?: Record<string, unknown>;
       /** TypeSafe 侧 usage（若响应体携带）；未携带则缺省，成本体系暂不计入。 */
       tokens?: { input: number; output: number };
       /** ok=false 时的错误摘要（HTTP 状态或网络错误信息，不含密钥）。 */
@@ -589,7 +599,10 @@ export class AgentHarness {
       });
       // 注意：此早期返回发生在 verify 门禁之前，不进入 runLoop，故不计入 guardrailsBlocked
       // （verify 上下文只统计循环内发生的拦截；此处直接以 guardrail 消息结束本轮）。
-      const msg = `[guardrail] blocked: ${guard.reason}`;
+      // 内部原因已通过上方 emit('guardrail:blocked') 记入调用链路 / 服务端日志；
+      // 返回给用户的终态文案须中性、不泄露内部合规判定细节（如「知识库未收录」等）。
+      const msg =
+        '抱歉，您的输入触发了内容安全策略，本次未能发送。如有疑问，请通过官方正规渠道咨询。';
       cleanup();
       // Hook: agent.post_run — guardrail early return path
       void hooks.execute('agent.post_run', {

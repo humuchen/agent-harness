@@ -13,6 +13,19 @@ import { getPluginContext } from '../runtime';
 import { makeTaskId } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
+import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
+import {
+  contentSnapshot,
+  generateTemplateContent,
+  createManualDraft,
+  submitContent,
+  approveContent,
+  rejectContent,
+  publishContent,
+} from '../services/content-service';
+import type { ContentState, ContentPlatform } from '../repo/content-repo';
+import { buildLeadBriefing, revealContact } from '../services/assist-service';
+import { listExperiments, getExperiment, createExperiment, stopExperiment, assignVariant, experimentReport } from '../services/ab-service';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
@@ -453,6 +466,317 @@ const listAppointments: PluginRouteHandler = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// 定时调度器（B3）与对客触达（B4/B5）
+// ---------------------------------------------------------------------------
+
+/** GET /scheduler —— 调度器快照（配置 + 任务统计 + 触达消息统计）。 */
+const schedulerRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    send(res, 200, await schedulerSnapshot());
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /scheduler/tick —— 手动触发一轮「规划 + 消费」（需管理令牌；后台循环之外的对账入口）。 */
+const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  try {
+    send(res, 200, await schedulerTick());
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /scheduler/jobs —— 运营手动排期任务（需管理令牌）。
+ * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall', leadId, dueAt?, text?, key? }
+ * birthday/repurchase 必须提供运营自拟文案 text（入队前过医疗广告合规筛查）。
+ */
+const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const { json } = await readRawBody(req);
+  const jobType = String(json.jobType ?? '');
+  const leadId = String(json.leadId ?? '');
+  if (!leadId) return send(res, 400, { error: 'leadId required' });
+  if (!['welcome', 'recall', 'birthday', 'repurchase'].includes(jobType)) {
+    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase' });
+  }
+  try {
+    const r = await scheduleManualJob({
+      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase',
+      leadId,
+      dueAt: typeof json.dueAt === 'number' ? json.dueAt : undefined,
+      text: json.text ? String(json.text) : undefined,
+      key: json.key ? String(json.key) : undefined,
+    });
+    send(res, 200, { ok: true, ...r });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+// ---------------------------------------------------------------------------
+// 内容生产与先审后发（D8/D9）
+// ---------------------------------------------------------------------------
+
+/** 内容写操作统一的管理令牌校验。校验失败返回响应并返回 true（调用方直接 return）。 */
+function denyUnlessAdmin(res: Res, req: Req): boolean {
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+    return false;
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+    return true;
+  }
+}
+
+/** GET /content —— 内容流水线快照（统计 + 列表，支持 ?state=&platform=&limit=）。 */
+const contentList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const p = url.searchParams;
+  try {
+    const snap = await contentSnapshot({
+      state: (p.get('state') as ContentState) || undefined,
+      platform: (p.get('platform') as ContentPlatform) || undefined,
+      limit: p.get('limit') ? Number(p.get('limit')) : undefined,
+    });
+    send(res, 200, { total: snap.items.length, ...snap });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/generate —— 从知识库批量生成平台内容（需管理令牌；同日幂等）。 */
+const contentGenerate: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  try {
+    const r = await generateTemplateContent({
+      platform: json.platform ? String(json.platform) : undefined,
+      projectName: json.projectName ? String(json.projectName) : undefined,
+    });
+    send(res, 200, { ok: true, ...r });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/draft —— 运营手写草稿（需管理令牌；过合规筛查落库为 draft）。 */
+const contentDraft: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  try {
+    const r = await createManualDraft({
+      platform: String(json.platform ?? ''),
+      title: String(json.title ?? ''),
+      body: String(json.body ?? ''),
+      project: json.project ? String(json.project) : undefined,
+    });
+    send(res, 200, { ok: true, ...r });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/submit —— 送审（draft/rejected → review，需管理令牌）。 */
+const contentSubmit: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const contentId = String(json.contentId ?? '');
+  if (!contentId) return send(res, 400, { error: 'contentId required' });
+  try {
+    const c = await submitContent(contentId, json.operator ? String(json.operator) : undefined);
+    send(res, 200, { ok: true, content: c });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/approve —— 人工过审（review → approved，需管理令牌）。 */
+const contentApprove: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const contentId = String(json.contentId ?? '');
+  if (!contentId) return send(res, 400, { error: 'contentId required' });
+  try {
+    const c = await approveContent(contentId, String(json.reviewer ?? ''));
+    send(res, 200, { ok: true, content: c });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/reject —— 人工驳回（review → rejected，必须给原因，需管理令牌）。 */
+const contentReject: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const contentId = String(json.contentId ?? '');
+  if (!contentId) return send(res, 400, { error: 'contentId required' });
+  try {
+    const c = await rejectContent(contentId, String(json.reviewer ?? ''), String(json.reason ?? ''));
+    send(res, 200, { ok: true, content: c });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /content/publish —— 发布过审内容（approved → 网关 → published，需管理令牌；失败保持 approved 可重试）。 */
+const contentPublish: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const contentId = String(json.contentId ?? '');
+  if (!contentId) return send(res, 400, { error: 'contentId required' });
+  try {
+    const c = await publishContent(contentId);
+    send(res, 200, { ok: true, content: c });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /assist/briefing —— 咨询师简报（脱敏版；联系方式掩码，公开读）。 */
+const assistBriefing: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const leadId = url.searchParams.get('leadId') ?? '';
+  if (!leadId) return send(res, 400, { error: 'leadId required' });
+  try {
+    send(res, 200, { ok: true, briefing: await buildLeadBriefing(leadId) });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /assist/reveal —— 完整联系方式放行（须管理令牌；简报里只有掩码）。 */
+const assistReveal: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const leadId = url.searchParams.get('leadId') ?? '';
+  if (!leadId) return send(res, 400, { error: 'leadId required' });
+  try {
+    send(res, 200, { ok: true, ...(await revealContact(leadId)) });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+// ---------------------------------------------------------------------------
+// A/B 分流实验（E 组：自做 A/B，替代「只看厂商宣称数据」）
+// ---------------------------------------------------------------------------
+
+/** GET /ab —— 实验清单（含变体与状态）。 */
+const abList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    const experiments = await listExperiments();
+    send(res, 200, { total: experiments.length, experiments });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /ab/report?experimentId= —— 实验报表（真实 SQL 聚合 + 样本量提示）。 */
+const abReport: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const experimentId = url.searchParams.get('experimentId') ?? '';
+  if (!experimentId) return send(res, 400, { error: 'experimentId required' });
+  try {
+    send(res, 200, { ok: true, ...(await experimentReport(experimentId)) });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /ab/assign?experimentId=&leadId= —— 预览/物化某线索的 sticky 分流结果。 */
+const abAssign: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const experimentId = url.searchParams.get('experimentId') ?? '';
+  const leadId = url.searchParams.get('leadId') ?? '';
+  if (!experimentId || !leadId) return send(res, 400, { error: 'experimentId + leadId required' });
+  try {
+    const r = await assignVariant(experimentId, leadId);
+    send(res, 200, { ok: true, experimentId, leadId, ...(r ?? {}) });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /ab/experiments —— 创建实验（须管理令牌；变体文案过医疗广告合规筛查）。 */
+const abCreate: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  try {
+    const r = await createExperiment({
+      name: String(json.name ?? ''),
+      topic: String(json.topic ?? ''),
+      metric: json.metric ? String(json.metric) : undefined,
+      variants: (Array.isArray(json.variants) ? json.variants : []) as Record<string, unknown>[],
+    });
+    send(res, 200, { ok: true, ...r });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** POST /ab/stop —— 停止实验（须管理令牌；之后该 topic 回落默认模板）。 */
+const abStop: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const experimentId = String(json.experimentId ?? '');
+  if (!experimentId) return send(res, 400, { error: 'experimentId required' });
+  try {
+    const exp = await stopExperiment(experimentId);
+    send(res, 200, { ok: true, experiment: exp });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /**
  * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敮到统一前缀
  * /api/plugins/medical-aesthetics-lead/*.
@@ -478,5 +802,22 @@ export const leadServerExtension: ServerExtension = {
     '/analytics/export': analyticsExport,
     '/appointments': listAppointments,
     '/appointments/mark': markAppointment,
+    '/scheduler': schedulerRoute,
+    '/scheduler/tick': schedulerTickRoute,
+    '/scheduler/jobs': schedulerJobRoute,
+    '/content': contentList,
+    '/content/generate': contentGenerate,
+    '/content/draft': contentDraft,
+    '/content/submit': contentSubmit,
+    '/content/approve': contentApprove,
+    '/content/reject': contentReject,
+    '/content/publish': contentPublish,
+    '/assist/briefing': assistBriefing,
+    '/assist/reveal': assistReveal,
+    '/ab': abList,
+    '/ab/report': abReport,
+    '/ab/assign': abAssign,
+    '/ab/experiments': abCreate,
+    '/ab/stop': abStop,
   },
 };

@@ -22,3 +22,6 @@ deploy/k8s/secret.yaml
 .workbuddy-ai/
 .workbuddy-ai/memory/
 .git.bak/
+
+# server 运行时数据（SQLite 账户库 / 插件 store 等），仅存本地磁盘
+access/server/.data/

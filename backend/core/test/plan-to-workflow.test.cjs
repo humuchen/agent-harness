@@ -73,11 +73,51 @@ test('planToWorkflowDef: agentRefByTask 按 task 覆盖默认 agent', () => {
   assert.strictEqual(def.steps.find((s) => s.id === 't2').agentRef, 'agent-test-special');
 });
 
-test('planToWorkflowDef: P5 缺省 execMode=serial（单步发送），显式 parallel 可回并行', () => {
+test('planToWorkflowDef: P5 自动决策 —— 分支计划（波宽>1）→ parallel+有界并发，链状 → serial，显式传入优先', () => {
+  // samplePlan：t1 → (t2, t3)，最大拓扑波宽 2 → 自动 parallel，并带缺省并发上限。
   const d1 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X });
-  assert.strictEqual(d1.execMode, 'serial');
-  const d2 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, execMode: 'parallel' });
-  assert.strictEqual(d2.execMode, 'parallel');
+  assert.strictEqual(d1.execMode, 'parallel');
+  assert.strictEqual(d1.maxConcurrency, plan.PLAN_WAVE_CONCURRENCY_DEFAULT);
+  // 纯链状计划：波宽恒 1 → serial（并行无收益），不带 maxConcurrency 字段。
+  const chainPlan = {
+    goal: '链式计划',
+    tasks: [
+      { id: 't1', title: 'a', steps: [], dependsOn: [], expectedOutput: 'a' },
+      { id: 't2', title: 'b', steps: [], dependsOn: ['t1'], expectedOutput: 'b' },
+      { id: 't3', title: 'c', steps: [], dependsOn: ['t2'], expectedOutput: 'c' }
+    ]
+  };
+  const d2 = planToWorkflowDef(chainPlan, { agentRef: AGENT_X });
+  assert.strictEqual(d2.execMode, 'serial');
+  assert.strictEqual(d2.maxConcurrency, undefined);
+  // 显式覆盖优先于自动决策：分支计划显式 serial / 链状显式 parallel。
+  const d3 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, execMode: 'serial' });
+  assert.strictEqual(d3.execMode, 'serial');
+  assert.strictEqual(d3.maxConcurrency, undefined);
+  const d4 = planToWorkflowDef(chainPlan, { agentRef: AGENT_X, execMode: 'parallel' });
+  assert.strictEqual(d4.execMode, 'parallel');
+  assert.strictEqual(d4.maxConcurrency, plan.PLAN_WAVE_CONCURRENCY_DEFAULT);
+  // maxConcurrency：显式值生效；非法值（0 / 负数 / 非有限数）回落缺省。
+  const d5 = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, maxConcurrency: 2 });
+  assert.strictEqual(d5.maxConcurrency, 2);
+  for (const bad of [0, -3, Number.NaN, Infinity]) {
+    const d = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, maxConcurrency: bad });
+    assert.strictEqual(d.maxConcurrency, plan.PLAN_WAVE_CONCURRENCY_DEFAULT, `bad=${bad}`);
+  }
+});
+
+test('planMaxWaveWidth：空=0 / 链=1 / 分支=2 / 星形=独立数 / 混合=最宽层', () => {
+  const { planMaxWaveWidth } = plan;
+  const t = (id, deps) => ({ id, title: id, steps: [], dependsOn: deps, expectedOutput: id });
+  assert.strictEqual(planMaxWaveWidth({ goal: 'g', tasks: [] }), 0);
+  assert.strictEqual(planMaxWaveWidth({ goal: 'g', tasks: [t('t1', []), t('t2', ['t1']), t('t3', ['t2'])] }), 1);
+  assert.strictEqual(planMaxWaveWidth(samplePlan), 2);
+  assert.strictEqual(planMaxWaveWidth({ goal: 'g', tasks: [t('t1', []), t('t2', []), t('t3', []), t('t4', [])] }), 4);
+  // 混合：wave1=[t1] wave2=[t2,t3] wave3=[t4] → 最宽 2。
+  assert.strictEqual(
+    planMaxWaveWidth({ goal: 'g', tasks: [t('t1', []), t('t2', ['t1']), t('t3', ['t1']), t('t4', ['t2'])] }),
+    2
+  );
 });
 
 test('planToWorkflowDef: 缺省 workflowId 自动生成且可多次不同（R4 防并发拒绝）', () => {
@@ -182,7 +222,7 @@ test('DagEngine 集成：下游 step 的 input 含 goal + taskMeta + 上游真�
 });
 
 test('DagEngine 集成（成功路径）：无依赖的独立 task 同波次并行（maxConcurrent ≥ 2，显式 parallel）', async () => {
-  // P5：计划桥缺省 execMode=serial（单步发送），并行需显式声明 —— 本测试锁住并行路径行为。
+  // P5 自动串/并决策：波宽 > 1 时缺省即 parallel；本测试显式声明 execMode='parallel' 锁住并行路径行为。
   const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-par', execMode: 'parallel' });
   const running = new Set();
   let maxConcurrent = 0;
@@ -206,10 +246,10 @@ test('DagEngine 集成（成功路径）：无依赖的独立 task 同波次并�
   );
 });
 
-test('DagEngine 集成（P5 缺省 serial）：无依赖的独立 task 也逐个执行（maxConcurrent === 1）', async () => {
-  // P5 静默计划执行的执行侧契约：plan 桥缺省「单步发送」—— t2/t3 虽无依赖也串行跑，
-  // 任一时刻至多一个 task 在执行（思考过程与当前任务一一对应的执行前提）。
-  const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-serial' });
+test('DagEngine 集成（显式 serial）：无依赖的独立 task 也逐个执行（maxConcurrent === 1）', async () => {
+  // P5 自动串/并决策后 serial 为显式 opt-in（缺省按波宽决策，见上方自动决策用例）。
+  // 本测试锁住串行路径的执行侧契约：t2/t3 虽无依赖也逐个跑，任一时刻至多一个 task 在执行。
+  const def = planToWorkflowDef(samplePlan, { agentRef: AGENT_X, workflowId: 'plan-int-serial', execMode: 'serial' });
   assert.strictEqual(def.execMode, 'serial');
   const running = new Set();
   let maxConcurrent = 0;

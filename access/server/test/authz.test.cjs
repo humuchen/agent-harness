@@ -75,3 +75,74 @@ test('createApprovalPolicy: 从环境变量读取 bypass 角色', () => {
   assert.strictEqual(pol.requiresApproval('env:create', { token: 't', sub: 'o', role: 'operator' }), false);
   delete process.env.UI_APPROVAL_BYPASS_ROLES;
 });
+
+// ── AccountAuthorizer：cookie 来源（浏览器直接导航）跳过 x-ah-username 双因子 ──
+// 背景：<a> 直连下载/预览（如 GET /api/artifacts/:id?preview=1）是浏览器顶级导航，
+// 物理上只自动携带 HttpOnly cookie，带不了 x-ah-username 自定义头 → 一直 401
+//（「unauthorized: missing or invalid token」）。cookie 为 HttpOnly（JS 不可读、无法在
+// 会话外重放），本身即会话凭据，跳过双因子头校验不扩大攻击面；Authorization / ?token=
+// 来源维持双因子不变。
+test('AccountAuthorizer: cookie 来源放行浏览器直接导航，header/query 来源维持双因子', async (t) => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-authz-acct-'));
+  process.env.ACCOUNT_DB_FILE = path.join(dir, 'accounts.db');
+  t.after(() => {
+    delete process.env.ACCOUNT_DB_FILE;
+    // Windows 上 DB 文件句柄可能延迟释放（EBUSY）——清理尽力而为，Temp 目录残留无害。
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+  const { issueTokens } = require('../dist/accounts.js');
+  const { AccountAuthorizer } = require('../dist/authz.js');
+  const { accessToken } = await issueTokens('navuser');
+  const az = new AccountAuthorizer(new RoleBasedAuthorizer({ tokens: {} }));
+
+  // 1) 浏览器直接导航（<a> 点击 / window.open）：只有 cookie、无 x-ah-username 头 → 放行。
+  const nav = await az.authenticate(
+    fakeReq({ cookie: `ah_auth=${accessToken}` }, '/api/artifacts/x?preview=1')
+  );
+  assert.ok(nav, 'cookie-only 导航应放行（本次修复的核心行为）');
+  assert.strictEqual(nav.sub, 'navuser');
+  assert.strictEqual(nav.role, 'viewer');
+
+  // 2) Authorization 来源缺 x-ah-username 头 → 仍拒绝（双因子不放宽）。
+  assert.strictEqual(
+    await az.authenticate(fakeReq({ authorization: `Bearer ${accessToken}` })),
+    null,
+    'header 来源缺 username 头必须拒绝'
+  );
+
+  // 3) Authorization 来源带正确 username 头 → 放行（原行为保持）。
+  const withHeader = await az.authenticate(
+    fakeReq({ authorization: `Bearer ${accessToken}`, 'x-ah-username': 'navuser' })
+  );
+  assert.ok(withHeader && withHeader.sub === 'navuser');
+
+  // 4) Authorization 来源 username 头与 token 签名不一致 → 拒绝（防冒用）。
+  assert.strictEqual(
+    await az.authenticate(
+      fakeReq({ authorization: `Bearer ${accessToken}`, 'x-ah-username': 'someone-else' })
+    ),
+    null
+  );
+
+  // 5) ?token= 来源同样维持双因子（缺头拒绝）。
+  assert.strictEqual(
+    await az.authenticate(fakeReq({}, `/x?token=${encodeURIComponent(accessToken)}`)),
+    null
+  );
+
+  // 6) 无任何凭据 → null。
+  assert.strictEqual(await az.authenticate(fakeReq({})), null);
+
+  // 7) 篡改 cookie（坏签名）→ null。
+  assert.strictEqual(
+    await az.authenticate(fakeReq({ cookie: `ah_auth=${accessToken.slice(0, -2)}zz` })),
+    null
+  );
+});

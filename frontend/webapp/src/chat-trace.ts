@@ -15,7 +15,12 @@ export interface Insights {
   mode?: string;
   steps: number;
   toolCount: number;
+  /**
+   * 整轮累计 token（provider 实测）：取所有 cost 节点的累计峰值，即最后一步的 cumulativeTokens。
+   * 注意不是「某一步」的用量，也不包含 Jev 旁路调用（jev:call 单独统计）。
+   */
   costTokens?: string;
+  /** 整轮累计成本（provider 单价表估算，累计峰值）。 */
   costValue?: string;
 
   /** 'true'=命中定价表（cost 为 0 表示模型免费），'false'=未命中（按默认价 0 估算）。 */
@@ -30,7 +35,10 @@ export interface Insights {
    */
   jevCalls?: string;
 
-  /** Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化固定开销来源。 */
+  /**
+   * Token 拆解（系统 / 工具 / 历史 / 输出）占比，用于「关键信息」区可视化 token 大头来源。
+   * 口径：各步估算**跨步求和**（与整轮 Token 同为整轮视角），百分比分母是四项之和。
+   */
   costBreakdown?: Array<{ label: string; tokens: number; pct: number }>;
   retrievals: Array<{ label: string; result: string }>;
 }
@@ -654,8 +662,12 @@ export function buildInsights(trace: TraceNode[]): Insights {
     (n) => n.kind === 'tool' && !(n.meta && n.meta.reused) && !isJevNode(n)
   );
   const retrievals = flat.filter((n) => n.kind === 'retrieval');
-  const cost = flat.find((n) => n.kind === 'cost');
-  const cacheNode = flat.find((n) => n.kind === 'tokencache');
+  // 成本 / 用量节点：harness 每步发一条 run:cost，节点里的 tokens / cost 是**该步结束时的累计值**
+  // （cost.cumulativeTokens / cumulativeCost），因此整轮口径必须取「累计峰值」而不是第一个节点 ——
+  // 此前用 find() 取 DFS 首节点，实际显示的是第 1 步的累计（5 步运行只显示第 1 步用量，明显偏小）。
+  const costNodes = flat.filter((n) => n.kind === 'cost');
+  // 缓存节点同理取最后一个：其 meta 来自进程级累计快照（getTokenCacheStats），越靠后的节点样本越完整。
+  const cacheNode = flat.filter((n) => n.kind === 'tokencache').pop();
   const meta = root?.meta ?? {};
   // Jev 直连调用聚合：次数 + tokens（meta.tokens 形如 "120+30"，input+output）。
   const jevNodes = flat.filter(isJevNode);
@@ -675,13 +687,13 @@ export function buildInsights(trace: TraceNode[]): Insights {
     mode: meta.mode,
     steps,
     toolCount: tools.length + retrievals.length,
-    costTokens: cost?.meta?.tokens,
-    costValue: cost?.meta?.cost,
-    costPriced: cost?.meta?.priced,
+    costTokens: peakMetaValue(costNodes, 'tokens'),
+    costValue: peakMetaValue(costNodes, 'cost'),
+    costPriced: lastMetaValue(costNodes, 'priced'),
     cacheHitRate: cacheNode?.meta?.命中率,
     cacheHits: cacheNode?.meta?.命中,
     jevCalls,
-    costBreakdown: parseCostBreakdown(cost?.meta),
+    costBreakdown: aggregateCostBreakdown(costNodes),
     retrievals: retrievals.map((n) => ({
       label: n.label,
       result: n.result ?? ''
@@ -728,6 +740,83 @@ export function parseCostBreakdown(
   return out;
 }
 
+/** 四项固定展示顺序（与 parseCostBreakdown 一致，聚合时保证不跳位）。 */
+const BREAKDOWN_ORDER = ['系统', '工具', '历史', '输出'] as const;
+
+/**
+ * 聚合整轮「系统 / 工具 / 历史 / 输出」四项估算（跨步求和）。
+ *
+ * 为什么需要聚合：每个 cost 节点的四项只是**该步**发出的 payload 估算，而面板上的 Token 是整轮累计；
+ * 直接沿用某一步的分项会让「总量是整轮、拆解是单步」两个基准打架。这里把各步四项分别相加，
+ * 百分比分母为四项之和（不是面板 Token —— 后者来自 provider 实测，两者本就不同基准）。
+ * 全部节点都没有分项数据（旧落盘 trace / 未带 estTokens）时返回 undefined，由调用方展示降级文案。
+ */
+function aggregateCostBreakdown(
+  nodes: TraceNode[]
+): Insights['costBreakdown'] {
+  const sums = new Map<string, number>();
+  for (const n of nodes) {
+    const bd = parseCostBreakdown(n.meta);
+    if (!bd) continue;
+    for (const b of bd) sums.set(b.label, (sums.get(b.label) ?? 0) + b.tokens);
+  }
+  if (!sums.size) return undefined;
+  // 固定项按既有顺序在前，采集端新增的未知项追加在后（UI 不空白、不跳位）。
+  const labels = [
+    ...BREAKDOWN_ORDER.filter((l) => sums.has(l)),
+    ...[...sums.keys()].filter(
+      (l) => !(BREAKDOWN_ORDER as readonly string[]).includes(l)
+    )
+  ];
+  const total = [...sums.values()].reduce((s, v) => s + v, 0);
+  return labels.map((label) => {
+    const tokens = sums.get(label) ?? 0;
+    return {
+      label,
+      tokens,
+      pct: total > 0 ? Math.round((tokens / total) * 100) : 0
+    };
+  });
+}
+
+/**
+ * 从一组 cost 节点里取某个「累计型」数值 meta 的峰值（tokens / cost）。
+ * run:cost 的两个数值都是累计量且单调不减，故最大值即整轮合计；对乱序、缺字段、'?' 均安全。
+ * 全部不可解析时返回 undefined（UI 隐藏该格，而不是显示 NaN）。
+ */
+function peakMetaValue(nodes: TraceNode[], key: string): string | undefined {
+  let best = Number.NEGATIVE_INFINITY;
+  let bestRaw: string | undefined;
+  for (const n of nodes) {
+    const raw = n.meta?.[key];
+    if (raw == null) continue;
+    const num = Number.parseFloat(String(raw).replace(/[^\d.]/g, ''));
+    if (!Number.isFinite(num)) continue;
+    if (num >= best) {
+      best = num;
+      bestRaw = String(raw);
+    }
+  }
+  return bestRaw;
+}
+
+/** 取最后一个携带该 meta 键的节点的值（非数值语义，如 priced 标志）。 */
+function lastMetaValue(nodes: TraceNode[], key: string): string | undefined {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const raw = nodes[i]?.meta?.[key];
+    if (raw != null) return String(raw);
+  }
+  return undefined;
+}
+
+/**
+ * Token 拆解区的口径说明（两处标题共用）。
+ * 必须如实描述实现：四项是本地启发式估算并按步累加，占比分母是四项之和；
+ * 面板上的 Token 来自 provider 的 usage（实测），两者不是同一基准，别让用户以为能直接对账。
+ */
+const BREAKDOWN_TIP =
+  '四项为本地启发式估算（按字符/词折算，工具项含完整 JSON schema，图片按视觉 token），已跨步累加为整轮发送与产出的估算构成；占比分母是四项之和，与上方 Token（provider 实测累计）不是同一基准，概览用而非账单。';
+
 /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
 export function renderInsights(ins: Insights) {
   const stats: Array<[string, string]> = [];
@@ -765,9 +854,12 @@ export function renderInsights(ins: Insights) {
       ? html`<div class="ins-breakdown">
           <div
             class="ins-bd-title"
-            title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
+            title=${BREAKDOWN_TIP}
           >
             Token 拆解 <span class="ins-bd-est">估算</span>
+            ${ins.steps > 1
+              ? html`<span class="ins-bd-est">${ins.steps} 步累计</span>`
+              : nothing}
           </div>
           <div class="ins-bd-bars">
             ${ins.costBreakdown.map(
@@ -796,9 +888,12 @@ export function renderInsights(ins: Insights) {
       ? html`<div class="ins-breakdown">
           <div
             class="ins-bd-title"
-            title="本拆解四项占比为本地启发式估算（按字符粗估后，按 provider 返回的真实 token 总数缩放得出），并非模型返回的真实分项计数；绝对值以 provider 的 usage 为准。"
+            title=${BREAKDOWN_TIP}
           >
             Token 拆解 <span class="ins-bd-est">估算</span>
+            ${ins.steps > 1
+              ? html`<span class="ins-bd-est">${ins.steps} 步累计</span>`
+              : nothing}
           </div>
           <div class="ins-bd-bars">
             <div class="ins-bd-empty">

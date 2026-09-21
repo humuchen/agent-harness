@@ -91,6 +91,11 @@ services:
       # 挂在持久卷（disks → /app/data）下可跨重启保留；free 盘部署重置仍会清空（同 MEMORY_DIR 语义）。
       - key: WORKFLOW_STORE_DIR
         value: /app/data/workflows
+      # 成果物归档（P1-5）落点：LocalArtifactStore 把 index.json + files/<id> 写到此目录。
+      # 不配则默认 `.data/artifacts`（相对启动 cwd，部署重建即丢，历史文档打开报 artifact not found）。
+      # 注意：与其它 /app/data 数据一样，仅在付费 plan 挂载持久卷后才能跨部署保留。
+      - key: ARTIFACT_DIR
+        value: /app/data/artifacts
       # 外部 MCP 服务清单（多 server 声明式，启动时自动接入）：
       #   rag（stdio，本仓库 RAG 服务）/ context7（远程，免 key）/
       #   filesystem / fetch / memory / excel（stdio，npx 拉起）。
@@ -101,8 +106,28 @@ services:
         value: mcp
       - key: RAG_TENANT_ID
         value: default
+      # RAG 知识库持久化（绝对路径，落持久卷）：此前为相对路径 data/rag-store.json，
+      # 落在启动 cwd（临时盘），部署重建即丢，与工件丢盘同根因。
       - key: RAG_DATA_FILE
-        value: data/rag-store.json
+        value: /app/data/rag-store.json
+      # ── 成果物工件后端（P5.7）：local（默认，本地盘）| s3（S3 兼容对象存储）──
+      # Render free plan 磁盘为临时盘，local 后端重启/重部署即丢（历史文档打开报
+      # artifact not found 的根因）。要跨部署保留工件，切 s3 后端并配置下方三项凭据：
+      # 兼容 AWS S3 / Cloudflare R2 / MinIO / Render Object Storage（SigV4，零 SDK 依赖）。
+      # 用 R2：S3_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com，region 任意。
+      # 不配置时保持 local 后端（落 ARTIFACT_DIR，默认 .data/artifacts）。
+      - key: ARTIFACT_STORE
+        value: local
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        value: us-east-1
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
       # 医美插件数据库绝对路径：固定落点，避免随启动 cwd 不同分散到 access/server/data 与项目根 data 两处。
       - key: MA_DATA_DIR
         value: /app/data/ma-lead

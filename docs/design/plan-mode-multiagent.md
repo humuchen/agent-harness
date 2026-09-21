@@ -275,6 +275,21 @@ Plan 桥下 step input 是 `{goal, upstream_*}` 对象 + task 自身元数据，
 
 回归基线：core 463/463（含 `plan-parse.test.cjs` 新增 7 项 clarify/联合解析用例）；webapp tsc 9 条全 pre-existing、vitest 346/346、vite build 通过；server build 通过、293 pass / 2 skip；改动文件 eslint 0 error。执行侧（DAG 确认执行）零改动。
 
+### P5.5 执行侧自动串/并决策 + 有界并发（已实现，2026-09-20）
+
+用户要求「根据任务自动决策串并行，同时健壮地完成任务」。此前计划桥缺省 `execMode='serial'` 且前端从不传 execMode → 计划 DAG 实际永远串行，波次内也无并发上限。
+
+| 层 | 改动 |
+|---|---|
+| 计划桥（`plan.ts`） | 新增 `planMaxWaveWidth`（与引擎 topoWaves 同语义的 Kahn 分层，环防御返回 tasks.length）；`planToWorkflowDef` 缺省按 DAG 形状自动决策：**波宽 > 1 → parallel**（带 `maxConcurrency`，缺省 `PLAN_WAVE_CONCURRENCY_DEFAULT=3`，非法值 0/负数/非有限数回落缺省），**纯链 → serial**（无并行收益，保持「思考流 ↔ 当前任务」一一对应）；显式 `opts.execMode` 优先 |
+| 引擎（`workflow/types.ts` + `engine.ts`） | `WorkflowDef.maxConcurrency?: number`：正整数走**工作池**（保序取任务、完成一个补一个、fail-fast 后不再拉新任务、在途自然跑完），`limit >= 波宽` 时退化为 `Promise.all` 全并行（与旧版行为一致）；缺省/非法值 → 不限并发（手工 def 存量语义零回归）。run/resume 双路径同享 |
+| server（`server.ts`） | 透传合法显式 `body.execMode`（'parallel'/'serial'），非法值不再强转 parallel → 前端不传时全量走计划桥自动决策 |
+| 前端（`chat-types.ts` / `chat-render-utils.ts` / `chat-message-render.ts`） | `PlanExecState` 增瞬态 `thinkingByTask`（分槽思考）与 `runningTaskIds`（在途聚合）；`applyPlanWfEvent` start/done 按 stepId 聚合/摘除；计划卡显示全部在跑任务、思考面板按任务序堆叠分块（旧帧无 stepId 回落单槽）——修复并行下单思考槽互覆 |
+
+健壮性不变式：串/并只改调度顺序，验证门禁（P4.5）/ 补偿 / 审批门（P3 改进项）/ 检查点续跑（P1）/ 黑板传递 / 事件协议完全一致；`maxConcurrency=3` 保护 BYOK 速率限制与 token 预算；fail-fast 语义与旧 all-or-nothing 一致（R8 per-branch 取消仍为后续项）。
+
+测试矩阵：core `plan-to-workflow.test.cjs`（自动决策 4 场景 + `planMaxWaveWidth` 5 形状 + 非法 maxConcurrency 回落）、core `workflow.test.cjs` 新增 4 项有界并发（峰值恰为 2 / 非法值回落全并行 / fail-fast 不拉新 / resume 同样有界）、webapp `chat-plan-wf-state.test.ts` P5 并行渲染 6 用例。回归基线：core 526/526、webapp 369/369、access/server tsc 0 error、vite build 通过。
+
 
 
 ### P4（P4.5 已实施，余下后续未实施）

@@ -175,37 +175,56 @@ export function applyPlanWfEvent(
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
       // P3：审批放行后重新进入 running —— 清掉 awaiting 标记。
       // P5 静默执行：每个任务开始时重置思考面板（新任务 → 新的空思考流）。
+      // 并行（2026-09-20）：runningTaskIds 聚合在跑任务（串行时长度恒 1，语义不变）；
+      // thinkingByTask 为该任务建独立空槽（已有槽位重置为空 —— start 即重新执行）。
+      const running = new Set(prev.runningTaskIds ?? []);
+      running.delete(ev.stepId);
+      running.add(ev.stepId);
       return {
         ...prev,
         status: 'running',
         currentTaskId: ev.stepId,
         awaitingTaskIds: undefined,
-        thinking: { taskId: ev.stepId, text: '' }
+        runningTaskIds: [...running],
+        thinking: { taskId: ev.stepId, text: '' },
+        thinkingByTask: { ...(prev.thinkingByTask ?? {}), [ev.stepId]: '' }
       };
     }
     case 'wf:step:done': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
       // P5：任务完成即收起思考面板。P5.1 精准清槽：只清「本任务」的思考流 ——
       // 若事件乱序（done(t3) 迟到而思考面板已自愈切到 t4），不得误清新任务的思考流。
+      // 并行（2026-09-20）：只把本任务移出在跑集合 / 删本任务分槽，兄弟任务不受影响。
       const thinking =
         prev.thinking && prev.thinking.taskId !== ev.stepId
           ? prev.thinking
           : undefined;
+      const runningTaskIds = (prev.runningTaskIds ?? []).filter(
+        (id) => id !== ev.stepId
+      );
+      const thinkingByTask = { ...(prev.thinkingByTask ?? {}) };
+      delete thinkingByTask[ev.stepId];
       return {
         ...prev,
         status: 'running',
         done: { ...prev.done, [ev.stepId]: true },
-        thinking
+        thinking,
+        runningTaskIds,
+        thinkingByTask
       };
     }
     case 'wf:step:failed': {
       if (!ev.stepId || !knownTaskIds.has(ev.stepId)) return prev;
+      // 引擎 all-or-nothing：任一 step 失败整 run 收敛 failed（并行时兄弟任务在途结果
+      // 由检查点记录，断点续跑可复用）。卡片整体转 failed，思考面板 / 在跑集合全清。
       return {
         ...prev,
         status: 'failed',
         failedTaskId: ev.stepId,
         currentTaskId: ev.stepId,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     case 'wf:awaiting-approval': {
@@ -218,7 +237,9 @@ export function applyPlanWfEvent(
         status: 'awaiting',
         currentTaskId: undefined,
         awaitingTaskIds: ids,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     case 'wf:done':
@@ -228,7 +249,9 @@ export function applyPlanWfEvent(
         currentTaskId: undefined,
         failedTaskId: undefined,
         awaitingTaskIds: undefined,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
@@ -241,7 +264,9 @@ export function applyPlanWfEvent(
         status: 'failed',
         failedTaskId: firstFailed?.id ?? prev.failedTaskId,
         currentTaskId: undefined,
-        thinking: undefined
+        thinking: undefined,
+        runningTaskIds: undefined,
+        thinkingByTask: undefined
       };
     }
     default:
@@ -255,7 +280,7 @@ export function applyPlanWfEvent(
 export const PLAN_THINKING_MAX = 40_000;
 
 /**
- * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的「当前任务思考面板」。
+ * P5 静默执行：把一条 llm:reasoning 增量叠加到计划执行状态的思考面板。
  * - 仅 running 时消费；其它状态原样返回 prev（同引用判重）。
  * - 文本超 PLAN_THINKING_MAX 时保留尾部（最新思考），与 UI 面板「tail 展示」语义一致。
  * - 空增量 no-op（同引用返回，避免无谓重渲染）。
@@ -268,6 +293,12 @@ export const PLAN_THINKING_MAX = 40_000;
  * - 带 stepId 且与当前槽位不一致 → 丢弃旧槽、以该 stepId 重建槽位（自愈切换）；
  * - 带 stepId 且无槽位（如刷新恢复后思考面板为空）→ 直接建槽，思考流不再被丢弃；
  * - 不带 stepId（旧服务端帧）→ 保持原行为（仅追加到已有槽位）。
+ *
+ * 并行双写（2026-09-20）：单槽 thinking 在多任务并发时会互相覆盖（A、B 交替增量导致
+ * 单槽来回重建丢文本），故同时把增量累积进 **按任务分槽** 的 thinkingByTask ——
+ * 渲染面按 plan.tasks 序分块展示，各任务思考互不覆盖；单槽保持原语义（最近接收
+ * 增量的任务），兼容旧渲染 / 测试 / 恢复路径。stepId 缺省（旧帧）时增量同时落入
+ * 单槽对应的分槽键，保证旧服务端帧也能进入分块渲染。
  */
 export function applyPlanThinking(
   prev: PlanExecState,
@@ -280,9 +311,13 @@ export function applyPlanThinking(
     slot = { taskId: stepId, text: '' };
   }
   if (!slot) return prev;
+  const key = slot.taskId;
+  if (!key) return prev; // 无归属任务（理论不可达：槽位必带 taskId），防御不落脏数据
   const text = (slot.text + delta).slice(-PLAN_THINKING_MAX);
+  const byTask = { ...(prev.thinkingByTask ?? {}) };
+  byTask[key] = ((byTask[key] ?? '') + delta).slice(-PLAN_THINKING_MAX);
   if (slot === prev.thinking && text === prev.thinking?.text) return prev;
-  return { ...prev, thinking: { ...slot, text } };
+  return { ...prev, thinking: { ...slot, text }, thinkingByTask: byTask };
 }
 
 /** wf:done / wf:failed 携带的 run 快照最小形态（只含回挂摘要用到的字段）。 */
@@ -558,7 +593,7 @@ export function buildPlanArtifactSection(
     (a) => a && typeof a.id === 'string' && a.id
   );
   if (list.length === 0) return '';
-  const lines: string[] = ['', `**📎 交付文件（${list.length} 个）**`];
+  const lines: string[] = ['', `**${PLAN_ARTIFACT_SECTION_MARK}（${list.length} 个）**`];
   for (const a of list) {
     const label = escapeLinkLabel(String(a.name ?? a.id));
     lines.push(
@@ -569,6 +604,147 @@ export function buildPlanArtifactSection(
       )}） ｜ [下载](/api/artifacts/${a.id}?download=1)`
     );
   }
+  return lines.join('\n');
+}
+
+/**
+ * 「📎 交付文件」区块的单源标记（与 buildPlanArtifactSection 的标题行同源）。
+ * 恢复自愈（chat.ts: reattachPlanDeliverables）据此判断摘要 content 是否已带
+ * 交付区——幂等防重挂，勿在别处硬编码同文案。
+ */
+export const PLAN_ARTIFACT_SECTION_MARK = '📎 交付文件';
+
+/** 摘要 content 是否已含「📎 交付文件」区块（恢复自愈的幂等检测，纯函数）。 */
+export function hasPlanArtifactSection(
+  content: string | undefined | null
+): boolean {
+  return (
+    typeof content === 'string' && content.includes(PLAN_ARTIFACT_SECTION_MARK)
+  );
+}
+
+/* ─────────────── P4.6 延伸：计划执行报告（汇总交付文件） ─────────────── */
+
+/**
+ * 汇总报告在 artifact-store 里的 note 标记（幂等键）：前端串行路径与
+ * 服务端 DAG 归档共用该语义 —— 同一 runId 下至多一份汇总报告，
+ * 重复接线（resume / 兜底帧 / 断连自愈收敛）不重复归档。
+ */
+export const PLAN_FINAL_ARTIFACT_NOTE = '__plan_final__';
+
+/**
+ * 汇总报告里单任务产出的字符上限。与 REPLAY_DETAIL_MAX 同数量级但语义独立：
+ * 报告是落盘交付物，宁全勿缺；单个任务产出超此上限按「截断保头」处理，
+ * 并在报告里标注（防止单个失控任务把整份报告撑到几十 MB）。
+ */
+export const PLAN_REPORT_TASK_MAX = 200_000;
+
+/** 文件名安全化：去文件系统/URL 非法字符，限长，空则回落固定名。 */
+function sanitizeArtifactName(s: string, fallback: string): string {
+  const safe = s
+    .replace(/[\\/:*?"<>|\u0000-\u001f#%&{}$!'@+=`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40);
+  return safe || fallback;
+}
+
+/** 汇总报告文件名：`计划报告-<goal 截断安全化>.md`。纯函数（便于单测）。 */
+export function buildPlanReportFileName(goal: string): string {
+  return `计划报告-${sanitizeArtifactName(goal, '执行结果')}.md`;
+}
+
+/**
+ * 把 plan run 快照里的 step 产出提取为 { taskId → 产出全文 }：
+ * - 仅提取 state==='done' 且产出非空的 step（failed/pending/空产出不进报告）；
+ * - 非字符串产出按 JSON 序列化（与 appendPlanDagSummary 的兜底同语义）。
+ * 纯函数，串行路径（taskOutputs 直传）与 DAG 路径（run 快照提取）共用。
+ */
+export function planOutputsFromRun(
+  run:
+    | {
+        steps?: Record<
+          string,
+          { state?: string; output?: unknown } | null | undefined
+        >;
+      }
+    | null
+    | undefined
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const steps = run?.steps ?? {};
+  for (const [id, sr] of Object.entries(steps)) {
+    if (!sr || sr.state !== 'done') continue;
+    const v = sr.output;
+    if (v === undefined || v === null) continue;
+    if (typeof v === 'string') {
+      if (v.trim()) out[id] = v;
+    } else {
+      try {
+        const s = JSON.stringify(v, null, 2);
+        if (s && s.trim()) out[id] = s;
+      } catch {
+        /* 不可序列化产出跳过 */
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 生成「计划执行报告」markdown 全文（plan 结束后归档为可下载交付文件）：
+ * 标题 + 元信息 + 执行状态清单 + 逐任务产出全文。纯函数（便于单测）。
+ *
+ * @param goal    计划目标（报告标题）
+ * @param tasks   计划任务视图（id/title + 可选状态，用于状态清单与章节排序）
+ * @param outputs taskId → 产出全文（done 任务才有；缺产出任务在报告中显式标注）
+ */
+export function buildPlanFinalReport(
+  goal: string,
+  tasks: Array<{ id: string; title: string; state?: string }>,
+  outputs: Record<string, string>
+): string {
+  const lines: string[] = [];
+  const doneCount = tasks.filter((t) => (t.state ?? 'done') === 'done').length;
+  lines.push(`# 计划执行报告：${goal}`);
+  lines.push('');
+  lines.push(
+    `> 由计划模式自动归档 · 共 ${tasks.length} 个任务，完成 ${doneCount} 个`
+  );
+  lines.push('');
+  lines.push('## 执行状态');
+  lines.push('');
+  for (const t of tasks) {
+    const state = t.state ?? 'done';
+    const mark = state === 'done' ? '✅' : state === 'failed' ? '❌' : '⏭';
+    lines.push(`- ${mark} **${t.id}** ${t.title}（${state}）`);
+  }
+  lines.push('');
+  lines.push('## 任务产出');
+  for (const t of tasks) {
+    const state = t.state ?? 'done';
+    lines.push('');
+    lines.push(`### ${t.id} · ${t.title}`);
+    lines.push('');
+    const out = (outputs[t.id] ?? '').trim();
+    if (!out) {
+      lines.push(
+        state === 'done'
+          ? '（该任务已完成，但未产出可归档的内容。）'
+          : `（该任务状态为 ${state}，无产出。）`
+      );
+      continue;
+    }
+    if (out.length > PLAN_REPORT_TASK_MAX) {
+      lines.push(
+        out.slice(0, PLAN_REPORT_TASK_MAX) +
+          '\n\n…（产出超长已截断，完整内容见会话中该任务的回复）'
+      );
+    } else {
+      lines.push(out);
+    }
+  }
+  lines.push('');
   return lines.join('\n');
 }
 
