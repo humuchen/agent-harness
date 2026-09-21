@@ -68,7 +68,7 @@ function estimateFullTools(registry) {
   return registry.schemas().reduce((a, s) => a + (s.name.length + s.description.length), 0);
 }
 
-test('真实任务输入回退全量工具（安全网优先，避免漏发）', async () => {
+test('真实任务输入发相关性子集（动态选择生效，不再无脑全量）', async () => {
   const registry = buildRegistry();
   const seenToolNames = [];
   const mockLlm = async (messages, tools) => {
@@ -88,10 +88,10 @@ test('真实任务输入回退全量工具（安全网优先，避免漏发）',
     delete process.env.DYNAMIC_TOOLS;
   }
   const first = seenToolNames[0];
-  // 修复后策略：真实任务（含疑问/较长/任务词）一律发全量，确保不遗漏必要工具。
-  assert.ok(first.length === registry.schemas().length, `真实任务应回退全量 ${registry.schemas().length}，实际 ${first.length}`);
-  assert.ok(first.includes('write_code'), `应含 write_code，实际 ${JSON.stringify(first)}`);
-  assert.ok(first.includes('run_tests'), `应含 run_tests，实际 ${JSON.stringify(first)}`);
+  // 修复后策略：真实任务也发「相关性子集」（topK），不再无脑全量，降低固定 prompt 开销；
+  // 模型若需要子集外的已注册工具，执行阶段仍走全量注册表，能力不丢。
+  assert.ok(first.length < registry.schemas().length, `真实任务应发子集而非全量 ${registry.schemas().length}，实际 ${first.length}`);
+  assert.ok(first.length > 0, '子集不应为空（输入与工具描述有重叠）');
 });
 
 test('零匹配的真实任务回退全量工具（安全网，避免漏发）', async () => {
