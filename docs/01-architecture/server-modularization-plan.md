@@ -191,6 +191,59 @@ curl -sf http://127.0.0.1:4182/health/ready
 | 9 | workspaces / artifacts / sandbox / chat-sessions / history / workflows 快照 / provider-keys / events / plugins / run 挂载 | 待做（同模式；chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
 | — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
 
+## 已完成：第九批（协作资源：工作空间 / 成果物 / 沙箱）
+
+- 新模块：`routes/collab-routes.ts`（约 350 行）：/api/workspaces 全 CRUD + :id/sessions
+  子资源、/api/artifacts 全套（base64 上传 / 元数据 / md preview 渲染 / 删除）、
+  /api/sandbox/sessions 全套。
+- server.ts 4208 → 约 3981 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 10/10（`scripts/smoke-batch9.cjs`）。
+- **单例核查再立功**：`createWorkspaceStore()` 非单例工厂（每次 new）——workspaceStore
+  必须经 deps 注入共享，否则空间数据分裂。
+- 冒烟脚本教训：响应 body 截断后 JSON.parse 取 id 会静默失败 → 后续断言全部落空（假失败）；
+  解析用的字段必须来自完整 body。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
+| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
+| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
+| 9 | workspaces / artifacts / sandbox | ✅ 已完成（collab-routes.ts） |
+| 10 | chat-sessions CRUD / history / events（全局 SSE）/ workflows 快照 / provider-keys 包装 / run 挂载 | 待做（chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
+| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+
+## 已完成：第十批（聊天数据：chat-sessions / history / provider-keys）
+
+- 新模块：`routes/chat-data-routes.ts`（约 330 行）：/api/chat/sessions 全 CRUD（含分页与
+  anon 401 语义）、/api/history 全套（PUT 体量校验 / GET 兼容旧版 data 信封 / DELETE）、
+  /api/account/provider-keys 包装（registerProviderKeyRoutes 委托）。
+- server.ts 4208 → 约 3725 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 10/10（`scripts/smoke-batch10.cjs`）。
+- **机械转换器教训**：把提取块转为 boolean 函数时，return 语句的转换必须做两遍——
+  ① 全文替换内联 `return;` → `return true;`（含 `if (!ctx) return;` 形式）；
+  ② 语句级 `return <expr>` 用括号深度扫描找分号结尾，void 调用（res./sendJson 等）改写为
+  「调用 + return true」。f-string 组装含大量花括号的代码会触发 braces 展开 bug——
+  **用字符串拼接而非 f-string**。另：本地冒烟端口避开 4190（ManageSieve，undici bad-port
+  黑名单会让 fetch 直接 'bad port' 报错）。
+- deps 仅 `{ guard }`；HISTORY_MAX_BYTES 常量随迁（cfgNum 同源）。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
+| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
+| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
+| 9 | workspaces / artifacts / sandbox | ✅ 已完成（collab-routes.ts） |
+| 10 | chat-sessions / history / provider-keys | ✅ 已完成（chat-data-routes.ts） |
+| — | handleRun / handleWorkflow / chat-stream / events / workflows POST | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项（这些是 run 关键路径，留在 server.ts 由组合根直接持有） |
+
 ## 后续批次（按耦合度从低到高排序）
 
 | 批次 | 路由组 | 预估行数 | 依赖闭包 | 备注 |
