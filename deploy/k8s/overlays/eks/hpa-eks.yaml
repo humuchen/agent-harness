@@ -1,0 +1,9 @@
+# R3：eks overlay 解锁水平扩容——前提（Redis 队列/注册表 + REPLICA_ID 注入）已由
+# configmap-prod-patch.yaml 与 deployment-replica-id.yaml 保证。
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agent-harness
+spec:
+  minReplicas: 2
+  maxReplicas: 6

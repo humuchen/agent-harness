@@ -15,8 +15,35 @@ const OTEL_API = '@opentelemetry/api';
 import { captureError } from './errorlog';
 import { scrubFields, redactValue } from './log-scrub';
 
-let tracer: any = null;
-let meter: any = null;
+/**
+ * OTel 最小结构契约（@opentelemetry/api 为可选依赖，未安装时这些路径不可达；
+ * 用结构类型替代 any，使本模块对 OTel 的耦合面收敛到这几个方法）。
+ */
+interface OtelSpan {
+  setStatus?(opts: { code: number; message?: string }): unknown;
+  recordException?(err: unknown): unknown;
+  end(): void;
+}
+interface OtelTracer {
+  startSpan(name: string): OtelSpan;
+}
+interface OtelCounter {
+  add(value: number, attrs?: Record<string, unknown>): void;
+}
+interface OtelHistogram {
+  record(value: number, attrs?: Record<string, unknown>): void;
+}
+interface OtelMeter {
+  createCounter(name: string): OtelCounter;
+  createHistogram(name: string): OtelHistogram;
+}
+interface OtelApi {
+  trace: { getTracer(name: string): OtelTracer };
+  metrics: { getMeter(name: string): OtelMeter };
+}
+
+let tracer: OtelTracer | null = null;
+let meter: OtelMeter | null = null;
 let initPromise: Promise<void> | null = null;
 
 // ---------------------------------------------------------------------------
@@ -48,14 +75,14 @@ export function getRequestContext(): RequestContext {
 }
 
 // 可选绑定到真实 OTel meter 的计数器，便于把指标导出到 Collector。
-let otelCounters: Record<string, any> = {};
-let otelHistograms: Record<string, any> = {};
+let otelCounters: Record<string, OtelCounter> = {};
+let otelHistograms: Record<string, OtelHistogram> = {};
 
 async function ensureInit(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
       try {
-        const api: any = await import(OTEL_API);
+        const api = (await import(OTEL_API)) as unknown as OtelApi;
         tracer = api.trace.getTracer('agent-harness');
         try {
           meter = api.metrics.getMeter('agent-harness');
@@ -446,8 +473,8 @@ export async function emitAlert(
       alertLastSent[name] = now;
       try {
         await alertSink({ level, name, message, fields, ts: new Date().toISOString() });
-      } catch (e: any) {
-        structLog('warn', 'alert sink failed', { error: e?.message ?? String(e), name });
+      } catch (e) {
+        structLog('warn', 'alert sink failed', { error: e instanceof Error ? e.message : String(e), name });
       }
     } else {
       structLog('debug', `alert deduped: ${name} (within ${ALERT_DEDUP_WINDOW_MS}ms)`, fields);
@@ -466,7 +493,7 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T
     const start = nowMs();
     try {
       return await fn();
-    } catch (err: any) {
+    } catch (err) {
       recordError(name, err);
       throw err;
     } finally {
@@ -481,9 +508,9 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T
   const span = tracer.startSpan(name);
   try {
     return await run();
-  } catch (err: any) {
+  } catch (err) {
     if (span.setStatus) {
-      span.setStatus({ code: SPAN_STATUS_ERROR, message: err?.message ?? String(err) });
+      span.setStatus({ code: SPAN_STATUS_ERROR, message: err instanceof Error ? err.message : String(err) });
     }
     if (span.recordException) {
       span.recordException(err);
@@ -499,7 +526,7 @@ export async function withSpan<T>(name: string, fn: () => Promise<T>): Promise<T
  * 之后 `incCounter` / `recordLatency` 会同时把数据推到该 Meter，
  * 从而导出到 Collector。无 Collector 时可不调用，内存快照仍可用。
  */
-export function bindOtelMeter(m: any): void {
+export function bindOtelMeter(m: OtelMeter | null): void {
   meter = m;
 }
 
@@ -573,8 +600,8 @@ export function loadMetricsSnapshot(): void {
     const snap = JSON.parse(raw) as MetricsSnapshot;
     restoreMetricsSnapshot(snap);
     structLog('info', 'telemetry', { loaded: true, file: TELEMETRY_FILE });
-  } catch (e: any) {
-    structLog('warn', 'telemetry', { loaded: false, error: e?.message ?? String(e) });
+  } catch (e) {
+    structLog('warn', 'telemetry', { loaded: false, error: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -587,8 +614,8 @@ export function saveMetricsSnapshot(): void {
     const tmp = `${TELEMETRY_FILE}.tmp`;
     writeFileSync(tmp, JSON.stringify(getMetricsSnapshot()), 'utf8');
     renameSync(tmp, TELEMETRY_FILE);
-  } catch (e: any) {
-    structLog('warn', 'telemetry', { saved: false, error: e?.message ?? String(e) });
+  } catch (e) {
+    structLog('warn', 'telemetry', { saved: false, error: e instanceof Error ? e.message : String(e) });
   }
 }
 

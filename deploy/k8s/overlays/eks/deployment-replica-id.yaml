@@ -1,0 +1,22 @@
+# R3 多副本纪律：向容器注入副本标识，使 server 启动期的 multi-replica 自检
+# （REPLICA_ID/REPLICA_COUNT > 1 且 Redis 后端未就绪 → process.exit(1)）在 k8s 内真实生效。
+# 没有这个注入，replicas>1 时进程无法感知自己是多副本之一，自检形同虚设。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-harness
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: ui
+          env:
+            # Downward API：pod 名（每副本唯一）→ REPLICA_ID
+            - name: REPLICA_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # 与本 overlay 的副本数保持一致（扩容时同步修改）
+            - name: REPLICA_COUNT
+              value: '2'

@@ -244,6 +244,12 @@ curl -sf http://127.0.0.1:4182/health/ready
 | 10 | chat-sessions / history / provider-keys | ✅ 已完成（chat-data-routes.ts） |
 | — | handleRun / handleWorkflow / chat-stream / events / workflows POST | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项（这些是 run 关键路径，留在 server.ts 由组合根直接持有） |
 
+| 10 | chat-sessions / history / provider-keys | ✅ 已完成（chat-data-routes.ts） |
+| 11 | run 关键路径（handleRun ~1000 行 + plan 任务同步簇 + handleWorkflow + auditWfEvent + resolveWorkflowRunOpts + resolveTraceId + activeWorkflowAborts） | ✅ 已完成（run-routes.ts，1685 行）。护航 = scripts/e2e-run-flow.cjs（重构前旧 dist 先绿 5/5，重构后复验 5/5）。deps 经 initRunRoutes 在 bootstrap 注入；activeWorkflowAborts 由本模块持有并导出供 server.ts 快照分发器共享 |
+| — | chat-stream / events（依赖 chatBus 常驻 SSE） | 待做（低优先，独立 SSE 通道，耦合面小） |
+
+**server.ts 最终状态：6491 → 2135 行（-67%）**。剩余为组合根（装配）+ 主分发器 + chat-stream/events 两个 SSE 端点。
+
 ## 后续批次（按耦合度从低到高排序）
 
 | 批次 | 路由组 | 预估行数 | 依赖闭包 | 备注 |

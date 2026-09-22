@@ -10,8 +10,11 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: agent-harness
-  minReplicas: 2
-  maxReplicas: 6
+  # R3：base 为内存队列/注册表 + SQLite 单写 —— HPA 必须锁死单副本，
+  # 否则 minReplicas>=2 会立即把上面 replicas:1 扩成多副本写坏数据。
+  # 启用 RUN_QUEUE_BACKEND/AGENT_STORE=redis（eks overlay）后按需上调。
+  minReplicas: 1
+  maxReplicas: 1
   metrics:
     # CPU 利用率（基础扩缩容）
     - type: Resource

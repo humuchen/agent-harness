@@ -17,7 +17,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, type DbAdapter } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
 
 // ─── provider 默认端点 ───────────────────────────────────────────────────────
@@ -75,8 +75,14 @@ export interface CredentialResult {
 }
 
 // ─── 库存储 ──────────────────────────────────────────────────────────────────
-let db: any = null;
+let db: DbAdapter | null = null;
 let dbReady: Promise<void> | null = null;
+
+/** 运行期取库句柄（ensureDb 之后必非空；这里做显式断言以换取类型安全）。 */
+function dbc(): DbAdapter {
+  if (!db) throw new Error('provider-keys db 未初始化');
+  return db;
+}
 
 function getDbFile(): string {
   return process.env.PROVIDER_KEYS_DB_FILE || join(process.cwd(), 'data', 'provider-keys.db');
@@ -88,7 +94,7 @@ async function ensureDb(): Promise<void> {
     dbReady = (async () => {
       const file = getDbFile();
       db = getDbAdapter({ file });
-      await db.exec(
+      await dbc().exec(
         `CREATE TABLE IF NOT EXISTS user_provider_keys (
           owner             TEXT    NOT NULL,
           provider          TEXT    NOT NULL,
@@ -103,14 +109,14 @@ async function ensureDb(): Promise<void> {
           PRIMARY KEY (owner, provider)
         )`
       );
-      await db.exec(
+      await dbc().exec(
         'CREATE INDEX IF NOT EXISTS idx_upk_owner ON user_provider_keys(owner)'
       );
       // P2.4：多 Key 支持。向后兼容迁移——新增可空列存储附加 Key（JSON 数组）。
       // 现有单 Key 行 extra_keys_json 为 NULL，解析时视为无附加 Key。
       // exec 返回 void（不同后端可能异步），用 try/catch 包裹实现幂等（列已存在则忽略）。
       try {
-        await db.exec(
+        await dbc().exec(
           'ALTER TABLE user_provider_keys ADD COLUMN extra_keys_json TEXT'
         );
       } catch {
@@ -164,33 +170,49 @@ export function maskKey(plain: string): string {
 }
 
 // ─── 行读写 ──────────────────────────────────────────────────────────────────
-function rowToPublic(r: any): ProviderKeyPublic {
-  const extraKeys: Array<{ keyCipher: string; keyHint: string }> = parseExtraKeys(
-    typeof r.extra_keys_json === 'string' ? r.extra_keys_json : null
-  );
-  return {
-    provider: r.provider,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    keyHint: r.key_hint,
-    status: r.status,
-    ...(r.last_verified_at ? { lastVerifiedAt: r.last_verified_at } : {}),
-    ...(r.last_error ? { lastError: r.last_error } : {}),
-    keyCount: 1 + extraKeys.length,
-    needsRotation: computeNeedsRotation(r.updated_at)
-  };
+/** 库行的统一视图：字段经 str() 收敛为 string。 */
+type KeyRow = Record<string, unknown>;
+
+function col(r: KeyRow, k: string): string | undefined {
+  const v = r[k];
+  return v == null ? undefined : String(v);
 }
 
+function rowToPublic(r: KeyRow): ProviderKeyPublic {
+  const extraKeys: Array<{ keyCipher: string; keyHint: string }> = parseExtraKeys(
+    col(r, 'extra_keys_json') ?? null
+  );
+  const verifiedAt = col(r, 'last_verified_at');
+  const lastErr = col(r, 'last_error');
+  return {
+    provider: String(r.provider),
+    ...(r.base_url ? { baseUrl: String(r.base_url) } : {}),
+    keyHint: col(r, 'key_hint') ?? '',
+    status: String(r.status) as ProviderKeyPublic['status'],
+    ...(verifiedAt ? { lastVerifiedAt: Number(verifiedAt) } : {}),
+    ...(lastErr ? { lastError: lastErr } : {}),
+    keyCount: 1 + extraKeys.length,
+    needsRotation: computeNeedsRotation(
+      r.updated_at != null ? Number(r.updated_at) : undefined
+    )
+  };
+}
 /** 解析 extra_keys_json（容错：非法 JSON / 非数组 → 空数组）。 */
 function parseExtraKeys(
-  raw: string | null
+  raw: string | null | undefined
 ): Array<{ keyCipher: string; keyHint: string }> {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
     return arr
-      .filter((k: any) => k && typeof k.c === 'string' && typeof k.h === 'string')
-      .map((k: any) => ({ keyCipher: k.c, keyHint: k.h }));
+      .filter(
+        (k: unknown): k is { c: string; h: string } =>
+          !!k &&
+          typeof (k as { c?: unknown }).c === 'string' &&
+          typeof (k as { h?: unknown }).h === 'string'
+      )
+      .map((k) => ({ keyCipher: k.c, keyHint: k.h }));
   } catch {
     return [];
   }
@@ -201,23 +223,24 @@ export async function getUserProviderKey(
   provider: string
 ): Promise<ProviderKeyRow | null> {
   await ensureDb();
-  const r = await db
+  const r = await dbc()
     .prepare(
       'SELECT owner, provider, base_url, key_cipher, key_hint, status, last_verified_at, last_error, created_at, updated_at, extra_keys_json FROM user_provider_keys WHERE owner = ? AND provider = ?'
     )
-    .get(owner, provider) as any | undefined;
+    .get(owner, provider) as KeyRow | undefined;
   if (!r) return null;
+  const status = String(r.status) as ProviderKeyRow['status'];
   return {
-    owner: r.owner,
-    provider: r.provider,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    keyCipher: r.key_cipher,
-    keyHint: r.key_hint,
-    status: r.status,
-    ...(r.last_verified_at ? { lastVerifiedAt: r.last_verified_at } : {}),
-    ...(r.last_error ? { lastError: r.last_error } : {}),
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
+    owner: String(r.owner),
+    provider: String(r.provider),
+    ...(r.base_url ? { baseUrl: String(r.base_url) } : {}),
+    keyCipher: String(r.key_cipher),
+    keyHint: String(r.key_hint),
+    status,
+    ...(r.last_verified_at != null ? { lastVerifiedAt: Number(r.last_verified_at) } : {}),
+    ...(r.last_error ? { lastError: String(r.last_error) } : {}),
+    createdAt: Number(r.created_at ?? 0),
+    updatedAt: Number(r.updated_at ?? 0),
     extraKeys: parseExtraKeys(
       typeof r.extra_keys_json === 'string' ? r.extra_keys_json : null
     )
@@ -228,11 +251,11 @@ export async function listUserProviderKeys(
   owner: string
 ): Promise<ProviderKeyPublic[]> {
   await ensureDb();
-  const rows = (await db
+  const rows = (await dbc()
     .prepare(
       'SELECT owner, provider, base_url, key_hint, status, last_verified_at, last_error, updated_at, extra_keys_json FROM user_provider_keys WHERE owner = ? ORDER BY updated_at DESC'
     )
-    .all(owner)) as any[];
+    .all(owner)) as KeyRow[];
   return rows.map(rowToPublic);
 }
 
@@ -265,7 +288,7 @@ export async function saveUserProviderKey(
   const extraJson = extra.length ? JSON.stringify(extra) : null;
   const now = Date.now();
   await ensureDb();
-  await db
+  await dbc()
     .prepare(
       `INSERT INTO user_provider_keys (owner, provider, base_url, key_cipher, key_hint, status, created_at, updated_at, extra_keys_json)
        VALUES (?, ?, ?, ?, ?, 'unverified', ?, ?, ?)
@@ -308,7 +331,7 @@ export async function updateProviderKeyBaseUrl(
   if (baseUrl === undefined) return;
   await ensureDb();
   const trimmed = baseUrl.trim();
-  await db
+  await dbc()
     .prepare(
       `UPDATE user_provider_keys
        SET base_url = ?, status = 'unverified', last_verified_at = NULL, last_error = NULL, updated_at = ?
@@ -322,7 +345,7 @@ export async function deleteUserProviderKey(
   provider: string
 ): Promise<void> {
   await ensureDb();
-  await db
+  await dbc()
     .prepare('DELETE FROM user_provider_keys WHERE owner = ? AND provider = ?')
     .run(owner, provider);
 }
@@ -334,7 +357,7 @@ export async function setVerifyResult(
   error?: string
 ): Promise<void> {
   await ensureDb();
-  await db
+  await dbc()
     .prepare(
       `UPDATE user_provider_keys SET status = ?, last_verified_at = ?, last_error = ? WHERE owner = ? AND provider = ?`
     )
@@ -547,7 +570,7 @@ export async function registerProviderKeyRoutes(
   res: ServerResponse,
   path: string,
   method: string,
-  body: any,
+  body: Record<string, unknown>,
   owner: string
 ): Promise<boolean> {
   const base = '/api/account/provider-keys';
