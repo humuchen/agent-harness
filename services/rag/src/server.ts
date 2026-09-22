@@ -252,7 +252,7 @@ export function createRagServer(opts: RagServerOptions) {
           const result = await evaluator.evaluate(dataset, retrieveFn);
           return send(res, 200, result);
         } catch (e) {
-          return send(res, 500, { error: String(e?.message || e) });
+          return send(res, 500, { error: String(e instanceof Error ? e.message : e) });
         }
       }
 
@@ -298,13 +298,13 @@ export function createRagServer(opts: RagServerOptions) {
           });
           return send(res, 200, result);
         } catch (e) {
-          return send(res, 500, { error: String(e?.message || e) });
+          return send(res, 500, { error: String(e instanceof Error ? e.message : e) });
         }
       }
 
       return send(res, 404, { error: 'not found', path });
     } catch (e) {
-      return send(res, 500, { error: String(e?.message || e) });
+      return send(res, 500, { error: String(e instanceof Error ? e.message : e) });
     }
   });
 
