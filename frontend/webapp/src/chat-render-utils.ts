@@ -61,6 +61,7 @@ export function filterPlanSingleStep(msgs: ChatMsg[]): ChatMsg[] {
   const out: ChatMsg[] = [];
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
+    if (!m) continue;
     const isDispatch =
       m.role === 'user' &&
       typeof m.content === 'string' &&

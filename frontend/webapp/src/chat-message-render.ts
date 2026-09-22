@@ -792,7 +792,7 @@ export function renderTraceDrawer(ctx: ChatRenderCtx): TemplateResult {
                       class="trace-collapse-all"
                       title="折叠整条调用链路中所有可折叠项"
                       @click=${() => {
-                        collapseEntireTrace(m.trace);
+                        collapseEntireTrace(m.trace ?? []);
                         ctx.requestUpdate();
                       }}
                     >

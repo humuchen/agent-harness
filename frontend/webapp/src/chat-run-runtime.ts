@@ -33,6 +33,11 @@ import { safeJson } from './utils/chat-utils';
 import { agentContext } from './agent-context';
 import { MY_ORIGIN } from './chat-sync';
 
+
+/** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
+function asObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
 /** 后端上下文用量（与 AhChat 内联类型同构）。 */
 export interface BackendUsage {
   window: number;
@@ -189,7 +194,7 @@ export async function runWithReconnect(
       if (deps.getConnState(sid) !== 'connected')
         deps.setConn(sid, 'connected');
       return;
-    } catch (rawErr: any) {
+    } catch (rawErr) {
       const aborted = ac.signal.aborted;
       const wasKeepAlive = deps.getKeepAliveAbort(sid) === true;
       deps.clearKeepAliveAbort(sid);
@@ -307,14 +312,14 @@ export class ChatRunRuntime {
     this.deps.setConn(sid, 'reconnecting');
     try {
       await this.runWithReconnect(sid, input, ac);
-    } catch (e: any) {
-      if ((e as any)?.name !== 'UserStoppedRun') {
+    } catch (e) {
+      if ((e as { name?: string })?.name !== 'UserStoppedRun') {
         this.deps.setConn(sid, 'lost');
         this.deps.patchSession(sid, {
           error: true,
           content:
             (this.deps.curSession(sid)?.content ?? '') ||
-            `⚠️ 重连失败：${e?.message ?? e}（请重新发送消息）`
+            `⚠️ 重连失败：${e instanceof Error ? e.message : String(e)}（请重新发送消息）`
         });
         notifyError(e, { title: '重连失败', key: `chat-run-${sid}` });
       }
@@ -336,7 +341,7 @@ export class ChatRunRuntime {
         this.deps.patchSession(sid, { trace: [tc2.root] });
       }
       this.deps.setStreaming(sid, false);
-      this.abortBy[sid] = undefined as any;
+      delete this.abortBy[sid];
       if (this.deps.getActiveId() === sid)
         this.deps.setMessages(this.deps.getThreads(sid) ?? []);
       this.deps.saveHistory(sid);
@@ -351,13 +356,13 @@ export class ChatRunRuntime {
     const cur = (): ChatMsg | null => this.deps.curSession(sid);
     const patch = (p: Partial<ChatMsg>) => this.deps.patchSession(sid, p);
     // 终结事件（最终答复已到达 / 流结束 / 运行出错）：立即解除该会话的「流式」状态。
-    const et = (ev as any).type;
+    const et = ev.type;
     if (et === 'run:end' || et === '_done' || et === 'error') {
       this.deps.setStreaming(sid, false);
     }
     // 断线恢复簿记：记录 jobId（重连凭据）、最大事件 seq（续传游标）、
     // 活跃时间戳（看门狗/切回标签页的健康判定）与终结标记。
-    const anyEv = ev as any;
+    const anyEv = ev;
     if (et === 'job:accepted' && anyEv.jobId) {
       this.jobBy[sid] = String(anyEv.jobId);
     }
@@ -446,7 +451,7 @@ export class ChatRunRuntime {
         if (c) {
           this.typewriter.received[sid] = true;
           const p = this.typewriter.pending[sid];
-          if (p) p.content += String((ev as any).delta ?? '');
+          if (p) p.content += String(ev.delta ?? '');
           // 首个回答 token 到达 = 思考阶段结束：自动折叠本轮思考面板。
           if (!c.content) this.deps.autoCollapseThink(sid);
           this.typewriter.ensureTypewriter();
@@ -457,11 +462,11 @@ export class ChatRunRuntime {
         const c = cur();
         if (c) {
           const p = this.typewriter.pending[sid];
-          if (p) p.reasoning += String((ev as any).delta ?? '');
+          if (p) p.reasoning += String(ev.delta ?? '');
           this.typewriter.ensureTypewriter();
           // P5 静默计划执行：quiet run 的思考增量改道计划卡思考面板（气泡本身隐藏）。
           if (this.quietBy[sid]) {
-            this.deps.onPlanThinking?.(sid, String((ev as any).delta ?? ''));
+            this.deps.onPlanThinking?.(sid, String(ev.delta ?? ''));
           }
         }
         break;
@@ -470,7 +475,7 @@ export class ChatRunRuntime {
         // 关键修复：若已通过 llm:token 增量构建了内容，不再用 llm:response 覆盖。
         const c = cur();
         if (c && !this.typewriter.received[sid]) {
-          const respContent = String((ev as any).content ?? '');
+          const respContent = String(ev.content ?? '');
           if (respContent) patch({ content: respContent });
           // 标记已处理：避免重复 llm:response 事件二次覆盖（逆序/重复内容根因），
           // 且不影响后续 llm:token 增量追加（token 分支不读此标志做门禁）。
@@ -483,8 +488,8 @@ export class ChatRunRuntime {
         if (!c) break;
         const tools = [...(c.tools ?? [])];
         tools.push({
-          name: (ev as any).call?.name ?? 'unknown',
-          args: safeJson((ev as any).call?.arguments)
+          name: String(asObj(ev.call)?.name ?? 'unknown'),
+          args: safeJson(asObj(ev.call)?.arguments)
         });
         patch({ tools });
         break;
@@ -493,7 +498,7 @@ export class ChatRunRuntime {
         const c = cur();
         if (!c) break;
         const tools = [...(c.tools ?? [])];
-        const evName = (ev as any).call?.name;
+        const evName = asObj(ev.call)?.name;
         // 回填最近一条同名且尚未有结果的工具卡。
         if (evName !== undefined) {
           for (let i = tools.length - 1; i >= 0; i--) {
@@ -502,8 +507,8 @@ export class ChatRunRuntime {
             if (tv.name === evName && tv.result === undefined) {
               tools[i] = {
                 ...tv,
-                result: String((ev as any).result ?? ''),
-                errored: Boolean((ev as any).errored)
+                result: String(ev.result ?? ''),
+                errored: Boolean(ev.errored)
               };
               break;
             }
@@ -515,7 +520,7 @@ export class ChatRunRuntime {
       case 'guardrail:blocked': {
         const c = cur();
         if (c) {
-          const phase = String((ev as any).phase ?? '');
+          const phase = String(ev.phase ?? '');
           // 护栏拦截的内部原因（如「医疗广告法：project_kb_search 返回 found:false」）
           // 属诊断信息，仅记入调用链路（chat.ts 的 trace detail），不直接暴露给终端用户；
           // 这里只给出一条中性的合规提示，避免泄露内部合规判定细节。
@@ -531,7 +536,7 @@ export class ChatRunRuntime {
       }
       case 'llm:usage': {
         // 后端精确上下文用量：更新浮层数据源，并同步给 dashboard 汇总（跨页面共享）。
-        const u = ev as any;
+        const u = ev;
         if (u && u.breakdown) {
           const win =
             this.deps.getServerCtxWindow() > 0
@@ -561,14 +566,17 @@ export class ChatRunRuntime {
             completionTokens: Number(u.completionTokens) || 0,
             totalTokens: Number(u.totalTokens) || 0,
             compressed,
-            breakdown: {
-              system: Number(u.breakdown.system) || 0,
-              tools: Number(u.breakdown.tools) || 0,
-              messages: Number(u.breakdown.messages) || 0,
-              mcp: Number(u.breakdown.mcp) || 0,
-              skills: Number(u.breakdown.skills) || 0,
-              completion: Number(u.breakdown.completion) || 0
-            }
+            breakdown: (() => {
+              const bd = asObj(u.breakdown) ?? {};
+              return {
+                system: Number(bd.system) || 0,
+                tools: Number(bd.tools) || 0,
+                messages: Number(bd.messages) || 0,
+                mcp: Number(bd.mcp) || 0,
+                skills: Number(bd.skills) || 0,
+                completion: Number(bd.completion) || 0
+              };
+            })()
           });
           const totalPct =
             win > 0 ? Math.min(100, (Number(u.totalTokens) / win) * 100) : 0;
@@ -576,7 +584,7 @@ export class ChatRunRuntime {
             totalPct,
             totalTokens: Number(u.totalTokens),
             window: win,
-            model: u.model,
+            model: u.model == null ? undefined : String(u.model),
             compressed,
             updatedAt: Date.now()
           });
@@ -586,7 +594,7 @@ export class ChatRunRuntime {
         break;
       }
       case 'run:end': {
-        const finalStr = String((ev as any).final ?? '');
+        const finalStr = String(ev.final ?? '');
         this.typewriter.finalBy[sid] = finalStr;
         // 仅在没有 token 增量（非流式回退）时才用 final 直接赋值；计划卡片跳过原始 JSON 外泄。
         if (!this.typewriter.received[sid] && finalStr) {
@@ -612,7 +620,7 @@ export class ChatRunRuntime {
             error: true,
             // 保留已有内容；内容为空时才填错误占位。
             content:
-              c.content || `⚠️ ${escapeHtml(String((ev as any).message ?? ev))}`
+              c.content || `⚠️ ${escapeHtml(String(ev.message ?? ev))}`
           });
         break;
       }
@@ -746,8 +754,8 @@ export class ChatRunRuntime {
         return 'error';
       }
       return 'ok';
-    } catch (e: any) {
-      if ((e as any)?.name === 'UserStoppedRun') {
+    } catch (e) {
+      if ((e as { name?: string })?.name === 'UserStoppedRun') {
         // 用户主动停止：保留已揭示内容，不标错误。
         return 'stopped';
       } else {
@@ -757,7 +765,7 @@ export class ChatRunRuntime {
           error: true,
           content:
             (this.deps.curSession(sessionId)?.content ?? '') ||
-            `⚠️ ${e?.message ?? e}`
+            `⚠️ ${e instanceof Error ? e.message : String(e)}`
         });
         notifyError(e, { title: '对话中断', key: `chat-run-${sessionId}` });
         return 'error';
@@ -785,7 +793,7 @@ export class ChatRunRuntime {
         this.deps.patchSession(sessionId, { trace: [tc.root] });
       }
       this.deps.setStreaming(sessionId, false);
-      this.abortBy[sessionId] = undefined as any;
+      delete this.abortBy[sessionId];
       // P5：run 收尾解除 quiet 标记（下一轮普通 run 的思考回到气泡内折叠块）。
       this.quietBy[sessionId] = false;
       if (this.deps.getActiveId() === sessionId)

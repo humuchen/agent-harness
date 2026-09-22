@@ -4,6 +4,11 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { client } from './api';
 import { ApprovalRequiredError } from '@agent-harness/client';
 import type { RunMode, StreamEvent } from '@agent-harness/client';
+
+/** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
+function asObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
 import { sharedStyles } from './styles';
 import { toRichHtml, escapeHtml } from './utils/markdown';
 import {
@@ -139,20 +144,19 @@ export class AhRun extends LitElement {
   private ingest(ev: StreamEvent) {
     switch (ev.type) {
       case 'job:accepted':
-        this.jobId = (ev as any).jobId ?? this.jobId;
+        this.jobId = ev.jobId == null ? this.jobId : String(ev.jobId);
         // 服务端分配的会话 key：后续追问原样带回，即可复用同一 Memory 窗口续上对话。
-        if ((ev as any).sessionKey)
-          this.conversationId = String((ev as any).sessionKey);
+        if (ev.sessionKey != null) this.conversationId = String(ev.sessionKey);
         break;
       case 'run:start':
         this.markActive(0);
         this.push({
           kind: 'user',
-          text: String((ev as any).input ?? this.prompt)
+          text: String(ev.input ?? this.prompt)
         });
         break;
       case 'run:tools':
-        this.toolsCount = (ev as any).tools?.length ?? this.toolsCount;
+        this.toolsCount = (ev.tools as unknown[] | undefined)?.length ?? this.toolsCount;
         break;
       case 'step:start':
         this.markActive(1);
@@ -163,12 +167,12 @@ export class AhRun extends LitElement {
         break;
       case 'llm:response': {
         this.markActive(3);
-        const content = (ev as any).content;
+        const content = ev.content;
         if (content)
           this.push({
             kind: 'think',
             text: String(content),
-            step: (ev as any).step
+            step: ev.step == null ? undefined : Number(ev.step)
           });
         break;
       }
@@ -176,20 +180,20 @@ export class AhRun extends LitElement {
         this.markActive(2);
         this.push({
           kind: 'tool',
-          text: `调用工具：${(ev as any).call?.name ?? 'unknown'}`,
-          step: (ev as any).step,
-          detail: safeJson((ev as any).call?.arguments)
+          text: `调用工具：${String(asObj(ev.call)?.name ?? 'unknown')}`,
+          step: ev.step == null ? undefined : Number(ev.step),
+          detail: safeJson(asObj(ev.call)?.arguments)
         });
         break;
       case 'tool:result':
         this.markDone(2);
         this.push({
           kind: 'tool-result',
-          text: `${(ev as any).call?.name ?? 'unknown'} → ${
-            (ev as any).errored ? '失败' : '完成'
+          text: `${String(asObj(ev.call)?.name ?? 'unknown')} → ${
+            ev.errored ? '失败' : '完成'
           }`,
-          step: (ev as any).step,
-          detail: safeJson((ev as any).result)
+          step: ev.step == null ? undefined : Number(ev.step),
+          detail: safeJson(ev.result)
         });
         break;
       case 'guardrail:blocked':
@@ -198,27 +202,27 @@ export class AhRun extends LitElement {
         this.push({
           kind: 'warn',
           text:
-            (ev as any).phase === 'input'
+            ev.phase === 'input'
               ? '输入触发内容安全策略，本轮未发送'
               : '回复触发内容安全策略，已按合规要求调整'
         });
         break;
       case 'run:cost':
-        this.cost = (ev as any).cumulativeCost ?? this.cost;
+        this.cost = typeof ev.cumulativeCost === 'number' ? ev.cumulativeCost : this.cost;
         break;
       case 'run:end':
         this.markDone(3);
         this.markDone(4);
         this.allDone();
-        this.final = String((ev as any).final ?? '');
-        this.steps = (ev as any).steps ?? this.steps;
+        this.final = String(ev.final ?? '');
+        this.steps = typeof ev.steps === 'number' ? ev.steps : this.steps;
         // 会话状态机推进到 finished（订阅回调会把 running/finished 同步到位）。
         if (this.session.can('finish')) this.session.finish();
         // 把本轮最终回答作为一条「回答」块追加进对话轨迹，使多轮聊天记录连续可读。
         if (this.final) this.push({ kind: 'answer', text: this.final });
         break;
       case 'error':
-        this.push({ kind: 'error', text: String((ev as any).message ?? ev) });
+        this.push({ kind: 'error', text: String(ev.message ?? ev) });
         break;
       case 'env:status':
       case '_env_done':
@@ -284,13 +288,13 @@ export class AhRun extends LitElement {
       )) {
         this.ingest(ev);
       }
-    } catch (e: any) {
+    } catch (e) {
       if (e instanceof ApprovalRequiredError) {
         this.ticket = `需要审批：ticket ${e.ticketId}（在「审批」页裁决后重投）`;
         notify.warning(this.ticket, { title: '需要审批', key: 'run-approval' });
         if (this.session.can('approve')) this.session.requestApproval();
       } else {
-        this.error = String(e?.message ?? e);
+        this.error = String(e instanceof Error ? e.message : e);
         // 运行失败统一走通知组件（用户主动点「停止」属 AbortError，内部会静默跳过）。
         notifyError(e, { title: '运行失败', key: 'run' });
         // 被 stop() 中止后状态已为 aborted，不再覆盖为 error。
