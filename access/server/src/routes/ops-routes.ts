@@ -24,7 +24,7 @@ export interface OpsRouteDeps {
     req: IncomingMessage,
     res: ServerResponse,
     action: Action,
-    body?: any
+    body?: Record<string, unknown>
   ) => Promise<AuthContext | null>;
   auditAction: (action: string, fields: Record<string, unknown>) => void;
   /** server.ts 的 URL 脱敏助手（去掉查询串，避免内嵌 token 进审计日志）。 */
@@ -81,9 +81,9 @@ export async function handleOpsRoutes(
         if (!closed) send(e);
       });
       if (!closed) send({ type: '_verify_done' });
-    } catch (e: any) {
+    } catch (e) {
       if (!closed)
-        send({ type: 'verify:error', id: '0', message: e?.message ?? String(e) });
+        send({ type: 'verify:error', id: '0', message: e instanceof Error ? e.message : String(e) });
       if (!closed) send({ type: '_verify_done' });
     } finally {
       if (!closed) res.end();
@@ -145,9 +145,9 @@ export async function handleOpsRoutes(
         transportType
       });
       sendJson(res, { server: meta, servers: mcpManager.list() }, req);
-    } catch (e: any) {
+    } catch (e) {
       res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: e?.message ?? String(e) }));
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
     }
     return true;
   }
@@ -171,9 +171,9 @@ export async function handleOpsRoutes(
     try {
       const meta = await mcpManager.connectPreset(id, token);
       sendJson(res, { server: meta, servers: mcpManager.list() }, req);
-    } catch (e: any) {
+    } catch (e) {
       res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: e?.message ?? String(e) }));
+      res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
     }
     return true;
   }
@@ -190,8 +190,8 @@ export async function handleOpsRoutes(
     try {
       const meta = await mcpManager.reconnect(name);
       sendJson(res, { server: meta }, req);
-    } catch (e: any) {
-      sendJson(res, { error: e?.message ?? String(e) }, req);
+    } catch (e) {
+      sendJson(res, { error: e instanceof Error ? e.message : String(e) }, req);
     }
     return true;
   }
@@ -208,8 +208,8 @@ export async function handleOpsRoutes(
     try {
       await mcpManager.removeServer(name);
       sendJson(res, { ok: true, servers: mcpManager.list() }, req);
-    } catch (e: any) {
-      sendJson(res, { error: e?.message ?? String(e) }, req);
+    } catch (e) {
+      sendJson(res, { error: e instanceof Error ? e.message : String(e) }, req);
     }
     return true;
   }
@@ -283,9 +283,9 @@ export async function handleOpsRoutes(
           if (!closed) send({ type: 'env:status', env });
         });
         if (!closed) send({ type: '_env_done' });
-      } catch (e: any) {
+      } catch (e) {
         if (!closed)
-          send({ type: 'env:error', message: e?.message ?? String(e) });
+          send({ type: 'env:error', message: e instanceof Error ? e.message : String(e) });
         if (!closed) send({ type: '_env_done', error: true });
       } finally {
         if (!closed) res.end();
@@ -303,9 +303,9 @@ export async function handleOpsRoutes(
         if (!env && !closed)
           send({ type: 'env:error', message: `未找到环境 ${envId}` });
         if (!closed) send({ type: '_env_done', found: !!env });
-      } catch (e: any) {
+      } catch (e) {
         if (!closed)
-          send({ type: 'env:error', message: e?.message ?? String(e) });
+          send({ type: 'env:error', message: e instanceof Error ? e.message : String(e) });
         if (!closed) send({ type: '_env_done', error: true });
       } finally {
         if (!closed) res.end();

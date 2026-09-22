@@ -228,7 +228,7 @@ export function createRagServer(opts: RagServerOptions) {
         const dataset: EvalDataset = {
           name: String(body.name ?? 'default'),
           samples: Array.isArray(body.samples)
-            ? body.samples.map((s: any) => ({
+            ? body.samples.map((s: Record<string, unknown>) => ({
                 query: String(s.query ?? ''),
                 groundTruthChunkIds: Array.isArray(s.groundTruthChunkIds) ? s.groundTruthChunkIds : undefined,
                 groundTruthAnswer: s.groundTruthAnswer ? String(s.groundTruthAnswer) : undefined,
@@ -246,12 +246,12 @@ export function createRagServer(opts: RagServerOptions) {
               query,
               top_k: Number(body.k) || 5,
               tenant_id: auth.tenantId,
-            } as any);
+            } as never);
             return resp.results ?? [];
           };
           const result = await evaluator.evaluate(dataset, retrieveFn);
           return send(res, 200, result);
-        } catch (e: any) {
+        } catch (e) {
           return send(res, 500, { error: String(e?.message || e) });
         }
       }
@@ -297,13 +297,13 @@ export function createRagServer(opts: RagServerOptions) {
             latency_ms: result.latency_ms,
           });
           return send(res, 200, result);
-        } catch (e: any) {
+        } catch (e) {
           return send(res, 500, { error: String(e?.message || e) });
         }
       }
 
       return send(res, 404, { error: 'not found', path });
-    } catch (e: any) {
+    } catch (e) {
       return send(res, 500, { error: String(e?.message || e) });
     }
   });
