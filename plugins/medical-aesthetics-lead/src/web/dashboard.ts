@@ -383,66 +383,76 @@ export const analyticsDashboardView: PluginUIView = {
   render(): string | Promise<string> {
     return (async () => {
       const result = await runAnalyticsQuery({ type: 'full' });
-      const d = result.data as any;
+      // 全量分析查询结果的行结构（runAnalyticsQuery 返回面为宽泛 Record，
+      // 各分组行的字段在此处一次性 String/Number 收敛，下游全部推断类型）。
+      const d = (result.data ?? {}) as {
+        funnel?: Array<Record<string, unknown>>;
+        channel?: Array<Record<string, unknown>>;
+        clinic?: Array<Record<string, unknown>>;
+        project?: Array<Record<string, unknown>>;
+        trend?: Array<Record<string, unknown>>;
+      };
+      const S = (v: unknown): string => String(v ?? '');
+      const N = (v: unknown): number => Number(v) || 0;
 
       // --- 漏斗图 ---
-      const funnelData = (d?.funnel ?? []).map((f: any) => ({
-        label: f.stage,
-        value: f.count,
-        pct: f.percentage,
-        avgH: f.avgHoursToNext
+      const funnelData = (d.funnel ?? []).map((f) => ({
+        label: S(f.stage),
+        value: N(f.count),
+        pct: N(f.percentage),
+        avgH: N(f.avgHoursToNext)
       }));
 
       // --- 渠道柱状图 ---
-      const channelData = (d?.channel ?? []).map((c: any) => ({
-        label: c.channel,
-        value: c.leadCount,
-        rate: c.dealRate
+      const channelData = (d.channel ?? []).map((c) => ({
+        label: S(c.channel),
+        value: N(c.leadCount),
+        rate: N(c.dealRate)
       }));
 
       // --- 院区柱状图 ---
-      const clinicData = (d?.clinic ?? []).map((c: any) => ({
-        label: c.clinicName,
-        value: c.dealCount,
-        util: c.slotUtilization
+      const clinicData = (d.clinic ?? []).map((c) => ({
+        label: S(c.clinicName),
+        value: N(c.dealCount),
+        util: N(c.slotUtilization)
       }));
 
       // --- 项目柱状图 ---
-      const projectData = (d?.project ?? []).map((p: any) => ({
-        label: p.project,
-        value: p.dealCount,
-        rev: p.estimatedRevenue
+      const projectData = (d.project ?? []).map((p) => ({
+        label: S(p.project),
+        value: N(p.dealCount),
+        rev: N(p.estimatedRevenue)
       }));
 
       // --- 趋势折线 ---
-      const trendData = (d?.trend ?? []).map((t: any) => ({
-        period: t.period,
-        leads: t.leadCount,
-        deals: t.dealCount
+      const trendData = (d.trend ?? []).map((t) => ({
+        period: S(t.period),
+        leads: N(t.leadCount),
+        deals: N(t.dealCount)
       }));
 
       const funnelBars = barChart(
-        funnelData.map((f: any) => ({ label: f.label, value: f.value })),
+        funnelData.map((f) => ({ label: f.label, value: f.value })),
         'var(--ah-accent)'
       );
 
       const channelBars = barChart(
-        channelData.map((c: any) => ({ label: c.label, value: c.value })),
+        channelData.map((c) => ({ label: c.label, value: c.value })),
         '#5B8FF9'
       );
 
       const clinicBars = barChart(
-        clinicData.map((c: any) => ({ label: c.label, value: c.value })),
+        clinicData.map((c) => ({ label: c.label, value: c.value })),
         '#5AD8A6'
       );
 
       const projectBars = barChart(
-        projectData.map((p: any) => ({ label: p.label, value: p.value })),
+        projectData.map((p) => ({ label: p.label, value: p.value })),
         '#F6BD16'
       );
 
       // 趋势折线图
-      const trendMax = Math.max(1, ...trendData.map((t: any) => t.leads));
+      const trendMax = Math.max(1, ...trendData.map((t) => t.leads));
       const trendW = 420,
         trendH = 140,
         trendPad = { top: 20, right: 10, bottom: 30, left: 40 };
@@ -456,7 +466,7 @@ export const analyticsDashboardView: PluginUIView = {
         (v / trendMax) * (trendH - trendPad.top - trendPad.bottom);
       const trendPath = trendData
         .map(
-          (t: any, i: number) =>
+          (t, i: number) =>
             `${trendX(i).toFixed(1)},${trendY(t.leads).toFixed(1)}`
         )
         .join(' ');
@@ -468,7 +478,7 @@ export const analyticsDashboardView: PluginUIView = {
           '<tbody>' +
           funnelData
             .map(
-              (f: any) =>
+              (f) =>
                 `<tr><td>${esc(f.label)}</td><td>${f.value}</td><td>${
                   f.pct
                 }%</td><td>${f.avgH ?? '-'}</td></tr>`
@@ -483,7 +493,7 @@ export const analyticsDashboardView: PluginUIView = {
           '<tbody>' +
           channelData
             .map(
-              (c: any) =>
+              (c) =>
                 `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${
                   c.rate
                 }%</td></tr>`
@@ -498,7 +508,7 @@ export const analyticsDashboardView: PluginUIView = {
           '<tbody>' +
           clinicData
             .map(
-              (c: any) =>
+              (c) =>
                 `<tr><td>${esc(c.label)}</td><td>${c.value}</td><td>${
                   c.util
                 }%</td></tr>`
@@ -513,7 +523,7 @@ export const analyticsDashboardView: PluginUIView = {
           '<tbody>' +
           projectData
             .map(
-              (p: any) =>
+              (p) =>
                 `<tr><td>${esc(p.label)}</td><td>${
                   p.value
                 }</td><td>${p.rev.toLocaleString()}</td></tr>`
@@ -618,7 +628,7 @@ export const analyticsDashboardView: PluginUIView = {
           <polyline fill="none" stroke="var(--ah-accent)" stroke-width="2" points="${trendPath}"/>
           ${trendData
             .map(
-              (t: any, i: number) =>
+              (t, i: number) =>
                 `<text class="ma-lab" x="${trendX(i).toFixed(1)}" y="${(
                   trendH -
                   trendPad.bottom +
@@ -630,7 +640,7 @@ export const analyticsDashboardView: PluginUIView = {
             .join('')}
           ${trendData
             .map(
-              (t: any, i: number) =>
+              (t, i: number) =>
                 `<text class="ma-val" x="${trendX(i).toFixed(1)}" y="${(
                   trendY(t.leads) - 4
                 ).toFixed(1)}" font-size="10" text-anchor="middle">${
