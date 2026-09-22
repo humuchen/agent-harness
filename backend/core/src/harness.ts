@@ -62,14 +62,25 @@ export function contextWindowFor(model?: string): number {
  * 判断错误是否由「上下文超出模型窗口」引起（用于压缩后自愈重试）。
  * 覆盖常见的 400 / 413 及中英文错误文案（部分免费模型如 MiniMax 返回中文报错）。
  */
-function isContextOverflowError(e: any): boolean {
+function isContextOverflowError(e: unknown): boolean {
   if (!e) return false;
-  const status = e?.status ?? e?.statusCode ?? e?.response?.status;
+  const r =
+    typeof e === 'object'
+      ? (e as {
+          status?: unknown;
+          statusCode?: unknown;
+          response?: { status?: unknown };
+          message?: unknown;
+          body?: unknown;
+          error?: { message?: unknown };
+        })
+      : {};
+  const status = r.status ?? r.statusCode ?? r.response?.status;
   if (status === 413) return true;
   const text = [
-    e?.message,
-    e?.body,
-    e?.error?.message,
+    r.message,
+    r.body,
+    r.error?.message,
     typeof e === 'string' ? e : ''
   ]
     .filter(Boolean)
@@ -660,7 +671,7 @@ export class AgentHarness {
             : { type: 'image_url', image_url: { url } }
         );
       }
-      memory.add({ role: 'user', content: contentBlocks as any });
+      memory.add({ role: 'user', content: contentBlocks });
     } else {
       memory.add({ role: 'user', content: resolvedInput });
     }
@@ -975,7 +986,7 @@ export class AgentHarness {
                 // 否则：工具已注册但不在子集——不重发，直接执行（见上方说明）。
               }
               break;
-            } catch (llmErr: any) {
+            } catch (llmErr) {
               if (isContextOverflowError(llmErr) && llmAttempt < OVERFLOW_MAX_RETRIES) {
                 this.overflowShrink = true;
                 // 自适应收窄：有成功样本用「样本 × 0.6」，否则用当前历史估算的一半，逐次收敛。
@@ -1446,9 +1457,11 @@ export class AgentHarness {
                 } else {
                   result = raced.value;
                 }
-              } catch (e: any) {
+              } catch (e) {
                 // 将错误作为工具结果返回，以便模型自行修复。
-                result = `tool error: ${e?.message ?? String(e)}`;
+                result = `tool error: ${
+                  e instanceof Error ? e.message : String(e)
+                }`;
                 errored = true;
               }
             }
@@ -1531,17 +1544,19 @@ export class AgentHarness {
 
     try {
       final = await runLoop();
-    } catch (e: any) {
+    } catch (e) {
       // P1-10: 熔断打开时直接返回错误，不触发通用告警（避免告警风暴）
-      if (e?.name === 'CircuitBreakerOpen') {
-        const msg = e.message ?? 'circuit breaker open';
+      const breakerName = (e as { name?: string } | null)?.name;
+      if (breakerName === 'CircuitBreakerOpen') {
+        const msg = e instanceof Error ? e.message : 'circuit breaker open';
         emit({ type: 'error', message: msg });
         final = `${CIRCUIT_BREAKER_PREFIX} ${msg}`;
       } else {
         logError('agent.run', e, { runId });
-        emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
-        emit({ type: 'error', message: e?.message ?? String(e) });
-        final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
+        const errMsg = e instanceof Error ? e.message : String(e);
+        emitAlert('error', 'agent.run', errMsg, { runId });
+        emit({ type: 'error', message: errMsg });
+        final = `${ERROR_PREFIX} ${e instanceof Error ? e.message : String(e)}`;
       }
     }
 
@@ -1607,9 +1622,9 @@ export class AgentHarness {
           });
           try {
             final = await runLoop();
-          } catch (e: any) {
+          } catch (e) {
             logError('agent.run.retry', e, { runId });
-            final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
+            final = `${ERROR_PREFIX} ${e instanceof Error ? e.message : String(e)}`;
           }
           outcome = await this.opts.verify(buildCtx());
           emit({

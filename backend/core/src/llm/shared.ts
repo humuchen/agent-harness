@@ -127,7 +127,33 @@ export function normalizeToolCallIds(calls: ToolCall[]): ToolCall[] {
 // 18+ 个工具 schema 序列化后 ≈ 5000+ tok，每次完整传输开销巨大。
 // 优化：缓存最近 50 组工具组合的序列化结果，同时跟踪工具被使用频率。
 // 高频工具在 cache key 命中后可直接复用，避免重复序列化和传输。
-const TOOL_SCHEMA_CACHE = new Map<string, any>();
+/** OpenAI wire format 工具 schema 的最小视图（与 core 内部 ToolSchema 名同形异，勿混）。 */
+interface WireToolSchema {
+  function?: { name?: string; description?: unknown; [k: string]: unknown };
+  [k: string]: unknown;
+}
+/** SSE chat.completion.chunk 的最小视图（字段全部按 unknown 读取，typeof 收敛）。 */
+interface ChatChunk {
+  model?: unknown;
+  usage?: unknown;
+  choices?: Array<{
+    delta?: Record<string, unknown>;
+    message?: { reasoning_content?: unknown; reasoning?: unknown; [k: string]: unknown };
+    [k: string]: unknown;
+  }>;
+}
+interface ChatCompletionResponse {
+  model?: unknown;
+  usage?: unknown;
+  choices?: Array<{
+    message?: {
+      tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  }>;
+}
+const TOOL_SCHEMA_CACHE = new Map<string, WireToolSchema[]>();
 const TOOL_FREQ: Record<string, number> = {};
 const MAX_CACHE_ENTRIES = 50;
 
@@ -137,17 +163,17 @@ const MAX_CACHE_ENTRIES = 50;
  * - 低频工具 description 被截短（> 100 字符截至 80 字），减少传输体积
  * - 高频工具保留完整描述，保证语义准确性
  */
-export function serializeToolsCached(tools: any[]): any[] | undefined {
+export function serializeToolsCached(tools: WireToolSchema[]): WireToolSchema[] | undefined {
   if (!tools || tools.length === 0) return tools;
 
   // 构建 cache key（基于工具名称排序后拼接）
-  const names = tools.map((t: any) => t?.function?.name || '').sort().join(',');
+  const names = tools.map((t: WireToolSchema) => t?.function?.name || '').sort().join(',');
   if (TOOL_SCHEMA_CACHE.has(names)) {
     return TOOL_SCHEMA_CACHE.get(names);
   }
 
   // 缓存未命中：序列化并缩减低频工具描述
-  const serialized = tools.map((tool: any) => {
+  const serialized = tools.map((tool: WireToolSchema) => {
     const tName = tool?.function?.name || '';
     const freq = TOOL_FREQ[tName] || 0;
     const fn = tool?.function || {};
@@ -222,15 +248,15 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
 
   // 优化：缓存工具 schema 序列化结果，缩减低频工具描述以减小传输体积。
   // (仅在非缓存模式下也生效 — schema 缩减独立于 prompt cache)
-  const tools = (body as any).tools;
+  const tools = body.tools;
   if (Array.isArray(tools)) {
-    (body as any).tools = serializeToolsCached(tools);
+    body.tools = serializeToolsCached(tools as WireToolSchema[]);
   }
 
   if (caching) {
-    const msgs = (body as any).messages;
-    if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
-      msgs[0].cache_control = { type: 'ephemeral' };
+    const msgs = body.messages;
+    if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {
+      (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
     // 优化：仅对「系统提示词」应用 cache_control，使其作为稳定的缓存前缀。
     // 工具 schema 因动态裁剪可能变动：若也打 cache_control，每次工具集变化都会
@@ -268,9 +294,8 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     let resp: Response;
     try {
       resp = await fetchWithBreaker();
-    } catch (breakerErr: any) {
+    } catch (breakerErr) {
       // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略
-      if (breakerErr?.name === 'CircuitBreakerOpen') throw breakerErr;
       throw breakerErr;
     }
 
@@ -287,45 +312,43 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
       throw new Error(`LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
     }
 
-    const data: any = await resp.json();
+    const data = (await resp.json()) as ChatCompletionResponse;
     const msg = data?.choices?.[0]?.message ?? {};
     const toolCalls: ToolCall[] = normalizeToolCallIds(
-      (msg.tool_calls ?? []).map((c: any) => ({
-        id: c.id,
-        name: c.function.name,
-        arguments: safeParseArgs(c.function.arguments),
-      }))
+      (msg.tool_calls ?? []).map(
+        (c: { id?: unknown; function?: { name?: unknown; arguments?: unknown } }) => ({
+          id: String(c.id ?? ''),
+          name: String(c.function?.name ?? ''),
+          arguments: safeParseArgs(
+            typeof c.function?.arguments === 'string' ? c.function.arguments : ''
+          ),
+        })
+      )
     );
     // 提取 token 用量（OpenAI / OpenRouter 均返回 usage 字段），供成本记账与配额使用。
-    const u = data?.usage;
-    if (u) {
-      usageAcc.prompt_tokens += u.prompt_tokens ?? 0;
-      usageAcc.completion_tokens += u.completion_tokens ?? 0;
-      usageAcc.total_tokens +=
-        u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0);
-      // 供应商侧 prompt 缓存命中 token 数（OpenAI / OpenRouter 字段名一致；Anthropic 经 OpenRouter 为 cached_prompt_tokens）。
-      usageAcc.cached_tokens +=
-        Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || 0;
+    // 统一走 toUsage 归一（缺失字段补 0），本地累计与 last.usage 复用同一份结果。
+    const usage: TokenUsage | undefined = toUsage(data?.usage);
+    if (usage) {
+      usageAcc.prompt_tokens += usage.prompt_tokens ?? 0;
+      usageAcc.completion_tokens += usage.completion_tokens ?? 0;
+      usageAcc.total_tokens += usage.total_tokens ?? 0;
+      usageAcc.cached_tokens += usage.cached_tokens ?? 0;
     }
-    const usage: TokenUsage | undefined = u
-      ? {
-          prompt_tokens: u.prompt_tokens ?? 0,
-          completion_tokens: u.completion_tokens ?? 0,
-          total_tokens: u.total_tokens ?? (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0),
-          cached_tokens:
-            Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || undefined,
-        }
-      : undefined;
     // 实际使用的模型（OpenRouter 多模型降级时会与请求模型不同）；用于按模型计价与可观测。
     const usedModel: string | undefined = typeof data?.model === 'string' ? data.model : undefined;
-    last = { content: msg.content ?? '', tool_calls: toolCalls, usage, model: usedModel };
+    last = {
+      content: typeof msg.content === 'string' ? msg.content : '',
+      tool_calls: toolCalls,
+      usage,
+      model: usedModel,
+    };
 
     // 退化响应（无文本且无工具调用）—— 若仍有重试次数则重试。
     const degenerate = last.content.trim() === '' && last.tool_calls.length === 0;
     if (!degenerate || attempt === retries) {
       // 返回累加后的用量，避免重试成本被低估。
       reportCache();
-      return { ...last, usage: u ? { ...usageAcc } : undefined };
+      return { ...last, usage: usage ? { ...usageAcc } : undefined };
     }
     await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
   }
@@ -352,9 +375,9 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   // 与一次性路径一致：开启 PROMPT_CACHE 时给系统提示词打 cache_control，让流式请求也能命中供应商侧 prompt 缓存。
   const caching = process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1';
   if (caching) {
-    const msgs = (streamBody as any).messages;
-    if (Array.isArray(msgs) && msgs.length && msgs[0]?.role === 'system') {
-      msgs[0].cache_control = { type: 'ephemeral' };
+    const msgs = streamBody.messages;
+    if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {
+      (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
   }
   const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -367,7 +390,7 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     const text = await resp.text();
     throw new Error(`LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
   }
-  if (!resp.body || typeof (resp.body as any).getReader !== 'function') {
+  if (!resp.body || typeof (resp.body as unknown as { getReader?: unknown }).getReader !== 'function') {
     throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
   }
 
@@ -411,14 +434,14 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     if (!l.startsWith('data:')) return;
     const data = l.slice(5).trim();
     if (!data || data === '[DONE]') return;
-    let json: any;
+    let json: ChatChunk;
     try {
       json = JSON.parse(data);
     } catch {
       return;
     }
     sawSse = true;
-    if (json.model) usedModel = json.model;
+    if (typeof json.model === 'string' && json.model) usedModel = json.model;
     if (json.usage) usage = toUsage(json.usage);
     const choice = json.choices?.[0];
     if (!choice) return;
@@ -545,12 +568,15 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
 }
 
 /** 将 provider 用量对象归一为标准 TokenUsage（缺失字段补 0）。 */
-function toUsage(u: any): TokenUsage | undefined {
+function toUsage(u: unknown): TokenUsage | undefined {
   if (!u || typeof u !== 'object') return undefined;
-  const prompt = Number(u.prompt_tokens) || 0;
-  const completion = Number(u.completion_tokens) || 0;
-  const total = Number(u.total_tokens) || prompt + completion;
-  const cached = Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_prompt_tokens ?? 0) || 0;
+  const r = u as Record<string, unknown>;
+  const details = (r.prompt_tokens_details ?? {}) as Record<string, unknown>;
+  const prompt = Number(r.prompt_tokens) || 0;
+  const completion = Number(r.completion_tokens) || 0;
+  const total = Number(r.total_tokens) || prompt + completion;
+  const cached =
+    Number(details.cached_tokens ?? details.cached_prompt_tokens ?? 0) || 0;
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
