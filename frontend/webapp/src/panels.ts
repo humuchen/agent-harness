@@ -230,7 +230,7 @@ export class AhMcp extends LitElement {
   @state() tokens: Record<string, string> = {};
 
   /** 已接入列表自动刷新定时器（连接状态变化无需手动刷新）。 */
-  private refreshTimer?: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer?: number | null = null; // window.setInterval 句柄（DOM 类型）
   private readonly REFRESH_INTERVAL_MS = 10000;
 
   connectedCallback() {

@@ -528,12 +528,12 @@ describe('mac-ui 适配层测试', () => {
   });
 });
 
-import { MacConfirm } from '@humuchen/mac-ui';
+import { MacConfirm, MacButton } from '@humuchen/mac-ui';
 
 declare global {
   interface HTMLElementTagNameMap {
-    'mac-confirm': any;
-    'mac-button': any;
+    'mac-confirm': MacConfirm;
+    'mac-button': MacButton;
     'ah-modal': import('./components/ah-modal').AhModal;
     'ah-drawer': import('./components/ah-drawer').AhDrawer;
   }

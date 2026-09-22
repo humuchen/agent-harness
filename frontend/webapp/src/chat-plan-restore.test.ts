@@ -200,8 +200,9 @@ describe('recoverPlanFinalResult（刷新恢复：兜底回收最终结果）', 
     ];
     const out = recoverPlanFinalResult(base, clean);
     expect(out.length).toBe(3);
-    expect(out[2].role).toBe('assistant');
-    expect(out[2].content).toContain('t2 产出（最终）');
+    const last = out[2]!;
+    expect(last.role).toBe('assistant');
+    expect(last.content).toContain('t2 产出（最终）');
   });
 
   it('clean 中无任务产出 → 原样返回（不追加空结果）', () => {

@@ -489,7 +489,7 @@ async function guard(
   req: IncomingMessage,
   res: ServerResponse,
   action: Action,
-  body?: any
+  body?: Record<string, unknown>
 ): Promise<AuthContext | null> {
   const ip = clientIp(req);
   const ctx = await authorizer.authenticate(req);
@@ -546,7 +546,7 @@ async function guard(
   const requireTenant = isTenantRequired();
   if (requireTenant) {
     const tenant = resolveTenantContext({
-      tenantId: body?.tenantId ?? null,
+      tenantId: typeof body?.tenantId === 'string' ? body.tenantId : null,
       authenticatedTenantId: ctx.tenantId ?? null,
       name: ctx.email,
       domain: undefined
@@ -957,8 +957,9 @@ const server = createServer(
           try {
             // 必须读原始字节：签名校验对字节序敏感，JSON 往返会破坏验签。
             raw = await readRawBody(req);
-          } catch (e: any) {
-            sendJsonError(res, e?.status ?? 400, { error: e?.message ?? 'bad request' }, req);
+          } catch (e) {
+            const status = (e as { status?: number }).status ?? 400;
+            sendJsonError(res, status, { error: e instanceof Error ? e.message : String(e) }, req);
             return;
           }
         }
@@ -1084,7 +1085,9 @@ const server = createServer(
             }
             // 检查是否可续跑：steps 是 Record<stepId, StepRun>（非数组）；
             // 终态 = done / skipped / compensated，存在任何非终态 step 即可续跑。
-            const stepValues = Object.values((existing as any).steps ?? {}) as Array<{ state?: string }>;
+            const stepValues = Object.values(
+              (existing as { steps?: Record<string, { state?: string }> }).steps ?? {}
+            );
             const unfinished = stepValues.filter(
               (s) => s.state !== 'done' && s.state !== 'skipped' && s.state !== 'compensated',
             );
@@ -1109,7 +1112,7 @@ const server = createServer(
               store,
               executor: createWorkflowExecutor({
                 // P5 静默展示（plan 桥工作流续跑同首跑语义）：抑制 llm:token 流式内容。
-                onEvent: (e: any, stepId: string) => {
+                onEvent: (e: { type?: string }, stepId: string) => {
                   if (isPlanWorkflow && e?.type === 'llm:token') return;
                   if (!closed) send({ type: 'harness', event: e, stepId });
                 },
@@ -1139,8 +1142,9 @@ const server = createServer(
             });
             if (!closed) send({ type: '_wf_done', workflowId, run });
             if (!closed) res.end();
-          } catch (e: any) {
-            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
+          } catch (e) {
+            if (!closed)
+              send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
             if (!closed) res.end();
           }
           return;
@@ -1231,7 +1235,7 @@ const server = createServer(
               store,
               executor: createWorkflowExecutor({
                 // P5 静默展示（plan 桥工作流审批续跑同首跑语义）：抑制 llm:token 流式内容。
-                onEvent: (e: any, stepId: string) => {
+                onEvent: (e: { type?: string }, stepId: string) => {
                   const isPlanWf = !!(run as unknown as { def?: { failOnInvalidOutput?: boolean } }).def?.failOnInvalidOutput;
                   if (isPlanWf && e?.type === 'llm:token') return;
                   if (!closed) send({ type: 'harness', event: e, stepId });
@@ -1261,8 +1265,9 @@ const server = createServer(
             });
             if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
             if (!closed) res.end();
-          } catch (e: any) {
-            if (!closed) send({ type: 'wf:error', workflowId, message: e?.message ?? String(e) });
+          } catch (e) {
+            if (!closed)
+              send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
             if (!closed) res.end();
           }
           return;
@@ -1485,13 +1490,20 @@ const server = createServer(
         return sendJson(
           res,
           {
-            plugins: pluginSystem.loader.list().map((r: any) => ({
+            plugins: pluginSystem.loader
+              .list()
+              .map(
+                (r: {
+                  manifest: { id: string; name?: string; version?: string; dependencies?: string[] };
+                  state: string;
+                }) => ({
               id: r.manifest.id,
               name: r.manifest.name ?? r.manifest.id,
               version: r.manifest.version,
               state: r.state,
-              dependencies: r.manifest.dependencies ?? []
-            })),
+                dependencies: r.manifest.dependencies ?? []
+              })
+            ),
             views
           },
           req
@@ -1529,8 +1541,12 @@ const server = createServer(
                 ? await pluginSystem.loader.enable(id)
                 : await pluginSystem.loader.disable(id);
             return sendJson(res, { id, state: rec.state }, req);
-          } catch (e: any) {
-            return sendJson(res, { error: e?.message ?? String(e) }, req);
+          } catch (e) {
+            return sendJson(
+              res,
+              { error: e instanceof Error ? e.message : String(e) },
+              req
+            );
           }
         }
         // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
@@ -1542,8 +1558,12 @@ const server = createServer(
           try {
             const rec = await pluginSystem.loader.disable(id);
             return sendJson(res, { id, state: rec.state }, req);
-          } catch (e: any) {
-            return sendJson(res, { error: e?.message ?? String(e) }, req);
+          } catch (e) {
+            return sendJson(
+              res,
+              { error: e instanceof Error ? e.message : String(e) },
+              req
+            );
           }
         }
       }
@@ -1582,13 +1602,18 @@ const server = createServer(
 
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
-    } catch (e: any) {
+    } catch (e) {
       logError('http.request', e, { path: req.url });
-      const code = typeof e?.status === 'number' ? e.status : 500;
+      const code =
+        typeof (e as { status?: unknown }).status === 'number'
+          ? (e as { status: number }).status
+          : 500;
       if (!res.headersSent) {
         res.writeHead(code, { 'content-type': 'application/json' });
       }
-      res.end(JSON.stringify({ error: e?.message ?? String(e) }));
+      res.end(
+        JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
+      );
     }
   }
 );
@@ -1650,10 +1675,11 @@ async function buildState(req: IncomingMessage) {
       health: s.health ?? null,
       reconnectAttempts: s.reconnectAttempts ?? 0,
       toolCount: s.tools.length,
-      tools: s.tools.map((t: any) => ({
+      tools: s.tools.map(
+        (t: { registeredName?: string; originalName?: string; description?: string }) => ({
         registeredName: t.registeredName,
         originalName: t.originalName,
-        description: t.description ?? ''
+          description: t.description ?? ''
       })),
       error: s.error ?? null
     })),
@@ -1678,14 +1704,15 @@ function buildAgentStore(): AgentStore {
         maxRetriesPerRequest: null,
         lazyConnect: false
       }) as unknown as AgentStoreRedis;
-      (redis as any).on?.('error', (e: any) =>
-        console.error('[agent-store] redis error:', e?.message)
+      (redis as unknown as { on?(ev: string, cb: (e: Error) => void): void }).on?.(
+        'error',
+        (e: Error) => console.error('[agent-store] redis error:', e.message)
       );
       console.log(`[agent-store] using Redis backend${url ? ` (${url})` : ''}`);
-    } catch (e: any) {
+    } catch (e) {
       console.error(
         '[agent-store] ioredis 不可用，回退内存态 volatile 后端：',
-        e?.message ?? e
+        e instanceof Error ? e.message : e
       );
     }
   }
@@ -1795,8 +1822,8 @@ async function bootstrap(): Promise<void> {
   const MIGRATE_AUTO = (process.env.AH_MIGRATE_AUTO ?? 'off').toLowerCase();
   if (['on', '1', 'true'].includes(MIGRATE_AUTO)) {
     const { execSync } = await import('node:child_process');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const _m = (globalThis as any).import?.meta;
+    const _m = (globalThis as unknown as { import?: { meta?: { url?: string } } })
+      .import?.meta;
     const MIGRATE_SCRIPT = join(
       dirname(_m?.url ? fileURLToPath(_m.url) : __dirname),
       '..', '..', 'scripts', 'db-migrate.cjs'
@@ -1809,8 +1836,8 @@ async function bootstrap(): Promise<void> {
       });
       structLog('info', 'migration', { status: 'success', output: result.trim() });
       console.log('[migration] 启动迁移完成:', result.trim());
-    } catch (e: any) {
-      console.error('[migration] 启动迁移失败:', e.message);
+    } catch (e) {
+      console.error('[migration] 启动迁移失败:', e instanceof Error ? e.message : String(e));
       // 不阻断启动，但记录错误以便运维排查。
     }
   } else {
@@ -1944,7 +1971,8 @@ function onListening(): void {
     }`
   );
   console.log(`   MCP_SERVER_URL: ${process.env.MCP_SERVER_URL ?? '未配置'}`);
-  const storeKind = (registry as any)?.store?.kind ?? 'volatile';
+  const storeKind =
+    (registry as unknown as { store?: { kind?: string } })?.store?.kind ?? 'volatile';
   if (storeKind === 'volatile') {
     console.warn(
       `   ⚠️  AgentRegistry 后端：volatile（内存态，重启即丢、多副本不共享）。生产请设 AGENT_STORE=redis|sqlite|file。`
@@ -2032,9 +2060,9 @@ function createWebhookAlertSink(url: string) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(a)
       });
-    } catch (e: any) {
+    } catch (e) {
       structLog('warn', 'alert webhook failed', {
-        error: e?.message ?? String(e)
+        error: e instanceof Error ? e.message : String(e)
       });
     }
   };

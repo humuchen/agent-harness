@@ -110,7 +110,7 @@ function buildHost() {
     curSession,
     patchSession,
     resetTrace: (s) => {
-      traces[s] = { root: null, parent: null, llm: null, lastTool: null, seq: 0 };
+      traces[s] = { root: null, parent: null, llm: null, lastTool: null, seq: 0, toolByCallId: {} };
     },
     customModelEndpoint: async () => ({}) as Record<string, unknown>,
     traceHandle: (ev, s) => {
@@ -118,6 +118,7 @@ function buildHost() {
       const tc =
         traces[s] ??
         (traces[s] = {
+          toolByCallId: {},
           root: null,
           parent: null,
           llm: null,

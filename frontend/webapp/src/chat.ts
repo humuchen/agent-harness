@@ -152,6 +152,11 @@ import './components/composer-plus';
 import './components/ah-command-suggestions';
 import type { AhCommandSuggestions } from './components/ah-command-suggestions';
 
+
+/** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
+function asObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
 /**
  * 附件约束（导出以便单测与 UI 文案复用，避免两处写死不一致）。
  * 拖拽遮罩的提示文案与该强制校验共用同一常量。
@@ -920,12 +925,14 @@ export class AhChat extends LitElement {
     try {
       const state = await client.getState();
       // per-user 真实 LLM 就绪：优先 llm.ready（BYOK），回退旧字段 openrouter。
-      this.llmReady =
-        !!(state as any)?.llm?.ready || !!(state as any)?.openrouter;
+      const st = state as
+        | { llm?: { ready?: boolean }; openrouter?: unknown; historyMaxBytes?: number }
+        | null;
+      this.llmReady = !!st?.llm?.ready || !!st?.openrouter;
       this.mode = this.llmReady ? 'real' : 'mock';
       this.historyMaxBytes =
-        typeof (state as any)?.historyMaxBytes === 'number'
-          ? (state as any).historyMaxBytes
+        typeof st?.historyMaxBytes === 'number'
+          ? st.historyMaxBytes
           : this.historyMaxBytes;
       // /api/state 的 contextWindow 只是服务端兜底基线（无官方数据时 128K），
       // 不作为「默认模型」的真实窗口 —— 默认模型同样隐藏用量展示。
@@ -1362,10 +1369,10 @@ export class AhChat extends LitElement {
   private async refreshAgents() {
     try {
       const res = await client.listAgents();
-      const raw = ((res?.agents as any[]) ?? []).map((a) => ({
+      const raw = (res?.agents ?? []).map((a) => ({
         id: String(a.id),
         name: String(a.name ?? a.id),
-        domain: String(a.domain ?? '') as any
+        domain: String(a.domain ?? '')
       }));
       const hasDefault = raw.some((a) => a.id === 'default' || a.id === '');
       // viewer 角色：从列表中彻底过滤掉医美运营分析相关的 agent，不显示、不可选、不可调用。
@@ -1773,10 +1780,10 @@ export class AhChat extends LitElement {
             trace: m.trace,
             plan: m.plan,
             // propose 当时的联网开关：随计划卡片透传，执行（含刷新后续跑）继承。
-            planWeb: (m as any).planWeb === true ? true : undefined,
-            planStatus: (m as any).planStatus,
+            planWeb: (m as { planWeb?: unknown }).planWeb === true ? true : undefined,
+            planStatus: (m as { planStatus?: unknown }).planStatus,
             // 计划模式（P0）：目标澄清结果透传，刷新 / 切回后还原目标确认卡。
-            clarify: (m as any).clarify,
+            clarify: (m as { clarify?: unknown }).clarify,
             // 服务端落盘的附件（图片/文件预览）原样透传，刷新 / 切回后还原气泡内图片。
             ...(m.attachments && m.attachments.length
               ? { attachments: m.attachments }
@@ -1790,8 +1797,8 @@ export class AhChat extends LitElement {
         // 计划进度（planStatus）仍以服务端为权威源（实时性更强，尤其进行中 / 刚完成）。
         const mirrored = await loadThread(id);
         const isPlanSession =
-          clean.some((m) => (m as any).plan) ||
-          !!(mirrored && mirrored.msgs.some((m) => (m as any).plan));
+          clean.some((m) => (m as { plan?: unknown }).plan) ||
+          !!(mirrored && mirrored.msgs.some((m) => (m as { plan?: unknown }).plan));
         // 先取计划进度镜像查找表（以服务端为权威源）；待线程按新 id 重建后再应用。
         // P2.7 对账接线（修复「定义了但零调用点」）：本地历史镜像的 planStatus 参与
         // 合并（mergePlanStatusLookup 取进度等级更高的一方）。服务端会话存储丢
@@ -1816,16 +1823,17 @@ export class AhChat extends LitElement {
           );
           if (mirrorMsgs.length && hasSummary) {
             // 镜像含摘要（DAG 路径 / 新串行路径）：干净源，直接采用并过滤任何残余单步噪声。
-            base = filterPlanSingleStep(mirrorMsgs);
+            // MirroredMsg 与 ChatMsg 仅差 id 字段（显示路径不使用 id），此处收窄转换。
+            base = filterPlanSingleStep(mirrorMsgs as unknown as ChatMsg[]);
             recoveredUsage = mirrored?.usage ?? null;
           } else {
             // 镜像缺失 / 无摘要（如本修复前的已完成串行会话）：退回服务端存储，滤掉单步
             // 派发噪声，并从最后一条任务产出回收「最终结果」作为兜底展示（与摘要末位任务语义一致）。
-            base = filterPlanSingleStep(clean);
-            base = recoverPlanFinalResult(base, clean);
+            base = filterPlanSingleStep(clean as unknown as ChatMsg[]);
+            base = recoverPlanFinalResult(base, clean as unknown as ChatMsg[]);
           }
         } else {
-          base = clean;
+          base = clean as unknown as ChatMsg[]; // MirroredMsg 与 ChatMsg 仅差 id（见上）
         }
         // 本地若已有消息（如离线期间新发送的），按「最长尾首重叠」合并，防丢消息/重复。
         const merged =
@@ -1841,7 +1849,7 @@ export class AhChat extends LitElement {
                   name: a.name,
                   size: 0,
                   type: a.type,
-                  dataUrl: a.url || '',
+                  dataUrl: ('url' in a ? String(a.url) : '') || '',
                   ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
                 }))
               }
@@ -1869,7 +1877,7 @@ export class AhChat extends LitElement {
                     name: a.name,
                     size: 0,
                     type: a.type,
-                    dataUrl: a.url || '',
+                    dataUrl: ('url' in a ? String(a.url) : '') || '',
                     ...(a.serverUrl ? { serverUrl: a.serverUrl } : {})
                   }))
                 }
@@ -2007,7 +2015,7 @@ export class AhChat extends LitElement {
       const t = this.threads[id];
       if (t && t.length) this.saveHistory(id);
       notify.success('会话已重命名');
-    } catch (e: any) {
+    } catch (e) {
       notifyError(e, { title: '重命名会话', fallback: '重命名失败' });
     }
   }
@@ -2032,7 +2040,7 @@ export class AhChat extends LitElement {
       this.sessions = this.sessions.filter((s) => s.id !== id);
       if (this.activeId === id) this.newChat();
       notify.success('会话已删除');
-    } catch (e: any) {
+    } catch (e) {
       notifyError(e, { title: '删除会话', fallback: '删除失败' });
     }
   }
@@ -2246,7 +2254,7 @@ export class AhChat extends LitElement {
     let sessionId: string;
     try {
       sessionId = await this.ensureSession();
-    } catch (e: any) {
+    } catch (e) {
       notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
       return;
     }
@@ -2344,7 +2352,8 @@ export class AhChat extends LitElement {
       resetTrace: (sid) => this.resetTrace(sid),
       customModelEndpoint: () =>
         this.customModelEndpoint() as Promise<Record<string, unknown>>,
-      traceHandle: (ev, sid) => this.traceHandle(ev, sid),
+      traceHandle: (ev, sid) =>
+        this.traceHandle(ev as { type: string; [k: string]: unknown }, sid),
       autoCollapseThink: (sid) => this.autoCollapseThink(sid),
       rebuildTraceMessages: (sid) => this.rebuildTraceMessages(sid),
       saveHistory: (sid) => this.saveHistory(sid),
@@ -2353,7 +2362,8 @@ export class AhChat extends LitElement {
       requestUpdate: () => this.requestUpdate(),
 
       /* ----- SSE 客户端 ----- */
-      streamRun: (payload, opts) => client.streamRun(payload as any, opts),
+      streamRun: (payload, opts) =>
+        client.streamRun(payload as Parameters<typeof client.streamRun>[0], opts),
 
       /* ----- P5 静默计划执行：quiet run 的思考增量 → 当前计划卡思考面板 ----- */
       onPlanThinking: (sid, delta) => {
@@ -2392,7 +2402,7 @@ export class AhChat extends LitElement {
    * 树形：run → step → llm → tool/retrieval/cost，外加 root 级的 verify/guardrail/budget/error。
    * 外部调用（工具/检索）因此被整合进对话上下文，可结构化复盘。追踪按会话隔离，支持并发流式。
    */
-  private traceHandle(ev: any, sid: string) {
+  private traceHandle(ev: { type: string; [k: string]: unknown }, sid: string) {
     const tc = this.traceCtx(sid);
     const mk = (
       parent: TraceNode,
@@ -2483,8 +2493,9 @@ export class AhChat extends LitElement {
         break;
       }
       case 'tool:start': {
-        if (!tc.llm || !ev.call) break;
-        const name = String(ev.call.name ?? 'tool');
+        const call = asObj(ev.call);
+        if (!tc.llm || !call) break;
+        const name = String(call.name ?? 'tool');
         const retrieval = isRetrievalTool(name);
         const node = mk(
           tc.llm,
@@ -2493,22 +2504,23 @@ export class AhChat extends LitElement {
           'pending',
           {
             detail:
-              typeof ev.call.arguments === 'string'
-                ? ev.call.arguments
-                : JSON.stringify(ev.call.arguments ?? {})
+              typeof call.arguments === 'string'
+                ? call.arguments
+                : JSON.stringify(call.arguments ?? {})
           }
         );
         // 按 call.id 索引，并行工具各自命中自己的节点，不再共用单指针 lastTool。
         tc.lastTool = node;
-        const cid = (ev.call as { id?: unknown }).id;
+        const cid = call.id;
         if (cid != null) tc.toolByCallId[String(cid)] = node;
         break;
       }
       case 'tool:deduped': {
         // 加固：工具调用去重命中。复用首次结果，记为「复用缓存」节点（仍挂在当前 LLM 调用下，
         // 便于在调用链里看出哪些请求被去重），但 buildInsights 的「工具调用」计数会排除此类节点。
-        if (!tc.llm || !ev.call) break;
-        const name = String(ev.call.name ?? 'tool');
+        const dedupCall = asObj(ev.call);
+        if (!tc.llm || !dedupCall) break;
+        const name = String(dedupCall.name ?? 'tool');
         const retrieval = isRetrievalTool(name);
         const node = mk(
           tc.llm,
@@ -2517,14 +2529,14 @@ export class AhChat extends LitElement {
           ev.errored ? 'error' : 'ok',
           {
             detail:
-              typeof ev.call.arguments === 'string'
-                ? ev.call.arguments
-                : JSON.stringify(ev.call.arguments ?? {}),
+              typeof dedupCall.arguments === 'string'
+                ? dedupCall.arguments
+                : JSON.stringify(dedupCall.arguments ?? {}),
             meta: { reused: '复用缓存（去重）' }
           }
         );
         tc.lastTool = node;
-        const cid = (ev.call as { id?: unknown }).id;
+        const cid = dedupCall.id;
         if (cid != null) tc.toolByCallId[String(cid)] = node;
         node.result =
           typeof ev.result === 'string'
@@ -2567,12 +2579,12 @@ export class AhChat extends LitElement {
         const parent = tc.parent ?? tc.root!;
         // 本运行累计 token 消耗（所有 step 之和）：供「上下文用量」弹层的「累计消耗」行展示，
         // 与单轮窗口占用（llm:usage.promptTokens）区分，避免混淆。
-        if ((ev as any).cumulativeTokens != null) {
+        if (ev.cumulativeTokens != null) {
           this.runCumulative = {
-            tokens: Number((ev as any).cumulativeTokens),
+            tokens: Number(ev.cumulativeTokens),
             cost:
-              (ev as any).cumulativeCost != null
-                ? Number((ev as any).cumulativeCost)
+              ev.cumulativeCost != null
+                ? Number(ev.cumulativeCost)
                 : 0
           };
           // 累计消耗更新后立即落盘，与 llm:usage 对称，避免重新进入会话后「本运行累计」丢失。
@@ -2581,7 +2593,7 @@ export class AhChat extends LitElement {
         // Token 拆解四项（系统/工具/历史/输出）：与 access/server 的 traceHandle 保持
         // 完全一致的键名与格式 —— 此前前端分支丢弃了 ev.estTokens，导致「Token 拆解」
         // 仅在服务端落盘后的恢复视图中出现、实时流视图中消失（时有时无的根因）。
-        const est = (ev as any).estTokens as
+        const est = ev.estTokens as
           | {
               system: number;
               tools: number;
@@ -2595,7 +2607,9 @@ export class AhChat extends LitElement {
         mk(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(
-              ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'
+              ev.cumulativeTokens ??
+              asObj(ev.usage)?.total_tokens ??
+              '?'
             ),
             cost:
               ev.cumulativeCost != null
@@ -2648,10 +2662,10 @@ export class AhChat extends LitElement {
             调用方: String(ev.caller ?? '?'),
             延迟: `${Number(ev.latencyMs ?? 0)}ms`,
             ...(ev.questions != null ? { 问题数: String(ev.questions) } : {}),
-            ...(ev.tokens
+            ...(asObj(ev.tokens)
               ? {
-                  tokens: `${Number(ev.tokens.input ?? 0)}+${Number(
-                    ev.tokens.output ?? 0
+                  tokens: `${Number(asObj(ev.tokens)?.input ?? 0)}+${Number(
+                    asObj(ev.tokens)?.output ?? 0
                   )}`
                 }
               : {})
@@ -2663,11 +2677,12 @@ export class AhChat extends LitElement {
         this.ensureTraceRoot(sid);
         const parent = tc.parent ?? tc.root!;
         const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
-        const tcByModel = Object.entries<{
-          queries: number;
-          hits: number;
-          hitRate: number;
-        }>(ev.byModel ?? {})
+        const tcByModel = Object.entries(
+          (asObj(ev.byModel) ?? {}) as Record<
+            string,
+            { queries: number; hits: number; hitRate: number }
+          >
+        )
           .map(
             ([m, st]) =>
               `${m}: ~${(Number(st.hitRate) * 100).toFixed(0)}% (~${st.hits}/${
@@ -2700,7 +2715,7 @@ export class AhChat extends LitElement {
             score: String(ev.score ?? '?'),
             passed: ev.passed ? '通过' : soft ? '未通过（不阻断）' : '未通过'
           },
-          result: (ev.reasons ?? []).join('\n')
+          result: (Array.isArray(ev.reasons) ? ev.reasons : []).join('\n')
         });
         break;
       }
@@ -4065,7 +4080,7 @@ export class AhChat extends LitElement {
       lines.push(
         `${ok ? '✅' : '⏭'} ${task.id} ${task.title}（${ok ? 'done' : 'skipped'}）`
       );
-      const out = taskOutputs[task.id];
+      const out = taskOutputs[task.id] ?? '';
       if (ok && out.trim()) {
         finalOut = out;
         finalTask = { id: task.id, title: task.title };
@@ -5390,7 +5405,11 @@ export class AhChat extends LitElement {
                     .web=${this.web}
                     @model-change=${(e: Event) => {
                       const d = (
-                        e as CustomEvent<{ model: string; ctx?: number }>
+                        e as CustomEvent<{
+                          model: string;
+                          ctx?: number;
+                          baseUrl?: string;
+                        }>
                       ).detail;
                       this.model = d.model;
                       // 仅当选中模型带官方上下文窗口时更新分母；否则清零 ——
