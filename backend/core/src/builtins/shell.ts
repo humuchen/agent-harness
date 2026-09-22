@@ -103,7 +103,7 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
       },
       ['command']
     ),
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, ctx?: Record<string, unknown>) => {
       const command = String(args.command ?? '').trim();
       if (!command) return 'error: missing command';
       const argList = Array.isArray(args.args) ? args.args.map(String) : [];
@@ -147,7 +147,9 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
       }
 
       // 5) 执行：委托给注入的 SandboxExecutor（local 硬化 / container 隔离）。
-      const res = await executor.exec({ command: base, args: argList, cwd: cwdAbs, timeoutMs });
+      //    透传运行级 abort 信号：run 被取消/超时后及时强杀子进程（避免孤儿进程）。
+      const signal = (ctx?.signal as AbortSignal | undefined) ?? undefined;
+      const res = await executor.exec({ command: base, args: argList, cwd: cwdAbs, timeoutMs, signal });
       const status = res.signal ? `killed by ${res.signal}` : `exit code ${res.code ?? -1}`;
       const body = [res.stdout, res.stderr].filter(Boolean).join('') || '(no output)';
       return `[${status}]\n${body}`;

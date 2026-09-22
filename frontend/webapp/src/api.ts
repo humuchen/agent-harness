@@ -187,9 +187,12 @@ export async function fetchMe(): Promise<MeInfo | null> {
  */
 export async function refreshToken(): Promise<boolean> {
   try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    const csrf = csrfToken();
+    if (csrf) headers['x-csrf-token'] = csrf;
     const res = await fetch('/api/account/refresh', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       credentials: 'same-origin',
       // refresh token 由 HttpOnly cookie(ah_refresh) 随同源请求自动携带，无需 body。
       body: JSON.stringify({})
@@ -341,9 +344,18 @@ export async function logout(): Promise<void> {
   window.dispatchEvent(new CustomEvent('ah-session-expired'));
 }
 
+// ─── CSRF 双重提交令牌（P1 安全加固）─────────────────────────────────────────
+
+/** 从 cookie 读取 ah_csrf 令牌（非 HttpOnly，JS 可读——双重提交模式的工作前提）。 */
+export function csrfToken(): string {
+  if (typeof document === 'undefined') return '';
+  const m = document.cookie.match(/(?:^|;\s*)ah_csrf=([^;]*)/);
+  return m?.[1] ? decodeURIComponent(m[1]) : '';
+}
+
 /**
- * 同源鉴权 fetch 封装：自动带上 cookie（same-origin）与 x-ah-username 双因子头。
- * 任意 401 触发全局 ah-session-expired。
+ * 同源鉴权 fetch 封装：自动带上 cookie（same-origin）、x-ah-username 双因子头
+ * 与 x-csrf-token CSRF 头。任意 401 触发全局 ah-session-expired。
  */
 export function authedFetch(
   input: string | URL | Request,
@@ -352,6 +364,9 @@ export function authedFetch(
   const headers = new Headers(init.headers);
   const u = initialUser();
   if (u) headers.set('x-ah-username', u);
+  // CSRF 双重提交：cookie 鉴权会话在状态变更请求头回传服务端签发的令牌。
+  const csrf = csrfToken();
+  if (csrf) headers.set('x-csrf-token', csrf);
   return fetch(input, {
     ...init,
     headers,

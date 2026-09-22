@@ -1411,7 +1411,9 @@ export class AgentHarness {
                   withSpan(`tool.${call.name}`, async () => ({
                     kind: 'ok',
                     value: await this.opts.tools.call(call.name, call.arguments, {
-                      traceId: this.opts.traceId
+                      traceId: this.opts.traceId,
+                      // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
+                      signal
                     })
                   })),
                   abortPromise.then(() => ({ kind: 'aborted' as const }))

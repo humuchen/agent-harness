@@ -24,6 +24,7 @@
 import { createPublicKey, createVerify, createHmac, timingSafeEqual, constants } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import type { Authorizer, AuthContext, Role, Action } from './authz';
+import { structLog } from '@agent-harness/core';
 
 export type SsoProvider = 'token' | 'oidc' | 'proxy';
 
@@ -365,6 +366,52 @@ export class OidcAuthorizer implements Authorizer {
 }
 
 // ---------------------------------------------------------------------------
+// 代理可信网关 IP 校验（fail-closed 的兜底手段）
+// ---------------------------------------------------------------------------
+
+/** 取请求源 IP：优先 X-Forwarded-For 首段（网关已追加），否则用 socket 直连地址。 */
+function proxyClientIp(req: IncomingMessage): string | undefined {
+  const fwd = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
+  return fwd || req.socket.remoteAddress;
+}
+
+/** 把 IPv4 地址转成 32 位无符号整数；非法格式返回 null。 */
+function ipToInt(s: string): number | null {
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  const c = Number(m[3]);
+  const d = Number(m[4]);
+  if ([a, b, c, d].some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+  return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+}
+
+/** 判断 IP 是否落在给定 CIDR 列表内（仅 IPv4 网段 + IPv6 精确匹配）。 */
+function ipInCidrs(ip: string | undefined, cidrs: string[]): boolean {
+  if (!ip) return false;
+  const norm = ip.replace(/^::ffff:/, ''); // IPv4-mapped IPv6 → IPv4
+  for (const cidr of cidrs) {
+    const slash = cidr.indexOf('/');
+    if (slash < 0) continue;
+    const base = cidr.slice(0, slash).trim();
+    const bits = Number(cidr.slice(slash + 1).trim());
+    if (Number.isNaN(bits)) continue;
+    if (base.includes(':')) {
+      // IPv6：仅支持精确匹配（细粒度网段建议交给边缘网关剥离非受信头）。
+      if (norm.toLowerCase() === base.toLowerCase()) return true;
+      continue;
+    }
+    const ipInt = ipToInt(norm);
+    const baseInt = ipToInt(base);
+    if (ipInt == null || baseInt == null) continue;
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    if ((ipInt & mask) === (baseInt & mask)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Proxy Authorizer（LDAP / SSO 网关头注入）
 // ---------------------------------------------------------------------------
 
@@ -389,8 +436,15 @@ export class ProxyAuthorizer implements Authorizer {
     const user = hdr(req, userHeader);
     if (!user) return (await this.fallback?.authenticate(req)) ?? null;
 
-    // 可选 HMAC：仅在配置了 PROXY_HMAC_SECRET 时强制校验，防非受信网络头伪造。
+    // P0 代理认证提权修复（fail-closed）：代理头（X-Forwarded-*）可由客户端任意伪造，
+    // 必须二选一才能信任，否则拒绝，杜绝「无认证即信任」的提权路径：
+    //   1) 配置了 PROXY_HMAC_SECRET → 校验 X-Forwarded-Signature（HMAC-SHA256 over 用户名）；
+    //   2) 配置了 PROXY_TRUSTED_PROXY_CIDRS → 请求源 IP 必须落在可信网关网段内。
     const secret = process.env.PROXY_HMAC_SECRET;
+    const trustedCidrs = (process.env.PROXY_TRUSTED_PROXY_CIDRS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (secret) {
       const sig = hdr(req, sigHeader);
       if (!sig) return null;
@@ -398,6 +452,21 @@ export class ProxyAuthorizer implements Authorizer {
       if (expected.length !== sig.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
         return null;
       }
+    } else if (trustedCidrs.length > 0) {
+      const clientIp = proxyClientIp(req);
+      if (!ipInCidrs(clientIp, trustedCidrs)) {
+        structLog('error', 'proxy-auth', {
+          issue: '代理认证源 IP 不在 PROXY_TRUSTED_PROXY_CIDRS 内，拒绝',
+          ip: clientIp,
+        });
+        return null;
+      }
+    } else {
+      structLog('error', 'proxy-auth', {
+        issue: 'PROXY_HMAC_SECRET 与 PROXY_TRUSTED_PROXY_CIDRS 均未配置：代理认证 fail-closed 拒绝',
+        hint: '生产环境必须配置其一，否则任意客户端可伪造 X-Forwarded-* 提权',
+      });
+      return null;
     }
 
     const groupsRaw = hdr(req, groupsHeader);
@@ -419,6 +488,8 @@ export class ProxyAuthorizer implements Authorizer {
   }
 
   describe() {
+    const secret = !!process.env.PROXY_HMAC_SECRET;
+    const cidr = !!(process.env.PROXY_TRUSTED_PROXY_CIDRS || '').trim();
     return {
       ...this.policy.describe(),
       mode: 'on' as const,
@@ -427,7 +498,8 @@ export class ProxyAuthorizer implements Authorizer {
         kind: 'proxy' as const,
         userHeader: process.env.PROXY_USER_HEADER || 'x-forwarded-user',
         groupsHeader: process.env.PROXY_GROUPS_HEADER || 'x-forwarded-groups',
-        hmac: !!process.env.PROXY_HMAC_SECRET,
+        // fail-closed：缺少 HMAC 与可信网段任一配置时，代理认证会被拒绝。
+        trustMode: secret ? 'hmac' : cidr ? 'cidr' : 'none(fail-closed)',
       },
     };
   }

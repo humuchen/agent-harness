@@ -67,6 +67,23 @@ function parseHeaders(headerStr?: string): Record<string, string> {
 }
 
 /**
+ * 规范化端点为「base URL」：去尾部斜杠与可能已带的 /v1/metrics、/v1/traces 路径，
+ * 避免拼接出 /v1/metrics/v1/metrics 这类双重路径（HTTP 导出器会 404 且静默丢数据）。
+ * 兼容两种常见写法：http://collector:4318 与 http://collector:4318/v1/metrics。
+ */
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '').replace(/\/v1\/(?:metrics|traces)$/, '');
+}
+
+/** 由 base URL 派生各信号端点（若用户已写全路径则尊重原值）。 */
+function signalUrl(raw: string, suffix: '/v1/metrics' | '/v1/traces'): string {
+  const base = normalizeBaseUrl(raw);
+  return /\/v1\/(?:metrics|traces)$/.test(raw.replace(/\/+$/, ''))
+    ? raw.replace(/\/+$/, '')
+    : base + suffix;
+}
+
+/**
  * 初始化 OTLP 导出器。幂等，多次调用只生效一次。
  * 依赖为可选：未安装 @opentelemetry/* 时静默跳过（不抛错）。
  */
@@ -93,12 +110,12 @@ export async function initOtlpExporter(opts?: OtlpOptions): Promise<void> {
       });
 
       const traceExporter = new OTLPTraceExporter({
-        url: finalOpts.tracesEndpoint,
+        url: signalUrl(finalOpts.tracesEndpoint || finalOpts.endpoint, '/v1/traces'),
         headers: finalOpts.headers
       });
 
       const metricExporter = new (require(OTEL_METRICS_EXPORTER).OTLPHttpMetricExporter)({
-        url: `${finalOpts.endpoint}/v1/metrics`,
+        url: signalUrl(finalOpts.endpoint, '/v1/metrics'),
         headers: finalOpts.headers
       });
 

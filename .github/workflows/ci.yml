@@ -39,6 +39,11 @@ jobs:
       - name: 代码检查（ESLint，fail on error）
         run: pnpm lint
 
+      # P2：no-explicit-any 棘轮——存量锁定（.eslint-any-baseline.json），禁止新增 any。
+      # 存量清零后把 eslint.config.js 的 no-explicit-any 提为 error 并删除此步。
+      - name: no-explicit-any 棘轮检查
+        run: node scripts/lint-any-ratchet.cjs
+
       - name: 构建
         run: pnpm -r build
 
@@ -54,9 +59,57 @@ jobs:
       - name: 备份脚本验证
         run: node scripts/backup-db.cjs --action backup && node scripts/backup-db.cjs --action list
 
+  # P2：E2E 冒烟——启动真实服务进程（mock 模式，零外部依赖）跑 SSE 重连脚本，
+  # 把此前游离在 CI 外的 e2e 脚本纳入门禁。deploy 依赖本 job 全绿。
+  e2e:
+    name: E2E 冒烟（真实进程 + SSE）
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建
+        run: pnpm -r build
+
+      - name: 启动服务（后台，mock 模式）
+        run: |
+          ADMIN_API_KEY=test-admin-token node access/server/dist/server.js > /tmp/server.log 2>&1 &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+
+      - name: 等待服务就绪
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4173/health/ready > /dev/null; then
+              echo "服务已就绪（第 ${i} 次探测）"; exit 0
+            fi
+            sleep 1
+          done
+          echo "服务 30s 内未就绪，日志："; tail -50 /tmp/server.log; exit 1
+
+      - name: SSE 重连 E2E
+        run: node scripts/sse-reconnect-test.cjs
+        env:
+          SERVER_URL: http://127.0.0.1:4173
+
+      - name: 失败时输出服务日志
+        if: failure()
+        run: tail -100 /tmp/server.log
+
   deploy:
     name: 部署
-    needs: test
+    needs: [test, e2e]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     concurrency: deploy-${{ github.ref_name }}

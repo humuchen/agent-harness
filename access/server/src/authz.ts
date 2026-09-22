@@ -394,6 +394,15 @@ function accountTokenRaw(
 }
 
 /**
+ * 是否为 cookie 来源的账户会话（请求头里带 ah_auth cookie）。
+ * CSRF 防护适用性判断：浏览器自动携带 cookie 的请求才有 CSRF 面；
+ * Authorization 头 / query token / API key 的机器客户端不适用，跳过校验。
+ */
+export function isCookieAuth(req: IncomingMessage): boolean {
+  return !!cookieValue(req, AUTH_COOKIE);
+}
+
+/**
  * AccountAuthorizer：账户密码档的鉴权器。
  * - token 取自 Cookie / Authorization / ?token（来源见 accountTokenRaw）；
  * - **cookie 来源**（浏览器直接导航的唯一通道）：验签 + 服务端 token 记录有效即放行，

@@ -28,6 +28,8 @@ export interface SandboxExecRequest {
   env?: Record<string, string>;
   /** 单条命令超时（毫秒）。超时强杀。 */
   timeoutMs: number;
+  /** 运行级中止信号。一旦中止立即强杀子进程（含进程组），避免取消/超时后命令仍后台空跑。 */
+  signal?: AbortSignal;
 }
 
 export interface SandboxExecResult {
@@ -70,6 +72,45 @@ export function scrubEnv(env: Record<string, string> | NodeJS.ProcessEnv = proce
     out[k] = String(v);
   }
   return out;
+}
+
+/**
+ * 中止信号接线：当 req.signal 触发 abort 时，立即按进程组（detach）+ 直杀子进程，
+ * 并以 SIGKILL 作为结果回传，确保「运行取消 / 超时」后能及时释放资源，而不是傻等到
+ * timeoutMs 才强杀（P1 修复：取消 run 后命令仍后台空跑的孤儿进程问题）。
+ * finish 自带幂等保护，close 事件触发时移除监听，避免泄漏。
+ */
+export function wireAbort(
+  req: SandboxExecRequest,
+  proc: ChildProcess,
+  timer: NodeJS.Timeout,
+  finish: (r: SandboxExecResult) => void,
+  readBuffers: () => { stdout: string; stderr: string }
+): void {
+  const sig = req.signal;
+  if (!sig) return;
+  const killChild = () => {
+    clearTimeout(timer);
+    try {
+      if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
+    } catch {
+      /* 进程组可能已退出 */
+    }
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      /* 忽略 */
+    }
+    const { stdout, stderr } = readBuffers();
+    finish({ stdout, stderr, code: null, signal: 'SIGKILL' });
+  };
+  if (sig.aborted) {
+    killChild();
+    return;
+  }
+  const onAbort = () => killChild();
+  sig.addEventListener('abort', onAbort, { once: true });
+  proc.on('close', () => sig.removeEventListener('abort', onAbort));
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +171,8 @@ export class LocalSandboxExecutor implements SandboxExecutor {
           /* 忽略 */
         }
       }, req.timeoutMs);
+
+      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
@@ -240,6 +283,15 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
       let stderr = '';
       proc.stdout?.on('data', (d) => (stdout += d.toString()));
       proc.stderr?.on('data', (d) => (stderr += d.toString()));
+
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          /* 忽略 */
+        }
+      }, req.timeoutMs);
+      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'ENOENT') {

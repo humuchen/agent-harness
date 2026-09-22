@@ -1,6 +1,7 @@
 export * from './types';
 export * from './telemetry';
 export * from './telemetry/otlp';
+export * from './log-scrub';
 export * from './errorlog';
 export * from './feature-flags';
 export * from './memory';

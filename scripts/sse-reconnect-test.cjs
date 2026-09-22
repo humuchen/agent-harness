@@ -69,6 +69,23 @@ async function testSSEConnection(roundId, connId) {
       let buffer = '';
       let startTime = null;
       let readyEvent = false;
+      let settled = false;
+
+      // 统一结算：防止 401/流提前结束等场景下 promise 永不 resolve，
+      // 导致进程在事件循环清空后**静默 exit 0**（曾导致 e2e 假绿）。
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      const fail = (error) =>
+        settle({
+          success: false,
+          error,
+          roundId,
+          connId,
+          latency: performance.now() - start,
+        });
       
       res.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -92,7 +109,7 @@ async function testSSEConnection(roundId, connId) {
         // 收到 ready 事件后立即断开（我们只关心重连能力）
         if (readyEvent && startTime) {
           const latency = performance.now() - startTime;
-          resolve({
+          settle({
             success: true,
             latency,
             roundId,
@@ -100,6 +117,21 @@ async function testSSEConnection(roundId, connId) {
           });
           req.destroy();
         }
+      });
+
+      // 非 200（如 401/403）不会有 SSE 事件流：立即判失败并带上状态码。
+      if (res.statusCode !== 200 && !settled) {
+        res.resume(); // 排空响应体以释放 socket
+        fail(`non-200 status: ${res.statusCode}`);
+        return;
+      }
+
+      // 流结束仍未收到 chat:ready → 失败（否则 promise 悬挂、进程静默退出）。
+      res.on('end', () => {
+        if (!readyEvent) fail(`stream ended without chat:ready (status ${res.statusCode})`);
+      });
+      res.on('close', () => {
+        if (!readyEvent) fail(`stream closed without chat:ready (status ${res.statusCode})`);
       });
       
       res.on('error', (err) => {
@@ -115,23 +147,11 @@ async function testSSEConnection(roundId, connId) {
 
     req.on('timeout', () => {
       req.destroy();
-      resolve({
-        success: false,
-        error: 'timeout',
-        roundId,
-        connId,
-        latency: performance.now() - start,
-      });
+      fail('timeout');
     });
 
     req.on('error', (err) => {
-      resolve({
-        success: false,
-        error: err.message,
-        roundId,
-        connId,
-        latency: performance.now() - start,
-      });
+      fail(err.message);
     });
 
     req.end();

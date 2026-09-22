@@ -24,6 +24,7 @@ import {
 import type { McpTransportType } from '@agent-harness/core';
 import {
   getMetricsSnapshot,
+  LATENCY_BUCKETS_MS,
   Memory,
   sanitizeKey,
   structLog,
@@ -63,6 +64,7 @@ import {
   DEFAULT_AGENT_ID,
   contextWindowFor,
   enableTelemetryAutosave,
+  initOtlpExporter,
   getTeamManager,
   type Team
 } from '@agent-harness/core';
@@ -158,7 +160,6 @@ import { archivePlanArtifacts } from './plan-artifacts';
 // P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
 import { getSkillRegistry } from './skill-registry';
 // P1-7 企业数据源适配器：数据源注册 + 连通性测试。
-import { getDataSourceRegistry } from './data-source';
 // P1-4 浏览器沙箱：受控浏览器会话生命周期管理。
 import { getSandboxManager } from './browser-sandbox';
 // P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
@@ -181,12 +182,12 @@ import { subscribePlanEvents, publishPlanEvent } from './plan-bus';
 // P3-1 品牌位配置。
 import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
 // P2-1 手机端：设备推送令牌存储。
-import { getDeviceStore } from './device-store';
 
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
+  isCookieAuth,
   type Authorizer,
   type AuthContext,
   type Action,
@@ -211,7 +212,6 @@ import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
 
 // 文件上传（图片/文本附件）。
-import { handleUpload, serveUploaded } from './upload';
 
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
@@ -221,6 +221,10 @@ import { installScrubber } from './log-scrub';
 
 import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
+import { handleAccountRoutes } from './routes/account-routes';
+import { handleDeviceRoutes } from './routes/device-routes';
+import { handleDatasourceRoutes } from './routes/datasource-routes';
+import { handleUploadRoutes } from './routes/upload-routes';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -253,30 +257,16 @@ import { registerOAuthRoutes } from './oauth';
 
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
-  registerUser,
-  registerWithDerivedHex,
-  loginUser,
-  loginWithDerivedHex,
-  getSalt,
-  DUMMY_SALT,
   verifyDerivedHex,
   upsertGithubUser,
   upsertGoogleUser,
   usernameFromCookie,
   cookieValue,
   authCookieValue,
-  clearAuthCookie,
+  CSRF_COOKIE,
+  csrfCookieValue,
+  issueCsrfToken,
   isAuthSecretConfigured,
-  getProfile,
-  changePassword,
-  changePasswordWithDerivedHex,
-  revokeAllTokens,
-  requestPasswordReset,
-  resetPassword,
-  resetPasswordWithDerivedHex,
-  deleteUser,
-  rotateTokens,
-  verifyRefreshToken,
   type AccountResult
 } from './accounts';
 import { REFRESH_TTL_MS } from './accounts';
@@ -496,10 +486,6 @@ const HISTORY_MAX_BYTES = cfgNum(
   'HISTORY_MAX_BYTES',
   DEFAULTS.HISTORY_MAX_BYTES as number
 );
-// 文件上传：单文件上限（MB）与 /api/upload 请求体截断阈值（字节）。
-// 请求体上限比单文件限制多 2MB 余量，覆盖 multipart boundary / headers 开销。
-const UPLOAD_MAX_MB = cfgNum('UPLOAD_MAX_MB', DEFAULTS.UPLOAD_MAX_MB as number);
-const UPLOAD_BODY_MAX_BYTES = (UPLOAD_MAX_MB + 2) * 1024 * 1024;
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
 const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
@@ -508,6 +494,9 @@ const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
 const RATE_WINDOW_MS = cfgNum('RATE_LIMIT_WINDOW_MS', DEFAULTS.RATE_LIMIT_WINDOW_MS as number);
 // 单已登录用户限流（防单账号滥用）；默认 60/60s，0=关闭。原内联读取 `|| 60` 对 env=0 静默变 60（关不掉）。
 const USER_RATE_LIMIT = cfgNum('USER_RATE_LIMIT', DEFAULTS.USER_RATE_LIMIT as number);
+// P1 安全加固：CSRF 双重提交令牌门禁开关。默认开启；CSRF_ENFORCE=off 可关闭
+// （仅供无法升级的老客户端平滑过渡，生产不建议常关）。
+const CSRF_ENFORCE = process.env.CSRF_ENFORCE !== 'off';
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
@@ -640,6 +629,41 @@ async function guard(
     });
     unauthorized(res);
     return null;
+  }
+
+  // P1 安全加固：CSRF 双重提交令牌校验。
+  // 仅约束「cookie 来源 + 状态变更方法」的请求——Authorization/query/API key 的
+  // 机器客户端没有 CSRF 面（浏览器不会替它们自动带 cookie）；GET/HEAD 无副作用不校验。
+  if (
+    CSRF_ENFORCE &&
+    isCookieAuth(req) &&
+    !['GET', 'HEAD', 'OPTIONS'].includes((req.method ?? 'GET').toUpperCase())
+  ) {
+    const cookieTok = cookieValue(req, CSRF_COOKIE) ?? '';
+    const rawHeader = req.headers['x-csrf-token'];
+    const headerTok = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader) ?? '';
+    if (!cookieTok || !headerTok || !safeEqualString(cookieTok, headerTok)) {
+      audit({
+        kind: 'request',
+        method: req.method,
+        path: redactUrl(req.url),
+        ip,
+        authed: true,
+        status: 403,
+        reason: 'csrf token missing or mismatched'
+      });
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        ...securityHeaders()
+      });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: 'CSRF 校验失败：缺少或无效的 x-csrf-token 头，请刷新页面后重试'
+        })
+      );
+      return null;
+    }
   }
 
   // P0.3 租户隔离：若强制租户隔离（REQUIRE_TENANT=true），校验请求携带的
@@ -1089,294 +1113,12 @@ const server = createServer(
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
       // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
-      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 PBKDF2 派生哈希，
-      // 服务器仅比对哈希，不接触明文密码。
-      if (req.method === 'GET' && path === '/api/account/login-salt') {
-        const username = (url.searchParams.get('username') || '').trim();
-        if (!username || !/^[A-Za-z0-9_]{3,32}$/.test(username)) {
-          res.writeHead(200, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ salt: DUMMY_SALT }));
-          return;
-        }
-        const result = await getSalt(username);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({ salt: result?.salt ?? DUMMY_SALT })
-        );
+      // ── 账户路由（/api/account/*）：已外迁 routes/account-routes.ts（P2 模块化第一批）──
+      if (await handleAccountRoutes(req, res, url, path, { guard, audit, refreshCookieValue, setCookies, clientIp })) {
         return;
       }
-      if (path === '/api/account/register' && req.method === 'POST') {
-        const b = await readBody(req);
-        const u = typeof b?.username === 'string' ? b.username : '';
-        const p = typeof b?.password === 'string' ? b.password : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式注册 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt，而非明文密码。
-        let r: AccountResult;
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await registerWithDerivedHex(u, salt, dhx, b.email);
-        } else {
-          r = await registerUser(u, p, b.email);
-        }
-        if (!r.ok) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        // 注册成功顺带登录，直接下发 cookie token，减少一次往返。
-        const lr: AccountResult = dhx
-          ? await loginWithDerivedHex(u, dhx)
-          : await loginUser(u, p);
-        if (!lr.ok || !lr.token) {
-          res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(
-            JSON.stringify({ ok: false, error: '注册成功但签发登录态失败' })
-          );
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(
-            authCookieValue(req, lr.token),
-            refreshCookieValue(req, lr.refreshToken)
-          ),
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: lr.username,
-            accessExpiresAt: lr.accessExpiresAt,
-            refreshToken: lr.refreshToken
-          })
-        );
+      if (await handleDeviceRoutes(req, res, path, { guard })) {
         return;
-      }
-      if (path === '/api/account/login' && req.method === 'POST') {
-        const b = await readBody(req);
-        const u = typeof b?.username === 'string' ? b.username : '';
-        const p = typeof b?.password === 'string' ? b.password : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式登录 —— 客户端本地 PBKDF2 派生后发送 derivedHex，服务器不接触明文密码。
-        const r: AccountResult = dhx
-          ? await loginWithDerivedHex(u, dhx)
-          : await loginUser(u, p);
-        if (!r.ok || !r.token) {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: r.error ?? '登录失败' }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(
-            authCookieValue(req, r.token),
-            refreshCookieValue(req, r.refreshToken)
-          ),
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: r.username,
-            accessExpiresAt: r.accessExpiresAt,
-            refreshToken: r.refreshToken
-          })
-        );
-        return;
-      }
-      // ── 忘记密码 / 重置密码（公开，放在 guard 之前，与 register/login 同区）──
-      if (req.method === 'POST' && path === '/api/account/forgot-password') {
-        const b = await readBody(req);
-        const identifier =
-          typeof b?.identifier === 'string' ? b.identifier : '';
-        const r = await requestPasswordReset(identifier);
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true, resetToken: r.resetToken ?? null }));
-        return;
-      }
-      if (req.method === 'POST' && path === '/api/account/reset-password') {
-        const b = await readBody(req);
-        const token = typeof b?.token === 'string' ? b.token : '';
-        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式重置 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
-        let r: { ok: boolean; error?: string };
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await resetPasswordWithDerivedHex(token, salt, dhx);
-        } else {
-          r = await resetPassword(token, newPw);
-        }
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      if (req.method === 'GET' && path === '/api/account/me') {
-        // 当前会话：仅依赖 ah_auth cookie（不要求 x-ah-username 双因子，避免鸡生蛋）。
-        // 前端在 OAuth 回调后回填用户名（setSession）时调用。
-        const u = await usernameFromCookie(req);
-        if (!u) {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '未登录' }));
-          return;
-        }
-        const profile = await getProfile(u);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: u,
-            role: profile?.role ?? 'viewer', // P0-A: 兜底改为 viewer
-            email: profile?.email ?? null
-          })
-        );
-        return;
-      }
-      if (req.method === 'POST' && path === '/api/account/change-password') {
-        // 改密：需先登录（cookie 有效且 x-ah-username 双因子一致，由下方 guard 保证）。
-        const ctx = await guard(req, res, 'chat:write');
-        if (!ctx) return;
-        const b = await readBody(req);
-        const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
-        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式改密 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
-        let r: { ok: boolean; error?: string };
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await changePasswordWithDerivedHex(ctx.sub, oldPw, salt, dhx);
-        } else {
-          r = await changePassword(ctx.sub, oldPw, newPw);
-        }
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      if (req.method === 'POST' && path === '/api/account/logout') {
-        // 登出：清除服务端 token 记录 + 让浏览器丢弃 ah_auth cookie（HttpOnly 只能由服务端清除）。
-        const u = await usernameFromCookie(req);
-        if (u) await revokeAllTokens(u);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': clearAuthCookie(req),
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
-      if (req.method === 'POST' && path === '/api/account/refresh') {
-        const b = await readBody(req);
-        // refresh token 优先取 HttpOnly cookie（登录时下发、前端不可读、防 XSS 窃取），
-        // 兼容旧客户端从请求体携带 refresh_token 的方式。
-        const refreshToken =
-          (typeof b?.refresh_token === 'string' && b.refresh_token) ||
-          cookieValue(req, 'ah_refresh') ||
-          '';
-        if (!refreshToken) {
-          sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
-          return;
-        }
-        const result = await rotateTokens(refreshToken);
-        if (!('accessToken' in result)) {
-          sendJsonError(res, 401, { error: result.error ?? 'refresh token 无效' }, req);
-          return;
-        }
-        const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
-        // 注意：authCookieValue 第三参为「剩余时长(ms)」，必须是相对值，不能是绝对时间戳。
-        const authCookie = authCookieValue(req, accessToken, accessExpiresAt - Date.now());
-        const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(authCookie, refreshCookie),
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
-        return;
-      }
-      // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
-      if (req.method === 'DELETE' && path === '/api/account') {
-        const u = await usernameFromCookie(req);
-        if (!u) {
-          sendJsonError(res, 401, { error: 'unauthorized' }, req);
-          return;
-        }
-        const result = await deleteUser(u);
-        if (!result.ok) {
-          sendJsonError(res, 500, { error: result.error ?? '删除失败' }, req);
-          return;
-        }
-        // 删除成功后清除 cookie
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': clearAuthCookie(req),
-          ...securityHeaders()
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      // ── P2-1 手机端：设备推送令牌注册 ──
-      // 移动端在启动时注册 FCM/APNs 设备令牌，供服务端推送通知使用。
-      // 受 chat:read 保护（已登录用户才能注册自己的设备）。
-      if (path === '/api/devices' && req.method === 'POST') {
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        const b = await readBody(req);
-        const token = typeof b?.token === 'string' ? b.token.trim() : '';
-        const platform = b?.platform === 'android' ? 'android' : 'ios';
-        if (!token) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'token is required' }));
-          return;
-        }
-        const device = await getDeviceStore().register({
-          owner: ctx.sub,
-          token,
-          platform
-        });
-        return sendJson(res, { device }, req);
       }
       // ── GitHub OAuth 授权码流（后端持有 client_secret）──
       // 1) 前端按钮跳转这里 → 302 到 GitHub 授权页（带 CSRF state，存于 HttpOnly cookie）。
@@ -1589,7 +1331,8 @@ const server = createServer(
           res.writeHead(200, {
             'set-cookie': setCookies(
               authCookieValue(req, r.token),
-              refreshCookieValue(req, r.refreshToken)
+              refreshCookieValue(req, r.refreshToken),
+              csrfCookieValue(req, issueCsrfToken())
             ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
@@ -1843,7 +1586,8 @@ const server = createServer(
           res.writeHead(200, {
             'set-cookie': setCookies(
               authCookieValue(req, r.token),
-              refreshCookieValue(req, r.refreshToken)
+              refreshCookieValue(req, r.refreshToken),
+              csrfCookieValue(req, issueCsrfToken())
             ),
             'content-type': 'text/html; charset=utf-8',
             'cache-control': 'no-store'
@@ -2208,6 +1952,26 @@ const server = createServer(
           '# TYPE harness_cost_total gauge',
           `harness_cost_total ${Number(snapshot.cost).toFixed(6)}`
         ];
+        // P2：延迟直方图（Prometheus histogram，供 histogram_quantile 计算延迟分位数）。
+        // 桶为累计口径（cumulative），+Inf 桶 = 总计数。
+        const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9_]/g, '_');
+        for (const [name, h] of Object.entries(snapshot.latency)) {
+          const metric = `harness_latency_${sanitize(name)}_ms`;
+          lines.push(
+            `# HELP ${metric} 延迟直方图（毫秒）：${name}`,
+            `# TYPE ${metric} histogram`
+          );
+          let cumulative = 0;
+          LATENCY_BUCKETS_MS.forEach((le, i) => {
+            cumulative += h.buckets?.[i] ?? 0;
+            lines.push(`${metric}_bucket{le="${le}"} ${cumulative}`);
+          });
+          lines.push(
+            `${metric}_bucket{le="+Inf"} ${h.count}`,
+            `${metric}_sum ${h.sumMs}`,
+            `${metric}_count ${h.count}`
+          );
+        }
         res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(lines.join('\n') + '\n');
         return;
@@ -2981,40 +2745,8 @@ const server = createServer(
         return;
       }
 
-      // ── P1-7 企业数据源适配器（受 datasource:read / datasource:manage 保护）──
-      // 连通性测试为只读校验，归 datasource:read；配置变更走 datasource:manage（后续扩展）。
-      if (path === '/api/datasources') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'datasource:read');
-          if (!ctx) return;
-          const items = await getDataSourceRegistry().list();
-          return sendJson(res, { items }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/datasources/')) {
-        const tm = path.slice('/api/datasources/'.length).match(/^([^/]+)\/test$/);
-        if (tm && req.method === 'POST') {
-          const ctx = await guard(req, res, 'datasource:read');
-          if (!ctx) return;
-          const dsid = tm[1];
-          if (!dsid) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'invalid datasource path' }));
-            return;
-          }
-          const result = await getDataSourceRegistry().test(dsid);
-          if (!result) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'datasource not found' }));
-            return;
-          }
-          return sendJson(res, { result }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
+      // ── P1-7 企业数据源适配器：已外迁 routes/datasource-routes.ts ──
+      if (await handleDatasourceRoutes(req, res, path, { guard })) {
         return;
       }
 
@@ -3723,52 +3455,8 @@ const server = createServer(
           }
         }
       }
-      // 上传附件：POST /api/upload（multipart/form-data，图片/文本）。
-      if (path === '/api/upload' && req.method === 'POST') {
-        const ctx = await guard(req, res, 'upload:file');
-        if (!ctx) return;
-        try {
-          const chunks: Buffer[] = [];
-          let total = 0;
-          for await (const c of req) {
-            total += (c as Buffer).length;
-            if (total > UPLOAD_BODY_MAX_BYTES) {
-              const err: any = new Error(
-                `request body too large (${UPLOAD_MAX_MB + 2} MB limit)`
-              );
-              err.status = 413;
-              throw err;
-            }
-            chunks.push(c as Buffer);
-          }
-          const result = await handleUpload(
-            Buffer.concat(chunks),
-            String(req.headers['content-type'] ?? '')
-          );
-          if (!result.ok) {
-            return sendJson(res, { error: result.error }, req);
-          }
-          return sendJson(res, { ok: true, meta: result.meta }, req);
-        } catch (e: any) {
-          const code = typeof e?.status === 'number' ? e.status : 400;
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
-      }
-
-      // 获取已上传文件：GET /api/uploads/:filename（静态展示用，含防穿越）。
-      const um = path.match(/^\/api\/uploads\/(.+)$/);
-      if (um && req.method === 'GET') {
-        const filename = decodeURIComponent(um[1] ?? '');
-        const result = await serveUploaded(filename);
-        if (!result.ok) {
-          return sendJson(res, { error: result.error }, req);
-        }
-        res.writeHead(200, {
-          'content-type': result.mime,
-          'cache-control': 'public, max-age=86400',
-          ...corsHeaders(req)
-        });
-        res.end(result.buf);
+      // ── 文件上传：已外迁 routes/upload-routes.ts ──
+      if (await handleUploadRoutes(req, res, path, { guard })) {
         return;
       }
 
@@ -5990,6 +5678,16 @@ async function bootstrap(): Promise<void> {
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P1 修复：接通 OTLP 导出器（此前 initOtlpExporter 定义了但从未被调用，分布式追踪/指标导出静默失效）。
+  // OTEL_EXPORTER_OTLP_ENDPOINT 非空即启用；未配置时零开销跳过；可选依赖缺失时静默降级，不影响启动。
+  await initOtlpExporter();
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    structLog('info', 'telemetry', {
+      otlp: true,
+      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    });
   }
 
   // P2.a：启用结构化审计日志落盘（委托 @agent-harness/core 的 enableAuditFile）。

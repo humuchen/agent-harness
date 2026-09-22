@@ -104,6 +104,12 @@ export class AgentClient {
     // 浏览器侧账户鉴权：服务端要求 cookie(ah_auth) + x-ah-username 双因子一致，
     // 这里把用户名带到 header（cookie 由浏览器自动附加）。非浏览器客户端也可带。
     if (this.username) h['x-ah-username'] = this.username;
+    // CSRF 双重提交（仅浏览器）：cookie 鉴权会话需回传服务端签发的 ah_csrf 令牌。
+    // Node/SSR 无 document，读不到即不带（服务端对非 cookie 来源不校验）。
+    if (typeof document !== 'undefined') {
+      const m = document.cookie.match(/(?:^|;\s*)ah_csrf=([^;]*)/);
+      if (m?.[1]) h['x-csrf-token'] = decodeURIComponent(m[1]);
+    }
     return h;
   }
 

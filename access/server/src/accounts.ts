@@ -211,6 +211,16 @@ async function ensureDb(): Promise<void> {
       await db.exec(
         `CREATE INDEX IF NOT EXISTS idx_resets_user ON password_resets(username)`
       );
+      // 登录锁定表（P1 安全加固）：连续失败 N 次临时锁定，防在线撞库。
+      // 落库而非内存：多副本部署（eks overlay）下锁定状态跨实例一致。
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS login_lockouts (
+          username TEXT PRIMARY KEY,
+          fail_count INTEGER NOT NULL DEFAULT 0,
+          locked_until INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        )`
+      );
       // 兼容旧库：早期 users 表无 email 列，ALTER 补列（列已存在则跳过）。
       try {
         const cols = (await db
@@ -443,6 +453,64 @@ function validUsername(u: string): boolean {
   return /^[A-Za-z0-9_]{3,32}$/.test(u);
 }
 
+// ─── 登录锁定（P1 安全加固：防在线撞库）─────────────────────────────────────
+// 连续失败 AUTH_LOCKOUT_THRESHOLD 次（默认 5）→ 锁定 AUTH_LOCKOUT_WINDOW_MS（默认 15 分钟）。
+// 阈值/窗口均可经环境变量调整；设 AUTH_LOCKOUT_THRESHOLD=0 关闭（不建议生产关闭）。
+const LOCKOUT_THRESHOLD = Number(process.env.AUTH_LOCKOUT_THRESHOLD ?? 5);
+const LOCKOUT_WINDOW_MS = Number(process.env.AUTH_LOCKOUT_WINDOW_MS) || 15 * 60_000;
+
+/** 查询账号是否处于锁定中。锁定时返回剩余秒数（供 428/401 提示语）。 */
+export async function isLoginLocked(
+  username: string
+): Promise<{ locked: boolean; retryAfterSec: number }> {
+  if (!(LOCKOUT_THRESHOLD > 0) || !username) return { locked: false, retryAfterSec: 0 };
+  await ensureDb();
+  const row = (await db
+    .prepare('SELECT locked_until FROM login_lockouts WHERE username = ?')
+    .get(username)) as { locked_until: number } | undefined;
+  const now = Date.now();
+  if (row && row.locked_until > now) {
+    return {
+      locked: true,
+      retryAfterSec: Math.max(1, Math.ceil((row.locked_until - now) / 1000))
+    };
+  }
+  return { locked: false, retryAfterSec: 0 };
+}
+
+/** 记一次登录失败；达到阈值即落锁定时间戳。计数随最后一次失败超过窗口而自动清零（防慢速累积）。 */
+async function recordLoginFailure(username: string): Promise<void> {
+  if (!(LOCKOUT_THRESHOLD > 0) || !username) return;
+  await ensureDb();
+  const now = Date.now();
+  const row = (await db
+    .prepare('SELECT fail_count, locked_until, updated_at FROM login_lockouts WHERE username = ?')
+    .get(username)) as
+    | { fail_count: number; locked_until: number; updated_at: number }
+    | undefined;
+  // 上次失败距今已超过一个锁定窗口 → 视为新一轮尝试，从 1 起算。
+  const stale = row && now - row.updated_at > LOCKOUT_WINDOW_MS;
+  const failCount = stale || !row ? 1 : row.fail_count + 1;
+  const lockedUntil = failCount >= LOCKOUT_THRESHOLD ? now + LOCKOUT_WINDOW_MS : 0;
+  await db
+    .prepare(
+      `INSERT INTO login_lockouts (username, fail_count, locked_until, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(username) DO UPDATE SET
+         fail_count = excluded.fail_count,
+         locked_until = excluded.locked_until,
+         updated_at = excluded.updated_at`
+    )
+    .run(username, failCount, lockedUntil, now);
+}
+
+/** 登录成功后清零失败计数。 */
+async function clearLoginFailures(username: string): Promise<void> {
+  if (!username) return;
+  await ensureDb();
+  await db.prepare('DELETE FROM login_lockouts WHERE username = ?').run(username);
+}
+
 export async function registerUser(
   username: string,
   password: string,
@@ -504,6 +572,14 @@ export async function loginUser(
   password: string
 ): Promise<AccountResult> {
   username = (username || '').trim();
+  // P1 安全加固：锁定中的账号直接拒绝（在 scrypt 校验前短路，不烧 CPU）。
+  const lock = await isLoginLocked(username);
+  if (lock.locked) {
+    return {
+      ok: false,
+      error: `失败次数过多，账号已临时锁定，请约 ${lock.retryAfterSec} 秒后重试`
+    };
+  }
   await ensureDb();
   const row = (await db
     .prepare('SELECT password FROM users WHERE username = ?')
@@ -512,8 +588,10 @@ export async function loginUser(
   const fake = hashPassword('__nonexistent__');
   const stored = row?.password ?? fake;
   if (!row || !verifyPassword(password, stored)) {
+    await recordLoginFailure(username);
     return { ok: false, error: '用户名或密码错误' };
   }
+  await clearLoginFailures(username);
   // P1-13: 双 token 模式，签发 access + refresh token 对。
   const tokens = await issueTokens(username);
   return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
@@ -528,6 +606,14 @@ export async function loginWithDerivedHex(
   derivedHex: string
 ): Promise<AccountResult> {
   username = (username || '').trim();
+  // P1 安全加固：锁定中的账号直接拒绝。
+  const lock = await isLoginLocked(username);
+  if (lock.locked) {
+    return {
+      ok: false,
+      error: `失败次数过多，账号已临时锁定，请约 ${lock.retryAfterSec} 秒后重试`
+    };
+  }
   await ensureDb();
   const row = (await db
     .prepare('SELECT password FROM users WHERE username = ?')
@@ -536,8 +622,10 @@ export async function loginWithDerivedHex(
   const fake = hashPassword('__nonexistent__');
   const stored = row?.password ?? fake;
   if (!row || !verifyDerivedHex(derivedHex, stored)) {
+    await recordLoginFailure(username);
     return { ok: false, error: '用户名或密码错误' };
   }
+  await clearLoginFailures(username);
   const tokens = await issueTokens(username);
   return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
 }
@@ -713,6 +801,38 @@ export function cookieValue(
 }
 
 export const TOKEN_TTL = TOKEN_TTL_MS;
+
+// ─── CSRF 双重提交令牌（P1 安全加固）────────────────────────────────────────
+// cookie 鉴权的浏览器会话存在 CSRF 面：恶意站点可诱导浏览器自动携带 ah_auth 发起
+// 状态变更请求。双重提交：服务端签发**非 HttpOnly** 的 ah_csrf cookie，前端在
+// 状态变更请求头回传 x-csrf-token，服务端比对二者（见 server.ts guard()）。
+// 攻击者站点读不到本域 cookie（同源策略），无法伪造匹配的头。
+export const CSRF_COOKIE = 'ah_csrf';
+const CSRF_COOKIE_MAX_AGE_SEC = 30 * 24 * 3600; // 30 天，独立于 auth token 有效期
+
+/** 签发新的 CSRF 令牌（32 字节随机 hex）。登录/注册/刷新会话时轮换。 */
+export function issueCsrfToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/**
+ * 构造 ah_csrf Set-Cookie 值。
+ * 注意**不加 HttpOnly**：前端 JS 必须能读出并回传到 x-csrf-token 头——这正是
+ * 双重提交模式的工作前提；令牌本身不含机密，泄露无独立危害。
+ */
+export function csrfCookieValue(
+  req: { headers: Record<string, unknown> },
+  token: string
+): string {
+  const parts = [
+    `${CSRF_COOKIE}=${token}`,
+    'SameSite=Lax',
+    'Path=/',
+    `Max-Age=${CSRF_COOKIE_MAX_AGE_SEC}`
+  ];
+  if (!isLocalhost(req)) parts.push('Secure');
+  return parts.join('; ');
+}
 
 /**
  * 从请求的 ah_auth cookie 解析出当前已登录用户名（签名/过期/吊销任一失败返回 null）。

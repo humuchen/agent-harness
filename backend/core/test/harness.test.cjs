@@ -41,10 +41,12 @@ test('工具循环：工具结果回灌后再产出最终文本', async () => {
   assert.equal(out, 'done');
 });
 
-test('输入护栏命中：直接拦截并返回提示', async () => {
+test('输入护栏命中：直接拦截并返回优雅兜底文案（不暴露内部 blocked 文本）', async () => {
   const h = new AgentHarness({ llm: singleTurnLLM('x'), tools: new ToolRegistry() });
   const out = await h.run('AKIAIOSFODNN7EXAMPLE');
-  assert.match(out, /blocked/);
+  // 对外契约：护栏命中后返回优雅兜底文案，且不把内部原因（[guardrail] blocked ...）透给用户。
+  assert.match(out, /内容安全策略/);
+  assert.doesNotMatch(out, /guardrail\]?\s*blocked/i);
 });
 
 test('remember 注入系统提示词（长期记忆可见）', async () => {

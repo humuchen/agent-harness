@@ -1,0 +1,21 @@
+apiVersion: 1
+
+# Grafana 数据源自动装配：指向同 compose 网络内的 Loki（日志管线，P2）。
+# 日志经 promtail 以 docker_sd 从容器 json-file 日志采集（含 agent-harness 的
+# structLog JSON 行——可在 Grafana 用 JSON 解析器按 level / msg / trace.id 过滤）。
+datasources:
+  - name: Loki
+    # 固定 uid：看板/Explore 链接以此引用，避免 uid 漂移。
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      # Derived fields：把日志行里的 trace.id 转为可点击的临时查询跳转（关联排障）。
+      derivedFields:
+        - name: trace_id
+          matcherRegex: '"trace\.id":"([^"]+)"'
+          url: '$${__value.raw}'
+          urlDisplayMode: raw

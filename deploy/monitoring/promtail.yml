@@ -1,0 +1,45 @@
+# promtail 配置（P2 日志管线）：docker_sd 发现全部容器，采集 json-file 日志推送到 Loki。
+#
+# 说明：
+#  - 挂载 /var/lib/docker/containers（json-file 日志）与 /var/run/docker.sock（元数据：
+#    容器名 / compose service / labels 转成 Loki 标签，便于 {container="agent-harness-ui-1"} 过滤）。
+#  - 仅 Docker / Docker Desktop 环境；K8s 部署请用 Loki 的 helm chart（promtail 改 DaemonSet）。
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+        filters:
+          - name: label
+            values: ['com.docker.compose.project']
+    relabel_configs:
+      # compose 网络里最有用的三个标签：容器名 / service 名 / 项目名。
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: service
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: project
+    pipeline_stages:
+      # agent-harness 的 structLog 输出单行 JSON —— 解析后 level/trace.id 直接成为 Loki 标签。
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            trace_id: trace.id
+            job_id: job.id
+      - labels:
+          level:
+      - labels:
+          trace_id:

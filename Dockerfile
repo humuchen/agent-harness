@@ -84,6 +84,17 @@ RUN (apt-get update && apt-get install -y --no-install-recommends \
 ARG HARNESS_NATIVE_STRICT=1
 RUN HARNESS_NATIVE_STRICT=${HARNESS_NATIVE_STRICT} bash scripts/build-native.sh
 
+# P2 瘦身 + 收窄泄露面：运行时层只保留编译产物（dist / native / package.json），
+# 删掉 src 与 test —— 此前整目录 COPY 会把全部源码、测试与示例打进镜像。
+# 说明：server 启动横幅的「src 比 dist 新」自检对 src 缺失已有 try/catch 容错。
+RUN rm -rf \
+      backend/core/src backend/core/test \
+      backend/client/src backend/client/test \
+      access/server/src access/server/test \
+      frontend/webapp/src \
+      frontend/cli/src \
+      services/rag/src services/rag/test
+
 # ----------------------------- 运行阶段 -----------------------------
 FROM ${NODE_BASE}:${NODE_TAG} AS runtime
 ENV NODE_ENV=production
@@ -108,9 +119,9 @@ COPY --from=build /app/package.json ./package.json
 # 必须随镜像分发，否则运行时报 MODULE_NOT_FOUND。
 COPY --from=build /app/scripts ./scripts
 
-# 内置 RAG MCP Server（stdio 模式）：MCP_SERVERS 默认清单以 services/rag/dist/index.js 拉起，
-# 缺失会导致 rag 服务连接失败。
-COPY --from=build /app/services ./services
+# 版本化迁移 SQL：AH_MIGRATE_AUTO=on 时 server 启动会调 scripts/db-migrate.cjs，
+# 该脚本从 ./migrations 读取 .sql —— 此前未拷贝导致容器内迁移静默空转（目录被脚本自动创建为空）。
+COPY --from=build /app/migrations ./migrations
 
 # 运行期共享库：若 helper 以 libseccomp/libcap 编译，则运行需对应 .so（best-effort，失败不阻断）。
 RUN (apt-get update && apt-get install -y --no-install-recommends libseccomp2 libcap2 && rm -rf /var/lib/apt/lists/*) 2>/dev/null || true

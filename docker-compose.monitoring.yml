@@ -2,14 +2,17 @@
 # 监控栈 overlay（Prometheus + Grafana + Alertmanager）
 #
 # 用法：
-#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+#   GRAFANA_ADMIN_PASSWORD=<强口令> docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
 #
 # 访问：
-#   Grafana        http://localhost:3000   （默认 admin / admin，首次登录请改密）
+#   Grafana        http://localhost:3000   （口令经 GRAFANA_ADMIN_PASSWORD 注入，未设置则拒绝启动）
 #   Prometheus     http://localhost:9090
 #   Alertmanager   http://localhost:9093
 #
 # 说明：
+#   - 端口只绑定 127.0.0.1（本机访问）：Prometheus 的 lifecycle API 曾未鉴权暴露，
+#     任何能访问 9090 的来源都可 POST /-/quit 关停服务；Grafana 亦不应裸奔公网。
+#     远端访问请走反向代理 + 认证，或 k8s ServiceMonitor 方案。
 #   - 抓取目标为 compose 网络内的 `ui:4173`，指标端点 /api/metrics/prometheus（无需令牌）。
 #   - Grafana 数据源与看板经 provisioning 自动装配（无需手工导入）。
 #   - 告警链路：Prometheus 规则 → Alertmanager（分组/抑制）→ ALERTMANAGER_WEBHOOK_URL。
@@ -26,9 +29,10 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
-      - '--web.enable-lifecycle'
+      # 安全加固：移除 --web.enable-lifecycle（未鉴权的 /-/reload、/-/quit 可被任意来源调用）。
+      # 需要热加载配置时：docker compose kill -s SIGHUP prometheus
     ports:
-      - '9090:9090'
+      - '127.0.0.1:9090:9090'
     volumes:
       - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
@@ -54,7 +58,7 @@ services:
       # 未配置时指向 discard 端口（告警仅在 Alertmanager UI 可见，不对外投递）。
       ALERTMANAGER_WEBHOOK_URL: '${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9/noop}'
     ports:
-      - '9093:9093'
+      - '127.0.0.1:9093:9093'
     volumes:
       - ./deploy/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager-data:/alertmanager
@@ -72,15 +76,16 @@ services:
     depends_on:
       - prometheus
     environment:
-      # 生产部署务必覆盖默认口令（可用 .env 的 GRAFANA_ADMIN_PASSWORD）。
+      # 安全加固：管理口令必须显式提供（fail-fast），杜绝默认 admin/admin 上线。
+      # 本地开发可在 .env 写 GRAFANA_ADMIN_PASSWORD=admin 明示接受弱口令。
       GF_SECURITY_ADMIN_USER: '${GRAFANA_ADMIN_USER:-admin}'
-      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_ADMIN_PASSWORD:-admin}'
+      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_ADMIN_PASSWORD:?请在环境变量或 .env 中设置 GRAFANA_ADMIN_PASSWORD（生产禁止默认口令）}'
       # 关闭匿名访问；看板以 provisioning 只读装配。
       GF_AUTH_ANONYMOUS_ENABLED: 'false'
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_ALERTING_ENABLED: 'false'
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
     volumes:
       - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -92,7 +97,40 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── P2 日志管线：Loki（存储）+ promtail（采集）───────────────────────────
+  # structLog 的 JSON 行日志被 promtail 解析为 level / trace.id 标签，
+  # 在 Grafana Explore 里可按 {service="ui", level="error"} 直接过滤，并可从
+  # 指标异常一键跳到对应时间窗的日志（trace.id 关联）。
+  loki:
+    image: grafana/loki:3.1.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    # 端口不对宿主机暴露：仅 compose 网络内被 Grafana / promtail 访问。
+    volumes:
+      - loki-data:/loki
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://127.0.0.1:3100/ready || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ./deploy/monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      # 采集 docker 容器日志：json-file 目录 + docker.sock（用于 docker_sd 与元数据标签）。
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   prometheus-data:
   grafana-data:
   alertmanager-data:
+  loki-data:
