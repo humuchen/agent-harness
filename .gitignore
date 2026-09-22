@@ -17,8 +17,8 @@ deploy/k8s/secret.yaml
 # 项目决策记录等，不应随仓库分发或进入生产环境（Render 原生 node buildpack 会 clone
 # 整个仓库）。仅排除 memory/，注册壳 .workbuddy/skills/ 仍需入库（团队共享的发现入口）。
 # 文件仍保留在本地磁盘，记忆功能不受影响。
-.workbuddy/
-.workbuddy/memory/
+# .workbuddy/
+# .workbuddy/memory/
 .workbuddy-ai/
 .workbuddy-ai/memory/
 .git.bak/
