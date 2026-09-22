@@ -9,7 +9,7 @@
     "start": "node dist/server.js",
     "registry": "node dist/registry-server.js",
     "dev": "tsc -p tsconfig.json && node dist/server.js",
-    "test": "node --test test/*.test.cjs"
+    "test": "pnpm --filter @agent-harness/core run build && tsc -p tsconfig.json && node --test test/*.test.cjs"
   },
   "license": "MIT",
   "engines": {

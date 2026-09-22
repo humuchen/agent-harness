@@ -13,7 +13,7 @@
 // 供 UI / 可观测 / 审计使用。
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { scrubEnv, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox';
+import { scrubEnv, wireAbort, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox';
 import { detectCapabilities, type OSSandboxCapabilities } from './detect';
 import { buildHelperArgs, buildUnshareFallbackArgs } from './args';
 import { normalizeProfile } from './policy';
@@ -145,6 +145,8 @@ export class OSSandboxExecutor implements SandboxExecutor {
           /* 忽略 */
         }
       }, req.timeoutMs);
+
+      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);

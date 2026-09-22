@@ -739,11 +739,13 @@ export class DagEngine {
     wave: string[],
     runStep: (id: string) => Promise<void>
   ): Promise<void> {
+    // 全局并发上限（默认 16），防止未设 maxConcurrency 的工作流触发无界 fan-out，
+    // 一次性拉起成百上千个 step / LLM 调用压垮事件循环与下游配额（P0 修复）。
+    const GLOBAL_CAP = Math.max(1, Number(process.env.WF_MAX_CONCURRENCY) || 16);
     const raw = def.maxConcurrency;
-    const limit =
-      typeof raw === 'number' && Number.isFinite(raw) && raw >= 1
-        ? Math.floor(raw)
-        : Infinity;
+    const requested =
+      typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : GLOBAL_CAP;
+    const limit = Math.min(requested, GLOBAL_CAP);
     if (limit >= wave.length) {
       await Promise.all(wave.map(runStep));
       return;

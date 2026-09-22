@@ -13,6 +13,7 @@ const OTEL_API = '@opentelemetry/api';
 // 错误明细存储（环形缓冲）：记录每条错误的具体类型 / 消息 / 时间 / 堆栈 / 上下文。
 // 注意：errorlog 不反向依赖 telemetry，避免循环引用；计数仍由本模块负责。
 import { captureError } from './errorlog';
+import { scrubFields, redactValue } from './log-scrub';
 
 let tracer: any = null;
 let meter: any = null;
@@ -86,7 +87,12 @@ interface Histogram {
   sum: number;
   min: number;
   max: number;
+  /** 各桶计数（与 LATENCY_BUCKETS_MS 对齐、非累计；Prometheus 暴露时转 cumulative）。 */
+  buckets: number[];
 }
+
+/** 延迟直方图分桶边界（毫秒）。供 Prometheus histogram_quantile 计算延迟分位数。 */
+export const LATENCY_BUCKETS_MS = [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000];
 
 const COUNTERS: Record<string, number> = {};
 const HISTS: Record<string, Histogram> = {};
@@ -119,7 +125,7 @@ function tenantMetrics(tenantId?: string | null): TenantMetrics {
 function ensureHist(name: string): Histogram {
   let h = HISTS[name];
   if (!h) {
-    h = { count: 0, sum: 0, min: Infinity, max: -Infinity };
+    h = { count: 0, sum: 0, min: Infinity, max: -Infinity, buckets: LATENCY_BUCKETS_MS.map(() => 0) };
     HISTS[name] = h;
   }
   return h;
@@ -142,6 +148,15 @@ export function recordLatency(name: string, ms: number): void {
   h.sum += ms;
   if (ms < h.min) h.min = ms;
   if (ms > h.max) h.max = ms;
+  // 分桶计数（非累计，暴露时转 cumulative）：定位 ms 落入的桶边界。
+  for (let i = 0; i < LATENCY_BUCKETS_MS.length; i++) {
+    const le = LATENCY_BUCKETS_MS[i];
+    if (le === undefined) break;
+    if (ms <= le) {
+      h.buckets[i] = (h.buckets[i] ?? 0) + 1;
+      break;
+    }
+  }
   if (meter) {
     let o = otelHistograms[name];
     if (!o) o = otelHistograms[name] = meter.createHistogram(name);
@@ -265,7 +280,18 @@ export interface MetricsSnapshot {
   since: number;
   uptimeMs: number;
   counters: Record<string, number>;
-  latency: Record<string, { count: number; sumMs: number; minMs: number; maxMs: number; avgMs: number }>;
+  latency: Record<
+    string,
+    {
+      count: number;
+      sumMs: number;
+      minMs: number;
+      maxMs: number;
+      avgMs: number;
+      /** 各桶计数（与 LATENCY_BUCKETS_MS 对齐、非累计）。 */
+      buckets: number[];
+    }
+  >;
   tokens: { prompt: number; completion: number; total: number };
   cost: number;
   costByModel: Record<string, number>;
@@ -291,6 +317,7 @@ export function getMetricsSnapshot(): MetricsSnapshot {
       minMs: h.min === Infinity ? 0 : h.min,
       maxMs: h.max === -Infinity ? 0 : h.max,
       avgMs: h.count ? h.sum / h.count : 0,
+      buckets: [...h.buckets],
     };
   }
   const byTenant: Record<string, TenantMetricsSnapshot> = {};
@@ -338,11 +365,13 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
  * 自动注入当前请求上下文（traceId / jobId / tenantId），便于一次运行/请求的全链路关联。 */
 export function structLog(level: LogLevel, message: string, fields?: Record<string, unknown>): void {
   const ctx = getRequestContext();
+  // P0 日志脱敏：在统一出口对 message 与 fields 做脱敏，避免密钥/PII 经任意调用点泄露。
+  // 单一事实来源在 ./log-scrub（installScrubber 仍可由服务启动期调用以覆盖规则）。
   const entry: Record<string, unknown> = {
     ts: new Date().toISOString(),
     level,
-    msg: message,
-    ...(fields ?? {}),
+    msg: redactValue(message),
+    ...scrubFields(fields ?? {}),
   };
   // 仅在有值时注入，避免污染无上下文的生产日志（如 daemon 进程）。
   if (ctx.traceId) entry['trace.id'] = ctx.traceId;
@@ -511,6 +540,10 @@ export function restoreMetricsSnapshot(snap: MetricsSnapshot): void {
       sum: v.sumMs,
       min: v.minMs === 0 ? Infinity : v.minMs,
       max: v.maxMs === 0 ? -Infinity : v.maxMs,
+      // 旧快照无桶数据（升级前落盘）→ 以零桶回填，长度与当前边界对齐。
+      buckets: Array.isArray(v.buckets) && v.buckets.length === LATENCY_BUCKETS_MS.length
+        ? [...v.buckets]
+        : LATENCY_BUCKETS_MS.map(() => 0),
     };
   }
   TOKENS.prompt = snap.tokens?.prompt ?? 0;

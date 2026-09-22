@@ -53,7 +53,7 @@ export const SCHEMA: Field[] = [
   },
   // LLM
   { key: 'OPEN_BASE_URL', type: 'url', desc: 'LLM base URL' },
-  { key: 'LLM_FAILOVER', type: 'enum', allowed: ['on', 'off', 'auto'], desc: '故障转移开关' },
+  { key: 'LLM_FAILOVER', type: 'enum', allowed: ['on', 'off', 'auto'], desc: '故障转移开关', critical: true },
   { key: 'LLM_REASONING', type: 'enum', allowed: ['on', 'off'], desc: '推理开关' },
   // 记忆
   {
@@ -134,7 +134,7 @@ export const SCHEMA: Field[] = [
     allowed: ['mock', 'real', 'real-mcp'],
     desc: 'IM 任务默认运行模式'
   },
-  { key: 'IM_MAX_STEPS', type: 'number', min: 1, desc: 'IM 任务循环步数上限' },
+  { key: 'IM_MAX_STEPS', type: 'number', min: 1, desc: 'IM 任务循环步数上限', critical: true },
   { key: 'IM_TIMEOUT_MS', type: 'number', min: 1, desc: 'IM 任务超时（ms）' },
   { key: 'IM_GROUP_REQUIRE_MENTION', type: 'boolean', desc: '群聊是否需 @机器人 才触发' },
   { key: 'IM_REPLY_PREFIX', type: 'string', desc: 'IM 回复前缀' },

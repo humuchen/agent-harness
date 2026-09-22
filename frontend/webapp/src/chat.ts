@@ -2629,8 +2629,20 @@ export class AhChat extends LitElement {
         if (ev.caller === 'tool') break;
         this.ensureTraceRoot(sid);
         const jParent = tc.llm ?? tc.parent ?? tc.root!;
+        // 问题（输入）与输出（决策）记录：实时流构建时就带上，与 server 端 trace 保持一致，
+        // 避免首次进入点击展开为空、必须刷新页面才显示内容。
+        const jDetail =
+          ev.questionSpec && typeof ev.questionSpec === 'object'
+            ? JSON.stringify(ev.questionSpec, null, 2)
+            : undefined;
+        const jResultOk =
+          ev.ok !== false && ev.answers && typeof ev.answers === 'object'
+            ? JSON.stringify(ev.answers, null, 2)
+            : undefined;
         mk(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
           ...(ev.error ? { result: String(ev.error) } : {}),
+          ...(jDetail ? { detail: jDetail } : {}),
+          ...(jResultOk ? { result: jResultOk } : {}),
           meta: {
             jev: 'true',
             调用方: String(ev.caller ?? '?'),

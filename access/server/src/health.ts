@@ -21,7 +21,7 @@ export interface HealthCheckResult {
 }
 
 export interface HealthCheck {
-  status: 'ok' | 'error' | 'timeout';
+  status: 'ok' | 'error' | 'timeout' | 'degraded';
   latency?: number;
   error?: string;
   details?: Record<string, any>;
@@ -122,7 +122,7 @@ export async function handleReadiness(
     : 0;
 
   checks.memory = {
-    status: memPercent > 90 ? 'error' : memPercent > 70 ? 'ok' : 'ok',
+    status: memPercent > 90 ? 'error' : memPercent > 70 ? 'degraded' : 'ok',
     details: {
       heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
       heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
@@ -160,39 +160,43 @@ export async function handleReadiness(
 }
 
 /**
- * 检查数据库连接
- * 注意: 当前项目使用内存存储,无需数据库健康检查
- * 如果使用SQLite/PostgreSQL,在此添加检查逻辑
+ * 检查数据库连接（真实探针，P1 修复）。
+ * 此前为硬编码 ok 的 no-op：即便已配置 SQLite/Turso 持久化，readiness 也从不真正探活，
+ * 数据库损坏/不可达时探针仍报 ok，误导 K8s 把流量导入不健康的副本。
+ * 现按配置的 DB 后端执行 `SELECT 1` 真实探活；纯内存态（未配置持久化库）则跳过。
  */
 async function checkDatabase(): Promise<HealthCheck> {
-  // 原始代码(已注释 - 项目未使用数据库):
-  // const start = Date.now();
-  // try {
-  //   // 尝试导入并查询数据库
-  //   const { getDb } = await import('./chat-sessions');
-  //   const db = getDb();
-  //
-  //   // 执行简单查询测试连接
-  //   db.prepare('SELECT 1').get();
-  //
-  //   return {
-  //     status: 'ok',
-  //     latency: Date.now() - start
-  //   };
-  // } catch (e: any) {
-  //   return {
-  //     status: 'error',
-  //     latency: Date.now() - start,
-  //     error: e?.message || '数据库连接失败'
-  //   };
-  // }
+  const start = Date.now();
+  const dbBackend = (process.env.DB_BACKEND || 'sqlite').toLowerCase();
+  const usesDb =
+    dbBackend === 'turso'
+      ? !!process.env.TURSO_URL
+      : !!process.env.DB_SQLITE_FILE;
 
-  // 当前实现: 项目使用内存存储,无需数据库检查
-  return {
-    status: 'ok',
-    latency: 0,
-    details: { note: '使用内存存储,无需数据库检查' }
-  };
+  if (!usesDb) {
+    return {
+      status: 'ok',
+      latency: 0,
+      details: { note: '未配置持久化数据库（内存态），无需检查' }
+    };
+  }
+
+  try {
+    const { getDbAdapter } = await import('@agent-harness/core');
+    const db = getDbAdapter();
+    db.exec('SELECT 1');
+    return {
+      status: 'ok',
+      latency: Date.now() - start,
+      details: { backend: dbBackend }
+    };
+  } catch (e: any) {
+    return {
+      status: 'error',
+      latency: Date.now() - start,
+      error: e?.message || '数据库连接失败'
+    };
+  }
 }
 
 /**

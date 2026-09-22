@@ -10,7 +10,16 @@
  * 两处均派生自 DEFAULTS，不存在配置漂移风险。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { DEFAULTS } from './config-defaults';
+
+/** 恒定时间字符串比较，避免 CSRF state / token 比较泄漏时序差。长度不同直接拒。 */
+export function safeEqualString(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 // 本地派生（与 server.ts 同源 DEFAULTS）：避免对 server 模块常量的编译期耦合 / 循环依赖。
 const UI_CORS_ORIGIN = (process.env.UI_CORS_ORIGIN ?? (DEFAULTS.UI_CORS_ORIGIN as string))

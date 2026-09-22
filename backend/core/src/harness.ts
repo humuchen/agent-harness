@@ -879,18 +879,23 @@ export class AgentHarness {
               allowTools: [...allow],
               topK
             });
-            // 安全网：若输入看起来是真实任务（含疑问、较长、或出现常见任务词），
-            // 直接回退全量工具，避免漏发必要工具导致质量退化；
-            // 问候/寒暄/极短输入则保持最小子集，保留优化收益。
-            // 优化：原「input.length >= 8」过于激进，导致多字问候（如「你好啊，请问…」）误判为任务
-            // 拉上全量 20+ 工具 schema。改为：问候/寒暄类输入保持小子集，其余输入回退全量。
-            const taskIndicators =
-              /[?？]|什么|怎么|如何|为什么|多少|查询|获取|搜索|查一下|查找|计算|天气|时间|日期|文件|代码|运行|测试|执行|创建|销毁|环境|状态|结果|最新|新闻|资讯|帮我|请问|能不能|可以吗|写|部署|发布|删除|修改|更新|查看|打开|读取|下载|上传|安装|配置|调试|优化|重构|分析|总结|提取|转换|格式|编码|解码|解析|合并|分割|排序|过滤|统计|图片|绘画|生成|制作|处理|管理|控制|监控|告警|通知|报告|文档|资料|笔记|日志|缓存|队列|线程|进程|服务|接口|API|参数|变量|函数|方法|类|对象|模块|包|依赖|版本|分支|提交|合并|拉取|推送|仓库|密钥|令牌|账号|用户|权限|角色|团队|项目|任务|工作|进度|计划|步骤|流程|操作|指令|命令|脚本|程序|插件|扩展|组件|页面|视图|路由|导航|菜单|按钮|表单|表格|列表|卡片|布局|样式|主题|配色|图标|动画|效果|交互|体验|性能|追踪|报警|回调|钩子|监听|订阅|发布|消费|生产|消息|话题|频道|群组|聊天|会话|对话|协作|讨论|评审|审查|批复|回复|反馈|评论|点评|评价|投票|点赞|收藏|分享|建议|意见|咨询|询问|提问|解答|回答|解释|说明|描述|介绍|概述|归纳|整理/;
-            // Note: the taskIndicators regex above is intentionally kept concise — only common task keywords.
-            const greetingPattern = /^你好|^hello|^hi|^嗨|good.?morning|good.?afternoon|good.?evening|^\s*$/;
-            const isGreeting = greetingPattern.test(input);
-            const looksLikeTask = !isGreeting && (taskIndicators.test(input) || input.length >= 20);
-            stepTools = looksLikeTask ? allSchemas : subset;
+            // 首轮发「相关性子集」而非全量：动态工具选择的核心收益。
+            // 此前用 looksLikeTask（正则含几乎所有中文疑问词）判断回退全量，导致任何真实
+            // 问答都发全量 schema，问候/寒暄之外的优化形同虚设——用户实测简单问答「工具」
+            // 项高达 ~12968 tok，其中 ~92% 来自 MCP 工具的大 schema（内置工具仅 ~1151 tok）。
+            // 安全网：若子集为空（输入与任何工具描述零关键词重叠），且输入不像问候/空，
+            // 则回退全量——避免「模型看不到任何工具」导致真实任务彻底丧失工具能力；
+            // 纯问候/空输入保持空子集（本就不需要工具）。已用过的工具（usedTools）恒在
+            // allow 中，故子集不会为空，不会触发此回退。
+            let chosen = subset;
+            if (subset.length === 0) {
+              const isGreeting =
+                /^你好|^hello|^hi|^嗨|good.?morning|good.?afternoon|good.?evening|^\s*$/i.test(
+                  input
+                );
+              if (!isGreeting) chosen = allSchemas;
+            }
+            stepTools = chosen;
           }
           // Hook: agent.pre_llm — observe messages before LLM call
           void hooks.execute('agent.pre_llm', {
@@ -945,6 +950,30 @@ export class AgentHarness {
               );
               if (raceResult === '__aborted__') return abortedResult();
               resp = raceResult as LLMResponse;
+              // 智能兜底：动态选择只发了子集时，模型可能「点名」一个未发出的工具。
+              //  - 该工具在全量注册表 this.opts.tools 中存在（执行注册表始终全量）：直接交给
+              //    下方执行分支即可，绝不可重发 schema 重试——否则会丢弃模型已给出的有效
+              //    tool_call（曾经的实现因此让 builtin__jev_decide 等核心工具「点了名却没执行」）。
+              //  - 该工具全量注册表中也不存在（模型幻觉的未知工具名）：扩展到全量 schema
+              //    重试一次，让模型改选真实工具。至多扩展一次（扩展后 stepTools === allSchemas
+              //    条件不再成立），不会死循环。
+              const requestedOutside = (resp.tool_calls ?? []).filter(
+                (tc) => !stepTools.find((s) => s.name === tc.name)
+              );
+              if (requestedOutside.length > 0 && dynamicOn && stepTools !== allSchemas) {
+                const unknown = requestedOutside.filter(
+                  (tc) => !allSchemas.find((s) => s.name === tc.name)
+                );
+                if (unknown.length > 0) {
+                  stepTools = allSchemas;
+                  structLog('info', 'model requested unknown tool(s); expanding to full schema and retrying', {
+                    unknown: unknown.map((t) => t.name),
+                    runId
+                  });
+                  continue;
+                }
+                // 否则：工具已注册但不在子集——不重发，直接执行（见上方说明）。
+              }
               break;
             } catch (llmErr: any) {
               if (isContextOverflowError(llmErr) && llmAttempt < OVERFLOW_MAX_RETRIES) {
@@ -1382,7 +1411,9 @@ export class AgentHarness {
                   withSpan(`tool.${call.name}`, async () => ({
                     kind: 'ok',
                     value: await this.opts.tools.call(call.name, call.arguments, {
-                      traceId: this.opts.traceId
+                      traceId: this.opts.traceId,
+                      // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
+                      signal
                     })
                   })),
                   abortPromise.then(() => ({ kind: 'aborted' as const }))

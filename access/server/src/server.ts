@@ -12,18 +12,12 @@ import {
   assembleAgent,
   type RunMode
 } from './runner';
-import { runVerification, type VerifyEvent } from './verification';
 import { mcpManager } from './mcp-manager';
 import { runQueue, sseConnectionLock } from './run-queue';
 import { envPipeline } from './env-pipeline';
 import {
-  approve as approveShell,
-  preapprove as preapproveShell,
-  shellSignature
-} from './shell-approval';
-import type { McpTransportType } from '@agent-harness/core';
-import {
   getMetricsSnapshot,
+  LATENCY_BUCKETS_MS,
   Memory,
   sanitizeKey,
   structLog,
@@ -63,6 +57,7 @@ import {
   DEFAULT_AGENT_ID,
   contextWindowFor,
   enableTelemetryAutosave,
+  initOtlpExporter,
   getTeamManager,
   type Team
 } from '@agent-harness/core';
@@ -90,7 +85,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError } from './http-helpers';
+import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -158,7 +153,6 @@ import { archivePlanArtifacts } from './plan-artifacts';
 // P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
 import { getSkillRegistry } from './skill-registry';
 // P1-7 企业数据源适配器：数据源注册 + 连通性测试。
-import { getDataSourceRegistry } from './data-source';
 // P1-4 浏览器沙箱：受控浏览器会话生命周期管理。
 import { getSandboxManager } from './browser-sandbox';
 // P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
@@ -177,16 +171,16 @@ import {
   type PlanStore
 } from './plan-store';
 // P2-3 Plan 协同事件总线（SSE 协同）。
-import { subscribePlanEvents, publishPlanEvent } from './plan-bus';
+import { publishPlanEvent } from './plan-bus';
 // P3-1 品牌位配置。
 import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
 // P2-1 手机端：设备推送令牌存储。
-import { getDeviceStore } from './device-store';
 
 
 // 业务策略层（与核心 framework 隔离）：RBAC 鉴权 + 审批工作流，均为可插拔接口。
 import {
   createAuthorizer,
+  isCookieAuth,
   type Authorizer,
   type AuthContext,
   type Action,
@@ -202,8 +196,6 @@ import {
 } from './approval';
 import {
   createEvaluator,
-  getRecipeStore,
-  runRecordFromEvents,
   type Evaluator,
   type RecipeStore
 } from './eval';
@@ -211,7 +203,6 @@ import { createRetentionPolicy, type RetentionPolicy } from './retention';
 import { buildOpenApiSpec } from './openapi';
 
 // 文件上传（图片/文本附件）。
-import { handleUpload, serveUploaded } from './upload';
 
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
@@ -221,6 +212,21 @@ import { installScrubber } from './log-scrub';
 
 import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
+import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes';
+import { handleDeviceRoutes } from './routes/device-routes';
+import { handleDatasourceRoutes } from './routes/datasource-routes';
+import { handleUploadRoutes } from './routes/upload-routes';
+import { handlePlanRoutes } from './routes/plan-routes';
+import { handleApprovalRoutes } from './routes/approval-routes';
+import { handleEvalRecipeRoutes } from './routes/eval-recipe-routes';
+import { handleSkillRoutes } from './routes/skill-routes';
+import { handleAgentRoutes } from './routes/agent-routes';
+import { handleOpsRoutes } from './routes/ops-routes';
+import { handlePolicyRoutes } from './routes/policy-routes';
+import { handleMetricsRoutes } from './routes/metrics-routes';
+import { handleMiscRoutes } from './routes/misc-routes';
+import { handleCollabRoutes } from './routes/collab-routes';
+import { handleChatDataRoutes } from './routes/chat-data-routes';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -253,30 +259,16 @@ import { registerOAuthRoutes } from './oauth';
 
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
-  registerUser,
-  registerWithDerivedHex,
-  loginUser,
-  loginWithDerivedHex,
-  getSalt,
-  DUMMY_SALT,
   verifyDerivedHex,
   upsertGithubUser,
   upsertGoogleUser,
   usernameFromCookie,
   cookieValue,
   authCookieValue,
-  clearAuthCookie,
+  CSRF_COOKIE,
+  csrfCookieValue,
+  issueCsrfToken,
   isAuthSecretConfigured,
-  getProfile,
-  changePassword,
-  changePasswordWithDerivedHex,
-  revokeAllTokens,
-  requestPasswordReset,
-  resetPassword,
-  resetPasswordWithDerivedHex,
-  deleteUser,
-  rotateTokens,
-  verifyRefreshToken,
   type AccountResult
 } from './accounts';
 import { REFRESH_TTL_MS } from './accounts';
@@ -332,133 +324,6 @@ function edgeRouteDeps(): EdgeRouteDeps {
   };
 }
 
-// OAuth：CSRF state 临时存于 HttpOnly cookie（10 分钟有效，仅用于校验回调来源）。
-// 按提供方分别命名，避免 GitHub / Google 两套流程共用同一 cookie 互相串扰。
-//
-// SameSite=None; Secure 而非 Lax：OAuth 回调从 github.com / accounts.google.com
-// 跨站跳回本服务，WebView（含 Capacitor）判定为跨站上下文，Lax cookie 在跨站
-// GET 时虽按规范允许携带，但部分 WebView 实现（尤其 iOS WKWebView 旧版、Android
-// WebView 在 allowNavigation 白名单受限场景）会严格按 site 判定丢弃，导致回调
-// 请求里读不到 ah_oauth_state 而报「OAuth state 校验失败（CSRF/过期）」。
-// 改为 None+Secure 后跨站 top-level 导航明确携带，Web 浏览器行为不变（None 在
-// 同站场景与 Lax 等价可用），仅要求 HTTPS（本服务生产均为 https，dev localhost
-// 走 isReqLocalhost 分支可豁免 Secure）。
-const OAUTH_STATE_COOKIE = 'ah_oauth_state';
-
-/** 请求是否来自 localhost（dev 可走 http，不置 Secure）。 */
-function isReqLocalhost(req: { headers?: Record<string, unknown> }): boolean {
-  const host = String(req?.headers?.host ?? '');
-  return (
-    host.startsWith('localhost') ||
-    host.startsWith('127.') ||
-    host.startsWith('[::1]')
-  );
-}
-
-/**
- * 构造 OAuth state cookie 串：HttpOnly + SameSite=None + Secure + 10min。
- * 非 localhost 追加 Secure（dev 可 http，不置 Secure 以便本地测试）。
- * OAuth 跨站回调需要 None 才能被 WebView 携带，见上方注释。
- */
-function oauthStateCookie(
-  req: { headers?: Record<string, unknown> },
-  name: string,
-  value: string
-): string {
-  const parts = [
-    `${name}=${value}`,
-    'HttpOnly',
-    'SameSite=None',
-    'Path=/',
-    'Max-Age=600'
-  ];
-  if (!isReqLocalhost(req)) parts.push('Secure');
-  return parts.join('; ');
-}
-
-/**
- * 构造 PKCE code_verifier cookie 串（Google OAuth 专用）：与 oauthStateCookie
- * 同策略（SameSite=None + Secure），否则 WebView 跨站回调时同样读不到。
- */
-function oauthCodeVerifierCookie(
-  req: { headers?: Record<string, unknown> },
-  value: string
-): string {
-  const parts = [
-    `ah_oauth_cv=${value}`,
-    'HttpOnly',
-    'SameSite=None',
-    'Path=/',
-    'Max-Age=600'
-  ];
-  if (!isReqLocalhost(req)) parts.push('Secure');
-  return parts.join('; ');
-}
-
-/** 构造 refresh cookie 串（HttpOnly；30 天有效，与 REFRESH_TTL_MS 对齐）。登录 / refresh / OAuth 回调统一复用。无 token 时返回 null（不设置该 cookie）。 */
-function refreshCookieValue(
-  req: { headers?: Record<string, unknown> },
-  refreshToken: string | undefined
-): string | null {
-  if (!refreshToken) return null;
-  const parts = [
-    `ah_refresh=${refreshToken}`,
-    'HttpOnly',
-    'SameSite=Lax',
-    'Path=/',
-    `Max-Age=${REFRESH_TTL_MS / 1000}`,
-    `Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`
-  ];
-  if (!isReqLocalhost(req)) parts.push('Secure');
-  return parts.join('; ');
-}
-
-/** 构造 set-cookie 头数组：过滤掉 null（无 refresh token 时不下发该 cookie），产出 HTTP 规范的「每元素一个 Set-Cookie 头」数组。 */
-function setCookies(...cookies: (string | null)[]): string[] {
-  return cookies.filter((c): c is string => !!c);
-}
-
-/** 恒定时间字符串比较，避免 CSRF state 比较泄漏时序差。长度不同直接拒。 */
-function safeEqualString(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
-}
-
-// 协议自适应的 GitHub OAuth 回调 URL 构造：
-//   1) 显式 GITHUB_OAUTH_REDIRECT（完整 http(s) URL）→ 直接用，最高优先级；
-//   2) 否则读反向代理注入的 X-Forwarded-Proto（Render/Vercel/Cloud Run 等都会注入）；
-//   3) 兜底：host 为 localhost/127.0.0.1 用 http，其余（生产域名）默认 https。
-// 关键：authorize 跳转 与 callback 换 token 必须返回完全一致的值，否则 GitHub 会因
-// redirect_uri 不一致再次拒绝授权（此前在 Render 上因后端写死 http:// 导致此问题）。
-function githubRedirectUri(req: IncomingMessage): string {
-  const cfg =
-    process.env.GITHUB_OAUTH_REDIRECT || '/api/account/oauth/github/callback';
-  if (cfg.startsWith('http')) return cfg; // 完整 URL，直接采用，不走协议推断
-  const host = req.headers.host ? String(req.headers.host) : '';
-  if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`; // 无 host 兜底（保持原行为）
-  const xfp = String(req.headers['x-forwarded-proto'] || '')
-    .split(',')[0]
-    ?.trim();
-  const proto =
-    xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
-  return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
-}
-// Google OAuth 回调 URL 构造：与 githubRedirectUri 同理
-function googleRedirectUri(req: IncomingMessage): string {
-  const cfg =
-    process.env.GOOGLE_OAUTH_REDIRECT || '/api/account/oauth/google/callback';
-  if (cfg.startsWith('http')) return cfg;
-  const host = req.headers.host ? String(req.headers.host) : '';
-  if (!host) return `${cfg.startsWith('/') ? '' : '/'}${cfg}`;
-  const xfp = String(req.headers['x-forwarded-proto'] || '')
-    .split(',')[0]
-    ?.trim();
-  const proto =
-    xfp || (/^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? 'http' : 'https');
-  return `${proto}://${host}${cfg.startsWith('/') ? '' : '/'}${cfg}`;
-}
 // LLM 统一密钥 OPEN_API_KEY 主要作为模型调用凭证（@agent-harness/core 直接读 process.env.OPEN_API_KEY）。
 // 出于向后兼容，OPEN_API_KEY 在 ADMIN_API_KEY 未设置时仍被接受为 admin 鉴权凭证（逃生通道 / 降级唯一凭证），
 // 详见 authz.ts 的 createAuthorizer。新部署应显式设置 ADMIN_API_KEY，使「LLM 密钥」与「站点鉴权」职责分离。
@@ -496,10 +361,6 @@ const HISTORY_MAX_BYTES = cfgNum(
   'HISTORY_MAX_BYTES',
   DEFAULTS.HISTORY_MAX_BYTES as number
 );
-// 文件上传：单文件上限（MB）与 /api/upload 请求体截断阈值（字节）。
-// 请求体上限比单文件限制多 2MB 余量，覆盖 multipart boundary / headers 开销。
-const UPLOAD_MAX_MB = cfgNum('UPLOAD_MAX_MB', DEFAULTS.UPLOAD_MAX_MB as number);
-const UPLOAD_BODY_MAX_BYTES = (UPLOAD_MAX_MB + 2) * 1024 * 1024;
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
 const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
@@ -508,6 +369,9 @@ const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
 const RATE_WINDOW_MS = cfgNum('RATE_LIMIT_WINDOW_MS', DEFAULTS.RATE_LIMIT_WINDOW_MS as number);
 // 单已登录用户限流（防单账号滥用）；默认 60/60s，0=关闭。原内联读取 `|| 60` 对 env=0 静默变 60（关不掉）。
 const USER_RATE_LIMIT = cfgNum('USER_RATE_LIMIT', DEFAULTS.USER_RATE_LIMIT as number);
+// P1 安全加固：CSRF 双重提交令牌门禁开关。默认开启；CSRF_ENFORCE=off 可关闭
+// （仅供无法升级的老客户端平滑过渡，生产不建议常关）。
+const CSRF_ENFORCE = process.env.CSRF_ENFORCE !== 'off';
 // 审计日志落盘路径；为空则仅输出到 stdout（JSON 行）。
 const AUDIT_LOG = process.env.AUDIT_LOG ?? (DEFAULTS.AUDIT_LOG as string);
 
@@ -541,7 +405,6 @@ if (AUTH_PROVIDER === 'oidc') {
 const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 // 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
 const evaluator: Evaluator = createEvaluator();
-const recipeStore: RecipeStore = getRecipeStore();
 // 数据留存/出境策略与 OpenAPI 契约（业务合规层），同样由组合工厂装配，核心不感知。
 const retentionPolicy: RetentionPolicy = createRetentionPolicy();
 const openApiSpec = buildOpenApiSpec();
@@ -640,6 +503,41 @@ async function guard(
     });
     unauthorized(res);
     return null;
+  }
+
+  // P1 安全加固：CSRF 双重提交令牌校验。
+  // 仅约束「cookie 来源 + 状态变更方法」的请求——Authorization/query/API key 的
+  // 机器客户端没有 CSRF 面（浏览器不会替它们自动带 cookie）；GET/HEAD 无副作用不校验。
+  if (
+    CSRF_ENFORCE &&
+    isCookieAuth(req) &&
+    !['GET', 'HEAD', 'OPTIONS'].includes((req.method ?? 'GET').toUpperCase())
+  ) {
+    const cookieTok = cookieValue(req, CSRF_COOKIE) ?? '';
+    const rawHeader = req.headers['x-csrf-token'];
+    const headerTok = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader) ?? '';
+    if (!cookieTok || !headerTok || !safeEqualString(cookieTok, headerTok)) {
+      audit({
+        kind: 'request',
+        method: req.method,
+        path: redactUrl(req.url),
+        ip,
+        authed: true,
+        status: 403,
+        reason: 'csrf token missing or mismatched'
+      });
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        ...securityHeaders()
+      });
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: 'CSRF 校验失败：缺少或无效的 x-csrf-token 头，请刷新页面后重试'
+        })
+      );
+      return null;
+    }
   }
 
   // P0.3 租户隔离：若强制租户隔离（REQUIRE_TENANT=true），校验请求携带的
@@ -1089,1171 +987,41 @@ const server = createServer(
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
       // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
-      // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 PBKDF2 派生哈希，
-      // 服务器仅比对哈希，不接触明文密码。
-      if (req.method === 'GET' && path === '/api/account/login-salt') {
-        const username = (url.searchParams.get('username') || '').trim();
-        if (!username || !/^[A-Za-z0-9_]{3,32}$/.test(username)) {
-          res.writeHead(200, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ salt: DUMMY_SALT }));
-          return;
-        }
-        const result = await getSalt(username);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({ salt: result?.salt ?? DUMMY_SALT })
-        );
+      // ── 账户路由（/api/account/*）：已外迁 routes/account-routes.ts（P2 模块化第一批）──
+      if (await handleAccountRoutes(req, res, url, path, { guard, audit, clientIp })) {
         return;
       }
-      if (path === '/api/account/register' && req.method === 'POST') {
-        const b = await readBody(req);
-        const u = typeof b?.username === 'string' ? b.username : '';
-        const p = typeof b?.password === 'string' ? b.password : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式注册 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt，而非明文密码。
-        let r: AccountResult;
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await registerWithDerivedHex(u, salt, dhx, b.email);
-        } else {
-          r = await registerUser(u, p, b.email);
-        }
-        if (!r.ok) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        // 注册成功顺带登录，直接下发 cookie token，减少一次往返。
-        const lr: AccountResult = dhx
-          ? await loginWithDerivedHex(u, dhx)
-          : await loginUser(u, p);
-        if (!lr.ok || !lr.token) {
-          res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(
-            JSON.stringify({ ok: false, error: '注册成功但签发登录态失败' })
-          );
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(
-            authCookieValue(req, lr.token),
-            refreshCookieValue(req, lr.refreshToken)
-          ),
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: lr.username,
-            accessExpiresAt: lr.accessExpiresAt,
-            refreshToken: lr.refreshToken
-          })
-        );
+      // OAuth（github/google 授权码流）：已外迁 routes/account-routes.ts（第六批）
+      if (await handleAccountOauthRoutes(req, res, path)) {
         return;
       }
-      if (path === '/api/account/login' && req.method === 'POST') {
-        const b = await readBody(req);
-        const u = typeof b?.username === 'string' ? b.username : '';
-        const p = typeof b?.password === 'string' ? b.password : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式登录 —— 客户端本地 PBKDF2 派生后发送 derivedHex，服务器不接触明文密码。
-        const r: AccountResult = dhx
-          ? await loginWithDerivedHex(u, dhx)
-          : await loginUser(u, p);
-        if (!r.ok || !r.token) {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: r.error ?? '登录失败' }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(
-            authCookieValue(req, r.token),
-            refreshCookieValue(req, r.refreshToken)
-          ),
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: r.username,
-            accessExpiresAt: r.accessExpiresAt,
-            refreshToken: r.refreshToken
-          })
-        );
+      if (await handleDeviceRoutes(req, res, path, { guard })) {
         return;
       }
-      // ── 忘记密码 / 重置密码（公开，放在 guard 之前，与 register/login 同区）──
-      if (req.method === 'POST' && path === '/api/account/forgot-password') {
-        const b = await readBody(req);
-        const identifier =
-          typeof b?.identifier === 'string' ? b.identifier : '';
-        const r = await requestPasswordReset(identifier);
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true, resetToken: r.resetToken ?? null }));
+      // ── 策略 / 合规 / 品牌：已外迁 routes/policy-routes.ts ──
+      if (await handlePolicyRoutes(req, res, url, path, { guard, auditAction, retentionPolicy, openApiSpec, imBridge })) {
         return;
       }
-      if (req.method === 'POST' && path === '/api/account/reset-password') {
-        const b = await readBody(req);
-        const token = typeof b?.token === 'string' ? b.token : '';
-        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式重置 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
-        let r: { ok: boolean; error?: string };
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await resetPasswordWithDerivedHex(token, salt, dhx);
-        } else {
-          r = await resetPassword(token, newPw);
-        }
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
+      // ── P2-3 Plan 协同：已外迁 routes/plan-routes.ts ──
+      if (await handlePlanRoutes(req, res, url, path, { guard, auditAction })) {
         return;
       }
-      if (req.method === 'GET' && path === '/api/account/me') {
-        // 当前会话：仅依赖 ah_auth cookie（不要求 x-ah-username 双因子，避免鸡生蛋）。
-        // 前端在 OAuth 回调后回填用户名（setSession）时调用。
-        const u = await usernameFromCookie(req);
-        if (!u) {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: '未登录' }));
-          return;
-        }
-        const profile = await getProfile(u);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            username: u,
-            role: profile?.role ?? 'viewer', // P0-A: 兜底改为 viewer
-            email: profile?.email ?? null
-          })
-        );
-        return;
-      }
-      if (req.method === 'POST' && path === '/api/account/change-password') {
-        // 改密：需先登录（cookie 有效且 x-ah-username 双因子一致，由下方 guard 保证）。
-        const ctx = await guard(req, res, 'chat:write');
-        if (!ctx) return;
-        const b = await readBody(req);
-        const oldPw = typeof b?.oldPassword === 'string' ? b.oldPassword : '';
-        const newPw = typeof b?.newPassword === 'string' ? b.newPassword : '';
-        const dhx = typeof b?.derivedHex === 'string' ? b.derivedHex : '';
-        // P1-14: 质询式改密 —— 客户端本地 PBKDF2 派生后发送 derivedHex + salt。
-        let r: { ok: boolean; error?: string };
-        if (dhx) {
-          const salt = typeof b?.salt === 'string' ? b.salt : '';
-          r = await changePasswordWithDerivedHex(ctx.sub, oldPw, salt, dhx);
-        } else {
-          r = await changePassword(ctx.sub, oldPw, newPw);
-        }
-        if (!r.ok) {
-          res.writeHead(400, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: r.error }));
-          return;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      if (req.method === 'POST' && path === '/api/account/logout') {
-        // 登出：清除服务端 token 记录 + 让浏览器丢弃 ah_auth cookie（HttpOnly 只能由服务端清除）。
-        const u = await usernameFromCookie(req);
-        if (u) await revokeAllTokens(u);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': clearAuthCookie(req),
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      // P1-13: Refresh token 旋转 — 消耗旧 refresh token，签发新 access + refresh token 对。
-      if (req.method === 'POST' && path === '/api/account/refresh') {
-        const b = await readBody(req);
-        // refresh token 优先取 HttpOnly cookie（登录时下发、前端不可读、防 XSS 窃取），
-        // 兼容旧客户端从请求体携带 refresh_token 的方式。
-        const refreshToken =
-          (typeof b?.refresh_token === 'string' && b.refresh_token) ||
-          cookieValue(req, 'ah_refresh') ||
-          '';
-        if (!refreshToken) {
-          sendJsonError(res, 400, { error: 'refresh_token 必填' }, req);
-          return;
-        }
-        const result = await rotateTokens(refreshToken);
-        if (!('accessToken' in result)) {
-          sendJsonError(res, 401, { error: result.error ?? 'refresh token 无效' }, req);
-          return;
-        }
-        const { accessToken, refreshToken: newRefreshToken, accessExpiresAt } = result;
-        // 注意：authCookieValue 第三参为「剩余时长(ms)」，必须是相对值，不能是绝对时间戳。
-        const authCookie = authCookieValue(req, accessToken, accessExpiresAt - Date.now());
-        const refreshCookie = `ah_refresh=${newRefreshToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${REFRESH_TTL_MS / 1000}; Expires=${new Date(Date.now() + REFRESH_TTL_MS).toUTCString()}`;
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': setCookies(authCookie, refreshCookie),
-          'cache-control': 'no-store'
-        });
-        res.end(JSON.stringify({ ok: true, username: result.username, accessExpiresAt }));
-        return;
-      }
-      // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
-      if (req.method === 'DELETE' && path === '/api/account') {
-        const u = await usernameFromCookie(req);
-        if (!u) {
-          sendJsonError(res, 401, { error: 'unauthorized' }, req);
-          return;
-        }
-        const result = await deleteUser(u);
-        if (!result.ok) {
-          sendJsonError(res, 500, { error: result.error ?? '删除失败' }, req);
-          return;
-        }
-        // 删除成功后清除 cookie
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'set-cookie': clearAuthCookie(req),
-          ...securityHeaders()
-        });
-        res.end(JSON.stringify({ ok: true }));
-        return;
-      }
-      // ── P2-1 手机端：设备推送令牌注册 ──
-      // 移动端在启动时注册 FCM/APNs 设备令牌，供服务端推送通知使用。
-      // 受 chat:read 保护（已登录用户才能注册自己的设备）。
-      if (path === '/api/devices' && req.method === 'POST') {
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        const b = await readBody(req);
-        const token = typeof b?.token === 'string' ? b.token.trim() : '';
-        const platform = b?.platform === 'android' ? 'android' : 'ios';
-        if (!token) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'token is required' }));
-          return;
-        }
-        const device = await getDeviceStore().register({
-          owner: ctx.sub,
-          token,
-          platform
-        });
-        return sendJson(res, { device }, req);
-      }
-      // ── GitHub OAuth 授权码流（后端持有 client_secret）──
-      // 1) 前端按钮跳转这里 → 302 到 GitHub 授权页（带 CSRF state，存于 HttpOnly cookie）。
-      if (req.method === 'GET' && path === '/api/account/oauth/github') {
-        const clientId = process.env.GITHUB_CLIENT_ID;
-        if (!clientId || !process.env.GITHUB_CLIENT_SECRET) {
-          res.writeHead(500, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              error:
-                '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。'
-            })
-          );
-          return;
-        }
-        const redirectUri = githubRedirectUri(req);
-        const state = randomBytes(16).toString('hex');
-        const ghUrl =
-          `https://github.com/login/oauth/authorize` +
-          `?client_id=${encodeURIComponent(clientId || '')}` +
-          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-          `&scope=${encodeURIComponent('read:user user:email')}` +
-          `&state=${encodeURIComponent(state)}`;
-        res.writeHead(302, {
-          'set-cookie': oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
-          'cache-control': 'no-store',
-          location: ghUrl
-        });
-        res.end();
-        return;
-      }
-      // 2) GitHub 回调：校验 state → 用 code 换 token → 拉 user + 主邮箱 → 本地 upsert → 下发 cookie → 回首页。
-      if (
-        req.method === 'GET' &&
-        path === '/api/account/oauth/github/callback'
-      ) {
-        const fail = (code: number, msg: string) => {
-          if (
-            code === 500 &&
-            process.env.GITHUB_CLIENT_ID &&
-            process.env.GITHUB_CLIENT_SECRET
-          ) {
-            // 配置正常但处理异常：返回 HTML 错误页
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(renderOAuthTransitionHtml({ ok: false, message: msg }));
-            return;
-          }
-          res.writeHead(code, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(JSON.stringify({ ok: false, error: msg }));
-          return;
-        };
-        if (
-          !process.env.GITHUB_CLIENT_ID ||
-          !process.env.GITHUB_CLIENT_SECRET
-        ) {
-          return fail(
-            500,
-            '服务端未配置 GitHub OAuth（GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET）。'
-          );
-        }
-        const url = new URL(
-          req.url ?? '/',
-          `http://${req.headers.host ?? 'localhost'}`
-        );
-        const code = url.searchParams.get('code');
-        const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
-        if (!state || !expect || !safeEqualString(state, expect)) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message:
-                'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。'
-            })
-          );
-          return;
-        }
-        if (!code) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message: 'GitHub 未回传授权码，请重试。'
-            })
-          );
-          return;
-        }
-        try {
-          const redirectUri = githubRedirectUri(req);
-          // 换 access_token（GitHub 接受 Accept: application/json）。
-          const tokRes = await fetch(
-            'https://github.com/login/oauth/access_token',
-            {
-              method: 'POST',
-              headers: {
-                accept: 'application/json',
-                'content-type': 'application/json'
-              },
-              body: JSON.stringify({
-                client_id: process.env.GITHUB_CLIENT_ID,
-                client_secret: process.env.GITHUB_CLIENT_SECRET,
-                code,
-                redirect_uri: redirectUri
-              })
-            }
-          );
-          const tok = (await tokRes.json()) as {
-            access_token?: string;
-            error?: string;
-          };
-          if (!tok.access_token) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: `GitHub 换 token 失败：${tok.error ?? '未知错误'}`
-              })
-            );
-            return;
-          }
-          // 拉用户基本信息。
-          const userRes = await fetch('https://api.github.com/user', {
-            headers: {
-              authorization: `Bearer ${tok.access_token}`,
-              accept: 'application/vnd.github+json',
-              'user-agent': 'agent-harness'
-            }
-          });
-          const user = (await userRes.json()) as {
-            login?: string;
-            id?: number;
-            email?: string;
-          };
-          if (!user.login) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: '无法获取 GitHub 用户信息。'
-              })
-            );
-            return;
-          }
-          // 拉主邮箱（user.email 常常为空，需单独调 /user/emails 取 primary/verified）。
-          let email = user.email;
-          if (!email) {
-            try {
-              const emRes = await fetch('https://api.github.com/user/emails', {
-                headers: {
-                  authorization: `Bearer ${tok.access_token}`,
-                  accept: 'application/vnd.github+json',
-                  'user-agent': 'agent-harness'
-                }
-              });
-              const ems = (await emRes.json()) as Array<{
-                email?: string;
-                primary?: boolean;
-                verified?: boolean;
-              }>;
-              // 仅接受 GitHub 已 verified 的邮箱；未验证邮箱一律不采用，避免冒用他人邮箱身份。
-              const primary = ems.find((e) => e.verified);
-              email = primary?.email;
-            } catch {
-              /* 邮箱可选，失败不阻断登录 */
-            }
-          }
-          const r: AccountResult = await upsertGithubUser(
-            user.login,
-            Number(user.id ?? 0),
-            email
-          );
-          if (!r.ok || !r.token) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: '创建/登录本地账户失败，请稍后重试。'
-              })
-            );
-            return;
-          }
-          const home = process.env.GITHUB_OAUTH_SUCCESS_REDIRECT || '/';
-          // 先下发 cookie，再返回 HTML 过渡页（带自动跳转），避免空白页
-          res.writeHead(200, {
-            'set-cookie': setCookies(
-              authCookieValue(req, r.token),
-              refreshCookieValue(req, r.refreshToken)
-            ),
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: true,
-              message: `欢迎回来，${r.username}！正在跳转到工作台…`,
-              redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
-            })
-          );
-          return;
-        } catch (err) {
-          return fail(
-            500,
-            `GitHub OAuth 处理异常：${(err as Error)?.message ?? String(err)}`
-          );
-        }
-      }
-      // ── Google OAuth 授权码流（后端持有 client_secret）──
-      // 1) 前端按钮跳转这里 → 302 到 Google 授权页（带 CSRF state + PKCE code_challenge）。
-      if (req.method === 'GET' && path === '/api/account/oauth/google') {
-        const clientId = process.env.GOOGLE_CLIENT_ID;
-        if (!clientId || !process.env.GOOGLE_CLIENT_SECRET) {
-          res.writeHead(500, {
-            'content-type': 'application/json',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            JSON.stringify({
-              ok: false,
-              error:
-                '服务端未配置 Google OAuth（GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET）。'
-            })
-          );
-          return;
-        }
-        const redirectUri = googleRedirectUri(req);
-        const state = randomBytes(16).toString('hex');
-        const codeVerifier = randomBytes(32).toString('base64url');
-        const codeChallenge = createHash('sha256')
-          .update(codeVerifier)
-          .digest('base64url');
-        const googleUrl =
-          `https://accounts.google.com/o/oauth2/v2/auth` +
-          `?client_id=${encodeURIComponent(clientId)}` +
-          `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-          `&response_type=code` +
-          `&scope=${encodeURIComponent('openid email profile')}` +
-          `&state=${encodeURIComponent(state)}` +
-          `&code_challenge=${encodeURIComponent(codeChallenge)}` +
-          `&code_challenge_method=S256` +
-          `&access_type=online` +
-          `&prompt=consent`;
-        res.writeHead(302, {
-          'set-cookie': [
-            oauthStateCookie(req, OAUTH_STATE_COOKIE, state),
-            oauthCodeVerifierCookie(req, codeVerifier)
-          ],
-          'cache-control': 'no-store',
-          location: googleUrl
-        });
-        res.end();
-        return;
-      }
-      // 2) Google 回调：校验 state → 用 code + code_verifier 换 token → 解析 id_token → 本地 upsert → 下发 cookie → 回首页。
-      if (
-        req.method === 'GET' &&
-        path === '/api/account/oauth/google/callback'
-      ) {
-        if (
-          !process.env.GOOGLE_CLIENT_ID ||
-          !process.env.GOOGLE_CLIENT_SECRET
-        ) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message: '服务端未配置 Google OAuth。'
-            })
-          );
-          return;
-        }
-        const url = new URL(
-          req.url ?? '/',
-          `http://${req.headers.host ?? 'localhost'}`
-        );
-        const code = url.searchParams.get('code');
-        const state = url.searchParams.get('state');
-        const expect = cookieValue(req, OAUTH_STATE_COOKIE);
-        const codeVerifier = cookieValue(req, 'ah_oauth_cv');
-        if (!state || !expect || !safeEqualString(state, expect)) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message:
-                'OAuth state 校验失败（可能是 CSRF 或过期），请重新登录。'
-            })
-          );
-          return;
-        }
-        if (!code) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message: 'Google 未回传授权码，请重试。'
-            })
-          );
-          return;
-        }
-        if (!codeVerifier) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message: 'PKCE code_verifier 丢失，请重新登录。'
-            })
-          );
-          return;
-        }
-        try {
-          const redirectUri = googleRedirectUri(req);
-          // 换 token
-          const tokRes = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'content-type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-              client_id: process.env.GOOGLE_CLIENT_ID,
-              client_secret: process.env.GOOGLE_CLIENT_SECRET,
-              code,
-              redirect_uri: redirectUri,
-              grant_type: 'authorization_code',
-              code_verifier: codeVerifier
-            }).toString()
-          });
-          const tok = (await tokRes.json()) as {
-            id_token?: string;
-            access_token?: string;
-            error?: string;
-          };
-          if (!tok.id_token) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: `Google 换 token 失败：${tok.error ?? '未知错误'}`
-              })
-            );
-            return;
-          }
-          // 解析 JWT id_token（不验签，已来自 Google 直连 + 后续用 access_token 拉 userinfo 复核）
-          const parts = tok.id_token.split('.');
-          if (parts.length !== 3 || !parts[1]) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: 'Google 返回的 id_token 格式异常。'
-              })
-            );
-            return;
-          }
-          const payload = JSON.parse(
-            Buffer.from(parts[1], 'base64url').toString('utf-8')
-          ) as {
-            sub?: string;
-            email?: string;
-            name?: string;
-            email_verified?: boolean;
-          };
-          if (
-            !payload.sub ||
-            !payload.email ||
-            payload.email_verified === false
-          ) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: 'Google 账号未验证邮箱或信息不完整。'
-              })
-            );
-            return;
-          }
-          // 用 access_token 拉 userinfo 做最终复核（防 id_token 被重放）
-          const infoRes = await fetch(
-            'https://www.googleapis.com/oauth2/v3/userinfo',
-            {
-              headers: { authorization: `Bearer ${tok.access_token}` }
-            }
-          );
-          const info = (await infoRes.json()) as {
-            sub?: string;
-            email?: string;
-          };
-          if (info.sub && info.sub !== payload.sub) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: 'Google 用户信息校验不一致。'
-              })
-            );
-            return;
-          }
-          const r: AccountResult = await upsertGoogleUser(
-            payload.sub,
-            payload.email,
-            payload.name
-          );
-          if (!r.ok || !r.token) {
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'cache-control': 'no-store'
-            });
-            res.end(
-              renderOAuthTransitionHtml({
-                ok: false,
-                message: '创建/登录本地账户失败，请稍后重试。'
-              })
-            );
-            return;
-          }
-          const home = process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT || '/';
-          res.writeHead(200, {
-            'set-cookie': setCookies(
-              authCookieValue(req, r.token),
-              refreshCookieValue(req, r.refreshToken)
-            ),
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: true,
-              message: `欢迎回来，${r.username}！正在跳转到工作台…`,
-              redirect: `${home}${home.includes('?') ? '&' : '?'}oauth=success`
-            })
-          );
-          return;
-        } catch (err) {
-          res.writeHead(200, {
-            'content-type': 'text/html; charset=utf-8',
-            'cache-control': 'no-store'
-          });
-          res.end(
-            renderOAuthTransitionHtml({
-              ok: false,
-              message: `Google OAuth 处理异常：${
-                (err as Error)?.message ?? String(err)
-              }`
-            })
-          );
-          return;
-        }
-      }
-      if (req.method === 'GET' && path === '/api/openapi.json') {
-        // OpenAPI 3.0 契约（版本化 API 文档）；受 policy:read 保护。
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        return sendJson(res, openApiSpec, req);
-      }
-      if (req.method === 'GET' && path === '/api/retention') {
-        // 数据留存 / 出境策略快照（合规查阅）。
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        return sendJson(res, retentionPolicy.describe(), req);
-      }
-      if (req.method === 'GET' && path === '/api/features') {
-        // 特性开关状态（运行时查询/审计），受 policy:read 保护。
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        return sendJson(
-          res,
-          { flags: features.getAll(), stats: features.getStats() },
-          req
-        );
-      }
-      if (req.method === 'GET' && path === '/api/im/status') {
-        // IM 多实例状态聚合（健康 / 连接 / 吞吐 / 心跳 / 故障转移）。
-        // 受 policy:read 保护（复用既有权限，无需新增 Action）。
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        const snapshot = getImStatusAggregator([imBridge]).snapshot();
-        return sendJson(res, snapshot, req);
-      }
-      if (req.method === 'POST' && path === '/api/features/toggle') {
-        // 运行时切换特性开关，受 policy:write 保护。
-        const ctx = await guard(req, res, 'features:write');
-        if (!ctx) return;        const b = await readBody(req);
-        const key = typeof b?.key === 'string' ? b.key : '';
-        const enabled = typeof b?.enabled === 'boolean' ? b.enabled : undefined;
-        if (!key) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'missing key' }));
-        }
-        if (enabled === undefined) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'missing enabled' }));
-        }
-        try {
-          features.setOverride(key, enabled);
-          return sendJson(res, { ok: true, key, enabled }, req);
-        } catch (e: any) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: e.message }));
-        }
-      }
-      // ── P2-2 策略编辑器：RBAC 矩阵读写 + 预览 ──
-      if (req.method === 'GET' && path === '/api/policy') {
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        const store = getPolicyStore();
-        const doc = await store.read();
-        return sendJson(
-          res,
-          { matrix: doc.matrix, actions: allActions() },
-          req
-        );
-      }
-      if (req.method === 'GET' && path === '/api/policy/preview') {
-        const ctx = await guard(req, res, 'policy:read');
-        if (!ctx) return;
-        const role = url.searchParams.get('role');
-        const action = url.searchParams.get('action');
-        if (
-          !role ||
-          !action ||
-          !['admin', 'operator', 'viewer'].includes(role) ||
-          !(allActions() as readonly string[]).includes(action)
-        ) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'role and action are required and must be valid' }));
-        }
-        const allowed = await getPolicyStore().preview(
-          role as Role,
-          action as Action
-        );
-        return sendJson(res, { role, action, allowed }, req);
-      }
-      if (req.method === 'POST' && path === '/api/policy') {
-        const ctx = await guard(req, res, 'policy:write');
-        if (!ctx) return;
-        const b = await readBody(req);
-        const matrix = b?.matrix as Record<string, string[]> | undefined;
-        if (!matrix || typeof matrix !== 'object') {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'matrix is required' }));
-        }
-        // 校验 Action 合法性
-        const doc: { matrix: Record<string, Action[]> } = { matrix: {} };
-        for (const role of ['admin', 'operator', 'viewer'] as Role[]) {
-          const acts = matrix[role] ?? [];
-          doc.matrix[role] = acts.map(String) as Action[];
-        }
-        const err = validatePolicyDoc(doc);
-        if (err) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: err }));
-        }
-        try {
-          await getPolicyStore().write(doc);
-          auditAction('policy.write', { role: ctx.role, sub: ctx.sub });
-          return sendJson(res, { ok: true }, req);
-        } catch (e: any) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: e?.message ?? 'write failed' }));
-        }
-      }
-      // ── P2-3 Plan 协同：计划文档 CRUD + 版本 diff + SSE 协同 ──
-      if (path === '/api/plans') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'plan:read');
-          if (!ctx) return;
-          const plans = await getPlanStore().list(ctx.sub);
-          return sendJson(res, { items: plans }, req);
-        }
-        if (req.method === 'POST') {
-          const ctx = await guard(req, res, 'plan:write');
-          if (!ctx) return;
-          const b = await readBody(req);
-          const plan: PlanDoc = {
-            id: b?.id ?? b?.plan?.id ?? '',
-            title: b?.title ?? b?.plan?.title ?? '',
-            nodes: b?.nodes ?? b?.plan?.nodes ?? [],
-            version: b?.version ?? 0,
-            updatedBy: ctx.sub,
-            updatedAt: b?.updatedAt ?? new Date().toISOString(),
-            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
-          };
-          if (!plan.id || !plan.title) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'id and title are required' }));
-          }
-          // 校验节点
-          for (const n of plan.nodes) {
-            if (!n.id || !n.title) {
-              res.writeHead(400, { 'content-type': 'application/json' });
-              return res.end(JSON.stringify({ error: 'each node needs id and title' }));
-            }
-          }
-          const saved = await getPlanStore().save(plan);
-          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
-          auditAction('plan.save', { planId: saved.id, version: saved.version, role: ctx.role, sub: ctx.sub });
-          return sendJson(res, { item: saved }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'method not allowed' }));
-      }
-      if (path.startsWith('/api/plans/')) {
-        const rest = decodeURIComponent(path.slice('/api/plans/'.length));
-        // diff 接口
-        const diffMatch = rest.match(/^([^/]+)\/diff$/);
-        if (diffMatch && req.method === 'GET') {
-          const ctx = await guard(req, res, 'plan:read');
-          if (!ctx) return;
-          const otherId = url.searchParams.get('other');
-          if (!otherId) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'other param required' }));
-          }
-          try {
-            const result = await getPlanStore().diff(diffMatch[1]!, otherId);
-            return sendJson(res, result, req);
-          } catch (e: any) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: e?.message ?? 'plan not found' }));
-          }
-        }
-        // 单文档 CRUD
-        const id = rest.replace(/\/.*$/, '');
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'plan:read');
-          if (!ctx) return;
-          const plan = await getPlanStore().read(id);
-          if (!plan) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'plan not found' }));
-          }
-          // owner 校验：仅更新人可读（除非 admin）
-          if (ctx.role !== 'admin' && plan.updatedBy !== ctx.sub) {
-            res.writeHead(403, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'forbidden' }));
-          }
-          return sendJson(res, { item: plan }, req);
-        }
-        if (req.method === 'POST') {
-          const ctx = await guard(req, res, 'plan:write');
-          if (!ctx) return;
-          const b = await readBody(req);
-          const plan: PlanDoc = {
-            id,
-            title: b?.title ?? '',
-            nodes: b?.nodes ?? [],
-            version: b?.version ?? 0,
-            updatedBy: ctx.sub,
-            updatedAt: b?.updatedAt ?? new Date().toISOString(),
-            ...(b?.sessionId ? { sessionId: b.sessionId } : {})
-          };
-          // owner 校验
-          const existing = await getPlanStore().read(id);
-          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
-            res.writeHead(403, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'forbidden' }));
-          }
-          const saved = await getPlanStore().save(plan);
-          publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
-          auditAction('plan.save', { planId: id, version: saved.version, role: ctx.role, sub: ctx.sub });
-          return sendJson(res, { item: saved }, req);
-        }
-        if (req.method === 'DELETE') {
-          const ctx = await guard(req, res, 'plan:write');
-          if (!ctx) return;
-          const existing = await getPlanStore().read(id);
-          if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
-            res.writeHead(403, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'forbidden' }));
-          }
-          const ok = await getPlanStore().remove(id);
-          publishPlanEvent(id, ctx.sub, { type: 'plan:update', patch: { removed: true } });
-          auditAction('plan.delete', { planId: id, role: ctx.role, sub: ctx.sub });
-          return sendJson(res, { ok }, req);
-        }
-      }
-      // ── P2-3 Plan 协同 SSE 频道 ──
-      if (req.method === 'GET' && path.startsWith('/api/plans/') && path.endsWith('/events')) {
-        const ctx = await guard(req, res, 'plan:read');
-        if (!ctx) return;
-        if (!sseConnectionLock.acquire()) {
-          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
-          return;
-        }
-        const planId = decodeURIComponent(path.slice('/api/plans/'.length, -'/events'.length));
-        const send = startSse(res, req);
-        send({ type: 'plan:ready', planId, owner: ctx.sub });
-        const unsub = subscribePlanEvents(planId, ctx.sub, (e) => {
-          try { send(e); } catch { /* 连接已断 */ }
-        });
-        res.on('close', () => {
-          try { unsub(); } catch { /* 重复订阅安全 */ }
-          sseConnectionLock.release();
-        });
-        return;
-      }
-      // ── P3-1 品牌位：公开无需鉴权（属展示信息） ──
-      if (req.method === 'GET' && path === '/api/brand') {
-        return sendJson(res, getBrandConfig(), req);
-      }
+
       // POST 动作由各 handler 在读取 body 后自行 guard（需先判定 run mode 等）。
       const readAct = readAction(path);
       if (readAct && req.method === 'GET') {
         const ctx = await guard(req, res, readAct);
         if (!ctx) return;
       }
-      if (req.method === 'GET' && path === '/api/mcp/list') {
-        return sendJson(res, { servers: mcpManager.list() });
-      }
-      if (req.method === 'GET' && path === '/api/mcp/presets') {
-        // 开箱预设清单（Context7 / GitHub / Composio 等），供前端「预设市场」一键接入。
-        return sendJson(res, { presets: mcpManager.presets() });
-      }
-      if (req.method === 'GET' && path === '/api/metrics') {
-        // 可观测性指标（token 用量 / 延迟 / 错误率 / 工具调用数 / 成本 / 队列 / token 缓存命中率）。受保护，需令牌。
-        const store = getMemoryStore();
-        const snapshot = getMetricsSnapshot();
-        // 队列深度 Prometheus 友好指标：queue.pending / queue.processing / queue.concurrency
-        const qstats = runQueue.stats();
-        return sendJson(
-          res,
-          {
-            ...snapshot,
-            queue: qstats,
-            prometheus: {
-              harness_queue_pending: qstats.pending ?? 0,
-              harness_queue_processing: qstats.running ?? 0,
-              harness_queue_concurrency_limit: qstats.concurrency ?? 4,
-              harness_run_success_total: snapshot.counters['run.success'] ?? 0,
-              harness_run_failed_total: snapshot.counters['run.failed'] ?? 0,
-              harness_guardrail_blocked_total:
-                snapshot.counters['guardrail.blocked'] ?? 0,
-              harness_os_sandbox_degraded_total:
-                snapshot.counters['os_sandbox.degraded'] ?? 0,
-              harness_errors_total: snapshot.counters['errors'] ?? 0,
-              harness_tokens_total: snapshot.tokens.total,
-              harness_cost_total: snapshot.cost
-            },
-            memory: { backend: store.kind },
-            tokenCache: getTokenCacheStats(),
-            tokenCacheHistory: getTokenCacheHistory(),
-            errors: getErrorSummary(),
-            recentErrors: getErrorLog({ limit: 20 })
-          },
-          req
-        );
-      }
-      if (req.method === 'GET' && path === '/api/metrics/prometheus') {
-        // Prometheus scrape 端点：返回文本格式的 key=value 指标（供 Prometheus node_exporter/textfile 采集）。
-        const qstats = runQueue.stats();
-        const snapshot = getMetricsSnapshot();
-        const lines = [
-          '# HELP harness_queue_pending 当前排队中（pending）的任务数',
-          '# TYPE harness_queue_pending gauge',
-          `harness_queue_pending ${qstats.pending ?? 0}`,
-          '# HELP harness_queue_processing 当前正在执行的任务数',
-          '# TYPE harness_queue_processing gauge',
-          `harness_queue_processing ${qstats.running ?? 0}`,
-          '# HELP harness_run_success_total 累计成功完成的 run 次数',
-          '# TYPE harness_run_success_total counter',
-          `harness_run_success_total ${snapshot.counters['run.success'] ?? 0}`,
-          '# HELP harness_run_failed_total 累计失败的 run 次数',
-          '# TYPE harness_run_failed_total counter',
-          `harness_run_failed_total ${snapshot.counters['run.failed'] ?? 0}`,
-          '# HELP harness_guardrail_blocked_total 护栏拦截次数',
-          '# TYPE harness_guardrail_blocked_total counter',
-          `harness_guardrail_blocked_total ${
-            snapshot.counters['guardrail.blocked'] ?? 0
-          }`,
-          '# HELP harness_os_sandbox_degraded_total OS 沙箱降级为 local 的次数',
-          '# TYPE harness_os_sandbox_degraded_total counter',
-          `harness_os_sandbox_degraded_total ${
-            snapshot.counters['os_sandbox.degraded'] ?? 0
-          }`,
-          '# HELP harness_errors_total 累计错误数',
-          '# TYPE harness_errors_total counter',
-          `harness_errors_total ${snapshot.counters['errors'] ?? 0}`,
-          '# HELP harness_tokens_total 累计 token 用量',
-          '# TYPE harness_tokens_total counter',
-          `harness_tokens_total ${snapshot.tokens.total}`,
-          '# HELP harness_cost_total 累计 LLM 调用成本（货币单位与模型定价一致）',
-          '# TYPE harness_cost_total gauge',
-          `harness_cost_total ${Number(snapshot.cost).toFixed(6)}`
-        ];
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end(lines.join('\n') + '\n');
+      // ── 可观测指标：已外迁 routes/metrics-routes.ts ──
+      if (await handleMetricsRoutes(req, res, path)) {
         return;
       }
-      if (req.method === 'GET' && path === '/api/jobs') {
-        // 运行队列的脱敏状态快照（运维视角）：当前排队/执行数、最近若干 job 概要。
-        return sendJson(
-          res,
-          { queue: runQueue.stats(), jobs: runQueue.list() },
-          req
-        );
+      // ---- P0.1 智能体注册与发现 / A2A / Teams：已外迁 routes/agent-routes.ts ----
+      if (await handleAgentRoutes(req, res, url, path, { guard, auditAction, isShuttingDown: () => shuttingDown })) {
+        return;
       }
-      if (req.method === 'GET' && path === '/api/sessions') {
-        // 多租户记忆视图（P1-9）：列出所有已落盘记忆的会话 key 及后端类型。
-        const store = getMemoryStore();
-        const keys = await store.list();
-        return sendJson(res, { backend: store.kind, sessions: keys }, req);
-      }
-      // ---- P0.1：智能体注册与发现 ----
-      if (req.method === 'GET' && path === '/api/agents') {
-        // 列出 / 按 domain + capability 发现已注册 agent。受 agent:read 保护。
-        const ctx = await guard(req, res, 'agent:read');
-        if (!ctx) return;
-        const domain = url.searchParams.get('domain') || undefined;
-        const capability = url.searchParams.get('capability') || undefined;
-        const agents = await getAgentRegistry().query({
-          ...(domain ? { domain } : {}),
-          ...(capability ? { capability } : {})
-        });
-        return sendJson(res, { agents, count: agents.length }, req);
-      }
-      if (req.method === 'GET' && path.startsWith('/api/agents/')) {
-        // 取单个 agent 卡片（含健康度）。受 agent:read 保护。
-        const ctx = await guard(req, res, 'agent:read');
-        if (!ctx) return;
-        const id = decodeURIComponent(
-          path.slice('/api/agents/'.length).replace(/\/$/, '')
-        );
-        const card = id ? await getAgentRegistry().get(id) : null;
-        if (!card) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'agent not found', id }));
-          return;
-        }
-        return sendJson(res, { agent: card }, req);
-      }
+
       // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
@@ -2535,560 +1303,29 @@ const server = createServer(
           return sendJson(res, { workflow: run }, req);
         }
       }
-      if (path === '/api/memory') {
-        // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
-        const sessionKey = sanitizeKey(
-          url.searchParams.get('session') || 'anonymous'
-        );
-        if (req.method === 'DELETE') {
-          const body = await readBody(req);
-          const ctx = await guard(req, res, 'memory:clear', body);
-          if (!ctx) return;
-          const store = getMemoryStore();
-          const memory = new Memory({ store, sessionKey });
-          await memory.clear();
-          // 同步失效进程内会话记忆缓存，避免下次 run 仍复用已被清空的旧窗口。
-          invalidateSessionMemory(sessionKey);
-          auditAction('memory.clear', {
-            sessionKey,
-            role: ctx.role,
-            sub: ctx.sub
-          });
-          return sendJson(res, { ok: true, sessionKey }, req);
-        }
-        // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
-        const ctx = await guard(req, res, 'memory:read');
-        if (!ctx) return;
-        const store = getMemoryStore();
-        const memory = new Memory({ store, sessionKey });
-        await memory.load();
-        return sendJson(
-          res,
-          {
-            sessionKey,
-            backend: store.kind,
-            notes: memory.notes(),
-            windowLen: memory.history().length
-          },
-          req
-        );
-      }
-      if (req.method === 'DELETE' && path === '/api/data/gdpr') {
-        // GDPR 数据删除：按 tenantId 级联清理记忆、队列任务、会话历史。
-        // 需要 memory:clear 权限 + admin 角色。
-        const ctx = await guard(req, res, 'memory:clear');
-        if (!ctx) return;
-        if (ctx.role !== 'admin') {
-          res.writeHead(403, {
-            'content-type': 'application/json',
-            ...securityHeaders()
-          });
-          return res.end(JSON.stringify({ error: 'forbidden: admin only' }));
-        }
-        const b = await readBody(req);
-        const tenantId = typeof b?.tenantId === 'string' ? b.tenantId : '';
-        if (!tenantId) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'missing tenantId' }));
-        }
-        try {
-          const store = getMemoryStore();
-          const allKeys = await store.list();
-          let deleted = 0;
-          for (const key of allKeys) {
-            // 简单匹配：sessionKey 包含 tenantId 或等于 tenantId
-            if (key.includes(tenantId) || key === tenantId) {
-              await store.delete(key);
-              invalidateSessionMemory(key);
-              deleted++;
-            }
-          }
-          auditAction('gdpr.delete', { tenantId, deletedCount: deleted, role: ctx.role, sub: ctx.sub });
-          return sendJson(res, { ok: true, tenantId, deletedSessions: deleted }, req);
-        } catch (e: any) {
-          res.writeHead(500, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: e.message }));
-        }
-      }
-      if (req.method === 'GET' && path === '/api/roles') {
-        // 当前授权配置概览（不含令牌明文），便于运维核对角色权限矩阵。
-        return sendJson(res, authorizer.describe(), req);
-      }
-      if (path === '/api/approvals') {
-        // 审批工单列表（admin / operator 可读：operator 会发起需审批动作，应能看到工单状态）。
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:read');
-          if (!ctx) return;
-          const status = url.searchParams.get('status');
-          return sendJson(
-            res,
-            {
-              tickets: await approvalPolicy.list(
-                status ? { status: status as any } : undefined
-              )
-            },
-            req
-          );
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
+      // ── 审批工单：已外迁 routes/approval-routes.ts ──
+      if (await handleApprovalRoutes(req, res, url, path, { guard, auditAction, approvalPolicy })) {
         return;
       }
-      if (path.startsWith('/api/approvals/')) {
-        // 单张工单：GET 查看状态（admin / operator 可读）；POST 审批人裁决（approve/reject，仅 admin）。
-        const id = path.slice('/api/approvals/'.length).replace(/\/$/, '');
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'approvals:read');
-          if (!ctx) return;
-          const t = (await approvalPolicy.list()).find(
-            (x: ApprovalTicket) => x.id === id
-          );
-          return sendJson(res, t ? { ticket: t } : { error: 'not found' }, req);
-        }
-        if (req.method === 'POST') {
-          const ctx = await guard(req, res, 'approvals:review');
-          if (!ctx) return;
-          const body = await readBody(req);
-          const decision = body.decision === 'reject' ? 'reject' : 'approve';
-          const t = await approvalPolicy.decide(id, decision, ctx.sub);
-          if (!t)
-            return sendJson(
-              res,
-              { error: 'ticket not found or already decided' },
-              req
-            );
-          auditAction('approval.decide', { id, decision, by: ctx.sub });
-          return sendJson(res, { ticket: t }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
+
+      // ── 评估与配方：已外迁 routes/eval-recipe-routes.ts ──
+      if (await handleEvalRecipeRoutes(req, res, path, { guard, auditAction, evaluator })) {
         return;
       }
-      // ---- 评估与配方版本化（P2-13，业务质量策略）----
-      if (req.method === 'POST' && path === '/api/eval') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'eval:run', body);
-        if (!ctx) return;
-        const jobId = String(body.jobId ?? '');
-        const job = runQueue.get(jobId);
-        if (!job) return sendJson(res, { error: 'job not found' }, req);
-        const rec = runRecordFromEvents(jobId, job.events);
-        const result = evaluator.evaluate(rec);
-        auditAction('eval.run', {
-          jobId,
-          score: result.score,
-          passed: result.passed,
-          role: ctx.role,
-          sub: ctx.sub
-        });
-        return sendJson(res, { jobId, record: rec, result }, req);
-      }
-      if (path === '/api/recipes') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'recipe:read');
-          if (!ctx) return;
-          return sendJson(res, { recipes: recipeStore.list() }, req);
-        }
-        if (req.method === 'POST') {
-          const body = await readBody(req);
-          const ctx = await guard(req, res, 'recipe:save', body);
-          if (!ctx) return;
-          const jobId = String(body.jobId ?? '');
-          const job = runQueue.get(jobId);
-          if (!job) return sendJson(res, { error: 'job not found' }, req);
-          const rec = runRecordFromEvents(jobId, job.events);
-          const id = `rcp_${Date.now().toString(36)}`;
-          const recipe = {
-            id,
-            name: String(body.name ?? id),
-            createdAt: Date.now(),
-            record: rec,
-            notes: body.notes ? String(body.notes) : undefined
-          };
-          recipeStore.save(recipe);
-          auditAction('recipe.save', {
-            id,
-            name: recipe.name,
-            role: ctx.role,
-            sub: ctx.sub
-          });
-          return sendJson(res, { recipe }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/recipes/')) {
-        const id = path.slice('/api/recipes/'.length).replace(/\/$/, '');
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'recipe:read');
-          if (!ctx) return;
-          const r = recipeStore.get(id);
-          return sendJson(res, r ? { recipe: r } : { error: 'not found' }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      // ── 工作空间（参考图能力链路：User → Workspace → Skill → Tool → Data → Credential → Policy）──
-      // 纯业务层：把「一组会话 / 可用技能 / 成员 / 配额」收拢为显式资源；core 零感知。
-      if (path === '/api/workspaces') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'workspace:read');
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required' }));
-          }
-          // 首次访问自动创建「默认空间」，保证开箱即用（幂等：已有空间则原样返回）。
-          const spaces = ensureDefaultWorkspace(workspaceStore, ctx.sub);
-          return sendJson(res, { workspaces: spaces, store: workspaceStore.kind }, req);
-        }
-        if (req.method === 'POST') {
-          const body = await readBody(req);
-          const ctx = await guard(req, res, 'workspace:write', body);
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'authentication required' }));
-          }
-          const name = typeof body?.name === 'string' ? body.name.trim() : '';
-          if (!name) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'missing name' }));
-          }
-          const ws = workspaceStore.create({
-            name,
-            owner: ctx.sub,
-            members: Array.isArray(body?.members) ? body.members.map(String) : undefined,
-            skills: Array.isArray(body?.skills) ? body.skills.map(String) : undefined,
-            quota: body?.quota && typeof body.quota === 'object' ? body.quota : undefined,
-            tenantId: ctx.tenantId ?? undefined
-          });
-          auditAction('workspace.create', { id: ws.id, sub: ctx.sub });
-          return sendJson(res, { workspace: ws }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/workspaces/')) {
-        const rest = path.slice('/api/workspaces/'.length).replace(/\/$/, '');
-        // 子资源：/api/workspaces/:id/sessions —— 该空间下的会话列表。
-        const sessionsMatch = /^([^/]+)\/sessions$/.exec(rest);
-        if (sessionsMatch) {
-          const ctx = await guard(req, res, 'workspace:read');
-          if (!ctx) return;
-          const ws = workspaceStore.get(decodeURIComponent(sessionsMatch[1] ?? ''));
-          if (!ws) return sendJson(res, { error: 'not found' }, req);
-          if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
-            return sendJson(res, { error: 'forbidden' }, req);
-          }
-          const sessions = listChatSessions(ctx.sub).filter((s) => s.workspaceId === ws.id);
-          return sendJson(res, { workspaceId: ws.id, sessions }, req);
-        }
-        const wsId = decodeURIComponent(rest);
-        const action: Action = req.method === 'GET' ? 'workspace:read' : 'workspace:write';
-        const ctx = await guard(req, res, action);
-        if (!ctx) return;
-        const ws = workspaceStore.get(wsId);
-        if (!ws) return sendJson(res, { error: 'not found' }, req);
-        if (!canAccessWorkspace(ws, ctx.sub, ctx.role)) {
-          return sendJson(res, { error: 'forbidden' }, req);
-        }
-        if (req.method === 'GET') return sendJson(res, { workspace: ws }, req);
-        if (req.method === 'PATCH' || req.method === 'PUT') {
-          const body = await readBody(req);
-          const updated = workspaceStore.update(wsId, {
-            ...(body?.name != null ? { name: String(body.name) } : {}),
-            ...(Array.isArray(body?.members) ? { members: body.members.map(String) } : {}),
-            ...(Array.isArray(body?.skills) ? { skills: body.skills.map(String) } : {}),
-            ...(body?.quota !== undefined ? { quota: body.quota } : {})
-          });
-          auditAction('workspace.update', { id: wsId, sub: ctx.sub });
-          return sendJson(res, { workspace: updated }, req);
-        }
-        if (req.method === 'DELETE') {
-          // 仅 owner 或 admin 可删除空间。
-          if (ctx.role !== 'admin' && ws.owner !== ctx.sub) {
-            return sendJson(res, { error: 'forbidden: only owner or admin can delete' }, req);
-          }
-          workspaceStore.remove(wsId);
-          auditAction('workspace.delete', { id: wsId, sub: ctx.sub });
-          return sendJson(res, { ok: true }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
+
       // ── 合规审计查询（谁在何时做了什么 / 谁审批了谁 / 越权拦截记录）──
       // 数据源为 AUDIT_LOG 落盘的 append-only JSONL（写入侧早已就绪，本路由补齐读取侧）。
-      if (req.method === 'GET' && path === '/api/audit') {
-        const ctx = await guard(req, res, 'audit:read');
-        if (!ctx) return;
-        const outcomeRaw = url.searchParams.get('outcome') ?? '';
-        const outcome = (AUDIT_OUTCOMES as readonly string[]).includes(outcomeRaw)
-          ? (outcomeRaw as 'success' | 'failure' | 'denied' | 'info')
-          : undefined;
-        const result = await queryAuditFile(resolveAuditFile(), {
-          limit: Number(url.searchParams.get('limit')) || undefined,
-          offset: Number(url.searchParams.get('offset')) || undefined,
-          actor: url.searchParams.get('actor') || undefined,
-          action: url.searchParams.get('action') || undefined,
-          outcome,
-          since: toEpochMs(url.searchParams.get('since')),
-          until: toEpochMs(url.searchParams.get('until')),
-          q: url.searchParams.get('q') || undefined
-        });
-        return sendJson(res, result, req);
-      }
-      // ── 企业组织树（P1-3）：部门 / 成员层级，受 org:read 保护 ──
-      if (req.method === 'GET' && path === '/api/org') {
-        const ctx = await guard(req, res, 'org:read');
-        if (!ctx) return;
-        const tree = await getOrgTree();
-        return sendJson(res, tree, req);
-      }
-
-      // ── P1-5 成果物归档页 / 文件库（受 artifact:read / artifact:write 保护）──
-      // 列出 / 详情 / 下载 / 删除；POST 以 base64 内容落盘（便于通过 JSON 走现有网关）。
-      if (path === '/api/artifacts') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'artifact:read');
-          if (!ctx) return;
-          // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）；
-          // 缺省（无参）行为与旧版逐字一致——全量列表（成果物归档页零回归）。
-          const runIdFilter = url.searchParams.get('runId') || undefined;
-          const items = await getArtifactStore().list(runIdFilter);
-          return sendJson(res, { items }, req);
-        }
-        if (req.method === 'POST') {
-          const ctx = await guard(req, res, 'artifact:write');
-          if (!ctx) return;
-          const b = await readBody(req);
-          const name = typeof b?.name === 'string' ? b.name.trim() : '';
-          const contentB64 = typeof b?.contentBase64 === 'string' ? b.contentBase64 : '';
-          if (!name || !contentB64) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'name and contentBase64 are required' }));
-            return;
-          }
-          const meta = await getArtifactStore().save({
-            name,
-            kind: typeof b?.kind === 'string' && b.kind ? b.kind : 'other',
-            mimeType:
-              typeof b?.mimeType === 'string' && b.mimeType
-                ? b.mimeType
-                : 'application/octet-stream',
-            content: Buffer.from(contentB64, 'base64'),
-            owner: ctx.sub,
-            runId: typeof b?.runId === 'string' ? b.runId : undefined,
-            note: typeof b?.note === 'string' ? b.note : undefined
-          });
-          return sendJson(res, { item: meta }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/artifacts/')) {
-        const id = decodeURIComponent(path.slice('/api/artifacts/'.length).replace(/\/.*$/, ''));
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'artifact:read');
-          if (!ctx) return;
-          const dl = url.searchParams.get('download') === '1';
-          // P4.6：?preview=1 在线打开（content-disposition: inline，浏览器直接渲染/查看文本）；
-          // 缺省（无 preview/download 参数）行为与旧版逐字一致——返回 JSON 元数据（成果物归档页零回归）。
-          const preview = url.searchParams.get('preview') === '1';
-          const meta = await getArtifactStore().get(id);
-          if (!meta) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'artifact not found' }));
-            return;
-          }
-          if (!dl && !preview) return sendJson(res, { item: meta }, req);
-          const buf = await getArtifactStore().readContent(id);
-          if (!buf) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'artifact content not found' }));
-            return;
-          }
-          // md 预览：服务端转成 HTML 渲染页（下载仍返回原始 markdown）。
-          if (preview && meta.mimeType === 'text/markdown') {
-            const html = markdownPreviewHtml(buf.toString('utf8'), meta.name);
-            res.writeHead(200, {
-              'content-type': 'text/html; charset=utf-8',
-              'content-disposition': `inline; filename="${encodeURIComponent(meta.name)}"`,
-              'content-length': Buffer.byteLength(html)
-            });
-            res.end(html);
-            return;
-          }
-          // 其余类型（txt/csv/json 等）维持原行为：inline 按原 mimeType 打开。
-          res.writeHead(200, {
-            'content-type': meta.mimeType,
-            'content-disposition': `${dl ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
-            'content-length': buf.length
-          });
-          res.end(buf);
-          return;
-        }
-        if (req.method === 'DELETE') {
-          const ctx = await guard(req, res, 'artifact:write');
-          if (!ctx) return;
-          const ok = await getArtifactStore().remove(id);
-          return sendJson(res, { ok }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
+      // ── P1-6 企业 Skill 管理：已外迁 routes/skill-routes.ts ──
+      if (await handleSkillRoutes(req, res, path, { guard })) {
         return;
       }
 
-      // ── P1-6 企业 Skill 管理（受 skill:read / skill:manage 保护）──
-      if (path === '/api/skills') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'skill:read');
-          if (!ctx) return;
-          const items = await getSkillRegistry().list();
-          return sendJson(res, { items }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/skills/')) {
-        const m = path.slice('/api/skills/'.length).match(/^([^/]+)\/(enable|disable)$/);
-        if (m && req.method === 'POST') {
-          const ctx = await guard(req, res, 'skill:manage');
-          if (!ctx) return;
-          const sid = m[1];
-          const enable = m[2] === 'enable';
-          if (!sid || !m[2]) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'invalid skill path' }));
-            return;
-          }
-          const def = await getSkillRegistry().setEnabled(sid, enable);
-          if (!def) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'skill not found' }));
-            return;
-          }
-          return sendJson(res, { item: def }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-
-      // ── P1-7 企业数据源适配器（受 datasource:read / datasource:manage 保护）──
-      // 连通性测试为只读校验，归 datasource:read；配置变更走 datasource:manage（后续扩展）。
-      if (path === '/api/datasources') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'datasource:read');
-          if (!ctx) return;
-          const items = await getDataSourceRegistry().list();
-          return sendJson(res, { items }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/datasources/')) {
-        const tm = path.slice('/api/datasources/'.length).match(/^([^/]+)\/test$/);
-        if (tm && req.method === 'POST') {
-          const ctx = await guard(req, res, 'datasource:read');
-          if (!ctx) return;
-          const dsid = tm[1];
-          if (!dsid) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'invalid datasource path' }));
-            return;
-          }
-          const result = await getDataSourceRegistry().test(dsid);
-          if (!result) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'datasource not found' }));
-            return;
-          }
-          return sendJson(res, { result }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-
-      // ── P1-4 浏览器沙箱（受 sandbox:use 保护）──
-      if (path === '/api/sandbox/sessions') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'sandbox:use');
-          if (!ctx) return;
-          return sendJson(res, { items: getSandboxManager().list() }, req);
-        }
-        if (req.method === 'POST') {
-          const ctx = await guard(req, res, 'sandbox:use');
-          if (!ctx) return;
-          const b = await readBody(req);
-          const s = await getSandboxManager().create({
-            targetUrl: typeof b?.targetUrl === 'string' ? b.targetUrl : undefined,
-            owner: ctx.sub
-          });
-          return sendJson(res, { item: s }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path.startsWith('/api/sandbox/sessions/')) {
-        const id = decodeURIComponent(
-          path.slice('/api/sandbox/sessions/'.length).replace(/\/.*$/, '')
-        );
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'sandbox:use');
-          if (!ctx) return;
-          const s = getSandboxManager().get(id);
-          if (!s) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: 'session not found' }));
-            return;
-          }
-          return sendJson(res, { item: s }, req);
-        }
-        if (req.method === 'DELETE') {
-          const ctx = await guard(req, res, 'sandbox:use');
-          if (!ctx) return;
-          const ok = getSandboxManager().destroy(id);
-          return sendJson(res, { ok }, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
+      // ── P1-7 企业数据源适配器：已外迁 routes/datasource-routes.ts ──
+      if (await handleDatasourceRoutes(req, res, path, { guard })) {
         return;
       }
 
       // ── P1-8 CI 供应链（受 supplychain:read 保护）──
-      if (path === '/api/supply-chain/report') {
-        if (req.method === 'GET') {
-          const ctx = await guard(req, res, 'supplychain:read');
-          if (!ctx) return;
-          const repoRoot = resolve(__dirname, '..', '..', '..');
-          const report = await getSupplyChainScanner(repoRoot).scan();
-          return sendJson(res, report, req);
-        }
-        res.writeHead(405, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'method not allowed' }));
-        return;
-      }
-      if (path === '/api/supply-chain/scan' && req.method === 'POST') {
-        const ctx = await guard(req, res, 'supplychain:read');
-        if (!ctx) return;
-        const repoRoot = resolve(__dirname, '..', '..', '..');
-        const report = await getSupplyChainScanner(repoRoot).scan();
-        return sendJson(res, report, req);
-      }
-
-      if (req.method === 'GET' && path === '/api/env') {
-        return sendJson(res, { envs: envPipeline.list() }, req);
-      }
       // 自定义模型 CRUD（SQLite 持久化；apiKey 由服务端 AES-GCM 加密落库，GET 仅回掩码）。
       // P1.1：owner 隔离——必须已登录且具备 provider:manage，owner 强制 = ctx.sub，
       // 忽略请求体任何 owner 字段（防越权）；admin/operator 额外可见平台遗留模型（includeLegacy）。
@@ -3116,30 +1353,6 @@ const server = createServer(
 
       // P2.2 配额与用量看板：/api/account/usage（per-owner 滚动窗口用量 + 当前限额）。
       // owner 强制 = ctx.sub，与 provider-keys 同权限档（仅本人可见）。
-      if (path === '/api/account/usage' && req.method === 'GET') {
-        const ctx = await guard(req, res, 'provider:manage');
-        if (!ctx) return;
-        const usage = quotaEngine.getUsage(ctx.sub);
-        const limits = quotaEngine.getQuota(ctx.sub);
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'cache-control': 'no-store'
-        });
-        res.end(
-          JSON.stringify({
-            usage,
-            limits: {
-              qps: limits.qps ?? null,
-              maxConcurrency: limits.maxConcurrency ?? null,
-              maxTokensPerWindow: limits.maxTokensPerWindow ?? null,
-              maxCostPerWindow: limits.maxCostPerWindow ?? null,
-              windowMs: limits.windowMs ?? null
-            }
-          })
-        );
-        return;
-      }
-
       // P2.1 OpenRouter OAuth（PKCE）授权框架：/api/account/oauth*。
       // /config 与 /exchange 需登录（owner=ctx.sub）；/callback 为公开静态 HTML。
       if (path.startsWith('/api/account/oauth')) {
@@ -3158,163 +1371,8 @@ const server = createServer(
 
       // Jev（TypeSafe AI 决策模型）状态自检：凭据来源 / 子系统开关 / 进程内调用统计。
       // 不回传任何密钥明文，用于回答「Jev 是否已配置、是否真的被调用过」。
-      if (req.method === 'GET' && path === '/api/jev/status') {
-        const ctx = await guard(req, res, 'provider:manage');
-        if (!ctx) return;
-        const userCred = await resolveJevCredential(ctx.sub).catch(() => null);
-        const source =
-          userCred?.apiKey ? 'user' : process.env.TYPESAFE_API_KEY ? 'env' : 'none';
-        res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(
-          JSON.stringify(
-            {
-              configured: source !== 'none',
-              credentialSource: source,
-              baseUrl: process.env.TYPESAFE_BASE_URL || 'https://api.typesafe.ai/v1',
-              switches: {
-                // 三开关默认 off：off 时各子系统完全走旧逻辑（零 Jev 调用）。
-                injectionGate: (process.env.JEV_INJECTION_GATE || 'off').toLowerCase() === 'on',
-                routing: (process.env.JEV_ROUTING || 'off').toLowerCase() === 'on',
-                contextCompress:
-                  (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on'
-              },
-              // lastCalledAt === null 表示本进程启动以来 Jev 从未被调用过。
-              stats: getJevStats()
-            },
-            null,
-            2
-          )
-        );
-      }
-
       // 用户自带 LLM 凭据（BYOK）：/api/account/provider-keys*。
       // owner 强制 = ctx.sub（服务端认证身份），忽略请求体任何 owner/username（防越权）。
-      if (path.startsWith('/api/account/provider-keys')) {
-        const ctx = await guard(req, res, 'provider:manage');
-        if (!ctx) return;
-        const pkBody = await readBody(req);
-        if (
-          await registerProviderKeyRoutes(
-            req,
-            res,
-            path,
-            req.method ?? 'GET',
-            pkBody,
-            ctx.sub
-          )
-        )
-          return;
-      }
-
-      /* ----------------- 多会话 Chat App：会话存储 CRUD ----------------- */
-      // 注意：与已存在的 /api/sessions（agent 运行期会话）区分，聊天会话走独立前缀。
-      // 客户端以版本化 URL /api/v1/chat/sessions 调用，服务端在路由前已统一重写
-      // /api/v1 -> /api，故此处按重写后的 /api/chat/sessions 匹配。
-      if (req.method === 'GET' && path === '/api/chat/sessions') {
-        // 多用户隔离：必须已登录（非匿名）才能读取自己的会话列表；越权/匿名返回 401。
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({
-              error: 'authentication required for chat history'
-            })
-          );
-        }
-        // 分页（左侧历史列表滚动加载）：limit/offset 缺省 → 返回全量，
-        // 与改造前契约一致（老客户端不传参时行为不变）；响应额外带 total/hasMore。
-        const { limit, offset } = parseSessionPageQuery({
-          limit: url.searchParams.get('limit'),
-          offset: url.searchParams.get('offset')
-        });
-        return sendJson(
-          res,
-          listChatSessionsPage(ctx.sub, { limit, offset }),
-          req
-        );
-      }
-      if (req.method === 'POST' && path === '/api/chat/sessions') {
-        const b = await readBody(req);
-        const ctx = await guard(req, res, 'chat:write', b);
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({
-              error: 'authentication required for chat history'
-            })
-          );
-        }
-        return sendJson(
-          res,
-          createChatSession(b.title, ctx.sub, {
-            interactionMode: b.interactionMode,
-            model: b.model,
-            agentId: b.agentId
-          }),
-          req
-        );
-      }
-      if (req.method === 'GET' && path.startsWith('/api/chat/sessions/')) {
-        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({
-              error: 'authentication required for chat history'
-            })
-          );
-        }
-        const s = await getChatSession(id, ctx.sub);
-        if (!s) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'session not found' }));
-        }
-        return sendJson(res, s, req);
-      }
-      if (req.method === 'PATCH' && path.startsWith('/api/chat/sessions/')) {
-        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-        const b = await readBody(req);
-        const ctx = await guard(req, res, 'chat:write', b);
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({
-              error: 'authentication required for chat history'
-            })
-          );
-        }
-        const s = await renameChatSession(id, b.title, ctx.sub, {
-          interactionMode: b.interactionMode,
-          model: b.model,
-          agentId: b.agentId
-        });
-        if (!s) {
-          res.writeHead(404, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'session not found' }));
-        }
-        return sendJson(res, s, req);
-      }
-      if (req.method === 'DELETE' && path.startsWith('/api/chat/sessions/')) {
-        const id = decodeURIComponent(path.slice('/api/chat/sessions/'.length));
-        const ctx = await guard(req, res, 'chat:delete');
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          return res.end(
-            JSON.stringify({
-              error: 'authentication required for chat history'
-            })
-          );
-        }
-        const ok = await deleteChatSession(id, ctx.sub);
-        return sendJson(res, { ok }, req);
-      }
-
       /* ------------- 聊天实时广播通道（跨设备 / 跨标签页同步） ------------- */
       // 前端登录后建立一条常驻 SSE：按 owner 订阅 chat-bus，把本账户其它端写入的
       // 消息/标题/删除事件实时推回。单实例走进程内 fanout，多实例（有 Redis）走
@@ -3390,261 +1448,26 @@ const server = createServer(
       }
 
       /* ------------- 聊天历史镜像 CRUD（ah_chat_history 接口层） ------------- */
-      // 前端不再直写 localStorage：历史容错镜像统一经本组端点落到 ChatHistoryStore
-      // （默认 SQLite 临时持久化，HISTORY_BACKEND/HISTORY_DB_FILE 可调，预留正式数据库扩展）。
-      // 注意按重写后的 /api/history 匹配（/api/v1 -> /api 已在路由前统一重写）。
-      {
-        const HISTORY_PREFIX = '/api/history/';
-        const validSid = (sid: string): boolean =>
-          !!sid && sid.length <= 128 && /^[A-Za-z0-9_\-]+$/.test(sid);
-
-        if (req.method === 'GET' && path === '/api/history') {
-          // 多用户隔离：必须已登录（非匿名）才能读取自己的历史索引；匿名返回 401。
-          const ctx = await guard(req, res, 'chat:read');
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(
-              JSON.stringify({
-                error: 'authentication required for chat history'
-              })
-            );
-          }
-          const index = await getHistoryStore().index(ctx.sub);
-          return sendJson(res, { sessions: index }, req);
-        }
-        if (req.method === 'GET' && path.startsWith(HISTORY_PREFIX)) {
-          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
-          const ctx = await guard(req, res, 'chat:read');
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(
-              JSON.stringify({
-                error: 'authentication required for chat history'
-              })
-            );
-          }
-          if (!validSid(sid)) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'invalid session id' }));
-          }
-          const row = await getHistoryStore().get(sid, ctx.sub);
-          if (!row) {
-            res.writeHead(404, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'history not found' }));
-          }
-          try {
-            const parsed = JSON.parse(row.data);
-            // 兼容旧版：data 可能是纯 msgs 数组，也可能是 { msgs, usage } 信封。
-            const msgs = Array.isArray(parsed)
-              ? parsed
-              : Array.isArray(parsed?.msgs)
-              ? parsed.msgs
-              : [];
-            const usage = !Array.isArray(parsed) ? parsed.usage ?? null : null;
-            return sendJson(res, { ...row.meta, v: 1, msgs, usage }, req);
-          } catch {
-            // 存储层数据损坏：明确返回 522 类错误而非抛出未捕获异常。
-            res.writeHead(500, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'history data corrupted' }));
-          }
-        }
-        if (req.method === 'PUT' && path.startsWith(HISTORY_PREFIX)) {
-          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
-          if (!validSid(sid)) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'invalid session id' }));
-          }
-          const b = await readBody(req);
-          const ctx = await guard(req, res, 'chat:write', b);
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(
-              JSON.stringify({
-                error: 'authentication required for chat history'
-              })
-            );
-          }
-          // 参数校验：msgs 必须为数组；title 收敛为字符串；整体序列化体积受限。
-          if (!Array.isArray(b.msgs)) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'msgs must be an array' }));
-          }
-          let data: string;
-          try {
-            // 信封并行携带会话级用量快照（usage，可选），与 msgs 一并落盘，向后兼容旧版。
-            data = JSON.stringify({ msgs: b.msgs, usage: b.usage ?? null });
-          } catch {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'msgs not serializable' }));
-          }
-          if (Buffer.byteLength(data, 'utf-8') > HISTORY_MAX_BYTES) {
-            res.writeHead(413, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'history too large' }));
-          }
-          const now = Date.now();
-          // owner 由服务端以 ctx.sub 强制写入，忽略客户端上报（防伪造归属）。
-          await getHistoryStore().upsert(
-            {
-              sid,
-              title:
-                typeof b.title === 'string' && b.title.trim()
-                  ? b.title.trim().slice(0, 200)
-                  : '新对话',
-              updatedAt:
-                typeof b.updatedAt === 'number' && Number.isFinite(b.updatedAt)
-                  ? Math.floor(b.updatedAt)
-                  : now,
-              savedAt: now
-            },
-            data,
-            ctx.sub
-          );
-          return sendJson(res, { ok: true }, req);
-        }
-        if (req.method === 'DELETE' && path.startsWith(HISTORY_PREFIX)) {
-          const sid = decodeURIComponent(path.slice(HISTORY_PREFIX.length));
-          if (!validSid(sid)) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            return res.end(JSON.stringify({ error: 'invalid session id' }));
-          }
-          const ctx = await guard(req, res, 'chat:delete');
-          if (!ctx) return;
-          if (ctx.sub === 'anon') {
-            res.writeHead(401, { 'content-type': 'application/json' });
-            return res.end(
-              JSON.stringify({
-                error: 'authentication required for chat history'
-              })
-            );
-          }
-          const ok = await getHistoryStore().remove(sid, ctx.sub);
-          return sendJson(res, { ok }, req);
-        }
-      }
-
       if (req.method === 'POST' && path === '/api/workflows') {
         return await handleWorkflow(req, res);
       }
-      if (req.method === 'POST' && path === '/api/a2a/tasks') {
-        return await handleA2A(req, res);
+      // ── 运维/工具端点（verify / mcp / shell / env / jobs）：已外迁 routes/ops-routes.ts ──
+      if (await handleOpsRoutes(req, res, path, { guard, auditAction, redactUrl })) {
+        return;
       }
-      // P0.1 写端点：运行期注册/注销/心跳 agent（避免必须在启动期代码里硬编码新行业 agent）。
-      if (req.method === 'POST' && path === '/api/agents') {
-        return await handleAgentRegister(req, res);
+      // ── 数据 / 合规 / 运维杂项：已外迁 routes/misc-routes.ts ──
+      if (await handleMiscRoutes(req, res, url, path, { guard, auditAction, authorizer })) {
+        return;
       }
-      // P1-④：Agent Teams API — 团队 CRUD
-      if (req.method === 'GET' && path === '/api/teams') {
-        const ctx = await guard(req, res, 'agent:read');
-        if (!ctx) return;
-        const tm = getTeamManager();
-        if (!tm)
-          return sendJson(res, { error: 'TeamManager not initialized' }, req);
-        return sendJson(res, { teams: tm.list() }, req);
+      // ── 协作资源（工作空间 / 成果物 / 沙箱）：已外迁 routes/collab-routes.ts ──
+      if (await handleCollabRoutes(req, res, url, path, { guard, auditAction, workspaceStore })) {
+        return;
       }
-      if (req.method === 'POST' && path === '/api/teams') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'agent:register', body);
-        if (!ctx) return;
-        auditAction('team.register', { role: ctx.role, sub: ctx.sub });
-        try {
-          const tm = getTeamManager();
-          if (!tm) {
-            return sendJson(res, { error: 'TeamManager not initialized' }, req);
-          }
-          const team: Team = { ...body, members: body.members ?? [] };
-          await tm.register(team);
-          return sendJson(res, { ok: true, team }, req);
-        } catch (e: any) {
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
+      // ── 聊天数据（chat-sessions / history / provider-keys）：已外迁 routes/chat-data-routes.ts ──
+      if (await handleChatDataRoutes(req, res, url, path, { guard })) {
+        return;
       }
-      if (req.method === 'DELETE' && path.startsWith('/api/teams/')) {
-        const ctx = await guard(req, res, 'agent:register');
-        if (!ctx) return;
-        const teamId = path.slice('/api/teams/'.length).replace(/\/$/, '');
-        auditAction('team.deregister', {
-          teamId,
-          role: ctx.role,
-          sub: ctx.sub
-        });
-        const tm = getTeamManager();
-        if (!tm)
-          return sendJson(res, { error: 'TeamManager not initialized' }, req);
-        tm.deregister(teamId);
-        return sendJson(res, { ok: true }, req);
-      }
-      if (req.method === 'GET' && path.startsWith('/api/teams/')) {
-        const ctx = await guard(req, res, 'agent:read');
-        if (!ctx) return;
-        const teamId = path.slice('/api/teams/'.length).replace(/\/$/, '');
-        const tm = getTeamManager();
-        if (!tm)
-          return sendJson(res, { error: 'TeamManager not initialized' }, req);
-        const team = tm.get(teamId);
-        if (!team)
-          return sendJson(res, { error: `Team not found: ${teamId}` }, req);
-        return sendJson(res, { team }, req);
-      }
-      if (
-        req.method === 'POST' &&
-        path.startsWith('/api/agents/') &&
-        path.endsWith('/heartbeat')
-      ) {
-        return await handleAgentHeartbeat(req, res, path);
-      }
-      if (req.method === 'DELETE' && path.startsWith('/api/agents/')) {
-        return await handleAgentDeregister(req, res, path);
-      }
-      if (req.method === 'POST' && path === '/api/verify') {
-        return await handleVerify(req, res);
-      }
-      if (req.method === 'POST' && path === '/api/mcp/add') {
-        return await handleMcpAdd(req, res);
-      }
-      if (req.method === 'POST' && path === '/api/mcp/preset') {
-        return await handleMcpPreset(req, res);
-      }
-      if (req.method === 'POST' && path === '/api/mcp/reconnect') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'mcp:reconnect', body);
-        if (!ctx) return;
-        const name = String(body.name ?? '');
-        if (!name) {
-          return sendJson(res, { error: '缺少 name' }, req);
-        }
-        auditAction('mcp.reconnect', { name, role: ctx.role, sub: ctx.sub });
-        try {
-          const meta = await mcpManager.reconnect(name);
-          return sendJson(res, { server: meta }, req);
-        } catch (e: any) {
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
-      }
-      if (req.method === 'POST' && path === '/api/mcp/remove') {
-        const body = await readBody(req);
-        const ctx = await guard(req, res, 'mcp:remove', body);
-        if (!ctx) return;
-        const name = String(body.name ?? '');
-        if (!name) {
-          return sendJson(res, { error: '缺少 name' }, req);
-        }
-        auditAction('mcp.remove', { name, role: ctx.role, sub: ctx.sub });
-        try {
-          await mcpManager.removeServer(name);
-          return sendJson(res, { ok: true, servers: mcpManager.list() }, req);
-        } catch (e: any) {
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
-      }
-      if (req.method === 'POST' && path === '/api/shell/approve') {
-        return await handleShellApprove(req, res);
-      }
-      if (req.method === 'POST' && path === '/api/env') {
-        return await handleEnv(req, res);
-      }
+
       // ---- 插件宿主：通用扩展点（无业务词）----
       // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
       // 视图按当前登录用户渲染（数据 owner 绑定）：鉴权失败 401，开放模式 sub='anon'。
@@ -3723,52 +1546,8 @@ const server = createServer(
           }
         }
       }
-      // 上传附件：POST /api/upload（multipart/form-data，图片/文本）。
-      if (path === '/api/upload' && req.method === 'POST') {
-        const ctx = await guard(req, res, 'upload:file');
-        if (!ctx) return;
-        try {
-          const chunks: Buffer[] = [];
-          let total = 0;
-          for await (const c of req) {
-            total += (c as Buffer).length;
-            if (total > UPLOAD_BODY_MAX_BYTES) {
-              const err: any = new Error(
-                `request body too large (${UPLOAD_MAX_MB + 2} MB limit)`
-              );
-              err.status = 413;
-              throw err;
-            }
-            chunks.push(c as Buffer);
-          }
-          const result = await handleUpload(
-            Buffer.concat(chunks),
-            String(req.headers['content-type'] ?? '')
-          );
-          if (!result.ok) {
-            return sendJson(res, { error: result.error }, req);
-          }
-          return sendJson(res, { ok: true, meta: result.meta }, req);
-        } catch (e: any) {
-          const code = typeof e?.status === 'number' ? e.status : 400;
-          return sendJson(res, { error: e?.message ?? String(e) }, req);
-        }
-      }
-
-      // 获取已上传文件：GET /api/uploads/:filename（静态展示用，含防穿越）。
-      const um = path.match(/^\/api\/uploads\/(.+)$/);
-      if (um && req.method === 'GET') {
-        const filename = decodeURIComponent(um[1] ?? '');
-        const result = await serveUploaded(filename);
-        if (!result.ok) {
-          return sendJson(res, { error: result.error }, req);
-        }
-        res.writeHead(200, {
-          'content-type': result.mime,
-          'cache-control': 'public, max-age=86400',
-          ...corsHeaders(req)
-        });
-        res.end(result.buf);
+      // ── 文件上传：已外迁 routes/upload-routes.ts ──
+      if (await handleUploadRoutes(req, res, path, { guard })) {
         return;
       }
 
@@ -5083,199 +2862,6 @@ function syncPlanTaskStatus(
 }
 
 /**
- * P1-④ A2A 接收端点：远端 agent 把 TaskEnvelope 投递到本平台，由本平台在「本地」用
- * 与 /api/run 同款的 assembleAgent+harness 执行（目标 agent 必须已注册或为 local transport）。
- * body: A2ARequest { envelope: TaskEnvelope, card?: AgentCard }。
- * - card 可选：随任务一起自注册/更新目标 agent 的能力卡片（远端 agent 入驻式入驻）；
- * - 执行结果以 { result: TaskResult } 返回（成功 200，目标不存在 400）。
- */
-async function handleA2A(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'a2a:receive', body);
-  if (!ctx) return;
-  if (shuttingDown) {
-    res.writeHead(503, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'server is shutting down' }));
-    return;
-  }
-
-  const reqBody = body as Partial<A2ARequest>;
-  const envelope = reqBody.envelope as TaskEnvelope | undefined;
-  if (
-    !envelope ||
-    typeof envelope.taskId !== 'string' ||
-    typeof envelope.toAgent !== 'string'
-  ) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error:
-          'invalid a2a request: 需要 { envelope: { taskId, toAgent, ... } }'
-      })
-    );
-    return;
-  }
-
-  // 远端 agent 随任务自注册能力卡片（首次入驻或覆盖更新）。
-  const card = reqBody.card as AgentCard | undefined;
-  if (card && typeof card.id === 'string') {
-    await getAgentRegistry().register(card);
-  }
-
-  const target = await getAgentRegistry().get(envelope.toAgent);
-  if (!target) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({ error: `unknown a2a target agent: ${envelope.toAgent}` })
-    );
-    return;
-  }
-
-  // 安全红线：本端点只执行本地 agent（transport=local）。远端 a2a 目标不应被当作本地执行，
-  // 否则会与 run-queue 的跨主机派发语义混淆——跨主机由发起方经 HttpA2ATransport 走。
-  if (target.transport !== 'local') {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: `agent "${target.id}" transport=${target.transport} 不是本地 agent，无法被本端点直接执行`
-      })
-    );
-    return;
-  }
-
-  try {
-    const output = await runAgentTask(target, envelope.input, {
-      tenantId: envelope.tenantId,
-      onEvent: undefined
-    });
-    const result: TaskResult = {
-      taskId: envelope.taskId,
-      status: 'success',
-      output
-    };
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ result }));
-  } catch (e: any) {
-    const result: TaskResult = {
-      taskId: envelope.taskId,
-      status: 'failed',
-      error: e?.message ?? String(e)
-    };
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ result }));
-  }
-}
-
-/** 校验并补全一张待注册的 AgentCard（缺省健康度视为初次上线健康）。返回 null 表示非法。 */
-function normalizeIncomingCard(raw: unknown): AgentCard | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const c = raw as Partial<AgentCard>;
-  if (typeof c.id !== 'string' || !c.id.trim()) return null;
-  if (!Array.isArray(c.capabilities)) return null;
-  const now = Date.now();
-  return {
-    id: c.id.trim(),
-    name: typeof c.name === 'string' && c.name ? c.name : c.id.trim(),
-    domain: (c.domain ?? 'generic') as AgentCard['domain'],
-    description: c.description,
-    capabilities: c.capabilities,
-    transport: c.transport ?? 'local',
-    endpoint: c.endpoint,
-    version: c.version,
-    isolation: c.isolation,
-    assembly: c.assembly,
-    // 客户端可上报健康度；缺省视为「初次上线且健康」。
-    health: c.health ?? { status: 'healthy', lastHeartbeat: now, load: 0 }
-  } as AgentCard;
-}
-
-/**
- * P0.1 注册/更新 agent。body = AgentCard（至少 { id, capabilities }）。
- * 受 agent:register 保护（admin/operator）；写穿注册表持久后端，多副本经共享后端立即可见。
- */
-async function handleAgentRegister(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'agent:register', body);
-  if (!ctx) return;
-  const card = normalizeIncomingCard(body);
-  if (!card) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: 'invalid agent card: 需要 { id: string, capabilities: [] }'
-      })
-    );
-    return;
-  }
-  await getAgentRegistry().register(card);
-  auditAction('agent.register', {
-    id: card.id,
-    domain: card.domain,
-    transport: card.transport,
-    role: ctx.role,
-    sub: ctx.sub
-  });
-  return sendJson(res, { ok: true, agent: card }, req);
-}
-
-/**
- * P0.1 心跳。path = /api/agents/:id/heartbeat；body = Partial<AgentHealth>（status/load 等）。
- * 未注册的 id 静默返回 ok:false（不 404，便于客户端幂等重试）。
- */
-async function handleAgentHeartbeat(
-  req: IncomingMessage,
-  res: ServerResponse,
-  path: string
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'agent:register', body);
-  if (!ctx) return;
-  const id = decodeURIComponent(
-    path.slice('/api/agents/'.length, path.length - '/heartbeat'.length)
-  );
-  if (!id) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'missing agent id' }));
-    return;
-  }
-  const existing = await getAgentRegistry().get(id);
-  if (!existing) {
-    return sendJson(res, { ok: false, reason: 'unknown agent', id }, req);
-  }
-  const health = (body ?? {}) as Partial<AgentHealth>;
-  await getAgentRegistry().heartbeat(id, health);
-  return sendJson(res, { ok: true, id }, req);
-}
-
-/** P0.1 注销 agent。path = /api/agents/:id。受 agent:register 保护。 */
-async function handleAgentDeregister(
-  req: IncomingMessage,
-  res: ServerResponse,
-  path: string
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'agent:register', body);
-  if (!ctx) return;
-  const id = decodeURIComponent(
-    path.slice('/api/agents/'.length).replace(/\/$/, '')
-  );
-  if (!id) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'missing agent id' }));
-    return;
-  }
-  await getAgentRegistry().deregister(id);
-  auditAction('agent.deregister', { id, role: ctx.role, sub: ctx.sub });
-  return sendJson(res, { ok: true, id }, req);
-}
-
-/**
  * P1-⑤ 工作流编排入口：定义并运行一个 DAG 工作流，SSE 直播每 step 进度与最终快照。
  * body: { def: WorkflowDef, input?: unknown }。def 含 steps（agentRef / dependsOn / compensate）。
  * 每个 step 经 createWorkflowExecutor 复用 /api/run 同一套 assembleAgent + harness 装配。
@@ -5639,235 +3225,6 @@ async function handleWorkflow(
   return;
 }
 
-async function handleVerify(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  let closed = false;
-  res.on('close', () => {
-    closed = true;
-  });
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'verify', body);
-  if (!ctx) return;
-  const send = startSse(res, req);
-  try {
-    auditAction('verify', { role: ctx.role, sub: ctx.sub });
-    await runVerification((e: VerifyEvent) => {
-      if (!closed) send(e);
-    });
-    if (!closed) send({ type: '_verify_done' });
-  } catch (e: any) {
-    if (!closed)
-      send({ type: 'verify:error', id: '0', message: e?.message ?? String(e) });
-    if (!closed) send({ type: '_verify_done' });
-  } finally {
-    if (!closed) res.end();
-  }
-}
-
-// 合法的传输类型（与 core 的 McpTransportType 保持一致）。
-const MCP_TRANSPORT_TYPES = new Set(['auto', 'sse', 'streamable-http']);
-
-async function handleMcpAdd(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'mcp:add', body);
-  if (!ctx) return;
-  const name = String(body.name ?? '').trim();
-  // 兼容旧字段 `url`，同时接受标准字段 `serverUrl`。
-  const serverUrl = String(body.url ?? body.serverUrl ?? '').trim();
-  const command = body.command != null ? String(body.command) : undefined;
-  const args = Array.isArray(body.args) ? body.args.map(String) : undefined;
-  const env =
-    body.env && typeof body.env === 'object'
-      ? (body.env as Record<string, string>)
-      : undefined;
-  const headers =
-    body.headers && typeof body.headers === 'object'
-      ? (body.headers as Record<string, string>)
-      : undefined;
-  // 仅接受合法的传输类型，其余忽略（回退 core 的 'auto' 自动判定）。
-  let transportType: McpTransportType | undefined;
-  if (
-    typeof body.transportType === 'string' &&
-    MCP_TRANSPORT_TYPES.has(body.transportType)
-  ) {
-    transportType = body.transportType as McpTransportType;
-  }
-  if (!name && !serverUrl && !command) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: 'name 与（serverUrl/url 或 command）至少需提供其一'
-      })
-    );
-    return;
-  }
-  auditAction('mcp.add', {
-    name,
-    url: redactUrl(serverUrl),
-    command: command ?? null,
-    role: ctx.role,
-    sub: ctx.sub
-  });
-  try {
-    // 使用非阻塞接入：立刻返回「connecting」占位状态，避免 stdio 服务器
-    // 启动耗时（如 uvx 下载包）阻塞 HTTP 响应。连接结果通过后续
-    // /api/mcp/list 或健康探测反映到状态上。
-    const meta = mcpManager.addServerBackground({
-      name,
-      serverUrl,
-      command,
-      args,
-      env,
-      headers,
-      transportType
-    });
-    sendJson(res, { server: meta, servers: mcpManager.list() }, req);
-  } catch (e: any) {
-    res.writeHead(500, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: e?.message ?? String(e) }));
-  }
-}
-
-/** 一键接入预设 MCP 服务（Context7 / GitHub / Composio 等）。 */
-async function handleMcpPreset(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'mcp:preset', body);
-  if (!ctx) return;
-  const id = String(body.id ?? '').trim();
-  const token = body.token != null ? String(body.token) : undefined;
-  if (!id) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: '缺少预设 id（如 context7 / github / composio）'
-      })
-    );
-    return;
-  }
-  auditAction('mcp.preset', { id, role: ctx.role, sub: ctx.sub });
-  try {
-    const meta = await mcpManager.connectPreset(id, token);
-    sendJson(res, { server: meta, servers: mcpManager.list() }, req);
-  } catch (e: any) {
-    res.writeHead(500, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: e?.message ?? String(e) }));
-  }
-}
-
-/**
- * 审批一次待执行的 shell 命令（配合 SHELL_REQUIRE_CONFIRM=true）。
- * body: { command, args, preapprove? }。preapprove=true 时仅登记永久批准、不等待。
- * 返回被放行的等待项数量（waitingReleased）或预批准结果（preapproved）。
- */
-async function handleShellApprove(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const body = await readBody(req);
-  const ctx = await guard(req, res, 'shell:approve', body);
-  if (!ctx) return;
-  const command = String(body.command ?? '');
-  const args = Array.isArray(body.args) ? body.args.map(String) : [];
-  if (!command) {
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: '缺少 command' }));
-    return;
-  }
-  auditAction('shell.approve', {
-    command,
-    preapprove: body.preapprove === true,
-    role: ctx.role,
-    sub: ctx.sub
-  });
-  if (body.preapprove === true) {
-    preapproveShell(shellSignature(command, args));
-    return sendJson(res, { preapproved: true }, req);
-  }
-  const released = approveShell(command, args);
-  sendJson(res, { waitingReleased: released }, req);
-}
-
-async function handleEnv(
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  let closed = false;
-  res.on('close', () => {
-    closed = true;
-  });
-  const body = await readBody(req);
-  // 按动作类型映射为细分动作，做角色授权 + 审批判定（create/destroy 需审批）。
-  const envAction: Action =
-    body.action === 'destroy' ? 'env:destroy' : 'env:create';
-  const ctx = await guard(req, res, envAction, body);
-  if (!ctx) return;
-  const send = startSse(res, req);
-  const action = body.action;
-
-  if (action === 'create') {
-    const input = {
-      envType: String(body.env_type ?? 'ephemeral'),
-      branch: String(body.branch ?? 'main'),
-      ttlHours: body.ttl_hours != null ? Number(body.ttl_hours) : undefined,
-      region: body.region ? String(body.region) : undefined,
-      owner: body.owner ? String(body.owner) : undefined
-    };
-    auditAction('env.create', {
-      envType: input.envType,
-      branch: input.branch,
-      region: input.region ?? null,
-      owner: input.owner ?? null,
-      role: ctx.role,
-      sub: ctx.sub
-    });
-    try {
-      await envPipeline.create(input, (env) => {
-        if (!closed) send({ type: 'env:status', env });
-      });
-      if (!closed) send({ type: '_env_done' });
-    } catch (e: any) {
-      if (!closed)
-        send({ type: 'env:error', message: e?.message ?? String(e) });
-      if (!closed) send({ type: '_env_done', error: true });
-    } finally {
-      if (!closed) res.end();
-    }
-    return;
-  }
-
-  if (action === 'destroy') {
-    const envId = String(body.env_id ?? '');
-    auditAction('env.destroy', { envId, role: ctx.role, sub: ctx.sub });
-    try {
-      const env = await envPipeline.destroy(envId, (e) => {
-        if (!closed) send({ type: 'env:status', env: e });
-      });
-      if (!env && !closed)
-        send({ type: 'env:error', message: `未找到环境 ${envId}` });
-      if (!closed) send({ type: '_env_done', found: !!env });
-    } catch (e: any) {
-      if (!closed)
-        send({ type: 'env:error', message: e?.message ?? String(e) });
-      if (!closed) send({ type: '_env_done', error: true });
-    } finally {
-      if (!closed) res.end();
-    }
-    return;
-  }
-
-  res.writeHead(400, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ error: 'action 必须是 create 或 destroy' }));
-  return;
-}
-
 /**
  * 按 AGENT_STORE env 构造 AgentRegistry 持久后端（投产：多副本共享 + 重启不丢）。
  * - redis：动态 require ioredis（可选依赖，与 queue-backend 同款）注入最小 Hash 契约；
@@ -5990,6 +3347,16 @@ async function bootstrap(): Promise<void> {
   if (TELEMETRY_FILE) {
     enableTelemetryAutosave(TELEMETRY_FILE);
     structLog('info', 'telemetry', { autosave: true, file: TELEMETRY_FILE });
+  }
+
+  // P1 修复：接通 OTLP 导出器（此前 initOtlpExporter 定义了但从未被调用，分布式追踪/指标导出静默失效）。
+  // OTEL_EXPORTER_OTLP_ENDPOINT 非空即启用；未配置时零开销跳过；可选依赖缺失时静默降级，不影响启动。
+  await initOtlpExporter();
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    structLog('info', 'telemetry', {
+      otlp: true,
+      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    });
   }
 
   // P2.a：启用结构化审计日志落盘（委托 @agent-harness/core 的 enableAuditFile）。
