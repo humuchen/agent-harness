@@ -8,9 +8,13 @@ packages:
   - 'mobile'
   - 'mobile/*' # 手机端：Capacitor 原生壳
 # pnpm v11：依赖的构建脚本默认全部禁止，需在此显式放行。
-# webapp 用 Vite 构建依赖 esbuild 的 postinstall 下载原生二进制；
-# 不放行则 pnpm install 直接 exit 1（ERR_PNPM_IGNORED_BUILDS），部署卡死。
+# 一旦设置 allowBuilds，任何"带 install 脚本但未被列入"的依赖都会触发
+# ERR_PNPM_IGNORED_BUILDS 并直接导致 pnpm install exit 1（部署卡死）。
+# - esbuild：webapp 用 Vite 构建依赖其 postinstall 下载原生二进制；
+# - protobufjs：backend/core 的 @opentelemetry/* OTLP 导出器传递依赖，
+#   用于 protobuf 序列化，带 postinstall 脚本，同样需要放行。
 allowBuilds:
   esbuild: true
+  protobufjs: true
 minimumReleaseAgeExclude:
   - '@humuchen/mac-ui@0.0.3'
