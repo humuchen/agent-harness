@@ -119,6 +119,22 @@ const DEFAULT_POLICY: GuardrailPolicy = {
   network: { mode: 'denylist', deniedDomains: ['*'] },
 };
 
+/**
+ * 计划任务输入长度上限（**仅由环境变量驱动，不设置代码默认值**）。
+ * 通过 GUARDRAIL_PLAN_MAX_INPUT 配置，例如 60000（约 3 万字）。
+ * 未设置（或取值非法）时返回 null —— 表示不针对计划类输入做任何额外放宽，
+ * 计划任务沿用通用 maxInputLength 长度闸（默认 20000）。
+ * 注意：若希望计划输入放宽到 60000，部署时必须显式设置 GUARDRAIL_PLAN_MAX_INPUT=60000，
+ * 否则 plan 长输入仍会被通用长度闸拦下（input too long）。
+ */
+function resolvePlanMaxInput(): number | null {
+  const raw = process.env.GUARDRAIL_PLAN_MAX_INPUT;
+  if (raw === undefined || raw.trim() === '') return null;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+const PLAN_MAX_INPUT_LENGTH: number | null = resolvePlanMaxInput();
+
 /** 允许通过环境变量调整护栏默认策略（无需改代码即可按部署收紧 / 放松）。 */
 function resolveDefaultPolicy(): GuardrailPolicy {
   const sens = (process.env.GUARDRAIL_SENSITIVITY || '').toLowerCase();
@@ -537,14 +553,26 @@ export function checkInput(
    * 计划任务的步骤描述合理地提到「阅读 system prompt 文档 / 优化 system prompt」，
    * 弱信号命中会把整次任务派发拦死；安全底线（真密钥格式 + 强信号注入）不放松。
    */
-  strongOnly = false
+  strongOnly = false,
+  /**
+   * 是否为计划任务输入。当 isPlanTask 且部署显式配置了 GUARDRAIL_PLAN_MAX_INPUT 时，
+   * 计划类输入（需求文档）允许更长（见下方 plan 分支，取 max(通用上限, 配置值)），
+   * 避免被通用 maxInputLength 长度闸误拦；未配置该环境变量时本标志不生效，沿用通用上限。
+   * 该标志默认跟随 strongOnly（harness 把 planTask 当作 strongOnly 透传），
+   * 现有 plan 派发 / 回退路径无需改动即生效。
+   */
+  isPlanTask = strongOnly
 ): GuardrailResult {
   const p = pol ?? policy;
   if (typeof text !== 'string') {
     return { ok: false, reason: 'input must be a string' };
   }
-  if (text.length > p.maxInputLength) {
-    return { ok: false, reason: `input too long (${text.length} > ${p.maxInputLength})` };
+  const maxLen =
+    isPlanTask && PLAN_MAX_INPUT_LENGTH != null
+      ? Math.max(p.maxInputLength, PLAN_MAX_INPUT_LENGTH)
+      : p.maxInputLength;
+  if (text.length > maxLen) {
+    return { ok: false, reason: `input too long (${text.length} > ${maxLen})` };
   }
   if (p.enableSecretScan) {
     for (const re of SECRET_PATTERNS) {
@@ -715,9 +743,10 @@ export function checkToolArgs(
 export async function checkInputAsync(
   text: string,
   pol?: GuardrailPolicy,
-  strongOnly = false
+  strongOnly = false,
+  isPlanTask = strongOnly
 ): Promise<GuardrailResult> {
-  const sync = checkInput(text, pol, strongOnly);
+  const sync = checkInput(text, pol, strongOnly, isPlanTask);
   if (!sync.ok) return sync; // 旧逻辑已拦截，直接返回
   const inj = await detectInjectionAsync(text, pol ?? policy, strongOnly);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };

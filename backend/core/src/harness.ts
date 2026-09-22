@@ -594,6 +594,9 @@ export class AgentHarness {
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
       // 对称地降级为强信号注入检测 —— 任务步骤合理提到「system prompt」等词不应拦截。
+      this.opts.planTask === true,
+      // 同时标记此为计划任务输入：放行 PLAN_MAX_INPUT_LENGTH 长度上限，
+      // 避免长计划需求文档被通用 maxInputLength 长度闸拦死（Fix A）。
       this.opts.planTask === true
     );
     if (!guard.ok) {
@@ -603,17 +606,23 @@ export class AgentHarness {
         reason: guard.reason,
         runId
       });
+      const blockedReason = guard.reason ?? 'unknown';
       emit({
         type: 'guardrail:blocked',
         phase: 'input',
-        reason: guard.reason ?? 'unknown'
+        reason: blockedReason
       });
       // 注意：此早期返回发生在 verify 门禁之前，不进入 runLoop，故不计入 guardrailsBlocked
       // （verify 上下文只统计循环内发生的拦截；此处直接以 guardrail 消息结束本轮）。
       // 内部原因已通过上方 emit('guardrail:blocked') 记入调用链路 / 服务端日志；
       // 返回给用户的终态文案须中性、不泄露内部合规判定细节（如「知识库未收录」等）。
-      const msg =
-        '抱歉，您的输入触发了内容安全策略，本次未能发送。如有疑问，请通过官方正规渠道咨询。';
+      // 长度超限与内容安全拦截语义不同：前者是工程限制、后者才是合规拦截，必须区分文案，
+      // 避免用户把「输入过长」误读为「被内容安全策略拦截」且无任何产出。
+      const isLengthLimit =
+        typeof blockedReason === 'string' && blockedReason.startsWith('input too long');
+      const msg = isLengthLimit
+        ? `输入过长（${blockedReason}），本次未执行。请精简内容至长度上限以内后重试；计划类任务可联系管理员调高 plan 输入长度上限。`
+        : '抱歉，您的输入触发了内容安全策略，本次未能发送。如有疑问，请通过官方正规渠道咨询。';
       cleanup();
       // Hook: agent.post_run — guardrail early return path
       void hooks.execute('agent.post_run', {

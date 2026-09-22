@@ -311,7 +311,8 @@ export class IntentRouter {
           intent = {
             ...intent,
             domain: jd.domain as IndustryDomain,
-            source: 'jev'
+            source: 'jev',
+            jevConfidence: jd.confidence
           };
         }
       } catch {

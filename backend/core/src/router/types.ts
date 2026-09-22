@@ -42,6 +42,8 @@ export interface Intent {
   requiredCapabilities: string[];
   /** 分类来源：rule（规则引擎）/ llm（小模型分类）/ jev（TypeSafe Jev 决策模型），便于追踪与缓存。 */
   source: 'rule' | 'llm' | 'jev';
+  /** 当 source==='jev' 时，记录 Jev 决策模型的置信度（0~1），供可观测性透传。 */
+  jevConfidence?: number;
 }
 
 /** 选择器上下文：影响评分的额外信号（租户亲和、目标 domain 等）。 */

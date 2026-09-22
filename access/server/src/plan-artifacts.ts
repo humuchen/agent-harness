@@ -36,32 +36,53 @@ export interface ArchivePlanArtifactsResult {
 }
 
 /**
- * 由 plan step 的 StepDef.inputMapping.taskMeta（JSON 字符串 {id,title,...}）生成
- * 人类可读文件名；解析失败回落 `task-<stepId>.md`。纯函数（便于单测）。
+ * 合并交付文档在 artifact-store 里的 note 标记（幂等键）：
+ * 与前端 `chat.ts` 的 `attachPlanDeliverables` 共用同一语义（PLAN_FINAL_ARTIFACT_NOTE）。
+ * 同一 runId 下至多一份合并文档 —— 后端（本模块）与前端（buildPlanFinalReport）
+ * 谁先落盘谁生效，另一方经 note 去重跳过，确保「📎 交付文件」区只有**一份**
+ * 可阅读的交付文档，而非每个 step 一个散落文件（解决「文件混乱、无法梳理」）。
  */
-export function buildPlanArtifactName(stepDef: StepDef | undefined, stepId: string): string {
-  const raw: string | undefined = stepDef?.inputMapping?.taskMeta;
-  let title = '';
-  if (typeof raw === 'string') {
-    try {
-      const parsed = JSON.parse(raw) as { title?: unknown };
-      if (parsed && typeof parsed.title === 'string') title = parsed.title.trim();
-    } catch {
-      title = ''; // taskMeta 非法不阻断归档（P4.5 同款纪律）
-    }
-  }
-  // 文件名安全化：去分隔符 / 保留中英文数字与少量标点，限长 60。
-  const safe = (title || `task-${stepId}`)
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 60)
-    .trim();
-  return safe ? `${safe}.md` : `task-${stepId}.md`;
+export const PLAN_FINAL_ARTIFACT_NOTE = '__plan_final__';
+
+/** 文件名安全化：去文件系统/URL 非法字符，限长，空则回落固定名。 */
+function sanitizeArtifactName(s: string, fallback: string): string {
+  const safe = s
+    .replace(/[\\/:*?"<>|\u0000-\u001f#%&{}$!'@+=`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 40);
+  return safe || fallback;
 }
 
 /**
- * plan 来源工作流终态归档入口（server.ts 三端点共用：run / resume / approve）。
- * 见模块头纪律；任何异常仅 warn，返回已完成的归档结果（绝不 throw 阻断链路）。
+ * 由 plan step 的 StepDef.inputMapping.taskMeta（JSON 字符串 {id,title,...}）解析
+ * 人类可读标题；解析失败回落 stepId。纯函数。
+ */
+function stepTitle(stepDef: StepDef | undefined, stepId: string): string {
+  const raw: string | undefined = stepDef?.inputMapping?.taskMeta;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as { title?: unknown };
+      if (parsed && typeof parsed.title === 'string' && parsed.title.trim()) {
+        return parsed.title.trim();
+      }
+    } catch {
+      /* taskMeta 非法不阻断归档（P4.5 同款纪律） */
+    }
+  }
+  return stepId;
+}
+
+/**
+ * plan 来源工作流终态归档入口（server.ts 多端点共用：run / resume / approve）。
+ *
+ * 行为收口：**不再为每个 step 落一个独立文件**，而是把所有已完成、产出有效的
+ * step 合成**一份**合并交付文档（markdown）归档，note=`__plan_final__`。
+ * 与前端 `attachPlanDeliverables` 同源 note 去重，保证「📎 交付文件」区只有这一份
+ * 可阅读文档，彻底消除「多个散落文件、无法梳理」的问题。
+ *
+ * 纪律（沿用模块头）：仅 plan 桥（failOnInvalidOutput===true）、仅全成功 run、
+ * 无效产出不归档、幂等、旁路不阻断、单任务产出超 512KB 截断。
  */
 export async function archivePlanArtifacts(params: {
   def: WorkflowDef;
@@ -78,27 +99,52 @@ export async function archivePlanArtifacts(params: {
   const stepDefById = new Map<string, StepDef>();
   for (const s of def.steps) stepDefById.set(s.id, s);
 
-  // 幂等：本 runId 已归档的 stepId 集合（note 字段即 stepId）。
-  let existing = new Set<string>();
+  // 幂等：本 runId 已存在合并交付文档（含前端 buildPlanFinalReport 同源 note）则跳过。
   try {
     const metas = await getArtifactStore().list(def.id);
-    existing = new Set(
-      metas.filter((m) => m.kind === PLAN_ARTIFACT_KIND).map((m) => m.note ?? '')
-    );
+    if (
+      metas.some(
+        (m) => m.kind === PLAN_ARTIFACT_KIND && m.note === PLAN_FINAL_ARTIFACT_NOTE
+      )
+    ) {
+      result.skipped.push(PLAN_FINAL_ARTIFACT_NOTE);
+      return result;
+    }
   } catch {
-    existing = new Set(); // list 失败保守按「无既有」处理，最坏重复一条
+    /* list 失败保守按「无既有」处理 */
   }
 
-  for (const [stepId, sr] of Object.entries(run.steps ?? {})) {
-    if (sr.state !== 'done') continue;
-    if (existing.has(stepId)) {
-      result.skipped.push(stepId);
+  const lines: string[] = [];
+  const doneTotal = def.steps.filter((s) => run.steps?.[s.id]?.state === 'done').length;
+  lines.push('# 计划交付文档');
+  lines.push('');
+  lines.push(
+    `> 由计划模式自动合并归档 · 工作流 \`${def.id}\` · 共 ${def.steps.length} 个任务，完成 ${doneTotal} 个 · 生成于 ${new Date().toISOString()}`
+  );
+  lines.push('');
+  lines.push('## 执行状态');
+  lines.push('');
+  for (const s of def.steps) {
+    const st = run.steps?.[s.id]?.state ?? 'pending';
+    const mark = st === 'done' ? '✅' : st === 'failed' ? '❌' : '⏭';
+    lines.push(`- ${mark} **${s.id}** ${stepTitle(stepDefById.get(s.id), s.id)}（${st}）`);
+  }
+  lines.push('');
+  lines.push('## 任务产出');
+  for (const s of def.steps) {
+    lines.push('');
+    const title = stepTitle(stepDefById.get(s.id), s.id);
+    lines.push(`### ${s.id} · ${title}`);
+    lines.push('');
+    const sr = run.steps?.[s.id];
+    if (!sr || sr.state !== 'done') {
+      lines.push(`（该任务状态为 ${sr?.state ?? 'pending'}，无产出。）`);
       continue;
     }
     const insp = inspectStepOutput(sr.output);
     if (insp.issue !== 'ok') {
       // 无效产出（空 / 中断 / 兜底话术）不落盘——与 P4.5 闸门同语义。
-      result.skipped.push(stepId);
+      lines.push('（该任务产出无效 / 为空，未归档。）');
       continue;
     }
     let body: string;
@@ -110,29 +156,35 @@ export async function archivePlanArtifacts(params: {
         body = String(sr.output);
       }
     }
-    let content: Buffer = Buffer.from(body, 'utf-8');
-    if (content.length > PLAN_ARTIFACT_MAX_BYTES) {
-      content = Buffer.from(
-        body.slice(0, PLAN_ARTIFACT_MAX_BYTES) + '\n\n（产物过大已截断，完整内容见该任务执行详情）\n',
-        'utf-8'
-      );
+    if (!body.trim()) {
+      lines.push('（该任务已完成，但未产出可归档的内容。）');
+      continue;
     }
-    try {
-      const meta = await getArtifactStore().save({
-        name: buildPlanArtifactName(stepDefById.get(stepId), stepId),
-        kind: PLAN_ARTIFACT_KIND,
-        mimeType: PLAN_ARTIFACT_MIME,
-        content,
-        owner,
-        runId: def.id,
-        note: stepId
-      });
-      result.archived.push(meta);
-    } catch (e) {
-      console.warn(
-        `[plan-artifacts] 归档 step ${stepId} 失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`
-      );
+    if (body.length > PLAN_ARTIFACT_MAX_BYTES) {
+      body =
+        body.slice(0, PLAN_ARTIFACT_MAX_BYTES) +
+        '\n\n（单个任务产出过大已截断，完整内容见该任务执行详情）\n';
     }
+    lines.push(body);
+  }
+  lines.push('');
+
+  const content: Buffer = Buffer.from(lines.join('\n'), 'utf-8');
+  try {
+    const meta = await getArtifactStore().save({
+      name: `计划交付文档-${sanitizeArtifactName(def.id, '执行结果')}.md`,
+      kind: PLAN_ARTIFACT_KIND,
+      mimeType: PLAN_ARTIFACT_MIME,
+      content,
+      owner,
+      runId: def.id,
+      note: PLAN_FINAL_ARTIFACT_NOTE
+    });
+    result.archived.push(meta);
+  } catch (e) {
+    console.warn(
+      `[plan-artifacts] 合并归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`
+    );
   }
   return result;
 }
