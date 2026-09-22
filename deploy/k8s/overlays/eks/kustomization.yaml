@@ -43,6 +43,14 @@ patches:
     target:
       kind: Deployment
       name: agent-harness
+  - path: deployment-replica-id.yaml
+    target:
+      kind: Deployment
+      name: agent-harness
+  - path: hpa-eks.yaml
+    target:
+      kind: HorizontalPodAutoscaler
+      name: agent-harness
   - path: configmap-otel.yaml
     target:
       kind: ConfigMap

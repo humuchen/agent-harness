@@ -59,8 +59,20 @@ export interface DbAdapterOptions {
 
 // ─── SQLite 后端（node:sqlite）───────────────────────────────────────────────
 
+/** node:sqlite 的最小结构契约（避免直接依赖 @types/node 的具体版本）。 */
+interface SqliteStatement {
+  run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint };
+  get(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown;
+}
+interface SqliteDb {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
 class SqliteAdapter implements DbAdapter {
-  private db: any;
+  private db: SqliteDb;
   private file: string;
   /** 自身在 adapterCache 中的键，close 时用于同步删除缓存条目（自愈）。 */
   cacheKey: string;
@@ -71,7 +83,7 @@ class SqliteAdapter implements DbAdapter {
     this.file = file;
     this.cacheKey = `sqlite:${file}`;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const sqlite = require('node:sqlite') as { DatabaseSync: any };
+    const sqlite = require('node:sqlite') as { DatabaseSync: new (file: string) => SqliteDb };
     this.db = new sqlite.DatabaseSync(file);
     // 常用 PRAGMA（按配置，走默认值兜底）
     const journal = pragmas?.journalMode ?? 'wal';
@@ -107,8 +119,20 @@ class SqliteAdapter implements DbAdapter {
 
 // ─── Turso 后端（@libsql/client/node）──────────────────────────────────────
 
+/** @libsql/client 的最小结构契约（可选依赖，未安装时不可达此路径）。 */
+type LibsqlArgs = Array<string | number | bigint | Uint8Array | null>;
+interface LibsqlResult {
+  rowsAffected?: number;
+  lastInsertRowid?: number | bigint | string;
+  rows?: Array<Record<string, unknown>>;
+}
+interface LibsqlClient {
+  execute(stmt: string | { sql: string; args: LibsqlArgs }): LibsqlResult | Promise<LibsqlResult>;
+  close(): void;
+}
+
 class TursoAdapter implements DbAdapter {
-  private client: any;
+  private client: LibsqlClient;
   /** 自身在 adapterCache 中的键，close 时用于同步删除缓存条目（自愈）。 */
   cacheKey: string;
 
@@ -116,7 +140,7 @@ class TursoAdapter implements DbAdapter {
     this.cacheKey = `turso:${url}`;
     try {
       // @libsql/client/node 使用 createClient 工厂函数
-      const { createClient } = require('@libsql/client/node') as { createClient: any };
+      const { createClient } = require('@libsql/client/node') as { createClient: (cfg: Record<string, unknown>) => LibsqlClient };
       this.client = createClient({
         url,
         authToken: token,
@@ -125,9 +149,9 @@ class TursoAdapter implements DbAdapter {
         ...(url.startsWith('libsql://') || url.startsWith('libsql+ws://') || url.startsWith('libsql+wss://')
           ? { tls: true } : {}),
       });
-    } catch (e: any) {
+    } catch (e) {
       throw new Error(
-        `Turso 后端初始化失败（缺少依赖或配置错误）：${e.message}。请执行 pnpm add @libsql/client`
+        `Turso 后端初始化失败（缺少依赖或配置错误）：${e instanceof Error ? e.message : String(e)}。请执行 pnpm add @libsql/client`
       );
     }
   }
@@ -141,55 +165,54 @@ class TursoAdapter implements DbAdapter {
       if (trimmed) stmts.push(trimmed);
     }
     if (stmts.length === 0) return;
-    
+    const first = stmts[0];
+    if (first === undefined) return;
+
     // 检查第一条返回值判断是否为 Promise（HTTP 模式）
-    const firstResult = this.client.execute(stmts[0]);
-    if (firstResult && typeof firstResult.then === 'function') {
+    const firstResult = this.client.execute(first);
+    if (firstResult && typeof (firstResult as Promise<LibsqlResult>).then === 'function') {
       // HTTP 模式：顺序 await 每条语句
-      let chain = firstResult;
-      for (let i = 1; i < stmts.length; i++) {
-        chain = chain.then(() => this.client.execute(stmts[i]));
+      let chain = firstResult as Promise<LibsqlResult>;
+      for (const stmt of stmts.slice(1)) {
+        chain = chain.then(() => this.client.execute(stmt));
       }
       return chain.then(() => {});
     } else {
       // WebSocket 模式：同步执行
-      for (let i = 1; i < stmts.length; i++) {
-        this.client.execute(stmts[i]);
+      for (const stmt of stmts.slice(1)) {
+        this.client.execute(stmt);
       }
     }
+  }
+
+  /** execute 的统一 await：无论 Hrana 返回同步结果还是 Promise，都收敛为 Promise。 */
+  private async awaitResult(
+    sql: string,
+    params: unknown[]
+  ): Promise<LibsqlResult> {
+    const r = this.client.execute({ sql, args: params as LibsqlArgs });
+    if (r && typeof (r as Promise<LibsqlResult>).then === 'function') {
+      return r as Promise<LibsqlResult>;
+    }
+    return r as LibsqlResult;
   }
 
   prepare(sql: string): DbStatement {
     return {
       run: async (...params: unknown[]) => {
-        const r = this.client.execute({ sql, args: params as any });
-        if (r && typeof r.then === 'function') {
-          const res = await r;
-          return {
-            changes: res.rowsAffected ?? 0,
-            lastInsertRowid: res.lastInsertRowid != null ? Number(res.lastInsertRowid) : 0,
-          };
-        }
+        const res = await this.awaitResult(sql, params);
         return {
-          changes: r.rowsAffected ?? 0,
-          lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : 0,
+          changes: res.rowsAffected ?? 0,
+          lastInsertRowid: res.lastInsertRowid != null ? Number(res.lastInsertRowid) : 0,
         };
       },
       get: async (...params: unknown[]) => {
-        const r = this.client.execute({ sql, args: params as any });
-        if (r && typeof r.then === 'function') {
-          const res = await r;
-          return res.rows?.[0] as Record<string, unknown> | undefined;
-        }
-        return r.rows?.[0] as Record<string, unknown> | undefined;
+        const res = await this.awaitResult(sql, params);
+        return res.rows?.[0] as Record<string, unknown> | undefined;
       },
       all: async (...params: unknown[]) => {
-        const r = this.client.execute({ sql, args: params as any });
-        if (r && typeof r.then === 'function') {
-          const res = await r;
-          return res.rows as Record<string, unknown>[] ?? [];
-        }
-        return r.rows as Record<string, unknown>[] ?? [];
+        const res = await this.awaitResult(sql, params);
+        return res.rows as Record<string, unknown>[] ?? [];
       },
     };
   }
@@ -241,8 +264,8 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
         // libsql://、https://、wss:// 均为远端库；仅 file: 前缀是本地文件（libsql 本地模式）。
         const isRemote = /^(libsql|https|wss):\/\//.test(url);
         console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? url : ''}`);
-      } catch (e: any) {
-        console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e.message}`);
+      } catch (e) {
+        console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e instanceof Error ? e.message : String(e)}`);
       }
     } else {
       console.warn('[db-adapter] DB_BACKEND=turso 但未设置 TURSO_URL，降级为本地 sqlite');

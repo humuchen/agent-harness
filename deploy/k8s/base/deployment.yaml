@@ -8,7 +8,9 @@ metadata:
     app.kubernetes.io/part-of: agent-harness
 spec:
   # 生产建议 >=2 副本（配合 REDIS_URL 运行队列实现水平扩展）。
-  replicas: 2
+  # R3：默认单副本——base 的队列/注册表为内存后端（SQLite 单写），多副本会写坏数据。
+  # 扩容到多副本必须走 overlays/eks（启用 RUN_QUEUE_BACKEND/AGENT_STORE=redis 并注入 REPLICA_ID）。
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: agent-harness

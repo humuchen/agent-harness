@@ -96,16 +96,25 @@ export async function initOtlpExporter(opts?: OtlpOptions): Promise<void> {
 
   initPromise = (async () => {
     try {
-      const { NodeSDK } = require(OTEL_SDK) as any;
-      const { Resource } = require(OTEL_METRICS) as any;
-      const { OTLPTraceExporter } = require(OTEL_EXPORTER) as any;
+      // OTel SDK 最小结构契约：可选依赖未安装时 require 抛错 → 静默降级。
+      const { NodeSDK } = require(OTEL_SDK) as {
+        NodeSDK: new (cfg: Record<string, unknown>) => { start?(): void; shutdown?(): Promise<void> };
+      };
+      const { Resource } = require(OTEL_METRICS) as {
+        Resource: new (attrs: Record<string, string>) => unknown;
+      };
+      const { OTLPTraceExporter } = require(OTEL_EXPORTER) as {
+        OTLPTraceExporter: new (opts: { url?: string; headers?: Record<string, string> }) => unknown;
+      };
       const { PeriodicExportingMetricReader } =
-        require(OTEL_METRICS_EXPORTER) as any;
+        require(OTEL_METRICS_EXPORTER) as {
+          PeriodicExportingMetricReader: new (opts: Record<string, unknown>) => unknown;
+        };
 
       const finalOpts = opts ?? getDefaultOptions();
 
       const resource = new Resource({
-        'service.name': finalOpts.serviceName,
+        'service.name': finalOpts.serviceName ?? 'agent-harness',
         'deployment.environment': process.env.NODE_ENV || 'development'
       });
 
@@ -132,15 +141,15 @@ export async function initOtlpExporter(opts?: OtlpOptions): Promise<void> {
         metricReaders: [reader]
       });
 
-      sdk.start();
+      sdk.start?.();
       initialized = true;
       console.log(
         `[telemetry] OTLP exporter initialized → ${finalOpts.endpoint}`
       );
-    } catch (e: any) {
+    } catch (e) {
       console.warn(
         `[telemetry] OTLP init failed (optional dep missing?):`,
-        e?.message
+        e instanceof Error ? e.message : String(e)
       );
       initPromise = null; // 允许重试
     }
@@ -153,7 +162,7 @@ export async function initOtlpExporter(opts?: OtlpOptions): Promise<void> {
 export async function shutdownOtlpExporter(): Promise<void> {
   if (!initialized) return;
   try {
-    const { NodeSDK } = require(OTEL_SDK) as any;
+    require(OTEL_SDK) as unknown; // 触发模块存在性校验（缺失则走 catch 忽略）
     // NodeSDK 单例通过内部 store 访问，此处仅做标记
     initialized = false;
     initPromise = null;

@@ -36,6 +36,9 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
+      - name: k8s 多副本组合校验（R3）
+        run: node scripts/validate-k8s-combo.cjs
+
       - name: 代码检查（ESLint，fail on error）
         run: pnpm lint
 

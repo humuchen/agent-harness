@@ -18,7 +18,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const BASELINE_FILE = path.join(ROOT, '.eslint-any-baseline.json');
+// R6 加固：基线放在 scripts/ 下（非 dotfile）——本工作区曾两次清除根目录 dotfile
+// （即使已 git add 暂存），非 dot 路径已验证可幸存。旧根路径存在时自动迁移。
+const BASELINE_FILE = path.join(__dirname, 'eslint-any-baseline.json');
+const LEGACY_BASELINE = path.join(ROOT, '.eslint-any-baseline.json');
 const RULE = '@typescript-eslint/no-explicit-any';
 
 function countAny() {
@@ -55,11 +58,24 @@ function main() {
   const update = process.argv.includes('--update');
   const current = countAny();
 
-  if (update || !fs.existsSync(BASELINE_FILE)) {
+  if (update) {
     fs.writeFileSync(BASELINE_FILE, JSON.stringify(current, null, 2) + '\n');
-    console.log(`✅ 基线已${fs.existsSync(BASELINE_FILE) && update ? '更新' : '创建'}：no-explicit-any 总数 = ${current.total}`);
-    if (!update) console.log('   （首次运行自动生成基线；如需收紧请人工 review 后再提交）');
+    console.log(`✅ 基线已更新：no-explicit-any 总数 = ${current.total}`);
+    console.log('   基线文件必须随本次改动一并提交（R6：缺失的基线会让棘轮静默失效）。');
     process.exit(0);
+  }
+  // R6 修复：检查模式下基线缺失 = 棘轮被绕过，必须失败而非静默重建。
+  // （此前任何模式都会自动生成基线，删除文件即可让 CI 检查形同虚设。）
+  if (!fs.existsSync(BASELINE_FILE) && fs.existsSync(LEGACY_BASELINE)) {
+    fs.copyFileSync(LEGACY_BASELINE, BASELINE_FILE);
+    console.log('ℹ️  已把旧位置基线迁移到 scripts/eslint-any-baseline.json（根目录 dotfile 在本工作区会被清理）');
+  }
+  if (!fs.existsSync(BASELINE_FILE)) {
+    console.error('❌ 基线文件缺失：' + path.relative(ROOT, BASELINE_FILE));
+    console.error('   棘轮检查拒绝在无基线状态下运行（否则删除文件即可绕过）。');
+    console.error('   确认是首次建立基线后，请显式运行并提交产物：');
+    console.error('   node scripts/lint-any-ratchet.cjs --update && git add scripts/eslint-any-baseline.json');
+    process.exit(1);
   }
 
   const baseline = JSON.parse(fs.readFileSync(BASELINE_FILE, 'utf8'));

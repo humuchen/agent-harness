@@ -247,6 +247,13 @@ export async function handleOpsRoutes(
       closed = true;
     });
     const body = await readBody(req);
+    // R5 修复：非法 action 必须在 startSse 之前拒绝——SSE 头一旦写出就无法再
+    // 回 400（headers-sent 冲突），此前会 fall-through 到外层兜底变成 200 错误 JSON。
+    if (body.action !== 'create' && body.action !== 'destroy') {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'action 必须是 create 或 destroy' }));
+      return true;
+    }
     // 按动作类型映射为细分动作，做角色授权 + 审批判定（create/destroy 需审批）。
     const envAction: Action =
       body.action === 'destroy' ? 'env:destroy' : 'env:create';
@@ -305,10 +312,6 @@ export async function handleOpsRoutes(
       }
       return true;
     }
-
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'action 必须是 create 或 destroy' }));
-    return true;
   }
   return false;
 }
