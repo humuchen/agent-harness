@@ -56,6 +56,141 @@ curl -sf http://127.0.0.1:4182/health/ready
 | 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
 | 7 | metrics / artifacts / history / memory | 待做 |
 
+## 已完成：第三批（plans / approvals / eval+recipes / skills）
+
+- 新模块：`routes/plan-routes.ts`（含协同 SSE 频道）、`routes/approval-routes.ts`、
+  `routes/eval-recipe-routes.ts`、`routes/skill-routes.ts`
+- server.ts 6055 → 约 5788 行；tsc 零错误、325 项测试全绿、
+  HTTP 冒烟 6/6（`scripts/smoke-batch3.cjs`，可复用于回归）。
+- 依赖启示：`runQueue` / `sseConnectionLock` / plan-bus / eval 等都是可独立 import 的模块——
+  真正需要 deps 注入的只剩 `guard`、`auditAction` 和组合根单例（`approvalPolicy` / `evaluator`）。
+  **单例语义核查**：`getRecipeStore()` 是 memoized 单例，模块内直接调用安全；
+  `createApprovalPolicy()` / `createEvaluator()` 每次创建新实例，必须经 deps 注入共享。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / registry / A2A | 待做 |
+| 5 | chat / run / jobs（SSE 流） | 待做 |
+| 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
+| 7 | metrics / artifacts / history / memory | 待做 |
+
+## 已完成：第四批（agents / A2A / teams）
+
+- 新模块：`routes/agent-routes.ts`（约 270 行，含 normalizeIncomingCard 与 handleA2A 全函数体迁入）
+- server.ts 5788 → 约 5503 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 9/9（`scripts/smoke-batch4.cjs`）。
+- 新增注入形态：**可变旗标经 getter 注入**（`isShuttingDown: () => boolean`）——server.ts 的
+  可变模块状态不直接共享，读侧用闭包。
+- 教训：外迁函数体时锚点必须「现场重取」——上一批删掉的注释不能再当终点锚（曾因
+  end 锚点已不存在而 ValueError，改用下一个存活注释为终点并重跑）。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | chat / run / jobs（SSE 流） | 待做（最大批次） |
+| 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
+| 7 | metrics / artifacts / history / memory / mcp / shell / env / workflows | 待做 |
+
+## 已完成：第五批（jobs / mcp / verify / shell / env 运维端点）
+
+- 新模块：`routes/ops-routes.ts`（约 340 行）
+- server.ts 5503 → 约 5208 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 8/8（`scripts/smoke-batch5.cjs`）。
+- **发现一个存量怪癖（未顺手修，遵守「搬移不带行为变更」纪律）**：`POST /api/env` 传非法
+  `action` 时，原代码先 `startSse()` 写响应头、再 fall-through 到 `writeHead(400)` →
+  ERR_HTTP_HEADERS_SENT，被外层兜底捕获后回 200 + 错误 JSON。候选后续修复：在 startSse
+  前校验 action ∈ {create, destroy}，否则直接 400。
+- 原 handleRun（~1000 行）与 handleWorkflow 的搬移**暂缓**：二者深度耦合配额/会话/计划
+  提议/BYOK 凭据装配与 SSE 流，是产品关键路径，机械搬移的风险收益比不合理。建议以
+  「先补 run/chat 全流程 e2e（真实 LLM 或确定性 stub）→ 再搬移」的方式进行，单独排期。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | handleRun / handleWorkflow / chat 流（高危，需先补 e2e） | ⏸ 暂缓（单独立项） |
+| 7 | OAuth（github/google 回调，并入 account-routes） | 待做 |
+
+## 已完成：第六批（OAuth 并入账户模块）
+
+- `routes/account-routes.ts` 新增 `handleAccountOauthRoutes`：GitHub / Google 授权码流
+  全部 4 个端点 + cookie 构造器族（oauthStateCookie / oauthCodeVerifierCookie /
+  refreshCookieValue / setCookies / isReqLocalhost）与 redirectUri 构造器整体迁入。
+- `safeEqualString` 上移至 `http-helpers.ts`（guard 的 CSRF 校验与 OAuth 回调共用）。
+- server.ts 5208 → 约 4589 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 3/3
+  （`scripts/smoke-batch6.cjs`：未配置语义 500 JSON + PKCE 分流归属验证）。
+- **分流归属注意**：`/api/account/oauth/callback、/config、/exchange` 属 OpenRouter
+  PKCE 流（provider-keys 注册表），本模块显式返回 false，由 server.ts 的 PKCE 分发块接手。
+- **机械转换教训**：外迁「深嵌套 if 块」时，裸 `return;` 出现在多层缩进——只转换顶层
+  缩进会漏掉嵌套层（曾 23 处漏网导致 TS2322）；应对整个函数区间做任意缩进的统一转换。
+  行级手术删除函数定义区时，插入语句后必须核对原位置残留的 `return;}/}` 孤儿对。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
+| 7 | metrics / artifacts / history / memory / workspaces / workflows 快照等杂项 | 待做（量大但模式同） |
+| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+
+## 已完成：第七批（策略 / 合规 / 可观测指标）
+
+- 新模块：`routes/policy-routes.ts`（openapi.json / retention / features GET+toggle /
+  im/status / policy GET+preview+POST / brand，约 190 行）、
+  `routes/metrics-routes.ts`（/api/metrics JSON + /api/metrics/prometheus 含延迟直方图，约 120 行）。
+- server.ts 4589 → 约 4388 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 4/4（`scripts/smoke-batch7.cjs`）。
+- **鉴权归属要点**：`/api/metrics*` 的守卫来自主分发器的 `readAction` 预检（metrics:read），
+  不在路由块内——metrics 模块的分发调用必须保持在 readAct 预检**之后**，否则守卫被绕过。
+  外迁任何「无显式 guard 的 GET」前，先查 readAction 映射表。
+- 类型来源核对清单：ImBridge 在 `./im`（im-status 只是转用）、Action/Role 在 `./authz`
+  （core 的同名类型语义不同）、RetentionPolicy 在 `./retention`、getMemoryStore 在 `./runner`。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
+| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
+| 8 | sessions / memory / gdpr / roles / workspaces / audit / org / artifacts / sandbox / supply-chain / usage / jev / provider-keys / chat-sessions / history / events / workflows 快照 | 待做（同模式，逐组推进） |
+| — | handleRun（~1000 行）/ handleWorkflow / chat-stream / events | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+
+## 已完成：第八批（数据 / 合规 / 运维杂项）
+
+- 新模块：`routes/misc-routes.ts`（约 300 行）：GET /api/sessions、GET+DELETE /api/memory、
+  DELETE /api/data/gdpr、GET /api/roles、GET /api/audit、GET /api/org、
+  GET+POST /api/supply-chain/*、GET /api/account/usage、GET /api/jev/status。
+- server.ts 4388 → 约 4208 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 7/7（`scripts/smoke-batch8.cjs`）。
+- 环境注意：macOS 本地默认记忆目录 `/var/lib/agent-harness` 不可写（EACCES）属**存量环境问题**
+  与重构无关——本地冒烟用 `MEMORY_BACKEND=volatile` 规避；容器内路径已预建（Dockerfile）。
+- 类型/依赖来源：Memory / quotaEngine / getJevStats / sanitizeKey 在 core；
+  invalidateSessionMemory 在 `./runner`；resolveJevCredential 在 `./provider-keys`。
+
+| 批次 | 路由组 | 状态 |
+|---|---|---|
+| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
+| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
+| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
+| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
+| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
+| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
+| 9 | workspaces / artifacts / sandbox / chat-sessions / history / workflows 快照 / provider-keys / events / plugins / run 挂载 | 待做（同模式；chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
+| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+
 ## 后续批次（按耦合度从低到高排序）
 
 | 批次 | 路由组 | 预估行数 | 依赖闭包 | 备注 |
