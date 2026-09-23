@@ -809,7 +809,9 @@ export class RunQueue {
         // 导致「执行详情 / 调用链路」看不到这次 Jev 决策。此处经任务级 emit（直连前端事件流，
         // 不经过 ALS）补发一条 jev:call，把领域分类结果（domain + confidence）带进执行详情。
         // 真实 Jev 调用已由 getJevStats() 计次，本补发不改变统计；仅补齐可观测性。
-        if (route?.intent?.source === 'jev' && typeof route.intent.jevConfidence === 'number') {
+        // D2 扩展：只要路由真实调用过 Jev 就补发（intent.jevInvoked），包括低置信度 /
+        // generic 未覆盖的情况 —— 否则接口 stats 有调用、调用链路却无痕迹。
+        if (route?.intent?.jevInvoked === true) {
           emit({
             type: 'jev:call',
             caller: 'router',
@@ -822,8 +824,9 @@ export class RunQueue {
             answers: {
               domain: {
                 type: 'choice',
-                choice: route.intent.domain,
-                confidence: route.intent.jevConfidence
+                choice: route.intent.jevDomain ?? route.intent.domain,
+                confidence: route.intent.jevConfidence,
+                overrode: route.intent.source === 'jev'
               }
             }
           } as any);
