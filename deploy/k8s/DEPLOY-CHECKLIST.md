@@ -86,6 +86,10 @@ kubectl -n agent-harness create secret generic agent-harness \
 - [ ] `ComplianceProfile.dataResidency=domestic` 的租户务必配 `TENANT_DATA_ZONE=medical` 或 `financial`，
       配合 `audit().dataZone` 字段出合规报表。
 - [ ] 多租户生产建议每个合规域一个 DB 文件（物理隔离），而非共享 `./data/app.db`。
+- [ ] **全 6 个 SQLite 库均已接入分区**（`resolveTenantDbPath` 统一收口）：
+      `accounts`（`ACCOUNT_DB_FILE`）/ `history`（`HISTORY_DB_FILE`）/ `memory`（`MEMORY_SQLITE_FILE`）/
+      `provider-keys`（`PROVIDER_KEYS_DB_FILE`）/ `plan`（`PLAN_DB_FILE`）/ `mcp`（`MCP_SERVERS_DB_FILE`）。
+      设 `TENANT_DATA_ZONE=medical` 后，上 6 个库全部落 `<dir>/medical/<basename>`，合规域数据物理隔离。
 
 ## 6. 应用顺序
 ```bash
