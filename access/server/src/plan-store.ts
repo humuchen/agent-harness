@@ -25,7 +25,7 @@
  * - PLAN_DB_FILE: SQLite 文件路径（默认 `<cwd>/data/plans.db`）
  */
 
-import { getDbAdapter, type DbAdapter } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath, type DbAdapter } from '@agent-harness/core';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -175,9 +175,11 @@ class MemoryPlanStore implements PlanStore {
 class SqlitePlanStore implements PlanStore {
   private db: DbAdapter;
 
-  constructor(file: string) {
+  constructor(file: string, dataZone?: string) {
     // 使用统一适配器（支持 sqlite / turso 双后端），与 history-store 同款范式。
-    this.db = getDbAdapter({ file });
+    // P1：按 dataZone 做物理分区（缺省读 TENANT_DATA_ZONE env，合规域落独立文件）。
+    const dbFile = resolveTenantDbPath(file, dataZone ?? process.env.TENANT_DATA_ZONE);
+    this.db = getDbAdapter({ file: dbFile });
     const execResult = this.db.exec(`
       CREATE TABLE IF NOT EXISTS plan_docs (
         id         TEXT PRIMARY KEY,
