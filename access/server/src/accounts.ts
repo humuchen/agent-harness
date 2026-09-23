@@ -29,7 +29,7 @@ import {
 } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath } from '@agent-harness/core';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
 let cachedSecret: Uint8Array | null = null;
@@ -135,9 +135,10 @@ let db: any = null;
 let dbReady: Promise<void> | null = null;
 
 function getDbFile(): string {
-  return (
-    process.env.ACCOUNT_DB_FILE || join(process.cwd(), 'data', 'accounts.db')
-  );
+  // P1：按 TENANT_DATA_ZONE 做物理分区（medical/financial 等合规域落独立文件，
+  // general/未设保持原路径不变，向后兼容）。
+  const base = process.env.ACCOUNT_DB_FILE || join(process.cwd(), 'data', 'accounts.db');
+  return resolveTenantDbPath(base, process.env.TENANT_DATA_ZONE);
 }
 
 async function ensureDb(): Promise<void> {

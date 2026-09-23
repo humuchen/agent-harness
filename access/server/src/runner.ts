@@ -40,7 +40,7 @@ import {
   getPluginToolRegistry,
   isEnabled
 } from '@agent-harness/core';
-import { MemoryScorer, createHeuristicScorer } from '@agent-harness/core';
+import { MemoryScorer, createHeuristicScorer, resolveTenantDbPath } from '@agent-harness/core';
 import { mcpManager } from './mcp-manager';
 import { waitApproval } from './shell-approval';
 import { bridgeHarnessEvent } from './plugin-bootstrap';
@@ -161,10 +161,12 @@ export function getMemoryStore(): MemoryStore {
   if (backend === 'volatile') {
     _memoryStore = new VolatileMemoryStore();
   } else   if (backend === 'sqlite' || backend === '') {
-    const file = resolveDataPath(
+    const rawFile = resolveDataPath(
       process.env.MEMORY_SQLITE_FILE || (DEFAULTS.MEMORY_SQLITE_FILE as string),
       'MEMORY_SQLITE_FILE'
     );
+    // P1：按 TENANT_DATA_ZONE 做物理分区（medical/financial 等合规域落独立文件）。
+    const file = resolveTenantDbPath(rawFile, process.env.TENANT_DATA_ZONE);
     try {
       _memoryStore = new SqliteMemoryStore({ file });
       structLog('info', 'memory store', { backend: 'sqlite', file });

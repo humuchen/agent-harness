@@ -71,10 +71,13 @@ jobs:
 
       # P2：CI 安全基线 —— secret 扫描 + SBOM + 回滚演练（verify-only，快速）。
       # 完整回滚链路（backup → verify → restore）放在 nightly job，避免拖慢 PR 门禁。
-      - name: secret 扫描（gitleaks）
+      # gitleaks 基线在仓库根 .gitleaks.toml：继承默认规则 + 排除占位/示例，
+      # 避免历史误报阻断门禁。真实泄露走 git filter-repo 清除并轮换凭证，不进 allowlist。
+      - name: secret 扫描（gitleaks，基线 .gitleaks.toml）
         uses: gitleaks/gitleaks-action@v2
         with:
           workdir: ./
+          config: .gitleaks.toml
 
       - name: 生成 SBOM（Syft）
         run: |
