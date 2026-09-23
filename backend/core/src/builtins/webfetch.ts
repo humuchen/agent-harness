@@ -3,6 +3,12 @@ import { objectParams, ToolRegistry } from '../tools';
 export interface WebFetchOptions {
   maxBytes?: number;
   timeoutMs?: number;
+  /**
+   * P0-C：出网域名白名单（精确 host 或 `*.example.com` 通配后缀）。
+   * 缺省（空数组）= 全放行，保持向后兼容；非空时 host 不匹配直接返回 error。
+   * 来源：options.allowedDomains ?? process.env.WEB_FETCH_ALLOWED_DOMAINS（逗号分隔）。
+   */
+  allowedDomains?: string[];
 }
 
 /** 极简 HTML→纯文本：去掉 script/style 与标签，还原常见实体并压缩空白。 */
@@ -22,6 +28,8 @@ function stripHtml(html: string): string {
 export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions = {}): void {
   const maxBytes = opts.maxBytes ?? 200_000;
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  // P0-C：出网域名白名单（精确 host 或 *.example.com 通配后缀）。空 = 全放行（向后兼容）。
+  const allowedDomains = (opts.allowedDomains ?? parseAllowedDomainsEnv()).map(normalizeDomain).filter(Boolean);
   registry.register(
     'builtin__web_fetch',
     'Fetch a URL and return its text content (HTML is lightly stripped to plain text). ' +
@@ -45,6 +53,10 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       }
       if (u.protocol !== 'http:' && u.protocol !== 'https:') {
         return 'error: only http/https URLs are allowed';
+      }
+      // P0-C：域名白名单校验（非空白名单时 host 必须命中）。
+      if (allowedDomains.length > 0 && !hostAllowed(u.hostname, allowedDomains)) {
+        return `error: host not in allowlist: ${u.hostname} (allowed: ${allowedDomains.join(', ')})`;
       }
       const method = (args.method ? String(args.method) : 'GET').toUpperCase();
       const baseHeaders: Record<string, string> = { 'user-agent': 'agent-harness/0.1' };
@@ -76,4 +88,45 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
     },
     'builtin'
   );
+}
+
+// ---------------------------------------------------------------------------
+// P0-C：域名白名单辅助
+// ---------------------------------------------------------------------------
+
+/** 从 env 解析逗号分隔的白名单（去空白、去空项）。 */
+function parseAllowedDomainsEnv(): string[] {
+  const raw = process.env.WEB_FETCH_ALLOWED_DOMAINS;
+  if (!raw || !raw.trim()) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** host 归一化：小写、去端口、去协议前缀。 */
+function normalizeDomain(d: string): string {
+  let host = String(d).trim().toLowerCase();
+  if (host.startsWith('http://') || host.startsWith('https://')) {
+    host = host.replace(/^https?:\//, '').split('/')[0] ?? '';
+  }
+  const colon = host.lastIndexOf(':');
+  if (colon > 0) {
+    host = host.slice(0, colon);
+  }
+  return host;
+}
+
+/** host 是否命中白名单（精确匹配或 *.suffix 通配后缀）。 */
+function hostAllowed(host: string, allowed: string[]): boolean {
+  const h = normalizeDomain(host);
+  for (const entry of allowed) {
+    if (entry.startsWith('*.')) {
+      const suffix = entry.slice(2);
+      if (h === suffix || h.endsWith('.' + suffix)) return true;
+    } else if (h === entry) {
+      return true;
+    }
+  }
+  return false;
 }

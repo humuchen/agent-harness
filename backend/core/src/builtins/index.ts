@@ -19,6 +19,11 @@ export interface BuiltinOptions {
   webEnabled?: boolean;
   /** web_fetch 返回正文的最大字符数。 */
   webMaxBytes?: number;
+  /**
+   * P0-C：web_fetch 出网域名白名单（精确 host 或 *.example.com 通配后缀）。
+   * 缺省读 process.env.WEB_FETCH_ALLOWED_DOMAINS（逗号分隔）；为空 = 全放行（向后兼容）。
+   */
+  webAllowedDomains?: string[];
   calcEnabled?: boolean;
   datetimeEnabled?: boolean;
   /** 天气工具（open-meteo 免 key）开关。默认开启。 */
@@ -104,7 +109,9 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const only = options.tools;
   const allow = (n: string) => !only || only.length === 0 || only.includes(n);
   if (fsEnabled && allow('filesystem')) registerFilesystem(registry, { root: fsRoot });
-  if (webEnabled && allow('web_fetch')) registerWebFetch(registry, { maxBytes: webMaxBytes });
+  // P0-C：域名白名单——优先调用方显式传入，缺省读 env。
+  const webAllowedDomains = options.webAllowedDomains ?? parseWebAllowedDomainsEnv();
+  if (webEnabled && allow('web_fetch')) registerWebFetch(registry, { maxBytes: webMaxBytes, allowedDomains: webAllowedDomains });
   if (calcEnabled && allow('calculator')) registerCalculator(registry);
   if (datetimeEnabled && allow('datetime')) registerDateTime(registry);
   if (weatherEnabled && allow('weather')) registerWeather(registry);
@@ -176,3 +183,13 @@ export type {
 } from './typesafe-jev';
 // OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
 export * from '../sandbox';
+
+/** P0-C：从 env 解析逗号分隔的域名白名单（去空白、去空项）。 */
+function parseWebAllowedDomainsEnv(): string[] {
+  const raw = process.env.WEB_FETCH_ALLOWED_DOMAINS;
+  if (!raw || !raw.trim()) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}

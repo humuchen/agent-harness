@@ -233,6 +233,25 @@ function evictAdapterCache(cacheKey: string): void {
 }
 
 /**
+ * P1：按租户/数据分区解析 SQLite 文件路径。
+ *
+ * 设计：默认 `./data/app.db`；当传入 `dataZone`（如 'medical' / 'financial'）时，
+ * 路径变为 `./data/<dataZone>/app.db`，实现 per-zone 物理分区（不同合规域数据落不同文件，
+ * 配合 ComplianceProfile.dataResidency='domestic' 与 audit dataZone 字段满足合规审计维度）。
+ * 缺省 `dataZone='general'` 时返回原始路径（向后兼容，行为不变）。
+ *
+ * ⚠️ 仅影响 sqlite 后端；turso 后端的分区由 TURSO_URL 指向的远端库决定，此函数不改动它。
+ */
+export function resolveTenantDbPath(base: string, dataZone?: string): string {
+  const zone = (dataZone ?? 'general').trim().toLowerCase();
+  if (!zone || zone === 'general') return base;
+  // 安全：zone 仅允许 [a-z0-9_-]，杜绝路径穿越
+  if (!/^[a-z0-9_-]+$/.test(zone)) return base;
+  const pathMod = require('node:path') as { dirname: (s: string) => string; basename: (s: string) => string; join: (...p: string[]) => string };
+  return pathMod.join(pathMod.dirname(base), zone, pathMod.basename(base));
+}
+
+/**
  * 获取（或创建）数据库适配器。
  *
  * 同一 file 配置返回同一实例（单例）；不同 file 各自独立连接。

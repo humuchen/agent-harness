@@ -23,6 +23,7 @@ import {
   loadEnv,
   structLog,
   recordError,
+  detectCapabilities,
   type LLM,
   type HarnessEvent,
   type ToolCall,
@@ -386,8 +387,22 @@ export async function assembleAgent(
   // 设为 'false' 关闭；HARNESS_FS_ROOT 可限定文件沙箱根目录。
   // 沙箱 shell 能力默认关闭，需 SHELL_ENABLED=true 开启；开启后受白名单 + 作用域管控，
   // 若再设 SHELL_REQUIRE_CONFIRM=true 则每次执行前需经 /api/shell/approve 审批。
-  const shellEnabled = process.env.SHELL_ENABLED === 'true';
+  let shellEnabled = process.env.SHELL_ENABLED === 'true';
   const shellRequireConfirm = process.env.SHELL_REQUIRE_CONFIRM === 'true';
+  // P0-A：开启 shell 前校验 OS 级沙箱是否真正可用（native helper + user namespace）。
+  // 不可用时静默关闭 shell（而非降级到硬化本地执行器），避免隐性「软沙箱」承载危险命令。
+  if (shellEnabled) {
+    const caps = detectCapabilities();
+    if (!caps.supported) {
+      structLog('error', '[shell] SHELL_ENABLED=true but OS-level sandbox unavailable, disabling shell', {
+        reason: caps.reason,
+        helperAvailable: caps.helperAvailable,
+        userNamespaces: caps.userNamespaces,
+      });
+      shellEnabled = false;
+    }
+  }
+
   // 联网搜索总开关：环境变量 BUILTINS_WEB（默认开）× 本次 run 的 webEnabled（UI 开关）。
   // 两者任一为 false 即关闭 web_fetch 与「联网检索」技能 —— 即便用户询问外部/最新信息也不出网。
   const builtinWebEnabled =

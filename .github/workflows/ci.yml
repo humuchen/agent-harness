@@ -38,6 +38,13 @@ jobs:
 
       - name: k8s 多副本组合校验（R3）
         run: node scripts/validate-k8s-combo.cjs
+      # P0-A：强制产出 OS 级沙箱原生 helper（与 Dockerfile 的 HARNESS_NATIVE_STRICT=1 对齐），
+      # 并校验产物存在 —— 防止 CI 上跑测试时静默降级到「硬化本地执行器」。
+      - name: 构建 OS 级沙箱 helper（严格模式）
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config libseccomp-dev libcap-dev
+          HARNESS_NATIVE_STRICT=1 bash scripts/build-native.sh
+          test -x backend/core/native/sandbox-exec/build/sandbox-exec
 
       - name: 代码检查（ESLint，fail on error）
         run: pnpm lint
@@ -61,6 +68,23 @@ jobs:
 
       - name: 备份脚本验证
         run: node scripts/backup-db.cjs --action backup && node scripts/backup-db.cjs --action list
+
+      # P2：CI 安全基线 —— secret 扫描 + SBOM + 回滚演练（verify-only，快速）。
+      # 完整回滚链路（backup → verify → restore）放在 nightly job，避免拖慢 PR 门禁。
+      - name: secret 扫描（gitleaks）
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          workdir: ./
+
+      - name: 生成 SBOM（Syft）
+        run: |
+          docker run --rm -v "$(pwd):/scan" -w /scan aquasec/syft:latest /scan --file sbom.spdx.json -q
+          test -s sbom.spdx.json
+        continue-on-error: true
+
+      - name: 回滚演练（verify-only，快速）
+        run: node scripts/rollback-drill.cjs --action verify
+        continue-on-error: true
 
   # P2：E2E 冒烟——启动真实服务进程（mock 模式，零外部依赖）跑 SSE 重连脚本，
   # 把此前游离在 CI 外的 e2e 脚本纳入门禁。deploy 依赖本 job 全绿。
@@ -127,3 +151,32 @@ jobs:
         env:
           TURSO_URL: ${{ secrets.TURSO_URL }}
           TURSO_TOKEN: ${{ secrets.TURSO_TOKEN }}
+
+  # P2：夜间全量回滚演练（backup → verify → restore）—— 不阻塞 PR 门禁，
+  # 每天 03:00 UTC 跑一次；也可在 Actions 页面手动 dispatch。
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+nightly:
+  name: 夜间回滚演练（全链路）
+  if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 11
+
+    - name: 安装依赖
+      run: pnpm install --frozen-lockfile
+
+    - name: 回滚演练（backup → verify → restore 全链路）
+      run: |
+        node scripts/rollback-drill.cjs --action backup
+        node scripts/rollback-drill.cjs --action verify
+        node scripts/rollback-drill.cjs --action restore --from latest

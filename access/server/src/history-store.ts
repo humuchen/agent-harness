@@ -22,7 +22,7 @@
  * - TURSO_URL / TURSO_TOKEN: Turso 连接配置
  */
 
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath } from '@agent-harness/core';
 
 export interface HistoryThreadMeta {
   sid: string;
@@ -84,9 +84,11 @@ class MemoryHistoryStore implements ChatHistoryStore {
 class SqliteHistoryStore implements ChatHistoryStore {
   private db: any;
 
-  constructor(file: string) {
-    // 使用统一适配器（支持 sqlite / turso 双后端）
-    this.db = getDbAdapter({ file });
+  constructor(file: string, dataZone?: string) {
+    // 使用统一适配器（支持 sqlite / turso 双后端）；P1：按 dataZone 做物理分区
+    // （general/缺省 = 原路径不变；medical/financial 等落 <dir>/<zone>/<basename>）。
+    const dbFile = resolveTenantDbPath(file, dataZone ?? process.env.TENANT_DATA_ZONE);
+    this.db = getDbAdapter({ file: dbFile });
     const execResult = this.db.exec(`
       CREATE TABLE IF NOT EXISTS chat_history (
         sid        TEXT PRIMARY KEY,
