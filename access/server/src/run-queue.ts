@@ -803,6 +803,34 @@ export class RunQueue {
           return null;
         });
         const targetCard = route?.card ?? null;
+
+        // Fix D：路由阶段若由 Jev 决策模型（TypeSafe System One）完成领域分类，
+        // 其 jev:call 事件因发生在 harness.run() 之前、run-events ALS 未建立而被静默丢弃，
+        // 导致「执行详情 / 调用链路」看不到这次 Jev 决策。此处经任务级 emit（直连前端事件流，
+        // 不经过 ALS）补发一条 jev:call，把领域分类结果（domain + confidence）带进执行详情。
+        // 真实 Jev 调用已由 getJevStats() 计次，本补发不改变统计；仅补齐可观测性。
+        // D2 扩展：只要路由真实调用过 Jev 就补发（intent.jevInvoked），包括低置信度 /
+        // generic 未覆盖的情况 —— 否则接口 stats 有调用、调用链路却无痕迹。
+        if (route?.intent?.jevInvoked === true) {
+          emit({
+            type: 'jev:call',
+            caller: 'router',
+            ok: true,
+            latencyMs: null,
+            questions: 1,
+            questionSpec: {
+              domain: { type: 'choice', instructions: '路由领域语义分类 (Jev System One)' }
+            },
+            answers: {
+              domain: {
+                type: 'choice',
+                choice: route.intent.jevDomain ?? route.intent.domain,
+                confidence: route.intent.jevConfidence,
+                overrode: route.intent.source === 'jev'
+              }
+            }
+          } as any);
+        }
         // P0.3：由 job.tenantId 派生租户上下文（无 tenantId 则 null → 通用默认策略 + 原始记忆 key）。
         const tenantCtx = resolveTenantContext({ tenantId: job.tenantId });
 

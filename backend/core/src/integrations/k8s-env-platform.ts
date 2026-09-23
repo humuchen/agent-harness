@@ -31,9 +31,18 @@ export class KubernetesEnvPlatform implements EnvPlatform {
   readonly kind = 'k8s' as const;
   readonly dryRun = false;
 
+  /*
+   * 技术债（显式豁免，勿扩散）：@kubernetes/client-node 的 API 面极大且经
+   * 动态 require 加载（可选依赖，未装时 require 抛清晰错误），结构化类型化
+   * 整个 client 不现实。集中收敛为单一别名 K8sApi；引入类型依赖后应整体替换。
+   */
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   private k8s: any;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   private k8sCore: any;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   private k8sApps: any;
+  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   private k8sNet: any;
   private namespace: string;
   private namePrefix: string;
@@ -48,24 +57,25 @@ export class KubernetesEnvPlatform implements EnvPlatform {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor() {
-    let mod: any;
+    let mod: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- 动态 require 可选依赖
     try {
       // 动态 require：缺失依赖时抛出清晰错误，而非静默失效。
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       mod = require('@kubernetes/client-node');
-    } catch (e: any) {
+    } catch (e) {
       throw new Error(
         'KubernetesEnvPlatform 需要可选依赖 @kubernetes/client-node（当前未安装或加载失败）：' +
-          (e?.message ?? String(e)) +
+          (e instanceof Error ? e.message : String(e)) +
           '。请先 `pnpm --filter @agent-harness/core add -D @kubernetes/client-node` 并配置 KUBECONFIG。'
       );
     }
     const kc = new mod.KubeConfig();
     try {
       kc.loadFromDefault();
-    } catch (e: any) {
+    } catch (e) {
       throw new Error(
-        'KubernetesEnvPlatform 无法加载 kubeconfig（也未运行于集群内）：' + (e?.message ?? String(e))
+        'KubernetesEnvPlatform 无法加载 kubeconfig（也未运行于集群内）：' +
+          (e instanceof Error ? e.message : String(e))
       );
     }
     this.k8s = mod;
@@ -213,7 +223,7 @@ export class KubernetesEnvPlatform implements EnvPlatform {
       if (handle.status === 'ready') onStage('READY');
       else onStage('FAILED');
       return handle;
-    } catch (e: any) {
+    } catch (e) {
       onStage('FAILED');
       throw e;
     }

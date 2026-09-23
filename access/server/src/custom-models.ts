@@ -11,7 +11,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, type DbAdapter } from '@agent-harness/core';
 
 /** 平台哨兵 owner：单租户时代遗留的自定义模型在 owner 隔离后统一归入此标识，
  *  由 admin/operator（includeLegacy）可见可管；普通用户不可见，避免越权读他人模型。 */
@@ -149,7 +149,13 @@ export interface CustomModelPublic {
   updatedAt: number;
 }
 
-let db: any = null;
+let db: DbAdapter | null = null;
+
+/** 运行期取库句柄（ensureDb 之后必非空；显式断言以换取类型安全）。 */
+function dbc(): DbAdapter {
+  if (!db) throw new Error('custom-models db 未初始化');
+  return db;
+}
 let dbReady: Promise<void> | null = null;
 
 const DEFAULT_DB = process.env.CUSTOM_MODELS_DB_FILE || '/var/lib/agent-harness/custom-models.db';
@@ -161,7 +167,7 @@ async function ensureDb() {
       const file = DEFAULT_DB;
       // 使用统一适配器（自动按 DB_BACKEND 环境变量选择 sqlite 或 turso）
       db = getDbAdapter({ file });
-      await db.exec(
+      await dbc().exec(
         `CREATE TABLE IF NOT EXISTS custom_models (
           id TEXT PRIMARY KEY,
           base_url TEXT,
@@ -173,13 +179,13 @@ async function ensureDb() {
       );
       // 存量库（无 key_hint 列）向后兼容：幂等加列，失败（已存在）忽略。
       try {
-        await db.exec('ALTER TABLE custom_models ADD COLUMN key_hint TEXT');
+        await dbc().exec('ALTER TABLE custom_models ADD COLUMN key_hint TEXT');
       } catch {
         /* 列已存在 */
       }
       // P1.1：存量库（无 owner 列）向后兼容：幂等加列。
       try {
-        await db.exec('ALTER TABLE custom_models ADD COLUMN owner TEXT');
+        await dbc().exec('ALTER TABLE custom_models ADD COLUMN owner TEXT');
       } catch {
         /* 列已存在 */
       }
@@ -213,15 +219,20 @@ export async function listCustomModels(
     params.push(owner);
   }
   sql += ' ORDER BY updated_at DESC';
-  const rows = (await db.prepare(sql).all(...params)) as any[];
-  return rows.map((r) => ({
-    id: r.id,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    ...(r.api_key ? { apiKey: r.api_key } : {}),
-    ...(r.key_hint ? { keyHint: r.key_hint } : {}),
-    ...(r.owner ? { owner: r.owner } : {}),
-    updatedAt: r.updated_at,
-  }));
+  const rows = (await dbc().prepare(sql).all(...params)) as Array<Record<string, unknown>>;
+  return rows.map(rowToRow);
+}
+
+/** 库行 → CustomModelRow（字段经 String/Number 收敛）。 */
+function rowToRow(r: Record<string, unknown>): CustomModelRow {
+  return {
+    id: String(r.id),
+    ...(r.base_url ? { baseUrl: String(r.base_url) } : {}),
+    ...(r.api_key ? { apiKey: String(r.api_key) } : {}),
+    ...(r.key_hint ? { keyHint: String(r.key_hint) } : {}),
+    ...(r.owner ? { owner: String(r.owner) } : {}),
+    updatedAt: Number(r.updated_at ?? 0),
+  };
 }
 
 export async function getCustomModel(
@@ -242,22 +253,15 @@ export async function getCustomModel(
     sql += ' AND owner = ?';
     params.push(LEGACY_OWNER);
   }
-  const r = (await db.prepare(sql).get(...params)) as any | undefined;
+  const r = (await dbc().prepare(sql).get(...params)) as Record<string, unknown> | undefined;
   if (!r) return null;
-  return {
-    id: r.id,
-    ...(r.base_url ? { baseUrl: r.base_url } : {}),
-    ...(r.api_key ? { apiKey: r.api_key } : {}),
-    ...(r.key_hint ? { keyHint: r.key_hint } : {}),
-    ...(r.owner ? { owner: r.owner } : {}),
-    updatedAt: r.updated_at,
-  };
+  return rowToRow(r);
 }
 
 export async function putCustomModel(row: Omit<CustomModelRow, 'updatedAt'>): Promise<void> {
   await ensureDb();
   const now = Date.now();
-  const stmt = db.prepare(
+  const stmt = dbc().prepare(
     `INSERT INTO custom_models (id, base_url, api_key, updated_at, key_hint, owner)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -293,7 +297,7 @@ export async function deleteCustomModel(
     sql += ' AND owner = ?';
     params.push(owner);
   }
-  await db.prepare(sql).run(...params);
+  await dbc().prepare(sql).run(...params);
 }
 
 // ─── 脱敏 / 输入归一化 helper ────────────────────────────────────────────────
@@ -358,7 +362,7 @@ export async function registerCustomModelRoutes(
   res: ServerResponse,
   path: string,
   method: string,
-  body: any,
+  body: Record<string, unknown>,
   owner: string,
   includeLegacy = false
 ): Promise<boolean> {
@@ -429,7 +433,7 @@ export async function registerCustomModelRoutes(
 
 // ─── 最小 sendJson 复用（避免重复声明类型） ─────────────────────────────────
 
-function sendJson(res: ServerResponse, obj: any, _req: IncomingMessage) {
+function sendJson(res: ServerResponse, obj: unknown, _req: IncomingMessage) {
   const body = JSON.stringify(obj);
   res.writeHead(200, {
     'content-type': 'application/json',

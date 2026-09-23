@@ -8,7 +8,7 @@
  */
 
 import { join } from 'node:path';
-import { getDbAdapter } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey } from './custom-models';
 import type { McpServerConfig } from '@agent-harness/core';
 
@@ -32,7 +32,9 @@ export interface McpServerRecord {
 let db: any = null;
 let dbReady: Promise<void> | null = null;
 
-const DEFAULT_DB = process.env.MCP_SERVERS_DB_FILE || '/var/lib/agent-harness/mcp-servers.db';
+// P1：按 TENANT_DATA_ZONE 做物理分区（合规域落独立文件，general/未设保持原路径不变）。
+const DEFAULT_DB_BASE = process.env.MCP_SERVERS_DB_FILE || '/var/lib/agent-harness/mcp-servers.db';
+const DEFAULT_DB = resolveTenantDbPath(DEFAULT_DB_BASE, process.env.TENANT_DATA_ZONE);
 
 async function ensureDb() {
   if (db) return;

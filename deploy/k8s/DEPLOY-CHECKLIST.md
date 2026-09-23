@@ -64,6 +64,33 @@ kubectl -n agent-harness create secret generic agent-harness \
 - [ ] EKS overlay 已注入 `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4317`
       等环境变量；端点不可达时 SDK 静默丢弃，不影响业务。
 
+## 5b. P0/P1 可信执行与数据分区（企业级上线必做）
+
+### P0-A：OS 级沙箱门禁
+- [ ] 镜像构建时用 `HARNESS_NATIVE_STRICT=1` 编译 native helper（Dockerfile 已默认开启；
+      自托管时 `HARNESS_NATIVE_STRICT=1 bash scripts/build-native.sh` 后 `test -x` 校验产物）。
+- [ ] Pod 调度到 Linux 节点 + 内核 `user.max_user_namespaces > 0`（`sysctl user.max_user_namespaces`）；
+      不满足时 `SHELL_ENABLED=true` 会被静默关闭（`runner.ts` 守卫），日志会出 `error` 级告警。
+- [ ] `SHELL_ENABLED=true` + `SHELL_WHITELIST=ls,cat,echo,node,python3`（按业务最小化白名单）；
+      `SHELL_REQUIRE_CONFIRM=true` 走 `/api/shell/approve` 审批。
+- [ ] `SANDBOX_BACKEND=os`（默认）；不可用环境显式 `SANDBOX_BACKEND=container` + `SANDBOX_IMAGE=node:22-slim`。
+
+### P0-C：出网白名单
+- [ ] 生产环境必设 `WEB_FETCH_ALLOWED_DOMAINS`（逗号分隔，支持 `*.example.com` 通配）。
+      留空 = 全放行（演示/开发可用）；生产至少把 LLM / RAG / 业务 API 域名列出。
+- [ ] 与 NetworkPolicy 叠加：K8s 侧收紧 DNS + 443，应用侧 `WEB_FETCH_ALLOWED_DOMAINS` 做 host 级二次校验。
+
+### P1：租户数据分区
+- [ ] 按合规域设 `TENANT_DATA_ZONE`（`general`/`medical`/`financial`），缺省 `general` 保持向后兼容。
+      设 `medical` 后 SQLite 文件自动落到 `<dir>/medical/<basename>`（`resolveTenantDbPath`）。
+- [ ] `ComplianceProfile.dataResidency=domestic` 的租户务必配 `TENANT_DATA_ZONE=medical` 或 `financial`，
+      配合 `audit().dataZone` 字段出合规报表。
+- [ ] 多租户生产建议每个合规域一个 DB 文件（物理隔离），而非共享 `./data/app.db`。
+- [ ] **全 6 个 SQLite 库均已接入分区**（`resolveTenantDbPath` 统一收口）：
+      `accounts`（`ACCOUNT_DB_FILE`）/ `history`（`HISTORY_DB_FILE`）/ `memory`（`MEMORY_SQLITE_FILE`）/
+      `provider-keys`（`PROVIDER_KEYS_DB_FILE`）/ `plan`（`PLAN_DB_FILE`）/ `mcp`（`MCP_SERVERS_DB_FILE`）。
+      设 `TENANT_DATA_ZONE=medical` 后，上 6 个库全部落 `<dir>/medical/<basename>`，合规域数据物理隔离。
+
 ## 6. 应用顺序
 ```bash
 kubectl apply -k deploy/k8s            # 薄 root → base（namespace/configmap/secret/deployment/service/ingress/hpa/redis/pvc）

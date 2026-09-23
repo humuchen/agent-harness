@@ -62,14 +62,25 @@ export function contextWindowFor(model?: string): number {
  * 判断错误是否由「上下文超出模型窗口」引起（用于压缩后自愈重试）。
  * 覆盖常见的 400 / 413 及中英文错误文案（部分免费模型如 MiniMax 返回中文报错）。
  */
-function isContextOverflowError(e: any): boolean {
+function isContextOverflowError(e: unknown): boolean {
   if (!e) return false;
-  const status = e?.status ?? e?.statusCode ?? e?.response?.status;
+  const r =
+    typeof e === 'object'
+      ? (e as {
+          status?: unknown;
+          statusCode?: unknown;
+          response?: { status?: unknown };
+          message?: unknown;
+          body?: unknown;
+          error?: { message?: unknown };
+        })
+      : {};
+  const status = r.status ?? r.statusCode ?? r.response?.status;
   if (status === 413) return true;
   const text = [
-    e?.message,
-    e?.body,
-    e?.error?.message,
+    r.message,
+    r.body,
+    r.error?.message,
     typeof e === 'string' ? e : ''
   ]
     .filter(Boolean)
@@ -583,6 +594,9 @@ export class AgentHarness {
       this.opts.guardrailPolicy,
       // 计划任务派发：输入（任务标题/步骤/预期产出的拼接文本）与输出侧 checkTaskOutput
       // 对称地降级为强信号注入检测 —— 任务步骤合理提到「system prompt」等词不应拦截。
+      this.opts.planTask === true,
+      // 同时标记此为计划任务输入：放行 PLAN_MAX_INPUT_LENGTH 长度上限，
+      // 避免长计划需求文档被通用 maxInputLength 长度闸拦死（Fix A）。
       this.opts.planTask === true
     );
     if (!guard.ok) {
@@ -592,17 +606,23 @@ export class AgentHarness {
         reason: guard.reason,
         runId
       });
+      const blockedReason = guard.reason ?? 'unknown';
       emit({
         type: 'guardrail:blocked',
         phase: 'input',
-        reason: guard.reason ?? 'unknown'
+        reason: blockedReason
       });
       // 注意：此早期返回发生在 verify 门禁之前，不进入 runLoop，故不计入 guardrailsBlocked
       // （verify 上下文只统计循环内发生的拦截；此处直接以 guardrail 消息结束本轮）。
       // 内部原因已通过上方 emit('guardrail:blocked') 记入调用链路 / 服务端日志；
       // 返回给用户的终态文案须中性、不泄露内部合规判定细节（如「知识库未收录」等）。
-      const msg =
-        '抱歉，您的输入触发了内容安全策略，本次未能发送。如有疑问，请通过官方正规渠道咨询。';
+      // 长度超限与内容安全拦截语义不同：前者是工程限制、后者才是合规拦截，必须区分文案，
+      // 避免用户把「输入过长」误读为「被内容安全策略拦截」且无任何产出。
+      const isLengthLimit =
+        typeof blockedReason === 'string' && blockedReason.startsWith('input too long');
+      const msg = isLengthLimit
+        ? `输入过长（${blockedReason}），本次未执行。请精简内容至长度上限以内后重试；计划类任务可联系管理员调高 plan 输入长度上限。`
+        : '抱歉，您的输入触发了内容安全策略，本次未能发送。如有疑问，请通过官方正规渠道咨询。';
       cleanup();
       // Hook: agent.post_run — guardrail early return path
       void hooks.execute('agent.post_run', {
@@ -660,7 +680,7 @@ export class AgentHarness {
             : { type: 'image_url', image_url: { url } }
         );
       }
-      memory.add({ role: 'user', content: contentBlocks as any });
+      memory.add({ role: 'user', content: contentBlocks });
     } else {
       memory.add({ role: 'user', content: resolvedInput });
     }
@@ -975,7 +995,7 @@ export class AgentHarness {
                 // 否则：工具已注册但不在子集——不重发，直接执行（见上方说明）。
               }
               break;
-            } catch (llmErr: any) {
+            } catch (llmErr) {
               if (isContextOverflowError(llmErr) && llmAttempt < OVERFLOW_MAX_RETRIES) {
                 this.overflowShrink = true;
                 // 自适应收窄：有成功样本用「样本 × 0.6」，否则用当前历史估算的一半，逐次收敛。
@@ -1446,9 +1466,11 @@ export class AgentHarness {
                 } else {
                   result = raced.value;
                 }
-              } catch (e: any) {
+              } catch (e) {
                 // 将错误作为工具结果返回，以便模型自行修复。
-                result = `tool error: ${e?.message ?? String(e)}`;
+                result = `tool error: ${
+                  e instanceof Error ? e.message : String(e)
+                }`;
                 errored = true;
               }
             }
@@ -1531,17 +1553,19 @@ export class AgentHarness {
 
     try {
       final = await runLoop();
-    } catch (e: any) {
+    } catch (e) {
       // P1-10: 熔断打开时直接返回错误，不触发通用告警（避免告警风暴）
-      if (e?.name === 'CircuitBreakerOpen') {
-        const msg = e.message ?? 'circuit breaker open';
+      const breakerName = (e as { name?: string } | null)?.name;
+      if (breakerName === 'CircuitBreakerOpen') {
+        const msg = e instanceof Error ? e.message : 'circuit breaker open';
         emit({ type: 'error', message: msg });
         final = `${CIRCUIT_BREAKER_PREFIX} ${msg}`;
       } else {
         logError('agent.run', e, { runId });
-        emitAlert('error', 'agent.run', e?.message ?? String(e), { runId });
-        emit({ type: 'error', message: e?.message ?? String(e) });
-        final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
+        const errMsg = e instanceof Error ? e.message : String(e);
+        emitAlert('error', 'agent.run', errMsg, { runId });
+        emit({ type: 'error', message: errMsg });
+        final = `${ERROR_PREFIX} ${e instanceof Error ? e.message : String(e)}`;
       }
     }
 
@@ -1607,9 +1631,9 @@ export class AgentHarness {
           });
           try {
             final = await runLoop();
-          } catch (e: any) {
+          } catch (e) {
             logError('agent.run.retry', e, { runId });
-            final = `${ERROR_PREFIX} ${e?.message ?? String(e)}`;
+            final = `${ERROR_PREFIX} ${e instanceof Error ? e.message : String(e)}`;
           }
           outcome = await this.opts.verify(buildCtx());
           emit({

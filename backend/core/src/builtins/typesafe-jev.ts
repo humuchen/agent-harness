@@ -73,6 +73,8 @@ interface JevStats {
   lastCalledAt: number | null;
   /** 最近一次调用方标签。 */
   lastCaller: string | null;
+  /** 最近一次失败的错误信息（成功调用后清空；null = 无失败记录）。 */
+  lastError: string | null;
 }
 
 const jevStats: JevStats = {
@@ -80,7 +82,8 @@ const jevStats: JevStats = {
   errors: 0,
   lastLatencyMs: null,
   lastCalledAt: null,
-  lastCaller: null
+  lastCaller: null,
+  lastError: null
 };
 
 /** 读取 Jev 调用统计（只读快照）。lastCalledAt === null 表示进程内从未被调用。 */
@@ -95,6 +98,7 @@ export function resetJevStats(): void {
   jevStats.lastLatencyMs = null;
   jevStats.lastCalledAt = null;
   jevStats.lastCaller = null;
+  jevStats.lastError = null;
 }
 
 const DEFAULT_BASE_URL = 'https://api.typesafe.ai/v1';

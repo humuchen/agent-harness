@@ -62,7 +62,7 @@ export class AhVerify extends LitElement {
       for await (const ev of client.streamVerify({ signal: ac.signal })) {
         this.events = [...this.events, ev];
       }
-    } catch (e: any) {
+    } catch (e) {
       reportError('verify', e);
     } finally {
       this.running = false;
@@ -125,7 +125,7 @@ export class AhEnv extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-    } catch (e: any) {
+    } catch (e) {
       reportError('env', e);
     } finally {
       this.running = false;
@@ -285,7 +285,7 @@ export class AhMcp extends LitElement {
       ]);
       this.servers = s.servers;
       this.presets = p.presets;
-    } catch (e: any) {
+    } catch (e) {
       // 静默刷新（自动轮询）不弹错误，避免刷屏；手动刷新仍报错。
       if (!silent) reportError('mcp', e);
     }
@@ -342,7 +342,7 @@ export class AhMcp extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-    } catch (e: any) {
+    } catch (e) {
       reportError('mcp', e);
     } finally {
       this.adding = false;
@@ -364,7 +364,7 @@ export class AhMcp extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-    } catch (e: any) {
+    } catch (e) {
       reportError('mcp', e);
     } finally {
       this.adding = false;
@@ -381,7 +381,7 @@ export class AhMcp extends LitElement {
       this.dispatchEvent(
         new CustomEvent('ah-refresh', { bubbles: true, composed: true })
       );
-    } catch (e: any) {
+    } catch (e) {
       reportError('mcp', e);
     } finally {
       this.adding = false;
@@ -780,7 +780,7 @@ export class AhApprovals extends LitElement {
     if (this.hidden) return;
     try {
       this.items = (await client.listApprovals()).tickets;
-    } catch (e: any) {
+    } catch (e) {
       reportError('approvals', e);
     }
   }
@@ -790,7 +790,7 @@ export class AhApprovals extends LitElement {
       await client.decideApproval(id, decision);
       await this.refresh();
       notify.success(decision === 'approve' ? '工单已通过' : '工单已拒绝');
-    } catch (e: any) {
+    } catch (e) {
       reportError('approvals', e);
     }
   }

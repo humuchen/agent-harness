@@ -51,7 +51,7 @@ describe('mac-ui 适配层测试', () => {
       el.size = 'lg';
       document.body.appendChild(el);
       await el.updateComplete;
-      const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+      const confirm = el.shadowRoot?.querySelector('mac-confirm') as MacConfirm;
       expect(confirm?.width).toBe('640px');
     });
 
@@ -67,7 +67,7 @@ describe('mac-ui 适配层测试', () => {
       el.addEventListener('ah-cancel', () => events.push('cancel'));
       el.addEventListener('close', () => events.push('close'));
 
-      const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+      const confirm = el.shadowRoot?.querySelector('mac-confirm') as MacConfirm;
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-ok'));
       await new Promise(r => setTimeout(r, 10));
 
@@ -80,7 +80,7 @@ describe('mac-ui 适配层测试', () => {
     it('确认返回 true', async () => {
       const p = AhModal.confirm({ variant: 'confirm', title: '确认' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       expect(confirm).toBeTruthy();
       const okBtn = confirm?.shadowRoot?.querySelector('[part="ok-button"]') as HTMLElement;
       if (okBtn) okBtn.click();
@@ -93,7 +93,7 @@ describe('mac-ui 适配层测试', () => {
     it('warning + danger 变体', async () => {
       const p = AhModal.confirm({ variant: 'warning', danger: true, title: '删除', confirmText: '删除' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       expect(confirm?.danger).toBe(true);
       expect(confirm?.confirmText).toBe('删除');
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-cancel'));
@@ -103,7 +103,7 @@ describe('mac-ui 适配层测试', () => {
     it('关闭返回 false', async () => {
       const p = AhModal.confirm({ title: '测试' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-close'));
       const result = await p;
       expect(result).toBe(false);
@@ -114,7 +114,7 @@ describe('mac-ui 适配层测试', () => {
     it('返回输入值', async () => {
       const p = AhModal.prompt({ title: '重命名', inputValue: 'test-name' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       const input = confirm?.querySelector('input');
       expect(input?.value).toBe('test-name');
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-ok'));
@@ -125,7 +125,7 @@ describe('mac-ui 适配层测试', () => {
     it('取消返回 null', async () => {
       const p = AhModal.prompt({ title: '输入' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-cancel'));
       const result = await p;
       expect(result).toBeNull();
@@ -134,7 +134,7 @@ describe('mac-ui 适配层测试', () => {
     it('input 值修改后返回新值', async () => {
       const p = AhModal.prompt({ title: '输入', inputValue: '' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       const input = confirm?.querySelector('input') as HTMLInputElement;
       input.value = 'new-value';
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -148,7 +148,7 @@ describe('mac-ui 适配层测试', () => {
     it('resolve void', async () => {
       const p = AhModal.alert({ title: '提示' });
       await new Promise(r => setTimeout(r, 100));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       confirm?.dispatchEvent(new CustomEvent('mac-confirm-ok'));
       const result = await p;
       expect(result).toBeUndefined();
@@ -197,8 +197,11 @@ describe('mac-ui 适配层测试', () => {
       await el.updateComplete;
 
       let closed = false;
-      let reason: any;
-      el.addEventListener('close', (e: any) => { closed = true; reason = e.detail; });
+      let reason: unknown;
+      el.addEventListener('close', (e: Event) => {
+        closed = true;
+        reason = (e as CustomEvent).detail;
+      });
 
       const closeBtn = el.shadowRoot?.querySelector('.close') as HTMLElement;
       closeBtn?.click();
@@ -295,7 +298,7 @@ describe('mac-ui 适配层测试', () => {
       await el.updateComplete;
 
       const reasons: string[] = [];
-      el.addEventListener('close', (e: any) => reasons.push(e.detail));
+      el.addEventListener('close', (e: Event) => reasons.push((e as CustomEvent).detail));
 
       signalRouteChange();
       await el.updateComplete;
@@ -421,7 +424,7 @@ describe('mac-ui 适配层测试', () => {
       el.open = true;
       document.body.appendChild(el);
       await el.updateComplete;
-      const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+      const confirm = el.shadowRoot?.querySelector('mac-confirm') as MacConfirm;
       expect(confirm?.theme).toBe('dark');
 
       // 模拟用户切主题（app / settings-center 会广播该事件）
@@ -438,7 +441,7 @@ describe('mac-ui 适配层测试', () => {
       document.documentElement.setAttribute('data-theme', 'dark');
       const p = AhModal.confirm({ variant: 'confirm', title: '确认' });
       await new Promise((r) => setTimeout(r, 0));
-      const confirm = document.querySelector('mac-confirm') as any;
+      const confirm = document.querySelector('mac-confirm') as MacConfirm;
       expect(confirm).toBeTruthy();
       expect(confirm?.theme).toBe('dark');
 
@@ -461,7 +464,7 @@ describe('mac-ui 适配层测试', () => {
         el.size = size;
         document.body.appendChild(el);
         await el.updateComplete;
-        const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+        const confirm = el.shadowRoot?.querySelector('mac-confirm') as MacConfirm;
         expect(confirm?.width).toBe(expected);
         el.remove();
       }
@@ -509,7 +512,7 @@ describe('mac-ui 适配层测试', () => {
       el.title = '测试';
       document.body.appendChild(el);
       await el.updateComplete;
-      const confirm = el.shadowRoot?.querySelector('mac-confirm') as any;
+      const confirm = el.shadowRoot?.querySelector('mac-confirm') as MacConfirm;
       expect(confirm).toBeTruthy();
       const container = confirm?.shadowRoot?.querySelector('[part="container"]');
       expect(container).toBeTruthy();

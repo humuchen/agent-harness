@@ -444,6 +444,10 @@ function audit(rec: Record<string, unknown>): void {
     : (rec.outcome as 'success' | 'failure' | 'denied' | 'info' | undefined) ?? 'info';
   void coreAudit({
     tenantId: (rec.tenantId as string | null | undefined) ?? null,
+    // P1 收尾：dataZone/residency 随审计落盘（调用方可通过 rec.dataZone / rec.residency 注入，
+    // 缺省读 process.env.TENANT_DATA_ZONE 部署级基线，使合规审计报表可直接按数据分区出数）。
+    dataZone: (rec.dataZone as string | undefined) ?? process.env.TENANT_DATA_ZONE,
+    residency: rec.residency as string | undefined,
     actor: (rec.actor as string | null | undefined) ?? (rec.authed ? String(rec.sub ?? 'authenticated') : 'anonymous'),
     action: (rec.action as string) ?? (rec.kind === 'action' ? String(rec.kind) : 'request'),
     outcome,

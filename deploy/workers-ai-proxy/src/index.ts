@@ -81,7 +81,21 @@ function resolveWorkerModel(model: string): string {
 }
 
 /** Convert OpenAI tool definitions to Workers AI format */
-function toolsToWorkerFormat(tools?: any[]): any[] {
+/** OpenAI wire format 工具（type:function / function{name,description,parameters}）。 */
+interface OpenAiTool {
+  type?: unknown;
+  function?: { name?: unknown; description?: unknown; parameters?: unknown };
+  [k: string]: unknown;
+}
+/** Workers AI 工具格式（扁平 name/description/parameters）。 */
+interface WorkerTool {
+  name: unknown;
+  description?: unknown;
+  parameters?: unknown;
+  [k: string]: unknown;
+}
+
+function toolsToWorkerFormat(tools?: unknown[]): WorkerTool[] {
   if (!tools || !Array.isArray(tools)) return [];
   return tools.map((t) => {
     if (t.type === 'function' && t.function) {
@@ -101,7 +115,7 @@ function toolsToWorkerFormat(tools?: any[]): any[] {
  * 会往系统消息注入 `cache_control`，若不剥离，GLM-4.7-flash 等严格模型会返回
  * `Invalid input` (code 8001)。转发前统一剥离这些不兼容字段。
  */
-function stripIncompatibleFields(messages: any[]): any[] {
+function stripIncompatibleFields(messages: unknown): unknown[] {
   if (!Array.isArray(messages)) return [];
   return messages.map((m) => {
     if (m && typeof m === 'object') {
@@ -113,7 +127,7 @@ function stripIncompatibleFields(messages: any[]): any[] {
 }
 
 /** 把 OpenAI 工具转换成 Workers AI 格式，并兜底保证 parameters 是合法 JSON Schema 对象。 */
-function sanitizeTools(tools?: any[]): any[] {
+function sanitizeTools(tools?: unknown[]): WorkerTool[] {
   const converted = toolsToWorkerFormat(tools);
   return converted.map((t) => {
     let params = t.parameters && typeof t.parameters === 'object' ? t.parameters : undefined;
@@ -129,7 +143,7 @@ function sanitizeTools(tools?: any[]): any[] {
  * Build the Workers AI request body from an OpenAI Chat Completions body.
  * Sends `messages` array directly (Workers AI accepts OpenAI format).
  */
-function buildWorkerBody(body: any): Record<string, unknown> {
+function buildWorkerBody(body: Record<string, unknown>): Record<string, unknown> {
   const msg = String(body.model || 'llama-3-8b');
   const workerModel = resolveWorkerModel(msg);
   const stream = body.stream === true;
@@ -143,32 +157,32 @@ function buildWorkerBody(body: any): Record<string, unknown> {
 
   // Optional parameters
   if (body.max_tokens || body.max_completion_tokens) {
-    (workerBody as any).max_tokens = body.max_tokens || body.max_completion_tokens;
+    workerBody.max_tokens = body.max_tokens || body.max_completion_tokens;
   }
   if (body.temperature !== undefined) {
-    (workerBody as any).temperature = body.temperature;
+    workerBody.temperature = body.temperature;
   }
   if (body.top_p !== undefined) {
-    (workerBody as any).top_p = body.top_p;
+    workerBody.top_p = body.top_p;
   }
   if (body.frequency_penalty !== undefined) {
-    (workerBody as any).frequency_penalty = body.frequency_penalty;
+    workerBody.frequency_penalty = body.frequency_penalty;
   }
   if (body.presence_penalty !== undefined) {
-    (workerBody as any).presence_penalty = body.presence_penalty;
+    workerBody.presence_penalty = body.presence_penalty;
   }
   if (body.n && body.n > 1) {
-    (workerBody as any).n = body.n;
+    workerBody.n = body.n;
   }
   if (tools.length > 0) {
-    (workerBody as any).tools = tools;
+    workerBody.tools = tools;
   }
 
   return { model: workerModel, ...workerBody };
 }
 
 /** Estimate token usage when Workers AI doesn't provide it in the response */
-function estimateUsage(promptText: string, response: string, tools?: any[]): {
+function estimateUsage(promptText: string, response: string, tools?: unknown[]): {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -219,7 +233,7 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
     const data = await resp.json();
     const result = data?.result ?? data;
 
-    let openaiResp: any;
+    let openaiResp: Record<string, unknown>;
     // Workers AI newer models (glm-4.7-flash, etc.) return OpenAI format inside result
     if (result?.choices && Array.isArray(result.choices)) {
       openaiResp = result;
@@ -228,7 +242,11 @@ async function handleChatCompletions(request: Request, env: Env): Promise<Respon
     else if (typeof result?.response === 'string') {
       const content = result.response;
       const messages = workerBody.messages || [];
-      const promptText = messages.map((m: any) => m.content || '').join('');
+      const promptText = (Array.isArray(messages) ? messages : [])
+        .map((m) =>
+          m && typeof m === 'object' ? String((m as Record<string, unknown>).content ?? '') : ''
+        )
+        .join('');
       const estimatedUsage = estimateUsage(promptText, content, workerBody.tools);
       openaiResp = {
         id: `chatcmpl-${Date.now()}`,

@@ -17,6 +17,10 @@ export interface AuditEvent {
   ts?: string;
   /** 租户维度（合规审计的核心维度；空 / anonymous 表示未分租户）。 */
   tenantId?: string | null;
+  /** P1：数据分区（合规审计维度，与 TenantContext.dataZone 对应）。 */
+  dataZone?: string;
+  /** P1：数据驻留约束（与 TenantContext.residency 对应）。 */
+  residency?: string;
   /** 操作者身份（如认证后的 userId / apiKey id；未认证为 'anonymous'）。 */
   actor?: string;
   /** 动作名（如 'agent.run.start' / 'agent.run.end' / 'quota.denied' / 'a2a.send'）。 */

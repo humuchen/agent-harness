@@ -307,12 +307,23 @@ export class IntentRouter {
     if (JEV_ROUTER_ON && resolveJevCreds()) {
       try {
         const jd = await jevClassifyDomain(prompt, KNOWN_DOMAINS as string[]);
-        if (jd && jd.confidence >= 0.6 && jd.domain !== 'generic') {
+        if (jd) {
+          // 无论是否覆盖 domain，都先记录「本轮分类调用过 Jev」的事实（含原始判定与置信度）：
+          // 低置信度 / generic 判定虽然计入了 getJevStats()，但若不落进 Intent，
+          // 派发层就无法补发 jev:call —— 形成接口有调用、执行详情却无痕迹的盲区。
           intent = {
             ...intent,
-            domain: jd.domain as IndustryDomain,
-            source: 'jev'
+            jevInvoked: true,
+            jevConfidence: jd.confidence,
+            jevDomain: jd.domain
           };
+          if (jd.confidence >= 0.6 && jd.domain !== 'generic') {
+            intent = {
+              ...intent,
+              domain: jd.domain as IndustryDomain,
+              source: 'jev'
+            };
+          }
         }
       } catch {
         /* Jev 出错 → 保持旧逻辑（rule/llm）结果 */

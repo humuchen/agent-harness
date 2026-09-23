@@ -568,15 +568,15 @@ export async function dbCall<T>(fn: () => T | Promise<T>, what: string): Promise
 }
 
 /** 规范化 prepare().all()：直接 await。兼容 sqlite 同步 / turso 异步。 */
-export async function allRows(stmt: { all: (...p: any[]) => MaybePromise<Record<string, unknown>[]> }, ...params: any[]): Promise<Record<string, unknown>[]> {
+export async function allRows(stmt: { all: (...p: unknown[]) => MaybePromise<Record<string, unknown>[]> }, ...params: any[]): Promise<Record<string, unknown>[]> {
   return await stmt.all(...params);
 }
 
-export async function getRow(stmt: { get: (...p: any[]) => MaybePromise<Record<string, unknown> | undefined> }, ...params: any[]): Promise<Record<string, unknown> | undefined> {
+export async function getRow(stmt: { get: (...p: unknown[]) => MaybePromise<Record<string, unknown> | undefined> }, ...params: any[]): Promise<Record<string, unknown> | undefined> {
   return await stmt.get(...params);
 }
 
-export async function runStmt(stmt: { run: (...p: any[]) => MaybePromise<{ changes: number; lastInsertRowid: number | bigint }> }, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number | bigint }> {
+export async function runStmt(stmt: { run: (...p: unknown[]) => MaybePromise<{ changes: number; lastInsertRowid: number | bigint }> }, ...params: any[]): Promise<{ changes: number; lastInsertRowid: number | bigint }> {
   return await stmt.run(...params);
 }
 

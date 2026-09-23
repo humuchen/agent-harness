@@ -272,19 +272,29 @@ async function establishConnection(
   });
   const toolsInfo: ToolInfo[] = [];
   const names: string[] = [];
-  for (const tool of conn.tools) {
+  for (const rawTool of conn.tools) {
+    const tool = rawTool as {
+      name?: unknown;
+      description?: unknown;
+      inputSchema?: unknown;
+    };
+    const name = String(tool.name ?? '');
     // 内存传输（测试）或旧的 registerMcpTools 路径不加前缀；多服务路径统一加 <server>__ 前缀。
-    const registeredName = config.transportProvided ? tool.name : `${config.name}__${tool.name}`;
-    const description = tool.description ?? '';
+    const registeredName = config.transportProvided ? name : `${config.name}__${name}`;
+    const description = String(tool.description ?? '');
     const parameters = (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>;
     registry.register(
       registeredName,
       config.transportProvided ? description : `[${config.name}] ${description}`,
       parameters,
-      makeResilientExecutor(config, tool.name, tool.inputSchema),
+      makeResilientExecutor(
+        config,
+        name,
+        tool.inputSchema as Record<string, unknown> | undefined
+      ),
       `mcp:${config.name}`
     );
-    toolsInfo.push({ registeredName, originalName: tool.name, description });
+    toolsInfo.push({ registeredName, originalName: name, description });
     names.push(registeredName);
   }
   return { client: conn.client, names, toolsInfo };
@@ -294,11 +304,19 @@ async function establishConnection(
  * 生成 MCP 工具执行器：调用失败时先尝试一次自动重连，成功则重试，
  * 使远端 server 重启 / 连接抖动对运行中的 agent 透明自愈。
  */
+/** MCP JSON-RPC 结果的最小视图（content/isError；结构按 unknown 读取）。 */
+interface McpToolResult {
+  isError?: unknown;
+  content?: unknown;
+  [k: string]: unknown;
+}
+type JsonArgs = Record<string, unknown>;
+
 function makeResilientExecutor(
   config: McpConnectionConfig,
   originalName: string,
   schema?: Record<string, unknown>
-): (args: any) => Promise<string> {
+): (args: JsonArgs) => Promise<string> {
   const key = config.name;
   return async (args) => {
     const live = liveClients.get(key);
@@ -327,7 +345,10 @@ function makeResilientExecutor(
  *
  * 仅当字段为 undefined/null 时判定缺失；空字符串 "" 视为合法（write_file 可用它清空/新建文件）。
  */
-export function missingRequiredArgs(schema: any, args: any): string[] {
+export function missingRequiredArgs(
+  schema: { required?: unknown } | undefined | null,
+  args: JsonArgs | undefined
+): string[] {
   const required: string[] = Array.isArray(schema?.required) ? schema.required : [];
   if (required.length === 0) return [];
   const obj = args && typeof args === 'object' ? args : {};
@@ -341,7 +362,7 @@ export function missingRequiredArgs(schema: any, args: any): string[] {
 async function callAndStringify(
   client: Client,
   originalName: string,
-  args: any,
+  args: JsonArgs,
   serverLabel = 'mcp',
   schema?: Record<string, unknown>
 ): Promise<string> {
@@ -362,7 +383,7 @@ async function callAndStringify(
     0,
     Number(process.env.MCP_CALL_TIMEOUT_MS ?? 180_000) || 0
   );
-  const res: any =
+  const res =
     callTimeoutMs > 0
       ? await withMcpTimeout(
           client.callTool({ name: originalName, arguments: args }),
@@ -371,7 +392,7 @@ async function callAndStringify(
           'callTool'
         )
       : await client.callTool({ name: originalName, arguments: args });
-  if ((res as any).isError) {
+  if (res.isError) {
     throw new Error('MCP tool error: ' + JSON.stringify(res.content));
   }
   return mcpContentToString(res.content);
@@ -427,12 +448,12 @@ async function performReconnect(key: string): Promise<boolean> {
     incCounter('mcp.reconnect.success');
     structLog('info', 'mcp server reconnected', { server: key, tools: est.toolsInfo.length });
     return true;
-  } catch (e: any) {
+  } catch (e) {
     entry.status = 'error';
     entry.meta.status = 'error';
     entry.health = 'unhealthy';
     entry.meta.health = 'unhealthy';
-    entry.lastError = e?.message ?? String(e);
+    entry.lastError = e instanceof Error ? e.message : String(e);
     entry.meta.error = entry.lastError;
     entry.reconnectAttempts += 1;
     entry.meta.reconnectAttempts = entry.reconnectAttempts;
@@ -478,9 +499,13 @@ const PROBE_FAILURE_THRESHOLD = Math.max(1, Number(process.env.MCP_PROBE_FAILURE
 
 async function probeOnce(entry: LiveMcp, key: string): Promise<void> {
   if (entry.closed || entry.reconnecting) return;
-  const client = entry.client as any;
+  const client = entry.client as unknown as {
+    ping?: (...p: unknown[]) => unknown;
+  };
   const pingFn = typeof client.ping === 'function' ? client.ping.bind(client) : null;
-  const probe = pingFn ? pingFn() : entry.client.listTools();
+  const probe = pingFn
+    ? Promise.resolve(pingFn())
+    : entry.client.listTools();
   try {
     await withTimeout(probe, HEALTH_TIMEOUT_MS);
     entry.health = 'healthy';
@@ -663,10 +688,10 @@ export async function connectMcpServer(
     const entry = liveClients.get(opts.name);
     if (entry) startProbe(entry, opts.name);
     structLog('info', 'mcp server connected', { server: opts.name, tools: est.toolsInfo.length });
-  } catch (e: any) {
+  } catch (e) {
     meta.status = 'error';
     meta.health = 'unhealthy';
-    meta.error = e?.message ?? String(e);
+    meta.error = e instanceof Error ? e.message : String(e);
     structLog('error', 'mcp server connect failed', { server: opts.name, error: meta.error });
   }
   return meta;
@@ -685,7 +710,7 @@ async function connectMcpClient(args: {
   client: Client;
   name?: string;
   timeoutMs?: number;
-}): Promise<{ client: Client; tools: any[] }> {
+}): Promise<{ client: Client; tools: Array<Record<string, unknown>> }> {
   const { serverUrl, command, useStdio, headers, transport, transportType, args: cmdArgs, env, client, name, timeoutMs } = args;
   // 可配置 MCP 连接超时（默认 60s）。stdio 服务器（如 npx/uvx）首次启动需下载包，
   // 15s 易超时；可通过 MCP_CONNECT_TIMEOUT_MS 环境变量或 timeoutMs 参数覆盖。
@@ -727,9 +752,9 @@ async function connectMcpClient(args: {
     await withMcpTimeout(connPromise, MCP_CONNECT_TIMEOUT_MS, serverLabel, 'connect');
     const list = await withMcpTimeout(client.listTools(), MCP_CONNECT_TIMEOUT_MS, serverLabel, 'listTools');
     return { client, tools: list.tools };
-  } catch (e: any) {
+  } catch (e) {
     // 补充服务器上下文信息，便于排查。
-    const detail = e?.message ?? String(e);
+    const detail = e instanceof Error ? e.message : String(e);
     throw new Error(`MCP server "${serverLabel}" ${detail}`);
   }
 }
@@ -738,7 +763,9 @@ async function connectMcpClient(args: {
 function mcpContentToString(content: unknown): string {
   if (Array.isArray(content)) {
     return content
-      .map((c: any) => (c.type === 'text' ? c.text : JSON.stringify(c)))
+      .map((c: Record<string, unknown>) =>
+        c.type === 'text' ? String(c.text ?? '') : JSON.stringify(c)
+      )
       .join('\n');
   }
   return JSON.stringify(content);

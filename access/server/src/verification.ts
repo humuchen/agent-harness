@@ -75,7 +75,7 @@ export async function runVerification(onEvent: (e: VerifyEvent) => void): Promis
       dryRun: false,
       statusPath: 'status',
       doneStatuses: ['SUCCESS', 'FAILED'],
-      fetchImpl: (async (input: any, _init?: any) => {
+      fetchImpl: (async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
         const url = String(input);
         if (url.includes('/execute/')) return jsonResponse({ executionId: 'exec-FAIL-1' });
         if (url.includes('/executions/')) return jsonResponse({ status: 'FAILED' });
@@ -108,10 +108,13 @@ export async function runVerification(onEvent: (e: VerifyEvent) => void): Promis
         },
       ],
     }));
-    server.setRequestHandler(CallToolRequestSchema, async (req: any) => {
-      const args = (req.params.arguments ?? {}) as { message?: string };
-      return { content: [{ type: 'text', text: `echo: ${args.message ?? ''}` }] };
-    });
+    server.setRequestHandler(
+      CallToolRequestSchema,
+      async (req: { params?: { arguments?: Record<string, unknown> } }) => {
+        const args = (req.params?.arguments ?? {}) as { message?: string };
+        return { content: [{ type: 'text', text: `echo: ${args.message ?? ''}` }] };
+      }
+    );
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -165,7 +168,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function fakeHarnessBackend(finalStatus: string) {
   let poll = 0;
   const statusSequence = ['RUNNING', 'RUNNING', finalStatus];
-  return (async (input: any, _init?: any): Promise<Response> => {
+  return (async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]): Promise<Response> => {
     const url = String(input);
     if (url.includes('/execute/')) {
       return jsonResponse({ pipelineExecutionId: 'exec-XYZ-789' });

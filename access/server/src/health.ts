@@ -103,13 +103,13 @@ export async function handleReadiness(
       status: 'ok',
       details: {
         count: mcpServers.length,
-        servers: mcpServers.map((s: any) => s.name || s.id)
+        servers: mcpServers.map((s) => s.name)
       }
     };
-  } catch (e: any) {
+  } catch (e) {
     checks.mcp = {
       status: 'error',
-      error: e?.message || 'MCP检查失败'
+      error: e instanceof Error ? e.message : 'MCP检查失败'
     };
     status = status === 'error' ? 'error' : 'degraded';
   }
@@ -190,11 +190,11 @@ async function checkDatabase(): Promise<HealthCheck> {
       latency: Date.now() - start,
       details: { backend: dbBackend }
     };
-  } catch (e: any) {
+  } catch (e) {
     return {
       status: 'error',
       latency: Date.now() - start,
-      error: e?.message || '数据库连接失败'
+      error: e instanceof Error ? e.message : '数据库连接失败'
     };
   }
 }
@@ -226,7 +226,7 @@ async function checkRedis(): Promise<HealthCheck> {
   //     status: 'ok',
   //     latency: Date.now() - start
   //   };
-  // } catch (e: any) {
+  // } catch (e) {
   //   return {
   //     status: 'error',
   //     latency: Date.now() - start,
@@ -262,11 +262,11 @@ async function checkRedis(): Promise<HealthCheck> {
       latency,
       details: { configured: true }
     };
-  } catch (e: any) {
+  } catch (e) {
     return {
       status: 'error',
       latency: Date.now() - start,
-      error: e?.message || 'Redis连接失败'
+      error: e instanceof Error ? e.message : 'Redis连接失败'
     };
   }
 }

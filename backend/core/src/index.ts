@@ -33,6 +33,7 @@ export * from './quota/engine';
 export * from './audit';
 export * from './sandbox/types';
 export * from './sandbox/isolation';
+export { detectCapabilities, resolveHelperPath } from './sandbox/detect';
 export * from './loadEnv';
 export * from './llm';
 export * from './integrations/harness-client.types';

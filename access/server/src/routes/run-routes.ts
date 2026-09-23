@@ -60,12 +60,17 @@ import { decryptApiKey } from '../custom-models';
 import { archivePlanArtifacts } from '../plan-artifacts';
 import type { Action, AuthContext } from '../authz';
 
+
+/** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
+function asObj(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
 export interface RunRouteDeps {
   guard: (
     req: IncomingMessage,
     res: ServerResponse,
     action: Action,
-    body?: any
+    body?: Record<string, unknown>
   ) => Promise<AuthContext | null>;
   auditAction: (action: string, fields: Record<string, unknown>) => void;
   isShuttingDown: () => boolean;
@@ -137,7 +142,9 @@ export async function handleRun(
   // 同一 run 的 run:end 会被 run-queue 补发一次（不带 runId 的重复帧），用此标志保证
   // 终态 final 只广播一次，避免他端把重复帧当成「新一轮回复」而追加多余 assistant。
   let runEnded = false;
-  const maybeBroadcastStream = (e: any): void => {
+  const maybeBroadcastStream = (
+    e: { type?: unknown; delta?: unknown; final?: unknown } | undefined
+  ): void => {
     if (!chatSessionId || !ctx || ctx.sub === 'anon') return;
     const t = e?.type;
     if (t === 'llm:token' && typeof e?.delta === 'string') {
@@ -445,7 +452,7 @@ export async function handleRun(
     parent.children.push(n);
     return n;
   };
-  const traceHandle = (ev: any): void => {
+  const traceHandle = (ev: { type?: string; [k: string]: unknown }): void => {
     switch (ev?.type) {
       case 'run:meta': {
         const r = traceEnsureRoot();
@@ -530,8 +537,9 @@ export async function handleRun(
         break;
       }
       case 'tool:start': {
-        if (!traceLlm || !ev.call) break;
-        const name = String(ev.call.name ?? 'tool');
+        const callObj = asObj(ev.call);
+        if (!traceLlm || !callObj) break;
+        const name = String(callObj.name ?? 'tool');
         const retrieval = RETRIEVAL_RE.test(name);
         traceLastTool = traceNode(
           traceLlm,
@@ -540,9 +548,9 @@ export async function handleRun(
           'pending',
           {
             detail:
-              typeof ev.call.arguments === 'string'
-                ? ev.call.arguments
-                : JSON.stringify(ev.call.arguments ?? {})
+              typeof callObj.arguments === 'string'
+                ? callObj.arguments
+                : JSON.stringify(callObj.arguments ?? {})
           }
         );
         break;
@@ -564,14 +572,15 @@ export async function handleRun(
       case 'run:cost': {
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
-        const est = ev.estTokens;
+        const est = asObj(ev.estTokens);
+        const num = (v: unknown): number => Number(v) || 0;
         const estTotal = est
-          ? est.system + est.tools + est.history + est.completion
+          ? num(est.system) + num(est.tools) + num(est.history) + num(est.completion)
           : 0;
         traceNode(parent, 'cost', '成本 / 用量', 'ok', {
           meta: {
             tokens: String(
-              ev.cumulativeTokens ?? ev.usage?.total_tokens ?? '?'
+              ev.cumulativeTokens ?? asObj(ev.usage)?.total_tokens ?? '?'
             ),
             cost:
               ev.cumulativeCost != null
@@ -581,18 +590,18 @@ export async function handleRun(
             ...(ev.model ? { model: String(ev.model) } : {}),
             ...(est
               ? {
-                  系统: String(est.system),
-                  工具: `${est.tools}${
+                  系统: String(est.system ?? ''),
+                  工具: `${num(est.tools)}${
                     estTotal
-                      ? ` (${((est.tools / estTotal) * 100).toFixed(0)}%)`
+                      ? ` (${((num(est.tools) / estTotal) * 100).toFixed(0)}%)`
                       : ''
                   }`,
-                  历史: `${est.history}${
+                  历史: `${num(est.history)}${
                     estTotal
-                      ? ` (${((est.history / estTotal) * 100).toFixed(0)}%)`
+                      ? ` (${((num(est.history) / estTotal) * 100).toFixed(0)}%)`
                       : ''
                   }`,
-                  输出: `${est.completion}`
+                  输出: `${num(est.completion)}`
                 }
               : {})
           }
@@ -620,8 +629,12 @@ export async function handleRun(
           调用方: String(ev.caller ?? '?'),
           延迟: `${Number(ev.latencyMs ?? 0)}ms`,
           ...(ev.questions != null ? { 问题数: String(ev.questions) } : {}),
-          ...(ev.tokens
-            ? { tokens: `${Number(ev.tokens.input ?? 0)}+${Number(ev.tokens.output ?? 0)}` }
+          ...(asObj(ev.tokens)
+            ? {
+                tokens: `${Number(asObj(ev.tokens)?.input ?? 0)}+${Number(
+                  asObj(ev.tokens)?.output ?? 0
+                )}`
+              }
             : {})
         };
         traceNode(jParent, 'tool', `Jev 决策 · ${String(ev.caller ?? '?')}`, ev.ok === false ? 'error' : 'ok', {
@@ -636,11 +649,12 @@ export async function handleRun(
         traceEnsureRoot();
         const parent = traceParent ?? traceRoot!;
         const tcHitPct = (Number(ev.hitRate) * 100).toFixed(1);
-        const tcByModel = Object.entries<{
-          queries: number;
-          hits: number;
-          hitRate: number;
-        }>(ev.byModel ?? {})
+        const tcByModel = Object.entries(
+          (asObj(ev.byModel) ?? {}) as Record<
+            string,
+            { queries: number; hits: number; hitRate: number }
+          >
+        )
           .map(
             ([m, st]) =>
               `${m}: ${(Number(st.hitRate) * 100).toFixed(0)}% (${st.hits}/${
@@ -671,7 +685,7 @@ export async function handleRun(
             score: String(ev.score ?? '?'),
             passed: ev.passed ? '通过' : '未通过'
           },
-          result: (ev.reasons ?? []).join('\n')
+          result: (Array.isArray(ev.reasons) ? ev.reasons : []).join('\n')
         });
         break;
       }
@@ -743,7 +757,11 @@ export async function handleRun(
       ts: Date.now()
     });
   };
-  unsub = runQueue.subscribe(jobId, (e) => {
+  unsub = runQueue.subscribe(
+    jobId,
+    (rawEvent: unknown) => {
+      const e = rawEvent as { type?: string; seq?: number; __synthetic?: boolean; [k: string]: unknown };
+      {
     // 断线续传：重连订阅方跳过已消费的旧事件（send 与持久化副作用一并跳过，
     // 防止重放把 user/assistant 消息、trace 再次落盘造成重复）。
     const seq = (e as { seq?: number }).seq;
@@ -865,10 +883,17 @@ export async function handleRun(
     // 多会话 Chat App：把 run 的首尾事件落盘到会话存储（user 提问 + assistant 回答），
     // 并在过程中累积推理与工具调用，run 结束时一并写入，保证切换会话后再切回可完整还原。
     if (chatSessionId) {
-      const ev = e as { type?: string; input?: unknown; final?: unknown };
-      const a = ev as any;
+      const ev = e as {
+        type?: string;
+        input?: unknown;
+        final?: unknown;
+        delta?: unknown;
+        call?: Record<string, unknown>;
+        [k: string]: unknown;
+      };
+      const a = ev;
       if (ev.type === 'llm:reasoning' && typeof a.delta === 'string') {
-        reasoningBuf += a.delta as string;
+        reasoningBuf += a.delta;
       } else if (ev.type === 'tool:start' && a.call) {
         const c = a.call;
         toolMap.set(String(c.id), {
@@ -1066,7 +1091,9 @@ export async function handleRun(
         /* 连接可能已关闭 */
       }
     }
-  });
+      }
+    }
+  );
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
   // P1-1：客户端断连时立即中止 in-flight job（用户关浏览器后 agent 继续烧 token 最多 5 分钟 → 改为立即 abort）。
   // 仅当该 job 无其他活跃订阅者时才 abort（允许多客户端同时订阅同一 job）。
@@ -1572,7 +1599,7 @@ async function handleWorkflow(
   // llm:token 不在 StepTraceCollector 白名单内，此处过滤对调用链路落盘零影响；
   // 非 plan 工作流（def 来源）保持全量直播，行为不变。
   const quietPresentation = !!body.plan;
-  const onHarnessEvent = (e: any, stepId?: string) => {
+  const onHarnessEvent = (e: { type?: unknown }, stepId?: string) => {
     if (quietPresentation && e?.type === 'llm:token') return;
     // P5.1 同步修复：外层帧携带 stepId —— 前端思考面板据此把 llm:reasoning 归因到
     // 正确任务（wf:step:start 丢失/乱序时自愈，不再错挂旧任务标签）。
@@ -1608,11 +1635,13 @@ async function handleWorkflow(
   // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 立即 400，不进入异步执行才失败。
   try {
     engine.validateWorkflow(def);
-  } catch (e: any) {
+  } catch (e) {
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(
       JSON.stringify({
-        error: `invalid workflow topology: ${e?.message ?? String(e)}`
+        error: `invalid workflow topology: ${
+          e instanceof Error ? e.message : String(e)
+        }`
       })
     );
     return;
@@ -1634,7 +1663,7 @@ async function handleWorkflow(
   activeWorkflowAborts.set(def.id, runAbort);
   engine
     .run(def, initialInput, runAbort.signal)
-    .then(async (run: any) => {
+    .then(async (run: unknown) => {
       // P4.6：plan 桥终态先归档「交付文件」（幂等、无效产出跳过、绝不抛错），
       // 归档完成再发 _wf_done 终态帧——前端在终态帧后拉 GET /api/artifacts?runId=<wfId> 必然命中。
       await archivePlanArtifacts({ def, run: run as WorkflowRun, owner: ctx.sub }).catch((e) => {
@@ -1643,8 +1672,13 @@ async function handleWorkflow(
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
       if (!closed) res.end();
     })
-    .catch((e: any) => {
-      if (!closed) send({ type: 'wf:error', workflowId: def.id, message: e?.message ?? String(e) });
+    .catch((e) => {
+      if (!closed)
+        send({
+          type: 'wf:error',
+          workflowId: def.id,
+          message: e instanceof Error ? e.message : String(e)
+        });
       if (!closed) res.end();
     })
     .finally(() => {

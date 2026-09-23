@@ -17,7 +17,7 @@
 
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDbAdapter, type DbAdapter } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath, type DbAdapter } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
 
 // ─── provider 默认端点 ───────────────────────────────────────────────────────
@@ -85,7 +85,9 @@ function dbc(): DbAdapter {
 }
 
 function getDbFile(): string {
-  return process.env.PROVIDER_KEYS_DB_FILE || join(process.cwd(), 'data', 'provider-keys.db');
+  // P1：按 TENANT_DATA_ZONE 做物理分区（合规域落独立文件，general/未设保持原路径不变）。
+  const base = process.env.PROVIDER_KEYS_DB_FILE || join(process.cwd(), 'data', 'provider-keys.db');
+  return resolveTenantDbPath(base, process.env.TENANT_DATA_ZONE);
 }
 
 async function ensureDb(): Promise<void> {

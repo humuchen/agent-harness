@@ -18,6 +18,15 @@ export interface TenantContext {
   name?: string;
   /** 行业域（可选，用于行业策略画像预选，见 policy/engine）。 */
   domain?: string;
+  /**
+   * P1：数据分区（compliance data zone），决定该租户的数据落哪个存储后端/分区键。
+   * 'general' = 默认通用分区（向后兼容，无隔离要求）；
+   * 'medical' / 'financial' 等 = 强合规分区，配合 ComplianceProfile.dataResidency 使用。
+   * 全字段可选，未设时落 'general'。
+   */
+  dataZone?: 'general' | 'medical' | 'financial' | string;
+  /** 可选的数据驻留约束（如 'cn' / 'us'），仅记录、不强制；实际驻留由 DB 后端配置决定。 */
+  residency?: string;
 }
 
 /**
@@ -30,12 +39,17 @@ export function resolveTenantContext(raw: {
   authenticatedTenantId?: string | null;
   name?: string;
   domain?: string;
+  dataZone?: 'general' | 'medical' | 'financial' | string;
+  residency?: string;
 }): TenantContext | null {
   const id = raw.authenticatedTenantId || raw.tenantId;
   if (!id) return null;
   const normalized = sanitizeKey(id);
   if (normalized === 'anonymous') return null;
-  return { id: normalized, name: raw.name, domain: raw.domain };
+  // P1 收尾：dataZone 缺省读 TENANT_DATA_ZONE env（部署级合规分区基线），
+  // 调用方显式传入的 raw.dataZone 优先（per-request 覆盖）。
+  const dataZone = raw.dataZone ?? process.env.TENANT_DATA_ZONE;
+  return { id: normalized, name: raw.name, domain: raw.domain, dataZone, residency: raw.residency };
 }
 
 /**
