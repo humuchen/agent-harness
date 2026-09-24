@@ -30,6 +30,7 @@ export * from './plan';
 export * from './plan-propose';
 export * from './verify';
 export * from './quota/engine';
+export * from './quota/tenant-store';
 export * from './audit';
 export * from './sandbox/types';
 export * from './sandbox/isolation';

@@ -253,7 +253,8 @@ import {
 } from './provider-keys';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
-import { quotaEngine } from '@agent-harness/core';
+import { quotaEngine, TenantQuotaStore } from '@agent-harness/core';
+import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
 import { registerOAuthRoutes } from './oauth';
@@ -1817,6 +1818,32 @@ async function bootstrap(): Promise<void> {
     structLog('info', 'quota', {
       enabled: true,
       maxCostPerWindow,
+    });
+  }
+
+  // 配额接线（DB tenant 表 + 多副本）：租户级配额配置从 tenant_quotas 表读取
+  // （TTL 缓存，admit 热路径不打 DB）；配置了 REDIS_URL 时注入分布式后端，
+  // admit/release/结算走 Lua 原子脚本（多副本精确），Redis 故障自动降级进程内。
+  // 表不存在时 store 启动自愈建表（CREATE TABLE IF NOT EXISTS），失败仅告警不阻断启动。
+  try {
+    const tenantQuotaStore = new TenantQuotaStore({
+      file: process.env.TENANT_QUOTA_DB_FILE || process.env.DB_SQLITE_FILE || '/var/lib/agent-harness/tenant-quotas.db'
+    });
+    await tenantQuotaStore.init();
+    quotaEngine.setTenantStore(tenantQuotaStore);
+    const redisForQuota = getRedisClient();
+    if (redisForQuota) {
+      quotaEngine.setRedisBackend(redisForQuota);
+    }
+    structLog('info', 'quota', {
+      tenantStore: true,
+      db: process.env.TENANT_QUOTA_DB_FILE || process.env.DB_SQLITE_FILE || '/var/lib/agent-harness/tenant-quotas.db',
+      backend: redisForQuota ? 'redis' : 'in-process'
+    });
+  } catch (e) {
+    structLog('warn', 'quota', {
+      tenantStore: false,
+      error: e instanceof Error ? e.message : String(e)
     });
   }
 

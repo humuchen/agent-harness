@@ -732,15 +732,15 @@ export class RunQueue {
       // P2.2 用量统计：捕获 run:cost 事件，把 token / 成本累计进 per-owner 配额引擎
       // （keyed by owner，与 admit 的 tenantId 维度解耦；默认无硬上限，仅统计看板用）。
       if (e.type === 'run:cost') {
-        quotaEngine.recordUsage(job.owner ?? 'anonymous', {
-          tokens:
-            (e as unknown as { usage?: { total_tokens?: number } }).usage
-              ?.total_tokens ?? 0,
-          cost:
-            typeof (e as unknown as { stepCost?: number }).stepCost === 'number'
-              ? (e as unknown as { stepCost: number }).stepCost
-              : 0
-        });
+        const costEvt = e as unknown as { usage?: { total_tokens?: number }; stepCost?: number };
+        const tokens = costEvt.usage?.total_tokens ?? 0;
+        const cost =
+          typeof costEvt.stepCost === 'number' ? costEvt.stepCost : 0;
+        // 租户维度累计（run 结束时经 settleUsage 冲销 admit 预留并记入 tenant 窗口）。
+        actualTokens += tokens;
+        actualCost += cost;
+        // owner 维度统计看板保持原语义（与 admit 的 tenantId 维度解耦）。
+        quotaEngine.recordUsage(job.owner ?? 'anonymous', { tokens, cost });
       }
       emit(e);
     };
@@ -762,6 +762,11 @@ export class RunQueue {
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
     const tenantIdForQuota = job.tenantId ?? 'anonymous';
+    // 配额闭环（DB tenant 表 + 多副本）：租户维度实际用量累计 + admit 预留，
+    // run 结束在 finally 里 settleUsage（实际替换预留）+ releaseAsync（归还并发槽）。
+    let actualTokens = 0;
+    let actualCost = 0;
+    let quotaReservation: { tokens: number; cost: number } | null = null;
     // 在 try 之外保存，供 finally 中的审计留存引用（try 内 const 不可见于 finally）。
     let resolvedAgentId: string | null = null;
     let admitted = false;
@@ -866,16 +871,25 @@ export class RunQueue {
           return;
         }
 
-        // P0-2 / P0-B: 配额/计费准入：QPS 令牌桶 + 并发信号量 + 成本硬上限。
-        // 从环境变量读取 MAX_COST_PER_WINDOW（默认 0=关闭硬上限）。
-        // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
-        // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
+        // P0-2 / P0-B / 配额接线：准入升级为 admitAsync（多副本走 Redis Lua 原子脚本，
+        // 故障自动降级进程内）。配置优先级：DB tenant 表（getQuota 内部叠加，仅覆盖显式
+        // 字段）> env default（server 启动 setDefault 已并入 default cfg）。
+        // 硬上限维度：maxCostPerWindow 或 maxTokensPerWindow 任一 > 0 即启用窗口硬上限。
         // P0-B 修复：requestedCost 传本次预估成本（或 0），而非窗口总预算；
         // 原代码传 maxCostPerWindow 导致每次 admit 累加整个窗口预算，第 2 次调用即被拒。
-        const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
+        const quotaCfg = quotaEngine.getQuota(tenantIdForQuota);
+        const costLimitOn = (quotaCfg.maxCostPerWindow ?? 0) > 0;
+        const hardLimit = costLimitOn || (quotaCfg.maxTokensPerWindow ?? 0) > 0;
         const estimatedCostPerRun = 0.5; // 单轮 run 预估成本（美元），用于配额准入判断
-        const costPerRun = maxCostPerWindow > 0 ? estimatedCostPerRun : 0;
-        const admit = quotaEngine.admit(tenantIdForQuota, { cost: costPerRun }, maxCostPerWindow > 0);
+        const admit = await quotaEngine.admitAsync(
+          tenantIdForQuota,
+          {
+            cost: costLimitOn ? estimatedCostPerRun : 0,
+            // token 无法预估：预留 0，run 结束按 run:cost 实际累计结算冲销
+            tokens: 0
+          },
+          hardLimit
+        );
         if (!admit.allowed) {
           emit({
             type: 'warn',
@@ -899,6 +913,7 @@ export class RunQueue {
           return;
         }
         admitted = true;
+        quotaReservation = admit.reservation ?? { tokens: 0, cost: 0 };
         resolvedAgentId = route?.agentId ?? job.agentId ?? 'default';
         audit({
           tenantId: job.tenantId,
@@ -1203,8 +1218,21 @@ export class RunQueue {
           'run.totalMs',
           job.finishedAt - (job.startedAt ?? job.finishedAt)
         );
-        // P2.a：归还并发额度（admit 成功才消耗；denied 路径 active=0，release 为 no-op 安全）。
-        if (admitted) quotaEngine.release(tenantIdForQuota);
+        // P2.a：配额闭环收尾——先结算实际用量（冲销 admit 预留，实际替换预留），
+        // 再归还并发槽（多副本走 Redis Lua；Redis 故障自动降级进程内）。
+        // settle 失败不阻断收尾（配额是保护性限流，可用性优先）。
+        if (admitted) {
+          try {
+            await quotaEngine.settleUsage(
+              tenantIdForQuota,
+              { tokens: actualTokens, cost: actualCost },
+              quotaReservation ?? undefined
+            );
+          } catch {
+            /* 结算失败仅丢窗口统计，不影响 run 收尾 */
+          }
+          await quotaEngine.releaseAsync(tenantIdForQuota);
+        }
         // P2.a：运行结束审计留痕（成功/失败，便于强合规租户对账）。
         audit({
           tenantId: job.tenantId,

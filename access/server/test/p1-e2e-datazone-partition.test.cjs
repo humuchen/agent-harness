@@ -32,9 +32,9 @@ test('resolveTenantDbPath: medical zone 把三个 DB 文件都落到 medical/ �
     const memoryFile = resolveTenantDbPath(memoryBase, 'medical');
     const historyFile = resolveTenantDbPath(historyBase, 'medical');
 
-    assert.ok(accountsFile.includes('/medical/'), 'accounts 应落 medical/ 子目录，实际：' + accountsFile);
-    assert.ok(memoryFile.includes('/medical/'), 'memory 应落 medical/ 子目录，实际：' + memoryFile);
-    assert.ok(historyFile.includes('/medical/'), 'history 应落 medical/ 子目录，实际：' + historyFile);
+    assert.ok(accountsFile.includes(path.normalize('/medical/')), 'accounts 应落 medical/ 子目录，实际：' + accountsFile);
+    assert.ok(memoryFile.includes(path.normalize('/medical/')), 'memory 应落 medical/ 子目录，实际：' + memoryFile);
+    assert.ok(historyFile.includes(path.normalize('/medical/')), 'history 应落 medical/ 子目录，实际：' + historyFile);
     // basename 保留
     assert.strictEqual(path.basename(accountsFile), 'accounts.db');
     assert.strictEqual(path.basename(memoryFile), 'memory.db');
@@ -66,8 +66,8 @@ test('resolveTenantDbPath: 不同 zone 落到不同子目录（跨合规域物�
     const medical = resolveTenantDbPath(accountsBase, 'medical');
     const financial = resolveTenantDbPath(accountsBase, 'financial');
     assert.notStrictEqual(medical, financial, '不同 zone 应落不同目录');
-    assert.ok(medical.includes('/medical/'), 'medical 实际：' + medical);
-    assert.ok(financial.includes('/financial/'), 'financial 实际：' + financial);
+    assert.ok(medical.includes(path.normalize('/medical/')), 'medical 实际：' + medical);
+    assert.ok(financial.includes(path.normalize('/financial/')), 'financial 实际：' + financial);
   } finally {
     cleanup(dir);
   }
@@ -94,7 +94,7 @@ test('TENANT_DATA_ZONE env 与 resolveTenantContext 联动（端到端语义）'
     assert.strictEqual(ctx?.dataZone, 'medical', 'env 应自动派生 dataZone');
     // 与 resolveTenantDbPath 联动：ctx.dataZone 直接作为分区键
     const file = resolveTenantDbPath('./data/accounts.db', ctx.dataZone);
-    assert.ok(file.includes('/medical/'), 'ctx.dataZone 应驱动 DB 分区，实际：' + file);
+    assert.ok(file.includes(path.normalize('/medical/')), 'ctx.dataZone 应驱动 DB 分区，实际：' + file);
   } finally {
     if (old === undefined) delete process.env.TENANT_DATA_ZONE;
     else process.env.TENANT_DATA_ZONE = old;
