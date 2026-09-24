@@ -14,8 +14,12 @@ import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
 import type { OutputIssue } from './step-output';
 
-/** 单个 step 的运行态。 */
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
+/**
+ * 单个 step 的运行态。
+ * P1 C5：compensate-failed = 补偿动作执行失败（副作用既未回滚也不会被视为已处理），
+ * 非终态 —— resume 时会重试补偿，成功后转为 compensated。
+ */
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'compensate-failed' | 'skipped' | 'awaiting';
 /** 整个工作流的运行态。 */
 export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'awaiting';
 

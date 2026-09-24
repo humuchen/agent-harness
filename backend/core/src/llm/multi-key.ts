@@ -53,7 +53,10 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
     return states[i]!.deadUntil > Date.now();
   }
   function markDead(i: number): void {
-    if (states[i]!.deadUntil === 0) {
+    // 判断「未在冷却中」必须比较时间戳而非 === 0：冷却过期后 deadUntil 是过去的
+    // 非零值，若只在 === 0 时续期，探活失败后该 Key 永远拿不到新冷却，
+    // 每次请求都会先付一次必败 round-trip（P1 C2）。
+    if (states[i]!.deadUntil <= Date.now()) {
       states[i]!.deadUntil = Date.now() + cooldownMs;
       incCounter('llm.key.dead');
       structLog('warn', 'multi-key: key marked dead, cooling down', {

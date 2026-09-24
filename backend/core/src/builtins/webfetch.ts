@@ -5,6 +5,11 @@ export interface WebFetchOptions {
   maxBytes?: number;
   timeoutMs?: number;
   /**
+   * P1 C1：响应体服务端硬上限（原始字节，与 LLM 可控的截断参数无关）。
+   * 超过即中止读取并返回错误/截断标记，防止超大响应把进程内存打爆。
+   */
+  hardBodyBytes?: number;
+  /**
    * P0-C：出网域名白名单（精确 host 或 `*.example.com` 通配后缀）。
    * 缺省（空数组）= 全放行，保持向后兼容；非空时 host 不匹配直接返回 error。
    * 来源：options.allowedDomains ?? process.env.WEB_FETCH_ALLOWED_DOMAINS（逗号分隔）。
@@ -29,6 +34,9 @@ function stripHtml(html: string): string {
 export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions = {}): void {
   const maxBytes = opts.maxBytes ?? 200_000;
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  // P1 C1：响应体服务端硬上限（原始字节）。此前 resp.text() 无上限整包入内存，
+  // 截断上限 max_bytes 又来自 LLM 参数且无校验——恶意/超大响应可直接 OOM 进程。
+  const hardBodyBytes = Math.max(opts.hardBodyBytes ?? 2_000_000, 1024);
   // P0-C：出网域名白名单（精确 host 或 *.example.com 通配后缀）。空 = 全放行（向后兼容）。
   const allowedDomains = (opts.allowedDomains ?? parseAllowedDomainsEnv()).map(normalizeDomain).filter(Boolean);
   registry.register(
@@ -83,9 +91,19 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       try {
         const resp = await fetch(u.toString(), { method, headers: baseHeaders, signal: ctrl.signal });
         const ct = resp.headers.get('content-type') ?? '';
-        let text = await resp.text();
-        if (ct.includes('html')) text = stripHtml(text);
-        const cap = args.max_bytes ? Number(args.max_bytes) : maxBytes;
+        // P1 C1：先按 Content-Length 提前拒绝超限响应。
+        const declared = Number(resp.headers.get('content-length') ?? '');
+        if (Number.isFinite(declared) && declared > hardBodyBytes) {
+          try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
+          return `error: response body too large (${declared} bytes > ${hardBodyBytes} hard limit)`;
+        }
+        // P1 C1：流式分块读取 + 字节预算，超限即中止连接，不再 resp.text() 整包入内存。
+        const { text: raw, truncatedByLimit } = await readBodyCapped(resp, ctrl, hardBodyBytes);
+        let text = ct.includes('html') ? stripHtml(raw) : raw;
+        if (truncatedByLimit) text += ' ...[fetch aborted: hard byte limit]';
+        // P1 C1：LLM 可控的截断上限夹紧到 [1, hardBodyBytes]，防参数注入超大值。
+        const rawCap = args.max_bytes ? Number(args.max_bytes) : maxBytes;
+        const cap = Number.isFinite(rawCap) ? Math.min(Math.max(Math.floor(rawCap), 1), hardBodyBytes) : maxBytes;
         if (text.length > cap) text = text.slice(0, cap) + `\n...[truncated at ${cap} chars]`;
         return JSON.stringify({
           status: resp.status,
@@ -103,6 +121,57 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
     },
     'builtin'
   );
+}
+
+// ---------------------------------------------------------------------------
+// P1 C1：响应体流式限额读取
+// ---------------------------------------------------------------------------
+
+/**
+ * 流式读取响应体，累计字节超过 budget 时中止连接并返回已读部分。
+ * 返回 truncatedByLimit 标记是否因预算触发了中止。
+ */
+async function readBodyCapped(
+  resp: Response,
+  ctrl: AbortController,
+  budget: number
+): Promise<{ text: string; truncatedByLimit: boolean }> {
+  const reader = resp.body?.getReader();
+  if (!reader) return { text: '', truncatedByLimit: false };
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remain = budget - received;
+      if (value.byteLength > remain) {
+        chunks.push(value.slice(0, Math.max(remain, 0)));
+        received += Math.min(value.byteLength, Math.max(remain, 0));
+        truncated = true;
+        ctrl.abort(); // 立即断开底层连接，剩余数据不再进内存
+        break;
+      }
+      chunks.push(value);
+      received += value.byteLength;
+    }
+  } finally {
+    // 中止/提前退出时释放锁并取消流，避免连接悬挂。
+    try { await reader.cancel(); } catch { /* 已 abort 或流已结束，忽略 */ }
+    try { reader.releaseLock(); } catch { /* 忽略重复释放 */ }
+  }
+  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  // 非 fatal 解码：截断可能切断多字节字符，容忍替换符。
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(merged);
+  return { text, truncatedByLimit: truncated };
 }
 
 // ---------------------------------------------------------------------------

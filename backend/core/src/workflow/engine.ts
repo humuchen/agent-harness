@@ -171,7 +171,7 @@ export class DagEngine {
    */
   private validateReferences(def: WorkflowDef): void {
     const ids = new Set(def.steps.map((s) => s.id));
-    const stepStates = new Set(['pending', 'running', 'done', 'failed', 'compensated', 'skipped']);
+    const stepStates = new Set(['pending', 'running', 'done', 'failed', 'compensated', 'compensate-failed', 'skipped']);
     for (const s of def.steps) {
       for (const [key, src] of Object.entries(s.inputMapping ?? {})) {
         if (src === 'input') continue;
@@ -331,14 +331,27 @@ export class DagEngine {
     this.validateWorkflow(def);
     // 并发护栏：store 按 def.id 存单检查点。若已存在「另一 runId 且仍在 running」的检查点，
     // 说明同 def 有并发运行在进行 —— 拒绝启动（fail-fast），避免互相覆盖检查点导致续跑错乱。
-    const existing = await this.store.get(def.id);
-    if (existing && existing.state === 'running' && existing.runId && existing.runId !== runId) {
-      throw new Error(
-        `workflow "${def.id}" already has a running execution (runId=${existing.runId}); ` +
-          `concurrent run rejected to avoid checkpoint overwrite — resume it or wait for it to finish`,
-      );
+    // P1 C4：优先走 store.claim() 原子占位（检查+写入在存储侧一次完成，无 await 间隙）；
+    // 旧自定义 store 未实现 claim 时回落两步 get+save（保留原行为，零回归）。
+    if (typeof this.store.claim === 'function') {
+      const claimed = await this.store.claim(run);
+      if (!claimed) {
+        const existing = await this.store.get(def.id);
+        throw new Error(
+          `workflow "${def.id}" already has a running execution (runId=${existing?.runId ?? 'unknown'}); ` +
+            `concurrent run rejected to avoid checkpoint overwrite — resume it or wait for it to finish`,
+        );
+      }
+    } else {
+      const existing = await this.store.get(def.id);
+      if (existing && existing.state === 'running' && existing.runId && existing.runId !== runId) {
+        throw new Error(
+          `workflow "${def.id}" already has a running execution (runId=${existing.runId}); ` +
+            `concurrent run rejected to avoid checkpoint overwrite — resume it or wait for it to finish`,
+        );
+      }
+      await this.store.save(run);
     }
-    await this.store.save(run);
     this.emit({ type: 'wf:start', workflowId: def.id, runId });
 
     const outputs: Record<string, unknown> = {};
@@ -545,6 +558,7 @@ export class DagEngine {
       for (const compId of ordered) {
         const compStep = stepById.get(compId)!;
         // 已成功补偿过（前次 run / resume 残留）的 step 不重复回滚（幂等护栏）。
+        // P1 C5：compensate-failed 不在终态之列 —— 会在此被重试。
         if (run.steps[compId]?.state === 'compensated') continue;
         this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: compId });
         try {
@@ -557,8 +571,10 @@ export class DagEngine {
           run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', output: result, compensateInput: compInput, finishedAt: Date.now() };
           this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5 补偿 step 链路同样落检查点
         } catch (e2: any) {
-          // 补偿失败：记录但不阻断其余补偿（避免雪崩）；保留 compensateInput 供重试。
-          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: run.steps[step.id]?.output };
+          // P1 C5：补偿失败改标 compensate-failed（非终态），不再冒充 compensated ——
+          // 旧行为把失败补偿标成终态，resume 视其为已完成直接跳过，
+          // 副作用既没回滚也不会补执行。保留 compensateInput 供 resume 重试。
+          run.steps[compId] = { id: compId, ...run.steps[compId], state: 'compensate-failed', error: e2?.message ?? String(e2), compensateInput: run.steps[step.id]?.output };
           this.mergeStepTrace(run.steps[compId]!, ctx); // P2.5：失败的补偿链路是排障关键信息
         }
         await this.store.save(run);
@@ -567,7 +583,8 @@ export class DagEngine {
 
       for (const cmd of literalCmds) {
         // 字面量回滚指令：复用触发 step 的 agent（executor 据 ctx.compensate 走回滚分支）。
-        if (run.steps[step.id]?.state === 'compensated') break; // 上一轮已补偿过（幂等护栏）
+        // P1 C5：幂等护栏只挡 compensated，compensate-failed 会被重试。
+        if (run.steps[step.id]?.state === 'compensated') break;
         this.emit({ type: 'wf:compensate:start', workflowId: def.id, stepId: step.id });
         try {
           await this.resolveCard(step.agentRef); // 校验 agentRef 可解析（不可解析则抛出，落入 catch 记录）
@@ -575,7 +592,8 @@ export class DagEngine {
           run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', output: result, compensateInput: cmd };
           this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         } catch (e2: any) {
-          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensated', error: e2?.message ?? String(e2), compensateInput: cmd };
+          // P1 C5：同上 —— 失败补偿标 compensate-failed，纳入 resume 重试。
+          run.steps[step.id] = { id: step.id, ...run.steps[step.id], state: 'compensate-failed', error: e2?.message ?? String(e2), compensateInput: cmd };
           this.mergeStepTrace(run.steps[step.id]!, ctx); // P2.5
         }
         await this.store.save(run);
@@ -628,7 +646,26 @@ export class DagEngine {
     const runId = run.runId ?? this.genRunId();
     run.runId = runId;
     run.state = 'running';
-    await this.store.save(run);
+    // P1 C4：resume 同样走原子占位（同 runId 重取放行，异 runId 在跑则拒绝）。
+    // 旧的 get+check 是同源读取自比较、恒为真，等于没有并发护栏。
+    if (typeof this.store.claim === 'function') {
+      const claimed = await this.store.claim(run);
+      if (!claimed) {
+        throw new Error(
+          `workflow "${workflowId}" checkpoint belongs to a different running execution (runId=${runId}); ` +
+            `concurrent resume rejected to avoid checkpoint overwrite`,
+        );
+      }
+    } else {
+      const live = await this.store.get(workflowId);
+      if (live && live.state === 'running' && live.runId && live.runId !== runId) {
+        throw new Error(
+          `workflow "${workflowId}" checkpoint belongs to a different running execution (runId=${live.runId}); ` +
+            `concurrent resume rejected to avoid checkpoint overwrite`,
+        );
+      }
+      await this.store.save(run);
+    }
     this.emit({ type: 'wf:start', workflowId, runId });
 
     let stepFailed = false;
@@ -663,7 +700,9 @@ export class DagEngine {
           const sr = run.steps[id];
           // 终态 step 不重跑：done（已完成）、skipped（条件不满足，保持跳过）、
           // compensated（补偿动作已执行，回滚不应重复）。
-          if (sr?.state === 'done' || sr?.state === 'skipped' || sr?.state === 'compensated') return;
+          // P1 C5：compensate-failed 也不按普通 step 重跑 —— 它是补偿动作，
+          // 重跑走 compensate() 的补偿语义（带 ctx.compensate），而非无回滚上下文的正常执行。
+          if (sr?.state === 'done' || sr?.state === 'skipped' || sr?.state === 'compensated' || sr?.state === 'compensate-failed') return;
           const step = run.def.steps.find((s) => s.id === id)!;
           // 与 run() 同语义补齐（修复 resume 语义残缺）：
           // ① 级联跳过 —— 输出消费依赖已被跳过的上游时自动跳过，否则会执行
@@ -741,8 +780,25 @@ export class DagEngine {
       run.finishedAt = Date.now();
       await this.store.save(run);
       await this.compensate(run.def, run, outputs, signal);
+      // P1 C5：本轮补偿若仍有失败，step 保持 compensate-failed（非终态），
+      // 下次 resume 会经下方「无新失败但存在补偿失败」分支继续重试。
       this.emit({ type: 'wf:failed', workflowId, run });
       return run;
+    }
+    // P1 C5：无新失败但存在此前补偿失败的 step → 重试补偿（不重跑业务 step）。
+    // 旧行为只在 stepFailed 时才补偿，历史 compensate-failed 会被永久搁置。
+    const hasCompFailed = run.def.steps.some((s) => run.steps[s.id]?.state === 'compensate-failed');
+    if (hasCompFailed) {
+      await this.compensate(run.def, run, outputs, signal);
+      const stillCompFailed = run.def.steps.some((s) => run.steps[s.id]?.state === 'compensate-failed');
+      if (stillCompFailed) {
+        run.state = 'failed';
+        run.error = run.error ?? 'compensation failed during resume (retry pending)';
+        run.finishedAt = Date.now();
+        await this.store.save(run);
+        this.emit({ type: 'wf:failed', workflowId, run });
+        return run;
+      }
     }
     run.state = 'done';
     run.finishedAt = Date.now();
