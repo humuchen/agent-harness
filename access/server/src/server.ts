@@ -472,12 +472,32 @@ function auditAction(action: string, fields: Record<string, unknown>): void {
   audit({ kind: 'action', action, ...fields });
 }
 
-/** 去掉 URL 中的查询串，避免把内嵌 token 写进审计日志。 */
+/** 需要在日志/审计中脱敏值的查询参数（不区分大小写）。 */
+const REDACT_URL_PARAMS = new Set([
+  'token',
+  'access_token',
+  'api_key',
+  'apikey',
+  'key',
+  'secret',
+  'password',
+  'sig',
+  'signature',
+]);
+
+/**
+ * 脱敏 URL 中的敏感查询参数值（如 ?token=...），供审计/错误日志使用。
+ * 相比「整段去掉查询串」，保留非敏感参数便于排障；敏感参数值替换为 [redacted]。
+ */
 function redactUrl(url?: string): string {
   if (!url) return '';
   try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
+    const u = new URL(url, 'http://localhost');
+    for (const [k] of u.searchParams) {
+      if (REDACT_URL_PARAMS.has(k.toLowerCase())) u.searchParams.set(k, '[redacted]');
+    }
+    // 相对路径保持相对形式；绝对 URL 保留 origin。
+    return url.startsWith('/') ? u.pathname + u.search : u.origin + u.pathname + u.search;
   } catch {
     return url.split('?')[0] ?? '';
   }
@@ -502,7 +522,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: false,
       status: 401
@@ -560,7 +580,7 @@ async function guard(
       audit({
         kind: 'request',
         method: req.method,
-        path: req.url,
+        path: redactUrl(req.url),
         ip,
         authed: true,
         status: 403,
@@ -600,7 +620,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: true,
       status: 429,
@@ -619,7 +639,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: true,
       status: 403,
@@ -636,7 +656,7 @@ async function guard(
   audit({
     kind: 'request',
     method: req.method,
-    path: req.url,
+    path: redactUrl(req.url),
     ip,
     authed: true,
     action
@@ -807,11 +827,25 @@ let pluginSystem!: PluginSystem;
 
 const server = createServer(
   async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(
-      req.url ?? '/',
-      `http://${req.headers.host ?? 'localhost'}`
-    );
-    let path = url.pathname;
+    // 路径解析必须在主 try 之前安全化：Host 头是用户可控输入，`new URL(url, 'http://${host}')`
+    // 对非法 host 会同步抛出 —— 此前裸露在主 try 之外，异常会穿透到 crashGuard 直接 exit(1)。
+    // 三级回落：完整解析 → 去查询串按 localhost 解析 → 兜底 '/'。
+    let url: URL;
+    let path = '/';
+    try {
+      url = new URL(
+        req.url ?? '/',
+        `http://${req.headers.host ?? 'localhost'}`
+      );
+      path = url.pathname;
+    } catch {
+      try {
+        url = new URL(String(req.url ?? '/').split('?')[0] || '/', 'http://localhost');
+        path = url.pathname;
+      } catch {
+        url = new URL('/', 'http://localhost');
+      }
+    }
     // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
     if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
 
@@ -1587,7 +1621,7 @@ const server = createServer(
           audit({
             kind: 'request',
             method: req.method,
-            path: req.url,
+            path: redactUrl(req.url),
             ip: clientIp(req),
             authed: false,
             status: 401
@@ -1608,7 +1642,7 @@ const server = createServer(
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
     } catch (e) {
-      logError('http.request', e, { path: req.url });
+      logError('http.request', e, { path: redactUrl(req.url) });
       const code =
         typeof (e as { status?: unknown }).status === 'number'
           ? (e as { status: number }).status

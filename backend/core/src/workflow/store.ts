@@ -3,8 +3,9 @@
  *
  * 复用本仓库「接口 + 默认实现 + 工厂」范式（与 `memory-store.ts` / `agents/store.ts` 同构）：
  * - `WorkflowStore` 接口：save / get / list / delete；
- * - `VolatileWorkflowStore`（默认，纯内存）/ `FileWorkflowStore`（按工作流 id 分桶的 JSON 文件，原子 rename 落盘）；
- * - 工厂 `getWorkflowStore()`：未配置 `WORKFLOW_STORE_DIR` 时用 Volatile，否则用 File。
+ * - `VolatileWorkflowStore`（显式 `WORKFLOW_STORE_BACKEND=memory` 时）/ `FileWorkflowStore`（按工作流 id 分桶的 JSON 文件，原子 rename 落盘）；
+ * - 工厂 `getWorkflowStore()`：默认 File（`WORKFLOW_STORE_DIR` || `./data/workflows`）；
+ *   `WORKFLOW_STORE_BACKEND=memory` 显式回落 Volatile（测试/演示形态）。
  *
  * 注意：只存 WorkflowRun（def + 每 step 状态），引擎的执行逻辑无状态、可重放。
  */
@@ -94,11 +95,21 @@ export class FileWorkflowStore implements WorkflowStore {
 
 let _store: WorkflowStore | null = null;
 
-/** 进程内共享的存储单例：默认 Volatile；配置 WORKFLOW_STORE_DIR 时改用 File（持久化 + 重启续跑）。 */
+/**
+ * 进程内共享的存储单例。
+ *
+ * 默认改为 **File 持久化**（目录 = `WORKFLOW_STORE_DIR` || `./data/workflows`）：
+ * 此前默认 Volatile，未显式配置目录的部署在重启后丢检查点（断点续跑/对账全失效）。
+ * 需要「纯内存、零落盘」的形态（测试/演示）显式设 `WORKFLOW_STORE_BACKEND=memory`。
+ */
 export function getWorkflowStore(): WorkflowStore {
   if (!_store) {
+    const backend = (process.env.WORKFLOW_STORE_BACKEND ?? '').trim().toLowerCase();
     const dir = process.env.WORKFLOW_STORE_DIR;
-    _store = dir ? new FileWorkflowStore({ dir }) : new VolatileWorkflowStore();
+    _store =
+      backend === 'memory' || backend === 'volatile'
+        ? new VolatileWorkflowStore()
+        : new FileWorkflowStore({ dir: dir && dir.trim() ? dir : './data/workflows' });
   }
   return _store;
 }

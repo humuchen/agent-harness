@@ -47,13 +47,34 @@ export function bridgeHarnessEvent(e: PluginEvent): void {
   _system?.loader.broadcast(e);
 }
 
+/**
+ * 构造插件系统：把 server/web 宿主注入 loader，使插件经 PluginContext 挂路由/视图。
+ *
+ * env 白名单兼容声明：ctx.env 默认只透传基础部署元信息 + PLUGIN_ / AH_PLUGIN_ 前缀变量
+ * （插件隔离：不再全量暴露 process.env）。捆绑插件经 ctx.env 消费的变量在此显式放行——
+ * customer-service 的 reminders-trigger 依赖 HARNESS_BASE_URL / OPEN_API_KEY / REMINDER_*。
+ * 注意：这些变量仅进入「经 ctx.env 的契约面」；同进程插件直接读 process.env 的行为
+ * 由插件运行时隔离（P2 worker/OS 沙箱，未落地）约束，属已知边界。
+ */
+const PLUGIN_ENV_COMPAT = [
+  'HARNESS_BASE_URL',
+  'OPEN_API_KEY',
+  'REMINDER_INTERVAL_MS',
+  'REMINDER_STATE_FILE',
+];
+
 /** 构造插件系统：把 server/web 宿主注入 loader，使插件经 PluginContext 挂路由/视图。 */
 export function createPluginSystem(): PluginSystem {
   const serverHost = new ServerPluginHost();
   const webHost = new WebPluginHost();
   // 复用进程共享 AgentRegistry（与 /api/agents、运行期路由同源），插件 agent 启用后即可被
   // 能力索引发现、被 TaskRouter 选中、被 A2A/工作流引用——与核心 agent 走完全相同路径。
-  const loader = new PluginLoader({ serverHost, webHost, registry: getAgentRegistry() });
+  const loader = new PluginLoader({
+    serverHost,
+    webHost,
+    registry: getAgentRegistry(),
+    envAllowlist: PLUGIN_ENV_COMPAT,
+  });
   return { loader, serverHost, webHost };
 }
 

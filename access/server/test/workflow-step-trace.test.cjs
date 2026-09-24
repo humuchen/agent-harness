@@ -40,6 +40,8 @@ function startServer() {
       MCP_SERVERS: '',
       OPEN_API_KEY: '',
       HARNESS_API_KEY: '',
+      // store 默认已改 File 落盘：测试显式 memory 后端，避免跨用例落盘污染。
+      WORKFLOW_STORE_BACKEND: 'memory',
       WORKFLOW_STORE_DIR: ''
     };
     const child = spawn(process.execPath, [SERVER_JS], {

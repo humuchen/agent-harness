@@ -39,7 +39,8 @@ function startServer() {
       MCP_SERVERS: '',
       OPEN_API_KEY: '',
       HARNESS_API_KEY: '',
-      // P3 测试确定性：不接文件检查点目录（Volatile 即可），避免跨用例污染。
+      // P3 测试确定性：显式 memory 后端（默认已改 File 落盘），避免跨用例落盘污染。
+      WORKFLOW_STORE_BACKEND: 'memory',
       WORKFLOW_STORE_DIR: ''
     };
     const child = spawn(process.execPath, [SERVER_JS], {

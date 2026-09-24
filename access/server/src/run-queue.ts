@@ -129,6 +129,9 @@ export interface RunJob {
   /** 归属用户（= 认证身份 sub）：执行期经 runWithUser 注入工具链路，插件据此绑定数据归属。 */
   owner?: string;
 
+  /** 幂等键（可选）：活跃期间同键提交被去重；任务进入终态后索引即清。 */
+  idempotencyKey?: string;
+
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
 
@@ -163,6 +166,17 @@ export const PLAN_TASK_TIMEOUT_MS =
   Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
 // jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
 const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
+// 排队背压上限（防慢消费者无限堆积）：待执行队列长度达到该值时 submit 直接拒绝。
+// 0 = 不限（恢复旧行为）。仅约束进程内队列；redis 共享模式的积压由后端自身容量约束。
+const QUEUE_MAX_PENDING = Number(process.env.RUN_QUEUE_MAX_PENDING ?? 200) || 0;
+
+/** 排队背压拒绝：待执行队列已达 RUN_QUEUE_MAX_PENDING，提交被拒（HTTP 层映射 429）。 */
+export class QueueBackpressureError extends Error {
+  constructor(public readonly pending: number, public readonly limit: number) {
+    super(`run queue is full: ${pending} pending jobs >= limit ${limit}`);
+    this.name = 'QueueBackpressureError';
+  }
+}
 
 export class RunQueue {
   private jobs = new Map<string, RunJob>();
@@ -170,6 +184,9 @@ export class RunQueue {
   private running = 0;
   private seq = 0;
   private concurrency = CONCURRENCY;
+
+  /** 幂等索引：`owner|idempotencyKey` → jobId（仅覆盖 queued/running 活跃任务，结束即清）。 */
+  private idemIndex = new Map<string, string>();
 
   /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
   private runningSessions = new Set<string>();
@@ -221,9 +238,29 @@ export class RunQueue {
     interactionMode?: 'qa' | 'plan';
     planPhase?: 'propose' | 'execute';
     owner?: string;
+    /** 幂等键（可选）：同 owner 下该键存在活跃（排队/执行中）任务时，返回既有 job 不重复执行。 */
+    idempotencyKey?: string;
   }): RunJob {
+    // 幂等去重：命中活跃同键任务直接复用，防客户端重试/双击造成重复执行与重复计费。
+    if (input.idempotencyKey) {
+      const key = `${input.owner ?? ''}|${input.idempotencyKey}`;
+      const existingId = this.idemIndex.get(key);
+      const existing = existingId ? this.jobs.get(existingId) : undefined;
+      if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+        return existing;
+      }
+      // 陈旧索引（任务已结束但索引未清）随手清理。
+      if (existingId) this.idemIndex.delete(key);
+    }
+    // 排队背压：待执行队列达上限时拒绝提交（redis 共享模式由后端容量约束，不做进程内限制）。
+    if (!this.shared && QUEUE_MAX_PENDING > 0 && this.queue.length >= QUEUE_MAX_PENDING) {
+      throw new QueueBackpressureError(this.queue.length, QUEUE_MAX_PENDING);
+    }
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
     const job = this.makeJob(input, id);
+    if (input.idempotencyKey) {
+      this.idemIndex.set(`${input.owner ?? ''}|${input.idempotencyKey}`, id);
+    }
     const descriptor: JobDescriptor = {
       id,
       mode: job.mode,
@@ -282,34 +319,36 @@ export class RunQueue {
       traceId?: string;
       attachments?: Array<{ url: string; name: string; type: string }>;
       web?: boolean;
-      interactionMode?: 'qa' | 'plan';
-      planPhase?: 'propose' | 'execute';
-      owner?: string;
-    },
-    id: string
-  ): RunJob {
-    const job: RunJob = {
-      id,
-      status: 'queued',
-      mode: input.mode,
-      prompt: input.prompt,
-      model: input.model,
-      modelBaseUrl: input.modelBaseUrl,
-      modelApiKey: input.modelApiKey,
-      priority: input.priority,
-      sessionKey: input.sessionKey,
-      maxSteps: input.maxSteps,
-      verify: input.verify,
-      agentId: input.agentId,
-      domain: input.domain,
-      tenantId: input.tenantId,
-      web: input.web,
-      interactionMode: input.interactionMode,
-      planPhase: input.planPhase,
-      workflowId: input.workflowId,
-      traceId: input.traceId,
-      owner: input.owner,
-      attachments: input.attachments,
+    interactionMode?: 'qa' | 'plan';
+    planPhase?: 'propose' | 'execute';
+    owner?: string;
+    idempotencyKey?: string;
+  },
+  id: string
+): RunJob {
+  const job: RunJob = {
+    id,
+    status: 'queued',
+    mode: input.mode,
+    prompt: input.prompt,
+    model: input.model,
+    modelBaseUrl: input.modelBaseUrl,
+    modelApiKey: input.modelApiKey,
+    priority: input.priority,
+    sessionKey: input.sessionKey,
+    maxSteps: input.maxSteps,
+    verify: input.verify,
+    agentId: input.agentId,
+    domain: input.domain,
+    tenantId: input.tenantId,
+    web: input.web,
+    interactionMode: input.interactionMode,
+    planPhase: input.planPhase,
+    workflowId: input.workflowId,
+    traceId: input.traceId,
+    owner: input.owner,
+    idempotencyKey: input.idempotencyKey,
+    attachments: input.attachments,
       events: [],
       eventSeq: 0,
       subscribers: new Set(),
@@ -1213,6 +1252,11 @@ export class RunQueue {
       } finally {
         clearTimeout(watchdog);
         if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
+        // 幂等索引清理：任务进入终态后，同键新提交不再被去重拦截。
+        if (job.idempotencyKey) {
+          const key = `${job.owner ?? ''}|${job.idempotencyKey}`;
+          if (this.idemIndex.get(key) === job.id) this.idemIndex.delete(key);
+        }
         job.finishedAt = Date.now();
         recordLatency(
           'run.totalMs',
