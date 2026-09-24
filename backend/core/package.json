@@ -23,7 +23,9 @@
     "node": "22.x"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1"
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "mysql2": "^3.24.4",
+    "pg": "^8.23.0"
   },
   "optionalDependencies": {
     "@libsql/client": "^0.14.0",

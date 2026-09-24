@@ -34,6 +34,17 @@ export * from './quota/tenant-store';
 export { isPrivateIp, resolveHostIsPrivate, checkEgressAsync, GuardrailsEngine, defaultGuardrailsEngine } from './guardrails';
 export { getGuardrailsForTenant, resolveTenantGuardrailPolicy, resetTenantGuardrailsForTest } from './guardrails-tenant';
 export { FailoverProxyAdapter } from './db-adapter';
+export {
+  dialectFromUrl,
+  translateDdl,
+  translateStatement,
+  translateSqlFor,
+  pgParams,
+  isPragma,
+  listTablesSql,
+  tableColumnsSql,
+  type SqlDialect,
+} from './db-dialect';
 export * from './audit';
 export * from './sandbox/types';
 export * from './sandbox/isolation';

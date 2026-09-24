@@ -88,56 +88,68 @@ DSN：
   --dry-run      仅列出表与行数`);
 }
 
-/** 解析 DSN 为 adapter 实例与可读标签。 */
+/** 解析 DSN 为 adapter 实例与可读标签。支持 file:<path> | turso | mysql | postgres。 */
 function openDsn(dsn, side) {
   if (!dsn) {
-    console.error(`❌ 缺少 --${side}（file:<path> 或 turso）`);
+    console.error(`❌ 缺少 --${side}（file:<path> | turso | mysql | postgres）`);
     process.exit(2);
   }
-  if (dsn === 'turso') {
-    if (!process.env.TURSO_URL) {
-      console.error(`❌ --${side} turso 需要环境变量 TURSO_URL（及 TURSO_TOKEN）`);
+  if (dsn === 'turso' || dsn === 'mysql' || dsn === 'postgres') {
+    if (dsn === 'turso') {
+      if (!process.env.TURSO_URL) {
+        console.error(`❌ --${side} turso 需要环境变量 TURSO_URL（及 TURSO_TOKEN）`);
+        process.exit(2);
+      }
+      const adapter = core.getDbAdapter({ backend: 'turso', file: ':memory:' });
+      return { adapter, label: `turso(${process.env.TURSO_URL})`, dialect: 'sqlite' };
+    }
+    const url = process.env.DATABASE_URL;
+    if (!url || core.dialectFromUrl(url) !== dsn) {
+      console.error(`❌ --${side} ${dsn} 需要环境变量 DATABASE_URL（${dsn}://...）`);
       process.exit(2);
     }
-    const adapter = core.getDbAdapter({ backend: 'turso', file: ':memory:' });
-    return { adapter, label: `turso(${process.env.TURSO_URL})` };
+    const adapter = core.getDbAdapter({ backend: dsn, url });
+    return { adapter, label: `${dsn}(${url.replace(/\/\/[^@]*@/, '//***@')})`, dialect: dsn };
   }
   const m = /^file:(.+)$/.exec(dsn);
   if (!m || !m[1]) {
-    console.error(`❌ --${side} DSN 非法：${dsn}（应为 file:<path> 或 turso）`);
+    console.error(`❌ --${side} DSN 非法：${dsn}（应为 file:<path> | turso | mysql | postgres）`);
     process.exit(2);
   }
   const adapter = core.getDbAdapter({ backend: 'sqlite', file: m[1] });
-  return { adapter, label: `sqlite(${m[1]})` };
+  return { adapter, label: `sqlite(${m[1]})`, dialect: 'sqlite' };
 }
 
-// ─── 表枚举与传输 ────────────────────────────────────────────────────────────
+// ─── 表枚举与传输（多方言）────────────────────────────────────────────────────
 
-function qid(name) {
-  return `"${String(name).replace(/"/g, '""')}"`;
+function qid(name, dialect) {
+  const n = String(name).replace(/"/g, '""');
+  return dialect === 'mysql' ? '`' + n.replace(/`/g, '``') + '`' : `"${n}"`;
 }
 
-function listTables(adapter) {
-  const rows = adapter.prepare(
-    "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-  ).all();
-  return rows.map((r) => ({ name: String(r.name), sql: r.sql == null ? '' : String(r.sql) }));
+function listTables(adapter, dialect) {
+  const { sql, params } = core.listTablesSql(dialect);
+  const rows = adapter.prepare(sql).all(...params);
+  return rows.map((r) => ({ name: String(r.name), sql: r.sql == null ? '' : String(r.sql || '') }));
 }
 
-function listIndexes(adapter) {
+function listIndexes(adapter, dialect) {
+  // 索引 DDL 仅 sqlite 源可导（sqlite_master.sql）；mysql/pg 源跳过（目标端自愈建表不含索引，需手工补）
+  if (dialect !== 'sqlite') return [];
   const rows = adapter.prepare(
     "SELECT name, sql, tbl_name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name"
   ).all();
   return rows.map((r) => ({ name: String(r.name), sql: String(r.sql), table: String(r.tbl_name) }));
 }
 
-function tableColumns(adapter, table) {
-  const rows = adapter.prepare(`PRAGMA table_info(${qid(table)})`).all();
+function tableColumns(adapter, dialect, table) {
+  const { sql, params } = core.tableColumnsSql(dialect, table);
+  const rows = adapter.prepare(sql).all(...params);
   return rows.map((r) => String(r.name));
 }
 
-function countRows(adapter, table) {
-  const r = adapter.prepare(`SELECT COUNT(*) AS n FROM ${qid(table)}`).get();
+function countRows(adapter, dialect, table) {
+  const r = adapter.prepare(`SELECT COUNT(*) AS n FROM ${qid(table, dialect)}`).get();
   return Number(r && r.n);
 }
 
@@ -147,35 +159,37 @@ function chunks(arr, size) {
   return out;
 }
 
-async function copyTable(src, dst, table, opts) {
+async function copyTable(src, dst, table, opts, srcDialect, dstDialect) {
   const name = table.name;
-  const cols = tableColumns(src, name);
+  const cols = tableColumns(src, srcDialect, name);
   if (cols.length === 0) {
     console.log(`  ⚠️ ${name}: 无法读取列信息，跳过`);
     return { copied: 0, skipped: true };
   }
-  const colList = cols.map(qid).join(', ');
+  const colList = cols.map((c) => qid(c, dstDialect)).join(', ');
   const placeholders = cols.map(() => '?').join(', ');
 
-  // 目标建表（幂等）：源端 DDL 可能没有 IF NOT EXISTS，统一改写后执行，保证可安全重跑
+  // 目标建表（幂等）：sqlite DDL 经目标适配器翻译为对应方言；仅 sqlite 源携带 DDL
+  // （mysql/pg 源的 information_schema 无原始 DDL，目标端由各 store 自愈建表）
   if (table.sql) {
     const ddl = table.sql.replace(/^CREATE\s+TABLE\s+/i, 'CREATE TABLE IF NOT EXISTS ');
     await dst.exec(ddl);
   }
 
-  const total = countRows(src, name);
+  const total = countRows(src, srcDialect, name);
   if (opts.truncate) {
-    await dst.exec(`DELETE FROM ${qid(name)}`);
+    await dst.exec(`DELETE FROM ${qid(name, dstDialect)}`);
   }
 
   let copied = 0;
   const BATCH = Math.max(1, opts.batch);
   for (let offset = 0; offset < total; offset += BATCH) {
     const rows = src
-      .prepare(`SELECT ${colList} FROM ${qid(name)} LIMIT ${BATCH} OFFSET ${offset}`)
+      .prepare(`SELECT ${cols.map((c) => qid(c, srcDialect)).join(', ')} FROM ${qid(name, srcDialect)} LIMIT ${BATCH} OFFSET ${offset}`)
       .all();
     if (rows.length === 0) break;
-    // 多行合并为一条 INSERT（减少 turso 网络往返）；insert or ignore 保证重跑幂等
+    // 多行合并为一条 INSERT（减少 turso/mysql/pg 网络往返）；insert or ignore 保证重跑幂等
+    // （INSERT OR IGNORE 由目标适配器按方言翻译：MySQL INSERT IGNORE / PG ON CONFLICT DO NOTHING）
     for (const group of chunks(rows, Math.max(1, Math.floor(900 / cols.length)) || 1)) {
       const valuesSql = group.map(() => `(${placeholders})`).join(', ');
       const args = [];
@@ -186,7 +200,7 @@ async function copyTable(src, dst, table, opts) {
         }
       }
       await dst
-        .prepare(`INSERT OR IGNORE INTO ${qid(name)} (${colList}) VALUES ${valuesSql}`)
+        .prepare(`INSERT OR IGNORE INTO ${qid(name, dstDialect)} (${colList}) VALUES ${valuesSql}`)
         .run(...args);
       copied += group.length;
     }
@@ -210,7 +224,7 @@ async function main() {
   console.log(`[db-copy] 源：${src.label}`);
   console.log(`[db-copy] 目标：${dst.label}${opts.truncate ? '（truncate 模式）' : '（INSERT OR IGNORE 幂等）'}`);
 
-  const tables = listTables(src.adapter);
+  const tables = listTables(src.adapter, src.dialect);
   const include = opts.tables ? new Set(opts.tables.split(',').map((s) => s.trim()).filter(Boolean)) : null;
   const exclude = opts.exclude ? new Set(opts.exclude.split(',').map((s) => s.trim()).filter(Boolean)) : null;
   const selected = tables.filter(
@@ -225,21 +239,21 @@ async function main() {
 
   if (opts.dryRun) {
     for (const t of selected) {
-      console.log(`  ${t.name}: ${countRows(src.adapter, t.name)} 行`);
+      console.log(`  ${t.name}: ${countRows(src.adapter, src.dialect, t.name)} 行`);
     }
     console.log('[db-copy] dry-run 结束（未写入）');
     return;
   }
 
-  // 1) schema + 数据
+  // 1) schema + 数据（sqlite 源的 DDL 经目标适配器按方言翻译；INSERT OR IGNORE 同样按方言翻译）
   const results = [];
   for (const t of selected) {
-    const r = await copyTable(src.adapter, dst.adapter, t, opts);
-    results.push({ table: t.name, ...r, srcCount: countRows(src.adapter, t.name), dstCount: countRows(dst.adapter, t.name) });
+    const r = await copyTable(src.adapter, dst.adapter, t, opts, src.dialect, dst.dialect);
+    results.push({ table: t.name, ...r, srcCount: countRows(src.adapter, src.dialect, t.name), dstCount: countRows(dst.adapter, dst.dialect, t.name) });
   }
 
-  // 2) 索引（数据之后创建，非自动索引才建）
-  for (const idx of listIndexes(src.adapter)) {
+  // 2) 索引（仅 sqlite 源可导出 DDL；数据之后创建，非自动索引才建）
+  for (const idx of listIndexes(src.adapter, src.dialect)) {
     if (selected.some((t) => t.name === idx.table)) {
       try {
         await dst.adapter.exec(idx.sql);
