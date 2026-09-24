@@ -41,10 +41,16 @@ export interface NetworkPolicy {
    * denylist：禁止 listed 域名（含子域），其余放行。
    */
   mode: 'open' | 'allowlist' | 'denylist';
-  /** allowlist 模式下仅允许这些域名（支持 `*.example.com` 通配子域）。 */
+  /** allowlist 模式下仅允许这些域名（含子域，支持 `*.example.com` 通配子域）。 */
   allowedDomains?: string[];
-  /** denylist 模式下禁止这些域名（支持 `*.example.com` 通配子域）。 */
+  /** denylist 模式下禁止这些域名（含子域，支持 `*.example.com` 通配子域）。 */
   deniedDomains?: string[];
+  /**
+   * 是否豁免本地/私有网络地址（127.x / 10.x / 192.168.x / 172.16-31.x / localhost）。
+   * 缺省 true（存量零回归：内网服务访问不受管控影响）；设为 false 时私有地址同样
+   * 纳入出网管控，防止 allowlist 域名 DNS rebinding / 直连内网服务的 SSRF 面。
+   */
+  allowPrivateNetwork?: boolean;
 }
 
 export interface GuardrailPolicy {
@@ -298,8 +304,18 @@ function detectInjection(
 ): string | null {
   if (!pol.enableInjectionScan) return null;
   const norm = normalizeForScan(text);
+  // 句子级强信号短语（"ignore previous instructions" 类）**始终检测，不受 allowlist 豁免**：
+  // 旧实现 allowlist 命中即跳过全部注入检测 —— 攻击者只需在载荷中夹带任意 allowlist
+  // 关键词（如 "system"）即可整体绕过。现收窄为：allowlist 仅豁免弱信号短短语
+  //（保留原语义：产品名恰好含 "system prompt" 的误报放行），强信号短语照拦。
+  for (const p of PHRASES_LOW) {
+    if (norm.includes(normalizeForScan(p))) {
+      return p;
+    }
+  }
+  if (strongOnly) return null;
   if (isAllowlisted(norm, pol)) return null;
-  const phrases = strongOnly ? PHRASES_LOW : phraseSet(pol.injectionSensitivity);
+  const phrases = phraseSet(pol.injectionSensitivity);
   for (const p of phrases) {
     if (norm.includes(normalizeForScan(p))) {
       return p;
@@ -363,7 +379,9 @@ function domainMatches(host: string, entry: string): boolean {
     const base = e.slice(2);
     return h === base || h.endsWith(`.${base}`);
   }
-  return h === e;
+  // 普通条目按注释/文档声明的语义匹配「主机自身或任意子域」：
+  // 旧实现只有全等，denylist 配 evil.com 拦不住 sub.evil.com（策略静默弱化）。
+  return h === e || h.endsWith(`.${e}`);
 }
 
 /** 判断 host 是否属于本地/私有网络地址（127.x.x.x、localhost、192.168.x.x、10.x.x.x、172.16-31.x.x）。 */
@@ -397,8 +415,9 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   } catch {
     return 'invalid URL';
   }
-  // 本地/私有网络豁免（测试用例与内网服务访问不受管控影响）
-  if (isPrivateHost(host)) return null;
+  // 本地/私有网络豁免：缺省放行（存量零回归）；allowPrivateNetwork=false 时纳入管控，
+  // 防止 allowlist 域名 DNS rebinding / 直连内网服务（SSRF 面）。
+  if (isPrivateHost(host) && (net.allowPrivateNetwork ?? true)) return null;
   if (net.mode === 'denylist') {
     const denied = (net.deniedDomains ?? []).some((d) => domainMatches(host, d));
     return denied ? `egress denied to ${host} (denylist)` : null;

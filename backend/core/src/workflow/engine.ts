@@ -322,6 +322,9 @@ export class DagEngine {
       runId,
       steps: Object.fromEntries(def.steps.map((s) => [s.id, { id: s.id, state: 'pending' } as StepRun])),
       startedAt: Date.now(),
+      // 全局初始输入随检查点持久化：审批门暂停 / 失败后 resume 时，
+      // inputMapping 含 `input` 的 step 才能拿到真实目标（而非 undefined）。
+      initialInput,
     };
     // 拓扑合法性 fail-fast：环 / 未知依赖 / 重复 stepId 在 try 之外抛错，
     // 使 run() 以 reject 形式暴露（而非吞成 state=failed），符合「校验错误即失败」。
@@ -629,6 +632,9 @@ export class DagEngine {
     this.emit({ type: 'wf:start', workflowId, runId });
 
     let stepFailed = false;
+    // 恢复全局初始输入（run() 时随检查点持久化）：inputMapping 含 `input` 的 step
+    // 续跑时才能解析真实目标；旧检查点无该字段时为 undefined（与旧行为一致）。
+    const initialInput = run.initialInput;
     const defById = new Map(run.def.steps.map((s) => [s.id, s]));
     const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step（approve 路由写入检查点后随 resume 生效）
     const skippedIds = new Set(
@@ -659,7 +665,32 @@ export class DagEngine {
           // compensated（补偿动作已执行，回滚不应重复）。
           if (sr?.state === 'done' || sr?.state === 'skipped' || sr?.state === 'compensated') return;
           const step = run.def.steps.find((s) => s.id === id)!;
-          const input = this.resolveInput(step, undefined, outputs);
+          // 与 run() 同语义补齐（修复 resume 语义残缺）：
+          // ① 级联跳过 —— 输出消费依赖已被跳过的上游时自动跳过，否则会执行
+          //    「等待一个永远不会产出的 output」的 step（fallback 分支之外的照跑）；
+          // ② 条件求值 —— run() 中因 condition 不满足而从未执行的 pending step，
+          //    续跑时必须同样评估，而不是无条件真实执行。
+          const depSkipped = this.outputDeps(step).some((d) => skippedIds.has(d));
+          if (depSkipped) {
+            skippedIds.add(id);
+            run.steps[id] = { id, state: 'skipped' };
+            await this.store.save(run);
+            this.emit({ type: 'wf:step:start', workflowId, stepId: id });
+            this.emit({ type: 'wf:step:done', workflowId, stepId: id });
+            return;
+          }
+          if (step.condition) {
+            const conditionMet = await this.evaluateCondition(step.condition, initialInput, outputs, run.steps);
+            if (!conditionMet) {
+              skippedIds.add(id);
+              run.steps[id] = { id, state: 'skipped' };
+              await this.store.save(run);
+              this.emit({ type: 'wf:step:start', workflowId, stepId: id });
+              this.emit({ type: 'wf:step:done', workflowId, stepId: id });
+              return;
+            }
+          }
+          const input = this.resolveInput(step, initialInput, outputs);
           const card = await this.resolveCard(step.agentRef);
           run.steps[id] = { id, state: 'running', agentId: card.id, input, startedAt: Date.now() };
           await this.store.save(run);
@@ -746,8 +777,26 @@ export class DagEngine {
     const requested =
       typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : GLOBAL_CAP;
     const limit = Math.min(requested, GLOBAL_CAP);
+    // 追踪所有已派发 step 的 promise：失败传播前等待在途 step 收敛，
+    // 否则补偿（读 completed 快照）与「迟到完成写检查点」并发 —— 补偿快照缺漏
+    // 迟到完成者，且 resume 会把它们当已跳过，副作用既没回滚也不会补执行。
+    const inflight: Promise<void>[] = [];
+    const tracked = (id: string): Promise<void> => {
+      const p = runStep(id);
+      inflight.push(p);
+      // 全部路径都会 await p；此条仅为防极端时序下 rejection 无人接住。
+      void p.catch(() => {});
+      return p;
+    };
+    const settleInflight = async () => {
+      await Promise.allSettled(inflight);
+    };
     if (limit >= wave.length) {
-      await Promise.all(wave.map(runStep));
+      try {
+        await Promise.all(wave.map(tracked));
+      } finally {
+        await settleInflight();
+      }
       return;
     }
     let next = 0;
@@ -762,7 +811,7 @@ export class DagEngine {
             const id = wave[next++];
             if (id === undefined) break; // noUncheckedIndexedAccess 防御
             try {
-              await runStep(id);
+              await tracked(id);
             } catch (e) {
               failed = true;
               throw e;
@@ -771,7 +820,11 @@ export class DagEngine {
         })()
       );
     }
-    await Promise.all(workers);
+    try {
+      await Promise.all(workers);
+    } finally {
+      await settleInflight();
+    }
   }
 }
 

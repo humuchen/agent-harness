@@ -1,5 +1,17 @@
 import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types';
 import { recordTokenCacheQuery } from './token-cache-metrics';
+import { CircuitBreakerOpen } from '../circuit-breaker';
+
+/**
+ * 统一退避：指数退避 + jitter，优先尊重 Retry-After 响应头（秒）。
+ * 429 风暴场景下比旧线性 800/1600 更友好；jitter 避免多实例同步重试形成尖峰。
+ */
+function computeBackoffMs(attempt: number, retryAfterHeader?: string | null): number {
+  const ra = retryAfterHeader != null && retryAfterHeader !== '' ? Number(retryAfterHeader) : NaN;
+  if (Number.isFinite(ra) && ra >= 0) return Math.min(ra * 1000, 30_000);
+  const base = Math.min(800 * Math.pow(2, attempt), 8_000);
+  return base + Math.floor(Math.random() * 250);
+}
 
 /**
  * OpenAI 兼容 Chat Completions 适配器之间共享的纯函数。
@@ -231,8 +243,9 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal, onToken, onReasoning, circuitBreaker } = opts;
   // token 级流式：回调存在即走 stream:true，边读边 emit 增量并重建完整响应
   // （含工具调用的增量重组），保证既能在聊天 UI 实现打字机效果，又不丢失 agent 的工具执行能力。
+  // 注意：必须透传 retries 与 circuitBreaker（此前被丢弃 → 流式既无重试也无熔断）。
   if (onToken || onReasoning) {
-    return streamOpenAIChat({ baseUrl, headers, body, fetchImpl, modelLabel, signal, onToken, onReasoning });
+    return streamOpenAIChat({ baseUrl, headers, body, fetchImpl, retries, modelLabel, signal, onToken, onReasoning, circuitBreaker });
   }
   let last: LLMResponse = { content: '', tool_calls: [] };
   // 跨重试累计 token 用量：每次重试都重发全量 prompt，provider 对每次都计费，
@@ -276,18 +289,29 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     });
   };
 
+  // 非流式请求独立 HTTP 超时：run 级 signal 仅在 harness 配置 timeoutMs 时存在，
+  // 未配置时一次 TCP 挂起可让调用永久阻塞（race 的 abortPromise 永不触发）。
+  // 默认 600s 兜底，可用 LLM_HTTP_TIMEOUT_MS 调整（设 0 关闭）。流式路径已有
+  // LLM_STREAM_IDLE_TIMEOUT_MS 空闲超时兜底，不在此重复。
+  const httpTimeoutMs = Number(process.env.LLM_HTTP_TIMEOUT_MS ?? 600_000) || 0;
+  const withHttpTimeout = (sig?: AbortSignal): AbortSignal | undefined => {
+    if (httpTimeoutMs <= 0) return sig;
+    const timeoutSignal = AbortSignal.timeout(httpTimeoutMs);
+    return sig ? AbortSignal.any([sig, timeoutSignal]) : timeoutSignal;
+  };
+
   const fetchWithBreaker = circuitBreaker
     ? () => circuitBreaker.withRequest(() => fetchImpl(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal,
+      signal: withHttpTimeout(signal),
     }))
     : () => fetchImpl(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
-      signal,
+      signal: withHttpTimeout(signal),
     });
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -302,7 +326,7 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     if (!resp.ok) {
       const text = await resp.text();
       if (RETRYABLE_STATUS.has(resp.status) && attempt < retries) {
-        const waitMs = 800 * (attempt + 1);
+        const waitMs = computeBackoffMs(attempt, resp.headers?.get?.('retry-after') ?? null);
         console.warn(
           `[llm] ${resp.status} (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
         );
@@ -366,7 +390,7 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
  * 返回与一次性调用同形状的 LLMResponse，供 harness 记忆 / 成本记账 / 门禁复用。
  */
 async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
-  const { baseUrl, headers, body, fetchImpl, modelLabel, signal, onToken, onReasoning } = opts;
+  const { baseUrl, headers, body, fetchImpl, modelLabel, signal, onToken, onReasoning, circuitBreaker, retries = 0 } = opts;
   const streamBody: Record<string, unknown> = {
     ...body,
     stream: true,
@@ -380,18 +404,57 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
   }
-  const resp = await fetchImpl(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(streamBody),
-    signal,
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
+
+  // ── 连接阶段：熔断器 + 首字节前重试 ─────────────────────────────────────
+  // 修复（原实现两点缺陷）：① stream 直连 fetch 绕过 circuitBreaker —— 传入的熔断器
+  // 被静默忽略，上游持续 5xx 时流式调用每次都空等；② 无任何重试 —— 一次抖动即失败。
+  // 约束：仅「首字节前」失败（连接拒绝 / 非 200 / 无可读 body）可重试 —— 此时还未向
+  // 调用方发出任何 token，语义与非流式重试等价；首字节后失败仍走 partial 保留已产出。
+  let resp: Response | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let r: Response;
+    try {
+      const doFetch = () => fetchImpl(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(streamBody),
+        signal,
+      });
+      r = circuitBreaker
+        ? await circuitBreaker.withRequest(doFetch)
+        : await doFetch();
+    } catch (e) {
+      // CircuitBreakerOpen 不是 LLM API 错误，直接上抛不消耗重试（与非流式一致）。
+      if (e instanceof CircuitBreakerOpen || attempt >= retries) throw e;
+      const waitMs = computeBackoffMs(attempt);
+      console.warn(
+        `[llm] stream connect failed (model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries}):`,
+        e instanceof Error ? e.message : String(e)
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      if (RETRYABLE_STATUS.has(r.status) && attempt < retries) {
+        const waitMs = computeBackoffMs(attempt, r.headers?.get?.('retry-after') ?? null);
+        console.warn(
+          `[llm] stream ${r.status} (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+      throw new Error(`LLM API error ${r.status} (model=${modelLabel}): ${text}`);
+    }
+    if (!r.body || typeof (r.body as unknown as { getReader?: unknown }).getReader !== 'function') {
+      throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
+    }
+    resp = r;
+    break;
   }
-  if (!resp.body || typeof (resp.body as unknown as { getReader?: unknown }).getReader !== 'function') {
-    throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
+  if (!resp) {
+    // 理论不可达（循环内要么 break 要么 throw），防御 noUncheckedIndexedAccess / 边界修改。
+    throw new Error(`LLM streaming failed without a response (model=${modelLabel})`);
   }
 
   const reader = (resp.body as ReadableStream<Uint8Array>).getReader();

@@ -35,6 +35,12 @@ export interface QuotaDecision {
   reason?: string;
   /** 建议客户端重试等待毫秒（限流时）。 */
   retryAfterMs?: number;
+  /**
+   * 本次准入的预留量（allowed=true 时）：调用方在结算实际用量时把它传回
+   * recordUsage 的第三参，实现「实际替换预留」冲销 —— 否则窗口用量 =
+   * 预估值 + 实际值双重累计，系统性虚高并提前触发限额（修复）。
+   */
+  reservation?: { tokens: number; cost: number };
 }
 
 interface Bucket {
@@ -156,7 +162,48 @@ export class QuotaEngine {
     b.active += 1;
     b.tokensUsed += reqTokens;
     b.costUsed += reqCost;
-    return { allowed: true };
+    return { allowed: true, reservation: { tokens: reqTokens, cost: reqCost } };
+  }
+
+  /**
+   * admit/release 配对的便捷包装（防泄漏，供未来接线使用）。
+   *
+   * 执行 fn 前 admit；无论 fn 成功还是抛错，finally 必然 release —— 消除「调用方
+   * 忘记配对 release 导致并发槽永久泄漏、并发闸永久拒绝」的风险。fn 结果经
+   * `usageOf` 提取实际用量，以「实际替换预留」方式结算窗口累计（预约值被冲销，
+   * 不再双重计费）。admit 拒绝时不执行 fn，直接返回 decision。
+   */
+  async admitAndRun<T>(
+    tenantId: string,
+    fn: () => Promise<T>,
+    opts: {
+      /** 本轮预计消耗（用于硬上限预判与预留）。 */
+      requested?: { tokens?: number; cost?: number };
+      /** 是否启用 token / cost 窗口硬上限。 */
+      hardLimit?: boolean;
+      /** 从执行结果提取实际用量；不传则不做窗口结算（仅并发/QPS 管控）。 */
+      usageOf?: (result: T) => { tokens?: number; cost?: number };
+    } = {}
+  ): Promise<
+    | { ok: true; value: T; decision: QuotaDecision }
+    | { ok: false; decision: QuotaDecision; error?: unknown }
+  > {
+    const decision = this.admit(tenantId, opts.requested, opts.hardLimit);
+    if (!decision.allowed) return { ok: false, decision };
+    const reservation = decision.reservation;
+    try {
+      const value = await fn();
+      if (opts.usageOf) {
+        this.recordUsage(tenantId, opts.usageOf(value), reservation);
+      }
+      return { ok: true, value, decision };
+    } catch (e) {
+      // fn 抛错同样不向上穿透：统一以 ok:false 返回（error 字段携带原始异常），
+      // finally 保证并发槽必然归还 —— 调用方无需再包 try/catch。
+      return { ok: false, decision, error: e };
+    } finally {
+      this.release(tenantId);
+    }
   }
 
   /** 执行结束后归还并发额度（与 admit 配对）。 */
@@ -166,13 +213,27 @@ export class QuotaEngine {
     if (b && b.active > 0) b.active -= 1;
   }
 
-  /** 运行期累计 token / cost（不拦截，仅统计；用于计费与窗口观测）。 */
-  recordUsage(tenantId: string, usage: { tokens?: number; cost?: number }): void {
+  /**
+   * 运行期累计 token / cost（不拦截，仅统计；用于计费与窗口观测）。
+   * @param reservation admit 成功时返回的预留量：传入后先冲销预估值再记实际值
+   *   （「实际替换预留」），消除 admit + recordUsage 双重累计导致的窗口用量虚高；
+   *   不传则保持旧的纯累加语义（向后兼容）。
+   */
+  recordUsage(
+    tenantId: string,
+    usage: { tokens?: number; cost?: number },
+    reservation?: { tokens?: number; cost?: number }
+  ): void {
     const id = tenantId || 'anonymous';
     const q = this.getQuota(id);
     const b = this.bucket(id);
     const now = Date.now();
     this.rollWindow(b, q.windowMs && q.windowMs > 0 ? q.windowMs : 60000, now);
+    if (reservation) {
+      // 冲销预留（floor 0：窗口可能已滚动，预留已随 rollWindow 清零）
+      b.tokensUsed = Math.max(0, b.tokensUsed - (reservation.tokens ?? 0));
+      b.costUsed = Math.max(0, b.costUsed - (reservation.cost ?? 0));
+    }
     b.tokensUsed += usage.tokens ?? 0;
     b.costUsed += usage.cost ?? 0;
   }

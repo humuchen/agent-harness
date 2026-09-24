@@ -15,6 +15,26 @@ import type { IndustryDomain } from '../agents/types';
 
 /** 基础默认策略（与 guardrails 的 DEFAULT_POLICY 对齐，但此处为独立快照，避免耦合其可变单例）。 */
 function baseDefaultPolicy(): GuardrailPolicy {
+  // 出网基线（部署级开关）：EGRESS_DEFAULT_MODE=open|denylist|allowlist，缺省 open。
+  // 旧实现缺 network 字段 → checkEgress 直接放行（fail-open），且与 guardrails 模块
+  // 自身的 deny-all 默认相互矛盾（哪套生效取决于策略来源）。现在部署可用一条 env
+  // 统一收紧（如 EGRESS_DEFAULT_MODE=denylist + EGRESS_DENIED_DOMAINS=...），存量部署
+  // 不设置则保持 open（向后兼容零回归）。
+  const mode = (process.env.EGRESS_DEFAULT_MODE || 'open').toLowerCase();
+  let network: GuardrailPolicy['network'];
+  if (mode === 'denylist') {
+    const denied = (process.env.EGRESS_DENIED_DOMAINS || '*')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    network = { mode: 'denylist', deniedDomains: denied };
+  } else if (mode === 'allowlist') {
+    const allowed = (process.env.EGRESS_ALLOWED_DOMAINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    network = { mode: 'allowlist', allowedDomains: allowed };
+  }
   return {
     maxInputLength: 20000,
     enableSecretScan: true,
@@ -22,7 +42,7 @@ function baseDefaultPolicy(): GuardrailPolicy {
     injectionSensitivity: 'medium',
     enablePiiRedaction: true,
     allowlist: [],
-    // network 缺省 open（全部放行），向后兼容。
+    ...(network ? { network } : {}),
   };
 }
 
@@ -43,6 +63,10 @@ export const INDUSTRY_PROFILES: Record<string, Partial<GuardrailPolicy>> = {
     enableInjectionScan: true,
     injectionSensitivity: 'high',
     enableSecretScan: true,
+    // 高合规画像默认收紧出网（denylist '*' = 默认禁外部出网，LLM API 调用不受
+    // checkEgress 管控）：数据驻留 domestic 与「默认不出境」语义对齐。个别租户
+    // 需要放开时经 applyIndustryProfile 的 extra 传入 network 覆盖（extra 优先于画像）。
+    network: { mode: 'denylist', deniedDomains: ['*'] },
     compliance: {
       framework: '等保三级 + 个人信息保护法',
       dataResidency: 'domestic',
@@ -56,6 +80,7 @@ export const INDUSTRY_PROFILES: Record<string, Partial<GuardrailPolicy>> = {
     enableInjectionScan: true,
     injectionSensitivity: 'high',
     enableSecretScan: true,
+    network: { mode: 'denylist', deniedDomains: ['*'] },
     compliance: {
       framework: '等保三级 + 个人信息保护法',
       dataResidency: 'domestic',

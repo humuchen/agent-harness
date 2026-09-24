@@ -518,7 +518,16 @@ export class AgentHarness {
     imageAttachments?: Array<{ url: string; name: string; type: string }>
   ): Promise<string> {
     const runId = nextId('run');
-    const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
+    // 事件通道防御：调用方传入的 onEvent 抛错（如 SSE 写失败）不得影响主流程，
+    // 也不得从 run:meta / run:end 等发射点把异常冒出 run()。对齐 run-events.ts
+    // 旁路通道「观测异常不影响业务」的容错约定。
+    const emit = (e: HarnessEvent) => {
+      try {
+        this.opts.onEvent?.(e);
+      } catch {
+        // 观测通道失败：吞掉，不影响 run 主流程
+      }
+    };
 
     // 组合「超时」与「外部取消」为单一信号：任一触发即中止本次运行。
     const controller = new AbortController();
@@ -947,26 +956,28 @@ export class AgentHarness {
           for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
             if (signal.aborted) return abortedResult();
             try {
+              const llmCall = this.opts.llm(messages, stepTools, {
+                signal,
+                circuitBreaker: this.opts.circuitBreaker,
+                ...(this.opts.streamTokens
+                  ? {
+                      onToken: (delta: string) => {
+                        streamedTokens = true;
+                        streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
+                        emit({ type: 'llm:token', step: steps, delta });
+                      },
+                      onReasoning: (delta: string) => {
+                        emit({ type: 'llm:reasoning', step: steps, delta });
+                      }
+                    }
+                  : {})
+              });
+              // 防御：abort/超时竞速获胜后，底层调用 rejection 无人接住会触发
+              // unhandledRejection（Node ≥15 默认 crash）。挂一条兜底 catch，
+              // 不影响竞速正常路径的异常传播（race 仍会收到原始 rejection）。
+              void llmCall.catch(() => {});
               const raceResult = await withSpan('llm.call', () =>
-                Promise.race([
-                  this.opts.llm(messages, stepTools, {
-                    signal,
-                    circuitBreaker: this.opts.circuitBreaker,
-                    ...(this.opts.streamTokens
-                      ? {
-                          onToken: (delta: string) => {
-                            streamedTokens = true;
-                            streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
-                            emit({ type: 'llm:token', step: steps, delta });
-                          },
-                          onReasoning: (delta: string) => {
-                            emit({ type: 'llm:reasoning', step: steps, delta });
-                          }
-                        }
-                      : {})
-                  }),
-                  abortPromise
-                ])
+                Promise.race([llmCall, abortPromise])
               );
               if (raceResult === '__aborted__') return abortedResult();
               resp = raceResult as LLMResponse;
@@ -1427,15 +1438,25 @@ export class AgentHarness {
                 //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
                 //    回传，模型可改道或基于已有信息继续，而不是拖垮整步。
                 let toolTimer: ReturnType<typeof setTimeout> | null = null;
-                const racers: Array<Promise<{ kind: string; value?: unknown }>> = [
-                  withSpan(`tool.${call.name}`, async () => ({
-                    kind: 'ok',
-                    value: await this.opts.tools.call(call.name, call.arguments, {
-                      traceId: this.opts.traceId,
-                      // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
-                      signal
-                    })
-                  })),
+                // 把工具 promise 的 rejection 转为已决值：超时/中止放弃等待后，
+                // 底层工具稍后 reject 时不再触发 unhandledRejection（Node ≥15 默认 crash）。
+                const toolPromise: Promise<{
+                  kind: string;
+                  value?: unknown;
+                  error?: unknown;
+                }> = withSpan(`tool.${call.name}`, async () => ({
+                  kind: 'ok',
+                  value: await this.opts.tools.call(call.name, call.arguments, {
+                    traceId: this.opts.traceId,
+                    // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
+                    signal
+                  })
+                })).then(
+                  (v) => v,
+                  (e) => ({ kind: 'err', error: e })
+                );
+                const racers: Array<Promise<{ kind: string; value?: unknown; error?: unknown }>> = [
+                  toolPromise,
                   abortPromise.then(() => ({ kind: 'aborted' as const }))
                 ];
                 if (toolCallTimeoutMs > 0) {
@@ -1448,7 +1469,7 @@ export class AgentHarness {
                     })
                   );
                 }
-                let raced: { kind: string; value?: unknown };
+                let raced: { kind: string; value?: unknown; error?: unknown };
                 try {
                   raced = await Promise.race(racers);
                 } finally {
@@ -1457,6 +1478,11 @@ export class AgentHarness {
                 if (raced.kind === 'aborted') {
                   fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
                   return abortedResult();
+                }
+                if (raced.kind === 'err') {
+                  // 工具 promise 已被转成已决值（见 toolPromise），此处恢复异常
+                  // 语义，走下方统一 catch 转为工具错误文本回传模型。
+                  throw raced.error;
                 }
                 if (raced.kind === 'timeout') {
                   result =

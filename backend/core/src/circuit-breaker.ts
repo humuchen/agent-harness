@@ -73,7 +73,9 @@ export class CircuitBreaker {
    * 否则执行 fn，成功关闭计数器，失败递增计数器并在阈值时打开熔断。
    */
   async withRequest<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state === 'open') {
+    // 走 currentState getter：open 且超过 timeoutMs 时懒转换为 half-open，
+    // 否则熔断打开后将永不恢复（half-open 恢复路径不可达）。
+    if (this.currentState === 'open') {
       throw new CircuitBreakerOpen(this.opts.name, this.consecutiveFailures);
     }
 

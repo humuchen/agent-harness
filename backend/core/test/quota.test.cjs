@@ -84,3 +84,61 @@ test('QuotaEngine：getQuota 缺省合并 default（未注册字段回退）', (
   assert.strictEqual(q.getQuota('t').qps, 5); // default 合并
   assert.strictEqual(q.getQuota('t').maxConcurrency, 3);
 });
+
+// ---------------------------------------------------------------------------
+// 预留冲销（实际替换预留，修复双重计费）与 admitAndRun 防泄漏包装
+// ---------------------------------------------------------------------------
+
+test('QuotaEngine：预留冲销 —— recordUsage 传 reservation 后实际替换预留', () => {
+  const q = new QuotaEngine();
+  q.setQuota('t', { windowMs: 60000 });
+  const d = q.admit('t', { tokens: 100, cost: 0.5 }, false);
+  assert.strictEqual(d.allowed, true);
+  assert.ok(d.reservation, 'admit 成功应返回预留量');
+  // 实际用量 60/0.3：冲销 100/0.5 预留后只记 60/0.3（旧实现 100+60=160 虚高）
+  q.recordUsage('t', { tokens: 60, cost: 0.3 }, d.reservation);
+  const u = q.getUsage('t');
+  assert.strictEqual(u.tokensUsed, 60);
+  assert.ok(Math.abs(u.costUsed - 0.3) < 1e-9);
+  q.release('t');
+});
+
+test('QuotaEngine：硬上限预判用预留，实际结算后释放窗口额度', () => {
+  const q = new QuotaEngine();
+  q.setQuota('t', { maxTokensPerWindow: 100, windowMs: 60000 });
+  const d1 = q.admit('t', { tokens: 80 }, true); // 预留 80/100
+  assert.strictEqual(d1.allowed, true);
+  const d2 = q.admit('t', { tokens: 30 }, true); // 80+30 > 100 → 拒绝
+  assert.strictEqual(d2.allowed, false);
+  q.recordUsage('t', { tokens: 50 }, d1.reservation); // 实际只用 50 → 冲销后 50/100
+  const d3 = q.admit('t', { tokens: 30 }, true); // 50+30 = 80 ≤ 100 → 放行
+  assert.strictEqual(d3.allowed, true);
+  q.release('t');
+});
+
+test('QuotaEngine：admitAndRun 成功路径 —— release 自动归还 + usageOf 实际替换预留', async () => {
+  const q = new QuotaEngine();
+  q.setQuota('t', { maxConcurrency: 1, windowMs: 60000 });
+  const r = await q.admitAndRun('t', async () => 'done', {
+    requested: { tokens: 100 },
+    usageOf: () => ({ tokens: 40 }),
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.value, 'done');
+  assert.strictEqual(q.getUsage('t').concurrency, 0, '结束必须归还并发槽');
+  assert.strictEqual(q.getUsage('t').tokensUsed, 40, '实际替换预留，不双重累计');
+  assert.strictEqual(q.admit('t').allowed, true, '槽已归还，可再次准入');
+  q.release('t');
+});
+
+test('QuotaEngine：admitAndRun 抛错路径 —— finally 仍 release，槽不泄漏', async () => {
+  const q = new QuotaEngine();
+  q.setQuota('t', { maxConcurrency: 1 });
+  const r = await q.admitAndRun('t', async () => {
+    throw new Error('boom');
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(q.getUsage('t').concurrency, 0, '抛错也必须归还并发槽');
+  assert.strictEqual(q.admit('t').allowed, true, '槽未泄漏');
+  q.release('t');
+});

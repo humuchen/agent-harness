@@ -189,6 +189,12 @@ export interface WorkflowRun {
   /** 失败时的根因信息。 */
   error?: string;
   /**
+   * 全局初始输入（随检查点持久化）：resume 时 inputMapping 含 `input` 的 step
+   * （如计划桥 goal:'input'）依赖它解析输入；不落盘则审批门暂停后续跑拿到 undefined。
+   * 旧检查点无该字段时 resume 退回 undefined（与旧行为一致，零回归）。
+   */
+  initialInput?: unknown;
+  /**
    * P3 人工审批门：已批准放行的 step id 列表（随检查点持久化）。
    * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。
    */
