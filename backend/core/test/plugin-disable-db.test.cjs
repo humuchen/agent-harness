@@ -38,7 +38,17 @@ test('getDbAdapter: Turso 后端按 TURSO_URL 区分缓存键（避免共用默�
     core.resetDbAdaptersForTest();
     const a = core.getDbAdapter({ file: './data/app.db' });
     const keyA = a.cacheKey;
-    assert.strictEqual(keyA, 'turso:libsql://example-a.turso.io', 'Turso 键应含 TURSO_URL');
+    // 键 = turso:<url>:<localFile>：既区分不同远端库，也保证降级时不同逻辑文件
+    // 拿到独立实例（键只含 url 会让第二个调用方复用第一个调用方的本地文件 → 串库）。
+    assert.strictEqual(
+      keyA,
+      'turso:libsql://example-a.turso.io:./data/app.db',
+      'Turso 键应含 TURSO_URL 与 localFile'
+    );
+    // 不同 localFile → 不同实例（Turso 降级串库修复的回归断言）
+    const b = core.getDbAdapter({ file: './data/other.db' });
+    assert.notStrictEqual(b, a, '不同 localFile 必须是独立实例');
+    assert.strictEqual(b.cacheKey, 'turso:libsql://example-a.turso.io:./data/other.db');
   } finally {
     if (origUrl === undefined) delete process.env.TURSO_URL; else process.env.TURSO_URL = origUrl;
     if (origBackend === undefined) delete process.env.DB_BACKEND; else process.env.DB_BACKEND = origBackend;

@@ -19,6 +19,16 @@ import {
   structLog,
   recordError
 } from '@agent-harness/core';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/**
+ * delegate_task 递归深度追踪（AsyncLocalStorage 跨嵌套传播）：
+ * 顶层 run 的工具调用 depth=0；子 agent 的工具调用继承父 depth+1。
+ * 无上限的递归派发会在「子 agent 再派子 agent」时指数级烧 token / 占满
+ * 并发槽，上限默认 3 层（AGENT_DELEGATE_MAX_DEPTH 可调，0=不限）。
+ */
+const delegateDepth = new AsyncLocalStorage<number>();
+const MAX_DELEGATE_DEPTH = Number(process.env.AGENT_DELEGATE_MAX_DEPTH ?? 3) || 0;
 
 /**
  * SubAgent 装配参数（用于 delegate_task 工具内部递归调用 assembleAgent）。
@@ -100,6 +110,23 @@ export function registerSubAgentTool(
       required: ['task'],
     },
     async (args: Record<string, unknown>): Promise<unknown> => {
+      // 递归深度门禁：子 agent 的工具调用落在父 delegateDepth.run(depth+1) 上下文内，
+      // 因此这里读到的 store 就是「本次调用所处的派发深度」。
+      const depth = delegateDepth.getStore() ?? 0;
+      if (MAX_DELEGATE_DEPTH > 0 && depth >= MAX_DELEGATE_DEPTH) {
+        structLog('warn', 'delegate_task depth limit reached', {
+          depth,
+          maxDepth: MAX_DELEGATE_DEPTH,
+          sessionKey: opts.sessionKey
+        });
+        recordError('subagent.depth_limit');
+        return {
+          type: 'text' as const,
+          text:
+            `错误：已达到子任务派发深度上限（${MAX_DELEGATE_DEPTH} 层），不再继续派发。` +
+            '请基于当前可用信息直接完成任务。',
+        };
+      }
       const task =
         typeof args.task === 'string' ? args.task : String(args.task ?? '');
       const agentId =
@@ -151,6 +178,9 @@ export function registerSubAgentTool(
         }
       }
 
+      // 子 agent 的整个执行（含其工具调用）包进 depth+1 上下文：
+      // 子 agent 内再调 delegate_task 时读到的深度即 +1，逐层递增至门禁。
+      return delegateDepth.run(depth + 1, async (): Promise<unknown> => {
       try {
         manager.markRunning(inst.id);
 
@@ -213,6 +243,7 @@ export function registerSubAgentTool(
         // 清理已完成实例
         manager.cleanup(inst.id);
       }
+      }); // end delegateDepth.run(depth + 1)
     }
   );
 }

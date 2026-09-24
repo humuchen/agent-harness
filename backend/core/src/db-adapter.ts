@@ -263,26 +263,31 @@ export function resolveTenantDbPath(base: string, dataZone?: string): string {
  */
 export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
   const backend = (opts.backend || process.env.DB_BACKEND || 'sqlite').toLowerCase() as DbBackend;
-  // Turso 后端按 TURSO_URL 区分（同一文件可被多个远端库共用），sqlite 按 file 区分。
-  const file =
-    backend === 'turso'
-      ? process.env.TURSO_URL || opts.file || './data/app.db'
-      : opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
-  const cacheKey = `${backend}:${file}`;
+  // 本地 sqlite 文件路径：与 TURSO_URL 严格分离——降级时绝不把远程 URL 当本地文件名
+  // 开库（此前 file 回退取 TURSO_URL，libsql 缺依赖降级后会产生名为 "libsql://xxx"
+  // 的垃圾本地文件）。turso 仅 file: 前缀是本地模式，其余均为远端。
+  const localFile = opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
+  const tursoUrl = process.env.TURSO_URL;
+  const file = backend === 'turso' ? tursoUrl || localFile : localFile;
+  // 缓存键必须唯一标识底层库：降级实例是「本地 localFile 的 sqlite」而非「TURSO_URL
+  // 指向的远端库」，且不同调用方（不同 opts.file）必须拿到各自独立的实例——
+  // 此前降级实例统一挂在 turso:<url> 键下，第二个调用方会复用第一个调用方的文件
+  // 句柄，造成跨 store 数据串库。键中并入 localFile 后，同 (url, file) 组合仍单例。
+  const cacheKey =
+    backend === 'turso' ? `turso:${tursoUrl ?? ''}:${localFile}` : `sqlite:${localFile}`;
 
   if (adapterCache.has(cacheKey)) return adapterCache.get(cacheKey)!;
 
   let adapter: DbAdapter | null = null;
 
   if (backend === 'turso') {
-    const url = process.env.TURSO_URL;
     const token = process.env.TURSO_TOKEN;
-    if (url) {
+    if (tursoUrl) {
       try {
-        adapter = new TursoAdapter(url, token);
+        adapter = new TursoAdapter(tursoUrl, token);
         // libsql://、https://、wss:// 均为远端库；仅 file: 前缀是本地文件（libsql 本地模式）。
-        const isRemote = /^(libsql|https|wss):\/\//.test(url);
-        console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? url : ''}`);
+        const isRemote = /^(libsql|https|wss):\/\//.test(tursoUrl);
+        console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? tursoUrl : ''}`);
       } catch (e) {
         console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e instanceof Error ? e.message : String(e)}`);
       }
@@ -291,10 +296,10 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
     }
   }
 
-  // 兜底：sqlite
+  // 兜底：sqlite（用 localFile——远程 URL 绝不能当本地路径）
   if (!adapter) {
-    adapter = new SqliteAdapter(file, opts.pragmas);
-    console.log(`[db-adapter] 后端：SQLite（本地文件 ${file}）`);
+    adapter = new SqliteAdapter(localFile, opts.pragmas);
+    console.log(`[db-adapter] 后端：SQLite（本地文件 ${localFile}）`);
   }
 
   adapterCache.set(cacheKey, adapter);

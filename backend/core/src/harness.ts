@@ -1437,6 +1437,13 @@ export class AgentHarness {
                 //  - 运行被中止（超时/取消）→ 立即放弃等待并走中止路径（内容不再丢）；
                 //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
                 //    回传，模型可改道或基于已有信息继续，而不是拖垮整步。
+                //  - 超时不再只是「放弃等待」：经工具级独立 AbortController 真实中止
+                //    工具执行（shell/sandbox/子 agent 等支持 signal 的工具会及时终止，
+                //    孤儿执行不再继续烧 token / 占用资源）；run 级中止级联进工具信号。
+                const toolAbort = new AbortController();
+                const propagateAbort = () => toolAbort.abort(signal.reason);
+                if (signal.aborted) propagateAbort();
+                else signal.addEventListener('abort', propagateAbort, { once: true });
                 let toolTimer: ReturnType<typeof setTimeout> | null = null;
                 // 把工具 promise 的 rejection 转为已决值：超时/中止放弃等待后，
                 // 底层工具稍后 reject 时不再触发 unhandledRejection（Node ≥15 默认 crash）。
@@ -1448,13 +1455,17 @@ export class AgentHarness {
                   kind: 'ok',
                   value: await this.opts.tools.call(call.name, call.arguments, {
                     traceId: this.opts.traceId,
-                    // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
-                    signal
+                    // 透传工具级取消信号（级联运行级 abort）：shell 等会落地子进程的工具据此及时强杀。
+                    signal: toolAbort.signal
                   })
                 })).then(
                   (v) => v,
                   (e) => ({ kind: 'err', error: e })
                 );
+                // 工具 promise 结束后移除级联监听，避免多次工具调用在 run 信号上堆积监听器。
+                void toolPromise
+                  .finally(() => signal.removeEventListener('abort', propagateAbort))
+                  .catch(() => {}); // 理论不可达（rejection 已转已决值），防御性兜底
                 const racers: Array<Promise<{ kind: string; value?: unknown; error?: unknown }>> = [
                   toolPromise,
                   abortPromise.then(() => ({ kind: 'aborted' as const }))
@@ -1485,9 +1496,10 @@ export class AgentHarness {
                   throw raced.error;
                 }
                 if (raced.kind === 'timeout') {
+                  toolAbort.abort(); // 真实取消：仍在执行的工具（含落地子进程）随 signal 退出
                   result =
                     `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
-                    '已放弃等待；请改用其它方式获取信息，或基于已有信息继续）';
+                    '已中止该工具执行；请改用其它方式获取信息，或基于已有信息继续）';
                   errored = true;
                 } else {
                   result = raced.value;

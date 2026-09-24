@@ -238,6 +238,35 @@ export interface ChatCallOptions {
 // 这些 HTTP 状态视为限流 / 瞬时故障，可重试（免费档常遇 429）。
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 
+/**
+ * 带 HTTP 状态的 LLM 错误：multi-key 故障转移据此做结构化状态识别——
+ * 此前靠「错误文案里抓任意 3 位数字」判定状态码，`took 4013ms` 会被误判成 401
+ * 导致健康 Key 被立即冷却。新错误类型携带 status 字段，调用方优先读结构化值。
+ */
+export class LLMHttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'LLMHttpError';
+    this.status = status;
+  }
+}
+
+/** 从错误对象提取 HTTP 状态：结构化 status 优先，退回锚定文案匹配。 */
+export function extractHttpStatus(e: unknown): number | null {
+  if (e instanceof LLMHttpError) return e.status;
+  const anyErr = e as { status?: unknown } | null;
+  if (anyErr && typeof anyErr.status === 'number' && Number.isFinite(anyErr.status)) {
+    return anyErr.status;
+  }
+  const msg = e instanceof Error ? e.message : String(e ?? '');
+  // 锚定格式：`LLM API error 429` / `HTTP 403` / `HTTP status 500`；后随数字不算
+  // （避免 `4013ms` 被截成 401）。裸 3 位数字一律不认——宁可漏判交给阈值累计，
+  // 也不误冷却健康 Key。
+  const m = /(?:LLM API error|HTTP(?:\s*status)?)\s*[: ]?\s*(\d{3})(?!\d)/i.exec(msg);
+  return m ? Number(m[1]) : null;
+}
+
 /** 调用任意 OpenAI 兼容 Chat Completions 端点并解析为标准 LLMResponse。 */
 export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   const { baseUrl, headers, body, fetchImpl, retries = 0, modelLabel, signal, onToken, onReasoning, circuitBreaker } = opts;
@@ -333,7 +362,7 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
         await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
-      throw new Error(`LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
+      throw new LLMHttpError(resp.status, `LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
     }
 
     const data = (await resp.json()) as ChatCompletionResponse;
@@ -444,7 +473,7 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
         continue;
       }
-      throw new Error(`LLM API error ${r.status} (model=${modelLabel}): ${text}`);
+      throw new LLMHttpError(r.status, `LLM API error ${r.status} (model=${modelLabel}): ${text}`);
     }
     if (!r.body || typeof (r.body as unknown as { getReader?: unknown }).getReader !== 'function') {
       throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);

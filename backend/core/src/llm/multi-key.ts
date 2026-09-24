@@ -1,5 +1,6 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
 import { createOpenRouterLLM, type OpenRouterConfig } from './openrouter';
+import { extractHttpStatus } from './shared';
 import { incCounter, structLog } from '../telemetry';
 
 export interface MultiKeyOptions extends Omit<OpenRouterConfig, 'apiKey'> {
@@ -77,12 +78,15 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
     return -1;
   }
   function statusOf(e: unknown): number | null {
-    const msg = e instanceof Error ? e.message : String(e ?? '');
-    const m = /(?:HTTP\s*)?(\d{3})/.exec(msg);
-    if (m) {
-      const code = Number(m[1]);
-      if (killStatuses.has(code)) return code;
+    // 结构化状态优先（LLMHttpError.status / err.status / 锚定文案匹配）——
+    // 此前用「文案里抓任意 3 位数字」的裸正则，`took 4013ms` 会被截成 401，
+    // 把健康 Key 立即冷却。extractHttpStatus 只认锚定格式，杜绝该误判。
+    const httpStatus = extractHttpStatus(e);
+    if (httpStatus !== null) {
+      return killStatuses.has(httpStatus) ? httpStatus : null;
     }
+    // 兜底：无结构化状态时的文案启发式（保持旧行为，供自定义 provider 的非标错误）
+    const msg = e instanceof Error ? e.message : String(e ?? '');
     if (/quota|rate limit|rate_limit|too many requests/i.test(msg)) return 429;
     if (/unauthorized|invalid api key|api key|authentication/i.test(msg)) return 401;
     return null;
