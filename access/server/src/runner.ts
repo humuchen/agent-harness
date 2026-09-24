@@ -805,6 +805,9 @@ export async function assembleAgent(
       : Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
     // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
     ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
+    // P1（leadId 注入防护）：会话标识随工具 ctx 透传给插件工具，供服务端
+    // session→leadId 绑定校验（医美插件据此拒绝跨会话写他人客资档案）。
+    ...(sessionKey ? { sessionId: sessionKey } : {}),
     // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
     ...(planPropose ? { planPropose: true } : {}),
     // 计划任务执行（P0）：教学内容输出走 checkTaskOutput 宽松扫描（弱信号短语 /

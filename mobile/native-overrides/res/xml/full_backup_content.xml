@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  P1（mobile token 防提取）：Android 11 及以下的全量备份规则。
+  与 AndroidManifest android:fullBackupContent 绑定：排除全部 SharedPreferences
+  与文件域，@capacitor/preferences 中的会话凭据不随 adb backup / 云备份导出。
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="." />
+</full-backup-content>

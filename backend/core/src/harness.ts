@@ -326,6 +326,13 @@ export interface HarnessOptions {
   workflowId?: string;
   traceId?: string;
   tenantId?: string;
+  /**
+   * P1（leadId 注入防护）：会话标识（服务端 sessionKey，如 conversationId）。
+   * 随工具调用 ctx 透传给插件工具，供「session→业务实体」服务端绑定校验——
+   * 插件据此拒绝跨会话写他人档案（如医美插件 leadId 强制与首绑一致）。
+   * 缺省不透传（工具侧无法绑定时保持既有行为）。
+   */
+  sessionId?: string;
 
   /** 路由决策来源（explicit / domain / classify / fallback），供可观测区分。 */
   decidedBy?: string;
@@ -422,6 +429,8 @@ interface ResolvedHarnessOptions {
   workflowId?: string;
   traceId?: string;
   tenantId?: string;
+  // P1（leadId 注入防护）：随工具 ctx 透传的会话标识（见 HarnessOptions.sessionId）。
+  sessionId?: string;
   decidedBy?: string;
   // token 级流式开关：开启后 LLM 调用透传 onToken/onReasoning，harness 发出
   // llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。默认 false。
@@ -1455,6 +1464,9 @@ export class AgentHarness {
                   kind: 'ok',
                   value: await this.opts.tools.call(call.name, call.arguments, {
                     traceId: this.opts.traceId,
+                    // P1（leadId 注入防护）：会话标识透传给插件工具——服务端据此做
+                    // session→leadId 绑定校验，拒绝跨会话写他人档案。
+                    sessionId: this.opts.sessionId,
                     // 透传工具级取消信号（级联运行级 abort）：shell 等会落地子进程的工具据此及时强杀。
                     signal: toolAbort.signal,
                     // DNS rebinding 防护：web_fetch 等出网工具在真实连接前可做解析级私网校验

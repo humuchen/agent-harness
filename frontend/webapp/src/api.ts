@@ -40,6 +40,12 @@ export function setToken(token: string): void {
 export function clearSession(): void {
   setSession('');
   setToken('');
+  // F2：迁移清理——旧版本曾把 refresh token 明文写入 localStorage['ah_refresh']
+  // 且登出从不清理；刷新流程实际只依赖 HttpOnly cookie，此副本无读取方。
+  // 登出/会话失效时顺带移除，保证历史残留被清空。
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem('ah_refresh');
+  }
 }
 
 function initialUser(): string {

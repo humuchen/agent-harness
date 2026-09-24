@@ -2,6 +2,7 @@ import type { ToolRegistry } from '@agent-harness/core';
 import { bookConsultation } from '../services/schedule-service';
 import { toMaError } from '../infra/errors';
 import { handoffLead } from '../services/lead-service';
+import { resolveLeadIdForSession } from '../infra/lead-binding';
 
 /**
  * consultation_book：预约线下面诊/咨询（院区、日期、时段）。
@@ -29,20 +30,25 @@ export function registerBookTool(tools: ToolRegistry): void {
       },
       required: ['leadId', 'clinic', 'date', 'time'],
     },
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, ctx?: Record<string, unknown>) => {
       const leadId = String(args.leadId ?? '').trim();
+      // P1 安全：leadId 经 session 绑定校验（会话首绑后不可切换），防注入给他人客资建预约。
+      const bound = resolveLeadIdForSession(ctx, leadId);
+      if (!bound.ok) {
+        return toMaError(new Error(bound.reason), 'INVALID_ARGUMENT').toJSON();
+      }
       const clinic = String(args.clinic ?? '').trim();
       const date = String(args.date ?? '').trim();
       const time = String(args.time ?? '').trim();
       try {
-        return await bookConsultation({ leadId, clinic, date, time });
+        return await bookConsultation({ leadId: bound.leadId, clinic, date, time });
       } catch (e) {
         const err = toMaError(e, 'UPSTREAM_ERROR');
         // 硬兜底：系统/号源侧不可自愈的失败 → 自动转人工落库（幂等，同 leadId 重复调用无害）
-        if (err.code !== 'INVALID_ARGUMENT' && leadId) {
+        if (err.code !== 'INVALID_ARGUMENT' && bound.leadId) {
           try {
             const h = await handoffLead({
-              leadId,
+              leadId: bound.leadId,
               reason:
                 `booking-failed:${err.code} 用户选定院区=${clinic || '?'} ` +
                 `日期=${date || '?'} 时段=${time || '?'}（${err.message}）`,

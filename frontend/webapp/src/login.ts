@@ -1709,9 +1709,9 @@ export class AhLogin extends LitElement {
       }
       // 服务端已下发 ah_auth cookie；前端记录用户名 + access token（用于调度刷新）。
       setSession(data.username || email);
-      if (data.refreshToken && typeof localStorage !== 'undefined') {
-        localStorage.setItem('ah_refresh', data.refreshToken);
-      }
+      // F2：不再把 refresh token 落 localStorage——服务端已签发 HttpOnly ah_refresh
+      // cookie（account-routes refreshCookieValue），刷新流程只走 cookie；
+      // 此前写入的 'ah_refresh' 明文副本无任何读取方，且登出从不清理，属纯泄漏面。
       if (data.accessExpiresAt) {
         setToken(data.refreshToken || ''); // 存 refresh token 副本以维持会话存在性判断
         scheduleAutoRefresh(data.accessExpiresAt);

@@ -1,10 +1,12 @@
 import type { ToolRegistry } from '@agent-harness/core';
 import { captureLead } from '../services/lead-service';
 import { errorResult } from '../infra/errors';
+import { resolveLeadIdForSession } from '../infra/lead-binding';
 
 /**
  * lead_capture：在用户明确授权后留资（微信/手机号/姓名），推进到 captured 阶段（真实落库）。
  * 合规：必须用户主动提供或同意，不在未授权时索要隐私；未授权/无联系方式均据实报错。
+ * P1 安全：leadId 经 session 绑定校验（会话首绑后不可切换），防注入跨档案写 PII。
  */
 export function registerCaptureTool(tools: ToolRegistry): void {
   tools.register(
@@ -21,10 +23,12 @@ export function registerCaptureTool(tools: ToolRegistry): void {
       },
       required: ['leadId', 'consent'],
     },
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, ctx?: Record<string, unknown>) => {
       try {
+        const bound = resolveLeadIdForSession(ctx, String(args.leadId ?? ''));
+        if (!bound.ok) return errorResult(new Error(bound.reason), 'INVALID_ARGUMENT');
         return await captureLead({
-          leadId: String(args.leadId ?? ''),
+          leadId: bound.leadId,
           consent: args.consent === true || args.consent === 'true',
           wechat: args.wechat ? String(args.wechat) : undefined,
           phone: args.phone ? String(args.phone) : undefined,
