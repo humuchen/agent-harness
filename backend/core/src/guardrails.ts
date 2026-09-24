@@ -122,7 +122,9 @@ const DEFAULT_POLICY: GuardrailPolicy = {
   injectionSensitivity: 'medium',
   enablePiiRedaction: true,
   allowlist: [],
-  network: { mode: 'denylist', deniedDomains: ['*'] },
+  // 默认 agent（无租户/无画像路径）不限制出网；需要收紧时用 GUARDRAIL_NETWORK_MODE 显式配置，
+  // 或对高合规租户走行业画像（policy/engine.ts 里 medical/healthcare/finance 仍默认 deny-all）。
+  network: { mode: 'open' },
 };
 
 /**
@@ -147,11 +149,12 @@ export function resolveDefaultPolicy(): GuardrailPolicy {
   const sensitivity: InjectionSensitivity = sens === 'low' || sens === 'high' ? sens : 'medium';
   const maxInput = Number(process.env.GUARDRAIL_MAX_INPUT ?? '');
   const webFetchScan = (process.env.GUARDRAIL_WEB_FETCH_SECRET_SCAN || '').toLowerCase();
-  // 网络出口管控：GUARDRAIL_NETWORK_MODE 支持 open/allowlist/denylist（默认 denylist）。
-  // - denylist + GUARDRAIL_DENIED_DOMAINS：显式禁止的域名列表（默认 ['*'] 即禁所有，需显式放开）；
+  // 网络出口管控：GUARDRAIL_NETWORK_MODE 支持 open/allowlist/denylist（默认 open，2026-09-24 起）。
+  // - 默认 agent（无租户/无行业画像）不限制出网；需要收紧的部署显式设置 env：
+  // - denylist + GUARDRAIL_DENIED_DOMAINS：显式禁止的域名列表；
   // - allowlist + GUARDRAIL_ALLOWED_DOMAINS：白名单模式，仅允许指定域名出网；
-  // - open：放行所有（仅内部测试/离线场景启用）。
-  const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'denylist').toLowerCase();
+  // - open：放行所有（默认）。高合规租户不受此默认影响（行业画像自带 deny-all 基线）。
+  const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'open').toLowerCase();
   const deniedRaw = process.env.GUARDRAIL_DENIED_DOMAINS;
   const allowedRaw = process.env.GUARDRAIL_ALLOWED_DOMAINS;
   // 私网豁免部署开关（GUARDRAIL_ALLOW_PRIVATE_NETWORK，缺省 false 收紧——secure by default）：
@@ -169,7 +172,8 @@ export function resolveDefaultPolicy(): GuardrailPolicy {
       allowPrivateNetwork,
     };
   } else {
-    // denylist（默认）：解析禁止域名，缺省 ['*'] 表示禁止所有出网。
+    // denylist（显式启用）：解析禁止域名，未配 GUARDRAIL_DENIED_DOMAINS 时按 ['*'] 禁所有
+    // （部署既然显式选了 denylist，按最严解释；只想禁部分域名就配上具体列表）。
     const denied = deniedRaw
       ? deniedRaw.split(',').map((s) => s.trim()).filter(Boolean)
       : ['*'];

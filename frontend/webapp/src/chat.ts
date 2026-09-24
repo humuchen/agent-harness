@@ -25,7 +25,7 @@ import {
   formatSize,
   buildPlanStatusLookup,
   mergePlanStatusLookup,
-  derivePlanExecFromMessages,
+  resolveRestoredPlanExec,
   applyPlanWfEvent,
   applyPlanThinking,
   derivePlanWfId,
@@ -1897,6 +1897,9 @@ export class AhChat extends LitElement {
           );
         } else {
           this.threads[id] = localBuf ?? [];
+          // 降级路径（本地镜像恢复）同样还原计划进度：缺失时补种 pending（见
+          // applyPlanStatusLookup 内注释）——否则该路径下「确认执行」同样无反应。
+          this.applyPlanStatusLookup(id, buildPlanStatusLookup(this.threads[id]));
 
           // 区分「真·服务端不可达（网络/超时/5xx）」与「会话本就为空或不存在（404 且无镜像）」：
           // 后者无数据可恢复、也非故障，不打吓人告警、不打 restoreFailed（避免每次进入空会话都重试弹窗）；
@@ -1958,8 +1961,17 @@ export class AhChat extends LitElement {
       if (!m.plan || this.planExec[m.id]) continue;
       const ps = lookup.get(m.plan.goal);
       if (!ps) {
-        const derived = derivePlanExecFromMessages(m.plan, thread);
-        if (derived) this.planExec = { ...this.planExec, [m.id]: derived };
+        // 修复（2026-09-24，「重新登录后点确认执行无反应」）：从未确认执行的计划
+        // 在镜像契约里没有对应状态（toMirrorPlanStatus 对 pending 返回 null），
+        // 恢复后 lookup 必然 miss；线程也无【计划任务 tX】派发痕迹 → 反推为 null。
+        // 此前直接 continue，planExec[m.id] 不会被创建 —— 渲染端按「缺省 pending」
+        // 显示「确认执行」按钮，而 confirmPlan 门禁要求 planExec[m.id] 存在且
+        // status ∈ {pending, failed}，缺失即静默 return，点击毫无反应。
+        // 显式补种 pending 态，使按钮渲染与点击门禁对齐（语义与渲染缺省一致）。
+        this.planExec = {
+          ...this.planExec,
+          [m.id]: resolveRestoredPlanExec(m.plan, thread)
+        };
         continue;
       }
       const doneMap: Record<string, boolean> = {};
