@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agent-harness 全仓代码评估报告 · 2026-09-24</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1d212e; --border:#2a2f3d;
+    --text:#e2e5ec; --muted:#9aa3b5; --dim:#6b7386;
+    --red:#f56358; --orange:#e8a33d; --blue:#5aa7f0; --green:#4fc38a; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;line-height:1.7;padding:40px 20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;margin-bottom:4px}
+  h2{font-size:20px;margin:44px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--text)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:14px}
+  .scoregrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}
+  .score{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+  .score .num{font-size:30px;font-weight:700}
+  .score .lbl{font-size:12px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0}
+  th{background:var(--panel2);color:var(--muted);text-align:left;padding:8px 10px;font-weight:600;border-bottom:1px solid var(--border)}
+  td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:4px;margin-right:6px}
+  .p0{background:rgba(245,99,88,.15);color:var(--red);border:1px solid rgba(245,99,88,.4)}
+  .p1{background:rgba(232,163,61,.15);color:var(--orange);border:1px solid rgba(232,163,61,.4)}
+  .p2{background:rgba(90,167,240,.12);color:var(--blue);border:1px solid rgba(90,167,240,.35)}
+  .ok{color:var(--green)} .warn{color:var(--orange)}
+  code{background:var(--panel2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;font-family:Consolas,monospace;color:#c9d3e8}
+  .loc{font-family:Consolas,monospace;font-size:12px;color:var(--purple)}
+  .impact{color:var(--muted)}
+  .issue{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--border);border-radius:8px;padding:14px 18px;margin-bottom:12px}
+  .issue.p0i{border-left-color:var(--red)} .issue.p1i{border-left-color:var(--orange)}
+  .issue h4{font-size:14px;margin-bottom:6px}
+  .issue .meta{font-size:12px;color:var(--dim);margin:4px 0 8px}
+  ul{padding-left:20px;margin:8px 0}
+  li{margin:4px 0}
+  .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-top:6px}
+  .bar i{display:block;height:100%;border-radius:4px}
+  .footer{color:var(--dim);font-size:12px;margin-top:40px;text-align:center}
+  @media (max-width:700px){.scoregrid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>agent-harness 全仓功能模块评估报告</h1>
+<div class="sub">评估日期：2026-09-24 · 范围：backend/core、access/server、frontend/webapp+cli、plugins（×3）、services/rag、mobile、scripts、deploy · 方式：五路并行静态审查 + 构建/测试/lint 实测验证</div>
+
+<div class="scoregrid">
+  <div class="score"><div class="num" style="color:var(--green)">7.9<span style="font-size:14px;color:var(--dim)">/10</span></div><div class="lbl">稳定性</div></div>
+  <div class="score"><div class="num" style="color:var(--green)">7.4<span style="font-size:14px;color:var(--dim)">/10</span></div><div class="lbl">健壮性</div></div>
+  <div class="score"><div class="num" style="color:var(--red)">6.1<span style="font-size:14px;color:var(--dim)">/10</span></div><div class="lbl">安全性</div></div>
+</div>
+
+<div class="card">
+<b>总体结论：</b>工程质量整体处于<b>良好（B）</b>水位。构建与全部 1360 项测试实测通过，核心引擎（超时/中止竞速、断线续传、队列背压、优雅停机）达到工程级水准；主要短板集中在<b>安全默认值（secure-by-default 意识不足）与数据出口鉴权不一致</b>：3 个 P0（SSRF、账户接管、容器提权）与 18 个 P1 中绝大多数属于"功能正确但默认配置/边界放行"类问题，修复成本低、收益高，建议公网暴露前优先完成 P0 与鉴权类 P1。
+</div>
+
+<h2>一、实测验证结果</h2>
+<table>
+<tr><th>验证项</th><th>结果</th><th>说明</th></tr>
+<tr><td><code>pnpm -r build</code>（全仓 6 包）</td><td class="ok">✅ 通过</td><td>core / server / webapp / cli / rag / medical-ad-guard 全部构建成功</td></tr>
+<tr><td>core 单元测试（tsc + node --test）</td><td class="ok">✅ 625/625</td><td>0 失败，约 32s</td></tr>
+<tr><td>server 单元测试</td><td class="ok">✅ 333/333</td><td>0 失败，2 skipped（设计内），约 85s</td></tr>
+<tr><td>webapp vitest</td><td class="ok">✅ 402/402</td><td>25 个测试文件全绿，约 40s</td></tr>
+<tr><td>ESLint</td><td class="warn">⚠️ 138 errors / 10696 warnings</td><td>其中 <b>132 个 error 来自 mobile 内嵌的构建产物</b>（index-CcpiCtQD.js），属 lint 配置缺陷；源码真实 error 仅 6 个（no-unsafe-finally ×4 等，均轻微）</td></tr>
+</table>
+
+<h2>二、模块评分矩阵</h2>
+<table>
+<tr><th>模块</th><th>稳定性</th><th>健壮性</th><th>安全性</th><th>一句话评价</th></tr>
+<tr><td><b>backend/core</b>（核心框架）</td><td>7.5</td><td>7.0</td><td>6.0</td><td>主循环超时/中止竞速与崩溃防御扎实；web_fetch 默认 SSRF、shell args 逃逸、multi-key 冷却失效是主要扣分</td></tr>
+<tr><td><b>access/server</b>（HTTP+SSE）</td><td>8.0</td><td>7.0</td><td>5.0</td><td>guard 统一准入、队列背压、BYOK 加密纪律好；重置 token 回包 + 两个未鉴权读端点拉低水位</td></tr>
+<tr><td><b>frontend/webapp+cli</b></td><td>9.0</td><td>8.5</td><td>7.0</td><td>断线续传/竞态守卫教科书级；插件视图裸注入 unsafeHTML 与 refresh token 存储是仅有的真实攻击面</td></tr>
+<tr><td><b>plugins</b>（×3 业务插件）</td><td>8.0</td><td>8.0</td><td>6.0</td><td>fail-closed、幂等、自动兜底贯穿；/leads PII 裸奔与 leadId 信任模型是数据出口短板</td></tr>
+<tr><td><b>services/rag</b></td><td>7.0</td><td>6.0</td><td>7.0</td><td>租户强制重写设计正确；请求体零限额、嵌入降级静默毒化缓存、ingest 无事务</td></tr>
+<tr><td><b>mobile</b>（Capacitor 壳）</td><td>7.0</td><td>8.0</td><td>5.0</td><td>Web 降级与 Android 配置干净；token 明文存储 + 远程源承载原生桥是三区最弱</td></tr>
+<tr><td><b>scripts + deploy</b></td><td>6.0<span style="color:var(--dim)">（脚本）</span></td><td>—</td><td>8.0<span style="color:var(--dim)">（部署）</span></td><td>k8s 加固/密钥外注达生产水准；备份恢复闭环缺校验、迁移无事务是运维面主要风险</td></tr>
+</table>
+
+<h2>三、P0 问题（公网暴露前必须修复，共 3 项）</h2>
+
+<div class="issue p0i">
+<h4><span class="tag p0">P0</span>S1 · web_fetch 默认全放行含私网，构成 SSRF 攻击链</h4>
+<div class="meta"><span class="loc">backend/core/src/builtins/webfetch.ts:59-84</span></div>
+<div>白名单为空即全放行；私网校验仅在可选 <code>networkPolicy</code> 存在时执行，而 harness 默认透传 <code>undefined</code>。注：DNS rebinding 防护机制（<code>resolveHostIsPrivate</code> 解析级校验 + 连接时二次校验）已落地且部署级开关 <code>GUARDRAIL_ALLOW_PRIVATE_NETWORK=false</code> 可收紧，但<b>缺省值 <code>allowPrivateNetwork ?? true</code> 仍为放行</b>——模型被 prompt 注入操控后可直接 fetch <code>http://169.254.169.254/</code> 云元数据或内网服务并回传内容。</div>
+<div class="impact"><b>修复：</b>翻转缺省值为 <code>false</code>（或生产配置强制注入 <code>GUARDRAIL_ALLOW_PRIVATE_NETWORK=false</code>），需要内网访问的部署显式开启。</div>
+</div>
+
+<div class="issue p0i">
+<h4><span class="tag p0">P0</span>S2 · 密码重置凭证直接在 HTTP 响应中返回，可接管任意账户（含 admin）</h4>
+<div class="meta"><span class="loc">access/server/src/routes/account-routes.ts:379 · accounts.ts:1071</span></div>
+<div><code>POST /api/account/forgot-password</code> 仅受 20 次/分钟限流，响应直接携带一次性 <code>resetToken</code>；攻击者凭用户名即可重置任意账户密码并吊销其全部会话。代码注释自认是演示行为，但生产未封堵。</div>
+<div class="impact"><b>修复：</b>resetToken 改为邮件/短信带外下发；接口统一返回 <code>{ok:true}</code>；config-schema 校验阻断演示模式上生产。</div>
+</div>
+
+<div class="issue p0i">
+<h4><span class="tag p0">P0</span>S3 · promtail 挂载 docker.sock，等同授予宿主 root 权限</h4>
+<div class="meta"><span class="loc">docker-compose.monitoring.yml:130</span></div>
+<div><code>:ro</code> 仅限制 socket 文件本身，通过 Docker API 仍可创建特权容器、读宿主任意文件；监控栈一旦被攻破即链式逃逸至宿主机。</div>
+<div class="impact"><b>修复：</b>改用 <code>docker_sd</code> 只读发现代理方案，或至少 <code>internal: true</code> 网络且不暴露端口。</div>
+</div>
+
+<h2>四、P1 问题（重要缺陷，共 18 项）</h2>
+
+<h3>backend/core</h3>
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C1 · web_fetch 整包读入内存，OOM DoS</h4>
+<div class="meta"><span class="loc">builtins/webfetch.ts:81-84</span></div>
+<div class="impact"><code>resp.text()</code> 无字节上限先整包入内存再截断，且截断上限 <code>max_bytes</code> 来自 LLM 参数、无上限校验。<b>修复：</b>流式读取 + 硬上限中断。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C2 · multi-key 故障转移冷却逻辑失效</h4>
+<div class="meta"><span class="loc">llm/multi-key.ts:55-64</span></div>
+<div class="impact"><code>markDead</code> 条件 <code>deadUntil === 0</code> 在首次冷却过期后恒为假，死 Key 每次请求都被轮询（先付必败 round-trip），直到进程重启。<b>修复：</b>条件改 <code>deadUntil &lt;= Date.now()</code>。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C3 · 异步 scorer 打分无 catch，rejection 直接炸进程</h4>
+<div class="meta"><span class="loc">memory.ts:589-593</span></div>
+<div class="impact"><code>void scores.then(...)</code> 无 <code>.catch</code>，插件 scorer 抛错即触发 unhandledRejection（Node ≥15 默认 crash），且位于 <code>memory.add()</code> 热路径。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C4 · workflow 引擎并发护栏存在 TOCTOU</h4>
+<div class="meta"><span class="loc">workflow/engine.ts:334-341</span></div>
+<div class="impact">get→save 之间的 await 间隙允许同 def 并发 run 互相覆盖检查点，step 状态踩踏、resume 失效。<b>修复：</b>原子占位（ON CONFLICT / 文件锁）。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C5 · 补偿失败被标 compensated，永不重试</h4>
+<div class="meta"><span class="loc">workflow/engine.ts:559-562, 666</span></div>
+<div class="impact">补偿执行失败仍标 <code>compensated</code>，resume 视其为终态跳过——副作用既没回滚也不会补执行。<b>修复：</b>引入 <code>compensate-failed</code> 状态并纳入 resume 重试。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>C6 · shell 工具只锁 cwd 不约束 args，白名单含解释器即逃逸</h4>
+<div class="meta"><span class="loc">builtins/shell.ts:152</span></div>
+<div class="impact"><code>node -e "…rmSync…"</code> 可读写任意路径，白名单+三道闸门形同虚设。<b>修复：</b>含 <code>-e/-c</code> 的解释器参数强制走 container/os 执行器。</div></div>
+
+<h3>access/server</h3>
+<div class="issue p1i"><h4><span class="tag p1">P1</span>V1 · <code>GET /api/errors</code> 未鉴权，内部错误明细公开</h4>
+<div class="meta"><span class="loc">routes/edge-routes.ts:117-137</span></div>
+<div class="impact">位于 guard 之前的 edge 路由，匿名可拉取含堆栈/内部路径的错误列表；同功能 HTML 页反而正确做了 guard。<b>修复：</b>移入 guard 后并要求 <code>errors:read</code>。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>V2 · <code>GET /api/uploads/:filename</code> 无鉴权 + 可执行类型内联回显</h4>
+<div class="meta"><span class="loc">routes/upload-routes.ts:71-86</span></div>
+<div class="impact">仅上传有 guard，读取完全公开；白名单含 <code>text/html</code>/<code>image/svg+xml</code> 且内联输出，构成登录用户间的存储型 XSS。<b>修复：</b>GET 纳入 guard；移出可执行类型；SVG 加 <code>CSP: sandbox</code> 或强制 attachment。</div></div>
+
+<h3>frontend</h3>
+<div class="issue p1i"><h4><span class="tag p1">P1</span>F1 · 插件视图 HTML 未经净化直接 unsafeHTML 注入主文档</h4>
+<div class="meta"><span class="loc">frontend/webapp/src/app.ts:1186 · plugin-ui-registry.ts:39-41</span></div>
+<div class="impact">核心聊天管线净化扎实，但插件视图是管线外的裸 sink——任一插件数据被污染即在主应用源上获得 XSS。<b>修复：</b>过 DOMPurify 或改 sandboxed iframe。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>F2 · refresh token 明文落 localStorage 且登出永不清理</h4>
+<div class="meta"><span class="loc">login.ts:1703-1704 · api.ts:40-43</span></div>
+<div class="impact">与 F1 叠加即成完整攻击链；注释声称 HttpOnly cookie 与实现矛盾。<b>修复：</b>改 HttpOnly cookie，至少 <code>clearSession()</code> 同步移除。</div></div>
+
+<h3>plugins / rag / mobile</h3>
+<div class="issue p1i"><h4><span class="tag p1">P1</span>P1 · <code>/leads</code> 无鉴权返回全量客资（手机号/微信明文）</h4>
+<div class="meta"><span class="loc">plugins/medical-aesthetics-lead/src/server/routes.ts:78-82</span></div>
+<div class="impact">同数据面 <code>/assist/briefing</code> 做掩码、<code>/reveal</code> 要管理令牌，此处却裸奔，自相矛盾。<b>修复：</b>读接口统一 <code>denyUnlessAdmin</code>。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>P2 · leadId 完全信任 LLM 输出，客户消息可注入污染任意客资档案</h4>
+<div class="meta"><span class="loc">tools/capture.ts:27 · prompts.ts:79</span></div>
+<div class="impact">外部客户消息原样进 prompt 且无分隔标记，提示词"铁律"是唯一防线；可写入他人档案或对任意 leadId 触发 handoff 骚扰。<b>修复：</b>服务端维护 session→leadId 绑定并强制校验。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>P3 · RAG 嵌入失败静默降级哈希向量并写缓存，永久毒化语料</h4>
+<div class="meta"><span class="loc">services/rag/src/embed.ts:139-143, 213-217</span></div>
+<div class="impact">降级向量与真实向量同维度混入，检索质量静默崩塌且无告警；API 抖动恢复后该文本仍永久保持哈希向量。<b>修复：</b>失败重试或标 failed；缓存只存真实结果。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>P4 · mobile token 明文存储，注释声明与事实不符</h4>
+<div class="meta"><span class="loc">mobile/src/plugins/biometric-auth.ts:68-71 · AndroidManifest.xml</span></div>
+<div class="impact">注释声称 Keychain/EncryptedSharedPreferences，实际是明文 UserDefaults/SharedPreferences，叠加 <code>allowBackup="true"</code> 可随云备份提取。<b>修复：</b>换 secure-storage 插件；allowBackup 改 false。</div></div>
+
+<h3>scripts / deploy</h3>
+<div class="issue p1i"><h4><span class="tag p1">P1</span>D1 · 恢复脚本直接覆盖活动 SQLite，无完整性校验不停服</h4>
+<div class="meta"><span class="loc">scripts/backup-db.cjs:165 · rollback-drill.cjs:225</span></div>
+<div class="impact">坏备份也"恢复成功"且已覆盖好库；残留 WAL 被重放到新库造成损坏。<b>修复：</b>校验文件头 + integrity_check、清理 -wal/-shm、要求停服或走服务接口。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>D2 · compose 默认 0.0.0.0 + 空 ADMIN_API_KEY = 匿名全权 admin</h4>
+<div class="meta"><span class="loc">docker-compose.yml:14,32 · tunnel overlay</span></div>
+<div class="impact">叠加 tunnel 可直通公网，等于公开全部接口（执行 agent 任务、读写全部数据）。<b>修复：</b>默认绑 127.0.0.1；tunnel 对空凭据 <code>:?</code> fail-fast。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>D3 · db-migrate 无事务且失败退出码为 0</h4>
+<div class="meta"><span class="loc">scripts/db-migrate.cjs:96-127</span></div>
+<div class="impact">DDL 半成功无回滚；EKS prod 开启 AUTO 迁移时失败不阻断编排，半健康副本继续接流。<b>修复：</b><code>BEGIN IMMEDIATE…COMMIT</code> 包裹 + 失败 <code>exit 1</code>。</div></div>
+
+<div class="issue p1i"><h4><span class="tag p1">P1</span>D4 · 备份不等待 WAL checkpoint 且直接拷活动库</h4>
+<div class="meta"><span class="loc">scripts/backup-db.cjs:85-96</span></div>
+<div class="impact">checkpoint 异步未等待即 close+copy，备份可能页级撕裂不可用，而恢复端无校验能发现（与 D1 叠加）。<b>修复：</b>用 <code>.backup()</code> API 或 <code>VACUUM INTO</code>。</div></div>
+
+<h2>五、P2 问题摘要（共 30+ 项，择要）</h2>
+<table>
+<tr><th>模块</th><th>问题</th><th>位置</th></tr>
+<tr><td rowspan="8">core</td><td>工具结果（含外部网页文本）未经注入扫描直接写上下文，间接 prompt 注入面</td><td class="loc">harness.ts:1544-1549</td></tr>
+<tr><td>工具结果 JSON.stringify 在 try 外，循环引用/BigInt 使整个 run 失败</td><td class="loc">harness.ts:1520</td></tr>
+<tr><td>runInner 前置路径抛错泄漏 timeout 定时器与 abort 监听器</td><td class="loc">harness.ts:601-646</td></tr>
+<tr><td>JEV_CONTEXT_COMPRESS 每消息并发调第三方 HTTP（最坏数十秒延迟 + 内容外发）</td><td class="loc">memory.ts:848-867</td></tr>
+<tr><td>持久化记忆载入无形状校验，损坏存档可注入任意 role 消息</td><td class="loc">memory-store.ts:104-113</td></tr>
+<tr><td>同一实例并发 run 共享可变自适应状态，历史交叉串扰</td><td class="loc">harness.ts:557-560</td></tr>
+<tr><td>PROMPT_CACHE 开关流式/非流式语义不一致</td><td class="loc">llm/shared.ts:288/429</td></tr>
+<tr><td>工具 schema 缓存键过粗且截断决策被首次写入冻结</td><td class="loc">llm/shared.ts:168-215</td></tr>
+<tr><td rowspan="8">server</td><td>artifacts 无 owner 隔离 + 任意 mimeType 内联渲染（跨用户可见 + 存储型 XSS）</td><td class="loc">collab-routes.ts:171-255</td></tr>
+<tr><td>clientIp 无条件信任 cf-connecting-ip / XFF，限流可被伪造头绕过</td><td class="loc">server.ts:419-426</td></tr>
+<tr><td>IM webhook 完全绕过限流，可在线爆破签名 / 消耗解密 CPU</td><td class="loc">server.ts:991-1016</td></tr>
+<tr><td>钉钉签名不覆盖 body 且无时间戳窗口（换体重放）；飞书 challenge 回显先于验签</td><td class="loc">adapter-dingtalk.ts:79-91 · adapter-feishu.ts:149-164</td></tr>
+<tr><td>5xx 将内部异常 message 原样返回客户端</td><td class="loc">server.ts:1650-1655</td></tr>
+<tr><td>verifyProviderKey 网络不可达 fail-open；用户自控 baseUrl 构成出网 SSRF 面</td><td class="loc">provider-keys.ts:556-559 · run-routes.ts:195-207</td></tr>
+<tr><td>SSE 连接上限默认 0（不设限）且 /api/run SSE 未接入闸门</td><td class="loc">run-queue.ts:152-158</td></tr>
+<tr><td>verify 结果按 Key 前 8 位缓存，存在串扰；email 正则笔误放行非法地址</td><td class="loc">provider-keys.ts:528 · accounts.ts:554</td></tr>
+<tr><td rowspan="6">webapp / cli</td><td>Capacitor 场景 credentials 实现与注释不符（same-origin），原生 WebView 登录态失效</td><td class="loc">api.ts:118-166</td></tr>
+<tr><td>window 匿名监听器未在 disconnectedCallback 解绑</td><td class="loc">app.ts:486-491</td></tr>
+<tr><td>类字段初始化直读 localStorage 无容错，禁用存储即整页白屏</td><td class="loc">app.ts:372-376</td></tr>
+<tr><td>plugin-notify SSE 正常关闭后不重连不降级，提醒通道静默死亡</td><td class="loc">plugin-notify.ts:285-311</td></tr>
+<tr><td>planWfAbort 单槽全局，并发计划执行互相覆盖无法分别停止</td><td class="loc">chat.ts:4201-4322</td></tr>
+<tr><td>ah-modal innerHTML 拼接未转义 confirmText（潜伏 sink）；cli --token 经 argv 暴露进程列表</td><td class="loc">ah-modal.ts:306 · cli.ts</td></tr>
+<tr><td rowspan="5">plugins / rag / mobile</td><td>RAG 请求体与入库文本零上限，可内存 DoS；job 状态查询未校验租户归属</td><td class="loc">rag/server.ts:48-62, 174-199</td></tr>
+<tr><td>ingest 先删后写无事务，中途失败文档半入库</td><td class="loc">rag/ingest.ts:68-87</td></tr>
+<tr><td>customer-service /reminder POST 漏鉴权；admin token 用 === 非恒定时间比较</td><td class="loc">customer-service/routes.ts:113-122, 36-40</td></tr>
+<tr><td>webhook 文本无长度上限直入 prompt；mobile 主文档远程加载、原生桥整体暴露</td><td class="loc">ma-lead/routes.ts:269-311 · capacitor.config.ts:9-27</td></tr>
+<tr><td>deep link 未校验 host 白名单即派发内部路由；RAG 持久化恢复不校验 chunk 结构</td><td class="loc">register-plugins.ts:62-68 · rag/store.ts:158-181</td></tr>
+<tr><td rowspan="5">scripts / deploy</td><td>压测脚本硬编码默认 token 'test-admin-token'；rollback backupId 未校验存在路径穿越</td><td class="loc">load-test.cjs:19 · rollback-drill.cjs:176</td></tr>
+<tr><td>cleanup-retention 可能误删唯一活动指标文件，--force 参数定义未用；备份过期清理静默失效且会误删 rollback 锚点</td><td class="loc">cleanup-retention.cjs:78 · backup-db.cjs:107-123</td></tr>
+<tr><td>全部运维脚本无并发锁（仅 cron-run-example.sh 用 flock）；k8s base 空 Secret 使 Redis 无鉴权</td><td class="loc">scripts/* · k8s/base/kustomization.yaml:36</td></tr>
+<tr><td>server 容器 readOnlyRootFilesystem: false；浮动镜像 tag；Dockerfile/render lockfile 校验可绕过</td><td class="loc">k8s/base/deployment.yaml:81 · Dockerfile:70 · render.yaml:29</td></tr>
+<tr><td>ESLint 未排除 mobile 内嵌构建产物（132 个假 error）；compose 全部服务无资源限制</td><td class="loc">eslint.config.js · docker-compose.yml</td></tr>
+</table>
+
+<h2>六、值得肯定的亮点</h2>
+<div class="card">
+<ul>
+<li><b>core 主循环工程化：</b>unhandledRejection 系统性防御、孤儿 tool_call 协议级收齐、时间预算治理（软截止注入/真实取消/部分产出抢救）三条独立成因分别治本。</li>
+<li><b>filesystem 双层路径防护：</b>词法 resolve/relative 之外再做 realpath 上溯比对，覆盖 symlink 逃逸。</li>
+<li><b>前端断线恢复引擎：</b>6 次指数退避 + seq 游标续传去重 + 双层看门狗 + forceFinalizeStuck 兜底「终结帧丢失导致永久挂起」死角；会话切换 seq 守卫与「恢复失败绝不清数据」三级降级贯彻到位。</li>
+<li><b>server 统一准入网关：</b>guard() 收敛认证→CSRF→租户→限流→RBAC→审批，authz fallback 明确杜绝 fail-open；RunQueue 看门狗/内存监控/LMOVE 原子领取完整。</li>
+<li><b>BYOK 密钥纪律：</b>AES-256-GCM 落库、掩码回显、明文不进 env/日志/持久化 descriptor。</li>
+<li><b>医疗插件硬兜底：</b>预约失败工具层自动落库转人工，把提示词纪律升级为代码保障；webhook HMAC+防重放窗口+恒定时间比较完整。</li>
+<li><b>部署加固：</b>Dockerfile 非 root + HEALTHCHECK + 原生严格模式；k8s seccomp/drop ALL/HPA 锁副本 + Downward API 多副本自检；监控栈 Grafana 口令 fail-fast。</li>
+</ul>
+</div>
+
+<h2>七、修复路线图建议</h2>
+<table>
+<tr><th>优先级</th><th>时间窗</th><th>事项</th></tr>
+<tr><td><span class="tag p0">P0</span>立即</td><td>公网暴露前</td><td>S1 webfetch 默认拒私网 · S2 重置 token 带外下发 · S3 移除 docker.sock</td></tr>
+<tr><td><span class="tag p1">P1</span>第一周</td><td>1 周</td><td>鉴权补齐四件套（/api/errors、/api/uploads、/leads、/reminder）· D1–D4 备份恢复/迁移闭环 · C2 multi-key 一行修复 · C4 原子占位 · C3 补 catch</td></tr>
+<tr><td><span class="tag p2">P2</span>迭代</td><td>2–4 周</td><td>XFF 信任链 · IM 签名窗口+限流 · 5xx 收敛 · 插件视图净化 · refresh token 迁移 · F2/mobile 安全存储 · eslint ignore 构建产物 · 各类上限（SSE/请求体/文本）</td></tr>
+</table>
+
+<div class="footer">agent-harness 代码评估报告 · 生成于 2026-09-24 · 静态审查基于逐行人工核读，实测数据来自当日构建与测试运行</div>
+</div>
+</body>
+</html>
