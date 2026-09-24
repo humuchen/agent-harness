@@ -59,13 +59,18 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       if (allowedDomains.length > 0 && !hostAllowed(u.hostname, allowedDomains)) {
         return `error: host not in allowlist: ${u.hostname} (allowed: ${allowedDomains.join(', ')})`;
       }
-      // DNS rebinding 防护（连接时校验）：策略 allowPrivateNetwork=false 时，
-      // 真实 fetch 前对目标主机做解析级私网校验——策略检查时（checkToolArgsAsync）与
-      // 此处各校验一次，把「检查时解析、连接时换址」的 TOCTOU 窗口收窄到秒级 TTL。
+      // P0 安全修复（secure by default）：私网/链路本地地址默认拒绝——不再依赖可选策略。
+      // - 有策略（ctx.networkPolicy）：以策略 allowPrivateNetwork 为准（未指定时按 false 收紧）；
+      // - 无策略（缺省直连 registry 的宿主）：回落本工具级开关 WEB_FETCH_ALLOW_PRIVATE_NETWORK
+      //   （true/1/on 放行），否则一律拒绝。DNS rebinding 防护（解析级 + 连接时双查）保持不变。
       const net = ctx?.networkPolicy as NetworkPolicy | undefined;
-      if (net && !(net.allowPrivateNetwork ?? true)) {
+      const privRaw = (process.env.WEB_FETCH_ALLOW_PRIVATE_NETWORK ?? '').trim().toLowerCase();
+      const allowPrivate = net
+        ? (net.allowPrivateNetwork ?? false)
+        : privRaw === 'true' || privRaw === '1' || privRaw === 'on';
+      if (!allowPrivate) {
         if (await resolveHostIsPrivate(u.hostname)) {
-          return `error: egress denied: ${u.hostname} resolves to a private network address`;
+          return `error: egress denied: ${u.hostname} resolves to a private network address (set GUARDRAIL_ALLOW_PRIVATE_NETWORK=true or WEB_FETCH_ALLOW_PRIVATE_NETWORK=on to allow)`;
         }
       }
       const method = (args.method ? String(args.method) : 'GET').toUpperCase();

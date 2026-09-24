@@ -74,16 +74,19 @@ const stats: PluginRouteHandler = async (req, res) => {
   send(res, 200, { ...stats, outbox: ob });
 };
 
-/** GET /leads —— 客资明细 + 统计。 */
+/** GET /leads —— 客资明细 + 统计（P1 安全修复：需管理令牌——明细含手机号/微信等 PII，
+ *  与 /assist/reveal 同一数据敏感级，此前与掩码版简报 /assist/briefing 的鉴权口径不一致）。 */
 const leads: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const [stats, all, page] = await Promise.all([computeStats(), listLeads(), listLeads(100, 0)]);
   send(res, 200, { total: all.length, stats, leads: page });
 };
 
-/** GET /handoffs —— 转人工队列（待认领）。 */
+/** GET /handoffs —— 转人工队列（待认领；P1 安全修复：需管理令牌，含 leadId + 项目意向画像）。 */
 const handoffs: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const s = await Promise.resolve(computeStats());
   const q = s.handoffQueue.map((r) => ({
     leadId: r.leadId,
@@ -95,9 +98,10 @@ const handoffs: PluginRouteHandler = async (req, res) => {
   send(res, 200, { queue: q, count: q.length });
 };
 
-/** GET /followups —— 待跟进队列（C 级 / 未转化）。 */
+/** GET /followups —— 待跟进队列（C 级 / 未转化；P1 安全修复：需管理令牌，同 handoffs）。 */
 const followups: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const s = await Promise.resolve(computeStats());
   const q = s.followupQueue.map((r) => ({
     leadId: r.leadId,

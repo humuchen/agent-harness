@@ -70,15 +70,36 @@ export async function handleUploadRoutes(
   // 获取已上传文件：GET /api/uploads/:filename（静态展示用，含防穿越）。
   const um = path.match(/^\/api\/uploads\/(.+)$/);
   if (um && req.method === 'GET') {
+    // P1 安全修复：读取同样经 guard（upload:file）——此前读取完全公开，
+    // 任何匿名来源可遍历/下载他人上传的附件。浏览器 <img>/<a> 直连场景不受影响：
+    // 同源请求自动携带 HttpOnly 会话 cookie（accountTokenRaw 的 cookie 来源即会话凭据）。
+    const ctx = await deps.guard(req, res, 'upload:file');
+    if (!ctx) return true;
     const filename = decodeURIComponent(um[1] ?? '');
     const result = await serveUploaded(filename);
     if (!result.ok) {
       sendJson(res, { error: result.error }, req);
       return true;
     }
+    // P1 安全修复（存储型 XSS 缓解）：可执行类型禁止/限制内联渲染——
+    // 上传白名单仍允许 text/html、text/javascript、image/svg+xml（历史数据兼容），
+    // 但回显时 html/js 强制 attachment，svg 保留 inline（聊天 <img> 引用不执行脚本）
+    // 并统一加 CSP sandbox 兜底（直接导航打开时阻止脚本执行与同源访问）。
+    const risky =
+      result.mime === 'text/html' ||
+      result.mime === 'text/javascript' ||
+      result.mime === 'image/svg+xml';
     res.writeHead(200, {
       'content-type': result.mime,
       'cache-control': 'public, max-age=86400',
+      ...(risky
+        ? {
+            'content-security-policy': "sandbox; default-src 'none'",
+            ...(result.mime !== 'image/svg+xml'
+              ? { 'content-disposition': 'attachment' }
+              : {})
+          }
+        : {}),
       ...corsHeaders(req)
     });
     res.end(result.buf);

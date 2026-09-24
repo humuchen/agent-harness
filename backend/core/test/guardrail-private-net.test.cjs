@@ -1,6 +1,6 @@
 // GUARDRAIL_ALLOW_PRIVATE_NETWORK 部署开关守护测试：
-// - 缺省 true（零回归）：私网地址在 checkEgress 中豁免；
-// - 设为 false：NetworkPolicy.allowPrivateNetwork=false，私网地址纳入管控（SSRF 收紧）。
+// - 缺省 false（secure by default，P0 修复）：私网地址纳入管控；
+// - 显式 true：恢复放行（内网互访部署的逃生舱）。
 // resolveDefaultPolicy 按调用时 process.env 求值（模块级 policy 单例在导入时已固化，
 // 测试直接调 resolveDefaultPolicy 验证 env → 策略映射）。
 const test = require('node:test');
@@ -25,7 +25,7 @@ function withEnv(env, fn) {
   }
 }
 
-test('缺省：allowPrivateNetwork=true（零回归），私网豁免不变', () => {
+test('缺省：allowPrivateNetwork=false（secure by default），私网纳入管控', () => {
   withEnv(
     {
       GUARDRAIL_ALLOW_PRIVATE_NETWORK: undefined,
@@ -34,10 +34,10 @@ test('缺省：allowPrivateNetwork=true（零回归），私网豁免不变', ()
     },
     () => {
       const pol = resolveDefaultPolicy();
-      assert.strictEqual(pol.network?.allowPrivateNetwork, true);
-      // 私网豁免：allowlist 未命中但私网放行
-      assert.strictEqual(checkEgress('http://127.0.0.1:8080/x', pol.network), null);
-      assert.strictEqual(checkEgress('http://10.1.2.3/x', pol.network), null);
+      assert.strictEqual(pol.network?.allowPrivateNetwork, false);
+      // 缺省收紧：loopback / 私网一律拒绝（SSRF 防护默认生效）
+      assert.ok(checkEgress('http://127.0.0.1:8080/x', pol.network), 'loopback 应被拒');
+      assert.ok(checkEgress('http://10.1.2.3/x', pol.network), '私网应被拒');
     }
   );
 });

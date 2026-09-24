@@ -221,7 +221,28 @@ function doRestore(backupId) {
     const destPath = src.name === 'accounts'
       ? (process.env.ACCOUNT_DB_FILE || path.join(process.cwd(), 'data', 'accounts.db'))
       : (process.env.MEMORY_SQLITE_FILE || path.join(process.cwd(), 'data', 'memory.db'));
-    
+
+    // P1 修复（与 backup-db.cjs restore 对齐）：恢复前校验 SQLite magic header，
+    // 覆盖前清理目标库 -wal/-shm 附属文件（旧句柄重放是新库损坏的主要来源）。
+    const fd = fs.openSync(srcPath, 'r');
+    try {
+      const hdr = Buffer.alloc(16);
+      fs.readSync(fd, hdr, 0, 16, 0);
+      if (hdr.toString('latin1') !== 'SQLite format 3\x00') {
+        console.error(`❌ 备份文件不是合法 SQLite 库，中止恢复: ${srcPath}`);
+        process.exit(1);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    for (const suffix of ['-wal', '-shm']) {
+      const side = `${destPath}${suffix}`;
+      if (fs.existsSync(side)) {
+        fs.unlinkSync(side);
+        log(`  🧹 已清理附属文件: ${side}`);
+      }
+    }
+
     fs.copyFileSync(srcPath, destPath);
     log(`  ✅ ${src.name}: ${destPath}`);
   }

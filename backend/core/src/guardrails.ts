@@ -154,11 +154,11 @@ export function resolveDefaultPolicy(): GuardrailPolicy {
   const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'denylist').toLowerCase();
   const deniedRaw = process.env.GUARDRAIL_DENIED_DOMAINS;
   const allowedRaw = process.env.GUARDRAIL_ALLOWED_DOMAINS;
-  // 私网豁免部署开关（GUARDRAIL_ALLOW_PRIVATE_NETWORK，默认 true 零回归）：
-  // 生产部署建议显式设为 false —— 私网地址纳入出网管控，封死 allowlist 域名下
-  // 直连内网服务 / DNS rebinding 的 SSRF 面（代价是 web_fetch 校验多一次 DNS 展开）。
+  // 私网豁免部署开关（GUARDRAIL_ALLOW_PRIVATE_NETWORK，缺省 false 收紧——secure by default）：
+  // 私网地址默认纳入出网管控，封死 allowlist 域名下直连内网服务 / DNS rebinding 的 SSRF 面
+  // （代价是 web_fetch 校验多一次 DNS 展开）。需要访问内网/本机服务的部署显式设为 true 放行。
   const privRaw = (process.env.GUARDRAIL_ALLOW_PRIVATE_NETWORK ?? '').trim().toLowerCase();
-  const allowPrivateNetwork = privRaw === '' ? true : !(privRaw === 'false' || privRaw === '0' || privRaw === 'off');
+  const allowPrivateNetwork = privRaw === '' ? false : !(privRaw === 'false' || privRaw === '0' || privRaw === 'off');
   let network: NetworkPolicy | undefined;
   if (netMode === 'open') {
     network = { mode: 'open', allowPrivateNetwork };

@@ -970,8 +970,8 @@ const server = createServer(
         }
       }
       // 边缘路由（公开/运维探针）：命中即短路分发，未命中继续主链。
-      // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
-      // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
+      // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config。
+      // /api/errors 已移出 edge 表：错误明细必须受 errors:read 保护（下方与 /errors 页同区处理）。
       if (
         await tryDispatchEdgeRoute(
           edgeRoutes,
@@ -1023,6 +1023,39 @@ const server = createServer(
           'cache-control': 'no-cache'
         });
         res.end(renderErrorsHtml());
+        return;
+      }
+      // 错误明细 JSON API：受 errors:read 保护。
+      // P1 安全修复：此前该端点挂在 edge 路由表（guard 之前）且未做任何鉴权，
+      // 匿名即可拉取内部错误明细（堆栈/内部路径/上游响应片段）——现与 /errors HTML 页
+      // 同权走 guard，并把 edge 路由表中的同名条目移除（消除「注释声称有 guard 实际无」的不一致）。
+      if (req.method === 'GET' && path === '/api/errors') {
+        const ctx = await guard(req, res, 'errors:read');
+        if (!ctx) return;
+        const limitRaw = Number(url.searchParams.get('limit'));
+        const limit =
+          Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200;
+        const full = url.searchParams.get('full') === '1';
+        const fmt = url.searchParams.get('format');
+        const d = edgeRouteDeps();
+        if (fmt === 'text') {
+          res.writeHead(200, {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+            ...securityHeaders()
+          });
+          res.end(d.formatErrorReport({ limit: full ? undefined : limit }));
+          return;
+        }
+        const list = d.getErrorLog({ limit: full ? undefined : limit });
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          ...securityHeaders()
+        });
+        res.end(
+          JSON.stringify({ count: list.length, summary: d.getErrorSummary(), errors: list })
+        );
         return;
       }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──

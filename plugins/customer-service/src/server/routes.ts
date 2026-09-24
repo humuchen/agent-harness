@@ -109,9 +109,11 @@ export const csServerExtension: ServerExtension = {
       json(res, 200, rows);
     }) as PluginRouteHandler,
 
-    // POST /api/plugins/customer-service/reminders —— 更新提醒状态
+    // POST /api/plugins/customer-service/reminders —— 更新提醒状态（P1 安全修复：补鉴权，
+    // 与同文件 /ticket/status、/kb POST 对齐——此前漏加，任何来源可将提醒置为已处理掩盖待办）。
     '/reminder': (async (req, res) => {
       if (req.method !== 'POST') return json(res, 405, { error: true, message: 'method not allowed' });
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
       const body = await readBody(req);
       const id = String(body.id ?? '');
       const action = String(body.action ?? 'reminded');

@@ -1,9 +1,14 @@
-# promtail 配置（P2 日志管线）：docker_sd 发现全部容器，采集 json-file 日志推送到 Loki。
+# promtail 配置（P2 日志管线）：采集 json-file 容器日志推送到 Loki。
 #
-# 说明：
-#  - 挂载 /var/lib/docker/containers（json-file 日志）与 /var/run/docker.sock（元数据：
-#    容器名 / compose service / labels 转成 Loki 标签，便于 {container="agent-harness-ui-1"} 过滤）。
-#  - 仅 Docker / Docker Desktop 环境；K8s 部署请用 Loki 的 helm chart（promtail 改 DaemonSet）。
+# P0 安全修复：不再使用 docker_sd（需要挂载 docker.sock，等同宿主 root 权限），
+# 改为直接读取 /var/lib/docker/containers 下 json-file 日志（compose 只读挂载）。
+#
+# 取舍：
+#  - 失去 docker_sd 的容器名 / compose service / labels 标签维度；
+#  - structLog 的 level / trace.id 仍从日志 JSON 提取为 Loki 标签，查询体验基本保留；
+#  - json-file 外层包装（{"log": "...", "stream": "...", "time": "..."}）需先解包再解析内层。
+#  - 若确需容器元数据标签，建议部署受限的 docker-sd 只读代理（如 harvester 方案），
+#    而非直接回挂 docker.sock。
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
@@ -15,31 +20,32 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: docker
-    docker_sd_configs:
-      - host: unix:///var/run/docker.sock
-        refresh_interval: 15s
-        filters:
-          - name: label
-            values: ['com.docker.compose.project']
-    relabel_configs:
-      # compose 网络里最有用的三个标签：容器名 / service 名 / 项目名。
-      - source_labels: ['__meta_docker_container_name']
-        regex: '/(.*)'
-        target_label: container
-      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
-        target_label: service
-      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
-        target_label: project
+  - job_name: containers
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: agent-harness
+          __path__: /var/lib/docker/containers/*/*.log
     pipeline_stages:
-      # agent-harness 的 structLog 输出单行 JSON —— 解析后 level/trace.id 直接成为 Loki 标签。
+      # 第一层：解 json-file 包装（每行原始日志在 "log" 字段，stream 为 stdout/stderr）。
       - json:
+          expressions:
+            log_line: log
+            stream: stream
+      # 第二层：解析 structLog 的单行 JSON（level / trace.id 等）。
+      - json:
+          source: log_line
           expressions:
             level: level
             msg: msg
             trace_id: trace.id
             job_id: job.id
       - labels:
+          stream:
+      - labels:
           level:
       - labels:
           trace_id:
+      # 输出内层原始日志行（而不是外层包装 JSON），便于 Loki 里直接阅读。
+      - output:
+          source: log_line

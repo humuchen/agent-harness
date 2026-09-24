@@ -48,7 +48,9 @@ test('createEdgeRoutes: 含健康探针与公开端点', () => {
   assert.ok(paths.includes('GET /api/state'));
   assert.ok(paths.includes('GET /api/sandbox'));
   assert.ok(paths.includes('GET /api/auth/config'));
-  assert.ok(paths.includes('GET /api/errors'));
+  // P1 安全修复守护：错误明细 JSON 必须受 errors:read 保护，
+  // 不得回到本表（本表在鉴权 guard 之前分发）。
+  assert.ok(!paths.includes('GET /api/errors'), '/api/errors 不得出现在 edge 路由表');
   // 每个 handler 必须是函数
   assert.ok(routes.every((r) => typeof r.handler === 'function'));
 });

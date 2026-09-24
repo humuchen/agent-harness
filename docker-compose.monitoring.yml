@@ -125,9 +125,11 @@ services:
       - loki
     volumes:
       - ./deploy/monitoring/promtail.yml:/etc/promtail/config.yml:ro
-      # 采集 docker 容器日志：json-file 目录 + docker.sock（用于 docker_sd 与元数据标签）。
+      # P0 安全修复：移除 docker.sock 挂载（socket 等同宿主 root 权限——通过 Docker API
+      # 可创建特权容器/读宿主任意文件，监控栈被攻破即链式逃逸）。改为只读挂载容器
+      # json-file 日志目录，promtail 用 file 采集（见 promtail.yml 的 static_configs）。
+      # 代价：失去 docker_sd 的容器名/service 标签，改由日志 JSON 内字段（level/trace_id）替代。
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   prometheus-data:

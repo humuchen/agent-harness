@@ -1516,14 +1516,23 @@ export class AhLogin extends LitElement {
     this.submitting = true;
     try {
       const r = await requestPasswordReset(identifier);
-      if (!r.ok || !r.resetToken) {
+      if (!r.ok) {
         notify.error(r.error || '申请失败。', { key: 'forgot-form' });
         return;
       }
-      // 演示环境：token 直接注入，跳到第二步设置新密码（生产应改为来自邮件链接）。
-      this.resetToken = r.resetToken;
-      this.forgotStep = 'reset';
-      notify.success('验证通过，请设置新密码');
+      if (r.resetToken) {
+        // 演示模式（服务端 PASSWORD_RESET_INLINE_TOKEN=on）：token 直接注入，跳到第二步设置新密码。
+        this.resetToken = r.resetToken;
+        this.forgotStep = 'reset';
+        notify.success('验证通过，请设置新密码');
+      } else {
+        // 生产模式（P0 安全修复）：重置凭证带外下发（邮件/管理员），响应不再回传 token。
+        // 统一成功话术，不区分账号是否存在（防枚举）。
+        notify.success('如果该账号存在，重置凭证已生成，请通过邮件或管理员获取。', {
+          key: 'forgot-form',
+        });
+        this.backToLogin();
+      }
     } catch (err) {
       notifyError(err, { fallback: '申请失败。', key: 'forgot-form' });
     } finally {
