@@ -1456,7 +1456,10 @@ export class AgentHarness {
                   value: await this.opts.tools.call(call.name, call.arguments, {
                     traceId: this.opts.traceId,
                     // 透传工具级取消信号（级联运行级 abort）：shell 等会落地子进程的工具据此及时强杀。
-                    signal: toolAbort.signal
+                    signal: toolAbort.signal,
+                    // DNS rebinding 防护：web_fetch 等出网工具在真实连接前可做解析级私网校验
+                    // （策略来自 per-run guardrailPolicy.network；undefined 表示策略未配置）。
+                    networkPolicy: this.opts.guardrailPolicy?.network
                   })
                 })).then(
                   (v) => v,

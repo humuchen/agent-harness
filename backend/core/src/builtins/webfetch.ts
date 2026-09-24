@@ -1,4 +1,5 @@
 import { objectParams, ToolRegistry } from '../tools';
+import { resolveHostIsPrivate, type NetworkPolicy } from '../guardrails';
 
 export interface WebFetchOptions {
   maxBytes?: number;
@@ -43,7 +44,7 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       },
       ['url']
     ),
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, ctx?: Record<string, unknown>) => {
       const url = String(args.url ?? '');
       let u: URL;
       try {
@@ -57,6 +58,15 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       // P0-C：域名白名单校验（非空白名单时 host 必须命中）。
       if (allowedDomains.length > 0 && !hostAllowed(u.hostname, allowedDomains)) {
         return `error: host not in allowlist: ${u.hostname} (allowed: ${allowedDomains.join(', ')})`;
+      }
+      // DNS rebinding 防护（连接时校验）：策略 allowPrivateNetwork=false 时，
+      // 真实 fetch 前对目标主机做解析级私网校验——策略检查时（checkToolArgsAsync）与
+      // 此处各校验一次，把「检查时解析、连接时换址」的 TOCTOU 窗口收窄到秒级 TTL。
+      const net = ctx?.networkPolicy as NetworkPolicy | undefined;
+      if (net && !(net.allowPrivateNetwork ?? true)) {
+        if (await resolveHostIsPrivate(u.hostname)) {
+          return `error: egress denied: ${u.hostname} resolves to a private network address`;
+        }
       }
       const method = (args.method ? String(args.method) : 'GET').toUpperCase();
       const baseHeaders: Record<string, string> = { 'user-agent': 'agent-harness/0.1' };

@@ -142,7 +142,7 @@ function resolvePlanMaxInput(): number | null {
 const PLAN_MAX_INPUT_LENGTH: number | null = resolvePlanMaxInput();
 
 /** 允许通过环境变量调整护栏默认策略（无需改代码即可按部署收紧 / 放松）。 */
-function resolveDefaultPolicy(): GuardrailPolicy {
+export function resolveDefaultPolicy(): GuardrailPolicy {
   const sens = (process.env.GUARDRAIL_SENSITIVITY || '').toLowerCase();
   const sensitivity: InjectionSensitivity = sens === 'low' || sens === 'high' ? sens : 'medium';
   const maxInput = Number(process.env.GUARDRAIL_MAX_INPUT ?? '');
@@ -187,9 +187,12 @@ function resolveDefaultPolicy(): GuardrailPolicy {
 
 let policy: GuardrailPolicy = resolveDefaultPolicy();
 
-/** 运行时调整护栏策略（例如按租户级别收紧 / 放松）。 */
+/** 运行时调整护栏策略（例如按租户级别收紧 / 放松）。作用域：全局默认引擎。
+ * 同时更新模块级 policy 与 defaultGuardrailsEngine（两处唯一写入口，保持同步）。
+ * per-tenant 配置请走 guardrails-tenant.ts 的 getGuardrailsForTenant（互不影响）。 */
 export function configureGuardrails(p: Partial<GuardrailPolicy>): void {
   policy = { ...policy, ...p };
+  defaultGuardrailsEngine.configure(p);
 }
 
 /** 读取当前策略（只读），供 UI / 调试展示。 */
@@ -400,6 +403,72 @@ function isPrivateHost(host: string): boolean {
 }
 
 /**
+ * 判断单个 IP 字面量是否为私有/保留地址（SSRF 面覆盖）：
+ * v4：0/8、10/8、100.64/10（CGNAT）、127/8、169.254/16（链路本地/云元数据）、
+ *     172.16/12、192.168/16；v6：::1、fc00::/7（ULA）、fe80::/10、IPv4-mapped。
+ */
+export function isPrivateIp(ip: string): boolean {
+  const s = ip.trim().toLowerCase();
+  if (s.includes(':')) {
+    // IPv6（含 mapped ::ffff:a.b.c.d）
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+    if (mapped && mapped[1]) return isPrivateIp(mapped[1]);
+    if (s === '::1' || s === '::') return true;
+    if (s.startsWith('fe8') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb')) return true; // fe80::/10
+    if (s.startsWith('fc') || s.startsWith('fd')) return true; // fc00::/7 ULA
+    return false;
+  }
+  const parts = s.split('.');
+  if (parts.length !== 4 || parts.some((p) => p === '' || Number.isNaN(Number(p)))) return false;
+  const [a, b] = [Number(parts[0]), Number(parts[1])];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true; // 链路本地 / AWS/GCP 元数据
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  return false;
+}
+
+/** 主机名 → 私网判定的 TTL 缓存（DNS 结果短暂缓存，避免每次出网都打解析器）。 */
+const privateResolveCache = new Map<string, { result: boolean; at: number }>();
+const PRIVATE_RESOLVE_TTL_MS = 30_000;
+
+/**
+ * 主机名是否解析到私有/保留网络（DNS rebinding 防护核心）：
+ * - 字面量 IP / localhost：走 isPrivateHost / isPrivateIp 快路径（零开销）；
+ * - 域名：dns.lookup({all:true}) 展开**全部**解析结果，任一命中私有段即判私网
+ *   （攻击者常同时配 A/AAAA 记录，只查第一条会被绕过）；
+ * - 解析失败视为「非私网」交给后续真实连接去失败（此处不做网络可达性判断）。
+ * 注意：这仍是「请求时」校验，与实际建连之间存在秒级 TTL 窗口；彻底闭合需
+ * 连接层拦截（undici dispatcher / 自定义 lookup），待依赖引入后接入。
+ */
+export async function resolveHostIsPrivate(host: string): Promise<boolean> {
+  const h = (host.split(':')[0] ?? '').trim().toLowerCase();
+  if (!h) return false;
+  // 字面量快路径
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return isPrivateIp(h.replace(/^\[|\]$/g, ''));
+  const cached = privateResolveCache.get(h);
+  if (cached && Date.now() - cached.at < PRIVATE_RESOLVE_TTL_MS) return cached.result;
+  let result = false;
+  try {
+    const dns = await import('node:dns/promises');
+    const addrs = await Promise.race([
+      dns.lookup(h, { all: true, verbatim: true }),
+      new Promise<never>((_res, rej) => {
+        const t = setTimeout(() => rej(new Error('dns lookup timeout')), 3000);
+        t.unref?.();
+      }),
+    ]);
+    result = (addrs as Array<{ address: string }>).some((a) => isPrivateIp(a.address));
+  } catch {
+    result = false; // 解析失败不判私网，交由真实连接失败
+  }
+  privateResolveCache.set(h, { result, at: Date.now() });
+  return result;
+}
+
+/**
  * 出网管控（P0.3）：依据策略判定某 URL 是否允许访问。
  * - open / 无 network：放行；
  * - allowlist：仅允许 listed 域名（含子域），其余拒绝；
@@ -425,6 +494,33 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   // allowlist
   const allowed = (net.allowedDomains ?? []).some((d) => domainMatches(host, d));
   return allowed ? null : `egress not allowed to ${host} (not in allowlist)`;
+}
+
+/**
+ * 出网管控异步变体（DNS rebinding 防护）：在同步字面量校验之上，把域名经
+ * dns.lookup 展开为全部解析结果，任一命中私网段即按私网策略处理。
+ * 仅当 `allowPrivateNetwork === false` 时执行 DNS 解析（缺省 true 完全零开销零回归）。
+ * 返回 null 表示放行，否则为拒绝原因。
+ */
+export async function checkEgressAsync(url: string, net?: NetworkPolicy): Promise<string | null> {
+  // 快路径：open 模式 / invalid URL 短路
+  if (!net || net.mode === 'open') return null;
+  // 私网豁免（缺省 true）→ 字面量校验即终点，零额外开销零回归
+  const privateExempt = net.allowPrivateNetwork ?? true;
+  let host = '';
+  try {
+    host = new URL(url).host;
+  } catch {
+    return 'invalid URL';
+  }
+  if (privateExempt) return checkEgress(url, net);
+  // —— strict 模式（allowPrivateNetwork=false）：私网纳入管控 ——
+  if (isPrivateHost(host)) return `egress denied to ${host} (private network)`;
+  if (await resolveHostIsPrivate(host)) {
+    return `egress denied to ${host} (resolves to private network address)`;
+  }
+  // 解析级校验通过 → 继续按域名规则（allowlist/denylist）判定
+  return checkEgress(url, net);
 }
 
 // ---------------------------------------------------------------------------
@@ -793,8 +889,73 @@ export async function checkToolArgsAsync(
 ): Promise<GuardrailResult> {
   const sync = checkToolArgs(name, args, pol);
   if (!sync.ok) return sync;
+  // DNS rebinding 防护：web_fetch 出网目标做解析级私网校验（仅 allowPrivateNetwork=false
+  // 时激活 DNS 展开；字面量校验已在同步路径完成）。检查时机从「策略检查时」前移到
+  // 「每次调用时」，显著收窄 TOCTOU 窗口。
+  if (name === 'builtin__web_fetch' && typeof args.url === 'string') {
+    const eg = await checkEgressAsync(String(args.url), pol?.network);
+    if (eg) return { ok: false, reason: `network egress blocked: ${eg}` };
+  }
   const inj = await detectInjectionAsync(JSON.stringify(args), pol ?? policy);
   if (inj)
     return { ok: false, reason: `possible injection in tool args for ${name} (matched: ${inj})` };
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// GuardrailsEngine（P1 类化）：策略与判定的实体化封装。
+//
+// 背景：此前策略是模块级单例（configureGuardrails 全局可变），一个租户收紧会
+// 波及全部租户。类化后每个租户可持有独立引擎实例（见 guardrails-tenant.ts 的
+// 租户注册表），全局默认行为经 defaultEngine 保持完全向后兼容。
+// 注意：自定义规则 / 打分器 / PII 脱敏器仍是模块级注册表（插件全局注册 + scope
+// 收窄是设计约定，非租户私有状态）。
+// ---------------------------------------------------------------------------
+export class GuardrailsEngine {
+  private pol: GuardrailPolicy;
+
+  constructor(policy: GuardrailPolicy) {
+    this.pol = { ...policy };
+  }
+
+  /** 只读策略快照。 */
+  get policy(): Readonly<GuardrailPolicy> {
+    return this.pol;
+  }
+
+  /** 运行时调整本引擎策略（合并语义与全局 configureGuardrails 一致）。 */
+  configure(p: Partial<GuardrailPolicy>): void {
+    this.pol = { ...this.pol, ...p };
+  }
+
+  checkInput(text: string, strongOnly = false, isPlanTask = strongOnly): GuardrailResult {
+    return checkInput(text, this.pol, strongOnly, isPlanTask);
+  }
+
+  checkOutput(text: string, ctx?: GuardrailOutputContext): GuardrailResult {
+    return checkOutput(text, this.pol, ctx);
+  }
+
+  checkStructuredOutput(text: string): GuardrailResult {
+    return checkStructuredOutput(text, this.pol);
+  }
+
+  checkTaskOutput(text: string): GuardrailResult {
+    return checkTaskOutput(text, this.pol);
+  }
+
+  checkToolArgs(name: string, args: Record<string, unknown>): GuardrailResult {
+    return checkToolArgs(name, args, this.pol);
+  }
+
+  async checkToolArgsAsync(name: string, args: Record<string, unknown>): Promise<GuardrailResult> {
+    return checkToolArgsAsync(name, args, this.pol);
+  }
+
+  redactOutput(text: string): string {
+    return redactOutput(text, this.pol);
+  }
+}
+
+/** 全局默认引擎：configureGuardrails / getGuardrailPolicy / 未显式传策略的调用方都落到它。 */
+export const defaultGuardrailsEngine = new GuardrailsEngine(resolveDefaultPolicy());

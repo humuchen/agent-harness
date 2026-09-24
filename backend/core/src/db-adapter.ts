@@ -223,6 +223,152 @@ class TursoAdapter implements DbAdapter {
   }
 }
 
+// ─── 运行期 failover 代理（Turso → 本地 sqlite）────────────────────────────
+
+/** 连接类错误判定：只有这类错误才触发降级（SQL 语法/约束等语义错误 failover 救不了，原样抛）。 */
+function isConnectionError(e: unknown): boolean {
+  const msg = e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '');
+  return /fetch failed|network|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|socket.*(hang|closed)|unreachable|refused|HTTP 5\d\d|HTTP 429|timed?\s*out|aborted/i.test(
+    msg
+  );
+}
+
+/**
+ * Turso 运行期 failover 代理（②）：远端故障时自动切本地 sqlite 兜底，探活恢复后切回。
+ *
+ * 状态机（自持，不依赖外部熔断器——需区分「连接错误计数」与「语义错误直抛」）：
+ *   healthy → 连接类错误累计 2 次 → degraded（窗口 15s 内全部走本地）
+ *           → 窗口过期后下一个操作试探远端（probe）：成功则恢复 healthy，失败则续窗。
+ *
+ * 数据一致性（明确取舍）：降级窗口内的写入落在本地库，**不自动回放**——回放需要
+ * 幂等键与冲突消解，复杂度失控。窗口期以 structLog + 计数器明确告警「写操作需人工对账」；
+ * probe 成功恢复时同样留痕。本地兜底文件独立于远端库（缓存键含 localFile，互不串库）。
+ * （导出仅供测试：窗口/阈值在测试中收缩以验证状态机。）
+ */
+export class FailoverProxyAdapter implements DbAdapter {
+  private primary: DbAdapter;
+  private fallback: DbAdapter;
+  private label: string;
+  /** 连接类失败计数（healthy 态累计，达阈值进入 degraded）。 */
+  private fails = 0;
+  private degradedUntil = 0;
+  private degradedLogged = false;
+  /** 降级阈值 / 探活窗口（静态可变，仅供测试收缩时序）。 */
+  static DEGRADE_THRESHOLD = 2;
+  static PROBE_WINDOW_MS = 15_000;
+  cacheKey: string;
+
+  constructor(primary: DbAdapter, fallback: DbAdapter, opts: { cacheKey: string; label: string }) {
+    this.primary = primary;
+    this.fallback = fallback;
+    this.cacheKey = opts.cacheKey;
+    this.label = opts.label;
+  }
+
+  private degraded(): boolean {
+    return Date.now() < this.degradedUntil;
+  }
+
+  private markDegraded(): void {
+    this.fails += 1;
+    if (this.fails >= FailoverProxyAdapter.DEGRADE_THRESHOLD) {
+      this.degradedUntil = Date.now() + FailoverProxyAdapter.PROBE_WINDOW_MS;
+      if (!this.degradedLogged) {
+        this.degradedLogged = true;
+        console.warn(
+          `[db-adapter] ${this.label}: 远端连接故障，降级本地 sqlite 兜底 ` +
+            `（${FailoverProxyAdapter.PROBE_WINDOW_MS / 1000}s 窗口，窗口内写操作需人工对账）；将自动探活恢复`
+        );
+      }
+    }
+  }
+
+  private recover(): void {
+    if (this.degradedLogged) {
+      this.degradedLogged = false;
+      console.log(`[db-adapter] ${this.label}: 远端探活恢复，切回远端库`);
+    }
+    this.fails = 0;
+    this.degradedUntil = 0;
+  }
+
+  /**
+   * 统一远端调用：healthy 直连（同步结果原样返回，Promise 挂 rejected 处理）；
+   * 连接类错误计数/降级后走本地兜底；语义错误原样抛（不污染状态机）。
+   */
+  private viaRemote<R>(remote: () => R, local: () => R): R {
+    if (this.degraded()) {
+      // 探活窗口过期：本操作先试远端（probe）
+      if (Date.now() >= this.degradedUntil && this.degradedUntil !== 0) {
+        try {
+          const r = remote();
+          this.recover();
+          if (r && typeof (r as unknown as Promise<unknown>).then === 'function') {
+            return (r as unknown as Promise<unknown>).then(undefined, (e: unknown) =>
+              this.onRemoteError(e, local)
+            ) as R;
+          }
+          return r;
+        } catch (e) {
+          return this.onRemoteError(e, local);
+        }
+      }
+      return local();
+    }
+    try {
+      const r = remote();
+      if (r && typeof (r as unknown as Promise<unknown>).then === 'function') {
+        return (r as unknown as Promise<unknown>).then(undefined, (e: unknown) =>
+          this.onRemoteError(e, local)
+        ) as R;
+      }
+      this.fails = 0;
+      return r;
+    } catch (e) {
+      return this.onRemoteError(e, local);
+    }
+  }
+
+  private onRemoteError<R>(e: unknown, local: () => R): R {
+    if (!isConnectionError(e)) throw e; // 语义错误原样抛，不触发降级
+    this.markDegraded();
+    return local();
+  }
+
+  exec(sql: string): void | Promise<void> {
+    return this.viaRemote(
+      () => this.primary.exec(sql),
+      () => this.fallback.exec(sql)
+    );
+  }
+
+  prepare(sql: string): DbStatement {
+    // 语句级代理：每个操作的远端/本地路径独立判定（prepare 本身不触发 IO）。
+    const run = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).run(...params),
+        () => this.fallback.prepare(sql).run(...params)
+      );
+    const get = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).get(...params),
+        () => this.fallback.prepare(sql).get(...params)
+      );
+    const all = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).all(...params),
+        () => this.fallback.prepare(sql).all(...params)
+      );
+    return { run, get, all };
+  }
+
+  close(): void {
+    try { this.primary.close?.(); } catch { /* ok */ }
+    try { this.fallback.close?.(); } catch { /* ok */ }
+    evictAdapterCache(this.cacheKey);
+  }
+}
+
 // ─── 单例管理 ────────────────────────────────────────────────────────────────
 
 const adapterCache = new Map<string, DbAdapter>();
@@ -284,10 +430,21 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
     const token = process.env.TURSO_TOKEN;
     if (tursoUrl) {
       try {
-        adapter = new TursoAdapter(tursoUrl, token);
+        const tursoAdapter = new TursoAdapter(tursoUrl, token);
         // libsql://、https://、wss:// 均为远端库；仅 file: 前缀是本地文件（libsql 本地模式）。
         const isRemote = /^(libsql|https|wss):\/\//.test(tursoUrl);
         console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? tursoUrl : ''}`);
+        // ② 运行期 failover（opt-in）：DB_FAILOVER_LOCAL=on 时远端连接故障自动切
+        // 本地 sqlite 兜底（探活自动恢复；降级窗口写操作需人工对账，见类注释）。
+        if (isRemote && (process.env.DB_FAILOVER_LOCAL || '').toLowerCase() === 'on') {
+          const fallback = new SqliteAdapter(localFile, opts.pragmas);
+          adapter = new FailoverProxyAdapter(tursoAdapter, fallback, {
+            cacheKey,
+            label: `Turso→sqlite(${localFile})`
+          });
+        } else {
+          adapter = tursoAdapter;
+        }
       } catch (e) {
         console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e instanceof Error ? e.message : String(e)}`);
       }

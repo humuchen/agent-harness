@@ -35,6 +35,7 @@ import {
   type TenantContext,
   tenantSessionKey,
   policyEngine,
+  resolveTenantGuardrailPolicy,
   type ContentBlock,
   type GuardrailPolicy,
   getPluginToolRegistry,
@@ -752,11 +753,10 @@ export async function assembleAgent(
     process.env.AGENT_COMPLETION_CHECK === 'true' ||
     process.env.AGENT_COMPLETION_CHECK === '1';
   // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
-  // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
-  // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
-  const basePolicy = tenantCtx
-    ? policyEngine.getPolicy(tenantCtx.id)
-    : policyEngine.getPolicy(undefined);
+  // 统一经 guardrails-tenant 解析点（TTL 引擎注册表，租户间互不影响），无租户回退
+  // 部署默认策略（向后兼容）。该策略会自动覆盖 checkInput/checkOutput/checkToolArgs/
+  // redactOutput 的判定与 web_fetch 出网管控（含 DNS rebinding 解析级校验）。
+  const basePolicy = resolveTenantGuardrailPolicy(tenantCtx?.id);
   // P0.x 治本：按 agent 卡片领域派生「业务护栏作用域」，使领域护栏（如医疗广告法）
   // 仅对对应领域 agent 生效。默认/generic agent 显式排除（scopes:[]），
   // 杜绝「全局注册导致默认 agent 被医美护栏误拦」（见 Clipboard_Screenshot 误报 case）。
