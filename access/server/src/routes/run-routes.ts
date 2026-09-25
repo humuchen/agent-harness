@@ -37,7 +37,7 @@ import {
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
 import { readBody, startSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
-import { runQueue, sseConnectionLock, QueueBackpressureError } from '../run-queue';
+import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
 import {
   appendChatMessage,
   peekChatSession,
@@ -361,7 +361,9 @@ export async function handleRun(
   if (!targetId) {
     let job;
     try {
-      job = runQueue.submit({
+      // submit 现为异步：共享（redis）模式下持久化是同步前置，append 失败抛
+      // QueuePersistError（status 503，由主分发器映射响应），杜绝「有 jobId 无执行」。
+      job = await runQueue.submit({
       mode,
       prompt: effectivePrompt,
       model,
@@ -407,6 +409,24 @@ export async function handleRun(
             error: 'run queue is full, please retry later',
             pending: e.pending,
             limit: e.limit
+          })
+        );
+        return;
+      }
+      // 跨实例幂等冲突（仅共享后端）：同键活跃任务正在其它实例上执行。
+      // 返回 409 + 既有 jobId——其事件经 pub/sub 事件桥对任意实例可见，客户端
+      // 仍可凭该 jobId 订阅 SSE 进度。
+      if (e instanceof QueueDuplicateError) {
+        res.writeHead(409, {
+          'content-type': 'application/json',
+          ...corsHeaders(req),
+          ...securityHeaders()
+        });
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: 'duplicate idempotency key: an active run already exists',
+            jobId: e.existingJobId ?? null
           })
         );
         return;

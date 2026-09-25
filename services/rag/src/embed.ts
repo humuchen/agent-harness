@@ -105,6 +105,14 @@ function strictEmbedding(): boolean {
   return (process.env.RAG_EMBED_STRICT ?? 'true').trim().toLowerCase() !== 'false';
 }
 
+/**
+ * 远程嵌入请求超时（毫秒），默认 60s（RAG_EMBED_TIMEOUT_MS 可调）。
+ * P1 修复：此前两处 fetch 均未传 AbortSignal——embed-server 挂起（TCP 建连但不响应）
+ * 时请求永不返回，并发 4 的 ingest worker 池会被 4 个挂起请求全部耗尽，后续
+ * ingest 永久排队。超时后进入既有失败处置（strict 抛错 / 降级），闭环不中断。
+ */
+const EMBED_TIMEOUT_MS = Number(process.env.RAG_EMBED_TIMEOUT_MS ?? 60_000) || 60_000;
+
 /** 带重试的远程嵌入调用（指数退避：200ms / 400ms），耗尽后把最后一个错误抛给调用方。 */
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
@@ -170,6 +178,7 @@ export class OpenAIEmbedding implements EmbeddingProvider {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
             body: JSON.stringify({ model: this.model, input: text }),
+            signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
           })
         );
         if (resp.ok) {
@@ -253,6 +262,7 @@ export class RemoteEmbedding implements EmbeddingProvider {
             ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
           },
           body: JSON.stringify({ texts: [text] }),
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
         })
       );
       if (resp.ok) {

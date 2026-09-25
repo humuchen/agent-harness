@@ -3,6 +3,7 @@ import {
   getDbAdapter,
   DbAdapter,
 } from './db-adapter';
+import { quarantineCorruptFile } from './store-safety';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。
@@ -100,17 +101,26 @@ export class FileMemoryStore implements MemoryStore {
   async load(key: string): Promise<PersistedMemory | null> {
     const fs = await import('node:fs/promises');
     const path = this.filePath(key);
+    let raw: string;
     try {
-      const raw = await fs.readFile(path, 'utf-8');
-      const data = JSON.parse(raw) as Partial<PersistedMemory>;
-      return {
-        window: Array.isArray(data.window) ? (data.window as Message[]) : [],
-        longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
-        ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
-      };
+      raw = await fs.readFile(path, 'utf-8');
     } catch {
-      return null; // 无存档，视为空
+      return null; // 无存档（ENOENT 等 IO 态）视为空——不属损坏，不告警
     }
+    // P2 统一损坏策略：解析失败 → 告警 + 隔离改名 + 空状态启动。
+    // 此前与本 catch 合并静默当空数据，数据静默丢失且不可见。
+    let data: Partial<PersistedMemory>;
+    try {
+      data = JSON.parse(raw) as Partial<PersistedMemory>;
+    } catch (e) {
+      quarantineCorruptFile(path, 'memory', e);
+      return null;
+    }
+    return {
+      window: Array.isArray(data.window) ? (data.window as Message[]) : [],
+      longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
+      ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
+    };
   }
 
   async save(key: string, data: PersistedMemory): Promise<void> {

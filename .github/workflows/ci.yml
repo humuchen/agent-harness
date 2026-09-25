@@ -17,6 +17,11 @@ on:
     branches: [main, dev, master]
   pull_request:
     branches: [main, dev, master]
+  # 夜间回滚演练触发器（schedule / 手动 dispatch）必须挂在 workflow 级 `on:` 下——
+  # 此前被错误缩进到 jobs.nightly 内，导致整个 workflow 文件解析失败、CI 全部不可用。
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
 
 jobs:
   test:
@@ -133,6 +138,26 @@ jobs:
         env:
           SERVER_URL: http://127.0.0.1:4173
 
+      # P2 演练入 CI：HTTP 负载与容量基线此前完全游离在 CI 外。小参数跑通链路，
+      # 断言请求零失败即可（性能阈值由容量基准观察，不作 PR 门禁）。
+      - name: HTTP 负载测试（小规模门禁：请求零失败）
+        run: node scripts/load-test.cjs
+        env:
+          SERVER_URL: http://127.0.0.1:4173
+          ADMIN_TOKEN: test-admin-token
+          CONCURRENCY: '10'
+          REQUESTS: '100'
+
+      # 容量基线依赖 runner 性能，共享 CI runner 波动大：仅采集输出，不判阈值防门禁抖动。
+      - name: 容量基准（采集模式，不作门禁）
+        run: node scripts/capacity-benchmark.cjs
+        env:
+          SERVER_URL: http://127.0.0.1:4173
+          ADMIN_TOKEN: test-admin-token
+          CONCURRENCY: '10'
+          REQUESTS: '100'
+        continue-on-error: true
+
       - name: 失败时输出服务日志
         if: failure()
         run: tail -100 /tmp/server.log
@@ -157,29 +182,29 @@ jobs:
 
   # P2：夜间全量回滚演练（backup → verify → restore）—— 不阻塞 PR 门禁，
   # 每天 03:00 UTC 跑一次；也可在 Actions 页面手动 dispatch。
+  # 触发器 schedule/workflow_dispatch 在 workflow 级 on: 下（修复了此前缩进错误
+  # 导致整个 workflow 无法解析的问题）；job 级用 if 过滤事件类型。
   nightly:
-  name: 夜间回滚演练（全链路）
-  if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-  schedule:
-    - cron: '30 3 * * *'
-  workflow_dispatch:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
+    name: 夜间回滚演练（全链路）
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
 
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 22
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-    - uses: pnpm/action-setup@v4
-      with:
-        version: 11
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
 
-    - name: 安装依赖
-      run: pnpm install --frozen-lockfile
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
 
-    - name: 回滚演练（backup → verify → restore 全链路）
-      run: |
-        node scripts/rollback-drill.cjs --action backup
-        node scripts/rollback-drill.cjs --action verify
-        node scripts/rollback-drill.cjs --action restore --from latest
+      - name: 回滚演练（backup → verify → restore 全链路）
+        run: |
+          node scripts/rollback-drill.cjs --action backup
+          node scripts/rollback-drill.cjs --action verify
+          node scripts/rollback-drill.cjs --action restore --from latest

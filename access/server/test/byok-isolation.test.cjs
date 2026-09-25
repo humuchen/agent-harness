@@ -158,7 +158,7 @@ describe('P1.3 JobDescriptor 不持久化解析后的明文凭据', () => {
     const b = fakeCapturingBackend();
     const rq = new RunQueue(b);
     try {
-      rq.submit({
+      await rq.submit({
         mode: 'real',
         prompt: 'hello',
         model: 'openrouter/auto',
@@ -189,7 +189,7 @@ describe('P1.3 JobDescriptor 不持久化解析后的明文凭据', () => {
     const b = fakeCapturingBackend();
     const rq = new RunQueue(b);
     try {
-      rq.submit({
+      await rq.submit({
         mode: 'real',
         prompt: 'hi',
         model: 'openrouter/auto',

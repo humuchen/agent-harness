@@ -13,6 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { WorkflowRun } from './types';
+import { quarantineCorruptFile } from '../store-safety';
 
 export interface WorkflowStore {
   save(run: WorkflowRun): Promise<void>;
@@ -106,11 +107,14 @@ export class FileWorkflowStore implements WorkflowStore {
   async get(id: string): Promise<WorkflowRun | null> {
     const f = this.file(id);
     if (!existsSync(f)) return null;
+    // P2 统一损坏策略：解析失败 → 告警 + 隔离改名 + 空状态继续（此前静默当无检查点，
+    // 断点续跑数据静默丢失且不可见）。
     try {
       const raw = readFileSync(f, 'utf-8');
       const parsed = JSON.parse(raw);
       return (parsed?.run ?? parsed) as WorkflowRun;
-    } catch {
+    } catch (e) {
+      quarantineCorruptFile(f, 'workflow', e);
       return null;
     }
   }
@@ -121,11 +125,13 @@ export class FileWorkflowStore implements WorkflowStore {
     const out: WorkflowRun[] = [];
     for (const name of readdirSync(d)) {
       if (!name.endsWith('.json')) continue;
+      const f = join(d, name);
       try {
-        const parsed = JSON.parse(readFileSync(join(d, name), 'utf-8'));
+        const parsed = JSON.parse(readFileSync(f, 'utf-8'));
         out.push((parsed?.run ?? parsed) as WorkflowRun);
-      } catch {
-        /* 跳过损坏文件 */
+      } catch (e) {
+        // 损坏检查点：告警 + 隔离改名，其余检查点继续加载。
+        quarantineCorruptFile(f, 'workflow', e);
       }
     }
     return out;

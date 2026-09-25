@@ -169,12 +169,44 @@ const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
 // 排队背压上限（防慢消费者无限堆积）：待执行队列长度达到该值时 submit 直接拒绝。
 // 0 = 不限（恢复旧行为）。仅约束进程内队列；redis 共享模式的积压由后端自身容量约束。
 const QUEUE_MAX_PENDING = Number(process.env.RUN_QUEUE_MAX_PENDING ?? 200) || 0;
+// 跨实例幂等键 TTL（仅共享后端生效）：须大于最长任务超时（planTask 10 分钟），默认 30 分钟。
+// 任务终态时会主动 DEL 释放；TTL 只是兜底（如执行实例整机失联）。
+const RUN_QUEUE_IDEM_TTL_MS =
+  Number(process.env.RUN_QUEUE_IDEM_TTL_MS ?? 1_800_000) || 1_800_000;
+// 共享模式下僵尸任务回收周期：此前 reclaimStale 仅在实例启动时执行一次，实例在
+// claim 与 ack 之间崩溃会让任务滞留 processing，长生命周期集群无人回收。
+const RUN_QUEUE_RECLAIM_INTERVAL_MS =
+  Number(process.env.RUN_QUEUE_RECLAIM_INTERVAL_MS ?? 60_000) || 60_000;
 
 /** 排队背压拒绝：待执行队列已达 RUN_QUEUE_MAX_PENDING，提交被拒（HTTP 层映射 429）。 */
 export class QueueBackpressureError extends Error {
   constructor(public readonly pending: number, public readonly limit: number) {
     super(`run queue is full: ${pending} pending jobs >= limit ${limit}`);
     this.name = 'QueueBackpressureError';
+  }
+}
+
+/**
+ * 共享后端持久化失败：redis 不可用时 append 失败，任务将永远无法被 claim——
+ * 必须同步失败让调用方拿到 503 重试，而不是「有 jobId 无执行」的静默黑洞。
+ * status 字段被 server.ts 主分发器识别并映射为 HTTP 状态码。
+ */
+export class QueuePersistError extends Error {
+  readonly status = 503;
+  constructor(cause?: string) {
+    super(`run queue backend unavailable, submission not persisted${cause ? `: ${cause}` : ''}`);
+    this.name = 'QueuePersistError';
+  }
+}
+
+/** 跨实例幂等冲突（仅共享后端）：同 idempotencyKey 的活跃任务正在其它实例上执行。 */
+export class QueueDuplicateError extends Error {
+  readonly status = 409;
+  constructor(public readonly existingJobId?: string) {
+    super(
+      `duplicate idempotency key: an active run already exists (jobId: ${existingJobId ?? 'unknown'})`
+    );
+    this.name = 'QueueDuplicateError';
   }
 }
 
@@ -198,6 +230,8 @@ export class RunQueue {
 
   /** 共享模式下领取任务的定时器（setInterval）。 */
   private claimTimer?: ReturnType<typeof setInterval>;
+  /** 共享模式下僵尸任务回收的周期定时器（setInterval）。 */
+  private reclaimTimer?: ReturnType<typeof setInterval>;
 
   constructor(backend?: QueueBackend) {
     this.backend = backend ?? createQueueBackend();
@@ -214,10 +248,12 @@ export class RunQueue {
 
   /**
    * 提交一次 agent 运行任务，立即返回 Job（不等待执行）。
-   * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
-   * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
+   * 共享后端（redis）下持久化是同步前置：append 失败（如 Redis 不可用）会抛
+   * QueuePersistError（HTTP 503），杜绝「客户端拿到 jobId 但任务永远不被执行」；
+   * 单实例（memory/file）下落盘失败仅影响崩溃重放，维持仅告警语义。
+   * 幂等去重两层：进程内 Map（零开销）+ 共享模式 Redis SET NX（跨实例）。
    */
-  submit(input: {
+  async submit(input: {
     mode: RunMode;
     prompt: string;
     priority?: JobPriority;
@@ -240,26 +276,39 @@ export class RunQueue {
     owner?: string;
     /** 幂等键（可选）：同 owner 下该键存在活跃（排队/执行中）任务时，返回既有 job 不重复执行。 */
     idempotencyKey?: string;
-  }): RunJob {
-    // 幂等去重：命中活跃同键任务直接复用，防客户端重试/双击造成重复执行与重复计费。
-    if (input.idempotencyKey) {
-      const key = `${input.owner ?? ''}|${input.idempotencyKey}`;
-      const existingId = this.idemIndex.get(key);
+  }): Promise<RunJob> {
+    const idemKey = input.idempotencyKey
+      ? `${input.owner ?? ''}|${input.idempotencyKey}`
+      : undefined;
+    // 第一层幂等去重（进程内）：命中活跃同键任务直接复用，防客户端重试/双击重复执行。
+    if (idemKey) {
+      const existingId = this.idemIndex.get(idemKey);
       const existing = existingId ? this.jobs.get(existingId) : undefined;
       if (existing && (existing.status === 'queued' || existing.status === 'running')) {
         return existing;
       }
       // 陈旧索引（任务已结束但索引未清）随手清理。
-      if (existingId) this.idemIndex.delete(key);
+      if (existingId) this.idemIndex.delete(idemKey);
     }
     // 排队背压：待执行队列达上限时拒绝提交（redis 共享模式由后端容量约束，不做进程内限制）。
     if (!this.shared && QUEUE_MAX_PENDING > 0 && this.queue.length >= QUEUE_MAX_PENDING) {
       throw new QueueBackpressureError(this.queue.length, QUEUE_MAX_PENDING);
     }
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
+    // 第二层幂等去重（跨实例，仅共享后端）：Redis SET NX 原子占位。
+    // 既有任务可能在本实例的 jobs 表里查不到（其它实例提交），返回 409 + 既有 jobId；
+    // 其事件经 pub/sub 事件桥对任意实例可见，客户端仍可订阅该 jobId 的 SSE。
+    if (idemKey && this.shared && this.backend.tryAcquireIdem) {
+      const res = await this.backend
+        .tryAcquireIdem(idemKey, id, RUN_QUEUE_IDEM_TTL_MS)
+        .catch(() => ({ acquired: true } as { acquired: boolean; existingJobId?: string }));
+      if (!res.acquired) {
+        throw new QueueDuplicateError(res.existingJobId);
+      }
+    }
     const job = this.makeJob(input, id);
-    if (input.idempotencyKey) {
-      this.idemIndex.set(`${input.owner ?? ''}|${input.idempotencyKey}`, id);
+    if (idemKey) {
+      this.idemIndex.set(idemKey, id);
     }
     const descriptor: JobDescriptor = {
       id,
@@ -285,14 +334,26 @@ export class RunQueue {
       enqueuedAt: job.enqueuedAt
     };
 
-    // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
-    void this.backend.append(descriptor).catch((e) => {
-      console.error('[run-queue] persist failed:', (e as Error)?.message);
-    });
     if (this.shared) {
+      // P1 稳定性修复：共享模式下持久化是执行的前置——append 失败意味着没有任何
+      // 实例能 claim 到该任务，必须同步失败（503）并回滚已占用的资源。
+      try {
+        await this.backend.append(descriptor);
+      } catch (e) {
+        this.jobs.delete(id);
+        if (idemKey) this.idemIndex.delete(idemKey);
+        if (idemKey && this.backend.releaseIdem) {
+          void this.backend.releaseIdem(idemKey).catch(() => {});
+        }
+        throw new QueuePersistError((e as Error)?.message);
+      }
       // 执行由 claim 驱动；立即触发一次领取以减少首任务延迟（并发满则跳过，待 worker 空闲再扫）。
       void this.sweepOnce();
     } else {
+      // 单实例模式：落盘失败仅影响崩溃重放，不影响内存态任务运行，维持仅告警语义。
+      void this.backend.append(descriptor).catch((e) => {
+        console.error('[run-queue] persist failed:', (e as Error)?.message);
+      });
       this.queue.push(job);
       this.pump();
     }
@@ -385,6 +446,26 @@ export class RunQueue {
     // 一直保持事件循环活跃而挂住（表现为测试文件级超时）。unref 后定时器照常触发，
     // 仅不再充当「进程存活」的引用。
     this.claimTimer.unref?.();
+    // P1 稳定性修复：僵尸任务回收周期化。此前 reclaimStale 仅在实例启动时执行一次，
+    // 实例在 claim 与 ack 之间崩溃会让任务滞留 processing；长生命周期集群中若无实例
+    // 重启则无人回收。周期默认 60s（RUN_QUEUE_RECLAIM_INTERVAL_MS 可调），远小于
+    // 租约时长（QUEUE_LEASE_MS 默认 300s），不会回收在飞任务。
+    if (this.backend.reclaimStale) {
+      this.reclaimTimer = setInterval(() => {
+        void this.backend
+          .reclaimStale!(leaseMs)
+          .then((moved) => {
+            if (moved > 0)
+              console.log(
+                `[run-queue] periodic reclaim moved ${moved} stale job(s) back to pending`
+              );
+          })
+          .catch((e) =>
+            console.error('[run-queue] periodic reclaim failed:', (e as Error)?.message)
+          );
+      }, RUN_QUEUE_RECLAIM_INTERVAL_MS);
+      this.reclaimTimer.unref?.();
+    }
     // 立即扫一次，缩短启动后首任务延迟。
     void this.sweepOnce();
   }
@@ -632,6 +713,10 @@ export class RunQueue {
     if (this.claimTimer) {
       clearInterval(this.claimTimer);
       this.claimTimer = undefined;
+    }
+    if (this.reclaimTimer) {
+      clearInterval(this.reclaimTimer);
+      this.reclaimTimer = undefined;
     }
     // 清理所有 per-job 内存监控定时器。此前 stop() 遗漏此处：若任务在执行中被 stop
     // （或测试未等任务结束），这些定时器会残留并阻止 Node 进程退出 —— 即测试文件级超时的根因之一。
@@ -1256,6 +1341,11 @@ export class RunQueue {
         if (job.idempotencyKey) {
           const key = `${job.owner ?? ''}|${job.idempotencyKey}`;
           if (this.idemIndex.get(key) === job.id) this.idemIndex.delete(key);
+          // 共享后端：跨实例幂等键（Redis）随终态释放，允许同键新提交。
+          // 任务可能在其它实例被 claim 执行，故不能只看本进程索引。
+          if (this.shared && this.backend.releaseIdem) {
+            void this.backend.releaseIdem(key).catch(() => {});
+          }
         }
         job.finishedAt = Date.now();
         recordLatency(

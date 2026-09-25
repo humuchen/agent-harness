@@ -270,11 +270,13 @@ export async function changePassword(
 
 /**
  * 申请重置密码：POST /api/account/forgot-password（公开，无需登录）。
- * 返回 { ok, error?, resetToken? }。
+ * 返回 { ok, error?, message?, resetToken? }——
+ * 生产模式（默认）服务端不回传 resetToken，改回 message（带外交付指引，含本部署的
+ * 演示开关说明）；仅服务端 PASSWORD_RESET_INLINE_TOKEN=on 时才带 resetToken。
  */
 export async function requestPasswordReset(
   identifier: string
-): Promise<{ ok: boolean; error?: string; resetToken?: string }> {
+): Promise<{ ok: boolean; error?: string; message?: string; resetToken?: string }> {
   try {
     const res = await fetch('/api/account/forgot-password', {
       method: 'POST',
@@ -285,12 +287,13 @@ export async function requestPasswordReset(
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       error?: string;
+      message?: string;
       resetToken?: string;
     };
     if (!res.ok || !data.ok) {
       return { ok: false, error: data.error || '申请失败' };
     }
-    return { ok: true, resetToken: data.resetToken };
+    return { ok: true, message: data.message, resetToken: data.resetToken };
   } catch {
     return { ok: false, error: '网络异常，请稍后重试。' };
   }

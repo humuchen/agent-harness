@@ -64,6 +64,23 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+          # P1 自愈补齐：此前该 Deployment 完全没有探针——redis 崩溃/假死时 Service
+          # 仍把流量导给不健康实例，队列写入静默失败。liveness/readiness 均为真实 PING
+          # （密码经 env 展开，避免命令行泄露在 spec 之外）。
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

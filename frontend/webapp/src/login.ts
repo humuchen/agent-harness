@@ -1527,10 +1527,14 @@ export class AhLogin extends LitElement {
         notify.success('验证通过，请设置新密码');
       } else {
         // 生产模式（P0 安全修复）：重置凭证带外下发（邮件/管理员），响应不再回传 token。
-        // 统一成功话术，不区分账号是否存在（防枚举）。
-        notify.success('如果该账号存在，重置凭证已生成，请通过邮件或管理员获取。', {
-          key: 'forgot-form',
-        });
+        // 优先展示服务端返回的权威提示（message 含本部署的演示开关说明，
+        // 此前该字段被 api 层丢弃）；无 message 时用统一话术，不区分账号是否存在（防枚举）。
+        notify.success(
+          r.message || '如果该账号存在，重置凭证已生成，请通过邮件或管理员获取。',
+          {
+            key: 'forgot-form',
+          }
+        );
         this.backToLogin();
       }
     } catch (err) {

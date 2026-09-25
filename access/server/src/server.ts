@@ -212,6 +212,7 @@ import { installScrubber } from './log-scrub';
 
 import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
+import { isTrustedProxy } from './trusted-proxy';
 import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes';
 import { handleDeviceRoutes } from './routes/device-routes';
 import { handleDatasourceRoutes } from './routes/datasource-routes';
@@ -415,14 +416,23 @@ const openApiSpec = buildOpenApiSpec();
 // 安全 / 可观测辅助
 // ---------------------------------------------------------------------------
 
-/** 取客户端真实 IP：优先 Cloudflare 注入头，其次 X-Forwarded-For 首个，最后 socket。 */
+/**
+ * 取客户端真实 IP（P1 安全修复）：
+ * 仅当 TCP 对端落在 TRUST_PROXY_CIDRS 可信网段内才采信代理注入头
+ * （Cloudflare 头优先，其次 X-Forwarded-For 首段）；否则一律以 socket 地址为准——
+ * 直连部署下伪造 XFF/CF 头不再能绕过基于 IP 的限流与审计。
+ * 缺省仅信任回环（同机反代拓扑零配置可用）；docker 网络代理见 compose 注入的缺省值。
+ */
 function clientIp(req: IncomingMessage): string {
-  const cf = req.headers['cf-connecting-ip'];
-  if (typeof cf === 'string' && cf.length) return cf.trim();
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length)
-    return (xff.split(',')[0] ?? '').trim();
-  return req.socket?.remoteAddress || 'unknown';
+  const remote = req.socket?.remoteAddress || 'unknown';
+  if (isTrustedProxy(remote)) {
+    const cf = req.headers['cf-connecting-ip'];
+    if (typeof cf === 'string' && cf.length) return cf.trim();
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.length)
+      return (xff.split(',')[0] ?? '').trim();
+  }
+  return remote;
 }
 
 // 固定窗口限流已收敛到 ./rate-limit（阈值与窗口显式传入）。
@@ -1935,8 +1945,17 @@ async function bootstrap(): Promise<void> {
       structLog('info', 'migration', { status: 'success', output: result.trim() });
       console.log('[migration] 启动迁移完成:', result.trim());
     } catch (e) {
-      console.error('[migration] 启动迁移失败:', e instanceof Error ? e.message : String(e));
-      // 不阻断启动，但记录错误以便运维排查。
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[migration] 启动迁移失败:', msg);
+      // P1 稳定性修复：关键模式（AH_STARTUP_CRITICAL=1）下迁移失败必须阻断启动——
+      // 否则新副本会带着旧 schema 接流，把「schema 不匹配」推迟成运行期偶发错误。
+      // 与多副本自检的处理方式一致：宁可拒绝启动，也不带错误配置静默上线。
+      if (process.env.AH_STARTUP_CRITICAL === '1') {
+        structLog('error', 'migration', { status: 'failed', blocking: true, error: msg });
+        console.error('[migration] AH_STARTUP_CRITICAL=1，阻断启动。请修复迁移后重启。');
+        process.exit(1);
+      }
+      // 非关键模式维持原语义：不阻断启动，但记录错误以便运维排查。
     }
   } else {
     console.log('[migration] AH_MIGRATE_AUTO 未启用，跳过启动时迁移（如需启用请设置 AH_MIGRATE_AUTO=on）');
@@ -1958,6 +1977,22 @@ async function bootstrap(): Promise<void> {
 
   // R1 收口：把组合根闭包（guard/auditAction/shuttingDown）注入 run 路由模块。
   initRunRoutes({ guard, auditAction, isShuttingDown: () => shuttingDown });
+  // P1 稳定性修复：监听失败不再是笼统 fatal——EADDRINUSE 单独给出可操作的提示。
+  // 此前端口占用经 crash guard 输出一条无上下文的 fatal 后 exit(1)，排障困难。
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(
+        `[fatal] 端口 ${PORT}（${HOST}）已被占用（EADDRINUSE）：` +
+          `请停掉占用进程或改用其它 PORT 后重启。定位占用者：lsof -iTCP:${PORT} -sTCP:LISTEN`
+      );
+      emitAlert('fatal', 'server.eaddrinuse', `port ${PORT} already in use`, { port: PORT, host: HOST });
+      process.exit(1);
+    }
+    // 其余监听期错误与多副本自检保持一致：记录后显式退出，交给编排层重启。
+    console.error('[fatal] server error:', err?.code ?? '', err?.message);
+    emitAlert('fatal', 'server.error', err?.message ?? String(err), { code: err?.code });
+    process.exit(1);
+  });
   server.listen(PORT, HOST, onListening);
 }
 

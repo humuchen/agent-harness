@@ -156,3 +156,42 @@ window.addEventListener('ah-session-cleared', () => {
   clearSession();
   mountLogin();
 });
+
+// ── P2 全局错误兜底 ──────────────────────────────────────────────────────────
+// 此前主应用无 window error / unhandledrejection 监听：Lit 组件树未捕获的异常
+// 静默消失，排障只能靠复现。现统一兜底：
+// - console.error 带固定前缀（浏览器 devtools / 移动端 WebView 日志可过滤）；
+// - notifyError 弹提示（同 fallback 文案自动去重合并，不会刷屏）；
+// - 最近 20 条挂在 window.__ahClientErrors，控制台可直接检查，
+//   也为后续接入服务端错误上报端点预留数据源。
+// 注意：SSE 断线重连、401 刷新等已自处理的错误走各自 UI 提示（均有 catch），
+// 只有真正未捕获的异常 / Promise 拒绝才会到达这里。
+const clientErrors: Array<{ at: number; kind: string; message: string }> = [];
+(window as unknown as { __ahClientErrors?: typeof clientErrors }).__ahClientErrors =
+  clientErrors;
+
+function recordGlobalError(kind: 'error' | 'unhandledrejection', message: string): void {
+  clientErrors.push({ at: Date.now(), kind, message });
+  if (clientErrors.length > 20) clientErrors.shift();
+  console.error(`[ah:${kind}]`, message);
+}
+
+window.addEventListener('error', (e) => {
+  const msg =
+    e instanceof ErrorEvent ? e.message : String((e as ErrorEvent)?.message ?? 'unknown error');
+  recordGlobalError('error', e.filename ? `${msg} (${e.filename}:${e.lineno})` : msg);
+  notifyError(new Error(msg), {
+    fallback: '页面发生内部错误，部分功能可能异常。',
+    key: 'global-error'
+  });
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = (e as PromiseRejectionEvent).reason;
+  const msg = reason instanceof Error ? reason.message : String(reason ?? 'unknown rejection');
+  recordGlobalError('unhandledrejection', msg);
+  notifyError(reason instanceof Error ? reason : new Error(msg), {
+    fallback: '页面发生内部错误，部分功能可能异常。',
+    key: 'global-error'
+  });
+});
