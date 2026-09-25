@@ -1,0 +1,163 @@
+# docker-compose.prod.yml —— 生产部署加固 overlay（P1-1）
+#
+# 与 docker-compose.yml + docker-compose.redis.yml 叠加使用，强制启用：
+#   1. Redis 多副本共享运行队列（RUN_QUEUE_BACKEND=redis）
+#   2. 多副本共享 AgentRegistry（AGENT_STORE=redis）
+#   3. 租户隔离强制门禁（REQUIRE_TENANT=on）
+#   4. 启动时自动数据库迁移（AH_MIGRATE_AUTO=on）
+#   5. 启动强校验（AH_STARTUP_CRITICAL=1，关键配置校验失败阻断启动）
+#   6. 日志脱敏、审计日志、成本上限、遥测持久化全量开启
+#   7. 持久化记忆（sqlite）、审计、遥测、工件全部落 data 卷
+#
+# 用法：
+#   cp .env.prod.example .env.prod   # 填入生产密钥
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.redis.yml \
+#     -f docker-compose.prod.yml \
+#     --profile redis \
+#     --env-file .env.prod \
+#     up -d --build
+#
+# ⚠️ 生产部署前必读 deploy/k8s/DEPLOY-CHECKLIST.md，逐项确认。
+#
+# 与 docker-compose.redis.yml 的区别：
+#   - redis.yml 是「内部多人试用推荐」，仍允许无租户执行、默认内存队列降级；
+#   - prod.yml 是「生产强制」，关闭所有降级路径，Redis 不可用时直接 unhealthy。
+
+services:
+  ui:
+    environment:
+      # ── 多副本水平扩展（消除单点故障）──
+      # 运行队列：Redis 共享队列，进程崩溃后未开始任务可恢复续跑。
+      RUN_QUEUE_BACKEND: 'redis'
+      # Agent 注册表：Redis 共享，多副本一致可见。
+      AGENT_STORE: 'redis'
+      # Redis 连接（覆盖 redis.yml 的无密码 URL，带上 prod 密码）。
+      REDIS_URL: 'redis://:${REDIS_PASSWORD}@redis:6379'
+      # 记忆持久化：sqlite 落 data 卷，重启不丢。
+      MEMORY_BACKEND: 'sqlite'
+      MEMORY_SQLITE_FILE: '/app/data/memory.db'
+
+      # ── 安全合规强制门禁 ──
+      # P0.3 租户隔离：行业 agent 必须携带认证租户身份，杜绝无租户执行越界。
+      REQUIRE_TENANT: 'on'
+      # 启动时自动数据库迁移（P0-D），确保 schema 与代码版本一致。
+      AH_MIGRATE_AUTO: 'on'
+      # 启动强校验：关键配置（密钥 / DB / Redis）缺失或不可达时直接阻断启动，
+      # 杜绝「静默降级到内存态」的安全错配。
+      AH_STARTUP_CRITICAL: '1'
+
+      # ── 日志脱敏（P2 生产化）──
+      LOG_SCRUB_ENABLED: 'true'
+
+      # ── 审计日志 ──
+      AUDIT_BACKEND: 'file'
+      AUDIT_LOG_FILE: '/app/data/audit/audit.jsonl'
+
+      # ── 成本硬上限 ──
+      # 每窗口最大成本（美元），0=不限。生产建议设为团队预算上限。
+      MAX_COST_PER_WINDOW: '${MAX_COST_PER_WINDOW:-50}'
+
+      # ── 遥测持久化 ──
+      # 跨重启保留累计计数 / token / 成本 / 租户维度。
+      TELEMETRY_FILE: '/app/data/telemetry-metrics.json'
+      # 启动时自动保存遥测快照（每 60s 一次）。
+      TELEMETRY_AUTOSAVE: 'on'
+
+      # ── 告警路由 ──
+      # 生产必须配置告警 webhook（Slack/飞书/钉钉）或至少落文件。
+      ALERT_LOG_PATH: '/app/data/alerts.jsonl'
+      # ALERT_WEBHOOK_URL 由 .env.prod 注入（含密钥，不入镜像）。
+
+      # ── 自定义模型持久化 ──
+      CUSTOM_MODELS_DB_FILE: '/app/data/custom-models.db'
+
+      # ── 成果物工件落点 ──
+      ARTIFACT_DIR: '/app/data/artifacts'
+
+      # ── 工作流检查点 ──
+      # 持久化到 data 卷，容器重启后断点续跑有数据可读。
+      WORKFLOW_STORE_DIR: '/app/data/workflows'
+
+      # ── 备份配置 ──
+      AH_BACKUP_DIR: '/app/data/backups'
+      AH_BACKUP_KEEP_DAYS: '${AH_BACKUP_KEEP_DAYS:-30}'
+
+      # ── 可信代理网段（P1 安全修复）──
+      # 生产部署应收窄为实际反代所在网段，防止伪造头绕过 IP 限流。
+      # 默认含 docker 桥接网段 + 回环；直连公网部署时必须改。
+      TRUST_PROXY_CIDRS: '${TRUST_PROXY_CIDRS:-172.16.0.0/12,127.0.0.0/8,::1/128}'
+
+      # ── 出网管控（生产建议 denylist 或 allowlist）──
+      # 默认 open（与代码一致）；生产建议设为 denylist + 禁止私有地址绕过。
+      GUARDRAIL_NETWORK_MODE: '${GUARDRAIL_NETWORK_MODE:-denylist}'
+      GUARDRAIL_DENIED_DOMAINS: '${GUARDRAIL_DENIED_DOMAINS:-}'
+      GUARDRAIL_ALLOW_PRIVATE_NETWORK: '${GUARDRAIL_ALLOW_PRIVATE_NETWORK:-false}'
+
+      # ── 密钥签名（必须由 .env.prod 注入，缺失则启动阻断）──
+      AH_CRYPTO_KEY: '${AH_CRYPTO_KEY:?AH_CRYPTO_KEY is required for production}'
+      AH_AUTH_SECRET: '${AH_AUTH_SECRET:?AH_AUTH_SECRET is required for production}'
+      ADMIN_API_KEY: '${ADMIN_API_KEY:?ADMIN_API_KEY is required for production}'
+
+      # ── LLM 密钥（BYOK 架构）──
+      OPEN_API_KEY: '${OPEN_API_KEY:-}'
+      OPEN_MODEL: '${OPEN_MODEL:-}'
+      PLATFORM_OPEN_API_KEY: '${PLATFORM_OPEN_API_KEY:-}'
+      ALLOW_PLATFORM_KEY: '${ALLOW_PLATFORM_KEY:-}'
+
+      # ── 成果物存储后端（生产建议 S3）──
+      ARTIFACT_STORE: '${ARTIFACT_STORE:-}'
+      S3_BUCKET: '${S3_BUCKET:-}'
+      S3_REGION: '${S3_REGION:-us-east-1}'
+      S3_ENDPOINT: '${S3_ENDPOINT:-}'
+      S3_ACCESS_KEY_ID: '${S3_ACCESS_KEY_ID:-}'
+      S3_SECRET_ACCESS_KEY: '${S3_SECRET_ACCESS_KEY:-}'
+
+    # 生产部署：放宽健康检查重试次数，给启动期自动迁移更多时间。
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4173/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+    # 生产部署：添加资源限制，防止单容器 OOM 拖垮宿主。
+    deploy:
+      resources:
+        limits:
+          memory: '${CONTAINER_MEMORY_LIMIT:-2g}'
+          cpus: '${CONTAINER_CPU_LIMIT:-2.0}'
+
+    restart: always
+
+  # Redis：生产强制启用（非可选 profile），AOF 持久化 + 密码 + 内存上限。
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command:
+      - 'redis-server'
+      - '--appendonly'
+      - 'yes'
+      - '--maxmemory'
+      - '${REDIS_MAXMEMORY:-512mb}'
+      - '--maxmemory-policy'
+      - 'allkeys-lru'
+      - '--requirepass'
+      - '${REDIS_PASSWORD:?REDIS_PASSWORD is required for production}'
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+    # Redis 不暴露端口到宿主，仅通过 docker 网络供 ui 访问。
+    # ui 的 REDIS_URL 需在 .env.prod 中设为 redis://redis:6379（无密码）
+    # 或在 redis.yml overlay 中覆盖为 redis://:${REDIS_PASSWORD}@redis:6379。

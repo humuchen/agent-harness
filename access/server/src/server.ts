@@ -1,9 +1,13 @@
 import { createServer } from 'node:http';
-import { readFile, appendFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+// P0-2：告警装配、崩溃防护、优雅停机已拆出到独立模块，server.ts 聚焦 HTTP 路由编排。
+import { setupAlerting } from './alerting-setup';
+import { installCrashGuard } from './crash-guard';
+import { createShutdownHandler } from './graceful-shutdown';
 import {
   defaultPromptFor,
   getMemoryStore,
@@ -21,7 +25,6 @@ import {
   Memory,
   sanitizeKey,
   structLog,
-  setAlertSink,
   emitAlert,
   logError,
   resolveOpenRouterConfig,
@@ -33,8 +36,6 @@ import {
   policyEngine,
   getTokenCacheStats,
   getTokenCacheHistory,
-  startTokenCacheAggregation,
-  setTokenCacheAlertSink,
   type VerifyConfig,
   type AgentCard,
   type AgentHealth,
@@ -1102,7 +1103,7 @@ const server = createServer(
         return;
       }
       // ---- P0.1 智能体注册与发现 / A2A / Teams：已外迁 routes/agent-routes.ts ----
-      if (await handleAgentRoutes(req, res, url, path, { guard, auditAction, isShuttingDown: () => shuttingDown })) {
+      if (await handleAgentRoutes(req, res, url, path, { guard, auditAction, isShuttingDown })) {
         return;
       }
 
@@ -1975,8 +1976,8 @@ async function bootstrap(): Promise<void> {
     scheduleRetention();
   }
 
-  // R1 收口：把组合根闭包（guard/auditAction/shuttingDown）注入 run 路由模块。
-  initRunRoutes({ guard, auditAction, isShuttingDown: () => shuttingDown });
+  // R1 收口：把组合根闭包（guard/auditAction/isShuttingDown）注入 run 路由模块。
+  initRunRoutes({ guard, auditAction, isShuttingDown });
   // P1 稳定性修复：监听失败不再是笼统 fatal——EADDRINUSE 单独给出可操作的提示。
   // 此前端口占用经 crash guard 输出一条无上下文的 fatal 后 exit(1)，排障困难。
   server.on('error', (err: NodeJS.ErrnoException) => {
@@ -2175,116 +2176,11 @@ function onListening(): void {
   console.log('');
 }
 
-// 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
-// - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
-// - unhandledRejection：仅记录，不退出，避免单个被拒 Promise 拖垮在线服务。
-
-/**
- * 告警接收器工厂。告警下沉是可插拔的：默认关闭，按环境变量装配。
- * - ALERT_WEBHOOK_URL：将告警 JSON POST 到该地址（如 Slack/飞书/钉钉 入站 Webhook、自研告警网关）。
- * - ALERT_LOG_PATH：将告警以 JSON 逐行追加到指定文件（便于被 Filebeat/Loki 采集）。
- * 多个 sink 会依次触发；单个 sink 失败仅告警日志，不影响其它 sink 与主流程。
- */
-function createWebhookAlertSink(url: string) {
-  return async (a: unknown) => {
-    try {
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(a)
-      });
-    } catch (e) {
-      structLog('warn', 'alert webhook failed', {
-        error: e instanceof Error ? e.message : String(e)
-      });
-    }
-  };
-}
-function createFileAlertSink(filePath: string) {
-  return async (a: unknown) => {
-    try {
-      await appendFile(filePath, JSON.stringify(a) + '\n');
-    } catch {
-      /* 告警落盘失败不向上传播 */
-    }
-  };
-}
-function setupAlerting(): void {
-  const url = process.env.ALERT_WEBHOOK_URL;
-  const file = process.env.ALERT_LOG_PATH;
-  const sinks: Array<(a: unknown) => void | Promise<void>> = [];
-  if (url) {
-    sinks.push(createWebhookAlertSink(url));
-    structLog('info', 'alerting enabled', { sink: 'webhook', url });
-  }
-  if (file) {
-    sinks.push(createFileAlertSink(file));
-    structLog('info', 'alerting enabled', { sink: 'file', path: file });
-  }
-  if (sinks.length) {
-    setAlertSink(async (a: unknown) => {
-      for (const s of sinks) await s(a);
-    });
-  }
-
-  // Token 缓存命中率统计：复用同一套告警通道（webhook / 文件），并启动周期聚合。
-  setTokenCacheAlertSink(emitAlert);
-  startTokenCacheAggregation();
-}
-
-function installCrashGuard(): void {
-  const fatal = (where: string, err: unknown) => {
-    const e = err as { message?: string; stack?: string };
-    logError('crash.guard', err, { where });
-    emitAlert(
-      'fatal',
-      'crash.guard',
-      `${where}: ${e?.message ?? String(err)}`,
-      { where, stack: e?.stack }
-    );
-    console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
-  };
-  process.on('uncaughtException', (err) => {
-    fatal('uncaughtException', err);
-    process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
-    fatal('unhandledRejection', reason);
-  });
-}
+// 进程级兜底：防止未捕获异常导致整进程裸崩（已抽出到 ./crash-guard）。
 installCrashGuard();
 
-// 停机宽限：先中止在飞任务，给其最多该时长退出，再关 MCP 与监听。
-const SHUTDOWN_GRACE_MS =
-  Number(process.env.RUN_SHUTDOWN_GRACE_MS ?? 5000) || 5000;
-let shuttingDown = false;
-
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log('\n[ui] 收到停机信号，开始优雅停机…');
-
-  // 1) 中止所有在飞/排队任务（job 级 AbortController），释放 worker 与 LLM/MCP 占用。
-  runQueue.abortAll('shutdown');
-
-  // 1b) 停止领取轮询并关闭共享后端（redis）连接，避免进程退出后空转。
-  runQueue.stop();
-
-  // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
-  await new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
-
-  // 3) 关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
-  await mcpManager.shutdown().catch(() => {});
-
-  // 4) 停止接受新连接，等待已建立的连接（如健康检查）关闭。
-  server.close(() => {
-    console.log('[ui] 已停止接受新连接。');
-    process.exit(0);
-  });
-
-  // 兜底：若 server.close 因长连接迟迟不结束，强制退出。
-  setTimeout(() => process.exit(0), 3000).unref();
-}
+// 优雅停机：已抽出到 ./graceful-shutdown，通过依赖注入解耦模块级变量。
+const { shutdown, isShuttingDown } = createShutdownHandler({ runQueue, mcpManager, server });
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 
