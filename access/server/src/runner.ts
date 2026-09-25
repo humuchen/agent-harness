@@ -47,6 +47,7 @@ import { waitApproval } from './shell-approval';
 import { bridgeHarnessEvent } from './plugin-bootstrap';
 import { DEFAULTS } from './config-defaults';
 import { registerSubAgentTool } from './subagent-tools';
+import { registerDeliverFileTool } from './deliver-file';
 import { getTeamManager, initTeamManager, getAgentRegistry } from '@agent-harness/core';
 import path from 'node:path';
 
@@ -437,6 +438,15 @@ export async function assembleAgent(
     ...(jevApiKey !== undefined || jevBaseUrl !== undefined
       ? { jevApiKey, jevBaseUrl }
       : {})
+  });
+
+  // 文件交付闭环（P-交付闭环）：把沙箱内已生成的文件注册进 artifact-store，
+  // 使 doc_export / fs_write 的产物出现在「📎 交付文件」区可预览 / 可下载。
+  // runId 从 sessionKey 推导：plan 步骤（wf:<workflowId>:<stepId>）对齐 plan-artifacts 的
+  // list(def.id) 同键；owner 经 runWithUser 上下文取归属用户（无则匿名桶）。
+  registerDeliverFileTool(tools, {
+    fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
+    sessionKey: sessionKey ?? ''
   });
 
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。

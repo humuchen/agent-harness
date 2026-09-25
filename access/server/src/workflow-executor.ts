@@ -81,6 +81,17 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
               `请在对应内容/小节标题中原样使用这些词；若某项数据/资料确实无法获取，仍须在「数据缺口」说明中写出该关键词并说明原因。`
           );
         }
+        // P-交付闭环：文件交付指引。任务要求 PPT / Excel / CSV 等真实文件时，执行模型须走
+        // 「doc_export 生成 → deliver_file 注册进交付文件区 → 正文列文件名与摘要」链路；
+        // 工具面缺能力（未安装依赖 / assembly 收窄）时以正文文本兜底，不得只回一句「已生成」。
+        if (/ppt|pptx|excel|xlsx|csv|幻灯片|演示文稿|表格|导出|生成文件|交付文件|报表/i.test(meta.title ?? '')) {
+          lines.push(
+            '文件交付（如适用）：本任务可能需要生成真实文件。若你的工具面包含 builtin__doc_export ' +
+              '（xlsx/pptx/csv）或 builtin__fs_write，先生成文件，再调用 builtin__deliver_file ' +
+              '注册进交付文件区（否则用户拿不到文件），最后在正文列出文件名与内容摘要。' +
+              '工具不可用或报依赖缺失时，把完整表格 / 大纲文本写入正文兜底并注明原因。'
+          );
+        }
       }
       lines.push(`目标：${String(rec.goal ?? '')}`);
       // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经

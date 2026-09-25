@@ -151,6 +151,23 @@ export function defaultSkills(): Skill[] {
         '处理时间问题：用 builtin__datetime_now 获取当前时间，builtin__datetime_convert 做时区换算，' +
         'builtin__datetime_add 计算相对时间。始终基于真实当前时间作答。',
     },
+    {
+      id: 'doc-export',
+      title: '文件生成与交付',
+      description: '需要生成 Excel / PPT / CSV 等真实可下载交付文件时使用（生成后注册进交付文件区）。',
+      triggers: [
+        'ppt', 'pptx', 'excel', 'xlsx', 'csv', '幻灯片', '演示文稿', '表格文件',
+        '导出', '生成文件', '交付文件', '下载文件', '报表', 'summary slide', 'deck'
+      ],
+      tools: ['builtin__doc_export', 'builtin__fs_write', 'builtin__deliver_file'],
+      prompt:
+        '生成交付文件的标准工作流：\n' +
+        '1) 表格数据 → builtin__doc_export(format="xlsx", sheets=[{name, rows}]) 或 format="csv"（rows 支持二维数组或对象数组，对象数组自动加表头）；\n' +
+        '2) 演示文稿 → builtin__doc_export(format="pptx", slides=[{title, bullets, notes?}])，每页标题 + 要点；\n' +
+        '3) 任意文本/Markdown → builtin__fs_write；\n' +
+        '4) 生成成功后**必须**调用 builtin__deliver_file({path}) 把文件注册进交付文件区，否则用户拿不到文件；\n' +
+        '5) 回复正文列出已交付的文件名与内容摘要。若 doc_export 报「可选依赖缺失」，降级用 fs_write 写出 CSV/大纲文本并交付，同时注明降级原因。',
+    },
   ];
 }
 
@@ -167,7 +184,7 @@ export function registerSkillTools(tools: ToolRegistry, registry: SkillRegistry)
       {
         skill: {
           type: 'string',
-          description: '技能 id，例如 web-research / math / files / current-time。',
+          description: '技能 id，例如 web-research / math / files / current-time / doc-export。',
         },
       },
       ['skill']

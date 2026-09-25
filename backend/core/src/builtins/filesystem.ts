@@ -103,6 +103,51 @@ export function registerFilesystem(registry: ToolRegistry, opts: FilesystemOptio
     'builtin'
   );
 
+  // 单次写入的字节上限（解码后）：防大 payload 撑爆沙箱盘与工具参数通道。
+  const FS_WRITE_MAX_BYTES = 2 * 1024 * 1024;
+
+  registry.register(
+    'builtin__fs_write',
+    'Write a file within the allowed root directory (parent dirs auto-created). ' +
+      'Default encoding "utf-8" writes text; "base64" decodes content into binary bytes ' +
+      '(e.g. images). Returns JSON {path, bytes}. Overwrites existing files.',
+    objectParams(
+      {
+        path: { type: 'string', description: 'Path relative to the sandbox root.' },
+        content: {
+          type: 'string',
+          description: 'File content: text (utf-8) or base64 string (encoding="base64").'
+        },
+        encoding: {
+          type: 'string',
+          enum: ['utf-8', 'base64'],
+          description: 'Content encoding; defaults to utf-8.'
+        }
+      },
+      ['path', 'content']
+    ),
+    async (args: Record<string, unknown>) => {
+      const p = String(args.path ?? '');
+      const raw = String(args.content ?? '');
+      const encoding = args.encoding === 'base64' ? 'base64' : 'utf-8';
+      try {
+        const abs = await safeReal(p);
+        const buf =
+          encoding === 'base64' ? Buffer.from(raw, 'base64') : Buffer.from(raw, 'utf-8');
+        if (buf.length > FS_WRITE_MAX_BYTES) {
+          return `error: content too large (${buf.length} bytes > ${FS_WRITE_MAX_BYTES})`;
+        }
+        await fsp.mkdir(resolve(abs, '..'), { recursive: true });
+        await fsp.writeFile(abs, buf);
+        return JSON.stringify({ path: relative(root, abs), bytes: buf.length });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return `error: ${msg}`;
+      }
+    },
+    'builtin'
+  );
+
   registry.register(
     'builtin__fs_search',
     'Search files under the root whose name contains `name_contains` (and optionally whose ' +

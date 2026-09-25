@@ -7,20 +7,22 @@
  * @capacitor/preferences（Android 上= SharedPreferences），允许云备份即允许
  * 备份通道提取凭据。本脚本在每个 build 的 sync 链尾把安全基线重新打上：
  *   1) AndroidManifest.xml：allowBackup="false" + dataExtractionRules + fullBackupContent；
- *   2) res/xml/{data_extraction_rules,full_backup_content}.xml：排除 sharedpref/file 域备份。
+ *   2) res/xml/{data_extraction_rules,full_backup_content}.xml：排除 sharedpref/file 域备份；
+ *   3) MainActivity.java：附件下载监听（Capacitor 8 WebView 无 DownloadListener，
+ *      Content-Disposition: attachment 响应被静默吞掉 → 交付文件「下载」无反应）。
  * 资源源文件在 mobile/native-overrides/（被跟踪），此处复制进生成目录并覆写 manifest 属性。
  *
  * 幂等：已加固时跳过写盘；仅打印一行结果。
  * 失败语义：找不到 manifest 等结构性异常 → exit 1（与 splash-copy 一致，fail-fast）。
  */
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const mobileDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const androidMain = join(mobileDir, 'android', 'app', 'src', 'main');
 const manifestPath = join(androidMain, 'AndroidManifest.xml');
-const overridesDir = join(mobileDir, 'native-overrides', 'res', 'xml');
+const overridesDir = join(mobileDir, 'native-overrides');
 const resXmlDir = join(androidMain, 'res', 'xml');
 
 if (!existsSync(manifestPath)) {
@@ -30,7 +32,7 @@ if (!existsSync(manifestPath)) {
 
 // 1) 复制备份排除规则资源（幂等覆盖）
 for (const name of ['data_extraction_rules.xml', 'full_backup_content.xml']) {
-  const src = join(overridesDir, name);
+  const src = join(overridesDir, 'res', 'xml', name);
   if (!existsSync(src)) {
     console.error(`[harden-android] 缺少源资源 ${src}，中止`);
     process.exit(1);
@@ -59,5 +61,37 @@ if (manifest !== original) {
   console.log('[harden-android] 已加固 AndroidManifest（allowBackup=false + 备份排除规则）');
 } else {
   console.log('[harden-android] AndroidManifest 已是加固态，跳过');
+}
+
+// 3) MainActivity 下载监听补丁（幂等：内容一致时跳过写盘）。
+//    Capacitor 8 的 WebView 未设置任何 DownloadListener，attachment 响应被静默吞掉
+//    ——App 内点交付文件「下载」无任何反应。正本见 native-overrides/java/。
+const mainActivitySrc = join(
+  overridesDir,
+  'java',
+  'com',
+  'agentharness',
+  'mobile',
+  'MainActivity.java'
+);
+const mainActivityDst = join(
+  androidMain,
+  'java',
+  'com',
+  'agentharness',
+  'mobile',
+  'MainActivity.java'
+);
+if (!existsSync(mainActivitySrc)) {
+  console.error(`[harden-android] 缺少 MainActivity 正本 ${mainActivitySrc}，中止`);
+  process.exit(1);
+}
+const patched = readFileSync(mainActivitySrc, 'utf-8');
+if (existsSync(mainActivityDst) && readFileSync(mainActivityDst, 'utf-8') === patched) {
+  console.log('[harden-android] MainActivity 已含下载监听补丁，跳过');
+} else {
+  mkdirSync(dirname(mainActivityDst), { recursive: true });
+  writeFileSync(mainActivityDst, patched, 'utf-8');
+  console.log('[harden-android] 已回打 MainActivity（滚动条关闭 + DownloadManager 附件下载监听）');
 }
 process.exit(0);
