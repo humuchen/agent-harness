@@ -135,7 +135,19 @@ export class DagEngine {
     if (insp.issue === 'ok') return undefined;
     sr.outputIssue = insp.issue;
     if (!def.failOnInvalidOutput) return undefined;
-    return `无效产出（${insp.issue}）${insp.detail ? `：${insp.detail}` : ''}`;
+    // 排障增强：闸门文案默认只有通用 detail（如「step 运行抛异常（[error] 前缀）」），
+    // 真实异常消息只存在于 step.output 开头（harness return '[error] <msg>'），根因被吞、
+    // 用户只能看到「无效产出（failed）」却不知道错在哪。这里把产出开头截成单行片段
+    // 附进失败信息（空产出无片段 → 文案与旧版逐字一致，测试 includes 断言不受影响）。
+    let snippet = '';
+    if (typeof result === 'string') {
+      const t = result.trim().replace(/\s+/g, ' ');
+      snippet = t.length > 160 ? `${t.slice(0, 160)}…` : t;
+    }
+    return (
+      `无效产出（${insp.issue}）${insp.detail ? `：${insp.detail}` : ''}` +
+      (snippet ? `（产出开头：${snippet}）` : '')
+    );
   }
 
   /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */

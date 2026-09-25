@@ -838,6 +838,7 @@ const TRACE_ICON: Record<string, string> = {
   'tool:start': '🔧',
   'tool:result': '🔧',
   'guardrail:blocked': '🛡',
+  'jev:call': '🎯',
   'verify:result': '✅',
   'budget:exceeded': '⚠️',
   'run:cost': '📊',

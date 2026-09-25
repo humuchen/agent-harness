@@ -186,7 +186,7 @@ export interface WorkflowExecutorOptions {
 
 /**
  * P2.5 调用链路采集器（workflow-executor 专用）：把 step 执行期间流过的 harness 事件
- * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / 校验 / 用量 / 收尾），
+ * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / Jev 决策 / 校验 / 用量 / 收尾），
  * 由 executor 写入 `ctx.trace`，引擎在 step 收尾合并进 `StepRun.trace` 并随检查点持久化 ——
  * 使「执行详情」抽屉能看到每个节点的运行过程，而不只是完成后的耗时。
  *
@@ -333,6 +333,32 @@ export class StepTraceCollector {
           detail: e.reasons.length ? clip(e.reasons.join('；')) : undefined
         });
         return;
+      case 'jev:call': {
+        // TypeSafe Jev 决策模型旁路上报（子系统直连：注入门禁 / 上下文压缩 / 路由补发）：
+        // 补齐「接口 stats 有调用量、执行详情却无痕迹」的缺口 —— jev:call 同样入链。
+        // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点（与前后端一致）。
+        if (e.caller === 'tool') return;
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `Jev 决策（${e.caller}）`,
+          status: e.ok ? 'ok' : 'error',
+          detail: clip(
+            !e.ok && e.error
+              ? e.error
+              : e.questionSpec
+              ? JSON.stringify(e.questionSpec)
+              : undefined
+          ),
+          meta: {
+            调用方: e.caller,
+            延迟: `${Number(e.latencyMs ?? 0)}ms`,
+            ...(e.questions != null ? { 问题数: String(e.questions) } : {}),
+            ...(e.tokens ? { tokens: `${e.tokens.input}+${e.tokens.output}` } : {})
+          },
+        });
+        return;
+      }
       case 'run:end':
         this.traceNodes.push({
           type: e.type,
