@@ -1516,14 +1516,27 @@ export class AhLogin extends LitElement {
     this.submitting = true;
     try {
       const r = await requestPasswordReset(identifier);
-      if (!r.ok || !r.resetToken) {
+      if (!r.ok) {
         notify.error(r.error || '申请失败。', { key: 'forgot-form' });
         return;
       }
-      // 演示环境：token 直接注入，跳到第二步设置新密码（生产应改为来自邮件链接）。
-      this.resetToken = r.resetToken;
-      this.forgotStep = 'reset';
-      notify.success('验证通过，请设置新密码');
+      if (r.resetToken) {
+        // 演示模式（服务端 PASSWORD_RESET_INLINE_TOKEN=on）：token 直接注入，跳到第二步设置新密码。
+        this.resetToken = r.resetToken;
+        this.forgotStep = 'reset';
+        notify.success('验证通过，请设置新密码');
+      } else {
+        // 生产模式（P0 安全修复）：重置凭证带外下发（邮件/管理员），响应不再回传 token。
+        // 优先展示服务端返回的权威提示（message 含本部署的演示开关说明，
+        // 此前该字段被 api 层丢弃）；无 message 时用统一话术，不区分账号是否存在（防枚举）。
+        notify.success(
+          r.message || '如果该账号存在，重置凭证已生成，请通过邮件或管理员获取。',
+          {
+            key: 'forgot-form',
+          }
+        );
+        this.backToLogin();
+      }
     } catch (err) {
       notifyError(err, { fallback: '申请失败。', key: 'forgot-form' });
     } finally {
@@ -1700,9 +1713,9 @@ export class AhLogin extends LitElement {
       }
       // 服务端已下发 ah_auth cookie；前端记录用户名 + access token（用于调度刷新）。
       setSession(data.username || email);
-      if (data.refreshToken && typeof localStorage !== 'undefined') {
-        localStorage.setItem('ah_refresh', data.refreshToken);
-      }
+      // F2：不再把 refresh token 落 localStorage——服务端已签发 HttpOnly ah_refresh
+      // cookie（account-routes refreshCookieValue），刷新流程只走 cookie；
+      // 此前写入的 'ah_refresh' 明文副本无任何读取方，且登出从不清理，属纯泄漏面。
       if (data.accessExpiresAt) {
         setToken(data.refreshToken || ''); // 存 refresh token 副本以维持会话存在性判断
         scheduleAutoRefresh(data.accessExpiresAt);

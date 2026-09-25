@@ -72,10 +72,13 @@ function cleanupByAge(files, maxAgeMs, kind) {
 
 function main() {
   const dataDir = process.env.APP_DATA_DIR || '/app/data';
+  // P1 误删防护修复：telemetry-metrics.json 不再纳入清理。它是遥测累计计数的热文件
+  // （TELEMETRY_FILE，跨重启保留累计 token/成本/租户维度），按 mtime 清理会误删——
+  // 低频写入时 mtime 可能长期停更，一旦超 90 天即被删除，累计指标历史全部丢失。
+  // 如需控制其体积，应由遥测模块自身的轮转策略管理，而非按龄删除。
   const policies = {
     audit: { dir: path.join(dataDir, 'audit'), pattern: /\.jsonl$/, kind: 'audit' },
-    memory: { dir: path.join(dataDir, 'memory'), pattern: /\.json$/, kind: 'memory' },
-    telemetry: { dir: dataDir, pattern: /^telemetry-metrics\.json$/, kind: 'audit' }
+    memory: { dir: path.join(dataDir, 'memory'), pattern: /\.json$/, kind: 'memory' }
   };
 
   console.log(`=== 数据留存清理任务 ===`);

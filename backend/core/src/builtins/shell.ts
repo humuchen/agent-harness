@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { objectParams, ToolRegistry } from '../tools';
-import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
+import { createSandboxExecutor, LocalSandboxExecutor, type SandboxExecutor } from './sandbox';
 
 /**
  * 沙箱 shell / 代码执行能力（可选）。
@@ -68,6 +68,41 @@ export interface ShellOptions {
 // 常见的 shell 元字符 / 运算符。命中即视为潜在命令注入。
 const SHELL_OPERATOR_RE = /[|&;<>$()`\\!*?{}[\]"'\n]/;
 
+// ---------------------------------------------------------------------------
+// P1 C6：解释器 inline-eval 逃逸拦截。
+// 白名单一旦包含解释器（node / python / bash / perl…），`node -e "…rmSync('/etc/passwd')"`
+// 这类 inline-eval 参数即可在解释器内执行任意代码、读写沙箱外任意路径 ——
+// cwd 作用域锁与「只跑白名单命令」的承诺同时失效。
+// 处置：local 硬化进程执行器（无 OS 级隔离）直接拒绝；container / os 执行器
+// 具备真实文件系统隔离，放行。宁可误拒（如 node -c 语法检查），绝不放过逃逸。
+// ---------------------------------------------------------------------------
+
+/** 常见解释器的 basename（白名单命中这些命令时启用 inline-eval 检查）。 */
+const INTERPRETER_BASENAMES = new Set([
+  'node', 'deno', 'bun',
+  'python', 'python3', 'python3.x', 'pypy', 'pypy3',
+  'perl', 'ruby', 'php', 'php8', 'lua', 'lua5.1', 'lua5.3', 'lua5.4', 'luajit',
+  'bash', 'sh', 'zsh', 'ksh', 'dash', 'fish', 'csh', 'tcsh',
+  'tclsh', 'wish', 'awk', 'gawk', 'mawk', 'nawk',
+  'julia', 'Rscript', 'ghci', 'pwsh', 'powershell',
+]);
+
+/**
+ * 检测参数中是否携带 inline-eval 标志。返回命中的参数（供错误信息展示），无则 null。
+ * 短参数按组合形式整体匹配（-e / -c / -pe / -ec …均命中）；宁可误拒不放过。
+ */
+function detectInterpreterInlineEval(base: string, args: string[]): string | null {
+  if (!INTERPRETER_BASENAMES.has(base)) return null;
+  for (const a of args) {
+    if (a.startsWith('--')) {
+      if (a === '--eval' || a === '--exec' || a.startsWith('--eval=') || a.startsWith('--exec=')) return a;
+      continue;
+    }
+    if (a.length > 1 && a.startsWith('-') && /^-[a-zA-Z]*[ecpr]/.test(a)) return a;
+  }
+  return null;
+}
+
 export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): void {
   const root = resolve(opts.root ?? process.cwd());
   const allowed = new Set((opts.allowedCommands ?? []).map((c) => c.trim()).filter(Boolean));
@@ -114,6 +149,18 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
       if (!allowed.has(command) && !allowed.has(base)) {
         const list = allowed.size ? ` (allowed: ${[...allowed].join(', ')})` : ' (allowlist empty)';
         return `error: command not in allowlist: ${command}${list}`;
+      }
+
+      // 1.5) P1 C6：解释器 inline-eval 逃逸拦截（详见 detectInterpreterInlineEval 注释）。
+      //      仅在无真实文件系统隔离的 local 执行器上拒绝；container / os 执行器放行。
+      const inlineEval = detectInterpreterInlineEval(base, argList);
+      if (inlineEval && executor instanceof LocalSandboxExecutor) {
+        return (
+          `error: interpreter inline-eval is blocked on the local sandbox backend: ` +
+          `"${base} ${inlineEval} …" executes arbitrary code that can read/write any path outside ` +
+          `the sandbox root (allowlist + cwd lock do not contain it). ` +
+          `Set SANDBOX_BACKEND=container or =os for real isolation, or drop the inline-eval flag.`
+        );
       }
 
       // 2) 拒绝 shell 元字符 / 运算符（除非显式开启）

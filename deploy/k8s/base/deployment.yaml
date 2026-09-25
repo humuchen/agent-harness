@@ -55,14 +55,17 @@ spec:
             limits:
               cpu: "1000m"
               memory: "1Gi"
-          # 健康检查：服务端 /api/state（真实端点，Render/Docker 同此路径）。
+          # 健康检查（P1 修复接线）：readiness 用 /health/ready（真实探测 DB SELECT 1 /
+          # Redis PING / 内存水位，未配置的依赖自动跳过）；liveness 用 /health/live（进程存活）。
+          # 此前两者都打 /api/state——该端点不探测任何依赖，Redis/DB 宕机时仍返回 200，
+          # readiness 形同虚设。Docker/Render 侧同此语义（见 Dockerfile HEALTHCHECK / render.yaml）。
           lifecycle:
             preStop:
               exec:
                 command: ["/bin/sh", "-c", "sleep 10"]
           readinessProbe:
             httpGet:
-              path: /api/state
+              path: /health/ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -70,7 +73,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /api/state
+              path: /health/live
               port: http
             initialDelaySeconds: 10
             periodSeconds: 20

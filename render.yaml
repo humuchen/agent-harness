@@ -28,7 +28,9 @@ services:
     # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
     buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
     startCommand: node access/server/dist/server.js
-    healthCheckPath: /api/state
+    # P1 修复接线：/api/state 不探测依赖；/health/ready 真实探测 DB/Redis/内存
+    #（未配置的依赖自动跳过），与 Docker HEALTHCHECK / k8s probes 语义一致。
+    healthCheckPath: /health/ready
     # 持久卷（需付费 plan 才能挂载；free plan 不支持，磁盘临时重启即清空）。
     # 挂载到 /app/data 后可保留账户 / 记忆 / 医美插件等本地状态；否则依赖下方。
     disks:

@@ -14,8 +14,12 @@ import type { AgentCard } from '../agents/types';
 import type { Team } from '../teams';
 import type { OutputIssue } from './step-output';
 
-/** 单个 step 的运行态。 */
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
+/**
+ * 单个 step 的运行态。
+ * P1 C5：compensate-failed = 补偿动作执行失败（副作用既未回滚也不会被视为已处理），
+ * 非终态 —— resume 时会重试补偿，成功后转为 compensated。
+ */
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'compensate-failed' | 'skipped' | 'awaiting';
 /** 整个工作流的运行态。 */
 export type WorkflowState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'awaiting';
 
@@ -188,6 +192,12 @@ export interface WorkflowRun {
   finishedAt?: number;
   /** 失败时的根因信息。 */
   error?: string;
+  /**
+   * 全局初始输入（随检查点持久化）：resume 时 inputMapping 含 `input` 的 step
+   * （如计划桥 goal:'input'）依赖它解析输入；不落盘则审批门暂停后续跑拿到 undefined。
+   * 旧检查点无该字段时 resume 退回 undefined（与旧行为一致，零回归）。
+   */
+  initialInput?: unknown;
   /**
    * P3 人工审批门：已批准放行的 step id 列表（随检查点持久化）。
    * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。

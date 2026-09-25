@@ -41,10 +41,16 @@ export interface NetworkPolicy {
    * denylist：禁止 listed 域名（含子域），其余放行。
    */
   mode: 'open' | 'allowlist' | 'denylist';
-  /** allowlist 模式下仅允许这些域名（支持 `*.example.com` 通配子域）。 */
+  /** allowlist 模式下仅允许这些域名（含子域，支持 `*.example.com` 通配子域）。 */
   allowedDomains?: string[];
-  /** denylist 模式下禁止这些域名（支持 `*.example.com` 通配子域）。 */
+  /** denylist 模式下禁止这些域名（含子域，支持 `*.example.com` 通配子域）。 */
   deniedDomains?: string[];
+  /**
+   * 是否豁免本地/私有网络地址（127.x / 10.x / 192.168.x / 172.16-31.x / localhost）。
+   * 缺省 true（存量零回归：内网服务访问不受管控影响）；设为 false 时私有地址同样
+   * 纳入出网管控，防止 allowlist 域名 DNS rebinding / 直连内网服务的 SSRF 面。
+   */
+  allowPrivateNetwork?: boolean;
 }
 
 export interface GuardrailPolicy {
@@ -116,7 +122,9 @@ const DEFAULT_POLICY: GuardrailPolicy = {
   injectionSensitivity: 'medium',
   enablePiiRedaction: true,
   allowlist: [],
-  network: { mode: 'denylist', deniedDomains: ['*'] },
+  // 默认 agent（无租户/无画像路径）不限制出网；需要收紧时用 GUARDRAIL_NETWORK_MODE 显式配置，
+  // 或对高合规租户走行业画像（policy/engine.ts 里 medical/healthcare/finance 仍默认 deny-all）。
+  network: { mode: 'open' },
 };
 
 /**
@@ -136,32 +144,40 @@ function resolvePlanMaxInput(): number | null {
 const PLAN_MAX_INPUT_LENGTH: number | null = resolvePlanMaxInput();
 
 /** 允许通过环境变量调整护栏默认策略（无需改代码即可按部署收紧 / 放松）。 */
-function resolveDefaultPolicy(): GuardrailPolicy {
+export function resolveDefaultPolicy(): GuardrailPolicy {
   const sens = (process.env.GUARDRAIL_SENSITIVITY || '').toLowerCase();
   const sensitivity: InjectionSensitivity = sens === 'low' || sens === 'high' ? sens : 'medium';
   const maxInput = Number(process.env.GUARDRAIL_MAX_INPUT ?? '');
   const webFetchScan = (process.env.GUARDRAIL_WEB_FETCH_SECRET_SCAN || '').toLowerCase();
-  // 网络出口管控：GUARDRAIL_NETWORK_MODE 支持 open/allowlist/denylist（默认 denylist）。
-  // - denylist + GUARDRAIL_DENIED_DOMAINS：显式禁止的域名列表（默认 ['*'] 即禁所有，需显式放开）；
+  // 网络出口管控：GUARDRAIL_NETWORK_MODE 支持 open/allowlist/denylist（默认 open，2026-09-24 起）。
+  // - 默认 agent（无租户/无行业画像）不限制出网；需要收紧的部署显式设置 env：
+  // - denylist + GUARDRAIL_DENIED_DOMAINS：显式禁止的域名列表；
   // - allowlist + GUARDRAIL_ALLOWED_DOMAINS：白名单模式，仅允许指定域名出网；
-  // - open：放行所有（仅内部测试/离线场景启用）。
-  const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'denylist').toLowerCase();
+  // - open：放行所有（默认）。高合规租户不受此默认影响（行业画像自带 deny-all 基线）。
+  const netMode = (process.env.GUARDRAIL_NETWORK_MODE || 'open').toLowerCase();
   const deniedRaw = process.env.GUARDRAIL_DENIED_DOMAINS;
   const allowedRaw = process.env.GUARDRAIL_ALLOWED_DOMAINS;
+  // 私网豁免部署开关（GUARDRAIL_ALLOW_PRIVATE_NETWORK，缺省 false 收紧——secure by default）：
+  // 私网地址默认纳入出网管控，封死 allowlist 域名下直连内网服务 / DNS rebinding 的 SSRF 面
+  // （代价是 web_fetch 校验多一次 DNS 展开）。需要访问内网/本机服务的部署显式设为 true 放行。
+  const privRaw = (process.env.GUARDRAIL_ALLOW_PRIVATE_NETWORK ?? '').trim().toLowerCase();
+  const allowPrivateNetwork = privRaw === '' ? false : !(privRaw === 'false' || privRaw === '0' || privRaw === 'off');
   let network: NetworkPolicy | undefined;
   if (netMode === 'open') {
-    network = { mode: 'open' };
+    network = { mode: 'open', allowPrivateNetwork };
   } else if (netMode === 'allowlist') {
     network = {
       mode: 'allowlist',
       allowedDomains: allowedRaw ? allowedRaw.split(',').map((s) => s.trim()).filter(Boolean) : [],
+      allowPrivateNetwork,
     };
   } else {
-    // denylist（默认）：解析禁止域名，缺省 ['*'] 表示禁止所有出网。
+    // denylist（显式启用）：解析禁止域名，未配 GUARDRAIL_DENIED_DOMAINS 时按 ['*'] 禁所有
+    // （部署既然显式选了 denylist，按最严解释；只想禁部分域名就配上具体列表）。
     const denied = deniedRaw
       ? deniedRaw.split(',').map((s) => s.trim()).filter(Boolean)
       : ['*'];
-    network = { mode: 'denylist', deniedDomains: denied };
+    network = { mode: 'denylist', deniedDomains: denied, allowPrivateNetwork };
   }
   return {
     maxInputLength:
@@ -181,9 +197,12 @@ function resolveDefaultPolicy(): GuardrailPolicy {
 
 let policy: GuardrailPolicy = resolveDefaultPolicy();
 
-/** 运行时调整护栏策略（例如按租户级别收紧 / 放松）。 */
+/** 运行时调整护栏策略（例如按租户级别收紧 / 放松）。作用域：全局默认引擎。
+ * 同时更新模块级 policy 与 defaultGuardrailsEngine（两处唯一写入口，保持同步）。
+ * per-tenant 配置请走 guardrails-tenant.ts 的 getGuardrailsForTenant（互不影响）。 */
 export function configureGuardrails(p: Partial<GuardrailPolicy>): void {
   policy = { ...policy, ...p };
+  defaultGuardrailsEngine.configure(p);
 }
 
 /** 读取当前策略（只读），供 UI / 调试展示。 */
@@ -298,8 +317,18 @@ function detectInjection(
 ): string | null {
   if (!pol.enableInjectionScan) return null;
   const norm = normalizeForScan(text);
+  // 句子级强信号短语（"ignore previous instructions" 类）**始终检测，不受 allowlist 豁免**：
+  // 旧实现 allowlist 命中即跳过全部注入检测 —— 攻击者只需在载荷中夹带任意 allowlist
+  // 关键词（如 "system"）即可整体绕过。现收窄为：allowlist 仅豁免弱信号短短语
+  //（保留原语义：产品名恰好含 "system prompt" 的误报放行），强信号短语照拦。
+  for (const p of PHRASES_LOW) {
+    if (norm.includes(normalizeForScan(p))) {
+      return p;
+    }
+  }
+  if (strongOnly) return null;
   if (isAllowlisted(norm, pol)) return null;
-  const phrases = strongOnly ? PHRASES_LOW : phraseSet(pol.injectionSensitivity);
+  const phrases = phraseSet(pol.injectionSensitivity);
   for (const p of phrases) {
     if (norm.includes(normalizeForScan(p))) {
       return p;
@@ -363,7 +392,9 @@ function domainMatches(host: string, entry: string): boolean {
     const base = e.slice(2);
     return h === base || h.endsWith(`.${base}`);
   }
-  return h === e;
+  // 普通条目按注释/文档声明的语义匹配「主机自身或任意子域」：
+  // 旧实现只有全等，denylist 配 evil.com 拦不住 sub.evil.com（策略静默弱化）。
+  return h === e || h.endsWith(`.${e}`);
 }
 
 /** 判断 host 是否属于本地/私有网络地址（127.x.x.x、localhost、192.168.x.x、10.x.x.x、172.16-31.x.x）。 */
@@ -382,6 +413,72 @@ function isPrivateHost(host: string): boolean {
 }
 
 /**
+ * 判断单个 IP 字面量是否为私有/保留地址（SSRF 面覆盖）：
+ * v4：0/8、10/8、100.64/10（CGNAT）、127/8、169.254/16（链路本地/云元数据）、
+ *     172.16/12、192.168/16；v6：::1、fc00::/7（ULA）、fe80::/10、IPv4-mapped。
+ */
+export function isPrivateIp(ip: string): boolean {
+  const s = ip.trim().toLowerCase();
+  if (s.includes(':')) {
+    // IPv6（含 mapped ::ffff:a.b.c.d）
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+    if (mapped && mapped[1]) return isPrivateIp(mapped[1]);
+    if (s === '::1' || s === '::') return true;
+    if (s.startsWith('fe8') || s.startsWith('fe9') || s.startsWith('fea') || s.startsWith('feb')) return true; // fe80::/10
+    if (s.startsWith('fc') || s.startsWith('fd')) return true; // fc00::/7 ULA
+    return false;
+  }
+  const parts = s.split('.');
+  if (parts.length !== 4 || parts.some((p) => p === '' || Number.isNaN(Number(p)))) return false;
+  const [a, b] = [Number(parts[0]), Number(parts[1])];
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true; // 链路本地 / AWS/GCP 元数据
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  return false;
+}
+
+/** 主机名 → 私网判定的 TTL 缓存（DNS 结果短暂缓存，避免每次出网都打解析器）。 */
+const privateResolveCache = new Map<string, { result: boolean; at: number }>();
+const PRIVATE_RESOLVE_TTL_MS = 30_000;
+
+/**
+ * 主机名是否解析到私有/保留网络（DNS rebinding 防护核心）：
+ * - 字面量 IP / localhost：走 isPrivateHost / isPrivateIp 快路径（零开销）；
+ * - 域名：dns.lookup({all:true}) 展开**全部**解析结果，任一命中私有段即判私网
+ *   （攻击者常同时配 A/AAAA 记录，只查第一条会被绕过）；
+ * - 解析失败视为「非私网」交给后续真实连接去失败（此处不做网络可达性判断）。
+ * 注意：这仍是「请求时」校验，与实际建连之间存在秒级 TTL 窗口；彻底闭合需
+ * 连接层拦截（undici dispatcher / 自定义 lookup），待依赖引入后接入。
+ */
+export async function resolveHostIsPrivate(host: string): Promise<boolean> {
+  const h = (host.split(':')[0] ?? '').trim().toLowerCase();
+  if (!h) return false;
+  // 字面量快路径
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return isPrivateIp(h.replace(/^\[|\]$/g, ''));
+  const cached = privateResolveCache.get(h);
+  if (cached && Date.now() - cached.at < PRIVATE_RESOLVE_TTL_MS) return cached.result;
+  let result = false;
+  try {
+    const dns = await import('node:dns/promises');
+    const addrs = await Promise.race([
+      dns.lookup(h, { all: true, verbatim: true }),
+      new Promise<never>((_res, rej) => {
+        const t = setTimeout(() => rej(new Error('dns lookup timeout')), 3000);
+        t.unref?.();
+      }),
+    ]);
+    result = (addrs as Array<{ address: string }>).some((a) => isPrivateIp(a.address));
+  } catch {
+    result = false; // 解析失败不判私网，交由真实连接失败
+  }
+  privateResolveCache.set(h, { result, at: Date.now() });
+  return result;
+}
+
+/**
  * 出网管控（P0.3）：依据策略判定某 URL 是否允许访问。
  * - open / 无 network：放行；
  * - allowlist：仅允许 listed 域名（含子域），其余拒绝；
@@ -397,8 +494,9 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   } catch {
     return 'invalid URL';
   }
-  // 本地/私有网络豁免（测试用例与内网服务访问不受管控影响）
-  if (isPrivateHost(host)) return null;
+  // 本地/私有网络豁免：缺省放行（存量零回归）；allowPrivateNetwork=false 时纳入管控，
+  // 防止 allowlist 域名 DNS rebinding / 直连内网服务（SSRF 面）。
+  if (isPrivateHost(host) && (net.allowPrivateNetwork ?? true)) return null;
   if (net.mode === 'denylist') {
     const denied = (net.deniedDomains ?? []).some((d) => domainMatches(host, d));
     return denied ? `egress denied to ${host} (denylist)` : null;
@@ -406,6 +504,33 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   // allowlist
   const allowed = (net.allowedDomains ?? []).some((d) => domainMatches(host, d));
   return allowed ? null : `egress not allowed to ${host} (not in allowlist)`;
+}
+
+/**
+ * 出网管控异步变体（DNS rebinding 防护）：在同步字面量校验之上，把域名经
+ * dns.lookup 展开为全部解析结果，任一命中私网段即按私网策略处理。
+ * 仅当 `allowPrivateNetwork === false` 时执行 DNS 解析（缺省 true 完全零开销零回归）。
+ * 返回 null 表示放行，否则为拒绝原因。
+ */
+export async function checkEgressAsync(url: string, net?: NetworkPolicy): Promise<string | null> {
+  // 快路径：open 模式 / invalid URL 短路
+  if (!net || net.mode === 'open') return null;
+  // 私网豁免（缺省 true）→ 字面量校验即终点，零额外开销零回归
+  const privateExempt = net.allowPrivateNetwork ?? true;
+  let host = '';
+  try {
+    host = new URL(url).host;
+  } catch {
+    return 'invalid URL';
+  }
+  if (privateExempt) return checkEgress(url, net);
+  // —— strict 模式（allowPrivateNetwork=false）：私网纳入管控 ——
+  if (isPrivateHost(host)) return `egress denied to ${host} (private network)`;
+  if (await resolveHostIsPrivate(host)) {
+    return `egress denied to ${host} (resolves to private network address)`;
+  }
+  // 解析级校验通过 → 继续按域名规则（allowlist/denylist）判定
+  return checkEgress(url, net);
 }
 
 // ---------------------------------------------------------------------------
@@ -774,8 +899,73 @@ export async function checkToolArgsAsync(
 ): Promise<GuardrailResult> {
   const sync = checkToolArgs(name, args, pol);
   if (!sync.ok) return sync;
+  // DNS rebinding 防护：web_fetch 出网目标做解析级私网校验（仅 allowPrivateNetwork=false
+  // 时激活 DNS 展开；字面量校验已在同步路径完成）。检查时机从「策略检查时」前移到
+  // 「每次调用时」，显著收窄 TOCTOU 窗口。
+  if (name === 'builtin__web_fetch' && typeof args.url === 'string') {
+    const eg = await checkEgressAsync(String(args.url), pol?.network);
+    if (eg) return { ok: false, reason: `network egress blocked: ${eg}` };
+  }
   const inj = await detectInjectionAsync(JSON.stringify(args), pol ?? policy);
   if (inj)
     return { ok: false, reason: `possible injection in tool args for ${name} (matched: ${inj})` };
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// GuardrailsEngine（P1 类化）：策略与判定的实体化封装。
+//
+// 背景：此前策略是模块级单例（configureGuardrails 全局可变），一个租户收紧会
+// 波及全部租户。类化后每个租户可持有独立引擎实例（见 guardrails-tenant.ts 的
+// 租户注册表），全局默认行为经 defaultEngine 保持完全向后兼容。
+// 注意：自定义规则 / 打分器 / PII 脱敏器仍是模块级注册表（插件全局注册 + scope
+// 收窄是设计约定，非租户私有状态）。
+// ---------------------------------------------------------------------------
+export class GuardrailsEngine {
+  private pol: GuardrailPolicy;
+
+  constructor(policy: GuardrailPolicy) {
+    this.pol = { ...policy };
+  }
+
+  /** 只读策略快照。 */
+  get policy(): Readonly<GuardrailPolicy> {
+    return this.pol;
+  }
+
+  /** 运行时调整本引擎策略（合并语义与全局 configureGuardrails 一致）。 */
+  configure(p: Partial<GuardrailPolicy>): void {
+    this.pol = { ...this.pol, ...p };
+  }
+
+  checkInput(text: string, strongOnly = false, isPlanTask = strongOnly): GuardrailResult {
+    return checkInput(text, this.pol, strongOnly, isPlanTask);
+  }
+
+  checkOutput(text: string, ctx?: GuardrailOutputContext): GuardrailResult {
+    return checkOutput(text, this.pol, ctx);
+  }
+
+  checkStructuredOutput(text: string): GuardrailResult {
+    return checkStructuredOutput(text, this.pol);
+  }
+
+  checkTaskOutput(text: string): GuardrailResult {
+    return checkTaskOutput(text, this.pol);
+  }
+
+  checkToolArgs(name: string, args: Record<string, unknown>): GuardrailResult {
+    return checkToolArgs(name, args, this.pol);
+  }
+
+  async checkToolArgsAsync(name: string, args: Record<string, unknown>): Promise<GuardrailResult> {
+    return checkToolArgsAsync(name, args, this.pol);
+  }
+
+  redactOutput(text: string): string {
+    return redactOutput(text, this.pol);
+  }
+}
+
+/** 全局默认引擎：configureGuardrails / getGuardrailPolicy / 未显式传策略的调用方都落到它。 */
+export const defaultGuardrailsEngine = new GuardrailsEngine(resolveDefaultPolicy());

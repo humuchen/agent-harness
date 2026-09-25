@@ -1,10 +1,12 @@
 import type { ToolRegistry } from '@agent-harness/core';
 import { qualifyLead } from '../services/lead-service';
 import { errorResult } from '../infra/errors';
+import { resolveLeadIdForSession } from '../infra/lead-binding';
 
 /**
  * lead_qualify：结构化抽取抖音/小红书私信中的客资要素，并做 A/B/C/D 分级，写回本地客资库（真实 DB）。
  * 工具名用短名，loader 启用时自动加 `medical-aesthetics-lead__` 前缀合并进共享工具表。
+ * P1 安全：leadId 经 session 绑定校验（会话首绑后不可切换），防注入跨档案污染。
  */
 export function registerQualifyTool(tools: ToolRegistry): void {
   tools.register(
@@ -23,10 +25,12 @@ export function registerQualifyTool(tools: ToolRegistry): void {
       },
       required: ['leadId', 'channel', 'grade'],
     },
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, ctx?: Record<string, unknown>) => {
       try {
+        const bound = resolveLeadIdForSession(ctx, String(args.leadId ?? ''));
+        if (!bound.ok) return errorResult(new Error(bound.reason), 'INVALID_ARGUMENT');
         return await qualifyLead({
-          leadId: String(args.leadId ?? ''),
+          leadId: bound.leadId,
           channel: String(args.channel ?? 'unknown'),
           project: args.project ? String(args.project) : undefined,
           budget: args.budget ? String(args.budget) : undefined,

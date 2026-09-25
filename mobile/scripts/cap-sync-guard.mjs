@@ -60,4 +60,15 @@ if (splash.status !== 0) {
   console.error(`[cap-sync-guard] splash-copy 失败（exit ${splash.status ?? 1}），中止构建`);
   process.exit(splash.status ?? 1);
 }
+
+// P1（P4）：sync 后强制 Android 安全基线（allowBackup=false + 备份排除规则）。
+// android/ 是生成目录，cap add/add 之后可能回到模板默认值，此处幂等加固。
+const harden = spawnSync(process.execPath, [join(mobileDir, 'scripts/harden-android.mjs')], {
+  stdio: 'inherit',
+  cwd: mobileDir
+});
+if (harden.status !== 0) {
+  console.error(`[cap-sync-guard] harden-android 失败（exit ${harden.status ?? 1}），中止构建`);
+  process.exit(harden.status ?? 1);
+}
 process.exit(0);

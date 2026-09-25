@@ -36,8 +36,8 @@ import {
   type A2ARequest
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
-import { readBody, startSse, sendJson, sendJsonError } from '../http-helpers';
-import { runQueue, sseConnectionLock } from '../run-queue';
+import { readBody, startSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
+import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
 import {
   appendChatMessage,
   peekChatSession,
@@ -359,7 +359,11 @@ export async function handleRun(
 
   let jobId: string;
   if (!targetId) {
-    const job = runQueue.submit({
+    let job;
+    try {
+      // submit 现为异步：共享（redis）模式下持久化是同步前置，append 失败抛
+      // QueuePersistError（status 503，由主分发器映射响应），杜绝「有 jobId 无执行」。
+      job = await runQueue.submit({
       mode,
       prompt: effectivePrompt,
       model,
@@ -384,8 +388,51 @@ export async function handleRun(
       planPhase,
       // 归属用户（权威来源 = 认证身份 ctx.sub）：执行期经 runWithUser 注入工具链路，
       // 插件（如 memo）据此把工具产生的数据绑定到登录用户。
-      owner: ctx.sub
-    });
+      owner: ctx.sub,
+      // 幂等键（可选）：客户端防重试/双击重复执行；同键活跃任务存在时返回既有 jobId。
+      idempotencyKey:
+        typeof body.idempotencyKey === 'string' && body.idempotencyKey.trim()
+          ? body.idempotencyKey.trim().slice(0, 128)
+          : undefined
+      });
+    } catch (e) {
+      if (e instanceof QueueBackpressureError) {
+        res.writeHead(429, {
+          'content-type': 'application/json',
+          'retry-after': '5',
+          ...corsHeaders(req),
+          ...securityHeaders()
+        });
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: 'run queue is full, please retry later',
+            pending: e.pending,
+            limit: e.limit
+          })
+        );
+        return;
+      }
+      // 跨实例幂等冲突（仅共享后端）：同键活跃任务正在其它实例上执行。
+      // 返回 409 + 既有 jobId——其事件经 pub/sub 事件桥对任意实例可见，客户端
+      // 仍可凭该 jobId 订阅 SSE 进度。
+      if (e instanceof QueueDuplicateError) {
+        res.writeHead(409, {
+          'content-type': 'application/json',
+          ...corsHeaders(req),
+          ...securityHeaders()
+        });
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: 'duplicate idempotency key: an active run already exists',
+            jobId: e.existingJobId ?? null
+          })
+        );
+        return;
+      }
+      throw e;
+    }
     requireDeps().auditAction('agent.run', {
       mode,
       promptLen: prompt.length,

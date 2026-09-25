@@ -7,8 +7,12 @@
 # 阈值说明：
 #   - memory: RSS 超过 90% 容器 limits 持续 2 分钟
 #   - queue_depth: pending 队列超过 30 持续 5 分钟
-#   - llm_error_rate: LLM 调用错误率超过 10% 持续 5 分钟
-#   - job_duration: 单个 job 执行超过 10 分钟（可能挂死）
+#   - run_failure_rate: Run 失败率超过 30% 持续 10 分钟（分母下限 0.05 rps 防低流量误报）
+#   - processing_stuck: 有任务在执行但 30 分钟无任何完成/失败事件（疑似挂死）
+#
+# 指标来源：/api/metrics/prometheus 导出的 harness_* 系列（见 metrics-routes.ts）。
+# 历史注记：本文件曾引用 llm_call_errors_total / llm_call_attempts_total /
+# harness_job_started_seconds —— 这三个指标从未被导出，对应告警从未触发过（幽灵指标）。
 
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -50,33 +54,34 @@ spec:
             description: "队列等待任务数 {{ $value }}，超过阈值 30。可能需要扩容或排查慢任务。"
             runbook_url: "https://wiki.example.com/runbooks/harness-queue"
 
-        # 3. LLM 调用错误率高
-        - alert: HarnessLlmErrorRateHigh
+        # 3. Run 失败率过高（LLM 调用失败 / 护栏 / 执行异常最终都体现为 run 失败）
+        - alert: HarnessRunFailureRateHigh
           expr: |
-            rate(llm_call_errors_total[5m])
-            / rate(llm_call_attempts_total[5m])
-            > 0.1
-          for: 5m
+            sum(rate(harness_run_failed_total[5m]))
+              /
+            clamp_min(sum(rate(harness_run_success_total[5m])) + sum(rate(harness_run_failed_total[5m])), 0.05)
+            > 0.3
+          for: 10m
           labels:
             severity: critical
             team: llm
           annotations:
-            summary: "agent-harness LLM 调用错误率过高"
-            description: "LLM 错误率 {{ $value | humanizePercentage }}，超过阈值 10%。检查熔断器状态和模型端点。"
+            summary: "agent-harness Run 失败率过高"
+            description: "Run 失败率 {{ $value | humanizePercentage }}，超过阈值 30%（分母下限 0.05 rps，低流量不误报）。检查熔断器状态与模型端点。"
             runbook_url: "https://wiki.example.com/runbooks/harness-llm"
 
-        # 4. Job 执行时间过长（可能挂死）
-        - alert: HarnessJobDurationLong
+        # 4. 任务滞留 processing 疑似挂死
+        - alert: HarnessProcessingStuck
           expr: |
-            (time() - harness_job_started_seconds)
-            > 600
-          for: 2m
+            max_over_time(harness_queue_processing[30m]) > 0
+            and (sum(increase(harness_run_success_total[30m])) + sum(increase(harness_run_failed_total[30m]))) == 0
+          for: 5m
           labels:
             severity: warning
             team: platform
           annotations:
-            summary: "agent-harness Job 执行时间过长"
-            description: "Job {{ $labels.job_id }} 已执行 {{ $value | humanizeDuration }}，超过 10 分钟。可能挂死，检查看门狗。"
+            summary: "agent-harness 任务滞留 processing 疑似挂死"
+            description: "30 分钟内有任务处于 processing 但无任何完成/失败事件。检查看门狗与 job 日志。"
             runbook_url: "https://wiki.example.com/runbooks/harness-job"
 
         # 5. 健康检查失败

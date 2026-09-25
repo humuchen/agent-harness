@@ -8,6 +8,13 @@
 
 ## 一、你的 harness 如何接入一个远程 MCP
 
+> **运行时接入校验**：经 UI / `/api/mcp/add` / 预设接入的新服务会先过三道校验——
+> ① `serverUrl` 做 DNS 级私网黑名单（拒绝 127/10/172.16-31/192.168/169.254 等地址，防元数据端点 SSRF）；
+> ② `serverUrl` 仅允许 http/https；③ stdio `command` 必须命中白名单 `MCP_ALLOWED_COMMANDS`
+> （默认 `node,npx,uvx,bunx,python,python3,deno`），args 含 shell 元字符直接拒绝。
+> 自托管内网 MCP 可显式设 `MCP_ALLOW_PRIVATE_SERVER_URL=on` 放行；`MCP_SERVERS` 环境变量
+> 启动期配置不受限（属运维可控面）。
+
 **方式 A — UI 面板**
 打开 Web Playground → 「MCP 服务」面板 → 添加，填 `name` + `url`（可选 `headers`）。
 

@@ -74,6 +74,68 @@ export interface PluginLoaderOptions {
    * 文件变更事件触发 installModule；disable 状态插件不启用（仅安装）。
    */
   pluginDir?: string;
+  /**
+   * 额外透传给插件的 env 变量名（在基础白名单与 PLUGIN_ / AH_PLUGIN_ 前缀之外）。
+   * 宿主为兼容既有插件按需声明（如捆绑插件消费的 HARNESS_BASE_URL / OPEN_API_KEY）。
+   */
+  envAllowlist?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// 插件环境变量白名单（插件隔离 P2 前置步：收敛密钥泄露面）。
+//
+// 此前 buildContext 直接注入 `env: process.env` —— 插件与宿主同进程运行，
+// 可读到 ADMIN_API_KEY、LLM Key 等全部宿主凭据。现改为白名单子集：
+// - 基础部署元信息（不含凭据）无条件放行；
+// - `PLUGIN_*` / `AH_PLUGIN_*` 前缀变量视为插件专属配置位；
+// - `PLUGIN_ENV_EXTRA`（逗号分隔变量名）显式追加白名单；
+// - `PLUGIN_ENV_FULL=on|1|true` 为逃逸舱口：恢复全量透传，但打 warn 留痕，
+//   仅限完全可信的插件与部署形态使用。
+// ---------------------------------------------------------------------------
+
+/** 无条件注入的基础变量（部署元信息，不含凭据）。 */
+const PLUGIN_ENV_BASE = new Set([
+  'NODE_ENV',
+  'PORT',
+  'HOST',
+  'HOSTNAME',
+  'LOG_LEVEL',
+  'TZ',
+  'LANG',
+  /** 插件 A2A 派发的缺省目标（loader 自身 a2a.send 依赖）。 */
+  'AGENT_A2A_BASE_URL',
+]);
+
+/** 允许透传给插件的变量名前缀。 */
+const PLUGIN_ENV_PREFIXES = ['PLUGIN_', 'AH_PLUGIN_'];
+
+/**
+ * 解析注入给插件的环境变量视图（白名单子集）。
+ * 独立导出便于测试；`processEnv` 参数便于用例注入伪 env。
+ */
+export function resolvePluginEnv(
+  processEnv: NodeJS.ProcessEnv = process.env,
+  extraAllowlist?: string[]
+): NodeJS.ProcessEnv {
+  const full = String(processEnv.PLUGIN_ENV_FULL ?? '').trim().toLowerCase();
+  if (full === 'on' || full === '1' || full === 'true') {
+    structLog('warn', '[plugin] PLUGIN_ENV_FULL=on：插件将看到完整 process.env（可能含密钥），仅限可信环境使用');
+    return processEnv;
+  }
+  const extra = [
+    ...String(processEnv.PLUGIN_ENV_EXTRA ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    ...(extraAllowlist ?? []),
+  ];
+  const allow = new Set([...PLUGIN_ENV_BASE, ...extra]);
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(processEnv)) {
+    if (v === undefined) continue;
+    if (allow.has(k) || PLUGIN_ENV_PREFIXES.some((p) => k.startsWith(p))) out[k] = v;
+  }
+  return out;
 }
 
 export class PluginLoader {
@@ -90,6 +152,7 @@ export class PluginLoader {
   private readonly hostUnregs = new Map<string, Array<() => void>>();
   private readonly registry: AgentRegistry;
   private readonly sandbox?: (manifest: PluginManifest) => Promise<void> | void;
+  private readonly envAllowlist?: string[];
   private serverHost?: ServerExtensionHost;
   private webHost?: WebExtensionHost;
 
@@ -99,6 +162,7 @@ export class PluginLoader {
     this.serverHost = opts.serverHost;
     this.webHost = opts.webHost;
     this.pluginDir = opts.pluginDir;
+    this.envAllowlist = opts.envAllowlist;
   }
 
   /** 注入服务端扩展宿主（server 启动时调用一次）。 */
@@ -452,7 +516,7 @@ export class PluginLoader {
             },
           }
         : undefined,
-      env: process.env,
+      env: resolvePluginEnv(process.env, this.envAllowlist),
     };
     this.contexts.set(manifest.id, ctx);
     return ctx;

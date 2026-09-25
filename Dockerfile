@@ -67,7 +67,16 @@ COPY frontend/webapp/package.json frontend/webapp/package.json
 COPY frontend/cli/package.json frontend/cli/package.json
 # 不再剥离根 package.json 的 packageManager 字段：基础镜像已满足 Node>=22.13，
 # pnpm@11.9.0 与根 packageManager（pnpm@11.9.0）一致，corepack/版本错配问题不复存在。
-RUN pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
+# 依赖安装：严格锁文件校验（P1 供应链修复）。
+# 此前为 `--frozen-lockfile || --no-frozen-lockfile`——锁文件漂移时静默降级为不校验，
+# 供应链完整性保证形同虚设。现在漂移一律显式失败（构建期即暴露，而非运行期）；
+# 确需临时绕过时请在构建命令显式传 --build-arg STRICT_LOCKFILE=0，留下操作痕迹。
+ARG STRICT_LOCKFILE=1
+RUN if [ "$STRICT_LOCKFILE" = "1" ]; then \
+      pnpm install --frozen-lockfile; \
+    else \
+      echo "⚠️ STRICT_LOCKFILE=0：跳过锁文件校验（仅限本地试验，禁止用于生产镜像）" && pnpm install --no-frozen-lockfile; \
+    fi
 
 # 再拷源码并构建部署所需的包（server + 其依赖，以及 webapp + 其依赖，以及 cli）。
 COPY . .
@@ -143,6 +152,9 @@ USER ah:ah
 # 注：若业务功能依赖写入 /app（如插件本地缓存），需将对应路径单独挂载为可写卷。
 
 EXPOSE 4173
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4173)+'/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# P1 修复接线：健康检查从 /api/state 切到 /health/ready —— 后者真实探测 DB（SELECT 1）、
+# Redis（PING，未配置则跳过）与内存水位；/api/state 不探测任何依赖，Redis 宕机时仍 200。
+# start_period 放宽到 30s，为启动期自动迁移（AH_MIGRATE_AUTO=on）留出时间。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4173)+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "access/server/dist/server.js"]

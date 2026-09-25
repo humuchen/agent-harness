@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  P1（mobile token 防提取）：Android 12+ 数据提取规则。
+  allowBackup=false 之外再显式禁云备份与设备迁移，双保险——
+  SharedPreferences（@capacitor/preferences 底层）中的会话凭据不得随备份导出。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </device-transfer>
+</data-extraction-rules>

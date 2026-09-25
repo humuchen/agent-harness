@@ -1,6 +1,6 @@
 # agent-harness 作为「统一智能体调度基座平台」的能力评估
 
-> 评估对象：`@agent-harness/core` + `@agent-harness/server`（截至 2026-08-15 代码快照）
+> 评估对象：`@agent-harness/core` + `@agent-harness/server`（代码快照）
 > 评估视角：能否作为**统一基座平台**，用于**调度与协调跨行业专业智能体**（医美 / 金融 / 医疗 / 教育 …）
 > 评估口径：**已具备**（能力完整、默认生效）/ **部分具备**（有核心实现但有边界或缺口）/ **缺失**（无对应实现）
 > 配套：本文聚焦「多智能体调度 / 协调」这一新维度；沙箱 / 进程隔离 / 自验证 / 自修复 / 插件化等单智能体维度见 `./platform-capability-assessment.md`。
@@ -17,13 +17,13 @@
 
 **好消息**：它的可扩展性范式（接口 + 默认实现 + 组合工厂）、MCP 运行时动态加载、类型化 `HarnessEvent`、可插拔队列后端（memory/file/redis）、RBAC/审批/护栏，恰好是搭建基座平台的「 plumbing 」。因此这是一次**有方向的模块化演进**，而不是推倒重写 —— 预计可复用 60%~70% 的现有资产。
 
-| 基座核心能力 | 现状 | 一句话 |
-|---|---|---|
-| ① 智能体注册与发现 | **缺失** | 有 MCP 工具级服务发现的雏形，但无「agent」实体、无 AgentCard、无能力索引 |
-| ② 任务路由与分发 | **缺失** | 有队列（RunQueue），但所有任务进同一个 harness，无语义路由 / 无按能力选 agent |
-| ③ 跨行业上下文隔离与数据安全 | **部分具备** | 安全基因强（三层护栏 + PII 脱敏 + 密钥扫描），但缺租户 / 行业边界与数据分区 |
-| ④ 统一通信协议与接口规范 | **部分具备** | 内部事件协议（HarnessEvent）与 MCP 很强，但无 A2A 协议 / 无 AgentCard 标准 |
-| ⑤ 工作流编排与状态监控 | **部分具备** | 单 run 编排 + run 级可观测强；跨 agent 的 DAG 编排 / 跨 agent 追踪缺失 |
+| 基座核心能力                 | 现状         | 一句话                                                                        |
+| ---------------------------- | ------------ | ----------------------------------------------------------------------------- |
+| ① 智能体注册与发现           | **缺失**     | 有 MCP 工具级服务发现的雏形，但无「agent」实体、无 AgentCard、无能力索引      |
+| ② 任务路由与分发             | **缺失**     | 有队列（RunQueue），但所有任务进同一个 harness，无语义路由 / 无按能力选 agent |
+| ③ 跨行业上下文隔离与数据安全 | **部分具备** | 安全基因强（三层护栏 + PII 脱敏 + 密钥扫描），但缺租户 / 行业边界与数据分区   |
+| ④ 统一通信协议与接口规范     | **部分具备** | 内部事件协议（HarnessEvent）与 MCP 很强，但无 A2A 协议 / 无 AgentCard 标准    |
+| ⑤ 工作流编排与状态监控       | **部分具备** | 单 run 编排 + run 级可观测强；跨 agent 的 DAG 编排 / 跨 agent 追踪缺失        |
 
 ---
 
@@ -82,11 +82,13 @@
 **现状：部分具备（安全基因为主，隔离边界为辅，租户模型缺失）。**
 
 已具备：
+
 - **会话级记忆隔离**：`sessionKey` → `file` / `sqlite` / `volatile` 后端分区（`runner.ts: getMemoryStore()`）；`SESSION_MEMORY_MAX` LRU 防膨胀。
 - **三层内容护栏**：`guardrails.ts` 的 `checkInput / checkOutput / checkToolArgs`，含归一化提示词注入检测、密钥扫描、`redactOutput` 输出侧 PII 脱敏（邮箱 / 手机 / 身份证 / 银行卡 / IPv4 / API Key）。
 - **RBAC + 审批**：`authz.ts` + `approval.ts` 按动作授权（`agent:run` / `mcp:add` / `memory:clear` …），敏感动作返回 202 + ticket。
 
 关键缺口：
+
 - **无租户 / 行业边界**：所有 run 共享同一 Node 进程、同一全局 MCP 注册表（`mcpManager.liveRegistry()` 被合并进每次 run）、同一全局 `guardrails` 策略实例。**医疗 PII 与金融数据没有任何强制边界**。
 - **策略非 per-tenant**：`configureGuardrails(p)` 改的是全局单例。无法做到「医疗租户强制脱敏 + 金融租户额外审计 + 教育租户放宽」。
 - **无数据分区 / 数据驻留**：跨行业数据落同一后端、同一输出通道，无分区键、无行业合规画像（如医疗等保 / 金融数据出境限制）。
@@ -100,11 +102,13 @@
 **现状：部分具备（内部强，跨 agent 弱）。**
 
 已具备：
+
 - **类型化事件协议**：`HarnessEvent`（`harness.ts`）定义了完整的运行时事件 schema，是极好的「可观测契约」。
 - **MCP 标准工具协议**：已用 `@modelcontextprotocol/sdk` 接入远端 / 本地工具，是业界标准，可支撑「工具即服务」。
 - **HTTP + SSE 服务协议** + `client` SDK 建模 `/api/v1` + OpenAPI spec（`openapi.ts`）。
 
 关键缺口：
+
 - **无 Agent-to-Agent（A2A）协议**：agent 之间如何握手、如何传递任务、如何回传结果，没有定义。
 - **无 AgentCard 标准**：外部行业 agent（第三方、异构实现）要接入平台，缺少一份「能力声明 + 接入契约」标准。
 - **无跨 agent 任务信封（task envelope）**：任务在 agent 间 handoff 时，携带哪些字段（tenantId / traceId / 输入 schema / SLA / 回调用址）没有规范。
@@ -117,11 +121,13 @@
 **现状：部分具备（单 run 强，跨 agent 缺失）。**
 
 已具备：
+
 - **单 run 编排**：`AgentHarness.run()` 的线性循环 + 预算熔断 + 超时 + 验证门禁。
 - **Skills 流程指引**：`SkillRegistry` 注入工作流提示词，但它是**提示词层面的软编排**，不是可执行的状态机。
 - **run 级可观测**：`HarnessEvent` 流 + `/api/jobs`（脱敏状态）+ `/api/metrics`（token / 成本 / 延迟 / 错误率）+ 可选 OTel。
 
 关键缺口：
+
 - **无多智能体工作流引擎**：无法表达「医美 agent 完成 → 交给金融 agent → 再交教育 agent」的 DAG / 状态机。
 - **无 agent 间 handoff / 子 agent 派发**：当前 harness 内部不会 spawn 另一个 agent。
 - **无 step 级状态 / 检查点续跑**：一次长任务中断只能整体重来（`./platform-capability-assessment.md` 已指出）。
@@ -135,14 +141,17 @@
 ## 3. 可扩展性 / 插件化 / 多租户 三维现状与差距
 
 ### 3.1 可扩展性（Extensibility）
+
 - **强**：`tool` / `LLM` / `MCP` / `queue-backend` / `approval` / `eval` 全面采用「接口 + 默认实现 + 组合工厂」；Redis 多实例 + `reclaimStale` 崩溃回收；水平扩展有基础。
 - **弱**：新增一个**行业智能体**需要改 `assembleAgent()` 注册 skills / tools；**无动态 agent 加载**；执行仍在**单进程内**（无 per-job 进程隔离，见既有评估 P0）。
 
 ### 3.2 插件化架构（Plugin Architecture）
+
 - **强**：`ToolRegistry` 是统一插件原语；**MCP 是运行时动态插件**（最强，配置驱动、无需重启）；Skills 是组合包；护栏 / 评估 / 队列后端均可插拔。
 - **弱**：`builtins` / `Skills`（`defaultSkills()`）需**代码级变更**；**无插件清单（manifest）**、无版本 / 依赖解析、无安全隔离加载（接入的插件与核心**同进程同权限**）；无市场 / 目录分发。
 
 ### 3.3 多租户（Multi-tenant）
+
 - **强**：`sessionKey` 记忆隔离 + LRU；RBAC + 审批；可插拔护栏。
 - **弱**：**无真实租户模型**（job 上仅有 `sessionKey`，无 `tenantId`）；无租户开通 / 配额 / 计费；**无 per-tenant 策略 / 数据 / 网络隔离**；跨租户访问无强制边界。
 
@@ -176,61 +185,69 @@
 ### 4.2 关键模块设计
 
 **① Agent Registry & Discovery**
+
 - 引入 **AgentCard** 清单：`{ id, name, domain(医美/金融/…), capabilities[], inputSchema, outputSchema, endpoint?, transport(mcp|a2a|local), version, owner, health, sla }`。
 - Registry 存储：复用 `memory-store` 的 `MemoryStore` 接口（`Volatile/File/Sqlite`）扩展为 `AgentStore`，支持注册 / 心跳 / 注销 / 按能力查询。
 - 发现 API：`/api/agents` 列出、`/api/agents/:id` 详情、按 `domain` / `capability` 过滤。
 - 远端 agent 通过 A2A 协议「自注册」；本地 agent 在启动期登记。
 
 **② Task Router / Orchestrator**
+
 - **Intent Router**：对入站任务做轻量分类（规则 / 小模型 / LLM），产出 `{ domain, intent, requiredCapabilities[] }`。
 - **Agent Selector**：从 Registry 取候选 → 评分（能力匹配度 + 实时负载 + 预估成本 + 租户策略权重）→ 选中目标 agent。
 - **Workflow Orchestrator**：DAG / 状态机引擎，支持顺序 / 并行 / 条件分支；每个节点 = 一次 agent 调用；支持 checkpoint 续跑、失败补偿（解决既有评估 P1「副作用无回滚」）。
 - 复用 `RunQueue`：将其升级为 **capability-aware dispatcher**（按目标 agent 投递，而非统一 harness）。
 
 **③ Tenant & Industry Isolation**
+
 - 引入 **TenantContext**：`{ tenantId, industry, policyRef }` 贯穿 run 全链路（从 `handleRun` 注入，经 `assembleAgent` → `AgentHarness` → `Memory` → 输出）。
 - **数据分区**：记忆 / 向量库按 `tenantId` 分桶（扩展 `MemoryStore` 增加 `tenantId` 维度）；医疗 / 金融租户使用独立后端或加密分区。
 - **per-tenant Policy**：把全局 `configureGuardrails` 改为 `PolicyEngine.getPolicy(tenantId)`（从 Registry 拉取行业合规画像：医疗强制脱敏 + 审计、金融数据出境限制、教育放宽）。
 - **出网管控**：`web_fetch` / MCP 按租户策略走域名白名单。
 
 **④ Unified Agent Protocol（A2A）**
+
 - 定义 **Task Envelope**：`{ taskId, tenantId, traceId, fromAgent, toAgent, input, schema, sla, callback }`。
 - 桥接两种标准：**MCP**（工具级接入，已有）+ **A2A**（agent 级协作，新增）。外部异构行业 agent 用 A2A 入驻。
 - 扩展 `client` SDK 与 OpenAPI，覆盖 agents / tasks / workflows 资源。
 
 **⑤ Workflow Engine + Observability**
+
 - DAG 执行器：step 状态机（pending / running / done / failed / compensated），持久化到 `queue-backend` 同类接口。
 - **跨 agent 追踪**：`traceId` 贯穿所有 agent 调用；`HarnessEvent` 扩展 `agentId` / `workflowId` 字段，OTel span 跨 agent 关联。
 - 工作流级监控面板：区别于当前 job 级，补充「第 N 步在哪个 agent、耗时、健康」。
 
 **⑥ Plugin Framework**
+
 - **Plugin Manifest**（类 `package.json`）：`{ id, version, capabilities[], dependencies[], permissions[], transport }`。
 - 热加载 + 版本 / 依赖解析 + 生命周期（install / enable / disable / upgrade）。
 - **隔离加载**：插件在独立 `worker_thread` / 子进程运行并裁剪权限（解决既有评估 P0「同进程同权限」），而非与核心同堆。
 
 ### 4.3 复用现有资产（避免重写）
 
-| 现有资产 | 在基座平台中的角色 |
-|---|---|
-| `RunQueue` + redis 后端 + `reclaimStale` | 升级为 **capability-aware dispatcher**（多实例、崩溃回收复用） |
-| `HarnessEvent` | 扩展为**跨 agent trace 事件**（加 `agentId` / `workflowId`） |
-| MCP `placeholder.ts` | 既是工具插件，也可作为**远端 agent 接入协议之一**（A2A 的补充） |
-| `guardrails.ts`（PII / 注入 / 密钥） | 作为 **PolicyEngine 的默认策略集**（per-tenant 复制） |
-| `memory-store`（file / sqlite） | 作为 **per-tenant 分区**的存储底座 |
-| `authz.ts` / `approval.ts` | 升级为 **tenant-scoped RBAC + 审批** |
-| `SkillRegistry` | 演进为 agent 内部的「能力包」机制，与 AgentCard 对齐 |
+| 现有资产                                 | 在基座平台中的角色                                              |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| `RunQueue` + redis 后端 + `reclaimStale` | 升级为 **capability-aware dispatcher**（多实例、崩溃回收复用）  |
+| `HarnessEvent`                           | 扩展为**跨 agent trace 事件**（加 `agentId` / `workflowId`）    |
+| MCP `placeholder.ts`                     | 既是工具插件，也可作为**远端 agent 接入协议之一**（A2A 的补充） |
+| `guardrails.ts`（PII / 注入 / 密钥）     | 作为 **PolicyEngine 的默认策略集**（per-tenant 复制）           |
+| `memory-store`（file / sqlite）          | 作为 **per-tenant 分区**的存储底座                              |
+| `authz.ts` / `approval.ts`               | 升级为 **tenant-scoped RBAC + 审批**                            |
+| `SkillRegistry`                          | 演进为 agent 内部的「能力包」机制，与 AgentCard 对齐            |
 
 ---
 
 ## 5. 演进路线图（分阶段，复用优先）
 
 - **P0 — 基座成型（先让多 agent 跑起来）**
+
   - `AgentCard` 协议 + `Agent Registry`（本地 agent 注册 / 发现）
   - `Task Router`（单跳：分类 → 选 agent → 分发；先支持本地多 agent）
   - `TenantContext` + 数据 / 策略隔离（per-tenant 记忆分区 + per-tenant 护栏）
   - 复用 `RunQueue` 做按 agent 分发的最小改造
 
 - **P1 — 编排增强（让多个 agent 协同）**
+
   - `Workflow Orchestrator`（DAG 状态机 + 多 agent handoff + 补偿回滚）
   - 跨 agent 链路追踪（`traceId` + 扩展 `HarnessEvent`）
   - `Plugin Manifest` + 热加载骨架
@@ -246,6 +263,7 @@
 ## 6. 结论与建议
 
 1. **是否具备作为统一基座平台的能力？**
+
    - 作为「单智能体执行引擎」：**已具备且扎实**（记忆 / 护栏 / 队列 / MCP / 可观测 / RBAC 都到位）。
    - 作为「多智能体调度 / 协调基座」：**当前不具备**，缺 agent 实体、跨 agent 路由、工作流引擎、租户 / 行业隔离模型。这是**架构级空白**，不是补几个函数能解决的。
 

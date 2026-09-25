@@ -29,7 +29,7 @@ import {
 } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { getDbAdapter, resolveTenantDbPath } from '@agent-harness/core';
+import { getDbAdapter, resolveTenantDbPath, structLog } from '@agent-harness/core';
 
 // ─── 签名密钥 ────────────────────────────────────────────────────────────────
 let cachedSecret: Uint8Array | null = null;
@@ -1033,8 +1033,16 @@ export async function deleteUser(
  * 申请重置密码：按「用户名或注册邮箱」定位账号，存在则生成一次性重置凭证
  * （token + 15 分钟过期）写入 password_resets 表，并返回 token。
  *
- * 演示环境（无邮件服务）：token 直接返回前端，便于走通「申请 → 重置」全流程；
- * 生产环境应改为仅把 token 下发到用户邮箱、本接口不返回 token（避免链接泄露即失密）。
+ * P1 安全修复（回显门禁在路由层）：本函数的返回值**仅供 routes/account-routes.ts
+ * 消费**——HTTP 响应是否回传 token 由该路由层的 PASSWORD_RESET_INLINE_TOKEN 决定：
+ * 默认**不回传**（凭证带外交付：邮件 / 管理员转交），仅本地演示可显式
+ * `PASSWORD_RESET_INLINE_TOKEN=on` 恢复回传（仅限非公网环境）。
+ * 此前「知道用户名即可经 HTTP 响应拿到 resetToken 接管任意账户」的口径已由此门禁关闭。
+ *
+ * 签发时会打一条不含完整凭证的结构化日志（auth.reset_token_issued）提醒管理员
+ * 转交——完整凭证只存于 password_resets 表，管理员经 SQLite 查询获取，
+ * 避免凭证进入可能被聚合/外泄的日志通道。
+ *
  * 账号不存在时明确返回错误——本项目注册接口已暴露「用户名已被占用」，
  * 用户枚举风险本就存在，保持一致性、方便用户自查输入。
  */
@@ -1068,6 +1076,16 @@ export async function requestPasswordReset(
       'INSERT INTO password_resets (token, username, expires_at, created_at) VALUES (?, ?, ?, ?)'
     )
     .run(token, row.username, exp, Date.now());
+  // 带外交付落地：签发事件进结构化日志提醒管理员转交（此前非演示模式下 token 只入库，
+  // 管理员既不知道有重置申请、也不知道去哪取凭证，重置流程实际上走不通）。
+  // 完整凭证不进日志——防日志聚合面泄露；管理员经 password_resets 表获取。
+  structLog('warn', 'auth.reset_token_issued', {
+    username: row.username,
+    expiresInMin: Math.round(RESET_TTL_MS / 60_000),
+    note:
+      'HTTP 响应默认不回传凭证（PASSWORD_RESET_INLINE_TOKEN=on 才回显，仅限本地演示）。' +
+      '请经带外渠道转交用户；完整凭证请查 password_resets 表（token 列，15 分钟内有效）。',
+  });
   return { ok: true, resetToken: token };
 }
 

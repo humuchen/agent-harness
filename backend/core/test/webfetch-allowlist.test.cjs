@@ -80,3 +80,59 @@ test('web_fetch 白名单：env WEB_FETCH_ALLOWED_DOMAINS 生效', async () => {
   restore();
   if (oldEnv === undefined) delete process.env.WEB_FETCH_ALLOWED_DOMAINS; else process.env.WEB_FETCH_ALLOWED_DOMAINS = oldEnv;
 });
+
+// ---------------------------------------------------------------------------
+// P0 安全修复（secure by default）：私网/链路本地地址缺省拒绝。
+// 无策略（ctx.networkPolicy 缺省 undefined）时工具级兜底校验生效；
+// WEB_FETCH_ALLOW_PRIVATE_NETWORK=on 为内网互访部署的显式逃生舱。
+// ---------------------------------------------------------------------------
+
+test('web_fetch 私网：缺省（无策略）拒绝 127.0.0.1，不发请求', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  let called = 0;
+  const mock = async () => { called++; return { ok: true, status: 200, headers: new Map([['content-type', 'text/plain']]), text: async () => 'x' }; };
+  const restore = withMockFetch(mock);
+  const res = await reg.call('builtin__web_fetch', { url: 'http://127.0.0.1:8080/actuator' });
+  assert.ok(res.startsWith('error: egress denied'), 'loopback 应被缺省拒绝，实际：' + res);
+  assert.strictEqual(called, 0, '拒绝时不应发出 fetch');
+  restore();
+});
+
+test('web_fetch 私网：无策略时 WEB_FETCH_ALLOW_PRIVATE_NETWORK=on 放行（逃生舱）', async () => {
+  const oldEnv = process.env.WEB_FETCH_ALLOW_PRIVATE_NETWORK;
+  process.env.WEB_FETCH_ALLOW_PRIVATE_NETWORK = 'on';
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  let called = 0;
+  const mock = async () => { called++; return { ok: true, status: 200, headers: new Map([['content-type', 'text/plain']]), text: async () => 'ok' }; };
+  const restore = withMockFetch(mock);
+  const res = await reg.call('builtin__web_fetch', { url: 'http://127.0.0.1:8080/x' });
+  assert.strictEqual(called, 1, '显式放行后应发出请求，实际：' + res);
+  assert.ok(!res.startsWith('error: egress denied'));
+  restore();
+  if (oldEnv === undefined) delete process.env.WEB_FETCH_ALLOW_PRIVATE_NETWORK; else process.env.WEB_FETCH_ALLOW_PRIVATE_NETWORK = oldEnv;
+});
+
+test('web_fetch 私网：策略 allowPrivateNetwork=false 时拒绝；未指定按 false 收紧', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  let called = 0;
+  const mock = async () => { called++; return { ok: true, status: 200, headers: new Map([['content-type', 'text/plain']]), text: async () => 'x' }; };
+  const restore = withMockFetch(mock);
+  const denied = await reg.call(
+    'builtin__web_fetch',
+    { url: 'http://10.9.8.7/x' },
+    { networkPolicy: { mode: 'open', allowPrivateNetwork: false } }
+  );
+  assert.ok(denied.startsWith('error: egress denied'), '策略 false 应拒绝，实际：' + denied);
+  // 策略存在但未指定 allowPrivateNetwork → 缺省 false 收紧
+  const denied2 = await reg.call(
+    'builtin__web_fetch',
+    { url: 'http://169.254.169.254/latest/meta-data' },
+    { networkPolicy: { mode: 'open' } }
+  );
+  assert.ok(denied2.startsWith('error: egress denied'), '策略未指定时应按 false 收紧（云元数据），实际：' + denied2);
+  assert.strictEqual(called, 0, '两例均不应发出 fetch');
+  restore();
+});

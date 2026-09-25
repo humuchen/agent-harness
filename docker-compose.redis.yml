@@ -18,10 +18,11 @@
 services:
   ui:
     environment:
-      # 安全基线：网络出口默认 denylist（禁所有出网，需显式白名单放开）；
-      #   代码执行默认 OS 级隔离（SANDBOX_BACKEND=os）；审计日志落 /app/data/audit。
+      # 网络出口：默认 open（默认 agent 不限制出网，与代码默认一致，2026-09-24 起）；
+      # 需要收紧的部署显式设置 GUARDRAIL_NETWORK_MODE=denylist|allowlist。
+      # 代码执行默认 OS 级隔离（SANDBOX_BACKEND=os）；审计日志落 /app/data/audit。
       SANDBOX_BACKEND: '${SANDBOX_BACKEND:-os}'
-      GUARDRAIL_NETWORK_MODE: '${GUARDRAIL_NETWORK_MODE:-denylist}'
+      GUARDRAIL_NETWORK_MODE: '${GUARDRAIL_NETWORK_MODE:-open}'
       GUARDRAIL_DENIED_DOMAINS: '${GUARDRAIL_DENIED_DOMAINS:-*}'
       AUDIT_BACKEND: '${AUDIT_BACKEND:-file}'
       AUDIT_LOG_FILE: '/app/data/audit/audit.jsonl'

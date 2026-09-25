@@ -22,11 +22,24 @@
 #   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml logs tunnel
 #   curl -I https://app.yourdomain.com/api/state
 #
-# 安全加固（可选）：
-#   若只想让服务经隧道/localhost 访问、不再直接暴露宿主机端口，
-#   可把主 compose 中 ui 的 ports 由 '4173:4173' 改为 '127.0.0.1:4173:4173'。
+# 安全加固（P1 D2）：
+#   - 主 compose 的 ui 端口现已缺省只绑 127.0.0.1（AH_BIND_IP 可覆盖），
+#     经隧道访问不受影响（隧道容器走 compose 网络内 http://ui:4173）。
+#   - 本 overlay 强制「空凭据 fail-fast」：ADMIN_API_KEY 为空时 tunnel-admin-gate
+#     直接失败并阻止 tunnel 启动——空 admin 凭据穿透隧道等于把执行能力与
+#     全量数据面匿名公开到公网。
 
 services:
+  # D2 fail-fast 门禁：复用主 compose 构建的镜像跑一个一次性校验容器。
+  # ADMIN_API_KEY 缺失/为空 → exit 1 → tunnel 不会启动（condition: service_completed_successfully）。
+  tunnel-admin-gate:
+    image: agent-harness:local
+    restart: 'no'
+    entrypoint:
+      ['node', '-e', "if(!process.env.ADMIN_API_KEY||!process.env.ADMIN_API_KEY.trim()){console.error('[tunnel-gate] 拒绝启动：ADMIN_API_KEY 为空。经 Cloudflare Tunnel 暴露公网时必须设置站点 admin 凭据（.env 中 ADMIN_API_KEY=...），否则等同于匿名公开全部接口。');process.exit(1);}"]
+    environment:
+      ADMIN_API_KEY: '${ADMIN_API_KEY:-}'
+
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -37,5 +50,7 @@ services:
     # 与 ui 同处默认网络（未显式声明 networks 时所有服务自动加入同一默认网络），
     # 因此可通过 http://ui:4173 直接访问业务容器。
     depends_on:
+      tunnel-admin-gate:
+        condition: service_completed_successfully
       ui:
         condition: service_healthy

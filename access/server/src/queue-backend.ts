@@ -94,6 +94,18 @@ export interface QueueBackend {
    */
   reclaimStale?(leaseMs: number): Promise<number>;
   /**
+   * 跨实例幂等占位（仅共享后端实现）：原子 SET NX，key 已存在时返回既有 jobId。
+   * 使「同 idempotencyKey 不重复执行」的保证从进程内扩展到多副本（此前幂等索引
+   * 是进程内 Map，同键提交落到不同实例会各自执行）。
+   */
+  tryAcquireIdem?(
+    key: string,
+    jobId: string,
+    ttlMs: number
+  ): Promise<{ acquired: boolean; existingJobId?: string }>;
+  /** 释放跨实例幂等占位（任务终态时调用；仅共享后端实现）。 */
+  releaseIdem?(key: string): Promise<void>;
+  /**
    * 跨实例事件桥（仅共享后端实现）。执行实例把每个事件 publish 到 `runq:events:<jobId>`，
    * 持有 SSE 订阅的任意实例 subscribeEvents 后即可转发，使 SSE 不受「提交/执行在不同实例」
    * 影响。单实例后端（memory/file）不实现，事件走进程内直发（见 run-queue.ts）。
@@ -238,6 +250,18 @@ export interface RedisLike {
   hdel(key: string, ...fields: string[]): Promise<unknown>;
   del(...keys: string[]): Promise<unknown>;
   publish(channel: string, message: string): Promise<unknown>;
+  /**
+   * SET 带 PX/NX 选项（跨实例幂等占位用）。可选：测试用 FakeRedis 未实现时，
+   * tryAcquireIdem 退化为「总是获取成功」，幂等仅剩进程内一层。
+   */
+  set?(
+    key: string,
+    value: string,
+    mode: 'PX',
+    ttlMs: number,
+    nx: 'NX'
+  ): Promise<string | null>;
+  get?(key: string): Promise<string | null>;
 }
 export interface RedisPubSubLike {
   duplicate(): RedisPubSubLike;
@@ -375,6 +399,32 @@ export class RedisQueueBackend implements QueueBackend {
       }
     }
     return moved;
+  }
+
+  private idemKeyOf(key: string): string {
+    return `runq:idem:${key}`;
+  }
+
+  /** 跨实例幂等占位：原子 SET NX PX；客户端不支持 set/get（旧测试替身）时退化为放行。 */
+  async tryAcquireIdem(
+    key: string,
+    jobId: string,
+    ttlMs: number
+  ): Promise<{ acquired: boolean; existingJobId?: string }> {
+    const client = this.client as RedisLike;
+    if (typeof client.set !== 'function' || typeof client.get !== 'function') {
+      return { acquired: true };
+    }
+    const k = this.idemKeyOf(key);
+    const res = await client.set(k, jobId, 'PX', ttlMs, 'NX');
+    if (res === 'OK' || res === '1') return { acquired: true };
+    const existing = await client.get(k);
+    return { acquired: false, existingJobId: existing ?? undefined };
+  }
+
+  /** 释放跨实例幂等占位（任务终态时由 run-queue 调用）。 */
+  async releaseIdem(key: string): Promise<void> {
+    await this.client.del(this.idemKeyOf(key));
   }
 
   async publishEvent(jobId: string, event: unknown): Promise<void> {

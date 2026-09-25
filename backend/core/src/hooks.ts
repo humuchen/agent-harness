@@ -10,9 +10,13 @@
  *
  * 约定：
  * - 全部钩子上下文可 JSON 序列化（便于日志 / 可观测）
- * - 单个 HookHandler 抛出异常不影响主流程或其它钩子
+ * - 单个 HookHandler 抛出异常不影响主流程或其它钩子（但必须留痕——此前零日志，
+ *   钩子坏了只能靠业务侧「效果消失」反向发现）
+ * - 单个处理器有超时保护（AGENT_HOOK_TIMEOUT_MS，默认 10s）：挂死的插件钩子
+ *   不再无限滞留，超时后放弃等待并告警；处理器本身仍在后台跑，其副作用自负
  * - 注册返回注销函数，插件 disable 时对称清理
  */
+import { structLog } from './telemetry';
 
 /** Hook 名称枚举。 */
 export type HookName =
@@ -80,7 +84,9 @@ export class HookRegistry {
 
   /**
    * 执行某类 Hook 的所有注册处理器。
-   * 单个处理器抛出异常会被吞掉（不影响其它 + 不影响主流程）。
+   * 单个处理器抛出异常或超时都不影响其它处理器与主流程，但均记 warn 日志留痕。
+   * 超时保护：AGENT_HOOK_TIMEOUT_MS（默认 10000，0=不限）。超时后放弃等待——
+   * 处理器仍可能在后台完成（其副作用自负），但不再滞留 execute 的调用方。
    */
   async execute<T extends Partial<HookContext> = HookContext>(
     name: HookName,
@@ -88,11 +94,31 @@ export class HookRegistry {
   ): Promise<void> {
     const handlers = this.hooks.get(name);
     if (!handlers || handlers.size === 0) return;
+    const timeoutMs =
+      Math.max(0, Number(process.env.AGENT_HOOK_TIMEOUT_MS ?? 10_000) || 0);
     for (const h of handlers) {
       try {
-        await h(ctx as HookContext);
-      } catch {
-        // Hook 异常不影响主流程
+        if (timeoutMs > 0) {
+          await Promise.race([
+            Promise.resolve(h(ctx as HookContext)),
+            new Promise<never>((_resolve, reject) => {
+              const t = setTimeout(
+                () => reject(new Error(`hook handler timeout after ${timeoutMs}ms`)),
+                timeoutMs
+              );
+              // 超时定时器不持有事件循环：进程自然退出时不必等挂死的钩子
+              t.unref?.();
+            }),
+          ]);
+        } else {
+          await h(ctx as HookContext);
+        }
+      } catch (e) {
+        // Hook 异常/超时不影响主流程，但必须留痕（此前静默吞掉，故障不可见）
+        structLog('warn', 'hook handler failed', {
+          hook: name,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     }
   }

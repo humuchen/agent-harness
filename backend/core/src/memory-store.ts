@@ -3,6 +3,7 @@ import {
   getDbAdapter,
   DbAdapter,
 } from './db-adapter';
+import { quarantineCorruptFile } from './store-safety';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。
@@ -100,17 +101,26 @@ export class FileMemoryStore implements MemoryStore {
   async load(key: string): Promise<PersistedMemory | null> {
     const fs = await import('node:fs/promises');
     const path = this.filePath(key);
+    let raw: string;
     try {
-      const raw = await fs.readFile(path, 'utf-8');
-      const data = JSON.parse(raw) as Partial<PersistedMemory>;
-      return {
-        window: Array.isArray(data.window) ? (data.window as Message[]) : [],
-        longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
-        ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
-      };
+      raw = await fs.readFile(path, 'utf-8');
     } catch {
-      return null; // 无存档，视为空
+      return null; // 无存档（ENOENT 等 IO 态）视为空——不属损坏，不告警
     }
+    // P2 统一损坏策略：解析失败 → 告警 + 隔离改名 + 空状态启动。
+    // 此前与本 catch 合并静默当空数据，数据静默丢失且不可见。
+    let data: Partial<PersistedMemory>;
+    try {
+      data = JSON.parse(raw) as Partial<PersistedMemory>;
+    } catch (e) {
+      quarantineCorruptFile(path, 'memory', e);
+      return null;
+    }
+    return {
+      window: Array.isArray(data.window) ? (data.window as Message[]) : [],
+      longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
+      ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
+    };
   }
 
   async save(key: string, data: PersistedMemory): Promise<void> {
@@ -194,28 +204,37 @@ export class SqliteMemoryStore implements MemoryStore {
   private ensure(): Promise<void> {
     if (this.ready) return this.ready;
     this.ready = (async () => {
-      // 使用统一适配器（支持 sqlite / turso 双后端）
-      this.db = getDbAdapter({ file: this.file });
-      await this.db.exec(
-        'CREATE TABLE IF NOT EXISTS memory (' +
-          'key TEXT PRIMARY KEY, ' +
-          'window TEXT NOT NULL, ' +
-          'long_term TEXT NOT NULL, ' +
-          'summary TEXT)'
-      );
-      // 启用 WAL 模式 + 连接池优化
-      try { await this.db.exec('PRAGMA journal_mode=WAL;'); } catch { /* ok */ }
-      try { await this.db.exec('PRAGMA synchronous=NORMAL;'); } catch { /* ok */ }
-      try { await this.db.exec('PRAGMA cache_size=-64000;'); } catch { /* ok */ }
-      try { await this.db.exec('PRAGMA temp_store=MEMORY;'); } catch { /* ok */ }
-      // 兼容旧库：缺列时补上
       try {
-        const cols = (await this.db.prepare('PRAGMA table_info(memory)').all()) as Record<string, unknown>[];
-        const hasSummary = cols.some((c) => String(c.name) === 'summary');
-        if (!hasSummary) {
-          await this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
-        }
-      } catch { /* 列已存在，忽略 */ }
+        // 使用统一适配器（支持 sqlite / turso 双后端）
+        this.db = getDbAdapter({ file: this.file });
+        await this.db.exec(
+          'CREATE TABLE IF NOT EXISTS memory (' +
+            'key TEXT PRIMARY KEY, ' +
+            'window TEXT NOT NULL, ' +
+            'long_term TEXT NOT NULL, ' +
+            'summary TEXT)'
+        );
+        // 启用 WAL 模式 + 连接池优化
+        try { await this.db.exec('PRAGMA journal_mode=WAL;'); } catch { /* ok */ }
+        try { await this.db.exec('PRAGMA synchronous=NORMAL;'); } catch { /* ok */ }
+        try { await this.db.exec('PRAGMA cache_size=-64000;'); } catch { /* ok */ }
+        try { await this.db.exec('PRAGMA temp_store=MEMORY;'); } catch { /* ok */ }
+        // 兼容旧库：缺列时补上
+        try {
+          const cols = (await this.db.prepare('PRAGMA table_info(memory)').all()) as Record<string, unknown>[];
+          const hasSummary = cols.some((c) => String(c.name) === 'summary');
+          if (!hasSummary) {
+            await this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
+          }
+        } catch { /* 列已存在，忽略 */ }
+      } catch (e) {
+        // 自愈：初始化失败（磁盘满 / 权限 / node:sqlite 不可用等瞬时故障）时
+        // 重置 this.ready，下次调用可重试；否则 rejected promise 被永久缓存，
+        // 进程生命周期内所有 load/save 永久 reject，无任何恢复路径。
+        this.ready = null;
+        this.db = null;
+        throw e;
+      }
     })();
     return this.ready;
   }

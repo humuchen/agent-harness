@@ -41,7 +41,8 @@ function mockLLM(script) {
   return { fn, calls };
 }
 
-function makeTools() {
+/** failOnCallN：第 N 次工具调用抛错（0 = 永不失败）。 */
+function makeTools(failOnCallN = 0) {
   const reg = new ToolRegistry();
   let n = 0;
   reg.register(
@@ -50,7 +51,9 @@ function makeTools() {
     { type: 'object', properties: { url: { type: 'string' } } },
     async () => {
       n += 1;
-      if (n === 2) throw new Error('network down');
+      // 0e2b9e9 起调研循环为 LLM 驱动（不再按 query 主动直调工具）：
+      // 工具失败用例改为「首次调用即抛错」，验证「工具失败记数据缺口，仍产出计划」。
+      if (failOnCallN > 0 && n === failOnCallN) throw new Error('network down');
       return '调研内容片段';
     }
   );
@@ -139,7 +142,7 @@ test('管线：工具失败记数据缺口，仍产出计划（不白烧）', as
   const events = [];
   const final = await pp.runPlanPropose({
     llm: llm.fn,
-    tools: makeTools(), // 第 2 次调用抛错
+    tools: makeTools(1), // 工具首次调用即抛错
     userInput: '做一份研报',
     emit: (e) => events.push(e)
   });

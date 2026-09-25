@@ -838,6 +838,7 @@ const TRACE_ICON: Record<string, string> = {
   'tool:start': '🔧',
   'tool:result': '🔧',
   'guardrail:blocked': '🛡',
+  'jev:call': '🎯',
   'verify:result': '✅',
   'budget:exceeded': '⚠️',
   'run:cost': '📊',
@@ -1001,6 +1002,21 @@ export function derivePlanExecFromMessages(
     currentTaskId: undefined,
     done
   };
+}
+
+/**
+ * 恢复时「无镜像」分支的计划状态决议：先从线程反推（曾执行过的计划），
+ * 反推不出（从未确认执行、无派发痕迹）则显式补种 pending。
+ *
+ * 回归锁（2026-09-24）：此前该分支反推为 null 时直接跳过，planExec[m.id] 不被创建，
+ * 而渲染端缺省按 pending 显示「确认执行」按钮、confirmPlan 门禁却要求该状态存在 ——
+ * 重新登录后点击「确认执行」静默无反应。调用方必须以本函数返回值落 planExec。
+ */
+export function resolveRestoredPlanExec(
+  plan: { tasks?: Array<{ id?: unknown }> } | undefined,
+  msgs: readonly PlanDeriveMsg[]
+): PlanExecState {
+  return derivePlanExecFromMessages(plan, msgs) ?? { status: 'pending', done: {} };
 }
 
 export interface RenderAttachmentsOpts {

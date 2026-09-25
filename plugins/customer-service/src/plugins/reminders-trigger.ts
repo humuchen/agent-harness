@@ -286,7 +286,9 @@ export const csRemindersTriggerPlugin: PluginModule = {
         path.join(os.tmpdir(), 'agent-harness', 'cs-reminders-state.json')
     );
     const baseUrl = String(ctx.env.HARNESS_BASE_URL ?? 'http://127.0.0.1:4173');
-    const apiKey = String(ctx.env.OPEN_API_KEY ?? '');
+    // P1 安全收窄配套：优先使用专属管理凭证 ADMIN_API_KEY；OPEN_API_KEY 为历史
+    // 回退（仅在服务端 PLUGIN_SHARE_LEGACY_LLM_KEY=on 时才会出现在 ctx.env）。
+    const apiKey = String(ctx.env.ADMIN_API_KEY ?? ctx.env.OPEN_API_KEY ?? '');
     const agentId = 'medical-aesthetics-lead';
     const emit = (e: PluginEvent) => ctx.events.emit(e);
 

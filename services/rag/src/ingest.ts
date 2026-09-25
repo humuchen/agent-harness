@@ -64,12 +64,20 @@ export async function ingestDocument(
   const overlap = input.chunk_overlap ?? 80;
   const pieces = chunkText(input.text, size, overlap);
 
+  // P1（嵌入失败毒化防护）：先完成全部向量化，再做任何写操作——
+  // 远程嵌入失败（strict 默认抛 EmbeddingUnavailableError）时旧文档原样保留，
+  // 不再出现「旧 chunk 已删、新 chunk 半途失败」的半入库中间态；
+  // 嵌入产物也不会以静默降级的哈希向量形态混入语料。
+  const vectors: number[][] = [];
+  for (const piece of pieces) {
+    vectors.push(await embedOne(provider, `${input.title ?? ''}\n${piece}`));
+  }
+
   // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）
   const replaced = store.deleteByDoc(docId, tenantId);
 
   let idx = 0;
   for (const piece of pieces) {
-    const vector = await embedOne(provider, `${input.title ?? ''}\n${piece}`);
     const chunk: Chunk = {
       chunk_id: `${docId}#${idx}`,
       doc_id: docId,
@@ -79,7 +87,7 @@ export async function ingestDocument(
       title: input.title,
       tags: input.tags,
       metadata: input.metadata,
-      vector,
+      vector: vectors[idx]!,
       created_at: Date.now(),
     };
     store.upsert(chunk);

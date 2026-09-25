@@ -3,6 +3,7 @@ import type {
   AgentHealth,
   IndustryDomain,
 } from './types';
+import { quarantineCorruptFile } from '../store-safety';
 
 /**
  * 智能体注册表持久化后端（P0.1：Agent Registry & Discovery）。
@@ -131,10 +132,18 @@ export class FileAgentStore implements AgentStore {
   }
   async get(id: string): Promise<AgentCard | null> {
     const fs = await import('node:fs/promises');
+    const path = this.filePath(id);
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.filePath(id), 'utf-8');
-      return JSON.parse(raw) as AgentCard;
+      raw = await fs.readFile(path, 'utf-8');
     } catch {
+      return null; // 不存在等 IO 态：正常空，不告警
+    }
+    // P2 统一损坏策略：解析失败 → 告警 + 隔离改名 + 空状态继续（此前静默当 null）。
+    try {
+      return JSON.parse(raw) as AgentCard;
+    } catch (e) {
+      quarantineCorruptFile(path, 'agents', e);
       return null;
     }
   }
@@ -145,11 +154,18 @@ export class FileAgentStore implements AgentStore {
       const out: AgentCard[] = [];
       for (const f of entries) {
         if (!f.endsWith('.json')) continue;
+        const path = `${this.dir}/${f}`;
+        let raw: string;
         try {
-          const raw = await fs.readFile(`${this.dir}/${f}`, 'utf-8');
-          out.push(JSON.parse(raw) as AgentCard);
+          raw = await fs.readFile(path, 'utf-8');
         } catch {
-          /* 坏文件跳过 */
+          continue;
+        }
+        try {
+          out.push(JSON.parse(raw) as AgentCard);
+        } catch (e) {
+          // 损坏卡片：告警 + 隔离改名，其余卡片继续加载（此前静默跳过）。
+          quarantineCorruptFile(path, 'agents', e);
         }
       }
       return out;

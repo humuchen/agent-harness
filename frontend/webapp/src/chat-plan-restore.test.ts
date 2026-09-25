@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   derivePlanExecFromMessages,
+  resolveRestoredPlanExec,
   PLAN_TASK_DISPATCH_RE,
   filterPlanSingleStep,
   recoverPlanFinalResult,
@@ -125,6 +126,39 @@ describe('derivePlanExecFromMessages（镜像缺失时从线程反推）', () =>
     expect(PLAN_TASK_DISPATCH_RE.test('【计划任务 t 12】提取文本')).toBe(true);
     expect(PLAN_TASK_DISPATCH_RE.test('【计划任务 task-1】提取文本')).toBe(true);
     expect(PLAN_TASK_DISPATCH_RE.test('普通用户消息')).toBe(false);
+  });
+});
+
+describe('resolveRestoredPlanExec（恢复无镜像分支：回归锁「重新登录后点确认执行无反应」）', () => {
+  it('从未确认执行的计划 → 显式补种 pending（此前返回 null → planExec 不创建 → 按钮门禁静默失配）', () => {
+    const msgs: PlanDeriveMsg[] = [
+      { role: 'user', content: '为中国市场制作一份轻医美行业研究报告' },
+      {
+        role: 'assistant',
+        content: '已生成执行计划（共 6 个任务）：轻医美行业研究报告。确认后将按依赖顺序逐任务执行。'
+      }
+    ];
+    expect(resolveRestoredPlanExec(plan, msgs)).toEqual({
+      status: 'pending',
+      done: {}
+    });
+  });
+
+  it('曾执行完成的计划仍从线程反推 done（不回归既有修复）', () => {
+    const msgs = [
+      ...dispatched('t1', '任务一完成'),
+      ...dispatched('t2', '任务二完成'),
+      ...dispatched('t3', '任务三完成')
+    ];
+    expect(resolveRestoredPlanExec(plan, msgs)?.status).toBe('done');
+  });
+
+  it('曾执行中断的计划仍反推 failed + 失败节点', () => {
+    const msgs = [...dispatched('t1', '任务一完成'), ...dispatched('t2', null)];
+    const st = resolveRestoredPlanExec(plan, msgs);
+    expect(st?.status).toBe('failed');
+    expect(st?.failedTaskId).toBe('t2');
+    expect(st?.done).toEqual({ t1: true });
   });
 });
 

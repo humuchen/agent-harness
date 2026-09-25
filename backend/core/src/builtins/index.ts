@@ -7,6 +7,7 @@ import { registerWeather } from './weather';
 import { registerDataTransform } from './datatransform';
 import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
 import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
+import { registerDocExport, type DocExportOptions } from './docexport';
 import { registerRagRetrieve, type RagRetrieveOptions } from './rag-retrieve';
 import { registerJevDecide, type JevDecideOptions } from './typesafe-jev';
 
@@ -30,6 +31,13 @@ export interface BuiltinOptions {
   weatherEnabled?: boolean;
   /** 数据转换/ETL 工具（JSON/CSV 解析、文本清洗、聚合）开关。默认开启。 */
   dataTransformEnabled?: boolean;
+  /**
+   * 文件导出工具（xlsx/pptx/csv → exports/ 目录）开关。默认开启。
+   * exceljs / pptxgenjs 为可选依赖：缺失时工具仍注册，调用时返回可操作错误。
+   */
+  docExportEnabled?: boolean;
+  /** 文件导出根目录（文件写入 `<root>/exports/`）；默认与 fsRoot 一致。 */
+  docExportRoot?: string;
   /** RAG 检索工具开关。默认关闭（需配置 RAG_URL 才生效）。 */
   ragEnabled?: boolean;
   /**
@@ -116,6 +124,11 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   if (datetimeEnabled && allow('datetime')) registerDateTime(registry);
   if (weatherEnabled && allow('weather')) registerWeather(registry);
   if (dataTransformEnabled && allow('data_transform')) registerDataTransform(registry);
+  const docExportEnabled = options.docExportEnabled ?? true;
+  if (docExportEnabled && allow('doc_export')) {
+    const docExportOpts: DocExportOptions = { root: options.docExportRoot ?? fsRoot };
+    registerDocExport(registry, docExportOpts);
+  }
   if (ragEnabled && allow('rag_retrieve')) registerRagRetrieve(registry, { baseUrl: process.env.RAG_URL, token: process.env.RAG_TOKEN });
   if (jevEnabled && allow('jev')) {
     // 按用户 BYOK 注入的 Key/地址优先于 env；两者皆无时回落 env（registerJevDecide 内部再判空）。
@@ -164,6 +177,11 @@ export type { FilesystemOptions } from './filesystem';
 export type { WebFetchOptions } from './webfetch';
 export { registerRagRetrieve } from './rag-retrieve';
 export type { RagRetrieveOptions } from './rag-retrieve';
+// web_fetch 状态码分类观测（改进6）：ok2xx/blocked403/notFound404/timeout 等计数。
+export { getWebFetchStats, resetWebFetchStats } from './webfetch';
+export type { WebFetchStats } from './webfetch';
+export { registerDocExport } from './docexport';
+export type { DocExportOptions } from './docexport';
 export { registerJevDecide } from './typesafe-jev';
 export {
   jevDecide,

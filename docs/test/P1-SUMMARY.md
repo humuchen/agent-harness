@@ -1,21 +1,20 @@
 # P1 改进完成总结
 
-**完成日期**: 2026-08-19
-**状态**: ✅ **100%完成** (4/4任务全部完成)
+**状态**: ✅ **100%完成** (4/4 任务全部完成)
 
 ---
 
 ## 任务清单
 
-### ✅ Task 1: 统一TypeScript配置
+### ✅ Task 1: 统一 TypeScript 配置
 
 **文件**: `frontend/cli/tsconfig.json`
 
 **改动**:
 
-- CLI包现在继承 `tsconfig.base.json`
-- 减少8行重复配置
-- 所有包(core/server/cli/client/medical-ad-guard)统一继承base配置
+- CLI 包现在继承 `tsconfig.base.json`
+- 减少 8 行重复配置
+- 所有包(core/server/cli/client/medical-ad-guard)统一继承 base 配置
 
 **验证**:
 
@@ -25,14 +24,14 @@ pnpm -r build  # 所有包构建成功
 
 ---
 
-### ✅ Task 2: 增加API集成测试
+### ✅ Task 2: 增加 API 集成测试
 
 **文件**: `access/server/test/api.integration.test.cjs`
 
 **覆盖端点**:
 
 1. `GET /api/state` - 系统状态
-2. `POST /api/v1/run` - Job提交(含认证检查)
+2. `POST /api/v1/run` - Job 提交(含认证检查)
 3. `GET /api/v1/approvals` - 审批列表
 4. `POST /api/v1/eval` - 评估端点
 5. `GET /` - 健康检查
@@ -41,7 +40,7 @@ pnpm -r build  # 所有包构建成功
 
 - 智能检测服务器可用性
 - 服务器未运行时自动跳过(不失败)
-- 包含认证测试(401检查)
+- 包含认证测试(401 检查)
 
 **验证**:
 
@@ -103,7 +102,7 @@ node scripts/load-test.cjs -c 20 -r 200 -e /api/v1/run -m POST
 
 ---
 
-### ✅ Task 4: 增加Webapp构建验证
+### ✅ Task 4: 增加 Webapp 构建验证
 
 **文件**: `frontend/webapp/package.json`
 
@@ -111,7 +110,7 @@ node scripts/load-test.cjs -c 20 -r 200 -e /api/v1/run -m POST
 
 - 添加 `test` 脚本: `vite build`
 - 添加 `test:ci` 脚本: `vite build`
-- CI现在可以检测构建失败
+- CI 现在可以检测构建失败
 
 **验证**:
 
@@ -160,19 +159,19 @@ pnpm --filter @agent-harness/webapp test
 
 ## 质量提升
 
-- ✅ TypeScript配置一致性提升
-- ✅ API变更现在有自动化回归保护
+- ✅ TypeScript 配置一致性提升
+- ✅ API 变更现在有自动化回归保护
 - ✅ 可以验证系统性能表现
-- ✅ Webapp构建失败会被CI捕获
-- ✅ 测试覆盖率增加7个新用例
+- ✅ Webapp 构建失败会被 CI 捕获
+- ✅ 测试覆盖率增加 7 个新用例
 
 ---
 
 ## 下一步
 
-P1已全部完成,建议继续实施:
+P1 已全部完成,建议继续实施:
 
 - **P2 - 开发者体验**: CHANGELOG、示例文档、插件脚手架、错误码文档
 - **P3 - 架构增强**: 健康检查、特性开关、插件市场、数据迁移
 
-详见: [IMPROVEMENT-PLAN.md](./IMPROVEMENT-PLAN.md)
+详见: IMPROVEMENT-PLAN.md（该文件已归档移除）

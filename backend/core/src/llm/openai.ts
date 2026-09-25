@@ -70,6 +70,8 @@ export function createOpenAILLM(config: OpenAIConfig = {}): LLM {
       retries: 0,
       modelLabel: model,
       signal: options?.signal,
+      // P1-10 熔断器透传（修复）：此前被静默丢弃，熔断器在真实调用链上从未生效。
+      circuitBreaker: options?.circuitBreaker,
       onToken: options?.onToken,
       onReasoning: options?.onReasoning,
     });

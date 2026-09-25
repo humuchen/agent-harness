@@ -129,6 +129,9 @@ export interface RunJob {
   /** 归属用户（= 认证身份 sub）：执行期经 runWithUser 注入工具链路，插件据此绑定数据归属。 */
   owner?: string;
 
+  /** 幂等键（可选）：活跃期间同键提交被去重；任务进入终态后索引即清。 */
+  idempotencyKey?: string;
+
   /** 事件重放缓冲（带上限裁剪）。 */
   events: unknown[];
 
@@ -163,6 +166,49 @@ export const PLAN_TASK_TIMEOUT_MS =
   Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
 // jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
 const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
+// 排队背压上限（防慢消费者无限堆积）：待执行队列长度达到该值时 submit 直接拒绝。
+// 0 = 不限（恢复旧行为）。仅约束进程内队列；redis 共享模式的积压由后端自身容量约束。
+const QUEUE_MAX_PENDING = Number(process.env.RUN_QUEUE_MAX_PENDING ?? 200) || 0;
+// 跨实例幂等键 TTL（仅共享后端生效）：须大于最长任务超时（planTask 10 分钟），默认 30 分钟。
+// 任务终态时会主动 DEL 释放；TTL 只是兜底（如执行实例整机失联）。
+const RUN_QUEUE_IDEM_TTL_MS =
+  Number(process.env.RUN_QUEUE_IDEM_TTL_MS ?? 1_800_000) || 1_800_000;
+// 共享模式下僵尸任务回收周期：此前 reclaimStale 仅在实例启动时执行一次，实例在
+// claim 与 ack 之间崩溃会让任务滞留 processing，长生命周期集群无人回收。
+const RUN_QUEUE_RECLAIM_INTERVAL_MS =
+  Number(process.env.RUN_QUEUE_RECLAIM_INTERVAL_MS ?? 60_000) || 60_000;
+
+/** 排队背压拒绝：待执行队列已达 RUN_QUEUE_MAX_PENDING，提交被拒（HTTP 层映射 429）。 */
+export class QueueBackpressureError extends Error {
+  constructor(public readonly pending: number, public readonly limit: number) {
+    super(`run queue is full: ${pending} pending jobs >= limit ${limit}`);
+    this.name = 'QueueBackpressureError';
+  }
+}
+
+/**
+ * 共享后端持久化失败：redis 不可用时 append 失败，任务将永远无法被 claim——
+ * 必须同步失败让调用方拿到 503 重试，而不是「有 jobId 无执行」的静默黑洞。
+ * status 字段被 server.ts 主分发器识别并映射为 HTTP 状态码。
+ */
+export class QueuePersistError extends Error {
+  readonly status = 503;
+  constructor(cause?: string) {
+    super(`run queue backend unavailable, submission not persisted${cause ? `: ${cause}` : ''}`);
+    this.name = 'QueuePersistError';
+  }
+}
+
+/** 跨实例幂等冲突（仅共享后端）：同 idempotencyKey 的活跃任务正在其它实例上执行。 */
+export class QueueDuplicateError extends Error {
+  readonly status = 409;
+  constructor(public readonly existingJobId?: string) {
+    super(
+      `duplicate idempotency key: an active run already exists (jobId: ${existingJobId ?? 'unknown'})`
+    );
+    this.name = 'QueueDuplicateError';
+  }
+}
 
 export class RunQueue {
   private jobs = new Map<string, RunJob>();
@@ -170,6 +216,9 @@ export class RunQueue {
   private running = 0;
   private seq = 0;
   private concurrency = CONCURRENCY;
+
+  /** 幂等索引：`owner|idempotencyKey` → jobId（仅覆盖 queued/running 活跃任务，结束即清）。 */
+  private idemIndex = new Map<string, string>();
 
   /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
   private runningSessions = new Set<string>();
@@ -181,6 +230,8 @@ export class RunQueue {
 
   /** 共享模式下领取任务的定时器（setInterval）。 */
   private claimTimer?: ReturnType<typeof setInterval>;
+  /** 共享模式下僵尸任务回收的周期定时器（setInterval）。 */
+  private reclaimTimer?: ReturnType<typeof setInterval>;
 
   constructor(backend?: QueueBackend) {
     this.backend = backend ?? createQueueBackend();
@@ -197,10 +248,12 @@ export class RunQueue {
 
   /**
    * 提交一次 agent 运行任务，立即返回 Job（不等待执行）。
-   * 提交意图会异步落盘（file/redis 后端），进程崩溃/重启后可重放尚未开始的任务。
-   * 共享后端（redis）下，执行由 claim 轮询驱动，本实例或任何空闲实例都会领取执行。
+   * 共享后端（redis）下持久化是同步前置：append 失败（如 Redis 不可用）会抛
+   * QueuePersistError（HTTP 503），杜绝「客户端拿到 jobId 但任务永远不被执行」；
+   * 单实例（memory/file）下落盘失败仅影响崩溃重放，维持仅告警语义。
+   * 幂等去重两层：进程内 Map（零开销）+ 共享模式 Redis SET NX（跨实例）。
    */
-  submit(input: {
+  async submit(input: {
     mode: RunMode;
     prompt: string;
     priority?: JobPriority;
@@ -221,9 +274,42 @@ export class RunQueue {
     interactionMode?: 'qa' | 'plan';
     planPhase?: 'propose' | 'execute';
     owner?: string;
-  }): RunJob {
+    /** 幂等键（可选）：同 owner 下该键存在活跃（排队/执行中）任务时，返回既有 job 不重复执行。 */
+    idempotencyKey?: string;
+  }): Promise<RunJob> {
+    const idemKey = input.idempotencyKey
+      ? `${input.owner ?? ''}|${input.idempotencyKey}`
+      : undefined;
+    // 第一层幂等去重（进程内）：命中活跃同键任务直接复用，防客户端重试/双击重复执行。
+    if (idemKey) {
+      const existingId = this.idemIndex.get(idemKey);
+      const existing = existingId ? this.jobs.get(existingId) : undefined;
+      if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+        return existing;
+      }
+      // 陈旧索引（任务已结束但索引未清）随手清理。
+      if (existingId) this.idemIndex.delete(idemKey);
+    }
+    // 排队背压：待执行队列达上限时拒绝提交（redis 共享模式由后端容量约束，不做进程内限制）。
+    if (!this.shared && QUEUE_MAX_PENDING > 0 && this.queue.length >= QUEUE_MAX_PENDING) {
+      throw new QueueBackpressureError(this.queue.length, QUEUE_MAX_PENDING);
+    }
     const id = `job_${++this.seq}_${Date.now().toString(36)}`;
+    // 第二层幂等去重（跨实例，仅共享后端）：Redis SET NX 原子占位。
+    // 既有任务可能在本实例的 jobs 表里查不到（其它实例提交），返回 409 + 既有 jobId；
+    // 其事件经 pub/sub 事件桥对任意实例可见，客户端仍可订阅该 jobId 的 SSE。
+    if (idemKey && this.shared && this.backend.tryAcquireIdem) {
+      const res = await this.backend
+        .tryAcquireIdem(idemKey, id, RUN_QUEUE_IDEM_TTL_MS)
+        .catch(() => ({ acquired: true } as { acquired: boolean; existingJobId?: string }));
+      if (!res.acquired) {
+        throw new QueueDuplicateError(res.existingJobId);
+      }
+    }
     const job = this.makeJob(input, id);
+    if (idemKey) {
+      this.idemIndex.set(idemKey, id);
+    }
     const descriptor: JobDescriptor = {
       id,
       mode: job.mode,
@@ -248,14 +334,26 @@ export class RunQueue {
       enqueuedAt: job.enqueuedAt
     };
 
-    // 异步落盘：不阻塞提交返回；失败仅记录，不影响内存态任务运行。
-    void this.backend.append(descriptor).catch((e) => {
-      console.error('[run-queue] persist failed:', (e as Error)?.message);
-    });
     if (this.shared) {
+      // P1 稳定性修复：共享模式下持久化是执行的前置——append 失败意味着没有任何
+      // 实例能 claim 到该任务，必须同步失败（503）并回滚已占用的资源。
+      try {
+        await this.backend.append(descriptor);
+      } catch (e) {
+        this.jobs.delete(id);
+        if (idemKey) this.idemIndex.delete(idemKey);
+        if (idemKey && this.backend.releaseIdem) {
+          void this.backend.releaseIdem(idemKey).catch(() => {});
+        }
+        throw new QueuePersistError((e as Error)?.message);
+      }
       // 执行由 claim 驱动；立即触发一次领取以减少首任务延迟（并发满则跳过，待 worker 空闲再扫）。
       void this.sweepOnce();
     } else {
+      // 单实例模式：落盘失败仅影响崩溃重放，不影响内存态任务运行，维持仅告警语义。
+      void this.backend.append(descriptor).catch((e) => {
+        console.error('[run-queue] persist failed:', (e as Error)?.message);
+      });
       this.queue.push(job);
       this.pump();
     }
@@ -282,34 +380,36 @@ export class RunQueue {
       traceId?: string;
       attachments?: Array<{ url: string; name: string; type: string }>;
       web?: boolean;
-      interactionMode?: 'qa' | 'plan';
-      planPhase?: 'propose' | 'execute';
-      owner?: string;
-    },
-    id: string
-  ): RunJob {
-    const job: RunJob = {
-      id,
-      status: 'queued',
-      mode: input.mode,
-      prompt: input.prompt,
-      model: input.model,
-      modelBaseUrl: input.modelBaseUrl,
-      modelApiKey: input.modelApiKey,
-      priority: input.priority,
-      sessionKey: input.sessionKey,
-      maxSteps: input.maxSteps,
-      verify: input.verify,
-      agentId: input.agentId,
-      domain: input.domain,
-      tenantId: input.tenantId,
-      web: input.web,
-      interactionMode: input.interactionMode,
-      planPhase: input.planPhase,
-      workflowId: input.workflowId,
-      traceId: input.traceId,
-      owner: input.owner,
-      attachments: input.attachments,
+    interactionMode?: 'qa' | 'plan';
+    planPhase?: 'propose' | 'execute';
+    owner?: string;
+    idempotencyKey?: string;
+  },
+  id: string
+): RunJob {
+  const job: RunJob = {
+    id,
+    status: 'queued',
+    mode: input.mode,
+    prompt: input.prompt,
+    model: input.model,
+    modelBaseUrl: input.modelBaseUrl,
+    modelApiKey: input.modelApiKey,
+    priority: input.priority,
+    sessionKey: input.sessionKey,
+    maxSteps: input.maxSteps,
+    verify: input.verify,
+    agentId: input.agentId,
+    domain: input.domain,
+    tenantId: input.tenantId,
+    web: input.web,
+    interactionMode: input.interactionMode,
+    planPhase: input.planPhase,
+    workflowId: input.workflowId,
+    traceId: input.traceId,
+    owner: input.owner,
+    idempotencyKey: input.idempotencyKey,
+    attachments: input.attachments,
       events: [],
       eventSeq: 0,
       subscribers: new Set(),
@@ -346,6 +446,26 @@ export class RunQueue {
     // 一直保持事件循环活跃而挂住（表现为测试文件级超时）。unref 后定时器照常触发，
     // 仅不再充当「进程存活」的引用。
     this.claimTimer.unref?.();
+    // P1 稳定性修复：僵尸任务回收周期化。此前 reclaimStale 仅在实例启动时执行一次，
+    // 实例在 claim 与 ack 之间崩溃会让任务滞留 processing；长生命周期集群中若无实例
+    // 重启则无人回收。周期默认 60s（RUN_QUEUE_RECLAIM_INTERVAL_MS 可调），远小于
+    // 租约时长（QUEUE_LEASE_MS 默认 300s），不会回收在飞任务。
+    if (this.backend.reclaimStale) {
+      this.reclaimTimer = setInterval(() => {
+        void this.backend
+          .reclaimStale!(leaseMs)
+          .then((moved) => {
+            if (moved > 0)
+              console.log(
+                `[run-queue] periodic reclaim moved ${moved} stale job(s) back to pending`
+              );
+          })
+          .catch((e) =>
+            console.error('[run-queue] periodic reclaim failed:', (e as Error)?.message)
+          );
+      }, RUN_QUEUE_RECLAIM_INTERVAL_MS);
+      this.reclaimTimer.unref?.();
+    }
     // 立即扫一次，缩短启动后首任务延迟。
     void this.sweepOnce();
   }
@@ -594,6 +714,10 @@ export class RunQueue {
       clearInterval(this.claimTimer);
       this.claimTimer = undefined;
     }
+    if (this.reclaimTimer) {
+      clearInterval(this.reclaimTimer);
+      this.reclaimTimer = undefined;
+    }
     // 清理所有 per-job 内存监控定时器。此前 stop() 遗漏此处：若任务在执行中被 stop
     // （或测试未等任务结束），这些定时器会残留并阻止 Node 进程退出 —— 即测试文件级超时的根因之一。
     for (const [jobId, timer] of this.memoryCheckTimers) {
@@ -732,15 +856,15 @@ export class RunQueue {
       // P2.2 用量统计：捕获 run:cost 事件，把 token / 成本累计进 per-owner 配额引擎
       // （keyed by owner，与 admit 的 tenantId 维度解耦；默认无硬上限，仅统计看板用）。
       if (e.type === 'run:cost') {
-        quotaEngine.recordUsage(job.owner ?? 'anonymous', {
-          tokens:
-            (e as unknown as { usage?: { total_tokens?: number } }).usage
-              ?.total_tokens ?? 0,
-          cost:
-            typeof (e as unknown as { stepCost?: number }).stepCost === 'number'
-              ? (e as unknown as { stepCost: number }).stepCost
-              : 0
-        });
+        const costEvt = e as unknown as { usage?: { total_tokens?: number }; stepCost?: number };
+        const tokens = costEvt.usage?.total_tokens ?? 0;
+        const cost =
+          typeof costEvt.stepCost === 'number' ? costEvt.stepCost : 0;
+        // 租户维度累计（run 结束时经 settleUsage 冲销 admit 预留并记入 tenant 窗口）。
+        actualTokens += tokens;
+        actualCost += cost;
+        // owner 维度统计看板保持原语义（与 admit 的 tenantId 维度解耦）。
+        quotaEngine.recordUsage(job.owner ?? 'anonymous', { tokens, cost });
       }
       emit(e);
     };
@@ -762,6 +886,11 @@ export class RunQueue {
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
     const tenantIdForQuota = job.tenantId ?? 'anonymous';
+    // 配额闭环（DB tenant 表 + 多副本）：租户维度实际用量累计 + admit 预留，
+    // run 结束在 finally 里 settleUsage（实际替换预留）+ releaseAsync（归还并发槽）。
+    let actualTokens = 0;
+    let actualCost = 0;
+    let quotaReservation: { tokens: number; cost: number } | null = null;
     // 在 try 之外保存，供 finally 中的审计留存引用（try 内 const 不可见于 finally）。
     let resolvedAgentId: string | null = null;
     let admitted = false;
@@ -866,16 +995,25 @@ export class RunQueue {
           return;
         }
 
-        // P0-2 / P0-B: 配额/计费准入：QPS 令牌桶 + 并发信号量 + 成本硬上限。
-        // 从环境变量读取 MAX_COST_PER_WINDOW（默认 0=关闭硬上限）。
-        // 任一维度拒绝则整体拒绝——不消耗配额、不装配 harness，直接标记失败并审计留痕。
-        // （return 发生在 try 内，finally 仍会执行看门狗清理与并发额度归还。）
+        // P0-2 / P0-B / 配额接线：准入升级为 admitAsync（多副本走 Redis Lua 原子脚本，
+        // 故障自动降级进程内）。配置优先级：DB tenant 表（getQuota 内部叠加，仅覆盖显式
+        // 字段）> env default（server 启动 setDefault 已并入 default cfg）。
+        // 硬上限维度：maxCostPerWindow 或 maxTokensPerWindow 任一 > 0 即启用窗口硬上限。
         // P0-B 修复：requestedCost 传本次预估成本（或 0），而非窗口总预算；
         // 原代码传 maxCostPerWindow 导致每次 admit 累加整个窗口预算，第 2 次调用即被拒。
-        const maxCostPerWindow = Number(process.env.MAX_COST_PER_WINDOW) || 0;
+        const quotaCfg = quotaEngine.getQuota(tenantIdForQuota);
+        const costLimitOn = (quotaCfg.maxCostPerWindow ?? 0) > 0;
+        const hardLimit = costLimitOn || (quotaCfg.maxTokensPerWindow ?? 0) > 0;
         const estimatedCostPerRun = 0.5; // 单轮 run 预估成本（美元），用于配额准入判断
-        const costPerRun = maxCostPerWindow > 0 ? estimatedCostPerRun : 0;
-        const admit = quotaEngine.admit(tenantIdForQuota, { cost: costPerRun }, maxCostPerWindow > 0);
+        const admit = await quotaEngine.admitAsync(
+          tenantIdForQuota,
+          {
+            cost: costLimitOn ? estimatedCostPerRun : 0,
+            // token 无法预估：预留 0，run 结束按 run:cost 实际累计结算冲销
+            tokens: 0
+          },
+          hardLimit
+        );
         if (!admit.allowed) {
           emit({
             type: 'warn',
@@ -899,6 +1037,7 @@ export class RunQueue {
           return;
         }
         admitted = true;
+        quotaReservation = admit.reservation ?? { tokens: 0, cost: 0 };
         resolvedAgentId = route?.agentId ?? job.agentId ?? 'default';
         audit({
           tenantId: job.tenantId,
@@ -1198,13 +1337,36 @@ export class RunQueue {
       } finally {
         clearTimeout(watchdog);
         if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
+        // 幂等索引清理：任务进入终态后，同键新提交不再被去重拦截。
+        if (job.idempotencyKey) {
+          const key = `${job.owner ?? ''}|${job.idempotencyKey}`;
+          if (this.idemIndex.get(key) === job.id) this.idemIndex.delete(key);
+          // 共享后端：跨实例幂等键（Redis）随终态释放，允许同键新提交。
+          // 任务可能在其它实例被 claim 执行，故不能只看本进程索引。
+          if (this.shared && this.backend.releaseIdem) {
+            void this.backend.releaseIdem(key).catch(() => {});
+          }
+        }
         job.finishedAt = Date.now();
         recordLatency(
           'run.totalMs',
           job.finishedAt - (job.startedAt ?? job.finishedAt)
         );
-        // P2.a：归还并发额度（admit 成功才消耗；denied 路径 active=0，release 为 no-op 安全）。
-        if (admitted) quotaEngine.release(tenantIdForQuota);
+        // P2.a：配额闭环收尾——先结算实际用量（冲销 admit 预留，实际替换预留），
+        // 再归还并发槽（多副本走 Redis Lua；Redis 故障自动降级进程内）。
+        // settle 失败不阻断收尾（配额是保护性限流，可用性优先）。
+        if (admitted) {
+          try {
+            await quotaEngine.settleUsage(
+              tenantIdForQuota,
+              { tokens: actualTokens, cost: actualCost },
+              quotaReservation ?? undefined
+            );
+          } catch {
+            /* 结算失败仅丢窗口统计，不影响 run 收尾 */
+          }
+          await quotaEngine.releaseAsync(tenantIdForQuota);
+        }
         // P2.a：运行结束审计留痕（成功/失败，便于强合规租户对账）。
         audit({
           tenantId: job.tenantId,

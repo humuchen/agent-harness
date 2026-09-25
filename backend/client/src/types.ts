@@ -462,7 +462,7 @@ export interface A2ARequest {
 
 /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
 
-export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'skipped' | 'awaiting';
+export type StepState = 'pending' | 'running' | 'done' | 'failed' | 'compensated' | 'compensate-failed' | 'skipped' | 'awaiting';
 
 export interface StepDef {
   id: string;

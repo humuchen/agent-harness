@@ -376,7 +376,23 @@ export async function handleAccountRoutes(
       'content-type': 'application/json',
       'cache-control': 'no-store'
     });
-    res.end(JSON.stringify({ ok: true, resetToken: r.resetToken ?? null }));
+    // P0 安全修复：重置凭证默认带外下发（邮件/管理员转交），不再回传 HTTP 响应体——
+    // 此前任何知道用户名的人调用本端点即可拿到 resetToken 接管任意账户（含 admin）。
+    // 本地演示/联调可显式 PASSWORD_RESET_INLINE_TOKEN=on 恢复回传（仅限非公网环境）。
+    const inline = ['1', 'true', 'on', 'yes'].includes(
+      (process.env.PASSWORD_RESET_INLINE_TOKEN ?? '').trim().toLowerCase()
+    );
+    res.end(
+      JSON.stringify(
+        inline
+          ? { ok: true, resetToken: r.resetToken ?? null }
+          : {
+              ok: true,
+              message:
+                '如果该账号存在，重置凭证已生成；请通过邮件或管理员获取（本部署未开启演示回显 PASSWORD_RESET_INLINE_TOKEN）。'
+            }
+      )
+    );
     return true;
   }
   if (req.method === 'POST' && path === '/api/account/reset-password') {

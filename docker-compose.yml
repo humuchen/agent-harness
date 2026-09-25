@@ -11,7 +11,10 @@ services:
       dockerfile: Dockerfile
     image: agent-harness:local
     ports:
-      - '4173:4173'
+      # P1（D2）：缺省只绑回环——自托管实例带执行能力与全量数据面，
+      # 不应默认对局域网/公网开放。需要外部访问时显式设 AH_BIND_IP=0.0.0.0
+      # （并配合反代/隧道鉴权），或走 tunnel overlay。
+      - '${AH_BIND_IP:-127.0.0.1}:4173:4173'
     environment:
       NODE_ENV: production
       PORT: '4173'
@@ -73,6 +76,10 @@ services:
       # 必须透传 .env 的 AH_CRYPTO_KEY（或单独的 AH_AUTH_SECRET）到容器。
       AH_CRYPTO_KEY: '${AH_CRYPTO_KEY:-}'
       AH_AUTH_SECRET: '${AH_AUTH_SECRET:-}'
+      # ── 可信代理网段（P1 安全修复）：仅当 TCP 对端落在列表内才采信 XFF/CF 头。
+      # 缺省含 docker 默认桥接网段（覆盖 cloudflared / 同 compose 内反代 sidecar）
+      # 与回环；直连公网部署时应收窄为实际反代所在网段，防止伪造头绕过 IP 限流。
+      TRUST_PROXY_CIDRS: '${TRUST_PROXY_CIDRS:-172.16.0.0/12,127.0.0.0/8,::1/128}'
       # ── 成本硬上限（P2 Go-live）：每窗口最大成本（美元），0=不限
       MAX_COST_PER_WINDOW: '10'
       # ── 告警路由（P2）：ALERT_WEBHOOK_URL 推送至 Slack/飞书/钉钉入站 Webhook
@@ -110,18 +117,26 @@ services:
       #   RUN_QUEUE_BACKEND=redis        # 多副本共享运行队列
       #   AGENT_STORE=redis              # 多副本共享 AgentRegistry
     restart: unless-stopped
+    # P2 容器加固补齐：与 Dockerfile 注释建议、k8s securityContext 对齐——
+    # 禁止提权 + 丢弃全部 Linux capabilities（应用仅需绑定 >1024 端口与读写挂载卷）。
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
+      # P1 修复接线：/api/state 不探测任何依赖；/health/ready 真实探测 DB/Redis/内存
+      #（未配置的依赖自动跳过），Redis 宕机时容器被标记 unhealthy 而非假活。
       test:
         [
           'CMD',
           'node',
           '-e',
-          "fetch('http://127.0.0.1:4173/api/state').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+          "fetch('http://127.0.0.1:4173/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     volumes:
       # 共享记忆卷：ui 容器把记忆与插件数据写入 /app/data（file 后端），重启不丢。
       - data:/app/data

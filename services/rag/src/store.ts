@@ -158,7 +158,26 @@ export class MemoryVectorStore {
   load(file: string, shardByTenant = false): void {
     if (!shardByTenant) {
       if (!existsSync(file)) return;
-      const raw = JSON.parse(readFileSync(file, 'utf8')) as { dim: number; chunks: Chunk[] };
+      // P2 统一损坏策略（rag 为 stdlib-only，不引 core，内联等价实现）：
+      // 解析失败 → console.error 告警 + 隔离改名（保留现场）+ 以空索引继续。
+      // 此前 JSON.parse 失败直接抛出 → createRagServer 启动即崩、进入崩溃循环。
+      let raw: { dim: number; chunks: Chunk[] };
+      try {
+        raw = JSON.parse(readFileSync(file, 'utf8')) as { dim: number; chunks: Chunk[] };
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        const quarantined = `${file}.corrupt-${Date.now()}`;
+        try {
+          renameSync(file, quarantined);
+        } catch {
+          /* 隔离失败保留原位，下次启动会再次进入本路径告警 */
+        }
+        console.error(
+          `[rag-store] 索引文件损坏（${detail}），已隔离为 ${quarantined}，按空索引继续。` +
+            `如需恢复请基于 .corrupt-* 文件人工修复后重新 ingest。`
+        );
+        return;
+      }
       if (raw.dim !== this.dim) {
         throw new Error(`持久化维度(${raw.dim})与当前(${this.dim})不一致`);
       }
@@ -171,7 +190,24 @@ export class MemoryVectorStore {
     if (existsSync(dir)) {
       for (const name of readdirSync(dir)) {
         if (!name.startsWith(base + '.') || !name.endsWith('.json')) continue;
-        const raw = JSON.parse(readFileSync(join(dir, name), 'utf8')) as { dim: number; chunks: Chunk[] };
+        const shardPath = join(dir, name);
+        // 分片损坏：告警 + 隔离改名 + 跳过该分片继续（此前静默跳过，数据静默丢失不可见）。
+        let raw: { dim: number; chunks: Chunk[] };
+        try {
+          raw = JSON.parse(readFileSync(shardPath, 'utf8')) as { dim: number; chunks: Chunk[] };
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
+          const quarantined = `${shardPath}.corrupt-${Date.now()}`;
+          try {
+            renameSync(shardPath, quarantined);
+          } catch {
+            /* 隔离失败保留原位 */
+          }
+          console.error(
+            `[rag-store] 索引分片损坏（${detail}），已隔离为 ${quarantined}，跳过该分片继续。`
+          );
+          continue;
+        }
         if (raw.dim !== this.dim) continue;
         for (const c of raw.chunks) this.chunks.set(c.chunk_id, c);
         loaded++;

@@ -8,6 +8,7 @@ import {
   sanitizeKey,
 } from './memory-store';
 import { jevDecide, resolveJevCreds } from './builtins/typesafe-jev';
+import { structLog } from './telemetry';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。
@@ -588,9 +589,18 @@ export class Memory {
       // 异步打分不阻塞 add()
       const scores = this.opts.scorer.scoreWindow(this.window, this.lastInput);
       if (scores instanceof Promise) {
-        void scores.then((s) => {
-          this.windowScores = s;
-        });
+        // .catch 必须挂上（P1 C3）：插件 scorer 抛错若不接住，会以
+        // unhandledRejection 形式直接炸掉进程（Node ≥15 默认 crash），
+        // 且该路径位于 add() 热路径上。打分失败只降级为「本轮无分数」。
+        void scores
+          .then((s) => {
+            this.windowScores = s;
+          })
+          .catch((e) => {
+            structLog('warn', 'memory: async scorer failed, skipping scores', {
+              error: e instanceof Error ? e.message : String(e),
+            });
+          });
       } else {
         this.windowScores = scores;
       }

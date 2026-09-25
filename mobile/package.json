@@ -6,9 +6,9 @@
   "description": "Mobile client (Capacitor) for agent-harness: wraps frontend/webapp/dist in a native iOS/Android shell with push, deep-link, file-upload, biometric auth, and offline cache.",
   "scripts": {
     "build": "pnpm --filter @agent-harness/webapp run build && node scripts/cap-sync-guard.mjs",
-    "dev": "cap sync && node scripts/splash-copy.mjs && cap open ios",
-    "dev:android": "cap sync && node scripts/splash-copy.mjs && cap open android",
-    "sync": "cap sync && node scripts/splash-copy.mjs",
+    "dev": "cap sync && node scripts/splash-copy.mjs && node scripts/harden-android.mjs && cap open ios",
+    "dev:android": "cap sync && node scripts/splash-copy.mjs && node scripts/harden-android.mjs && cap open android",
+    "sync": "cap sync && node scripts/splash-copy.mjs && node scripts/harden-android.mjs",
     "splash:copy": "node scripts/splash-copy.mjs",
     "open:ios": "cap open ios",
     "open:android": "cap open android",

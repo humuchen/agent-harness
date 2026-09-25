@@ -14,8 +14,11 @@ test('resolveTenantDbPath: general / 空 / 未传 = 原路径不变（向后兼�
 });
 
 test('resolveTenantDbPath: medical zone 落到子目录', () => {
+  // 用 path.normalize 做平台无关断言：实现经 path.join 拼接，Windows 产出反斜杠
+  // （曾因硬编码 'data/medical/app.db' 在 Windows 上稳定失败）。
+  const path = require('node:path');
   const p = resolveTenantDbPath('./data/app.db', 'medical');
-  assert.ok(p.includes('data/medical/app.db'), '应含 medical 子目录，实际：' + p);
+  assert.ok(p.includes(path.normalize('data/medical/app.db')), '应含 medical 子目录，实际：' + p);
 });
 
 test('resolveTenantDbPath: 非法 zone（路径穿越）回退原路径', () => {

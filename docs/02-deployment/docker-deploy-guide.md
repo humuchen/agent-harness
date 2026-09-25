@@ -15,17 +15,17 @@
 
 ## 1. 架构速览（先搞清楚跑起来的是什么）
 
-| 项       | 说明                                                                    |
-| -------- | ----------------------------------------------------------------------- |
-| 构建     | `Dockerfile` 多阶段：node:22-bookworm 构建 → node:22-bookworm-slim 运行 |
-| 进程     | `node access/server/dist/server.js`                                     |
-| 监听     | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0）                          |
-| 托管     | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI）     |
-| 健康检查 | `GET /api/state` 与 `GET /api/v1/state` 均开放（无需令牌，返回 200 JSON） |
-| 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本）        |
-| 运行用户 | 镜像内已用非 root 用户 `ah` 运行                                        |
+| 项       | 说明                                                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 构建     | `Dockerfile` 多阶段：node:22-bookworm 构建 → node:22-bookworm-slim 运行                                                               |
+| 进程     | `node access/server/dist/server.js`                                                                                                   |
+| 监听     | `PORT`（默认 4173）/ `UI_HOST`（默认 0.0.0.0）                                                                                        |
+| 托管     | server 优先托管 `frontend/webapp/dist`（即我们做的「运行」面板 UI）                                                                   |
+| 健康检查 | 容器探针已切换为 `GET /health/ready`（真实探测 DB/Redis/内存水位，未配置的依赖自动跳过）；`GET /health/live`、`GET /api/state` 均开放 |
+| 运行队列 | 默认内存模式；启用 `redis` profile 后由 Redis 接管（支持多副本）                                                                      |
+| 运行用户 | 镜像内已用非 root 用户 `ah` 运行                                                                                                      |
 
-> 注意：健康检查端点为 `/api/state`。早期版本健康检查误写为 `/api/v1/state`（当时确无对应 handler，返回 404），现已在 `server.ts` 路由入口将 `/api/v1/*` 重写为 `/api/*`，故 `/api/v1/state` 与 `/api/state` **二者均返回 200**，部署后 `docker ps` 应显示 `healthy`。
+> 注意：容器 HEALTHCHECK 与 compose healthcheck 已从 `/api/state` 切换到 **`/health/ready`**（探针接线修复——`/api/state` 不探测任何依赖，Redis 宕机时仍返回 200 误判存活）。`/api/v1/state` 与 `/api/state` 经路由重写仍均返回 200，可作兼容探活；liveness 请用 `/health/live`。compose 已附加 `no-new-privileges` + `cap_drop: ALL` 容器加固。
 
 ---
 
@@ -181,10 +181,10 @@ docker compose down -v
 ## 10. 常见问题（FAQ）
 
 **Q1：构建特别慢 / 卡在 install？**
-A：首次构建需联网拉全部依赖 + Vite 全量构建，几分钟级属正常。若卡死，确认 Docker 有网络访问；`pnpm` 版本不一致时 build 会自动 `--no-frozen-lockfile` 自愈。
+A：首次构建需联网拉全部依赖 + Vite 全量构建，几分钟级属正常。若卡死，确认 Docker 有网络访问；锁文件漂移时构建会显式失败（`STRICT_LOCKFILE=0` 为显式逃生门，仅限本地试验）。
 
 **Q2：`docker ps` 显示 unhealthy？**
-A：健康检查走 `/api/state`（与版本化 `/api/v1/state` 等价，均 200）。若仍 unhealthy，确认是用最新代码 `up --build` 重建的；或手动 `curl http://localhost:4173/api/state` 验证。
+A：健康检查走 `/health/ready`（真实探测 DB/Redis/内存水位，未配置的依赖自动跳过）。若仍 unhealthy，先 `curl http://localhost:4173/health/ready` 看分项检查哪个失败；确认是用最新代码 `up --build` 重建的（旧镜像探针仍打 `/api/state`）。
 
 **Q3：浏览器打不开 / 端口被占用？**
 A：换映射端口，如 `docker run -p 8080:4173 ...`，访问 `http://localhost:8080`。compose 改 `ports: ["8080:4173"]`。
@@ -212,8 +212,9 @@ docker compose up --build -d
 docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up --build -d
 # 看状态
 docker ps
-# 看健康
-curl http://localhost:4173/api/state
+# 看健康（readiness 真实探测 / liveness 进程存活）
+curl http://localhost:4173/health/ready
+curl http://localhost:4173/health/live
 # 看日志
 docker compose logs -f
 # 停

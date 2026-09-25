@@ -17,11 +17,11 @@ test('SkillRegistry 注册与查询', () => {
   assert.throws(() => r.register({ id: '', title: 'x', description: 'd' }));
 });
 
-test('defaultSkills 提供 5 个默认技能', () => {
+test('defaultSkills 提供 6 个默认技能', () => {
   const list = defaultSkills();
-  assert.strictEqual(list.length, 5);
+  assert.strictEqual(list.length, 6);
   const ids = list.map((s) => s.id).sort();
-  assert.deepStrictEqual(ids, ['current-time', 'files', 'math', 'repo-verify', 'web-research']);
+  assert.deepStrictEqual(ids, ['current-time', 'doc-export', 'files', 'math', 'repo-verify', 'web-research']);
   for (const s of list) {
     // tools 允许为空（prompt-only 技能，如 repo-verify），但 triggers 必须声明
     assert.ok(s.triggers && s.triggers.length > 0, `${s.id} 应声明 triggers`);
@@ -29,6 +29,12 @@ test('defaultSkills 提供 5 个默认技能', () => {
   const repoVerify = list.find((s) => s.id === 'repo-verify');
   assert.ok(repoVerify, 'repo-verify 技能存在');
   assert.ok(repoVerify.prompt && repoVerify.prompt.length > 20, 'repo-verify 应携带执行指引');
+  const docExport = list.find((s) => s.id === 'doc-export');
+  assert.ok(docExport, 'doc-export 技能存在');
+  assert.ok(
+    docExport.tools?.includes('builtin__doc_export') && docExport.tools?.includes('builtin__deliver_file'),
+    'doc-export 应关联生成与交付工具'
+  );
 });
 
 test('matchTriggers 中文/英文触发词（大小写不敏感）', () => {

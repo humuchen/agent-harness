@@ -35,6 +35,7 @@ import {
   type TenantContext,
   tenantSessionKey,
   policyEngine,
+  resolveTenantGuardrailPolicy,
   type ContentBlock,
   type GuardrailPolicy,
   getPluginToolRegistry,
@@ -46,6 +47,7 @@ import { waitApproval } from './shell-approval';
 import { bridgeHarnessEvent } from './plugin-bootstrap';
 import { DEFAULTS } from './config-defaults';
 import { registerSubAgentTool } from './subagent-tools';
+import { registerDeliverFileTool } from './deliver-file';
 import { getTeamManager, initTeamManager, getAgentRegistry } from '@agent-harness/core';
 import path from 'node:path';
 
@@ -438,6 +440,15 @@ export async function assembleAgent(
       : {})
   });
 
+  // 文件交付闭环（P-交付闭环）：把沙箱内已生成的文件注册进 artifact-store，
+  // 使 doc_export / fs_write 的产物出现在「📎 交付文件」区可预览 / 可下载。
+  // runId 从 sessionKey 推导：plan 步骤（wf:<workflowId>:<stepId>）对齐 plan-artifacts 的
+  // list(def.id) 同键；owner 经 runWithUser 上下文取归属用户（无则匿名桶）。
+  registerDeliverFileTool(tools, {
+    fsRoot: process.env.HARNESS_FS_ROOT || process.cwd(),
+    sessionKey: sessionKey ?? ''
+  });
+
   // 技能编排层：把基础工具打包成模型可一键选用的复合能力。
   // 注册表 + 元工具（builtin__use_skill）均为新增，不修改 Agent 主循环；
   // 技能目录与触发词自动预激活的指引会注入系统提示词。
@@ -752,11 +763,10 @@ export async function assembleAgent(
     process.env.AGENT_COMPLETION_CHECK === 'true' ||
     process.env.AGENT_COMPLETION_CHECK === '1';
   // P0.3：按租户取护栏策略（含出网 network 约束），注入 harness 的 per-run 覆盖；
-  // 无 tenant 时取默认策略（与全局 default 一致，向后兼容）。该策略会自动覆盖
-  // checkInput/checkOutput/checkToolArgs/redactOutput 的判定与 web_fetch 出网管控。
-  const basePolicy = tenantCtx
-    ? policyEngine.getPolicy(tenantCtx.id)
-    : policyEngine.getPolicy(undefined);
+  // 统一经 guardrails-tenant 解析点（TTL 引擎注册表，租户间互不影响），无租户回退
+  // 部署默认策略（向后兼容）。该策略会自动覆盖 checkInput/checkOutput/checkToolArgs/
+  // redactOutput 的判定与 web_fetch 出网管控（含 DNS rebinding 解析级校验）。
+  const basePolicy = resolveTenantGuardrailPolicy(tenantCtx?.id);
   // P0.x 治本：按 agent 卡片领域派生「业务护栏作用域」，使领域护栏（如医疗广告法）
   // 仅对对应领域 agent 生效。默认/generic agent 显式排除（scopes:[]），
   // 杜绝「全局注册导致默认 agent 被医美护栏误拦」（见 Clipboard_Screenshot 误报 case）。
@@ -805,6 +815,9 @@ export async function assembleAgent(
       : Number(process.env.MAX_TOOL_CALLS_PER_STEP ?? 0) || 0,
     // P2：把租户身份注入 harness，使 token / cost / run 指标能按 tenantId 聚合（审计/计费）。
     ...(tenantCtx?.id ? { tenantId: tenantCtx.id } : {}),
+    // P1（leadId 注入防护）：会话标识随工具 ctx 透传给插件工具，供服务端
+    // session→leadId 绑定校验（医美插件据此拒绝跨会话写他人客资档案）。
+    ...(sessionKey ? { sessionId: sessionKey } : {}),
     // 计划模式 propose（P0）：计划 JSON 输出走结构化校验，跳过业务合规输出规则。
     ...(planPropose ? { planPropose: true } : {}),
     // 计划任务执行（P0）：教学内容输出走 checkTaskOutput 宽松扫描（弱信号短语 /

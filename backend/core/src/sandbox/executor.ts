@@ -13,7 +13,7 @@
 // 供 UI / 可观测 / 审计使用。
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { scrubEnv, wireAbort, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox';
+import { scrubEnv, wireAbort, createCappedAccumulator, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox';
 import { detectCapabilities, type OSSandboxCapabilities } from './detect';
 import { buildHelperArgs, buildUnshareFallbackArgs } from './args';
 import { normalizeProfile } from './policy';
@@ -94,7 +94,8 @@ export class OSSandboxExecutor implements SandboxExecutor {
 
     if (this.backend === 'os-unshare') {
       // 纯 unshare 降级：仅命名空间 + 部分 rlimit，无 seccomp/能力裁剪。
-      const active = this.profile.namespaces?.length ?? 0 > 0;
+      // （修复 ?? 与 > 的优先级问题：原 `?? 0 > 0` 实为 `?? (0 > 0)`，active 得到数字而非布尔。）
+      const active = (this.profile.namespaces?.length ?? 0) > 0;
       structLog('warn', '[sandbox] OS-level isolation using unshare fallback (no seccomp/capabilities)', {
         backend: 'os-unshare',
         namespaces: active,
@@ -128,10 +129,10 @@ export class OSSandboxExecutor implements SandboxExecutor {
         });
       }
 
-      let stdout = '';
-      let stderr = '';
-      proc.stdout?.on('data', (d) => (stdout += d.toString()));
-      proc.stderr?.on('data', (d) => (stderr += d.toString()));
+      const out = createCappedAccumulator('stdout');
+      const errOut = createCappedAccumulator('stderr');
+      proc.stdout?.on('data', (d) => out.push(d));
+      proc.stderr?.on('data', (d) => errOut.push(d));
 
       const timer = setTimeout(() => {
         try {
@@ -146,7 +147,7 @@ export class OSSandboxExecutor implements SandboxExecutor {
         }
       }, req.timeoutMs);
 
-      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
+      wireAbort(req, proc, timer, finish, () => ({ stdout: out.toString(), stderr: errOut.toString() }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
@@ -156,11 +157,11 @@ export class OSSandboxExecutor implements SandboxExecutor {
           local.exec(req).then(finish);
           return;
         }
-        finish({ stdout, stderr: `error: ${err.message}`, code: -1, signal: null });
+        finish({ stdout: out.toString(), stderr: `error: ${err.message}`, code: -1, signal: null });
       });
       proc.on('close', (code, signal) => {
         clearTimeout(timer);
-        finish({ stdout, stderr, code: code ?? null, signal: signal ?? null });
+        finish({ stdout: out.toString(), stderr: errOut.toString(), code: code ?? null, signal: signal ?? null });
       });
     });
   }

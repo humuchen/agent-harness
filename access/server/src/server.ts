@@ -1,9 +1,13 @@
 import { createServer } from 'node:http';
-import { readFile, appendFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+// P0-2：告警装配、崩溃防护、优雅停机已拆出到独立模块，server.ts 聚焦 HTTP 路由编排。
+import { setupAlerting } from './alerting-setup';
+import { installCrashGuard } from './crash-guard';
+import { createShutdownHandler } from './graceful-shutdown';
 import {
   defaultPromptFor,
   getMemoryStore,
@@ -21,7 +25,6 @@ import {
   Memory,
   sanitizeKey,
   structLog,
-  setAlertSink,
   emitAlert,
   logError,
   resolveOpenRouterConfig,
@@ -33,8 +36,6 @@ import {
   policyEngine,
   getTokenCacheStats,
   getTokenCacheHistory,
-  startTokenCacheAggregation,
-  setTokenCacheAlertSink,
   type VerifyConfig,
   type AgentCard,
   type AgentHealth,
@@ -212,6 +213,7 @@ import { installScrubber } from './log-scrub';
 
 import { DEFAULTS, cfgNum } from './config-defaults';
 import { rateLimited } from './rate-limit';
+import { isTrustedProxy } from './trusted-proxy';
 import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes';
 import { handleDeviceRoutes } from './routes/device-routes';
 import { handleDatasourceRoutes } from './routes/datasource-routes';
@@ -253,7 +255,8 @@ import {
 } from './provider-keys';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
-import { quotaEngine } from '@agent-harness/core';
+import { quotaEngine, TenantQuotaStore } from '@agent-harness/core';
+import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
 import { registerOAuthRoutes } from './oauth';
@@ -414,14 +417,23 @@ const openApiSpec = buildOpenApiSpec();
 // 安全 / 可观测辅助
 // ---------------------------------------------------------------------------
 
-/** 取客户端真实 IP：优先 Cloudflare 注入头，其次 X-Forwarded-For 首个，最后 socket。 */
+/**
+ * 取客户端真实 IP（P1 安全修复）：
+ * 仅当 TCP 对端落在 TRUST_PROXY_CIDRS 可信网段内才采信代理注入头
+ * （Cloudflare 头优先，其次 X-Forwarded-For 首段）；否则一律以 socket 地址为准——
+ * 直连部署下伪造 XFF/CF 头不再能绕过基于 IP 的限流与审计。
+ * 缺省仅信任回环（同机反代拓扑零配置可用）；docker 网络代理见 compose 注入的缺省值。
+ */
 function clientIp(req: IncomingMessage): string {
-  const cf = req.headers['cf-connecting-ip'];
-  if (typeof cf === 'string' && cf.length) return cf.trim();
-  const xff = req.headers['x-forwarded-for'];
-  if (typeof xff === 'string' && xff.length)
-    return (xff.split(',')[0] ?? '').trim();
-  return req.socket?.remoteAddress || 'unknown';
+  const remote = req.socket?.remoteAddress || 'unknown';
+  if (isTrustedProxy(remote)) {
+    const cf = req.headers['cf-connecting-ip'];
+    if (typeof cf === 'string' && cf.length) return cf.trim();
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.length)
+      return (xff.split(',')[0] ?? '').trim();
+  }
+  return remote;
 }
 
 // 固定窗口限流已收敛到 ./rate-limit（阈值与窗口显式传入）。
@@ -471,12 +483,32 @@ function auditAction(action: string, fields: Record<string, unknown>): void {
   audit({ kind: 'action', action, ...fields });
 }
 
-/** 去掉 URL 中的查询串，避免把内嵌 token 写进审计日志。 */
+/** 需要在日志/审计中脱敏值的查询参数（不区分大小写）。 */
+const REDACT_URL_PARAMS = new Set([
+  'token',
+  'access_token',
+  'api_key',
+  'apikey',
+  'key',
+  'secret',
+  'password',
+  'sig',
+  'signature',
+]);
+
+/**
+ * 脱敏 URL 中的敏感查询参数值（如 ?token=...），供审计/错误日志使用。
+ * 相比「整段去掉查询串」，保留非敏感参数便于排障；敏感参数值替换为 [redacted]。
+ */
 function redactUrl(url?: string): string {
   if (!url) return '';
   try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
+    const u = new URL(url, 'http://localhost');
+    for (const [k] of u.searchParams) {
+      if (REDACT_URL_PARAMS.has(k.toLowerCase())) u.searchParams.set(k, '[redacted]');
+    }
+    // 相对路径保持相对形式；绝对 URL 保留 origin。
+    return url.startsWith('/') ? u.pathname + u.search : u.origin + u.pathname + u.search;
   } catch {
     return url.split('?')[0] ?? '';
   }
@@ -501,7 +533,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: false,
       status: 401
@@ -559,7 +591,7 @@ async function guard(
       audit({
         kind: 'request',
         method: req.method,
-        path: req.url,
+        path: redactUrl(req.url),
         ip,
         authed: true,
         status: 403,
@@ -599,7 +631,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: true,
       status: 429,
@@ -618,7 +650,7 @@ async function guard(
     audit({
       kind: 'request',
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       ip,
       authed: true,
       status: 403,
@@ -635,7 +667,7 @@ async function guard(
   audit({
     kind: 'request',
     method: req.method,
-    path: req.url,
+    path: redactUrl(req.url),
     ip,
     authed: true,
     action
@@ -806,11 +838,25 @@ let pluginSystem!: PluginSystem;
 
 const server = createServer(
   async (req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(
-      req.url ?? '/',
-      `http://${req.headers.host ?? 'localhost'}`
-    );
-    let path = url.pathname;
+    // 路径解析必须在主 try 之前安全化：Host 头是用户可控输入，`new URL(url, 'http://${host}')`
+    // 对非法 host 会同步抛出 —— 此前裸露在主 try 之外，异常会穿透到 crashGuard 直接 exit(1)。
+    // 三级回落：完整解析 → 去查询串按 localhost 解析 → 兜底 '/'。
+    let url: URL;
+    let path = '/';
+    try {
+      url = new URL(
+        req.url ?? '/',
+        `http://${req.headers.host ?? 'localhost'}`
+      );
+      path = url.pathname;
+    } catch {
+      try {
+        url = new URL(String(req.url ?? '/').split('?')[0] || '/', 'http://localhost');
+        path = url.pathname;
+      } catch {
+        url = new URL('/', 'http://localhost');
+      }
+    }
     // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
     if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
 
@@ -935,8 +981,8 @@ const server = createServer(
         }
       }
       // 边缘路由（公开/运维探针）：命中即短路分发，未命中继续主链。
-      // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config、
-      // /api/errors（受 guard 保护的错误明细 JSON 由下方单独处理）。
+      // 覆盖 health/live、health/ready、/api/state、/api/sandbox、/api/auth/config。
+      // /api/errors 已移出 edge 表：错误明细必须受 errors:read 保护（下方与 /errors 页同区处理）。
       if (
         await tryDispatchEdgeRoute(
           edgeRoutes,
@@ -990,6 +1036,39 @@ const server = createServer(
         res.end(renderErrorsHtml());
         return;
       }
+      // 错误明细 JSON API：受 errors:read 保护。
+      // P1 安全修复：此前该端点挂在 edge 路由表（guard 之前）且未做任何鉴权，
+      // 匿名即可拉取内部错误明细（堆栈/内部路径/上游响应片段）——现与 /errors HTML 页
+      // 同权走 guard，并把 edge 路由表中的同名条目移除（消除「注释声称有 guard 实际无」的不一致）。
+      if (req.method === 'GET' && path === '/api/errors') {
+        const ctx = await guard(req, res, 'errors:read');
+        if (!ctx) return;
+        const limitRaw = Number(url.searchParams.get('limit'));
+        const limit =
+          Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200;
+        const full = url.searchParams.get('full') === '1';
+        const fmt = url.searchParams.get('format');
+        const d = edgeRouteDeps();
+        if (fmt === 'text') {
+          res.writeHead(200, {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+            ...securityHeaders()
+          });
+          res.end(d.formatErrorReport({ limit: full ? undefined : limit }));
+          return;
+        }
+        const list = d.getErrorLog({ limit: full ? undefined : limit });
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          ...securityHeaders()
+        });
+        res.end(
+          JSON.stringify({ count: list.length, summary: d.getErrorSummary(), errors: list })
+        );
+        return;
+      }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──
       // 这两个端点本身公开（不需要先登录），但会被上面的 guard 默认拦截，
       // 故显式放在 guard 之前处理。
@@ -1024,7 +1103,7 @@ const server = createServer(
         return;
       }
       // ---- P0.1 智能体注册与发现 / A2A / Teams：已外迁 routes/agent-routes.ts ----
-      if (await handleAgentRoutes(req, res, url, path, { guard, auditAction, isShuttingDown: () => shuttingDown })) {
+      if (await handleAgentRoutes(req, res, url, path, { guard, auditAction, isShuttingDown })) {
         return;
       }
 
@@ -1586,7 +1665,7 @@ const server = createServer(
           audit({
             kind: 'request',
             method: req.method,
-            path: req.url,
+            path: redactUrl(req.url),
             ip: clientIp(req),
             authed: false,
             status: 401
@@ -1607,7 +1686,7 @@ const server = createServer(
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
     } catch (e) {
-      logError('http.request', e, { path: req.url });
+      logError('http.request', e, { path: redactUrl(req.url) });
       const code =
         typeof (e as { status?: unknown }).status === 'number'
           ? (e as { status: number }).status
@@ -1820,6 +1899,32 @@ async function bootstrap(): Promise<void> {
     });
   }
 
+  // 配额接线（DB tenant 表 + 多副本）：租户级配额配置从 tenant_quotas 表读取
+  // （TTL 缓存，admit 热路径不打 DB）；配置了 REDIS_URL 时注入分布式后端，
+  // admit/release/结算走 Lua 原子脚本（多副本精确），Redis 故障自动降级进程内。
+  // 表不存在时 store 启动自愈建表（CREATE TABLE IF NOT EXISTS），失败仅告警不阻断启动。
+  try {
+    const tenantQuotaStore = new TenantQuotaStore({
+      file: process.env.TENANT_QUOTA_DB_FILE || process.env.DB_SQLITE_FILE || '/var/lib/agent-harness/tenant-quotas.db'
+    });
+    await tenantQuotaStore.init();
+    quotaEngine.setTenantStore(tenantQuotaStore);
+    const redisForQuota = getRedisClient();
+    if (redisForQuota) {
+      quotaEngine.setRedisBackend(redisForQuota);
+    }
+    structLog('info', 'quota', {
+      tenantStore: true,
+      db: process.env.TENANT_QUOTA_DB_FILE || process.env.DB_SQLITE_FILE || '/var/lib/agent-harness/tenant-quotas.db',
+      backend: redisForQuota ? 'redis' : 'in-process'
+    });
+  } catch (e) {
+    structLog('warn', 'quota', {
+      tenantStore: false,
+      error: e instanceof Error ? e.message : String(e)
+    });
+  }
+
   // P0-D: 启动时自动运行迁移脚本，确保 schema 与代码版本一致。
   // AH_MIGRATE_AUTO=on/1/true 时启用，默认关闭（避免开发环境意外执行）。
   // P1-3: 迁移脚本使用幂等版本检查（SELECT MAX(version)），重复运行安全。
@@ -1841,8 +1946,17 @@ async function bootstrap(): Promise<void> {
       structLog('info', 'migration', { status: 'success', output: result.trim() });
       console.log('[migration] 启动迁移完成:', result.trim());
     } catch (e) {
-      console.error('[migration] 启动迁移失败:', e instanceof Error ? e.message : String(e));
-      // 不阻断启动，但记录错误以便运维排查。
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[migration] 启动迁移失败:', msg);
+      // P1 稳定性修复：关键模式（AH_STARTUP_CRITICAL=1）下迁移失败必须阻断启动——
+      // 否则新副本会带着旧 schema 接流，把「schema 不匹配」推迟成运行期偶发错误。
+      // 与多副本自检的处理方式一致：宁可拒绝启动，也不带错误配置静默上线。
+      if (process.env.AH_STARTUP_CRITICAL === '1') {
+        structLog('error', 'migration', { status: 'failed', blocking: true, error: msg });
+        console.error('[migration] AH_STARTUP_CRITICAL=1，阻断启动。请修复迁移后重启。');
+        process.exit(1);
+      }
+      // 非关键模式维持原语义：不阻断启动，但记录错误以便运维排查。
     }
   } else {
     console.log('[migration] AH_MIGRATE_AUTO 未启用，跳过启动时迁移（如需启用请设置 AH_MIGRATE_AUTO=on）');
@@ -1862,8 +1976,24 @@ async function bootstrap(): Promise<void> {
     scheduleRetention();
   }
 
-  // R1 收口：把组合根闭包（guard/auditAction/shuttingDown）注入 run 路由模块。
-  initRunRoutes({ guard, auditAction, isShuttingDown: () => shuttingDown });
+  // R1 收口：把组合根闭包（guard/auditAction/isShuttingDown）注入 run 路由模块。
+  initRunRoutes({ guard, auditAction, isShuttingDown });
+  // P1 稳定性修复：监听失败不再是笼统 fatal——EADDRINUSE 单独给出可操作的提示。
+  // 此前端口占用经 crash guard 输出一条无上下文的 fatal 后 exit(1)，排障困难。
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(
+        `[fatal] 端口 ${PORT}（${HOST}）已被占用（EADDRINUSE）：` +
+          `请停掉占用进程或改用其它 PORT 后重启。定位占用者：lsof -iTCP:${PORT} -sTCP:LISTEN`
+      );
+      emitAlert('fatal', 'server.eaddrinuse', `port ${PORT} already in use`, { port: PORT, host: HOST });
+      process.exit(1);
+    }
+    // 其余监听期错误与多副本自检保持一致：记录后显式退出，交给编排层重启。
+    console.error('[fatal] server error:', err?.code ?? '', err?.message);
+    emitAlert('fatal', 'server.error', err?.message ?? String(err), { code: err?.code });
+    process.exit(1);
+  });
   server.listen(PORT, HOST, onListening);
 }
 
@@ -2046,116 +2176,11 @@ function onListening(): void {
   console.log('');
 }
 
-// 进程级兜底：防止未捕获异常导致整进程裸崩（防御性，不替代正常的错误边界）。
-// - uncaughtException：可能使事件循环处于非法状态，记录后安全退出，交由守护进程（k8s/Render）重启。
-// - unhandledRejection：仅记录，不退出，避免单个被拒 Promise 拖垮在线服务。
-
-/**
- * 告警接收器工厂。告警下沉是可插拔的：默认关闭，按环境变量装配。
- * - ALERT_WEBHOOK_URL：将告警 JSON POST 到该地址（如 Slack/飞书/钉钉 入站 Webhook、自研告警网关）。
- * - ALERT_LOG_PATH：将告警以 JSON 逐行追加到指定文件（便于被 Filebeat/Loki 采集）。
- * 多个 sink 会依次触发；单个 sink 失败仅告警日志，不影响其它 sink 与主流程。
- */
-function createWebhookAlertSink(url: string) {
-  return async (a: unknown) => {
-    try {
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(a)
-      });
-    } catch (e) {
-      structLog('warn', 'alert webhook failed', {
-        error: e instanceof Error ? e.message : String(e)
-      });
-    }
-  };
-}
-function createFileAlertSink(filePath: string) {
-  return async (a: unknown) => {
-    try {
-      await appendFile(filePath, JSON.stringify(a) + '\n');
-    } catch {
-      /* 告警落盘失败不向上传播 */
-    }
-  };
-}
-function setupAlerting(): void {
-  const url = process.env.ALERT_WEBHOOK_URL;
-  const file = process.env.ALERT_LOG_PATH;
-  const sinks: Array<(a: unknown) => void | Promise<void>> = [];
-  if (url) {
-    sinks.push(createWebhookAlertSink(url));
-    structLog('info', 'alerting enabled', { sink: 'webhook', url });
-  }
-  if (file) {
-    sinks.push(createFileAlertSink(file));
-    structLog('info', 'alerting enabled', { sink: 'file', path: file });
-  }
-  if (sinks.length) {
-    setAlertSink(async (a: unknown) => {
-      for (const s of sinks) await s(a);
-    });
-  }
-
-  // Token 缓存命中率统计：复用同一套告警通道（webhook / 文件），并启动周期聚合。
-  setTokenCacheAlertSink(emitAlert);
-  startTokenCacheAggregation();
-}
-
-function installCrashGuard(): void {
-  const fatal = (where: string, err: unknown) => {
-    const e = err as { message?: string; stack?: string };
-    logError('crash.guard', err, { where });
-    emitAlert(
-      'fatal',
-      'crash.guard',
-      `${where}: ${e?.message ?? String(err)}`,
-      { where, stack: e?.stack }
-    );
-    console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
-  };
-  process.on('uncaughtException', (err) => {
-    fatal('uncaughtException', err);
-    process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
-    fatal('unhandledRejection', reason);
-  });
-}
+// 进程级兜底：防止未捕获异常导致整进程裸崩（已抽出到 ./crash-guard）。
 installCrashGuard();
 
-// 停机宽限：先中止在飞任务，给其最多该时长退出，再关 MCP 与监听。
-const SHUTDOWN_GRACE_MS =
-  Number(process.env.RUN_SHUTDOWN_GRACE_MS ?? 5000) || 5000;
-let shuttingDown = false;
-
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log('\n[ui] 收到停机信号，开始优雅停机…');
-
-  // 1) 中止所有在飞/排队任务（job 级 AbortController），释放 worker 与 LLM/MCP 占用。
-  runQueue.abortAll('shutdown');
-
-  // 1b) 停止领取轮询并关闭共享后端（redis）连接，避免进程退出后空转。
-  runQueue.stop();
-
-  // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
-  await new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS));
-
-  // 3) 关闭 MCP 连接（stdio 子进程 / SSE 长连接），避免资源泄漏。
-  await mcpManager.shutdown().catch(() => {});
-
-  // 4) 停止接受新连接，等待已建立的连接（如健康检查）关闭。
-  server.close(() => {
-    console.log('[ui] 已停止接受新连接。');
-    process.exit(0);
-  });
-
-  // 兜底：若 server.close 因长连接迟迟不结束，强制退出。
-  setTimeout(() => process.exit(0), 3000).unref();
-}
+// 优雅停机：已抽出到 ./graceful-shutdown，通过依赖注入解耦模块级变量。
+const { shutdown, isShuttingDown } = createShutdownHandler({ runQueue, mcpManager, server });
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 

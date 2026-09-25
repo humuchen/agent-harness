@@ -19,6 +19,8 @@
 
 // ─── 类型契约 ────────────────────────────────────────────────────────────────
 
+import { translateSqlFor, isPragma, splitSqlStatements, dialectFromUrl } from './db-dialect';
+
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface DbStatement {
@@ -35,7 +37,7 @@ export interface DbAdapter {
   cacheKey?: string;
 }
 
-export type DbBackend = 'sqlite' | 'turso';
+export type DbBackend = 'sqlite' | 'turso' | 'mysql' | 'postgres';
 
 export interface DbAdapterOptions {
   /**
@@ -43,6 +45,11 @@ export interface DbAdapterOptions {
    * turso 后端忽略此字段（由 TURSO_URL 决定）。
    */
   file?: string;
+  /**
+   * mysql / postgres 后端的连接串；缺省读 DATABASE_URL。
+   * scheme 决定方言（mysql:// | mariadb:// → mysql；postgres:// | postgresql:// → postgres）。
+   */
+  url?: string;
   /**
    * 强制指定后端（覆盖环境变量 DB_BACKEND）。
    */
@@ -223,6 +230,258 @@ class TursoAdapter implements DbAdapter {
   }
 }
 
+// ─── 运行期 failover 代理（Turso → 本地 sqlite）────────────────────────────
+
+/** 连接类错误判定：只有这类错误才触发降级（SQL 语法/约束等语义错误 failover 救不了，原样抛）。 */
+function isConnectionError(e: unknown): boolean {
+  const msg = e instanceof Error ? `${e.name} ${e.message}` : String(e ?? '');
+  return /fetch failed|network|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|socket.*(hang|closed)|unreachable|refused|HTTP 5\d\d|HTTP 429|timed?\s*out|aborted/i.test(
+    msg
+  );
+}
+
+/**
+ * Turso 运行期 failover 代理（②）：远端故障时自动切本地 sqlite 兜底，探活恢复后切回。
+ *
+ * 状态机（自持，不依赖外部熔断器——需区分「连接错误计数」与「语义错误直抛」）：
+ *   healthy → 连接类错误累计 2 次 → degraded（窗口 15s 内全部走本地）
+ *           → 窗口过期后下一个操作试探远端（probe）：成功则恢复 healthy，失败则续窗。
+ *
+ * 数据一致性（明确取舍）：降级窗口内的写入落在本地库，**不自动回放**——回放需要
+ * 幂等键与冲突消解，复杂度失控。窗口期以 structLog + 计数器明确告警「写操作需人工对账」；
+ * probe 成功恢复时同样留痕。本地兜底文件独立于远端库（缓存键含 localFile，互不串库）。
+ * （导出仅供测试：窗口/阈值在测试中收缩以验证状态机。）
+ */
+export class FailoverProxyAdapter implements DbAdapter {
+  private primary: DbAdapter;
+  private fallback: DbAdapter;
+  private label: string;
+  /** 连接类失败计数（healthy 态累计，达阈值进入 degraded）。 */
+  private fails = 0;
+  private degradedUntil = 0;
+  private degradedLogged = false;
+  /** 降级阈值 / 探活窗口（静态可变，仅供测试收缩时序）。 */
+  static DEGRADE_THRESHOLD = 2;
+  static PROBE_WINDOW_MS = 15_000;
+  cacheKey: string;
+
+  constructor(primary: DbAdapter, fallback: DbAdapter, opts: { cacheKey: string; label: string }) {
+    this.primary = primary;
+    this.fallback = fallback;
+    this.cacheKey = opts.cacheKey;
+    this.label = opts.label;
+  }
+
+  private degraded(): boolean {
+    return Date.now() < this.degradedUntil;
+  }
+
+  private markDegraded(): void {
+    this.fails += 1;
+    if (this.fails >= FailoverProxyAdapter.DEGRADE_THRESHOLD) {
+      this.degradedUntil = Date.now() + FailoverProxyAdapter.PROBE_WINDOW_MS;
+      if (!this.degradedLogged) {
+        this.degradedLogged = true;
+        console.warn(
+          `[db-adapter] ${this.label}: 远端连接故障，降级本地 sqlite 兜底 ` +
+            `（${FailoverProxyAdapter.PROBE_WINDOW_MS / 1000}s 窗口，窗口内写操作需人工对账）；将自动探活恢复`
+        );
+      }
+    }
+  }
+
+  private recover(): void {
+    if (this.degradedLogged) {
+      this.degradedLogged = false;
+      console.log(`[db-adapter] ${this.label}: 远端探活恢复，切回远端库`);
+    }
+    this.fails = 0;
+    this.degradedUntil = 0;
+  }
+
+  /**
+   * 统一远端调用：healthy 直连（同步结果原样返回，Promise 挂 rejected 处理）；
+   * 连接类错误计数/降级后走本地兜底；语义错误原样抛（不污染状态机）。
+   */
+  private viaRemote<R>(remote: () => R, local: () => R): R {
+    if (this.degraded()) {
+      // 探活窗口过期：本操作先试远端（probe）
+      if (Date.now() >= this.degradedUntil && this.degradedUntil !== 0) {
+        try {
+          const r = remote();
+          this.recover();
+          if (r && typeof (r as unknown as Promise<unknown>).then === 'function') {
+            return (r as unknown as Promise<unknown>).then(undefined, (e: unknown) =>
+              this.onRemoteError(e, local)
+            ) as R;
+          }
+          return r;
+        } catch (e) {
+          return this.onRemoteError(e, local);
+        }
+      }
+      return local();
+    }
+    try {
+      const r = remote();
+      if (r && typeof (r as unknown as Promise<unknown>).then === 'function') {
+        return (r as unknown as Promise<unknown>).then(undefined, (e: unknown) =>
+          this.onRemoteError(e, local)
+        ) as R;
+      }
+      this.fails = 0;
+      return r;
+    } catch (e) {
+      return this.onRemoteError(e, local);
+    }
+  }
+
+  private onRemoteError<R>(e: unknown, local: () => R): R {
+    if (!isConnectionError(e)) throw e; // 语义错误原样抛，不触发降级
+    this.markDegraded();
+    return local();
+  }
+
+  exec(sql: string): void | Promise<void> {
+    return this.viaRemote(
+      () => this.primary.exec(sql),
+      () => this.fallback.exec(sql)
+    );
+  }
+
+  prepare(sql: string): DbStatement {
+    // 语句级代理：每个操作的远端/本地路径独立判定（prepare 本身不触发 IO）。
+    const run = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).run(...params),
+        () => this.fallback.prepare(sql).run(...params)
+      );
+    const get = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).get(...params),
+        () => this.fallback.prepare(sql).get(...params)
+      );
+    const all = (...params: unknown[]) =>
+      this.viaRemote(
+        () => this.primary.prepare(sql).all(...params),
+        () => this.fallback.prepare(sql).all(...params)
+      );
+    return { run, get, all };
+  }
+
+  close(): void {
+    try { this.primary.close?.(); } catch { /* ok */ }
+    try { this.fallback.close?.(); } catch { /* ok */ }
+    evictAdapterCache(this.cacheKey);
+  }
+}
+
+// ─── MySQL / PostgreSQL 后端（SQL 方言翻译 + 连接池）──────────────────────
+//
+// 设计：store 层的 SQLite 方言 SQL 在适配器出口统一翻译（db-dialect.ts），
+// store 代码零改动。与 sqlite/turso 的关键差异：
+//   - PRAGMA 无对应 → exec 降级 no-op、prepare 返回空结果（调用方均有 try/catch）；
+//   - 连接池（mysql2 / pg Pool），无需 WAL/busy_timeout；
+//   - PG 的 lastInsertRowid 恒 0（需要自增 id 请用 RETURNING，仓库内无此用法）；
+//   - PG 的 BIGINT 返回字符串（COUNT 等调用方已有 Number() 包裹）。
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SqlPool = any;
+
+abstract class SqlDialectAdapterBase implements DbAdapter {
+  protected pool: SqlPool;
+  protected dialect: 'mysql' | 'postgres';
+  cacheKey: string;
+
+  constructor(dialect: 'mysql' | 'postgres', url: string, cacheKey: string) {
+    this.dialect = dialect;
+    this.cacheKey = cacheKey;
+    if (dialect === 'mysql') {
+      const mysql = require('mysql2/promise');
+      this.pool = mysql.createPool({
+        uri: url,
+        connectionLimit: 10,
+        // 多行合并 INSERT 单语句可达数百参数，prepared 协议偶发兼容问题，走 text 协议
+        namedPlaceholders: false,
+      });
+    } else {
+      const { Pool } = require('pg');
+      this.pool = new Pool({ connectionString: url, max: 10 });
+    }
+  }
+
+  protected q(sql: string, bindParams: boolean): string {
+    return translateSqlFor(sql, this.dialect, bindParams);
+  }
+
+  /** 统一执行：返回目标驱动的原始结果。 */
+  protected async runRaw(sql: string, params: unknown[]): Promise<unknown> {
+    const q = this.q(sql, true);
+    if (this.dialect === 'mysql') {
+      const [rows] = await this.pool.query(q, params);
+      return rows;
+    }
+    const res = await this.pool.query(q, params);
+    return res.rows;
+  }
+
+  async exec(sql: string): Promise<void> {
+    for (const stmt of splitSqlStatements(sql)) {
+      if (isPragma(stmt)) continue; // PRAGMA 在 MySQL/PG 无对应：no-op
+      await this.runRaw(stmt, []);
+    }
+  }
+
+  prepare(sql: string): DbStatement {
+    if (isPragma(sql)) {
+      // PRAGMA 查询（如 table_info 兼容检查）：返回空结果，调用方走 catch/空分支
+      return { run: async () => ({ changes: 0, lastInsertRowid: 0 }), get: async () => undefined, all: async () => [] };
+    }
+    const exec = async (params: unknown[]): Promise<{ rows: Record<string, unknown>[]; affected: number; insertId: number }> => {
+      const raw = await this.runRaw(sql, params);
+      if (this.dialect === 'mysql') {
+        if (Array.isArray(raw)) {
+          const rows = raw as Record<string, unknown>[];
+          if (Array.isArray(rows) && !rows.length) return { rows: [], affected: 0, insertId: 0 };
+          if (rows && typeof rows === 'object' && 'affectedRows' in (rows as object)) {
+            const ok = rows as unknown as { affectedRows?: number; insertId?: number };
+            return { rows: [], affected: ok.affectedRows ?? 0, insertId: Number(ok.insertId ?? 0) };
+          }
+          return { rows, affected: 0, insertId: 0 };
+        }
+        return { rows: [], affected: 0, insertId: 0 };
+      }
+      const res = raw as { rows: Record<string, unknown>[]; rowCount: number };
+      return { rows: res.rows ?? [], affected: res.rowCount ?? 0, insertId: 0 };
+    };
+    return {
+      run: async (...params: unknown[]) => {
+        const r = await exec(params);
+        return { changes: r.affected, lastInsertRowid: r.insertId };
+      },
+      get: async (...params: unknown[]) => (await exec(params)).rows[0],
+      all: async (...params: unknown[]) => (await exec(params)).rows,
+    };
+  }
+
+  close(): void {
+    try { this.pool.end?.(); } catch { /* ok */ }
+    evictAdapterCache(this.cacheKey);
+  }
+}
+
+class MySqlAdapter extends SqlDialectAdapterBase {
+  constructor(url: string, cacheKey: string) {
+    super('mysql', url, cacheKey);
+  }
+}
+
+class PgAdapter extends SqlDialectAdapterBase {
+  constructor(url: string, cacheKey: string) {
+    super('postgres', url, cacheKey);
+  }
+}
+
 // ─── 单例管理 ────────────────────────────────────────────────────────────────
 
 const adapterCache = new Map<string, DbAdapter>();
@@ -262,27 +521,68 @@ export function resolveTenantDbPath(base: string, dataZone?: string): string {
  * 因此 close() 会同步把缓存条目删除，使下次 getDbAdapter 重新建连（自愈）。
  */
 export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
-  const backend = (opts.backend || process.env.DB_BACKEND || 'sqlite').toLowerCase() as DbBackend;
-  // Turso 后端按 TURSO_URL 区分（同一文件可被多个远端库共用），sqlite 按 file 区分。
-  const file =
-    backend === 'turso'
-      ? process.env.TURSO_URL || opts.file || './data/app.db'
-      : opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
-  const cacheKey = `${backend}:${file}`;
+  const backendRaw = (opts.backend || process.env.DB_BACKEND || 'sqlite').toLowerCase();
+  // 'postgresql' 别名归一（DATABASE_URL scheme 同款写法）
+  const backend = (backendRaw === 'postgresql' ? 'postgres' : backendRaw) as DbBackend;
+  // 本地 sqlite 文件路径：与 TURSO_URL 严格分离——降级时绝不把远程 URL 当本地文件名
+  // 开库（此前 file 回退取 TURSO_URL，libsql 缺依赖降级后会产生名为 "libsql://xxx"
+  // 的垃圾本地文件）。turso 仅 file: 前缀是本地模式，其余均为远端。
+  const localFile = opts.file || process.env.DB_SQLITE_FILE || './data/app.db';
+  const tursoUrl = process.env.TURSO_URL;
+
+  // MySQL / PostgreSQL：DATABASE_URL（或 opts.url）为唯一连接配置，scheme 必须与
+  // backend 匹配。主数据存储配置错误时 fail-fast（不静默降级 sqlite——数据落错地方
+  // 比启动失败更难收拾）。
+  if (backend === 'mysql' || backend === 'postgres') {
+    const url = opts.url || process.env.DATABASE_URL || '';
+    const urlDialect = dialectFromUrl(url);
+    if (!url || urlDialect !== backend) {
+      throw new Error(
+        `[db-adapter] DB_BACKEND=${backend} 需要配置匹配的 DATABASE_URL` +
+          `（如 ${backend === 'mysql' ? 'mysql://user:pass@host:3306/db' : 'postgres://user:pass@host:5432/db'}），` +
+          `当前：${url ? `${url.slice(0, 24)}…（scheme=${urlDialect ?? '未知'}）` : '未设置'}`
+      );
+    }
+    const cacheKey = `${backend}:${url}`;
+    if (adapterCache.has(cacheKey)) return adapterCache.get(cacheKey)!;
+    const adapter =
+      backend === 'mysql' ? new MySqlAdapter(url, cacheKey) : new PgAdapter(url, cacheKey);
+    console.log(`[db-adapter] 后端：${backend === 'mysql' ? 'MySQL' : 'PostgreSQL'}（连接池，DATABASE_URL）`);
+    adapterCache.set(cacheKey, adapter);
+    return adapter;
+  }
+
+  const file = backend === 'turso' ? tursoUrl || localFile : localFile;
+  // 缓存键必须唯一标识底层库：降级实例是「本地 localFile 的 sqlite」而非「TURSO_URL
+  // 指向的远端库」，且不同调用方（不同 opts.file）必须拿到各自独立的实例——
+  // 此前降级实例统一挂在 turso:<url> 键下，第二个调用方会复用第一个调用方的文件
+  // 句柄，造成跨 store 数据串库。键中并入 localFile 后，同 (url, file) 组合仍单例。
+  const cacheKey =
+    backend === 'turso' ? `turso:${tursoUrl ?? ''}:${localFile}` : `sqlite:${localFile}`;
 
   if (adapterCache.has(cacheKey)) return adapterCache.get(cacheKey)!;
 
   let adapter: DbAdapter | null = null;
 
   if (backend === 'turso') {
-    const url = process.env.TURSO_URL;
     const token = process.env.TURSO_TOKEN;
-    if (url) {
+    if (tursoUrl) {
       try {
-        adapter = new TursoAdapter(url, token);
+        const tursoAdapter = new TursoAdapter(tursoUrl, token);
         // libsql://、https://、wss:// 均为远端库；仅 file: 前缀是本地文件（libsql 本地模式）。
-        const isRemote = /^(libsql|https|wss):\/\//.test(url);
-        console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? url : ''}`);
+        const isRemote = /^(libsql|https|wss):\/\//.test(tursoUrl);
+        console.log(`[db-adapter] 后端：Turso (${isRemote ? 'remote' : 'local-file'}) ${isRemote ? tursoUrl : ''}`);
+        // ② 运行期 failover（opt-in）：DB_FAILOVER_LOCAL=on 时远端连接故障自动切
+        // 本地 sqlite 兜底（探活自动恢复；降级窗口写操作需人工对账，见类注释）。
+        if (isRemote && (process.env.DB_FAILOVER_LOCAL || '').toLowerCase() === 'on') {
+          const fallback = new SqliteAdapter(localFile, opts.pragmas);
+          adapter = new FailoverProxyAdapter(tursoAdapter, fallback, {
+            cacheKey,
+            label: `Turso→sqlite(${localFile})`
+          });
+        } else {
+          adapter = tursoAdapter;
+        }
       } catch (e) {
         console.warn(`[db-adapter] Turso 初始化失败，降级为本地 sqlite：${e instanceof Error ? e.message : String(e)}`);
       }
@@ -291,10 +591,10 @@ export function getDbAdapter(opts: DbAdapterOptions = {}): DbAdapter {
     }
   }
 
-  // 兜底：sqlite
+  // 兜底：sqlite（用 localFile——远程 URL 绝不能当本地路径）
   if (!adapter) {
-    adapter = new SqliteAdapter(file, opts.pragmas);
-    console.log(`[db-adapter] 后端：SQLite（本地文件 ${file}）`);
+    adapter = new SqliteAdapter(localFile, opts.pragmas);
+    console.log(`[db-adapter] 后端：SQLite（本地文件 ${localFile}）`);
   }
 
   adapterCache.set(cacheKey, adapter);

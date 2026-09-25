@@ -111,6 +111,10 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       retries,
       modelLabel: model,
       signal: options?.signal,
+      // P1-10 熔断器透传（修复）：LLMCallOptions.circuitBreaker 此前被静默丢弃，
+      // 熔断器在真实调用链上从未生效（含非流式路径）。现透传给 callOpenAIChat，
+      // 由 fetchWithBreaker 包裹 HTTP 调用。
+      circuitBreaker: options?.circuitBreaker,
       // 透传流式回调：开启后走 stream:true，逐 delta 回调 token / reasoning，
       // 驱动聊天 UI 打字机与「深度思考」块（此前遗漏，导致始终走非流式分支、推理丢失）。
       onToken: options?.onToken,

@@ -1,4 +1,4 @@
-import { ToolRegistry } from '@agent-harness/core';
+import { ToolRegistry, resolveHostIsPrivate } from '@agent-harness/core';
 import {
   connectMcpServer,
   disconnectAllMcp,
@@ -19,6 +19,73 @@ import {
   type McpServerRecord,
 } from './mcp-store';
 import { encryptApiKey } from './custom-models';
+
+// ── P1 安全修复：运行时接入校验 ──────────────────────────────────────────────
+// 背景：/api/mcp/add（operator/admin）此前对 serverUrl / command 无任何网络侧
+// 约束——可指向 169.254.169.254 等云元数据端点（SSRF），或以任意 command 拉起进程。
+
+/** stdio 命令白名单：basename 必须命中（预设仅使用 uvx / node，均已覆盖）。 */
+const MCP_ALLOWED_COMMANDS = new Set(
+  (process.env.MCP_ALLOWED_COMMANDS ?? 'node,npx,uvx,bunx,python,python3,deno')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+/** 显式放行指向内网/元数据地址的 serverUrl（自托管内网 MCP 场景），默认拒绝。 */
+const MCP_ALLOW_PRIVATE_SERVER_URL = ['on', '1', 'true'].includes(
+  (process.env.MCP_ALLOW_PRIVATE_SERVER_URL ?? '').toLowerCase()
+);
+
+/** args 数组透传给子进程，出现 shell 元字符即视为可疑注入，直接拒绝。 */
+const MCP_SHELL_META = /[|&;<>$`()\\!*?{}[\]"'\n\r]/;
+
+/** 同步校验：命令白名单 + args 元字符 + URL 协议（addServerBackground 需保持同步签名）。 */
+function validateMcpConnectionSync(config: McpServerConfig): void {
+  if (config.command) {
+    const base = config.command.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+    if (!MCP_ALLOWED_COMMANDS.has(base)) {
+      throw new Error(
+        `[mcp-manager] command 不在白名单内: ${config.command}（如需扩展请配置 MCP_ALLOWED_COMMANDS）`
+      );
+    }
+    for (const a of config.args ?? []) {
+      if (MCP_SHELL_META.test(String(a))) {
+        throw new Error('[mcp-manager] args 含 shell 元字符，已拒绝');
+      }
+    }
+  }
+  if (config.serverUrl) {
+    let u: URL;
+    try {
+      u = new URL(config.serverUrl);
+    } catch {
+      throw new Error(`[mcp-manager] serverUrl 非法: ${config.serverUrl}`);
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      throw new Error(
+        `[mcp-manager] serverUrl 仅允许 http/https 协议，收到: ${u.protocol}`
+      );
+    }
+  }
+}
+
+/** 异步校验：serverUrl 主机名 DNS 级私网判定（复用 core 的 guardrails 实现）。 */
+async function validateMcpServerUrlPrivate(config: McpServerConfig): Promise<void> {
+  if (!config.serverUrl || MCP_ALLOW_PRIVATE_SERVER_URL) return;
+  const host = new URL(config.serverUrl).hostname;
+  if (await resolveHostIsPrivate(host)) {
+    throw new Error(
+      `[mcp-manager] serverUrl 指向私网/元数据地址，已拒绝: ${host}（如确需内网 MCP，设 MCP_ALLOW_PRIVATE_SERVER_URL=on）`
+    );
+  }
+}
+
+/** 完整校验（同步项 + DNS 私网项）：用于 addServer 等可等待的异步入口。 */
+async function validateMcpConnection(config: McpServerConfig): Promise<void> {
+  validateMcpConnectionSync(config);
+  await validateMcpServerUrlPrivate(config);
+}
 
 /**
  * MCP 服务的运行时管理器（单例）。
@@ -137,6 +204,8 @@ class McpManager {
         `[mcp-manager] addServer 需要至少一个连接目标 (serverUrl 或 command)，收到: ${JSON.stringify(config)}`
       );
     }
+    // P1 安全修复：API 接入路径先过私网/白名单校验（启动期 env 配置不受限）。
+    await validateMcpConnection(config);
     return this.withLock(async () => {
       const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
       this.configs.set(clean, config);
@@ -169,6 +238,9 @@ class McpManager {
         `[mcp-manager] addServerBackground 需要至少一个连接目标 (serverUrl 或 command)，收到: ${JSON.stringify(config)}`
       );
     }
+    // P1 安全修复：同步校验项（命令白名单/元字符/协议）直接抛给 HTTP 调用方；
+    // DNS 私网校验在下方异步闭包内执行，失败时把占位状态标为 error。
+    validateMcpConnectionSync(config);
     const clean = (config.name ?? '').trim() || this.slug(config.serverUrl ?? config.command ?? '');
     this.configs.set(clean, config);
     // 同步推入占位 meta，立即可见。
@@ -185,10 +257,11 @@ class McpManager {
     };
     if (idx >= 0) this.servers[idx] = placeholder;
     else this.servers.push(placeholder);
-    // 持久化到 SQLite（不含运行时状态）
-    void putMcpServer({ name: clean, serverUrl: config.serverUrl, command: config.command, args: config.args, env: config.env, headers: config.headers, transportType: config.transportType });
-    // 异步执行 — 不阻塞 HTTP 响应。
-    this.withLock(async () => {
+    // 持久化移入异步闭包：仅在私网校验通过后落库，避免被拒配置在下次启动被重放。
+    // 异步执行 — 不阻塞 HTTP 响应。校验/连接失败统一落占位状态，不让 withLock 链产生未处理拒绝。
+    void this.withLock(async () => {
+      await validateMcpServerUrlPrivate(config);
+      await putMcpServer({ name: clean, serverUrl: config.serverUrl, command: config.command, args: config.args, env: config.env, headers: config.headers, transportType: config.transportType });
       const meta = await connectMcpServer(this.registry, {
         name: clean,
         serverUrl: config.serverUrl,
@@ -202,6 +275,12 @@ class McpManager {
       if (i >= 0) this.servers[i] = meta;
       else this.servers.push(meta);
       return meta;
+    }).catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[mcp-manager] 接入 MCP 服务 ${clean} 失败：`, msg);
+      placeholder.status = 'error';
+      placeholder.health = 'unhealthy';
+      placeholder.error = msg;
     });
     return placeholder;
   }

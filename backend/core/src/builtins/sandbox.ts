@@ -30,6 +30,11 @@ export interface SandboxExecRequest {
   timeoutMs: number;
   /** 运行级中止信号。一旦中止立即强杀子进程（含进程组），避免取消/超时后命令仍后台空跑。 */
   signal?: AbortSignal;
+  /**
+   * 容器执行器专用：本次 exec 的容器名（--name）。提供后，超时/中止路径可用
+   * `docker rm -f` 兜底清理孤儿容器（SIGKILL docker CLI 后 --rm 容器仍可能存活）。
+   */
+  containerName?: string;
 }
 
 export interface SandboxExecResult {
@@ -39,6 +44,79 @@ export interface SandboxExecResult {
   code: number | null;
   /** 被信号杀死时的信号名；否则 null。 */
   signal: string | null;
+}
+
+/**
+ * 子进程输出字节上限（SANDBOX_OUTPUT_MAX_BYTES，默认 1MB；0 / 负数 = 不限，恢复旧行为）。
+ * 防止单条 verbose 命令（yes / find /）把 Node 进程内存打穿直至 OOM。
+ */
+export const SANDBOX_OUTPUT_MAX_BYTES = (() => {
+  const n = Number(process.env.SANDBOX_OUTPUT_MAX_BYTES);
+  return Number.isFinite(n) ? Math.floor(n) : 1_048_576;
+})();
+
+/**
+ * 受字节上限约束的输出累积器：超限后停止拼接并追加截断标记。
+ * 截断标记会进入 LLM 上下文——模型需要知道「输出不完整」才能改道。
+ *
+ * UTF-8 安全：
+ *  - Uint8Array chunk 经 TextDecoder(stream 模式) 解码，跨 chunk 拆开的多字节字符不会变成 U+FFFD；
+ *  - 超限截断按「字符边界回退」切分，避免把半个多字节字符解码成 U+FFFD。
+ */
+export function createCappedAccumulator(label: string, maxBytes: number = SANDBOX_OUTPUT_MAX_BYTES) {
+  let buf = '';
+  let bytes = 0;
+  let truncated = false;
+  let flushed = false;
+  const decoder = new TextDecoder('utf-8');
+  const limit = Math.max(0, Math.floor(maxBytes));
+  // 结束时 flush 解码器残留（补齐最后半个多字节字符）；惰性执行，未截断路径零开销。
+  const flushDecoder = () => {
+    if (!flushed) {
+      flushed = true;
+      buf += decoder.decode();
+    }
+  };
+  return {
+    push(chunk: unknown): void {
+      let str: string;
+      if (typeof chunk === 'string') str = chunk;
+      else if (chunk instanceof Uint8Array) str = decoder.decode(chunk, { stream: true });
+      else str = String(chunk);
+      if (limit <= 0) {
+        buf += str; // 不限模式：与旧行为一致
+        return;
+      }
+      if (truncated) return;
+      const add = Buffer.byteLength(str, 'utf8');
+      if (bytes + add <= limit) {
+        buf += str;
+        bytes += add;
+        return;
+      }
+      const remainBytes = limit - bytes;
+      if (remainBytes > 0) {
+        const b = Buffer.from(str, 'utf8');
+        let cut = Math.min(remainBytes, b.length);
+        // 回退到完整字符边界：b[cut] 为 continuation byte（0b10xxxxxx）说明切在字符中间
+        while (cut > 0) {
+          const byte = b[cut];
+          if (byte === undefined || (byte & 0xc0) !== 0x80) break;
+          cut--;
+        }
+        buf += b.subarray(0, cut).toString('utf8');
+      }
+      truncated = true;
+      buf += `\n…[${label} truncated at ${limit} bytes（后续输出已丢弃）]`;
+    },
+    toString(): string {
+      flushDecoder();
+      return buf;
+    },
+    get truncated(): boolean {
+      return truncated;
+    },
+  };
 }
 
 export interface SandboxExecutor {
@@ -154,10 +232,10 @@ export class LocalSandboxExecutor implements SandboxExecutor {
         return finish({ stdout: '', stderr: `error: failed to start command: ${e?.message ?? String(e)}`, code: -1, signal: null });
       }
 
-      let stdout = '';
-      let stderr = '';
-      proc.stdout?.on('data', (d) => (stdout += d.toString()));
-      proc.stderr?.on('data', (d) => (stderr += d.toString()));
+      const out = createCappedAccumulator('stdout');
+      const errOut = createCappedAccumulator('stderr');
+      proc.stdout?.on('data', (d) => out.push(d));
+      proc.stderr?.on('data', (d) => errOut.push(d));
 
       const timer = setTimeout(() => {
         try {
@@ -172,15 +250,15 @@ export class LocalSandboxExecutor implements SandboxExecutor {
         }
       }, req.timeoutMs);
 
-      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
+      wireAbort(req, proc, timer, finish, () => ({ stdout: out.toString(), stderr: errOut.toString() }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
-        finish({ stdout, stderr: `error: ${err.message}`, code: err.code === 'ENOENT' ? -2 : -1, signal: null });
+        finish({ stdout: out.toString(), stderr: `error: ${err.message}`, code: err.code === 'ENOENT' ? -2 : -1, signal: null });
       });
       proc.on('close', (code, signal) => {
         clearTimeout(timer);
-        finish({ stdout, stderr, code: code ?? null, signal: signal ?? null });
+        finish({ stdout: out.toString(), stderr: errOut.toString(), code: code ?? null, signal: signal ?? null });
       });
     });
   }
@@ -234,6 +312,8 @@ export function buildContainerArgs(o: ContainerSandboxOptions, req: SandboxExecR
   if (o.memoryMb && o.memoryMb > 0) args.push('--memory', `${o.memoryMb}m`);
   if (o.cpus && o.cpus > 0) args.push('--cpus', String(o.cpus));
   if (o.pidsLimit && o.pidsLimit > 0) args.push('--pids-limit', String(o.pidsLimit));
+  // 容器名：提供时（容器执行器会生成唯一名）可在超时/中止后用 rm -f 兜底清理孤儿容器。
+  if (req.containerName) args.push('--name', req.containerName);
   if (o.extraArgs && o.extraArgs.length) args.push(...o.extraArgs);
   // 仅挂载已锁定的工作目录（cwd 在 shell 层已被 scope 约束），并设为可写工作目录。
   args.push('-v', `${req.cwd}:/work:rw`);
@@ -249,7 +329,11 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
   constructor(private opts: ContainerSandboxOptions = {}) {}
 
   exec(req: SandboxExecRequest): Promise<SandboxExecResult> {
-    const args = buildContainerArgs(this.opts, req);
+    // 每次 exec 生成唯一容器名：超时/中止只 SIGKILL 了 docker CLI 进程，--rm 容器
+    // 可能仍在宿主上空跑成孤儿（持续吃资源）；rm -f 按名兜底清理（修复孤儿容器问题）。
+    const containerName = `ah-sb-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const reqWithContainer: SandboxExecRequest = { ...req, containerName };
+    const args = buildContainerArgs(this.opts, reqWithContainer);
     const bin = this.opts.bin ?? (this.opts.backend === 'podman' ? 'podman' : 'docker');
     return new Promise<SandboxExecResult>((resolve) => {
       // 与 LocalSandboxExecutor 一致：finish 幂等，避免 ENOENT 时「error 事件触发降级」与
@@ -260,6 +344,24 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
         if (done) return;
         done = true;
         resolve(r);
+      };
+      // 异常终止（被杀 / 无退出码）时兜底清理容器：正常退出的容器已被 --rm 移除，
+      // rm -f 对不存在的容器报错被忽略（fire-and-forget + unref，不阻塞主流程）。
+      const cleanupContainer = () => {
+        try {
+          const cleanup = spawn(bin, ['rm', '-f', containerName], {
+            windowsHide: true,
+            detached: true,
+            stdio: 'ignore',
+          });
+          cleanup.unref?.();
+        } catch {
+          /* 忽略：清理失败不影响结果返回 */
+        }
+      };
+      const finishWithCleanup = (r: SandboxExecResult) => {
+        if (r.code === null || r.signal != null) cleanupContainer();
+        finish(r);
       };
       // ENOENT 降级期间由 fallback 负责 resolve；标记后 close 事件不再抢答。
       let delegated = false;
@@ -279,10 +381,10 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
         return finish({ stdout: '', stderr: `error: failed to start sandbox: ${e?.message ?? String(e)}`, code: -1, signal: null });
       }
 
-      let stdout = '';
-      let stderr = '';
-      proc.stdout?.on('data', (d) => (stdout += d.toString()));
-      proc.stderr?.on('data', (d) => (stderr += d.toString()));
+      const out = createCappedAccumulator('stdout');
+      const errOut = createCappedAccumulator('stderr');
+      proc.stdout?.on('data', (d) => out.push(d));
+      proc.stderr?.on('data', (d) => errOut.push(d));
 
       const timer = setTimeout(() => {
         try {
@@ -291,7 +393,10 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
           /* 忽略 */
         }
       }, req.timeoutMs);
-      wireAbort(req, proc, timer, finish, () => ({ stdout, stderr }));
+      wireAbort(reqWithContainer, proc, timer, finishWithCleanup, () => ({
+        stdout: out.toString(),
+        stderr: errOut.toString(),
+      }));
 
       proc.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'ENOENT') {
@@ -300,12 +405,12 @@ export class ContainerSandboxExecutor implements SandboxExecutor {
           this.fallback.exec(req).then(finish);
           return;
         }
-        finish({ stdout, stderr: `error: ${err.message}`, code: -1, signal: null });
+        finishWithCleanup({ stdout: out.toString(), stderr: `error: ${err.message}`, code: -1, signal: null });
       });
       proc.on('close', (code, signal) => {
         // ENOENT 已委托 fallback：其结果会经 finish 返回，这里不再抢答。
         if (delegated) return;
-        finish({ stdout, stderr, code: code ?? null, signal: signal ?? null });
+        finishWithCleanup({ stdout: out.toString(), stderr: errOut.toString(), code: code ?? null, signal: signal ?? null });
       });
     });
   }

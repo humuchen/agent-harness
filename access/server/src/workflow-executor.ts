@@ -81,6 +81,17 @@ export function formatStepInput(input: unknown, compensate?: boolean): string {
               `请在对应内容/小节标题中原样使用这些词；若某项数据/资料确实无法获取，仍须在「数据缺口」说明中写出该关键词并说明原因。`
           );
         }
+        // P-交付闭环：文件交付指引。任务要求 PPT / Excel / CSV 等真实文件时，执行模型须走
+        // 「doc_export 生成 → deliver_file 注册进交付文件区 → 正文列文件名与摘要」链路；
+        // 工具面缺能力（未安装依赖 / assembly 收窄）时以正文文本兜底，不得只回一句「已生成」。
+        if (/ppt|pptx|excel|xlsx|csv|幻灯片|演示文稿|表格|导出|生成文件|交付文件|报表/i.test(meta.title ?? '')) {
+          lines.push(
+            '文件交付（如适用）：本任务可能需要生成真实文件。若你的工具面包含 builtin__doc_export ' +
+              '（xlsx/pptx/csv）或 builtin__fs_write，先生成文件，再调用 builtin__deliver_file ' +
+              '注册进交付文件区（否则用户拿不到文件），最后在正文列出文件名与内容摘要。' +
+              '工具不可用或报依赖缺失时，把完整表格 / 大纲文本写入正文兜底并注明原因。'
+          );
+        }
       }
       lines.push(`目标：${String(rec.goal ?? '')}`);
       // 共享黑板：upstream_* 是上游 step 的**真实** output（engine.resolveInput 经
@@ -186,7 +197,7 @@ export interface WorkflowExecutorOptions {
 
 /**
  * P2.5 调用链路采集器（workflow-executor 专用）：把 step 执行期间流过的 harness 事件
- * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / 校验 / 用量 / 收尾），
+ * 收敛为紧凑的 `StepTraceNode` 序列（LLM 调用 / 工具 / 护栏 / Jev 决策 / 校验 / 用量 / 收尾），
  * 由 executor 写入 `ctx.trace`，引擎在 step 收尾合并进 `StepRun.trace` 并随检查点持久化 ——
  * 使「执行详情」抽屉能看到每个节点的运行过程，而不只是完成后的耗时。
  *
@@ -333,6 +344,32 @@ export class StepTraceCollector {
           detail: e.reasons.length ? clip(e.reasons.join('；')) : undefined
         });
         return;
+      case 'jev:call': {
+        // TypeSafe Jev 决策模型旁路上报（子系统直连：注入门禁 / 上下文压缩 / 路由补发）：
+        // 补齐「接口 stats 有调用量、执行详情却无痕迹」的缺口 —— jev:call 同样入链。
+        // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点（与前后端一致）。
+        if (e.caller === 'tool') return;
+        this.traceNodes.push({
+          type: e.type,
+          ts,
+          label: `Jev 决策（${e.caller}）`,
+          status: e.ok ? 'ok' : 'error',
+          detail: clip(
+            !e.ok && e.error
+              ? e.error
+              : e.questionSpec
+              ? JSON.stringify(e.questionSpec)
+              : undefined
+          ),
+          meta: {
+            调用方: e.caller,
+            延迟: `${Number(e.latencyMs ?? 0)}ms`,
+            ...(e.questions != null ? { 问题数: String(e.questions) } : {}),
+            ...(e.tokens ? { tokens: `${e.tokens.input}+${e.tokens.output}` } : {})
+          },
+        });
+        return;
+      }
       case 'run:end':
         this.traceNodes.push({
           type: e.type,

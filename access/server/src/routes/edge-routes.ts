@@ -41,7 +41,7 @@ export interface RouteDef {
   method: string;
   /** 精确路径或前缀（以 '/' 结尾表示前缀匹配）。 */
   path: string;
-  /** 是否需要鉴权（errors/错误展示页需，探针/state 不需）。 */
+  /** 处理函数（本表端点均为公开/探针端点，不经 guard）。 */
   handler: EdgeRouteHandler;
 }
 
@@ -73,8 +73,9 @@ export function findEdgeRoute(
 
 /**
  * 构造边缘路由表。逻辑集中在此，server.ts 只负责在合适时机调用。
- * 错误明细展示页/JSON 需要 errors:read 权限，由 server.ts 在调用前完成 guard，
- * 故此处 handler 收到的 req 已通过鉴权（未通过时 server.ts 已 return）。
+ * 本表所有端点均为「无需鉴权的公开/探针端点」，由 server.ts 在 guard 之前分发；
+ * 需要鉴权的端点（如 /api/errors，errors:read）不得放入本表，
+ * 应在 server.ts 主链中显式 guard 后处理。
  */
 export function createEdgeRoutes(): RouteDef[] {
   return [
@@ -110,32 +111,10 @@ export function createEdgeRoutes(): RouteDef[] {
       method: 'GET',
       path: '/api/auth/config',
       handler: (_req, res, _url, d) => sendJsonRoute(res, d.getAuthConfig())
-    },
-    // 错误明细 JSON：count + summary + errors 列表
-    {
-      method: 'GET',
-      path: '/api/errors',
-      handler: (req, res, url, d) => {
-        const limitRaw = Number(url.searchParams.get('limit'));
-        const limit =
-          Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200;
-        const full = url.searchParams.get('full') === '1';
-        const fmt = url.searchParams.get('format');
-        if (fmt === 'text') {
-          res.writeHead(200, {
-            'content-type': 'text/plain; charset=utf-8'
-          });
-          res.end(d.formatErrorReport({ limit: full ? undefined : limit }));
-          return;
-        }
-        const list = d.getErrorLog({ limit: full ? undefined : limit });
-        sendJsonRoute(res, {
-          count: list.length,
-          summary: d.getErrorSummary(),
-          errors: list
-        });
-      }
     }
+    // 注：/api/errors（错误明细 JSON）已移出本表——本表在鉴权 guard 之前分发，
+    // 而该端点返回内部错误明细，必须受 errors:read 保护。现由 server.ts 在
+    // /errors HTML 页旁以 guard(req,res,'errors:read') 显式处理（P1 安全修复）。
   ];
 }
 

@@ -172,10 +172,12 @@ export async function handleCollabRoutes(
     if (req.method === 'GET') {
       const ctx = await deps.guard(req, res, 'artifact:read');
       if (!ctx) return true;
-      // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）；
-      // 缺省（无参）行为与旧版逐字一致——全量列表（成果物归档页零回归）。
+      // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）。
       const runIdFilter = url.searchParams.get('runId') || undefined;
-      const items = await getArtifactStore().list(runIdFilter);
+      const all = await getArtifactStore().list(runIdFilter);
+      // P1 安全修复（IDOR）：列表按 owner 收敛——admin 全可见，其余仅见本人工件。
+      // 此前无归属过滤，任意 viewer 可读取所有用户的 Agent 产出物（可能含业务数据）。
+      const items = ctx.role === 'admin' ? all : all.filter((m) => m.owner === ctx.sub);
       sendJson(res, { items }, req);
       return true;
     }
@@ -224,6 +226,13 @@ export async function handleCollabRoutes(
         res.end(JSON.stringify({ error: 'artifact not found' }));
         return true;
       }
+      // P1 安全修复（IDOR）：非 admin 仅可访问本人工件；归属不符按 404 处理，
+      // 不泄露资源存在性。此前仅校验 artifact:read 动作权限，任意账号可读他人工件。
+      if (ctx.role !== 'admin' && meta.owner !== ctx.sub) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'artifact not found' }));
+        return true;
+      }
       if (!dl && !preview) {
         sendJson(res, { item: meta }, req);
         return true;
@@ -257,6 +266,14 @@ export async function handleCollabRoutes(
     if (req.method === 'DELETE') {
       const ctx = await deps.guard(req, res, 'artifact:write');
       if (!ctx) return true;
+      // P1 安全修复（IDOR）：删除同样需归属校验（admin 豁免）；此前 operator 可删任意用户工件。
+      // 找不到与归属不符统一按 404 处理，不泄露资源存在性。
+      const meta = await getArtifactStore().get(id);
+      if (!meta || (ctx.role !== 'admin' && meta.owner !== ctx.sub)) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'artifact not found' }));
+        return true;
+      }
       const ok = await getArtifactStore().remove(id);
       sendJson(res, { ok }, req);
       return true;

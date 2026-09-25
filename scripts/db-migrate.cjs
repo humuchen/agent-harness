@@ -92,11 +92,23 @@ function runMigration(migration) {
   const sql = fs.readFileSync(migration.path, 'utf8');
   const checksum = crypto.createHash('md5').update(sql).digest('hex');
   const start = Date.now();
+  // P1 修复（D3）：DDL 与 schema_migrations 记录包进同一事务——此前迁移中途失败
+  // 会留下「半迁移」状态且无回滚。turso（HTTP）后端不支持跨语句事务，保持原语义。
+  const inTx = (process.env.DB_BACKEND || 'sqlite') === 'sqlite';
   try {
-    db.exec(sql);
-    db.prepare(
-      'INSERT INTO schema_migrations (version, name, execution_time_ms, checksum) VALUES (?, ?, ?, ?)'
-    ).run(migration.version, migration.name, Date.now() - start, checksum);
+    if (inTx) db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(sql);
+      db.prepare(
+        'INSERT INTO schema_migrations (version, name, execution_time_ms, checksum) VALUES (?, ?, ?, ?)'
+      ).run(migration.version, migration.name, Date.now() - start, checksum);
+      if (inTx) db.exec('COMMIT');
+    } catch (inner) {
+      if (inTx) {
+        try { db.exec('ROLLBACK'); } catch {}
+      }
+      throw inner;
+    }
     return { success: true, version: migration.version, name: migration.name, time: Date.now() - start };
   } catch (error) {
     return { success: false, version: migration.version, name: migration.name, error: error.message, time: Date.now() - start };
@@ -111,6 +123,7 @@ function migrateUp(targetVersion = null) {
     return;
   }
   const results = [];
+  let failed = false;
   for (const migration of pending) {
     if (targetVersion && migration.version > targetVersion) break;
     console.log(`⏳ 执行迁移 ${migration.version}_${migration.name}...`);
@@ -119,12 +132,16 @@ function migrateUp(targetVersion = null) {
       console.log(`   ✅ 完成 (${result.time}ms)`);
     } else {
       console.log(`   ❌ 失败: ${result.error}`);
-      console.log('\n⚠️ 迁移失败，停止后续迁移');
+      console.log('\n⚠️ 迁移失败，停止后续迁移（已回滚本次迁移事务）');
+      // P1 修复（D3）：失败必须非零退出——AH_MIGRATE_AUTO=on 时（如 EKS prod 启动迁移）
+      // 此前退出码为 0，半健康副本照常接流，编排层无法感知失败。
+      failed = true;
       break;
     }
     results.push(result);
   }
-  console.log(`\n📊 迁移报告: 当前版本=${getCurrentVersion()}, 成功=${results.filter((r) => r.success).length}, 失败=${results.filter((r) => !r.success).length}`);
+  console.log(`\n📊 迁移报告: 当前版本=${getCurrentVersion()}, 成功=${results.filter((r) => r.success).length}, 失败=${failed ? 1 : 0}`);
+  if (failed) process.exit(1);
 }
 
 function migrateDown() {
@@ -137,16 +154,27 @@ function migrateDown() {
   const down = getMigrations().find((m) => m.direction === 'down' && m.version === current);
   if (!down) {
     console.log(`❌ 未找到版本 ${current} 的回滚脚本（请在 ${MIGRATIONS_DIR} 创建 ${current}_*.down.sql）`);
-    return;
+    process.exit(1);
   }
   const sql = fs.readFileSync(down.path, 'utf8');
   const start = Date.now();
+  const inTx = (process.env.DB_BACKEND || 'sqlite') === 'sqlite';
   try {
-    db.exec(sql);
-    db.prepare('DELETE FROM schema_migrations WHERE version = ?').run(current);
+    if (inTx) db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(sql);
+      db.prepare('DELETE FROM schema_migrations WHERE version = ?').run(current);
+      if (inTx) db.exec('COMMIT');
+    } catch (inner) {
+      if (inTx) {
+        try { db.exec('ROLLBACK'); } catch {}
+      }
+      throw inner;
+    }
     console.log(`   ✅ 回滚完成 (${Date.now() - start}ms)，当前版本=${getCurrentVersion()}`);
   } catch (error) {
     console.log(`   ❌ 回滚失败: ${error.message}`);
+    process.exit(1);
   }
 }
 

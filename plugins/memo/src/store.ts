@@ -83,7 +83,15 @@ function ensureDb(): Promise<DbAdapter> {
       }
       await migrateLegacyJson(db);
       return db;
-    })();
+    })().catch((e) => {
+      // P1 自愈修复：初始化失败必须重置缓存——rejected promise 被永久缓存后，
+      // 之后所有 saveNote/listNotes 都会永远 reject（磁盘满/权限/瞬时故障后插件
+      // 永久不可用）。与 core memory-store.ts:220-227 的修复范式一致：
+      // 当次调用仍收到错误，但下一次调用会重新尝试初始化。
+      schemaReady = null;
+      schemaDirKey = null;
+      throw e;
+    });
   }
   return schemaReady;
 }

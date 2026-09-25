@@ -1,32 +1,42 @@
-import { LLM, Message, ToolCall, LLMResponse, TokenUsage } from './types';
-import { type Verifier, type VerifyContext } from './verify';
-import {
-  GUARDRAIL_FALLBACK_PREFIX,
-  PARTIAL_NOTICE,
-  VERIFY_FAILED_PREFIX,
-  TIMEOUT_NOTICE,
-  ERROR_PREFIX,
-  ABORTED_PREFIX,
-  CIRCUIT_BREAKER_PREFIX,
-  MAX_STEPS_NOTICE
-} from './workflow/step-output';
-import { ToolRegistry } from './tools';
+/**
+ * AgentHarness —— LLM ↔ 工具 ↔ 记忆 主循环（聚合门面）。
+ *
+ * P1-2 拆分说明（纯结构解耦，行为与对外接口零变化）：
+ * 此前本文件承载了类型契约、上下文窗口工具、去重 key、消息净化、用量记账、
+ * 工具执行竞速、验证门禁等全部职责（~1830 行）。现按职责拆分为 harness/ 子模块，
+ * 本文件保留：
+ *   1. 对外 API 聚合与 re-export（AgentHarness / contextWindowFor /
+ *      HarnessEvent / HarnessOptions / sanitizeToolPairing —— 导入路径不变，
+ *      13 个测试文件与 index.ts 的 `export * from './harness'` 契约不受影响）；
+ *   2. AgentHarness 类与 runInner 主循环骨架（run 启动/中止装配、输入护栏、
+ *      记忆装配、主循环 LLM 调用与溢出自愈、输出护栏、计划模式收尾、持久化）。
+ *
+ * 子模块清单（依赖方向：harness.ts → harness/*，harness/* → 上层模块，无环）：
+ *   - harness/types.ts            事件与选项类型契约（零运行时逻辑）
+ *   - harness/context-window.ts   上下文窗口解析 + 溢出错误识别（纯函数）
+ *   - harness/tool-dedup.ts       工具调用去重 key（纯函数）
+ *   - harness/id.ts               run id 生成（模块级计数器）
+ *   - harness/message-sanitizer.ts tool 配对净化 + 工具调用收集（纯变换）
+ *   - harness/run-prompts.ts      软截止收尾提示 + 中止文案（纯常量/函数）
+ *   - harness/content-blocks.ts   多模态用户消息构造（纯函数）
+ *   - harness/usage-accounting.ts LLM 用量记账与 run:cost/llm:usage 事件
+ *   - harness/tool-executor.ts    单工具执行「中止+超时」竞速
+ *   - harness/verify-gate.ts      运行期自动验证门禁（含自愈重试）
+ */
+import type { ToolCall, LLMResponse } from './types';
+import type { VerifyContext } from './verify';
+import { selectToolsForInput } from './tools';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
 import {
-  checkInput,
-  checkOutput,
   checkStructuredOutput,
   checkTaskOutput,
-  checkToolArgs,
   checkInputAsync,
   checkOutputAsync,
   checkToolArgsAsync,
-  redactOutput,
-  type GuardrailPolicy
+  redactOutput
 } from './guardrails';
 import { parsePlanOutput } from './plan';
-import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
 import {
   withSpan,
   incCounter,
@@ -34,418 +44,34 @@ import {
   structLog,
   logError,
   emitAlert,
-  recordTokensTenant,
-  recordCostTenant,
   incCounterTenant
 } from './telemetry';
-import { estimateCostDetailed } from './llm/pricing';
-import { getTokenCacheStats } from './llm/token-cache-metrics';
-import { estimateMessageTokens, estimateTokens, estimateToolsTokens } from './llm/token-estimator';
-import { selectToolsForInput } from './tools';
 import { hooks } from './hooks';
 import { runWithEventSink } from './run-events';
+import {
+  GUARDRAIL_FALLBACK_PREFIX,
+  PARTIAL_NOTICE,
+  ERROR_PREFIX,
+  CIRCUIT_BREAKER_PREFIX,
+  MAX_STEPS_NOTICE
+} from './workflow/step-output';
 
-/** 上下文窗口上限（token）：用于「上下文用量」占比分母。
- *  已废弃按模型名硬编码的猜测表 —— 各模型真实 context_length 由前端从
- *  OpenRouter 模型目录获取并随 run 下发；此处仅保留 AH_CONTEXT_WINDOW
- *  显式覆盖与保守兜底（仅影响未携带窗口数据的旧客户端）。 */
-const FALLBACK_CONTEXT_WINDOW = 128000;
+// ── 拆分子模块 ──────────────────────────────────────────────────────────
+import type { HarnessEvent, HarnessOptions, ResolvedHarnessOptions } from './harness/types';
+import { contextWindowFor, isContextOverflowError } from './harness/context-window';
+import { stableToolKey } from './harness/tool-dedup';
+import { nextId } from './harness/id';
+import { sanitizeToolPairing, collectToolCalls } from './harness/message-sanitizer';
+import { WRAP_UP_PROMPT, abortedMessage } from './harness/run-prompts';
+import { buildUserContent } from './harness/content-blocks';
+import { accountAndEmitUsage } from './harness/usage-accounting';
+import { executeToolWithRace } from './harness/tool-executor';
+import { runVerifyGate } from './harness/verify-gate';
 
-/** 导出供 server（/api/state）向前端下发当前模型的上下文窗口上限。 */
-export function contextWindowFor(model?: string): number {
-  const env = Number(process.env.AH_CONTEXT_WINDOW);
-  if (env > 0) return env;
-  return FALLBACK_CONTEXT_WINDOW;
-}
-
-/**
- * 判断错误是否由「上下文超出模型窗口」引起（用于压缩后自愈重试）。
- * 覆盖常见的 400 / 413 及中英文错误文案（部分免费模型如 MiniMax 返回中文报错）。
- */
-function isContextOverflowError(e: unknown): boolean {
-  if (!e) return false;
-  const r =
-    typeof e === 'object'
-      ? (e as {
-          status?: unknown;
-          statusCode?: unknown;
-          response?: { status?: unknown };
-          message?: unknown;
-          body?: unknown;
-          error?: { message?: unknown };
-        })
-      : {};
-  const status = r.status ?? r.statusCode ?? r.response?.status;
-  if (status === 413) return true;
-  const text = [
-    r.message,
-    r.body,
-    r.error?.message,
-    typeof e === 'string' ? e : ''
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  return /context length|context_length|maximum context|max(imum)? (context|token)|too many tokens|exceeds.*(context|window)|prompt.*too long|reduce.*prompt|token limit|上下文|超出.*(窗口|长度|上下文|限制)/i.test(
-    text
-  );
-}
-
-/** 未知上下文窗口时的保守预算上限：宁可压得多、绝不溢出（模型无回应比多压几条历史更糟）。 */
-const BUDGET_FALLBACK_WINDOW = 32768;
-
-/**
- * Harness 在跑一轮 `run()` 期间发出的事件。
- * 这些事件让外部（CLI 进度条、Web UI、测试探针）无需侵入核心循环即可
- * 实时观察 LLM ↔ 工具 ↔ 记忆 的每一步。纯可选，不影响任何既有行为。
- */
-export type HarnessEvent =
-  | { type: 'run:start'; runId: string; input: string }
-  | { type: 'run:tools'; tools: { name: string; description: string }[] }
-  | {
-      type: 'guardrail:blocked';
-      phase: 'input' | 'output' | 'tool';
-      reason: string;
-      tool?: string;
-    }
-  | { type: 'step:start'; step: number; maxSteps: number }
-  | { type: 'llm:call'; step: number; messageCount: number; toolCount: number }
-  | {
-      type: 'llm:response';
-      step: number;
-      content: string;
-      toolCalls: ToolCall[];
-      /** 是否为「与模型连接空闲超时」截断的部分响应（中段断流兜底）。前端据此显示「生成中断」提示。 */
-      partial?: boolean;
-    }
-  /** token 级流式增量（打字机效果）。仅当 HarnessOptions.streamTokens 开启且适配器支持时发出。 */
-  | { type: 'llm:token'; step: number; delta: string }
-  /** 推理过程增量（思考折叠块）。部分推理模型在 delta.reasoning 中逐段返回。 */
-  | { type: 'llm:reasoning'; step: number; delta: string }
-  | { type: 'tool:start'; step: number; call: ToolCall }
-  | {
-      type: 'tool:result';
-      step: number;
-      call: ToolCall;
-      result: string;
-      errored: boolean;
-    }
-  /** 加固：工具调用去重命中。同 run 内出现「同名 + 相同归一化参数」的重复请求时，
-   *  直接复用首次结果而不真正执行，emit 此事件（而非 tool:start），用于 UI 标记「复用缓存」并计入可观测。 */
-  | {
-      type: 'tool:deduped';
-      step: number;
-      call: ToolCall;
-      result: string;
-      errored: boolean;
-    }
-  | {
-      type: 'run:cost';
-      step: number;
-      model?: string;
-      usage: TokenUsage;
-      stepCost: number;
-      cumulativeTokens: number;
-      cumulativeCost: number;
-      priced?: boolean;
-      estTokens?: {
-        system: number;
-        tools: number;
-        history: number;
-        completion: number;
-      };
-    }
-  /** 上下文用量（精确）：以 provider 返回的 usage（prompt/completion）为权威总量，
-   *  按各组件序列化 token 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），
-   *  供前端「上下文用量」浮层展示精确占比。仅当拿到 provider usage 时发出。 */
-  | {
-      type: 'llm:usage';
-      step: number;
-      model?: string;
-      window: number;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      /** 自上次用量上报以来是否发生过上下文压缩（历史淘汰）：用于前端「已压缩」指示。 */
-      compressed?: boolean;
-      breakdown: {
-        system: number;
-        tools: number;
-        messages: number;
-        mcp: number;
-        skills: number;
-        completion: number;
-        /** 本次供应商侧缓存命中 token，前端可展示节省量。 */
-        cached?: number;
-      };
-    }
-  | {
-      type: 'run:token-cache';
-      step: number;
-      model?: string;
-      interface: string;
-      queries: number;
-      hits: number;
-      hitRate: number;
-      cachedTokens: number;
-      promptTokens: number;
-      tokenHitRate: number;
-      byModel: Record<
-        string,
-        { queries: number; hits: number; hitRate: number }
-      >;
-    }
-  /** 统一基座平台元数据：把本次 run 关联到「智能体 / 工作流 / 租户 / 追踪」维度（P0/P1）。
-   *  纯旁路观测通道，不修改任何业务逻辑；仅当调用方传入相关字段时才发出。 */
-  | {
-      type: 'run:meta';
-      runId: string;
-      agentId?: string;
-      workflowId?: string;
-      traceId?: string;
-      tenantId?: string;
-      decidedBy?: string;
-    }
-  | {
-      type: 'budget:exceeded';
-      kind: 'tokens' | 'cost';
-      limit: number;
-      used: number;
-    }
-  | { type: 'run:end'; runId: string; final: string; steps: number }
-  | {
-      type: 'verify:result';
-      attempt: number;
-      passed: boolean;
-      score: number;
-      reasons: string[];
-      /**
-       * 软性未通过（P4.7）：只告警、不阻断 —— 产出原样保留、不追加 [verify:failed]、
-       * step 不判失败。见 verify.ts 的 VerifyOutcome.soft。
-       */
-      soft?: boolean;
-    }
-  /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
-   *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
-  | { type: 'plan:proposed'; plan: import('./plan').ExecutionPlan }
-  /** 计划模式（P0）：需求不清时由服务端解析澄清 JSON 补发的旁路事件，等用户确认目标后再 propose。 */
-  | { type: 'plan:clarify'; clarify: import('./plan').PlanClarify }
-  /** 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），供前端展示真实进展。 */
-  | { type: 'plan:phase'; phase: string; ts: number }
-  /** TypeSafe AI Jev 决策模型调用旁路事件：子系统直连路径（注入门禁/上下文压缩等）与
-   *  builtin__jev_decide 工具路径统一经 run-events 通道上报，让「typesafe 后台有调用量」
-   *  在 run 调用链可观测。仅当 jevDecide 的 HTTP 调用发生在 run 异步链路内时发出。
-   *  注意：caller==='tool' 的调用已有 tool:start/tool:result 节点，前端不重复建节点。 */
-  | {
-      type: 'jev:call';
-      /** 调用方标签：'tool'(LLM 工具路径) / 'injection-gate' / 'context-compress' / 'router' 等。 */
-      caller: string;
-      ok: boolean;
-      /** 本次 HTTP 调用耗时（ms）。 */
-      latencyMs: number;
-      /** 本次提问数（一次 systemone 调用可携带多个问题）。 */
-      questions?: number;
-      /**
-       * 逐问题规格（问题名 -> 问题定义），用于调用链节点展开「问题」记录。
-       * 与 questions(数量) 并存：后者供聚合统计，前者供单条回溯。
-       */
-      questionSpec?: Record<string, unknown>;
-      /**
-       * 归一化后的逐问题决策输出（问题名 -> { type, choice?, probabilities?, score?, noul?, confidence?, criteria? }），
-       * 用于调用链节点展开「输出记录」。失败时缺省（节点改显 error）。
-       */
-      answers?: Record<string, unknown>;
-      /** TypeSafe 侧 usage（若响应体携带）；未携带则缺省，成本体系暂不计入。 */
-      tokens?: { input: number; output: number };
-      /** ok=false 时的错误摘要（HTTP 状态或网络错误信息，不含密钥）。 */
-      error?: string;
-    }
-  /** 旁路告警（如工具调用预算截断），不影响主流程，仅供可观测。 */
-  | { type: 'warn'; message: string }
-  | { type: 'error'; message: string };
-
-export interface HarnessOptions {
-  llm: LLM;
-  tools: ToolRegistry;
-  memory?: Memory;
-  systemPrompt?: string;
-
-  // 对 Agent 循环步数的安全上限（工具调用 -> LLM -> 工具调用 ...）。
-  maxSteps?: number;
-
-  // 整体运行超时（毫秒）。超时后中止循环并返回超时提示，避免长时间挂起。
-  timeoutMs?: number;
-
-  // 外部取消信号；触发后中止运行（例如用户关闭 UI、进程收到 SIGTERM）。
-  signal?: AbortSignal;
-
-  // 可选的事件回调：在循环每一步（LLM 调用 / 工具调用 / 护栏拦截）发生时触发。
-  // 用于进度展示、可视化与测试断言，不修改任何业务逻辑。
-  onEvent?: (e: HarnessEvent) => void;
-
-  // 用于成本计价的模型标识（harness 不直接调 LLM 配置，需调用方传入用于查单价表）。
-  // 缺省时仍会按响应里的 resp.model 计价；两者都无则按未知模型默认价（默认 0）。
-  model?: string;
-
-  // 该模型的真实上下文窗口上限（token）：llm:usage 事件据此下发「上下文用量」分母。
-  // 由调用方从权威来源（OpenRouter 模型目录 context_length / AH_CONTEXT_WINDOW）解析后传入；
-  // 未传时回落保守基线（FALLBACK_CONTEXT_WINDOW），不再按模型名猜测。
-  contextWindow?: number;
-
-  // 单次 run 的 token 预算上限（累计 total_tokens）。超出即中止并返回预算超限提示。
-  tokenBudget?: number;
-
-  // 单次 run 的成本预算上限（美元，按模型单价估算）。超出即中止。
-  costBudget?: number;
-
-  // 单次 run 的工具结果字符上限（超出截断并标注）。降低「工具原文逐字重发」带来的
-  // 上下文膨胀与 token 成本。未配置（undefined）则不截断；UI 默认 16000。
-  maxToolResultChars?: number;
-
-  // 可选「完成自检」：开启后，若模型以空响应（疑似放弃）收尾，注入提示继续循环
-  // 直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。默认关闭（避免额外成本）。
-  requireCompletion?: boolean;
-
-  // 运行期自动验证门禁（P0-2）：产出最终答案后自动调用验证器。未通过时若仍有重试额度，
-  // 注入自检提示重跑循环（自愈）；否则在最终结果前加 [verify:failed] 标记。不设置则关闭门禁。
-  verify?: Verifier;
-
-  // 验证未通过时的最大自动重试次数（每次重跑一个完整 maxSteps 预算的循环）。默认 0（仅校验不重试）。
-  verifyMaxRetries?: number;
-
-  // 验证未通过且仍有重试额度时，是否注入自检提示重跑（默认：在 verifyMaxRetries>0 时开启）。
-  verifySelfCorrect?: boolean;
-
-  // P0.3 租户隔离：per-run 护栏策略覆盖。传入后，输入/输出/工具参数校验与脱敏均使用
-  // 该策略而非全局默认。缺省（undefined）则沿用全局 default（向后兼容：零租户行为不变）。
-  guardrailPolicy?: GuardrailPolicy;
-
-  // P0/P1 统一基座平台元数据：把本次 run 关联到「目标智能体 / 工作流 / 追踪 id / 租户」。
-  // 仅用于 run:meta 事件观测与可观测关联，不影响任何业务逻辑；全部可选、向后兼容。
-  agentId?: string;
-  workflowId?: string;
-  traceId?: string;
-  tenantId?: string;
-
-  /** 路由决策来源（explicit / domain / classify / fallback），供可观测区分。 */
-  decidedBy?: string;
-
-  /**
-   * 是否启用 token 级流式：开启后 LLM 调用会透传 onToken/onReasoning 回调，
-   * harness 据此发出 llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。
-   * 默认 false，不改变既有非流式行为；服务端 assembleAgent 对 real 模式默认开启。
-   */
-  streamTokens?: boolean;
-
-  /**
-   * 动态工具选择：硬允许集（来自 AgentCard.assembly.tools 或核心环境工具）。
-   * 与「按意图动态裁剪」配合——这些工具无条件发给 LLM，永不裁掉；其余工具按
-   * 当前用户输入的相关性择优发送（见 selectToolsForInput）。缺省为空，表示无硬约束。
-   */
-  allowTools?: string[];
-
-  // 加固：工具调用去重。开启后，对「同名 + 相同归一化参数」的重复工具调用，直接复用首次结果
-  //（emit tool:deduped 而非 tool:start），不真正重新执行，从而砍掉冗余调用、降低 token 成本与上下文膨胀。
-  // 默认 false（完全不介入），向后兼容，不破坏任何既有行为。
-  enableToolDedup?: boolean;
-
-  // 加固：单 step 内工具调用预算上限。每 step 真实执行达到上限后，剩余 tool_calls 被截断并 emit warn。
-  // 0 或不传表示不限制（保持现状），用于兜底「模型单轮并行请求过多工具」的场景。
-  maxToolCallsPerStep?: number;
-
-  // 计划模式 propose（P0）：开启后，若模型最终输出能解析为合法计划 JSON，则输出校验
-  // 走 checkStructuredOutput（仅密钥/注入扫描），跳过业务自定义规则——结构化任务描述
-  // 极易被领域合规正则（如医疗广告法）误伤，且拦截后的合规话术重试会破坏 JSON 格式。
-  // 缺省 false（行为与之前完全一致，向后兼容）。
-  planPropose?: boolean;
-
-  // 计划任务执行（P0）：计划模式逐任务派发的 run。输出为面向用户的学习/执行内容，
-  // 常规架构讲解必然包含「system prompt」「apiKey=…示例」等字样 —— medium 敏感度的
-  // 弱信号注入短语与密钥赋值样例正则会把正常教学内容误拦成「无法提供回复」。
-  // 开启后输出校验降级为「真实密钥格式 + 强信号注入短语」扫描（checkTaskOutput），
-  // 跳过弱信号短语、业务自定义规则与上下文规则；安全底线（真密钥 / 注入攻击）不放松。
-  // 缺省 false（行为与之前完全一致，向后兼容）。
-  planTask?: boolean;
-
-  // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
-  toolDedupKey?: (call: ToolCall) => string;
-}
-
-/** 把工具名 + 参数归一化为稳定字符串，用于去重比较（参数 key 排序，忽略字段顺序差异）。 */
-function stableToolKey(call: ToolCall): string {
-  let args: unknown = call.arguments;
-  try {
-    if (typeof args === 'string') args = JSON.parse(args as string);
-  } catch {
-    /* 保留原字符串 */
-  }
-  let norm: unknown = args;
-  if (args && typeof args === 'object' && !Array.isArray(args)) {
-    const sorted: Record<string, unknown> = {};
-    for (const k of Object.keys(args as Record<string, unknown>).sort()) {
-      sorted[k] = (args as Record<string, unknown>)[k];
-    }
-    norm = sorted;
-  }
-  let argStr: string;
-  try {
-    argStr = JSON.stringify(norm);
-  } catch {
-    argStr = String(args);
-  }
-  return `${call.name}::${argStr}`;
-}
-
-// 经默认值填充后的解析结果类型：onEvent 永不为空。
-interface ResolvedHarnessOptions {
-  llm: LLM;
-  tools: ToolRegistry;
-  memory: Memory;
-  systemPrompt: string; // 注意：systemPrompt 实际不经过 Memory 持久化窗口，见下
-  maxSteps: number;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onEvent: (e: HarnessEvent) => void;
-  model?: string;
-  // 真实上下文窗口上限（token，可选）：llm:usage 分母。见 HarnessOptions.contextWindow。
-  contextWindow?: number;
-  tokenBudget?: number;
-  costBudget?: number;
-  maxToolResultChars?: number;
-  requireCompletion: boolean;
-  verify?: Verifier;
-  verifyMaxRetries: number;
-  verifySelfCorrect: boolean;
-  guardrailPolicy?: GuardrailPolicy;
-  // P0/P1 统一基座平台元数据（仅观测用，不影响业务逻辑）。
-  agentId?: string;
-  workflowId?: string;
-  traceId?: string;
-  tenantId?: string;
-  decidedBy?: string;
-  // token 级流式开关：开启后 LLM 调用透传 onToken/onReasoning，harness 发出
-  // llm:token / llm:reasoning 事件（打字机效果 + 思考折叠块）。默认 false。
-  streamTokens?: boolean;
-  // 动态工具选择：硬允许集（永远发给 LLM，不被按意图裁剪）。
-  allowTools?: string[];
-  // 加固：工具调用去重开关与单 step 预算（见 HarnessOptions 注释）。
-  enableToolDedup: boolean;
-  maxToolCallsPerStep: number;
-  toolDedupKey?: (call: ToolCall) => string;
-  // 计划模式 propose（见 HarnessOptions 注释）。
-  planPropose: boolean;
-  // 计划任务执行（见 HarnessOptions 注释）。
-  planTask: boolean;
-  // P1-10: 可选熔断器（CircuitBreaker）。LLM 持续 5xx 时自动熔断，避免逐个请求硬等超时。
-  // 未传则不启用（向后兼容）。开启后，熔断打开时抛出 CircuitBreakerOpen，调用方可捕获决定重试策略。
-  circuitBreaker?: CircuitBreaker;
-}
-
-let idCounter = 0;
-function nextId(prefix: string): string {
-  idCounter += 1;
-  return `${prefix}_${Date.now()}_${idCounter}`;
-}
+// ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
+export { contextWindowFor } from './harness/context-window';
+export { sanitizeToolPairing } from './harness/message-sanitizer';
+export type { HarnessEvent, HarnessOptions } from './harness/types';
 
 export class AgentHarness {
   private opts: ResolvedHarnessOptions;
@@ -518,7 +144,16 @@ export class AgentHarness {
     imageAttachments?: Array<{ url: string; name: string; type: string }>
   ): Promise<string> {
     const runId = nextId('run');
-    const emit = (e: HarnessEvent) => this.opts.onEvent?.(e);
+    // 事件通道防御：调用方传入的 onEvent 抛错（如 SSE 写失败）不得影响主流程，
+    // 也不得从 run:meta / run:end 等发射点把异常冒出 run()。对齐 run-events.ts
+    // 旁路通道「观测异常不影响业务」的容错约定。
+    const emit = (e: HarnessEvent) => {
+      try {
+        this.opts.onEvent?.(e);
+      } catch {
+        // 观测通道失败：吞掉，不影响 run 主流程
+      }
+    };
 
     // 组合「超时」与「外部取消」为单一信号：任一触发即中止本次运行。
     const controller = new AbortController();
@@ -657,33 +292,12 @@ export class AgentHarness {
       memory.add({ role: 'system', content: sysContent });
     }
     // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
-    if (imageAttachments && imageAttachments.length > 0) {
-      // 零依赖兜底：对超大 base64 原图强制 detail:'low'，由模型端降采样到 512px，
-      // 覆盖前端压缩被绕过的入口（subagent / workflow / 直接构造 attachments 等）。
-      // 仅体积超限的图受影响，经前端压缩后的图保持原有质量。
-      const forceLowDetail = (url: string): boolean => {
-        if (!url.startsWith('data:image/')) return false;
-        const approx = Math.ceil(((url.split(',')[1] ?? '').length * 3) / 4);
-        return approx > 1.5 * 1024 * 1024;
-      };
-      const contentBlocks: Array<
-        | { type: 'text'; text?: string }
-        | { type: 'image_url'; image_url?: { url: string; detail?: 'low' | 'high' | 'auto' } }
-      > = [];
-      if (userInput) contentBlocks.push({ type: 'text', text: userInput });
-      for (const img of imageAttachments) {
-        const url = img.url;
-        const detail = forceLowDetail(url) ? ('low' as const) : undefined;
-        contentBlocks.push(
-          detail
-            ? { type: 'image_url', image_url: { url, detail } }
-            : { type: 'image_url', image_url: { url } }
-        );
-      }
-      memory.add({ role: 'user', content: contentBlocks });
-    } else {
-      memory.add({ role: 'user', content: resolvedInput });
-    }
+    // （构造逻辑拆分至 harness/content-blocks.ts，行为契约见该模块注释：
+    //  多模态路径 text 块取 userInput、纯文本路径取 resolvedInput，与拆分前一致。）
+    memory.add({
+      role: 'user',
+      content: buildUserContent(userInput, resolvedInput, imageAttachments)
+    });
 
     let final = MAX_STEPS_NOTICE;
     let steps = 0;
@@ -947,26 +561,28 @@ export class AgentHarness {
           for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
             if (signal.aborted) return abortedResult();
             try {
+              const llmCall = this.opts.llm(messages, stepTools, {
+                signal,
+                circuitBreaker: this.opts.circuitBreaker,
+                ...(this.opts.streamTokens
+                  ? {
+                      onToken: (delta: string) => {
+                        streamedTokens = true;
+                        streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
+                        emit({ type: 'llm:token', step: steps, delta });
+                      },
+                      onReasoning: (delta: string) => {
+                        emit({ type: 'llm:reasoning', step: steps, delta });
+                      }
+                    }
+                  : {})
+              });
+              // 防御：abort/超时竞速获胜后，底层调用 rejection 无人接住会触发
+              // unhandledRejection（Node ≥15 默认 crash）。挂一条兜底 catch，
+              // 不影响竞速正常路径的异常传播（race 仍会收到原始 rejection）。
+              void llmCall.catch(() => {});
               const raceResult = await withSpan('llm.call', () =>
-                Promise.race([
-                  this.opts.llm(messages, stepTools, {
-                    signal,
-                    circuitBreaker: this.opts.circuitBreaker,
-                    ...(this.opts.streamTokens
-                      ? {
-                          onToken: (delta: string) => {
-                            streamedTokens = true;
-                            streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
-                            emit({ type: 'llm:token', step: steps, delta });
-                          },
-                          onReasoning: (delta: string) => {
-                            emit({ type: 'llm:reasoning', step: steps, delta });
-                          }
-                        }
-                      : {})
-                  }),
-                  abortPromise
-                ])
+                Promise.race([llmCall, abortPromise])
               );
               if (raceResult === '__aborted__') return abortedResult();
               resp = raceResult as LLMResponse;
@@ -1016,149 +632,29 @@ export class AgentHarness {
             }
           }
           if (!resp) return abortedResult();
-          // 记录「已成功接收的最大 prompt」，作为后续步的保守预算上限，避免反复溢出。
-          this.maxAcceptedPrompt = Math.max(this.maxAcceptedPrompt, resp.usage?.prompt_tokens ?? 0);
-          recordTokensTenant(resp.usage, this.opts.tenantId);
 
-          // 成本记账：按实际使用模型（响应优先，回落配置 model）查单价表估算，
-          // 累加进 per-run 与全局指标，并发出 run:cost 事件供 UI 实时展示。
-          const costModel = resp.model ?? this.opts.model;
-          const estimate = estimateCostDetailed(costModel, resp.usage);
-          const stepCost = estimate.cost;
-          runCost += stepCost;
-          runTokens += resp.usage?.total_tokens ?? 0;
-          recordCostTenant(stepCost, costModel, this.opts.tenantId);
-          // 未找到单价且未配置默认价时发出诊断日志，便于排查「cost 始终为 0」的根因。
-          if (
-            !estimate.found &&
-            stepCost === 0 &&
-            (resp.usage?.prompt_tokens || resp.usage?.completion_tokens)
-          ) {
-            structLog(
-              'warn',
-              'model pricing not found, cost estimate is zero',
-              {
-                model: costModel,
-                usage: resp.usage,
-                runId
-              }
-            );
-          }
-          // 本地拆解四项占比（启发式估算，仅用于链路可视化；权威值仍以 provider 的 usage 为准）。
-          // 系统在「系统提示」项，工具 schema 在「工具」项，其余消息累计为「历史」，
-          // 模型本次输出（含 tool_calls 参数）计入「输出」项，便于定位高 token 消耗的固定开销来源。
-          //
-          // 多模态计费口径：走 estimateMessageTokens 而非 JSON.stringify + estimateTokens。
-          // 后者会把整段图片 base64 序列化后按「4 字符 = 1 token」折算，一张 1MB 图即约
-          // 34 万虚假 token，使「历史」一项高估 1~2 个数量级（曾出现 858,118 tok 的失真展示）。
-          // 现改为图片按视觉 token 计（low=85 / high=85+170×512 分块数），与真实计费同量级。
-          let estSystem = 0;
-          let estHistory = 0;
-          for (const m of messages) {
-            const t = estimateMessageTokens(m);
-            if (m.role === 'system') estSystem += t;
-            else estHistory += t;
-          }
-          const estTools = estimateToolsTokens(stepTools);
-          // 把工具拆分为「内置工具」与「MCP 工具（名称含 '__' 前缀）」，分别计入
-          // 「工具及子智能体」与「连接器及 MCP」两类，使上下文用量拆分更贴近真实构成。
-          let estMcp = 0;
-          for (const t of stepTools) {
-            if (t.name.includes('__'))
-              estMcp += estimateTokens(`${t.name} ${t.description ?? ''}`);
-          }
-          const estToolsBuiltin = estTools - estMcp;
-          const estSkills = 80; // 技能注册基线（粗估）
-          let completionText = resp.content ?? '';
-          if (resp.tool_calls) {
-            for (const tc of resp.tool_calls) {
-              completionText +=
-                ' ' +
-                (typeof tc.arguments === 'string'
-                  ? tc.arguments
-                  : JSON.stringify(tc.arguments ?? {}));
-            }
-          }
-          const estCompletion = estimateTokens(completionText);
-          // 仅在拿到 usage 时发出 run:cost（mock / 不返回用量的响应不刷屏）。
-          if (resp.usage) {
-            emit({
-              type: 'run:cost',
-              step: steps,
-              model: costModel,
-              usage: resp.usage,
-              stepCost,
-              cumulativeTokens: runTokens,
-              cumulativeCost: runCost,
-              priced: estimate.found,
-              estTokens: {
-                system: estSystem,
-                tools: estTools,
-                history: estHistory,
-                completion: estCompletion
-              },
-              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {})
-            });
-            // 上下文用量（精确）：以 provider 的 usage 为权威总量，按各组件序列化 token
-            // 占比把 prompt 拆到五类（系统/工具/对话/MCP/技能），供前端浮层展示精确占比。
-            const promptTokens = resp.usage.prompt_tokens ?? 0;
-            const completionTokens = resp.usage.completion_tokens ?? 0;
-            const window =
-              this.opts.contextWindow && this.opts.contextWindow > 0
-                ? this.opts.contextWindow
-                : contextWindowFor(costModel);
-            // 把真实上下文占用喂给记忆，驱动 token 级压缩护栏（在占用率越过阈值时
-            // 于后续 add() 中淘汰最旧历史，避免上下文撑爆导致模型 400）。
-            memory.setContextUsage(promptTokens, window);
-            // 优化：scale 基于「实际新计费 token」（排除缓存命中），避免 cached_tokens 被归到 tools 占比上
-            const actualPromptTokens = promptTokens - (resp.usage?.cached_tokens ?? 0);
-            const promptEst =
-              estSystem + estToolsBuiltin + estHistory + estMcp + estSkills;
-            const scale = promptEst > 0 ? actualPromptTokens / promptEst : 0;
-            emit({
-              type: 'llm:usage',
-              step: steps,
-              model: costModel,
-              window,
-              promptTokens,
-              completionTokens,
-              totalTokens: promptTokens + completionTokens,
-              // 「自上次用量上报以来」是否发生过上下文压缩：读取即清零，
-              // 避免会话级 sticky 标志导致「已压缩」徽标亮起后永不消失、
-              // 与真实用量变化脱钩。
-              compressed: memory.consumeCompressed(),
-              breakdown: {
-                system: Math.round(estSystem * scale),
-                tools: Math.round(estToolsBuiltin * scale),
-                messages: Math.round(estHistory * scale),
-                mcp: Math.round(estMcp * scale),
-                skills: Math.round(estSkills * scale),
-                completion: completionTokens,
-                // 新增：本次供应商侧缓存命中 token，前端可展示节省量
-                cached: resp.usage?.cached_tokens ?? 0,
-              }
-            });
-          }
-          // Token 缓存命中率：仅在本次 run 真正发生过缓存查询时发出
-          // （PROMPT_CACHE 开启且供应商返回 cached_tokens）。数据来自全局统计快照，
-          // 随链路一并下发，便于在调用链 trace 中排查缓存/鉴权相关性能问题。
-          const tcStats = getTokenCacheStats();
-          if (tcStats.queries > 0) {
-            emit({
-              type: 'run:token-cache',
-              step: steps,
-              model: costModel,
-              interface: 'prompt-cache',
-              queries: tcStats.queries,
-              hits: tcStats.hits,
-              hitRate: tcStats.hitRate,
-              cachedTokens: tcStats.cachedTokens,
-              promptTokens: tcStats.promptTokens,
-              tokenHitRate: tcStats.tokenHitRate,
-              byModel: tcStats.byModel,
-              ...(this.opts.tenantId ? { tenantId: this.opts.tenantId } : {})
-            });
-          }
+          // 用量记账与事件发射（拆分至 harness/usage-accounting.ts，语句顺序逐字保留）：
+          // 记录自适应预算上限、token/成本记账、无单价诊断、占比拆解，
+          // 以及 run:cost / llm:usage / run:token-cache 三类旁路事件。
+          // 三个累加量经返回值写回（原为闭包局部变量与实例字段）。
+          const accounted = accountAndEmitUsage({
+            resp,
+            messages,
+            stepTools,
+            steps,
+            runTokens,
+            runCost,
+            maxAcceptedPrompt: this.maxAcceptedPrompt,
+            memory,
+            emit,
+            tenantId: this.opts.tenantId,
+            contextWindow: this.opts.contextWindow,
+            model: this.opts.model,
+            runId
+          });
+          runTokens = accounted.runTokens;
+          runCost = accounted.runCost;
+          this.maxAcceptedPrompt = accounted.maxAcceptedPrompt;
           // 累加后立即检查预算：超限则中止，不再进入工具执行 / 下一轮。
           if (tokenBudget && runTokens > tokenBudget)
             return budgetExceeded('tokens');
@@ -1420,48 +916,36 @@ export class AgentHarness {
               toolCall: { name: call.name, arguments: call.arguments },
             });
               try {
-                // P4.8：工具执行纳入「中止 + 单次超时」竞速。此前这里是裸 await ——
-                // 工具挂死时看门狗 abort 无法生效，整个 step 会一直阻塞到该工具自己返回，
-                // 用户表现为「等待时间很长，然后才报 step 超时中止」。现在：
+                // P4.8：工具执行纳入「中止 + 单次超时」竞速（机制拆分至
+                // harness/tool-executor.ts）。此前这里是裸 await —— 工具挂死时看门狗
+                // abort 无法生效，整个 step 会一直阻塞到该工具自己返回。现在：
                 //  - 运行被中止（超时/取消）→ 立即放弃等待并走中止路径（内容不再丢）；
                 //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
-                //    回传，模型可改道或基于已有信息继续，而不是拖垮整步。
-                let toolTimer: ReturnType<typeof setTimeout> | null = null;
-                const racers: Array<Promise<{ kind: string; value?: unknown }>> = [
-                  withSpan(`tool.${call.name}`, async () => ({
-                    kind: 'ok',
-                    value: await this.opts.tools.call(call.name, call.arguments, {
-                      traceId: this.opts.traceId,
-                      // 透传运行级 abort 信号：shell 等会落地子进程的工具据此及时强杀。
-                      signal
-                    })
-                  })),
-                  abortPromise.then(() => ({ kind: 'aborted' as const }))
-                ];
-                if (toolCallTimeoutMs > 0) {
-                  racers.push(
-                    new Promise<{ kind: string }>((resolve) => {
-                      toolTimer = setTimeout(
-                        () => resolve({ kind: 'timeout' }),
-                        toolCallTimeoutMs
-                      );
-                    })
-                  );
-                }
-                let raced: { kind: string; value?: unknown };
-                try {
-                  raced = await Promise.race(racers);
-                } finally {
-                  if (toolTimer) clearTimeout(toolTimer);
-                }
+                //    回传，模型可改道或基于已有信息继续，而不是拖垮整步；
+                //  - 超时经工具级独立 AbortController 真实中止工具执行（含落地子进程）。
+                const raced = await executeToolWithRace({
+                  call,
+                  signal,
+                  abortPromise,
+                  toolCallTimeoutMs,
+                  tools: this.opts.tools,
+                  traceId: this.opts.traceId,
+                  sessionId: this.opts.sessionId,
+                  networkPolicy: this.opts.guardrailPolicy?.network
+                });
                 if (raced.kind === 'aborted') {
                   fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
                   return abortedResult();
                 }
+                if (raced.kind === 'err') {
+                  // 工具 promise 已被转成已决值，此处恢复异常语义，
+                  // 走下方统一 catch 转为工具错误文本回传模型。
+                  throw raced.error;
+                }
                 if (raced.kind === 'timeout') {
                   result =
                     `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
-                    '已放弃等待；请改用其它方式获取信息，或基于已有信息继续）';
+                    '已中止该工具执行；请改用其它方式获取信息，或基于已有信息继续）';
                   errored = true;
                 } else {
                   result = raced.value;
@@ -1576,94 +1060,34 @@ export class AgentHarness {
     // 门禁的 notContains(PARTIAL_NOTICE) 会给已抢救回来的部分产出再加上 [verify:failed]
     // 前缀，把「超时中断」误标成「验证失败」，掩盖真实的失败原因与已保留的内容。
     // 中止路径的语义由产出有效性闸门（inspectStepOutput → partial）如实承担。
+    //
+    // 门禁主体拆分至 harness/verify-gate.ts。final 同步约定：buildCtx 闭包读取本作用域
+    // 的 final；门禁内每次更新 final 都经 onFinalUpdate 写回本作用域，保证后续
+    // verify(buildCtx()) 读到最新产出（与拆分前单变量闭包语义一致）。
     if (this.opts.verify && !signal.aborted) {
-      const buildCtx = (): VerifyContext => ({
-        input: userInput,
-        final,
-        steps,
-        toolCalls: collectToolCalls(memory.history()),
-        guardrailsBlocked,
-        budgetExceeded: budgetExceededFlag
-      });
-      let attempt = 0;
-      let outcome = await this.opts.verify(buildCtx());
-      emit({
-        type: 'verify:result',
-        attempt,
-        passed: outcome.passed,
-        score: outcome.score,
-        reasons: outcome.reasons,
-        ...(outcome.soft ? { soft: true } : {})
-      });
-      while (!outcome.passed && attempt < this.opts.verifyMaxRetries) {
-        attempt += 1;
-        if (this.opts.verifySelfCorrect) {
-          // P4.8 重试预算守卫：剩余时间不足以跑完一轮时不再重试。
-          // 此前无条件重跑：第一轮已耗尽大半预算时，第二轮的硬超时会把**第一轮已经
-          // 产出的完整内容整个覆盖**成超时提示 —— 用户等到超时后什么也拿不到。
-          // 宁可保留第一轮产出（可能只是验收词未逐字命中），也不做毁灭性的重试。
-          const remainMs = Number.isFinite(deadlineAt) ? deadlineAt - Date.now() : Infinity;
-          // 重试所需的最低剩余预算：缺省 60s，并收敛到总预算的 1/4 以内（与软截止同款
-          // 口径）—— 否则「总预算 60s」时任何重试都会被判为「剩余不足」而永不执行。
-          const minRetryCfg = Math.max(
-            0,
-            Number(process.env.AGENT_VERIFY_MIN_RETRY_MS ?? 60_000) || 0
-          );
-          const minRetryMs =
-            runTimeoutMs > 0
-              ? Math.min(minRetryCfg, Math.floor(runTimeoutMs / 4))
-              : minRetryCfg;
-          if (remainMs <= minRetryMs) {
-            emit({
-              type: 'warn',
-              message: `剩余时间不足（${Number.isFinite(remainMs) ? Math.max(0, Math.round(remainMs / 1000)) : '∞'}s），跳过自检重试并保留当前产出`
-            });
-            break;
-          }
-          // 注入自检提示，让模型根据失败原因修正后重新跑一轮（自动重试 / 自愈）。
-          // 软性未通过同样重试一次（定向补齐成本低、收益明确），只是重试后仍不通过时不阻断。
-          memory.add({
-            role: 'user',
-            content:
-              '（系统提示）上一轮运行未通过自动验证：' +
-              outcome.reasons.join('；') +
-              '。请审视并修正你的回答与步骤，然后重新给出最终结果。'
-          });
-          try {
-            final = await runLoop();
-          } catch (e) {
-            logError('agent.run.retry', e, { runId });
-            final = `${ERROR_PREFIX} ${e instanceof Error ? e.message : String(e)}`;
-          }
-          outcome = await this.opts.verify(buildCtx());
-          emit({
-            type: 'verify:result',
-            attempt,
-            passed: outcome.passed,
-            score: outcome.score,
-            reasons: outcome.reasons,
-            ...(outcome.soft ? { soft: true } : {})
-          });
-        } else {
-          break;
+      final = await runVerifyGate({
+        verify: this.opts.verify,
+        verifyMaxRetries: this.opts.verifyMaxRetries,
+        verifySelfCorrect: this.opts.verifySelfCorrect,
+        buildCtx: (): VerifyContext => ({
+          input: userInput,
+          final,
+          steps,
+          toolCalls: collectToolCalls(memory.history()),
+          guardrailsBlocked,
+          budgetExceeded: budgetExceededFlag
+        }),
+        runLoop,
+        deadlineAt,
+        runTimeoutMs,
+        emit,
+        memory,
+        runId,
+        initialFinal: final,
+        onFinalUpdate: (nextFinal) => {
+          final = nextFinal;
         }
-      }
-      if (!outcome.passed) {
-        if (outcome.soft) {
-          // P4.7 软性未通过：只告警、不改写产出。
-          // 症状背景：计划模式逐 task 的验收关键词断言是「planner 调用 A 出词 → executor 调用 B
-          // 的产出逐字包含」的跨调用匹配，同义改写即未命中；此前会追加 [verify:failed] 前缀，
-          // 被引擎出口闸门判为无效产出 → step failed → 整个 run 失败（而单步对话无此门禁，故正常）。
-          // 现在保留模型原始产出，让内容正常交付、下游正常消费，验收缺口由 verify:result 事件
-          // （soft=true）与调用链路抽屉呈现，不再牺牲整个 run。
-          emit({
-            type: 'warn',
-            message: `验收告警（不影响产出）：${outcome.reasons.join('；')}`
-          });
-        } else {
-          final = `${VERIFY_FAILED_PREFIX} ${outcome.reasons.join('; ')}\n\n${final}`;
-        }
-      }
+      });
     }
 
     // 运行结束，若有持久化路径则落盘（best-effort）。
@@ -1692,86 +1116,4 @@ export class AgentHarness {
     emit({ type: 'run:end', runId, final, steps });
     return final;
   }
-}
-
-/**
- * P4.8 软截止收尾提示：接近时间预算时注入，让模型基于已有信息直接给最终结果。
- * 目的是把「硬超时砍掉产出」变成「主动收尾交付」；同时要求显式标注数据缺口，
- * 保持与 planner/executor 既有「数据不足如实说明、禁止编造」约定一致。
- */
-const WRAP_UP_PROMPT =
-  '（系统提示）本次运行的时间预算即将耗尽，请立即停止进一步调研与工具调用，' +
-  '基于已获取的信息直接输出最终结果：把已确认的内容完整写出，' +
-  '尚未获取到的部分在结果中显式标注「数据缺口」说明，不要编造。';
-
-/** 根据中止原因生成人类可读的结果提示。 */
-function abortedMessage(signal: AbortSignal): string {
-  const reason = (signal as { reason?: unknown }).reason;
-  if (reason === 'timeout') return TIMEOUT_NOTICE;
-  if (reason === 'external') return `${ABORTED_PREFIX} run cancelled by caller`;
-  return `${ABORTED_PREFIX} run cancelled`;
-}
-
-/** 从对话历史收集所有工具调用（供验证上下文统计）。 */
-function collectToolCalls(messages: Message[]): ToolCall[] {
-  const out: ToolCall[] = [];
-  for (const m of messages) {
-    if (m.role === 'assistant' && m.tool_calls) out.push(...m.tool_calls);
-  }
-  return out;
-}
-
-/**
- * 清洗消息序列中的 tool 配对断裂，保证发给 LLM 的请求不会因 id 不匹配被拒。
- *
- * OpenAI 兼容协议（OpenRouter / MiniMax / OpenAI 等）对两类断裂都会直接 400：
- *  - **孤儿 tool 结果**：存在 `role=tool`，但前面没有声明过同 id 的 tool_call
- *    → `invalid_request_error: tool result 的 tool id 未找到`；
- *  - **孤儿 tool_call**：assistant 声明了 tool_calls 却没有紧跟对应结果
- *    → `tool_calls 必须紧跟对应的 tool 消息`。
- *
- * 成因不止一种：滑动窗口从「assistant + 其 tool 结果」中间切断、上一轮被中止后
- * 持久化的半截历史、模型返回重复/缺失的 tool_call id。与其逐个堵，不如在每次
- * 发送前统一净化一次 —— 只清洗发出去的副本，不动 Memory 里的存储。
- */
-export function sanitizeToolPairing(messages: Message[]): Message[] {
-  const pending = new Set<string>();
-  const out: Message[] = [];
-  for (const m of messages) {
-    if (m.role === 'tool') {
-      const id = m.tool_call_id ?? '';
-      // 只保留能匹配到「前面已声明且尚未消费」的调用的结果。
-      if (id && pending.has(id)) {
-        pending.delete(id);
-        out.push(m);
-      }
-      continue;
-    }
-    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
-      const ids = m.tool_calls
-        .map((tc) => tc.id)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-      if (ids.length === 0) {
-        out.push({ ...m, tool_calls: [] });
-        continue;
-      }
-      out.push(m);
-      for (const id of ids) pending.add(id);
-      continue;
-    }
-    out.push(m);
-  }
-  if (pending.size === 0) return out;
-  // 收尾：把始终没有等来结果的孤儿 tool_call 从 assistant 上摘掉，
-  // 否则「声明了调用却没有结果」同样会被 provider 拒绝。
-  return out.map((m) => {
-    if (
-      m.role === 'assistant' &&
-      Array.isArray(m.tool_calls) &&
-      m.tool_calls.some((tc) => pending.has(tc.id))
-    ) {
-      return { ...m, tool_calls: m.tool_calls.filter((tc) => !pending.has(tc.id)) };
-    }
-    return m;
-  });
 }

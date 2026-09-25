@@ -1,5 +1,6 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
 import { createOpenRouterLLM, type OpenRouterConfig } from './openrouter';
+import { extractHttpStatus } from './shared';
 import { incCounter, structLog } from '../telemetry';
 
 export interface MultiKeyOptions extends Omit<OpenRouterConfig, 'apiKey'> {
@@ -52,7 +53,10 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
     return states[i]!.deadUntil > Date.now();
   }
   function markDead(i: number): void {
-    if (states[i]!.deadUntil === 0) {
+    // 判断「未在冷却中」必须比较时间戳而非 === 0：冷却过期后 deadUntil 是过去的
+    // 非零值，若只在 === 0 时续期，探活失败后该 Key 永远拿不到新冷却，
+    // 每次请求都会先付一次必败 round-trip（P1 C2）。
+    if (states[i]!.deadUntil <= Date.now()) {
       states[i]!.deadUntil = Date.now() + cooldownMs;
       incCounter('llm.key.dead');
       structLog('warn', 'multi-key: key marked dead, cooling down', {
@@ -77,12 +81,15 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
     return -1;
   }
   function statusOf(e: unknown): number | null {
-    const msg = e instanceof Error ? e.message : String(e ?? '');
-    const m = /(?:HTTP\s*)?(\d{3})/.exec(msg);
-    if (m) {
-      const code = Number(m[1]);
-      if (killStatuses.has(code)) return code;
+    // 结构化状态优先（LLMHttpError.status / err.status / 锚定文案匹配）——
+    // 此前用「文案里抓任意 3 位数字」的裸正则，`took 4013ms` 会被截成 401，
+    // 把健康 Key 立即冷却。extractHttpStatus 只认锚定格式，杜绝该误判。
+    const httpStatus = extractHttpStatus(e);
+    if (httpStatus !== null) {
+      return killStatuses.has(httpStatus) ? httpStatus : null;
     }
+    // 兜底：无结构化状态时的文案启发式（保持旧行为，供自定义 provider 的非标错误）
+    const msg = e instanceof Error ? e.message : String(e ?? '');
     if (/quota|rate limit|rate_limit|too many requests/i.test(msg)) return 429;
     if (/unauthorized|invalid api key|api key|authentication/i.test(msg)) return 401;
     return null;
