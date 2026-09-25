@@ -185,7 +185,7 @@ pnpm install
 pnpm -r build          # 拓扑序：core → client → server → webapp/cli → examples
 pnpm server            # node access/server/dist/server.js
 
-# 容器化（多阶段镜像，非 root 运行；HEALTHCHECK → /api/state）
+# 容器化（多阶段镜像，非 root 运行；HEALTHCHECK → /health/ready 真实探针）
 docker build -t agent-harness:local .
 docker run -p 4173:4173 \
   -e OPEN_API_KEY=sk-or-... -e UI_AUTH_TOKEN=change-me \
@@ -194,7 +194,7 @@ docker run -p 4173:4173 \
 
 # 云服务（Render Blueprint）
 #   push 到 GitHub(dev) → Render 选 render.yaml → build: pnpm install --no-frozen-lockfile && pnpm -r build
-#   start: node access/server/dist/server.js  →  healthCheckPath: /api/state
+#   start: node access/server/dist/server.js  →  healthCheckPath: /health/ready
 ```
 
 ### 4.3 部署形态选择
@@ -205,7 +205,7 @@ docker run -p 4173:4173 \
 | 内网多人低并发    | Compose + Redis + 鉴权 overlay                | `../02-deployment/docker-deploy-guide.md` §3、§9 |
 | 外部多人 / 高可用 | Kubernetes（kustomize base + overlays/local） | `../02-deployment/k8s-deploy-guide.md`           |
 
-> K8s 关键坑（已修复）：早期健康检查误用 `/api/v1/state` 返回 404（pod 永远 not-ready），现已在 server 路由入口把 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 二者均 200；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `../02-deployment/k8s-deploy-guide.md`。
+> K8s 关键坑（已修复）：早期健康检查误用 `/api/v1/state` 返回 404（pod 永远 not-ready），现已在 server 路由入口把 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 二者均 200；探针接线修复后 readiness 用 `/health/ready`（真实探测 DB/Redis/内存水位）、liveness 用 `/health/live`，`/api/state` 仅作兼容保留；Redis 必须带密码否则多副本走内存队列；记忆持久化用 RWX 卷挂 `/app/data` + `MEMORY_BACKEND=file`。详见 `../02-deployment/k8s-deploy-guide.md`。
 
 ### 4.4 配置说明（核心环境变量）
 

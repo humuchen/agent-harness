@@ -21,8 +21,9 @@ agent-harness/                # 根：private 包 + pnpm workspace
 │  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（消费 /api/v1，断网可用）
 │  └─ cli/                    # @agent-harness/cli —— 零依赖 CLI 客户端（消费 /api/v1）
 ├─ access/                    # 接入层（路由 / 鉴权 / 运行队列 / 会话 / OAuth / 账户 / 插件扩展 / IM 桥接）
-│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core，约 45 个源文件）
+│  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core，约 90 个源文件，路由已模块化拆分至 src/routes/ 下 18 个模块）
 │                             #   im/ 子目录：飞书 / 钉钉 / 企业微信桥接（用户层入口，core 零感知）
+├─ mobile/                    # Capacitor 移动端壳（iOS/Android 包裹 frontend/webapp 构建产物：推送 / Deep Link / 生物识别 / 离线缓存）
 ├─ backend/                   # 后端工具层
 │  ├─ core/                   # @agent-harness/core —— 框架库（零运行时依赖，含多智能体基座子系统）
 │  ├─ client/                 # @agent-harness/client —— 跨运行时 typed HTTP 客户端（Web/Node/Edge）
@@ -235,6 +236,13 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 | `builtin__fs_read`          | 读文件       | UTF-8 文本读取（限 root 内）                                                                                                                                                 |
 | `builtin__fs_list`          | 列目录       | 列出目录条目                                                                                                                                                                 |
 | `builtin__fs_search`        | 搜文件       | 按文件名/内容在 root 内递归搜索                                                                                                                                              |
+| `builtin__fs_write`         | 写文件       | 沙箱内写文件（utf-8 文本 / base64 二进制），父目录自动创建，防路径逃逸，2MB 上限——文件交付闭环的第一段                                                                  |
+| `builtin__doc_export`       | 导出真实文件 | 结构化数据 → 真实文件落沙箱 `exports/`：`xlsx`（exceljs）/ `pptx`（pptxgenjs）/ `csv`（零依赖 RFC4180）；exceljs/pptxgenjs 为可选依赖，缺失时返回带安装指引的可操作错误                                                                  |
+| `builtin__jev_decide`       | 结构化决策   | TypeSafe **Jev「System One」决策模型**（非聊天 LLM）：接收程序状态 + 带类型问题（Choice/Score/Noul），返回带校准概率的决策；凭据优先级 显式参数 > 用户 BYOK > `TYPESAFE_API_KEY`，未配置自动回落旧逻辑 |
+
+> 另有 `builtin__weather`、`builtin__rag_retrieve`、`builtin__datatransform`、shell / 沙箱执行等
+> 内置工具，以及 `builtin__deliver_file`（server 侧：把沙箱内已生成文件注册进「📎 交付文件」区，
+> 见「文件导出与交付闭环」）。护栏 / 记忆 / 追踪对全部内置工具自动生效。
 
 接入点：`registerBuiltinTools(registry, options)`（`backend/core/src/builtins`）。
 UI 在 `assembleAgent` 中默认注册，可用环境变量关闭单项：
@@ -382,7 +390,10 @@ OPEN_API_KEY=your-key node access/server/dist/server.js
   `Authorization: Bearer <token>` 发送（不再依赖会泄露在日志/历史里的 `?token=`）。
   （`?token=` 仍保留为兼容写法，但建议迁移到 Bearer。）
 - 未启用鉴权时服务照常启动，但会在日志给出开放模式告警；若监听在非本地回环地址，会额外输出高危告警。
-- `/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。
+- `/api/state`（供 Render 等 PaaS 健康检查）与静态页始终开放。**探针推荐**：liveness 用
+  `/health/live`（进程存活），readiness 用 `/health/ready`（真实探测 DB `SELECT 1` / Redis PING /
+  内存水位，未配置的依赖自动跳过）——k8s / Docker / Render 的探针已统一切换，`/api/state`
+  仅作兼容保留（它不探测任何依赖，Redis 宕机时仍返回 200）。
 
 ### 部署公网前的安全加固（必做）
 
@@ -399,6 +410,21 @@ OPEN_API_KEY=your-key node access/server/dist/server.js
 | `HISTORY_MAX_BYTES`                   | 单会话历史镜像（PUT /api/history）序列化体积上限 | 524288（512KB）|
 | `RATE_LIMIT` / `RATE_LIMIT_WINDOW_MS` | 单 IP 限流（窗口内请求数）；≤0 关闭               | 120 / 60000    |
 | `AUDIT_LOG`                           | 审计日志落盘路径；留空则仅输出 stdout（JSON 行）  | 空（stdout）   |
+| `TRUST_PROXY_CIDRS`                   | 可信代理网段（逗号分隔 CIDR）：仅当 TCP 对端落在列表内才采信 `cf-connecting-ip`/`X-Forwarded-For`，否则取 socket 地址（防伪造头绕过 IP 限流） | 回环（compose 缺省含 docker 网段） |
+| `PASSWORD_RESET_INLINE_TOKEN`         | 忘记密码凭证回显开关：默认**带外交付**（凭证入库 + `auth.reset_token_issued` 日志提醒管理员转交）；`on` 才在 HTTP 响应回显（仅限本地演示，公网禁止） | `off`  |
+| `MCP_ALLOWED_COMMANDS`                | 运行时接入 MCP 的 stdio 命令白名单（basename 匹配） | `node,npx,uvx,bunx,python,python3,deno` |
+| `MCP_ALLOW_PRIVATE_SERVER_URL`        | 放行指向内网/元数据地址的 MCP serverUrl（默认拒绝，防特权 SSRF） | `off`  |
+| `PLUGIN_SHARE_LEGACY_LLM_KEY`         | 把 `OPEN_API_KEY` 注入插件的显式开关（默认关闭；插件改注入 `ADMIN_API_KEY`） | `off`  |
+
+**2026-09-25 加固批次要点**（完整清单见 [`docs/02-deployment/hardening-2026-09-25.md`](./docs/02-deployment/hardening-2026-09-25.md)）：
+
+- **越权与注入面收敛**：`/api/artifacts` 列表/读取/删除按 owner 过滤（admin 豁免，归属不符按 404）；
+  运行时接入 MCP 先过「私网黑名单 + 命令白名单 + args 元字符」三道校验（启动期 env 配置不受限）；
+  静态令牌之外，`clientIp()` 不再盲信代理头。
+- **容器与供应链**：Dockerfile 锁文件校验失败显式失败（`STRICT_LOCKFILE=0` 为显式逃生门）；
+  compose 补 `no-new-privileges` + `cap_drop: ALL`；k8s redis Deployment 补 liveness/readiness 探针。
+- **队列语义收紧**：共享（Redis）模式下提交落盘失败同步返回 **503**（杜绝「有 jobId 无执行」）；
+  同幂等键活跃任务跨实例去重，重复提交返回 **409** + 既有 jobId（事件桥对其可见）。
 
 审计日志会记录 时间 / 方法 / 路径 / 客户端 IP / 是否鉴权 / 状态码，并对高危动作
 （`agent.run`、`env.create`/`env.destroy`、`mcp.add`/`mcp.preset`、`shell.approve`）
@@ -427,7 +453,8 @@ OPEN_API_KEY=your-key node access/server/dist/server.js
 
 - **归一化注入检测**：先去零宽字符、折叠空白、去标点后做子串匹配，对大小写变形、
   字符间插空格、`IGNORE␣ALL␣INSTRUCTIONS` 等常见绕过显著更鲁棒；
-  并预留 `registerInjectionScorer()` 可接语义级分类模型。
+  并预留 `registerInjectionScorer()`——现已接入 **Jev 语义打分**（配 `TYPESAFE_API_KEY` 后
+  对注入检测做语义级增强打分，未配置自动回落规则匹配）。
 - **输出侧 PII 脱敏**：`redactOutput()` 自动识别并打码邮箱、手机号、身份证、银行卡、
   IPv4、常见 API Key；模型最终返回内容在 harness 出口统一脱敏。
 - 向后兼容：`checkInput`/`checkOutput`/`checkToolArgs`/`registerInputRule` 签名不变。
@@ -494,8 +521,16 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
   - 数据结构：`runq:pending` / `runq:processing` 双列表 + `runq:jobs` / `runq:claimedAt` 哈希。
   - **原子领取**：`claim()` 用 `LMOVE pending processing LEFT RIGHT` 原子迁移，多实例并发下
     同一任务只会被一个实例拿到——天然无重复执行，无需分布式锁。
-  - **崩溃恢复**：领取时记录 `claimedAt`；实例崩溃后，其它实例周期性 `reclaimStale(QUEUE_LEASE_MS)`
-    把超租约的 processing 任务迁回 pending 重新领取（`QUEUE_LEASE_MS` 默认 5 分钟）。
+  - **崩溃恢复**：领取时记录 `claimedAt`；实例崩溃后，其它实例**周期性** `reclaimStale(QUEUE_LEASE_MS)`
+    把超租约的 processing 任务迁回 pending 重新领取（`QUEUE_LEASE_MS` 默认 5 分钟；回收周期
+    `RUN_QUEUE_RECLAIM_INTERVAL_MS` 默认 60s，此前仅在实例启动时回收一次，长生命周期集群无人接管僵尸任务）。
+  - **提交语义（P1 收紧）**：共享模式下「落盘」是执行的前置——Redis 不可用时 `append` 失败**同步返回
+    503**（`QueuePersistError`），不再出现「客户端拿到 jobId 但任务永远不被执行」；单实例（memory/file）
+    模式落盘失败仅影响崩溃重放，维持仅告警。
+  - **跨实例幂等（P1 收紧）**：`idempotencyKey` 去重从进程内 Map 扩展为两层——共享模式下经
+    Redis `SET NX PX` 原子占位（`runq:idem:<key>`，TTL `RUN_QUEUE_IDEM_TTL_MS` 默认 30 分钟，
+    终态主动释放）；重复提交返回 **409**（`QueueDuplicateError`）+ 既有 jobId——其事件经
+    pub/sub 事件桥对任意实例可见，客户端仍可订阅该 jobId 的 SSE。
   - **跨实例 SSE**：执行实例经 `publishEvent` 把每个事件发到 `runq:events:<jobId>` 的 pub/sub
     通道，持有 SSE 订阅的任意实例 `subscribeEvents` 即可转发，提交/执行分处不同实例时事件不丢。
   - 多实例部署只需设 `REDIS_URL`（或 `RUN_QUEUE_BACKEND=redis`），`RunQueue` / handler / 前端协议
@@ -626,6 +661,22 @@ guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就
   崩溃时旧文件完好、仅残留可清理的 `.tmp`，既不丢数据也不产生半截 JSON。这是本轮**唯一一次核心改动**，
   且仅为 I/O 安全加固，未触碰任何业务语义；其余加固均在 server 层。
 
+**2026-09-25 健壮性批次增量**（详见 [`docs/02-deployment/hardening-2026-09-25.md`](./docs/02-deployment/hardening-2026-09-25.md)）：
+
+- **损坏 JSON 统一处置**（`backend/core/src/store-safety.ts`）：记忆 / 工作流检查点 / AgentCard 的
+  数据文件解析失败统一走「结构化告警 + 坏文件隔离改名（`.corrupt-<ts>` 保留现场）+ 空状态继续」，
+  不再静默当空数据；RAG 索引损坏从「启动崩溃循环」收敛为同一策略（stdlib 内联实现）。
+- **RAG 嵌入请求超时**：`RAG_EMBED_TIMEOUT_MS`（默认 60s）——embed-server 挂起时不再永久占用
+  ingest worker 池，超时走既有失败处置（strict 抛错 / 降级），检索闭环不中断。
+- **插件数据库初始化自愈**：memo 插件 `ensureDb()` 初始化失败自动重置缓存（此前 rejected promise
+  永久缓存，磁盘满/瞬时故障后插件永久不可用）。
+- **前端全局错误兜底**：webapp 挂 `window.onerror` / `unhandledrejection` 监听——未捕获异常不再
+  静默消失，统一去重提示 + 最近 20 条挂 `window.__ahClientErrors` 供诊断。
+- **启动期排障改善**：端口占用（EADDRINUSE）给出可操作提示（定位命令 + 改 PORT 建议）；
+  `AH_STARTUP_CRITICAL=1` 时启动迁移失败**阻断启动**，不再带旧 schema 接流。
+- **数据清理误删防护**：`cleanup-retention` 不再把活跃的 `telemetry-metrics.json` 按龄删除
+  （它是有状态热文件，此前低频写入时 mtime 停更即会被误删）。
+
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
 
@@ -730,6 +781,57 @@ access/server/src/im/
 > 钉钉 / 企业微信同理，仅回调路径与凭据变量不同（见 `.env.example`）。
 > 运行态可查 `GET /api/im/status`（需具备 `policy:read` 的令牌）。
 
+## 计划模式（Chat 内规划-执行-交付）
+
+复杂需求在多会话 Chat 里可进入**计划模式**：模型先产出可确认、可编辑的**计划树**（任务拆解 +
+依赖 + 验收点，澄清问题支持候选选项点选/逐题作答），用户确认后由计划桥映射为 WorkflowDef 交给
+DagEngine 多 agent 执行（按 DAG 形状自动决策串/并行 + 有界并发），全程实时思考面板、断连自愈、
+显式取消，失败/中断状态落盘（重开不从头重跑）。完整链路与代码坐标见
+[`docs/01-architecture/plan-mode.md`](./docs/01-architecture/plan-mode.md)。
+
+### 文件导出与交付闭环
+
+报告/表格类任务可交付**真实文件**而非仅 markdown 文本，三段闭环：
+
+1. `builtin__fs_write` 在沙箱内写文件（文本 / base64 二进制）；
+2. `builtin__doc_export` 把结构化数据导出为真实 `xlsx` / `pptx` / `csv`（exceljs / pptxgenjs
+   为 core 可选依赖，缺失时返回带安装指引的可操作错误；csv 零依赖）；
+3. `builtin__deliver_file`（server 侧）把沙箱内已生成文件注册进「📎 交付文件」区，可预览/下载，
+   owner 归属登录用户。
+
+core 技能新增 `doc-export`（触发词 ppt/excel/csv/导出/交付文件…），planner 提示词对含 PPT/Excel
+目标的需求自动拆「生成交付文件」任务；计划各 step 产出由 `plan-artifacts` 归档为可下载工件。
+
+### 工件存储（本地 / S3 兼容对象存储）
+
+`ArtifactStore` 契约 + 双实现：本地文件版（默认）与 **S3 兼容对象存储版**（`artifact-store-s3.ts`，
+支持 AWS S3 / Cloudflare R2 / MinIO / Render Object Storage）——SigV4 签名手写（node:crypto）、
+零 SDK 依赖，只需 GetObject / PutObject / DeleteObject 三个权限，配置 `S3_BUCKET` /
+`S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`（可选 `S3_ENDPOINT`、`S3_REGION`、
+`S3_FORCE_PATH_STYLE`）即可让工件跨重启 / 临时盘保留。
+
+## 数据库后端与租户数据分区
+
+所有经统一适配器（`backend/core/src/db-adapter.ts`）的存储可整体切换后端，store 层零改动
+（方言翻译见 `db-dialect.ts`）：
+
+| `DB_BACKEND` | 连接配置 | 说明 |
+| --- | --- | --- |
+| `sqlite`（默认） | `DB_SQLITE_FILE` | node:sqlite 内置，零依赖 |
+| `turso` | `TURSO_URL` + `TURSO_TOKEN` | 云端 SQLite；`@libsql/client` 为可选依赖，失败自动降级本地 sqlite（`DB_FAILOVER_LOCAL=on` 可开运行期 failover） |
+| `mysql` / `postgres` | `DATABASE_URL`（scheme 必须匹配） | `mysql2` / `pg` 驱动；配置错误 **fail-fast** 不静默降级 |
+
+配套：**租户数据分区**（`TENANT_DATA_ZONE` 使 sqlite 库按合规域物理分文件，与
+`ComplianceProfile.dataResidency` / 审计 `dataZone` 联动）、**搬迁工具**
+`scripts/db-copy.cjs`（sqlite ↔ turso 双向复制）、`scripts/db-migrate.cjs` / `smoke-db.cjs`。
+详见 [`docs/02-deployment/database-backends.md`](./docs/02-deployment/database-backends.md)。
+
+### 移动端（Capacitor 壳）
+
+`mobile/` 以 Capacitor 把 `frontend/webapp` 构建产物包裹为 iOS / Android 原生应用：
+推送通知（FCM/APNs）、`piagent://` Deep Link、相机/相册文件上传、Face ID / 指纹快捷登录、
+TTL 离线缓存；结构与应用商店审核材料见 [`mobile/README.md`](./mobile/README.md)。
+
 ## 已知问题与设计权衡
 
 UI 端实测反馈过两类现象，经排查均为**设计层面的真实问题**（非偶发），现将根因与本仓库已落地的优化记录如下，便于后续评估与演进决策。
@@ -815,7 +917,7 @@ token 成本呈**结构性**偏高，根因在 prompt 的组装方式，而非�
 
 ```bash
 pnpm --filter @agent-harness/core run build   # 先构建
-pnpm --filter @agent-harness/core run test    # 跑测试（约 371 用例，52 测试文件）
+pnpm --filter @agent-harness/core run test    # 跑测试（约 630 用例，85 测试文件）
 ```
 
 Web Playground 也有集成测试：启动真实构建产物 `dist/server.js` 子进程，验证鉴权(P0-3)、
@@ -840,9 +942,17 @@ pnpm -r build && \
 e2e 的三种运行姿态：设 `AH_BASE_URL` 直连既有实例（不 spawn）；未设则自举 server；
 server 未构建时默认跳过（exit 0），设 `AH_SMOKE_STRICT=1` 则升级为失败（CI 采用后者）。
 
-CI（`.github/workflows/ci.yml`）在 push/PR 时执行 `lint → pnpm -r build → pnpm -r test → pnpm audit --audit-level=high`，
-并附带 `cleanup-retention` 与 `backup-db` 两个运维步骤。当前**未集成**镜像推送（GHCR）、SBOM（CycloneDX）或
-PR `Dependency Review` 作业——如需准生产供应链可见性，建议后续补齐。
+CI（`.github/workflows/ci.yml`，name: CI/CD）共四个作业：
+
+- **test**（push/PR）：ESLint（含 `no-explicit-any` 棘轮）→ k8s 多副本组合校验 → OS 沙箱
+  helper 构建（严格模式）→ `pnpm -r build` → `pnpm -r test` → `pnpm audit` → 留存清理
+  dry-run + 备份脚本验证 → **gitleaks** secret 扫描（基线 `.gitleaks.toml`）→ **Syft SBOM** →
+  回滚演练（verify-only）。
+- **e2e**：自举真实服务进程（mock 模式）→ SSE 重连 E2E → HTTP 负载门禁（零失败）→ 容量基准。
+- **deploy**：push 时触发 Render Deploy Hook（TURSO 凭据经 secrets 注入）。
+- **nightly**：每日 03:00 UTC 全链路回滚演练（backup → verify → restore），可手动 dispatch。
+
+当前**未集成** GHCR 镜像推送与 PR Dependency Review 作业（如需可后续补齐）。
 
 ## 健壮性增强
 
@@ -870,7 +980,7 @@ PR `Dependency Review` 作业——如需准生产供应链可见性，建议后
 - **`Dockerfile`**（多阶段 pnpm 构建，基础镜像锁定 Node 22，非 root 运行 + HEALTHCHECK）
 - **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
 - **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
-- **`.github/workflows/ci.yml`**（push/PR：lint → `pnpm -r build` → `pnpm -r test` → `pnpm audit --audit-level=high`；**当前未集成镜像推送 / SBOM / Dependency Review 作业**）
+- **`.github/workflows/ci.yml`**（CI/CD 四作业：test / e2e / deploy / nightly，含 gitleaks 与 Syft SBOM；未集成 GHCR 镜像推送）
 - **[`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
 
 > 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。

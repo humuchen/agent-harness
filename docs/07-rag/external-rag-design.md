@@ -315,18 +315,18 @@ sequenceDiagram
 
 ### 交付物
 
-| 文件                           | 职责                                                                                    |
-| ------------------------------ | --------------------------------------------------------------------------------------- |
-| `services/rag/src/embed.ts`    | 可插拔向量化：`HashEmbedding`（默认，零依赖演示）/ `OpenAIEmbedding`（设 key 启用）     |
-| `services/rag/src/store.ts`    | `MemoryVectorStore`：余弦检索 + JSON 持久化（可按租户分片）+ 租户过滤 + `getChunks`  |
-| `services/rag/src/ingest.ts`   | 入库流水线：分块 → 向量化 → 幂等 upsert（增量更新）                                     |
-| `services/rag/src/retrieve.ts` | 检索编排：稠密余弦 + 真 BM25 融合 + MMR 重排 + 阈值/过滤 + Pre-retrieval 扩展           |
-| `services/rag/src/server.ts`   | HTTP REST：`/v1/retrieve`、`/v1/ingest(异步)`、`/v1/ingest/:jobId`、`/v1/health`、`/v1/metrics` + JWT/令牌鉴权 + tenant 重写 |
-| `services/rag/src/mcp.ts`      | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest`（带缓存） |
-| `services/rag/src/index.ts`    | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输                                                |
-| `services/rag/src/{auth,bm25,queue,cache,metrics,rerank,generate}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 / cross-encoder 重排（MMR+API） / 生成层（检索+LLM生成一体化） |
-| `services/rag/test/*.test.cjs` | 单测 + 集成（21 例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展/MMR/cross-encoder API/生成层（上下文融入/fail-closed/HTTP v1/generate/MCP rag_generate） |
-| `examples/rag-e2e.ts`          | 端到端演示：起 RAG → 注入 → 检索 → 融入生成                                             |
+| 文件                                                                  | 职责                                                                                                                                                                                            |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `services/rag/src/embed.ts`                                           | 可插拔向量化：`HashEmbedding`（默认，零依赖演示）/ `OpenAIEmbedding`（设 key 启用）                                                                                                             |
+| `services/rag/src/store.ts`                                           | `MemoryVectorStore`：余弦检索 + JSON 持久化（可按租户分片）+ 租户过滤 + `getChunks`                                                                                                             |
+| `services/rag/src/ingest.ts`                                          | 入库流水线：分块 → 向量化 → 幂等 upsert（增量更新）                                                                                                                                             |
+| `services/rag/src/retrieve.ts`                                        | 检索编排：稠密余弦 + 真 BM25 融合 + MMR 重排 + 阈值/过滤 + Pre-retrieval 扩展                                                                                                                   |
+| `services/rag/src/server.ts`                                          | HTTP REST：`/v1/retrieve`、`/v1/ingest(异步)`、`/v1/ingest/:jobId`、`/v1/health`、`/v1/metrics` + JWT/令牌鉴权 + tenant 重写                                                                    |
+| `services/rag/src/mcp.ts`                                             | MCP stdio Server（协议级最小实现，零 SDK 依赖）暴露 `rag_retrieve` / `rag_ingest`（带缓存）                                                                                                     |
+| `services/rag/src/index.ts`                                           | 入口：`RAG_TRANSPORT=http\|mcp` 选择传输                                                                                                                                                        |
+| `services/rag/src/{auth,bm25,queue,cache,metrics,rerank,generate}.ts` | P2/P3 新模块：JWT 鉴权 / 真 BM25 / 异步入库队列 / 查询缓存 / 可观测指标 / cross-encoder 重排（MMR+API） / 生成层（检索+LLM 生成一体化）                                                         |
+| `services/rag/test/*.test.cjs`                                        | 单测 + 集成（21 例全绿）：入库/检索/租户隔离/幂等/阈值/MCP 端到端/JWT/BM25/队列/缓存/metrics/分片/扩展/MMR/cross-encoder API/生成层（上下文融入/fail-closed/HTTP v1/generate/MCP rag_generate） |
+| `examples/rag-e2e.ts`                                                 | 端到端演示：起 RAG → 注入 → 检索 → 融入生成                                                                                                                                                     |
 
 ### 关键实现决策
 
@@ -336,7 +336,7 @@ sequenceDiagram
 - **零运行时依赖**：仅用 Node 内置模块，契合「可独立部署」关键要求。
 - **tenant 服务端重写**：ingest/retrieve 的请求体 `tenant_id` 一律被服务端解析值覆盖，杜绝越权。
 
-### P2+P3 已落地（2026-08-20）
+### P2+P3 已落地
 
 - **P2**：
   - 完整鉴权：新增 `services/rag/src/auth.ts`——JWT(HS256, `node:crypto`，`RAG_JWT_SECRET`) +

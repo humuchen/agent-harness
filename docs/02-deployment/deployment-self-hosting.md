@@ -69,7 +69,7 @@ docker run -p 4173:4173 \
 `Dockerfile` 多阶段：
 
 - **build**：`corepack enable` + pnpm 安装并 `pnpm -r build`（拓扑序 core → client → server → webapp → cli）。
-- **runtime**：`node:22-bookworm-slim`，非 root 运行，HEALTHCHECK 探活 `/api/v1/state`。
+- **runtime**：`node:22-bookworm-slim`，非 root 运行，HEALTHCHECK 探活 `/health/ready`（真实探测 DB/Redis/内存水位；此前为 `/api/state`，该端点不探测依赖）。锁文件校验严格化：构建期 `STRICT_LOCKFILE=0` 为显式逃生门，漂移默认直接失败。
 
 ## 4. 镜像 CI（GHCR）
 

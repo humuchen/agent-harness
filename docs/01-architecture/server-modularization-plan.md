@@ -3,7 +3,13 @@
 > 背景：`access/server/src/server.ts` 曾达 6400+ 行，单文件承载全部路由分发与组合根。
 > 大文件的问题不是行数本身，而是「改动热点集中」：任何路由小改都要在 6000 行里找上下文，
 > code review 困难、合并冲突高频、编译增量慢。
-> 本文记录已验证的拆分模式与后续批次计划。
+> 本文记录已验证的拆分模式与各批次实施记录。
+
+> **当前状态：拆分已全部完成**。`routes/` 下共 17 个路由模块 +
+> `respond.ts` 共享响应助手；`run-routes.ts`（`POST /api/run` SSE、workflows 编排、
+> plan 任务同步簇）为 P2 模块化**终批**（R1 收口）；`edge-routes.ts` 把公开/运维/探针
+> 端点收敛为可测试的路由表（鉴权守卫前短路分发）。server.ts 仅剩组合根 + 主分发器 +
+> 少量内聚 SSE 端点。各路由模块清单与职责见 [`modules.md`](modules.md) 的 server 业务层表。
 
 ## 已完成：第一批（账户路由，模式验证）
 
@@ -11,7 +17,7 @@
 - 覆盖：`/api/account/*` 全部 10 个非 OAuth 端点（login-salt / register / login /
   forgot-password / reset-password / me / change-password / logout / refresh / DELETE）
 - server.ts 由 6491 行降至约 6150 行，编译零错误，325 项测试全绿，
-  并经真实 HTTP 全流程验证（注册→me→refresh→logout + CSRF 403/200 正反例）。
+  并经真实 HTTP 全流程验证（注册 →me→refresh→logout + CSRF 403/200 正反例）。
 
 ### 模式约定（后续批次必须遵守）
 
@@ -46,15 +52,15 @@ curl -sf http://127.0.0.1:4182/health/ready
 - 细节：原 upload catch 中 `const code = e?.status ? ... : 400` 是死变量（未用于响应），
   搬移时保留线上行为（错误统一 200 JSON body），未"顺手修复"——拆分批次严禁夹带行为变更。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | approvals / plans / recipes / skills | 待做 |
-| 4 | agents / registry / A2A | 待做 |
-| 5 | chat / run / jobs（SSE 流） | 待做 |
-| 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
-| 7 | metrics / artifacts / history / memory | 待做 |
+| 批次 | 路由组                                 | 状态                                                |
+| ---- | -------------------------------------- | --------------------------------------------------- |
+| 1    | account（10 端点，非 OAuth）           | ✅ 已完成（routes/account-routes.ts）               |
+| 2    | devices / datasources / upload         | ✅ 已完成（device / datasource / upload-routes.ts） |
+| 3    | approvals / plans / recipes / skills   | 待做                                                |
+| 4    | agents / registry / A2A                | 待做                                                |
+| 5    | chat / run / jobs（SSE 流）            | 待做                                                |
+| 6    | OAuth（github/google 回调）            | 待做（并入 account-routes）                         |
+| 7    | metrics / artifacts / history / memory | 待做                                                |
 
 ## 已完成：第三批（plans / approvals / eval+recipes / skills）
 
@@ -67,15 +73,15 @@ curl -sf http://127.0.0.1:4182/health/ready
   **单例语义核查**：`getRecipeStore()` 是 memoized 单例，模块内直接调用安全；
   `createApprovalPolicy()` / `createEvaluator()` 每次创建新实例，必须经 deps 注入共享。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / registry / A2A | 待做 |
-| 5 | chat / run / jobs（SSE 流） | 待做 |
-| 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
-| 7 | metrics / artifacts / history / memory | 待做 |
+| 批次 | 路由组                                    | 状态                                                         |
+| ---- | ----------------------------------------- | ------------------------------------------------------------ |
+| 1    | account（10 端点，非 OAuth）              | ✅ 已完成（routes/account-routes.ts）                        |
+| 2    | devices / datasources / upload            | ✅ 已完成（device / datasource / upload-routes.ts）          |
+| 3    | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4    | agents / registry / A2A                   | 待做                                                         |
+| 5    | chat / run / jobs（SSE 流）               | 待做                                                         |
+| 6    | OAuth（github/google 回调）               | 待做（并入 account-routes）                                  |
+| 7    | metrics / artifacts / history / memory    | 待做                                                         |
 
 ## 已完成：第四批（agents / A2A / teams）
 
@@ -86,15 +92,15 @@ curl -sf http://127.0.0.1:4182/health/ready
 - 教训：外迁函数体时锚点必须「现场重取」——上一批删掉的注释不能再当终点锚（曾因
   end 锚点已不存在而 ValueError，改用下一个存活注释为终点并重跑）。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | chat / run / jobs（SSE 流） | 待做（最大批次） |
-| 6 | OAuth（github/google 回调） | 待做（并入 account-routes） |
-| 7 | metrics / artifacts / history / memory / mcp / shell / env / workflows | 待做 |
+| 批次 | 路由组                                                                 | 状态                                                         |
+| ---- | ---------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 1    | account（10 端点，非 OAuth）                                           | ✅ 已完成（routes/account-routes.ts）                        |
+| 2    | devices / datasources / upload                                         | ✅ 已完成（device / datasource / upload-routes.ts）          |
+| 3    | plans / approvals / eval+recipes / skills                              | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4    | agents / A2A / teams                                                   | ✅ 已完成（agent-routes.ts）                                 |
+| 5    | chat / run / jobs（SSE 流）                                            | 待做（最大批次）                                             |
+| 6    | OAuth（github/google 回调）                                            | 待做（并入 account-routes）                                  |
+| 7    | metrics / artifacts / history / memory / mcp / shell / env / workflows | 待做                                                         |
 
 ## 已完成：第五批（jobs / mcp / verify / shell / env 运维端点）
 
@@ -108,15 +114,15 @@ curl -sf http://127.0.0.1:4182/health/ready
   提议/BYOK 凭据装配与 SSE 流，是产品关键路径，机械搬移的风险收益比不合理。建议以
   「先补 run/chat 全流程 e2e（真实 LLM 或确定性 stub）→ 再搬移」的方式进行，单独排期。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | handleRun / handleWorkflow / chat 流（高危，需先补 e2e） | ⏸ 暂缓（单独立项） |
-| 7 | OAuth（github/google 回调，并入 account-routes） | 待做 |
+| 批次 | 路由组                                                   | 状态                                                         |
+| ---- | -------------------------------------------------------- | ------------------------------------------------------------ |
+| 1    | account（10 端点，非 OAuth）                             | ✅ 已完成（routes/account-routes.ts）                        |
+| 2    | devices / datasources / upload                           | ✅ 已完成（device / datasource / upload-routes.ts）          |
+| 3    | plans / approvals / eval+recipes / skills                | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4    | agents / A2A / teams                                     | ✅ 已完成（agent-routes.ts）                                 |
+| 5    | jobs / mcp / verify / shell / env                        | ✅ 已完成（ops-routes.ts）                                   |
+| 6    | handleRun / handleWorkflow / chat 流（高危，需先补 e2e） | ⏸ 暂缓（单独立项）                                           |
+| 7    | OAuth（github/google 回调，并入 account-routes）         | 待做                                                         |
 
 ## 已完成：第六批（OAuth 并入账户模块）
 
@@ -132,16 +138,16 @@ curl -sf http://127.0.0.1:4182/health/ready
   缩进会漏掉嵌套层（曾 23 处漏网导致 TS2322）；应对整个函数区间做任意缩进的统一转换。
   行级手术删除函数定义区时，插入语句后必须核对原位置残留的 `return;}/}` 孤儿对。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
-| 7 | metrics / artifacts / history / memory / workspaces / workflows 快照等杂项 | 待做（量大但模式同） |
-| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+| 批次 | 路由组                                                                     | 状态                                                         |
+| ---- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 1    | account（10 端点，非 OAuth）                                               | ✅ 已完成（routes/account-routes.ts）                        |
+| 2    | devices / datasources / upload                                             | ✅ 已完成（device / datasource / upload-routes.ts）          |
+| 3    | plans / approvals / eval+recipes / skills                                  | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4    | agents / A2A / teams                                                       | ✅ 已完成（agent-routes.ts）                                 |
+| 5    | jobs / mcp / verify / shell / env                                          | ✅ 已完成（ops-routes.ts）                                   |
+| 6    | OAuth（github/google）                                                     | ✅ 已完成（并入 account-routes.ts）                          |
+| 7    | metrics / artifacts / history / memory / workspaces / workflows 快照等杂项 | 待做（量大但模式同）                                         |
+| —    | handleRun（~1000 行）/ handleWorkflow                                      | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项                 |
 
 ## 已完成：第七批（策略 / 合规 / 可观测指标）
 
@@ -155,41 +161,41 @@ curl -sf http://127.0.0.1:4182/health/ready
 - 类型来源核对清单：ImBridge 在 `./im`（im-status 只是转用）、Action/Role 在 `./authz`
   （core 的同名类型语义不同）、RetentionPolicy 在 `./retention`、getMemoryStore 在 `./runner`。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
-| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
-| 8 | sessions / memory / gdpr / roles / workspaces / audit / org / artifacts / sandbox / supply-chain / usage / jev / provider-keys / chat-sessions / history / events / workflows 快照 | 待做（同模式，逐组推进） |
-| — | handleRun（~1000 行）/ handleWorkflow / chat-stream / events | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+| 批次 | 路由组                                                                                                                                                                             | 状态                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 1    | account（10 端点，非 OAuth）                                                                                                                                                       | ✅ 已完成（routes/account-routes.ts）                        |
+| 2    | devices / datasources / upload                                                                                                                                                     | ✅ 已完成（device / datasource / upload-routes.ts）          |
+| 3    | plans / approvals / eval+recipes / skills                                                                                                                                          | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
+| 4    | agents / A2A / teams                                                                                                                                                               | ✅ 已完成（agent-routes.ts）                                 |
+| 5    | jobs / mcp / verify / shell / env                                                                                                                                                  | ✅ 已完成（ops-routes.ts）                                   |
+| 6    | OAuth（github/google）                                                                                                                                                             | ✅ 已完成（并入 account-routes.ts）                          |
+| 7    | 策略 / 合规 / 品牌 / 指标                                                                                                                                                          | ✅ 已完成（policy-routes.ts + metrics-routes.ts）            |
+| 8    | sessions / memory / gdpr / roles / workspaces / audit / org / artifacts / sandbox / supply-chain / usage / jev / provider-keys / chat-sessions / history / events / workflows 快照 | 待做（同模式，逐组推进）                                     |
+| —    | handleRun（~1000 行）/ handleWorkflow / chat-stream / events                                                                                                                       | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项                 |
 
 ## 已完成：第八批（数据 / 合规 / 运维杂项）
 
 - 新模块：`routes/misc-routes.ts`（约 300 行）：GET /api/sessions、GET+DELETE /api/memory、
   DELETE /api/data/gdpr、GET /api/roles、GET /api/audit、GET /api/org、
-  GET+POST /api/supply-chain/*、GET /api/account/usage、GET /api/jev/status。
+  GET+POST /api/supply-chain/\*、GET /api/account/usage、GET /api/jev/status。
 - server.ts 4388 → 约 4208 行；tsc 零错误、325 项测试全绿、HTTP 冒烟 7/7（`scripts/smoke-batch8.cjs`）。
 - 环境注意：macOS 本地默认记忆目录 `/var/lib/agent-harness` 不可写（EACCES）属**存量环境问题**
   与重构无关——本地冒烟用 `MEMORY_BACKEND=volatile` 规避；容器内路径已预建（Dockerfile）。
 - 类型/依赖来源：Memory / quotaEngine / getJevStats / sanitizeKey 在 core；
   invalidateSessionMemory 在 `./runner`；resolveJevCredential 在 `./provider-keys`。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
-| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
-| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
-| 9 | workspaces / artifacts / sandbox / chat-sessions / history / workflows 快照 / provider-keys / events / plugins / run 挂载 | 待做（同模式；chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
-| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+| 批次 | 路由组                                                                                                                    | 状态                                                                                      |
+| ---- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 1    | account（10 端点，非 OAuth）                                                                                              | ✅ 已完成（routes/account-routes.ts）                                                     |
+| 2    | devices / datasources / upload                                                                                            | ✅ 已完成（device / datasource / upload-routes.ts）                                       |
+| 3    | plans / approvals / eval+recipes / skills                                                                                 | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts）                              |
+| 4    | agents / A2A / teams                                                                                                      | ✅ 已完成（agent-routes.ts）                                                              |
+| 5    | jobs / mcp / verify / shell / env                                                                                         | ✅ 已完成（ops-routes.ts）                                                                |
+| 6    | OAuth（github/google）                                                                                                    | ✅ 已完成（并入 account-routes.ts）                                                       |
+| 7    | 策略 / 合规 / 品牌 / 指标                                                                                                 | ✅ 已完成（policy-routes.ts + metrics-routes.ts）                                         |
+| 8    | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev                                               | ✅ 已完成（misc-routes.ts）                                                               |
+| 9    | workspaces / artifacts / sandbox / chat-sessions / history / workflows 快照 / provider-keys / events / plugins / run 挂载 | 待做（同模式；chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
+| —    | handleRun（~1000 行）/ handleWorkflow                                                                                     | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项                                              |
 
 ## 已完成：第九批（协作资源：工作空间 / 成果物 / 沙箱）
 
@@ -202,19 +208,19 @@ curl -sf http://127.0.0.1:4182/health/ready
 - 冒烟脚本教训：响应 body 截断后 JSON.parse 取 id 会静默失败 → 后续断言全部落空（假失败）；
   解析用的字段必须来自完整 body。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
-| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
-| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
-| 9 | workspaces / artifacts / sandbox | ✅ 已完成（collab-routes.ts） |
-| 10 | chat-sessions CRUD / history / events（全局 SSE）/ workflows 快照 / provider-keys 包装 / run 挂载 | 待做（chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
-| — | handleRun（~1000 行）/ handleWorkflow | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项 |
+| 批次 | 路由组                                                                                            | 状态                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 1    | account（10 端点，非 OAuth）                                                                      | ✅ 已完成（routes/account-routes.ts）                                             |
+| 2    | devices / datasources / upload                                                                    | ✅ 已完成（device / datasource / upload-routes.ts）                               |
+| 3    | plans / approvals / eval+recipes / skills                                                         | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts）                      |
+| 4    | agents / A2A / teams                                                                              | ✅ 已完成（agent-routes.ts）                                                      |
+| 5    | jobs / mcp / verify / shell / env                                                                 | ✅ 已完成（ops-routes.ts）                                                        |
+| 6    | OAuth（github/google）                                                                            | ✅ 已完成（并入 account-routes.ts）                                               |
+| 7    | 策略 / 合规 / 品牌 / 指标                                                                         | ✅ 已完成（policy-routes.ts + metrics-routes.ts）                                 |
+| 8    | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev                       | ✅ 已完成（misc-routes.ts）                                                       |
+| 9    | workspaces / artifacts / sandbox                                                                  | ✅ 已完成（collab-routes.ts）                                                     |
+| 10   | chat-sessions CRUD / history / events（全局 SSE）/ workflows 快照 / provider-keys 包装 / run 挂载 | 待做（chat/history/events 与 run 耦合较深，建议与 handleRun 一并 e2e 护航后处理） |
+| —    | handleRun（~1000 行）/ handleWorkflow                                                             | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项                                      |
 
 ## 已完成：第十批（聊天数据：chat-sessions / history / provider-keys）
 
@@ -230,19 +236,19 @@ curl -sf http://127.0.0.1:4182/health/ready
   黑名单会让 fetch 直接 'bad port' 报错）。
 - deps 仅 `{ guard }`；HISTORY_MAX_BYTES 常量随迁（cfgNum 同源）。
 
-| 批次 | 路由组 | 状态 |
-|---|---|---|
-| 1 | account（10 端点，非 OAuth） | ✅ 已完成（routes/account-routes.ts） |
-| 2 | devices / datasources / upload | ✅ 已完成（device / datasource / upload-routes.ts） |
-| 3 | plans / approvals / eval+recipes / skills | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts） |
-| 4 | agents / A2A / teams | ✅ 已完成（agent-routes.ts） |
-| 5 | jobs / mcp / verify / shell / env | ✅ 已完成（ops-routes.ts） |
-| 6 | OAuth（github/google） | ✅ 已完成（并入 account-routes.ts） |
-| 7 | 策略 / 合规 / 品牌 / 指标 | ✅ 已完成（policy-routes.ts + metrics-routes.ts） |
-| 8 | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts） |
-| 9 | workspaces / artifacts / sandbox | ✅ 已完成（collab-routes.ts） |
-| 10 | chat-sessions / history / provider-keys | ✅ 已完成（chat-data-routes.ts） |
-| — | handleRun / handleWorkflow / chat-stream / events / workflows POST | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项（这些是 run 关键路径，留在 server.ts 由组合根直接持有） |
+| 批次 | 路由组                                                                      | 状态                                                                                                 |
+| ---- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 1    | account（10 端点，非 OAuth）                                                | ✅ 已完成（routes/account-routes.ts）                                                                |
+| 2    | devices / datasources / upload                                              | ✅ 已完成（device / datasource / upload-routes.ts）                                                  |
+| 3    | plans / approvals / eval+recipes / skills                                   | ✅ 已完成（plan / approval / eval-recipe / skill-routes.ts）                                         |
+| 4    | agents / A2A / teams                                                        | ✅ 已完成（agent-routes.ts）                                                                         |
+| 5    | jobs / mcp / verify / shell / env                                           | ✅ 已完成（ops-routes.ts）                                                                           |
+| 6    | OAuth（github/google）                                                      | ✅ 已完成（并入 account-routes.ts）                                                                  |
+| 7    | 策略 / 合规 / 品牌 / 指标                                                   | ✅ 已完成（policy-routes.ts + metrics-routes.ts）                                                    |
+| 8    | sessions / memory / gdpr / roles / audit / org / supply-chain / usage / jev | ✅ 已完成（misc-routes.ts）                                                                          |
+| 9    | workspaces / artifacts / sandbox                                            | ✅ 已完成（collab-routes.ts）                                                                        |
+| 10   | chat-sessions / history / provider-keys                                     | ✅ 已完成（chat-data-routes.ts）                                                                     |
+| —    | handleRun / handleWorkflow / chat-stream / events / workflows POST          | ⏸ 暂缓：需先补 run 全流程 e2e 护航，单独立项（这些是 run 关键路径，留在 server.ts 由组合根直接持有） |
 
 | 10 | chat-sessions / history / provider-keys | ✅ 已完成（chat-data-routes.ts） |
 | 11 | run 关键路径（handleRun ~1000 行 + plan 任务同步簇 + handleWorkflow + auditWfEvent + resolveWorkflowRunOpts + resolveTraceId + activeWorkflowAborts） | ✅ 已完成（run-routes.ts，1685 行）。护航 = scripts/e2e-run-flow.cjs（重构前旧 dist 先绿 5/5，重构后复验 5/5）。deps 经 initRunRoutes 在 bootstrap 注入；activeWorkflowAborts 由本模块持有并导出供 server.ts 快照分发器共享 |
@@ -250,19 +256,22 @@ curl -sf http://127.0.0.1:4182/health/ready
 
 **server.ts 最终状态：6491 → 2135 行（-67%）**。剩余为组合根（装配）+ 主分发器 + chat-stream/events 两个 SSE 端点。
 
-## 后续批次（按耦合度从低到高排序）
+## 批次规划（历史，已全部完成）
 
-| 批次 | 路由组 | 预估行数 | 依赖闭包 | 备注 |
-|---|---|---|---|---|
-| 2 | devices / datasources / upload | ~250 | guard, readBody, sendJson | 简单 CRUD，最易 |
-| 3 | approvals / plans / recipes / skills | ~400 | guard, approvalEngine | 中等 |
-| 4 | agents / registry / A2A | ~600 | registry, guard | 需注册表上下文 |
-| 5 | chat / run / jobs（SSE 流） | ~900 | runQueue, chatBus, sse | 流式端点，注意限流豁免 |
-| 6 | OAuth（github/google 回调） | ~500 | views, provider 配置 | 与账户模块合并进 account-routes |
-| 7 | metrics / artifacts / history / memory | ~500 | telemetry, artifactStore | — |
+下表为最初按耦合度排的批次规划，第 2~7 批均已按此落地并追加至第十批之后
+（第十一批为 run 关键路径终批，另将公开/运维/探针端点收敛为 `edge-routes.ts` 路由表）：
 
-每批一次 commit，全量回归后再进下一批。全部完成后 server.ts 只剩：
-组合根（装配 authorizer/queue/plugins）+ 主分发器（< 800 行目标）。
+| 批次 | 路由组                                 | 备注                             |
+| ---- | -------------------------------------- | -------------------------------- |
+| 2    | devices / datasources / upload         | ✅ 已完成                        |
+| 3    | approvals / plans / recipes / skills   | ✅ 已完成                        |
+| 4    | agents / registry / A2A                | ✅ 已完成                        |
+| 5    | chat / run / jobs（SSE 流）            | ✅ 已完成（run SSE 为终批收口）  |
+| 6    | OAuth（github/google 回调）            | ✅ 已完成（并入 account-routes） |
+| 7    | metrics / artifacts / history / memory | ✅ 已完成                        |
+
+每批一次 commit，全量回归后再进下一批。最终 server.ts 只剩
+组合根（装配 authorizer/queue/plugins）+ 主分发器（实际 2135 行，后随 run 外迁进一步下降）。
 
 ## 风险与教训（第一批实录）
 

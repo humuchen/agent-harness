@@ -28,19 +28,24 @@ client ───► │  Load      │ ─────────────�
   持有 SSE 订阅的**任意**实例 `subscribeEvents` 后转发给客户端。因此「提交实例 ≠ 执行实例」
   也能实时回传（前提是负载均衡开启 **sticky session**，见 §3）。
 - **崩溃恢复**：任务领取时写入 `runq:claimedAt`，超过租约（`QUEUE_LEASE_MS`）未被 ack 的
-  任务由 `reclaimStale` 迁回 `pending` 重新领取。
+  任务由 `reclaimStale` 迁回 `pending` 重新领取——回收是**周期性**的
+  （`RUN_QUEUE_RECLAIM_INTERVAL_MS`，默认 60s；仅在实例启动时执行一次，
+  长生命周期集群中 claim/ack 之间崩溃的任务无人接管）。
+- **提交语义**：共享模式下落盘（`append`）是执行的前置，Redis 不可用时提交同步返回
+  **503**（`QueuePersistError`）；同 `idempotencyKey` 的活跃任务跨实例去重（Redis `SET NX PX`），
+  重复提交返回 **409**（`QueueDuplicateError`）+ 既有 jobId（事件经 pub/sub 桥对任意实例可见）。
 
 ---
 
 ## 2. Redis 数据结构（前缀 `runq:`）
 
-| Key | 类型 | 内容 |
-|---|---|---|
-| `runq:pending` | LIST | 待领取任务 id（FIFO） |
-| `runq:processing` | LIST | 已领取、正在执行的任务 id |
-| `runq:jobs` | HASH | `id → JobDescriptor(JSON)`，claim/list/ack 的内容源 |
-| `runq:claimedAt` | HASH | `id → 领取时刻(ms)`，供 `reclaimStale` 判定租约过期 |
-| `runq:events:<jobId>` | pub/sub channel | 运行事件流（SSE 转发） |
+| Key                   | 类型            | 内容                                                |
+| --------------------- | --------------- | --------------------------------------------------- |
+| `runq:pending`        | LIST            | 待领取任务 id（FIFO）                               |
+| `runq:processing`     | LIST            | 已领取、正在执行的任务 id                           |
+| `runq:jobs`           | HASH            | `id → JobDescriptor(JSON)`，claim/list/ack 的内容源 |
+| `runq:claimedAt`      | HASH            | `id → 领取时刻(ms)`，供 `reclaimStale` 判定租约过期 |
+| `runq:events:<jobId>` | pub/sub channel | 运行事件流（SSE 转发）                              |
 
 领取用 `LMOVE pending processing LEFT RIGHT`（原子迁移，并发安全，FIFO）。
 
@@ -55,6 +60,7 @@ client ───► │  Load      │ ─────────────�
 pnpm --filter @agent-harness/server run build
 node access/server/dist/server.js
 ```
+
 适用：试点、低流量、开发。任务在进程内队列，进程重启会丢失在飞任务（可接受，客户端会重投）。
 
 ### 3.2 多实例（启用 Redis）
@@ -73,6 +79,8 @@ node access/server/dist/server.js
 
    # 租约与领取节奏（可选，有默认值）
    QUEUE_LEASE_MS=300000          # 任务租约 5 分钟；超过未 ack 即回收重派
+   RUN_QUEUE_RECLAIM_INTERVAL_MS=60000   # 僵尸任务回收周期（默认 60s）
+   RUN_QUEUE_IDEM_TTL_MS=1800000  # 跨实例幂等键 TTL（默认 30 分钟，终态主动释放）
    QUEUE_CLAIM_INTERVAL_MS=3000   # 各实例每 3s 轮询一次 claim
 
    # 密钥走外部化（见 README「密钥管理」）：平台 env 或 SECRETS_FILE
@@ -99,6 +107,7 @@ node access/server/dist/server.js
 ### 3.3 ioredis 可选依赖说明
 
 `ioredis` 是 `optionalDependencies`。若部署镜像未包含：
+
 - 设了 `REDIS_URL` 但无 `ioredis` → 自动降级为 **memory 后端**并打印告警
   `[queue-backend] ioredis 不可用，回退 memory 后端:`，**不会崩溃**，但多实例共享失效。
 - 多实例务必确保 `ioredis` 已安装（`pnpm install` 会自动带，或镜像内 `npm i ioredis`）。
@@ -107,16 +116,17 @@ node access/server/dist/server.js
 
 ## 4. 验证清单（上线前逐项确认）
 
-| 项 | 方法 | 期望 |
-|---|---|---|
-| Redis 连通 | 启动日志无 ioredis 降级告警 | 无 `[queue-backend] ioredis 不可用` |
-| 共享领取 | 2 实例 + 并发提交 10 任务，查 `LLEN runq:pending` 与 `LLEN runq:processing` | 任务被**不同实例**领取，无重复执行 |
-| FIFO | 观测 `runq:pending` 出队顺序 | 先提交的先执行 |
-| 事件桥 | 客户端在实例 A 提交、SSE 连实例 B | SSE 仍实时收到执行事件 |
-| 崩溃恢复 | 杀掉正在执行任务的实例 | 该任务在 `QUEUE_LEASE_MS` 内被另一实例 reclaim 并重跑 |
-| 幂等 claim | 同任务 id 重复提交（测试用） | `jobs` HASH 覆盖，仅一个实例执行 |
+| 项         | 方法                                                                        | 期望                                                  |
+| ---------- | --------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Redis 连通 | 启动日志无 ioredis 降级告警                                                 | 无 `[queue-backend] ioredis 不可用`                   |
+| 共享领取   | 2 实例 + 并发提交 10 任务，查 `LLEN runq:pending` 与 `LLEN runq:processing` | 任务被**不同实例**领取，无重复执行                    |
+| FIFO       | 观测 `runq:pending` 出队顺序                                                | 先提交的先执行                                        |
+| 事件桥     | 客户端在实例 A 提交、SSE 连实例 B                                           | SSE 仍实时收到执行事件                                |
+| 崩溃恢复   | 杀掉正在执行任务的实例                                                      | 该任务在 `QUEUE_LEASE_MS` 内被另一实例 reclaim 并重跑 |
+| 幂等 claim | 同任务 id 重复提交（测试用）                                                | `jobs` HASH 覆盖，仅一个实例执行                      |
 
 快速核查命令：
+
 ```bash
 redis-cli -u "$REDIS_URL" LLEN runq:pending
 redis-cli -u "$REDIS_URL" LLEN runq:processing
@@ -137,6 +147,7 @@ redis-cli -u "$REDIS_URL" HLEN runq:jobs
 hey -n 200 -c 20 -m POST -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"ping","mode":"mock"}' http://localhost:4173/api/run
 ```
+
 产出：单实例最大并发、p95、错误率（作为多实例对照基线）。
 
 ### 5.2 多实例水平扩展
@@ -146,7 +157,7 @@ hey -n 200 -c 20 -m POST -H "Authorization: Bearer $TOK" \
    - **吞吐**是否随实例数近似线性提升；
    - `LLEN runq:pending` 是否被各实例平稳消费（无某实例空转、无单实例过载）；
    - 各实例 `sweepOnce` 日志分布是否均匀。
-3. 记录不同实例数下的 TPS 与 p95，绘制扩展效率曲线（理想：N 实例 ≈ N×单实例）。
+3. 记录不同实例数下的 TPS 与 p95，绘制扩展效率曲线（理想：N 实例 ≈ N× 单实例）。
 
 ### 5.3 故障注入
 

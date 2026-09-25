@@ -7,11 +7,11 @@
 
 ## 0. 先选场景
 
-| 你的场景 | 推荐路径 | 详细文档 |
-|---|---|---|
-|| 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式 | [./docker-deploy-guide.md](./docker-deploy-guide.md) §2 |
-|| **内网多人低并发（推荐你现在的用法）** | Compose + Redis + 鉴权 overlay | [./docker-deploy-guide.md](./docker-deploy-guide.md) §3、§9 |
-|| 外部多人 / 高可用 / 弹性扩缩 | Kubernetes | [./k8s-deploy-guide.md](./k8s-deploy-guide.md) |
+| 你的场景 | 推荐路径                                | 详细文档                       |
+| -------- | --------------------------------------- | ------------------------------ | ----------------------------------------------------------- |
+|          | 本机快速试用 / 演示（≤1 人，Mock 即可） | Compose 内存模式               | [./docker-deploy-guide.md](./docker-deploy-guide.md) §2     |
+|          | **内网多人低并发（推荐你现在的用法）**  | Compose + Redis + 鉴权 overlay | [./docker-deploy-guide.md](./docker-deploy-guide.md) §3、§9 |
+|          | 外部多人 / 高可用 / 弹性扩缩            | Kubernetes                     | [./k8s-deploy-guide.md](./k8s-deploy-guide.md)              |
 
 > **结论**：你这次选的是「内网多人」档，所以主线就是 **Compose + Redis overlay + 强随机令牌**，下面「路径一」给的是完整可直接复制的命令。
 
@@ -62,7 +62,7 @@ curl http://localhost:4173/api/state
 
 `deploy/k8s/` 下已有完整 kustomize 清单（namespace / configmap / secret / deployment / service / ingress / hpa / redis），base 之外平级放了 `deploy/overlays/local` 本地验证 overlay（kustomize 要求 overlay 与 base 平级，否则报 cycle detected）。已修复的致命坑：
 
-- 健康检查探针：早期 `/api/v1/state` 返回 404（pod 永远 not-ready），已在 server 路由入口将 `/api/v1/*` 重写为 `/api/*`，现 `/api/v1/state` 与 `/api/state` 均 200。
+- 健康检查探针：早期 `/api/v1/state` 返回 404（pod 永远 not-ready），已在 server 路由入口将 `/api/v1/*` 重写为 `/api/*`，现 `/api/v1/state` 与 `/api/state` 均 200。**接线修复**：readiness 已切换到 `/health/ready`（真实探测 DB/Redis/内存水位）、liveness 到 `/health/live`——`/api/state` 不探测任何依赖，仅作兼容保留。
 - Redis 默认接入、带密码（`REDIS_URL=redis://:PASSWORD@redis:6379`，否则多副本走内存队列）。
 - 记忆持久化：RWX 卷 `agent-harness-data` 挂 `/app/data`，`MEMORY_BACKEND=file`，多副本共享、重启不丢（依赖支持 RWX 的 StorageClass）。
 - **kustomize 循环**：local overlay 原放在 `deploy/k8s/overlays/local`（base 子目录），引用 base 触发 `cycle detected`，已移至 `deploy/overlays/local`。
@@ -83,16 +83,17 @@ kubectl -n agent-harness port-forward svc/agent-harness 4173:4173       # 浏览
 
 ## 共用：运维 & 排错
 
-| 操作 | Compose | K8s |
-|---|---|---|
-| 看状态 | `docker ps` | `kubectl -n agent-harness get pods` |
-| 看日志 | `docker logs -f agent-harness-ts-ui-1` | `kubectl -n agent-harness logs -f deploy/agent-harness` |
-| 重启 | `docker compose restart` | `kubectl -n agent-harness rollout restart deploy/agent-harness` |
-| 停止 | `docker compose down` | `kubectl delete -k deploy/k8s` |
-| 验证 Redis 接管 | `docker logs … \| grep queue-backend` | `kubectl … logs \| grep queue-backend` |
+| 操作            | Compose                                | K8s                                                             |
+| --------------- | -------------------------------------- | --------------------------------------------------------------- |
+| 看状态          | `docker ps`                            | `kubectl -n agent-harness get pods`                             |
+| 看日志          | `docker logs -f agent-harness-ts-ui-1` | `kubectl -n agent-harness logs -f deploy/agent-harness`         |
+| 重启            | `docker compose restart`               | `kubectl -n agent-harness rollout restart deploy/agent-harness` |
+| 停止            | `docker compose down`                  | `kubectl delete -k deploy/k8s`                                  |
+| 验证 Redis 接管 | `docker logs … \| grep queue-backend`  | `kubectl … logs \| grep queue-backend`                          |
 
 **常见坑**（两份指南都有详述）：
-- 健康检查必须是 `/api/state`，不是 `/api/v1/state`。
+
+- readiness 探针用 `/health/ready`、liveness 用 `/health/live`（已统一切换）；`/api/state` 与 `/api/v1/state` 均可作兼容探活，但它们不探测任何依赖。
 - 纯 `docker compose --profile redis` **不会**连上 Redis，必须用 `docker-compose.redis.yml` overlay。
 - `UI_AUTH_TOKEN` 不设在 overlay 模式下会拒绝启动（保护行为）。
 
@@ -110,5 +111,5 @@ docs/
   docker-deploy-guide.md    # Compose 完整流程（从部署到落地使用）
   k8s-deploy-guide.md       # K8s 完整流程（本地 overlay + 生产集群）
 deploy/k8s/                 # K8s manifests（base + overlays/local）
-| Dockerfile                  | 多阶段构建（已修正健康检查为 /api/state） |
+| Dockerfile                  | 多阶段构建（HEALTHCHECK 已切换为 /health/ready；锁文件校验严格化 STRICT_LOCKFILE） |
 ```

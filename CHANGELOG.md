@@ -6,6 +6,92 @@
 
 ## [Unreleased] - 2026-09-25
 
+### 📚 文档全量重新整合（多轮功能新增与修复后的总收口）
+
+- **新增 3 份文档**：[`docs/01-architecture/plan-mode.md`](./docs/01-architecture/plan-mode.md)
+  （计划模式全链路：澄清 → propose → DAG 执行 → 交付归档）、
+  [`docs/02-deployment/database-backends.md`](./docs/02-deployment/database-backends.md)
+  （sqlite/turso/MySQL/PostgreSQL 后端矩阵 + 方言层 + 租户数据分区 + 搬迁工具）、
+  [`docs/02-deployment/hardening-2026-09-25.md`](./docs/02-deployment/hardening-2026-09-25.md)
+  （2026-09-25 加固批次 18 项修复总账 + 新增环境变量表 + 探针速查）。
+- **CHANGELOG 补记缺失批次**：计划模式与多步任务执行、Jev 决策模型接入、数据库多后端与
+  租户数据分区、S3 工件存储与移动端壳（2026-09-18 ~ 09-24 期间落地但此前未入册）。
+- **README 同步**：目录树补 `mobile/`；内置工具表补 `fs_write` / `doc_export` / `jev_decide`；
+  护栏章节更新 Jev 语义打分已接入；测试规模（core 约 630 用例 / 85 文件）、server 规模
+  （约 90 源文件 / routes/ 18 模块）、CI/CD 四作业描述（gitleaks / Syft SBOM / e2e / nightly）；
+  新增「计划模式」「文件导出与交付闭环」「工件存储」「数据库后端」「移动端」章节。
+- **docs/README.md 索引全量化**：从 5 类扩展到 10 目录（补 `07-rag` / `08-others` / `design` /
+  `proposals` / `test`），补登记 `k8s-upgrade-rollback-runbook.md`、`plugin-sandbox-design.md`
+  等此前遗漏文档；仓库结构快照刷新。
+- **失效链接修复**：`docs/test/P1~P3-SUMMARY.md` 归档时遗留的 14 处相对链接全部修复
+  （根目录迁移导致的 `./` 前缀失效、已移除文件的链接改为纯文本）。
+- **一致性校验**：全仓 56 份文档相对链接 0 坏链；旧表述（测试计数、SBOM 未集成、探针路径等）无残留。
+
+### 🔒 安全加固与稳定性收口（四维能力评估后的 18 项修复）
+
+全项目「健壮 / 稳定 / 安全 / 自愈」四维代码审计（纯源码实证）后，对 12 项 P1 + 6 项结构性问题
+逐一修复；完整清单与文件坐标见 [`docs/02-deployment/hardening-2026-09-25.md`](./docs/02-deployment/hardening-2026-09-25.md)。
+
+**安全**
+
+- **越权修复（IDOR）**：`/api/artifacts` 列表 / 读取 / 删除按 owner 过滤（admin 豁免），
+  归属不符统一 404 不泄露资源存在性——此前任意 viewer 可读所有用户的 Agent 产出物、
+  operator 可删他人工件（`routes/collab-routes.ts`）。
+- **可信代理网段**：新增 `access/server/src/trusted-proxy.ts`（零依赖 CIDR 匹配，IPv4 掩码 +
+  IPv6 展开/映射折返）；`clientIp()` 仅当 TCP 对端落在 `TRUST_PROXY_CIDRS` 内才采信
+  `cf-connecting-ip` / `X-Forwarded-For`，直连部署下伪造头不再能绕过 IP 限流（缺省仅信任回环，
+  compose 缺省含 docker 网段）。
+- **MCP 运行时接入校验**（`mcp-manager.ts`）：`serverUrl` 经 core `resolveHostIsPrivate` 做
+  DNS 级私网黑名单（防元数据端点 SSRF）+ 仅 http/https + `command` 白名单
+  （`MCP_ALLOWED_COMMANDS`）+ args shell 元字符拒绝；启动期 env 配置不受限；
+  内网 MCP 可显式 `MCP_ALLOW_PRIVATE_SERVER_URL=on`；被拒配置不落库。
+- **忘记密码凭证交付补齐**：HTTP 回显门禁（`PASSWORD_RESET_INLINE_TOKEN`，默认带外）此前已在
+  路由层落地；本轮补齐签发事件日志 `auth.reset_token_issued`（不含凭证本体，注明查
+  `password_resets` 表转交）、前端透传服务端 `message` 提示、`.env.example` 部署文档。
+- **供应链**：Dockerfile 锁文件校验失败不再静默降级 `--no-frozen-lockfile`（`STRICT_LOCKFILE=0`
+  为显式逃生门）；compose 补 `no-new-privileges` + `cap_drop: ALL`（与 k8s securityContext 对齐）。
+- **插件密钥收窄**：`OPEN_API_KEY` 不再无条件注入所有插件（改 `PLUGIN_SHARE_LEGACY_LLM_KEY=on`
+  显式开关）；插件回调本机 API 改注入专属凭证 `ADMIN_API_KEY`（`reminders-trigger` 优先读取）。
+
+**稳定**
+
+- **共享队列提交语义收紧**：`submit` 异步化；Redis 模式下落盘（`append`）失败同步返回
+  **503**（`QueuePersistError`）并回滚资源——此前仅 `console.error`，客户端拿到 jobId 但任务
+  永远不被执行；单实例模式维持「失败仅影响崩溃重放」语义。
+- **跨实例幂等**：`idempotencyKey` 去重从进程内 Map 扩展为两层（Redis `SET NX PX`，
+  `runq:idem:<key>`，TTL `RUN_QUEUE_IDEM_TTL_MS` 默认 30 分钟，终态主动释放）；
+  重复提交返回 **409**（`QueueDuplicateError`）+ 既有 jobId，其事件经事件桥对任意实例可见。
+- **僵尸任务周期回收**：`reclaimStale` 从「仅启动时一次」改为周期执行
+  （`RUN_QUEUE_RECLAIM_INTERVAL_MS` 默认 60s），claim/ack 之间崩溃的任务不再滞留 processing。
+- **启动期**：端口占用（EADDRINUSE）给出可操作提示并告警；`AH_STARTUP_CRITICAL=1` 时
+  启动迁移失败阻断启动（不再带旧 schema 接流）。
+
+**自愈（探针与告警接线）**
+
+- **探针统一切换**：k8s readiness → `/health/ready`（真实探测 DB `SELECT 1` / Redis PING /
+  内存水位，未配置的依赖自动跳过）、liveness → `/health/live`；Dockerfile HEALTHCHECK、
+  docker-compose healthcheck、render.yaml 同步——此前全部打在不探测依赖的 `/api/state` 上，
+  Redis 宕机时 readiness 仍 200。k8s redis Deployment 补 liveness/readiness（redis-cli PING）。
+- **告警幽灵指标修正**：prod overlay `alerts.yaml` 此前引用从未导出的 `llm_call_*` /
+  `harness_job_started_seconds`（两条告警永不触发），改用 `harness_*` 组合表达式
+  （`HarnessRunFailureRateHigh` 失败率 / `HarnessProcessingStuck` 处理滞留）。
+- **CI 修复与补强**：nightly 回滚演练作业缩进错误导致整个 workflow 无法解析（`schedule` 触发器
+  移至 workflow 级 `on:`）；e2e 作业纳入 `load-test` / `capacity-benchmark`。
+
+**健壮**
+
+- **损坏 JSON 统一处置**（新增 `backend/core/src/store-safety.ts`）：记忆 / 工作流检查点 /
+  AgentCard 解析失败统一「结构化告警 + 坏文件隔离改名（`.corrupt-<ts>`）+ 空状态继续」，
+  不再静默当空数据；RAG 索引损坏从启动崩溃循环收敛为同一策略（rag 为 stdlib-only，内联等价实现）。
+- **RAG 嵌入超时**：两处 `fetch` 加 `AbortSignal.timeout(RAG_EMBED_TIMEOUT_MS)`（默认 60s）——
+  embed-server 挂起时不再耗尽 ingest worker 池。
+- **memo 插件 DB 初始化自愈**：`ensureDb()` 失败重置缓存（此前 rejected promise 永久缓存）。
+- **前端全局错误兜底**：webapp 挂 `error` / `unhandledrejection` 监听（去重提示 +
+  `window.__ahClientErrors` 环形缓冲）。
+- **清理误删防护**：`cleanup-retention` 不再按龄删除活跃的 `telemetry-metrics.json`。
+
+---
+
 ### ✨ 文件导出与交付闭环（报告可交付真实 PPT / Excel）
 
 报告生成此前只能产出 markdown 文本（计划交付文档），PPT / Excel 无法落成真实文件——
@@ -29,6 +115,64 @@
   server 新增 `deliver-file.test.cjs`（5 例，纯函数 + 端到端注册往返）。
   修复 `plan-propose.test.cjs` 遗留失败（0e2b9e9 起调研循环改 LLM 驱动后 mock 未同步）、
   `skills.test.cjs` 技能数断言（5 → 6）。
+
+---
+
+### ✨ 计划模式与多步任务执行（2026-09-18 ~ 09-24 多批次迭代）
+
+Chat 内「规划-执行-交付」多步任务形态，分层：core 契约/解析/映射（`plan.ts` + `plan-propose.ts`）、
+server 透传/落盘/事件桥/归档（`plan-routes` / `plan-store` / `plan-bus` / `plan-verify` / `plan-artifacts`）、
+webapp 全部 UI 语义。完整链路见 [`docs/01-architecture/plan-mode.md`](./docs/01-architecture/plan-mode.md)。
+
+- **规划**：需求澄清分支（候选选项点选 / 逐题作答）、两段式 propose 管线（实时活动 + 计时）、
+  规划模式步数与工具调用限制、长输入放宽；计划树可确认可编辑，任务支持 `requireApproval`
+  人工审批门（波次前暂停 → 放行续跑）。
+- **执行**：计划桥按 DAG 形状自动决策串/并行并支持有界并发（此前默认全串行）；显式取消 +
+  断连自愈（断连中止引擎运行、清理思考面板残留）；验收词软门禁（P4.5 确定性结果断言零 LLM
+  成本拦跑题/空/截断产出，P4.7 收敛「告知词 = 断言词」）；失败/中断状态落盘，重开不从头重跑。
+- **交付**：各 step 产出归档为可下载工件（`kind=plan-step-output`）；计划任务可合并交付文档；
+  终止后归档汇总交付报告；执行详情截断上限放宽至 20 万字。
+- **可观测**：`jev:call` 旁路事件上报 Jev 调用、调用统计与状态自检接口（`scripts/jev-e2e.cjs`
+  端到端验证）；chat-trace Token 用量口径修正为整轮累计。
+- **UI**：思考面板（钉底滚动/归因/执行详情）、侧边栏布局与折叠动效、移动端下拉刷新与顶栏刷新、
+  消息编辑重发。
+
+### ✨ Jev 决策模型接入（TypeSafe「System One」）
+
+Jev 不是文本生成型 LLM，而是接收「程序状态 + 带类型结构化问题（Choice/Score/Noul）」、
+返回带校准概率决策的模型。作为**内置决策工具**接入（`builtins/typesafe-jev.ts`）：
+
+- `builtin__jev_decide` 工具（LLM 主动调用）+ `jevDecide()` 异步客户端（护栏 / 路由 / RAG /
+  上下文压缩等子系统在 LLM 之外直接调用），两者共用 HTTP 调用与凭据解析
+  （显式参数 > 运行级 BYOK > `TYPESAFE_API_KEY`，未配置自动回落旧逻辑）。
+- 护栏注入检测接入 Jev 语义打分（`registerInjectionScorer()` 首个真实实现）。
+- `jev:call` 旁路事件接入可观测性；`scripts/jev-smoke.cjs` / `jev-e2e.cjs` / `jev-als-repro.cjs` 验证脚本。
+
+### ✨ 数据库多后端与租户数据分区（2026-09-24）
+
+- **统一数据库适配器**（`db-adapter.ts` + `db-dialect.ts` 方言层）：`DB_BACKEND` 切换
+  `sqlite`（默认，零依赖）/ `turso`（`@libsql/client` 可选依赖，失败自动降级）/ `mysql` /
+  `postgres`（`mysql2` / `pg` 驱动，`DATABASE_URL` scheme 必须匹配，配置错误 **fail-fast**
+  不静默降级）；SQLite 方言 SQL 在适配器出口自动翻译为目标方言，store 层零改动。
+- **租户数据分区**：`TENANT_DATA_ZONE` 使 sqlite 库按合规域物理分文件（`./data/<zone>/app.db`），
+  与 `ComplianceProfile.dataResidency`、审计 `dataZone` 联动；配额引擎多副本闭环与租户表接线。
+- **搬迁与运维工具**：`scripts/db-copy.cjs`（sqlite ↔ turso 双向复制）、`db-migrate.cjs`、
+  `smoke-db.cjs`；turso 降级实例缓存键并入本地文件名，修复跨 store 数据串库缺陷。
+- 详见 [`docs/02-deployment/database-backends.md`](./docs/02-deployment/database-backends.md)。
+
+### ✨ 工件存储 S3 化与移动端壳（2026-09-20 前后）
+
+- **S3 兼容对象存储工件后端**（`artifact-store-s3.ts`）：与本地版同契约，支持 AWS S3 /
+  Cloudflare R2 / MinIO / Render Object Storage；SigV4 签名手写（node:crypto）零 SDK 依赖，
+  仅需 GetObject / PutObject / DeleteObject 三个权限；工件 md 预览渲染。
+  环境变量：`S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_ENDPOINT` /
+  `S3_REGION` / `S3_FORCE_PATH_STYLE`。
+- **移动端**（`mobile/`）：Capacitor 包裹 webapp 构建产物的 iOS / Android 壳——推送通知
+  （FCM/APNs）、`piagent://` Deep Link、相机/相册上传、Face ID / 指纹快捷登录、TTL 离线缓存
+  （见 `mobile/README.md`）。
+- **运行时健壮性**：harness 动态工具选择首轮发子集并智能兜底；BYOK 凭据透传子智能体；
+  医美插件新增定时调度器与对客触达、内容生产 / AB 分流 / 咨询师辅助三能力（见
+  `docs/04-agents/medical-aesthetics-rollout-checklist.md`）。
 
 ---
 

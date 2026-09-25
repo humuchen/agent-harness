@@ -56,12 +56,15 @@ kubectl apply -k deploy/k8s
 
 ## 3. 已修复的关键坑（务必知悉）
 
-| 问题               | 旧值                                              | 现状                                                       |
-| ------------------ | ------------------------------------------------- | ---------------------------------------------------------- |
-| 健康检查探针路径   | `/api/v1/state`（早期 404，pod 永远 not-ready）   | 路由入口已将 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 均返回 200，否则 Service 收不到流量 |
-| Redis 是否默认接入 | `redis.yaml` 被注释、`REDIS_URL=""`（走内存队列） | 已默认启用，`REDIS_URL=redis://redis:6379`，多副本共享队列 |
+| 问题               | 旧值                                                                            | 现状                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 健康检查探针路径   | `/api/v1/state`（早期 404，pod 永远 not-ready）                                 | 路由入口已将 `/api/v1/*` 重写为 `/api/*`，`/api/v1/state` 与 `/api/state` 均返回 200，否则 Service 收不到流量                                    |
+| 探针不探依赖       | readiness/liveness 均打 `/api/state`（Redis/DB 宕机仍 200，readiness 形同虚设） | **readiness → `/health/ready`**（真实 `SELECT 1` + Redis PING + 内存水位）、**liveness → `/health/live`**（接线修复）；`/api/state` 仅作兼容保留 |
+| Redis 探针缺失     | `redis.yaml` 完全没有 probes（redis 假死时 Service 仍导流）                     | 已补 liveness/readiness（`redis-cli -a "$REDIS_PASSWORD" ping`）                                                                                 |
+| Redis 是否默认接入 | `redis.yaml` 被注释、`REDIS_URL=""`（走内存队列）                               | 已默认启用，`REDIS_URL=redis://redis:6379`，多副本共享队列                                                                                       |
 
-> 说明：`/api/v1/state` 与 `/api/state` 等价（server 在路由入口统一重写前缀），健康检查二者皆可。Docker 与 K8s 两处都已统一。
+> 说明：`/api/v1/state` 与 `/api/state` 等价（server 在路由入口统一重写前缀），可作兼容探活；
+> **readiness 请用 `/health/ready`**（未配置的依赖自动跳过检查，不会误报），liveness 用 `/health/live`。
 
 ## 3.1 生产加固补丁（记忆持久化 + Redis 密码）
 
@@ -107,10 +110,10 @@ deploy/k8s/
 ├── namespace.yaml
 ├── configmap.yaml          # 非敏感配置（端口/限流/平台后端）
 ├── secret.yaml            # 敏感配置（默认开放 + Redis 已接）
-├── deployment.yaml        # 2 副本，探针已修为 /api/state
+├── deployment.yaml        # 2 副本，readiness=/health/ready、liveness=/health/live（接线修复）
 ├── service.yaml           # ClusterIP
 ├── ingress.yaml           # nginx + cert-manager（生产用）
 ├── hpa.yaml               # CPU 70% 触发扩缩
-├── redis.yaml             # 单副本 Redis + PVC（生产建议换托管）
+├── redis.yaml             # 单副本 Redis + PVC（已补 liveness/readiness 探针；生产建议换托管）
 └── overlays/local/        # 本地验证：agent-harness:local + NodePort 31473 + 单副本
 ```
