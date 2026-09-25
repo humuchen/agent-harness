@@ -92,6 +92,18 @@ export interface DeliverFileOptions {
 
 export function registerDeliverFileTool(registry: ToolRegistry, opts: DeliverFileOptions): void {
   const root = resolve(opts.fsRoot);
+  // realpath(root) 缓存：macOS 下 /var → /private/var 等符号链接会让「词法 root 前缀比较」
+  // 误判逃逸；与 core fs 工具同款纪律，统一以 realpath(root) 为前缀基准。
+  let realRootCache: string | null = null;
+  const realRoot = async (): Promise<string> => {
+    if (realRootCache) return realRootCache;
+    try {
+      realRootCache = await fsp.realpath(root);
+    } catch {
+      realRootCache = root;
+    }
+    return realRootCache;
+  };
 
   registry.register(
     'builtin__deliver_file',
@@ -119,9 +131,10 @@ export function registerDeliverFileTool(registry: ToolRegistry, opts: DeliverFil
         if (rel.startsWith('..') || rel === '' || abs === root) {
           return `error: path escapes root: ${p}`;
         }
-        // 真实路径层：防 symlink 逃逸（文件必须已存在）。
+        // 真实路径层：防 symlink 逃逸（文件必须已存在），前缀基准为 realpath(root)。
         const real = await fsp.realpath(abs);
-        if (!real.startsWith(root + sep) && real !== root) {
+        const rr = await realRoot();
+        if (!real.startsWith(rr + sep) && real !== rr) {
           return `error: path escapes root (symlink): ${p}`;
         }
         const stat = await fsp.stat(real);

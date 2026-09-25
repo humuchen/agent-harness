@@ -139,7 +139,9 @@ export function registerFilesystem(registry: ToolRegistry, opts: FilesystemOptio
         }
         await fsp.mkdir(resolve(abs, '..'), { recursive: true });
         await fsp.writeFile(abs, buf);
-        return JSON.stringify({ path: relative(root, abs), bytes: buf.length });
+        // 返回相对 realRoot 的路径：与 fs_read/list 的入参约定一致（相对路径），
+        // 模型可直接把该路径用于后续工具调用（相对 realRoot 时绝不产生绝对前缀）。
+        return JSON.stringify({ path: relative(await realRoot(), abs), bytes: buf.length });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return `error: ${msg}`;

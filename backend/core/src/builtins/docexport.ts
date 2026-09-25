@@ -92,18 +92,27 @@ function sanitizeSheetName(raw: string, fallback: string): string {
 
 /**
  * 行数据归一化：接受二维数组 `[[a, b], ...]` 或对象数组 `[{a:1,b:2}, ...]`。
- * 对象数组：以首个对象的键序为表头，自动补首行；后续对象缺键补空串。
- * 其余值 String() 化（number 保留为 number 进 Excel/CSV）。
+ * 对象数组：以首个对象的键序为表头自动补首行；后续对象缺键补空串、多键忽略，
+ * 保证所有行列对齐。其余值 String() 化（number 保留为 number 进 Excel/CSV）。
  */
 function normalizeRows(rows: unknown): Array<Array<string | number>> {
   if (!Array.isArray(rows)) return [];
   const out: Array<Array<string | number>> = [];
+  let header: string[] | null = null;
   for (const item of rows) {
     if (Array.isArray(item)) {
       out.push(item.map((v) => (typeof v === 'number' ? v : String(v ?? ''))));
     } else if (item && typeof item === 'object') {
       const rec = item as Record<string, unknown>;
-      out.push(Object.keys(rec).map((k) => (typeof rec[k] === 'number' ? (rec[k] as number) : String(rec[k] ?? ''))));
+      if (!header) {
+        header = Object.keys(rec);
+        out.push(header.slice());
+      }
+      out.push(
+        header.map((k) =>
+          typeof rec[k] === 'number' ? (rec[k] as number) : String(rec[k] ?? '')
+        )
+      );
     } else if (item != null) {
       out.push([String(item)]);
     }

@@ -103,6 +103,8 @@ test('deliver_file: plan 步骤 sessionKey 下注册，list(runId) 命中且字�
 });
 
 test('deliver_file: 逃逸路径 / 目录 / 不存在文件被拒绝', async () => {
+  // beforeEach 会重建全新 tmpRoot：目录用例需自建 exports/ 才能真正覆盖。
+  mkdirSync(path.join(tmpRoot, 'exports'), { recursive: true });
   const reg = makeRegistry('wf:plan-x:t1');
   const esc = await reg.call('builtin__deliver_file', { path: '../outside.txt' });
   assert.ok(esc.startsWith('error: path escapes root'), esc);

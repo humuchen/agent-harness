@@ -29,7 +29,7 @@ const hasPptxGenJs = optionalDepsInstalled('pptxgenjs');
 
 function makeRegistry(root) {
   const reg = new ToolRegistry();
-  registerBuiltinTools(reg, { root: root, webEnabled: false, weatherEnabled: false });
+  registerBuiltinTools(reg, { fsRoot: root, webEnabled: false, weatherEnabled: false });
   return reg;
 }
 

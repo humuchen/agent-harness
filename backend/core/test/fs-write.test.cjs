@@ -16,7 +16,7 @@ const { registerBuiltinTools } = require('../dist/builtins/index.js');
 
 function makeRegistry(root) {
   const reg = new ToolRegistry();
-  registerBuiltinTools(reg, { root: root, webEnabled: false, weatherEnabled: false, docExportEnabled: false });
+  registerBuiltinTools(reg, { fsRoot: root, webEnabled: false, weatherEnabled: false, docExportEnabled: false });
   return reg;
 }
 

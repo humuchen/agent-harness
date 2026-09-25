@@ -4,6 +4,34 @@
 
 ---
 
+## [Unreleased] - 2026-09-25
+
+### ✨ 文件导出与交付闭环（报告可交付真实 PPT / Excel）
+
+报告生成此前只能产出 markdown 文本（计划交付文档），PPT / Excel 无法落成真实文件——
+工具面无写文件能力、无格式生成器、二进制文件也进不了「📎 交付文件」区。本轮补齐三段闭环：
+
+- **`builtin__fs_write`**（core `builtins/filesystem.ts`）：沙箱内写文件（utf-8 文本 / base64 二进制），
+  父目录自动创建，复用 `safe/safeReal` 防路径逃逸，2MB 上限；返回相对 realRoot 路径可直接用于后续工具调用。
+- **`builtin__doc_export`**（core `builtins/docexport.ts`）：结构化数据 → 真实文件，落到沙箱 `exports/` 目录。
+  `xlsx`（exceljs，sheets=[{name, rows}]）、`pptx`（pptxgenjs，slides=[{title, bullets, notes?}]）、
+  `csv`（零依赖 RFC4180，对象数组自动补表头）。exceljs / pptxgenjs 以 core **optionalDependencies** 声明
+  （与 OpenTelemetry 同款「可选即降级」先例），缺失时返回带安装指引的可操作错误。
+- **`builtin__deliver_file`**（server `deliver-file.ts`）：把沙箱内已生成文件注册进 artifact-store，
+  runId 从 sessionKey 推导（plan 步骤 `wf:<workflowId>:<stepId>` → workflowId，与 plan-artifacts 同键），
+  使 xlsx / pptx / csv 出现在「📎 交付文件」区可预览 / 可下载；owner 经 runWithUser 上下文归属登录用户；
+  体积上限 `DELIVER_FILE_MAX_BYTES`（默认 10MB），realpath(root) 前缀基准防 symlink 逃逸。
+- **技能与提示词配合**：core 技能新增 `doc-export`（触发词 ppt/excel/xlsx/csv/导出/交付文件…，
+  指引「生成 → deliver_file 交付 → 正文列文件名」标准链路与降级策略）；
+  planner 提示词新增 4b「文件交付对齐」（含 PPT/Excel 目标时拆「生成交付文件」任务）；
+  workflow-executor step prompt 对文件类任务追加交付指引。
+- **测试**：core 新增 `fs-write.test.cjs`（5 例）、`doc-export.test.cjs`（6 例，可选依赖缺失自动 skip）；
+  server 新增 `deliver-file.test.cjs`（5 例，纯函数 + 端到端注册往返）。
+  修复 `plan-propose.test.cjs` 遗留失败（0e2b9e9 起调研循环改 LLM 驱动后 mock 未同步）、
+  `skills.test.cjs` 技能数断言（5 → 6）。
+
+---
+
 ## [0.3.0] - 2026-09-03
 
 ### 📚 文档
