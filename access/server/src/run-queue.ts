@@ -2,6 +2,7 @@ import type { HarnessEvent } from '@agent-harness/core';
 import {
   incCounter,
   recordLatency,
+  structLog,
   resolveOpenRouterConfig,
   createVerifier,
   resolveTask,
@@ -173,6 +174,8 @@ const QUEUE_MAX_PENDING = Number(process.env.RUN_QUEUE_MAX_PENDING ?? 200) || 0;
 // 任务终态时会主动 DEL 释放；TTL 只是兜底（如执行实例整机失联）。
 const RUN_QUEUE_IDEM_TTL_MS =
   Number(process.env.RUN_QUEUE_IDEM_TTL_MS ?? 1_800_000) || 1_800_000;
+// 排队等待告警阈值（毫秒）：超过该值打 structLog warn（问答链路「回复慢」排查的关键信号）。
+const QUEUE_WAIT_WARN_MS = Number(process.env.RUN_QUEUE_WAIT_WARN_MS ?? 2_000) || 2_000;
 // 共享模式下僵尸任务回收周期：此前 reclaimStale 仅在实例启动时执行一次，实例在
 // claim 与 ack 之间崩溃会让任务滞留 processing，长生命周期集群无人回收。
 const RUN_QUEUE_RECLAIM_INTERVAL_MS =
@@ -628,6 +631,21 @@ export class RunQueue {
   }
 
   /**
+   * 同会话是否有任务正在执行（串行化占用中）。
+   * 供提交入口提示用户「本条消息已排队等待前序任务」——排队期间此前无任何
+   * 反馈，是问答链路「回复慢」体感的主要来源之一。
+   */
+  isSessionBusy(sessionKey?: string | null): boolean {
+    if (!sessionKey) return false;
+    return this.runningSessions.has(sessionKey);
+  }
+
+  /** 当前待执行（未开始）的队列长度：并发跑满时的排队规模观测。 */
+  get pendingCount(): number {
+    return this.queue.length;
+  }
+
+  /**
    * 注入服务端合成事件（如 plan:proposed / warn）：与 execute 内 emit 走同一
    * seq 计数 + events 缓冲 + 订阅通知 + 跨实例桥，保证断线重连（since 游标）
    * 后这些帧可被重放，计划卡片等派生状态不丢。
@@ -903,6 +921,19 @@ export class RunQueue {
     return withRequestContext(reqCtx, async () => {
       try {
         const signal = job.controller.signal;
+        // 排队等待可观测化（问答链路耗时分析）：queueWaitMs = 开始执行 - 入队时刻。
+        // 用户报「回复很慢」时，这段耗时发生在任何 LLM 调用之前且此前完全不可见。
+        // 同会话串行化（runningSessions 占用）与全局并发跑满都会体现在这里。
+        const queueWaitMs = Math.max(0, Date.now() - (job.enqueuedAt ?? job.startedAt ?? Date.now()));
+        if (queueWaitMs > QUEUE_WAIT_WARN_MS) {
+          structLog('warn', 'run queue wait exceeded threshold', {
+            jobId: job.id,
+            queueWaitMs,
+            sessionKey: job.sessionKey ?? null,
+            concurrency: this.concurrency
+          });
+        }
+        recordLatency('run.queue_wait_ms', queueWaitMs);
         // P0-2：从 job 携带的可序列化验证配置装配运行期验证器（undefined 表示关闭门禁）。
         const verifier = createVerifier(job.verify);
         const verifyMaxRetries = verifier
@@ -1226,7 +1257,9 @@ export class RunQueue {
           costBudget: assembled.costBudget ?? null,
           failover: assembled.failover,
           workflowId: job.workflowId ?? null,
-          traceId: job.traceId ?? null
+          traceId: job.traceId ?? null,
+          // 排队等待毫秒数：前端/排查可区分「排队慢」与「执行慢」。
+          queueWaitMs
         });
         emit({ type: 'run:tools', tools: assembled.tools.schemas() });
         // 归属用户注入（数据绑定）：整个 agent 循环（含工具执行）都在 runWithUser 上下文内，

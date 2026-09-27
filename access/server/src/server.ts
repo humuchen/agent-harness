@@ -113,6 +113,7 @@ import {
   applyPlanWfTerminal,
   updatePlanStatus,
   extractPlanTaskId,
+  flushChatSessions,
   type StoredTool,
   type TraceNode,
   type ChatMessage
@@ -2180,7 +2181,13 @@ function onListening(): void {
 installCrashGuard();
 
 // 优雅停机：已抽出到 ./graceful-shutdown，通过依赖注入解耦模块级变量。
-const { shutdown, isShuttingDown } = createShutdownHandler({ runQueue, mcpManager, server });
+// flushSessions：chat-sessions 持久化已防抖异步化，停机时冲刷待写内容防丢最近消息。
+const { shutdown, isShuttingDown } = createShutdownHandler({
+  runQueue,
+  mcpManager,
+  server,
+  flushSessions: flushChatSessions
+});
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 

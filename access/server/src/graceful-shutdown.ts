@@ -16,6 +16,11 @@ export interface ShutdownDeps {
   mcpManager: { shutdown(): Promise<void> };
   /** HTTP 服务器实例：close 停止接受新连接。 */
   server: { close(cb?: () => void): void };
+  /**
+   * 聊天会话 JSON 存档落盘钩子（可选）：chat-sessions 持久化已改为防抖异步，
+   * 停机时必须冲刷待写内容，否则窗口内增量（最近一条消息）随进程退出丢失。
+   */
+  flushSessions?: () => Promise<void>;
 }
 
 /** 停机处理器 + 状态查询（路由层据此拒绝停机期间的新请求）。 */
@@ -57,6 +62,11 @@ export function createShutdownHandler(
 
     // 1b) 停止领取轮询并关闭共享后端（redis）连接，避免进程退出后空转。
     deps.runQueue.stop();
+
+    // 1c) 冲刷聊天会话 JSON 存档的待写内容（防抖异步持久化的收尾），失败不阻断停机。
+    if (deps.flushSessions) {
+      await deps.flushSessions().catch(() => {});
+    }
 
     // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
     await new Promise<void>((resolve) => setTimeout(resolve, graceMs));

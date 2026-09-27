@@ -445,6 +445,19 @@ export async function handleRun(
       verify: verifyConfig ? 'on' : 'off'
     });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
+    // 同会话排队提示（问答链路耗时分析）：本会话已有任务在执行时，本条消息会因
+    // 同会话串行化排队等待——排队期间此前没有任何反馈，用户只看到转圈。
+    // 这里在订阅建立前注入合成 warn（events 缓冲保证订阅重放可见），把「排队慢」说清楚。
+    if (sessionKey && runQueue.isSessionBusy(sessionKey)) {
+      runQueue.emitSynthetic(job.id, {
+        type: 'warn',
+        // userHint：面向用户的提示（前端 toast 呈现）。其余技术性 warn（路由降级、
+        // 指代消解等）维持既有「链路内可见、不弹窗」的行为。
+        userHint: true,
+        message:
+          '当前会话有正在进行的任务，本条消息已排队等待（同会话任务串行执行）'
+      });
+    }
     jobId = job.id;
   } else {
     requireDeps().auditAction('agent.run.reconnect', {

@@ -2745,6 +2745,17 @@ export class AhChat extends LitElement {
         });
         break;
       }
+      case 'warn': {
+        // 服务端运行期告警：默认维持既有行为（不弹窗，仅链路/日志可见）。
+        // 仅带 userHint 标记的告警（如同会话排队提示）以轻量 toast 呈现，
+        // 按内容去重（断线重连重放同一帧不重复弹）。
+        if (ev.userHint !== true) break;
+        const msg = String(ev.message ?? '').trim();
+        if (msg) {
+          notify.warning(msg, { key: `run-warn:${msg.slice(0, 64)}` });
+        }
+        break;
+      }
       case 'error': {
         this.ensureTraceRoot(sid);
         mk(tc.root!, 'error', '运行错误', 'error', {
