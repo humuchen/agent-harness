@@ -349,22 +349,30 @@ export class StepTraceCollector {
         // 补齐「接口 stats 有调用量、执行详情却无痕迹」的缺口 —— jev:call 同样入链。
         // caller==='tool' 的调用已有 tool:start/tool:result 节点，不重复建节点（与前后端一致）。
         if (e.caller === 'tool') return;
+        // 问（questionSpec）与答（answers）都进 detail：对齐普通 run 路径「detail=问题 /
+        // result=决策结果」的语义（StepTraceNode 无 result 字段，detail 是唯一正文载体）。
+        // 问/答各限 240 字分段截断——questionSpec 的 instructions 往往很长，整体截断会把
+        // 「答」段挤掉，导致调用链里 Jev 决策看不到调用结果。
+        const qJson = e.questionSpec ? clip(e.questionSpec, 240) : undefined;
+        const aJson = e.ok && e.answers ? clip(e.answers, 240) : undefined;
+        const jevDetail =
+          [qJson ? `问：${qJson}` : undefined, aJson ? `答：${aJson}` : undefined]
+            .filter(Boolean)
+            .join('\n') || (!e.ok && e.error ? e.error : undefined);
+        // meta 摘要兜底：一行可读决策（choice/score/noul/value），保证 detail 被截断时
+        // 「Jev 到底回了什么」在抽屉 meta 行里始终可见。
+        const decision = e.ok ? summarizeJevAnswers(e.answers) : undefined;
         this.traceNodes.push({
           type: e.type,
           ts,
           label: `Jev 决策（${e.caller}）`,
           status: e.ok ? 'ok' : 'error',
-          detail: clip(
-            !e.ok && e.error
-              ? e.error
-              : e.questionSpec
-              ? JSON.stringify(e.questionSpec)
-              : undefined
-          ),
+          detail: clip(jevDetail),
           meta: {
             调用方: e.caller,
             延迟: `${Number(e.latencyMs ?? 0)}ms`,
             ...(e.questions != null ? { 问题数: String(e.questions) } : {}),
+            ...(decision ? { 决策: decision } : {}),
             ...(e.tokens ? { tokens: `${e.tokens.input}+${e.tokens.output}` } : {})
           },
         });
@@ -410,6 +418,32 @@ function clip(s: unknown, max: number = STEP_TRACE_DETAIL_MAX): string | undefin
   t = t.trim();
   if (!t) return undefined;
   return t.length > max ? t.slice(0, max) + '…' : t;
+}
+
+/**
+ * Jev answers → 一行可读决策摘要（如「is_injection=0 (0.02) · urgency=78」），
+ * 与前端 summarizeJevDecision 同语义（choice/score/noul/value），供链路节点 meta 展示。
+ * 防御式兜底：取不到精确字段时返回 undefined（此时 detail 里的完整 JSON 仍可回溯）。
+ */
+function summarizeJevAnswers(answers: unknown): string | undefined {
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) return undefined;
+  const parts: string[] = [];
+  for (const [q, a] of Object.entries(answers as Record<string, unknown>)) {
+    if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+    const av = a as Record<string, unknown>;
+    if ('choice' in av) {
+      const conf =
+        typeof av.confidence === 'number' ? ` (${av.confidence})` : '';
+      parts.push(`${q}=${String(av.choice)}${conf}`);
+    } else if ('score' in av) {
+      parts.push(`${q}=${String(av.score ?? av.value)}`);
+    } else if ('noul' in av) {
+      parts.push(`${q}=${String(av.noul)}`);
+    } else if ('value' in av) {
+      parts.push(`${q}=${String(av.value)}`);
+    }
+  }
+  return parts.length ? clip(parts.join(' · '), 200) : undefined;
 }
 
 /**
