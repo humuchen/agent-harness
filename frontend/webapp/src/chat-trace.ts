@@ -817,18 +817,24 @@ function lastMetaValue(nodes: TraceNode[], key: string): string | undefined {
 const BREAKDOWN_TIP =
   '四项为本地启发式估算（按字符/词折算，工具项含完整 JSON schema，图片按视觉 token），已跨步累加为整轮发送与产出的估算构成；占比分母是四项之和，与上方 Token（provider 实测累计）不是同一基准，概览用而非账单。';
 
+/** 「另计」徽标悬浮提示：旁路统计项（如 Jev）与面板 Token 主数值的关系。 */
+const EXTRA_BADGE_TIP =
+  '该项为独立统计的旁路消耗（如 Jev 子系统直连调用），不计入上方 Token（主链路 provider 实测累计）';
+
 /** 渲染「关键信息」结构化洞察区（模型/步骤/工具/用量/检索内容）。 */
 export function renderInsights(ins: Insights) {
-  const stats: Array<[string, string]> = [];
-  const push = (k: string, v: string | undefined) => {
-    if (v != null) stats.push([k, v]);
+  const stats: Array<[string, string, string?]> = [];
+  const push = (k: string, v: string | undefined, badge?: string) => {
+    if (v != null) stats.push([k, v, badge]);
   };
   push('模型', ins.model);
   push('Agent', ins.agent);
   push('模式', ins.mode);
   push('步骤', ins.steps ? String(ins.steps) : undefined);
   push('工具调用', ins.toolCount ? String(ins.toolCount) : undefined);
-  push('Jev 调用', ins.jevCalls);
+  // Jev 是子系统旁路调用（jev:call 独立统计），其 token 不计入下方 Token（主链路
+  // provider 实测累计）——加「另计」徽标避免两笔账被混读。
+  push('Jev 调用', ins.jevCalls, ins.jevCalls ? '另计' : undefined);
   push('Token', ins.costTokens);
   push('缓存命中率', ins.cacheHitRate);
   // cost=0 时区分「已定价的免费模型」与「未定价模型」，避免 UI 上 $0.0000 看起来像 bug。
@@ -844,8 +850,14 @@ export function renderInsights(ins: Insights) {
     <div class="insights-title">关键信息</div>
     <div class="ins-grid">
       ${stats.map(
-        ([k, v]) => html`<div class="ins-item">
-          <span class="ins-k">${escapeHtml(k)}</span
+        ([k, v, badge]) => html`<div class="ins-item">
+          <span class="ins-k">${escapeHtml(k)}${
+            badge
+              ? html`<span class="ins-extra" title=${EXTRA_BADGE_TIP}
+                  >${escapeHtml(badge)}</span
+                >`
+              : nothing
+          }</span
           ><span class="ins-v">${escapeHtml(v)}</span>
         </div>`
       )}

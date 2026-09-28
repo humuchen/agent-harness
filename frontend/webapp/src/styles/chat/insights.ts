@@ -44,6 +44,18 @@ export const insights = css`
       font-size: 10px;
       color: var(--ah-text-muted);
     }
+    /* 「另计」徽标：Jev 等旁路调用的 token 独立统计、不计入面板 Token 主数值。 */
+    .ins-extra {
+      font-size: 9px;
+      font-weight: 500;
+      color: var(--ah-text-muted);
+      border: 1px solid var(--ah-border);
+      border-radius: 4px;
+      padding: 0 4px;
+      margin-left: 5px;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
     .ins-v {
       font-size: 12.5px;
       font-weight: 600;

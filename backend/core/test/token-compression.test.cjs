@@ -164,6 +164,8 @@ function longToolContent(n) {
   return '抓取正文开始\n' + Array.from({ length: n }, (_, i) => `行${i}：内容细节 ${i * 7}`).join('\n') + '\n抓取正文结束';
 }
 
+// 折叠门槛默认 8000 字符：600 行 ≈ 10k 字符，超过门槛触发折叠；
+// 同时验证「低于门槛的结果不折叠」（见下方短结果测试）。
 function buildMemoryWithStaleTool() {
   const mem = new Memory();
   // 组0: user；组1: assistant(tool_calls)+tool（长结果，将被折叠）
@@ -173,15 +175,19 @@ function buildMemoryWithStaleTool() {
     content: '',
     tool_calls: [{ id: 'c1', name: 'builtin__web_fetch', arguments: { url: 'https://a.example' } }],
   });
-  mem.add({ role: 'tool', tool_call_id: 'c1', name: 'builtin__web_fetch', content: longToolContent(300) });
-  // 组2: user；组3: assistant(tool_calls)+tool（近期长结果，应保留完整）
+  mem.add({ role: 'tool', tool_call_id: 'c1', name: 'builtin__web_fetch', content: longToolContent(600) });
+  // 组2/3/4: 中间轮次；组5: assistant(tool_calls)+tool（近期长结果，应保留完整）
   mem.add({ role: 'user', content: '第二个问题' });
+  mem.add({ role: 'assistant', content: '中间回答' });
+  mem.add({ role: 'user', content: '第三个问题' });
+  mem.add({ role: 'assistant', content: '中间回答2' });
+  mem.add({ role: 'user', content: '第四个问题' });
   mem.add({
     role: 'assistant',
     content: '',
     tool_calls: [{ id: 'c2', name: 'builtin__web_fetch', arguments: { url: 'https://b.example' } }],
   });
-  mem.add({ role: 'tool', tool_call_id: 'c2', name: 'builtin__web_fetch', content: longToolContent(300) });
+  mem.add({ role: 'tool', tool_call_id: 'c2', name: 'builtin__web_fetch', content: longToolContent(600) });
   return mem;
 }
 
