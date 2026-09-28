@@ -71,6 +71,7 @@
 | [single-agent-closed-loop.md](05-analysis/single-agent-closed-loop.md)                   | 单行业智能体完全闭环可行性（自动闭环 vs 断点）                              |
 | [分层架构设计说明.md](05-analysis/分层架构设计说明.md)                                   | core / server / webapp 分层架构与业务语义隔离说明                           |
 | [架构落地缺口分析.md](05-analysis/架构落地缺口分析.md)                                   | 架构落地缺口分析（原 14 项缺口已全部落地，留作演进记录）                    |
+| [langchain-langgraph-comparison.md](05-analysis/langchain-langgraph-comparison.md)       | 与 LangChain 1.x / LangGraph 1.x 架构对比（相同设计 / 关键差异 / 欠缺项 / 独有能力与补齐优先级；2026-09 时点） |
 | 配套图                                                                                   | [目标基座平台架构.svg](05-analysis/diagrams/目标基座平台架构.svg)           |
 
 ### 07 RAG · `07-rag/`
