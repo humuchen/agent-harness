@@ -93,8 +93,25 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     // 请求模型返回「思考过程」（深度思考内容）。agnes 端点以 delta.reasoning_content
     // 流式返回；该字段驱动前端「深度思考」tab 的逐字（打字机）展示。
     // 个别不识别该参数的 provider 可用 LLM_REASONING=off 关闭，避免未知字段报错。
+    // 压缩方案4（Token 成本优化）：推理输出也是 token（26 次调用可累计上万）。
+    // 检索/工具类任务长思考收益低，可经 env 收窄而不必全关：
+    //   - LLM_REASONING_EFFORT=low|medium|high  控制思考深度（OpenRouter reasoning.effort）
+    //   - LLM_REASONING_MAX_TOKENS=2048         限制思考 token 上限（reasoning.max_tokens）
+    // 未配置时保持 { enabled: true } 原行为，零变更。
     if (process.env.LLM_REASONING !== 'off') {
-      body.reasoning = { enabled: true };
+      const effortRaw = (process.env.LLM_REASONING_EFFORT ?? '').trim().toLowerCase();
+      const effort =
+        effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high'
+          ? effortRaw
+          : undefined;
+      const maxRaw = Number(process.env.LLM_REASONING_MAX_TOKENS);
+      const maxTokens =
+        Number.isFinite(maxRaw) && maxRaw > 0 ? Math.floor(maxRaw) : undefined;
+      body.reasoning = {
+        enabled: true,
+        ...(effort ? { effort } : {}),
+        ...(maxTokens ? { max_tokens: maxTokens } : {}),
+      };
     }
 
     // 请求头。

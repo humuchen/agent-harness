@@ -70,12 +70,14 @@ export interface WebFetchStats {
   privateDenied: number;
   /** 403 后经回退代理成功抓取的次数。 */
   fallbackUsed: number;
+  /** 2xx 但正文近空（JS 渲染空壳/反爬软页）——压缩方案3 观测项。 */
+  nearEmpty: number;
 }
 
 const stats: WebFetchStats = {
   total: 0, ok2xx: 0, redirect3xx: 0, blocked403: 0, notFound404: 0, client4xx: 0,
   rateLimited429: 0, server5xx: 0, tooLarge: 0, timeout: 0, networkError: 0,
-  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0,
+  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0, nearEmpty: 0,
 };
 
 /** 读取 web_fetch 状态码分类统计快照（只读副本）。 */
@@ -87,6 +89,18 @@ export function getWebFetchStats(): WebFetchStats {
 export function resetWebFetchStats(): void {
   for (const k of Object.keys(stats) as (keyof WebFetchStats)[]) stats[k] = 0;
 }
+
+// ---------------------------------------------------------------------------
+// Token 成本优化（压缩方案3）：近空结果检测
+// ---------------------------------------------------------------------------
+
+/** HTML 提取后有效正文低于该字符数即视为「近空」（空壳页/反爬软页）。 */
+const NEAR_EMPTY_MIN_CHARS = 200;
+
+/** 近空结果的引导文案：明确告知不要重试同一 URL，避免浪费轮次与 token。 */
+const NEAR_EMPTY_HINT =
+  'page has almost no readable text (likely JS-rendered or bot-protected). ' +
+  'Do NOT retry the same URL; switch to another source immediately.';
 
 // ---------------------------------------------------------------------------
 // 改进4：进程级 cookie jar（按 host 记忆 set-cookie，提升会话型站点成功率）
@@ -227,7 +241,13 @@ function extractText(html: string): string {
 }
 
 export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions = {}): void {
-  const maxBytes = opts.maxBytes ?? 200_000;
+  // Token 成本优化（压缩方案1）：默认抓取上限从 200_000 降到 4_000 字符。
+  // 动机：一次 16KB 级抓取会驻留历史、被后续每一步重复计费（实测全程可放大 6-10k tok）。
+  // 4k 字符 ≈ 1-2k token，通常已覆盖标题/摘要/关键段落；确需长文时 LLM 可对单次请求
+  // 显式传 max_bytes 提升上限，运维可经 env WEB_FETCH_DEFAULT_MAX_CHARS 全局调整。
+  const envMax = Number(process.env.WEB_FETCH_DEFAULT_MAX_CHARS);
+  const maxBytes =
+    opts.maxBytes ?? (Number.isFinite(envMax) && envMax > 0 ? Math.floor(envMax) : 4_000);
   const timeoutMs = opts.timeoutMs ?? 15_000;
   // P1 C1：响应体服务端硬上限（原始字节）。此前 resp.text() 无上限整包入内存，
   // 截断上限 max_bytes 又来自 LLM 参数且无校验——恶意/超大响应可直接 OOM 进程。
@@ -248,13 +268,20 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       'Use for retrieving up-to-date information from the web. Only http/https are allowed. ' +
       'IMPORTANT: always use URLs exactly as they appear in search results or user input — ' +
       'never construct, guess, or modify URLs yourself (fabricated URLs cause 404). ' +
-      'If a fetch returns 403/404, do not invent variants of the URL; report it and try another source instead.',
+      'If a fetch returns 403/404, do not invent variants of the URL; report it and try another source instead. ' +
+      'Keep responses small: the default cap is 4000 characters, which is enough for most pages — ' +
+      'raise max_bytes only for a page you already know needs more. ' +
+      'If a result is marked near_empty, the page has almost no readable text (JS-rendered or bot-protected): ' +
+      'do NOT retry the same URL, switch to another source immediately.',
     objectParams(
       {
         url: { type: 'string', description: 'Full http(s) URL to fetch.' },
         method: { type: 'string', description: 'HTTP method (default GET).' },
         headers: { type: 'object', description: 'Optional request headers as a flat object (overrides defaults).' },
-        max_bytes: { type: 'number', description: 'Max characters to return (default 200000).' },
+        max_bytes: {
+          type: 'number',
+          description: 'Max characters to return (default 4000; raise only when the page is known to need more).'
+        },
       },
       ['url']
     ),
@@ -290,13 +317,18 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
         }
       }
       stats.total++;
+      // 压缩方案1配套：args.max_bytes 此前从未被读取（schema 声称支持但实际无效）。
+      // 现按设计意图生效：单次请求可显式提升上限，readResult 仍用 hardBodyBytes 夹紧防注入。
+      const reqMaxRaw = Number(args.max_bytes);
+      const reqMaxBytes =
+        Number.isFinite(reqMaxRaw) && reqMaxRaw > 0 ? Math.floor(reqMaxRaw) : maxBytes;
       return fetchWithRetries(u, {
         method: (args.method ? String(args.method) : 'GET').toUpperCase(),
         extraHeaders: args.headers && typeof args.headers === 'object' ? (args.headers as Record<string, unknown>) : {},
         defaultUserAgent,
         timeoutMs,
         hardBodyBytes,
-        maxBytes,
+        maxBytes: reqMaxBytes,
         maxRetries,
         fallbackProxy,
         allowedHost: u.hostname,
@@ -451,17 +483,28 @@ async function readResult(
   }
   // P1 C1：流式分块读取 + 字节预算，超限即中止连接，不再 resp.text() 整包入内存。
   const { text: raw, truncatedByLimit } = await readBodyCapped(resp, run.hardBodyBytes);
-  const text = ct.includes('html') ? extractText(raw) : raw;
+  const isHtml = ct.includes('html');
+  const text = isHtml ? extractText(raw) : raw;
   storeCookies(run.allowedHost, resp);
   let out = truncatedByLimit ? text + ' ...[fetch aborted: hard byte limit]' : text;
   // P1 C1：LLM 可控的截断上限夹紧到 [1, hardBodyBytes]，防参数注入超大值。
   const cap = Math.min(Math.max(run.maxBytes, 1), run.hardBodyBytes);
   if (out.length > cap) out = out.slice(0, cap) + `\n...[truncated at ${cap} chars]`;
+  // 压缩方案3：近空结果检测（仅 HTML——纯文本/JSON 端点本来就短，短 ≠ 无效）。
+  // 2xx 但正文近空大概率是 JS 渲染空壳或反爬软页；显式返回 near_empty + 引导提示，
+  // 避免模型对着空壳 URL 反复重试浪费轮次（实测此类无效抓取单次全程浪费 1-2k tok）。
+  let nearEmpty = false;
+  if (isHtml) {
+    const bodyOnly = out.replace(/^标题:[^\n]*\n+/, '');
+    nearEmpty = bodyOnly.trim().length < NEAR_EMPTY_MIN_CHARS;
+    if (nearEmpty) stats.nearEmpty++;
+  }
   return JSON.stringify({
     status: resp.status,
     ok: resp.ok,
     content_type: ct,
     length: out.length,
+    ...(nearEmpty ? { near_empty: true, hint: NEAR_EMPTY_HINT } : {}),
     ...(via ? { via } : {}),
     body: out,
   });

@@ -226,6 +226,34 @@ const SHRINK_MIN_TOKENS = 64;
 /** 单次 add() 内最多瘦身多少条（防御性上限，避免极端情况下的长循环）。 */
 const MAX_SHRINK_PASSES = 24;
 
+// ---------------------------------------------------------------------------
+// Token 成本优化（压缩方案2）：陈旧工具结果折叠（stale tool result folding）
+// ---------------------------------------------------------------------------
+
+/** 折叠标记：含该标记的消息不会二次折叠（独立于 SHRUNK_MARK，与瘦身互不干扰）。 */
+const FOLD_MARK = '【工具结果已折叠】';
+/** 折叠时保留的开头字符数（模型通常只回溯结论性开头）。 */
+const FOLD_KEEP_HEAD = 800;
+/** 折叠时保留的结尾字符数（部分工具把结论放尾部）。 */
+const FOLD_KEEP_TAIL = 300;
+
+/** 陈旧折叠总开关：缺省 on；AH_STALE_TOOL_FOLD=off 恢复旧行为（零折叠）。 */
+function foldEnvOn(): boolean {
+  return (process.env.AH_STALE_TOOL_FOLD ?? 'on').trim().toLowerCase() !== 'off';
+}
+
+/** 触发折叠的最小结果长度（字符）：默认 2000，约 500-700 token 起才有折叠收益。 */
+function foldMinChars(): number {
+  const n = Number(process.env.AH_STALE_TOOL_FOLD_MIN_CHARS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2000;
+}
+
+/** 保留最近 N 组（原子组，assistant+其工具结果）不折叠：默认 2，近期结果可能仍在使用。 */
+function foldKeepAgeGroups(): number {
+  const n = Number(process.env.AH_STALE_TOOL_FOLD_AGE_GROUPS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2;
+}
+
 /**
  * 把消息序列切分为「原子组」：返回每条消息所属的组号（从 0 递增）。
  *
@@ -736,6 +764,63 @@ export class Memory {
         this._compressedSinceReport = true;
       }
     }
+  }
+
+  /**
+   * 陈旧工具结果折叠（Token 成本优化，压缩方案2）。
+   *
+   * 动机：大体积抓取结果一旦进历史，后续每一步都会重复计费（滚雪球——一次 16KB
+   * 级抓取全程可放大 6-10k tok）。模型对「N 组之前」的工具结果通常已消化完毕，
+   * 保留开头与结尾足以回溯，无需逐字保留全文。
+   *
+   * 与 fitToBudget 互补：fitToBudget 是「超预算才压」的硬上限兜底；本方法不等
+   * 预算击穿、每步发送前主动防患。只折叠 role='tool' 的文本结果，保留
+   * tool_call_id / name，绝不破坏 tool 配对（与瘦身同级的安全性）。
+   *
+   * 配置（env）：
+   *   - AH_STALE_TOOL_FOLD=off              关闭（默认 on）
+   *   - AH_STALE_TOOL_FOLD_MIN_CHARS=2000   触发折叠的最小结果长度（字符）
+   *   - AH_STALE_TOOL_FOLD_AGE_GROUPS=2     保留最近 N 组不折叠
+   *
+   * 返回是否折叠过至少一条（供上层打「已压缩」指示）。
+   */
+  foldStaleToolResults(): boolean {
+    if (!foldEnvOn()) return false;
+    const minChars = foldMinChars();
+    if (!(minChars > 0)) return false;
+    const keepAge = foldKeepAgeGroups();
+    // window → rest（去掉非摘要 system）映射，rest 下标用于组号计算。
+    const restIdx: number[] = [];
+    const rest: Message[] = [];
+    this.window.forEach((m, i) => {
+      if (m.role === 'system' && !isSummaryNode(m)) return;
+      restIdx.push(i);
+      rest.push(m);
+    });
+    if (rest.length === 0) return false;
+    const groups = groupIndexOf(rest);
+    const lastGroup = groups[groups.length - 1] ?? 0;
+    const staleMax = lastGroup - keepAge; // 组号 <= staleMax 视为陈旧
+    if (staleMax < 0) return false;
+    let changed = false;
+    for (let j = 0; j < rest.length; j++) {
+      const m = rest[j] as Message;
+      if (m.role !== 'tool') continue;
+      if (typeof m.content !== 'string' || m.content.length <= minChars) continue;
+      if (m.content.includes(FOLD_MARK)) continue; // 已折叠，不重复处理
+      if ((groups[j] ?? 0) > staleMax) continue; // 近期组保留完整
+      const text = m.content;
+      const folded =
+        text.slice(0, FOLD_KEEP_HEAD) +
+        `\n${FOLD_MARK}原长 ${text.length} 字符，距当前轮次较远，仅保留开头与结尾；如需完整内容请重新获取。\n` +
+        text.slice(-FOLD_KEEP_TAIL);
+      const wi = restIdx[j] ?? -1;
+      if (wi < 0) continue; // 防御性：映射缺失则跳过，绝不丢消息
+      this.window[wi] = { ...m, content: folded };
+      changed = true;
+    }
+    if (changed) this._compressedSinceReport = true;
+    return changed;
   }
 
   /**

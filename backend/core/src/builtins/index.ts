@@ -99,7 +99,13 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   const fsRoot = options.fsRoot ?? process.cwd();
   const fsEnabled = options.fsEnabled ?? true;
   const webEnabled = options.webEnabled ?? true;
-  const webMaxBytes = options.webMaxBytes ?? 200_000;
+  // Token 成本优化（压缩方案1）：默认从 200_000 收紧到 4_000 字符（≈1-2k token）。
+  // 动机：16KB 级抓取结果驻留历史、被后续每步重复计费（全程可放大 6-10k tok）。
+  // 显式传入 webMaxBytes 仍可覆盖；未显式传入时 env WEB_FETCH_DEFAULT_MAX_CHARS 可调整。
+  const envWebMax = Number(process.env.WEB_FETCH_DEFAULT_MAX_CHARS);
+  const webMaxBytes =
+    options.webMaxBytes ??
+    (Number.isFinite(envWebMax) && envWebMax > 0 ? Math.floor(envWebMax) : 4_000);
   const calcEnabled = options.calcEnabled ?? true;
   const datetimeEnabled = options.datetimeEnabled ?? true;
   const weatherEnabled = options.weatherEnabled ?? true;
