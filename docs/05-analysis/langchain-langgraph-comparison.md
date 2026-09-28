@@ -91,6 +91,11 @@
 
 ## 7. 补齐建议与优先级
 
+> **落地状态（2026-09-28 P6 批次）**：第 1–2 项（结构化输出 schema：`json-schema.ts` 校验器 + 工具参数 `validateArgs` 接入 harness 执行链 + `StepDef.outputSchema` 产出闸门）、
+> 第 2 行动态 fan-out 原语（`StepDef.dynamic` + `spawn` 物化）、第 3 行检查点 DB 后端（`DbWorkflowStore`，PostgreSQL/SQLite 经 DbAdapter）、
+> 以及 step 分叉重跑（`resetRunForRerun` + `POST /api/workflows/:id/rerun`）**均已实现并随 `backend/core/test/workflow-p6.test.cjs` 覆盖**；
+> step 级重试（`retries`/`retryBackoffMs` + `wf:step:retry` 事件）同批落地。RAG 生产化与节点级 time travel 完整版仍为后续项。
+
 | 优先级 | 事项 | 建议落点 |
 | --- | --- | --- |
 | P1 | 结构化输出 schema（zod 校验内联工具参数与 step 输出闸门） | `tools.ts`（schema 定义）+ `workflow/step-output.ts`（`inspectStepOutput` 已有挂点） |

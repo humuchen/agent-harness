@@ -83,6 +83,61 @@ export interface StepDef {
    * 未标记的 step 行为与旧版完全一致（零回归面）。
    */
   requireApproval?: boolean;
+
+  /**
+   * P6 步骤级重试：执行失败（抛错 / 产出闸门或 outputSchema 校验失败）后的最大重试次数。
+   * 指数退避（retryBackoffMs 基数），仅重试瞬时类失败——外部取消（signal aborted）不重试。
+   * 缺省 0 = 不重试（存量零回归）。
+   */
+  retries?: number;
+  /** 重试退避基数毫秒（第 n 次重试前等待 base * 2^(n-1)，上限 RETRY_BACKOFF_MAX_MS）。缺省 500。 */
+  retryBackoffMs?: number;
+
+  /**
+   * P6 动态 fan-out（运行期扇出，对标 LangGraph Send API 的静态 DAG 等价物）：
+   * true 时，本 step 成功且产出为含 `spawn` 数组的对象（每项为 SpawnSpec）时，
+   * 引擎在本波次完成后把 spawn 项物化为真实 StepDef（id 自动加 `<父id>.` 前缀，
+   * dependsOn 强制含父 step），参与后续波次调度、补偿与检查点续跑。
+   * 所在波次失败（fail-fast）时未物化的 spawn 丢弃（与「失败不扩散副作用」一致）。
+   * 单个 step 最多物化 MAX_DYNAMIC_SPAWN 个子任务。
+   */
+  dynamic?: boolean;
+
+  /**
+   * P6 产出 schema（JSON-Schema 子集，validateAgainstSchema 校验）：
+   * 产出（executor 返回值）不符合 schema 时按失败处置（step failed + 补偿 + 级联，
+   * 错误信息含具体路径），与 failOnInvalidOutput 同型但更严格。
+   * 仅显式声明的 step 受影响（存量零回归）。
+   */
+  outputSchema?: Record<string, unknown>;
+
+  /**
+   * 运行期物化字面量输入（仅动态 fan-out 子任务使用，手工 def 不用）：
+   * spawn 项携带的 `input` 落在此字段；无 inputMapping 时 resolveInput 直接返回它，
+   * 有 inputMapping 时以 mapping 为准（literalInput 忽略）。可 JSON 序列化。
+   */
+  literalInput?: unknown;
+}
+
+/**
+ * P6 动态 fan-out 的子任务规格（父 step 产出 `spawn` 数组的元素形态）。
+ * 全部字段可 JSON 序列化；agentRef 缺省继承父 step 的 agentRef。
+ */
+export interface SpawnSpec {
+  /** 子任务 id（同父内唯一即可，引擎物化时加 `<父id>.` 前缀避免与全局 stepId 冲突）。 */
+  id: string;
+  /** 目标 agent（缺省继承父 step 的 agentRef）。 */
+  agentRef?: string | AgentCard;
+  /** 字面量输入（物化后落在子 StepDef.literalInput；与 inputMapping 二选一，均缺省取父产出）。 */
+  input?: unknown;
+  /** 输入映射（与静态 StepDef 同语法，可引用任意已存在 step 的产出，含父 step）。 */
+  inputMapping?: Record<string, string>;
+  /** 额外依赖（引擎自动追加父 step id；引用未知 step 时物化失败 → run failed）。 */
+  dependsOn?: string[];
+  /** 子任务是否需要人工审批（同静态 requireApproval 语义）。 */
+  requireApproval?: boolean;
+  /** 子任务重试次数（同静态 retries 语义）。 */
+  retries?: number;
 }
 
 /** 工作流定义（DAG）。 */
@@ -174,6 +229,11 @@ export interface StepRun {
    * 随检查点持久化供审计 / 执行详情抽屉展示。是否阻断由 def.failOnInvalidOutput 决定。
    */
   outputIssue?: Exclude<OutputIssue, 'ok'>;
+  /**
+   * P6 步骤级重试：已执行的额外重试次数（不含首次；0/缺省 = 未重试或未启用重试）。
+   * 随检查点持久化，供执行详情抽屉展示与审计。
+   */
+  attempts?: number;
 }
 
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */

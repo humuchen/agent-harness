@@ -931,6 +931,31 @@ export class AgentHarness {
               });
               continue;
             }
+            // P6 结构化输出闸门（工具参数侧）：按注册 JSON-Schema 校验 LLM 传入参数，
+            // 不合规时不执行工具，以可读错误文本回喂模型自愈（与上方护栏拦截同型：
+            // preset + errored）。registry.call 契约保持不变（工具自身 error: 返回语义、
+            // 直接调用方零回归）；工具内部的语义级校验（如 operation 枚举）仍由工具自管。
+            const schemaErrors = this.opts.tools.validateArgs(call.name, call.arguments);
+            if (schemaErrors.length > 0) {
+              recordError('schema.tool');
+              structLog('warn', 'tool args schema mismatch', {
+                phase: 'tool',
+                tool: call.name,
+                errors: schemaErrors.slice(0, 5).join('; '),
+                runId
+              });
+              planned.push({
+                call,
+                kind: 'execute',
+                preset: {
+                  result:
+                    `tool "${call.name}" 参数校验失败：${schemaErrors.slice(0, 5).join('; ')}` +
+                    (schemaErrors.length > 5 ? `（等 ${schemaErrors.length} 处）` : ''),
+                  errored: true
+                }
+              });
+              continue;
+            }
             planned.push({ call, kind: 'execute' });
           }
           if (preparedAborted) {

@@ -256,7 +256,8 @@ import {
 } from './provider-keys';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
-import { quotaEngine, TenantQuotaStore } from '@agent-harness/core';
+// P6 分叉重跑：工作流 step 及其下游重置（纯函数，随 /api/workflows/:id/rerun 暴露）。
+import { quotaEngine, TenantQuotaStore, resetRunForRerun } from '@agent-harness/core';
 import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
@@ -1108,21 +1109,82 @@ const server = createServer(
         return;
       }
 
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消）----
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消 + 分叉重跑）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
       // POST /api/workflows/:id/approve → P3 人工审批放行（写入检查点 approvals 后续跑）
       // POST /api/workflows/:id/cancel → P5.4 显式取消（abort 活动 run；断连不再隐式中止）
+      // POST /api/workflows/:id/rerun  → P6 分叉重跑（重置指定 step 及其下游为 pending，随后 /resume 执行）
       if (path.startsWith('/api/workflows/')) {
         const isResume = req.method === 'POST' && path.endsWith('/resume');
         const isApprove = req.method === 'POST' && path.endsWith('/approve');
         const isCancel = req.method === 'POST' && path.endsWith('/cancel');
-        // POST /resume、/approve、/cancel 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
-        const ctx = await guard(req, res, isResume || isApprove || isCancel ? 'workflow:run' : 'workflow:read');
+        const isRerun = req.method === 'POST' && path.endsWith('/rerun');
+        // POST /resume、/approve、/cancel、/rerun 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const ctx = await guard(
+          req,
+          res,
+          isResume || isApprove || isCancel || isRerun ? 'workflow:run' : 'workflow:read'
+        );
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
         );
+        // P6（分叉重跑）：POST /api/workflows/:id/rerun —— body.stepId 指定重新执行的起点。
+        // 语义：把该 step 及其全部传递下游重置为 pending（清产出/错误/链路），run 置回
+        // pending 落盘；随后调用既有 POST /:id/resume 即从该 step 重新执行（上游 done 产出
+        // 复用，执行端点带凭据/SSE 与普通续跑完全同款）。拆成「重置 + 续跑」两步而非一步执行，
+        // 是为了完整复用 /resume 的 BYOK 凭据解析与 SSE 链路（不在本分支重复执行器装配）。
+        if (isRerun) {
+          const workflowId = id.slice(0, -'/rerun'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const body = await readBody(req);
+          const stepId = typeof body.stepId === 'string' ? body.stepId.trim() : '';
+          if (!stepId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'rerun requires body.stepId（分叉重跑起点）' }));
+            return;
+          }
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            const updated = resetRunForRerun(run, stepId);
+            await store.save(updated);
+            auditAction('workflow.rerun', {
+              workflowId,
+              stepId,
+              resetSteps: Object.values(updated.steps).filter((s) => s.state === 'pending').length,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                workflowId,
+                stepId,
+                run: updated,
+                hint: `POST /api/workflows/${encodeURIComponent(workflowId)}/resume 从 step "${stepId}" 重新执行`
+              })
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            // running 态拒绝 / 未知 step → 语义化 4xx；其余 500。
+            const status = /正在运行/.test(msg) ? 409 : /不存在 step/.test(msg) ? 400 : 500;
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: msg }));
+          }
+          return;
+        }
         // POST /resume 路径单独处理
         if (req.method === 'POST' && id.endsWith('/resume')) {
           const workflowId = id.slice(0, -'/resume'.length);

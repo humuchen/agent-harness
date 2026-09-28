@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSyn
 import { dirname, join } from 'node:path';
 import type { WorkflowRun } from './types';
 import { quarantineCorruptFile } from '../store-safety';
+import { getDbAdapter, type DbAdapter } from '../db-adapter';
 
 export interface WorkflowStore {
   save(run: WorkflowRun): Promise<void>;
@@ -146,6 +147,116 @@ export class FileWorkflowStore implements WorkflowStore {
 let _store: WorkflowStore | null = null;
 
 /**
+ * P6 数据库检查点后端（PostgreSQL / SQLite / Turso 通用，经统一 DbAdapter）。
+ *
+ * 动机：FileWorkflowStore 落单机文件，多副本 / 容器重建场景下检查点易失；
+ * 本实现把 WorkflowRun 全量 JSON 存进 `workflow_runs` 表（id = def.id），SQL 走
+ * SQLite 方言、由 db-dialect 层在适配器出口统一翻译（PG：? → $n、datetime('now') → now()），
+ * store 代码零方言分支——与 agents/store 等既有 store 同范式。
+ *
+ * claim() 原子性：单条 `INSERT ... ON CONFLICT(id) DO UPDATE SET ... WHERE
+ * <既有行>.state != 'running' OR <既有行>.run_id = excluded.run_id`，按 changes 是否 >0
+ * 判定占位成败——检查与写入在数据库侧一次完成，天然免疫并发 claim 的 TOCTOU
+ * （FileWorkflowStore 只能做到进程内互斥；本实现跨副本安全，前提是共用同一库）。
+ *
+ * 后端选择：构造显式传 `adapter` 优先；否则 getDbAdapter()（DB_BACKEND / DATABASE_URL，
+ * `postgres://…` 即 PostgreSQL，缺省本地 sqlite）。工厂 getWorkflowStore() 在
+ * `WORKFLOW_STORE_BACKEND=db|postgres|postgresql` 时启用本实现。
+ * （MySQL 未纳入：其方言层不支持带 WHERE 的 upsert，claim 原子占位不可用。）
+ */
+export class DbWorkflowStore implements WorkflowStore {
+  private readonly adapter: DbAdapter;
+  private readonly table: string;
+  private schemaReady: Promise<void> | null = null;
+
+  constructor(opts: { adapter?: DbAdapter; table?: string } = {}) {
+    this.adapter = opts.adapter ?? getDbAdapter();
+    this.table =
+      opts.table && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(opts.table) ? opts.table : 'workflow_runs';
+  }
+
+  /** 幂等建表（首次操作时执行一次；并发调用共享同一 Promise）。 */
+  private async ensureSchema(): Promise<void> {
+    if (!this.schemaReady) {
+      this.schemaReady = (async () => {
+        await this.adapter.exec(
+          `CREATE TABLE IF NOT EXISTS ${this.table} (` +
+            `id TEXT PRIMARY KEY, ` +
+            `run_id TEXT, ` +
+            `state TEXT NOT NULL DEFAULT 'pending', ` +
+            `data TEXT NOT NULL, ` +
+            `updated_at TEXT DEFAULT (datetime('now')))`
+        );
+      })();
+    }
+    await this.schemaReady;
+  }
+
+  /** upsert SQL（claim 版本带 WHERE 守卫：仅在「无在跑 run 或同 runId 重取」时更新）。
+   * 注：ON CONFLICT 目标必须是裸列名（PG 拒绝表名限定）；WHERE 子句引用既有行用表名限定。 */
+  private upsertSql(guarded: boolean): string {
+    const base =
+      `INSERT INTO ${this.table} (id, run_id, state, data) VALUES (?, ?, ?, ?) ` +
+      `ON CONFLICT(id) DO UPDATE SET ` +
+      `run_id = excluded.run_id, state = excluded.state, data = excluded.data, ` +
+      `updated_at = datetime('now')`;
+    return guarded
+      ? `${base} WHERE ${this.table}.state != 'running' OR ${this.table}.run_id = excluded.run_id`
+      : base;
+  }
+
+  async claim(run: WorkflowRun): Promise<boolean> {
+    await this.ensureSchema();
+    const res = await this.adapter
+      .prepare(this.upsertSql(true))
+      .run(run.def.id, run.runId ?? null, run.state, JSON.stringify(run));
+    return res.changes > 0;
+  }
+
+  async save(run: WorkflowRun): Promise<void> {
+    await this.ensureSchema();
+    await this.adapter
+      .prepare(this.upsertSql(false))
+      .run(run.def.id, run.runId ?? null, run.state, JSON.stringify(run));
+  }
+
+  async get(id: string): Promise<WorkflowRun | null> {
+    await this.ensureSchema();
+    const row = await this.adapter.prepare(`SELECT data FROM ${this.table} WHERE id = ?`).get(id);
+    if (!row) return null;
+    try {
+      return JSON.parse(String(row.data)) as WorkflowRun;
+    } catch (e) {
+      // 损坏行：告警 + 按无检查点处理（与 FileWorkflowStore 的隔离策略同语义，但不物理删行，
+      // 保留现场供人工排查）。
+      console.warn(`[workflow-store] 检查点损坏（id=${id}）：${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
+  async list(): Promise<WorkflowRun[]> {
+    await this.ensureSchema();
+    const rows = await this.adapter.prepare(`SELECT data FROM ${this.table} ORDER BY updated_at`).all();
+    const out: WorkflowRun[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(String(row.data)) as WorkflowRun);
+      } catch (e) {
+        console.warn(
+          `[workflow-store] 跳过损坏检查点：${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+    return out;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.ensureSchema();
+    await this.adapter.prepare(`DELETE FROM ${this.table} WHERE id = ?`).run(id);
+  }
+}
+
+/**
  * 进程内共享的存储单例。
  *
  * 默认改为 **File 持久化**（目录 = `WORKFLOW_STORE_DIR` || `./data/workflows`）：
@@ -159,7 +270,14 @@ export function getWorkflowStore(): WorkflowStore {
     _store =
       backend === 'memory' || backend === 'volatile'
         ? new VolatileWorkflowStore()
-        : new FileWorkflowStore({ dir: dir && dir.trim() ? dir : './data/workflows' });
+        : backend === 'db' || backend === 'postgres' || backend === 'postgresql'
+          ? new DbWorkflowStore()
+          : new FileWorkflowStore({ dir: dir && dir.trim() ? dir : './data/workflows' });
   }
   return _store;
+}
+
+/** 测试用：清空共享单例（下次 getWorkflowStore 按当前 env 重建）。 */
+export function resetWorkflowStoreForTest(): void {
+  _store = null;
 }
