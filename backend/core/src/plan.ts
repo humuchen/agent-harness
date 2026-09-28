@@ -435,6 +435,16 @@ export function buildInputMapping(task: PlanTask): Record<string, string> {
   return map;
 }
 
+/** P6 计划任务缺省重试次数（瞬时 LLM / 网络失败自愈；重试在引擎波次内原地执行，不扩散副作用）。 */
+export const PLAN_TASK_RETRIES_DEFAULT = 1;
+
+/** 计划任务重试次数归一：env `PLAN_TASK_RETRIES` 可调（0 = 关闭），非法 / 负数按缺省，上限 10。 */
+function planTaskRetries(): number {
+  const raw = Number(process.env.PLAN_TASK_RETRIES);
+  if (!Number.isFinite(raw) || raw < 0) return PLAN_TASK_RETRIES_DEFAULT;
+  return Math.min(Math.floor(raw), 10);
+}
+
 /**
  * 把 ExecutionPlan 映射为可被 DagEngine 执行的 WorkflowDef（设计文档 §4 的核心桥）。
  * - 每个 PlanTask → 一个 StepDef（task.id → step.id，dependsOn 直接透传为 DAG 边）；
@@ -457,6 +467,10 @@ export function planToWorkflowDef(plan: ExecutionPlan, opts: PlanToWorkflowOptio
     agentRef: byTask[task.id] ?? opts.agentRef,
     dependsOn: task.dependsOn,
     inputMapping: buildInputMapping(task),
+    // P6：计划任务缺省带 1 次重试（瞬时失败原地自愈，退避 500ms 起）——LLM 空响应 /
+    // 网络抖动不再直接把整个计划打 failed。env PLAN_TASK_RETRIES=0 可关闭；仅重试
+    // 瞬时类失败，外部取消（用户停止）不重试。
+    retries: planTaskRetries(),
     // P3：人工审批门透传（未标记任务零回归面）——引擎在该 step 所在波次前暂停 run。
     ...(task.requireApproval === true ? { requireApproval: true } : {})
   }));

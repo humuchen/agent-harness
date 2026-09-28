@@ -92,6 +92,11 @@ export interface PlanExecState {
    * Render free 盘清理后丢失时，「执行详情」抽屉按此镜像回退水合（404 → 历史快照）。
    */
   wfSnapshot?: PlanWfRunMirror;
+  /**
+   * P6：各任务的引擎自动重试次数（wf:step:retry 事件的 attempt 累计；wf:step:start /
+   * wf:done 时清除）。瞬态字段 —— 不落 planStatus 镜像（仅当前会话渲染用）。
+   */
+  retryCounts?: Record<string, number>;
 }
 
 /**

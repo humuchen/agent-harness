@@ -39,6 +39,7 @@ import {
   PLAN_FINAL_ARTIFACT_NOTE,
   filterPlanSingleStep,
   recoverPlanFinalResult,
+  planDownstreamTaskIds,
   type PlanWfEvent,
   type PlanWfRunSnapshot
 } from './chat-render-utils';
@@ -3815,6 +3816,7 @@ export class AhChat extends LitElement {
       planWfReplayMsg: this.planWfReplayMsg,
       openPlanWfReplay: (m: ChatMsg) => this.openPlanWfReplay(m),
       closePlanWfReplay: () => this.closePlanWfReplay(),
+      planRerunFrom: (m: ChatMsg, taskId: string) => void this.planRerunFrom(m, taskId),
       onEditingInput: (v: string) => {
         this.editingDraft = v;
       },
@@ -4378,6 +4380,69 @@ export class AhChat extends LitElement {
     }
     if (terminal) this.saveHistory(sid);
     return terminal;
+  }
+
+  /**
+   * P6（分叉重跑）：抽屉「从此步重跑」——把指定任务及其全部下游重置后重新执行。
+   * - DAG 路径：POST /api/workflows/:id/rerun 重置检查点（engine.resetRunForRerun），
+   *   随后复用 resumePlanViaWorkflow 的断点续跑流（重置后的 step 为 pending，resume
+   *   重跑它们；上游 done 产出复用）。重置失败（404 无检查点 / 409 在跑）保持现状。
+   * - 串行回退（DAG 关闭 / 无检查点）：退化为「清下游 done 标记重派发」——串行恢复
+   *   本就跳过 done 任务，清掉目标及下游即可达成同一效果，无需服务端配合。
+   *
+   * 与「从失败任务继续」（confirmPlan → resume）的区别：resume 只重跑非终态 step，
+   * 已 done 的上游不可重跑；分叉重跑允许从任意已完成节点重新分叉（上游产出有问题时用）。
+   */
+  private async planRerunFrom(m: ChatMsg, taskId: string): Promise<void> {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    if (!st || st.status === 'running') return; // running 不可分叉（服务端同语义 409）
+    if (!m.plan.tasks.some((t) => t.id === taskId)) return;
+    this.stopPlanWfReconcile(m.id);
+    const downstream = planDownstreamTaskIds(m.plan.tasks, taskId);
+    const done = { ...st.done };
+    for (const id of downstream) delete done[id];
+    const wfId = derivePlanWfId(sid, m.plan);
+    if (isPlanDagEnabled()) {
+      try {
+        await client.rerunWorkflow(wfId, taskId);
+      } catch {
+        // 重置失败（404 检查点丢失 / 409 在跑 / 未知 step）：保持现状可重试。
+        return;
+      }
+      const ok = await this.resumePlanViaWorkflow(
+        m,
+        { ...st, done, status: 'failed', failedTaskId: undefined, currentTaskId: undefined },
+        sid,
+        wfId
+      );
+      if (ok) return;
+      // 续跑传输层失败：卡片收敛 failed（检查点已重置，可再点「从失败任务继续」）。
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: {
+          ...(this.planExec[m.id] ?? st),
+          status: 'failed',
+          currentTaskId: undefined
+        }
+      };
+      this.saveHistory(sid);
+      return;
+    }
+    // 串行模式：无检查点，退化为「清下游 done 重派发」（confirmPlan 按失败态恢复）。
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: {
+        ...st,
+        done,
+        status: 'failed',
+        failedTaskId: undefined,
+        currentTaskId: undefined
+      }
+    };
+    this.saveHistory(sid);
+    await this.confirmPlan(m);
   }
 
   /**

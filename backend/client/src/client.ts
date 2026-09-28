@@ -486,6 +486,33 @@ export class AgentClient {
   }
 
   /**
+   * P6 分叉重跑：把指定 step（及其全部传递下游）重置为 pending、清空产出与错误，
+   * 随后配合 streamWorkflowResume 从该 step 重新执行（上游 done 产出复用）。
+   * 对应服务端 POST /api/workflows/:id/rerun；running 态 / 未知 step 由服务端
+   * 409 / 400 拒绝（抛 ApiError，error 字段带原因）。
+   */
+  async rerunWorkflow(
+    id: string,
+    stepId: string
+  ): Promise<{ ok: boolean; workflowId: string; stepId: string; run: WorkflowRun; hint?: string }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/rerun`,
+      { method: 'POST', body: JSON.stringify({ stepId }) }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as {
+      ok: boolean;
+      workflowId: string;
+      stepId: string;
+      run: WorkflowRun;
+      hint?: string;
+    };
+  }
+
+  /**
    * 定义并运行一个 DAG 工作流，返回编排事件异步迭代器（与 harness 事件同通道）。
    * wf:* 为编排事件；嵌套的 harness 事件以 { type: 'harness', event } 包裹。
    */

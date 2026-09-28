@@ -19,6 +19,7 @@ import {
   compactPlanWfSnapshot,
   formatPlanWfOutput,
   formatPlanWfDuration,
+  planDownstreamTaskIds,
   planWfReplayStateLabel,
   planWfReplayMark,
   planWfTraceMetaLabel,
@@ -565,6 +566,69 @@ describe('P2 轨迹回放：快照 → 时间线行（buildPlanWfReplayRows 等�
     expect(planWfReplayStateLabel('weird')).toBe('weird');
     expect(planWfReplayMark('done')).toBe('✅');
     expect(planWfReplayMark('weird')).toBe('•');
+  });
+});
+
+describe('P6 引擎增强：重试角标 / 动态子任务 / 分叉重跑助手', () => {
+  it('wf:step:retry → retryCounts 记录该任务重试次数（未知任务 / 缺 attempt 不消费）', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:retry', stepId: 't1', attempt: 1 }, KNOWN);
+    expect(st.retryCounts).toEqual({ t1: 1 });
+    st = applyPlanWfEvent(st, { type: 'wf:step:retry', stepId: 't1', attempt: 2 }, KNOWN);
+    expect(st.retryCounts).toEqual({ t1: 2 });
+    expect(applyPlanWfEvent(base, { type: 'wf:step:retry', stepId: 'nope', attempt: 1 }, KNOWN)).toBe(base);
+    expect(applyPlanWfEvent(base, { type: 'wf:step:retry', stepId: 't1' }, KNOWN)).toBe(base);
+  });
+
+  it('wf:step:start 清掉该任务重试计数（每次执行独立统计）；wf:done 全清', () => {
+    let st = applyPlanWfEvent(base, { type: 'wf:step:retry', stepId: 't1', attempt: 2 }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:step:start', stepId: 't1' }, KNOWN);
+    expect(st.retryCounts?.t1).toBeUndefined();
+    st = applyPlanWfEvent(st, { type: 'wf:step:retry', stepId: 't2', attempt: 1 }, KNOWN);
+    st = applyPlanWfEvent(st, { type: 'wf:done' }, KNOWN);
+    expect(st.retryCounts).toBeUndefined();
+  });
+
+  it('wf:step:spawned（物化子任务）不进入卡片状态机（不在计划任务清单内）', () => {
+    expect(
+      applyPlanWfEvent(base, { type: 'wf:step:spawned', stepId: 'planner', spawned: ['planner.c1'] }, KNOWN)
+    ).toBe(base);
+  });
+
+  it('回放行：attempts 透出；非计划任务且带父前缀的 step 追加为 spawned 行；补偿 step 不占行', () => {
+    const p: ExecutionPlanView = {
+      goal: 'g',
+      tasks: [
+        { id: 't1', title: 'A', steps: [], dependsOn: [], expectedOutput: '' },
+        { id: 't2', title: 'B', steps: [], dependsOn: ['t1'], expectedOutput: '' }
+      ]
+    };
+    const rows = buildPlanWfReplayRows(p, {
+      steps: {
+        t1: { state: 'done', attempts: 2, output: 'ok' },
+        t2: { state: 'pending' },
+        't1.c1': { state: 'done', output: 'child' },
+        comp_step: { state: 'compensated' }
+      }
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.attempts).toBe(2);
+    const spawnedRow = rows[2];
+    expect(spawnedRow?.spawned).toBe(true);
+    expect(spawnedRow?.id).toBe('t1.c1');
+    expect(spawnedRow?.title).toBe('t1.c1');
+    expect(rows.some((r) => r.id === 'comp_step')).toBe(false);
+  });
+
+  it('planDownstreamTaskIds：沿 dependsOn 反向传递闭包（含自身；无下游仅自身）', () => {
+    const tasks = [
+      { id: 'a', dependsOn: [] },
+      { id: 'b', dependsOn: ['a'] },
+      { id: 'c', dependsOn: ['b'] },
+      { id: 'd', dependsOn: [] }
+    ];
+    expect(planDownstreamTaskIds(tasks, 'a').sort()).toEqual(['a', 'b', 'c']);
+    expect(planDownstreamTaskIds(tasks, 'd')).toEqual(['d']);
+    expect(planDownstreamTaskIds(tasks, 'c')).toEqual(['c']);
   });
 });
 

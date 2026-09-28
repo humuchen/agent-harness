@@ -197,6 +197,17 @@ export const planMode = css`
     vertical-align: middle;
     white-space: nowrap;
   }
+  /* P6：任务自动重试角标（wf:step:retry 计数；琥珀同族区分于审批黄）。 */
+  .pt-retry {
+    margin-left: 8px;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text-muted);
+    vertical-align: middle;
+    white-space: nowrap;
+  }
   .pt-steps {
     margin: 6px 0 0 30px;
     padding-left: 16px;
@@ -338,6 +349,15 @@ export const planMode = css`
   }
   .wf-replay-state {
     font-size: 12px;
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+  }
+  /* P6：抽屉行头重试角标 + 动态子任务行（spawn 物化，↳ 前缀已入标题）。 */
+  .wf-replay-retry {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--ah-surface-2);
     color: var(--ah-text-muted);
     white-space: nowrap;
   }

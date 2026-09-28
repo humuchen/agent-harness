@@ -144,6 +144,10 @@ export interface PlanWfEvent {
   workflowId?: string;
   /** P3：wf:awaiting-approval 携带的待审批 step id 列表。 */
   stepIds?: string[];
+  /** P6：wf:step:retry 携带的重试序号（第 N 次额外重试）。 */
+  attempt?: number;
+  /** P6：wf:step:spawned 携带的物化子任务 id 列表（卡片状态机不消费，仅类型完备）。 */
+  spawned?: string[];
   /** wf:failed 时携带的完整 run（step 终态快照，用于定位失败 task）。 */
   run?: {
     state?: string;
@@ -178,9 +182,17 @@ export function applyPlanWfEvent(
       // P5 静默执行：每个任务开始时重置思考面板（新任务 → 新的空思考流）。
       // 并行（2026-09-20）：runningTaskIds 聚合在跑任务（串行时长度恒 1，语义不变）；
       // thinkingByTask 为该任务建独立空槽（已有槽位重置为空 —— start 即重新执行）。
+      // P6：重新开始执行 → 清掉上一轮的重试计数（每次运行独立统计）。
+      // 仅当计数实际存在时才携带该键（返回形状对既有消费方/测试零回归）。
       const running = new Set(prev.runningTaskIds ?? []);
       running.delete(ev.stepId);
       running.add(ev.stepId);
+      let retryCounts = prev.retryCounts;
+      if (retryCounts && ev.stepId in retryCounts) {
+        const rc = { ...retryCounts };
+        delete rc[ev.stepId];
+        retryCounts = rc;
+      }
       return {
         ...prev,
         status: 'running',
@@ -188,7 +200,8 @@ export function applyPlanWfEvent(
         awaitingTaskIds: undefined,
         runningTaskIds: [...running],
         thinking: { taskId: ev.stepId, text: '' },
-        thinkingByTask: { ...(prev.thinkingByTask ?? {}), [ev.stepId]: '' }
+        thinkingByTask: { ...(prev.thinkingByTask ?? {}), [ev.stepId]: '' },
+        ...(retryCounts !== prev.retryCounts ? { retryCounts } : {})
       };
     }
     case 'wf:step:done': {
@@ -228,6 +241,15 @@ export function applyPlanWfEvent(
         thinkingByTask: undefined
       };
     }
+    case 'wf:step:retry': {
+      // P6 步骤级重试：记录该任务的自动重试次数（卡片任务行显示 ↻ N 角标）。
+      // 未知任务 / 缺 stepId 不消费（与其它 step:* 事件同语义）。
+      if (!ev.stepId || !knownTaskIds.has(ev.stepId) || typeof ev.attempt !== 'number') return prev;
+      return {
+        ...prev,
+        retryCounts: { ...(prev.retryCounts ?? {}), [ev.stepId]: ev.attempt }
+      };
+    }
     case 'wf:awaiting-approval': {
       // P3 审批门：引擎在波次边界暂停（run.state → awaiting）。stepIds 与本计划 task 求交集
       // （补偿 step / 非本计划的 def 演化不进入卡片状态机）。
@@ -252,7 +274,8 @@ export function applyPlanWfEvent(
         awaitingTaskIds: undefined,
         thinking: undefined,
         runningTaskIds: undefined,
-        thinkingByTask: undefined
+        thinkingByTask: undefined,
+        retryCounts: undefined
       };
     case 'wf:failed': {
       // R8：引擎 all-or-nothing，run 整体失败。失败 task 定位：
@@ -271,7 +294,9 @@ export function applyPlanWfEvent(
       };
     }
     default:
-      // wf:start / wf:compensate:* / 嵌套 harness 事件 / _wf_done / wf:error（SSE 终结帧）：
+      // wf:start / wf:compensate:* / wf:step:spawned（动态 fan-out 物化的子任务不在计划
+      // 任务清单内，卡片状态机不消费 —— 抽屉回放经 buildPlanWfReplayRows 的「动态子任务」
+      // 行展示）/ 嵌套 harness 事件 / _wf_done / wf:error（SSE 终结帧）：
       // 卡片状态机不消费（wf:error 即请求级失败，由调用方 catch 兜底回退串行路径）。
       return prev;
   }
@@ -520,6 +545,16 @@ export interface PlanWfReplayRow {
    * 旧快照 / 无链路捕获时为 undefined（抽屉不渲染「调用链路」区，零回归）。
    */
   trace?: StepTraceNode[];
+  /**
+   * P6 步骤级重试：引擎为该 step 执行的额外重试次数（>0 时抽屉行头显示「↻ 重试 N」）。
+   * 旧快照无该字段 → undefined（不渲染，零回归）。
+   */
+  attempts?: number;
+  /**
+   * P6 动态 fan-out：本行是否为运行期物化的子任务（不在计划任务清单内，
+   * title 为完整 step id，含 `<父id>.` 前缀）。追加在计划任务行之后。
+   */
+  spawned?: boolean;
 }
 
 const REPLAY_MARK: Record<string, string> = {
@@ -763,7 +798,9 @@ export function formatPlanWfOutput(v: unknown): string | undefined {
 /**
  * 由（计划任务清单，WorkflowRun 快照）构建时间线行。
  * 行序 = 计划 tasks 序（拓扑合法的计划序即可读执行序）；快照缺失的 task 记 pending。
- * 快照 steps 里多出的 step（def 演化 / 补偿 step）不额外占行，避免与任务清单错位。
+ * P6 动态 fan-out：快照 steps 里不属于计划任务的 step（运行期物化的 spawn 子任务，
+ * id 带 `<父id>.` 前缀）以「动态子任务」行追加在计划任务行之后（保持插入序）；
+ * 其余多出的 step（补偿 step 等）仍不占行，避免与任务清单错位。
  */
 export function buildPlanWfReplayRows(
   plan: ExecutionPlanView,
@@ -778,6 +815,7 @@ export function buildPlanWfReplayRows(
             error?: string;
             startedAt?: number;
             finishedAt?: number;
+            attempts?: number;
             trace?: StepTraceNode[];
           }
         >;
@@ -786,7 +824,8 @@ export function buildPlanWfReplayRows(
     | undefined
 ): PlanWfReplayRow[] {
   const steps = run?.steps ?? {};
-  return (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
+  const known = new Set((plan?.tasks ?? []).map((t) => t.id));
+  const rows = (plan?.tasks ?? []).map((t): PlanWfReplayRow => {
     const sr = steps[t.id];
     const state = sr?.state ?? 'pending';
     const durationMs =
@@ -808,10 +847,76 @@ export function buildPlanWfReplayRows(
       state,
       durationMs,
       detail,
+      attempts: sr?.attempts,
       // P2.5 调用链路：非终态（skipped/awaiting）无执行过程可回放，不透传。
       trace: sr?.trace && sr.trace.length ? sr.trace : undefined
     };
   });
+  // P6 动态 fan-out：物化子任务行（运行期 spawn，id 不在计划任务清单内）。
+  // 插入序即执行序（引擎 append 顺序）；补偿 step 等其它非任务 step 仍不展示。
+  for (const [id, sr] of Object.entries(steps)) {
+    if (known.has(id)) continue;
+    if (!id.includes('.')) continue; // 非任务且无父前缀 → 补偿 step 等，跳过
+    const state = sr?.state ?? 'pending';
+    const durationMs =
+      sr?.startedAt && sr.finishedAt
+        ? Math.max(0, sr.finishedAt - sr.startedAt)
+        : undefined;
+    const detail =
+      state === 'failed' || state === 'compensated'
+        ? formatPlanWfOutput(sr?.error)
+        : state === 'skipped'
+          ? undefined
+          : formatPlanWfOutput(sr?.output);
+    rows.push({
+      id,
+      title: id,
+      agentId: sr?.agentId,
+      state,
+      durationMs,
+      detail,
+      attempts: sr?.attempts,
+      spawned: true,
+      trace: sr?.trace && sr.trace.length ? sr.trace : undefined
+    });
+  }
+  return rows;
+}
+
+/**
+ * P6 分叉重跑（前端侧）：计算计划任务图中 startId 及其全部传递下游（沿 dependsOn
+ * 反向可达集，含自身）。与引擎 downstreamSteps 同语义（作用对象是计划任务而非 def），
+ * 供「从此步重跑」在串行回退路径清 done 标记、DAG 路径做一致性校验。
+ */
+export function planDownstreamTaskIds(
+  tasks: ReadonlyArray<{ id: string; dependsOn?: string[] }>,
+  startId: string
+): string[] {
+  const dependents = new Map<string, Set<string>>();
+  for (const t of tasks) {
+    for (const d of t.dependsOn ?? []) {
+      let set = dependents.get(d);
+      if (!set) {
+        set = new Set<string>();
+        dependents.set(d, set);
+      }
+      set.add(t.id);
+    }
+  }
+  const out: string[] = [];
+  const seen = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    out.push(cur);
+    for (const nxt of dependents.get(cur) ?? []) {
+      if (!seen.has(nxt)) {
+        seen.add(nxt);
+        queue.push(nxt);
+      }
+    }
+  }
+  return out;
 }
 
 /**

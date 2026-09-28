@@ -125,6 +125,8 @@ export interface ChatRenderCtx {
   confirmClarify: (m: ChatMsg) => void;
   /** P3（人工审批门）：awaiting 态放行审批。stepId 缺省 = 全部未决门；指定 = 单节点放行。 */
   approvePlan: (m: ChatMsg, stepId?: string) => void;
+  /** P6（分叉重跑）：重置指定任务及其下游并从此重新执行（DAG 检查点；串行路径清 done 重派发）。 */
+  planRerunFrom: (m: ChatMsg, taskId: string) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
   requestUpdate: () => void;
   onComposerPointerDown: (e: PointerEvent) => void;
@@ -866,6 +868,13 @@ export function renderPlanCard(ctx: ChatRenderCtx, m: ChatMsg): TemplateResult {
               >${done ? '✓' : active ? '⏳' : failed ? '✗' : awaitingNode ? '🔒' : i + 1}</span
             >
             <b>${escapeHtml(t.title)}</b>
+            ${(st.retryCounts?.[t.id] ?? 0) > 0
+              ? html`<span
+                  class="pt-retry"
+                  title="引擎为该任务自动重试了 ${st.retryCounts?.[t.id]} 次（瞬时失败自愈）"
+                  >↻ ${st.retryCounts?.[t.id]}</span
+                >`
+              : nothing}
             ${t.requireApproval
               ? html`<span class="pt-approval" title="执行前需人工批准">🔒 需审批</span>`
               : nothing}
@@ -1051,7 +1060,14 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                   html`<li class="wf-replay-row ${r.state}">
                     <div class="wf-replay-row-head">
                       <span class="wf-replay-mark">${planWfReplayMark(r.state)}</span>
-                      <b>${escapeHtml(r.title)}</b>
+                      <b>${escapeHtml(r.spawned ? '↳ ' + r.title : r.title)}</b>
+                      ${(r.attempts ?? 0) > 0
+                        ? html`<span
+                            class="wf-replay-retry"
+                            title="引擎为该节点自动重试了 ${r.attempts} 次（瞬时失败自愈）"
+                            >↻ 重试 ${r.attempts}</span
+                          >`
+                        : nothing}
                       <span class="wf-replay-agent">${r.agentId ? escapeHtml(r.agentId) : '—'}</span>
                       <span class="wf-replay-state"
                         >${planWfReplayStateLabel(r.state)} · ${formatPlanWfDuration(r.durationMs)}</span
@@ -1064,6 +1080,19 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                             @click=${() => ctx.approvePlan(m, r.id)}
                           >
                             批准此节点
+                          </button>
+                        </div>`
+                      : nothing}
+                    ${!fromMirror &&
+                    run?.state !== 'running' &&
+                    (r.state === 'done' || r.state === 'failed' || r.state === 'skipped')
+                      ? html`<div class="wf-replay-approve">
+                          <button
+                            class="plan-btn ghost"
+                            title="重置该节点及其下游并从此重新执行（上游已完成产出复用）"
+                            @click=${() => ctx.planRerunFrom(m, r.id)}
+                          >
+                            从此步重跑
                           </button>
                         </div>`
                       : nothing}
