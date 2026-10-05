@@ -16,7 +16,7 @@ import { getAgentRegistry, type AgentRegistry } from '../agents/registry';
 import type { AgentCard } from '../agents/types';
 import { getTeamManager, type TeamManager } from '../teams';
 import type { Team } from '../teams';
-import type { SpawnSpec, StepDef, StepRun, StepTraceNode, WorkflowDef, WorkflowRun } from './types';
+import { WORKFLOW_HISTORY_MAX, type SpawnSpec, type StepDef, type StepRun, type StepTraceNode, type WorkflowDef, type WorkflowHistoryEntry, type WorkflowRun } from './types';
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
 import { inspectStepOutput } from './step-output';
 import { validateAgainstSchema } from '../json-schema';
@@ -46,6 +46,13 @@ export interface RunContext {
    * trace 缺省，零回归。引擎按节点上限截断（保早期调用），避免检查点膨胀。
    */
   trace?: StepTraceNode[];
+  /**
+   * P6-D outputSchema 修正环：产出 schema 校验失败时，引擎把错误信息写入本字段并
+   * 触发重试；executor（如 workflow-executor 的 prompt 装配）可读取它向 LLM 注入
+   * 「上次产出不合规，请修正」的定向指令——比整步盲重跑更省 token、成功率更高。
+   * 产出通过校验后由引擎清除。仅声明 outputSchema 的 step 会写入（存量零回归）。
+   */
+  schemaFeedback?: string;
 }
 
 /** 单 step 调用链路节点数上限（R5 体积护栏）：超出截断保留早期调用，防止检查点膨胀。 */
@@ -59,6 +66,8 @@ export const RETRY_BACKOFF_MAX_MS = 8_000;
 export const STEP_RETRIES_MAX = 10;
 /** P6 动态 fan-out：单个 dynamic step 单次产出的 spawn 数上限（防产出异常打爆 DAG）。 */
 export const MAX_DYNAMIC_SPAWN = 50;
+/** P6-B subgraph 嵌套深度硬上限（配合 activeChain 环检测，防 defRef 互相引用打爆调用栈）。 */
+export const MAX_SUBGRAPH_DEPTH = 5;
 /** P6 重试退避基数缺省毫秒（StepDef.retryBackoffMs 缺省值）。 */
 const RETRY_BACKOFF_DEFAULT_MS = 500;
 
@@ -72,6 +81,21 @@ export type WorkflowEvent =
   | { type: 'wf:step:retry'; workflowId: string; stepId: string; attempt: number; error: string }
   /** P6 动态 fan-out：dynamic step 成功后物化的子任务 id 列表（已写入 def 与检查点）。 */
   | { type: 'wf:step:spawned'; workflowId: string; stepId: string; spawned: string[] }
+  /**
+   * P6-C6 状态增量：step 状态任意变迁（running/done/failed/retry/skipped/awaiting/
+   * compensated/pending-物化）后的单帧快照 —— 外部看板无需拼装多类事件即可重建
+   * 「某 step 现在什么样」。幂等冗余（与 wf:step:* 同源），消费方可忽略。
+   */
+  | {
+      type: 'wf:step:update';
+      workflowId: string;
+      runId?: string;
+      stepId: string;
+      state: StepRun['state'];
+      attempts?: number;
+      /** 产出体量（字符串长度或 JSON 序列化长度；仅 output 已落时携带）。 */
+      outputBytes?: number;
+    }
   | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
   | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
   /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
@@ -90,6 +114,12 @@ export interface DagEngineOptions {
   executor: StepExecutor;
   /** 引擎级事件回调（SSE / 可观测）。 */
   onEvent?: (e: WorkflowEvent) => void;
+  /**
+   * P6-B subgraph：嵌套深度与 defRef 调用链（内部透传，应用代码不传）。
+   * executeNested 每下钻一层 +1 并把当前 defRef 追加进 chain；chain 内重复即环。
+   */
+  nestingDepth?: number;
+  activeChain?: string[];
 }
 
 export class DagEngine {
@@ -100,6 +130,9 @@ export class DagEngine {
   private readonly store: WorkflowStore;
   private readonly executor: StepExecutor;
   private readonly onEvent?: (e: WorkflowEvent) => void;
+  /** P6-B subgraph：嵌套深度与 defRef 调用链（executeNested 透传，根引擎为 0/空）。 */
+  private readonly nestingDepth: number;
+  private readonly activeChain: string[];
 
   constructor(opts: DagEngineOptions) {
     if (!opts.executor) {
@@ -110,10 +143,99 @@ export class DagEngine {
     this.store = opts.store ?? new VolatileWorkflowStore();
     this.executor = opts.executor;
     this.onEvent = opts.onEvent;
+    this.nestingDepth = opts.nestingDepth ?? 0;
+    this.activeChain = opts.activeChain ?? [];
   }
 
   private emit(e: WorkflowEvent): void {
     this.onEvent?.(e);
+  }
+
+  /**
+   * P6-C6 状态增量帧：step 当前状态的单帧快照（幂等冗余，消费方可忽略）。
+   * 在每个状态跃迁点（start/done/failed/retry/skipped/awaiting/compensated/物化）调用。
+   */
+  private emitStepUpdate(run: WorkflowRun, stepId: string): void {
+    const sr = run.steps[stepId];
+    if (!sr) return;
+    let outputBytes: number | undefined;
+    if (sr.output !== undefined) {
+      outputBytes =
+        typeof sr.output === 'string' ? sr.output.length : JSON.stringify(sr.output)?.length ?? 0;
+    }
+    this.emit({
+      type: 'wf:step:update',
+      workflowId: run.def.id,
+      runId: run.runId,
+      stepId,
+      state: sr.state,
+      ...(sr.attempts ? { attempts: sr.attempts } : {}),
+      ...(outputBytes !== undefined ? { outputBytes } : {}),
+    });
+  }
+
+  /**
+   * P6-B subgraph 嵌套复用：把 defRef 指向的嵌套工作流跑完并返回其 WorkflowRun 作为
+   * 本 step 产出。三种情形：检查点 done → 幂等复用；非终态（pending/failed/awaiting
+   * 后续由审批路由处理）→ resume 续跑；环（activeChain 重复）或超深 → 明确失败。
+   * 嵌套引擎共享同一 store / executor / 注册表；其 wf:* 事件以
+   * `<父workflowId>><嵌套defId>` 前缀透传（编排时间线可区分层级）。
+   */
+  private async executeNested(defRef: string, input: unknown, ctx: RunContext): Promise<unknown> {
+    if (this.activeChain.includes(defRef)) {
+      throw new Error(
+        `subgraph 引用环：${[...this.activeChain, defRef].join(' → ')}（defRef 不可互相引用）`
+      );
+    }
+    const depth = this.nestingDepth + 1;
+    if (depth > MAX_SUBGRAPH_DEPTH) {
+      throw new Error(`subgraph 嵌套深度超过上限 ${MAX_SUBGRAPH_DEPTH}（当前链：${this.activeChain.join(' → ') || '根'} → ${defRef}）`);
+    }
+    const checkpoint = await this.store.get(defRef);
+    const nestedDef = checkpoint?.def;
+    if (!nestedDef || !Array.isArray(nestedDef.steps) || nestedDef.steps.length === 0) {
+      throw new Error(
+        `subgraph defRef 无法解析："${defRef}"（store 中不存在该工作流的检查点；defRef 指向的工作流需先经 POST /api/workflows 落过检查点）`
+      );
+    }
+    const nested = new DagEngine({
+      store: this.store,
+      executor: this.executor,
+      registry: this.registry,
+      teamManager: this.teamManager,
+      onEvent: (e) => {
+        // 嵌套层事件透传（父级 wf:step:* 不受影响——workflowId 已改写为带层级前缀）。
+        if (e.type.startsWith('wf:')) {
+          this.emit({ ...e, workflowId: `${ctx.workflowId}>${defRef}` } as WorkflowEvent);
+        }
+      },
+      nestingDepth: depth,
+      activeChain: [...this.activeChain, defRef]
+    });
+    if (checkpoint.state === 'done') return checkpoint; // 幂等复用（嵌套已完成）
+    const result = await nested.resume(defRef, ctx.signal);
+    // 嵌套失败必须传播为父 step 失败（WorkflowRun 是对象，产出闸门对对象恒判 ok，
+    // 不在此检查则「嵌套失败」会被静默当成功写黑板）。awaiting（嵌套含审批门）当前
+    // 版本同样按失败处置：跨层审批穿透是独立设计，不混入本特性。
+    if (result.state !== 'done') {
+      const firstErr = Object.values(result.steps ?? {}).find(
+        (s) => s && typeof s === 'object' && 'state' in s && (s as { state?: string }).state === 'failed'
+      )?.error;
+      throw new Error(
+        `subgraph "${defRef}" 嵌套执行未完成（state=${result.state}）` +
+          `${firstErr ? `：${firstErr}` : ''}${result.error ? ` / ${result.error}` : ''}`
+      );
+    }
+    return result;
+  }
+
+  /**
+   * P6 统一 step 执行入口：defRef（嵌套 subgraph）优先，否则走注入的 executor。
+   * retry 循环与 run/resume 两路径共用，保证闸门 / 重试 / trace 语义一致。
+   */
+  private executeStepCall(step: StepDef, input: unknown, ctx: RunContext): Promise<unknown> {
+    if (step.defRef) return this.executeNested(step.defRef, input, ctx);
+    return this.executor(step, input, ctx);
   }
 
   /**
@@ -218,6 +340,7 @@ export class DagEngine {
         }
         def.steps.push(child);
         run.steps[child.id] = { id: child.id, state: 'pending' };
+        this.emitStepUpdate(run, child.id);
         const list = spawnedByParent.get(parent.id) ?? [];
         list.push(child.id);
         spawnedByParent.set(parent.id, list);
@@ -523,7 +646,10 @@ export class DagEngine {
           return true;
         });
         if (gated.length > 0) {
-          for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+          for (const id of gated) {
+            run.steps[id] = { id, state: 'awaiting' };
+            this.emitStepUpdate(run, id);
+          }
           run.state = 'awaiting';
           delete run.finishedAt;
           await this.store.save(run);
@@ -547,6 +673,7 @@ export class DagEngine {
               await this.store.save(run);
               this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id });
               this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id });
+              this.emitStepUpdate(run, id);
               return;
             }
             if (step.condition) {
@@ -557,6 +684,7 @@ export class DagEngine {
                 await this.store.save(run);
                 this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id });
                 this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id });
+                this.emitStepUpdate(run, id);
                 return;
               }
             }
@@ -577,6 +705,7 @@ export class DagEngine {
             run.steps[id] = sr;
             await this.store.save(run);
             this.emit({ type: 'wf:step:start', workflowId: def.id, stepId: id, agentId: card.id });
+            this.emitStepUpdate(run, id);
 
             const ctx: RunContext = {
               workflowId: def.id,
@@ -593,7 +722,8 @@ export class DagEngine {
             let attempt = 0;
             for (;;) {
               try {
-                const result = await this.executor(step, input, ctx);
+                // P6-B：defRef（嵌套 subgraph）优先，否则走注入的 executor（见 executeStepCall）。
+                const result = await this.executeStepCall(step, input, ctx);
                 sr.output = result;
                 // P4.5 产出有效性闸门：无效产出（空 / 中断 / 护栏兜底）不再「静默成功」——
                 // 开启 def.failOnInvalidOutput 时按失败处置（进下方 catch → failed + 补偿 + 级联），
@@ -601,14 +731,20 @@ export class DagEngine {
                 const gateError = this.inspectOutputGate(def, sr, result);
                 if (gateError) throw new Error(gateError);
                 // P6 产出 schema 闸门：声明 outputSchema 的 step 产出不合规即失败（opt-in）。
+                // 失败时把错误写入 ctx.schemaFeedback —— 重试的 executor 可注入定向修正指令。
                 const schemaError = this.checkOutputSchema(step, sr, result);
-                if (schemaError) throw new Error(schemaError);
+                if (schemaError) {
+                  ctx.schemaFeedback = schemaError;
+                  throw new Error(schemaError);
+                }
+                ctx.schemaFeedback = undefined;
                 sr.state = 'done';
                 sr.finishedAt = Date.now();
                 outputs[id] = result;
                 this.mergeStepTrace(sr, ctx); // P2.5 调用链路落检查点（缺省 no-op）
                 await this.store.save(run);
                 this.emit({ type: 'wf:step:done', workflowId: def.id, stepId: id, output: result });
+                this.emitStepUpdate(run, id);
                 this.queueSpawns(step, result, spawnQueue); // P6 动态 fan-out 入队（波次收敛后物化）
                 break;
               } catch (e: any) {
@@ -617,6 +753,7 @@ export class DagEngine {
                   attempt += 1;
                   sr.attempts = attempt;
                   this.emit({ type: 'wf:step:retry', workflowId: def.id, stepId: id, attempt, error: errMsg });
+                  this.emitStepUpdate(run, id);
                   await this.store.save(run);
                   await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS));
                   if (!ctx.signal?.aborted) continue; // 退避期间未被取消 → 重试
@@ -626,6 +763,7 @@ export class DagEngine {
                 this.mergeStepTrace(sr, ctx); // P2.5：失败 step 的链路是排障关键信息
                 await this.store.save(run);
                 this.emit({ type: 'wf:step:failed', workflowId: def.id, stepId: id, error: errMsg });
+                this.emitStepUpdate(run, id);
                 throw e;
               }
             }
@@ -655,6 +793,8 @@ export class DagEngine {
       this.emit({ type: 'wf:done', workflowId: def.id, run });
       return run;
     } catch (e: any) {
+      // P6-D9-lite：失败收敛前记录跃迁历史（当时各 step 状态 + 失败原因）。
+      pushRunHistory(run, 'failed', e?.message ?? String(e));
       run.error = e?.message ?? String(e);
       run.state = 'failed';
       run.finishedAt = Date.now();
@@ -764,6 +904,7 @@ export class DagEngine {
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: compId });
+        this.emitStepUpdate(run, compId);
       }
 
       for (const cmd of literalCmds) {
@@ -783,6 +924,7 @@ export class DagEngine {
         }
         await this.store.save(run);
         this.emit({ type: 'wf:compensate:done', workflowId: def.id, stepId: step.id });
+        this.emitStepUpdate(run, step.id);
       }
     }
   }
@@ -852,6 +994,8 @@ export class DagEngine {
       await this.store.save(run);
     }
     this.emit({ type: 'wf:start', workflowId, runId });
+    // P6-D9-lite：续跑同样是一次生命周期跃迁（断点恢复 / 审批放行 / 分叉重跑执行），记入历史。
+    pushRunHistory(run, 'resumed', runId);
 
     let stepFailed = false;
     // 恢复全局初始输入（run() 时随检查点持久化）：inputMapping 含 `input` 的 step
@@ -880,7 +1024,10 @@ export class DagEngine {
         return true;
       });
       if (gated.length > 0) {
-        for (const id of gated) run.steps[id] = { id, state: 'awaiting' };
+        for (const id of gated) {
+          run.steps[id] = { id, state: 'awaiting' };
+          this.emitStepUpdate(run, id);
+        }
         run.state = 'awaiting';
         delete run.finishedAt;
         await this.store.save(run);
@@ -908,6 +1055,7 @@ export class DagEngine {
             await this.store.save(run);
             this.emit({ type: 'wf:step:start', workflowId, stepId: id });
             this.emit({ type: 'wf:step:done', workflowId, stepId: id });
+            this.emitStepUpdate(run, id);
             return;
           }
           if (step.condition) {
@@ -918,6 +1066,7 @@ export class DagEngine {
               await this.store.save(run);
               this.emit({ type: 'wf:step:start', workflowId, stepId: id });
               this.emit({ type: 'wf:step:done', workflowId, stepId: id });
+              this.emitStepUpdate(run, id);
               return;
             }
           }
@@ -926,6 +1075,7 @@ export class DagEngine {
           run.steps[id] = { id, state: 'running', agentId: card.id, input, startedAt: Date.now() };
           await this.store.save(run);
           this.emit({ type: 'wf:step:start', workflowId, stepId: id, agentId: card.id });
+          this.emitStepUpdate(run, id);
 
           const ctx: RunContext = {
             workflowId,
@@ -940,18 +1090,25 @@ export class DagEngine {
           let attempt = 0;
           for (;;) {
             try {
-              const result = await this.executor(step, input, ctx);
+              // P6-B：defRef（嵌套 subgraph）优先，否则走注入的 executor（见 executeStepCall）。
+              const result = await this.executeStepCall(step, input, ctx);
               // P4.5 产出有效性闸门（与 run() 同语义）：分类非 ok 记录 outputIssue，
               // 且 run.def.failOnInvalidOutput 开启时按失败处置（进 catch → stepFailed + 级联 + 补偿）。
               const gateError = this.inspectOutputGate(run.def, run.steps[id], result);
               if (gateError) throw new Error(gateError);
-              // P6 产出 schema 闸门（与 run() 同语义，opt-in）。
+              // P6 产出 schema 闸门（与 run() 同语义，opt-in）：失败写入 ctx.schemaFeedback
+              // 供重试时 executor 注入定向修正指令。
               const schemaError = this.checkOutputSchema(step, run.steps[id], result);
-              if (schemaError) throw new Error(schemaError);
+              if (schemaError) {
+                ctx.schemaFeedback = schemaError;
+                throw new Error(schemaError);
+              }
+              ctx.schemaFeedback = undefined;
               run.steps[id] = { ...run.steps[id], state: 'done', output: result, finishedAt: Date.now() };
               outputs[id] = result;
               this.mergeStepTrace(run.steps[id], ctx); // P2.5 续跑 step 的链路同样落检查点
               this.emit({ type: 'wf:step:done', workflowId, stepId: id, output: result });
+              this.emitStepUpdate(run, id);
               this.queueSpawns(step, result, spawnQueue); // P6 动态 fan-out 入队（波次收敛后物化）
               break;
             } catch (e: any) {
@@ -960,6 +1117,7 @@ export class DagEngine {
                 attempt += 1;
                 run.steps[id] = { ...run.steps[id], attempts: attempt };
                 this.emit({ type: 'wf:step:retry', workflowId, stepId: id, attempt, error: errMsg });
+                this.emitStepUpdate(run, id);
                 await this.store.save(run);
                 await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS));
                 if (!ctx.signal?.aborted) continue;
@@ -967,6 +1125,7 @@ export class DagEngine {
               run.steps[id] = { ...run.steps[id], state: 'failed', error: errMsg };
               this.mergeStepTrace(run.steps[id], ctx); // P2.5：失败 step 的链路是排障关键信息
               this.emit({ type: 'wf:step:failed', workflowId, stepId: id, error: errMsg });
+              this.emitStepUpdate(run, id);
               stepFailed = true;
               break;
             }
@@ -1001,6 +1160,8 @@ export class DagEngine {
 
     if (stepFailed) {
       // 与 run() 一致：任一 step 失败 → 整个 run 标记 failed 并执行补偿（逆序 onRolling / 旧 compensate）。
+      // P6-D9-lite：失败收敛前记录跃迁历史。
+      pushRunHistory(run, 'failed', run.error ?? 'step failed during resume');
       run.state = 'failed';
       run.error = run.error ?? 'step failed during resume';
       run.finishedAt = Date.now();
@@ -1157,6 +1318,25 @@ function sleepMs(ms: number): Promise<void> {
 }
 
 /**
+ * P6-D9-lite 跃迁历史：追加一条「跃迁前状态快照」到 run.history（随检查点持久化，
+ * 保留最近 WORKFLOW_HISTORY_MAX 条）。time travel 审计的最小可用形态 ——
+ * 「分叉重跑前长什么样 / 失败时各 step 处于什么状态」可回溯。
+ */
+export function pushRunHistory(run: WorkflowRun, action: string, detail?: string): void {
+  const prevStates: Record<string, string> = {};
+  for (const [id, sr] of Object.entries(run.steps)) {
+    prevStates[id] = sr?.state ?? 'pending';
+  }
+  const entry: WorkflowHistoryEntry = {
+    ts: Date.now(),
+    action,
+    prevStates,
+    ...(detail ? { detail } : {}),
+  };
+  run.history = [...(run.history ?? []), entry].slice(-WORKFLOW_HISTORY_MAX);
+}
+
+/**
  * P6 step 分叉重跑：计算 stepId 及其全部传递下游（沿 effectiveDeps 反向可达集，含自身）。
  * 未知 stepId 抛错。纯函数，供 resetRunForRerun 与 server 路由复用。
  */
@@ -1201,6 +1381,8 @@ export function resetRunForRerun(run: WorkflowRun, stepId: string): WorkflowRun 
     throw new Error(`workflow "${run.def.id}" 正在运行（runId=${run.runId ?? 'unknown'}），不可分叉重跑——先 cancel 再重试`);
   }
   const targets = downstreamSteps(run.def, stepId);
+  // P6-D9-lite：重置前先记「跃迁前状态」历史（rerun 起点 + 当时的全部 step 状态）。
+  pushRunHistory(run, 'rerun', `from ${stepId}`);
   for (const id of targets) {
     run.steps[id] = { id, state: 'pending' };
   }

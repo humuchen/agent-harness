@@ -104,6 +104,18 @@ export interface StepDef {
   dynamic?: boolean;
 
   /**
+   * P6-B subgraph 嵌套复用：引用「已在 WorkflowStore 落过检查点」的另一工作流 def id
+   * （POST /api/workflows 即落检查点）。引擎执行本 step 时以嵌套 DagEngine 跑该 def：
+   * - 检查点非终态 → resume 续跑（嵌套检查点独立，input 取其自身 initialInput）；
+   * - 已 done → 幂等复用该 run 作为产出。
+   * 本 step 的 output = 嵌套 WorkflowRun（可序列化；下游取嵌套单步产出需穿透
+   * `steps.<本step>.output.steps.<嵌套stepId>.output`）。与 agentRef/teamRef 互斥
+   * （defRef 优先）；补偿语义为不透明 step（嵌套工作流的回滚由其自身 def 的
+   * onRolling 承担）。防递归：activeChain 环检测 + MAX_SUBGRAPH_DEPTH 硬上限。
+   */
+  defRef?: string;
+
+  /**
    * P6 产出 schema（JSON-Schema 子集，validateAgainstSchema 校验）：
    * 产出（executor 返回值）不符合 schema 时按失败处置（step failed + 补偿 + 级联，
    * 错误信息含具体路径），与 failOnInvalidOutput 同型但更严格。
@@ -236,6 +248,25 @@ export interface StepRun {
   attempts?: number;
 }
 
+/**
+ * P6-D9-lite 跃迁历史条目（time travel 审计的最小可用形态）：
+ * 每次关键生命周期跃迁（分叉重跑 / 失败收敛 / 续跑）追加一条，随检查点持久化，
+ * 保留最近 WORKFLOW_HISTORY_MAX 条。不做全量快照链（那是完整版 time travel 的范围）。
+ */
+export interface WorkflowHistoryEntry {
+  /** 跃迁时间（epoch ms）。 */
+  ts: number;
+  /** 跃迁类型：'rerun'（分叉重跑重置）/ 'failed'（失败收敛）/ 'resumed'（续跑开始）。 */
+  action: string;
+  /** 动作说明（如重跑起点 step id / 失败原因）。 */
+  detail?: string;
+  /** 跃迁前的 step 状态快照（stepId → state），支撑「当时长什么样」的审计回放。 */
+  prevStates: Record<string, string>;
+}
+
+/** 历史条目上限（防检查点膨胀；超出丢最旧）。 */
+export const WORKFLOW_HISTORY_MAX = 20;
+
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */
 export interface WorkflowRun {
   def: WorkflowDef;
@@ -263,4 +294,9 @@ export interface WorkflowRun {
    * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。
    */
   approvals?: string[];
+  /**
+   * P6-D9-lite 跃迁历史（分叉重跑 / 失败收敛 / 续跑），随检查点持久化；
+   * 旧快照无该字段 → 从空开始累积（零回归）。
+   */
+  history?: WorkflowHistoryEntry[];
 }

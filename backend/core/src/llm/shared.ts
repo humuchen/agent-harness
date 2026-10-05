@@ -148,6 +148,8 @@ interface WireToolSchema {
 interface ChatChunk {
   model?: unknown;
   usage?: unknown;
+  /** P6-C：OpenRouter 引用来源（顶层累积数组；字符串或 url_citation 对象形态）。 */
+  citations?: unknown;
   choices?: Array<{
     delta?: Record<string, unknown>;
     message?: { reasoning_content?: unknown; reasoning?: unknown; [k: string]: unknown };
@@ -157,6 +159,8 @@ interface ChatChunk {
 interface ChatCompletionResponse {
   model?: unknown;
   usage?: unknown;
+  /** P6-C：OpenRouter 引用来源（顶层累积数组）。 */
+  citations?: unknown;
   choices?: Array<{
     message?: {
       tool_calls?: Array<{ id?: unknown; function?: { name?: unknown; arguments?: unknown } }>;
@@ -164,6 +168,32 @@ interface ChatCompletionResponse {
     };
     [k: string]: unknown;
   }>;
+}
+
+/**
+ * P6-C：从 citations / annotations 的两种 wire 形态抽取 URL 并按出现序去重。
+ * 形态一：字符串数组（OpenRouter 顶层 `citations` 累积数组）；
+ * 形态二：对象数组（`annotations`，`{ type:'url_citation', url_citation:{ url } }`，兼容平铺 `{ url }`）。
+ * acc / seen 由调用方持有 —— 流式路径跨 chunk 累积，非流式路径单次收集。
+ */
+function collectCitationItems(src: unknown, acc: string[], seen: Set<string>): void {
+  if (!Array.isArray(src)) return;
+  for (const item of src) {
+    let url = '';
+    if (typeof item === 'string') {
+      url = item.trim();
+    } else if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      const inner = (o.url_citation && typeof o.url_citation === 'object'
+        ? o.url_citation
+        : o) as Record<string, unknown>;
+      if (typeof inner.url === 'string') url = inner.url.trim();
+    }
+    if (url && !seen.has(url)) {
+      seen.add(url);
+      acc.push(url);
+    }
+  }
 }
 const TOOL_SCHEMA_CACHE = new Map<string, WireToolSchema[]>();
 const TOOL_FREQ: Record<string, number> = {};
@@ -389,11 +419,17 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     }
     // 实际使用的模型（OpenRouter 多模型降级时会与请求模型不同）；用于按模型计价与可观测。
     const usedModel: string | undefined = typeof data?.model === 'string' ? data.model : undefined;
+    // P6-C：非流式路径的引用来源归一（顶层 citations / message.annotations，与流式同契约）。
+    const citationAcc: string[] = [];
+    const citationSeen = new Set<string>();
+    collectCitationItems(data?.citations, citationAcc, citationSeen);
+    collectCitationItems(msg.annotations, citationAcc, citationSeen);
     last = {
       content: typeof msg.content === 'string' ? msg.content : '',
       tool_calls: toolCalls,
       usage,
       model: usedModel,
+      ...(citationAcc.length ? { citations: citationAcc } : {}),
     };
 
     // 退化响应（无文本且无工具调用）—— 若仍有重试次数则重试。
@@ -493,6 +529,10 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
   let reasoning = '';
   let usage: TokenUsage | undefined;
   let usedModel: string | undefined;
+  // P6-C 引用来源归一：统一收集 + 按出现序去重（两种 wire 形态见 collectCitationItems）。
+  const citations: string[] = [];
+  const citationSeen = new Set<string>();
+  const collectCitations = (src: unknown): void => collectCitationItems(src, citations, citationSeen);
   // 按 index 重组工具调用增量：{ id?, name?, args }
   const toolAcc: Array<{ id?: string; name?: string; args: string }> = [];
 
@@ -535,9 +575,13 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     sawSse = true;
     if (typeof json.model === 'string' && json.model) usedModel = json.model;
     if (json.usage) usage = toUsage(json.usage);
+    // P6-C：引用来源（OpenRouter 顶层 citations 累积数组 / delta.annotations）。
+    if (json.citations !== undefined) collectCitations(json.citations);
     const choice = json.choices?.[0];
     if (!choice) return;
     const delta = choice.delta ?? {};
+    if (Array.isArray(delta.annotations)) collectCitations(delta.annotations);
+    if (Array.isArray(choice.message?.annotations)) collectCitations(choice.message.annotations);
     // 部分端点（如 agnes）把思考过程放在「聚合后的 message」而非 delta（常见于最后一个事件）。
     const msgReasoning =
       typeof choice.message?.reasoning_content === 'string'
@@ -630,6 +674,9 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       }
       if (data?.usage) usage = toUsage(data.usage);
       if (data?.model) usedModel = data.model;
+      // P6-C：非流式路径的引用来源同样归一。
+      collectCitations(data?.citations);
+      collectCitations(msg.annotations);
     } catch {
       /* 非预期响应体，忽略 */
     }
@@ -656,7 +703,15 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     });
   }
 
-  return { content: fullContent, tool_calls: toolCalls, usage, model: usedModel, partial: stalled };
+  return {
+    content: fullContent,
+    tool_calls: toolCalls,
+    usage,
+    model: usedModel,
+    partial: stalled,
+    // P6-C：引用来源（无引用时缺省，零回归）。
+    ...(citations.length ? { citations } : {}),
+  };
 }
 
 /** 将 provider 用量对象归一为标准 TokenUsage（缺失字段补 0）。 */

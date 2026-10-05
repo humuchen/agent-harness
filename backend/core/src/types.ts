@@ -75,6 +75,12 @@ export interface LLMResponse {
    * 适配器以 partial:true 返回已生成的内容（而非整次失败、内容全丢），供前端提示「生成中断」并保留已生成文本。
    */
   partial?: boolean;
+  /**
+   * P6-C 引用来源归一：web 检索 / 联网模型的引用 URL 列表（OpenRouter 顶层 `citations`
+   * 累积数组与 delta/message `annotations` 的 url_citation 两种 wire 形态统一抽 url，
+   * 按出现序去重）。无引用时缺省（零回归）。
+   */
+  citations?: string[];
 }
 
 /** 每次 LLM 调用可选的附带信息（如取消信号）。第三个参数，调用方可忽略。 */

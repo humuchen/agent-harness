@@ -318,3 +318,289 @@ test('P6 工具参数校验: validateArgs 返回错误列表；registry.call 契
   assert.deepStrictEqual(ok, { received: { a: 1, b: 's' } });
   assert.deepStrictEqual(await reg.call('t_loose', { anything: true }), 'ok');
 });
+
+// ─── 7. P6-B subgraph 嵌套复用（StepDef.defRef）─────────────────────────────
+
+test('P6-B subgraph: defRef 嵌套执行 — output 为嵌套 WorkflowRun，done 幂等复用', async () => {
+  const store = new VolatileWorkflowStore();
+  // 子工作流先经独立引擎落检查点（defRef 靠 store 解析）。
+  const childCalls = {};
+  const childEngine = new DagEngine({
+    store,
+    executor: (step) => {
+      childCalls[step.id] = (childCalls[step.id] ?? 0) + 1;
+      return { step: step.id };
+    },
+  });
+  const childRun = await childEngine.run(
+    { id: 'wf-child', steps: [{ id: 'c1', agentRef: DEFAULT_AGENT_ID }] },
+    'in'
+  );
+  assert.strictEqual(childRun.state, 'done');
+  assert.strictEqual(childCalls.c1, 1);
+
+  const engine = new DagEngine({
+    store,
+    executor: async (step) => ({ step: step.id }),
+  });
+  const run = await engine.run(
+    { id: 'wf-parent', steps: [{ id: 'sub', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-child' }] },
+    'x'
+  );
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(run.steps.sub.state, 'done');
+  assert.strictEqual(run.steps.sub.output.state, 'done', 'output = 嵌套 WorkflowRun');
+  assert.strictEqual(run.steps.sub.output.def.id, 'wf-child');
+  assert.strictEqual(childCalls.c1, 1, '子工作流 done → 幂等复用不重跑');
+
+  // 另一父工作流引用同一子 → 仍复用（不重跑）。
+  const run2 = await engine.run(
+    { id: 'wf-parent-2', steps: [{ id: 'sub', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-child' }] },
+    'x'
+  );
+  assert.strictEqual(run2.state, 'done');
+  assert.strictEqual(childCalls.c1, 1);
+});
+
+test('P6-B subgraph: 非终态子检查点经 resume 续跑至完成', async () => {
+  const store = new VolatileWorkflowStore();
+  // 共享计数 executor：嵌套引擎继承父引擎的 executor（与生产一致），
+  // 计数必须挂在共享 executor 上才能同时观测子直跑与嵌套续跑。
+  const calls = {};
+  const countingExecutor = (step) => {
+    calls[step.id] = (calls[step.id] ?? 0) + 1;
+    if (step.id === 'c1' && calls.c1 === 1) throw new Error('child transient');
+    return { step: step.id };
+  };
+  // 子工作流首跑失败（检查点 failed）。
+  const childEngine = new DagEngine({ store, executor: countingExecutor });
+  const bad = await childEngine.run(
+    { id: 'wf-child-r', steps: [{ id: 'c1', agentRef: DEFAULT_AGENT_ID }] },
+    'in'
+  );
+  assert.strictEqual(bad.state, 'failed');
+  assert.strictEqual(calls.c1, 1);
+
+  // 父 defRef → 嵌套 resume：子修复后父整链 done。
+  const engine = new DagEngine({ store, executor: countingExecutor });
+  const run = await engine.run(
+    { id: 'wf-parent-r', steps: [{ id: 'sub', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-child-r' }] },
+    'x'
+  );
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(run.steps.sub.output.state, 'done');
+  assert.strictEqual(calls.c1, 2, '子任务经嵌套 resume 重跑一次');
+});
+
+test('P6-B subgraph: 引用环 / 深度超限 / 无法解析 → step 失败并带可读原因', async () => {
+  const store = new VolatileWorkflowStore();
+  // 手工落两个互相引用的检查点（不经 run，避免解析时序问题）。
+  await store.save({
+    def: { id: 'wf-a', steps: [{ id: 's', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-b' }] },
+    state: 'pending',
+    steps: { s: { id: 's', state: 'pending' } },
+  });
+  await store.save({
+    def: { id: 'wf-b', steps: [{ id: 's', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-a' }] },
+    state: 'pending',
+    steps: { s: { id: 's', state: 'pending' } },
+  });
+  const engine = new DagEngine({
+    store,
+    executor: async () => ({ step: 'x' }),
+  });
+  // 引用环：C → A → B → A（activeChain 命中）。
+  const run = await engine.run(
+    { id: 'wf-cycle', steps: [{ id: 'x', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-a' }] },
+    'x'
+  );
+  assert.strictEqual(run.state, 'failed');
+  // 环根因经嵌套失败传播链透传（C → A → B 的 step error 含环信息）。
+  assert.match(String(run.error ?? run.steps.x.error ?? ''), /引用环/);
+  // 无法解析：store 中不存在该 def。
+  const run2 = await engine.run(
+    { id: 'wf-missing-ref', steps: [{ id: 'x', agentRef: DEFAULT_AGENT_ID, defRef: 'wf-nope' }] },
+    'x'
+  );
+  assert.strictEqual(run2.state, 'failed');
+  assert.match(String(run2.steps.x.error ?? ''), /defRef 无法解析/);
+});
+
+// ─── 8. P6-D outputSchema 修正环（ctx.schemaFeedback → 重试 executor）────────
+
+test('P6-D schema 修正环: 首次失败把 schema 错误写入 ctx.schemaFeedback，重试 executor 可读', async () => {
+  const seen = [];
+  let n = 0;
+  const engine = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: async (step, input, ctx) => {
+      seen.push(ctx.schemaFeedback ?? null);
+      n += 1;
+      if (n === 1) return { name: 123 }; // 违反 schema（name 应为 string）
+      return { name: 'ok' };
+    },
+  });
+  const run = await engine.run(
+    {
+      id: 'wf-schema-feedback',
+      steps: [
+        {
+          id: 'a',
+          agentRef: DEFAULT_AGENT_ID,
+          retries: 1,
+          retryBackoffMs: 1,
+          outputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+          },
+        },
+      ],
+    },
+    'x'
+  );
+  assert.strictEqual(run.state, 'done');
+  assert.strictEqual(seen[0], null, '首次执行无反馈');
+  assert.match(String(seen[1]), /outputSchema/, '重试时 executor 拿到 schema 错误反馈');
+  assert.strictEqual(n, 2);
+});
+
+test('P6-D schema 修正环: retries=0 时无重试机会，直接失败（存量语义）', async () => {
+  let n = 0;
+  const engine = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: async (step, input, ctx) => {
+      n += 1;
+      return { name: 123 };
+    },
+  });
+  const run = await engine.run(
+    {
+      id: 'wf-schema-nofeedback',
+      steps: [
+        {
+          id: 'a',
+          agentRef: DEFAULT_AGENT_ID,
+          outputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        },
+      ],
+    },
+    'x'
+  );
+  assert.strictEqual(run.state, 'failed');
+  assert.strictEqual(n, 1);
+  assert.match(String(run.steps.a.error ?? ''), /outputSchema/);
+});
+
+// ─── 9. P6-C6 wf:step:update 状态增量 ──────────────────────────────────────
+
+test('P6-C6: update 帧覆盖 start/retry/done 跃迁，attempts 与 outputBytes 可见', async () => {
+  const calls = {};
+  const events = [];
+  const engine = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: makeExecutor({ failMap: { a: 1 }, calls }),
+    onEvent: (e) => events.push(e),
+  });
+  const run = await engine.run(
+    { id: 'wf-update', steps: [{ id: 'a', agentRef: DEFAULT_AGENT_ID, retries: 1, retryBackoffMs: 1 }] },
+    'x'
+  );
+  assert.strictEqual(run.state, 'done');
+  const ups = events.filter((e) => e.type === 'wf:step:update' && e.stepId === 'a');
+  assert.deepStrictEqual(ups.map((e) => e.state), ['running', 'running', 'done']);
+  assert.strictEqual(ups[0].outputBytes, undefined, 'running 时尚无产出');
+  assert.strictEqual(ups[1].attempts, 1, 'retry 帧带重试计数');
+  assert.ok(ups[2].outputBytes > 0, 'done 帧带产出体量');
+  assert.strictEqual(ups.every((e) => e.runId === run.runId), true);
+});
+
+test('P6-C6: skipped / awaiting / compensated 跃迁同样发增量帧', async () => {
+  // skipped：condition 'false' 字面量。
+  const ev1 = [];
+  const e1 = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: async () => ({}),
+    onEvent: (e) => ev1.push(e),
+  });
+  const r1 = await e1.run(
+    { id: 'wf-u-skip', steps: [{ id: 'a', agentRef: DEFAULT_AGENT_ID, condition: 'false' }] },
+    'x'
+  );
+  assert.strictEqual(r1.state, 'done');
+  assert.ok(ev1.some((e) => e.type === 'wf:step:update' && e.stepId === 'a' && e.state === 'skipped'));
+
+  // awaiting：审批门暂停 → awaiting 帧。
+  const ev2 = [];
+  const e2 = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: async () => ({}),
+    onEvent: (e) => ev2.push(e),
+  });
+  const r2 = await e2.run(
+    { id: 'wf-u-await', steps: [{ id: 'g', agentRef: DEFAULT_AGENT_ID, requireApproval: true }] },
+    'x'
+  );
+  assert.strictEqual(r2.state, 'awaiting');
+  assert.ok(ev2.some((e) => e.type === 'wf:step:update' && e.stepId === 'g' && e.state === 'awaiting'));
+
+  // compensated：a 完成 + 字面量回滚声明，b 失败 → 补偿逆序回滚 a → compensated 帧
+  // （补偿只作用于 done 的 step —— 失败 step 无已完成副作用可回滚）。
+  const ev3 = [];
+  const e3 = new DagEngine({
+    store: new VolatileWorkflowStore(),
+    executor: async (step, input, ctx) =>
+      ctx?.compensate ? 'rolled-back' : step.id === 'a' ? { ok: 1 } : Promise.reject(new Error('boom')),
+    onEvent: (e) => ev3.push(e),
+  });
+  const r3 = await e3.run(
+    {
+      id: 'wf-u-comp',
+      steps: [
+        { id: 'a', agentRef: DEFAULT_AGENT_ID, onRolling: ['请回滚副作用'] },
+        { id: 'b', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+      ],
+    },
+    'x'
+  );
+  assert.strictEqual(r3.state, 'failed');
+  assert.ok(ev3.some((e) => e.type === 'wf:step:update' && e.stepId === 'a' && e.state === 'compensated'));
+});
+
+// ─── 10. P6-D9-lite 跃迁历史（time travel 审计）────────────────────────────
+
+test('P6-D9-lite: rerun/resumed/failed 历史随检查点持久化，截断保留最近 20 条', async () => {
+  const store = new VolatileWorkflowStore();
+  let failA = true;
+  const engine = new DagEngine({
+    store,
+    executor: (step) => {
+      if (step.id === 'a' && failA) throw new Error('boom');
+      return { step: step.id };
+    },
+  });
+  const def = { id: 'wf-hist', steps: [{ id: 'a', agentRef: DEFAULT_AGENT_ID }] };
+  const r1 = await engine.run(def, 'x');
+  assert.strictEqual(r1.state, 'failed');
+  assert.ok(r1.history?.some((h) => h.action === 'failed' && h.prevStates.a === 'failed'));
+
+  failA = false;
+  const r2 = await engine.resetForRerun('wf-hist', 'a');
+  const rerunEntry = r2.history?.find((h) => h.action === 'rerun');
+  assert.ok(rerunEntry, 'rerun 跃迁入史');
+  assert.strictEqual(rerunEntry.prevStates.a, 'failed', '记录跃迁前状态');
+  assert.match(rerunEntry.detail ?? '', /from a/);
+
+  const r3 = await engine.resume('wf-hist');
+  assert.strictEqual(r3.state, 'done');
+  assert.ok(r3.history?.some((h) => h.action === 'resumed'));
+
+  // 截断：50 次跃迁后检查点里只保留最近 WORKFLOW_HISTORY_MAX 条。
+  for (let i = 0; i < 25; i++) {
+    await engine.resetForRerun('wf-hist', 'a');
+    await engine.resume('wf-hist');
+  }
+  const stored = await store.get('wf-hist');
+  assert.ok(stored.history && stored.history.length <= 20);
+  assert.strictEqual(stored.history[stored.history.length - 1].action, 'resumed');
+});

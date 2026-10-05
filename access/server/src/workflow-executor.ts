@@ -628,7 +628,13 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     // plan 来源 step：input 是 { goal, taskMeta, upstream_* } 对象 → 经 formatStepInput
     // 装配成设计文档 §5 约定的可读 prompt；其它 workflow step（string / 任意对象）保持
     // 原行为不变（零回归）。补偿路径同用 helper，回滚指令前缀保留。
-    const prompt = formatStepInput(input, ctx.compensate);
+    // P6-D outputSchema 修正环：schema 校验失败触发重试时，引擎把错误写入 ctx.schemaFeedback
+    // —— 此处注入定向修正指令（比整步盲重跑省 token：模型知道上次产出哪里不合规）。
+    const promptBase = formatStepInput(input, ctx.compensate);
+    const prompt = ctx.schemaFeedback
+      ? `${promptBase}\n\n【修正要求（硬性）】上一次产出未通过产出 schema 校验：${ctx.schemaFeedback}。` +
+        `请严格按上述 schema 结构重新组织并输出完整产出（修正后仍须满足正文自包含等既有要求）。`
+      : promptBase;
 
     const assembled = await assembleAgent(
       mode,
