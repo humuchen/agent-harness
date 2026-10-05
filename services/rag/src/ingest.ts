@@ -6,9 +6,8 @@
  * doc_id + index 派生的 chunk_id 幂等，重复入库同篇文档仅更新，满足「增量更新」。
  */
 
-import type { Chunk } from './store';
+import type { Chunk, VectorStore } from './store';
 import type { EmbeddingProvider } from './embed';
-import type { MemoryVectorStore } from './store';
 
 export interface IngestInput {
   doc_id: string;
@@ -51,7 +50,7 @@ async function embedOne(provider: EmbeddingProvider, text: string): Promise<numb
 
 /** 入库一篇文档：分块 + 向量化 + 幂等 upsert；先按 doc_id 清旧 chunk 再写新。 */
 export async function ingestDocument(
-  store: MemoryVectorStore,
+  store: VectorStore,
   provider: EmbeddingProvider,
   input: IngestInput,
 ): Promise<IngestResult> {
@@ -73,8 +72,8 @@ export async function ingestDocument(
     vectors.push(await embedOne(provider, `${input.title ?? ''}\n${piece}`));
   }
 
-  // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）
-  const replaced = store.deleteByDoc(docId, tenantId);
+  // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）。P6-B：后端可为异步。
+  const replaced = await store.deleteByDoc(docId, tenantId);
 
   let idx = 0;
   for (const piece of pieces) {
@@ -90,7 +89,7 @@ export async function ingestDocument(
       vector: vectors[idx]!,
       created_at: Date.now(),
     };
-    store.upsert(chunk);
+    await store.upsert(chunk);
     idx++;
   }
 

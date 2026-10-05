@@ -34,8 +34,44 @@ export interface RetrieveResult {
   metadata?: Record<string, unknown>;
 }
 
-export class MemoryVectorStore {
+/**
+ * P6-B 向量存储统一契约（对标 LangChain VectorStore 抽象的最小可用子集）。
+ *
+ * 设计要点：
+ * - 方法允许同步或异步返回（MaybePromise）——MemoryVectorStore 全同步零开销，
+ *   外部后端（Qdrant 等）async 实现，消费方统一 `await`（await 同步值零成本）。
+ * - `hybridCapable`：是否支持全量语料导出（getChunks）。BM25 混合检索 / 查询扩展 /
+ *   MMR 重排依赖它；不支持的后端（如纯检索型远程库）消费方按 false 降级为纯稠密检索。
+ * - persist/load 为可选能力（仅本地持久化实现提供；外部后端的持久化由其自身承担）。
+ */
+export type MaybePromise<T> = T | Promise<T>;
+
+export interface VectorStore {
   readonly dim: number;
+  /** 全量语料导出能力（BM25 混合 / MMR / 查询扩展的前置条件）。 */
+  readonly hybridCapable: boolean;
+  /** chunk 级幂等写入；相同 chunk_id 覆盖（增量更新语义）。 */
+  upsert(chunk: Chunk): MaybePromise<void>;
+  /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk，返回删除数（后端无法计数时返回 0）。 */
+  deleteByDoc(docId: string, tenantId: string): MaybePromise<number>;
+  /** 候选检索：tenant 内相似度 top_k（租户过滤在实现内强制，绝不跨租户）。 */
+  search(tenantId: string, queryVec: number[], topK: number): MaybePromise<RetrieveResult[]>;
+  /** 租户内全量 chunk（含 vector），供 BM25 / MMR 重建语料。仅 hybridCapable=true 保证可用。 */
+  getChunks(tenantId: string): MaybePromise<Chunk[]>;
+  /** chunk 计数（省略 tenant = 全库）。 */
+  count(tenantId?: string): MaybePromise<number>;
+  /** 可选：JSON 持久化（Memory 实现；外部后端忽略）。 */
+  persist?(file: string, shardByTenant?: boolean): void;
+  /** 可选：从 JSON 恢复（Memory 实现）。 */
+  load?(file: string, shardByTenant?: boolean): void;
+  /** 可选：各租户 chunk 数（可观测 / health 用）。 */
+  tenantCounts?(): Record<string, number>;
+}
+
+export class MemoryVectorStore implements VectorStore {
+  readonly dim: number;
+  /** P6-B：全量语料在内存 → 混合检索能力齐备。 */
+  readonly hybridCapable = true;
   private chunks = new Map<string, Chunk>();
 
   constructor(dim: number) {
@@ -215,4 +251,26 @@ export class MemoryVectorStore {
     }
     if (loaded === 0 && existsSync(file)) this.load(file, false);
   }
+}
+
+/**
+ * P6-B 存储工厂：按 `RAG_STORE_BACKEND` 构建向量存储后端。
+ * - 缺省 / `memory` → MemoryVectorStore（单节点 JSON 持久化，零依赖，存量行为）；
+ * - `qdrant` → QdrantVectorStore（REST 零 SDK；QDRANT_URL / QDRANT_API_KEY /
+ *   QDRANT_COLLECTION 配置，维度取参数 dim）。
+ */
+export function createVectorStore(dim: number): VectorStore {
+  const backend = (process.env.RAG_STORE_BACKEND ?? '').trim().toLowerCase();
+  if (backend === 'qdrant') {
+    // 延迟 require：仅 qdrant 后端加载该模块（保持 memory 路径零额外开销）。
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { QdrantVectorStore } = require('./qdrant') as { QdrantVectorStore: new (o: { dim: number; url?: string; apiKey?: string; collection?: string }) => VectorStore };
+    return new QdrantVectorStore({
+      dim,
+      url: process.env.QDRANT_URL,
+      apiKey: process.env.QDRANT_API_KEY,
+      collection: process.env.QDRANT_COLLECTION,
+    });
+  }
+  return new MemoryVectorStore(dim);
 }

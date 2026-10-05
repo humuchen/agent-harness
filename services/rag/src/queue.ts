@@ -8,7 +8,7 @@
  * 零依赖。优雅关闭可调用 drain() 等待在途任务完成。
  */
 
-import type { MemoryVectorStore } from './store';
+import type { VectorStore } from './store';
 import type { EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 
@@ -39,7 +39,7 @@ export interface IngestQueueOptions {
 let seq = 0;
 
 export class IngestQueue {
-  private store: MemoryVectorStore;
+  private store: VectorStore;
   private provider: EmbeddingProvider;
   private concurrency: number;
   private dataFile?: string;
@@ -49,7 +49,7 @@ export class IngestQueue {
   private queue: { job: IngestJob; input: IngestInput }[] = [];
   private active = 0;
 
-  constructor(store: MemoryVectorStore, provider: EmbeddingProvider, opts?: IngestQueueOptions) {
+  constructor(store: VectorStore, provider: EmbeddingProvider, opts?: IngestQueueOptions) {
     this.store = store;
     this.provider = provider;
     this.concurrency = Math.max(1, opts?.concurrency ?? 4);
@@ -94,7 +94,8 @@ export class IngestQueue {
       job.finishedAt = Date.now();
       if (this.dataFile && job.status === 'done') {
         try {
-          this.store.persist(this.dataFile, this.shardByTenant);
+          // P6-B：persist 为 Memory 后端可选能力（外部后端由其自身持久化承担）。
+          this.store.persist?.(this.dataFile, this.shardByTenant);
         } catch {
           /* 持久化失败不阻断队列 */
         }

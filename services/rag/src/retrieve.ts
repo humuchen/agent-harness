@@ -11,7 +11,7 @@
  * - 所有读路径使用服务端重写的 tenant_id，严格租户内检索。
  */
 
-import { MemoryVectorStore, RetrieveResult } from './store';
+import { MemoryVectorStore, RetrieveResult, type VectorStore } from './store';
 import { EmbeddingProvider, tokenize } from './embed';
 import { Bm25Corpus } from './bm25';
 import { mmrRerank } from './rerank';
@@ -55,7 +55,7 @@ function newTraceId(): string {
 }
 
 export async function retrieve(
-  store: MemoryVectorStore,
+  store: VectorStore,
   provider: EmbeddingProvider,
   req: RetrieveRequest,
 ): Promise<RetrieveResponse> {
@@ -68,21 +68,24 @@ export async function retrieve(
   // 复用外部 trace_id 或生成新的
   const traceId = req.trace_id ?? newTraceId();
 
-  // 1) 稠密余弦候选（放大候选集供融合/重排）
-  const cand = store.search(req.tenant_id, queryVec, topK * 4);
+  // 1) 稠密余弦候选（放大候选集供融合/重排）。P6-B：后端可为异步（Qdrant）。
+  const cand = await store.search(req.tenant_id, queryVec, topK * 4);
   if (cand.length === 0) {
     return { results: [], trace_id: traceId, latency_ms: Date.now() - t0 };
   }
 
-  // 2) 真 BM25：从租户全量 chunk 重建语料（含 IDF），对候选打分
-  const allChunks = store.getChunks(req.tenant_id);
+  // 2) 真 BM25：从租户全量 chunk 重建语料（含 IDF），对候选打分。
+  //    P6-B：仅 hybridCapable 后端（Memory / Qdrant-scroll）执行；纯检索后端降级为
+  //    纯稠密检索（wBm25 项归零）， BM25 / 查询扩展自动关闭。
+  const hybrid = store.hybridCapable;
+  const allChunks = hybrid ? await store.getChunks(req.tenant_id) : [];
   const corpus = Bm25Corpus.fromChunks(allChunks);
   const vectorMap = new Map<string, number[]>();
   for (const c of allChunks) vectorMap.set(c.chunk_id, c.vector);
 
   const scored: Scored[] = cand.map((r) => {
     const dense = Math.max(0, r.score); // 余弦 clamp 到 [0,1]
-    const bm25 = corpus.scoreChunk(r.chunk_id, queryTerms);
+    const bm25 = hybrid ? corpus.scoreChunk(r.chunk_id, queryTerms) : 0;
     return { ...r, dense, bm25 };
   });
   const maxBm25 = Math.max(1e-9, ...scored.map((s) => s.bm25));
@@ -124,8 +127,8 @@ export async function retrieve(
     for (const r of ranked) r.rerank_score = r.score;
   }
 
-  // 6) Pre-retrieval：查询扩展词（按 IDF 取显著词项）
-  const expanded_terms = req.expand ? corpus.topTerms(queryTerms, 5) : undefined;
+  // 6) Pre-retrieval：查询扩展词（按 IDF 取显著词项；仅混合后端可用）
+  const expanded_terms = req.expand && hybrid ? corpus.topTerms(queryTerms, 5) : undefined;
 
   return {
     results: ranked,

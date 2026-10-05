@@ -18,7 +18,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { MemoryVectorStore } from './store';
+import { createVectorStore, type VectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
@@ -32,7 +32,7 @@ import { generateAnswer, createLLM, type LLMProvider } from './generate';
 
 export interface RagServerOptions {
   port?: number;
-  store?: MemoryVectorStore;
+  store?: VectorStore;
   provider?: EmbeddingProvider;
   /** secret -> tenantId 映射（多租户静态令牌）。 */
   tokens?: Map<string, string>;
@@ -68,9 +68,10 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 export function createRagServer(opts: RagServerOptions) {
-  const store = opts.store ?? new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
+  // P6-B：存储后端可插拔（RAG_STORE_BACKEND=memory|qdrant，缺省 memory 存量行为不变）。
+  const store = opts.store ?? createVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
   const shard = (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
-  if (opts.dataFile) store.load(opts.dataFile, shard);
+  if (opts.dataFile) store.load?.(opts.dataFile, shard);
   const provider = opts.provider ?? createEmbedder();
   const tokens = opts.tokens;
   const jwtSecret = opts.jwtSecret ?? process.env.RAG_JWT_SECRET;
@@ -96,10 +97,10 @@ export function createRagServer(opts: RagServerOptions) {
       const method = req.method || 'GET';
 
       if (path === '/v1/health' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts());
+        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
         return send(res, 200, {
           ok: true,
-          chunks: store.count(),
+          chunks: await store.count(),
           dim: store.dim,
           cache_size: cache.size,
           ingest: queue.stats(),
@@ -108,7 +109,7 @@ export function createRagServer(opts: RagServerOptions) {
       }
 
       if (path === '/v1/metrics' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts());
+        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
         const buf = Buffer.from(metrics.toPrometheus(), 'utf8');
         res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
         return res.end(buf);
@@ -155,7 +156,10 @@ export function createRagServer(opts: RagServerOptions) {
             resp = { ...resp, results: rr };
           } else {
             const vectorMap = new Map<string, number[]>();
-            for (const c of store.getChunks(rreq.tenant_id)) vectorMap.set(c.chunk_id, c.vector);
+            if (store.hybridCapable) {
+              for (const c of await store.getChunks(rreq.tenant_id))
+                vectorMap.set(c.chunk_id, c.vector);
+            }
             resp = { ...resp, results: mmrRerank(resp.results, vectorMap, 0.5) };
           }
         }
@@ -214,7 +218,7 @@ export function createRagServer(opts: RagServerOptions) {
         }
 
         const result = await ingestDocument(store, provider, input);
-        if (opts.dataFile) store.persist(opts.dataFile, shard);
+        if (opts.dataFile) store.persist?.(opts.dataFile, shard);
         metrics.recordIngest(true);
         return send(res, 200, result);
       }
