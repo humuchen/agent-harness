@@ -21,6 +21,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { createVectorStore, type VectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, ingestStructured, IngestInput, StructuredIngestInput } from './ingest';
+import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
 import { resolveTenant } from './auth';
 import { IngestQueue } from './queue';
@@ -126,6 +127,7 @@ export function createRagServer(opts: RagServerOptions) {
           filters: body.filters,
           tenant_id: auth.tenantId, // 服务端重写
           expand: !!body.expand,
+          parent: !!body.parent, // P6-B 方案二二期：ParentDocument 父块展开
         };
         if (!rreq.query) return send(res, 400, { error: 'query required' });
 
@@ -147,7 +149,17 @@ export function createRagServer(opts: RagServerOptions) {
           }
         }
 
-        let resp: RetrieveResponse = { ...(await retrieve(store, provider, rreq)), cache_hit: false };
+        // P6-B 方案二二期：高级检索分派（body.mode: multi-query | hyde；需已配置 LLM，
+        // 未配置时静默回落普通检索——高级检索是增强能力非必需）。
+        const mode = String(body.mode ?? '').toLowerCase();
+        let resp: RetrieveResponse;
+        if (mode === 'multi-query' && llm) {
+          resp = { ...(await multiQueryRetrieve(store, provider, llm, rreq)), cache_hit: false };
+        } else if (mode === 'hyde' && llm) {
+          resp = { ...(await hydeRetrieve(store, provider, llm, rreq)), cache_hit: false };
+        } else {
+          resp = { ...(await retrieve(store, provider, rreq)), cache_hit: false };
+        }
         // RAG_RERANK=api：真实 cross-encoder 重排（rerank.ts），失败回退 MMR
         const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
         if (rerankMode === 'api' && resp.results.length > 1) {

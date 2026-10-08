@@ -36,6 +36,12 @@ export interface RetrieveRequest {
    * 若提供，则复用该 id 而非生成新的；便于与 harness 侧的 run:meta traceId 关联。
    */
   trace_id?: string;
+  /**
+   * P6-B 方案二二期：ParentDocument 模式 —— 入库为父子两级（retrieval_mode='parent-child'）
+   * 时开启：候选排除父块（父块仅作返回上下文单位），命中子块按 parent_id 聚合返回
+   * 父块内容（小块精度 + 大块上下文）。缺省 false（存量行为）。
+   */
+  parent?: boolean;
 }
 
 export interface RetrieveResponse {
@@ -54,6 +60,44 @@ function newTraceId(): string {
   return 'rag_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/**
+ * P6-B 方案二二期：父块展开（ParentDocument 后处理）。
+ * 命中子块（metadata.parent_id）按父聚合：content 替换为父块全文、chunk_id 换为父 id、
+ * metadata.expanded_from 记来源子块；同父多子命中取最高分（results 已按分排序取首现）。
+ * 非父子语料（无 parent_id 标记）原样返回（零回归）。
+ */
+async function expandToParents(
+  results: Scored[],
+  store: VectorStore,
+  tenantId: string
+): Promise<Scored[]> {
+  if (!results.some((r) => r.metadata?.parent_id)) return results;
+  const chunks = await store.getChunks(tenantId);
+  const byId = new Map(chunks.map((c) => [c.chunk_id, c] as const));
+  const out = new Map<string, Scored>();
+  for (const r of results) {
+    const parentId = r.metadata?.parent_id as string | undefined;
+    if (!parentId) {
+      if (!out.has(r.chunk_id)) out.set(r.chunk_id, r);
+      continue;
+    }
+    const key = `parent:${parentId}`;
+    if (out.has(key)) continue; // 同父取最高分（首现）
+    const parent = byId.get(parentId);
+    if (!parent) {
+      if (!out.has(r.chunk_id)) out.set(r.chunk_id, r);
+      continue;
+    }
+    out.set(key, {
+      ...r,
+      chunk_id: parentId,
+      content: parent.content,
+      metadata: { ...(r.metadata ?? {}), expanded_from: r.chunk_id },
+    });
+  }
+  return [...out.values()];
+}
+
 export async function retrieve(
   store: VectorStore,
   provider: EmbeddingProvider,
@@ -69,7 +113,11 @@ export async function retrieve(
   const traceId = req.trace_id ?? newTraceId();
 
   // 1) 稠密余弦候选（放大候选集供融合/重排）。P6-B：后端可为异步（Qdrant）。
-  const cand = await store.search(req.tenant_id, queryVec, topK * 4);
+  const cand0 = await store.search(req.tenant_id, queryVec, topK * 4);
+  // parent 模式：候选排除父块（父块仅作返回上下文单位，不参与命中）。
+  const cand = req.parent
+    ? cand0.filter((r) => r.metadata?.retrieval_role !== 'parent')
+    : cand0;
   if (cand.length === 0) {
     return { results: [], trace_id: traceId, latency_ms: Date.now() - t0 };
   }
@@ -119,6 +167,12 @@ export async function retrieve(
   let ordered = filtered;
   if (rerankMode === 'mmr' && filtered.length > 1) {
     ordered = mmrRerank(filtered, vectorMap, 0.5);
+  }
+
+  // 4.5) P6-B 方案二二期：父块展开 —— 命中子块按 parent_id 聚合为父块
+  //（同父取最高分；结果已按分排序取首现）。父块内容从全量语料取（hybrid 后端）。
+  if (req.parent && store.hybridCapable) {
+    ordered = await expandToParents(ordered, store, req.tenant_id);
   }
 
   // 5) 阈值 + 取 top_k

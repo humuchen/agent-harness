@@ -9,7 +9,7 @@
 import type { Chunk, VectorStore } from './store';
 import type { EmbeddingProvider } from './embed';
 import { loadDocument, type DocumentSource } from './loaders';
-import { splitAuto } from './splitter';
+import { splitAuto, splitParentChild } from './splitter';
 
 export interface IngestInput {
   doc_id: string;
@@ -84,6 +84,18 @@ export interface StructuredIngestInput extends Omit<IngestInput, 'text' | 'chunk
   source: DocumentSource;
   /** splitter 单片上限（字符），缺省 480。 */
   max_len?: number;
+  /**
+   * P6-B 方案二二期：检索编排模式。
+   * - 缺省 'chunk'：单片直接入库（存量行为）。
+   * - 'parent-child'：父子两级切分入库 —— 子块做检索命中（metadata.retrieval_role='child'、
+   *   携带 parent_id），父块同库存储（role='parent'）；retrieve 开启 parent 展开后命中
+   *   子块返回父块内容（小块精度 + 大块上下文）。
+   */
+  retrieval_mode?: 'chunk' | 'parent-child';
+  /** parent-child 模式的父块上限（字符），缺省 1600。 */
+  parent_len?: number;
+  /** parent-child 模式的子块上限（字符），缺省 400。 */
+  child_len?: number;
 }
 
 export async function ingestStructured(
@@ -98,6 +110,43 @@ export async function ingestStructured(
   if (!input.source) throw new Error('source 必填（{ type, value }）');
 
   const doc = await loadDocument(input.source);
+
+  // parent-child：父子两级切分，子块检索命中 / 父块返回上下文。
+  if ((input.retrieval_mode ?? 'chunk') === 'parent-child') {
+    const groups = splitParentChild(doc.text, {
+      parentLen: input.parent_len,
+      childLen: input.child_len ?? input.chunk_size ?? 400,
+    });
+    const items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }> = [];
+    groups.forEach((g, pi) => {
+      const parentId = `${docId}#p${pi}`;
+      items.push({
+        content: g.parent.content,
+        chunkId: parentId, // 显式 chunk id —— 与 metadata.parent_id 严格一致（检索展开按此聚合）
+        meta: {
+          retrieval_role: 'parent',
+          parent_id: parentId,
+          ...(g.parent.headingPath.length ? { heading_path: g.parent.headingPath } : {}),
+        },
+      });
+      for (const c of g.children) {
+        items.push({
+          content: c.content,
+          meta: {
+            retrieval_role: 'child',
+            parent_id: parentId,
+            ...(c.headingPath.length ? { heading_path: c.headingPath } : {}),
+          },
+        });
+      }
+    });
+    if (items.length === 0) {
+      throw new Error('加载与切分后无有效内容（检查 source 内容或 max_len 配置）');
+    }
+    const replaced = await embedAndWrite(store, provider, docId, tenantId, items, input);
+    return { doc_id: docId, tenant_id: tenantId, chunks: items.length, replaced };
+  }
+
   const pieces = splitAuto(doc.text, { maxLen: input.max_len ?? input.chunk_size ?? 480 });
   if (pieces.length === 0) {
     throw new Error('加载与切分后无有效内容（检查 source 内容或 max_len 配置）');
@@ -121,13 +170,15 @@ export async function ingestStructured(
  * 共享写入段：先完成**全部**向量化（P1 毒化防护 —— 远程嵌入失败时旧文档原样保留，
  * 不出现半入库中间态），再 deleteByDoc + 逐片幂等 upsert。
  * items.meta 会合并进 chunk.metadata（heading_path 等结构信息；空对象不覆盖既有 metadata 语义）。
+ * items.chunkId 为显式 chunk id（P6-B ParentDocument 父块用 `${docId}#p${i}`，供
+ * metadata.parent_id 关联检索）；缺省按顺序 `${docId}#${idx}`。
  */
 async function embedAndWrite(
   store: VectorStore,
   provider: EmbeddingProvider,
   docId: string,
   tenantId: string,
-  items: Array<{ content: string; meta?: Record<string, unknown> }>,
+  items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }>,
   base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown> }
 ): Promise<number> {
   const vectors: number[][] = [];
@@ -142,7 +193,7 @@ async function embedAndWrite(
   for (const item of items) {
     const meta = { ...(base?.metadata ?? {}), ...(item.meta ?? {}) };
     const chunk: Chunk = {
-      chunk_id: `${docId}#${idx}`,
+      chunk_id: item.chunkId ?? `${docId}#${idx}`,
       doc_id: docId,
       tenant_id: tenantId,
       index: idx,

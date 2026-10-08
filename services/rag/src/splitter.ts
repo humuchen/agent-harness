@@ -135,3 +135,36 @@ export function splitPlainText(text: string, opts: SplitOptions = {}): SplitPiec
 export function splitAuto(text: string, opts: SplitOptions = {}): SplitPiece[] {
   return /(^|\n)#{1,6}\s+\S/.test(text) ? splitMarkdown(text, opts) : splitPlainText(text, opts);
 }
+
+/* ------------------------------------------------------------------ */
+/* P6-B 方案二二期：ParentDocument 父子切分（小块检索命中 → 返回父块）  */
+/* ------------------------------------------------------------------ */
+
+export interface ParentChildGroup {
+  /** 父块（检索返回单位，较大）。 */
+  parent: { content: string; headingPath: string[] };
+  /** 子块（检索单位，较小；index 为父内序号）。 */
+  children: SplitPiece[];
+}
+
+/**
+ * 父子两级切分：先按结构切父块（parentLen，缺省 1600），父块内再切子块
+ * （childLen，缺省 400）。入库时子块做检索命中、携带 parent_id；检索端按
+ * parent_id 聚合返回父块内容（见 retrieve 的 parent 展开选项）。
+ */
+export function splitParentChild(
+  text: string,
+  opts: { parentLen?: number; childLen?: number } = {}
+): ParentChildGroup[] {
+  const parentLen = Math.max(200, opts.parentLen ?? 1600);
+  const childLen = Math.max(80, opts.childLen ?? 400);
+  const parents = splitAuto(text, { maxLen: parentLen });
+  return parents.map((p) => ({
+    parent: { content: p.content, headingPath: p.headingPath },
+    children: splitBlock(p.content, childLen).map((content, index) => ({
+      content,
+      index,
+      headingPath: p.headingPath,
+    })),
+  }));
+}
