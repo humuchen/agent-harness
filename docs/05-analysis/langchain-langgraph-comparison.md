@@ -91,10 +91,28 @@
 
 ## 7. 补齐建议与优先级
 
-> **落地状态（2026-09-28 P6 批次）**：第 1–2 项（结构化输出 schema：`json-schema.ts` 校验器 + 工具参数 `validateArgs` 接入 harness 执行链 + `StepDef.outputSchema` 产出闸门）、
-> 第 2 行动态 fan-out 原语（`StepDef.dynamic` + `spawn` 物化）、第 3 行检查点 DB 后端（`DbWorkflowStore`，PostgreSQL/SQLite 经 DbAdapter）、
-> 以及 step 分叉重跑（`resetRunForRerun` + `POST /api/workflows/:id/rerun`）**均已实现并随 `backend/core/test/workflow-p6.test.cjs` 覆盖**；
-> step 级重试（`retries`/`retryBackoffMs` + `wf:step:retry` 事件）同批落地。RAG 生产化与节点级 time travel 完整版仍为后续项。
+> **落地状态（2026-10-08 终版，全部收口）**：§7 全部 10 项可执行候选已实施（提交
+> 8ea9da8 → caf95bb → 7312b49 → 688cf0e → 0abaf35），并追加评估方案 5 项排期
+> （`docs/05-analysis/p6-gap-remediation-eval.md`）全部落地：
+>
+> | 能力 | 实现 | 测试锚点 |
+> | --- | --- | --- |
+> | step 重试 | `retries/retryBackoffMs` + `wf:step:retry` | workflow-p6 |
+> | 结构化输出 schema | `json-schema.ts` + `validateArgs` + `outputSchema` + 修正环（ctx.schemaFeedback 回喂） | workflow-p6 |
+> | 检查点 DB 后端 | `DbWorkflowStore`（PG/SQLite/Turso，原子 claim） | workflow-p6 |
+> | 动态 fan-out | `StepDef.dynamic` + `spawn` 物化（`wf:step:spawned`） | workflow-p6 |
+> | 分叉重跑 / time travel | `resetRunForRerun` + `/rerun`；快照链 `WorkflowRun.snapshots`（≤50）+ `rollbackToSnapshot` + `/rollback` 任意回溯；`history` 跃迁审计 | workflow-p6 |
+> | 状态增量流 | `wf:step:update`（16 跃迁点单帧快照） | workflow-p6 |
+> | subgraph | `StepDef.defRef` 嵌套（环检测 + 深度护栏 + 失败传播） | workflow-p6 |
+> | citations 归一 | `LLMResponse.citations`（流式/非流式双路径） | llm-citations |
+> | RAG 向量库 | `VectorStore` 契约 + Memory/Qdrant 双后端 + loaders + 结构感知 splitter + ParentDocument/multi-query/HyDE | loaders-splitter / advanced-golden |
+> | evals | golden 数据集版本化批跑 + 版本 diff（`golden.ts` + `scripts/rag-golden.cjs`） | advanced-golden |
+> | 观测 | `run_traces` 过程归档（跨重启可检索）+ 抽屉「历史执行」 | workflow-trace |
+>
+> **维持不对齐（决策项）**：LangSmith SaaS 接入（自建 run_traces + OTel 预留替代）、
+> 图运行时重写 / middleware 化 / provider 数量军备（负 ROI）；`store` 独立快照表
+> （方案一 B）仅当出现长 run 全量回放需求时升级。验证基线：core 731/731、rag 46/46、
+> webapp 410/410。
 
 | 优先级 | 事项 | 建议落点 |
 | --- | --- | --- |
