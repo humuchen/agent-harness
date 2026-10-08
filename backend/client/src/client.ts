@@ -470,6 +470,33 @@ export class AgentClient {
   }
 
   /**
+   * P6 方案一 A：回滚到指定快照（time travel 回放锚点）—— 把 run 恢复到该时点
+   * （steps/outputs 恢复，产出超限 step 重置 pending）后，配合 streamWorkflowResume
+   * 重放（上游 done 产出复用）。对应服务端 POST /api/workflows/:id/rollback；
+   * running 态 / 未知快照由服务端 409/400 拒绝（ApiError）。
+   */
+  async rollbackWorkflow(
+    id: string,
+    snapshotId: string
+  ): Promise<{ ok: boolean; workflowId: string; snapshotId: string; run: WorkflowRun; hint?: string }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/rollback`,
+      { method: 'POST', body: JSON.stringify({ snapshotId }) }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as {
+      ok: boolean;
+      workflowId: string;
+      snapshotId: string;
+      run: WorkflowRun;
+      hint?: string;
+    };
+  }
+
+  /**
    * P6 观测（方案三一期）：run 过程归档查询 —— runId 缺省返回该工作流最近 ≤20 次执行的
    * 归档列表（新→旧）；指定 runId 返回单次完整归档（per-step 状态/重试/错误/调用链路）。
    * 对应服务端 GET /api/workflows/:id/run-traces[?runId=]。

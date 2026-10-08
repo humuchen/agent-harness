@@ -16,7 +16,7 @@ import { getAgentRegistry, type AgentRegistry } from '../agents/registry';
 import type { AgentCard } from '../agents/types';
 import { getTeamManager, type TeamManager } from '../teams';
 import type { Team } from '../teams';
-import { WORKFLOW_HISTORY_MAX, type SpawnSpec, type StepDef, type StepRun, type StepTraceNode, type WorkflowDef, type WorkflowHistoryEntry, type WorkflowRun } from './types';
+import { WORKFLOW_HISTORY_MAX, WORKFLOW_SNAPSHOT_MAX, SNAPSHOT_OUTPUT_MAX, type SpawnSpec, type StepDef, type StepRun, type StepTraceNode, type WorkflowDef, type WorkflowHistoryEntry, type WorkflowRun, type WorkflowSnapshot } from './types';
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
 import { inspectStepOutput } from './step-output';
 import { validateAgainstSchema } from '../json-schema';
@@ -101,7 +101,15 @@ export type WorkflowEvent =
   /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
   | { type: 'wf:awaiting-approval'; workflowId: string; runId?: string; stepIds: string[]; run: WorkflowRun }
   | { type: 'wf:done'; workflowId: string; runId?: string; run: WorkflowRun }
-  | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun };
+  | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun }
+  | {
+      /** P6 方案一 A：回滚到指定快照完成（恢复态已落盘，调用方随后 /resume 重放）。 */
+      type: 'wf:rollback';
+      workflowId: string;
+      runId?: string;
+      snapshotId: string;
+      run: WorkflowRun;
+    };
 
 export interface DagEngineOptions {
   /** 注册表：解析 agentRef（字符串 id）。缺省用共享单例。 */
@@ -407,6 +415,26 @@ export class DagEngine {
     return updated;
   }
 
+  /**
+   * P6 方案一 A：回滚到指定快照（time travel 回放锚点）。恢复 steps/outputs 后
+   * state → pending 落盘，调用方随后走既有 /resume 重放（上游 done 产出复用；
+   * 产出超限被省略的 step 自动重跑）。运行中拒绝（与 rerun 同语义）。
+   */
+  async rollback(workflowId: string, snapshotId: string): Promise<WorkflowRun> {
+    const run = await this.store.get(workflowId);
+    if (!run) throw new Error(`workflow not found: ${workflowId}`);
+    const updated = rollbackToSnapshot(run, snapshotId);
+    await this.store.save(updated);
+    this.emit({
+      type: 'wf:rollback',
+      workflowId,
+      runId: updated.runId,
+      snapshotId,
+      run: updated,
+    });
+    return updated;
+  }
+
   /** 生成运行唯一 id：时间戳 + 单调自增 + 随机后缀，无需引入 uuid 依赖。 */
   private genRunId(): string {
     DagEngine._seq = (DagEngine._seq ?? 0) + 1;
@@ -625,11 +653,13 @@ export class DagEngine {
     const approved = new Set(run.approvals ?? []); // P3：已批准放行的 step
     // P6 动态 fan-out：波次收敛后统一物化的 spawn 队列（所在波次失败时不物化，见 drainSpawns）。
     const spawnQueue: Array<{ parent: StepDef; result: unknown }> = [];
+    // P6 方案一 A：当前波次序号提到 try 外 —— 失败收敛的快照（catch 内）需要它。
+    let wi = 0;
     try {
       // P6 调度循环：波次列表仅在发生物化（drainSpawns > 0）时重算——无 spawn 时与旧
       // `for (const wave of this.topoWaves(def))` 的波次序列逐字一致（topoWaves 确定性）。
       let waves = this.topoWaves(def);
-      let wi = 0;
+      wi = 0;
       while (wi < waves.length) {
         const wave = waves[wi]!;
         if (signal?.aborted) throw new Error('workflow aborted');
@@ -646,6 +676,8 @@ export class DagEngine {
           return true;
         });
         if (gated.length > 0) {
+          // P6 方案一 A：进入审批暂停前快照（回滚锚点 —— 审批前状态可整体回退）。
+          pushRunSnapshot(run, 'awaiting', wi + 1);
           for (const id of gated) {
             run.steps[id] = { id, state: 'awaiting' };
             this.emitStepUpdate(run, id);
@@ -774,6 +806,8 @@ export class DagEngine {
           await this.runWaveParallel(def, wave, runWaveStep);
         }
         wi += 1;
+        // P6 方案一 A：波次收敛 → 状态快照（time travel 回放锚点）。
+        pushRunSnapshot(run, 'wave', wi);
         // P6 动态 fan-out：波次收敛后物化 spawn（失败已 fail-fast 抛出，不会走到这里）。
         if (this.drainSpawns(def, run, spawnQueue) > 0) {
           waves = this.topoWaves(def); // 新步骤参与调度（引用 / 环非法时抛错 → run failed）
@@ -795,6 +829,8 @@ export class DagEngine {
     } catch (e: any) {
       // P6-D9-lite：失败收敛前记录跃迁历史（当时各 step 状态 + 失败原因）。
       pushRunHistory(run, 'failed', e?.message ?? String(e));
+      // P6 方案一 A：失败收敛快照（回滚锚点 —— 失败现场可整体回退重放）。
+      pushRunSnapshot(run, 'failed', wi);
       run.error = e?.message ?? String(e);
       run.state = 'failed';
       run.finishedAt = Date.now();
@@ -1024,6 +1060,8 @@ export class DagEngine {
         return true;
       });
       if (gated.length > 0) {
+        // P6 方案一 A：进入审批暂停前快照（与 run() 同语义）。
+        pushRunSnapshot(run, 'awaiting', wi + 1);
         for (const id of gated) {
           run.steps[id] = { id, state: 'awaiting' };
           this.emitStepUpdate(run, id);
@@ -1138,6 +1176,8 @@ export class DagEngine {
         await this.runWaveParallel(run.def, wave, resumeWaveStep);
       }
       wi += 1;
+      // P6 方案一 A：波次收敛 → 状态快照（与 run() 同语义）。
+      pushRunSnapshot(run, 'wave', wi);
       // P6 动态 fan-out：仅波次无失败时物化（失败即收敛 failed，与 run() 语义一致）。
       if (!stepFailed && this.drainSpawns(run.def, run, spawnQueue) > 0) {
         waves = this.topoWaves(run.def);
@@ -1162,6 +1202,8 @@ export class DagEngine {
       // 与 run() 一致：任一 step 失败 → 整个 run 标记 failed 并执行补偿（逆序 onRolling / 旧 compensate）。
       // P6-D9-lite：失败收敛前记录跃迁历史。
       pushRunHistory(run, 'failed', run.error ?? 'step failed during resume');
+      // P6 方案一 A：失败收敛快照（回滚锚点）。
+      pushRunSnapshot(run, 'failed', wi);
       run.state = 'failed';
       run.error = run.error ?? 'step failed during resume';
       run.finishedAt = Date.now();
@@ -1334,6 +1376,83 @@ export function pushRunHistory(run: WorkflowRun, action: string, detail?: string
     ...(detail ? { detail } : {}),
   };
   run.history = [...(run.history ?? []), entry].slice(-WORKFLOW_HISTORY_MAX);
+}
+
+/** 快照 id 序号（进程内单调；与 ts 组合保证唯一）。 */
+let snapSeq = 0;
+
+/**
+ * P6 方案一 A：捕获状态快照（波次收敛 / awaiting / failed 时调用）。
+ * steps 做 JSON 深拷贝（引擎后续对 StepRun 的原地变异 —— mergeStepTrace 写 sr.trace、
+ * 字段更新 —— 不得污染已入快照的对象）；产出超 SNAPSHOT_OUTPUT_MAX 的 step 省略产出
+ * 并记入 outputOmitted（rollback 时强制重置 pending 重跑，杜绝截断产出污染黑板）。
+ * 返回快照 id。
+ */
+export function pushRunSnapshot(run: WorkflowRun, action: string, wave: number): string {
+  const id = `snap_${Date.now().toString(36)}_${++snapSeq}`;
+  const steps: Record<string, StepRun> = {};
+  const omitted: string[] = [];
+  for (const [sid, sr] of Object.entries(run.steps)) {
+    if (!sr) continue;
+    const out = sr.output;
+    if (out !== undefined) {
+      const size = typeof out === 'string' ? out.length : (JSON.stringify(out)?.length ?? 0);
+      if (size > SNAPSHOT_OUTPUT_MAX) {
+        omitted.push(sid);
+        const copy = JSON.parse(JSON.stringify({ ...sr, output: undefined })) as StepRun;
+        steps[sid] = copy;
+        continue;
+      }
+    }
+    steps[sid] = JSON.parse(JSON.stringify(sr)) as StepRun;
+  }
+  const snap: WorkflowSnapshot = {
+    id,
+    ts: Date.now(),
+    action,
+    wave,
+    steps,
+    ...(omitted.length ? { outputOmitted: omitted } : {}),
+  };
+  run.snapshots = [...(run.snapshots ?? []), snap].slice(-WORKFLOW_SNAPSHOT_MAX);
+  return id;
+}
+
+/**
+ * P6 方案一 A：把 run 恢复到指定快照时点（纯函数，随引擎 rollback / 服务端
+ * POST /:id/rollback 暴露）。语义：
+ * - steps 恢复为快照内容（产出被省略的 step 重置 pending 重跑，杜绝截断产出进黑板）；
+ * - 快照之后新增的 step（动态物化子任务）重置 pending —— 其依赖父步已恢复 done，
+ *   resume 会按 def 拓扑直接执行它们（父不再重跑、spawn 不重放，物化 id 已在 def）；
+ * - state → pending，清 error/finishedAt，随后走既有 /resume 重放；
+ * - 跃迁历史记 'rollback'（重置前的状态留档）。
+ */
+export function rollbackToSnapshot(run: WorkflowRun, snapshotId: string): WorkflowRun {
+  if (run.state === 'running') {
+    throw new Error(
+      `workflow "${run.def.id}" 正在运行（runId=${run.runId ?? 'unknown'}），不可回滚——先 cancel 再重试`
+    );
+  }
+  const snap = (run.snapshots ?? []).find((s) => s.id === snapshotId);
+  if (!snap) {
+    const n = (run.snapshots ?? []).length;
+    throw new Error(`快照不存在："${snapshotId}"（该 run 共 ${n} 份快照）`);
+  }
+  pushRunHistory(run, 'rollback', `to ${snapshotId}`);
+  const restored: Record<string, StepRun> = {};
+  for (const [sid, sr] of Object.entries(snap.steps)) {
+    restored[sid] = snap.outputOmitted?.includes(sid)
+      ? { id: sid, state: 'pending' }
+      : (JSON.parse(JSON.stringify(sr)) as StepRun);
+  }
+  for (const sid of Object.keys(run.steps)) {
+    if (!restored[sid]) restored[sid] = { id: sid, state: 'pending' };
+  }
+  run.steps = restored;
+  run.state = 'pending';
+  delete run.error;
+  delete run.finishedAt;
+  return run;
 }
 
 /**

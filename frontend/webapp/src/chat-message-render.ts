@@ -130,6 +130,8 @@ export interface ChatRenderCtx {
   /** P6 观测（方案三一期）：抽屉「历史执行」回看指定 run 归档 / 退出回看。 */
   planWfHistoryLoad: (m: ChatMsg, runId: string) => void;
   planWfHistoryClose: (m: ChatMsg) => void;
+  /** P6 方案一 A：抽屉「回滚到此点」—— 恢复到指定快照后重新执行。 */
+  planRollbackTo: (m: ChatMsg, snapshotId: string) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
   requestUpdate: () => void;
   onComposerPointerDown: (e: PointerEvent) => void;
@@ -1095,6 +1097,34 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                   </span>
                 </div>`
               : nothing}
+            ${(() => {
+              // P6 方案一 A：「状态快照」区 —— time travel 回放锚点列表（检查点随带，
+              // 零新请求）。回看历史归档时不渲染（快照属于当前 run 态）。
+              const snaps = !historyView && !fromMirror ? run?.snapshots : undefined;
+              if (!snaps || snaps.length === 0) return nothing;
+              return html`<details class="wf-replay-history">
+                <summary>状态快照 · ${snaps.length} 个（可回滚）</summary>
+                <ul class="wf-history-list">
+                  ${snaps
+                    .slice()
+                    .reverse()
+                    .map(
+                      (s) => html`<li class="wf-snapshot-item">
+                        <span class="wf-snapshot-meta"
+                          >#${s.wave} · ${s.action} · ${new Date(s.ts).toLocaleTimeString()}</span
+                        >
+                        <button
+                          class="plan-btn ghost"
+                          title="把 run 恢复到该时点后重新执行（上游 done 产出复用）"
+                          @click=${() => ctx.planRollbackTo(m, s.id)}
+                        >
+                          回滚到此点
+                        </button>
+                      </li>`
+                    )}
+                </ul>
+              </details>`;
+            })()}
             <ol class="wf-replay-timeline">
               ${rows.map(
                 (r) =>

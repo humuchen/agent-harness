@@ -267,6 +267,31 @@ export interface WorkflowHistoryEntry {
 /** 历史条目上限（防检查点膨胀；超出丢最旧）。 */
 export const WORKFLOW_HISTORY_MAX = 20;
 
+/**
+ * P6 方案一 A：run 内嵌状态快照（time travel 的回放锚点，见
+ * docs/05-analysis/p6-gap-remediation-eval.md §方案一）。
+ * 与 history（仅状态名）不同，snapshot 记录**完整 steps**（含产出；产出超
+ * SNAPSHOT_OUTPUT_MAX 时省略并标记 outputOmitted），rollbackToSnapshot 据此把
+ * run 恢复到该时点后走 /resume 重放。
+ */
+export interface WorkflowSnapshot {
+  id: string;
+  ts: number;
+  /** 捕获时机：'wave'（波次收敛）/ 'awaiting'（进入审批暂停）/ 'failed'（失败收敛）。 */
+  action: string;
+  /** 该时点已完成波次序号（展示用）。 */
+  wave: number;
+  /** 完整 steps 快照。 */
+  steps: Record<string, StepRun>;
+  /** 产出被省略的 step id 集合（rollback 时这些 step 强制重置 pending 重跑）。 */
+  outputOmitted?: string[];
+}
+
+/** 快照产出截断阈值：单 step 产出超过该字符数则不进快照（rollback 后该 step 重跑）。 */
+export const SNAPSHOT_OUTPUT_MAX = 65_536;
+/** 快照条目上限（防检查点膨胀；超出丢最旧）。 */
+export const WORKFLOW_SNAPSHOT_MAX = 50;
+
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */
 export interface WorkflowRun {
   def: WorkflowDef;
@@ -299,4 +324,10 @@ export interface WorkflowRun {
    * 旧快照无该字段 → 从空开始累积（零回归）。
    */
   history?: WorkflowHistoryEntry[];
+  /**
+   * P6 方案一 A 状态快照链（波次收敛 / awaiting / failed 时捕获，上限
+   * WORKFLOW_SNAPSHOT_MAX 丢最旧），rollbackToSnapshot 据此把 run 恢复到任意时点。
+   * 旧快照无该字段 → 从空开始累积（零回归）。
+   */
+  snapshots?: WorkflowSnapshot[];
 }

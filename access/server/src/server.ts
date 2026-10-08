@@ -1120,11 +1120,12 @@ const server = createServer(
         const isApprove = req.method === 'POST' && path.endsWith('/approve');
         const isCancel = req.method === 'POST' && path.endsWith('/cancel');
         const isRerun = req.method === 'POST' && path.endsWith('/rerun');
-        // POST /resume、/approve、/cancel、/rerun 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
+        const isRollback = req.method === 'POST' && path.endsWith('/rollback');
+        // POST /resume、/approve、/cancel、/rerun、/rollback 会影响执行中的 agent（写操作）→ workflow:run；GET 快照/归档 → workflow:read。
         const ctx = await guard(
           req,
           res,
-          isResume || isApprove || isCancel || isRerun ? 'workflow:run' : 'workflow:read'
+          isResume || isApprove || isCancel || isRerun || isRollback ? 'workflow:run' : 'workflow:read'
         );
         if (!ctx) return;
         const id = decodeURIComponent(
@@ -1215,6 +1216,67 @@ const server = createServer(
           } catch (e) {
             res.writeHead(500, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          }
+          return;
+        }
+        // P6 方案一 A：POST /api/workflows/:id/rollback —— body.snapshotId 指定回放锚点。
+        // 语义：把 run 恢复到该快照时点（steps/outputs 恢复，产出超限 step 重置 pending），
+        // state → pending 落盘；随后调用既有 POST /:id/resume 重放（与 rerun 同款「重置 + 续跑」
+        // 两步拆分，完整复用 /resume 的 BYOK 凭据解析与 SSE 链路）。运行中拒绝（409）。
+        if (isRollback) {
+          const workflowId = id.slice(0, -'/rollback'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const body = await readBody(req);
+          const snapshotId = typeof body.snapshotId === 'string' ? body.snapshotId.trim() : '';
+          if (!snapshotId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({ error: 'rollback requires body.snapshotId（回放锚点快照 id）' })
+            );
+            return;
+          }
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            const engine = new DagEngine({ store, executor: async () => ({}), onEvent: (e: unknown) => {
+              if (e && typeof e === 'object' && 'type' in e) {
+                const ev = e as WorkflowEvent;
+                auditWfEvent(ev, ctx);
+                maybeArchiveRunTrace(ev);
+              }
+            } });
+            const updated = await engine.rollback(workflowId, snapshotId);
+            auditAction('workflow.rollback', {
+              workflowId,
+              snapshotId,
+              restoredSteps: Object.values(updated.steps).filter((s) => s.state === 'done').length,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                workflowId,
+                snapshotId,
+                run: updated,
+                hint: `POST /api/workflows/${encodeURIComponent(workflowId)}/resume 从快照 "${snapshotId}" 重放`
+              })
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const status = /正在运行/.test(msg) ? 409 : /快照不存在/.test(msg) ? 400 : 500;
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: msg }));
           }
           return;
         }

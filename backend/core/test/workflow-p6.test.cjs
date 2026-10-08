@@ -604,3 +604,89 @@ test('P6-D9-lite: rerun/resumed/failed 历史随检查点持久化，截断保�
   assert.ok(stored.history && stored.history.length <= 20);
   assert.strictEqual(stored.history[stored.history.length - 1].action, 'resumed');
 });
+
+// ─── 11. P6 方案一 A：状态快照 + 任意回滚 ──────────────────────────────────
+
+test('P6-A snapshot: 波次收敛捕获 + rollback 后 resume 重放（上游产出复用）', async () => {
+  const calls = {};
+  const store = new VolatileWorkflowStore();
+  const engine = new DagEngine({ store, executor: makeExecutor({ calls }) });
+  const def = {
+    id: 'wf-snap',
+    steps: [
+      { id: 'a', agentRef: DEFAULT_AGENT_ID },
+      { id: 'b', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+    ],
+  };
+  const run = await engine.run(def, 'x');
+  assert.strictEqual(run.state, 'done');
+  assert.ok((run.snapshots ?? []).length >= 2, '两波各留一份快照');
+  assert.strictEqual(calls.a, 1);
+  // 回滚到第 1 波快照（a 刚完成）。
+  const snap1 = (run.snapshots ?? []).find((s) => s.wave === 1);
+  assert.ok(snap1);
+  const rb = await engine.rollback('wf-snap', snap1.id);
+  assert.strictEqual(rb.state, 'pending');
+  assert.strictEqual(rb.steps.a.state, 'done', 'a 从快照恢复 done');
+  assert.strictEqual(rb.steps.b.state, 'pending');
+  assert.ok(rb.history?.some((h) => h.action === 'rollback'), '跃迁历史记 rollback');
+  // resume 重放：b 重跑，a 跳过（调用计数不增）。
+  const r2 = await engine.resume('wf-snap');
+  assert.strictEqual(r2.state, 'done');
+  assert.strictEqual(calls.a, 1, 'a 产出复用不重跑');
+  assert.strictEqual(calls.b, 2, 'b 重放');
+});
+
+test('P6-A snapshot: 产出超限 step 省略产出，rollback 时强制重跑', async () => {
+  const calls = {};
+  const store = new VolatileWorkflowStore();
+  const big = 'z'.repeat(70_000); // > SNAPSHOT_OUTPUT_MAX(65536)
+  const engine = new DagEngine({
+    store,
+    executor: (step) => {
+      calls[step.id] = (calls[step.id] ?? 0) + 1;
+      return step.id === 'a' ? big : { step: step.id };
+    },
+  });
+  const run = await engine.run(
+    {
+      id: 'wf-snap-omit',
+      steps: [
+        { id: 'a', agentRef: DEFAULT_AGENT_ID },
+        { id: 'b', agentRef: DEFAULT_AGENT_ID, dependsOn: ['a'] },
+      ],
+    },
+    'x'
+  );
+  assert.strictEqual(run.state, 'done');
+  const snap = run.snapshots.find((s) => s.outputOmitted?.includes('a'));
+  assert.ok(snap, '超限产出被省略并标记');
+  assert.strictEqual(snap.steps.a.output, undefined);
+  const rb = await engine.rollback('wf-snap-omit', snap.id);
+  assert.strictEqual(rb.steps.a.state, 'pending', '超限产出 step 回滚后重置 pending');
+  const r2 = await engine.resume('wf-snap-omit');
+  assert.strictEqual(r2.state, 'done');
+  assert.strictEqual(calls.a, 2, 'a 因产出缺失而重跑');
+  assert.strictEqual(calls.b, 2);
+});
+
+test('P6-A snapshot: 上限 50 丢最旧；未知快照 / running 拒绝', async () => {
+  const store = new VolatileWorkflowStore();
+  const engine = new DagEngine({ store, executor: async () => ({ ok: 1 }) });
+  const run = await engine.run({ id: 'wf-snap-cap', steps: [{ id: 'a', agentRef: DEFAULT_AGENT_ID }] }, 'x');
+  const snapshots = run.snapshots ?? [];
+  for (let i = 0; i < 55; i++) {
+    snapshots.push({ id: `s${i}`, ts: Date.now() + i, action: 'wave', wave: i, steps: {} });
+  }
+  run.snapshots = snapshots.slice(-50);
+  await store.save(run);
+  assert.strictEqual((await store.get('wf-snap-cap')).snapshots.length, 50);
+  await assert.rejects(() => engine.rollback('wf-snap-cap', 'nope'), /快照不存在/);
+  const rr = await store.get('wf-snap-cap');
+  rr.state = 'running';
+  await store.save(rr);
+  await assert.rejects(
+    () => engine.rollback('wf-snap-cap', rr.snapshots[0].id),
+    /正在运行/
+  );
+});

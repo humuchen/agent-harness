@@ -3717,6 +3717,55 @@ export class AhChat extends LitElement {
   }
 
   /**
+   * P6 方案一 A：抽屉「回滚到此点」—— 把 run 恢复到指定快照后走既有断点续跑重放
+   * （上游 done 产出复用；产出超限被省略的 step 由服务端自动重置重跑）。
+   * 串行模式（无检查点）退化为全量重跑。
+   */
+  private async planRollbackTo(m: ChatMsg, snapshotId: string): Promise<void> {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const st = this.planExec[m.id];
+    if (!st || st.status === 'running') return;
+    this.stopPlanWfReconcile(m.id);
+    const wfId = derivePlanWfId(sid, m.plan);
+    if (isPlanDagEnabled()) {
+      try {
+        const res = await client.rollbackWorkflow(wfId, snapshotId);
+        // 前端 done 集合按恢复后的 run 重建（快照中 done 的保留；resume 流只为
+        // 重跑的 step 发 done 事件，已跳过的 done 不会重发 —— 需在此补齐）。
+        const restoredDone: Record<string, boolean> = Object.fromEntries(
+          Object.entries(res.run.steps ?? {})
+            .filter(([, s]) => s.state === 'done')
+            .map(([id]) => [id, true])
+        );
+        const ok = await this.resumePlanViaWorkflow(
+          m,
+          { ...st, done: restoredDone, status: 'failed', failedTaskId: undefined, currentTaskId: undefined },
+          sid,
+          wfId
+        );
+        if (ok) return;
+      } catch {
+        // 回滚失败（404 检查点丢失 / 409 在跑 / 未知快照）：保持现状可重试。
+        return;
+      }
+      this.planExec = {
+        ...this.planExec,
+        [m.id]: { ...(this.planExec[m.id] ?? st), status: 'failed', currentTaskId: undefined }
+      };
+      this.saveHistory(sid);
+      return;
+    }
+    // 串行模式：无快照链 → 退化为全量重跑（清 done 后 confirmPlan）。
+    this.planExec = {
+      ...this.planExec,
+      [m.id]: { ...st, done: {}, status: 'failed', failedTaskId: undefined, currentTaskId: undefined }
+    };
+    this.saveHistory(sid);
+    await this.confirmPlan(m);
+  }
+
+  /**
    * P6 观测（方案三一期）：抽屉「历史执行」回看 —— 拉取指定 run 的完整归档并把
    * 抽屉行数据切换为该次执行（per-step 状态/重试/错误/调用链路；产出正文不归档，
    * 由检查点/交付文件承载）。
@@ -3893,6 +3942,7 @@ export class AhChat extends LitElement {
       openPlanWfReplay: (m: ChatMsg) => this.openPlanWfReplay(m),
       closePlanWfReplay: () => this.closePlanWfReplay(),
       planRerunFrom: (m: ChatMsg, taskId: string) => void this.planRerunFrom(m, taskId),
+      planRollbackTo: (m: ChatMsg, snapshotId: string) => void this.planRollbackTo(m, snapshotId),
       planWfHistoryLoad: (m: ChatMsg, runId: string) => void this.planWfHistoryLoad(m, runId),
       planWfHistoryClose: (m: ChatMsg) => this.planWfHistoryClose(m),
       onEditingInput: (v: string) => {
