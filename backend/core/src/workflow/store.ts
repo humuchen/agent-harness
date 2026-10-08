@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { WorkflowRun } from './types';
+import type { WorkflowRun, StepTraceNode } from './types';
 import { quarantineCorruptFile } from '../store-safety';
 import { getDbAdapter, type DbAdapter } from '../db-adapter';
 
@@ -280,4 +280,160 @@ export function getWorkflowStore(): WorkflowStore {
 /** 测试用：清空共享单例（下次 getWorkflowStore 按当前 env 重建）。 */
 export function resetWorkflowStoreForTest(): void {
   _store = null;
+}
+
+/* ------------------------------------------------------------------ */
+/* P6 观测：run 级 trace 归档（方案三一期，见 docs/05-analysis/        */
+/* p6-gap-remediation-eval.md §方案三）——「快照管状态可回放，          */
+/* run_traces 管过程可检索」。与检查点后端解耦：直接挂 getDbAdapter()   */
+/* （缺省本地 sqlite），任何部署形态下 run 过程均可跨重启检索。          */
+/* ------------------------------------------------------------------ */
+
+/** 单次 run 的过程归档：per-step 状态 / 重试计数 / 错误 / 调用链路（StepTraceNode 序列）。 */
+export interface RunTraceRecord {
+  workflowId: string;
+  runId: string;
+  /** 归档时间（epoch ms）。 */
+  ts: number;
+  /** run 终态（done / failed / cancelled）。 */
+  state: string;
+  /** stepId → 过程数据（不落产出正文 —— 大体积产出归检查点/交付文件，trace 记过程）。 */
+  steps: Record<
+    string,
+    { state?: string; attempts?: number; error?: string; trace?: StepTraceNode[] }
+  >;
+}
+
+/** run_traces 归档上限：单条记录序列化后超过该字节数则剥离 trace.detail（保类型/标签/时间轴）。 */
+export const RUN_TRACE_MAX_BYTES = 1_000_000;
+
+/** 从终态 run 提取归档记录（体积超限时降级剥离 detail，保时间轴与结论）。 */
+export function buildRunTraceRecord(run: WorkflowRun): RunTraceRecord {
+  const steps: RunTraceRecord['steps'] = {};
+  for (const [id, sr] of Object.entries(run.steps)) {
+    steps[id] = {
+      state: sr?.state,
+      ...(sr?.attempts ? { attempts: sr.attempts } : {}),
+      ...(sr?.error ? { error: sr.error } : {}),
+      ...(sr?.trace && sr.trace.length ? { trace: sr.trace } : {}),
+    };
+  }
+  const rec: RunTraceRecord = {
+    workflowId: run.def.id,
+    runId: run.runId ?? '',
+    ts: Date.now(),
+    state: run.state,
+    steps,
+  };
+  // 体积护栏：超限剥离 detail（detail 是体积大头，时间轴/类型/标签保留）。
+  if (JSON.stringify(rec).length > RUN_TRACE_MAX_BYTES) {
+    for (const s of Object.values(steps)) {
+      if (s.trace) {
+        s.trace = s.trace.map((n) => {
+          const { detail: _detail, ...rest } = n as { detail?: string } & typeof n;
+          return rest as typeof n;
+        });
+      }
+    }
+  }
+  return rec;
+}
+
+/**
+ * run 过程归档存储（独立于 WorkflowStore —— 过程数据的生命周期与检查点不同：
+ * 检查点每 def.id 一份最新，trace 每 run 一份历史）。
+ * 表结构 `(def_id, run_id)` 复合主键；upsert 幂等（同 runId 重终态覆盖）。
+ */
+export class DbRunTraceStore {
+  private readonly adapter: DbAdapter;
+  private readonly table: string;
+  private schemaReady: Promise<void> | null = null;
+
+  constructor(opts: { adapter?: DbAdapter; table?: string } = {}) {
+    this.adapter = opts.adapter ?? getDbAdapter();
+    this.table =
+      opts.table && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(opts.table)
+        ? opts.table
+        : 'workflow_run_traces';
+  }
+
+  private async ensureSchema(): Promise<void> {
+    if (!this.schemaReady) {
+      this.schemaReady = (async () => {
+        await this.adapter.exec(
+          `CREATE TABLE IF NOT EXISTS ${this.table} (` +
+            `def_id TEXT NOT NULL, ` +
+            `run_id TEXT NOT NULL, ` +
+            `ts INTEGER NOT NULL, ` +
+            `state TEXT NOT NULL DEFAULT 'pending', ` +
+            `data TEXT NOT NULL, ` +
+            `PRIMARY KEY (def_id, run_id))`
+        );
+      })().catch((e: unknown) => {
+        // 建表失败重置 promise，下次操作重试（瞬时锁/连接抖动自愈）。
+        this.schemaReady = null;
+        throw e;
+      });
+    }
+    await this.schemaReady;
+  }
+
+  async save(rec: RunTraceRecord): Promise<void> {
+    await this.ensureSchema();
+    await this.adapter
+      .prepare(
+        `INSERT INTO ${this.table} (def_id, run_id, ts, state, data) VALUES (?, ?, ?, ?, ?) ` +
+          `ON CONFLICT(def_id, run_id) DO UPDATE SET ` +
+          `ts = excluded.ts, state = excluded.state, data = excluded.data`
+      )
+      .run(rec.workflowId, rec.runId, rec.ts, rec.state, JSON.stringify(rec));
+  }
+
+  /** 列出某工作流的归档（新→旧，limit 缺省 20；data 内含完整 steps 过程）。 */
+  async list(workflowId: string, limit = 20): Promise<RunTraceRecord[]> {
+    await this.ensureSchema();
+    const rows = await this.adapter
+      .prepare(`SELECT data FROM ${this.table} WHERE def_id = ? ORDER BY ts DESC LIMIT ?`)
+      .all(workflowId, limit);
+    const out: RunTraceRecord[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(String(row.data)) as RunTraceRecord);
+      } catch (e) {
+        console.warn(
+          `[workflow-trace] 归档损坏跳过（def=${workflowId}）：${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+    return out;
+  }
+
+  async get(workflowId: string, runId: string): Promise<RunTraceRecord | null> {
+    await this.ensureSchema();
+    const row = await this.adapter
+      .prepare(`SELECT data FROM ${this.table} WHERE def_id = ? AND run_id = ?`)
+      .get(workflowId, runId);
+    if (!row) return null;
+    try {
+      return JSON.parse(String(row.data)) as RunTraceRecord;
+    } catch (e) {
+      console.warn(
+        `[workflow-trace] 归档损坏（def=${workflowId}, run=${runId}）：${e instanceof Error ? e.message : String(e)}`
+      );
+      return null;
+    }
+  }
+}
+
+let _traceStore: DbRunTraceStore | null = null;
+
+/** 进程内共享的 run 归档单例（挂 getDbAdapter() —— 缺省本地 sqlite，与检查点后端解耦）。 */
+export function getRunTraceStore(): DbRunTraceStore {
+  if (!_traceStore) _traceStore = new DbRunTraceStore();
+  return _traceStore;
+}
+
+/** 测试用：清空共享单例。 */
+export function resetRunTraceStoreForTest(): void {
+  _traceStore = null;
 }

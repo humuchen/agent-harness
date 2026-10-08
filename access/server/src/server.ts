@@ -230,7 +230,7 @@ import { handleMetricsRoutes } from './routes/metrics-routes';
 import { handleMiscRoutes } from './routes/misc-routes';
 import { handleCollabRoutes } from './routes/collab-routes';
 import { handleChatDataRoutes } from './routes/chat-data-routes';
-import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent } from './routes/run-routes';
+import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent, maybeArchiveRunTrace } from './routes/run-routes';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -257,7 +257,7 @@ import {
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
 // P6 分叉重跑：工作流 step 及其下游重置（纯函数，随 /api/workflows/:id/rerun 暴露）。
-import { quotaEngine, TenantQuotaStore, resetRunForRerun } from '@agent-harness/core';
+import { quotaEngine, TenantQuotaStore, resetRunForRerun, getRunTraceStore } from '@agent-harness/core';
 import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
@@ -1185,6 +1185,39 @@ const server = createServer(
           }
           return;
         }
+        // P6 观测（方案三一期）：GET /api/workflows/:id/run-traces[?runId=] —— run 过程归档查询。
+        // 无 runId → 该工作流最近 ≤20 次执行的归档列表（新→旧）；带 runId → 单次完整归档
+        // （per-step 状态/重试/错误/调用链路）。鉴权走本分支共同的 workflow:read（只读）。
+        if (req.method === 'GET' && id.endsWith('/run-traces')) {
+          const workflowId = id.slice(0, -'/run-traces'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          try {
+            const traceStore = getRunTraceStore();
+            const runId = new URL(req.url || '/', 'http://localhost').searchParams.get('runId');
+            if (runId) {
+              const rec = await traceStore.get(workflowId, runId);
+              if (!rec) {
+                res.writeHead(404, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'run trace not found', workflowId, runId }));
+                return;
+              }
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ trace: rec }));
+              return;
+            }
+            const traces = await traceStore.list(workflowId, 20);
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ traces }));
+          } catch (e) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          }
+          return;
+        }
         // POST /resume 路径单独处理
         if (req.method === 'POST' && id.endsWith('/resume')) {
           const workflowId = id.slice(0, -'/resume'.length);
@@ -1272,6 +1305,7 @@ const server = createServer(
                 if (e && typeof e === 'object' && 'type' in e) {
                   const ev = e as WorkflowEvent;
                   auditWfEvent(ev, ctx);
+                  maybeArchiveRunTrace(ev);
                   planSync?.sync(ev);
                 }
                 if (!closed) send(e);
@@ -1395,6 +1429,7 @@ const server = createServer(
                 if (e && typeof e === 'object' && 'type' in e) {
                   const ev = e as WorkflowEvent;
                   auditWfEvent(ev, ctx);
+                  maybeArchiveRunTrace(ev);
                   planSync?.sync(ev);
                 }
                 if (!closed) send(e);

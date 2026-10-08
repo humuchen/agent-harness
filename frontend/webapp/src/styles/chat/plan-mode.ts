@@ -361,6 +361,62 @@ export const planMode = css`
     color: var(--ah-text-muted);
     white-space: nowrap;
   }
+  /* P6 观测（方案三一期）：「历史执行」归档列表 + 回看态退出条。 */
+  .wf-replay-history {
+    margin-top: 8px;
+  }
+  .wf-replay-history summary {
+    cursor: pointer;
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    user-select: none;
+  }
+  .wf-replay-history summary:hover {
+    color: var(--ah-accent);
+  }
+  .wf-history-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .wf-history-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--ah-border, transparent);
+    border-radius: 6px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .wf-history-item:hover {
+    border-color: var(--ah-accent);
+  }
+  .wf-history-ts {
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+  }
+  .wf-replay-history-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--ah-surface-2);
+  }
+  .wf-replay-history-hint {
+    font-size: 12px;
+    color: var(--ah-text-muted);
+  }
   .wf-replay-detail {
     margin-top: 8px;
   }

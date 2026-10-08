@@ -8,6 +8,8 @@
 
 import type { Chunk, VectorStore } from './store';
 import type { EmbeddingProvider } from './embed';
+import { loadDocument, type DocumentSource } from './loaders';
+import { splitAuto } from './splitter';
 
 export interface IngestInput {
   doc_id: string;
@@ -59,39 +61,100 @@ export async function ingestDocument(
   if (!docId) throw new Error('doc_id 必填');
   if (!tenantId) throw new Error('tenant_id 必填');
 
-  const size = input.chunk_size ?? 480;
-  const overlap = input.chunk_overlap ?? 80;
-  const pieces = chunkText(input.text, size, overlap);
+  const pieces = chunkText(input.text, input.chunk_size ?? 480, input.chunk_overlap ?? 80);
+  const replaced = await embedAndWrite(
+    store,
+    provider,
+    docId,
+    tenantId,
+    pieces.map((p) => ({ content: p })),
+    input
+  );
 
-  // P1（嵌入失败毒化防护）：先完成全部向量化，再做任何写操作——
-  // 远程嵌入失败（strict 默认抛 EmbeddingUnavailableError）时旧文档原样保留，
-  // 不再出现「旧 chunk 已删、新 chunk 半途失败」的半入库中间态；
-  // 嵌入产物也不会以静默降级的哈希向量形态混入语料。
+  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+}
+
+/**
+ * P6-B（方案二一期）结构化入库：source（markdown/text/url/pdf/docx）→ 加载 →
+ * 结构感知切分（标题层级 heading_path 进 chunk.metadata）→ 向量化 → 幂等写入。
+ * 与 ingestDocument 共用「先全部向量化再写」的毒化防护纪律；行为差异：
+ * 切分由 splitAuto 按 markdown 标题/段落/句子递归（不再固定滑窗）。
+ */
+export interface StructuredIngestInput extends Omit<IngestInput, 'text' | 'chunk_overlap'> {
+  source: DocumentSource;
+  /** splitter 单片上限（字符），缺省 480。 */
+  max_len?: number;
+}
+
+export async function ingestStructured(
+  store: VectorStore,
+  provider: EmbeddingProvider,
+  input: StructuredIngestInput
+): Promise<IngestResult> {
+  const docId = String(input.doc_id).trim();
+  const tenantId = String(input.tenant_id).trim();
+  if (!docId) throw new Error('doc_id 必填');
+  if (!tenantId) throw new Error('tenant_id 必填');
+  if (!input.source) throw new Error('source 必填（{ type, value }）');
+
+  const doc = await loadDocument(input.source);
+  const pieces = splitAuto(doc.text, { maxLen: input.max_len ?? input.chunk_size ?? 480 });
+  if (pieces.length === 0) {
+    throw new Error('加载与切分后无有效内容（检查 source 内容或 max_len 配置）');
+  }
+  const replaced = await embedAndWrite(
+    store,
+    provider,
+    docId,
+    tenantId,
+    pieces.map((p) => ({
+      content: p.content,
+      meta: p.headingPath.length ? { heading_path: p.headingPath } : {},
+    })),
+    input
+  );
+
+  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+}
+
+/**
+ * 共享写入段：先完成**全部**向量化（P1 毒化防护 —— 远程嵌入失败时旧文档原样保留，
+ * 不出现半入库中间态），再 deleteByDoc + 逐片幂等 upsert。
+ * items.meta 会合并进 chunk.metadata（heading_path 等结构信息；空对象不覆盖既有 metadata 语义）。
+ */
+async function embedAndWrite(
+  store: VectorStore,
+  provider: EmbeddingProvider,
+  docId: string,
+  tenantId: string,
+  items: Array<{ content: string; meta?: Record<string, unknown> }>,
+  base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown> }
+): Promise<number> {
   const vectors: number[][] = [];
-  for (const piece of pieces) {
-    vectors.push(await embedOne(provider, `${input.title ?? ''}\n${piece}`));
+  for (const item of items) {
+    vectors.push(await embedOne(provider, `${base?.title ?? ''}\n${item.content}`));
   }
 
   // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）。P6-B：后端可为异步。
   const replaced = await store.deleteByDoc(docId, tenantId);
 
   let idx = 0;
-  for (const piece of pieces) {
+  for (const item of items) {
+    const meta = { ...(base?.metadata ?? {}), ...(item.meta ?? {}) };
     const chunk: Chunk = {
       chunk_id: `${docId}#${idx}`,
       doc_id: docId,
       tenant_id: tenantId,
       index: idx,
-      content: piece,
-      title: input.title,
-      tags: input.tags,
-      metadata: input.metadata,
+      content: item.content,
+      ...(base?.title ? { title: base.title } : {}),
+      ...(base?.tags ? { tags: base.tags } : {}),
+      ...(Object.keys(meta).length ? { metadata: meta } : {}),
       vector: vectors[idx]!,
       created_at: Date.now(),
     };
     await store.upsert(chunk);
     idx++;
   }
-
-  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+  return replaced;
 }

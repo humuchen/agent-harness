@@ -127,6 +127,9 @@ export interface ChatRenderCtx {
   approvePlan: (m: ChatMsg, stepId?: string) => void;
   /** P6（分叉重跑）：重置指定任务及其下游并从此重新执行（DAG 检查点；串行路径清 done 重派发）。 */
   planRerunFrom: (m: ChatMsg, taskId: string) => void;
+  /** P6 观测（方案三一期）：抽屉「历史执行」回看指定 run 归档 / 退出回看。 */
+  planWfHistoryLoad: (m: ChatMsg, runId: string) => void;
+  planWfHistoryClose: (m: ChatMsg) => void;
   setTraceDrawer: (m: ChatMsg | null, section: 'trace' | 'insights' | 'confidence') => void;
   requestUpdate: () => void;
   onComposerPointerDown: (e: PointerEvent) => void;
@@ -996,7 +999,12 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
   const rs: PlanWfReplayState | undefined = ctx.planWfReplay[m.id];
   // P2.6：实时检查点缺失（404）时回退 planStatus 历史镜像快照（形状兼容，buildPlanWfReplayRows 直接消费）。
   const mirror = rs?.mirrorSnapshot ? (rs.mirrorSnapshot as unknown as WorkflowRun) : null;
-  const run = rs?.snapshot ?? mirror;
+  // P6 观测（方案三一期）：历史回看态 —— 行数据切换为所选 run 的归档（过程数据，
+  // 无产出正文/耗时；「返回当前」恢复实时快照/镜像）。当前态：检查点 → 镜像兜底。
+  const historyView = rs?.historyView;
+  const run = historyView
+    ? ({ state: historyView.state, steps: historyView.steps } as unknown as WorkflowRun)
+    : (rs?.snapshot ?? mirror);
   const fromMirror = !rs?.snapshot && !!mirror;
   const rows = buildPlanWfReplayRows(m.plan, run);
   const totalMs =
@@ -1042,8 +1050,41 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
               <span class="wf-replay-total"
                 >共 ${rows.length} 步${totalMs !== undefined ? html` · ${formatPlanWfDuration(totalMs)}` : ''}</span
               >
-              ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
-            </div>
+            ${run.error ? html`<span class="wf-replay-err">${escapeHtml(run.error)}</span>` : nothing}
+          </div>
+          ${(() => {
+            // P6 观测（方案三一期）：「历史执行」区 —— 回看态显示退出条，否则列归档列表。
+            // 归档来自服务端 run_traces（跨重启持久）；无归档（旧部署）时不渲染。
+            const hist = rs?.history;
+            if (historyView) {
+              return html`<div class="wf-replay-history-bar">
+                <span class="wf-replay-history-hint">
+                  ↩ 回看历史执行 · ${new Date(historyView.ts).toLocaleString()} ·
+                  ${planWfReplayStateLabel(historyView.state)}
+                </span>
+                <button class="plan-btn ghost" @click=${() => ctx.planWfHistoryClose(m)}>
+                  返回当前
+                </button>
+              </div>`;
+            }
+            if (!hist || hist.length === 0) return nothing;
+            return html`<details class="wf-replay-history">
+              <summary>历史执行 · ${hist.length} 次</summary>
+              <ul class="wf-history-list">
+                ${hist.map(
+                  (h) => html`<li>
+                    <button
+                      class="wf-history-item"
+                      @click=${() => ctx.planWfHistoryLoad(m, h.runId)}
+                    >
+                      <span>${planWfReplayStateLabel(h.state)}</span>
+                      <span class="wf-history-ts">${new Date(h.ts).toLocaleString()}</span>
+                    </button>
+                  </li>`
+                )}
+              </ul>
+            </details>`;
+          })()}
             ${run.state === 'awaiting' && !fromMirror
               ? html`<div class="wf-replay-approve">
                   <button class="plan-btn" @click=${() => ctx.approvePlan(m)}>
@@ -1084,6 +1125,7 @@ export function renderPlanWfReplayDrawer(ctx: ChatRenderCtx): TemplateResult {
                         </div>`
                       : nothing}
                     ${!fromMirror &&
+                    !historyView &&
                     run?.state !== 'running' &&
                     (r.state === 'done' || r.state === 'failed' || r.state === 'skipped')
                       ? html`<div class="wf-replay-approve">

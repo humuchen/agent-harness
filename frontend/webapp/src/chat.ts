@@ -3672,7 +3672,18 @@ export class AhChat extends LitElement {
       }
       // 抽屉已关闭 / 已切到别的计划消息时不写回（防旧请求回流覆盖最新交互态）。
       if (this.planWfReplayMsg?.id !== m.id) return;
-      this.planWfReplay = { ...this.planWfReplay, [m.id]: st };
+      const prev = this.planWfReplay[m.id];
+      // P6 观测（方案三一期）：轮询写回保留「历史执行」区状态（history/historyView
+      // 不被快照刷新覆盖 —— 否则回看历史时 2.5s 轮询会把行数据切回当前快照）。
+      this.planWfReplay = {
+        ...this.planWfReplay,
+        [m.id]: {
+          ...st,
+          history: prev?.history,
+          historyView: prev?.historyView,
+          historyLoading: prev?.historyLoading
+        }
+      };
       // P5.1：run 已终态（done/failed）→ 停止轮询（awaiting 仍需继续：审批后引擎恢复执行）。
       const state = st.snapshot?.state ?? (st.mirrorSnapshot as { state?: string } | null)?.state;
       if ((state === 'done' || state === 'failed') && this.planWfReplayTimer != null) {
@@ -3681,9 +3692,74 @@ export class AhChat extends LitElement {
       }
     };
     void fetchSnapshot();
+    // P6 观测（方案三一期）：打开抽屉时拉一次「历史执行」归档列表（服务端 run_traces；
+    // 无归档的部署/旧服务端 404/500 → 静默不渲染历史区）。终态 run 每次执行一条。
+    const fetchHistory = async (): Promise<void> => {
+      const wfId = derivePlanWfId(sid, m.plan!);
+      try {
+        const res = await client.getWorkflowRunTraces(wfId);
+        if (this.planWfReplayMsg?.id !== m.id) return;
+        const cur = this.planWfReplay[m.id];
+        if (cur) {
+          this.planWfReplay = {
+            ...this.planWfReplay,
+            [m.id]: { ...cur, history: res.traces ?? [] }
+          };
+        }
+      } catch {
+        /* 无归档：抽屉不渲染历史区（不告警，归档是增强能力非必需） */
+      }
+    };
+    void fetchHistory();
     this.planWfReplayTimer = window.setInterval(() => {
       void fetchSnapshot();
     }, 2500);
+  }
+
+  /**
+   * P6 观测（方案三一期）：抽屉「历史执行」回看 —— 拉取指定 run 的完整归档并把
+   * 抽屉行数据切换为该次执行（per-step 状态/重试/错误/调用链路；产出正文不归档，
+   * 由检查点/交付文件承载）。
+   */
+  private async planWfHistoryLoad(m: ChatMsg, runId: string): Promise<void> {
+    const sid = this.activeId;
+    if (!sid || !m.plan) return;
+    const cur = this.planWfReplay[m.id];
+    if (!cur) return;
+    this.planWfReplay = {
+      ...this.planWfReplay,
+      [m.id]: { ...cur, historyLoading: true }
+    };
+    try {
+      const wfId = derivePlanWfId(sid, m.plan);
+      const res = await client.getWorkflowRunTraces(wfId, runId);
+      if (this.planWfReplayMsg?.id !== m.id) return;
+      const now = this.planWfReplay[m.id];
+      if (now) {
+        this.planWfReplay = {
+          ...this.planWfReplay,
+          [m.id]: { ...now, historyView: res.trace ?? undefined, historyLoading: false }
+        };
+      }
+    } catch {
+      if (this.planWfReplayMsg?.id !== m.id) return;
+      const now = this.planWfReplay[m.id];
+      if (now) {
+        this.planWfReplay = { ...this.planWfReplay, [m.id]: { ...now, historyLoading: false } };
+      }
+    }
+    this.requestUpdate();
+  }
+
+  /** P6 观测：退出历史回看，行数据切回当前检查点快照。 */
+  private planWfHistoryClose(m: ChatMsg): void {
+    const cur = this.planWfReplay[m.id];
+    if (!cur || cur.historyView === undefined) return;
+    this.planWfReplay = {
+      ...this.planWfReplay,
+      [m.id]: { ...cur, historyView: undefined }
+    };
+    this.requestUpdate();
   }
 
   /** P2：关闭「执行详情」抽屉（快照缓存保留，重开时即时水合后仍可重拉）。 */
@@ -3817,6 +3893,8 @@ export class AhChat extends LitElement {
       openPlanWfReplay: (m: ChatMsg) => this.openPlanWfReplay(m),
       closePlanWfReplay: () => this.closePlanWfReplay(),
       planRerunFrom: (m: ChatMsg, taskId: string) => void this.planRerunFrom(m, taskId),
+      planWfHistoryLoad: (m: ChatMsg, runId: string) => void this.planWfHistoryLoad(m, runId),
+      planWfHistoryClose: (m: ChatMsg) => this.planWfHistoryClose(m),
       onEditingInput: (v: string) => {
         this.editingDraft = v;
       },

@@ -35,6 +35,7 @@ import type {
   WorkflowDef,
   WorkflowEvent,
   WorkflowRun,
+  RunTraceRecord,
 } from './types.js';
 
 export interface AgentClientOptions {
@@ -466,6 +467,26 @@ export class AgentClient {
   /** 获取某次工作流运行的快照（最终状态 + 各 step 状态）。 */
   getWorkflow(id: string): Promise<{ workflow: WorkflowRun }> {
     return this.json<{ workflow: WorkflowRun }>(`/api/v1/workflows/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * P6 观测（方案三一期）：run 过程归档查询 —— runId 缺省返回该工作流最近 ≤20 次执行的
+   * 归档列表（新→旧）；指定 runId 返回单次完整归档（per-step 状态/重试/错误/调用链路）。
+   * 对应服务端 GET /api/workflows/:id/run-traces[?runId=]。
+   */
+  async getWorkflowRunTraces(
+    id: string,
+    runId?: string
+  ): Promise<{ traces?: RunTraceRecord[]; trace?: RunTraceRecord }> {
+    const q = runId ? `?runId=${encodeURIComponent(runId)}` : '';
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/run-traces${q}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as { traces?: RunTraceRecord[]; trace?: RunTraceRecord };
   }
 
   /**

@@ -33,7 +33,9 @@ import {
   type PlanClarify,
   type WorkflowDef,
   DEFAULT_AGENT_ID,
-  type A2ARequest
+  type A2ARequest,
+  buildRunTraceRecord,
+  getRunTraceStore
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
 import { readBody, startSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
@@ -1437,6 +1439,33 @@ export function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
 }
 
 /**
+ * P6 观测（方案三一期）：终态 run 过程归档 —— wf:done / wf:failed 帧统一捕获，
+ * 写入 workflow_run_traces（经 getDbAdapter，缺省本地 sqlite；与检查点后端解耦，
+ * 任何部署形态下 run 过程跨重启可检索）。覆盖首跑 / resume / 审批续跑 / 嵌套子工作流
+ * （嵌套事件虽带层级前缀，归档键取 run.def.id 原始 id）。
+ * 失败仅告警不阻断执行链路（审计/直播不依赖归档可用性）。
+ */
+export function maybeArchiveRunTrace(e: WorkflowEvent): void {
+  if (e.type !== 'wf:done' && e.type !== 'wf:failed') return;
+  const run = e.run;
+  if (!run || !run.runId) return; // 无 runId（异常路径/旧引擎）不归档，避免键冲突
+  try {
+    void getRunTraceStore()
+      .save(buildRunTraceRecord(run))
+      .catch((err: unknown) => {
+        console.warn(
+          `[workflow-trace] 归档失败（不阻断执行，def=${run.def.id}, run=${run.runId}）：` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+  } catch (err) {
+    console.warn(
+      `[workflow-trace] 归档构建失败：${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
  * P1（断点续跑）：/api/workflows 执行路径（handleWorkflow + POST /:id/resume + /:id/approve）
  * 共享的执行器选项解析——BYOK 凭据 + 校验门禁 + 与 /api/run 完全同款语义收敛。
  *
@@ -1675,6 +1704,8 @@ async function handleWorkflow(
   );
   const onWfEvent = (e: WorkflowEvent) => {
     auditWfEvent(e, ctx);
+    // P6 观测（方案三一期）：终态 run 过程归档（见 maybeArchiveRunTrace 注释）。
+    maybeArchiveRunTrace(e);
     planSync?.sync(e);
     if (!closed) send(e);
   };

@@ -201,4 +201,31 @@ export interface PlanWfReplayState {
    * 抽屉头部标注「检查点已过期，以下为历史镜像快照」；来自实时检查点时为 undefined。
    */
   fromMirror?: boolean;
+  /**
+   * P6 观测（方案三一期）：「历史执行」——服务端 run_traces 归档列表（新→旧，≤20）。
+   * 服务端无归档（旧部署 / 归档失败）时 undefined → 抽屉不渲染历史区。
+   */
+  history?: PlanWfHistoryMeta[];
+  /** 当前正在回看的历史 run（设置后抽屉行数据切换为该次归档；undefined = 回到当前快照）。 */
+  historyView?: PlanWfHistoryDetail;
+  /** 历史归档详情在途标记。 */
+  historyLoading?: boolean;
+}
+
+/** 历史执行列表项（run_traces 轻量元数据）。 */
+export interface PlanWfHistoryMeta {
+  runId: string;
+  ts: number;
+  state: string;
+}
+
+/** 历史执行详情（per-step 状态/重试/错误/调用链路；不含产出正文）。 */
+export interface PlanWfHistoryDetail {
+  runId: string;
+  ts: number;
+  state: string;
+  steps: Record<
+    string,
+    { state?: string; attempts?: number; error?: string; trace?: unknown }
+  >;
 }

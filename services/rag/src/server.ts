@@ -20,7 +20,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import { createVectorStore, type VectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
-import { ingestDocument, IngestInput } from './ingest';
+import { ingestDocument, ingestStructured, IngestInput, StructuredIngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
 import { resolveTenant } from './auth';
 import { IngestQueue } from './queue';
@@ -188,18 +188,44 @@ export function createRagServer(opts: RagServerOptions) {
         const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const body = await readJson(req);
+        // P6-B（方案二一期）：结构化入库 —— body.source（{type, value}）存在时走
+        // loadDocument + splitAuto（结构感知切分，heading_path 进 metadata）；
+        // 缺省仍为纯文本 + 固定滑窗（存量零回归）。source 与 text 二选一。
+        const sourceBranch =
+          body.source && typeof body.source === 'object' && body.source.type && body.source.value != null;
         const input: IngestInput = {
           doc_id: String(body.doc_id ?? ''),
           tenant_id: auth.tenantId, // 服务端重写
           title: body.title,
-          text: String(body.text ?? ''),
+          text: sourceBranch ? '' : String(body.text ?? ''),
           tags: body.tags,
           metadata: body.metadata,
           chunk_size: body.chunk_size,
           chunk_overlap: body.chunk_overlap,
         };
-        if (!input.doc_id || !input.text) {
-          return send(res, 400, { error: 'doc_id and text required' });
+        if (!input.doc_id || (!sourceBranch && !input.text)) {
+          return send(res, 400, { error: 'doc_id and (text or source) required' });
+        }
+
+        // 结构化入库强制同步（loader 可能走外部服务，失败需同步反馈调用方；
+        // 不进异步队列 —— 队列复用 IngestInput，source 分支的 text 为空会在 worker 里产出 0 chunk）。
+        if (sourceBranch) {
+          try {
+            const result = await ingestStructured(store, provider, {
+              ...input,
+              text: undefined as unknown as string,
+              source: body.source,
+              max_len: body.max_len,
+            } as unknown as StructuredIngestInput);
+            if (opts.dataFile) store.persist?.(opts.dataFile, shard);
+            metrics.recordIngest(true);
+            return send(res, 200, result);
+          } catch (e) {
+            metrics.recordIngest(false);
+            return send(res, 400, {
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
         }
 
         if (asyncIngest) {
