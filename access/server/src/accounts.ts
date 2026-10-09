@@ -5,7 +5,8 @@
  * 由 authz.createAuthorizer 组合进来，企业 SSO 部署完全不受影响。
  *
  * 流程（对应需求）：
- *  1) POST /api/account/register —— 校验用户名/密码强度 → 入库（scrypt 加盐哈希）。
+ *  1) POST /api/account/register —— 校验用户名/密码强度 → 入库（PBKDF2-SHA256 100k 迭代
+ *     加盐哈希；存量 scrypt 哈希在登录校验时兼容回退，见 verifyPassword）。
  *  2) POST /api/account/login    —— 校验凭据 → 签发 HMAC 签名的 token（payload 含 username + 7 天 exp），
  *     同时把 token 记到服务端 SQLite（auth_tokens 表，7 天有效期，支持吊销）→ Set-Cookie: ah_auth。
  *  3) 之后每次请求：浏览器自动带 Cookie: ah_auth=*** ；前端额外在 header 带 x-ah-username。
@@ -15,7 +16,7 @@
  *  4) 前端收到 401 → 清 cookie + 跳登录页。
  *
  * 安全约束：
- *  - 密码 scrypt 加盐（Node 内置），不存明文。
+ *  - 密码 PBKDF2-SHA256 加盐（Node 内置；存量 scrypt 兼容），不存明文。
  *  - token 为 jti.payload.sig：sig = HMAC-SHA256(jti.payload, AH_AUTH_SECRET)；payload = base64url({u,exp})。
  *  - Cookie: HttpOnly; SameSite=Lax; 仅非 localhost 置 Secure（dev 可 http）；Max-Age=604800。
  *  - 签名密钥 AH_AUTH_SECRET（64 hex）；缺失时回退 AH_CRYPTO_KEY，再缺则每进程随机生成（重启即失效，仅演示）。
@@ -553,7 +554,7 @@ export async function registerWithDerivedHex(
     return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
   if (!derivedHex || derivedHex.length !== 64)
     return { ok: false, error: '密码至少 8 位' };
-  if (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return { ok: false, error: '邮箱格式不正确' };
   await ensureDb();
   const existing = await db

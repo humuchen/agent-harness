@@ -1,6 +1,7 @@
 import type { HarnessEvent } from '@agent-harness/core';
 import {
   incCounter,
+  logError,
   recordLatency,
   structLog,
   resolveOpenRouterConfig,
@@ -153,8 +154,9 @@ export interface RunJob {
 const MAX_BUFFER = Number(process.env.RUN_QUEUE_BUFFER ?? 500) || 500;
 const CONCURRENCY = Number(process.env.RUN_CONCURRENCY ?? 4) || 4;
 
-// P1-3: SSE 连接数上限（防止恶意客户端耗尽连接）
-const MAX_SSE_CONNECTIONS = Number(process.env.MAX_SSE_CONNECTIONS ?? 0) || 0;
+// P1-8: SSE 连接数上限默认 500（此前默认 0 = 不限，恶意客户端可耗尽连接）。
+// 显式设置 MAX_SSE_CONNECTIONS=0 可恢复不限行为。
+const MAX_SSE_CONNECTIONS = Number(process.env.MAX_SSE_CONNECTIONS ?? 500) || 0;
 let activeSseConnections = 0;
 export const sseConnectionLock = { acquire(): boolean { return MAX_SSE_CONNECTIONS <= 0 || ++activeSseConnections <= MAX_SSE_CONNECTIONS; }, release(): void { activeSseConnections = Math.max(0, activeSseConnections - 1); } };
 
@@ -180,6 +182,14 @@ const QUEUE_WAIT_WARN_MS = Number(process.env.RUN_QUEUE_WAIT_WARN_MS ?? 2_000) |
 // claim 与 ack 之间崩溃会让任务滞留 processing，长生命周期集群无人回收。
 const RUN_QUEUE_RECLAIM_INTERVAL_MS =
   Number(process.env.RUN_QUEUE_RECLAIM_INTERVAL_MS ?? 60_000) || 60_000;
+// P0-1：共享模式租约时长提升为模块级常量（此前是 startShared 的局部变量）——
+// execute() 的租约续租定时器需要与 reclaimStale 使用同一租约值。
+// 执行实例会在执行期间周期续租（LEASE_RENEW_INTERVAL_MS），故租约只需覆盖
+// 「实例崩溃后其它实例发现僵尸」的恢复延迟，无需 ≥ 任务最大超时。
+const QUEUE_LEASE_MS = Number(process.env.QUEUE_LEASE_MS ?? 300_000) || 300_000;
+// 租约续租周期：租约/3（下限 15s），保证在飞任务在租约到期前至少成功续租 2 次
+// （单次续租失败不至于立即被回收）。
+const LEASE_RENEW_INTERVAL_MS = Math.max(15_000, Math.floor(QUEUE_LEASE_MS / 3));
 
 /** 排队背压拒绝：待执行队列已达 RUN_QUEUE_MAX_PENDING，提交被拒（HTTP 层映射 429）。 */
 export class QueueBackpressureError extends Error {
@@ -346,12 +356,21 @@ export class RunQueue {
         this.jobs.delete(id);
         if (idemKey) this.idemIndex.delete(idemKey);
         if (idemKey && this.backend.releaseIdem) {
-          void this.backend.releaseIdem(idemKey).catch(() => {});
+          void this.backend
+            .releaseIdem(idemKey)
+            .catch((e) =>
+              logError('run-queue.bg', e as Error, {
+                op: 'releaseIdem.rollback',
+                jobId: id
+              })
+            );
         }
         throw new QueuePersistError((e as Error)?.message);
       }
       // 执行由 claim 驱动；立即触发一次领取以减少首任务延迟（并发满则跳过，待 worker 空闲再扫）。
-      void this.sweepOnce();
+      void this.sweepOnce().catch((e) =>
+        logError('run-queue.bg', e as Error, { op: 'sweepOnce.submit', jobId: id })
+      );
     } else {
       // 单实例模式：落盘失败仅影响崩溃重放，不影响内存态任务运行，维持仅告警语义。
       void this.backend.append(descriptor).catch((e) => {
@@ -428,7 +447,7 @@ export class RunQueue {
    * 领取到的任务由 execute() 执行；跨实例事件经 publishEvent/subscribeEvents 桥接回订阅方。
    */
   private async startShared(): Promise<void> {
-    const leaseMs = Number(process.env.QUEUE_LEASE_MS ?? 300_000) || 300_000;
+    const leaseMs = QUEUE_LEASE_MS;
     try {
       const moved = this.backend.reclaimStale
         ? await this.backend.reclaimStale(leaseMs)
@@ -470,15 +489,31 @@ export class RunQueue {
       this.reclaimTimer.unref?.();
     }
     // 立即扫一次，缩短启动后首任务延迟。
-    void this.sweepOnce();
+    void this.sweepOnce().catch((e) =>
+      logError('run-queue.bg', e as Error, { op: 'sweepOnce.startup' })
+    );
   }
 
   /**
    * 领取并执行一条任务（共享后端 worker）。原子 claim 保证同一任务只被一个实例领取，
    * 故不存在重复执行；本实例已提交的任務被自己领取时复用本地 RunJob（SSE 缓冲连续）。
+   *
+   * P0-2 修复：claim 是异步的，等待期间并发可能已被其它在飞 sweep 占满。旧代码在
+   * claim 返回后不复查并发直接 `running += 1`，而 sweepOnce 的触发源有三个
+   * （claimTimer 每 3s + submit 触发 + execute finally 触发），多路在飞时各自领取一单
+   * → 实际并发短暂超过 RUN_CONCURRENCY（超卖）。现 claim 返回后复查：超限时任务进入
+   * 本地延期缓冲（已持有跨实例 claim，不归还后端；槽位释放时优先消费），检查与
+   * `running += 1` 之间无 await，单线程事件循环下不存在交错。
    */
   private async sweepOnce(): Promise<void> {
     if (this.running >= this.concurrency) return;
+    // 优先消化本地延期缓冲：这些任务已持有跨实例 claim（在 processing 中），比新
+    // claim 更紧迫；滞留期间租约时钟在流逝（launchClaimed 执行前会先续租一次兜底）。
+    const deferredJob = this.deferred.shift();
+    if (deferredJob) {
+      this.launchClaimed(deferredJob);
+      return;
+    }
     let d: JobDescriptor | null = null;
     try {
       d = await this.backend.claim();
@@ -487,6 +522,18 @@ export class RunQueue {
       return;
     }
     if (!d) return;
+    if (this.running >= this.concurrency) {
+      this.deferred.push(d);
+      return;
+    }
+    this.launchClaimed(d);
+  }
+
+  /** P0-2：claim 返回但并发已满时暂存的本地延期缓冲（任务已持有跨实例 claim）。 */
+  private deferred: JobDescriptor[] = [];
+
+  /** 启动一个已领取的任务（共享模式 worker 路径）：调用方必须已确认 running < concurrency。 */
+  private launchClaimed(d: JobDescriptor): void {
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
@@ -505,12 +552,26 @@ export class RunQueue {
           tenantId: d.tenantId,
           workflowId: d.workflowId,
           traceId: d.traceId,
+          attachments: d.attachments,
+          web: d.web,
           interactionMode: d.interactionMode,
           planPhase: d.planPhase,
           owner: d.owner
         },
         d.id
       );
+    }
+    // P0-1/P0-2 兜底：本地延期滞留期间租约时钟持续流逝，执行前先续租一次。若任务
+    // 已被其它实例回收重领，这里刷新的只是新持有者的租约（延长方向，无危害）。
+    if (this.shared && this.backend.renewLease) {
+      void this.backend
+        .renewLease(d.id)
+        .catch((e) =>
+          logError('run-queue.bg', e as Error, {
+            op: 'renewLease.launch',
+            jobId: d.id
+          })
+        );
     }
     this.running += 1;
     if (job.sessionKey) this.runningSessions.add(job.sessionKey);
@@ -523,7 +584,9 @@ export class RunQueue {
       this.stopMemoryCheck(job.id);
       this.running -= 1;
       this.pump();
-      this.sweepOnce();
+      void this.sweepOnce().catch((e) =>
+        logError('run-queue.bg', e as Error, { op: 'sweepOnce.finally', jobId: job.id })
+      );
       this.evictIfNeeded();
     });
   }
@@ -594,6 +657,10 @@ export class RunQueue {
     }
     // 跨实例事件桥：执行实例若在别处，事件经 Redis pub/sub 转发到本订阅方，SSE 不受影响。
     let unsubBus: (() => void) | null = null;
+    // P2-5 修复：若调用方在 subscribeEvents promise resolve 之前就执行了返回的
+    // unsubscribe，此时 unsubBus 还是 null，之后才被赋值 → 该 Redis 订阅永久残留。
+    // 用 disposed 标记：迟到 resolve 时立即退订。
+    let disposed = false;
     if (
       this.backend.subscribeEvents &&
       job.status !== 'done' &&
@@ -609,9 +676,15 @@ export class RunQueue {
           }
         })
         .then((u) => {
+          if (disposed) {
+            u();
+            return;
+          }
           unsubBus = u;
         })
-        .catch(() => {});
+        .catch((e) =>
+          logError('run-queue.bg', e as Error, { op: 'subscribeEvents', jobId: id })
+        );
     }
     if (
       job.status === 'done' ||
@@ -621,6 +694,7 @@ export class RunQueue {
       job.subscribers.delete(fn);
     }
     return () => {
+      disposed = true;
       job.subscribers.delete(fn);
       if (unsubBus) unsubBus();
     };
@@ -665,7 +739,11 @@ export class RunQueue {
       }
     }
     if (this.backend.publishEvent) {
-      void this.backend.publishEvent(id, e).catch(() => {});
+      // 高频路径（每事件一次）：失败只计数不打日志，防 Redis 故障时日志洪泛；
+      // 指标经 /api/metrics 暴露，事件桥故障由 failed 计数突增体现。
+      void this.backend
+        .publishEvent(id, e)
+        .catch(() => incCounter('run.queue.publish_event.failed'));
     }
     return true;
   }
@@ -709,8 +787,11 @@ export class RunQueue {
       if (j.status === 'queued') {
         j.status = 'cancelled';
         j.finishedAt = Date.now();
-        // 取消的排队任务也移出持久层，避免重启后被重放。
-        void this.backend.ack(j.id).catch(() => {});
+        // 取消的排队任务也移出持久层，避免重启后被重放。ack 失败意味着重启后该任务
+        // 会被重放再执行一次——必须留痕（P1-10：不再静默吞错）。
+        void this.backend.ack(j.id).catch((e) =>
+          logError('run-queue.bg', e as Error, { op: 'ack.abortAll', jobId: j.id })
+        );
         return false;
       }
       return true;
@@ -736,6 +817,14 @@ export class RunQueue {
       clearInterval(this.reclaimTimer);
       this.reclaimTimer = undefined;
     }
+    // P0-2：延期缓冲中的任务已持有跨实例 claim；本实例退出后由租约到期回收（多实例）
+    // 或重放（单实例）接管，此处仅告警留痕。
+    if (this.deferred.length > 0) {
+      console.warn(
+        `[run-queue] stop(): ${this.deferred.length} deferred job(s) remain claimed — recovery via lease expiry / replay`
+      );
+    }
+    this.deferred = [];
     // 清理所有 per-job 内存监控定时器。此前 stop() 遗漏此处：若任务在执行中被 stop
     // （或测试未等任务结束），这些定时器会残留并阻止 Node 进程退出 —— 即测试文件级超时的根因之一。
     for (const [jobId, timer] of this.memoryCheckTimers) {
@@ -847,8 +936,30 @@ export class RunQueue {
     // 启动 per-job 内存监控
     this.startMemoryCheck(job);
     // 任务正式开始执行：从持久层移除，重启后不再重放（在飞任务的 controller 不可恢复，
-    // 客户端会自行重投）。失败仅记录。
-    void this.backend.ack(job.id).catch(() => {});
+    // 客户端会自行重投）。ack 失败意味着重启后该任务可能被重放再执行一次——必须留痕
+    // （P1-10：不再静默吞错）。
+    void this.backend.ack(job.id).catch((e) =>
+      logError('run-queue.bg', e as Error, { op: 'ack.execute', jobId: job.id })
+    );
+    // P0-1 修复：共享模式执行期租约续租。此前租约（默认 300s）不可续期，而计划任务
+    // 超时（PLAN_TASK_TIMEOUT_MS 默认 600s）> 租约 —— 运行超 5 分钟的任务会被其它
+    // 实例的 reclaimStale 迁回 pending 并被重复领取执行。现按租约/3 周期续租：
+    // 任务存活 → 租约永续；实例崩溃 → 续租停止 → 租约到期后由其它实例正常回收。
+    let leaseRenewTimer: NodeJS.Timeout | undefined;
+    if (this.shared && this.backend.renewLease) {
+      leaseRenewTimer = setInterval(() => {
+        void this.backend
+          .renewLease!(job.id)
+          .catch((e) =>
+            logError('run-queue.bg', e as Error, {
+              op: 'renewLease.execute',
+              jobId: job.id
+            })
+          );
+      }, LEASE_RENEW_INTERVAL_MS);
+      // 与看门狗同理：后台续租定时器不应阻止进程退出。
+      leaseRenewTimer.unref?.();
+    }
     let stepCount = 0;
     const emit = (e: unknown) => {
       // 附加 job 内单调递增序号：客户端凭「已收到的最大 seq」断线续传，
@@ -865,8 +976,11 @@ export class RunQueue {
         }
       }
       // 跨实例事件桥：把事件广播给持有该 job SSE 订阅的其它实例（共享后端才实现）。
+      // 高频路径：失败只计数不打日志，防 Redis 故障时日志洪泛（指标名见 emitSynthetic）。
       if (this.backend.publishEvent) {
-        void this.backend.publishEvent(job.id, e).catch(() => {});
+        void this.backend
+          .publishEvent(job.id, e)
+          .catch(() => incCounter('run.queue.publish_event.failed'));
       }
     };
     const onEvent = (e: HarnessEvent) => {
@@ -1369,6 +1483,12 @@ export class RunQueue {
         incCounter('run.failed');
       } finally {
         clearTimeout(watchdog);
+        // P0-1：执行结束即停续租——claimedAt 不再刷新，租约自然到期（ack 已把
+        // claimedAt 删除，续租脚本本身也会返回 0，这里 clearInterval 是防定时器残留）。
+        if (leaseRenewTimer) {
+          clearInterval(leaseRenewTimer);
+          leaseRenewTimer = undefined;
+        }
         if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
         // 幂等索引清理：任务进入终态后，同键新提交不再被去重拦截。
         if (job.idempotencyKey) {
@@ -1377,7 +1497,12 @@ export class RunQueue {
           // 共享后端：跨实例幂等键（Redis）随终态释放，允许同键新提交。
           // 任务可能在其它实例被 claim 执行，故不能只看本进程索引。
           if (this.shared && this.backend.releaseIdem) {
-            void this.backend.releaseIdem(key).catch(() => {});
+            void this.backend.releaseIdem(key).catch((e) =>
+              logError('run-queue.bg', e as Error, {
+                op: 'releaseIdem.settle',
+                jobId: job.id
+              })
+            );
           }
         }
         job.finishedAt = Date.now();

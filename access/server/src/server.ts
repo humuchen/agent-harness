@@ -396,10 +396,15 @@ if (!isAuthSecretConfigured()) {
   );
 }
 
-// P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
-if (process.env.LOG_SCRUB_ENABLED === 'true') {
+// P2/P1-8：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）。
+// 默认开启（此前默认关闭，生产日志存在 Key/token 泄漏面）；显式 LOG_SCRUB_ENABLED=false
+// 可关闭（仅建议本地调试临时使用）。
+if (process.env.LOG_SCRUB_ENABLED !== 'false') {
   installScrubber({});
-  structLog('info', 'log-scrub', { enabled: true, note: '全局日志脱敏已激活' });
+  structLog('info', 'log-scrub', {
+    enabled: true,
+    note: '全局日志脱敏已激活（默认开启，LOG_SCRUB_ENABLED=false 可关闭）'
+  });
 }
 
 // OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。

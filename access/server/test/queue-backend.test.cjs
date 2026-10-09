@@ -101,6 +101,112 @@ test('dist 未构建时显式提示', { skip: RUN }, () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// P1-2：descriptor 明文 modelApiKey 落盘加密（持久层 seal / 读取边界 open）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AES-GCM 密钥在调用期读取（getBuildTimeCryptoKey），require 前设置即可。
+process.env.AH_CRYPTO_KEY = 'ab'.repeat(32);
+
+test('FileQueueBackend: modelApiKey 落盘加密——文件无明文，list/claim 解密回明文', { skip: !RUN }, async () => {
+  const { FileQueueBackend } = loadBackend();
+  const file = path.join(tmpDir(), 'run-queue-enc.jsonl');
+  const b = new FileQueueBackend({ file });
+  await b.append({
+    id: 'enc1',
+    mode: 'real',
+    prompt: 'p',
+    modelApiKey: 'sk-secret-123456',
+    enqueuedAt: 1
+  });
+
+  // 持久层文件本身不含明文 Key，且带加密前缀
+  const raw = fs.readFileSync(file, 'utf-8');
+  assert.ok(!raw.includes('sk-secret-123456'), 'JSONL 文件不得出现明文 Key');
+  assert.ok(raw.includes('"modelApiKey":"enc:v1:'), '文件应存加密前缀密文');
+
+  // 读取边界解密：list/claim 拿到的是明文（进程内流不变）
+  const listed = await b.list();
+  assert.strictEqual(listed[0].modelApiKey, 'sk-secret-123456');
+  const claimed = await b.claim();
+  assert.strictEqual(claimed.modelApiKey, 'sk-secret-123456');
+
+  // 无 Key 的 descriptor 不受影响
+  const b2 = new FileQueueBackend({ file: path.join(tmpDir(), 'nokey.jsonl') });
+  await b2.append({ id: 'plain', mode: 'mock', prompt: 'p', enqueuedAt: 1 });
+  assert.strictEqual((await b2.list())[0].modelApiKey, undefined);
+});
+
+test('FileQueueBackend: 存量明文 modelApiKey 兼容读取（旧文件不炸）', { skip: !RUN }, async () => {
+  const { FileQueueBackend } = loadBackend();
+  const file = path.join(tmpDir(), 'legacy.jsonl');
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ id: 'legacy1', mode: 'real', prompt: 'p', modelApiKey: 'sk-legacy-plaintext', enqueuedAt: 1 }) + '\n'
+  );
+  const b = new FileQueueBackend({ file });
+  const all = await b.list();
+  assert.strictEqual(all[0].modelApiKey, 'sk-legacy-plaintext', '无加密前缀的存量明文按原样透传');
+});
+
+test('RedisQueueBackend: modelApiKey 落盘加密 + renewLease 续租语义', { skip: !RUN }, async () => {
+  const { RedisQueueBackend } = loadBackend();
+  const store = new FakeStore();
+  const b = new RedisQueueBackend(new FakeRedis(store));
+  await b.append({
+    id: 'renc1',
+    mode: 'real',
+    prompt: 'p',
+    modelApiKey: 'sk-redis-secret-999',
+    enqueuedAt: 1
+  });
+  // runq:jobs HASH 只存密文
+  const rawJob = store.hashes.get('runq:jobs').get('renc1');
+  assert.ok(!rawJob.includes('sk-redis-secret-999'), 'Redis HASH 不得出现明文 Key');
+  assert.ok(rawJob.includes('"modelApiKey":"enc:v1:'), 'HASH 应存加密前缀密文');
+
+  // claim 解密回明文；claim 已原子记录领取时刻
+  const d = await b.claim();
+  assert.strictEqual(d.modelApiKey, 'sk-redis-secret-999');
+  assert.ok(Number(store.hashes.get('runq:claimedAt').get('renc1')) > 0, 'claim 应记录领取时刻');
+
+  // 续租：claimedAt 存在 → true；ack 后 claimedAt 已删 → false
+  assert.strictEqual(await b.renewLease('renc1'), true);
+  await b.ack('renc1');
+  assert.strictEqual(await b.renewLease('renc1'), false, '任务终态后续租应失效');
+});
+
+test('RedisQueueBackend: reclaimStale 跳过 claimedAt 缺失的任务（防误杀在飞）', { skip: !RUN }, async () => {
+  const { RedisQueueBackend } = loadBackend();
+  const store = new FakeStore();
+  const b = new RedisQueueBackend(new FakeRedis(store));
+  await b.append({ id: 'noLease1', mode: 'mock', prompt: 'p', enqueuedAt: 1 });
+  await b.claim();
+  // 模拟 claimedAt 丢失（数据损坏 / 旧版本崩溃窗口）：旧逻辑会立即回收 → 重复执行；
+  // 新逻辑必须跳过 + 留在 processing。
+  store.hashes.get('runq:claimedAt').delete('noLease1');
+  const moved = await b.reclaimStale(0);
+  assert.strictEqual(moved, 0, 'claimedAt 缺失不得回收');
+  const proc = store.lists.get('runq:processing') || [];
+  assert.ok(proc.includes('noLease1'), '任务应滞留 processing 等待下一轮');
+});
+
+test('RedisQueueBackend: reclaimStale 迁移与 ack 原子——已 ack 的任务不回填 pending', { skip: !RUN }, async () => {
+  const { RedisQueueBackend } = loadBackend();
+  const store = new FakeStore();
+  const b = new RedisQueueBackend(new FakeRedis(store));
+  await b.append({ id: 'raced1', mode: 'mock', prompt: 'p', enqueuedAt: 1 });
+  await b.claim();
+  // 执行实例 ack（lrem processing + hdel jobs/claimedAt）；随后回收方才扫描——
+  // 旧实现 lrem/rpush 两步会把已 ack 的 id 塞回 pending 造成空转/重复；新实现 lrem 返回 0 即跳过。
+  await b.ack('raced1');
+  const moved = await b.reclaimStale(0);
+  assert.strictEqual(moved, 0, '已 ack 的任务不得被回填');
+  const pending = store.lists.get('runq:pending') || [];
+  assert.ok(!pending.includes('raced1'), 'pending 不应出现已 ack 的任务');
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Redis 后端（共享、多实例）：用进程内 FakeRedis 实现 RedisClient 契约，无需真实 Redis 服务。
 // ─────────────────────────────────────────────────────────────────────────────
 

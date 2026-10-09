@@ -428,38 +428,23 @@ export class AhProviderKeySettings extends LitElement {
     }
   }
 
-  /** P2.1 发起 OpenRouter OAuth（PKCE）授权流程。 */
+  /** P2.1/P1-1 发起 OpenRouter OAuth（PKCE）授权流程。
+   * P1-1 起授权 URL 由服务端 /oauth/start 签发（服务端生成 verifier + 签名 state）：
+   * verifier 不再经前端流转，state 无法伪造（login-CSRF / 账号固定防护）。 */
   private async startOAuth() {
     if (this.oauthing) return;
     this.oauthing = true;
     try {
-      const cfgRes = await authedFetch(
-        '/api/account/oauth/config?provider=openrouter'
+      const res = await authedFetch(
+        '/api/account/oauth/start?provider=openrouter'
       );
-      if (!cfgRes.ok) throw new Error(`HTTP ${cfgRes.status}`);
-      const cfg = (await cfgRes.json()) as {
-        enabled?: boolean;
-        clientId?: string;
-        authorizeUrl?: string;
-        redirectUri?: string;
-        scopes?: string;
-      };
-      if (!cfg.enabled || !cfg.clientId || !cfg.authorizeUrl) {
-        throw new Error('OpenRouter OAuth 未配置');
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
       }
-      // 生成 PKCE verifier/challenge；state 复用 verifier（高熵随机，作 CSRF 防护足够）。
-      const { verifier, challenge } = await this.pkce();
-      const params = new URLSearchParams({
-        client_id: cfg.clientId,
-        redirect_uri: cfg.redirectUri ?? '',
-        response_type: 'code',
-        scope: cfg.scopes ?? 'openid profile',
-        code_challenge: challenge,
-        code_challenge_method: 'S256',
-        state: verifier
-      });
-      const url = `${cfg.authorizeUrl}?${params.toString()}`;
-      window.open(url, 'oauth', 'width=640,height=720');
+      const data = (await res.json()) as { authorizeUrl?: string };
+      if (!data.authorizeUrl) throw new Error('OpenRouter OAuth 未配置');
+      window.open(data.authorizeUrl, 'oauth', 'width=640,height=720');
       notify.info('已在弹窗中打开 OpenRouter 授权页，请完成授权', {
         title: 'API Key'
       });
@@ -471,24 +456,6 @@ export class AhProviderKeySettings extends LitElement {
         key: 'oauth-start'
       });
     }
-  }
-
-  /** 生成 PKCE code_verifier / code_challenge（S256）。 */
-  private async pkce(): Promise<{ verifier: string; challenge: string }> {
-    const buf = crypto.getRandomValues(new Uint8Array(32));
-    const verifier = this.b64url(buf);
-    const digest = await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(verifier)
-    );
-    const challenge = this.b64url(new Uint8Array(digest));
-    return { verifier, challenge };
-  }
-
-  private b64url(buf: Uint8Array): string {
-    let s = '';
-    for (const b of buf) s += String.fromCharCode(b);
-    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
   /** 从后端拉取本账号全部 provider Key（脱敏）。 */

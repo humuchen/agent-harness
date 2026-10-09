@@ -16,6 +16,7 @@
  */
 
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getDbAdapter, resolveTenantDbPath, type DbAdapter } from '@agent-harness/core';
 import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
@@ -511,6 +512,37 @@ interface VerifyCacheEntry {
 }
 const verifyCache = new Map<string, VerifyCacheEntry>();
 const VERIFY_TTL_MS = 60_000;
+// P0-3 修复配套：容量上限 + 惰性淘汰（此前条目永不删除，随用户增长缓慢泄漏）。
+const VERIFY_CACHE_MAX = Math.max(
+  16,
+  Number(process.env.PROVIDER_VERIFY_CACHE_MAX ?? 1000) || 1000
+);
+
+/**
+ * 缓存键：完整 Key 的 SHA-256 摘要（前 32 hex）。
+ * P0-3 修复：此前取 Key 前 8 字符 —— OpenRouter Key 统一以 `sk-or-v1-` 开头，
+ * 所有用户共享同一缓存条目，A 用户的校验结果（valid/limit/usage）会串给 B 用户。
+ * 摘要键同时保证明文 Key 不进入内存键空间。
+ */
+function verifyCacheKey(provider: ProviderId, apiKey: string): string {
+  return `${provider}:${createHash('sha256').update(apiKey).digest('hex').slice(0, 32)}`;
+}
+
+/** 容量超限时按最旧写入时间淘汰 1/4（惰性，与 rate-limit.ts 同范式）。 */
+function evictVerifyCache(): void {
+  if (verifyCache.size < VERIFY_CACHE_MAX) return;
+  const entries = [...verifyCache.entries()].sort((a, b) => a[1].at - b[1].at);
+  const drop = Math.ceil(entries.length / 4);
+  for (let i = 0; i < drop; i++) {
+    const key = entries[i]?.[0];
+    if (key !== undefined) verifyCache.delete(key);
+  }
+}
+
+/** 运维/测试观测：当前校验缓存条目数与上限。 */
+export function verifyCacheStats(): { size: number; max: number } {
+  return { size: verifyCache.size, max: VERIFY_CACHE_MAX };
+}
 
 /**
  * 校验 Key 是否对 OpenRouter 有效（GET https://openrouter.ai/api/v1/key）。
@@ -525,7 +557,7 @@ export async function verifyProviderKey(
     // 其它 provider 暂不支持在线校验：交给实际调用时由上游 401 判定。
     return { valid: true };
   }
-  const cacheKey = `${provider}:${apiKey.slice(0, 8)}`;
+  const cacheKey = verifyCacheKey(provider, apiKey);
   const cached = verifyCache.get(cacheKey);
   if (cached && Date.now() - cached.at < VERIFY_TTL_MS) {
     return cached.result;
@@ -536,6 +568,7 @@ export async function verifyProviderKey(
     });
     if (!res.ok) {
       const result = { valid: false, error: `HTTP ${res.status}` };
+      evictVerifyCache();
       verifyCache.set(cacheKey, { at: Date.now(), result });
       return result;
     }
@@ -551,6 +584,7 @@ export async function verifyProviderKey(
         ? { usage: data.data.usage }
         : {})
     };
+    evictVerifyCache();
     verifyCache.set(cacheKey, { at: Date.now(), result });
     return result;
   } catch (e) {

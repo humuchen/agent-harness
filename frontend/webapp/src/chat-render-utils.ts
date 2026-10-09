@@ -728,6 +728,19 @@ export function planOutputsFromRun(
 }
 
 /**
+ * P1-11：交付文件归档/渲染的状态门禁（唯一判定点，attachPlanDeliverables 接线）。
+ *
+ * 仅全成功（status==='done'）才归档汇总报告 + 追加「📎 交付文件」区 —— 与后端
+ * 「仅 done run 归档」同语义。抽成纯函数的目的：
+ * 1. 门禁逻辑单源可测（vitest 直测各状态）；
+ * 2. 调用方时序守护（chat-plan-finalize.test.ts）据此断言「先置 done 再 attach」——
+ *    旧顺序（saveHistory 后才置 done）会让归档/渲染被本门禁挡掉，交付文件静默丢失。
+ */
+export function planDeliverablesEnabled(status: string | undefined): boolean {
+  return status === 'done';
+}
+
+/**
  * 生成「计划执行报告」markdown 全文（plan 结束后归档为可下载交付文件）：
  * 标题 + 元信息 + 执行状态清单 + 逐任务产出全文。纯函数（便于单测）。
  *

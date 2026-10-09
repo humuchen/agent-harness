@@ -35,6 +35,7 @@ import {
   buildPlanReportFileName,
   buildPlanFinalReport,
   planOutputsFromRun,
+  planDeliverablesEnabled,
   hasPlanArtifactSection,
   PLAN_FINAL_ARTIFACT_NOTE,
   filterPlanSingleStep,
@@ -4912,8 +4913,9 @@ export class AhChat extends LitElement {
   ): Promise<boolean> {
     if (summaryMsgId == null || !m.plan) return false;
     // 仅成功完成的计划才交付文件（failed / cancelled 无「最终交付物」，与后端同语义）。
-    const status = this.planExec[m.id]?.status;
-    if (status !== 'done') return false;
+    // P1-11：门禁抽为 chat-render-utils 纯函数（planDeliverablesEnabled）单源可测；
+    // 调用方时序由 chat-plan-finalize.test.ts 源码守护锁定（先置 done 再 attach）。
+    if (!planDeliverablesEnabled(this.planExec[m.id]?.status)) return false;
     const wfId = derivePlanWfId(sid, m.plan);
     const hasOutput = Object.values(outputs).some((s) => s && s.trim());
     if (hasOutput) {
