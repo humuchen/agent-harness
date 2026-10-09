@@ -222,14 +222,35 @@ export class FileQueueBackend implements QueueBackend {
   private file: string;
   private cache: JobDescriptor[] = [];
   private loaded = false;
+  /**
+   * P2-4：首载去重。旧实现在 await 读文件**之前**就置 loaded=true，并发首载窗口内
+   * （append + list 同时到达）第二个调用直接拿到空 cache —— append 会把新任务写进
+   * 空缓存视图并落盘（磁盘上已有任务对本次视图丢失），list 返回空。现缓存 loading
+   * promise，并发调用共享同一次加载；加载失败时清 promise 允许下次重试。
+   */
+  private loadPromise: Promise<void> | null = null;
 
   constructor(opts: { file: string }) {
     this.file = opts.file;
   }
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  private ensureLoaded(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    this.loadPromise ??= this.doLoad().then(
+      () => {
+        this.loaded = true;
+      },
+      (e) => {
+        // 加载失败（如目录创建被拒）：清 promise 允许下次调用重试，而不是把
+        // 失败状态永久钉死（旧实现还会静默带着空 cache 继续跑）。
+        this.loadPromise = null;
+        throw e;
+      }
+    );
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
     const fs = await import('node:fs/promises');
     const pathMod = await import('node:path');
     await fs.mkdir(pathMod.dirname(this.file), { recursive: true });

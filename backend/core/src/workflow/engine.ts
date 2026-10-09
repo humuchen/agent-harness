@@ -787,7 +787,7 @@ export class DagEngine {
                   this.emit({ type: 'wf:step:retry', workflowId: def.id, stepId: id, attempt, error: errMsg });
                   this.emitStepUpdate(run, id);
                   await this.store.save(run);
-                  await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS));
+                  await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS), ctx.signal);
                   if (!ctx.signal?.aborted) continue; // 退避期间未被取消 → 重试
                 }
                 sr.state = 'failed';
@@ -990,15 +990,9 @@ export class DagEngine {
     const run = await this.store.get(workflowId);
     if (!run) throw new Error(`workflow not found: ${workflowId}`);
     if (run.state === 'done') return run;
-    // 并发护栏：检查点属于另一 runId 且仍在 running（进程可能尚未结束）时拒绝续跑，
-    // 避免两个执行体对同一 def.id 的检查点互相覆盖。
-    const live = await this.store.get(workflowId);
-    if (live && live.state === 'running' && live.runId && live.runId !== run.runId) {
-      throw new Error(
-        `workflow "${workflowId}" checkpoint belongs to a different running execution (runId=${live.runId}); ` +
-          `concurrent resume rejected to avoid checkpoint overwrite`,
-      );
-    }
+    // P2-2 清理：原此处有一段「立即重复 get 同一 id 再比较 runId」的并发护栏 ——
+    // 同源读取自比较恒为真，无任何防护效果，纯死代码已删。真实护栏是下方
+    // P1 C4 的 store.claim 原子占位（无 claim 的 store 无并发护栏，属分层取舍）。
 
     const outputs: Record<string, unknown> = {};
     for (const s of run.def.steps) {
@@ -1020,13 +1014,8 @@ export class DagEngine {
         );
       }
     } else {
-      const live = await this.store.get(workflowId);
-      if (live && live.state === 'running' && live.runId && live.runId !== runId) {
-        throw new Error(
-          `workflow "${workflowId}" checkpoint belongs to a different running execution (runId=${live.runId}); ` +
-            `concurrent resume rejected to avoid checkpoint overwrite`,
-        );
-      }
+      // P2-2 清理：无 claim 的 store 原有一段同源 get+check 恒真护栏，已删。
+      // 无原子占位能力时仅落盘状态，并发护栏缺失属已知分层取舍。
       await this.store.save(run);
     }
     this.emit({ type: 'wf:start', workflowId, runId });
@@ -1157,7 +1146,7 @@ export class DagEngine {
                 this.emit({ type: 'wf:step:retry', workflowId, stepId: id, attempt, error: errMsg });
                 this.emitStepUpdate(run, id);
                 await this.store.save(run);
-                await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS));
+                await sleepMs(Math.min(backoffBase * 2 ** (attempt - 1), RETRY_BACKOFF_MAX_MS), ctx.signal);
                 if (!ctx.signal?.aborted) continue;
               }
               run.steps[id] = { ...run.steps[id], state: 'failed', error: errMsg };
@@ -1354,9 +1343,20 @@ function normalizeBackoff(step: StepDef): number {
   return typeof b === 'number' && Number.isFinite(b) && b >= 0 ? b : RETRY_BACKOFF_DEFAULT_MS;
 }
 
-/** 可中断休眠（重试退避；到点即返回，取消检查由调用方负责）。 */
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** 可中断休眠（重试退避；到点或 signal 中止即返回，取消检查由调用方负责）。
+ * P2-2：此前退避期间不响应取消 —— 长退避（上限可达分钟级）把 cancel 拖到睡满才生效。
+ * 现传入执行体 AbortSignal，中止时提前 settle（外层既有的 aborted 检查随即接管）。 */
+function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(t);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const t = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
 }
 
 /**

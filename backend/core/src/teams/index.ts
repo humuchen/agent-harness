@@ -51,6 +51,25 @@ export interface Team {
   onTaskAssign?(agentId: string, task: string): void;
 }
 
+/** competitive 打分饱和常数：结果长度达到该字符数时基础效用 ≈ 0.5。 */
+const RESULT_SCORE_HALF_CHARS = 1200;
+
+/**
+ * competitive 模式的结果效用打分（长度中性化，评审 P2-3）。
+ *
+ * 旧实现 `result.length * weight` 让「谁啰嗦谁赢」——分数随长度线性放大，
+ * 冗长跑题的答案几乎总能击败精炼切题的答案。现改为饱和曲线 `len / (len + K)`：
+ * - 空结果（含纯空白）得 0 分，退化输出直接落选；
+ * - 长度边际收益递减、封顶于 1：超过 K 字符后继续堆字数几乎不再改变排名，
+ *   vote 实际由成员权重（对 agent 的先验信任）主导；
+ * - 平分时由 `reduce` 严格大于保持先注册成员优先，行为确定。
+ */
+export function scoreResultUtility(text: string): number {
+  const len = text.trim().length;
+  if (len === 0) return 0;
+  return len / (len + RESULT_SCORE_HALF_CHARS);
+}
+
 /**
  * TeamManager：管理 Team 的 CRUD + 协作调度。
  *
@@ -161,11 +180,11 @@ export class TeamManager {
       case 'competitive': {
         // 所有成员执行，按权重 vote
         const votes = await Promise.all(
-          members.map(async (m, i) => {
-            const score = team.weights?.[m.id] ?? 1;
+          members.map(async (m) => {
+            const weight = team.weights?.[m.id] ?? 1;
             const result = await dispatchAgentTask(m, input);
-            // 简单打分：按结果长度 × 权重
-            const effectiveness = result.length * score;
+            // 打分：饱和长度效用 × 成员权重（长度中性化，见 scoreResultUtility）
+            const effectiveness = scoreResultUtility(result) * weight;
             return { result, score: effectiveness };
           })
         );

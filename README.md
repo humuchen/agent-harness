@@ -680,6 +680,14 @@ guardrailsBlocked / budgetExceeded / finalAnswer / tokens / cost`。这本身就
 > 已知边界：单条工具调用（如一次阻塞的网络请求）若自身不响应取消信号，job 级看门狗只能在其返回后
 > 生效；这属于底层工具的契约范畴，核心 harness 已对 LLM 调用做了 `Promise.race` + 信号兜底。
 
+> **分层声明（直接嵌入 `@agent-harness/core` 的宿主须知）**：core 作为框架库**不注册任何
+> 进程级安全网**——`process.on('uncaughtException' / 'unhandledRejection')` 兜底、SIGTERM/SIGINT
+> 优雅停机、job 看门狗（`JOB_TIMEOUT_MS`）、run 级预算熔断的运维收口等全部位于 `access/server`
+> 运行时层（见上文）。这是刻意的分层取舍：库不抢占宿主进程的治理策略，也避免与宿主自身的
+> 全局 handler 叠加产生二次副作用。第三方宿主把 core 当库嵌入自建进程时，**必须自行安装**
+> 未捕获异常 / 未处理拒绝的兜底与停机钩子，否则单次 run 内的异常可能直接击穿宿主进程；
+> 或直接复用 `access/server` 获得完整安全网。
+
 ## 密钥管理（外部化）
 
 服务**不依赖任何密钥 SDK**，所有密钥均通过 `process.env` 读取；启动早期由 `loadSecrets()`（`access/server/src/secrets.ts`）统一装配，使既有读取逻辑零改动。该设计让「真实密钥永不进仓库/镜像」，满足准生产安全要求。

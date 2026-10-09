@@ -106,7 +106,9 @@ export class AgentHarness {
       enableToolDedup: opts.enableToolDedup ?? false,
       maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
       planPropose: opts.planPropose ?? false,
-      planTask: opts.planTask ?? false
+      planTask: opts.planTask ?? false,
+      // P2-1：护栏温和重试上限（每轮 run 重置），缺省 1 与历史行为一致。
+      guardrailMaxRetries: opts.guardrailMaxRetries ?? 1
     };
     // 初始化指代消解追踪器（若开启）
     if (process.env.COREF_ENABLED === 'true') {
@@ -304,8 +306,9 @@ export class AgentHarness {
     // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
     let guardrailsBlocked = 0;
     // 输出护栏「合规内容类」拦截后，允许温和重试的次数（密钥/注入类不重试，直接兜底）。
-    // 每轮 run 重置，避免跨轮累积；重试会注入纠正提示让模型重新生成合规内容。
-    let guardrailRetriesLeft = 1;
+    // P2-1：改为可配置（opts.guardrailMaxRetries，缺省 1 保持历史行为），每轮 run 重置，
+    // 避免跨轮累积；重试会注入纠正提示让模型重新生成合规内容。
+    let guardrailRetriesLeft = Math.max(0, Math.floor(this.opts.guardrailMaxRetries));
     // 最近一次执行的工具调用结果（跨 runLoop 迭代保留），用于向输出护栏注入上下文，
     // 使规则能感知「上一步工具（如 project_kb_search）是否返回 found:false」等业务信号。
     let lastToolResult: { name: string; result: string } | null = null;
@@ -635,7 +638,14 @@ export class AgentHarness {
               throw llmErr;
             }
           }
-          if (!resp) return abortedResult();
+          if (!resp) {
+            // P2-1：走到这里 = 重试循环耗尽或适配器返回空响应 —— 这是「模型调用失败」，
+            // 不是「运行被取消」。旧实现一律 abortedResult() 把失败伪装成取消，
+            // 调用方/用户看到的文案与真实原因不符。仅当确实收到中止信号才走取消语义；
+            // 其余按失败抛出（外层既有 catch 落 failed + 事件，语义与模型抛错一致）。
+            if (signal.aborted) return abortedResult();
+            throw new Error(`llm returned no response after retries (step=${steps})`);
+          }
 
           // 用量记账与事件发射（拆分至 harness/usage-accounting.ts，语句顺序逐字保留）：
           // 记录自适应预算上限、token/成本记账、无单价诊断、占比拆解，

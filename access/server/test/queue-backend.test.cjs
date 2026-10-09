@@ -66,6 +66,33 @@ test('FileQueueBackend: 追加写持久化 + ack 移除 + 坏行鲁棒', { skip:
   assert.deepStrictEqual(all.map((d) => d.id), ['a']);
 });
 
+test('FileQueueBackend: P2-4 并发首载——append/list 竞争不丢任务、窗口内 list 非空', { skip: !RUN }, async () => {
+  const { FileQueueBackend } = loadBackend();
+  const file = path.join(tmpDir(), 'run-queue.jsonl');
+  // 预置磁盘上已有 a、b 两个任务（模拟重启后首载）
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ id: 'a', mode: 'mock', prompt: 'p1', enqueuedAt: 1 }) + '\n' +
+    JSON.stringify({ id: 'b', mode: 'mock', prompt: 'p2', enqueuedAt: 2 }) + '\n',
+    'utf-8'
+  );
+  const b = new FileQueueBackend({ file });
+  // append 先进 ensureLoaded（置载中态 → await 读文件），list 随后到达。
+  // 旧实现 loaded 在读文件前置位 → list 直接拿到空 cache（首载窗口返回空视图）。
+  const [, lst] = await Promise.all([
+    b.append({ id: 'c', mode: 'mock', prompt: 'p3', enqueuedAt: 3 }),
+    b.list()
+  ]);
+  assert.ok(
+    lst.some((d) => d.id === 'a') && lst.some((d) => d.id === 'b'),
+    `并发窗口内的 list 必须看到磁盘已有任务，实际=${JSON.stringify(lst.map((d) => d.id))}`
+  );
+  // 最终一致：append 的新任务与磁盘已有任务并存（旧实现 appendFile/readFile
+  // 竞争可能用读回结果覆盖掉刚 push 的 c）。
+  const all = await b.list();
+  assert.deepStrictEqual(all.map((d) => d.id).sort(), ['a', 'b', 'c']);
+});
+
 test('RunQueue + FileQueueBackend: 启动重放未开始任务并清空持久层', { skip: !RUN }, async () => {
   const { FileQueueBackend } = loadBackend();
   const { RunQueue } = require(RUNQUEUE_JS);
