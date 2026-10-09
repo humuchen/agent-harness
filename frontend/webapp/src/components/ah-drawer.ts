@@ -312,18 +312,28 @@ export class AhDrawer extends LitElement {
           height: 0;
         }
 
-        /* ── 移动端：标题与关闭按钮左右互换 ──
-           原布局为「标题在左、× 在右」。移动端改为返回键在左、标题在右：
+        /* ── 移动端：标题居中 + 返回键在左 + × 换箭头 ──
+           原布局为「标题在左、× 在右」。移动端改为返回键在左、标题居中：
            拇指可达区在屏幕左侧，返回是高频动作；同时把 × 换成箭头，
            与 iOS/Android 的「返回」语义一致（而非「关闭弹层」）。
-           实现用 order 而非改 DOM 顺序——DOM 顺序影响读屏与 Tab 焦点次序，
-           保持 close 在后不影响可访问性；margin-left:auto 需一并清掉，
-           否则标题仍会被推到右侧，等于没换。 */
+
+           标题「真居中」的实现要点：close 必须 position:absolute 脱离流，
+           再由 .head justify-content:center 居中 title。若只给 title 设
+           text-align:center，它居中的是「扣掉左侧 44px 按钮后」的剩余区域，
+           整体会偏右约 30px（视觉上明显没居中）。title 左右等量 padding
+           为按钮留出等宽空间，长标题被挤到中间也不会压到按钮下面。
+           实现用 CSS 而非改 DOM 顺序——DOM 顺序影响读屏与 Tab 焦点次序，
+           保持 close 在后不影响可访问性。 */
         .head {
+          position: relative;
           flex-direction: row;
+          justify-content: center;
         }
         .close {
-          order: -1;
+          position: absolute;
+          left: 16px;
+          top: 50%;
+          transform: translateY(-50%);
           margin-left: 0;
           /* 触控目标放大到 44px（移动端可点区域下限） */
           min-width: 44px;
@@ -332,8 +342,10 @@ export class AhDrawer extends LitElement {
         }
         .title {
           order: 1;
-          margin-right: auto;
-          text-align: right;
+          margin-right: 0;
+          text-align: center;
+          /* 左右留白对称，使标题相对面板中心居中（面板 padding 也是 16px） */
+          padding: 0 48px;
         }
         .ico-back {
           display: inline-flex;

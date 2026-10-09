@@ -22,6 +22,8 @@
  * - 44px 最小触控目标；
  * - 无 JS 时 `href="/"` 直接回主界面，有 JS 且同源跳转而来时走 history.back()
  *   以保留会话 / Tab / 滚动位置。桌面端同样可用，且不影响浏览器自身后退。
+ * - 返回图标用与前端 `ah-drawer` 的 `.ico-back` 完全相同的 chevron SVG，两处
+ *   「返回」视觉一致（路径 d="M15 18l-6-6 6-6"，24×24 / round 端点 / 2px / currentColor）。
  */
 
 /** HTML 转义（与项目内其它 escapeHtml 语义一致）。 */
@@ -326,7 +328,11 @@ export function markdownPreviewHtml(mdText: string, fileName: string): string {
     -webkit-tap-highlight-color: rgba(9, 105, 218, .15);
   }
   .md-back:active { background: #eaeef2; }
-  .md-back-ico { font-size: 1.15em; line-height: 1; }
+  /* 返回箭头：与前端 ah-drawer 的 .ico-back 用同一条 chevron 路径（d="M15 18l-6-6 6-6"，
+     24×24 viewBox、round 端点、stroke-width 2、currentColor），两处「返回」视觉完全一致。
+     改这里须同步改 ah-drawer.ts 的 .ico-back svg path。 */
+  .md-back-ico { display: inline-flex; align-items: center; }
+  .md-back-ico svg { width: 20px; height: 20px; display: block; }
   .md-name {
     flex: 1 1 auto; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -383,7 +389,9 @@ export function markdownPreviewHtml(mdText: string, fileName: string): string {
 <body>
 <div class="md-bar">
   <a class="md-back" id="md-back" href="/" aria-label="关闭预览，返回主界面">
-    <span class="md-back-ico" aria-hidden="true">&#8592;</span><span>返回</span>
+    <span class="md-back-ico" aria-hidden="true"><svg
+      viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg></span><span>返回</span>
   </a>
   <div class="md-name" title="${title}">${title}</div>
 </div>

@@ -249,7 +249,7 @@ describe('mac-ui 适配层测试', () => {
         return m?.[1] ?? '';
       };
 
-      it('移动端：close 用 order:-1 移到左侧，title 用 order:1 移到右侧', async () => {
+      it('移动端：标题真居中——close 绝对定位，head 用 justify-content:center', async () => {
         const el = document.createElement('ah-drawer');
         el.open = true;
         el.title = '执行详情';
@@ -257,11 +257,23 @@ describe('mac-ui 适配层测试', () => {
         await el.updateComplete;
 
         const css = cssText(el);
-        expect(mobileRules(css, '.close')).toMatch(/order:\s*-1/);
-        expect(mobileRules(css, '.title')).toMatch(/order:\s*1/);
-        // margin-left:auto 必须一并清掉，否则标题仍被推到右侧＝没换
-        expect(mobileRules(css, '.close')).toMatch(/margin-left:\s*0/);
-        expect(mobileRules(css, '.title')).toMatch(/text-align:\s*right/);
+        // close 必须脱离文档流，否则 title 居中的是「扣掉按钮后的剩余区域」，
+        // 整体偏右约 30px，肉眼可见没居中。
+        const close = mobileRules(css, '.close');
+        expect(close).toMatch(/position:\s*absolute/);
+        expect(close).toMatch(/top:\s*50%/);
+        expect(close).toMatch(/transform:\s*translateY\(-50%\)/);
+        expect(close).toMatch(/margin-left:\s*0/);
+
+        const head = mobileRules(css, '.head');
+        expect(head).toMatch(/position:\s*relative/);
+        expect(head).toMatch(/justify-content:\s*center/);
+
+        // 标题左右等量留白，为按钮留出等宽空间（否则长标题会压到按钮下）
+        const title = mobileRules(css, '.title');
+        expect(title).toMatch(/text-align:\s*center/);
+        expect(title).toMatch(/padding:\s*0 48px/);
+        expect(title).toMatch(/margin-right:\s*0/);
       });
 
       it('移动端：返回键触控目标不小于 44px', async () => {
@@ -297,6 +309,28 @@ describe('mac-ui 适配层测试', () => {
         expect(css).toMatch(/\.ico-back\s*\{[^}]*display:\s*none/);
         expect(mobileRules(css, '.ico-back')).toMatch(/display:\s*inline-flex/);
         expect(mobileRules(css, '.ico-close')).toMatch(/display:\s*none/);
+      });
+
+      /**
+       * 返回图标与 md 预览页（access/server/src/markdown-preview.ts 的 .md-back-ico）
+       * 保持一致。两处分属前端组件与服务端字符串模板、无共享代码，故在此把
+       * path 钉死；服务端侧由 markdown-preview.test.cjs 钉同一常量。
+       */
+      it('返回图标 path 固定为 chevron（M15 18l-6-6 6-6），与服务端预览页一致', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        document.body.appendChild(el);
+        await el.updateComplete;
+
+        const svg = el.shadowRoot?.querySelector('.ico-back svg') as SVGElement;
+        const path = svg?.querySelector('path')?.getAttribute('d');
+        expect(path).toBe('M15 18l-6-6 6-6');
+        expect(svg?.getAttribute('viewBox')).toBe('0 0 24 24');
+        expect(svg?.getAttribute('stroke')).toBe('currentColor');
+        // 描边样式与线宽须与 md-preview 一致，否则同图标粗细/端点不同
+        expect(svg?.getAttribute('stroke-width')).toBe('2');
+        expect(svg?.getAttribute('stroke-linecap')).toBe('round');
+        expect(svg?.getAttribute('stroke-linejoin')).toBe('round');
       });
 
       it('无障碍名随断点切换：桌面「关闭」/ 移动「返回」', async () => {

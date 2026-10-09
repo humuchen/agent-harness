@@ -170,3 +170,26 @@ test('返回栏不破坏深色模式（跟随系统）', () => {
   assert.ok(dark, '应保留深色模式媒体查询');
   assert.match(dark[1], /\.md-bar \{/, '深色下须给返回栏配色，避免白底黑字不可读');
 });
+
+test('返回图标为 chevron SVG，与前端 ah-drawer 的 .ico-back 同一 path', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  // 与 frontend/webapp/src/components/ah-drawer.ts 的 .ico-back svg 保持一致：
+  // 24×24 viewBox、round 端点/连接、2px 描边、currentColor、同一 path。
+  assert.match(html, /class="md-back-ico"[^>]*aria-hidden="true"/, '图标须对读屏隐藏');
+  assert.match(html, /<svg[^>]*viewBox="0 0 24 24"/);
+  assert.match(html, /stroke="currentColor"/);
+  assert.match(html, /stroke-width="2"/);
+  assert.match(html, /stroke-linecap="round"/);
+  assert.match(html, /stroke-linejoin="round"/);
+  assert.match(html, /<path d="M15 18l-6-6 6-6"><\/path>/);
+  // 旧实现用的是 ← 字符（&#8592;），须已换成 SVG
+  assert.ok(!html.includes('&#8592;'), '不应再使用 ← 字符图标');
+  assert.ok(!html.includes('←'), '不应再使用 ← 字符图标');
+});
+
+test('返回箭头有确定尺寸（不被字体行高挤压）', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  assert.match(html, /\.md-back-ico svg \{[^}]*width: 20px[^}]*height: 20px/);
+  // 容器改用 inline-flex 对齐，取消旧的 font-size 行高 hack
+  assert.match(html, /\.md-back-ico \{[^}]*display: inline-flex/);
+});
