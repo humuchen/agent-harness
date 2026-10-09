@@ -10,6 +10,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
+import { APP_EVENTS } from '../app-events';
 
 /** 宿主传入的 Agent 条目。 */
 export interface AgentOption {
@@ -228,12 +229,12 @@ export class AhAgentPicker extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /**

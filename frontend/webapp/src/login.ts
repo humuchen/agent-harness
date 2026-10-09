@@ -49,6 +49,7 @@ import {
   type LoginForm,
   type RegisterForm
 } from './utils/auth-validation';
+import { APP_EVENTS } from './app-events';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
@@ -1724,7 +1725,7 @@ export class AhLogin extends LitElement {
         this.mode === 'register' ? '注册成功，已自动登录' : '登录成功'
       );
       this.dispatchEvent(
-        new CustomEvent('ah-login-success', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.loginSuccess, { bubbles: true, composed: true })
       );
     } catch (err) {
       notifyError(err, {

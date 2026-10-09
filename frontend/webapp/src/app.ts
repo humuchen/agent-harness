@@ -33,6 +33,7 @@ import './plugins-console';
 import './components/settings-center';
 import { TopProgressBar } from './top-progress-bar';
 import { PullToRefreshController } from './pull-refresh';
+import { APP_EVENTS } from './app-events';
 
 type Tab =
   | 'workspace'
@@ -344,7 +345,7 @@ const chatShellCss = css`
 
 /**
  * 顶层应用壳：顶栏（连接状态 + 令牌）、Tab 导航、各面板容器。
- * 面板通过 dispatchEvent(new CustomEvent('ah-refresh')) 。
+ * 面板通过 dispatchEvent(new CustomEvent(APP_EVENTS.refresh)) 。
  */
 @customElement('ah-app')
 export class AhApp extends LitElement {
@@ -414,7 +415,7 @@ export class AhApp extends LitElement {
     void this.loadPluginViews();
     // 监听子面板发来的刷新请求（如创建/销毁环境后）；同时重拉插件视图，
     // 使正在查看的插件 Tab（如客资看板）也能拿到最新服务端渲染数据。
-    this.addEventListener('ah-refresh', () => {
+    this.addEventListener(APP_EVENTS.refresh, () => {
       this.refreshState();
       void this.loadPluginViews();
     });
@@ -433,7 +434,7 @@ export class AhApp extends LitElement {
     startPluginNotify();
     // 子面板请求切换 Tab：detail 为 string（Tab id），或 { tab, group } 用于进入设置中心的指定分组，
     // 或 { tab: 'chat', sessionId } 用于从工作台打开指定会话。
-    this.addEventListener('ah-goto', (e) => {
+    this.addEventListener(APP_EVENTS.goto, (e) => {
       const d = (
         e as CustomEvent<
           string | { tab?: string; group?: string; sessionId?: string }
@@ -473,7 +474,7 @@ export class AhApp extends LitElement {
       this.deepThinkCollapsed = collapsed;
       localStorage.setItem(DEEP_THINK_COLLAPSED_KEY, String(collapsed));
     };
-    window.addEventListener('ah:theme-changed', this.onThemeChanged);
+    window.addEventListener(APP_EVENTS.themeChanged, this.onThemeChanged);
     this.addEventListener(
       'ah-sidebar-collapsed',
       this.onSidebarCollapsed as EventListener
@@ -483,10 +484,10 @@ export class AhApp extends LitElement {
       this.onDeepThinkCollapsed as EventListener
     );
     // 全局运行中指示器：任意面板运行时亮起，全部结束后熄灭。
-    window.addEventListener('ah:run:start', () => {
+    window.addEventListener(APP_EVENTS.runStart, () => {
       this.globalRunning = true;
     });
-    window.addEventListener('ah:run:stop', () => {
+    window.addEventListener(APP_EVENTS.runStop, () => {
       this.globalRunning = false;
     });
     // History 路由：浏览器后退 / 前进时从 pathname 恢复 Tab（SPA fallback 保证刷新可用）。
@@ -498,8 +499,8 @@ export class AhApp extends LitElement {
       this.closeAllOverlays();
       // 路由切换时显示顶部进度条
       if (prevTab !== this.tab) {
-        window.dispatchEvent(new Event('ah:bar:start'));
-        setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
+        window.dispatchEvent(new Event(APP_EVENTS.barStart));
+        setTimeout(() => window.dispatchEvent(new Event(APP_EVENTS.barStop)), 600);
       }
       // 浏览器前进/后退切到新 Tab 时，补拉该面板数据。
       void this.activatePanel(this.tab);
@@ -515,7 +516,7 @@ export class AhApp extends LitElement {
       const seg = path.replace(/^\/+/, '').split('/')[0];
       if (seg) this.setTab(seg);
     };
-    window.addEventListener('ah:deeplink', this.onDeepLink as EventListener);
+    window.addEventListener(APP_EVENTS.deeplink, this.onDeepLink as EventListener);
 
     // 移动端左屏边缘右滑 → 打开抽屉
     this.addEventListener('touchstart', this.onTouchStart, { passive: true });
@@ -528,7 +529,7 @@ export class AhApp extends LitElement {
     this.ptr?.detach();
     this.ptr = undefined;
     window.removeEventListener('popstate', this.onPopState);
-    window.removeEventListener('ah:deeplink', this.onDeepLink as EventListener);
+    window.removeEventListener(APP_EVENTS.deeplink, this.onDeepLink as EventListener);
     this.removeEventListener('touchstart', this.onTouchStart);
     this.removeEventListener('touchmove', this.onEdgeTouchMove);
     this.removeEventListener('touchend', this.onEdgeTouchEnd);
@@ -626,9 +627,9 @@ export class AhApp extends LitElement {
     if (prevTab !== tab) {
       // 切换 Tab 时关闭所有覆盖层，避免旧抽屉/模态悬浮到新页面。
       this.closeAllOverlays();
-      window.dispatchEvent(new Event('ah:bar:start'));
+      window.dispatchEvent(new Event(APP_EVENTS.barStart));
       // 短暂延迟后停止，模拟页面加载完成
-      setTimeout(() => window.dispatchEvent(new Event('ah:bar:stop')), 600);
+      setTimeout(() => window.dispatchEvent(new Event(APP_EVENTS.barStop)), 600);
       // 新激活的面板此前在隐藏态挂载时跳过了首屏请求，此处补拉一次（见各面板 refresh() 守卫）。
       void this.activatePanel(tab);
     }
@@ -644,7 +645,7 @@ export class AhApp extends LitElement {
     const chat = this.shadowRoot?.querySelector('ah-chat');
     if (chat) {
       chat.dispatchEvent(
-        new CustomEvent('ah-select-session', {
+        new CustomEvent(APP_EVENTS.selectSession, {
           detail: sessionId,
           bubbles: true,
           composed: true
@@ -789,7 +790,7 @@ export class AhApp extends LitElement {
    * 避免移动端侧滑返回后旧覆盖层仍悬浮在新页面上。
    */
   private closeAllOverlays() {
-    window.dispatchEvent(new CustomEvent('ah:close-overlays'));
+    window.dispatchEvent(new CustomEvent(APP_EVENTS.closeOverlays));
   }
 
   /** 移动端抽屉打开时锁定背景滚动，关闭后还原。 */

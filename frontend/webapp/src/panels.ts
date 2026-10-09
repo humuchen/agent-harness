@@ -11,6 +11,7 @@ import type {
 import { sharedStyles } from './styles';
 import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
+import { APP_EVENTS } from './app-events';
 
 /* ------------------------------ 通用辅助 ------------------------------ */
 
@@ -123,7 +124,7 @@ export class AhEnv extends LitElement {
         this.events = [...this.events, ev];
       }
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     } catch (e) {
       reportError('env', e);
@@ -340,7 +341,7 @@ export class AhMcp extends LitElement {
       await this.refresh();
       notify.success(`MCP 服务「${addedName}」已接入`);
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     } catch (e) {
       reportError('mcp', e);
@@ -362,7 +363,7 @@ export class AhMcp extends LitElement {
       await this.refresh();
       notify.success(`已移除 MCP 服务「${name}」`);
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     } catch (e) {
       reportError('mcp', e);
@@ -379,7 +380,7 @@ export class AhMcp extends LitElement {
       await this.refresh();
       notify.success('预设市场服务接入成功');
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     } catch (e) {
       reportError('mcp', e);

@@ -3,6 +3,7 @@
  * 覆盖：基础渲染、命令式 API、主题切换、响应式、交互行为、资源清理
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { CSSResult } from 'lit';
 import './components/ah-modal';
 import './components/ah-drawer';
 import '@humuchen/mac-ui';
@@ -218,6 +219,117 @@ describe('mac-ui 适配层测试', () => {
       document.body.appendChild(el);
       await el.updateComplete;
       expect(el.shadowRoot?.querySelector('.scrim')).toBeFalsy();
+    });
+
+    /**
+     * 移动端抽屉头部：标题与关闭按钮左右互换，且 × 换成返回箭头。
+     *
+     * 背景：移动端拇指可达区在屏幕左侧，「返回」又是高频动作，故把关闭键移到左侧
+     * 并改用箭头图标（语义从「关闭弹层」转为「返回」）。桌面端保持原样。
+     *
+     * jsdom 不做布局（无 getComputedStyle 真实解算、媒体查询恒不匹配），
+     * 因此这里锁定的是**产生该视觉的前置条件**——CSS 规则与 DOM 结构；
+     * 实际像素位置由浏览器端到端验证（390×844 实测 btn.left=16 / title.left=70）。
+     */
+    describe('移动端头部：标题与返回键互换', () => {
+      /** 取组件样式表全文（static styles 为 CSSResult 数组）。 */
+      const cssText = (el: Element): string => {
+        const styles = (el.constructor as unknown as { styles: CSSResult[] }).styles;
+        const flat = Array.isArray(styles) ? styles : [styles];
+        return flat.map((s) => s.cssText).join('\n');
+      };
+
+      /** 抽出 @media (max-width: 760px), (pointer: coarse) 块内的 .close / .title 规则。 */
+      const mobileRules = (css: string, sel: string): string => {
+        const at = css.indexOf('@media (max-width: 760px), (pointer: coarse)');
+        expect(at, '应存在移动端媒体查询块').toBeGreaterThan(-1);
+        const block = css.slice(at);
+        const m = new RegExp(`${sel.replace('.', '\\.')}\\s*\\{([^}]*)\\}`).exec(block);
+        expect(m, `移动端块内应有 ${sel} 规则`).toBeTruthy();
+        return m?.[1] ?? '';
+      };
+
+      it('移动端：close 用 order:-1 移到左侧，title 用 order:1 移到右侧', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        el.title = '执行详情';
+        document.body.appendChild(el);
+        await el.updateComplete;
+
+        const css = cssText(el);
+        expect(mobileRules(css, '.close')).toMatch(/order:\s*-1/);
+        expect(mobileRules(css, '.title')).toMatch(/order:\s*1/);
+        // margin-left:auto 必须一并清掉，否则标题仍被推到右侧＝没换
+        expect(mobileRules(css, '.close')).toMatch(/margin-left:\s*0/);
+        expect(mobileRules(css, '.title')).toMatch(/text-align:\s*right/);
+      });
+
+      it('移动端：返回键触控目标不小于 44px', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        document.body.appendChild(el);
+        await el.updateComplete;
+
+        const rule = mobileRules(cssText(el), '.close');
+        const h = /min-height:\s*(\d+)px/.exec(rule);
+        const w = /min-width:\s*(\d+)px/.exec(rule);
+        expect(Number(h?.[1])).toBeGreaterThanOrEqual(44);
+        expect(Number(w?.[1])).toBeGreaterThanOrEqual(44);
+      });
+
+      it('两枚图标并存、按断点切换（避免 JS 匹配媒体查询导致首帧闪烁）', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        document.body.appendChild(el);
+        await el.updateComplete;
+        const sr = el.shadowRoot;
+        const btn = sr?.querySelector('.close') as HTMLElement;
+
+        // × 与箭头同时渲染，靠 CSS display 切换
+        expect(btn.querySelector('.ico-close')?.textContent?.trim()).toBe('×');
+        expect(btn.querySelector('.ico-back svg')).toBeTruthy();
+        // 两枚图标均为纯装饰，须对读屏隐藏
+        expect(btn.querySelector('.ico-close')?.getAttribute('aria-hidden')).toBe('true');
+        expect(btn.querySelector('.ico-back')?.getAttribute('aria-hidden')).toBe('true');
+
+        const css = cssText(el);
+        // 默认（桌面）只显示 ×，移动端只显示箭头
+        expect(css).toMatch(/\.ico-back\s*\{[^}]*display:\s*none/);
+        expect(mobileRules(css, '.ico-back')).toMatch(/display:\s*inline-flex/);
+        expect(mobileRules(css, '.ico-close')).toMatch(/display:\s*none/);
+      });
+
+      it('无障碍名随断点切换：桌面「关闭」/ 移动「返回」', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        document.body.appendChild(el);
+        await el.updateComplete;
+        const btn = el.shadowRoot?.querySelector('.close') as HTMLElement;
+
+        // 按钮视觉为纯图标，可访问名由视觉隐藏的文案提供
+        expect(btn.querySelector('.lbl-close')?.textContent?.trim()).toBe('关闭');
+        expect(btn.querySelector('.lbl-back')?.textContent?.trim()).toBe('返回');
+        // 隐藏文案不得撑开布局（须为视觉隐藏写法）
+        const css = cssText(el);
+        expect(css).toMatch(/\.lbl-close,\s*\.lbl-back\s*\{[^}]*clip-path:\s*inset\(50%\)/);
+
+        const block = mobileRules(css, '.lbl-back');
+        expect(block).toMatch(/display:\s*block/);
+        expect(mobileRules(css, '.lbl-close')).toMatch(/display:\s*none/);
+      });
+
+      it('DOM 顺序不变：close 仍在 title 之后（读屏与 Tab 次序不被打乱）', async () => {
+        const el = document.createElement('ah-drawer');
+        el.open = true;
+        el.title = '执行详情';
+        document.body.appendChild(el);
+        await el.updateComplete;
+
+        const head = el.shadowRoot?.querySelector('.head') as HTMLElement;
+        const kids = Array.from(head.children).map((c) => c.className);
+        expect(kids.indexOf('title')).toBeLessThan(kids.indexOf('close'));
+        // 视觉换位靠 CSS order，不靠改 DOM
+      });
     });
 
     it('ah-open 事件触发', async () => {

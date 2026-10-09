@@ -25,6 +25,7 @@ import { client } from './api';
 import type { ApprovalTicket, ServerState } from '@agent-harness/client';
 import { sharedStyles } from './styles';
 import { notifyError } from './utils/errors';
+import { APP_EVENTS } from './app-events';
 
 interface QueueStats {
   concurrency: number;
@@ -115,7 +116,7 @@ export class AhDashboard extends LitElement {
 
   private goto(tab: string) {
     this.dispatchEvent(
-      new CustomEvent('ah-goto', { detail: tab, bubbles: true, composed: true })
+      new CustomEvent(APP_EVENTS.goto, { detail: tab, bubbles: true, composed: true })
     );
   }
 

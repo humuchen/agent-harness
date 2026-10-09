@@ -31,6 +31,7 @@ import './password-dialog';
 // 二者已在 components/index.ts 全局注册，此处副作用导入仅为显式声明依赖、保证独立渲染可用。
 import './ah-drawer';
 import './settings-center';
+import { APP_EVENTS } from '../app-events';
 
 @customElement('ah-user-menu')
 export class AhUserMenu extends LitElement {
@@ -427,14 +428,14 @@ export class AhUserMenu extends LitElement {
     if (g) this.brand = g;
     document.addEventListener('click', this.onDocClick, true);
     window.addEventListener('keydown', this.onKeydown);
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('click', this.onDocClick, true);
     window.removeEventListener('keydown', this.onKeydown);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /** 外部（ah-app）在拿到 /me 后调用，回填头像所需资料。 */

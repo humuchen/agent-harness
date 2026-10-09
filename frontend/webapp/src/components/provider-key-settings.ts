@@ -18,6 +18,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { authedFetch } from '../api';
 import { notify } from './ah-notification';
 import { notifyError, errorMessage } from '../utils/errors';
+import { APP_EVENTS } from '../app-events';
 
 interface ProviderKeyPublic {
   provider: string;
@@ -409,7 +410,7 @@ export class AhProviderKeySettings extends LitElement {
       void this.loadUsage();
       // 授权成功后通知顶层刷新，使「LLM live」即时出现。
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     }
   };
@@ -591,7 +592,7 @@ export class AhProviderKeySettings extends LitElement {
       // 由 /api/v1/state 的 openrouter 字段驱动，不刷新则必须手动 reload 页面
       // 才能从 mock 切到 live（见 app.ts 的 ah-refresh 监听）。
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
       // 保存后自动测试连通性，即时反馈状态（保留模式同样重验，baseUrl 变更会重置状态）。
       void this.verify();
@@ -670,7 +671,7 @@ export class AhProviderKeySettings extends LitElement {
       await this.load();
       // 删除后同样通知顶层刷新，使「LLM live」回落为「mock」。
       this.dispatchEvent(
-        new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+        new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
       );
     } catch (e) {
       notifyError(e, {

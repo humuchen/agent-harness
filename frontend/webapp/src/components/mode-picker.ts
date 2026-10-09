@@ -10,6 +10,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
+import { APP_EVENTS } from '../app-events';
 
 /** 运行模式定义：值与宿主 interactionMode 对齐。 */
 interface ModeItem {
@@ -177,12 +178,12 @@ export class AhModePicker extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /**

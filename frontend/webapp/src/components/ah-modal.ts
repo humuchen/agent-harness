@@ -28,6 +28,7 @@ import '@humuchen/mac-ui';
 import { MacConfirm } from '@humuchen/mac-ui';
 import type { ConfirmOptions } from '@humuchen/mac-ui';
 import { getTheme, type Theme } from '../theme/tokens';
+import { APP_EVENTS } from '../app-events';
 
 export type ModalVariant = 'info' | 'confirm' | 'warning';
 export type ModalSize = 'sm' | 'md' | 'lg';
@@ -68,8 +69,8 @@ function bindMacTheme(...els: Themeable[]): () => void {
     for (const el of els) el.theme = theme;
   };
   sync();
-  window.addEventListener('ah:theme-changed', sync);
-  return () => window.removeEventListener('ah:theme-changed', sync);
+  window.addEventListener(APP_EVENTS.themeChanged, sync);
+  return () => window.removeEventListener(APP_EVENTS.themeChanged, sync);
 }
 
 export interface AhModalOptions {
@@ -148,14 +149,14 @@ export class AhModal extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.macTheme = getTheme();
-    window.addEventListener('ah:theme-changed', this.onThemeChanged);
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.themeChanged, this.onThemeChanged);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    window.removeEventListener('ah:theme-changed', this.onThemeChanged);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.themeChanged, this.onThemeChanged);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /** 路由切换或浏览器后退/前进时关闭声明式弹窗。 */
@@ -271,13 +272,13 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve(v);
-        window.removeEventListener('ah:close-overlays', onOverlayClose);
+        window.removeEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
         el.remove();
       };
       // 注意：事件在 window 上派发，不会向下传播到 body 子元素，
       // 故必须监听 window 而不是弹框元素本身。
       const onOverlayClose = () => finish(false);
-      window.addEventListener('ah:close-overlays', onOverlayClose);
+      window.addEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
       el.addEventListener('mac-confirm-ok', () => finish(true));
       el.addEventListener('mac-confirm-cancel', () => finish(false));
       el.addEventListener('mac-confirm-close', () => finish(false));
@@ -316,12 +317,12 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve();
-        window.removeEventListener('ah:close-overlays', onOverlayClose);
+        window.removeEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
         el.remove();
       };
       // 事件在 window 上派发，不会向下传播到 body 子元素 → 监听 window。
       const onOverlayClose = () => finish();
-      window.addEventListener('ah:close-overlays', onOverlayClose);
+      window.addEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
       el.addEventListener('mac-confirm-open', () => {
         // 等 DOM 渲染后绑定按钮事件
         requestAnimationFrame(() => {
@@ -386,12 +387,12 @@ export class AhModal extends LitElement {
         done = true;
         stopTheme();
         resolve(v);
-        window.removeEventListener('ah:close-overlays', onOverlayClose);
+        window.removeEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
         el.remove();
       };
       // 事件在 window 上派发，不会向下传播到 body 子元素 → 监听 window。
       const onOverlayClose = () => finish(null);
-      window.addEventListener('ah:close-overlays', onOverlayClose);
+      window.addEventListener(APP_EVENTS.closeOverlays, onOverlayClose);
       el.addEventListener('mac-confirm-ok', () => finish(input.value));
       el.addEventListener('mac-confirm-cancel', () => finish(null));
       el.addEventListener('mac-confirm-close', () => finish(null));

@@ -24,6 +24,7 @@ import './ah-drawer';
 import './settings-center';
 import './ah-swipe-item';
 import { swipeActStyles } from '../styles/swipe-act';
+import { APP_EVENTS } from '../app-events';
 
 /** 远程模型条目：id + baseUrl（固化，供 run 时直连）+ 官方上下文窗口（token）+ 是否免费变体，供分组与用量分母使用。 */
 interface RemoteModel {
@@ -1299,14 +1300,14 @@ export class AhModelPicker extends LitElement {
       if (!inside) this.toggle(false);
     };
     document.addEventListener('pointerdown', this.onDocPointerDown, true);
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this.onDocPointerDown)
       document.removeEventListener('pointerdown', this.onDocPointerDown, true);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /**

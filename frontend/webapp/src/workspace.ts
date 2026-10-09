@@ -19,6 +19,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { client } from './api';
 import { sharedStyles } from './styles';
 import { notifyError } from './utils/errors';
+import { APP_EVENTS } from './app-events';
 
 interface ChatSessionLite {
   id: string;
@@ -260,7 +261,7 @@ export class AhWorkspace extends LitElement {
   /** 经 `ah-goto` 事件切换 Tab（app.ts 监听；需 bubbles + composed 穿透 shadow DOM）。 */
   private goto(tab: string): void {
     this.dispatchEvent(
-      new CustomEvent('ah-goto', {
+      new CustomEvent(APP_EVENTS.goto, {
         detail: tab,
         bubbles: true,
         composed: true
@@ -271,7 +272,7 @@ export class AhWorkspace extends LitElement {
   /** 点击最近会话条目：切换到对话 Tab 并携带目标会话 id。 */
   private gotoSession(s: ChatSessionLite): void {
     this.dispatchEvent(
-      new CustomEvent('ah-goto', {
+      new CustomEvent(APP_EVENTS.goto, {
         detail: { tab: 'chat', sessionId: s.id },
         bubbles: true,
         composed: true

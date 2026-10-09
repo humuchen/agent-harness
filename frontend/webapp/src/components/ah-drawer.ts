@@ -22,6 +22,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { mobilePill } from '../styles/mobile-pill';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { PropertyValues } from 'lit';
+import { APP_EVENTS } from '../app-events';
 
 export type DrawerPlacement = 'left' | 'right' | 'top' | 'bottom';
 export type DrawerCloseReason = 'esc' | 'mask' | 'button';
@@ -180,9 +181,41 @@ export class AhDrawer extends LitElement {
         cursor: pointer;
         padding: 0 8px;
         border-radius: var(--ah-radius-sm);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
       .close:hover {
         background: var(--md-drawer-close-hover-bg, var(--ah-surface-2));
+      }
+      .close svg {
+        width: 20px;
+        height: 20px;
+        display: block;
+      }
+      /* 两枚图标并存、按断点切换：避免用 JS 匹配媒体查询（渲染前闪烁 + 需订阅变更）。
+         display:none 会同时把节点移出无障碍树，故非当前态的图标不会被读屏念出。 */
+      .ico-back {
+        display: none;
+        align-items: center;
+        justify-content: center;
+      }
+      /* 「关闭 / 返回」文案仅供无障碍树（按钮视觉上是纯图标）。两端各留一份，
+         按断点互换，保证移动端箭头图标配的仍是准确的名称。 */
+      .lbl-close,
+      .lbl-back {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+      }
+      .lbl-back {
+        display: none;
       }
 
       .body {
@@ -278,6 +311,42 @@ export class AhDrawer extends LitElement {
           width: 0;
           height: 0;
         }
+
+        /* ── 移动端：标题与关闭按钮左右互换 ──
+           原布局为「标题在左、× 在右」。移动端改为返回键在左、标题在右：
+           拇指可达区在屏幕左侧，返回是高频动作；同时把 × 换成箭头，
+           与 iOS/Android 的「返回」语义一致（而非「关闭弹层」）。
+           实现用 order 而非改 DOM 顺序——DOM 顺序影响读屏与 Tab 焦点次序，
+           保持 close 在后不影响可访问性；margin-left:auto 需一并清掉，
+           否则标题仍会被推到右侧，等于没换。 */
+        .head {
+          flex-direction: row;
+        }
+        .close {
+          order: -1;
+          margin-left: 0;
+          /* 触控目标放大到 44px（移动端可点区域下限） */
+          min-width: 44px;
+          min-height: 44px;
+          padding: 0 4px;
+        }
+        .title {
+          order: 1;
+          margin-right: auto;
+          text-align: right;
+        }
+        .ico-back {
+          display: inline-flex;
+        }
+        .ico-close {
+          display: none;
+        }
+        .lbl-close {
+          display: none;
+        }
+        .lbl-back {
+          display: block;
+        }
       }
 
       /* 全屏模式：用更高特异度（三 class）覆盖基础与移动端媒体查询的 88vw / 70dvh 限制，
@@ -371,13 +440,13 @@ export class AhDrawer extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     // 订阅全局「关闭所有覆盖层」信号（Tab 切换 / 浏览器后退前进），见文件头「路由联动」。
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this.mask) document.body.style.overflow = '';
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /** 路由变化时的强制关闭：跳过离场动画，但仍派发 close 让宿主同步自身状态。 */
@@ -515,10 +584,23 @@ export class AhDrawer extends LitElement {
                       type="button"
                       class="close"
                       title="关闭"
-                      aria-label="关闭"
                       @click=${() => this.finish('button')}
                     >
-                      ×
+                      <span class="lbl-close">关闭</span
+                      ><span class="lbl-back">返回</span>
+                      <span class="ico-close" aria-hidden="true">×</span>
+                      <span class="ico-back" aria-hidden="true">
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        >
+                          <path d="M15 18l-6-6 6-6"></path>
+                        </svg>
+                      </span>
                     </button>`
                   : nothing}
               </div>`

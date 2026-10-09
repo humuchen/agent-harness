@@ -171,6 +171,21 @@ export interface QueueBackend {
    */
   publishEvent?(jobId: string, event: unknown): Promise<void>;
   subscribeEvents?(jobId: string, fn: (e: unknown) => void): Promise<() => void>;
+  /**
+   * P1-6：跨实例同会话串行化锁（仅共享后端实现）。SET NX PX 原子占位：
+   * 同一会话（sessionKey）的任务在任意时刻只允许一个实例执行 —— 进程内
+   * runningSessions Set 只覆盖本实例（pump 路径），共享后端下任务经
+   * claim→launchClaimed 直达执行，跨实例并发写同一 owner 的记忆会互相覆盖。
+   * Redis 故障由调用方降级处理（不设锁，退化为进程内语义）。
+   */
+  acquireSessionLock?(key: string, token: string, ttlMs: number): Promise<boolean>;
+  /** P1-6：释放会话锁。Lua 校验 token 防误删他人锁（锁过期后被其它任务重占）。 */
+  releaseSessionLock?(key: string, token: string): Promise<boolean>;
+  /**
+   * P1-6：把「已 claim 但尚未执行」的任务原子退回 pending（清租约）。会话锁被占时
+   * 调用方用它把任务让回队列，待锁释放后的下一轮 claim 重新领取。
+   */
+  releaseClaim?(id: string): Promise<boolean>;
 }
 
 /** 默认后端：纯内存，不落盘。与改造前 RunQueue 行为完全一致（重启即丢）。 */
@@ -359,6 +374,28 @@ return 0`;
 const RENEW_LEASE_LUA = `if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then
   redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
   return 1
+end
+return 0`;
+
+/**
+ * P1-6：把「已 claim 未执行」的任务原子退回 pending（清租约）。LREM processing
+ * 成功才 RPUSH + HDEL —— 与 ack 的竞态下（任务已被执行实例 ack 移除）返回 0，
+ * 调用方据此走本地延期兜底，不会把已 ack 的任务复活进 pending。
+ */
+const RELEASE_CLAIM_LUA = `if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 1 then
+  redis.call('RPUSH', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  return 1
+end
+return 0`;
+
+/**
+ * P1-6：释放会话锁——GET 与 token 相等才 DEL（check-and-delete 原子化）。
+ * 防误删场景：锁 TTL 到期后被其它任务重新占位，此时原持有者的迟到释放不得
+ * 把新持有者的锁删掉。
+ */
+const SESSION_LOCK_RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
 end
 return 0`;
 
@@ -618,6 +655,71 @@ export class RedisQueueBackend implements QueueBackend {
   /** 释放跨实例幂等占位（任务终态时由 run-queue 调用）。 */
   async releaseIdem(key: string): Promise<void> {
     await this.client.del(this.idemKeyOf(key));
+  }
+
+  private sessionLockKeyOf(key: string): string {
+    return `runq:sesslock:${key}`;
+  }
+
+  /** P1-6：跨实例会话锁占位（SET NX PX，原子）。返回 false = 已被其它任务持有。 */
+  async acquireSessionLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const client = this.client as RedisLike;
+    if (typeof client.set !== 'function') return true; // 无 set（旧测试替身）→ 放行
+    const res = await client.set(this.sessionLockKeyOf(key), token, 'PX', ttlMs, 'NX');
+    return res === 'OK' || res === '1';
+  }
+
+  /** P1-6：释放会话锁（Lua check-and-delete；token 不匹配 = 锁已易主，不删）。 */
+  async releaseSessionLock(key: string, token: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          SESSION_LOCK_RELEASE_LUA,
+          1,
+          this.sessionLockKeyOf(key),
+          token
+        )) as number;
+        return Number(r) === 1;
+      } catch {
+        // 脚本不可用（极旧客户端）→ 落到两步退化（最坏结果为误删易主后的锁，
+        // 但同会话本就该串行，下一轮 claim 会重新占位，影响有限）。
+      }
+    }
+    const client = this.client as RedisLike;
+    if (typeof client.get !== 'function' || typeof client.del !== 'function') return false;
+    const cur = await client.get(this.sessionLockKeyOf(key));
+    if (cur !== token) return false;
+    await client.del(this.sessionLockKeyOf(key));
+    return true;
+  }
+
+  /** P1-6：把已 claim 未执行的任务原子退回 pending（清租约）。返回 false = 已不在 processing。 */
+  async releaseClaim(id: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          RELEASE_CLAIM_LUA,
+          3,
+          this.processing,
+          this.pending,
+          this.claimedAt,
+          id
+        )) as number;
+        return Number(r) === 1;
+      } catch (e) {
+        console.error(
+          '[queue-backend] release claim script failed, falling back to two-step:',
+          (e as Error)?.message
+        );
+      }
+    }
+    // 退化路径：与 reclaimStale 的两步退化同款（lrem+rpush 非原子；执行实例尚未
+    // 开始 execute，此窗口内只有「抢到同一任务的下一实例」与「本退回」竞争，
+    // lrem 二者仅一方成功，rpush 的空 id 空转由既有 claim 判空消化）。
+    await this.client.lrem(this.processing, 1, id);
+    await this.client.rpush(this.pending, id);
+    await this.client.hdel(this.claimedAt, id);
+    return true;
   }
 
   async publishEvent(jobId: string, event: unknown): Promise<void> {

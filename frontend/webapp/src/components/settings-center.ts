@@ -70,6 +70,7 @@ import {
 import { getReminderUnread, clearReminderUnread } from '../plugin-notify';
 import './provider-key-settings';
 import { mobilePill } from '../styles/mobile-pill';
+import { APP_EVENTS } from '../app-events';
 
 /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
 // @ts-ignore - vite define 注入
@@ -887,7 +888,7 @@ export class AhSettingsCenter extends LitElement {
   private async recheck() {
     await this.checkServer();
     this.dispatchEvent(
-      new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+      new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
     );
     if (this.llmLive !== null) {
       notify.success(
@@ -917,7 +918,7 @@ export class AhSettingsCenter extends LitElement {
     }
     // 通知顶层同步 theme 状态（顶栏主题按钮的文案 / 图标由 app.ts 持有）。
     window.dispatchEvent(
-      new CustomEvent('ah:theme-changed', { detail: { theme: getTheme() } })
+      new CustomEvent(APP_EVENTS.themeChanged, { detail: { theme: getTheme() } })
     );
   }
 
@@ -1039,7 +1040,7 @@ export class AhSettingsCenter extends LitElement {
       );
       // 本地凭据已清空：广播给入口层（main.ts）切回登录页，而不是整页 reload
       // —— 更快，也不会把刚弹出的结果提示一起刷掉。
-      window.dispatchEvent(new CustomEvent('ah-session-cleared'));
+      window.dispatchEvent(new CustomEvent(APP_EVENTS.sessionCleared));
     } catch (e) {
       notifyError(e, {
         title: '存储空间',

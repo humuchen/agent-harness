@@ -11,6 +11,7 @@
   *  - 任何 401 会触发全局 ah-session-expired → 清会话并重回登录页。
   */
 import { AgentClient } from '@agent-harness/client';
+import { APP_EVENTS } from './app-events';
 
 const baseUrl =
   typeof window !== 'undefined' ? window.location.origin : 'http://localhost:4173';
@@ -57,7 +58,7 @@ function initialUser(): string {
 
 function handleUnauthorized(): void {
   clearSession();
-  window.dispatchEvent(new CustomEvent('ah-session-expired'));
+  window.dispatchEvent(new CustomEvent(APP_EVENTS.sessionExpired));
 }
 
 // ─── P1-14: 质询式密码保护（客户端 PBKDF2，不传输明文密码）───────────────────
@@ -350,7 +351,7 @@ export async function logout(): Promise<void> {
     /* 即便请求失败也强制本地登出 */
   }
   clearSession();
-  window.dispatchEvent(new CustomEvent('ah-session-expired'));
+  window.dispatchEvent(new CustomEvent(APP_EVENTS.sessionExpired));
 }
 
 // ─── CSRF 双重提交令牌（P1 安全加固）─────────────────────────────────────────

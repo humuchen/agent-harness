@@ -26,6 +26,7 @@ import { changePassword, derivePassword, bytesToHex } from '../api';
 import { notify } from './ah-notification';
 import { validateChangePassword } from '../utils/auth-validation';
 import { mobilePill } from '../styles/mobile-pill';
+import { APP_EVENTS } from '../app-events';
 
 @customElement('ah-password-dialog')
 export class AhPasswordDialog extends LitElement {
@@ -185,13 +186,13 @@ export class AhPasswordDialog extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     window.addEventListener('keydown', this.onKeydown);
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onKeydown);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   /** 路由切换或浏览器后退/前进时关闭模态（提交中不响应，避免请求悬挂）。 */

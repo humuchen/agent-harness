@@ -21,6 +21,7 @@ import { notifyError } from './utils/errors';
 import { notify } from './components/ah-notification';
 import './components/suggestions';
 import './components/file-upload';
+import { APP_EVENTS } from './app-events';
 
 /* ------------------------------ 类型 ------------------------------ */
 
@@ -227,7 +228,7 @@ export class AhRun extends LitElement {
       case 'env:status':
       case '_env_done':
         this.dispatchEvent(
-          new CustomEvent('ah-refresh', { bubbles: true, composed: true })
+          new CustomEvent(APP_EVENTS.refresh, { bubbles: true, composed: true })
         );
         break;
       default:
@@ -346,7 +347,7 @@ export class AhRun extends LitElement {
       this.finished = p === 'finished' || p === 'error' || p === 'aborted';
       // 全局运行中指示器：有任一面板在运行时亮起，全部结束后熄灭。
       window.dispatchEvent(
-        new Event(this.running ? 'ah:run:start' : 'ah:run:stop')
+        new Event(this.running ? APP_EVENTS.runStart : APP_EVENTS.runStop)
       );
     });
   }

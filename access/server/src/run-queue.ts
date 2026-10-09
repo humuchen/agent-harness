@@ -1,5 +1,6 @@
 import type { HarnessEvent } from '@agent-harness/core';
 import {
+  emitAlert,
   incCounter,
   logError,
   recordLatency,
@@ -22,6 +23,7 @@ import {
   withRequestContext,
   type RequestContext
 } from '@agent-harness/core';
+import { createHash, randomUUID } from 'node:crypto';
 import { assembleAgent, type RunMode } from './runner';
 import {
   createQueueBackend,
@@ -191,6 +193,19 @@ const QUEUE_LEASE_MS = Number(process.env.QUEUE_LEASE_MS ?? 300_000) || 300_000;
 // （单次续租失败不至于立即被回收）。
 const LEASE_RENEW_INTERVAL_MS = Math.max(15_000, Math.floor(QUEUE_LEASE_MS / 3));
 
+// P1-6：跨实例会话锁 TTL。须覆盖「锁持有实例从 acquire 到 finally release」的最长
+// 生命周期 —— 取最大任务超时（计划任务 600s > 普通任务 300s）+ 60s 缓冲。实例崩溃
+// 后 TTL 到期自动释放，其它实例的重投循环即可重新领取执行。
+const SESSION_LOCK_TTL_MS =
+  Math.max(JOB_TIMEOUT_MS, PLAN_TASK_TIMEOUT_MS) + 60_000;
+
+// P1-7：看门狗强制结算的宽限期。看门狗在 watchdogMs 发出 abort 后，若底层 execute
+// promise 在此宽限内仍未 settle（abort 未被底层响应的结构性泄漏），第二层
+// Promise.race 强制让 execute() 走 catch → finally，释放 worker 槽位与会话标记。
+// 导出供测试断言 env 覆盖生效（同 PLAN_TASK_TIMEOUT_MS 惯例）。
+export const EXECUTE_FORCE_SETTLE_GRACE_MS =
+  Number(process.env.JOB_FORCE_SETTLE_GRACE_MS ?? 30_000) || 30_000;
+
 /** 排队背压拒绝：待执行队列已达 RUN_QUEUE_MAX_PENDING，提交被拒（HTTP 层映射 429）。 */
 export class QueueBackpressureError extends Error {
   constructor(public readonly pending: number, public readonly limit: number) {
@@ -235,6 +250,18 @@ export class RunQueue {
 
   /** 正在执行的会话集合，用于同会话串行化（避免并发写记忆后端互相覆盖）。 */
   private runningSessions = new Set<string>();
+  /**
+   * P1-6：已 launch 但尚未执行完成的跨实例会话锁（jobId → 锁键与 token）。
+   * execute 的 finally 据此释放（Lua check-and-delete，防误删易主后的锁）。
+   */
+  private sessionLocks = new Map<string, { key: string; token: string }>();
+  /**
+   * P1-6/P0-2 延伸：已通过并发复查、正在做会话锁 acquire（异步窗口）的任务 id。
+   * 并发复查按 `running + launching.size` 计占额 —— 否则多路 sweep 在锁 acquire 的
+   * await 间隙各自通过复查、各自 launch，重新打开 P0-2 修掉的超卖窗口。
+   * 生命周期：sweepOnce 复查通过时 add，launchClaimed（running += 1）或退回时 delete。
+   */
+  private launching = new Set<string>();
   /** 持久化后端：默认内存（重启即丢）；RUN_QUEUE_BACKEND=file 时落盘可重放；redis 时共享多实例。 */
   private backend: QueueBackend;
 
@@ -506,12 +533,29 @@ export class RunQueue {
    * `running += 1` 之间无 await，单线程事件循环下不存在交错。
    */
   private async sweepOnce(): Promise<void> {
-    if (this.running >= this.concurrency) return;
+    // P1-6：并发占额 = running + launching（launching 是已过并发复查、正在等会话锁
+    // 的任务——锁 acquire 是 await，计入占额才能封住多路 sweep 在该 await 间隙的
+    // 复查交错，否则重新打开 P0-2 的超卖窗口）。
+    const overCapacity = () => this.running + this.launching.size >= this.concurrency;
+    if (overCapacity()) return;
     // 优先消化本地延期缓冲：这些任务已持有跨实例 claim（在 processing 中），比新
     // claim 更紧迫；滞留期间租约时钟在流逝（launchClaimed 执行前会先续租一次兜底）。
     const deferredJob = this.deferred.shift();
     if (deferredJob) {
-      this.launchClaimed(deferredJob);
+      // P0-2 语义保持：消化前同步复查并发（超限放回队首，本轮结束）。
+      if (overCapacity()) {
+        this.deferred.unshift(deferredJob);
+        return;
+      }
+      // P1-6：deferred 任务此前可能未做过会话锁检查（并发满入缓冲的路径），消化时补检。
+      this.launching.add(deferredJob.id);
+      const lock = await this.acquireSessionLockFor(deferredJob);
+      if (lock === 'busy') {
+        this.launching.delete(deferredJob.id);
+        await this.parkSessionBusyJob(deferredJob);
+        return;
+      }
+      this.launchClaimed(deferredJob, lock ?? undefined);
       return;
     }
     let d: JobDescriptor | null = null;
@@ -522,18 +566,81 @@ export class RunQueue {
       return;
     }
     if (!d) return;
-    if (this.running >= this.concurrency) {
+    // P0-2：claim 返回后复查（claim 是 await，等待期间并发可能已被其它在飞 sweep
+    // 占满；launching 一并计入，见 overCapacity 注释）。
+    if (overCapacity()) {
       this.deferred.push(d);
       return;
     }
-    this.launchClaimed(d);
+    // P1-6：跨实例同会话串行化 —— 锁被占时任务原子退回 pending，待锁释放后的
+    // 下一轮 claim 重新领取。acquire 期间保持 launching 占额（见 overCapacity）。
+    this.launching.add(d.id);
+    const lock = await this.acquireSessionLockFor(d);
+    if (lock === 'busy') {
+      this.launching.delete(d.id);
+      await this.parkSessionBusyJob(d);
+      return;
+    }
+    this.launchClaimed(d, lock ?? undefined);
+  }
+
+  /**
+   * P1-6：尝试获取任务的跨实例会话锁。返回：
+   * - `{ key, token }` —— 占位成功（launchClaimed 透传给 execute finally 释放）；
+   * - `'busy'` —— 锁被其它任务（本实例或其它实例）持有，应退回 pending；
+   * - `null` —— 无锁需求（非共享后端 / 无 sessionKey / 后端不支持 / Redis 故障降级）。
+   * 非共享模式的进程内串行化由 runningSessions Set 覆盖（pump 路径），此处跳过。
+   */
+  private async acquireSessionLockFor(
+    d: JobDescriptor
+  ): Promise<{ key: string; token: string } | 'busy' | null> {
+    if (!this.shared || !d.sessionKey || !this.backend.acquireSessionLock) {
+      return null;
+    }
+    // sessionKey 可能含任意用户可控字符 → sha256 摘要作为锁键（防超长/注入形状）。
+    const key = createHash('sha256').update(d.sessionKey).digest('hex').slice(0, 24);
+    const token = `${d.id}:${randomUUID()}`;
+    try {
+      const ok = await this.backend.acquireSessionLock(key, token, SESSION_LOCK_TTL_MS);
+      return ok ? { key, token } : 'busy';
+    } catch (e) {
+      // Redis 故障 → 降级为进程内语义（不设锁，不阻断执行），与幂等占位同哲学。
+      logError('run-queue.bg', e as Error, { op: 'acquireSessionLock', jobId: d.id });
+      return null;
+    }
+  }
+
+  /**
+   * P1-6：会话锁被占时的任务处置——原子退回 pending（releaseClaim：迁回 + 清租约），
+   * 让持有锁的实例继续执行、本任务待锁释放后的下一轮 claim 重领。releaseClaim
+   * 失败（极小竞态窗口）时退回本地延期缓冲兜底（已持有 claim，不重复 append）。
+   */
+  private async parkSessionBusyJob(d: JobDescriptor): Promise<void> {
+    if (this.backend.releaseClaim) {
+      const moved = await this.backend.releaseClaim(d.id).catch((e) => {
+        logError('run-queue.bg', e as Error, {
+          op: 'releaseClaim.sessionBusy',
+          jobId: d.id
+        });
+        return false;
+      });
+      if (moved) return;
+    }
+    this.deferred.push(d);
   }
 
   /** P0-2：claim 返回但并发已满时暂存的本地延期缓冲（任务已持有跨实例 claim）。 */
   private deferred: JobDescriptor[] = [];
 
-  /** 启动一个已领取的任务（共享模式 worker 路径）：调用方必须已确认 running < concurrency。 */
-  private launchClaimed(d: JobDescriptor): void {
+  /** 启动一个已领取的任务（共享模式 worker 路径）：调用方必须已确认 running < concurrency。
+   * P1-6：lock 为 sweepOnce 阶段占位的跨实例会话锁，透传到 execute finally 释放。 */
+  private launchClaimed(
+    d: JobDescriptor,
+    lock?: { key: string; token: string }
+  ): void {
+    // 并发占额从 launching 转正（sweepOnce 复查通过时 add；本方法同步段内 running += 1，
+    // 二者无缝衔接，不留占额空窗）。
+    this.launching.delete(d.id);
     let job = this.jobs.get(d.id);
     if (!job) {
       job = this.makeJob(
@@ -575,6 +682,7 @@ export class RunQueue {
     }
     this.running += 1;
     if (job.sessionKey) this.runningSessions.add(job.sessionKey);
+    if (lock) this.sessionLocks.set(d.id, lock);
     job.status = 'running';
     job.startedAt = Date.now();
     void this.execute(job).finally(() => {
@@ -929,6 +1037,37 @@ export class RunQueue {
     if (timer) {
       clearInterval(timer);
       this.memoryCheckTimers.delete(jobId);
+    }
+  }
+
+  /**
+   * P1-7：第二层强制结算。看门狗（watchdogMs）只 abort 信号 —— 若底层 LLM/工具
+   * 调用不响应中止，execute() 的 await 永不 resolve，worker 槽位 / runningSessions /
+   * 会话锁 / 配额预留全部泄漏（结构性）。宽限期（EXECUTE_FORCE_SETTLE_GRACE_MS，
+   * 默认 30s）后强制 reject，让 execute 走 catch → finally 完成全部资源回收。
+   * 底层悬挂 promise 的最终 settle 由 Promise.race 的既有 handler 消化，不会产生
+   * unhandledRejection；其内部逻辑继续在飞（core 侧工具级真实中止已尽力），接受。
+   */
+  private async forceSettleRun(
+    p: Promise<string>,
+    watchdogMs: number,
+    job: RunJob
+  ): Promise<string> {
+    let timer: NodeJS.Timeout | undefined;
+    const hard = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const message = `run force-settled: watchdog abort was not honored within ${EXECUTE_FORCE_SETTLE_GRACE_MS}ms grace`;
+        incCounter('run.queue.force_settled');
+        void emitAlert('error', 'run.queue.force_settled', message, { jobId: job.id });
+        reject(new Error(message));
+      }, watchdogMs + EXECUTE_FORCE_SETTLE_GRACE_MS);
+      timer.unref?.();
+    });
+    try {
+      // 必须 await：仅 return race 的话 finally 会在 settle 前执行并清掉强制结算定时器。
+      return await Promise.race([p, hard]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -1389,28 +1528,32 @@ export class RunQueue {
           isPlanPropose &&
           assembled.llmKind === 'openrouter' &&
           process.env.PLAN_PROPOSE_PIPELINE !== 'false';
-        const finalText = await runWithUser(
-          job.owner
-            ? {
-                sub: job.owner,
-                jevApiKey: jevCred.apiKey,
-                jevBaseUrl: jevCred.baseUrl
-              }
-            : null,
-          () =>
-            useProposePipeline
-              ? runPlanPropose({
-                  llm: assembled.llm,
-                  tools: assembled.tools,
-                  userInput: job.prompt,
-                  emit: onEvent,
-                  signal,
-                  systemPrompt: assembled.systemPrompt,
-                  memory: assembled.memory,
-                  streamTokens: true,
-                  guardPolicy: assembled.guardrailPolicy
-                })
-              : assembled.harness.run(job.prompt, job.attachments)
+        const finalText = await this.forceSettleRun(
+          runWithUser(
+            job.owner
+              ? {
+                  sub: job.owner,
+                  jevApiKey: jevCred.apiKey,
+                  jevBaseUrl: jevCred.baseUrl
+                }
+              : null,
+            () =>
+              useProposePipeline
+                ? runPlanPropose({
+                    llm: assembled.llm,
+                    tools: assembled.tools,
+                    userInput: job.prompt,
+                    emit: onEvent,
+                    signal,
+                    systemPrompt: assembled.systemPrompt,
+                    memory: assembled.memory,
+                    streamTokens: true,
+                    guardPolicy: assembled.guardrailPolicy
+                  })
+                : assembled.harness.run(job.prompt, job.attachments)
+          ),
+          watchdogMs,
+          job
         );
 
         // 运行完成闸门（P2-13 延伸）：自动评估本轮质量，据 HARNESS_EVAL_GATE 决定告警或拦截。
@@ -1490,6 +1633,22 @@ export class RunQueue {
           leaseRenewTimer = undefined;
         }
         if (job.sessionKey) this.runningSessions.delete(job.sessionKey);
+        // P1-6：释放跨实例会话锁（Lua check-and-delete；token 不匹配说明锁已因
+        // TTL 过期被其它任务重占，不删——同会话下一轮 claim 会重新占位）。
+        const sessLock = this.sessionLocks.get(job.id);
+        if (sessLock) {
+          this.sessionLocks.delete(job.id);
+          if (this.backend.releaseSessionLock) {
+            void this.backend
+              .releaseSessionLock(sessLock.key, sessLock.token)
+              .catch((e) =>
+                logError('run-queue.bg', e as Error, {
+                  op: 'releaseSessionLock',
+                  jobId: job.id
+                })
+              );
+          }
+        }
         // 幂等索引清理：任务进入终态后，同键新提交不再被去重拦截。
         if (job.idempotencyKey) {
           const key = `${job.owner ?? ''}|${job.idempotencyKey}`;

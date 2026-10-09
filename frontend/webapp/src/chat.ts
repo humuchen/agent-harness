@@ -153,6 +153,7 @@ import './components/composer-plus';
 // 永远弹不出来（同时 onKey 转发 handleKey 时会报 “is not a function”）。
 import './components/ah-command-suggestions';
 import type { AhCommandSuggestions } from './components/ah-command-suggestions';
+import { APP_EVENTS } from './app-events';
 
 
 /** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
@@ -629,7 +630,7 @@ export class AhChat extends LitElement {
     this.streaming = { ...this.streaming, [sid]: val };
     // 全局运行中指示器：任意会话在流式时亮起，全部结束后熄灭。
     const any = Object.values(this.streaming).some(Boolean);
-    window.dispatchEvent(new Event(any ? 'ah:run:start' : 'ah:run:stop'));
+    window.dispatchEvent(new Event(any ? APP_EVENTS.runStart : APP_EVENTS.runStop));
   }
 
   /** 每会话的调用链路追踪构建上下文。 */
@@ -889,7 +890,7 @@ export class AhChat extends LitElement {
 
     // 工作台/全局入口请求打开指定会话：直接选中并加载消息。
     this.addEventListener(
-      'ah-select-session',
+      APP_EVENTS.selectSession,
       this.onSelectSession as EventListener
     );
 
@@ -897,7 +898,7 @@ export class AhChat extends LitElement {
     // 本组件随应用壳常驻，切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
     // 移动端侧滑返回后再次进入对话页会看到上次遗留的展开面板。
     // 统一约定见 ah-app.closeAllOverlays（各 ah-* 覆盖层同样订阅该事件）。
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
 
     // 跨刷新恢复上次会话：读取持久化的 activeId，若存在则自动打开并渲染历史消息
     // （历史镜像经 /api/v1/history 落 SQLite，刷新不丢）。无标记则保持空白新对话。
@@ -911,7 +912,7 @@ export class AhChat extends LitElement {
     // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
     // 已登录（本地有用户名）才启动；未登录（匿名）无 owner，服务端会 401，无需连接。
     if (getUsername()) {
-      window.addEventListener('ah-chat-sync', this.onChatSync as EventListener);
+      window.addEventListener(APP_EVENTS.chatSync, this.onChatSync as EventListener);
       startChatSync(getUsername());
     }
   }
@@ -950,7 +951,7 @@ export class AhChat extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('keydown', this.onPreviewKeydown);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
     document.removeEventListener('pointerdown', this.onDocPointerDown, true);
     document.removeEventListener(
       'visibilitychange',
@@ -959,7 +960,7 @@ export class AhChat extends LitElement {
 
     // 跨设备实时同步：组件卸载时停掉常驻 SSE 并移除事件监听（避免泄漏/重复订阅）。
     window.removeEventListener(
-      'ah-chat-sync',
+      APP_EVENTS.chatSync,
       this.onChatSync as EventListener
     );
     stopChatSync();
@@ -970,7 +971,7 @@ export class AhChat extends LitElement {
       this.onPluginsChanged as EventListener
     );
     this.removeEventListener(
-      'ah-select-session',
+      APP_EVENTS.selectSession,
       this.onSelectSession as EventListener
     );
   }
@@ -2248,7 +2249,7 @@ export class AhChat extends LitElement {
         { title: '需要 API Key', key: 'pk-required' }
       );
       this.dispatchEvent(
-        new CustomEvent('ah-goto', {
+        new CustomEvent(APP_EVENTS.goto, {
           detail: 'settings',
           bubbles: true,
           composed: true
@@ -3569,7 +3570,7 @@ export class AhChat extends LitElement {
    * 避免「抽屉关了 / 已切会话、某行还摊开」的悬浮态，列表回到默认外观。 */
   private closeAllSessionSwipes() {
     window.dispatchEvent(
-      new CustomEvent('ah:swipe-close', { detail: { group: 'chat-sessions' } })
+      new CustomEvent(APP_EVENTS.swipeClose, { detail: { group: 'chat-sessions' } })
     );
   }
 
@@ -5177,7 +5178,7 @@ export class AhChat extends LitElement {
               style="margin-left:auto;color:var(--ah-warning);border-color:var(--ah-warning);"
               @click=${() =>
                 this.dispatchEvent(
-                  new CustomEvent('ah-goto', {
+                  new CustomEvent(APP_EVENTS.goto, {
                     detail: 'settings',
                     bubbles: true,
                     composed: true

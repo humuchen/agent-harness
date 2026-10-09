@@ -29,6 +29,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 // （radius:999px + border 透明）会让模式卡片变成胶囊、选中描边被吞掉，
 // 与文件/专家分区的观感割裂（用户实测反馈，已还原为原始造型）。
 import type { UploadedFile } from '../agent-context';
+import { APP_EVENTS } from '../app-events';
 
 /** 宿主传入的智能体条目（与 agent-picker 的 AgentOption 保持一致）。 */
 export interface ComposerAgentOption {
@@ -700,12 +701,12 @@ export class AhComposerPlus extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     document.addEventListener('keydown', this.onDocKey, true);
-    window.addEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.addEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
   }
 
   disconnectedCallback(): void {
     document.removeEventListener('keydown', this.onDocKey, true);
-    window.removeEventListener('ah:close-overlays', this.onCloseOverlays);
+    window.removeEventListener(APP_EVENTS.closeOverlays, this.onCloseOverlays);
     super.disconnectedCallback();
   }
 

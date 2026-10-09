@@ -52,9 +52,10 @@ import {
   shouldSnapOpen
 } from '../utils/swipe-gesture';
 import type { SwipeAxisState } from '../utils/swipe-gesture';
+import { APP_EVENTS } from '../app-events';
 
 /** 全局组排他信号：detail.group 为组名，同组其他 ah-swipe-item 收起自身。 */
-const SWIPE_GROUP_CLOSE_EVENT = 'ah:swipe-close';
+const SWIPE_GROUP_CLOSE_EVENT = APP_EVENTS.swipeClose;
 
 @customElement('ah-swipe-item')
 export class AhSwipeItem extends LitElement {

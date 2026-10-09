@@ -84,6 +84,7 @@ const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'succ
 
 // P3-1：加载品牌配置并应用主题色。脱离品牌不影响应用主流程。
 import { initBrand } from './theme/tokens';
+import { APP_EVENTS } from './app-events';
 initBrand().catch(() => {});
 
 async function bootstrap(): Promise<void> {
@@ -135,13 +136,13 @@ mountSplash();
 bootstrap();
 
 // 登录页派发 ah-login-success 后进入控制台。
-window.addEventListener('ah-login-success', () => mountApp());
+window.addEventListener(APP_EVENTS.loginSuccess, () => mountApp());
 
 // 任意请求 401（登录态失效 / cookie 过期 / 被吊销）→ 清会话并强制回到登录页。
 // 幂等：main.ts 只负责清本地状态 + 切登录页；同时给一条常驻通知说明「为什么被踢回来」
 // （此前是静默跳登录页，用户只会以为是自己手滑退出了）。
 // 通知 key 固定，多个并发 401 只合并成一条。
-window.addEventListener('ah-session-expired', () => {
+window.addEventListener(APP_EVENTS.sessionExpired, () => {
   clearSession();
   mountLogin();
   notify.warning('登录已失效，请重新登录。', {
@@ -152,7 +153,7 @@ window.addEventListener('ah-session-expired', () => {
 
 // 设置页「清除数据」：本地凭据已被清空 → 切回登录页。
 // 不做整页 reload：既更快，也不会把「已清除」的结果提示一起刷掉（提示由设置页自己弹）。
-window.addEventListener('ah-session-cleared', () => {
+window.addEventListener(APP_EVENTS.sessionCleared, () => {
   clearSession();
   mountLogin();
 });
