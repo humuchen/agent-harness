@@ -13,6 +13,15 @@
  * 覆盖语法（LLM 交付报告的高频子集）：ATX 标题、有序/无序/任务列表（含嵌套）、
  * 表格、围栏代码块、行内码、粗体/斜体/删除线、链接、引用块、水平线、段落。
  * 不追求完整 CommonMark —— 预览是「读」的场景，宁可保守降级为文本，不可放大攻击面。
+ *
+ * 移动端「预览关不掉」（P1 修复）：本页由 ?preview=1 整页导航打开、脱离 SPA，
+ * 移动端 Capacitor WebView 内没有任何浏览器 UI，若页面自身不提供返回入口，
+ * 用户会被困在此页。因此整页包装固定输出顶部 `.md-bar` 返回栏：
+ * - `position: sticky` 常驻可达，不随长文档滚走；z-index 20 避免被内容压住；
+ * - 顶部 padding 让出 `env(safe-area-inset-top)`，刘海屏下按钮不被状态栏遮挡；
+ * - 44px 最小触控目标；
+ * - 无 JS 时 `href="/"` 直接回主界面，有 JS 且同源跳转而来时走 history.back()
+ *   以保留会话 / Tab / 滚动位置。桌面端同样可用，且不影响浏览器自身后退。
  */
 
 /** HTML 转义（与项目内其它 escapeHtml 语义一致）。 */
@@ -284,17 +293,49 @@ export function markdownPreviewHtml(mdText: string, fileName: string): string {
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${title}</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 2rem 1rem;
+    margin: 0; padding: 0;
     font: 15px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     color: #1f2328; background: #ffffff;
   }
-  main { max-width: 860px; margin: 0 auto; }
+  /* 返回栏：移动端修复的核心。
+     背景：本页由 /api/artifacts/:id?preview=1 整页导航打开（脱离 SPA），
+     而移动端 Capacitor WebView 内没有任何浏览器 UI（无地址栏/后退按钮），
+     此前页面又不含任何返回控件 → 用户被彻底困在预览页。
+     桌面端同样受益（多一个显式返回入口），不影响原有浏览器后退行为。 */
+  .md-bar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: .6rem;
+    /* 刘海屏/灵动岛：顶部内边距让出安全区，否则按钮会被状态栏遮住。 */
+    padding: calc(.55rem + env(safe-area-inset-top)) 1rem .55rem;
+    background: #ffffff; border-bottom: 1px solid #e5e7eb;
+    -webkit-backdrop-filter: saturate(180%) blur(8px); backdrop-filter: saturate(180%) blur(8px);
+  }
+  .md-back {
+    display: inline-flex; align-items: center; gap: .3rem;
+    /* 44px 最小可点区域（移动端触控目标下限），避免误触/点不中。 */
+    min-height: 44px; padding: 0 .7rem;
+    color: #0969da; text-decoration: none;
+    border: 1px solid #d0d7de; border-radius: 8px; background: #f6f8fa;
+    font-size: .95em; line-height: 1; white-space: nowrap;
+    -webkit-tap-highlight-color: rgba(9, 105, 218, .15);
+  }
+  .md-back:active { background: #eaeef2; }
+  .md-back-ico { font-size: 1.15em; line-height: 1; }
+  .md-name {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: .85em; color: #57606a;
+  }
+  main {
+    max-width: 860px; margin: 0 auto;
+    padding: 1.6rem 1rem 3rem;
+  }
   h1, h2, h3, h4, h5, h6 { line-height: 1.35; margin: 1.6em 0 .6em; }
   h1 { font-size: 1.7em; border-bottom: 1px solid #e5e7eb; padding-bottom: .35em; }
   h2 { font-size: 1.4em; border-bottom: 1px solid #eef0f3; padding-bottom: .3em; }
@@ -324,6 +365,10 @@ export function markdownPreviewHtml(mdText: string, fileName: string): string {
   .md-task { margin-right: .35em; }
   @media (prefers-color-scheme: dark) {
     body { color: #e6e8eb; background: #16181c; }
+    .md-bar { background: #16181c; border-color: #2c3038; }
+    .md-back { color: #6cb2ff; background: #1d2026; border-color: #3a3f47; }
+    .md-back:active { background: #24272d; }
+    .md-name { color: #9aa1ab; }
     h1, h2 { border-color: #2c3038; }
     a { color: #6cb2ff; }
     code { background: #24272d; }
@@ -336,9 +381,39 @@ export function markdownPreviewHtml(mdText: string, fileName: string): string {
 </style>
 </head>
 <body>
+<div class="md-bar">
+  <a class="md-back" id="md-back" href="/" aria-label="关闭预览，返回主界面">
+    <span class="md-back-ico" aria-hidden="true">&#8592;</span><span>返回</span>
+  </a>
+  <div class="md-name" title="${title}">${title}</div>
+</div>
 <main>
 ${body}
 </main>
+<script>
+/* 关闭逻辑：无 JS 也能回主界面（href="/" 是真实链接，WebView 直接跟随）。
+   有 JS 且确系 App 内同源跳转而来时改走 history.back()，以保留会话、
+   当前 Tab 与滚动位置——直接跳 "/" 会把这些状态重置。
+   判定用 referrer 同源而非 history.length：后者在 WebView 里常含启动页，
+   误判会把用户带出应用（直接粘贴 URL 打开预览时尤其明显）。 */
+(function () {
+  var btn = document.getElementById('md-back');
+  if (!btn) return;
+  btn.addEventListener('click', function (e) {
+    e.preventDefault();
+    var ref = document.referrer;
+    if (ref) {
+      try {
+        if (new URL(ref, location.href).origin === location.origin) {
+          history.back();
+          return;
+        }
+      } catch (err) { /* referrer 非法 → 落到下面的首页跳转 */ }
+    }
+    location.href = btn.getAttribute('href') || '/';
+  });
+})();
+</script>
 </body>
 </html>`;
 }

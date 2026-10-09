@@ -106,3 +106,67 @@ test('未闭合围栏不抛异常（耗尽即收尾）', () => {
   const b = bodyOf('```txt\n未闭合内容');
   assert.match(b, /<pre><code class="language-txt">未闭合内容<\/code><\/pre>/);
 });
+
+/* ── 移动端「预览关不掉」回归（P1）─────────────────────────────────
+   预览页是整页导航（脱离 SPA），移动端 WebView 内没有浏览器 UI 可后退，
+   页面自身必须提供返回入口。下列断言锁死该契约，防止重构时被无声删掉。 */
+
+test('返回栏存在：可点击的返回控件指向主界面', () => {
+  const html = markdownPreviewHtml('# 报告', '计划报告-分析.md');
+  assert.match(html, /<div class="md-bar">/, '必须有顶部返回栏');
+  assert.match(html, /<a class="md-back"[^>]*href="\/"/, '返回控件须是指向主界面的真实链接');
+  assert.match(html, /aria-label="关闭预览，返回主界面"/, '须有无障碍标签');
+});
+
+test('返回栏在 <main> 之外且先于正文（不会被正文内容覆盖）', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  const barAt = html.indexOf('class="md-bar"');
+  const mainAt = html.indexOf('<main>');
+  assert.ok(barAt > -1 && mainAt > -1, '两者都应存在');
+  assert.ok(barAt < mainAt, '返回栏必须排在正文之前，否则首屏被正文顶掉');
+});
+
+test('返回栏 sticky + z-index，长文档滚动时始终可达', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  const bar = /\.md-bar \{([^}]*)\}/.exec(html);
+  assert.ok(bar, '应输出 .md-bar 规则');
+  assert.match(bar[1], /position:\s*sticky/, '必须 sticky，长文档下滚时不能消失');
+  assert.match(bar[1], /top:\s*0/, '必须吸附顶部');
+  assert.match(bar[1], /z-index:\s*\d+/, '必须有 z-index，避免被正文压住');
+});
+
+test('返回栏让出刘海屏安全区，避免按钮被状态栏遮挡', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  const bar = /\.md-bar \{([^}]*)\}/.exec(html);
+  assert.match(bar[1], /env\(safe-area-inset-top\)/, '顶部内边距须让出安全区');
+});
+
+test('触控目标不小于 44px（移动端点得中）', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  const back = /\.md-back \{([^}]*)\}/.exec(html);
+  assert.ok(back, '应输出 .md-back 规则');
+  const m = /min-height:\s*(\d+)px/.exec(back[1]);
+  assert.ok(m, '须声明 min-height');
+  assert.ok(Number(m[1]) >= 44, `触控目标应 >= 44px，实际 ${m[1]}px`);
+});
+
+test('无 JS 也能回主界面：href 兜底 + 同源判定', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  assert.match(html, /id="md-back"/, '脚本须绑定到有 id 的元素');
+  assert.match(html, /document\.referrer/, '须用 referrer 判定是否同源');
+  assert.match(html, /history\.back\(\)/, '同源时走 history.back 保留会话状态');
+  assert.match(html, /location\.href\s*=/, '非同源/无脚本时兜底跳主界面');
+});
+
+test('返回栏渲染的文件名已转义（不引入注入面）', () => {
+  const html = markdownPreviewHtml('# x', '<img src=x onerror=alert(1)>.md');
+  assert.ok(!/<img src=x/.test(html), '文件名不得原样注入 img 标签');
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;\.md/);
+});
+
+test('返回栏不破坏深色模式（跟随系统）', () => {
+  const html = markdownPreviewHtml('# 报告', 'a.md');
+  const dark = /@media \(prefers-color-scheme: dark\) \{([\s\S]*?)\n  \}/.exec(html);
+  assert.ok(dark, '应保留深色模式媒体查询');
+  assert.match(dark[1], /\.md-bar \{/, '深色下须给返回栏配色，避免白底黑字不可读');
+});
