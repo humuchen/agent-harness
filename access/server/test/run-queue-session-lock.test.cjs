@@ -176,6 +176,7 @@ test('P1-6：releaseClaim —— processing 原子退回 pending 并清租约', 
 
 // ── RunQueue 集成：同 sessionKey 两任务 → 第二个被退回，锁释放后重领 ──
 test('P1-6：同会话第二任务在锁忙时退回 pending，锁释放后重新领取执行', { skip: !RUN }, async () => {
+  const { createHash } = require('node:crypto');
   const { RedisQueueBackend } = require(BACKEND_JS);
   const { RunQueue } = require(RUNQUEUE_JS);
   const store = new FakeStore();
@@ -185,6 +186,12 @@ test('P1-6：同会话第二任务在锁忙时退回 pending，锁释放后重�
     // 等 startShared 的启动回收 + 首次 sweep 跑完（pending 空，claim 返回 null）。
     await new Promise((r) => setTimeout(r, 30));
     const sessKey = 'im-feishu-abc123';
+    // run-queue 的 acquireSessionLockFor 先对 sessionKey 做 sha256 摘要（前 24 hex）
+    // 再传给 backend；backend 层锁键为裸拼接。digestKey 是 backend API 的入参形态
+    // （acquire/release 均收「摘要」，前缀由 backend 内部加）；rqLockKey 是 Redis
+    // 里的最终键形态（直读 client 用）。
+    const digestKey = createHash('sha256').update(sessKey).digest('hex').slice(0, 24);
+    const rqLockKey = 'runq:sesslock:' + digestKey;
     await b.append({ id: 'sl1', mode: 'mock', prompt: 'p1', enqueuedAt: 1, sessionKey: sessKey });
     await b.append({ id: 'sl2', mode: 'mock', prompt: 'p2', enqueuedAt: 2, sessionKey: sessKey });
 
@@ -202,7 +209,7 @@ test('P1-6：同会话第二任务在锁忙时退回 pending，锁释放后重�
     await q.sweepOnce();
     await new Promise((r) => setTimeout(r, 10));
     assert.deepStrictEqual(executed, ['sl1'], '第一个任务应被领取执行');
-    const lockVal = await b.client.get(sessLockKeyOf(sessKey));
+    const lockVal = await b.client.get(rqLockKey);
     assert.ok(lockVal && lockVal.startsWith('sl1:'), `会话锁应存在且 token 绑定 sl1，实际=${lockVal}`);
 
     // sweep 领取 sl2 → 同会话锁被占 → parkSessionBusyJob → releaseClaim 退回 pending。
@@ -220,7 +227,9 @@ test('P1-6：同会话第二任务在锁忙时退回 pending，锁释放后重�
     releaseExec();
     await new Promise((r) => setTimeout(r, 10));
     const tok = lockVal;
-    await b.releaseSessionLock(sessKey, tok);
+    // 与生产 execute finally 一致：传「摘要 key + token」（不是原始 sessionKey，
+    // 也不是带前缀的完整键 —— 前缀由 backend 内部拼接，传完整键会变成双前缀）。
+    await b.releaseSessionLock(digestKey, tok);
     // 下一轮 sweep：sl2 从 pending 重领 → 占锁成功 → 执行。
     await q.sweepOnce();
     await new Promise((r) => setTimeout(r, 10));

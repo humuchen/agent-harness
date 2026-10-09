@@ -33,11 +33,19 @@ test('EXECUTE_FORCE_SETTLE_GRACE_MS：env 覆盖生效（测试用 40ms）', { s
 test('P1-7：底层不响应中止 → 宽限后强制 reject（走 finally 语义）', { skip: !RUN }, async () => {
   const q = new RunQueue(); // memory 后端，无共享副作用
   const hung = new Promise(() => {}); // 永不 settle：模拟不响应 abort 的 LLM 调用
-  await assert.rejects(
-    () => q.forceSettleRun(hung, 30, { id: 'fs1' }),
-    /run force-settled: watchdog abort was not honored/,
-    'watchdogMs(30) + grace(40) = 70ms 后应强制失败'
-  );
+  // 保活：hard 定时器被实现 unref()（不阻止进程退出，生产正确），但测试必须
+  // 依赖它触发 —— 全量并发跑时事件循环可能空转，unref timer 不保活会导致
+  // 测试 promise 永远 pending（ERR_TEST_FAILURE: pending but loop resolved）。
+  const keepAlive = setInterval(() => {}, 25);
+  try {
+    await assert.rejects(
+      () => q.forceSettleRun(hung, 30, { id: 'fs1' }),
+      /run force-settled: watchdog abort was not honored/,
+      'watchdogMs(30) + grace(40) = 70ms 后应强制失败'
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test('P1-7：正常完成 → 结果透传，hard 定时器被 finally 清掉', { skip: !RUN }, async () => {
@@ -63,17 +71,23 @@ test('P1-7：race settle 后悬挂 promise 才 reject → 不产生 unhandledRej
   const p = new Promise((_, rej) => {
     rejectP = rej;
   });
-  await assert.rejects(() => q.forceSettleRun(p, 30, { id: 'fs3' }), /force-settled/);
-  // 强制结算已发生；此时底层 promise 才失败（真实场景：深层 fetch 最终报错）。
-  rejectP(new Error('late underlying failure'));
-  let unhandled = 0;
-  const h = () => {
-    unhandled++;
-  };
-  process.on('unhandledRejection', h);
-  await new Promise((r) => setTimeout(r, 60));
-  process.removeListener('unhandledRejection', h);
-  assert.strictEqual(unhandled, 0, 'race 的既有 handler 应消化悬挂 rejection');
+  // 保活（同前一项：hard 定时器被 unref，测试须自保事件循环不空转）。
+  const keepAlive = setInterval(() => {}, 25);
+  try {
+    await assert.rejects(() => q.forceSettleRun(p, 30, { id: 'fs3' }), /force-settled/);
+    // 强制结算已发生；此时底层 promise 才失败（真实场景：深层 fetch 最终报错）。
+    rejectP(new Error('late underlying failure'));
+    let unhandled = 0;
+    const h = () => {
+      unhandled++;
+    };
+    process.on('unhandledRejection', h);
+    await new Promise((r) => setTimeout(r, 60));
+    process.removeListener('unhandledRejection', h);
+    assert.strictEqual(unhandled, 0, 'race 的既有 handler 应消化悬挂 rejection');
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 // 源码锚点：强制结算必须 `return await Promise.race` —— 缺 await 则 finally 提前
