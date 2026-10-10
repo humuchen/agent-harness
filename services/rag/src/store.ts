@@ -4,7 +4,10 @@
  * 满足设计文档 P0「可 docker run 单节点」与第 8 节「增量更新 / 权限隔离」：
  * - 内存为主索引，chunk 级 upsert（幂等），支持按 doc_id 整文档删除（增量更新）。
  * - 所有读路径强制 tenant_id 过滤（服务端重写后传入），零跨租户泄漏。
- * - 可选 JSON 持久化（RAG_DATA_FILE），进程重启后恢复；生产可换 sqlite/向量库（见 persistSqlite 占位）。
+ * - 可选 JSON 持久化（RAG_DATA_FILE），进程重启后恢复；
+ * - P6-C：sqlite 持久化后端（RAG_STORE_BACKEND=sqlite，node:sqlite 零 npm 依赖，
+ *   写路径落库即持久，替代「全量 JSON 快照」；见 SqliteVectorStore）；
+ *   生产规模/横向扩展用 qdrant（RAG_STORE_BACKEND=qdrant）。
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
@@ -254,8 +257,198 @@ export class MemoryVectorStore implements VectorStore {
 }
 
 /**
+ * P6-C sqlite 持久化后端：node:sqlite（Node 22.13+ 内置，零 npm 依赖）。
+ *
+ * 设计要点：
+ * - **写即持久**：upsert/deleteByDoc 直接落库（WAL 模式），无需 JSON 快照的
+ *   「每 ingest 全量序列化」——大索引下 O(n) 写放大消除，崩溃只丢未刷盘的 WAL 尾部。
+ * - **读路径全量扫描 + 余弦**：与 MemoryVectorStore 同算法（租户过滤在 SQL 层强制），
+ *   十万级 chunk 内延迟可接受；更大规模应切 qdrant（向量索引在库侧）。
+ * - **hybridCapable = true**：getChunks 全量导出可用，BM25 / MMR / 查询扩展不降级。
+ * - dim 一致性：首个 chunk 定型后建表约束不现实，改在 upsert 时校验（与内存版同语义），
+ *   并在构造时读存量向量维度，不一致 fail-fast（与 JSON load 的行为一致）。
+ * - persist/load 为 no-op：写即持久，无需快照/恢复；保留接口以对齐消费方
+ *   「ingest 后 persist」调用（server.ts）与 shutdown 流程。
+ */
+export class SqliteVectorStore implements VectorStore {
+  readonly dim: number;
+  readonly hybridCapable = true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private db: any;
+  private readonly file: string;
+
+  constructor(dim: number, file: string) {
+    this.dim = dim;
+    this.file = file;
+    // 延迟加载 node:sqlite：运行期 Node 不支持时给出可操作错误（不静默降级到 memory——
+    // 用户显式选择了 sqlite 后端，静默降级会让「以为持久化了」的索引在重启后消失）。
+    let DatabaseSync: any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      ({ DatabaseSync } = require('node:sqlite'));
+    } catch {
+      throw new Error(
+        `SqliteVectorStore 需要 Node 22.13+ 的内置 node:sqlite（当前 ${process.version}）。` +
+          `请升级 Node，或改用 RAG_STORE_BACKEND=memory（JSON 快照）/ qdrant。`
+      );
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    this.db = new DatabaseSync(file);
+    this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec(`CREATE TABLE IF NOT EXISTS chunks (
+      chunk_id TEXT PRIMARY KEY,
+      doc_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      title TEXT,
+      tags TEXT,
+      metadata TEXT,
+      vector TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_tenant ON chunks(tenant_id)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, tenant_id)');
+    // 存量维度校验：与 JSON load 的 fail-fast 语义一致（embedding 维度变了必须重建索引）。
+    const row = this.db.prepare('SELECT vector FROM chunks LIMIT 1').get();
+    if (row) {
+      const v = JSON.parse(row.vector as string) as number[];
+      if (Array.isArray(v) && v.length !== dim) {
+        this.db.close();
+        throw new Error(`sqlite 索引维度(${v.length})与当前(${dim})不一致：请更换 RAG_SQLITE_FILE 或重新 ingest`);
+      }
+    }
+  }
+
+  /** chunk 级幂等写入；相同 chunk_id 覆盖（增量更新语义）。 */
+  upsert(c: Chunk): void {
+    if (c.vector.length !== this.dim) {
+      throw new Error(`向量维度不匹配：期望 ${this.dim}，实际 ${c.vector.length}`);
+    }
+    this.db
+      .prepare(
+        `INSERT INTO chunks (chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, vector, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(chunk_id) DO UPDATE SET
+           doc_id=excluded.doc_id, tenant_id=excluded.tenant_id, idx=excluded.idx,
+           content=excluded.content, title=excluded.title, tags=excluded.tags,
+           metadata=excluded.metadata, vector=excluded.vector, created_at=excluded.created_at`
+      )
+      .run(
+        c.chunk_id,
+        c.doc_id,
+        c.tenant_id,
+        c.index,
+        c.content,
+        c.title ?? null,
+        c.tags ? JSON.stringify(c.tags) : null,
+        c.metadata ? JSON.stringify(c.metadata) : null,
+        JSON.stringify(c.vector),
+        c.created_at
+      );
+  }
+
+  /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk（增量更新）。 */
+  deleteByDoc(docId: string, tenantId: string): number {
+    const r = this.db
+      .prepare('DELETE FROM chunks WHERE doc_id = ? AND tenant_id = ?')
+      .run(docId, tenantId);
+    return Number(r.changes ?? 0);
+  }
+
+  /** 候选检索：tenant 内余弦 top_k（SQL 层强制租户过滤，零跨租户泄漏）。 */
+  search(tenantId: string, queryVec: number[], topK: number): RetrieveResult[] {
+    const rows = this.db
+      .prepare('SELECT chunk_id, doc_id, title, content, tags, metadata, vector FROM chunks WHERE tenant_id = ?')
+      .all(tenantId) as Array<Record<string, unknown>>;
+    const scored = rows.map((r) => {
+      const vec = JSON.parse(r.vector as string) as number[];
+      return {
+        chunk_id: r.chunk_id as string,
+        doc_id: r.doc_id as string,
+        title: (r.title as string) ?? undefined,
+        content: r.content as string,
+        tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : undefined,
+        metadata: r.metadata ? (JSON.parse(r.metadata as string) as Record<string, unknown>) : undefined,
+        score: MemoryVectorStore.cosine(queryVec, vec),
+      };
+    });
+    scored.sort((x, y) => y.score - x.score);
+    return scored.slice(0, topK);
+  }
+
+  count(tenantId?: string): number {
+    if (!tenantId) {
+      const r = this.db.prepare('SELECT COUNT(*) AS n FROM chunks').get() as { n: number };
+      return Number(r.n);
+    }
+    const r = this.db
+      .prepare('SELECT COUNT(*) AS n FROM chunks WHERE tenant_id = ?')
+      .get(tenantId) as { n: number };
+    return Number(r.n);
+  }
+
+  /** 各租户 chunk 数（可观测 / health 用）。 */
+  tenantCounts(): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT tenant_id, COUNT(*) AS n FROM chunks GROUP BY tenant_id')
+      .all() as Array<{ tenant_id: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.tenant_id] = Number(r.n);
+    return out;
+  }
+
+  /** 租户内全部 chunk（含 vector），供 BM25 / 重排按需重建语料。 */
+  getChunks(tenantId: string): Chunk[] {
+    const rows = this.db
+      .prepare('SELECT chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, vector, created_at FROM chunks WHERE tenant_id = ? ORDER BY doc_id, idx')
+      .all(tenantId) as Array<Record<string, unknown>>;
+    return rows.map(rowToChunk);
+  }
+
+  /** no-op：写路径已落库即持久（保留以对齐 server 的「ingest 后 persist」调用）。 */
+  persist(_file?: string, _shardByTenant?: boolean): void {
+    void _file;
+    void _shardByTenant;
+  }
+
+  /** no-op：数据在库内，无需恢复。 */
+  load(_file?: string, _shardByTenant?: boolean): void {
+    void _file;
+    void _shardByTenant;
+  }
+
+  /** 优雅关闭（server shutdown 调用；WAL checkpoint 由 close 隐式完成）。 */
+  close(): void {
+    try {
+      this.db.close();
+    } catch {
+      /* 已关闭 / 已损坏：忽略 */
+    }
+  }
+}
+
+/** sqlite 行 → Chunk（JSON 列反序列化）。 */
+function rowToChunk(r: Record<string, unknown>): Chunk {
+  return {
+    chunk_id: r.chunk_id as string,
+    doc_id: r.doc_id as string,
+    tenant_id: r.tenant_id as string,
+    index: Number(r.idx),
+    content: r.content as string,
+    title: (r.title as string) ?? undefined,
+    tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : undefined,
+    metadata: r.metadata ? (JSON.parse(r.metadata as string) as Record<string, unknown>) : undefined,
+    vector: JSON.parse(r.vector as string) as number[],
+    created_at: Number(r.created_at),
+  };
+}
+
+/**
  * P6-B 存储工厂：按 `RAG_STORE_BACKEND` 构建向量存储后端。
  * - 缺省 / `memory` → MemoryVectorStore（单节点 JSON 持久化，零依赖，存量行为）；
+ * - `sqlite` → SqliteVectorStore（node:sqlite 零 npm 依赖，写即持久；
+ *   RAG_SQLITE_FILE 配置库文件，默认 ./data/rag-index.db）；
  * - `qdrant` → QdrantVectorStore（REST 零 SDK；QDRANT_URL / QDRANT_API_KEY /
  *   QDRANT_COLLECTION 配置，维度取参数 dim）。
  */
@@ -271,6 +464,10 @@ export function createVectorStore(dim: number): VectorStore {
       apiKey: process.env.QDRANT_API_KEY,
       collection: process.env.QDRANT_COLLECTION,
     });
+  }
+  if (backend === 'sqlite') {
+    const file = process.env.RAG_SQLITE_FILE?.trim() || './data/rag-index.db';
+    return new SqliteVectorStore(dim, file);
   }
   return new MemoryVectorStore(dim);
 }

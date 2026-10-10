@@ -94,6 +94,20 @@ jobs:
         run: node scripts/rollback-drill.cjs --action verify
         continue-on-error: true
 
+  # P2-8 补齐：PR 依赖安全审查（Dependency Review）——PR 引入的传递依赖若存在
+  # 已知高危漏洞或许可证不合规，门禁直接失败（此前仅靠 pnpm audit 覆盖锁文件全量）。
+  dependency-review:
+    name: 依赖安全审查（PR）
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          # 许可证拒绝清单可按需追加（GPL-3.0 等强传染协议）
+          deny-licenses: AGPL-3.0-or-later
+
   # P2：E2E 冒烟——启动真实服务进程（mock 模式，零外部依赖）跑 SSE 重连脚本，
   # 把此前游离在 CI 外的 e2e 脚本纳入门禁。deploy 依赖本 job 全绿。
   e2e:

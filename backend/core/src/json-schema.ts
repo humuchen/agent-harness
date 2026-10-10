@@ -15,9 +15,12 @@
  *   - array：items（schema 或元组数组）/ minItems / maxItems / uniqueItems；
  *   - string：minLength / maxLength / pattern；
  *   - number：minimum / maximum / exclusiveMinimum / exclusiveMaximum / multipleOf；
- *   - 组合：enum / const / anyOf / oneOf / allOf（not 未实现，忽略）；
+ *   - 组合：enum / const / anyOf / oneOf / allOf / not（P6.1 补齐）；
  *   - OpenAPI 兼容：nullable: true 视为允许 null；
- *   - $ref 未实现（遇到视为通过——不误杀，schema 作者应内联展开）。
+ *   - $ref（P6.1 补齐）：仅支持**本地指针** `#/definitions/...` 与 `#/$defs/...`
+ *     （含 ~0/~1 与 URI 解码）；外部 URL / 远程引用无法在零依赖校验器内解析，
+ *     按 **fail-closed** 报错拒绝（校验闸门不逃逸——工具参数/step 产出用着它，
+ *     静默放行等于没有约束）。
  *
  * 纪律：纯函数、零运行时依赖、未知关键字一律忽略（向前兼容）；错误信息含 JSON 路径
  * （如 `a.b[2]`），单条错误不抛异常（调用方决定如何处置）。
@@ -51,15 +54,47 @@ function matchesType(v: unknown, t: string): boolean {
   return actual === t;
 }
 
-/** 组合关键字（anyOf/oneOf/allOf）中优先于 type 校验：先跑组合再跑本层约束。 */
+/**
+ * 解析本地 JSON Pointer 引用（P6.1）：仅支持 `#/definitions/...` / `#/$defs/...`。
+ * 支持 ~0（~）/ ~1（/）转义与 URI 编码段。解析失败 / 非本地指针 → null（调用方 fail-closed）。
+ */
+function resolveLocalRef(root: unknown, ref: string): Record<string, unknown> | null {
+  if (typeof ref !== 'string') return null;
+  // 根指针 '#'：整个 root schema 自身（自引用树形结构的惯用写法）
+  if (ref === '#') {
+    return root !== null && typeof root === 'object' && !Array.isArray(root)
+      ? (root as Record<string, unknown>)
+      : null;
+  }
+  if (!ref.startsWith('#/')) return null;
+  const pointer = ref.slice(1); // 保留开头 '/'
+  let cur: unknown = root;
+  for (const rawSeg of pointer.split('/').slice(1)) {
+    if (cur === null || typeof cur !== 'object') return null;
+    const seg = rawSeg.replace(/~1/g, '/').replace(/~0/g, '~');
+    let key = seg;
+    try {
+      key = decodeURIComponent(seg);
+    } catch {
+      // 非法 URI 编码：按原样匹配
+    }
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur !== null && typeof cur === 'object' && !Array.isArray(cur)
+    ? (cur as Record<string, unknown>)
+    : null;
+}
+
+/** 组合关键字（anyOf/oneOf/allOf/not/$ref）中优先于 type 校验：先跑组合再跑本层约束。 */
 function validate(
   value: unknown,
   schema: unknown,
   path: string,
   errors: string[],
-  depth: number
+  depth: number,
+  root?: unknown
 ): void {
-  // 深度护栏：防御 schema 自引用（$ref 展开缺失时的循环）拖垮校验。
+  // 深度护栏：防御 schema 自引用（$ref 循环）拖垮校验。
   if (depth > 32) {
     errors.push(`${path || '(root)'}: schema 嵌套过深（>32 层），停止校验`);
     return;
@@ -68,13 +103,28 @@ function validate(
     return; // 非法 / 缺省 schema：不约束（与「未知关键字忽略」一致）
   }
   const s = schema as Record<string, unknown>;
+  const ctxRoot = root === undefined ? schema : root;
 
-  // 组合：anyOf / oneOf / allOf
+  // $ref（P6.1）：本地指针解析后按解析结果校验（draft-07 语义：$ref 优先、忽略兄弟键）。
+  // 无法解析（外部 URL / 指针悬空）→ fail-closed 报错，绝不静默放行。
+  if (typeof s.$ref === 'string') {
+    const resolved = resolveLocalRef(ctxRoot, s.$ref);
+    if (!resolved) {
+      errors.push(
+        `${path || '(root)'}: $ref "${s.$ref}" 无法解析（仅支持本地 #/definitions|#/$defs 指针），按校验失败处理`
+      );
+      return;
+    }
+    validate(value, resolved, path, errors, depth + 1, ctxRoot);
+    return;
+  }
+
+  // 组合：anyOf / oneOf / allOf / not
   if (Array.isArray(s.anyOf)) {
     const passed = s.anyOf.some(
       (sub) => {
         const errs: string[] = [];
-        validate(value, sub, path, errs, depth + 1);
+        validate(value, sub, path, errs, depth + 1, ctxRoot);
         return errs.length === 0;
       }
     );
@@ -88,7 +138,7 @@ function validate(
     let hit = 0;
     for (const sub of s.oneOf) {
       const errs: string[] = [];
-      validate(value, sub, path, errs, depth + 1);
+      validate(value, sub, path, errs, depth + 1, ctxRoot);
       if (errs.length === 0) hit += 1;
     }
     if (hit !== 1) {
@@ -100,10 +150,18 @@ function validate(
   if (Array.isArray(s.allOf)) {
     for (const sub of s.allOf) {
       const before = errors.length;
-      validate(value, sub, path, errors, depth + 1);
+      validate(value, sub, path, errors, depth + 1, ctxRoot);
       if (errors.length > before) return; // 某分支失败即返回（错误信息已带路径）
     }
     // allOf 全过后继续走本层约束（fall through）
+  }
+  if (s.not !== undefined && s.not !== null && typeof s.not === 'object') {
+    const errs: string[] = [];
+    validate(value, s.not, path, errs, depth + 1, ctxRoot);
+    if (errs.length === 0) {
+      errors.push(`${path || '(root)'}: 值不满足 not 约束（匹配了被禁止的 schema）`);
+      return;
+    }
   }
 
   // nullable（OpenAPI 风格）：允许 null 短路通过
@@ -155,11 +213,11 @@ function validate(
     for (const [key, val] of Object.entries(obj)) {
       const childPath = joinPath(path, key);
       if (key in props) {
-        validate(val, props[key], childPath, errors, depth + 1);
+        validate(val, props[key], childPath, errors, depth + 1, ctxRoot);
       } else if (additional === false) {
         errors.push(`${childPath}: 不允许的额外属性（additionalProperties=false）`);
       } else if (additional && typeof additional === 'object') {
-        validate(val, additional, childPath, errors, depth + 1);
+        validate(val, additional, childPath, errors, depth + 1, ctxRoot);
       }
     }
     if (typeof s.minProperties === 'number' && Object.keys(obj).length < s.minProperties) {
@@ -177,9 +235,9 @@ function validate(
       const childPath = joinPath(path, i);
       if (Array.isArray(items)) {
         // 元组形态：越界项不校验（标准行为）
-        if (i < items.length) validate(item, items[i], childPath, errors, depth + 1);
+        if (i < items.length) validate(item, items[i], childPath, errors, depth + 1, ctxRoot);
       } else if (items !== undefined) {
-        validate(item, items, childPath, errors, depth + 1);
+        validate(item, items, childPath, errors, depth + 1, ctxRoot);
       }
     });
     if (typeof s.minItems === 'number' && value.length < s.minItems) {

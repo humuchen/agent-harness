@@ -63,10 +63,13 @@ function getSpec(provider: string): OAuthProviderSpec | null {
 // ─── 服务端签发 OAuth state（P1-1 CSRF 防护）─────────────────────────────────
 // 旧实现：state 即前端生成的 code_verifier，服务端不签发也不校验 → 攻击者可诱导
 // 已登录受害者完成「绑定攻击者 OpenRouter 账号」的授权流（login-CSRF / 账号固定）。
-// 新实现：/oauth/start 由服务端生成 verifier 并把 { exp, nonce, verifier } 经
+// 实现：/oauth/start 由服务端生成 verifier 并把 { exp, nonce, verifier, owner } 经
 // AES-GCM 加密为 state（认证标签防篡改，10 分钟 TTL），回调凭 state 反解 verifier
 // 换票。stateless 校验天然多实例可用（无需共享存储）；重放 state 无意义——授权码
 // code 在 OpenRouter 侧一次性消费。
+// 会话绑定（P1-1 收紧）：state 载荷携带签发时的登录身份 owner，/exchange 校验
+// state.owner 与当前会话 owner 一致——否则「攻击者自建合法 state 诱导受害者完成
+// 授权」的 login-CSRF 依然可行（state 本身无法伪造，但可被跨会话复用）。
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
 const OAUTH_STATE_PREFIX = 'ah1.';
 
@@ -86,27 +89,29 @@ function s256(verifier: string): string {
   return b64url(createHash('sha256').update(verifier).digest());
 }
 
-/** 签发授权 state：载荷 { exp, nonce, verifier } 经 AES-GCM 加密（防伪造 + 保密 verifier）。 */
-export function issueOAuthState(verifier: string): string {
+/** 签发授权 state：载荷 { exp, nonce, verifier, owner } 经 AES-GCM 加密（防伪造 + 保密 verifier）。 */
+export function issueOAuthState(verifier: string, owner: string): string {
   const payload = JSON.stringify({
     exp: Date.now() + OAUTH_STATE_TTL_MS,
     nonce: b64url(randomBytes(16)),
-    verifier
+    verifier,
+    owner
   });
   return OAUTH_STATE_PREFIX + b64url(Buffer.from(encryptApiKey(payload)));
 }
 
-/** 校验并解出授权 state 中的 code_verifier；伪造/篡改/过期 → null（调用方按 400 拒绝）。 */
-export function verifyOAuthState(state: string): string | null {
+/** 校验并解出授权 state：返回 { verifier, owner }；伪造/篡改/过期 → null（调用方按 400 拒绝）。 */
+export function verifyOAuthState(state: string): { verifier: string; owner: string } | null {
   if (typeof state !== 'string' || !state.startsWith(OAUTH_STATE_PREFIX)) return null;
   try {
     // b64url 解码还原出的是「encryptApiKey 输出的 base64 文本」（utf-8 字节），
     // 需按 utf-8 读回原文再交给 decryptApiKey 做一次 base64 解码。
     const payload = decryptApiKey(b64urlDecode(state.slice(OAUTH_STATE_PREFIX.length)).toString('utf-8'));
-    const obj = JSON.parse(payload) as { exp?: number; verifier?: string };
+    const obj = JSON.parse(payload) as { exp?: number; verifier?: string; owner?: string };
     if (typeof obj.exp !== 'number' || obj.exp < Date.now()) return null;
     if (typeof obj.verifier !== 'string' || obj.verifier.length < 32) return null;
-    return obj.verifier;
+    if (typeof obj.owner !== 'string' || !obj.owner) return null;
+    return { verifier: obj.verifier, owner: obj.owner };
   } catch {
     return null;
   }
@@ -282,6 +287,14 @@ export async function registerOAuthRoutes(
       return true;
     }
     const verifier = b64url(randomBytes(48)); // 64 字符，符合 RFC 7636 的 43-128 字符要求
+    // P1-1 会话绑定：state 携带签发者身份（server.ts guard 已把 ctx.sub 注入 ahOwner），
+    // /exchange 时校验 state.owner === 当前会话 owner，防跨会话复用（login-CSRF）。
+    const stateOwner = (req as unknown as { ahOwner?: string }).ahOwner;
+    if (!stateOwner) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return true;
+    }
     const params = new URLSearchParams({
       client_id: cfg.clientId,
       redirect_uri: cfg.redirectUri ?? '',
@@ -289,7 +302,7 @@ export async function registerOAuthRoutes(
       scope: cfg.scopes ?? 'openid profile',
       code_challenge: s256(verifier),
       code_challenge_method: 'S256',
-      state: issueOAuthState(verifier)
+      state: issueOAuthState(verifier, stateOwner)
     });
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ authorizeUrl: `${cfg.authorizeUrl}?${params.toString()}` }));
@@ -316,7 +329,7 @@ export async function registerOAuthRoutes(
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return true;
     }
-    let body: any = {};
+    let body: any;
     try {
       // P2-6：此路由此前自读 body 无大小上限（其余路由均受 MAX_BODY_BYTES 约束），
       // 补 64KB 上限（OAuth 交换载荷远小于此）。
@@ -338,8 +351,9 @@ export async function registerOAuthRoutes(
       res.end(JSON.stringify({ error: 'invalid body' }));
       return true;
     }
-    // P1-1：优先取服务端签发的 state（反解 verifier）；旧前端仍直传 codeVerifier 时
-    // 走兼容路径。state 无效/过期 → 400，不做授权换票（防 login-CSRF / 账号固定）。
+    // P1-1：优先取服务端签发的 state（反解 verifier + 校验会话绑定）；旧前端仍直传
+    // codeVerifier 时走兼容路径。state 无效/过期/跨用户 → 400，不做授权换票
+    // （防 login-CSRF / 账号固定）。
     let codeVerifier = '';
     const stateRaw = typeof body.state === 'string' ? body.state : '';
     if (stateRaw) {
@@ -349,7 +363,13 @@ export async function registerOAuthRoutes(
         res.end(JSON.stringify({ error: 'oauth state invalid or expired' }));
         return true;
       }
-      codeVerifier = fromState;
+      // P1-1 会话绑定：state 必须由当前登录用户签发——他人的合法 state 一律拒绝。
+      if (fromState.owner !== owner) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'oauth state does not belong to current session' }));
+        return true;
+      }
+      codeVerifier = fromState.verifier;
     } else if (typeof body.codeVerifier === 'string' && body.codeVerifier) {
       codeVerifier = body.codeVerifier;
     }

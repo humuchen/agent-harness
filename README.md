@@ -188,7 +188,8 @@ ENV_PLATFORM=local pnpm --filter @agent-harness/examples run demo:env
    ```
 2. **运行时动态添加** —— 通过 `POST /api/mcp/add`（body `{name,serverUrl,headers?}`）或 UI 面板的
    「添加 MCP」即时接入；也可从 `GET /api/mcp/presets` 预设市场（Context7 / GitHub / Composio 等）
-   一键 `POST /api/mcp/preset` 接入。**注意：动态添加是内存态、不持久化，重启即清空**，常驻 server 仍建议走方式 1。
+   一键 `POST /api/mcp/preset` 接入。**动态添加已持久化到 SQLite**（`mcp_servers` 表，认证头
+   AES-GCM 加密落库），重启自动重连；环境变量 `MCP_SERVERS` 同名条目优先。
 3. **stdio 本地服务** —— 同数组加 `{"name":"x","command":"npx","args":[...]}`。
 
 它提供两个工具：`resolve-library-id`（把库名解析成 Context7 库 ID）和
@@ -960,7 +961,7 @@ CI（`.github/workflows/ci.yml`，name: CI/CD）共四个作业：
 - **deploy**：push 时触发 Render Deploy Hook（TURSO 凭据经 secrets 注入）。
 - **nightly**：每日 03:00 UTC 全链路回滚演练（backup → verify → restore），可手动 dispatch。
 
-当前**未集成** GHCR 镜像推送与 PR Dependency Review 作业（如需可后续补齐）。
+GHCR 镜像推送（`.github/workflows/docker.yml`，push 构建并推送 `ghcr.io/<owner>/<repo>`：分支 + sha + 默认分支 latest）与 **PR Dependency Review**（`ci.yml` 的 `dependency-review` 作业，高危漏洞/许可证拒绝即失败）均已集成。
 
 ## 健壮性增强
 
@@ -988,7 +989,7 @@ CI（`.github/workflows/ci.yml`，name: CI/CD）共四个作业：
 - **`Dockerfile`**（多阶段 pnpm 构建，基础镜像锁定 Node 22，非 root 运行 + HEALTHCHECK）
 - **`docker-compose.yml`**（单实例内存模式开箱即用；`--profile redis` 启用 Redis 运行队列以支持多副本）
 - **`deploy/k8s/`**（Namespace / ConfigMap / Secret / Deployment / Service / Ingress / HPA，可选 Redis；用 kustomize 管理）
-- **`.github/workflows/ci.yml`**（CI/CD 四作业：test / e2e / deploy / nightly，含 gitleaks 与 Syft SBOM；未集成 GHCR 镜像推送）
+- **`.github/workflows/ci.yml`**（CI/CD 作业：test / e2e / deploy / nightly + PR 依赖安全审查，含 gitleaks 与 Syft SBOM）与 **`.github/workflows/docker.yml`**（GHCR 镜像构建推送）
 - **[`docs/deployment.md`](./docs/02-deployment/deployment-self-hosting.md)** —— 完整的自托管指南（本地 docker / K8s / 环境变量清单 / 密钥注入 / SSO）
 
 > 关键约定：**所有密钥经 `process.env` 注入**（平台 env > `SECRETS_FILE` > 本地 `.env`），真实密钥永不进仓库或镜像。

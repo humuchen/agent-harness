@@ -1,0 +1,62 @@
+# GHCR 镜像构建与推送（P2-8 补齐：CI 缺口之一）
+#
+# - PR：只构建（验证 Dockerfile 可用），不推送
+# - push（main/dev/master）与手动 dispatch：构建并推送 ghcr.io/<owner>/<repo>
+#   镜像 tag：分支名 + sha 短哈希；main/master 额外打 latest
+# - 多阶段构建复用 ci.yml 已有的测试门禁（本 workflow 不重复跑测试）
+# 需要：无额外 Secrets（GITHUB_TOKEN 由 Actions 自动注入，需 packages:write 权限）
+name: Docker
+
+on:
+  push:
+    branches: [main, dev, master]
+    # 与 ci.yml 的 schedule/workflow_dispatch 解耦：镜像只在 push/手动时构建
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-push:
+    name: 构建镜像（PR 仅构建）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算镜像元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 登录 GHCR（仅 push 事件）
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
