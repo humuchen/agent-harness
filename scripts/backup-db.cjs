@@ -83,14 +83,21 @@ async function doBackup(backupDir, keepDays) {
     try {
       // P1 修复（D4）：SQLite 一致性备份。此前先发异步 WAL checkpoint 又立即 close，
       // 随后直接 copyFileSync 活动库文件——checkpoint 未必完成、拷贝可能页级撕裂。
-      // 现改用 sqlite3 在线 backup API（源库读锁 + 页级一致快照）；驱动不可用时
-      // 退化为「等待 checkpoint 完成后拷贝」。
+      // 现按优先级三级降级：
+      //   1) node:sqlite（Node 22.13+ 内置，零依赖）VACUUM INTO —— 在线一致快照；
+      //   2) sqlite3 npm 驱动在线 backup API（若环境中恰好可用）；
+      //   3) 退化：等待 WAL checkpoint 完成后拷贝（页级撕裂风险最低化）。
       if (src.name === 'accounts' || src.name === 'memory') {
-        const backedUp = await sqliteOnlineBackup(src.path, dest);
+        let backedUp = await sqliteBuiltinBackup(src.path, dest);
+        if (backedUp) {
+          log(`[info] ${src.name}: node:sqlite VACUUM INTO 在线备份`);
+        } else {
+          backedUp = await sqliteOnlineBackup(src.path, dest);
+        }
         if (!backedUp) {
           await walCheckpointAndWait(src.path);
           fs.copyFileSync(src.path, dest);
-          log(`[warn] ${src.name}: sqlite3 驱动不可用，已按 checkpoint 后拷贝（退化模式）`);
+          log(`[warn] ${src.name}: 无可用 SQLite 驱动，已按 checkpoint 后拷贝（退化模式）`);
         }
       } else {
         fs.copyFileSync(src.path, dest);
@@ -127,6 +134,37 @@ async function doBackup(backupDir, keepDays) {
 
   log(`[done] 本次备份 ${entries.length} 个文件，目录: ${backupDir}`);
   return entries;
+}
+
+/**
+ * node:sqlite 内置在线备份（Node 22.13+，零依赖）：
+ * `VACUUM INTO` 在读事务内把源库整理成全新一致副本——活动库持续写入时快照仍页级一致，
+ * 且输出库不带 WAL 附属文件。返回 true=成功；false=运行期 Node 不支持/失败（调用方降级）。
+ */
+async function sqliteBuiltinBackup(srcPath, destPath) {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require('node:sqlite'));
+  } catch {
+    return false;
+  }
+  let db;
+  try {
+    if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+    db = new DatabaseSync(srcPath);
+    db.exec(`VACUUM INTO '${destPath.replace(/\\/g, '/').replace(/'/g, "''")}'`);
+    return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
+  } catch (e) {
+    log(`[warn] node:sqlite 在线备份失败（${e.message}），尝试 sqlite3 驱动`);
+    try {
+      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+    } catch { /* 忽略 */ }
+    return false;
+  } finally {
+    try {
+      db?.close();
+    } catch { /* 忽略 */ }
+  }
 }
 
 /** sqlite3 在线 backup：返回 true=备份成功；false=驱动不可用/失败（调用方退化拷贝）。 */
@@ -216,8 +254,26 @@ function assertRestorable(file, srcName) {
   }
 }
 
-/** 对 SQLite 备份副本执行 PRAGMA integrity_check（驱动不可用时返回 'skipped'）。 */
+/** 对 SQLite 备份副本执行 PRAGMA integrity_check（优先 node:sqlite；驱动均不可用时返回 'skipped'）。 */
 function sqliteIntegrityCheck(file) {
+  // 1) node:sqlite 内置（Node 22.13+，零依赖）——此前只有 sqlite3 驱动路径，
+  //    零依赖部署下永远 'skipped'，恢复校验形同虚设。
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(file);
+    try {
+      const row = db.prepare('PRAGMA integrity_check').get();
+      const v = row ? Object.values(row)[0] : null;
+      return Promise.resolve(v === 'ok' ? 'ok' : `integrity_check 未通过: ${JSON.stringify(row)}`);
+    } finally {
+      try { db.close(); } catch { /* 忽略 */ }
+    }
+  } catch (e) {
+    if (String(e.message).includes('integrity_check')) {
+      return Promise.resolve(`integrity_check 出错: ${e.message}`);
+    }
+    // node:sqlite 不可用（旧 Node）→ 继续尝试 sqlite3 驱动
+  }
   let Database;
   try {
     ({ Database } = require('sqlite3'));

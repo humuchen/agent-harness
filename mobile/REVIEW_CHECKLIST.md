@@ -49,7 +49,7 @@
 - [x] 工作流执行监控
 - [x] 审批任务处理
 - [x] 成果物档案库（上传、浏览、下载）
-- [x] 实时推送通知（Android：FCM HTTP v1 已通，需配置 `FIREBASE_SERVICE_ACCOUNT`；iOS：APNs 投递层与 `google-services.json` / APNs entitlement 待接入，未配置时服务端降级为日志投递）
+- [x] 实时推送通知（服务端投递层已双通道齐备：Android FCM HTTP v1 + iOS APNs（ES256 + HTTP/2），分别配置 `FIREBASE_SERVICE_ACCOUNT` 与 `APNS_KEY_P8/APNS_KEY_ID/APNS_TEAM_ID/APNS_TOPIC` 后启用，未配置时降级为日志投递。原生侧仍需补 `google-services.json` 与 APNs entitlement 才能真机收包）
 - [x] 生物认证快捷登录
 - [x] 离线缓存（弱网只读）
 - [x] Deep Link 唤起指定视图
