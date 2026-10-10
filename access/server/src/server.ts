@@ -2013,6 +2013,23 @@ async function bootstrap(): Promise<void> {
   }
   const store = buildAgentStore();
   await initAgentRegistry(store);
+  // Agent 心跳超时自动下线：此前 sweepStale 仅测试引用、生产从未生效。此处启动周期 sweep
+  // （unref 定时器），心跳超时的远程 agent（mcp/a2a）被标记 down 供路由降权；local agent 豁免。
+  // AGENT_SWEEP_INTERVAL_MS（默认 60000；off/0 关闭）、AGENT_STALE_TIMEOUT_MS（默认 30000）。
+  {
+    const rawInterval = Number(process.env.AGENT_SWEEP_INTERVAL_MS);
+    const rawEnv = (process.env.AGENT_SWEEP_INTERVAL_MS ?? '').toLowerCase();
+    const sweepOff = rawEnv === 'off' || rawEnv === '0' || rawEnv === 'false';
+    if (!sweepOff) {
+      const intervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 60_000;
+      const rawTimeout = Number(process.env.AGENT_STALE_TIMEOUT_MS);
+      const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 30_000;
+      getAgentRegistry().startStaleSweep({ intervalMs, timeoutMs });
+      structLog('info', 'agents', {
+        staleSweep: { enabled: true, intervalMs, timeoutMs },
+      });
+    }
+  }
   // 插件系统：复用已注入持久后端的共享 AgentRegistry，构造 loader + 双宿主。
   pluginSystem = createPluginSystem();
   // 发现并启用插件（动态 require，server 不静态依赖具体插件）。

@@ -4,6 +4,7 @@ import {
   VolatileAgentStore,
   type AgentStore,
 } from './store';
+import { structLog } from '../telemetry';
 
 /**
  * 智能体注册表（P0.1 核心）。
@@ -119,12 +120,19 @@ export class AgentRegistry {
   /**
    * 扫掉心跳超时的 agent：lastHeartbeat 距现在超过 `timeoutMs` 的标记为 `down`
    * （保留在注册表，便于运维查看，但路由层应降权/跳过）。
+   *
+   * 例外：`transport === 'local'` 的 agent 与本进程同生命周期——进程活着即 agent 活着，
+   * 其 lastHeartbeat 只在注册/心跳上报时刷新，若不豁免会被周期 sweep 误杀
+   * （如 seed 的 `default` 通用 agent 并无外部心跳来源）。
+   * 超时判定只对远程 agent（mcp / a2a，其存活独立于本进程）有意义。
+   *
    * @returns 被标记为 down 的 agent id 列表。
    */
   async sweepStale(timeoutMs = 30_000): Promise<string[]> {
     const now = Date.now();
     const downed: string[] = [];
     for (const c of this.cache.values()) {
+      if (c.transport === 'local') continue;
       if (now - c.health.lastHeartbeat > timeoutMs && c.health.status !== 'down') {
         c.health = { ...c.health, status: 'down' };
         await this.store.heartbeat(c.id, { status: 'down' }).catch(() => {});
@@ -132,6 +140,43 @@ export class AgentRegistry {
       }
     }
     return downed;
+  }
+
+  /** 周期性 sweep 定时器（unref，不阻止进程退出）。 */
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * 启动周期性 sweep（幂等：已启动则忽略）。此前 sweepStale 仅有单测引用，
+   * 生产从未生效——server bootstrap 调用本方法后，心跳超时的远程 agent 才会被自动标记 down。
+   * @param opts.intervalMs sweep 周期，默认 60s；须为正数否则不启动。
+   * @param opts.timeoutMs  心跳超时阈值，透传给 sweepStale，默认 30s。
+   */
+  startStaleSweep(opts: { intervalMs?: number; timeoutMs?: number } = {}): void {
+    if (this.sweepTimer) return;
+    const intervalMs = opts.intervalMs ?? 60_000;
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+    this.sweepTimer = setInterval(() => {
+      void this.sweepStale(timeoutMs)
+        .then((downed) => {
+          if (downed.length) {
+            structLog('warn', 'agent-registry: 心跳超时的远程 agent 已标记为 down', {
+              downed,
+              timeoutMs,
+            });
+          }
+        })
+        .catch(() => {});
+    }, intervalMs);
+    this.sweepTimer.unref?.();
+  }
+
+  /** 停止周期性 sweep（测试 / 优雅关停用）。 */
+  stopStaleSweep(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
   }
 }
 
