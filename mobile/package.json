@@ -12,7 +12,8 @@
     "splash:copy": "node scripts/splash-copy.mjs",
     "open:ios": "cap open ios",
     "open:android": "cap open android",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node -e \"const fs=require('fs');fs.writeFileSync('dist-test/package.json',JSON.stringify({type:'commonjs'}))\" && node --test \"test/*.test.cjs\""
   },
   "dependencies": {
     "@aparajita/capacitor-biometric-auth": "^10.0.0",

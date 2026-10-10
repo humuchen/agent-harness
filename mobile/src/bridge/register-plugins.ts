@@ -43,6 +43,19 @@ export function getPlugins(): PluginRegistry {
 }
 
 /**
+ * 仅供测试：注入 mock 插件注册表（传 null 复位为真实单例）。
+ * 落实 mobile/README 所称「Plugins follow interface + default impl pattern for
+ * testability」——无此缝时 controller 内部硬取单例，mock 注入无从谈起。
+ */
+export function setPluginsForTest(override: Partial<PluginRegistry> | null): void {
+  if (override === null) {
+    registry = null;
+    return;
+  }
+  registry = { ...getPlugins(), ...override };
+}
+
+/**
  * 注册所有插件监听器（启动时调用一次）。
  * 包括：推送通知权限、Deep Link 拦截。
  */

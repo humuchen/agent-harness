@@ -228,6 +228,8 @@ importers:
         specifier: ^5.4.5
         version: 5.9.3
 
+  mobile/dist-test: {}
+
   plugins/customer-service:
     dependencies:
       '@agent-harness/core':

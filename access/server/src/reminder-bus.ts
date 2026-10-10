@@ -33,6 +33,8 @@ function ownerOf(e: unknown): string {
 
 /**
  * 向所有同 owner 订阅者转发一条提醒事件（备忘提醒，按 owner 隔离）。
+ * P2-1：同时向该 owner 的已注册移动设备投递推送（fire-and-forget，失败不影响
+ * SSE 通道；无设备/未配 FCM 凭据时由 push-dispatch 侧自然 no-op / 日志兜底）。
  */
 export function publishReminder(e: unknown): void {
   const owner = ownerOf(e);
@@ -45,6 +47,18 @@ export function publishReminder(e: unknown): void {
       /* 单个订阅者异常不影响其他 */
     }
   }
+  // 推送投递（异步旁路）：不阻塞 SSE fanout，失败只计数告警。
+  // 延迟 require 避免 push-dispatch → device-store 与本模块潜在的加载环。
+  const ev = e as { text?: unknown; tag?: unknown; type?: unknown };
+  const body = typeof ev.text === 'string' ? ev.text : '您有一条到点提醒';
+  const kind = typeof ev.type === 'string' ? ev.type : 'memo:reminder';
+  void import('./push-dispatch')
+    .then(({ dispatchPushToOwner }) =>
+      dispatchPushToOwner(owner, { title: '备忘提醒', body, kind })
+    )
+    .catch(() => {
+      /* 投递层自身已兜底；此处仅防模块加载异常冒泡 */
+    });
 }
 
 /**
