@@ -86,7 +86,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
+import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -1388,11 +1388,15 @@ const server = createServer(
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
             });
             if (!closed) send({ type: '_wf_done', workflowId, run });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           } catch (e) {
             if (!closed)
               send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           }
           return;
         }
@@ -1512,11 +1516,15 @@ const server = createServer(
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
             });
             if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           } catch (e) {
             if (!closed)
               send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           }
           return;
         }

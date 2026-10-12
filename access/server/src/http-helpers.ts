@@ -181,6 +181,38 @@ export function writeSseFrame(
   }
 }
 
+/**
+ * SSE 收尾原语：统一「**先置 closed → 再清心跳 → 最后 end()**」的收尾顺序铁律。
+ *
+ * 为什么顺序不可变：
+ * - `res.end()` 只是把结束写入内核队列，'close' 事件在**之后**才异步派发——该窗口内
+ *   调用方闭包里的 closed 仍为 false，在途的 send / ping 会继续 write 到一个已结束的
+ *   响应上，触发异步 ERR_STREAM_WRITE_AFTER_END（无监听器时冒泡 uncaughtException →
+ *   crash-guard exit(1) → 平台重启 → 全部在途请求 503）。
+ * - 先置 closed 能让 writeSseFrame 的三重守卫立即生效，挡住窗口期的全部写入。
+ *
+ * 端态判定：`writableEnded` / `destroyed` 已真时跳过 end()——幂等设计，重复收尾无害
+ * （此前「end() 后又 end()」依赖 error 监听器消化 ERR_STREAM_ALREADY_FINISHED，
+ * 现在从源头避免）。收尾本身的同步异常一并吞掉（连接已断属正常竞态）。
+ *
+ * @param markClosed 置位调用方闭包中的 closed 标志（每站点各持一份）
+ * @param clearPing  可选：清理心跳定时器（引用归调用方持有，传闭包负责 clearInterval）
+ */
+export function endSse(
+  res: ServerResponse,
+  markClosed: () => void,
+  clearPing?: () => void
+): void {
+  markClosed();
+  clearPing?.();
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.end();
+  } catch {
+    /* 连接可能已断开：收尾失败无需处理 */
+  }
+}
+
 /** 发送带安全头的JSON错误响应（P1-8：安全响应头全覆盖）。 */
 export function sendJsonError(
   res: ServerResponse,

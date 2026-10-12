@@ -22,6 +22,7 @@ const { EventEmitter } = require('node:events');
 const {
   startSse,
   writeSseFrame,
+  endSse,
   isBenignStreamError
 } = require('../dist/http-helpers.js');
 
@@ -164,28 +165,100 @@ test('源码守护：startSse 不得移除 error 监听器（防止后续重构�
   );
 });
 
-test('源码守护：_done 收尾必须「先置 closed 再 end」（时序铁律）', () => {
+test('endSse：先置 closed → 清心跳 → 再 end；writableEnded 后幂等跳过', () => {
+  // 正常路径：markClosed 与 clearPing 必须先于 end 执行（窗口期写入被 closed 挡住）。
+  const res = makeRes();
+  let closed = false;
+  let pingCleared = false;
+  let order = [];
+  res.end = () => {
+    order.push('end');
+    res.writableEnded = true;
+    return res;
+  };
+  endSse(
+    res,
+    () => {
+      closed = true;
+      order.push('closed');
+    },
+    () => {
+      pingCleared = true;
+      order.push('ping');
+    }
+  );
+  assert.strictEqual(closed, true, 'endSse 必须置位调用方 closed 标志');
+  assert.strictEqual(pingCleared, true, 'endSse 必须清理心跳定时器');
+  assert.strictEqual(res.writableEnded, true, 'endSse 必须调用 res.end()');
+  assert.deepStrictEqual(order, ['closed', 'ping', 'end'], '收尾顺序铁律：先 closed → 清心跳 → 最后 end');
+
+  // 幂等：已结束的响应重复收尾不得二次 end（避免 ERR_STREAM_ALREADY_FINISHED）。
+  const done = makeRes();
+  done.writableEnded = true;
+  let endCalls = 0;
+  done.end = () => {
+    endCalls++;
+    return done;
+  };
+  assert.doesNotThrow(() => endSse(done, () => {}));
+  assert.strictEqual(endCalls, 0, 'writableEnded 后必须跳过 end()');
+
+  // 同步异常吞掉：收尾失败（连接已断）不得外泄。
+  const boom = makeRes();
+  boom.end = () => {
+    throw new Error('socket gone');
+  };
+  assert.doesNotThrow(() => endSse(boom, () => {}));
+});
+
+test('源码守护：_done 收尾必须走 endSse（时序铁律已收敛为原语，禁止回退手写）', () => {
   const raw = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'routes', 'run-routes.ts'),
     'utf8'
   );
-  // 必须剥离行注释再做顺序断言：注释里也出现了 res.end() 字样
-  //（用于解释竞态），直接匹配会锚到注释而非真实语句，造成假失败。
+  // 必须剥离注释再做断言：注释里也出现了 res.end() / endSse 字样，直接匹配会锚到注释。
   const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
   const doneIdx = src.indexOf("=== '_done'");
   assert.ok(doneIdx > 0, '未找到 _done 收尾分支');
   const branch = src.slice(doneIdx, doneIdx + 700);
-  const closedIdx = branch.indexOf('closed = true');
-  const endIdx = branch.indexOf('res.end()');
-  assert.ok(closedIdx > 0 && endIdx > 0, '_done 分支必须同时含 closed=true 与 res.end()');
   assert.ok(
-    closedIdx < endIdx,
-    'closed = true 必须早于 res.end()：否则 end 到 close 派发之间的写入会触发 write after end'
+    /endSse\(\s*res/.test(branch),
+    '_done 收尾必须走 endSse 原语（先置 closed 再 end 的手写实现已在 R3 收敛，不得回退）'
   );
   assert.ok(
     /clearInterval\(pingTimer\)/.test(branch),
     '_done 收尾必须清理 pingTimer：否则心跳会在响应结束后继续写入'
   );
+  assert.ok(
+    !/res\.end\(\)/.test(branch),
+    '_done 分支不得裸调 res.end()：必须经 endSse 的 closed 先置位 + 幂等守卫'
+  );
+});
+
+test('源码守护：endSse 原语本身必须「先置 closed 再 end」且带幂等守卫', () => {
+  const raw = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'http-helpers.ts'),
+    'utf8'
+  );
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const fnIdx = src.indexOf('export function endSse');
+  assert.ok(fnIdx > 0, '未找到 endSse 定义');
+  const body = src.slice(fnIdx, src.indexOf('export function', fnIdx + 10));
+  const markIdx = body.indexOf('markClosed()');
+  const endIdx = body.indexOf('res.end()');
+  const guardIdx = body.indexOf('writableEnded');
+  assert.ok(
+    markIdx >= 0 && endIdx > markIdx,
+    'endSse 必须「先 markClosed() 再 res.end()」：end 到 close 派发的窗口内写入会触发 write after end'
+  );
+  assert.ok(
+    guardIdx >= 0 && guardIdx < endIdx,
+    'endSse 必须按 writableEnded/destroyed 幂等短路（重复收尾不得二次 end）'
+  );
+  const clearIdx = body.indexOf('clearPing?.()');
+  if (clearIdx >= 0) {
+    assert.ok(clearIdx < endIdx, '心跳清理必须早于 res.end()');
+  }
 });
 
 test('源码守护：crash-guard 不得对流级错误 process.exit', () => {

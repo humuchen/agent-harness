@@ -38,7 +38,7 @@ import {
   getRunTraceStore
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
-import { readBody, startSse, writeSseFrame, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
+import { readBody, startSse, writeSseFrame, endSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
 import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
 import {
   appendChatMessage,
@@ -1147,19 +1147,15 @@ export async function handleRun(
       }
     }
     if ((e as { type?: string }).type === '_done') {
-      // 收尾顺序铁律：**先置 closed 再 end()**。
-      // res.end() 只是把结束写入内核队列，'close' 事件在之后才异步派发；
-      // 若不先置 closed，这个窗口内到达的事件（run-queue 在 run:end 之后紧跟的
-      // _done、emitSynthetic 追加的合成帧、ping 心跳）会继续 res.write() 到一个
-      // 已结束的响应上，触发异步 ERR_STREAM_WRITE_AFTER_END。该 error 无监听器
-      // 时冒泡为 uncaughtException → crash-guard process.exit(1) → 平台重启 → 503。
-      closed = true;
-      clearInterval(pingTimer);
-      try {
-        res.end();
-      } catch {
-        /* 连接可能已关闭 */
-      }
+      // 收尾顺序铁律（先置 closed → 清心跳 → 再 end）统一收敛到 endSse，
+      // 依据见 http-helpers.endSse 的窗口期竞态说明。
+      endSse(
+        res,
+        () => {
+          closed = true;
+        },
+        () => clearInterval(pingTimer)
+      );
     }
       }
     }
@@ -1769,7 +1765,9 @@ async function handleWorkflow(
         console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
       });
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
-      if (!closed) res.end();
+      endSse(res, () => {
+        closed = true;
+      });
     })
     .catch((e) => {
       if (!closed)
@@ -1778,7 +1776,9 @@ async function handleWorkflow(
           workflowId: def.id,
           message: e instanceof Error ? e.message : String(e)
         });
-      if (!closed) res.end();
+      endSse(res, () => {
+        closed = true;
+      });
     })
     .finally(() => {
       activeWorkflowAborts.delete(def.id);
