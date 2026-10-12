@@ -102,6 +102,31 @@ export function sendJson(
   res.end(JSON.stringify(obj));
 }
 
+/**
+ * 判定一个错误是否为「流已结束/连接已断开」类的**良性**写入失败。
+ *
+ * 这类错误只说明「往一个已经关闭的响应/套接字写数据没写成」，不携带任何
+ * 进程状态已损坏的语义 —— 属于客户端断连或 SSE 收尾竞态的正常产物。
+ * crash-guard 据此白名单放行，避免单条 SSE 写入失败把整个服务打下线。
+ */
+export function isBenignStreamError(err: unknown): boolean {
+  const e = err as { code?: string; name?: string; message?: string } | null;
+  if (!e) return false;
+  if (
+    e.code === 'ERR_STREAM_WRITE_AFTER_END' ||
+    e.code === 'ERR_STREAM_DESTROYED' ||
+    e.code === 'ERR_STREAM_ALREADY_FINISHED' ||
+    e.code === 'EPIPE' ||
+    e.code === 'ECONNRESET' ||
+    e.code === 'ERR_HTTP_HEADERS_SENT' ||
+    e.name === 'ERR_STREAM_WRITE_AFTER_END'
+  ) {
+    return true;
+  }
+  // 部分运行时只给message 不给 code，用消息前缀兜底。
+  return typeof e.message === 'string' && /write after end|stream (?:is )?destroyed/i.test(e.message);
+}
+
 export function startSse(
   res: ServerResponse,
   req?: IncomingMessage
@@ -117,14 +142,43 @@ export function startSse(
   res.on('close', () => {
     closed = true;
   });
-  return (obj: unknown) => {
-    if (closed) return;
-    try {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    } catch {
-      closed = true;
-    }
-  };
+  // 关键兜底：ServerResponse 在 end() 之后被再次 write() 时**不抛同步异常**，
+  // 而是异步 emit('error')。若无监听器，该 error 会冒泡成 uncaughtException，
+  // 再被 crash-guard 的 process.exit(1) 升级为整进程退出 → 平台重启 → 全部
+  // 在途请求 503（线上 SSE 长连接「跑一半就 503」的根因）。必须显式消费。
+  res.on('error', () => {
+    closed = true;
+  });
+  return (obj: unknown) =>
+    writeSseFrame(res, `data: ${JSON.stringify(obj)}\n\n`, () => closed);
+}
+
+/**
+ * SSE 帧写出（startSse 的 send 与 ping 心跳共用，保证守卫语义一致）。
+ *
+ * 三重守卫，缺一不可：
+ * - `writableEnded`：**end() 已调用但 close 事件尚未异步派发**的窗口内，
+ *   closed 仍为 false，仅靠 closed 会漏写并触发 ERR_STREAM_WRITE_AFTER_END；
+ * - `destroyed`：底层套接字已被销毁；
+ * - try/catch：兜住少数同步抛出的写入异常。
+ *
+ * 注意：try/catch 捕获不到异步 'error' 事件，故其不能替代 res.on('error')。
+ *
+ * @param frame 已格式化好的完整 SSE 帧（含结尾空行）。data 帧与注释心跳帧
+ *              格式不同，故由调用方决定，不在此处拼装。
+ */
+export function writeSseFrame(
+  res: ServerResponse,
+  frame: string,
+  isClosed: () => boolean
+): void {
+  if (isClosed()) return;
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(frame);
+  } catch {
+    /* 连接可能已关闭：静默丢弃该帧 */
+  }
 }
 
 /** 发送带安全头的JSON错误响应（P1-8：安全响应头全覆盖）。 */

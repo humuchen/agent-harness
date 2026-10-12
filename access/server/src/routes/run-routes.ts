@@ -38,7 +38,7 @@ import {
   getRunTraceStore
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
-import { readBody, startSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
+import { readBody, startSse, writeSseFrame, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
 import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
 import {
   appendChatMessage,
@@ -795,12 +795,12 @@ export async function handleRun(
   // 注释帧对 SSE 解析透明（parseSse 只认 data: 帧），仅用于维持链路活跃。
   const pingTimer = setInterval(() => {
     if (closed) return;
-    try {
-      res.write(': ping\n\n');
-    } catch {
-      closed = true;
-    }
+    // 与 startSse 的 send 共用同一套守卫：end() 之后 close 事件尚未派发的
+    // 窗口内 closed 仍为 false，仅靠 closed 会漏写并触发 ERR_STREAM_WRITE_AFTER_END。
+    // ping 是注释帧（`: ping\n\n`），对 SSE 解析透明，仅维持链路活跃。
+    writeSseFrame(res, ': ping\n\n', () => closed);
   }, 15_000);
+  pingTimer.unref?.();
   let unsub: () => void = () => {};
   // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
   let planEndHandled = false;
@@ -1147,6 +1147,14 @@ export async function handleRun(
       }
     }
     if ((e as { type?: string }).type === '_done') {
+      // 收尾顺序铁律：**先置 closed 再 end()**。
+      // res.end() 只是把结束写入内核队列，'close' 事件在之后才异步派发；
+      // 若不先置 closed，这个窗口内到达的事件（run-queue 在 run:end 之后紧跟的
+      // _done、emitSynthetic 追加的合成帧、ping 心跳）会继续 res.write() 到一个
+      // 已结束的响应上，触发异步 ERR_STREAM_WRITE_AFTER_END。该 error 无监听器
+      // 时冒泡为 uncaughtException → crash-guard process.exit(1) → 平台重启 → 503。
+      closed = true;
+      clearInterval(pingTimer);
       try {
         res.end();
       } catch {
