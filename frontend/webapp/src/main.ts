@@ -27,6 +27,9 @@ import './brand';
 import './plan-board';
 // 通用 UI 组件统一注册入口（弹层 / 弹框 / 抽屉 / 通知）：集中注册所有通用 UI 原语。
 import './components';
+// P2-10：Service Worker（离线 app-shell）。注册边界与守卫见 ./sw-register 与
+// public/sw.js 头注释——/api/*（含 SSE）一律直通，SW 仅缓存静态资产。
+import { registerServiceWorker } from './sw-register';
 
 // 鉴权拦截：无 token 时直接挂全屏登录页，登录成功后再渲染控制台（不再依赖 #/login）。
 import { isAuthed, setSession, clearSession, scheduleAutoRefresh } from './api';
@@ -134,6 +137,10 @@ async function bootstrap(): Promise<void> {
 // 在 bootstrap() 之前先挂品牌占位 ah-splash，确保 JS 执行期间 body 始终有内容。
 mountSplash();
 bootstrap();
+
+// SW 注册 fire-and-forget：纯增强能力，任何失败（不支持/被策略跳过/注册异常）
+// 都已在其内部消化为 null，这里再兜一层保证绝不影响启动主流程。
+void registerServiceWorker().catch(() => {});
 
 // 登录页派发 ah-login-success 后进入控制台。
 window.addEventListener(APP_EVENTS.loginSuccess, () => mountApp());
