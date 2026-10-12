@@ -133,7 +133,7 @@ export class AgentClient {
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.request(path, init);
     const text = await res.text();
-    let data: unknown = undefined;
+    let data: unknown;
     try {
       data = text ? JSON.parse(text) : undefined;
     } catch {

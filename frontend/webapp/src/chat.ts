@@ -3152,7 +3152,7 @@ export class AhChat extends LitElement {
         continue;
       }
 
-      let dataUrl = '';
+      let dataUrl: string;
       try {
         dataUrl = await readAsDataUrl(f);
       } catch {
@@ -4359,7 +4359,7 @@ export class AhChat extends LitElement {
     // 复用「流式中」标记：停止按钮亮起、发送按钮隐藏（避免计划执行中并发发起普通 run）。
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running' } };
-    let terminal = false;
+    let terminal: boolean;
     try {
       const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowFromPlan(
@@ -4418,7 +4418,7 @@ export class AhChat extends LitElement {
     this.planWfActiveId = wfId;
     this.streaming = { ...this.streaming, [sid]: true };
     this.planExec = { ...this.planExec, [m.id]: { ...st, status: 'running', thinking: undefined } };
-    let terminal = false;
+    let terminal: boolean;
     try {
       const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowResume(
@@ -4479,7 +4479,7 @@ export class AhChat extends LitElement {
       ...this.planExec,
       [m.id]: { ...st, status: 'running', awaitingTaskIds: undefined, thinking: undefined }
     };
-    let terminal = false;
+    let terminal: boolean;
     try {
       const byok = await this.planWfByok(m);
       const source: AsyncGenerator<unknown> = client.streamWorkflowApprove(
@@ -4619,6 +4619,9 @@ export class AhChat extends LitElement {
     source: AsyncGenerator<unknown>,
     kind: 'first' | 'resume' | 'approve'
   ): Promise<boolean> {
+    // 此处保留初始化值（不可去掉）：catch 分支「首跑传输层异常回退串行」不赋值
+    // 直接 return terminal，初始化的 false 正是兜底语义（区别于 4362/4421/4482
+    // 三个 try/finally 站点——它们的异常直接向上传播，初始化值才可省）。
     let terminal = false;
     // P4.6：终态交付文件拉取状态——记录已回挂摘要的 msgId 与本 run 的 wfId；
     // 只在 _wf_done（服务端归档完成后发出）时拉取，避免与归档竞态。

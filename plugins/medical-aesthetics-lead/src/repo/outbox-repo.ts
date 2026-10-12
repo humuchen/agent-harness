@@ -25,7 +25,7 @@ export interface OutboxRow {
 }
 
 function rowToOutbox(r: Record<string, unknown>): OutboxRow {
-  let payload: unknown = null;
+  let payload: unknown;
   try {
     payload = r.payload ? JSON.parse(String(r.payload)) : null;
   } catch {

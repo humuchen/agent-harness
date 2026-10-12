@@ -46,7 +46,7 @@ export function runRecordFromEvents(jobId: string, events: unknown[]): RunRecord
     if (!t) continue;
     switch (t) {
       case 'run:meta':
-        if (raw.notes) rec.steps = rec.steps; // notes 仅展示
+        // notes 仅展示，不参与指标计算（原此处为自赋值死代码，已清理）。
         break;
       case 'run:start':
         if (typeof raw.input === 'string') rec.prompt = raw.input;

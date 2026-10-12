@@ -182,6 +182,7 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
     const apiErr2 = apiErr; // capture for closure
     const deps2: ReconnectDeps = {
       ...deps,
+      // eslint-disable-next-line require-yield -- 本 mock 故意立即抛 4xx（必须保持 AsyncGenerator 形状，见上注释），无产出
       streamRun: async function* (
         _p: Record<string, unknown>,
         _o: { signal: AbortSignal }

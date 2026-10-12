@@ -67,7 +67,7 @@ function makeFile(name: string, type = 'image/png', bytes = 16): File {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
-const proto = AhChat.prototype as unknown as Record<string, Function>;
+const proto = AhChat.prototype as unknown as Record<string, unknown>;
 
 /** 构造一个只含 handleFiles 链路所需字段的最小上下文。 */
 function makeCtx(seed: unknown[] = []) {

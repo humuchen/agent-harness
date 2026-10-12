@@ -30,7 +30,7 @@ export interface ScheduleJobRow {
 }
 
 function rowToJob(r: Record<string, unknown>): ScheduleJobRow {
-  let payload: unknown = null;
+  let payload: unknown;
   try {
     payload = r.payload ? JSON.parse(String(r.payload)) : null;
   } catch {

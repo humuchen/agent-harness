@@ -186,7 +186,7 @@ export class FeishuAdapter implements ImAdapter {
     // 过滤机器人自身消息（sender_type 非 user 时忽略）。
     if (ev.sender?.sender_type && ev.sender.sender_type !== 'user') return null;
 
-    let text = '';
+    let text: string;
     try {
       text = String((JSON.parse(msg.content ?? '{}') as { text?: string }).text ?? '');
     } catch {

@@ -24,27 +24,16 @@ const BASELINE_FILE = path.join(__dirname, 'eslint-any-baseline.json');
 const LEGACY_BASELINE = path.join(ROOT, '.eslint-any-baseline.json');
 const RULE = '@typescript-eslint/no-explicit-any';
 
-function countAny() {
-  const { spawnSync } = require('node:child_process');
-  // 直接用仓库本地的 eslint 二进制（避免依赖 PATH / npx 联网解析）。
-  const eslintBin = path.join(ROOT, 'node_modules', '.bin', 'eslint');
-  const r = spawnSync(eslintBin, ['.', '--format', 'json'], {
-    encoding: 'utf8',
-    cwd: ROOT,
-    maxBuffer: 128 * 1024 * 1024,
-    shell: process.platform === 'win32',
-  });
-  // eslint 存在 error 级 lint 问题时会非零退出，但 stdout 仍有完整 JSON —— 以 JSON 可解析为准。
-  const out = (r.stdout ?? '').trim();
-  if (!out.startsWith('[') && !out.startsWith('{')) {
-    throw new Error(`eslint 运行失败：exit=${r.status} ${r.stderr?.slice(0, 500) ?? ''}`);
-  }
-  const parsed = JSON.parse(out);
-  // eslint 9 flat config 的 json formatter 返回 { results, ... }；旧版直接是数组。
-  const files = Array.isArray(parsed) ? parsed : parsed.results ?? [];
+async function countAny() {
+  // 用 ESLint Node API 进程内扫描：不依赖子进程 spawn（Windows 下 .bin/eslint.CMD
+  // 依赖 cmd.exe shim、部分环境 spawnSync 返回 exit=null），结果与 CLI
+  // `eslint . --format json` 完全一致（同一引擎、同一 flat config）。
+  const { ESLint } = require('eslint');
+  const eslint = new ESLint({ cwd: ROOT });
+  const results = await eslint.lintFiles(['.']);
   let total = 0;
   const byFile = {};
-  for (const f of files) {
+  for (const f of results) {
     const n = (f.messages || []).filter((m) => m.ruleId === RULE).length;
     if (n > 0) {
       total += n;
@@ -54,9 +43,9 @@ function countAny() {
   return { total, byFile };
 }
 
-function main() {
+async function main() {
   const update = process.argv.includes('--update');
-  const current = countAny();
+  const current = await countAny();
 
   if (update) {
     fs.writeFileSync(BASELINE_FILE, JSON.stringify(current, null, 2) + '\n');
@@ -98,4 +87,7 @@ function main() {
   console.log(`✅ no-explicit-any 棘轮通过：${current.total} 处（与基线持平）`);
 }
 
-main();
+main().catch((e) => {
+  console.error(`❌ eslint 运行失败：${e?.message ?? e}`);
+  process.exit(1);
+});

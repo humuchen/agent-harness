@@ -374,13 +374,8 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     });
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    let resp: Response;
-    try {
-      resp = await fetchWithBreaker();
-    } catch (breakerErr) {
-      // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略
-      throw breakerErr;
-    }
+    // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略（不参与重试）。
+    const resp = await fetchWithBreaker();
 
     if (!resp.ok) {
       const text = await resp.text();

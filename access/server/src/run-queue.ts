@@ -558,7 +558,7 @@ export class RunQueue {
       this.launchClaimed(deferredJob, lock ?? undefined);
       return;
     }
-    let d: JobDescriptor | null = null;
+    let d: JobDescriptor | null;
     try {
       d = await this.backend.claim();
     } catch (e) {

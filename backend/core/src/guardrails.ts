@@ -460,7 +460,7 @@ export async function resolveHostIsPrivate(host: string): Promise<boolean> {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return isPrivateIp(h.replace(/^\[|\]$/g, ''));
   const cached = privateResolveCache.get(h);
   if (cached && Date.now() - cached.at < PRIVATE_RESOLVE_TTL_MS) return cached.result;
-  let result = false;
+  let result: boolean;
   try {
     const dns = await import('node:dns/promises');
     const addrs = await Promise.race([
@@ -517,7 +517,7 @@ export async function checkEgressAsync(url: string, net?: NetworkPolicy): Promis
   if (!net || net.mode === 'open') return null;
   // 私网豁免（缺省 true）→ 字面量校验即终点，零额外开销零回归
   const privateExempt = net.allowPrivateNetwork ?? true;
-  let host = '';
+  let host: string;
   try {
     host = new URL(url).host;
   } catch {

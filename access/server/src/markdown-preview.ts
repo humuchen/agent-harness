@@ -56,6 +56,7 @@ function stash(ctx: InlineCtx, html: string): string {
 }
 
 function restoreStash(text: string, ctx: InlineCtx): string {
+  // eslint-disable-next-line no-control-regex -- \x00 是占位协议哨兵：匹配控制字符正是本反解的目的
   return text.replace(/\u0000(\d+)\u0000/g, (_, i: string) => {
     const idx = Number(i);
     return Number.isInteger(idx) && idx >= 0 && idx < ctx.stash.length ? ctx.stash[idx] ?? '' : '';

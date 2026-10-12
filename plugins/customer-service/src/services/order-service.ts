@@ -69,7 +69,7 @@ export async function queryOrder(input: { orderNo: string }): Promise<OrderQuery
   if (cfg.order.token) headers.authorization = `Bearer ${cfg.order.token}`;
 
   const attempts = Math.max(cfg.order.retries + 1, 1);
-  let lastMsg = '';
+  let lastMsg: string;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const res = await fetch(url, {

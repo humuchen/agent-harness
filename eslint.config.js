@@ -22,7 +22,10 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/examples/**',
       '**/*.cjs',
-      '**/build/**'
+      '**/build/**',
+      // Capacitor 构建产物（vite build 的输出被复制进 android/ios 资产目录）：
+      // 未入 git、不可读、体积巨大，且会把 webapp 的 lint 债务复制一份进来。
+      'mobile/**/assets/**'
     ]
   },
   js.configs.recommended,

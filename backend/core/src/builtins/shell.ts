@@ -182,7 +182,7 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
 
       // 4) 确认（human-in-the-loop）
       if (requireConfirmation) {
-        let approved = false;
+        let approved: boolean;
         try {
           approved = await evalConfirm(confirm, { command: base, args: argList, cwd: cwdAbs, root });
         } catch {

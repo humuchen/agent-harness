@@ -678,6 +678,7 @@ export const PLAN_REPORT_TASK_MAX = 200_000;
 /** 文件名安全化：去文件系统/URL 非法字符，限长，空则回落固定名。 */
 function sanitizeArtifactName(s: string, fallback: string): string {
   const safe = s
+    // eslint-disable-next-line no-control-regex -- 剥离控制字符正是本净化的目的（导出文件名安全化）
     .replace(/[\\/:*?"<>|\u0000-\u001f#%&{}$!'@+=`]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
