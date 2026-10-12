@@ -97,6 +97,8 @@ kubectl -n agent-harness port-forward svc/agent-harness 4173:4173       # 浏览
 - 纯 `docker compose --profile redis` **不会**连上 Redis，必须用 `docker-compose.redis.yml` overlay。
 - `UI_AUTH_TOKEN` 不设在 overlay 模式下会拒绝启动（保护行为）。
 
+**生产化决策项**（RAG 切远程 embedding / qdrant、多副本数据库、成本护栏与安全默认值速查）见 [./production-checklist.md](./production-checklist.md)——评审 R7 的落地形式：部署期配置决策一页清单。
+
 ---
 
 ## 文件地图
