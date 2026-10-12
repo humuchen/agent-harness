@@ -539,7 +539,7 @@ export class DagEngine {
   private async resolveTeam(ref?: string): Promise<Team | null> {
     if (!ref) return null;
     if (!this.teamManager) return null;
-    return this.teamManager.get(ref) ?? null;
+    return (await this.teamManager.get(ref)) ?? null;
   }
 
   /**

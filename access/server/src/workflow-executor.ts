@@ -571,7 +571,7 @@ export function createWorkflowExecutor(opts: WorkflowExecutorOptions = {}): Step
     // P1-④：teamRef 优先 —— 通过 TeamManager 按协作模式派发
     const teamManager: TeamManager | null = step.teamRef ? getTeamManager() : null;
     if (teamManager && step.teamRef) {
-      const team = teamManager.get(step.teamRef);
+      const team = await teamManager.get(step.teamRef);
       if (!team) {
         throw new Error(`workflow step "${step.id}": unknown teamRef ${step.teamRef}`);
       }

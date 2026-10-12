@@ -60,7 +60,11 @@ import {
   enableTelemetryAutosave,
   initOtlpExporter,
   getTeamManager,
-  type Team
+  initTeamManager,
+  createTeamStoreFromEnv,
+  type Team,
+  type TeamStore,
+  type TeamStoreRedis
 } from '@agent-harness/core';
 
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
@@ -1981,6 +1985,44 @@ function buildAgentStore(): AgentStore {
   return store;
 }
 
+/**
+ * 评审 R5：TeamStore 后端解析（与 buildAgentStore 同款 ioredis 注入范式）。
+ * - `TEAM_STORE=redis` → 独立 ioredis 连接（与 agent store / 队列实例可并存）；
+ * - 缺省跟随 `AGENT_STORE`（createTeamStoreFromEnv 内判定，多副本零配置即正确）；
+ * - 请求 redis 但 ioredis 不可用 → 回退内存并告警（teams 不共享不阻断启动）。
+ */
+function buildTeamStore(): TeamStore {
+  const kind = (process.env.TEAM_STORE || '').toLowerCase();
+  const agentStore = (process.env.AGENT_STORE || '').toLowerCase();
+  const wantRedis = kind === 'redis' || (!kind && agentStore === 'redis');
+  if (!wantRedis) {
+    return createTeamStoreFromEnv(process.env, null);
+  }
+  const url = process.env.AGENT_STORE_REDIS_URL || process.env.REDIS_URL;
+  try {
+    // ioredis 为可选依赖：动态 require，未安装则回退内存（保持「一切降级可用」）。
+    const RedisMod = require('ioredis');
+    const RedisCtor =
+      (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+    const redis = new RedisCtor(url || 'redis://localhost:6379', {
+      maxRetriesPerRequest: null,
+      lazyConnect: false
+    }) as unknown as TeamStoreRedis;
+    (redis as unknown as { on?(ev: string, cb: (e: Error) => void): void }).on?.(
+      'error',
+      (e: Error) => console.error('[team-store] redis error:', e.message)
+    );
+    console.log(`[team-store] using Redis backend${url ? ` (${url})` : ''}`);
+    return createTeamStoreFromEnv(process.env, redis);
+  } catch (e) {
+    console.error(
+      '[team-store] ioredis 不可用，回退内存态后端（多副本下 teams 不共享）：',
+      e instanceof Error ? e.message : e
+    );
+    return createTeamStoreFromEnv(process.env, null);
+  }
+}
+
 async function bootstrap(): Promise<void> {
   // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
   // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
@@ -2021,6 +2063,10 @@ async function bootstrap(): Promise<void> {
   }
   const store = buildAgentStore();
   await initAgentRegistry(store);
+  // 评审 R5：TeamStore 接线（先于 runner.ts 的懒初始化——initTeamManager 幂等先到先得）。
+  // TEAM_STORE 缺省跟随 AGENT_STORE（多副本部署零配置即正确）；TEAM_STORE=redis 但
+  // ioredis 不可用时回退内存并告警（teams 不共享不阻断启动）。
+  await initTeamManager(getAgentRegistry(), buildTeamStore());
   // Agent 心跳超时自动下线：此前 sweepStale 仅测试引用、生产从未生效。此处启动周期 sweep
   // （unref 定时器），心跳超时的远程 agent（mcp/a2a）被标记 down 供路由降权；local agent 豁免。
   // AGENT_SWEEP_INTERVAL_MS（默认 60000；off/0 关闭）、AGENT_STALE_TIMEOUT_MS（默认 30000）。

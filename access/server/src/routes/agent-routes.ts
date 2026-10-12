@@ -212,7 +212,7 @@ export async function handleAgentRoutes(
       sendJson(res, { error: 'TeamManager not initialized' }, req);
       return true;
     }
-    sendJson(res, { teams: tm.list() }, req);
+    sendJson(res, { teams: await tm.list() }, req);
     return true;
   }
   if (req.method === 'POST' && path === '/api/teams') {
@@ -249,7 +249,7 @@ export async function handleAgentRoutes(
       sendJson(res, { error: 'TeamManager not initialized' }, req);
       return true;
     }
-    tm.deregister(teamId);
+    await tm.deregister(teamId);
     sendJson(res, { ok: true }, req);
     return true;
   }
@@ -262,7 +262,7 @@ export async function handleAgentRoutes(
       sendJson(res, { error: 'TeamManager not initialized' }, req);
       return true;
     }
-    const team = tm.get(teamId);
+    const team = await tm.get(teamId);
     if (!team) {
       sendJson(res, { error: `Team not found: ${teamId}` }, req);
       return true;
