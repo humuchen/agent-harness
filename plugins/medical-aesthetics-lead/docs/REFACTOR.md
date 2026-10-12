@@ -23,33 +23,52 @@
 plugins/medical-aesthetics-lead/
 ├── src/
 │   ├── index.ts                 # 插件主入口：注入 ctx、注册工具/路由/看板、事件桥接、worker 生命周期
-│   ├── config.ts                # 配置唯一入口（env 解析 + fail-closed 判定）
-│   ├── manifest.ts              # 能力清单（→ AgentCard → 路由）
+│   ├── config.ts                # 配置唯一入口（env 解析 + fail-closed 判定），含 MA_RAG_API_STYLE 等
+│   ├── manifest.ts              # 能力清单（→ AgentCard → 路由）+ assembly 硬允许集
 │   ├── prompts.ts               # 系统提示词（含医疗广告合规红线）
 │   ├── runtime.ts               # 运行时单例：currentRunKey + pluginCtx（供路由经 A2A 触发 agent）
+│   ├── analytics/               # 运营分析（漏斗/渠道/等级/同步分布聚合）
+│   │   ├── analytics-service.ts
+│   │   └── types.ts
+│   ├── workflows/               # 工作流（分析报表 / 对话归集）
+│   │   ├── analytics.ts
+│   │   └── conversation.ts
 │   ├── infra/
 │   │   ├── errors.ts            # MaError 错误分类（NOT_CONFIGURED/UPSTREAM_*/DB_ERROR…）
 │   │   ├── http.ts              # 真实 REST 客户端（超时/退避/幂等/脱敏）
-│   │   ├── db.ts                # node:sqlite 接入（WAL、幂等 DDL、事务、dbHealth）
+│   │   ├── db.ts                # 统一 db-adapter 接入（sqlite / turso 双后端、WAL、幂等 DDL、事务、dbHealth）
+│   │   ├── embed.ts              # 嵌入服务客户端（语义 hybrid 检索）
+│   │   ├── lead-binding.ts      # 入站消息 → 线索归并
+│   │   ├── seed.ts              # 启动期演示数据种子（MA_SEED_ON_STARTUP，仅开发/验证）
 │   │   └── signature.ts         # webhook HMAC 验签 + 管理令牌校验
 │   ├── repo/                    # 真实数据访问层（参数化 SQL，零内置数据）
 │   │   ├── types.ts             # 领域模型（LeadRecord / ProjectRecord / SlotRecord …）
-│   │   ├── lead-repo.ts         # 线索 UPSERT / 消息归集 / SQL 漏斗聚合 / 认领
+│   │   ├── lead-repo.ts         # 线索 UPSERT / 消息归集 / SQL 漏斗聚合 / 认领 / 阶段流水
 │   │   ├── transcript-repo.ts   # 运行期对话记录（与主线索物理隔离）
-│   │   ├── kb-repo.ts           # 知识库检索（LIKE 初筛 + 加权打分，库空即空）
+│   │   ├── kb-repo.ts           # 知识库检索（LIKE 初筛 + 加权打分 + 意图映射，库空即空）
+│   │   ├── content-repo.ts      # 内容生产先审后发（D8/D9）
 │   │   ├── schedule-repo.ts     # 院区/号源/预约单（事务锁号防超卖）
+│   │   ├── schedule-job-repo.ts # 定时调度任务（回捞/欢迎/生日/复购）
 │   │   ├── outbox-repo.ts       # CRM/HIS 同步发件箱（至少一次投递）
 │   │   └── inbound-repo.ts      # 渠道入站消息落库（UNIQUE 去重防重放）
 │   ├── services/                # 业务编排层（工具 → repo + 外部客户端）
 │   │   ├── lead-service.ts      # qualify/capture/handoff + CRM 同步入队
 │   │   ├── schedule-service.ts  # bookConsultation（真实可用性校验 + 事务锁号 + HIS 同步）
-│   │   ├── kb-service.ts        # 知识库检索出口（db / 外部 KB 服务）
+│   │   ├── scheduler-service.ts # 定时调度（回捞/欢迎/生日/复购规划 + 消费）
+│   │   ├── kb-service.ts        # 知识库检索出口（db / RAG / 外部 KB 服务）
+│   │   ├── content-service.ts   # 内容起草/送审/发布编排
+│   │   ├── assist-service.ts    # 咨询师辅助简报（C6/C7）
+│   │   ├── ab-service.ts        # A/B 分流实验（E 组）
+│   │   ├── analytics-service.ts # 运营分析聚合
+│   │   ├── outreach-client.ts   # 渠道触达网关客户端（对客主动消息）
+│   │   ├── outreach-templates.ts# 触达文案模板
 │   │   ├── crm-client.ts        # CRM 真实 REST 客户端
 │   │   ├── his-client.ts        # HIS 预约真实 REST 客户端
 │   │   └── outbox-worker.ts     # 后台投递循环（start/stop + 指数退避）
-│   ├── tools/                   # 5 个 agent 工具（薄封装，调用 services，errorResult 回灌）
+│   ├── tools/                   # 9 个 agent 工具（薄封装，调用 services，errorResult 回灌）
 │   │   ├── qualify.ts  capture.ts  book.ts  handoff.ts  kb.ts
-│   ├── server/routes.ts         # HTTP 路由（统计/明细/认领/导入/webhook/health）
+│   │   ├── content.ts  assist.ts  ab.ts  analytics.ts
+│   ├── server/routes.ts         # HTTP 路由（统计/明细/认领/导入/webhook/callback/health/content/assist/ab/scheduler）
 │   └── web/dashboard.ts         # 客资看板（读真实 SQL 聚合 + 同步健康）
 ├── package.json  tsconfig.json  smoke.cjs   # 构建脚本 + 端到端冒烟
 ```
@@ -107,7 +126,7 @@ harness.run → 工具分发（plugins 工具表前缀 medical-aesthetics-lead__
         │
         ▼
       assembleAgent(tenantId, domain=medical-aesthetics-lead)
-        → tools.mergeFrom(getPluginToolRegistry())   # 注入 5 个插件工具
+        → tools.mergeFrom(getPluginToolRegistry())   # 注入 9 个插件工具（qualify/capture/book/handoff/kb/content/assist/ab/analytics）
         → harness.run → 工具调用（见入口 A）
 ```
 
@@ -149,9 +168,26 @@ export const leadManifest: PluginManifest = {
   transport: 'local',
   entry: 'dist/index.js',
   capabilities: [
-    { id: 'chat' }, { id: 'lead' }, { id: 'consult' }, { id: 'book' }, { id: 'handoff' },
+    { id: 'chat' }, { id: 'lead' }, { id: 'consult' }, { id: 'book' }, { id: 'handoff' }, { id: 'analytics' },
   ] as AgentCapability[],
-  assembly: { systemPrompt: buildSystemPrompt() },
+  assembly: {
+    systemPrompt: buildSystemPrompt(),
+    // 硬允许集：列出的命名空间工具无条件进动态工具选择的 allowTools，保证系统提示词指挥的
+    // project_kb_search / lead_* / consultation_book / content_draft / lead_briefing / ab_report 与
+    // 模型实际拿到的函数定义严格一致；delegate_task 由 server 层注册，原样透传。
+    tools: [
+      'medical-aesthetics-lead__project_kb_search',
+      'medical-aesthetics-lead__lead_qualify',
+      'medical-aesthetics-lead__lead_capture',
+      'medical-aesthetics-lead__consultation_book',
+      'medical-aesthetics-lead__lead_handoff',
+      'medical-aesthetics-lead__content_draft',
+      'medical-aesthetics-lead__lead_briefing',
+      'medical-aesthetics-lead__ab_report',
+      'delegate_task',
+    ],
+    skills: [],
+  },
 };
 ```
 
@@ -182,9 +218,10 @@ export const leadManifest: PluginManifest = {
   "engines": { "node": "22.x" },
   "dependencies": {
     "@agent-harness/core": "workspace:*",
-    "@agent-harness/medical-ad-guard": "workspace:*"
+    "@agent-harness/medical-ad-guard": "workspace:*",
+    "@libsql/client": "^0.14.0"
   },
-  "devDependencies": { "@types/node": "^20.19.43", "typescript": "^5.4.5" }
+  "devDependencies": { "@types/node": "^20.19.43", "typescript": "^5.9.3" }
 }
 ```
 
@@ -196,11 +233,11 @@ export const leadManifest: PluginManifest = {
 | --- | --- | --- |
 | 运行时（workspace） | `@agent-harness/core` | 插件契约（ToolRegistry / PluginContext / ServerExtension / A2A / guardrails）。经 `paths` 指向 `backend/core/dist/index.d.ts`。 |
 | 运行时（workspace） | `@agent-harness/medical-ad-guard` | 医疗广告合规护栏（可插拔、幂等）。 |
-| 运行时（Node 内置，**零 npm 依赖**） | `node:sqlite` | Node 22+ 内置关系库；`require('node:sqlite').DatabaseSync` + 类型断言接入（@types/node@20 无声明）。 |
+| 运行时（npm） | `@libsql/client` | Turso 云端 SQLite 后端（`DB_BACKEND=turso` 时启用）；`DB_BACKEND=sqlite`（默认）走 Node 22+ 内置 `node:sqlite`，零 npm 依赖。由 core 的 `getDbAdapter` 统一收口，自动回退。 |
 | 运行时（Node 内置） | `node:fs` / `node:crypto` / `node:path` / `fetch` | 文件目录、HMAC 验签、路径、真实 HTTP 客户端。 |
 | 构建 | `typescript` / `@types/node` | 仅构建期。 |
 
-> **本次重构未引入任何新的 npm 运行时依赖**——所有"真实后端"通过环境变量配置的可达 REST 地址 + 内置 `node:sqlite` 实现。
+> 默认 `DB_BACKEND=sqlite` 时**零 npm 运行时依赖**（Node 内置 `node:sqlite`）；仅当选择 `DB_BACKEND=turso` 云端后端时才引入 `@libsql/client`。所有"真实后端"经环境变量配置的可达 REST 地址接入。
 
 ---
 

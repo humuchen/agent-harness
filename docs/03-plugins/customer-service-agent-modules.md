@@ -4,7 +4,7 @@
 > 本文在架构图与总体方案之上，把 7 个模块拆到「子组件 / 关键接口（设计契约）/ 数据契约 / 框架接驳点 / 实施阶段」粒度，作为后续编码的蓝图。
 > 标注 **[设计契约]** 的 TypeScript 片段是设计层面的类型约定，不是最终实现代码。
 
-> **落地状态**：本设计已**实现**为 `plugins/customer-service`（`@agent-harness/customer-service`，19 个源文件）。
+> **落地状态**：本设计已**实现**为 `plugins/customer-service`（`@agent-harness/customer-service`，22 个源文件）。
 > 实际落地形式与设计要点一致：单张 `AgentCard`（`domain: 'customer-service'`，`transport: 'local'`）+ 4 个业务工具
 > `ticket` / `kb` / `order` / `handoff`；持久化走 `backend/core` 的 `getDbAdapter()`（`DB_BACKEND=sqlite` 或 `turso`，
 > 表含会话 / 工单 / 知识库，首连自动建表）；经 `access/server` 的 `plugin-bootstrap.ts` 自动加载，业务语义 100% 留在

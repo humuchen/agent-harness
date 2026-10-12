@@ -10,7 +10,7 @@
 
 **错误信息**: `unauthorized: missing or invalid token`
 
-**位置**: `access/server/src/server.ts:221`
+**位置**: `access/server/src/server.ts:757`
 
 **原因**:
 
@@ -34,7 +34,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `forbidden`
 
-**位置**: `access/server/src/server.ts:180`
+**位置**: `access/server/src/server.ts:618`
 
 **原因**:
 
@@ -53,7 +53,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `rate limit exceeded`
 
-**位置**: `access/server/src/server.ts:174`
+**位置**: `access/server/src/server.ts:657`
 
 **原因**:
 
@@ -73,7 +73,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3100/api/v1/run
 
 **错误信息**: `agent not found`
 
-**位置**: `access/server/src/server.ts:427`
+**位置**: `access/server/src/routes/agent-routes.ts:96`
 
 **原因**:
 
@@ -96,7 +96,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `workflow not found`
 
-**位置**: `access/server/src/server.ts:441`
+**位置**: `access/server/src/server.ts:1167`（路由层多处 404 检查点，core 另于 `backend/core/src/workflow/engine.ts:412` 抛出 `workflow not found`）
 
 **原因**:
 
@@ -113,7 +113,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `job not found`
 
-**位置**: `access/server/src/server.ts:524, 542`
+**位置**: `access/server/src/routes/eval-recipe-routes.ts:44`（另 :73）
 
 **原因**:
 
@@ -131,7 +131,7 @@ curl http://localhost:3100/api/agents
 
 **错误信息**: `_done{error: true}` (SSE 事件)
 
-**位置**: `access/server/src/run-queue.ts:491, 511, 668, 681`
+**位置**: `access/server/src/run-queue.ts:1277`（另 :1319 / :1440 / :1611 / :1624 等 `_done{error:true}` 发射点）
 
 **原因**:
 
@@ -158,7 +158,7 @@ echo $OPEN_API_KEY
 
 **错误信息**: `Unknown tool: {name}`
 
-**位置**: `backend/core/src/tools.ts:58`
+**位置**: `backend/core/src/tools.ts:59`
 
 **原因**:
 
@@ -177,7 +177,7 @@ echo $OPEN_API_KEY
 
 **错误信息**: `plugin not found: {id}`
 
-**位置**: `backend/core/src/plugin/loader.ts:265`
+**位置**: `backend/core/src/plugin/loader.ts:426`
 
 **原因**:
 
@@ -200,7 +200,7 @@ ls plugins/
 
 **错误信息**: `plugin already installed: {id}`
 
-**位置**: `backend/core/src/plugin/loader.ts:156, 171`
+**位置**: `backend/core/src/plugin/loader.ts:306, 328`
 
 **原因**:
 
@@ -217,7 +217,7 @@ ls plugins/
 
 **错误信息**: `plugin "{id}" signature verification failed`
 
-**位置**: `backend/core/src/plugin/loader.ts:146`
+**位置**: `backend/core/src/plugin/loader.ts:289`
 
 **原因**:
 
@@ -235,7 +235,7 @@ ls plugins/
 
 **错误信息**: `plugin "{id}" depends on missing plugin "{dep}"`
 
-**位置**: `backend/core/src/plugin/loader.ts:258`
+**位置**: `backend/core/src/plugin/loader.ts:419`
 
 **原因**:
 
@@ -255,7 +255,7 @@ cat plugins/*/manifest.json | grep dependencies
 
 **错误信息**: `upgrade manifest id mismatch: {manifest.id} != {id}`
 
-**位置**: `backend/core/src/plugin/loader.ts:239`
+**位置**: `backend/core/src/plugin/loader.ts:400`
 
 **原因**:
 
@@ -272,9 +272,9 @@ cat plugins/*/manifest.json | grep dependencies
 
 ### WF_001 - 工作流执行器未注入
 
-**错误信息**: `DagEngine requires an injected 'executor'`
+**错误信息**: `DagEngine requires an injected \`executor\` (core does not construct harnesses).`
 
-**位置**: `backend/core/src/workflow/engine.ts:70`
+**位置**: `backend/core/src/workflow/engine.ts:147`
 
 **原因**:
 
@@ -295,7 +295,7 @@ const engine = new DagEngine({
 
 **错误信息**: `duplicate step id: {id}`
 
-**位置**: `backend/core/src/workflow/engine.ts:89`
+**位置**: `backend/core/src/workflow/engine.ts:454`
 
 **原因**:
 
@@ -311,7 +311,7 @@ const engine = new DagEngine({
 
 **错误信息**: `unknown agentRef: {ref}`
 
-**位置**: `backend/core/src/workflow/engine.ts:99`
+**位置**: `backend/core/src/workflow/engine.ts:534`
 
 **原因**:
 
@@ -326,9 +326,9 @@ const engine = new DagEngine({
 
 ### WF_004 - 依赖未知步骤
 
-**错误信息**: `step "{id}" depends on unknown step "{d}"`
+**错误信息**: `step "${id}" references unknown step "${d}" (dependsOn/inputMapping/condition)`
 
-**位置**: `backend/core/src/workflow/engine.ts:111`
+**位置**: `backend/core/src/workflow/engine.ts:1327`
 
 **原因**:
 
@@ -345,7 +345,7 @@ const engine = new DagEngine({
 
 **错误信息**: `workflow contains a dependency cycle`
 
-**位置**: `backend/core/src/workflow/engine.ts:124`
+**位置**: `backend/core/src/workflow/engine.ts:581`
 
 **原因**:
 
@@ -372,7 +372,7 @@ const engine = new DagEngine({
 
 **错误信息**: `workflow aborted`
 
-**位置**: `backend/core/src/workflow/engine.ts:165`
+**位置**: `backend/core/src/workflow/engine.ts:665`（另 :1187 标记 run 终态）
 
 **原因**:
 
@@ -392,7 +392,7 @@ const engine = new DagEngine({
 
 **错误信息**: `LLM API error {status} (model={model}): {text}`
 
-**位置**: `backend/core/src/llm/shared.ts:184, 263`
+**位置**: `backend/core/src/llm/shared.ts:390`（另 :507）
 
 **原因**:
 
@@ -422,7 +422,7 @@ curl https://api.openai.com/v1/models \
 
 **错误信息**: `LLM streaming response has no readable body (model={model})`
 
-**位置**: `backend/core/src/llm/shared.ts:266`
+**位置**: `backend/core/src/llm/shared.ts:510`
 
 **原因**:
 
@@ -445,8 +445,8 @@ curl https://api.openai.com/v1/models \
 
 **位置**:
 
-- `backend/core/src/llm/openai.ts:33`
-- `backend/core/src/llm/openrouter.ts:52`
+- `backend/core/src/llm/openai.ts:34`
+- `backend/core/src/llm/openrouter.ts:61`
 
 **解决**:
 
@@ -535,7 +535,7 @@ skills.register({ id: 'my-skill', name: 'my-skill' });
 
 **错误信息**: `session not found`
 
-**位置**: `access/server/src/server.ts:595`
+**位置**: `access/server/src/routes/chat-data-routes.ts:142`（另 `routes/collab-routes.ts:318`）
 
 **原因**:
 

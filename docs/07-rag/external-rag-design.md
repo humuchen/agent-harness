@@ -264,7 +264,7 @@ sequenceDiagram
 4. **融合策略（可选）**：
    - _Gate 模式_：先检索，若 `total==0` 或 `max_score < 阈值`，提示 LLM「知识库无相关权威来源」，避免幻觉。
    - _Confidence 模式_：把 `rerank_score` 作为回答置信度信号，低分时建议转人工/澄清。
-5. **Guardrails 复用**：检索内容经 `guardrails.ts` 的 `INJECTION_PATTERNS` 检测，拦截"忽略以上指令"类提示注入；按 `tenant_id` 做 PII 脱敏。
+5. **Guardrails 复用**：检索内容经 `guardrails.ts` 的注入检测（`phraseSet(injectionSensitivity)` 短语集 + `registerInjectionScorer` 语义打分，由 `GUARDRAIL_INJECTION_SCAN` 开关启用）检测"忽略以上指令"类提示注入；按 `tenant_id` 做 PII 脱敏。
 6. **可追溯**：最终回答的 `[1]` 与 `chunk_id` 映射可在 UI 的「调用链 / 深度思考」Tab 展示（复用现有 trace 能力）。
 
 ---
@@ -288,7 +288,7 @@ sequenceDiagram
 | RAG 能力        | 复用点                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------- |
 | 工具注册 / 调用 | `placeholder.ts` `parseMcpServersEnv` + `connectMcpServers`；`ToolRegistry` 自动加 `rag__` 前缀 |
-| 内容安全        | `guardrails.ts` `INJECTION_PATTERNS` + `registerInputRule`（覆盖 input/output）                 |
+| 内容安全        | `guardrails.ts` 注入检测（`phraseSet` 短语集 + `registerInputRule`/`registerInjectionScorer`，覆盖 input/output）                 |
 | 租户隔离        | `tenant.ts` 提供 `tenant_id`；RAG token 由租户侧 secret 派生                                    |
 | 检索缓存        | `memory-store.ts`（file/sqlite/volatile）可缓存 `query→results` 缩短重复延迟                    |
 | 结果展示        | 现有 trace / 「调用链」Tab 展示 `chunk_id` 引用；typewriter 渲染深度思考                        |

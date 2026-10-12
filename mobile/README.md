@@ -20,6 +20,7 @@ mobile/
 │       ├── push-notification.ts   # FCM/APNs 注册
 │       ├── deep-link.ts           # piagent:// 路由解析
 │       ├── file-upload.ts         # 相机/相册 → artifacts 上传
+│       ├── local-notification.ts  # 本地通知（到店提醒 / 待办）
 │       ├── artifacts-client.ts    # POST /api/artifacts 客户端
 │       ├── biometric-auth.ts      # Face ID / 指纹快捷登录
 │       └── offline-cache.ts       # TTL 缓存 + 网络状态监听

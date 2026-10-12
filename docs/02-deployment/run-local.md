@@ -46,7 +46,7 @@ pnpm install --prefer-offline
 pnpm -r build
 ```
 
-按拓扑序构建 `core → server/webapp/examples → plugins`，全部产出到各自 `dist/`。
+按拓扑序构建 `core → client → server → webapp/cli → examples → plugins`，全部产出到各自 `dist/`。
 校验产物存在：
 
 ```bash

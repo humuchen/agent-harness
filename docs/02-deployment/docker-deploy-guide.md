@@ -1,6 +1,6 @@
 # Agent Harness · 本地 Docker 部署到落地使用完整流程
 
-> 适用对象：在本机（已安装 Docker）上把 `agent-harness-ts` 跑起来并实际使用「运行时面板」。
+> 适用对象：在本机（已安装 Docker）上把 `agent-harness` 跑起来并实际使用「运行时面板」。
 > 本机已验证环境：Docker 29.6.2 / Docker Compose v5.3.1，项目根目录 `access/server` + `frontend/webapp` 均就绪。
 
 ---
@@ -8,7 +8,7 @@
 ## 0. 前置条件
 
 - 已安装并启动 Docker（Docker Desktop 或 daemon）。
-- 本机已 `git clone` 项目到本地路径，如 `C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness-ts`。
+- 本机已 `git clone` 项目到本地路径，如 `C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness`。
 - （可选）想要**真实 LLM** 时准备 `OPEN_API_KEY`；不准备也能跑——内置 **Mock LLM 离线模式** 可直接演示运行时面板。
 
 ---
@@ -32,7 +32,7 @@
 ## 2. 快速部署（内存模式，推荐先跑通）
 
 ```bash
-cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness-ts
+cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness
 
 # 内存模式（无 Redis，单副本）——本地演示首选
 docker compose up --build -d
@@ -171,8 +171,8 @@ docker compose down -v
 - **TLS / 反代**：在容器前加 Nginx / Caddy 做 HTTPS 与域名转发，不要把 4173 直接暴露公网。
 - **持久化**：
   - 运行队列 → 启用 `redis` profile（数据卷 `redis-data`）。
-  - 长期记忆 → 配置 `memory.persistencePath` 挂载宿主机卷。
-- **严格可复现构建（可选）**：Dockerfile 当前 `corepack prepare pnpm@9 --activate`，但根 `package.json` 的 `packageManager` 是 `pnpm@11.9.0`、锁文件由 11 生成，故 `--frozen-lockfile` 可能版本不一致失败，靠 `|| pnpm install --no-frozen-lockfile` 自愈（依赖会重排）。要严格可复现，把 Dockerfile 的 `pnpm@9` 改为 `pnpm@11`。
+  - 长期记忆 → 配置 `MEMORY_DIR` 挂载宿主机卷。
+- **严格可复现构建（可选）**：Dockerfile 已固定 `pnpm@11.9.0`（`npm install -g pnpm@11.9.0`），与根 `package.json` 的 `packageManager` 完全一致，`--frozen-lockfile` 可稳定通过、依赖不会重排，无需再切换版本。
 - **资源限制**：compose 可加 `deploy.resources` / 裸 `docker run --memory=512m` 防止失控。
 - 镜像已默认非 root 运行，无需额外处理。
 
@@ -193,7 +193,7 @@ A：换映射端口，如 `docker run -p 8080:4173 ...`，访问 `http://localho
 A：能。`OPEN_API_KEY` 留空即 Mock LLM 离线模式，运行时面板交互完整可演示。
 
 **Q5：数据重启后没了？**
-A：内存模式作业/记忆重启即丢。挂 Redis（redis profile）或配置 `memory.persistencePath` 持久化。
+A：内存模式作业/记忆重启即丢。挂 Redis（redis profile）或配置 `MEMORY_DIR` 持久化。
 
 ---
 

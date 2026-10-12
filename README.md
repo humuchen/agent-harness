@@ -218,7 +218,7 @@ pnpm --filter @agent-harness/examples run verify:context7   # 连真实端点、
 
 > 把「环境治理」与「Agent harness」串起来的关键：
 > `harness-env-platform` 负责环境定义与流水线，
-> `agent-harness-ts` 通过 Harness API 在对话中按需供给/回收环境，
+> `agent-harness` 通过 Harness API 在对话中按需供给/回收环境，
 > 两者仅通过流水线 identifier 与环境变量耦合，互不入侵。
 
 ## 内置基础工具（Built-in tools）

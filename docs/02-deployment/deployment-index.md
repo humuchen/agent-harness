@@ -22,7 +22,7 @@
 ### A. 快速试用（内存模式，零配置）
 
 ```bash
-cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness-ts
+cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness
 docker compose up --build -d
 # 打开 http://localhost:4173
 ```
@@ -34,14 +34,14 @@ docker compose up --build -d
 > 本项目已预置 `.env`（含自动生成的强随机 `UI_AUTH_TOKEN`），可直接用；如需自签：`openssl rand -base64 32`。
 
 ```bash
-cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness-ts
+cd C:\Users\Administrator\Documents\WorkBuddy\App\agent-harness
 
 # 停旧容器 + 用 redis overlay 重建（redis profile 会把 REDIS_URL 注入 ui，并强制 UI_AUTH_TOKEN）
 docker compose down
 docker compose -f docker-compose.yml -f docker-compose.redis.yml --profile redis up --build -d
 
 # 验证 Redis 已接管队列（应出现 using Redis backend）
-docker logs agent-harness-ts-ui-1 | grep queue-backend
+docker logs agent-harness-ui-1 | grep queue-backend
 
 # 健康端点
 curl http://localhost:4173/api/state
@@ -86,7 +86,7 @@ kubectl -n agent-harness port-forward svc/agent-harness 4173:4173       # 浏览
 | 操作            | Compose                                | K8s                                                             |
 | --------------- | -------------------------------------- | --------------------------------------------------------------- |
 | 看状态          | `docker ps`                            | `kubectl -n agent-harness get pods`                             |
-| 看日志          | `docker logs -f agent-harness-ts-ui-1` | `kubectl -n agent-harness logs -f deploy/agent-harness`         |
+| 看日志          | `docker logs -f agent-harness-ui-1` | `kubectl -n agent-harness logs -f deploy/agent-harness`         |
 | 重启            | `docker compose restart`               | `kubectl -n agent-harness rollout restart deploy/agent-harness` |
 | 停止            | `docker compose down`                  | `kubectl delete -k deploy/k8s`                                  |
 | 验证 Redis 接管 | `docker logs … \| grep queue-backend`  | `kubectl … logs \| grep queue-backend`                          |

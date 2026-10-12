@@ -18,7 +18,7 @@
 | [execution.md](01-architecture/execution.md)                                   | `AgentHarness.run()` 执行流、闭环收口机制、超时/取消、运行队列解耦                                                                                                                                          |
 | [modules.md](01-architecture/modules.md)                                       | core 内部模块分组与依赖边（含 P0/P1/P2 基座子系统、DB 适配器、计划模式原语）、server 业务层模块、包级依赖                                                                                                   |
 | [plan-mode.md](01-architecture/plan-mode.md)                                   | **计划模式**：澄清 → 两段式 propose → 计划桥 DAG 执行 → 交付归档的全链路（代码坐标 / 生命周期 / 关键机制）                                                                                                  |
-| [server-modularization-plan.md](01-architecture/server-modularization-plan.md) | server.ts 路由模块化拆分方案（已完成多批次，`routes/` 下 18 个路由模块）                                                                                                                                    |
+| [server-modularization-plan.md](01-architecture/server-modularization-plan.md) | server.ts 路由模块化拆分方案（已完成多批次，`routes/` 下 17 个路由模块 + `respond.ts` 共享响应助手）                                                                                                                                    |
 | [user-provider-key-design.md](01-architecture/user-provider-key-design.md)     | BYOK 用户级凭据设计（**已落地**：AES-GCM 落库、per-run 注入）                                                                                                                                               |
 | 配套图                                                                         | [architecture.svg](01-architecture/diagrams/architecture.svg) · [execution-flow.svg](01-architecture/diagrams/execution-flow.svg) · [module-dependency.svg](01-architecture/diagrams/module-dependency.svg) |
 
@@ -112,7 +112,7 @@ agent-harness/                # pnpm monorepo
 │  └─ cli/                   # 运维/CI 命令行（ah）
 ├─ mobile/                   # Capacitor 移动端壳（iOS/Android，包裹 webapp 构建产物）
 ├─ access/                   # 接入层
-│  └─ server/                # HTTP+SSE 服务（src/routes/ 下 18 个路由模块 + 业务层模块）
+│  └─ server/                # HTTP+SSE 服务（src/routes/ 下 17 个路由模块 + respond.ts 共享响应助手 + 业务层模块）
 ├─ backend/                  # 后端工具层
 │  ├─ core/                  # 核心框架库（含多智能体基座、DB 适配器、计划模式原语）
 │  ├─ client/                # 零依赖 HTTP+SSE 客户端 SDK（Web/Node/Edge）
