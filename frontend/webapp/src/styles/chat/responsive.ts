@@ -228,13 +228,6 @@ export const responsive = `
     .composer-footer-right .model-picker-root {
       max-width: 40px;
     }
-    .composer-footer-right .model-picker-root.trigger {
-      max-width: 40px;
-      height: 34px;
-      line-height: 34px;
-      justify-content: center;
-      overflow: hidden;
-    }
     .hint {
       font-size: 10.5px;
       margin-top: 6px;

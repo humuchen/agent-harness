@@ -245,8 +245,12 @@
   let clearingCache = $state(false);
   let clearingData = $state(false);
 
-  /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。 */
-  let mountedGroups = $state(new Set<SettingsGroup>([DEFAULT_GROUP]));
+  /** 已挂载过的分组：切换回来时保留组件状态（如密钥面板已加载的 Key），无需重新拉取。
+   * 用普通对象 + `$state` 代替 Set：Svelte 5 对对象属性的读/写是响应式的，
+   * 而 Set 的 `.add()` / `.has()` 不会被追踪。 */
+  let mountedGroups = $state<Record<SettingsGroup, boolean>>({
+    [DEFAULT_GROUP]: true
+  } as Record<SettingsGroup, boolean>);
 
   /** 根元素：用于向祖先派发 bubbles+composed 事件（原 this.dispatchEvent）。 */
   let root: HTMLElement | undefined = $state();
@@ -283,11 +287,10 @@
         active = group as SettingsGroup;
       }
     }
-    mountedGroups.add(active);
-    // 数据加载必须在 untrack 内：checkServer/refreshStorage 会写 checking / llmLive
-    // 等 $state，若被本 effect 追踪将形成「加载完成 → 触发重跑 → 再次加载」的
-    // 无限循环（线上 /api/v1/state 持续请求的根因）。effect 只应依赖 groupSeq / active。
+    // 父级传入/用户切换后，把当前分组标记为已挂载（惰性渲染）。
+    // 该写操作在 untrack 内，避免 effect 自我追踪导致无限循环。
     untrack(() => {
+      mountedGroups[active] = true;
       if (active === 'system') {
         void checkServer();
         // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
@@ -317,6 +320,7 @@
   function selectGroup(id: SettingsGroup): void {
     if (active === id) return;
     active = id;
+    mountedGroups[id] = true;
   }
 
   /** 真实拉取 /api/v1/state，读取服务端 LLM 连通状态（live / mock）。 */
@@ -519,12 +523,12 @@
     </div>
 
     <div class="pane">
-      {#if mountedGroups.has('keys')}
+      {#if mountedGroups['keys']}
         <section data-group="keys" hidden={active !== 'keys'}>
           <ProviderKeySettings />
         </section>
       {/if}
-      {#if mountedGroups.has('system')}
+      {#if mountedGroups['system']}
         <section data-group="system" hidden={active !== 'system'}>
           <div class="sec-title">服务与网络</div>
           <div class="card">
@@ -654,7 +658,7 @@
           </div>
         </section>
       {/if}
-      {#if mountedGroups.has('appearance')}
+      {#if mountedGroups['appearance']}
         <section data-group="appearance" hidden={active !== 'appearance'}>
           <div class="sec-title">主题</div>
           <div class="card">
@@ -740,7 +744,7 @@
           </div>
         </section>
       {/if}
-      {#if mountedGroups.has('about')}
+      {#if mountedGroups['about']}
         <section data-group="about" hidden={active !== 'about'}>
           <div class="card">
             <div class="row">

@@ -997,7 +997,10 @@
     background: transparent;
     color: var(--ah-text-muted, #9e9e9e);
   }
-  /* 面板容器 */
+  /* 面板容器
+     z-index 必须与 agent-picker / mode-picker / composer-plus / user-menu
+     等浮层面板保持一致（60）：聊天消息区存在 position:fixed + z-index:60
+     的 .toast 等覆盖层，model-picker 若停留在 30 会被这些消息覆盖层遮挡。 */
   .panel {
     position: absolute;
     bottom: calc(100% + 8px);
@@ -1011,7 +1014,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    z-index: 30;
+    z-index: 60;
   }
   .panel-head {
     padding: 10px 12px;
