@@ -1,4 +1,3 @@
-
 // 切片自 styles.ts 原文件第 12-484 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
 export const base = `
   /* 组件根盒：修复样式模块化拆分时丢失 :host 选择器前缀导致整条规则失效的问题。
@@ -10,7 +9,6 @@ export const base = `
      面板组件共用，:host 规则若写在共享层会泄漏到每个面板 host。 */
   .ah-c {
     display: block;
-    background: var(--ah-canvas);
     color: var(--ah-text);
     font-family: var(--ah-font-sans);
     font-size: 14px;
