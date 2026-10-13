@@ -1,3 +1,4 @@
+<script lang="ts">
 /**
  * 总览 Dashboard（ah-dashboard）。Svelte 5 迁移版
  * ------------------------------------------------------------------
@@ -11,7 +12,6 @@
  * 经全仓检索无任何调用方（死代码），且 .svelte 内无法保留 lit 模板函数，
  * 故未迁入；如需沙箱芯片请在 Svelte 侧以 snippet 重写。
  */
-<script lang="ts">
   import { onMount } from 'svelte';
   import { client } from './api';
   import type { ApprovalTicket, ServerState } from '@agent-harness/client';

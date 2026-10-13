@@ -7,7 +7,7 @@ export const responsive = `
      没有固定高度链，桌面内部滚动模型失效 → 显示不全且无法滚动。
      谓词与 app.ts chatShellCss / sharedStyles 的移动端判定保持一致。 */
   @media (max-width: 900px), (orientation: landscape) and (max-height: 760px) {
-    .ah-c {
+    .chat-root {
       /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
              .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
              .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。

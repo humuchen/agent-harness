@@ -1,3 +1,4 @@
+<script lang="ts">
 /**
  * provider-key-settings：用户自带 LLM 凭据（BYOK）设置面板 —— Svelte 迁移版。
  *
@@ -12,7 +13,6 @@
  * 该组件由 settings-center 的「模型与密钥」分组承载；model-picker 底部「配置 API Key」
  * 按钮经 ah-goto（detail 为 tab:'settings'、group:'keys'）直达该面板。
  */
-<script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { authedFetch } from '../api';
   import { notify } from './ah-notification';

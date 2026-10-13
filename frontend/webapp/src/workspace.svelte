@@ -1,3 +1,4 @@
+<script lang="ts">
 /**
  * 工作台（Workspace）路由：用户层「六宫格」入口。Svelte 5 迁移版
  * ------------------------------------------------------------------
@@ -17,7 +18,6 @@
  * 面板契约（MIGRATION-GUIDE §5）：常驻挂载，visible prop 控制显隐，
  * 公开 refresh() 由 App 壳 bind:this 调用。
  */
-<script lang="ts">
   import { onMount } from 'svelte';
   import { client } from './api';
   import { notifyError } from './utils/errors';

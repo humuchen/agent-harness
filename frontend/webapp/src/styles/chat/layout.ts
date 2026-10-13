@@ -1,6 +1,6 @@
 
 export const layout = `
-  .ah-c {
+  .chat-root {
     display: flex;
     flex-direction: row;
     height: 100%;

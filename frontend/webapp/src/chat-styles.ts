@@ -1,8 +1,8 @@
 /**
  * 聊天页专属样式（从单一 chatStyles 大数组拆出）。
  *
- * 原 chatStyles 是一段约 4150 行的巨型 css 数组，难以维护。现按功能域拆分为
- * src/styles/chat/*.ts 下的多个聚焦模块（每个模块仅导出 lit 的 css 结果），
+ * 原 chatStyles 是一段巨型 css 数组，难以维护。现按功能域拆分为
+ * src/styles/chat/*.ts 下的多个聚焦模块（每个模块仅导出组件需要的 css 结果），
  * 本文件仅做「组合」：按原数组顺序拼回 chatStyles，顺序不变 ⇒ CSS 层叠零变化。
  *
  * 约定：
@@ -45,5 +45,5 @@ export const chatStyles = [
   /* 会话列表滑动操作（ah-swipe-item 宿主布局）：必须在 responsive 之后 ——
      responsive ≤900px 的「触屏常驻 .acts」规则同选择器且靠后时生效，
      本模块按设备判定隐藏 .acts，需排在最末层叠覆盖。 */
-  sessionSwipe,
+  sessionSwipe
 ];

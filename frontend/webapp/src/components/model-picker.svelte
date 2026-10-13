@@ -1,3 +1,4 @@
+<script lang="ts">
 /**
  * model-picker：模型选择器（输入框底部工具栏）—— Svelte 迁移版
  *
@@ -17,7 +18,6 @@
  * `::-webkit-scrollbar` 通写改用 :global(.model-picker-root …) 保住
  * 「整个子树隐藏滚动条」的原语义。
  */
-<script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
   import { authedFetch } from '../api';
   import { notify } from './ah-notification';

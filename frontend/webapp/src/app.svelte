@@ -1,3 +1,4 @@
+<script lang="ts">
 /**
  * 顶层应用壳（ah-app → App.svelte，Svelte 5 迁移版）
  * ----------------------------------------------------------------
@@ -10,7 +11,6 @@
  *    （bubbles+composed）→ 无 shadow 边界后直达 window，本壳统一监听 window；
  *  - 本壳派发 ah:close-overlays / ah:bar-start / ah:bar-stop 于 window。
  */
-<script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { tick } from 'svelte';
   import { client, authedFetch, fetchMe } from './api';
@@ -1028,7 +1028,7 @@
 
 <style>
   /* 面板显隐：根元素 hidden 属性（原 :host([hidden]) 语义，全局属性选择器）。 */
-  .content [hidden] {
+  .content :global([hidden]) {
     display: none !important;
   }
 
