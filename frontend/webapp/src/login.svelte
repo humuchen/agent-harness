@@ -58,72 +58,6 @@
   // P3-1: 品牌位配置（当前无写入方，恒为默认值；保留以维持模板契约）
   let brand: BrandConfig = BRAND_DEFAULT;
 
-  /* ------------------------------ 智能体网络 mesh 数据 ------------------------------ */
-
-  interface NetNode {
-    x: number;
-    y: number;
-    r: number;
-    delay: number;
-  }
-  interface NetEdge {
-    a: number;
-    b: number;
-    dur: number;
-    delay: number;
-  }
-
-  // viewBox 560 × 640，居中 hub + 6 个外围节点，构成星形 + 周界互联网络
-  const NODES: NetNode[] = [
-    { x: 280, y: 300, r: 9, delay: 0 }, // 0 hub
-    { x: 130, y: 150, r: 5, delay: 0.6 }, // 1
-    { x: 430, y: 130, r: 6, delay: 1.1 }, // 2
-    { x: 95, y: 430, r: 5, delay: 0.3 }, // 3
-    { x: 460, y: 440, r: 6, delay: 1.4 }, // 4
-    { x: 210, y: 560, r: 5, delay: 0.9 }, // 5
-    { x: 370, y: 580, r: 5, delay: 1.8 } // 6
-  ];
-  const EDGES: NetEdge[] = [
-    { a: 0, b: 1, dur: 4.2, delay: 0.0 },
-    { a: 0, b: 2, dur: 3.8, delay: 0.7 },
-    { a: 0, b: 3, dur: 4.6, delay: 0.3 },
-    { a: 0, b: 4, dur: 4.0, delay: 1.0 },
-    { a: 0, b: 5, dur: 5.0, delay: 0.5 },
-    { a: 0, b: 6, dur: 4.4, delay: 1.3 },
-    { a: 1, b: 2, dur: 5.4, delay: 0.2 },
-    { a: 3, b: 5, dur: 5.8, delay: 0.9 },
-    { a: 4, b: 6, dur: 5.2, delay: 0.4 },
-    { a: 1, b: 3, dur: 6.0, delay: 1.2 },
-    { a: 2, b: 4, dur: 5.6, delay: 0.6 },
-    { a: 5, b: 6, dur: 6.2, delay: 1.5 }
-  ];
-
-  function edgePath(e: NetEdge): string {
-    const a = NODES[e.a];
-    const b = NODES[e.b];
-    if (!a || !b) return '';
-    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
-  }
-
-  /**
-   * 渲染整张 mesh：连线(流动) + 沿线游走的脉冲 + 节点(呼吸光晕 + 实心点)。
-   * 迁移后以完整 `<svg>…</svg>` 字符串表示，模板经 {@html} 注入（innerHTML
-   * 对完整 <svg> 元素按 SVG 外来内容解析，无命名空间问题）。
-   */
-  function meshSvg(className = 'mesh'): string {
-    const edges = EDGES.map(
-      (e, k) =>
-        `<path id="edge-${k}" class="edge" d="${edgePath(e)}" style="animation-delay:${e.delay}s"></path>` +
-        `<circle class="packet" r="3"><animateMotion dur="${e.dur}s" begin="${e.delay}s" repeatCount="indefinite"><mpath href="#edge-${k}"></mpath></animateMotion></circle>`
-    ).join('');
-    const nodes = NODES.map(
-      (n) =>
-        `<circle class="node-glow" cx="${n.x}" cy="${n.y}" r="${n.r * 2.4}" style="animation-delay:${n.delay}s"></circle>` +
-        `<circle class="node" cx="${n.x}" cy="${n.y}" r="${n.r}"></circle>`
-    ).join('');
-    return `<svg class="${className}" viewBox="0 0 560 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">${edges}${nodes}</svg>`;
-  }
-
   /** 眼睛图标：open=true 睁眼，false 闭眼（带斜杠）。 */
   function eyeIcon(open: boolean): string {
     return open
@@ -627,8 +561,6 @@
         ></span>
       {/each}
     </div>
-    <div class="depth-mesh">{@html meshSvg('depth-mesh')}</div>
-    {@html meshSvg()}
     <div class="scan-track">
       <i class="scan-beam"></i><i class="scan-line"></i>
     </div>
@@ -651,9 +583,6 @@
       {#each RULER as v}<span>{v}<i></i></span>{/each}
     </div>
     <div class="hud-tel">
-      <div>
-        MESH <b>{NODES.length}</b> NODES · <b>{EDGES.length}</b> LINKS
-      </div>
       <div>UPLINK <b>STABLE</b></div>
       <div>RTT <b>{latencyMs}ms</b></div>
       <div>UP {fmtUptime()}<i class="cursor"></i></div>
@@ -973,44 +902,6 @@
   }
 
   /* ---------------------- 背景氛围层 ---------------------- */
-  /* mesh / edge / packet / node-glow / node 均位于 {@html} 注入的 svg 内，
-     Svelte scoping class 不会落到注入内容上，须 :global 命中。 */
-  :global(svg.mesh) {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 1;
-    opacity: 0.95;
-    pointer-events: none;
-  }
-  :global(.edge) {
-    fill: none;
-    stroke: var(--ah-accent);
-    stroke-width: 1.2;
-    opacity: 0.5;
-    stroke-dasharray: 5 9;
-    animation: ah-login-flow 4s linear infinite;
-  }
-  .ah-c[data-theme='light'] :global(.edge) {
-    opacity: 0.78;
-  }
-  :global(.packet) {
-    fill: var(--ah-accent-strong);
-    filter: drop-shadow(0 0 4px var(--ah-accent));
-  }
-  :global(.node-glow) {
-    fill: var(--ah-accent);
-    transform-box: fill-box;
-    transform-origin: center;
-    animation: ah-login-node 3.2s ease-in-out infinite;
-  }
-  :global(.node) {
-    fill: var(--ah-text);
-    stroke: var(--ah-accent);
-    stroke-width: 1.5;
-  }
-
   .particles {
     position: absolute;
     inset: 0;
@@ -1028,33 +919,6 @@
     animation: ah-login-float linear infinite;
   }
 
-  /* 景深 mesh：比主 mesh 更大、更淡、更慢，营造空间纵深感。
-     原 .depth-mesh 同时命中外层 div 与注入的 svg（同名 class），此处保留两段。 */
-  .depth-mesh,
-  .depth-mesh :global(svg) {
-    position: absolute;
-    inset: -12%;
-    width: 124%;
-    height: 124%;
-    z-index: 0;
-    opacity: 0.18;
-    filter: blur(1.5px);
-    pointer-events: none;
-    animation: ah-login-drift 24s ease-in-out infinite alternate;
-  }
-  .ah-c[data-theme='light'] .depth-mesh,
-  .ah-c[data-theme='light'] .depth-mesh :global(svg) {
-    opacity: 0.28;
-  }
-  .depth-mesh :global(.edge) {
-    opacity: 0.35;
-    stroke-width: 0.9;
-  }
-  .depth-mesh :global(.node),
-  .depth-mesh :global(.node-glow),
-  .depth-mesh :global(.packet) {
-    opacity: 0.45;
-  }
 
   /* 漂浮光球：大尺度 accent 柔光，增加背景层次。 */
   .orbs {
@@ -1785,22 +1649,6 @@
 
   /* ---------------------- 关键帧（:global 保持原名，供注入 svg 引用） ---------------------- */
   :global {
-    @keyframes ah-login-flow {
-      to {
-        stroke-dashoffset: -140;
-      }
-    }
-    @keyframes ah-login-node {
-      0%,
-      100% {
-        opacity: 0.32;
-        transform: scale(0.82);
-      }
-      50% {
-        opacity: 0.65;
-        transform: scale(1.28);
-      }
-    }
     @keyframes ah-login-float {
       0% {
         transform: translateY(0);
@@ -1913,12 +1761,9 @@
     .scan-line,
     .orb,
     .particle,
-    .depth-mesh,
     .chip-dot,
     .hud-tel .cursor,
-    .btn-primary::after,
-    :global(.edge),
-    :global(.node-glow) {
+    .btn-primary::after {
       animation: none !important;
     }
     .scan-track,
@@ -1931,8 +1776,6 @@
   @media (max-width: 900px) {
     .ah-c {
       place-items: start center;
-      /* 横向裁掉：装饰层 .depth-mesh（inset:-12% / width:124%）
-         在移动端 .login-wrap 放开后本体会向右溢出约 12%。 */
       overflow-x: hidden;
       /* 移动端允许整页滚动，避免内容超高被裁切 */
       overflow-y: auto;
@@ -1947,9 +1790,7 @@
       max-height: none;
       min-height: 100dvh;
       /* border-box：padding 计入宽度，避免 100% 宽 + 内边距撑出横向溢出；
-         overflow-x:hidden 裁掉装饰层右溢，overflow-y:auto 让内容超高时纵向滚动，
-         同时裁掉 .depth-mesh 上下 -12% 的幻影溢出（它原本会把 scrollHeight 撑大、
-         凭空触发竖向滚动条）。 */
+         overflow-x:hidden 裁掉装饰层右溢，overflow-y:auto 让内容超高时纵向滚动。 */
       box-sizing: border-box;
       overflow-x: hidden;
       overflow-y: auto;
@@ -1987,11 +1828,6 @@
     .hud,
     .hud-ruler,
     .hud-tel {
-      display: none;
-    }
-    /* depth-mesh 是 inset:-12% / width:124% 的装饰景深层，无 overflow 裁切，
-       会在移动端向下/右溢出、凭空撑出滚动条；移动端隐藏，保留主 mesh + 粒子即可。 */
-    .depth-mesh {
       display: none;
     }
     /* 极矮屏（如 640 高的小手机）：隐藏冗余品牌文案，只留卡片。 */
