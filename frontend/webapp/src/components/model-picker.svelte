@@ -282,7 +282,11 @@
 
   function toggle(openNext: boolean) {
     open = openNext;
-    if (!openNext) {
+    if (openNext) {
+      // 同步锚定一次（$effect 里还会挂 resize/scroll 跟随监听），
+      // 避免面板首帧落在默认坐标上产生闪跳。
+      positionPanel();
+    } else {
       // 关闭时重置瞬态状态，下次打开回到干净视图。
       query = '';
       adding = false;
@@ -556,8 +560,60 @@
   const showFree = true;
   const showOpenRouter = true;
 
-  // 外点监听句柄（onMount 装载，onDestroy 卸载）。
+  /** 面板外点监听句柄（onMount 装载，onDestroy 卸载）。 */
   let onDocPointerDown: ((e: PointerEvent) => void) | null = null;
+
+  /* ── 面板定位（position:fixed + JS 锚定触发按钮）─────────────────
+   * 为什么弃用 position:absolute（bottom:calc(100%+8px) 锚 .wrap）：
+   * 真机反馈「点击后面板不显示」——DevTools 证实面板盒子已渲染（302×259、
+   * 位置正确）但像素级零绘制（面板区域底色 == 画布色，背景/边框/文字全无）。
+   * absolute 面板的绘制被困在 composer 子树的层叠/裁剪上下文里，真机环境的
+   * 某层上下文（应用壳 scoped 规则与全局注入样式的层叠交互）会吞掉它的绘制。
+   * 改用与灯箱 / 全屏编辑器 / 抽屉同款的 position:fixed 方案（Lit 原版
+   * model-picker 遮罩即 fixed）——fixed 面板脱离 composer 子树绘制树、
+   * 以视口为包含块直接参与根层叠，任何祖先的 overflow/层叠上下文都无法
+   * 再困住它；坐标由 JS 按触发按钮实时计算（含 resize/scroll 跟随与
+   * 视口钳制），视觉效果与原 absolute 方案一致（右对齐、向上弹出 8px）。
+   * 依赖约束：composer 祖先链禁止 transform/filter（会劫持 fixed 包含块），
+   * 该约束在 composer.ts / layout.ts 已有多处注释强制执行。 */
+  let triggerEl: HTMLButtonElement | undefined = $state();
+  let panelPos = $state({
+    right: '12px',
+    bottom: '60px',
+    maxHeight: 'min(70vh, 460px)'
+  });
+
+  /** 按触发按钮当前视口位置重算面板坐标：右对齐触发按钮、整体位于其上方
+   *  8px，并钳制在视口内（左右 ≥8px、距顶 ≥16px）。 */
+  function positionPanel() {
+    const trig = triggerEl;
+    if (!trig) return;
+    const r = trig.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    panelPos = {
+      right: `${Math.max(8, Math.round(vw - r.right))}px`,
+      bottom: `${Math.max(8, Math.round(vh - r.top + 8))}px`,
+      maxHeight: `${Math.max(
+        160,
+        Math.round(Math.min(460, vh * 0.7, r.top - 16))
+      )}px`
+    };
+  }
+
+  // 展开期间跟随视口变化：窗口 resize 与任何内部滚动（capture 捕获消息区
+  // 的 overflow-y 滚动）都重新锚定，保证面板始终贴着触发按钮。
+  $effect(() => {
+    if (!open) return;
+    positionPanel();
+    const onRepos = () => positionPanel();
+    window.addEventListener('resize', onRepos);
+    document.addEventListener('scroll', onRepos, true);
+    return () => {
+      window.removeEventListener('resize', onRepos);
+      document.removeEventListener('scroll', onRepos, true);
+    };
+  });
 
   onMount(() => {
     void refreshModels({ silent: true });
@@ -598,6 +654,7 @@
   <div class="wrap">
     <button
       class="trigger"
+      bind:this={triggerEl}
       title="选择模型"
       aria-haspopup="listbox"
       aria-expanded={open ? 'true' : 'false'}
@@ -647,7 +704,13 @@
     </button>
 
     {#if open}
-      <div class="panel" role="listbox">
+      <div
+        class="panel"
+        role="listbox"
+        style:right={panelPos.right}
+        style:bottom={panelPos.bottom}
+        style:max-height={panelPos.maxHeight}
+      >
         <div class="panel-head">
           <div class="search">
             <svg
@@ -997,14 +1060,15 @@
     background: transparent;
     color: var(--ah-text-muted, #9e9e9e);
   }
-  /* 面板容器
-     z-index 必须与 agent-picker / mode-picker / composer-plus / user-menu
-     等浮层面板保持一致（60）：聊天消息区存在 position:fixed + z-index:60
-     的 .toast 等覆盖层，model-picker 若停留在 30 会被这些消息覆盖层遮挡。 */
+  /* 面板容器 —— position:fixed + JS 锚定（见脚本区「面板定位」注释）。
+     right/bottom/max-height 由 positionPanel() 以内联样式实时写入，
+     此处仅保留兜底缺省值；z-index 与 agent-picker / mode-picker /
+     composer-plus / user-menu 等浮层面板同层（60 < 拖拽遮罩 90 < 抽屉 1060），
+     并高于聊天消息区 position:fixed 的 .toast 等覆盖层。 */
   .panel {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
+    position: fixed;
+    bottom: 60px;
+    right: 12px;
     width: min(92vw, 300px);
     max-height: min(70vh, 460px);
     background: var(--ah-surface-2, #1c1c1c);
