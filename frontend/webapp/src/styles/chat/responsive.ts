@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const responsive = css`
+export const responsive = `
   /* ===================== 响应式适配 ===================== */
   /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。
      第二个条件覆盖「横屏且视口矮」的大屏手机（如 iPhone 16 Pro Max 横屏
@@ -8,7 +7,7 @@ export const responsive = css`
      没有固定高度链，桌面内部滚动模型失效 → 显示不全且无法滚动。
      谓词与 app.ts chatShellCss / sharedStyles 的移动端判定保持一致。 */
   @media (max-width: 900px), (orientation: landscape) and (max-height: 760px) {
-    :host {
+    .ah-c {
       /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
              .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
              .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。
@@ -217,7 +216,7 @@ export const responsive = css`
     }
     /* 「+」入口 + 结果胶囊：手机端给足点击热区，并限宽避免顶到右侧模型选择器
          （胶囊的省略号截断由组件内部媒体查询处理）。 */
-    .composer-footer-left ah-composer-plus {
+    .composer-footer-left .composer-plus-root {
       max-width: calc(100vw - 170px);
     }
     .mode-select {
@@ -226,10 +225,10 @@ export const responsive = css`
     }
     /* 手机：模型选择器只显示厂商 logo（隐藏文字与箭头，组件内部媒体查询处理），
          宿主只需放宽宽度预算并保持点击热区。 */
-    .composer-footer-right ah-model-picker {
+    .composer-footer-right .model-picker-root {
       max-width: 40px;
     }
-    .composer-footer-right ah-model-picker::part(trigger) {
+    .composer-footer-right .model-picker-root.trigger {
       max-width: 40px;
       height: 34px;
       line-height: 34px;

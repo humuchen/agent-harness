@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const insights = css`
+export const insights = `
     /* ----------------------- 关键信息 (insights) ----------------------- */
     .insights {
       margin-bottom: 10px;

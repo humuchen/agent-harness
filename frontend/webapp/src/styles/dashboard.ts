@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 611-932 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const dashboard = css`
+export const dashboard = `
   /* ------------------- Dashboard / Observability 专用 ------------------- */
   .two {
     display: grid;

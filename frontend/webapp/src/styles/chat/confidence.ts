@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const confidence = css`
+export const confidence = `
     /* ----------------------- 链路信心 (confidence) ----------------------- */
     /* 卡片外壳：与 insights / trace 同款（边框 + 圆角 + 表面色），承载环形量表与语义进度条。 */
     .confidence-wrap {

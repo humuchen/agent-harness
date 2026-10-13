@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 485-610 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const mcp = css`
+export const mcp = `
   /* MCP 已接入错误：红色内联提示，让「添加后失败」可见原因 */
   .mcp-err {
     margin-top: 4px;

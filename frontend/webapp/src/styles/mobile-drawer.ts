@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 933-970 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const mobileDrawer = css`
+export const mobileDrawer = `
   /* 移动端抽屉相关：桌面端默认隐藏，窄屏下由媒体查询启用 */
   .menu-btn {
     display: none;

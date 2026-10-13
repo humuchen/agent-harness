@@ -1,4 +1,3 @@
-import { css } from 'lit';
 
 /**
  * 对话气泡内 Markdown 富文本元素的呈现规范（作用域严格限定在 .msg-text）。
@@ -11,7 +10,7 @@ import { css } from 'lit';
  * - 代码 token 的**颜色**不在这里定义 —— 它在 styles/base.ts 的共享层，
  *   因为运行详情（.codeblock.rich）也要用同一套配色；此处只负责容器、布局与交互态。
  */
-export const markdownRichText = css`
+export const markdownRichText = `
   /* ==================== 表格 ====================
      滚动与圆角由外层 wrapper 承担，table 保持 display:table。
      禁止改回 display:block —— 那会让列宽退化为「由内容决定」、表头与数据列错位，

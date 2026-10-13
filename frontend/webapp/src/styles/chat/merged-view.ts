@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const mergedView = css`
+export const mergedView = `
   /* ----------------------- 合并视图：深度思考 + 最终回答 ----------------------- */
   /* 思考区：合并视图顶部，实时流式呈现模型推理（随 token 增量逐字揭示）。 */
   .think {

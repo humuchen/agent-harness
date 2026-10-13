@@ -1,4 +1,3 @@
-import { css } from 'lit';
 import { base } from './styles/base';
 import { mcp } from './styles/mcp';
 import { dashboard } from './styles/dashboard';
@@ -36,7 +35,7 @@ import { mobilePill } from './styles/mobile-pill';
  * 注意：chat 与 plan-board 的计划卡片 pill 分别用 `chat/plan-mode` 与 `base`+`dashboard` 两套定义
  * （硬编码 rgba vs CSS 变量），属设计语言分裂但功能正常；统一前需真机比对视觉。
  */
-export const sharedStyles = css`
+export const sharedStyles = `
   ${base}
   ${mcp}
   ${dashboard}

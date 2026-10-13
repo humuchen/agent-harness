@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const planMode = css`
+export const planMode = `
   /* ---- 计划模式（P0）：计划卡片 ---- */
   .plan-card {
     border: 1px solid var(--ah-border);

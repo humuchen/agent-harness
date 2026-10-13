@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const messageArea = css`
+export const messageArea = `
     /* 滚动区外壳：相对定位，作为「回到底部」浮动按钮的定位上下文；
          按钮 absolute 钉在其底部中央，不进入文档流、不挤压/遮挡内容与输入框。 */
     .scroll-region {

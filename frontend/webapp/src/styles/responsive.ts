@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 1444-1694 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const responsive = css`
+export const responsive = `
   /* ------------------- 移动端适配（≤760px 或 横屏矮屏） -------------------
      横屏矮屏：手机横屏后 CSS 宽度变成长边（常见 800–930px），会越过 760px
      落到桌面壳的 100dvh + overflow:hidden 锁定，表现为「上下无法滚动、展示不全」。
@@ -14,7 +13,7 @@ export const responsive = css`
        （height:auto / min-height:100dvh / overflow:visible / --ah-tabbar-h）
        放在 app.ts 的 mobileShellCss（仅注入 ah-app 自身 shadow root）。
        若写在本文件：sharedStyles 会被 19 个面板组件各自的 shadow DOM 编译，
-       :host 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
+       .ah-c 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
        仍撑满整屏 → .content 被顶高 → 文档超出视口 ~139px 幽灵滚动。 */
     .shell {
       height: auto;

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import pkg from './package.json';
 
 // 构建产物默认输出到 dist/（frontend/webapp/dist），
@@ -12,6 +13,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version)
     },
+    plugins: [svelte()],
     build: {
       // 输出为可直接被 node:http 静态托管的纯静态资源（无 SSR）。
       target: 'es2022',

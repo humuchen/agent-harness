@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const composer = css`
+export const composer = `
   .composer-wrap {
     /* 悬浮输入：去除底部背景块与顶部分隔线，让输入框像卡片一样浮在对话区之上。 */
     border-top: none;
@@ -105,7 +104,7 @@ export const composer = css`
   }
   /* 「+」统一入口：可压缩（0 1 auto）以免把右侧模型选择器挤出 composer；
        面板由组件自身 shadow DOM 绝对定位锚定，宿主不做任何裁剪。 */
-  .composer-footer-left ah-composer-plus {
+  .composer-footer-left .composer-plus-root {
     flex: 0 1 auto;
     min-width: 0;
   }
@@ -559,7 +558,7 @@ export const composer = css`
     max-width: 148px;
     max-height: 148px;
   }
-  /* 注：原 .attach-btn（裸「+」label）已由 <ah-composer-plus> 取代，
+  /* 注：原 .attach-btn（裸「+」label）已由 <.composer-plus-root> 取代，
        上传入口与模式/专家选择一并收口到该组件，此处不再保留其样式。 */
   /* 移动端适配 */
   @media (max-width: 640px) {

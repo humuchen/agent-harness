@@ -1,28 +1,27 @@
 /**
- * chat.ts 滚动簇抽离（Phase 4）。
+ * chat.svelte 滚动簇抽离（Phase 4 → Svelte 迁移版）。
  *
  * 把消息区滚动跟随逻辑（钉底状态、浮动「回到底部」按钮显隐、平滑回底、
- * 深度思考区流式钉底）收进一个轻量控制器 `ChatScroll`，由 AhChat 持有为
- * `this.scrollCtl`。原 @state stickToBottom / showScrollDown 迁移到控制器内部，
- * 通过 host.requestUpdate() 驱动重渲染（与原 @state 行为一致）；scrollRef 也归
- * 控制器所有。AhChat 仅通过 `this.scrollCtl.xxx()` 调用，零 this.* 泄漏到组件状态层。
+ * 深度思考区流式钉底）收进一个轻量控制器 `ChatScroll`，由 chat.svelte 持有。
+ * Svelte 迁移说明：
+ *  - 原 lit `createRef`/`Ref` → 公开字段 `scrollEl`（组件用 bind:this 绑定局部
+ *    变量后在 effect 中同步进来，或直接把元素赋给该字段）；
+ *  - 原 host.requestUpdate() → 构造时传入 `requestUpdate` 回调（组件内把
+ *    stickToBottom/showScrollDown 同步到 $state）；
+ *  - 原 host.renderRoot → 构造时传入 `root` 取根元素的函数（组件 bind:this 根 div）。
  */
-import { createRef, type Ref } from 'lit/directives/ref.js';
-
-/** 控制器所需的宿主能力：addController 注册生命周期、requestUpdate 触发重渲染、
- *  renderRoot 供「深度思考区钉底」查询 DOM。与 LitElement 契约对齐（不依赖 lit 类型）。 */
+/** 控制器所需的宿主能力：requestUpdate 触发组件重渲染、root 供「深度思考区钉底」查询 DOM。 */
 interface ScrollHost {
-  addController(controller: unknown): void;
   requestUpdate(): void;
-  readonly renderRoot: HTMLElement | DocumentFragment;
+  root(): HTMLElement | DocumentFragment | null;
 }
 
 /** 距底阈值（px）：容忍亚像素/轻微回弹，认为已到底部则隐藏按钮、恢复跟随。 */
 const AT_BOTTOM_THRESHOLD = 24;
 
 export class ChatScroll {
-  /** 消息区滚动容器引用（渲染模板中经 ref() 绑定）。 */
-  readonly scrollRef: Ref<HTMLElement> = createRef<HTMLElement>();
+  /** 消息区滚动容器（组件 bind:this 后赋值）。 */
+  scrollEl: HTMLElement | null = null;
   /** 是否处于「钉底」跟随状态：true 时新消息/更新自动滚到底部。 */
   stickToBottom = true;
   /** 浮动「回到底部」按钮是否可见（未钉底时显示）。 */
@@ -36,7 +35,6 @@ export class ChatScroll {
 
   constructor(host: ScrollHost) {
     this.host = host;
-    host.addController(this);
   }
 
   /** 切到钉底并隐藏浮动按钮（新会话 / 切换会话 / 发送新消息时调用）。 */
@@ -46,15 +44,15 @@ export class ChatScroll {
     this.host.requestUpdate();
   }
 
-  /** 仅当处于钉底状态才把消息区滚到底部（updated() 中调用，不触发状态变更）。 */
+  /** 仅当处于钉底状态才把消息区滚到底部（渲染后调用，不触发状态变更）。 */
   scrollToBottom() {
-    const el = this.scrollRef.value;
+    const el = this.scrollEl;
     if (el && this.stickToBottom) el.scrollTop = el.scrollHeight;
   }
 
   /** 消息区滚动监听：计算距底距离，更新钉底状态与浮动按钮显隐。 */
   onScroll() {
-    const el = this.scrollRef.value;
+    const el = this.scrollEl;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distance <= AT_BOTTOM_THRESHOLD;
@@ -67,7 +65,7 @@ export class ChatScroll {
 
   /** 点击浮动按钮：平滑滚回底部并重新开启钉底跟随。 */
   scrollToBottomSmooth() {
-    const el = this.scrollRef.value;
+    const el = this.scrollEl;
     if (!el) return;
     this.stickToBottom = true;
     this.showScrollDown = false;
@@ -88,16 +86,12 @@ export class ChatScroll {
       // 两类「思考区正文」滚动容器：深度思考面板（普通对话流式）与计划思考面板
       // （P5 静默执行）。二者不会同时 live（计划执行 vs 普通对话流式），但各自维护
       // 独立的钉底状态（dataset.thinkStick），互不干扰——杜绝共享布尔被误重置。
+      const root = this.host.root();
+      if (!root) return;
       const targets = [
-        this.host.renderRoot.querySelector(
-          '.think.live .think-body'
-        ) as HTMLElement | null,
-        this.host.renderRoot.querySelector(
-          '.plan-thinking .pt-think-body'
-        ) as HTMLElement | null,
-      ].filter(
-        (x): x is HTMLElement => !!x && !x.closest('.think.collapsed')
-      );
+        root.querySelector('.think.live .think-body') as HTMLElement | null,
+        root.querySelector('.plan-thinking .pt-think-body') as HTMLElement | null
+      ].filter((x): x is HTMLElement => !!x && !x.closest('.think.collapsed'));
       for (const tb of targets) {
         this.bindThinkScroll(tb);
         if (this.thinkSticks(tb)) tb.scrollTop = tb.scrollHeight;
@@ -112,7 +106,9 @@ export class ChatScroll {
    */
   scrollThinkBlockToBottom(msgId: string) {
     requestAnimationFrame(() => {
-      const tb = this.host.renderRoot.querySelector(
+      const root = this.host.root();
+      if (!root) return;
+      const tb = root.querySelector(
         `.think[data-mid="${msgId}"] .think-body`
       ) as HTMLElement | null;
       if (!tb || tb.closest('.think.collapsed')) return;

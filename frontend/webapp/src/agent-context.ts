@@ -1,15 +1,17 @@
 /**
- * agent-context：跨组件响应式共享状态容器（Lit 版「useAgentContext」）。
+ * agent-context：跨组件响应式共享状态容器（Svelte 迁移版）。
  *
- * SVG 架构图中「前端应用层 · useAgentContext 状态共享」在本项目（前端是 Lit 而非 React）
- * 的真实落地形态：一个进程级单例 `AgentContextStore`（EventTarget 驱动，零依赖）+
- * 面向 Lit 的 `AgentContextController`（ReactiveController）绑定。
+ * SVG 架构图中「前端应用层 · useAgentContext 状态共享」在本项目的真实落地形态：
+ * 一个进程级单例 `AgentContextStore`（listener 驱动，零依赖）+
+ * `AgentContextController`（Svelte 化：普通类，onMount/onDestroy 中调用
+ * hostConnected()/hostDisconnected()，状态变更经 onChange 回调驱动组件 $state 同步）。
  *
- * 用法：
+ * 用法（Svelte 组件内）：
  *   import { agentContext, useAgentContext } from './agent-context';
- *   // 在 Lit 组件构造函数中：
- *   this.ctx = useAgentContext(this);            // 订阅全部字段，变更自动 requestUpdate
- *   this.ctx = useAgentContext(this, ['running']); // 或只订阅感兴趣的字段
+ *   let ctxState = $state(agentContext.getState());
+ *   const ctx = useAgentContext({ onChange: () => { ctxState = agentContext.getState(); } });
+ *   onMount(() => ctx.hostConnected());
+ *   onDestroy(() => ctx.hostDisconnected());
  *   // 任意组件读写共享状态：
  *   agentContext.set('running', true);
  *   const s = agentContext.getState();
@@ -17,7 +19,6 @@
  * 特性：localStorage 持久化（隐私模式等不可用时自动降级为纯内存）、
  * 键白名单校验、订阅解绑、错误兜底——不引入任何外部依赖。
  */
-import type { ReactiveController, ReactiveControllerHost } from 'lit';
 
 /** 上下文用量汇总（由聊天页在收到后端 llm:usage 事件后写入，供 dashboard 跨页汇总展示）。 */
 export interface ContextUsageSummary {
@@ -234,21 +235,22 @@ class AgentContextStore {
 export const agentContext = new AgentContextStore();
 
 /**
- * 把 Lit 组件宿主绑定到共享状态：状态变更时自动触发宿主重新渲染。
- * 可用 `keys` 收窄订阅范围（默认全部）。返回 controller，需在组件构造函数里持有。
+ * 把组件绑定到共享状态：状态变更时经 onChange 回调通知组件（组件内同步 $state）。
+ * 可用 `keys` 收窄订阅范围（默认全部）。hostConnected/hostDisconnected 由组件在
+ * onMount/onDestroy 中调用（Svelte 迁移：原 ReactiveController 生命周期协议）。
  */
-export class AgentContextController implements ReactiveController {
-  private host: ReactiveControllerHost;
+export class AgentContextController {
   private keys: ReadonlySet<AgentContextKey> | null;
   private unsubscribe: (() => void) | null = null;
+  private onChange: () => void;
 
-  constructor(host: ReactiveControllerHost, keys?: AgentContextKey[]) {
-    this.host = host;
-    this.keys = keys && keys.length ? new Set(keys) : null;
+  constructor(opts: { onChange?: () => void; keys?: AgentContextKey[] } = {}) {
+    this.keys = opts.keys && opts.keys.length ? new Set(opts.keys) : null;
+    this.onChange = opts.onChange ?? (() => {});
   }
 
   hostConnected(): void {
-    this.unsubscribe = agentContext.subscribe(() => this.host.requestUpdate());
+    this.unsubscribe = agentContext.subscribe(() => this.onChange());
   }
 
   hostDisconnected(): void {
@@ -258,12 +260,11 @@ export class AgentContextController implements ReactiveController {
 }
 
 /**
- * 便捷工厂：等价于在组件构造函数里 `new AgentContextController(this, keys)`。
+ * 便捷工厂：等价于 `new AgentContextController(opts)`。
  * 命名对齐 SVG 架构图里的 useAgentContext，语义即「让组件响应式订阅共享上下文」。
  */
 export function useAgentContext(
-  host: ReactiveControllerHost,
-  keys?: AgentContextKey[]
+  opts: { onChange?: () => void; keys?: AgentContextKey[] } = {}
 ): AgentContextController {
-  return new AgentContextController(host, keys);
+  return new AgentContextController(opts);
 }

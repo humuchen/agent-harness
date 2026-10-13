@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const messageBubble = css`
+export const messageBubble = `
     .msg {
       display: flex;
       gap: 12px;

@@ -1,4 +1,3 @@
-import { css } from 'lit';
 
 /**
  * 移动端按钮「胶囊化」覆盖层（≤760px 或触屏设备）
@@ -49,7 +48,7 @@ import { css } from 'lit';
  * 维护提示：新增按钮若自带「透明底 + 描边」造型，需把其类名补进下方「幽灵按钮补填充底」。
  */
 
-export const mobilePill = css`
+export const mobilePill = `
   /* 断点写法注意：@media 条件必须是字面量 —— lit 的 css 标签模板出于安全考虑
      只接受 CSSResultGroup / number 插值，把条件抽成字符串常量插值会触发 TS2345。
      条件与项目既有「移动端」约定一致（theme/tokens.ts 触屏样式、base.ts 滚动条隐藏）。 */

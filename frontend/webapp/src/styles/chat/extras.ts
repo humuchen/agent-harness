@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const extras = css`
+export const extras = `
     /* 折叠式附加信息（调用链路 / 关键信息）：默认收起，点按钮从侧滑抽屉展开。 */
     .extras {
       margin-top: 12px;

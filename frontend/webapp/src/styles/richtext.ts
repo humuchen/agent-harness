@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 1299-1442 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const richtext = css`
+export const richtext = `
   /* 富文本渲染（Markdown → HTML）排版 */
   .codeblock.rich {
     font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC',
