@@ -7,9 +7,9 @@
  * 「配置 API Key」（整屏抽屉，内嵌 settings-center group=keys）。
  *
  * 数据来源与事件契约与原版完全一致：
- *  - `model-change`：detail { model, ctx, baseUrl }（model 为空串表示恢复服务端默认）
- *  - `think-change` / `web-change`：detail { value }
- *  - `ctx-change`：detail { ctx }（0 = 无数据，宿主隐藏用量展示）
+ *  - `model-change`：detail (model, ctx, baseUrl)（model 为空串表示恢复服务端默认）
+ *  - `think-change` / `web-change`：detail (value)
+ *  - `ctx-change`：detail (ctx)（0 = 无数据，宿主隐藏用量展示）
  *  - 公开方法 refreshModels(opts) / requestCtx(model?)（父组件 bind:this 调用）
  *
  * 样式说明：:host 规则已按迁移规范改写为根类 .model-picker-root（宿主
@@ -670,7 +670,7 @@
           </div>
         </div>
         <div class="panel-body">
-          {#snippet group(name, items)}
+          {#snippet group(name: string, items: string[])}
             {@const groupCollapsed = collapsed[name] ?? true}
             <div class="group">
               <div

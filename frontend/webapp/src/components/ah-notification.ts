@@ -10,25 +10,25 @@ import {
   closeNotification,
   clearNotifications,
   configureNotifications
-} from './ah-notification.svelte';
+} from './ah-notification-store.svelte';
 
 export type {
   NotificationType,
   NotificationPlacement,
   NotificationOptions
-} from './ah-notification.svelte';
+} from './ah-notification-store.svelte';
 
 /** 去掉 message 字段的选项（各语法糖方法用）。 */
-type MessageOptions = Omit<import('./ah-notification.svelte').NotificationOptions, 'message' | 'type'>;
+type MessageOptions = Omit<import('./ah-notification-store.svelte').NotificationOptions, 'message' | 'type'>;
 
 export interface NotificationConfig {
-  placement?: import('./ah-notification.svelte').NotificationPlacement;
+  placement?: import('./ah-notification-store.svelte').NotificationPlacement;
   max?: number;
 }
 
 export const notify = {
   /** 通用入口。 */
-  show(opts: import('./ah-notification.svelte').NotificationOptions): number {
+  show(opts: import('./ah-notification-store.svelte').NotificationOptions): number {
     return showNotification(opts);
   },
   success(message: string, opts?: MessageOptions): number {

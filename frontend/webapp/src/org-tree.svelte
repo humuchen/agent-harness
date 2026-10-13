@@ -58,14 +58,14 @@
       </div>
       <div class="tree">
         <ul class="tree-list root">
-          {@render node(tree.root, 0)}
+          {@render renderNode(tree.root, 0)}
         </ul>
       </div>
     </section>
   {/if}
 </div>
 
-{#snippet node(node: OrgNode, depth: number)}
+{#snippet renderNode(node: OrgNode, depth: number)}
   {@const isDept = node.type === 'dept'}
   {@const isCollapsed = collapsed.has(node.id)}
   {@const hasChildren = isDept && (node.children?.length ?? 0) > 0}
@@ -93,7 +93,7 @@
     {#if hasChildren && !isCollapsed}
       <ul class="tree-list">
         {#each node.children ?? [] as c (c.id)}
-          {@render node(c, depth + 1)}
+          {@render renderNode(c, depth + 1)}
         {/each}
       </ul>
     {/if}

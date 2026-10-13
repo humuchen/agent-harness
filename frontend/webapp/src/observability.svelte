@@ -64,8 +64,8 @@
 
   let { visible = true }: { visible?: boolean } = $props();
 
-  let metrics: Metrics | null = $state(null);
-  let jobs: JobsView | null = $state(null);
+  let metrics = $state<Metrics | null>(null);
+  let jobs = $state<JobsView | null>(null);
   let sessions: { backend: string; sessions: string[] } | null = $state(null);
   let roles: RolesView | null = $state(null);
   let loading = $state(true);

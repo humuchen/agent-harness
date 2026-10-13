@@ -68,9 +68,9 @@
 
   let { visible = true }: { visible?: boolean } = $props();
 
-  let state: ServerState | null = $state(null);
-  let metrics: Metrics | null = $state(null);
-  let jobs: JobsView | null = $state(null);
+  let serverState = $state<ServerState | null>(null);
+  let metrics = $state<Metrics | null>(null);
+  let jobs = $state<JobsView | null>(null);
   let pending: ApprovalTicket[] = $state([]);
   let loading = $state(true);
 
@@ -94,7 +94,7 @@
           .listApprovals('pending')
           .catch(() => ({ tickets: [] as ApprovalTicket[] }))
       ]);
-      state = s;
+      serverState = s;
       metrics = m;
       jobs = j;
       pending = a.tickets;
@@ -113,13 +113,13 @@
 
   let running = $derived(jobs?.queue.running ?? 0);
   let queued = $derived(jobs?.queue.queued ?? 0);
-  let envCount = $derived(state?.envs.length ?? 0);
-  let mcpCount = $derived(state?.mcpServers.length ?? 0);
+  let envCount = $derived(serverState?.envs.length ?? 0);
+  let mcpCount = $derived(serverState?.mcpServers.length ?? 0);
   let cost = $derived(metrics ? `$${metrics.cost.toFixed(2)}` : '—');
   /** 沙箱已生效的 OS 原语名（hero 副标题展示）。 */
   let sandboxActive = $derived(
-    state?.sandbox && state.sandbox.supported
-      ? Object.entries(state.sandbox.active)
+    serverState?.sandbox && serverState.sandbox.supported
+      ? Object.entries(serverState.sandbox.active)
           .filter(([, v]) => v)
           .map(([k]) => k)
           .join('/')
@@ -128,7 +128,7 @@
 </script>
 
 <div class="ah-c dashboard-root" bind:this={rootEl} hidden={!visible}>
-  {#if loading && !state}
+  {#if loading && !serverState}
     <section><p class="muted">加载总览…</p></section>
   {:else}
     <section style="border:none;background:none;box-shadow:none;padding:8px">
@@ -136,8 +136,8 @@
         <h2>Agent Harness 控制台</h2>
         <div class="hero-sub">
           记忆后端 {metrics ? (metrics as any).memory?.backend ?? '—' : '—'} ·
-          {#if state?.sandbox}
-            沙箱 <b>{state.sandbox.backend}</b>{#if state.sandbox.supported}（{sandboxActive}）{:else} — {state.sandbox.reason}{/if}
+          {#if serverState?.sandbox}
+            沙箱 <b>{serverState.sandbox.backend}</b>{#if serverState.sandbox.supported}（{sandboxActive}）{:else} — {serverState.sandbox.reason}{/if}
           {:else}
             沙箱：硬化本地（无 OS 级隔离）
           {/if}
@@ -221,14 +221,14 @@
             </button>
           </div>
           <ul class="list">
-            {#each (state?.envs ?? []).slice(0, 4) as e}
+            {#each (serverState?.envs ?? []).slice(0, 4) as e}
               <li>
                 <b>{e.envId}</b>
                 <span class="pill {e.status}">{e.status}</span><br />
                 <span class="muted-sm">{e.branch ?? '—'}{e.owner ? ' · ' + e.owner : ''}</span>
               </li>
             {/each}
-            {#if (state?.envs ?? []).length === 0}
+            {#if (serverState?.envs ?? []).length === 0}
               <li class="muted">暂无环境</li>
             {/if}
           </ul>

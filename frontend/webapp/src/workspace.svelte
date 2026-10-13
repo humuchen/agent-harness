@@ -58,11 +58,11 @@
   let { visible = true }: { visible?: boolean } = $props();
 
   let sessions: ChatSessionLite[] = $state([]);
-  let jobs: JobsView | null = $state(null);
+  let jobs = $state<JobsView | null>(null);
   let recipes: RecipeLite[] = $state([]);
   let agentCount = $state(0);
   let mcpCount = $state(0);
-  let memSessions: SessionsView | null = $state(null);
+  let memSessions = $state<SessionsView | null>(null);
   let loading = $state(true);
 
   /** 根元素引用：ah-goto 事件从其派发（bubbles 穿透至 window，App 壳监听）。 */

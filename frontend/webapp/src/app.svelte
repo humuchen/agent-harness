@@ -221,52 +221,35 @@
   let mainEl: HTMLElement | undefined = $state();
   let themeToggleBtn: HTMLButtonElement | undefined = $state();
 
-  /** 当前 Tab 对应的面板实例（插件 Tab / 我的 返回 null，走特型容器）。 */
-  function activePanelRef():
-    | { refresh?: () => Promise<void> | void }
-    | undefined {
-    switch (tab) {
-      case 'workspace':
-        return workspaceRef;
-      case 'dashboard':
-        return dashboardRef;
-      case 'chat':
-        return chatRef;
-      case 'run':
-        return runRef;
-      case 'verify':
-        return verifyRef;
-      case 'env':
-        return envRef;
-      case 'mcp':
-        return mcpRef;
-      case 'approvals':
-        return approvalsRef;
-      case 'observability':
-        return observabilityRef;
-      case 'audit':
-        return auditRef;
-      case 'org':
-        return orgTreeRef;
-      case 'artifact':
-        return artifactRef;
-      case 'skill':
-        return skillRef;
-      case 'datasource':
-        return datasourceRef;
-      case 'sandbox':
-        return sandboxRef;
-      case 'supplychain':
-        return supplyChainRef;
-      case 'plugins':
-        return pluginsRef;
-      case 'plan':
-        return planBoardRef;
-      case 'settings':
-        return settingsCenterRef;
-      default:
-        return undefined;
-    }
+  /**
+   * 当前 Tab 对应的面板实例（插件 Tab / 我的 返回 null，走特型容器）。
+   * 注意：部分面板（verify/env/mcp 等）本就没有公开 refresh（原 Lit 版即由
+   * typeof 守卫兜底），故这里用宽类型承接，调用处仍按 typeof fn === 'function' 守卫。
+   */
+  type PanelHandle = { refresh?: () => void | Promise<void> };
+  function activePanelRef(): PanelHandle | undefined {
+    const refs: Record<string, unknown> = {
+      workspace: workspaceRef,
+      dashboard: dashboardRef,
+      chat: chatRef,
+      run: runRef,
+      verify: verifyRef,
+      env: envRef,
+      mcp: mcpRef,
+      approvals: approvalsRef,
+      observability: observabilityRef,
+      audit: auditRef,
+      org: orgTreeRef,
+      artifact: artifactRef,
+      skill: skillRef,
+      datasource: datasourceRef,
+      sandbox: sandboxRef,
+      supplychain: supplyChainRef,
+      plugins: pluginsRef,
+      plan: planBoardRef,
+      settings: settingsCenterRef
+    };
+    return refs[tab] as PanelHandle | undefined;
   }
 
   // ── 生命周期与事件订阅（原 connectedCallback / disconnectedCallback） ──

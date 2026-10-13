@@ -39,7 +39,7 @@
   let rootEl: HTMLElement;
 
   /** 已接入列表自动刷新定时器（连接状态变化无需手动刷新）。 */
-  let refreshTimer: number | null = null; // window.setInterval 句柄（DOM 类型）
+  let refreshTimer: number | null | undefined = null; // window.setInterval 句柄（DOM 类型）
   const REFRESH_INTERVAL_MS = 10000;
 
   onMount(() => {
@@ -522,7 +522,7 @@
                 <div class="row" style="margin-top:8px">
                   <a
                     class="ghost-link"
-                    href={p.docUrl ?? '#'}
+                    href={(p.docUrl as string | undefined) ?? '#'}
                     target="_blank"
                     rel="noopener"
                     >查看接入说明 ›</a
@@ -539,7 +539,7 @@
                             ...tokens,
                             [p.id]: (e.target as HTMLInputElement).value
                           })}
-                        placeholder={p.authPlaceholder ?? ''}
+                        placeholder={(p.authPlaceholder as string | undefined) ?? ''}
                     /></label>
                   {/if}
                   <button

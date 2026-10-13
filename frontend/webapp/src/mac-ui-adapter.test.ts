@@ -13,22 +13,24 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, tick } from 'svelte';
+import type { ComponentProps } from 'svelte';
 import '@humuchen/mac-ui';
 import { AhModal } from './components/ah-modal';
 import AhDrawer from './components/ah-drawer.svelte';
 import drawerSource from './components/ah-drawer.svelte?raw';
 
-type DrawerInst = ReturnType<typeof mount<typeof AhDrawer>>;
+type DrawerProps = ComponentProps<typeof AhDrawer>;
+type DrawerInst = ReturnType<typeof mount<DrawerProps, Record<string, any>>>;
 /** 本文件挂载过的组件实例：afterEach 统一卸载（清 window 监听等副作用）。 */
 const insts: Record<string, unknown>[] = [];
 
 /** 挂载一个 ah-drawer（target=document.body，light DOM 可直接查询）。 */
 function mountDrawer(
-  props: Partial<Parameters<typeof mount<typeof AhDrawer>>[1]['props']> = {}
+  props: Partial<DrawerProps> = {}
 ): DrawerInst {
   const inst = mount(AhDrawer, {
     target: document.body,
-    props: props as Parameters<typeof mount<typeof AhDrawer>>[1]['props']
+    props: props as DrawerProps
   });
   insts.push(inst as unknown as Record<string, unknown>);
   return inst;
@@ -297,8 +299,11 @@ describe('mac-ui 适配层测试', () => {
         await tick();
 
         const head = document.querySelector('.head') as HTMLElement;
-        const kids = Array.from(head.children).map((c) => c.className);
-        expect(kids.indexOf('title')).toBeLessThan(kids.indexOf('close'));
+        // Svelte scoped style 会给元素附加 svelte-xxx 哈希类，用 classList.contains 匹配。
+        const kids = Array.from(head.children);
+        expect(kids.findIndex((c) => c.classList.contains('title'))).toBeLessThan(
+          kids.findIndex((c) => c.classList.contains('close'))
+        );
         // 视觉换位靠 CSS order，不靠改 DOM
       });
     });

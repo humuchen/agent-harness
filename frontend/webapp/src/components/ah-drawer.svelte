@@ -16,6 +16,7 @@
    * 后退前进时广播），收到后跳过离场动画立即关闭并回调 onclose。
    */
   import { onMount, onDestroy } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { APP_EVENTS } from '../app-events';
 
   export type DrawerPlacement = 'left' | 'right' | 'top' | 'bottom';
@@ -59,9 +60,9 @@
     onclose?: (reason: DrawerCloseReason) => void;
     onahOpen?: () => void;
     onahConfirm?: () => void;
-    children?: () => unknown;
-    header?: () => unknown;
-    footer?: () => unknown;
+    children?: Snippet;
+    header?: Snippet;
+    footer?: Snippet;
   } = $props();
 
   let leaving = $state(false);

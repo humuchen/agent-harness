@@ -10,14 +10,15 @@
   }
   import { toRichHtml, escapeHtml } from './utils/markdown';
   import {
-    agentContext,
-    type UploadedFile
+    agentContext
   } from './agent-context';
   import { SessionStateMachine } from './utils/session-state';
   import { notifyError } from './utils/errors';
   import { notify } from './components/ah-notification';
-  import './components/suggestions';
-  import './components/file-upload';
+  import Suggestions from './components/suggestions.svelte';
+  import FileUpload, {
+    type UploadedFileWithStatus
+  } from './components/file-upload.svelte';
   import { APP_EVENTS } from './app-events';
 
   let { visible = true }: { visible?: boolean } = $props();
@@ -95,7 +96,7 @@
   let error: string | null = $state(null);
   let ticket: string | null = $state(null);
 
-  let view: 'thinking' | 'result' | 'all' = $state('all');
+  let view = $state<'thinking' | 'result' | 'all'>('all');
   let phases: Phase[] = $state(PHASES.map((p) => ({ ...p })));
   let trace: TraceBlock[] = $state([]);
   let final = $state('');
@@ -109,7 +110,7 @@
   /** 会话状态机：把 running/finished 从散落的布尔收敛为受控迁移。 */
   let session = new SessionStateMachine();
   /** 附件（来自 <ah-file-upload>，同时写入 agentContext 供各面板共享）。 */
-  let attachments: UploadedFile[] = $state([]);
+  let attachments: UploadedFileWithStatus[] = $state([]);
 
   /** 根元素引用：APP_EVENTS.refresh 事件从其派发（原 this.dispatchEvent，bubbles+composed）。 */
   let rootEl: HTMLElement;
@@ -490,29 +491,35 @@
             (prompt = (e.target as HTMLTextAreaElement).value)}
         ></textarea>
       </label>
-      <ah-suggestions
-        items={SUGGESTIONS}
-        disabled={running}
-        onsuggestion-picked={(e: Event) => {
-          prompt = (e as CustomEvent<string>).detail;
-        }}
-      ></ah-suggestions>
-      <ah-file-upload
-        files={attachments}
-        max-files="3"
-        max-size-mb="5"
-        accept=".txt,.md,.csv,.json,.log"
-        disabled={running}
-        onfiles-changed={(e: Event) => {
-          attachments = (e as CustomEvent<UploadedFile[]>).detail;
-          agentContext.set('files', attachments);
+      <!-- 组件以 bubbles DOM 事件对外通知；包装层（display:contents，零布局影响）
+           承接冒泡事件。Svelte 5 中 on* 出现在组件标签上只是普通 prop，不会挂 DOM 监听。 -->
+      <div
+        class="run-input-extras"
+        style="display: contents"
+        {...{
+          'onsuggestion-picked': (e: Event) => {
+            prompt = (e as CustomEvent<string>).detail;
+          },
+          'onfiles-changed': (e: Event) => {
+            attachments = (e as CustomEvent<UploadedFileWithStatus[]>).detail;
+            agentContext.set('files', attachments);
+          }
         }}
         onerror={(e: Event) =>
           notify.warning((e as CustomEvent<string>).detail, {
             title: '附件',
             key: 'run-upload'
           })}
-      ></ah-file-upload>
+      >
+        <Suggestions items={SUGGESTIONS} disabled={running} />
+        <FileUpload
+          bind:files={attachments}
+          maxFiles={3}
+          maxSizeMb={5}
+          accept=".txt,.md,.csv,.json,.log"
+          disabled={running}
+        />
+      </div>
       <div class="row">
         <button disabled={running} onclick={() => run()}>
           {running ? '运行中…' : '运行 Agent'}

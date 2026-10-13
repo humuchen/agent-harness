@@ -44,7 +44,7 @@
     info: '信息'
   };
 
-  let data: AuditResult | null = $state(null);
+  let data = $state<AuditResult | null>(null);
   let loading = $state(true);
   let offset = $state(0);
   let fActor = $state('');

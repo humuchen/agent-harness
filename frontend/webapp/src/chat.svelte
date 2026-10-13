@@ -3203,6 +3203,16 @@
     previewFile = null;
   }
 
+  /** 展开多图附件卡片（展开态由 .attach-card.expanded 类驱动）。 */
+  function expandAttachCard(e: Event): void {
+    (e.currentTarget as HTMLElement | null)?.closest('.attach-card')?.classList.add('expanded');
+  }
+
+  /** 收起多图附件卡片。 */
+  function collapseAttachCard(e: Event): void {
+    (e.currentTarget as HTMLElement | null)?.closest('.attach-card')?.classList.remove('expanded');
+  }
+
   // ── 移动端长按输入框 → 全屏编辑器 ──────────────────────────────
 
   /** 长按计时器句柄；600ms 触发全屏编辑。 */
@@ -5276,12 +5286,18 @@
           </div>
         {/if}
         <!-- Slash Command：选中命令后固化为胶囊，联想面板绝对定位浮在整个 composer 之上。 -->
-        <AhCommandSuggestions
-          value={input}
-          selected={cmdName}
-          oncommand-select={onCommandSelectEv}
-          oncommand-remove={() => onCommandRemove()}
-        />
+        <!-- 事件经 bubbles DOM CustomEvent 冒泡；包装层（display:contents，零布局影响）
+             承接监听。Svelte 5 中 on* 落在组件标签上只是普通 prop，不会挂 DOM 监听。 -->
+        <div
+          class="cmd-suggest-host"
+          style="display: contents"
+          {...{
+            'oncommand-select': onCommandSelectEv,
+            'oncommand-remove': () => onCommandRemove()
+          }}
+        >
+          <AhCommandSuggestions value={input} selected={cmdName} />
+        </div>
         <div class="composer-body">
           <textarea
             class="composer-input"
@@ -5299,27 +5315,37 @@
         <div class="composer-footer">
           <div class="composer-footer-left">
             <!-- 「+」统一入口：文件 / 模式 / 专家三类能力收口到一个按钮 + 分区面板。 -->
-            <AhComposerPlus
-              agents={agents}
-              agentId={agentId}
-              mode={interactionMode}
-              attachments={attachments}
-              onfiles-select={onFilesSelectEv}
-              onremove-attachment={onRemoveAttachmentEv}
-              onmode-change={onModeChangeEv}
-              onagent-change={onAgentChangeEv}
-            />
+            <div
+              class="composer-plus-host"
+              style="display: contents"
+              {...{
+                'onfiles-select': onFilesSelectEv,
+                'onremove-attachment': onRemoveAttachmentEv,
+                'onmode-change': onModeChangeEv,
+                'onagent-change': onAgentChangeEv
+              }}
+            >
+              <AhComposerPlus
+                agents={agents}
+                agentId={agentId}
+                mode={interactionMode}
+                attachments={attachments}
+              />
+            </div>
           </div>
           <div class="composer-footer-right">
-            <ModelPicker
-              model={model}
-              deepThink={deepThink}
-              web={web}
-              onmodel-change={onModelChangeEv}
-              onthink-change={onThinkChangeEv}
-              onweb-change={onWebChangeEv}
-              onctx-change={onCtxChangeEv}
-            />
+            <div
+              class="model-picker-host"
+              style="display: contents"
+              {...{
+                'onmodel-change': onModelChangeEv,
+                'onthink-change': onThinkChangeEv,
+                'onweb-change': onWebChangeEv,
+                'onctx-change': onCtxChangeEv
+              }}
+            >
+              <ModelPicker model={model} deepThink={deepThink} web={web} />
+            </div>
             {#if serverCtxWindow > 0 && activeId !== ''}
               <CtxRing
                 usage={selectContextUsage({
@@ -5981,7 +6007,10 @@
           class="extra-btn"
           class:active={traceDrawerMsg === m &&
             traceDrawerSection === 'trace'}
-          onclick={() => setTraceDrawer(m, 'trace')}
+          onclick={() => {
+            traceDrawerMsg = m;
+            traceDrawerSection = 'trace';
+          }}
         >
           <svg
             class="ticon"
@@ -6010,7 +6039,10 @@
           class="extra-btn alt"
           class:active={traceDrawerMsg === m &&
             traceDrawerSection === 'insights'}
-          onclick={() => setTraceDrawer(m, 'insights')}
+          onclick={() => {
+            traceDrawerMsg = m;
+            traceDrawerSection = 'insights';
+          }}
         >
           <span>关键信息</span>
         </button>
@@ -6021,7 +6053,10 @@
           class="extra-btn alt"
           class:active={traceDrawerMsg === m &&
             traceDrawerSection === 'confidence'}
-          onclick={() => setTraceDrawer(m, 'confidence')}
+          onclick={() => {
+            traceDrawerMsg = m;
+            traceDrawerSection = 'confidence';
+          }}
         >
           <span>链路信心</span>
         </button>
@@ -6044,7 +6079,9 @@
     placement="right"
     title={drawerTitle}
     size="500px"
-    onclose={() => setTraceDrawer(null, traceDrawerSection)}
+    onclose={() => {
+      traceDrawerMsg = null;
+    }}
   >
     {#if m && m.trace && m.trace.length > 0}
       <div class="trace-drawer">
@@ -6607,7 +6644,7 @@
         role="button"
         tabindex="0"
         title="点击展开 / 收起消息与工具调用"
-        aria-expanded={String(expanded)}
+        aria-expanded={expanded ? 'true' : 'false'}
         onclick={() => {
           n.expanded = !expanded;
           onToggle?.();

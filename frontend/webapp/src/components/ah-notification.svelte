@@ -21,7 +21,7 @@
     type NotificationItem,
     type NotificationPlacement,
     type NotificationType
-  } from './ah-notification.svelte';
+  } from './ah-notification-store.svelte';
 
   let {
     placement = 'top-right',

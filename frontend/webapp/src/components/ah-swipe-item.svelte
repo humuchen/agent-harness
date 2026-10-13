@@ -49,6 +49,7 @@
  * 见 styles/swipe-act.ts / session-swipe.ts 等宿主侧全局样式的约定）。
  */
   import { onDestroy, onMount, tick } from 'svelte';
+  import type { Snippet } from 'svelte';
   import {
     clampSwipeOffset,
     detectSwipeAxis,
@@ -73,8 +74,8 @@
     id?: string;
     group?: string;
     open?: boolean;
-    children?: () => unknown;
-    actions?: () => unknown;
+    children?: Snippet;
+    actions?: Snippet;
   } = $props();
 
   let rootEl: HTMLElement | undefined = $state();
