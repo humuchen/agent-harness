@@ -35,7 +35,7 @@
    *
    * 视觉：仅引用 --ah-* 语义令牌，深色 / 浅色主题自适应；图标统一 Lucide 线型隐喻（stroke 1.7–1.8）。
    */
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import {
     getTheme,
     setTheme,
@@ -284,17 +284,22 @@
       }
     }
     mountedGroups.add(active);
-    if (active === 'system') {
-      void checkServer();
-      // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
-      void refreshStorage();
-      unread = getReminderUnread().count;
-    }
-    if (active === 'appearance') {
-      // 计划多 Agent 开关：实例可能比开关变更更早挂载（抽屉常驻 / 两入口各一实例），
-      // 每次进入「外观」从同一 key 重新对齐，避免显示陈旧值。
-      planDagEnabled = isPlanDagEnabled();
-    }
+    // 数据加载必须在 untrack 内：checkServer/refreshStorage 会写 checking / llmLive
+    // 等 $state，若被本 effect 追踪将形成「加载完成 → 触发重跑 → 再次加载」的
+    // 无限循环（线上 /api/v1/state 持续请求的根因）。effect 只应依赖 groupSeq / active。
+    untrack(() => {
+      if (active === 'system') {
+        void checkServer();
+        // 存储占用随使用变化，每次进入「系统与网络」都重新测量一次。
+        void refreshStorage();
+        unread = getReminderUnread().count;
+      }
+      if (active === 'appearance') {
+        // 计划多 Agent 开关：实例可能比开关变更更早挂载（抽屉常驻 / 两入口各一实例），
+        // 每次进入「外观」从同一 key 重新对齐，避免显示陈旧值。
+        planDagEnabled = isPlanDagEnabled();
+      }
+    });
   });
 
   /** 当前分组的列下标：驱动移动端滑动指示条的位移（找不到时退回 0）。 */
@@ -777,6 +782,11 @@
   /* 惰性挂载：非激活分组保留在 DOM（不丢已加载状态）但隐藏。
    根的 display:flex 会盖过浏览器默认 [hidden]，加 !important 保险。 */
   .ah-c[hidden] {
+    display: none !important;
+  }
+  /* 分组惰性挂载的隐藏：section 自身 display 样式会盖过浏览器默认 [hidden]，
+     必须显式 !important（原 Lit 版 [hidden] 规则，迁移时曾遗漏 → 切 Tab 无效）。 */
+  .ah-c :global([hidden]) {
     display: none !important;
   }
 

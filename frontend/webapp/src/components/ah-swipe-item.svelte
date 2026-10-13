@@ -234,7 +234,7 @@
 </script>
 
 <div
-  class="swipe-item-root"
+  class="swipe-item-root no-pill"
   data-open={open ? '' : undefined}
   bind:this={rootEl}
 >
@@ -243,7 +243,7 @@
       {@render actions?.()}
     </div>
     <div
-      class="content"
+      class="swipe-content"
       class:dragging
       bind:this={contentEl}
       ontouchstart={onTouchStart}
@@ -289,7 +289,7 @@
     opacity: 1;
     transition-delay: 0s;
   }
-  .content {
+  .swipe-content {
     position: relative;
     z-index: 1;
     display: block;
@@ -302,10 +302,10 @@
     /* 内容自带底色盖住操作区；宿主行背景色在内容元素上声明 */
   }
   /* 展开态：内容右缘（贴按钮侧）升起一层薄投影，强化「盖住操作区」的层次。 */
-  .swipe-item-root[data-open] .content {
+  .swipe-item-root[data-open] .swipe-content {
     box-shadow: 3px 0 12px rgba(0, 0, 0, 0.28);
   }
-  .content.dragging {
+  .swipe-content.dragging {
     transition: none;
   }
   /* 操作区按钮（.swipe-act）是宿主投影内容，组件 scoped 选择器
@@ -317,7 +317,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .content {
+    .swipe-content {
       transition: none;
     }
     .bg {

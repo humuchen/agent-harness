@@ -111,7 +111,7 @@
   }
 </script>
 
-<div class="pw-root" bind:this={rootEl}>
+<div class="pw-root no-pill" bind:this={rootEl}>
   {#if open}
     <div
       class="scrim"

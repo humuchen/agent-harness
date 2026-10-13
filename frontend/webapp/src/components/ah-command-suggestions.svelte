@@ -292,7 +292,7 @@
 <!-- 原 :host 为 display:contents：两个子节点（胶囊条 / 面板）直接参与
      宿主 .composer flex 容器布局。保留 display:contents 根壳以维持
      事件派发锚点与 bind:this 目标，布局语义不变。 -->
-<div class="cs-root" bind:this={rootEl}>
+<div class="cs-root no-pill" bind:this={rootEl}>
   {#if selected}
     <!-- 胶囊条：已选命令 + 悬停删除 -->
     {@const desc = getCommands().find((c) => c.name === selected)?.description ?? ''}

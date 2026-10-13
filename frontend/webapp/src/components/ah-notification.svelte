@@ -51,7 +51,7 @@
 
 <!-- 宿主铺满视口（inset:0），容器不吃事件；位置由 data-placement 驱动（原 :host([placement]) 语义）。 -->
 <div
-  class="notif-host"
+  class="notif-host no-pill"
   data-placement={notifState.placement}
   role="region"
   aria-label="通知"

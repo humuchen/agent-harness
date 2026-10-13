@@ -260,7 +260,7 @@
   </svg>
 {/snippet}
 
-<div class="composer-plus-root" bind:this={rootEl}>
+<div class="composer-plus-root no-pill" bind:this={rootEl}>
   <button
     class="plus"
     class:open

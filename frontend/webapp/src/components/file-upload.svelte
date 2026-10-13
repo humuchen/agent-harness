@@ -214,7 +214,7 @@
   }
 </script>
 
-<div class="file-upload-root" bind:this={rootEl}>
+<div class="file-upload-root no-pill" bind:this={rootEl}>
   <label
     class="drop"
     class:dragover

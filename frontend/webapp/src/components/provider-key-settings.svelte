@@ -393,7 +393,7 @@
   };
 </script>
 
-<div class="pks-root">
+<div class="pks-root no-pill">
   <p class="intro">
     配置你自己的大模型 API Key
     后，对话将使用<strong>真实模型</strong>（按你的账号计费）。 Key

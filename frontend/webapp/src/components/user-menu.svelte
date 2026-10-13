@@ -141,7 +141,7 @@
 </script>
 
 <div
-  class="user-menu-root"
+  class="user-menu-root no-pill"
   data-standalone={standalone ? '' : undefined}
   bind:this={rootEl}
 >

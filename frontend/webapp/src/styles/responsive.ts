@@ -121,7 +121,9 @@ export const responsive = `
 
     /* 对话页顶栏不显示 ☰（由 ah-chat 自绘顶栏承担），但会话列表入口
        由 chat.ts 的 .menu-btn 承担（见 chat-styles.ts）；外层顶栏此处仅隐藏。 */
-    .shell.chat-mode .menu-btn {
+    /* 仅隐藏外层顶栏的 ☰（app 菜单按钮在 .topbar 内；chat 自绘顶栏的 .menu-btn
+       不在 .topbar 下，不受影响 —— 全局化后若无此前缀会误杀 chat 的会话入口）。 */
+    .shell.chat-mode .topbar .menu-btn {
       display: none;
     }
     .scrim.show {

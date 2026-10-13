@@ -57,7 +57,7 @@
   }
 </script>
 
-<div class="suggestions-root" bind:this={rootEl}>
+<div class="suggestions-root no-pill" bind:this={rootEl}>
   {#if normalized.length > 0}
     <div class="suggestions" role="listbox" aria-label="快捷建议">
       {#each normalized as it (it.prompt + '\u0000' + it.label)}

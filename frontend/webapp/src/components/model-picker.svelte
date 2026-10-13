@@ -594,7 +594,7 @@
   }
 </script>
 
-<div class="model-picker-root" bind:this={rootEl}>
+<div class="model-picker-root no-pill" bind:this={rootEl}>
   <div class="wrap">
     <button
       class="trigger"

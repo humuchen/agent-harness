@@ -81,7 +81,7 @@
   }
 </script>
 
-<div class="mode-picker-root" bind:this={rootEl}>
+<div class="mode-picker-root no-pill" bind:this={rootEl}>
   <button
     class="trigger"
     class:plan={mode === 'plan'}

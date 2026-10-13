@@ -99,7 +99,7 @@
   }
 </script>
 
-<div class="agent-picker-root" bind:this={rootEl}>
+<div class="agent-picker-root no-pill" bind:this={rootEl}>
   <button
     class="trigger"
     title="选择业务 Agent（默认走通用 Agent）"

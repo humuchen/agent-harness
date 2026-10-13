@@ -158,7 +158,7 @@
   <!-- 全屏定位层：默认不拦截指针，仅遮罩与面板各自开启 pointer-events，
       这样 mask=false 时抽屉为非模态，外部点击可穿透到下层页面。 -->
   <div
-    class="overlay {placement}{leaving ? ' leaving' : ''}{fullscreen ? ' fullscreen' : ''}"
+    class="overlay no-pill {placement}{leaving ? ' leaving' : ''}{fullscreen ? ' fullscreen' : ''}"
   >
     {#if mask}
       <div

@@ -5433,6 +5433,16 @@
       <button
         class="lightbox-close"
         title="关闭 (Esc)"
+        onclick={(e: Event) => {
+          e.stopPropagation();
+          closePreview();
+        }}
+      >
+        ×
+      </button>
+      <button
+        class="lightbox-close"
+        title="关闭 (Esc)"
         onclick={(e) => {
           e.stopPropagation();
           closePreview();
