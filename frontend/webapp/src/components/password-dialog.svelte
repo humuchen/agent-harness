@@ -16,6 +16,7 @@
    *
    * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / 登录页）一致；深浅主题自适应。
    * 原 :host 为 display:contents → 根壳 .pw-root（display:contents）。
+   * 注意：遮罩类名为 .pw-scrim 而非 .scrim —— 刻意避开全局抽屉遮罩规则，见下方样式注释。
    */
   import { onDestroy, onMount } from 'svelte';
   import { changePassword, derivePassword, bytesToHex } from '../api';
@@ -114,7 +115,7 @@
 <div class="pw-root no-pill" bind:this={rootEl}>
   {#if open}
     <div
-      class="scrim"
+      class="pw-scrim"
       onclick={(e: MouseEvent) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -199,7 +200,13 @@
     display: contents;
   }
 
-  .scrim {
+  /* ⚠️ 类名刻意不叫 .scrim：全局样式（styles/mobile-drawer.ts）有
+     `.scrim { opacity: 0; display: none; z-index: 40; background: rgba(0,0,0,.45) }`
+     这条给应用壳抽屉遮罩用的规则 —— Svelte 迁移后无 Shadow DOM，同名类会直接
+     命中本模态遮罩：opacity 未被组件自有规则覆盖（ Lit 时代 shadow 边界天然隔离），
+     表现为「DOM 在、画面全无」（实测 computed opacity:0，整块模态含 panel 一起隐身）。
+     故本组件遮罩统一前缀 pw-，与全局规则零碰撞。 */
+  .pw-scrim {
     position: fixed;
     inset: 0;
     z-index: 1000;
@@ -213,6 +220,9 @@
   @keyframes ahpd-fade {
     from {
       opacity: 0;
+    }
+    to {
+      opacity: 1;
     }
   }
   .panel {
@@ -230,9 +240,13 @@
       opacity: 0;
       transform: scale(0.96) translateY(6px);
     }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
-    .scrim,
+    .pw-scrim,
     .panel {
       animation: none;
     }

@@ -51,8 +51,10 @@
 export const mobilePill = `
   /* 断点写法注意：@media 条件必须是字面量 —— lit 的 css 标签模板出于安全考虑
      只接受 CSSResultGroup / number 插值，把条件抽成字符串常量插值会触发 TS2345。
-     条件与项目既有「移动端」约定一致（theme/tokens.ts 触屏样式、base.ts 滚动条隐藏）。 */
-  @media (max-width: 760px):not(.no-pill *),  (pointer: coarse):not(.no-pill *) {
+     条件与项目既有「移动端」约定一致（theme/tokens.ts 触屏样式、base.ts 滚动条隐藏）。
+     排除 .no-pill 子树的 :not() 只能写在下方选择器上 —— @media 条件不支持 :not()
+     （写了整条 @media 判 invalid、内部规则全部丢弃，曾致移动端胶囊样式整体失效）。 */
+  @media (max-width: 760px), (pointer: coarse) {
     /* ═══ 1) 胶囊形 + 去描边 ═══
        直接命中 button 元素即可覆盖所有组件自带的 border-radius：
        因 !important 优先于任意非 important 声明，无需再堆特异性。
@@ -79,7 +81,7 @@ export const mobilePill = `
     .collapse-btn:not(.no-pill *) {
       background: var(--ah-surface-2) !important;
     }
-    /* 工作台磁贴：既是按钮也是卡片。原底色写的是 var(--ah-surface:not(.no-pill *),  ...)，
+    /* 工作台磁贴：既是按钮也是卡片。原底色写的是 var(--ah-surface, ...)，
        而主题令牌只定义了 --ah-surface-1/2/3（--ah-surface 未定义 → 落到几乎不可见的
        2% 白兜底）。桌面端靠描边撑出卡片轮廓，移动端去掉描边后必须给卡片级底色。 */
     .tile:not(.no-pill *) {

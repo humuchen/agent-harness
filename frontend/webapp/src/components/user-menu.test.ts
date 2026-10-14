@@ -72,8 +72,8 @@ describe('UserMenu（「我的」页覆盖层）', () => {
   it('standalone 默认不渲染设置抽屉与改密模态', async () => {
     const inst = await mountStandalone();
     expect(document.body.querySelector('.overlay')).toBeFalsy();
-    // 改密模态（PasswordDialog）关闭时渲染为空（.scrim 仅打开态存在）
-    expect(document.body.querySelector('.scrim')).toBeFalsy();
+    // 改密模态（PasswordDialog）关闭时渲染为空（.pw-scrim 仅打开态存在）
+    expect(document.body.querySelector('.pw-scrim')).toBeFalsy();
     unmount(inst);
   });
 
@@ -114,13 +114,13 @@ describe('UserMenu（「我的」页覆盖层）', () => {
     itemByLabel('修改密码').click();
     await tick();
 
-    // PasswordDialog 打开态渲染 .scrim 遮罩
-    expect(document.body.querySelector('.scrim')).toBeTruthy();
+    // PasswordDialog 打开态渲染 .pw-scrim 遮罩
+    expect(document.body.querySelector('.pw-scrim')).toBeTruthy();
 
     signalRouteChange();
     await tick();
 
-    expect(document.body.querySelector('.scrim')).toBeFalsy();
+    expect(document.body.querySelector('.pw-scrim')).toBeFalsy();
     unmount(inst);
   });
 
