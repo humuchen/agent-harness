@@ -127,18 +127,12 @@
             if (e.key === 'Enter') void createSession();
           }}
         />
-        <button
-          class="primary"
-          disabled={busy}
-          onclick={() => void createSession()}
-        >
+        <button disabled={busy} onclick={() => void createSession()}>
           创建会话
         </button>
       </div>
       {#if items.length === 0}
-        <div class="empty">
-          暂无沙箱会话，输入目标 URL 后点击「创建会话」。
-        </div>
+        <div class="empty">暂无沙箱会话，输入目标 URL 后点击「创建会话」。</div>
       {:else}
         <ul class="sessions">
           {#each items as s}
@@ -148,13 +142,8 @@
               <span class="url" title={s.targetUrl ?? 'about:blank'}
                 >{s.targetUrl ?? 'about:blank'}</span
               >
-              <span class="meta"
-                >{new Date(s.createdAt).toLocaleString()}</span
-              >
-              <button
-                class="destroy"
-                onclick={() => void destroySession(s.id)}
-              >
+              <span class="meta">{new Date(s.createdAt).toLocaleString()}</span>
+              <button class="destroy" onclick={() => void destroySession(s.id)}>
                 销毁
               </button>
             </li>

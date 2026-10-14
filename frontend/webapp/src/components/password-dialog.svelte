@@ -15,8 +15,7 @@
    *  - 新密码客户端 PBKDF2 派生后提交（P1-14），明文新密码不出网；旧密码仍需服务端校验。
    *
    * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / 登录页）一致；深浅主题自适应。
-   * 原 :host 为 display:contents → 根壳 .pw-root（display:contents），经 portal action
-   * 直挂 document.body（真机浮层存活模式，见下方 portal 注释）。
+   * 原 :host 为 display:contents → 根壳 .pw-root（display:contents）。
    */
   import { onDestroy, onMount } from 'svelte';
   import { changePassword, derivePassword, bytesToHex } from '../api';
@@ -35,25 +34,6 @@
   let busy = $state(false);
 
   let rootEl: HTMLElement | undefined = $state();
-
-  /**
-   * 模态壳直挂 document.body（Svelte portal action）。
-   *
-   * 背景：全站浮层里 ah-modal / 通知宿主均挂 body（真机已验证可用），而本模态此前
-   * 就地渲染在 `.content > .me-view > 组件根` 深处 —— 真机 App 壳的层叠/裁剪上下文
-   * 曾吞掉就地渲染浮层的绘制（"盒子在而画面全无"，见 model-picker 801221e 的同类
-   * 案例与修复），表现为点「修改密码」后弹窗不出现。scrim 本身是 position:fixed，
-   * 移动挂载点对桌面浏览器零视觉差异；对真机则彻底脱离应用壳的包含块。
-   * 组件实例与 bind:open 响应式不受 DOM 位置影响（Svelte 节点搬运不破坏事件/绑定）。
-   */
-  function portal(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.remove();
-      }
-    };
-  }
 
   /** 上一次 open 快照：仅在 false → true 跳变时重置草稿（对齐原 willUpdate 语义）。 */
   let wasOpen = false;
@@ -131,7 +111,7 @@
   }
 </script>
 
-<div class="pw-root no-pill" bind:this={rootEl} use:portal>
+<div class="pw-root no-pill" bind:this={rootEl}>
   {#if open}
     <div
       class="scrim"
