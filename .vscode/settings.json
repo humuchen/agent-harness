@@ -1,0 +1,7 @@
+{
+  // 使用工作区 TypeScript（6.0.3），避免 IDE 内置旧版 TS 加载不了
+  // tsconfig.json 中 moduleResolution: "bundler" 及 svelte 通配模块声明
+  "typescript.tsdk": "node_modules/typescript/lib",
+  // 打开 .ts 文件时自动提示切换到工作区 TS 版本
+  "typescript.enablePromptUseWorkspaceTsdk": true
+}
