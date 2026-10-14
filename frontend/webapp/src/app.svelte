@@ -34,6 +34,8 @@
   import { TopProgressBar } from './top-progress-bar';
   import { PullToRefreshController } from './pull-refresh';
   import { APP_EVENTS } from './app-events';
+  // 触感反馈：Tab 切换给一次「刻度感」振动（手机端导航质感）。
+  import { hapticSelection } from './utils/haptics';
 
   // 各面板组件（常驻挂载，visible 控制显隐）
   import Workspace from './workspace.svelte';
@@ -459,6 +461,8 @@
     }
     // 路由切换时显示顶部进度条，加载完成后隐藏
     if (prevTab !== next) {
+      // 触感反馈：真实发生切换时才给（初始挂载/重复点同一 Tab 不打扰）。
+      hapticSelection();
       // 切换 Tab 时关闭所有覆盖层，避免旧抽屉/模态悬浮到新页面。
       closeAllOverlays();
       window.dispatchEvent(new Event(APP_EVENTS.barStart));

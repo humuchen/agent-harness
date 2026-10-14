@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.stripDataUrlPrefix = exports.uploadArtifact = exports.notificationController = exports.offlineCacheController = exports.biometricAuthController = exports.fileUploadController = exports.deepLinkController = exports.pushNotificationController = void 0;
+exports.stripDataUrlPrefix = exports.uploadArtifact = exports.HAPTICS_ENABLED_KEY = exports.hapticsController = exports.notificationController = exports.offlineCacheController = exports.biometricAuthController = exports.fileUploadController = exports.deepLinkController = exports.pushNotificationController = void 0;
 /**
  * 移动端入口
  *
@@ -25,6 +25,9 @@ var offline_cache_1 = require("./plugins/offline-cache");
 Object.defineProperty(exports, "offlineCacheController", { enumerable: true, get: function () { return offline_cache_1.offlineCacheController; } });
 var local_notification_1 = require("./plugins/local-notification");
 Object.defineProperty(exports, "notificationController", { enumerable: true, get: function () { return local_notification_1.notificationController; } });
+var haptics_1 = require("./plugins/haptics");
+Object.defineProperty(exports, "hapticsController", { enumerable: true, get: function () { return haptics_1.hapticsController; } });
+Object.defineProperty(exports, "HAPTICS_ENABLED_KEY", { enumerable: true, get: function () { return haptics_1.HAPTICS_ENABLED_KEY; } });
 var artifacts_client_1 = require("./plugins/artifacts-client");
 Object.defineProperty(exports, "uploadArtifact", { enumerable: true, get: function () { return artifacts_client_1.uploadArtifact; } });
 Object.defineProperty(exports, "stripDataUrlPrefix", { enumerable: true, get: function () { return artifacts_client_1.stripDataUrlPrefix; } });

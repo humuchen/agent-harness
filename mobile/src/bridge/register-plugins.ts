@@ -12,6 +12,7 @@ import { Preferences } from '@capacitor/preferences';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { Filesystem } from '@capacitor/filesystem';
 import { Camera } from '@capacitor/camera';
+import { Haptics } from '@capacitor/haptics';
 
 export interface PluginRegistry {
   app: typeof App;
@@ -19,6 +20,7 @@ export interface PluginRegistry {
   pushNotifications: typeof PushNotifications;
   filesystem: typeof Filesystem;
   camera: typeof Camera;
+  haptics: typeof Haptics;
   isNative: boolean;
 }
 
@@ -37,6 +39,7 @@ export function getPlugins(): PluginRegistry {
     pushNotifications: PushNotifications,
     filesystem: Filesystem,
     camera: Camera,
+    haptics: Haptics,
     isNative
   };
   return registry;

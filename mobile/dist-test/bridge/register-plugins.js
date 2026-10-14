@@ -17,6 +17,7 @@ const preferences_1 = require("@capacitor/preferences");
 const push_notifications_1 = require("@capacitor/push-notifications");
 const filesystem_1 = require("@capacitor/filesystem");
 const camera_1 = require("@capacitor/camera");
+const haptics_1 = require("@capacitor/haptics");
 let registry = null;
 /**
  * 获取插件注册表（单例）。
@@ -32,6 +33,7 @@ function getPlugins() {
         pushNotifications: push_notifications_1.PushNotifications,
         filesystem: filesystem_1.Filesystem,
         camera: camera_1.Camera,
+        haptics: haptics_1.Haptics,
         isNative
     };
     return registry;

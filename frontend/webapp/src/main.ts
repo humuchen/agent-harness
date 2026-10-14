@@ -16,6 +16,9 @@ import '@humuchen/mac-ui';
 
 import { initTheme, initBrand } from './theme/tokens';
 import { installGlobalStyles } from './styles-global';
+// 触感反馈：启动时预热开关缓存（读 Preferences/localStorage），
+// 避免首次交互时才异步加载偏好（那一下会按默认「开」放行，可能绕过关闭设置）。
+import { initHaptics } from './utils/haptics';
 
 // 通知宿主（常驻 document.body，渲染 ah-notification.svelte.ts 的状态机）
 import AhNotificationHost from './components/ah-notification.svelte';
@@ -106,6 +109,9 @@ const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'succ
 
 // P3-1：加载品牌配置并应用主题色。脱离品牌不影响应用主流程。
 initBrand().catch(() => {});
+
+// 触感偏好预热（fire-and-forget，失败静默）：与 initBrand 同理，绝不影响启动主流程。
+void initHaptics().catch(() => {});
 
 async function bootstrap(): Promise<void> {
   if (isAuthed()) {

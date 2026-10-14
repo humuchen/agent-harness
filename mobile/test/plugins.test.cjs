@@ -5,6 +5,8 @@
 // - biometric-auth：token AES-GCM 加密落盘往返（Node webcrypto）、信封损坏→null（fail-safe）、
 //   clearToken 连密钥一并清除、每安装密钥跨调用稳定
 // - push-notification / deep-link：非原生环境（isNative=false）全部 no-op
+// - haptics：impact/notification/selection/vibrate → 原生插件映射、用户开关
+//   （ah:haptics:enabled=false 时全部静默）、原生抛错 fail-safe、非原生 no-op
 //
 // 运行：pnpm --filter @agent-harness/mobile run test（先以 tsconfig.test.json 编译 src → dist-test）
 const test = require('node:test');
@@ -66,11 +68,12 @@ function makePrefsMock() {
   };
 }
 
-function inject({ prefs, isNative = false } = {}) {
+function inject({ prefs, isNative = false, haptics } = {}) {
   const { setPluginsForTest } = require(process.cwd() + '/dist-test/bridge/register-plugins.js');
   setPluginsForTest({
     preferences: prefs ?? makePrefsMock(),
     isNative,
+    ...(haptics ? { haptics } : {}),
   });
 }
 
@@ -223,6 +226,105 @@ test('非原生环境：push/deep-link 控制器安全 no-op', SKIP, async () =>
     await assert.doesNotReject(() => pushNotificationController.register(), 'web 环境注册应静默跳过');
     assert.doesNotThrow(() => pushNotificationController.onNotification(() => {}));
     assert.strictEqual(await deepLinkController.getInitialUrl(), null, 'web 环境无初始 Deep Link');
+  } finally {
+    reset();
+  }
+});
+
+// ─── haptics（触感反馈）──────────────────────────────────────────────────────
+
+function makeHapticsMock() {
+  const calls = [];
+  return {
+    calls,
+    impact: async (o) => { calls.push(['impact', o]); },
+    notification: async (o) => { calls.push(['notification', o]); },
+    selectionStart: async () => { calls.push(['selectionStart']); },
+    selectionChanged: async () => { calls.push(['selection']); },
+    selectionEnd: async () => { calls.push(['selectionEnd']); },
+    vibrate: async (o) => { calls.push(['vibrate', o]); },
+  };
+}
+
+test('haptics: 原生环境 impact/notification/selection/vibrate 映射到插件调用', SKIP, async () => {
+  const { hapticsController } = require(process.cwd() + '/dist-test/plugins/haptics.js');
+  const haptics = makeHapticsMock();
+  inject({ isNative: true, haptics });
+  try {
+    await hapticsController.impact('light');
+    assert.deepStrictEqual(haptics.calls.pop(), ['impact', { style: 'LIGHT' }]);
+    await hapticsController.impact();
+    assert.deepStrictEqual(haptics.calls.pop(), ['impact', { style: 'MEDIUM' }], '默认 medium');
+    await hapticsController.impact('heavy');
+    assert.deepStrictEqual(haptics.calls.pop(), ['impact', { style: 'HEAVY' }]);
+    await hapticsController.notification('success');
+    assert.deepStrictEqual(haptics.calls.pop(), ['notification', { type: 'SUCCESS' }]);
+    await hapticsController.notification('warning');
+    assert.deepStrictEqual(haptics.calls.pop(), ['notification', { type: 'WARNING' }]);
+    await hapticsController.notification('error');
+    assert.deepStrictEqual(haptics.calls.pop(), ['notification', { type: 'ERROR' }]);
+    await hapticsController.selection();
+    assert.deepStrictEqual(haptics.calls.pop(), ['selection']);
+    await hapticsController.vibrate(200);
+    assert.deepStrictEqual(haptics.calls.pop(), ['vibrate', { duration: 200 }]);
+  } finally {
+    reset();
+  }
+});
+
+test('haptics: 开关关闭后全部静默 no-op（ah:haptics:enabled 持久化）', SKIP, async () => {
+  const { hapticsController } = require(process.cwd() + '/dist-test/plugins/haptics.js');
+  const prefs = makePrefsMock();
+  const haptics = makeHapticsMock();
+  inject({ prefs, isNative: true, haptics });
+  try {
+    assert.strictEqual(await hapticsController.isEnabled(), true, '默认开启');
+    await hapticsController.setEnabled(false);
+    assert.strictEqual(prefs._store.get('ah:haptics:enabled'), 'false', '开关应持久化');
+    assert.strictEqual(await hapticsController.isEnabled(), false);
+    await hapticsController.impact('heavy');
+    await hapticsController.notification('error');
+    await hapticsController.selection();
+    await hapticsController.vibrate(300);
+    assert.strictEqual(haptics.calls.length, 0, '关闭后不得触发任何原生触感');
+    await hapticsController.setEnabled(true);
+    await hapticsController.impact();
+    assert.strictEqual(haptics.calls.length, 1, '重新开启后恢复触发');
+  } finally {
+    reset();
+  }
+});
+
+test('haptics: 原生调用抛错 fail-safe（插件缺失/被拒绝不阻断业务）', SKIP, async () => {
+  const { hapticsController } = require(process.cwd() + '/dist-test/plugins/haptics.js');
+  const broken = {
+    impact: async () => { throw new Error('native only'); },
+    notification: async () => { throw new Error('native only'); },
+    selectionChanged: async () => { throw new Error('native only'); },
+    vibrate: async () => { throw new Error('native only'); },
+  };
+  inject({ isNative: true, haptics: broken });
+  try {
+    await assert.doesNotReject(() => hapticsController.impact());
+    await assert.doesNotReject(() => hapticsController.notification('success'));
+    await assert.doesNotReject(() => hapticsController.selection());
+    await assert.doesNotReject(() => hapticsController.vibrate());
+  } finally {
+    reset();
+  }
+});
+
+test('haptics: 非原生环境安全 no-op（Node 无 Vibration API，isEnabled=false）', SKIP, async () => {
+  const { hapticsController } = require(process.cwd() + '/dist-test/plugins/haptics.js');
+  const haptics = makeHapticsMock();
+  inject({ isNative: false, haptics });
+  try {
+    await assert.doesNotReject(() => hapticsController.impact('light'));
+    await assert.doesNotReject(() => hapticsController.notification('error'));
+    await assert.doesNotReject(() => hapticsController.selection());
+    await assert.doesNotReject(() => hapticsController.vibrate());
+    assert.strictEqual(haptics.calls.length, 0, '非原生不得调用原生桥');
+    assert.strictEqual(await hapticsController.isEnabled(), false, '无 Vibration API 时视为关闭');
   } finally {
     reset();
   }

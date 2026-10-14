@@ -514,6 +514,9 @@
 <script lang="ts">
   import { onMount, onDestroy, tick, untrack } from 'svelte';
 
+  // 触感反馈：发送 / 下拉刷新 / 失败时的振动（手机端交互质感）。
+  import { hapticTap, hapticWarning, hapticError } from './utils/haptics';
+
   // 迁移后的子组件（原自定义元素副作用导入 → Svelte 组件）。
   import AhSwipeItem from './components/ah-swipe-item.svelte';
   import AhDrawer from './components/ah-drawer.svelte';
@@ -1532,6 +1535,8 @@
   /** 触发下拉刷新：重拉首屏会话列表（显式用户操作，失败弹提示）。 */
   async function triggerPullRefresh() {
     pullRefreshing = true;
+    // 触感反馈：松手触发刷新时给一次轻震，与原生列表的刷新手感对齐。
+    hapticTap('light');
     const inner = sessionInnerEl;
     const ind = pullIndicatorEl;
     const hint = pullHintEl;
@@ -2357,6 +2362,7 @@
 
     // BYOK 发送前 gating。
     if (mode === 'real' && !llmReady) {
+      hapticWarning();
       notify.warning(
         '尚未配置可用的 LLM API Key，无法发起真实对话。请到「设置 → 模型服务商」填入你的 OpenRouter Key。',
         { title: '需要 API Key', key: 'pk-required' }
@@ -2376,6 +2382,7 @@
     try {
       sessionId = await ensureSession();
     } catch (e) {
+      hapticError();
       notifyError(e, { title: '新建会话', fallback: '创建会话失败，请重试' });
       return;
     }
@@ -2389,6 +2396,8 @@
       await buildAttachmentDispatchOpts(content, rawAttachments);
 
     clearComposer();
+    // 触感反馈：发送即给一次轻震（不必等流式返回），失败/拦截路径各自有反馈。
+    hapticTap('light');
     await runRt.dispatchPrompt(sessionId, content, imageAttachments, {
       attachments: rawAttachments,
       modelPrompt

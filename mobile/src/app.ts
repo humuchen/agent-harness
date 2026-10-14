@@ -18,4 +18,6 @@ export { fileUploadController } from './plugins/file-upload';
 export { biometricAuthController } from './plugins/biometric-auth';
 export { offlineCacheController } from './plugins/offline-cache';
 export { notificationController } from './plugins/local-notification';
+export { hapticsController, HAPTICS_ENABLED_KEY } from './plugins/haptics';
+export type { HapticStyle, HapticKind } from './plugins/haptics';
 export { uploadArtifact, stripDataUrlPrefix } from './plugins/artifacts-client';

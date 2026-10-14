@@ -30,6 +30,8 @@
    *    两个动作：「清除缓存」只清缓存、无需确认；**「清除数据」会抹掉登录状态与全部偏好，
    *    必须先经 AhModal 二次确认**，完成后广播 `ah-session-cleared` 由入口层切回登录页。
    *  - 外观：主题（深色 / 浅色 / 跟随系统，真实写入 ah-theme）+ 侧边栏默认收起（父级持有偏好）。
+   *    交互分组：触感反馈开关（发送 / Tab 切换 / 任务收尾的振动，原生壳与纯 Web 双通道，
+   *    偏好与 mobile 侧同键 ah:haptics:enabled，见 utils/haptics.ts）。
    *  - 关于：版本号 + 界面语言（只读）。品牌信息不出现在本页——品牌统一收敛到「我的」页，
    *    故此处不渲染品牌卡与版权脚（桌面侧栏品牌块亦已隐藏，见 styles/base.ts）。
    *
@@ -58,6 +60,14 @@
   import { getReminderUnread, clearReminderUnread } from '../plugin-notify';
   import ProviderKeySettings from './provider-key-settings.svelte';
   import { APP_EVENTS } from '../app-events';
+  // 触感反馈开关：与 haptics 工具同一模块读写（原生 Preferences / 纯 Web localStorage）。
+  import {
+    initHaptics,
+    isHapticsEnabled,
+    setHapticsEnabled,
+    hapticsAvailable,
+    hapticTap
+  } from '../utils/haptics';
 
   /** 应用版本号，build-time 由 vite define（__APP_VERSION__）注入，取自 package.json。 */
   // @ts-ignore - vite define 注入
@@ -169,6 +179,11 @@
     `<circle cx="5" cy="6" r="2.2" /><circle cx="17" cy="4.5" r="2.2" /><circle cx="17" cy="12" r="2.2" /><circle cx="13" cy="19" r="2.2" /><path d="M7 6.8l8 6.6M7 5.4l8-1.5M13 16.8V14.2" />`,
     '1.7'
   );
+  /** 触感反馈行图标：手机两侧的振动波。 */
+  const ICON_VIBRATE = svgIcon(
+    `<rect x="8" y="3" width="8" height="18" rx="2" /><path d="M4.5 9.5 3 10v4l1.5.5M19.5 9.5 21 10v4l-1.5.5M2 12h1M21 12h1" />`,
+    '1.7'
+  );
 
   /**
    * 人读字节数；null / 不可用显示为破折号。
@@ -235,6 +250,14 @@
    * 设置页改完即生效，无需跨组件事件总线；两入口（设置 Tab / 我的→设置抽屉）
    * 各持一个组件实例，均从同一 key 初始化，重新进入即读到最新值。 */
   let planDagEnabled = $state(true);
+  /**
+   * 触感反馈开关（手机端交互振动）。单一事实源在 utils/haptics（原生壳经
+   * Capacitor Preferences、纯 Web 经 localStorage，键均为 ah:haptics:enabled）。
+   * 此处只持有 UI 镜像：onMount 时 initHaptics() 读回真实值对齐。
+   */
+  let hapticsOn = $state(true);
+  /** 当前环境是否有触感通道（原生 Haptics / Web Vibration API）：只影响说明文案。 */
+  let hapticsSupported = $state(false);
   /** 系统与网络：服务端 LLM 连通状态（null = 尚未检测）。 */
   let llmLive: boolean | null = $state(null);
   let checking = $state(false);
@@ -273,6 +296,12 @@
       // 计划多 Agent 执行开关：单一事实源 isPlanDagEnabled()（localStorage 不可用时恒为默认「开」）。
       planDagEnabled = isPlanDagEnabled();
     }
+    // 触感反馈：偏好读取是异步的（原生壳走 Preferences 桥），init 后回填真实值，
+    // 保证设置页显示与「实际震不震」一致（main.ts 已预热，这里通常立即命中缓存）。
+    hapticsSupported = hapticsAvailable();
+    void initHaptics().then(() => {
+      hapticsOn = isHapticsEnabled();
+    });
     unread = getReminderUnread().count;
   });
 
@@ -399,6 +428,18 @@
     planDagEnabled = on;
     setPlanDagEnabled(on);
     notify.success(on ? '计划多 Agent 执行已开启' : '计划多 Agent 执行已关闭');
+  }
+
+  /**
+   * 触感反馈开关变更：先更新 UI 镜像（立即生效），再持久化（setHapticsEnabled
+   * 内部同步缓存）。开启时立刻给一次轻震作为「效果确认」；关闭时不震。
+   */
+  async function toggleHaptics(): Promise<void> {
+    const on = !hapticsOn;
+    hapticsOn = on;
+    await setHapticsEnabled(on);
+    if (on) hapticTap('light');
+    notify.success(on ? '触感反馈已开启' : '触感反馈已关闭');
   }
 
   function clearUnread(): void {
@@ -739,6 +780,28 @@
                 aria-checked={planDagEnabled ? 'true' : 'false'}
                 aria-label="计划多 Agent 执行"
                 onclick={() => togglePlanDag()}
+              ></button>
+            </div>
+          </div>
+          <div class="sec-title">交互</div>
+          <div class="card">
+            <div class="row">
+              <span class="ri">{@html ICON_VIBRATE}</span>
+              <span class="rc">
+                <span class="rl">触感反馈</span>
+                <span class="rd">
+                  {hapticsSupported
+                    ? '发送消息、切换 Tab、任务完成时轻微振动（手机端）'
+                    : '当前设备或环境不支持触感反馈，开启后不会有效果'}
+                </span>
+              </span>
+              <button
+                class="toggle"
+                class:on={hapticsOn}
+                role="switch"
+                aria-checked={hapticsOn ? 'true' : 'false'}
+                aria-label="触感反馈"
+                onclick={() => toggleHaptics()}
               ></button>
             </div>
           </div>
