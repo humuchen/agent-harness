@@ -1,4 +1,3 @@
-
 export const responsive = `
   /* ===================== 响应式适配 ===================== */
   /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。
@@ -66,7 +65,6 @@ export const responsive = `
       justify-content: space-between;
       gap: 8px;
       padding: 12px 14px;
-      margin-top: 40px;
     }
     .sidebar .new-btn {
       width: auto;
