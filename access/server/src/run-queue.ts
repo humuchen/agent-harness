@@ -67,6 +67,11 @@ const MEMORY_CHECK_INTERVAL_MS = Number(process.env.JOB_MEMORY_CHECK_MS ?? 5000)
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 export type JobPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+/** 终态判定：done / failed / cancelled 均不再需要断连宽限中止（已无在飞执行可杀）。 */
+function isTerminalStatus(status: JobStatus): boolean {
+  return status === 'done' || status === 'failed' || status === 'cancelled';
+}
+
 /** 优先级映射：数字越小越优先 */
 const PRIORITY_SCORE: Record<JobPriority, number> = {
   urgent: 0,
@@ -169,6 +174,15 @@ const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
 // 默认放宽到 10 分钟，可用 PLAN_TASK_TIMEOUT_MS 环境变量覆盖。
 export const PLAN_TASK_TIMEOUT_MS =
   Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
+// 断连宽限中止时长（ms）：客户端 SSE 断开后，仅当该 job 已无任何订阅者时才预约
+// 延迟中止；宽限期内客户端凭 jobId 重订阅即取消（cancelDisconnectAbort）。
+// 背景（P1-1 演进）：旧行为「断开即中止」会把网络抖动 / 刷新造成的瞬时断连
+// 升级成 job 死亡 —— 重连只能重放到已 abort 的残缺终态（abortedResult 的
+// 「本次运行被取消」+ _done），问答模式表现为「对话到一半断网后无法自动恢复
+// 继续回答」。宽限须大于前端自动重试预算（chat-run-runtime 6 次退避约 31s），
+// 默认 60s；RUN_DISCONNECT_GRACE_MS=0 退化为旧行为（断开即中止）。
+export const RUN_DISCONNECT_GRACE_MS =
+  Number(process.env.RUN_DISCONNECT_GRACE_MS ?? 60_000) || 0;
 // jobs 表上限；超出后惰性淘汰「已结束且无人订阅」的最旧 job，防内存泄漏。
 const JOBS_MAX = Number(process.env.RUN_JOBS_MAX ?? 500) || 500;
 // 排队背压上限（防慢消费者无限堆积）：待执行队列长度达到该值时 submit 直接拒绝。
@@ -264,6 +278,13 @@ export class RunQueue {
   private launching = new Set<string>();
   /** 持久化后端：默认内存（重启即丢）；RUN_QUEUE_BACKEND=file 时落盘可重放；redis 时共享多实例。 */
   private backend: QueueBackend;
+
+  /**
+   * 断连宽限中止定时器：jobId → timer。客户端 SSE 全部断开后延迟中止在飞 job，
+   * 宽限期内重订阅即取消（见 scheduleDisconnectAbort / cancelDisconnectAbort）。
+   * 替代 P1-1 的「断开即中止」——那会毒化 jobId+since 断线续传。
+   */
+  private disconnectTimers = new Map<string, NodeJS.Timeout>();
 
   /** 是否共享后端（redis/bullmq）：执行由 claim 驱动、事件走 pub/sub 桥；否则走进程内 this.queue。 */
   private shared: boolean;
@@ -756,6 +777,9 @@ export class RunQueue {
     const job = this.jobs.get(id);
     if (!job) return () => {};
     job.subscribers.add(fn);
+    // 有订阅者回归：取消该 job 待执行的断连宽限中止（统一不变量——任何活跃
+    // 订阅都意味着客户端仍在听，job 必须续跑供断线续传）。
+    this.cancelDisconnectAbort(id);
     for (const e of job.events) {
       try {
         fn(e);
@@ -812,6 +836,64 @@ export class RunQueue {
     return this.jobs.get(id);
   }
 
+  /* ------------------------- 断连宽限中止（P1-1 演进） ------------------------- */
+
+  /**
+   * 预约「客户端 SSE 已全部断开」的宽限中止（替代旧「断开即中止」）。
+   *
+   * 为什么不能立即中止：网络抖动 / 页面刷新造成的瞬时断连会让服务端在客户端
+   * 重连前就把 job 打死 —— 重连凭 jobId+since 只能重放到 abortedResult 的
+   * 残缺终态（「本次运行被取消」+ _done），问答模式即「对话到一半断网后
+   * 无法自动恢复继续回答」。计划模式 DAG 早已按同一哲学改为断连不中止
+   * （P5.3/P5.4），这里把问答/普通 run 对齐。
+   *
+   * 语义：
+   * - 宽限期内任意订阅者回归（subscribe / cancelDisconnectAbort）即取消中止；
+   * - 宽限期到且 job 仍非终态、仍无任何订阅者，才 abort（保留 P1-1
+   *   「关浏览器后停止烧 token」的初衷；job 自身看门狗仍是最终兜底）；
+   * - 幂等：已有预约则跳过 —— 断连重试风暴不会顺延宽限窗口；
+   * - delayMs<=0（RUN_DISCONNECT_GRACE_MS=0）：退化为旧行为，同步立即中止。
+   */
+  scheduleDisconnectAbort(jobId: string, delayMs: number): void {
+    if (delayMs <= 0) {
+      this.abortIfUnsubscribed(jobId);
+      return;
+    }
+    if (this.disconnectTimers.has(jobId)) return;
+    const job = this.jobs.get(jobId);
+    if (!job || isTerminalStatus(job.status)) return;
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(jobId);
+      this.abortIfUnsubscribed(jobId);
+    }, delayMs);
+    // 宽限定时器不应阻止进程退出（测试 / 优雅停机场景）。
+    timer.unref?.();
+    this.disconnectTimers.set(jobId, timer);
+  }
+
+  /**
+   * 取消待执行的断连宽限中止。调用点：客户端凭 jobId 重订阅（handleRun
+   * reconnect 分支 + subscribe 统一不变量）、job 进入终态、停机 / 淘汰。
+   */
+  cancelDisconnectAbort(jobId: string): void {
+    const timer = this.disconnectTimers.get(jobId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.disconnectTimers.delete(jobId);
+  }
+
+  /** 宽限到点（或旧行为直连）：仅当 job 仍非终态且无任何订阅者时才真正中止。 */
+  private abortIfUnsubscribed(jobId: string): void {
+    const job = this.jobs.get(jobId);
+    if (!job || isTerminalStatus(job.status)) return;
+    if (job.subscribers.size > 0) return; // 宽限期内客户端已重连
+    try {
+      job.controller.abort('client disconnected');
+    } catch {
+      /* 忽略重复 abort */
+    }
+  }
+
   /**
    * 同会话是否有任务正在执行（串行化占用中）。
    * 供提交入口提示用户「本条消息已排队等待前序任务」——排队期间此前无任何
@@ -864,7 +946,9 @@ export class RunQueue {
       running: this.running,
       jobs: this.jobs.size,
       sessionsRunning: this.runningSessions.size,
-      memoryCheckTimers: this.memoryCheckTimers.size
+      memoryCheckTimers: this.memoryCheckTimers.size,
+      // 断连宽限中止待执行数（客户端全断开但宽限未到的 job 数）。
+      disconnectTimers: this.disconnectTimers.size
     };
   }
 
@@ -913,6 +997,9 @@ export class RunQueue {
         }
       }
     }
+    // 断连宽限定时器一并清除：停机路径已统一处置在飞任务，无需再补刀。
+    for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
+    this.disconnectTimers.clear();
   }
 
   /** 停止领取轮询并关闭后端连接（测试与进程退出前调用）。 */
@@ -933,6 +1020,9 @@ export class RunQueue {
       );
     }
     this.deferred = [];
+    // 清理所有断连宽限定时器（与 per-job 内存监控定时器同理：不得残留阻止退出）。
+    for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
+    this.disconnectTimers.clear();
     // 清理所有 per-job 内存监控定时器。此前 stop() 遗漏此处：若任务在执行中被 stop
     // （或测试未等任务结束），这些定时器会残留并阻止 Node 进程退出 —— 即测试文件级超时的根因之一。
     for (const [jobId, timer] of this.memoryCheckTimers) {
@@ -998,6 +1088,7 @@ export class RunQueue {
     for (const j of finished) {
       if (over <= 0) break;
       this.jobs.delete(j.id);
+      this.disconnectTimers.delete(j.id);
       over -= 1;
     }
   }
@@ -1626,6 +1717,9 @@ export class RunQueue {
         incCounter('run.failed');
       } finally {
         clearTimeout(watchdog);
+        // job 已进入终态：摘掉待执行的断连宽限中止（此时 abort 已无意义，
+        // 留着反而会在停机/淘汰路径之外多一个定时器引用）。
+        this.cancelDisconnectAbort(job.id);
         // P0-1：执行结束即停续租——claimedAt 不再刷新，租约自然到期（ack 已把
         // claimedAt 删除，续租脚本本身也会返回 0，这里 clearInterval 是防定时器残留）。
         if (leaseRenewTimer) {

@@ -175,7 +175,10 @@ export async function runWithReconnect(
   deps: ReconnectDeps,
   sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = sleep
 ): Promise<void> {
-  const MAX_ATTEMPTS = 6;
+  // 自动重试预算须落在服务端断连宽限窗口内（RUN_DISCONNECT_GRACE_MS 默认 60s）：
+  // 退避 1/2/4/8/8/8/8/8s ≈ 47s < 60s —— 网络抖动在宽限内被自动重连消化，
+  // 超出后才交给「重新连接」横幅手动续传（服务端 job 仍可能存活）。
+  const MAX_ATTEMPTS = 8;
   let attempts = 0;
   let first = true;
   while (true) {

@@ -39,7 +39,7 @@ import {
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
 import { readBody, startSse, writeSseFrame, endSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
-import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
+import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError, RUN_DISCONNECT_GRACE_MS } from '../run-queue';
 import {
   appendChatMessage,
   peekChatSession,
@@ -462,6 +462,9 @@ export async function handleRun(
     }
     jobId = job.id;
   } else {
+    // 断线重连：客户端回来了 —— 取消该 job 待执行的断连宽限中止，job 继续跑，
+    // 本连接经 since 游标无缝续传（宽限中止的语义见 RunQueue.scheduleDisconnectAbort）。
+    runQueue.cancelDisconnectAbort(targetId);
     requireDeps().auditAction('agent.run.reconnect', {
       jobId: targetId,
       role: ctx.role,
@@ -1161,20 +1164,23 @@ export async function handleRun(
     }
   );
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
-  // P1-1：客户端断连时立即中止 in-flight job（用户关浏览器后 agent 继续烧 token 最多 5 分钟 → 改为立即 abort）。
-  // 仅当该 job 无其他活跃订阅者时才 abort（允许多客户端同时订阅同一 job）。
+  // P1-1 演进：客户端 SSE 断开不再「立即」中止 in-flight job。旧行为把网络抖动 /
+  // 刷新造成的瞬时断连升级成 job 死亡 —— 客户端凭 jobId+since 重连时只能重放到
+  // 已 abort 的残缺终态（abortedResult 的「本次运行被取消」+ _done），问答模式
+  // 即「对话到一半断网后无法自动恢复继续回答」。改为宽限中止：仅当本 job 已无
+  // 任何订阅者时才预约延迟 abort（RUN_DISCONNECT_GRACE_MS，默认 60s > 前端
+  // 自动重试预算）；宽限期内重订阅即取消，无缝续传。计划模式 DAG 早已按同一
+  // 哲学不断开中止（P5.3/P5.4），此处对齐。「关浏览器」场景由宽限到期补刀，
+  // 保留 P1-1 停止烧 token 的初衷；job 自身看门狗（JOB_TIMEOUT_MS）仍是最终兜底。
+  // 订阅者判定：unsub 后为 0 才预约 —— 旧代码 `<= 1` 会在「恰好另一个客户端
+  // 仍在订阅」时误杀 job（半开死连接迟到 close + 活跃重连方共存的场景）。
   res.on('close', async () => {
     closed = true;
     clearInterval(pingTimer);
     unsub();
     const remainingSubs = [...(runQueue.get(jobId)?.subscribers ?? [])];
-    if (remainingSubs.length <= 1) {
-      // 这是最后一个订阅者，立即中止在飞任务
-      try {
-        runQueue.get(jobId)?.controller?.abort('client disconnected');
-      } catch {
-        /* 忽略 */
-      }
+    if (remainingSubs.length === 0) {
+      runQueue.scheduleDisconnectAbort(jobId, RUN_DISCONNECT_GRACE_MS);
     }
   });
   return;
