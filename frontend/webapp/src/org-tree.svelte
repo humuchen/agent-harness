@@ -73,7 +73,18 @@
     <div class="row">
       <span
         class="toggle"
+        role="button"
+        tabindex="0"
+        aria-label={isCollapsed ? '展开' : '收起'}
         onclick={hasChildren ? () => toggle(node.id) : undefined}
+        onkeydown={hasChildren
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggle(node.id);
+              }
+            }
+          : undefined}
         >{hasChildren ? (isCollapsed ? '▶' : '▼') : ''}</span
       >
       <span class="badge {isDept ? 'dept' : ''}"

@@ -420,7 +420,16 @@
         <div class="card mcp-server-list">
           <div
             class="section-title collapsible"
+            role="button"
+            tabindex="0"
+            aria-expanded={serversExpanded}
             onclick={() => (serversExpanded = !serversExpanded)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                serversExpanded = !serversExpanded;
+              }
+            }}
           >
             <span>已接入</span>
             <span class="chevron">{serversExpanded ? '▼' : '▶'}</span>
@@ -431,11 +440,23 @@
                 <li class="mcp-server-item">
                   <div
                     class="mcp-server-header"
+                    role="button"
+                    tabindex="0"
+                    aria-expanded={!!toolsExpanded[s.name]}
                     onclick={() =>
                       (toolsExpanded = {
                         ...toolsExpanded,
                         [s.name]: !toolsExpanded[s.name]
                       })}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toolsExpanded = {
+                          ...toolsExpanded,
+                          [s.name]: !toolsExpanded[s.name]
+                        };
+                      }
+                    }}
                   >
                     <div>
                       <b>{s.name}</b> · {s.status} · {s.toolCount}

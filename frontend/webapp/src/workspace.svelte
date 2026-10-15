@@ -323,7 +323,15 @@
           {#each recent as s}
             <div
               class="recent-item"
+              role="button"
+              tabindex="0"
               onclick={() => gotoSession(s)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  gotoSession(s);
+                }
+              }}
               title={s.title}
             >
               <span class="recent-title">{s.title || '未命名会话'}</span>

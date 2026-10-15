@@ -80,7 +80,11 @@ export function scopeCss(css: string, scope: string): string {
         trimmed.startsWith('@font-face') ||
         trimmed.startsWith('@property')
       ) {
-        out.push(prelude + block);
+        // ⚠️ block 从 '{' 之后开始（开括号已被消费），必须补回 '{'——
+        //    否则整段 @keyframes 变成无头规则，浏览器解析报错后还会
+        //    连带吞掉紧随其后的规则（如 .ctx-ring-wrap 的 position:relative，
+        //    导致上下文用量弹层锚点失效、跑到整个 composer 上）。
+        out.push(prelude + '{' + block);
       } else if (/^@(media|supports|container|layer)\b/.test(trimmed)) {
         out.push(prelude + '{' + scopeCss(block.slice(1, -1), scope) + '}');
       } else {

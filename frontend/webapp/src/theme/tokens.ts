@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------
  * - 语义化令牌（--ah-*）与具体色值解耦：组件只引用 --ah-*，绝不写死颜色。
  * - 通过 <html data-theme="dark|light"> 切换主题。CSS 自定义属性会沿 shadow DOM
- *   边界向上继承，因此单个注入 <head> 的全局样式表即可驱动所有 Lit 组件。
+ *   边界向上继承，因此单个注入 <head> 的全局样式表即可驱动所有组件。
  * - 扩展新主题 = 新增一个 :root[data-theme="x"] 块，组件零改动。
  */
 
@@ -30,6 +30,7 @@ const darkTokens = `
   --ah-warning-soft: rgba(255, 214, 10, 0.15);
   --ah-danger: #FF453A;
   --ah-danger-soft: rgba(255, 69, 58, 0.15);
+
   /* 代码语法高亮（hljs token → 语义色映射）。
      hljs 只输出 <span class>，不输出内联样式 —— 因此配色可以完全由这套令牌接管，
      这也是选它而非 Shiki 的原因（Shiki 倾向内联 style，会迫使净化层放开 style 白名单）。
@@ -47,6 +48,7 @@ const darkTokens = `
   --ah-hl-ins-bg: rgba(46, 160, 67, 0.15);
   --ah-hl-del: #FFA198;
   --ah-hl-del-bg: rgba(248, 81, 73, 0.15);
+
   /* 横向滚动容器的边缘阴影（.md-table-wrap 等）：
      用于提示「右侧还有内容」，因为本产品在 ≤760px 全局隐藏了滚动条。
      阴影画在内容**下方**（背景层），文字本身不会被淡化，因此需要较高不透明度
@@ -87,6 +89,7 @@ const lightTokens = `
   --ah-warning-soft: rgba(176, 116, 0, 0.12);
   --ah-danger: #D4261A;
   --ah-danger-soft: rgba(212, 38, 26, 0.12);
+
   /* 代码高亮浅色映射：GitHub Light。亮色下关键字/字符串若沿用暗色的高亮色，
      在白底上会出现明显不足的对比度（如 #A5D6FF 接近不可读），故必须独立取值。 */
   --ah-code-bg: #F4F6FA;
@@ -102,6 +105,7 @@ const lightTokens = `
   --ah-hl-ins-bg: rgba(46, 160, 67, 0.12);
   --ah-hl-del: #82071E;
   --ah-hl-del-bg: rgba(248, 81, 73, 0.12);
+
   /* 见暗色同名令牌说明。亮色底本身已足够亮，0.16 即可形成可辨边缘。 */
   --ah-scroll-shadow: rgba(0, 0, 0, 0.16);
   --ah-radius-sm: 8px;
@@ -149,6 +153,7 @@ export const THEME_CSS = `
 @property --ah-warning-soft  { syntax: '<color>';  inherits: true; initial-value: rgba(255,214,10,0.15); }
 @property --ah-danger        { syntax: '<color>';  inherits: true; initial-value: #FF453A; }
 @property --ah-danger-soft   { syntax: '<color>';  inherits: true; initial-value: rgba(255,69,58,0.15); }
+
 /* 代码高亮令牌同样注册，否则主题切换时代码块颜色会瞬间跳变，
    与页面其余部分的 0.45s 过渡不一致（代码块面积大，跳变很显眼）。 */
 @property --ah-code-bg   { syntax: '<color>';  inherits: true; initial-value: #0F1420; }
@@ -227,6 +232,7 @@ html, body {
     -webkit-tap-highlight-color: transparent;
   }
 }
+
 /* 移动端按钮胶囊化：外部组件库 @humuchen/mac-ui 的按钮圆角覆盖。
    为什么必须写在文档级（此处）而不是业务组件的 shadow 样式里：
    mac-ui 的按钮有两个来源，二者都不在业务组件的 shadow root 内 ——
@@ -415,6 +421,7 @@ export function syncNativeStatusBar(theme: Theme): void {
       }
     ).Capacitor;
     if (!cap?.isNativePlatform?.()) return;
+
     // native 端 StatusBar.setStyle(style) 实际语义（StatusBar.java:51）：
     //   style='DARK'  → setAppearanceLightStatusBars(false) → 深色背景 + 浅色图标（白字）→ 配深色主题
     //   style='LIGHT' → setAppearanceLightStatusBars(true)  → 浅色背景 + 深色图标（黑字）→ 配浅色主题

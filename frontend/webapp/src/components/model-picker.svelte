@@ -738,8 +738,17 @@
             <div class="group">
               <div
                 class="group-title"
+                role="button"
+                tabindex="0"
+                aria-expanded={!groupCollapsed}
                 onclick={() => {
                   collapsed = { ...collapsed, [name]: !groupCollapsed };
+                }}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    collapsed = { ...collapsed, [name]: !groupCollapsed };
+                  }
                 }}
               >
                 {name}
@@ -771,7 +780,15 @@
                         <div
                           class="item custom-item"
                           class:active
+                          role="button"
+                          tabindex="0"
                           onclick={() => pick(id)}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              pick(id);
+                            }
+                          }}
                         >
                           <span class="custom-actions">
                             <button
@@ -852,7 +869,20 @@
                         {/snippet}
                       </AhSwipeItem>
                     {:else}
-                      <div class="item" class:active onclick={() => pick(id)}>
+                      <div
+                        class="item"
+                        class:active
+                        data-haptic
+                        role="button"
+                        tabindex="0"
+                        onclick={() => pick(id)}
+                        onkeydown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            pick(id);
+                          }
+                        }}
+                      >
                         <span class="name">{displayName(id)}</span>
                       </div>
                     {/if}

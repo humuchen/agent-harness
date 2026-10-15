@@ -411,7 +411,20 @@
           </div>
         {:else}
           {#each planList as p}
-            <div class="list-item" onclick={() => openPlan(p.id)}>
+            <div
+              class="list-item"
+              data-haptic
+              role="button"
+              tabindex="0"
+              aria-label={p.title}
+              onclick={() => openPlan(p.id)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  openPlan(p.id);
+                }
+              }}
+            >
               <span class="li-title">{p.title}</span>
               <span class="li-progress">{p.doneCount}/{p.nodeCount} 完成</span>
               <span class="li-meta">v{p.version} · {p.updatedBy}</span>
@@ -463,6 +476,8 @@
     <div class="board">
       {#each PLAN_COLUMNS as col}
         {@const items = grouped[col]}
+        <!-- HTML5 拖放列：拖放无键盘等价操作，键盘用户由列内状态 select 覆盖。 -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="column"
           class:is-empty={items.length === 0}
@@ -477,6 +492,8 @@
             <div class="column-empty">暂无任务</div>
           {:else}
             {#each items as node}
+              <!-- 拖拽卡片：拖放无键盘等价操作，键盘用户由下方状态 select 覆盖。 -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div
                 class="node-card"
                 draggable="true"

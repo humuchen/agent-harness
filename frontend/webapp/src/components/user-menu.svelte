@@ -246,7 +246,20 @@
     </button>
 
     {#if open}
-      <div class="menu-scrim" onclick={() => (open = false)}></div>
+      <div
+        class="menu-scrim"
+        data-haptic
+        role="button"
+        tabindex="-1"
+        aria-label="关闭菜单"
+        onclick={() => (open = false)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            open = false;
+          }
+        }}
+      ></div>
       <div class="menu" role="menu">
         <div class="menu-head">
           <span class="ava">{initial}</span>

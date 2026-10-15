@@ -1,17 +1,17 @@
 export const responsive = `
   /* ===================== 响应式适配 ===================== */
   /* 平板 / 手机（≤900px）：侧栏离屏为抽屉，汉堡按钮唤出，主区占满。
-     第二个条件覆盖「横屏且视口矮」的大屏手机（如 iPhone 16 Pro Max 横屏
-     956×440）：宽度越过 900 会落回桌面对话布局，但外层移动壳的 .content
-     没有固定高度链，桌面内部滚动模型失效 → 显示不全且无法滚动。
-     谓词与 app.ts chatShellCss / sharedStyles 的移动端判定保持一致。 */
+    第二个条件覆盖「横屏且视口矮」的大屏手机（如 iPhone 16 Pro Max 横屏
+    956×440）：宽度越过 900 会落回桌面对话布局，但外层移动壳的 .content
+    没有固定高度链，桌面内部滚动模型失效 → 显示不全且无法滚动。
+    谓词与 app.ts chatShellCss / sharedStyles 的移动端判定保持一致。 */
   @media (max-width: 900px), (orientation: landscape) and (max-height: 760px) {
     .chat-root {
       /* 移动端：ah-chat 嵌在 ah-app 的 .content 中，对话 Tab 时外壳已被
-             .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
-             .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。
-             min-height:0 必须显式中和 sharedStyles ≤760px 设的 min-height:100dvh，
-             否则它把组件顶高、仍需滚动。 */
+            .shell.chat-mode 锁定为整屏（fixed + inset:0）。这里让 ah-chat 填满
+            .content（height:100%），输入框自然钉在视口底部，无需滚动外层页面。
+            min-height:0 必须显式中和 sharedStyles ≤760px 设的 min-height:100dvh，
+            否则它把组件顶高、仍需滚动。 */
       height: 100%;
       min-height: 0;
       overflow: hidden;
@@ -27,11 +27,12 @@ export const responsive = `
       transition: transform 220ms ease;
       z-index: 50;
       box-shadow: 2px 0 18px rgba(0, 0, 0, 0.45);
+
       /* 固定 top:0 的会话列表抽屉：顶/底 padding 含安全区，避开状态栏与手势条。
-           box-sizing 必须显式声明：content-box 下 height:100% 是「内容高」，
-           再叠加安全区 padding 会让抽屉总高超出视口 (24px + safe-top + safe-bottom)，
-           滚动到底时最后若干条会话被推出屏幕且无法回滚到。
-           改为 border-box 后 padding 计入 100%，抽屉正好铺满视口，末条可达。 */
+          box-sizing 必须显式声明：content-box 下 height:100% 是「内容高」，
+          再叠加安全区 padding 会让抽屉总高超出视口 (24px + safe-top + safe-bottom)，
+          滚动到底时最后若干条会话被推出屏幕且无法回滚到。
+          改为 border-box 后 padding 计入 100%，抽屉正好铺满视口，末条可达。 */
       box-sizing: border-box;
       padding: calc(12px + env(safe-area-inset-top, 0px)) 0
         calc(12px + env(safe-area-inset-bottom, 0px));
@@ -39,6 +40,7 @@ export const responsive = `
     .sidebar.open {
       transform: none;
     }
+
     /* 移动端忽略 PC 折叠态：始终展示完整侧栏 */
     .sidebar.collapsed {
       width: 264px;
@@ -58,6 +60,7 @@ export const responsive = `
     .collapse-btn {
       display: none;
     }
+
     /* 移动端侧栏抽屉：新对话按钮 + 关闭按钮横排，会话区占满 */
     .sidebar .side-head {
       flex-direction: row;
@@ -92,6 +95,7 @@ export const responsive = `
     .menu-btn {
       display: inline-flex;
     }
+
     /* 移动端：顶栏显示「新对话」快捷按钮（桌面隐藏） */
     .new-chat-btn {
       display: inline-flex;
@@ -105,6 +109,7 @@ export const responsive = `
       padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
       gap: 8px;
     }
+
     /* 触屏无 hover：会话操作按钮常驻显示，避免点按时按钮在指尖下浮现截获 click
          （选会话误触发重命名弹框的根因）。 */
     .session .acts {
@@ -124,6 +129,7 @@ export const responsive = `
       max-width: 100%;
     }
   }
+
   /* 手机（≤600px）：进一步收紧内边距 / 字号，确保完整显示与流畅操作。 */
   @media (max-width: 600px) {
     .scroll {
@@ -143,6 +149,7 @@ export const responsive = `
     .msg {
       gap: 9px;
     }
+      
     /* 骨架屏同步收窄断点：头像 26px / 间距 9px / 内边距 10px 12px，
          与上方 .avatar / .bubble / .msg 的 ≤600px 规则逐项对齐。 */
     .sk-msg {
@@ -165,6 +172,7 @@ export const responsive = `
       width: 54%;
       min-width: 0;
     }
+
     /* 轮次间距同步收窄，保持骨架与真实消息一致。 */
     .sk-msg.assistant,
     .msg.assistant {
@@ -212,6 +220,7 @@ export const responsive = `
       padding: 4px 6px 8px 8px;
       gap: 6px;
     }
+
     /* 「+」入口 + 结果胶囊：手机端给足点击热区，并限宽避免顶到右侧模型选择器
          （胶囊的省略号截断由组件内部媒体查询处理）。 */
     .composer-footer-left .composer-plus-root {
@@ -221,6 +230,7 @@ export const responsive = `
       height: 36px;
       line-height: 36px;
     }
+      
     /* 手机：模型选择器只显示厂商 logo（隐藏文字与箭头，组件内部媒体查询处理），
          宿主只需放宽宽度预算并保持点击热区。 */
     .composer-footer-right .model-picker-root {
@@ -245,9 +255,10 @@ export const responsive = `
       margin: 4px 0 8px;
     }
   }
+
   /* 中屏（901–1100px）：侧栏收窄但常驻，兼顾 iPad 横屏与窄笔记本。
-     限定 min-height:761px：手机横屏（矮视口）已由上方扩展条件接管为抽屉，
-     不排除的话本规则的 220px 常驻侧栏会与抽屉规则同特异性冲突且胜出。 */
+    限定 min-height:761px：手机横屏（矮视口）已由上方扩展条件接管为抽屉，
+    不排除的话本规则的 220px 常驻侧栏会与抽屉规则同特异性冲突且胜出。 */
   @media (min-width: 901px) and (max-width: 1100px) and (min-height: 761px) {
     .sidebar {
       width: 220px;

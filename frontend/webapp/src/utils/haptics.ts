@@ -19,6 +19,18 @@
  * 存储，设置中心改一处两端生效）；纯 Web 回落 localStorage。默认开启，
  * 只有显式写过 'false' 才关闭。偏好读取是异步的，首次调用前 `initHaptics()`
  * 预热缓存；未预热时按默认「开」放行（触感非关键路径，fail-open）。
+ *
+ * ## 覆盖策略：语义调用 + 全局委托
+ *
+ * - **语义调用**（`hapticSuccess/hapticError/hapticWarning/hapticSelection`）：
+ *   放在关键交互的处理器里，表达「这件事成了/败了/被拦截」。
+ * - **全局委托**（`installHaptics()`）：捕获阶段监听 document 点击，对命中
+ *   `TAPPABLE_SELECTOR` 的元素补一次通用轻震——全站约 250 个按钮、语义化
+ *   角色元素、外部库（Shadow DOM）按钮一次性覆盖，新增 UI 无需逐处接线。
+ *   自定义可点区域（会话行、图片预览、scrim 等 div）加 `data-haptic` 属性纳入。
+ * - 不产生 click 的手势（滑动露钮、长按编辑、边缘滑开抽屉）在各自手势处显式调用。
+ * - 委托监听延迟一个宏任务触发，若同一点击的处理器已触发语义触感则跳过，
+ *   保证「一次点击一次振动」。
  */
 
 /** 撞击强度档位。 */
@@ -63,6 +75,59 @@ interface CapacitorGlobal {
 
 /** 偏好缓存：null = 尚未加载（按默认「开」放行）。 */
 let enabledCache: boolean | null = null;
+
+/**
+ * 可点击元素选择器：全局委托监听只对命中该选择器的点击补通用轻震。
+ * 覆盖 button / 链接 / 语义化角色（switch/tab/menuitem/option/radio/checkbox/link）/
+ * 表单开关（checkbox/radio/submit/button）/ 显式 `data-haptic` 标记的自定义可点区域。
+ * 文本输入（input/textarea/select）天然不在列——点击聚焦不应振动。
+ */
+const TAPPABLE_SELECTOR = [
+  'button',
+  'a[href]',
+  'input[type="button"]',
+  'input[type="submit"]',
+  'input[type="checkbox"]',
+  'input[type="radio"]',
+  '[role="button"]',
+  '[role="switch"]',
+  '[role="tab"]',
+  '[role="menuitem"]',
+  '[role="option"]',
+  '[role="radio"]',
+  '[role="checkbox"]',
+  '[role="link"]',
+  '[data-haptic]'
+].join(',');
+
+/** 最近一次触感触发的时间戳（任意来源，40ms 节流防叠振）。 */
+let lastHapticAt = 0;
+/**
+ * 最近一次「显式/语义调用」的时间戳（处理器里的 hapticTap/Selection/Success 等）。
+ * 全局委托的通用轻震据此去重：同一点击的处理器已给过反馈就不再补振。
+ * 与 lastHapticAt 分开——委托自己的连续轻震只受 40ms 节流约束，
+ * 不应被 150ms 的语义去重窗口误杀。
+ */
+let lastExplicitAt = 0;
+/** 同一点击内语义触感的去重窗口（ms）。 */
+const SEMANTIC_DEDUP_MS = 150;
+/** 连续快速点击的最小间隔（ms）：避免振动「堵车」叠成一段长振。 */
+const MIN_INTERVAL_MS = 40;
+
+/** 节流打戳：返回 false 表示距上次触感太近，本次跳过。explicit = 处理器显式调用。 */
+function stampFire(explicit: boolean): boolean {
+  const now = Date.now();
+  if (now - lastHapticAt < MIN_INTERVAL_MS) return false;
+  lastHapticAt = now;
+  if (explicit) lastExplicitAt = now;
+  return true;
+}
+
+/** 内部：通用轻震（不标记显式来源，仅供全局委托监听使用）。 */
+function tapGenericLight(): void {
+  if (!stampFire(false)) return;
+  void fire((h) => h.impact!({ style: 'LIGHT' }), WEB_PATTERNS.light);
+}
 
 /** 取出原生壳的 Haptics 插件；非原生环境（或插件未注册）返回 null。 */
 function nativeHaptics(): HapticsPluginLike | null {
@@ -142,26 +207,31 @@ async function fire(
 
 /** 通用点击反馈（按钮、发送消息等）。 */
 export function hapticTap(style: HapticStyle = 'light'): void {
+  if (!stampFire(true)) return;
   void fire((h) => h.impact!({ style: style.toUpperCase() }), WEB_PATTERNS[style]);
 }
 
 /** 选择刻度感（Tab 切换、picker）。 */
 export function hapticSelection(): void {
+  if (!stampFire(true)) return;
   void fire((h) => h.selectionChanged!(), WEB_PATTERNS.selection);
 }
 
 /** 成功反馈（任务完成、最终答复到达）。 */
 export function hapticSuccess(): void {
+  if (!stampFire(true)) return;
   void fire((h) => h.notification!({ type: 'SUCCESS' }), WEB_PATTERNS.success);
 }
 
 /** 警告反馈（操作被拦截、需要用户注意）。 */
 export function hapticWarning(): void {
+  if (!stampFire(true)) return;
   void fire((h) => h.notification!({ type: 'WARNING' }), WEB_PATTERNS.warning);
 }
 
 /** 错误反馈（运行失败、请求出错）。 */
 export function hapticError(): void {
+  if (!stampFire(true)) return;
   void fire((h) => h.notification!({ type: 'ERROR' }), WEB_PATTERNS.error);
 }
 
@@ -181,6 +251,10 @@ export function isHapticsEnabled(): boolean {
  */
 export async function setHapticsEnabled(on: boolean): Promise<void> {
   enabledCache = on;
+  // 重置节流时钟：开关切换本身不该被「刚才那次（可能是关闭态下的）点击」的
+  // 节流窗口影响——开启后的第一次点击应立即有反馈。
+  lastHapticAt = 0;
+  lastExplicitAt = 0;
   const prefs = nativePreferences();
   if (prefs?.set) {
     try {
@@ -201,4 +275,62 @@ export async function setHapticsEnabled(on: boolean): Promise<void> {
 export function hapticsAvailable(): boolean {
   if (nativeHaptics()) return true;
   return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+}
+
+/* ------------------------------------------------------------------ *
+ * 全局委托触感监听：一次性覆盖全站按钮类点击
+ * ------------------------------------------------------------------ */
+
+let delegatedInstalled = false;
+
+/**
+ * 捕获阶段的点击判定（同步）：是否点在「可点击元素」上。
+ * 用 composedPath 而非 e.target——外部库（@humuchen/mac-ui 的 mac-confirm 等）
+ * 在 Shadow DOM 里渲染按钮，e.target 已被重定向到宿主元素，只有 composedPath
+ * 能拿到影子节点。同时天然覆盖「按钮内 span 被点」与「data-haptic 自定义区域」。
+ */
+function isTappableClick(e: MouseEvent): boolean {
+  const path =
+    typeof e.composedPath === 'function' ? e.composedPath() : [];
+  const nodes: Array<EventTarget | null> =
+    path.length > 0 ? path : [e.target];
+  for (const n of nodes) {
+    if (
+      n instanceof Element &&
+      typeof n.matches === 'function' &&
+      n.matches(TAPPABLE_SELECTOR)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 捕获阶段监听（先于一切处理器，不受 stopPropagation 影响）：
+ * 命中可点击元素后**延迟一个宏任务**再补通用轻震——等本点击的所有同步处理器
+ * 跑完。若处理器已触发语义触感（Tab 切换的刻度感、发送轻震、告警/错误等，
+ * 均同步打戳），则跳过，避免一次点击双重振动。
+ */
+function onDelegatedClickCapture(e: MouseEvent): void {
+  if (!isTappableClick(e)) return;
+  setTimeout(() => {
+    // 处理器已触发显式/语义触感（同一点击）→ 跳过，保证一次点击一次振动
+    if (Date.now() - lastExplicitAt < SEMANTIC_DEDUP_MS) return;
+    tapGenericLight();
+  }, 0);
+}
+
+/** 安装全局委托触感（幂等；main.ts 启动时调用一次）。 */
+export function installHaptics(): void {
+  if (delegatedInstalled || typeof window === 'undefined') return;
+  delegatedInstalled = true;
+  window.addEventListener('click', onDelegatedClickCapture, true);
+}
+
+/** 卸载全局委托触感（测试/热替换用）。 */
+export function uninstallHaptics(): void {
+  if (!delegatedInstalled || typeof window === 'undefined') return;
+  delegatedInstalled = false;
+  window.removeEventListener('click', onDelegatedClickCapture, true);
 }

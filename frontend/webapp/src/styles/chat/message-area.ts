@@ -1,4 +1,3 @@
-
 export const messageArea = `
     /* 滚动区外壳：相对定位，作为「回到底部」浮动按钮的定位上下文；
          按钮 absolute 钉在其底部中央，不进入文档流、不挤压/遮挡内容与输入框。 */
@@ -407,7 +406,7 @@ export const messageArea = `
       max-width: 745px;
       padding: 12px 14px;
       background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
+      // border: 1px solid var(--ah-border);
       border-radius: 14px;
       border-top-left-radius: 4px;
     }

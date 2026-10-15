@@ -42,7 +42,10 @@ export default tseslint.config(
 
       // ── error 级（阻断 CI）：确定性 bug 信号 ──────────────────────
       // 禁止提交 TODO/FIXME 遗留（已验证代码库 0 处，P2 升级为 error）。
-      'no-warning-comments': ['error', { terms: ['todo', 'fixme', 'xxx'], location: 'start' }],
+      'no-warning-comments': [
+        'error',
+        { terms: ['todo', 'fixme', 'xxx'], location: 'start' }
+      ],
       // 自赋值始终是 bug（x = x 无意义）。
       'no-self-assign': 'error',
       // 无用赋值（赋值后从未读取）是死代码信号。

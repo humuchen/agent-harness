@@ -169,7 +169,7 @@
         }}
       ></div>
     {/if}
-    <aside
+    <div
       bind:this={panelEl}
       class="panel"
       style="--ahd-size: {size}"
@@ -227,7 +227,7 @@
           </div>
         {/if}
       {/if}
-    </aside>
+    </div>
   </div>
 {/if}
 

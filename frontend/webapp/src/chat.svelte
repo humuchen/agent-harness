@@ -3241,6 +3241,8 @@
     longPressTimer = setTimeout(() => {
       longPressTimer = null;
       fullscreenEditOpen = true;
+      // 触感反馈：长按 600ms 确认（中等强度），与「长按生效」的手感对齐。
+      hapticTap('medium');
       // 打开后自动聚焦，直接弹键盘可输入。
       void tick().then(() => {
         feInputEl?.focus();
@@ -4873,7 +4875,8 @@
 </script>
 
 <!-- 面板根元素：hidden 由 App 壳 visible 驱动（常驻挂载保留状态）。
-     整屏拖拽上传事件挂在根元素上 —— 铺满 .ah-c，「拖到 chat 任意位置」都能被接住。 -->
+    整屏拖拽上传事件挂在根元素上 —— 铺满 .ah-c，「拖到 chat 任意位置」都能被接住。 -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="ah-c chat-root"
   hidden={!visible}
@@ -4883,6 +4886,7 @@
   ondrop={onDrop}
   bind:this={rootEl}
 >
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="sidebar"
     class:open={sidebarOpen}
@@ -4936,8 +4940,16 @@
               <div
                 class="session"
                 class:active={s.id === activeId}
-                role="listitem"
+                role="button"
+                tabindex="0"
+                data-haptic
                 onclick={() => selectSessionImpl(s.id)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    selectSessionImpl(s.id);
+                  }
+                }}
               >
                 <span class="dot"></span>
                 <span class="title">{s.title}</span>
@@ -5155,6 +5167,8 @@
             <p>基于 agent-harness 的多会话对话。下方输入即可开始。</p>
           </div>
         {:else}
+          <!-- 富文本点击事件为事件委托（折叠/复制代码块），内层交互元素自行处理；此处忽略静态元素交互告警。 -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div class="thread" onclick={onRichClick}>
             <!-- 连接状态横幅：connected 不显示；reconnecting 自动恢复提示；lost 给「重新连接」。 -->
             {#if connState[activeId] === 'reconnecting'}
@@ -5238,7 +5252,16 @@
                   class="attach-preview-item"
                   class:error={f.uploadStatus === 'error'}
                   class:is-image={isPreviewable(f)}
+                  role="button"
+                  tabindex="0"
+                  aria-label={f.name}
                   onclick={() => openPreview(f)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      openPreview(f);
+                    }
+                  }}
                 >
                   {#if f.type.startsWith('image/')}
                     <img src={f.dataUrl} alt={f.name} class="attach-thumb" />
@@ -5395,9 +5418,19 @@
   <div
     class="scrim"
     class:show={sidebarOpen}
+    role="button"
+    tabindex="-1"
+    aria-label="关闭侧边栏"
     onclick={() => {
       if (_sidebarJustOpened) return;
       sidebarOpen = false;
+    }}
+    onkeydown={(e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (_sidebarJustOpened) return;
+        sidebarOpen = false;
+      }
     }}
   ></div>
   {#if fullscreenEditOpen}
@@ -5438,7 +5471,20 @@
     </div>
   {/if}
   {#if previewFile}
-    <div class="lightbox" onclick={() => closePreview()}>
+    <div
+      class="lightbox"
+      data-haptic
+      role="button"
+      tabindex="-1"
+      aria-label="关闭预览"
+      onclick={() => closePreview()}
+      onkeydown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          closePreview();
+        }
+      }}
+    >
       <button
         class="lightbox-close"
         title="关闭 (Esc)"
@@ -5459,11 +5505,7 @@
       >
         ×
       </button>
-      <img
-        src={previewFile.dataUrl}
-        alt={previewFile.name}
-        onclick={(e) => e.stopPropagation()}
-      />
+      <img src={previewFile.dataUrl} alt={previewFile.name} />
       <div class="lightbox-info">
         {previewFile.name} ·
         {formatSize(previewFile.size)}
@@ -5518,13 +5560,41 @@
   {@const first = images[0]}
   {#if first}
     {#if images.length === 1}
-      <div class="attach-img is-previewable" title="点击预览" onclick={() => openPreview(first)}>
+      <div
+        class="attach-img is-previewable"
+        title="点击预览"
+        data-haptic
+        role="button"
+        tabindex="0"
+        aria-label={first.name}
+        onclick={() => openPreview(first)}
+        onkeydown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openPreview(first);
+          }
+        }}
+      >
         <img src={first.dataUrl} alt={first.name} loading="lazy" />
       </div>
     {:else}
       {@const mid = (images.length - 1) / 2}
       <div class="attach-card">
-        <div class="attach-card-stack" title="点击展开全部图片" onclick={expandAttachCard}>
+        <div
+          class="attach-card-stack"
+          title="点击展开全部图片"
+          data-haptic
+          role="button"
+          tabindex="0"
+          aria-label="展开全部图片"
+          onclick={expandAttachCard}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              expandAttachCard(e);
+            }
+          }}
+        >
           {#each images as f, i}
             <div class="attach-img" style={`--i:${i};--mid:${mid}`}>
               <img src={f.dataUrl} alt={f.name} loading="lazy" />
@@ -5543,7 +5613,24 @@
           </div>
           <div class="attach-card-grid">
             {#each images as f}
-              <div class="attach-img is-previewable" title="点击预览" onclick={(e) => { e.stopPropagation(); openPreview(f); }}>
+              <div
+                class="attach-img is-previewable"
+                title="点击预览"
+                data-haptic
+                role="button"
+                tabindex="0"
+                aria-label={f.name}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  openPreview(f);
+                }}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openPreview(f);
+                  }
+                }}
+              >
                 <img src={f.dataUrl} alt={f.name} loading="lazy" />
               </div>
             {/each}
@@ -5791,6 +5878,8 @@
     class:collapsed={collapsed}
     data-mid={String(m.id)}
   >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="think-head"
       onclick={() => toggleThink(m.id)}

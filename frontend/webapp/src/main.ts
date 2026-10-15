@@ -18,7 +18,8 @@ import { initTheme, initBrand } from './theme/tokens';
 import { installGlobalStyles } from './styles-global';
 // 触感反馈：启动时预热开关缓存（读 Preferences/localStorage），
 // 避免首次交互时才异步加载偏好（那一下会按默认「开」放行，可能绕过关闭设置）。
-import { initHaptics } from './utils/haptics';
+// 同时安装全局委托监听：全站按钮类点击统一补通用轻震（语义调用优先，不重复振）。
+import { initHaptics, installHaptics } from './utils/haptics';
 
 // 通知宿主（常驻 document.body，渲染 ah-notification.svelte.ts 的状态机）
 import AhNotificationHost from './components/ah-notification.svelte';
@@ -112,6 +113,8 @@ initBrand().catch(() => {});
 
 // 触感偏好预热（fire-and-forget，失败静默）：与 initBrand 同理，绝不影响启动主流程。
 void initHaptics().catch(() => {});
+// 全局委托触感监听：全站按钮类点击统一补轻震（幂等，内部处理禁用态）。
+installHaptics();
 
 async function bootstrap(): Promise<void> {
   if (isAuthed()) {

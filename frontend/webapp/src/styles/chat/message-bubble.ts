@@ -1,4 +1,3 @@
-
 export const messageBubble = `
     .msg {
       display: flex;
@@ -52,7 +51,7 @@ export const messageBubble = `
       flex: 1 1 auto;
       width: 100%;
       background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
+      // border: 1px solid var(--ah-border);
       border-top-left-radius: 4px;
     }
     .msg.user .bubble {

@@ -192,7 +192,7 @@
    * 这里显式兜底：preventDefault 掉原生提交，统一走 submitForm，避免一次回车提交两次。
    * 注意 isComposing：中文输入法组字期间的回车用于「确认候选词」，不能触发登录。
    */
-  function onFormKeydown(e: KeyboardEvent): void {
+  function onFieldKeydown(e: KeyboardEvent): void {
     if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
     const el = e.target as HTMLElement | null;
     if (!el || el.tagName !== 'INPUT') return;
@@ -201,9 +201,8 @@
     if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
       return;
     e.preventDefault();
-    const form =
-      input.form ?? (rootEl?.querySelector('form') as HTMLFormElement | null);
-    void submitForm(form);
+    const form = input.form;
+    if (form) form.requestSubmit();
   }
 
   /** 表单 submit 事件：点击提交按钮、移动端软键盘 Go 键都汇聚到这里。 */
@@ -217,19 +216,6 @@
   function onForgotRequest(e: Event): void {
     e.preventDefault();
     void submitForgotRequest(e.target as HTMLFormElement);
-  }
-
-  function onForgotKeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
-    const el = e.target as HTMLElement | null;
-    if (!el || el.tagName !== 'INPUT') return;
-    const input = el as HTMLInputElement;
-    if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
-      return;
-    e.preventDefault();
-    const form =
-      input.form ?? (rootEl?.querySelector('form') as HTMLFormElement | null);
-    void submitForgotRequest(form);
   }
 
   /** 申请重置凭证：前端校验 identifier → POST /api/account/forgot-password。 */
@@ -281,19 +267,6 @@
   function onResetSubmit(e: Event): void {
     e.preventDefault();
     void submitReset(e.target as HTMLFormElement);
-  }
-
-  function onResetKeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Enter' || e.isComposing || e.repeat) return;
-    const el = e.target as HTMLElement | null;
-    if (!el || el.tagName !== 'INPUT') return;
-    const input = el as HTMLInputElement;
-    if (['checkbox', 'radio', 'button', 'submit', 'reset'].includes(input.type))
-      return;
-    e.preventDefault();
-    const form =
-      input.form ?? (rootEl?.querySelector('form') as HTMLFormElement | null);
-    void submitReset(form);
   }
 
   /** 用凭证重设密码：前端校验 → POST /api/account/reset-password → 回登录页。 */
@@ -517,14 +490,16 @@
       : 'password'
     : type}
   <div class="field" class:has-eye={hasEye}>
-    <label>{label}</label>
+    <label for={`ah-field-${valueKey}`}>{label}</label>
     <input
+      id={`ah-field-${valueKey}`}
       name={valueKey}
       type={inputType}
       placeholder={placeholder}
       autocomplete={autocomplete}
       enterkeyhint={enterkeyhint}
       disabled={submitting}
+      onkeydown={onFieldKeydown}
     />
     {#if hasEye}
       <button
@@ -682,7 +657,7 @@
         {#if mode === 'login'}
           <h1>欢迎回来</h1>
           <p class="auth-sub">登录以进入你的 Agent 工作台</p>
-          <form onsubmit={onSubmit} onkeydown={onFormKeydown}>
+          <form onsubmit={onSubmit}>
             {@render field('用户名', 'username', '用户名', 'username')}
             {@render field('密码', 'password', '请输入密码', 'password', true)}
             <div class="row-between">
@@ -767,7 +742,7 @@
         {:else if mode === 'register'}
           <h1>创建账号</h1>
           <p class="auth-sub">注册以解锁完整的智能体编排能力</p>
-          <form onsubmit={onSubmit} onkeydown={onFormKeydown}>
+          <form onsubmit={onSubmit}>
             {@render field('邮箱', 'email', 'you@company.com', 'email')}
             {@render field('用户名', 'text', '设置用户名', 'username')}
             {@render field('密码', 'password', '至少 8 位', 'password', true)}
@@ -781,13 +756,9 @@
               />
               <span
                 >我已阅读并同意
-                <a href="#" onclick={(e: Event) => e.preventDefault()}
-                  >服务条款</a
-                >
+                <button type="button" class="terms-link">服务条款</button>
                 与
-                <a href="#" onclick={(e: Event) => e.preventDefault()}
-                  >隐私政策</a
-                >。</span
+                <button type="button" class="terms-link">隐私政策</button>。</span
               >
             </label>
             <button
@@ -816,10 +787,7 @@
               : '为该账号设置一个新密码，重置成功后需使用新密码重新登录。'}
           </p>
           {#if forgotStep === 'request'}
-            <form
-              onsubmit={onForgotRequest}
-              onkeydown={onForgotKeydown}
-            >
+            <form onsubmit={onForgotRequest}>
               {@render field(
                 '用户名或邮箱',
                 'text',
@@ -836,10 +804,7 @@
               <div class="enter-hint">按 <kbd>Enter</kbd> 提交</div>
             </form>
           {:else}
-            <form
-              onsubmit={onResetSubmit}
-              onkeydown={onResetKeydown}
-            >
+            <form onsubmit={onResetSubmit}>
               {@render field('新密码', 'password', '至少 8 位', 'password', true)}
               {@render field('确认新密码', 'password', '再次输入密码', 'confirm', true)}
               <button
@@ -1626,9 +1591,15 @@
     margin-top: 2px;
     accent-color: var(--ah-accent);
   }
-  .terms a {
+  .terms-link {
+    font: inherit;
+    font-size: 12px;
+    padding: 0;
+    border: 0;
+    background: none;
     color: var(--ah-accent);
     text-decoration: none;
+    cursor: pointer;
   }
   .auth-foot {
     margin-top: 22px;

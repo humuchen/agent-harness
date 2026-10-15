@@ -418,11 +418,12 @@
       {#snippet renderForm()}
         {@const existing = !!current?.keyCount && (current?.keyCount ?? 0) > 0}
         <div class="field">
-          <label
+          <label for="pks-api-key"
             >API Key（明文仅经 HTTPS 提交，服务端加密落库{#if existing}；留空保留已保存
               Key{/if}）</label
           >
           <input
+            id="pks-api-key"
             class="key-input"
             type="password"
             placeholder={existing
@@ -440,12 +441,13 @@
           {/if}
         </div>
         <div class="field">
-          <label
+          <label for="pks-base-url"
             >{provider === 'openrouter'
               ? '接口地址（可选；留空用服务商默认端点）'
               : '接口地址（必填）'}</label
           >
           <input
+            id="pks-base-url"
             placeholder={provider === 'openrouter'
               ? 'https://openrouter.ai/api/v1'
               : provider === 'typesafe'
@@ -456,11 +458,12 @@
           />
         </div>
         <div class="field">
-          <label
+          <label for="pks-extra-keys"
             >附加 Key（可选，P2.4 多 Key
             负载/故障转移：一行一个或逗号分隔）</label
           >
           <textarea
+            id="pks-extra-keys"
             class="extra-keys"
             rows="3"
             placeholder={'sk-or-... 第二把 Key\nsk-or-... 第三把 Key'}

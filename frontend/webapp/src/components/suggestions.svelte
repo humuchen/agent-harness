@@ -65,6 +65,7 @@
           type="button"
           class="chip"
           role="option"
+          aria-selected={false}
           title={it.prompt}
           disabled={disabled}
           onclick={() => pick(it.prompt)}

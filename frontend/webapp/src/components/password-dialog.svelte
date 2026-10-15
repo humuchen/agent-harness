@@ -116,8 +116,17 @@
   {#if open}
     <div
       class="pw-scrim"
+      role="button"
+      tabindex="-1"
+      aria-label="关闭"
       onclick={(e: MouseEvent) => {
         if (e.target === e.currentTarget) close();
+      }}
+      onkeydown={(e: KeyboardEvent) => {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+          e.preventDefault();
+          close();
+        }
       }}
     >
       <div class="panel" role="dialog" aria-modal="true" aria-label="修改密码">

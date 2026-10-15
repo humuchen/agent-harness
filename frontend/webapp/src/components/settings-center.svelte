@@ -427,19 +427,23 @@
     const on = !planDagEnabled;
     planDagEnabled = on;
     setPlanDagEnabled(on);
-    notify.success(on ? '计划多 Agent 执行已开启' : '计划多 Agent 执行已关闭');
   }
 
   /**
    * 触感反馈开关变更：先更新 UI 镜像（立即生效），再持久化（setHapticsEnabled
    * 内部同步缓存）。开启时立刻给一次轻震作为「效果确认」；关闭时不震。
    */
+  /**
+   * 触感反馈开关变更：先更新 UI 镜像（立即生效），再持久化（setHapticsEnabled
+   * 内部同步缓存）。开/关都给一次轻震——开启是「效果确认」，关闭是最后一次
+   * 「开关响应」确认（此后不再震）。
+   */
   async function toggleHaptics(): Promise<void> {
     const on = !hapticsOn;
     hapticsOn = on;
+    if (!on) hapticTap('light'); // 关闭前给最后一次确认震（之后偏好即失效）
     await setHapticsEnabled(on);
-    if (on) hapticTap('light');
-    notify.success(on ? '触感反馈已开启' : '触感反馈已关闭');
+    if (on) hapticTap('light'); // 开启时立刻给一次效果确认
   }
 
   function clearUnread(): void {

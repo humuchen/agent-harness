@@ -34,8 +34,9 @@
   import { TopProgressBar } from './top-progress-bar';
   import { PullToRefreshController } from './pull-refresh';
   import { APP_EVENTS } from './app-events';
-  // 触感反馈：Tab 切换给一次「刻度感」振动（手机端导航质感）。
-  import { hapticSelection } from './utils/haptics';
+  // 触感反馈：Tab 切换给一次「刻度感」振动（手机端导航质感）；
+  // 边缘滑开抽屉是纯手势，显式补轻震。
+  import { hapticSelection, hapticTap } from './utils/haptics';
 
   // 各面板组件（常驻挂载，visible 控制显隐）
   import Workspace from './workspace.svelte';
@@ -440,6 +441,8 @@
     // 向右 20px 且竖直漂移不过大 → 视为「边缘右滑开抽屉」，单次滑动只触发一次
     if (dx > 20 && dy < 45 && !drawerOpen) {
       edgeFired = true;
+      // 触感反馈：边缘滑开抽屉是纯手势（无 click），显式补一次轻震。
+      hapticTap('light');
       onToggleDrawer();
     }
   }
@@ -684,6 +687,7 @@
   }
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="shell ah-c{tab === 'chat' ? ' chat-mode' : ''}"
   ontouchstart={onTouchStart}
@@ -916,9 +920,11 @@
     <!-- 品牌信息已收敛到「我的」页（移动端）与登录页，桌面内容区不再渲染品牌脚。 -->
 
     <!-- 移动端底栏 Tab（≤760px 显示）：工作台/对话/资产/插件/我的 -->
-    <nav class="mobile-tabbar" role="tablist">
+    <div class="mobile-tabbar" role="tablist">
       <button
         class="m-tab{tab === 'workspace' ? ' on' : ''}"
+        role="tab"
+        aria-selected={tab === 'workspace'}
         onclick={() => setMobileTab('workspace')}
         aria-label="工作台"
       >
@@ -941,6 +947,8 @@
       </button>
       <button
         class="m-tab{tab === 'chat' ? ' on' : ''}"
+        role="tab"
+        aria-selected={tab === 'chat'}
         onclick={() => setMobileTab('chat')}
         aria-label="对话"
       >
@@ -965,6 +973,8 @@
         class="m-tab{tab === 'mcp' || tab === 'skill' || tab === 'datasource'
           ? ' on'
           : ''}"
+        role="tab"
+        aria-selected={tab === 'mcp' || tab === 'skill' || tab === 'datasource'}
         onclick={() => setMobileTab('mcp')}
         aria-label="资产"
       >
@@ -986,6 +996,8 @@
       </button>
       <button
         class="m-tab{tab === 'plugins' ? ' on' : ''}"
+        role="tab"
+        aria-selected={tab === 'plugins'}
         onclick={() => setMobileTab('plugins')}
         aria-label="插件"
       >
@@ -1008,6 +1020,8 @@
       </button>
       <button
         class="m-tab{tab === 'me' ? ' on' : ''}"
+        role="tab"
+        aria-selected={tab === 'me'}
         onclick={() => setMobileTab('me')}
         aria-label="我的"
       >
@@ -1026,7 +1040,7 @@
           </svg>
         </span>
       </button>
-    </nav>
+    </div>
   </div>
 </div>
 

@@ -57,6 +57,9 @@
   } from '../utils/swipe-gesture';
   import type { SwipeAxisState } from '../utils/swipe-gesture';
   import { APP_EVENTS } from '../app-events';
+  // 触感反馈：滑动露出/收起操作区不产生 click（手势被 preventDefault 抑制），
+  // 在吸附状态变化处显式补一次（露出=刻度感，收起=轻震）。
+  import { hapticSelection, hapticTap } from '../utils/haptics';
 
   /** 全局组排他信号：detail.group 为组名，同组其他 AhSwipeItem 收起自身。 */
   const SWIPE_GROUP_CLOSE_EVENT = APP_EVENTS.swipeClose;
@@ -208,8 +211,12 @@
     // tap-close：展开态下点按（未滑动、吸附回收起）→ 本次仅关闭，
     // preventDefault 阻止合成 click，宿主的行 onclick（选中会话）不会误触发。
     if (wasOpen && !g.swiped && !snappedOpen) e.preventDefault();
-    if (snappedOpen !== open) open = snappedOpen;
-    else applyTransform();
+    if (snappedOpen !== open) {
+      open = snappedOpen;
+      // 触感反馈：露出操作区给刻度感、收起给轻震（手势不产生 click）。
+      if (snappedOpen) hapticSelection();
+      else hapticTap('light');
+    } else applyTransform();
   };
 
   /** 手势取消（系统手势接管 / 第二指落下）：按当前位移就近吸附。 */
@@ -220,8 +227,11 @@
     contentEl?.classList.remove('dragging');
     dragging = false;
     const snappedOpen = shouldSnapOpen(lastOffset, cap());
-    if (snappedOpen !== open) open = snappedOpen;
-    else applyTransform();
+    if (snappedOpen !== open) {
+      open = snappedOpen;
+      if (snappedOpen) hapticSelection();
+      else hapticTap('light');
+    } else applyTransform();
   };
 
   /**
@@ -239,12 +249,13 @@
   bind:this={rootEl}
 >
   <div class="inner">
-    <div class="bg" aria-hidden="true" bind:this={bgEl} onclick={onSlotActionClick}>
+    <div class="bg" aria-hidden="true" bind:this={bgEl} data-haptic onclick={onSlotActionClick}>
       {@render actions?.()}
     </div>
     <div
       class="swipe-content"
       class:dragging
+      role="group"
       bind:this={contentEl}
       ontouchstart={onTouchStart}
       ontouchmove={onTouchMove}
