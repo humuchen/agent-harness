@@ -249,6 +249,25 @@ export const responsive = `
       color: var(--ah-accent);
       transform: translateY(-2px) scale(1.06);
     }
+    /* 按下反馈（触控）：此前首次点击底栏 Tab 完全没有按压反馈、第二次以后才
+       「有」，成因即缺 :active 态——触屏上首次触摸不触发 hover 模拟（hover 是
+       浏览器在首次点击后才保留的粘性状态），而原生点击高亮又被 theme/tokens.ts
+       的 *{-webkit-tap-highlight-color:transparent} 全局吃掉，于是首次点击只能
+       等松手后页面切换（.on 态）才看到变化，粘性 hover 生效后的再次点击才像
+       「有反馈」。这里补显式按压态，与全站按压语言一致（.ttab/.seg button 的
+       scale(0.94)、.swipe-act 的 brightness(0.88)）。
+       transition 只留 color：按压必须即时生效，松手后由常规过渡回弹。 */
+    .m-tab:active {
+      transform: scale(0.92);
+      background: var(--ah-surface-2);
+      color: var(--ah-text);
+      transition: color 160ms ease;
+    }
+    /* 特异性 (0,3,0) 与 .m-tab.on .ti 相同、排在后面：已选中 Tab 被按下时
+       图标同样缩一下，保持「按得动」的手感。 */
+    .m-tab:active .ti {
+      transform: scale(0.88);
+    }
     .m-tab:focus-visible {
       outline: 2px solid var(--ah-accent);
       outline-offset: 2px;
