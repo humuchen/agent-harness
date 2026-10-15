@@ -41,12 +41,14 @@ export type HapticKind = 'success' | 'warning' | 'error';
 /** 触感开关键（与 mobile/src/plugins/haptics.ts 的 HAPTICS_ENABLED_KEY 一致）。 */
 const ENABLED_KEY = 'ah:haptics:enabled';
 
-/** 纯 Web 降级的振动 pattern（毫秒）：对齐 mobile 侧 WEB_PATTERNS。 */
+/** 纯 Web 降级的振动 pattern（毫秒）：对齐 mobile 侧 WEB_PATTERNS。
+    selection 从 8ms 提到 20ms：8ms 在多数机型上低于可感知阈值，
+    纯 Web（无原生桥）环境下等于没有反馈。 */
 const WEB_PATTERNS = {
   light: 10,
   medium: 20,
   heavy: 30,
-  selection: 8,
+  selection: 20,
   success: 15,
   warning: [10, 40, 10],
   error: [25, 50, 25, 50, 25],
@@ -126,7 +128,7 @@ function stampFire(explicit: boolean): boolean {
 /** 内部：通用轻震（不标记显式来源，仅供全局委托监听使用）。 */
 function tapGenericLight(): void {
   if (!stampFire(false)) return;
-  void fire((h) => h.impact!({ style: 'LIGHT' }), WEB_PATTERNS.light);
+  void fire('impact', (h) => h.impact!({ style: 'LIGHT' }), WEB_PATTERNS.light);
 }
 
 /** 取出原生壳的 Haptics 插件；非原生环境（或插件未注册）返回 null。 */
@@ -187,18 +189,24 @@ async function loadEnabled(): Promise<boolean> {
 /**
  * 统一的触感发放入口：开关 → 原生 Haptics → Web Vibration API 三级降级。
  * 所有异常静默吞掉，任何环境下调用方都不需要 try/catch。
+ *
+ * method 显式传入而非只用 impact 探针：原生插件缺该方法（老壳未实现）时
+ * 直接走 Web 降级；桥调用 reject 时同样降级——此前 catch 后直接 return，
+ * 注释里承诺的「降级到 Web」并未发生，原生一失败振动就整体丢失。
  */
 async function fire(
+  method: 'impact' | 'notification' | 'selectionChanged' | 'vibrate',
   call: (h: HapticsPluginLike) => Promise<void>,
   webPattern: number | readonly number[]
 ): Promise<void> {
   if (!(await loadEnabled())) return;
   const h = nativeHaptics();
-  if (h) {
+  if (h && typeof h[method] === 'function') {
     try {
       await call(h);
     } catch {
-      /* 桥调用失败：静默降级到 Web（原生壳内通常同样不可用） */
+      /* 桥调用失败：按上述承诺降级到 Web Vibration API */
+      webVibrate(webPattern);
     }
     return;
   }
@@ -208,31 +216,40 @@ async function fire(
 /** 通用点击反馈（按钮、发送消息等）。 */
 export function hapticTap(style: HapticStyle = 'light'): void {
   if (!stampFire(true)) return;
-  void fire((h) => h.impact!({ style: style.toUpperCase() }), WEB_PATTERNS[style]);
+  void fire('impact', (h) => h.impact!({ style: style.toUpperCase() }), WEB_PATTERNS[style]);
 }
 
-/** 选择刻度感（Tab 切换、picker）。 */
+/**
+ * 选择刻度感（Tab 切换、picker、滑动露出操作区）。
+ *
+ * 原生侧选 impact(LIGHT) 而非 selectionChanged()：Android 的
+ * @capacitor/haptics 把 selectionChanged() 门禁在 selectionStart() 之后
+ * （Haptics.java 里 selectionStarted=false 时直接 no-op，不抛错、不 reject），
+ * 单独调用会被静默丢弃——这正是「切换底部 Tab 没有触感、而重复点当前 Tab
+ * （走全局委托的 impact）却有」的成因。iOS 上二者等价，统一用 impact
+ * 保证双端行为一致。
+ */
 export function hapticSelection(): void {
   if (!stampFire(true)) return;
-  void fire((h) => h.selectionChanged!(), WEB_PATTERNS.selection);
+  void fire('impact', (h) => h.impact!({ style: 'LIGHT' }), WEB_PATTERNS.selection);
 }
 
 /** 成功反馈（任务完成、最终答复到达）。 */
 export function hapticSuccess(): void {
   if (!stampFire(true)) return;
-  void fire((h) => h.notification!({ type: 'SUCCESS' }), WEB_PATTERNS.success);
+  void fire('notification', (h) => h.notification!({ type: 'SUCCESS' }), WEB_PATTERNS.success);
 }
 
 /** 警告反馈（操作被拦截、需要用户注意）。 */
 export function hapticWarning(): void {
   if (!stampFire(true)) return;
-  void fire((h) => h.notification!({ type: 'WARNING' }), WEB_PATTERNS.warning);
+  void fire('notification', (h) => h.notification!({ type: 'WARNING' }), WEB_PATTERNS.warning);
 }
 
 /** 错误反馈（运行失败、请求出错）。 */
 export function hapticError(): void {
   if (!stampFire(true)) return;
-  void fire((h) => h.notification!({ type: 'ERROR' }), WEB_PATTERNS.error);
+  void fire('notification', (h) => h.notification!({ type: 'ERROR' }), WEB_PATTERNS.error);
 }
 
 /** 预热偏好缓存（应用启动时调用一次，幂等）。 */

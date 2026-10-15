@@ -2,9 +2,12 @@
 """
 生成 Agent Harness App 图标（mipmap launcher icons）。
 
-输出到 mobile/android/app/src/main/res/mipmap-{dpi}/ 目录。
+输出到 mobile/android/app/src/main/res/：
 - ic_launcher.png: 深色背景 (#0b0e14) + 三层菱形 logo + 品牌字
 - ic_launcher_foreground.png: 透明背景 + 三层菱形 logo（安全区内）
+- ic_launcher_round.png: 圆形裁剪版
+- drawable/ic_launcher_monochrome.xml: Android 13+ 主题图标单色层
+- mipmap-anydpi-v26/ic_launcher{,_round}.xml: 自适应图标（背景 + 前景 + monochrome）
 - 同时更新 values/ic_launcher_background.xml 为 #0B0E14
 
 运行：python3 assets/generate-icons.py
@@ -22,8 +25,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ANDROID_RES = os.path.join(ROOT, "mobile/android/app/src/main/res")
 
 BG = (11, 14, 20)          # #0b0e14
-ACCENT = (41, 151, 255)    # #2997FF
-LIGHT = (64, 159, 255)     # lighter accent for logo contrast
+ACCENT = (41, 151, 255)    # #2997FF（与 generate-splash.py / splash_icon.xml 同一渐变）
 
 # 三层菱形（viewBox 0 0 100 100），与 public/logo.svg 一致
 RHOMBI = [
@@ -34,6 +36,8 @@ RHOMBI = [
 
 def _font(size):
     for path in (
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     ):
@@ -48,10 +52,10 @@ def draw_logo(draw, cx, cy, size, alpha_base=1.0):
     """在 (cx, cy) 绘制三层菱形 logo，size 为 logo 区块边长（px）。"""
     scale = size / 100.0
     for i, pts in enumerate(RHOMBI):
-        f = alpha_base - i * 0.35
+        f = alpha_base - i * 0.30
         if f < 0.1:
             f = 0.1
-        c = tuple(int(BG[j] + (LIGHT[j] - BG[j]) * f) for j in range(3))
+        c = tuple(int(BG[j] + (ACCENT[j] - BG[j]) * f) for j in range(3))
         poly = [(cx + (x - 50) * scale, cy + (y - 50) * scale) for (x, y) in pts]
         draw.polygon(poly, fill=c)
 
@@ -103,6 +107,54 @@ def gen_round_launcher(dpi, size):
     result.save(path)
     print(f"  {os.path.relpath(path, ANDROID_RES)}  ({size}x{size})")
 
+# ---- 品牌矢量资源（自适应图标 monochrome 层） ----
+# 把 0..100 网格的菱形缩放平移到 108 画布中心：logo 收缩进中心 2/3 安全区，
+# 与 mipmap 前景图、系统启动图 icon 保持同一构图。
+_ICON_S = 0.8
+
+def _vector_paths():
+    out = []
+    for pts in RHOMBI:
+        p = [(54 + (x - 50) * _ICON_S, 54 + (y - 50) * _ICON_S) for (x, y) in pts]
+        out.append("M" + "L".join(f"{x:g},{y:g}" for x, y in p) + "Z")
+    return out
+
+def gen_monochrome():
+    """生成 drawable/ic_launcher_monochrome.xml：Android 13+ 主题图标单色层。"""
+    path = os.path.join(ANDROID_RES, "drawable", "ic_launcher_monochrome.xml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<vector xmlns:android="http://schemas.android.com/apk/res/android"',
+        '    android:width="108dp"',
+        '    android:height="108dp"',
+        '    android:viewportWidth="108"',
+        '    android:viewportHeight="108">',
+    ]
+    for d in _vector_paths():
+        lines.append(f'    <path android:fillColor="#FFFFFF" android:pathData="{d}" />')
+    lines.append("</vector>")
+    with open(path, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  {os.path.relpath(path, ANDROID_RES)}")
+
+def gen_adaptive_icons():
+    """生成 mipmap-anydpi-v26 自适应图标（背景色 + 品牌前景 + monochrome 层）。"""
+    out = os.path.join(ANDROID_RES, "mipmap-anydpi-v26")
+    os.makedirs(out, exist_ok=True)
+    for name in ("ic_launcher", "ic_launcher_round"):
+        path = os.path.join(out, f"{name}.xml")
+        with open(path, "w", newline="\n") as f:
+            f.write(
+                '<?xml version="1.0" encoding="utf-8"?>\n'
+                "<adaptive-icon xmlns:android=\"http://schemas.android.com/apk/res/android\">\n"
+                "    <background android:drawable=\"@color/ic_launcher_background\"/>\n"
+                "    <foreground android:drawable=\"@mipmap/ic_launcher_foreground\"/>\n"
+                "    <monochrome android:drawable=\"@drawable/ic_launcher_monochrome\"/>\n"
+                "</adaptive-icon>\n"
+            )
+        print(f"  {os.path.relpath(path, ANDROID_RES)}")
+
 def main():
     if not os.path.isdir(ANDROID_RES):
         sys.exit(f"找不到 {ANDROID_RES}，请先运行 cap sync 生成 android 目录")
@@ -127,6 +179,10 @@ def main():
         gen_launcher(dpi, size)
         gen_foreground(dpi, fg_sizes[dpi])
         gen_round_launcher(dpi, size)
+
+    print("生成品牌矢量资源…")
+    gen_monochrome()
+    gen_adaptive_icons()
 
     # 更新 ic_launcher_background.xml
     bg_xml = os.path.join(ANDROID_RES, "values", "ic_launcher_background.xml")

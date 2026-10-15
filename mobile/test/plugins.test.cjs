@@ -264,7 +264,7 @@ test('haptics: 原生环境 impact/notification/selection/vibrate 映射到插�
     await hapticsController.notification('error');
     assert.deepStrictEqual(haptics.calls.pop(), ['notification', { type: 'ERROR' }]);
     await hapticsController.selection();
-    assert.deepStrictEqual(haptics.calls.pop(), ['selection']);
+    assert.deepStrictEqual(haptics.calls.pop(), ['impact', { style: 'LIGHT' }], 'selection 走 impact(LIGHT)：Android selectionChanged 有 selectionStart 门禁，单飞会被静默丢弃');
     await hapticsController.vibrate(200);
     assert.deepStrictEqual(haptics.calls.pop(), ['vibrate', { duration: 200 }]);
   } finally {

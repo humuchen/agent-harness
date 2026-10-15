@@ -22,12 +22,13 @@ const haptics_1 = require("@capacitor/haptics");
 const register_plugins_1 = require("../bridge/register-plugins");
 /** 触感开关的持久化键（与 webapp 侧 utils/haptics.ts 约定同一键）。 */
 exports.HAPTICS_ENABLED_KEY = 'ah:haptics:enabled';
-/** Web 降级振动档位（毫秒）：navigator.vibrate 的 pattern。 */
+/** Web 降级振动档位（毫秒）：navigator.vibrate 的 pattern。
+    selection 8→20：8ms 在多数机型上低于可感知阈值，纯 Web 下等于没有反馈。 */
 const WEB_PATTERNS = {
     light: 10,
     medium: 20,
     heavy: 30,
-    selection: 8,
+    selection: 20,
     success: 15,
     warning: [10, 40, 10],
     error: [25, 50, 25, 50, 25],
@@ -93,7 +94,11 @@ exports.hapticsController = {
         const { haptics, isNative } = (0, register_plugins_1.getPlugins)();
         if (isNative) {
             try {
-                await haptics.selectionChanged();
+                // 不用 selectionChanged()：Android 原生实现把它门禁在 selectionStart()
+                // 之后（Haptics.java：selectionStarted=false 时静默 no-op，不抛错），
+                // 单独调用不产生任何反馈。impact(LIGHT) 在 Android/iOS 上都是即时
+                // 单发的刻度感，双端一致。与 webapp 侧 utils/haptics.ts 同一约定。
+                await haptics.impact({ style: haptics_1.ImpactStyle.Light });
             }
             catch { /* 原生触感不可用：静默降级 */ }
             return;

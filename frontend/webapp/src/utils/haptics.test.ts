@@ -4,7 +4,8 @@
  * （全站按钮类点击统一补轻震；语义调用优先不重复；节流防抖）。
  *
  * 覆盖：
- * - 原生壳：impact/notification/selection 映射到 window.Capacitor.Plugins.Haptics
+ * - 原生壳：impact/notification 映射到 window.Capacitor.Plugins.Haptics；
+ *   selection 走 impact(LIGHT)（Android 的 selectionChanged 有 selectionStart 门禁）
  * - 开关关闭（原生 Preferences / 纯 Web localStorage）后全部静默
  * - 纯 Web 降级 navigator.vibrate 的 pattern；无 Vibration API 时静默不抛错
  * - 桥调用 reject 时 fail-safe（绝不向上抛）
@@ -131,13 +132,15 @@ describe('utils/haptics：原生壳（Capacitor Haptics）', () => {
     expect(spy.notification).toHaveBeenCalledTimes(3);
   });
 
-  it('hapticSelection 映射 selectionChanged', async () => {
+  it('hapticSelection 映射 impact(LIGHT)（Android selectionChanged 有 selectionStart 门禁，不可单飞）', async () => {
     const spy = makeHapticsSpy();
     fakeNative(spy);
     const { hapticSelection } = await freshHaptics();
     hapticSelection();
     await flush();
-    expect(spy.selectionChanged).toHaveBeenCalledTimes(1);
+    expect(spy.selectionChanged).not.toHaveBeenCalled();
+    expect(spy.impact).toHaveBeenCalledTimes(1);
+    expect(spy.impact).toHaveBeenCalledWith({ style: 'LIGHT' });
   });
 
   it('开关关闭（Preferences ah:haptics:enabled=false）后全部静默', async () => {
@@ -221,7 +224,7 @@ describe('utils/haptics：纯 Web 降级（navigator.vibrate）', () => {
     expect(vibrate).toHaveBeenLastCalledWith([25, 50, 25, 50, 25]);
     h.hapticSelection();
     await flush();
-    expect(vibrate).toHaveBeenLastCalledWith(8);
+    expect(vibrate).toHaveBeenLastCalledWith(20);
     expect(vibrate).toHaveBeenCalledTimes(6);
   });
 
@@ -339,8 +342,10 @@ describe('utils/haptics：全局委托监听（全站按钮类点击）', () => 
 
     click(btn);
     await flush();
-    expect(spy.selectionChanged).toHaveBeenCalledTimes(1);
-    expect(spy.impact).not.toHaveBeenCalled();
+    // 语义调用（现为 impact LIGHT）恰好一次；委托的通用轻震被去重跳过
+    expect(spy.impact).toHaveBeenCalledTimes(1);
+    expect(spy.impact).toHaveBeenCalledWith({ style: 'LIGHT' });
+    expect(spy.selectionChanged).not.toHaveBeenCalled();
   });
 
   it('处理器 stopPropagation 不漏振（捕获阶段监听先于一切处理器）', async () => {
