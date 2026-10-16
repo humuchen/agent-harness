@@ -106,7 +106,8 @@ function mountNotificationHost(): void {
 // OAuth 回调场景：浏览器带 ah_auth cookie 回到 ?oauth=success，但本地尚无用户名记录，
 // 此时需先打 /api/account/me 用 cookie 回填会话，再进控制台（满足 x-ah-username 双因子）。
 // 注意：OAuth 用户不经过账号密码接口，因此不写入 ah_token；会话存在性仅凭用户名判断。
-const oauthSuccess = new URLSearchParams(location.search).get('oauth') === 'success';
+const oauthSuccess =
+  new URLSearchParams(location.search).get('oauth') === 'success';
 
 // P3-1：加载品牌配置并应用主题色。脱离品牌不影响应用主流程。
 initBrand().catch(() => {});
@@ -180,8 +181,7 @@ window.addEventListener(APP_EVENTS.sessionExpired, () => {
   clearSession();
   mountLogin();
   notify.warning('登录已失效，请重新登录。', {
-    key: 'session-expired',
-    duration: 0
+    key: 'session-expired'
   });
 });
 
@@ -202,10 +202,14 @@ window.addEventListener(APP_EVENTS.sessionCleared, () => {
 // 注意：SSE 断线重连、401 刷新等已自处理的错误走各自 UI 提示（均有 catch），
 // 只有真正未捕获的异常 / Promise 拒绝才会到达这里。
 const clientErrors: Array<{ at: number; kind: string; message: string }> = [];
-(window as unknown as { __ahClientErrors?: typeof clientErrors }).__ahClientErrors =
-  clientErrors;
+(
+  window as unknown as { __ahClientErrors?: typeof clientErrors }
+).__ahClientErrors = clientErrors;
 
-function recordGlobalError(kind: 'error' | 'unhandledrejection', message: string): void {
+function recordGlobalError(
+  kind: 'error' | 'unhandledrejection',
+  message: string
+): void {
   clientErrors.push({ at: Date.now(), kind, message });
   if (clientErrors.length > 20) clientErrors.shift();
   console.error(`[ah:${kind}]`, message);
@@ -213,8 +217,13 @@ function recordGlobalError(kind: 'error' | 'unhandledrejection', message: string
 
 window.addEventListener('error', (e) => {
   const msg =
-    e instanceof ErrorEvent ? e.message : String((e as ErrorEvent)?.message ?? 'unknown error');
-  recordGlobalError('error', e.filename ? `${msg} (${e.filename}:${e.lineno})` : msg);
+    e instanceof ErrorEvent
+      ? e.message
+      : String((e as ErrorEvent)?.message ?? 'unknown error');
+  recordGlobalError(
+    'error',
+    e.filename ? `${msg} (${e.filename}:${e.lineno})` : msg
+  );
   notifyError(new Error(msg), {
     fallback: '页面发生内部错误，部分功能可能异常。',
     key: 'global-error'
@@ -223,7 +232,10 @@ window.addEventListener('error', (e) => {
 
 window.addEventListener('unhandledrejection', (e) => {
   const reason = (e as PromiseRejectionEvent).reason;
-  const msg = reason instanceof Error ? reason.message : String(reason ?? 'unknown rejection');
+  const msg =
+    reason instanceof Error
+      ? reason.message
+      : String(reason ?? 'unknown rejection');
   recordGlobalError('unhandledrejection', msg);
   notifyError(reason instanceof Error ? reason : new Error(msg), {
     fallback: '页面发生内部错误，部分功能可能异常。',
