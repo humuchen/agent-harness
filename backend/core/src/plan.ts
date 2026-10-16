@@ -82,7 +82,7 @@ export function pickOutputChecks(raw: unknown): string[] {
  * 在 propose 阶段本就可用，这里显式鼓励调研，并以阶段约束让规划过程「有思考、有依据、有确认」。
  */
 export function buildPlannerPrompt(userInput: string): string {
-  return [
+  const lines = [
     '你是资深任务规划师。请先理解用户需求，再产出执行计划；若需求不清则先澄清目标。',
     '',
     '严格按顺序执行：',
@@ -112,8 +112,207 @@ export function buildPlannerPrompt(userInput: string): string {
     '- 每个问题必须附 options：2~4 个该问题最常见的候选答案（短词或短语，覆盖典型场景），供用户直接点选；用户也可自行输入其他答案。',
     '- needs（可选）：你认为缺失的关键信息或前置条件。',
     '',
-    `用户需求：${userInput}`,
+    `用户需求：${userInput}`
+  ];
+  // 澄清回复轮（前端「确认并继续」再次派发）：输入里带「—— 目标澄清回复 ——」标记时，
+  // 把用户已回答的 Q&A 显式注入并禁止重复提问——否则弱模型会把上一轮已确认的问题
+  // 换个措辞再问一遍，用户被循环追问（本提示词同时覆盖旧 harness 回退路径）。
+  const reply = parseClarifyReply(userInput);
+  if (reply) lines.push('', buildClarifyConfirmedBlock(reply));
+  return lines.join('\n');
+}
+
+/**
+ * 澄清回复标记：前端「确认并继续」把「原需求 + 目标草稿 + 用户逐题确认 + 整体补充」
+ * 拼为新一轮 propose 输入；本常量是该跨端文本契约的单一事实源（core 解析、前端生成）。
+ */
+export const CLARIFY_REPLY_MARKER = '—— 目标澄清回复';
+
+/**
+ * 澄清轮次硬上限（含首轮提问，按「回复轮」计）：达到后即使模型仍想澄清也强制进入规划，
+ * 杜绝「问个没完」的死循环（env CLARIFY_MAX_ROUNDS 可调，非法值回落缺省）。
+ */
+export const CLARIFY_MAX_ROUNDS_DEFAULT = 3;
+
+/** 澄清轮次上限（env 覆盖，下限 1）。 */
+export function clarifyMaxRounds(): number {
+  const raw = Number(process.env.CLARIFY_MAX_ROUNDS);
+  if (!Number.isFinite(raw) || raw < 1) return CLARIFY_MAX_ROUNDS_DEFAULT;
+  return Math.min(Math.floor(raw), 10);
+}
+
+/** 解析出的澄清回复（多轮时累计所有历史轮的 Q&A，round/goalDraft/extra 取最后一轮）。 */
+export interface ClarifyReply {
+  /** 第几轮澄清回复（从 1 开始；标记未带轮次时按 1 计）。 */
+  round: number;
+  /** 模型上一轮给出的目标草稿（最后一条非空值）。 */
+  goalDraft: string;
+  /** 用户已逐题确认的问答对（跨轮累计去重）。 */
+  qa: Array<{ q: string; a: string }>;
+  /** 用户整体补充说明（最后一条非空值）。 */
+  extra: string;
+}
+
+/** 解析单个回复段（标记之后、下一标记之前的正文）。 */
+function parseClarifyReplySegment(body: string): ClarifyReply {
+  const firstLine = (body.split('\n', 1)[0] ?? '').trim();
+  const roundM = firstLine.match(/第\s*(\d+)\s*轮/);
+  const out: ClarifyReply = {
+    round: roundM ? Math.max(1, Number(roundM[1]) || 1) : 1,
+    goalDraft: '',
+    qa: [],
+    extra: ''
+  };
+  let inQa = false;
+  for (const raw of body.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('目标草稿：')) {
+      out.goalDraft = line.slice('目标草稿：'.length).trim();
+      inQa = false;
+      continue;
+    }
+    if (line.startsWith('用户逐题确认：')) {
+      inQa = true;
+      continue;
+    }
+    if (line.startsWith('用户补充：')) {
+      out.extra = line.slice('用户补充：'.length).trim();
+      inQa = false;
+      continue;
+    }
+    // 逐题行形如「1. <问题> → <答案>」；问题里含 → 时取首个分隔（答案在后，无损）。
+    const qaM = line.match(/^(\d+)[.、]\s*(.+?)\s*→\s*(.+?)\s*$/);
+    if (qaM) {
+      const q = (qaM[2] ?? '').trim();
+      const a = (qaM[3] ?? '').trim();
+      if (q && a) out.qa.push({ q, a });
+      inQa = true;
+      continue;
+    }
+    if (inQa && out.qa.length) {
+      // 续行并入上一条答案（自定义补充跨行的容错）。
+      const last = out.qa[out.qa.length - 1];
+      if (last) last.a = `${last.a} ${line}`.trim();
+      continue;
+    }
+    if (out.extra) {
+      out.extra = `${out.extra} ${line}`.trim();
+    }
+    // 其余行（如「用户确认：按上述目标草稿继续」）无需结构化，忽略。
+  }
+  return out;
+}
+
+/**
+ * 从 propose 输入中解析澄清回复（前端「确认并继续」的再次派发）。
+ * 多轮澄清时早轮回复段会作为历史残留前文：逐段解析、Q&A 跨轮累计（防跨轮重复追问），
+ * round / goalDraft / extra 取最后一轮。无标记或三段皆空 → null。
+ */
+export function parseClarifyReply(userInput: string): ClarifyReply | null {
+  if (!userInput || !userInput.includes(CLARIFY_REPLY_MARKER)) return null;
+  const out: ClarifyReply = { round: 1, goalDraft: '', qa: [], extra: '' };
+  let cursor = 0;
+  for (;;) {
+    const at = userInput.indexOf(CLARIFY_REPLY_MARKER, cursor);
+    if (at === -1) break;
+    const bodyStart = at + CLARIFY_REPLY_MARKER.length;
+    const nextAt = userInput.indexOf(CLARIFY_REPLY_MARKER, bodyStart);
+    const seg = parseClarifyReplySegment(
+      userInput.slice(bodyStart, nextAt === -1 ? undefined : nextAt)
+    );
+    out.round = seg.round;
+    if (seg.goalDraft) out.goalDraft = seg.goalDraft;
+    if (seg.extra) out.extra = seg.extra;
+    for (const item of seg.qa) {
+      if (!out.qa.some((x) => x.q === item.q && x.a === item.a)) out.qa.push(item);
+    }
+    if (nextAt === -1) break;
+    cursor = bodyStart;
+  }
+  if (!out.goalDraft && out.qa.length === 0 && !out.extra) return null;
+  return out;
+}
+
+/**
+ * 「已确认信息」注入块：把用户已回答的 Q&A 显式摆到规划提示词里，并下硬性禁重问规则。
+ * 阶段1（理解需求）/ 阶段3（生成计划）/ 旧 harness 回退路径共用。
+ */
+export function buildClarifyConfirmedBlock(reply: ClarifyReply): string {
+  return [
+    `已确认信息（用户第 ${reply.round} 轮澄清回复，硬性约束）：`,
+    ...(reply.goalDraft ? [`目标草稿：${reply.goalDraft}`] : []),
+    ...(reply.qa.length
+      ? [
+          '用户已逐题确认（已回答，禁止再次提问）：',
+          ...reply.qa.map((x, i) => `${i + 1}. ${x.q} → ${x.a}`)
+        ]
+      : []),
+    ...(reply.extra ? [`用户补充：${reply.extra}`] : []),
+    '规则（硬性）：',
+    '- 上列问题已由用户亲自回答，禁止以任何形式再次提问相同或近似的问题（换措辞、拆小问、改选项重问都算重复）。',
+    '- 若上列信息已足以拆分计划 → 必须直接进入规划分支（plan / research），不得输出澄清。',
+    '- 仅当存在用户尚未回答、且确实缺失的新关键前提时才可再次澄清，且新问题不得与已回答问题重复。'
   ].join('\n');
+}
+
+/** 归一化：小写 + 去空白/中英标点，用于问题相似度比较。 */
+function normForCompare(s: string): string {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '')
+    .replace(
+      /[，。！？、；：""''（）()【】\[\]{}!?;:,.~—\-_/\\|+*#@$%^&"'<>=`]/g,
+      ''
+    );
+}
+
+/** 字符二元组集合（中文无词边界，bigram 是问句相似度的可用近似）。 */
+function bigramSet(s: string): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < s.length; i += 1) out.add(s.slice(i, i + 2));
+  if (s.length === 1) out.add(s);
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  return inter / (a.size + b.size - inter);
+}
+
+/**
+ * 判断新澄清问题是否只是「已回答问题」的换措辞重问。三路信号任一命中即判重：
+ * 1. 归一化后相同，或一方完整包含另一方（短句 ≥6 字，防「时间范围」式误伤）；
+ * 2. 问句字符二元组 Jaccard ≥ 0.5；
+ * 3. 新问题的候选选项 ≥60% 已出现在旧答案或旧问句中（最强信号：选项集重合）。
+ */
+export function isClarifyQuestionDuplicate(
+  question: string,
+  options: string[] | undefined,
+  answered: Array<{ q: string; a: string }>
+): boolean {
+  const nq = normForCompare(question);
+  if (!nq || answered.length === 0) return false;
+  const nqBi = bigramSet(nq);
+  const normOpts = (options ?? []).map(normForCompare).filter(Boolean);
+  for (const { q, a } of answered) {
+    const naq = normForCompare(q);
+    if (naq) {
+      if (nq === naq) return true;
+      const longer = nq.length >= naq.length ? nq : naq;
+      const shorter = nq.length >= naq.length ? naq : nq;
+      if (shorter.length >= 6 && longer.includes(shorter)) return true;
+      if (jaccard(nqBi, bigramSet(naq)) >= 0.5) return true;
+    }
+    if (normOpts.length) {
+      const pool = `${normForCompare(a)}|${naq}`;
+      const hit = normOpts.filter((o) => pool.includes(o)).length;
+      if (hit / normOpts.length >= 0.6) return true;
+    }
+  }
+  return false;
 }
 
 /** 澄清问题（可附候选选项供用户点选，也允许用户自行输入）。 */

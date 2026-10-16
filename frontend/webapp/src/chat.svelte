@@ -3856,9 +3856,13 @@
       .filter((x): x is string => x !== null);
     const extra = st.extra.trim();
     const answered = answerLines.length > 0 || extra.length > 0;
+    // 澄清轮次 = 本卡之前的澄清卡数 + 1。写进回复标记（与 core parseClarifyReply 契约）：
+    // planner 管线据此识别「第 N 轮澄清回复」，把已回答 Q&A 显式注入提示词并禁止重复提问，
+    // 达到上限后强制出计划——修复「已回答的问题被换个措辞再问一遍」的循环追问。
+    const round = thread.slice(0, idx).filter((p) => p?.clarify).length + 1;
     const parts = [
       origNeed || '（原需求见上文）',
-      '—— 目标澄清回复 ——',
+      `—— 目标澄清回复（第 ${round} 轮） ——`,
       m.clarify.goalDraft ? `目标草稿：${m.clarify.goalDraft}` : '',
       answerLines.length ? '用户逐题确认：' : '',
       ...answerLines,
