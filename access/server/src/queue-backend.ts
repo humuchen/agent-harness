@@ -72,6 +72,19 @@ export function isPlanTaskRun(d: { interactionMode?: string; planPhase?: string 
   return d.interactionMode === 'plan' && d.planPhase !== 'propose';
 }
 
+/**
+ * 计划 propose（生成计划）判定：计划模式 + propose 阶段 = 前端「规划思考」派发的 run。
+ * 两段式规划管线（理解 → 受限调研 → 生成计划，澄清回复轮还有防重问守卫重试）是
+ * 3~4 次顺序 LLM 调用，推理模型单轮思考即可分钟级 —— 与 planTask 同属重任务，
+ * 服务端据此放宽看门狗（见 run-queue PLAN_PROPOSE_TIMEOUT_MS）。
+ */
+export function isPlanProposeRun(d: {
+  interactionMode?: string;
+  planPhase?: string;
+}): boolean {
+  return d.interactionMode === 'plan' && d.planPhase === 'propose';
+}
+
 // ─── descriptor 明文凭据落盘防护（P1-2）───────────────────────────────────────
 // 旧自定义模型前端路径可能随 run body 直传明文 modelApiKey；该字段若随 descriptor
 // 原样持久化（run-queue.jsonl / runq:jobs HASH），明文 Key 将落盘。此处统一在持久层

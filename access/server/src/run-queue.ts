@@ -27,6 +27,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { assembleAgent, type RunMode } from './runner';
 import {
   createQueueBackend,
+  isPlanProposeRun,
   isPlanTaskRun,
   type QueueBackend,
   type JobDescriptor
@@ -174,6 +175,14 @@ const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;
 // 默认放宽到 10 分钟，可用 PLAN_TASK_TIMEOUT_MS 环境变量覆盖。
 export const PLAN_TASK_TIMEOUT_MS =
   Number(process.env.PLAN_TASK_TIMEOUT_MS ?? 600_000) || 600_000;
+// 计划 propose（两段式规划管线）专用超时：阶段1 理解 + 阶段3 生成计划 + 澄清防重问
+// 守卫重试 ≈ 3~4 次顺序 LLM 调用，推理模型单轮思考即可分钟级。此前 propose 与普通
+// run 共用 JOB_TIMEOUT_MS（5 分钟），多阶段管线会在阶段3 中途被看门狗 abort —— 前端
+// 只见「规划未完成：连接可能已中断或处理超时」，且已烧掉的 token 全部作废。默认与
+// planTask 对齐 10 分钟，可用 PLAN_PROPOSE_TIMEOUT_MS 覆盖。
+export const PLAN_PROPOSE_TIMEOUT_MS =
+  Number(process.env.PLAN_PROPOSE_TIMEOUT_MS ?? PLAN_TASK_TIMEOUT_MS) ||
+  PLAN_TASK_TIMEOUT_MS;
 // 断连宽限中止时长（ms）：客户端 SSE 断开后，仅当该 job 已无任何订阅者时才预约
 // 延迟中止；宽限期内客户端凭 jobId 重订阅即取消（cancelDisconnectAbort）。
 // 背景（P1-1 演进）：旧行为「断开即中止」会把网络抖动 / 刷新造成的瞬时断连
@@ -208,10 +217,10 @@ const QUEUE_LEASE_MS = Number(process.env.QUEUE_LEASE_MS ?? 300_000) || 300_000;
 const LEASE_RENEW_INTERVAL_MS = Math.max(15_000, Math.floor(QUEUE_LEASE_MS / 3));
 
 // P1-6：跨实例会话锁 TTL。须覆盖「锁持有实例从 acquire 到 finally release」的最长
-// 生命周期 —— 取最大任务超时（计划任务 600s > 普通任务 300s）+ 60s 缓冲。实例崩溃
-// 后 TTL 到期自动释放，其它实例的重投循环即可重新领取执行。
+// 生命周期 —— 取最大任务超时（计划任务/propose 600s > 普通任务 300s）+ 60s 缓冲。
+// 实例崩溃后 TTL 到期自动释放，其它实例的重投循环即可重新领取执行。
 const SESSION_LOCK_TTL_MS =
-  Math.max(JOB_TIMEOUT_MS, PLAN_TASK_TIMEOUT_MS) + 60_000;
+  Math.max(JOB_TIMEOUT_MS, PLAN_TASK_TIMEOUT_MS, PLAN_PROPOSE_TIMEOUT_MS) + 60_000;
 
 // P1-7：看门狗强制结算的宽限期。看门狗在 watchdogMs 发出 abort 后，若底层 execute
 // promise 在此宽限内仍未 settle（abort 未被底层响应的结构性泄漏），第二层
@@ -1234,7 +1243,14 @@ export class RunQueue {
     // P4.8 修复：此前无条件用 JOB_TIMEOUT_MS（默认 300s），而计划任务执行在 harness 侧
     // 拿到的是 PLAN_TASK_TIMEOUT_MS（默认 600s）—— 看门狗会在 5 分钟就把「预算 10 分钟」
     // 的计划任务掐断，是「等待很久 → step 超时中止」的一个确定性来源。两者必须同源。
-    const watchdogMs = isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS;
+    // 计划 propose 同理（且更甚）：两段式规划管线是 3~4 次顺序 LLM 调用，共用 5 分钟
+    // 看门狗会在阶段3 中途 abort，前端只见「规划未完成：连接可能已中断或处理超时」。
+    const runTimeoutMs = isPlanTaskRun(job)
+      ? PLAN_TASK_TIMEOUT_MS
+      : isPlanProposeRun(job)
+        ? PLAN_PROPOSE_TIMEOUT_MS
+        : JOB_TIMEOUT_MS;
+    const watchdogMs = runTimeoutMs;
     const watchdog = setTimeout(() => {
       try {
         job.controller.abort('timeout');
@@ -1242,8 +1258,8 @@ export class RunQueue {
         /* 忽略 */
       }
     }, watchdogMs);
-    // 看门狗最长可达 PLAN_TASK_TIMEOUT_MS（默认 600s），若测试 / 停机时任务未结束会长期
-    // 持有事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
+    // 看门狗最长可达 PLAN_TASK_TIMEOUT_MS / PLAN_PROPOSE_TIMEOUT_MS（默认 600s），若测试 /
+    // 停机时任务未结束会长期持有事件循环引用；unref 后仍会按时触发 abort，但不阻止进程退出。
     watchdog.unref?.();
     const t0 = Date.now();
     // P2.a：配额计费的租户维度键（无 tenantId 归到 'anonymous'，与 telemetry 一致）。
@@ -1448,11 +1464,14 @@ export class RunQueue {
             fromAgent: 'default',
             toAgent: targetCard.id,
             input: job.prompt,
-            // 与本地 harness 看门狗一致：计划任务执行放宽到 PLAN_TASK_TIMEOUT_MS。
+            // 与本地 harness 看门狗一致：计划任务执行放宽到 PLAN_TASK_TIMEOUT_MS，
+            // 计划 propose（多阶段规划管线）放宽到 PLAN_PROPOSE_TIMEOUT_MS。
             sla: {
               timeoutMs: isPlanTaskRun(job)
                 ? PLAN_TASK_TIMEOUT_MS
-                : JOB_TIMEOUT_MS
+                : isPlanProposeRun(job)
+                  ? PLAN_PROPOSE_TIMEOUT_MS
+                  : JOB_TIMEOUT_MS
             }
           };
           const result: TaskResult | null = await new HttpA2ATransport(
@@ -1553,7 +1572,8 @@ export class RunQueue {
           signal,
           // 计划任务执行用更长超时：重任务（源码精读等）常超默认 5 分钟
           //（实测 stealth/ox-alpha 单次推理 >300s），被 watchdog 掐断后只能整任务作废。
-          isPlanTaskRun(job) ? PLAN_TASK_TIMEOUT_MS : JOB_TIMEOUT_MS,
+          // 计划 propose（两段式规划管线，3~4 次顺序 LLM 调用）同理放宽。
+          runTimeoutMs,
           job.maxSteps,
           undefined,
           verifier,

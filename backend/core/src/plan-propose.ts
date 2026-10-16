@@ -607,7 +607,15 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
   if (clarifyReply) {
     finalText = await guardClarifyEcho(finalText, finalMsgs, goal);
   }
+  // 最终仍不可解析：不再把空/垃圾文本当 final 上抛。此前该路径把 '' 直接交给服务端
+  // run:end，前端既无计划也无内容，只能渲染「规划未完成：连接可能已中断或处理超时」
+  // 死路占位（已烧掉的 token 全部作废，用户唯一出路是整轮重发）。现按已确认目标合成
+  // 最小计划收口，与防重问守卫同一兜底哲学：propose 必须产出计划或澄清，绝不返回空。
+  // 典型触发：provider 思考期超过 LLM_STREAM_IDLE_TIMEOUT_MS（默认 120s）被空闲超时
+  // 截断、返回空 content —— 空响应重试一次仍空，走到这里。
+  if (!parsePlanOrClarify(finalText)) {
+    finalText = JSON.stringify(buildClarifyFallbackPlan(goal));
+  }
   remember({ role: 'assistant', content: finalText });
-  // 最终仍不可解析：原样返回，交由服务端 run:end 的 warn 回退路径处理（与旧链路一致）。
   return finalText;
 }
