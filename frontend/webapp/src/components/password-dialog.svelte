@@ -1,17 +1,32 @@
 <script lang="ts">
   /**
-   * ah-password-dialog：修改密码模态（共享组件）—— Svelte 迁移版。
+   * ah-password-dialog：修改密码弹层（共享组件）—— 双形态：桌面模态 / 移动端抽屉。
    *
    * 由 user-menu（顶栏头像下拉 / 移动端「我的」页）承载的改密入口使用；
    * 抽为独立组件是为了把表单与校验从菜单组件里分出来，便于单测与复用。
    * （设置中心已移除「账户」分组，改密入口全站只有 user-menu 一处。）
    *
-   * 交互与校验：
-   *  - 受控打开：父组件绑定 open（bind:open），组件内部关闭时派发 `ah-pw-close`
-   *    让父级同步状态（同时经由 bind:open 双向同步）。
+   * 形态分派（本组件内做结构切换，父级无感知，两处入口自动各得其所）：
+   *  - 桌面（宽 ≥760px 且指针精细）：居中模态，Esc / 遮罩 / 取消 / × 关闭。
+   *  - 移动端（(max-width: 760px), (pointer: coarse)——与全站 CSS 断点一致）：
+   *    全屏右侧抽屉（placement=right + fullscreen，与「我的→设置」同款形态），
+   *    复用 AhDrawer 全部能力：跟手侧滑关闭、松手阈值/回弹、系统手势排除
+   *    （Android 10+ 返回手势）、safe-area、焦点圈、路由联动关闭。
+   *    断点翻转（转屏 / 拔掉外接屏）实时切换形态。
+   *    注：这里必须用 JS 判定——模态与抽屉是两棵 DOM 树，CSS 媒体查询做不了
+   *    结构切换（ah-drawer 内「避免 JS 媒体查询」的注释针对的是纯视觉切换，
+   *    与此不冲突）。
+   *
+   * 提交中（busy）的关闭策略，两形态语义一致——「提交中禁止关闭」：
+   *  - 模态：close() 的 busy 早退兜底（Esc/遮罩/× 均汇入）。
+   *  - 抽屉：除 close() 兜底外，直接在 props 层关掉全部关闭路径
+   *    （maskClosable/escClosable/showClose/swipeToClose = !busy）。不能只靠
+   *    兜底——AhDrawer 的离场流程是「先播动画再回调 onclose」，父级 busy 拒绝
+   *    会呈现「滑出去又弹回来」的抖动，观感差；props 层禁用则根本不发起。
+   *
+   * 校验与提交（两形态共用）：
    *  - 校验前移到前端（规则同登录 / 注册，见 utils/auth-validation.ts）；校验失败 /
-   *    后端报错 / 网络异常一律走 ah-notification，模态内不保留内联错误条。
-   *  - 关闭途径：Esc / 遮罩点击 / 「取消」/ 右上角 ×；提交中禁止关闭（避免请求悬挂）。
+   *    后端报错 / 网络异常一律走 ah-notification，弹层内不保留内联错误条。
    *  - 新密码客户端 PBKDF2 派生后提交（P1-14），明文新密码不出网；旧密码仍需服务端校验。
    *
    * 视觉：仅引用 --ah-* 语义令牌，与全站（topbar / ah-modal / 登录页）一致；深浅主题自适应。
@@ -19,10 +34,12 @@
    * 注意：遮罩类名为 .pw-scrim 而非 .scrim —— 刻意避开全局抽屉遮罩规则，见下方样式注释。
    */
   import { onDestroy, onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { changePassword, derivePassword, bytesToHex } from '../api';
   import { notify } from './ah-notification';
   import { validateChangePassword } from '../utils/auth-validation';
   import { APP_EVENTS } from '../app-events';
+  import AhDrawer from './ah-drawer.svelte';
 
   let {
     /** 受控打开态：由父组件绑定（bind:open），内部关闭时派发 ah-pw-close。 */
@@ -35,6 +52,18 @@
   let busy = $state(false);
 
   let rootEl: HTMLElement | undefined = $state();
+
+  /* ── 移动端判定（结构性切换，见文件头「形态分派」）── */
+  const mobileMq: MediaQueryList | undefined =
+    typeof matchMedia === 'function'
+      ? matchMedia('(max-width: 760px), (pointer: coarse)')
+      : undefined;
+  /** 无 matchMedia 的环境（jsdom 单测）回退 false → 模态，保持既有测试路径。 */
+  let asDrawer = $state(mobileMq?.matches ?? false);
+
+  const onMqChange = () => {
+    asDrawer = mobileMq?.matches ?? false;
+  };
 
   /** 上一次 open 快照：仅在 false → true 跳变时重置草稿（对齐原 willUpdate 语义）。 */
   let wasOpen = false;
@@ -51,22 +80,29 @@
   });
 
   onMount(() => {
+    // 挂载期再取一次（模块求值到挂载之间视口可能已变），并跟随断点翻转实时切换形态。
+    if (mobileMq) {
+      asDrawer = mobileMq.matches;
+      mobileMq.addEventListener('change', onMqChange);
+    }
     window.addEventListener('keydown', onKeydown);
     window.addEventListener(APP_EVENTS.closeOverlays, onCloseOverlays);
   });
 
   onDestroy(() => {
+    mobileMq?.removeEventListener('change', onMqChange);
     window.removeEventListener('keydown', onKeydown);
     window.removeEventListener(APP_EVENTS.closeOverlays, onCloseOverlays);
   });
 
-  /** 路由切换或浏览器后退/前进时关闭模态（提交中不响应，避免请求悬挂）。 */
+  /** 路由切换或浏览器后退/前进时关闭弹层（提交中不响应，避免请求悬挂）。 */
   function onCloseOverlays() {
     if (open) close();
   }
 
   const onKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && open) close();
+    // 抽屉形态下 Esc 由 AhDrawer 面板统一处理（尊重其 escClosable，busy 时已禁）。
+    if (e.key === 'Escape' && open && !asDrawer) close();
   };
 
   /** 关闭并通知父级同步（提交中不响应，避免请求悬挂）。 */
@@ -113,77 +149,70 @@
 </script>
 
 <div class="pw-root no-pill" bind:this={rootEl}>
+  <!-- 表单字段：模态与抽屉两形态共用（Svelte snippet，避免双份维护）。
+       声明在 .pw-root 内即可被下方两处 {@render fields()} 词法可见。 -->
+  {#snippet fields()}
+    <div class="field">
+      <label for="ah-pw-old">当前密码</label>
+      <input
+        id="ah-pw-old"
+        type="password"
+        autocomplete="current-password"
+        placeholder="请输入当前密码"
+        value={oldPw}
+        oninput={(e) => (oldPw = e.currentTarget.value)}
+      />
+    </div>
+    <div class="field">
+      <label for="ah-pw-new">新密码（至少 8 位）</label>
+      <input
+        id="ah-pw-new"
+        type="password"
+        autocomplete="new-password"
+        placeholder="请输入新密码"
+        value={newPw}
+        oninput={(e) => (newPw = e.currentTarget.value)}
+      />
+    </div>
+    <div class="field">
+      <label for="ah-pw-confirm">确认新密码</label>
+      <input
+        id="ah-pw-confirm"
+        type="password"
+        autocomplete="new-password"
+        placeholder="请输入确认密码"
+        value={confirmPw}
+        oninput={(e) => (confirmPw = e.currentTarget.value)}
+        onkeydown={(e: KeyboardEvent) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+      />
+    </div>
+  {/snippet}
   {#if open}
-    <div
-      class="pw-scrim"
-      role="button"
-      tabindex="-1"
-      aria-label="关闭"
-      onclick={(e: MouseEvent) => {
-        if (e.target === e.currentTarget) close();
-      }}
-      onkeydown={(e: KeyboardEvent) => {
-        if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
-          e.preventDefault();
-          close();
-        }
-      }}
-    >
-      <div class="panel" role="dialog" aria-modal="true" aria-label="修改密码">
-        <div class="head">
-          <span class="title">修改密码</span>
+    {#if asDrawer}
+      <!-- 移动端：全屏右侧抽屉（与「我的→设置」同款形态），带侧滑关闭手势。
+           busy 时在 props 层关掉全部关闭路径（理由见文件头「提交中的关闭策略」）。 -->
+      <AhDrawer
+        open={open}
+        placement="right"
+        title="修改密码"
+        size="100vw"
+        fullscreen={true}
+        maskClosable={!busy}
+        escClosable={!busy}
+        showClose={!busy}
+        swipeToClose={!busy}
+        onclose={() => close()}
+        showFooter={true}
+      >
+        {@render fields()}
+        {#snippet footer()}
           <button
-            class="close"
-            title="关闭"
-            aria-label="关闭"
-            onclick={() => close()}
-          >
-            ×
-          </button>
-        </div>
-        <div class="body">
-          <div class="field">
-            <label for="ah-pw-old">当前密码</label>
-            <input
-              id="ah-pw-old"
-              type="password"
-              autocomplete="current-password"
-              placeholder="请输入当前密码"
-              value={oldPw}
-              oninput={(e) => (oldPw = e.currentTarget.value)}
-            />
-          </div>
-          <div class="field">
-            <label for="ah-pw-new">新密码（至少 8 位）</label>
-            <input
-              id="ah-pw-new"
-              type="password"
-              autocomplete="new-password"
-              placeholder="请输入新密码"
-              value={newPw}
-              oninput={(e) => (newPw = e.currentTarget.value)}
-            />
-          </div>
-          <div class="field">
-            <label for="ah-pw-confirm">确认新密码</label>
-            <input
-              id="ah-pw-confirm"
-              type="password"
-              autocomplete="new-password"
-              placeholder="请输入确认密码"
-              value={confirmPw}
-              oninput={(e) => (confirmPw = e.currentTarget.value)}
-              onkeydown={(e: KeyboardEvent) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  void submit();
-                }
-              }}
-            />
-          </div>
-        </div>
-        <div class="foot">
-          <button
+            type="button"
             class="btn ghost"
             onclick={() => close()}
             disabled={busy}
@@ -191,15 +220,65 @@
             取消
           </button>
           <button
+            type="button"
             class="btn primary"
             onclick={() => submit()}
             disabled={busy}
           >
             {busy ? '提交中…' : '修改'}
           </button>
+        {/snippet}
+      </AhDrawer>
+    {:else}
+      <div
+        class="pw-scrim"
+        role="button"
+        tabindex="-1"
+        aria-label="关闭"
+        onclick={(e: MouseEvent) => {
+          if (e.target === e.currentTarget) close();
+        }}
+        onkeydown={(e: KeyboardEvent) => {
+          if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+            e.preventDefault();
+            close();
+          }
+        }}
+      >
+        <div class="panel" role="dialog" aria-modal="true" aria-label="修改密码">
+          <div class="head">
+            <span class="title">修改密码</span>
+            <button
+              class="close"
+              title="关闭"
+              aria-label="关闭"
+              onclick={() => close()}
+            >
+              ×
+            </button>
+          </div>
+          <div class="body">
+            {@render fields()}
+          </div>
+          <div class="foot">
+            <button
+              class="btn ghost"
+              onclick={() => close()}
+              disabled={busy}
+            >
+              取消
+            </button>
+            <button
+              class="btn primary"
+              onclick={() => submit()}
+              disabled={busy}
+            >
+              {busy ? '提交中…' : '修改'}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    {/if}
   {/if}
 </div>
 
