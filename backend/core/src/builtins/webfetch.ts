@@ -332,6 +332,10 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
         maxRetries,
         fallbackProxy,
         allowedHost: u.hostname,
+      }, {
+        // P1 SSRF 修复：传入逐跳校验上下文（重定向手动跟随，每跳复检）。
+        allowedDomains,
+        allowPrivate,
       });
     },
     'builtin'
@@ -379,12 +383,13 @@ async function fetchOnce(
   url: string,
   headers: Record<string, string>,
   method: string,
-  timeoutMs: number
+  timeoutMs: number,
+  redirect: 'follow' | 'manual' = 'follow'
 ): Promise<{ resp?: Response; error?: Error; timedOut: boolean }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { method, headers, signal: ctrl.signal });
+    const resp = await fetch(url, { method, headers, signal: ctrl.signal, redirect });
     return { resp, timedOut: false };
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -395,12 +400,41 @@ async function fetchOnce(
   }
 }
 
-async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
-  const attempts = run.maxRetries + 1;
+// ---------------------------------------------------------------------------
+// P1 SSRF 修复：重定向手动跟随
+// ---------------------------------------------------------------------------
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const headers = buildHeaders(run, u.hostname);
-    const { resp, error, timedOut } = await fetchOnce(u.toString(), headers, run.method, run.timeoutMs);
+/**
+ * 重定向手动跟随的跳数上限（防重定向环 / 资源放大）。
+ */
+const MAX_REDIRECT_HOPS = 5;
+
+/**
+ * 逐跳校验所需的策略上下文：主路径（guard 存在）以 `redirect: 'manual'` 请求，
+ * 每个 3xx 由本模块解析 Location 并重新校验 allowlist + 私网后再跟随。
+ * 旧实现 `redirect: 'follow'` 由 fetch 内部直跳——公网 URL 302 到云元数据
+ * （169.254.169.254）/ 内网服务时完全绕过首跳校验，是已知可利用的 SSRF 面。
+ */
+interface RedirectGuard {
+  allowedDomains: string[];
+  allowPrivate: boolean;
+}
+
+async function fetchWithRetries(u: URL, run: FetchRunOptions, guard?: RedirectGuard): Promise<string> {
+  const attempts = run.maxRetries + 1;
+  let current = u;
+  let hop = 0;
+  let attempt = 1;
+
+  for (;;) {
+    const headers = buildHeaders(run, current.hostname);
+    const { resp, error, timedOut } = await fetchOnce(
+      current.toString(),
+      headers,
+      run.method,
+      run.timeoutMs,
+      guard ? 'manual' : 'follow'
+    );
 
     if (error || !resp) {
       if (timedOut) {
@@ -412,6 +446,7 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
       const err = error ?? new Error('fetch failed');
       if (attempt < attempts) {
         await sleep(backoffDelay(attempt, null));
+        attempt++;
         continue;
       }
       return `error: ${err.message}`;
@@ -426,28 +461,55 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
     else if (status >= 400 && status < 500) stats.client4xx++;
     else if (status >= 500) stats.server5xx++;
 
+    // P1 SSRF 修复：手动逐跳跟随重定向，每跳重新校验协议 + allowlist + 私网。
+    if (guard && status >= 300 && status < 400 && hop < MAX_REDIRECT_HOPS) {
+      const loc = resp.headers.get('location');
+      try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
+      if (loc) {
+        let next: URL;
+        try {
+          next = new URL(loc, current);
+        } catch {
+          return 'error: invalid redirect location';
+        }
+        if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+          return 'error: redirect to non-http/https URL denied';
+        }
+        if (guard.allowedDomains.length > 0 && !hostAllowed(next.hostname, guard.allowedDomains)) {
+          return `error: redirect host not in allowlist: ${next.hostname}`;
+        }
+        if (!guard.allowPrivate && (await resolveHostIsPrivate(next.hostname))) {
+          stats.privateDenied++;
+          return `error: redirect target ${next.hostname} resolves to a private network address (set GUARDRAIL_ALLOW_PRIVATE_NETWORK=true or WEB_FETCH_ALLOW_PRIVATE_NETWORK=on to allow)`;
+        }
+        current = next;
+        hop++;
+        continue;
+      }
+      // 无 Location 的 3xx：按普通响应读取（保持旧行为）。
+    }
+
     // 改进2：429/5xx 退避重试（尊重 Retry-After，上限 2s）。
     if ((status === 429 || status >= 500) && attempt < attempts) {
       try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
       await sleep(backoffDelay(attempt, resp.headers.get('retry-after')));
+      attempt++;
       continue;
     }
 
     // 改进3：403 被反爬拦截 → 配置了回退代理时走代理再抓一次（仅首次 403 后触发一次）。
     if (status === 403 && run.fallbackProxy) {
-      const proxied = await tryFallbackProxy(u.toString(), run);
+      const proxied = await tryFallbackProxy(current.toString(), run);
       if (proxied !== null) return proxied;
       // 代理失败 → 落回正常 403 返回路径。
     }
 
-    const result = await readResult(resp, run);
+    const result = await readResult(resp, { ...run, allowedHost: current.hostname });
     if (result !== null) return result;
     // tooLarge：readResult 已计数，按 Content-Length 给出错误信息。
     const declared = Number(resp.headers.get('content-length') ?? '');
     return `error: response body too large (${Number.isFinite(declared) && declared > 0 ? declared : 'unknown'} bytes > ${run.hardBodyBytes} hard limit)`;
   }
-  // 不可达：循环内每个分支要么 return 要么 continue（最后一次迭代不 continue）。
-  return 'error: unreachable';
 }
 
 /** 改进3：经回退代理抓取；成功返回格式化结果，失败返回 null（回落主路径）。 */

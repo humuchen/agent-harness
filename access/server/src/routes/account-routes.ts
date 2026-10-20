@@ -542,6 +542,9 @@ export async function handleAccountRoutes(
   }
   // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
   if (req.method === 'DELETE' && path === '/api/account') {
+    // P1 CSRF 修复：本端点「cookie 鉴权 + 不经 guard」，与 logout/refresh 同属
+    // csrfGuard 兜底范围——恶意站点可诱导已登录浏览器携带 cookie 发起 DELETE。
+    if (!csrfGuard(req, res)) return true;
     const u = await usernameFromCookie(req);
     if (!u) {
       sendJsonError(res, 401, { error: 'unauthorized' }, req);

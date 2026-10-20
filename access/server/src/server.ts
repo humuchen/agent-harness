@@ -589,11 +589,14 @@ async function guard(
   }
 
   // P0.3 租户隔离：若强制租户隔离（REQUIRE_TENANT=true），校验请求携带的
-  // 租户上下文（优先认证身份派生，其次请求体声明），无租户上下文则拒绝。
+  // 租户上下文（仅认证身份派生），无租户上下文则拒绝。
+  // P1 租户伪造修复：强制模式下绝不采纳请求体声明的 tenantId——它可被任意客户端
+  // 伪造，一旦采纳即击穿记忆分区/合规策略/配额维度的跨租户隔离；body 声明仅保留
+  // 为非强制模式（本地/测试）的降级路径。
   const requireTenant = isTenantRequired();
   if (requireTenant) {
     const tenant = resolveTenantContext({
-      tenantId: typeof body?.tenantId === 'string' ? body.tenantId : null,
+      tenantId: null,
       authenticatedTenantId: ctx.tenantId ?? null,
       name: ctx.email,
       domain: undefined

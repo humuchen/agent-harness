@@ -48,6 +48,42 @@ const SOURCES = [
   },
 ];
 
+// P1 备份完整性修复（D16）：插件业务库此前完全不在备份清单——按 crontab 每天备份、
+// 灾难恢复后客资/工单/预约/备忘数据全部丢失。补齐三个插件的数据落点（路径解析与
+// 各插件 config 同约定）；文件不存在时按既有逻辑 [skip]，不影响无插件部署。
+SOURCES.push(
+  {
+    // customer-service：CS_DB_FILE > CS_DATA_DIR/cs.db > ./data/cs/cs.db
+    name: 'cs',
+    path:
+      process.env.CS_DB_FILE ||
+      path.join(process.env.CS_DATA_DIR || path.join(process.cwd(), 'data', 'cs'), 'cs.db'),
+  },
+  {
+    // medical-aesthetics-lead：MA_DB_FILE > MA_DATA_DIR/ma-lead.db > ./data/ma-lead/ma-lead.db
+    name: 'ma-lead',
+    path:
+      process.env.MA_DB_FILE ||
+      path.join(process.env.MA_DATA_DIR || path.join(process.cwd(), 'data', 'ma-lead'), 'ma-lead.db'),
+  },
+  {
+    // 平台统一库（memo 未设 MEMO_DATA_DIR 时的落点）：DB_SQLITE_FILE > ./data/app.db
+    name: 'app',
+    path: process.env.DB_SQLITE_FILE || path.join(process.cwd(), 'data', 'app.db'),
+  }
+);
+if (process.env.MEMO_DATA_DIR) {
+  SOURCES.push({ name: 'memo', path: path.join(process.env.MEMO_DATA_DIR, 'memo.db') });
+}
+
+/** 本脚本产出的备份文件前缀（清理与 restore 文件名识别共用）。 */
+const BACKUP_NAME_RE = /^(accounts|memory|rag|telemetry|alerts|cs|ma-lead|app|memo)-/;
+
+/** SQLite 源判定（按扩展名 .db）：走一致性备份/恢复校验路径，其余按 JSON/JSONL 处理。 */
+function isSqlitePath(p) {
+  return path.extname(p || '') === '.db';
+}
+
 // ── 工具函数 ────────────────────────────────────────────────────────────
 function nowIso() {
   return new Date().toISOString().replace(/[:.]/g, '-');
@@ -87,7 +123,7 @@ async function doBackup(backupDir, keepDays) {
       //   1) node:sqlite（Node 22.13+ 内置，零依赖）VACUUM INTO —— 在线一致快照；
       //   2) sqlite3 npm 驱动在线 backup API（若环境中恰好可用）；
       //   3) 退化：等待 WAL checkpoint 完成后拷贝（页级撕裂风险最低化）。
-      if (src.name === 'accounts' || src.name === 'memory') {
+      if (isSqlitePath(src.path)) {
         let backedUp = await sqliteBuiltinBackup(src.path, dest);
         if (backedUp) {
           log(`[info] ${src.name}: node:sqlite VACUUM INTO 在线备份`);
@@ -115,7 +151,7 @@ async function doBackup(backupDir, keepDays) {
   if (keepDays > 0) {
     try {
       const cutoff = Date.now() - keepDays * 86_400_000;
-      const ownPrefix = /^(accounts|memory|rag|telemetry|alerts)-/;
+      const ownPrefix = BACKUP_NAME_RE;
       for (const f of fs.readdirSync(backupDir)) {
         if (!ownPrefix.test(f)) continue; // 跳过 rollback-*/pre-restore-*/子目录等非本脚本产物
         try {
@@ -232,8 +268,7 @@ function walCheckpointAndWait(srcPath) {
 const SQLITE_MAGIC = 'SQLite format 3\x00';
 
 /** 校验文件前 16 字节为 SQLite magic header；非 SQLite 类型（JSON 等）做轻量结构检查。 */
-function assertRestorable(file, srcName) {
-  const isSqlite = srcName === 'accounts' || srcName === 'memory';
+function assertRestorable(file, isSqlite) {
   if (isSqlite) {
     const fd = fs.openSync(file, 'r');
     try {
@@ -314,7 +349,7 @@ async function doRestore(file, force) {
 
   // 推断源类型
   const basename = path.basename(file);
-  const match = basename.match(/^(accounts|memory|rag|telemetry|alerts)-(.+)$/);
+  const match = basename.match(new RegExp(BACKUP_NAME_RE.source + '(.+)$'));
   if (!match) {
     console.error('错误: 无法识别备份文件格式，应为 <name>-<timestamp>[.ext]');
     process.exit(1);
@@ -330,13 +365,13 @@ async function doRestore(file, force) {
   // P1 修复（D1）：恢复前完整性校验——此前直接 copyFileSync 覆盖，
   // 坏备份也「恢复成功」且已覆盖好库，且活动库残留 -wal/-shm 会被 SQLite 重放到新库造成损坏。
   log(`校验备份完整性: ${file}`);
+  const isSqlite = isSqlitePath(src.path);
   try {
-    assertRestorable(file, srcName);
+    assertRestorable(file, isSqlite);
   } catch (e) {
     console.error(`❌ 校验失败: ${e.message}`);
     process.exit(1);
   }
-  const isSqlite = srcName === 'accounts' || srcName === 'memory';
   if (isSqlite) {
     const check = await sqliteIntegrityCheck(file);
     if (check !== 'ok' && check !== 'skipped') {

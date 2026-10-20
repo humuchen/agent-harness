@@ -385,8 +385,10 @@ async function detectInjectionAsync(
 
 /** 域名是否匹配策略中的条目（`*` 表示全部；`*.example.com` 通配子域；普通条目精确匹配主机或任意子域）。 */
 function domainMatches(host: string, entry: string): boolean {
-  const h = host.toLowerCase();
-  const e = entry.toLowerCase().trim();
+  // P1 绕过修复：剥掉 FQDN trailing dot（`evil.com.` 与 `evil.com` 同一主机），
+  // 否则 `endsWith`/全等匹配被末尾点破坏，denylist 可被 trailing dot 绕过。
+  const h = host.toLowerCase().replace(/\.+$/, '');
+  const e = entry.toLowerCase().trim().replace(/\.+$/, '');
   if (e === '*') return true; // 通配全部：denylist 含 '*' 即禁止一切外部出网。
   if (e.startsWith('*.')) {
     const base = e.slice(2);
@@ -490,7 +492,10 @@ export function checkEgress(url: string, net?: NetworkPolicy): string | null {
   if (!net || net.mode === 'open') return null;
   let host: string;
   try {
-    host = new URL(url).host;
+    // P1 绕过修复：必须用 hostname（不含端口）——`new URL().host` 对
+    // `internal.com:8080` 返回含端口 authority，全等/后缀匹配全部失灵，
+    // denylist/allowlist 可被「加一个非默认端口」绕过。
+    host = new URL(url).hostname;
   } catch {
     return 'invalid URL';
   }
@@ -519,7 +524,8 @@ export async function checkEgressAsync(url: string, net?: NetworkPolicy): Promis
   const privateExempt = net.allowPrivateNetwork ?? true;
   let host: string;
   try {
-    host = new URL(url).host;
+    // 与 checkEgress 同口径：hostname（不含端口），防止端口后缀绕过。
+    host = new URL(url).hostname;
   } catch {
     return 'invalid URL';
   }

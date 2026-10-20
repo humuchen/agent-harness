@@ -7,7 +7,7 @@
  * 上游未配置时跳过本轮（积压保留，待配置后 flush），绝不假装已同步。
  */
 
-import { dueBatch, markSent, markFailed, outboxStats } from '../repo/outbox-repo';
+import { claimBatch, markSent, markFailed, outboxStats } from '../repo/outbox-repo';
 import { markCrmSync } from '../repo/lead-repo';
 import { setAppointmentExternal } from '../repo/schedule-repo';
 import { getConfig } from '../config';
@@ -55,12 +55,28 @@ async function deliverOne(
   }
 }
 
+/** P1 重复投递修复：tick 重入保护——上一轮投递（真实出网）未完成时跳过本轮，
+ * 防止投递耗时超过 intervalMs 时同一批行被并发捞出重复发送。 */
+let ticking = false;
+
 async function tick(): Promise<void> {
+  if (ticking) return;
+  ticking = true;
+  try {
+    await tickInner();
+  } finally {
+    ticking = false;
+  }
+}
+
+async function tickInner(): Promise<void> {
   const cfg = getConfig();
   if (!cfg.outbox.enabled) return;
   if (!cfg.crm.enabled && !cfg.his.enabled && !cfg.outreach.enabled) return; // 无上游可投：跳过（积压保留）
   try {
-    const due = await dueBatch(cfg.outbox.batchSize, Date.now());
+    // 原子 claim：扫描即置 state='sending'（多副本 / 重入不会重复捞取同一行），
+    // 滞留 sending 的行由 STALE_SENDING_MS 超时回收重投。
+    const due = await claimBatch(cfg.outbox.batchSize, Date.now());
     for (const row of due) {
       try {
         await deliverOne(row.id, row.topic, row.idempotencyKey, row.payload as Record<string, unknown>);

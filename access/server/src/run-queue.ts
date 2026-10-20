@@ -364,7 +364,9 @@ export class RunQueue {
     if (!this.shared && QUEUE_MAX_PENDING > 0 && this.queue.length >= QUEUE_MAX_PENDING) {
       throw new QueueBackpressureError(this.queue.length, QUEUE_MAX_PENDING);
     }
-    const id = `job_${++this.seq}_${Date.now().toString(36)}`;
+    // P1 越权加固：jobId 改用随机 UUID，不再暴露自增 seq + 毫秒时间戳
+    // （旧格式可预测可枚举，曾配合重连/eval 端点构成横向越权探测面）。
+    const id = `job_${randomUUID()}`;
     // 第二层幂等去重（跨实例，仅共享后端）：Redis SET NX 原子占位。
     // 既有任务可能在本实例的 jobs 表里查不到（其它实例提交），返回 409 + 既有 jobId；
     // 其事件经 pub/sub 事件桥对任意实例可见，客户端仍可订阅该 jobId 的 SSE。

@@ -23,6 +23,18 @@ export interface EvalRecipeRouteDeps {
   evaluator: Evaluator;
 }
 
+/**
+ * P1 越权修复：job 事件流读取的归属校验。
+ * owner 缺省（历史 job / 内部派发）或 owner 即本人、或 admin 角色可访问；
+ * 其余一律拒绝（调用方以 404 语义响应，不泄露他人 job 存在性）。
+ */
+function isJobAccessible(
+  job: { owner?: string },
+  ctx: AuthContext
+): boolean {
+  return !job.owner || job.owner === ctx.sub || ctx.role === 'admin';
+}
+
 export async function handleEvalRecipeRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -40,8 +52,11 @@ export async function handleEvalRecipeRoutes(
     if (!ctx) return true;
     const jobId = String(body.jobId ?? '');
     const job = runQueue.get(jobId);
-    if (!job) {
-      sendJson(res, { error: 'job not found' }, req);
+    if (!job || !isJobAccessible(job, ctx)) {
+      // P1 越权修复：归属不符与「job 不存在」同响应（404），不泄露他人 job 的事件流
+      //（含 prompt / LLM 输出 / 工具结果）。
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'job not found' }));
       return true;
     }
     const rec = runRecordFromEvents(jobId, job.events);
@@ -69,8 +84,10 @@ export async function handleEvalRecipeRoutes(
       if (!ctx) return true;
       const jobId = String(body.jobId ?? '');
       const job = runQueue.get(jobId);
-      if (!job) {
-        sendJson(res, { error: 'job not found' }, req);
+      if (!job || !isJobAccessible(job, ctx)) {
+        // P1 越权修复：与 eval 同口径，归属不符返回 404。
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'job not found' }));
         return true;
       }
       const rec = runRecordFromEvents(jobId, job.events);

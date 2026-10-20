@@ -39,15 +39,19 @@ export function createFailoverLLM(primary: LLM, secondary: LLM, opts: FailoverOp
     return openedAt > 0 && Date.now() - openedAt < cooldownMs;
   }
   function openCircuit(): void {
-    if (openedAt === 0) {
-      openedAt = Date.now();
-      incCounter('llm.circuit.open');
-      structLog('warn', 'llm circuit opened, routing to secondary', {
-        primary: primaryLabel,
-        secondary: secondaryLabel,
-        cooldownMs,
-      });
-    }
+    // P1 修复：必须无条件刷新 openedAt。旧实现仅在 openedAt===0 时赋值——
+    // half-open 探活失败路径中 openedAt 仍是旧值，openCircuit() 变 no-op，
+    // circuitOpen() 因冷却期已过恒为 false，熔断器从此永久退化为直连 primary
+    //（失败也无法再触发重新打开）。重新打开 = 重新计时冷却。
+    const firstOpen = openedAt === 0;
+    openedAt = Date.now();
+    if (firstOpen) incCounter('llm.circuit.open');
+    structLog('warn', 'llm circuit opened, routing to secondary', {
+      primary: primaryLabel,
+      secondary: secondaryLabel,
+      cooldownMs,
+      reopen: !firstOpen
+    });
   }
   function closeCircuit(): void {
     if (openedAt !== 0) {

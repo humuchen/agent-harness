@@ -1235,9 +1235,10 @@ export class Memory {
       if (nm) (next as { name?: unknown }).name = nm;
       return next;
     });
-    this.longTerm = [];
-    this.longTermScores = [];
     this.windowScores = [];
+    // P1 数据丢失修复：长期记忆（remember() 写入、跨 run 注入系统提示词）不是
+    // 窗口的「派生状态」——编辑重发一次对话不应抹掉用户全部长期笔记。此处仅清
+    // 窗口派生字段（摘要 / 窗口分数 / 压缩计数），longTerm 与 longTermScores 保留。
     this.summaryText = null;
     this.pendingSummary = null;
     this.hasPendingSummary = false;

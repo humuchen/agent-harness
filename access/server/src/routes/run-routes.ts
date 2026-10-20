@@ -18,6 +18,7 @@ import {
   features,
   getAgentRegistry,
   getJevStats,
+  isTenantRequired,
   sanitizeKey,
   structLog,
   parsePlanOutput,
@@ -312,9 +313,18 @@ export async function handleRun(
   }
 
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
+  // P1 越权修复：必须校验 job 归属——事件重放含完整 prompt / LLM 输出 / 工具结果，
+  // 不校验 owner 时任何持证用户可凭 jobId 窃听他人 run。归属不符返回 404
+  //（与「job 不存在」同响应，不泄露他人 job 的存在性，且绝不静默重提新 run）；
+  // owner 缺省的历史 job / admin 角色允许重连。
   const reconnectId = body.jobId ? String(body.jobId) : '';
-  const targetId =
-    reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
+  const reconnectJob = reconnectId ? runQueue.get(reconnectId) : undefined;
+  if (reconnectJob && reconnectJob.owner && reconnectJob.owner !== ctx.sub && ctx.role !== 'admin') {
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'job not found' }));
+    return;
+  }
+  const targetId = reconnectJob ? reconnectId : null;
   // 断线续传游标：客户端携带已收到的最大事件 seq，重放时跳过 seq ≤ since 的事件，
   // 避免恢复场景下（后台标签页冻结 / 网络中断后重连）内容与持久化副作用重复。
   const sinceSeq = Number.isFinite(Number(body.since))
@@ -323,12 +333,16 @@ export async function handleRun(
 
   // P0.2/P0.3：任务路由 & 租户辅助字段。
   // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
-  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId），
-  //   客户端声明的 body.tenantId 仅作本地/测试降级；认证身份优先，杜绝客户端伪造越界。
+  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId）。
+  //   P1 租户伪造修复：REQUIRE_TENANT=true 的合规部署下绝不接受 body 声明的租户
+  //  （客户端可任意伪造，一旦采纳即击穿记忆分区/合规策略/配额维度的跨租户隔离）；
+  //   body 声明仅保留为非强制模式（本地/测试）的降级路径。
   const domain = body.domain ? String(body.domain).trim() : undefined;
-  const declaredTenantId = body.tenantId
-    ? String(body.tenantId).trim()
-    : undefined;
+  const declaredTenantId = isTenantRequired()
+    ? undefined
+    : body.tenantId
+      ? String(body.tenantId).trim()
+      : undefined;
   const effectiveTenantId = ctx.tenantId || declaredTenantId;
   const tenantId = effectiveTenantId || undefined;
   const workflowId = body.workflowId
