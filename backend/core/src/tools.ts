@@ -1,4 +1,5 @@
 import { ToolSchema } from './types';
+import { validateAgainstSchema } from './json-schema';
 
 export type ToolFn = (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> | unknown;
 
@@ -58,6 +59,23 @@ export class ToolRegistry {
       throw new Error(`Unknown tool: ${name}`);
     }
     return t.fn(args, ctx);
+  }
+
+  /**
+   * P6 结构化输出闸门（工具参数侧）：按注册的 JSON-Schema 校验参数，返回错误列表
+   * （空数组 = 通过）。供 harness 执行链在真实执行前调用——不合规时不执行工具、
+   * 以可读错误文本回喂模型自愈（与护栏拦截同型）。
+   *
+   * 刻意不放进行 `call()`：本仓库内置工具的既有契约是「参数非法返回 `error:` 文案
+   * 而非抛错」（见 tools-extra.test.cjs），注册表级抛错会破坏该契约与直接调用方；
+   * 校验只在 LLM 工具执行链生效，语义等价于护栏（guardrailPolicy）的接线位置。
+   */
+  validateArgs(name: string, args: Record<string, unknown>): string[] {
+    const t = this.tools.get(name);
+    if (!t) return []; // 未知工具走 call() 的既有 Unknown tool 路径
+    if (args === undefined || args === null) return [];
+    if (!t.schema.parameters || typeof t.schema.parameters !== 'object') return [];
+    return validateAgainstSchema(args, t.schema.parameters).errors;
   }
 
   /**

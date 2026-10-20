@@ -155,7 +155,9 @@ node --test test/*.test.cjs
 | `RAG_RERANK_MODEL` | `jina-reranker-v2-base-multilingual` | cross-encoder 模型名 |
 | `RAG_FUSE_DENSE` / `RAG_FUSE_BM25` | `0.6` / `0.4` | 稠密余弦与 BM25 融合权重 |
 | `RAG_EMBED_DIM` | `256` | 向量维度（切换 embedding 提供方需保持一致） |
-| `RAG_DATA_FILE` | 空 | JSON 持久化文件路径 |
+| `RAG_DATA_FILE` | 空 | JSON 持久化文件路径（仅 memory 后端） |
+| `RAG_STORE_BACKEND` | `memory` | 向量存储后端：`memory`（JSON 快照持久化）\| `sqlite`（node:sqlite 内置零依赖，写即持久，需 Node 22.13+）\| `qdrant`（REST 零 SDK，生产规模推荐） |
+| `RAG_SQLITE_FILE` | `./data/rag-index.db` | sqlite 后端的库文件路径（`RAG_STORE_BACKEND=sqlite` 时生效） |
 || `RAG_EMBEDDING_ENDPOINT_URL` | 空 | 远程 embedding API 地址（对接外部 embed-server，如 Docker RAG 栈的 embed-server）。API 格式：POST {url}/embeddings，请求体 {texts: string[]}，响应 {embeddings: number[][]}。未配置/API 失败时自动降级到 HashEmbedding |
 || `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_BASE_URL` / `RAG_EMBEDDING_MODEL` | 空 | OpenAI 兼容远程 embedding（缺省降级到 HashEmbedding） |
 | `RAG_LLM_BASE_URL` | 空 | LLM API 地址（OpenAI 兼容，如 OpenRouter / 百度千帆 / 阿里百灵） |

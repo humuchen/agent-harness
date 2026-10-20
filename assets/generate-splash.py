@@ -5,6 +5,8 @@
 输出到 ../assets/（仓库根 assets/），供 mobile/scripts/splash-copy.mjs
 拷入 Capacitor 原生工程。所有图统一深色画布 #0b0e14 + 三层菱形 logo
 （对齐 public/logo.svg）+ "Agent Harness" 品牌字，与暗色主题一致。
+同时输出 res/drawable/splash_icon.xml —— Android 12+ 系统启动图
+（windowSplashScreenAnimatedIcon）用的品牌矢量图标。
 
 运行： python3 assets/generate-splash.py
 依赖： Pillow（macOS 上 Python 自带环境通常已有；否则 pip install pillow）
@@ -19,6 +21,7 @@ except ImportError:
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 OUT = os.path.join(ROOT, "assets")
+ANDROID_RES = os.path.join(ROOT, "mobile/android/app/src/main/res")
 os.makedirs(OUT, exist_ok=True)
 
 BG = (11, 14, 20)          # --ah-canvas #0b0e14
@@ -34,6 +37,8 @@ RHOMBI = [
 
 def _font(size):
     for path in (
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     ):
@@ -74,8 +79,44 @@ def render(w, h, out_path, large=False):
     img.save(out_path)
     print(f"  {out_path}  ({w}x{h})")
 
+# 系统启动图矢量（API 31+ 的 windowSplashScreenAnimatedIcon）。
+# viewport 108，logo 收缩进中心 2/3 安全区（与 mipmap 前景图同一构图），
+# 颜色与位图启动图一致（上→下渐淡）。
+_ICON_S = 0.8
+def _icon_paths():
+    out = []
+    for pts in RHOMBI:
+        p = [(54 + (x - 50) * _ICON_S, 54 + (y - 50) * _ICON_S) for (x, y) in pts]
+        out.append("M" + "L".join(f"{x:g},{y:g}" for x, y in p) + "Z")
+    return out
+
+def gen_splash_icon():
+    """生成 res/drawable/splash_icon.xml：Android 12+ 系统启动图的品牌图标。"""
+    if not os.path.isdir(ANDROID_RES):
+        print("  跳过 splash_icon.xml（android 工程未生成，先 cap sync）")
+        return
+    path = os.path.join(ANDROID_RES, "drawable", "splash_icon.xml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<vector xmlns:android="http://schemas.android.com/apk/res/android"',
+        '    android:width="240dp"',
+        '    android:height="240dp"',
+        '    android:viewportWidth="108"',
+        '    android:viewportHeight="108">',
+    ]
+    for i, d in enumerate(_icon_paths()):
+        f = 1 - i * 0.30
+        c = tuple(int(BG[j] + (ACCENT[j] - BG[j]) * f) for j in range(3))
+        hexc = "#%02X%02X%02X" % c
+        lines.append(f'    <path android:fillColor="{hexc}" android:pathData="{d}" />')
+    lines.append("</vector>")
+    with open(path, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  {os.path.relpath(path, ANDROID_RES)}")
+
 def main():
-    print("生成 Android 启动图…")
+    print("生成 Android 竖屏启动图…")
     # Capacitor 8 竖屏密度序列（mdpi→xxxhdpi）
     render(720, 1280, os.path.join(OUT, "splash_m.png"))
     render(1080, 1920, os.path.join(OUT, "splash_x.png"))
@@ -83,6 +124,17 @@ def main():
     render(2160, 3840, os.path.join(OUT, "splash_xxx.png"))
     # Android 14+ 方形大启动图（最小 1908x1908，logo ≤ 648）
     render(1908, 1908, os.path.join(OUT, "splash_large.png"), large=True)
+
+    print("生成 Android 横屏启动图…")
+    # Capacitor 横屏密度序列（mdpi→xxxhdpi）
+    for dpi, (w, h) in {
+        "mdpi": (480, 320), "hdpi": (720, 480), "xhdpi": (960, 540),
+        "xxhdpi": (1280, 720), "xxxhdpi": (1920, 1080),
+    }.items():
+        render(w, h, os.path.join(OUT, f"splash_land_{dpi}.png"))
+
+    print("生成系统启动图矢量 icon（API 31+）…")
+    gen_splash_icon()
 
     print("生成 iOS 启动图（LaunchScreen.imageset）…")
     ios_specs = [

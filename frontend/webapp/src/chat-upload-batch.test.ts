@@ -5,21 +5,17 @@
  * handleFiles 是「点击选择」与「拖拽」两条入口的唯一汇聚点，
  * 因此这里直接驱动它：给定 N 个文件，断言最终落地的附件数就是 N。
  *
- * 说明：本仓 webapp 的 vitest 环境是 node（无 DOM），无法挂载 Lit 组件，
- * 故构造一个最小上下文、并从 AhChat.prototype 上取用被测方法后直接 call ——
- * 只依赖方法自身的逻辑，不触碰渲染。
- *
- * 注意：上下文刻意用**普通对象**而非 Object.create(AhChat.prototype)。
- * @state() 会在原型上装访问器，直接读写会触发 Lit 的 requestUpdate 内部状态，
- * 在裸对象上会抛错；这里只需要 attachments / uploadingFiles 两个字段，
- * 原型方法按引用取用即可。
+ * 说明：Svelte 迁移后上传管线已抽为模块级纯函数 handleFilesCore(st: AttachState,
+ * picked)（chat.svelte <script module>），直接以最小 AttachState 上下文驱动即可 ——
+ * 只依赖函数自身的逻辑，不触碰渲染与组件状态。
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
-  AhChat,
+  handleFilesCore,
   UPLOAD_CONCURRENCY,
-  runWithConcurrency
-} from './chat';
+  runWithConcurrency,
+  type AttachState
+} from './chat.svelte';
 
 // ---------- 依赖桩 ----------
 // 上传请求的返回值由每个用例通过 uploadImpl 自行决定。
@@ -67,23 +63,17 @@ function makeFile(name: string, type = 'image/png', bytes = 16): File {
   return new File([new Uint8Array(bytes)], name, { type });
 }
 
-const proto = AhChat.prototype as unknown as Record<string, Function>;
-
-/** 构造一个只含 handleFiles 链路所需字段的最小上下文。 */
+/** 构造一个只含上传管线所需字段的最小 AttachState 上下文。 */
 function makeCtx(seed: unknown[] = []) {
   return {
-    attachments: seed as unknown[],
-    uploadingFiles: new Map<string, unknown>(),
-    // handleFiles 内部会调用这两个，按引用取用原型实现
-    uploadOne: proto.uploadOne,
-    patchAttachment: proto.patchAttachment
+    attachments: seed as AttachState['attachments'],
+    uploadingFiles: new Map<string, { status: 'uploading' | 'done' | 'error'; error?: string }>()
   };
 }
-type Ctx = ReturnType<typeof makeCtx>;
+type Ctx = AttachState;
 
 async function runHandleFiles(ctx: Ctx, files: File[]): Promise<void> {
-  const fn = proto.handleFiles as (f: File[]) => Promise<void>;
-  await fn.call(ctx, files);
+  await handleFilesCore(ctx, files);
 }
 
 function namesOf(ctx: Ctx): string[] {

@@ -71,7 +71,7 @@ const KB_EMPTY_PROJECT_HINT_RE =
  * 共用此解析，保证两层逻辑对序列化形态的处理一致。
  */
 function parseKbResult(result: string): { found: unknown; answer?: string } | null {
-  let obj: unknown = undefined;
+  let obj: unknown;
   try {
     obj = JSON.parse(result);
     if (typeof obj === 'string') obj = JSON.parse(obj); // 二次 stringify 兜底

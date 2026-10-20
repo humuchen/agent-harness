@@ -12,6 +12,7 @@ import { Preferences } from '@capacitor/preferences';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { Filesystem } from '@capacitor/filesystem';
 import { Camera } from '@capacitor/camera';
+import { Haptics } from '@capacitor/haptics';
 
 export interface PluginRegistry {
   app: typeof App;
@@ -19,6 +20,7 @@ export interface PluginRegistry {
   pushNotifications: typeof PushNotifications;
   filesystem: typeof Filesystem;
   camera: typeof Camera;
+  haptics: typeof Haptics;
   isNative: boolean;
 }
 
@@ -37,9 +39,23 @@ export function getPlugins(): PluginRegistry {
     pushNotifications: PushNotifications,
     filesystem: Filesystem,
     camera: Camera,
+    haptics: Haptics,
     isNative
   };
   return registry;
+}
+
+/**
+ * 仅供测试：注入 mock 插件注册表（传 null 复位为真实单例）。
+ * 落实 mobile/README 所称「Plugins follow interface + default impl pattern for
+ * testability」——无此缝时 controller 内部硬取单例，mock 注入无从谈起。
+ */
+export function setPluginsForTest(override: Partial<PluginRegistry> | null): void {
+  if (override === null) {
+    registry = null;
+    return;
+  }
+  registry = { ...getPlugins(), ...override };
 }
 
 /**
@@ -60,10 +76,16 @@ export function registerPlugins(): void {
 
   // Deep Link 拦截：把 piagent://path 转成内部路由事件
   plugins.app.addListener('appUrlOpen', (data) => {
-    const url = new URL(data.url);
-    const path = url.pathname + url.search;
-    window.dispatchEvent(
-      new CustomEvent('ah:deeplink', { detail: { path, raw: data.url } })
-    );
+    // P1 防御修复：畸形 URL（非标准 scheme / 编码损坏）会让 new URL 抛未捕获
+    // 异常，直接打断 App 壳的全局监听注册流程。
+    try {
+      const url = new URL(data.url);
+      const path = url.pathname + url.search;
+      window.dispatchEvent(
+        new CustomEvent('ah:deeplink', { detail: { path, raw: data.url } })
+      );
+    } catch {
+      /* 非法 URL 静默忽略 */
+    }
   });
 }

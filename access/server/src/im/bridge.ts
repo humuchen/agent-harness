@@ -61,8 +61,23 @@ export class ImBridge {
   private readonly byProvider = new Map<ImProvider, ImAdapter>();
   /** 在飞任务数（可观测）。 */
   private inflight = 0;
+  /**
+   * P1-3：并发闸门的等待队列（FIFO）。inflight 达到 maxInflight 后新任务入此队列，
+   * 每个在飞任务结束时唤醒队首。队列深度超过 maxWaiting 时新消息直接快速拒绝。
+   */
+  private readonly waitQueue: Array<() => void> = [];
   /** 累计处理计数（可观测）。 */
-  private counters = { received: 0, deduped: 0, rejected: 0, completed: 0, failed: 0 };
+  private counters = {
+    received: 0,
+    deduped: 0,
+    rejected: 0,
+    completed: 0,
+    failed: 0,
+    /** P1-3：在飞与等待队列都满时的快速拒绝数。 */
+    busyRejected: 0,
+    /** P1-4：缺失 messageId 而放弃去重的消息数（放行 + 告警）。 */
+    noMessageId: 0
+  };
 
   constructor(
     cfg: ImBridgeConfig,
@@ -78,6 +93,16 @@ export class ImBridge {
     for (const a of cfg.adapters) this.byProvider.set(a.provider, a);
   }
 
+  /** 并发上限（cfg 缺省 2 —— 比主队列 RUN_CONCURRENCY=4 更保守）。 */
+  private get maxInflight(): number {
+    return this.cfg.maxInflight && this.cfg.maxInflight > 0 ? this.cfg.maxInflight : 2;
+  }
+
+  /** 等待队列深度上限（cfg 缺省 8）。 */
+  private get maxWaiting(): number {
+    return this.cfg.maxWaiting && this.cfg.maxWaiting > 0 ? this.cfg.maxWaiting : 8;
+  }
+
   /** 已启用的平台清单。 */
   enabledProviders(): ImProvider[] {
     return [...this.byProvider.keys()];
@@ -90,6 +115,9 @@ export class ImBridge {
       defaultMode: this.cfg.defaultMode,
       groupRequireMention: this.cfg.groupRequireMention,
       inflight: this.inflight,
+      waiting: this.waitQueue.length,
+      maxInflight: this.maxInflight,
+      maxWaiting: this.maxWaiting,
       deduper: this.deduper.kind,
       deduperSize: this.deduper.size(),
       counters: { ...this.counters }
@@ -149,15 +177,45 @@ export class ImBridge {
     // 5) 去重（平台重推 / 跨实例重复投递）：命中即静默丢弃。
     // 注意：Redis 后端下 check 是异步网络调用（SET NX），故必须 await —— 不可省略，
     // 否则所有消息都会被判定为「首次」而失去去重效果。
-    const dedupKey = msg.messageId || `${msg.provider}:${msg.senderId}:${msg.chatId}:${msg.text}`;
-    if (!(await this.deduper.check(dedupKey))) {
+    // P1-4 修复：无 messageId 时**不再**用「provider:sender:chat:text」合成兜底键 ——
+    // 它会让用户在去重 TTL（默认 5min）内重发相同文本（「继续」「1」等高频短指令）
+    // 被误丢且无任何反馈。三个官方平台均携带 messageId，该路径属防御分支；与
+    // RedisDedupStore 的「故障放行」同哲学：宁可重复处理也不误丢用户消息，仅告警留痕。
+    if (!msg.messageId) {
+      this.counters.noMessageId++;
+      structLog('warn', 'im.inbound.no_message_id', {
+        provider: msg.provider,
+        senderId: msg.senderId,
+        chatId: msg.chatId
+      });
+    } else if (!(await this.deduper.check(`${msg.provider}:${msg.messageId}`))) {
       this.counters.deduped++;
-      structLog('debug', 'im.inbound.deduped', { provider, messageId: msg.messageId });
+      structLog('debug', 'im.inbound.deduped', { provider: msg.provider, messageId: msg.messageId });
       return { status: 200, body: { ok: true } };
     }
     // 6) 空文本 / 不支持的消息类型：直接提示，不进 agent。
     if (!msg.text) {
       void this.reply(adapter, msg, '暂不支持该消息类型，请发送文字指令。');
+      return { status: 200, body: { ok: true } };
+    }
+    // P1-3：并发闸门。在飞已满且等待队列也满时快速拒绝（回「繁忙」提示），
+    // 防止无界积压；未满时进入 FIFO 等待（process 内 acquireSlot）。
+    if (this.inflight >= this.maxInflight && this.waitQueue.length >= this.maxWaiting) {
+      this.counters.busyRejected++;
+      structLog('warn', 'im.inbound.busy_rejected', {
+        provider: msg.provider,
+        inflight: this.inflight,
+        waiting: this.waitQueue.length
+      });
+      this.hooks.onAudit?.({
+        action: 'im.inbound',
+        provider: msg.provider,
+        senderId: msg.senderId,
+        chatId: msg.chatId,
+        outcome: 'denied',
+        detail: { reason: 'busy', inflight: this.inflight, waiting: this.waitQueue.length }
+      });
+      void this.reply(adapter, msg, '当前任务较多，请稍后再试。');
       return { status: 200, body: { ok: true } };
     }
 
@@ -166,8 +224,23 @@ export class ImBridge {
     return { status: 200, body: { ok: true } };
   }
 
-  /** 后台执行：跑 agent 并把结果回发 IM。 */
+  /** P1-3：占一个执行槽；inflight 已满时 FIFO 排队等待（由 releaseSlot 唤醒）。 */
+  private acquireSlot(): Promise<void> {
+    if (this.inflight < this.maxInflight) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.waitQueue.push(resolve);
+    });
+  }
+
+  /** P1-3：释放执行槽并唤醒下一个等待者（若有）。 */
+  private releaseSlot(): void {
+    const next = this.waitQueue.shift();
+    if (next) next();
+  }
+
+  /** 后台执行：跑 agent 并把结果回发 IM。经 P1-3 并发闸门（信号量 + FIFO 等待队列）。 */
   private async process(adapter: ImAdapter, msg: ImInboundMessage): Promise<void> {
+    await this.acquireSlot();
     this.inflight++;
     const started = Date.now();
     try {
@@ -199,6 +272,8 @@ export class ImBridge {
       await this.reply(adapter, msg, '抱歉，处理你的请求时出错了，请稍后重试。');
     } finally {
       this.inflight = Math.max(0, this.inflight - 1);
+      // 唤醒下一个等待者（FIFO）。放在 inflight 递减之后，唤醒者复检时看到空槽。
+      this.releaseSlot();
     }
   }
 

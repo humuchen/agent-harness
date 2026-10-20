@@ -135,7 +135,7 @@ export function assertionsVerifier(
       n += 1;
       const a = typeof raw === 'function' ? raw : raw.assert;
       const describe = typeof raw === 'function' ? undefined : raw.describe;
-      let ok = false;
+      let ok: boolean;
       try {
         ok = await a(ctx);
       } catch {

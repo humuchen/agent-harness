@@ -66,7 +66,7 @@
 
 实现：
 - **系统提示词**（§4.2）把上述规则写成强约束；
-- **护栏**（core `guardrails.ts` 已有 `registerInputRule` + `INJECTION_PATTERNS`）注册一条输出规则：命中绝对化疗效词/诊断句式 → 拦截并要求改写（见 §4.8）。
+- **护栏**（core `guardrails.ts` 已有 `registerInputRule` + 注入语义打分 `registerInjectionScorer`（由 `GUARDRAIL_INJECTION_SCAN` 开关启用、可叠加 `injectionSensitivity`））注册一条输出规则：命中绝对化疗效词/诊断句式 → 拦截并要求改写（见 §4.8）。
 
 ---
 

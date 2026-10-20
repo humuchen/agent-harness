@@ -68,7 +68,22 @@ export class FileDeviceStore implements DeviceStore {
 
   private async writeIndex(items: DeviceToken[]): Promise<void> {
     await this.ensureDirs();
-    await writeFile(this.indexPath, JSON.stringify(items, null, 2), 'utf-8');
+    // P1 原子写修复：writeFile 直写 index.json——进程在写入中途崩溃会产生半截
+    // JSON，下次读取 parse 失败回空数组 = **静默清空全部设备**。改 tmp + rename
+    // 原子替换（与 memory/agents store 同模式）。
+    const tmp = `${this.indexPath}.tmp.${process.pid}.${Date.now().toString(36)}`;
+    try {
+      await writeFile(tmp, JSON.stringify(items, null, 2), 'utf-8');
+      const { rename } = await import('node:fs/promises');
+      await rename(tmp, this.indexPath);
+    } catch (e) {
+      try {
+        await unlink(tmp);
+      } catch {
+        /* 临时文件本就不存在 */
+      }
+      throw e;
+    }
   }
 
   async register(input: RegisterDeviceInput): Promise<DeviceToken> {
@@ -80,6 +95,28 @@ export class FileDeviceStore implements DeviceStore {
     }
 
     const items = await this.readIndex();
+
+    // P1 资源修复：per-owner 设备数上限——register 此前对每个新 token 无限写入
+    //（端点仅要求 chat:read 且无速率限制），恶意客户端可刷爆 index.json。
+    const MAX_DEVICES_PER_OWNER = Math.max(
+      1,
+      Number(process.env.DEVICE_MAX_PER_OWNER ?? 20) || 20
+    );
+    const ownerCount = items.filter((d) => d.owner === input.owner).length;
+    if (
+      ownerCount >= MAX_DEVICES_PER_OWNER &&
+      !items.some((d) => d.token === input.token)
+    ) {
+      // 淘汰该 owner 最旧的设备（lastSeenAt 最小）腾位，保持最近活跃设备可用。
+      const owned = items
+        .filter((d) => d.owner === input.owner)
+        .sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));
+      const evict = owned[0];
+      if (evict) {
+        const idx = items.findIndex((d) => d.id === evict.id);
+        if (idx !== -1) items.splice(idx, 1);
+      }
+    }
 
     // 幂等：同一 token 已存在则更新 lastSeenAt，不重复注册
     const existing = items.find((d) => d.token === input.token);

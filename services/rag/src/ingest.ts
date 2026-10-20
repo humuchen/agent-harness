@@ -6,9 +6,10 @@
  * doc_id + index 派生的 chunk_id 幂等，重复入库同篇文档仅更新，满足「增量更新」。
  */
 
-import type { Chunk } from './store';
+import type { Chunk, VectorStore } from './store';
 import type { EmbeddingProvider } from './embed';
-import type { MemoryVectorStore } from './store';
+import { loadDocument, type DocumentSource } from './loaders';
+import { splitAuto, splitParentChild } from './splitter';
 
 export interface IngestInput {
   doc_id: string;
@@ -51,7 +52,7 @@ async function embedOne(provider: EmbeddingProvider, text: string): Promise<numb
 
 /** 入库一篇文档：分块 + 向量化 + 幂等 upsert；先按 doc_id 清旧 chunk 再写新。 */
 export async function ingestDocument(
-  store: MemoryVectorStore,
+  store: VectorStore,
   provider: EmbeddingProvider,
   input: IngestInput,
 ): Promise<IngestResult> {
@@ -60,39 +61,151 @@ export async function ingestDocument(
   if (!docId) throw new Error('doc_id 必填');
   if (!tenantId) throw new Error('tenant_id 必填');
 
-  const size = input.chunk_size ?? 480;
-  const overlap = input.chunk_overlap ?? 80;
-  const pieces = chunkText(input.text, size, overlap);
+  const pieces = chunkText(input.text, input.chunk_size ?? 480, input.chunk_overlap ?? 80);
+  const replaced = await embedAndWrite(
+    store,
+    provider,
+    docId,
+    tenantId,
+    pieces.map((p) => ({ content: p })),
+    input
+  );
 
-  // P1（嵌入失败毒化防护）：先完成全部向量化，再做任何写操作——
-  // 远程嵌入失败（strict 默认抛 EmbeddingUnavailableError）时旧文档原样保留，
-  // 不再出现「旧 chunk 已删、新 chunk 半途失败」的半入库中间态；
-  // 嵌入产物也不会以静默降级的哈希向量形态混入语料。
-  const vectors: number[][] = [];
-  for (const piece of pieces) {
-    vectors.push(await embedOne(provider, `${input.title ?? ''}\n${piece}`));
+  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+}
+
+/**
+ * P6-B（方案二一期）结构化入库：source（markdown/text/url/pdf/docx）→ 加载 →
+ * 结构感知切分（标题层级 heading_path 进 chunk.metadata）→ 向量化 → 幂等写入。
+ * 与 ingestDocument 共用「先全部向量化再写」的毒化防护纪律；行为差异：
+ * 切分由 splitAuto 按 markdown 标题/段落/句子递归（不再固定滑窗）。
+ */
+export interface StructuredIngestInput extends Omit<IngestInput, 'text' | 'chunk_overlap'> {
+  source: DocumentSource;
+  /** splitter 单片上限（字符），缺省 480。 */
+  max_len?: number;
+  /**
+   * P6-B 方案二二期：检索编排模式。
+   * - 缺省 'chunk'：单片直接入库（存量行为）。
+   * - 'parent-child'：父子两级切分入库 —— 子块做检索命中（metadata.retrieval_role='child'、
+   *   携带 parent_id），父块同库存储（role='parent'）；retrieve 开启 parent 展开后命中
+   *   子块返回父块内容（小块精度 + 大块上下文）。
+   */
+  retrieval_mode?: 'chunk' | 'parent-child';
+  /** parent-child 模式的父块上限（字符），缺省 1600。 */
+  parent_len?: number;
+  /** parent-child 模式的子块上限（字符），缺省 400。 */
+  child_len?: number;
+}
+
+export async function ingestStructured(
+  store: VectorStore,
+  provider: EmbeddingProvider,
+  input: StructuredIngestInput
+): Promise<IngestResult> {
+  const docId = String(input.doc_id).trim();
+  const tenantId = String(input.tenant_id).trim();
+  if (!docId) throw new Error('doc_id 必填');
+  if (!tenantId) throw new Error('tenant_id 必填');
+  if (!input.source) throw new Error('source 必填（{ type, value }）');
+
+  const doc = await loadDocument(input.source);
+
+  // parent-child：父子两级切分，子块检索命中 / 父块返回上下文。
+  if ((input.retrieval_mode ?? 'chunk') === 'parent-child') {
+    const groups = splitParentChild(doc.text, {
+      parentLen: input.parent_len,
+      childLen: input.child_len ?? input.chunk_size ?? 400,
+    });
+    const items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }> = [];
+    groups.forEach((g, pi) => {
+      const parentId = `${docId}#p${pi}`;
+      items.push({
+        content: g.parent.content,
+        chunkId: parentId, // 显式 chunk id —— 与 metadata.parent_id 严格一致（检索展开按此聚合）
+        meta: {
+          retrieval_role: 'parent',
+          parent_id: parentId,
+          ...(g.parent.headingPath.length ? { heading_path: g.parent.headingPath } : {}),
+        },
+      });
+      for (const c of g.children) {
+        items.push({
+          content: c.content,
+          meta: {
+            retrieval_role: 'child',
+            parent_id: parentId,
+            ...(c.headingPath.length ? { heading_path: c.headingPath } : {}),
+          },
+        });
+      }
+    });
+    if (items.length === 0) {
+      throw new Error('加载与切分后无有效内容（检查 source 内容或 max_len 配置）');
+    }
+    const replaced = await embedAndWrite(store, provider, docId, tenantId, items, input);
+    return { doc_id: docId, tenant_id: tenantId, chunks: items.length, replaced };
   }
 
-  // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）
-  const replaced = store.deleteByDoc(docId, tenantId);
+  const pieces = splitAuto(doc.text, { maxLen: input.max_len ?? input.chunk_size ?? 480 });
+  if (pieces.length === 0) {
+    throw new Error('加载与切分后无有效内容（检查 source 内容或 max_len 配置）');
+  }
+  const replaced = await embedAndWrite(
+    store,
+    provider,
+    docId,
+    tenantId,
+    pieces.map((p) => ({
+      content: p.content,
+      meta: p.headingPath.length ? { heading_path: p.headingPath } : {},
+    })),
+    input
+  );
+
+  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+}
+
+/**
+ * 共享写入段：先完成**全部**向量化（P1 毒化防护 —— 远程嵌入失败时旧文档原样保留，
+ * 不出现半入库中间态），再 deleteByDoc + 逐片幂等 upsert。
+ * items.meta 会合并进 chunk.metadata（heading_path 等结构信息；空对象不覆盖既有 metadata 语义）。
+ * items.chunkId 为显式 chunk id（P6-B ParentDocument 父块用 `${docId}#p${i}`，供
+ * metadata.parent_id 关联检索）；缺省按顺序 `${docId}#${idx}`。
+ */
+async function embedAndWrite(
+  store: VectorStore,
+  provider: EmbeddingProvider,
+  docId: string,
+  tenantId: string,
+  items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }>,
+  base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown> }
+): Promise<number> {
+  const vectors: number[][] = [];
+  for (const item of items) {
+    vectors.push(await embedOne(provider, `${base?.title ?? ''}\n${item.content}`));
+  }
+
+  // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）。P6-B：后端可为异步。
+  const replaced = await store.deleteByDoc(docId, tenantId);
 
   let idx = 0;
-  for (const piece of pieces) {
+  for (const item of items) {
+    const meta = { ...(base?.metadata ?? {}), ...(item.meta ?? {}) };
     const chunk: Chunk = {
-      chunk_id: `${docId}#${idx}`,
+      chunk_id: item.chunkId ?? `${docId}#${idx}`,
       doc_id: docId,
       tenant_id: tenantId,
       index: idx,
-      content: piece,
-      title: input.title,
-      tags: input.tags,
-      metadata: input.metadata,
+      content: item.content,
+      ...(base?.title ? { title: base.title } : {}),
+      ...(base?.tags ? { tags: base.tags } : {}),
+      ...(Object.keys(meta).length ? { metadata: meta } : {}),
       vector: vectors[idx]!,
       created_at: Date.now(),
     };
-    store.upsert(chunk);
+    await store.upsert(chunk);
     idx++;
   }
-
-  return { doc_id: docId, tenant_id: tenantId, chunks: pieces.length, replaced };
+  return replaced;
 }

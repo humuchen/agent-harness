@@ -124,7 +124,7 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       crm_synced_at: patch.crmSyncedAt ?? cur?.crmSyncedAt ?? null,
     };
 
-    db.prepare(
+    const upsertRes = await db.prepare(
       `INSERT INTO ma_lead (
         lead_id, tenant_id, channel, intent, project, budget, city, grade, stage, reached,
         stage_updated_at,
@@ -149,7 +149,11 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
         appointment_id=excluded.appointment_id, handed_off=excluded.handed_off,
         handoff_reason=excluded.handoff_reason, consulted_by=excluded.consulted_by,
         crm_id=excluded.crm_id, crm_sync_state=excluded.crm_sync_state,
-        crm_synced_at=excluded.crm_synced_at, updated_at=excluded.updated_at`
+        crm_synced_at=excluded.crm_synced_at, updated_at=excluded.updated_at
+      -- P1 跨租户修复：lead_id 是全局主键（不含 tenant_id），租户 B upsert 一个
+      -- 已属于租户 A 的 lead_id 时，旧实现 DO UPDATE 会直接整行覆盖 A 的线索
+      --（含手机号/微信 PII）。追加 WHERE 后跨租户冲突不更新（changes=0）。
+      WHERE ma_lead.tenant_id = excluded.tenant_id`
     ).run({
       lead_id: leadId,
       tenant_id: cfg.tenantId,
@@ -157,6 +161,15 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       created_at: cur?.createdAt ?? now,
       updated_at: now,
     });
+
+    // P1 跨租户修复：changes=0 意味着 lead_id 已被其它租户占用（INSERT 冲突但
+    // WHERE 未放行）——显式报错而非静默吞掉，避免调用方误认为写入成功。
+    const upsertChanges = Number(
+      (upsertRes as unknown as { changes?: number })?.changes ?? 1
+    );
+    if (upsertChanges === 0) {
+      throw new Error(`lead_id ${leadId} 已被其它租户占用（跨租户冲突，拒绝覆盖）`);
+    }
 
     // 阶段变更时写入流水日志（用于漏斗留存耗时分析）
     if (stageChanged) {
@@ -305,9 +318,10 @@ export async function markCrmSync(leadId: string, state: CrmSyncState, crmId?: s
   dbCall(async () => {
     (await getDb())
       .prepare(
-        'UPDATE ma_lead SET crm_sync_state = ?, crm_id = COALESCE(?, crm_id), crm_synced_at = ?, updated_at = ? WHERE lead_id = ?'
+        // P1 租户隔离修复：UPDATE 补 tenant_id 条件，与 getLead/listLeads 的过滤口径对齐。
+        'UPDATE ma_lead SET crm_sync_state = ?, crm_id = COALESCE(?, crm_id), crm_synced_at = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ?'
       )
-      .run(state, crmId ?? null, Date.now(), Date.now(), leadId);
+      .run(state, crmId ?? null, Date.now(), Date.now(), getConfig().tenantId, leadId);
   }, '更新 CRM 同步状态');
 }
 

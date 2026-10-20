@@ -8,6 +8,8 @@
  * - 真实 embedding 通常是异步的，因此契约同时提供同步 embed() 与可选 embedAsync()。
  */
 
+import { createHash } from 'node:crypto';
+
 export interface EmbeddingProvider {
   /** 向量维度。 */
   readonly dim: number;
@@ -139,6 +141,42 @@ function warnDegradedOnce(provider: string, text: string): void {
 warnDegradedOnce.warned = false;
 
 /**
+ * P1 无界增长修复：嵌入缓存改为容量上限 LRU——旧实现按原文全文为 key 的 Map
+ * 永不淘汰，长期运行的 RAG 服务随 ingest 量线性增长（1024 维向量约 8KB/条，
+ * 10 万条即 800MB+）。key 改为 sha256(text)（全文键字符串也随缓存常驻内存），
+ * 命中时刷新插入序实现真 LRU。
+ */
+const EMBED_CACHE_MAX_ENTRIES =
+  Number(process.env.RAG_EMBED_CACHE_MAX ?? 20_000) || 20_000;
+
+class EmbedCache {
+  private map = new Map<string, number[]>();
+
+  static key(text: string): string {
+    return createHash('sha256').update(text, 'utf8').digest('hex');
+  }
+
+  get(key: string): number[] | undefined {
+    const v = this.map.get(key);
+    if (v === undefined) return undefined;
+    // LRU：命中即刷新插入序。
+    this.map.delete(key);
+    this.map.set(key, v);
+    return v;
+  }
+
+  set(key: string, vec: number[]): void {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, vec);
+    while (this.map.size > EMBED_CACHE_MAX_ENTRIES) {
+      const oldest = this.map.keys().next().value;
+      if (oldest === undefined) break;
+      this.map.delete(oldest);
+    }
+  }
+}
+
+/**
  * 真实远程 embedding（可选启用）。通过 env 配置：
  *   RAG_EMBEDDING_BASE_URL（默认 https://openrouter.ai/api/v1）
  *   RAG_EMBEDDING_API_KEY
@@ -150,7 +188,7 @@ export class OpenAIEmbedding implements EmbeddingProvider {
   private baseUrl: string;
   private apiKey: string;
   private model: string;
-  private cache = new Map<string, number[]>();
+  private cache = new EmbedCache();
 
   constructor(opts?: {
     dim?: number;
@@ -169,7 +207,8 @@ export class OpenAIEmbedding implements EmbeddingProvider {
   }
 
   async embedAsync(text: string): Promise<number[]> {
-    const cached = this.cache.get(text);
+    const ckey = EmbedCache.key(text);
+    const cached = this.cache.get(ckey);
     if (cached) return cached;
     if (this.apiKey) {
       try {
@@ -185,7 +224,7 @@ export class OpenAIEmbedding implements EmbeddingProvider {
           const data = (await resp.json()) as { data?: { embedding: number[] }[] };
           const vec = data.data?.[0]?.embedding;
           if (vec && vec.length) {
-            this.cache.set(text, vec); // 缓存只存真实远程向量（P1）
+            this.cache.set(ckey, vec); // 缓存只存真实远程向量（P1）
             return vec;
           }
         }
@@ -229,7 +268,7 @@ export class RemoteEmbedding implements EmbeddingProvider {
   readonly dim: number;
   private baseUrl: string;
   private apiKey: string;
-  private cache = new Map<string, number[]>();
+  private cache = new EmbedCache();
 
   constructor(opts?: {
     dim?: number;
@@ -246,7 +285,8 @@ export class RemoteEmbedding implements EmbeddingProvider {
   }
 
   async embedAsync(text: string): Promise<number[]> {
-    const cached = this.cache.get(text);
+    const ckey = EmbedCache.key(text);
+    const cached = this.cache.get(ckey);
     if (cached) return cached;
     if (!this.baseUrl) {
       // 配置缺失属确定性错误：降级但不缓存（配置修复后立即生效），并保持告警可见。
@@ -269,7 +309,7 @@ export class RemoteEmbedding implements EmbeddingProvider {
         const data = (await resp.json()) as { embeddings?: number[][] };
         const vec = data.embeddings?.[0];
         if (vec && vec.length === this.dim) {
-          this.cache.set(text, vec); // 缓存只存真实远程向量（P1）
+          this.cache.set(ckey, vec); // 缓存只存真实远程向量（P1）
           return vec;
         }
         if (vec && vec.length !== this.dim) {

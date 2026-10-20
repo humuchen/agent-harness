@@ -70,12 +70,14 @@ export interface WebFetchStats {
   privateDenied: number;
   /** 403 后经回退代理成功抓取的次数。 */
   fallbackUsed: number;
+  /** 2xx 但正文近空（JS 渲染空壳/反爬软页）——压缩方案3 观测项。 */
+  nearEmpty: number;
 }
 
 const stats: WebFetchStats = {
   total: 0, ok2xx: 0, redirect3xx: 0, blocked403: 0, notFound404: 0, client4xx: 0,
   rateLimited429: 0, server5xx: 0, tooLarge: 0, timeout: 0, networkError: 0,
-  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0,
+  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0, nearEmpty: 0,
 };
 
 /** 读取 web_fetch 状态码分类统计快照（只读副本）。 */
@@ -89,12 +91,27 @@ export function resetWebFetchStats(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Token 成本优化（压缩方案3）：近空结果检测
+// ---------------------------------------------------------------------------
+
+/** HTML 提取后有效正文低于该字符数即视为「近空」（空壳页/反爬软页）。 */
+const NEAR_EMPTY_MIN_CHARS = 200;
+
+/** 近空结果的引导文案：明确告知不要重试同一 URL，避免浪费轮次与 token。 */
+const NEAR_EMPTY_HINT =
+  'page has almost no readable text (likely JS-rendered or bot-protected). ' +
+  'Do NOT retry the same URL; switch to another source immediately.';
+
+// ---------------------------------------------------------------------------
 // 改进4：进程级 cookie jar（按 host 记忆 set-cookie，提升会话型站点成功率）
 // ---------------------------------------------------------------------------
 
 interface JarEntry { value: string; expires: number }
 const cookieJar = new Map<string, Map<string, JarEntry>>();
 const COOKIE_JAR_MAX_HOSTS = 200;
+/** P1 资源修复：单 host 的 cookie 条目数上限——容量控制此前只在 host 维度，恶意站点
+ * 可在单页响应里塞数百个 Set-Cookie，随抓取累积（每 host 独立 Map 无淘汰）。 */
+const COOKIE_JAR_MAX_PER_HOST = 50;
 const SESSION_COOKIE_TTL_MS = 30 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
@@ -140,7 +157,13 @@ function storeCookies(host: string, resp: Response): void {
       if (Number.isFinite(t)) expires = t;
     }
     jar.set(name, { value, expires });
-    if (value === '' || expires <= Date.now()) jar.delete(name); // 删除语义
+    if (value === '' || expires <= Date.now()) {
+      jar.delete(name); // 删除语义
+    } else if (jar.size > COOKIE_JAR_MAX_PER_HOST) {
+      // 超限淘汰最旧条目（插入序）。
+      const oldest = jar.keys().next().value;
+      if (oldest !== undefined) jar.delete(oldest);
+    }
   }
 }
 
@@ -227,7 +250,13 @@ function extractText(html: string): string {
 }
 
 export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions = {}): void {
-  const maxBytes = opts.maxBytes ?? 200_000;
+  // Token 成本优化（压缩方案1）：默认抓取上限从 200_000 降到 4_000 字符。
+  // 动机：一次 16KB 级抓取会驻留历史、被后续每一步重复计费（实测全程可放大 6-10k tok）。
+  // 4k 字符 ≈ 1-2k token，通常已覆盖标题/摘要/关键段落；确需长文时 LLM 可对单次请求
+  // 显式传 max_bytes 提升上限，运维可经 env WEB_FETCH_DEFAULT_MAX_CHARS 全局调整。
+  const envMax = Number(process.env.WEB_FETCH_DEFAULT_MAX_CHARS);
+  const maxBytes =
+    opts.maxBytes ?? (Number.isFinite(envMax) && envMax > 0 ? Math.floor(envMax) : 4_000);
   const timeoutMs = opts.timeoutMs ?? 15_000;
   // P1 C1：响应体服务端硬上限（原始字节）。此前 resp.text() 无上限整包入内存，
   // 截断上限 max_bytes 又来自 LLM 参数且无校验——恶意/超大响应可直接 OOM 进程。
@@ -248,13 +277,20 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       'Use for retrieving up-to-date information from the web. Only http/https are allowed. ' +
       'IMPORTANT: always use URLs exactly as they appear in search results or user input — ' +
       'never construct, guess, or modify URLs yourself (fabricated URLs cause 404). ' +
-      'If a fetch returns 403/404, do not invent variants of the URL; report it and try another source instead.',
+      'If a fetch returns 403/404, do not invent variants of the URL; report it and try another source instead. ' +
+      'Keep responses small: the default cap is 4000 characters, which is enough for most pages — ' +
+      'raise max_bytes only for a page you already know needs more. ' +
+      'If a result is marked near_empty, the page has almost no readable text (JS-rendered or bot-protected): ' +
+      'do NOT retry the same URL, switch to another source immediately.',
     objectParams(
       {
         url: { type: 'string', description: 'Full http(s) URL to fetch.' },
         method: { type: 'string', description: 'HTTP method (default GET).' },
         headers: { type: 'object', description: 'Optional request headers as a flat object (overrides defaults).' },
-        max_bytes: { type: 'number', description: 'Max characters to return (default 200000).' },
+        max_bytes: {
+          type: 'number',
+          description: 'Max characters to return (default 4000; raise only when the page is known to need more).'
+        },
       },
       ['url']
     ),
@@ -290,16 +326,25 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
         }
       }
       stats.total++;
+      // 压缩方案1配套：args.max_bytes 此前从未被读取（schema 声称支持但实际无效）。
+      // 现按设计意图生效：单次请求可显式提升上限，readResult 仍用 hardBodyBytes 夹紧防注入。
+      const reqMaxRaw = Number(args.max_bytes);
+      const reqMaxBytes =
+        Number.isFinite(reqMaxRaw) && reqMaxRaw > 0 ? Math.floor(reqMaxRaw) : maxBytes;
       return fetchWithRetries(u, {
         method: (args.method ? String(args.method) : 'GET').toUpperCase(),
         extraHeaders: args.headers && typeof args.headers === 'object' ? (args.headers as Record<string, unknown>) : {},
         defaultUserAgent,
         timeoutMs,
         hardBodyBytes,
-        maxBytes,
+        maxBytes: reqMaxBytes,
         maxRetries,
         fallbackProxy,
         allowedHost: u.hostname,
+      }, {
+        // P1 SSRF 修复：传入逐跳校验上下文（重定向手动跟随，每跳复检）。
+        allowedDomains,
+        allowPrivate,
       });
     },
     'builtin'
@@ -347,12 +392,13 @@ async function fetchOnce(
   url: string,
   headers: Record<string, string>,
   method: string,
-  timeoutMs: number
+  timeoutMs: number,
+  redirect: 'follow' | 'manual' = 'follow'
 ): Promise<{ resp?: Response; error?: Error; timedOut: boolean }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { method, headers, signal: ctrl.signal });
+    const resp = await fetch(url, { method, headers, signal: ctrl.signal, redirect });
     return { resp, timedOut: false };
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -363,12 +409,41 @@ async function fetchOnce(
   }
 }
 
-async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
-  const attempts = run.maxRetries + 1;
+// ---------------------------------------------------------------------------
+// P1 SSRF 修复：重定向手动跟随
+// ---------------------------------------------------------------------------
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const headers = buildHeaders(run, u.hostname);
-    const { resp, error, timedOut } = await fetchOnce(u.toString(), headers, run.method, run.timeoutMs);
+/**
+ * 重定向手动跟随的跳数上限（防重定向环 / 资源放大）。
+ */
+const MAX_REDIRECT_HOPS = 5;
+
+/**
+ * 逐跳校验所需的策略上下文：主路径（guard 存在）以 `redirect: 'manual'` 请求，
+ * 每个 3xx 由本模块解析 Location 并重新校验 allowlist + 私网后再跟随。
+ * 旧实现 `redirect: 'follow'` 由 fetch 内部直跳——公网 URL 302 到云元数据
+ * （169.254.169.254）/ 内网服务时完全绕过首跳校验，是已知可利用的 SSRF 面。
+ */
+interface RedirectGuard {
+  allowedDomains: string[];
+  allowPrivate: boolean;
+}
+
+async function fetchWithRetries(u: URL, run: FetchRunOptions, guard?: RedirectGuard): Promise<string> {
+  const attempts = run.maxRetries + 1;
+  let current = u;
+  let hop = 0;
+  let attempt = 1;
+
+  for (;;) {
+    const headers = buildHeaders(run, current.hostname);
+    const { resp, error, timedOut } = await fetchOnce(
+      current.toString(),
+      headers,
+      run.method,
+      run.timeoutMs,
+      guard ? 'manual' : 'follow'
+    );
 
     if (error || !resp) {
       if (timedOut) {
@@ -380,6 +455,7 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
       const err = error ?? new Error('fetch failed');
       if (attempt < attempts) {
         await sleep(backoffDelay(attempt, null));
+        attempt++;
         continue;
       }
       return `error: ${err.message}`;
@@ -394,28 +470,55 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions): Promise<string> {
     else if (status >= 400 && status < 500) stats.client4xx++;
     else if (status >= 500) stats.server5xx++;
 
+    // P1 SSRF 修复：手动逐跳跟随重定向，每跳重新校验协议 + allowlist + 私网。
+    if (guard && status >= 300 && status < 400 && hop < MAX_REDIRECT_HOPS) {
+      const loc = resp.headers.get('location');
+      try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
+      if (loc) {
+        let next: URL;
+        try {
+          next = new URL(loc, current);
+        } catch {
+          return 'error: invalid redirect location';
+        }
+        if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+          return 'error: redirect to non-http/https URL denied';
+        }
+        if (guard.allowedDomains.length > 0 && !hostAllowed(next.hostname, guard.allowedDomains)) {
+          return `error: redirect host not in allowlist: ${next.hostname}`;
+        }
+        if (!guard.allowPrivate && (await resolveHostIsPrivate(next.hostname))) {
+          stats.privateDenied++;
+          return `error: redirect target ${next.hostname} resolves to a private network address (set GUARDRAIL_ALLOW_PRIVATE_NETWORK=true or WEB_FETCH_ALLOW_PRIVATE_NETWORK=on to allow)`;
+        }
+        current = next;
+        hop++;
+        continue;
+      }
+      // 无 Location 的 3xx：按普通响应读取（保持旧行为）。
+    }
+
     // 改进2：429/5xx 退避重试（尊重 Retry-After，上限 2s）。
     if ((status === 429 || status >= 500) && attempt < attempts) {
       try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
       await sleep(backoffDelay(attempt, resp.headers.get('retry-after')));
+      attempt++;
       continue;
     }
 
     // 改进3：403 被反爬拦截 → 配置了回退代理时走代理再抓一次（仅首次 403 后触发一次）。
     if (status === 403 && run.fallbackProxy) {
-      const proxied = await tryFallbackProxy(u.toString(), run);
+      const proxied = await tryFallbackProxy(current.toString(), run);
       if (proxied !== null) return proxied;
       // 代理失败 → 落回正常 403 返回路径。
     }
 
-    const result = await readResult(resp, run);
+    const result = await readResult(resp, { ...run, allowedHost: current.hostname });
     if (result !== null) return result;
     // tooLarge：readResult 已计数，按 Content-Length 给出错误信息。
     const declared = Number(resp.headers.get('content-length') ?? '');
     return `error: response body too large (${Number.isFinite(declared) && declared > 0 ? declared : 'unknown'} bytes > ${run.hardBodyBytes} hard limit)`;
   }
-  // 不可达：循环内每个分支要么 return 要么 continue（最后一次迭代不 continue）。
-  return 'error: unreachable';
 }
 
 /** 改进3：经回退代理抓取；成功返回格式化结果，失败返回 null（回落主路径）。 */
@@ -451,17 +554,28 @@ async function readResult(
   }
   // P1 C1：流式分块读取 + 字节预算，超限即中止连接，不再 resp.text() 整包入内存。
   const { text: raw, truncatedByLimit } = await readBodyCapped(resp, run.hardBodyBytes);
-  const text = ct.includes('html') ? extractText(raw) : raw;
+  const isHtml = ct.includes('html');
+  const text = isHtml ? extractText(raw) : raw;
   storeCookies(run.allowedHost, resp);
   let out = truncatedByLimit ? text + ' ...[fetch aborted: hard byte limit]' : text;
   // P1 C1：LLM 可控的截断上限夹紧到 [1, hardBodyBytes]，防参数注入超大值。
   const cap = Math.min(Math.max(run.maxBytes, 1), run.hardBodyBytes);
   if (out.length > cap) out = out.slice(0, cap) + `\n...[truncated at ${cap} chars]`;
+  // 压缩方案3：近空结果检测（仅 HTML——纯文本/JSON 端点本来就短，短 ≠ 无效）。
+  // 2xx 但正文近空大概率是 JS 渲染空壳或反爬软页；显式返回 near_empty + 引导提示，
+  // 避免模型对着空壳 URL 反复重试浪费轮次（实测此类无效抓取单次全程浪费 1-2k tok）。
+  let nearEmpty = false;
+  if (isHtml) {
+    const bodyOnly = out.replace(/^标题:[^\n]*\n+/, '');
+    nearEmpty = bodyOnly.trim().length < NEAR_EMPTY_MIN_CHARS;
+    if (nearEmpty) stats.nearEmpty++;
+  }
   return JSON.stringify({
     status: resp.status,
     ok: resp.ok,
     content_type: ct,
     length: out.length,
+    ...(nearEmpty ? { near_empty: true, hint: NEAR_EMPTY_HINT } : {}),
     ...(via ? { via } : {}),
     body: out,
   });

@@ -18,9 +18,10 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { MemoryVectorStore } from './store';
+import { createVectorStore, type VectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
-import { ingestDocument, IngestInput } from './ingest';
+import { ingestDocument, ingestStructured, IngestInput, StructuredIngestInput } from './ingest';
+import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
 import { resolveTenant } from './auth';
 import { IngestQueue } from './queue';
@@ -32,7 +33,7 @@ import { generateAnswer, createLLM, type LLMProvider } from './generate';
 
 export interface RagServerOptions {
   port?: number;
-  store?: MemoryVectorStore;
+  store?: VectorStore;
   provider?: EmbeddingProvider;
   /** secret -> tenantId 映射（多租户静态令牌）。 */
   tokens?: Map<string, string>;
@@ -48,12 +49,29 @@ export interface RagServerOptions {
 function readJson(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (c) => (body += c));
+    let total = 0;
+    let aborted = false;
+    // P1 资源修复：请求体无上限累积——单条请求可携带数百 MB 文本，经
+    // JSON.stringify/splitter 多次复制放大内存（容器 limit 仅 512Mi，极易 OOM）。
+    const maxBytes =
+      Number(process.env.RAG_MAX_BODY_BYTES ?? 10_485_760) || 10_485_760;
+    req.on('data', (c: Buffer) => {
+      if (aborted) return;
+      total += c.byteLength;
+      if (total > maxBytes) {
+        aborted = true;
+        try { req.destroy(); } catch { /* 已断开则忽略 */ }
+        reject(new Error('request body too large'));
+        return;
+      }
+      body += c;
+    });
     req.on('end', () => {
+      if (aborted) return;
       if (!body) return resolve({});
       try {
         resolve(JSON.parse(body));
-      } catch (e) {
+      } catch {
         reject(new Error('invalid JSON body'));
       }
     });
@@ -68,9 +86,10 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 export function createRagServer(opts: RagServerOptions) {
-  const store = opts.store ?? new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
+  // P6-B：存储后端可插拔（RAG_STORE_BACKEND=memory|qdrant，缺省 memory 存量行为不变）。
+  const store = opts.store ?? createVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
   const shard = (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
-  if (opts.dataFile) store.load(opts.dataFile, shard);
+  if (opts.dataFile) store.load?.(opts.dataFile, shard);
   const provider = opts.provider ?? createEmbedder();
   const tokens = opts.tokens;
   const jwtSecret = opts.jwtSecret ?? process.env.RAG_JWT_SECRET;
@@ -96,10 +115,10 @@ export function createRagServer(opts: RagServerOptions) {
       const method = req.method || 'GET';
 
       if (path === '/v1/health' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts());
+        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
         return send(res, 200, {
           ok: true,
-          chunks: store.count(),
+          chunks: await store.count(),
           dim: store.dim,
           cache_size: cache.size,
           ingest: queue.stats(),
@@ -108,7 +127,7 @@ export function createRagServer(opts: RagServerOptions) {
       }
 
       if (path === '/v1/metrics' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts());
+        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
         const buf = Buffer.from(metrics.toPrometheus(), 'utf8');
         res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
         return res.end(buf);
@@ -125,6 +144,7 @@ export function createRagServer(opts: RagServerOptions) {
           filters: body.filters,
           tenant_id: auth.tenantId, // 服务端重写
           expand: !!body.expand,
+          parent: !!body.parent, // P6-B 方案二二期：ParentDocument 父块展开
         };
         if (!rreq.query) return send(res, 400, { error: 'query required' });
 
@@ -146,7 +166,17 @@ export function createRagServer(opts: RagServerOptions) {
           }
         }
 
-        let resp: RetrieveResponse = { ...(await retrieve(store, provider, rreq)), cache_hit: false };
+        // P6-B 方案二二期：高级检索分派（body.mode: multi-query | hyde；需已配置 LLM，
+        // 未配置时静默回落普通检索——高级检索是增强能力非必需）。
+        const mode = String(body.mode ?? '').toLowerCase();
+        let resp: RetrieveResponse;
+        if (mode === 'multi-query' && llm) {
+          resp = { ...(await multiQueryRetrieve(store, provider, llm, rreq)), cache_hit: false };
+        } else if (mode === 'hyde' && llm) {
+          resp = { ...(await hydeRetrieve(store, provider, llm, rreq)), cache_hit: false };
+        } else {
+          resp = { ...(await retrieve(store, provider, rreq)), cache_hit: false };
+        }
         // RAG_RERANK=api：真实 cross-encoder 重排（rerank.ts），失败回退 MMR
         const rerankMode = (process.env.RAG_RERANK || 'mmr').toLowerCase();
         if (rerankMode === 'api' && resp.results.length > 1) {
@@ -155,7 +185,10 @@ export function createRagServer(opts: RagServerOptions) {
             resp = { ...resp, results: rr };
           } else {
             const vectorMap = new Map<string, number[]>();
-            for (const c of store.getChunks(rreq.tenant_id)) vectorMap.set(c.chunk_id, c.vector);
+            if (store.hybridCapable) {
+              for (const c of await store.getChunks(rreq.tenant_id))
+                vectorMap.set(c.chunk_id, c.vector);
+            }
             resp = { ...resp, results: mmrRerank(resp.results, vectorMap, 0.5) };
           }
         }
@@ -176,7 +209,11 @@ export function createRagServer(opts: RagServerOptions) {
         const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const job = queue.job(jobMatch[1] ?? '');
-        if (!job) return send(res, 404, { error: 'job not found' });
+        // P1 IDOR 修复：job_id 为时间戳+序号（可预测），不校验租户时租户 A 可探测
+        // 租户 B 的入库任务状态 / doc_id / 错误信息。归属不符按 404 处理。
+        if (!job || job.tenant_id !== auth.tenantId) {
+          return send(res, 404, { error: 'job not found' });
+        }
         return send(res, 200, job);
       }
 
@@ -184,18 +221,44 @@ export function createRagServer(opts: RagServerOptions) {
         const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const body = await readJson(req);
+        // P6-B（方案二一期）：结构化入库 —— body.source（{type, value}）存在时走
+        // loadDocument + splitAuto（结构感知切分，heading_path 进 metadata）；
+        // 缺省仍为纯文本 + 固定滑窗（存量零回归）。source 与 text 二选一。
+        const sourceBranch =
+          body.source && typeof body.source === 'object' && body.source.type && body.source.value != null;
         const input: IngestInput = {
           doc_id: String(body.doc_id ?? ''),
           tenant_id: auth.tenantId, // 服务端重写
           title: body.title,
-          text: String(body.text ?? ''),
+          text: sourceBranch ? '' : String(body.text ?? ''),
           tags: body.tags,
           metadata: body.metadata,
           chunk_size: body.chunk_size,
           chunk_overlap: body.chunk_overlap,
         };
-        if (!input.doc_id || !input.text) {
-          return send(res, 400, { error: 'doc_id and text required' });
+        if (!input.doc_id || (!sourceBranch && !input.text)) {
+          return send(res, 400, { error: 'doc_id and (text or source) required' });
+        }
+
+        // 结构化入库强制同步（loader 可能走外部服务，失败需同步反馈调用方；
+        // 不进异步队列 —— 队列复用 IngestInput，source 分支的 text 为空会在 worker 里产出 0 chunk）。
+        if (sourceBranch) {
+          try {
+            const result = await ingestStructured(store, provider, {
+              ...input,
+              text: undefined as unknown as string,
+              source: body.source,
+              max_len: body.max_len,
+            } as unknown as StructuredIngestInput);
+            if (opts.dataFile) store.persist?.(opts.dataFile, shard);
+            metrics.recordIngest(true);
+            return send(res, 200, result);
+          } catch (e) {
+            metrics.recordIngest(false);
+            return send(res, 400, {
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
         }
 
         if (asyncIngest) {
@@ -214,7 +277,7 @@ export function createRagServer(opts: RagServerOptions) {
         }
 
         const result = await ingestDocument(store, provider, input);
-        if (opts.dataFile) store.persist(opts.dataFile, shard);
+        if (opts.dataFile) store.persist?.(opts.dataFile, shard);
         metrics.recordIngest(true);
         return send(res, 200, result);
       }

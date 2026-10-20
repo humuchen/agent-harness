@@ -17,6 +17,7 @@
 
 import type { RunMode } from './runner';
 import type { VerifyConfig } from '@agent-harness/core';
+import { encryptApiKey, decryptApiKey } from './custom-models';
 
 /** 可持久化的任务意图（RunJob 的纯数据子集，可 JSON 序列化）。 */
 export interface JobDescriptor {
@@ -71,6 +72,68 @@ export function isPlanTaskRun(d: { interactionMode?: string; planPhase?: string 
   return d.interactionMode === 'plan' && d.planPhase !== 'propose';
 }
 
+/**
+ * 计划 propose（生成计划）判定：计划模式 + propose 阶段 = 前端「规划思考」派发的 run。
+ * 两段式规划管线（理解 → 受限调研 → 生成计划，澄清回复轮还有防重问守卫重试）是
+ * 3~4 次顺序 LLM 调用，推理模型单轮思考即可分钟级 —— 与 planTask 同属重任务，
+ * 服务端据此放宽看门狗（见 run-queue PLAN_PROPOSE_TIMEOUT_MS）。
+ */
+export function isPlanProposeRun(d: {
+  interactionMode?: string;
+  planPhase?: string;
+}): boolean {
+  return d.interactionMode === 'plan' && d.planPhase === 'propose';
+}
+
+// ─── descriptor 明文凭据落盘防护（P1-2）───────────────────────────────────────
+// 旧自定义模型前端路径可能随 run body 直传明文 modelApiKey；该字段若随 descriptor
+// 原样持久化（run-queue.jsonl / runq:jobs HASH），明文 Key 将落盘。此处统一在持久层
+// 加密（AES-256-GCM，密钥 AH_CRYPTO_KEY，与 custom-models / provider-keys 同源），
+// 读取边界（list / claim / 启动重放）统一解密——进程内流（submit → execute）不变。
+const MODEL_KEY_ENC_PREFIX = 'enc:v1:';
+
+/** 持久化前加密 descriptor 内的明文 modelApiKey（幂等：已加密原样返回）。 */
+function sealModelApiKey(d: JobDescriptor): JobDescriptor {
+  if (!d.modelApiKey || d.modelApiKey.startsWith(MODEL_KEY_ENC_PREFIX)) return d;
+  try {
+    return {
+      ...d,
+      modelApiKey: MODEL_KEY_ENC_PREFIX + encryptApiKey(d.modelApiKey)
+    };
+  } catch (e) {
+    // AH_CRYPTO_KEY 未配置（开发/测试环境常见）：宁剥离也不落明文——该任务将改走
+    // 执行期凭据解析链（provider-keys / 平台兜底），解析不到时按 provider_key_required 拒绝。
+    console.error(
+      '[queue-backend] modelApiKey 加密失败（AH_CRYPTO_KEY 未配置？），已从持久层剥离该字段:',
+      (e as Error)?.message
+    );
+    return stripModelApiKey(d);
+  }
+}
+
+/** 从持久层读出时解密 descriptor 内的密文 modelApiKey（明文存量/未加密原样返回）。 */
+function openModelApiKey(d: JobDescriptor): JobDescriptor {
+  if (!d.modelApiKey || !d.modelApiKey.startsWith(MODEL_KEY_ENC_PREFIX)) return d;
+  try {
+    return {
+      ...d,
+      modelApiKey: decryptApiKey(d.modelApiKey.slice(MODEL_KEY_ENC_PREFIX.length))
+    };
+  } catch (e) {
+    console.error(
+      '[queue-backend] modelApiKey 解密失败（密钥不匹配或密文损坏），已剥离该字段:',
+      (e as Error)?.message
+    );
+    return stripModelApiKey(d);
+  }
+}
+
+function stripModelApiKey(d: JobDescriptor): JobDescriptor {
+  const stripped = { ...d } as Partial<JobDescriptor>;
+  delete stripped.modelApiKey;
+  return stripped as JobDescriptor;
+}
+
 /** 持久化后端契约：追加 / 列举 / 原子领取 / 消费确认 / 清空 + 可选跨实例事件桥。 */
 export interface QueueBackend {
   readonly kind: 'memory' | 'file' | 'redis' | 'bullmq';
@@ -91,8 +154,17 @@ export interface QueueBackend {
   /**
    * 崩溃回收：把 processing 中「领取时刻距今超过 leaseMs」的任务迁回 pending，
    * 使被崩溃实例占住的任务能被其它实例重新领取。仅共享后端实现；返回回收条数。
+   * P0-1：claimedAt 缺失的任务一律跳过 + 告警（宁可滞留等待下一轮，也不冒
+   * 「在飞任务被误判为僵尸 → 重复执行」的风险）。
    */
   reclaimStale?(leaseMs: number): Promise<number>;
+  /**
+   * 续租（仅共享后端实现，P0-1）：把某任务的领取时刻刷新为当前时间。执行实例在
+   * 任务执行期间周期调用（默认租约/3），使长任务（如 10 分钟计划任务）不会被其它
+   * 实例的 reclaimStale 误判为僵尸而重复执行。仅当 claimedAt 仍存在时刷新——
+   * ack（任务终态）后返回 false，续租自然失效。
+   */
+  renewLease?(id: string): Promise<boolean>;
   /**
    * 跨实例幂等占位（仅共享后端实现）：原子 SET NX，key 已存在时返回既有 jobId。
    * 使「同 idempotencyKey 不重复执行」的保证从进程内扩展到多副本（此前幂等索引
@@ -112,6 +184,21 @@ export interface QueueBackend {
    */
   publishEvent?(jobId: string, event: unknown): Promise<void>;
   subscribeEvents?(jobId: string, fn: (e: unknown) => void): Promise<() => void>;
+  /**
+   * P1-6：跨实例同会话串行化锁（仅共享后端实现）。SET NX PX 原子占位：
+   * 同一会话（sessionKey）的任务在任意时刻只允许一个实例执行 —— 进程内
+   * runningSessions Set 只覆盖本实例（pump 路径），共享后端下任务经
+   * claim→launchClaimed 直达执行，跨实例并发写同一 owner 的记忆会互相覆盖。
+   * Redis 故障由调用方降级处理（不设锁，退化为进程内语义）。
+   */
+  acquireSessionLock?(key: string, token: string, ttlMs: number): Promise<boolean>;
+  /** P1-6：释放会话锁。Lua 校验 token 防误删他人锁（锁过期后被其它任务重占）。 */
+  releaseSessionLock?(key: string, token: string): Promise<boolean>;
+  /**
+   * P1-6：把「已 claim 但尚未执行」的任务原子退回 pending（清租约）。会话锁被占时
+   * 调用方用它把任务让回队列，待锁释放后的下一轮 claim 重新领取。
+   */
+  releaseClaim?(id: string): Promise<boolean>;
 }
 
 /** 默认后端：纯内存，不落盘。与改造前 RunQueue 行为完全一致（重启即丢）。 */
@@ -148,14 +235,35 @@ export class FileQueueBackend implements QueueBackend {
   private file: string;
   private cache: JobDescriptor[] = [];
   private loaded = false;
+  /**
+   * P2-4：首载去重。旧实现在 await 读文件**之前**就置 loaded=true，并发首载窗口内
+   * （append + list 同时到达）第二个调用直接拿到空 cache —— append 会把新任务写进
+   * 空缓存视图并落盘（磁盘上已有任务对本次视图丢失），list 返回空。现缓存 loading
+   * promise，并发调用共享同一次加载；加载失败时清 promise 允许下次重试。
+   */
+  private loadPromise: Promise<void> | null = null;
 
   constructor(opts: { file: string }) {
     this.file = opts.file;
   }
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  private ensureLoaded(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    this.loadPromise ??= this.doLoad().then(
+      () => {
+        this.loaded = true;
+      },
+      (e) => {
+        // 加载失败（如目录创建被拒）：清 promise 允许下次调用重试，而不是把
+        // 失败状态永久钉死（旧实现还会静默带着空 cache 继续跑）。
+        this.loadPromise = null;
+        throw e;
+      }
+    );
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
     const fs = await import('node:fs/promises');
     const pathMod = await import('node:path');
     await fs.mkdir(pathMod.dirname(this.file), { recursive: true });
@@ -180,14 +288,17 @@ export class FileQueueBackend implements QueueBackend {
 
   async append(d: JobDescriptor): Promise<void> {
     await this.ensureLoaded();
-    this.cache.push(d);
+    // P1-2：持久层统一加密明文 modelApiKey（cache 与文件都只存密文）。
+    const sealed = sealModelApiKey(d);
+    this.cache.push(sealed);
     const fs = await import('node:fs/promises');
-    await fs.appendFile(this.file, JSON.stringify(d) + '\n', 'utf-8');
+    await fs.appendFile(this.file, JSON.stringify(sealed) + '\n', 'utf-8');
   }
 
   async list(): Promise<JobDescriptor[]> {
     await this.ensureLoaded();
-    return [...this.cache];
+    // P1-2：读取边界统一解密，重放/运维快照拿到的是明文 descriptor。
+    return this.cache.map(openModelApiKey);
   }
 
   async claim(): Promise<JobDescriptor | null> {
@@ -196,7 +307,7 @@ export class FileQueueBackend implements QueueBackend {
     if (!it) return null;
     // 单实例：claim 即视为已领取，重写持久层。多实例安全由 redis 后端保证。
     await this.rewrite();
-    return it;
+    return openModelApiKey(it);
   }
 
   async ack(id: string): Promise<void> {
@@ -262,6 +373,11 @@ export interface RedisLike {
     nx: 'NX'
   ): Promise<string | null>;
   get?(key: string): Promise<string | null>;
+  /**
+   * 执行 Lua 脚本（原子多命令，P0-1）。可选：测试替身未实现时，后端自动退化为
+   * 「多命令串行」路径（语义弱化为非原子，但功能一致）。
+   */
+  eval?(script: string, numkeys: number, ...keysAndArgs: string[]): Promise<unknown>;
 }
 export interface RedisPubSubLike {
   duplicate(): RedisPubSubLike;
@@ -270,6 +386,52 @@ export interface RedisPubSubLike {
   unsubscribe(channel: string): void;
 }
 export type RedisClient = RedisLike & RedisPubSubLike & { quit(): Promise<void> };
+
+// ─── P0-1 原子脚本（eval 可用时启用；测试替身缺失 eval 自动退化多命令路径）──────
+
+/** 领取：LMOVE 与「领取时刻」原子同写，消除 lmove→hset 之间崩溃导致 claimedAt 缺失的窗口。 */
+const CLAIM_LEASE_LUA = `local id = redis.call('LMOVE', KEYS[1], KEYS[2], 'LEFT', 'RIGHT')
+if id then redis.call('HSET', KEYS[3], id, ARGV[1]) end
+return id`;
+
+/** 崩溃回收：lrem+rpush 原子化。若任务已被执行实例 ack（lrem 返回 0）则不再回填 pending，
+ * 消除「lrem 后 rpush 前 ack → 任务二次入队」的重复执行竞态。 */
+const RECLAIM_LUA = `if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 1 then
+  redis.call('RPUSH', KEYS[2], ARGV[1])
+  return 1
+end
+return 0`;
+
+/** 续租：仅当 claimedAt 仍存在（任务未 ack）时刷新。给已被回收/已完结任务续租无危害：
+ * 已完结任务的 claimedAt 已被 ack 删除（返回 0）；已被其它实例重领的任务刷新的只是
+ * 新持有者的租约（延长而非缩短，方向安全）。 */
+const RENEW_LEASE_LUA = `if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then
+  redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+  return 1
+end
+return 0`;
+
+/**
+ * P1-6：把「已 claim 未执行」的任务原子退回 pending（清租约）。LREM processing
+ * 成功才 RPUSH + HDEL —— 与 ack 的竞态下（任务已被执行实例 ack 移除）返回 0，
+ * 调用方据此走本地延期兜底，不会把已 ack 的任务复活进 pending。
+ */
+const RELEASE_CLAIM_LUA = `if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 1 then
+  redis.call('RPUSH', KEYS[2], ARGV[1])
+  redis.call('HDEL', KEYS[3], ARGV[1])
+  return 1
+end
+return 0`;
+
+/**
+ * P1-6：释放会话锁——GET 与 token 相等才 DEL（check-and-delete 原子化）。
+ * 防误删场景：锁 TTL 到期后被其它任务重新占位，此时原持有者的迟到释放不得
+ * 把新持有者的锁删掉。
+ */
+const SESSION_LOCK_RELEASE_LUA = `if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0`;
 
 /**
  * Redis 后端：把「可插拔接口」变成真正的共享、多实例队列。
@@ -318,8 +480,10 @@ export class RedisQueueBackend implements QueueBackend {
   }
 
   async append(d: JobDescriptor): Promise<void> {
-    await this.client.hset(this.jobsKey, d.id, JSON.stringify(d));
-    await this.client.rpush(this.pending, d.id);
+    // P1-2：持久层统一加密明文 modelApiKey（runq:jobs HASH 只存密文）。
+    const sealed = sealModelApiKey(d);
+    await this.client.hset(this.jobsKey, sealed.id, JSON.stringify(sealed));
+    await this.client.rpush(this.pending, sealed.id);
   }
 
   async list(): Promise<JobDescriptor[]> {
@@ -327,14 +491,21 @@ export class RedisQueueBackend implements QueueBackend {
     const proc = await this.client.lrange(this.processing, 0, -1);
     const ids = [...pending, ...proc];
     if (ids.length === 0) return [];
-    const raws = await this.client.hmget(this.jobsKey, ...ids);
+    // P1 协议峰值修复：HMGET 参数数此前与积压量线性同步——redis 共享模式无进程内
+    // 背压，积压巨大时单条 HMGET 可达数万参数（同步串行大命令阻塞 + 内存峰值）。
+    // 改为分批（每批 500）拉取。
+    const BATCH = 500;
     const out: JobDescriptor[] = [];
-    for (const raw of raws) {
-      if (raw) {
-        try {
-          out.push(JSON.parse(raw) as JobDescriptor);
-        } catch {
-          /* 坏数据跳过 */
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      const raws = await this.client.hmget(this.jobsKey, ...batch);
+      for (const raw of raws) {
+        if (raw) {
+          try {
+            out.push(openModelApiKey(JSON.parse(raw) as JobDescriptor));
+          } catch {
+            /* 坏数据跳过 */
+          }
         }
       }
     }
@@ -343,22 +514,52 @@ export class RedisQueueBackend implements QueueBackend {
 
   async claim(): Promise<JobDescriptor | null> {
     // FIFO：从 pending 左端（最旧）原子弹出并追加到 processing 右端，保证多实例下
-    // 同一任务只被一个实例领取，且领取顺序与提交顺序一致；processing 保持领取顺序
+    // 同一任务只会被一个实例领取，且领取顺序与提交顺序一致；processing 保持领取顺序
     // 以便 reclaimStale 按原 FIFO 重新入队。
-    const id = await this.client.lmove(this.pending, this.processing, 'LEFT', 'RIGHT');
+    const id = await this.claimId();
     if (!id) return null;
     const raw = await this.client.hget(this.jobsKey, id);
     if (!raw) {
       await this.client.lrem(this.processing, 1, id);
       return null;
     }
-    await this.client.hset(this.claimedAt, id, String(Date.now()));
     try {
-      return JSON.parse(raw) as JobDescriptor;
+      return openModelApiKey(JSON.parse(raw) as JobDescriptor);
     } catch {
       await this.client.lrem(this.processing, 1, id);
       return null;
     }
+  }
+
+  /**
+   * P0-1：领取 id 与领取时刻原子同写（Lua 单脚本）。旧实现 lmove 与 hset 之间存在
+   * 窗口：实例在这两步之间崩溃 → claimedAt 缺失 → 回收方按「缺 claimedAt 立即回收」
+   * 处理，与真实执行状态脱节。Lua 化后该窗口不存在；eval 不可用（测试替身/旧客户端）
+   * 时退化为旧行为。
+   */
+  private async claimId(): Promise<string | null> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const id = (await this.client.eval(
+          CLAIM_LEASE_LUA,
+          3,
+          this.pending,
+          this.processing,
+          this.claimedAt,
+          String(Date.now())
+        )) as string | null;
+        return id ?? null;
+      } catch (e) {
+        console.error(
+          '[queue-backend] atomic claim script failed, falling back to two-step:',
+          (e as Error)?.message
+        );
+      }
+    }
+    const id = await this.client.lmove(this.pending, this.processing, 'LEFT', 'RIGHT');
+    if (!id) return null;
+    await this.client.hset(this.claimedAt, id, String(Date.now()));
+    return id;
   }
 
   /** 原子批量操作（pipeline）：多个命令打包为一次网络往返，提升吞吐并保证最终一致性。 */
@@ -389,16 +590,86 @@ export class RedisQueueBackend implements QueueBackend {
     const proc = await this.client.lrange(this.processing, 0, -1);
     const now = Date.now();
     let moved = 0;
+    let missingLease = 0;
     for (const id of proc) {
       const t = Number(await this.client.hget(this.claimedAt, id));
+      // P0-1 修复：claimedAt 缺失不再「立即回收」。旧逻辑 `!t || now - t >= leaseMs`
+      // 会在 claimedAt 意外丢失（或旧版 claim 的 lmove→hset 崩溃窗口）时把**在飞任务**
+      // 迁回 pending，与执行实例的 ack 竞态 → 重复执行。现改为跳过 + 告警：
+      // claim() 已 Lua 原子同写 claimedAt，正常路径不存在缺失；缺失只可能是数据
+      // 损坏/人工干预，此时保守等待下一轮（宁可滞留，也不冒重复执行风险）。
+      if (!t) {
+        missingLease += 1;
+        continue;
+      }
       // 租赁已到期（含恰好到期边界）：now - t >= leaseMs 即视为陈旧，迁回 pending 重新领取。
-      if (!t || now - t >= leaseMs) {
-        await this.client.lrem(this.processing, 1, id);
-        await this.client.rpush(this.pending, id);
-        moved += 1;
+      if (now - t >= leaseMs) {
+        if (await this.moveBackAtomic(id)) moved += 1;
       }
     }
+    if (missingLease > 0) {
+      console.warn(
+        `[queue-backend] reclaimStale: ${missingLease} processing job(s) missing claimedAt — skipped (will retry next cycle)`
+      );
+    }
     return moved;
+  }
+
+  /**
+   * P0-1：迁移原子化（Lua lrem+rpush 单脚本）。旧实现两步非原子：lrem 之后、rpush
+   * 之前，执行实例恰好 ack（hdel jobsKey/claimedAt）→ rpush 把 id 塞回 pending，
+   * 但任务内容已删 → 空 id 空转；更糟的窗口是任务被新实例领取后旧实例 ack —— 任务
+   * 被执行两遍。Lua 化后迁移本身原子；与 ack 的残余竞态由「执行期租约续租」把窗口
+   * 压到实例真实崩溃的场景。
+   */
+  private async moveBackAtomic(id: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          RECLAIM_LUA,
+          2,
+          this.processing,
+          this.pending,
+          id
+        )) as number;
+        return Number(r) === 1;
+      } catch (e) {
+        console.error(
+          '[queue-backend] reclaim script failed, falling back to two-step:',
+          (e as Error)?.message
+        );
+      }
+    }
+    await this.client.lrem(this.processing, 1, id);
+    await this.client.rpush(this.pending, id);
+    return true;
+  }
+
+  /** P0-1：续租——仅当 claimedAt 仍存在（未 ack）时刷新（Lua 原子）。 */
+  async renewLease(id: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          RENEW_LEASE_LUA,
+          1,
+          this.claimedAt,
+          id,
+          String(Date.now())
+        )) as number;
+        return Number(r) === 1;
+      } catch (e) {
+        console.error(
+          '[queue-backend] renew lease script failed, falling back:',
+          (e as Error)?.message
+        );
+      }
+    }
+    // 退化路径（测试替身/旧客户端）：hget 后 hset（非原子；最坏结果为「多续了一次
+    // 租」或给已被回收的任务补了一次租约——都无危害，见 RENEW_LEASE_LUA 注释）。
+    const t = await this.client.hget(this.claimedAt, id);
+    if (t === null) return false;
+    await this.client.hset(this.claimedAt, id, String(Date.now()));
+    return true;
   }
 
   private idemKeyOf(key: string): string {
@@ -425,6 +696,71 @@ export class RedisQueueBackend implements QueueBackend {
   /** 释放跨实例幂等占位（任务终态时由 run-queue 调用）。 */
   async releaseIdem(key: string): Promise<void> {
     await this.client.del(this.idemKeyOf(key));
+  }
+
+  private sessionLockKeyOf(key: string): string {
+    return `runq:sesslock:${key}`;
+  }
+
+  /** P1-6：跨实例会话锁占位（SET NX PX，原子）。返回 false = 已被其它任务持有。 */
+  async acquireSessionLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+    const client = this.client as RedisLike;
+    if (typeof client.set !== 'function') return true; // 无 set（旧测试替身）→ 放行
+    const res = await client.set(this.sessionLockKeyOf(key), token, 'PX', ttlMs, 'NX');
+    return res === 'OK' || res === '1';
+  }
+
+  /** P1-6：释放会话锁（Lua check-and-delete；token 不匹配 = 锁已易主，不删）。 */
+  async releaseSessionLock(key: string, token: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          SESSION_LOCK_RELEASE_LUA,
+          1,
+          this.sessionLockKeyOf(key),
+          token
+        )) as number;
+        return Number(r) === 1;
+      } catch {
+        // 脚本不可用（极旧客户端）→ 落到两步退化（最坏结果为误删易主后的锁，
+        // 但同会话本就该串行，下一轮 claim 会重新占位，影响有限）。
+      }
+    }
+    const client = this.client as RedisLike;
+    if (typeof client.get !== 'function' || typeof client.del !== 'function') return false;
+    const cur = await client.get(this.sessionLockKeyOf(key));
+    if (cur !== token) return false;
+    await client.del(this.sessionLockKeyOf(key));
+    return true;
+  }
+
+  /** P1-6：把已 claim 未执行的任务原子退回 pending（清租约）。返回 false = 已不在 processing。 */
+  async releaseClaim(id: string): Promise<boolean> {
+    if (typeof this.client.eval === 'function') {
+      try {
+        const r = (await this.client.eval(
+          RELEASE_CLAIM_LUA,
+          3,
+          this.processing,
+          this.pending,
+          this.claimedAt,
+          id
+        )) as number;
+        return Number(r) === 1;
+      } catch (e) {
+        console.error(
+          '[queue-backend] release claim script failed, falling back to two-step:',
+          (e as Error)?.message
+        );
+      }
+    }
+    // 退化路径：与 reclaimStale 的两步退化同款（lrem+rpush 非原子；执行实例尚未
+    // 开始 execute，此窗口内只有「抢到同一任务的下一实例」与「本退回」竞争，
+    // lrem 二者仅一方成功，rpush 的空 id 空转由既有 claim 判空消化）。
+    await this.client.lrem(this.processing, 1, id);
+    await this.client.rpush(this.pending, id);
+    await this.client.hdel(this.claimedAt, id);
+    return true;
   }
 
   async publishEvent(jobId: string, event: unknown): Promise<void> {

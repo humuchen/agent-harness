@@ -1,6 +1,4 @@
-import { css } from 'lit';
-
-export const messageArea = css`
+export const messageArea = `
     /* 滚动区外壳：相对定位，作为「回到底部」浮动按钮的定位上下文；
          按钮 absolute 钉在其底部中央，不进入文档流、不挤压/遮挡内容与输入框。 */
     .scroll-region {
@@ -15,6 +13,11 @@ export const messageArea = css`
       overflow-y: auto;
       min-height: 0;
       padding: 18px 0;
+      /* P1 窗口化渲染配套：向上扩容（往 each 头部插入更早的消息 DOM）时，
+         浏览器原生滚动锚定把视口钉在当前可见内容上，不发生跳动。
+         overflow-anchor 对各内核的兼容：Chromium 全量（Capacitor WebView 同源）、
+         Firefox 66+、Safari 16+；不支持的内核自动退化为旧行为（仅小幅跳动）。 */
+      overflow-anchor: auto;
     }
     /* 回到底部悬浮按钮：默认隐藏（由 showScrollDown 控制挂载），
          仅在用户向上滚动离开底部时出现；点击平滑滚回底部后由滚动事件自动消失。 */
@@ -352,6 +355,12 @@ export const messageArea = css`
       display: flex;
       flex-direction: column;
       // gap: 18px;
+      /* P1 渲染性能：长会话优化（完整虚拟滚动的低风险近似）——
+         content-visibility: auto 让浏览器跳过视口外消息的布局与渲染成本
+         （千条消息滚动/流式插入时不再全量重排）；contain-intrinsic-size 给
+         屏外消息一个估算占位高度，避免滚动条跳动。对屏内消息零视觉影响。 */
+      content-visibility: auto;
+      contain-intrinsic-size: auto 1000px;
     }
     /* ---- 历史会话加载骨架屏（切换会话时内容区占位）----
        与真实消息共用同一套尺寸规格，保证「加载态 → 内容态」不发生位移：
@@ -408,7 +417,7 @@ export const messageArea = css`
       max-width: 745px;
       padding: 12px 14px;
       background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
+      // border: 1px solid var(--ah-border);
       border-radius: 14px;
       border-top-left-radius: 4px;
     }

@@ -17,18 +17,35 @@ function json(res: import('node:http').ServerResponse, code: number, body: unkno
   res.end(JSON.stringify(body));
 }
 
-/** 读取请求体（JSON）。 */
+/** 读取请求体（JSON）。
+ *  P1 资源修复：与 medical-aesthetics 插件同口径——加字节上限（默认 1MB，可用
+ *  CS_MAX_BODY_BYTES 调整），超限直接断开，防单个大 body 打满进程内存。 */
+const MAX_BODY_BYTES = Number(process.env.CS_MAX_BODY_BYTES ?? 1_048_576) || 1_048_576;
 function readBody(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (c) => (data += c));
+    let total = 0;
+    let aborted = false;
+    req.on('data', (c: Buffer) => {
+      if (aborted) return;
+      total += c.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        aborted = true;
+        try { req.destroy(); } catch { /* 已断开则忽略 */ }
+        resolve({});
+        return;
+      }
+      data += c;
+    });
     req.on('end', () => {
+      if (aborted) return;
       try {
         resolve(data ? JSON.parse(data) : {});
       } catch {
         resolve({});
       }
     });
+    req.on('error', () => { if (!aborted) resolve({}); });
   });
 }
 
@@ -63,8 +80,11 @@ export const csServerExtension: ServerExtension = {
       json(res, 200, rows);
     }) as PluginRouteHandler,
 
-    // GET /api/plugins/customer-service/ticket?id=xxx
+    // GET /api/plugins/customer-service/ticket?id=xxx（P1 鉴权修复：工单明细此前
+    // 任意可读，配合旧版弱随机工单号可被枚举遍历；列表接口 /tickets 同口径已放行
+    // ——明细含客户对话内容，需 admin token。）
     '/ticket': ((req, res) => {
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
       const url = new URL(req.url ?? '', 'http://localhost');
       const id = url.searchParams.get('id');
       if (!id) return json(res, 400, { error: true, message: 'id required' });

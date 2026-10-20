@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -60,7 +60,11 @@ import {
   enableTelemetryAutosave,
   initOtlpExporter,
   getTeamManager,
-  type Team
+  initTeamManager,
+  createTeamStoreFromEnv,
+  type Team,
+  type TeamStore,
+  type TeamStoreRedis
 } from '@agent-harness/core';
 
 // 错误明细存储（展示「错误数量 + 具体错误信息」）。
@@ -86,7 +90,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
+import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -113,6 +117,7 @@ import {
   applyPlanWfTerminal,
   updatePlanStatus,
   extractPlanTaskId,
+  flushChatSessions,
   type StoredTool,
   type TraceNode,
   type ChatMessage
@@ -207,6 +212,7 @@ import { buildOpenApiSpec } from './openapi';
 
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
+import { scrubSensitiveEnv, getSecret } from './env-guard';
 
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 import { installScrubber } from './log-scrub';
@@ -229,7 +235,7 @@ import { handleMetricsRoutes } from './routes/metrics-routes';
 import { handleMiscRoutes } from './routes/misc-routes';
 import { handleCollabRoutes } from './routes/collab-routes';
 import { handleChatDataRoutes } from './routes/chat-data-routes';
-import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent } from './routes/run-routes';
+import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent, maybeArchiveRunTrace } from './routes/run-routes';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -255,7 +261,8 @@ import {
 } from './provider-keys';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
-import { quotaEngine, TenantQuotaStore } from '@agent-harness/core';
+// P6 分叉重跑：工作流 step 及其下游重置（纯函数，随 /api/workflows/:id/rerun 暴露）。
+import { quotaEngine, TenantQuotaStore, resetRunForRerun, getRunTraceStore } from '@agent-harness/core';
 import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
@@ -394,10 +401,15 @@ if (!isAuthSecretConfigured()) {
   );
 }
 
-// P2：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
-if (process.env.LOG_SCRUB_ENABLED === 'true') {
+// P2/P1-8：初始化全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）。
+// 默认开启（此前默认关闭，生产日志存在 Key/token 泄漏面）；显式 LOG_SCRUB_ENABLED=false
+// 可关闭（仅建议本地调试临时使用）。
+if (process.env.LOG_SCRUB_ENABLED !== 'false') {
   installScrubber({});
-  structLog('info', 'log-scrub', { enabled: true, note: '全局日志脱敏已激活' });
+  structLog('info', 'log-scrub', {
+    enabled: true,
+    note: '全局日志脱敏已激活（默认开启，LOG_SCRUB_ENABLED=false 可关闭）'
+  });
 }
 
 // OIDC 模式：后台预热 JWKS（内联 OIDC_JWKS 无需网络），并每小时刷新密钥（IdP 轮换）。
@@ -473,9 +485,14 @@ function audit(rec: Record<string, unknown>): void {
       ...(rec.detail as Record<string, unknown> | undefined),
     },
   });
-  // 向 stdout 同步打印一份 JSON 行，供容器日志采集。
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
-  console.log('[audit] ' + line);
+  // 向 stdout 打印一份 JSON 行供容器日志采集。
+  // P1 事件循环修复：audit 每请求同步 console.log 在高并发下阻塞事件循环，且与
+  // core 的结构化审计通道（上方 audit()，异步落盘）重复。改为失败/高危动作才同步
+  // 打印（排障可见性），正常成功请求仅走结构化通道，stdout 交给统一日志管道。
+  if (outcome !== 'success') {
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
+    console.log('[audit] ' + line);
+  }
 }
 
 /** 高危动作审计（已脱敏，绝不记录密钥/token/headers）。 */
@@ -578,11 +595,14 @@ async function guard(
   }
 
   // P0.3 租户隔离：若强制租户隔离（REQUIRE_TENANT=true），校验请求携带的
-  // 租户上下文（优先认证身份派生，其次请求体声明），无租户上下文则拒绝。
+  // 租户上下文（仅认证身份派生），无租户上下文则拒绝。
+  // P1 租户伪造修复：强制模式下绝不采纳请求体声明的 tenantId——它可被任意客户端
+  // 伪造，一旦采纳即击穿记忆分区/合规策略/配额维度的跨租户隔离；body 声明仅保留
+  // 为非强制模式（本地/测试）的降级路径。
   const requireTenant = isTenantRequired();
   if (requireTenant) {
     const tenant = resolveTenantContext({
-      tenantId: typeof body?.tenantId === 'string' ? body.tenantId : null,
+      tenantId: null,
       authenticatedTenantId: ctx.tenantId ?? null,
       name: ctx.email,
       domain: undefined
@@ -858,7 +878,11 @@ const server = createServer(
       }
     }
     // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
-    if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
+    // P1 边界修复：无边界 replace 会把 `/api/v1foo` 改写为 `/apifoo`——要求 v1 后
+    // 必须是 `/` 或行尾，其余路径保持原样（交给 404）。
+    if (/^\/api\/v1(\/|$)/.test(path)) {
+      path = '/api' + path.slice('/api/v1'.length);
+    }
 
     try {
       // CORS 预检：仅当配置了跨域白名单时才需处理。
@@ -936,7 +960,10 @@ const server = createServer(
           );
           const assetRoot = join(wd, 'assets');
           const fp = resolve(assetRoot, rel);
-          if (fp.startsWith(assetRoot)) {
+          // P1 路径穿越修复：startsWith 无尾部分隔符时，`/…/assets-evil` 也会命中
+          // `/…/assets` 前缀，可读到 webapp 目录同级以 assets 为前缀的任意文件。
+          // 与下方根级文件检查（严格相等）同口径：必须落在 assetRoot 目录内部。
+          if (fp === assetRoot || fp.startsWith(assetRoot + sep)) {
             try {
               const buf = await readFile(fp);
               res.writeHead(200, {
@@ -1107,21 +1134,177 @@ const server = createServer(
         return;
       }
 
-      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消）----
+      // ---- P1-⑤：工作流编排（DAG 执行快照查询 + 续跑 + 审批放行 + 显式取消 + 分叉重跑）----
       // GET  /api/workflows/:id     → 执行快照
       // POST /api/workflows/:id/resume → 从断点续跑
       // POST /api/workflows/:id/approve → P3 人工审批放行（写入检查点 approvals 后续跑）
       // POST /api/workflows/:id/cancel → P5.4 显式取消（abort 活动 run；断连不再隐式中止）
+      // POST /api/workflows/:id/rerun  → P6 分叉重跑（重置指定 step 及其下游为 pending，随后 /resume 执行）
       if (path.startsWith('/api/workflows/')) {
         const isResume = req.method === 'POST' && path.endsWith('/resume');
         const isApprove = req.method === 'POST' && path.endsWith('/approve');
         const isCancel = req.method === 'POST' && path.endsWith('/cancel');
-        // POST /resume、/approve、/cancel 会影响执行中的 agent（写操作）→ workflow:run；GET 快照 → workflow:read。
-        const ctx = await guard(req, res, isResume || isApprove || isCancel ? 'workflow:run' : 'workflow:read');
+        const isRerun = req.method === 'POST' && path.endsWith('/rerun');
+        const isRollback = req.method === 'POST' && path.endsWith('/rollback');
+        // POST /resume、/approve、/cancel、/rerun、/rollback 会影响执行中的 agent（写操作）→ workflow:run；GET 快照/归档 → workflow:read。
+        const ctx = await guard(
+          req,
+          res,
+          isResume || isApprove || isCancel || isRerun || isRollback ? 'workflow:run' : 'workflow:read'
+        );
         if (!ctx) return;
         const id = decodeURIComponent(
           path.slice('/api/workflows/'.length).replace(/\/$/, '')
         );
+        // P6（分叉重跑）：POST /api/workflows/:id/rerun —— body.stepId 指定重新执行的起点。
+        // 语义：把该 step 及其全部传递下游重置为 pending（清产出/错误/链路），run 置回
+        // pending 落盘；随后调用既有 POST /:id/resume 即从该 step 重新执行（上游 done 产出
+        // 复用，执行端点带凭据/SSE 与普通续跑完全同款）。拆成「重置 + 续跑」两步而非一步执行，
+        // 是为了完整复用 /resume 的 BYOK 凭据解析与 SSE 链路（不在本分支重复执行器装配）。
+        if (isRerun) {
+          const workflowId = id.slice(0, -'/rerun'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const body = await readBody(req);
+          const stepId = typeof body.stepId === 'string' ? body.stepId.trim() : '';
+          if (!stepId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'rerun requires body.stepId（分叉重跑起点）' }));
+            return;
+          }
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            const updated = resetRunForRerun(run, stepId);
+            await store.save(updated);
+            auditAction('workflow.rerun', {
+              workflowId,
+              stepId,
+              resetSteps: Object.values(updated.steps).filter((s) => s.state === 'pending').length,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                workflowId,
+                stepId,
+                run: updated,
+                hint: `POST /api/workflows/${encodeURIComponent(workflowId)}/resume 从 step "${stepId}" 重新执行`
+              })
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            // running 态拒绝 / 未知 step → 语义化 4xx；其余 500。
+            const status = /正在运行/.test(msg) ? 409 : /不存在 step/.test(msg) ? 400 : 500;
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: msg }));
+          }
+          return;
+        }
+        // P6 观测（方案三一期）：GET /api/workflows/:id/run-traces[?runId=] —— run 过程归档查询。
+        // 无 runId → 该工作流最近 ≤20 次执行的归档列表（新→旧）；带 runId → 单次完整归档
+        // （per-step 状态/重试/错误/调用链路）。鉴权走本分支共同的 workflow:read（只读）。
+        if (req.method === 'GET' && id.endsWith('/run-traces')) {
+          const workflowId = id.slice(0, -'/run-traces'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          try {
+            const traceStore = getRunTraceStore();
+            const runId = new URL(req.url || '/', 'http://localhost').searchParams.get('runId');
+            if (runId) {
+              const rec = await traceStore.get(workflowId, runId);
+              if (!rec) {
+                res.writeHead(404, { 'content-type': 'application/json' });
+                res.end(JSON.stringify({ error: 'run trace not found', workflowId, runId }));
+                return;
+              }
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ trace: rec }));
+              return;
+            }
+            const traces = await traceStore.list(workflowId, 20);
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ traces }));
+          } catch (e) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+          }
+          return;
+        }
+        // P6 方案一 A：POST /api/workflows/:id/rollback —— body.snapshotId 指定回放锚点。
+        // 语义：把 run 恢复到该快照时点（steps/outputs 恢复，产出超限 step 重置 pending），
+        // state → pending 落盘；随后调用既有 POST /:id/resume 重放（与 rerun 同款「重置 + 续跑」
+        // 两步拆分，完整复用 /resume 的 BYOK 凭据解析与 SSE 链路）。运行中拒绝（409）。
+        if (isRollback) {
+          const workflowId = id.slice(0, -'/rollback'.length);
+          if (!workflowId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: 'missing workflow id' }));
+            return;
+          }
+          const body = await readBody(req);
+          const snapshotId = typeof body.snapshotId === 'string' ? body.snapshotId.trim() : '';
+          if (!snapshotId) {
+            res.writeHead(400, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({ error: 'rollback requires body.snapshotId（回放锚点快照 id）' })
+            );
+            return;
+          }
+          try {
+            const store = workflowStore();
+            const run = await store.get(workflowId);
+            if (!run) {
+              res.writeHead(404, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: 'workflow not found', id: workflowId }));
+              return;
+            }
+            const engine = new DagEngine({ store, executor: async () => ({}), onEvent: (e: unknown) => {
+              if (e && typeof e === 'object' && 'type' in e) {
+                const ev = e as WorkflowEvent;
+                auditWfEvent(ev, ctx);
+                maybeArchiveRunTrace(ev);
+              }
+            } });
+            const updated = await engine.rollback(workflowId, snapshotId);
+            auditAction('workflow.rollback', {
+              workflowId,
+              snapshotId,
+              restoredSteps: Object.values(updated.steps).filter((s) => s.state === 'done').length,
+              role: ctx.role,
+              sub: ctx.sub
+            });
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                workflowId,
+                snapshotId,
+                run: updated,
+                hint: `POST /api/workflows/${encodeURIComponent(workflowId)}/resume 从快照 "${snapshotId}" 重放`
+              })
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const status = /正在运行/.test(msg) ? 409 : /快照不存在/.test(msg) ? 400 : 500;
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: msg }));
+          }
+          return;
+        }
         // POST /resume 路径单独处理
         if (req.method === 'POST' && id.endsWith('/resume')) {
           const workflowId = id.slice(0, -'/resume'.length);
@@ -1209,6 +1392,7 @@ const server = createServer(
                 if (e && typeof e === 'object' && 'type' in e) {
                   const ev = e as WorkflowEvent;
                   auditWfEvent(ev, ctx);
+                  maybeArchiveRunTrace(ev);
                   planSync?.sync(ev);
                 }
                 if (!closed) send(e);
@@ -1224,11 +1408,15 @@ const server = createServer(
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
             });
             if (!closed) send({ type: '_wf_done', workflowId, run });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           } catch (e) {
             if (!closed)
               send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           }
           return;
         }
@@ -1332,6 +1520,7 @@ const server = createServer(
                 if (e && typeof e === 'object' && 'type' in e) {
                   const ev = e as WorkflowEvent;
                   auditWfEvent(ev, ctx);
+                  maybeArchiveRunTrace(ev);
                   planSync?.sync(ev);
                 }
                 if (!closed) send(e);
@@ -1347,11 +1536,15 @@ const server = createServer(
               console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
             });
             if (!closed) send({ type: '_wf_done', workflowId, run: run2 });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           } catch (e) {
             if (!closed)
               send({ type: 'wf:error', workflowId, message: e instanceof Error ? e.message : String(e) });
-            if (!closed) res.end();
+            endSse(res, () => {
+              closed = true;
+            });
           }
           return;
         }
@@ -1694,14 +1887,37 @@ const server = createServer(
       if (!res.headersSent) {
         res.writeHead(code, { 'content-type': 'application/json' });
       }
-      res.end(
-        JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
-      );
+      // P1 信息泄露修复：500 的原始 e.message 可能携带内部路径 / SQL / 上游响应
+      // 片段（明细已入 getErrorLog，受 errors:read 保护）；客户端只给笼统文案。
+      // 4xx 为语义化业务错误，保留 message。
+      const detail =
+        code < 500
+          ? e instanceof Error
+            ? e.message
+            : String(e)
+          : 'internal server error';
+      res.end(JSON.stringify({ error: detail }));
     }
   }
 );
 
 async function buildState(req: IncomingMessage) {
+  // P1 信息泄露修复：/api/state 位于鉴权前的 edge 路由（Render PaaS 健康检查
+  // 无法携带令牌，故保留匿名可达），但响应此前包含 MCP 全清单（url/error）、
+  // envs 环境变量流水线内容与 keyHint——匿名者可借此枚举部署内部拓扑。
+  // 未认证请求只返回前端渲染所需的非敏感骨架；完整状态仅登录后可见。
+  const authedOwner = await usernameFromCookie(req).catch(() => null);
+  if (!authedOwner) {
+    return {
+      openrouter: false,
+      llm: { ready: false, source: 'none' },
+      harnessKey: !!process.env.HARNESS_API_KEY,
+      harnessDryRun: !process.env.HARNESS_API_KEY,
+      model: resolveOpenRouterConfig().model,
+      historyMaxBytes: HISTORY_MAX_BYTES,
+      contextWindow: contextWindowFor(resolveOpenRouterConfig().model)
+    };
+  }
   let sandbox: unknown = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1808,7 +2024,51 @@ function buildAgentStore(): AgentStore {
   return store;
 }
 
+/**
+ * 评审 R5：TeamStore 后端解析（与 buildAgentStore 同款 ioredis 注入范式）。
+ * - `TEAM_STORE=redis` → 独立 ioredis 连接（与 agent store / 队列实例可并存）；
+ * - 缺省跟随 `AGENT_STORE`（createTeamStoreFromEnv 内判定，多副本零配置即正确）；
+ * - 请求 redis 但 ioredis 不可用 → 回退内存并告警（teams 不共享不阻断启动）。
+ */
+function buildTeamStore(): TeamStore {
+  const kind = (process.env.TEAM_STORE || '').toLowerCase();
+  const agentStore = (process.env.AGENT_STORE || '').toLowerCase();
+  const wantRedis = kind === 'redis' || (!kind && agentStore === 'redis');
+  if (!wantRedis) {
+    return createTeamStoreFromEnv(process.env, null);
+  }
+  const url = process.env.AGENT_STORE_REDIS_URL || process.env.REDIS_URL;
+  try {
+    // ioredis 为可选依赖：动态 require，未安装则回退内存（保持「一切降级可用」）。
+    const RedisMod = require('ioredis');
+    const RedisCtor =
+      (RedisMod && (RedisMod.default || RedisMod)) || RedisMod;
+    const redis = new RedisCtor(url || 'redis://localhost:6379', {
+      maxRetriesPerRequest: null,
+      lazyConnect: false
+    }) as unknown as TeamStoreRedis;
+    (redis as unknown as { on?(ev: string, cb: (e: Error) => void): void }).on?.(
+      'error',
+      (e: Error) => console.error('[team-store] redis error:', e.message)
+    );
+    console.log(`[team-store] using Redis backend${url ? ` (${url})` : ''}`);
+    return createTeamStoreFromEnv(process.env, redis);
+  } catch (e) {
+    console.error(
+      '[team-store] ioredis 不可用，回退内存态后端（多副本下 teams 不共享）：',
+      e instanceof Error ? e.message : e
+    );
+    return createTeamStoreFromEnv(process.env, null);
+  }
+}
+
 async function bootstrap(): Promise<void> {
+  // P1 env 边界收口（插件 worker 沙箱·第一阶段）：在任何鉴权读取与插件 require
+  // 之前，把平台鉴权凭证（UI_TOKENS / UI_JWT_SECRET / UI_SESSION_SECRET /
+  // UI_ROLE_PERMISSIONS）从 process.env 摘除、收进受保护副本（env-guard）。
+  // 同进程插件此后直读 process.env 拿不到这些明文凭证，宿主统一经 getSecret
+  // 读取（authz/config-schema 已接线）。完整隔离待 worker/OS 沙箱（第二阶段）。
+  scrubSensitiveEnv();
   // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
   // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
   // 默认开启；确有单实例或外部共享存储场景可用 REPLICA_CHECK=off 关闭（需自担风险）。
@@ -1848,6 +2108,27 @@ async function bootstrap(): Promise<void> {
   }
   const store = buildAgentStore();
   await initAgentRegistry(store);
+  // 评审 R5：TeamStore 接线（先于 runner.ts 的懒初始化——initTeamManager 幂等先到先得）。
+  // TEAM_STORE 缺省跟随 AGENT_STORE（多副本部署零配置即正确）；TEAM_STORE=redis 但
+  // ioredis 不可用时回退内存并告警（teams 不共享不阻断启动）。
+  await initTeamManager(getAgentRegistry(), buildTeamStore());
+  // Agent 心跳超时自动下线：此前 sweepStale 仅测试引用、生产从未生效。此处启动周期 sweep
+  // （unref 定时器），心跳超时的远程 agent（mcp/a2a）被标记 down 供路由降权；local agent 豁免。
+  // AGENT_SWEEP_INTERVAL_MS（默认 60000；off/0 关闭）、AGENT_STALE_TIMEOUT_MS（默认 30000）。
+  {
+    const rawInterval = Number(process.env.AGENT_SWEEP_INTERVAL_MS);
+    const rawEnv = (process.env.AGENT_SWEEP_INTERVAL_MS ?? '').toLowerCase();
+    const sweepOff = rawEnv === 'off' || rawEnv === '0' || rawEnv === 'false';
+    if (!sweepOff) {
+      const intervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 60_000;
+      const rawTimeout = Number(process.env.AGENT_STALE_TIMEOUT_MS);
+      const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 30_000;
+      getAgentRegistry().startStaleSweep({ intervalMs, timeoutMs });
+      structLog('info', 'agents', {
+        staleSweep: { enabled: true, intervalMs, timeoutMs },
+      });
+    }
+  }
   // 插件系统：复用已注入持久后端的共享 AgentRegistry，构造 loader + 双宿主。
   pluginSystem = createPluginSystem();
   // 发现并启用插件（动态 require，server 不静态依赖具体插件）。
@@ -2048,7 +2329,7 @@ function onListening(): void {
     );
     if (
       (AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') &&
-      process.env.UI_TOKENS
+      getSecret('UI_TOKENS')
     ) {
       console.log(
         `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_TOKENS 直接鉴权（运维逃生通道）`
@@ -2180,7 +2461,13 @@ function onListening(): void {
 installCrashGuard();
 
 // 优雅停机：已抽出到 ./graceful-shutdown，通过依赖注入解耦模块级变量。
-const { shutdown, isShuttingDown } = createShutdownHandler({ runQueue, mcpManager, server });
+// flushSessions：chat-sessions 持久化已防抖异步化，停机时冲刷待写内容防丢最近消息。
+const { shutdown, isShuttingDown } = createShutdownHandler({
+  runQueue,
+  mcpManager,
+  server,
+  flushSessions: flushChatSessions
+});
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 

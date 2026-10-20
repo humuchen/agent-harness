@@ -120,6 +120,15 @@ export class FileMemoryStore implements MemoryStore {
       window: Array.isArray(data.window) ? (data.window as Message[]) : [],
       longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
       ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
+      // P1 持久化修复：分数此前从未被 load 读回——重启后 Memory.load 检测到长度
+      // 不匹配会把全部分数重置为 0，相关性排序/淘汰持久化失效（save 整体 JSON
+      // 落盘已包含分数，仅需补读）。
+      ...(Array.isArray(data.longTermScores)
+        ? { longTermScores: data.longTermScores as number[] }
+        : {}),
+      ...(Array.isArray(data.windowScores)
+        ? { windowScores: data.windowScores as number[] }
+        : {}),
     };
   }
 
@@ -226,6 +235,16 @@ export class SqliteMemoryStore implements MemoryStore {
           if (!hasSummary) {
             await this.db.exec('ALTER TABLE memory ADD COLUMN summary TEXT');
           }
+          // P1 持久化修复：分数列此前缺失——longTermScores/windowScores 从未落库，
+          // 重启后相关性排序持久化失效。沿用 summary 的 ALTER 补列兼容模式。
+          const hasLtScores = cols.some((c) => String(c.name) === 'long_term_scores');
+          if (!hasLtScores) {
+            await this.db.exec('ALTER TABLE memory ADD COLUMN long_term_scores TEXT');
+          }
+          const hasWinScores = cols.some((c) => String(c.name) === 'window_scores');
+          if (!hasWinScores) {
+            await this.db.exec('ALTER TABLE memory ADD COLUMN window_scores TEXT');
+          }
         } catch { /* 列已存在，忽略 */ }
       } catch (e) {
         // 自愈：初始化失败（磁盘满 / 权限 / node:sqlite 不可用等瞬时故障）时
@@ -242,15 +261,19 @@ export class SqliteMemoryStore implements MemoryStore {
   async load(key: string): Promise<PersistedMemory | null> {
     await this.ensure();
     const row = await this.db!
-      .prepare('SELECT window, long_term, summary FROM memory WHERE key = ?')
+      .prepare('SELECT window, long_term, summary, long_term_scores, window_scores FROM memory WHERE key = ?')
       .get(key);
     if (!row) return null;
     const window = safeParseArray<Message>(row.window);
     const longTerm = safeParseArray<string>(row.long_term);
+    const longTermScores = safeParseArray<number>(row.long_term_scores);
+    const windowScores = safeParseArray<number>(row.window_scores);
     return {
       window,
       longTerm,
       ...(typeof row.summary === 'string' ? { summary: row.summary } : {}),
+      ...(longTermScores.length ? { longTermScores } : {}),
+      ...(windowScores.length ? { windowScores } : {}),
     };
   }
 
@@ -258,13 +281,15 @@ export class SqliteMemoryStore implements MemoryStore {
     await this.ensure();
     await this.db!
       .prepare(
-        'INSERT OR REPLACE INTO memory (key, window, long_term, summary) VALUES (?, ?, ?, ?)'
+        'INSERT OR REPLACE INTO memory (key, window, long_term, summary, long_term_scores, window_scores) VALUES (?, ?, ?, ?, ?, ?)'
       )
       .run(
         key,
         JSON.stringify(data.window),
         JSON.stringify(data.longTerm),
-        typeof data.summary === 'string' ? data.summary : null
+        typeof data.summary === 'string' ? data.summary : null,
+        JSON.stringify(data.longTermScores ?? []),
+        JSON.stringify(data.windowScores ?? [])
       );
   }
 

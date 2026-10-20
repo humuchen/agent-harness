@@ -38,7 +38,10 @@ function getModTime(file) {
   try {
     return fs.statSync(file).mtimeMs;
   } catch {
-    return 0;
+    // P1 fail-safe 修复：stat 失败（权限/竞态删除）此前返回 0 → age ≈ 1.7 万亿 ms，
+    // 状态异常的文件反而必然被删。现返回 null 由调用方跳过并告警（fail-safe 而非
+    // fail-destructive）；--force 才允许清理 stat 失败文件。
+    return null;
   }
 }
 
@@ -60,6 +63,17 @@ function cleanupByAge(files, maxAgeMs, kind) {
   let deleted = 0;
   for (const file of files) {
     const modTime = getModTime(file);
+    if (modTime === null) {
+      if (FORCE) {
+        console.warn(`[${kind}] stat 失败但 --force 已指定，跳过保护直接清理: ${file}`);
+        deleteFile(file);
+        deleted++;
+      } else {
+        // 状态异常的文件需要人工介入，绝不静默删除。
+        console.warn(`[${kind}] stat 失败，跳过（需人工核查；--force 可强制清理）: ${file}`);
+      }
+      continue;
+    }
     const age = now - modTime;
     if (age > maxAgeMs) {
       console.log(`[${kind}] Exceeded ${Math.floor(age / 86400000)} days: ${file}`);

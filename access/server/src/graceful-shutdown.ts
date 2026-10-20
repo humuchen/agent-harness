@@ -14,8 +14,16 @@ export interface ShutdownDeps {
   runQueue: { abortAll(reason: string): void; stop(): void };
   /** MCP 管理器：shutdown 关闭 stdio/SSE 长连接。 */
   mcpManager: { shutdown(): Promise<void> };
-  /** HTTP 服务器实例：close 停止接受新连接。 */
-  server: { close(cb?: () => void): void };
+  /** HTTP 服务器实例：close 停止接受新连接。closeAllConnections（Node 18.2+，可选）主动断开长连接。 */
+  server: {
+    close(cb?: () => void): void;
+    closeAllConnections?(): void;
+  };
+  /**
+   * 聊天会话 JSON 存档落盘钩子（可选）：chat-sessions 持久化已改为防抖异步，
+   * 停机时必须冲刷待写内容，否则窗口内增量（最近一条消息）随进程退出丢失。
+   */
+  flushSessions?: () => Promise<void>;
 }
 
 /** 停机处理器 + 状态查询（路由层据此拒绝停机期间的新请求）。 */
@@ -58,6 +66,11 @@ export function createShutdownHandler(
     // 1b) 停止领取轮询并关闭共享后端（redis）连接，避免进程退出后空转。
     deps.runQueue.stop();
 
+    // 1c) 冲刷聊天会话 JSON 存档的待写内容（防抖异步持久化的收尾），失败不阻断停机。
+    if (deps.flushSessions) {
+      await deps.flushSessions().catch(() => {});
+    }
+
     // 2) 宽限期内让在飞任务尽快退出；超时后不再等待。
     await new Promise<void>((resolve) => setTimeout(resolve, graceMs));
 
@@ -69,6 +82,18 @@ export function createShutdownHandler(
       console.log('[ui] 已停止接受新连接。');
       process.exit(0);
     });
+
+    // P1 SSE 强杀修复：SSE 等长连接不会主动 end，server.close 的回调要等全部
+    // 连接关闭——实际总是走下方 3s 强杀兜底，pending 的 SSE 写会被截断。
+    // 宽限期已过（在飞任务已 abort），主动断开所有剩余连接让 close 回调正常触发。
+    // 给极短请求留 500ms 尾巴；老版本 Node 无该 API 时静默跳过（兜底仍生效）。
+    setTimeout(() => {
+      try {
+        deps.server.closeAllConnections?.();
+      } catch {
+        /* 忽略 */
+      }
+    }, 500).unref();
 
     // 兜底：若 server.close 因长连接迟迟不结束，强制退出。
     setTimeout(() => process.exit(0), 3000).unref();

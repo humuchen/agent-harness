@@ -76,6 +76,7 @@ export function deriveRunIdFromSessionKey(sessionKey: string | undefined): strin
 /** 展示名安全化：去非法字符、限长；空则回落 basename。 */
 export function sanitizeDisplayName(raw: string, fallback: string): string {
   const name = (raw || '')
+    // eslint-disable-next-line no-control-regex -- 剥离控制字符正是本净化的目的（文件名安全化）
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()

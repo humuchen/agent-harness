@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const planMode = css`
+export const planMode = `
   /* ---- 计划模式（P0）：计划卡片 ---- */
   .plan-card {
     border: 1px solid var(--ah-border);
@@ -197,6 +196,17 @@ export const planMode = css`
     vertical-align: middle;
     white-space: nowrap;
   }
+  /* P6：任务自动重试角标（wf:step:retry 计数；琥珀同族区分于审批黄）。 */
+  .pt-retry {
+    margin-left: 8px;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text-muted);
+    vertical-align: middle;
+    white-space: nowrap;
+  }
   .pt-steps {
     margin: 6px 0 0 30px;
     padding-left: 16px;
@@ -340,6 +350,71 @@ export const planMode = css`
     font-size: 12px;
     color: var(--ah-text-muted);
     white-space: nowrap;
+  }
+  /* P6：抽屉行头重试角标 + 动态子任务行（spawn 物化，↳ 前缀已入标题）。 */
+  .wf-replay-retry {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+  }
+  /* P6 观测（方案三一期）：「历史执行」归档列表 + 回看态退出条。 */
+  .wf-replay-history {
+    margin-top: 8px;
+  }
+  .wf-replay-history summary {
+    cursor: pointer;
+    color: var(--ah-text-muted);
+    font-size: 12px;
+    user-select: none;
+  }
+  .wf-replay-history summary:hover {
+    color: var(--ah-accent);
+  }
+  .wf-history-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .wf-history-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--ah-border, transparent);
+    border-radius: 6px;
+    background: var(--ah-surface-2);
+    color: var(--ah-text);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .wf-history-item:hover {
+    border-color: var(--ah-accent);
+  }
+  .wf-history-ts {
+    color: var(--ah-text-muted);
+    white-space: nowrap;
+  }
+  .wf-replay-history-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--ah-surface-2);
+  }
+  .wf-replay-history-hint {
+    font-size: 12px;
+    color: var(--ah-text-muted);
   }
   .wf-replay-detail {
     margin-top: 8px;

@@ -18,6 +18,7 @@ import {
   features,
   getAgentRegistry,
   getJevStats,
+  isTenantRequired,
   sanitizeKey,
   structLog,
   parsePlanOutput,
@@ -33,11 +34,13 @@ import {
   type PlanClarify,
   type WorkflowDef,
   DEFAULT_AGENT_ID,
-  type A2ARequest
+  type A2ARequest,
+  buildRunTraceRecord,
+  getRunTraceStore
 } from '@agent-harness/core';
 import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
-import { readBody, startSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
-import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError } from '../run-queue';
+import { readBody, startSse, writeSseFrame, endSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
+import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError, RUN_DISCONNECT_GRACE_MS } from '../run-queue';
 import {
   appendChatMessage,
   peekChatSession,
@@ -129,6 +132,26 @@ export async function handleRun(
     res.end(JSON.stringify({ error: 'server is shutting down' }));
     return;
   }
+  // P1 资源耗尽修复：/api/run 的 SSE 此前不计入 sseConnectionLock（该锁只覆盖
+  // /api/chat/stream、/api/events、/api/plans/:id/events）——恶意客户端可并发打开
+  // 大量 /api/run SSE 绕过连接耗尽防护（每次还触发 submit 入队 + 500 条事件缓冲）。
+  const sseAcquired = sseConnectionLock.acquire();
+  if (!sseAcquired) {
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      ...securityHeaders(),
+      ...corsHeaders(req)
+    });
+    res.end(JSON.stringify({ error: 'SSE connection limit reached, retry later' }));
+    return;
+  }
+  let sseReleased = false;
+  const releaseSse = () => {
+    if (sseReleased) return;
+    sseReleased = true;
+    sseConnectionLock.release();
+  };
+  res.on('close', releaseSse);
   const send = startSse(res, req);
   // 跨设备：进行中 assistant 增量的节流广播（让他端实时看到「正在回复…」而非仅最终全文）。
   // 声明置于 run 事件循环之前，确保整次 run 共享同一累积缓冲与节流游标（否则每次事件
@@ -240,14 +263,18 @@ export async function handleRun(
       ? Math.floor(body.maxSteps)
       : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
-  // 记忆按此 key 在所选后端（file/sqlite）隔离持久化，实现多租户。
+  // 记忆按此 key 在所选后端（file/sqlite)隔离持久化，实现多租户。
   // 注意：连续对话由 Web UI 在客户端生成并稳定携带 conversationId（见 webapp/run.ts），
   // 因此 web 端每条会话都带唯一 sessionId；未携带时回落 anonymous（CLI 无 --session 时）。
-  const sessionKey = sanitizeKey(
+  // P1 IDOR 修复：sessionKey 强制加 owner 前缀——记忆持久化 key 原为客户端可控的裸
+  // sessionId，任何持证用户可凭 /api/memory?session=<可预测 key> 读取他人会话的长期
+  // 记忆；同 sessionId 的两个用户也会共享记忆窗口。owner 前缀保证 per-user 隔离
+  // （与 IM 桥的 `${owner}::${sessionId}` 约定一致）。
+  const rawSessionId =
     (body.sessionId && String(body.sessionId)) ||
-      (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
-      'anonymous'
-  );
+    (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
+    'anonymous';
+  const sessionKey = sanitizeKey(`${ctx.sub}::${rawSessionId}`);
 
   // 多会话 Chat App：客户端为每个聊天会话分配独立 chatSessionId（与 Memory 的 sessionKey 解耦），
   // 服务端据此把 user/assistant 消息写入会话存储，供左侧栏与跨刷新恢复。
@@ -310,9 +337,18 @@ export async function handleRun(
   }
 
   // 断线重连：携带已知 jobId 时直接订阅该 job 的事件重放流，不再重复提交执行。
+  // P1 越权修复：必须校验 job 归属——事件重放含完整 prompt / LLM 输出 / 工具结果，
+  // 不校验 owner 时任何持证用户可凭 jobId 窃听他人 run。归属不符返回 404
+  //（与「job 不存在」同响应，不泄露他人 job 的存在性，且绝不静默重提新 run）；
+  // owner 缺省的历史 job / admin 角色允许重连。
   const reconnectId = body.jobId ? String(body.jobId) : '';
-  const targetId =
-    reconnectId && runQueue.get(reconnectId) ? reconnectId : null;
+  const reconnectJob = reconnectId ? runQueue.get(reconnectId) : undefined;
+  if (reconnectJob && reconnectJob.owner && reconnectJob.owner !== ctx.sub && ctx.role !== 'admin') {
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'job not found' }));
+    return;
+  }
+  const targetId = reconnectJob ? reconnectId : null;
   // 断线续传游标：客户端携带已收到的最大事件 seq，重放时跳过 seq ≤ since 的事件，
   // 避免恢复场景下（后台标签页冻结 / 网络中断后重连）内容与持久化副作用重复。
   const sinceSeq = Number.isFinite(Number(body.since))
@@ -321,12 +357,16 @@ export async function handleRun(
 
   // P0.2/P0.3：任务路由 & 租户辅助字段。
   // - domain / workflowId / traceId：客户端显式声明（用于路由与可观测）。
-  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId），
-  //   客户端声明的 body.tenantId 仅作本地/测试降级；认证身份优先，杜绝客户端伪造越界。
+  // - tenantId：P0.3 权威来源为认证身份（SSO 网关 / IdP claim 注入 ctx.tenantId）。
+  //   P1 租户伪造修复：REQUIRE_TENANT=true 的合规部署下绝不接受 body 声明的租户
+  //  （客户端可任意伪造，一旦采纳即击穿记忆分区/合规策略/配额维度的跨租户隔离）；
+  //   body 声明仅保留为非强制模式（本地/测试）的降级路径。
   const domain = body.domain ? String(body.domain).trim() : undefined;
-  const declaredTenantId = body.tenantId
-    ? String(body.tenantId).trim()
-    : undefined;
+  const declaredTenantId = isTenantRequired()
+    ? undefined
+    : body.tenantId
+      ? String(body.tenantId).trim()
+      : undefined;
   const effectiveTenantId = ctx.tenantId || declaredTenantId;
   const tenantId = effectiveTenantId || undefined;
   const workflowId = body.workflowId
@@ -445,8 +485,24 @@ export async function handleRun(
       verify: verifyConfig ? 'on' : 'off'
     });
     send({ type: 'job:accepted', jobId: job.id, sessionKey });
+    // 同会话排队提示（问答链路耗时分析）：本会话已有任务在执行时，本条消息会因
+    // 同会话串行化排队等待——排队期间此前没有任何反馈，用户只看到转圈。
+    // 这里在订阅建立前注入合成 warn（events 缓冲保证订阅重放可见），把「排队慢」说清楚。
+    if (sessionKey && runQueue.isSessionBusy(sessionKey)) {
+      runQueue.emitSynthetic(job.id, {
+        type: 'warn',
+        // userHint：面向用户的提示（前端 toast 呈现）。其余技术性 warn（路由降级、
+        // 指代消解等）维持既有「链路内可见、不弹窗」的行为。
+        userHint: true,
+        message:
+          '当前会话有正在进行的任务，本条消息已排队等待（同会话任务串行执行）'
+      });
+    }
     jobId = job.id;
   } else {
+    // 断线重连：客户端回来了 —— 取消该 job 待执行的断连宽限中止，job 继续跑，
+    // 本连接经 since 游标无缝续传（宽限中止的语义见 RunQueue.scheduleDisconnectAbort）。
+    runQueue.cancelDisconnectAbort(targetId);
     requireDeps().auditAction('agent.run.reconnect', {
       jobId: targetId,
       role: ctx.role,
@@ -780,12 +836,12 @@ export async function handleRun(
   // 注释帧对 SSE 解析透明（parseSse 只认 data: 帧），仅用于维持链路活跃。
   const pingTimer = setInterval(() => {
     if (closed) return;
-    try {
-      res.write(': ping\n\n');
-    } catch {
-      closed = true;
-    }
+    // 与 startSse 的 send 共用同一套守卫：end() 之后 close 事件尚未派发的
+    // 窗口内 closed 仍为 false，仅靠 closed 会漏写并触发 ERR_STREAM_WRITE_AFTER_END。
+    // ping 是注释帧（`: ping\n\n`），对 SSE 解析透明，仅维持链路活跃。
+    writeSseFrame(res, ': ping\n\n', () => closed);
   }, 15_000);
+  pingTimer.unref?.();
   let unsub: () => void = () => {};
   // 计划模式：本订阅内是否已处理过首条 run:end（run-queue 会补发重复 run:end，只处理一次）。
   let planEndHandled = false;
@@ -1132,30 +1188,37 @@ export async function handleRun(
       }
     }
     if ((e as { type?: string }).type === '_done') {
-      try {
-        res.end();
-      } catch {
-        /* 连接可能已关闭 */
-      }
+      // 收尾顺序铁律（先置 closed → 清心跳 → 再 end）统一收敛到 endSse，
+      // 依据见 http-helpers.endSse 的窗口期竞态说明。
+      endSse(
+        res,
+        () => {
+          closed = true;
+        },
+        () => clearInterval(pingTimer)
+      );
     }
       }
     }
   );
   // res.on('close') 已在上方把 closed 置真；这里显式解绑，避免长尾 job 持有已断开订阅者。
-  // P1-1：客户端断连时立即中止 in-flight job（用户关浏览器后 agent 继续烧 token 最多 5 分钟 → 改为立即 abort）。
-  // 仅当该 job 无其他活跃订阅者时才 abort（允许多客户端同时订阅同一 job）。
+  // P1-1 演进：客户端 SSE 断开不再「立即」中止 in-flight job。旧行为把网络抖动 /
+  // 刷新造成的瞬时断连升级成 job 死亡 —— 客户端凭 jobId+since 重连时只能重放到
+  // 已 abort 的残缺终态（abortedResult 的「本次运行被取消」+ _done），问答模式
+  // 即「对话到一半断网后无法自动恢复继续回答」。改为宽限中止：仅当本 job 已无
+  // 任何订阅者时才预约延迟 abort（RUN_DISCONNECT_GRACE_MS，默认 60s > 前端
+  // 自动重试预算）；宽限期内重订阅即取消，无缝续传。计划模式 DAG 早已按同一
+  // 哲学不断开中止（P5.3/P5.4），此处对齐。「关浏览器」场景由宽限到期补刀，
+  // 保留 P1-1 停止烧 token 的初衷；job 自身看门狗（JOB_TIMEOUT_MS）仍是最终兜底。
+  // 订阅者判定：unsub 后为 0 才预约 —— 旧代码 `<= 1` 会在「恰好另一个客户端
+  // 仍在订阅」时误杀 job（半开死连接迟到 close + 活跃重连方共存的场景）。
   res.on('close', async () => {
     closed = true;
     clearInterval(pingTimer);
     unsub();
     const remainingSubs = [...(runQueue.get(jobId)?.subscribers ?? [])];
-    if (remainingSubs.length <= 1) {
-      // 这是最后一个订阅者，立即中止在飞任务
-      try {
-        runQueue.get(jobId)?.controller?.abort('client disconnected');
-      } catch {
-        /* 忽略 */
-      }
+    if (remainingSubs.length === 0) {
+      runQueue.scheduleDisconnectAbort(jobId, RUN_DISCONNECT_GRACE_MS);
     }
   });
   return;
@@ -1424,6 +1487,33 @@ export function auditWfEvent(e: WorkflowEvent, ctx: AuthContext): void {
 }
 
 /**
+ * P6 观测（方案三一期）：终态 run 过程归档 —— wf:done / wf:failed 帧统一捕获，
+ * 写入 workflow_run_traces（经 getDbAdapter，缺省本地 sqlite；与检查点后端解耦，
+ * 任何部署形态下 run 过程跨重启可检索）。覆盖首跑 / resume / 审批续跑 / 嵌套子工作流
+ * （嵌套事件虽带层级前缀，归档键取 run.def.id 原始 id）。
+ * 失败仅告警不阻断执行链路（审计/直播不依赖归档可用性）。
+ */
+export function maybeArchiveRunTrace(e: WorkflowEvent): void {
+  if (e.type !== 'wf:done' && e.type !== 'wf:failed') return;
+  const run = e.run;
+  if (!run || !run.runId) return; // 无 runId（异常路径/旧引擎）不归档，避免键冲突
+  try {
+    void getRunTraceStore()
+      .save(buildRunTraceRecord(run))
+      .catch((err: unknown) => {
+        console.warn(
+          `[workflow-trace] 归档失败（不阻断执行，def=${run.def.id}, run=${run.runId}）：` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+  } catch (err) {
+    console.warn(
+      `[workflow-trace] 归档构建失败：${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+/**
  * P1（断点续跑）：/api/workflows 执行路径（handleWorkflow + POST /:id/resume + /:id/approve）
  * 共享的执行器选项解析——BYOK 凭据 + 校验门禁 + 与 /api/run 完全同款语义收敛。
  *
@@ -1662,6 +1752,8 @@ async function handleWorkflow(
   );
   const onWfEvent = (e: WorkflowEvent) => {
     auditWfEvent(e, ctx);
+    // P6 观测（方案三一期）：终态 run 过程归档（见 maybeArchiveRunTrace 注释）。
+    maybeArchiveRunTrace(e);
     planSync?.sync(e);
     if (!closed) send(e);
   };
@@ -1717,7 +1809,9 @@ async function handleWorkflow(
         console.warn(`[plan-artifacts] 归档失败（不阻断执行）：${e instanceof Error ? e.message : String(e)}`);
       });
       if (!closed) send({ type: '_wf_done', workflowId: def.id, run });
-      if (!closed) res.end();
+      endSse(res, () => {
+        closed = true;
+      });
     })
     .catch((e) => {
       if (!closed)
@@ -1726,7 +1820,9 @@ async function handleWorkflow(
           workflowId: def.id,
           message: e instanceof Error ? e.message : String(e)
         });
-      if (!closed) res.end();
+      endSse(res, () => {
+        closed = true;
+      });
     })
     .finally(() => {
       activeWorkflowAborts.delete(def.id);

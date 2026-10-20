@@ -21,19 +21,19 @@ import { type ProjectRecord, type IntentMapping } from './types';
 
 /** DB 行 → 领域模型（aliases/faq/embedding 等为 JSON 文本列，需解析）。 */
 function rowToProject(r: Record<string, unknown>): ProjectRecord {
-  let aliases: string[] = [];
+  let aliases: string[];
   try {
     aliases = r.aliases ? JSON.parse(String(r.aliases)) : [];
   } catch {
     aliases = [];
   }
-  let faq: { q: string; a?: string }[] = [];
+  let faq: { q: string; a?: string }[];
   try {
     faq = r.faq ? JSON.parse(String(r.faq)) : [];
   } catch {
     faq = [];
   }
-  let embedding: number[] | null = null;
+  let embedding: number[] | null;
   try {
     embedding = r.embedding
       ? (JSON.parse(String(r.embedding)) as number[])

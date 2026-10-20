@@ -5,7 +5,8 @@
  * 由 authz.createAuthorizer 组合进来，企业 SSO 部署完全不受影响。
  *
  * 流程（对应需求）：
- *  1) POST /api/account/register —— 校验用户名/密码强度 → 入库（scrypt 加盐哈希）。
+ *  1) POST /api/account/register —— 校验用户名/密码强度 → 入库（PBKDF2-SHA256 100k 迭代
+ *     加盐哈希；存量 scrypt 哈希在登录校验时兼容回退，见 verifyPassword）。
  *  2) POST /api/account/login    —— 校验凭据 → 签发 HMAC 签名的 token（payload 含 username + 7 天 exp），
  *     同时把 token 记到服务端 SQLite（auth_tokens 表，7 天有效期，支持吊销）→ Set-Cookie: ah_auth。
  *  3) 之后每次请求：浏览器自动带 Cookie: ah_auth=*** ；前端额外在 header 带 x-ah-username。
@@ -15,7 +16,7 @@
  *  4) 前端收到 401 → 清 cookie + 跳登录页。
  *
  * 安全约束：
- *  - 密码 scrypt 加盐（Node 内置），不存明文。
+ *  - 密码 PBKDF2-SHA256 加盐（Node 内置；存量 scrypt 兼容），不存明文。
  *  - token 为 jti.payload.sig：sig = HMAC-SHA256(jti.payload, AH_AUTH_SECRET)；payload = base64url({u,exp})。
  *  - Cookie: HttpOnly; SameSite=Lax; 仅非 localhost 置 Secure（dev 可 http）；Max-Age=604800。
  *  - 签名密钥 AH_AUTH_SECRET（64 hex）；缺失时回退 AH_CRYPTO_KEY，再缺则每进程随机生成（重启即失效，仅演示）。
@@ -25,6 +26,7 @@ import {
   scryptSync,
   pbkdf2Sync,
   timingSafeEqual,
+  createHash,
   createHmac
 } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -284,6 +286,8 @@ export function hashPassword(pw: string): string {
 
 /** 验证明文密码（Legacy，非浏览器客户端）。 */
 export function verifyPassword(pw: string, stored: string): boolean {
+  // P1 pass-the-hash 修复：v2 质询式记录不含明文密码派生路径，明文校验直接失败。
+  if (stored.startsWith(`${DERIVED_V2_PREFIX}:`)) return false;
   // 兼容旧 scrypt 哈希：格式为 `salt:hash`（64 字节），PBKDF2 为 32 字节。
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
@@ -319,6 +323,65 @@ export function verifyDerivedHex(
   }
 }
 
+// ─── P1 pass-the-hash 修复（H6）：质询式存储 v2 格式 ─────────────────────────
+//
+// 旧格式 `salt:derivedHex` 把客户端 PBKDF2 派生值原样落库、原样比对——存储值
+// 就是登录凭证本身（拖库即全员接管，pass-the-hash）。v2 格式在服务端再做一次
+// PBKDF2 包裹：存 `v2$:salt:H_final`（H_final = PBKDF2(derivedHex, salt)）。
+// 登录时用客户端提交的 derivedHex 现算 H_final 比对——拖库后攻击者无法从
+// H_final 反推出任何可通过校验的输入（仍需爆破 PBKDF2）。「服务器不接触明文
+// 密码」的性质保持不变（derivedHex 依旧只存在于内存中短暂一瞬间）。
+const DERIVED_V2_PREFIX = 'v2$';
+const PBKDF2_SERVER_WRAP_ROUNDS = 100_000;
+
+/** 把客户端派生值包裹为 v2 存储格式：`v2$:saltHex:H_final_hex`。 */
+function serverWrapDerivedHex(derivedHex: string, saltHex: string): string {
+  const salt = Buffer.from(saltHex, 'hex');
+  const inner = pbkdf2Sync(
+    derivedHex,
+    salt,
+    PBKDF2_SERVER_WRAP_ROUNDS,
+    PBKDF2_PARAMS.dklen,
+    PBKDF2_PARAMS.hash
+  );
+  return `${DERIVED_V2_PREFIX}:${saltHex}:${inner.toString('hex')}`;
+}
+
+/** 解析 v2 存储格式；非 v2 格式返回 null。 */
+function parseDerivedV2(
+  stored: string
+): { saltHex: string; hashHex: string } | null {
+  if (!stored.startsWith(`${DERIVED_V2_PREFIX}:`)) return null;
+  const [, saltHex, hashHex] = stored.split(':');
+  if (!saltHex || !hashHex) return null;
+  return { saltHex, hashHex };
+}
+
+/** 校验客户端提交的 derivedHex 是否匹配 v2 存储记录。 */
+function verifyDerivedHexV2(
+  providedDerivedHex: string,
+  saltHex: string,
+  hashHex: string
+): boolean {
+  if (!providedDerivedHex) return false;
+  try {
+    const salt = Buffer.from(saltHex, 'hex');
+    const inner = pbkdf2Sync(
+      providedDerivedHex,
+      salt,
+      PBKDF2_SERVER_WRAP_ROUNDS,
+      PBKDF2_PARAMS.dklen,
+      PBKDF2_PARAMS.hash
+    );
+    const expected = Buffer.from(hashHex, 'hex');
+    return (
+      inner.length === expected.length && timingSafeEqual(inner, expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 获取用户的 PBKDF2 salt（hex）。用于浏览器端预先派生哈希。
  * 用户不存在时返回固定 dummy salt，避免枚举时序差。
@@ -333,9 +396,14 @@ export async function getSalt(
     .prepare('SELECT password FROM users WHERE username = ?')
     .get(username)) as { password: string } | undefined;
   if (!row) return null;
-  const [satHex] = row.password.split(':');
-  if (!satHex) return null;
-  return { salt: satHex };
+  // P1 pass-the-hash 修复：v2 存储格式为 `v2$:salt:H_final`（三段），salt 在第二段；
+  // 旧格式 `salt:hash`（两段）salt 在第一段。取错会把 `v2$` 当 salt 发给客户端，
+  // 导致质询式登录永久失败。
+  const saltHex = row.password.startsWith(`${DERIVED_V2_PREFIX}:`)
+    ? row.password.split(':')[1]
+    : row.password.split(':')[0];
+  if (!saltHex) return null;
+  return { salt: saltHex };
 }
 
 /** 固定 dummy salt（用户不存在时返回），用于前端派生哈希 —— 服务器仍返回 401。 */
@@ -351,19 +419,44 @@ export interface AccountToken {
   role?: string;
 }
 
-function sign(jti: string, payloadB64: string): string {
-  const mac = createHmac('sha256', getAuthSecret());
+function sign(jti: string, payloadB64: string): string {  const mac = createHmac('sha256', getAuthSecret());
   mac.update(`${jti}.${payloadB64}`);
   return b64url(mac.digest());
 }
 
 /** 签发 access token（Cookie）+ refresh token（客户端存储），双 token 模式（P1-13）。 */
+// P1 无界增长修复：auth_tokens / refresh_tokens / login_lockouts / password_resets
+// 此前只增不删（仅 revoke/rotate 时删单条），长期运行 DB 无界增长。挂在高频入口
+// issueTokens 上做节流清理（默认 6h 一轮），失败静默（不影响签发主流程）。
+const AUTH_ROWS_PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let lastAuthRowsPurgeAt = 0;
+async function purgeExpiredAuthRows(): Promise<void> {
+  const now = Date.now();
+  if (now - lastAuthRowsPurgeAt < AUTH_ROWS_PURGE_INTERVAL_MS) return;
+  lastAuthRowsPurgeAt = now;
+  try {
+    await db
+      .prepare('DELETE FROM auth_tokens WHERE expires_at <= ?')
+      .run(now);
+    await db
+      .prepare('DELETE FROM refresh_tokens WHERE expires_at <= ?')
+      .run(now);
+    await db
+      .prepare('DELETE FROM password_resets WHERE expires_at <= ?')
+      .run(now);
+    structLog('info', 'auth.expired_rows_purged', {});
+  } catch {
+    /* 清理失败不影响签发主流程（下轮重试） */
+  }
+}
+
 export async function issueTokens(username: string): Promise<{
   accessToken: string;
   refreshToken: string;
   accessExpiresAt: number;
 }> {
   await ensureDb();
+  void purgeExpiredAuthRows();
   // access token：jti.payload.sig（HMAC-SHA256）
   const jti = randomBytes(16).toString('hex');
   const exp = Date.now() + TOKEN_TTL_MS;
@@ -380,14 +473,17 @@ export async function issueTokens(username: string): Promise<{
     )
     .run(jti, username, exp, Date.now());
 
-  // refresh token：随机 32 字节，存 DB，客户端持有，仅用于续期（不提供身份解析能力）。
+  // refresh token：随机 32 字节，客户端持有，仅用于续期（不提供身份解析能力）。
+  // P1 落库哈希修复：此前明文存储——拖库即接管全部活跃会话。改存 SHA-256 摘要，
+  // 校验时对提交值哈希后比对（存量明文行由 verifyRefreshToken 的兼容分支消化，
+  // rotate 时自然换发为哈希行）。
   const refreshToken = randomBytes(32).toString('hex');
   const refreshExp = Date.now() + REFRESH_TTL_MS;
   await db
     .prepare(
       `INSERT INTO refresh_tokens (token, username, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
-    .run(refreshToken, username, refreshExp, Date.now());
+    .run(hashToken(refreshToken), username, refreshExp, Date.now());
 
   return { accessToken, refreshToken, accessExpiresAt: exp };
 }
@@ -553,7 +649,7 @@ export async function registerWithDerivedHex(
     return { ok: false, error: '用户名需为 3-32 位字母、数字、下划线' };
   if (!derivedHex || derivedHex.length !== 64)
     return { ok: false, error: '密码至少 8 位' };
-  if (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return { ok: false, error: '邮箱格式不正确' };
   await ensureDb();
   const existing = await db
@@ -564,7 +660,9 @@ export async function registerWithDerivedHex(
     .prepare(
       'INSERT INTO users (username, password, email, created_at, role) VALUES (?, ?, ?, ?, ?)'
     )
-    .run(username, `${salt}:${derivedHex}`, email || null, Date.now(), 'viewer');
+    // P1 pass-the-hash 修复：不再原样存储客户端派生值（它就是登录凭证本身），
+    // 服务端二次 PBKDF2 包裹为 v2 格式。
+    .run(username, serverWrapDerivedHex(derivedHex, salt), email || null, Date.now(), 'viewer');
   return { ok: true, username };
 }
 
@@ -619,13 +717,37 @@ export async function loginWithDerivedHex(
   const row = (await db
     .prepare('SELECT password FROM users WHERE username = ?')
     .get(username)) as { password: string } | undefined;
-  // 用户不存在时仍走一次比较，避免枚举时序差。
-  const fake = hashPassword('__nonexistent__');
+  // 用户不存在时也走一次等价计算，避免枚举时序差。
+  // v2 格式的校验含一次服务端 PBKDF2（100k 轮），fake 必须同构（含同代价计算）。
+  const fake = serverWrapDerivedHex(
+    randomBytes(32).toString('hex'),
+    randomBytes(16).toString('hex')
+  );
   const stored = row?.password ?? fake;
-  if (!row || !verifyDerivedHex(derivedHex, stored)) {
+  let ok = false;
+  let upgraded = false;
+  const v2 = row ? parseDerivedV2(stored) : null;
+  if (v2) {
+    ok = verifyDerivedHexV2(derivedHex, v2.saltHex, v2.hashHex);
+  } else if (row) {
+    // 旧格式（salt:derivedHex 原样存储）：按旧逻辑比对；成功后透明升级到 v2，
+    // 使存量账户在下次登录时自动获得「存储 ≠ 凭证」的防护。
+    ok = verifyDerivedHex(derivedHex, stored);
+    if (ok) {
+      const [oldSalt] = stored.split(':');
+      if (oldSalt) {
+        await db
+          .prepare('UPDATE users SET password = ? WHERE username = ?')
+          .run(serverWrapDerivedHex(derivedHex, oldSalt), username);
+        upgraded = true;
+      }
+    }
+  }
+  if (!ok) {
     await recordLoginFailure(username);
     return { ok: false, error: '用户名或密码错误' };
   }
+  if (upgraded) structLog('info', 'auth.derived_hex.upgraded_to_v2', { username });
   await clearLoginFailures(username);
   const tokens = await issueTokens(username);
   return { ok: true, username, token: tokens.accessToken, refreshToken: tokens.refreshToken, accessExpiresAt: tokens.accessExpiresAt };
@@ -932,7 +1054,8 @@ export async function changePasswordWithDerivedHex(
     return { ok: false, error: '旧密码错误' };
   await db
     .prepare('UPDATE users SET password = ? WHERE username = ?')
-    .run(`${salt}:${derivedHex}`, username);
+    // P1 pass-the-hash 修复：新密码同样以 v2 格式落库。
+    .run(serverWrapDerivedHex(derivedHex, salt), username);
   return { ok: true };
 }
 
@@ -946,23 +1069,47 @@ export async function revokeAllTokens(username: string): Promise<void> {
 
 // ─── Refresh Token（P1-13）────────────────────────────────────────────────────
 
+/** P1 落库哈希修复：refresh token 只存 SHA-256 摘要（拖库防护）。 */
+function hashToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
 /**
  * 验证 refresh token 有效性：存在 + 未过期 + 用户未匹配。
  * 返回 { username } | null。
+ * 兼容分支：哈希化改造前签发的明文 token 仍可校验（rows 逐行比对命中即返回），
+ * 该行随后由调用方 rotate 流程删除重发，逐步收敛为全哈希存储。
  */
 export async function verifyRefreshToken(
   token: string
 ): Promise<{ username: string } | null> {
-  if (!db) return null;
+  if (!db || !token) return null;
   const row = (await db
     .prepare(
       'SELECT username, expires_at FROM refresh_tokens WHERE token = ? AND expires_at > ?'
     )
-    .get(token, Date.now())) as
+    .get(hashToken(token), Date.now())) as
     | { username: string; expires_at: number }
     | undefined;
-  if (!row) return null;
-  return { username: row.username };
+  if (row) return { username: row.username };
+  // 兼容：存量明文 token（哈希化前的会话）。逐行扫描有限集合并恒定耗时，防时序探测。
+  const legacy = (await db
+    .prepare(
+      'SELECT token, username, expires_at FROM refresh_tokens WHERE expires_at > ?'
+    )
+    .all(Date.now())) as Array<{ token: string; username: string; expires_at: number }>;
+  const expected = Buffer.from(token);
+  for (const r of legacy) {
+    try {
+      const cand = Buffer.from(r.token);
+      if (cand.length === expected.length && timingSafeEqual(cand, expected)) {
+        return { username: r.username };
+      }
+    } catch {
+      /* 非法 hex 行跳过 */
+    }
+  }
+  return null;
 }
 
 /**
@@ -979,8 +1126,10 @@ export async function rotateTokens(
   const subject = await verifyRefreshToken(refreshToken);
   if (!subject) return { ok: false, error: 'refresh token 无效或已过期' };
 
-  // 消费旧 refresh token
-  await db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+  // 消费旧 refresh token（P1 落库哈希修复：按摘要删除；兼容分支覆盖存量明文行）。
+  await db
+    .prepare('DELETE FROM refresh_tokens WHERE token = ? OR token = ?')
+    .run(hashToken(refreshToken), refreshToken);
 
   // 签发新 token 对
   const tokens = await issueTokens(subject.username);
@@ -1141,7 +1290,8 @@ export async function resetPasswordWithDerivedHex(
     return { ok: false, error: '重置凭证已过期，请重新申请' };
   await db
     .prepare('UPDATE users SET password = ? WHERE username = ?')
-    .run(`${salt}:${derivedHex}`, rec.username);
+    // P1 pass-the-hash 修复：重置后的新密码同样以 v2 格式落库。
+    .run(serverWrapDerivedHex(derivedHex, salt), rec.username);
   await db.prepare('DELETE FROM password_resets WHERE token = ?').run(token);
   await revokeAllTokens(rec.username);
   return { ok: true };

@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
 // 切片自 styles.ts 原文件第 1444-1694 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const responsive = css`
+export const responsive = `
   /* ------------------- 移动端适配（≤760px 或 横屏矮屏） -------------------
      横屏矮屏：手机横屏后 CSS 宽度变成长边（常见 800–930px），会越过 760px
      落到桌面壳的 100dvh + overflow:hidden 锁定，表现为「上下无法滚动、展示不全」。
@@ -14,7 +13,7 @@ export const responsive = css`
        （height:auto / min-height:100dvh / overflow:visible / --ah-tabbar-h）
        放在 app.ts 的 mobileShellCss（仅注入 ah-app 自身 shadow root）。
        若写在本文件：sharedStyles 会被 19 个面板组件各自的 shadow DOM 编译，
-       :host 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
+       .ah-c 泄漏到每个面板 host 上（min-height:100dvh），空数据页面板 host
        仍撑满整屏 → .content 被顶高 → 文档超出视口 ~139px 幽灵滚动。 */
     .shell {
       height: auto;
@@ -122,7 +121,9 @@ export const responsive = css`
 
     /* 对话页顶栏不显示 ☰（由 ah-chat 自绘顶栏承担），但会话列表入口
        由 chat.ts 的 .menu-btn 承担（见 chat-styles.ts）；外层顶栏此处仅隐藏。 */
-    .shell.chat-mode .menu-btn {
+    /* 仅隐藏外层顶栏的 ☰（app 菜单按钮在 .topbar 内；chat 自绘顶栏的 .menu-btn
+       不在 .topbar 下，不受影响 —— 全局化后若无此前缀会误杀 chat 的会话入口）。 */
+    .shell.chat-mode .topbar .menu-btn {
       display: none;
     }
     .scrim.show {
@@ -247,6 +248,25 @@ export const responsive = css`
     .m-tab.on .ti {
       color: var(--ah-accent);
       transform: translateY(-2px) scale(1.06);
+    }
+    /* 按下反馈（触控）：此前首次点击底栏 Tab 完全没有按压反馈、第二次以后才
+       「有」，成因即缺 :active 态——触屏上首次触摸不触发 hover 模拟（hover 是
+       浏览器在首次点击后才保留的粘性状态），而原生点击高亮又被 theme/tokens.ts
+       的 *{-webkit-tap-highlight-color:transparent} 全局吃掉，于是首次点击只能
+       等松手后页面切换（.on 态）才看到变化，粘性 hover 生效后的再次点击才像
+       「有反馈」。这里补显式按压态，与全站按压语言一致（.ttab/.seg button 的
+       scale(0.94)、.swipe-act 的 brightness(0.88)）。
+       transition 只留 color：按压必须即时生效，松手后由常规过渡回弹。 */
+    .m-tab:active {
+      transform: scale(0.92);
+      background: var(--ah-surface-2);
+      color: var(--ah-text);
+      transition: color 160ms ease;
+    }
+    /* 特异性 (0,3,0) 与 .m-tab.on .ti 相同、排在后面：已选中 Tab 被按下时
+       图标同样缩一下，保持「按得动」的手感。 */
+    .m-tab:active .ti {
+      transform: scale(0.88);
     }
     .m-tab:focus-visible {
       outline: 2px solid var(--ah-accent);

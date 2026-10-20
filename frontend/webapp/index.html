@@ -47,7 +47,7 @@
   </head>
   <body style="margin: 0">
     <!-- 首屏品牌占位：HTML 解析完即可见（JS 未执行时），main.ts 的 mountSplash()
-         会创建真实 Lit 占位 ah-splash 并淡出移除本节点。
+         会挂载 Svelte 占位 Splash 并淡出移除本节点。
          消灭「打开 App → 黑屏 → 才显示登录/控制台」的卡顿感。 -->
     <div id="ah-splash-static" style="position:fixed;inset:0;z-index:9999;display:grid;place-items:center;background:#0b0e14;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
       <div style="display:flex;flex-direction:column;align-items:center;gap:16px">

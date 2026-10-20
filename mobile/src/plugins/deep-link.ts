@@ -12,17 +12,20 @@ export interface DeepLinkRoute {
 }
 
 export interface DeepLinkController {
-  /** 监听 Deep Link 跳转 */
-  onDeepLink(handler: (route: DeepLinkRoute) => void): void;
+  /** 监听 Deep Link 跳转；返回取消函数（与 onNetworkChange 风格一致，防监听器叠加泄漏）。 */
+  onDeepLink(handler: (route: DeepLinkRoute) => void): () => void;
   /** 获取启动时的 Deep Link（冷启动场景） */
   getInitialUrl(): Promise<string | null>;
 }
 
 export const deepLinkController: DeepLinkController = {
   onDeepLink(handler) {
-    window.addEventListener('ah:deeplink', ((e: CustomEvent<DeepLinkRoute>) => {
+    // P1 泄漏修复：此前不返回取消函数，重复调用会叠加 handler（同一回调触发多次）。
+    const listener = ((e: CustomEvent<DeepLinkRoute>) => {
       handler(e.detail);
-    }) as EventListener);
+    }) as EventListener;
+    window.addEventListener('ah:deeplink', listener);
+    return () => window.removeEventListener('ah:deeplink', listener);
   },
   async getInitialUrl() {
     const { app, isNative } = getPlugins();

@@ -22,9 +22,16 @@ import { checkToolArgs } from './guardrails';
 import type { Memory } from './memory';
 import {
   buildPlannerPrompt,
+  buildClarifyConfirmedBlock,
+  clarifyMaxRounds,
+  isClarifyQuestionDuplicate,
+  parseClarifyReply,
   parseClarifyOutput,
   parsePlanOrClarify,
-  type PlanClarify
+  type ClarifyReply,
+  type ExecutionPlan,
+  type PlanClarify,
+  type PlanClarifyQuestion
 } from './plan';
 
 /** plan:phase 的三个阶段名（与前端 renderPlanPhase 的 stages 严格一致）。 */
@@ -66,11 +73,16 @@ export type UnderstandResult =
   | null;
 
 /** 阶段1 提示词：理解需求 + 三分支决策（clarify / 直接规划 / 需要调研）。 */
-export function buildProposeUnderstandPrompt(userInput: string): string {
-  return [
+export function buildProposeUnderstandPrompt(
+  userInput: string,
+  clarifyReply?: ClarifyReply | null
+): string {
+  const lines = [
     '你是资深任务规划师，当前处于「规划」的第一步：理解需求。不要执行任务。',
     '',
     `用户需求：${userInput}`,
+    // 澄清回复轮：把用户已回答的 Q&A 显式注入并下禁重问规则（防循环追问，见 plan.ts 契约）。
+    ...(clarifyReply ? ['', buildClarifyConfirmedBlock(clarifyReply)] : []),
     '',
     '请只输出一个 JSON 对象（三选一，不要任何其他文字或 markdown 围栏）：',
     '',
@@ -84,8 +96,15 @@ export function buildProposeUnderstandPrompt(userInput: string): string {
     '3. 需求模糊 / 关键前提缺失 / 涉及不可逆或高风险操作且目标未对齐：',
     '{"clarify": true, "goalDraft": "你对目标的初步理解草稿", "questions": [{"q": "需用户确认的具体问题", "options": ["候选答案1", "候选答案2"]}], "needs": "缺失的关键信息（可选）"}',
     '- questions 1~5 条，必须具体，不要泛泛而问。',
-    '- 每个问题必须附 options：2~4 个最常见的候选答案（短词/短语，覆盖典型场景），供用户直接点选。'
-  ].join('\n');
+    '- 每个问题必须附 options：2~4 个最常见的候选答案（短词/短语，覆盖典型场景），供用户直接点选。',
+    ...(clarifyReply && clarifyReply.round >= clarifyMaxRounds()
+      ? [
+          '',
+          `（硬性）本轮已是用户第 ${clarifyReply.round} 轮澄清回复，禁止再输出第 3 种澄清 JSON，必须输出第 1 / 2 种分支。`
+        ]
+      : [])
+  ];
+  return lines.join('\n');
 }
 
 /** 阶段2 提示词：受限调研（只收集资料，不产出计划）。 */
@@ -111,7 +130,8 @@ export function buildProposeResearchPrompt(
 export function buildProposeFinalPrompt(
   userInput: string,
   goal: string,
-  researchNotes: string
+  researchNotes: string,
+  clarifyReply?: ClarifyReply | null
 ): string {
   return [
     buildPlannerPrompt(userInput),
@@ -127,6 +147,12 @@ export function buildProposeFinalPrompt(
     '相关任务的 steps 应写明「无联网时以【数据缺口：待补充项】占位」，expectedOutput 只要求结构性内容 + 缺口标注完整，',
     'outputChecks 只放宽泛主题词（如「竞品」「风险」），禁止放「xxxx年市场数据」「xx个案例」这类必须联网才能满足的断言。',
     '',
+    // 澄清轮次达上限：与阶段1 同一把尺子，阶段3 也禁止再产出澄清 JSON（防跨阶段绕过上限）。
+    ...(clarifyReply && clarifyReply.round >= clarifyMaxRounds()
+      ? [
+          `（硬性）用户已完成 ${clarifyReply.round} 轮澄清回复，禁止再输出澄清 JSON（格式 B），必须只输出计划 JSON（格式 A）。`
+        ]
+      : []),
     '现在输出最终结果：需求清晰输出计划 JSON（格式 A），需求不清输出澄清 JSON（格式 B）。只输出一个 JSON 对象。'
   ].join('\n');
 }
@@ -190,9 +216,36 @@ export class PlanProposeAbortedError extends Error {
 }
 
 /**
+ * 澄清防循环兜底计划：用户已回答全部问题、模型却仍重复追问时，用已确认目标合成一个
+ * 最小可执行计划收口——「确认并继续」之后必须落到计划卡片，绝不再次弹出澄清卡。
+ */
+export function buildClarifyFallbackPlan(goal: string): ExecutionPlan {
+  const g = (goal || '').trim() || '按已确认信息完成用户需求';
+  return {
+    goal: g,
+    tasks: [
+      {
+        id: 't1',
+        title: '围绕已确认目标交付结果',
+        steps: [
+          '复述已确认的目标与关键约束',
+          '按目标逐项完成分析/制作，缺失信息以【数据缺口：待补充项】占位',
+          '输出结构化结论与缺口清单'
+        ],
+        dependsOn: [],
+        expectedOutput: '围绕已确认目标输出完整、可验收的结果（含数据缺口标注）'
+      }
+    ]
+  };
+}
+
+/**
  * 运行 propose 管线，返回「计划 / 澄清 JSON 文本」作为 run 的 final。
  * 服务端 run:end 处的 parsePlanOrClarify 分发（plan:proposed / plan:clarify）保持不变。
  * 阶段3 无条件执行：即使阶段2 全部失败，也会基于空纪要产出计划（标注数据缺口）。
+ * 澄清回复轮（输入带「—— 目标澄清回复 ——」标记）启用防重问守卫：模型把已回答问题
+ * 换措辞重问时，带「已答清单」反馈重试一次；仍不收敛则剔除重复问题，无新问题可问时
+ * 以兜底计划收口（guardClarifyEcho，见下）。
  */
 export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
   const emit = deps.emit ?? (() => {});
@@ -278,6 +331,69 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
     }
   };
 
+  // 澄清回复轮识别（前端「确认并继续」再次派发）：输入带回复标记时启用防重问守卫。
+  const clarifyReply = parseClarifyReply(deps.userInput);
+
+  /**
+   * 澄清防重问守卫（阶段1 / 阶段3 共用）：text 若是「重复追问已回答问题」的澄清 JSON，
+   * 带「已答清单 + 禁重问」反馈重试一次；仍不收敛 → 剔除重复问题；无新问题可问 →
+   * 以兜底计划收口。返回可直接作为 run final 的文本。
+   * baseMsgs：重试时追加 assistant + 反馈的消息底座（阶段1 传 understandMsgs，阶段3 传 finalMsgs）。
+   */
+  const guardClarifyEcho = async (
+    text: string,
+    baseMsgs: Message[],
+    fallbackGoal: string
+  ): Promise<string> => {
+    if (!clarifyReply) return text;
+    const dupsOf = (c: PlanClarify): PlanClarifyQuestion[] =>
+      c.questions.filter((q) =>
+        isClarifyQuestionDuplicate(q.q, q.options, clarifyReply.qa)
+      );
+    const first = parsePlanOrClarify(text);
+    if (!first || first.kind !== 'clarify') return text;
+    const dups = dupsOf(first.clarify);
+    if (dups.length === 0) return text; // 真正的新问题：正常多轮澄清，放行
+    const echoed = dups.map((d) => d.q).join('；');
+    const forcePlan = clarifyReply.round >= clarifyMaxRounds();
+    const retried =
+      (
+        await callLLM(
+          [
+            ...baseMsgs,
+            { role: 'assistant' as const, content: text },
+            {
+              role: 'user' as const,
+              content:
+                `（系统提示）你再次提问了用户已回答的问题：${echoed}。` +
+                (forcePlan
+                  ? `这已是用户第 ${clarifyReply.round} 轮澄清回复，禁止再输出澄清 JSON。`
+                  : '禁止重复提问已回答的问题。') +
+                '请立即基于已确认信息只输出计划 JSON：{"goal": string, "tasks": [{"id": "t1", "title": string, "steps": string[], "dependsOn": string[], "expectedOutput": string}]}，不要任何其他文字。'
+            }
+          ],
+          []
+        )
+      ).content ?? '';
+    const second = parsePlanOrClarify(retried);
+    if (second && second.kind !== 'clarify') return retried; // 收敛为计划
+    const src = second && second.kind === 'clarify' ? second.clarify : first.clarify;
+    const fresh = src.questions.filter(
+      (q) => !isClarifyQuestionDuplicate(q.q, q.options, clarifyReply.qa)
+    );
+    if (fresh.length > 0) {
+      // 仍有用户未回答的新问题：只保留新问题，剥离重复项。
+      return JSON.stringify({
+        clarify: true,
+        goalDraft: src.goalDraft,
+        questions: fresh,
+        ...(src.needs ? { needs: src.needs } : {})
+      });
+    }
+    // 没有任何新问题可问：用已确认目标合成最小计划收口（绝不再弹澄清卡）。
+    return JSON.stringify(buildClarifyFallbackPlan(src.goalDraft || fallbackGoal));
+  };
+
   // ================= 阶段1：理解需求 =================
   emitPhase(0);
   remember({ role: 'user', content: deps.userInput });
@@ -287,7 +403,7 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
       : []),
     {
       role: 'user' as const,
-      content: buildProposeUnderstandPrompt(deps.userInput)
+      content: buildProposeUnderstandPrompt(deps.userInput, clarifyReply)
     }
   ];
   let understand = await callLLM(understandMsgs, []);
@@ -310,15 +426,30 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
   }
 
   // 澄清分支：阶段1 的澄清 JSON 已满足契约，直接作为 final（服务端 parseClarifyOutput 分发）。
+  // 防重问守卫（多轮澄清闭环修复）：这些问题用户上一轮已回答（换措辞重问，弱模型高发）、
+  // 或澄清轮次已达上限时，不再弹澄清卡——按目标草稿继续走规划管线，由阶段3 守卫收敛。
   if (parsed?.kind === 'clarify') {
-    const finalText = understand.content ?? '';
-    remember({ role: 'assistant', content: finalText });
-    return finalText;
+    const echoed =
+      !!clarifyReply &&
+      (clarifyReply.round >= clarifyMaxRounds() ||
+        parsed.clarify.questions.some((q) =>
+          isClarifyQuestionDuplicate(q.q, q.options, clarifyReply.qa)
+        ));
+    if (!echoed) {
+      const finalText = understand.content ?? '';
+      remember({ role: 'assistant', content: finalText });
+      return finalText;
+    }
+    // 落到下方「直接规划」分支：goal 取目标草稿，queries 置空（不再调研，直奔阶段3）。
   }
 
-  // 阶段1 两次解析均失败：带目标兜底走「直接规划」，不让整轮作废。
+  // 阶段1 两次解析均失败 / 澄清被防重问守卫收敛：带目标兜底走「直接规划」，不让整轮作废。
   const goal =
-    parsed?.kind === 'go' ? parsed.goal : deps.userInput.slice(0, 200);
+    parsed?.kind === 'go'
+      ? parsed.goal
+      : parsed?.kind === 'clarify' && parsed.clarify.goalDraft
+        ? parsed.clarify.goalDraft
+        : deps.userInput.slice(0, 200);
   const queries = parsed?.kind === 'go' ? parsed.queries : [];
 
   // ================= 阶段2：调研（受限小循环，服务端封顶）=================
@@ -444,7 +575,12 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
       : []),
     {
       role: 'user' as const,
-      content: buildProposeFinalPrompt(deps.userInput, goal, researchNotes)
+      content: buildProposeFinalPrompt(
+        deps.userInput,
+        goal,
+        researchNotes,
+        clarifyReply
+      )
     }
   ];
   let fin = await callLLM(finalMsgs, []);
@@ -465,7 +601,21 @@ export async function runPlanPropose(deps: PlanProposeDeps): Promise<string> {
     );
     finalText = fin.content ?? '';
   }
+  // 澄清防重问守卫（阶段3）：模型仍把已回答问题换措辞重问时，带「已答清单」反馈重试
+  // 一次；仍不收敛则剔除重复问题，无新问题可问时以兜底计划收口——保证「确认并继续」
+  // 之后必然拿到计划卡片，而不是下一张澄清卡（修复重复追问死循环）。
+  if (clarifyReply) {
+    finalText = await guardClarifyEcho(finalText, finalMsgs, goal);
+  }
+  // 最终仍不可解析：不再把空/垃圾文本当 final 上抛。此前该路径把 '' 直接交给服务端
+  // run:end，前端既无计划也无内容，只能渲染「规划未完成：连接可能已中断或处理超时」
+  // 死路占位（已烧掉的 token 全部作废，用户唯一出路是整轮重发）。现按已确认目标合成
+  // 最小计划收口，与防重问守卫同一兜底哲学：propose 必须产出计划或澄清，绝不返回空。
+  // 典型触发：provider 思考期超过 LLM_STREAM_IDLE_TIMEOUT_MS（默认 120s）被空闲超时
+  // 截断、返回空 content —— 空响应重试一次仍空，走到这里。
+  if (!parsePlanOrClarify(finalText)) {
+    finalText = JSON.stringify(buildClarifyFallbackPlan(goal));
+  }
   remember({ role: 'assistant', content: finalText });
-  // 最终仍不可解析：原样返回，交由服务端 run:end 的 warn 回退路径处理（与旧链路一致）。
   return finalText;
 }

@@ -1,11 +1,11 @@
 /**
- * chat-context-usage：上下文用量圆环（Context Usage Ring）相关的纯逻辑与渲染。
+ * chat-context-usage：上下文用量（Context Usage）相关的纯逻辑。
  *
  * 从 AhChat 单体内抽离，便于独立测试与维护，不依赖组件 this.* 状态。
- * 调用方（AhChat）把组件状态显式传入，渲染回调也由调用方提供，
- * 因此本模块与外部唯一的耦合是 lit 的 TemplateResult 与 ChatMsg 视图类型。
+ * Svelte 迁移说明：圆环渲染部分（原 renderCtxRing 返回 lit TemplateResult）
+ * 已拆到 chat-context-usage.svelte（CtxRing 组件，含 onToggle/onClose 事件绑定）；
+ * 本文件只保留纯函数与类型。
  */
-import { html, nothing, type TemplateResult } from 'lit';
 import type { ChatMsg } from './chat-types';
 
 /** 单个用量维度项。 */
@@ -192,122 +192,4 @@ export function selectContextUsage(opts: {
     serverCtxWindow: opts.serverCtxWindow,
     messages: opts.messages
   });
-}
-
-export interface RenderCtxRingOpts {
-  usage: CtxUsage;
-  showCtxUsage: boolean;
-  runCumulative: RunCumulative | null;
-  /** 点击圆环：切换分类占比弹层。 */
-  onToggle: () => void;
-  /** 关闭弹层（点击遮罩 / 关闭按钮）。 */
-  onClose: () => void;
-}
-
-/**
- * 上下文用量圆环（环形进度条）：置于输入框发送按钮旁。
- * - 悬停：显示「上下文已使用：xx.x% - 用量/总量」提示；
- * - 点击：切换分类占比弹层；
- * - >80% 时进度环转警示红。
- */
-export function renderCtxRing(opts: RenderCtxRingOpts): TemplateResult {
-  const { usage: u, showCtxUsage, runCumulative, onToggle, onClose } = opts;
-  const pct = Math.min(100, u.totalPct);
-  const R = 15.5;
-  const C = 2 * Math.PI * R;
-  const offset = C * (1 - pct / 100);
-  return html`
-    <div class="ctx-ring-wrap">
-      <button class="ctx-ring" aria-label="上下文用量" @click=${onToggle}>
-        <svg viewBox="0 0 36 36" role="img" aria-hidden="true">
-          <circle
-            class="ring-bg"
-            cx="18"
-            cy="18"
-            r=${R}
-            stroke-width="5"
-          ></circle>
-          <circle
-            class="ring-fg ${pct > 80 ? 'warn' : ''}"
-            cx="18"
-            cy="18"
-            r=${R}
-            stroke-width="4"
-            stroke-dasharray=${C.toFixed(2)}
-            stroke-dashoffset=${offset.toFixed(2)}
-            transform="rotate(-90 18 18)"
-          ></circle>
-          <!-- <text
-            class="ring-num"
-            x="18"
-            y="18"
-            text-anchor="middle"
-            dominant-baseline="central"
-          >
-            ${Math.round(pct)}%
-          </text> -->
-        </svg>
-      </button>
-      <span class="ctx-tip"
-        >上下文已使用：~${pct.toFixed(1)}% -
-        ${fmtK(u.totalTokens)}/${fmtK(u.window)}</span
-      >
-      ${showCtxUsage
-        ? html`<button
-              class="ctx-scrim"
-              aria-label="关闭上下文用量"
-              @click=${onClose}
-            ></button>
-            <div class="ctx-pop">
-              <div class="ctx-pop-head">
-                <span>上下文用量</span>
-                <button
-                  class="ctx-pop-close"
-                  title="关闭"
-                  aria-label="关闭"
-                  @click=${onClose}
-                >
-                  ×
-                </button>
-              </div>
-              <div class="ctx-bar-meta">
-                <span class="ctx-bar-pct">~${u.totalPct.toFixed(1)}%</span>
-                <span class="ctx-bar-total">
-                  已使用 ${fmtK(u.totalTokens)} / ${fmtK(u.window)}</span
-                >
-              </div>
-              <div class="ctx-seg">
-                ${u.items.map(
-                  (it) => html`<span
-                    class="ctx-seg-i ${it.cls}"
-                    style="width:${it.pct}%"
-                    title="${it.label} ~${it.pct.toFixed(1)}%"
-                  ></span>`
-                )}
-              </div>
-              <ul class="ctx-list">
-                ${u.items.map(
-                  (it) => html`<li>
-                    <span class="ctx-dot ${it.cls}"></span>
-                    <span class="ctx-label">${it.label}</span>
-                    <span class="ctx-val">~${it.pct.toFixed(1)}%</span>
-                  </li>`
-                )}
-                ${runCumulative
-                  ? html`<li class="ctx-cum">
-                      <span class="ctx-dot c-cum"></span>
-                      <span class="ctx-label">本运行累计</span>
-                      <span class="ctx-val"
-                        >${fmtK(runCumulative.tokens)} ·
-                        ${runCumulative.cost > 0
-                          ? `$${runCumulative.cost.toFixed(4)}`
-                          : '免费'}</span
-                      >
-                    </li>`
-                  : nothing}
-              </ul>
-            </div>`
-        : nothing}
-    </div>
-  `;
 }

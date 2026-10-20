@@ -1,0 +1,357 @@
+<script module lang="ts">
+  /** 宿主传入的 Agent 条目。 */
+  export interface AgentOption {
+    id: string;
+    name: string;
+    /** 行业领域 / 分类标签（用于分组展示）。 */
+    domain?: string;
+  }
+</script>
+
+<script lang="ts">
+  /**
+   * agent-picker：业务 Agent 选择器（输入框底部工具栏）—— Svelte 迁移版。
+   *
+   * 与 mode-picker 同一套视觉（参考截图设计）：胶囊触发按钮「图标 + 名称 + chevron」，
+   * 点击向上弹出竖列面板，每项「左侧线性图标 + 名称 + 选中 ✓」，当前项高亮底色。
+   *
+   * 列表与当前值均由宿主持有并透传；选择结果经 `agent-change`
+   * 事件抛出（detail.value 为 agent id）。
+   *
+   * 样式：mobilePill 已全局注入（勿在组件内重复）；:host 规则改写为根类
+   * .agent-picker-root。
+   */
+  import { onDestroy, onMount } from 'svelte';
+  import { APP_EVENTS } from '../app-events';
+
+  /** 行业领域 → 中文标签（用于 Agent 选择器分类标题）。 */
+  const domainLabels: Record<string, string> = {
+    'medical-aesthetics': '医美运营分析',
+    finance: '金融',
+    healthcare: '医疗',
+    education: '教育',
+    generic: '通用'
+  };
+
+  /** 统一机器人图标：所有 Agent 共用，仅名称区分。 */
+  const BOT_ICON =
+    'M12 2v2m0 0a2 2 0 0 1 2 2h-4a2 2 0 0 1 2-2zM8 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-2M9 13h.01M15 13h.01M9.5 16.5h5';
+
+  let {
+    /** 可选 Agent 列表（由宿主持有）。 */
+    agents = [],
+    /** 当前选中的 agent id。 */
+    value = ''
+  }: { agents?: AgentOption[]; value?: string } = $props();
+
+  let open = $state(false);
+  let rootEl: HTMLElement | undefined = $state();
+
+  onMount(() => {
+    window.addEventListener(APP_EVENTS.closeOverlays, onCloseOverlays);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener(APP_EVENTS.closeOverlays, onCloseOverlays);
+  });
+
+  /**
+   * 路由变化（Tab 切换 / 浏览器后退前进）时收起浮层。
+   * 本组件常驻在对话页、切 Tab 只是被父级 hidden 而非销毁，若不主动收起，
+   * 侧滑返回后再次进入对话页会看到上次遗留的展开下拉（统一约定见 ah-app.closeAllOverlays）。
+   */
+  function onCloseOverlays() {
+    if (open) open = false;
+  }
+
+  function select(id: string) {
+    open = false;
+    if (id === value) return;
+    rootEl?.dispatchEvent(
+      new CustomEvent('agent-change', {
+        detail: { value: id },
+        bubbles: true,
+        composed: true
+      })
+    );
+  }
+
+  /** 将 Agent 按 domain 分类分组，用于下拉面板展示。 */
+  function groupedAgents(): { label: string | null; items: AgentOption[] }[] {
+    const groups: { label: string | null; items: AgentOption[] }[] = [];
+    const generic: AgentOption[] = [];
+    const byDomain = new Map<string, AgentOption[]>();
+    for (const a of agents) {
+      if (!a.domain || a.domain === 'generic' || a.domain === '') {
+        generic.push(a);
+      } else {
+        const arr = byDomain.get(a.domain) ?? [];
+        arr.push(a);
+        byDomain.set(a.domain, arr);
+      }
+    }
+    if (generic.length) groups.push({ label: null, items: generic });
+    for (const [domain, items] of byDomain) {
+      const label = domainLabels[domain] ?? domain;
+      groups.push({ label, items });
+    }
+    return groups;
+  }
+</script>
+
+<div class="agent-picker-root no-pill" bind:this={rootEl}>
+  <button
+    class="trigger"
+    title="选择业务 Agent（默认走通用 Agent）"
+    aria-haspopup="dialog"
+    aria-expanded={open ? 'true' : 'false'}
+    onclick={() => (open = !open)}
+  >
+    <!-- 统一机器人图标 -->
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d={BOT_ICON} />
+    </svg>
+    <span class="name">{agents.find((a) => a.id === value)?.name ?? '默认'}</span>
+    <!-- 下拉 chevron -->
+    <svg
+      class="chev"
+      viewBox="0 0 10 6"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M1 1l4 4 4-4" />
+    </svg>
+  </button>
+  {#if open}
+    <button
+      class="scrim"
+      aria-label="关闭 Agent 选择"
+      onclick={() => (open = false)}
+    ></button>
+    <div class="panel" role="dialog" aria-label="业务 Agent">
+      {#each groupedAgents() as g, gi (gi)}
+        {#if g.label}
+          <div class="category-label">{g.label}</div>
+        {/if}
+        {#each g.items as a (a.id)}
+          <button
+            class="item"
+            class:selected={value === a.id}
+            role="option"
+            aria-selected={value === a.id ? 'true' : 'false'}
+            title={a.name}
+            onclick={() => select(a.id)}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d={BOT_ICON} />
+            </svg>
+            <span class="name">{a.name}</span>
+            {#if value === a.id}
+              <span class="check">✓</span>
+            {/if}
+          </button>
+        {/each}
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<style>
+  /* 原 :host 规则 → 根类 */
+  .agent-picker-root {
+    display: inline-block;
+    position: relative;
+  }
+  /* 触发按钮：胶囊形（图标+文字+chevron），低饱和强调底色 —— 与 mode-picker 一致 */
+  .trigger {
+    appearance: none;
+    border: none;
+    background: color-mix(
+      in srgb,
+      var(--ah-accent, #2997ff) 14%,
+      transparent
+    );
+    color: var(--ah-accent, #2997ff);
+    font-size: 12px;
+    font-weight: 500;
+    height: var(--ah-h-lg);
+    padding: 0 12px;
+    border-radius: 16px;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 46vw;
+    transition: background 0.15s, filter 0.15s;
+  }
+  .trigger:hover {
+    filter: brightness(1.25);
+  }
+  .trigger svg {
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+  }
+  .trigger .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .trigger .chev {
+    width: 12px;
+  }
+
+  /* 移动端（≤600px）：隐藏图标与箭头，名称只展示前两个字符，
+     与 model-picker 的「移动端极简触发按钮」策略一致。 */
+  @media (max-width: 600px) {
+    .trigger {
+      padding: 0 10px;
+    }
+    /* 名称截前两个字：用整字宽的省略号占位符撑住宽度，避免布局跳动 */
+    .trigger .name {
+      max-width: 2em;
+      text-overflow: clip;
+    }
+    /* 移动端隐藏滚动条（Firefox scrollbar-width + WebKit 伪元素），保留可滚动。
+       原 shadow 内 `*` 通写 → 以根类为界的全局选择器（子树语义不变）。 */
+    :global(.agent-picker-root *) {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    :global(.agent-picker-root ::-webkit-scrollbar) {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+  }
+  /* 断点扩展到 760px（与 app 壳移动断点一致）：弹层 .panel 滚动条在
+     601–760px（Android 大机型）仍会显示，补齐。布局不受影响（仅隐藏滚动条）。 */
+  @media (max-width: 760px), (pointer: coarse) {
+    :global(.agent-picker-root *) {
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    :global(.agent-picker-root ::-webkit-scrollbar) {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+  }
+
+  /* 弹层面板：锚定按钮、向上展开（工具栏位于页面底部） */
+  .panel {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 10px);
+    z-index: 60;
+    width: 180px;
+    max-width: calc(100vw - 24px);
+    max-height: min(320px, 60vh);
+    overflow-y: auto;
+    background: var(--ah-surface-1);
+    border: 1px solid var(--ah-border);
+    border-radius: var(--ah-radius-lg, 12px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    padding: 6px;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+  }
+  /* 选项行：图标 + 名称 + 选中✓，选中项高亮底色 */
+  .item {
+    appearance: none;
+    border: none;
+    background: transparent;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4.5px 10px;
+    border-radius: 8px;
+    color: var(--ah-text);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.12s;
+    margin-bottom: 6px;
+  }
+  .item:last-child {
+    margin-bottom: 0;
+  }
+  .item:hover {
+    background: color-mix(
+      in srgb,
+      var(--ah-text-muted, #999) 12%,
+      transparent
+    );
+  }
+  .item.selected {
+    background: color-mix(
+      in srgb,
+      var(--ah-accent, #2997ff) 14%,
+      transparent
+    );
+  }
+  .item svg {
+    flex-shrink: 0;
+    width: 17px;
+    height: 17px;
+    color: var(--ah-text-muted);
+  }
+  .item.selected svg {
+    color: var(--ah-accent, #2997ff);
+  }
+  .item .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item .check {
+    flex-shrink: 0;
+    color: var(--ah-accent, #2997ff);
+    font-size: 14px;
+  }
+
+  /* 分类标签（组标题） */
+  .category-label {
+    padding: 4px 10px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--ah-text-muted, #999);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* 遮罩：点击空白处关闭（移动端友好） */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: default;
+  }
+</style>

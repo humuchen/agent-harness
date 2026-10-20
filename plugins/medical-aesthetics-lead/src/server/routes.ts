@@ -30,12 +30,29 @@ import { listExperiments, getExperiment, createExperiment, stopExperiment, assig
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;
 
-/** 读取请求体：同时返回原始串（供验签）与 JSON 解析结果。 */
+/** 读取请求体：同时返回原始串（供验签）与 JSON 解析结果。
+ *  P1 资源修复：加字节上限（默认 1MB，可用 MA_MAX_BODY_BYTES 调整），超限直接断开——
+ *  webhook/callback 是公网可达的验签入口，旧实现无上限累积会把进程内存打满。 */
+const MAX_BODY_BYTES = Number(process.env.MA_MAX_BODY_BYTES ?? 1_048_576) || 1_048_576;
 function readRawBody(req: Req): Promise<{ raw: string; json: Record<string, unknown> }> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
+    let total = 0;
+    let aborted = false;
+    req.on('data', (c: Buffer) => {
+      if (aborted) return;
+      total += c.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        aborted = true;
+        chunks.length = 0;
+        try { req.destroy(); } catch { /* 已断开则忽略 */ }
+        resolve({ raw: '', json: {} });
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => {
+      if (aborted) return;
       const raw = Buffer.concat(chunks).toString('utf-8');
       let json: Record<string, unknown> = {};
       if (raw) {
@@ -54,7 +71,7 @@ function readRawBody(req: Req): Promise<{ raw: string; json: Record<string, unkn
       }
       resolve({ raw, json });
     });
-    req.on('error', () => resolve({ raw: '', json: {} }));
+    req.on('error', () => { if (!aborted) resolve({ raw: '', json: {} }); });
   });
 }
 
@@ -67,9 +84,11 @@ function send(res: Res, code: number, obj: unknown): void {
 // 只读统计 / 明细（真实 SQL 聚合）
 // ---------------------------------------------------------------------------
 
-/** GET /stats —— 完整客资统计（漏斗 / 渠道 / 等级 / 队列 / CRM 同步健康）。 */
+/** GET /stats —— 完整客资统计（漏斗 / 渠道 / 等级 / 队列 / CRM 同步健康）。
+ *  P1 鉴权修复：统计含队列规模/渠道转化等经营数据，匿名暴露可被竞品抓取，需管理令牌。 */
 const stats: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const [stats, ob] = await Promise.all([computeStats(), outboxSnapshot()]);
   send(res, 200, { ...stats, outbox: ob });
 };
@@ -137,24 +156,29 @@ const kbList: PluginRouteHandler = async (req, res) => {
 // 写操作：认领 / 分配 / 导入 / webhook
 // ---------------------------------------------------------------------------
 
-/** POST /leads/assign —— 分配客资给咨询师。 */
+/** POST /leads/assign —— 分配客资给咨询师。
+ *  P1 鉴权修复：写操作（改派客资）此前无鉴权，任何可达来源均可抢占/改派，补 denyUnlessAdmin。 */
 const assign: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const { json } = await readRawBody(req);
   const leadId = String(json.leadId ?? '');
   const consultant = String(json.consultant ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
+  if (!consultant) return send(res, 400, { error: 'consultant required' });
   const ok = await assignConsultant(leadId, consultant);
   send(res, ok ? 200 : 409, { ok, consultant: ok ? consultant : undefined });
 };
 
-/** POST /handoffs/claim —— 坐席认领转人工客资。 */
+/** POST /handoffs/claim —— 坐席认领转人工客资（P1 鉴权修复：同 assign）。 */
 const claim: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const { json } = await readRawBody(req);
   const leadId = String(json.leadId ?? '');
   const consultant = String(json.consultant ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
+  if (!consultant) return send(res, 400, { error: 'consultant required' });
   const ok = await assignConsultant(leadId, consultant);
   send(res, ok ? 200 : 409, { ok, consultant: ok ? consultant : undefined });
 };
@@ -358,9 +382,10 @@ const callback: PluginRouteHandler = async (req, res) => {
   }
 };
 
-/** GET /analytics —— 运营分析查询（真实 SQL 聚合）。 */
+/** GET /analytics —— 运营分析查询（真实 SQL 聚合；P1 鉴权修复：经营数据需管理令牌）。 */
 const analytics: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
   const p = url.searchParams;
   const q: AnalyticsQuery = {
@@ -382,9 +407,10 @@ const analytics: PluginRouteHandler = async (req, res) => {
   }
 };
 
-/** POST /analytics/export —— 导出 CSV。 */
+/** POST /analytics/export —— 导出 CSV（P1 鉴权修复：匿名导出全量经营数据 + CSV 公式注入防护）。 */
 const analyticsExport: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
   const { json } = await readRawBody(req);
   const q = json as unknown as AnalyticsQuery;
   try {
@@ -399,22 +425,34 @@ const analyticsExport: PluginRouteHandler = async (req, res) => {
   }
 };
 
+/**
+ * P1 CSV 公式注入防护（OWASP CSV Injection）：以 `= + - @ \t \r` 开头的单元格
+ * 会被 Excel/LibreOffice/WPS 当作公式执行（如 `@SUM(...)`、`=HYPERLINK(...)` DDE），
+ * 运营打开导出文件即触发。前置 `'` 中和；含逗号/引号/换行的值按标准 CSV 引号包裹。
+ */
+function csvCell(v: unknown): string {
+  let s = v === null || v === undefined ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  if (/[",\n\r]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
 /** 将分析结果转换为 CSV 字符串。 */
 function analyticsToCsv(result: AnalyticsResult): string {
   const rows: string[] = ['section,fields,values'];
   const data = result.data as unknown;
   if (Array.isArray(data)) {
     for (const item of data as Record<string, unknown>[]) {
-      const keys = Object.keys(item).join('|');
-      const vals = Object.values(item).join('|');
-      rows.push(`row,${keys},${vals}`);
+      const keys = Object.keys(item).map(csvCell).join('|');
+      const vals = Object.values(item).map(csvCell).join('|');
+      rows.push([csvCell('row'), csvCell(keys), csvCell(vals)].join(','));
     }
   } else if (data && typeof data === 'object') {
     for (const [section, arr] of Object.entries(data as Record<string, unknown[]>)) {
       for (const item of arr as Record<string, unknown>[]) {
-        const keys = Object.keys(item).join('|');
-        const vals = Object.values(item).join('|');
-        rows.push(`${section},${keys},${vals}`);
+        const keys = Object.keys(item).map(csvCell).join('|');
+        const vals = Object.values(item).map(csvCell).join('|');
+        rows.push([csvCell(section), csvCell(keys), csvCell(vals)].join(','));
       }
     }
   }

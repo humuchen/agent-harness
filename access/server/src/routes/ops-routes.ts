@@ -16,7 +16,7 @@ import {
   preapprove as preapproveShell,
   shellSignature
 } from '../shell-approval';
-import { readBody, sendJson, startSse } from '../http-helpers';
+import { readBody, sendJson, startSse, endSse } from '../http-helpers';
 import type { Action, AuthContext } from '../authz';
 
 export interface OpsRouteDeps {
@@ -86,7 +86,9 @@ export async function handleOpsRoutes(
         send({ type: 'verify:error', id: '0', message: e instanceof Error ? e.message : String(e) });
       if (!closed) send({ type: '_verify_done' });
     } finally {
-      if (!closed) res.end();
+      endSse(res, () => {
+        closed = true;
+      });
     }
     return true;
   }
@@ -288,7 +290,9 @@ export async function handleOpsRoutes(
           send({ type: 'env:error', message: e instanceof Error ? e.message : String(e) });
         if (!closed) send({ type: '_env_done', error: true });
       } finally {
-        if (!closed) res.end();
+        endSse(res, () => {
+          closed = true;
+        });
       }
       return true;
     }
@@ -308,7 +312,9 @@ export async function handleOpsRoutes(
           send({ type: 'env:error', message: e instanceof Error ? e.message : String(e) });
         if (!closed) send({ type: '_env_done', error: true });
       } finally {
-        if (!closed) res.end();
+        endSse(res, () => {
+          closed = true;
+        });
       }
       return true;
     }

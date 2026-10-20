@@ -70,6 +70,7 @@ function loadPptxGenJs(): PptxModule | null {
 /** 文件名安全化：去路径与非法字符、限长，空则回落默认名；并归一扩展名。 */
 function sanitizeFilename(raw: string, format: 'xlsx' | 'pptx' | 'csv'): string {
   const base = (raw || '')
+    // eslint-disable-next-line no-control-regex -- 剥离控制字符正是本净化的目的（导出文件名安全化）
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()

@@ -529,6 +529,18 @@ export interface WorkflowRun {
   error?: string;
   /** P3：已批准放行的 step id 列表（随检查点持久化，resume 时跳过审批门）。 */
   approvals?: string[];
+  /**
+   * P6 方案一 A：状态快照链（波次收敛 / awaiting / failed 时捕获，上限 50 丢最旧）。
+   * 「执行详情」抽屉据此提供「回滚到此点」。旧快照无该字段。
+   */
+  snapshots?: Array<{
+    id: string;
+    ts: number;
+    action: string;
+    wave: number;
+    steps: Record<string, StepRun>;
+    outputOmitted?: string[];
+  }>;
 }
 
 /** 工作流 SSE 事件。与 harness 事件同通道：wf:* 为编排事件；harness 事件以 { type:'harness', event } 包裹。 */
@@ -545,3 +557,18 @@ export type WorkflowEvent =
   | { type: 'wf:failed'; workflowId: string; run: WorkflowRun }
   | { type: 'wf:error'; workflowId: string; error: string }
   | StreamEvent;
+
+/** P6 观测（方案三一期）：run 过程归档（服务端 workflow_run_traces 表）。 */
+export interface RunTraceRecord {
+  workflowId: string;
+  runId: string;
+  /** 归档时间（epoch ms）。 */
+  ts: number;
+  /** run 终态（done / failed / cancelled）。 */
+  state: string;
+  /** stepId → 过程数据（状态/重试计数/错误/调用链路；不含产出正文）。 */
+  steps: Record<
+    string,
+    { state?: string; attempts?: number; error?: string; trace?: StepTraceNode[] }
+  >;
+}

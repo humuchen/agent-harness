@@ -99,18 +99,43 @@ test('AgentRegistry：heartbeat 刷新健康度，deregister 移除并清理索�
   assert.strictEqual((await r.query({ capability: 'risk' })).length, 0);
 });
 
-test('AgentRegistry：sweepStale 把心跳超时的 agent 标记为 down', async () => {
+test('AgentRegistry：sweepStale 把心跳超时的远程 agent 标记为 down（local 豁免）', async () => {
   const r = new AgentRegistry(new VolatileAgentStore());
-  // 注入一个 lastHeartbeat 很远前的 agent
-  const stale = makeCard({ id: 'old', domain: 'finance', capabilities: [{ id: 'risk' }] });
+  // 注入一个 lastHeartbeat 很远前的远程 agent（mcp/a2a 存活独立于本进程，才会被 sweep）
+  const stale = makeCard({ id: 'old', domain: 'finance', capabilities: [{ id: 'risk' }], transport: 'mcp' });
   stale.health.lastHeartbeat = Date.now() - 10_000;
   await r.register(stale);
-  await r.register(makeCard({ id: 'fresh', domain: 'finance', capabilities: [{ id: 'risk' }] }));
+  await r.register(makeCard({ id: 'fresh', domain: 'finance', capabilities: [{ id: 'risk' }], transport: 'a2a' }));
+  // local agent 与进程同生命周期，即使心跳很旧也不应被误杀
+  const local = makeCard({ id: 'local-stale', domain: 'finance', capabilities: [{ id: 'risk' }] });
+  local.health.lastHeartbeat = Date.now() - 10_000;
+  await r.register(local);
 
   const downed = await r.sweepStale(5_000);
   assert.deepStrictEqual(downed.sort(), ['old']);
   assert.strictEqual((await r.get('old')).health.status, 'down');
   assert.strictEqual((await r.get('fresh')).health.status, 'healthy');
+  assert.strictEqual((await r.get('local-stale')).health.status, 'healthy');
+});
+
+test('AgentRegistry：startStaleSweep 周期把超时远程 agent 标记 down，stop 后停止', async () => {
+  const r = new AgentRegistry(new VolatileAgentStore());
+  const stale = makeCard({ id: 'old', domain: 'finance', capabilities: [{ id: 'risk' }], transport: 'a2a' });
+  stale.health.lastHeartbeat = Date.now() - 10_000;
+  await r.register(stale);
+
+  r.startStaleSweep({ intervalMs: 20, timeoutMs: 5_000 });
+  try {
+    // 周期 20ms，等待若干周期后应已被标记 down
+    await new Promise((res) => setTimeout(res, 150));
+    assert.strictEqual((await r.get('old')).health.status, 'down');
+  } finally {
+    r.stopStaleSweep();
+  }
+  // 幂等 start / 重复 stop 不抛错
+  r.stopStaleSweep();
+  r.startStaleSweep({ intervalMs: 0 }); // 非法周期不启动
+  assert.ok(true);
 });
 
 test('getAgentRegistry 单例自动 seed default 通用 agent', () => {

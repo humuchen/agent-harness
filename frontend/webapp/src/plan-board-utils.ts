@@ -5,7 +5,7 @@
  * 同一份语义，写在 render() 里既不可测，两套视图也容易各自漂移（例如列序或标签
  * 改了一处漏了另一处）。这里作为列序 / 标签 / 分组的单一来源。
  */
-import type { PlanNode, PlanNodeStatus } from './plan-board';
+import type { PlanNode, PlanNodeStatus } from './plan-board.svelte';
 
 /** 泳道顺序：桌面横向列序 = 移动端纵向分区序，单一来源。 */
 export const PLAN_COLUMNS: PlanNodeStatus[] = ['todo', 'doing', 'done', 'blocked'];

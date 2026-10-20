@@ -19,7 +19,11 @@ export type ImProvider = 'feishu' | 'dingtalk' | 'wecom';
 /** 一条标准化后的入站 IM 消息（各平台解析差异已在 adapter 内消化）。 */
 export interface ImInboundMessage {
   provider: ImProvider;
-  /** 平台侧消息唯一 id（用于去重；缺失时由 bridge 用「用户+时间戳+文本」兜底合成）。 */
+  /**
+   * 平台侧消息唯一 id（用于去重；三个官方平台均提供）。
+   * P1-4：缺失时**不再**用「用户+文本」合成兜底键去重 —— 那会让用户在去重 TTL
+   * 内重发相同文本（「继续」「1」）被误丢；现改为放行 + 告警计数（宁可重复处理）。
+   */
   messageId: string;
   /** 发送者平台内唯一 id（open_id / staffId / userid）。 */
   senderId: string;
@@ -93,4 +97,15 @@ export interface ImBridgeConfig {
   replyPrefix: string;
   /** 群聊中是否需要 @机器人 才触发（默认 true，避免刷屏）。 */
   groupRequireMention: boolean;
+  /**
+   * P1-3：IM 后台执行并发上限。此前 executor 直跑 harness 链路完全绕过
+   * RUN_CONCURRENCY，洪峰下 LLM 调用数不可控。默认 2（比主队列 RUN_CONCURRENCY=4
+   * 更保守）；排队等待队列见 maxWaiting。
+   */
+  maxInflight?: number;
+  /**
+   * P1-3：并发满时的等待队列深度。在飞 + 等待都满时新消息快速拒绝并回复「繁忙」，
+   * 防止无界积压。默认 8。
+   */
+  maxWaiting?: number;
 }

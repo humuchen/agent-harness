@@ -239,7 +239,15 @@ export async function handleAccountRoutes(
 ): Promise<boolean> {
   // P1-14: 质询式密码保护 — 客户端先获取 salt，本地 PBKDF2 派生哈希，
   // 服务器仅比对哈希，不接触明文密码。
+  // P1 限流修复：login-salt 曾只走全局限流——真实 salt vs DUMMY_SALT 的差异 +
+  // 响应时序差可用于枚举用户名，拿到 salt 后可离线跑 PBKDF2 字典攻击，
+  // 与 register/login 同属 auth 端点独立限流范围。
   if (req.method === 'GET' && path === '/api/account/login-salt') {
+    const arl = authRateLimited(deps, req);
+    if (arl.limited) {
+      authRateLimitExceeded(res, arl.retryAfter);
+      return true;
+    }
     const username = (url.searchParams.get('username') || '').trim();
     if (!username || !/^[A-Za-z0-9_]{3,32}$/.test(username)) {
       res.writeHead(200, {
@@ -542,6 +550,9 @@ export async function handleAccountRoutes(
   }
   // P1-11: 账户删除（事务原子性，删除 users/auth_tokens/password_resets）
   if (req.method === 'DELETE' && path === '/api/account') {
+    // P1 CSRF 修复：本端点「cookie 鉴权 + 不经 guard」，与 logout/refresh 同属
+    // csrfGuard 兜底范围——恶意站点可诱导已登录浏览器携带 cookie 发起 DELETE。
+    if (!csrfGuard(req, res)) return true;
     const u = await usernameFromCookie(req);
     if (!u) {
       sendJsonError(res, 401, { error: 'unauthorized' }, req);

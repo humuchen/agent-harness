@@ -16,6 +16,16 @@
  */
 
 import type { AgentCard, AgentRegistry, IndustryDomain } from '../agents';
+import { MemoryTeamStore, type TeamStore } from './store';
+
+export {
+  MemoryTeamStore,
+  RedisTeamStore,
+  createTeamStoreFromEnv,
+  type TeamStore,
+  type TeamStoreRedis,
+  type PersistedTeam
+} from './store';
 
 /** 团队协作模式。 */
 export type TeamMode =
@@ -51,18 +61,40 @@ export interface Team {
   onTaskAssign?(agentId: string, task: string): void;
 }
 
+/** competitive 打分饱和常数：结果长度达到该字符数时基础效用 ≈ 0.5。 */
+const RESULT_SCORE_HALF_CHARS = 1200;
+
+/**
+ * competitive 模式的结果效用打分（长度中性化，评审 P2-3）。
+ *
+ * 旧实现 `result.length * weight` 让「谁啰嗦谁赢」——分数随长度线性放大，
+ * 冗长跑题的答案几乎总能击败精炼切题的答案。现改为饱和曲线 `len / (len + K)`：
+ * - 空结果（含纯空白）得 0 分，退化输出直接落选；
+ * - 长度边际收益递减、封顶于 1：超过 K 字符后继续堆字数几乎不再改变排名，
+ *   vote 实际由成员权重（对 agent 的先验信任）主导；
+ * - 平分时由 `reduce` 严格大于保持先注册成员优先，行为确定。
+ */
+export function scoreResultUtility(text: string): number {
+  const len = text.trim().length;
+  if (len === 0) return 0;
+  return len / (len + RESULT_SCORE_HALF_CHARS);
+}
+
 /**
  * TeamManager：管理 Team 的 CRUD + 协作调度。
  *
- * 持久化：使用内存态 Map 作为默认后端（进程内），生产可替换为分布式 store。
+ * 持久化（评审 R5）：经 TeamStore 抽象，缺省 MemoryTeamStore（进程内），
+ * 可注入 RedisTeamStore（多副本共享 + 重启不丢，见 ./store.ts）。
+ * round-robin 轮次计数器同走 store——Redis 下用 INCR 原子自增，多实例共享轮转次序。
  * 团队成员查询 / agent dispatch 委托给传入的 AgentRegistry。
  */
 export class TeamManager {
-  private teams = new Map<string, Team>();
+  private store: TeamStore;
   private registry: AgentRegistry;
 
-  constructor(registry: AgentRegistry) {
+  constructor(registry: AgentRegistry, store: TeamStore = new MemoryTeamStore()) {
     this.registry = registry;
+    this.store = store;
   }
 
   /** 注册 / 更新一个团队。 */
@@ -78,27 +110,27 @@ export class TeamManager {
     for (const mid of team.members) {
       team.onMemberJoin?.(mid);
     }
-    this.teams.set(team.id, team);
+    await this.store.save(team);
   }
 
   /** 注销一个团队。 */
   async deregister(id: string): Promise<void> {
-    const team = this.teams.get(id);
+    const team = await this.store.get(id);
     if (!team) return;
     for (const mid of team.members) {
       team.onMemberLeave?.(mid);
     }
-    this.teams.delete(id);
+    await this.store.remove(id);
   }
 
-  /** 获取团队。 */
-  get(id: string): Team | undefined {
-    return this.teams.get(id);
+  /** 获取团队（持久层异步读取；不存在返回 null）。 */
+  get(id: string): Promise<Team | null> {
+    return this.store.get(id);
   }
 
   /** 列出全部团队。 */
-  list(): Team[] {
-    return [...this.teams.values()];
+  list(): Promise<Team[]> {
+    return this.store.list();
   }
 
   /**
@@ -116,7 +148,7 @@ export class TeamManager {
       input: string
     ) => Promise<string>
   ): Promise<string | string[]> {
-    const team = this.teams.get(teamId);
+    const team = await this.store.get(teamId);
     if (!team) throw new Error(`TeamNotFound: ${teamId}`);
 
     // 获取成员 AgentCard
@@ -131,9 +163,10 @@ export class TeamManager {
 
     switch (team.mode) {
       case 'round-robin': {
-        const idx = this.teamRoundRobin.get(teamId) ?? 0;
-        const member = members[idx % members.length]!;
-        this.teamRoundRobin.set(teamId, idx + 1);
+        // 轮次计数器在 store 内原子自增（Redis INCR，多实例共享轮转次序）；
+        // 首次返回 1，下标 (n-1) % len 与旧「idx 从 0 起」的轮转次序一致。
+        const n = await this.store.incrCounter(teamId);
+        const member = members[(n - 1) % members.length]!;
         team.onTaskAssign?.(member.id, input);
         return dispatchAgentTask(member, input);
       }
@@ -161,11 +194,11 @@ export class TeamManager {
       case 'competitive': {
         // 所有成员执行，按权重 vote
         const votes = await Promise.all(
-          members.map(async (m, i) => {
-            const score = team.weights?.[m.id] ?? 1;
+          members.map(async (m) => {
+            const weight = team.weights?.[m.id] ?? 1;
             const result = await dispatchAgentTask(m, input);
-            // 简单打分：按结果长度 × 权重
-            const effectiveness = result.length * score;
+            // 打分：饱和长度效用 × 成员权重（长度中性化，见 scoreResultUtility）
+            const effectiveness = scoreResultUtility(result) * weight;
             return { result, score: effectiveness };
           })
         );
@@ -181,14 +214,13 @@ export class TeamManager {
       }
     }
   }
-
-  /** 轮次计数器：teamId → 下一次执行的成员 index。 */
-  private teamRoundRobin = new Map<string, number>();
 }
 
 /**
  * 全局 TeamManager 单例（进程内）。
- * 依赖 AgentRegistry 单例 —— server 层在启动时通过 `initTeamManager()` 初始化。
+ * 依赖 AgentRegistry 单例 —— server 层在启动时通过 `initTeamManager()` 初始化
+ * （可注入 TeamStore；缺省 MemoryTeamStore，多副本部署经 createTeamStoreFromEnv
+ * 注入 RedisTeamStore）。
  */
 let _defaultManager: TeamManager | null = null;
 
@@ -197,10 +229,13 @@ export function getTeamManager(): TeamManager | null {
   return _defaultManager;
 }
 
-/** 初始化共享 TeamManager（幂等）。 */
-export async function initTeamManager(registry: AgentRegistry): Promise<TeamManager> {
+/** 初始化共享 TeamManager（幂等，先到先得——后续调用注入的 store 被忽略）。 */
+export async function initTeamManager(
+  registry: AgentRegistry,
+  store?: TeamStore
+): Promise<TeamManager> {
   if (!_defaultManager) {
-    _defaultManager = new TeamManager(registry);
+    _defaultManager = new TeamManager(registry, store);
   }
   return _defaultManager;
 }

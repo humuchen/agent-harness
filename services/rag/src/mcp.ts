@@ -13,7 +13,7 @@
  */
 
 import { createInterface } from 'node:readline';
-import { MemoryVectorStore } from './store';
+import { createVectorStore, type VectorStore } from './store';
 import { createEmbedder, EmbeddingProvider } from './embed';
 import { ingestDocument, IngestInput } from './ingest';
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
@@ -23,7 +23,7 @@ import { rerankWithApi, mmrRerank } from './rerank';
 
 export interface RagMcpOptions {
   tenantId: string;
-  store?: MemoryVectorStore;
+  store?: VectorStore;
   provider?: EmbeddingProvider;
   /** LLM 提供商（生成层）；未传则从 env 构建。 */
   llm?: LLMProvider;
@@ -94,12 +94,10 @@ const TOOLS = [
 ];
 
 export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
-  const store =
-    opts.store ??
-    new MemoryVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
+  const store = opts.store ?? createVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
   const shard =
     (process.env.RAG_SHARD_BY_TENANT || '').toLowerCase() === 'true';
-  if (process.env.RAG_DATA_FILE) store.load(process.env.RAG_DATA_FILE, shard);
+  if (process.env.RAG_DATA_FILE) store.load?.(process.env.RAG_DATA_FILE, shard);
   const provider = opts.provider ?? createEmbedder();
   const tenantId = opts.tenantId;
   const llm = opts.llm ?? createLLM();
@@ -182,8 +180,10 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
                 resp = { ...resp, results: rr };
               } else {
                 const vectorMap = new Map<string, number[]>();
-                for (const c of store.getChunks(tenantId))
-                  vectorMap.set(c.chunk_id, c.vector);
+                if (store.hybridCapable) {
+                  for (const c of await store.getChunks(tenantId))
+                    vectorMap.set(c.chunk_id, c.vector);
+                }
                 resp = {
                   ...resp,
                   results: mmrRerank(resp.results, vectorMap, 0.5)
@@ -203,7 +203,7 @@ export async function startRagMcpServer(opts: RagMcpOptions): Promise<void> {
           };
           result = await ingestDocument(store, provider, input);
           if (process.env.RAG_DATA_FILE)
-            store.persist(process.env.RAG_DATA_FILE, shard);
+            store.persist?.(process.env.RAG_DATA_FILE, shard);
         } else if (name === 'rag_generate') {
           if (!llm) {
             send({

@@ -22,11 +22,11 @@ services:
     # workspace package (backend/core, access/server, examples) emits its dist/.
     # Do NOT use a bare `pnpm install` or point start at `dist/src/index.js` — those
     # belong to the old single-package layout and will fail with MODULE_NOT_FOUND.
-    # 注意：显式 --no-frozen-lockfile 是为了自愈——CI 环境(pnpm 检测到 CI=true)默认会
-    # 强制 --frozen-lockfile，一旦有人提交新依赖却忘记同步 pnpm-lock.yaml，构建即 exit 1。
-    # 用 --no-frozen-lockfile 让 Render 在 lockfile 轻微漂移时自动校正，避免部署卡死。
-    # 平时仍应保持 pnpm-lock.yaml 与 package.json 同步（本地改完依赖跑一次 pnpm install）。
-    buildCommand: pnpm install --no-frozen-lockfile && pnpm -r build
+    # P1 供应链一致性修复：--frozen-lockfile 与 Dockerfile（STRICT_LOCKFILE）对齐——
+    # lockfile 漂移是「有人提交新依赖忘同步 pnpm-lock.yaml」的流程错误，应当在 CI/构建
+    # 阶段暴露并修复，而不是部署期静默自愈（装进未经锁文件约束的依赖版本，供应链
+    # 完整性形同虚设）。日常保持 pnpm-lock.yaml 与 package.json 同步即可。
+    buildCommand: pnpm install --frozen-lockfile && pnpm -r build
     startCommand: node access/server/dist/server.js
     # P1 修复接线：/api/state 不探测依赖；/health/ready 真实探测 DB/Redis/内存
     #（未配置的依赖自动跳过），与 Docker HEALTHCHECK / k8s probes 语义一致。

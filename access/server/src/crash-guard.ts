@@ -11,6 +11,7 @@
  *   2) server.ts 聚焦 HTTP 路由编排，进程级兜底是横切关注点。
  */
 import { logError, emitAlert } from '@agent-harness/core';
+import { isBenignStreamError } from './http-helpers';
 
 /**
  * 安装进程级崩溃防护：uncaughtException 安全退出，unhandledRejection 仅记录。
@@ -29,6 +30,15 @@ export function installCrashGuard(): void {
     console.error(`[fatal] ${where}:`, e?.message ?? err, '\n', e?.stack ?? '');
   };
   process.on('uncaughtException', (err) => {
+    // 白名单放行：SSE/响应流写入失败（write after end、连接重置等）只说明
+    // 「往已关闭的连接写数据没写成」，不表示进程状态非法。此时 exit(1) 会让
+    // 平台重启服务，把一条无害的 SSE 竞态放大成**全部在途请求 503**
+    // （线上「agent 跑一半就 503」的放大路径）。仅记录告警，不退出。
+    // 其余未知异常维持原语义：记录后安全退出，交由守护进程重启。
+    if (isBenignStreamError(err)) {
+      fatal('benign-stream', err);
+      return;
+    }
     fatal('uncaughtException', err);
     process.exit(1);
   });

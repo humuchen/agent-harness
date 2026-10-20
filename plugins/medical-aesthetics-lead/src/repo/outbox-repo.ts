@@ -9,7 +9,7 @@
 import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
 import { getConfig } from '../config';
 
-export type OutboxState = 'pending' | 'sent' | 'failed';
+export type OutboxState = 'pending' | 'sending' | 'sent' | 'failed';
 
 export interface OutboxRow {
   id: number;
@@ -25,7 +25,7 @@ export interface OutboxRow {
 }
 
 function rowToOutbox(r: Record<string, unknown>): OutboxRow {
-  let payload: unknown = null;
+  let payload: unknown;
   try {
     payload = r.payload ? JSON.parse(String(r.payload)) : null;
   } catch {
@@ -69,6 +69,32 @@ export async function dueBatch(limit: number, now: number): Promise<OutboxRow[]>
   }, '扫描待投递');
 }
 
+/** sending 状态滞留判定：超过此时长仍为 sending（进程在 markSent/markFailed 前崩溃）视为可重投。 */
+const STALE_SENDING_MS = 120_000;
+
+/**
+ * P1 重复投递修复：原子 claim——把到期待投递行**原子地**置为 state='sending' 并返回被
+ * 认领的行（UPDATE ... RETURNING 单语句完成，替代「SELECT 后再改」的窗口）。
+ * 旧 dueBatch 只 SELECT 不占用，投递耗时超过轮询间隔或多副本部署时，同一批行会被
+ * 重复捞出重复投递（outreach.send 会给客户重复发消息）。
+ * 同时回收滞留的 sending 行（崩溃恢复）；重投幂等性由 idempotency_key UNIQUE 兜底。
+ */
+export async function claimBatch(limit: number, now: number): Promise<OutboxRow[]> {
+  return await dbCall(async () => {
+    const rows = await allRows((await getDb()).prepare(
+        `UPDATE ma_outbox SET state = 'sending', updated_at = ?
+         WHERE id IN (
+           SELECT id FROM ma_outbox
+           WHERE tenant_id = ? AND next_retry_at <= ?
+             AND (state = 'pending' OR (state = 'sending' AND updated_at < ?))
+           ORDER BY next_retry_at ASC LIMIT ?
+         )
+         RETURNING *`
+      ), now, getConfig().tenantId, now, now - STALE_SENDING_MS, limit);
+    return rows.map(rowToOutbox);
+  }, '原子认领待投递');
+}
+
 /** 标记已投递（state=sent）。 */
 export async function markSent(id: number): Promise<void> {
   await dbCall(async () => {
@@ -91,13 +117,14 @@ export async function markFailed(id: number, err: string, maxAttempts: number, n
 }
 
 /** 发件箱健康（看板同步状态用）。 */
-export async function outboxStats(): Promise<{ pending: number; sent: number; failed: number }> {
+export async function outboxStats(): Promise<{ pending: number; sending: number; sent: number; failed: number }> {
   return await dbCall(async () => {
     const rows = await allRows((await getDb()).prepare('SELECT state, COUNT(*) AS c FROM ma_outbox WHERE tenant_id = ? GROUP BY state'), getConfig().tenantId);
-    const out = { pending: 0, sent: 0, failed: 0 };
+    const out = { pending: 0, sending: 0, sent: 0, failed: 0 };
     for (const r of rows) {
       const s = String(r.state);
       if (s === 'pending') out.pending = Number(r.c);
+      else if (s === 'sending') out.sending = Number(r.c);
       else if (s === 'sent') out.sent = Number(r.c);
       else if (s === 'failed') out.failed = Number(r.c);
     }

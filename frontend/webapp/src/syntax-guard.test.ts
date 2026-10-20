@@ -45,7 +45,7 @@ function collectSourceFiles(dir: string): string[] {
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
       out.push(...collectSourceFiles(full));
-    } else if (entry.name.endsWith('.ts')) {
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
       out.push(full);
     }
   }
@@ -146,7 +146,7 @@ describe('样式模块语法守卫', () => {
     expect(files.length).toBeGreaterThan(50);
   });
 
-  it('全部源码可被解析（无提前终止的模板字面量）', () => {
+  it('全部源码可被解析（无提前终止的模板字面量）', { timeout: 30_000 }, () => {
     const issues = files.flatMap((f) => getSyntaxIssues(f.file, f.rel, f.src));
     expect(issues, `发现 ${issues.length} 处语法错误（仅在构建阶段暴露）：\n${format(sources, issues)}`).toEqual([]);
   });

@@ -32,6 +32,8 @@ import { escapeHtml } from './utils/markdown';
 import { safeJson } from './utils/chat-utils';
 import { agentContext } from './agent-context';
 import { MY_ORIGIN } from './chat-sync';
+// 触感反馈：运行收尾（成功/失败）给一次振动，手机端不必盯着屏幕等结果。
+import { hapticSuccess, hapticError } from './utils/haptics';
 
 
 /** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */
@@ -173,7 +175,10 @@ export async function runWithReconnect(
   deps: ReconnectDeps,
   sleepFn: (ms: number, signal?: AbortSignal) => Promise<void> = sleep
 ): Promise<void> {
-  const MAX_ATTEMPTS = 6;
+  // 自动重试预算须落在服务端断连宽限窗口内（RUN_DISCONNECT_GRACE_MS 默认 60s）：
+  // 退避 1/2/4/8/8/8/8/8s ≈ 47s < 60s —— 网络抖动在宽限内被自动重连消化，
+  // 超出后才交给「重新连接」横幅手动续传（服务端 job 仍可能存活）。
+  const MAX_ATTEMPTS = 8;
   let attempts = 0;
   let first = true;
   while (true) {
@@ -371,6 +376,16 @@ export class ChatRunRuntime {
     }
     this.lastEventAt[sid] = Date.now();
     if (et === 'run:end' || et === '_done' || et === 'error') {
+      // 触感反馈：只在首个终结事件触发一次（run:end/_done 可能连发两条，
+      // error 之后常再跟一条 run:end）。error 事件即失败收尾；run:end/_done
+      // 时若本轮出现过 error 同样按失败反馈（与 erroredBy 语义一致）。
+      if (!this.finishedBy[sid]) {
+        if (et === 'error' || this.erroredBy[sid]) {
+          hapticError();
+        } else {
+          hapticSuccess();
+        }
+      }
       this.finishedBy[sid] = true;
       // 记录本轮 run 是否出现过 error 事件：dispatchPrompt 收尾时据此区分
       // 「成功收尾」与「带错误收尾」，计划执行循环依赖这一判定中止后续任务。

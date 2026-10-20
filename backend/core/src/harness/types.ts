@@ -306,6 +306,11 @@ export interface HarnessOptions {
 
   // 可选自定义去重 key 生成器；不传则使用内置 stableToolKey（name + 参数 key 排序后 JSON）。
   toolDedupKey?: (call: ToolCall) => string;
+
+  // P2-1：输出护栏「合规内容类」拦截后的温和重试上限（每轮 run 重置，重试注入纠正提示）。
+  // 密钥/注入类拦截永不重试（直接兜底），不受此值影响。缺省 1（与历史行为一致）；
+  // 显式 0 = 关闭温和重试。
+  guardrailMaxRetries?: number;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。
@@ -345,6 +350,8 @@ export interface ResolvedHarnessOptions {
   // 加固：工具调用去重开关与单 step 预算（见 HarnessOptions 注释）。
   enableToolDedup: boolean;
   maxToolCallsPerStep: number;
+  // P2-1：护栏温和重试上限（见 HarnessOptions 注释；resolve 时缺省 1）。
+  guardrailMaxRetries: number;
   toolDedupKey?: (call: ToolCall) => string;
   // 计划模式 propose（见 HarnessOptions 注释）。
   planPropose: boolean;

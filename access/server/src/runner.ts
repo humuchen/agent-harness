@@ -548,7 +548,6 @@ export async function assembleAgent(
             ...primaryBase,
             ...(modelApiKey ? { apiKey: modelApiKey } : {})
           });
-    llmKind = 'openrouter';
 
     // 故障转移：若同时配置了原生 OpenAI（或兼容端点）密钥，则用熔断器把 OpenRouter
     // 作为 primary、OpenAI 作为 secondary；primary 连续失败或限流时自动回落，对主循环透明。

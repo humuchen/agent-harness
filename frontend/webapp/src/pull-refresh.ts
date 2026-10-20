@@ -9,7 +9,9 @@
  *   同时给内容区施加 translateY 橡皮筋效果、并在顶栏下方露出刷新指示器。
  * - 不触碰 Lit 渲染的 DOM 节点（只平移 .content、挂一个独立 indicator），
  *   避免与外壳的模板 diff 失同步。
+ * - 松手触发刷新时给一次触感反馈（hapticTap），与原生列表刷新手感对齐。
  */
+import { hapticTap } from './utils/haptics';
 
 /** 下拉刷新阶段，供 CSS 通过 data-phase 区分样式。 */
 export type PtrPhase = 'idle' | 'pull' | 'ready' | 'loading';
@@ -145,6 +147,8 @@ export class PullToRefreshController {
 
   private async doRefresh(): Promise<void> {
     this.refreshing = true;
+    // 触感反馈：松手触发刷新时给一次轻震（原生列表刷新的手感）。
+    hapticTap('light');
     // 刷新中保持指示器可见高度。
     this.dist = THRESHOLD;
     this.setPhase('loading');

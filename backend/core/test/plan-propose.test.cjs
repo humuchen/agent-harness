@@ -171,3 +171,48 @@ test('管线：阶段3 首次输出非法 JSON 时带反馈重试一次', async 
   // 至少 3 次 LLM 调用（阶段1 + 阶段3 首次 + 重试）
   assert.ok(llm.calls.length >= 3);
 });
+
+// ── 空/垃圾输出兜底（修复「规划未完成：连接可能已中断或处理超时」死路）──────────
+// 推理模型思考期超过 LLM_STREAM_IDLE_TIMEOUT_MS（默认 120s）时流被空闲超时截断，
+// 适配器以 partial:true 返回空 content；重试一次仍空 → finalText 为空。此前空串
+// 直接作为 run final 上抛，前端无计划无内容，只能渲染死路占位。现合成最小计划收口。
+
+test('管线：阶段3 连续返回空 content（流空闲超时）→ 合成最小计划收口', async () => {
+  if (!pp) return console.log('skip: core 未构建');
+  const llm = mockLLM([
+    { content: '{"action":"plan","goal":"输出 Agent 行业落地研报"}' },
+    { content: '' }, // 阶段3 首次：空闲超时截断的空响应
+    { content: '' } // 重试：仍空
+  ]);
+  const final = await pp.runPlanPropose({
+    llm: llm.fn,
+    tools: makeTools(),
+    userInput: '做一份研报',
+    emit: () => {}
+  });
+  const parsed = require(path.join(__dirname, '..', 'dist', 'plan.js')).parsePlanOutput(final);
+  assert.ok(parsed, '空输出也必须收口为计划，不得把空串当 final');
+  assert.ok(parsed.goal.includes('研报'));
+  assert.ok(parsed.tasks.length >= 1);
+  // 阶段1 + 阶段2 调研收尾 + 阶段3 首次 + 重试 = 4 次（兜底不再额外烧 LLM 调用）
+  assert.equal(llm.calls.length, 4);
+});
+
+test('管线：阶段3 连续返回非 JSON 垃圾文本 → 合成最小计划收口', async () => {
+  if (!pp) return console.log('skip: core 未构建');
+  const llm = mockLLM([
+    { content: '{"action":"plan","goal":"输出 Agent 行业落地研报"}' },
+    { content: '抱歉，我无法完成该请求。' },
+    { content: '（无输出）' }
+  ]);
+  const final = await pp.runPlanPropose({
+    llm: llm.fn,
+    tools: makeTools(),
+    userInput: '做一份研报',
+    emit: () => {}
+  });
+  const parsed = require(path.join(__dirname, '..', 'dist', 'plan.js')).parsePlanOutput(final);
+  assert.ok(parsed, '垃圾输出也必须收口为计划');
+  assert.ok(parsed.tasks.length >= 1);
+});
+

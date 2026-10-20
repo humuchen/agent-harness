@@ -66,8 +66,18 @@ export function resolveOpenRouterConfig(
       DEFAULT_OPEN_BASE_URL
     ),
     fetchImpl: input.fetchImpl ?? fetch,
-    retries: input.retries ?? DEFAULT_LLM_RETRIES
+    // 重试次数：配置对象优先 → LLM_RETRIES 环境变量 → 内置默认 2。
+    // 免费档端点常见 429/空响应，重试会成倍拉长问答耗时；部署方可按端点质量下调为 0/1。
+    retries: input.retries ?? resolveRetriesFromEnv(env)
   };
+}
+
+/** 从环境解析 LLM 重试次数（LLM_RETRIES）：非负整数；未设/非法回落内置默认。 */
+function resolveRetriesFromEnv(env: EnvLike): number {
+  const raw = env.LLM_RETRIES?.trim();
+  if (!raw) return DEFAULT_LLM_RETRIES;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_LLM_RETRIES;
 }
 
 /** 把 OpenAI（或任意 OpenAI 兼容端点）配置对象 + 环境变量解析成确定性标量。 */

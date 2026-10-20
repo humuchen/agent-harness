@@ -363,8 +363,11 @@ export async function searchNotes(
     params.push(q.tag);
   }
   if (q.q) {
-    cond.push('text LIKE ?');
-    params.push(`%${q.q}%`);
+    // P1 通配符修复：LIKE 参数值中的 % / _ 未转义时，用户传 '%' 即匹配全部
+    //（全表扫面/缓存击穿），'_' 会意外匹配任意单字符。转义后按字面量匹配。
+    const escaped = q.q.replace(/[\\%_]/g, '\\$&');
+    cond.push("text LIKE ? ESCAPE '\\'");
+    params.push(`%${escaped}%`);
   }
   const where = cond.join(' AND ');
   const totalRow = (await db

@@ -41,6 +41,21 @@ export interface DingtalkOptions {
   robotCode?: string;
   /** API base URL（默认官方 api.dingtalk.com；可覆盖以便私有化部署或端到端验证打桩）。 */
   baseUrl?: string;
+  /**
+   * P1-3：回调时间戳新鲜度窗（ms，默认读 IM_DINGTALK_TIMESTAMP_TOLERANCE_SEC，
+   * 缺省 300s = ±5min）。签名本身不防重放（同一 (timestamp, sign) 可无限重发），
+   * 必须叠加时间窗校验。设为 0 可关闭（服务器时钟漂移环境的逃生门）。
+   */
+  timestampToleranceMs?: number;
+}
+
+/** 默认时间窗（±5min）：钉钉官方推荐的重推窗口远小于此，足以容忍时钟秒级漂移。 */
+const DEFAULT_TS_TOLERANCE_MS = 300_000;
+
+function resolveToleranceMs(opt?: number): number {
+  if (opt !== undefined) return opt;
+  const sec = Number(process.env.IM_DINGTALK_TIMESTAMP_TOLERANCE_SEC ?? 300);
+  return Number.isFinite(sec) && sec >= 0 ? sec * 1000 : DEFAULT_TS_TOLERANCE_MS;
 }
 
 export class DingtalkAdapter implements ImAdapter {
@@ -84,6 +99,15 @@ export class DingtalkAdapter implements ImAdapter {
     const timestamp = this.headerValue(req.headers, 'timestamp');
     const sign = this.headerValue(req.headers, 'sign');
     if (!timestamp || !sign) return false;
+    // P1-3：时间戳新鲜度校验（防重放）。钉钉签名 = HMAC(ts + "\n" + secret)，同一对
+    // (timestamp, sign) 可被无限重放 —— 必须叠加「|now - ts| ≤ tolerance」窗口。
+    const toleranceMs = resolveToleranceMs(this.opt.timestampToleranceMs);
+    if (toleranceMs > 0) {
+      const ts = Number(timestamp);
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > toleranceMs) {
+        return false;
+      }
+    }
     const expected = createHmac('sha256', this.opt.clientSecret)
       .update(`${timestamp}\n${this.opt.clientSecret}`, 'utf8')
       .digest('base64');

@@ -11,6 +11,7 @@
   *  - 任何 401 会触发全局 ah-session-expired → 清会话并重回登录页。
   */
 import { AgentClient } from '@agent-harness/client';
+import { APP_EVENTS } from './app-events';
 
 const baseUrl =
   typeof window !== 'undefined' ? window.location.origin : 'http://localhost:4173';
@@ -27,9 +28,8 @@ export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || '';
 }
 
-/** 写入本地 token 副本（用于会话存在性判断）。
- * 账户密码模式下后端仅返回 refresh token，故此存 refresh token；
- * 实际鉴权由 ah_auth cookie 承担。 */
+/** 清除本地 token 副本（P1 泄漏修复后不再有写入方：会话存在性判断只看 ah_user，
+ * 鉴权只走 HttpOnly cookie；本函数仅供 clearSession 迁移清理历史残留）。 */
 export function setToken(token: string): void {
   if (typeof localStorage === 'undefined') return;
   if (token) localStorage.setItem(TOKEN_KEY, token);
@@ -57,7 +57,7 @@ function initialUser(): string {
 
 function handleUnauthorized(): void {
   clearSession();
-  window.dispatchEvent(new CustomEvent('ah-session-expired'));
+  window.dispatchEvent(new CustomEvent(APP_EVENTS.sessionExpired));
 }
 
 // ─── P1-14: 质询式密码保护（客户端 PBKDF2，不传输明文密码）───────────────────
@@ -220,8 +220,17 @@ export async function refreshToken(): Promise<boolean> {
  */
 export function scheduleAutoRefresh(accessExpiresAtMs: number): void {
   clearTimeout((window as unknown as Record<string, unknown>).__ah_refresh_timer as number | undefined);
-  const delay = Math.max(0, accessExpiresAtMs - Date.now() - (accessExpiresAtMs - Date.now()) * 0.1);
-  if (delay <= 0) return;  // 即将过期，立即刷新
+  const remaining = accessExpiresAtMs - Date.now();
+  const delay = Math.max(0, remaining - remaining * 0.1);
+  if (delay <= 0) {
+    // P1 修复：注释原意「即将过期，立即刷新」，旧实现却直接 return——弱网 /
+    // 切后台回来等场景（剩余有效期不足 10%）永远不会调度刷新，下一次请求
+    // 401 → handleUnauthorized() 直接把用户踢回登录页。此处立即触发刷新。
+    void refreshToken().then((ok) => {
+      if (!ok) handleUnauthorized();
+    });
+    return;
+  }
   (window as unknown as Record<string, unknown>).__ah_refresh_timer = window.setTimeout(async () => {
     const ok = await refreshToken();
     if (!ok) {
@@ -350,7 +359,7 @@ export async function logout(): Promise<void> {
     /* 即便请求失败也强制本地登出 */
   }
   clearSession();
-  window.dispatchEvent(new CustomEvent('ah-session-expired'));
+  window.dispatchEvent(new CustomEvent(APP_EVENTS.sessionExpired));
 }
 
 // ─── CSRF 双重提交令牌（P1 安全加固）─────────────────────────────────────────

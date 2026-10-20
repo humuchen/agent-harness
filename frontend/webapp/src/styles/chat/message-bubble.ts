@@ -1,6 +1,4 @@
-import { css } from 'lit';
-
-export const messageBubble = css`
+export const messageBubble = `
     .msg {
       display: flex;
       gap: 12px;
@@ -53,7 +51,7 @@ export const messageBubble = css`
       flex: 1 1 auto;
       width: 100%;
       background: var(--ah-surface-1);
-      border: 1px solid var(--ah-border);
+      // border: 1px solid var(--ah-border);
       border-top-left-radius: 4px;
     }
     .msg.user .bubble {

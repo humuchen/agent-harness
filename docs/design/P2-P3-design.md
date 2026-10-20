@@ -102,6 +102,8 @@
 ### 现状
 `authz.ts` 已有 `Action` 联合类型 + `DEFAULT_MATRIX` + `UI_ROLE_PERMISSIONS` 覆盖机制；但配置只能通过改环境变量 / 手写 JSON，无 UI 校验。
 
+> **现状更新**：`access/server/src/policy-editor.ts` 已落地（`PolicyStore` / `FilePolicyStore` / `getPolicyStore` 接口+默认实现+工厂），并新增 `GET /api/policy`（读）/ `POST /api/policy`（校验后写入）/ `GET /api/policy/preview?role=&action=` 端点与 `policy:read` / `policy:write` 动作；前端 `<ah-policy-editor>` 组件亦已实现。本节的接口与端点设计已基本兑现。
+
 ### 设计方案
 - **后端**（落 `access/server/src/policy-editor.ts`）：
   - `interface PolicyStore { read(): Promise<PolicyDoc>; write(doc: PolicyDoc): Promise<void>; preview(role: Role, action: Action): Promise<boolean> }`。
@@ -134,6 +136,8 @@
 
 ### 现状
 `workflow-executor.ts` 已存在工作流执行；`audit` / `approvals` 机制就绪；但 Plan 产物缺少可视化，多人在同一计划上无协同视图。
+
+> **现状更新**：计划模式协同子系统已落地，但实现形态与本节提案不同——计划产物的持久化与协同走 `access/server/src/plan-store.ts` / `plan-bus.ts` / `plan-verify.ts` / `plan-artifacts.ts`（计划模式「四件套」），**而非**本稿提议的新增 `access/server/src/plan.ts`（`plan.ts` 在 `backend/core/src` 已是计划模式原语：`ExecutionPlan`/`PlanTask` 契约、`buildPlannerPrompt`/`parsePlanOutput`、`planToWorkflowDef`）；权威规格见 `docs/01-architecture/plan-mode.md` 与 `docs/design/plan-mode-multiagent.md`。
 
 ### 设计方案
 - **数据模型**（新增 `plan.ts`）：

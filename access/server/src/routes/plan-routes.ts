@@ -67,6 +67,15 @@ export async function handlePlanRoutes(
           return true;
         }
       }
+      // P1 IDOR 修复：集合创建与单文档 POST 同口径做归属校验——planId 由客户端
+      // 提供（格式 plan:<chatSessionId> 可预测），不校验 existing.updatedBy 时，
+      // 知道 planId 即可静默覆盖他人的计划文档。
+      const existing = await getPlanStore().read(plan.id);
+      if (existing && ctx.role !== 'admin' && existing.updatedBy !== ctx.sub) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden' }));
+        return true;
+      }
       const saved = await getPlanStore().save(plan);
       publishPlanEvent(saved.id, ctx.sub, { type: 'plan:update', patch: saved });
       deps.auditAction('plan.save', { planId: saved.id, version: saved.version, role: ctx.role, sub: ctx.sub });

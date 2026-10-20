@@ -76,7 +76,10 @@ export function createImRegistry(
     maxSteps: toPositiveInt(env.IM_MAX_STEPS, 24),
     timeoutMs: toPositiveInt(env.IM_TIMEOUT_MS, 180_000),
     replyPrefix: env.IM_REPLY_PREFIX ?? '',
-    groupRequireMention: env.IM_GROUP_REQUIRE_MENTION !== 'false'
+    groupRequireMention: env.IM_GROUP_REQUIRE_MENTION !== 'false',
+    // P1-3：IM 执行并发闸门（此前完全绕过 RUN_CONCURRENCY）。
+    maxInflight: toPositiveInt(env.IM_MAX_INFLIGHT, 2),
+    maxWaiting: toPositiveInt(env.IM_MAX_WAITING, 8)
   };
 
   if (!enabledFlag) {

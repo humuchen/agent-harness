@@ -15,7 +15,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   ATTACH_COLLAPSE_LIMIT,
   resolveAttachmentView
-} from './chat';
+} from './chat.svelte';
 
 /**
  * 复刻 handleFiles 的准入规则（与 chat.ts 实现保持逐字同构）。

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import pkg from './package.json';
 
 // 构建产物默认输出到 dist/（frontend/webapp/dist），
@@ -12,12 +13,26 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version)
     },
+    plugins: [svelte()],
     build: {
       // 输出为可直接被 node:http 静态托管的纯静态资源（无 SSR）。
       target: 'es2022',
       // 测试文件（*.test.ts）仅用于 vitest，禁止打进生产产物。
       rollupOptions: {
-        external: [/\.test\.ts$/]
+        external: [/\.test\.ts$/],
+        // P1 首屏体积优化：1.6MB 单 chunk 冷启动解析直接吃满 WebView 主线程
+        //（mobile 壳实测 1,601,540 字节单文件）。按依赖拆 vendor chunk——
+        // 大型库独立缓存，业务代码更新时用户无需重新下载整包。
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('highlight.js')) return 'vendor-hljs';
+            if (id.includes('dompurify')) return 'vendor-dompurify';
+            if (id.includes('marked')) return 'vendor-marked';
+            if (id.includes('lit')) return 'vendor-lit';
+            return 'vendor';
+          }
+        }
       }
     },
     // history 路由回退：dev 模式下 /chat 等深链接刷新时返回 index.html，

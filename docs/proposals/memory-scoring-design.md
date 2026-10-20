@@ -1,5 +1,7 @@
 # 记忆打分机制设计方案
 
+> **现状（已落地）**：本文设计已实施。`MemoryScorer` 接口与 `HeuristicMemoryScorer`（`createHeuristicScorer` 工厂）已存在于 `backend/core/src/memory.ts`；特性开关为 `memoryScoring`（`backend/core/src/feature-flags.ts`，默认关），由 `access/server/src/runner.ts` 在开启时装配 `memoryScorer` 传入 `Memory`。打分驱动的淘汰与长期记忆 Top-K 相关性裁剪均已实现，验证见 `scripts/test-scoring-report.cjs` 与 `backend/core/test/memory.test.cjs`。本文保留作为设计依据。
+
 ## 背景
 
 当前 agent-harness 记忆系统采用固定大小的滑动窗口（默认 20 条）进行上下文管理。

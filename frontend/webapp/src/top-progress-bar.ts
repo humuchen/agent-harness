@@ -6,6 +6,8 @@
  * - 默认从 0 → 90% 自动递增，模拟"加载中"；stop 时直接到 100% 并渐隐
  * - 全局唯一，多个面板并发时不会叠加
  */
+import { APP_EVENTS } from './app-events';
+
 export class TopProgressBar {
   private static instance: TopProgressBar | null = null;
 
@@ -67,9 +69,9 @@ export class TopProgressBar {
       this.bar = container.querySelector('.bar') as HTMLElement;
     }
     // 绑定事件
-    window.addEventListener('ah:bar:start', this.onStart);
-    window.addEventListener('ah:bar:tick', this.onTick);
-    window.addEventListener('ah:bar:stop', this.onStop);
+    window.addEventListener(APP_EVENTS.barStart, this.onStart);
+    window.addEventListener(APP_EVENTS.barTick, this.onTick);
+    window.addEventListener(APP_EVENTS.barStop, this.onStop);
   }
 
   private onStart = (): void => {
@@ -117,9 +119,9 @@ export class TopProgressBar {
   }
 
   destroy(): void {
-    window.removeEventListener('ah:bar:start', this.onStart);
-    window.removeEventListener('ah:bar:tick', this.onTick);
-    window.removeEventListener('ah:bar:stop', this.onStop);
+    window.removeEventListener(APP_EVENTS.barStart, this.onStart);
+    window.removeEventListener(APP_EVENTS.barTick, this.onTick);
+    window.removeEventListener(APP_EVENTS.barStop, this.onStop);
     if (this.timer) clearTimeout(this.timer);
     if (this.el) {
       this.el.remove();

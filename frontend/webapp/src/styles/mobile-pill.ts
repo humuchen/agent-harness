@@ -1,4 +1,3 @@
-import { css } from 'lit';
 
 /**
  * 移动端按钮「胶囊化」覆盖层（≤760px 或触屏设备）
@@ -49,23 +48,25 @@ import { css } from 'lit';
  * 维护提示：新增按钮若自带「透明底 + 描边」造型，需把其类名补进下方「幽灵按钮补填充底」。
  */
 
-export const mobilePill = css`
+export const mobilePill = `
   /* 断点写法注意：@media 条件必须是字面量 —— lit 的 css 标签模板出于安全考虑
      只接受 CSSResultGroup / number 插值，把条件抽成字符串常量插值会触发 TS2345。
-     条件与项目既有「移动端」约定一致（theme/tokens.ts 触屏样式、base.ts 滚动条隐藏）。 */
+     条件与项目既有「移动端」约定一致（theme/tokens.ts 触屏样式、base.ts 滚动条隐藏）。
+     排除 .no-pill 子树的 :not() 只能写在下方选择器上 —— @media 条件不支持 :not()
+     （写了整条 @media 判 invalid、内部规则全部丢弃，曾致移动端胶囊样式整体失效）。 */
   @media (max-width: 760px), (pointer: coarse) {
     /* ═══ 1) 胶囊形 + 去描边 ═══
        直接命中 button 元素即可覆盖所有组件自带的 border-radius：
        因 !important 优先于任意非 important 声明，无需再堆特异性。
        「.seg」（分段控件外壳）与「.pill」（状态标签）非 button 元素，单独列出。 */
-    button,
-    .seg,
-    .pill {
+    button:not(.no-pill *), 
+    .seg:not(.no-pill *), 
+    .pill:not(.no-pill *) {
       border-radius: var(--ah-radius-pill, 999px) !important;
       border-color: transparent !important;
     }
 
-    .refresh-btn {
+    .refresh-btn:not(.no-pill *) {
       display: none;
     }
 
@@ -73,58 +74,58 @@ export const mobilePill = css`
        仅收录「原本 background 为 transparent/none 且依赖 1px 描边提供轮廓」的类。
        它们各自的语义变体（.primary/.danger/.active）在下方 §4 还原，
        因 !important 同级比特异性，变体选择器天然更高故可胜出。 */
-    .ghost,
-    .btn,
-    .btn-sso,
-    .prov-tab,
-    .collapse-btn {
+    .ghost:not(.no-pill *), 
+    .btn:not(.no-pill *), 
+    .btn-sso:not(.no-pill *), 
+    .prov-tab:not(.no-pill *), 
+    .collapse-btn:not(.no-pill *) {
       background: var(--ah-surface-2) !important;
     }
     /* 工作台磁贴：既是按钮也是卡片。原底色写的是 var(--ah-surface, ...)，
        而主题令牌只定义了 --ah-surface-1/2/3（--ah-surface 未定义 → 落到几乎不可见的
        2% 白兜底）。桌面端靠描边撑出卡片轮廓，移动端去掉描边后必须给卡片级底色。 */
-    .tile {
+    .tile:not(.no-pill *) {
       background: var(--ah-surface-1) !important;
     }
     /* 沙箱「销毁」：原为透明底 + danger 描边 */
-    button.destroy {
+    button.destroy:not(.no-pill *) {
       background: var(--ah-danger-soft) !important;
     }
 
     /* ═══ 3) 悬停反馈补偿 ═══
        原 hover 多靠「border-color: accent」提示，描边透明后该反馈消失，改以底色加深替代。 */
-    .ghost:hover:not(:disabled),
-    .btn:hover:not(:disabled),
-    .btn-sso:hover:not(:disabled),
-    .prov-tab:not(.active):hover,
-    .collapse-btn:hover {
+    .ghost:hover:not(:disabled):not(.no-pill *), 
+    .btn:hover:not(:disabled):not(.no-pill *), 
+    .btn-sso:hover:not(:disabled):not(.no-pill *), 
+    .prov-tab:not(.active):hover:not(.no-pill *), 
+    .collapse-btn:hover:not(.no-pill *) {
       background: var(--ah-surface-3) !important;
     }
-    .tile:hover {
+    .tile:hover:not(.no-pill *) {
       background: var(--ah-surface-2) !important;
     }
 
     /* ═══ 4) 语义变体还原 ═══
        必须用 !important 显式还原：§2 的填充底是 important，而各组件的变体声明
-       （如 .btn.primary{background:accent}）是普通声明 —— important 优先于特异性，
+       （如 .btn.primary:not(.no-pill *) {background:accent}）是普通声明 —— important 优先于特异性，
        若不还原，实心主按钮/危险按钮会被一并染成浅灰底。 */
-    .primary,
-    .btn.primary,
-    .edit-btn.primary {
+    .primary:not(.no-pill *), 
+    .btn.primary:not(.no-pill *), 
+    .edit-btn.primary:not(.no-pill *) {
       background: var(--ah-accent) !important;
     }
-    .primary:hover:not(:disabled),
-    .btn.primary:hover:not(:disabled),
-    .edit-btn.primary:hover:not(:disabled) {
+    .primary:hover:not(:disabled):not(.no-pill *), 
+    .btn.primary:hover:not(:disabled):not(.no-pill *), 
+    .edit-btn.primary:hover:not(:disabled):not(.no-pill *) {
       background: var(--ah-accent-strong, var(--ah-accent)) !important;
     }
-    .btn.danger,
-    button.destroy {
+    .btn.danger:not(.no-pill *), 
+    button.destroy:not(.no-pill *) {
       background: var(--ah-danger-soft) !important;
       color: var(--ah-danger) !important;
     }
-    .btn.danger:hover:not(:disabled),
-    button.destroy:hover:not(:disabled) {
+    .btn.danger:hover:not(:disabled):not(.no-pill *), 
+    button.destroy:hover:not(:disabled):not(.no-pill *) {
       background: color-mix(
         in srgb,
         var(--ah-danger) 24%,
@@ -132,7 +133,7 @@ export const mobilePill = css`
       ) !important;
     }
     /* 厂商 Tab 选中态：原为 accent 实心，属 important 同级、特异性更高，此处显式声明以便阅读 */
-    .prov-tab.active {
+    .prov-tab.active:not(.no-pill *) {
       background: var(--ah-accent) !important;
       color: #fff !important;
     }
@@ -140,7 +141,7 @@ export const mobilePill = css`
     /* ═══ 5) 刻意保留的分隔线（非按钮轮廓） ═══
        模型选择器底部「刷新模型 | 关闭」两枚按钮共享一条左边框作分隔；
        去掉后两个按钮会挤成一段连续文字，故还原。 */
-    .footer button + button {
+    .footer button + button:not(.no-pill *) {
       border-left-color: var(--ah-border, #2a2a2a) !important;
     }
 

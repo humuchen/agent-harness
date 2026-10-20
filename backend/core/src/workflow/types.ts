@@ -83,6 +83,73 @@ export interface StepDef {
    * 未标记的 step 行为与旧版完全一致（零回归面）。
    */
   requireApproval?: boolean;
+
+  /**
+   * P6 步骤级重试：执行失败（抛错 / 产出闸门或 outputSchema 校验失败）后的最大重试次数。
+   * 指数退避（retryBackoffMs 基数），仅重试瞬时类失败——外部取消（signal aborted）不重试。
+   * 缺省 0 = 不重试（存量零回归）。
+   */
+  retries?: number;
+  /** 重试退避基数毫秒（第 n 次重试前等待 base * 2^(n-1)，上限 RETRY_BACKOFF_MAX_MS）。缺省 500。 */
+  retryBackoffMs?: number;
+
+  /**
+   * P6 动态 fan-out（运行期扇出，对标 LangGraph Send API 的静态 DAG 等价物）：
+   * true 时，本 step 成功且产出为含 `spawn` 数组的对象（每项为 SpawnSpec）时，
+   * 引擎在本波次完成后把 spawn 项物化为真实 StepDef（id 自动加 `<父id>.` 前缀，
+   * dependsOn 强制含父 step），参与后续波次调度、补偿与检查点续跑。
+   * 所在波次失败（fail-fast）时未物化的 spawn 丢弃（与「失败不扩散副作用」一致）。
+   * 单个 step 最多物化 MAX_DYNAMIC_SPAWN 个子任务。
+   */
+  dynamic?: boolean;
+
+  /**
+   * P6-B subgraph 嵌套复用：引用「已在 WorkflowStore 落过检查点」的另一工作流 def id
+   * （POST /api/workflows 即落检查点）。引擎执行本 step 时以嵌套 DagEngine 跑该 def：
+   * - 检查点非终态 → resume 续跑（嵌套检查点独立，input 取其自身 initialInput）；
+   * - 已 done → 幂等复用该 run 作为产出。
+   * 本 step 的 output = 嵌套 WorkflowRun（可序列化；下游取嵌套单步产出需穿透
+   * `steps.<本step>.output.steps.<嵌套stepId>.output`）。与 agentRef/teamRef 互斥
+   * （defRef 优先）；补偿语义为不透明 step（嵌套工作流的回滚由其自身 def 的
+   * onRolling 承担）。防递归：activeChain 环检测 + MAX_SUBGRAPH_DEPTH 硬上限。
+   */
+  defRef?: string;
+
+  /**
+   * P6 产出 schema（JSON-Schema 子集，validateAgainstSchema 校验）：
+   * 产出（executor 返回值）不符合 schema 时按失败处置（step failed + 补偿 + 级联，
+   * 错误信息含具体路径），与 failOnInvalidOutput 同型但更严格。
+   * 仅显式声明的 step 受影响（存量零回归）。
+   */
+  outputSchema?: Record<string, unknown>;
+
+  /**
+   * 运行期物化字面量输入（仅动态 fan-out 子任务使用，手工 def 不用）：
+   * spawn 项携带的 `input` 落在此字段；无 inputMapping 时 resolveInput 直接返回它，
+   * 有 inputMapping 时以 mapping 为准（literalInput 忽略）。可 JSON 序列化。
+   */
+  literalInput?: unknown;
+}
+
+/**
+ * P6 动态 fan-out 的子任务规格（父 step 产出 `spawn` 数组的元素形态）。
+ * 全部字段可 JSON 序列化；agentRef 缺省继承父 step 的 agentRef。
+ */
+export interface SpawnSpec {
+  /** 子任务 id（同父内唯一即可，引擎物化时加 `<父id>.` 前缀避免与全局 stepId 冲突）。 */
+  id: string;
+  /** 目标 agent（缺省继承父 step 的 agentRef）。 */
+  agentRef?: string | AgentCard;
+  /** 字面量输入（物化后落在子 StepDef.literalInput；与 inputMapping 二选一，均缺省取父产出）。 */
+  input?: unknown;
+  /** 输入映射（与静态 StepDef 同语法，可引用任意已存在 step 的产出，含父 step）。 */
+  inputMapping?: Record<string, string>;
+  /** 额外依赖（引擎自动追加父 step id；引用未知 step 时物化失败 → run failed）。 */
+  dependsOn?: string[];
+  /** 子任务是否需要人工审批（同静态 requireApproval 语义）。 */
+  requireApproval?: boolean;
+  /** 子任务重试次数（同静态 retries 语义）。 */
+  retries?: number;
 }
 
 /** 工作流定义（DAG）。 */
@@ -174,7 +241,56 @@ export interface StepRun {
    * 随检查点持久化供审计 / 执行详情抽屉展示。是否阻断由 def.failOnInvalidOutput 决定。
    */
   outputIssue?: Exclude<OutputIssue, 'ok'>;
+  /**
+   * P6 步骤级重试：已执行的额外重试次数（不含首次；0/缺省 = 未重试或未启用重试）。
+   * 随检查点持久化，供执行详情抽屉展示与审计。
+   */
+  attempts?: number;
 }
+
+/**
+ * P6-D9-lite 跃迁历史条目（time travel 审计的最小可用形态）：
+ * 每次关键生命周期跃迁（分叉重跑 / 失败收敛 / 续跑）追加一条，随检查点持久化，
+ * 保留最近 WORKFLOW_HISTORY_MAX 条。不做全量快照链（那是完整版 time travel 的范围）。
+ */
+export interface WorkflowHistoryEntry {
+  /** 跃迁时间（epoch ms）。 */
+  ts: number;
+  /** 跃迁类型：'rerun'（分叉重跑重置）/ 'failed'（失败收敛）/ 'resumed'（续跑开始）。 */
+  action: string;
+  /** 动作说明（如重跑起点 step id / 失败原因）。 */
+  detail?: string;
+  /** 跃迁前的 step 状态快照（stepId → state），支撑「当时长什么样」的审计回放。 */
+  prevStates: Record<string, string>;
+}
+
+/** 历史条目上限（防检查点膨胀；超出丢最旧）。 */
+export const WORKFLOW_HISTORY_MAX = 20;
+
+/**
+ * P6 方案一 A：run 内嵌状态快照（time travel 的回放锚点，见
+ * docs/05-analysis/p6-gap-remediation-eval.md §方案一）。
+ * 与 history（仅状态名）不同，snapshot 记录**完整 steps**（含产出；产出超
+ * SNAPSHOT_OUTPUT_MAX 时省略并标记 outputOmitted），rollbackToSnapshot 据此把
+ * run 恢复到该时点后走 /resume 重放。
+ */
+export interface WorkflowSnapshot {
+  id: string;
+  ts: number;
+  /** 捕获时机：'wave'（波次收敛）/ 'awaiting'（进入审批暂停）/ 'failed'（失败收敛）。 */
+  action: string;
+  /** 该时点已完成波次序号（展示用）。 */
+  wave: number;
+  /** 完整 steps 快照。 */
+  steps: Record<string, StepRun>;
+  /** 产出被省略的 step id 集合（rollback 时这些 step 强制重置 pending 重跑）。 */
+  outputOmitted?: string[];
+}
+
+/** 快照产出截断阈值：单 step 产出超过该字符数则不进快照（rollback 后该 step 重跑）。 */
+export const SNAPSHOT_OUTPUT_MAX = 65_536;
+/** 快照条目上限（防检查点膨胀；超出丢最旧）。 */
+export const WORKFLOW_SNAPSHOT_MAX = 50;
 
 /** 一次工作流执行的完整快照（可序列化、可续跑、可审计）。 */
 export interface WorkflowRun {
@@ -203,4 +319,15 @@ export interface WorkflowRun {
    * resume 时，`requireApproval` step 若在此列表中则跳过审批门直接执行。
    */
   approvals?: string[];
+  /**
+   * P6-D9-lite 跃迁历史（分叉重跑 / 失败收敛 / 续跑），随检查点持久化；
+   * 旧快照无该字段 → 从空开始累积（零回归）。
+   */
+  history?: WorkflowHistoryEntry[];
+  /**
+   * P6 方案一 A 状态快照链（波次收敛 / awaiting / failed 时捕获，上限
+   * WORKFLOW_SNAPSHOT_MAX 丢最旧），rollbackToSnapshot 据此把 run 恢复到任意时点。
+   * 旧快照无该字段 → 从空开始累积（零回归）。
+   */
+  snapshots?: WorkflowSnapshot[];
 }

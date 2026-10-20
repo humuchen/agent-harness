@@ -35,6 +35,7 @@ import type {
   WorkflowDef,
   WorkflowEvent,
   WorkflowRun,
+  RunTraceRecord,
 } from './types.js';
 
 export interface AgentClientOptions {
@@ -132,7 +133,7 @@ export class AgentClient {
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await this.request(path, init);
     const text = await res.text();
-    let data: unknown = undefined;
+    let data: unknown;
     try {
       data = text ? JSON.parse(text) : undefined;
     } catch {
@@ -469,6 +470,53 @@ export class AgentClient {
   }
 
   /**
+   * P6 方案一 A：回滚到指定快照（time travel 回放锚点）—— 把 run 恢复到该时点
+   * （steps/outputs 恢复，产出超限 step 重置 pending）后，配合 streamWorkflowResume
+   * 重放（上游 done 产出复用）。对应服务端 POST /api/workflows/:id/rollback；
+   * running 态 / 未知快照由服务端 409/400 拒绝（ApiError）。
+   */
+  async rollbackWorkflow(
+    id: string,
+    snapshotId: string
+  ): Promise<{ ok: boolean; workflowId: string; snapshotId: string; run: WorkflowRun; hint?: string }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/rollback`,
+      { method: 'POST', body: JSON.stringify({ snapshotId }) }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as {
+      ok: boolean;
+      workflowId: string;
+      snapshotId: string;
+      run: WorkflowRun;
+      hint?: string;
+    };
+  }
+
+  /**
+   * P6 观测（方案三一期）：run 过程归档查询 —— runId 缺省返回该工作流最近 ≤20 次执行的
+   * 归档列表（新→旧）；指定 runId 返回单次完整归档（per-step 状态/重试/错误/调用链路）。
+   * 对应服务端 GET /api/workflows/:id/run-traces[?runId=]。
+   */
+  async getWorkflowRunTraces(
+    id: string,
+    runId?: string
+  ): Promise<{ traces?: RunTraceRecord[]; trace?: RunTraceRecord }> {
+    const q = runId ? `?runId=${encodeURIComponent(runId)}` : '';
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/run-traces${q}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as { traces?: RunTraceRecord[]; trace?: RunTraceRecord };
+  }
+
+  /**
    * P5.4 显式取消一个运行中的工作流（POST /api/workflows/:id/cancel）。
    * 服务端 abort 引擎 signal → 检查点落 failed（已完成 step 保留），可从断点续跑。
    * 幂等：run 已终态 / 不在本进程运行时服务端直接 ok（cancelled:false）。
@@ -483,6 +531,33 @@ export class AgentClient {
       throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
     }
     return data as { ok: boolean; workflowId: string; cancelled: boolean };
+  }
+
+  /**
+   * P6 分叉重跑：把指定 step（及其全部传递下游）重置为 pending、清空产出与错误，
+   * 随后配合 streamWorkflowResume 从该 step 重新执行（上游 done 产出复用）。
+   * 对应服务端 POST /api/workflows/:id/rerun；running 态 / 未知 step 由服务端
+   * 409 / 400 拒绝（抛 ApiError，error 字段带原因）。
+   */
+  async rerunWorkflow(
+    id: string,
+    stepId: string
+  ): Promise<{ ok: boolean; workflowId: string; stepId: string; run: WorkflowRun; hint?: string }> {
+    const res = await this.request(
+      `/api/v1/workflows/${encodeURIComponent(id)}/rerun`,
+      { method: 'POST', body: JSON.stringify({ stepId }) }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`);
+    }
+    return data as {
+      ok: boolean;
+      workflowId: string;
+      stepId: string;
+      run: WorkflowRun;
+      hint?: string;
+    };
   }
 
   /**

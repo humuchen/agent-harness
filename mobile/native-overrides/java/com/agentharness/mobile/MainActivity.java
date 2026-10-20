@@ -2,15 +2,19 @@ package com.agentharness.mobile;
 
 import android.app.DownloadManager;
 import android.content.Context;
+import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.WebView;
 import android.widget.Toast;
 import com.getcapacitor.BridgeActivity;
 import java.net.URLDecoder;
+import java.util.Collections;
 
 /**
  * 自定义 WebView 行为（cap add 重新生成 android/ 时会重置为 Capacitor 模板；
@@ -74,6 +78,44 @@ public class MainActivity extends BridgeActivity {
                     Toast.makeText(this, "下载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
                 }
             });
+            // 抽屉侧滑关闭 vs 系统返回手势（Android 10+ 左右边缘内滑返回）的冲突协调：
+            // webapp 的 utils/system-gesture.ts 在抽屉打开期间经本接口申请排除区。
+            // 排除区只作用于系统返回手势（不影响底部 Home 手势），抽屉关闭即解除。
+            webview.addJavascriptInterface(new AhSystemGestureBridge(), "AhSystemGesture");
+        }
+    }
+
+    /**
+     * JS 桥：供 webapp（window.AhSystemGesture）在抽屉打开/关闭时调用的系统手势排除开关。
+     *
+     * 安全说明：接口暴露给 WebView 内加载的全部内容（含 OAuth 白名单内的第三方授权页），
+     * 但能力仅限「开/关系统返回手势排除区」，不触及凭据、文件与网络，与既有
+     * DownloadListener 属同一信任级别。JSInterface 方法运行在 JavaBridge 后台线程，
+     * View 操作统一 runOnUiThread 切回主线程。
+     */
+    private final class AhSystemGestureBridge {
+        @JavascriptInterface
+        public void setDrawerGestureExclusion(final boolean enabled) {
+            runOnUiThread(() -> applyDrawerGestureExclusion(enabled));
+        }
+    }
+
+    /**
+     * 登记/解除系统返回手势排除区。
+     * setSystemGestureExclusionRects 自 API 29（Android 10）提供——恰是系统返回手势
+     * （边缘内滑）引入的版本，低版本没有该系统手势，无需排除。
+     */
+    private void applyDrawerGestureExclusion(boolean enabled) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        WebView webview = getBridge() != null ? getBridge().getWebView() : null;
+        if (webview == null) return;
+        if (enabled) {
+            // 全屏排除：抽屉打开期间系统返回手势在整个 WebView 区域不触发，
+            // 触摸全部交给应用（web 层此时正消费侧滑关闭手势）。
+            Rect full = new Rect(0, 0, webview.getWidth(), webview.getHeight());
+            webview.setSystemGestureExclusionRects(Collections.singletonList(full));
+        } else {
+            webview.setSystemGestureExclusionRects(Collections.<Rect>emptyList());
         }
     }
 }

@@ -55,9 +55,10 @@ function feishuSignedBody(envelope, encryptKey) {
 }
 
 // 钉钉：无加密，签名 sign = base64(HMAC-SHA256(ts+"\n"+secret, secret))。
+// P1-3：钉钉 timestamp 为毫秒协议且带 ±5min 新鲜度窗，固定旧时间戳会被时间窗拒绝。
 function dingtalkSignedBody(event, secret) {
   const rawBody = JSON.stringify(event);
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const sign = createHmac('sha256', secret).update(`${ts}\n${secret}`, 'utf8').digest('base64');
   return { headers: { timestamp: ts, sign }, rawBody };
 }

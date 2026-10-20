@@ -79,8 +79,20 @@ export const offlineCacheController: OfflineCacheController = {
     }
   },
   async clear() {
+    // P1 误清凭据修复：preferences.clear() 会清空**整个** Preferences 存储——
+    // 连带抹掉 biometric-auth 的 auth_token/auth_token_key 与 haptics 等设置，
+    // 用户点一次「清除缓存」就丢失快捷登录凭据与全部偏好。改为按本模块前缀
+    // 逐 key 删除。
     const { preferences } = getPlugins();
-    await preferences.clear();
+    const result = await preferences.keys();
+    const keys: string[] = Array.isArray(result)
+      ? (result as unknown as string[])
+      : ((result as { value?: string[] }).value ?? []);
+    await Promise.all(
+      keys
+        .filter((k) => k.startsWith(CACHE_KEY_PREFIX))
+        .map((k) => preferences.remove({ key: k }))
+    );
   },
   async isOnline() {
     const status = await Network.getStatus();

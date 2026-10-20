@@ -13,7 +13,7 @@
  */
 
 import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
-import { MemoryVectorStore } from './store';
+import type { VectorStore } from './store';
 import { EmbeddingProvider } from './embed';
 import { Metrics } from './metrics';
 
@@ -169,7 +169,7 @@ function buildUserMessage(query: string, ctx: RetrieveResponse): string {
  * @param opts 生成选项
  */
 export async function generateAnswer(
-  store: MemoryVectorStore,
+  store: VectorStore,
   provider: EmbeddingProvider,
   llm: LLMProvider,
   req: RetrieveRequest & { query: string },

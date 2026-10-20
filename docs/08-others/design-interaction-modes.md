@@ -3,6 +3,8 @@
 > 状态：待确认 → 确认后按 Phase 分期实现
 > 原则：非侵入式演进 —— core/server/webapp 零业务耦合，复用既有管线（SSE / JobDescriptor 透传先例 / chat session 持久化），拒绝引入新框架。
 
+> **现状（已落地）**：计划模式已实施，权威规格见 [`plan-mode.md`](../../01-architecture/plan-mode.md) 与本目录的 [`../design/plan-mode-multiagent.md`](../design/plan-mode-multiagent.md)。本稿为早期设计，实际实现与本文有出入：计划由 `buildPlannerPrompt`（`backend/core/src/plan.ts`）包装提示词、在 `run:end` 经 `parsePlanOutput` 解析（**非**本文的 `extractPlanJson()`），并补发真实的 `plan:proposed` 事件（契约见 `backend/core/src/harness/types.ts`）；问答/计划切换已并入计划模式子系统，且确认执行走 `DagEngine` 多 agent 并行 + 共享黑板的桥（见 plan-mode-multiagent.md）。本文保留作为设计演进记录。
+
 ---
 
 ## 1. 模式定义与职责边界
@@ -95,7 +97,7 @@ sequenceDiagram
 
 | 层 | 文件 | 改动 | 侵入度 |
 |---|---|---|---|
-| core | `harness.ts` | `HarnessEvent` 加 `plan:proposed`（旁路）；新增 planner 系统提示词常量 + `extractPlanJson()` 解析容错 | 低 |
+| core | `harness.ts` | `HarnessEvent` 加 `plan:proposed`（旁路）；新增 planner 系统提示词常量 + `parsePlanOutput()` 解析容错（实现为 `backend/core/src/plan.ts` 的 `buildPlannerPrompt` / `parsePlanOutput`，非设计稿中的 `extractPlanJson()`） | 低 |
 | server | `run-queue.ts` | `JobDescriptor`/`submit`/`makeJob` 透传 `interactionMode?`、`planPhase?`（沿用 `web?: boolean` 的既有透传先例） | 低 |
 | server | `server.ts` | handleRun 读取并透传两个字段；plan 落盘复用 chat session 存储（消息 meta 扩展位，与 trace 同机制） | 低 |
 | client | `types.ts` | `RunInput` 加 `interactionMode?` / `phase?` / `executePlan?`（type only） | 零逻辑 |

@@ -2,6 +2,7 @@
  * 客服提醒仓储：cs_reminder 表 CRUD。
  * 存储 agent 分析产出的提醒项，供看板轮询 + SSE 推送。
  */
+import { randomBytes } from 'node:crypto';
 import { getDb } from '../infra/db';
 import { getConfig } from '../config';
 
@@ -23,7 +24,8 @@ export interface CsReminderRow {
 }
 
 export function newReminderId(): string {
-  return `rmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  // P1 弱随机修复：Math.random 熵仅 ~20bit 且可预测，改用 crypto 随机（可枚举 ID 防护）。
+  return `rmd-${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`;
 }
 
 /**
@@ -94,16 +96,17 @@ export function listPendingReminders(limit = 50): CsReminderRow[] {
   return rows;
 }
 
-/** 更新提醒状态。 */
+/** 更新提醒状态（P1 租户隔离修复：UPDATE 补 tenant_id 条件，与 getReminder/listPendingReminders 口径对齐）。 */
 export function updateReminderStatus(
   id: string,
   status: 'reminded' | 'ignored'
 ): boolean {
   const db = getDb();
+  const tenantId = getConfig().tenantId;
   const now = new Date().toISOString();
   const result = db
-    .prepare(`UPDATE cs_reminder SET status = ?, updated_at = ? WHERE id = ?`)
-    .run(status, now, id);
+    .prepare(`UPDATE cs_reminder SET status = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`)
+    .run(status, now, tenantId, id);
   return (result as unknown as { changes: number }).changes > 0;
 }
 

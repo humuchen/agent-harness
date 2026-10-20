@@ -202,7 +202,9 @@ test('FeishuAdapter: 非文本消息返回 null', () => {
 test('DingtalkAdapter: 签名校验（HMAC-SHA256）', () => {
   const secret = 'appsec';
   const a = new DingtalkAdapter({ clientId: 'k', clientSecret: secret });
-  const ts = '1700000000';
+  // P1-3：钉钉 timestamp 为毫秒协议且带 ±5min 新鲜度窗，固定旧时间戳会被时间窗拒绝，
+  // 故用当前时间构造合法请求。
+  const ts = String(Date.now());
   const sign = createHmac('sha256', secret).update(`${ts}\n${secret}`, 'utf8').digest('base64');
   assert.strictEqual(
     a.verifyInbound({ headers: { timestamp: ts, sign }, rawBody: '{}', url: new URL('http://x/') }),
@@ -211,6 +213,37 @@ test('DingtalkAdapter: 签名校验（HMAC-SHA256）', () => {
   assert.strictEqual(
     a.verifyInbound({ headers: { timestamp: ts, sign: 'bad' }, rawBody: '{}', url: new URL('http://x/') }),
     false
+  );
+});
+
+test('DingtalkAdapter: 时间戳超出 ±5min 新鲜度窗 → 拒绝（P1-3 防重放）', () => {
+  const secret = 'appsec';
+  const a = new DingtalkAdapter({ clientId: 'k', clientSecret: secret });
+  const mk = (ts) => {
+    const sign = createHmac('sha256', secret).update(`${ts}\n${secret}`, 'utf8').digest('base64');
+    return { headers: { timestamp: String(ts), sign }, rawBody: '{}', url: new URL('http://x/') };
+  };
+  assert.strictEqual(a.verifyInbound(mk(Date.now() - 10 * 60_000)), false, '10min 前超出 ±5min 窗');
+  assert.strictEqual(a.verifyInbound(mk(Date.now() + 10 * 60_000)), false, '未来 10min 同样拒绝');
+  assert.strictEqual(a.verifyInbound(mk(Date.now())), true, '当前时间放行');
+  // 非数字时间戳也必须在新鲜度校验处拒绝（NaN 比较 false）。
+  const badTsSign = createHmac('sha256', secret).update(`abc\n${secret}`, 'utf8').digest('base64');
+  assert.strictEqual(
+    a.verifyInbound({ headers: { timestamp: 'abc', sign: badTsSign }, rawBody: '{}', url: new URL('http://x/') }),
+    false,
+    '非数字时间戳拒绝'
+  );
+});
+
+test('DingtalkAdapter: timestampToleranceMs=0 关闭时间窗（时钟漂移逃生门）', () => {
+  const secret = 'appsec';
+  const a = new DingtalkAdapter({ clientId: 'k', clientSecret: secret, timestampToleranceMs: 0 });
+  const ts = 1700000000; // 2023 年的陈旧时间戳：仅验签、不做新鲜度校验时应放行
+  const sign = createHmac('sha256', secret).update(`${ts}\n${secret}`, 'utf8').digest('base64');
+  assert.strictEqual(
+    a.verifyInbound({ headers: { timestamp: String(ts), sign }, rawBody: '{}', url: new URL('http://x/') }),
+    true,
+    '容差 0 = 不做新鲜度校验，仅验签'
   );
 });
 
@@ -606,4 +639,123 @@ test('ImBridge: 可注入自定义 DedupStore 且去重生效', async () => {
   assert.strictEqual(called, 1, '注入的存储应完成去重');
   assert.strictEqual(bridge.snapshot().deduper, 'memory');
   assert.strictEqual(bridge.snapshot().counters.deduped, 1);
+});
+
+// ── P1-3：并发闸门（信号量 + FIFO 等待队列 + 双满快速拒绝）──
+test('ImBridge: 在飞与等待队列双满 → 快速拒绝并回繁忙提示', async () => {
+  let called = 0;
+  const releases = [];
+  let seq = 0;
+  const adapter = stubAdapter({
+    parseInbound: () => ({
+      provider: 'feishu',
+      messageId: `m-${++seq}`,
+      senderId: 'u1',
+      chatId: 'c1',
+      isGroup: false,
+      mentionedBot: true,
+      text: 'hi'
+    })
+  });
+  const bridge = new ImBridge(
+    bridgeConfig(adapter, { maxInflight: 1, maxWaiting: 1 }),
+    async () => {
+      called++;
+      return new Promise((resolve) => releases.push(resolve));
+    }
+  );
+  const req = () => bridge.handleInbound('feishu', { headers: {}, rawBody: '{}', url: new URL('http://x/') });
+  // 第 1 条：占住唯一在飞槽（executor 挂起）。
+  assert.strictEqual((await req()).status, 200);
+  await tick();
+  // 第 2 条：进入 FIFO 等待队列（maxWaiting=1）。
+  assert.strictEqual((await req()).status, 200);
+  await tick();
+  // 第 3 条：双满 → 快速拒绝（200 + 繁忙提示），不进队列。
+  assert.strictEqual((await req()).status, 200);
+  await tick();
+  assert.strictEqual(bridge.snapshot().counters.busyRejected, 1, '双满应计 busyRejected');
+  assert.strictEqual(called, 1, '被拒绝的消息不得进入 executor');
+  assert.ok(
+    adapter._sent.some((t) => t.includes('当前任务较多')),
+    '应回「繁忙」提示'
+  );
+  // 快照透出闸门水位。
+  const snap = bridge.snapshot();
+  assert.strictEqual(snap.maxInflight, 1);
+  assert.strictEqual(snap.maxWaiting, 1);
+  assert.strictEqual(snap.waiting, 1, '一条在等待队列');
+  // 放行第 1 条 → 第 2 条从等待队列被唤醒执行。
+  releases[0]('ok1');
+  await tick();
+  await tick();
+  await tick();
+  assert.strictEqual(called, 2, '等待者应被唤醒执行');
+  releases[1]('ok2');
+  await tick();
+  assert.strictEqual(bridge.snapshot().counters.completed, 2);
+  assert.strictEqual(bridge.snapshot().inflight, 0, '全部结算后在飞清零');
+});
+
+// ── P1-4：无 messageId 不去重（宁可重复处理也不误丢用户消息）──
+test('ImBridge: 无 messageId → 不去重仅告警计数，同文本重发照常执行', async () => {
+  let called = 0;
+  const adapter = stubAdapter({
+    parseInbound: () => ({
+      provider: 'feishu',
+      messageId: '',
+      senderId: 'u1',
+      chatId: 'c1',
+      isGroup: false,
+      mentionedBot: true,
+      text: '继续'
+    })
+  });
+  const bridge = new ImBridge(bridgeConfig(adapter), async () => {
+    called++;
+    return 'ok';
+  });
+  const req = { headers: {}, rawBody: '{}', url: new URL('http://x/') };
+  await bridge.handleInbound('feishu', req);
+  await bridge.handleInbound('feishu', req);
+  await tick();
+  assert.strictEqual(called, 2, '缺 messageId 时两次都应执行（不得用文本合成兜底键去重）');
+  assert.strictEqual(bridge.snapshot().counters.noMessageId, 2, '应累计告警计数');
+  assert.strictEqual(bridge.snapshot().counters.deduped, 0, '不应产生去重计数');
+});
+
+// ── P1-4：去重键带 provider 前缀（防跨平台 messageId 碰撞）──
+test('ImBridge: 去重键含 provider 前缀，跨平台同 messageId 不互斥', async () => {
+  let called = 0;
+  const mk = (provider) =>
+    stubAdapter({
+      provider,
+      parseInbound: () => ({
+        provider,
+        messageId: 'same-id',
+        senderId: 'u1',
+        chatId: 'c1',
+        isGroup: false,
+        mentionedBot: true,
+        text: 'hi'
+      })
+    });
+  const feishuA = mk('feishu');
+  const feishuB = mk('feishu');
+  const wecomA = mk('wecom');
+  const deduper = new MemoryDedupStore();
+  const exec = async () => {
+    called++;
+    return 'ok';
+  };
+  const cfg = (a) => bridgeConfig(a);
+  const b1 = new ImBridge(cfg(feishuA), exec, {}, deduper);
+  const b2 = new ImBridge(cfg(wecomA), exec, {}, deduper);
+  const b3 = new ImBridge(cfg(feishuB), exec, {}, deduper);
+  const req = { headers: {}, rawBody: '{}', url: new URL('http://x/') };
+  await b1.handleInbound('feishu', req); // feishu:same-id 首次
+  await b2.handleInbound('wecom', req); // wecom:same-id 与 feishu 不互斥
+  await b3.handleInbound('feishu', req); // feishu:same-id 共享存储 → 去重
+  await tick();
+  assert.strictEqual(called, 2, '跨平台同 messageId 应各执行一次；同平台第二次去重');
 });

@@ -28,6 +28,9 @@
 | [medspa-agent.ts](./medspa-agent.ts)     | **医美Agent** - 医疗客资Agent完整实现 | `npx tsx medspa-agent.ts`   |
 | [os-sandbox.ts](./os-sandbox.ts)         | **操作系统沙箱** - 安全执行环境       | `npx tsx os-sandbox.ts`     |
 | [self-serve-env.ts](./self-serve-env.ts) | **自助环境** - 自动环境配置           | `npx tsx self-serve-env.ts` |
+| [a2a-remote-agent.ts](./a2a-remote-agent.ts) | **远程A2A Agent** - 跨进程Agent间任务投递 | `npx tsx a2a-remote-agent.ts` |
+| [plugin-registry-pull.ts](./plugin-registry-pull.ts) | **插件市场拉取** - 从 Registry 拉取并加载插件 | `npx tsx plugin-registry-pull.ts` |
+| [scheduled-trigger-plugin.ts](./scheduled-trigger-plugin.ts) | **定时触发插件** - 演示插件注册与调度触发 | `npx tsx scheduled-trigger-plugin.ts` |
 
 ### 🔍 验证/测试示例
 
@@ -37,6 +40,8 @@
 | [verify-mcp.ts](./verify-mcp.ts)           | **MCP验证** - 验证MCP服务连接       | `npx tsx verify-mcp.ts`      |
 | [use-context7.ts](./use-context7.ts)       | **Context7使用** - 使用Context7工具 | `npx tsx use-context7.ts`    |
 | [verify-context7.ts](./verify-context7.ts) | **Context7验证** - 验证Context7集成 | `npx tsx verify-context7.ts` |
+| [rag-e2e.ts](./rag-e2e.ts)               | **RAG端到端** - 拉起 RAG 服务并验证入库/检索 | `npx tsx rag-e2e.ts` |
+| [rag-live-e2e.ts](./rag-live-e2e.ts)     | **RAG实时端到端** - RAG 以 MCP 形态接入并跑通检索 | `npx tsx rag-live-e2e.ts` |
 
 ## 🚀 快速开始
 
@@ -82,12 +87,20 @@ npx tsx multi-agent.ts
 **关键代码**:
 
 ```typescript
-const agent = new Agent({
-  systemPrompt: '你是一个有用的助手',
-  model: 'gpt-4'
-});
+import { AgentHarness, ToolRegistry, objectParams } from '@agent-harness/core';
 
-const result = await agent.run('你好,请介绍一下自己');
+// 1. 注册工具
+const tools = new ToolRegistry();
+tools.register(
+  'add',
+  'Add two numbers and return the sum.',
+  objectParams({ a: { type: 'number' }, b: { type: 'number' } }),
+  async ({ a, b }) => ({ content: String(a + b) })
+);
+
+// 2. 创建 Harness 并运行
+const agent = new AgentHarness({ tools });
+const result = await agent.run('帮我算 1+2');
 console.log(result);
 ```
 
@@ -106,11 +119,15 @@ console.log(result);
 **关键代码**:
 
 ```typescript
-const chat = new ChatSession(agent);
+import { AgentHarness, Memory } from '@agent-harness/core';
 
-await chat.sendMessage('我想了解医美项目');
-await chat.sendMessage('双眼皮手术多少钱?');
-await chat.sendMessage('恢复期多久?');
+// 多轮对话依靠 Memory 维护上下文
+const memory = new Memory();
+const agent = new AgentHarness({ memory /* + llm / tools */ });
+
+await agent.run('我想了解医美项目');
+await agent.run('双眼皮手术多少钱?');
+await agent.run('恢复期多久?');
 ```
 
 ---
@@ -128,9 +145,12 @@ await chat.sendMessage('恢复期多久?');
 **关键代码**:
 
 ```typescript
-const researcher = new Agent({ role: '研究员' });
-const writer = new Agent({ role: '作家' });
-const reviewer = new Agent({ role: '审核员' });
+import { AgentHarness, ToolRegistry } from '@agent-harness/core';
+
+// 各角色 = 各自的 AgentHarness 实例（可带不同工具集 / 系统提示）
+const researcher = new AgentHarness({ tools, agentId: 'researcher' });
+const writer = new AgentHarness({ tools, agentId: 'writer' });
+const reviewer = new AgentHarness({ tools, agentId: 'reviewer' });
 
 // 协作流程
 const research = await researcher.run('调研医美市场');
@@ -153,7 +173,10 @@ const final = await reviewer.run(`审核文章: ${article}`);
 **关键代码**:
 
 ```typescript
-const agent = new Agent({
+import { AgentHarness } from '@agent-harness/core';
+
+const agent = new AgentHarness({
+  // 连接多个 MCP 服务后工具自动注册进 ToolRegistry
   mcpServers: [
     { name: 'weather', url: 'http://localhost:3001' },
     { name: 'calendar', url: 'http://localhost:3002' }
@@ -180,15 +203,29 @@ const result = await agent.run('明天北京天气如何?帮我安排会议');
 **关键代码**:
 
 ```typescript
-const medspaAgent = new MedicalAestheticsAgent({
-  guardrails: medicalAdRules,
-  kbService: kbService,
-  leadService: leadService
-});
+// 演示「运行时注册」而非启动期硬编码：
+// 1) 构造一张 domain=medical-aesthetics 的 AgentCard（声明能力 + assembly 装配配方）
+// 2) POST /api/agents 注册到运行中的服务端
+// 3) POST /api/run 带 tenantId 跑一轮医美咨询，验证「行业 agent + 租户隔离」闭环
 
-// 完整对话流程
-await medspaAgent.handleMessage('我想做双眼皮');
-// → 资质评估 → 留资 → 预约 → (可选)转人工
+const card = {
+  id: 'medspa-consultant',
+  domain: 'medical-aesthetics',
+  name: '医美咨询顾问',
+  capabilities: ['chat', 'lead', 'consult', 'book', 'handoff'],
+  assembly: { systemPrompt: buildSystemPrompt() },
+};
+
+await fetch(`${BASE}/api/agents`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(card),
+});
+const res = await fetch(`${BASE}/api/run`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ agentId: 'medspa-consultant', tenantId: 'default', message: '我想做双眼皮' }),
+});
 ```
 
 ---
@@ -206,13 +243,13 @@ await medspaAgent.handleMessage('我想做双眼皮');
 **关键代码**:
 
 ```typescript
-const sandbox = new OSSandbox({
-  allowedCommands: ['ls', 'cat', 'pwd'],
-  maxMemory: '512mb',
-  timeout: 30000
-});
+import { registerShell, createSandboxExecutor } from '@agent-harness/core';
 
-const result = await sandbox.execute('ls -la');
+// 命令白名单 + 作用域 + 确认三道闸门后，放行的命令交由 OS 沙箱执行
+registerShell({
+  executor: createSandboxExecutor({ backend: 'os' }),
+  whitelist: ['ls', 'cat', 'pwd', 'node', 'python3'],
+});
 ```
 
 ---
@@ -231,12 +268,16 @@ const result = await sandbox.execute('ls -la');
 **关键代码**:
 
 ```typescript
+import { Workflow, type StepExecutor } from '@agent-harness/core';
+
+const qualify: StepExecutor = async (step, input) => ({ output: `qualified: ${input}` });
+const capture: StepExecutor = async (step, input) => ({ output: `captured: ${input}` });
+
 const workflow = new Workflow({
   steps: [
-    { id: 'qualify', action: qualifyLead },
-    { id: 'capture', action: captureLead, condition: isQualified },
-    { id: 'book', action: bookConsultation, condition: hasConsent }
-  ]
+    { id: 'qualify', run: qualify },
+    { id: 'capture', run: capture, condition: (ctx) => ctx.state.qualified },
+  ],
 });
 
 await workflow.execute({ channel: '抖音', project: '双眼皮' });
@@ -260,6 +301,8 @@ multi-agent.ts → multi-mcp.ts → real-loop.ts
 高级 (5-6小时)
   ↓
 medspa-agent.ts → os-sandbox.ts → workflow-demo.ts
+  → a2a-remote-agent.ts → plugin-registry-pull.ts → scheduled-trigger-plugin.ts
+  → rag-e2e.ts / rag-live-e2e.ts
 ```
 
 ### 调试技巧
@@ -303,10 +346,10 @@ curl http://localhost:3001/health
 
 ### Q: 如何查看Agent的完整执行日志?
 
-**A**: 启用调试模式:
+**A**: 启用调试模式（AgentHarness 透传 core 的调试开关，或设置环境变量 `DEBUG=*`）:
 
 ```typescript
-const agent = new Agent({
+const agent = new AgentHarness({
   debug: true // 启用详细日志
 });
 ```

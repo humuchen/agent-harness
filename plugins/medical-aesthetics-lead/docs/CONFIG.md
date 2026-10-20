@@ -83,6 +83,12 @@ RAG_TRANSPORT=http RAG_DATA_FILE=/data/ma-lead/rag-store.json \
 export MA_RAG_BASE_URL=http://localhost:8787
 ```
 
+`project_kb_search` 调 RAG 时按 `MA_RAG_API_STYLE` 区分风格（由 `src/config.ts` 的 `rag.apiStyle` 读取，默认 `local`）：
+
+| 变量 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `MA_RAG_API_STYLE` | 否 | `local` | RAG 检索风格：`local` 调本地 services/rag 的 `POST /v1/retrieve`（纯检索）；`hermes` 调外部 HermesChat RAG 的 `POST /api/v1/chat`，取 `citations` 作为检索片段。 |
+
 > ⚠️ **`rag-store.json` 是迁移后运行时唯一的持久化知识源，且被 gitignore（不在版本控制）。** 因 `knowledge/` 已删除，`rag-ingest.cjs` 现已无法重跑（会判定 `knowledge/` 不存在并安全退出）。新环境重建需**复制该 store 文件**，或先 `git checkout` 恢复 `knowledge/` 母版后再迁移。
 
 **可选：本地库语义 hybrid（ma_project 回退路径）**。仅当未配 `MA_RAG_BASE_URL` 时生效；启用步骤：
@@ -245,7 +251,7 @@ metric 决定转化口径 `reply|booking|arrived`）+ `ma_ab_variant`（2~3 个�
 
 ---
 
-## 8. 脚本命令行参数
+## 12. 脚本命令行参数
 
 脚本（`scripts/*.cjs`）复用插件编译产物（`dist/`），并通过 `MA_DB_FILE` 指定库。
 
@@ -261,7 +267,7 @@ metric 决定转化口径 `reply|booking|arrived`）+ `ma_ab_variant`（2~3 个�
 MA_RAG_DATA_FILE=/data/ma-lead/rag-store.json node scripts/rag-ingest.cjs
 ```
 
-### 9. Seeding Demo Data for Local Testing
+### 13. Seeding Demo Data for Local Testing
 
 The plugin does **not** auto-seed on startup. For local development and testing, use the standalone seed script:
 
@@ -286,7 +292,7 @@ Environment variables honored by the script:
 
 Data written: 7 clinics, 4 projects, 200 leads (8 stages: deal/contacted/qualified/booked/captured/arrived/new/lost), 490 time slots, 889 lead messages, 480 stage logs, 57 appointments, 57 outbox entries, 57 inbound messages.
 
-### 10. Seeding Real Business Data from JSON
+### 14. Seeding Real Business Data from JSON
 
 To insert **real business data** (e.g., from your CRM/Excel export) instead of simulated demo data:
 

@@ -40,3 +40,4 @@ resources:
   - hpa.yaml
   - redis.yaml   # Redis 单副本（开发/测试）。生产建议用托管 Redis ——详见 overlays/eks/kustomization.yaml 的注释
   - pvc.yaml     # 记忆持久化共享卷（RWX，多副本共享 /app/data）
+  - networkpolicy.yaml  # P1 加固：rag/redis 入站仅放行 agent-harness 应用 Pod（需 CNI 支持）

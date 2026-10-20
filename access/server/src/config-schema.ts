@@ -11,6 +11,7 @@
  * 设计：声明式 schema + 纯函数校验；未来若引入 zod/envkit，可整体替换实现而不改调用方。
  */
 import { structLog } from '@agent-harness/core';
+import { getSecret } from './env-guard';
 
 type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json' | 'hex64';
 
@@ -207,7 +208,9 @@ export function validateConfig(): ConfigReport {
   const warnings: string[] = [];
 
   for (const field of SCHEMA) {
-    const raw = process.env[field.key];
+    // P1 env 边界收口：敏感键（UI_TOKENS 等）已被 scrub 进受保护副本，统一经
+    // getSecret 读取（非敏感键回落直读，行为等价）。
+    const raw = getSecret(field.key);
     if (raw == null || raw === '') {
       if (field.required) errors.push(`缺少必需环境变量 ${field.key}（${field.desc ?? ''}）`);
       continue;

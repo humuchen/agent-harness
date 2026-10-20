@@ -9,6 +9,7 @@ export * from './memory-store';
 export * from './circuit-breaker';
 export * from './db-adapter';
 export * from './tools';
+export * from './json-schema';
 export * from './builtins';
 export * from './agents';
 export * from './router';

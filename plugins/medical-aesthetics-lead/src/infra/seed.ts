@@ -315,7 +315,7 @@ export async function shouldSeed(): Promise<boolean> {
     return true;
   }
   // 检查 ma_lead 表是否存在；若不存在，说明 schema 尚未初始化，应当运行种子
-  let count = 0;
+  let count: number;
   try {
     const rows = await db.prepare('SELECT COUNT(*) AS c FROM ma_lead').get();
     count = Number(rows?.c ?? 0);
@@ -554,7 +554,7 @@ export async function seedDemoData(
 
     let bookingDate: string | null = null;
     let bookingTime: string | null = null;
-    let slotId: string | null = null;
+    let slotId: string | null;
 
     if (['booked', 'arrived', 'deal'].includes(stage)) {
       const clinicIdx = rand(1, 7);
@@ -711,7 +711,7 @@ export async function seedDemoData(
 
     // 写入 ma_lead
     const crmSyncRoll = Math.random();
-    let crmSyncState = 'pending';
+    let crmSyncState: string;
     let crmId: string | null = null;
     let crmSyncedAt: number | null = null;
     if (crmSyncRoll < 0.7) {

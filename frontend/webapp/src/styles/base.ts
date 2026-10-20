@@ -1,17 +1,14 @@
-import { css } from 'lit';
-
 // 切片自 styles.ts 原文件第 12-484 行，CSS 文本逐字节保留（LF 行尾），仅外层改用 css 组合。
-export const base = css`
+export const base = `
   /* 组件根盒：修复样式模块化拆分时丢失 :host 选择器前缀导致整条规则失效的问题。
      缺 display:block 时自定义元素退回 display:inline；缺令牌则组件不随 [data-theme]
      切换（亮色主题下根背景仍为暗色）且丢失 Inter / 14px 基准排版。
      注意：此处刻意不写 height/overflow —— 移动端顶层壳 ah-app 的
-     :host height:auto / min-height:100dvh / overflow:visible 在 app.ts 的
+     .ah-c height:auto / min-height:100dvh / overflow:visible 在 app.ts 的
      mobileShellCss（仅注入 ah-app 自身 shadow root）；sharedStyles 被 19 个
      面板组件共用，:host 规则若写在共享层会泄漏到每个面板 host。 */
-  :host {
+  .ah-c {
     display: block;
-    background: var(--ah-canvas);
     color: var(--ah-text);
     font-family: var(--ah-font-sans);
     font-size: 14px;

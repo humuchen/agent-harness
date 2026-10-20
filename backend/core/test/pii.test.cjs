@@ -26,7 +26,14 @@ test('PII：脱敏 API Key 类串', () => {
 });
 
 test('PII：脱敏银行卡号', () => {
-  assert.equal(g.redactPII('卡号 6222021234567890'), '卡号 ***[card]');
+  // 过 Luhn 的行业通用测试卡（P1 误杀修复后，不过 Luhn 的纯数字不再误判）。
+  assert.equal(g.redactPII('卡号 4111111111111111'), '卡号 ***[card]');
+});
+
+test('PII：时间戳/订单号不过 Luhn 不误杀', () => {
+  // 13 位 Unix 毫秒时间戳与 19 位订单号此前一律被打码成 ***[card]。
+  assert.equal(g.redactPII('时间戳 1700000000000'), '时间戳 1700000000000');
+  assert.equal(g.redactPII('订单号 1234567890123456789'), '订单号 1234567890123456789');
 });
 
 test('PII：非字符串原样返回', () => {

@@ -1,7 +1,6 @@
-import { css } from 'lit';
 
-export const layout = css`
-  :host {
+export const layout = `
+  .chat-root {
     display: flex;
     flex-direction: row;
     height: 100%;

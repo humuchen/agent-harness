@@ -1,0 +1,30 @@
+[
+  {
+    "id": "doc-gen",
+    "name": "文档生成",
+    "description": "根据提示词自动生成结构化文档（周报 / 方案 / 操作手册）。",
+    "enabled": true,
+    "source": "builtin"
+  },
+  {
+    "id": "data-export",
+    "name": "数据导出",
+    "description": "将对话记录 / 业务数据导出为 CSV 或 Excel 文件。",
+    "enabled": true,
+    "source": "builtin"
+  },
+  {
+    "id": "code-review",
+    "name": "代码审查",
+    "description": "对 Pull Request 进行自动化代码审查、风格与安全扫描。",
+    "enabled": false,
+    "source": "enterprise"
+  },
+  {
+    "id": "summarize",
+    "name": "内容摘要",
+    "description": "对长文档 / 会议录音转写做多语言摘要与要点抽取。",
+    "enabled": true,
+    "source": "builtin"
+  }
+]

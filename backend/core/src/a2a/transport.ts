@@ -52,9 +52,13 @@ export class HttpA2ATransport implements A2ATransport {
 
   async send(envelope: TaskEnvelope): Promise<TaskResult> {
     const controller = new AbortController();
-    if (envelope.sla?.timeoutMs && envelope.sla.timeoutMs > 0) {
-      setTimeout(() => controller.abort(), envelope.sla.timeoutMs);
-    }
+    // P1 资源修复：SLA 超时 timer 此前既不 clearTimeout 也不 unref——请求成功后
+    // 事件循环被空挂到 SLA 时刻；且 res.json() 无大小上限，异常远端可返回超大
+    // JSON 直接进内存。
+    const slaTimeout = envelope.sla?.timeoutMs && envelope.sla.timeoutMs > 0
+      ? setTimeout(() => controller.abort(), envelope.sla.timeoutMs)
+      : null;
+    if (slaTimeout && typeof slaTimeout.unref === 'function') slaTimeout.unref();
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl.replace(/\/+$/, '')}/api/a2a/tasks`, {
@@ -64,12 +68,14 @@ export class HttpA2ATransport implements A2ATransport {
         signal: controller.signal,
       });
     } catch (e: any) {
+      if (slaTimeout) clearTimeout(slaTimeout);
       return {
         taskId: envelope.taskId,
         status: 'failed',
         error: `a2a transport error: ${e?.message ?? String(e)}`,
       };
     }
+    if (slaTimeout) clearTimeout(slaTimeout);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       return {
@@ -78,10 +84,51 @@ export class HttpA2ATransport implements A2ATransport {
         error: `remote ${res.status}: ${text.slice(0, 200)}`,
       };
     }
-    const data = (await res.json().catch(() => null)) as
-      | { result?: TaskResult; error?: string }
-      | TaskResult
-      | null;
+    // 响应体上限（与 webfetch readBodyCapped 同思路）：流式读取并截断到 2MB。
+    const reader = res.body?.getReader();
+    let jsonText: string;
+    if (reader) {
+      const dec = new TextDecoder();
+      const chunks: string[] = [];
+      let received = 0;
+      const budget = 2 * 1024 * 1024;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const remain = budget - received;
+          const take = value.subarray(0, Math.max(remain, 0));
+          chunks.push(dec.decode(take, { stream: true }));
+          received += take.byteLength;
+          if (value.byteLength > remain) {
+            try { await reader.cancel(); } catch { /* 忽略 */ }
+            return {
+              taskId: envelope.taskId,
+              status: 'failed',
+              error: `a2a response too large (> ${budget} bytes)`,
+            };
+          }
+        }
+      } finally {
+        try { await reader.cancel(); } catch { /* 已结束则忽略 */ }
+      }
+      jsonText = chunks.join('') + dec.decode();
+    } else if (typeof (res as { text?: unknown }).text === 'function') {
+      jsonText = await res.text();
+    } else {
+      // 兼容测试 mock / 非标准 Response：仅有 json() 时退化。
+      jsonText = JSON.stringify(await res.json());
+    }
+    let data: { result?: TaskResult; error?: string } | TaskResult | null;
+    try {
+      data = JSON.parse(jsonText) as
+        | { result?: TaskResult; error?: string }
+        | TaskResult
+        | null;
+    } catch {
+      data = null;
+    }
     if (!data) {
       return { taskId: envelope.taskId, status: 'failed', error: 'empty a2a response' };
     }

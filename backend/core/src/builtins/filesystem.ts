@@ -69,8 +69,25 @@ export function registerFilesystem(registry: ToolRegistry, opts: FilesystemOptio
         const abs = await safeReal(p);
         const stat = await fsp.stat(abs);
         if (stat.isDirectory()) return 'error: is a directory, use builtin__fs_list';
-        const buf = await fsp.readFile(abs, 'utf-8');
+        // P1 OOM 修复：旧实现整文件读入内存后才截断——root 内一个几 GB 的文件
+        // （或被 symlink 指向的大文件）会直接把进程打到 OOM，截断护栏形同虚设。
+        // 改为按 fd 只读前 cap 字节 + 大小预检双重防护。
         const cap = 200_000;
+        if (stat.size > cap * 4) {
+          // 超大文件：仅读前 cap 字节。
+          const fh = await fsp.open(abs, 'r');
+          try {
+            const buf = Buffer.alloc(cap);
+            const { bytesRead } = await fh.read(buf, 0, cap, 0);
+            return (
+              buf.toString('utf-8', 0, bytesRead) +
+              `\n...[truncated: file is ${stat.size} bytes, showing first ${bytesRead}]`
+            );
+          } finally {
+            await fh.close();
+          }
+        }
+        const buf = await fsp.readFile(abs, 'utf-8');
         const text = buf.length > cap ? buf.slice(0, cap) + '\n...[truncated]' : buf;
         return text;
       } catch (e: unknown) {

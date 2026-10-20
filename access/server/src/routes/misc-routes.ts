@@ -73,13 +73,22 @@ export async function handleMiscRoutes(
   }
   if (path === '/api/memory') {
     // 查看 / 清空某个会话（按 session key）的记忆。敏感运维动作，已接入 RBAC + 审批。
-    const sessionKey = sanitizeKey(
-      url.searchParams.get('session') || 'anonymous'
+    // P1 IDOR 修复：与 /api/run 写入侧同口径，sessionKey 强制加 owner 前缀——
+    // 裸 sessionKey 之下任何持证用户可凭可预测 key 读取他人会话记忆。
+    // admin（memory:read/clear 为运维动作）保留全量 key 访问能力。
+    const rawSession = url.searchParams.get('session') || 'anonymous';
+    const memoryReadCtx = await deps.guard(
+      req,
+      res,
+      req.method === 'DELETE' ? 'memory:clear' : 'memory:read'
     );
+    if (!memoryReadCtx) return true;
+    const sessionKey =
+      memoryReadCtx.role === 'admin'
+        ? sanitizeKey(rawSession)
+        : sanitizeKey(`${memoryReadCtx.sub}::${rawSession}`);
     if (req.method === 'DELETE') {
-      const body = await readBody(req);
-      const ctx = await deps.guard(req, res, 'memory:clear', body);
-      if (!ctx) return true;
+      // guard 已在上方统一执行（memory:clear），此处直接清理。
       const store = getMemoryStore();
       const memory = new Memory({ store, sessionKey });
       await memory.clear();
@@ -87,15 +96,14 @@ export async function handleMiscRoutes(
       invalidateSessionMemory(sessionKey);
       deps.auditAction('memory.clear', {
         sessionKey,
-        role: ctx.role,
-        sub: ctx.sub
+        role: memoryReadCtx.role,
+        sub: memoryReadCtx.sub
       });
       sendJson(res, { ok: true, sessionKey }, req);
       return true;
     }
     // GET：返回该会话的长期笔记与窗口长度（不 dump 完整对话内容，控制暴露面）。
-    const ctx = await deps.guard(req, res, 'memory:read');
-    if (!ctx) return true;
+    // guard 已在上方统一执行（memory:read）。
     const store = getMemoryStore();
     const memory = new Memory({ store, sessionKey });
     await memory.load();

@@ -8,7 +8,7 @@
  *   3) jobGone（4xx）—— 立即放弃重试，原样上抛、标记非 UserStoppedRun；
  *   4) 用户手动停止 —— 抛 UserStoppedRun，且不走重连横幅；
  *   5) keepalive 中断 —— 走重连路径（先 reconnecting）后抛 UserStoppedRun；
- *   6) 最大重试次数 —— 6 次退避后放弃，原样上抛；
+ *   6) 最大重试次数 —— 8 次退避后放弃，原样上抛；
  *   7) isJobGone / sleep 单测。
  *
  * 这些用例锁住「重连引擎」的契约：后续若再抽 ingest / dispatchPrompt / resumeLost，
@@ -182,6 +182,7 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
     const apiErr2 = apiErr; // capture for closure
     const deps2: ReconnectDeps = {
       ...deps,
+      // eslint-disable-next-line require-yield -- 本 mock 故意立即抛 4xx（必须保持 AsyncGenerator 形状，见上注释），无产出
       streamRun: async function* (
         _p: Record<string, unknown>,
         _o: { signal: AbortSignal }
@@ -245,7 +246,7 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
     expect(connSetCalls).toContain('reconnecting');
   });
 
-  it('6) 最大重试次数：6 次退避后放弃，原样上抛', async () => {
+  it('6) 最大重试次数：8 次退避后放弃，原样上抛', async () => {
     const state: MockState = {
       jobId: 'job-1',
       lastSeq: 3,
@@ -257,7 +258,7 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
       state,
       events: [],
       failSeq: (['throw'] as ('ok' | 'throw')[]).concat(
-        Array(10).fill('throw')
+        Array(12).fill('throw')
       ),
       throwEvents: []
     });
@@ -265,9 +266,9 @@ describe('runWithReconnect —— 重连 / 退避状态机', () => {
     await expect(
       runWithReconnect('s1', {}, new AbortController(), deps, instant)
     ).rejects.toThrow('network blip');
-    // 首次 + 6 次重试 = 7 次 streamRun；重连横幅置位 6 次。
-    expect(calls.length).toBe(7);
-    expect(connSetCalls.filter((v) => v === 'reconnecting').length).toBe(6);
+    // 首次 + 8 次重试 = 9 次 streamRun；重连横幅置位 8 次。
+    expect(calls.length).toBe(9);
+    expect(connSetCalls.filter((v) => v === 'reconnecting').length).toBe(8);
   });
 });
 

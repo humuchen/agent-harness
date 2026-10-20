@@ -86,7 +86,7 @@ examples ──▶ core
 | 模块 | 职责 |
 |---|---|
 | `server.ts` | 组合根 / HTTP+SSE 路由分发（路由实现已模块化拆分至 `routes/`）/ 启动装配（注册行业画像+选 AgentStore+意图路由+租户门禁）/ 优雅停机 |
-| `routes/`（18 个路由模块） | 路由模块化拆分（account / chat-data / collab / run / plan / agent / approval / eval-recipe / metrics / ops / datasource / upload / skill / policy / device / edge / misc / oauth）；统一签名 `handleXxxRoutes(req,res,url,path,deps)` 依赖注入、前缀短路、行为零变更 |
+| `routes/`（17 个路由模块 + `respond.ts` 共享响应助手） | 路由模块化拆分（account / chat-data / collab / run / plan / agent / approval / eval-recipe / metrics / ops / datasource / upload / skill / policy / device / edge / misc / respond）；OAuth 端点并入 `account-routes.ts`（`handleAccountOauthRoutes`），无独立 `oauth-routes`；统一签名 `handleXxxRoutes(req,res,url,path,deps)` 依赖注入、前缀短路、行为零变更 |
 | `runner.ts` | 按模式（mock/real/real-mcp）组装 agent（`assembleAgent(card?, tenantCtx?, sandboxBackend?)` 收窄工具集） |
 | `agent-run.ts` | `runAgentTask` 单一入口（workflow/a2a/run-queue 共用 assemble+run；复用 ten化隔离） |
 | `run-queue.ts` + `queue-backend.ts` | 运行队列（Memory/File/Redis 后端；共享模式提交落盘失败同步 503、`idempotencyKey` 两层去重——进程内 Map + Redis `SET NX PX` 跨实例、僵尸任务周期回收 `RUN_QUEUE_RECLAIM_INTERVAL_MS`） |

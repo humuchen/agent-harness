@@ -46,6 +46,34 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/**
+ * P1 修复（D17）：活动 SQLite 库直接 copyFileSync 在 WAL 模式下大概率页级撕裂，
+ * 而「回滚演练」恰恰是最需要可靠快照的场景。对齐 backup-db.cjs 的降级策略：
+ * 1) node:sqlite（Node 22.13+ 内置，零依赖）VACUUM INTO —— 在线一致快照；
+ * 2) 失败时退化：尝试 sqlite3 CLI checkpoint 后拷贝（尽力降低撕裂风险）。
+ */
+function sqliteSafeCopy(srcPath, destPath) {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    let db;
+    try {
+      if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+      db = new DatabaseSync(srcPath);
+      db.exec(`VACUUM INTO '${destPath.replace(/\\/g, '/').replace(/'/g, "''")}'`);
+      return true;
+    } finally {
+      try { db?.close(); } catch { /* 忽略 */ }
+    }
+  } catch (e) {
+    log(`[warn] node:sqlite 在线备份失败（${e.message}），退化 checkpoint+拷贝`);
+  }
+  try {
+    execSync(`sqlite3 "${srcPath}" "PRAGMA wal_checkpoint(TRUNCATE);"`, { stdio: 'ignore' });
+  } catch { /* sqlite3 CLI 不可用则直接拷贝 */ }
+  fs.copyFileSync(srcPath, destPath);
+  return true;
+}
+
 // ── verify: 验证当前部署状态 ──────────────────────────────────────────
 function doVerify() {
   log('=== 回滚演练：状态验证 ===\n');
@@ -130,7 +158,7 @@ function doBackup() {
     const srcPath = src.file.startsWith('/') ? src.file : path.join(process.cwd(), src.file);
     if (fs.existsSync(srcPath)) {
       const destPath = path.join(backupPath, `${src.name}.db`);
-      fs.copyFileSync(srcPath, destPath);
+      sqliteSafeCopy(srcPath, destPath);
       results.push({ name: src.name, status: 'ok', size: fs.statSync(destPath).size });
       log(`✅ ${src.name}: ${destPath} (${(fs.statSync(destPath).size / 1024).toFixed(1)} KB)`);
     } else {
@@ -170,6 +198,12 @@ function doRestore(backupId) {
     console.error('错误: 必须指定 --from <backup-id>');
     process.exit(1);
   }
+  // P1 路径注入修复：backupId 直接拼进路径，含 ../ 时可指向任意目录读取其
+  // accounts.db 覆盖真实库。仅允许字母数字（generateId 的输出域）。
+  if (!/^[a-z0-9]+$/i.test(backupId)) {
+    console.error('错误: backup-id 仅允许字母数字');
+    process.exit(1);
+  }
   
   log(`=== 回滚演练：恢复备份 ${backupId} ===\n`);
   
@@ -195,6 +229,16 @@ function doRestore(backupId) {
     console.error('错误: 备份中没有有效的源文件');
     process.exit(1);
   }
+
+  // P1 确认门修复（与 backup-db.cjs restore 对齐）：恢复会覆盖活动库，一条命令即生效。
+  // 非 --force 时只打印计划并退出；恢复前必须停服（运行中的服务持有旧句柄，覆盖后
+  // 其缓冲仍会写入造成新旧混杂）。
+  if (!process.argv.includes('--force')) {
+    console.error('\n⚠️  即将覆盖以下活动数据库文件，请先停止服务并使用 --force 显式确认：');
+    for (const src of sources) console.error(`    ${src.name}`);
+    console.error(`    node scripts/rollback-drill.cjs --action restore --from ${backupId} --force`);
+    process.exit(1);
+  }
   
   // 备份当前状态（防止误操作）
   log('\n🔒 备份当前状态...');
@@ -206,10 +250,10 @@ function doRestore(backupId) {
     const srcPath = src.name === 'accounts'
       ? (process.env.ACCOUNT_DB_FILE || path.join(process.cwd(), 'data', 'accounts.db'))
       : (process.env.MEMORY_SQLITE_FILE || path.join(process.cwd(), 'data', 'memory.db'));
-    
+
     const destPath = path.join(currentBackupPath, `${src.name}.db`);
     if (fs.existsSync(srcPath)) {
-      fs.copyFileSync(srcPath, destPath);
+      sqliteSafeCopy(srcPath, destPath);
       log(`  ✅ ${src.name}: ${destPath}`);
     }
   }

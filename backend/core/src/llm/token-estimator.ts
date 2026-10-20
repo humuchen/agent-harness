@@ -98,9 +98,37 @@ interface MessageLike {
  *  2. 不按 base64 字符数折 —— 否则单张 1MB 图被高估成约 34 万 token，
  *     链路拆解数字（如「历史 858,118 tok」）整体失去参考价值。
  */
+/**
+ * P1 性能修复：消息 token 估算缓存（WeakMap，按消息对象引用）。
+ *
+ * 背景：memory 的 fitToBudget / historyTokens / shrinkToTokenBudget 在压缩循环里
+ * 对全窗口反复调用本函数（每次 while 迭代全量重算），主循环每步再叠加——
+ * 长会话呈 O(steps × window × passes) 的二次方退化。
+ *
+ * 失效策略：字符串不可变——以 content 字符串引用为缓存键，内容一旦被改写
+ * （如 shrinkMessage 生成新字符串）引用即变，缓存天然失效，无需手动清理；
+ * WeakMap 键为消息对象，消息被淘汰后由 GC 自动回收。
+ */
+interface MsgTokenCacheEntry {
+  src: string;
+  tokens: number;
+}
+const msgTokenCache = new WeakMap<object, MsgTokenCacheEntry>();
+
 export function estimateMessageTokens(msg: MessageLike | undefined | null): number {
   if (!msg?.content) return 0;
-  if (typeof msg.content === 'string') return estimateTokens(msg.content);
+  if (typeof msg.content === 'string') {
+    const key = msg as object;
+    const cached = msgTokenCache.get(key);
+    if (cached && cached.src === msg.content) return cached.tokens;
+    const tokens = estimateTokens(msg.content);
+    try {
+      msgTokenCache.set(key, { src: msg.content, tokens });
+    } catch {
+      /* 非 object 键（极端环境）跳过缓存，回退直接估算 */
+    }
+    return tokens;
+  }
   if (!Array.isArray(msg.content)) return 0;
   let total = 0;
   for (const b of msg.content) {

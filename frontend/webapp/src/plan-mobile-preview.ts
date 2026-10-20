@@ -1,16 +1,21 @@
 /**
- * 临时预览（一次性，验收后删除）：把 <ah-plan-board> 挂进「移动端应用壳」里。
+ * 临时预览（一次性，验收后删除）：把计划看板挂进「移动端应用壳」里。
  *
- * 目的：绕开登录与后端，复现 app.ts 的 .content 约束（窄屏 padding 16/14 +
+ * 目的：绕开登录与后端，复现 app 壳的 .content 约束（窄屏 padding 16/14 +
  * 底部固定 Tab 栏留白）与深色主题，从而判断窄屏下的泳道布局是否成立。
+ *
+ * Svelte 迁移版：原 <ah-plan-board> 自定义元素 → mount(PlanBoard)；
+ * shadowRoot 查询 → light DOM 查询（组件内部 DOM 直接可达）。
  *
  * 用法：/plan-mobile-preview.html?id=demo&w=390&shell=0
  *   w      手机框宽度（默认 390）
  *   shell  0 = 不套壳、组件独占整宽（桌面回归对照用）
  */
+import { mount, unmount, tick } from 'svelte';
 import { installThemeStyles, setTheme } from './theme/tokens';
-import type { PlanDoc } from './plan-board';
-import './plan-board';
+import { installGlobalStyles } from './styles-global';
+import type { PlanDoc } from './plan-board.svelte';
+import PlanBoard from './plan-board.svelte';
 
 const errors: string[] = [];
 window.addEventListener('error', (e) => errors.push(`ERR: ${e.message}`));
@@ -19,6 +24,7 @@ window.addEventListener('unhandledrejection', (e) =>
 );
 
 installThemeStyles();
+installGlobalStyles();
 setTheme('dark');
 
 const params = new URLSearchParams(location.search);
@@ -85,8 +91,11 @@ document.body.style.cssText =
 const hostCss =
   'display:block;background:var(--ah-canvas);font-family:var(--ah-font-sans);color:var(--ah-text)';
 
+let boardInst: Record<string, unknown> | null = null;
+let boardHost: HTMLElement | null = null;
+
 if (withShell) {
-  // 复现 app.ts 的移动端壳：固定顶栏 + .content（窄屏 padding + 底栏留白）+ 固定底栏
+  // 复现 app 壳的移动端壳：固定顶栏 + .content（窄屏 padding + 底栏留白）+ 固定底栏
   const phone = document.createElement('div');
   phone.id = 'phone';
   phone.style.cssText = `position:relative;width:${width}px;height:844px;overflow:hidden;background:var(--ah-canvas);display:flex;flex-direction:column`;
@@ -96,29 +105,30 @@ if (withShell) {
       <strong style="font-size:14px">计划</strong>
     </div>
     <div id="content" style="flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px 14px calc(48px + 16px);display:block;box-sizing:border-box">
-      <ah-plan-board style="${hostCss}"></ah-plan-board>
+      <div id="board-host" style="${hostCss}"></div>
     </div>
     <nav style="position:absolute;left:0;right:0;bottom:0;height:48px;display:flex;align-items:center;justify-content:space-around;background:var(--ah-surface-1);box-shadow:0 -2px 8px rgba(0,0,0,.3);font-size:10px;color:var(--ah-text-faint)">
       <span>工作台</span><span>对话</span><span style="color:var(--ah-accent)">计划</span><span>设置</span><span>我的</span>
     </nav>`;
   document.body.appendChild(phone);
+  boardHost = document.getElementById('board-host');
 } else {
-  const el = document.createElement('ah-plan-board');
-  el.setAttribute('style', `${hostCss};width:100%`);
-  document.body.appendChild(el);
+  boardHost = document.createElement('div');
+  boardHost.setAttribute('style', `${hostCss};width:100%`);
+  document.body.appendChild(boardHost);
 }
 
-const board = document.querySelector('ah-plan-board') as
-  | (HTMLElement & { updateComplete?: Promise<unknown> })
-  | null;
+if (boardHost) {
+  boardInst = mount(PlanBoard, { target: boardHost, props: { visible: true } });
+}
 
 void (async () => {
-  await board?.updateComplete;
+  await tick();
   await new Promise((r) => setTimeout(r, 400));
 
-  const sr = board?.shadowRoot;
-  const q = <T extends Element>(sel: string): T | null => sr?.querySelector(sel) as T | null;
-  const qa = (sel: string): Element[] => Array.from(sr?.querySelectorAll(sel) ?? []);
+  const root = boardHost ?? document.body;
+  const q = <T extends Element>(sel: string): T | null => root.querySelector(sel) as T | null;
+  const qa = (sel: string): Element[] => Array.from(root.querySelectorAll(sel));
   const cs = (el: Element | null, prop: string): string =>
     el ? getComputedStyle(el).getPropertyValue(prop).trim() : 'n/a';
   const rect = (el: Element | null): string =>
@@ -134,7 +144,7 @@ void (async () => {
     `NODES=${qa('.node-card').length} COLUMNS=${qa('.column').length}`,
     `BOARD_DIR=${cs(boardEl, 'flex-direction')} BOARD_RECT=${rect(boardEl)}`,
     `BOARD_OVERFLOW_X=${boardEl ? boardEl.scrollWidth - boardEl.clientWidth : -1}`,
-    `HOST_OVERFLOW_X=${board ? board.scrollWidth - board.clientWidth : -1}`,
+    `HOST_OVERFLOW_X=${boardHost ? boardHost.scrollWidth - boardHost.clientWidth : -1}`,
     `COL_RECTS=${qa('.column').map((c) => `${c.className.split(' ').filter((x) => x !== 'column').join('+') || 'full'}:${rect(c)}`).join(' , ')}`,
     `PROGRESS=${cs(q('.plan-progress'), 'display')} TEXT=${q('.plan-progress')?.textContent?.replace(/\s+/g, ' ').trim() ?? 'n/a'}`,
     `EMPTY_VISIBLE=${empties.length} TEXT=${empties[0]?.textContent?.trim() ?? 'n/a'}`,
@@ -155,3 +165,8 @@ void (async () => {
   const content = document.getElementById('content');
   if (scrollTop && content) content.scrollTop = scrollTop;
 })();
+
+// 页面卸载时回收组件实例
+window.addEventListener('beforeunload', () => {
+  if (boardInst) unmount(boardInst);
+});

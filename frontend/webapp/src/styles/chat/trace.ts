@@ -1,6 +1,5 @@
-import { css } from 'lit';
 
-export const trace = css`
+export const trace = `
     /* ----------------------- 调用链路 (trace) ----------------------- */
     .trace {
       margin-bottom: 10px;

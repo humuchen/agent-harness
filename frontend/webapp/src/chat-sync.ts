@@ -4,7 +4,7 @@
  * 登录后由 chat.ts 调用 startChatSync(username) 建立一条常驻 SSE 连接到
  * /api/chat/stream：服务端按 owner 把本账户其它端写入的消息/标题/删除事件实时推回。
  * 本模块只负责「接收 + 去重 + 派发」，不触碰 UI 状态；收到事件后派发
- * window 级 CustomEvent('ah-chat-sync', { detail })，由 chat.ts 订阅并更新视图。
+ * window 级 CustomEvent(APP_EVENTS.chatSync, { detail })，由 chat.ts 订阅并更新视图。
  *
  * 去重：每条消息带 origin（发送端设备指纹）。本设备所有标签页共享同一 deviceId，
  * 因此本地已乐观插入的消息回声会被忽略；其它设备 origin 不同，正常增量插入。
@@ -14,6 +14,7 @@
 
 import { parseSse } from '@agent-harness/client';
 import { authedFetch } from './api';
+import { APP_EVENTS } from './app-events';
 
 /** 设备指纹：整设备稳定（localStorage），跨标签页共享，用于忽略本端回声。 */
 function deviceId(): string {
@@ -56,7 +57,7 @@ let retries = 0;
 let stopped = false;
 
 function dispatch(e: ChatSyncEvent): void {
-  window.dispatchEvent(new CustomEvent<ChatSyncEvent>('ah-chat-sync', { detail: e }));
+  window.dispatchEvent(new CustomEvent<ChatSyncEvent>(APP_EVENTS.chatSync, { detail: e }));
 }
 
 /**
@@ -87,6 +88,13 @@ function open(username: string): void {
       scheduleReconnect(username);
       return;
     }
+    // P1 修复：不可恢复的 401（会话已被服务端吊销 / 过期未续）此前仍无限重连——
+    // authedFetch 的 401 会清本地会话并派发 sessionExpired，但本模块的 stopped
+    // 标志不受影响，此后每 15s 白打一次请求直到组件恰好卸载。
+    if (res.status === 401) {
+      stopped = true;
+      return;
+    }
     if (!res.ok || !res.body) {
       scheduleReconnect(username);
       return;
@@ -106,8 +114,9 @@ function open(username: string): void {
 function scheduleReconnect(username: string): void {
   if (stopped) return;
   retries += 1;
-  // 指数退避，封顶 15s，避免密集重连打爆服务端。
-  const delay = Math.min(15_000, 500 * 2 ** (retries - 1));
+  // 指数退避，封顶 15s；P1 jitter 修复：加随机抖动——服务端重启后所有客户端
+  // 同节拍重连会形成 thundering herd。
+  const delay = Math.min(15_000, 500 * 2 ** (retries - 1)) + Math.random() * 500;
   retryTimer = setTimeout(() => open(username), delay);
 }
 

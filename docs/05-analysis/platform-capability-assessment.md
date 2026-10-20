@@ -29,7 +29,7 @@
 - **命令白名单（allowlist）**：`builtins/shell.ts` 的 `registerShell` 只允许 `allowedCommands` 中声明的基础命令通过，`base = command.split(sep).pop()` 取 basename 比对，空名单 = 什么也不执行（安全默认）。
 - **目录作用域（jail）**：`resolveScope(root, cwdRel)` 拒绝绝对路径并校验 `relative(root, abs)` 不以前缀 `..` 开头，cwd 被锁死在 `root`（默认 `process.cwd()`，可配 `SHELL_ROOT`/`HARNESS_FS_ROOT`）。
 - **Shell 元字符拦截**：`SHELL_OPERATOR_RE` 默认拒绝 `| & ; < > $ ( ) \` ! \* ? { } [ ] " '` 及换行，杜绝命令注入式拼接（`allowShellOperators` 可显式放开）。
-- **人工确认闸门（HITL）**：`requireConfirmation` + `confirm` 策略（`auto`/`deny`/`interactive`/自定义回调）。Web 端经 `server/src/shell-approval.ts` 的 `POST /api/shell/approve` 审批网关，超时未批准即拒绝（安全默认）。
+- **人工确认闸门（HITL）**：`requireConfirmation` + `confirm` 策略（`auto`/`deny`/`interactive`/自定义回调）。Web 端经 `access/server/src/shell-approval.ts` 的 `POST /api/shell/approve` 审批网关，超时未批准即拒绝（安全默认）。
 - **内容级护栏**：`guardrails.ts` 在 input/output/tool-args 三处做归一化提示词注入检测、密钥扫描、输出侧 PII 脱敏（`redactOutput` 在 `harness.run` 末尾对所有返回内容打码）。
 - **文件系统沙箱**：`builtin__fs_*` 限定在 `HARNESS_FS_ROOT` 内。
 - **超时**：单条命令 `timeoutMs`（默认 10s），`spawn(..., { windowsHide: true })`。

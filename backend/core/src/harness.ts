@@ -106,7 +106,9 @@ export class AgentHarness {
       enableToolDedup: opts.enableToolDedup ?? false,
       maxToolCallsPerStep: opts.maxToolCallsPerStep ?? 0,
       planPropose: opts.planPropose ?? false,
-      planTask: opts.planTask ?? false
+      planTask: opts.planTask ?? false,
+      // P2-1：护栏温和重试上限（每轮 run 重置），缺省 1 与历史行为一致。
+      guardrailMaxRetries: opts.guardrailMaxRetries ?? 1
     };
     // 初始化指代消解追踪器（若开启）
     if (process.env.COREF_ENABLED === 'true') {
@@ -304,8 +306,9 @@ export class AgentHarness {
     // 自验证计数：本轮被护栏拦截次数（供 VerifyContext 使用）。
     let guardrailsBlocked = 0;
     // 输出护栏「合规内容类」拦截后，允许温和重试的次数（密钥/注入类不重试，直接兜底）。
-    // 每轮 run 重置，避免跨轮累积；重试会注入纠正提示让模型重新生成合规内容。
-    let guardrailRetriesLeft = 1;
+    // P2-1：改为可配置（opts.guardrailMaxRetries，缺省 1 保持历史行为），每轮 run 重置，
+    // 避免跨轮累积；重试会注入纠正提示让模型重新生成合规内容。
+    let guardrailRetriesLeft = Math.max(0, Math.floor(this.opts.guardrailMaxRetries));
     // 最近一次执行的工具调用结果（跨 runLoop 迭代保留），用于向输出护栏注入上下文，
     // 使规则能感知「上一步工具（如 project_kb_search）是否返回 found:false」等业务信号。
     let lastToolResult: { name: string; result: string } | null = null;
@@ -480,15 +483,19 @@ export class AgentHarness {
           const budgetCap = Math.min(proactiveBudget, adaptiveCap);
           // 上下文压缩：默认走确定性预算剪枝（fitToBudget）；开启 JEV_CONTEXT_COMPRESS 时，
           // 在预算剪枝之「后」用 Jev 重要性打分优先淘汰低分消息（旧逻辑为兜底，Jev 缺配/出错回落）。
+          // 压缩方案2（Token 成本优化）：发送前先折叠陈旧工具结果——不等预算击穿、
+          // 每步主动执行，把「N 组之前」的超长 tool 结果压为首尾摘要，与预算剪枝互补。
+          const folded = memory.foldStaleToolResults();
           const useJevCompress =
             (process.env.JEV_CONTEXT_COMPRESS || 'off').toLowerCase() === 'on';
           const compressed = useJevCompress
             ? await memory.compressByImportance(budgetCap)
             : memory.fitToBudget(budgetCap);
-          if (compressed) {
+          if (compressed || folded) {
             structLog('info', 'proactive context compression applied before LLM send', {
               budgetCap,
               jev: useJevCompress,
+              folded,
               runId
             });
           }
@@ -631,7 +638,14 @@ export class AgentHarness {
               throw llmErr;
             }
           }
-          if (!resp) return abortedResult();
+          if (!resp) {
+            // P2-1：走到这里 = 重试循环耗尽或适配器返回空响应 —— 这是「模型调用失败」，
+            // 不是「运行被取消」。旧实现一律 abortedResult() 把失败伪装成取消，
+            // 调用方/用户看到的文案与真实原因不符。仅当确实收到中止信号才走取消语义；
+            // 其余按失败抛出（外层既有 catch 落 failed + 事件，语义与模型抛错一致）。
+            if (signal.aborted) return abortedResult();
+            throw new Error(`llm returned no response after retries (step=${steps})`);
+          }
 
           // 用量记账与事件发射（拆分至 harness/usage-accounting.ts，语句顺序逐字保留）：
           // 记录自适应预算上限、token/成本记账、无单价诊断、占比拆解，
@@ -843,10 +857,28 @@ export class AgentHarness {
             continue;
           }
 
+          // ── 压缩方案5（Token 成本优化）：同批 tool_calls 有界并发执行 ─────────────
+          // 原实现逐个 await：同一轮 N 次抓取的墙钟时间 = 各次之和，而模型一轮发出的
+          // 多个调用本就语义独立（OpenAI parallel_tool_calls 语义）。改为三阶段：
+          //   1) 按序准备：abort / 上限 / 去重 / 护栏分类，产出执行计划（保序）；
+          //   2) 有界并发：仅「需真实执行」的调用并发跑（AH_TOOL_CONCURRENCY，默认 4，
+          //      设 1 退化为串行）；事件语义不变（start/result 与实际执行绑定）；
+          //   3) 按原序回填：memory 中 tool 结果顺序与 tool_calls 严格一致，
+          //      不给严格 provider 制造乱序配对。
+          // 中止语义：任一调用竞速到 aborted → 停止取新任务，先按原序回填已完成项
+          // （与串行版「已完成结果保留」一致），再对未完成项补占位并中止整轮。
+          interface PlannedToolCall {
+            call: ToolCall;
+            kind: 'skipped' | 'dedup' | 'execute';
+            /** 预置结果：dedup 缓存命中 / 护栏拦截，不真正执行工具。 */
+            preset?: { result: unknown; errored: boolean };
+          }
+          const planned: PlannedToolCall[] = [];
+          let preparedAborted = false;
           for (const call of resp.tool_calls) {
             if (signal.aborted) {
-              fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
-              return abortedResult();
+              preparedAborted = true;
+              break;
             }
             // 加固：单 step 工具调用预算上限（默认不限制）。达到上限后截断剩余 tool_calls。
             if (maxCallsPerStep > 0 && stepToolCalls >= maxCallsPerStep) {
@@ -854,7 +886,8 @@ export class AgentHarness {
                 type: 'warn',
                 message: `step ${steps} 工具调用已达上限 ${maxCallsPerStep}，截断剩余 tool_calls`
               });
-              break;
+              planned.push({ call, kind: 'skipped' });
+              continue;
             }
             stepToolCalls++;
             // 加固：同 run 内「同名 + 相同归一化参数」去重，复用首次结果，避免重复执行。
@@ -869,14 +902,11 @@ export class AgentHarness {
                   result: cached.result,
                   errored: cached.errored
                 });
-                memory.add({
-                  role: 'tool',
-                  tool_call_id: call.id,
-                  name: call.name,
-                  content: cached.result
+                planned.push({
+                  call,
+                  kind: 'dedup',
+                  preset: { result: cached.result, errored: cached.errored }
                 });
-                answeredIds.add(call.id);
-                lastToolResult = { name: call.name, result: cached.result };
                 continue;
               }
             }
@@ -887,11 +917,7 @@ export class AgentHarness {
               call.arguments,
               this.opts.guardrailPolicy
             );
-            let result: unknown;
-            let errored = false;
             if (!argGuard.ok) {
-              result = `guardrail blocked: ${argGuard.reason}`;
-              errored = true;
               recordError('guardrail.tool');
               structLog('warn', 'guardrail blocked', {
                 phase: 'tool',
@@ -906,101 +932,190 @@ export class AgentHarness {
                 reason: argGuard.reason ?? 'unknown'
               });
               guardrailsBlocked += 1;
-            } else {
-              emit({ type: 'tool:start', step: steps, call });
-            // Hook: agent.pre_tool — observe tool call before execution
-            void hooks.execute('agent.pre_tool', {
-              runId,
-              sessionKey: runId,
-              tenantId: this.opts.tenantId,
-              toolCall: { name: call.name, arguments: call.arguments },
-            });
-              try {
-                // P4.8：工具执行纳入「中止 + 单次超时」竞速（机制拆分至
-                // harness/tool-executor.ts）。此前这里是裸 await —— 工具挂死时看门狗
-                // abort 无法生效，整个 step 会一直阻塞到该工具自己返回。现在：
-                //  - 运行被中止（超时/取消）→ 立即放弃等待并走中止路径（内容不再丢）；
-                //  - 单次工具超过 AGENT_TOOL_TIMEOUT_MS → 以「工具超时」作为工具结果
-                //    回传，模型可改道或基于已有信息继续，而不是拖垮整步；
-                //  - 超时经工具级独立 AbortController 真实中止工具执行（含落地子进程）。
-                const raced = await executeToolWithRace({
-                  call,
-                  signal,
-                  abortPromise,
-                  toolCallTimeoutMs,
-                  tools: this.opts.tools,
-                  traceId: this.opts.traceId,
-                  sessionId: this.opts.sessionId,
-                  networkPolicy: this.opts.guardrailPolicy?.network
-                });
-                if (raced.kind === 'aborted') {
-                  fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
-                  return abortedResult();
-                }
-                if (raced.kind === 'err') {
-                  // 工具 promise 已被转成已决值，此处恢复异常语义，
-                  // 走下方统一 catch 转为工具错误文本回传模型。
-                  throw raced.error;
-                }
-                if (raced.kind === 'timeout') {
-                  result =
-                    `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
-                    '已中止该工具执行；请改用其它方式获取信息，或基于已有信息继续）';
-                  errored = true;
-                } else {
-                  result = raced.value;
-                }
-              } catch (e) {
-                // 将错误作为工具结果返回，以便模型自行修复。
-                result = `tool error: ${
-                  e instanceof Error ? e.message : String(e)
-                }`;
-                errored = true;
-              }
+              // 护栏拦截项不真正执行工具，但沿用统一的「结果后处理」路径
+              //（计数 / 截断 / 事件 / 回填），与串行版语义一致。
+              planned.push({
+                call,
+                kind: 'execute',
+                preset: { result: `guardrail blocked: ${argGuard.reason}`, errored: true }
+              });
+              continue;
             }
-            incCounter('tool.call');
-            if (errored) recordError(`tool.${call.name}`);
-            let resultStr =
-              typeof result === 'string' ? result : JSON.stringify(result);
-            // 工具结果截断：降低「工具原文逐字重发」带来的上下文膨胀与 token 成本。
+            // P6 结构化输出闸门（工具参数侧）：按注册 JSON-Schema 校验 LLM 传入参数，
+            // 不合规时不执行工具，以可读错误文本回喂模型自愈（与上方护栏拦截同型：
+            // preset + errored）。registry.call 契约保持不变（工具自身 error: 返回语义、
+            // 直接调用方零回归）；工具内部的语义级校验（如 operation 枚举）仍由工具自管。
+            const schemaErrors = this.opts.tools.validateArgs(call.name, call.arguments);
+            if (schemaErrors.length > 0) {
+              recordError('schema.tool');
+              structLog('warn', 'tool args schema mismatch', {
+                phase: 'tool',
+                tool: call.name,
+                errors: schemaErrors.slice(0, 5).join('; '),
+                runId
+              });
+              planned.push({
+                call,
+                kind: 'execute',
+                preset: {
+                  result:
+                    `tool "${call.name}" 参数校验失败：${schemaErrors.slice(0, 5).join('; ')}` +
+                    (schemaErrors.length > 5 ? `（等 ${schemaErrors.length} 处）` : ''),
+                  errored: true
+                }
+              });
+              continue;
+            }
+            planned.push({ call, kind: 'execute' });
+          }
+          if (preparedAborted) {
+            fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
+            return abortedResult();
+          }
+
+          // 工具结果截断：降低「工具原文逐字重发」带来的上下文膨胀与 token 成本。
+          const formatToolResult = (result: unknown): string => {
+            let s = typeof result === 'string' ? result : JSON.stringify(result);
             const cap = this.opts.maxToolResultChars;
-            if (cap && cap > 0 && resultStr.length > cap) {
-              resultStr =
-                resultStr.slice(0, cap) +
-                `\n…[工具结果已截断：原长 ${resultStr.length} 字符，仅保留前 ${cap} 字符]`;
+            if (cap && cap > 0 && s.length > cap) {
+              s =
+                s.slice(0, cap) +
+                `\n…[工具结果已截断：原长 ${s.length} 字符，仅保留前 ${cap} 字符]`;
             }
-            emit({
-              type: 'tool:result',
-              step: steps,
-              call,
-              result: resultStr,
-              errored
-            });
-            // Hook: agent.post_tool — observe tool result after execution
-            void hooks.execute('agent.post_tool', {
-              runId,
-              sessionKey: runId,
-              tenantId: this.opts.tenantId,
-              toolResult: { output: resultStr, errored },
-              toolCall: { name: call.name, arguments: call.arguments },
-            });
-            memory.add({
-              role: 'tool',
-              tool_call_id: call.id,
-              name: call.name,
-              content: resultStr
-            });
-            answeredIds.add(call.id);
-            // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
-            lastToolResult = { name: call.name, result: resultStr };
-            // 加固：将真实执行结果写入去重缓存，供后续相同调用复用。
-            if (toolDedupOn) {
-              toolDedupCache.set(makeDedupKey(call), {
+            return s;
+          };
+
+          // 阶段二：仅「需真实执行」的调用进入有界并发池（去重命中 / 护栏拦截不进池）。
+          const execItems = planned.filter((p) => p.kind === 'execute');
+          const concRaw = Number(process.env.AH_TOOL_CONCURRENCY);
+          const concurrency = Math.max(
+            1,
+            Math.min(Number.isFinite(concRaw) && concRaw > 0 ? Math.floor(concRaw) : 4, 16)
+          );
+          const done = new Map<PlannedToolCall, { result: string; errored: boolean }>();
+          let runAborted = false;
+          let cursor = 0;
+          const worker = async (): Promise<void> => {
+            while (cursor < execItems.length && !runAborted) {
+              const item = execItems[cursor++] as PlannedToolCall;
+              const call = item.call;
+              let result: unknown;
+              let errored = false;
+              if (item.preset) {
+                // 护栏拦截等预置结果：不启动工具、不发 tool:start，直接走后处理。
+                result = item.preset.result;
+                errored = item.preset.errored;
+              } else {
+                emit({ type: 'tool:start', step: steps, call });
+                // Hook: agent.pre_tool — observe tool call before execution
+                void hooks.execute('agent.pre_tool', {
+                  runId,
+                  sessionKey: runId,
+                  tenantId: this.opts.tenantId,
+                  toolCall: { name: call.name, arguments: call.arguments },
+                });
+                try {
+                  // P4.8：工具执行纳入「中止 + 单次超时」竞速（机制拆分至
+                  // harness/tool-executor.ts）：运行被中止 → 走中止路径；单次超时 →
+                  // 以「工具超时」作为结果回传并真实中止工具执行（含落地子进程）。
+                  const raced = await executeToolWithRace({
+                    call,
+                    signal,
+                    abortPromise,
+                    toolCallTimeoutMs,
+                    tools: this.opts.tools,
+                    traceId: this.opts.traceId,
+                    sessionId: this.opts.sessionId,
+                    networkPolicy: this.opts.guardrailPolicy?.network
+                  });
+                  if (raced.kind === 'aborted') {
+                    runAborted = true;
+                    return;
+                  }
+                  if (raced.kind === 'err') {
+                    // 工具 promise 已被转成已决值，此处恢复异常语义，
+                    // 走统一 catch 转为工具错误文本回传模型。
+                    throw raced.error;
+                  }
+                  if (raced.kind === 'timeout') {
+                    result =
+                      `tool error: 工具执行超时（>${Math.round(toolCallTimeoutMs / 1000)}s 无返回，` +
+                      '已中止该工具执行；请改用其它方式获取信息，或基于已有信息继续）';
+                    errored = true;
+                  } else {
+                    result = raced.value;
+                  }
+                } catch (e) {
+                  // 将错误作为工具结果返回，以便模型自行修复。
+                  result = `tool error: ${
+                    e instanceof Error ? e.message : String(e)
+                  }`;
+                  errored = true;
+                }
+              }
+              incCounter('tool.call');
+              if (errored) recordError(`tool.${call.name}`);
+              const resultStr = formatToolResult(result);
+              emit({
+                type: 'tool:result',
+                step: steps,
+                call,
                 result: resultStr,
                 errored
               });
+              // Hook: agent.post_tool — observe tool result after execution
+              void hooks.execute('agent.post_tool', {
+                runId,
+                sessionKey: runId,
+                tenantId: this.opts.tenantId,
+                toolResult: { output: resultStr, errored },
+                toolCall: { name: call.name, arguments: call.arguments },
+              });
+              done.set(item, { result: resultStr, errored });
             }
+          };
+          await Promise.all(
+            Array.from(
+              { length: Math.max(1, Math.min(concurrency, execItems.length)) },
+              () => worker()
+            )
+          );
+
+          // 阶段三：按原序回填。memory 中 tool 结果顺序与 tool_calls 严格一致；
+          // dedup 命中项沿用缓存结果（不再发 tool:result，与串行版事件语义一致）。
+          const flushPlanned = (): void => {
+            for (const p of planned) {
+              if (answeredIds.has(p.call.id)) continue;
+              if (p.kind === 'skipped') continue; // 留给循环末尾 fillMissingToolResults 统一占位
+              const entry =
+                p.kind === 'dedup' && p.preset
+                  ? { result: p.preset.result as string, errored: p.preset.errored }
+                  : done.get(p);
+              if (!entry) continue; // aborted 等场景未完成，由 fillMissingToolResults 兜底
+              memory.add({
+                role: 'tool',
+                tool_call_id: p.call.id,
+                name: p.call.name,
+                content: entry.result
+              });
+              answeredIds.add(p.call.id);
+              // 记录最近一次工具结果，供下一轮输出护栏感知业务上下文（如 kb 查空信号）。
+              lastToolResult = { name: p.call.name, result: entry.result };
+              // 加固：将执行结果写入去重缓存，供后续相同调用复用。
+              if (toolDedupOn && p.kind === 'execute') {
+                toolDedupCache.set(makeDedupKey(p.call), {
+                  result: entry.result,
+                  errored: entry.errored
+                });
+              }
+            }
+          };
+          if (runAborted) {
+            flushPlanned();
+            fillMissingToolResults('[aborted] 运行已取消，该工具未执行');
+            return abortedResult();
           }
+          flushPlanned();
           // 收尾补齐：被「单步调用预算」截断的 tool_calls 也要有结果占位，
           // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
           fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
@@ -1019,17 +1134,36 @@ export class AgentHarness {
                 '需求不清时输出澄清 JSON（{"clarify": true, "goalDraft": string, "questions": string[]}）。' +
                 '只输出一个 JSON 对象，不要任何其他文字。'
             });
-            const finResp = await this.opts.llm(
+            // P1 可靠性修复：收尾调用与主循环对齐——纳入 abortPromise 竞速 + 兜底
+            // catch（旧实现裸 await：适配器不尊重 signal 时硬超时看门狗无法打断；
+            // catch 静默吞错且无遥测留痕）。
+            const finCall = this.opts.llm(
               sanitizeToolPairing(memory.history()),
               [],
               { signal, circuitBreaker: this.opts.circuitBreaker }
             );
+            void finCall.catch(() => {});
+            const finResult = await Promise.race([
+              finCall,
+              abortPromise.then((v) => {
+                if (v === '__aborted__') throw new DOMException('aborted', 'AbortError');
+                return v as never;
+              })
+            ]);
+            const finResp = finResult as LLMResponse | undefined;
             if (finResp?.content && finResp.content.trim()) {
               memory.add({ role: 'assistant', content: finResp.content });
               return finResp.content;
             }
-          } catch {
-            // 收尾调用失败（网络/熔断等）：回退到默认 MAX_STEPS_NOTICE。
+            structLog('warn', 'plan propose finalize produced no content; fallback to notice', {
+              runId
+            });
+          } catch (e) {
+            // 收尾调用失败（网络/熔断/中止）：回退到默认 MAX_STEPS_NOTICE；留痕便于排查。
+            structLog('warn', 'plan propose finalize failed; fallback to notice', {
+              runId,
+              error: e instanceof Error ? e.message : String(e)
+            });
           }
         }
         return MAX_STEPS_NOTICE;

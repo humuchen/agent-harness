@@ -11,7 +11,8 @@
  * 所有读写函数均接收 owner 并校验归属，跨用户不可互见；旧存档无 owner 的会话
  * 归 'legacy' 桶，普通用户 list/get 均不可见（仅服务端保留，不泄露存在性）。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getHistoryStore } from './history-store';
 import { publishChatEvent } from './chat-bus';
@@ -111,8 +112,49 @@ export interface ChatSession {
 }
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
+/**
+ * P1 无界增长修复：会话数与单会话消息数上限。
+ * 内存 Map 此前只增不减（每条 IM/聊天消息永久累积，trace/plan 附件随消息堆叠），
+ * writeNow 全量序列化的体积随会话增长线性膨胀（每次防抖触发都是 O(全库)）。
+ * 超限按 updatedAt LRU 淘汰最旧会话（SQLite 历史镜像为主持久化层，被淘汰会话
+ * 仍可从镜像按需回读）；单会话消息超限裁剪最旧（首条 user 标题消息保留语义不受影响）。
+ */
+const MAX_SESSIONS = Math.max(50, Number(process.env.CHAT_SESSIONS_MAX ?? 2000) || 2000);
+const MAX_MESSAGES_PER_SESSION = Math.max(
+  50,
+  Number(process.env.CHAT_SESSIONS_MAX_MSGS ?? 2000) || 2000
+);
+
+/** 超出会话数上限时淘汰最旧（updatedAt 最小）的会话；被淘汰者不可再从内存读。 */
+function evictOldestSessions(): void {
+  if (sessions.size <= MAX_SESSIONS) return;
+  const entries = [...sessions.values()].sort((a, b) => a.updatedAt - b.updatedAt);
+  let excess = sessions.size - MAX_SESSIONS;
+  for (const s of entries) {
+    if (excess <= 0) break;
+    sessions.delete(s.id);
+    excess--;
+  }
+}
+
+/** 单会话消息数超限时裁剪最旧消息。 */
+function trimSessionMessages(s: ChatSession): void {
+  if (s.messages.length <= MAX_MESSAGES_PER_SESSION) return;
+  s.messages = s.messages.slice(s.messages.length - MAX_MESSAGES_PER_SESSION);
+}
+/**
+ * 防抖窗口（毫秒）：热路径（每条消息 / 每次计划状态更新）不再同步写盘，
+ * 只标脏 + 排程；窗口内的多次变更合并为一次磁盘 I/O。
+ * 之前的 writeFileSync 全量会话 JSON 在会话积累后会阻塞事件循环，
+ * 拖慢所有并发请求（问答链路耗时分析 P0 项）。
+ */
+const FLUSH_MS = Math.max(50, Number(process.env.CHAT_SESSIONS_FLUSH_MS ?? 500) || 500);
 const sessions = new Map<string, ChatSession>();
 let loaded = false;
+// 异步持久化状态：dirty 待写标记 + 防抖定时器 + 在飞写互斥（tmp→rename 串行化，防交错覆盖）。
+let dirty = false;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let inFlightWrite: Promise<void> = Promise.resolve();
 
 function load(): void {
   if (loaded) return;
@@ -132,17 +174,55 @@ function load(): void {
   }
 }
 
-/** 持久化到 JSON（原子写：tmp → rename，防崩溃产生半截文件）。 */
+/** 真正落盘：异步原子写（tmp → rename，防崩溃产生半截文件）；经链式串行化避免并发写交错。 */
+function writeNow(): Promise<void> {
+  const run = async (): Promise<void> => {
+    try {
+      mkdirSync(dirname(FILE), { recursive: true });
+      const tmpPath = FILE + '.tmp';
+      // 快照在写入时刻取，确保覆盖到排程之后、执行之前的最新变更。
+      await writeFile(tmpPath, JSON.stringify([...sessions.values()], null, 2), 'utf-8');
+      await rename(tmpPath, FILE);
+    } catch {
+      // 持久化失败不影响内存态运行（SQLite 历史镜像为主持久化层），仅吞掉。
+    }
+  };
+  inFlightWrite = inFlightWrite.then(run, run);
+  return inFlightWrite;
+}
+
+/**
+ * 持久化（防抖异步版）：只标脏 + 起/续定时器，零同步 I/O、不阻塞事件循环。
+ * 窗口内多次变更合并为一次写盘；断电/崩溃丢失窗口内的增量可接受
+ * （内存 Map 为权威态，SQLite 历史镜像为主持久化层，JSON 文件仅跨重启恢复用）。
+ */
 function persist(): void {
   if (!FILE) return;
-  try {
-    mkdirSync(dirname(FILE), { recursive: true });
-    const tmpPath = FILE + '.tmp';
-    writeFileSync(tmpPath, JSON.stringify([...sessions.values()], null, 2), 'utf-8');
-    renameSync(tmpPath, FILE);
-  } catch {
-    // 持久化失败不影响内存态运行，仅记录。
+  dirty = true;
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (!dirty) return;
+    dirty = false;
+    void writeNow();
+  }, FLUSH_MS);
+}
+
+/**
+ * 立即落盘待写内容并等待在飞写完成（优雅停机 / 测试钩子）。
+ * 无待写内容时仅等待在飞写结束，不产生额外磁盘 I/O。
+ */
+export async function flushChatSessions(): Promise<void> {
+  if (!FILE) return;
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
   }
+  if (dirty) {
+    dirty = false;
+    await writeNow();
+  }
+  await inFlightWrite;
 }
 
 function genId(): string {
@@ -290,6 +370,7 @@ export function createChatSession(
     ...(meta?.workspaceId ? { workspaceId: meta.workspaceId } : {})
   };
   sessions.set(session.id, session);
+  evictOldestSessions();
   persist();
   // 跨设备广播：其它端实时看到新会话（左侧栏即时出现）。
   if (owner && owner !== LEGACY_OWNER) {
@@ -432,6 +513,7 @@ export function appendChatMessage(
     const now = Date.now();
     s = { id, title: '新对话', createdAt: now, updatedAt: now, messages: [], owner };
     sessions.set(id, s);
+    evictOldestSessions();
   }
   // 源头去重：紧邻上一条消息同 role+同内容则跳过（编辑重发/断连重连重放等场景
   // 会把同一 user 内容二次写入，若在此放任落库，刷新与跨设备恢复后重复永远跟着走）。
@@ -449,6 +531,7 @@ export function appendChatMessage(
   }
   s.messages.push(msg);
   s.updatedAt = Date.now();
+  trimSessionMessages(s);
   let titleChanged = false;
   if (msg.role === 'user') {
     const userCount = s.messages.filter((m) => m.role === 'user').length;

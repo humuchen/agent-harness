@@ -5,7 +5,7 @@ import {
   MemoryStore,
   PersistedMemory,
   VolatileMemoryStore,
-  sanitizeKey,
+  sanitizeKey
 } from './memory-store';
 import { jevDecide, resolveJevCreds } from './builtins/typesafe-jev';
 import { structLog } from './telemetry';
@@ -27,7 +27,10 @@ export interface MemoryScorer {
    * @param context 当前用户输入（用于相关性计算）
    * @returns 每条消息对应的分数
    */
-  scoreWindow(messages: Message[], context: string): number[] | Promise<number[]>;
+  scoreWindow(
+    messages: Message[],
+    context: string
+  ): number[] | Promise<number[]>;
 
   /**
    * 对长期记忆笔记打分（0~1）。
@@ -50,24 +53,36 @@ export interface MemoryScorer {
  */
 export class HeuristicMemoryScorer implements MemoryScorer {
   readonly relevanceWeight: number;
-  readonly importanceWeights: { user: number; assistant: number; tool: number; system: number };
+  readonly importanceWeights: {
+    user: number;
+    assistant: number;
+    tool: number;
+    system: number;
+  };
   readonly recencyWeight: number;
   readonly lengthWeight: number;
   readonly maxNoteLength: number; // 长期记忆最大注入字符数
 
-  constructor(opts: {
-    relevanceWeight?: number;
-    importanceWeights?: Partial<{ user: number; assistant: number; tool: number; system: number }>;
-    recencyWeight?: number;
-    lengthWeight?: number;
-    maxNoteLength?: number;
-  } = {}) {
+  constructor(
+    opts: {
+      relevanceWeight?: number;
+      importanceWeights?: Partial<{
+        user: number;
+        assistant: number;
+        tool: number;
+        system: number;
+      }>;
+      recencyWeight?: number;
+      lengthWeight?: number;
+      maxNoteLength?: number;
+    } = {}
+  ) {
     this.relevanceWeight = opts.relevanceWeight ?? 0.4;
     this.importanceWeights = {
       user: opts.importanceWeights?.user ?? 0.3,
       assistant: opts.importanceWeights?.assistant ?? 0.15,
       tool: opts.importanceWeights?.tool ?? 0.1,
-      system: opts.importanceWeights?.system ?? 0.05,
+      system: opts.importanceWeights?.system ?? 0.05
     };
     this.recencyWeight = opts.recencyWeight ?? 0.1;
     this.lengthWeight = opts.lengthWeight ?? 0.05;
@@ -105,7 +120,8 @@ export class HeuristicMemoryScorer implements MemoryScorer {
       }
 
       // 4. 篇幅（内容越长信息量越大）
-      const lenFactor = Math.min(text.length / 500, 0.1) * (this.lengthWeight / 0.1);
+      const lenFactor =
+        Math.min(text.length / 500, 0.1) * (this.lengthWeight / 0.1);
       score += lenFactor;
 
       return Math.min(score, 1.0);
@@ -125,9 +141,7 @@ export class HeuristicMemoryScorer implements MemoryScorer {
       for (const g of contextGrams) {
         if (grams.has(g)) overlap++;
       }
-      const relevance = contextGrams.size > 0
-        ? overlap / contextGrams.size
-        : 0;
+      const relevance = contextGrams.size > 0 ? overlap / contextGrams.size : 0;
       score += relevance * 0.4;
 
       // 篇幅因子
@@ -161,11 +175,11 @@ export function createHeuristicScorer(): HeuristicMemoryScorer {
       user: Number(process.env.MEMORY_SCORE_IMPORTANCE_USER ?? 0.3),
       assistant: Number(process.env.MEMORY_SCORE_IMPORTANCE_ASSISTANT ?? 0.15),
       tool: Number(process.env.MEMORY_SCORE_IMPORTANCE_TOOL ?? 0.1),
-      system: Number(process.env.MEMORY_SCORE_IMPORTANCE_SYSTEM ?? 0.05),
+      system: Number(process.env.MEMORY_SCORE_IMPORTANCE_SYSTEM ?? 0.05)
     },
     recencyWeight: Number(process.env.MEMORY_SCORE_RECENCY ?? 0.1),
     lengthWeight: Number(process.env.MEMORY_SCORE_LENGTH ?? 0.05),
-    maxNoteLength: Number(process.env.MEMORY_NOTES_MAXLEN ?? 200),
+    maxNoteLength: Number(process.env.MEMORY_NOTES_MAXLEN ?? 200)
   });
 }
 
@@ -226,6 +240,52 @@ const SHRINK_MIN_TOKENS = 64;
 /** 单次 add() 内最多瘦身多少条（防御性上限，避免极端情况下的长循环）。 */
 const MAX_SHRINK_PASSES = 24;
 
+// ---------------------------------------------------------------------------
+// Token 成本优化（压缩方案2）：陈旧工具结果折叠（stale tool result folding）
+// ---------------------------------------------------------------------------
+
+/**
+ * 缓存权衡：
+ * 折叠会改写历史「中间」的消息内容，使 prompt cache 前缀在该消息之后全部失效——
+ * 缓存命中是持续收益（每步 1 折价），断裂是一次性损失（断裂点后全价一次）。
+ * 实测把 2k 字符级结果折叠导致缓存命中率 53.3% → 43.8%，净效果为负。
+ * 因此触发门槛必须足够高：只折叠 ≥8000 字符（≈2-2.7k tok）的大块结果，
+ * 且要求足够陈旧（≥4 组）让缓存先把这段历史用透——典型收益场景是
+ * 上次消耗分析中的 16KB 级抓取（省 6-10k tok 重复计费，远超一次性断裂损失）。
+ */
+
+/** 折叠标记：含该标记的消息不会二次折叠（独立于 SHRUNK_MARK，与瘦身互不干扰）。 */
+const FOLD_MARK = '【工具结果已折叠】';
+/** 折叠时保留的开头字符数（模型通常只回溯结论性开头）。 */
+const FOLD_KEEP_HEAD = 800;
+/** 折叠时保留的结尾字符数（部分工具把结论放尾部）。 */
+const FOLD_KEEP_TAIL = 300;
+
+/** 陈旧折叠总开关：缺省 on；AH_STALE_TOOL_FOLD=off 恢复旧行为（零折叠）。 */
+function foldEnvOn(): boolean {
+  return (
+    (process.env.AH_STALE_TOOL_FOLD ?? 'on').trim().toLowerCase() !== 'off'
+  );
+}
+
+/**
+ * 触发折叠的最小结果长度（字符）：默认 8000。
+ * 低于此值时「折叠省下的重复计费 < 缓存前缀断裂损失」，得不偿失。
+ */
+function foldMinChars(): number {
+  const n = Number(process.env.AH_STALE_TOOL_FOLD_MIN_CHARS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 8000;
+}
+
+/**
+ * 保留最近 N 组（原子组，assistant+其工具结果）不折叠：默认 4。
+ * 近期结果可能仍在使用，且让缓存先把该消息「用透」几轮再折叠。
+ */
+function foldKeepAgeGroups(): number {
+  const n = Number(process.env.AH_STALE_TOOL_FOLD_AGE_GROUPS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
+}
+
 /**
  * 把消息序列切分为「原子组」：返回每条消息所属的组号（从 0 递增）。
  *
@@ -254,7 +314,11 @@ export function groupIndexOf(msgs: Message[]): number[] {
       pending = 0;
     }
     out[i] = g;
-    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+    if (
+      m.role === 'assistant' &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.length > 0
+    ) {
       pending = m.tool_calls.length;
     } else {
       g += 1;
@@ -285,7 +349,11 @@ function shrinkMessage(m: Message): Message {
   const text = typeof m.content === 'string' ? m.content : '';
   const head = text.slice(0, SHRINK_KEEP_HEAD).replace(/\s+/g, ' ').trim();
   const label =
-    m.role === 'tool' ? '工具结果' : m.role === 'assistant' ? '助手回复' : '用户输入';
+    m.role === 'tool'
+      ? '工具结果'
+      : m.role === 'assistant'
+      ? '助手回复'
+      : '用户输入';
   return {
     ...m,
     content: `${SHRUNK_MARK}${label}共 ${text.length} 字符，已压缩以释放上下文，开头摘要：${head}`
@@ -313,7 +381,11 @@ function shrinkMultimodal(m: Message): Message {
     .join('\n');
   const head = text.slice(0, SHRINK_KEEP_HEAD).replace(/\s+/g, ' ').trim();
   const label =
-    m.role === 'tool' ? '工具结果' : m.role === 'assistant' ? '助手回复' : '用户输入';
+    m.role === 'tool'
+      ? '工具结果'
+      : m.role === 'assistant'
+      ? '助手回复'
+      : '用户输入';
   return {
     ...m,
     content:
@@ -338,6 +410,11 @@ export class Memory {
   private sessionKey: string;
   // 标记：lastInput 用于打分时的 context
   private lastInput: string = '';
+  // P1 竞态修复：窗口代数计数器——窗口内容每次被重写（淘汰/replaceWindow/clear）
+  // 时递增；异步打分结果返回时若代数不一致即丢弃，杜绝「分数与消息错位」。
+  private scoreGen = 0;
+  // P1 二次方修复：在途打分标志（去抖）——同一 run 连续 add() 只保留一个在途打分。
+  private scorePending = false;
   // 上下文压缩摘要（有界字符串）；为 null 表示尚未发生压缩。
   private summaryText: string | null = null;
   // 异步摘要器（如 LLM）返回的待落地摘要；hasPendingSummary=true 时窗口暂不含摘要节点，
@@ -369,7 +446,7 @@ export class Memory {
       summarizer: opts.summarizer,
       scorer: opts.scorer,
       notesTopK: opts.notesTopK ?? 10,
-      compressThreshold: opts.compressThreshold ?? 0.8,
+      compressThreshold: opts.compressThreshold ?? 0.8
     };
     // 解析后端：显式 store > 旧版 persistencePath（单文件）> 纯内存（默认）。
     if (opts.store) {
@@ -546,7 +623,10 @@ export class Memory {
    *   结果）；若保护状态下压不到目标，调用方会再放行一次 —— 因为上下文超窗会让
    *   下一次请求直接失败，此时压缩当前轮次是唯一出路。
    */
-  private shrinkToTokenBudget(target: number, protectLastGroup = true): boolean {
+  private shrinkToTokenBudget(
+    target: number,
+    protectLastGroup = true
+  ): boolean {
     if (!(target >= 0)) return false;
     let changed = false;
     for (let pass = 0; pass < MAX_SHRINK_PASSES; pass++) {
@@ -582,29 +662,70 @@ export class Memory {
     return changed;
   }
 
+  /**
+   * 调度一次窗口打分（去抖）：在途打分未返回时不再重复发起。
+   * 同步 scorer 立即结算；异步 scorer 返回后经 applyScores 做代数校验。
+   */
+  private scheduleScore(): void {
+    if (!this.opts.scorer || this.scorePending) return;
+    this.scorePending = true;
+    const gen = ++this.scoreGen;
+    const snapshot = this.window.slice();
+    let result: number[] | Promise<number[]>;
+    try {
+      result = this.opts.scorer.scoreWindow(snapshot, this.lastInput);
+    } catch (e) {
+      this.scorePending = false;
+      structLog('warn', 'memory: sync scorer failed, skipping scores', {
+        error: e instanceof Error ? e.message : String(e)
+      });
+      return;
+    }
+    if (result instanceof Promise) {
+      // .catch 必须挂上（P1 C3）：插件 scorer 抛错若不接住，会以
+      // unhandledRejection 形式直接炸掉进程（Node ≥15 默认 crash）。
+      // 打分失败只降级为「本轮无分数」。
+      void result
+        .then((s) => {
+          this.scorePending = false;
+          this.applyScores(gen, s);
+        })
+        .catch((e) => {
+          this.scorePending = false;
+          structLog('warn', 'memory: async scorer failed, skipping scores', {
+            error: e instanceof Error ? e.message : String(e)
+          });
+        });
+    } else {
+      this.scorePending = false;
+      this.applyScores(gen, result);
+    }
+  }
+
+  /** 应用打分结果：代数不一致（窗口已变）则丢弃并重调度；长度不符防御性丢弃。 */
+  private applyScores(gen: number, s: unknown): void {
+    if (gen !== this.scoreGen) {
+      // 窗口在打分期间被重写（淘汰/替换）——结果基于过期快照，丢弃后重调度，
+      // 保证最终拿到与当前窗口一致的分数。
+      this.scheduleScore();
+      return;
+    }
+    if (Array.isArray(s) && s.length === this.window.length) {
+      this.windowScores = s as number[];
+    }
+  }
+
   add(msg: Message): void {
     this.window.push(msg);
-    // 更新对应消息的分数
-    if (this.opts.scorer && msg.role !== 'system') {
-      // 异步打分不阻塞 add()
-      const scores = this.opts.scorer.scoreWindow(this.window, this.lastInput);
-      if (scores instanceof Promise) {
-        // .catch 必须挂上（P1 C3）：插件 scorer 抛错若不接住，会以
-        // unhandledRejection 形式直接炸掉进程（Node ≥15 默认 crash），
-        // 且该路径位于 add() 热路径上。打分失败只降级为「本轮无分数」。
-        void scores
-          .then((s) => {
-            this.windowScores = s;
-          })
-          .catch((e) => {
-            structLog('warn', 'memory: async scorer failed, skipping scores', {
-              error: e instanceof Error ? e.message : String(e),
-            });
-          });
-      } else {
-        this.windowScores = scores;
-      }
-    }
+    // 更新对应消息的分数。
+    // P1 竞态+二次方修复：同一 run 内 assistant + N 条 tool 结果会连续 add()，
+    // 旧实现每次 add 都对全窗口发起打分（O(add × window) 重复计算），且异步
+    // scorer 返回时窗口可能已被淘汰改变——仅靠长度巧合相等（淘汰一条又新增
+    // 一条）就会分数错位、按错误分数淘汰消息。现改为：
+    //   1) 去抖：在途打分期间后续 add 不再重复发起，返回后代数已变则重调度；
+    //   2) 代数校验：窗口代数不一致的结果一律丢弃；
+    //   3) 快照：打分器拿到的是发起时刻的窗口副本。
+    this.scheduleScore();
     // 触发条件：消息条数溢出 或 token 占用率越过压缩阈值。
     // token 级触发是独立于 CONTEXT_COMPRESSION 特性开关的安全护栏——
     // 即便未开启摘要，也会触发 FIFO 淘汰，避免上下文撑爆（原问题根因）。
@@ -660,7 +781,10 @@ export class Memory {
       const evicted = rest.slice(0, cut);
       const keptRest = rest.slice(cut);
       if (this.opts.summarizer) {
-        const result = this.opts.summarizer({ previous: this.summaryText, evicted });
+        const result = this.opts.summarizer({
+          previous: this.summaryText,
+          evicted
+        });
         if (result instanceof Promise) {
           // 异步摘要器：暂存 pending，窗口先不含摘要节点；flushSummary() 落地后补入。
           // 一个 step 内可能连续多次 add()（assistant + N 条 tool 结果），
@@ -680,7 +804,12 @@ export class Memory {
         } else {
           this.summaryText = result;
           const summaryNode = this.summaryText
-            ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+            ? [
+                {
+                  role: 'system' as const,
+                  content: `【历史摘要】\n${this.summaryText}`
+                }
+              ]
             : [];
           this.window = [...sys, ...summaryNode, ...keptRest];
         }
@@ -731,11 +860,75 @@ export class Memory {
         this._compactCount++;
         this._compressedSinceReport = true;
       }
-      if (this.historyTokens() > target && this.shrinkToTokenBudget(target, false)) {
+      if (
+        this.historyTokens() > target &&
+        this.shrinkToTokenBudget(target, false)
+      ) {
         this._compactCount++;
         this._compressedSinceReport = true;
       }
     }
+  }
+
+  /**
+   * 陈旧工具结果折叠（Token 成本优化，压缩方案2）。
+   *
+   * 动机：大体积抓取结果一旦进历史，后续每一步都会重复计费（滚雪球——一次 16KB
+   * 级抓取全程可放大 6-10k tok）。模型对「N 组之前」的工具结果通常已消化完毕，
+   * 保留开头与结尾足以回溯，无需逐字保留全文。
+   *
+   * 与 fitToBudget 互补：fitToBudget 是「超预算才压」的硬上限兜底；本方法不等
+   * 预算击穿、每步发送前主动防患。只折叠 role='tool' 的文本结果，保留
+   * tool_call_id / name，绝不破坏 tool 配对（与瘦身同级的安全性）。
+   *
+   * 配置（env）：
+   *   - AH_STALE_TOOL_FOLD=off              关闭（默认 on）
+   *   - AH_STALE_TOOL_FOLD_MIN_CHARS=8000   触发折叠的最小结果长度（字符）
+   *   - AH_STALE_TOOL_FOLD_AGE_GROUPS=4     保留最近 N 组不折叠
+   *
+   * 返回是否折叠过至少一条（仅作日志/观测用；**不**点亮「已压缩」徽标——
+   * 折叠是轻量瘦身，与 token 级上下文压缩是两件事，避免徽标口径混淆）。
+   */
+  foldStaleToolResults(): boolean {
+    if (!foldEnvOn()) return false;
+    const minChars = foldMinChars();
+    if (!(minChars > 0)) return false;
+    const keepAge = foldKeepAgeGroups();
+    // window → rest（去掉非摘要 system）映射，rest 下标用于组号计算。
+    const restIdx: number[] = [];
+    const rest: Message[] = [];
+    this.window.forEach((m, i) => {
+      if (m.role === 'system' && !isSummaryNode(m)) return;
+      restIdx.push(i);
+      rest.push(m);
+    });
+    if (rest.length === 0) return false;
+    const groups = groupIndexOf(rest);
+    const lastGroup = groups[groups.length - 1] ?? 0;
+    const staleMax = lastGroup - keepAge; // 组号 <= staleMax 视为陈旧
+    if (staleMax < 0) return false;
+    let changed = false;
+    for (let j = 0; j < rest.length; j++) {
+      const m = rest[j] as Message;
+      if (m.role !== 'tool') continue;
+      if (typeof m.content !== 'string' || m.content.length <= minChars)
+        continue;
+      if (m.content.includes(FOLD_MARK)) continue; // 已折叠，不重复处理
+      if ((groups[j] ?? 0) > staleMax) continue; // 近期组保留完整
+      const text = m.content;
+      const folded =
+        text.slice(0, FOLD_KEEP_HEAD) +
+        `\n${FOLD_MARK}原长 ${text.length} 字符，距当前轮次较远，仅保留开头与结尾；如需完整内容请重新获取。\n` +
+        text.slice(-FOLD_KEEP_TAIL);
+      const wi = restIdx[j] ?? -1;
+      if (wi < 0) continue; // 防御性：映射缺失则跳过，绝不丢消息
+      this.window[wi] = { ...m, content: folded };
+      changed = true;
+    }
+    // 注意：折叠**不**点亮「已压缩」徽标（_compressedSinceReport）。该徽标的语义是
+    // 「历史顶到压缩阈值、发生token级上下文压缩」；折叠是轻量瘦身，改写一两条消息
+    // 对历史总量影响甚微，点亮徽标会造成「显示已压缩但历史仍高」的口径混淆
+    return changed;
   }
 
   /**
@@ -769,11 +962,19 @@ export class Memory {
       const evicted = rest.slice(0, cut);
       const keptRest = rest.slice(cut);
       if (this.opts.summarizer) {
-        const result = this.opts.summarizer({ previous: this.summaryText, evicted });
+        const result = this.opts.summarizer({
+          previous: this.summaryText,
+          evicted
+        });
         if (!(result instanceof Promise)) {
           this.summaryText = result;
           const summaryNode = this.summaryText
-            ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+            ? [
+                {
+                  role: 'system' as const,
+                  content: `【历史摘要】\n${this.summaryText}`
+                }
+              ]
             : [];
           this.window = [...sys, ...summaryNode, ...keptRest];
         } else {
@@ -790,7 +991,10 @@ export class Memory {
     // 2) 内容瘦身兜底（保留配对）：先保护当前轮次，仍不达标则放行瘦身当前轮次。
     if (this.historyTokens() > maxTokens) {
       if (this.shrinkToTokenBudget(maxTokens)) changed = true;
-      if (this.historyTokens() > maxTokens && this.shrinkToTokenBudget(maxTokens, false))
+      if (
+        this.historyTokens() > maxTokens &&
+        this.shrinkToTokenBudget(maxTokens, false)
+      )
         changed = true;
     }
 
@@ -860,7 +1064,10 @@ export class Memory {
         head.map(async (m) => {
           const text = messageText(m);
           const d = await jevDecide(
-            `评估以下对话消息对当前任务的关键程度（0~100，越高越重要）：\n${text.slice(0, 1500)}`,
+            `评估以下对话消息对当前任务的关键程度（0~100，越高越重要）：\n${text.slice(
+              0,
+              1500
+            )}`,
             {
               importance: {
                 type: 'score',
@@ -885,8 +1092,20 @@ export class Memory {
           victim = i;
         }
       }
-      const evicted = head[victim];
-      const keptRest = rest.filter((m) => m !== evicted);
+      // P1 组对齐修复：victim 所在「原子组」必须整组淘汰——旧实现按单条消息
+      // 过滤，若最低分消息恰是 assistant(tool_calls) 或其某条 tool 结果，会拆散
+      // tool 配对，喂给 LLM 的历史出现孤儿 tool_call / 孤儿 tool result，直接被
+      // provider 400 拒绝（与 fitToBudget 的 alignEvictionCut 同一硬约束）。
+      const victimMsg = head[victim];
+      if (!victimMsg) return base;
+      const victimIdx = rest.indexOf(victimMsg);
+      const groups = groupIndexOf(rest);
+      const victimGroup = victimIdx >= 0 ? groups[victimIdx] : undefined;
+      const keptRest =
+        victimGroup !== undefined
+          ? rest.filter((m, i) => groups[i] !== victimGroup)
+          : rest.filter((m) => m !== victimMsg);
+      if (keptRest.length === rest.length) return base; // 未淘汰任何消息（防御）
       this.window = [...sys, ...keptRest];
       this._compactCount++;
       this._compressedSinceReport = true;
@@ -924,9 +1143,16 @@ export class Memory {
       typeof m.content === 'string' &&
       m.content.startsWith('【历史摘要】');
     const sys = this.window.filter((m) => m.role === 'system' && !isSummary(m));
-    const rest = this.window.filter((m) => !(m.role === 'system' && !isSummary(m)));
+    const rest = this.window.filter(
+      (m) => !(m.role === 'system' && !isSummary(m))
+    );
     const summaryNode = this.summaryText
-      ? [{ role: 'system' as const, content: `【历史摘要】\n${this.summaryText}` }]
+      ? [
+          {
+            role: 'system' as const,
+            content: `【历史摘要】\n${this.summaryText}`
+          }
+        ]
       : [];
     this.window = [...sys, ...summaryNode, ...rest];
   }
@@ -949,7 +1175,7 @@ export class Memory {
   notesWithScores(): Array<{ note: string; score: number }> {
     return this.longTerm.map((note, i) => ({
       note,
-      score: this.longTermScores[i] ?? 0,
+      score: this.longTermScores[i] ?? 0
     }));
   }
 
@@ -973,14 +1199,12 @@ export class Memory {
     this.longTermScores = scores;
     const indexed = this.longTerm.map((note, i) => ({
       note,
-      score: scores[i] ?? 0,
+      score: scores[i] ?? 0
     }));
     indexed.sort((a, b) => b.score - a.score);
     const topK = Math.min(this.opts.notesTopK, indexed.length);
     const top = indexed.slice(0, topK).map((x) => x.note);
-    return top.length
-      ? `Long-term memory:\n- ${top.join('\n- ')}`
-      : '';
+    return top.length ? `Long-term memory:\n- ${top.join('\n- ')}` : '';
   }
 
   /** 持久化当前记忆到后端（按 sessionKey）。 */
@@ -988,15 +1212,22 @@ export class Memory {
     await this.flushSummary();
     // 若有 scorer，重新计算 longTerm scores
     if (this.opts.scorer && this.longTerm.length > 0) {
-      const scores = await this.opts.scorer.scoreNotes(this.longTerm, this.lastInput);
+      const scores = await this.opts.scorer.scoreNotes(
+        this.longTerm,
+        this.lastInput
+      );
       this.longTermScores = scores;
     }
     const data: PersistedMemory = {
       window: this.window,
       longTerm: this.longTerm,
       ...(this.summaryText ? { summary: this.summaryText } : {}),
-      ...(this.longTermScores.length > 0 ? { longTermScores: this.longTermScores } : {}),
-      ...(this.windowScores.length > 0 ? { windowScores: this.windowScores } : {}),
+      ...(this.longTermScores.length > 0
+        ? { longTermScores: this.longTermScores }
+        : {}),
+      ...(this.windowScores.length > 0
+        ? { windowScores: this.windowScores }
+        : {})
     };
     await this.store.save(this.sessionKey, data);
   }
@@ -1008,8 +1239,12 @@ export class Memory {
       this.window = Array.isArray(data.window) ? data.window : [];
       this.longTerm = Array.isArray(data.longTerm) ? data.longTerm : [];
       this.summaryText = typeof data.summary === 'string' ? data.summary : null;
-      this.longTermScores = Array.isArray(data.longTermScores) ? data.longTermScores as number[] : [];
-      this.windowScores = Array.isArray(data.windowScores) ? data.windowScores as number[] : [];
+      this.longTermScores = Array.isArray(data.longTermScores)
+        ? (data.longTermScores as number[])
+        : [];
+      this.windowScores = Array.isArray(data.windowScores)
+        ? (data.windowScores as number[])
+        : [];
       // 如果持久化的 scores 长度不匹配，重置
       if (this.longTermScores.length !== this.longTerm.length) {
         this.longTermScores = [];
@@ -1026,6 +1261,7 @@ export class Memory {
     this.longTerm = [];
     this.longTermScores = [];
     this.windowScores = [];
+    this.scoreGen++;
     this._compactCount = 0;
     this._compressedSinceReport = false;
     this._tokenOvershoot = 0;
@@ -1046,9 +1282,11 @@ export class Memory {
     this.window = messages.map((m) => {
       const next: Message = { role: m.role, content: m.content };
       if ((m as { tool_calls?: unknown }).tool_calls) {
-        (next as { tool_calls?: unknown }).tool_calls = (m as {
-          tool_calls?: unknown;
-        }).tool_calls;
+        (next as { tool_calls?: unknown }).tool_calls = (
+          m as {
+            tool_calls?: unknown;
+          }
+        ).tool_calls;
       }
       const tcid = (m as { tool_call_id?: unknown }).tool_call_id;
       if (tcid) (next as { tool_call_id?: unknown }).tool_call_id = tcid;
@@ -1056,9 +1294,12 @@ export class Memory {
       if (nm) (next as { name?: unknown }).name = nm;
       return next;
     });
-    this.longTerm = [];
-    this.longTermScores = [];
     this.windowScores = [];
+    // P1 竞态修复：窗口代数递增，使在途的异步打分结果失效。
+    this.scoreGen++;
+    // P1 数据丢失修复：长期记忆（remember() 写入、跨 run 注入系统提示词）不是
+    // 窗口的「派生状态」——编辑重发一次对话不应抹掉用户全部长期笔记。此处仅清
+    // 窗口派生字段（摘要 / 窗口分数 / 压缩计数），longTerm 与 longTermScores 保留。
     this.summaryText = null;
     this.pendingSummary = null;
     this.hasPendingSummary = false;

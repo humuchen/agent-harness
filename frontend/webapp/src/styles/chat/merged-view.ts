@@ -1,6 +1,4 @@
-import { css } from 'lit';
-
-export const mergedView = css`
+export const mergedView = `
   /* ----------------------- 合并视图：深度思考 + 最终回答 ----------------------- */
   /* 思考区：合并视图顶部，实时流式呈现模型推理（随 token 增量逐字揭示）。 */
   .think {
@@ -75,11 +73,12 @@ export const mergedView = css`
   .think.collapsed .think-chev {
     transform: rotate(-90deg);
   }
+
   /* 高度封顶 + 内部滚动：超长推理不再撑高整条消息，降低视觉占用。 */
   .think-body {
     padding: 2px 12px 8px 34px;
     color: var(--ah-text-muted);
-    font-size: 12.5px;
+    font-size: 12px;
     line-height: 1.65;
     max-height: 180px;
     overflow-y: auto;
@@ -110,6 +109,7 @@ export const mergedView = css`
   .think-text.muted {
     opacity: 0.85;
   }
+
   /* 关键变量卡（深度思考内高亮） */
   .dvars {
     margin-bottom: 10px;
@@ -154,6 +154,7 @@ export const mergedView = css`
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
   /* 思考区与回答区之间的清晰分隔 */
   .sep {
     display: flex;
@@ -172,11 +173,13 @@ export const mergedView = css`
     height: 1px;
     background: var(--ah-border);
   }
+
   /* 回答区：合并视图底部，承载最终回答（流式逐字）。 */
   .answer {
     font-size: 14px;
     line-height: 1.65;
   }
+
   /* “模型正在回复…” 文字动效：循环脉冲 + 跳动圆点，提示模型仍在处理。 */
   .replying {
     display: inline-flex;
@@ -197,6 +200,7 @@ export const mergedView = css`
       opacity: 1;
     }
   }
+    
   /* 通用跳动圆点（思考中 / 模型正在回复 共用 blinkdot 动效） */
   .dots {
     display: inline-flex;

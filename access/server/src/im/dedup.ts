@@ -111,7 +111,7 @@ export class RedisDedupStore implements DedupStore {
   async check(key: string): Promise<boolean> {
     if (!key) return true;
     // 延迟 require：避免在无 Redis 场景下也加载 ioredis（保持「一切降级可用」）。
-    let client: { set(...args: unknown[]): Promise<unknown> } | null = null;
+    let client: { set(...args: unknown[]): Promise<unknown> } | null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const mod = require('../redis-client') as typeof import('../redis-client');

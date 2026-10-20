@@ -1,6 +1,7 @@
 /**
  * 工单仓储：参数化 SQL，真实落库（node:sqlite）。
  */
+import { randomBytes } from 'node:crypto';
 import { getDb } from '../infra/db';
 import { getConfig } from '../config';
 
@@ -17,9 +18,9 @@ export interface TicketRow {
   updatedAt: string;
 }
 
-/** 生成工单号（cs-<timestamp36>-<rand>）。 */
+/** 生成工单号（cs-<timestamp36>-<rand>；P1 弱随机修复：crypto 随机替代 Math.random）。 */
 export function newTicketId(): string {
-  return `cs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  return `cs-${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`;
 }
 
 /** 创建工单。 */

@@ -10,6 +10,7 @@
 import type { IncomingMessage } from 'node:http';
 // 外部身份源实现（OIDC Bearer JWT / proxy 头注入）。authz 单向依赖 sso，sso 仅 import type 引用本文件类型。
 import { OidcAuthorizer, ProxyAuthorizer, loadRoleMapping } from './sso';
+import { getSecret } from './env-guard';
 // 账户密码身份源（注册/登录 + 服务端签发 7 天 token + cookie）。与 OIDC/proxy/静态令牌共存，
 // 作为 Authorizer 的 fallback 档。accounts 仅依赖 node 内置模块，无循环依赖风险。
 import {
@@ -251,8 +252,11 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'agent:read',
     'workflow:run',
     'workflow:read',
-    'a2a:receive',
-    'a2a:send',
+    // P1 越权修复（H3）：a2a:receive 允许同步执行本地 agent——viewer 曾借此绕过
+    // runQueue 的并发上限/看门狗/配额 admit/审批闸门直接跑真 agent。收口到
+    // operator 及以上；确需 viewer 参与 A2A 的部署可用 UI_ROLE_PERMISSIONS 显式放开。
+    // 'a2a:receive',
+    // 'a2a:send',
     'chat:read',
     'env:read',
     'workspace:read',
@@ -266,7 +270,8 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
 };
 
 export function loadMatrix(): Record<Role, Action[]> {
-  const raw = process.env.UI_ROLE_PERMISSIONS;
+  // P1 env 边界收口：UI_ROLE_PERMISSIONS 已 scrub，经 getSecret 读受保护副本。
+  const raw = getSecret('UI_ROLE_PERMISSIONS');
   if (!raw) return DEFAULT_MATRIX;
   try {
     const parsed = JSON.parse(raw) as Partial<Record<Role, Action[]>>;
@@ -484,10 +489,13 @@ export class AccountAuthorizer implements Authorizer {
 export function createAuthorizer(requireAuth: boolean): Authorizer {
   // admin 鉴权密钥：优先 ADMIN_API_KEY；未设置时回退 OPEN_API_KEY（向后兼容历史双用途）。
   // 二者都不影响 OPEN_API_KEY 作为 LLM 调用密钥的职责（core 直接读它）。
+  // ADMIN_API_KEY/OPEN_API_KEY 不在 env-guard scrub 清单（插件设计内依赖 / core LLM 直读）。
   const apiKey = process.env.ADMIN_API_KEY || process.env.OPEN_API_KEY || '';
+  // P1 env 边界收口：UI_TOKENS / UI_ROLE_PERMISSIONS 已在启动期被 scrub 进受保护
+  // 副本（同进程插件直读 process.env 拿不到），统一经 getSecret 读取。
   const rbacConfigured = !!(
-    process.env.UI_TOKENS ||
-    process.env.UI_ROLE_PERMISSIONS
+    getSecret('UI_TOKENS') ||
+    getSecret('UI_ROLE_PERMISSIONS')
   );
 
   // 全放行（开放语义）：本地无 key 且无 RBAC 的演示态，或 requireAuth=false。
@@ -537,7 +545,8 @@ export function createAuthorizer(requireAuth: boolean): Authorizer {
   // ── RBAC 已接入：token / oidc / proxy 模式 ──
   // OPEN_API_KEY 始终作为 admin 逃生通道（统一认证依据），与 RBAC 角色并行生效。
   const tokens: Record<string, Role> = {};
-  const tokensRaw = process.env.UI_TOKENS;
+  // P1 env 边界收口：同上，经 getSecret 读 scrub 后的受保护副本。
+  const tokensRaw = getSecret('UI_TOKENS');
   if (tokensRaw) {
     try {
       Object.assign(tokens, JSON.parse(tokensRaw) as Record<string, Role>);

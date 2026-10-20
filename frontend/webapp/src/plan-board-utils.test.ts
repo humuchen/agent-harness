@@ -5,7 +5,7 @@ import {
   groupNodesByStatus,
   planProgress
 } from './plan-board-utils';
-import type { PlanNode, PlanNodeStatus } from './plan-board';
+import type { PlanNode, PlanNodeStatus } from './plan-board.svelte';
 
 function node(id: string, status: PlanNodeStatus): PlanNode {
   return { id, title: `任务 ${id}`, status, dependsOn: [] };

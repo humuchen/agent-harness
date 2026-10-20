@@ -1,14 +1,13 @@
-import { css } from 'lit';
 
 /**
- * ah-swipe-item 操作区按钮的通用宿主侧样式（可复用）。
+ * .swipe-item-root 操作区按钮的通用宿主侧样式（可复用）。
  *
  * 背景：actions slot 内容由宿主 light DOM 投影，组件 shadow 内的选择器无法
- * 直接命中投影内容，因此按钮视觉约定交给本模块 —— 任何接入 ah-swipe-item 的
+ * 直接命中投影内容，因此按钮视觉约定交给本模块 —— 任何接入 .swipe-item-root 的
  * 宿主把本模块并入自身样式即可获得一致的操作区按钮外观（仅用 --ah-* 语义令牌）。
  */
-export const swipeActStyles = css`
-  /* 滑动操作区按钮（ah-swipe-item 的 actions slot 内容约定类名）。
+export const swipeActStyles = `
+  /* 滑动操作区按钮（.swipe-item-root 的 actions slot 内容约定类名）。
      入场动画：展开时按钮自右向左错落缩放入场（nth-child 错峰 60ms），
      收起时（open 属性移除）延迟归零、快速淡出，与内容回弹节奏匹配。
      入场曲线同内容回弹（略过冲）保持手感一致。 */
@@ -41,18 +40,18 @@ export const swipeActStyles = css`
   }
   /* 展开态：按钮入场 + 错峰（第 1 个先出、第 2 个跟上，制造「滑出」层次感）。
      宿主 CSS 能命中投影内容的选择器：按钮留在宿主 shadow 树中，
-     ah-swipe-item[open] 是 host 属性反射，可作前缀。 */
-  ah-swipe-item[open] .swipe-act {
+     .swipe-item-root[data-open] 是 host 属性反射，可作前缀。 */
+  .swipe-item-root[data-open] .swipe-act {
     opacity: 1;
     transform: none;
   }
-  ah-swipe-item[open] .swipe-act:nth-child(1) {
+  .swipe-item-root[data-open] .swipe-act:nth-child(1) {
     transition-delay: 0.06s;
   }
-  ah-swipe-item[open] .swipe-act:nth-child(2) {
+  .swipe-item-root[data-open] .swipe-act:nth-child(2) {
     transition-delay: 0.12s;
   }
-  ah-swipe-item[open] .swipe-act:nth-child(3) {
+  .swipe-item-root[data-open] .swipe-act:nth-child(3) {
     transition-delay: 0.18s;
   }
   @media (prefers-reduced-motion: reduce) {

@@ -111,6 +111,8 @@
 | `eval.ts` / `verification.ts`       | RunRecord 还原 + 评估器 / 三大能力自验证                                                                 |
 | `retention.ts` / `openapi.ts`       | 留存/出境策略 + OpenAPI 契约                                                                             |
 
+> 除上述核心业务模块外，`server` 业务层还包含计划模式（`plan-store`/`plan-bus`/`plan-verify`/`plan-artifacts`）、交付物存储（`artifact-store`/`artifact-store-s3`/`deliver-file`）、插件宿主（`plugin-ext`）、推送投递（`push-dispatch`）、IM 桥接（`im/*`：飞书/钉钉/企业微信）、子智能体与团队（`subagent-tools`/`teams`）、工作流执行（`workflow-executor`）、备案与供应链（`backup-scheduler`/`supply-chain`）等模块，完整清单见 [`modules.md`](modules.md) 的 server 业务层表。
+
 ### 2.6 模块协作时序（一次 `POST /api/run`）
 
 ```
@@ -227,7 +229,7 @@ docker run -p 4173:4173 \
 | 隔离         | `SANDBOX_BACKEND` / `HARNESS_NATIVE_STRICT`                                                                              | 环境                        | container / os / local                                                                                                                          |
 | 自检         | `AGENT_AUTO_VERIFY` / `AGENT_VERIFY_MAX_RETRIES` / `AGENT_COMPLETION_CHECK`                                              | false/0/false               | 自动验证门禁                                                                                                                                    |
 | 护栏         | `GUARDRAIL_SENSITIVITY` / `GUARDRAIL_MAX_INPUT` / `GUARDRAIL_SECRET_SCAN` / `GUARDRAIL_INJECTION_SCAN` / `GUARDRAIL_PII` | medium/20000/true/true/true | 全局护栏基线                                                                                                                                    |
-| 配额/运维    | `RUN_CONCURRENCY` / `JOB_TIMEOUT_MS` / `RUN_JOBS_MAX` / `MAX_STEPS` / `MAX_TOKENS_PER_RUN` / `MAX_COST_PER_RUN`          | 4/300000/500/12/∞/∞         | 并发/超时/步数/预算                                                                                                                             |
+| 配额/运维    | `RUN_CONCURRENCY` / `JOB_TIMEOUT_MS` / `RUN_JOBS_MAX` / `MAX_STEPS` / `MAX_TOKENS_PER_RUN` / `MAX_COST_PER_RUN`          | 4/300000/500/24/∞/∞         | 并发/超时/步数(server 默认 24，框架默认 12)/预算                                                                                                                             |
 | 审批         | `UI_APPROVAL_BYPASS_ROLES`                                                                                               | admin                       | 可绕过审批的角色                                                                                                                                |
 | Shell        | `SHELL_ENABLED` / `SHELL_REQUIRE_CONFIRM` / `SHELL_ROOT` / `SHELL_WHITELIST`                                             | true/false/cwd/空           | shell 工具开关与边界                                                                                                                            |
 | 审计/告警    | `AUDIT_LOG` / `ALERT_WEBHOOK_URL` / `RETENTION_DAYS_AUDIT`                                                               | 空                          | 审计落盘 / 告警 / 留存天数                                                                                                                      |

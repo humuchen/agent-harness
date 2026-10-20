@@ -1,34 +1,34 @@
 /**
- * 路由联动：撰写区「常驻组件自持打开态」的浮层必须随路由变化收起。
+ * 路由联动：撰写区「常驻组件自持打开态」的浮层必须随路由变化收起 —— Svelte 5 迁移版。
  *
  * 回归背景：这些 picker 随应用壳一起挂载、切 Tab 只是被父级 hidden 而非销毁，
  * 内部 `open` 不会自己归零。移动端侧滑返回（只改 history、不产生点击）后
  * 再次进入对话页，会看到上次遗留的展开下拉。
  *
- * 统一机制见 ah-app.closeAllOverlays：路由变化时向 window 广播
+ * 统一机制见应用壳 closeAllOverlays：路由变化时向 window 广播
  * `ah:close-overlays`，各覆盖层组件订阅后自行关闭。
- * （弹框/抽屉类原语在 mac-ui-adapter.test.ts，「我的」宿主在 user-menu.test.ts。）
+ * （「我的」宿主在 user-menu.test.ts。）
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import './mode-picker';
-import './agent-picker';
-import type { AhModePicker } from './mode-picker';
-import type { AhAgentPicker } from './agent-picker';
+import { mount, unmount, tick } from 'svelte';
+import type { SvelteComponent } from 'svelte';
+import ModePicker from './mode-picker.svelte';
+import AgentPicker from './agent-picker.svelte';
 
-type El = HTMLElement & { updateComplete: Promise<unknown> };
-
-/** 模拟 ah-app 的路由变化广播。 */
+/** 模拟应用壳的路由变化广播。 */
 function signalRouteChange(): void {
   window.dispatchEvent(new CustomEvent('ah:close-overlays'));
 }
 
 /** 挂载组件并等到首次渲染完成。 */
-async function mount<T extends HTMLElement>(tag: string): Promise<El & T> {
-  const el = document.createElement(tag) as unknown as El & T;
-  document.body.appendChild(el);
-  await el.updateComplete;
-  return el;
+async function mountC(
+  C: typeof ModePicker | typeof AgentPicker,
+  props: Record<string, unknown> = {}
+): Promise<SvelteComponent> {
+  const inst = mount(C, { target: document.body, props });
+  await tick();
+  return inst as SvelteComponent;
 }
 
 describe('路由联动：撰写区浮层随 ah:close-overlays 收起', () => {
@@ -40,52 +40,56 @@ describe('路由联动：撰写区浮层随 ah:close-overlays 收起', () => {
     document.body.innerHTML = '';
   });
 
-  it('ah-mode-picker：展开态收到信号后收起', async () => {
-    const el = await mount<AhModePicker>('ah-mode-picker');
-    expect(el.shadowRoot?.querySelector('.panel')).toBeFalsy();
+  it('mode-picker：展开态收到信号后收起', async () => {
+    const inst = await mountC(ModePicker);
+    expect(document.body.querySelector('.panel')).toBeFalsy();
 
-    (el.shadowRoot?.querySelector('.trigger') as HTMLElement).click();
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector('.panel')).toBeTruthy();
+    (document.body.querySelector('.trigger') as HTMLElement).click();
+    await tick();
+    expect(document.body.querySelector('.panel')).toBeTruthy();
 
     signalRouteChange();
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector('.panel')).toBeFalsy();
+    await tick();
+    expect(document.body.querySelector('.panel')).toBeFalsy();
+    unmount(inst);
   });
 
-  it('ah-mode-picker：收起态收到信号幂等（不抛错）', async () => {
-    const el = await mount<AhModePicker>('ah-mode-picker');
+  it('mode-picker：收起态收到信号幂等（不抛错）', async () => {
+    const inst = await mountC(ModePicker);
 
     signalRouteChange();
     signalRouteChange();
-    await el.updateComplete;
+    await tick();
 
-    expect(el.shadowRoot?.querySelector('.panel')).toBeFalsy();
+    expect(document.body.querySelector('.panel')).toBeFalsy();
+    unmount(inst);
   });
 
-  it('ah-agent-picker：展开态收到信号后收起', async () => {
-    const el = await mount<AhAgentPicker>('ah-agent-picker');
-    expect(el.shadowRoot?.querySelector('.panel')).toBeFalsy();
+  it('agent-picker：展开态收到信号后收起', async () => {
+    const inst = await mountC(AgentPicker);
+    expect(document.body.querySelector('.panel')).toBeFalsy();
 
-    (el.shadowRoot?.querySelector('.trigger') as HTMLElement).click();
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector('.panel')).toBeTruthy();
+    (document.body.querySelector('.trigger') as HTMLElement).click();
+    await tick();
+    expect(document.body.querySelector('.panel')).toBeTruthy();
 
     signalRouteChange();
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector('.panel')).toBeFalsy();
+    await tick();
+    expect(document.body.querySelector('.panel')).toBeFalsy();
+    unmount(inst);
   });
 
-  it('ah-agent-picker：收起后仍能再次展开（状态归零而非锁死）', async () => {
-    const el = await mount<AhAgentPicker>('ah-agent-picker');
+  it('agent-picker：收起后仍能再次展开（状态归零而非锁死）', async () => {
+    const inst = await mountC(AgentPicker);
 
-    (el.shadowRoot?.querySelector('.trigger') as HTMLElement).click();
-    await el.updateComplete;
+    (document.body.querySelector('.trigger') as HTMLElement).click();
+    await tick();
     signalRouteChange();
-    await el.updateComplete;
+    await tick();
 
-    (el.shadowRoot?.querySelector('.trigger') as HTMLElement).click();
-    await el.updateComplete;
-    expect(el.shadowRoot?.querySelector('.panel')).toBeTruthy();
+    (document.body.querySelector('.trigger') as HTMLElement).click();
+    await tick();
+    expect(document.body.querySelector('.panel')).toBeTruthy();
+    unmount(inst);
   });
 });
