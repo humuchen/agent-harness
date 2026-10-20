@@ -9,6 +9,10 @@
    * 以「状态对象」参数化 —— 组件实例经 attachBridge 桥接 $state，单测直接构造最小状态驱动。
    */
   import { client, authedFetch, getUsername } from './api';
+  // P1 拆分首刀：滚动跟随 + 窗口化渲染状态外迁（见 stores/chat-scroll.svelte.ts）。
+  import { chatScroll, AT_BOTTOM_THRESHOLD } from './stores/chat-scroll.svelte';
+  // P1 拆分第二刀：消息级 UI 覆盖态（深度思考折叠）外迁。
+  import { chatMessageUi } from './stores/chat-message-ui.svelte';
   // 跨设备实时同步：登录后建立常驻 SSE，接收本账户其它端写入的增量消息/标题/删除。
   import {
     startChatSync,
@@ -574,10 +578,12 @@
   let sessionLoading = $state(false);
 
   let messages = $state<ChatMsg[]>([]);
-  // P1 渲染性能：过滤结果提升为 $derived——模板里每次渲染周期重复计算
-  // messages.filter(...)（千条消息的会话下每帧 O(n) 白算），derived 只在
-  // messages 变化时重算一次。
-  const visibleMessages = $derived(messages.filter((m) => !m.quiet));
+  // P1 渲染性能（窗口化渲染）：长会话不再一次性渲染全部消息 DOM——窗口大小
+  // 由 stores/chat-scroll.svelte.ts 的 chatScroll.windowSize 持有（初始 60，
+  // 上滚接近顶部 +200 渐进扩容）；过滤 + 截尾都在 derived 内完成（每帧不再
+  // 重复 filter），slice(-n) 保证当前轮次消息永远在窗口内。
+  const allVisible = $derived(messages.filter((m) => !m.quiet));
+  const visibleMessages = $derived(allVisible.slice(-chatScroll.windowSize));
   let input = $state('');
   let model = $state('');
   let mode = $state<RunMode>('mock');
@@ -596,8 +602,7 @@
   let deepThink = $state(true);
   let web = $state(true);
 
-  /** 每条助手消息的深度思考折叠态（key 为 message id），用于手动收起思考区。 */
-  let thinkCollapsed = $state<Record<string, boolean>>({});
+  /** 每条助手消息的深度思考折叠态：已外迁 stores/chat-message-ui.svelte.ts（chatMessageUi）。 */
 
   /**
    * 富文本块（超长代码块 / 表格）的折叠态覆盖表，key 为 `${scope}/${blockKey}`。
@@ -726,46 +731,21 @@
    */
   let rtVersion = $state(0);
 
-  /* ── 滚动跟随（原 ChatScroll 控制器逻辑内联，host 契约改为 bind:this + $state） ── */
-
-  /** 消息区滚动容器。 */
-  let scrollEl: HTMLElement | null = null;
-  /** 是否处于「钉底」跟随状态：true 时新消息/更新自动滚到底部。 */
-  let stickToBottom = $state(true);
-  /** 浮动「回到底部」按钮是否可见（未钉底时显示）。 */
-  let showScrollDown = $state(false);
-  /** 距底阈值（px）：容忍亚像素/轻微回弹，认为已到底部则隐藏按钮、恢复跟随。 */
-  const AT_BOTTOM_THRESHOLD = 24;
-
-  /** 仅当处于钉底状态才把消息区滚到底部（渲染后调用，不触发状态变更）。 */
+  /* ── 滚动跟随 + 窗口化渲染：状态与逻辑已外迁 stores/chat-scroll.svelte.ts（拆分首刀）。 ──
+   * chatScroll 单例持有 scrollEl / stickToBottom / showScrollDown / windowSize；
+   * 模板接点：bind:this={chatScroll.scrollEl}、onscroll={chatScroll.onScrollFollow(...)}；
+   * 组件内保留的 scrollToBottom()/resetToBottom()/scrollToBottomSmooth() 为单行转发，
+   * 让既有调用点（含 runRt 契约 resetScrollToBottom）零改动。 */
   function scrollToBottom() {
-    const el = scrollEl;
-    if (el && stickToBottom) el.scrollTop = el.scrollHeight;
+    chatScroll.scrollToBottom();
   }
 
-  /** 消息区滚动监听：计算距底距离，更新钉底状态与浮动按钮显隐。 */
-  function onScrollFollow() {
-    const el = scrollEl;
-    if (!el) return;
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = distance <= AT_BOTTOM_THRESHOLD;
-    stickToBottom = atBottom;
-    showScrollDown = !atBottom;
-  }
-
-  /** 切到钉底并隐藏浮动按钮（新会话 / 切换会话 / 发送新消息时调用）。 */
   function resetToBottom() {
-    stickToBottom = true;
-    showScrollDown = false;
+    chatScroll.resetToBottom();
   }
 
-  /** 点击浮动按钮：平滑滚回底部并重新开启钉底跟随。 */
   function scrollToBottomSmooth() {
-    const el = scrollEl;
-    if (!el) return;
-    stickToBottom = true;
-    showScrollDown = false;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    chatScroll.scrollToBottomSmooth();
   }
 
   /**
@@ -3020,9 +3000,8 @@
         const { [removedId]: _drop2, ...rest2 } = planWfReplay;
         planWfReplay = rest2;
       }
-      if (thinkCollapsed[removedId]) {
-        const { [removedId]: _drop3, ...rest3 } = thinkCollapsed;
-        thinkCollapsed = rest3;
+      if (chatMessageUi.thinkCollapsed[removedId] !== undefined) {
+        chatMessageUi.drop(removedId);
       }
     }
 
@@ -3298,10 +3277,8 @@
 
   /** 某条消息深度思考区的有效折叠态：显式覆盖优先，否则取「深度思考收起」全局偏好。 */
   function effectiveThinkCollapsed(id: number): boolean {
-    const k = String(id);
-    return k in thinkCollapsed
-      ? !!thinkCollapsed[k]
-      : deepThinkCollapsed;
+    const o = chatMessageUi.getOverride(id);
+    return o !== undefined ? o : deepThinkCollapsed;
   }
 
   /** 折叠 / 展开某条消息的深度思考区（思考中不可折叠，保证实时推理可见）。 */
@@ -3318,12 +3295,9 @@
     // 相对「有效折叠态」取反，写入显式覆盖。
     const cur = effectiveThinkCollapsed(id);
     const next = !cur;
-    thinkCollapsed = {
-      ...thinkCollapsed,
-      [k]: next
-    };
+    chatMessageUi.setOverride(id, next);
     // 手动展开时把思考区正文滚到底部。
-    if (!next) scrollThinkBlockToBottom(k);
+    if (!next) scrollThinkBlockToBottom(String(id));
   }
 
   /* ── 富文本块折叠（超长代码块 / 表格） ────────────────────────── */
@@ -3434,7 +3408,7 @@
     const k = String(m.id);
     // 已折叠（含偏好默认）则不重复折叠；未折叠才折叠。
     if (effectiveThinkCollapsed(m.id)) return;
-    thinkCollapsed = { ...thinkCollapsed, [k]: true };
+    chatMessageUi.setOverride(k, true);
   }
 
   /** 切换交互模式（问答/计划）并按当前会话持久化 + 广播。 */
@@ -5121,8 +5095,8 @@
     <div class="scroll-region">
       <div
         class="scroll"
-        bind:this={scrollEl}
-        onscroll={onScrollFollow}
+        bind:this={chatScroll.scrollEl}
+        onscroll={() => chatScroll.onScrollFollow(allVisible.length)}
       >
         {#if sessionLoading}
           <!-- 内容区骨架屏：与真实消息共用同一套尺寸规格，加载态 → 内容态不位移。 -->
@@ -5216,7 +5190,7 @@
           </div>
         {/if}
       </div>
-      {#if showScrollDown}
+      {#if chatScroll.showScrollDown}
         <button
           class="scroll-down"
           title="回到底部"
@@ -5870,9 +5844,7 @@
     m.reasoning && m.reasoning.trim() ? parseDeepThinking(m.reasoning) : null}
   {@const collapsed = isThinking
     ? false
-    : String(m.id) in thinkCollapsed
-    ? !!thinkCollapsed[String(m.id)]
-    : deepThinkCollapsed}
+    : (chatMessageUi.getOverride(m.id) ?? deepThinkCollapsed)}
   <div
     class="think"
     class:live={isThinking}

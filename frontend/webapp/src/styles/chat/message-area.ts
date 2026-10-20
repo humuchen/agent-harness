@@ -13,6 +13,11 @@ export const messageArea = `
       overflow-y: auto;
       min-height: 0;
       padding: 18px 0;
+      /* P1 窗口化渲染配套：向上扩容（往 each 头部插入更早的消息 DOM）时，
+         浏览器原生滚动锚定把视口钉在当前可见内容上，不发生跳动。
+         overflow-anchor 对各内核的兼容：Chromium 全量（Capacitor WebView 同源）、
+         Firefox 66+、Safari 16+；不支持的内核自动退化为旧行为（仅小幅跳动）。 */
+      overflow-anchor: auto;
     }
     /* 回到底部悬浮按钮：默认隐藏（由 showScrollDown 控制挂载），
          仅在用户向上滚动离开底部时出现；点击平滑滚回底部后由滚动事件自动消失。 */
