@@ -212,6 +212,7 @@ import { buildOpenApiSpec } from './openapi';
 
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
 import { logConfigValidation } from './config-schema';
+import { scrubSensitiveEnv, getSecret } from './env-guard';
 
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 import { installScrubber } from './log-scrub';
@@ -2062,6 +2063,12 @@ function buildTeamStore(): TeamStore {
 }
 
 async function bootstrap(): Promise<void> {
+  // P1 env 边界收口（插件 worker 沙箱·第一阶段）：在任何鉴权读取与插件 require
+  // 之前，把平台鉴权凭证（UI_TOKENS / UI_JWT_SECRET / UI_SESSION_SECRET /
+  // UI_ROLE_PERMISSIONS）从 process.env 摘除、收进受保护副本（env-guard）。
+  // 同进程插件此后直读 process.env 拿不到这些明文凭证，宿主统一经 getSecret
+  // 读取（authz/config-schema 已接线）。完整隔离待 worker/OS 沙箱（第二阶段）。
+  scrubSensitiveEnv();
   // 多副本一致性自检：当明确声明「多实例」(REPLICA_COUNT>1 或 REPLICA_ID 非空) 时，
   // 运行队列与 AgentStore 必须走 redis，否则各副本各自内存态会导致任务丢失 / agent 漂移。
   // 默认开启；确有单实例或外部共享存储场景可用 REPLICA_CHECK=off 关闭（需自担风险）。
@@ -2322,7 +2329,7 @@ function onListening(): void {
     );
     if (
       (AUTH_PROVIDER === 'oidc' || AUTH_PROVIDER === 'proxy') &&
-      process.env.UI_TOKENS
+      getSecret('UI_TOKENS')
     ) {
       console.log(
         `   🔑 同时启用静态令牌 break-glass：IdP 不可用时可用 UI_TOKENS 直接鉴权（运维逃生通道）`

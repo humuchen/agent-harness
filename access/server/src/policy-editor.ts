@@ -18,6 +18,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { getSecret } from './env-guard';
 import { dirname, resolve } from 'node:path';
 import { loadMatrix, type Role, type Action } from './authz';
 
@@ -178,8 +179,8 @@ export class FilePolicyStore implements PolicyStore {
     this.ensureInitialized();
     if (this.cached) return this.cached;
 
-    // 优先从 env 覆盖构造
-    const envOverride = parseEnvOverride(process.env.UI_ROLE_PERMISSIONS);
+    // 优先从 env 覆盖构造（P1 env 边界收口：经 getSecret 读 scrub 后的受保护副本）
+    const envOverride = parseEnvOverride(getSecret('UI_ROLE_PERMISSIONS'));
     if (envOverride) {
       const base = loadMatrix();
       this.cached = {
