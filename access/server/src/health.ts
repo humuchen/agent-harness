@@ -53,6 +53,11 @@ export function handleLiveness(
 /**
  * Readiness检查 - 检查所有依赖是否就绪
  * K8s readiness探针使用
+ *
+ * 语义说明（有意设计，勿「修复」）：degraded（Redis/MCP 不可用但 DB 正常）返回
+ * 200 —— 可用性优先的降级语义：Redis 不可用时队列自动降级为进程内后端，服务
+ * 仍可服务单副本流量；若把 degraded 判 503 会把唯一副本摘出流量池造成全停。
+ * 需要硬门槛的部署可在 K8s 侧用独立脚本探针（检查 detail.redis.status）。
  */
 export async function handleReadiness(
   req: IncomingMessage,

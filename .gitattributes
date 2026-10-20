@@ -9,3 +9,6 @@
 # 容器/构建相关文件同样强制 LF，避免 heredoc 与换行解析异常。
 Dockerfile text eol=lf
 *.dockerfile text eol=lf
+*.ts text eol=lf
+*.svelte text eol=lf
+*.mjs text eol=lf

@@ -484,9 +484,14 @@ function audit(rec: Record<string, unknown>): void {
       ...(rec.detail as Record<string, unknown> | undefined),
     },
   });
-  // 向 stdout 同步打印一份 JSON 行，供容器日志采集。
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
-  console.log('[audit] ' + line);
+  // 向 stdout 打印一份 JSON 行供容器日志采集。
+  // P1 事件循环修复：audit 每请求同步 console.log 在高并发下阻塞事件循环，且与
+  // core 的结构化审计通道（上方 audit()，异步落盘）重复。改为失败/高危动作才同步
+  // 打印（排障可见性），正常成功请求仅走结构化通道，stdout 交给统一日志管道。
+  if (outcome !== 'success') {
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...rec });
+    console.log('[audit] ' + line);
+  }
 }
 
 /** 高危动作审计（已脱敏，绝不记录密钥/token/headers）。 */

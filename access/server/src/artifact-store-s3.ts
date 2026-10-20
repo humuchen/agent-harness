@@ -133,8 +133,9 @@ export class S3ArtifactStore implements ArtifactStore {
   private async s3Request(
     method: 'GET' | 'PUT' | 'DELETE',
     key: string,
-    body?: Buffer
-  ): Promise<{ status: number; body: Buffer }> {
+    body?: Buffer,
+    extraHeaders?: Record<string, string>
+  ): Promise<{ status: number; body: Buffer; etag?: string }> {
     const { url, host } = this.objectUrl(key);
     const payload = body ?? Buffer.alloc(0);
     const payloadHash = sha256Hex(payload);
@@ -183,32 +184,47 @@ export class S3ArtifactStore implements ArtifactStore {
       headers: {
         authorization,
         'x-amz-content-sha256': payloadHash,
-        'x-amz-date': amzdate
+        'x-amz-date': amzdate,
+        ...(extraHeaders ?? {})
       },
       body: method === 'PUT' ? new Uint8Array(payload) : undefined
     });
     const resBody = Buffer.from(await res.arrayBuffer());
-    return { status: res.status, body: resBody };
+    return {
+      status: res.status,
+      body: resBody,
+      etag: res.headers.get('etag') ?? undefined
+    };
   }
 
-  private async readIndexRaw(): Promise<ArtifactMeta[]> {
-    const { status, body } = await this.s3Request('GET', this.indexKey());
-    if (status === 404) return [];
+  private async readIndexRaw(): Promise<{ items: ArtifactMeta[]; etag?: string }> {
+    const { status, body, etag } = await this.s3Request('GET', this.indexKey());
+    if (status === 404) return { items: [] };
     if (status !== 200) {
       throw new Error(`S3ArtifactStore: read index failed (HTTP ${status})`);
     }
     try {
       const parsed = JSON.parse(body.toString('utf-8'));
-      return Array.isArray(parsed) ? (parsed as ArtifactMeta[]) : [];
+      return {
+        items: Array.isArray(parsed) ? (parsed as ArtifactMeta[]) : [],
+        etag
+      };
     } catch {
       // 索引损坏：回落空列表（与本地版语义一致，最坏情况文件对象仍可手动找回）。
-      return [];
+      return { items: [] };
     }
   }
 
-  private async writeIndexRaw(items: ArtifactMeta[]): Promise<void> {
+  private async writeIndexRaw(items: ArtifactMeta[], ifMatch?: string): Promise<void> {
     const body = Buffer.from(JSON.stringify(items, null, 2), 'utf-8');
-    const { status } = await this.s3Request('PUT', this.indexKey(), body);
+    // P1 跨实例丢条目修复：乐观锁——多副本同时 save 时各自 GET→PUT 整份索引，
+    // 后写覆盖前写。带 If-Match（GET 返回的 ETag）做 CAS：对象已被并发修改时
+    // S3 返回 412 Precondition Failed，拒绝本次覆盖（重试由调用方处理）。
+    // 不支持 If-Match 的兼容存储会忽略该头（降级为既有行为，不比之前更差）。
+    const { status } = await this.s3Request('PUT', this.indexKey(), body, ifMatch ? { 'if-match': ifMatch } : undefined);
+    if (status === 412) {
+      throw new Error('S3ArtifactStore: index concurrently modified (412), retry');
+    }
     if (status !== 200) {
       throw new Error(`S3ArtifactStore: write index failed (HTTP ${status})`);
     }
@@ -226,7 +242,7 @@ export class S3ArtifactStore implements ArtifactStore {
   }
 
   async list(runId?: string): Promise<ArtifactMeta[]> {
-    const items = await this.readIndexRaw();
+    const { items } = await this.readIndexRaw();
     return items
       .filter((m) => (runId ? m.runId === runId : true))
       .slice()
@@ -235,7 +251,7 @@ export class S3ArtifactStore implements ArtifactStore {
 
   async get(id: string): Promise<ArtifactMeta | null> {
     if (!safeId(id)) return null;
-    const items = await this.readIndexRaw();
+    const { items } = await this.readIndexRaw();
     return items.find((m) => m.id === id) ?? null;
   }
 
@@ -257,10 +273,18 @@ export class S3ArtifactStore implements ArtifactStore {
       if (put.status !== 200) {
         throw new Error(`S3ArtifactStore: put object failed (HTTP ${put.status})`);
       }
-      const items = await this.readIndexRaw();
-      items.push(meta);
-      await this.writeIndexRaw(items);
-      return meta;
+      // P1 跨实例丢条目修复：CAS 写回，412（并发修改）时重读重写一次。
+      for (let attempt = 0; ; attempt++) {
+        const { items, etag } = await this.readIndexRaw();
+        items.push(meta);
+        try {
+          await this.writeIndexRaw(items, etag);
+          return meta;
+        } catch (e) {
+          if (attempt < 2 && e instanceof Error && e.message.includes('412')) continue;
+          throw e;
+        }
+      }
     });
   }
 
@@ -277,21 +301,29 @@ export class S3ArtifactStore implements ArtifactStore {
   async remove(id: string): Promise<boolean> {
     if (!safeId(id)) return false;
     return this.withIndexLock(async () => {
-      const items = await this.readIndexRaw();
-      const idx = items.findIndex((m) => m.id === id);
-      if (idx === -1) return false;
-      // 先删字节对象再清索引；对象删除失败不阻断索引清理（与本地版语义一致）。
-      try {
-        const del = await this.s3Request('DELETE', this.fileKey(id));
-        if (del.status !== 200 && del.status !== 204 && del.status !== 404) {
-          throw new Error(`S3ArtifactStore: delete object failed (HTTP ${del.status})`);
+      // P1 跨实例丢条目修复：CAS 写回（与 save 同口径），412 时重读重试一次。
+      for (let attempt = 0; ; attempt++) {
+        const { items, etag } = await this.readIndexRaw();
+        const idx = items.findIndex((m) => m.id === id);
+        if (idx === -1) return false;
+        // 先删字节对象再清索引；对象删除失败不阻断索引清理（与本地版语义一致）。
+        try {
+          const del = await this.s3Request('DELETE', this.fileKey(id));
+          if (del.status !== 200 && del.status !== 204 && del.status !== 404) {
+            throw new Error(`S3ArtifactStore: delete object failed (HTTP ${del.status})`);
+          }
+        } catch {
+          /* 删除失败不阻塞索引清理，仍视为已移除条目。 */
         }
-      } catch {
-        /* 删除失败不阻塞索引清理，仍视为已移除条目。 */
+        items.splice(idx, 1);
+        try {
+          await this.writeIndexRaw(items, etag);
+          return true;
+        } catch (e) {
+          if (attempt < 2 && e instanceof Error && e.message.includes('412')) continue;
+          throw e;
+        }
       }
-      items.splice(idx, 1);
-      await this.writeIndexRaw(items);
-      return true;
     });
   }
 }

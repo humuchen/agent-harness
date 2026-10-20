@@ -1134,17 +1134,36 @@ export class AgentHarness {
                 '需求不清时输出澄清 JSON（{"clarify": true, "goalDraft": string, "questions": string[]}）。' +
                 '只输出一个 JSON 对象，不要任何其他文字。'
             });
-            const finResp = await this.opts.llm(
+            // P1 可靠性修复：收尾调用与主循环对齐——纳入 abortPromise 竞速 + 兜底
+            // catch（旧实现裸 await：适配器不尊重 signal 时硬超时看门狗无法打断；
+            // catch 静默吞错且无遥测留痕）。
+            const finCall = this.opts.llm(
               sanitizeToolPairing(memory.history()),
               [],
               { signal, circuitBreaker: this.opts.circuitBreaker }
             );
+            void finCall.catch(() => {});
+            const finResult = await Promise.race([
+              finCall,
+              abortPromise.then((v) => {
+                if (v === '__aborted__') throw new DOMException('aborted', 'AbortError');
+                return v as never;
+              })
+            ]);
+            const finResp = finResult as LLMResponse | undefined;
             if (finResp?.content && finResp.content.trim()) {
               memory.add({ role: 'assistant', content: finResp.content });
               return finResp.content;
             }
-          } catch {
-            // 收尾调用失败（网络/熔断等）：回退到默认 MAX_STEPS_NOTICE。
+            structLog('warn', 'plan propose finalize produced no content; fallback to notice', {
+              runId
+            });
+          } catch (e) {
+            // 收尾调用失败（网络/熔断/中止）：回退到默认 MAX_STEPS_NOTICE；留痕便于排查。
+            structLog('warn', 'plan propose finalize failed; fallback to notice', {
+              runId,
+              error: e instanceof Error ? e.message : String(e)
+            });
           }
         }
         return MAX_STEPS_NOTICE;

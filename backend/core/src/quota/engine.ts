@@ -234,6 +234,9 @@ export class QuotaEngine {
   private bucket(tenantId: string): Bucket {
     let b = this.buckets.get(tenantId);
     if (!b) {
+      // P1 无界增长修复：bucket 创建前做惰性清理——长期不活跃（超过窗口上限 10 倍
+      // 或 24h）的 bucket 直接删除（伪造 tenantId 场景下 Map 无界增长）。
+      this.pruneStaleBuckets();
       const q = this.getQuota(tenantId);
       const cap = q.qps && q.qps > 0 ? q.qps : 0;
       b = {
@@ -247,6 +250,20 @@ export class QuotaEngine {
       this.buckets.set(tenantId, b);
     }
     return b;
+  }
+
+  /** 惰性清理长期不活跃的 bucket（无 active 占用且 lastRefill 超过 24h）。节流：每 1000 次调用至多执行一轮。 */
+  private lastPruneAt = 0;
+  private pruneStaleBuckets(): void {
+    const now = Date.now();
+    if (now - this.lastPruneAt < 60_000) return; // 至多每分钟一轮
+    this.lastPruneAt = now;
+    const staleBefore = now - 24 * 60 * 60 * 1000;
+    for (const [id, b] of this.buckets) {
+      if (b.active <= 0 && b.lastRefill < staleBefore) {
+        this.buckets.delete(id);
+      }
+    }
   }
 
   /** 滚动窗口：若距窗口起点已超过 windowMs，则清零 token/cost 累计。 */

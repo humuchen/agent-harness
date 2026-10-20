@@ -62,6 +62,15 @@ export function pgParams(sql: string): string {
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
     if (ch === "'") {
+      // P1 正确性修复：SQL 标准转义 `''`（字面量内的单引号）此前会连续翻转
+      // 两次状态——`'it''s a ? test'` 中 `''` 之后的 `?` 实际仍在字符串字面量内，
+      // 却被错误改写为 $n，PG 端报「bind message 供参不足」或语义错乱。
+      // 遇 `''` 时保持状态不变，整体原样透传。
+      if (inString && sql[i + 1] === "'") {
+        out += "''";
+        i += 1;
+        continue;
+      }
       inString = !inString;
       out += ch;
       continue;

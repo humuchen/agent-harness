@@ -505,6 +505,10 @@ export async function resolveHostIsPrivate(host: string): Promise<boolean> {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return isPrivateIp(h.replace(/^\[|\]$/g, ''));
   const cached = privateResolveCache.get(h);
   if (cached && Date.now() - cached.at < PRIVATE_RESOLVE_TTL_MS) return cached.result;
+  // P1 资源修复：过期条目此前永不删除（TTL 只用于命中判断），面向公网抓取的
+  // 部署随域名多样性线性泄漏。命中失败的过期条目顺手清除 + 容量超限整体重置。
+  if (cached) privateResolveCache.delete(h);
+  if (privateResolveCache.size >= 5_000) privateResolveCache.clear();
   let result: boolean;
   try {
     const dns = await import('node:dns/promises');
@@ -655,6 +659,23 @@ function ruleInScope(ruleScope: string | undefined, pol?: GuardrailPolicy): bool
 // PII 脱敏
 // ---------------------------------------------------------------------------
 
+/** Luhn 校验：真实银行卡号必过；时间戳 / 订单号等纯数字几乎不过（误杀防护核心）。 */
+function luhnValid(digits: string): boolean {
+  let sum = 0;
+  let dbl = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (d < 0 || d > 9) return false;
+    if (dbl) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    dbl = !dbl;
+  }
+  return sum % 10 === 0;
+}
+
 // 注意顺序：先匹配特异性高的（邮箱/手机/身份证/IP/Key），最后才是宽泛的银行卡。
 const PII_REDACTORS: PiiRedactor[] = [
   {
@@ -676,7 +697,14 @@ const PII_REDACTORS: PiiRedactor[] = [
   {
     label: 'ipv4',
     re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
-    mask: () => '***[ip]',
+    // P1 误杀修复：仅打码「段值合法且私网/保留段」的 IPv4——用户隐私风险来自
+    // 内网拓扑（10.x/192.168.x/169.254 元数据等）；版本号（1.2.3.4、redis 7.2.4.1）
+    // 与公网服务地址（8.8.8.8）不是隐私，技术问答的版本信息此前会被打码成 ***[ip]。
+    mask: (m: string) => {
+      const segs = m.split('.').map(Number);
+      if (segs.some((n) => n > 255)) return m;
+      return isPrivateIp(m) ? '***[ip]' : m;
+    },
   },
   {
     label: 'apikey',
@@ -684,10 +712,11 @@ const PII_REDACTORS: PiiRedactor[] = [
     mask: () => '***[apikey]',
   },
   {
-    // 银行卡：13~19 位数字（在身份证/手机之后匹配，避免误伤）。
+    // 银行卡：13~19 位数字且通过 Luhn 校验（在身份证/手机之后匹配，避免误伤）。
+    // P1 误杀修复：13 位 Unix 毫秒时间戳与常见订单号此前一律被打码成 ***[card]。
     label: 'card',
     re: /\b\d{13,19}\b/g,
-    mask: () => '***[card]',
+    mask: (m: string) => (luhnValid(m) ? '***[card]' : m),
   },
 ];
 
