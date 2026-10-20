@@ -574,6 +574,10 @@
   let sessionLoading = $state(false);
 
   let messages = $state<ChatMsg[]>([]);
+  // P1 渲染性能：过滤结果提升为 $derived——模板里每次渲染周期重复计算
+  // messages.filter(...)（千条消息的会话下每帧 O(n) 白算），derived 只在
+  // messages 变化时重算一次。
+  const visibleMessages = $derived(messages.filter((m) => !m.quiet));
   let input = $state('');
   let model = $state('');
   let mode = $state<RunMode>('mock');
@@ -5206,7 +5210,7 @@
                 </button>
               </div>
             {/if}
-            {#each messages.filter((m) => !m.quiet) as m (m.id)}
+            {#each visibleMessages as m (m.id)}
               {@render message(m)}
             {/each}
           </div>

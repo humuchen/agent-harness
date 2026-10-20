@@ -148,11 +148,29 @@ export class FeishuAdapter implements ImAdapter {
       return safeEqual(expected, signature);
     }
     // 2) 未配 Encrypt Key：回落到校验 body 内的 verification token（解密后）。
+    //    P1 重放缓解：token 回落路径强度弱于签名（token 会随明文事件出现在飞书
+    //    控制台日志），叠加事件创建时间窗校验——v2 事件 header.create_time（毫秒），
+    //    旧格式无该字段时跳过（保持向后兼容），窗口与签名路径共用同一环境变量。
     try {
       const plain = this.decryptEnvelope(req.rawBody);
       const parsed = JSON.parse(plain) as FeishuEnvelope;
       const token = parsed.token ?? parsed.header?.token ?? '';
-      return Boolean(token) && safeEqual(this.opt.verificationToken, token);
+      if (!token || !safeEqual(this.opt.verificationToken, token)) return false;
+      const createTime = parsed.header?.create_time;
+      if (createTime) {
+        const toleranceSec = Number(
+          process.env.IM_FEISHU_TIMESTAMP_TOLERANCE_SEC ?? 300
+        );
+        const toleranceMs =
+          Number.isFinite(toleranceSec) && toleranceSec >= 0
+            ? toleranceSec * 1000
+            : 300_000;
+        const ts = Number(createTime);
+        if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > toleranceMs) {
+          return false;
+        }
+      }
+      return true;
     } catch {
       return false;
     }

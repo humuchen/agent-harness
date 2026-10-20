@@ -350,6 +350,12 @@ export const messageArea = `
       display: flex;
       flex-direction: column;
       // gap: 18px;
+      /* P1 渲染性能：长会话优化（完整虚拟滚动的低风险近似）——
+         content-visibility: auto 让浏览器跳过视口外消息的布局与渲染成本
+         （千条消息滚动/流式插入时不再全量重排）；contain-intrinsic-size 给
+         屏外消息一个估算占位高度，避免滚动条跳动。对屏内消息零视觉影响。 */
+      content-visibility: auto;
+      contain-intrinsic-size: auto 1000px;
     }
     /* ---- 历史会话加载骨架屏（切换会话时内容区占位）----
        与真实消息共用同一套尺寸规格，保证「加载态 → 内容态」不发生位移：
