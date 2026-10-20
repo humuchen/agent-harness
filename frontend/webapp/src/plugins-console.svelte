@@ -14,6 +14,9 @@
   import { authedFetch } from './api';
   import { notifyError } from './utils/errors';
   import { notify } from './components/ah-notification';
+  // P1 去重：转义实现收敛到 utils/html-safe（原三处重复，改转义策略必然漏改）。
+  // 注意：本文件旧实现不转义单引号，收敛后统一为五字符转义（更安全，无行为回归）。
+  import { escapeHtml } from './utils/html-safe';
 
   interface PluginInfo {
     id: string;
@@ -25,16 +28,7 @@
 
   /** HTML 转义。 */
   function esc(s: string): string {
-    return String(s).replace(
-      /[&<>"]/g,
-      (c) =>
-        ((
-          { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<
-            string,
-            string
-          >
-        )[c] ?? c)
-    );
+    return escapeHtml(String(s));
   }
 
   let { visible = true }: { visible?: boolean } = $props();

@@ -10,7 +10,7 @@
  * 注意：只存 WorkflowRun（def + 每 step 状态），引擎的执行逻辑无状态、可重放。
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { WorkflowRun, StepTraceNode } from './types';
 import { quarantineCorruptFile } from '../store-safety';
@@ -98,11 +98,27 @@ export class FileWorkflowStore implements WorkflowStore {
   }
 
   async save(run: WorkflowRun): Promise<void> {
+    // P1 事件循环阻塞修复：save 在引擎每个 step 的 start/done/failed/快照处都被
+    // await（热路径），检查点含全量 steps + snapshots（深拷贝 JSON），大工作流单次
+    // 可达数百 KB~MB——同步 writeFileSync/renameSync 会阻塞事件循环，拖慢同进程
+    // 并发的其它 run。改 fs/promises（FileMemoryStore.save 已是异步实现，同型）。
+    const fs = await import('node:fs/promises');
     const f = this.file(run.def.id);
-    mkdirSync(dirname(f), { recursive: true });
-    const tmp = `${f}.tmp`;
-    writeFileSync(tmp, `{"v":1,"run":${JSON.stringify(run)}}`, 'utf-8');
-    renameSync(tmp, f);
+    await fs.mkdir(dirname(f), { recursive: true });
+    const tmp = `${f}.tmp.${process.pid}.${Date.now().toString(36)}.${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    try {
+      await fs.writeFile(tmp, `{"v":1,"run":${JSON.stringify(run)}}`, 'utf-8');
+      await fs.rename(tmp, f);
+    } catch (e) {
+      try {
+        await fs.unlink(tmp);
+      } catch {
+        /* 临时文件本就不存在，忽略 */
+      }
+      throw e;
+    }
   }
 
   async get(id: string): Promise<WorkflowRun | null> {

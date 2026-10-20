@@ -26,6 +26,13 @@ jobs:
     name: 构建镜像（PR 仅构建）
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # P1 供应链加固（进行中）：第三方 Action 此前以主版本 tag 引用——tag 被上游
+    # 覆盖即可把任意代码跑进持 packages:write 权限的作业。推荐把下方 uses: 全部
+    # 固定到完整 commit SHA（pin 后可注释回原 tag 便于升级）。一键生成：
+    #   for a in actions/checkout docker/metadata-action docker/login-action \
+    #            docker/setup-buildx-action docker/build-push-action; do
+    #     git ls-remote https://github.com/$a.git refs/tags/v* | head -1; done
+    # 或使用 step-security/harden-runner 自动审计出网行为。
     steps:
       - uses: actions/checkout@v4
 

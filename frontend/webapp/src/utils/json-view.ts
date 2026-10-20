@@ -19,15 +19,11 @@ const MAX_CHILDREN = 8;
 /** 每层缩进像素。 */
 const INDENT_PX = 14;
 
+// P1 去重：转义实现此前三处逐字符重复（html-safe / json-view / plugins-console），
+// 改转义策略（如补反引号）必然漏改。统一收敛到 utils/html-safe。
+import { escapeHtml } from './html-safe';
 /** HTML 转义（替代原 Lit 插值的自动转义；所有动态插值必须过此函数）。 */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+const esc = escapeHtml;
 
 /** 与 chat.ts formatToolJson 相同的实体解码（防御服务端已转义的输入）。导出供回退路径复用。 */
 export function decodeEntities(raw: string): string {

@@ -16,7 +16,9 @@
     abort = ac;
     try {
       for await (const ev of client.streamVerify({ signal: ac.signal })) {
-        events = [...events, ev];
+        // P1 O(n²) 修复：旧实现每收一条 SSE 事件全量拷贝数组并触发整列表重渲染
+        //（Svelte 5 $state 深度响应下 push 即可触发更新）。
+        events.push(ev);
       }
     } catch (e) {
       reportError('verify', e);

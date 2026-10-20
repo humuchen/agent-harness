@@ -34,6 +34,7 @@ services:
       # 注意：compose 只把 .env 用于 ${VAR} 替换，不会自动注入容器，故需在此显式声明。
       ADMIN_API_KEY: '${ADMIN_API_KEY:-}'
       # 运行队列：默认内存模式；启用 redis profile 后由下方 REDIS_URL 接管。
+      # redis 服务已启用 requirepass：连接串需携带密码（与 REDIS_PASSWORD 同源）。
       REDIS_URL: '${REDIS_URL:-}'
       # 记忆持久化后端（Phase 4 决策 A）：file 后端落 RWX 风格共享卷 /app/data，
       # 配合下方 data 卷挂载，单实例重启不丢、与 k8s 部署行为一致（sqlite 勿用）。
@@ -150,13 +151,28 @@ services:
     image: redis:7-alpine
     profiles: ['redis']
     restart: unless-stopped
-    # 开启 AOF 持久化：队列 / 事件桥数据写入 redis-data 卷，Redis 重启或重建后不丢。
-    command: ['redis-server', '--appendonly', 'yes']
+    # P1 加固（对齐 k8s redis.yaml）：requirepass 密码鉴权——compose 网络内任何容器
+    #（含 MCP filesystem/fetch 等被拉起的子进程）此前都可未授权读写队列数据；
+    # 同时补 cap_drop / no-new-privileges / 只读根 fs，收敛容器逃逸面。
+    # REDIS_PASSWORD 必须显式提供（缺失即启动失败，fail-fast 防裸奔上线）。
+    command: >
+      sh -c 'if [ -z "$$REDIS_PASSWORD" ]; then
+        echo "REDIS_PASSWORD is required for redis profile" >&2; exit 1; fi;
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"'
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD required for redis profile}
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
       interval: 10s
       timeout: 3s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - redis-data:/data
 

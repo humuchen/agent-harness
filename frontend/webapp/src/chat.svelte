@@ -4803,11 +4803,8 @@
 
   function onThinkChangeEv(e: Event) {
     deepThink = (e as CustomEvent<{ value: boolean }>).detail.value;
-    try {
-      localStorage.setItem('ah_deep_think', deepThink ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
+    // P1 死代码清理：读取侧已在 onMount 删除该 key（深度思考默认开启，不再从
+    // localStorage 恢复关闭态），写入是纯残留——还会给用户「设置被记住」的错觉。
   }
 
   function onWebChangeEv(e: Event) {
@@ -4828,11 +4825,7 @@
   /** 深度思考快捷开关（chat-head）。 */
   function toggleDeepThink() {
     deepThink = !deepThink;
-    try {
-      localStorage.setItem('ah_deep_think', deepThink ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
+    // 同 onThinkChangeEv：不再写 localStorage（读取侧已废弃该 key）。
   }
 
   /** 联网搜索快捷开关（chat-head）。 */

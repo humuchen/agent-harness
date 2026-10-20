@@ -1,0 +1,47 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rag-allow-from-agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  # P1 加固：rag 服务（8787）此前对全 namespace 开放——任何可达 Pod 均可匿名
+  # （或持任意有效租户令牌）读写检索语料。仅放行 agent-harness 应用 Pod。
+  # 注意：需要集群 CNI 支持 NetworkPolicy（Calico / Cilium / Weave 等），
+  # 不支持的发行版该资源会被静默忽略（不阻断部署）。
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rag
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent-harness
+      ports:
+        - protocol: TCP
+          port: 8787
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow-from-agent-harness
+  namespace: agent-harness
+  labels:
+    app.kubernetes.io/part-of: agent-harness
+spec:
+  # P1 加固：redis（6379）仅放行 agent-harness 应用 Pod，杜绝 namespace 内
+  # 其它工作负载（被入侵的插件子进程等）直接读写运行队列与事件桥。
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent-harness
+      ports:
+        - protocol: TCP
+          port: 6379

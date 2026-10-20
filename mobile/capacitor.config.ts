@@ -7,7 +7,17 @@ const config: CapacitorConfig = {
   appName: 'Agent Harness',
   webDir: '../frontend/webapp/dist',
   server: {
-    url: process.env.AH_API_URL || 'https://agent-harness-86h5.onrender.com',
+    // P1 fail-fast：未设 AH_API_URL 时旧实现静默连到硬编码的 render.com 生产实例
+    //（免费实例还有冷启动延迟），开发构建极易误连生产。改为构建期显式报错，
+    // 需要连该实例时显式 export AH_API_URL=https://agent-harness-86h5.onrender.com。
+    url:
+      process.env.AH_API_URL ||
+      (() => {
+        throw new Error(
+          '[capacitor.config] AH_API_URL 未设置：拒绝静默回落生产实例。' +
+            '请 export AH_API_URL=<你的部署地址> 后重新 sync。'
+        );
+      })(),
     androidScheme: 'https',
     iosScheme: 'https',
     // allowNavigation 白名单：Capacitor Android 的 Bridge.launchIntent()（所有

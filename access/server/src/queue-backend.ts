@@ -491,14 +491,21 @@ export class RedisQueueBackend implements QueueBackend {
     const proc = await this.client.lrange(this.processing, 0, -1);
     const ids = [...pending, ...proc];
     if (ids.length === 0) return [];
-    const raws = await this.client.hmget(this.jobsKey, ...ids);
+    // P1 协议峰值修复：HMGET 参数数此前与积压量线性同步——redis 共享模式无进程内
+    // 背压，积压巨大时单条 HMGET 可达数万参数（同步串行大命令阻塞 + 内存峰值）。
+    // 改为分批（每批 500）拉取。
+    const BATCH = 500;
     const out: JobDescriptor[] = [];
-    for (const raw of raws) {
-      if (raw) {
-        try {
-          out.push(openModelApiKey(JSON.parse(raw) as JobDescriptor));
-        } catch {
-          /* 坏数据跳过 */
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      const raws = await this.client.hmget(this.jobsKey, ...batch);
+      for (const raw of raws) {
+        if (raw) {
+          try {
+            out.push(openModelApiKey(JSON.parse(raw) as JobDescriptor));
+          } catch {
+            /* 坏数据跳过 */
+          }
         }
       }
     }

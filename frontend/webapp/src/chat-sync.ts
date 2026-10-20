@@ -88,6 +88,13 @@ function open(username: string): void {
       scheduleReconnect(username);
       return;
     }
+    // P1 修复：不可恢复的 401（会话已被服务端吊销 / 过期未续）此前仍无限重连——
+    // authedFetch 的 401 会清本地会话并派发 sessionExpired，但本模块的 stopped
+    // 标志不受影响，此后每 15s 白打一次请求直到组件恰好卸载。
+    if (res.status === 401) {
+      stopped = true;
+      return;
+    }
     if (!res.ok || !res.body) {
       scheduleReconnect(username);
       return;
@@ -107,8 +114,9 @@ function open(username: string): void {
 function scheduleReconnect(username: string): void {
   if (stopped) return;
   retries += 1;
-  // 指数退避，封顶 15s，避免密集重连打爆服务端。
-  const delay = Math.min(15_000, 500 * 2 ** (retries - 1));
+  // 指数退避，封顶 15s；P1 jitter 修复：加随机抖动——服务端重启后所有客户端
+  // 同节拍重连会形成 thundering herd。
+  const delay = Math.min(15_000, 500 * 2 ** (retries - 1)) + Math.random() * 500;
   retryTimer = setTimeout(() => open(username), delay);
 }
 

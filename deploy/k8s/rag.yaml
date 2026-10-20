@@ -77,7 +77,8 @@ spec:
               memory: "512Mi"
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
+            # P1 加固：根 fs 只读（对齐 redis.yaml / 主 deployment 口径），数据走 /data(PVC)。
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
       volumes:

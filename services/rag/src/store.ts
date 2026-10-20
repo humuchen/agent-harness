@@ -346,14 +346,41 @@ export class SqliteVectorStore implements VectorStore {
         JSON.stringify(c.vector),
         c.created_at
       );
+    // 向量缓存同步失效（upsert 覆盖语义）。
+    this.vecCache.delete(c.chunk_id);
   }
 
   /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk（增量更新）。 */
   deleteByDoc(docId: string, tenantId: string): number {
+    // 先查受影响 chunk_id 以清缓存，再删除行。
+    const rows = this.db
+      .prepare('SELECT chunk_id FROM chunks WHERE doc_id = ? AND tenant_id = ?')
+      .all(docId, tenantId) as Array<{ chunk_id: string }>;
+    for (const r of rows) this.vecCache.delete(r.chunk_id);
     const r = this.db
       .prepare('DELETE FROM chunks WHERE doc_id = ? AND tenant_id = ?')
       .run(docId, tenantId);
     return Number(r.changes ?? 0);
+  }
+
+  /**
+   * P1 检索性能修复：向量反序列化缓存（chunk_id → Float32Array）。
+   * 旧实现每次 search 对租户全量行 JSON.parse 向量——10 万 chunk × 1024 维时
+   * 单次检索要解析约 400MB JSON 文本，CPU 与 GC 压力巨大。缓存后同一 chunk 只
+   * 反序列化一次；写入/删除同步失效；超上限整体清空（防长尾无界增长）。
+   */
+  private vecCache = new Map<string, Float32Array>();
+  private static VEC_CACHE_MAX = Number(process.env.RAG_VEC_CACHE_MAX ?? 100_000) || 100_000;
+
+  private cachedVec(chunkId: string, raw: string): number[] {
+    const hit = this.vecCache.get(chunkId);
+    if (hit) return hit as unknown as number[];
+    const vec = JSON.parse(raw) as number[];
+    if (this.vecCache.size >= SqliteVectorStore.VEC_CACHE_MAX) {
+      this.vecCache.clear();
+    }
+    this.vecCache.set(chunkId, new Float32Array(vec));
+    return vec;
   }
 
   /** 候选检索：tenant 内余弦 top_k（SQL 层强制租户过滤，零跨租户泄漏）。 */
@@ -362,7 +389,7 @@ export class SqliteVectorStore implements VectorStore {
       .prepare('SELECT chunk_id, doc_id, title, content, tags, metadata, vector FROM chunks WHERE tenant_id = ?')
       .all(tenantId) as Array<Record<string, unknown>>;
     const scored = rows.map((r) => {
-      const vec = JSON.parse(r.vector as string) as number[];
+      const vec = this.cachedVec(r.chunk_id as string, r.vector as string);
       return {
         chunk_id: r.chunk_id as string,
         doc_id: r.doc_id as string,

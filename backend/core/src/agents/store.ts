@@ -84,10 +84,31 @@ export class VolatileAgentStore implements AgentStore {
   }
 }
 
+/**
+ * P1 心跳竞态修复：heartbeat 的 get→改→register 读改写非原子——同一进程内两个
+ * 并发心跳（如定时器与显式心跳交错）时，后写者用**旧读取**的卡片整体覆盖，
+ * 丢失前者刚写入的 status/load，而调度决策依赖 health.load。per-id promise 链
+ * 互斥使同 id 的心跳串行化（跨副本场景由后端语义另行保证）。
+ */
+function withHeartbeatLock(
+  locks: Map<string, Promise<void>>,
+  id: string,
+  fn: () => Promise<void>
+): Promise<void> {
+  const prev = locks.get(id) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // 前序失败不阻塞本次心跳
+  const stored = run.catch(() => {});
+  locks.set(id, stored);
+  return run.finally(() => {
+    if (locks.get(id) === stored) locks.delete(id);
+  });
+}
+
 /** 文件实现：每个 agentId 一个 JSON 文件，落盘用原子 rename 防半截写。 */
 export class FileAgentStore implements AgentStore {
   readonly kind = 'file' as const;
   private dir: string;
+  private hbLocks = new Map<string, Promise<void>>();
 
   constructor(opts: { dir: string }) {
     this.dir = opts.dir ?? './data/agents';
@@ -117,10 +138,12 @@ export class FileAgentStore implements AgentStore {
     }
   }
   async heartbeat(id: string, health: Partial<AgentHealth>): Promise<void> {
-    const c = await this.get(id);
-    if (!c) return;
-    c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
-    await this.register(c);
+    await withHeartbeatLock(this.hbLocks, id, async () => {
+      const c = await this.get(id);
+      if (!c) return;
+      c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
+      await this.register(c);
+    });
   }
   async deregister(id: string): Promise<void> {
     const fs = await import('node:fs/promises');
@@ -192,6 +215,7 @@ export class SqliteAgentStore implements AgentStore {
   private file: string;
   private db: any = null;
   private ready: Promise<void> | null = null;
+  private hbLocks = new Map<string, Promise<void>>();
 
   constructor(opts: { file: string }) {
     this.file = opts.file;
@@ -241,10 +265,12 @@ export class SqliteAgentStore implements AgentStore {
       );
   }
   async heartbeat(id: string, health: Partial<AgentHealth>): Promise<void> {
-    const c = await this.get(id);
-    if (!c) return;
-    c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
-    await this.register(c);
+    await withHeartbeatLock(this.hbLocks, id, async () => {
+      const c = await this.get(id);
+      if (!c) return;
+      c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
+      await this.register(c);
+    });
   }
   async deregister(id: string): Promise<void> {
     await this.ensure();
@@ -298,6 +324,7 @@ export class RedisAgentStore implements AgentStore {
   readonly kind = 'redis' as const;
   private client: AgentStoreRedis;
   private hashKey: string;
+  private hbLocks = new Map<string, Promise<void>>();
 
   constructor(opts: { client: AgentStoreRedis; keyPrefix?: string }) {
     this.client = opts.client;
@@ -308,10 +335,12 @@ export class RedisAgentStore implements AgentStore {
     await this.client.hset(this.hashKey, card.id, JSON.stringify(card));
   }
   async heartbeat(id: string, health: Partial<AgentHealth>): Promise<void> {
-    const c = await this.get(id);
-    if (!c) return;
-    c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
-    await this.register(c);
+    await withHeartbeatLock(this.hbLocks, id, async () => {
+      const c = await this.get(id);
+      if (!c) return;
+      c.health = { ...c.health, ...health, lastHeartbeat: Date.now() };
+      await this.register(c);
+    });
   }
   async deregister(id: string): Promise<void> {
     await this.client.hdel(this.hashKey, id);

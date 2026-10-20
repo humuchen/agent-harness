@@ -198,6 +198,8 @@ function collectCitationItems(src: unknown, acc: string[], seen: Set<string>): v
 const TOOL_SCHEMA_CACHE = new Map<string, WireToolSchema[]>();
 const TOOL_FREQ: Record<string, number> = {};
 const MAX_CACHE_ENTRIES = 50;
+/** 频率计数上限（防无界增长；达到上限后不再递增，语义等价「已是高频」）。 */
+const MAX_TOOL_FREQ = 10_000;
 
 /**
  * 序列化工具 schema（带缓存）。
@@ -210,8 +212,21 @@ export function serializeToolsCached(tools: WireToolSchema[]): WireToolSchema[] 
 
   // 构建 cache key（基于工具名称排序后拼接）
   const names = tools.map((t: WireToolSchema) => t?.function?.name || '').sort().join(',');
-  if (TOOL_SCHEMA_CACHE.has(names)) {
-    return TOOL_SCHEMA_CACHE.get(names);
+  const cached = TOOL_SCHEMA_CACHE.get(names);
+  if (cached) {
+    // P1 真 LRU 修复：Map 迭代序 = 插入序，get 不刷新顺序——旧实现删「首个 key」
+    // 实际是 FIFO。命中时 delete+set 刷新插入序，淘汰才真正淘汰最久未用项。
+    TOOL_SCHEMA_CACHE.delete(names);
+    TOOL_SCHEMA_CACHE.set(names, cached);
+    // P1 频次计数修复：递增移到命中路径——旧实现只在 miss 时递增，低频工具
+    // 用热了也不会重新生成完整描述（截短与否取决于首次序列化时的快照）。
+    for (const t of tools) {
+      const tName = t?.function?.name || '';
+      if (tName && (TOOL_FREQ[tName] ?? 0) < MAX_TOOL_FREQ) {
+        TOOL_FREQ[tName] = (TOOL_FREQ[tName] || 0) + 1;
+      }
+    }
+    return cached;
   }
 
   // 缓存未命中：序列化并缩减低频工具描述
@@ -235,10 +250,12 @@ export function serializeToolsCached(tools: WireToolSchema[]): WireToolSchema[] 
   }
   TOOL_SCHEMA_CACHE.set(names, serialized);
 
-  // 更新使用频率
+  // 更新使用频率（首见也计一次；封顶防无界增长）
   for (const t of tools) {
     const tName = t?.function?.name || '';
-    if (tName) TOOL_FREQ[tName] = (TOOL_FREQ[tName] || 0) + 1;
+    if (tName && (TOOL_FREQ[tName] ?? 0) < MAX_TOOL_FREQ) {
+      TOOL_FREQ[tName] = (TOOL_FREQ[tName] || 0) + 1;
+    }
   }
 
   return serialized;
@@ -267,6 +284,29 @@ export interface ChatCallOptions {
 
 // 这些 HTTP 状态视为限流 / 瞬时故障，可重试（免费档常遇 429）。
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
+
+/**
+ * PROMPT_CACHE 解析（单一事实源）：默认开启（省重复系统提示计费），
+ * 显式设 false/0/off 关闭。流式与非流式路径共用，杜绝两路径默认值漂移。
+ */
+function resolvePromptCacheEnabled(): boolean {
+  const raw = (process.env.PROMPT_CACHE ?? '').trim().toLowerCase();
+  return !(raw === 'false' || raw === '0' || raw === 'off');
+}
+
+/** 网络层错误是否可重试（fetch reject：ECONNRESET / EAI_AGAIN / 连接超时等）。 */
+function isRetryableNetworkError(e: unknown): boolean {
+  const code = (e as { cause?: { code?: unknown }; code?: unknown })?.cause?.code
+    ?? (e as { code?: unknown })?.code;
+  if (typeof code === 'string') {
+    return [
+      'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ETIMEDOUT',
+      'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT'
+    ].includes(code);
+  }
+  return false;
+}
 
 /**
  * 带 HTTP 状态的 LLM 错误：multi-key 故障转移据此做结构化状态识别——
@@ -315,8 +355,10 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   //（provider 不支持时忽略该字段）。默认开启以省去重复的系统提示 + 工具 schema 计费；
   // 设 PROMPT_CACHE=false 可关闭（逃生阀，避免个别严格校验 cache_control 的 provider 报错）。
   // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
-  const cacheDisabled = process.env.PROMPT_CACHE === 'false' || process.env.PROMPT_CACHE === '0';
-  const caching = !cacheDisabled;
+  // P1 一致性修复：默认值解析收敛到 resolvePromptCacheEnabled()——流式与非流式
+  // 此前默认值相反（非流式默认开 / 流式默认关），开 streamTokens 的生产流量
+  // 拿不到 prompt 缓存标记。
+  const caching = resolvePromptCacheEnabled();
 
   // 优化：缓存工具 schema 序列化结果，缩减低频工具描述以减小传输体积。
   // (仅在非缓存模式下也生效 — schema 缩减独立于 prompt cache)
@@ -375,7 +417,24 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略（不参与重试）。
-    const resp = await fetchWithBreaker();
+    // P1 可靠性修复：fetch 本身 reject（ECONNRESET / EAI_AGAIN / 连接超时等网络层
+    // 异常）此前直接抛出，一次抖动即失败；现纳入同一退避重试（与 webfetch 的
+    // 网络错误重试策略对齐）。
+    let resp: Response;
+    try {
+      resp = await fetchWithBreaker();
+    } catch (e) {
+      if (e instanceof CircuitBreakerOpen || attempt >= retries || !isRetryableNetworkError(e)) {
+        throw e;
+      }
+      const waitMs = computeBackoffMs(attempt, null);
+      console.warn(
+        `[llm] network error (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries}):`,
+        e instanceof Error ? e.message : String(e)
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -457,7 +516,8 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     stream_options: { include_usage: true },
   };
   // 与一次性路径一致：开启 PROMPT_CACHE 时给系统提示词打 cache_control，让流式请求也能命中供应商侧 prompt 缓存。
-  const caching = process.env.PROMPT_CACHE === 'true' || process.env.PROMPT_CACHE === '1';
+  // P1 一致性修复：与非流式路径共用 resolvePromptCacheEnabled()（此前默认值相反）。
+  const caching = resolvePromptCacheEnabled();
   if (caching) {
     const msgs = streamBody.messages;
     if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {

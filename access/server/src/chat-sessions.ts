@@ -113,6 +113,36 @@ export interface ChatSession {
 
 const FILE = process.env.CHAT_SESSIONS_FILE || '';
 /**
+ * P1 无界增长修复：会话数与单会话消息数上限。
+ * 内存 Map 此前只增不减（每条 IM/聊天消息永久累积，trace/plan 附件随消息堆叠），
+ * writeNow 全量序列化的体积随会话增长线性膨胀（每次防抖触发都是 O(全库)）。
+ * 超限按 updatedAt LRU 淘汰最旧会话（SQLite 历史镜像为主持久化层，被淘汰会话
+ * 仍可从镜像按需回读）；单会话消息超限裁剪最旧（首条 user 标题消息保留语义不受影响）。
+ */
+const MAX_SESSIONS = Math.max(50, Number(process.env.CHAT_SESSIONS_MAX ?? 2000) || 2000);
+const MAX_MESSAGES_PER_SESSION = Math.max(
+  50,
+  Number(process.env.CHAT_SESSIONS_MAX_MSGS ?? 2000) || 2000
+);
+
+/** 超出会话数上限时淘汰最旧（updatedAt 最小）的会话；被淘汰者不可再从内存读。 */
+function evictOldestSessions(): void {
+  if (sessions.size <= MAX_SESSIONS) return;
+  const entries = [...sessions.values()].sort((a, b) => a.updatedAt - b.updatedAt);
+  let excess = sessions.size - MAX_SESSIONS;
+  for (const s of entries) {
+    if (excess <= 0) break;
+    sessions.delete(s.id);
+    excess--;
+  }
+}
+
+/** 单会话消息数超限时裁剪最旧消息。 */
+function trimSessionMessages(s: ChatSession): void {
+  if (s.messages.length <= MAX_MESSAGES_PER_SESSION) return;
+  s.messages = s.messages.slice(s.messages.length - MAX_MESSAGES_PER_SESSION);
+}
+/**
  * 防抖窗口（毫秒）：热路径（每条消息 / 每次计划状态更新）不再同步写盘，
  * 只标脏 + 排程；窗口内的多次变更合并为一次磁盘 I/O。
  * 之前的 writeFileSync 全量会话 JSON 在会话积累后会阻塞事件循环，
@@ -340,6 +370,7 @@ export function createChatSession(
     ...(meta?.workspaceId ? { workspaceId: meta.workspaceId } : {})
   };
   sessions.set(session.id, session);
+  evictOldestSessions();
   persist();
   // 跨设备广播：其它端实时看到新会话（左侧栏即时出现）。
   if (owner && owner !== LEGACY_OWNER) {
@@ -482,6 +513,7 @@ export function appendChatMessage(
     const now = Date.now();
     s = { id, title: '新对话', createdAt: now, updatedAt: now, messages: [], owner };
     sessions.set(id, s);
+    evictOldestSessions();
   }
   // 源头去重：紧邻上一条消息同 role+同内容则跳过（编辑重发/断连重连重放等场景
   // 会把同一 user 内容二次写入，若在此放任落库，刷新与跨设备恢复后重复永远跟着走）。
@@ -499,6 +531,7 @@ export function appendChatMessage(
   }
   s.messages.push(msg);
   s.updatedAt = Date.now();
+  trimSessionMessages(s);
   let titleChanged = false;
   if (msg.role === 'user') {
     const userCount = s.messages.filter((m) => m.role === 'user').length;

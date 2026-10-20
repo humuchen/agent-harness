@@ -410,6 +410,11 @@ export class Memory {
   private sessionKey: string;
   // 标记：lastInput 用于打分时的 context
   private lastInput: string = '';
+  // P1 竞态修复：窗口代数计数器——窗口内容每次被重写（淘汰/replaceWindow/clear）
+  // 时递增；异步打分结果返回时若代数不一致即丢弃，杜绝「分数与消息错位」。
+  private scoreGen = 0;
+  // P1 二次方修复：在途打分标志（去抖）——同一 run 连续 add() 只保留一个在途打分。
+  private scorePending = false;
   // 上下文压缩摘要（有界字符串）；为 null 表示尚未发生压缩。
   private summaryText: string | null = null;
   // 异步摘要器（如 LLM）返回的待落地摘要；hasPendingSummary=true 时窗口暂不含摘要节点，
@@ -657,29 +662,70 @@ export class Memory {
     return changed;
   }
 
+  /**
+   * 调度一次窗口打分（去抖）：在途打分未返回时不再重复发起。
+   * 同步 scorer 立即结算；异步 scorer 返回后经 applyScores 做代数校验。
+   */
+  private scheduleScore(): void {
+    if (!this.opts.scorer || this.scorePending) return;
+    this.scorePending = true;
+    const gen = ++this.scoreGen;
+    const snapshot = this.window.slice();
+    let result: number[] | Promise<number[]>;
+    try {
+      result = this.opts.scorer.scoreWindow(snapshot, this.lastInput);
+    } catch (e) {
+      this.scorePending = false;
+      structLog('warn', 'memory: sync scorer failed, skipping scores', {
+        error: e instanceof Error ? e.message : String(e)
+      });
+      return;
+    }
+    if (result instanceof Promise) {
+      // .catch 必须挂上（P1 C3）：插件 scorer 抛错若不接住，会以
+      // unhandledRejection 形式直接炸掉进程（Node ≥15 默认 crash）。
+      // 打分失败只降级为「本轮无分数」。
+      void result
+        .then((s) => {
+          this.scorePending = false;
+          this.applyScores(gen, s);
+        })
+        .catch((e) => {
+          this.scorePending = false;
+          structLog('warn', 'memory: async scorer failed, skipping scores', {
+            error: e instanceof Error ? e.message : String(e)
+          });
+        });
+    } else {
+      this.scorePending = false;
+      this.applyScores(gen, result);
+    }
+  }
+
+  /** 应用打分结果：代数不一致（窗口已变）则丢弃并重调度；长度不符防御性丢弃。 */
+  private applyScores(gen: number, s: unknown): void {
+    if (gen !== this.scoreGen) {
+      // 窗口在打分期间被重写（淘汰/替换）——结果基于过期快照，丢弃后重调度，
+      // 保证最终拿到与当前窗口一致的分数。
+      this.scheduleScore();
+      return;
+    }
+    if (Array.isArray(s) && s.length === this.window.length) {
+      this.windowScores = s as number[];
+    }
+  }
+
   add(msg: Message): void {
     this.window.push(msg);
-    // 更新对应消息的分数
-    if (this.opts.scorer && msg.role !== 'system') {
-      // 异步打分不阻塞 add()
-      const scores = this.opts.scorer.scoreWindow(this.window, this.lastInput);
-      if (scores instanceof Promise) {
-        // .catch 必须挂上（P1 C3）：插件 scorer 抛错若不接住，会以
-        // unhandledRejection 形式直接炸掉进程（Node ≥15 默认 crash），
-        // 且该路径位于 add() 热路径上。打分失败只降级为「本轮无分数」。
-        void scores
-          .then((s) => {
-            this.windowScores = s;
-          })
-          .catch((e) => {
-            structLog('warn', 'memory: async scorer failed, skipping scores', {
-              error: e instanceof Error ? e.message : String(e)
-            });
-          });
-      } else {
-        this.windowScores = scores;
-      }
-    }
+    // 更新对应消息的分数。
+    // P1 竞态+二次方修复：同一 run 内 assistant + N 条 tool 结果会连续 add()，
+    // 旧实现每次 add 都对全窗口发起打分（O(add × window) 重复计算），且异步
+    // scorer 返回时窗口可能已被淘汰改变——仅靠长度巧合相等（淘汰一条又新增
+    // 一条）就会分数错位、按错误分数淘汰消息。现改为：
+    //   1) 去抖：在途打分期间后续 add 不再重复发起，返回后代数已变则重调度；
+    //   2) 代数校验：窗口代数不一致的结果一律丢弃；
+    //   3) 快照：打分器拿到的是发起时刻的窗口副本。
+    this.scheduleScore();
     // 触发条件：消息条数溢出 或 token 占用率越过压缩阈值。
     // token 级触发是独立于 CONTEXT_COMPRESSION 特性开关的安全护栏——
     // 即便未开启摘要，也会触发 FIFO 淘汰，避免上下文撑爆（原问题根因）。
@@ -1046,8 +1092,20 @@ export class Memory {
           victim = i;
         }
       }
-      const evicted = head[victim];
-      const keptRest = rest.filter((m) => m !== evicted);
+      // P1 组对齐修复：victim 所在「原子组」必须整组淘汰——旧实现按单条消息
+      // 过滤，若最低分消息恰是 assistant(tool_calls) 或其某条 tool 结果，会拆散
+      // tool 配对，喂给 LLM 的历史出现孤儿 tool_call / 孤儿 tool result，直接被
+      // provider 400 拒绝（与 fitToBudget 的 alignEvictionCut 同一硬约束）。
+      const victimMsg = head[victim];
+      if (!victimMsg) return base;
+      const victimIdx = rest.indexOf(victimMsg);
+      const groups = groupIndexOf(rest);
+      const victimGroup = victimIdx >= 0 ? groups[victimIdx] : undefined;
+      const keptRest =
+        victimGroup !== undefined
+          ? rest.filter((m, i) => groups[i] !== victimGroup)
+          : rest.filter((m) => m !== victimMsg);
+      if (keptRest.length === rest.length) return base; // 未淘汰任何消息（防御）
       this.window = [...sys, ...keptRest];
       this._compactCount++;
       this._compressedSinceReport = true;
@@ -1203,6 +1261,7 @@ export class Memory {
     this.longTerm = [];
     this.longTermScores = [];
     this.windowScores = [];
+    this.scoreGen++;
     this._compactCount = 0;
     this._compressedSinceReport = false;
     this._tokenOvershoot = 0;
@@ -1236,6 +1295,8 @@ export class Memory {
       return next;
     });
     this.windowScores = [];
+    // P1 竞态修复：窗口代数递增，使在途的异步打分结果失效。
+    this.scoreGen++;
     // P1 数据丢失修复：长期记忆（remember() 写入、跨 run 注入系统提示词）不是
     // 窗口的「派生状态」——编辑重发一次对话不应抹掉用户全部长期笔记。此处仅清
     // 窗口派生字段（摘要 / 窗口分数 / 压缩计数），longTerm 与 longTermScores 保留。
