@@ -130,6 +130,18 @@ export class FeishuAdapter implements ImAdapter {
     // 1) 配了 Encrypt Key：用官方签名算法（sha256(timestamp + nonce + encryptKey + body)）。
     if (this.opt.encryptKey) {
       if (!timestamp || !nonce || !signature) return false;
+      // P1 重放修复（对齐钉钉 P1-3）：签名 = sha256(timestamp + nonce + key + body)，
+      // 同一对 (timestamp, nonce, signature) 可被无限重放（去重键 TTL 过期后再次触发
+      // agent 执行、烧 token）。必须叠加「|now - ts| ≤ tolerance」窗口。
+      const toleranceSec = Number(process.env.IM_FEISHU_TIMESTAMP_TOLERANCE_SEC ?? 300);
+      const toleranceMs =
+        Number.isFinite(toleranceSec) && toleranceSec >= 0 ? toleranceSec * 1000 : 300_000;
+      if (toleranceMs > 0) {
+        const ts = Number(timestamp);
+        if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > toleranceMs) {
+          return false;
+        }
+      }
       const expected = createHash('sha256')
         .update(timestamp + nonce + this.opt.encryptKey + req.rawBody, 'utf8')
         .digest('hex');

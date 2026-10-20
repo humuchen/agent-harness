@@ -213,7 +213,15 @@ export class SqliteAgentStore implements AgentStore {
           'card TEXT NOT NULL, ' +
           'updated_at INTEGER NOT NULL)'
       );
-    })();
+    })() as Promise<void>;
+    // P1 自愈修复：初始化失败（磁盘满 / 短暂锁冲突）此前把 rejected promise 永久
+    // 缓存在 this.ready 上，此后 register/get/list 进程生命周期内全部失败、无恢复
+    // 路径（同仓 SqliteMemoryStore 已修复此问题，此处对齐其 catch 重置模式）。
+    this.ready.catch(() => {
+      this.ready = null;
+      try { this.db?.close?.(); } catch { /* 忽略 */ }
+      this.db = null;
+    });
     return this.ready;
   }
 

@@ -20,6 +20,7 @@ import { WORKFLOW_HISTORY_MAX, WORKFLOW_SNAPSHOT_MAX, SNAPSHOT_OUTPUT_MAX, type 
 import { type WorkflowStore, VolatileWorkflowStore } from './store';
 import { inspectStepOutput } from './step-output';
 import { validateAgainstSchema } from '../json-schema';
+import { structLog } from '../telemetry';
 
 /** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
 export type StepExecutor = (
@@ -156,7 +157,17 @@ export class DagEngine {
   }
 
   private emit(e: WorkflowEvent): void {
-    this.onEvent?.(e);
+    // P1 可靠性修复：与 harness 主循环对齐（事件通道防御）——onEvent 回调抛错
+    //（SSE 写失败 / 消费方 bug）此前会沿 runWaveParallel 的 await 链传播，把本可
+    // 成功的 run 判成 failed 并触发补偿。观测通道故障不应放大成业务故障。
+    try {
+      this.onEvent?.(e);
+    } catch (err) {
+      structLog('warn', 'workflow onEvent handler failed (suppressed)', {
+        type: (e as { type?: string })?.type ?? 'unknown',
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
   }
 
   /**

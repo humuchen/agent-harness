@@ -103,6 +103,39 @@ export class IngestQueue {
       this.onDone?.(job);
       this.active--;
       this.pump();
+      this.pruneTerminalJobs();
+    }
+  }
+
+  /**
+   * P1 无界增长修复：终态任务此前永不清理（仅 stats() 遍历），每个 job 永久驻留。
+   * 完成超过 TTL（默认 30min，调用方仍可查询结果）或总数超上限时删除最旧终态任务。
+   */
+  private pruneTerminalJobs(): void {
+    const ttlMs =
+      Number(process.env.RAG_JOB_TTL_MS ?? 30 * 60 * 1000) || 30 * 60 * 1000;
+    const maxJobs =
+      Number(process.env.RAG_JOB_MAX ?? 10_000) || 10_000;
+    const now = Date.now();
+    for (const [id, j] of this.jobs) {
+      if (
+        (j.status === 'done' || j.status === 'failed') &&
+        j.finishedAt !== undefined &&
+        now - j.finishedAt > ttlMs
+      ) {
+        this.jobs.delete(id);
+      }
+    }
+    if (this.jobs.size > maxJobs) {
+      const terminal = [...this.jobs.values()]
+        .filter((j) => j.status === 'done' || j.status === 'failed')
+        .sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
+      let excess = this.jobs.size - maxJobs;
+      for (const j of terminal) {
+        if (excess <= 0) break;
+        this.jobs.delete(j.jobId);
+        excess--;
+      }
     }
   }
 

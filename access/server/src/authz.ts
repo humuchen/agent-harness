@@ -251,8 +251,11 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'agent:read',
     'workflow:run',
     'workflow:read',
-    'a2a:receive',
-    'a2a:send',
+    // P1 越权修复（H3）：a2a:receive 允许同步执行本地 agent——viewer 曾借此绕过
+    // runQueue 的并发上限/看门狗/配额 admit/审批闸门直接跑真 agent。收口到
+    // operator 及以上；确需 viewer 参与 A2A 的部署可用 UI_ROLE_PERMISSIONS 显式放开。
+    // 'a2a:receive',
+    // 'a2a:send',
     'chat:read',
     'env:read',
     'workspace:read',

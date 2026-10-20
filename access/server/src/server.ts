@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -872,7 +872,11 @@ const server = createServer(
       }
     }
     // 版本化 API：/api/v1/* 是稳定契约前缀，内部重写为等价非前缀路径 /api/*（向后兼容别名）。
-    if (path.startsWith('/api/v1')) path = path.replace('/api/v1', '/api');
+    // P1 边界修复：无边界 replace 会把 `/api/v1foo` 改写为 `/apifoo`——要求 v1 后
+    // 必须是 `/` 或行尾，其余路径保持原样（交给 404）。
+    if (/^\/api\/v1(\/|$)/.test(path)) {
+      path = '/api' + path.slice('/api/v1'.length);
+    }
 
     try {
       // CORS 预检：仅当配置了跨域白名单时才需处理。
@@ -950,7 +954,10 @@ const server = createServer(
           );
           const assetRoot = join(wd, 'assets');
           const fp = resolve(assetRoot, rel);
-          if (fp.startsWith(assetRoot)) {
+          // P1 路径穿越修复：startsWith 无尾部分隔符时，`/…/assets-evil` 也会命中
+          // `/…/assets` 前缀，可读到 webapp 目录同级以 assets 为前缀的任意文件。
+          // 与下方根级文件检查（严格相等）同口径：必须落在 assetRoot 目录内部。
+          if (fp === assetRoot || fp.startsWith(assetRoot + sep)) {
             try {
               const buf = await readFile(fp);
               res.writeHead(200, {
@@ -1874,14 +1881,37 @@ const server = createServer(
       if (!res.headersSent) {
         res.writeHead(code, { 'content-type': 'application/json' });
       }
-      res.end(
-        JSON.stringify({ error: e instanceof Error ? e.message : String(e) })
-      );
+      // P1 信息泄露修复：500 的原始 e.message 可能携带内部路径 / SQL / 上游响应
+      // 片段（明细已入 getErrorLog，受 errors:read 保护）；客户端只给笼统文案。
+      // 4xx 为语义化业务错误，保留 message。
+      const detail =
+        code < 500
+          ? e instanceof Error
+            ? e.message
+            : String(e)
+          : 'internal server error';
+      res.end(JSON.stringify({ error: detail }));
     }
   }
 );
 
 async function buildState(req: IncomingMessage) {
+  // P1 信息泄露修复：/api/state 位于鉴权前的 edge 路由（Render PaaS 健康检查
+  // 无法携带令牌，故保留匿名可达），但响应此前包含 MCP 全清单（url/error）、
+  // envs 环境变量流水线内容与 keyHint——匿名者可借此枚举部署内部拓扑。
+  // 未认证请求只返回前端渲染所需的非敏感骨架；完整状态仅登录后可见。
+  const authedOwner = await usernameFromCookie(req).catch(() => null);
+  if (!authedOwner) {
+    return {
+      openrouter: false,
+      llm: { ready: false, source: 'none' },
+      harnessKey: !!process.env.HARNESS_API_KEY,
+      harnessDryRun: !process.env.HARNESS_API_KEY,
+      model: resolveOpenRouterConfig().model,
+      historyMaxBytes: HISTORY_MAX_BYTES,
+      contextWindow: contextWindowFor(resolveOpenRouterConfig().model)
+    };
+  }
   let sandbox: unknown = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires

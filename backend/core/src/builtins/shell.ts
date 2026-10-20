@@ -174,7 +174,7 @@ export function registerShell(registry: ToolRegistry, opts: ShellOptions = {}): 
       // 3) 作用域：cwd 必须在 root 内
       let cwdAbs: string;
       try {
-        cwdAbs = resolveScope(root, cwdRel);
+        cwdAbs = await resolveScopeSafe(root, cwdRel);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return `error: ${msg}`;
@@ -212,6 +212,33 @@ function resolveScope(root: string, cwdRel: string): string {
   const rel = relative(root, abs);
   if (rel.startsWith('..')) throw new Error(`cwd escapes sandbox root: ${cwdRel}`);
   return abs;
+}
+
+/**
+ * P1 symlink 逃逸修复：resolveScope 只做词法校验——root 内若存在指向外部的
+ * 符号链接目录（由先前 fs_write / 挂载 / 部署目录本身引入），cwd 传入该链接
+ * 路径即可通过词法校验，命令真实工作目录落在 root 之外。local 执行器本无
+ * OS 级隔离，cwd 承诺是唯一边界。现对解析结果做 realpath 逐级上溯校验
+ *（与 filesystem.ts 的 safeReal 同型），目标不存在时回落词法结果。
+ */
+async function resolveScopeSafe(root: string, cwdRel: string): Promise<string> {
+  const lexical = resolveScope(root, cwdRel);
+  try {
+    const fsp = await import('node:fs/promises');
+    const real = await fsp.realpath(lexical);
+    // root 本身也可能经 symlink 到达（macOS /tmp → /private/tmp）：realpath 化后再比较，
+    // 否则合法 cwd 会被误判为逃逸。
+    const realRoot = await fsp.realpath(root);
+    const rel = relative(realRoot, real);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error(`cwd escapes sandbox root via symlink: ${cwdRel}`);
+    }
+    return real;
+  } catch (e: unknown) {
+    if (e instanceof Error && e.message.includes('symlink')) throw e;
+    // 目标不存在等 → 保持词法校验结果（执行时由系统报错）。
+    return lexical;
+  }
 }
 
 async function evalConfirm(confirm: ShellConfirmStrategy, req: ShellExecRequest): Promise<boolean> {

@@ -110,6 +110,17 @@ export class WecomAdapter implements ImAdapter {
     const nonce = req.url.searchParams.get('nonce') ?? '';
     const msgSignature = req.url.searchParams.get('msg_signature') ?? '';
     if (!timestamp || !nonce || !msgSignature) return false;
+    // P1 重放修复（对齐钉钉 P1-3）：签名含 timestamp 但从不校验新鲜度——截获一次
+    // 合法 webhook 即可无限重放（去重键 TTL 过期后再次触发 agent 执行、烧 token）。
+    const toleranceSec = Number(process.env.IM_WECOM_TIMESTAMP_TOLERANCE_SEC ?? 300);
+    const toleranceMs =
+      Number.isFinite(toleranceSec) && toleranceSec >= 0 ? toleranceSec * 1000 : 300_000;
+    if (toleranceMs > 0) {
+      const ts = Number(timestamp);
+      if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > toleranceMs) {
+        return false;
+      }
+    }
     const encrypt = extractXmlTag(req.rawBody, 'Encrypt');
     if (!encrypt) return false;
     return safeEqual(this.signature(timestamp, nonce, encrypt), msgSignature);

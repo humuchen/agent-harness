@@ -132,6 +132,26 @@ export async function handleRun(
     res.end(JSON.stringify({ error: 'server is shutting down' }));
     return;
   }
+  // P1 资源耗尽修复：/api/run 的 SSE 此前不计入 sseConnectionLock（该锁只覆盖
+  // /api/chat/stream、/api/events、/api/plans/:id/events）——恶意客户端可并发打开
+  // 大量 /api/run SSE 绕过连接耗尽防护（每次还触发 submit 入队 + 500 条事件缓冲）。
+  const sseAcquired = sseConnectionLock.acquire();
+  if (!sseAcquired) {
+    res.writeHead(429, {
+      'content-type': 'application/json',
+      ...securityHeaders(),
+      ...corsHeaders(req)
+    });
+    res.end(JSON.stringify({ error: 'SSE connection limit reached, retry later' }));
+    return;
+  }
+  let sseReleased = false;
+  const releaseSse = () => {
+    if (sseReleased) return;
+    sseReleased = true;
+    sseConnectionLock.release();
+  };
+  res.on('close', releaseSse);
   const send = startSse(res, req);
   // 跨设备：进行中 assistant 增量的节流广播（让他端实时看到「正在回复…」而非仅最终全文）。
   // 声明置于 run 事件循环之前，确保整次 run 共享同一累积缓冲与节流游标（否则每次事件
@@ -243,14 +263,18 @@ export async function handleRun(
       ? Math.floor(body.maxSteps)
       : undefined;
   // 会话/租户标识（P1-9）：优先 body.sessionId，其次 x-session-id 头，默认 anonymous。
-  // 记忆按此 key 在所选后端（file/sqlite）隔离持久化，实现多租户。
+  // 记忆按此 key 在所选后端（file/sqlite)隔离持久化，实现多租户。
   // 注意：连续对话由 Web UI 在客户端生成并稳定携带 conversationId（见 webapp/run.ts），
   // 因此 web 端每条会话都带唯一 sessionId；未携带时回落 anonymous（CLI 无 --session 时）。
-  const sessionKey = sanitizeKey(
+  // P1 IDOR 修复：sessionKey 强制加 owner 前缀——记忆持久化 key 原为客户端可控的裸
+  // sessionId，任何持证用户可凭 /api/memory?session=<可预测 key> 读取他人会话的长期
+  // 记忆；同 sessionId 的两个用户也会共享记忆窗口。owner 前缀保证 per-user 隔离
+  // （与 IM 桥的 `${owner}::${sessionId}` 约定一致）。
+  const rawSessionId =
     (body.sessionId && String(body.sessionId)) ||
-      (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
-      'anonymous'
-  );
+    (req.headers['x-session-id'] && String(req.headers['x-session-id'])) ||
+    'anonymous';
+  const sessionKey = sanitizeKey(`${ctx.sub}::${rawSessionId}`);
 
   // 多会话 Chat App：客户端为每个聊天会话分配独立 chatSessionId（与 Memory 的 sessionKey 解耦），
   // 服务端据此把 user/assistant 消息写入会话存储，供左侧栏与跨刷新恢复。

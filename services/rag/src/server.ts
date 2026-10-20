@@ -49,12 +49,29 @@ export interface RagServerOptions {
 function readJson(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (c) => (body += c));
+    let total = 0;
+    let aborted = false;
+    // P1 资源修复：请求体无上限累积——单条请求可携带数百 MB 文本，经
+    // JSON.stringify/splitter 多次复制放大内存（容器 limit 仅 512Mi，极易 OOM）。
+    const maxBytes =
+      Number(process.env.RAG_MAX_BODY_BYTES ?? 10_485_760) || 10_485_760;
+    req.on('data', (c: Buffer) => {
+      if (aborted) return;
+      total += c.byteLength;
+      if (total > maxBytes) {
+        aborted = true;
+        try { req.destroy(); } catch { /* 已断开则忽略 */ }
+        reject(new Error('request body too large'));
+        return;
+      }
+      body += c;
+    });
     req.on('end', () => {
+      if (aborted) return;
       if (!body) return resolve({});
       try {
         resolve(JSON.parse(body));
-      } catch (e) {
+      } catch {
         reject(new Error('invalid JSON body'));
       }
     });
@@ -192,7 +209,11 @@ export function createRagServer(opts: RagServerOptions) {
         const auth = resolveTenant(req, authOpts);
         if ('error' in auth) return send(res, auth.error, { error: auth.message });
         const job = queue.job(jobMatch[1] ?? '');
-        if (!job) return send(res, 404, { error: 'job not found' });
+        // P1 IDOR 修复：job_id 为时间戳+序号（可预测），不校验租户时租户 A 可探测
+        // 租户 B 的入库任务状态 / doc_id / 错误信息。归属不符按 404 处理。
+        if (!job || job.tenant_id !== auth.tenantId) {
+          return send(res, 404, { error: 'job not found' });
+        }
         return send(res, 200, job);
       }
 

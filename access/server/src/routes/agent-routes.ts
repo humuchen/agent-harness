@@ -11,6 +11,7 @@ import { URL } from 'node:url';
 import {
   getAgentRegistry,
   getTeamManager,
+  isTenantRequired,
   type A2ARequest,
   type AgentCard,
   type AgentHealth,
@@ -155,8 +156,24 @@ export async function handleAgentRoutes(
     }
 
     try {
+      // P1 资源防护：envelope.input 无上限时，恶意大 payload 直接进 harness
+      // 上下文（同步执行路径无 runQueue 的看门狗兜底）。256KB 对任务输入足够宽裕。
+      const inputStr = JSON.stringify(envelope.input ?? null);
+      if (inputStr.length > 256 * 1024) {
+        res.writeHead(413, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'envelope.input too large (>256KB)' }));
+        return true;
+      }
+      // P1 租户伪造修复（与 /api/run 同口径）：执行租户只认认证身份派生的租户，
+      // envelope.tenantId 仅在认证身份未携带租户且非强制租户模式时作为降级来源。
       const output = await runAgentTask(target, envelope.input, {
-        tenantId: envelope.tenantId,
+        tenantId:
+          ctx.tenantId ??
+          (isTenantRequired()
+            ? undefined
+            : typeof envelope.tenantId === 'string'
+              ? envelope.tenantId
+              : undefined),
         onEvent: undefined
       });
       const result: TaskResult = {

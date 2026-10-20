@@ -81,11 +81,10 @@ export function verifyJwt(
     const payload = JSON.parse(
       Buffer.from(p, 'base64url').toString('utf8')
     ) as Record<string, unknown>;
-    if (
-      typeof payload.exp === 'number' &&
-      payload.exp < Math.floor(Date.now() / 1000)
-    )
-      return null;
+    // P1 修复：exp 必须存在且未过期——旧实现「payload.exp 是 number 才校验」，
+    // 签发方漏掉 exp 的 JWT 永久有效（过期防线形同虚设）。fail-closed。
+    if (typeof payload.exp !== 'number') return null;
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch {
     return null;

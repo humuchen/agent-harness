@@ -162,14 +162,21 @@ export interface ProviderKeyPublic {
 
 // ─── 掩码 ────────────────────────────────────────────────────────────────────
 /**
- * 仅保留首尾若干字符生成掩码（sk-or-v1-…a91f），中间用 · 填充。
- * 过短 Key 退化为「前 0 + 后 4」。明文绝不出网。
+ * 生成掩码（••••a91f）：仅保留末 4 字符。
+ * P1 泄露修复：旧实现保留前 7 字符——对 `sk-proj-…` 等自定义端点 Key 恰好暴露
+ * 真实密钥片段（厂商公开前缀之外的部分）；掩码值还会落库 key_hint 列并经
+ * /api/state 等端点外发。改为只保留已知厂商公开前缀（无秘密性）+ 末 4 位，
+ * 其余全部遮蔽。
  */
+const KNOWN_KEY_PREFIXES = ['sk-or-v1-', 'sk-proj-', 'sk-ant-', 'sk-', 'ghp_', 'github_pat_', 'hf_', 'r8_'];
+
 export function maskKey(plain: string): string {
   const s = plain.trim();
   if (!s) return '';
-  if (s.length <= 11) return '••••' + s.slice(-4);
-  return s.slice(0, 7) + '…' + s.slice(-4);
+  const tail = s.slice(-4);
+  const known = KNOWN_KEY_PREFIXES.find((p) => s.startsWith(p));
+  if (known) return known + '…' + tail;
+  return '••••' + tail;
 }
 
 // ─── 行读写 ──────────────────────────────────────────────────────────────────

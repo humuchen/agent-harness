@@ -109,6 +109,9 @@ const NEAR_EMPTY_HINT =
 interface JarEntry { value: string; expires: number }
 const cookieJar = new Map<string, Map<string, JarEntry>>();
 const COOKIE_JAR_MAX_HOSTS = 200;
+/** P1 资源修复：单 host 的 cookie 条目数上限——容量控制此前只在 host 维度，恶意站点
+ * 可在单页响应里塞数百个 Set-Cookie，随抓取累积（每 host 独立 Map 无淘汰）。 */
+const COOKIE_JAR_MAX_PER_HOST = 50;
 const SESSION_COOKIE_TTL_MS = 30 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
@@ -154,7 +157,13 @@ function storeCookies(host: string, resp: Response): void {
       if (Number.isFinite(t)) expires = t;
     }
     jar.set(name, { value, expires });
-    if (value === '' || expires <= Date.now()) jar.delete(name); // 删除语义
+    if (value === '' || expires <= Date.now()) {
+      jar.delete(name); // 删除语义
+    } else if (jar.size > COOKIE_JAR_MAX_PER_HOST) {
+      // 超限淘汰最旧条目（插入序）。
+      const oldest = jar.keys().next().value;
+      if (oldest !== undefined) jar.delete(oldest);
+    }
   }
 }
 
