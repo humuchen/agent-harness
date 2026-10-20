@@ -18,7 +18,7 @@ async function mountPicker(props?: Record<string, unknown>) {
     props: { model: 'agnes-2.5-flash', ...(props ?? {}) }
   });
   await tick();
-  return inst as SvelteComponent;
+  return inst as unknown as SvelteComponent;
 }
 
 describe('ModelPicker（模型选择器）', () => {

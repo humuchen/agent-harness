@@ -42,7 +42,7 @@ async function mountCenter(props?: Record<string, unknown>) {
     props: { visible: true, ...(props ?? {}) }
   });
   await tick();
-  return inst as SvelteComponent;
+  return inst as unknown as SvelteComponent;
 }
 
 function tabByLabel(label: string): HTMLButtonElement {

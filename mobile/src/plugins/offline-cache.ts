@@ -84,11 +84,14 @@ export const offlineCacheController: OfflineCacheController = {
     // 用户点一次「清除缓存」就丢失快捷登录凭据与全部偏好。改为按本模块前缀
     // 逐 key 删除。
     const { preferences } = getPlugins();
-    const keys = await preferences.keys();
+    const result = await preferences.keys();
+    const keys: string[] = Array.isArray(result)
+      ? (result as unknown as string[])
+      : ((result as { value?: string[] }).value ?? []);
     await Promise.all(
       keys
-        .filter((k: string) => k.startsWith(CACHE_KEY_PREFIX))
-        .map((k: string) => preferences.remove({ key: k }))
+        .filter((k) => k.startsWith(CACHE_KEY_PREFIX))
+        .map((k) => preferences.remove({ key: k }))
     );
   },
   async isOnline() {
