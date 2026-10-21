@@ -39,7 +39,7 @@ function feishuEncrypt(plainJson, encryptKey) {
 }
 function feishuSignedBody(envelope, encryptKey) {
   const rawBody = JSON.stringify({ encrypt: feishuEncrypt(envelope, encryptKey) });
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n-' + Math.random().toString(36).slice(2, 8);
   const signature = createHash('sha256')
     .update(ts + nonce + encryptKey + rawBody, 'utf8')
@@ -86,7 +86,7 @@ function wecomSign(token, ts, nonce, payload) {
 }
 function wecomPostBody(xml, token, aesKey) {
   const enc = wecomEncrypt(xml, aesKey);
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n-' + Math.random().toString(36).slice(2, 8);
   const sig = wecomSign(token, ts, nonce, enc);
   const url = new URL(
@@ -337,7 +337,7 @@ test('企业微信（真实适配器）：URL 验证握手（验签+解密 echos
   const bridge = bridgeWith(a);
   const echoPlain = 'echo-12345';
   const echostr = wecomEncrypt(echoPlain, WECOM_AES_KEY);
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n1';
   const sig = wecomSign('tok', ts, nonce, echostr);
   const url = new URL(
@@ -385,7 +385,7 @@ test('企业微信（真实适配器）：签名不符 → 401', async () => {
   );
   const xml = '<xml><MsgType>text</MsgType><Content>hi</Content><FromUserName>u</FromUserName></xml>';
   const enc = wecomEncrypt(xml, WECOM_AES_KEY);
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n9';
   const badUrl = new URL(
     `http://x/api/im/wecom/events?msg_signature=bad&timestamp=${ts}&nonce=${nonce}`

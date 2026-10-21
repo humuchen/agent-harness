@@ -40,6 +40,6 @@
   "devDependencies": {
     "@kubernetes/client-node": "^2.0.0",
     "@types/node": "^20.19.43",
-    "typescript": "^5.4.5"
+    "typescript": "^7.0.2"
   }
 }

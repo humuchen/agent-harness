@@ -169,7 +169,8 @@ export async function loadDocument(source: DocumentSource): Promise<LoadedDoc> {
       const FETCH_TIMEOUT_MS = 30_000;
       const MAX_REDIRECT_HOPS = 5;
       let current = parsed;
-      let resp: Response | null = null;
+      // resp 在循环首次迭代即赋值（break 前必经），无需 null 初值（no-useless-assignment）。
+      let resp: Response;
       for (let hop = 0; ; hop++) {
         await assertPublicHost(current);
         resp = await fetch(current.toString(), {

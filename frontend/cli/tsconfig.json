@@ -3,14 +3,20 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "rootDir": "src",
     "outDir": "dist",
-    "baseUrl": ".",
     "noUncheckedIndexedAccess": true,
     "paths": {
-      "@agent-harness/client": ["../../backend/client/dist/index.d.ts"]
+      "@agent-harness/client": [
+        "../../backend/client/dist/index.d.ts"
+      ]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

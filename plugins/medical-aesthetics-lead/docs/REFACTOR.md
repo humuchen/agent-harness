@@ -6,14 +6,14 @@
 
 ## 0. 核心设计原则
 
-| 原则 | 落地方式 |
-| --- | --- |
-| **零内置业务数据** | 源码不再包含任何项目语料 / 院区 / 号源 / 线索样本。`PROJECT_CORPUS` 硬编码数组已删除，知识库内容只来自运营导入接口或外部 KB 服务落库。 |
+| 原则                        | 落地方式                                                                                                                                                                                     |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **零内置业务数据**          | 源码不再包含任何项目语料 / 院区 / 号源 / 线索样本。`PROJECT_CORPUS` 硬编码数组已删除，知识库内容只来自运营导入接口或外部 KB 服务落库。                                                       |
 | **fail-closed（失败关闭）** | 某能力依赖的后端未配置时，对应工具 / 接口返回明确的 `NOT_CONFIGURED` 错误，**绝不退化为假数据、也绝不假装成功**。例如 CRM 未配置时线索照常落本地库，但同步状态标记为 `disabled` 并据实告知。 |
-| **真实 HTTP 客户端** | 超时（`AbortSignal.timeout`）、指数退避重试（仅 429/5xx/网络错误）、幂等键（`Idempotency-Key`）、HMAC 验签、脱敏日志。无任何 mock 分支。 |
-| **事务防超卖** | 号源占用走 `BEGIN IMMEDIATE` 事务 + 条件更新（`booked < capacity`）+ 唯一索引兜底，天然防并发超卖。 |
-| **至少一次投递** | CRM/HIS 同步经发件箱（outbox）异步投递，失败指数退避重排，达到上限标记 `failed`，确保上游抖动不丢客资。 |
-| **非侵入式** | 插件只通过 `PluginContext` 调用 core 公共 API，不修改 core 源码；server / web 宿主由运行时注入。 |
+| **真实 HTTP 客户端**        | 超时（`AbortSignal.timeout`）、指数退避重试（仅 429/5xx/网络错误）、幂等键（`Idempotency-Key`）、HMAC 验签、脱敏日志。无任何 mock 分支。                                                     |
+| **事务防超卖**              | 号源占用走 `BEGIN IMMEDIATE` 事务 + 条件更新（`booked < capacity`）+ 唯一索引兜底，天然防并发超卖。                                                                                          |
+| **至少一次投递**            | CRM/HIS 同步经发件箱（outbox）异步投递，失败指数退避重排，达到上限标记 `failed`，确保上游抖动不丢客资。                                                                                      |
+| **非侵入式**                | 插件只通过 `PluginContext` 调用 core 公共 API，不修改 core 源码；server / web 宿主由运行时注入。                                                                                             |
 
 ---
 
@@ -163,12 +163,18 @@ export const leadManifest: PluginManifest = {
   id: 'medical-aesthetics-lead',
   version: '0.1.0',
   name: '医美客资顾问',
-  description: '多渠道获客 / 需求初筛 / 项目咨询 / 留资 / 预约到店 / 转人工咨询师，含医疗广告合规护栏',
+  description:
+    '多渠道获客 / 需求初筛 / 项目咨询 / 留资 / 预约到店 / 转人工咨询师，含医疗广告合规护栏',
   domain: 'medical-aesthetics',
   transport: 'local',
   entry: 'dist/index.js',
   capabilities: [
-    { id: 'chat' }, { id: 'lead' }, { id: 'consult' }, { id: 'book' }, { id: 'handoff' }, { id: 'analytics' },
+    { id: 'chat' },
+    { id: 'lead' },
+    { id: 'consult' },
+    { id: 'book' },
+    { id: 'handoff' },
+    { id: 'analytics' }
   ] as AgentCapability[],
   assembly: {
     systemPrompt: buildSystemPrompt(),
@@ -184,10 +190,10 @@ export const leadManifest: PluginManifest = {
       'medical-aesthetics-lead__content_draft',
       'medical-aesthetics-lead__lead_briefing',
       'medical-aesthetics-lead__ab_report',
-      'delegate_task',
+      'delegate_task'
     ],
-    skills: [],
-  },
+    skills: []
+  }
 };
 ```
 
@@ -221,7 +227,7 @@ export const leadManifest: PluginManifest = {
     "@agent-harness/medical-ad-guard": "workspace:*",
     "@libsql/client": "^0.14.0"
   },
-  "devDependencies": { "@types/node": "^20.19.43", "typescript": "^5.9.3" }
+  "devDependencies": { "@types/node": "^20.19.43", "typescript": "^7.0.2" }
 }
 ```
 
@@ -229,13 +235,13 @@ export const leadManifest: PluginManifest = {
 
 ## 4. 依赖
 
-| 类别 | 依赖 | 说明 |
-| --- | --- | --- |
-| 运行时（workspace） | `@agent-harness/core` | 插件契约（ToolRegistry / PluginContext / ServerExtension / A2A / guardrails）。经 `paths` 指向 `backend/core/dist/index.d.ts`。 |
-| 运行时（workspace） | `@agent-harness/medical-ad-guard` | 医疗广告合规护栏（可插拔、幂等）。 |
-| 运行时（npm） | `@libsql/client` | Turso 云端 SQLite 后端（`DB_BACKEND=turso` 时启用）；`DB_BACKEND=sqlite`（默认）走 Node 22+ 内置 `node:sqlite`，零 npm 依赖。由 core 的 `getDbAdapter` 统一收口，自动回退。 |
-| 运行时（Node 内置） | `node:fs` / `node:crypto` / `node:path` / `fetch` | 文件目录、HMAC 验签、路径、真实 HTTP 客户端。 |
-| 构建 | `typescript` / `@types/node` | 仅构建期。 |
+| 类别                | 依赖                                              | 说明                                                                                                                                                                        |
+| ------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 运行时（workspace） | `@agent-harness/core`                             | 插件契约（ToolRegistry / PluginContext / ServerExtension / A2A / guardrails）。经 `paths` 指向 `backend/core/dist/index.d.ts`。                                             |
+| 运行时（workspace） | `@agent-harness/medical-ad-guard`                 | 医疗广告合规护栏（可插拔、幂等）。                                                                                                                                          |
+| 运行时（npm）       | `@libsql/client`                                  | Turso 云端 SQLite 后端（`DB_BACKEND=turso` 时启用）；`DB_BACKEND=sqlite`（默认）走 Node 22+ 内置 `node:sqlite`，零 npm 依赖。由 core 的 `getDbAdapter` 统一收口，自动回退。 |
+| 运行时（Node 内置） | `node:fs` / `node:crypto` / `node:path` / `fetch` | 文件目录、HMAC 验签、路径、真实 HTTP 客户端。                                                                                                                               |
+| 构建                | `typescript` / `@types/node`                      | 仅构建期。                                                                                                                                                                  |
 
 > 默认 `DB_BACKEND=sqlite` 时**零 npm 运行时依赖**（Node 内置 `node:sqlite`）；仅当选择 `DB_BACKEND=turso` 云端后端时才引入 `@libsql/client`。所有"真实后端"经环境变量配置的可达 REST 地址接入。
 
@@ -245,30 +251,30 @@ export const leadManifest: PluginManifest = {
 
 全部以 `MA_` 前缀，由 `src/config.ts` 解析（懒解析，首次 `getConfig()` 时缓存）。
 
-| 变量 | 必填 | 默认 | 作用 | 未配置时行为（fail-closed） |
-| --- | --- | --- | --- | --- |
-| `MA_TENANT_ID` | 否 | `default` | 租户标识，贯穿 DB 行 / CRM 请求头 / A2A 信封 | — |
-| `MA_DATA_DIR` | 否 | `MEMORY_DIR/plugins/medical-aesthetics-lead` 或 `./data/ma-lead` | 数据目录（DB 文件所在） | — |
-| `MA_DB_FILE` | 否 | `<MA_DATA_DIR>/ma-lead.db` | sqlite 库文件绝对路径 | — |
-| `MA_DB_BUSY_TIMEOUT_MS` | 否 | `5000` | WAL busy_timeout（多副本共享卷防锁冲突） | — |
-| `MA_CRM_BASE_URL` | 条件 | 空 | CRM REST 基址（如 `https://crm.internal`） | 置空 → CRM 同步 `disabled`（线索仍落本地库） |
-| `MA_CRM_TOKEN` | 条件 | 空 | CRM Bearer 令牌 | 缺 → 鉴权失败 |
-| `MA_CRM_TIMEOUT_MS` | 否 | `8000` | CRM 单次请求超时 | — |
-| `MA_CRM_RETRIES` | 否 | `2` | CRM 重试次数（仅 429/5xx/网络） | — |
-| `MA_HIS_BASE_URL` | 条件 | 空 | HIS/预约系统 REST 基址 | 置空 → 预约单不向 HIS 同步（`hisSync=disabled`） |
-| `MA_HIS_TOKEN` | 条件 | 空 | HIS Bearer 令牌 | 缺 → 鉴权失败 |
-| `MA_HIS_TIMEOUT_MS` / `MA_HIS_RETRIES` | 否 | `8000` / `2` | HIS 超时 / 重试 | — |
-| `MA_KB_BASE_URL` | 条件 | 空 | 外部知识库服务基址（`MA_KB_SOURCE=http` 时必填） | 置空 + `http` 模式 → `NOT_CONFIGURED` |
-| `MA_KB_TOKEN` | 条件 | 空 | KB Bearer 令牌 | 缺 → 鉴权失败 |
-| `MA_KB_SOURCE` | 否 | `db` | 知识库来源：`db`（本地库，由导入接口/外部服务写入）或 `http`（真实出网检索） | `db` 缺数据→检索返回空 |
-| `MA_WEBHOOK_SECRET` | 条件 | 空 | 渠道 webhook HMAC 密钥 | 置空 → 所有 webhook 拒绝（401/503） |
-| `MA_ADMIN_TOKEN` | 条件 | 空 | 数据导入/写接口管理令牌 | 置空 → 导入接口拒绝 |
-| `MA_OUTBOX_ENABLED` | 否 | `true` | 是否启用 CRM/HIS 同步后台投递 | `false` → 不出网同步（仅落库） |
-| `MA_OUTBOX_INTERVAL_MS` | 否 | `15000` | 发件箱轮询间隔 | — |
-| `MA_OUTBOX_MAX_ATTEMPTS` | 否 | `8` | 同步最大重试次数（达上限标记 failed） | — |
-| `MA_OUTBOX_BATCH_SIZE` | 否 | `20` | 每轮扫描批次 | — |
-| `MA_A2A_BASE_URL` | 条件 | `AGENT_A2A_BASE_URL` | webhook → agent 的 A2A 投递基址 | 置空 → webhook 仅落库不触发 agent |
-| `MA_A2A_TIMEOUT_MS` | 否 | `60000` | A2A 投递超时 | — |
+| 变量                                   | 必填 | 默认                                                             | 作用                                                                         | 未配置时行为（fail-closed）                      |
+| -------------------------------------- | ---- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------ |
+| `MA_TENANT_ID`                         | 否   | `default`                                                        | 租户标识，贯穿 DB 行 / CRM 请求头 / A2A 信封                                 | —                                                |
+| `MA_DATA_DIR`                          | 否   | `MEMORY_DIR/plugins/medical-aesthetics-lead` 或 `./data/ma-lead` | 数据目录（DB 文件所在）                                                      | —                                                |
+| `MA_DB_FILE`                           | 否   | `<MA_DATA_DIR>/ma-lead.db`                                       | sqlite 库文件绝对路径                                                        | —                                                |
+| `MA_DB_BUSY_TIMEOUT_MS`                | 否   | `5000`                                                           | WAL busy_timeout（多副本共享卷防锁冲突）                                     | —                                                |
+| `MA_CRM_BASE_URL`                      | 条件 | 空                                                               | CRM REST 基址（如 `https://crm.internal`）                                   | 置空 → CRM 同步 `disabled`（线索仍落本地库）     |
+| `MA_CRM_TOKEN`                         | 条件 | 空                                                               | CRM Bearer 令牌                                                              | 缺 → 鉴权失败                                    |
+| `MA_CRM_TIMEOUT_MS`                    | 否   | `8000`                                                           | CRM 单次请求超时                                                             | —                                                |
+| `MA_CRM_RETRIES`                       | 否   | `2`                                                              | CRM 重试次数（仅 429/5xx/网络）                                              | —                                                |
+| `MA_HIS_BASE_URL`                      | 条件 | 空                                                               | HIS/预约系统 REST 基址                                                       | 置空 → 预约单不向 HIS 同步（`hisSync=disabled`） |
+| `MA_HIS_TOKEN`                         | 条件 | 空                                                               | HIS Bearer 令牌                                                              | 缺 → 鉴权失败                                    |
+| `MA_HIS_TIMEOUT_MS` / `MA_HIS_RETRIES` | 否   | `8000` / `2`                                                     | HIS 超时 / 重试                                                              | —                                                |
+| `MA_KB_BASE_URL`                       | 条件 | 空                                                               | 外部知识库服务基址（`MA_KB_SOURCE=http` 时必填）                             | 置空 + `http` 模式 → `NOT_CONFIGURED`            |
+| `MA_KB_TOKEN`                          | 条件 | 空                                                               | KB Bearer 令牌                                                               | 缺 → 鉴权失败                                    |
+| `MA_KB_SOURCE`                         | 否   | `db`                                                             | 知识库来源：`db`（本地库，由导入接口/外部服务写入）或 `http`（真实出网检索） | `db` 缺数据 → 检索返回空                         |
+| `MA_WEBHOOK_SECRET`                    | 条件 | 空                                                               | 渠道 webhook HMAC 密钥                                                       | 置空 → 所有 webhook 拒绝（401/503）              |
+| `MA_ADMIN_TOKEN`                       | 条件 | 空                                                               | 数据导入/写接口管理令牌                                                      | 置空 → 导入接口拒绝                              |
+| `MA_OUTBOX_ENABLED`                    | 否   | `true`                                                           | 是否启用 CRM/HIS 同步后台投递                                                | `false` → 不出网同步（仅落库）                   |
+| `MA_OUTBOX_INTERVAL_MS`                | 否   | `15000`                                                          | 发件箱轮询间隔                                                               | —                                                |
+| `MA_OUTBOX_MAX_ATTEMPTS`               | 否   | `8`                                                              | 同步最大重试次数（达上限标记 failed）                                        | —                                                |
+| `MA_OUTBOX_BATCH_SIZE`                 | 否   | `20`                                                             | 每轮扫描批次                                                                 | —                                                |
+| `MA_A2A_BASE_URL`                      | 条件 | `AGENT_A2A_BASE_URL`                                             | webhook → agent 的 A2A 投递基址                                              | 置空 → webhook 仅落库不触发 agent                |
+| `MA_A2A_TIMEOUT_MS`                    | 否   | `60000`                                                          | A2A 投递超时                                                                 | —                                                |
 
 > 共享存储（多副本共享记忆）：所有 ui 副本挂 RWX PVC 到同一目录，`MA_DATA_DIR` 指向该挂载点，`MA_DB_FILE` 用**绝对路径**（后台任务中 `$PWD` 会偏移到错误目录）。
 
@@ -318,6 +324,7 @@ curl localhost:4173/api/plugins/medical-aesthetics-lead/health
 ### 6.4 接入真实外部系统（可选增强）
 
 设置 `MA_CRM_BASE_URL`/`MA_CRM_TOKEN` 与 `MA_HIS_BASE_URL`/`MA_HIS_TOKEN` 后：
+
 - 线索变更自动经发件箱异步投递 CRM（至少一次，幂等键防重复建单）；
 - 预约单自动同步 HIS；
 - 看板 `CRM 同步健康` 展示 `已投/待投/失败` 分布。
@@ -326,15 +333,15 @@ curl localhost:4173/api/plugins/medical-aesthetics-lead/health
 
 ## 7. fail-closed 行为矩阵（关键保障）
 
-| 场景 | 旧行为 | 新行为 |
-| --- | --- | --- |
-| 知识库无数据 | 返回内置 `PROJECT_CORPUS` 假语料 | 返回 `found:false` + 建议面诊（**无假数据**） |
-| 号源已满/不存在 | 仍返回 `ok:true`（**假成功**） | 抛 `NOT_FOUND`/`CONFLICT`，工具据实回灌模型 |
-| CRM 未配置 | 静默跳过，假装已同步 | 线索落本地库，同步状态 `disabled`，如实告知 |
-| 外部服务 5xx/超时 | — | 指数退避重试；达上限标记 `failed`，发件箱保留积压待配置后 flush |
-| webhook 无密钥/签名错 | — | 一律拒绝（401/503），不允许裸奔入口 |
-| 重复入站消息 | — | `UNIQUE` 去重，防重放 |
-| 并发锁号 | 文件覆盖，可能超卖 | 事务 + 条件更新 + 唯一索引，天然防超卖 |
+| 场景                  | 旧行为                           | 新行为                                                          |
+| --------------------- | -------------------------------- | --------------------------------------------------------------- |
+| 知识库无数据          | 返回内置 `PROJECT_CORPUS` 假语料 | 返回 `found:false` + 建议面诊（**无假数据**）                   |
+| 号源已满/不存在       | 仍返回 `ok:true`（**假成功**）   | 抛 `NOT_FOUND`/`CONFLICT`，工具据实回灌模型                     |
+| CRM 未配置            | 静默跳过，假装已同步             | 线索落本地库，同步状态 `disabled`，如实告知                     |
+| 外部服务 5xx/超时     | —                                | 指数退避重试；达上限标记 `failed`，发件箱保留积压待配置后 flush |
+| webhook 无密钥/签名错 | —                                | 一律拒绝（401/503），不允许裸奔入口                             |
+| 重复入站消息          | —                                | `UNIQUE` 去重，防重放                                           |
+| 并发锁号              | 文件覆盖，可能超卖               | 事务 + 条件更新 + 唯一索引，天然防超卖                          |
 
 ---
 

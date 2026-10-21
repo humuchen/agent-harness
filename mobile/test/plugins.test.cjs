@@ -64,6 +64,10 @@ function makePrefsMock() {
     async clear() {
       store.clear();
     },
+    // P1 误清凭据修复后 clear() 走 keys() 按前缀删，mock 需提供 keys()。
+    async keys() {
+      return { value: [...store.keys()] };
+    },
     _store: store,
   };
 }

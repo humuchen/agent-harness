@@ -41,6 +41,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^9.39.4",
+    "tsrs": "^0.18.0-ts7.1.0-dev.20260929",
+    "typescript": "~6.0.3",
     "typescript-eslint": "^8.68.0"
   }
 }

@@ -1,14 +1,17 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "outDir": "dist",
     "rootDir": "src",
     "noUncheckedIndexedAccess": true,
     "declaration": true,
     "paths": {
-      "@agent-harness/core": ["../../backend/core/dist/index.d.ts"]
+      "@agent-harness/core": [
+        "../../backend/core/dist/index.d.ts"
+      ]
     }
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

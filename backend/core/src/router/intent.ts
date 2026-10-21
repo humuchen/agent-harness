@@ -341,7 +341,7 @@ export class IntentRouter {
   /** 小模型分类：构造受限 prompt，要求返回 JSON，解析失败抛错由调用方回退。 */
   private async classifyByLlm(prompt: string): Promise<Intent> {
     // 惰性加载 LLM 适配器（import 本身无网络；仅调用时联网）。
-    const { createOpenRouterLLM } = await import('../llm/openrouter');
+    const { createOpenRouterLLM } = await import('../llm/openrouter.js');
     const llm = createOpenRouterLLM();
     const sys =
       '你是任务路由器。把用户请求归类到行业领域与所需能力。仅输出 JSON：' +
