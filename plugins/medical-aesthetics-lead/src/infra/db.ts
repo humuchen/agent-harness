@@ -387,6 +387,24 @@ CREATE TABLE IF NOT EXISTS ma_order (
 CREATE INDEX IF NOT EXISTS ix_order_tenant      ON ma_order(tenant_id, lead_id);
 CREATE INDEX IF NOT EXISTS ix_order_tenant_proj ON ma_order(tenant_id, project);
 CREATE INDEX IF NOT EXISTS ix_order_paid        ON ma_order(tenant_id, paid_at);
+
+-- 键值元数据（调度节奏守卫 / 异常告警去重等）。单租户维度即可。
+CREATE TABLE IF NOT EXISTS ma_meta (
+  k          TEXT PRIMARY KEY,
+  v          TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 经营日报落库（P1-⑥ 日报定时化）：每日一份快照，供看板回溯与手动调取。
+CREATE TABLE IF NOT EXISTS ma_daily_report (
+  tenant_id    TEXT NOT NULL DEFAULT 'default',
+  report_date  TEXT NOT NULL,
+  markdown     TEXT NOT NULL,
+  metrics_json TEXT,
+  generated_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, report_date)
+);
+CREATE INDEX IF NOT EXISTS ix_daily_report_tenant ON ma_daily_report(tenant_id, report_date);
 `;
 
 /**
@@ -670,21 +688,8 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
     const conn = await getDb();
     const counts: Record<string, number> = {};
-    for (const t of [
-      'ma_lead',
-      'ma_project',
-      'ma_clinic',
-      'ma_slot',
-      'ma_appointment',
-      'ma_outbox',
-      'ma_inbound_message',
-      'ma_schedule_job',
-      'ma_content',
-      'ma_ab_experiment',
-      'ma_script',
-      'ma_case',
-      'ma_order',
-    ]) {
+    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report'];
+    for (const t of tables) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);
     }

@@ -7,6 +7,8 @@ import type {
 } from '../types';
 import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared';
 import { resolveOpenRouterConfig } from './config';
+import { resolveTierConfig, resolveTierModel } from './model-tier';
+import { structLog } from '../telemetry';
 
 export interface OpenRouterConfig {
   apiKey?: string;
@@ -22,6 +24,14 @@ export interface OpenRouterConfig {
   // 进行重试，某些免费/弱模型会间歇性返回空响应或撞上速率限制。
   // 默认重试 2 次。
   retries?: number;
+  /**
+   * P1-④ 模型分级路由：轻量模型标识（如 openai/gpt-4o-mini）。
+   * 配合 `modelTiering: 'auto'` 启用；仅在低风险步（工具结果合成 / 首轮极短问答）
+   * 降级到此模型，成本按实际 `resp.model` 记账。
+   */
+  lightModel?: string;
+  /** 模型分级路由总开关：'auto' 启用，'off'（默认）关闭。 */
+  modelTiering?: 'auto' | 'off';
 }
 
 /**
@@ -50,6 +60,8 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
     fetchImpl,
     retries
   } = resolveOpenRouterConfig(config);
+  // 模型分级路由配置（在闭包创建时解析一次；运行期不读 env）。
+  const tierCfg = resolveTierConfig(config);
 
   return async function openRouterLLM(
     messages: Message[],
@@ -66,11 +78,25 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       messages: messages.map(toOpenAIMessage)
     };
 
+    // 模型分级路由：仅在「单模型」模式下生效（`models` 降级数组由上游控制，
+    // 不参与 tiers）。合成步 / 首轮短问答降级到轻量模型，其余保持高阶。
+    let effectiveModel = model;
+    if (!(models && models.length > 0) && tierCfg.enabled && tierCfg.lightModel) {
+      const tier = resolveTierModel({ messages, tools, model, cfg: tierCfg });
+      effectiveModel = tier.model;
+      structLog('info', 'model tier route', {
+        tier: tier.tier,
+        model: effectiveModel,
+        reason: tier.reason,
+        promptChars: tier.promptChars
+      });
+    }
+
     // OpenRouter 支持单个 `model` 或 `models` 降级列表。
     if (models && models.length > 0) {
       body.models = models;
     } else {
-      body.model = model;
+      body.model = effectiveModel;
     }
 
     if (tools && tools.length > 0) {
@@ -126,7 +152,7 @@ export function createOpenRouterLLM(config: OpenRouterConfig = {}): LLM {
       body,
       fetchImpl,
       retries,
-      modelLabel: model,
+      modelLabel: effectiveModel,
       signal: options?.signal,
       // P1-10 熔断器透传（修复）：LLMCallOptions.circuitBreaker 此前被静默丢弃，
       // 熔断器在真实调用链上从未生效（含非流式路径）。现透传给 callOpenAIChat，

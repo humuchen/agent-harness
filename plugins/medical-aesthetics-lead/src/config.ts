@@ -93,6 +93,20 @@ export interface MaConfig {
     postOpEnabled: boolean;
     /** 术后关怀节点（天）：到店后第 N 天触达，默认 [1,7,30]（D+1 关怀 / D+7 恢复跟进 / D+30 复购培育）。 */
     postOpDays: number[];
+    /** 经营日报定时生成（P1-⑥）：每日首次 tick 生成并落库一份运营日报。 */
+    dailyReportEnabled: boolean;
+    /** 业务异常预警（P1-⑥）：阈值越界时经 events.emit 告警，接入 Webhook/日志 sink。 */
+    anomalyEnabled: boolean;
+    /** 异常告警冷却时长（ms）：同规则两次告警最小间隔，避免刷屏。 */
+    anomalyCooldownMs: number;
+    /** 异常阈值：到院率下限（arrived / 新增线索，低于则告警）。 */
+    arrivalRateMin: number;
+    /** 异常阈值：成交率下限（deal / 到院，低于则告警）。 */
+    dealRateMin: number;
+    /** 异常阈值：复购率下限（低于则告警）。 */
+    repurchaseRateMin: number;
+    /** 异常阈值：新增线索日环比跌幅（%，如 60 表示日环比跌超 60% 告警）。 */
+    newLeadDropPct: number;
   };
   /** 入站消息触发 agent 的 A2A 入口（平台自身 /api/a2a/tasks）。 */
   a2a: { baseUrl: string; timeoutMs: number };
@@ -104,6 +118,14 @@ function int(name: string, fallback: number): number {
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** 解析浮点 env（阈值用），非法/缺省时回退。 */
+function num(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 /** 解析逗号分隔的天数列表（术后关怀节点），非法值过滤，至少保留一个正天。 */
@@ -213,6 +235,13 @@ export function getConfig(): MaConfig {
       welcomeWindowHours: int('MA_SCHEDULER_WELCOME_WINDOW_H', 24),
       postOpEnabled: process.env.MA_SCHEDULER_POST_OP !== 'false',
       postOpDays: postOpDays([1, 7, 30]),
+      dailyReportEnabled: process.env.MA_DAILY_REPORT !== 'false',
+      anomalyEnabled: process.env.MA_ANOMALY !== 'false',
+      anomalyCooldownMs: int('MA_ANOMALY_COOLDOWN_MS', 6 * 3600 * 1000),
+      arrivalRateMin: num('MA_ALERT_ARRIVAL_RATE_MIN', 0.15),
+      dealRateMin: num('MA_ALERT_DEAL_RATE_MIN', 0.2),
+      repurchaseRateMin: num('MA_ALERT_REPURCHASE_RATE_MIN', 0.1),
+      newLeadDropPct: num('MA_ALERT_NEWLEAD_DROP_PCT', 60),
     },
     a2a: {
       baseUrl: (process.env.MA_A2A_BASE_URL ?? process.env.AGENT_A2A_BASE_URL ?? '')
@@ -250,6 +279,15 @@ export function configSummary(): Record<string, unknown> {
       recall: { enabled: c.scheduler.recallEnabled, firstHours: c.scheduler.recallFirstHours, secondHours: c.scheduler.recallSecondHours },
       welcome: { enabled: c.scheduler.welcomeEnabled, windowHours: c.scheduler.welcomeWindowHours },
       postOp: { enabled: c.scheduler.postOpEnabled, days: c.scheduler.postOpDays },
+      dailyReport: { enabled: c.scheduler.dailyReportEnabled },
+      anomaly: {
+        enabled: c.scheduler.anomalyEnabled,
+        cooldownMs: c.scheduler.anomalyCooldownMs,
+        arrivalRateMin: c.scheduler.arrivalRateMin,
+        dealRateMin: c.scheduler.dealRateMin,
+        repurchaseRateMin: c.scheduler.repurchaseRateMin,
+        newLeadDropPct: c.scheduler.newLeadDropPct,
+      },
     },
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
   };

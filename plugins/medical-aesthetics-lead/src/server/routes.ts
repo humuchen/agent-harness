@@ -14,6 +14,7 @@ import { makeTaskId } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
+import { latestDailyReport } from '../services/report-service';
 import {
   contentSnapshot,
   generateTemplateContent,
@@ -523,6 +524,19 @@ const schedulerRoute: PluginRouteHandler = async (req, res) => {
   }
 };
 
+/** GET /report —— 最新经营日报（P1-⑥ 日报定时化；看板回溯入口）。 */
+const reportRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    const r = await latestDailyReport();
+    if (!r) return send(res, 404, { error: 'no daily report yet' });
+    send(res, 200, r);
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /** POST /scheduler/tick —— 手动触发一轮「规划 + 消费」（需管理令牌；后台循环之外的对账入口）。 */
 const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
@@ -848,6 +862,7 @@ export const leadServerExtension: ServerExtension = {
     '/scheduler': schedulerRoute,
     '/scheduler/tick': schedulerTickRoute,
     '/scheduler/jobs': schedulerJobRoute,
+    '/report': reportRoute,
     '/content': contentList,
     '/content/generate': contentGenerate,
     '/content/draft': contentDraft,

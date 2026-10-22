@@ -32,6 +32,7 @@ import {
 import { enqueue } from '../repo/outbox-repo';
 import { buildWelcomeText, buildRecallText, buildPostOpText } from './outreach-templates';
 import { resolveAbText, withRiskHint } from './ab-service';
+import { generateDailyReport, scanAnomalies, metaGet, metaSet } from './report-service';
 import { medicalAdRules } from '@agent-harness/medical-ad-guard';
 
 let timer: NodeJS.Timeout | null = null;
@@ -399,11 +400,32 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
   await markJobFinished(job.id, 'done');
 }
 
-/** 单轮调度：规划 + 消费。手动触发（/scheduler/tick）与后台循环共用。 */
-export async function schedulerTick(): Promise<{ plan: PlanResult; run: RunResult }> {
+/**
+ * 单轮调度：规划 + 消费 + 日报/异常（P1-⑥）。
+ * 手动触发（/scheduler/tick）与后台循环共用。日报与异常各自幂等/冷却去重，
+ * 可安全每轮调用；异常扫描额外按 ~15min 节流，避免高频跑全量聚合。
+ */
+export async function schedulerTick(): Promise<{ plan: PlanResult; run: RunResult; report: unknown; anomalies: unknown }> {
   const plan = await planSopJobs();
   const run = await runDueJobs();
-  return { plan, run };
+
+  const cfg = getConfig().scheduler;
+  let report: unknown = null;
+  let anomalies: unknown = null;
+  try {
+    if (cfg.dailyReportEnabled) report = await generateDailyReport();
+    if (cfg.anomalyEnabled) {
+      const lastScan = Number((await metaGet('scheduler:last_anomaly_scan')) ?? 0);
+      const scanInterval = Math.max(cfg.anomalyCooldownMs / 4, 15 * 60 * 1000);
+      if (Date.now() - lastScan >= scanInterval) {
+        await metaSet('scheduler:last_anomaly_scan', String(Date.now()));
+        anomalies = await scanAnomalies();
+      }
+    }
+  } catch {
+    /* 日报/异常不应影响 SOP 主流程 */
+  }
+  return { plan, run, report, anomalies };
 }
 
 /** 启动后台调度（幂等；unref 不阻塞进程退出）。 */
