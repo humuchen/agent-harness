@@ -74,6 +74,17 @@ export interface MaConfig {
   outbox: { enabled: boolean; intervalMs: number; maxAttempts: number; batchSize: number };
   /** 渠道触达网关（对客主动消息出站：回捞/欢迎/生日/复购提醒）。未配置时消息积压 pending，绝不假装已发送。 */
   outreach: UpstreamConfig;
+  /**
+   * 广告投放平台（P1-⑨）：拉取消耗与转化，计算真实 ROI。
+   * 未配置（baseUrl 为空）时 fail-closed：ROI 分析的 spendConnected=false、roi=null，绝不虚构；
+   * 此路径下仍可经 POST /ad-spend/import 手动导入消耗（source=import）。
+   */
+  adPlatform: UpstreamConfig & {
+    /** 平台标识（oceanengine=巨量引擎 / tencentads=腾讯广告 / generic=任意兼容端点）。 */
+    platform: string;
+    /** 广告主 ID（平台侧账号标识，随请求带上）。 */
+    advertiserId: string;
+  };
   /** 定时调度器（B3）：SOP 任务规划 + 到期任务消费。 */
   scheduler: {
     enabled: boolean;
@@ -224,6 +235,11 @@ export function getConfig(): MaConfig {
       batchSize: int('MA_OUTBOX_BATCH_SIZE', 20),
     },
     outreach: upstream('MA_OUTREACH'),
+    adPlatform: {
+      ...upstream('MA_AD_PLATFORM'),
+      platform: (process.env.MA_AD_PLATFORM_KIND ?? 'generic').trim() || 'generic',
+      advertiserId: (process.env.MA_AD_PLATFORM_ADVERTISER_ID ?? '').trim(),
+    },
     scheduler: {
       enabled: process.env.MA_SCHEDULER_ENABLED !== 'false',
       intervalMs: int('MA_SCHEDULER_INTERVAL_MS', 60000),
@@ -273,6 +289,13 @@ export function configSummary(): Record<string, unknown> {
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,
     outreach: { enabled: c.outreach.enabled, baseUrl: c.outreach.baseUrl || null, hasToken: c.outreach.token.length > 0 },
+    adPlatform: {
+      enabled: c.adPlatform.enabled,
+      kind: c.adPlatform.platform,
+      baseUrl: c.adPlatform.baseUrl || null,
+      hasToken: c.adPlatform.token.length > 0,
+      hasAdvertiserId: c.adPlatform.advertiserId.length > 0,
+    },
     scheduler: {
       enabled: c.scheduler.enabled,
       intervalMs: c.scheduler.intervalMs,

@@ -136,8 +136,9 @@ export interface RepurchaseAnalysis {
 
 /**
  * ROI 分析（P1-⑧/⑨）。
- * 当前成交金额来自 ma_order（已落地）；广告花费需投放平台接入（P1-⑨）后方可计算真实 ROI。
- * 在花费未接入前，roi 字段为 null 且 spendConnected=false，绝不虚构 ROI 数值（fail-closed 纪律）。
+ * 成交金额来自 ma_order；广告花费来自 ma_ad_spend（P1-⑨ 落地：可经投放平台 API 拉取或
+ * POST /ad-spend/import 手动导入）。在花费无数据时 roi/cpl 为 null 且 spendConnected=false，
+ * 绝不虚构 ROI 数值（fail-closed 纪律）。
  */
 export interface RoiAnalysis {
   /** 总成交金额（paid）。 */
@@ -145,11 +146,17 @@ export interface RoiAnalysis {
   orderCount: number;
   /** 复购率（%）。 */
   repurchaseRate: number;
-  /** 广告花费是否已接入（默认 false，待 P1-⑨ 投放平台对接）。 */
+  /** 是否有广告花费数据（true 时 adSpend/roi/cpl 为真实值）。 */
   spendConnected: boolean;
-  /** 广告花费（元）。未接入为 null。 */
+  /** 广告花费（元）。无数据为 null。 */
   adSpend: number | null;
-  /** ROI = 总成交金额 / 广告花费。未接入为 null。 */
+  /** ROI = 总成交金额 / 广告花费。无花费数据为 null。 */
   roi: number | null;
+  /** 单条留资成本 = 广告花费 / 转化数（元）。无花费或无转化为 null。 */
+  cpl: number | null;
+  /** 花费侧曝光/点击/转化合计（无数据时全 0）。 */
+  spendMetrics: { impressions: number; clicks: number; conversions: number };
+  /** 分渠道花费与转化（无数据时空数组）。 */
+  byChannel: Array<{ channel: string; spend: number; clicks: number; conversions: number }>;
   note: string;
 }

@@ -104,12 +104,12 @@ describe('模板生成（知识库驱动）', () => {
   test('同日批量幂等：全平台生成 → 重复调用 generated=0', async () => {
     seedProject('p-ultra', '超声炮');
     const r1 = await generateTemplateContent();
-    assert.equal(r1.generated, 3, '缺省应覆盖三平台各一条');
-    assert.equal(new Set(r1.contentIds).size, 3, 'contentIds 不应重复');
+    assert.equal(r1.generated, 4, '缺省应覆盖四平台（xiaohongshu/douyin/livestream/video_script）各一条');
+    assert.equal(new Set(r1.contentIds).size, 4, 'contentIds 不应重复');
     const r2 = await generateTemplateContent();
     assert.equal(r2.generated, 0, '同日同项目同平台应幂等去重');
     const all = await listContent({ state: 'review' });
-    assert.equal(all.length, 3);
+    assert.equal(all.length, 4);
   });
 
   test('指定项目名不存在 → NOT_FOUND', async () => {

@@ -15,6 +15,7 @@ import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
 import { latestDailyReport } from '../services/report-service';
+import { upsertAdSpend, listAdSpend, adSpendStats } from '../repo/ad-spend-repo';
 import {
   contentSnapshot,
   generateTemplateContent,
@@ -284,6 +285,64 @@ const slotImport: PluginRouteHandler = async (req, res) => {
       n += 1;
     }
     send(res, 200, { ok: true, imported: n });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /ad-spend/import —— 导入广告投放消耗（需管理令牌；P1-⑨ 无 API 资质时的手动路径）。
+ * body: { items: [{ spendDate:'YYYY-MM-DD', channel, campaignId, campaignName?, spend,
+ *                   impressions?, clicks?, conversions? }] }
+ * 同日同渠道同计划重复导入幂等覆盖；spend 为负或日期格式非法 → 400（fail-fast，脏数据不进 ROI 分母）。
+ */
+const adSpendImport: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const { json } = await readRawBody(req);
+  const items = (Array.isArray(json.items) ? json.items : []) as Record<string, unknown>[];
+  if (!items.length) return send(res, 400, { error: 'items[] required' });
+  try {
+    const written = await upsertAdSpend(
+      items.map((s) => ({
+        spendDate: String(s.spendDate ?? s.date ?? ''),
+        channel: String(s.channel ?? ''),
+        campaignId: String(s.campaignId ?? s.campaign_id ?? ''),
+        campaignName: s.campaignName ? String(s.campaignName) : undefined,
+        spend: Number(s.spend ?? 0),
+        impressions: s.impressions != null ? Number(s.impressions) : undefined,
+        clicks: s.clicks != null ? Number(s.clicks) : undefined,
+        conversions: s.conversions != null ? Number(s.conversions) : undefined,
+        source: 'import',
+      }))
+    );
+    send(res, 200, { ok: true, imported: written });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /ad-spend —— 消耗明细 + 汇总（需管理令牌；经营数据）。 */
+const adSpendList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const channel = url.searchParams.get('channel') ?? undefined;
+    const [items, stats] = await Promise.all([listAdSpend({ channel }), adSpendStats()]);
+    send(res, 200, { items, stats });
   } catch (e) {
     const me = toMaError(e);
     send(res, me.httpStatus, me.toJSON());
@@ -863,6 +922,8 @@ export const leadServerExtension: ServerExtension = {
     '/scheduler/tick': schedulerTickRoute,
     '/scheduler/jobs': schedulerJobRoute,
     '/report': reportRoute,
+    '/ad-spend': adSpendList,
+    '/ad-spend/import': adSpendImport,
     '/content': contentList,
     '/content/generate': contentGenerate,
     '/content/draft': contentDraft,

@@ -21,7 +21,7 @@ export function registerContentTool(tools: ToolRegistry): void {
         platform: {
           type: 'string',
           enum: [...CONTENT_PLATFORMS],
-          description: '目标平台：xiaohongshu / douyin / livestream',
+          description: '目标平台：xiaohongshu / douyin / livestream / video_script(短视频分镜脚本)',
         },
         title: { type: 'string', description: '内容标题（不含疗效承诺与绝对化用语）' },
         body: { type: 'string', description: '内容正文（科普向，事实仅来自知识库）' },

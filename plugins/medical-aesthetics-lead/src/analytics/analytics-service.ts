@@ -9,6 +9,7 @@ import { getDb, dbCall } from '../infra/db';
 import { getConfig } from '../config';
 import { STAGE_ORDER } from '../repo/types';
 import { orderStats } from '../repo/order-repo';
+import { adSpendStats } from '../repo/ad-spend-repo';
 import type {
   AnalyticsQuery, AnalyticsResult, AnalyticsFullResult,
   FunnelAnalysis, ChannelPerformance, ClinicPerformance,
@@ -476,21 +477,39 @@ export async function repurchaseAnalysis(q: AnalyticsQuery): Promise<RepurchaseA
 // ─── ROI 分析（P1-⑧/⑨） ─────────────────────────────────────────────
 
 /**
- * ROI 分析：成交金额来自 ma_order（已落地）。
- * 广告花费需投放平台接入（P1-⑨）后方可计算；在花费未接入前 roi=null、spendConnected=false，
- * 绝不虚构 ROI 数值（与全插件 fail-closed 纪律一致）。
+ * ROI 分析（P1-⑧/⑨）：成交金额来自 ma_order，广告花费来自 ma_ad_spend。
+ * 无花费数据时 spendConnected=false、adSpend/roi/cpl 全为 null，绝不虚构（fail-closed）。
+ * 花费可经投放平台 API 拉取（services/ad-client.ts）或 POST /ad-spend/import 手动导入。
  */
 export async function roiAnalysis(q: AnalyticsQuery): Promise<RoiAnalysis> {
   return await dbCall(async () => {
-    const stats = await orderStats(q.startTime, q.endTime);
+    const [stats, spend] = await Promise.all([
+      orderStats(q.startTime, q.endTime),
+      adSpendStats(q.startTime, q.endTime),
+    ]);
+    const hasSpend = spend.rowCount > 0 && spend.totalSpend > 0;
+    const roi = hasSpend ? Math.round((stats.totalRevenue / spend.totalSpend) * 100) / 100 : null;
+    const cpl =
+      hasSpend && spend.conversions > 0
+        ? Math.round((spend.totalSpend / spend.conversions) * 100) / 100
+        : null;
     return {
       totalRevenue: stats.totalRevenue,
       orderCount: stats.orderCount,
       repurchaseRate: stats.repurchaseRate,
-      spendConnected: false,
-      adSpend: null,
-      roi: null,
-      note: '广告花费尚未接入（P1-⑨ 投放平台对接后计算真实 ROI）；当前仅返回成交金额与复购率。',
+      spendConnected: hasSpend,
+      adSpend: hasSpend ? spend.totalSpend : null,
+      roi,
+      cpl,
+      spendMetrics: {
+        impressions: spend.impressions,
+        clicks: spend.clicks,
+        conversions: spend.conversions,
+      },
+      byChannel: spend.byChannel,
+      note: hasSpend
+        ? 'ROI = 成交金额 / 广告花费（花费来自 ma_ad_spend，可经投放平台 API 或手动导入）。'
+        : '暂无广告花费数据（ma_ad_spend 为空）：可经投放平台 API 拉取或 POST /ad-spend/import 导入；当前仅返回成交金额与复购率，不虚构 ROI。',
     };
   }, 'ROI 分析');
 }

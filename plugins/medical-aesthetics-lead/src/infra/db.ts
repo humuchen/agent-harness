@@ -405,6 +405,29 @@ CREATE TABLE IF NOT EXISTS ma_daily_report (
   PRIMARY KEY (tenant_id, report_date)
 );
 CREATE INDEX IF NOT EXISTS ix_daily_report_tenant ON ma_daily_report(tenant_id, report_date);
+
+-- 广告投放消耗（P1-⑨ ROI 数据底座的另一端）：按日 × 渠道 × 计划记录花费与转化。
+-- 数据可来自投放平台 API 拉取，或运营经 /ad-spend/import 手动导入（无 API 资质时的诚实路径）。
+-- UNIQUE(tenant_id, spend_date, channel, campaign_id) 保证同日同计划重复导入幂等。
+CREATE TABLE IF NOT EXISTS ma_ad_spend (
+  spend_id     TEXT PRIMARY KEY,
+  tenant_id    TEXT NOT NULL DEFAULT 'default',
+  spend_date   TEXT NOT NULL,
+  channel      TEXT NOT NULL,
+  campaign_id  TEXT NOT NULL,
+  campaign_name TEXT,
+  spend        REAL NOT NULL DEFAULT 0,
+  currency     TEXT NOT NULL DEFAULT 'CNY',
+  impressions  INTEGER NOT NULL DEFAULT 0,
+  clicks       INTEGER NOT NULL DEFAULT 0,
+  conversions  INTEGER NOT NULL DEFAULT 0,
+  source       TEXT NOT NULL DEFAULT 'import',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_ad_spend_natural ON ma_ad_spend(tenant_id, spend_date, channel, campaign_id);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_date ON ma_ad_spend(tenant_id, spend_date);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_channel ON ma_ad_spend(tenant_id, channel, spend_date);
 `;
 
 /**
@@ -688,7 +711,7 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
     const conn = await getDb();
     const counts: Record<string, number> = {};
-    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report'];
+    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report', 'ma_ad_spend'];
     for (const t of tables) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);
