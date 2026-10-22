@@ -428,6 +428,28 @@ CREATE TABLE IF NOT EXISTS ma_ad_spend (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_ad_spend_natural ON ma_ad_spend(tenant_id, spend_date, channel, campaign_id);
 CREATE INDEX IF NOT EXISTS ix_ad_spend_date ON ma_ad_spend(tenant_id, spend_date);
 CREATE INDEX IF NOT EXISTS ix_ad_spend_channel ON ma_ad_spend(tenant_id, channel, spend_date);
+
+-- 策略建议（P2 自动策略闭环）：规则引擎基于日报真实指标产出「可执行建议」，
+-- 落库待人工确认（approved 才可执行）；**引擎只建议、不自动执行**，人工是硬闸门。
+-- suggestion_id = sug_{rule}_{YYYY-MM-DD}：同规则当天幂等，避免每日重复刷屏。
+CREATE TABLE IF NOT EXISTS ma_strategy_suggestion (
+  suggestion_id TEXT PRIMARY KEY,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  rule          TEXT NOT NULL,
+  severity      TEXT NOT NULL DEFAULT 'warn',
+  title         TEXT NOT NULL,
+  detail        TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  evidence_json TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  review_reason TEXT,
+  reviewed_by   TEXT,
+  reviewed_at   INTEGER,
+  executed_at   INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_suggestion_status ON ma_strategy_suggestion(tenant_id, status, created_at DESC);
 `;
 
 /**
@@ -711,7 +733,7 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
     const conn = await getDb();
     const counts: Record<string, number> = {};
-    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report', 'ma_ad_spend'];
+    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report', 'ma_ad_spend', 'ma_strategy_suggestion'];
     for (const t of tables) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);

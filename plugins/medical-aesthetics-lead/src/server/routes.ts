@@ -16,6 +16,7 @@ import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
 import { latestDailyReport } from '../services/report-service';
 import { upsertAdSpend, listAdSpend, adSpendStats } from '../repo/ad-spend-repo';
+import { suggestionSnapshot, reviewSuggestion, markSuggestionExecuted } from '../services/strategy-service';
 import {
   contentSnapshot,
   generateTemplateContent,
@@ -596,6 +597,67 @@ const reportRoute: PluginRouteHandler = async (req, res) => {
   }
 };
 
+/** GET /strategy —— 策略建议列表（P2 自动策略闭环；看板用）。 */
+const strategyList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const status = url.searchParams.get('status') ?? undefined;
+    const snap = await suggestionSnapshot();
+    const items = status ? snap.items.filter((s) => s.status === status) : snap.items;
+    send(res, 200, { counts: snap.counts, items });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /strategy/review —— 人工确认策略建议（需管理令牌；P2 硬闸门）。
+ * body: { suggestionId, decision: 'approved'|'rejected', operator, reason? }
+ * rejected 必须给原因；仅 pending 可确认。
+ */
+const strategyReview: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const suggestionId = String(json.suggestionId ?? '');
+  if (!suggestionId) return send(res, 400, { error: 'suggestionId required' });
+  const decision = json.decision === 'approved' ? 'approved' : json.decision === 'rejected' ? 'rejected' : null;
+  if (!decision) return send(res, 400, { error: "decision must be 'approved' or 'rejected'" });
+  try {
+    const s = await reviewSuggestion(
+      suggestionId,
+      decision,
+      json.operator ? String(json.operator) : 'operator',
+      json.reason ? String(json.reason) : undefined
+    );
+    send(res, 200, { ok: true, suggestion: s });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /strategy/execute —— 标记建议已执行（需管理令牌）。
+ * 仅 approved 可执行——人工确认是不可绕过的闸门。
+ */
+const strategyExecute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const suggestionId = String(json.suggestionId ?? '');
+  if (!suggestionId) return send(res, 400, { error: 'suggestionId required' });
+  try {
+    const s = await markSuggestionExecuted(suggestionId);
+    send(res, 200, { ok: true, suggestion: s });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /** POST /scheduler/tick —— 手动触发一轮「规划 + 消费」（需管理令牌；后台循环之外的对账入口）。 */
 const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
@@ -924,6 +986,9 @@ export const leadServerExtension: ServerExtension = {
     '/report': reportRoute,
     '/ad-spend': adSpendList,
     '/ad-spend/import': adSpendImport,
+    '/strategy': strategyList,
+    '/strategy/review': strategyReview,
+    '/strategy/execute': strategyExecute,
     '/content': contentList,
     '/content/generate': contentGenerate,
     '/content/draft': contentDraft,

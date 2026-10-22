@@ -33,6 +33,8 @@ import { enqueue } from '../repo/outbox-repo';
 import { buildWelcomeText, buildRecallText, buildPostOpText } from './outreach-templates';
 import { resolveAbText, withRiskHint } from './ab-service';
 import { generateDailyReport, scanAnomalies, metaGet, metaSet } from './report-service';
+import { pullAdSpend } from './ad-client';
+import { generateStrategySuggestions } from './strategy-service';
 import { medicalAdRules } from '@agent-harness/medical-ad-guard';
 
 let timer: NodeJS.Timeout | null = null;
@@ -401,17 +403,26 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
 }
 
 /**
- * 单轮调度：规划 + 消费 + 日报/异常（P1-⑥）。
- * 手动触发（/scheduler/tick）与后台循环共用。日报与异常各自幂等/冷却去重，
+ * 单轮调度：规划 + 消费 + 日报/异常/策略建议（P1-⑥ + P2）。
+ * 手动触发（/scheduler/tick）与后台循环共用。日报、异常、策略建议各自幂等/冷却去重，
  * 可安全每轮调用；异常扫描额外按 ~15min 节流，避免高频跑全量聚合。
  */
-export async function schedulerTick(): Promise<{ plan: PlanResult; run: RunResult; report: unknown; anomalies: unknown }> {
+export async function schedulerTick(): Promise<{
+  plan: PlanResult;
+  run: RunResult;
+  report: unknown;
+  anomalies: unknown;
+  adSpendPull: unknown;
+  suggestions: unknown;
+}> {
   const plan = await planSopJobs();
   const run = await runDueJobs();
 
   const cfg = getConfig().scheduler;
   let report: unknown = null;
   let anomalies: unknown = null;
+  let adSpendPull: unknown = null;
+  let suggestions: unknown = null;
   try {
     if (cfg.dailyReportEnabled) report = await generateDailyReport();
     if (cfg.anomalyEnabled) {
@@ -422,10 +433,24 @@ export async function schedulerTick(): Promise<{ plan: PlanResult; run: RunResul
         anomalies = await scanAnomalies();
       }
     }
+    // 广告消耗定时拉取（P1-⑨）：每日一次，拉昨日区间；平台未配置时静默跳过。
+    if (cfg.adSpendPullEnabled) {
+      const lastPull = Number((await metaGet('scheduler:last_ad_spend_pull')) ?? 0);
+      if (Date.now() - lastPull >= 20 * 3600 * 1000) {
+        await metaSet('scheduler:last_ad_spend_pull', String(Date.now()));
+        const yest = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+        const today = new Date().toISOString().slice(0, 10);
+        adSpendPull = await pullAdSpend(yest, today);
+      }
+    }
+    // 策略建议（P2）：日报生成后基于真实指标出规则式建议（当天幂等）。
+    if (cfg.suggestionEnabled) {
+      suggestions = await generateStrategySuggestions();
+    }
   } catch {
-    /* 日报/异常不应影响 SOP 主流程 */
+    /* 日报/异常/拉取/建议不应影响 SOP 主流程 */
   }
-  return { plan, run, report, anomalies };
+  return { plan, run, report, anomalies, adSpendPull, suggestions };
 }
 
 /** 启动后台调度（幂等；unref 不阻塞进程退出）。 */

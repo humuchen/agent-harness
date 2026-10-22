@@ -106,6 +106,16 @@ export interface MaConfig {
     postOpDays: number[];
     /** 经营日报定时生成（P1-⑥）：每日首次 tick 生成并落库一份运营日报。 */
     dailyReportEnabled: boolean;
+    /**
+     * 广告消耗定时拉取（P1-⑨）：每日首次 tick 经投放平台 API 拉取昨日消耗并落库。
+     * 平台未配置时静默跳过（pullAdSpend 返回 pulled=false），不影响其它调度。
+     */
+    adSpendPullEnabled: boolean;
+    /**
+     * 策略建议生成（P2 自动策略闭环）：基于日报真实指标按规则产出可执行建议，
+     * 落库待人工确认；**不自动执行**任何动作（人工确认是硬闸门）。
+     */
+    suggestionEnabled: boolean;
     /** 业务异常预警（P1-⑥）：阈值越界时经 events.emit 告警，接入 Webhook/日志 sink。 */
     anomalyEnabled: boolean;
     /** 异常告警冷却时长（ms）：同规则两次告警最小间隔，避免刷屏。 */
@@ -252,6 +262,8 @@ export function getConfig(): MaConfig {
       postOpEnabled: process.env.MA_SCHEDULER_POST_OP !== 'false',
       postOpDays: postOpDays([1, 7, 30]),
       dailyReportEnabled: process.env.MA_DAILY_REPORT !== 'false',
+      adSpendPullEnabled: process.env.MA_AD_SPEND_PULL !== 'false',
+      suggestionEnabled: process.env.MA_STRATEGY_SUGGESTION !== 'false',
       anomalyEnabled: process.env.MA_ANOMALY !== 'false',
       anomalyCooldownMs: int('MA_ANOMALY_COOLDOWN_MS', 6 * 3600 * 1000),
       arrivalRateMin: num('MA_ALERT_ARRIVAL_RATE_MIN', 0.15),
@@ -303,6 +315,8 @@ export function configSummary(): Record<string, unknown> {
       welcome: { enabled: c.scheduler.welcomeEnabled, windowHours: c.scheduler.welcomeWindowHours },
       postOp: { enabled: c.scheduler.postOpEnabled, days: c.scheduler.postOpDays },
       dailyReport: { enabled: c.scheduler.dailyReportEnabled },
+      adSpendPull: { enabled: c.scheduler.adSpendPullEnabled },
+      suggestion: { enabled: c.scheduler.suggestionEnabled },
       anomaly: {
         enabled: c.scheduler.anomalyEnabled,
         cooldownMs: c.scheduler.anomalyCooldownMs,
