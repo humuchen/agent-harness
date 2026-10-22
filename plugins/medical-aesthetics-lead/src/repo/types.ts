@@ -60,10 +60,26 @@ export interface LeadRecord {
   crmId?: string;
   crmSyncState: CrmSyncState;
   crmSyncedAt?: number;
+  /** 客户偏好记忆（P1-⑧ 数据闭环）：沟通渠道偏好 / 项目偏好 / 价格敏感度。 */
+  preferences?: LeadPreferences;
   createdAt: number;
   updatedAt: number;
   /** 关联对话消息（仅明细查询时装载）。 */
   messages?: { role: string; text: string; t: number }[];
+}
+
+/**
+ * 客户偏好记忆（P1-⑧）。
+ * - channel：沟通渠道偏好（wecom/sms/phone）。
+ * - projects：项目偏好列表（projectId）。
+ * - priceSensitivity：价格敏感度 low/mid/high。
+ * - notes：自由备注（咨询师填写，非 PII）。
+ */
+export interface LeadPreferences {
+  channel?: string;
+  projects?: string[];
+  priceSensitivity?: 'low' | 'mid' | 'high';
+  notes?: string;
 }
 
 /** 可更新的线索字段（补丁式 upsert）。 */
@@ -92,6 +108,7 @@ export type LeadPatch = Partial<
     | 'crmId'
     | 'crmSyncState'
     | 'crmSyncedAt'
+    | 'preferences'
   >
 >;
 
@@ -214,4 +231,91 @@ export interface AppointmentRecord {
   completedAt?: number;
   updatedAt: number;
   createdAt: number;
+}
+
+/**
+ * 话术条目（话术库：场景化接待 / 异议应对话术，合规状态内建）。
+ * 三层知识库（话术库 · 案例库 · 项目知识）中缺失的两层之一（P1-⑤）。
+ */
+export interface ScriptRecord {
+  scriptId: string;
+  tenantId: string;
+  /** 场景：welcome（欢迎接待）/ price_objection（价格异议）/ effect_concern（效果担忧）/ arrival_guide（到院引导）/ post_op（术后关怀）/ generic（通用）。 */
+  scene: string;
+  /** 适用客户等级（A/B/C/D；空=通用）。 */
+  grade?: LeadGrade;
+  /** 适用项目（projectId；空=通用）。 */
+  project?: string;
+  /** 话术标题。 */
+  title: string;
+  /** 话术正文（合规表述，不含疗效承诺 / 术前术后对比 / 固定价）。 */
+  body: string;
+  /** 对外合规版本（去疗效承诺，对客优先返回）。 */
+  compliantCopy?: string;
+  /** 是否已过合规复核。未过审对客不返回疗效类表述。 */
+  complianceReviewed: boolean;
+  /** 是否启用（软删）。 */
+  active: boolean;
+  updatedAt: number;
+}
+
+/**
+ * 案例条目（案例库：脱敏真实成交 / 咨询案例，强制脱敏字段）。
+ * 三层知识库缺失的两层之一（P1-⑤）。入库强制 masked=true，绝不含姓名 / 电话 / 院区精确追溯。
+ */
+export interface CaseRecord {
+  caseId: string;
+  tenantId: string;
+  /** 关联项目（projectId）。 */
+  project?: string;
+  /** 项目分类。 */
+  category?: string;
+  /** 诉求意图。 */
+  intent?: string;
+  /** 脱敏后的案例概述（不含 PII）。 */
+  summary: string;
+  /** 客户诉求（脱敏）。 */
+  concern?: string;
+  /** 方案思路（科普级，无疗效承诺 / 诊断）。 */
+  approach?: string;
+  /** 结果备注（脱敏，如「已完成面诊并制定方案」）。 */
+  outcomeNote?: string;
+  /** 是否已脱敏（入库强制 true；外发前再校验一次）。 */
+  masked: boolean;
+  /** 内部引用（如订单 / 线索 ID，仅内部用，绝不外发）。 */
+  sourceRef?: string;
+  /** 标签（如 术后护理 / 升单 / 复诊）。 */
+  tags?: string[];
+  updatedAt: number;
+}
+
+/**
+ * 成交 / 消费订单（P1-⑧ 数据闭环：复购率与真实 ROI 的数据底座）。
+ * 原架构缺口：服务履历截至到店，无成交后消费 / 订单表，导致复购率与 ROI 无数据支撑。
+ */
+export interface OrderRecord {
+  orderId: string;
+  tenantId: string;
+  leadId: string;
+  /** 成交项目（projectId）。 */
+  project: string;
+  /** 项目分类。 */
+  category?: string;
+  /** 成交金额（按元存储）。 */
+  amount: number;
+  /** 币种（默认 CNY）。 */
+  currency: string;
+  /** 订单状态。 */
+  status: 'paid' | 'refunded' | 'partial';
+  /** 成交院区。 */
+  clinicId?: string;
+  clinicName?: string;
+  /** 成交咨询师。 */
+  consultant?: string;
+  /** 来源（SOP / 自然 / 转介绍 / 复购）。 */
+  source?: string;
+  /** 付款时间戳。 */
+  paidAt?: number;
+  createdAt: number;
+  updatedAt: number;
 }

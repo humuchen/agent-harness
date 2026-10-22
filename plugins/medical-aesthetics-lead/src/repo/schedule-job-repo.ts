@@ -12,7 +12,7 @@
 import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
 import { getConfig } from '../config';
 
-export type ScheduleJobType = 'welcome' | 'recall' | 'birthday' | 'repurchase';
+export type ScheduleJobType = 'welcome' | 'recall' | 'birthday' | 'repurchase' | 'post_op';
 export type ScheduleJobState = 'pending' | 'done' | 'skipped' | 'failed' | 'cancelled';
 
 export interface ScheduleJobRow {

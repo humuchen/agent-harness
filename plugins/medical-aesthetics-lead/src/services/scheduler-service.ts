@@ -30,7 +30,7 @@ import {
   type ScheduleJobRow,
 } from '../repo/schedule-job-repo';
 import { enqueue } from '../repo/outbox-repo';
-import { buildWelcomeText, buildRecallText } from './outreach-templates';
+import { buildWelcomeText, buildRecallText, buildPostOpText } from './outreach-templates';
 import { resolveAbText, withRiskHint } from './ab-service';
 import { medicalAdRules } from '@agent-harness/medical-ad-guard';
 
@@ -106,6 +106,8 @@ export interface PlanResult {
   welcome: number;
   recallFirst: number;
   recallSecond: number;
+  /** 术后关怀序列排期数（P1-⑦）。 */
+  postOp: number;
 }
 
 /**
@@ -115,7 +117,7 @@ export interface PlanResult {
  */
 export async function planSopJobs(now = Date.now()): Promise<PlanResult> {
   const cfg = getConfig().scheduler;
-  const out: PlanResult = { welcome: 0, recallFirst: 0, recallSecond: 0 };
+  const out: PlanResult = { welcome: 0, recallFirst: 0, recallSecond: 0, postOp: 0 };
 
   // 1) 欢迎语：近期新建、尚未进入需求挖掘的线索。
   if (cfg.welcomeEnabled) {
@@ -172,7 +174,76 @@ export async function planSopJobs(now = Date.now()): Promise<PlanResult> {
     }
   }
 
+  // 3) 术后关怀序列（P1-⑦）：到店/成交后自动关怀与复购培育。
+  if (cfg.postOpEnabled && cfg.postOpDays.length) {
+    out.postOp = await planPostOpJobs(now);
+  }
+
   return out;
+}
+
+/**
+ * 规划术后关怀序列（P1-⑦）：到店/成交客户在 D+{postOpDays} 的自动关怀与复购培育。
+ *
+ * 触发源：ma_appointment.arrived_at（已到院/已完成的预约），按 arrived_at + day 计算各节点 dueAt。
+ * - 幂等：scheduled_key = `post_op:{leadId}:{day}` UNIQUE，重复 tick 自动去重；
+ * - 回填护栏：仅对「dueAt 落在最近一个最长周期内（now - maxDays, now]」的节点排期，
+ *   避免首次启动对全部历史到店客户批量补发；后续节点随 tick 跨过阈值自然排期；
+ * - 前置条件：已授权（consent_at 非空）+ 有联系方式（phone/wechat），与 recall 同口径；
+ * - 执行复查：沿用防打扰逻辑（仅对已转化客户豁免 skipped，见 executeJob）。
+ */
+async function planPostOpJobs(now = Date.now()): Promise<number> {
+  const cfg = getConfig().scheduler;
+  const rows = await dbCall(async () => {
+    return (await allRows(
+      (await getDb()).prepare(
+        `SELECT a.lead_id AS lead_id, a.arrived_at AS arrived_at, l.channel AS channel,
+                l.name AS name, l.project AS project, l.phone AS phone, l.wechat AS wechat
+         FROM ma_appointment a
+         JOIN ma_lead l ON l.lead_id = a.lead_id AND l.tenant_id = a.tenant_id
+         WHERE a.tenant_id = ? AND a.status IN ('arrived','completed') AND a.arrived_at IS NOT NULL
+           AND l.consent_at IS NOT NULL
+           AND ((l.phone IS NOT NULL AND l.phone != '') OR (l.wechat IS NOT NULL AND l.wechat != ''))`
+      ),
+      getConfig().tenantId
+    )) as Array<{
+      lead_id: string;
+      arrived_at: number | null;
+      channel: string | null;
+      name: string | null;
+      project: string | null;
+      phone: string | null;
+      wechat: string | null;
+    }>;
+  }, '查询术后关怀候选');
+
+  const maxDays = Math.max(...cfg.postOpDays);
+  const backfillMs = maxDays * 86400 * 1000;
+  let count = 0;
+  for (const r of rows) {
+    const arrivedMs = (r.arrived_at ?? 0) * 1000; // arrived_at 存 unix 秒
+    if (!Number.isFinite(arrivedMs) || arrivedMs <= 0) continue;
+    for (const d of cfg.postOpDays) {
+      const dueAt = arrivedMs + d * 86400 * 1000;
+      if (dueAt <= now && dueAt > now - backfillMs) {
+        const inserted = await enqueueJob({
+          jobType: 'post_op',
+          leadId: String(r.lead_id),
+          scheduledKey: `post_op:${String(r.lead_id)}:${d}`,
+          dueAt,
+          payload: {
+            day: d,
+            channel: r.channel ?? '',
+            name: r.name ?? undefined,
+            project: r.project ?? undefined,
+            to: { name: r.name ?? undefined, phone: r.phone ?? undefined, wechat: r.wechat ?? undefined },
+          },
+        });
+        if (inserted) count += 1;
+      }
+    }
+  }
+  return count;
 }
 
 /**
@@ -181,10 +252,12 @@ export async function planSopJobs(now = Date.now()): Promise<PlanResult> {
  * 命中红线（疗效承诺/诊断式/固定价/贬低同业等）直接拒绝，绝不带病入队。
  */
 export async function scheduleManualJob(input: {
-  jobType: 'welcome' | 'recall' | 'birthday' | 'repurchase';
+  jobType: 'welcome' | 'recall' | 'birthday' | 'repurchase' | 'post_op';
   leadId: string;
   dueAt?: number;
   text?: string;
+  /** 术后关怀节点（天），仅 jobType='post_op' 使用。 */
+  day?: number;
   key?: string;
 }): Promise<{ scheduledKey: string; dueAt: number }> {
   const lead = await leadBrief(input.leadId);
@@ -201,7 +274,11 @@ export async function scheduleManualJob(input: {
       }
     }
   }
-  const scheduledKey = input.key?.trim() || `${input.jobType}:${input.leadId}:${dueAt}`;
+  const scheduledKey =
+    input.key?.trim() ||
+    (input.jobType === 'post_op'
+      ? `post_op:${input.leadId}:${input.day ?? 1}`
+      : `${input.jobType}:${input.leadId}:${dueAt}`);
   await enqueueJob({
     jobType: input.jobType,
     leadId: input.leadId,
@@ -209,6 +286,7 @@ export async function scheduleManualJob(input: {
     dueAt,
     payload: {
       text: input.text,
+      day: input.jobType === 'post_op' ? input.day ?? 1 : undefined,
       channel: lead.channel,
       name: lead.name ?? undefined,
       project: lead.project ?? undefined,
@@ -257,7 +335,8 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
     job.leadId
   )) as Record<string, unknown> | undefined;
   const stage = String(state?.stage ?? '');
-  if (['booked', 'arrived', 'deal'].includes(stage)) {
+  // 术后关怀（post_op）面向已到店/成交客户，不跳过；其余 SOP（welcome/recall）对已转化客户跳过。
+  if (['booked', 'arrived', 'deal'].includes(stage) && job.jobType !== 'post_op') {
     await markJobFinished(job.id, 'skipped', `线索已转化（stage=${stage}），跳过触达`);
     return;
   }
@@ -281,6 +360,11 @@ async function executeJob(job: ScheduleJobRow): Promise<void> {
     const node = payload.node === 'second' ? 'second' : 'first';
     topic = `recall_${node}`;
     text = buildRecallText(node, payload.name as string | undefined, payload.project as string | undefined);
+  } else if (job.jobType === 'post_op') {
+    // 术后关怀：优先用运营自拟文案，否则生成模板（D+1/D+7/D+30 分节点）。
+    topic = 'post_op';
+    const custom = String(payload.text ?? '').trim();
+    text = custom || buildPostOpText(Number(payload.day ?? 1), payload.name as string | undefined, payload.project as string | undefined);
   } else {
     topic = job.jobType;
     const custom = String(payload.text ?? '').trim();
@@ -350,6 +434,7 @@ export async function schedulerSnapshot(): Promise<Record<string, unknown>> {
     intervalMs: cfg.scheduler.intervalMs,
     recall: { enabled: cfg.scheduler.recallEnabled, firstHours: cfg.scheduler.recallFirstHours, secondHours: cfg.scheduler.recallSecondHours },
     welcome: { enabled: cfg.scheduler.welcomeEnabled, windowHours: cfg.scheduler.welcomeWindowHours },
+    postOp: { enabled: cfg.scheduler.postOpEnabled, days: cfg.scheduler.postOpDays },
     jobs: await jobStats(),
     outreach: await outreachStats(),
   };

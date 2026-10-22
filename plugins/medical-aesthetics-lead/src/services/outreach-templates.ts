@@ -39,3 +39,24 @@ export function buildRecallText(node: 'first' | 'second', name?: string, project
   const mid = proj ? `日前您咨询过「${proj}」` : '日前您咨询过相关项目';
   return `${head}，${mid}。如近期有意向，可以回复我，帮您协调面诊时间。${RISK_HINT}`;
 }
+
+/**
+ * 术后关怀（P1-⑦）：到店/成交后的自动关怀与复购培育。
+ * 节点 day 对应配置 postOpDays（默认 D+1/D+7/D+30）：
+ * - D+1：到院后关怀（注意休息 / 遵医嘱，不承诺效果）；
+ * - D+7：恢复跟进（恢复情况了解，引导复诊）；
+ * - D+30：复购 / 周期性项目培育（温和引导，非硬销）。
+ * 合规：不承诺疗效、不报固定价、附风险提示。
+ */
+export function buildPostOpText(day: number, name?: string, project?: string): string {
+  const who = clean(name);
+  const proj = clean(project);
+  const head = who ? `${who}您好` : '您好';
+  if (day <= 1) {
+    return `${head}，很高兴您已完成面诊/治疗${proj ? `（${proj}）` : ''}。术后请遵医嘱做好护理与休息，如有不适及时联系您的主治医生。${RISK_HINT}`;
+  }
+  if (day <= 7) {
+    return `${head}，距离您到院已一周${proj ? `（${proj}）` : ''}。恢复情况还顺利吗？如有护理或恢复方面的疑问，随时回复我，帮您对接咨询师。${RISK_HINT}`;
+  }
+  return `${head}，感谢您近期的信任${proj ? `（${proj}）` : ''}。部分医美项目需周期性维护，如您有后续安排或新需求，可回复我，帮您协调面诊时间。${RISK_HINT}`;
+}

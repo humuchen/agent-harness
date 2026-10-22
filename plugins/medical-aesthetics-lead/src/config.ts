@@ -89,6 +89,10 @@ export interface MaConfig {
     welcomeEnabled: boolean;
     /** 欢迎语仅对近期新建线索排期（小时窗口），避免给历史存量线索补发欢迎语。 */
     welcomeWindowHours: number;
+    /** 术后关怀序列开关（P1-⑦）：到店/成交后自动关怀与复购培育。 */
+    postOpEnabled: boolean;
+    /** 术后关怀节点（天）：到店后第 N 天触达，默认 [1,7,30]（D+1 关怀 / D+7 恢复跟进 / D+30 复购培育）。 */
+    postOpDays: number[];
   };
   /** 入站消息触发 agent 的 A2A 入口（平台自身 /api/a2a/tasks）。 */
   a2a: { baseUrl: string; timeoutMs: number };
@@ -100,6 +104,18 @@ function int(name: string, fallback: number): number {
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** 解析逗号分隔的天数列表（术后关怀节点），非法值过滤，至少保留一个正天。 */
+function postOpDays(fallback: number[]): number[] {
+  const raw = process.env.MA_SCHEDULER_POST_OP_DAYS ?? '';
+  if (!raw.trim()) return fallback;
+  const days = raw
+    .split(/[,，]/)
+    .map((s) => Number.parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  return days.length ? days : fallback;
 }
 
 /** 解析上游配置：baseUrl 为空即 enabled=false（该能力 fail-closed）。 */
@@ -195,6 +211,8 @@ export function getConfig(): MaConfig {
       recallEnabled: process.env.MA_SCHEDULER_RECALL !== 'false',
       welcomeEnabled: process.env.MA_SCHEDULER_WELCOME !== 'false',
       welcomeWindowHours: int('MA_SCHEDULER_WELCOME_WINDOW_H', 24),
+      postOpEnabled: process.env.MA_SCHEDULER_POST_OP !== 'false',
+      postOpDays: postOpDays([1, 7, 30]),
     },
     a2a: {
       baseUrl: (process.env.MA_A2A_BASE_URL ?? process.env.AGENT_A2A_BASE_URL ?? '')
@@ -231,6 +249,7 @@ export function configSummary(): Record<string, unknown> {
       intervalMs: c.scheduler.intervalMs,
       recall: { enabled: c.scheduler.recallEnabled, firstHours: c.scheduler.recallFirstHours, secondHours: c.scheduler.recallSecondHours },
       welcome: { enabled: c.scheduler.welcomeEnabled, windowHours: c.scheduler.welcomeWindowHours },
+      postOp: { enabled: c.scheduler.postOpEnabled, days: c.scheduler.postOpDays },
     },
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
   };

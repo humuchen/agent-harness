@@ -542,7 +542,7 @@ const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
 
 /**
  * POST /scheduler/jobs —— 运营手动排期任务（需管理令牌）。
- * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall', leadId, dueAt?, text?, key? }
+ * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall'|'post_op', leadId, dueAt?, text?, day?, key? }
  * birthday/repurchase 必须提供运营自拟文案 text（入队前过医疗广告合规筛查）。
  */
 const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
@@ -557,15 +557,16 @@ const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
   const jobType = String(json.jobType ?? '');
   const leadId = String(json.leadId ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
-  if (!['welcome', 'recall', 'birthday', 'repurchase'].includes(jobType)) {
-    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase' });
+  if (!['welcome', 'recall', 'birthday', 'repurchase', 'post_op'].includes(jobType)) {
+    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase|post_op' });
   }
   try {
     const r = await scheduleManualJob({
-      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase',
+      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase' | 'post_op',
       leadId,
       dueAt: typeof json.dueAt === 'number' ? json.dueAt : undefined,
       text: json.text ? String(json.text) : undefined,
+      day: typeof json.day === 'number' ? json.day : undefined,
       key: json.key ? String(json.key) : undefined,
     });
     send(res, 200, { ok: true, ...r });

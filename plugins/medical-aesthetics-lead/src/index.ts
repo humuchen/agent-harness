@@ -7,6 +7,7 @@ import { registerBookTool } from './tools/book';
 import { registerHandoffTool } from './tools/handoff';
 import { registerAnalyticsTool } from './tools/analytics';
 import { registerKbTool } from './tools/kb';
+import { registerLibraryTool } from './tools/library';
 import { registerContentTool } from './tools/content';
 import { registerAssistTool } from './tools/assist';
 import { registerAbTool } from './tools/ab';
@@ -50,6 +51,7 @@ export const leadPlugin: PluginModule = {
     registerBookTool(ctx.tools);
     registerHandoffTool(ctx.tools);
     registerKbTool(ctx.tools);
+    registerLibraryTool(ctx.tools);
     registerAnalyticsTool(ctx.tools);
     registerContentTool(ctx.tools);
     registerAssistTool(ctx.tools);

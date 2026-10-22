@@ -21,8 +21,8 @@ export function registerAnalyticsTool(tools: ToolRegistry): void {
       properties: {
         type: {
           type: 'string',
-          description: '分析类型：funnel(漏斗) | channel(渠道) | clinic(院区) | project(项目) | trend(趋势) | retention(留存) | inactive(未活跃) | full(全面)',
-          enum: ['funnel', 'channel', 'clinic', 'project', 'trend', 'retention', 'inactive', 'full'],
+          description: '分析类型：funnel(漏斗) | channel(渠道) | clinic(院区) | project(项目) | trend(趋势) | retention(留存) | inactive(未活跃) | repurchase(复购率) | roi(ROI) | full(全面)',
+          enum: ['funnel', 'channel', 'clinic', 'project', 'trend', 'retention', 'inactive', 'repurchase', 'roi', 'full'],
         },
         startTime: { type: 'integer', description: '开始时间（毫秒时间戳，UTC）。可选' },
         endTime: { type: 'integer', description: '结束时间（毫秒时间戳，UTC）。可选' },

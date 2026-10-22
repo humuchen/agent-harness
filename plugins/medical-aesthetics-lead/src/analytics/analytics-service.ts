@@ -8,11 +8,12 @@
 import { getDb, dbCall } from '../infra/db';
 import { getConfig } from '../config';
 import { STAGE_ORDER } from '../repo/types';
+import { orderStats } from '../repo/order-repo';
 import type {
   AnalyticsQuery, AnalyticsResult, AnalyticsFullResult,
   FunnelAnalysis, ChannelPerformance, ClinicPerformance,
   ProjectProfitability, TimeTrendPoint, StageRetention,
-  InactiveLead,
+  InactiveLead, RepurchaseAnalysis, RoiAnalysis,
 } from './types';
 
 const STAGE_ZH: Record<string, string> = {
@@ -453,6 +454,47 @@ export async function inactiveLeads(q: AnalyticsQuery & { daysThreshold?: number
   }, '未活跃线索分析');
 }
 
+// ─── 复购率分析（P1-⑧） ─────────────────────────────────────────────
+
+/**
+ * 复购率分析：基于 ma_order 真实成交数据。
+ * 空数据时返回 0 值，绝不虚构。
+ */
+export async function repurchaseAnalysis(q: AnalyticsQuery): Promise<RepurchaseAnalysis> {
+  return await dbCall(async () => {
+    const stats = await orderStats(q.startTime, q.endTime);
+    return {
+      customerCount: stats.customerCount,
+      orderCount: stats.orderCount,
+      repurchaseCustomers: stats.repurchaseCustomers,
+      repurchaseRate: stats.repurchaseRate,
+      byProject: stats.byProject,
+    };
+  }, '复购率分析');
+}
+
+// ─── ROI 分析（P1-⑧/⑨） ─────────────────────────────────────────────
+
+/**
+ * ROI 分析：成交金额来自 ma_order（已落地）。
+ * 广告花费需投放平台接入（P1-⑨）后方可计算；在花费未接入前 roi=null、spendConnected=false，
+ * 绝不虚构 ROI 数值（与全插件 fail-closed 纪律一致）。
+ */
+export async function roiAnalysis(q: AnalyticsQuery): Promise<RoiAnalysis> {
+  return await dbCall(async () => {
+    const stats = await orderStats(q.startTime, q.endTime);
+    return {
+      totalRevenue: stats.totalRevenue,
+      orderCount: stats.orderCount,
+      repurchaseRate: stats.repurchaseRate,
+      spendConnected: false,
+      adSpend: null,
+      roi: null,
+      note: '广告花费尚未接入（P1-⑨ 投放平台对接后计算真实 ROI）；当前仅返回成交金额与复购率。',
+    };
+  }, 'ROI 分析');
+}
+
 // ─── 统一查询入口 ─────────────────────────────────────────────────────
 
 export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsResult> {
@@ -485,6 +527,14 @@ export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsRes
     }
     case 'inactive': {
       const data = await inactiveLeads(q as AnalyticsQuery & { daysThreshold?: number });
+      return { query: q, generatedAt, data };
+    }
+    case 'repurchase': {
+      const data = await repurchaseAnalysis(q);
+      return { query: q, generatedAt, data };
+    }
+    case 'roi': {
+      const data = await roiAnalysis(q);
       return { query: q, generatedAt, data };
     }
     case 'full': {

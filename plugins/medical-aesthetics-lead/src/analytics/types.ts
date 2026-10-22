@@ -72,7 +72,7 @@ export interface StageRetention {
 /** 分析查询参数。 */
 export interface AnalyticsQuery {
   /** 分析类型。 */
-  type: 'funnel' | 'channel' | 'clinic' | 'project' | 'trend' | 'retention' | 'inactive' | 'full';
+  type: 'funnel' | 'channel' | 'clinic' | 'project' | 'trend' | 'retention' | 'inactive' | 'repurchase' | 'roi' | 'full';
   /** 租户 ID。 */
   tenantId?: string;
   /** 时间范围（毫秒时间戳）。 */
@@ -95,7 +95,7 @@ export interface AnalyticsQuery {
 export interface AnalyticsResult {
   query: AnalyticsQuery;
   generatedAt: number;
-  data: FunnelAnalysis[] | ChannelPerformance[] | ClinicPerformance[] | ProjectProfitability[] | TimeTrendPoint[] | StageRetention[] | InactiveLead[] | AnalyticsFullResult;
+  data: FunnelAnalysis[] | ChannelPerformance[] | ClinicPerformance[] | ProjectProfitability[] | TimeTrendPoint[] | StageRetention[] | InactiveLead[] | RepurchaseAnalysis | RoiAnalysis | AnalyticsFullResult;
 }
 
 /** full 类型的结果（所有分析集合）。 */
@@ -118,4 +118,38 @@ export interface InactiveLead {
   daysSince: number;
   activityTitle: string | null;
   activityId: string | null;
+}
+
+/** 复购率分析（P1-⑧：基于 ma_order 真实成交数据）。 */
+export interface RepurchaseAnalysis {
+  /** 成交客户数（去重 leadId）。 */
+  customerCount: number;
+  /** 订单总数（paid）。 */
+  orderCount: number;
+  /** 复购客户数（同一 leadId 多笔 paid 订单）。 */
+  repurchaseCustomers: number;
+  /** 复购率 = 复购客户数 / 成交客户数（%）。 */
+  repurchaseRate: number;
+  /** 分项目成交金额与订单数（用于交叉分析）。 */
+  byProject: Array<{ project: string; revenue: number; orders: number }>;
+}
+
+/**
+ * ROI 分析（P1-⑧/⑨）。
+ * 当前成交金额来自 ma_order（已落地）；广告花费需投放平台接入（P1-⑨）后方可计算真实 ROI。
+ * 在花费未接入前，roi 字段为 null 且 spendConnected=false，绝不虚构 ROI 数值（fail-closed 纪律）。
+ */
+export interface RoiAnalysis {
+  /** 总成交金额（paid）。 */
+  totalRevenue: number;
+  orderCount: number;
+  /** 复购率（%）。 */
+  repurchaseRate: number;
+  /** 广告花费是否已接入（默认 false，待 P1-⑨ 投放平台对接）。 */
+  spendConnected: boolean;
+  /** 广告花费（元）。未接入为 null。 */
+  adSpend: number | null;
+  /** ROI = 总成交金额 / 广告花费。未接入为 null。 */
+  roi: number | null;
+  note: string;
 }
