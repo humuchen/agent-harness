@@ -66,8 +66,15 @@ function registerPlugins() {
     });
     // Deep Link 拦截：把 piagent://path 转成内部路由事件
     plugins.app.addListener('appUrlOpen', (data) => {
-        const url = new URL(data.url);
-        const path = url.pathname + url.search;
-        window.dispatchEvent(new CustomEvent('ah:deeplink', { detail: { path, raw: data.url } }));
+        // P1 防御修复：畸形 URL（非标准 scheme / 编码损坏）会让 new URL 抛未捕获
+        // 异常，直接打断 App 壳的全局监听注册流程。
+        try {
+            const url = new URL(data.url);
+            const path = url.pathname + url.search;
+            window.dispatchEvent(new CustomEvent('ah:deeplink', { detail: { path, raw: data.url } }));
+        }
+        catch {
+            /* 非法 URL 静默忽略 */
+        }
     });
 }

@@ -52,7 +52,7 @@ export function publishReminder(e: unknown): void {
   const ev = e as { text?: unknown; tag?: unknown; type?: unknown };
   const body = typeof ev.text === 'string' ? ev.text : '您有一条到点提醒';
   const kind = typeof ev.type === 'string' ? ev.type : 'memo:reminder';
-  void import('./push-dispatch')
+  void import('./push-dispatch.js')
     .then(({ dispatchPushToOwner }) =>
       dispatchPushToOwner(owner, { title: '备忘提醒', body, kind })
     )

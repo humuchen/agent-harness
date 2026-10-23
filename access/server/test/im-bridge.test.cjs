@@ -118,7 +118,7 @@ test('FeishuAdapter: 未配 encryptKey 时按 verification token 校验', () => 
 test('FeishuAdapter: 配 encryptKey 时校验 X-Lark-Signature', () => {
   const a = feishu({ encryptKey: 'ek' });
   const rawBody = '{"encrypt":"x"}';
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n1';
   const sig = createHash('sha256').update(ts + nonce + 'ek' + rawBody, 'utf8').digest('hex');
   assert.strictEqual(
@@ -407,7 +407,7 @@ test('WecomAdapter: verifyInbound 校验 Encrypt 签名', () => {
   });
   const enc = wecomEncrypt('<xml><MsgType>text</MsgType></xml>', WECOM_AES_KEY);
   const body = `<xml><Encrypt><![CDATA[${enc}]]></Encrypt></xml>`;
-  const ts = '1700000000';
+  const ts = String(Date.now());
   const nonce = 'n9';
   const okUrl = new URL(
     `http://x/api/im/wecom/events?msg_signature=${wecomSign('tok', ts, nonce, enc)}&timestamp=${ts}&nonce=${nonce}`

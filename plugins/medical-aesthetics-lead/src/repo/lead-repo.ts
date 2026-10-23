@@ -16,9 +16,21 @@ import {
   type LeadGrade,
   type LeadStats,
   type CrmSyncState,
+  type LeadPreferences,
   STAGE_ORDER,
   stageRank,
 } from './types';
+
+/** 解析偏好 JSON 列（容错：解析失败返回 undefined，绝不抛错阻断读取）。 */
+function parsePreferences(v: unknown): LeadPreferences | undefined {
+  if (!v) return undefined;
+  try {
+    const o = JSON.parse(String(v));
+    return o && typeof o === 'object' ? (o as LeadPreferences) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** DB 行 → 领域模型。 */
 function rowToLead(r: Record<string, unknown>): LeadRecord {
@@ -49,6 +61,7 @@ function rowToLead(r: Record<string, unknown>): LeadRecord {
     crmId: (r.crm_id as string) ?? undefined,
     crmSyncState: (r.crm_sync_state as CrmSyncState) ?? 'pending',
     crmSyncedAt: r.crm_synced_at != null ? Number(r.crm_synced_at) : undefined,
+    preferences: parsePreferences(r.preferences),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -122,6 +135,11 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
       crm_id: patch.crmId ?? cur?.crmId ?? null,
       crm_sync_state: patch.crmSyncState ?? cur?.crmSyncState ?? 'pending',
       crm_synced_at: patch.crmSyncedAt ?? cur?.crmSyncedAt ?? null,
+      preferences: patch.preferences
+        ? JSON.stringify(patch.preferences)
+        : cur?.preferences
+          ? JSON.stringify(cur.preferences)
+          : null,
     };
 
     const upsertRes = await db.prepare(
@@ -130,12 +148,14 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
         stage_updated_at,
         name, phone, wechat, consent_at, clinic_id, clinic_name, booking_date, booking_time,
         appointment_id, handed_off, handoff_reason, consulted_by, crm_id, crm_sync_state, crm_synced_at,
+        preferences,
         created_at, updated_at
       ) VALUES (
         :lead_id, :tenant_id, :channel, :intent, :project, :budget, :city, :grade, :stage, :reached,
         :stage_updated_at,
         :name, :phone, :wechat, :consent_at, :clinic_id, :clinic_name, :booking_date, :booking_time,
         :appointment_id, :handed_off, :handoff_reason, :consulted_by, :crm_id, :crm_sync_state, :crm_synced_at,
+        :preferences,
         :created_at, :updated_at
       )
       ON CONFLICT(lead_id) DO UPDATE SET
@@ -149,7 +169,7 @@ export async function upsertLead(leadId: string, patch: LeadPatch): Promise<Lead
         appointment_id=excluded.appointment_id, handed_off=excluded.handed_off,
         handoff_reason=excluded.handoff_reason, consulted_by=excluded.consulted_by,
         crm_id=excluded.crm_id, crm_sync_state=excluded.crm_sync_state,
-        crm_synced_at=excluded.crm_synced_at, updated_at=excluded.updated_at
+        crm_synced_at=excluded.crm_synced_at, preferences=excluded.preferences, updated_at=excluded.updated_at
       -- P1 跨租户修复：lead_id 是全局主键（不含 tenant_id），租户 B upsert 一个
       -- 已属于租户 A 的 lead_id 时，旧实现 DO UPDATE 会直接整行覆盖 A 的线索
       --（含手机号/微信 PII）。追加 WHERE 后跨租户冲突不更新（changes=0）。

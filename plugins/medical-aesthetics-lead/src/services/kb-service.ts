@@ -13,7 +13,8 @@
  */
 
 import { searchProjects as dbSearch, upsertProject, listProjects } from '../repo/kb-repo';
-import type { ProjectRecord } from '../repo/types';
+import { searchScripts, searchCases } from '../repo/library-repo';
+import type { ProjectRecord, ScriptRecord, CaseRecord } from '../repo/types';
 import { HttpClient } from '../infra/http';
 import { getConfig } from '../config';
 import { notConfigured } from '../infra/errors';
@@ -242,4 +243,37 @@ export function toCustomerView(p: ProjectRecord): {
     recovery: p.recovery,
     contraindications: p.contraindications,
   };
+}
+
+/**
+ * 话术对客视图（合规内建）：已过审优先返回 compliantCopy，未过审返回 body 科普表述。
+ * 仅用于对外/对咨询师展示，绝不外带内部合规状态位之外的敏感字段。
+ */
+export function toScriptView(s: ScriptRecord): {
+  scene: string;
+  title: string;
+  copy: string;
+  reviewed: boolean;
+  grade?: string;
+  project?: string;
+} {
+  const reviewed = s.complianceReviewed === true;
+  return {
+    scene: s.scene,
+    title: s.title,
+    copy: (reviewed && s.compliantCopy ? s.compliantCopy : s.body).trim(),
+    reviewed,
+    grade: s.grade,
+    project: s.project,
+  };
+}
+
+/** 检索话术库（合规内建：对客优先 compliantCopy）。 */
+export async function searchScriptsView(query: string, limit = 5, scene?: string): Promise<ScriptRecord[]> {
+  return searchScripts(query, limit, scene);
+}
+
+/** 检索案例库（强制脱敏：library-repo 已过滤 masked=false，此处绝不回带 sourceRef）。 */
+export async function searchCasesView(query: string, limit = 5): Promise<CaseRecord[]> {
+  return searchCases(query, limit);
 }

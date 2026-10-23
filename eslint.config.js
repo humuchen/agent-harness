@@ -25,7 +25,9 @@ export default tseslint.config(
       '**/build/**',
       // Capacitor 构建产物（vite build 的输出被复制进 android/ios 资产目录）：
       // 未入 git、不可读、体积巨大，且会把 webapp 的 lint 债务复制一份进来。
-      'mobile/**/assets/**'
+      'mobile/**/assets/**',
+      // svelte-check 生成物（.svelte -> .ts 转译缓存，含 triple-slash 引用头）。
+      '**/.svelte-check/**'
     ]
   },
   js.configs.recommended,

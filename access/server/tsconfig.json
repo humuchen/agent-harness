@@ -3,12 +3,17 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "baseUrl": ".",
     "noUncheckedIndexedAccess": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@agent-harness/core": ["../../backend/core/dist/index.d.ts"]
+      "@agent-harness/core": [
+        "../../backend/core/dist/index.d.ts"
+      ]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

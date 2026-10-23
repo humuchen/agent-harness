@@ -26,3 +26,6 @@ deploy/k8s/secret.yaml
 # server 运行时数据（SQLite 账户库 / 插件 store 等），仅存本地磁盘
 access/server/.data/
 .verify-tmp-*
+
+# svelte-check 类型检查生成物（.svelte -> .ts 转译缓存）
+.svelte-check/

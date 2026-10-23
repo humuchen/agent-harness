@@ -11,7 +11,7 @@
 import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
 import { getConfig } from '../config';
 
-export type ContentPlatform = 'xiaohongshu' | 'douyin' | 'livestream';
+export type ContentPlatform = 'xiaohongshu' | 'douyin' | 'livestream' | 'video_script';
 export type ContentSource = 'manual' | 'template' | 'llm';
 export type ContentState = 'draft' | 'review' | 'approved' | 'rejected' | 'published';
 

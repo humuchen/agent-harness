@@ -14,9 +14,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/obfuscate.mjs",
+    "build:raw": "tsc -p tsconfig.json",
     "build:native": "make -C native/sandbox-exec",
-    "test": "tsc -p tsconfig.json && node --test test/*.test.cjs"
+    "test": "npm run build && node --test test/*.test.cjs"
   },
   "license": "MIT",
   "engines": {
@@ -40,6 +41,7 @@
   "devDependencies": {
     "@kubernetes/client-node": "^2.0.0",
     "@types/node": "^20.19.43",
-    "typescript": "^5.4.5"
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }

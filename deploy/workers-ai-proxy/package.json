@@ -8,7 +8,7 @@
     "@cloudflare/workers-ai": "^0.2.0",
     "@cloudflare/workers-types": "^4.20240917.0",
     "@types/node": "^20.11.30",
-    "typescript": "^5.3.3",
+    "typescript": "^7.0.2",
     "wrangler": "^3.30.0"
   },
   "engines": {

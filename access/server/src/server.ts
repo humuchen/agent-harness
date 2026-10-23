@@ -2246,14 +2246,14 @@ async function bootstrap(): Promise<void> {
   // P0-E: 启动定时备份调度器（进程内 setInterval，替代外部 cron 依赖）。
   const AH_BACKUP_ENABLED = (process.env.AH_BACKUP_ENABLED ?? 'on').toLowerCase();
   if (['on', '1', 'true'].includes(AH_BACKUP_ENABLED)) {
-    const { scheduleBackup } = await import('./backup-scheduler');
+    const { scheduleBackup } = await import('./backup-scheduler.js');
     scheduleBackup();
   }
 
   // P1-8: 启动数据留存调度器（按策略定期清理过期记录）。
   const AH_RETENTION_ENABLED = (process.env.AH_RETENTION_ENABLED ?? 'on').toLowerCase();
   if (['on', '1', 'true'].includes(AH_RETENTION_ENABLED)) {
-    const { scheduleRetention } = await import('./retention');
+    const { scheduleRetention } = await import('./retention.js');
     scheduleRetention();
   }
 

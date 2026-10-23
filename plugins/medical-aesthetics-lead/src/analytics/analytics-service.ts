@@ -8,11 +8,13 @@
 import { getDb, dbCall } from '../infra/db';
 import { getConfig } from '../config';
 import { STAGE_ORDER } from '../repo/types';
+import { orderStats } from '../repo/order-repo';
+import { adSpendStats } from '../repo/ad-spend-repo';
 import type {
   AnalyticsQuery, AnalyticsResult, AnalyticsFullResult,
   FunnelAnalysis, ChannelPerformance, ClinicPerformance,
   ProjectProfitability, TimeTrendPoint, StageRetention,
-  InactiveLead,
+  InactiveLead, RepurchaseAnalysis, RoiAnalysis,
 } from './types';
 
 const STAGE_ZH: Record<string, string> = {
@@ -453,6 +455,65 @@ export async function inactiveLeads(q: AnalyticsQuery & { daysThreshold?: number
   }, '未活跃线索分析');
 }
 
+// ─── 复购率分析（P1-⑧） ─────────────────────────────────────────────
+
+/**
+ * 复购率分析：基于 ma_order 真实成交数据。
+ * 空数据时返回 0 值，绝不虚构。
+ */
+export async function repurchaseAnalysis(q: AnalyticsQuery): Promise<RepurchaseAnalysis> {
+  return await dbCall(async () => {
+    const stats = await orderStats(q.startTime, q.endTime);
+    return {
+      customerCount: stats.customerCount,
+      orderCount: stats.orderCount,
+      repurchaseCustomers: stats.repurchaseCustomers,
+      repurchaseRate: stats.repurchaseRate,
+      byProject: stats.byProject,
+    };
+  }, '复购率分析');
+}
+
+// ─── ROI 分析（P1-⑧/⑨） ─────────────────────────────────────────────
+
+/**
+ * ROI 分析（P1-⑧/⑨）：成交金额来自 ma_order，广告花费来自 ma_ad_spend。
+ * 无花费数据时 spendConnected=false、adSpend/roi/cpl 全为 null，绝不虚构（fail-closed）。
+ * 花费可经投放平台 API 拉取（services/ad-client.ts）或 POST /ad-spend/import 手动导入。
+ */
+export async function roiAnalysis(q: AnalyticsQuery): Promise<RoiAnalysis> {
+  return await dbCall(async () => {
+    const [stats, spend] = await Promise.all([
+      orderStats(q.startTime, q.endTime),
+      adSpendStats(q.startTime, q.endTime),
+    ]);
+    const hasSpend = spend.rowCount > 0 && spend.totalSpend > 0;
+    const roi = hasSpend ? Math.round((stats.totalRevenue / spend.totalSpend) * 100) / 100 : null;
+    const cpl =
+      hasSpend && spend.conversions > 0
+        ? Math.round((spend.totalSpend / spend.conversions) * 100) / 100
+        : null;
+    return {
+      totalRevenue: stats.totalRevenue,
+      orderCount: stats.orderCount,
+      repurchaseRate: stats.repurchaseRate,
+      spendConnected: hasSpend,
+      adSpend: hasSpend ? spend.totalSpend : null,
+      roi,
+      cpl,
+      spendMetrics: {
+        impressions: spend.impressions,
+        clicks: spend.clicks,
+        conversions: spend.conversions,
+      },
+      byChannel: spend.byChannel,
+      note: hasSpend
+        ? 'ROI = 成交金额 / 广告花费（花费来自 ma_ad_spend，可经投放平台 API 或手动导入）。'
+        : '暂无广告花费数据（ma_ad_spend 为空）：可经投放平台 API 拉取或 POST /ad-spend/import 导入；当前仅返回成交金额与复购率，不虚构 ROI。',
+    };
+  }, 'ROI 分析');
+}
+
 // ─── 统一查询入口 ─────────────────────────────────────────────────────
 
 export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsResult> {
@@ -485,6 +546,14 @@ export async function runAnalyticsQuery(q: AnalyticsQuery): Promise<AnalyticsRes
     }
     case 'inactive': {
       const data = await inactiveLeads(q as AnalyticsQuery & { daysThreshold?: number });
+      return { query: q, generatedAt, data };
+    }
+    case 'repurchase': {
+      const data = await repurchaseAnalysis(q);
+      return { query: q, generatedAt, data };
+    }
+    case 'roi': {
+      const data = await roiAnalysis(q);
       return { query: q, generatedAt, data };
     }
     case 'full': {

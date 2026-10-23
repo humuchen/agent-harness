@@ -28,8 +28,8 @@ import {
 import type { ContentRow, ContentPlatform, ContentState } from '../repo/content-repo';
 import { MaError, toMaError } from '../infra/errors';
 
-/** 平台白名单（防误传任意字符串进状态机）。 */
-export const CONTENT_PLATFORMS: readonly ContentPlatform[] = ['xiaohongshu', 'douyin', 'livestream'] as const;
+/** 平台白名单（防误传任意字符串进状态机）。video_script = 短视频分镜脚本（⑩）。 */
+export const CONTENT_PLATFORMS: readonly ContentPlatform[] = ['xiaohongshu', 'douyin', 'livestream', 'video_script'] as const;
 
 export function isContentPlatform(v: string): v is ContentPlatform {
   return (CONTENT_PLATFORMS as readonly string[]).includes(v);
@@ -80,6 +80,7 @@ function assertCompliant(title: string, body: string): void {
 function buildTitle(platform: ContentPlatform, projectName: string): string {
   if (platform === 'xiaohongshu') return `${projectName}｜新手科普笔记`;
   if (platform === 'douyin') return `${projectName}：一分钟看懂`;
+  if (platform === 'video_script') return `${projectName}｜30 秒科普短视频脚本`;
   return `【科普】${projectName} 常见问题梳理`;
 }
 
@@ -115,6 +116,97 @@ function buildBody(platform: ContentPlatform, p: {
   return parts.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// 短视频分镜脚本（⑩：视频脚本生成）
+// ---------------------------------------------------------------------------
+
+/**
+ * 短视频分镜脚本骨架（只组装 KB 字段，零编造）。
+ *
+ * 五段式结构（总时长约 35s）：钩子 → 科普 → 适用与恢复 → 风险提示 → 引导面诊。
+ * 纪律与图文模板一致：
+ * - 全部事实性内容来自知识库（summary/compliantCopy/audience/recovery/contraindications/priceRange），
+ *   缺字段跳过该镜头，绝不补写；
+ * - 钩子只用**疑问框架**（不承诺效果）；价格必须以「面诊为准」收口；
+ * - 末镜固定风险提示（与 PUBLISH_RISK_HINT 同一口径），引导到院而非线上成交。
+ */
+function buildVideoScriptBody(p: {
+  name: string;
+  summary: string;
+  compliantCopy?: string;
+  complianceReviewed: boolean;
+  audience?: string;
+  recovery?: string;
+  contraindications?: string;
+  priceRange?: string;
+}): string {
+  const copy = (p.complianceReviewed && p.compliantCopy ? p.compliantCopy : p.summary).trim();
+  const scenes: { sec: string; shot: string; voice: string; sub: string }[] = [];
+
+  // 镜头 1 · 钩子（0-3s）：只用疑问框架，不做任何效果承诺
+  scenes.push({
+    sec: '0-3s',
+    shot: '正面近景，字幕弹出项目名',
+    voice: `想了解${p.name}？先弄清这几点。`,
+    sub: `${p.name}｜科普向`,
+  });
+
+  // 镜头 2 · 科普（3-15s）
+  if (copy) {
+    scenes.push({
+      sec: '3-15s',
+      shot: '项目示意动画 / 院内实景',
+      voice: copy,
+      sub: '核心科普',
+    });
+  }
+
+  // 镜头 3 · 适用与恢复（15-25s）
+  if (p.audience || p.recovery) {
+    const voiceParts: string[] = [];
+    if (p.audience) voiceParts.push(`适合人群：${p.audience}`);
+    if (p.recovery) voiceParts.push(`恢复期：${p.recovery}`);
+    scenes.push({
+      sec: '15-25s',
+      shot: '对比信息卡 / 恢复期时间轴',
+      voice: voiceParts.join('；'),
+      sub: '适用与恢复',
+    });
+  }
+
+  // 镜头 4 · 注意事项（仅在 KB 有禁忌时出现）
+  if (p.contraindications) {
+    scenes.push({
+      sec: '25-30s',
+      shot: '注意事项清单卡片',
+      voice: `注意事项：${p.contraindications}`,
+      sub: '注意事项',
+    });
+  }
+
+  // 镜头 5 · 风险提示 + 引导面诊（收口，固定存在）
+  const tail = p.priceRange
+    ? `价格区间：${p.priceRange}，最终以面诊方案为准。`
+    : '最终以面诊方案为准。';
+  scenes.push({
+    sec: '30-35s',
+    shot: '医师出镜 / 院内环境收尾',
+    voice: `${PUBLISH_RISK_HINT}${tail}建议到院与医师面诊后确定是否适合。`,
+    sub: '以面诊为准',
+  });
+
+  const lines: string[] = [`# ${p.name}｜30 秒科普短视频脚本`, ''];
+  for (const s of scenes) {
+    lines.push(`【${s.sec}】`);
+    lines.push(`画面：${s.shot}`);
+    lines.push(`口播：${s.voice}`);
+    lines.push(`字幕：${s.sub}`);
+    lines.push('');
+  }
+  lines.push('> 脚本仅组装知识库字段，不含疗效承诺；发布前仍须过医疗广告合规筛查。');
+  return lines.join('\n');
+}
+
 export interface GenerateResult {
   generated: number;
   skipped: { project: string; platform: ContentPlatform; reason: string }[];
@@ -123,9 +215,11 @@ export interface GenerateResult {
 
 /**
  * 从知识库批量生成平台内容（真实数据、同日幂等）。
- * - platform 缺省 → 三平台全量；projectName 缺省 → 全部在架项目；
+ * - platform 缺省 → 四平台全量（xiaohongshu / douyin / livestream / video_script）；
+ *   projectName 缺省 → 全部在架项目；
  * - content_id = tpl_{platform}_{projectId}_{YYYY-MM-DD}：同日重复调用幂等去重；
- * - 生成后过合规筛查，意外命中的条目跳过并记录原因（不落库）。
+ * - 生成后过合规筛查，意外命中的条目跳过并记录原因（不落库）；
+ * - video_script 走分镜脚本骨架（钩子/科普/适用与恢复/注意事项/风险提示+引导面诊）。
  */
 export async function generateTemplateContent(opts: { platform?: string; projectName?: string } = {}): Promise<GenerateResult> {
   const platforms = opts.platform ? [opts.platform] : [...CONTENT_PLATFORMS];
@@ -151,17 +245,29 @@ export async function generateTemplateContent(opts: { platform?: string; project
   for (const p of projects) {
     for (const pf of platforms as ContentPlatform[]) {
       const title = buildTitle(pf, p.name);
-      const body = buildBody(pf, {
-        name: p.name,
-        summary: p.summary,
-        compliantCopy: p.compliantCopy,
-        complianceReviewed: p.complianceReviewed === true,
-        audience: p.audience,
-        recovery: p.recovery,
-        contraindications: p.contraindications,
-        priceRange: p.priceRange,
-        faq: p.faq,
-      });
+      const body =
+        pf === 'video_script'
+          ? buildVideoScriptBody({
+              name: p.name,
+              summary: p.summary,
+              compliantCopy: p.compliantCopy,
+              complianceReviewed: p.complianceReviewed === true,
+              audience: p.audience,
+              recovery: p.recovery,
+              contraindications: p.contraindications,
+              priceRange: p.priceRange,
+            })
+          : buildBody(pf, {
+              name: p.name,
+              summary: p.summary,
+              compliantCopy: p.compliantCopy,
+              complianceReviewed: p.complianceReviewed === true,
+              audience: p.audience,
+              recovery: p.recovery,
+              contraindications: p.contraindications,
+              priceRange: p.priceRange,
+              faq: p.faq,
+            });
       const hits = screenContent(title, body);
       if (hits.length) {
         // 模板内容理论上是合规字段组装；意外命中（如导入语料本身含违规词）→ 跳过并记录

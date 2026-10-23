@@ -14,6 +14,9 @@ import { makeTaskId } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
+import { latestDailyReport } from '../services/report-service';
+import { upsertAdSpend, listAdSpend, adSpendStats } from '../repo/ad-spend-repo';
+import { suggestionSnapshot, reviewSuggestion, markSuggestionExecuted } from '../services/strategy-service';
 import {
   contentSnapshot,
   generateTemplateContent,
@@ -290,6 +293,64 @@ const slotImport: PluginRouteHandler = async (req, res) => {
 };
 
 /**
+ * POST /ad-spend/import —— 导入广告投放消耗（需管理令牌；P1-⑨ 无 API 资质时的手动路径）。
+ * body: { items: [{ spendDate:'YYYY-MM-DD', channel, campaignId, campaignName?, spend,
+ *                   impressions?, clicks?, conversions? }] }
+ * 同日同渠道同计划重复导入幂等覆盖；spend 为负或日期格式非法 → 400（fail-fast，脏数据不进 ROI 分母）。
+ */
+const adSpendImport: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  const { json } = await readRawBody(req);
+  const items = (Array.isArray(json.items) ? json.items : []) as Record<string, unknown>[];
+  if (!items.length) return send(res, 400, { error: 'items[] required' });
+  try {
+    const written = await upsertAdSpend(
+      items.map((s) => ({
+        spendDate: String(s.spendDate ?? s.date ?? ''),
+        channel: String(s.channel ?? ''),
+        campaignId: String(s.campaignId ?? s.campaign_id ?? ''),
+        campaignName: s.campaignName ? String(s.campaignName) : undefined,
+        spend: Number(s.spend ?? 0),
+        impressions: s.impressions != null ? Number(s.impressions) : undefined,
+        clicks: s.clicks != null ? Number(s.clicks) : undefined,
+        conversions: s.conversions != null ? Number(s.conversions) : undefined,
+        source: 'import',
+      }))
+    );
+    send(res, 200, { ok: true, imported: written });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /ad-spend —— 消耗明细 + 汇总（需管理令牌；经营数据）。 */
+const adSpendList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    verifyAdminToken(getConfig().adminToken, req.headers as Record<string, string | string[] | undefined>);
+  } catch (e) {
+    const me = toMaError(e);
+    return send(res, me.httpStatus, me.toJSON());
+  }
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const channel = url.searchParams.get('channel') ?? undefined;
+    const [items, stats] = await Promise.all([listAdSpend({ channel }), adSpendStats()]);
+    send(res, 200, { items, stats });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
  * POST /webhook —— 渠道入站消息入口（真实链路起点）。
  * 流程：HMAC 验签 → 落库去重 → 经 A2A 触发本插件 agent 处理。
  * 验签失败 / 缺密钥一律拒绝（无鉴权裸奔入口不允许）。
@@ -523,6 +584,80 @@ const schedulerRoute: PluginRouteHandler = async (req, res) => {
   }
 };
 
+/** GET /report —— 最新经营日报（P1-⑥ 日报定时化；看板回溯入口）。 */
+const reportRoute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    const r = await latestDailyReport();
+    if (!r) return send(res, 404, { error: 'no daily report yet' });
+    send(res, 200, r);
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/** GET /strategy —— 策略建议列表（P2 自动策略闭环；看板用）。 */
+const strategyList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  try {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const status = url.searchParams.get('status') ?? undefined;
+    const snap = await suggestionSnapshot();
+    const items = status ? snap.items.filter((s) => s.status === status) : snap.items;
+    send(res, 200, { counts: snap.counts, items });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /strategy/review —— 人工确认策略建议（需管理令牌；P2 硬闸门）。
+ * body: { suggestionId, decision: 'approved'|'rejected', operator, reason? }
+ * rejected 必须给原因；仅 pending 可确认。
+ */
+const strategyReview: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const suggestionId = String(json.suggestionId ?? '');
+  if (!suggestionId) return send(res, 400, { error: 'suggestionId required' });
+  const decision = json.decision === 'approved' ? 'approved' : json.decision === 'rejected' ? 'rejected' : null;
+  if (!decision) return send(res, 400, { error: "decision must be 'approved' or 'rejected'" });
+  try {
+    const s = await reviewSuggestion(
+      suggestionId,
+      decision,
+      json.operator ? String(json.operator) : 'operator',
+      json.reason ? String(json.reason) : undefined
+    );
+    send(res, 200, { ok: true, suggestion: s });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /strategy/execute —— 标记建议已执行（需管理令牌）。
+ * 仅 approved 可执行——人工确认是不可绕过的闸门。
+ */
+const strategyExecute: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const suggestionId = String(json.suggestionId ?? '');
+  if (!suggestionId) return send(res, 400, { error: 'suggestionId required' });
+  try {
+    const s = await markSuggestionExecuted(suggestionId);
+    send(res, 200, { ok: true, suggestion: s });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /** POST /scheduler/tick —— 手动触发一轮「规划 + 消费」（需管理令牌；后台循环之外的对账入口）。 */
 const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
@@ -542,7 +677,7 @@ const schedulerTickRoute: PluginRouteHandler = async (req, res) => {
 
 /**
  * POST /scheduler/jobs —— 运营手动排期任务（需管理令牌）。
- * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall', leadId, dueAt?, text?, key? }
+ * body: { jobType: 'birthday'|'repurchase'|'welcome'|'recall'|'post_op', leadId, dueAt?, text?, day?, key? }
  * birthday/repurchase 必须提供运营自拟文案 text（入队前过医疗广告合规筛查）。
  */
 const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
@@ -557,15 +692,16 @@ const schedulerJobRoute: PluginRouteHandler = async (req, res) => {
   const jobType = String(json.jobType ?? '');
   const leadId = String(json.leadId ?? '');
   if (!leadId) return send(res, 400, { error: 'leadId required' });
-  if (!['welcome', 'recall', 'birthday', 'repurchase'].includes(jobType)) {
-    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase' });
+  if (!['welcome', 'recall', 'birthday', 'repurchase', 'post_op'].includes(jobType)) {
+    return send(res, 400, { error: 'jobType must be welcome|recall|birthday|repurchase|post_op' });
   }
   try {
     const r = await scheduleManualJob({
-      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase',
+      jobType: jobType as 'welcome' | 'recall' | 'birthday' | 'repurchase' | 'post_op',
       leadId,
       dueAt: typeof json.dueAt === 'number' ? json.dueAt : undefined,
       text: json.text ? String(json.text) : undefined,
+      day: typeof json.day === 'number' ? json.day : undefined,
       key: json.key ? String(json.key) : undefined,
     });
     send(res, 200, { ok: true, ...r });
@@ -847,6 +983,12 @@ export const leadServerExtension: ServerExtension = {
     '/scheduler': schedulerRoute,
     '/scheduler/tick': schedulerTickRoute,
     '/scheduler/jobs': schedulerJobRoute,
+    '/report': reportRoute,
+    '/ad-spend': adSpendList,
+    '/ad-spend/import': adSpendImport,
+    '/strategy': strategyList,
+    '/strategy/review': strategyReview,
+    '/strategy/execute': strategyExecute,
     '/content': contentList,
     '/content/generate': contentGenerate,
     '/content/draft': contentDraft,

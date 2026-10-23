@@ -74,6 +74,17 @@ export interface MaConfig {
   outbox: { enabled: boolean; intervalMs: number; maxAttempts: number; batchSize: number };
   /** 渠道触达网关（对客主动消息出站：回捞/欢迎/生日/复购提醒）。未配置时消息积压 pending，绝不假装已发送。 */
   outreach: UpstreamConfig;
+  /**
+   * 广告投放平台（P1-⑨）：拉取消耗与转化，计算真实 ROI。
+   * 未配置（baseUrl 为空）时 fail-closed：ROI 分析的 spendConnected=false、roi=null，绝不虚构；
+   * 此路径下仍可经 POST /ad-spend/import 手动导入消耗（source=import）。
+   */
+  adPlatform: UpstreamConfig & {
+    /** 平台标识（oceanengine=巨量引擎 / tencentads=腾讯广告 / generic=任意兼容端点）。 */
+    platform: string;
+    /** 广告主 ID（平台侧账号标识，随请求带上）。 */
+    advertiserId: string;
+  };
   /** 定时调度器（B3）：SOP 任务规划 + 到期任务消费。 */
   scheduler: {
     enabled: boolean;
@@ -89,6 +100,34 @@ export interface MaConfig {
     welcomeEnabled: boolean;
     /** 欢迎语仅对近期新建线索排期（小时窗口），避免给历史存量线索补发欢迎语。 */
     welcomeWindowHours: number;
+    /** 术后关怀序列开关（P1-⑦）：到店/成交后自动关怀与复购培育。 */
+    postOpEnabled: boolean;
+    /** 术后关怀节点（天）：到店后第 N 天触达，默认 [1,7,30]（D+1 关怀 / D+7 恢复跟进 / D+30 复购培育）。 */
+    postOpDays: number[];
+    /** 经营日报定时生成（P1-⑥）：每日首次 tick 生成并落库一份运营日报。 */
+    dailyReportEnabled: boolean;
+    /**
+     * 广告消耗定时拉取（P1-⑨）：每日首次 tick 经投放平台 API 拉取昨日消耗并落库。
+     * 平台未配置时静默跳过（pullAdSpend 返回 pulled=false），不影响其它调度。
+     */
+    adSpendPullEnabled: boolean;
+    /**
+     * 策略建议生成（P2 自动策略闭环）：基于日报真实指标按规则产出可执行建议，
+     * 落库待人工确认；**不自动执行**任何动作（人工确认是硬闸门）。
+     */
+    suggestionEnabled: boolean;
+    /** 业务异常预警（P1-⑥）：阈值越界时经 events.emit 告警，接入 Webhook/日志 sink。 */
+    anomalyEnabled: boolean;
+    /** 异常告警冷却时长（ms）：同规则两次告警最小间隔，避免刷屏。 */
+    anomalyCooldownMs: number;
+    /** 异常阈值：到院率下限（arrived / 新增线索，低于则告警）。 */
+    arrivalRateMin: number;
+    /** 异常阈值：成交率下限（deal / 到院，低于则告警）。 */
+    dealRateMin: number;
+    /** 异常阈值：复购率下限（低于则告警）。 */
+    repurchaseRateMin: number;
+    /** 异常阈值：新增线索日环比跌幅（%，如 60 表示日环比跌超 60% 告警）。 */
+    newLeadDropPct: number;
   };
   /** 入站消息触发 agent 的 A2A 入口（平台自身 /api/a2a/tasks）。 */
   a2a: { baseUrl: string; timeoutMs: number };
@@ -100,6 +139,26 @@ function int(name: string, fallback: number): number {
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** 解析浮点 env（阈值用），非法/缺省时回退。 */
+function num(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** 解析逗号分隔的天数列表（术后关怀节点），非法值过滤，至少保留一个正天。 */
+function postOpDays(fallback: number[]): number[] {
+  const raw = process.env.MA_SCHEDULER_POST_OP_DAYS ?? '';
+  if (!raw.trim()) return fallback;
+  const days = raw
+    .split(/[,，]/)
+    .map((s) => Number.parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+  return days.length ? days : fallback;
 }
 
 /** 解析上游配置：baseUrl 为空即 enabled=false（该能力 fail-closed）。 */
@@ -186,6 +245,11 @@ export function getConfig(): MaConfig {
       batchSize: int('MA_OUTBOX_BATCH_SIZE', 20),
     },
     outreach: upstream('MA_OUTREACH'),
+    adPlatform: {
+      ...upstream('MA_AD_PLATFORM'),
+      platform: (process.env.MA_AD_PLATFORM_KIND ?? 'generic').trim() || 'generic',
+      advertiserId: (process.env.MA_AD_PLATFORM_ADVERTISER_ID ?? '').trim(),
+    },
     scheduler: {
       enabled: process.env.MA_SCHEDULER_ENABLED !== 'false',
       intervalMs: int('MA_SCHEDULER_INTERVAL_MS', 60000),
@@ -195,6 +259,17 @@ export function getConfig(): MaConfig {
       recallEnabled: process.env.MA_SCHEDULER_RECALL !== 'false',
       welcomeEnabled: process.env.MA_SCHEDULER_WELCOME !== 'false',
       welcomeWindowHours: int('MA_SCHEDULER_WELCOME_WINDOW_H', 24),
+      postOpEnabled: process.env.MA_SCHEDULER_POST_OP !== 'false',
+      postOpDays: postOpDays([1, 7, 30]),
+      dailyReportEnabled: process.env.MA_DAILY_REPORT !== 'false',
+      adSpendPullEnabled: process.env.MA_AD_SPEND_PULL !== 'false',
+      suggestionEnabled: process.env.MA_STRATEGY_SUGGESTION !== 'false',
+      anomalyEnabled: process.env.MA_ANOMALY !== 'false',
+      anomalyCooldownMs: int('MA_ANOMALY_COOLDOWN_MS', 6 * 3600 * 1000),
+      arrivalRateMin: num('MA_ALERT_ARRIVAL_RATE_MIN', 0.15),
+      dealRateMin: num('MA_ALERT_DEAL_RATE_MIN', 0.2),
+      repurchaseRateMin: num('MA_ALERT_REPURCHASE_RATE_MIN', 0.1),
+      newLeadDropPct: num('MA_ALERT_NEWLEAD_DROP_PCT', 60),
     },
     a2a: {
       baseUrl: (process.env.MA_A2A_BASE_URL ?? process.env.AGENT_A2A_BASE_URL ?? '')
@@ -226,11 +301,30 @@ export function configSummary(): Record<string, unknown> {
     admin: { configured: c.adminToken.length > 0 },
     outbox: c.outbox,
     outreach: { enabled: c.outreach.enabled, baseUrl: c.outreach.baseUrl || null, hasToken: c.outreach.token.length > 0 },
+    adPlatform: {
+      enabled: c.adPlatform.enabled,
+      kind: c.adPlatform.platform,
+      baseUrl: c.adPlatform.baseUrl || null,
+      hasToken: c.adPlatform.token.length > 0,
+      hasAdvertiserId: c.adPlatform.advertiserId.length > 0,
+    },
     scheduler: {
       enabled: c.scheduler.enabled,
       intervalMs: c.scheduler.intervalMs,
       recall: { enabled: c.scheduler.recallEnabled, firstHours: c.scheduler.recallFirstHours, secondHours: c.scheduler.recallSecondHours },
       welcome: { enabled: c.scheduler.welcomeEnabled, windowHours: c.scheduler.welcomeWindowHours },
+      postOp: { enabled: c.scheduler.postOpEnabled, days: c.scheduler.postOpDays },
+      dailyReport: { enabled: c.scheduler.dailyReportEnabled },
+      adSpendPull: { enabled: c.scheduler.adSpendPullEnabled },
+      suggestion: { enabled: c.scheduler.suggestionEnabled },
+      anomaly: {
+        enabled: c.scheduler.anomalyEnabled,
+        cooldownMs: c.scheduler.anomalyCooldownMs,
+        arrivalRateMin: c.scheduler.arrivalRateMin,
+        dealRateMin: c.scheduler.dealRateMin,
+        repurchaseRateMin: c.scheduler.repurchaseRateMin,
+        newLeadDropPct: c.scheduler.newLeadDropPct,
+      },
     },
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },
   };

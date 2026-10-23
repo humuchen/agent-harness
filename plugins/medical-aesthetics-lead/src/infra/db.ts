@@ -331,6 +331,125 @@ CREATE TABLE IF NOT EXISTS ma_ab_assignment (
   UNIQUE(experiment_id, lead_id)
 );
 CREATE INDEX IF NOT EXISTS ix_ab_assign_exp ON ma_ab_assignment(tenant_id, experiment_id, variant_key);
+
+-- 话术库（P1-⑤ 三层知识缺失的两层之一）：场景化接待 / 异议应对话术，合规状态内建。
+CREATE TABLE IF NOT EXISTS ma_script (
+  script_id          TEXT PRIMARY KEY,
+  tenant_id          TEXT NOT NULL DEFAULT 'default',
+  scene              TEXT NOT NULL,
+  grade              TEXT,
+  project            TEXT,
+  title              TEXT NOT NULL,
+  body               TEXT NOT NULL,
+  compliant_copy     TEXT,
+  compliance_reviewed INTEGER NOT NULL DEFAULT 0,
+  active             INTEGER NOT NULL DEFAULT 1,
+  updated_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_script_tenant ON ma_script(tenant_id, scene, active);
+
+-- 案例库（P1-⑤ 三层知识缺失的两层之二）：脱敏真实成交 / 咨询案例，强制 masked。
+CREATE TABLE IF NOT EXISTS ma_case (
+  case_id     TEXT PRIMARY KEY,
+  tenant_id   TEXT NOT NULL DEFAULT 'default',
+  project     TEXT,
+  category    TEXT,
+  intent      TEXT,
+  summary     TEXT NOT NULL,
+  concern     TEXT,
+  approach    TEXT,
+  outcome_note TEXT,
+  masked      INTEGER NOT NULL DEFAULT 1,
+  source_ref  TEXT,
+  tags        TEXT,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_case_tenant ON ma_case(tenant_id, project, category);
+
+-- 成交 / 消费订单（P1-⑧ 数据闭环底座：复购率与真实 ROI 的数据来源）。
+CREATE TABLE IF NOT EXISTS ma_order (
+  order_id    TEXT PRIMARY KEY,
+  tenant_id   TEXT NOT NULL DEFAULT 'default',
+  lead_id     TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  category    TEXT,
+  amount      REAL NOT NULL DEFAULT 0,
+  currency    TEXT NOT NULL DEFAULT 'CNY',
+  status      TEXT NOT NULL DEFAULT 'paid',
+  clinic_id   TEXT,
+  clinic_name TEXT,
+  consultant  TEXT,
+  source      TEXT,
+  paid_at     INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_order_tenant      ON ma_order(tenant_id, lead_id);
+CREATE INDEX IF NOT EXISTS ix_order_tenant_proj ON ma_order(tenant_id, project);
+CREATE INDEX IF NOT EXISTS ix_order_paid        ON ma_order(tenant_id, paid_at);
+
+-- 键值元数据（调度节奏守卫 / 异常告警去重等）。单租户维度即可。
+CREATE TABLE IF NOT EXISTS ma_meta (
+  k          TEXT PRIMARY KEY,
+  v          TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 经营日报落库（P1-⑥ 日报定时化）：每日一份快照，供看板回溯与手动调取。
+CREATE TABLE IF NOT EXISTS ma_daily_report (
+  tenant_id    TEXT NOT NULL DEFAULT 'default',
+  report_date  TEXT NOT NULL,
+  markdown     TEXT NOT NULL,
+  metrics_json TEXT,
+  generated_at INTEGER NOT NULL,
+  PRIMARY KEY (tenant_id, report_date)
+);
+CREATE INDEX IF NOT EXISTS ix_daily_report_tenant ON ma_daily_report(tenant_id, report_date);
+
+-- 广告投放消耗（P1-⑨ ROI 数据底座的另一端）：按日 × 渠道 × 计划记录花费与转化。
+-- 数据可来自投放平台 API 拉取，或运营经 /ad-spend/import 手动导入（无 API 资质时的诚实路径）。
+-- UNIQUE(tenant_id, spend_date, channel, campaign_id) 保证同日同计划重复导入幂等。
+CREATE TABLE IF NOT EXISTS ma_ad_spend (
+  spend_id     TEXT PRIMARY KEY,
+  tenant_id    TEXT NOT NULL DEFAULT 'default',
+  spend_date   TEXT NOT NULL,
+  channel      TEXT NOT NULL,
+  campaign_id  TEXT NOT NULL,
+  campaign_name TEXT,
+  spend        REAL NOT NULL DEFAULT 0,
+  currency     TEXT NOT NULL DEFAULT 'CNY',
+  impressions  INTEGER NOT NULL DEFAULT 0,
+  clicks       INTEGER NOT NULL DEFAULT 0,
+  conversions  INTEGER NOT NULL DEFAULT 0,
+  source       TEXT NOT NULL DEFAULT 'import',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_ad_spend_natural ON ma_ad_spend(tenant_id, spend_date, channel, campaign_id);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_date ON ma_ad_spend(tenant_id, spend_date);
+CREATE INDEX IF NOT EXISTS ix_ad_spend_channel ON ma_ad_spend(tenant_id, channel, spend_date);
+
+-- 策略建议（P2 自动策略闭环）：规则引擎基于日报真实指标产出「可执行建议」，
+-- 落库待人工确认（approved 才可执行）；**引擎只建议、不自动执行**，人工是硬闸门。
+-- suggestion_id = sug_{rule}_{YYYY-MM-DD}：同规则当天幂等，避免每日重复刷屏。
+CREATE TABLE IF NOT EXISTS ma_strategy_suggestion (
+  suggestion_id TEXT PRIMARY KEY,
+  tenant_id     TEXT NOT NULL DEFAULT 'default',
+  rule          TEXT NOT NULL,
+  severity      TEXT NOT NULL DEFAULT 'warn',
+  title         TEXT NOT NULL,
+  detail        TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  evidence_json TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  review_reason TEXT,
+  reviewed_by   TEXT,
+  reviewed_at   INTEGER,
+  executed_at   INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_suggestion_status ON ma_strategy_suggestion(tenant_id, status, created_at DESC);
 `;
 
 /**
@@ -400,6 +519,9 @@ async function runMigrations(conn: SqliteDatabase): Promise<void> {
   const leadCols = (leadResult as Record<string, unknown>[]).map((r) => String(r.name));
   if (!leadCols.includes('stage_updated_at')) {
     await conn.exec(`ALTER TABLE ma_lead ADD COLUMN stage_updated_at INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!leadCols.includes('preferences')) {
+    await conn.exec(`ALTER TABLE ma_lead ADD COLUMN preferences TEXT;`);
   }
 
   // --- ma_appointment analytics columns ---
@@ -472,6 +594,9 @@ async function runMigrationsAsync(conn: SqliteDatabase): Promise<void> {
   const leadCols = (leadResult as Record<string, unknown>[]).map((r) => String(r.name));
   if (!leadCols.includes('stage_updated_at')) {
     await conn.exec(`ALTER TABLE ma_lead ADD COLUMN stage_updated_at INTEGER NOT NULL DEFAULT 0;`);
+  }
+  if (!leadCols.includes('preferences')) {
+    await conn.exec(`ALTER TABLE ma_lead ADD COLUMN preferences TEXT;`);
   }
 
   // --- ma_appointment analytics columns ---
@@ -608,18 +733,8 @@ export async function dbHealth(): Promise<Record<string, unknown>> {
   try {
     const conn = await getDb();
     const counts: Record<string, number> = {};
-    for (const t of [
-      'ma_lead',
-      'ma_project',
-      'ma_clinic',
-      'ma_slot',
-      'ma_appointment',
-      'ma_outbox',
-      'ma_inbound_message',
-      'ma_schedule_job',
-      'ma_content',
-      'ma_ab_experiment',
-    ]) {
+    const tables = ['ma_lead', 'ma_project', 'ma_clinic', 'ma_slot', 'ma_appointment', 'ma_outbox', 'ma_inbound_message', 'ma_schedule_job', 'ma_content', 'ma_ab_experiment', 'ma_script', 'ma_case', 'ma_order', 'ma_meta', 'ma_daily_report', 'ma_ad_spend', 'ma_strategy_suggestion'];
+    for (const t of tables) {
       const row = await conn.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get();
       counts[t] = Number(row?.c ?? 0);
     }

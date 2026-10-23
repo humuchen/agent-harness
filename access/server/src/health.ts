@@ -102,7 +102,7 @@ export async function handleReadiness(
 
   // 检查3: MCP服务(如果有)
   try {
-    const { mcpManager } = await import('./mcp-manager');
+    const { mcpManager } = await import('./mcp-manager.js');
     const mcpServers = mcpManager.list();
     checks.mcp = {
       status: 'ok',
@@ -251,7 +251,7 @@ async function checkRedis(): Promise<HealthCheck> {
 
   try {
     // 使用Redis客户端进行PING测试
-    const { ping } = await import('./redis-client');
+    const { ping } = await import('./redis-client.js');
     const latency = await ping();
 
     if (latency < 0) {

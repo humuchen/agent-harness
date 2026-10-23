@@ -29,7 +29,8 @@ test('鉴权: JWT 成功 / 篡改 403 / 缺失 401 / 静态令牌兼容 / 开放
   };
   const mkReq = (auth) => ({ headers: auth ? { authorization: `Bearer ${auth}` } : {} });
 
-  const good = resolveTenant(mkReq(signJwt({ tenant: 'beta' }, 's3cret')), opts);
+  // P1 fail-closed：verifyJwt 要求 exp 存在且未过期，签发必须显式带 expiresInSec。
+  const good = resolveTenant(mkReq(signJwt({ tenant: 'beta' }, 's3cret', { expiresInSec: 3600 })), opts);
   assert.equal(good.tenantId, 'beta', '合法 JWT 应解析出 tenant');
 
   const tampered = resolveTenant(mkReq(signJwt({ tenant: 'beta' }, 's3cret') + 'x'), opts);
