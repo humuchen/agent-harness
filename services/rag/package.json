@@ -6,7 +6,8 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",
+    "build:raw": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "start:http": "node dist/index.js",
     "start:mcp": "RAG_TRANSPORT=mcp node dist/index.js",

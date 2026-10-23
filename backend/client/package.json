@@ -12,7 +12,8 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",
+    "build:raw": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "node test/smoke.mjs"
   },

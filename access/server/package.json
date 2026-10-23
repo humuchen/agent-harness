@@ -5,7 +5,8 @@
   "description": "HTTP+SSE server / dashboard for @agent-harness/core (deploys the agent harness and hosts the webapp).",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",
+    "build:raw": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "registry": "node dist/registry-server.js",
     "dev": "tsc -p tsconfig.json && node dist/server.js",

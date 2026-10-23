@@ -14,7 +14,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/obfuscate.mjs",
+    "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",
     "build:raw": "tsc -p tsconfig.json",
     "build:native": "make -C native/sandbox-exec",
     "test": "npm run build && node --test test/*.test.cjs"

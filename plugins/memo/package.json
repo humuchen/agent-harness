@@ -5,7 +5,8 @@
   "description": "备忘助手插件：备忘录/笔记的记录、检索与删除，非侵入式接入 agent-harness（技能落地执行样例）。",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",
+    "build:raw": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.cjs"
   },
   "license": "MIT",
