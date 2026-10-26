@@ -15,7 +15,7 @@
  * - 每条对客发布文案末尾统一追加风险提示（RISK_HINT）。
  */
 
-import { medicalAdRules } from '@agent-harness/medical-ad-guard';
+import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
 import { listKnowledge } from './kb-service';
 import { OutreachClient } from './outreach-client';
 import {
@@ -47,15 +47,12 @@ export interface AdViolation {
   reason: string;
 }
 
-/** 对（标题+正文）跑医疗广告红线正则。返回全部命中；空数组 = 通过。 */
+/**
+ * 对（标题+正文）跑医疗广告红线筛查。返回全部命中；空数组 = 通过。
+ * 中期：走 guard 包统一入口（硬化归一化匹配），与运行时护栏同源、可热更新同词库。
+ */
 export function screenContent(title: string, body: string): AdViolation[] {
-  const text = `${title}\n${body}`;
-  const hits: AdViolation[] = [];
-  for (const rule of medicalAdRules) {
-    const m = rule.re.exec(text);
-    if (m) hits.push({ matched: m[0], reason: rule.reason });
-  }
-  return hits;
+  return screenMedicalAdText(`${title}\n${body}`);
 }
 
 /** 筛查不通过时统一抛 INVALID_ARGUMENT（列出全部命中，便于运营改稿）。 */

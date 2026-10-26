@@ -9,66 +9,67 @@
  *   仅命中「疗效/安全绝对化 + 医疗语境」「诊断式话术」「术前术后真人对比」「固定价承诺」等。
  * - 输入/输出双向注册：既防止用户诱导模型作承诺（输入），也拦截模型最终输出（输出）。
  * - 幂等：进程内只注册一次（双插件调用安全）。
+ *
+ * 中期增强（词库外置化 + 对抗归一化 + 热更新）：
+ * - 词库外置：MEDICAL_AD_LEXICON_PATH 指向 JSON 词库（追加/替换内置默认），见 lexicon.ts。
+ * - 对抗归一化：规则以 normalize 模式注册 —— core hardenText 先做「全半角折叠 +
+ *   去零宽/emoji/符号/空白」再匹配，封堵「保~证不留疤」「１００％安全」等绕过。
+ * - 热更新：reloadMedicalAdLexicon() 反注册全部旧规则并按当前词库重注册；
+ *   MEDICAL_AD_LEXICON_POLL_MS > 0 时自动 mtime 轮询热更（默认关闭）。
  */
 
 import {
+  hardenText,
   registerInputRule,
   registerOutputRule,
   registerContextualOutputRule,
   type GuardrailOutputContext,
   type GuardrailResult,
 } from '@agent-harness/core';
-
-/** 医疗广告法违规模式（输入/输出共用同一组）。统一打 scope='medical-ad'，
- *  使本组规则仅在运行策略的 scopes 含 'medical-ad'（即医美 agent）时生效，
- *  默认/generic agent 传 scopes:[] 即自动排除，杜绝「没选医美 agent 也被拦」的误伤。 */
-const MEDICAL_AD_RULES: Array<{ re: RegExp; reason: string }> = [
-  // 1) 疗效/安全绝对化承诺（带医疗语境）
-  {
-    re: /保证.{0,10}(不留疤|不失败|不反弹|不疼痛|不出血|成功|安全|有效|无风险|无副作用|零风险)/,
-    reason: '医疗广告法：不得对功效、安全性作绝对化保证（如「保证不留疤/绝对安全」）',
-  },
-  {
-    re: /(100%|百分百|绝对|一定|肯定).{0,10}(成功|安全|有效|无风险|不留疤|不失败|根治)/,
-    reason: '医疗广告法：不得使用「100%/绝对/肯定」等表示功效、安全性的断言用语',
-  },
-  // 2) 诊断式话术（模型不得代替医生诊断）
-  {
-    re: /你这(是|应该|可能|就是|多半是).{0,8}(炎|病|症|囊肿|增生|下垂|畸形|过敏|肌无力)/,
-    reason: '医疗广告法：AI 不得作诊断结论，应引导面诊',
-  },
-  {
-    re: /(术前|术后).{0,8}(对比|真人|案例|效果图|前后照)/,
-    reason: '医疗广告法：不得使用患者术前术后形象作证明/对比',
-  },
-  // 3) 固定价承诺（应用区间/起）
-  {
-    re: /价格(只要|仅|固定|包干|一口价).{0,12}\d+\s*(元|块|rmb)/i,
-    reason: '医疗广告法：价格应示区间或「起」，不得承诺固定价',
-  },
-  // 4) 贬低同业 / 虚构资质
-  {
-    re: /(别去|千万别去|那家.{0,6}不行|比.{0,4}(某某|别家).{0,6}(好|强|便宜))/,
-    reason: '医疗广告法：不得贬低其他医疗机构或作不实比较',
-  },
-];
+import {
+  compileRule,
+  resolveLexicon,
+  escapeRegExp,
+  type LexiconRule,
+} from './lexicon';
 
 /** 本插件注册的所有规则统一作用域标签。 */
 export const MEDICAL_AD_SCOPE = 'medical-ad';
+
+/** 编译后的生效规则（lexicon 形态 + 编译产物），供插件内自检与导出。 */
+export interface CompiledAdRule {
+  re: RegExp;
+  reason: string;
+  id?: string;
+  normalize: boolean;
+}
+
+/** 当前生效的编译规则（随词库热更新重建）。 */
+let activeRules: CompiledAdRule[] = [];
+
+/** 当前生效的 KB 项目词正则（随词库热更新重建）。 */
+let activeKbTermsRe: RegExp = new RegExp('(?!)'); // 恒不匹配的空态
+
+/** 当前词库元信息（reload 后更新）。 */
+let lexiconMeta = { version: 'builtin', source: 'builtin', ruleCount: 0, kbTermCount: 0 };
+
+/**
+ * 按词库编译全部规则（normalize 缺省 true —— 默认规则享受硬化匹配）。
+ * fail-fast：任一非法 pattern 直接抛错，绝不带着残缺词库上线。
+ */
+function compileLexicon(rules: LexiconRule[]): CompiledAdRule[] {
+  return rules.map((r, i) => {
+    const re = compileRule(r, i);
+    return { re, reason: r.reason, ...(r.id !== undefined ? { id: r.id } : {}), normalize: r.normalize !== false };
+  });
+}
 
 /**
  * 知识库查空硬拦截（输出侧护栏）：当 project_kb_search 返回 found:false（知识库未收录）时，
  * 仅凭 prompt 纪律不足以阻止模型自行编造项目/疗程/功效/恢复期推荐，故在此做硬保障。
  * 命中即拦截，回复回退为「建议预约面诊」。词表刻意只覆盖「具体项目/治疗手段」，
  * 避开纯诉求词（黑头/闭口/出油），以降低对正常面诊引导话术的误伤。
- */
-const KB_EMPTY_PROJECT_HINT_RE =
-  /化学焕肤|果酸|小气泡|光子嫩肤|光子|M22|点阵激光|二氧化碳激光|皮秒|超皮秒|微针|中胚层|水光|热玛吉|超声炮|超声刀|线雕|埋线|玻尿酸|肉毒素|瘦脸针|除皱针|植发|种睫毛|纹眉|半永久|激光脱毛|酷塑|溶脂|吸脂|双眼皮|开眼角|隆鼻|隆胸|私密|妊娠纹|瘢痕|疤痕|黄褐斑|红血丝|刷酸|清痘/;
-
-/**
- * 解析 project_kb_search 的工具结果，兼容「对象 JSON」与「二次 stringify」两种形态，
- * 统一返回 { found, answer }（无法解析时返回 null）。检测 found:false 与提取 answer
- * 共用此解析，保证两层逻辑对序列化形态的处理一致。
+ * 对抗：对输出文本先 hardenText（剥分隔符/零宽/全半角），封堵「热-玛-吉」式拆词绕过。
  */
 function parseKbResult(result: string): { found: unknown; answer?: string } | null {
   let obj: unknown;
@@ -91,7 +92,8 @@ function kbEmptyGuard(text: string, ctx: GuardrailOutputContext): GuardrailResul
   // 解析工具结果：found===false 才视为「知识库未收录」；found:true 属正常命中，放行。
   const parsed = parseKbResult(tool.result);
   if (!parsed || parsed.found !== false) return { ok: true };
-  if (KB_EMPTY_PROJECT_HINT_RE.test(text)) {
+  // 硬化后匹配：剥掉拆词混淆（热-玛-吉 / 玻 尿 酸 / 表情隔断）再比对项目词。
+  if (activeKbTermsRe.test(hardenText(text))) {
     const safeReply = typeof parsed.answer === 'string' ? parsed.answer : undefined;
     return {
       ok: false,
@@ -104,19 +106,154 @@ function kbEmptyGuard(text: string, ctx: GuardrailOutputContext): GuardrailResul
 }
 
 let registered = false;
+/** 本次注册产生的反注册函数集合（reload 时逐个调用后重建）。 */
+let unregisters: Array<() => void> = [];
+/** 词库文件 mtime 轮询 timer（MEDICAL_AD_LEXICON_POLL_MS 开启时）。 */
+let pollTimer: NodeJS.Timeout | null = null;
+let lastMtimeMs = 0;
+
+/** 重建 KB 项目词正则（项目词按字面拼接，防元字符注入；词数 0 时恒不匹配）。 */
+function rebuildKbTermsRe(terms: string[]): void {
+  activeKbTermsRe = terms.length ? new RegExp(terms.map(escapeRegExp).join('|')) : new RegExp('(?!)');
+}
+
+/** 执行注册：编译当前词库 → 注册进 core（幂等由 registered 旗标与调用方纪律保证）。 */
+function activate(): void {
+  const lex = resolveLexicon();
+  activeRules = compileLexicon(lex.rules);
+  rebuildKbTermsRe(lex.kbTerms);
+  lexiconMeta = {
+    version: lex.version,
+    source: lex.source,
+    ruleCount: activeRules.length,
+    kbTermCount: lex.kbTerms.length,
+  };
+  // 同步原位重写导出数组（消费方持引用自动可见新词库）。
+  medicalAdRules.length = 0;
+  medicalAdRules.push(...activeRules);
+  unregisters = [];
+  for (const r of activeRules) {
+    // normalize 规则按硬化文本匹配（对抗分隔符/全半角/零宽绕过）。
+    unregisters.push(
+      registerInputRule(r.re, r.reason, MEDICAL_AD_SCOPE, { normalize: r.normalize }),
+    );
+    unregisters.push(
+      registerOutputRule(r.re, r.reason, MEDICAL_AD_SCOPE, { normalize: r.normalize }),
+    );
+  }
+  unregisters.push(registerContextualOutputRule(kbEmptyGuard, MEDICAL_AD_SCOPE));
+}
+
+/** 反注册全部规则（reload 前置步骤）。 */
+function deactivate(): void {
+  for (const unreg of unregisters) {
+    try {
+      unreg();
+    } catch {
+      /* 单条反注册失败不阻断重建 */
+    }
+  }
+  unregisters = [];
+}
+
+/**
+ * 词库热更新：反注册旧规则 → 按当前词库（含 MEDICAL_AD_LEXICON_PATH 外部文件）重注册。
+ * 未注册过时等价于首次注册。返回词库元信息供调用方审计。
+ */
+export function reloadMedicalAdLexicon(): {
+  version: string;
+  source: string;
+  ruleCount: number;
+  kbTermCount: number;
+} {
+  if (registered) {
+    deactivate();
+    activate();
+  } else {
+    registerMedicalAdGuardrail();
+  }
+  return { ...lexiconMeta };
+}
+
+/** 当前生效词库元信息（注册/热更新后可查）。 */
+export function medicalAdLexiconInfo(): Readonly<typeof lexiconMeta> {
+  return lexiconMeta;
+}
 
 /**
  * 注册医疗广告合规护栏（幂等）。任一插件 setup 时调用一次即可；
  * 客服与客资插件都调用本函数，互不影响，也不会重复注册。
+ * 词库文件自动热更：MEDICAL_AD_LEXICON_POLL_MS > 0 时启动 mtime 轮询（默认关闭）。
  */
 export function registerMedicalAdGuardrail(): void {
   if (registered) return;
-  for (const r of MEDICAL_AD_RULES) {
-    registerInputRule(r.re, r.reason, MEDICAL_AD_SCOPE);
-    registerOutputRule(r.re, r.reason, MEDICAL_AD_SCOPE);
-  }
-  registerContextualOutputRule(kbEmptyGuard, MEDICAL_AD_SCOPE);
+  activate();
   registered = true;
+
+  // 可选：词库文件 mtime 轮询热更（毫秒级间隔下限 5s，防打满磁盘）。
+  const pollMs = Number(process.env.MEDICAL_AD_LEXICON_POLL_MS ?? 0) || 0;
+  const path = (process.env.MEDICAL_AD_LEXICON_PATH ?? '').trim();
+  if (pollMs >= 5000 && path) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { statSync } = require('node:fs') as typeof import('node:fs');
+    try {
+      lastMtimeMs = statSync(path).mtimeMs;
+    } catch {
+      lastMtimeMs = 0;
+    }
+    pollTimer = setInterval(() => {
+      try {
+        const m = statSync(path).mtimeMs;
+        if (m !== lastMtimeMs) {
+          lastMtimeMs = m;
+          const meta = reloadMedicalAdLexicon();
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[medical-ad-guard] 词库热更新完成：version=${meta.version} rules=${meta.ruleCount} kbTerms=${meta.kbTermCount}`,
+          );
+        }
+      } catch (e) {
+        // 轮询期文件不可读：保持旧词库继续生效（fail-safe），下次 tick 重试。
+        // eslint-disable-next-line no-console
+        console.warn(`[medical-ad-guard] 词库热更新检查失败（沿用旧词库）：${e instanceof Error ? e.message : e}`);
+      }
+    }, pollMs);
+    if (typeof pollTimer.unref === 'function') pollTimer.unref();
+  }
 }
 
-export const medicalAdRules = MEDICAL_AD_RULES;
+/**
+ * 插件内自检入口：对任意文案跑当前生效词库（硬化归一化后匹配），
+ * 返回命中列表（供内容先审后发 / A/B 创建 / 手动排期等前置筛查复用）。
+ * 惰性激活：调用方（含测试）未显式 register 时，首次筛查自动编译词库并完成 core
+ * 注册（幂等）—— 保证与旧版「导入 medicalAdRules 即可用」行为等价。
+ */
+export function screenMedicalAdText(text: string): Array<{ matched: string; reason: string }> {
+  if (!registered || activeRules.length === 0) registerMedicalAdGuardrail();
+  const hardened = hardenText(text);
+  const hits: Array<{ matched: string; reason: string }> = [];
+  for (const r of activeRules) {
+    const target = r.normalize ? hardened : text;
+    const m = r.re.exec(target);
+    if (m) {
+      hits.push({ matched: m[0] ?? '', reason: r.reason });
+      if (hits.length >= 20) break; // 防超长命中列表
+    }
+  }
+  return hits;
+}
+
+/**
+ * 当前生效的规则编译列表（导出为稳定数组引用：词库热更新时**原位重写**，
+ * 既有消费方（内容筛查/A-B/手动排期）无需重取引用即自动使用新词库）。
+ * 兼容旧形态 { re, reason }（新增 id/normalize 为可选字段）。
+ */
+export const medicalAdRules: CompiledAdRule[] = [];
+
+/** 进程退出时清理（可选调用）：停掉词库轮询 timer。 */
+export function disposeMedicalAdGuard(): void {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}

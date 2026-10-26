@@ -590,30 +590,56 @@ export async function checkEgressAsync(url: string, net?: NetworkPolicy): Promis
 // 自定义输入规则（向后兼容）
 // ---------------------------------------------------------------------------
 
-const customInputRules: { re: RegExp; reason: string; scope?: string }[] = [];
+const customInputRules: { re: RegExp; reason: string; scope?: string; normalize?: boolean }[] = [];
 
 /**
  * 注册一条自定义输入校验规则（命中即拦截）。
  * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
  *   `scopes` 包含此标签时才生效；不传则始终生效（全局安全底线）。
+ * @param opts.normalize 为 true 时对 hardenText(text)（全半角折叠/去零宽/去符号与
+ *   空白，仅保留字母数字与 `%`）做匹配而非原文 —— 对抗「保~证不留疤」式分隔符
+ *   混淆。规则 pattern 应按硬化后文本编写（连续、无空白分隔）。
+ * @returns 反注册函数（调用后规则立即失效；领域词库热更新用）。
  */
-export function registerInputRule(re: RegExp, reason: string, scope?: string): void {
-  customInputRules.push({ re, reason, scope });
+export function registerInputRule(
+  re: RegExp,
+  reason: string,
+  scope?: string,
+  opts?: { normalize?: boolean }
+): () => void {
+  const entry = { re, reason, scope, normalize: opts?.normalize };
+  customInputRules.push(entry);
+  return () => {
+    const i = customInputRules.indexOf(entry);
+    if (i >= 0) customInputRules.splice(i, 1);
+  };
 }
 
 // ---------------------------------------------------------------------------
 // 自定义输出规则（与输入规则对称；供业务插件注册领域合规过滤，如医疗广告法）
 // ---------------------------------------------------------------------------
 
-const customOutputRules: { re: RegExp; reason: string; scope?: string }[] = [];
+const customOutputRules: { re: RegExp; reason: string; scope?: string; normalize?: boolean }[] = [];
 
 /**
  * 注册一条自定义输出校验规则（命中即拦截模型最终输出）。
  * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
  *   `scopes` 包含此标签时才生效；不传则始终生效（全局安全底线）。
+ * @param opts.normalize 语义同 registerInputRule。
+ * @returns 反注册函数（调用后规则立即失效；领域词库热更新用）。
  */
-export function registerOutputRule(re: RegExp, reason: string, scope?: string): void {
-  customOutputRules.push({ re, reason, scope });
+export function registerOutputRule(
+  re: RegExp,
+  reason: string,
+  scope?: string,
+  opts?: { normalize?: boolean }
+): () => void {
+  const entry = { re, reason, scope, normalize: opts?.normalize };
+  customOutputRules.push(entry);
+  return () => {
+    const i = customOutputRules.indexOf(entry);
+    if (i >= 0) customOutputRules.splice(i, 1);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -638,9 +664,15 @@ const customContextualOutputRules: { fn: ContextualOutputRule; scope?: string }[
  * 与 registerOutputRule（纯文本正则）互补：可据 recentTool 等上下文做精准判定。
  * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
  *   `scopes` 包含此标签时才生效；不传则始终生效。
+ * @returns 反注册函数（调用后规则立即失效；领域规则热更新用）。
  */
-export function registerContextualOutputRule(fn: ContextualOutputRule, scope?: string): void {
-  customContextualOutputRules.push({ fn, scope });
+export function registerContextualOutputRule(fn: ContextualOutputRule, scope?: string): () => void {
+  const entry = { fn, scope };
+  customContextualOutputRules.push(entry);
+  return () => {
+    const i = customContextualOutputRules.indexOf(entry);
+    if (i >= 0) customContextualOutputRules.splice(i, 1);
+  };
 }
 
 /**
@@ -653,6 +685,34 @@ function ruleInScope(ruleScope: string | undefined, pol?: GuardrailPolicy): bool
   if (!ruleScope) return true;
   if (!pol || !Array.isArray(pol.scopes)) return true;
   return pol.scopes.includes(ruleScope);
+}
+
+// ---------------------------------------------------------------------------
+// 文本硬化（对抗归一化，中期：领域护栏绕过对抗的基础设施）。
+// 纯文本归一化，不含任何业务语义：全半角折叠、去零宽/变体选择符、
+// 去 emoji/符号/标点/空白，仅保留字母、数字与 '%'（供 100% 类断言词存活）。
+// 领域规则经 opts.normalize  opted-in 后按硬化文本匹配，封堵「保~证不留疤」
+// 「１００％安全」等廉价绕过手段。核心保持零业务词。
+// ---------------------------------------------------------------------------
+/** 全角（FF01–FF5E）→ 半角（20–7E）；全角空格（U+3000）→ 空格。 */
+function foldFullWidth(s: string): string {
+  let out = '';
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code >= 0xff01 && code <= 0xff5e) out += String.fromCharCode(code - 0xfee0);
+    else if (code === 0x3000) out += ' ';
+    else out += ch;
+  }
+  return out;
+}
+
+/** 白名单保留：字母（含 CJK）+ 数字 + '%'；其余（符号/标点/空白/零宽/变体选择符）全剔除。 */
+const HARDEN_STRIP_RE = /[^\p{L}\p{N}%]+/gu;
+
+/** 硬化文本：全半角折叠 → 剔除符号/标点/空白/不可见字符。规则 pattern 应按其输出形态编写。 */
+export function hardenText(text: string): string {
+  if (typeof text !== 'string') return text;
+  return foldFullWidth(text).replace(HARDEN_STRIP_RE, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -784,9 +844,16 @@ export function checkInput(
   }
   const inj = detectInjection(text, p, strongOnly);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
+  // normalize 规则共享一次硬化（惰性计算，无 normalize 规则时零开销）。
+  let hardened: string | null = null;
   for (const r of customInputRules) {
     if (!ruleInScope(r.scope, p)) continue;
-    if (r.re.test(text)) return { ok: false, reason: r.reason };
+    if (r.normalize) {
+      if (hardened === null) hardened = hardenText(text);
+      if (r.re.test(hardened)) return { ok: false, reason: r.reason };
+    } else if (r.re.test(text)) {
+      return { ok: false, reason: r.reason };
+    }
   }
   return { ok: true };
 }
@@ -805,9 +872,15 @@ export function checkOutput(
   }
   const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
+  let hardened: string | null = null;
   for (const r of customOutputRules) {
     if (!ruleInScope(r.scope, p)) continue;
-    if (r.re.test(text)) return { ok: false, reason: r.reason };
+    if (r.normalize) {
+      if (hardened === null) hardened = hardenText(text);
+      if (r.re.test(hardened)) return { ok: false, reason: r.reason };
+    } else if (r.re.test(text)) {
+      return { ok: false, reason: r.reason };
+    }
   }
   // 上下文感知规则：仅当调用方注入了上下文时运行（无 ctx 的旧调用方不受影响），
   // 让领域插件据最近工具结果等业务上下文做精准拦截（如知识库查空后禁止自行推荐）。

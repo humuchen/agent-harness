@@ -28,6 +28,8 @@ export interface CsConfig {
   db: { driver: 'sqlite'; file: string; busyTimeoutMs: number };
   /** 订单/售后系统（外部上游，未配置则 cs_order_query fail-closed）。 */
   order: UpstreamConfig;
+  /** RAG 检索服务（短期：KB 语义检索优先上游；未配置则回退本地词面匹配）。 */
+  rag: UpstreamConfig;
   /** 渠道 webhook 验签密钥（未配置则拒绝所有 webhook）。 */
   webhookSecret: string;
   /** 管理写操作令牌（未配置则拒绝写入）。 */
@@ -80,6 +82,9 @@ export function getConfig(): CsConfig {
       busyTimeoutMs: int('CS_DB_BUSY_TIMEOUT_MS', 5000),
     },
     order: upstream('CS_ORDER'),
+    // 短期：RAG 语义检索上游（与 services/rag 的 POST /v1/retrieve 契约对齐）；
+    // 未配置 CS_RAG_BASE_URL 即 enabled=false，KB 检索回退本地 LIKE（存量行为零回归）。
+    rag: upstream('CS_RAG', { timeoutMs: 5000, retries: 1 }),
     webhookSecret: (process.env.CS_WEBHOOK_SECRET ?? '').trim(),
     adminToken: (process.env.CS_ADMIN_TOKEN ?? '').trim(),
     a2a: {
@@ -104,6 +109,7 @@ export function configSummary(): Record<string, unknown> {
     tenantId: c.tenantId,
     db: { driver: c.db.driver, file: c.db.file },
     order: { enabled: c.order.enabled, baseUrl: c.order.baseUrl || null },
+    rag: { enabled: c.rag.enabled, baseUrl: c.rag.baseUrl || null },
     webhook: { configured: c.webhookSecret.length > 0 },
     admin: { configured: c.adminToken.length > 0 },
     a2a: { configured: c.a2a.baseUrl.length > 0, baseUrl: c.a2a.baseUrl || null },

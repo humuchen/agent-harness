@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
 import { getConfig } from '../config';
 import { MaError } from '../infra/errors';
-import { medicalAdRules } from '@agent-harness/medical-ad-guard';
+import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
 import { RISK_HINT } from './outreach-templates';
 
 /** 实验可绑定的 SOP 触达 topic（与 scheduler executeJob 产出的 topic 精确对应）。 */
@@ -59,10 +59,14 @@ function bucketOf(experimentId: string, leadId: string, totalWeight: number): nu
 }
 
 function assertCompliantText(text: string, what: string): void {
-  for (const rule of medicalAdRules) {
-    if (rule.re.test(text)) {
-      throw new MaError('INVALID_ARGUMENT', `${what}命中医疗广告合规红线（${rule.reason}），已拒绝创建实验`);
-    }
+  // 中期：走 guard 包统一入口（硬化归一化），与运行时护栏同源、可热更新同词库。
+  const hits = screenMedicalAdText(text);
+  const first = hits[0];
+  if (first) {
+    throw new MaError(
+      'INVALID_ARGUMENT',
+      `${what}命中医疗广告合规红线（${first.reason}），已拒绝创建实验`,
+    );
   }
 }
 

@@ -42,6 +42,7 @@ import type { StepExecutor } from '../workflow/engine';
 import type { WorkflowDef } from '../workflow/types';
 import { HttpA2ATransport } from '../a2a/transport';
 import type { TaskEnvelope, TaskResult } from '../a2a/types';
+import { getProcessCronScheduler } from '../cron/scheduler';
 import { structLog, emitAlert } from '../telemetry';
 
 /** 插件生命周期状态。 */
@@ -150,6 +151,11 @@ export class PluginLoader {
    * disable 时对称调用，使「停用」真正生效：已禁用插件的看板 Tab 与 HTTP 路由不再暴露。
    */
   private readonly hostUnregs = new Map<string, Array<() => void>>();
+  /**
+   * 插件经 ctx.cron 注册的周期任务注销句柄（按 pluginId 收集）。
+   * disable/uninstall 时框架自动停止该插件的全部周期任务（中期：框架级 cron）。
+   */
+  private readonly cronUnregs = new Map<string, Array<() => void>>();
   private readonly registry: AgentRegistry;
   private readonly sandbox?: (manifest: PluginManifest) => Promise<void> | void;
   private readonly envAllowlist?: string[];
@@ -368,6 +374,8 @@ export class PluginLoader {
       // 「停用」不仅注销 AgentCard，还应让已禁用插件的看板 Tab 与 HTTP 路由不再暴露，
       // 否则 /api/plugins 仍会渲染其看板、对外仍可调其路由。
       this.unregisterHosts(id);
+      // 框架级 cron：停用插件时自动停止其全部周期任务（防幽灵任务继续跑）。
+      this.stopCronJobs(id);
       this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';
@@ -458,6 +466,24 @@ export class PluginLoader {
           const url = baseUrl ?? process.env.AGENT_A2A_BASE_URL ?? '';
           if (!url) throw new Error('a2a.send 需要 baseUrl 或 AGENT_A2A_BASE_URL');
           return new HttpA2ATransport(url).send(envelope);
+        },
+      },
+      cron: {
+        // 中期：框架级 cron —— 进程共享调度器 + 插件名前缀防冲突 + 生命周期自动停。
+        register: (opts: { name: string; everyMs: number; run: () => Promise<void> | void; leaderOnly?: boolean; jitterMs?: number }) => {
+          const unreg = getProcessCronScheduler().register({
+            ...opts,
+            name: `${manifest.id}:${opts.name}`,
+          });
+          const arr = this.cronUnregs.get(manifest.id) ?? [];
+          arr.push(unreg);
+          this.cronUnregs.set(manifest.id, arr);
+          return () => {
+            const list = this.cronUnregs.get(manifest.id) ?? [];
+            const i = list.indexOf(unreg);
+            if (i >= 0) list.splice(i, 1);
+            unreg();
+          };
         },
       },
       events: {
@@ -557,6 +583,20 @@ export class PluginLoader {
       }
     }
     this.hostUnregs.delete(id);
+  }
+
+  /** 停止插件经 ctx.cron 注册的全部周期任务（disable / uninstall 时框架自动调用）。 */
+  private stopCronJobs(id: string): void {
+    const unregs = this.cronUnregs.get(id);
+    if (!unregs) return;
+    for (const unreg of unregs) {
+      try {
+        unreg();
+      } catch {
+        /* 单个任务停止异常不影响其它 */
+      }
+    }
+    this.cronUnregs.delete(id);
   }
 
   /** 把 PluginManifest 的能力声明转成可路由的 AgentCard（复用既有 agent 代码路径）。 */

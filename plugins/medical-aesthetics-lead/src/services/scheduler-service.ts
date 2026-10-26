@@ -35,7 +35,7 @@ import { resolveAbText, withRiskHint } from './ab-service';
 import { generateDailyReport, scanAnomalies, metaGet, metaSet } from './report-service';
 import { pullAdSpend } from './ad-client';
 import { generateStrategySuggestions } from './strategy-service';
-import { medicalAdRules } from '@agent-harness/medical-ad-guard';
+import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -271,10 +271,11 @@ export async function scheduleManualJob(input: {
     throw new MaError('INVALID_ARGUMENT', `${input.jobType} 任务必须提供运营自拟文案 text`);
   }
   if (input.text) {
-    for (const rule of medicalAdRules) {
-      if (rule.re.test(input.text)) {
-        throw new MaError('INVALID_ARGUMENT', `文案命中医疗广告合规红线（${rule.reason}），已拒绝排期`);
-      }
+    // 中期：走 guard 包统一入口（硬化归一化），与运行时护栏同源、可热更新同词库。
+    const hits = screenMedicalAdText(input.text);
+    const first = hits[0];
+    if (first) {
+      throw new MaError('INVALID_ARGUMENT', `文案命中医疗广告合规红线（${first.reason}），已拒绝排期`);
     }
   }
   const scheduledKey =
@@ -453,10 +454,33 @@ export async function schedulerTick(): Promise<{
   return { plan, run, report, anomalies, adSpendPull, suggestions };
 }
 
-/** 启动后台调度（幂等；unref 不阻塞进程退出）。 */
-export function startScheduler(): void {
+/**
+ * 启动后台调度（幂等）。
+ * 中期：传入 register（ctx.cron.register）时挂到框架级 cron —— 单飞 + 可选 leader 收敛
+ * （多副本部署仅 leader 副本做规划/触达，防重复发送）+ 插件生命周期自动停。
+ * 不传 register 时保持原 setInterval 行为（嵌入/测试场景零回归）。
+ */
+export function startScheduler(
+  register?: (opts: {
+    name: string;
+    everyMs: number;
+    run: () => Promise<void> | void;
+    leaderOnly?: boolean;
+  }) => () => void,
+): void {
   const cfg = getConfig();
   if (!cfg.scheduler.enabled || timer) return;
+  if (register) {
+    register({
+      name: 'scheduler-tick',
+      everyMs: Math.max(250, cfg.scheduler.intervalMs),
+      leaderOnly: true,
+      run: async () => {
+        await schedulerTick();
+      },
+    });
+    return;
+  }
   timer = setInterval(() => {
     void schedulerTick().catch(() => {
       /* 单轮异常不阻断下一轮 */

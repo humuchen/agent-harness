@@ -55,4 +55,21 @@ export class QueryCache {
   clear(): void {
     this.map.clear();
   }
+
+  /**
+   * 短期（缓存失效联动）：按租户失效 —— ingest/删除文档后调用，
+   * 消除「TTL 窗口内检索返回旧索引结果」的脏读。键首段即租户（key() 契约）。
+   * @returns 失效的条目数。
+   */
+  invalidateTenant(tenant: string): number {
+    const prefix = `${tenant}|`;
+    let n = 0;
+    for (const k of [...this.map.keys()]) {
+      if (k.startsWith(prefix)) {
+        this.map.delete(k);
+        n++;
+      }
+    }
+    return n;
+  }
 }

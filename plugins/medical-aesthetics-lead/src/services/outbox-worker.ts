@@ -94,10 +94,31 @@ async function tickInner(): Promise<void> {
   }
 }
 
-/** 启动后台投递（幂等；unref 不阻塞进程退出）。 */
-export function startOutboxWorker(): void {
+/**
+ * 启动后台投递（幂等）。
+ * 中期：传入 register（ctx.cron.register）时挂到框架级 cron —— 单飞 + 可选 leader 收敛
+ * （claimBatch 原子性 + leader 收敛双保险，多副本不再重复出网投递）。
+ * 不传 register 时保持原 setInterval 行为（嵌入/测试场景零回归）。
+ */
+export function startOutboxWorker(
+  register?: (opts: {
+    name: string;
+    everyMs: number;
+    run: () => Promise<void> | void;
+    leaderOnly?: boolean;
+  }) => () => void,
+): void {
   const cfg = getConfig();
   if (!cfg.outbox.enabled || timer) return;
+  if (register) {
+    register({
+      name: 'outbox-tick',
+      everyMs: Math.max(250, cfg.outbox.intervalMs),
+      leaderOnly: true,
+      run: () => tick(),
+    });
+    return;
+  }
   timer = setInterval(() => {
     void tick();
   }, cfg.outbox.intervalMs);

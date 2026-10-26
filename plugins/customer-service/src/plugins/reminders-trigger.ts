@@ -205,44 +205,49 @@ class Scheduler {
     }
   }
 
-  start(onTrigger: (slot: number) => Promise<void>): void {
-    const tick = async (): Promise<void> => {
-      if (this.running) return;
-      this.running = true;
-      try {
-        const now = Date.now();
-        const slot = this.slotIndex(now);
-        if (slot <= this.state.lastExecutedSlot) return;
+  /**
+   * 单次轮询（中期：timer 外移到框架级 cron —— ctx.cron；本方法公开供其复用）。
+   * 单飞（running 防重叠）+ slot 幂等 + 重启 catch-up 语义不变。
+   */
+  async tick(onTrigger: (slot: number) => Promise<void>): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      const now = Date.now();
+      const slot = this.slotIndex(now);
+      if (slot <= this.state.lastExecutedSlot) return;
 
-        const from = Math.max(this.state.lastExecutedSlot + 1, slot - this.cfg.catchUpCap + 1);
-        for (let s = from; s <= slot; s++) {
-          try {
-            await onTrigger(s);
-            this.state.consecutiveFailures = 0;
-            this.state.lastError = undefined;
-          } catch (_e) {
-            const msg = _e instanceof Error ? _e.message : String(_e);
-            this.state.consecutiveFailures += 1;
-            this.state.lastError = msg;
-            this.emit({
-              type: 'plugin:alert',
-              plugin: 'cs-reminders-trigger',
-              reason: 'trigger_failed',
-              slot: s,
-              error: msg,
-              consecutive: this.state.consecutiveFailures,
-            });
-          }
-          this.state.lastExecutedSlot = s;
-          this.persist();
+      const from = Math.max(this.state.lastExecutedSlot + 1, slot - this.cfg.catchUpCap + 1);
+      for (let s = from; s <= slot; s++) {
+        try {
+          await onTrigger(s);
+          this.state.consecutiveFailures = 0;
+          this.state.lastError = undefined;
+        } catch (_e) {
+          const msg = _e instanceof Error ? _e.message : String(_e);
+          this.state.consecutiveFailures += 1;
+          this.state.lastError = msg;
+          this.emit({
+            type: 'plugin:alert',
+            plugin: 'cs-reminders-trigger',
+            reason: 'trigger_failed',
+            slot: s,
+            error: msg,
+            consecutive: this.state.consecutiveFailures,
+          });
         }
-      } finally {
-        this.running = false;
+        this.state.lastExecutedSlot = s;
+        this.persist();
       }
-    };
+    } finally {
+      this.running = false;
+    }
+  }
 
-    void tick();
-    this.timer = setInterval(() => void tick(), Math.min(this.cfg.intervalMs, 15_000));
+  /** 兼容路径：自带 setInterval（未接 ctx.cron 的嵌入场景）。插件主路径经 ctx.cron 注册。 */
+  start(onTrigger: (slot: number) => Promise<void>): void {
+    void this.tick(onTrigger);
+    this.timer = setInterval(() => void this.tick(onTrigger), Math.min(this.cfg.intervalMs, 15_000));
   }
 
   stop(): void {
@@ -298,32 +303,40 @@ export const csRemindersTriggerPlugin: PluginModule = {
       emit
     );
 
-    sched.start(async (slot) => {
-      ctx.logger.info('cs-reminders trigger firing', { slot });
-      const res = await postRunAndParse(baseUrl, apiKey, {
-        prompt: ANALYSIS_PROMPT,
-        agentId,
-        runId: `cs-reminder-analysis:${slot}`,
-        meta: { scheduled: true, slot, source: 'cs-reminders-trigger' },
-      });
-      if (!res.ok) {
-        throw new Error(`/api/run failed: HTTP ${res.status}`);
-      }
-      ctx.logger.info('cs-reminders trigger ok', {
-        slot,
-        finalLen: res.finalText.length,
-      });
-      // 输出由事件订阅者处理（写入 cs_reminder + SSE 推送）
-      emit({
-        type: 'cs:reminder:analysis_complete',
-        plugin: 'cs-reminders-trigger',
-        slot,
-        finalText: res.finalText,
-      });
+    // 中期：迁移到框架级 cron（ctx.cron —— 单飞 + timer unref + 插件 disable/uninstall 自动停止；
+    // leaderOnly：宿主注入 Redis 选举器时多副本仅 leader 触发分析，未注入时行为与单进程一致零回归）。
+    ctx.cron.register({
+      name: 'lead-analysis-slots',
+      everyMs: Math.min(intervalMs, 15_000),
+      leaderOnly: true,
+      run: () =>
+        sched.tick(async (slot) => {
+          ctx.logger.info('cs-reminders trigger firing', { slot });
+          const res = await postRunAndParse(baseUrl, apiKey, {
+            prompt: ANALYSIS_PROMPT,
+            agentId,
+            runId: `cs-reminder-analysis:${slot}`,
+            meta: { scheduled: true, slot, source: 'cs-reminders-trigger' },
+          });
+          if (!res.ok) {
+            throw new Error(`/api/run failed: HTTP ${res.status}`);
+          }
+          ctx.logger.info('cs-reminders trigger ok', {
+            slot,
+            finalLen: res.finalText.length,
+          });
+          // 输出由事件订阅者处理（写入 cs_reminder + SSE 推送）
+          emit({
+            type: 'cs:reminder:analysis_complete',
+            plugin: 'cs-reminders-trigger',
+            slot,
+            finalText: res.finalText,
+          });
+        }),
     });
 
     cleanupFns.push(() => sched.stop());
-    ctx.logger.info('cs-reminders-trigger started', { intervalMs, stateFile });
+    ctx.logger.info('cs-reminders-trigger started (framework cron)', { intervalMs, stateFile });
   },
 
   async onStop(ctx: PluginContext): Promise<void> {

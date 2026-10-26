@@ -18,6 +18,8 @@ export interface IngestInput {
   text: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  /** 长期首片：文档级 ACL（principal 列表）；缺省 = 租户内全员可见。 */
+  acl?: string[];
   chunk_size?: number;
   chunk_overlap?: number;
 }
@@ -179,7 +181,7 @@ async function embedAndWrite(
   docId: string,
   tenantId: string,
   items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }>,
-  base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown> }
+  base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown>; acl?: string[] }
 ): Promise<number> {
   const vectors: number[][] = [];
   for (const item of items) {
@@ -200,6 +202,7 @@ async function embedAndWrite(
       content: item.content,
       ...(base?.title ? { title: base.title } : {}),
       ...(base?.tags ? { tags: base.tags } : {}),
+      ...(base?.acl?.length ? { acl: base.acl } : {}),
       ...(Object.keys(meta).length ? { metadata: meta } : {}),
       vector: vectors[idx]!,
       created_at: Date.now(),

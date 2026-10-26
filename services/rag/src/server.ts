@@ -1,10 +1,12 @@
 /**
  * server.ts — 外部 RAG 的 HTTP REST 服务（独立部署单元）。
  *
- * 对外协议（设计文档第 4 节 + P2/P3）：
- *   POST /v1/retrieve        { query, top_k?, score_threshold?, filters?, expand? } -> RetrieveResponse
- *   POST /v1/ingest          { doc_id, title?, text, tags?, metadata? }             -> 202 { accepted, job_id }（异步）| 200 IngestResult（同步）
+ * 对外协议（设计文档第 4 节 + P2/P3 + 短中期增量）：
+ *   POST /v1/retrieve        { query, top_k?, score_threshold?, filters?, expand?, acl_principals? } -> RetrieveResponse
+ *   POST /v1/ingest          { doc_id, title?, text, tags?, metadata?, acl? }                        -> 202 { accepted, job_id }（异步）| 200 IngestResult（同步）
  *   GET  /v1/ingest/:jobId   异步任务状态
+ *   GET  /v1/documents       租户内文档列表（中期：文档管理 API）
+ *   DELETE /v1/documents/:docId  删除整篇文档（中期：文档管理 API）
  *   GET  /v1/health          { ok, chunks, dim, cache_size, ingest, metrics }
  *   GET  /v1/metrics         Prometheus 文本格式
  *
@@ -12,6 +14,13 @@
  * - Bearer token 鉴权：RAG_TOKENS="tenantA:secretA" 映射 secret->tenant。
  * - JWT（HS256）鉴权：RAG_JWT_SECRET 配置后启用；令牌 `tenant` 声明即租户（auth.ts）。
  * - tenant_id 服务端强制重写：ingest/retrieve 请求体里的 tenant_id 一律被覆盖，杜绝越权。
+ *
+ * 可观测（短期修复）：
+ * - trace 透传：X-Trace-Id 请求头（或 body.trace_id）全程复用，此前 /v1/retrieve 不读头，
+ *   builtin__rag_retrieve 发送的头被丢弃，跨服务 trace 实际断裂。
+ *
+ * 一致性（短期修复）：
+ * - ingest 成功（同步/异步任务完成）后按租户失效查询缓存，消除 TTL 窗口内旧结果脏读。
  *
  * P2：异步入库队列（RAG_ASYNC_INGEST，默认开）；P3：查询缓存（RAG_CACHE）、
  * 可观测（metrics）、按租户分片持久化（RAG_SHARD_BY_TENANT）。
@@ -85,6 +94,18 @@ function send(res: ServerResponse, code: number, obj: unknown): void {
   res.end(buf);
 }
 
+/**
+ * 短期（trace 透传修复）：提取外部 trace_id —— 优先 X-Trace-Id 请求头
+ * （builtin__rag_retrieve / access 层透传的主通道），兼容 body.trace_id。
+ * 截断 128 字符防头注入滥用；无效则返回 undefined（retrieve 侧生成新 id）。
+ */
+function incomingTraceId(req: IncomingMessage, body: Record<string, unknown> | undefined): string | undefined {
+  const h = req.headers['x-trace-id'];
+  const raw = (Array.isArray(h) ? h[0] : h) || (typeof body?.trace_id === 'string' ? body.trace_id : '');
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  return t ? t.slice(0, 128) : undefined;
+}
+
 export function createRagServer(opts: RagServerOptions) {
   // P6-B：存储后端可插拔（RAG_STORE_BACKEND=memory|qdrant，缺省 memory 存量行为不变）。
   const store = opts.store ?? createVectorStore(Number(process.env.RAG_EMBED_DIM || 256));
@@ -101,7 +122,11 @@ export function createRagServer(opts: RagServerOptions) {
   const queue = new IngestQueue(store, provider, {
     dataFile: opts.dataFile,
     shardByTenant: shard,
-    onDone: (job) => metrics.recordIngest(job.status === 'done'),
+    // 短期（缓存失效联动）：异步任务完成后按租户失效查询缓存（失败任务不动缓存）。
+    onDone: (job) => {
+      metrics.recordIngest(job.status === 'done');
+      if (job.status === 'done' && cacheEnabled) cache.invalidateTenant(job.tenant_id);
+    },
   });
 
   // P2: 生成层 LLM 提供商（可选启用）
@@ -145,12 +170,24 @@ export function createRagServer(opts: RagServerOptions) {
           tenant_id: auth.tenantId, // 服务端重写
           expand: !!body.expand,
           parent: !!body.parent, // P6-B 方案二二期：ParentDocument 父块展开
+          acl_principals: Array.isArray(body.acl_principals)
+            ? body.acl_principals.map(String) // 长期首片：文档级 ACL
+            : undefined,
+          trace_id: incomingTraceId(req, body), // 短期：trace 透传修复
         };
         if (!rreq.query) return send(res, 400, { error: 'query required' });
 
         const t0 = Date.now();
         const ck = cacheEnabled
-          ? cache.key(auth.tenantId, rreq.query, rreq.top_k ?? 5, rreq.score_threshold ?? 0, JSON.stringify(rreq.filters ?? {}))
+          ? cache.key(
+              auth.tenantId,
+              rreq.query,
+              rreq.top_k ?? 5,
+              rreq.score_threshold ?? 0,
+              // 长期首片：acl_principals 参与缓存键 —— 不同 principal 的可见集不同，
+              // 共用条目会造成「受限文档泄漏给无权限方」或反之的假阴性。
+              JSON.stringify(rreq.filters ?? {}) + '|' + JSON.stringify(rreq.acl_principals ?? []),
+            )
           : '';
         if (cacheEnabled) {
           const hit = cache.get(ck) as RetrieveResponse | undefined;
@@ -233,6 +270,7 @@ export function createRagServer(opts: RagServerOptions) {
           text: sourceBranch ? '' : String(body.text ?? ''),
           tags: body.tags,
           metadata: body.metadata,
+          acl: Array.isArray(body.acl) ? body.acl.map(String) : undefined, // 长期首片：文档级 ACL
           chunk_size: body.chunk_size,
           chunk_overlap: body.chunk_overlap,
         };
@@ -251,6 +289,7 @@ export function createRagServer(opts: RagServerOptions) {
               max_len: body.max_len,
             } as unknown as StructuredIngestInput);
             if (opts.dataFile) store.persist?.(opts.dataFile, shard);
+            if (cacheEnabled) cache.invalidateTenant(auth.tenantId); // 短期：缓存失效联动
             metrics.recordIngest(true);
             return send(res, 200, result);
           } catch (e) {
@@ -264,7 +303,7 @@ export function createRagServer(opts: RagServerOptions) {
         if (asyncIngest) {
           const job = queue.enqueue(input);
           metrics.recordIngestAccepted();
-          logTrace(`rag_job_${job.jobId}`, 'info', 'ingest accepted (async)', {
+          logTrace(incomingTraceId(req, body) ?? `rag_job_${job.jobId}`, 'info', 'ingest accepted (async)', {
             tenant: input.tenant_id,
             job_id: job.jobId,
           });
@@ -278,8 +317,37 @@ export function createRagServer(opts: RagServerOptions) {
 
         const result = await ingestDocument(store, provider, input);
         if (opts.dataFile) store.persist?.(opts.dataFile, shard);
+        if (cacheEnabled) cache.invalidateTenant(auth.tenantId); // 短期：缓存失效联动
         metrics.recordIngest(true);
         return send(res, 200, result);
+      }
+
+      // 中期（文档管理 API）：GET /v1/documents — 租户内文档列表
+      if (path === '/v1/documents' && method === 'GET') {
+        const auth = resolveTenant(req, authOpts);
+        if ('error' in auth) return send(res, auth.error, { error: auth.message });
+        if (typeof store.listDocs !== 'function') {
+          return send(res, 501, { error: '当前存储后端不支持文档列表（listDocs 未实现）' });
+        }
+        const docs = await store.listDocs(auth.tenantId);
+        return send(res, 200, { tenant_id: auth.tenantId, docs });
+      }
+
+      // 中期（文档管理 API）：DELETE /v1/documents/:docId — 删除整篇文档
+      const docMatch = /^\/v1\/documents\/([^/]+)$/.exec(path);
+      if (docMatch && method === 'DELETE') {
+        const auth = resolveTenant(req, authOpts);
+        if ('error' in auth) return send(res, auth.error, { error: auth.message });
+        const docId = decodeURIComponent(docMatch[1] ?? '');
+        if (!docId) return send(res, 400, { error: 'doc_id required' });
+        const deleted = await store.deleteByDoc(docId, auth.tenantId);
+        if (cacheEnabled) cache.invalidateTenant(auth.tenantId); // 与 ingest 同一一致性纪律
+        logTrace(incomingTraceId(req, undefined) ?? `rag_del_${Date.now().toString(36)}`, 'info', 'document deleted', {
+          tenant: auth.tenantId,
+          doc_id: docId,
+          deleted,
+        });
+        return send(res, 200, { deleted, doc_id: docId, tenant_id: auth.tenantId });
       }
 
       // RAG 评估端点：POST /v1/eval — 批量评估检索+生成质量
@@ -345,6 +413,8 @@ export function createRagServer(opts: RagServerOptions) {
               filters: body.filters,
               tenant_id: auth.tenantId,
               expand: !!body.expand,
+              acl_principals: Array.isArray(body.acl_principals) ? body.acl_principals.map(String) : undefined,
+              trace_id: incomingTraceId(req, body), // 短期：trace 透传修复
             },
             {
               maxTokens: body.max_tokens,

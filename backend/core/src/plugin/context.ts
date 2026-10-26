@@ -48,6 +48,26 @@ export interface PluginA2AApi {
   transport(baseUrl: string): HttpA2ATransport;
 }
 
+/**
+ * 框架级周期任务 API（中期：统一 cron + 可选 leader 收敛，替代插件各自 setInterval）。
+ * 进程共享同一 CronScheduler：单飞（重叠跳过）、异常隔离、timer 全部 unref。
+ * 多副本部署时由宿主装配层注入 leader 选举器，leaderOnly 任务全集群单执行。
+ */
+export interface PluginCronApi {
+  /**
+   * 注册周期任务。任务名自动加 `${pluginId}:` 前缀（跨插件防冲突）；
+   * 插件 disable/uninstall 时其任务被框架自动停止（无需插件自理）。
+   * @returns 注销函数（提前停止单个任务）。
+   */
+  register(opts: {
+    name: string;
+    everyMs: number;
+    run: () => Promise<void> | void;
+    leaderOnly?: boolean;
+    jitterMs?: number;
+  }): () => void;
+}
+
 /** 事件订阅 API：订阅核心事件总线，并向总线发事件（自动桥接 alert 通道）。 */
 export interface PluginEventApi {
   /** 订阅；返回注销函数。 */
@@ -136,6 +156,8 @@ export interface PluginContext {
   readonly workflow: PluginWorkflowApi;
   /** A2A 协作 API。 */
   readonly a2a: PluginA2AApi;
+  /** 框架级周期任务 API（disable/uninstall 自动停止本插件任务）。 */
+  readonly cron: PluginCronApi;
   /** 事件订阅/发布 API。 */
   readonly events: PluginEventApi;
   /** 服务端扩展宿主（server 注入；未注入则插件不挂 HTTP 路由）。 */

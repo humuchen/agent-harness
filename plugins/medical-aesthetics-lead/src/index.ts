@@ -202,8 +202,12 @@ export const leadPlugin: PluginModule = {
   },
 
   async onStart(ctx: PluginContext): Promise<void> {
-    startOutboxWorker();
-    startScheduler();
+    // 中期：后台轮询迁移到框架级 cron（ctx.cron）—— 单飞 + timer unref +
+    // leaderOnly（宿主注入 Redis 选举器时多副本仅 leader 执行，防重复规划/投递/发送；
+    // 未注入选举器时行为与原单进程 setInterval 一致，零回归）。
+    // 插件 disable/uninstall 时由 loader 自动停止，onStop 的 stop* 保留为兜底。
+    startOutboxWorker(ctx.cron.register);
+    startScheduler(ctx.cron.register);
 
     ctx.logger.info('medical-aesthetics-lead plugin started');
   },

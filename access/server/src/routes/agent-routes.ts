@@ -9,6 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 import {
+  deliverA2ACallback,
   getAgentRegistry,
   getTeamManager,
   isTenantRequired,
@@ -181,6 +182,8 @@ export async function handleAgentRoutes(
         status: 'success',
         output
       };
+      // 长期首片：信封带 callback 时异步回填结果（fire-and-forget；同步响应不受影响）。
+      void deliverA2ACallback(envelope, result);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ result }));
     } catch (e: any) {
@@ -189,6 +192,7 @@ export async function handleAgentRoutes(
         status: 'failed',
         error: e?.message ?? String(e)
       };
+      void deliverA2ACallback(envelope, result);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ result }));
     }

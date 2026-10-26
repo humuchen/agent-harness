@@ -22,8 +22,35 @@ export interface Chunk {
   title?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  /**
+   * 长期首片：文档级 ACL（principal 列表，如 ["user:u1","group:vip"]）。
+   * 无 acl / 空 = 对租户内所有调用方可见（存量数据零回归）；
+   * 有 acl = 仅 principals 与之有交集的调用方可见。
+   */
+  acl?: string[];
   vector: number[];
   created_at: number;
+}
+
+/** 文档摘要（GET /v1/documents 文档管理 API 返回项）。 */
+export interface DocSummary {
+  doc_id: string;
+  chunks: number;
+  title?: string;
+  /** 租户内该文档最新 chunk 的时间（近似文档更新时间）。 */
+  updated_at: number;
+  acl?: string[];
+}
+
+/**
+ * 文档级 ACL 判定（长期首片）。
+ * - 无 acl（或空数组）：对所有调用方可见（向后兼容存量数据）。
+ * - 有 acl：仅当调用方 principals 与 acl 有交集时可见；调用方无 principals 不可见。
+ */
+export function aclVisible(acl: string[] | undefined, principals: string[] | undefined): boolean {
+  if (!acl || acl.length === 0) return true;
+  if (!principals || principals.length === 0) return false;
+  return acl.some((p) => principals.includes(p));
 }
 
 export interface RetrieveResult {
@@ -57,12 +84,17 @@ export interface VectorStore {
   upsert(chunk: Chunk): MaybePromise<void>;
   /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk，返回删除数（后端无法计数时返回 0）。 */
   deleteByDoc(docId: string, tenantId: string): MaybePromise<number>;
-  /** 候选检索：tenant 内相似度 top_k（租户过滤在实现内强制，绝不跨租户）。 */
-  search(tenantId: string, queryVec: number[], topK: number): MaybePromise<RetrieveResult[]>;
+  /** 候选检索：tenant 内相似度 top_k（租户过滤在实现内强制，绝不跨租户）。
+   *  aclPrincipals 提供时，带 acl 的 chunk 仅在与 principals 有交集时返回（文档级 ACL）。 */
+  search(tenantId: string, queryVec: number[], topK: number, aclPrincipals?: string[]): MaybePromise<RetrieveResult[]>;
   /** 租户内全量 chunk（含 vector），供 BM25 / MMR 重建语料。仅 hybridCapable=true 保证可用。 */
   getChunks(tenantId: string): MaybePromise<Chunk[]>;
   /** chunk 计数（省略 tenant = 全库）。 */
   count(tenantId?: string): MaybePromise<number>;
+  /** 可选：租户内文档列表（文档管理 API 用；未实现的后端由调用方按 501 处理）。 */
+  listDocs?(tenantId: string): MaybePromise<DocSummary[]>;
+  /** 可选：进程内写版本号（写路径自增）。检索侧据此缓存 BM25 语料快照，消除每查询全量重建。 */
+  revision?(): number;
   /** 可选：JSON 持久化（Memory 实现；外部后端忽略）。 */
   persist?(file: string, shardByTenant?: boolean): void;
   /** 可选：从 JSON 恢复（Memory 实现）。 */
@@ -76,6 +108,8 @@ export class MemoryVectorStore implements VectorStore {
   /** P6-B：全量语料在内存 → 混合检索能力齐备。 */
   readonly hybridCapable = true;
   private chunks = new Map<string, Chunk>();
+  /** 写版本号（BM25 语料快照缓存依据）。 */
+  private rev = 0;
 
   constructor(dim: number) {
     this.dim = dim;
@@ -87,6 +121,7 @@ export class MemoryVectorStore implements VectorStore {
       throw new Error(`向量维度不匹配：期望 ${this.dim}，实际 ${c.vector.length}`);
     }
     this.chunks.set(c.chunk_id, c);
+    this.rev++;
   }
 
   /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk（增量更新）。 */
@@ -98,7 +133,36 @@ export class MemoryVectorStore implements VectorStore {
         n++;
       }
     }
+    if (n > 0) this.rev++;
     return n;
+  }
+
+  /** 进程内写版本号（检索侧 BM25 快照缓存失效依据）。 */
+  revision(): number {
+    return this.rev;
+  }
+
+  /** 租户内文档列表（文档管理 API）。 */
+  listDocs(tenantId: string): DocSummary[] {
+    const map = new Map<string, DocSummary>();
+    for (const c of this.chunks.values()) {
+      if (c.tenant_id !== tenantId) continue;
+      const d = map.get(c.doc_id);
+      if (!d) {
+        map.set(c.doc_id, {
+          doc_id: c.doc_id,
+          chunks: 1,
+          ...(c.title ? { title: c.title } : {}),
+          updated_at: c.created_at,
+          ...(c.acl?.length ? { acl: [...c.acl] } : {}),
+        });
+      } else {
+        d.chunks++;
+        if (!d.title && c.title) d.title = c.title;
+        if (c.created_at > d.updated_at) d.updated_at = c.created_at;
+      }
+    }
+    return [...map.values()].sort((a, b) => b.updated_at - a.updated_at);
   }
 
   /** 仅返回该租户的 chunk（权限隔离主路径）。 */
@@ -118,20 +182,24 @@ export class MemoryVectorStore implements VectorStore {
     return s;
   }
 
-  /** 候选检索：tenant 内余弦 top_k（未做阈值/融合，融合在 retrieve.ts）。 */
+  /** 候选检索：tenant 内余弦 top_k（未做阈值/融合，融合在 retrieve.ts）。
+   *  带 acl 的 chunk 仅在 principals 与之有交集时返回（文档级 ACL）。 */
   search(
     tenantId: string,
     queryVec: number[],
     topK: number,
+    aclPrincipals?: string[],
   ): RetrieveResult[] {
-    const scored = this.byTenant(tenantId).map((c) => ({
-      chunk_id: c.chunk_id,
-      doc_id: c.doc_id,
-      title: c.title,
-      content: c.content,
-      metadata: c.metadata,
-      score: MemoryVectorStore.cosine(queryVec, c.vector),
-    }));
+    const scored = this.byTenant(tenantId)
+      .filter((c) => aclVisible(c.acl, aclPrincipals))
+      .map((c) => ({
+        chunk_id: c.chunk_id,
+        doc_id: c.doc_id,
+        title: c.title,
+        content: c.content,
+        metadata: c.metadata,
+        score: MemoryVectorStore.cosine(queryVec, c.vector),
+      }));
     scored.sort((x, y) => y.score - x.score);
     return scored.slice(0, topK);
   }
@@ -276,6 +344,8 @@ export class SqliteVectorStore implements VectorStore {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private db: any;
   private readonly file: string;
+  /** 写版本号（BM25 语料快照缓存依据）。 */
+  private rev = 0;
 
   constructor(dim: number, file: string) {
     this.dim = dim;
@@ -309,6 +379,11 @@ export class SqliteVectorStore implements VectorStore {
     )`);
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_tenant ON chunks(tenant_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, tenant_id)');
+    // 长期首片（文档级 ACL）：存量库平滑迁移 —— 缺列时补 acl 列（TEXT，JSON 数组）。
+    const cols = this.db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'acl')) {
+      this.db.exec('ALTER TABLE chunks ADD COLUMN acl TEXT');
+    }
     // 存量维度校验：与 JSON load 的 fail-fast 语义一致（embedding 维度变了必须重建索引）。
     const row = this.db.prepare('SELECT vector FROM chunks LIMIT 1').get();
     if (row) {
@@ -327,12 +402,12 @@ export class SqliteVectorStore implements VectorStore {
     }
     this.db
       .prepare(
-        `INSERT INTO chunks (chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, vector, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO chunks (chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, acl, vector, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(chunk_id) DO UPDATE SET
            doc_id=excluded.doc_id, tenant_id=excluded.tenant_id, idx=excluded.idx,
            content=excluded.content, title=excluded.title, tags=excluded.tags,
-           metadata=excluded.metadata, vector=excluded.vector, created_at=excluded.created_at`
+           metadata=excluded.metadata, acl=excluded.acl, vector=excluded.vector, created_at=excluded.created_at`
       )
       .run(
         c.chunk_id,
@@ -343,11 +418,13 @@ export class SqliteVectorStore implements VectorStore {
         c.title ?? null,
         c.tags ? JSON.stringify(c.tags) : null,
         c.metadata ? JSON.stringify(c.metadata) : null,
+        c.acl?.length ? JSON.stringify(c.acl) : null,
         JSON.stringify(c.vector),
         c.created_at
       );
     // 向量缓存同步失效（upsert 覆盖语义）。
     this.vecCache.delete(c.chunk_id);
+    this.rev++;
   }
 
   /** 按 doc_id + tenant_id 删除整篇文档的所有 chunk（增量更新）。 */
@@ -360,7 +437,44 @@ export class SqliteVectorStore implements VectorStore {
     const r = this.db
       .prepare('DELETE FROM chunks WHERE doc_id = ? AND tenant_id = ?')
       .run(docId, tenantId);
-    return Number(r.changes ?? 0);
+    const n = Number(r.changes ?? 0);
+    if (n > 0) this.rev++;
+    return n;
+  }
+
+  /** 进程内写版本号（检索侧 BM25 快照缓存失效依据）。 */
+  revision(): number {
+    return this.rev;
+  }
+
+  /** 租户内文档列表（文档管理 API）。acl 为文档级统一值，取 MIN 聚合。 */
+  listDocs(tenantId: string): DocSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT doc_id, COUNT(*) AS chunks, MIN(NULLIF(title, '')) AS title,
+                MAX(created_at) AS updated_at, MIN(acl) AS acl
+         FROM chunks WHERE tenant_id = ? GROUP BY doc_id ORDER BY updated_at DESC`
+      )
+      .all(tenantId) as Array<Record<string, unknown>>;
+    return rows.map((r) => {
+      const aclRaw = r.acl as string | null;
+      let acl: string[] | undefined;
+      if (aclRaw) {
+        try {
+          const parsed = JSON.parse(aclRaw);
+          if (Array.isArray(parsed) && parsed.length) acl = parsed.map(String);
+        } catch {
+          /* 坏值按无 acl 处理 */
+        }
+      }
+      return {
+        doc_id: String(r.doc_id),
+        chunks: Number(r.chunks),
+        title: (r.title as string) ?? undefined,
+        updated_at: Number(r.updated_at ?? 0),
+        ...(acl?.length ? { acl } : {}),
+      };
+    });
   }
 
   /**
@@ -383,10 +497,11 @@ export class SqliteVectorStore implements VectorStore {
     return vec;
   }
 
-  /** 候选检索：tenant 内余弦 top_k（SQL 层强制租户过滤，零跨租户泄漏）。 */
-  search(tenantId: string, queryVec: number[], topK: number): RetrieveResult[] {
+  /** 候选检索：tenant 内余弦 top_k（SQL 层强制租户过滤，零跨租户泄漏）。
+   *  带 acl 的 chunk 仅在 principals 与之有交集时返回（文档级 ACL）。 */
+  search(tenantId: string, queryVec: number[], topK: number, aclPrincipals?: string[]): RetrieveResult[] {
     const rows = this.db
-      .prepare('SELECT chunk_id, doc_id, title, content, tags, metadata, vector FROM chunks WHERE tenant_id = ?')
+      .prepare('SELECT chunk_id, doc_id, title, content, tags, metadata, acl, vector FROM chunks WHERE tenant_id = ?')
       .all(tenantId) as Array<Record<string, unknown>>;
     const scored = rows.map((r) => {
       const vec = this.cachedVec(r.chunk_id as string, r.vector as string);
@@ -397,11 +512,13 @@ export class SqliteVectorStore implements VectorStore {
         content: r.content as string,
         tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : undefined,
         metadata: r.metadata ? (JSON.parse(r.metadata as string) as Record<string, unknown>) : undefined,
+        acl: r.acl ? (JSON.parse(r.acl as string) as string[]) : undefined,
         score: MemoryVectorStore.cosine(queryVec, vec),
       };
     });
-    scored.sort((x, y) => y.score - x.score);
-    return scored.slice(0, topK);
+    const visible = scored.filter((s) => aclVisible(s.acl, aclPrincipals));
+    visible.sort((x, y) => y.score - x.score);
+    return visible.slice(0, topK);
   }
 
   count(tenantId?: string): number {
@@ -428,7 +545,7 @@ export class SqliteVectorStore implements VectorStore {
   /** 租户内全部 chunk（含 vector），供 BM25 / 重排按需重建语料。 */
   getChunks(tenantId: string): Chunk[] {
     const rows = this.db
-      .prepare('SELECT chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, vector, created_at FROM chunks WHERE tenant_id = ? ORDER BY doc_id, idx')
+      .prepare('SELECT chunk_id, doc_id, tenant_id, idx, content, title, tags, metadata, acl, vector, created_at FROM chunks WHERE tenant_id = ? ORDER BY doc_id, idx')
       .all(tenantId) as Array<Record<string, unknown>>;
     return rows.map(rowToChunk);
   }
@@ -466,6 +583,7 @@ function rowToChunk(r: Record<string, unknown>): Chunk {
     title: (r.title as string) ?? undefined,
     tags: r.tags ? (JSON.parse(r.tags as string) as string[]) : undefined,
     metadata: r.metadata ? (JSON.parse(r.metadata as string) as Record<string, unknown>) : undefined,
+    acl: r.acl ? (JSON.parse(r.acl as string) as string[]) : undefined,
     vector: JSON.parse(r.vector as string) as number[],
     created_at: Number(r.created_at),
   };

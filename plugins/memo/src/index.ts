@@ -40,7 +40,9 @@ export const memoPlugin: PluginModule = {
   },
 
   async onStart(ctx: PluginContext): Promise<void> {
-    // 起提醒调度器：进程内每 15s 轮询全用户到期提醒，重启后自然补发（notified 持久化在库）。
+    // 起提醒调度器：每 15s 轮询全用户到期提醒，重启后自然补发（notified 持久化在库）。
+    // 中期：迁移到框架级 cron（ctx.cron —— 单飞 + timer unref + 插件 disable/uninstall 自动停止；
+    // leaderOnly：宿主注入 Redis 选举器时多副本仅 leader 轮询，未注入时与单进程行为一致零回归）。
     // fire 回调仅发事件/日志（事件携带 owner，宿主 reminder-bus 只推给本人连接；
     // 真正的用户通知由前端轮询 /api/plugins/memo/reminders 按 owner 收口兜底）。
     const scheduler = new ReminderScheduler(
@@ -59,10 +61,15 @@ export const memoPlugin: PluginModule = {
       (e) => ctx.events.emit(e),
       ctx.logger,
     );
-    scheduler.start();
+    ctx.cron.register({
+      name: 'reminder-poll',
+      everyMs: 15_000,
+      leaderOnly: true,
+      run: () => scheduler.triggerNow(),
+    });
 
     cleanupFns.push(() => scheduler.stop());
-    ctx.logger.info('memo plugin started (reminder scheduler on)');
+    ctx.logger.info('memo plugin started (reminder scheduler on framework cron)');
   },
 
   async onStop(ctx: PluginContext): Promise<void> {

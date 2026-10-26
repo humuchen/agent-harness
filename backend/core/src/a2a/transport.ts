@@ -36,10 +36,57 @@ export class LocalA2ATransport implements A2ATransport {
         traceId: envelope.traceId,
         fromAgent: envelope.fromAgent,
       });
-      return { taskId: envelope.taskId, status: 'success', output };
+      const result: TaskResult = { taskId: envelope.taskId, status: 'success', output };
+      // 长期首片：信封带 callback 时异步回填结果（fire-and-forget，不阻塞派发方主流程）。
+      deliverA2ACallback(envelope, result).catch(() => {/* 已在 helper 内告警 */ });
+      return result;
     } catch (e: any) {
-      return { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
+      const result: TaskResult = { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
+      deliverA2ACallback(envelope, result).catch(() => {/* 已在 helper 内告警 */ });
+      return result;
     }
+  }
+}
+
+/**
+ * 长期首片：A2A 异步回调投递 —— 此前 TaskEnvelope.callback 仅是声明字段，
+ * 传输层从不消费，异步任务完成/失败后派发方无从获知。
+ * 语义：任务终态时向 callback POST { taskId, status, output?, error?, traceId, fromAgent, toAgent }。
+ * fire-and-forget：10s 超时、失败仅告警（重试/死信留宿主队列层），
+ * 绝不影响任务结果本身（返回值已同步交给派发方）。
+ */
+export async function deliverA2ACallback(
+  envelope: TaskEnvelope,
+  result: TaskResult,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean> {
+  const url = envelope.callback;
+  if (!url) return false;
+  try {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        taskId: result.taskId,
+        status: result.status,
+        ...(result.output !== undefined ? { output: result.output } : {}),
+        ...(result.error !== undefined ? { error: result.error } : {}),
+        ...(envelope.traceId ? { traceId: envelope.traceId } : {}),
+        fromAgent: envelope.fromAgent,
+        toAgent: envelope.toAgent,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[a2a] callback 投递非 2xx：${res.status} → ${url}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[a2a] callback 投递失败（不影响任务结果）：${e instanceof Error ? e.message : e} → ${url}`);
+    return false;
   }
 }
 

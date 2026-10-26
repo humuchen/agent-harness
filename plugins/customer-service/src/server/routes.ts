@@ -6,7 +6,7 @@
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
-import { searchKb, insertKb } from '../repo/kb-repo';
+import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service';
 import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
 import { getConfig } from '../config';
 
@@ -105,13 +105,14 @@ export const csServerExtension: ServerExtension = {
     }) as PluginRouteHandler,
 
     // GET（检索）/ POST（写入） /api/plugins/customer-service/kb
+    // 短期：检索走 service（RAG 语义优先 → 本地 LIKE 降级）；POST 落库后尽力镜像 RAG。
     '/kb': (async (req, res) => {
       if (req.method === 'POST') {
         if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
         const body = await readBody(req);
         if (!body.question || !body.answer)
           return json(res, 400, { error: true, message: 'question & answer required' });
-        const row = insertKb({
+        const row = await addKbSvc({
           question: String(body.question),
           answer: String(body.answer),
           category: body.category ? String(body.category) : undefined,
@@ -120,7 +121,7 @@ export const csServerExtension: ServerExtension = {
       }
       const url = new URL(req.url ?? '', 'http://localhost');
       const q = url.searchParams.get('q') ?? '';
-      json(res, 200, q ? searchKb(q, 10) : []);
+      json(res, 200, q ? await searchKbSvc({ query: q, limit: 10 }) : []);
     }) as PluginRouteHandler,
 
     // GET /api/plugins/customer-service/reminders —— 查询待处理提醒

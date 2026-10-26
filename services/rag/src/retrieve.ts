@@ -11,7 +11,7 @@
  * - 所有读路径使用服务端重写的 tenant_id，严格租户内检索。
  */
 
-import { MemoryVectorStore, RetrieveResult, type VectorStore } from './store';
+import { MemoryVectorStore, RetrieveResult, aclVisible, type Chunk, type VectorStore } from './store';
 import { EmbeddingProvider, tokenize } from './embed';
 import { Bm25Corpus } from './bm25';
 import { mmrRerank } from './rerank';
@@ -42,6 +42,63 @@ export interface RetrieveRequest {
    * 父块内容（小块精度 + 大块上下文）。缺省 false（存量行为）。
    */
   parent?: boolean;
+  /**
+   * 长期首片：调用方 principal 列表（如 ["user:u1","group:vip"]）。
+   * 带 acl 的 chunk 仅在与 principals 有交集时可见；无 acl 数据不受影响（向后兼容）。
+   */
+  acl_principals?: string[];
+}
+
+/**
+ * 中期（BM25 语料快照缓存）：按 (tenant, store.revision) 缓存租户语料快照
+ * （chunks + BM25 语料 + 向量映射）。写路径 revision 自增 → 下次检索自动失效重建；
+ * 无写入期间多次检索零重建 —— 此前每次查询都执行 getChunks 全量导出 +
+ * Bm25Corpus.fromChunks 全量分词重建，是规模化下的最大 CPU 热点。
+ * 自定义 store 未实现 revision() 时回落逐查询重建（存量行为，零回归）。
+ * 上限 RAG_SNAPSHOT_MAX_TENANTS（默认 16 租户，LRU 淘汰，防长驻进程内存无界）。
+ */
+interface TenantSnapshot {
+  rev: number;
+  chunks: Chunk[];
+  corpus: Bm25Corpus;
+  vectorMap: Map<string, number[]>;
+}
+const snapshotCache = new Map<string, TenantSnapshot>();
+const SNAPSHOT_MAX = Math.max(1, Number(process.env.RAG_SNAPSHOT_MAX_TENANTS ?? 16) || 16);
+
+async function getTenantSnapshot(
+  store: VectorStore,
+  tenantId: string,
+): Promise<{ chunks: Chunk[]; corpus: Bm25Corpus; vectorMap: Map<string, number[]> }> {
+  if (!store.hybridCapable || typeof store.revision !== 'function') {
+    const chunks = await store.getChunks(tenantId);
+    return {
+      chunks,
+      corpus: Bm25Corpus.fromChunks(chunks),
+      vectorMap: new Map(chunks.map((c) => [c.chunk_id, c.vector] as const)),
+    };
+  }
+  const hit = snapshotCache.get(tenantId);
+  if (hit && hit.rev === store.revision()) {
+    snapshotCache.delete(tenantId); // LRU touch
+    snapshotCache.set(tenantId, hit);
+    return { chunks: hit.chunks, corpus: hit.corpus, vectorMap: hit.vectorMap };
+  }
+  const chunks = await store.getChunks(tenantId);
+  const rev = store.revision(); // 取数后再读版本：写入并发下宁可少缓存不缓存脏数据
+  const snapshot: TenantSnapshot = {
+    rev,
+    chunks,
+    corpus: Bm25Corpus.fromChunks(chunks),
+    vectorMap: new Map(chunks.map((c) => [c.chunk_id, c.vector] as const)),
+  };
+  if (snapshotCache.has(tenantId)) snapshotCache.delete(tenantId);
+  snapshotCache.set(tenantId, snapshot);
+  if (snapshotCache.size > SNAPSHOT_MAX) {
+    const oldest = snapshotCache.keys().next().value;
+    if (oldest !== undefined) snapshotCache.delete(oldest);
+  }
+  return { chunks: snapshot.chunks, corpus: snapshot.corpus, vectorMap: snapshot.vectorMap };
 }
 
 export interface RetrieveResponse {
@@ -65,14 +122,14 @@ function newTraceId(): string {
  * 命中子块（metadata.parent_id）按父聚合：content 替换为父块全文、chunk_id 换为父 id、
  * metadata.expanded_from 记来源子块；同父多子命中取最高分（results 已按分排序取首现）。
  * 非父子语料（无 parent_id 标记）原样返回（零回归）。
+ * 长期首片：父块自身带 acl 时按 principals 复核（防止子块可见而父块受限被间接泄漏）。
  */
 async function expandToParents(
   results: Scored[],
-  store: VectorStore,
-  tenantId: string
+  chunks: Chunk[],
+  principals: string[] | undefined
 ): Promise<Scored[]> {
   if (!results.some((r) => r.metadata?.parent_id)) return results;
-  const chunks = await store.getChunks(tenantId);
   const byId = new Map(chunks.map((c) => [c.chunk_id, c] as const));
   const out = new Map<string, Scored>();
   for (const r of results) {
@@ -84,7 +141,7 @@ async function expandToParents(
     const key = `parent:${parentId}`;
     if (out.has(key)) continue; // 同父取最高分（首现）
     const parent = byId.get(parentId);
-    if (!parent) {
+    if (!parent || !aclVisible(parent.acl, principals)) {
       if (!out.has(r.chunk_id)) out.set(r.chunk_id, r);
       continue;
     }
@@ -113,7 +170,8 @@ export async function retrieve(
   const traceId = req.trace_id ?? newTraceId();
 
   // 1) 稠密余弦候选（放大候选集供融合/重排）。P6-B：后端可为异步（Qdrant）。
-  const cand0 = await store.search(req.tenant_id, queryVec, topK * 4);
+  //    长期首片：acl_principals 透传 —— 带 acl 的 chunk 在 store 内先过滤。
+  const cand0 = await store.search(req.tenant_id, queryVec, topK * 4, req.acl_principals);
   // parent 模式：候选排除父块（父块仅作返回上下文单位，不参与命中）。
   const cand = req.parent
     ? cand0.filter((r) => r.metadata?.retrieval_role !== 'parent')
@@ -122,14 +180,17 @@ export async function retrieve(
     return { results: [], trace_id: traceId, latency_ms: Date.now() - t0 };
   }
 
-  // 2) 真 BM25：从租户全量 chunk 重建语料（含 IDF），对候选打分。
+  // 2) 真 BM25：租户语料（含 IDF），对候选打分。
   //    P6-B：仅 hybridCapable 后端（Memory / Qdrant-scroll）执行；纯检索后端降级为
   //    纯稠密检索（wBm25 项归零）， BM25 / 查询扩展自动关闭。
+  //    中期：语料经 getTenantSnapshot 按 (tenant, revision) 缓存，无写入期间零重建。
   const hybrid = store.hybridCapable;
-  const allChunks = hybrid ? await store.getChunks(req.tenant_id) : [];
-  const corpus = Bm25Corpus.fromChunks(allChunks);
-  const vectorMap = new Map<string, number[]>();
-  for (const c of allChunks) vectorMap.set(c.chunk_id, c.vector);
+  const snap = hybrid
+    ? await getTenantSnapshot(store, req.tenant_id)
+    : { chunks: [] as Chunk[], corpus: new Bm25Corpus(), vectorMap: new Map<string, number[]>() };
+  const allChunks = snap.chunks;
+  const corpus = snap.corpus;
+  const vectorMap = snap.vectorMap;
 
   const scored: Scored[] = cand.map((r) => {
     const dense = Math.max(0, r.score); // 余弦 clamp 到 [0,1]
@@ -170,9 +231,9 @@ export async function retrieve(
   }
 
   // 4.5) P6-B 方案二二期：父块展开 —— 命中子块按 parent_id 聚合为父块
-  //（同父取最高分；结果已按分排序取首现）。父块内容从全量语料取（hybrid 后端）。
+  //（同父取最高分；结果已按分排序取首现）。父块内容取自语料快照（hybrid 后端）。
   if (req.parent && store.hybridCapable) {
-    ordered = await expandToParents(ordered, store, req.tenant_id);
+    ordered = await expandToParents(ordered, allChunks, req.acl_principals);
   }
 
   // 5) 阈值 + 取 top_k

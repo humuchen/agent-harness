@@ -3,26 +3,35 @@ import { search, add } from '../services/kb-service';
 import { errorResult } from '../infra/errors';
 
 /**
- * cs_kb_search：检索知识库/FAQ（真实落库，词面匹配）。
+ * cs_kb_search：检索知识库/FAQ。
+ * 短期：RAG 语义检索优先（CS_RAG_BASE_URL），未配置/失败回退本地词面匹配。
+ * 返回条目带 source（rag|local）与 score，便于模型与看板判断检索质量。
  */
 export function registerKbTools(tools: ToolRegistry): void {
   tools.register(
     'cs_kb_search',
-    '检索知识库/FAQ，返回命中的问答条目；客服应基于检索结果回答，禁止编造政策。',
+    '检索知识库/FAQ（语义检索优先，自动回退词面匹配），返回命中问答条目及来源；客服应基于检索结果回答，禁止编造政策。',
     {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '客户问题关键词' },
+        query: { type: 'string', description: '客户问题（自然语言，可整句）' },
         limit: { type: 'number', description: '返回条数（默认 5）' },
       },
       required: ['query'],
     },
     async (args: Record<string, unknown>) => {
       try {
-        const rows = search({ query: String(args.query ?? ''), limit: Number(args.limit) || undefined });
+        const rows = await search({ query: String(args.query ?? ''), limit: Number(args.limit) || undefined });
         return {
           count: rows.length,
-          items: rows.map((r) => ({ question: r.question, answer: r.answer, category: r.category })),
+          source: rows[0]?.source ?? 'local',
+          items: rows.map((r) => ({
+            question: r.question,
+            answer: r.answer,
+            category: r.category,
+            ...(r.score !== undefined ? { score: Number(r.score.toFixed(4)) } : {}),
+            source: r.source,
+          })),
         };
       } catch (e) {
         return errorResult(e);
@@ -44,7 +53,7 @@ export function registerKbTools(tools: ToolRegistry): void {
     },
     async (args: Record<string, unknown>) => {
       try {
-        const r = add({
+        const r = await add({
           question: String(args.question ?? ''),
           answer: String(args.answer ?? ''),
           category: args.category ? String(args.category) : undefined,

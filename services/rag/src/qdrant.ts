@@ -15,7 +15,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Chunk, RetrieveResult, VectorStore } from './store';
+import { aclVisible, type Chunk, type RetrieveResult, type VectorStore } from './store';
 
 /** chunk_id → 确定性 UUID（md5 摊平 8-4-4-4-12）。同 chunk_id 恒得同点 id（幂等 upsert）。 */
 function chunkIdToPointId(chunkId: string): string {
@@ -39,6 +39,7 @@ function payloadToChunk(id: string, payload: Record<string, unknown>, vector: nu
     content: String(payload.content ?? ''),
     ...(payload.title != null ? { title: String(payload.title) } : {}),
     ...(Array.isArray(payload.tags) ? { tags: payload.tags.map(String) } : {}),
+    ...(Array.isArray(payload.acl) ? { acl: payload.acl.map(String) } : {}),
     ...(payload.metadata && typeof payload.metadata === 'object'
       ? { metadata: payload.metadata as Record<string, unknown> }
       : {}),
@@ -63,6 +64,12 @@ export class QdrantVectorStore implements VectorStore {
   private readonly collection: string;
   /** 幂等建表（首个操作触发一次；并发调用共享同一 Promise）。 */
   private readyPromise: Promise<void> | null = null;
+  /**
+   * 进程内写版本号（BM25 语料快照缓存依据）。单写者进程内精确；
+   * 多写者共享同一 Qdrant 集合时不感知他方写入 —— 检索侧快照可能滞后，
+   * 属已知取舍（多副本写入应按租户分片路由到单写者）。
+   */
+  private rev = 0;
 
   constructor(opts: QdrantStoreOptions) {
     this.dim = opts.dim;
@@ -125,6 +132,7 @@ export class QdrantVectorStore implements VectorStore {
         },
       ],
     });
+    this.rev++;
   }
 
   async deleteByDoc(docId: string, tenantId: string): Promise<number> {
@@ -138,10 +146,16 @@ export class QdrantVectorStore implements VectorStore {
       },
     });
     // Qdrant 的 delete 响应不返回精确删除数：返回 0 并在注释中标明（调用方仅作日志用途）。
+    this.rev++;
     return 0;
   }
 
-  async search(tenantId: string, queryVec: number[], topK: number): Promise<RetrieveResult[]> {
+  /** 进程内写版本号（BM25 语料快照缓存失效依据；单写者精确，见类注释）。 */
+  revision(): number {
+    return this.rev;
+  }
+
+  async search(tenantId: string, queryVec: number[], topK: number, aclPrincipals?: string[]): Promise<RetrieveResult[]> {
     await this.ensureCollection();
     type SearchResp = {
       result?: Array<{ id: string | number; score: number; payload?: Record<string, unknown> }>;
@@ -156,19 +170,24 @@ export class QdrantVectorStore implements VectorStore {
         filter: { must: [{ key: 'tenant_id', match: { value: tenantId } }] },
       }
     );
-    return (resp.result ?? []).map((p) => {
-      const payload = p.payload ?? {};
-      return {
-        chunk_id: String(payload.chunk_id ?? String(p.id)),
-        doc_id: String(payload.doc_id ?? ''),
-        ...(payload.title != null ? { title: String(payload.title) } : {}),
-        content: String(payload.content ?? ''),
-        score: Number(p.score ?? 0),
-        ...(payload.metadata && typeof payload.metadata === 'object'
-          ? { metadata: payload.metadata as Record<string, unknown> }
-          : {}),
-      };
-    });
+    return (resp.result ?? [])
+      .map((p) => {
+        const payload = p.payload ?? {};
+        return {
+          chunk_id: String(payload.chunk_id ?? String(p.id)),
+          doc_id: String(payload.doc_id ?? ''),
+          ...(payload.title != null ? { title: String(payload.title) } : {}),
+          content: String(payload.content ?? ''),
+          score: Number(p.score ?? 0),
+          ...(payload.metadata && typeof payload.metadata === 'object'
+            ? { metadata: payload.metadata as Record<string, unknown> }
+            : {}),
+          // ACL 过滤标记（临时字段，随 map 后过滤剥离）
+          __acl: Array.isArray(payload.acl) ? (payload.acl as unknown[]).map(String) : undefined,
+        };
+      })
+      .filter((r) => aclVisible(r.__acl, aclPrincipals))
+      .map(({ __acl: _acl, ...rest }) => rest as RetrieveResult);
   }
 
   /** scroll 分页全量导出（with_vector）——混合检索语料重建。 */
