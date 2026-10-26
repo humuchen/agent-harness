@@ -33,6 +33,46 @@ test('单次对话：直接返回最终文本', async () => {
   assert.equal(out, '你好');
 });
 
+// P1 并发修复：同一实例并发 run 默认串行排队（防 Memory 窗口/预算字段互相覆盖）
+test('并发 run：同一实例默认串行排队，结果互不干扰', async () => {
+  const order = [];
+  const slowLLM = async (messages) => {
+    // 记录 LLM 实际开始执行的时间序（排队应保证串行：a 完成后 b 才开始）
+    order.push(`start:${messages[0].content ?? ''}`);
+    await new Promise((r) => setTimeout(r, 20));
+    order.push('end');
+    return { content: 'ok', tool_calls: [] };
+  };
+  const h = new AgentHarness({ llm: slowLLM, tools: new ToolRegistry() });
+  const [a, b] = await Promise.all([h.run('a'), h.run('b')]);
+  assert.equal(a, 'ok');
+  assert.equal(b, 'ok');
+  // 串行语义：第二个 run 的 LLM 调用必须在第一个 run 结束（end）之后才开始。
+  const startIdxs = order.reduce((acc, x, i) => (x.startsWith('start:') ? (acc.push(i), acc) : acc), []);
+  const endIdxs = order.reduce((acc, x, i) => (x === 'end' ? (acc.push(i), acc) : acc), []);
+  assert.ok(
+    startIdxs.length === 2 && endIdxs.length === 2 && endIdxs[0] < startIdxs[1],
+    `第二个 run 应在第一个结束后才进入主循环（实际时序：${order.join(' ')}）`
+  );
+});
+
+// P1 并发修复：HARNESS_CONCURRENT_RUN=fail 时并发 run 显式拒绝
+test('并发 run：fail-fast 模式显式拒绝并发', async () => {
+  process.env.HARNESS_CONCURRENT_RUN = 'fail';
+  try {
+    const h = new AgentHarness({ llm: hangingLLM(), tools: new ToolRegistry() });
+    const first = h.run('first');
+    await assert.rejects(
+      h.run('second'),
+      /并发 run 被拒绝/
+    );
+    // 清理挂起的第一个 run（abort 语义由测试进程退出兜底，这里仅保证断言）
+    void first;
+  } finally {
+    delete process.env.HARNESS_CONCURRENT_RUN;
+  }
+});
+
 test('工具循环：工具结果回灌后再产出最终文本', async () => {
   const tools = new ToolRegistry();
   tools.register('double', '翻倍', objectParams({ x: { type: 'number' } }, ['x']), (a) => Number(a.x) * 2);

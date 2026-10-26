@@ -43,31 +43,38 @@ export function jsonOut(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }
 
+/** 剥离 ANSI 转义序列（P2 安全修复：服务端事件字段 String() 后直写终端，
+ * 被入侵/异常的服务端可借字段注入光标控制/清屏序列；JSON.stringify 路径已安全）。 */
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+
 /** 把一个 SSE 事件渲染成单行摘要，供人类阅读。 */
 export function summarizeEvent(ev: Record<string, unknown>): string {
   const { type, ...rest } = ev;
   switch (type) {
     case 'job:accepted':
-      return `job ${String(ev.jobId)}`;
+      return `job ${stripAnsi(String(ev.jobId))}`;
     case 'env:status': {
       const env = (ev.env as Record<string, unknown>) ?? {};
-      return `env ${String(env.envId)} ${String(env.status)}${env.envUrl ? ' → ' + String(env.envUrl) : ''}`;
+      return `env ${stripAnsi(String(env.envId))} ${stripAnsi(String(env.status))}${env.envUrl ? ' → ' + stripAnsi(String(env.envUrl)) : ''}`;
     }
     case 'verify:assert':
-      return `assert ${String(ev.name)} ${ev.passed ? c('green', 'PASS') : c('red', 'FAIL')}`;
+      return `assert ${stripAnsi(String(ev.name))} ${ev.passed ? c('green', 'PASS') : c('red', 'FAIL')}`;
     case 'verify:group':
-      return `group ${String(ev.name)}`;
+      return `group ${stripAnsi(String(ev.name))}`;
     case 'verify:summary':
-      return `summary ${ev.passed ? c('green', 'PASS') : c('red', 'FAIL')} score=${String(ev.score)}`;
+      return `summary ${ev.passed ? c('green', 'PASS') : c('red', 'FAIL')} score=${stripAnsi(String(ev.score))}`;
     case '_done':
     case '_verify_done':
     case '_env_done':
-      return `${String(type)}`;
+      return `${stripAnsi(String(type))}`;
     default: {
       const restStr = Object.keys(rest).length
         ? ' ' + JSON.stringify(rest)
         : '';
-      return `${String(type)}${restStr}`;
+      return `${stripAnsi(String(type))}${restStr}`;
     }
   }
 }

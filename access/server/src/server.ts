@@ -90,7 +90,7 @@ import {
 } from './views';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers';
+import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString, writeSseFrame } from './http-helpers';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext';
@@ -1751,6 +1751,13 @@ const server = createServer(
         const send = startSse(res, req);
         // 连接建立即时确认，便于前端判定通道已就绪。
         send({ type: 'chat:ready', owner: ctx.sub });
+        // P2 修复：补 SSE 保活心跳（此前注释声称「心跳保活」但实现无 ping）——长静默
+        // 连接会被中间代理（nginx 默认 60s）掐断，且占用 SSE 连接槽位。注释帧对
+        // SSE 解析透明（对齐 run-routes.ts 的 pingTimer 模式）。
+        const ping = setInterval(() => {
+          writeSseFrame(res, ': ping\n\n', () => res.writableEnded || res.destroyed);
+        }, 15_000);
+        ping.unref?.();
         const unsub = subscribeChatEvents(ctx.sub, (e) => {
           try {
             send(e);
@@ -1759,6 +1766,7 @@ const server = createServer(
           }
         });
         res.on('close', () => {
+          clearInterval(ping);
           try {
             unsub();
           } catch {
@@ -1785,6 +1793,11 @@ const server = createServer(
         const send = startSse(res, req);
         // 连接建立即时确认（带 owner，便于前端核对归属）。
         send({ type: 'events:ready', owner: ctx.sub });
+        // P2 修复：补 SSE 保活心跳（同 chat/stream，注释帧对解析透明）。
+        const ping = setInterval(() => {
+          writeSseFrame(res, ': ping\n\n', () => res.writableEnded || res.destroyed);
+        }, 15_000);
+        ping.unref?.();
         // 支持 role 参数：role=service 订阅客服业务提醒，默认 role=user 订阅备忘提醒
         const url = new URL(req.url ?? '', 'http://localhost');
         const role = url.searchParams.get('role') === 'service' ? 'service' : 'user';
@@ -1796,6 +1809,7 @@ const server = createServer(
           }
         }, role);
         res.on('close', () => {
+          clearInterval(ping);
           try {
             unsub();
           } catch {

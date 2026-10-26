@@ -131,16 +131,47 @@ export class AgentHarness {
    * 运行入口：先把子系统旁路事件通道（run-events ALS）接到 onEvent，再进入主循环。
    * Jev 决策模型等在 run 链路内的直连调用（护栏门禁 / 上下文压缩 / 内置工具）经此汇入事件流，
    * 对外事件行为与既往完全一致（sink 仅新增事件，不改动既有事件序列）。
+   *
+   * P1 并发修复：同一实例此前无并发互斥——runInner 会重置实例级自适应预算字段、
+   * load/save 同一 Memory 窗口（后 save 覆盖先 save）、递增共享的指代消解 turn 计数，
+   * 并发 run 时互相覆盖产生状态错乱。现默认按到达顺序**串行排队**（同一会话的并发
+   * 输入按序处理，语义最接近单会话现实）；server 接入层每 run 新建实例，不受影响。
+   * HARNESS_CONCURRENT_RUN=fail 可改为 fail-fast（显式拒绝并发，返回明确错误）。
    */
   async run(
     userInput: string,
     imageAttachments?: Array<{ url: string; name: string; type: string }>
   ): Promise<string> {
-    return runWithEventSink(
-      (e) => this.opts.onEvent?.(e as HarnessEvent),
-      () => this.runInner(userInput, imageAttachments)
+    const failFast =
+      (process.env.HARNESS_CONCURRENT_RUN ?? '').trim().toLowerCase() === 'fail';
+    if (failFast && this.runPending > 0) {
+      return Promise.reject(
+        new Error('AgentHarness: 并发 run 被拒绝（HARNESS_CONCURRENT_RUN=fail；同一实例的上一次 run 尚未结束）')
+      );
+    }
+    this.runPending++;
+    const gate = this.runChain.then(() =>
+      runWithEventSink(
+        (e) => this.opts.onEvent?.(e as HarnessEvent),
+        () => this.runInner(userInput, imageAttachments)
+      )
     );
+    // 链上吞错传播：某个 run 失败不得阻塞后续排队的 run（错误仍由 gate 返回给本次调用方）。
+    this.runChain = gate.then(
+      () => {
+        this.runPending--;
+      },
+      () => {
+        this.runPending--;
+      }
+    );
+    return gate;
   }
+
+  /** 串行化链：所有 run 按到达顺序在此排队（run() 内部维护）。 */
+  private runChain: Promise<void> = Promise.resolve();
+  /** 已接收（含排队中）尚未结束的 run 数，fail-fast 模式据此拒绝并发。 */
+  private runPending = 0;
 
   private async runInner(
     userInput: string,

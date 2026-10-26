@@ -29,10 +29,15 @@
  */
 
 import { parseArgs } from 'node:util';
+import { createRequire } from 'node:module';
 import { AgentClient } from '@agent-harness/client';
 import { makeClient } from './client.js';
 import { runStream } from './stream.js';
 import { c, err, jsonOut, out } from './output.js';
+
+// P2 修复：版本号从 package.json 读取（此前与 package.json 双源维护易漂移）。
+const pkgVersion =
+  (createRequire(import.meta.url)('../package.json') as { version?: string }).version ?? '0.0.0';
 
 const HELP = `agent-harness CLI (ah) — 用法见源码头部注释，或 https://github.com/.../README`;
 
@@ -106,8 +111,13 @@ async function main(): Promise<number> {
     return 0;
   }
   if (bool(values['version'])) {
-    out('@agent-harness/cli 1.0.0');
+    out(`@agent-harness/cli ${pkgVersion}`);
     return 0;
+  }
+
+  // P2 修复：argv 传入 token 会留在 shell history 与 ps 输出中——提示改用 AH_TOKEN。
+  if (process.argv.some((a) => a === '--token' || a.startsWith('--token='))) {
+    err(c('yellow', 'warning: --token 经命令行传入会留在 shell history 与 ps 输出中，建议改用 AH_TOKEN 环境变量'));
   }
 
   const json = bool(values['json']);

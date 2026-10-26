@@ -415,13 +415,22 @@ export class AgentClient {
   /* ----------------------------- SSE 流（基石能力） ----------------------------- */
 
   /**
-   * 运行 agent。返回事件异步迭代器。
-   * 若动作需审批，服务端回 202 而非 SSE，此时抛 ApprovalRequiredError（含 ticketId/poll）。
+   * SSE POST 流式端点统一处理（P1 维护性收敛：7 个 stream 方法此前各自复制
+   * 「202 审批 → !ok → parseSse」样板，新增端点极易漂移）。
+   * - 202：服务端要求审批 → 抛 ApprovalRequiredError。统一含此前未检查 202 的
+   *   workflow 系端点（202 时响应体是 JSON 而非 SSE，旧代码会解析出垃圾流）。
+   * - !ok：读文本抛 ApiError。
+   * - 其余：parseSse 迭代事件。
    */
-  async *streamRun(input: RunInput, opts: SseOptions = {}): AsyncGenerator<RunEvent> {
-    const res = await this.request('/api/v1/run', {
+  private async *sseStream<T>(
+    path: string,
+    body: unknown,
+    opts: SseOptions,
+    action: string
+  ): AsyncGenerator<T> {
+    const res = await this.request(path, {
       method: 'POST',
-      body: JSON.stringify(input),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: opts.signal,
     });
     if (res.status === 202) {
@@ -430,52 +439,58 @@ export class AgentClient {
         poll?: string;
         message?: string;
       };
-      throw new ApprovalRequiredError(
-        data.ticketId ?? '',
-        data.poll ?? '',
-        'agent:run'
-      );
+      throw new ApprovalRequiredError(data.ticketId ?? '', data.poll ?? '', action);
     }
     if (!res.ok) {
       const data = await res.text().catch(() => '');
       throw new ApiError(res.status, data || `HTTP ${res.status}`);
     }
     for await (const ev of parseSse(res, opts)) {
-      yield ev as RunEvent;
+      yield ev as T;
     }
+  }
+
+  /**
+   * BYOK / 会话透传字段拷贝（P1 维护性收敛：workflow 三端点此前各拷一份，新增字段
+   * 要改 3 处）。缺省字段不进 body，与既有行为逐字段一致（verify 为 falsy 不透传）。
+   */
+  private byokFields(
+    body: Record<string, unknown>,
+    o: {
+      model?: string;
+      modelBaseUrl?: string;
+      modelApiKey?: string;
+      ctxWindow?: number;
+      web?: boolean;
+      verify?: unknown;
+      autoVerify?: boolean;
+      sessionId?: string;
+    }
+  ): void {
+    if (o.model) body.model = o.model;
+    if (o.modelBaseUrl) body.modelBaseUrl = o.modelBaseUrl;
+    if (o.modelApiKey) body.modelApiKey = o.modelApiKey;
+    if (o.ctxWindow && o.ctxWindow > 0) body.ctxWindow = o.ctxWindow;
+    if (o.web) body.web = true;
+    if (o.verify) body.verify = o.verify;
+    if (typeof o.autoVerify === 'boolean') body.autoVerify = o.autoVerify;
+    if (o.sessionId) body.sessionId = o.sessionId;
+  }
+
+  /**
+   * 运行 agent。返回事件异步迭代器。
+   * 若动作需审批，服务端回 202 而非 SSE，此时抛 ApprovalRequiredError（含 ticketId/poll）。
+   */
+  async *streamRun(input: RunInput, opts: SseOptions = {}): AsyncGenerator<RunEvent> {
+    yield* this.sseStream<RunEvent>('/api/v1/run', input, opts, 'agent:run');
   }
 
   async *streamVerify(opts: SseOptions = {}): AsyncGenerator<VerifyEvent> {
-    const res = await this.request('/api/v1/verify', { method: 'POST', signal: opts.signal });
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as VerifyEvent;
-    }
+    yield* this.sseStream<VerifyEvent>('/api/v1/verify', undefined, opts, 'verify');
   }
 
   async *streamEnv(input: EnvInput, opts: SseOptions = {}): AsyncGenerator<EnvEvent> {
-    const res = await this.request('/api/v1/env', {
-      method: 'POST',
-      body: JSON.stringify(input),
-      signal: opts.signal,
-    });
-    if (res.status === 202) {
-      const data = (await res.json().catch(() => ({}))) as {
-        ticketId?: string;
-        poll?: string;
-      };
-      throw new ApprovalRequiredError(data.ticketId ?? '', data.poll ?? '', 'env');
-    }
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as EnvEvent;
-    }
+    yield* this.sseStream<EnvEvent>('/api/v1/env', input, opts, 'env');
   }
 
   /* ----------------------------- 工作流 (workflows / P1.⑤) ----------------------------- */
@@ -540,7 +555,7 @@ export class AgentClient {
   async cancelWorkflow(id: string): Promise<{ ok: boolean; workflowId: string; cancelled: boolean }> {
     const res = await this.request(
       `/api/v1/workflows/${encodeURIComponent(id)}/cancel`,
-      { method: 'POST', body: '{}' }
+      { method: 'POST', body: JSON.stringify({}) }
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -585,18 +600,7 @@ export class AgentClient {
     input?: unknown,
     opts: SseOptions = {}
   ): AsyncGenerator<WorkflowEvent> {
-    const res = await this.request('/api/v1/workflows', {
-      method: 'POST',
-      body: JSON.stringify({ def, input }),
-      signal: opts.signal,
-    });
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as WorkflowEvent;
-    }
+    yield* this.sseStream<WorkflowEvent>('/api/v1/workflows', { def, input }, opts, 'workflow:run');
   }
 
   /**
@@ -646,24 +650,8 @@ export class AgentClient {
     // BYOK 透传（t1 根因修复）：DAG 路径此前不带任何模型/凭据字段，服务端 real 模式
     // 无 Key 可用 → 首 step LLM 调用即失败。现在与 /api/run 同构：服务端按 owner 解析
     // （provider Keys 主链路 / 自定义模型 / 请求自带 Key），明文仅在执行期内存中使用。
-    if (opts.model) body.model = opts.model;
-    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
-    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
-    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
-    if (opts.web) body.web = true;
-    if (opts.sessionId) body.sessionId = opts.sessionId;
-    const res = await this.request('/api/v1/workflows', {
-      method: 'POST',
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as WorkflowEvent;
-    }
+    this.byokFields(body, opts);
+    yield* this.sseStream<WorkflowEvent>('/api/v1/workflows', body, opts, 'workflow:plan');
   }
 
   /**
@@ -691,25 +679,13 @@ export class AgentClient {
   ): AsyncGenerator<WorkflowEvent> {
     const body: Record<string, unknown> = {};
     if (opts.mode) body.mode = opts.mode;
-    if (opts.model) body.model = opts.model;
-    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
-    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
-    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
-    if (opts.web) body.web = true;
-    if (opts.verify) body.verify = opts.verify;
-    if (typeof opts.autoVerify === 'boolean') body.autoVerify = opts.autoVerify;
-    if (opts.sessionId) body.sessionId = opts.sessionId;
-    const res = await this.request(
+    this.byokFields(body, opts);
+    yield* this.sseStream<WorkflowEvent>(
       `/api/v1/workflows/${encodeURIComponent(id)}/resume`,
-      { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
+      body,
+      opts,
+      'workflow:resume'
     );
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as WorkflowEvent;
-    }
   }
 
   /**
@@ -743,25 +719,13 @@ export class AgentClient {
     if (opts.stepId) body.stepId = opts.stepId;
     if (opts.all) body.all = true;
     if (opts.mode) body.mode = opts.mode;
-    if (opts.model) body.model = opts.model;
-    if (opts.modelBaseUrl) body.modelBaseUrl = opts.modelBaseUrl;
-    if (opts.modelApiKey) body.modelApiKey = opts.modelApiKey;
-    if (opts.ctxWindow && opts.ctxWindow > 0) body.ctxWindow = opts.ctxWindow;
-    if (opts.web) body.web = true;
-    if (opts.verify) body.verify = opts.verify;
-    if (typeof opts.autoVerify === 'boolean') body.autoVerify = opts.autoVerify;
-    if (opts.sessionId) body.sessionId = opts.sessionId;
-    const res = await this.request(
+    this.byokFields(body, opts);
+    yield* this.sseStream<WorkflowEvent>(
       `/api/v1/workflows/${encodeURIComponent(id)}/approve`,
-      { method: 'POST', body: JSON.stringify(body), signal: opts.signal }
+      body,
+      opts,
+      'workflow:approve'
     );
-    if (!res.ok) {
-      const data = await res.text().catch(() => '');
-      throw new ApiError(res.status, data || `HTTP ${res.status}`);
-    }
-    for await (const ev of parseSse(res, opts)) {
-      yield ev as WorkflowEvent;
-    }
   }
 }
 

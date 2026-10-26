@@ -51,7 +51,9 @@
 
   async function deleteArtifact(id: string): Promise<void> {
     try {
-      const res = await fetch(`/api/artifacts/${id}`, { method: 'DELETE' });
+      // P2 修复：改走 authedFetch——裸 fetch 不带 x-csrf-token / x-ah-username 头
+      // （绕过 CSRF 双重提交体系），且 401 不触发全局会话失效处理。
+      const res = await authedFetch(`/api/artifacts/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await refresh();
     } catch (e: any) {
