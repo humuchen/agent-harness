@@ -143,17 +143,24 @@ describe('租户管理 API（/api/admin/tenants/*）', () => {
     assert.equal(bad.status, 400);
   });
 
-  test('usage 账单端点：读前自动 flush + totals 聚合', async () => {
+  test('usage 账单端点：读前自动 flush + totals 聚合 + model 维度细分', async () => {
     // 记账走进程单例（与路由同源），缓冲未 flush —— 端点读前自动 flush 应可见
-    getUsageLedger().record('acme', 1000, 0.5);
+    getUsageLedger().record('acme', 1000, 0.5, 'gpt-4o-mini');
+    getUsageLedger().record('acme', 200, 0.1, 'claude-3-5-haiku');
     getUsageLedger().recordRun('acme');
     const today = UsageLedger.dayOf();
     const u = await j('GET', `/api/admin/tenants/acme/usage?from=${today}&to=${today}`);
     assert.equal(u.status, 200);
     assert.ok(u.json.daily.length >= 1, '读前 flush 应让缓冲可见');
-    assert.equal(u.json.totals.tokens, 1000);
+    assert.equal(u.json.totals.tokens, 1200);
     assert.equal(u.json.totals.runs, 1);
-    assert.ok(Math.abs(u.json.totals.cost - 0.5) < 1e-9);
+    assert.ok(Math.abs(u.json.totals.cost - 0.6) < 1e-9);
+    // model 维度细分
+    assert.ok(Array.isArray(u.json.modelDaily), '应返回 modelDaily 细分');
+    const gpt = u.json.modelDaily.find((m) => m.model === 'gpt-4o-mini');
+    const claude = u.json.modelDaily.find((m) => m.model === 'claude-3-5-haiku');
+    assert.ok(gpt && gpt.tokens === 1000 && Math.abs(gpt.cost - 0.5) < 1e-9, 'gpt-4o-mini 细分应正确');
+    assert.ok(claude && claude.tokens === 200 && Math.abs(claude.cost - 0.1) < 1e-9, 'claude 细分应正确');
   });
 
   test('DELETE 档案（运营撤销）', async () => {

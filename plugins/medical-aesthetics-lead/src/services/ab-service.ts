@@ -269,8 +269,86 @@ export async function stopExperiment(experimentId: string): Promise<AbExperiment
 
 export interface AbReport {
   experiment: AbExperimentRow;
-  variants: { key: string; assigned: number; conversions: number; conversionRate: number | null }[];
+  variants: {
+    key: string;
+    assigned: number;
+    conversions: number;
+    conversionRate: number | null;
+    /** Wilson 95% 置信区间（[low, high]；n=0 时省略）。 */
+    ci95?: [number, number];
+  }[];
+  /**
+   * 两比例 z 检验（增强：统计显著性）。基线 = 首个变体；challenger = 其余变体中
+   * 转化率最高者。无可用对比（任一侧 n=0）时省略。
+   */
+  significance?: {
+    baseline: string;
+    challenger: string;
+    /** 转化率提升（百分点，如 3.2 表示 +3.2pp；负值即下降）。 */
+    liftPp: number;
+    z: number;
+    pValue: number;
+    /** p < 0.05 且双方 n ≥ 30。 */
+    significant: boolean;
+    caveat: string;
+  };
   note: string;
+}
+
+// ---------------------------------------------------------------------------
+// 统计工具（零依赖）：两比例 z 检验 + Wilson 区间（增强：让实验结论可量化，
+// 替代「仅样本量文字提示」）。正态近似在 np、n(1-p) 均不太小（≥5）时可用，
+// 输出附 caveat 提醒小样本下仅作参考。
+// ---------------------------------------------------------------------------
+
+/** Abramowitz & Stegun 7.1.26 erf 有理近似（|误差| ≤ 1.5e-7）。 */
+function erf(x: number): number {
+  const sign = x >= 0 ? 1 : -1;
+  const ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-ax * ax);
+  return sign * y;
+}
+
+/** 双侧 p 值：P(|Z| ≥ |z|) = erfc(|z|/√2)。 */
+function twoSidedP(z: number): number {
+  const p = 1 - erf(Math.abs(z) / Math.SQRT2);
+  return Math.min(1, Math.max(0, p));
+}
+
+/**
+ * 两比例 z 检验（双侧）。合并比例做零方差防护（p1=p2=0/1 时 z=0）。
+ * 任一侧 n=0 返回 null（无可比样本）。
+ */
+export function twoProportionZTest(
+  c1: number,
+  n1: number,
+  c2: number,
+  n2: number,
+): { z: number; pValue: number } | null {
+  if (!(n1 > 0) || !(n2 > 0)) return null;
+  const p1 = c1 / n1;
+  const p2 = c2 / n2;
+  const pooled = (c1 + c2) / (n1 + n2);
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / n1 + 1 / n2));
+  if (se <= 0) return { z: 0, pValue: 1 };
+  const z = (p1 - p2) / se;
+  return { z, pValue: twoSidedP(z) };
+}
+
+/** Wilson 95% 置信区间（小样本下比正态区间更诚实）；n=0 返回 null。 */
+export function wilsonInterval(c: number, n: number): [number, number] | null {
+  if (!(n > 0)) return null;
+  const z = 1.959963985; // Φ^-1(0.975)
+  const p = c / n;
+  const denom = 1 + (z * z) / n;
+  const center = (p + (z * z) / (2 * n)) / denom;
+  const half = (z / denom) * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
+  return [Math.max(0, center - half), Math.min(1, center + half)];
 }
 
 /** 转化归因 SQL（按 metric 选择 EXISTS 子查询；分配时间之后发生才计转化）。 */
@@ -309,8 +387,42 @@ export async function experimentReport(experimentId: string): Promise<AbReport> 
       assigned: s.assigned,
       conversions: s.conversions,
       conversionRate: s.assigned > 0 ? Number((s.conversions / s.assigned).toFixed(4)) : null,
+      ...(s.assigned > 0 ? { ci95: wilsonInterval(s.conversions, s.assigned) ?? undefined } : {}),
     };
   });
+  // 增强（统计显著性）：基线 = 首个变体；challenger = 其余变体中转化率最高者。
+  const baseline = variants[0];
+  const challenger = variants
+    .slice(1)
+    .filter((v) => v.assigned > 0 && v.conversionRate != null)
+    .sort((a, b) => (b.conversionRate ?? 0) - (a.conversionRate ?? 0))[0];
+  let significance: AbReport['significance'] | undefined;
+  if (baseline && challenger && baseline.assigned > 0 && challenger.conversionRate != null && baseline.conversionRate != null) {
+    const test = twoProportionZTest(
+      baseline.conversions,
+      baseline.assigned,
+      challenger.conversions,
+      challenger.assigned,
+    );
+    if (test) {
+      const liftPp = Number(((challenger.conversionRate - baseline.conversionRate) * 100).toFixed(2));
+      const minN = Math.min(baseline.assigned, challenger.assigned);
+      significance = {
+        baseline: baseline.key,
+        challenger: challenger.key,
+        liftPp,
+        z: Number(test.z.toFixed(4)),
+        pValue: Number(test.pValue.toFixed(4)),
+        significant: test.pValue < 0.05 && minN >= 30,
+        caveat:
+          minN < 30
+            ? `样本量小（最小分组 n=${minN} < 30），p 值为正态近似结果、仅作参考，不构成上线依据。`
+            : test.pValue < 0.05
+              ? `差异统计显著（p=${test.pValue.toFixed(4)} < 0.05）：${challenger.key} 相对 ${baseline.key} ${liftPp >= 0 ? '提升' : '下降'} ${Math.abs(liftPp)}pp。`
+              : `差异未达统计显著（p=${test.pValue.toFixed(4)} ≥ 0.05），请继续积累数据，避免按噪声做决策。`,
+      };
+    }
+  }
   const minAssigned = Math.min(...variants.map((v) => v.assigned));
   const note =
     variants.every((v) => v.assigned === 0)
@@ -318,7 +430,7 @@ export async function experimentReport(experimentId: string): Promise<AbReport> 
       : minAssigned < 30
         ? '样本量小（任一变体分配数 < 30），转化率差异不具统计学意义，请继续积累数据再做结论；只看厂商宣称数据不如跑完这组实验。'
         : `转化口径：${exp.metric}（分配之后发生才归因）。差异解读建议结合绝对量与业务语境，避免过早上线单一变体。`;
-  return { experiment: exp, variants, note };
+  return { experiment: exp, variants, ...(significance ? { significance } : {}), note };
 }
 
 /** 发送侧文案组装：变体文案缺风险提示时补齐（与默认模板同一纪律）。 */

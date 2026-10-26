@@ -440,7 +440,13 @@ export class AccountAuthorizer implements Authorizer {
       if (from.source === 'cookie') {
         // 浏览器直接导航只带 HttpOnly cookie（带不了自定义头）→ 跳过 username 头校验。
         if (t && (await isTokenValidLocally(t))) {
-          return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
+          // 长期（租户治理）：token 内绑定租户透传为 ctx.tenantId（guard 准入/dataZone 门禁来源）。
+          return {
+            token: t.jti,
+            sub: t.username,
+            role: (t.role ?? 'viewer') as Role, // P0-A: 兜底改为 viewer
+            ...(t.tenantId ? { tenantId: t.tenantId } : {}),
+          };
         }
       } else {
         // Authorization / ?token= 来源维持双因子：头中的 username 必须存在且与 token 内
@@ -450,7 +456,12 @@ export class AccountAuthorizer implements Authorizer {
         if (t && username && username === t.username && await isTokenValidLocally(t)) {
           // 角色随 token 下发（issueToken 写入），OAuth/普通账户据此收窄权限，
           // 不再一律 admin（默认 admin 仅用于向后兼容旧 token）。
-          return { token: t.jti, sub: t.username, role: (t.role ?? 'viewer') as Role }; // P0-A: 兜底改为 viewer
+          return {
+            token: t.jti,
+            sub: t.username,
+            role: (t.role ?? 'viewer') as Role, // P0-A: 兜底改为 viewer
+            ...(t.tenantId ? { tenantId: t.tenantId } : {}),
+          };
         }
       }
     }

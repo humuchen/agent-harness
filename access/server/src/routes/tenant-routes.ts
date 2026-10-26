@@ -22,6 +22,7 @@ import {
   type TenantQuotaStore,
 } from '@agent-harness/core';
 import { getUsageLedger } from '../usage-ledger';
+import { setUserTenant, getUserTenant } from '../accounts';
 import { readBody } from '../http-helpers';
 import type { Action, AuthContext } from '../authz';
 
@@ -113,8 +114,8 @@ export async function handleTenantRoutes(
     return json(res, 405, { error: 'method not allowed' }), true;
   }
 
-  // ---- 单租户路由 /api/admin/tenants/:id[/quotas|/usage|/status] ----
-  const m = /^\/api\/admin\/tenants\/([^/]+)(?:\/(quotas|usage|status))?$/.exec(path);
+  // ---- 单租户路由 /api/admin/tenants/:id[/quotas|/usage|/status|/accounts] ----
+  const m = /^\/api\/admin\/tenants\/([^/]+)(?:\/(quotas|usage|status|accounts))?$/.exec(path);
   if (!m) return false;
   const tenantId = decodeURIComponent(m[1] ?? '');
   const sub = m[2] ?? '';
@@ -131,6 +132,7 @@ export async function handleTenantRoutes(
       /* flush 失败按已落库数据返回 */
     }
     const daily = await ledger.query(tenantId, from, to);
+    const modelDaily = await ledger.queryByModel(tenantId, from, to);
     const totals = daily.reduce(
       (acc, r) => ({ runs: acc.runs + r.runs, tokens: acc.tokens + r.tokens, cost: acc.cost + r.cost }),
       { runs: 0, tokens: 0, cost: 0 }
@@ -141,6 +143,7 @@ export async function handleTenantRoutes(
         from: from || null,
         to: to || null,
         daily,
+        modelDaily,
         totals: { ...totals, cost: Number(totals.cost.toFixed(6)) },
       }),
       true
@@ -180,6 +183,25 @@ export async function handleTenantRoutes(
       return json(res, 200, { ok: true, tenantId }), true;
     }
     return json(res, 405, { error: 'method not allowed' }), true;
+  }
+
+  // 用户 ↔ 租户绑定（长期：让登录用户进入 guard 的租户准入/dataZone 门禁链路）
+  if (sub === 'accounts') {
+    if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' }), true;
+    const body = (await readBody(req)) as Record<string, unknown>;
+    const ctx = await deps.guard(req, res, 'tenants:manage', body);
+    if (!ctx) return true;
+    const username = String(body.username ?? '').trim();
+    if (!username) return json(res, 400, { error: 'username required' }), true;
+    const unbind = body.action === 'unbind';
+    try {
+      await setUserTenant(username, unbind ? null : tenantId);
+      const bound = unbind ? null : await getUserTenant(username);
+      deps.auditAction('tenant.account.bind', { tenantId, username, unbind, sub: ctx.sub });
+      return json(res, 200, { ok: true, tenantId: unbind ? null : tenantId, username, bound: bound ?? null }), true;
+    } catch (e) {
+      return json(res, 404, { error: e instanceof Error ? e.message : String(e) }), true;
+    }
   }
 
   // 状态快改（快捷端点）

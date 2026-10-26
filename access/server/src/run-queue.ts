@@ -1230,7 +1230,7 @@ export class RunQueue {
       // P2.2 用量统计：捕获 run:cost 事件，把 token / 成本累计进 per-owner 配额引擎
       // （keyed by owner，与 admit 的 tenantId 维度解耦；默认无硬上限，仅统计看板用）。
       if (e.type === 'run:cost') {
-        const costEvt = e as unknown as { usage?: { total_tokens?: number }; stepCost?: number };
+        const costEvt = e as unknown as { usage?: { total_tokens?: number }; stepCost?: number; model?: string };
         const tokens = costEvt.usage?.total_tokens ?? 0;
         const cost =
           typeof costEvt.stepCost === 'number' ? costEvt.stepCost : 0;
@@ -1239,10 +1239,10 @@ export class RunQueue {
         actualCost += cost;
         // owner 维度统计看板保持原语义（与 admit 的 tenantId 维度解耦）。
         quotaEngine.recordUsage(job.owner ?? 'anonymous', { tokens, cost });
-        // 长期：用量账本 —— (tenant, UTC 日) 聚合进内存缓冲（批量落库，热路径零 IO），
+        // 长期：用量账本 —— (tenant, UTC 日[, model]) 聚合进内存缓冲（批量落库，热路径零 IO），
         // 供 /api/admin/tenants/:id/usage 账单查询。记账失败不影响事件流与配额主路径。
         try {
-          getUsageLedger().record(job.tenantId ?? 'anonymous', tokens, cost);
+          getUsageLedger().record(job.tenantId ?? 'anonymous', tokens, cost, costEvt.model);
         } catch {
           /* 账本异常静默 */
         }

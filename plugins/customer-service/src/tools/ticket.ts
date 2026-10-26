@@ -1,9 +1,9 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { openTicket, queryTicket, changeStatus, assign } from '../services/ticket-service';
+import { openTicket, queryTicket, changeStatus, assign, rate } from '../services/ticket-service';
 import { errorResult } from '../infra/errors';
 
 /**
- * cs_ticket_create / cs_ticket_query：工单创建与查询。
+ * cs_ticket_create / cs_ticket_query / cs_ticket_rate：工单创建、查询与 CSAT 评分。
  * 工具名用短名，loader 启用时自动加 `customer-service__` 前缀合并进共享工具表。
  */
 export function registerTicketTools(tools: ToolRegistry): void {
@@ -39,12 +39,12 @@ export function registerTicketTools(tools: ToolRegistry): void {
 
   tools.register(
     'cs_ticket_query',
-    '按工单号查询单条工单，或不传 ticketId 时按状态列出工单（open/pending/resolved/closed）。',
+    '按工单号查询单条工单，或不传 ticketId 时按状态列出工单（open/in_progress/resolved/closed；overdue=未结单且超 SLA）。结果带 slaDueAt/slaBreached/rating 字段。',
     {
       type: 'object',
       properties: {
         ticketId: { type: 'string', description: '工单号（与 status 二选一）' },
-        status: { type: 'string', description: '状态过滤：open/pending/resolved/closed' },
+        status: { type: 'string', description: '状态过滤：open/in_progress/resolved/closed/overdue' },
       },
       required: [],
     },
@@ -54,6 +54,33 @@ export function registerTicketTools(tools: ToolRegistry): void {
         const status = args.status ? String(args.status) : undefined;
         if (!ticketId && !status) return { error: true, message: 'provide ticketId or status' };
         return queryTicket({ ticketId, status });
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  tools.register(
+    'cs_ticket_rate',
+    '客户满意度评价（CSAT）：对已结单（resolved/closed）的工单提交 1-5 分评分，一次性不可复评；结单前调用会失败。',
+    {
+      type: 'object',
+      properties: {
+        ticketId: { type: 'string', description: '工单号' },
+        rating: { type: 'number', description: '满意度 1-5（5 = 非常满意）' },
+        comment: { type: 'string', description: '评价附言（可选）' },
+      },
+      required: ['ticketId', 'rating'],
+    },
+    async (args: Record<string, unknown>) => {
+      try {
+        const t = rate({
+          ticketId: String(args.ticketId ?? ''),
+          rating: Number(args.rating),
+          comment: args.comment ? String(args.comment) : undefined,
+        });
+        if (!t) return { error: true, message: 'ticket not found' };
+        return { ticketId: t.ticketId, rating: t.rating, status: t.status };
       } catch (e) {
         return errorResult(e);
       }

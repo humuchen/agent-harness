@@ -256,6 +256,12 @@ async function ensureDb(): Promise<void> {
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id)'
           );
         }
+        // 长期（租户治理）：用户 ↔ 租户绑定列 —— 登录签发 token 时把租户写入 payload，
+        // guard 据此走租户准入/dataZone 门禁（未绑定为 NULL，行为与既有单租户部署一致）。
+        const hasTenant = cols.some((c) => String(c.name) === 'tenant_id');
+        if (!hasTenant) {
+          await db.exec('ALTER TABLE users ADD COLUMN tenant_id TEXT');
+        }
       } catch {
         /* 列已存在或 Turso 不支持该 DDL，忽略 */
       }
@@ -417,6 +423,8 @@ export interface AccountToken {
   sig: string;
   /** 角色（admin/operator/viewer），随 token 下发，避免每次请求回查库。旧 token 无此字段时默认 admin（向后兼容）。 */
   role?: string;
+  /** 长期（租户治理）：签发时用户绑定的租户（users.tenant_id）。旧 token / 未绑定用户无此字段。 */
+  tenantId?: string;
 }
 
 function sign(jti: string, payloadB64: string): string {  const mac = createHmac('sha256', getAuthSecret());
@@ -461,10 +469,12 @@ export async function issueTokens(username: string): Promise<{
   const jti = randomBytes(16).toString('hex');
   const exp = Date.now() + TOKEN_TTL_MS;
   const row = (await db
-    .prepare('SELECT role FROM users WHERE username = ?')
-    .get(username)) as { role?: string } | undefined;
+    .prepare('SELECT role, tenant_id FROM users WHERE username = ?')
+    .get(username)) as { role?: string; tenant_id?: string | null } | undefined;
   const role = row?.role || 'viewer';
-  const payloadB64 = b64urlJson({ u: username, exp, r: role });
+  // 长期（租户治理）：绑定租户随 token 下发（guard 准入/dataZone 门禁的权威来源）。
+  const tenantId = row?.tenant_id ? String(row.tenant_id) : undefined;
+  const payloadB64 = b64urlJson({ u: username, exp, r: role, ...(tenantId ? { t: tenantId } : {}) });
   const sig = sign(jti, payloadB64);
   const accessToken = `${jti}.${payloadB64}.${sig}`;
   await db
@@ -511,12 +521,15 @@ export function parseToken(raw: string): AccountToken | null {
       u: string;
       exp: number;
       r?: string;
+      t?: string;
     };
     if (typeof payload.u !== 'string' || typeof payload.exp !== 'number')
       return null;
     // 旧 token 无 r → 默认 viewer（P1-1 兜底角色，避免公开注册即 admin）。
     const role = typeof payload.r === 'string' ? payload.r : 'viewer';
-    return { jti, username: payload.u, exp: payload.exp, sig, role };
+    // 长期（租户治理）：payload.t 为签发时绑定的租户（旧 token 无此字段 → undefined）。
+    const tenantId = typeof payload.t === 'string' && payload.t ? payload.t : undefined;
+    return { jti, username: payload.u, exp: payload.exp, sig, role, ...(tenantId ? { tenantId } : {}) };
   } catch {
     return null;
   }
@@ -530,6 +543,34 @@ export async function isTokenValidLocally(t: AccountToken): Promise<boolean> {
     .prepare('SELECT jti FROM auth_tokens WHERE jti = ? AND expires_at > ?')
     .get(t.jti, Date.now());
   return !!row;
+}
+
+// ─── 用户 ↔ 租户绑定（长期：租户治理）─────────────────────────────────────
+
+/**
+ * 设置/解绑用户的租户（管理操作；tenantId 传 null/空 = 解绑）。
+ * 绑定在下次登录/续期签发 token 时生效（payload.t），guard 据此走租户准入/dataZone 门禁。
+ * @throws 用户不存在时抛错。
+ */
+export async function setUserTenant(username: string, tenantId: string | null): Promise<void> {
+  await ensureDb();
+  const clean = (tenantId ?? '').trim();
+  const row = (await db
+    .prepare('SELECT username FROM users WHERE username = ?')
+    .get(username)) as { username?: string } | undefined;
+  if (!row) throw new Error(`user not found: ${username}`);
+  await db
+    .prepare('UPDATE users SET tenant_id = ? WHERE username = ?')
+    .run(clean || null, username);
+}
+
+/** 查询用户绑定的租户（未绑定返回 null）。 */
+export async function getUserTenant(username: string): Promise<string | null> {
+  await ensureDb();
+  const row = (await db
+    .prepare('SELECT tenant_id FROM users WHERE username = ?')
+    .get(username)) as { tenant_id?: string | null } | undefined;
+  return row?.tenant_id ? String(row.tenant_id) : null;
 }
 
 // ─── 账户操作（注册 / 登录）─────────────────────────────────────────────────

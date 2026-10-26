@@ -58,7 +58,11 @@ export function getDb(): SqliteDatabase {
       status       TEXT NOT NULL DEFAULT 'open',
       assignee     TEXT,
       created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      sla_due_at   TEXT,
+      rating       INTEGER,
+      rating_comment TEXT,
+      rated_at     TEXT
     );
 
     CREATE TABLE IF NOT EXISTS cs_kb (
@@ -91,8 +95,33 @@ export function getDb(): SqliteDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_cs_reminder_status ON cs_reminder(tenant_id, status, created_at DESC);
   `);
+  ensureTicketColumns(database);
   _db = database;
   return _db;
+}
+
+/**
+ * 存量库自愈迁移：cs_ticket 增列（sla_due_at / rating / rating_comment / rated_at）。
+ * 以「SELECT 探测 → 失败即 ALTER」实现（不依赖 PRAGMA，对 turso 后端同样成立）。
+ */
+function ensureTicketColumns(db: SqliteDatabase): void {
+  const columns: Array<[string, string]> = [
+    ['sla_due_at', 'sla_due_at TEXT'],
+    ['rating', 'rating INTEGER'],
+    ['rating_comment', 'rating_comment TEXT'],
+    ['rated_at', 'rated_at TEXT'],
+  ];
+  for (const [column, ddl] of columns) {
+    try {
+      db.prepare(`SELECT ${column} FROM cs_ticket LIMIT 1`).get();
+    } catch {
+      try {
+        db.exec(`ALTER TABLE cs_ticket ADD COLUMN ${ddl}`);
+      } catch {
+        /* 并发迁移竞态：列已存在则忽略 */
+      }
+    }
+  }
 }
 
 /** 关闭连接（onStop / 测试用）。 */

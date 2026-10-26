@@ -10,6 +10,7 @@ import { setPluginContext } from './runtime';
 import { getDb } from './infra/db';
 import { configSummary } from './config';
 import { insertReminders } from './repo/reminder-repo';
+import { escalateSlaBreached } from './services/ticket-service';
 import { csRemindersTriggerPlugin } from './plugins/reminders-trigger';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
@@ -128,6 +129,23 @@ export const csPlugin: PluginModule = {
     // 启动客服提醒定时触发器（复用 trigger 插件的 onStart）
     _reminderCtx = ctx;
     await csRemindersTriggerPlugin.onStart?.(ctx);
+
+    // 增强（工单运营闭环）：SLA 超时升级 —— 每 5min 扫描未结单且超时的工单，
+    // priority 提升为 urgent 并重算 SLA（框架 cron：单飞 + leaderOnly 多副本单执行 +
+    // 插件 disable/uninstall 自动停止）。
+    ctx.cron.register({
+      name: 'sla-escalation',
+      everyMs: 5 * 60_000,
+      leaderOnly: true,
+      run: () => {
+        try {
+          const n = escalateSlaBreached();
+          if (n > 0) ctx.logger.warn('cs sla escalation', { escalated: n });
+        } catch (e) {
+          ctx.logger.warn('cs sla escalation failed', { error: e instanceof Error ? e.message : String(e) });
+        }
+      },
+    });
   },
 
   async onStop(ctx: PluginContext): Promise<void> {

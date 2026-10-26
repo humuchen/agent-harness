@@ -17,6 +17,12 @@ export interface EmbeddingProvider {
   embed(text: string): number[];
   /** 异步向量化（远程 API）。可选；未实现时 ingest 回退到 embed()。 */
   embedAsync?(text: string): Promise<number[]>;
+  /**
+   * 批量向量化（增强：ingest 吞吐）。可选；实现方应一次请求携带整批文本，
+   * 消除逐条网络往返。失败处置与 embedAsync 同纪律（strict 抛错 / 非 strict 降级不缓存）。
+   * 返回顺序与输入一一对应。
+   */
+  embedBatchAsync?(texts: string[]): Promise<number[][]>;
 }
 
 const STOP_ZH = new Set([
@@ -248,6 +254,87 @@ export class OpenAIEmbedding implements EmbeddingProvider {
     warnDegradedOnce('openai-embedding', text);
     return new HashEmbedding(this.dim).embed(text);
   }
+
+  /**
+   * 批量向量化（增强：单次请求携带整批，消除 ingest 逐条网络往返）。
+   * OpenAI /embeddings 原生支持 input 数组；按 data[].index 对齐返回顺序。
+   * strict 失败抛 EmbeddingUnavailableError（毒化防护，与 embedAsync 同纪律）；
+   * 非 strict 失败逐条降级哈希（不写缓存）。内部按 96 条/请求分批，防超时。
+   */
+  async embedBatchAsync(texts: string[]): Promise<number[][]> {
+    const out: number[][] = new Array(texts.length);
+    const pending: Array<{ idx: number; text: string }> = [];
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i]!;
+      const cached = this.cache.get(EmbedCache.key(text));
+      if (cached) out[i] = cached;
+      else pending.push({ idx: i, text });
+    }
+    if (pending.length === 0) return out;
+    if (!this.apiKey) {
+      // 与 embedAsync 同口径：配置缺失降级（不缓存）。
+      for (const p of pending) {
+        warnDegradedOnce('openai-embedding', p.text);
+        out[p.idx] = new HashEmbedding(this.dim).embed(p.text);
+      }
+      return out;
+    }
+    const CHUNK = 96;
+    try {
+      for (let start = 0; start < pending.length; start += CHUNK) {
+        const chunk = pending.slice(start, start + CHUNK);
+        const resp = await withRetry(() =>
+          fetch(`${this.baseUrl}/embeddings`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+            body: JSON.stringify({ model: this.model, input: chunk.map((c) => c.text) }),
+            signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+          })
+        );
+        if (!resp.ok) {
+          throw new EmbeddingUnavailableError(
+            `远程批量嵌入失败：${this.baseUrl} 返回 HTTP ${resp.status}（模型 ${this.model}）；已重试 3 次`
+          );
+        }
+        const data = (await resp.json()) as { data?: { index?: number; embedding: number[] }[] };
+        const arr = data.data ?? [];
+        if (arr.length !== chunk.length) {
+          throw new EmbeddingUnavailableError(
+            `远程批量嵌入返回数量不匹配：期望 ${chunk.length}，实际 ${arr.length}`
+          );
+        }
+        // 按 index 对齐（OpenAI 批量响应带 index；缺省按顺序；越界防护取回本批内）。
+        arr.forEach((d, i) => {
+          const vec = d.embedding;
+          if (!vec?.length) {
+            throw new EmbeddingUnavailableError(`远程批量嵌入第 ${d.index ?? i} 条返回空向量`);
+          }
+          if (vec.length !== this.dim) {
+            throw new EmbeddingUnavailableError(
+              `向量维度不匹配：期望 ${this.dim}，远程返回 ${vec.length}`
+            );
+          }
+          const pos = Math.min(Math.max(d.index ?? i, 0), chunk.length - 1);
+          const target = chunk[pos]!;
+          out[target.idx] = vec;
+          this.cache.set(EmbedCache.key(target.text), vec); // 缓存只存真实远程向量（P1）
+        });
+      }
+      return out;
+    } catch (e) {
+      if (e instanceof EmbeddingUnavailableError) throw e;
+      if (strictEmbedding()) {
+        throw new EmbeddingUnavailableError(
+          `远程批量嵌入失败：${e instanceof Error ? e.message : String(e)}（已重试 3 次）`
+        );
+      }
+      for (const p of pending) {
+        warnDegradedOnce('openai-embedding', p.text);
+        out[p.idx] = new HashEmbedding(this.dim).embed(p.text);
+      }
+      return out;
+    }
+  }
 }
 
 /**
@@ -340,6 +427,85 @@ export class RemoteEmbedding implements EmbeddingProvider {
     // 降级路径（仅 RAG_EMBED_STRICT=false）：不写缓存，杜绝永久毒化（P1）。
     warnDegradedOnce('remote-embedding', text);
     return new HashEmbedding(this.dim).embed(text);
+  }
+
+  /**
+   * 批量向量化（增强）：embed-server 契约天然批量 —— POST { texts: string[] } →
+   * { embeddings: number[][] }。strict 失败抛 EmbeddingUnavailableError；
+   * 非 strict 降级哈希（不缓存）。内部按 64 条/请求分批。
+   */
+  async embedBatchAsync(texts: string[]): Promise<number[][]> {
+    const out: number[][] = new Array(texts.length);
+    const pending: Array<{ idx: number; text: string }> = [];
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i]!;
+      const cached = this.cache.get(EmbedCache.key(text));
+      if (cached) out[i] = cached;
+      else pending.push({ idx: i, text });
+    }
+    if (pending.length === 0) return out;
+    if (!this.baseUrl) {
+      for (const p of pending) {
+        warnDegradedOnce('remote-embedding', p.text);
+        out[p.idx] = new HashEmbedding(this.dim).embed(p.text);
+      }
+      return out;
+    }
+    const CHUNK = 64;
+    try {
+      for (let start = 0; start < pending.length; start += CHUNK) {
+        const chunk = pending.slice(start, start + CHUNK);
+        const resp = await withRetry(() =>
+          fetch(`${this.baseUrl}/embeddings`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
+            },
+            body: JSON.stringify({ texts: chunk.map((c) => c.text) }),
+            signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+          })
+        );
+        if (!resp.ok) {
+          throw new EmbeddingUnavailableError(
+            `远程批量嵌入失败：${this.baseUrl} 返回 HTTP ${resp.status}；已重试 3 次`
+          );
+        }
+        const data = (await resp.json()) as { embeddings?: number[][] };
+        const arr = data.embeddings ?? [];
+        if (arr.length !== chunk.length) {
+          throw new EmbeddingUnavailableError(
+            `远程批量嵌入返回数量不匹配：期望 ${chunk.length}，实际 ${arr.length}`
+          );
+        }
+        arr.forEach((vec, i) => {
+          const item = chunk[i]!;
+          if (!vec?.length) {
+            throw new EmbeddingUnavailableError(`远程批量嵌入第 ${i} 条返回空向量`);
+          }
+          if (vec.length !== this.dim) {
+            throw new EmbeddingUnavailableError(
+              `向量维度不匹配：期望 ${this.dim}，远程返回 ${vec.length}`
+            );
+          }
+          out[item.idx] = vec;
+          this.cache.set(EmbedCache.key(item.text), vec); // 缓存只存真实远程向量（P1）
+        });
+      }
+      return out;
+    } catch (e) {
+      if (e instanceof EmbeddingUnavailableError) throw e;
+      if (strictEmbedding()) {
+        throw new EmbeddingUnavailableError(
+          `远程批量嵌入失败：${e instanceof Error ? e.message : String(e)}（已重试 3 次）`
+        );
+      }
+      for (const p of pending) {
+        warnDegradedOnce('remote-embedding', p.text);
+        out[p.idx] = new HashEmbedding(this.dim).embed(p.text);
+      }
+      return out;
+    }
   }
 }
 

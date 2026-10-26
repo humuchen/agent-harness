@@ -25,6 +25,16 @@ export interface UsageDailyRow {
   updatedAt: number;
 }
 
+/** usage_model_daily 一行（按 model 细分；runs 不细分，仅 token/cost）。 */
+export interface UsageModelDailyRow {
+  tenantId: string;
+  day: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  updatedAt: number;
+}
+
 const FLUSH_INTERVAL_MS = 5_000;
 const FLUSH_THRESHOLD = 64;
 
@@ -32,6 +42,7 @@ export class UsageLedger {
   private file: string;
   private db: DbAdapter | null = null;
   private ready: Promise<void> | null = null;
+  /** key = tenant|day|model（model 空 = 未标注）。 */
   private buffer = new Map<string, { runs: number; tokens: number; cost: number }>();
   private timer: NodeJS.Timeout | null = null;
 
@@ -67,6 +78,16 @@ export class UsageLedger {
               'updated_at INTEGER NOT NULL, ' +
               'PRIMARY KEY (tenant_id, day))'
           );
+          await this.db.exec(
+            'CREATE TABLE IF NOT EXISTS usage_model_daily (' +
+              'tenant_id TEXT NOT NULL, ' +
+              'day TEXT NOT NULL, ' +
+              'model TEXT NOT NULL, ' +
+              'tokens INTEGER NOT NULL DEFAULT 0, ' +
+              'cost REAL NOT NULL DEFAULT 0, ' +
+              'updated_at INTEGER NOT NULL, ' +
+              'PRIMARY KEY (tenant_id, day, model))'
+          );
         } catch (e) {
           this.ready = null;
           throw e;
@@ -81,15 +102,23 @@ export class UsageLedger {
     return new Date(ts).toISOString().slice(0, 10);
   }
 
-  /** 记一笔用量（内存聚合；高频路径零 IO）。 */
-  record(tenantId: string, tokens: number, cost: number): void {
+  /** 记一笔用量（内存聚合；高频路径零 IO）。model 提供时同步进 model 维度细分表。 */
+  record(tenantId: string, tokens: number, cost: number, model?: string): void {
     const t = tenantId || 'anonymous';
     const day = UsageLedger.dayOf();
-    const key = `${t}|${day}`;
+    const m = (model ?? '').trim();
+    const key = `${t}|${day}|`;
     const cur = this.buffer.get(key) ?? { runs: 0, tokens: 0, cost: 0 };
     cur.tokens += Math.max(0, Math.floor(tokens || 0));
     cur.cost += Math.max(0, Number(cost) || 0);
     this.buffer.set(key, cur);
+    if (m) {
+      const mkey = `${t}|${day}|${m}`;
+      const mcur = this.buffer.get(mkey) ?? { runs: 0, tokens: 0, cost: 0 };
+      mcur.tokens += Math.max(0, Math.floor(tokens || 0));
+      mcur.cost += Math.max(0, Number(cost) || 0);
+      this.buffer.set(mkey, mcur);
+    }
     if (this.buffer.size >= FLUSH_THRESHOLD) {
       void this.flush().catch(() => {});
     }
@@ -104,7 +133,7 @@ export class UsageLedger {
     this.buffer.set(key, cur);
   }
 
-  /** 把缓冲批量 upsert 落库（幂等累加）。 */
+  /** 把缓冲批量 upsert 落库（幂等累加）。model 非空条目同时进 usage_model_daily。 */
   async flush(): Promise<void> {
     if (this.buffer.size === 0) return;
     await this.ensure();
@@ -113,18 +142,31 @@ export class UsageLedger {
     this.buffer.clear();
     const now = Date.now();
     for (const [key, agg] of batch) {
-      const idx = key.indexOf('|');
-      const tenantId = key.slice(0, idx);
-      const day = key.slice(idx + 1);
-      await this.db
-        .prepare(
-          'INSERT INTO usage_daily (tenant_id, day, runs, tokens, cost, updated_at) ' +
-            'VALUES (?, ?, ?, ?, ?, ?) ' +
-            'ON CONFLICT(tenant_id, day) DO UPDATE SET ' +
-            'runs = runs + excluded.runs, tokens = tokens + excluded.tokens, ' +
-            'cost = cost + excluded.cost, updated_at = excluded.updated_at'
-        )
-        .run(tenantId, day, agg.runs, agg.tokens, agg.cost, now);
+      const parts = key.split('|');
+      const tenantId = parts[0] ?? 'anonymous';
+      const day = parts[1] ?? '';
+      const model = parts.slice(2).join('|');
+      if (!model) {
+        // 聚合表：仅无 model 标注的条目写（model 条目在下方只进细分表，避免聚合翻倍）。
+        await this.db
+          .prepare(
+            'INSERT INTO usage_daily (tenant_id, day, runs, tokens, cost, updated_at) ' +
+              'VALUES (?, ?, ?, ?, ?, ?) ' +
+              'ON CONFLICT(tenant_id, day) DO UPDATE SET ' +
+              'runs = runs + excluded.runs, tokens = tokens + excluded.tokens, ' +
+              'cost = cost + excluded.cost, updated_at = excluded.updated_at'
+          )
+          .run(tenantId, day, agg.runs, agg.tokens, agg.cost, now);
+      } else {
+        await this.db
+          .prepare(
+            'INSERT INTO usage_model_daily (tenant_id, day, model, tokens, cost, updated_at) ' +
+              'VALUES (?, ?, ?, ?, ?, ?) ' +
+              'ON CONFLICT(tenant_id, day, model) DO UPDATE SET ' +
+              'tokens = tokens + excluded.tokens, cost = cost + excluded.cost, updated_at = excluded.updated_at'
+          )
+          .run(tenantId, day, model, agg.tokens, agg.cost, now);
+      }
     }
   }
 
@@ -149,6 +191,33 @@ export class UsageLedger {
       tenantId: String(r.tenant_id),
       day: String(r.day),
       runs: Number(r.runs ?? 0),
+      tokens: Number(r.tokens ?? 0),
+      cost: Number(r.cost ?? 0),
+      updatedAt: Number(r.updated_at ?? 0),
+    }));
+  }
+
+  /** model 维度细分查询（同区间口径；无数据返回空数组）。 */
+  async queryByModel(tenantId: string, fromDay?: string, toDay?: string): Promise<UsageModelDailyRow[]> {
+    await this.ensure();
+    if (!this.db) return [];
+    const clauses: string[] = ['tenant_id = ?'];
+    const args: unknown[] = [tenantId];
+    if (fromDay) {
+      clauses.push('day >= ?');
+      args.push(fromDay);
+    }
+    if (toDay) {
+      clauses.push('day <= ?');
+      args.push(toDay);
+    }
+    const rows = (await this.db
+      .prepare(`SELECT * FROM usage_model_daily WHERE ${clauses.join(' AND ')} ORDER BY day ASC, cost DESC`)
+      .all(...args)) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      tenantId: String(r.tenant_id),
+      day: String(r.day),
+      model: String(r.model),
       tokens: Number(r.tokens ?? 0),
       cost: Number(r.cost ?? 0),
       updatedAt: Number(r.updated_at ?? 0),

@@ -171,6 +171,8 @@ export async function ingestStructured(
 /**
  * 共享写入段：先完成**全部**向量化（P1 毒化防护 —— 远程嵌入失败时旧文档原样保留，
  * 不出现半入库中间态），再 deleteByDoc + 逐片幂等 upsert。
+ * 增强（吞吐）：provider 支持 embedBatchAsync 时按 RAG_EMBED_BATCH_SIZE（默认 32）
+ * 分批向量化 —— 单次请求携带整批文本，消除逐条网络往返；不支持时回退逐条（零回归）。
  * items.meta 会合并进 chunk.metadata（heading_path 等结构信息；空对象不覆盖既有 metadata 语义）。
  * items.chunkId 为显式 chunk id（P6-B ParentDocument 父块用 `${docId}#p${i}`，供
  * metadata.parent_id 关联检索）；缺省按顺序 `${docId}#${idx}`。
@@ -183,9 +185,20 @@ async function embedAndWrite(
   items: Array<{ content: string; meta?: Record<string, unknown>; chunkId?: string }>,
   base?: { title?: string; tags?: string[]; metadata?: Record<string, unknown>; acl?: string[] }
 ): Promise<number> {
-  const vectors: number[][] = [];
-  for (const item of items) {
-    vectors.push(await embedOne(provider, `${base?.title ?? ''}\n${item.content}`));
+  const inputs = items.map((item) => `${base?.title ?? ''}\n${item.content}`);
+  let vectors: number[][];
+  const batchFn = provider.embedBatchAsync;
+  if (typeof batchFn === 'function') {
+    const batchSize = Math.max(1, Number(process.env.RAG_EMBED_BATCH_SIZE ?? 32) || 32);
+    vectors = [];
+    for (let i = 0; i < inputs.length; i += batchSize) {
+      vectors.push(...(await batchFn.call(provider, inputs.slice(i, i + batchSize))));
+    }
+  } else {
+    vectors = [];
+    for (const item of items) {
+      vectors.push(await embedOne(provider, `${base?.title ?? ''}\n${item.content}`));
+    }
   }
 
   // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）。P6-B：后端可为异步。

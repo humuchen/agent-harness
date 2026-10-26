@@ -65,9 +65,16 @@ export const csServerExtension: ServerExtension = {
       const sessions = await Promise.resolve(listSessions(1000));
       const open = tickets.filter((t) => t.status === 'open').length;
       const handoff = sessions.filter((s) => s.status === 'handoff').length;
+      // 增强（工单运营闭环）：SLA 超时未结单数 + CSAT 均分（已评工单）
+      const overdue = tickets.filter((t) => t.slaBreached).length;
+      const rated = tickets.filter((t) => t.rating != null);
+      const csatAvg = rated.length
+        ? Number((rated.reduce((s, t) => s + (t.rating ?? 0), 0) / rated.length).toFixed(2))
+        : null;
       json(res, 200, {
-        tickets: { total: tickets.length, open },
+        tickets: { total: tickets.length, open, overdue },
         sessions: { total: sessions.length, handoff },
+        csat: { ratedCount: rated.length, avg: csatAvg },
         tenantId: getConfig().tenantId,
       });
     }) as PluginRouteHandler,
