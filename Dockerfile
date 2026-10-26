@@ -15,7 +15,7 @@
 # 说明：
 # - 基础镜像锁定 Node 22（与 engines: 22.x / render.yaml 一致）。
 # - 使用 corepack 提供的 pnpm；锁文件漂移时降级为 --no-frozen-lockfile 自愈。
-# - webapp（Vite+Lit）在 `pnpm -r build` 阶段一并构建，server 会优先托管
+# - webapp（Vite+Svelte 5）在 `pnpm -r build` 阶段一并构建，server 会优先托管
 #   frontend/webapp/dist（无 public 兜底目录）。
 # - runtime 用 slim 镜像；此处采用“复制 builder 已构建产物”的稳妥策略，
 #   保证 pnpm 的 workspace 软链（node_modules/@agent-harness/*）与 frontend/* / access/* / backend/*

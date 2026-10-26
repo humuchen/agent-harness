@@ -81,6 +81,8 @@ export class QdrantVectorStore implements VectorStore {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    // P1 修复：所有请求加超时兜底（QDRANT_TIMEOUT_MS，默认 30s）——Qdrant 抖动时
+    // 检索/写入此前会永久挂起。
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
@@ -88,6 +90,7 @@ export class QdrantVectorStore implements VectorStore {
         ...(this.apiKey ? { 'api-key': this.apiKey } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(Number(process.env.QDRANT_TIMEOUT_MS ?? 30_000) || 30_000),
     });
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
@@ -119,20 +122,33 @@ export class QdrantVectorStore implements VectorStore {
   }
 
   async upsert(chunk: Chunk): Promise<void> {
-    if (chunk.vector.length !== this.dim) {
-      throw new Error(`向量维度不匹配：期望 ${this.dim}，实际 ${chunk.vector.length}`);
+    await this.upsertMany([chunk]);
+  }
+
+  /**
+   * 批量 upsert（P1 修复）：此前 ingest 对每 chunk 单独一次 HTTP PUT（500 chunk
+   * 文档 = 500 次串行往返），现按 RAG_QDRANT_BATCH_SIZE（默认 64）分批一次性提交。
+   */
+  async upsertMany(chunks: Chunk[]): Promise<void> {
+    if (chunks.length === 0) return;
+    for (const c of chunks) {
+      if (c.vector.length !== this.dim) {
+        throw new Error(`向量维度不匹配：期望 ${this.dim}，实际 ${c.vector.length}（chunk ${c.chunk_id}）`);
+      }
     }
     await this.ensureCollection();
-    await this.request('PUT', `/collections/${this.collection}/points?wait=true`, {
-      points: [
-        {
+    const batchSize = Math.max(1, Number(process.env.RAG_QDRANT_BATCH_SIZE ?? 64) || 64);
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      await this.request('PUT', `/collections/${this.collection}/points?wait=true`, {
+        points: batch.map((chunk) => ({
           id: chunkIdToPointId(chunk.chunk_id),
           vector: chunk.vector,
           payload: chunkPayload(chunk),
-        },
-      ],
-    });
-    this.rev++;
+        })),
+      });
+    }
+    this.rev += chunks.length;
   }
 
   async deleteByDoc(docId: string, tenantId: string): Promise<number> {

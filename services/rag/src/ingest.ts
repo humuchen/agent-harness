@@ -204,6 +204,10 @@ async function embedAndWrite(
   // 增量更新：删除旧 chunk 后写新（幂等由 chunk_id 保证）。P6-B：后端可为异步。
   const replaced = await store.deleteByDoc(docId, tenantId);
 
+  // P1 修复：后端支持批量时一次收集整批 upsertMany（此前逐条 PUT，500 chunk =
+  // 500 次串行 HTTP 往返）；不支持批量的后端回退逐条。
+  const batchFnUpsert = (store as { upsertMany?: (chunks: Chunk[]) => Promise<void> }).upsertMany;
+  const pending: Chunk[] = [];
   let idx = 0;
   for (const item of items) {
     const meta = { ...(base?.metadata ?? {}), ...(item.meta ?? {}) };
@@ -220,8 +224,15 @@ async function embedAndWrite(
       vector: vectors[idx]!,
       created_at: Date.now(),
     };
-    await store.upsert(chunk);
+    if (typeof batchFnUpsert === 'function') {
+      pending.push(chunk);
+    } else {
+      await store.upsert(chunk);
+    }
     idx++;
+  }
+  if (pending.length > 0) {
+    await batchFnUpsert!.call(store, pending);
   }
   return replaced;
 }

@@ -4,6 +4,10 @@ dist/
 .DS_Store
 *.tsbuildinfo
 data/
+# 例外：services/rag/data/ 存放测试数据集（golden.json），需要入库——
+# 此前被通配 data/ 规则吞掉，克隆后 golden 门禁测试必失败。
+!services/rag/data/
+!services/rag/data/**
 
 # Local secrets — never commit. .env.example stays a tracked template.
 .env

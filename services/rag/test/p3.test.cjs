@@ -81,11 +81,21 @@ test('HTTP: JWT 鉴权 + 异步入库 + 缓存命中 + metrics + 分片持久化
     assert.ok(Array.isArray(ej.expanded_terms), 'expand 应返回扩展词数组');
 
     // 6) metrics 端点（Prometheus 文本）
+    // P1 修复后：per-tenant 明细（租户 id + chunk 数）默认不向匿名暴露，
+    // RAG_EXPOSE_TENANT_METRICS=true 显式开启后恢复。
     const mr = await fetch(`${baseUrl}/v1/metrics`);
     const text = await mr.text();
     assert.ok(text.includes('rag_retrieve_total'), 'metrics 应含检索计数');
-    assert.ok(text.includes('rag_tenant_chunks{tenant="acme"} 1'), 'metrics 应含租户 chunk 计数');
     assert.ok(text.includes('rag_retrieve_latency_ms{p="95"}'), 'metrics 应含 P95');
+    assert.ok(!text.includes('rag_tenant_chunks'), '默认不应暴露租户 chunk 明细');
+    process.env.RAG_EXPOSE_TENANT_METRICS = 'true';
+    try {
+      const mr2 = await fetch(`${baseUrl}/v1/metrics`);
+      const text2 = await mr2.text();
+      assert.ok(text2.includes('rag_tenant_chunks{tenant="acme"} 1'), '显式开启后应含租户 chunk 计数');
+    } finally {
+      delete process.env.RAG_EXPOSE_TENANT_METRICS;
+    }
 
     // 7) health 附队列统计
     const hr = await fetch(`${baseUrl}/v1/health`);

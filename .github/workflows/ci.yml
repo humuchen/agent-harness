@@ -62,6 +62,12 @@ jobs:
       - name: 构建
         run: pnpm -r build
 
+      # P1 补齐：typecheck 门禁——webapp 的 build 走 vite build（esbuild 仅转译不查类型），
+      # svelte-check / tsc --noEmit 此前从未在 CI 执行，类型错误可直达 main。
+      # 无 typecheck script 的包静默跳过（--if-present）。
+      - name: 类型检查（tsc --noEmit / svelte-check，--if-present）
+        run: pnpm -r --if-present typecheck
+
       - name: 测试
         run: pnpm -r test
 

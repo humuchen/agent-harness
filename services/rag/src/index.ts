@@ -57,6 +57,22 @@ async function main(): Promise<void> {
     dataFile: process.env.RAG_DATA_FILE,
   });
   await srv.listen();
+
+  // P1 修复：优雅停机——此前无 SIGTERM/SIGINT 处理，部署重启时 in-flight 请求被
+  // 直接切断、202 已受理的异步 ingest 任务静默丢失。现停止接收新连接并等待关闭
+  // （内存队列任务持久化需 store 层支持，此处先保证连接层优雅）。
+  let shuttingDown = false;
+  const shutdown = (sig: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // eslint-disable-next-line no-console
+    console.log(`[rag] received ${sig}, shutting down...`);
+    const force = setTimeout(() => process.exit(0), 10_000);
+    force.unref?.();
+    srv.close().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 if (require.main === module) {

@@ -8,8 +8,9 @@
 
 - **单一可替换契约**：任何 LLM 后端只要实现 `LLM` 类型即可接入
   `（messages, toolSchemas) => Promise<{ content, tool_calls }>`。
-- **零硬运行时依赖**：只用 Node 内置 API。OpenTelemetry 是可选的，
-  没装就自动降级为 no-op。
+- **内核零硬运行时依赖**：`harness` 主循环只用 Node 内置 API。OpenTelemetry 是可选的，
+  没装就自动降级为 no-op；`@agent-harness/core` 发行包另含可选 DB 驱动
+  （mysql2 / pg / @libsql/client）与 MCP SDK，仅在启用对应后端时加载。
 - **工具错误即自愈**：工具抛错会作为 tool result 回灌模型，模型可重试或换路。
 - **护栏先行**：输入 / 输出 / 工具参数三层检查，默认拦截密钥与超长输入。
 
@@ -18,7 +19,7 @@
 ```
 agent-harness/                # 根：private 包 + pnpm workspace
 ├─ frontend/                  # 前端应用层
-│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Lit SPA 前端面板（消费 /api/v1，断网可用）
+│  ├─ webapp/                 # @agent-harness/webapp —— Vite+Svelte 5 SPA 前端面板（消费 /api/v1，断网可用）
 │  └─ cli/                    # @agent-harness/cli —— 零依赖 CLI 客户端（消费 /api/v1）
 ├─ access/                    # 接入层（路由 / 鉴权 / 运行队列 / 会话 / OAuth / 账户 / 插件扩展 / IM 桥接）
 │  └─ server/                 # @agent-harness/server —— HTTP+SSE 服务 / 仪表盘（依赖 core，约 90 个源文件，路由已模块化拆分至 src/routes/ 下 18 个模块）

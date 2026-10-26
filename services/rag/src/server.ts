@@ -140,7 +140,11 @@ export function createRagServer(opts: RagServerOptions) {
       const method = req.method || 'GET';
 
       if (path === '/v1/health' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
+        // P1 修复：per-tenant 语料明细（租户 id + chunk 数）默认不暴露给匿名
+        // 探测；RAG_EXPOSE_TENANT_METRICS=true 显式开启（内网监控需要时）。
+        if ((process.env.RAG_EXPOSE_TENANT_METRICS || '').toLowerCase() === 'true') {
+          metrics.setTenantChunks(store.tenantCounts?.() ?? {});
+        }
         return send(res, 200, {
           ok: true,
           chunks: await store.count(),
@@ -152,7 +156,9 @@ export function createRagServer(opts: RagServerOptions) {
       }
 
       if (path === '/v1/metrics' && method === 'GET') {
-        metrics.setTenantChunks(store.tenantCounts?.() ?? {});
+        if ((process.env.RAG_EXPOSE_TENANT_METRICS || '').toLowerCase() === 'true') {
+          metrics.setTenantChunks(store.tenantCounts?.() ?? {});
+        }
         const buf = Buffer.from(metrics.toPrometheus(), 'utf8');
         res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
         return res.end(buf);
@@ -472,6 +478,8 @@ export function createRagServer(opts: RagServerOptions) {
   });
 
   const port = opts.port ?? Number(process.env.RAG_PORT || 8787);
+  // P1 修复：默认仅绑定回环（见 listen 注释）；RAG_HOST 显式开放。
+  const host = process.env.RAG_HOST || '127.0.0.1';
   return {
     store,
     provider,
@@ -481,9 +489,12 @@ export function createRagServer(opts: RagServerOptions) {
     cache,
     listen: () =>
       new Promise<void>((resolve) =>
-        server.listen(port, () => {
+        // P1 修复：默认仅绑定本机回环——开放模式（未配置 tokens/JWT）此前监听全部
+        // 网卡，写接口（ingest/删除文档）对任何来源可用。公网/容器部署需显式
+        // RAG_HOST=0.0.0.0（并建议同时配置凭证）。
+        server.listen(port, host, () => {
           // eslint-disable-next-line no-console
-          console.log(`[rag] http listening on :${port}`);
+          console.log(`[rag] http listening on ${host}:${port}`);
           resolve();
         }),
       ),

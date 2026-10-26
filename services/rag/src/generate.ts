@@ -52,6 +52,25 @@ export interface GenerateOptions {
   scoreThreshold?: number;
 }
 
+// P1 修复：生成层请求超时与有限重试（对齐 embed 层纪律；此前 fetch 无 AbortSignal）。
+const CHAT_TIMEOUT_MS = Number(process.env.RAG_LLM_TIMEOUT_MS ?? 120_000) || 120_000;
+
+/** 带退避的有限重试（网络/超时类错误重试；4xx 语义错误不重试）。 */
+async function withRetry<T>(fn: () => Promise<T>, what: string): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? `${e.name} ${e.message}` : String(e);
+      if (/HTTP 4\d\d/.test(msg) && !/HTTP 429/.test(msg)) throw e; // 语义错误直接抛
+      if (i < 2) await new Promise((r) => setTimeout(r, 200 * (i + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(`${what} failed: ${String(lastErr)}`);
+}
+
 /** LLM 提供商接口。 */
 export interface LLMProvider {
   /**
@@ -105,19 +124,26 @@ export class OpenAIProvider implements LLMProvider {
     if (!this.apiKey) {
       throw new Error('LLM API key 未配置（RAG_LLM_API_KEY）');
     }
-    const resp = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages,
-        max_tokens: opts?.maxTokens ?? 512,
-        temperature: opts?.temperature ?? 0.3,
-      }),
-    });
+    // P1 修复：与 embed 层纪律对齐——超时 + 有限重试。此前 fetch 无 AbortSignal，
+    // embed-server/LLM 建连挂起时 /v1/generate 永久挂起并占用连接。
+    const resp = await withRetry(
+      () =>
+        fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages,
+            max_tokens: opts?.maxTokens ?? 512,
+            temperature: opts?.temperature ?? 0.3,
+          }),
+          signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+        }),
+      'LLM chat'
+    );
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${text.slice(0, 200)}`);
@@ -140,20 +166,25 @@ export class OpenAIProvider implements LLMProvider {
     if (!this.apiKey) {
       throw new Error('LLM API key 未配置（RAG_LLM_API_KEY）');
     }
-    const resp = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages,
-        max_tokens: opts.maxTokens ?? 512,
-        temperature: opts.temperature ?? 0.3,
-        stream: true,
-      }),
-    });
+    const resp = await withRetry(
+      () =>
+        fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages,
+            max_tokens: opts.maxTokens ?? 512,
+            temperature: opts.temperature ?? 0.3,
+            stream: true,
+          }),
+          signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+        }),
+      'LLM chatStream'
+    );
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
       throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${text.slice(0, 200)}`);

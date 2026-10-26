@@ -31,8 +31,15 @@ test('RoleBasedAuthorizer: 令牌映射到角色 + 权限矩阵', () => {
   // 错误令牌 / 缺头 → null
   assert.strictEqual(az.authenticate(fakeReq({ authorization: 'Bearer nope' })), null);
   assert.strictEqual(az.authenticate(fakeReq({})), null);
-  // ?token= 兼容旧用法
-  assert.strictEqual(az.authenticate(fakeReq({}, '/x?token=opTok')).role, 'operator');
+  // P1 修复：?token= 查询参数默认禁用（URL 凭证进反代日志/历史/Referer）
+  assert.strictEqual(az.authenticate(fakeReq({}, '/x?token=opTok')), null);
+  // 逃生门：AH_ALLOW_QUERY_TOKEN=true 恢复旧用法（下载直链等场景）
+  process.env.AH_ALLOW_QUERY_TOKEN = 'true';
+  try {
+    assert.strictEqual(az.authenticate(fakeReq({}, '/x?token=opTok')).role, 'operator');
+  } finally {
+    delete process.env.AH_ALLOW_QUERY_TOKEN;
+  }
 });
 
 test('createAuthorizer: 关闭鉴权时全放行', async () => {

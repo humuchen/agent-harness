@@ -49,6 +49,8 @@ export interface AgentClientOptions {
   onUnauthorized?: () => void;
   /** 可注入 fetch（跨运行时 / 测试替身）。默认取全局 fetch。 */
   fetchImpl?: typeof fetch;
+  /** JSON 请求默认超时（ms，默认 30000；0 = 关闭）。P1 修复：防 TCP 挂起永久 pending。 */
+  timeoutMs?: number;
 }
 
 export class ApiError extends Error {
@@ -76,12 +78,15 @@ export class AgentClient {
   private username?: string;
   private readonly onUnauthorized?: () => void;
   private readonly fetchImpl: typeof fetch;
+  /** JSON 请求默认超时（ms）。P1 修复：防 TCP 挂起永久 pending；上传等长负载可调大。 */
+  private readonly timeoutMs: number;
 
   constructor(opts: AgentClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.token = opts.token;
     this.username = opts.username;
     this.onUnauthorized = opts.onUnauthorized;
+    this.timeoutMs = Math.max(0, opts.timeoutMs ?? 30_000);
     const f = opts.fetchImpl ?? (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     if (!f) throw new Error('global fetch unavailable; pass fetchImpl explicitly');
     // 浏览器里 window.fetch 是原生方法：若直接保存为属性再以 this.fetchImpl(...) 调用，
@@ -123,7 +128,18 @@ export class AgentClient {
     if (init.body && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    // P1 修复：默认超时兜底（30s，构造参数 timeoutMs 可调；上传等长负载可调大）——
+    // 此前 TCP 挂起时几十个 JSON 端点永久 pending，调用方无自愈。调用方传入的
+    // signal 与超时信号合并，任一触发即中止。SSE 流式方法不走本路径（自带 idle 语义）。
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    const signal =
+      init.signal && typeof (AbortSignal as { any?: unknown }).any === 'function'
+        ? (AbortSignal as { any: (sigs: AbortSignal[]) => AbortSignal }).any([
+            init.signal,
+            timeoutSignal,
+          ])
+        : (init.signal as AbortSignal | undefined) ?? timeoutSignal;
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers, signal });
     if (res.status === 401 && this.onUnauthorized) {
       this.onUnauthorized();
     }

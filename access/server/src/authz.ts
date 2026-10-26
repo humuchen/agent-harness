@@ -348,12 +348,17 @@ export class RoleBasedAuthorizer implements Authorizer {
       token = auth.slice(7).trim();
     }
     if (!token) {
-      const url = new URL(
-        req.url ?? '/',
-        `http://${req.headers.host ?? 'localhost'}`
-      );
-      const q = url.searchParams.get('token');
-      if (q) token = q;
+      // P1 修复：?token= 查询参数鉴权默认禁用——URL 中的凭证会被反代 access log、
+      // 浏览器历史、Referer 头捕获，泄漏面远大于 header。既有部署若依赖下载直链
+      // 等场景，显式设 AH_ALLOW_QUERY_TOKEN=true 恢复（并自行承担日志泄漏风险）。
+      if ((process.env.AH_ALLOW_QUERY_TOKEN || '').toLowerCase() === 'true') {
+        const url = new URL(
+          req.url ?? '/',
+          `http://${req.headers.host ?? 'localhost'}`
+        );
+        const q = url.searchParams.get('token');
+        if (q) token = q;
+      }
     }
     if (!token) return null;
     const role = this.tokens.get(token);
@@ -400,6 +405,10 @@ function accountTokenRaw(
   if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
     return { raw: auth.slice(7).trim(), source: 'header' };
   }
+  // P1 修复：query 来源的账户 token 同样默认禁用（URL 凭证进日志/历史/Referer），
+  // AH_ALLOW_QUERY_TOKEN=true 显式恢复；query 来源本就要求 x-ah-username 双因子，
+  // 开启后语义不变。
+  if ((process.env.AH_ALLOW_QUERY_TOKEN || '').toLowerCase() !== 'true') return null;
   const q = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).searchParams.get('token');
   return q ? { raw: q, source: 'query' } : null;
 }
