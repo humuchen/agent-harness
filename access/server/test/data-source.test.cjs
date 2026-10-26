@@ -55,3 +55,42 @@ test('remove(s1) → true；之后 get 为 null', async () => {
   const got = await reg.get('s1');
   assert.equal(got, null);
 });
+
+// ── P1 SSRF 防护 ──
+
+test('SSRF：http 目标私有网段被拒（denylist 默认）', async () => {
+  const reg = ds.getDataSourceRegistry();
+  await reg.create({ id: 'ssrf1', name: 'Loopback', type: 'http', config: { url: 'http://127.0.0.1:9/x' } });
+  const r = await reg.test('ssrf1');
+  assert.ok(r);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /egress blocked/);
+});
+
+test('SSRF：postgres 目标（云元数据端点）被拒；DATASOURCE_EGRESS_MODE=open 放行', async () => {
+  const reg = ds.getDataSourceRegistry();
+  await reg.create({ id: 'ssrf2', name: 'PG', type: 'postgres', config: { host: '169.254.169.254', port: 80 } });
+  const r1 = await reg.test('ssrf2');
+  assert.ok(r1);
+  assert.equal(r1.ok, false);
+  assert.match(r1.message, /egress blocked/);
+  // 逃生门：显式 open 恢复旧行为（探测失败但不再是 egress blocked）
+  process.env.DATASOURCE_EGRESS_MODE = 'open';
+  try {
+    const r2 = await reg.test('ssrf2');
+    assert.ok(r2);
+    assert.equal(r2.ok, false);
+    assert.doesNotMatch(r2.message, /egress blocked/);
+  } finally {
+    delete process.env.DATASOURCE_EGRESS_MODE;
+  }
+});
+
+test('SSRF：非 http(s) scheme 被拒', async () => {
+  const reg = ds.getDataSourceRegistry();
+  await reg.create({ id: 'ssrf3', name: 'File', type: 'http', config: { url: 'file:///etc/passwd' } });
+  const r = await reg.test('ssrf3');
+  assert.ok(r);
+  assert.equal(r.ok, false);
+  assert.match(r.message, /only http\/https allowed/);
+});

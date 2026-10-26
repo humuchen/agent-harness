@@ -133,8 +133,17 @@ interface LibsqlResult {
   lastInsertRowid?: number | bigint | string;
   rows?: Array<Record<string, unknown>>;
 }
+/** 交互式事务句柄（libsql transaction()）：事务内语句可读到自己未提交的写。 */
+interface LibsqlTx {
+  execute(stmt: string | { sql: string; args: LibsqlArgs }): LibsqlResult | Promise<LibsqlResult>;
+  commit(): void | Promise<void>;
+  rollback(): void | Promise<void>;
+  close?(): void | Promise<void>;
+}
 interface LibsqlClient {
   execute(stmt: string | { sql: string; args: LibsqlArgs }): LibsqlResult | Promise<LibsqlResult>;
+  /** libsql ≥0.3 提供；缺失时显式事务 fail-fast（拒绝静默退化为逐条自动提交）。 */
+  transaction?(mode?: string): LibsqlTx | Promise<LibsqlTx>;
   close(): void;
 }
 
@@ -142,6 +151,10 @@ class TursoAdapter implements DbAdapter {
   private client: LibsqlClient;
   /** 自身在 adapterCache 中的键，close 时用于同步删除缓存条目（自愈）。 */
   cacheKey: string;
+  /** 活动事务（exec('BEGIN…') 后非空）：事务内语句走 tx.execute，可读到自己未提交的写。 */
+  private tx: LibsqlTx | null = null;
+  /** 事务串行化链：同一 adapter 上并发 BEGIN 排队，防止两个事务在连接上交叉。 */
+  private txChain: Promise<void> = Promise.resolve();
 
   constructor(url: string, token?: string) {
     this.cacheKey = `turso:${url}`;
@@ -164,6 +177,43 @@ class TursoAdapter implements DbAdapter {
   }
 
   exec(sql: string): void | Promise<void> {
+    const head = sql.trim().slice(0, 15).toUpperCase();
+    // 显式事务（P0 修复）：此前 BEGIN/COMMIT 与普通语句一样按分号拆分逐条 execute，
+    // HTTP 模式下每条独立自动提交，「锁号源 + 建单」等关键事务完全失去原子性。
+    // 现改用 libsql 交互式事务：BEGIN 开 tx，事务内语句（含 prepare 的 run/get/all）全部
+    // 走 tx.execute，COMMIT/ROLLBACK 提交/回滚；client 不支持 transaction() 时 fail-fast。
+    if (head.startsWith('BEGIN')) {
+      // 串行化：等前一个事务链结束后再开新事务（防止并发事务在同一连接上交叉）。
+      const gate = this.txChain.then(async () => {
+        if (!this.client.transaction) {
+          throw new Error(
+            '当前 @libsql/client 不支持 transaction()（显式事务），请升级到 libsql >= 0.3；' +
+            '拒绝降级为逐条自动提交（会破坏事务原子性）'
+          );
+        }
+        this.tx = await this.client.transaction('write');
+      });
+      this.txChain = gate;
+      return gate;
+    }
+    if (head.startsWith('COMMIT') || head.startsWith('ROLLBACK')) {
+      const tx = this.tx;
+      this.tx = null;
+      return (async () => {
+        if (!tx) {
+          // ROLLBACK 容忍「无活动事务」（上层 catch 双重回滚等场景）；COMMIT 缺事务视为编程错误。
+          if (head.startsWith('COMMIT')) throw new Error('COMMIT 无活动事务');
+          return;
+        }
+        try {
+          if (head.startsWith('COMMIT')) await tx.commit();
+          else await tx.rollback();
+        } finally {
+          try { await tx.close?.(); } catch { /* 连接清理失败不阻断 */ }
+        }
+      })();
+    }
+
     // libsql Hrana 不允许单条 execute 中包含多条语句，需要按分号分割后逐个执行
     // 顺序执行 DDL 即可满足幂等建表需求。
     const stmts: string[] = [];
@@ -174,6 +224,16 @@ class TursoAdapter implements DbAdapter {
     if (stmts.length === 0) return;
     const first = stmts[0];
     if (first === undefined) return;
+
+    // 事务内语句必须走 tx.execute（读自己写）。
+    if (this.tx) {
+      const tx = this.tx;
+      let chain: Promise<LibsqlResult> = this.toPromise(tx.execute(first));
+      for (const stmt of stmts.slice(1)) {
+        chain = chain.then(() => this.toPromise(tx.execute(stmt)));
+      }
+      return chain.then(() => {});
+    }
 
     // 检查第一条返回值判断是否为 Promise（HTTP 模式）
     const firstResult = this.client.execute(first);
@@ -193,15 +253,17 @@ class TursoAdapter implements DbAdapter {
   }
 
   /** execute 的统一 await：无论 Hrana 返回同步结果还是 Promise，都收敛为 Promise。 */
-  private async awaitResult(
-    sql: string,
-    params: unknown[]
-  ): Promise<LibsqlResult> {
-    const r = this.client.execute({ sql, args: params as LibsqlArgs });
-    if (r && typeof (r as Promise<LibsqlResult>).then === 'function') {
-      return r as Promise<LibsqlResult>;
-    }
-    return r as LibsqlResult;
+  private toPromise(r: LibsqlResult | Promise<LibsqlResult>): Promise<LibsqlResult> {
+    return r && typeof (r as Promise<LibsqlResult>).then === 'function'
+      ? (r as Promise<LibsqlResult>)
+      : Promise.resolve(r as LibsqlResult);
+  }
+
+  /** 统一执行点：事务活动时走 tx.execute（可读未提交写），否则直连 client。 */
+  private async awaitResult(sql: string, params: unknown[]): Promise<LibsqlResult> {
+    const stmt = { sql, args: params as LibsqlArgs };
+    if (this.tx) return this.toPromise(this.tx.execute(stmt));
+    return this.toPromise(this.client.execute(stmt));
   }
 
   prepare(sql: string): DbStatement {

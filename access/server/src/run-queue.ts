@@ -167,7 +167,10 @@ const CONCURRENCY = Number(process.env.RUN_CONCURRENCY ?? 4) || 4;
 // 显式设置 MAX_SSE_CONNECTIONS=0 可恢复不限行为。
 const MAX_SSE_CONNECTIONS = Number(process.env.MAX_SSE_CONNECTIONS ?? 500) || 0;
 let activeSseConnections = 0;
-export const sseConnectionLock = { acquire(): boolean { return MAX_SSE_CONNECTIONS <= 0 || ++activeSseConnections <= MAX_SSE_CONNECTIONS; }, release(): void { activeSseConnections = Math.max(0, activeSseConnections - 1); } };
+// acquire 必须“先判断再自增”：此前写作 ++activeSseConnections <= MAX，被拒连接
+// （超限 503/429 分支不调用 release）也会使计数 +1，泄漏量随拒绝次数累积，最终
+// 达到 MAX 后所有 SSE 端点永久 503 直到重启进程。
+export const sseConnectionLock = { acquire(): boolean { if (MAX_SSE_CONNECTIONS <= 0) return true; if (activeSseConnections >= MAX_SSE_CONNECTIONS) return false; activeSseConnections++; return true; }, release(): void { activeSseConnections = Math.max(0, activeSseConnections - 1); } };
 
 // 单次运行整体超时；超时后中止循环并释放 worker 槽位（默认 5 分钟）。
 const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 300_000) || 300_000;

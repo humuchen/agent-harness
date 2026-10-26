@@ -138,23 +138,24 @@ export async function bookSlotWithinTx(
   if (upd.changes !== 1) throw new MaError('CONFLICT', `号源已不可约：${args.slotId}`);
   const now = Date.now();
   const apptId = `appt_${now}_${Math.random().toString(36).slice(2, 8)}`;
-  conn
-    .prepare(
+  // P0 修复：必须 await——Turso 异步模式下漏 await 会变成 floating promise（错误被吞、
+  // COMMIT 先于语句完成执行），出现「号源已占用但预约单未落库」的半事务。
+  await runStmt(
+    conn.prepare(
       `INSERT INTO ma_appointment (
         appointment_id, tenant_id, lead_id, clinic_id, slot_id, slot_date, slot_time, status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'booked', ?, ?)`
-    )
-    .run(
-      apptId,
-      tid,
-      args.leadId,
-      args.clinicId,
-      args.slotId,
-      String(slot.slot_date),
-      String(slot.slot_time),
-      now,
-      now
-    );
+    ),
+    apptId,
+    tid,
+    args.leadId,
+    args.clinicId,
+    args.slotId,
+    String(slot.slot_date),
+    String(slot.slot_time),
+    now,
+    now
+  );
   return rowToAppointment(await getRow(conn.prepare('SELECT * FROM ma_appointment WHERE appointment_id = ?'), apptId) as Record<string, unknown>);
 }
 
@@ -205,9 +206,12 @@ export async function cancelAppointmentTx(appointmentId: string): Promise<void> 
     if (!row) throw new MaError('NOT_FOUND', `预约单不存在：${appointmentId}`);
     if (row.status !== 'booked') return; // 已取消/已到院 → 幂等
     await runStmt(conn.prepare("UPDATE ma_appointment SET status = 'cancelled', updated_at = ? WHERE appointment_id = ?"), Date.now(), appointmentId);
-    conn
-      .prepare('UPDATE ma_slot SET booked = MAX(0, booked - 1), updated_at = ? WHERE slot_id = ?')
-      .run(Date.now(), String(row.slot_id));
+    // P0 修复：必须 await（同上——漏 await 在 Turso 下会且回退号源的 UPDATE）。
+    await runStmt(
+      conn.prepare('UPDATE ma_slot SET booked = MAX(0, booked - 1), updated_at = ? WHERE slot_id = ?'),
+      Date.now(),
+      String(row.slot_id)
+    );
   });
 }
 

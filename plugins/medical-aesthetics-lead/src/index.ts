@@ -13,8 +13,8 @@ import { registerAssistTool } from './tools/assist';
 import { registerAbTool } from './tools/ab';
 import { leadServerExtension } from './server/routes';
 import { leadDashboardView, analyticsDashboardView } from './web/dashboard';
-import { setRunKey, setPluginContext } from './runtime';
-import { appendTranscript } from './repo/transcript-repo';
+import { setPluginContext } from './runtime';
+import { appendTranscript, pruneOldTranscripts } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
 import { startScheduler, stopScheduler } from './services/scheduler-service';
 import { registerMedicalAdGuardrail, setMedicalAdAuditSink } from '@agent-harness/medical-ad-guard';
@@ -31,6 +31,16 @@ let offEvents: (() => void) | undefined;
 let offTranscript: (() => void) | undefined;
 /** 护栏命中审计 sink 注销句柄（中期补全：命中 → 人审队列）。 */
 let offGuardSink: (() => void) | undefined;
+/** ma_transcript 保留期清理定时器（onUnload 清理）。 */
+let transcriptPruneTimer: NodeJS.Timeout | undefined;
+
+/**
+ * 本插件拥有的 agentId 集合：仅这些 agent 的 run 才写入 ma_transcript。
+ * P0 隐私修复：此前订阅全局 run:start/run:end，把进程内所有 agent（memo、客服、
+ * plan-propose…）的对话全部捕获进医美客资库且无保留期——跨插件越界 + 医疗隐私
+ * 无限留存。注册卡片时逐个 add（事件桥惰性查询，规避 setup 内的注册顺序问题）。
+ */
+const ownedAgentIds = new Set<string>(['medical-aesthetics-lead']);
 
 /**
  * 医美客资插件模块（PluginModule 主入口）。
@@ -72,16 +82,17 @@ export const leadPlugin: PluginModule = {
       if (String(e.type).startsWith('ma.')) ctx.logger.info('ma event', { type: e.type });
     });
 
-    // 5) 对话记录回填
+    // 5) 对话记录回填（仅本插件 agent 的 run）
+    // P0 隐私修复：仅捕获 ownedAgentIds 内 agent 的 run；事件缺 agentId（旧宿主 /
+    // plan-propose 等内部管线）时按 fail-closed 不捕获。run_key 仍为 run:<runId>，
+    // 但归集（lead_qualify）侧改经 AsyncLocalStorage 的 getRunId() 推导，并发安全。
     offTranscript = ctx.events.on((e) => {
+      const agentId = (e as { agentId?: string }).agentId;
+      if (!agentId || !ownedAgentIds.has(agentId)) return;
       if (e.type === 'run:start' && typeof e.input === 'string') {
-        const key = `run:${String(e.runId)}`;
-        setRunKey(key);
-        appendTranscript(key, 'user', e.input);
+        appendTranscript(`run:${String(e.runId)}`, 'user', e.input);
       } else if (e.type === 'run:end' && typeof e.final === 'string') {
-        const key = `run:${String(e.runId)}`;
-        appendTranscript(key, 'assistant', e.final);
-        setRunKey(null);
+        appendTranscript(`run:${String(e.runId)}`, 'assistant', e.final);
       }
     });
 
@@ -122,6 +133,7 @@ export const leadPlugin: PluginModule = {
       },
       isolation: 'os',
     });
+    ownedAgentIds.add('project-advisor');
 
     await reg.register({
       id: 'pricing-agent',
@@ -138,6 +150,7 @@ export const leadPlugin: PluginModule = {
       },
       isolation: 'os',
     });
+    ownedAgentIds.add('pricing-agent');
 
     await reg.register({
       id: 'booking-agent',
@@ -161,6 +174,7 @@ export const leadPlugin: PluginModule = {
       },
       isolation: 'os',
     });
+    ownedAgentIds.add('booking-agent');
 
     await reg.register({
       id: 'lead-capture-agent',
@@ -177,6 +191,7 @@ export const leadPlugin: PluginModule = {
       },
       isolation: 'os',
     });
+    ownedAgentIds.add('lead-capture-agent');
 
     // 7.5) 注册运营分析子 Agent 卡片
     await reg.register({
@@ -194,6 +209,7 @@ export const leadPlugin: PluginModule = {
       },
       isolation: 'os',
     });
+    ownedAgentIds.add('operations-analyst');
 
     // 8) 注册团队（用于 Workflow parallel step）
     const tm = getTeamManager();
@@ -229,6 +245,18 @@ export const leadPlugin: PluginModule = {
     startOutboxWorker(ctx.cron.register);
     startScheduler(ctx.cron.register);
 
+    // P0 隐私修复：ma_transcript 保留期兜底清理（默认 30 天，0 = 禁用）。已归集的
+    // 记录在 attachRunTranscript 后即删，这里周期清理从未归集的无关对话。
+    const retentionDays = Number(process.env.MA_TRANSCRIPT_RETENTION_DAYS ?? 30);
+    if (retentionDays > 0) {
+      transcriptPruneTimer = setInterval(() => {
+        void pruneOldTranscripts(retentionDays).catch(() => {
+          /* 清理失败不影响主流程，下轮重试 */
+        });
+      }, 6 * 60 * 60 * 1000);
+      transcriptPruneTimer.unref?.();
+    }
+
     ctx.logger.info('medical-aesthetics-lead plugin started');
   },
 
@@ -241,6 +269,10 @@ export const leadPlugin: PluginModule = {
   async onUnload(ctx: PluginContext): Promise<void> {
     stopOutboxWorker();
     stopScheduler();
+    if (transcriptPruneTimer) {
+      clearInterval(transcriptPruneTimer);
+      transcriptPruneTimer = undefined;
+    }
     offEvents?.();
     offEvents = undefined;
     offTranscript?.();

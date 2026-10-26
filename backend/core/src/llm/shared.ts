@@ -392,8 +392,9 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
 
   // 非流式请求独立 HTTP 超时：run 级 signal 仅在 harness 配置 timeoutMs 时存在，
   // 未配置时一次 TCP 挂起可让调用永久阻塞（race 的 abortPromise 永不触发）。
-  // 默认 600s 兜底，可用 LLM_HTTP_TIMEOUT_MS 调整（设 0 关闭）。流式路径已有
-  // LLM_STREAM_IDLE_TIMEOUT_MS 空闲超时兜底，不在此重复。
+  // 默认 600s 兜底，可用 LLM_HTTP_TIMEOUT_MS 调整（设 0 关闭）。流式路径的连接
+  // 阶段由 LLM_STREAM_CONNECT_TIMEOUT_MS 兜底、读取阶段由 LLM_STREAM_IDLE_TIMEOUT_MS
+  // 空闲超时接管（此前注释称流式「已有空闲超时兜底」不实——它不覆盖连接阶段）。
   const httpTimeoutMs = Number(process.env.LLM_HTTP_TIMEOUT_MS ?? 600_000) || 0;
   const withHttpTimeout = (sig?: AbortSignal): AbortSignal | undefined => {
     if (httpTimeoutMs <= 0) return sig;
@@ -525,21 +526,54 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     }
   }
 
-  // ── 连接阶段：熔断器 + 首字节前重试 ─────────────────────────────────────
-  // 修复（原实现两点缺陷）：① stream 直连 fetch 绕过 circuitBreaker —— 传入的熔断器
-  // 被静默忽略，上游持续 5xx 时流式调用每次都空等；② 无任何重试 —— 一次抖动即失败。
-  // 约束：仅「首字节前」失败（连接拒绝 / 非 200 / 无可读 body）可重试 —— 此时还未向
-  // 调用方发出任何 token，语义与非流式重试等价；首字节后失败仍走 partial 保留已产出。
+  // ── 连接阶段：熔断器 + 首字节前重试 + 连接超时 ───────────────────────────
+  // 修复（原实现三点缺陷）：① stream 直连 fetch 绕过 circuitBreaker —— 传入的熔断器
+  // 被静默忽略，上游持续 5xx 时流式调用每次都空等；② 无任何重试 —— 一次抖动即失败；
+  // ③ 连接阶段（TCP/TLS/首字节前）无超时兜底 —— run 未配置 timeoutMs 时一次挂起
+  // 永久阻塞（此前注释称「流式已有 LLM_STREAM_IDLE_TIMEOUT_MS 兜底」不实：该空闲
+  // 超时仅在拿到 body 之后生效）。现对连接阶段叠加 LLM_STREAM_CONNECT_TIMEOUT_MS
+  // （默认 60s，0=关闭）——首字节到达即解除（超长生成不受影响，流式期仍由 IDLE_MS
+  // 空闲超时接管）；run 级 signal 的级联中止保留。
+  const connectTimeoutMs =
+    Number(process.env.LLM_STREAM_CONNECT_TIMEOUT_MS ?? 60_000) || 0;
+  const doFetch = () => {
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) ctrl.abort(signal.reason);
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (connectTimeoutMs > 0) {
+      // 带 code 的 reason：undici 会以 signal.reason reject fetch，使连接超时
+      // 落入 isRetryableNetworkError 的 ETIMEDOUT 判定（可重试）。
+      const timeoutErr = Object.assign(
+        new Error(`LLM stream connect timeout after ${connectTimeoutMs}ms (model=${modelLabel})`),
+        { code: 'ETIMEDOUT' }
+      );
+      timer = setTimeout(() => ctrl.abort(timeoutErr), connectTimeoutMs);
+      timer.unref?.();
+    }
+    const p = fetchImpl(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(streamBody),
+      signal: ctrl.signal,
+    });
+    // headers 就绪 = 连接阶段结束：解除连接超时与 run signal 挂接（流式期交给
+    // IDLE_MS 空闲超时；run 级中止对响应体的影响由 body reader 感知）。
+    return p.finally(() => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    });
+  };
   let resp: Response | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     let r: Response;
     try {
-      const doFetch = () => fetchImpl(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(streamBody),
-        signal,
-      });
+      r = circuitBreaker
+        ? await circuitBreaker.withRequest(doFetch)
+        : await doFetch();
       r = circuitBreaker
         ? await circuitBreaker.withRequest(doFetch)
         : await doFetch();

@@ -21,6 +21,69 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { createConnection } from 'node:net';
+import { lookup } from 'node:dns/promises';
+
+// ── 出网目标防护（SSRF / 内网探测，P1）────────────────────────────────────
+// 数据源连通性测试会以服务端身份向用户配置的任意 URL / host:port 发起请求——
+// 不加限制时，持有 datasource:read 的低权限账号即可让服务器探测内网拓扑
+// （含 169.254.169.254 云元数据端点），并从 latencyMs / 错误信息侧信道推断网段结构。
+// 默认 denylist：http 限 http(s) scheme，目标主机经 DNS 解析后逐 IP 校验，
+// 命中私有/保留网段即拒绝（解析后校验同时挡住 DNS rebinding 的常见形态）。
+// 自托管内网部署确需连内网数据源时，显式设置 DATASOURCE_EGRESS_MODE=open 恢复旧行为。
+
+function egressMode(): string {
+  return (process.env.DATASOURCE_EGRESS_MODE ?? 'denylist').toLowerCase();
+}
+
+/** IPv4 是否落在私有 / 保留网段。 */
+function isPrivateIpv4(ip: string): boolean {
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return true; // 非点分十进制一律视为可疑
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 0 || a === 10 || a === 127) return true; // 本机 / 内网 / 回环
+  if (a === 169 && b === 254) return true; // 链路本地（含云元数据 169.254.169.254）
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
+  if (a === 192 && b === 168) return true; // 192.168/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
+  if (a === 192 && b === 0) return true; // 192.0.0/24 + TEST-NET-1 192.0.2/24
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 基准测试
+  if (a >= 224) return true; // 组播 224/4 + 保留 240/4
+  return false;
+}
+
+/** IPv6 是否私有 / 保留（含 IPv4 映射地址解包校验）。 */
+function isPrivateIpv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  const mapped = lower.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  const mappedIp = mapped?.[1];
+  if (mappedIp) return isPrivateIpv4(mappedIp); // ::ffff:a.b.c.d 按 IPv4 判
+  if (lower === '::' || lower === '::1') return true; // 未指定 / 回环
+  if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true; // fe80::/10
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // fc00::/7 ULA
+  if (lower.startsWith('ff')) return true; // 组播
+  return false;
+}
+
+function isPrivateIp(ip: string): boolean {
+  return ip.includes(':') ? isPrivateIpv6(ip) : isPrivateIpv4(ip);
+}
+
+/**
+ * 校验出网目标主机；违规抛 Error（adapter 层捕获并转为连接失败，不泄露解析细节）。
+ * IP 字面量由 dns.lookup 直接返回；域名解析失败同样拒绝（fail-closed）。
+ */
+export async function assertEgressTarget(host: string): Promise<void> {
+  if (egressMode() === 'open') return;
+  const records = await lookup(host, { all: true, verbatim: true }).catch(() => {
+    throw new Error(`egress blocked: 无法解析主机（${host}）`);
+  });
+  if (records.some((r) => isPrivateIp(r.address))) {
+    throw new Error(
+      'egress blocked: 目标落在私有/保留网段（SSRF 防护；如确需访问内网数据源，请设置 DATASOURCE_EGRESS_MODE=open）'
+    );
+  }
+}
 
 export type DataSourceType = 'http' | 'static' | 'postgres';
 
@@ -68,6 +131,21 @@ class HttpAdapter implements DataSourceAdapter {
     if (!url) {
       return { ok: false, message: 'missing config.url' };
     }
+    // P1 SSRF 防护：scheme 白名单 + 目标主机私有网段校验。
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { ok: false, message: 'invalid config.url' };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, message: 'only http/https allowed' };
+    }
+    try {
+      await assertEgressTarget(parsed.hostname);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
     const start = Date.now();
     try {
       const res = await fetch(url, {
@@ -92,6 +170,12 @@ class PostgresAdapter implements DataSourceAdapter {
     const host = typeof this.def.config?.host === 'string' ? this.def.config.host : 'localhost';
     const port =
       typeof this.def.config?.port === 'number' ? this.def.config.port : 5432;
+    // P1 SSRF 防护：TCP 探测目标同样先过私有网段校验。
+    try {
+      await assertEgressTarget(host);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
     return new Promise<ConnectionResult>((resolve) => {
       const start = Date.now();
       const socket = createConnection({ host, port });

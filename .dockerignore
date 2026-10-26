@@ -4,6 +4,15 @@ node_modules
 **/dist
 **/.turbo
 
+# 运行期数据（P0 修复：本地 SQLite 账户库 / 插件 store / BYOK 加密凭据库
+# 绝不能随 COPY . . 进入镜像构建层再带入生产镜像）
+data/
+**/data/
+**/.data/
+*.db
+*.db-shm
+*.db-wal
+
 # 本地环境 / 密钥 / 日志
 .env
 .env.*

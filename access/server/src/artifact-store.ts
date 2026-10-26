@@ -10,13 +10,14 @@
  * - 工厂按环境变量选择后端：`ARTIFACT_STORE=s3` 且配置了 S3_BUCKET 时用 S3，否则本地盘。
  *
  * 安全：id 仅接受合法 UUID（`crypto.randomUUID()`），所有按 id 的文件访问都经过 `safeId` 校验，
- * 杜绝 `../` 路径遍历；模块自包含，不 import 任何其它项目模块。
+ * 杜绝 `../` 路径遍历；除同包的 atomic-write（索引原子落盘）外不依赖其它项目模块。
  */
 
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { atomicWriteJson } from './atomic-write';
 
 export interface ArtifactMeta {
   id: string;
@@ -66,6 +67,12 @@ export class LocalArtifactStore implements ArtifactStore {
   private readonly dir: string;
   private readonly indexPath: string;
   private readonly filesDir: string;
+  /**
+   * 索引读-改-写互斥链（P1 修复）：save / remove 都执行「读 index → 修改 → 写回」，
+   * 并发时互相覆盖丢条目（Promise 均为微任务交错，非原子）。用 promise 链串行化
+   * 单进程内的临界区；多副本部署应使用 S3 后端（其内部按对象存储原子性处理）。
+   */
+  private indexChain: Promise<void> = Promise.resolve();
 
   constructor(dir: string) {
     // resolve 保证基于绝对/相对目录的落盘位置确定，不随进程 cwd 漂移。
@@ -91,8 +98,9 @@ export class LocalArtifactStore implements ArtifactStore {
   }
 
   private async writeIndex(items: ArtifactMeta[]): Promise<void> {
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(this.indexPath, JSON.stringify(items, null, 2), 'utf-8');
+    // P1 修复：改用 tmp→rename 原子写（复用 atomic-write.ts；此前直接 writeFile，
+    // 崩溃时留下半截 JSON——虽有「解析失败回落空列表」兜底，但表现为「看起来丢数据」）。
+    atomicWriteJson(this.indexPath, items);
   }
 
   async list(runId?: string): Promise<ArtifactMeta[]> {
@@ -125,9 +133,12 @@ export class LocalArtifactStore implements ArtifactStore {
       note: input.note
     };
     await writeFile(join(this.filesDir, id), input.content);
-    const items = await this.readIndex();
-    items.push(meta);
-    await this.writeIndex(items);
+    // P1 修复：读-改-写段进互斥链，防并发 save/remove 互相覆盖索引条目。
+    await (this.indexChain = this.indexChain.then(async () => {
+      const items = await this.readIndex();
+      items.push(meta);
+      await this.writeIndex(items);
+    }));
     return meta;
   }
 
@@ -144,20 +155,25 @@ export class LocalArtifactStore implements ArtifactStore {
 
   async remove(id: string): Promise<boolean> {
     if (!safeId(id)) return false;
-    const items = await this.readIndex();
-    const idx = items.findIndex((m) => m.id === id);
-    if (idx === -1) return false;
-    const file = join(this.filesDir, id);
-    if (existsSync(file)) {
-      try {
-        await unlink(file);
-      } catch {
-        /* 文件删除失败（如权限）不影响索引清理，仍视为已移除条目。 */
+    // P1 修复：与 save 同一互斥链，防并发读改写互相覆盖。
+    let removed = false;
+    await (this.indexChain = this.indexChain.then(async () => {
+      const items = await this.readIndex();
+      const idx = items.findIndex((m) => m.id === id);
+      if (idx === -1) return;
+      const file = join(this.filesDir, id);
+      if (existsSync(file)) {
+        try {
+          await unlink(file);
+        } catch {
+          /* 文件删除失败（如权限）不影响索引清理，仍视为已移除条目。 */
+        }
       }
-    }
-    items.splice(idx, 1);
-    await this.writeIndex(items);
-    return true;
+      items.splice(idx, 1);
+      await this.writeIndex(items);
+      removed = true;
+    }));
+    return removed;
   }
 }
 

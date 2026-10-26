@@ -37,5 +37,28 @@ export async function attachRunTranscript(leadId: string, runKey: string): Promi
   const turns = await readTranscript(runKey);
   if (!turns.length) return 0;
   for (const t of turns) await appendLeadMessage(leadId, t.role, t.text, runKey);
+  // P0 隐私 + P1 去重：归集完成后即删除该 run 的记录——此前注释声称「去重」但无实现，
+  // 同一 run 多次 qualify 会把消息翻倍落库；删除后天然幂等，且减少医疗对话的无限留存
+  // （从未归集的无关对话由保留期清理兜底，见 pruneOldTranscripts）。
+  await dbCall(async () => {
+    (await getDb())
+      .prepare('DELETE FROM ma_transcript WHERE run_key = ?')
+      .run(runKey);
+  }, '清理已归集对话记录');
   return turns.length;
+}
+
+/**
+ * 清理 N 天前的运行期对话记录（保留期兜底；返回删除行数）。
+ * 由插件 onStart 调度周期执行（MA_TRANSCRIPT_RETENTION_DAYS，默认 30 天，0 = 禁用）。
+ */
+export async function pruneOldTranscripts(retentionDays: number): Promise<number> {
+  if (!retentionDays || retentionDays <= 0) return 0;
+  const cutoff = Date.now() - retentionDays * 86_400_000;
+  return await dbCall(async () => {
+    const r = (await getDb())
+      .prepare('DELETE FROM ma_transcript WHERE created_at < ?')
+      .run(cutoff);
+    return Number((r as { changes?: number }).changes ?? 0);
+  }, '清理过期对话记录');
 }

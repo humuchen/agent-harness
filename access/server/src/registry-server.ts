@@ -6,7 +6,7 @@
  * - 插件版本解析（语义化版本排序）
  * - 插件包下载（GET /plugins/<id>-<ver>.tar.gz）
  * - 安装统计（下载计数，内存聚合 + 定期落盘）
- * - 发布鉴权（REGISTRY_TOKEN，未配置时开放并告警）
+ * - 发布鉴权（REGISTRY_TOKEN；未配置时发布端点 fail-closed 拒绝，REGISTRY_OPEN=true 显式开放）
  *
  * 运行方式:
  *   node access/server/dist/registry-server.js
@@ -15,6 +15,7 @@
 
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import {
   readFileSync,
   existsSync,
@@ -49,8 +50,14 @@ const REGISTRY_DIR = join(process.cwd(), 'registry-data');
 const PLUGINS_FILE = join(REGISTRY_DIR, 'plugins.json');
 const PACKAGES_DIR = join(REGISTRY_DIR, 'packages');
 
-// 鉴权：发布/管理端点令牌。未设置时开放（本地/演示），启动期打印一次性告警。
+// 鉴权：发布/管理端点令牌。
+// P1 修复（fail-closed）：未配置 REGISTRY_TOKEN 时发布端点此前完全开放（仅打印告警），
+// 误暴露公网即任何人可发布插件包（供应链风险）。现默认拒绝发布；本地/演示场景显式
+// 设 REGISTRY_OPEN=true 恢复旧行为。
 const REGISTRY_TOKEN = (process.env.REGISTRY_TOKEN || '').trim();
+const REGISTRY_OPEN = (process.env.REGISTRY_OPEN || '').trim().toLowerCase() === 'true';
+// P1 修复：默认仅绑定本机回环；公网市场服务需显式 REGISTRY_HOST=0.0.0.0。
+const REGISTRY_HOST = process.env.REGISTRY_HOST || '127.0.0.1';
 
 // CORS：跨域白名单（逗号分隔 Origin）。留空 = 仅同源（不返回 ACAO，杜绝通配符）。
 const CORS_ORIGINS = (process.env.REGISTRY_CORS_ORIGIN || '')
@@ -172,13 +179,26 @@ function sendJson(res: ServerResponse, data: any, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-/** 发布/管理端点鉴权。未配置令牌时开放（兼容本地演示）。 */
+/** 发布/管理端点鉴权。未配置令牌时默认拒绝（fail-closed；REGISTRY_OPEN=true 显式开放）。 */
 function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
-  if (!REGISTRY_TOKEN) return true;
+  if (!REGISTRY_TOKEN) {
+    if (REGISTRY_OPEN) return true;
+    sendJson(
+      res,
+      { error: 'publish disabled: REGISTRY_TOKEN 未配置（本地演示请显式设置 REGISTRY_OPEN=true）' },
+      403
+    );
+    return false;
+  }
   const auth = req.headers.authorization;
   const token =
     typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  if (token === REGISTRY_TOKEN) return true;
+  // P1 修复：sha256 指纹 + timingSafeEqual 常量时间比较（=== 存在理论时序侧信道）。
+  if (token) {
+    const a = createHash('sha256').update(token).digest();
+    const b = createHash('sha256').update(REGISTRY_TOKEN).digest();
+    if (timingSafeEqual(a, b)) return true;
+  }
   sendJson(res, { error: 'unauthorized: missing or invalid token' }, 401);
   return false;
 }
@@ -407,11 +427,15 @@ const server = createServer(handleRequest);
 const flushTimer = setInterval(flushDownloads, FLUSH_MS);
 flushTimer.unref?.();
 
-server.listen(PORT, () => {
+server.listen(PORT, REGISTRY_HOST, () => {
   console.log(`🚀 插件市场 Registry Server 已启动`);
-  console.log(`📡 地址: http://localhost:${PORT}`);
+  console.log(`📡 地址: http://${REGISTRY_HOST}:${PORT}（公网部署需显式 REGISTRY_HOST）`);
   if (!REGISTRY_TOKEN) {
-    console.warn('⚠️  REGISTRY_TOKEN 未设置：发布端点开放，公网部署前请务必配置。');
+    if (REGISTRY_OPEN) {
+      console.warn('⚠️  REGISTRY_TOKEN 未设置且 REGISTRY_OPEN=true：发布端点开放，仅限本地/演示环境。');
+    } else {
+      console.warn('⚠️  REGISTRY_TOKEN 未设置：发布端点已拒绝（fail-closed）。配置 REGISTRY_TOKEN 启用发布，或 REGISTRY_OPEN=true 开放本地演示。');
+    }
   }
   console.log(`📋 API端点:`);
   console.log(`   GET  /api/registry/plugins        - 列出所有插件`);

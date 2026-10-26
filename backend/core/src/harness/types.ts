@@ -22,7 +22,14 @@ import type { CircuitBreaker } from '../circuit-breaker';
  * 实时观察 LLM ↔ 工具 ↔ 记忆 的每一步。纯可选，不影响任何既有行为。
  */
 export type HarnessEvent =
-  | { type: 'run:start'; runId: string; input: string }
+  | {
+      type: 'run:start';
+      runId: string;
+      input: string;
+      /** 发起本次 run 的 agent id（harness opts.agentId；未显式注册的裸 harness 缺省）。
+       *  插件据此过滤事件（如 ma 插件仅捕获本插件 agent 的对话，避免跨插件越界采集）。 */
+      agentId?: string;
+    }
   | { type: 'run:tools'; tools: { name: string; description: string }[] }
   | {
       type: 'guardrail:blocked';
@@ -137,7 +144,7 @@ export type HarnessEvent =
       limit: number;
       used: number;
     }
-  | { type: 'run:end'; runId: string; final: string; steps: number }
+  | { type: 'run:end'; runId: string; final: string; steps: number; agentId?: string }
   | {
       type: 'verify:result';
       attempt: number;

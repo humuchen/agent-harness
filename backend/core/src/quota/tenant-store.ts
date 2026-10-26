@@ -15,6 +15,7 @@
  */
 import type { TenantQuota } from './engine';
 import { getDbAdapter, type DbAdapter } from '../db-adapter';
+import { structLog } from '../telemetry';
 
 /** tenant_quotas 表一行的完整形态。 */
 export interface TenantQuotaRow extends TenantQuota {
@@ -115,7 +116,7 @@ export class TenantQuotaStore {
     return hit.row;
   }
 
-  /** 异步读全量（缓存 miss 打 DB；DB 异常返回 null 不上抛）。 */
+  /** 异步读全量（缓存 miss 打 DB；读失败保留 stale 缓存并留痕，完全无缓存才降级）。 */
   async get(tenantId: string): Promise<TenantQuota | null> {
     if (!tenantId || tenantId === 'anonymous') return null;
     try {
@@ -129,8 +130,17 @@ export class TenantQuotaStore {
       const row = this.rowToQuota(hit);
       this.cache.set(tenantId, { row, fetchedAt: Date.now() });
       return row;
-    } catch {
-      return null; // 读失败降级为「无租户配置」——引擎回退 default
+    } catch (e) {
+      // P1 修复：读失败 ≠ 租户无配置。此前二者同返回 null → 引擎静默回退 default，
+      // 付费租户在 DB 抖动期间被静默放宽/收紧限额且无任何信号。现：优先复用 stale
+      // 缓存（宁可短暂旧配置）；完全无缓存才降级，并显式留痕。
+      const stale = this.cache.get(tenantId);
+      structLog('warn', 'tenant-quota read failed; degrading', {
+        tenantId,
+        hadStale: Boolean(stale),
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return stale?.row ?? null;
     }
   }
 

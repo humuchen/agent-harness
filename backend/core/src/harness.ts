@@ -48,6 +48,7 @@ import {
 } from './telemetry';
 import { hooks } from './hooks';
 import { runWithEventSink } from './run-events';
+import { bindRunId } from './run-user';
 import {
   GUARDRAIL_FALLBACK_PREFIX,
   PARTIAL_NOTICE,
@@ -178,7 +179,11 @@ export class AgentHarness {
         this.opts.signal.removeEventListener('abort', onExternalAbort);
     };
 
-    emit({ type: 'run:start', runId, input: userInput });
+    // P0（插件事件归属）：沿本次 run 的异步链路绑定 runId（AsyncLocalStorage），
+    // 插件工具执行期可用 getRunId() 精确归属当前 run（如按 run 归集对话），
+    // 替代并发下会互相覆盖的进程级单例。
+    bindRunId(runId);
+    emit({ type: 'run:start', runId, input: userInput, agentId: this.opts.agentId });
     incCounterTenant('agent.run.start', this.opts.tenantId);
 
     // 重置自适应上下文预算状态（每轮运行独立，避免跨 run 串扰）。
@@ -269,7 +274,7 @@ export class AgentHarness {
         final: msg,
         steps: 0,
       });
-      emit({ type: 'run:end', runId, final: msg, steps: 0 });
+      emit({ type: 'run:end', runId, final: msg, steps: 0, agentId: this.opts.agentId });
       return msg;
     }
 
@@ -1247,7 +1252,7 @@ export class AgentHarness {
       tokens: undefined,
       cost: undefined,
     });
-    emit({ type: 'run:end', runId, final, steps });
+    emit({ type: 'run:end', runId, final, steps, agentId: this.opts.agentId });
     return final;
   }
 }

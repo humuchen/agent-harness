@@ -44,3 +44,25 @@ export function runWithUser<T>(user: RunUser | null, fn: () => T): T {
   if (!user) return fn();
   return storage.run(user, fn);
 }
+
+// ─── 运行级 runId 上下文（独立 store，不与 RunUser 混存）─────────────────────
+// 用途：把当前 runId 沿 harness.run 的异步链路传递到工具执行层，使插件工具能
+// 精确归属「自己是哪个 run」（如 ma 插件按 run 归集对话），替代易串扰的
+// 进程级单例变量（并发 run 下 run:end 会清掉其他并发 run 的状态）。
+// 独立 store 的原因：server 已用本文件的用户 store 包裹 harness.run，若复用同一
+// store，harness 内部的 run() 会在 enterWith 时覆盖用户字段。
+
+const runIdStorage = new AsyncLocalStorage<string>();
+
+/**
+ * 在当前异步链路绑定 runId。仅 harness.runInner 开头调用（enterWith 作用于
+ * 当前同步执行流的后续 + 其派生的全部异步任务，无需包裹函数体）。
+ */
+export function bindRunId(runId: string): void {
+  runIdStorage.enterWith(runId);
+}
+
+/** 读取当前异步链路的 runId；不在 harness.run 内时返回 null。 */
+export function getRunId(): string | null {
+  return runIdStorage.getStore() ?? null;
+}

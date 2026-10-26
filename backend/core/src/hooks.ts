@@ -99,8 +99,19 @@ export class HookRegistry {
     for (const h of handlers) {
       try {
         if (timeoutMs > 0) {
+          const hp = Promise.resolve(h(ctx as HookContext));
+          // P1 修复：超时竞速落选后 handler promise 仍在后台运行，若其随后 reject
+          // 而无人接住，Node ≥15 下 unhandledRejection 直接 crash 进程（与
+          // memory.ts 注释里记录的坑同型）。独立 .catch 分支兜底：late rejection
+          // 至少留痕；race 在超时前完成时两条路径都会记 warn（宁可双记不漏记）。
+          hp.catch((e) => {
+            structLog('warn', 'hook handler rejected after timeout race', {
+              hook: name,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          });
           await Promise.race([
-            Promise.resolve(h(ctx as HookContext)),
+            hp,
             new Promise<never>((_resolve, reject) => {
               const t = setTimeout(
                 () => reject(new Error(`hook handler timeout after ${timeoutMs}ms`)),

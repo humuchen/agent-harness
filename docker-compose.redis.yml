@@ -26,7 +26,10 @@ services:
       GUARDRAIL_DENIED_DOMAINS: '${GUARDRAIL_DENIED_DOMAINS:-*}'
       AUDIT_BACKEND: '${AUDIT_BACKEND:-file}'
       AUDIT_LOG_FILE: '/app/data/audit/audit.jsonl'
-      REDIS_URL: 'redis://redis:6379'
+      # P0 修复：主 compose 的 redis 服务强制 requirepass（REDIS_PASSWORD 缺失即启动失败），
+      # 此处硬编码的无密码 URL 叠加启用后必然 NOAUTH。与 docker-compose.prod.yml 对齐，
+      # 经环境变量注入密码。
+      REDIS_URL: 'redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required for redis profile}@redis:6379'
       # 可选：多角色鉴权（JSON 格式）
       # UI_TOKENS: '{"admin-token":"admin","viewer-token":"viewer"}'
       # 持久化记忆后端（sqlite 写入挂载卷 /app/data；node:sqlite 不可用时自动回退 file 后端，

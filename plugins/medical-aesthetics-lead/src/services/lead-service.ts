@@ -17,7 +17,7 @@ import {
 import { attachRunTranscript } from '../repo/transcript-repo';
 import { enqueue } from '../repo/outbox-repo';
 import { getConfig } from '../config';
-import { getRunKey } from '../runtime';
+import { getRunId } from '@agent-harness/core';
 import { MaError } from '../infra/errors';
 import { type LeadGrade, type CrmSyncState, type LeadStage, type LeadRecord, stageRank } from '../repo/types';
 
@@ -83,8 +83,11 @@ export async function qualifyLead(input: {
     grade,
     stage: keepStage,
   });
-  // 仅当线索已存在才归集当次对话（绝不凭空建档）
-  await attachRunTranscript(leadId, getRunKey() ?? '');
+  // 仅当线索已存在才归集当次对话（绝不凭空建档）。
+  // P1 竞态修复：run_key 由 AsyncLocalStorage 的当前 runId 直接推导（run:<runId>），
+  // 不再读取进程级单例（并发 run 下会归错线索）；不在 run 链路内（如管理路由直调）
+  // 时 getRunId() 为 null → 跳过归集（fail-closed，不误归属）。
+  await attachRunTranscript(leadId, getRunId() ? `run:${getRunId()}` : '');
   const crmSync = await queueCrmSync(lead);
   if (crmSync === 'disabled') await markCrmSync(leadId, 'disabled');
   return { ok: true, leadId, grade, stage: lead.stage, crmSync };

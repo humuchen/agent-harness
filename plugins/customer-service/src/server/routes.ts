@@ -4,6 +4,7 @@
  * 路由 key 用**纯路径**（宿主精确匹配 path），HTTP 方法在 handler 内用 req.method 判断。
  */
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
 import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo';
@@ -51,11 +52,29 @@ function readBody(req: import('node:http').IncomingMessage): Promise<Record<stri
   });
 }
 
-/** 校验 admin token（写操作）。 */
+/** 校验 admin token（写操作）。
+ *  P1 安全修复：换 sha256 + timingSafeEqual 常量时间比较（对齐 ma 插件 signature.ts 口径，
+ *  === 字符串比较存在理论时序侧信道）。 */
 function authorized(req: import('node:http').IncomingMessage): boolean {
   const auth = req.headers['authorization'] ?? '';
   const token = typeof auth === 'string' ? auth.replace(/^Bearer\s+/i, '') : '';
-  return token.length > 0 && token === getConfig().adminToken;
+  const expected = getConfig().adminToken;
+  if (!token || !expected) return false;
+  return timingSafeEqual(createHash('sha256').update(token).digest(), createHash('sha256').update(expected).digest());
+}
+
+/** PII 掩码：姓名保留首字符，其余打码。 */
+function maskName(v: string | null): string | null {
+  if (!v) return v;
+  return v.slice(0, 1) + '*'.repeat(Math.max(1, v.length - 1));
+}
+
+/** PII 掩码：电话保留前 3 后 4，其余打码。 */
+function maskPhone(v: string | null): string | null {
+  if (!v) return v;
+  const digits = v.replace(/\D/g, '');
+  if (digits.length >= 7) return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
+  return '*'.repeat(Math.max(digits.length, 4));
 }
 
 export const csServerExtension: ServerExtension = {
@@ -199,8 +218,15 @@ export const csServerExtension: ServerExtension = {
     }) as PluginRouteHandler,
 
     // GET /api/plugins/customer-service/reminders —— 查询待处理提醒
-    '/reminders': (async (_req, res) => {
-      const rows = await Promise.resolve(listPendingReminders(50));
+    // P0 安全修复：补鉴权（此前漏加，任何来源可枚举拉取含姓名/手机号的患者回访名单）
+    // 并对返回的 name/phone 做掩码——看板前端走 dashboard.ts 内部调用不受影响。
+    '/reminders': (async (req, res) => {
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
+      const rows = (await Promise.resolve(listPendingReminders(50))).map((r) => ({
+        ...r,
+        name: maskName(r.name),
+        phone: maskPhone(r.phone)
+      }));
       json(res, 200, rows);
     }) as PluginRouteHandler,
 

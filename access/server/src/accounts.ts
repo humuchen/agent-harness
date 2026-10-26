@@ -795,6 +795,33 @@ export async function loginWithDerivedHex(
 }
 
 /**
+ * P0 安全修复：OAuth 首登角色不再无条件 operator（此前任何 GitHub/Google 账号完成
+ * 登录即自动获得可执行 workflow:run / shell:approve 的角色，公网部署下等同于
+ * 「任意第三方账号 = 半信任员工」）。
+ *  - 默认落 viewer（最低权限）；
+ *  - OAUTH_DEFAULT_ROLE 显式覆盖（admin|operator|viewer，非法值回落 viewer）；
+ *  - OAUTH_EMAIL_ALLOWLIST（逗号分隔的完整邮箱或 @后缀，如 @example.com）命中则
+ *    授予 OAUTH_ALLOWLIST_ROLE（默认 operator）；GitHub 无邮箱时按默认角色处理。
+ */
+function resolveOAuthRole(email: string | null | undefined): 'admin' | 'operator' | 'viewer' {
+  const allowlist = (process.env.OAUTH_EMAIL_ALLOWLIST ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const addr = (email ?? '').trim().toLowerCase();
+  if (
+    allowlist.length > 0 &&
+    addr &&
+    allowlist.some((entry) => (entry.startsWith('@') ? addr.endsWith(entry) : addr === entry))
+  ) {
+    const allowRole = (process.env.OAUTH_ALLOWLIST_ROLE ?? 'operator').trim().toLowerCase();
+    return allowRole === 'admin' || allowRole === 'operator' ? allowRole : 'viewer';
+  }
+  const role = (process.env.OAUTH_DEFAULT_ROLE ?? 'viewer').trim().toLowerCase();
+  return role === 'admin' || role === 'operator' || role === 'viewer' ? role : 'viewer';
+}
+
+/**
  * GitHub OAuth 登录：按 GitHub login 在本地 upsert 一个账户并签发登录态。
  *  - username 取 GitHub login（已做合法性校验，非法时回退用 gh_<id>）。
  *  - 密码用一次性随机 scrypt 占位：GitHub 用户无法用密码登录，只能走 OAuth，降低撞库风险。
@@ -858,7 +885,7 @@ export async function upsertGithubUser(
       hashPassword(randomBytes(24).toString('hex')),
       email || null,
       Date.now(),
-      'operator',
+      resolveOAuthRole(email),
       githubId || null
     );
   const tokens = await issueTokens(finalName);
@@ -907,7 +934,7 @@ export async function upsertGoogleUser(
       hashPassword(randomBytes(24).toString('hex')),
       email || null,
       Date.now(),
-      'operator'
+      resolveOAuthRole(email)
     );
   } else if (email) {
     db.prepare('UPDATE users SET email = ? WHERE username = ?').run(
