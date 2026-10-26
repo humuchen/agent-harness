@@ -6,7 +6,8 @@
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
-import { listSeats, upsertSeat, setSeatStatus } from '../repo/seat-repo';
+import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo';
+import { claim as claimHandoff } from '../services/session-service';
 import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service';
 import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
 import { getConfig } from '../config';
@@ -84,6 +85,41 @@ export const csServerExtension: ServerExtension = {
       if (!seatId || !status) return json(res, 400, { error: true, message: 'seatId & status(online|offline) required' });
       const seat = setSeatStatus(seatId, status);
       return json(res, seat ? 200 : 404, seat ?? { error: true, message: 'seat not found' });
+    }) as PluginRouteHandler,
+
+    // 增强坐席池：POST /seat/max-concurrent {seatId, max}（admin）—— 并发上限调整
+    '/seat/max-concurrent': (async (req, res) => {
+      if (req.method !== 'POST') return json(res, 405, { error: true, message: 'method not allowed' });
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
+      const body = await readBody(req);
+      const seatId = String(body.seatId ?? '').trim();
+      const max = Number(body.max);
+      if (!seatId || !Number.isFinite(max) || max < 1) {
+        return json(res, 400, { error: true, message: 'seatId & max(>=1) required' });
+      }
+      const seat = setSeatMaxConcurrent(seatId, max);
+      return json(res, seat ? 200 : 404, seat ?? { error: true, message: 'seat not found' });
+    }) as PluginRouteHandler,
+
+    // 增强坐席池：POST /handoff/claim {seatId, sessionId?}（admin）—— 坐席认领
+    // 未指派的 handoff 会话；sessionId 缺省自动取最老的等待会话。
+    '/handoff/claim': (async (req, res) => {
+      if (req.method !== 'POST') return json(res, 405, { error: true, message: 'method not allowed' });
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
+      const body = await readBody(req);
+      const seatId = String(body.seatId ?? '').trim();
+      if (!seatId) return json(res, 400, { error: true, message: 'seatId required' });
+      try {
+        const sess = claimHandoff({
+          seatId,
+          sessionId: body.sessionId ? String(body.sessionId) : undefined,
+        });
+        return json(res, 200, { ok: true, sessionId: sess.sessionId, assignedSeat: sess.assignedSeat });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const notFound = /不存在/.test(msg);
+        return json(res, notFound ? 404 : 409, { error: true, message: msg });
+      }
     }) as PluginRouteHandler,
 
     // GET /api/plugins/customer-service/stats —— 看板概览

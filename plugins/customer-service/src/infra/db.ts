@@ -102,6 +102,7 @@ export function getDb(): SqliteDatabase {
       name            TEXT NOT NULL,
       status          TEXT NOT NULL DEFAULT 'offline',
       active_sessions INTEGER NOT NULL DEFAULT 0,
+      max_concurrent  INTEGER NOT NULL DEFAULT 3,
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -130,6 +131,7 @@ function ensureTicketColumns(db: SqliteDatabase): void {
 /** 存量库自愈迁移：cs_session 增 assigned_seat（坐席池指派）。 */
 function ensureSessionColumns(db: SqliteDatabase): void {
   ensureColumns(db, 'cs_session', [['assigned_seat', 'assigned_seat TEXT']]);
+  ensureColumns(db, 'cs_agent_seat', [['max_concurrent', "max_concurrent INTEGER NOT NULL DEFAULT 3"]]);
 }
 
 /** 通用列自愈：SELECT 探测失败即 ALTER（并发竞态下列已存在则忽略）。 */

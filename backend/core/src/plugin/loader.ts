@@ -43,6 +43,11 @@ import type { WorkflowDef } from '../workflow/types';
 import { HttpA2ATransport } from '../a2a/transport';
 import type { TaskEnvelope, TaskResult } from '../a2a/types';
 import { getProcessCronScheduler } from '../cron/scheduler';
+import {
+  shouldUseWorkerSandbox,
+  startWorkerSandbox,
+  stopWorkerSandbox,
+} from './worker-sandbox';
 import { structLog, emitAlert } from '../telemetry';
 
 /** 插件生命周期状态。 */
@@ -352,6 +357,13 @@ export class PluginLoader {
       this.mergePluginTools(rec, ctx);
       await mod.onStart?.(ctx);
     }
+    // 长期（插件沙箱）：entry + isolation ≠ none 的清单 → tools-only worker 隔离形态
+    //（worker 加载失败 fail-fast，enable 回滚；disable/uninstall 时 stopWorkerSandbox）。
+    if (shouldUseWorkerSandbox(rec.manifest)) {
+      await startWorkerSandbox(rec.manifest, ctx.tools, { envAllowlist: this.envAllowlist });
+      this.mergePluginTools(rec, ctx);
+      structLog('info', `[plugin:${id}] worker sandbox enabled (tools-only)`);
+    }
     await this.registry.register(this.toAgentCard(rec.manifest));
     rec.state = 'enabled';
     return rec;
@@ -376,6 +388,8 @@ export class PluginLoader {
       this.unregisterHosts(id);
       // 框架级 cron：停用插件时自动停止其全部周期任务（防幽灵任务继续跑）。
       this.stopCronJobs(id);
+      // 插件沙箱：停用即终止 worker（挂起调用拒绝，防幽灵执行）。
+      stopWorkerSandbox(id);
       this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';

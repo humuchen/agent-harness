@@ -19,12 +19,14 @@ export interface SeatRow {
   /** online = 可接新会话；busy = 有进行中会话；offline = 不参与指派。 */
   status: 'online' | 'busy' | 'offline';
   activeSessions: number;
+  /** 并发上限（指派时过滤满载坐席；默认 3）。 */
+  maxConcurrent: number;
   createdAt: string;
   updatedAt: string;
 }
 
 const SEAT_SELECT = `SELECT seat_id AS seatId, tenant_id AS tenantId, name, status,
-  active_sessions AS activeSessions, created_at AS createdAt, updated_at AS updatedAt FROM cs_agent_seat`;
+  active_sessions AS activeSessions, max_concurrent AS maxConcurrent, created_at AS createdAt, updated_at AS updatedAt FROM cs_agent_seat`;
 
 function toSeat(r: Record<string, unknown>): SeatRow {
   const status = String(r.status ?? 'offline');
@@ -34,6 +36,7 @@ function toSeat(r: Record<string, unknown>): SeatRow {
     name: String(r.name ?? ''),
     status: status === 'online' ? 'online' : status === 'busy' ? 'busy' : 'offline',
     activeSessions: Number(r.activeSessions ?? 0),
+    maxConcurrent: Number(r.maxConcurrent ?? 3),
     createdAt: String(r.createdAt ?? ''),
     updatedAt: String(r.updatedAt ?? ''),
   };
@@ -78,15 +81,30 @@ export function listSeats(limit = 100): SeatRow[] {
     .all(getConfig().tenantId, limit) as SeatRow[];
 }
 
-/** 最闲优先挑一个 online 坐席；无在线坐席返回 null（会话仍标 handoff 等待认领）。 */
+/** 最闲优先挑一个在线且未满载的坐席；无可用坐席返回 null（会话仍标 handoff 等待认领）。 */
 export function pickLeastBusySeat(): SeatRow | null {
   const db = getDb();
   const row = db
     .prepare(
-      `${SEAT_SELECT} WHERE tenant_id=? AND status IN ('online','busy') ORDER BY active_sessions ASC, updated_at ASC LIMIT 1`
+      `${SEAT_SELECT} WHERE tenant_id=? AND status IN ('online','busy')
+       AND active_sessions < max_concurrent
+       ORDER BY active_sessions ASC, updated_at ASC LIMIT 1`
     )
     .get(getConfig().tenantId) as Record<string, unknown> | undefined;
   return row ? toSeat(row) : null;
+}
+
+/** 设置坐席并发上限（min 1）。 */
+export function setSeatMaxConcurrent(seatId: string, maxConcurrent: number): SeatRow | null {
+  const n = Math.max(1, Math.floor(Number(maxConcurrent) || 0));
+  if (!Number.isFinite(n)) throw new Error(`max_concurrent 非法：${maxConcurrent}`);
+  const db = getDb();
+  db.prepare(`UPDATE cs_agent_seat SET max_concurrent=?, updated_at=? WHERE seat_id=?`).run(
+    n,
+    new Date().toISOString(),
+    seatId
+  );
+  return getSeat(seatId);
 }
 
 /** 负载 +1（指派会话）；online → busy 联动。 */

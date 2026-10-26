@@ -94,3 +94,15 @@ export function releaseSeat(sessionId: string): SessionRow | null {
   );
   return getSession(sessionId);
 }
+
+/** 最老的未指派 handoff 会话（坐席认领候选；无则 null）。 */
+export function oldestUnassignedHandoff(): SessionRow | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT session_id AS sessionId, tenant_id AS tenantId, channel, customer_id AS customerId, status, assigned_seat AS assignedSeat, created_at AS createdAt, updated_at AS updatedAt
+       FROM cs_session WHERE status='handoff' AND assigned_seat IS NULL ORDER BY updated_at ASC LIMIT 1`
+    )
+    .get() as SessionRow | undefined;
+  return row ?? null;
+}
