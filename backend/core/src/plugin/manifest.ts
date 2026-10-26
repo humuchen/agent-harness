@@ -44,6 +44,14 @@ export interface PluginManifest {
    * 远端/不可信插件应声明 'os' 或 'container'。
    */
   isolation?: 'none' | 'local' | 'os' | 'container';
+
+  /**
+   * 插件配置缺省值（增强：ctx.config 落地）。进程 env 白名单（PLUGIN_ 前缀、
+   * AH_PLUGIN_ 前缀、envAllowlist 显式名单，经 resolvePluginEnv 收敛）中同名变量
+   * 覆盖此处的声明 —— 部署期调整优先于打包缺省。
+   * 仅支持字符串值（与 env 同构）；复杂配置请走外部文件 + env 传路径。
+   */
+  env?: Record<string, string>;
   /**
    * 装配配方（可选，复用 AgentAssembly）：把系统提示词 / 技能 / MCP / 内置工具面收窄到本插件 agent。
    * 经 loader 的 toAgentCard 透传到 AgentCard.assembly，使插件 agent 走「领域 harness」而非万能 harness。

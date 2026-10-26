@@ -445,10 +445,24 @@ export class PluginLoader {
       warn: (m, f) => structLog('warn', `[plugin:${manifest.id}] ${m}`, f),
       error: (m, f) => structLog('error', `[plugin:${manifest.id}] ${m}`, f),
     };
+    // 增强（ctx.config 落地）：manifest.env 声明为缺省；声明键可被部署覆盖 ——
+    // 同名裸 env 或 PLUGIN_<KEY> 前缀 env（仅限 manifest 显式声明的键，即插件作者
+    // 划定的配置面）。白名单 env 视图（PLUGIN_*/AH_PLUGIN_*/envAllowlist）照旧并入
+    // 原样键名。密钥类变量不进视图（白名单纪律不变）。此前 ctx.config 恒为空对象，
+    // 声明但未实现。
+    const envView = resolvePluginEnv(process.env, this.envAllowlist) as Record<string, unknown>;
+    const declared = (manifest as { env?: Record<string, string> }).env ?? {};
+    const config: Record<string, unknown> = { ...declared };
+    for (const key of Object.keys(declared)) {
+      const prefixed = process.env[`PLUGIN_${key}`];
+      if (prefixed !== undefined) config[key] = prefixed;
+      else if (process.env[key] !== undefined) config[key] = process.env[key];
+    }
+    Object.assign(config, envView);
     const ctx: PluginContext = {
       pluginId: manifest.id,
       manifest,
-      config: {},
+      config,
       logger,
       agentRegistry: this.registry,
       tools: new ToolRegistry(),

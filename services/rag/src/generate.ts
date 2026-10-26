@@ -64,6 +64,15 @@ export interface LLMProvider {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     opts?: { maxTokens?: number; temperature?: number },
   ): Promise<string>;
+  /**
+   * 流式生成（增强：SSE 增量）。可选；未实现时流式端点回退 chat() 一次性输出。
+   * onDelta 逐增量回调（完整拼接结果由返回值给出，二者内容一致）。
+   */
+  chatStream?(
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    opts: { maxTokens?: number; temperature?: number },
+    onDelta: (delta: string) => void,
+  ): Promise<string>;
 }
 
 /**
@@ -117,6 +126,79 @@ export class OpenAIProvider implements LLMProvider {
       choices?: Array<{ message?: { content?: string } }>;
     };
     return data.choices?.[0]?.message?.content ?? '';
+  }
+
+  /**
+   * 流式生成（增强）：stream=true 的 OpenAI 兼容 SSE —— 逐 `data:` 行解析
+   * choices[0].delta.content，`data: [DONE]` 结束。返回完整拼接文本（与增量一致）。
+   */
+  async chatStream(
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    opts: { maxTokens?: number; temperature?: number },
+    onDelta: (delta: string) => void,
+  ): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error('LLM API key 未配置（RAG_LLM_API_KEY）');
+    }
+    const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        max_tokens: opts.maxTokens ?? 512,
+        temperature: opts.temperature ?? 0.3,
+        stream: true,
+      }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`LLM 请求失败 HTTP ${resp.status}: ${text.slice(0, 200)}`);
+    }
+    const body = resp.body;
+    if (!body) throw new Error('LLM 流式响应无 body');
+    const reader = (body as unknown as ReadableStream<Uint8Array>).getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let full = '';
+    let done = false;
+    while (!done) {
+      const { done: eof, value } = await reader.read();
+      if (eof) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      // SSE 按 \n\n 分帧；逐帧提取 data: 行。
+      while ((nl = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, nl);
+        buf = buf.slice(nl + 2);
+        for (const line of frame.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === '[DONE]') {
+            done = true;
+            continue;
+          }
+          try {
+            const json = JSON.parse(payload) as {
+              choices?: Array<{ delta?: { content?: string } }>;
+            };
+            const delta = json.choices?.[0]?.delta?.content;
+            if (delta) {
+              full += delta;
+              onDelta(delta);
+            }
+          } catch {
+            /* 非 JSON 帧（心跳/注释）跳过 */
+          }
+        }
+        if (done) break;
+      }
+    }
+    return full;
   }
 }
 
@@ -214,6 +296,89 @@ export async function generateAnswer(
     answer = `知识库检索到 ${ctx.results.length} 条相关片段，但生成服务暂时不可用（${e?.message ?? '未知错误'}）。\n\n检索到的参考：\n${sources.map((s, i) => `[${i + 1}] ${s.content}`).join('\n')}`;
   }
 
+  return {
+    answer,
+    trace_id: ctx.trace_id,
+    retrieved: ctx.results.length,
+    sources,
+    cache_hit: ctx.cache_hit ?? false,
+    latency_ms: Date.now() - t0,
+  };
+}
+
+/** 流式事件（SSE 单通道 data 帧，按 type 区分）。 */
+export type GenerateStreamEvent =
+  | {
+      type: 'sources';
+      sources: GenerateResult['sources'];
+      retrieved: number;
+      trace_id: string;
+      cache_hit: boolean;
+    }
+  | { type: 'delta'; text: string }
+  | { type: 'error'; message: string }
+  | {
+      type: 'done';
+      answer: string;
+      trace_id: string;
+      retrieved: number;
+      sources: GenerateResult['sources'];
+      latency_ms: number;
+    };
+
+/**
+ * RAG 流式生成（增强）：检索 →（先发 sources 事件）→ LLM 流式增量（delta 事件）
+ * → done 事件（完整结果）。fail-closed 与 generateAnswer 同口径：LLM 失败发
+ * error 事件并以兜底文案作为 answer（绝不伪造引用）。无流式能力的 LLM provider
+ * 自动回退一次性 chat()（整段作为单个 delta 发出，对客户端透明）。
+ */
+export async function generateAnswerStream(
+  store: VectorStore,
+  provider: EmbeddingProvider,
+  llm: LLMProvider,
+  req: RetrieveRequest & { query: string },
+  opts: GenerateOptions | undefined,
+  onEvent: (e: GenerateStreamEvent) => void,
+): Promise<GenerateResult> {
+  const t0 = Date.now();
+  const topK = opts?.topK ?? req.top_k ?? 5;
+  const scoreThreshold = opts?.scoreThreshold ?? 0;
+  const ctx = await retrieve(store, provider, { ...req, top_k: topK, score_threshold: scoreThreshold });
+  const ctxMsg = buildUserMessage(req.query, ctx);
+  const sources = ctx.results.map((r) => ({
+    chunk_id: r.chunk_id,
+    doc_id: r.doc_id,
+    title: r.title,
+    content: r.content,
+    score: r.score,
+  }));
+  onEvent({
+    type: 'sources',
+    sources,
+    retrieved: ctx.results.length,
+    trace_id: ctx.trace_id,
+    cache_hit: ctx.cache_hit ?? false,
+  });
+  const messages = [
+    { role: 'system' as const, content: buildSystemPrompt() },
+    { role: 'user' as const, content: ctxMsg },
+  ];
+  const genOpts = { maxTokens: opts?.maxTokens, temperature: opts?.temperature };
+  let answer: string;
+  try {
+    if (typeof llm.chatStream === 'function') {
+      answer = await llm.chatStream(messages, genOpts, (delta) => onEvent({ type: 'delta', text: delta }));
+    } else {
+      answer = await llm.chat(messages, genOpts);
+      onEvent({ type: 'delta', text: answer });
+    }
+  } catch (e: any) {
+    // fail-closed：明确告知，绝不伪造。
+    const fallback = `知识库检索到 ${ctx.results.length} 条相关片段，但生成服务暂时不可用（${e?.message ?? '未知错误'}）。\n\n检索到的参考：\n${sources.map((s, i) => `[${i + 1}] ${s.content}`).join('\n')}`;
+    onEvent({ type: 'error', message: e?.message ?? String(e) });
+    onEvent({ type: 'delta', text: fallback });
+    answer = fallback;
+  }
   return {
     answer,
     trace_id: ctx.trace_id,

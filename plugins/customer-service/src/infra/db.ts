@@ -94,8 +94,21 @@ export function getDb(): SqliteDatabase {
       UNIQUE(tenant_id, lead_id, source_slot)
     );
     CREATE INDEX IF NOT EXISTS idx_cs_reminder_status ON cs_reminder(tenant_id, status, created_at DESC);
+
+    -- 增强坐席池：人工坐席档案（在线状态 + 负载），handoff 最闲优先自动指派。
+    CREATE TABLE IF NOT EXISTS cs_agent_seat (
+      seat_id         TEXT PRIMARY KEY,
+      tenant_id       TEXT NOT NULL DEFAULT 'default',
+      name            TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'offline',
+      active_sessions INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_cs_seat_tenant_status ON cs_agent_seat(tenant_id, status, active_sessions);
   `);
   ensureTicketColumns(database);
+  ensureSessionColumns(database);
   _db = database;
   return _db;
 }
@@ -111,14 +124,24 @@ function ensureTicketColumns(db: SqliteDatabase): void {
     ['rating_comment', 'rating_comment TEXT'],
     ['rated_at', 'rated_at TEXT'],
   ];
+  ensureColumns(db, 'cs_ticket', columns);
+}
+
+/** 存量库自愈迁移：cs_session 增 assigned_seat（坐席池指派）。 */
+function ensureSessionColumns(db: SqliteDatabase): void {
+  ensureColumns(db, 'cs_session', [['assigned_seat', 'assigned_seat TEXT']]);
+}
+
+/** 通用列自愈：SELECT 探测失败即 ALTER（并发竞态下列已存在则忽略）。 */
+function ensureColumns(db: SqliteDatabase, table: string, columns: Array<[string, string]>): void {
   for (const [column, ddl] of columns) {
     try {
-      db.prepare(`SELECT ${column} FROM cs_ticket LIMIT 1`).get();
+      db.prepare(`SELECT ${column} FROM ${table} LIMIT 1`).get();
     } catch {
       try {
-        db.exec(`ALTER TABLE cs_ticket ADD COLUMN ${ddl}`);
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
       } catch {
-        /* 并发迁移竞态：列已存在则忽略 */
+        /* 列已存在则忽略 */
       }
     }
   }

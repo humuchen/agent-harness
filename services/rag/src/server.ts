@@ -38,7 +38,7 @@ import { QueryCache } from './cache';
 import { Metrics, logTrace } from './metrics';
 import { rerankWithApi, mmrRerank } from './rerank';
 import { createRAGEvaluator, type EvalDataset } from './eval';
-import { generateAnswer, createLLM, type LLMProvider } from './generate';
+import { generateAnswer, generateAnswerStream, createLLM, type LLMProvider } from './generate';
 
 export interface RagServerOptions {
   port?: number;
@@ -401,28 +401,58 @@ export function createRagServer(opts: RagServerOptions) {
         if (!query) return send(res, 400, { error: 'query required' });
 
         const t0 = Date.now();
+        const genReq = {
+          query,
+          top_k: body.top_k,
+          score_threshold: body.score_threshold,
+          filters: body.filters,
+          tenant_id: auth.tenantId,
+          expand: !!body.expand,
+          acl_principals: Array.isArray(body.acl_principals) ? body.acl_principals.map(String) : undefined,
+          trace_id: incomingTraceId(req, body), // 短期：trace 透传修复
+        };
+        const genOpts = {
+          maxTokens: body.max_tokens,
+          temperature: body.temperature,
+          topK: body.top_k,
+          scoreThreshold: body.score_threshold,
+        };
+
+        // 增强（流式生成）：stream=true → SSE 单通道 data 帧（sources → delta* → done）。
+        if (body.stream === true) {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no', // 关闭代理缓冲，保证增量实时
+          });
+          const emit = (e: unknown): void => {
+            res.write(`data: ${JSON.stringify(e)}\n\n`);
+          };
+          try {
+            const result = await generateAnswerStream(store, provider, llm, genReq, genOpts, emit);
+            metrics.recordRetrieve(Date.now() - t0, result.cache_hit);
+            logTrace(result.trace_id, 'info', 'generate (stream)', {
+              tenant: auth.tenantId,
+              retrieved: result.retrieved,
+              latency_ms: result.latency_ms,
+            });
+            emit({
+              type: 'done',
+              answer: result.answer,
+              trace_id: result.trace_id,
+              retrieved: result.retrieved,
+              sources: result.sources,
+              latency_ms: result.latency_ms,
+            });
+          } catch (e) {
+            emit({ type: 'error', message: String(e instanceof Error ? e.message : e) });
+          }
+          return res.end();
+        }
+
         try {
-          const result = await generateAnswer(
-            store,
-            provider,
-            llm,
-            {
-              query,
-              top_k: body.top_k,
-              score_threshold: body.score_threshold,
-              filters: body.filters,
-              tenant_id: auth.tenantId,
-              expand: !!body.expand,
-              acl_principals: Array.isArray(body.acl_principals) ? body.acl_principals.map(String) : undefined,
-              trace_id: incomingTraceId(req, body), // 短期：trace 透传修复
-            },
-            {
-              maxTokens: body.max_tokens,
-              temperature: body.temperature,
-              topK: body.top_k,
-              scoreThreshold: body.score_threshold,
-            },
-          );
+          const result = await generateAnswer(store, provider, llm, genReq, genOpts);
           metrics.recordRetrieve(Date.now() - t0, result.cache_hit);
           logTrace(result.trace_id, 'info', 'generate', {
             tenant: auth.tenantId,

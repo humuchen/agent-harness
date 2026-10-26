@@ -6,6 +6,7 @@
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
+import { listSeats, upsertSeat, setSeatStatus } from '../repo/seat-repo';
 import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service';
 import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
 import { getConfig } from '../config';
@@ -59,6 +60,32 @@ function authorized(req: import('node:http').IncomingMessage): boolean {
 export const csServerExtension: ServerExtension = {
   id: 'customer-service',
   mountRoutes: {
+    // 增强坐席池：GET 列表（负载升序）/ POST 注册或改名（admin）
+    '/seats': (async (req, res) => {
+      if (req.method === 'POST') {
+        if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
+        const body = await readBody(req);
+        const seatId = String(body.seatId ?? '').trim();
+        const name = String(body.name ?? '').trim();
+        if (!seatId || !name) return json(res, 400, { error: true, message: 'seatId & name required' });
+        return json(res, 200, upsertSeat({ seatId, name }));
+      }
+      if (req.method !== 'GET') return json(res, 405, { error: true, message: 'method not allowed' });
+      json(res, 200, { seats: listSeats(100) });
+    }) as PluginRouteHandler,
+
+    // 增强坐席池：POST /seat/status {seatId, status: online|offline}（admin）
+    '/seat/status': (async (req, res) => {
+      if (req.method !== 'POST') return json(res, 405, { error: true, message: 'method not allowed' });
+      if (!authorized(req)) return json(res, 401, { error: true, message: 'unauthorized' });
+      const body = await readBody(req);
+      const seatId = String(body.seatId ?? '').trim();
+      const status = body.status === 'online' ? 'online' : body.status === 'offline' ? 'offline' : null;
+      if (!seatId || !status) return json(res, 400, { error: true, message: 'seatId & status(online|offline) required' });
+      const seat = setSeatStatus(seatId, status);
+      return json(res, seat ? 200 : 404, seat ?? { error: true, message: 'seat not found' });
+    }) as PluginRouteHandler,
+
     // GET /api/plugins/customer-service/stats —— 看板概览
     '/stats': (async (_req, res) => {
       const tickets = await Promise.resolve(listTickets(undefined, 1000));
@@ -68,12 +95,16 @@ export const csServerExtension: ServerExtension = {
       // 增强（工单运营闭环）：SLA 超时未结单数 + CSAT 均分（已评工单）
       const overdue = tickets.filter((t) => t.slaBreached).length;
       const rated = tickets.filter((t) => t.rating != null);
+      // 增强坐席池：在线坐席数（含 busy）
+      const seats = listSeats(200);
+      const seatsOnline = seats.filter((s) => s.status !== 'offline').length;
       const csatAvg = rated.length
         ? Number((rated.reduce((s, t) => s + (t.rating ?? 0), 0) / rated.length).toFixed(2))
         : null;
       json(res, 200, {
         tickets: { total: tickets.length, open, overdue },
         sessions: { total: sessions.length, handoff },
+        seats: { total: seats.length, online: seatsOnline },
         csat: { ratedCount: rated.length, avg: csatAvg },
         tenantId: getConfig().tenantId,
       });

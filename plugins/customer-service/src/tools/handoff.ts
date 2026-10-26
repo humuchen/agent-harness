@@ -4,13 +4,14 @@ import { getPluginContext } from '../runtime';
 import { errorResult } from '../infra/errors';
 
 /**
- * cs_handoff：转接人工坐席。将当前会话状态置为 handoff，
- * 并通过 A2A 触发人工坐席 agent（若上游已配置 AGENT_A2A_BASE_URL）。
+ * cs_handoff：转接人工坐席。将当前会话状态置为 handoff + 最闲优先自动指派
+ * 在线坐席（坐席池；无在线坐席则等待认领），并通过 A2A 触发人工坐席 agent
+ *（若上游已配置 AGENT_A2A_BASE_URL）。
  */
 export function registerHandoffTool(tools: ToolRegistry): void {
   tools.register(
     'cs_handoff',
-    '将当前会话转接人工坐席：标记会话为 handoff，并（若已配置）经 A2A 通知人工坐席接管。',
+    '将当前会话转接人工坐席：标记会话为 handoff，自动指派最闲在线坐席（无在线坐席则等待认领），并（若已配置）经 A2A 通知人工坐席接管。',
     {
       type: 'object',
       properties: {
@@ -38,7 +39,12 @@ export function registerHandoffTool(tools: ToolRegistry): void {
             /* A2A 失败不影响本地转接标记 */
           }
         }
-        return { sessionId, status: sess?.status ?? 'handoff', handedOff: true };
+        return {
+          sessionId,
+          status: sess?.status ?? 'handoff',
+          assignedSeat: sess?.assignedSeat ?? null,
+          handedOff: true,
+        };
       } catch (e) {
         return errorResult(e);
       }
