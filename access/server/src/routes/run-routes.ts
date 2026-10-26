@@ -19,6 +19,8 @@ import {
   getAgentRegistry,
   getJevStats,
   isTenantRequired,
+  getTenantRegistry,
+  enforceDataZone,
   sanitizeKey,
   structLog,
   parsePlanOutput,
@@ -369,6 +371,31 @@ export async function handleRun(
       : undefined;
   const effectiveTenantId = ctx.tenantId || declaredTenantId;
   const tenantId = effectiveTenantId || undefined;
+
+  // 长期（租户治理首片）：body 声明租户的非强制模式降级路径同样过准入门禁 ——
+  // suspended 租户拒绝；请求声明分区（body.dataZone）与租户档案绑定分区不一致拒绝
+  //（认证租户路径已在 guard 统一拦截，此处为 declared 路径兜底）。注册表异常放行。
+  if (tenantId) {
+    try {
+      const admission = await getTenantRegistry().checkAdmission(tenantId);
+      if (!admission.ok) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden', reason: 'tenant suspended' }));
+        return;
+      }
+      const dz = enforceDataZone({
+        tenant: { id: tenantId, dataZone: admission.record?.dataZone },
+        declaredZone: typeof body.dataZone === 'string' ? body.dataZone : null,
+      });
+      if (dz) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'forbidden', reason: dz.reason }));
+        return;
+      }
+    } catch {
+      /* 注册表异常放行（fail-open） */
+    }
+  }
   const workflowId = body.workflowId
     ? String(body.workflowId).trim()
     : undefined;

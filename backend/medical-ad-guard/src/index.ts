@@ -23,8 +23,10 @@ import {
   registerInputRule,
   registerOutputRule,
   registerContextualOutputRule,
+  registerGuardrailAuditSink,
   type GuardrailOutputContext,
   type GuardrailResult,
+  type GuardrailRuleHit,
 } from '@agent-harness/core';
 import {
   compileRule,
@@ -256,4 +258,23 @@ export function disposeMedicalAdGuard(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+}
+
+/**
+ * 中期补全（命中审计闭环）：设置护栏命中审计 sink —— core 在自定义规则命中
+ * （运行时输入/输出拦截）时回调，本函数附加规则 id 解析后转发给消费方
+ * （如医美插件落 ma_guard_hits 表进人审队列）。
+ * @returns 注销函数。
+ */
+export interface MedicalAdAuditHit extends GuardrailRuleHit {
+  /** 命中规则的词库 id（外部词库规则可携带自定义 id，便于运营定位词条）。 */
+  ruleId?: string;
+}
+
+export function setMedicalAdAuditSink(fn: (hit: MedicalAdAuditHit) => void): () => void {
+  if (!registered || activeRules.length === 0) registerMedicalAdGuardrail();
+  return registerGuardrailAuditSink((hit) => {
+    const rule = activeRules.find((r) => r.reason === hit.reason);
+    fn({ ...hit, ...(rule?.id ? { ruleId: rule.id } : {}) });
+  });
 }

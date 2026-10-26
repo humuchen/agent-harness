@@ -450,6 +450,24 @@ CREATE TABLE IF NOT EXISTS ma_strategy_suggestion (
   updated_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_suggestion_status ON ma_strategy_suggestion(tenant_id, status, created_at DESC);
+
+-- 中期补全：医疗广告护栏命中审计（长期：拦截 → 人审 → 词库修正闭环）。
+-- 来源：core 护栏命中 sink（运行时输入/输出拦截）+ 插件内自检（内容/A-B/排期）。
+-- status: pending（待人审）| reviewed（确认违规）| dismissed（误报/放行）。
+CREATE TABLE IF NOT EXISTS ma_guard_hits (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  hit_at      INTEGER NOT NULL,
+  side        TEXT NOT NULL,
+  rule_id     TEXT,
+  matched     TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  scope       TEXT,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  reviewed_by TEXT,
+  reviewed_at INTEGER,
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_guard_hits_status ON ma_guard_hits(status, hit_at DESC);
 `;
 
 /**

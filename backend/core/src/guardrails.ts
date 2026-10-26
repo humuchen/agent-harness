@@ -622,6 +622,62 @@ export function registerInputRule(
 const customOutputRules: { re: RegExp; reason: string; scope?: string; normalize?: boolean }[] = [];
 
 /**
+ * 护栏命中审计 sink（长期：命中留痕 → 人审闭环的基础设施）。
+ * 纯回调透传：core 不落库、不做业务判定；fire-and-forget，单 sink 异常不影响判定路径。
+ * 消费方（领域库/插件）据此把命中落审计表、进人审队列。
+ */
+export interface GuardrailRuleHit {
+  side: 'input' | 'output';
+  /** 命中规则的 scope 标签（如 'medical-ad'；未声明 scope 的全局规则省略）。 */
+  scope?: string;
+  /** 命中片段（截断 200 字符，防审计表膨胀）。 */
+  matched: string;
+  /** 规则原因（领域库维护的人工可读合规依据）。 */
+  reason: string;
+  hitAt: number;
+}
+
+export type GuardrailAuditSink = (hit: GuardrailRuleHit) => void;
+
+const guardrailAuditSinks = new Set<GuardrailAuditSink>();
+
+/** 注册护栏命中审计 sink，返回注销函数。 */
+export function registerGuardrailAuditSink(fn: GuardrailAuditSink): () => void {
+  guardrailAuditSinks.add(fn);
+  return () => {
+    guardrailAuditSinks.delete(fn);
+  };
+}
+
+/** 提取命中片段并广播（内部使用；/g 正则的 lastIndex 复位防跨请求漏配）。 */
+function emitRuleHit(
+  side: 'input' | 'output',
+  scope: string | undefined,
+  re: RegExp,
+  target: string,
+  reason: string,
+): void {
+  if (guardrailAuditSinks.size === 0) return;
+  const m = re.exec(target);
+  const matched = m?.[0] ?? '';
+  if (re.lastIndex !== 0) re.lastIndex = 0;
+  const hit: GuardrailRuleHit = {
+    side,
+    ...(scope ? { scope } : {}),
+    matched: matched.slice(0, 200),
+    reason,
+    hitAt: Date.now(),
+  };
+  for (const fn of [...guardrailAuditSinks]) {
+    try {
+      fn(hit);
+    } catch {
+      /* 单 sink 异常不影响判定 */
+    }
+  }
+}
+
+/**
  * 注册一条自定义输出校验规则（命中即拦截模型最终输出）。
  * @param scope 可选作用域标签（如 'medical-ad'）。传入后该规则仅当运行策略的
  *   `scopes` 包含此标签时才生效；不传则始终生效（全局安全底线）。
@@ -850,8 +906,12 @@ export function checkInput(
     if (!ruleInScope(r.scope, p)) continue;
     if (r.normalize) {
       if (hardened === null) hardened = hardenText(text);
-      if (r.re.test(hardened)) return { ok: false, reason: r.reason };
+      if (r.re.test(hardened)) {
+        if (guardrailAuditSinks.size > 0) emitRuleHit('input', r.scope, r.re, hardened, r.reason);
+        return { ok: false, reason: r.reason };
+      }
     } else if (r.re.test(text)) {
+      if (guardrailAuditSinks.size > 0) emitRuleHit('input', r.scope, r.re, text, r.reason);
       return { ok: false, reason: r.reason };
     }
   }
@@ -877,8 +937,12 @@ export function checkOutput(
     if (!ruleInScope(r.scope, p)) continue;
     if (r.normalize) {
       if (hardened === null) hardened = hardenText(text);
-      if (r.re.test(hardened)) return { ok: false, reason: r.reason };
+      if (r.re.test(hardened)) {
+        if (guardrailAuditSinks.size > 0) emitRuleHit('output', r.scope, r.re, hardened, r.reason);
+        return { ok: false, reason: r.reason };
+      }
     } else if (r.re.test(text)) {
+      if (guardrailAuditSinks.size > 0) emitRuleHit('output', r.scope, r.re, text, r.reason);
       return { ok: false, reason: r.reason };
     }
   }

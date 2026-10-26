@@ -103,3 +103,32 @@ export function enforceTenantIsolation(input: {
     reason: `industry agent (domain=${domain}) requires tenant isolation, but no tenant context was provided (set REQUIRE_TENANT=false to allow, or pass an authenticated tenantId)`,
   };
 }
+
+/**
+ * 数据主权分区强制（长期首片：dataZone 由「记录」升级为「校验」）。
+ *
+ * 语义：租户档案（tenants 注册表）声明的 dataZone 是该租户数据的**权威分区**；
+ * 请求侧显式声明的分区（头 X-Data-Zone / body.dataZone，通常由网关或行业 agent
+ * 网关注入）必须与之一致，不一致即拒绝 —— 防止医疗/金融租户的请求被投递到
+ * 通用分区后端处理。
+ *
+ * 判定规则（刻意保守，向后兼容）：
+ * - 无租户 / 租户未声明 dataZone → 放行（缺省 general 语义不变）；
+ * - 请求未声明分区 → 放行（无法判断意图时不误伤；分区归属由存储后端配置决定）；
+ * - 双方都声明且不一致 → 拒绝（调用方据此 403 + 审计 denied）。
+ */
+export function enforceDataZone(input: {
+  /** 已解析的租户上下文（dataZone 可来自档案覆盖）。 */
+  tenant: TenantContext | null;
+  /** 请求侧声明的数据分区（X-Data-Zone 头 / body.dataZone；空表示未声明）。 */
+  declaredZone?: string | null;
+}): { denied: true; reason: string } | null {
+  const zone = input.tenant?.dataZone;
+  const declared = (input.declaredZone ?? '').toString().trim();
+  if (!zone || !declared) return null;
+  if (zone === declared) return null;
+  return {
+    denied: true,
+    reason: `data zone mismatch: tenant is bound to zone "${zone}" but request declares "${declared}"`,
+  };
+}

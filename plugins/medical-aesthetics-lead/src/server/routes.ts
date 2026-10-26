@@ -5,6 +5,7 @@ import { outboxSnapshot } from '../services/outbox-worker';
 import { importProjects, listKnowledge } from '../services/kb-service';
 import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment, markArrived, markCompleted, listAppointmentsByDate } from '../repo/schedule-repo';
 import { markCrmSync } from '../repo/lead-repo';
+import { listGuardHits, guardHitStats, reviewGuardHit } from '../repo/guard-hits-repo';
 import { getConfig, configSummary } from '../config';
 import { dbHealth } from '../infra/db';
 import { verifyWebhook, verifyAdminToken } from '../infra/signature';
@@ -955,6 +956,50 @@ const abStop: PluginRouteHandler = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// 中期补全：医疗广告护栏命中审计 / 人审队列（拦截 → 复核 → 词库修正闭环）。
+// ---------------------------------------------------------------------------
+
+/** GET /guard-hits?status=pending&limit=50 —— 人审队列（须管理令牌）。 */
+const guardHitsList: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const url = new URL(String(req.url), `http://${req.headers.host ?? 'localhost'}`);
+  const status = url.searchParams.get('status') ?? 'pending';
+  const limit = Number(url.searchParams.get('limit')) || 50;
+  try {
+    const [hits, stats] = await Promise.all([listGuardHits({ status, limit }), guardHitStats()]);
+    send(res, 200, { ok: true, hits, stats });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
+/**
+ * POST /guard-hits/review —— 复核处置（须管理令牌）。
+ * body: { id, status: 'reviewed'|'dismissed', note? }
+ * reviewed = 确认违规（保留拦截）；dismissed = 误报（反哺词库修正）。
+ */
+const guardHitsReview: PluginRouteHandler = async (req, res) => {
+  if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+  if (denyUnlessAdmin(res, req)) return;
+  const { json } = await readRawBody(req);
+  const id = Number(json.id);
+  const status = json.status === 'reviewed' ? 'reviewed' : json.status === 'dismissed' ? 'dismissed' : null;
+  if (!Number.isFinite(id) || id <= 0 || !status) {
+    return send(res, 400, { error: 'id 与 status(reviewed|dismissed) 必填' });
+  }
+  try {
+    const hit = await reviewGuardHit(id, { status, reviewedBy: 'admin', note: json.note ? String(json.note) : undefined });
+    if (!hit) return send(res, 404, { error: 'hit not found' });
+    send(res, 200, { ok: true, hit });
+  } catch (e) {
+    const me = toMaError(e);
+    send(res, me.httpStatus, me.toJSON());
+  }
+};
+
 /**
  * 客资插件服务端扩展：挂载 HTTP 路由。宿主把它们收敮到统一前缀
  * /api/plugins/medical-aesthetics-lead/*.
@@ -1003,5 +1048,7 @@ export const leadServerExtension: ServerExtension = {
     '/ab/assign': abAssign,
     '/ab/experiments': abCreate,
     '/ab/stop': abStop,
+    '/guard-hits': guardHitsList,
+    '/guard-hits/review': guardHitsReview,
   },
 };

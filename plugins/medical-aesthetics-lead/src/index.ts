@@ -17,7 +17,8 @@ import { setRunKey, setPluginContext } from './runtime';
 import { appendTranscript } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
 import { startScheduler, stopScheduler } from './services/scheduler-service';
-import { registerMedicalAdGuardrail } from '@agent-harness/medical-ad-guard';
+import { registerMedicalAdGuardrail, setMedicalAdAuditSink } from '@agent-harness/medical-ad-guard';
+import { insertGuardHit } from './repo/guard-hits-repo';
 import { getDbAsync } from './infra/db';
 import { getTeamManager } from '@agent-harness/core';
 import { consultationBookingWorkflow } from './workflows/conversation';
@@ -28,6 +29,8 @@ import { buildProjectAdvisorPrompt, buildPricingAgentPrompt, buildBookingAgentPr
 let offEvents: (() => void) | undefined;
 /** 对话记录（transcript）事件订阅注销句柄。 */
 let offTranscript: (() => void) | undefined;
+/** 护栏命中审计 sink 注销句柄（中期补全：命中 → 人审队列）。 */
+let offGuardSink: (() => void) | undefined;
 
 /**
  * 医美客资插件模块（PluginModule 主入口）。
@@ -84,6 +87,23 @@ export const leadPlugin: PluginModule = {
 
     // 6) 接入医疗广告合规护栏
     registerMedicalAdGuardrail();
+
+    // 6.5) 中期补全：护栏命中审计闭环 —— core 运行时拦截命中落 ma_guard_hits 人审队列
+    //（fire-and-forget：DB 写失败仅告警，绝不影响护栏判定主路径；onUnload 对称注销）。
+    offGuardSink = setMedicalAdAuditSink((hit) => {
+      void insertGuardHit({
+        hitAt: hit.hitAt,
+        side: hit.side,
+        ruleId: hit.ruleId ?? null,
+        matched: hit.matched,
+        reason: hit.reason,
+        scope: hit.scope ?? null,
+      }).catch((e) =>
+        ctx.logger.warn('guard hit persist failed', {
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    });
 
     // 7) 注册子 Agent 卡片（用于 delegate_task 指定）
     const reg = ctx.agentRegistry;
@@ -225,6 +245,8 @@ export const leadPlugin: PluginModule = {
     offEvents = undefined;
     offTranscript?.();
     offTranscript = undefined;
+    offGuardSink?.();
+    offGuardSink = undefined;
     setPluginContext({} as PluginContext);
     ctx.logger.info('medical-aesthetics-lead plugin unloaded');
   },

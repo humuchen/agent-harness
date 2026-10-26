@@ -23,6 +23,7 @@ export * from './workflow';
 export * from './a2a';
 export * from './plugin';
 export * from './cron/scheduler';
+export * from './tenants/registry';
 export * from './guardrails';
 export * from './hooks';
 export * from './subagent';

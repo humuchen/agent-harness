@@ -25,6 +25,7 @@ import {
 } from '@agent-harness/core';
 import { createHash, randomUUID } from 'node:crypto';
 import { assembleAgent, type RunMode } from './runner';
+import { getUsageLedger } from './usage-ledger';
 import {
   createQueueBackend,
   isPlanProposeRun,
@@ -1238,6 +1239,13 @@ export class RunQueue {
         actualCost += cost;
         // owner 维度统计看板保持原语义（与 admit 的 tenantId 维度解耦）。
         quotaEngine.recordUsage(job.owner ?? 'anonymous', { tokens, cost });
+        // 长期：用量账本 —— (tenant, UTC 日) 聚合进内存缓冲（批量落库，热路径零 IO），
+        // 供 /api/admin/tenants/:id/usage 账单查询。记账失败不影响事件流与配额主路径。
+        try {
+          getUsageLedger().record(job.tenantId ?? 'anonymous', tokens, cost);
+        } catch {
+          /* 账本异常静默 */
+        }
       }
       emit(e);
     };
@@ -1799,6 +1807,12 @@ export class RunQueue {
             /* 结算失败仅丢窗口统计，不影响 run 收尾 */
           }
           await quotaEngine.releaseAsync(tenantIdForQuota);
+        }
+        // 长期：用量账本 run 计数（无论是否走配额 admit，执行即计；失败不阻断收尾）。
+        try {
+          getUsageLedger().recordRun(tenantIdForQuota);
+        } catch {
+          /* 账本异常不影响 run 收尾 */
         }
         // P2.a：运行结束审计留痕（成功/失败，便于强合规租户对账）。
         audit({

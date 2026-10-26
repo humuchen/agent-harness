@@ -86,7 +86,10 @@ export type Action =
   // P2-3 Plan 协同（计划文档的 CRUD + 审批式执行）
   | 'plan:read'
   | 'plan:write'
-  | 'plan:execute';
+  | 'plan:execute'
+  // 长期：多租户运营面（租户档案/状态/配额/账单查询与治理）
+  | 'tenants:read'
+  | 'tenants:manage';
 
 export interface AuthContext {
   /** 归一化后的令牌（仅用于审计，不向客户端泄露明文）。SSO 下为 JWT/身份指纹。 */
@@ -187,7 +190,10 @@ const DEFAULT_MATRIX: Record<Role, Action[]> = {
     'supplychain:read',
     'plan:read',
     'plan:write',
-    'plan:execute'
+    'plan:execute',
+    // 长期：租户治理（仅 admin）
+    'tenants:read',
+    'tenants:manage'
   ],
   operator: [
     'agent:run:mock',

@@ -262,7 +262,23 @@ import {
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
 // P6 分叉重跑：工作流 step 及其下游重置（纯函数，随 /api/workflows/:id/rerun 暴露）。
-import { quotaEngine, TenantQuotaStore, resetRunForRerun, getRunTraceStore } from '@agent-harness/core';
+import {
+  quotaEngine,
+  TenantQuotaStore,
+  getTenantRegistry,
+  enforceDataZone,
+  resetRunForRerun,
+  getRunTraceStore
+} from '@agent-harness/core';
+import { configureUsageLedger, getUsageLedger } from './usage-ledger';
+import { handleTenantRoutes } from './routes/tenant-routes';
+
+/** 进程共享租户配额存储引用（tenant-routes 读写配额覆盖用；启动装配时赋值）。 */
+let _tenantQuotaStore: TenantQuotaStore | null = null;
+function tenantQuotaStoreRef(): TenantQuotaStore {
+  if (!_tenantQuotaStore) _tenantQuotaStore = new TenantQuotaStore();
+  return _tenantQuotaStore;
+}
 import { getRedisClient } from './redis-client';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
@@ -632,6 +648,63 @@ async function guard(
     }
     // 将解析后的租户上下文附加到 AuthContext，供下游消费。
     (ctx as AuthContext & { tenantCtx?: TenantContext }).tenantCtx = tenant;
+  }
+
+  // 长期（租户治理首片）：档案化准入 + 数据主权分区强制。
+  // - suspended 租户（认证身份派生租户）→ 403（档案治理入口）；
+  // - 请求声明分区（X-Data-Zone 头）与租户档案绑定分区不一致 → 403（防跨分区投递）；
+  // - 档案 dataZone 覆盖 tenantCtx（权威源），供下游记忆分区/存储路由消费。
+  // 容错：注册表异常时放行（fail-open，其余隔离机制——配额/记忆分区/策略画像仍生效）。
+  {
+    const authTenantId = ctx?.tenantId ?? null;
+    if (authTenantId) {
+      try {
+        const admission = await getTenantRegistry().checkAdmission(authTenantId);
+        if (!admission.ok) {
+          audit({
+            kind: 'request',
+            method: req.method,
+            path: redactUrl(req.url),
+            ip,
+            authed: true,
+            status: 403,
+            action,
+            reason: admission.reason
+          });
+          res.writeHead(403, { 'content-type': 'application/json', ...securityHeaders() });
+          res.end(JSON.stringify({ error: 'forbidden', reason: 'tenant suspended' }));
+          return null;
+        }
+        const declaredZone = typeof req.headers['x-data-zone'] === 'string' ? req.headers['x-data-zone'] : null;
+        const zoneCtx = resolveTenantContext({
+          tenantId: null,
+          authenticatedTenantId: authTenantId,
+          name: ctx?.email,
+          dataZone: admission.record?.dataZone
+        });
+        if (zoneCtx) {
+          const dz = enforceDataZone({ tenant: zoneCtx, declaredZone });
+          if (dz) {
+            audit({
+              kind: 'request',
+              method: req.method,
+              path: redactUrl(req.url),
+              ip,
+              authed: true,
+              status: 403,
+              action,
+              reason: dz.reason
+            });
+            res.writeHead(403, { 'content-type': 'application/json', ...securityHeaders() });
+            res.end(JSON.stringify({ error: 'forbidden', reason: dz.reason }));
+            return null;
+          }
+          (ctx as AuthContext & { tenantCtx?: TenantContext }).tenantCtx = zoneCtx;
+        }
+      } catch {
+        /* 注册表异常放行 */
+      }
+    }
   }
   // SSE 长连接不计入固定窗口限流：其重连/保活特性会在刷新时产生瞬时请求尖峰，
   // 与短 API 共享同一 60s 桶极易误伤——故 IP 桶与用户桶都豁免（此前只豁免了 IP 桶，
@@ -1116,6 +1189,10 @@ const server = createServer(
       }
       // ── P2-3 Plan 协同：已外迁 routes/plan-routes.ts ──
       if (await handlePlanRoutes(req, res, url, path, { guard, auditAction })) {
+        return;
+      }
+      // ── 长期：租户治理（/api/admin/tenants/*）—— routes/tenant-routes.ts ──
+      if (await handleTenantRoutes(req, res, url, path, { guard, auditAction, quotaStore: tenantQuotaStoreRef() })) {
         return;
       }
 
@@ -2190,6 +2267,7 @@ async function bootstrap(): Promise<void> {
     });
     await tenantQuotaStore.init();
     quotaEngine.setTenantStore(tenantQuotaStore);
+    _tenantQuotaStore = tenantQuotaStore;
     const redisForQuota = getRedisClient();
     if (redisForQuota) {
       quotaEngine.setRedisBackend(redisForQuota);
@@ -2202,6 +2280,23 @@ async function bootstrap(): Promise<void> {
   } catch (e) {
     structLog('warn', 'quota', {
       tenantStore: false,
+      error: e instanceof Error ? e.message : String(e)
+    });
+  }
+
+  // 长期（多租户运营面）：租户注册表（档案/状态/dataZone 权威源）+ 用量账本
+  // （(tenant, 日) 聚合落库）。失败仅告警不阻断启动 —— 门禁/账单按降级语义运行。
+  try {
+    const registry = getTenantRegistry();
+    await registry.init();
+    const ledger = configureUsageLedger({
+      file: process.env.USAGE_LEDGER_DB_FILE || process.env.DB_SQLITE_FILE || '/var/lib/agent-harness/usage.db'
+    });
+    await ledger.init();
+    structLog('info', 'tenants', { registry: true, usageLedger: true });
+  } catch (e) {
+    structLog('warn', 'tenants', {
+      registry: false,
       error: e instanceof Error ? e.message : String(e)
     });
   }
