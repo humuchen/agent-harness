@@ -8,10 +8,21 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16 32x32 48x48 256x256" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- P2 修复：Google Fonts 改非阻塞加载（media="print" + onload 切换）——目标环境
+         是中文移动 WebView，fonts.googleapis.com 不可达时此前渲染阻塞式加载可挂起
+         数秒卡首帧；现样式表后台加载，不可达时走系统字体回退栈不阻塞渲染。 -->
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <script>
       /* 主题首屏引导：在任何样式生效前落好 <html data-theme>，避免「先暗后亮」跳变，
          并与 tokens.ts 的 THEME_STORAGE_KEY('ah-theme') 保持一致。 */

@@ -236,11 +236,18 @@ export function screenMedicalAdText(text: string): Array<{ matched: string; reas
   const hits: Array<{ matched: string; reason: string }> = [];
   for (const r of activeRules) {
     const target = r.normalize ? hardened : text;
-    const m = r.re.exec(target);
-    if (m) {
+    // P2 修复：改用 global 副本收集全部命中——此前 re.exec 只取每条规则首个命中，
+    // 多处违规只报一处，影响先审后发的审计完整性。新建 global 副本避免污染
+    // 共享编译结果的 lastIndex 状态。
+    const re = r.re.global ? r.re : new RegExp(r.re.source, r.re.flags + 'g');
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(target)) !== null) {
       hits.push({ matched: m[0] ?? '', reason: r.reason });
       if (hits.length >= 20) break; // 防超长命中列表
+      if (m.index === re.lastIndex) re.lastIndex++; // 零宽匹配防死循环
     }
+    if (hits.length >= 20) break;
   }
   return hits;
 }

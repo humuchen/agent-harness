@@ -5144,7 +5144,9 @@
         {:else}
           <!-- 富文本点击事件为事件委托（折叠/复制代码块），内层交互元素自行处理；此处忽略静态元素交互告警。 -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <div class="thread" onclick={onRichClick}>
+          <!-- a11y：role="log"（聊天记录语义，隐式 aria-live=polite）——屏幕阅读器可感知
+               新消息；流式逐字更新由消息定型渲染承载，避免逐字播报轰炸。 -->
+          <div class="thread" role="log" aria-label="对话消息" onclick={onRichClick}>
             <!-- 连接状态横幅：connected 不显示；reconnecting 自动恢复提示；lost 给「重新连接」。 -->
             {#if connState[activeId] === 'reconnecting'}
               <div class="conn-banner warn">
@@ -5312,6 +5314,7 @@
             placeholder={cmdName
               ? `已选命令 /${cmdName}，输入参数后 ⏎ 执行（× 或 Backspace 移除）`
               : "您正在与 Agent 聊天，输入'/'获取更多能力，如'/plan'"}
+            aria-label="消息输入框"
             value={input}
             disabled={streaming[activeId] === true}
             oninput={onInput}
@@ -5409,8 +5412,13 @@
     }}
   ></div>
   {#if fullscreenEditOpen}
+    <!-- a11y：对话框语义（此前仅 div——屏幕阅读器不感知模态边界）。焦点圈禁
+         （focus trap）与关闭后焦点归还待 ah-modal 统一重构时一并落地。 -->
     <div
       class="fullscreen-edit"
+      role="dialog"
+      aria-modal="true"
+      aria-label="编辑消息"
       oncontextmenu={(e) => e.stopPropagation()}
     >
       <div class="fe-head">

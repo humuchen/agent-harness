@@ -39,17 +39,29 @@ const UPLOAD_DIR =
 const MAX_BYTES =
   (Number(process.env.UPLOAD_MAX_MB) || (DEFAULTS.UPLOAD_MAX_MB as number)) * 1024 * 1024;
 
-/** 允许的文件 MIME 白名单（图片 + 常见文本）。 */
+/** P2 收紧：text/html、text/css、text/javascript、image/svg+xml 默认拒绝——
+ * 这些是存储型 XSS 的残余面（回显已有 attachment + CSP sandbox 缓解，但存量文件
+ * 与内联引用场景仍有风险），且 html/js/css 为低频上传。设计/图标等场景确需
+ * svg 时，设 UPLOAD_ALLOW_ACTIVE=true 显式恢复全部「活动内容」类型。 */
+const ALLOW_ACTIVE = (process.env.UPLOAD_ALLOW_ACTIVE || '').toLowerCase() === 'true';
+
+/** 兜底路径（image/*、text/* 通配）中被排除的活动内容 MIME。 */
+const BLOCKED_ACTIVE_MIME = new Set<string>([
+  'text/html', 'text/css', 'text/javascript',
+  'application/javascript', 'application/x-javascript', 'image/svg+xml',
+]);
+
+/** 允许的文件 MIME 白名单（图片位图 + 常见文本；活动内容默认拒绝，见上）。 */
 const ALLOWED_MIME = new Set<string>([
-  // 图片
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+  // 图片（位图）
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
   // 文本
-  'text/plain', 'text/csv', 'text/html', 'text/css', 'text/javascript',
+  'text/plain', 'text/csv',
   'application/json', 'application/xml', 'text/markdown',
 ]);
 
 /** 额外允许的扩展名（兜底，防止 MIME 缺失场景）。 */
-const ALLOWED_EXTS = new Set<string>(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.txt', '.md', '.csv', '.json', '.html', '.css', '.js', '.xml']);
+const ALLOWED_EXTS = new Set<string>(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.txt', '.md', '.csv', '.json', '.xml']);
 
 /**
  * 解析 multipart body 的极简实现（不依赖 busboy/multiparty）。
@@ -155,11 +167,15 @@ function safeName(original: string): string {
 function isAllowed(mime: string | undefined, filename: string): boolean {
   if (!mime) {
     const ext = extname(filename).toLowerCase();
-    return ALLOWED_EXTS.has(ext);
+    if (ALLOWED_EXTS.has(ext)) return true;
+    // 活动内容扩展名走同一逃生门（MIME 缺失时的 .svg/.html/.js 兜底）。
+    return ALLOW_ACTIVE && ['.svg', '.html', '.css', '.js'].includes(ext);
   }
-  if (ALLOWED_MIME.has(mime.toLowerCase())) return true;
-  // 兜底：image/* 或 text/*
-  return /^image\//.test(mime) || /^text\//.test(mime);
+  const m = mime.toLowerCase();
+  if (ALLOWED_MIME.has(m)) return true;
+  // 兜底：image/* 或 text/*（排除活动内容子集；UPLOAD_ALLOW_ACTIVE=true 显式恢复）。
+  if (ALLOW_ACTIVE) return /^image\//.test(m) || /^text\//.test(m);
+  return /^image\//.test(m) || (/^text\//.test(m) && !BLOCKED_ACTIVE_MIME.has(m));
 }
 
 /**

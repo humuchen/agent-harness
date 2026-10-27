@@ -49,6 +49,21 @@ describe('医疗广告法规则', () => {
         '普通电商不应被医疗规则拦截'
       );
     });
+
+    // P2 词库边界修复回归：非疗效的履约承诺不再被 absolute-assertion 误拦
+    test('放行非疗效的「预约一定成功办理」履约承诺', () => {
+      const input = checkInput('帮您把预约一定成功办理，请放心');
+      assert.ok(input.ok, '履约承诺（成功+办理）不应被疗效断言规则拦截');
+    });
+
+    // P2 词库边界修复回归：screen 收集全部命中（此前每条规则只报首个）
+    test('screen 收集同一文本的多处违规命中', () => {
+      const { screenMedicalAdText } = require('../dist/index.js');
+      const hits = screenMedicalAdText('这个项目100%有效，保证安全无风险。术前术后对比图一大堆，价格只要999元。');
+      const reasons = new Set(hits.map((h) => h.reason));
+      assert.ok(hits.length >= 3, `应收集多处命中（实际 ${hits.length}）：${JSON.stringify(hits)}`);
+      assert.ok(reasons.size >= 3, '命中应来自至少 3 条不同规则');
+    });
   });
 
   describe('规则 2: 诊断式话术', () => {
