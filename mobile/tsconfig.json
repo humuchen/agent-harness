@@ -1,4 +1,6 @@
 {
+  // P1#34 裁定：Capacitor 壳的 tsc --noEmit 仅做类型检查（构建走 cap sync + 原生工具链），
+  // ESNext+bundler 与 webapp 同款（包裹其产物），不 extends base（无 Node 产出语义）。
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

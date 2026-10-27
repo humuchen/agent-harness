@@ -1,4 +1,6 @@
 {
+  // P1#34 裁定：Vite 项目标准形态（ESNext+Bundler+noEmit，类型检查交给 svelte-check），
+  // 与 base 的 NodeNext 产出语义不同，不 extends；strict/noUncheckedIndexedAccess 与 base 对齐。
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],

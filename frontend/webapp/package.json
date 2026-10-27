@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:ci": "vite build",
     "typecheck": "svelte-check --tsgo --tsconfig ./tsconfig.json",
+    "_ts_versions_note": "P1#31 裁定：typescript@6 与 @typescript/native(TS7) 双声明是 svelte-check --tsgo 的官方要求（TS7 native 做类型检查、TS6 供传统编译器 API——syntax-guard.test.ts 直接消费 ts.ScriptTarget），删除任一都会破坏 typecheck；单测试验证于 2026-10。其余包单用 TS7（^7.0.2）。",
     "preview": "vite preview"
   },
   "dependencies": {

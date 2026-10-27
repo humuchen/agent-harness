@@ -1,4 +1,8 @@
 {
+  // P1#34 裁定：有意不 extends tsconfig.base.json——本服务是独立部署的 CJS 产物
+  // （node --test 直接 require dist/），module=CommonJS + moduleResolution=Bundler
+  // 与 base 的 NodeNext 语义不同；lib 含 DOM（看板 HTML 模板字符串的类型辅助）。
+  // 与 base 的一致项：strict / noUncheckedIndexedAccess / ES2022 target。
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",

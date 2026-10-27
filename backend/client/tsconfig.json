@@ -1,20 +1,15 @@
 {
+  // P1#34 精简：extends tsconfig.base.json 后仅覆写真实差异项——
+  //   lib +DOM（跨运行时 SDK 的浏览器消费方）、types []（不能带 node types，
+  //   Web/Edge 环境无 node: 模块）、noUncheckedIndexedAccess（严格度增项）。
+  // 此前覆写了与 base 逐字相同的 9 项（target/module/strict 等），继承形同虚设。
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "rootDir": "src",
-    "outDir": "dist",
+    "types": [],
     "noUncheckedIndexedAccess": true,
-    "declaration": true,
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "types": []
+    "rootDir": "src",
+    "outDir": "dist"
   },
   "include": ["src/**/*.ts"]
 }
