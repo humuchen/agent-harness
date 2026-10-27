@@ -28,13 +28,9 @@ import type { VerifyContext } from './verify';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
 import {
-  checkStructuredOutput,
-  checkTaskOutput,
   checkInputAsync,
-  checkOutputAsync,
   checkToolArgsAsync
 } from './guardrails';
-import { parsePlanOutput } from './plan';
 import {
   withSpan,
   incCounter,
@@ -48,7 +44,6 @@ import { hooks } from './hooks';
 import { runWithEventSink } from './run-events';
 import { bindRunId } from './run-user';
 import {
-  GUARDRAIL_FALLBACK_PREFIX,
   PARTIAL_NOTICE,
   ERROR_PREFIX,
   CIRCUIT_BREAKER_PREFIX,
@@ -71,6 +66,7 @@ import { selectStepTools } from './harness/run-phases/dynamic-tools';
 import { setupRunMemory } from './harness/run-phases/memory-setup';
 import { planProposeFinalize } from './harness/run-phases/plan-finish';
 import { finalizeRun } from './harness/run-phases/finalize';
+import { runOutputGate } from './harness/run-phases/output-gate';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
 export { contextWindowFor } from './harness/context-window';
@@ -644,79 +640,25 @@ export class AgentHarness {
             return budgetExceeded('tokens');
           if (costBudget && runCost > costBudget) return budgetExceeded('cost');
 
-          // 计划模式 propose（P0）：输出能解析为合法计划 JSON 时，仅做密钥/注入扫描
-          // （checkStructuredOutput），跳过业务自定义规则与上下文规则——结构化任务描述
-          // 极易被领域合规正则（如医疗广告法关键词）误伤，导致计划永远生成失败。
-          // 解析不出计划的输出（含中间工具调用轮次）仍走完整 checkOutput，行为不变。
-          // 计划任务执行（planTask）：输出为面向用户的教学/执行内容，走 checkTaskOutput
-          // ——「system prompt」等弱信号短语与宽松的密钥赋值样例正则会把架构讲解
-          // 误拦成兜底话术（实测 stealth/ox-alpha 概念综述即被拦）；安全底线
-          // （真实密钥格式 + 强信号注入短语）不放松。普通问答仍走完整 checkOutput。
-          const structuredPlan = this.opts.planPropose
-            ? parsePlanOutput(resp.content)
-            : null;
-          const outGuard = structuredPlan
-            ? checkStructuredOutput(resp.content, this.opts.guardrailPolicy)
-            : this.opts.planTask
-            ? checkTaskOutput(resp.content, this.opts.guardrailPolicy)
-            : await checkOutputAsync(
-                resp.content,
-                this.opts.guardrailPolicy,
-                lastToolResult ? { recentTool: lastToolResult } : undefined
-              );
-          if (!outGuard.ok) {
-            recordError('guardrail.output');
-            structLog('warn', 'guardrail blocked', {
-              phase: 'output',
-              reason: outGuard.reason,
-              runId
-            });
-            emit({
-              type: 'guardrail:blocked',
-              phase: 'output',
-              reason: outGuard.reason ?? 'unknown'
-            });
-            guardrailsBlocked += 1;
-
-            // 优雅兜底（三档，避免向用户暴露 [guardrail] blocked 方括号文本）：
-            // 1) 拦截规则自带合规安全回复（如知识库查空的标准「建议预约面诊」话术）→ 直接采用，
-            //    零额外 LLM 成本、零幻觉风险，体验最佳。
-            if (outGuard.safeReply) return outGuard.safeReply;
-
-            // 密钥 / 注入类拦截：重试无意义且可能再次泄露，直接走中性兜底。
-            const isSecretOrInjection =
-              !!outGuard.reason &&
-              (outGuard.reason.includes('secret') ||
-                outGuard.reason.includes('injection'));
-
-            // 2) 合规内容类拦截（非密钥/注入）→ 温和重试一次：注入纠正提示让模型重新生成。
-            //    计划模式 propose 下，纠正提示必须保持「只输出计划 JSON」的格式约束，
-            //    否则模型会被带偏成合规话术，计划解析必然失败。
-            if (!isSecretOrInjection && guardrailRetriesLeft > 0) {
-              guardrailRetriesLeft -= 1;
-              memory.add({
-                role: 'user',
-                content: this.opts.planPropose
-                  ? '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
-                    (outGuard.reason ?? '合规校验未通过') +
-                    '）。请重新生成：仍然只输出一个符合格式要求的 JSON 对象——' +
-                    '需求清晰时输出计划 {"goal": string, "tasks": [{"id","title","steps","dependsOn","expectedOutput"}]}，' +
-                    '需求不清时输出澄清 {"clarify": true, "goalDraft": string, "questions": string[]}。' +
-                    '不要输出解释文字或 markdown 围栏；任务描述仅陈述有事实依据的内容，' +
-                    '不要包含绝对化功效承诺、固定价格承诺或任何未经确认的信息。'
-                  : '（系统提示）你上一条回复触发了内容安全护栏（原因：' +
-                    (outGuard.reason ?? '合规校验未通过') +
-                    '）。请重新组织回复：仅陈述有事实依据、经工具/知识库确认的内容；' +
-                    '不要自行编造或补充任何未经确认的项目、功效、价格、恢复期或禁忌。' +
-                    '若确实无法提供，请直接、礼貌地说明，并引导用户通过正规渠道（如预约面诊）咨询。'
-              });
-              continue;
-            }
-
-            // 3) 重试仍不通过 / 无 safeReply → 中性安全兜底，绝不暴露内部拦截文本。
-            // P4.5：兜底话术前缀与 step-output 检测器共享同一常量（单源，防字面量漂移）。
-            return GUARDRAIL_FALLBACK_PREFIX + '。如有进一步需求，建议您通过官方正规渠道咨询。';
-          }
+          // 输出护栏门禁（H2：迁至 run-phases/output-gate.ts，语义逐字等价）。
+          // 三种口径（计划 propose 结构化扫描 / 计划任务 checkTaskOutput / 普通
+          // checkOutputAsync）与三档优雅兜底（safeReply / 温和重试 / 中性兜底）在
+          // 模块内实现；continue/return 以动作枚举表达，调用方按 kind 分派。
+          const gate = await runOutputGate({
+            content: resp.content,
+            planPropose: this.opts.planPropose,
+            planTask: this.opts.planTask,
+            guardrailPolicy: this.opts.guardrailPolicy,
+            recentTool: lastToolResult,
+            guardrailRetriesLeft,
+            memory,
+            emit,
+            runId
+          });
+          guardrailRetriesLeft = gate.guardrailRetriesLeft;
+          guardrailsBlocked += gate.guardrailsBlocked;
+          if (gate.action.kind === 'final') return gate.action.text;
+          if (gate.action.kind === 'continue') continue;
 
           // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
           // 则把整段内容作为单个 token 发出，确保聊天 UI 仍能渲染（无打字动画，但内容完整）。
