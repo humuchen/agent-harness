@@ -43,19 +43,25 @@ export class ChatTypewriter {
 
   /**
    * 计算本 tick 应揭示的字符数：自适应速度。
-   * 缓冲越大揭示越快（保证长文在 ~1.5s 内揭示完），但最小 2 字/tick 保留打字质感，
-   * 最大 28 字/tick 防止对超长文本揭示过慢。真流式（小 delta 频繁到达）时缓冲始终很小，
+   * 缓冲越大揭示越快（保证长文在 ~1.5s 内揭示完），但最小 4 字/tick 保留打字质感，
+   * 最大 56 字/tick 防止对超长文本揭示过慢。真流式（小 delta 频繁到达）时缓冲始终很小，
    * 故以最小速度揭示，呈现自然打字节奏。
+   *
+   * C5 性能（P1#27）：tick 间隔 24ms → 50ms（AH_TYPEWRITER_MS 可调）——每次 tick 都
+   * 会触发 markdown 全量重解析，降频直接减半渲染热路径成本；步长与分母同步补偿
+   * （min 2→4、max 28→56、分母 70→35），每秒揭示字数与原实现一致（~80 字/s），
+   * 打字速度不变，仅平滑度略降。
    */
   private typeStep(n: number): number {
     if (n <= 0) return 0;
-    return Math.min(28, Math.max(2, Math.ceil(n / 70)));
+    return Math.min(56, Math.max(4, Math.ceil(n / 35)));
   }
 
-  /** 启动打字机定时器（已运行则跳过）。 */
+  /** 启动打字机定时器（已运行则跳过）。间隔可用 AH_TYPEWRITER_MS 调整。 */
   ensureTypewriter() {
     if (this.typedTimer) return;
-    this.typedTimer = setInterval(() => this.tickTypewriter(), 24);
+    const interval = Math.max(16, Number(process.env.AH_TYPEWRITER_MS ?? 50) || 50);
+    this.typedTimer = setInterval(() => this.tickTypewriter(), interval);
   }
 
   /** 停止打字机定时器并清空缓冲状态。 */
@@ -91,6 +97,7 @@ export class ChatTypewriter {
    */
   drainTypewriter(sid: string): Promise<void> {
     return new Promise((resolve) => {
+      const interval = Math.max(16, Number(process.env.AH_TYPEWRITER_MS ?? 50) || 50);
       const step = () => {
         const buf = this.pending[sid];
         if (!buf || (!buf.content.length && !buf.reasoning.length)) {
@@ -99,7 +106,7 @@ export class ChatTypewriter {
           return;
         }
         this.tickSession(sid);
-        setTimeout(step, 24);
+        setTimeout(step, interval);
       };
       step();
     });

@@ -28,6 +28,49 @@ export const SECRET_PATTERNS: RegExp[] = [
   /\btoken\s*[:=]\s*[A-Za-z0-9._-]{16,}/i,
 ];
 
+// ── G4b 共享扫描原语：四个 check 的 secret 扫描与两个 check 的自定义规则遍历
+// 此前逐字复制（改文案需同步 4 处），收敛为单一实现 ──
+
+/** 密钥扫描：命中返回拒绝结果，否则 null。phase 决定 reason 文案（input/output）。 */
+function scanSecretPatterns(
+  patterns: RegExp[],
+  text: string,
+  phase: 'input' | 'output'
+): GuardrailResult | null {
+  for (const re of patterns) {
+    if (re.test(text)) return { ok: false, reason: `possible secret in ${phase}` };
+  }
+  return null;
+}
+
+/**
+ * 自定义规则遍历（G4b 共享原语）：scope 收窄 → normalize 惰性硬化（共享一次计算，
+ * 无 normalize 规则时零开销）→ 命中即 emit 审计并返回拒绝结果；无命中返回 null。
+ * checkInput / checkOutput 的规则段此前逐字相同（仅 side 与规则数组不同）。
+ */
+function scanCustomRules(
+  rules: { re: RegExp; reason: string; scope?: string; normalize?: boolean }[],
+  text: string,
+  side: 'input' | 'output',
+  pol: GuardrailPolicy
+): GuardrailResult | null {
+  let hardened: string | null = null;
+  for (const r of rules) {
+    if (!ruleInScope(r.scope, pol)) continue;
+    if (r.normalize) {
+      if (hardened === null) hardened = hardenText(text);
+      if (r.re.test(hardened)) {
+        if (hasAuditSinks()) emitRuleHit(side, r.scope, r.re, hardened, r.reason);
+        return { ok: false, reason: r.reason };
+      }
+    } else if (r.re.test(text)) {
+      if (hasAuditSinks()) emitRuleHit(side, r.scope, r.re, text, r.reason);
+      return { ok: false, reason: r.reason };
+    }
+  }
+  return null;
+}
+
 export function checkInput(
   text: string,
   pol?: GuardrailPolicy,
@@ -59,27 +102,13 @@ export function checkInput(
     return { ok: false, reason: `input too long (${text.length} > ${maxLen})` };
   }
   if (p.enableSecretScan) {
-    for (const re of SECRET_PATTERNS) {
-      if (re.test(text)) return { ok: false, reason: 'possible secret in input' };
-    }
+    const secret = scanSecretPatterns(SECRET_PATTERNS, text, 'input');
+    if (secret) return secret;
   }
   const inj = detectInjection(text, p, strongOnly);
   if (inj) return { ok: false, reason: `possible prompt injection in input (matched: ${inj})` };
-  // normalize 规则共享一次硬化（惰性计算，无 normalize 规则时零开销）。
-  let hardened: string | null = null;
-  for (const r of customInputRules) {
-    if (!ruleInScope(r.scope, p)) continue;
-    if (r.normalize) {
-      if (hardened === null) hardened = hardenText(text);
-      if (r.re.test(hardened)) {
-        if (hasAuditSinks()) emitRuleHit('input', r.scope, r.re, hardened, r.reason);
-        return { ok: false, reason: r.reason };
-      }
-    } else if (r.re.test(text)) {
-      if (hasAuditSinks()) emitRuleHit('input', r.scope, r.re, text, r.reason);
-      return { ok: false, reason: r.reason };
-    }
-  }
+  const ruleHit = scanCustomRules(customInputRules, text, 'input', p);
+  if (ruleHit) return ruleHit;
   return { ok: true };
 }
 
@@ -91,26 +120,13 @@ export function checkOutput(
   const p = pol ?? getModulePolicy();
   if (typeof text !== 'string') return { ok: true };
   if (p.enableSecretScan) {
-    for (const re of SECRET_PATTERNS) {
-      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
-    }
+    const secret = scanSecretPatterns(SECRET_PATTERNS, text, 'output');
+    if (secret) return secret;
   }
   const inj = detectInjection(text, p);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
-  let hardened: string | null = null;
-  for (const r of customOutputRules) {
-    if (!ruleInScope(r.scope, p)) continue;
-    if (r.normalize) {
-      if (hardened === null) hardened = hardenText(text);
-      if (r.re.test(hardened)) {
-        if (hasAuditSinks()) emitRuleHit('output', r.scope, r.re, hardened, r.reason);
-        return { ok: false, reason: r.reason };
-      }
-    } else if (r.re.test(text)) {
-      if (hasAuditSinks()) emitRuleHit('output', r.scope, r.re, text, r.reason);
-      return { ok: false, reason: r.reason };
-    }
-  }
+  const ruleHit = scanCustomRules(customOutputRules, text, 'output', p);
+  if (ruleHit) return ruleHit;
   // 上下文感知规则：仅当调用方注入了上下文时运行（无 ctx 的旧调用方不受影响），
   // 让领域插件据最近工具结果等业务上下文做精准拦截（如知识库查空后禁止自行推荐）。
   if (ctx) {
@@ -142,9 +158,8 @@ export function checkStructuredOutput(
   const p = pol ?? getModulePolicy();
   if (typeof text !== 'string') return { ok: true };
   if (p.enableSecretScan) {
-    for (const re of SECRET_PATTERNS) {
-      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
-    }
+    const secret = scanSecretPatterns(SECRET_PATTERNS, text, 'output');
+    if (secret) return secret;
   }
   const inj = detectInjection(text, p, true);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };
@@ -177,9 +192,8 @@ export function checkTaskOutput(
   const p = pol ?? getModulePolicy();
   if (typeof text !== 'string') return { ok: true };
   if (p.enableSecretScan) {
-    for (const re of TASK_SECRET_PATTERNS) {
-      if (re.test(text)) return { ok: false, reason: 'possible secret in output' };
-    }
+    const secret = scanSecretPatterns(TASK_SECRET_PATTERNS, text, 'output');
+    if (secret) return secret;
   }
   const inj = detectInjection(text, p, true);
   if (inj) return { ok: false, reason: `possible prompt injection in output (matched: ${inj})` };

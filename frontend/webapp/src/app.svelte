@@ -166,6 +166,10 @@
   // P3-1: 品牌位配置（原 AhApp.brand 属性，无外部写入点，取默认值）
   const brand: BrandConfig = BRAND_DEFAULT;
   let tab: Tab = $state(initialTabFromPath());
+  // C6 惰性首挂载：重面板（PlanBoard/PluginsConsole/Audit）首次切到才挂载，之后保留
+  //（状态不丢）。此前 18 个面板一次性常驻挂载，首屏与常驻内存成本高；配合既有的
+  // activatePanel 补拉机制（切 Tab 后 ref.refresh），未挂载面板在首次进入时正常拉数。
+  let visitedTabs = $state(new Set<string>([initialTabFromPath()]));
   let serverState = $state<ServerState | null>(null);
   let err = $state<string | null>(null);
   let theme = $state<Theme>(getTheme());
@@ -392,6 +396,7 @@
   function onPopState(): void {
     const prevTab = tab;
     tab = initialTabFromPath();
+    visitedTabs.add(tab); // C6：前进/后退同样标记已访问
     closeDrawer();
     // 浏览器后退/前进时同步关闭所有覆盖层，防止移动端侧滑返回后抽屉/模态残留。
     closeAllOverlays();
@@ -458,6 +463,7 @@
   function setTab(next: string) {
     const prevTab = tab;
     tab = next;
+    visitedTabs.add(next); // C6：标记已访问，触发重面板惰性首挂载
     const target = `/${next}`;
     if (window.location.pathname !== target) {
       history.pushState({ tab: next }, '', target);
@@ -862,15 +868,21 @@
         bind:this={observabilityRef}
         visible={tab === 'observability'}
       />
-      <Audit bind:this={auditRef} visible={tab === 'audit'} />
+      {#if visitedTabs.has('audit')}
+        <Audit bind:this={auditRef} visible={tab === 'audit'} />
+      {/if}
       <OrgTree bind:this={orgTreeRef} visible={tab === 'org'} />
       <ArtifactLibrary bind:this={artifactRef} visible={tab === 'artifact'} />
       <SkillManager bind:this={skillRef} visible={tab === 'skill'} />
       <DataSourceUi bind:this={datasourceRef} visible={tab === 'datasource'} />
       <SandboxConsole bind:this={sandboxRef} visible={tab === 'sandbox'} />
       <SupplyChain bind:this={supplyChainRef} visible={tab === 'supplychain'} />
-      <PluginsConsole bind:this={pluginsRef} visible={tab === 'plugins'} />
-      <PlanBoard bind:this={planBoardRef} visible={tab === 'plan'} />
+      {#if visitedTabs.has('plugins')}
+        <PluginsConsole bind:this={pluginsRef} visible={tab === 'plugins'} />
+      {/if}
+      {#if visitedTabs.has('plan')}
+        <PlanBoard bind:this={planBoardRef} visible={tab === 'plan'} />
+      {/if}
       <!-- 设置 Tab：综合设置中心（顶部平铺分组 Tab；「模型与密钥」内嵌 BYOK 面板） -->
       <SettingsCenter
         bind:this={settingsCenterRef}
