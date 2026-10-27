@@ -25,7 +25,6 @@
  */
 import type { ToolCall, LLMResponse } from './types';
 import type { VerifyContext } from './verify';
-import { selectToolsForInput } from './tools';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
 import {
@@ -68,6 +67,9 @@ import { buildUserContent } from './harness/content-blocks';
 import { accountAndEmitUsage } from './harness/usage-accounting';
 import { executeToolWithRace } from './harness/tool-executor';
 import { runVerifyGate } from './harness/verify-gate';
+import { setupRunSignal } from './harness/run-phases/signal-setup';
+import { computeTimeBudget } from './harness/run-phases/time-budget';
+import { selectStepTools } from './harness/run-phases/dynamic-tools';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
 export { contextWindowFor } from './harness/context-window';
@@ -190,25 +192,8 @@ export class AgentHarness {
     };
 
     // 组合「超时」与「外部取消」为单一信号：任一触发即中止本次运行。
-    const controller = new AbortController();
-    const onExternalAbort = () => controller.abort('external');
-    if (this.opts.signal) {
-      if (this.opts.signal.aborted) controller.abort('external');
-      else
-        this.opts.signal.addEventListener('abort', onExternalAbort, {
-          once: true
-        });
-    }
-    const timeout =
-      this.opts.timeoutMs && this.opts.timeoutMs > 0
-        ? setTimeout(() => controller.abort('timeout'), this.opts.timeoutMs)
-        : null;
-    const signal = controller.signal;
-    const cleanup = () => {
-      if (timeout) clearTimeout(timeout);
-      if (this.opts.signal)
-        this.opts.signal.removeEventListener('abort', onExternalAbort);
-    };
+    // H1：装配逻辑迁至 harness/run-phases/signal-setup.ts（逐字等价）。
+    const { signal, cleanup } = setupRunSignal(this.opts.signal, this.opts.timeoutMs);
 
     // P0（插件事件归属）：沿本次 run 的异步链路绑定 runId（AsyncLocalStorage），
     // 插件工具执行期可用 getRunId() 精确归属当前 run（如按 run 归集对话），
@@ -395,34 +380,22 @@ export class AgentHarness {
     //      且发生在验证重试期间时会把第一轮产出覆盖成超时提示（见 abortedResult）；
     //  (c) 验证重试不检查剩余预算 —— 第一轮用掉大半预算后仍启动完整第二轮，
     //      必然撞超时并销毁第一轮产出（见下方重试预算守卫）。
-    const startedAt = Date.now();
-    const runTimeoutMs =
-      this.opts.timeoutMs && this.opts.timeoutMs > 0 ? this.opts.timeoutMs : 0;
-    const deadlineAt = runTimeoutMs > 0 ? startedAt + runTimeoutMs : Infinity;
-    // 软截止：剩余预算低于该阈值时主动要求模型收尾（替代硬超时砍掉产出）。置 0 关闭。
-    // 缺省 90s，并强制收敛到总预算的 1/4 以内 —— 否则「总超时 60s 而软截止 90s」会让
-    // 收尾指令在第一步就触发，等于剥夺模型的正常执行过程。
-    const softDeadlineCfg = Math.max(
-      0,
-      Number(process.env.AGENT_SOFT_DEADLINE_MS ?? 90_000) || 0
-    );
-    const softDeadlineMs =
-      runTimeoutMs > 0 ? Math.min(softDeadlineCfg, Math.floor(runTimeoutMs / 4)) : softDeadlineCfg;
+    // ── P4.8 时间预算治理：治「等很久 → 硬超时 → 无产出」三处结构性缺陷 ──────────
+    // 症状：计划模式单步执行等待极长，随后 step 超时中止且没有任何产出。
+    // 三个独立成因（均已复现）：
+    //  (a) 工具执行是裸 await —— 工具挂死时看门狗 abort 无法生效，循环卡在 await 上，
+    //      时间远超 step 预算后才返回（见下方工具调用竞速 + 单次工具超时）；
+    //  (b) 到点后只返回固定提示文案 —— 已生成（甚至已流式产出）的内容被整体丢弃，
+    //      且发生在验证重试期间时会把第一轮产出覆盖成超时提示（见 abortedResult）；
+    //  (c) 验证重试不检查剩余预算 —— 第一轮用掉大半预算后仍启动完整第二轮，
+    //      必然撞超时并销毁第一轮产出（见下方重试预算守卫）。
+    // H1：计算部分迁至 harness/run-phases/time-budget.ts（数值与语义逐字等价）。
+    const { startedAt, runTimeoutMs, deadlineAt, softDeadlineMs, isPastSoftDeadline, toolCallTimeoutMs } =
+      computeTimeBudget(this.opts.timeoutMs);
     let wrapUpRequested = false;
     // 收尾提示是否已注入记忆（注入点固定在 LLM 调用前，与「跳过工具」判定解耦）。
     let wrapUpPromptPushed = false;
     let wrapUpRounds = 0;
-    /** 是否已进入软截止窗口（剩余预算不足以再跑完一轮工具 + LLM）。 */
-    const isPastSoftDeadline = (): boolean =>
-      softDeadlineMs > 0 &&
-      Number.isFinite(deadlineAt) &&
-      Date.now() >= deadlineAt - softDeadlineMs;
-    // 单次工具调用超时：挂死的工具不再拖垮整步 —— 超时即放弃等待，把「工具超时」
-    // 作为工具结果回传，模型可据此改道或基于已有信息继续。置 0 关闭。缺省 5 分钟。
-    const toolCallTimeoutMs = Math.max(
-      0,
-      Number(process.env.AGENT_TOOL_TIMEOUT_MS ?? 300_000) || 0
-    );
     // 中止竞速用的一次性 promise（run 级共用，避免每步新增监听器）。
     const abortPromise = new Promise<'__aborted__'>((resolve) => {
       if (signal.aborted) return resolve('__aborted__');
@@ -539,41 +512,15 @@ export class AgentHarness {
           // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
           // 从全量工具中选出子集，降低简单输入（如问候）首呼时全量工具 schema 的固定开销。
           // 执行仍走全量注册表（this.opts.tools.call），仅「发送给 LLM 的 schema」做裁剪。
+          // H1：选择逻辑迁至 harness/run-phases/dynamic-tools.ts（逐字等价）。
           const allSchemas = this.opts.tools.schemas();
-          let stepTools = allSchemas;
-          const dynamicOn = process.env.DYNAMIC_TOOLS !== 'false';
-          if (dynamicOn && allSchemas.length > 0) {
-            const latestUser = [...messages]
-              .reverse()
-              .find((m) => m.role === 'user');
-            const input =
-              typeof latestUser?.content === 'string' ? latestUser.content : '';
-            const topK = Number(process.env.DYNAMIC_TOOL_TOPK ?? 8) || 8;
-            // 把本 run 已用过的工具并入硬允许，保证多步任务后续步骤仍可调用。
-            const allow = new Set(this.opts.allowTools ?? []);
-            for (const t of usedTools) allow.add(t);
-            const subset = selectToolsForInput(allSchemas, input, {
-              allowTools: [...allow],
-              topK
-            });
-            // 首轮发「相关性子集」而非全量：动态工具选择的核心收益。
-            // 此前用 looksLikeTask（正则含几乎所有中文疑问词）判断回退全量，导致任何真实
-            // 问答都发全量 schema，问候/寒暄之外的优化形同虚设——用户实测简单问答「工具」
-            // 项高达 ~12968 tok，其中 ~92% 来自 MCP 工具的大 schema（内置工具仅 ~1151 tok）。
-            // 安全网：若子集为空（输入与任何工具描述零关键词重叠），且输入不像问候/空，
-            // 则回退全量——避免「模型看不到任何工具」导致真实任务彻底丧失工具能力；
-            // 纯问候/空输入保持空子集（本就不需要工具）。已用过的工具（usedTools）恒在
-            // allow 中，故子集不会为空，不会触发此回退。
-            let chosen = subset;
-            if (subset.length === 0) {
-              const isGreeting =
-                /^你好|^hello|^hi|^嗨|good.?morning|good.?afternoon|good.?evening|^\s*$/i.test(
-                  input
-                );
-              if (!isGreeting) chosen = allSchemas;
-            }
-            stepTools = chosen;
-          }
+          // let：模型「点名未知工具」时兜底分支会扩展到全量 schema 重试一次（见下方）。
+          let { tools: stepTools, dynamicOn } = selectStepTools({
+            allSchemas,
+            messages,
+            usedTools,
+            allowTools: this.opts.allowTools
+          });
           // Hook: agent.pre_llm — observe messages before LLM call
           void hooks.execute('agent.pre_llm', {
             runId,
