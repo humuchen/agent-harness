@@ -17,6 +17,7 @@ import {
   type PluginModule,
   type PluginContext,
   type PluginEvent,
+  safeJsonParse,
 } from '@agent-harness/core';
 
 // ---------------------------------------------------------------------------
@@ -118,13 +119,13 @@ function postRunAndParse(baseUrl: string, apiKey: string, payload: object): Prom
           const lines = body.split('\n');
           for (const line of lines) {
             if (line.startsWith('data: ')) {
-              try {
-                const evt = JSON.parse(line.slice(6));
-                if (evt.type === 'run:end' && typeof evt.final === 'string') {
-                  finalText = evt.final;
-                }
-              } catch {
-                // 忽略非 JSON 行
+              // P1#24：JSON 安全解析委托 kit 的 safeJsonParse（非 JSON 行 → null，忽略）。
+              const evt = safeJsonParse<{ type?: unknown; final?: unknown } | null>(
+                line.slice(6),
+                null
+              );
+              if (evt?.type === 'run:end' && typeof evt.final === 'string') {
+                finalText = evt.final;
               }
             }
           }

@@ -28,7 +28,7 @@
     summarizeJevDecision,
     parseDeepThinking
   } from './utils/chat-utils';
-  import { toRichHtml } from './utils/markdown';
+  import { toRichHtml, toRichHtmlStreaming } from './utils/markdown';
 
   // 上下文用量聚合（圆环渲染已拆到 chat-context-usage.svelte 组件）。
   import { selectContextUsage } from './chat-context-usage';
@@ -812,14 +812,37 @@
   /** 下拉刷新指示器文案。 */
   let pullHintEl: HTMLElement | null = null;
   /** 全屏编辑器输入框。 */
-  let feInputEl: HTMLTextAreaElement | null = null;
+  let feInputEl: HTMLTextAreaElement | null = $state(null);
   /** 气泡内编辑输入框（编辑态渲染，退出编辑后为 undefined）。 */
-  let editInputEl: HTMLTextAreaElement | null = null;
+  let editInputEl: HTMLTextAreaElement | null = $state(null);
 
   /**
    * P5 静默计划执行（串行回退路径）：quiet run 进行中的思考面板 sink（携带计划的消息 id）。
    */
   let quietPlanSink: { msgId: number } | null = null;
+
+  /* ----- P1#27 热路径修复：quiet 计划思考面板增量缓冲 ----- */
+  // 每 reasoning delta 一次 planExec 全对象重赋值（$state）在长思考下是放大点；
+  // 缓冲 150ms 合并写入（applyPlanThinking 为纯追加+滑窗，合并增量与逐条等价）。
+  // 非流式事件边界由 traceHandle 顶部的 flushPlanThinking 兜底收敛。
+  let planThinkBuf = '';
+  let planThinkTimer: ReturnType<typeof setTimeout> | null = null;
+  function flushPlanThinking(): void {
+    if (planThinkTimer) {
+      clearTimeout(planThinkTimer);
+      planThinkTimer = null;
+    }
+    const sink = quietPlanSink;
+    const delta = planThinkBuf;
+    planThinkBuf = '';
+    if (!sink || !delta) return;
+    const prev = planExec[sink.msgId];
+    if (!prev || prev.status !== 'running') return;
+    const next = applyPlanThinking(prev, delta);
+    if (next !== prev) {
+      planExec = { ...planExec, [sink.msgId]: next };
+    }
+  }
 
   /** 侧栏打开瞬间标记：防止打开后立即被 scrim 点击关闭。 */
   let _sidebarJustOpened = false;
@@ -1021,9 +1044,17 @@
     );
   }
 
-  /** 流式推进中刷新当前 LLM 节点的消息上下文快照与计数标签。 */
-  function refreshLlmTraceMessages(sid: string, tc: TraceCtx) {
+  /** 流式推进中刷新当前 LLM 节点的消息上下文快照与计数标签。
+   *  P1#27 热路径修复：patchSession 每打字机 tick（~20/s）调用本函数，每次 O(n)
+   *  快照整组消息；时间门控为 ≥150ms 一次，事件边界（force）与 run 结束的
+   *  rebuildTraceMessages 兜底终态收敛。 */
+  const LLM_SNAP_MIN_INTERVAL_MS = 150;
+  const llmSnapAt: Record<string, number> = {};
+  function refreshLlmTraceMessages(sid: string, tc: TraceCtx, force = false) {
     if (!tc.llm) return;
+    const now = Date.now();
+    if (!force && now - (llmSnapAt[sid] ?? 0) < LLM_SNAP_MIN_INTERVAL_MS) return;
+    llmSnapAt[sid] = now;
     const snap = snapshotTraceMessages(sid);
     tc.llm.messages = snap;
     if (tc.llm.meta) {
@@ -2475,15 +2506,15 @@
         client.streamRun(payload as Parameters<typeof client.streamRun>[0], opts),
 
       /* ----- P5 静默计划执行：quiet run 的思考增量 → 当前计划卡思考面板 ----- */
+      // P1#27 热路径修复：增量先入缓冲，150ms 合并写入一次（见 flushPlanThinking）。
       onPlanThinking: (sid, delta) => {
         const sink = quietPlanSink;
         if (!sink) return;
         const prev = planExec[sink.msgId];
         if (!prev || prev.status !== 'running') return;
-        const next = applyPlanThinking(prev, delta);
-        if (next !== prev) {
-          planExec = { ...planExec, [sink.msgId]: next };
-        }
+        planThinkBuf += delta;
+        if (planThinkTimer) return;
+        planThinkTimer = setTimeout(flushPlanThinking, 150);
       }
     };
   }
@@ -2518,11 +2549,58 @@
     return tc.root;
   }
 
+  /* ----- P1#27 热路径修复：token/reasoning 事件的 trace 更新节流 ----- */
+  // 每个 token delta 都做 meta 对象展开 + O(n) 消息快照复制，长回答（数千 token）
+  // 下是稳定 CPU 热点。节流为 ≥150ms 合并写入；任何后续非增量事件到达时先冲刷，
+  // 保证 step/tool/终态边界的计数值精确收敛（与拆分前逐 token 更新语义对齐）。
+  const TRACE_DELTA_FLUSH_MS = 150;
+  const traceDeltaPending: Record<string, number> = {};
+  const traceDeltaTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+  function flushTraceDelta(sid: string, kind: 'token' | 'reasoning'): void {
+    const key = `${sid}\u0000${kind}`;
+    const timer = traceDeltaTimers[key];
+    if (timer) {
+      clearTimeout(timer);
+      delete traceDeltaTimers[key];
+    }
+    const chars = traceDeltaPending[key] ?? 0;
+    delete traceDeltaPending[key];
+    if (!chars) return;
+    const tc = traceCtx(sid);
+    if (!tc.llm) return;
+    const field = kind === 'token' ? 'tokenChars' : 'reasoningChars';
+    const n = (tc.llm.meta?.[field] ? Number(tc.llm.meta[field]) : 0) + chars;
+    tc.llm.meta = { ...(tc.llm.meta ?? {}), [field]: String(n) };
+    refreshLlmTraceMessages(sid, tc, true);
+  }
+
+  function scheduleTraceDelta(
+    sid: string,
+    kind: 'token' | 'reasoning',
+    deltaLen: number
+  ): void {
+    const key = `${sid}\u0000${kind}`;
+    traceDeltaPending[key] = (traceDeltaPending[key] ?? 0) + deltaLen;
+    if (traceDeltaTimers[key]) return;
+    traceDeltaTimers[key] = setTimeout(() => {
+      delete traceDeltaTimers[key];
+      flushTraceDelta(sid, kind);
+    }, TRACE_DELTA_FLUSH_MS);
+  }
+
   /**
    * 把一条流式事件汇入调用链路追踪树（瞬态构建，结果写入当前会话 assistant 消息的 trace 字段）。
    */
   function traceHandle(ev: { type: string; [k: string]: unknown }, sid: string) {
     const tc = traceCtx(sid);
+    // P1#27 热路径修复：非增量事件（step/tool/response/usage/end…）到达时，
+    // 先冲刷挂起的 token/reasoning 增量与计划思考缓冲，保证边界值精确。
+    if (ev?.type !== 'llm:token' && ev?.type !== 'llm:reasoning') {
+      flushTraceDelta(sid, 'token');
+      flushTraceDelta(sid, 'reasoning');
+      flushPlanThinking();
+    }
     const mk = (
       parent: TraceNode,
       kind: TraceKind,
@@ -2581,23 +2659,15 @@
         break;
       }
       case 'llm:reasoning': {
+        // P1#27 热路径修复：每 delta 的 meta 展开 + O(n) 快照 → 150ms 合并写入。
         if (tc.llm && typeof ev.delta === 'string') {
-          const n =
-            (tc.llm.meta?.reasoningChars
-              ? Number(tc.llm.meta.reasoningChars)
-              : 0) + ev.delta.length;
-          tc.llm.meta = { ...(tc.llm.meta ?? {}), reasoningChars: String(n) };
-          refreshLlmTraceMessages(sid, tc);
+          scheduleTraceDelta(sid, 'reasoning', ev.delta.length);
         }
         break;
       }
       case 'llm:token': {
         if (tc.llm && typeof ev.delta === 'string') {
-          const n =
-            (tc.llm.meta?.tokenChars ? Number(tc.llm.meta.tokenChars) : 0) +
-            ev.delta.length;
-          tc.llm.meta = { ...(tc.llm.meta ?? {}), tokenChars: String(n) };
-          refreshLlmTraceMessages(sid, tc);
+          scheduleTraceDelta(sid, 'token', ev.delta.length);
         }
         break;
       }
@@ -5168,8 +5238,10 @@
         {:else}
           <!-- 富文本点击事件为事件委托（折叠/复制代码块），内层交互元素自行处理；此处忽略静态元素交互告警。 -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <!-- a11y：role="log"（聊天记录语义，隐式 aria-live=polite）——屏幕阅读器可感知
-               新消息；流式逐字更新由消息定型渲染承载，避免逐字播报轰炸。 -->
+               新消息；流式逐字更新由消息定型渲染承载，避免逐字播报轰炸。onclick 为
+               动态注入富文本（{@html}）的事件委托容器，无法改为交互元素语义。 -->
           <div class="thread" role="log" aria-label="对话消息" onclick={onRichClick}>
             <!-- 连接状态横幅：connected 不显示；reconnecting 自动恢复提示；lost 给「重新连接」。 -->
             {#if connState[activeId] === 'reconnecting'}
@@ -5437,12 +5509,14 @@
   ></div>
   {#if fullscreenEditOpen}
     <!-- a11y：对话框语义（此前仅 div——屏幕阅读器不感知模态边界）。焦点圈禁
-         （focus trap）与关闭后焦点归还待 ah-modal 统一重构时一并落地。 -->
+         （focus trap）与关闭后焦点归还待 ah-modal 统一重构时一并落地；
+         tabindex="-1" 使容器可编程聚焦（后续 autoFocus 挂点）并满足 dialog 角色要求。 -->
     <div
       class="fullscreen-edit"
       role="dialog"
       aria-modal="true"
       aria-label="编辑消息"
+      tabindex="-1"
       oncontextmenu={(e) => e.stopPropagation()}
     >
       <div class="fe-head">
@@ -5944,7 +6018,10 @@
         {/if}
         <div class="think-text">
           {#if parsed.text}
-            {@html toRichHtml(parsed.text)}
+            <!-- P1#27：思考流式期间节流重解析；定型后走全量渲染保证终态精确。 -->
+            {@html isThinking
+              ? toRichHtmlStreaming(`think-${m.id}`, parsed.text)
+              : toRichHtml(parsed.text)}
           {:else}
             <span class="muted">（暂无推理内容）</span>
           {/if}
@@ -6083,12 +6160,20 @@
   <div class="answer">
     {#if m.content && m.content.trim()}
       <div class="msg-text" data-md-scope="ans-{m.id}">
-        {@html toRichHtml(m.content, {
-          htmlBlocks: true,
-          richBlocks: true,
-          // 流式中不提供折叠入口：内容还在增长，中途收起会丢失阅读位置。
-          finalize: !isStreaming
-        })}
+        {#if isStreaming}
+          <!-- P1#27 热路径修复：流式期间按消息 key 节流重解析（≤120ms 间隔复用上次 HTML），
+               终态由下方 finalize 分支全量渲染收敛；流式中不提供折叠入口。 -->
+          {@html toRichHtmlStreaming(`ans-${m.id}`, m.content, {
+            htmlBlocks: true,
+            richBlocks: true
+          })}
+        {:else}
+          {@html toRichHtml(m.content, {
+            htmlBlocks: true,
+            richBlocks: true,
+            finalize: true
+          })}
+        {/if}
       </div>
     {/if}
     {#if isAnswering}<span class="caret"></span>{/if}

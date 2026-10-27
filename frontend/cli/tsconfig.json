@@ -9,7 +9,6 @@
     ],
     "rootDir": "src",
     "outDir": "dist",
-    "noUncheckedIndexedAccess": true,
     "paths": {
       "@agent-harness/client": [
         "../../backend/client/dist/index.d.ts"

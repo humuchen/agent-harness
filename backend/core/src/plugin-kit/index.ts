@@ -7,3 +7,5 @@ export { simpleErrorResult, type SimpleErrorResult } from './simple-error';
 export { readJsonBody } from './body';
 export { createPluginCtxHolder, type PluginCtxHolder } from './plugin-ctx';
 export { safeEqual } from './safe-equal';
+export { jsonReply } from './json-reply';
+export { safeJsonParse } from './safe-json';

@@ -12,16 +12,14 @@
 
 import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
 import { getConfig } from '../config';
+import { safeJsonParse } from '@agent-harness/core';
 import { type ScriptRecord, type CaseRecord } from './types';
 
+/** P1#24：JSON 安全解析委托 kit 的 safeJsonParse（非法 JSON / 非数组 → undefined）。 */
 function safeJsonArray(v: unknown): string[] | undefined {
   if (!v) return undefined;
-  try {
-    const a = JSON.parse(String(v));
-    return Array.isArray(a) ? a.map(String) : undefined;
-  } catch {
-    return undefined;
-  }
+  const a = safeJsonParse<unknown>(String(v), null);
+  return Array.isArray(a) ? a.map(String) : undefined;
 }
 
 // ─── 话术库 ─────────────────────────────────────────────────────────

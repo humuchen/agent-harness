@@ -1,4 +1,5 @@
 import type { PluginModule, PluginContext } from '@agent-harness/core';
+import { safeJsonParse } from '@agent-harness/core';
 import { csManifest } from './manifest';
 import { registerTicketTools } from './tools/ticket';
 import { registerKbTools } from './tools/kb';
@@ -46,13 +47,11 @@ function parseAnalysisOutput(finalText: string): {
   if (fenceMatch?.[1]) {
     jsonStr = fenceMatch[1].trim();
   }
-  try {
-    const parsed = JSON.parse(jsonStr);
-    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items)) {
-      return parsed;
-    }
-  } catch {
-    // 解析失败
+  type AnalysisOutput = Extract<ReturnType<typeof parseAnalysisOutput>, object>;
+  // P1#24：JSON 安全解析委托 kit 的 safeJsonParse（非法 JSON → null，绝不抛错）。
+  const parsed = safeJsonParse<AnalysisOutput | null>(jsonStr, null);
+  if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items)) {
+    return parsed;
   }
   return null;
 }

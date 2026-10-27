@@ -4,7 +4,7 @@
  * 路由 key 用**纯路径**（宿主精确匹配 path），HTTP 方法在 handler 内用 req.method 判断。
  */
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { readJsonBody, safeEqual } from '@agent-harness/core';
+import { readJsonBody, safeEqual, jsonReply } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
 import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo';
@@ -13,12 +13,8 @@ import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service';
 import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
 import { getConfig } from '../config';
 
-/** 简单 JSON 响应助手。 */
-function json(res: import('node:http').ServerResponse, code: number, body: unknown): void {
-  res.statusCode = code;
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(body));
-}
+/** P1#24：JSON 响应助手委托 kit 的 jsonReply（三插件统一口径）；调用点保持 json 名不变。 */
+const json = jsonReply;
 
 /** P1#25：请求体读取委托 kit 的 readJsonBody（统一安全基线）；保留 CS_MAX_BODY_BYTES
  *  差异化配置入口（默认与 kit 一致 1MB）。 */

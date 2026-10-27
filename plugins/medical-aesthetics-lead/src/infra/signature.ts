@@ -6,7 +6,9 @@
  * 未配置密钥时一律拒绝——不允许无鉴权的裸奔入口。
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
+// P1#24：恒定时间比较委托 kit 的 safeEqual（与 cs / memo 同一安全口径，删除本地残留实现）。
+import { safeEqual } from '@agent-harness/core';
 import { MaError, notConfigured } from './errors';
 
 /** 允许的时间偏移（秒）：超出即视为重放。 */
@@ -15,14 +17,6 @@ const DEFAULT_TOLERANCE_SEC = 300;
 /** 计算签名：hex(HMAC_SHA256(secret, `${timestamp}.${rawBody}`))。 */
 export function computeSignature(secret: string, timestamp: string, rawBody: string): string {
   return createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
-}
-
-/** 恒定时间比较（长度不等直接 false，避免 timingSafeEqual 抛错）。 */
-function safeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a, 'utf-8');
-  const bb = Buffer.from(b, 'utf-8');
-  if (ba.length !== bb.length) return false;
-  return timingSafeEqual(ba, bb);
 }
 
 /**

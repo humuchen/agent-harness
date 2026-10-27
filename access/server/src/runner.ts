@@ -6,6 +6,7 @@ import {
   FileMemoryStore,
   SqliteMemoryStore,
   VolatileMemoryStore,
+  CircuitBreaker,
   createOpenRouterLLM,
   createOpenAILLM,
   resolveOpenRouterConfig,
@@ -58,6 +59,34 @@ loadEnv(); // 加载 git-ignored 的 .env；显式环境变量优先
  * 故意在 server 端用字面量申明，避免 server 直接依赖插件包（保持非侵入式解耦）。
  */
 const MEDICAL_AD_GUARD_SCOPE = 'medical-ad';
+
+/**
+ * HTTP 级熔断器（P1#23 收尾：激活 harness 的 P1-10 通道）。
+ *
+ * runner 装配的 LLM 包装器内部已有 provider 级（failover，60s 冷却）与 per-key 级
+ * （multi-key）熔断；本实例是第三层级——经 LLMCallOptions.circuitBreaker 由
+ * shared.ts 的 connectWithRetries 包裹真实 HTTP fetch，进程级单例、状态跨 run 保留：
+ * 上游持续故障时，后续 run 不再逐个请求硬等超时，而是以 [circuit-breaker] 文案快速失败。
+ *
+ * 与 provider 级的分层关系（刻意不合并）：
+ *  - provider 级熔断只影响对应 provider 的切换决策（primary→secondary / 换 key）；
+ *  - 本层只统计「真实发出的 HTTP 请求」的连续失败：主 provider 熔断期间流量切到
+ *    secondary，secondary 的成功会把本层连续失败清零，不会跨 provider 污染；
+ *  - 仅当所有 provider 的真实请求连续失败（网络层整体故障）时本层才打开，
+ *    此时快速失败正是期望行为。冷却 30s，比 provider 级 60s 更快试探恢复。
+ */
+const harnessCircuitBreaker = new CircuitBreaker({
+  name: 'runner:harness',
+  failureThreshold:
+    Number(process.env.LLM_HARNESS_BREAKER_THRESHOLD ?? 5) || 5,
+  timeoutMs:
+    Number(process.env.LLM_HARNESS_BREAKER_COOLDOWN_MS ?? 30_000) || 30_000,
+  onTransition: (from, to) => {
+    structLog('warn', `circuit breaker ${from} -> ${to}`, {
+      breaker: 'runner:harness'
+    });
+  }
+});
 
 /**
  * 按 agent 卡片领域派生「业务护栏作用域」，实现护栏按 agent 绑定（治本）。
@@ -778,6 +807,9 @@ export async function assembleAgent(
     tools,
     memory,
     systemPrompt: finalSystemPrompt,
+    // P1#23 收尾：注入 HTTP 级熔断器（激活 P1-10 通道）。熔断打开时 harness 主循环
+    // 直接以 [circuit-breaker] 文案收尾本轮（不触发通用告警风暴），见上方单例注释。
+    circuitBreaker: harnessCircuitBreaker,
     // 事件桥接：把核心 harness 运行事件广播给插件事件订阅者（ctx.events.on），
     // 使插件能订阅 run:start / run:end 等运行时事件（如客服对话记录），全程无业务耦合。
     onEvent: (e: HarnessEvent) => {

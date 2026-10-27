@@ -41,6 +41,49 @@ function cacheKey(text: string, htmlBlocks: boolean, richBlocks: boolean, finali
 /** 清空渲染缓存（仅测试使用；运行时不需要手动清理）。 */
 export function clearRichHtmlCache(): void {
   cache.clear();
+  streamRender.clear();
+}
+
+/* ────────────────────────── 流式渲染节流 ────────────────────────── */
+
+/**
+ * 流式渲染节流缓存（P1#27 热路径修复）。
+ *
+ * 主缓存 `cache` 的键含全文：流式期间文本每 tick 变化 → 必 miss → 每 tick 重跑
+ * marked + DOMPurify + hljs 全量解析（长回答下是 UI 卡顿的最大单点）。
+ * `toRichHtmlStreaming` 按消息 key 节流：同一消息在间隔内复用上一次 HTML
+ * （内容短暂落后 ≤ 间隔，肉眼不可感知），把全量重解析频率从 ~20 次/s 压到 ~8 次/s；
+ * 流式结束后调用方切回 `toRichHtml`（finalize 分支），终态内容必然精确收敛。
+ */
+const STREAM_MIN_INTERVAL_MS = 120;
+const STREAM_CACHE_MAX = 32;
+const streamRender = new Map<string, { html: string; at: number }>();
+
+/**
+ * 流式渲染节流版：同一 key（如 `ans-${消息id}`）在间隔内直接复用上次 HTML。
+ * 仅用于「正在流式」的消息；定型内容请用 toRichHtml（缓存命中且终态精确）。
+ */
+export function toRichHtmlStreaming(
+  key: string,
+  text: string,
+  opts: RichHtmlOptions = {}
+): string {
+  const t = (text ?? '').trim();
+  if (!t) {
+    streamRender.delete(key);
+    return '';
+  }
+  const now = Date.now();
+  const prev = streamRender.get(key);
+  if (prev && now - prev.at < STREAM_MIN_INTERVAL_MS) return prev.html;
+  const html = toRichHtml(text, opts);
+  streamRender.delete(key); // 先删再插，保证 Map 顺序 = 最近使用序
+  streamRender.set(key, { html, at: now });
+  if (streamRender.size > STREAM_CACHE_MAX) {
+    const oldest = streamRender.keys().next().value;
+    if (oldest !== undefined) streamRender.delete(oldest);
+  }
+  return html;
 }
 
 /* ────────────────────────── 结构增强 ────────────────────────── */

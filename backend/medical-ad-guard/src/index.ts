@@ -32,6 +32,7 @@ import {
   compileRule,
   resolveLexicon,
   escapeRegExp,
+  KB_TERM_NEGATIVE_CONTEXTS,
   type LexiconRule,
 } from './lexicon';
 
@@ -114,9 +115,23 @@ let unregisters: Array<() => void> = [];
 let pollTimer: NodeJS.Timeout | null = null;
 let lastMtimeMs = 0;
 
-/** 重建 KB 项目词正则（项目词按字面拼接，防元字符注入；词数 0 时恒不匹配）。 */
+/**
+ * 重建 KB 项目词正则（P2#40 词库边界）：项目词按字面拼接（防元字符注入）；
+ * 多义词按 KB_TERM_NEGATIVE_CONTEXTS 追加负向上下文（私密文件/水光灯 等非项目
+ * 连字不判命中）；词数 0 时恒不匹配。
+ */
 function rebuildKbTermsRe(terms: string[]): void {
-  activeKbTermsRe = terms.length ? new RegExp(terms.map(escapeRegExp).join('|')) : new RegExp('(?!)');
+  if (!terms.length) {
+    activeKbTermsRe = new RegExp('(?!)');
+    return;
+  }
+  const neg = new Map<string, string>(KB_TERM_NEGATIVE_CONTEXTS);
+  const parts = terms.map((t) => {
+    const src = escapeRegExp(t);
+    const ctx = neg.get(t);
+    return ctx ? `${src}(?!${ctx})` : src;
+  });
+  activeKbTermsRe = new RegExp(parts.join('|'));
 }
 
 /** 执行注册：编译当前词库 → 注册进 core（幂等由 registered 旗标与调用方纪律保证）。 */

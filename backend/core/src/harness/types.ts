@@ -318,6 +318,12 @@ export interface HarnessOptions {
   // 密钥/注入类拦截永不重试（直接兜底），不受此值影响。缺省 1（与历史行为一致）；
   // 显式 0 = 关闭温和重试。
   guardrailMaxRetries?: number;
+
+  // P1-10: 可选熔断器（CircuitBreaker）。LLM 持续 5xx 时自动熔断，避免逐个请求硬等超时。
+  // 未传则不启用（向后兼容）。开启后，熔断打开时抛出 CircuitBreakerOpen，调用方可捕获决定
+  // 重试策略（P1#23 收尾：server 装配注入进程级单例，激活该通道——此前仅存在于
+  // ResolvedHarnessOptions，公开构造选项缺失导致生产装配无法传入）。
+  circuitBreaker?: CircuitBreaker;
 }
 
 // 经默认值填充后的解析结果类型：onEvent 永不为空。

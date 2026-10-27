@@ -9,7 +9,7 @@
  */
 
 import type { ServerExtension, PluginRouteHandler, PluginRouteUser } from '@agent-harness/core';
-import { readJsonBody } from '@agent-harness/core';
+import { readJsonBody, jsonReply } from '@agent-harness/core';
 import {
   listNotes,
   saveNote,
@@ -31,11 +31,8 @@ function ownerOf(user?: PluginRouteUser): string {
   return user?.sub ? String(user.sub) : 'anon';
 }
 
-function json(res: import('node:http').ServerResponse, code: number, body: unknown): void {
-  res.statusCode = code;
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify(body));
-}
+/** P1#24：JSON 响应助手委托 kit 的 jsonReply（三插件统一口径）；调用点保持 json 名不变。 */
+const json = jsonReply;
 
 /** P1#25：请求体读取委托 kit（统一 1MB 上限安全基线——此前无上限，单个大 body
  *  可打满插件进程内存；容错语义与原实现一致：解析失败返回 {}）。 */

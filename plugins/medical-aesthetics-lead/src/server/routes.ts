@@ -11,7 +11,7 @@ import { dbHealth } from '../infra/db';
 import { verifyWebhook, verifyAdminToken } from '../infra/signature';
 import { toMaError } from '../infra/errors';
 import { getPluginContext } from '../runtime';
-import { makeTaskId } from '@agent-harness/core';
+import { makeTaskId, jsonReply } from '@agent-harness/core';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
 import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
@@ -79,10 +79,8 @@ function readRawBody(req: Req): Promise<{ raw: string; json: Record<string, unkn
   });
 }
 
-function send(res: Res, code: number, obj: unknown): void {
-  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(obj));
-}
+/** P1#24：JSON 响应助手委托 kit 的 jsonReply（三插件统一口径）；调用点保持 send 名不变。 */
+const send = jsonReply;
 
 // ---------------------------------------------------------------------------
 // 只读统计 / 明细（真实 SQL 聚合）

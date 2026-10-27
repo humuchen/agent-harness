@@ -43,6 +43,18 @@ describe('对抗归一化（hardenText 匹配）', () => {
     assert.strictEqual(out.ok, false, '拆词项目名应被硬化后拦截');
   });
 
+  test('P2#40 词库边界：多义短词的非项目连字不误拦', () => {
+    const ctx = { recentTool: { name: 'ma_lead__project_kb_search', result: JSON.stringify({ found: false }) } };
+    const out = checkOutput('请留意保存您的私密文件与水光灯', undefined, ctx);
+    assert.strictEqual(out.ok, true, '「私密文件」「水光灯」等非项目连字不应命中查空拦截');
+  });
+
+  test('P2#40 词库边界：项目语义用法仍正常拦截', () => {
+    const ctx = { recentTool: { name: 'ma_lead__project_kb_search', result: JSON.stringify({ found: false }) } };
+    const out = checkOutput('推荐做私密紧致和水光针', undefined, ctx);
+    assert.strictEqual(out.ok, false, '项目语义（私密紧致/水光针）仍应被查空拦截');
+  });
+
   test('正常话术不因硬化产生新误伤', () => {
     // 区间价 + 电商保证（回归既有放行语义在硬化路径下不变）
     assert.ok(checkOutput('光子嫩肤价格在800-2000元之间', { scopes: ['medical-ad'] }).ok);

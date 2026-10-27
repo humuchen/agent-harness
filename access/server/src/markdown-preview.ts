@@ -26,15 +26,8 @@
  *   「返回」视觉一致（路径 d="M15 18l-6-6 6-6"，24×24 / round 端点 / 2px / currentColor）。
  */
 
-/** HTML 转义（与项目内其它 escapeHtml 语义一致）。 */
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+// P1#24：HTML 转义委托 kit 的 escapeHtml（删除本地重复实现，全仓唯一实现点）。
+import { escapeHtml } from '@agent-harness/core';
 
 /** 允许的链接协议；其余（javascript:/vbscript:/data:…）一律降级为纯文本。 */
 const SAFE_LINK_PROTOCOL = /^(https?:\/\/|mailto:|\/|#)/i;
