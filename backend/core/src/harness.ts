@@ -32,8 +32,7 @@ import {
   checkTaskOutput,
   checkInputAsync,
   checkOutputAsync,
-  checkToolArgsAsync,
-  redactOutput
+  checkToolArgsAsync
 } from './guardrails';
 import { parsePlanOutput } from './plan';
 import {
@@ -63,13 +62,15 @@ import { stableToolKey } from './harness/tool-dedup';
 import { nextId } from './harness/id';
 import { sanitizeToolPairing, collectToolCalls } from './harness/message-sanitizer';
 import { WRAP_UP_PROMPT, abortedMessage } from './harness/run-prompts';
-import { buildUserContent } from './harness/content-blocks';
 import { accountAndEmitUsage } from './harness/usage-accounting';
 import { executeToolWithRace } from './harness/tool-executor';
 import { runVerifyGate } from './harness/verify-gate';
 import { setupRunSignal } from './harness/run-phases/signal-setup';
 import { computeTimeBudget } from './harness/run-phases/time-budget';
 import { selectStepTools } from './harness/run-phases/dynamic-tools';
+import { setupRunMemory } from './harness/run-phases/memory-setup';
+import { planProposeFinalize } from './harness/run-phases/plan-finish';
+import { finalizeRun } from './harness/run-phases/finalize';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
 export { contextWindowFor } from './harness/context-window';
@@ -296,30 +297,14 @@ export class AgentHarness {
 
     const memory = this.opts.memory;
 
-    // 若配置了持久化路径，先载入历史记忆（窗口 + 长期笔记）。
-    if (memory.hasPersistence) {
-      try {
-        await memory.load();
-      } catch {
-        /* 首次运行无存档，忽略 */
-      }
-    }
-
-    // 将长期记忆注入系统提示词，使模型能看到跨运行的上下文。
-    const ctx = memory.systemContext();
-    const sysContent =
-      ctx && this.opts.systemPrompt
-        ? `${this.opts.systemPrompt}\n\n${ctx}`
-        : this.opts.systemPrompt;
-    if (sysContent && !memory.history().some((m) => m.role === 'system')) {
-      memory.add({ role: 'system', content: sysContent });
-    }
-    // 图片附件：转为 ContentBlock[] 传给 LLM；无图片时退化为纯文本。
-    // （构造逻辑拆分至 harness/content-blocks.ts，行为契约见该模块注释：
-    //  多模态路径 text 块取 userInput、纯文本路径取 resolvedInput，与拆分前一致。）
-    memory.add({
-      role: 'user',
-      content: buildUserContent(userInput, resolvedInput, imageAttachments)
+    // 记忆装配（H1 后半：迁至 run-phases/memory-setup.ts，逐字等价）：
+    // 持久化载入 → 长期记忆注入系统提示词 → 用户消息入窗（多模态 ContentBlock）。
+    await setupRunMemory({
+      memory,
+      systemPrompt: this.opts.systemPrompt,
+      userInput,
+      resolvedInput,
+      imageAttachments
     });
 
     let final = MAX_STEPS_NOTICE;
@@ -390,7 +375,7 @@ export class AgentHarness {
     //  (c) 验证重试不检查剩余预算 —— 第一轮用掉大半预算后仍启动完整第二轮，
     //      必然撞超时并销毁第一轮产出（见下方重试预算守卫）。
     // H1：计算部分迁至 harness/run-phases/time-budget.ts（数值与语义逐字等价）。
-    const { startedAt, runTimeoutMs, deadlineAt, softDeadlineMs, isPastSoftDeadline, toolCallTimeoutMs } =
+    const { runTimeoutMs, deadlineAt, softDeadlineMs, isPastSoftDeadline, toolCallTimeoutMs } =
       computeTimeBudget(this.opts.timeoutMs);
     let wrapUpRequested = false;
     // 收尾提示是否已注入记忆（注入点固定在 LLM 调用前，与「跳过工具」判定解耦）。
@@ -514,13 +499,15 @@ export class AgentHarness {
           // 执行仍走全量注册表（this.opts.tools.call），仅「发送给 LLM 的 schema」做裁剪。
           // H1：选择逻辑迁至 harness/run-phases/dynamic-tools.ts（逐字等价）。
           const allSchemas = this.opts.tools.schemas();
-          // let：模型「点名未知工具」时兜底分支会扩展到全量 schema 重试一次（见下方）。
-          let { tools: stepTools, dynamicOn } = selectStepTools({
+          // stepTools 为 let：模型「点名未知工具」时兜底分支会扩展到全量 schema 重试一次（见下方）。
+          const selection = selectStepTools({
             allSchemas,
             messages,
             usedTools,
             allowTools: this.opts.allowTools
           });
+          let stepTools = selection.tools;
+          const dynamicOn = selection.dynamicOn;
           // Hook: agent.pre_llm — observe messages before LLM call
           void hooks.execute('agent.pre_llm', {
             runId,
@@ -1103,51 +1090,18 @@ export class AgentHarness {
           // 否则 assistant 会带着孤儿 tool_call 进入下一轮请求与持久化存档。
           fillMissingToolResults('[skipped] 本步工具调用已达上限，该调用未执行');
         }
-        // 计划 propose 收尾（P5 优化）：预算耗尽时调研往往已消耗大量 token，若直接返回
-        // MAX_STEPS_NOTICE，服务端解析不出计划 JSON，整轮调研白烧、用户只能从头重试。
-        // 这里补一次「强制收尾」LLM 调用（不带工具，逼模型立即产出），基于已获取的
-        // 信息直接输出计划/澄清 JSON；仅当收尾调用失败或仍无内容时才回退默认提示。
+        // 计划 propose 收尾（P5 优化）：预算耗尽时补一次「无工具」强制收尾调用。
+        // H1 后半：迁至 run-phases/plan-finish.ts（逐字等价；失败/无内容回退默认提示）。
         if (this.opts.planPropose && !signal.aborted) {
-          try {
-            memory.add({
-              role: 'user',
-              content:
-                '（系统提示）规划预算已用尽，请立即停止调研。基于以上已获取的信息直接输出最终结果：' +
-                '需求清晰时输出计划 JSON（信息不足的任务在 expectedOutput 中显式标注数据缺口），' +
-                '需求不清时输出澄清 JSON（{"clarify": true, "goalDraft": string, "questions": string[]}）。' +
-                '只输出一个 JSON 对象，不要任何其他文字。'
-            });
-            // P1 可靠性修复：收尾调用与主循环对齐——纳入 abortPromise 竞速 + 兜底
-            // catch（旧实现裸 await：适配器不尊重 signal 时硬超时看门狗无法打断；
-            // catch 静默吞错且无遥测留痕）。
-            const finCall = this.opts.llm(
-              sanitizeToolPairing(memory.history()),
-              [],
-              { signal, circuitBreaker: this.opts.circuitBreaker }
-            );
-            void finCall.catch(() => {});
-            const finResult = await Promise.race([
-              finCall,
-              abortPromise.then((v) => {
-                if (v === '__aborted__') throw new DOMException('aborted', 'AbortError');
-                return v as never;
-              })
-            ]);
-            const finResp = finResult as LLMResponse | undefined;
-            if (finResp?.content && finResp.content.trim()) {
-              memory.add({ role: 'assistant', content: finResp.content });
-              return finResp.content;
-            }
-            structLog('warn', 'plan propose finalize produced no content; fallback to notice', {
-              runId
-            });
-          } catch (e) {
-            // 收尾调用失败（网络/熔断/中止）：回退到默认 MAX_STEPS_NOTICE；留痕便于排查。
-            structLog('warn', 'plan propose finalize failed; fallback to notice', {
-              runId,
-              error: e instanceof Error ? e.message : String(e)
-            });
-          }
+          const finalized = await planProposeFinalize({
+            memory,
+            llm: this.opts.llm,
+            circuitBreaker: this.opts.circuitBreaker,
+            signal,
+            abortPromise,
+            runId
+          });
+          if (finalized !== null) return finalized;
         }
         return MAX_STEPS_NOTICE;
       });
@@ -1207,30 +1161,18 @@ export class AgentHarness {
       });
     }
 
-    // 运行结束，若有持久化路径则落盘（best-effort）。
-    if (memory.hasPersistence) {
-      try {
-        await memory.save();
-      } catch {
-        /* 存档失败不应影响已产出的结果 */
-      }
-    }
-
-    // 输出侧 PII 脱敏：无论正常结束、超时还是异常，最终返回给用户的内容都经过打码。
-    final = redactOutput(final, this.opts.guardrailPolicy);
-    incCounterTenant('agent.run.end', this.opts.tenantId);
-    cleanup();
-    // Hook: agent.post_run — normal completion
-    void hooks.execute('agent.post_run', {
+    // 运行收尾（H1 后半：迁至 run-phases/finalize.ts，逐字等价）：
+    // 持久化落盘 → 输出侧 PII 脱敏 → 计数/hook/run:end → 返回脱敏后的最终文本。
+    return await finalizeRun({
+      memory,
       runId,
-      sessionKey: runId,
       tenantId: this.opts.tenantId,
+      agentId: this.opts.agentId,
+      guardrailPolicy: this.opts.guardrailPolicy,
       final,
       steps,
-      tokens: undefined,
-      cost: undefined,
+      cleanup,
+      emit
     });
-    emit({ type: 'run:end', runId, final, steps, agentId: this.opts.agentId });
-    return final;
   }
 }
