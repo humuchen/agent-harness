@@ -23,7 +23,7 @@
  *   - harness/tool-executor.ts    单工具执行「中止+超时」竞速
  *   - harness/verify-gate.ts      运行期自动验证门禁（含自愈重试）
  */
-import type { ToolCall, LLMResponse } from './types';
+import type { ToolCall } from './types';
 import type { VerifyContext } from './verify';
 import { Memory } from './memory';
 import { resolveAndTrack, EntityTracker } from './coreference';
@@ -52,7 +52,7 @@ import {
 
 // ── 拆分子模块 ──────────────────────────────────────────────────────────
 import type { HarnessEvent, HarnessOptions, ResolvedHarnessOptions } from './harness/types';
-import { contextWindowFor, isContextOverflowError } from './harness/context-window';
+import { contextWindowFor } from './harness/context-window';
 import { stableToolKey } from './harness/tool-dedup';
 import { nextId } from './harness/id';
 import { sanitizeToolPairing, collectToolCalls } from './harness/message-sanitizer';
@@ -69,6 +69,7 @@ import { finalizeRun } from './harness/run-phases/finalize';
 import { runOutputGate } from './harness/run-phases/output-gate';
 import { emitAssistantTurn } from './harness/run-phases/assistant-turn';
 import { resolveFinalOutput } from './harness/run-phases/final-output';
+import { callLlmWithSelfHeal } from './harness/run-phases/loop-llm';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
 export { contextWindowFor } from './harness/context-window';
@@ -520,92 +521,38 @@ export class AgentHarness {
             toolCount: stepTools.length
           });
 
-          // 用 Promise.race 让「中止」能打断一个永不 settles 的 LLM 调用，
-          // 即使底层适配器未尊重 signal 也能及时退出。
-          // token 级流式：开启 streamTokens 时透传 onToken/onReasoning 回调，
-          // 适配器（支持 stream）会逐 delta 回调；同时记录是否真的收到了增量，
-          // 以便在不支持流式的适配器（含 mock）下回退为「整段作为单 token」发出，
-          // 保证聊天 UI 始终能拿到可渲染的增量事件。
-          let streamedTokens = false;
+          // 单步 LLM 调用 + 溢出自愈 + 智能兜底（H3：迁至 run-phases/loop-llm.ts，
+          // 逐字等价）。abort 竞速 / 未知工具扩展 / 溢出收窄的循环控制以状态对象表达；
+          // 实例字段（overflowShrink / maxAcceptedPrompt）经返回值写回。
+          // 中止路径：先写回 streamBuffer（抢救文案依赖它），再 return abortedResult()。
           // P4.8：本步流式产出缓冲（硬中止时抢救用）——每次 LLM 调用前重置。
           streamBuffer = '';
-          // 上下文溢出自愈：LLM 返回「超出上下文窗口」类错误（免费模型真实窗口常远小于
-          // 配置/回退值 128K）时，逐步压缩历史后重试，而非让整轮运行失败、卡死无回应。
-          const OVERFLOW_MAX_RETRIES = 4;
-          let resp: LLMResponse | null = null;
-          for (let llmAttempt = 0; llmAttempt <= OVERFLOW_MAX_RETRIES; llmAttempt++) {
-            if (signal.aborted) return abortedResult();
-            try {
-              const llmCall = this.opts.llm(messages, stepTools, {
-                signal,
-                circuitBreaker: this.opts.circuitBreaker,
-                ...(this.opts.streamTokens
-                  ? {
-                      onToken: (delta: string) => {
-                        streamedTokens = true;
-                        streamBuffer += delta; // P4.8：留存增量，供硬中止抢救
-                        emit({ type: 'llm:token', step: steps, delta });
-                      },
-                      onReasoning: (delta: string) => {
-                        emit({ type: 'llm:reasoning', step: steps, delta });
-                      }
-                    }
-                  : {})
-              });
-              // 防御：abort/超时竞速获胜后，底层调用 rejection 无人接住会触发
-              // unhandledRejection（Node ≥15 默认 crash）。挂一条兜底 catch，
-              // 不影响竞速正常路径的异常传播（race 仍会收到原始 rejection）。
-              void llmCall.catch(() => {});
-              const raceResult = await withSpan('llm.call', () =>
-                Promise.race([llmCall, abortPromise])
-              );
-              if (raceResult === '__aborted__') return abortedResult();
-              resp = raceResult as LLMResponse;
-              // 智能兜底：动态选择只发了子集时，模型可能「点名」一个未发出的工具。
-              //  - 该工具在全量注册表 this.opts.tools 中存在（执行注册表始终全量）：直接交给
-              //    下方执行分支即可，绝不可重发 schema 重试——否则会丢弃模型已给出的有效
-              //    tool_call（曾经的实现因此让 builtin__jev_decide 等核心工具「点了名却没执行」）。
-              //  - 该工具全量注册表中也不存在（模型幻觉的未知工具名）：扩展到全量 schema
-              //    重试一次，让模型改选真实工具。至多扩展一次（扩展后 stepTools === allSchemas
-              //    条件不再成立），不会死循环。
-              const requestedOutside = (resp.tool_calls ?? []).filter(
-                (tc) => !stepTools.find((s) => s.name === tc.name)
-              );
-              if (requestedOutside.length > 0 && dynamicOn && stepTools !== allSchemas) {
-                const unknown = requestedOutside.filter(
-                  (tc) => !allSchemas.find((s) => s.name === tc.name)
-                );
-                if (unknown.length > 0) {
-                  stepTools = allSchemas;
-                  structLog('info', 'model requested unknown tool(s); expanding to full schema and retrying', {
-                    unknown: unknown.map((t) => t.name),
-                    runId
-                  });
-                  continue;
-                }
-                // 否则：工具已注册但不在子集——不重发，直接执行（见上方说明）。
-              }
-              break;
-            } catch (llmErr) {
-              if (isContextOverflowError(llmErr) && llmAttempt < OVERFLOW_MAX_RETRIES) {
-                this.overflowShrink = true;
-                // 自适应收窄：有成功样本用「样本 × 0.6」，否则用当前历史估算的一半，逐次收敛。
-                const basis =
-                  this.maxAcceptedPrompt > 0 ? this.maxAcceptedPrompt : memory.historyTokens();
-                const newBudget = Math.max(256, Math.floor(basis * 0.6));
-                const shrank = memory.fitToBudget(newBudget);
-                structLog('warn', 'context overflow, shrinking history and retrying LLM call', {
-                  attempt: llmAttempt,
-                  newBudget,
-                  shrank,
-                  runId
-                });
-                messages = sanitizeToolPairing(memory.history());
-                continue;
-              }
-              throw llmErr;
-            }
-          }
+          const llmState = await callLlmWithSelfHeal({
+            llm: this.opts.llm,
+            circuitBreaker: this.opts.circuitBreaker,
+            streamTokens: this.opts.streamTokens,
+            messages,
+            stepTools,
+            allSchemas,
+            dynamicOn,
+            signal,
+            abortPromise,
+            memory,
+            overflowShrink: this.overflowShrink,
+            maxAcceptedPrompt: this.maxAcceptedPrompt,
+            steps,
+            runId,
+            emit,
+            abortedResult
+          });
+          messages = llmState.messages;
+          stepTools = llmState.stepTools;
+          const streamedTokens = llmState.streamedTokens;
+          streamBuffer = llmState.streamBuffer;
+          this.overflowShrink = llmState.overflowShrink;
+          this.maxAcceptedPrompt = llmState.maxAcceptedPrompt;
+          if (llmState.aborted) return abortedResult();
+          const resp = llmState.resp;
           if (!resp) {
             // P2-1：走到这里 = 重试循环耗尽或适配器返回空响应 —— 这是「模型调用失败」，
             // 不是「运行被取消」。旧实现一律 abortedResult() 把失败伪装成取消，
@@ -689,6 +636,13 @@ export class AgentHarness {
           if (fin.kind === 'final') return fin.text;
 
           // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
+          //
+          // 【H3 拆分决策：本段有意保持内联】三阶段并发编排（准备→有界并发→原序回填）
+          // 的参数面 >15（planned/done/answeredIds/cursor 等并发池状态跨 worker 闭包共享，
+          // 且 wrapUp 跳过、单步预算截断、护栏 preset、dedup 缓存写回多路交织），拆分为
+          // 独立模块需要把这些状态全部升格为参数对象或类——回归风险（并发时序）高于
+          // 可维护性收益。abort/护栏拦截/去重/截断语义已由 12 个专项测试覆盖
+          // （harness*.test.cjs 的工具循环 + 并发 + 去重 + 中止用例），维持现状。
           //
           // answeredIds 记录本轮已回传结果的 tool_call id。 assistant 消息在循环前
           // 就已带着全部 tool_calls 写入记忆，因此任何提前退出（预算截断 / 取消）

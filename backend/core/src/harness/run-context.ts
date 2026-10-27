@@ -1,13 +1,15 @@
-// RunContext —— runInner 的可变运行状态容器（H1 设计资产，H2 起逐步启用）。
+// RunContext —— runInner 的运行状态契约（H1 设计资产）。
 //
 // 背景（P1#21）：runInner（~1140 行）内约 40 个闭包变量互相交织，是「一个函数一个系统」。
-// 本接口把全部状态显式化，字段注释即「写读矩阵」——每个字段标注谁写（W）谁读（R），
-// 后续把 runInner 按阶段拆为 run-phases/ 模块函数时，阶段间仅经此容器通信，禁止互引。
-//
-// 搬移纪律（每批一个 commit，全测后合入）：
-//   H2: setup / input-gate / finalize 外迁（边界最清晰）
-//   H3: output-gate / plan-finish 外迁
-//   H4: loop 拆分（loop-llm / loop-tools——最大风险，最后做）
+// 拆分实际落地时采用了比「全量搬入容器」更稳的路径：自包含段以**显式参数 + 返回值**
+// 外迁（避免一次数百行的引用改写 diff），含循环控制的段以**动作枚举**表达 continue/return。
+// H1-H3 已完成，run-phases/ 现有 10 个模块：
+//   signal-setup / time-budget / dynamic-tools / memory-setup / plan-finish / finalize
+//   / output-gate / final-output / assistant-turn / loop-llm
+// loop-tools（三阶段并发编排）经评估**有意保持内联**（并发池闭包共享状态的拆分风险
+// 高于收益，见 harness.ts 段内决策注释）。
+// 本文件保留的三类产物接口（RunSignalSetup/RunTimeBudget/StepToolsSelection）即各
+// 阶段函数的返回契约；后续若引入更多阶段，沿用同一模式扩展。
 
 /** 装配段产物：组合后的中止信号 + 清理函数。 */
 export interface RunSignalSetup {
