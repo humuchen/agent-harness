@@ -1,6 +1,7 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
 import { createOpenRouterLLM, type OpenRouterConfig } from './openrouter';
 import { extractHttpStatus } from './shared';
+import { CircuitBreaker } from '../circuit-breaker';
 import { incCounter, structLog } from '../telemetry';
 
 export interface MultiKeyOptions extends Omit<OpenRouterConfig, 'apiKey'> {
@@ -20,11 +21,6 @@ export interface MultiKeyOptions extends Omit<OpenRouterConfig, 'apiKey'> {
   immediateKillOnStatus?: number[];
 }
 
-interface KeyState {
-  fails: number;
-  deadUntil: number;
-}
-
 /**
  * 多 Key 负载均衡 / 故障转移 LLM 包装器（P2.4）。
  *
@@ -32,9 +28,14 @@ interface KeyState {
  *  - 入参 keys 每个 Key 各自构造一个 OpenRouter LLM 实例（独立 apiKey）。
  *  - 调用时在「健康 Key」之间 round-robin 分发，实现负载均摊（多 Key 共享一个额度池时
  *    也能把请求摊薄到不同 Key，降低单 Key 触发限流的概率）。
- *  - 每个 Key 维护独立熔断状态：连续失败达阈值或命中 401/403/429 立即冷却，冷却期内跳过；
+ *  - 每个 Key 维护独立熔断：连续失败达阈值或命中 401/403/429 立即冷却，冷却期内跳过；
  *    到期后探活一次，成功则恢复。
  *  - 单次调用若当前 Key 失败，按顺序尝试其余健康 Key 兜底，全部失败才抛出最后一个错误。
+ *
+ * P1#23 统一熔断：per-key 状态机（deadUntil 手写实现）收敛到共享 CircuitBreaker——
+ * deadUntil → open、冷却到期 → half-open 探活、成功 → closed；P1 C2 修复的
+ * 「冷却过期后探活失败必须续期」语义由 breaker 打开时刷新 lastFailureAt 天然保证。
+ * 401/403/429 立即冷却经 forceOpen()；指标/日志经 onTransition 保留（语义不变）。
  *
  * 对 harness 主循环完全透明——调用方（runner）只看到一个 LLM 契约。
  */
@@ -46,31 +47,36 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
   );
   const base: Omit<OpenRouterConfig, 'apiKey'> = { ...opts };
   const llms = keys.map((k) => createOpenRouterLLM({ ...base, apiKey: k }));
-  const states: KeyState[] = keys.map(() => ({ fails: 0, deadUntil: 0 }));
+  const breakers = keys.map((_, i) =>
+    new CircuitBreaker({
+      failureThreshold: failThreshold,
+      timeoutMs: cooldownMs,
+      name: `multi-key:${i}`,
+      onTransition: (_from, to) => {
+        if (to === 'open') {
+          incCounter('llm.key.dead');
+          structLog('warn', 'multi-key: key marked dead, cooling down', {
+            index: i,
+            cooldownMs,
+          });
+        } else if (to === 'closed') {
+          incCounter('llm.key.recover');
+        }
+      },
+    })
+  );
   let rr = 0;
 
   function isDead(i: number): boolean {
-    return states[i]!.deadUntil > Date.now();
+    return breakers[i]!.currentState === 'open';
   }
   function markDead(i: number): void {
-    // 判断「未在冷却中」必须比较时间戳而非 === 0：冷却过期后 deadUntil 是过去的
-    // 非零值，若只在 === 0 时续期，探活失败后该 Key 永远拿不到新冷却，
-    // 每次请求都会先付一次必败 round-trip（P1 C2）。
-    if (states[i]!.deadUntil <= Date.now()) {
-      states[i]!.deadUntil = Date.now() + cooldownMs;
-      incCounter('llm.key.dead');
-      structLog('warn', 'multi-key: key marked dead, cooling down', {
-        index: i,
-        cooldownMs,
-      });
-    }
+    // forceOpen 无条件重开 = 重新计时冷却（与 P1 C2 的「过期后探活失败必须拿到
+    // 新冷却」语义一致：half-open 探活失败由 breaker 内部转回 open 并刷新计时）。
+    breakers[i]!.forceOpen();
   }
   function recover(i: number): void {
-    if (states[i]!.deadUntil !== 0) {
-      states[i]!.deadUntil = 0;
-      states[i]!.fails = 0;
-      incCounter('llm.key.recover');
-    }
+    breakers[i]!.reset();
   }
   /** 从 start 起找下一个健康 Key 下标；全死返回 -1。 */
   function nextHealthy(start: number): number {
@@ -114,25 +120,25 @@ export function createMultiKeyLLM(keys: string[], opts: MultiKeyOptions = {}): L
       if (tried.has(idx)) continue;
       tried.add(idx);
       try {
-        const resp = await llms[idx]!(messages, tools, options);
-        // 成功 → 该 Key 恢复健康
-        recover(idx);
+        // 失败计数/阈值开关/half-open 探活恢复均由共享 breaker 处理；
+        // nextHealthy 已跳过 open 的 Key，withRequest 不会再遇 CircuitBreakerOpen
+        //（并发窗口下极小概率遇到 → 归入 catch 走下一个 Key，语义安全）。
+        const resp = await breakers[idx]!.withRequest(() =>
+          llms[idx]!(messages, tools, options)
+        );
         rr = (idx + 1) % keys.length; // 下一次从下一个 Key 起 round-robin
         return resp;
       } catch (e) {
         firstErr = firstErr ?? e;
-        states[idx]!.fails += 1;
         incCounter('llm.key.fail');
         const st = statusOf(e);
         if (st !== null) {
-          markDead(idx); // 401/403/429/quota → 立即冷却该 Key
-        } else if (states[idx]!.fails >= failThreshold) {
-          markDead(idx); // 其它错误累计达阈值也冷却
+          markDead(idx); // 401/403/429/quota → 立即冷却该 Key（不等阈值累计）
         }
         structLog('warn', 'multi-key: key failed, trying next', {
           index: idx,
           status: st ?? 'unknown',
-          fails: states[idx]!.fails,
+          fails: breakers[idx]!.snapshot().consecutiveFailures,
         });
       }
     }

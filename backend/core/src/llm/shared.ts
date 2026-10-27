@@ -1,6 +1,6 @@
 import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types';
 import { recordTokenCacheQuery } from './token-cache-metrics';
-import { CircuitBreakerOpen } from '../circuit-breaker';
+import { CircuitBreaker, CircuitBreakerOpen } from '../circuit-breaker';
 
 /**
  * 统一退避：指数退避 + jitter，优先尊重 Retry-After 响应头（秒）。
@@ -294,6 +294,80 @@ function resolvePromptCacheEnabled(): boolean {
   return !(raw === 'false' || raw === '0' || raw === 'off');
 }
 
+/**
+ * P1#24 共享提取：prompt caching 注入（此前非流式与流式两段逐字重复）。
+ * 仅对首条 system 消息打 cache_control——工具 schema 因动态裁剪每次发送但不影响
+ * 系统提示词的缓存命中。返回是否启用（调用方据此决定是否记录缓存查询指标）。
+ */
+function applyPromptCaching(body: Record<string, unknown>): boolean {
+  const caching = resolvePromptCacheEnabled();
+  if (caching) {
+    const msgs = body.messages;
+    if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {
+      (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
+    }
+  }
+  return caching;
+}
+
+/**
+ * P1#24 共享提取：连接阶段循环（熔断包裹 + 网络错误/可重试状态码退避重试）。
+ * 此前非流式与流式两条路径整段复制粘贴，#14 的超时漂移正是这种复制导致——
+ * 现收敛为单一实现，两条路径仅传各自的 doFetch（含路径专属的超时/headers）与日志前缀。
+ *
+ * 语义（与原两路径逐条等价）：
+ *  - CircuitBreakerOpen 直接上抛，不消耗重试次数；
+ *  - 网络层错误（isRetryableNetworkError）纳入退避重试；
+ *  - 可重试状态码（RETRYABLE_STATUS）读 Retry-After 退避重试；
+ *  - 其余非 2xx 抛 LLMHttpError。
+ */
+async function connectWithRetries(
+  doFetch: () => Promise<Response>,
+  opts: {
+    retries: number;
+    modelLabel: string;
+    circuitBreaker?: CircuitBreaker;
+    /** 日志前缀（非流式为空串，流式为 'stream'），保持既有日志可检索性。 */
+    logTag: string;
+  }
+): Promise<Response> {
+  const tag = opts.logTag ? `${opts.logTag} ` : '';
+  for (let attempt = 0; attempt <= opts.retries; attempt++) {
+    let resp: Response;
+    try {
+      resp = opts.circuitBreaker
+        ? await opts.circuitBreaker.withRequest(doFetch)
+        : await doFetch();
+    } catch (e) {
+      if (e instanceof CircuitBreakerOpen || attempt >= opts.retries || !isRetryableNetworkError(e)) {
+        throw e;
+      }
+      const waitMs = computeBackoffMs(attempt, null);
+      console.warn(
+        `[llm] ${tag}network error (retryable, model=${opts.modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${opts.retries}):`,
+        e instanceof Error ? e.message : String(e)
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      if (RETRYABLE_STATUS.has(resp.status) && attempt < opts.retries) {
+        const waitMs = computeBackoffMs(attempt, resp.headers?.get?.('retry-after') ?? null);
+        console.warn(
+          `[llm] ${tag}${resp.status} (retryable, model=${opts.modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${opts.retries})`
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      throw new LLMHttpError(resp.status, `LLM API error ${resp.status} (model=${opts.modelLabel}): ${text}`);
+    }
+    return resp;
+  }
+  // 理论不可达（循环内要么 continue 要么 return/throw），防御边界修改。
+  throw new Error(`LLM connect failed without response (model=${opts.modelLabel})`);
+}
+
 /** 网络层错误是否可重试（fetch reject：ECONNRESET / EAI_AGAIN / 连接超时等）。 */
 function isRetryableNetworkError(e: unknown): boolean {
   const code = (e as { cause?: { code?: unknown }; code?: unknown })?.cause?.code
@@ -351,15 +425,6 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
   // 但旧实现只取最后一次响应的 usage → 重试成本被低估。这里把各次 usage 累加。
   const usageAcc = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 };
 
-  // 可选 prompt caching：把系统提示词与工具 schema 标记为可缓存前缀
-  //（provider 不支持时忽略该字段）。默认开启以省去重复的系统提示 + 工具 schema 计费；
-  // 设 PROMPT_CACHE=false 可关闭（逃生阀，避免个别严格校验 cache_control 的 provider 报错）。
-  // 开启时本次请求即视为一次「缓存查询」，命中与否由响应 cached_tokens 决定。
-  // P1 一致性修复：默认值解析收敛到 resolvePromptCacheEnabled()——流式与非流式
-  // 此前默认值相反（非流式默认开 / 流式默认关），开 streamTokens 的生产流量
-  // 拿不到 prompt 缓存标记。
-  const caching = resolvePromptCacheEnabled();
-
   // 优化：缓存工具 schema 序列化结果，缩减低频工具描述以减小传输体积。
   // (仅在非缓存模式下也生效 — schema 缩减独立于 prompt cache)
   const tools = body.tools;
@@ -367,17 +432,10 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     body.tools = serializeToolsCached(tools as WireToolSchema[]);
   }
 
-  if (caching) {
-    const msgs = body.messages;
-    if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {
-      (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
-    }
-    // 优化：仅对「系统提示词」应用 cache_control，使其作为稳定的缓存前缀。
-    // 工具 schema 因动态裁剪可能变动：若也打 cache_control，每次工具集变化都会
-    // 导致整个前缀缓存失效（cache key 包含完整工具数组）。
-    // 正确做法：系统提示词始终缓存；工具 schema 每次发送但不影响系统提示词的缓存命中。
-    // 这样即使工具集合变化，系统提示词（~2500 tok）仍能命中前缀缓存。
-  }
+  // 可选 prompt caching（P1#24 共享提取：注入逻辑收敛到 applyPromptCaching，
+  // 流式/非流式单一事实源）。仅对系统提示词打 cache_control（稳定的缓存前缀），
+  // 工具 schema 因动态裁剪每次发送但不影响命中。设 PROMPT_CACHE=false 关闭。
+  const caching = applyPromptCaching(body);
 
   // 仅在开启 prompt caching 时记录缓存查询（关闭则 provider 不会缓存，记了会虚低命中率）。
   const reportCache = () => {
@@ -402,53 +460,20 @@ export async function callOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse
     return sig ? AbortSignal.any([sig, timeoutSignal]) : timeoutSignal;
   };
 
-  const fetchWithBreaker = circuitBreaker
-    ? () => circuitBreaker.withRequest(() => fetchImpl(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: withHttpTimeout(signal),
-    }))
-    : () => fetchImpl(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: withHttpTimeout(signal),
-    });
-
+  // 非流式主循环：外层为「退化响应重试」（无文本且无工具调用时重试，OpenRouter
+  // 弱/免费模型常见，间隔固定 500*(attempt+1)）；内层 connectWithRetries 处理连接
+  // 阶段的熔断 + 网络/状态码退避重试（P1#24 共享提取，与流式单一事实源）。
+  // withHttpTimeout 在 doFetch 闭包内，每次重试独立计时。
   for (let attempt = 0; attempt <= retries; attempt++) {
-    // CircuitBreakerOpen 不是 LLM API 错误，直接上抛让调用方决定策略（不参与重试）。
-    // P1 可靠性修复：fetch 本身 reject（ECONNRESET / EAI_AGAIN / 连接超时等网络层
-    // 异常）此前直接抛出，一次抖动即失败；现纳入同一退避重试（与 webfetch 的
-    // 网络错误重试策略对齐）。
-    let resp: Response;
-    try {
-      resp = await fetchWithBreaker();
-    } catch (e) {
-      if (e instanceof CircuitBreakerOpen || attempt >= retries || !isRetryableNetworkError(e)) {
-        throw e;
-      }
-      const waitMs = computeBackoffMs(attempt, null);
-      console.warn(
-        `[llm] network error (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries}):`,
-        e instanceof Error ? e.message : String(e)
-      );
-      await new Promise((r) => setTimeout(r, waitMs));
-      continue;
-    }
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      if (RETRYABLE_STATUS.has(resp.status) && attempt < retries) {
-        const waitMs = computeBackoffMs(attempt, resp.headers?.get?.('retry-after') ?? null);
-        console.warn(
-          `[llm] ${resp.status} (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
-        );
-        await new Promise((r) => setTimeout(r, waitMs));
-        continue;
-      }
-      throw new LLMHttpError(resp.status, `LLM API error ${resp.status} (model=${modelLabel}): ${text}`);
-    }
+    const resp = await connectWithRetries(
+      () => fetchImpl(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: withHttpTimeout(signal),
+      }),
+      { retries, modelLabel, circuitBreaker, logTag: '' }
+    );
 
     const data = (await resp.json()) as ChatCompletionResponse;
     const msg = data?.choices?.[0]?.message ?? {};
@@ -516,24 +541,17 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
     stream: true,
     stream_options: { include_usage: true },
   };
-  // 与一次性路径一致：开启 PROMPT_CACHE 时给系统提示词打 cache_control，让流式请求也能命中供应商侧 prompt 缓存。
-  // P1 一致性修复：与非流式路径共用 resolvePromptCacheEnabled()（此前默认值相反）。
-  const caching = resolvePromptCacheEnabled();
-  if (caching) {
-    const msgs = streamBody.messages;
-    if (Array.isArray(msgs) && msgs.length && (msgs[0] as { role?: unknown })?.role === 'system') {
-      (msgs[0] as Record<string, unknown>).cache_control = { type: 'ephemeral' };
-    }
-  }
+  // 与一次性路径一致：P1#24 共享提取——prompt caching 注入收敛到 applyPromptCaching
+  //（此前默认值相反的漂移已由单一事实源消除）。返回值供末帧缓存指标判断。
+  const caching = applyPromptCaching(streamBody);
 
-  // ── 连接阶段：熔断器 + 首字节前重试 + 连接超时 ───────────────────────────
-  // 修复（原实现三点缺陷）：① stream 直连 fetch 绕过 circuitBreaker —— 传入的熔断器
-  // 被静默忽略，上游持续 5xx 时流式调用每次都空等；② 无任何重试 —— 一次抖动即失败；
-  // ③ 连接阶段（TCP/TLS/首字节前）无超时兜底 —— run 未配置 timeoutMs 时一次挂起
-  // 永久阻塞（此前注释称「流式已有 LLM_STREAM_IDLE_TIMEOUT_MS 兜底」不实：该空闲
-  // 超时仅在拿到 body 之后生效）。现对连接阶段叠加 LLM_STREAM_CONNECT_TIMEOUT_MS
-  // （默认 60s，0=关闭）——首字节到达即解除（超长生成不受影响，流式期仍由 IDLE_MS
-  // 空闲超时接管）；run 级 signal 的级联中止保留。
+  // ── 连接阶段：熔断 + 重试 + 连接超时（P1#24 收敛到 connectWithRetries）─────
+  // 修复历史（保留记录）：① stream 曾直连 fetch 绕过 circuitBreaker；② 曾无任何
+  // 重试；③ 连接阶段（TCP/TLS/首字节前）无超时兜底（LLM_STREAM_IDLE_TIMEOUT_MS
+  // 仅在拿到 body 后生效）。现熔断与重试由 connectWithRetries 统一处理（此前
+  // 整段复制还曾因复制错位产生 doFetch 双调用——#14 引入、#24 收敛时清除）；
+  // 连接阶段超时由下方 doFetch 的 LLM_STREAM_CONNECT_TIMEOUT_MS（默认 60s，0=关闭）
+  // 覆盖——首字节到达即解除（超长生成不受影响，流式期仍由 IDLE_MS 空闲超时接管）。
   const connectTimeoutMs =
     Number(process.env.LLM_STREAM_CONNECT_TIMEOUT_MS ?? 60_000) || 0;
   const doFetch = () => {
@@ -567,48 +585,9 @@ async function streamOpenAIChat(opts: ChatCallOptions): Promise<LLMResponse> {
       if (signal) signal.removeEventListener('abort', onAbort);
     });
   };
-  let resp: Response | null = null;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    let r: Response;
-    try {
-      r = circuitBreaker
-        ? await circuitBreaker.withRequest(doFetch)
-        : await doFetch();
-      r = circuitBreaker
-        ? await circuitBreaker.withRequest(doFetch)
-        : await doFetch();
-    } catch (e) {
-      // CircuitBreakerOpen 不是 LLM API 错误，直接上抛不消耗重试（与非流式一致）。
-      if (e instanceof CircuitBreakerOpen || attempt >= retries) throw e;
-      const waitMs = computeBackoffMs(attempt);
-      console.warn(
-        `[llm] stream connect failed (model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries}):`,
-        e instanceof Error ? e.message : String(e)
-      );
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-      continue;
-    }
-    if (!r.ok) {
-      const text = await r.text().catch(() => '');
-      if (RETRYABLE_STATUS.has(r.status) && attempt < retries) {
-        const waitMs = computeBackoffMs(attempt, r.headers?.get?.('retry-after') ?? null);
-        console.warn(
-          `[llm] stream ${r.status} (retryable, model=${modelLabel}), retrying in ${waitMs}ms (${attempt + 1}/${retries})`
-        );
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        continue;
-      }
-      throw new LLMHttpError(r.status, `LLM API error ${r.status} (model=${modelLabel}): ${text}`);
-    }
-    if (!r.body || typeof (r.body as unknown as { getReader?: unknown }).getReader !== 'function') {
-      throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
-    }
-    resp = r;
-    break;
-  }
-  if (!resp) {
-    // 理论不可达（循环内要么 break 要么 throw），防御 noUncheckedIndexedAccess / 边界修改。
-    throw new Error(`LLM streaming failed without a response (model=${modelLabel})`);
+  const resp = await connectWithRetries(doFetch, { retries, modelLabel, circuitBreaker, logTag: 'stream' });
+  if (!resp.body || typeof (resp.body as unknown as { getReader?: unknown }).getReader !== 'function') {
+    throw new Error(`LLM streaming response has no readable body (model=${modelLabel})`);
   }
 
   const reader = (resp.body as ReadableStream<Uint8Array>).getReader();

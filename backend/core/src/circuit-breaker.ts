@@ -24,9 +24,23 @@ export interface CircuitBreakerOptions {
   halfOpenAttempts?: number;
   /** 用于标记错误的额外信息。 */
   name?: string;
+  /**
+   * 状态转换回调（P1#23 统一熔断：failover / multi-key 借此挂各自的指标与日志，
+   * 替代各自手写状态机时的重复埋点）。同步调用，异常由调用方自行兜底。
+   */
+  onTransition?: (from: CircuitState, to: CircuitState) => void;
 }
 
-const DEFAULTS: Required<CircuitBreakerOptions> = {
+/** 解析后的完整选项（onTransition 可选，故不套 Required——避免把回调误变为必填）。 */
+interface ResolvedBreakerOpts {
+  failureThreshold: number;
+  timeoutMs: number;
+  halfOpenAttempts: number;
+  name: string;
+  onTransition?: (from: CircuitState, to: CircuitState) => void;
+}
+
+const DEFAULTS: Omit<ResolvedBreakerOpts, 'onTransition'> = {
   failureThreshold: 3,
   timeoutMs: 30_000,
   halfOpenAttempts: 1,
@@ -47,12 +61,25 @@ export type CircuitState = 'closed' | 'open' | 'half-open';
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
   private consecutiveFailures = 0;
-  private readonly opts: Required<CircuitBreakerOptions>;
+  private readonly opts: ResolvedBreakerOpts;
   private lastFailureAt = 0;
   private halfOpenAttempts = 0;
 
   constructor(opts: CircuitBreakerOptions = {}) {
-    this.opts = { ...DEFAULTS, ...opts };
+    const { onTransition, ...rest } = opts;
+    this.opts = { ...DEFAULTS, ...rest, onTransition };
+  }
+
+  /** 统一状态转换入口：赋值 + 通知回调（转换只在真正变化时触发）。 */
+  private transition(to: CircuitState): void {
+    if (this.state === to) return;
+    const from = this.state;
+    this.state = to;
+    try {
+      this.opts.onTransition?.(from, to);
+    } catch {
+      /* 观测回调异常不影响熔断状态机 */
+    }
   }
 
   get currentState(): CircuitState {
@@ -62,7 +89,7 @@ export class CircuitBreaker {
       this.lastFailureAt > 0 &&
       Date.now() - this.lastFailureAt >= this.opts.timeoutMs
     ) {
-      this.state = 'half-open';
+      this.transition('half-open');
       this.halfOpenAttempts = 0;
     }
     return this.state;
@@ -94,7 +121,7 @@ export class CircuitBreaker {
       this.halfOpenAttempts += 1;
       if (this.halfOpenAttempts >= this.opts.halfOpenAttempts) {
         // 试探成功，回归 CLOSED
-        this.state = 'closed';
+        this.transition('closed');
         this.consecutiveFailures = 0;
       }
     } else {
@@ -107,20 +134,30 @@ export class CircuitBreaker {
     this.lastFailureAt = Date.now();
     if (this.state === 'half-open') {
       // 试探也失败，延长熔断
-      this.state = 'open';
+      this.transition('open');
     } else if (
       this.consecutiveFailures >= this.opts.failureThreshold
     ) {
-      this.state = 'open';
+      this.transition('open');
     }
+  }
+
+  /**
+   * 立即打开熔断（P1#23 统一熔断扩展）：供「特定错误无需累计阈值」的调用方使用
+   *（如 multi-key 的 401/403/429 立即冷却）。重新打开 = 重新计时冷却。
+   */
+  forceOpen(): void {
+    this.consecutiveFailures = Math.max(this.consecutiveFailures, this.opts.failureThreshold);
+    this.lastFailureAt = Date.now();
+    if (this.state !== 'open') this.transition('open');
   }
 
   /** 手动重置（用于运维重置或配置变更时）。 */
   reset(): void {
-    this.state = 'closed';
     this.consecutiveFailures = 0;
     this.lastFailureAt = 0;
     this.halfOpenAttempts = 0;
+    this.transition('closed');
   }
 
   /** 获取当前统计（用于可观测性）。 */

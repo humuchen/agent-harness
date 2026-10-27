@@ -1,4 +1,5 @@
 import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
+import { CircuitBreaker, type CircuitState } from '../circuit-breaker';
 import { incCounter, structLog } from '../telemetry';
 
 export interface FailoverOptions {
@@ -32,70 +33,63 @@ export function createFailoverLLM(primary: LLM, secondary: LLM, opts: FailoverOp
   const primaryLabel = opts.primaryLabel ?? 'primary';
   const secondaryLabel = opts.secondaryLabel ?? 'secondary';
 
-  let consecutiveFails = 0;
-  let openedAt = 0; // 0 = 电路闭合
+  // P1#23 统一熔断：状态机收敛到共享 CircuitBreaker（此前手写 openedAt 状态机，
+  // 与 circuit-breaker.ts / multi-key.ts 三处各写一遍且行为细节不一致——本项目
+  // 三处都曾出现过状态机边缘 bug 的修复注释，正是该模式易错明的实证）。
+  // 指标/日志经 onTransition 挂接，语义与旧版一致。
+  const breaker = new CircuitBreaker({
+    failureThreshold: failThreshold,
+    timeoutMs: cooldownMs,
+    name: `failover:${primaryLabel}`,
+    onTransition: (from: CircuitState, to: CircuitState) => {
+      if (to === 'open') {
+        const reopen = from === 'half-open';
+        incCounter('llm.circuit.open');
+        structLog('warn', 'llm circuit opened, routing to secondary', {
+          primary: primaryLabel,
+          secondary: secondaryLabel,
+          cooldownMs,
+          reopen,
+        });
+      } else if (to === 'closed') {
+        incCounter('llm.circuit.close');
+        structLog('info', 'llm circuit closed, primary recovered', { primary: primaryLabel });
+      }
+    },
+  });
 
-  function circuitOpen(): boolean {
-    return openedAt > 0 && Date.now() - openedAt < cooldownMs;
-  }
-  function openCircuit(): void {
-    // P1 修复：必须无条件刷新 openedAt。旧实现仅在 openedAt===0 时赋值——
-    // half-open 探活失败路径中 openedAt 仍是旧值，openCircuit() 变 no-op，
-    // circuitOpen() 因冷却期已过恒为 false，熔断器从此永久退化为直连 primary
-    //（失败也无法再触发重新打开）。重新打开 = 重新计时冷却。
-    const firstOpen = openedAt === 0;
-    openedAt = Date.now();
-    if (firstOpen) incCounter('llm.circuit.open');
-    structLog('warn', 'llm circuit opened, routing to secondary', {
-      primary: primaryLabel,
-      secondary: secondaryLabel,
-      cooldownMs,
-      reopen: !firstOpen
-    });
-  }
-  function closeCircuit(): void {
-    if (openedAt !== 0) {
-      openedAt = 0;
-      consecutiveFails = 0;
-      incCounter('llm.circuit.close');
-      structLog('info', 'llm circuit closed, primary recovered', { primary: primaryLabel });
-    }
-  }
+  const circuitOpen = (): boolean => breaker.currentState === 'open';
 
   return async function failoverLLM(
     messages: Message[],
     tools: ToolSchema[],
     options?: LLMCallOptions
   ): Promise<LLMResponse> {
-    // half-open：冷却期已过，试 primary 一次探活。
-    const halfOpen = openedAt > 0 && !circuitOpen();
-
-    if (!circuitOpen() || halfOpen) {
-      try {
-        const resp = await primary(messages, tools, options);
-        closeCircuit();
-        return resp;
-      } catch (primaryErr: any) {
-        consecutiveFails += 1;
-        incCounter('llm.primary.fail');
-        structLog('warn', 'primary llm failed', {
-          primary: primaryLabel,
-          attempt: consecutiveFails,
-          error: primaryErr?.message ?? String(primaryErr),
-        });
-        if (consecutiveFails >= failThreshold) openCircuit();
-        else if (halfOpen) openCircuit(); // half-open 探活失败，重新打开
-
-        if (!immediateFallback && !circuitOpen()) {
-          throw primaryErr;
-        }
-        // 落到下面的 secondary 兜底。
-        return trySecondary(messages, tools, options, primaryErr);
-      }
-    }
-
     // 电路打开：直接走 secondary。
-    return trySecondary(messages, tools, options, undefined);
+    if (circuitOpen()) {
+      return trySecondary(messages, tools, options, undefined);
+    }
+    // 电路闭合 / 半开（探活）：试 primary。失败计数、阈值开关、half-open 探活失败
+    // 重新打开均由共享 CircuitBreaker 处理（含其历史边缘 bug 的修复语义）。
+    let primaryErr: unknown;
+    try {
+      const resp = await breaker.withRequest(() => primary(messages, tools, options));
+      return resp;
+    } catch (e) {
+      primaryErr = e;
+    }
+    incCounter('llm.primary.fail');
+    structLog('warn', 'primary llm failed', {
+      primary: primaryLabel,
+      attempt: breaker.snapshot().consecutiveFailures,
+      error: primaryErr instanceof Error ? primaryErr.message : String(primaryErr),
+    });
+    // immediateFallback=false 且电路仍闭合（未达阈值 / 并发打开瞬间）：原样上抛。
+    if (!immediateFallback && !circuitOpen()) {
+      throw primaryErr;
+    }
+    // 落到 secondary 兜底。
+    return trySecondary(messages, tools, options, primaryErr);
   };
 
   async function trySecondary(
