@@ -67,6 +67,8 @@ import { setupRunMemory } from './harness/run-phases/memory-setup';
 import { planProposeFinalize } from './harness/run-phases/plan-finish';
 import { finalizeRun } from './harness/run-phases/finalize';
 import { runOutputGate } from './harness/run-phases/output-gate';
+import { emitAssistantTurn } from './harness/run-phases/assistant-turn';
+import { resolveFinalOutput } from './harness/run-phases/final-output';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
 export { contextWindowFor } from './harness/context-window';
@@ -660,62 +662,31 @@ export class AgentHarness {
           if (gate.action.kind === 'final') return gate.action.text;
           if (gate.action.kind === 'continue') continue;
 
-          // 流式回退：开启了 streamTokens 但适配器并未逐 delta 回调（mock / 不支持 stream），
-          // 则把整段内容作为单个 token 发出，确保聊天 UI 仍能渲染（无打字动画，但内容完整）。
-          if (this.opts.streamTokens && !streamedTokens && resp.content) {
-            emit({ type: 'llm:token', step: steps, delta: resp.content });
-          }
-
-          emit({
-            type: 'llm:response',
-            step: steps,
-            content: resp.content,
-            toolCalls: resp.tool_calls,
-            partial: resp.partial
-          });
-          // Hook: agent.post_llm — observe response after LLM call
-          void hooks.execute('agent.post_llm', {
+          // 助手回合事件链 + 终态判定（H2 第二批：迁至 run-phases/assistant-turn.ts
+          // 与 final-output.ts，逐字等价；continue/final 以动作枚举分派，
+          // 'tools' 穿透到下方工具编排——与拆分前「if 块全 return、顺序落到编排」一致）。
+          emitAssistantTurn({
+            resp,
+            streamedTokens,
+            streamTokensEnabled: this.opts.streamTokens,
+            steps,
             runId,
-            sessionKey: runId,
             tenantId: this.opts.tenantId,
-            response: resp.content,
-            toolCalls: resp.tool_calls,
             messages,
+            memory,
+            emit
           });
-          memory.add({
-            role: 'assistant',
+          const fin = resolveFinalOutput({
             content: resp.content,
-            tool_calls: resp.tool_calls
+            toolCalls: resp.tool_calls,
+            partial: resp.partial,
+            requireCompletion: this.opts.requireCompletion,
+            steps,
+            maxSteps: this.opts.maxSteps,
+            memory
           });
-
-          if (!resp.tool_calls || resp.tool_calls.length === 0) {
-            // 可选「完成自检」：开启且模型以空响应（疑似放弃）收尾时，注入提示继续
-            // 循环直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。非空回复
-            // 一律视为真实最终答案，不二次质疑（避免干扰正常收尾、也避免额外成本）。
-            if (
-              this.opts.requireCompletion &&
-              (!resp.content || !resp.content.trim()) &&
-              steps < this.opts.maxSteps
-            ) {
-              memory.add({
-                role: 'user',
-                content:
-                  '（系统提示）你还没有给出实质性结果，请继续完成任务；若需要信息，请调用工具。'
-              });
-              continue;
-            }
-            // 中段断流兜底：provider 空闲超时后返回的是部分内容（partial:true）。
-            // 显式追加「生成中断」提示，让用户清楚这是被截断而非完整回答。
-            // P4.5：中断标记与 step-output 检测器共享同一常量（引擎闸门 / 黑板注记认它）。
-            if (resp.partial) {
-              return (
-                `${resp.content}\n\n` +
-                `${PARTIAL_NOTICE}：与模型的连接空闲超时（可在服务端调高 LLM_STREAM_IDLE_TIMEOUT_MS）。` +
-                '以上内容仅为已生成的部分结果，请重试以继续。'
-              );
-            }
-            return resp.content;
-          }
+          if (fin.kind === 'continue') continue;
+          if (fin.kind === 'final') return fin.text;
 
           // 执行每个请求的工具调用，并将结果以 tool 消息形式回传给 LLM。
           //
