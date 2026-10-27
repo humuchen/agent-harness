@@ -15,6 +15,11 @@ import { ReminderScheduler } from './reminder-scheduler';
  * - disable：onStop(ctx) + 宿主对称撤回路由/Tab/工具。
  * - uninstall：onUnload(ctx) 清理副作用后移出进程。
  */
+/** 事件订阅注销句柄收集（onUnload 对称清理）。
+ *  P1#25：声明提升到模块顶部——此前声明在文件末尾（第 92 行），setup 里的 push 依赖
+ *  「setup 晚于模块求值」的隐式时序（TDZ 隐患）。 */
+const cleanupFns: Array<() => void> = [];
+
 export const memoPlugin: PluginModule = {
   manifest: memoManifest,
 
@@ -52,11 +57,12 @@ export const memoPlugin: PluginModule = {
           plugin: 'memo',
           noteId: r.id,
           owner: r.owner,
-          text: r.text,
+          text: r.text, // 事件仅路由给 owner 本人的 SSE 连接（reminder-bus 按 owner 收口），非日志留存面
           tag: r.tag ?? null,
           remindAt: r.remindAt,
         });
-        ctx.logger.info('memo reminder due', { id: r.id, owner: r.owner, text: r.text });
+        // P1#25：日志不再携带笔记原文（用户隐私不留存于日志文件）；事件 text 仅路由给本人。
+        ctx.logger.info('memo reminder due', { id: r.id, owner: r.owner });
       },
       (e) => ctx.events.emit(e),
       ctx.logger,
@@ -87,9 +93,6 @@ export const memoPlugin: PluginModule = {
     ctx.logger.info('memo plugin unloaded');
   },
 };
-
-/** 事件订阅注销句柄收集（onUnload 对称清理）。 */
-const cleanupFns: Array<() => void> = [];
 
 export default memoPlugin;
 

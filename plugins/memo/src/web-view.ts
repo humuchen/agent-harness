@@ -19,6 +19,7 @@
  */
 
 import type { PluginUIView, PluginRouteUser } from '@agent-harness/core';
+import { escapeHtml as esc } from '@agent-harness/core';
 import type { MemoNote } from './store';
 import {
   searchNotes,
@@ -34,16 +35,6 @@ import {
 export const BOARD_PAGE = 20;
 /** 内联 JS 辅助：读取 ah_user（与 api.ts 同步的 localStorage key），构造带 x-ah-username 头的 fetch 选项。 */
 const AUTH_HEADERS_JS = `(function(){var h={};var u=localStorage.getItem('ah_user');if(u){h['x-ah-username']=u}return h})()`;
-
-function esc(s: unknown): string {
-  return String(s ?? '').replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[
-        c
-      ] as string)
-  );
-}
 
 /** 看板视图 HTML 经 unsafeHTML 注入到宿主 Lit 组件的 shadow DOM，
  *  内联事件处理器里的 document.getElementById / querySelector 只能查 light DOM，

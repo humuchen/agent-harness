@@ -9,6 +9,7 @@
  */
 
 import type { ServerExtension, PluginRouteHandler, PluginRouteUser } from '@agent-harness/core';
+import { readJsonBody } from '@agent-harness/core';
 import {
   listNotes,
   saveNote,
@@ -36,19 +37,10 @@ function json(res: import('node:http').ServerResponse, code: number, body: unkno
   res.end(JSON.stringify(body));
 }
 
-function readBody(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolveP) => {
-    let data = '';
-    req.on('data', (c) => (data += c));
-    req.on('end', () => {
-      try {
-        resolveP(data ? JSON.parse(data) : {});
-      } catch {
-        resolveP({});
-      }
-    });
-  });
-}
+/** P1#25：请求体读取委托 kit（统一 1MB 上限安全基线——此前无上限，单个大 body
+ *  可打满插件进程内存；容错语义与原实现一致：解析失败返回 {}）。 */
+const readBody = (req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> =>
+  readJsonBody(req);
 
 export const memoServerExtension: ServerExtension = {
   id: 'memo',

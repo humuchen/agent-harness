@@ -6,7 +6,7 @@ import { registerOrderTools } from './tools/order';
 import { registerHandoffTool } from './tools/handoff';
 import { csServerExtension } from './server/routes';
 import { csDashboardView } from './web/dashboard';
-import { setPluginContext } from './runtime';
+import { setPluginContext, clearPluginContext } from './runtime';
 import { getDb } from './infra/db';
 import { configSummary } from './config';
 import { insertReminders } from './repo/reminder-repo';
@@ -167,7 +167,9 @@ export const csPlugin: PluginModule = {
     offAnalysis?.();
     offAnalysis = undefined;
     _reminderCtx = null;
-    setPluginContext({} as PluginContext);
+    // P1#25：改用 kit holder 的 clear()——此前 setPluginContext({} as PluginContext)
+    // 是「伪造空上下文」反模式，残留一个看似可用的死对象。
+    clearPluginContext();
     ctx.logger.info('customer-service plugin unloaded');
   },
 };

@@ -22,6 +22,7 @@ export * from './policy';
 export * from './workflow';
 export * from './a2a';
 export * from './plugin';
+export * from './plugin-kit/index';
 export * from './cron/scheduler';
 export * from './tenants/registry';
 export * from './guardrails';

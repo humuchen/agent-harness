@@ -10,17 +10,13 @@
  */
 
 import type { ToolRegistry } from '@agent-harness/core';
-import { getRunUser } from '@agent-harness/core';
+import { getRunUser, simpleErrorResult as errResult } from '@agent-harness/core';
 import { saveNote, listNotes, deleteNote, resolveRemindAt } from './store';
 
 /** 当前工具执行的归属 owner（登录用户优先，无运行上下文时归 anon 桶）。 */
 function currentOwner(): string {
   const u = getRunUser();
   return u?.sub ? String(u.sub) : 'anon';
-}
-
-function errResult(e: unknown): { error: true; message: string } {
-  return { error: true, message: e instanceof Error ? e.message : String(e) };
 }
 
 /**

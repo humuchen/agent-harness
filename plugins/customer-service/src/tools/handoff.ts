@@ -1,7 +1,7 @@
 import type { ToolRegistry } from '@agent-harness/core';
+import { simpleErrorResult as errorResult } from '@agent-harness/core';
 import { handoff as handoffSession } from '../services/session-service';
 import { getPluginContext } from '../runtime';
-import { errorResult } from '../infra/errors';
 
 /**
  * cs_handoff：转接人工坐席。将当前会话状态置为 handoff + 最闲优先自动指派

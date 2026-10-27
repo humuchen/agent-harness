@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
+import { simpleErrorResult as errorResult } from '@agent-harness/core';
 import { search, add } from '../services/kb-service';
-import { errorResult } from '../infra/errors';
 
 /**
  * cs_kb_search：检索知识库/FAQ。

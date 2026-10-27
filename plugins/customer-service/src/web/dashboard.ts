@@ -6,18 +6,13 @@
  *   - 卡片容器 + 圆角面板 + 指标卡片行 + 规范表格 + 状态/优先级色标 + 药丸按钮。
  */
 import type { PluginUIView } from '@agent-harness/core';
+import { escapeHtml } from '@agent-harness/core';
 import { listTickets } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
 import { listPendingReminders } from '../repo/reminder-repo';
 
-/** HTML 转义。 */
-function esc(s: unknown): string {
-  return String(s ?? '').replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string
-  );
-}
+/** HTML 转义（P1#25：委托 plugin-kit，调用点保持 esc 名不变）。 */
+const esc = escapeHtml;
 
 /** 优先级 → 色标与中文标签。 */
 const PRIORITY_MAP: Record<string, { label: string; color: string }> = {

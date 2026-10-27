@@ -10,16 +10,23 @@
  * 会清掉 B 的 key（或 B 覆盖 A），对话会归到错误线索或归集为空。现改为：工具执行期
  * 经 core 的 AsyncLocalStorage 直接读取当前 runId（getRunId()），run_key 即
  * `run:<runId>`——天然并发安全，无需任何全局变量。
+ *
+ * P1#25：持有器实现委托共享 plugin-kit 的 createPluginCtxHolder（与 cs 插件口径统一）。
  */
 
 import type { PluginContext } from '@agent-harness/core';
+import { createPluginCtxHolder } from '@agent-harness/core';
 
-let pluginCtx: PluginContext | null = null;
+const holder = createPluginCtxHolder();
 
 /** 插件 setup 时注入上下文，供路由/worker 取用。 */
 export function setPluginContext(ctx: PluginContext): void {
-  pluginCtx = ctx;
+  holder.set(ctx);
 }
 export function getPluginContext(): PluginContext | null {
-  return pluginCtx;
+  return holder.get();
+}
+/** onUnload 清理（置空，不残留旧引用）。 */
+export function clearPluginContext(): void {
+  holder.clear();
 }

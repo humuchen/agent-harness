@@ -1,18 +1,14 @@
 import type { PluginUIView } from '@agent-harness/core';
+import { escapeHtml as esc } from '@agent-harness/core';
 import { computeStats, listLeads } from '../repo/lead-repo';
 import { outboxSnapshot } from '../services/outbox-worker';
 import { dbHealth } from '../infra/db';
 import { runAnalyticsQuery } from '../analytics/analytics-service';
 import { listAppointmentsByDate } from '../repo/schedule-repo';
 
-/** HTML 转义，避免客资字段注入。 */
-function esc(s: unknown): string {
-  return String(s ?? '').replace(
-    /[&<>"]/g,
-    (c) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string)
-  );
-}
+/** HTML 转义，避免客资字段注入。
+ *  P1#25 安全修复：委托 plugin-kit 的 escapeHtml——本地实现漏转义单引号（'），
+ *  模板属性若出现单引号包裹即成 XSS 注入点（kit 版转义全部五个实体）。 */
 
 /** 横向柱状图（SVG 字符串，服务端渲染）。 */
 function barChart(

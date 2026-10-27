@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
+import { simpleErrorResult as errorResult } from '@agent-harness/core';
 import { openTicket, queryTicket, changeStatus, assign, rate } from '../services/ticket-service';
-import { errorResult } from '../infra/errors';
 
 /**
  * cs_ticket_create / cs_ticket_query / cs_ticket_rate：工单创建、查询与 CSAT 评分。

@@ -13,7 +13,7 @@ import { registerAssistTool } from './tools/assist';
 import { registerAbTool } from './tools/ab';
 import { leadServerExtension } from './server/routes';
 import { leadDashboardView, analyticsDashboardView } from './web/dashboard';
-import { setPluginContext } from './runtime';
+import { setPluginContext, clearPluginContext } from './runtime';
 import { appendTranscript, pruneOldTranscripts } from './repo/transcript-repo';
 import { startOutboxWorker, stopOutboxWorker } from './services/outbox-worker';
 import { startScheduler, stopScheduler } from './services/scheduler-service';
@@ -279,7 +279,8 @@ export const leadPlugin: PluginModule = {
     offTranscript = undefined;
     offGuardSink?.();
     offGuardSink = undefined;
-    setPluginContext({} as PluginContext);
+    // P1#25：clear() 替代「伪造空上下文」反模式。
+    clearPluginContext();
     ctx.logger.info('medical-aesthetics-lead plugin unloaded');
   },
 };

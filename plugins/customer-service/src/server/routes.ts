@@ -4,7 +4,7 @@
  * 路由 key 用**纯路径**（宿主精确匹配 path），HTTP 方法在 handler 内用 req.method 判断。
  */
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { timingSafeEqual, createHash } from 'node:crypto';
+import { readJsonBody, safeEqual } from '@agent-harness/core';
 import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
 import { listSessions } from '../repo/session-repo';
 import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo';
@@ -20,47 +20,19 @@ function json(res: import('node:http').ServerResponse, code: number, body: unkno
   res.end(JSON.stringify(body));
 }
 
-/** 读取请求体（JSON）。
- *  P1 资源修复：与 medical-aesthetics 插件同口径——加字节上限（默认 1MB，可用
- *  CS_MAX_BODY_BYTES 调整），超限直接断开，防单个大 body 打满进程内存。 */
+/** P1#25：请求体读取委托 kit 的 readJsonBody（统一安全基线）；保留 CS_MAX_BODY_BYTES
+ *  差异化配置入口（默认与 kit 一致 1MB）。 */
 const MAX_BODY_BYTES = Number(process.env.CS_MAX_BODY_BYTES ?? 1_048_576) || 1_048_576;
-function readBody(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    let data = '';
-    let total = 0;
-    let aborted = false;
-    req.on('data', (c: Buffer) => {
-      if (aborted) return;
-      total += c.byteLength;
-      if (total > MAX_BODY_BYTES) {
-        aborted = true;
-        try { req.destroy(); } catch { /* 已断开则忽略 */ }
-        resolve({});
-        return;
-      }
-      data += c;
-    });
-    req.on('end', () => {
-      if (aborted) return;
-      try {
-        resolve(data ? JSON.parse(data) : {});
-      } catch {
-        resolve({});
-      }
-    });
-    req.on('error', () => { if (!aborted) resolve({}); });
-  });
-}
+const readBody = (req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> =>
+  readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
 
-/** 校验 admin token（写操作）。
- *  P1 安全修复：换 sha256 + timingSafeEqual 常量时间比较（对齐 ma 插件 signature.ts 口径，
- *  === 字符串比较存在理论时序侧信道）。 */
+/** 校验 admin token（写操作）：P1#25 换 kit 的 safeEqual（恒定时间比较，全插件口径统一）。 */
 function authorized(req: import('node:http').IncomingMessage): boolean {
   const auth = req.headers['authorization'] ?? '';
   const token = typeof auth === 'string' ? auth.replace(/^Bearer\s+/i, '') : '';
   const expected = getConfig().adminToken;
   if (!token || !expected) return false;
-  return timingSafeEqual(createHash('sha256').update(token).digest(), createHash('sha256').update(expected).digest());
+  return safeEqual(token, expected);
 }
 
 /** PII 掩码：姓名保留首字符，其余打码。 */
