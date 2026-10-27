@@ -5,6 +5,20 @@
 #   - push 到 main 分支：部署到 Render
 #   - pull_request 到 dev/main 分支：PR 门禁，必须全绿才能合并
 #
+# 【供应链待办（P1#33）：pin actions 到 commit SHA】
+# 本文件与 docker.yml 的所有 uses: 仍引用主版本 tag（@v4/@v5 等）。2026-10-26 的
+# 收尾尝试因构建环境无外网（GitHub API 不可达）未能取得精确 SHA——凭记忆写入
+# 错误 SHA 会直接挂 CI，风险不对称，故保留 tag 引用并留此待办。
+# 执行方法（有网环境，逐个验证）：
+#   for repo in "actions/checkout v4" "actions/setup-node v4" "pnpm/action-setup v4" \
+#               "actions/dependency-review-action v4" "gitleaks/gitleaks-action v2" \
+#               "docker/metadata-action v5" "docker/login-action v3" \
+#               "docker/setup-buildx-action v3" "docker/build-push-action v6"; do
+#     set -- $repo
+#     curl -s "https://api.github.com/repos/$1/commits/$2" | grep -m1 '"sha"'
+#   done
+# 把每个 uses: 改为 `owner/repo@<sha> # v4` 格式（注释保留版本号便于升级）。
+#
 # 需要的 Secrets：
 #   RENDER_DEPLOY_HOOK_URL — 从 Render Dashboard → Settings → Deploy Hook 获取
 #   TURSO_URL              — （可选）Turso 数据库地址

@@ -3306,10 +3306,20 @@
    * 把 mdFolded 重放到当前 DOM。
    * 每次渲染后都会全量重放：DOM 是刚重建的，不存在「已同步」的捷径。
    */
-  function applyFolds() {
+  /**
+   * 重放富文本块折叠态到 DOM。
+   * C5b 增量化（P1#27）：传 scopeFilter（如 `ans-12`）时仅扫描该消息的块——流式
+   * tick 高频路径只处理正在流式的消息，避免每 tick 对全文档 querySelectorAll +
+   * 逐块 closest/querySelector（长会话下为主线程热点）；不传（会话切换/新消息/
+   * 初始渲染）保持全量重放。
+   */
+  function applyFolds(scopeFilter?: string) {
     const root = rootEl;
     if (!root) return;
-    root.querySelectorAll<HTMLElement>('[data-md-block]').forEach((el) => {
+    const selector = scopeFilter
+      ? `[data-md-scope="${CSS.escape(scopeFilter)}"] [data-md-block]`
+      : '[data-md-block]';
+    root.querySelectorAll<HTMLElement>(selector).forEach((el) => {
       // 块归属哪个作用域由最近的 [data-md-scope] 决定。
       const scope = el.closest<HTMLElement>('[data-md-scope]')?.dataset.mdScope;
       const block = el.dataset.mdBlock;
@@ -4726,11 +4736,25 @@
   });
 
   // 消息/计划状态变化后：重放富文本块折叠态 + 钉底跟随（原 updated() 语义）。
+  // C5b 增量化：以「会话+长度+末条 id」签名区分两类更新——
+  //   流式 tick（签名不变、正在流式）：仅重放当前流式消息的块（applyFolds(scope)）；
+  //   会话切换 / 新消息 / 初始渲染（签名变化）：全量重放（历史块折叠态恢复）。
+  let lastRenderSig = '';
   $effect(() => {
     void messages;
     void planExec;
+    const streamIdxForActive = streamIdx[activeId];
+    const lastMsg = messages.length ? messages[messages.length - 1] : null;
+    const sig = `${activeId}:${messages.length}:${lastMsg?.id ?? ''}`;
+    const streamingTick = sig === lastRenderSig && streamIdxForActive != null;
+    lastRenderSig = sig;
     // 必须在滚动之前：折叠会改变内容高度，同步重排后 scrollToBottom 才取到正确值。
-    applyFolds();
+    if (streamingTick) {
+      const cur = streamIdxForActive != null ? messages[streamIdxForActive] : null;
+      applyFolds(cur ? `ans-${cur.id}` : undefined);
+    } else {
+      applyFolds();
+    }
     scrollToBottom();
     scrollThinkToBottom();
   });
