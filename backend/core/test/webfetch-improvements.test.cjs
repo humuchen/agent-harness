@@ -298,18 +298,16 @@ test('效率C：并发同 URL 请求合并为一次网络抓取', async () => {
   registerWebFetch(reg, {});
   clearWebFetchCache();
   let calls = 0;
-  let release;
-  const gate = new Promise((res) => { release = res; });
+  // mock 挂起一小段时间：第一个调用在途时第二个应命中 inflight 合并。
   useMock(async () => {
     calls++;
-    await gate;
+    await new Promise((res) => setTimeout(res, 20));
     return mkResp(200, 'shared', [['content-type', 'text/plain']]);
   });
   const [a, b] = await Promise.all([
     reg.call('builtin__web_fetch', { url: 'https://dedupe.example.com/x' }),
     reg.call('builtin__web_fetch', { url: 'https://dedupe.example.com/x' }),
   ]);
-  release();
   assert.strictEqual(calls, 1, '并发同 URL 应合并为一次抓取');
   assert.strictEqual(JSON.parse(a).body, 'shared');
   assert.strictEqual(JSON.parse(b).body, 'shared');
