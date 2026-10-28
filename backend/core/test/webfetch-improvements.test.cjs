@@ -184,3 +184,155 @@ test('改进6：状态码分类统计正确', async () => {
   resetWebFetchStats();
   assert.strictEqual(getWebFetchStats().total, 0, 'reset 后应清零');
 });
+
+// ---------------------------------------------------------------------------
+// 质量与性能改进（2026-10-28）：
+//   质量A 字符集解码（Content-Type / <meta charset> 嗅探，GBK/latin1 等）
+//   质量B 正文提取 Markdown 化（h#/li/a/pre + meta description）
+//   效率C TTL 响应缓存 + 在途请求合并 + refresh 逃生参数
+//   稳定D 408 重试 + Retry-After HTTP-date
+// ---------------------------------------------------------------------------
+
+const { clearWebFetchCache } = require('../dist/builtins/webfetch.js');
+
+/** 带字节流 body 的 mock 响应（触发真实的流式读取 + 字符集解码路径）。 */
+function mkByteResp(status, bytes, headers) {
+  const h = new Map((headers ?? []).map(([k, v]) => [String(k).toLowerCase(), String(v)]));
+  const stream = new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } });
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (k) => h.get(String(k).toLowerCase()) ?? null, getSetCookie: undefined },
+    body: stream,
+    text: async () => new TextDecoder('utf-8').decode(bytes),
+  };
+}
+
+test('质量A：Content-Type 声明 iso-8859-1 时按 latin1 解码（UTF-8 误解码乱码修复）', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  const bytes = Buffer.from('caf\xe9 menu', 'latin1'); // 0xE9 = é
+  useMock(async () => mkByteResp(200, bytes, [['content-type', 'text/html; charset=iso-8859-1']]));
+  const r = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://cs-ct.example.com/x' }));
+  assert.ok(r.body.includes('café menu'), 'latin1 字节应正确解码，实际：' + r.body);
+});
+
+test('质量A：Content-Type 无 charset 时从 <meta charset> 嗅探 GBK', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  // "测试" 的 GBK 字节：测=0xB2 0xE2，试=0xCA 0xD4（ASCII 结构之外用 \x 转义注入字节）
+  const html = '<html><head><meta charset="gbk"></head><body><p>\xb2\xe2\xca\xd4</p></body></html>';
+  useMock(async () => mkByteResp(200, Buffer.from(html, 'latin1'), [['content-type', 'text/html']]));
+  const r = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://cs-meta.example.com/x' }));
+  assert.ok(r.body.includes('测试'), 'meta charset=gbk 应生效，实际：' + r.body);
+});
+
+test('质量B：Markdown 化提取——标题/列表/链接/代码块/meta description', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  const html = `<!doctype html><html><head><title>MD 页</title>
+<meta name="description" content="页面摘要 ABC">
+<style>.s{}</style></head><body>
+<h1>主标题</h1><p>介绍 <a href="/docs/guide.html">使用指南</a> 与 <a href="#top">锚点</a>。</p>
+<ul><li>第一项</li><li>第二项</li></ul>
+<pre><code>const a = 1;   // 保留缩进</code></pre>
+<footer>页脚噪音</footer></body></html>`;
+  useMock(async () => mkResp(200, html, [['content-type', 'text/html; charset=utf-8']]));
+  const r = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://md.example.com/x' }));
+  assert.ok(r.body.includes('标题: MD 页'), '应提取 title');
+  assert.ok(r.body.includes('描述: 页面摘要 ABC'), '应输出 meta description');
+  assert.ok(r.body.includes('# 主标题'), 'h1 → # 前缀');
+  assert.ok(r.body.includes('[使用指南](/docs/guide.html)'), '链接 → [text](href)');
+  assert.ok(r.body.includes('锚点') && !r.body.includes('[锚点]('), '锚点/脚本链接降级为纯文本');
+  assert.ok(r.body.includes('- 第一项') && r.body.includes('- 第二项'), 'li → - 前缀');
+  assert.ok(r.body.includes('const a = 1;   // 保留缩进'), 'pre 代码块保留原始空白');
+  assert.ok(!r.body.includes('页脚噪音'), 'footer 噪音剔除');
+});
+
+test('效率C：TTL 缓存命中免网络、不同 max_bytes 复用、refresh/自定义头/清缓存绕过', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  resetWebFetchStats();
+  let calls = 0;
+  useMock(async () => { calls++; return mkResp(200, 'cached body', [['content-type', 'text/plain']]); });
+  const r1 = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://cache.example.com/x' }));
+  assert.strictEqual(calls, 1);
+  const r2 = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://cache.example.com/x', max_bytes: 99999 }));
+  assert.strictEqual(calls, 1, '命中缓存不应发网络请求');
+  assert.strictEqual(getWebFetchStats().cacheHits, 1, '缓存命中应计数');
+  assert.strictEqual(r1.body, r2.body, '不同 max_bytes 复用同一缓存文本');
+  await reg.call('builtin__web_fetch', { url: 'https://cache.example.com/x', refresh: true });
+  assert.strictEqual(calls, 2, 'refresh=true 应绕过缓存重抓');
+  await reg.call('builtin__web_fetch', { url: 'https://cache.example.com/x', headers: { 'x-a': '1' } });
+  assert.strictEqual(calls, 3, '带自定义 headers 的请求不读缓存');
+  clearWebFetchCache();
+  await reg.call('builtin__web_fetch', { url: 'https://cache.example.com/x' });
+  assert.strictEqual(calls, 4, 'clearWebFetchCache 后重新抓取');
+});
+
+test('效率C：no-store 响应不入缓存；非 2xx 不入缓存', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  let calls = 0;
+  useMock(async () => {
+    calls++;
+    return mkResp(200, 'dynamic', [['content-type', 'text/plain'], ['cache-control', 'no-store']]);
+  });
+  await reg.call('builtin__web_fetch', { url: 'https://nostore.example.com/x' });
+  await reg.call('builtin__web_fetch', { url: 'https://nostore.example.com/x' });
+  assert.strictEqual(calls, 2, 'no-store 应每次重新抓取');
+  let calls404 = 0;
+  useMock(async () => { calls404++; return mkResp(404, 'gone'); });
+  await reg.call('builtin__web_fetch', { url: 'https://nf.example.com/x' });
+  await reg.call('builtin__web_fetch', { url: 'https://nf.example.com/x' });
+  assert.strictEqual(calls404, 2, '404 不入缓存');
+});
+
+test('效率C：并发同 URL 请求合并为一次网络抓取', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, {});
+  clearWebFetchCache();
+  let calls = 0;
+  let release;
+  const gate = new Promise((res) => { release = res; });
+  useMock(async () => {
+    calls++;
+    await gate;
+    return mkResp(200, 'shared', [['content-type', 'text/plain']]);
+  });
+  const [a, b] = await Promise.all([
+    reg.call('builtin__web_fetch', { url: 'https://dedupe.example.com/x' }),
+    reg.call('builtin__web_fetch', { url: 'https://dedupe.example.com/x' }),
+  ]);
+  release();
+  assert.strictEqual(calls, 1, '并发同 URL 应合并为一次抓取');
+  assert.strictEqual(JSON.parse(a).body, 'shared');
+  assert.strictEqual(JSON.parse(b).body, 'shared');
+});
+
+test('稳定D：408 与 HTTP-date Retry-After 均触发重试', async () => {
+  const reg = new ToolRegistry();
+  registerWebFetch(reg, { maxRetries: 2 });
+  let calls408 = 0, callsDate = 0;
+  useMock(async (url) => {
+    if (url.startsWith('https://r408.example.com')) {
+      calls408++;
+      return calls408 === 1 ? mkResp(408, 'late') : mkResp(200, 'ok', [['content-type', 'text/plain']]);
+    }
+    callsDate++;
+    return callsDate === 1
+      ? mkResp(429, 'slow', [['retry-after', new Date(Date.now() + 50).toUTCString()]])
+      : mkResp(200, 'ok', [['content-type', 'text/plain']]);
+  });
+  const a = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://r408.example.com/x' }));
+  assert.strictEqual(calls408, 2, '408 应重试');
+  assert.strictEqual(a.status, 200);
+  const b = JSON.parse(await reg.call('builtin__web_fetch', { url: 'https://rdate.example.com/x' }));
+  assert.strictEqual(callsDate, 2, 'HTTP-date Retry-After 应解析并重试');
+  assert.strictEqual(b.status, 200);
+});

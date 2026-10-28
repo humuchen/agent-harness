@@ -184,7 +184,7 @@ export type { WebFetchOptions } from './webfetch';
 export { registerRagRetrieve } from './rag-retrieve';
 export type { RagRetrieveOptions } from './rag-retrieve';
 // web_fetch 状态码分类观测（改进6）：ok2xx/blocked403/notFound404/timeout 等计数。
-export { getWebFetchStats, resetWebFetchStats } from './webfetch';
+export { getWebFetchStats, resetWebFetchStats, clearWebFetchCache } from './webfetch';
 export type { WebFetchStats } from './webfetch';
 export { registerDocExport } from './docexport';
 export type { DocExportOptions } from './docexport';

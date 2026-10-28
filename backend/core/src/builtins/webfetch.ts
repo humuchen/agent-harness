@@ -34,6 +34,13 @@ export interface WebFetchOptions {
    * 缺省 2；退避 = min(400ms * 2^n + 抖动, 2s)，429 优先尊重 Retry-After（上限 2s）。
    */
   maxRetries?: number;
+  /**
+   * 效率改进：2xx 响应的进程级缓存 TTL（毫秒）。同 URL 重复抓取（LLM 高频行为）
+   * 直接命中缓存返回，不重发网络请求；并发同 URL 请求会合并为一次在途请求。
+   * 缺省 5 分钟；0 = 禁用缓存。env WEB_FETCH_CACHE_TTL_MS 可全局调整。
+   * LLM 可传 args.refresh=true 单次绕过缓存强制重抓。
+   */
+  cacheTtlMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,12 +79,14 @@ export interface WebFetchStats {
   fallbackUsed: number;
   /** 2xx 但正文近空（JS 渲染空壳/反爬软页）——压缩方案3 观测项。 */
   nearEmpty: number;
+  /** 效率改进：命中进程缓存（TTL 内同 URL 或并发在途合并）免于重复网络请求的次数。 */
+  cacheHits: number;
 }
 
 const stats: WebFetchStats = {
   total: 0, ok2xx: 0, redirect3xx: 0, blocked403: 0, notFound404: 0, client4xx: 0,
   rateLimited429: 0, server5xx: 0, tooLarge: 0, timeout: 0, networkError: 0,
-  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0, nearEmpty: 0,
+  allowlistDenied: 0, privateDenied: 0, fallbackUsed: 0, nearEmpty: 0, cacheHits: 0,
 };
 
 /** 读取 web_fetch 状态码分类统计快照（只读副本）。 */
@@ -88,6 +97,75 @@ export function getWebFetchStats(): WebFetchStats {
 /** 清零统计（测试/运维用）。 */
 export function resetWebFetchStats(): void {
   for (const k of Object.keys(stats) as (keyof WebFetchStats)[]) stats[k] = 0;
+}
+
+// ---------------------------------------------------------------------------
+// 效率改进：进程级响应缓存 + 在途请求合并
+// ---------------------------------------------------------------------------
+
+/**
+ * 网络层的原始抓取结果（解码后的完整文本）——缓存的存储单元。
+ * 与「格式化输出」（max_bytes 截断、markdown 提取、near_empty 判定）解耦：
+ * 同一 URL 以不同 max_bytes 重复调用时可直接复用原始文本重新格式化。
+ */
+interface RawFetchResult {
+  status: number;
+  ok: boolean;
+  contentType: string;
+  /** 已按正确字符集解码（HTML 已完成正文提取）的文本。 */
+  text: string;
+  /** 是否因服务端硬字节上限中止了读取。 */
+  truncatedByLimit: boolean;
+  /** near_empty 判定（网络层判定一次，缓存命中时不重复计数）。 */
+  nearEmpty: boolean;
+  /** 抓取路径标记（fallback-proxy 等）。 */
+  via?: string;
+  /** 响应带 Cache-Control: no-store：不入缓存（尊重站点语义，如动态/鉴权内容）。 */
+  noStore?: boolean;
+}
+
+interface CacheEntry {
+  raw: RawFetchResult;
+  at: number;
+}
+
+const respCache = new Map<string, CacheEntry>();
+/** 同 URL 并发在途请求：第二个调用者 await 同一 Promise，避免并发重复抓取。 */
+const inflight = new Map<string, Promise<RawFetchResult | string>>();
+const CACHE_MAX_ENTRIES = 64;
+const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
+
+function parseCacheTtlMs(): number {
+  const env = Number(process.env.WEB_FETCH_CACHE_TTL_MS);
+  if (Number.isFinite(env) && env >= 0) return env;
+  return DEFAULT_CACHE_TTL_MS;
+}
+
+/** 缓存取用（LRU：命中刷新插入序；过期即删）。 */
+function cacheGet(key: string, ttlMs: number): RawFetchResult | null {
+  const hit = respCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at >= ttlMs) {
+    respCache.delete(key);
+    return null;
+  }
+  respCache.delete(key);
+  respCache.set(key, hit);
+  return hit.raw;
+}
+
+function cachePut(key: string, raw: RawFetchResult): void {
+  if (respCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = respCache.keys().next().value;
+    if (oldest !== undefined) respCache.delete(oldest);
+  }
+  respCache.set(key, { raw, at: Date.now() });
+}
+
+/** 清空响应缓存与在途合并表（测试/运维用）。 */
+export function clearWebFetchCache(): void {
+  respCache.clear();
+  inflight.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -203,39 +281,63 @@ function decodeEntities(s: string): string {
     .replace(/&([a-z]+);/gi, (_, name) => NAMED_ENTITIES[name.toLowerCase()] ?? ' ');
 }
 
-/** 取第一个 <tag ...>...</tag> 区间的内部内容（找不到返回 null）。 */
-function innerBlock(html: string, tag: string): string | null {
-  const open = new RegExp(`<${tag}[\\s>]`, 'i').exec(html);
-  if (!open || open.index === undefined) return null;
-  const bodyStart = html.indexOf('>', open.index);
-  if (bodyStart < 0) return null;
-  const closeRe = new RegExp(`</${tag}\\s*>`, 'ig');
-  closeRe.lastIndex = bodyStart;
-  const close = closeRe.exec(html);
-  if (!close) return null;
-  return html.slice(bodyStart + 1, close.index);
+/** 从 <meta name/property="description|og:description"> 提取页面摘要（属性顺序两种写法都兼容）。 */
+function extractMetaDescription(html: string): string | null {
+  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+    const key = /(?:\bname|\bproperty)\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+    const k = (key?.[1] ?? key?.[2] ?? '').toLowerCase();
+    if (k !== 'description' && k !== 'og:description') continue;
+    const content = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+    const val = decodeEntities(content?.[1] ?? content?.[2] ?? '').replace(/\s+/g, ' ').trim();
+    if (val) return val;
+  }
+  return null;
 }
 
 /**
- * 极简正文提取：
- * 1) 记录 <title>；剔除 script/style/noscript/svg/template/iframe 与注释；
+ * 极简正文提取（输出轻量 Markdown 结构）：
+ * 1) 记录 title 与 meta description；剔除 script/style/noscript/svg/template/iframe 与注释；
  * 2) 剔除 nav/header/footer/aside/form 区块与表单噪音；
- * 3) 块级标签转换行保段落结构 → 剥标签 → 还原实体 → 压缩行内空白并去空行。
+ * 3) <pre> 代码块原样保留（占位符方案，不参与空白压缩，保住缩进与换行）；
+ * 4) 结构保真：h1-h6 → `#` 前缀、li → `- `、a → [text](href)、blockquote → `> `，
+ *    让模型直接看到标题层级、列表项与可跟进的链接；
+ * 5) 块级标签转换行 → 剥标签 → 还原实体 → 压缩行内空白并去空行。
  * （刻意不裁剪到 main/article 内部：SPA 空壳页保留全文反而能让「无正文」一眼可辨，
  *   且 main/article 定位对嵌套/异构页面误伤率高。）
  */
 function extractText(html: string): string {
   const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
+  const description = extractMetaDescription(html);
+  // <pre> 先摘出存占位符：内部只剥标签+还原实体，不参与后续空白压缩。
+  const pres: string[] = [];
   const work = html
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<title[^>]*>[\s\S]*?<\/title>/gi, ' ') // 标题单独输出，避免正文重复
     .replace(/<(script|style|noscript|svg|template|iframe)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<(input|button|select)\b[^>]*\/?>/gi, ' ');
+    .replace(/<(input|button|select)\b[^>]*\/?>/gi, ' ')
+    .replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_m, inner: string) => {
+      const code = decodeEntities(String(inner).replace(/<[^>]+>/g, ''));
+      return `\n\u0000PRE${pres.push(code) - 1}\u0000\n`;
+    })
+    // 链接 → [text](href)：内部先剥标签取文本；锚点/脚本/无文本链接直接降级。
+    .replace(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/gi,
+      (_m, dq: string | undefined, sq: string | undefined, inner: string) => {
+        const href = (dq ?? sq ?? '').trim();
+        const text = decodeEntities(String(inner).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+        if (!text) return '';
+        if (!href || href.startsWith('#') || /^(javascript|mailto|tel|data):/i.test(href)) return text;
+        return `[${text}](${href})`;
+      })
+    // 标题层级 / 列表 / 引用 → Markdown 前缀（收尾换行由块级标签正则统一处理）。
+    .replace(/<h([1-6])\b[^>]*>/gi, (_m, lvl: string) => `\n${'#'.repeat(Number(lvl))} `)
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<\/li>/gi, '')
+    .replace(/<blockquote\b[^>]*>/gi, '\n> ');
 
   let text = work
-    // 块级边界 → 换行，保住段落/标题/列表结构
-    .replace(/<\/(p|div|section|article|li|tr|h[1-6]|blockquote|pre|table|ul|ol|dl|figcaption)>/gi, '\n')
+    // 块级边界 → 换行，保住段落/标题/表格结构（li 已单独处理）
+    .replace(/<\/(p|div|section|article|tr|h[1-6]|blockquote|pre|table|ul|ol|dl|figcaption)>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ');
 
@@ -243,10 +345,18 @@ function extractText(html: string): string {
     .split('\n')
     .map((line) => line.replace(/[\t ]+/g, ' ').trim())
     .filter((line) => line.length > 0)
-    .join('\n');
+    .join('\n')
+    .replace(/\u0000PRE(\d+)\u0000/g, (_m, i: string) => {
+      const code = pres[Number(i)];
+      return code !== undefined ? `\n${code}\n` : '';
+    });
 
+  // 头部元信息：标题 + 描述（无 title 的页面 meta description 也能独撑摘要）。
+  const head: string[] = [];
   const t = decodeEntities(title ?? '').replace(/\s+/g, ' ').trim();
-  return t ? `标题: ${t}\n\n${text}` : text;
+  if (t) head.push(`标题: ${t}`);
+  if (description) head.push(`描述: ${description}`);
+  return (head.length ? `${head.join('\n')}\n\n` : '') + text;
 }
 
 export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions = {}): void {
@@ -271,15 +381,19 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
   const fallbackProxy = (opts.fallbackProxy ?? process.env.WEB_FETCH_FALLBACK_PROXY ?? '').trim();
   // 改进2：429/5xx/瞬时网络错误重试次数。
   const maxRetries = Math.max(0, Math.min(opts.maxRetries ?? 2, 5));
+  // 效率改进：响应缓存 TTL（0 = 禁用）。
+  const cacheTtlMs = opts.cacheTtlMs ?? parseCacheTtlMs();
   registry.register(
     'builtin__web_fetch',
-    'Fetch a URL and return its text content (HTML is extracted to readable plain text). ' +
+    'Fetch a URL and return its text content (HTML is extracted to readable Markdown-like plain text ' +
+      'with headings, lists and links preserved). ' +
       'Use for retrieving up-to-date information from the web. Only http/https are allowed. ' +
       'IMPORTANT: always use URLs exactly as they appear in search results or user input — ' +
       'never construct, guess, or modify URLs yourself (fabricated URLs cause 404). ' +
       'If a fetch returns 403/404, do not invent variants of the URL; report it and try another source instead. ' +
       'Keep responses small: the default cap is 4000 characters, which is enough for most pages — ' +
       'raise max_bytes only for a page you already know needs more. ' +
+      'Identical GET requests within a few minutes are served from cache; pass refresh=true to force a fresh fetch. ' +
       'If a result is marked near_empty, the page has almost no readable text (JS-rendered or bot-protected): ' +
       'do NOT retry the same URL, switch to another source immediately.',
     objectParams(
@@ -290,6 +404,10 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
         max_bytes: {
           type: 'number',
           description: 'Max characters to return (default 4000; raise only when the page is known to need more).'
+        },
+        refresh: {
+          type: 'boolean',
+          description: 'Skip the response cache and fetch fresh (default false).'
         },
       },
       ['url']
@@ -327,11 +445,11 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
       }
       stats.total++;
       // 压缩方案1配套：args.max_bytes 此前从未被读取（schema 声称支持但实际无效）。
-      // 现按设计意图生效：单次请求可显式提升上限，readResult 仍用 hardBodyBytes 夹紧防注入。
+      // 现按设计意图生效：单次请求可显式提升上限，formatResult 仍用 hardBodyBytes 夹紧防注入。
       const reqMaxRaw = Number(args.max_bytes);
       const reqMaxBytes =
         Number.isFinite(reqMaxRaw) && reqMaxRaw > 0 ? Math.floor(reqMaxRaw) : maxBytes;
-      return fetchWithRetries(u, {
+      const run: FetchRunOptions = {
         method: (args.method ? String(args.method) : 'GET').toUpperCase(),
         extraHeaders: args.headers && typeof args.headers === 'object' ? (args.headers as Record<string, unknown>) : {},
         defaultUserAgent,
@@ -341,11 +459,37 @@ export function registerWebFetch(registry: ToolRegistry, opts: WebFetchOptions =
         maxRetries,
         fallbackProxy,
         allowedHost: u.hostname,
-      }, {
-        // P1 SSRF 修复：传入逐跳校验上下文（重定向手动跟随，每跳复检）。
-        allowedDomains,
-        allowPrivate,
-      });
+      };
+      // P1 SSRF 修复：传入逐跳校验上下文（重定向手动跟随，每跳复检）。
+      const guard: RedirectGuard = { allowedDomains, allowPrivate };
+      // 效率改进：仅缓存「LLM 未注入自定义头」的 GET（自定义头常带鉴权/会话语义，复用有污染风险）。
+      const cacheable = run.method === 'GET' && Object.keys(run.extraHeaders).length === 0 && cacheTtlMs > 0;
+      const key = u.toString();
+      if (cacheable && args.refresh !== true) {
+        const cached = cacheGet(key, cacheTtlMs);
+        if (cached) {
+          stats.cacheHits++;
+          return formatResult(cached, run);
+        }
+        // 在途合并：并发同 URL 请求共用一次网络抓取，完成后各自格式化。
+        const pending = inflight.get(key);
+        if (pending) {
+          const shared = await pending;
+          if (typeof shared === 'string') return shared;
+          stats.cacheHits++;
+          return formatResult(shared, run);
+        }
+        const p = performFetch(u, run, guard).finally(() => { inflight.delete(key); });
+        inflight.set(key, p);
+        const result = await p;
+        if (typeof result === 'string') return result;
+        // 仅缓存 2xx 且站点未声明 no-store 的结果（403/404 不缓存：403 后续可能
+        // 走回退代理成功，404 虽可缓存但保持行为可预测）。
+        if (result.status >= 200 && result.status < 300 && !result.noStore) cachePut(key, result);
+        return formatResult(result, run);
+      }
+      const result = await performFetch(u, run, guard);
+      return typeof result === 'string' ? result : formatResult(result, run);
     },
     'builtin'
   );
@@ -385,6 +529,14 @@ function buildHeaders(run: FetchRunOptions, host: string): Record<string, string
 function backoffDelay(attempt: number, retryAfter: string | null): number {
   const ra = Number(retryAfter ?? '');
   if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 2000);
+  // Retry-After 也可为 HTTP-date（RFC 7231）：换算为相对毫秒再夹紧。
+  if (retryAfter) {
+    const t = Date.parse(retryAfter);
+    if (Number.isFinite(t)) {
+      const delta = t - Date.now();
+      if (delta > 0) return Math.min(delta, 2000);
+    }
+  }
   return Math.min(400 * 2 ** (attempt - 1) + Math.random() * 200, 2000);
 }
 
@@ -429,7 +581,11 @@ interface RedirectGuard {
   allowPrivate: boolean;
 }
 
-async function fetchWithRetries(u: URL, run: FetchRunOptions, guard?: RedirectGuard): Promise<string> {
+/**
+ * 网络抓取主循环：重试 + 手动重定向 + 回退代理 + cookie + 限额读取。
+ * 成功返回 RawFetchResult（缓存存储单元），失败返回 `error: ...` 文案。
+ */
+async function performFetch(u: URL, run: FetchRunOptions, guard?: RedirectGuard): Promise<RawFetchResult | string> {
   const attempts = run.maxRetries + 1;
   let current = u;
   let hop = 0;
@@ -498,8 +654,8 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions, guard?: RedirectGu
       // 无 Location 的 3xx：按普通响应读取（保持旧行为）。
     }
 
-    // 改进2：429/5xx 退避重试（尊重 Retry-After，上限 2s）。
-    if ((status === 429 || status >= 500) && attempt < attempts) {
+    // 改进2：429/408/5xx 退避重试（尊重 Retry-After 秒数或 HTTP-date，上限 2s）。
+    if ((status === 429 || status === 408 || status >= 500) && attempt < attempts) {
       try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
       await sleep(backoffDelay(attempt, resp.headers.get('retry-after')));
       attempt++;
@@ -513,16 +669,12 @@ async function fetchWithRetries(u: URL, run: FetchRunOptions, guard?: RedirectGu
       // 代理失败 → 落回正常 403 返回路径。
     }
 
-    const result = await readResult(resp, { ...run, allowedHost: current.hostname });
-    if (result !== null) return result;
-    // tooLarge：readResult 已计数，按 Content-Length 给出错误信息。
-    const declared = Number(resp.headers.get('content-length') ?? '');
-    return `error: response body too large (${Number.isFinite(declared) && declared > 0 ? declared : 'unknown'} bytes > ${run.hardBodyBytes} hard limit)`;
+    return readRawResult(resp, { ...run, allowedHost: current.hostname });
   }
 }
 
-/** 改进3：经回退代理抓取；成功返回格式化结果，失败返回 null（回落主路径）。 */
-async function tryFallbackProxy(originalUrl: string, run: FetchRunOptions): Promise<string | null> {
+/** 改进3：经回退代理抓取；成功返回结果，失败返回 null（回落主路径 403 处理）。 */
+async function tryFallbackProxy(originalUrl: string, run: FetchRunOptions): Promise<RawFetchResult | string | null> {
   const proxiedUrl = run.fallbackProxy.replace('{url}', encodeURIComponent(originalUrl));
   const { resp, error } = await fetchOnce(proxiedUrl, buildHeaders(run, safeHost(proxiedUrl)), 'GET', run.timeoutMs);
   if (error || !resp || !(resp.status >= 200 && resp.status < 300)) {
@@ -530,55 +682,107 @@ async function tryFallbackProxy(originalUrl: string, run: FetchRunOptions): Prom
     return null;
   }
   stats.fallbackUsed++;
-  const result = await readResult(resp, { ...run, allowedHost: safeHost(proxiedUrl) }, 'fallback-proxy');
-  return result ?? `error: response body too large via fallback proxy (> ${run.hardBodyBytes} hard limit)`;
+  return readRawResult(resp, { ...run, allowedHost: safeHost(proxiedUrl) }, 'fallback-proxy');
 }
 
 function safeHost(url: string): string {
   try { return new URL(url).hostname; } catch { return ''; }
 }
 
-/** 读取响应体并格式化为工具结果 JSON；超限时返回 null（调用方按 tooLarge 处理）。 */
-async function readResult(
+/**
+ * 读取响应体并产出原始抓取结果（网络层终点，也是缓存的存储单元）；
+ * 超硬上限返回 `error: ...` 文案。
+ */
+async function readRawResult(
   resp: Response,
   run: FetchRunOptions,
   via?: string
-): Promise<string | null> {
+): Promise<RawFetchResult | string> {
   const ct = resp.headers.get('content-type') ?? '';
   // P1 C1：先按 Content-Length 提前拒绝超限响应。
   const declared = Number(resp.headers.get('content-length') ?? '');
   if (Number.isFinite(declared) && declared > run.hardBodyBytes) {
     try { await resp.body?.cancel(); } catch { /* 忽略释放失败 */ }
     stats.tooLarge++;
-    return null;
+    return `error: response body too large (${declared} bytes > ${run.hardBodyBytes} hard limit)`;
   }
   // P1 C1：流式分块读取 + 字节预算，超限即中止连接，不再 resp.text() 整包入内存。
-  const { text: raw, truncatedByLimit } = await readBodyCapped(resp, run.hardBodyBytes);
+  const body = await readBodyCapped(resp, run.hardBodyBytes);
+  // 质量改进：字节流按嗅探到的字符集解码（GBK/Big5/Shift_JIS/latin1 等），
+  // 避免「meta 声明 gbk 的页面被当 UTF-8 解出乱码」这一中文抓取的高频质量事故。
+  // mock/无流运行时（body 为 null）拿到的是 text() 已解码字符串，直接使用。
+  const decoded = body.bytes ? decodeWithCharset(body.bytes, ct) : body.text;
   const isHtml = ct.includes('html');
-  const text = isHtml ? extractText(raw) : raw;
+  const text = isHtml ? extractText(decoded) : decoded;
   storeCookies(run.allowedHost, resp);
-  let out = truncatedByLimit ? text + ' ...[fetch aborted: hard byte limit]' : text;
+  // 压缩方案3：近空结果检测（仅 HTML——纯文本/JSON 端点本来就短，短 ≠ 无效）。
+  // 2xx 但正文近空大概率是 JS 渲染空壳或反爬软页；显式标记 near_empty + 引导提示，
+  // 避免模型对着空壳 URL 反复重试浪费轮次（实测此类无效抓取单次全程浪费 1-2k tok）。
+  // 在网络层判定一次并随结果缓存，命中缓存重新格式化时不重复计数。
+  const nearEmpty = isHtml && text.trim().length < NEAR_EMPTY_MIN_CHARS;
+  if (nearEmpty) stats.nearEmpty++;
+  return {
+    status: resp.status,
+    ok: resp.ok,
+    contentType: ct,
+    text,
+    truncatedByLimit: body.truncatedByLimit,
+    nearEmpty,
+    ...(via ? { via } : {}),
+    ...((resp.headers.get('cache-control') ?? '').includes('no-store') ? { noStore: true } : {}),
+  };
+}
+
+/** 将原始抓取结果格式化为工具结果 JSON（max_bytes 截断在此生效，可基于缓存重复调用）。 */
+function formatResult(r: RawFetchResult, run: FetchRunOptions): string {
+  let out = r.truncatedByLimit ? r.text + ' ...[fetch aborted: hard byte limit]' : r.text;
   // P1 C1：LLM 可控的截断上限夹紧到 [1, hardBodyBytes]，防参数注入超大值。
   const cap = Math.min(Math.max(run.maxBytes, 1), run.hardBodyBytes);
   if (out.length > cap) out = out.slice(0, cap) + `\n...[truncated at ${cap} chars]`;
-  // 压缩方案3：近空结果检测（仅 HTML——纯文本/JSON 端点本来就短，短 ≠ 无效）。
-  // 2xx 但正文近空大概率是 JS 渲染空壳或反爬软页；显式返回 near_empty + 引导提示，
-  // 避免模型对着空壳 URL 反复重试浪费轮次（实测此类无效抓取单次全程浪费 1-2k tok）。
-  let nearEmpty = false;
-  if (isHtml) {
-    const bodyOnly = out.replace(/^标题:[^\n]*\n+/, '');
-    nearEmpty = bodyOnly.trim().length < NEAR_EMPTY_MIN_CHARS;
-    if (nearEmpty) stats.nearEmpty++;
-  }
   return JSON.stringify({
-    status: resp.status,
-    ok: resp.ok,
-    content_type: ct,
+    status: r.status,
+    ok: r.ok,
+    content_type: r.contentType,
     length: out.length,
-    ...(nearEmpty ? { near_empty: true, hint: NEAR_EMPTY_HINT } : {}),
-    ...(via ? { via } : {}),
+    ...(r.nearEmpty ? { near_empty: true, hint: NEAR_EMPTY_HINT } : {}),
+    ...(r.via ? { via: r.via } : {}),
     body: out,
   });
+}
+
+// ---------------------------------------------------------------------------
+// 质量改进：非 UTF-8 字符集识别与解码
+// ---------------------------------------------------------------------------
+
+/**
+ * 嗅探响应字符集：优先 HTTP Content-Type 头，其次 HTML 头部 <meta charset> /
+ * <?xml encoding?>。meta 嗅探只看前 2KB，并以 windows-1252（latin1 兼容）单字节
+ * 通道解码——meta 标签本身必为 ASCII，该通道不会破坏标签结构。
+ */
+function sniffCharset(contentType: string, bytes: Uint8Array): string | null {
+  const ct = /charset\s*=\s*"?([\w.:-]+)"?/i.exec(contentType);
+  if (ct?.[1]) return ct[1];
+  const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, 2048));
+  const meta = /<meta[^>]+charset\s*=\s*["']?([\w.:-]+)/i.exec(head)
+    ?? /<\?xml[^>]+encoding\s*=\s*["']([\w.:-]+)/i.exec(head);
+  return meta?.[1] ?? null;
+}
+
+/**
+ * 按嗅探到的字符集解码字节流；未识别或运行时不支持的 label 一律回落 UTF-8。
+ * GBK/GB2312/GB18030/Big5/Shift_JIS/EUC-KR/ISO-8859-1/windows-1252 均为
+ * WHATWG Encoding 内置 label，Node 开箱支持，无需额外依赖。
+ */
+function decodeWithCharset(bytes: Uint8Array, contentType: string): string {
+  const label = sniffCharset(contentType, bytes);
+  if (label && !/^(utf-?8|us-ascii|ascii)$/i.test(label)) {
+    try {
+      return new TextDecoder(label, { fatal: false }).decode(bytes);
+    } catch {
+      // 未知 label → 回落 UTF-8
+    }
+  }
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
 // ---------------------------------------------------------------------------
@@ -586,21 +790,26 @@ async function readResult(
 // ---------------------------------------------------------------------------
 
 /**
- * 流式读取响应体，累计字节超过 budget 时中止连接并返回已读部分。
- * 返回 truncatedByLimit 标记是否因预算触发了中止。
- * 兼容无 body 流的 Response（mock/部分运行时）：回落一次性 text()。
+ * 流式读取响应体，累计字节超过 budget 时中止连接并返回已读字节。
+ * truncatedByLimit 标记是否因预算触发了中止。
+ * 返回 bytes（供调用方按正确字符集解码）；无 body 流的 Response（mock/部分运行时）
+ * 回落一次性 text()，此时 bytes 为 null、text 为已解码字符串。
  */
 async function readBodyCapped(
   resp: Response,
   budget: number
-): Promise<{ text: string; truncatedByLimit: boolean }> {
+): Promise<{ bytes: Uint8Array | null; text: string; truncatedByLimit: boolean }> {
   const reader = resp.body?.getReader();
   if (!reader) {
     try {
       const t = await resp.text();
-      return { text: t.length > budget ? t.slice(0, budget) : t, truncatedByLimit: t.length > budget };
+      return {
+        bytes: null,
+        text: t.length > budget ? t.slice(0, budget) : t,
+        truncatedByLimit: t.length > budget,
+      };
     } catch {
-      return { text: '', truncatedByLimit: false };
+      return { bytes: null, text: '', truncatedByLimit: false };
     }
   }
   const chunks: Uint8Array[] = [];
@@ -635,9 +844,7 @@ async function readBodyCapped(
     merged.set(c, off);
     off += c.byteLength;
   }
-  // 非 fatal 解码：截断可能切断多字节字符，容忍替换符。
-  const text = new TextDecoder('utf-8', { fatal: false }).decode(merged);
-  return { text, truncatedByLimit: truncated };
+  return { bytes: merged, text: '', truncatedByLimit: truncated };
 }
 
 // ---------------------------------------------------------------------------
