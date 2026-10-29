@@ -113,5 +113,23 @@ export function validatePluginManifest(
       errors.push({ field: 'dependencies', message: 'must be a string[]' });
     }
   }
+  if (manifest.quota !== undefined) {
+    if (typeof manifest.quota !== 'object' || manifest.quota === null) {
+      errors.push({ field: 'quota', message: 'must be an object' });
+    } else {
+      if (
+        manifest.quota.maxCallsPerRun !== undefined &&
+        (!Number.isInteger(manifest.quota.maxCallsPerRun) || manifest.quota.maxCallsPerRun <= 0)
+      ) {
+        errors.push({ field: 'quota.maxCallsPerRun', message: 'must be a positive integer' });
+      }
+      if (
+        manifest.quota.callTimeoutMs !== undefined &&
+        (!Number.isFinite(manifest.quota.callTimeoutMs) || manifest.quota.callTimeoutMs <= 0)
+      ) {
+        errors.push({ field: 'quota.callTimeoutMs', message: 'must be a positive number (ms)' });
+      }
+    }
+  }
   return errors;
 }

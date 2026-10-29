@@ -36,7 +36,7 @@ import {
   getPluginToolRegistry,
 } from './context';
 import { getIntentRouter } from '../router/intent';
-import { ToolRegistry } from '../tools';
+import { ToolRegistry, type ToolFn } from '../tools';
 import { DagEngine } from '../workflow/engine';
 import type { StepExecutor } from '../workflow/engine';
 import type { WorkflowDef } from '../workflow/types';
@@ -354,6 +354,8 @@ export class PluginLoader {
   async enable(id: string): Promise<PluginRecord> {
     const rec = this.require(id);
     if (rec.state === 'enabled') return rec;
+    // P2 插件资源配额：每次启用即开启新的配额窗口（等价于 run 维度重置）。
+    this.callCounts.set(id, 0);
     if (this.sandbox) await this.sandbox(rec.manifest);
     const ctx = this.buildContext(rec);
     const mod = this.modules.get(id);
@@ -398,6 +400,8 @@ export class PluginLoader {
       this.unmergePluginTools(rec);
       await this.registry.deregister(id);
       rec.state = 'disabled';
+      // P2 插件资源配额：禁用即清空配额窗口。
+      this.callCounts.delete(id);
     }
     return rec;
   }
@@ -585,10 +589,45 @@ export class PluginLoader {
   private mergePluginTools(rec: PluginRecord, ctx: PluginContext): void {
     const shared = getPluginToolRegistry();
     const prefix = `${rec.manifest.id}__`;
+    // worker 沙箱形态的工具由沙箱内部执行配额（见 startWorkerSandbox 的 call 看门狗），
+    // 此处仅对进程内形态（无 entry / isolation=none）包装配额守卫，避免双重计数。
+    const inProcess = !shouldUseWorkerSandbox(rec.manifest);
     for (const { name, schema, fn } of ctx.tools.entries()) {
       const full = name.startsWith(prefix) ? name : prefix + name;
-      shared.register(full, schema.description, schema.parameters as Record<string, unknown>, fn, `plugin:${rec.manifest.id}`);
+      const quotaFn = inProcess ? this.wrapWithQuota(rec.manifest.id, fn, rec.manifest.quota) : fn;
+      shared.register(full, schema.description, schema.parameters as Record<string, unknown>, quotaFn, `plugin:${rec.manifest.id}`);
     }
+  }
+
+  /**
+   * P2 插件资源配额守卫：包装插件工具函数。
+   * - maxCallsPerRun：按插件 id 计数（enable 时重置），超限拒绝；
+   * - callTimeoutMs：单次调用超时即拒绝（Promise.race 看门狗）。
+   * 无配额声明时零开销直通（不包装）。
+   */
+  private wrapWithQuota(pluginId: string, fn: ToolFn, quota?: PluginManifest['quota']): ToolFn {
+    const max = quota?.maxCallsPerRun;
+    const timeoutMs = quota?.callTimeoutMs;
+    if (!max && !timeoutMs) return fn;
+    return async (args, ctx) => {
+      if (max && max > 0) {
+        const used = this.callCounts.get(pluginId) ?? 0;
+        if (used >= max) {
+          throw new Error(`插件 ${pluginId} 调用次数超限（>${max}）`);
+        }
+        this.callCounts.set(pluginId, used + 1);
+      }
+      if (!timeoutMs || timeoutMs <= 0) return fn(args, ctx);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`插件 ${pluginId} 调用超时（>${timeoutMs}ms）`));
+        }, timeoutMs);
+        Promise.resolve(fn(args, ctx)).then(
+          (v) => { clearTimeout(timer); resolve(v); },
+          (e) => { clearTimeout(timer); reject(e); },
+        );
+      });
+    };
   }
 
   /** 从进程共享插件工具表移除该插件工具（按前缀）。 */

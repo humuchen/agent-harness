@@ -82,6 +82,46 @@ exports.setup = async function setup(ctx) {
   }
 });
 
+test('配额 callTimeoutMs：manifest.quota.callTimeoutMs 作为默认超时（无显式 timeoutMs 时）', async () => {
+  const file = join(dir, 'quota-slow.cjs');
+  writeFileSync(file, `
+exports.setup = async function setup(ctx) {
+  ctx.tools.register('slow', '慢工具', { type: 'object', properties: {} },
+    () => new Promise((r) => setTimeout(() => r('done'), 5000)));
+};`, 'utf8');
+  // 不传 timeoutMs —— 应回退到 manifest.quota.callTimeoutMs。
+  const sandbox = new WorkerToolsSandbox({
+    manifest: { id: 'wp-quota', version: '1.0.0', capabilities: [], quota: { callTimeoutMs: 300 } },
+    entry: file,
+  });
+  try {
+    await sandbox.start();
+    await assert.rejects(() => sandbox.getTools().call('slow', {}), /超时/, '慢工具应按 manifest.quota.callTimeoutMs 被拒绝');
+  } finally {
+    sandbox.stop();
+  }
+});
+
+test('配额 maxCallsPerRun：沙箱调用计数超限拒绝（worker 形态）', async () => {
+  const file = join(dir, 'quota-calls.cjs');
+  writeFileSync(file, `
+exports.setup = async function setup(ctx) {
+  ctx.tools.register('ping', 'ping 工具', { type: 'object', properties: {} }, () => 'pong');
+};`, 'utf8');
+  const sandbox = new WorkerToolsSandbox({
+    manifest: { id: 'wp-quota2', version: '1.0.0', capabilities: [], quota: { maxCallsPerRun: 2 } },
+    entry: file,
+  });
+  try {
+    await sandbox.start();
+    assert.strictEqual(await sandbox.getTools().call('ping', {}), 'pong', '第 1 次调用应成功');
+    assert.strictEqual(await sandbox.getTools().call('ping', {}), 'pong', '第 2 次调用应成功');
+    await assert.rejects(() => sandbox.getTools().call('ping', {}), /调用次数超限/, '第 3 次应被配额拒绝');
+  } finally {
+    sandbox.stop();
+  }
+});
+
 test('load-error fail-fast：入口缺 setup → start() 抛错', async () => {
   const file = join(dir, 'bad.cjs');
   writeFileSync(file, 'exports.nothing = 1;', 'utf8');

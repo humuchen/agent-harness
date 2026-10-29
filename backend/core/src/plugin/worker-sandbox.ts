@@ -63,7 +63,8 @@ export class WorkerToolsSandbox {
 
   constructor(opts: WorkerSandboxOptions) {
     this.opts = opts;
-    this.timeoutMs = Math.max(1000, opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+    // manifest.quota.callTimeoutMs 为默认超时（startWorkerSandbox 已传；直接构造时回退）。
+    this.timeoutMs = Math.max(1000, opts.timeoutMs ?? opts.manifest.quota?.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
   }
 
   /** 启动 worker 并等待插件 ready（注册阶段完成）。失败（load-error/超时）抛错。 */
@@ -138,7 +139,8 @@ export class WorkerToolsSandbox {
       return Promise.reject(new Error('插件 worker 已停止'));
     }
     // P2 插件资源配额：超过 maxCallsPerRun 的调用被拒绝（防插件无限循环拖垮宿主）。
-    const max = this.opts.maxCallsPerRun;
+    // 显式 opts 优先，缺省回退 manifest.quota.maxCallsPerRun。
+    const max = this.opts.maxCallsPerRun ?? this.opts.manifest.quota?.maxCallsPerRun;
     if (max && max > 0) {
       if (this.callCount >= max) {
         return Promise.reject(new Error(`插件 ${this.opts.manifest.id} 调用次数超限（>${max}）`));
@@ -205,7 +207,8 @@ export async function startWorkerSandbox(
     manifest,
     entry: entryPath,
     envAllowlist: opts.envAllowlist,
-    timeoutMs: opts.timeoutMs,
+    // manifest.quota.callTimeoutMs 声明插件单次调用超时；loader 显式传入的 timeoutMs 优先。
+    timeoutMs: opts.timeoutMs ?? manifest.quota?.callTimeoutMs,
     maxCallsPerRun: manifest.quota?.maxCallsPerRun,
   });
   await sandbox.start();
