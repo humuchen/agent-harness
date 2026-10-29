@@ -13,6 +13,12 @@ import { createHash } from 'node:crypto';
 export interface EmbeddingProvider {
   /** 向量维度。 */
   readonly dim: number;
+  /**
+   * 模型标识（版本指纹）。写入 chunk 元数据 `embedding_model`，检索时与当前
+   * provider 比对，不一致即 fail-fast——模型切换后旧向量语义空间不同，混用会
+   * 静默劣化检索质量。HashEmbedding 用 `hash-<dim>` 标识，远程模型用其名称。
+   */
+  readonly model: string;
   /** 同步向量化（演示/本地模型）。 */
   embed(text: string): number[];
   /** 异步向量化（远程 API）。可选；未实现时 ingest 回退到 embed()。 */
@@ -79,8 +85,10 @@ function l2normalize(v: number[]): number[] {
 /** 演示用确定性 embedding：令牌哈希入桶 + L2 归一化。零外部依赖。 */
 export class HashEmbedding implements EmbeddingProvider {
   readonly dim: number;
+  readonly model: string;
   constructor(dim = 256) {
     this.dim = dim;
+    this.model = `hash-${dim}`;
   }
   embed(text: string): number[] {
     const v = new Array<number>(this.dim).fill(0);
@@ -191,9 +199,9 @@ class EmbedCache {
  */
 export class OpenAIEmbedding implements EmbeddingProvider {
   readonly dim: number;
+  readonly model: string;
   private baseUrl: string;
   private apiKey: string;
-  private model: string;
   private cache = new EmbedCache();
 
   constructor(opts?: {
@@ -203,9 +211,9 @@ export class OpenAIEmbedding implements EmbeddingProvider {
     model?: string;
   }) {
     this.dim = opts?.dim ?? 1536;
+    this.model = opts?.model ?? process.env.RAG_EMBEDDING_MODEL ?? 'text-embedding-3-small';
     this.baseUrl = (opts?.baseUrl ?? process.env.RAG_EMBEDDING_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(/\/$/, '');
     this.apiKey = opts?.apiKey ?? process.env.RAG_EMBEDDING_API_KEY ?? '';
-    this.model = opts?.model ?? process.env.RAG_EMBEDDING_MODEL ?? 'text-embedding-3-small';
   }
 
   embed(_text: string): number[] {
@@ -353,6 +361,7 @@ export class OpenAIEmbedding implements EmbeddingProvider {
  */
 export class RemoteEmbedding implements EmbeddingProvider {
   readonly dim: number;
+  readonly model: string;
   private baseUrl: string;
   private apiKey: string;
   private cache = new EmbedCache();
@@ -361,8 +370,14 @@ export class RemoteEmbedding implements EmbeddingProvider {
     dim?: number;
     baseUrl?: string;
     apiKey?: string;
+    model?: string;
   }) {
     this.dim = opts?.dim ?? Number(process.env.RAG_EMBED_DIM || 1024);
+    // 模型标识：显式传入 > RAG_EMBEDDING_MODEL > 端点推导。用于 chunk 模型版本戳与检索守卫。
+    this.model =
+      opts?.model ??
+      process.env.RAG_EMBEDDING_MODEL ??
+      `remote-embed-${this.dim}`;
     this.baseUrl = (opts?.baseUrl ?? process.env.RAG_EMBEDDING_ENDPOINT_URL ?? '').replace(/\/+$/, '');
     this.apiKey = opts?.apiKey ?? process.env.RAG_EMBEDDING_API_KEY ?? '';
   }

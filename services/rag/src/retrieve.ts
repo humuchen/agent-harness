@@ -180,6 +180,27 @@ export async function retrieve(
     return { results: [], trace_id: traceId, latency_ms: Date.now() - t0 };
   }
 
+  // embedding 模型版本守卫（embedding 模型管理）：候选 chunk 携带的
+  // metadata.embedding_model 若存在，必须与当前 provider.model 一致。不一致说明语料由
+  // 另一语义空间的模型生成，与 queryVec 不可比——混用会静默劣化检索质量。
+  // 无戳（undefined）的历史/手工数据放行（向后兼容，无法判定不阻断）；
+  // 默认 fail-fast 抛错；RAG_EMBED_GUARD=off 可临时关闭（迁移期旧库逐步重嵌入时用）。
+  if ((process.env.RAG_EMBED_GUARD ?? 'on').trim().toLowerCase() !== 'off') {
+    const mismatched = cand.filter(
+      (r) => r.metadata?.embedding_model !== undefined && r.metadata?.embedding_model !== provider.model
+    );
+    if (mismatched.length > 0) {
+      const sample = mismatched
+        .slice(0, 3)
+        .map((r) => `${r.chunk_id}(${String(r.metadata?.embedding_model)})`)
+        .join(', ');
+      throw new Error(
+        `embedding 模型版本不匹配：候选 chunk 由模型 ${sample} 生成，当前 provider=${provider.model}；` +
+          `请重新入库（或设 RAG_EMBED_GUARD=off 临时放行，迁移期旧库逐步重嵌入）`
+      );
+    }
+  }
+
   // 2) 真 BM25：租户语料（含 IDF），对候选打分。
   //    P6-B：仅 hybridCapable 后端（Memory / Qdrant-scroll）执行；纯检索后端降级为
   //    纯稠密检索（wBm25 项归零）， BM25 / 查询扩展自动关闭。

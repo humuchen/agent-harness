@@ -207,10 +207,20 @@ async function embedAndWrite(
   // P1 修复：后端支持批量时一次收集整批 upsertMany（此前逐条 PUT，500 chunk =
   // 500 次串行 HTTP 往返）；不支持批量的后端回退逐条。
   const batchFnUpsert = (store as { upsertMany?: (chunks: Chunk[]) => Promise<void> }).upsertMany;
+  // embedding 模型版本戳（embedding 模型管理）：向量语义空间由 (model, dim) 决定，
+  // 模型切换后旧向量与新查询向量不可比。入库时把 provider 的模型指纹写入 chunk.metadata，
+  // retrieve 侧据此守卫，避免混用不同语义空间的向量导致检索质量静默劣化。
+  const embedModel = provider.model;
+  const embedDim = provider.dim;
   const pending: Chunk[] = [];
   let idx = 0;
   for (const item of items) {
-    const meta = { ...(base?.metadata ?? {}), ...(item.meta ?? {}) };
+    const meta = {
+      ...(base?.metadata ?? {}),
+      ...(item.meta ?? {}),
+      embedding_model: embedModel,
+      embedding_dim: embedDim,
+    };
     const chunk: Chunk = {
       chunk_id: item.chunkId ?? `${docId}#${idx}`,
       doc_id: docId,
@@ -220,7 +230,7 @@ async function embedAndWrite(
       ...(base?.title ? { title: base.title } : {}),
       ...(base?.tags ? { tags: base.tags } : {}),
       ...(base?.acl?.length ? { acl: base.acl } : {}),
-      ...(Object.keys(meta).length ? { metadata: meta } : {}),
+      metadata: meta,
       vector: vectors[idx]!,
       created_at: Date.now(),
     };
