@@ -573,6 +573,9 @@ export class AgentHarness {
             tenantId: this.opts.tenantId,
             contextWindow: this.opts.contextWindow,
             model: this.opts.model,
+            tokenBudget,
+            costBudget,
+            budgetAlertThreshold: this.opts.budgetAlertThreshold,
             runId
           });
           runTokens = accounted.runTokens;
@@ -658,6 +661,7 @@ export class AgentHarness {
             makeDedupKey,
             usedTools,
             maxToolResultChars: this.opts.maxToolResultChars,
+            maxToolResultTokens: this.opts.maxToolResultTokens,
             isPastSoftDeadline,
             salvagePartial,
             state: toolRoundState

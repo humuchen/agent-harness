@@ -55,6 +55,12 @@ export interface UsageAccountingParams {
   model?: string;
   /** run 标识（诊断日志用）。 */
   runId: string;
+  /** 本次 run 的 token 预算上限（预算告警用；未配置则不做 token 告警）。 */
+  tokenBudget?: number;
+  /** 本次 run 的成本预算上限（预算告警用；未配置则不做成本告警）。 */
+  costBudget?: number;
+  /** 预算告警阈值（0-1，缺省 0.8）：累计用量达到上限该比例时发出 budget:warning。 */
+  budgetAlertThreshold?: number;
 }
 
 export interface UsageAccountingResult {
@@ -226,6 +232,32 @@ export function accountAndEmitUsage(
       byModel: tcStats.byModel,
       ...(tenantId ? { tenantId } : {})
     } as HarnessEvent);
+  }
+
+  // ── 预算告警阈值（P0 成本治理）：累计用量达到预算上限的 threshold 比例时
+  // 发出 budget:warning（不中止运行），提示及时收尾。每个预算只告警一次。
+  // 未配置 tokenBudget / costBudget 时不触发；未配置阈值时默认 0.8。
+  const alertRatio = p.budgetAlertThreshold ?? 0.8;
+  const warned = (p as { _budgetWarned?: boolean })._budgetWarned === true;
+  if (!warned) {
+    const checkBudget = (kind: 'tokens' | 'cost'): void => {
+      const limit = kind === 'tokens' ? p.tokenBudget : p.costBudget;
+      if (!limit || limit <= 0) return;
+      const used = kind === 'tokens' ? runTokens : runCost;
+      if (used >= limit) return; // 已击穿预算，由 budgetExceeded 兜底
+      if (used / limit >= alertRatio) {
+        emit({
+          type: 'budget:warning',
+          kind,
+          limit,
+          used,
+          ratio: used / limit
+        });
+        (p as { _budgetWarned?: boolean })._budgetWarned = true;
+      }
+    };
+    checkBudget('tokens');
+    checkBudget('cost');
   }
 
   return { runTokens, runCost, maxAcceptedPrompt };

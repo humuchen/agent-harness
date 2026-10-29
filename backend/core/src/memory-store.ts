@@ -12,6 +12,8 @@ import { quarantineCorruptFile } from './store-safety';
 export interface PersistedMemory {
   window: Message[];
   longTerm: string[];
+  /** 冷归档笔记（被移出热层、不再注入系统提示词，但保留可检索）。 */
+  archivedNotes?: string[];
   // 上下文压缩产生的摘要（可选）。启用 summarizer 后，被滑动窗口淘汰的旧轮次
   // 会被压缩成一条 system 摘要固定保留，此处持久化该摘要以便跨运行恢复。
   summary?: string;
@@ -119,6 +121,9 @@ export class FileMemoryStore implements MemoryStore {
     return {
       window: Array.isArray(data.window) ? (data.window as Message[]) : [],
       longTerm: Array.isArray(data.longTerm) ? (data.longTerm as string[]) : [],
+      ...(Array.isArray(data.archivedNotes)
+        ? { archivedNotes: data.archivedNotes as string[] }
+        : {}),
       ...(typeof data.summary === 'string' ? { summary: data.summary } : {}),
       // P1 持久化修复：分数此前从未被 load 读回——重启后 Memory.load 检测到长度
       // 不匹配会把全部分数重置为 0，相关性排序/淘汰持久化失效（save 整体 JSON
@@ -221,7 +226,10 @@ export class SqliteMemoryStore implements MemoryStore {
             'key TEXT PRIMARY KEY, ' +
             'window TEXT NOT NULL, ' +
             'long_term TEXT NOT NULL, ' +
-            'summary TEXT)'
+            'summary TEXT, ' +
+            'archived_notes TEXT, ' +
+            'long_term_scores TEXT, ' +
+            'window_scores TEXT)'
         );
         // 启用 WAL 模式 + 连接池优化
         try { await this.db.exec('PRAGMA journal_mode=WAL;'); } catch { /* ok */ }
@@ -245,6 +253,11 @@ export class SqliteMemoryStore implements MemoryStore {
           if (!hasWinScores) {
             await this.db.exec('ALTER TABLE memory ADD COLUMN window_scores TEXT');
           }
+          // 冷归档笔记列（P0 分层记忆）：旧库缺列时补上
+          const hasArchived = cols.some((c) => String(c.name) === 'archived_notes');
+          if (!hasArchived) {
+            await this.db.exec('ALTER TABLE memory ADD COLUMN archived_notes TEXT');
+          }
         } catch { /* 列已存在，忽略 */ }
       } catch (e) {
         // 自愈：初始化失败（磁盘满 / 权限 / node:sqlite 不可用等瞬时故障）时
@@ -261,16 +274,18 @@ export class SqliteMemoryStore implements MemoryStore {
   async load(key: string): Promise<PersistedMemory | null> {
     await this.ensure();
     const row = await this.db!
-      .prepare('SELECT window, long_term, summary, long_term_scores, window_scores FROM memory WHERE key = ?')
+      .prepare('SELECT window, long_term, summary, archived_notes, long_term_scores, window_scores FROM memory WHERE key = ?')
       .get(key);
     if (!row) return null;
     const window = safeParseArray<Message>(row.window);
     const longTerm = safeParseArray<string>(row.long_term);
+    const archivedNotes = safeParseArray<string>(row.archived_notes);
     const longTermScores = safeParseArray<number>(row.long_term_scores);
     const windowScores = safeParseArray<number>(row.window_scores);
     return {
       window,
       longTerm,
+      ...(archivedNotes.length ? { archivedNotes } : {}),
       ...(typeof row.summary === 'string' ? { summary: row.summary } : {}),
       ...(longTermScores.length ? { longTermScores } : {}),
       ...(windowScores.length ? { windowScores } : {}),
@@ -281,13 +296,14 @@ export class SqliteMemoryStore implements MemoryStore {
     await this.ensure();
     await this.db!
       .prepare(
-        'INSERT OR REPLACE INTO memory (key, window, long_term, summary, long_term_scores, window_scores) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT OR REPLACE INTO memory (key, window, long_term, summary, archived_notes, long_term_scores, window_scores) VALUES (?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         key,
         JSON.stringify(data.window),
         JSON.stringify(data.longTerm),
         typeof data.summary === 'string' ? data.summary : null,
+        JSON.stringify(data.archivedNotes ?? []),
         JSON.stringify(data.longTermScores ?? []),
         JSON.stringify(data.windowScores ?? [])
       );

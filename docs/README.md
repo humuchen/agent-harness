@@ -72,7 +72,8 @@
 | [分层架构设计说明.md](05-analysis/分层架构设计说明.md)                                   | core / server / webapp 分层架构与业务语义隔离说明                           |
 | [架构落地缺口分析.md](05-analysis/架构落地缺口分析.md)                                   | 架构落地缺口分析（原 14 项缺口已全部落地，留作演进记录）                    |
 | [langchain-langgraph-comparison.md](05-analysis/langchain-langgraph-comparison.md)       | 与 LangChain 1.x / LangGraph 1.x 架构对比（相同设计 / 关键差异 / 欠缺项 / 独有能力与补齐优先级；2026-09 时点） |
-| 配套图                                                                                   | [目标基座平台架构.svg](05-analysis/diagrams/目标基座平台架构.svg)           |
+| [架构评审与演进规划.md](05-analysis/架构评审与演进规划.md)                                   | 整体架构评审：主流方案六维度对比（性能/可扩展性/可维护性/开发效率/部署成本/团队协作）、适用场景与瓶颈、P0/P1/P2 演进方向与衡量标准（2026-10 时点） |
+| 配套图                                                                                   | [目标基座平台架构.svg](05-analysis/diagrams/目标基座平台架构.svg) · [架构演进路线图.svg](05-analysis/diagrams/架构演进路线图.svg)（当前分层 → P0/P1/P2 演进目标 + 衡量标准） |
 
 ### 07 RAG · `07-rag/`
 

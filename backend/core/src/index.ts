@@ -50,6 +50,7 @@ export {
   type SqlDialect,
 } from './db-dialect';
 export * from './audit';
+export * from './event-bus';
 export * from './sandbox/types';
 export * from './sandbox/isolation';
 export { detectCapabilities, resolveHelperPath } from './sandbox/detect';

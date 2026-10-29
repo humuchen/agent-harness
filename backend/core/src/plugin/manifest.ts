@@ -57,6 +57,17 @@ export interface PluginManifest {
    * 经 loader 的 toAgentCard 透传到 AgentCard.assembly，使插件 agent 走「领域 harness」而非万能 harness。
    */
   assembly?: AgentAssembly;
+
+  /**
+   * 插件资源配额声明（P2 配额治理）：限制插件运行期对宿主资源的消耗。
+   * 缺省不限制（向后兼容）。宿主侧（loader）在执行插件能力前校验并计数。
+   */
+  quota?: {
+    /** 单次调用工具/能力的最大次数（防止插件无限循环调用宿主工具）。 */
+    maxCallsPerRun?: number;
+    /** 单次调用超时（毫秒），超出即中止该插件调用。 */
+    callTimeoutMs?: number;
+  };
 }
 
 /** 插件清单校验错误。 */

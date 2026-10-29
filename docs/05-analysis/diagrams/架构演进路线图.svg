@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 800" width="100%" role="img">
+
+<title>架构演进路线图：agent-harness 当前实现 → P0/P1/P2 演进目标</title>
+<desc>上半部：当前模块化单体分层架构（接入/编排/智能体/基座/执行 + 底座交付物）；下半部：演进目标（P0 成本治理与 RAG、P1 编排表达力与数据层、P2 插件隔离与事件总线）与衡量标准。</desc>
+
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="#AFA9EC" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<style>
+.bg{fill:#15131F}
+.th{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;font-weight:500;fill:#EEEDFE}
+.ts{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11px;font-weight:400;fill:#CECBF6}
+.tl{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:15px;font-weight:500;fill:#EEEDFE}
+.sec{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;font-weight:500;fill:#AFA9EC}
+.pk{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;font-weight:600;fill:#FFD27A}
+</style>
+
+<rect class="bg" x="0" y="0" width="920" height="800"/>
+
+<!-- Title -->
+<text class="tl" x="460" y="26" text-anchor="middle" fill="#AFA9EC">架构演进路线图 · 当前实现 → P0/P1/P2 演进目标</text>
+
+<!-- ===== ① 当前架构 ===== -->
+<text class="sec" x="40" y="52">① 当前架构 · 模块化单体 + 插件化（业务语义 100% 隔离于 plugins/）</text>
+
+<!-- L1 接入层 -->
+<g>
+  <rect x="40" y="66" width="560" height="52" rx="10" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="58" y="86">接入层 · access/server</text>
+  <text class="ts" x="58" y="102">HTTP+SSE 路由 · 鉴权/RBAC · 审批工作流 · 运行队列 · MCP 管理 · 账户/OAuth/BYOK · IM 桥接 · 计划模式</text>
+</g>
+
+<!-- L2 编排层 -->
+<g>
+  <rect x="40" y="128" width="560" height="52" rx="10" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="58" y="148">编排层 · router / workflow / a2a / subagent / teams</text>
+  <text class="ts" x="58" y="164">意图路由 · DagEngine（DAG+补偿+检查点） · A2A 协议 · 子智能体 · 团队协作</text>
+</g>
+
+<!-- L3 智能体层 -->
+<g>
+  <rect x="40" y="190" width="560" height="52" rx="10" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="58" y="210">智能体层 · agents</text>
+  <text class="ts" x="58" y="226">AgentCard · AgentRegistry · AgentStore（volatile/file/sqlite/redis）</text>
+</g>
+
+<!-- L4 基座层 -->
+<g>
+  <rect x="40" y="252" width="560" height="52" rx="10" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="58" y="272">基座层 · tenant / policy / quota / audit / sandbox / plugin</text>
+  <text class="ts" x="58" y="288">租户隔离 · 行业策略画像 · 配额引擎 · 审计 · OS 沙箱 · 插件框架与市场</text>
+</g>
+
+<!-- L5 执行层 -->
+<g>
+  <rect x="40" y="314" width="560" height="52" rx="10" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="58" y="334">执行层 · harness / tools / memory / guardrails / llm / builtins / skills</text>
+  <text class="ts" x="58" y="350">ReAct 主循环 · 工具注册表 · 三层护栏 · LLM 适配器 · 内置工具 · 技能编排</text>
+</g>
+
+<!-- 底座交付物 -->
+<g>
+  <rect x="620" y="66" width="260" height="300" rx="12" fill="#1E1B3A" stroke="#4A4180" stroke-width="0.5"/>
+  <text class="th" x="638" y="90">底座与交付物</text>
+  <text class="ts" x="638" y="120">services/rag 独立部署</text>
+  <text class="ts" x="638" y="142">deploy/k8s（kustomize）</text>
+  <text class="ts" x="638" y="164">docker-compose · render.yaml</text>
+  <text class="ts" x="638" y="186">Prometheus + Grafana 监控栈</text>
+  <text class="ts" x="638" y="208">OpenTelemetry（可选，默认关）</text>
+  <text class="ts" x="638" y="230">pnpm monorepo · Node 22 · TS</text>
+  <text class="ts" x="638" y="262">SQLite（默认）/ turso / mysql / pg</text>
+  <text class="ts" x="638" y="284">Redis（多副本队列，可选）</text>
+  <text class="ts" x="638" y="306">护栏：输入/输出/工具参数三层</text>
+  <text class="ts" x="638" y="328">已知瓶颈：编排表达力 / Token 成本 /</text>
+  <text class="ts" x="638" y="344">单进程内存态 / RAG 底座薄弱</text>
+</g>
+
+<!-- ===== 演进箭头 ===== -->
+<path d="M180 366L180 408" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text class="ts" x="188" y="390">成本治理</text>
+
+<path d="M460 366L460 408" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text class="ts" x="468" y="390">编排 · 数据</text>
+
+<path d="M740 366L740 408" fill="none" stroke="#AFA9EC" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text class="ts" x="748" y="390">隔离 · 事件</text>
+
+<!-- ===== ② 演进目标 ===== -->
+<text class="sec" x="40" y="400">② 演进目标 · 接口 + 默认实现 + 组合工厂 · core 零业务耦合</text>
+
+<!-- P0 -->
+<g>
+  <rect x="40" y="412" width="280" height="220" rx="12" fill="#26215C" stroke="#FFD27A" stroke-width="0.8"/>
+  <text class="pk" x="58" y="442">P0 · 成本与底座（高优先）</text>
+  <text class="ts" x="58" y="472">上下文压缩默认开启（heuristic）</text>
+  <text class="ts" x="58" y="494">提示词缓存 PROMPT_CACHE</text>
+  <text class="ts" x="58" y="516">分层记忆：热窗口 / 温摘要 / 冷归档</text>
+  <text class="ts" x="58" y="538">RAG：pgvector 起步 → Milvus / Qdrant</text>
+  <text class="ts" x="58" y="560">embedding 模型版本管理 + 分块管道</text>
+  <text class="ts" x="58" y="590">RAG 独立扩缩容（独立部署已验证）</text>
+</g>
+
+<!-- P1 -->
+<g>
+  <rect x="320" y="412" width="280" height="220" rx="12" fill="#26215C" stroke="#FFD27A" stroke-width="0.8"/>
+  <text class="pk" x="338" y="442">P1 · 编排与数据</text>
+  <text class="ts" x="338" y="472">Send 式动态扇出原语</text>
+  <text class="ts" x="338" y="494">subgraph 嵌套复用</text>
+  <text class="ts" x="338" y="516">step 级 retry / timeout 声明</text>
+  <text class="ts" x="338" y="538">Checkpointer 可插拔（Postgres / Redis）</text>
+  <text class="ts" x="338" y="560">Postgres 主库 + 读写分离</text>
+  <text class="ts" x="338" y="582">统一迁移工具链 · 租户分库分表</text>
+  <text class="ts" x="338" y="604">多地域部署 + 就近路由</text>
+</g>
+
+<!-- P2 -->
+<g>
+  <rect x="600" y="412" width="280" height="220" rx="12" fill="#26215C" stroke="#FFD27A" stroke-width="0.8"/>
+  <text class="pk" x="618" y="442">P2 · 隔离与事件</text>
+  <text class="ts" x="618" y="472">插件进程外隔离（子进程 / 容器 / WASM）</text>
+  <text class="ts" x="618" y="494">插件资源配额（CPU / 内存 / 调用数）</text>
+  <text class="ts" x="618" y="516">插件契约版本化与类型校验</text>
+  <text class="ts" x="618" y="538">事件总线：Kafka / NATS 可选后端</text>
+  <text class="ts" x="618" y="560">持久化事件重放（审计 / 告警 / 指标）</text>
+  <text class="ts" x="618" y="582">全链路追踪默认开启（OTel）</text>
+  <text class="ts" x="618" y="604">评估平台：LLM-as-judge + 回归门禁</text>
+</g>
+
+<!-- ===== 衡量标准 ===== -->
+<g>
+  <rect x="40" y="656" width="840" height="124" rx="12" fill="#1E1B3A" stroke="#4A4180" stroke-width="0.5"/>
+  <text class="th" x="58" y="684">衡量标准（改进效果度量）</text>
+
+  <rect x="58" y="696" width="156" height="64" rx="8" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="136" y="718" text-anchor="middle">性能</text>
+  <text class="ts" x="136" y="738" text-anchor="middle">p95 延迟 -30%</text>
+  <text class="ts" x="136" y="754" text-anchor="middle">队列积压 &lt; 100</text>
+
+  <rect x="222" y="696" width="156" height="64" rx="8" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="300" y="718" text-anchor="middle">成本</text>
+  <text class="ts" x="300" y="738" text-anchor="middle">长对话 token -50%</text>
+  <text class="ts" x="300" y="754" text-anchor="middle">cache 命中率 &gt; 70%</text>
+
+  <rect x="386" y="696" width="156" height="64" rx="8" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="464" y="718" text-anchor="middle">质量</text>
+  <text class="ts" x="464" y="738" text-anchor="middle">评估通过率 ≥ 90%</text>
+  <text class="ts" x="464" y="754" text-anchor="middle">护栏误报率 &lt; 5%</text>
+
+  <rect x="550" y="696" width="156" height="64" rx="8" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="628" y="718" text-anchor="middle">可用性</text>
+  <text class="ts" x="628" y="738" text-anchor="middle">SLA 99.9%</text>
+  <text class="ts" x="628" y="754" text-anchor="middle">MTTR &lt; 15 分钟</text>
+
+  <rect x="714" y="696" width="156" height="64" rx="8" fill="#26215C" stroke="#534AB7" stroke-width="0.5"/>
+  <text class="th" x="792" y="718" text-anchor="middle">工程效率</text>
+  <text class="ts" x="792" y="738" text-anchor="middle">部署频率 ×2</text>
+  <text class="ts" x="792" y="754" text-anchor="middle">核心测试 &lt; 5 分钟</text>
+</g>
+
+</svg>

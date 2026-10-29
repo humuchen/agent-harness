@@ -94,6 +94,13 @@ export interface StepDef {
   retryBackoffMs?: number;
 
   /**
+   * P1-timeout step 级超时声明（毫秒）：step 执行超过该时长即中止并按失败处置
+   * （走既有 failed + 补偿 + 级联路径）。缺省 / 非正数 = 不限制（向后兼容）。
+   * 超时通过 RaceAbortController 与外部取消 signal 合并，外部取消优先生效。
+   */
+  timeoutMs?: number;
+
+  /**
    * P6 动态 fan-out（运行期扇出，对标 LangGraph Send API 的静态 DAG 等价物）：
    * true 时，本 step 成功且产出为含 `spawn` 数组的对象（每项为 SpawnSpec）时，
    * 引擎在本波次完成后把 spawn 项物化为真实 StepDef（id 自动加 `<父id>.` 前缀，

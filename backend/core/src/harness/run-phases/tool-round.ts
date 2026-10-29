@@ -27,6 +27,7 @@ import { hooks } from '../../hooks';
 import type { HarnessEvent } from '../types';
 import { executeToolWithRace } from '../tool-executor';
 import { MAX_STEPS_NOTICE } from '../../workflow/step-output';
+import { estimateTokens } from '../../llm/token-estimator';
 
 /** 跨 runLoop 迭代保留的工具轮状态（调用方创建并逐轮传入同一对象，函数内写回）。 */
 export interface ToolRoundState {
@@ -74,6 +75,9 @@ export interface ToolRoundInput {
   usedTools: Set<string>;
   /** 工具结果字符上限（超出截断并标注；undefined/0 = 不截断）。 */
   maxToolResultChars?: number;
+  /** 工具结果 token 上限（超出按 token 估算截断并标注；undefined/0 = 不截断）。
+   *  与字符级上限并存：两者同时配置时取先命中者（token 级更贴近真实计费口径）。 */
+  maxToolResultTokens?: number;
   /** P4.8 软截止判定（调用方闭包，依赖 run 级 deadline）。 */
   isPastSoftDeadline: () => boolean;
   /** 抢救「已生成但未成为最终答案」的内容（调用方闭包，依赖 run 级 streamBuffer）。 */
@@ -117,6 +121,7 @@ export async function executeToolRound(
     makeDedupKey,
     usedTools,
     maxToolResultChars,
+    maxToolResultTokens,
     isPastSoftDeadline,
     salvagePartial,
     state
@@ -285,6 +290,8 @@ export async function executeToolRound(
   }
 
   // 工具结果截断：降低「工具原文逐字重发」带来的上下文膨胀与 token 成本。
+  // 两级上限并存：字符级（原行为，向后兼容）与 token 级（更贴近真实计费口径，
+  // 按估算器折算；两者同时配置时取先命中者）。
   const formatToolResult = (result: unknown): string => {
     let s = typeof result === 'string' ? result : JSON.stringify(result);
     const cap = maxToolResultChars;
@@ -292,6 +299,27 @@ export async function executeToolRound(
       s =
         s.slice(0, cap) +
         `\n…[工具结果已截断：原长 ${s.length} 字符，仅保留前 ${cap} 字符]`;
+    }
+    const tokCap = maxToolResultTokens;
+    if (tokCap && tokCap > 0 && estimateTokens(s) > tokCap) {
+      const originalTokens = estimateTokens(s);
+      // 二分逼近 token 上限：估算器是启发式，直接按比例缩放可能低估，
+      // 用二分搜索截断到「估算值 ≤ 上限」的最长前缀。
+      let lo = 0;
+      let hi = s.length;
+      let cut = 0;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (estimateTokens(s.slice(0, mid)) <= tokCap) {
+          cut = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      s =
+        s.slice(0, cut) +
+        `\n…[工具结果已截断：原约 ${originalTokens} tokens，仅保留前 ${cut} 字符]`;
     }
     return s;
   };

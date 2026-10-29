@@ -14,6 +14,7 @@ const OTEL_API = '@opentelemetry/api';
 // 注意：errorlog 不反向依赖 telemetry，避免循环引用；计数仍由本模块负责。
 import { captureError } from './errorlog';
 import { scrubFields, redactValue } from './log-scrub';
+import { eventBus } from './event-bus';
 
 /**
  * OTel 最小结构契约（@opentelemetry/api 为可选依赖，未安装时这些路径不可达；
@@ -479,6 +480,16 @@ export async function emitAlert(
     } else {
       structLog('debug', `alert deduped: ${name} (within ${ALERT_DEDUP_WINDOW_MS}ms)`, fields);
     }
+  }
+  // 事件总线（P2）：告警统一进总线，供跨实例订阅 / 持久化重放（与 sink 平行，互不影响）。
+  try {
+    await eventBus.publish({
+      category: 'alert',
+      name,
+      payload: { level, message, ...(fields ? { fields } : {}) }
+    });
+  } catch {
+    /* 总线发布失败不阻塞 */
   }
 }
 

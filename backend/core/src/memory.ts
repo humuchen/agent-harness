@@ -218,6 +218,14 @@ export interface MemoryOptions {
   /** 长期记忆注入系统提示词时的最大笔记数（按分数排序后裁剪）。默认 10。 */
   notesTopK?: number;
   /**
+   * 长期笔记容量上限（热层）：超过后，把分数最低的笔记移入冷归档（archive），
+   * 不再注入系统提示词，但保留可检索。默认 0 = 不限制（向后兼容）。
+   * 环境变量 MEMORY_NOTES_MAX 可配置。
+   */
+  maxNotes?: number;
+  /** 是否启用冷归档（默认 false；maxNotes > 0 时建议开启）。环境变量 MEMORY_ARCHIVE=on。 */
+  archiveNotes?: boolean;
+  /**
    * token 级压缩触发阈值（0~1）：最近一次 LLM 调用的 promptTokens / contextWindow
    * 越过该比例即触发历史淘汰。独立于 CONTEXT_COMPRESSION 特性开关，作为兜底护栏——
    * 即便未开启摘要，也会触发 FIFO 淘汰，避免上下文撑爆（原问题根因）。默认 0.8。
@@ -399,12 +407,16 @@ export class Memory {
   private longTerm: string[] = [];
   private longTermScores: number[] = [];
   private windowScores: number[] = [];
+  /** 冷归档笔记（被移出热层的长期笔记，不再注入系统提示词，但保留可检索）。 */
+  private archivedNotes: string[] = [];
   private opts: {
     maxWindow: number;
     summarizer?: MemorySummarizer;
     scorer?: MemoryScorer;
     notesTopK: number;
     compressThreshold: number;
+    maxNotes: number;
+    archiveNotes: boolean;
   };
   private store: MemoryStore;
   private sessionKey: string;
@@ -446,7 +458,9 @@ export class Memory {
       summarizer: opts.summarizer,
       scorer: opts.scorer,
       notesTopK: opts.notesTopK ?? 10,
-      compressThreshold: opts.compressThreshold ?? 0.8
+      compressThreshold: opts.compressThreshold ?? 0.8,
+      maxNotes: opts.maxNotes ?? 0,
+      archiveNotes: opts.archiveNotes ?? false
     };
     // 解析后端：显式 store > 旧版 persistencePath（单文件）> 纯内存（默认）。
     if (opts.store) {
@@ -1165,18 +1179,49 @@ export class Memory {
     this.longTerm.push(note);
     // 初始分数为 0，稍后在 save 时重新计算
     this.longTermScores.push(0);
+    this._maybeArchiveNotes();
   }
 
+  /**
+   * 冷归档：当启用 archiveNotes 且热层笔记数超过 maxNotes 时，
+   * 把分数最低的笔记移入归档（保留可检索，不再注入系统提示词）。
+   * 分数未知（全 0）时按写入顺序（先进先出）淘汰。
+   */
+  private _maybeArchiveNotes(): void {
+    if (!this.opts.archiveNotes) return;
+    const max = this.opts.maxNotes;
+    if (max <= 0 || this.longTerm.length <= max) return;
+    // 找到分数最低的笔记索引（分数未初始化为 0 时按写入顺序先进先出）
+    let minIdx = 0;
+    for (let i = 1; i < this.longTerm.length; i++) {
+      if ((this.longTermScores[i] ?? 0) < (this.longTermScores[minIdx] ?? 0)) minIdx = i;
+    }
+    const [archived] = this.longTerm.splice(minIdx, 1);
+    this.longTermScores.splice(minIdx, 1);
+    if (archived) this.archivedNotes.push(archived);
+  }
+
+  /** 获取热层长期笔记（不含归档）。 */
   notes(): string[] {
     return [...this.longTerm];
   }
 
-  /** 获取长期记忆笔记及其分数。 */
+  /** 获取全部长期笔记（热层 + 冷归档），供按需检索。 */
+  allNotes(): string[] {
+    return [...this.longTerm, ...this.archivedNotes];
+  }
+
+  /** 获取热层长期记忆笔记及其分数。 */
   notesWithScores(): Array<{ note: string; score: number }> {
     return this.longTerm.map((note, i) => ({
       note,
       score: this.longTermScores[i] ?? 0
     }));
+  }
+
+  /** 获取冷归档笔记（保留可检索，不注入系统提示词）。 */
+  archivedNotesList(): string[] {
+    return [...this.archivedNotes];
   }
 
   // 注入到系统提示词中，使模型能够看到跨运行的上下文。
@@ -1221,6 +1266,9 @@ export class Memory {
     const data: PersistedMemory = {
       window: this.window,
       longTerm: this.longTerm,
+      ...(this.archivedNotes.length > 0
+        ? { archivedNotes: this.archivedNotes }
+        : {}),
       ...(this.summaryText ? { summary: this.summaryText } : {}),
       ...(this.longTermScores.length > 0
         ? { longTermScores: this.longTermScores }
@@ -1238,6 +1286,9 @@ export class Memory {
     if (data) {
       this.window = Array.isArray(data.window) ? data.window : [];
       this.longTerm = Array.isArray(data.longTerm) ? data.longTerm : [];
+      this.archivedNotes = Array.isArray(data.archivedNotes)
+        ? (data.archivedNotes as string[])
+        : [];
       this.summaryText = typeof data.summary === 'string' ? data.summary : null;
       this.longTermScores = Array.isArray(data.longTermScores)
         ? (data.longTermScores as number[])
@@ -1261,6 +1312,7 @@ export class Memory {
     this.longTerm = [];
     this.longTermScores = [];
     this.windowScores = [];
+    this.archivedNotes = [];
     this.scoreGen++;
     this._compactCount = 0;
     this._compressedSinceReport = false;

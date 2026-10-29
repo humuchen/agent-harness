@@ -9,6 +9,7 @@
  * 关键动作（run 开始 / 结束 / 越权拦截 / 配额拒绝）处调用 audit() 即满足审计留痕。
  */
 import { scrubFields } from './log-scrub';
+import { eventBus } from './event-bus';
 
 export type AuditOutcome = 'success' | 'failure' | 'denied' | 'info';
 
@@ -147,6 +148,23 @@ export async function audit(e: AuditEvent): Promise<void> {
     } catch (err: unknown) {
       structLogAudit('warn', 'audit sink failed', { error: err instanceof Error ? err.message : String(err), action: e.action });
     }
+  }
+  // 事件总线（P2）：审计事件统一进总线，供跨实例订阅 / 持久化重放。
+  // 总线发布失败不阻塞（与 sink 语义一致）。
+  try {
+    await eventBus.publish({
+      category: 'audit',
+      name: e.action,
+      payload: {
+        outcome: e.outcome,
+        ...(e.target !== undefined ? { target: e.target } : {}),
+        ...(e.actor !== undefined ? { actor: e.actor } : {}),
+        ...(e.tenantId !== undefined ? { tenantId: e.tenantId } : {}),
+        ...(e.detail ? { detail: e.detail } : {})
+      }
+    });
+  } catch {
+    /* 总线发布失败不阻塞 */
   }
 }
 

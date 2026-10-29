@@ -46,6 +46,8 @@ export interface WorkerSandboxOptions {
   timeoutMs?: number;
   /** 额外透传给 worker 的 env 变量名（叠加在白名单之上，loader 的 envAllowlist 语义）。 */
   envAllowlist?: string[];
+  /** P2 插件资源配额：单次运行内该插件工具调用次数上限（超限拒绝）。缺省不限制。 */
+  maxCallsPerRun?: number;
 }
 
 export class WorkerToolsSandbox {
@@ -56,6 +58,8 @@ export class WorkerToolsSandbox {
   private readonly timeoutMs: number;
   private readonly opts: WorkerSandboxOptions;
   private stopped = false;
+  /** P2 插件资源配额：本 run 内已发起的插件调用计数。 */
+  private callCount = 0;
 
   constructor(opts: WorkerSandboxOptions) {
     this.opts = opts;
@@ -128,10 +132,18 @@ export class WorkerToolsSandbox {
     );
   }
 
-  /** RPC 调用（带超时看门狗）。 */
+  /** RPC 调用（带超时看门狗 + P2 调用配额）。 */
   private call(name: string, args: Record<string, unknown>): Promise<unknown> {
     if (this.stopped || !this.worker) {
       return Promise.reject(new Error('插件 worker 已停止'));
+    }
+    // P2 插件资源配额：超过 maxCallsPerRun 的调用被拒绝（防插件无限循环拖垮宿主）。
+    const max = this.opts.maxCallsPerRun;
+    if (max && max > 0) {
+      if (this.callCount >= max) {
+        return Promise.reject(new Error(`插件 ${this.opts.manifest.id} 调用次数超限（>${max}）`));
+      }
+      this.callCount++;
     }
     const id = this.nextCallId++;
     return new Promise((resolve, reject) => {
@@ -194,6 +206,7 @@ export async function startWorkerSandbox(
     entry: entryPath,
     envAllowlist: opts.envAllowlist,
     timeoutMs: opts.timeoutMs,
+    maxCallsPerRun: manifest.quota?.maxCallsPerRun,
   });
   await sandbox.start();
   sandboxes.set(manifest.id, sandbox);

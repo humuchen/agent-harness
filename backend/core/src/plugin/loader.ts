@@ -166,6 +166,11 @@ export class PluginLoader {
   private readonly envAllowlist?: string[];
   private serverHost?: ServerExtensionHost;
   private webHost?: WebExtensionHost;
+  /**
+   * P2 插件资源配额：按插件 id 记录当前 run 内的调用计数（run 维度，随 run 结束重置）。
+   * maxCallsPerRun 配置的插件，超过上限的调用被拒绝。
+   */
+  private readonly callCounts = new Map<string, number>();
 
   constructor(opts: PluginLoaderOptions = {}) {
     this.registry = opts.registry ?? new AgentRegistry();

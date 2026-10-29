@@ -144,6 +144,14 @@ export type HarnessEvent =
       limit: number;
       used: number;
     }
+  | {
+      type: 'budget:warning';
+      kind: 'tokens' | 'cost';
+      limit: number;
+      used: number;
+      /** 达到上限的比例（如 0.8）。 */
+      ratio: number;
+    }
   | { type: 'run:end'; runId: string; final: string; steps: number; agentId?: string }
   | {
       type: 'verify:result';
@@ -235,9 +243,18 @@ export interface HarnessOptions {
   // 单次 run 的成本预算上限（美元，按模型单价估算）。超出即中止。
   costBudget?: number;
 
+  // 预算告警阈值（0-1，默认 0.8）：累计用量达到预算上限的该比例时，
+  // 发出 budget:warning 事件（不中止运行），提示模型/用户及时收尾。
+  // 仅在配置了 tokenBudget / costBudget 时生效。
+  budgetAlertThreshold?: number;
+
   // 单次 run 的工具结果字符上限（超出截断并标注）。降低「工具原文逐字重发」带来的
   // 上下文膨胀与 token 成本。未配置（undefined）则不截断；UI 默认 16000。
   maxToolResultChars?: number;
+
+  // 单次 run 的工具结果 token 上限（超出按估算器截断并标注；更贴近真实计费口径）。
+  // 与字符级上限并存：两者同时配置时取先命中者。未配置则不截断。
+  maxToolResultTokens?: number;
 
   // 可选「完成自检」：开启后，若模型以空响应（疑似放弃）收尾，注入提示继续循环
   // 直到 maxSteps，避免复杂任务被「空响应即结束」提前中断。默认关闭（避免额外成本）。
@@ -341,7 +358,9 @@ export interface ResolvedHarnessOptions {
   contextWindow?: number;
   tokenBudget?: number;
   costBudget?: number;
+  budgetAlertThreshold?: number;
   maxToolResultChars?: number;
+  maxToolResultTokens?: number;
   requireCompletion: boolean;
   verify?: Verifier;
   verifyMaxRetries: number;

@@ -251,8 +251,23 @@ export class DagEngine {
   /**
    * P6 统一 step 执行入口：defRef（嵌套 subgraph）优先，否则走注入的 executor。
    * retry 循环与 run/resume 两路径共用，保证闸门 / 重试 / trace 语义一致。
+   * P1-timeout：配置 step.timeoutMs 时用 stepWithTimeout 包裹执行，
+   * 超时即中止并 reject（走既有 failed + 补偿 + 级联路径）；未配置时零开销直通。
    */
   private executeStepCall(step: StepDef, input: unknown, ctx: RunContext): Promise<unknown> {
+    const timeoutMs = normalizeTimeout(step);
+    if (timeoutMs > 0) {
+      return stepWithTimeout(
+        (signal) => this.executeStepCallInner(step, input, { ...ctx, signal }),
+        timeoutMs,
+        ctx.signal
+      );
+    }
+    return this.executeStepCallInner(step, input, ctx);
+  }
+
+  /** step 执行内部实现（超时包装器调用；与原语义一致）。 */
+  private executeStepCallInner(step: StepDef, input: unknown, ctx: RunContext): Promise<unknown> {
     if (step.defRef) return this.executeNested(step.defRef, input, ctx);
     return this.executor(step, input, ctx);
   }
@@ -534,6 +549,10 @@ export class DagEngine {
         (typeof s.retryBackoffMs !== 'number' || !Number.isFinite(s.retryBackoffMs) || s.retryBackoffMs < 0)
       ) {
         throw new Error(`step "${s.id}" retryBackoffMs 须为非负数（当前：${String(s.retryBackoffMs)}）`);
+      }
+      // P1-timeout：timeoutMs 须为正数（0/负/非有限 = 不限制，向后兼容；但配置了非法值应 fail-fast 提示）
+      if (s.timeoutMs !== undefined && (typeof s.timeoutMs !== 'number' || !Number.isFinite(s.timeoutMs) || s.timeoutMs < 0)) {
+        throw new Error(`step "${s.id}" timeoutMs 须为非负数（0 或不填 = 不限制；当前：${String(s.timeoutMs)}）`);
       }
     }
   }
@@ -1352,6 +1371,56 @@ function normalizeRetries(step: StepDef): number {
 function normalizeBackoff(step: StepDef): number {
   const b = step.retryBackoffMs;
   return typeof b === 'number' && Number.isFinite(b) && b >= 0 ? b : RETRY_BACKOFF_DEFAULT_MS;
+}
+
+/** P1-timeout step 超时归一：非法 / 非正数 → 0（不限制）。 */
+function normalizeTimeout(step: StepDef): number {
+  const t = step.timeoutMs;
+  return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : 0;
+}
+
+/**
+ * P1-timeout step 级超时执行器：合并外部取消 signal 与 step 超时。
+ * - 超时触发时 abort 内部 controller（让 executor 的信号感知路径提前取消），
+ *   并立即 reject（即使 executor 忽略 signal 也保证外层不悬挂）。
+ * - 外部取消优先：signal aborted 时立即 abort 内部 controller 并 reject。
+ * - 正常完成 / 失败时清理定时器与监听。
+ */
+function stepWithTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  external?: AbortSignal
+): Promise<T> {
+  const controller = new AbortController();
+  const onExternalAbort = (): void => controller.abort(external?.reason);
+  if (external) {
+    if (external.aborted) controller.abort(external.reason);
+    else external.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort(new Error(`step timeout after ${timeoutMs}ms`));
+      reject(new Error(`step timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    run(controller.signal).then(
+      (v) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
 }
 
 /** 可中断休眠（重试退避；到点或 signal 中止即返回，取消检查由调用方负责）。
