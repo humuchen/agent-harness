@@ -37,10 +37,27 @@ try {
 
 const DB_PATH = process.env.DB_PATH || process.env.DB_SQLITE_FILE || './data/app.db';
 const MIGRATIONS_DIR = process.env.MIGRATIONS_DIR || './migrations';
+const DB_BACKEND = (process.env.DB_BACKEND || 'sqlite').toLowerCase();
 
 if (!fs.existsSync(MIGRATIONS_DIR)) fs.mkdirSync(MIGRATIONS_DIR, { recursive: true });
 
-const db = getDbAdapter({ file: DB_PATH });
+const db = getDbAdapter({
+  backend: DB_BACKEND,
+  file: DB_PATH,
+  url: process.env.DATABASE_URL,
+});
+
+/**
+ * P1：方言感知事务语法。
+ * - sqlite：BEGIN IMMEDIATE（写锁立即获取，防并发迁移竞态）
+ * - postgres/mysql：BEGIN（标准事务语法）
+ * - turso（HTTP）：不支持跨语句事务，返回 null
+ */
+function beginTx() {
+  if (DB_BACKEND === 'sqlite') return 'BEGIN IMMEDIATE';
+  if (DB_BACKEND === 'postgres' || DB_BACKEND === 'postgresql' || DB_BACKEND === 'mysql' || DB_BACKEND === 'mariadb') return 'BEGIN';
+  return null;
+}
 
 function createMigrationsTable() {
   db.exec(`
@@ -94,17 +111,18 @@ function runMigration(migration) {
   const start = Date.now();
   // P1 修复（D3）：DDL 与 schema_migrations 记录包进同一事务——此前迁移中途失败
   // 会留下「半迁移」状态且无回滚。turso（HTTP）后端不支持跨语句事务，保持原语义。
-  const inTx = (process.env.DB_BACKEND || 'sqlite') === 'sqlite';
+  // P1 扩展：postgres/mysql 同样支持事务（方言感知 beginTx）。
+  const tx = beginTx();
   try {
-    if (inTx) db.exec('BEGIN IMMEDIATE');
+    if (tx) db.exec(tx);
     try {
       db.exec(sql);
       db.prepare(
         'INSERT INTO schema_migrations (version, name, execution_time_ms, checksum) VALUES (?, ?, ?, ?)'
       ).run(migration.version, migration.name, Date.now() - start, checksum);
-      if (inTx) db.exec('COMMIT');
+      if (tx) db.exec('COMMIT');
     } catch (inner) {
-      if (inTx) {
+      if (tx) {
         try { db.exec('ROLLBACK'); } catch {}
       }
       throw inner;
@@ -158,15 +176,15 @@ function migrateDown() {
   }
   const sql = fs.readFileSync(down.path, 'utf8');
   const start = Date.now();
-  const inTx = (process.env.DB_BACKEND || 'sqlite') === 'sqlite';
+  const tx = beginTx();
   try {
-    if (inTx) db.exec('BEGIN IMMEDIATE');
+    if (tx) db.exec(tx);
     try {
       db.exec(sql);
       db.prepare('DELETE FROM schema_migrations WHERE version = ?').run(current);
-      if (inTx) db.exec('COMMIT');
+      if (tx) db.exec('COMMIT');
     } catch (inner) {
-      if (inTx) {
+      if (tx) {
         try { db.exec('ROLLBACK'); } catch {}
       }
       throw inner;
@@ -227,9 +245,14 @@ function showHelp() {
   help             显示帮助
 
 环境变量:
-  DB_PATH          数据库文件路径（默认 ./data/app.db）
-  DB_BACKEND       sqlite | turso（默认 sqlite）
+  DB_BACKEND       sqlite | turso | postgres | mysql（默认 sqlite）
+  DB_PATH          sqlite/turso 数据库文件路径（默认 ./data/app.db）
+  DATABASE_URL     postgres/mysql 连接串（如 postgres://user:pass@host:5432/db）
   MIGRATIONS_DIR   迁移目录（默认 ./migrations）
+
+注意:
+  postgres/mysql 后端复用 @agent-harness/core 方言翻译（sqlite 方言 SQL 自动转换），
+  事务语法按方言感知（BEGIN IMMEDIATE / BEGIN），turso（HTTP）不支持事务。
 `);
 }
 

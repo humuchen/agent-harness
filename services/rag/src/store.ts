@@ -595,7 +595,9 @@ function rowToChunk(r: Record<string, unknown>): Chunk {
  * - `sqlite` → SqliteVectorStore（node:sqlite 零 npm 依赖，写即持久；
  *   RAG_SQLITE_FILE 配置库文件，默认 ./data/rag-index.db）；
  * - `qdrant` → QdrantVectorStore（REST 零 SDK；QDRANT_URL / QDRANT_API_KEY /
- *   QDRANT_COLLECTION 配置，维度取参数 dim）。
+ *   QDRANT_COLLECTION 配置，维度取参数 dim）；
+ * - `pgvector` → PgVectorStore（PostgreSQL + pgvector 原生 ANN；RAG_PG_URL /
+ *   RAG_PG_TABLE / RAG_PG_SCHEMA 配置，pg 为可选 peer 依赖，缺失时可操作报错）。
  */
 export function createVectorStore(dim: number): VectorStore {
   const backend = (process.env.RAG_STORE_BACKEND ?? '').trim().toLowerCase();
@@ -608,6 +610,17 @@ export function createVectorStore(dim: number): VectorStore {
       url: process.env.QDRANT_URL,
       apiKey: process.env.QDRANT_API_KEY,
       collection: process.env.QDRANT_COLLECTION,
+    });
+  }
+  if (backend === 'pgvector') {
+    // 延迟 require：仅 pgvector 后端加载该模块（pg 为可选 peer 依赖）。
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { PgVectorStore } = require('./pgvector') as { PgVectorStore: new (o: { dim: number; url?: string; table?: string; schema?: string }) => VectorStore };
+    return new PgVectorStore({
+      dim,
+      url: process.env.RAG_PG_URL,
+      table: process.env.RAG_PG_TABLE,
+      schema: process.env.RAG_PG_SCHEMA,
     });
   }
   if (backend === 'sqlite') {
