@@ -160,6 +160,8 @@ node --test test/*.test.cjs
 | `RAG_SQLITE_FILE` | `./data/rag-index.db` | sqlite 后端的库文件路径（`RAG_STORE_BACKEND=sqlite` 时生效） |
 || `RAG_EMBEDDING_ENDPOINT_URL` | 空 | 远程 embedding API 地址（对接外部 embed-server，如 Docker RAG 栈的 embed-server）。API 格式：POST {url}/embeddings，请求体 {texts: string[]}，响应 {embeddings: number[][]}。未配置/API 失败时自动降级到 HashEmbedding |
 || `RAG_EMBEDDING_API_KEY` / `RAG_EMBEDDING_BASE_URL` / `RAG_EMBEDDING_MODEL` | 空 | OpenAI 兼容远程 embedding（缺省降级到 HashEmbedding） |
+| `RAG_EMBEDDING_FALLBACK_ENDPOINT_URL` | 空 | 远程 embedding **备端点**（HA 回退）：主 `RAG_EMBEDDING_ENDPOINT_URL` 在 strict 重试耗尽抛 `EmbeddingUnavailableError` 时自动切换到此备服务。主备须同模型同维度（构造时校验 dim，不一致 fail-fast）；非 strict 模式主内部降级哈希不抛错，故不触发回退 |
+| `RAG_EMBED_GUARD` | `on` | embedding 模型版本守卫：检索时候选 chunk 的 `metadata.embedding_model` 与当前 provider 不一致即 fail-fast。`off` 供迁移期旧库逐步重嵌入临时放行（无戳历史数据始终放行） |
 | `RAG_LLM_BASE_URL` | 空 | LLM API 地址（OpenAI 兼容，如 OpenRouter / 百度千帆 / 阿里百灵） |
 | `RAG_LLM_API_KEY` | 空 | LLM API 密钥（设置后启用生成层） |
 | `RAG_LLM_MODEL` | `anthropic/claude-3.5-haiku` | LLM 模型名 |

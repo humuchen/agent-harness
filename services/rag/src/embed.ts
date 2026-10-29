@@ -524,11 +524,85 @@ export class RemoteEmbedding implements EmbeddingProvider {
   }
 }
 
+/**
+ * embedding 失败回退（embedding 模型管理）：主 provider 不可用时自动切换到备 provider，
+ * 避免单一远程嵌入服务故障导致整条入库/检索链路中断。
+ *
+ * 触发条件：主 provider 抛出 `EmbeddingUnavailableError`（strict 模式下远程重试耗尽的
+ * 规范失败信号）。非 strict 模式主 provider 会内部降级哈希而不抛错，故不触发回退
+ * （降级与回退是两种不同的可用性策略，互不叠加）。
+ *
+ * 语义空间约束：`model`/`dim` 取主 provider（逻辑模型身份）。备 provider 必须服务于
+ * **同一模型**（HA 主备同模型镜像），否则回退产出的向量与主空间不可比——混用会触发
+ * retrieve 的模型版本守卫。构造时校验 dim 一致（不一致即配置错误，fail-fast）。
+ */
+export class FallbackEmbedding implements EmbeddingProvider {
+  readonly dim: number;
+  readonly model: string;
+  private primary: EmbeddingProvider;
+  private fallback: EmbeddingProvider;
+
+  constructor(primary: EmbeddingProvider, fallback: EmbeddingProvider) {
+    if (primary.dim !== fallback.dim) {
+      throw new Error(
+        `[rag] FallbackEmbedding 维度不一致：主=${primary.dim}，备=${fallback.dim}；` +
+          `回退链要求主备同模型同维度（否则向量语义空间不可比）`
+      );
+    }
+    this.primary = primary;
+    this.fallback = fallback;
+    this.dim = primary.dim;
+    this.model = primary.model;
+  }
+
+  embed(text: string): number[] {
+    try {
+      return this.primary.embed(text);
+    } catch (e) {
+      if (e instanceof EmbeddingUnavailableError) return this.fallback.embed(text);
+      throw e;
+    }
+  }
+
+  async embedAsync(text: string): Promise<number[]> {
+    try {
+      if (this.primary.embedAsync) return await this.primary.embedAsync(text);
+      return this.primary.embed(text);
+    } catch (e) {
+      if (e instanceof EmbeddingUnavailableError) {
+        if (this.fallback.embedAsync) return await this.fallback.embedAsync(text);
+        return this.fallback.embed(text);
+      }
+      throw e;
+    }
+  }
+
+  async embedBatchAsync(texts: string[]): Promise<number[][]> {
+    try {
+      if (this.primary.embedBatchAsync) return await this.primary.embedBatchAsync(texts);
+      // 主无批量：逐条走主 embedAsync（批量契约对主不适用时退化为逐条）。
+      return await Promise.all(texts.map((t) => this.embedAsync(t)));
+    } catch (e) {
+      if (e instanceof EmbeddingUnavailableError) {
+        if (this.fallback.embedBatchAsync) return await this.fallback.embedBatchAsync(texts);
+        return await Promise.all(texts.map((t) => this.embedAsync(t)));
+      }
+      throw e;
+    }
+  }
+}
+
 /** 根据 env 构造 embedding 提提供方；默认 HashEmbedding。 */
 export function createEmbedder(): EmbeddingProvider {
   const endpointUrl = (process.env.RAG_EMBEDDING_ENDPOINT_URL || '').trim();
+  const fallbackUrl = (process.env.RAG_EMBEDDING_FALLBACK_ENDPOINT_URL || '').trim();
   if (endpointUrl) {
-    return new RemoteEmbedding({ baseUrl: endpointUrl });
+    const primary = new RemoteEmbedding({ baseUrl: endpointUrl });
+    // embedding 失败回退：配置备端点时构造回退链（主远程 → 备远程）。
+    if (fallbackUrl) {
+      return new FallbackEmbedding(primary, new RemoteEmbedding({ baseUrl: fallbackUrl }));
+    }
+    return primary;
   }
   if ((process.env.RAG_EMBEDDING_API_KEY || '').trim()) {
     return new OpenAIEmbedding();
