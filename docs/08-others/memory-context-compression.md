@@ -130,7 +130,7 @@ async flushSummary(): Promise<void> {
 
 | 开关 | 变量 | 默认 | 说明 |
 |---|---|---|---|
-| **特性开关** | `CONTEXT_COMPRESSION` | `false` | 环境变量或 `features.isEnabled('contextCompression')` |
+| **特性开关** | `CONTEXT_COMPRESSION` | `true` | 环境变量或 `features.isEnabled('contextCompression')` |
 | **模式选择** | `COMPRESSION_MODE` | `heuristic` | `heuristic` / `llm` |
 | **Jev 重要性压缩** | `JEV_CONTEXT_COMPRESS` | `off` | 在 `harness.ts` 预算剪枝（确定性 `fitToBudget`）之后，再用 Jev 重要性打分优先淘汰低分消息（`memory.compressByImportance`）；默认 `off`，缺配/出错回落 `fitToBudget`，零行为变更 |
 | **窗口大小** | `MEMORY_WINDOW` | `20` | 滑动窗口最大消息数 |
@@ -232,7 +232,7 @@ Long-term memory:\n- note1\n- note2
 
 | 配置项 | 环境变量 | 默认值 | 作用域 |
 |---|---|---|---|
-| 上下文压缩开关 | `CONTEXT_COMPRESSION` | `false` | 特性开关 (`feature-flags.ts`) |
+| 上下文压缩开关 | `CONTEXT_COMPRESSION` | `true` | 特性开关 (`feature-flags.ts`) |
 | Jev 重要性压缩 | `JEV_CONTEXT_COMPRESS` | `off` | `harness.ts`（默认 off；开启后在预算剪枝后 `memory.compressByImportance` 按 Jev 打分淘汰低分消息） |
 | 压缩模式 | `COMPRESSION_MODE` | `heuristic` | `runner.ts` |
 | 窗口大小 | `MEMORY_WINDOW` | `20` | `runner.ts` |

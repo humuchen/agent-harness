@@ -26,7 +26,8 @@
  */
 import type { ToolCall } from './types';
 import type { VerifyContext } from './verify';
-import { Memory } from './memory';
+import { Memory, createHeuristicSummarizer } from './memory';
+import { isEnabled } from './feature-flags';
 import { resolveAndTrack, EntityTracker } from './coreference';
 import { checkInputAsync } from './guardrails';
 import {
@@ -92,9 +93,17 @@ export class AgentHarness {
   private contextRetry = 0;
 
   constructor(opts: HarnessOptions) {
+    // 默认开启启发式上下文压缩（CONTEXT_COMPRESSION=heuristic）：长对话超窗后保留
+    // 旧轮次语义锚点（用户意图/助手结论/工具调用），避免丢失前情导致重复提问或结论漂移。
+    // 开关语义复用特性框架 isEnabled('contextCompression')（默认 true；显式设为非
+    // 'true'/'1' 即关闭），与服务层 runner 的 enableCompression 共用单一真相源。
+    // 调用方传入 opts.memory 时由下方 ...opts 覆盖此默认值。
+    const ctxCompressionOn = isEnabled('contextCompression');
     this.opts = {
       maxSteps: 12,
-      memory: new Memory(),
+      memory: new Memory({
+        ...(ctxCompressionOn ? { summarizer: createHeuristicSummarizer() } : {})
+      }),
       systemPrompt: 'You are a helpful assistant with access to tools.',
       onEvent: () => {},
       maxToolResultChars: opts.maxToolResultChars,

@@ -183,6 +183,58 @@ export function createHeuristicScorer(): HeuristicMemoryScorer {
   });
 }
 
+/** 摘要单条事实的最大字符数（避免单条过长撑爆摘要）。 */
+const SUMMARY_FACT_CHARS = 80;
+/** 启发式摘要有界长度（与 memory.ts 异步合并的 slice(-400) 对齐）。 */
+export const MAX_SUMMARY_CHARS = 400;
+
+/** 把任意文本压成单行并截断到 max 字符，超界加省略号。 */
+function clampFact(s: string, max: number): string {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + '…' : oneLine;
+}
+
+/**
+ * 启发式上下文压缩摘要器（CONTEXT_COMPRESSION=heuristic，零依赖、确定性、不调用 LLM）。
+ *
+ * 从被淘汰的轮次中抽取结构化要点（用户意图 / 助手结论 / 工具调用与结果），
+ * 与上一次摘要增量合并，产出有界字符串（≤ MAX_SUMMARY_CHARS）。
+ *
+ * 默认开启的原因：长对话超出窗口后，若直接丢弃旧轮次，后续步骤会丢失前情
+ * （用户问过什么、助手给过什么结论、调过哪些工具），导致重复提问或结论漂移。
+ * 启发式摘要以极低成本保留这些语义锚点。CONTEXT_COMPRESSION=off 可退回直接丢弃。
+ *
+ * 与 LLM 摘要器的区别：本实现零延迟、零额外 token 成本、确定性可测；适合作为默认。
+ * 需要更强语义压缩时可传入自定义 MemorySummarizer（如 LLM 摘要）覆盖。
+ */
+export function createHeuristicSummarizer(): MemorySummarizer {
+  return ({ previous, evicted }) => {
+    const facts: string[] = [];
+    for (const m of evicted) {
+      const text = messageText(m);
+      if (!text) continue;
+      // system 摘要节点由 memory.ts 单独管理，此处跳过避免重复。
+      if (m.role === 'system') continue;
+      if (m.role === 'user') {
+        facts.push(`用户: ${clampFact(text, SUMMARY_FACT_CHARS)}`);
+      } else if (m.role === 'assistant') {
+        facts.push(`助手: ${clampFact(text, SUMMARY_FACT_CHARS)}`);
+      } else if (m.role === 'tool') {
+        const name = m.name ?? 'tool';
+        facts.push(`工具${name}: ${clampFact(text, 60)}`);
+      }
+      if (facts.length >= 8) break; // 防御：单次淘汰过多时限制抽取量，控制摘要长度
+    }
+    if (facts.length === 0) return previous ?? '';
+    const merged = `${previous ? previous + ' ' : ''}${facts.join('；')}`;
+    if (merged.length <= MAX_SUMMARY_CHARS) return merged;
+    // 超界：保留尾部（越新越相关），尽量在分隔符处断开避免截半句。
+    const tail = merged.slice(-MAX_SUMMARY_CHARS);
+    const sep = tail.search(/[；。\n]/);
+    return sep > 0 ? tail.slice(sep + 1) : tail;
+  };
+}
+
 /**
  * 上下文压缩摘要器：当滑动窗口溢出、需要淘汰旧轮次时调用。
  * - `evicted`：本次被淘汰的轮次（user/assistant/tool 消息序列）。
