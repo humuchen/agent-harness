@@ -6,9 +6,15 @@
  *   事件流还原为「运行配方快照（RunRecord）」并交给可替换的 Evaluator 打分。
  * - Evaluator / RecipeStore 均为接口 + 默认实现 + 组合工厂；替换评分逻辑（如 LLM-as-judge）
  *   或落地存储（如数据库）只需改 createEvaluator / createRecipeStore，server 其余代码不动。
+ *
+ * Evaluator 实现：
+ * - RuleBasedEvaluator：可解释、零依赖的规则评估（默认兜底）。
+ * - LLMJudgeEvaluator：LLM-as-judge，注入 LLM 客户端打分；LLM 失败/输出不可解析时回退规则评估。
+ *   经 EVAL_JUDGE_ENABLED 特性开关启用（默认 off）；judge LLM 凭据缺失时自动降级为规则评估。
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { createOpenRouterLLM, isEnabled, structLog, type LLM } from '@agent-harness/core';
 
 /** 一次运行的配方快照：prompt / 工具 / 模型 + 关键质量信号，天然即「版本化配方」。 */
 export interface RunRecord {
@@ -99,8 +105,8 @@ export interface EvalResult {
 }
 
 export interface Evaluator {
-  /** 对一次运行配方打分，返回可解释的评分结果与原因。 */
-  evaluate(rec: RunRecord): EvalResult;
+  /** 对一次运行配方打分，返回可解释的评分结果与原因。LLM-as-judge 为异步实现，故允许返回 Promise。 */
+  evaluate(rec: RunRecord): EvalResult | Promise<EvalResult>;
 }
 
 /**
@@ -151,9 +157,202 @@ export class RuleBasedEvaluator implements Evaluator {
   }
 }
 
-/** 组合工厂：返回 Evaluator 实现。要接 LLM-as-judge，只需在此返回实现了 Evaluator 的对象。 */
-export function createEvaluator(): Evaluator {
+// ---------------------------------------------------------------------------
+// LLM-as-judge 评估器（默认实现，经 EVAL_JUDGE_ENABLED 特性开关门控启用）。
+// 注入 LLM 客户端对运行配方打分；LLM 失败或输出不可解析时回退规则评估（缺失即降级）。
+// ---------------------------------------------------------------------------
+
+/** judge 系统提示：约束输出「评分 + 逐条理由」格式，便于确定性解析。 */
+const JUDGE_SYSTEM_PROMPT = `你是一个严格、公正的「运行质量评估器」（LLM-as-judge）。你会收到一次 agent 运行的快照与最终回答，需要评估最终回答对用户 prompt 的完成质量，输出一个 0..1 的小数评分（越高越好）与简短中文理由。
+
+评估维度（按需取舍，不必全部覆盖）：
+1. 相关性：是否切题、直接回应用户 prompt。
+2. 正确性：事实准确、逻辑自洽、无明显错误。
+3. 完整性：覆盖用户需求、无关键遗漏。
+4. 工具使用：任务需要工具时是否正确调用并据此得出结论；无必要时不应臆造工具调用。
+5. 护栏与预算：被护栏拦截、超预算、步骤异常均作为硬性扣分项。
+
+输出格式（严格遵守）：先输出一行评分，再逐条输出理由，每条以「- 」开头：
+评分: <0..1 之间的小数>
+理由:
+- <理由一>
+- <理由二>`;
+
+/** 把 RunRecord 渲染为 judge 用户提示。 */
+function buildJudgeUserPrompt(rec: RunRecord): string {
+  return [
+    `用户 prompt：${rec.prompt}`,
+    ``,
+    `最终回答：${rec.finalAnswer && rec.finalAnswer.trim() ? rec.finalAnswer : '（空）'}`,
+    ``,
+    `已注册工具：${rec.tools.length > 0 ? rec.tools.join(', ') : '无'}`,
+    `步骤数：${rec.steps}`,
+    `护栏拦截次数：${rec.guardrailsBlocked}`,
+    `预算超限：${rec.budgetExceeded ? '是' : '否'}`,
+    `总 tokens：${rec.totalTokens}`,
+    `总成本：$${Number(rec.totalCost).toFixed(6)}`
+  ].join('\n');
+}
+
+/** 把任意数值归一到 0..1：≤1 原样；1..10 视为十分制折算；其余截断。 */
+export function normalizeScore(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  if (n <= 1) return Math.max(0, n);
+  if (n <= 10) return Math.max(0, Math.min(1, n / 10));
+  return 1;
+}
+
+/** 解析 judge 输出为 { score, reasons }；无法解析返回 null（触发兜底）。 */
+export function parseJudgeOutput(text: string): { score: number; reasons: string[] } | null {
+  if (!text || !text.trim()) return null;
+
+  // 优先尝试 JSON（LLM 偶尔无视格式约束直接输出 JSON 对象）。
+  const jsonProbe = text.match(/\{[\s\S]*\}/);
+  if (jsonProbe) {
+    try {
+      const obj = JSON.parse(jsonProbe[0]);
+      if (obj && typeof obj.score === 'number') {
+        const reasons = Array.isArray(obj.reasons)
+          ? (obj.reasons as unknown[]).filter((r): r is string => typeof r === 'string' && r.trim() !== '').map((r) => r.trim())
+          : [];
+        return { score: normalizeScore(obj.score), reasons };
+      }
+    } catch {
+      /* JSON 解析失败 → 继续走文本格式解析 */
+    }
+  }
+
+  // 文本格式：评分 + 逐条理由。
+  let raw: number | undefined;
+  const scoreRe = /评分\s*[:：]\s*([0-9]*\.?[0-9]+)/.exec(text);
+  if (scoreRe) raw = Number(scoreRe[1]);
+  if (raw === undefined || !Number.isFinite(raw)) {
+    const anyNum = /([0-9]*\.?[0-9]+)/.exec(text);
+    if (anyNum) raw = Number(anyNum[1]);
+  }
+  if (raw === undefined || !Number.isFinite(raw)) return null;
+  const score = normalizeScore(raw);
+
+  const reasons: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*[-•*]\s+(.+)/.exec(line) ?? /^\s*\d+[.)]\s+(.+)/.exec(line);
+    if (m) {
+      const r = m[1]?.trim();
+      if (r) reasons.push(r);
+    }
+  }
+  return { score, reasons };
+}
+
+export interface LLMJudgeOptions {
+  /** judge LLM 客户端（LLM 契约：llm(messages, tools) => Promise<{ content }>）。 */
+  llm: LLM;
+  /** 通过阈值（默认 0.5）。 */
+  passThreshold?: number;
+  /** 覆盖系统提示（默认内置）。 */
+  systemPrompt?: string;
+  /** LLM 失败/不可解析时的兜底评估器（默认 RuleBasedEvaluator）。 */
+  fallback?: Evaluator;
+}
+
+export class LLMJudgeEvaluator implements Evaluator {
+  private readonly llm: LLM;
+  private readonly passThreshold: number;
+  private readonly systemPrompt: string;
+  private readonly fallback: Evaluator;
+
+  constructor(opts: LLMJudgeOptions) {
+    if (!opts || !opts.llm) throw new Error('LLMJudgeEvaluator 需要 llm 客户端');
+    this.llm = opts.llm;
+    this.passThreshold = opts.passThreshold ?? 0.5;
+    this.systemPrompt = opts.systemPrompt ?? JUDGE_SYSTEM_PROMPT;
+    this.fallback = opts.fallback ?? new RuleBasedEvaluator();
+  }
+
+  async evaluate(rec: RunRecord): Promise<EvalResult> {
+    try {
+      const resp = await this.llm(
+        [
+          { role: 'system', content: this.systemPrompt },
+          { role: 'user', content: buildJudgeUserPrompt(rec) }
+        ],
+        []
+      );
+      const parsed = parseJudgeOutput(resp?.content ?? '');
+      if (!parsed) return this.degrade(rec, 'LLM 评估输出无法解析');
+      return {
+        passed: parsed.score >= this.passThreshold,
+        score: parsed.score,
+        reasons: parsed.reasons.length > 0 ? parsed.reasons : ['LLM 评估未给出理由']
+      };
+    } catch (err) {
+      return this.degrade(rec, `LLM 评估失败：${(err as Error).message}`);
+    }
+  }
+
+  /** 兜底：回退规则评估，并在理由前置说明降级原因，保证可解释性。 */
+  private async degrade(rec: RunRecord, why: string): Promise<EvalResult> {
+    structLog('warn', 'llm-judge fallback to rule evaluator', { reason: why });
+    const r = await this.fallback.evaluate(rec);
+    return {
+      passed: r.passed,
+      score: r.score,
+      reasons: [`${why}，已回退规则评估`, ...r.reasons]
+    };
+  }
+}
+
+/**
+ * 构造 judge LLM 客户端：优先专用 EVAL_JUDGE_* 配置，缺失则回退 OpenRouter（OPEN_*）。
+ * 无可用 API 凭据时返回 null（→ 规则评估，缺失即降级）。
+ */
+function createJudgeLLM(): LLM | null {
+  const judgeKey = (process.env.EVAL_JUDGE_API_KEY ?? '').trim();
+  const openKey = (process.env.OPEN_API_KEY ?? '').trim();
+  if (!judgeKey && !openKey) return null;
+  return createOpenRouterLLM({
+    apiKey: judgeKey || undefined,
+    model: (process.env.EVAL_JUDGE_MODEL ?? '').trim() || undefined,
+    baseUrl: (process.env.EVAL_JUDGE_BASE_URL ?? '').trim() || undefined
+  });
+}
+
+export interface CreateEvaluatorOptions {
+  /** 注入的 LLM-as-judge 客户端；提供则优先于自动构造。 */
+  judgeLlm?: LLM;
+  /** 是否启用 LLM-as-judge（默认读特性开关 EVAL_JUDGE_ENABLED）。 */
+  useLlmJudge?: boolean;
+  /** 覆盖通过阈值（默认 0.5）。 */
+  passThreshold?: number;
+}
+
+/** 组合工厂：返回 Evaluator 实现。要接 LLM-as-judge，传入 judgeLlm 或开启 EVAL_JUDGE_ENABLED。 */
+export function createEvaluator(opts: CreateEvaluatorOptions = {}): Evaluator {
+  // 显式注入的 judgeLlm 优先；否则按 useLlmJudge 开关（默认读特性开关）自动构造。
+  let judgeLlm = opts.judgeLlm;
+  if (!judgeLlm && (opts.useLlmJudge ?? isEnabled('llmJudge'))) {
+    judgeLlm = createJudgeLLM() ?? undefined;
+  }
+  if (judgeLlm) {
+    return new LLMJudgeEvaluator({
+      llm: judgeLlm,
+      passThreshold: opts.passThreshold,
+      fallback: new RuleBasedEvaluator()
+    });
+  }
   return new RuleBasedEvaluator();
+}
+
+/** 评估器单例（与 getRecipeStore 同模式）：run-queue 完成闸门与 /api/eval 共用同一实例。 */
+let _evaluator: Evaluator | null = null;
+export function getEvaluator(): Evaluator {
+  if (!_evaluator) _evaluator = createEvaluator();
+  return _evaluator;
+}
+
+/** 重置评估器单例（供测试与配置热更新场景使用）。 */
+export function resetEvaluator(): void {
+  _evaluator = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,18 +381,19 @@ export interface CompletionEval {
  * 运行结束后自动评估。把事件流还原为 RunRecord，并以运行最终回答覆盖 finalAnswer，
  * 再交给 Evaluator 打分。gate=off 时直接返回 null（不评估，零开销）。
  */
-export function evaluateCompletion(
+export async function evaluateCompletion(
   jobId: string,
   events: unknown[],
   finalText: string,
   gate: EvalGate = resolveEvalGate(),
-): CompletionEval | null {
+  evaluator?: Evaluator
+): Promise<CompletionEval | null> {
   if (gate === 'off') return null;
   const rec = runRecordFromEvents(jobId, events);
   // 运行结束时的真实最终回答优先（run:end/_done 之前事件可能尚无 finalAnswer）。
   rec.finalAnswer = finalText;
   rec.finishedAt = rec.finishedAt ?? Date.now();
-  const result = createEvaluator().evaluate(rec);
+  const result = await (evaluator ?? getEvaluator()).evaluate(rec);
   return { record: rec, result, gate };
 }
 
