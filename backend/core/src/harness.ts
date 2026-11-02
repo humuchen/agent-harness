@@ -24,12 +24,12 @@
  *   - harness/verify-gate.ts      运行期自动验证门禁（含自愈重试）
  *   - harness/run-phases/tool-round.ts 单步工具轮三阶段并发编排（H3 段迁出）
  */
-import type { ToolCall } from './types';
-import type { VerifyContext } from './verify';
-import { Memory, createHeuristicSummarizer } from './memory';
-import { isEnabled } from './feature-flags';
-import { resolveAndTrack, EntityTracker } from './coreference';
-import { checkInputAsync } from './guardrails';
+import type { ToolCall } from './types.js';
+import type { VerifyContext } from './verify.js';
+import { Memory, createHeuristicSummarizer } from './memory.js';
+import { isEnabled } from './feature-flags.js';
+import { resolveAndTrack, EntityTracker } from './coreference.js';
+import { checkInputAsync } from './guardrails.js';
 import {
   withSpan,
   incCounter,

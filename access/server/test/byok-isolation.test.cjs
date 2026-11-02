@@ -108,11 +108,16 @@ describe('P1.1 自定义模型 owner 隔离', () => {
       )
       .run('legacy1', null, cm.encryptApiKey('sk-mig-secret-0000'), Date.now(), 'sk-mig…0000');
 
-    // 重新加载模块，使其 ensureDb 在已含 NULL owner 行的库上执行 ALTER + 回填
+    // 重新加载模块，使其 ensureDb 在已含 NULL owner 行的库上执行 ALTER + 回填。
+    // ESM 产物：require(esm) 不经过 require.cache（删除缓存无法重建实例），
+    // 改用带 query 的动态 import 强制获取独立模块实例。
     const prevFile = process.env.CUSTOM_MODELS_DB_FILE;
     process.env.CUSTOM_MODELS_DB_FILE = legacyFile;
-    delete require.cache[require.resolve('../dist/custom-models')];
-    const cm2 = require('../dist/custom-models');
+    const { pathToFileURL } = require('node:url');
+    const cm2 = await import(
+      pathToFileURL(path.join(__dirname, '..', 'dist', 'custom-models.js')).href +
+        '?legacy-backfill-test=1'
+    );
 
     const adminList = await cm2.listCustomModels('admin', true);
     const userList = await cm2.listCustomModels('alice', false);

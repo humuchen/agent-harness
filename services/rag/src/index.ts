@@ -11,6 +11,7 @@
  *   RAG_EMBEDDING_API_KEY / RAG_EMBEDDING_BASE_URL / RAG_EMBEDDING_MODEL（真实向量化）
  */
 
+import { pathToFileURL } from 'node:url';
 import { createRagServer } from './server.js';
 import { startRagMcpServer } from './mcp.js';
 export * from './eval.js';
@@ -75,7 +76,9 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-if (require.main === module) {
+// ESM 产物的「直跑判定」等价形式：仅当本模块是被 node 直接执行的入口时才自启服务
+// （经 import/require 被测试或脚本加载时不自启，与原 require.main === module 语义一致）。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((e) => {
     // eslint-disable-next-line no-console
     console.error('[rag] fatal:', e);
