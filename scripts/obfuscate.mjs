@@ -3,7 +3,8 @@
 // 逐文件做压缩 + 标识符混淆（esbuild minify）。供 monorepo 各 package 的 build 复用：
 //   node ../../scripts/obfuscate.mjs [distDir]
 // 设计约束：
-// - 只处理 .js；.d.ts 声明文件保持原样，TS 消费者的类型信息不受影响。
+// - 只处理 .js；.d.ts 声明文件不做混淆（类型信息须保持可读），但注释已由 tsc
+//   removeComments: true 统一剥离（含 .d.ts），产物零注释。
 // - keepNames: true：保留 function/class 名称，避免破坏依赖 fn.name / constructor.name /
 //   错误栈可读性的运行时行为。
 // - 不做字符串阵列编码 / 控制流平坦化（javascript-obfuscator 式重混淆）：那类变换会破坏

@@ -11,6 +11,7 @@
     "skipLibCheck": true,
     "declaration": true,
     "sourceMap": false,
+    "removeComments": true,
     "resolveJsonModule": true,
     "noEmitOnError": true,
     "types": ["node"]
