@@ -208,7 +208,7 @@ import {
   type ApprovalTicket
 } from './approval.js';
 import {
-  createEvaluator,
+  getEvaluator,
   type Evaluator,
   type RecipeStore
 } from './eval.js';
@@ -443,7 +443,7 @@ if (AUTH_PROVIDER === 'oidc') {
 }
 const approvalPolicy: ApprovalPolicy = createApprovalPolicy();
 // 评估与配方版本化（业务质量策略），同样由组合工厂装配，核心不感知。
-const evaluator: Evaluator = createEvaluator();
+const evaluator: Evaluator = getEvaluator();
 // 数据留存/出境策略与 OpenAPI 契约（业务合规层），同样由组合工厂装配，核心不感知。
 const retentionPolicy: RetentionPolicy = createRetentionPolicy();
 const openApiSpec = buildOpenApiSpec();

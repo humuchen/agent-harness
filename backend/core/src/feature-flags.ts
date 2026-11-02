@@ -101,6 +101,13 @@ const FEATURE_FLAGS: Record<string, Omit<FeatureFlag, 'key' | 'enabled'>> = {
     category: 'experimental'
   },
 
+  llmJudge: {
+    description: 'LLM-as-judge 评估 - 用 LLM 对运行质量打分（缺失凭据或失败时回退规则评估）',
+    defaultValue: false,
+    envVar: 'EVAL_JUDGE_ENABLED',
+    category: 'experimental'
+  },
+
   // 已弃用
   legacyAuth: {
     description: '旧版认证 - 使用API Key而非JWT',

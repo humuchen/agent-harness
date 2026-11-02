@@ -22,7 +22,7 @@
 
 | 项 | 事实 |
 | --- | --- |
-| `CONTEXT_COMPRESSION`（feature-flags.ts:33-38） | **主路径未消费此 flag**（仅遗留定义，defaultValue=true）。设不设都不影响上述两级压缩。 |
+| `CONTEXT_COMPRESSION`（feature-flags.ts:33-38） | **已消费**（defaultValue=true）：`harness.ts` 默认 `Memory` 构造与 `runner.ts` 均据此装配启发式温摘要器——长对话超窗后旧轮次生成【历史摘要】节点保留语义锚点；显式设为非 `true`/`1`（`off`/`false`/`0` 等）即关闭、退回直接丢弃。不影响上述无条件两级预算剪枝（`foldStaleToolResults` + `fitToBudget`）。 |
 | `JEV_CONTEXT_COMPRESS=on`（harness.ts:489-493） | 可选增强：在预算剪枝之后改用 Jev 重要性打分淘汰低分消息。需 Typesafe Jev 凭据；缺配/出错自动回落确定性剪枝。 |
 
 **操作**：无必做项。长对话成本敏感的场景可评估开启 `JEV_CONTEXT_COMPRESS=on`；

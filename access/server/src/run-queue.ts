@@ -1686,7 +1686,7 @@ export class RunQueue {
         // - enforce：评估未通过则判本次运行失败（fail closed），并审计留痕。
         const evalGate = resolveEvalGate();
         if (evalGate !== 'off') {
-          const completion = evaluateCompletion(
+          const completion = await evaluateCompletion(
             job.id,
             job.events,
             finalText,

@@ -60,7 +60,7 @@ export async function handleEvalRecipeRoutes(
       return true;
     }
     const rec = runRecordFromEvents(jobId, job.events);
-    const result = deps.evaluator.evaluate(rec);
+    const result = await deps.evaluator.evaluate(rec);
     deps.auditAction('eval.run', {
       jobId,
       score: result.score,
