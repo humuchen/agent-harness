@@ -17,8 +17,8 @@ import {
   putMcpServer,
   deleteMcpServer,
   type McpServerRecord,
-} from './mcp-store';
-import { encryptApiKey } from './custom-models';
+} from './mcp-store.js';
+import { encryptApiKey } from './custom-models.js';
 
 // ── P1 安全修复：运行时接入校验 ──────────────────────────────────────────────
 // 背景：/api/mcp/add（operator/admin）此前对 serverUrl / command 无任何网络侧

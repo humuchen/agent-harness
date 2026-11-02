@@ -8,13 +8,13 @@
  * - 若 HIS 已配置，预约单经发件箱真实同步（至少一次投递），绝不假装同步成功。
  */
 
-import { searchClinics, listSlots, bookSlotWithinTx } from '../repo/schedule-repo';
-import { advanceStageTx, getLead } from '../repo/lead-repo';
-import { inTransaction, type SqliteDatabase } from '../infra/db';
-import { enqueue } from '../repo/outbox-repo';
-import { getConfig } from '../config';
-import { MaError } from '../infra/errors';
-import { type LeadStage, type SlotRecord, type ClinicRecord, stageRank } from '../repo/types';
+import { searchClinics, listSlots, bookSlotWithinTx } from '../repo/schedule-repo.js';
+import { advanceStageTx, getLead } from '../repo/lead-repo.js';
+import { inTransaction, type SqliteDatabase } from '../infra/db.js';
+import { enqueue } from '../repo/outbox-repo.js';
+import { getConfig } from '../config.js';
+import { MaError } from '../infra/errors.js';
+import { type LeadStage, type SlotRecord, type ClinicRecord, stageRank } from '../repo/types.js';
 
 /** 在院区列表中按名称/城市模糊解析出院区（真实数据，无内置清单）。 */
 function resolveClinic(clinics: ClinicRecord[], name: string): ClinicRecord | undefined {

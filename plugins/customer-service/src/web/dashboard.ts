@@ -7,9 +7,9 @@
  */
 import type { PluginUIView } from '@agent-harness/core';
 import { escapeHtml } from '@agent-harness/core';
-import { listTickets } from '../repo/ticket-repo';
-import { listSessions } from '../repo/session-repo';
-import { listPendingReminders } from '../repo/reminder-repo';
+import { listTickets } from '../repo/ticket-repo.js';
+import { listSessions } from '../repo/session-repo.js';
+import { listPendingReminders } from '../repo/reminder-repo.js';
 
 /** HTML 转义（P1#25：委托 plugin-kit，调用点保持 esc 名不变）。 */
 const esc = escapeHtml;

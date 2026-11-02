@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { experimentReport } from '../services/ab-service';
-import { errorResult } from '../infra/errors';
+import { experimentReport } from '../services/ab-service.js';
+import { errorResult } from '../infra/errors.js';
 
 /**
  * ab_report：A/B 实验报表（E 组）。

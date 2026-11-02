@@ -11,7 +11,7 @@
  */
 
 import type { ToolRegistry, AgentCard } from '@agent-harness/core';
-import type { assembleAgent, RunMode } from './runner';
+import type { assembleAgent, RunMode } from './runner.js';
 import {
   getSubAgentManager,
   initSubAgentManager,

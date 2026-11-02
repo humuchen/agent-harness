@@ -3,8 +3,8 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { ToolRegistry } from '../../tools';
-import { incCounter, structLog } from '../../telemetry';
+import { ToolRegistry } from '../../tools.js';
+import { incCounter, structLog } from '../../telemetry.js';
 
 export type McpTransportType = 'auto' | 'sse' | 'streamable-http';
 

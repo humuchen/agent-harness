@@ -11,10 +11,10 @@
  */
 
 import { structLog } from '@agent-harness/core';
-import type { ImAdapter, ImBridgeConfig, ImProvider } from './types';
-import { FeishuAdapter } from './adapter-feishu';
-import { DingtalkAdapter } from './adapter-dingtalk';
-import { WecomAdapter } from './adapter-wecom';
+import type { ImAdapter, ImBridgeConfig, ImProvider } from './types.js';
+import { FeishuAdapter } from './adapter-feishu.js';
+import { DingtalkAdapter } from './adapter-dingtalk.js';
+import { WecomAdapter } from './adapter-wecom.js';
 
 const ALL_PROVIDERS: ImProvider[] = ['feishu', 'dingtalk', 'wecom'];
 

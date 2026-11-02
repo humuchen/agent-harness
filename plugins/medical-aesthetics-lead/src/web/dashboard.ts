@@ -1,10 +1,10 @@
 import type { PluginUIView } from '@agent-harness/core';
 import { escapeHtml as esc } from '@agent-harness/core';
-import { computeStats, listLeads } from '../repo/lead-repo';
-import { outboxSnapshot } from '../services/outbox-worker';
-import { dbHealth } from '../infra/db';
-import { runAnalyticsQuery } from '../analytics/analytics-service';
-import { listAppointmentsByDate } from '../repo/schedule-repo';
+import { computeStats, listLeads } from '../repo/lead-repo.js';
+import { outboxSnapshot } from '../services/outbox-worker.js';
+import { dbHealth } from '../infra/db.js';
+import { runAnalyticsQuery } from '../analytics/analytics-service.js';
+import { listAppointmentsByDate } from '../repo/schedule-repo.js';
 
 /** HTML 转义，避免客资字段注入。
  *  P1#25 安全修复：委托 plugin-kit 的 escapeHtml——本地实现漏转义单引号（'），

@@ -1,11 +1,11 @@
 // 运行收尾段（runInner 段 H）：持久化落盘 + 输出侧 PII 脱敏 + 计数/hook/run:end。
 // P1#21 自 runInner 迁出，语句顺序与语义逐字等价。
-import type { Memory } from '../../memory';
-import type { GuardrailPolicy } from '../../guardrails';
-import type { HarnessEvent } from '../types';
-import { incCounterTenant } from '../../telemetry';
-import { redactOutput } from '../../guardrails';
-import { hooks } from '../../hooks';
+import type { Memory } from '../../memory.js';
+import type { GuardrailPolicy } from '../../guardrails.js';
+import type { HarnessEvent } from '../types.js';
+import { incCounterTenant } from '../../telemetry.js';
+import { redactOutput } from '../../guardrails.js';
+import { hooks } from '../../hooks.js';
 
 export interface FinalizeInput {
   memory: Memory;

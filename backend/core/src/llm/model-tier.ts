@@ -1,4 +1,4 @@
-import type { Message, ToolSchema } from '../types';
+import type { Message, ToolSchema } from '../types.js';
 
 /**
  * 模型分级路由（P1-④，补齐医美参考架构「轻量↔高阶按任务路由」缺口）。

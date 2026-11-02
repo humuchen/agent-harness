@@ -15,7 +15,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { aclVisible, type Chunk, type RetrieveResult, type VectorStore } from './store';
+import { aclVisible, type Chunk, type RetrieveResult, type VectorStore } from './store.js';
 
 /** chunk_id → 确定性 UUID（md5 摊平 8-4-4-4-12）。同 chunk_id 恒得同点 id（幂等 upsert）。 */
 function chunkIdToPointId(chunkId: string): string {

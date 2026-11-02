@@ -10,6 +10,7 @@
  */
 
 import { join } from 'node:path';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getDbAdapter, type DbAdapter } from '@agent-harness/core';
 
@@ -62,9 +63,6 @@ function buildAad(opts?: { tenantId?: string; rowId?: string }): Buffer {
 }
 
 export function encryptApiKey(plaintext: string, opts?: { tenantId?: string; rowId?: string }): string {
-  const { createCipheriv, randomBytes } =
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    require('node:crypto') as typeof import('node:crypto');
   const key = getBuildTimeCryptoKey();
   const iv = randomBytes(12);
   const version = Buffer.from([0x01]); // 版本前缀
@@ -116,9 +114,6 @@ function tryDecrypt(raw: Buffer, versionOffset: number, aad?: Buffer): string {
   const iv = raw.subarray(versionOffset, versionOffset + 12);
   const tag = raw.subarray(raw.length - 16);
   const ct = raw.subarray(versionOffset + 12, raw.length - 16);
-  const { createDecipheriv } =
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    require('node:crypto') as typeof import('node:crypto');
   const decipher = createDecipheriv('aes-256-gcm', getBuildTimeCryptoKey(), iv);
   // 仅当 AAD 非空才设置（加密端同样逻辑）；新旧格式在「无 opts」场景下 AAD 均为空，天然一致。
   if (aad && aad.length > 0) decipher.setAAD(aad);

@@ -12,9 +12,9 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { WorkflowRun, StepTraceNode } from './types';
-import { quarantineCorruptFile } from '../store-safety';
-import { getDbAdapter, type DbAdapter } from '../db-adapter';
+import type { WorkflowRun, StepTraceNode } from './types.js';
+import { quarantineCorruptFile } from '../store-safety.js';
+import { getDbAdapter, type DbAdapter } from '../db-adapter.js';
 
 export interface WorkflowStore {
   save(run: WorkflowRun): Promise<void>;

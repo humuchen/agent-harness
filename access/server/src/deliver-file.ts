@@ -20,7 +20,7 @@ import { promises as fsp } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getRunUser } from '@agent-harness/core';
 import { objectParams, type ToolRegistry } from '@agent-harness/core';
-import { getArtifactStore } from './artifact-store';
+import { getArtifactStore } from './artifact-store.js';
 
 /** 交付工件的 kind（前端/检索按 runId 过滤即可，kind 用于区分来源）。 */
 export const DELIVER_FILE_KIND = 'agent-file-delivery';

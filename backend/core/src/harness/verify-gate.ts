@@ -16,11 +16,11 @@
  * 事件与副作用顺序与拆分前逐字一致：verify:result 发射点、自检提示注入点、
  * runLoop 重跑点、warn 告警点全部保持原位。
  */
-import type { VerifyContext, Verifier } from '../verify';
-import type { Memory } from '../memory';
-import { logError } from '../telemetry';
-import { ERROR_PREFIX, VERIFY_FAILED_PREFIX } from '../workflow/step-output';
-import type { HarnessEvent } from './types';
+import type { VerifyContext, Verifier } from '../verify.js';
+import type { Memory } from '../memory.js';
+import { logError } from '../telemetry.js';
+import { ERROR_PREFIX, VERIFY_FAILED_PREFIX } from '../workflow/step-output.js';
+import type { HarnessEvent } from './types.js';
 
 type Emit = (e: HarnessEvent) => void;
 

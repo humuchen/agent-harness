@@ -9,8 +9,8 @@
  * 同日同计划重复导入/拉取覆盖更新，不产生重复行。
  */
 
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 /** 单条消耗记录（导入 / 拉取共用的输入形态）。 */
 export interface AdSpendInput {

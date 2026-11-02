@@ -6,10 +6,10 @@
  * 空数据时返回空数组或 0 值，绝不填充虚构数值。
  */
 import type { ToolRegistry } from '@agent-harness/core';
-import { runAnalyticsQuery } from '../analytics/analytics-service';
-import { markArrived, markCompleted } from '../repo/schedule-repo';
-import { errorResult } from '../infra/errors';
-import type { AnalyticsQuery } from '../analytics/types';
+import { runAnalyticsQuery } from '../analytics/analytics-service.js';
+import { markArrived, markCompleted } from '../repo/schedule-repo.js';
+import { errorResult } from '../infra/errors.js';
+import type { AnalyticsQuery } from '../analytics/types.js';
 
 export function registerAnalyticsTool(tools: ToolRegistry): void {
   // 1) 查询工具

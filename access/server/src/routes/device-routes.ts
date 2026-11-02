@@ -6,9 +6,9 @@
  * deps 注入 server.ts 闭包（guard），未命中返回 false 由主分发器继续。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDeviceStore } from '../device-store';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { getDeviceStore } from '../device-store.js';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface DeviceRouteDeps {
   guard: (

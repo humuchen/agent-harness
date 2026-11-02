@@ -1,8 +1,8 @@
 // 终态判定段（runInner 段 E8）：无工具调用时的三种走向——requireCompletion 空响应
 // 继续循环 / partial 断流兜底文案 / 正常最终答案。P1#21 H2 自 runInner 迁出，逐字等价。
 // 循环控制以动作枚举表达（与 output-gate 同一范式）。
-import type { Memory } from '../../memory';
-import { PARTIAL_NOTICE } from '../../workflow/step-output';
+import type { Memory } from '../../memory.js';
+import { PARTIAL_NOTICE } from '../../workflow/step-output.js';
 
 export interface FinalOutputInput {
   /** LLM 响应的三个被消费字段（调用方从 resp 解构透传）。 */

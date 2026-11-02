@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { createManualDraft, submitContent, screenContent, CONTENT_PLATFORMS } from '../services/content-service';
-import { errorResult } from '../infra/errors';
+import { createManualDraft, submitContent, screenContent, CONTENT_PLATFORMS } from '../services/content-service.js';
+import { errorResult } from '../infra/errors.js';
 
 /**
  * content_draft：Agent 起草平台内容（先审后发闸门内的入口）。

@@ -10,10 +10,10 @@
  * 语义 hybrid（embedding）暂不强制：话术/案例量级小、可解释优先；如需可复用 kb-repo 的 embed 路径。
  */
 
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
 import { safeJsonParse } from '@agent-harness/core';
-import { type ScriptRecord, type CaseRecord } from './types';
+import { type ScriptRecord, type CaseRecord } from './types.js';
 
 /** P1#24：JSON 安全解析委托 kit 的 safeJsonParse（非法 JSON / 非数组 → undefined）。 */
 function safeJsonArray(v: unknown): string[] | undefined {

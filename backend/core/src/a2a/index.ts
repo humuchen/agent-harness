@@ -6,5 +6,5 @@
  * http 跨主机投递到远端 /api/a2a/tasks。
  */
 
-export * from './types';
-export * from './transport';
+export * from './types.js';
+export * from './transport.js';

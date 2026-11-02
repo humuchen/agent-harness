@@ -27,10 +27,10 @@
  * 出参：结构化决策（answers 含 choice / probabilities / confidence / score / noul 等），归一化透传。
  */
 
-import { objectParams, ToolRegistry } from '../tools';
-import { structLog } from '../telemetry';
-import { getRunUser } from '../run-user';
-import { emitRunEvent } from '../run-events';
+import { objectParams, ToolRegistry } from '../tools.js';
+import { structLog } from '../telemetry.js';
+import { getRunUser } from '../run-user.js';
+import { emitRunEvent } from '../run-events.js';
 
 export type JevQuestionType = 'choice' | 'score' | 'noul';
 

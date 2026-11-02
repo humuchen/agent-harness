@@ -1,6 +1,6 @@
-import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types';
-import { recordTokenCacheQuery } from './token-cache-metrics';
-import { CircuitBreaker, CircuitBreakerOpen } from '../circuit-breaker';
+import type { LLMResponse, Message, ToolCall, ToolSchema, TokenUsage } from '../types.js';
+import { recordTokenCacheQuery } from './token-cache-metrics.js';
+import { CircuitBreaker, CircuitBreakerOpen } from '../circuit-breaker.js';
 
 /**
  * 统一退避：指数退避 + jitter，优先尊重 Retry-After 响应头（秒）。
@@ -279,7 +279,7 @@ export interface ChatCallOptions {
   // 推理过程流式回调（可选）：捕获 delta.reasoning（部分推理模型），用于「思考」折叠块。
   onReasoning?: (delta: string) => void;
   // P1-2: CircuitBreaker 实例（可选）。传入后自动包裹调用，熔断打开时抛出 CircuitBreakerOpen。
-  circuitBreaker?: import('../circuit-breaker').CircuitBreaker;
+  circuitBreaker?: import('../circuit-breaker.js').CircuitBreaker;
 }
 
 // 这些 HTTP 状态视为限流 / 瞬时故障，可重试（免费档常遇 429）。

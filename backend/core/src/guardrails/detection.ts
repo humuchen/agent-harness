@@ -1,6 +1,6 @@
 // 提示词注入检测（归一化 + 短语集，分敏感度；可选语义级打分器叠加）。P1#21 拆分自 guardrails.ts。
-import type { GuardrailPolicy, InjectionSensitivity } from './types';
-import { customInjectionScorers } from './registry';
+import type { GuardrailPolicy, InjectionSensitivity } from './types.js';
+import { customInjectionScorers } from './registry.js';
 
 // 完整句子级短语（低敏感度即启用）。
 const PHRASES_LOW = [

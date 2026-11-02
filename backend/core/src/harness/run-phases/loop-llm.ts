@@ -2,14 +2,14 @@
 // P1#21 H3 自 runInner 迁出：溢出重试循环、abort 竞速、未知工具 schema 扩展、
 // 流式增量缓冲，数值与语义逐字等价。实例字段（overflowShrink / maxAcceptedPrompt）
 // 经返回值写回（与 usage-accounting 同模式），杜绝跨函数的实例字段隐式写。
-import type { LLM, LLMResponse, ToolSchema } from '../../types';
-import type { Message } from '../../types';
-import type { CircuitBreaker } from '../../circuit-breaker';
-import type { Memory } from '../../memory';
-import { isContextOverflowError } from '../context-window';
-import { sanitizeToolPairing } from '../message-sanitizer';
-import { withSpan, structLog } from '../../telemetry';
-import type { HarnessEvent } from '../types';
+import type { LLM, LLMResponse, ToolSchema } from '../../types.js';
+import type { Message } from '../../types.js';
+import type { CircuitBreaker } from '../../circuit-breaker.js';
+import type { Memory } from '../../memory.js';
+import { isContextOverflowError } from '../context-window.js';
+import { sanitizeToolPairing } from '../message-sanitizer.js';
+import { withSpan, structLog } from '../../telemetry.js';
+import type { HarnessEvent } from '../types.js';
 
 export interface LoopLlmInput {
   llm: LLM;

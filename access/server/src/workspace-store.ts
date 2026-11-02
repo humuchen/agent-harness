@@ -9,6 +9,9 @@
  * （Volatile / File），与 `RecipeStore` 同款。
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 /** 空间级配额（覆盖全局默认；0 / undefined = 不限）。 */
 export interface WorkspaceQuota {
   /** 单日最大 run 次数。 */
@@ -167,12 +170,9 @@ export class FileWorkspaceStore implements WorkspaceStore {
   private load(): void {
     if (this.loaded) return;
     this.loaded = true;
-    // 延迟 require，保持模块顶层零副作用（便于单测注入临时路径）。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('node:fs') as typeof import('node:fs');
-    if (!this.file || !fs.existsSync(this.file)) return;
+    if (!this.file || !existsSync(this.file)) return;
     try {
-      const arr = JSON.parse(fs.readFileSync(this.file, 'utf-8')) as Workspace[];
+      const arr = JSON.parse(readFileSync(this.file, 'utf-8')) as Workspace[];
       for (const w of arr) {
         if (w?.id) {
           this.map.set(w.id, {
@@ -188,15 +188,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
 
   private persist(): void {
     if (!this.file) return;
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('node:fs') as typeof import('node:fs');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const path = require('node:path') as typeof import('node:path');
     try {
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      mkdirSync(dirname(this.file), { recursive: true });
       const tmp = this.file + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify([...this.map.values()], null, 2), 'utf-8');
-      fs.renameSync(tmp, this.file);
+      writeFileSync(tmp, JSON.stringify([...this.map.values()], null, 2), 'utf-8');
+      renameSync(tmp, this.file);
     } catch {
       // 持久化失败不影响内存态运行。
     }

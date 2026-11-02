@@ -16,7 +16,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { sendJsonRoute } from './respond';
+import { sendJsonRoute } from './respond.js';
 
 export interface EdgeRouteDeps {
   buildState: (req: IncomingMessage) => unknown;

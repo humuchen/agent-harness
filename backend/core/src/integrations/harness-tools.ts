@@ -1,5 +1,5 @@
-import { ToolRegistry, objectParams } from '../tools';
-import type { EnvPlatform } from './env-platform';
+import { ToolRegistry, objectParams } from '../tools.js';
+import type { EnvPlatform } from './env-platform.js';
 
 /**
  * 将环境自助服务工具注册到 Agent 的 ToolRegistry。

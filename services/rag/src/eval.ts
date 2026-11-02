@@ -14,8 +14,8 @@
  * - CI：集成到测试流程
  */
 
-import type { RetrieveResult } from './store';
-import { tokenize } from './embed';
+import type { RetrieveResult } from './store.js';
+import { tokenize } from './embed.js';
 
 // ---------------------------------------------------------------------------
 // 评估数据集格式

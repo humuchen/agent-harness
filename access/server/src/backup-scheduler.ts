@@ -11,10 +11,8 @@ import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _meta = (globalThis as any).import?.meta;
 const BACKUP_SCRIPT = join(
-  dirname(_meta?.url ? fileURLToPath(_meta.url) : __dirname),
+  dirname(fileURLToPath(import.meta.url)),
   '..', '..', 'scripts', 'backup-db.cjs'
 );
 const INTERVAL_MS = Number(process.env.AH_BACKUP_INTERVAL_MS) || 86_400_000; // 24h

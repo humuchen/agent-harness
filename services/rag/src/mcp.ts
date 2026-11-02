@@ -13,13 +13,13 @@
  */
 
 import { createInterface } from 'node:readline';
-import { createVectorStore, type VectorStore } from './store';
-import { createEmbedder, EmbeddingProvider } from './embed';
-import { ingestDocument, IngestInput } from './ingest';
-import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
-import { generateAnswer, createLLM, LLMProvider } from './generate';
-import { QueryCache } from './cache';
-import { rerankWithApi, mmrRerank } from './rerank';
+import { createVectorStore, type VectorStore } from './store.js';
+import { createEmbedder, EmbeddingProvider } from './embed.js';
+import { ingestDocument, IngestInput } from './ingest.js';
+import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve.js';
+import { generateAnswer, createLLM, LLMProvider } from './generate.js';
+import { QueryCache } from './cache.js';
+import { rerankWithApi, mmrRerank } from './rerank.js';
 
 export interface RagMcpOptions {
   tenantId: string;

@@ -10,9 +10,9 @@
  * - agentRef 既可是已注册 agent 的 id（字符串），也可是内联 AgentCard（同进程 / A2A 自描述）。
  */
 
-import type { AgentCard } from '../agents/types';
-import type { Team } from '../teams';
-import type { OutputIssue } from './step-output';
+import type { AgentCard } from '../agents/types.js';
+import type { Team } from '../teams/index.js';
+import type { OutputIssue } from './step-output.js';
 
 /**
  * 单个 step 的运行态。

@@ -12,10 +12,10 @@
  *
  * 切换后端只需设 `ENV_PLATFORM=harness|k8s|local`（见 `createEnvPlatform`）。
  */
-import type { EphemeralEnvInput, EnvHandle } from './env-platform.types';
-import { HarnessClient } from './harness-client';
-import { LocalEnvPlatform } from './local-env-platform';
-import { KubernetesEnvPlatform } from './k8s-env-platform';
+import type { EphemeralEnvInput, EnvHandle } from './env-platform.types.js';
+import { HarnessClient } from './harness-client.js';
+import { LocalEnvPlatform } from './local-env-platform.js';
+import { KubernetesEnvPlatform } from './k8s-env-platform.js';
 
 export type EnvPlatformKind = 'harness' | 'k8s' | 'local';
 

@@ -13,13 +13,18 @@
 // 供 UI / 可观测 / 审计使用。
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { scrubEnv, wireAbort, createCappedAccumulator, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox';
-import { detectCapabilities, type OSSandboxCapabilities } from './detect';
-import { buildHelperArgs, buildUnshareFallbackArgs } from './args';
-import { normalizeProfile } from './policy';
-import { resolveProfile, PROFILE_DEFAULT_ACTION } from './profiles';
-import type { OSSandboxProfile } from './types';
-import { structLog, incCounter } from '../telemetry';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留「延迟 require 打破加载期循环依赖」的语义
+// （降级路径按需加载 builtins/sandbox 的 LocalSandboxExecutor）。
+const require = createRequire(import.meta.url);
+import { scrubEnv, wireAbort, createCappedAccumulator, type SandboxExecutor, type SandboxExecRequest, type SandboxExecResult } from '../builtins/sandbox.js';
+import { detectCapabilities, type OSSandboxCapabilities } from './detect.js';
+import { buildHelperArgs, buildUnshareFallbackArgs } from './args.js';
+import { normalizeProfile } from './policy.js';
+import { resolveProfile, PROFILE_DEFAULT_ACTION } from './profiles.js';
+import type { OSSandboxProfile } from './types.js';
+import { structLog, incCounter } from '../telemetry.js';
 
 export type OSBackend = 'os-helper' | 'os-unshare' | 'os-fallback-local';
 

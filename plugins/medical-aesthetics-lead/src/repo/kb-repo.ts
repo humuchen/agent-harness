@@ -15,9 +15,9 @@
  * 4. 可选语义 hybrid：若查询与项目均带 embedding，则叠加余弦相似度（未配置嵌入服务时跳过，绝不伪造向量）。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
-import { getConfig } from '../config';
-import { type ProjectRecord, type IntentMapping } from './types';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { type ProjectRecord, type IntentMapping } from './types.js';
 
 /** DB 行 → 领域模型（aliases/faq/embedding 等为 JSON 文本列，需解析）。 */
 function rowToProject(r: Record<string, unknown>): ProjectRecord {

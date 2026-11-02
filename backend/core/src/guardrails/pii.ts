@@ -1,8 +1,8 @@
 // PII 脱敏（输出侧）。P1#21 拆分自 guardrails.ts。
 // ipv4 mask 依赖 egress 的 isPrivateIp（私网/保留段才打码——版本号/公网地址不是隐私）。
-import type { GuardrailPolicy, PiiRedactor } from './types';
-import { isPrivateIp } from './egress';
-import { getModulePolicy } from './policy';
+import type { GuardrailPolicy, PiiRedactor } from './types.js';
+import { isPrivateIp } from './egress.js';
+import { getModulePolicy } from './policy.js';
 
 /** Luhn 校验：真实银行卡号必过；时间戳 / 订单号等纯数字几乎不过（误杀防护核心）。 */
 function luhnValid(digits: string): boolean {

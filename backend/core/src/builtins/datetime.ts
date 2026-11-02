@@ -1,4 +1,4 @@
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 /** 用 Intl 把 Date 格式化为人类可读字符串；非法时区回退 UTC。 */
 function formatIn(d: Date, tz?: string): string {

@@ -15,7 +15,7 @@
  */
 
 import { existsSync, renameSync } from 'node:fs';
-import { structLog, emitAlert } from './telemetry';
+import { structLog, emitAlert } from './telemetry.js';
 
 /**
  * 隔离一个损坏的数据文件并发出告警。

@@ -1,4 +1,4 @@
-import type { ToolCall } from './types';
+import type { ToolCall } from './types.js';
 
 /**
  * 运行期自动验证门禁（P0-2）。

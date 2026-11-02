@@ -8,7 +8,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
-import { cfgNum, DEFAULTS } from '../config-defaults';
+import { cfgNum, DEFAULTS } from '../config-defaults.js';
 import {
   parseSessionPageQuery,
   listChatSessionsPage,
@@ -16,11 +16,11 @@ import {
   getChatSession,
   renameChatSession,
   deleteChatSession
-} from '../chat-sessions';
-import { getHistoryStore } from '../history-store';
-import { registerProviderKeyRoutes } from '../provider-keys';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+} from '../chat-sessions.js';
+import { getHistoryStore } from '../history-store.js';
+import { registerProviderKeyRoutes } from '../provider-keys.js';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface ChatDataRouteDeps {
   guard: (

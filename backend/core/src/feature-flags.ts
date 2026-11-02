@@ -8,7 +8,7 @@
  * - 类型安全
  *
  * 使用方式:
- *   import { features } from './feature-flags';
+ *   import { features } from './feature-flags.js';
  *
  *   if (features.isEnabled('contextCompression')) {
  *     // 使用压缩功能

@@ -1,3 +1,3 @@
-export * from './types';
-export * from './store';
-export * from './registry';
+export * from './types.js';
+export * from './store.js';
+export * from './registry.js';

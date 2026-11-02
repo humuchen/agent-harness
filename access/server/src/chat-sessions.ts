@@ -14,8 +14,8 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { getHistoryStore } from './history-store';
-import { publishChatEvent } from './chat-bus';
+import { getHistoryStore } from './history-store.js';
+import { publishChatEvent } from './chat-bus.js';
 
 /** 无归属旧数据的兜底桶（仅服务端保留，普通用户不可见）。 */
 export const LEGACY_OWNER = 'legacy';

@@ -13,18 +13,18 @@
  * 任何其它可观测副作用（emit / structLog / telemetry / memory.setContextUsage）
  * 均在本函数内部按原顺序发生。
  */
-import type { LLMResponse, Message, TokenUsage, ToolSchema } from '../types';
-import type { Memory } from '../memory';
-import { structLog, recordTokensTenant, recordCostTenant } from '../telemetry';
-import { estimateCostDetailed } from '../llm/pricing';
-import { getTokenCacheStats } from '../llm/token-cache-metrics';
+import type { LLMResponse, Message, TokenUsage, ToolSchema } from '../types.js';
+import type { Memory } from '../memory.js';
+import { structLog, recordTokensTenant, recordCostTenant } from '../telemetry.js';
+import { estimateCostDetailed } from '../llm/pricing.js';
+import { getTokenCacheStats } from '../llm/token-cache-metrics.js';
 import {
   estimateMessageTokens,
   estimateTokens,
   estimateToolsTokens
-} from '../llm/token-estimator';
-import { contextWindowFor } from './context-window';
-import type { HarnessEvent } from './types';
+} from '../llm/token-estimator.js';
+import { contextWindowFor } from './context-window.js';
+import type { HarnessEvent } from './types.js';
 
 /** 记账函数的事件发射器（runInner 的防御性 emit 包装）。 */
 type Emit = (e: HarnessEvent) => void;

@@ -10,8 +10,8 @@
  *   （复评抛错），评分不可篡改。
  */
 import { randomBytes } from 'node:crypto';
-import { getDb } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export interface TicketRow {
   ticketId: string;

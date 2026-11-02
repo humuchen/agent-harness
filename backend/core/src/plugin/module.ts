@@ -13,8 +13,8 @@
  * 插件只依赖 PluginContext（注入面），与 core 其它源码零耦合；core 不出现任何业务词。
  */
 
-import type { PluginContext } from './context';
-import type { PluginManifest } from './manifest';
+import type { PluginContext } from './context.js';
+import type { PluginManifest } from './manifest.js';
 
 export interface PluginModule {
   /** 能力清单（启用时转成 AgentCard 进入路由；与 PluginLoader 同款闭环）。 */

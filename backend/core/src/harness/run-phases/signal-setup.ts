@@ -1,5 +1,5 @@
 // run 装配段：组合「外部取消」与「超时」为单一信号（P1#21 自 runInner 迁出，逐字等价）。
-import type { RunSignalSetup } from '../run-context';
+import type { RunSignalSetup } from '../run-context.js';
 
 /**
  * @param externalSignal 调用方传入的取消信号（opts.signal；可 undefined）。

@@ -9,7 +9,7 @@ import {
   rateTicket,
   listSlaBreachedIds,
   type TicketRow,
-} from '../repo/ticket-repo';
+} from '../repo/ticket-repo.js';
 
 /** 创建工单（返回工单号；SLA 按 priority 分级写入）。 */
 export function openTicket(input: {

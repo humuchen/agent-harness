@@ -15,13 +15,13 @@ import {
   ensureDefaultWorkspace,
   type Workspace,
   type WorkspaceStore
-} from '../workspace-store';
-import { getArtifactStore } from '../artifact-store';
-import { getSandboxManager } from '../browser-sandbox';
-import { listChatSessions } from '../chat-sessions';
-import { markdownPreviewHtml } from '../markdown-preview';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+} from '../workspace-store.js';
+import { getArtifactStore } from '../artifact-store.js';
+import { getSandboxManager } from '../browser-sandbox.js';
+import { listChatSessions } from '../chat-sessions.js';
+import { markdownPreviewHtml } from '../markdown-preview.js';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface CollabRouteDeps {
   guard: (

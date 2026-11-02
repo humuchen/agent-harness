@@ -4,9 +4,9 @@
  * 把本地建好的预约单**真实同步**到 HIS（院区/号源/预约的权威来源）。未配置即 fail-closed。
  */
 
-import { HttpClient } from '../infra/http';
-import { getConfig } from '../config';
-import { notConfigured } from '../infra/errors';
+import { HttpClient } from '../infra/http.js';
+import { getConfig } from '../config.js';
+import { notConfigured } from '../infra/errors.js';
 
 /** 同步到 HIS 的预约单载荷。 */
 export interface HisAppointmentSync {

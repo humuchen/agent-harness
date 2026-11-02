@@ -43,17 +43,17 @@ import {
   issueCsrfToken,
   REFRESH_TTL_MS,
   type AccountResult
-} from '../accounts';
+} from '../accounts.js';
 import {
   readBody,
   sendJsonError,
   securityHeaders,
   safeEqualString
-} from '../http-helpers';
-import { renderOAuthTransitionHtml } from '../views';
-import { rateLimited } from '../rate-limit';
-import { cfgNum } from '../config-defaults';
-import { isCookieAuth, type Action, type AuthContext } from '../authz';
+} from '../http-helpers.js';
+import { renderOAuthTransitionHtml } from '../views.js';
+import { rateLimited } from '../rate-limit.js';
+import { cfgNum } from '../config-defaults.js';
+import { isCookieAuth, type Action, type AuthContext } from '../authz.js';
 
 /** 主分发器注入的闭包依赖（见文件头「拆分约定」）。 */
 export interface AccountRouteDeps {

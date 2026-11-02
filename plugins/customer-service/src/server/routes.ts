@@ -5,13 +5,13 @@
  */
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
 import { readJsonBody, safeEqual, jsonReply } from '@agent-harness/core';
-import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo';
-import { listSessions } from '../repo/session-repo';
-import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo';
-import { claim as claimHandoff } from '../services/session-service';
-import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service';
-import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo';
-import { getConfig } from '../config';
+import { listTickets, getTicket, updateTicket } from '../repo/ticket-repo.js';
+import { listSessions } from '../repo/session-repo.js';
+import { listSeats, upsertSeat, setSeatStatus, setSeatMaxConcurrent } from '../repo/seat-repo.js';
+import { claim as claimHandoff } from '../services/session-service.js';
+import { search as searchKbSvc, add as addKbSvc } from '../services/kb-service.js';
+import { listPendingReminders, updateReminderStatus } from '../repo/reminder-repo.js';
+import { getConfig } from '../config.js';
 
 /** P1#24：JSON 响应助手委托 kit 的 jsonReply（三插件统一口径）；调用点保持 json 名不变。 */
 const json = jsonReply;

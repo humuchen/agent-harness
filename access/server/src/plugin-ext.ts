@@ -18,7 +18,7 @@ import type {
   WebExtensionHost,
   PluginUIView,
 } from '@agent-harness/core';
-import { publishReminder, publishToRole } from './reminder-bus';
+import { publishReminder, publishToRole } from './reminder-bus.js';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;

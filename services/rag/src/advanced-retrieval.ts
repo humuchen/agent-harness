@@ -12,10 +12,10 @@
  * - 不做缓存/去重跨调用状态：每次请求独立（缓存由 server 层 QueryCache 承担）。
  */
 
-import { retrieve, type RetrieveRequest, type RetrieveResponse } from './retrieve';
-import type { RetrieveResult, VectorStore } from './store';
-import type { EmbeddingProvider } from './embed';
-import type { LLMProvider } from './generate';
+import { retrieve, type RetrieveRequest, type RetrieveResponse } from './retrieve.js';
+import type { RetrieveResult, VectorStore } from './store.js';
+import type { EmbeddingProvider } from './embed.js';
+import type { LLMProvider } from './generate.js';
 
 /** multi-query 改写条数上限（1–5，缺省 3；含原查询共 n+1 路检索）。 */
 const MULTI_QUERY_MAX = 5;

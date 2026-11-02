@@ -1,4 +1,4 @@
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 /**
  * 一个「技能」= 可组合的复合能力包：把一组工具 + 一段执行指引 + 触发词

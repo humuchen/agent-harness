@@ -13,9 +13,9 @@
  * （'os' 在 Linux+helper 下为命名空间/seccomp 隔离，否则自动降级本地硬化进程，符合「一切降级可用」）。
  */
 
-import type { AgentCard } from '../agents/types';
-import type { GuardrailPolicy } from '../guardrails';
-import { strongerIsolation, type IsolationLevel } from './types';
+import type { AgentCard } from '../agents/types.js';
+import type { GuardrailPolicy } from '../guardrails.js';
+import { strongerIsolation, type IsolationLevel } from './types.js';
 
 /** 强合规、要求「数据不出域」的租户行业域；跨行业 agent 对其执行须强制强隔离。 */
 const STRICT_DOMAINS = new Set<string>(['medical-aesthetics', 'healthcare', 'finance']);

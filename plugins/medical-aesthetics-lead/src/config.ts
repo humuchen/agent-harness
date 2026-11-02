@@ -194,7 +194,7 @@ function resolveDataDir(): string {
 
 /** 向上查找仓库根（以存在 access/server 目录为判定），返回 access/server/data/ma-lead 绝对路径。 */
 function findRepoServerDataDir(): string | null {
-  let dir = __dirname;
+  let dir = import.meta.dirname;
   for (let i = 0; i < 8; i++) {
     if (existsSync(join(dir, 'access', 'server'))) {
       return join(dir, 'access', 'server', 'data', 'ma-lead');

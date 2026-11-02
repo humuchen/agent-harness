@@ -1,6 +1,10 @@
 import { promises as fsp } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { objectParams, ToolRegistry } from '../tools';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留可选依赖（exceljs / pptxgenjs）的同步懒加载语义。
+const require = createRequire(import.meta.url);
+import { objectParams, ToolRegistry } from '../tools.js';
 
 /**
  * 文件导出工具（P-交付闭环）：把结构化内容生成**真实文件**（.xlsx / .pptx / .csv），

@@ -77,12 +77,14 @@ test('audit：文件写失败计数告警（句柄写入抛错时 stdout 出现 
 });
 
 test('audit：超过 AUDIT_LOG_MAX_BYTES 触发轮转（<file>.1 生成）', async () => {
-  // 用独立模块实例（env 在 require 前设置才生效）
+  // 用独立模块实例（env 在模块加载前设置才生效）。
+  // ESM 产物：require(esm) 不经过 require.cache（删除缓存无法重建实例），
+  // 改用带 query 的动态 import 强制获取独立模块实例。
   const file = path.join(os.tmpdir(), `ah-audit-rot-${process.pid}-${Date.now()}.jsonl`);
   process.env.AUDIT_LOG_MAX_BYTES = '400';
-  delete require.cache[distAudit];
+  const { pathToFileURL } = require('node:url');
   try {
-    const mod = require(distAudit);
+    const mod = await import(pathToFileURL(distAudit).href + '?rotate-test=1');
     await mod.enableAuditFile(file);
     for (let i = 0; i < 20; i++) {
       await mod.audit({ action: 'rotate.test', outcome: 'info', target: `entry-${i}` });
@@ -93,7 +95,6 @@ test('audit：超过 AUDIT_LOG_MAX_BYTES 触发轮转（<file>.1 生成）', asy
     assert.ok(rotated.length >= 1, '轮转文件非空');
   } finally {
     delete process.env.AUDIT_LOG_MAX_BYTES;
-    delete require.cache[distAudit];
     for (const f of [file, file + '.1']) {
       try { fs.unlinkSync(f); } catch { /* ignore */ }
     }

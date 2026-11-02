@@ -5,9 +5,9 @@
  * 由调用方据实标记同步状态，绝不假装成功。
  */
 
-import { HttpClient } from '../infra/http';
-import { getConfig } from '../config';
-import { notConfigured } from '../infra/errors';
+import { HttpClient } from '../infra/http.js';
+import { getConfig } from '../config.js';
+import { notConfigured } from '../infra/errors.js';
 
 /** 投递到 CRM 的客资载荷（与 ma_lead 关键列对齐；不含对话原文，避免过量隐私出网）。 */
 export interface CrmLeadSync {

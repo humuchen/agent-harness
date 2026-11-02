@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
-import { DEFAULTS } from './config-defaults';
+import { DEFAULTS } from './config-defaults.js';
 
 /** 上传目录（相对于进程 cwd 或 DATA_DIR）。 */
 const UPLOAD_DIR =

@@ -9,7 +9,7 @@
 // 设计约定（与 agents/router 一致）：全字段可选、向后兼容。tenantCtx 为空
 // 时退化为「通用 / 全局默认策略」—— 今天的零租户行为完全不变。
 
-import { sanitizeKey } from './memory-store';
+import { sanitizeKey } from './memory-store.js';
 
 export interface TenantContext {
   /** 归一化后的租户标识（经 sanitizeKey，杜绝路径穿越 / 注入）。 */

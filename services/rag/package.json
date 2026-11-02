@@ -4,6 +4,7 @@
   "private": true,
   "description": "External RAG (retrieval-augmented generation) service for agent-harness: ingest + vector store + retrieve over HTTP/MCP.",
   "license": "MIT",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",

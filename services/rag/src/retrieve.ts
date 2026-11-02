@@ -11,10 +11,10 @@
  * - 所有读路径使用服务端重写的 tenant_id，严格租户内检索。
  */
 
-import { MemoryVectorStore, RetrieveResult, aclVisible, type Chunk, type VectorStore } from './store';
-import { EmbeddingProvider, tokenize } from './embed';
-import { Bm25Corpus } from './bm25';
-import { mmrRerank } from './rerank';
+import { MemoryVectorStore, RetrieveResult, aclVisible, type Chunk, type VectorStore } from './store.js';
+import { EmbeddingProvider, tokenize } from './embed.js';
+import { Bm25Corpus } from './bm25.js';
+import { mmrRerank } from './rerank.js';
 
 export interface RetrieveFilters {
   doc_ids?: string[];

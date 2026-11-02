@@ -12,7 +12,7 @@
 // 会优雅降级到硬化的 LocalSandboxExecutor（detach 进程组 + 超时强杀 + 擦除密钥环境），
 // 符合项目「一切降级可用」的约定。
 
-import type { SandboxExecRequest, SandboxExecResult } from '../builtins/sandbox';
+import type { SandboxExecRequest, SandboxExecResult } from '../builtins/sandbox.js';
 
 /** 可被隔离的 Linux 命名空间种类。 */
 export type NamespaceKind = 'user' | 'mount' | 'pid' | 'network' | 'ipc' | 'uts';

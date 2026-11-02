@@ -1,13 +1,13 @@
 // 自定义规则注册表（输入/输出/上下文感知输出/注入打分器）与 scope 收窄判定。
 // P1#21 拆分自 guardrails.ts。模块级注册表是设计约定（插件全局注册 + scope 收窄，
 // 非租户私有状态）——拆文件后必须保持同一实例：本模块是唯一真相源，checks.ts 引用。
-import { jevScoreInjection } from '../builtins/typesafe-jev';
+import { jevScoreInjection } from '../builtins/typesafe-jev.js';
 import type {
   ContextualOutputRule,
   GuardrailOutputContext,
   GuardrailPolicy,
   InjectionScorer,
-} from './types';
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // 自定义输入规则（向后兼容）

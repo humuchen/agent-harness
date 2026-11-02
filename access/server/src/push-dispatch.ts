@@ -22,7 +22,7 @@
 import { createSign, sign as cryptoSign } from 'node:crypto';
 import { connect as http2Connect, type ClientHttp2Session } from 'node:http2';
 import { logError, structLog } from '@agent-harness/core';
-import { getDeviceStore, type DeviceToken } from './device-store';
+import { getDeviceStore, type DeviceToken } from './device-store.js';
 
 /** 一条待投递的通知（与 FCM notification 载荷对齐的最小子集）。 */
 export interface PushPayload {

@@ -1,4 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留「延迟 require 打破加载期循环依赖」的语义
+// （见 createSandboxExecutor 对 ../sandbox/executor 的函数体内懒加载）。
+const require = createRequire(import.meta.url);
 
 /**
  * 沙箱执行器抽象（P0-1：OS 级执行隔离）。
@@ -439,7 +444,7 @@ export interface CreateSandboxOptions {
   dropUid?: number;
   dropGid?: number;
   /** OS 级沙箱策略（backend 为 'os' / 'native' 时生效）。 */
-  osProfile?: import('../sandbox/types').OSSandboxProfile;
+  osProfile?: import('../sandbox/types.js').OSSandboxProfile;
   /** 显式指定原生 helper 路径（backend 为 'os' / 'native' 时生效）。 */
   helperPath?: string;
 }
@@ -466,7 +471,7 @@ export function createSandboxExecutor(opts: CreateSandboxOptions = {}): SandboxE
   }
   if (backend === 'os' || backend === 'native') {
     // 延迟到函数体内引入，避免与 OS 沙箱模块形成加载期循环依赖。
-    const { OSSandboxExecutor } = require('../sandbox/executor') as typeof import('../sandbox/executor');
+    const { OSSandboxExecutor } = require('../sandbox/executor') as typeof import('../sandbox/executor.js');
     return new OSSandboxExecutor(opts.osProfile, { helperPath: opts.helperPath });
   }
   return new LocalSandboxExecutor({ dropUid: opts.dropUid, dropGid: opts.dropGid });

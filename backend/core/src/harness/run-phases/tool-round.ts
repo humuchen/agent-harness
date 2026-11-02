@@ -17,17 +17,17 @@
  * abort/护栏拦截/去重/截断语义由既有专项测试覆盖（harness*.test.cjs 的工具循环 +
  * 并发 + 去重 + 中止用例）。
  */
-import type { LLMResponse, ToolCall } from '../../types';
-import type { Memory } from '../../memory';
-import type { ToolRegistry } from '../../tools';
-import type { GuardrailPolicy } from '../../guardrails';
-import { checkToolArgsAsync } from '../../guardrails';
-import { incCounter, recordError, structLog } from '../../telemetry';
-import { hooks } from '../../hooks';
-import type { HarnessEvent } from '../types';
-import { executeToolWithRace } from '../tool-executor';
-import { MAX_STEPS_NOTICE } from '../../workflow/step-output';
-import { estimateTokens } from '../../llm/token-estimator';
+import type { LLMResponse, ToolCall } from '../../types.js';
+import type { Memory } from '../../memory.js';
+import type { ToolRegistry } from '../../tools.js';
+import type { GuardrailPolicy } from '../../guardrails.js';
+import { checkToolArgsAsync } from '../../guardrails.js';
+import { incCounter, recordError, structLog } from '../../telemetry.js';
+import { hooks } from '../../hooks.js';
+import type { HarnessEvent } from '../types.js';
+import { executeToolWithRace } from '../tool-executor.js';
+import { MAX_STEPS_NOTICE } from '../../workflow/step-output.js';
+import { estimateTokens } from '../../llm/token-estimator.js';
 
 /** 跨 runLoop 迭代保留的工具轮状态（调用方创建并逐轮传入同一对象，函数内写回）。 */
 export interface ToolRoundState {

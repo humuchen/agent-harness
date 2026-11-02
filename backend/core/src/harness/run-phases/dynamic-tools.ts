@@ -1,9 +1,9 @@
 // 动态工具选择（默认开启，DYNAMIC_TOOLS=false 关闭）：按当前用户输入的相关性
 // 从全量工具中选出子集，降低简单输入首呼时全量工具 schema 的固定开销。
 // 执行仍走全量注册表，仅「发送给 LLM 的 schema」做裁剪。P1#21 自 runInner 迁出，逐字等价。
-import type { ToolSchema } from '../../types';
-import { selectToolsForInput } from '../../tools';
-import type { StepToolsSelection } from '../run-context';
+import type { ToolSchema } from '../../types.js';
+import { selectToolsForInput } from '../../tools.js';
+import type { StepToolsSelection } from '../run-context.js';
 
 export interface DynamicToolsInput {
   allSchemas: ToolSchema[];

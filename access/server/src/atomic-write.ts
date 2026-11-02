@@ -9,7 +9,7 @@
  * Node 的 fs/promises rename 在 Windows 上会因文件占用而失败，
  * 故同步版同时覆盖两种场景：失败时回退到直接写（避免部署卡死）。
  */
-import { writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, renameSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 /**
@@ -44,7 +44,3 @@ export function atomicWriteJson(
 }
 
 /** 仅删除临时文件（上述 catch 分支用）。 */
-function unlinkSync(path: string): void {
-  const fs = require('node:fs') as typeof import('node:fs');
-  fs.unlinkSync(path);
-}

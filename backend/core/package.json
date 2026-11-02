@@ -2,6 +2,7 @@
   "name": "@agent-harness/core",
   "version": "1.0.0",
   "description": "Minimal, runnable TypeScript LLM agent harness core (tool loop, memory, guardrails, telemetry, MCP).",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

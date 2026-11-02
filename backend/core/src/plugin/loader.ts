@@ -15,15 +15,15 @@
  * core 源码；server / web 宿主由运行时注入（PluginContext.server / PluginContext.web，可选）。
  */
 
-import { type AgentCard } from '../agents/types';
-import { AgentRegistry } from '../agents/registry';
-import type { AgentStore } from '../agents/store';
-import { VolatileAgentStore } from '../agents/store';
-import type { PluginManifest } from './manifest';
-import { PluginRegistryClient, type RegistryEntry } from './registry';
-import { verifyManifest } from './signature';
-import type { PluginModule } from './module';
-import { validatePluginManifest } from './manifest';
+import { type AgentCard } from '../agents/types.js';
+import { AgentRegistry } from '../agents/registry.js';
+import type { AgentStore } from '../agents/store.js';
+import { VolatileAgentStore } from '../agents/store.js';
+import type { PluginManifest } from './manifest.js';
+import { PluginRegistryClient, type RegistryEntry } from './registry.js';
+import { verifyManifest } from './signature.js';
+import type { PluginModule } from './module.js';
+import { validatePluginManifest } from './manifest.js';
 import {
   type PluginContext,
   type PluginLogger,
@@ -34,21 +34,25 @@ import {
   type PluginEventListener,
   type PluginEvent,
   getPluginToolRegistry,
-} from './context';
-import { getIntentRouter } from '../router/intent';
-import { ToolRegistry, type ToolFn } from '../tools';
-import { DagEngine } from '../workflow/engine';
-import type { StepExecutor } from '../workflow/engine';
-import type { WorkflowDef } from '../workflow/types';
-import { HttpA2ATransport } from '../a2a/transport';
-import type { TaskEnvelope, TaskResult } from '../a2a/types';
-import { getProcessCronScheduler } from '../cron/scheduler';
+} from './context.js';
+import { getIntentRouter } from '../router/intent.js';
+import { ToolRegistry, type ToolFn } from '../tools.js';
+import { DagEngine } from '../workflow/engine.js';
+import type { StepExecutor } from '../workflow/engine.js';
+import type { WorkflowDef } from '../workflow/types.js';
+import { HttpA2ATransport } from '../a2a/transport.js';
+import type { TaskEnvelope, TaskResult } from '../a2a/types.js';
+import { getProcessCronScheduler } from '../cron/scheduler.js';
 import {
   shouldUseWorkerSandbox,
   startWorkerSandbox,
   stopWorkerSandbox,
-} from './worker-sandbox';
-import { structLog, emitAlert } from '../telemetry';
+} from './worker-sandbox.js';
+import { structLog, emitAlert } from '../telemetry.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留同步读取 manifest.json 的 fs/path 懒加载语义。
+const require = createRequire(import.meta.url);
 
 /** 插件生命周期状态。 */
 export type PluginState = 'installed' | 'enabled' | 'disabled';

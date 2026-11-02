@@ -4,10 +4,10 @@
 // 消费方通常不需要直接创建 OSSandboxExecutor —— 通过 builtins/sandbox.ts 的
 // createSandboxExecutor({ backend: 'os', osProfile }) 即可在既有「逻辑沙箱」之后接入。
 
-export * from './types';
-export * from './capabilities';
-export * from './profiles';
-export * from './detect';
-export * from './policy';
-export * from './args';
-export * from './executor';
+export * from './types.js';
+export * from './capabilities.js';
+export * from './profiles.js';
+export * from './detect.js';
+export * from './policy.js';
+export * from './args.js';
+export * from './executor.js';

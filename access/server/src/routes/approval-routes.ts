@@ -7,9 +7,9 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
-import type { ApprovalPolicy, ApprovalTicket } from '../approval';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
+import type { ApprovalPolicy, ApprovalTicket } from '../approval.js';
 
 export interface ApprovalRouteDeps {
   guard: (

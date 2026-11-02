@@ -1,8 +1,12 @@
 /**
  * 会话仓储：参数化 SQL，真实落库（node:sqlite）。
  */
-import { getDb } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留「延迟加载 seat-repo，避免模块初始化顺序耦合」的语义。
+const require = createRequire(import.meta.url);
 
 export interface SessionRow {
   sessionId: string;
@@ -73,8 +77,8 @@ export function assignSeat(sessionId: string, seatId: string): SessionRow | null
     new Date().toISOString(),
     sessionId
   );
-  // 坐席负载联动（延迟 require 避免模块初始化顺序耦合）。
-  const { incrementSeatLoad } = require('./seat-repo') as typeof import('./seat-repo');
+  // 坐席负载联动（延迟加载避免模块初始化顺序耦合）。
+  const { incrementSeatLoad } = require('./seat-repo') as typeof import('./seat-repo.js');
   incrementSeatLoad(seatId);
   return getSession(sessionId);
 }
@@ -85,7 +89,7 @@ export function releaseSeat(sessionId: string): SessionRow | null {
   const current = getSession(sessionId);
   if (current?.assignedSeat) {
     // 延迟 require 避免与 seat-repo 循环依赖（seat-repo 不引 session-repo，此处仅为一致习惯）。
-    const { decrementSeatLoad } = require('./seat-repo') as typeof import('./seat-repo');
+    const { decrementSeatLoad } = require('./seat-repo') as typeof import('./seat-repo.js');
     decrementSeatLoad(current.assignedSeat);
   }
   db.prepare(`UPDATE cs_session SET assigned_seat=NULL, updated_at=? WHERE session_id=?`).run(

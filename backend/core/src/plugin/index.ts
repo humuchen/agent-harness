@@ -6,10 +6,10 @@
  * 由此无缝进入既有的路由 / 编排 / 隔离体系，与核心 agent 走完全相同代码路径。
  */
 
-export * from './manifest';
-export * from './normalize';
-export * from './context';
-export * from './module';
-export * from './loader';
-export * from './registry';
-export * from './signature';
+export * from './manifest.js';
+export * from './normalize.js';
+export * from './context.js';
+export * from './module.js';
+export * from './loader.js';
+export * from './registry.js';
+export * from './signature.js';

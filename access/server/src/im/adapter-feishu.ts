@@ -15,7 +15,7 @@
  */
 
 import { createHash, createDecipheriv } from 'node:crypto';
-import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types';
+import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types.js';
 
 const FEISHU_BASE = 'https://open.feishu.cn/open-apis';
 

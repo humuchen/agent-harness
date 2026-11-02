@@ -8,7 +8,7 @@
  *
  * 两者均为 Message[] 上的纯变换：只清洗发出去的副本，不动 Memory 里的存储。
  */
-import type { Message, ToolCall } from '../types';
+import type { Message, ToolCall } from '../types.js';
 
 /** 从对话历史收集所有工具调用（供验证上下文统计）。 */
 export function collectToolCalls(messages: Message[]): ToolCall[] {

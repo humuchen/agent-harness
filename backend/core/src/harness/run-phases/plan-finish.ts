@@ -1,11 +1,11 @@
 // 计划 propose 强制收尾段（runInner 段 E10，P5 优化）：预算耗尽时补一次「无工具」
 // 收尾 LLM 调用，基于已获取的信息直接输出计划/澄清 JSON，避免整轮调研白烧。
 // P1#21 自 runInner 迁出，语句顺序与语义逐字等价。
-import type { LLM, LLMResponse } from '../../types';
-import type { CircuitBreaker } from '../../circuit-breaker';
-import type { Memory } from '../../memory';
-import { sanitizeToolPairing } from '../message-sanitizer';
-import { structLog } from '../../telemetry';
+import type { LLM, LLMResponse } from '../../types.js';
+import type { CircuitBreaker } from '../../circuit-breaker.js';
+import type { Memory } from '../../memory.js';
+import { sanitizeToolPairing } from '../message-sanitizer.js';
+import { structLog } from '../../telemetry.js';
 
 export interface PlanFinalizeInput {
   memory: Memory;

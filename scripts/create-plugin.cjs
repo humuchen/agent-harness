@@ -70,6 +70,8 @@ const packageJson = {
   version: '0.1.0',
   private: true,
   description: `Agent-Harness 插件: ${PLUGIN_NAME}`,
+  // ESM 产物（与 monorepo 各包一致）：NodeNext + type:module，tsc 直接输出 ESM。
+  type: 'module',
   main: 'dist/index.js',
   scripts: {
     build: 'tsc -p tsconfig.json',

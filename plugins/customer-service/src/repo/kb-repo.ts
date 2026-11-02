@@ -2,8 +2,8 @@
  * 知识库仓储：参数化 SQL，真实落库（node:sqlite）。
  * 支持插入与按关键词/类别检索（词面匹配；语义检索留待 RAG 上游接入）。
  */
-import { getDb } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export interface KbRow {
   kbId: number;

@@ -15,9 +15,9 @@
  * 由调用方负责）；仅保证副作用顺序（监听器挂载/清理、竞速、计时器清理）与
  * 拆分前逐字一致。
  */
-import { withSpan } from '../telemetry';
-import type { ToolCall } from '../types';
-import type { ToolRegistry } from '../tools';
+import { withSpan } from '../telemetry.js';
+import type { ToolCall } from '../types.js';
+import type { ToolRegistry } from '../tools.js';
 
 /** 竞速结果（调用方按 kind 分派，语义与拆分前内联分支完全一致）。 */
 export type ToolRaceOutcome =

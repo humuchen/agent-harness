@@ -1,5 +1,5 @@
-import { ToolSchema } from './types';
-import { validateAgainstSchema } from './json-schema';
+import { ToolSchema } from './types.js';
+import { validateAgainstSchema } from './json-schema.js';
 
 export type ToolFn = (args: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> | unknown;
 

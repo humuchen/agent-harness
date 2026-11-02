@@ -10,8 +10,8 @@
  * 约定：所有传输都返回标准化的 `TaskResult`，调用方无需关心目标是本地还是远端。
  */
 
-import type { AgentCard } from '../agents/types';
-import type { TaskEnvelope, TaskResult } from './types';
+import type { AgentCard } from '../agents/types.js';
+import type { TaskEnvelope, TaskResult } from './types.js';
 
 /** 执行一个 agent 任务的回调（server 端注入：assembleAgent + harness.run）。 */
 export type A2ARunner = (

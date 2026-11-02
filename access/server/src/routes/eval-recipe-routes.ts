@@ -6,10 +6,10 @@
  * 拆分约定见 docs/01-architecture/server-modularization-plan.md。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { runQueue } from '../run-queue';
-import { getRecipeStore, runRecordFromEvents, type Evaluator } from '../eval';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { runQueue } from '../run-queue.js';
+import { getRecipeStore, runRecordFromEvents, type Evaluator } from '../eval.js';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface EvalRecipeRouteDeps {
   guard: (

@@ -9,7 +9,8 @@
  * - 不传 endpoint 的 local agent 仍在进程内 handoff，零额外网络开销（向后兼容）。
  */
 
-import type { AgentCard } from '../agents/types';
+import { randomUUID } from 'node:crypto';
+import type { AgentCard } from '../agents/types.js';
 
 /** 任务结果状态。 */
 export type TaskStatus = 'success' | 'failed';
@@ -53,11 +54,9 @@ export interface A2ARequest {
   card?: AgentCard;
 }
 
-/** 生成一个任务 id（优先用 node:rypto.randomUUID，缺失时回退时间戳+随机）。 */
+/** 生成一个任务 id（优先用 node:crypto.randomUUID，缺失时回退时间戳+随机）。 */
 export function makeTaskId(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { randomUUID } = require('node:crypto');
     return `task-${randomUUID()}`;
   } catch {
     return `task-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

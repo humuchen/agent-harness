@@ -8,7 +8,14 @@
  * - 优雅关闭
  */
 
-import Redis from 'ioredis';
+import { createRequire } from 'node:module';
+import type { Redis } from 'ioredis';
+
+// ESM 产物：ioredis 为可选依赖（CJS 包），经 createRequire 同步取其导出——
+// module.exports.default 优先，回退模块本体；类型面用命名导出的类类型。
+const require = createRequire(import.meta.url);
+const RedisMod = require('ioredis') as typeof import('ioredis');
+const RedisCtor = (RedisMod.default ?? RedisMod) as typeof RedisMod.Redis;
 
 // 单例实例
 let redisInstance: Redis | null = null;
@@ -49,7 +56,7 @@ function initializeRedis(): void {
   isConnecting = true;
   console.log('[Redis] 正在连接...');
 
-  redisInstance = new Redis(redisUrl, {
+  redisInstance = new RedisCtor(redisUrl, {
     // 自动重连配置
     retryStrategy(times: number) {
       const delay = Math.min(times * 50, 2000);
@@ -279,4 +286,4 @@ export async function refresh(): Promise<boolean> {
 }
 
 // 导出ioredis类型供高级使用
-export { Redis };
+export type { Redis };

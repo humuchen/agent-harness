@@ -13,8 +13,8 @@
  */
 
 import { dirname } from 'node:path';
-import { getConfig } from '../config';
-import { MaError } from './errors';
+import { getConfig } from '../config.js';
+import { MaError } from './errors.js';
 import { getDbAdapter, DbAdapter } from '@agent-harness/core';
 
 /** node:sqlite 预编译语句的最小接口（始终返回 Promise，由包装层兼容 sqlite 同步 / turso 异步）。 */

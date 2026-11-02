@@ -3,8 +3,8 @@
  * 增强坐席池：handoff 最闲优先自动指派在线坐席；关闭会话释放坐席负载；
  * 支持坐席认领（claim）未指派的 handoff 会话。
  */
-import { upsertSession, setSessionStatus, getSession, assignSeat, releaseSeat, oldestUnassignedHandoff, type SessionRow } from '../repo/session-repo';
-import { pickLeastBusySeat, getSeat } from '../repo/seat-repo';
+import { upsertSession, setSessionStatus, getSession, assignSeat, releaseSeat, oldestUnassignedHandoff, type SessionRow } from '../repo/session-repo.js';
+import { pickLeastBusySeat, getSeat } from '../repo/seat-repo.js';
 
 /** 记录一次会话接待（幂等创建/更新）。 */
 export function touchSession(input: {

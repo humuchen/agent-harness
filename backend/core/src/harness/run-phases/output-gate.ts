@@ -4,17 +4,17 @@
 //
 // 循环控制契约：runLoop 中本段含 continue（重试注入后跳回下一步）与 return（终态），
 // 提取为函数后以动作枚举表达——调用方按 kind 分派，语义与内联版完全一致。
-import type { Memory } from '../../memory';
-import type { GuardrailPolicy } from '../../guardrails';
+import type { Memory } from '../../memory.js';
+import type { GuardrailPolicy } from '../../guardrails.js';
 import {
   checkStructuredOutput,
   checkTaskOutput,
   checkOutputAsync,
-} from '../../guardrails';
-import { parsePlanOutput } from '../../plan';
-import { recordError, structLog } from '../../telemetry';
-import { GUARDRAIL_FALLBACK_PREFIX } from '../../workflow/step-output';
-import type { HarnessEvent } from '../types';
+} from '../../guardrails.js';
+import { parsePlanOutput } from '../../plan.js';
+import { recordError, structLog } from '../../telemetry.js';
+import { GUARDRAIL_FALLBACK_PREFIX } from '../../workflow/step-output.js';
+import type { HarnessEvent } from '../types.js';
 
 export type OutputGateAction =
   | { kind: 'pass' }

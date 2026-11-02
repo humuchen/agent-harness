@@ -13,13 +13,13 @@ import {
   getLead,
   markCrmSync,
   assignConsultant,
-} from '../repo/lead-repo';
-import { attachRunTranscript } from '../repo/transcript-repo';
-import { enqueue } from '../repo/outbox-repo';
-import { getConfig } from '../config';
+} from '../repo/lead-repo.js';
+import { attachRunTranscript } from '../repo/transcript-repo.js';
+import { enqueue } from '../repo/outbox-repo.js';
+import { getConfig } from '../config.js';
 import { getRunId } from '@agent-harness/core';
-import { MaError } from '../infra/errors';
-import { type LeadGrade, type CrmSyncState, type LeadStage, type LeadRecord, stageRank } from '../repo/types';
+import { MaError } from '../infra/errors.js';
+import { type LeadGrade, type CrmSyncState, type LeadStage, type LeadRecord, stageRank } from '../repo/types.js';
 
 const GRADES: LeadGrade[] = ['A', 'B', 'C', 'D'];
 

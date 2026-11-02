@@ -9,9 +9,9 @@
  * 纪律同全插件：参数化 SQL、按 tenant_id 隔离、空数据返回空。绝不虚构金额。
  */
 
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
-import { type OrderRecord } from './types';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { type OrderRecord } from './types.js';
 
 function rowToOrder(r: Record<string, unknown>): OrderRecord {
   return {

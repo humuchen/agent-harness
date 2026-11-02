@@ -1,23 +1,23 @@
 import type { ServerExtension, PluginRouteHandler } from '@agent-harness/core';
-import { computeStats, listLeads, assignConsultant } from '../repo/lead-repo';
-import { saveInbound, markInboundState } from '../repo/inbound-repo';
-import { outboxSnapshot } from '../services/outbox-worker';
-import { importProjects, listKnowledge } from '../services/kb-service';
-import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment, markArrived, markCompleted, listAppointmentsByDate } from '../repo/schedule-repo';
-import { markCrmSync } from '../repo/lead-repo';
-import { listGuardHits, guardHitStats, reviewGuardHit } from '../repo/guard-hits-repo';
-import { getConfig, configSummary } from '../config';
-import { dbHealth } from '../infra/db';
-import { verifyWebhook, verifyAdminToken } from '../infra/signature';
-import { toMaError } from '../infra/errors';
-import { getPluginContext } from '../runtime';
+import { computeStats, listLeads, assignConsultant } from '../repo/lead-repo.js';
+import { saveInbound, markInboundState } from '../repo/inbound-repo.js';
+import { outboxSnapshot } from '../services/outbox-worker.js';
+import { importProjects, listKnowledge } from '../services/kb-service.js';
+import { upsertClinic, upsertSlot, setAppointmentExternal, getAppointmentByExternalId, getAppointment, markArrived, markCompleted, listAppointmentsByDate } from '../repo/schedule-repo.js';
+import { markCrmSync } from '../repo/lead-repo.js';
+import { listGuardHits, guardHitStats, reviewGuardHit } from '../repo/guard-hits-repo.js';
+import { getConfig, configSummary } from '../config.js';
+import { dbHealth } from '../infra/db.js';
+import { verifyWebhook, verifyAdminToken } from '../infra/signature.js';
+import { toMaError } from '../infra/errors.js';
+import { getPluginContext } from '../runtime.js';
 import { makeTaskId, jsonReply } from '@agent-harness/core';
-import { runAnalyticsQuery } from '../analytics/analytics-service';
-import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types';
-import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service';
-import { latestDailyReport } from '../services/report-service';
-import { upsertAdSpend, listAdSpend, adSpendStats } from '../repo/ad-spend-repo';
-import { suggestionSnapshot, reviewSuggestion, markSuggestionExecuted } from '../services/strategy-service';
+import { runAnalyticsQuery } from '../analytics/analytics-service.js';
+import type { AnalyticsQuery, AnalyticsResult } from '../analytics/types.js';
+import { schedulerSnapshot, schedulerTick, scheduleManualJob } from '../services/scheduler-service.js';
+import { latestDailyReport } from '../services/report-service.js';
+import { upsertAdSpend, listAdSpend, adSpendStats } from '../repo/ad-spend-repo.js';
+import { suggestionSnapshot, reviewSuggestion, markSuggestionExecuted } from '../services/strategy-service.js';
 import {
   contentSnapshot,
   generateTemplateContent,
@@ -26,10 +26,10 @@ import {
   approveContent,
   rejectContent,
   publishContent,
-} from '../services/content-service';
-import type { ContentState, ContentPlatform } from '../repo/content-repo';
-import { buildLeadBriefing, revealContact } from '../services/assist-service';
-import { listExperiments, getExperiment, createExperiment, stopExperiment, assignVariant, experimentReport } from '../services/ab-service';
+} from '../services/content-service.js';
+import type { ContentState, ContentPlatform } from '../repo/content-repo.js';
+import { buildLeadBriefing, revealContact } from '../services/assist-service.js';
+import { listExperiments, getExperiment, createExperiment, stopExperiment, assignVariant, experimentReport } from '../services/ab-service.js';
 
 type Req = import('node:http').IncomingMessage;
 type Res = import('node:http').ServerResponse;

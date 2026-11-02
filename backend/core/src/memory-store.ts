@@ -1,9 +1,9 @@
-import { Message } from './types';
+import { Message } from './types.js';
 import {
   getDbAdapter,
   DbAdapter,
-} from './db-adapter';
-import { quarantineCorruptFile } from './store-safety';
+} from './db-adapter.js';
+import { quarantineCorruptFile } from './store-safety.js';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。

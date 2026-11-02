@@ -1,19 +1,19 @@
 // 对外校验接口（签名与行为与拆分前逐条一致）。P1#21 拆分自 guardrails.ts。
 // 组合：detection（注入）+ registry（自定义规则/scope）+ audit（命中留痕）+
 // harden（对抗归一化）+ egress（出网管控）+ policy state（模块级策略兜底）。
-import type { GuardrailOutputContext, GuardrailPolicy, GuardrailResult } from './types';
-import { detectInjection, detectInjectionAsync } from './detection';
-import { hardenText } from './harden';
-import { checkEgress, checkEgressAsync } from './egress';
-import { redactPII } from './pii';
+import type { GuardrailOutputContext, GuardrailPolicy, GuardrailResult } from './types.js';
+import { detectInjection, detectInjectionAsync } from './detection.js';
+import { hardenText } from './harden.js';
+import { checkEgress, checkEgressAsync } from './egress.js';
+import { redactPII } from './pii.js';
 import {
   customContextualOutputRules,
   customInputRules,
   customOutputRules,
   ruleInScope,
-} from './registry';
-import { emitRuleHit, hasAuditSinks } from './audit';
-import { getModulePolicy, PLAN_MAX_INPUT_LENGTH } from './policy';
+} from './registry.js';
+import { emitRuleHit, hasAuditSinks } from './audit.js';
+import { getModulePolicy, PLAN_MAX_INPUT_LENGTH } from './policy.js';
 
 // ---------------------------------------------------------------------------
 // 密钥扫描

@@ -7,11 +7,11 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
-import { getPlanStore, type PlanDoc } from '../plan-store';
-import { publishPlanEvent, subscribePlanEvents } from '../plan-bus';
-import { sseConnectionLock } from '../run-queue';
-import { readBody, sendJson, sendJsonError, startSse } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { getPlanStore, type PlanDoc } from '../plan-store.js';
+import { publishPlanEvent, subscribePlanEvents } from '../plan-bus.js';
+import { sseConnectionLock } from '../run-queue.js';
+import { readBody, sendJson, sendJsonError, startSse } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface PlanRouteDeps {
   guard: (

@@ -1,18 +1,18 @@
 import type { PluginModule, PluginContext } from '@agent-harness/core';
 import { safeJsonParse } from '@agent-harness/core';
-import { csManifest } from './manifest';
-import { registerTicketTools } from './tools/ticket';
-import { registerKbTools } from './tools/kb';
-import { registerOrderTools } from './tools/order';
-import { registerHandoffTool } from './tools/handoff';
-import { csServerExtension } from './server/routes';
-import { csDashboardView } from './web/dashboard';
-import { setPluginContext, clearPluginContext } from './runtime';
-import { getDb } from './infra/db';
-import { configSummary } from './config';
-import { insertReminders } from './repo/reminder-repo';
-import { escalateSlaBreached } from './services/ticket-service';
-import { csRemindersTriggerPlugin } from './plugins/reminders-trigger';
+import { csManifest } from './manifest.js';
+import { registerTicketTools } from './tools/ticket.js';
+import { registerKbTools } from './tools/kb.js';
+import { registerOrderTools } from './tools/order.js';
+import { registerHandoffTool } from './tools/handoff.js';
+import { csServerExtension } from './server/routes.js';
+import { csDashboardView } from './web/dashboard.js';
+import { setPluginContext, clearPluginContext } from './runtime.js';
+import { getDb } from './infra/db.js';
+import { configSummary } from './config.js';
+import { insertReminders } from './repo/reminder-repo.js';
+import { escalateSlaBreached } from './services/ticket-service.js';
+import { csRemindersTriggerPlugin } from './plugins/reminders-trigger.js';
 
 /** 事件订阅注销句柄（onUnload 时对称清理）。 */
 let offEvents: (() => void) | undefined;

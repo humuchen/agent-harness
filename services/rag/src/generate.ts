@@ -12,10 +12,10 @@
  * 对应设计文档第 6 节「检索内容融入生成流程」。
  */
 
-import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
-import type { VectorStore } from './store';
-import { EmbeddingProvider } from './embed';
-import { Metrics } from './metrics';
+import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve.js';
+import type { VectorStore } from './store.js';
+import { EmbeddingProvider } from './embed.js';
+import { Metrics } from './metrics.js';
 
 /**
  * 生成结果。answer 携带 [n] 引用标记；sources 是去重来源清单。

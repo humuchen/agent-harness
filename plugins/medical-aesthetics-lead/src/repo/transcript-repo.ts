@@ -6,8 +6,8 @@
  * 归集（去重）到已存在的线索上（见 lead-service.attachRunTranscript）。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
-import { appendLeadMessage, leadExists, getMessages } from './lead-repo';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db.js';
+import { appendLeadMessage, leadExists, getMessages } from './lead-repo.js';
 
 /** 落一条运行期对话记录（不建线索）。 */
 export async function appendTranscript(runKey: string, role: string, text: string): Promise<void> {

@@ -40,9 +40,9 @@ import {
   buildRunTraceRecord,
   getRunTraceStore
 } from '@agent-harness/core';
-import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner';
-import { readBody, startSse, writeSseFrame, endSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers';
-import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError, RUN_DISCONNECT_GRACE_MS } from '../run-queue';
+import { defaultPromptFor, resetSessionMemory, type RunMode } from '../runner.js';
+import { readBody, startSse, writeSseFrame, endSse, sendJson, sendJsonError, securityHeaders, corsHeaders } from '../http-helpers.js';
+import { runQueue, sseConnectionLock, QueueBackpressureError, QueueDuplicateError, RUN_DISCONNECT_GRACE_MS } from '../run-queue.js';
 import {
   appendChatMessage,
   peekChatSession,
@@ -53,17 +53,17 @@ import {
   type StoredTool,
   type TraceNode,
   type ChatMessage
-} from '../chat-sessions';
-import { getPlanStore, type PlanDoc, type PlanNode, type PlanNodeStatus } from '../plan-store';
-import { publishPlanEvent } from '../plan-bus';
-import { publishChatEvent } from '../chat-bus';
+} from '../chat-sessions.js';
+import { getPlanStore, type PlanDoc, type PlanNode, type PlanNodeStatus } from '../plan-store.js';
+import { publishPlanEvent } from '../plan-bus.js';
+import { publishChatEvent } from '../chat-bus.js';
 import { DagEngine } from '@agent-harness/core';
-import { workflowStore, createWorkflowExecutor, type WorkflowExecutorOptions } from '../workflow-executor';
-import { resolvePlanVerify, parsePlanVerifyRetries } from '../plan-verify';
-import { resolveRunCredential, type CredentialResult } from '../provider-keys';
-import { decryptApiKey } from '../custom-models';
-import { archivePlanArtifacts } from '../plan-artifacts';
-import type { Action, AuthContext } from '../authz';
+import { workflowStore, createWorkflowExecutor, type WorkflowExecutorOptions } from '../workflow-executor.js';
+import { resolvePlanVerify, parsePlanVerifyRetries } from '../plan-verify.js';
+import { resolveRunCredential, type CredentialResult } from '../provider-keys.js';
+import { decryptApiKey } from '../custom-models.js';
+import { archivePlanArtifacts } from '../plan-artifacts.js';
+import type { Action, AuthContext } from '../authz.js';
 
 
 /** 从索引签名事件里安全取对象字段（unknown → Record | undefined）。 */

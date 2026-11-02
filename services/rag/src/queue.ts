@@ -8,9 +8,9 @@
  * 零依赖。优雅关闭可调用 drain() 等待在途任务完成。
  */
 
-import type { VectorStore } from './store';
-import type { EmbeddingProvider } from './embed';
-import { ingestDocument, IngestInput } from './ingest';
+import type { VectorStore } from './store.js';
+import type { EmbeddingProvider } from './embed.js';
+import { ingestDocument, IngestInput } from './ingest.js';
 
 export type IngestStatus = 'queued' | 'processing' | 'done' | 'failed';
 

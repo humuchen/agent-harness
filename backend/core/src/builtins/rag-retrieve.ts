@@ -9,9 +9,9 @@
  * - RAG_TIMEOUT_MS: 超时时间（默认 10000ms）
  */
 
-import { objectParams, ToolRegistry } from '../tools';
-import { structLog } from '../telemetry';
-import { jevScoreChunk, resolveJevCreds } from './typesafe-jev';
+import { objectParams, ToolRegistry } from '../tools.js';
+import { structLog } from '../telemetry.js';
+import { jevScoreChunk, resolveJevCreds } from './typesafe-jev.js';
 
 export type RagApiStyle = 'local' | 'hermes';
 

@@ -1,4 +1,4 @@
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 type NumTok = { t: 'num'; v: number };
 type IdTok = { t: 'id'; v: string };

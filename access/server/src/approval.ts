@@ -17,7 +17,7 @@
  * - 若配置 APPROVAL_BACKEND=redis，则使用 Redis 持久化票据，支持多副本共享。
  * - 票据 ID 全局唯一（Redis INCR 计数器），避免多实例 ID 冲突。
  */
-import type { AuthContext, Action } from './authz';
+import type { AuthContext, Action } from './authz.js';
 import { randomBytes } from 'node:crypto';
 
 export type TicketStatus = 'pending' | 'approved' | 'rejected';

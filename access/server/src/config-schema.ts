@@ -11,7 +11,7 @@
  * 设计：声明式 schema + 纯函数校验；未来若引入 zod/envkit，可整体替换实现而不改调用方。
  */
 import { structLog } from '@agent-harness/core';
-import { getSecret } from './env-guard';
+import { getSecret } from './env-guard.js';
 
 type FieldType = 'string' | 'number' | 'boolean' | 'enum' | 'url' | 'json' | 'hex64';
 

@@ -13,8 +13,13 @@
  * 与核心 framework 零业务耦合：它只是 `EnvPlatform` 的一个实现，Agent/UI 通过
  * `createEnvPlatform('k8s')` 或 `ENV_PLATFORM=k8s` 选择，其余代码无需改动。
  */
-import type { EphemeralEnvInput, EnvHandle } from './env-platform.types';
-import type { EnvPlatform } from './env-platform';
+import { createRequire } from 'node:module';
+import type { EphemeralEnvInput, EnvHandle } from './env-platform.types.js';
+
+// ESM 产物：经 createRequire 保留「动态 require 可选依赖（@kubernetes/client-node），
+// 缺失时抛清晰错误」的语义。
+const require = createRequire(import.meta.url);
+import type { EnvPlatform } from './env-platform.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

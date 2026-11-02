@@ -1,4 +1,4 @@
-// guardrails 聚合门面：`from './guardrails'` 与 `from './guardrails/index.js'` 的导入路径
+// guardrails 聚合门面：`from './guardrails.js'` 与 `from './guardrails/index.js'` 的导入路径
 // 均解析到此处，对外导出面与拆分前完全一致（导出面快照测试锁定，见 test/guardrails-surface.test.cjs）。
 //
 // 模块依赖方向（无环）：
@@ -18,13 +18,13 @@ export type {
   GuardrailOutputContext,
   ContextualOutputRule,
   InjectionScorer,
-} from './types';
+} from './types.js';
 
 // 策略（默认表 / 环境变量解析 / 全局配置入口）
-export { resolveDefaultPolicy, configureGuardrails, getGuardrailPolicy } from './engine';
+export { resolveDefaultPolicy, configureGuardrails, getGuardrailPolicy } from './engine.js';
 
 // 出网管控 / 私网判定
-export { isPrivateIp, resolveHostIsPrivate, checkEgress, checkEgressAsync } from './egress';
+export { isPrivateIp, resolveHostIsPrivate, checkEgress, checkEgressAsync } from './egress.js';
 
 // 注册扩展点（自定义规则 / 语义打分器 / Jev）
 export {
@@ -33,16 +33,16 @@ export {
   registerContextualOutputRule,
   registerInjectionScorer,
   enableJevInjection,
-} from './registry';
+} from './registry.js';
 
 // 命中审计 sink
-export { registerGuardrailAuditSink } from './audit';
+export { registerGuardrailAuditSink } from './audit.js';
 
 // 文本硬化（对抗归一化）
-export { hardenText } from './harden';
+export { hardenText } from './harden.js';
 
 // PII 脱敏
-export { registerPiiRedactor, redactPII, redactOutput } from './pii';
+export { registerPiiRedactor, redactPII, redactOutput } from './pii.js';
 
 // 对外校验接口（同步 + 异步变体）
 export {
@@ -54,7 +54,7 @@ export {
   checkInputAsync,
   checkOutputAsync,
   checkToolArgsAsync,
-} from './checks';
+} from './checks.js';
 
 // 引擎类与全局默认引擎
-export { GuardrailsEngine, defaultGuardrailsEngine } from './engine';
+export { GuardrailsEngine, defaultGuardrailsEngine } from './engine.js';

@@ -12,7 +12,7 @@
  * RegistryEntry 含完整 PluginManifest + 可选 signature（hex）+ publishedAt。
  */
 
-import type { PluginManifest } from './manifest';
+import type { PluginManifest } from './manifest.js';
 
 /** registry 中的单个插件条目（清单 + 签名）。 */
 export interface RegistryEntry {

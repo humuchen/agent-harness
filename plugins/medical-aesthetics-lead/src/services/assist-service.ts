@@ -15,11 +15,11 @@
  * - 跟进建议全部为确定性规则推导（不经过 LLM），杜绝幻觉式「建议」。
  */
 
-import { getLead, getMessages } from '../repo/lead-repo';
-import type { LeadRecord } from '../repo/types';
-import { getDb, dbCall, allRows } from '../infra/db';
-import { getConfig } from '../config';
-import { MaError } from '../infra/errors';
+import { getLead, getMessages } from '../repo/lead-repo.js';
+import type { LeadRecord } from '../repo/types.js';
+import { getDb, dbCall, allRows } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { MaError } from '../infra/errors.js';
 
 /** 联系方式掩码：手机号保留前 3 后 4；微信号保留前 2 位；过短一律 ****。 */
 export function maskContact(v: string | undefined): string | undefined {

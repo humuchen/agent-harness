@@ -19,7 +19,12 @@
 
 // ─── 类型契约 ────────────────────────────────────────────────────────────────
 
-import { translateSqlFor, isPragma, splitSqlStatements, dialectFromUrl } from './db-dialect';
+import { translateSqlFor, isPragma, splitSqlStatements, dialectFromUrl } from './db-dialect.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留同步懒加载语义——node:sqlite / @libsql/client /
+// mysql2 / pg 等按后端延迟加载，缺失时抛错走降级路径（而非模块加载期就报错）。
+const require = createRequire(import.meta.url);
 
 export type MaybePromise<T> = T | Promise<T>;
 

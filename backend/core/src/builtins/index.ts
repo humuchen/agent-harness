@@ -1,15 +1,15 @@
-import { ToolRegistry } from '../tools';
-import { registerFilesystem, type FilesystemOptions } from './filesystem';
-import { registerWebFetch, type WebFetchOptions } from './webfetch';
-import { registerCalculator } from './calculator';
-import { registerDateTime } from './datetime';
-import { registerWeather } from './weather';
-import { registerDataTransform } from './datatransform';
-import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell';
-import { createSandboxExecutor, type SandboxExecutor } from './sandbox';
-import { registerDocExport, type DocExportOptions } from './docexport';
-import { registerRagRetrieve, type RagRetrieveOptions } from './rag-retrieve';
-import { registerJevDecide, type JevDecideOptions } from './typesafe-jev';
+import { ToolRegistry } from '../tools.js';
+import { registerFilesystem, type FilesystemOptions } from './filesystem.js';
+import { registerWebFetch, type WebFetchOptions } from './webfetch.js';
+import { registerCalculator } from './calculator.js';
+import { registerDateTime } from './datetime.js';
+import { registerWeather } from './weather.js';
+import { registerDataTransform } from './datatransform.js';
+import { registerShell, type ShellOptions, type ShellConfirmStrategy } from './shell.js';
+import { createSandboxExecutor, type SandboxExecutor } from './sandbox.js';
+import { registerDocExport, type DocExportOptions } from './docexport.js';
+import { registerRagRetrieve, type RagRetrieveOptions } from './rag-retrieve.js';
+import { registerJevDecide, type JevDecideOptions } from './typesafe-jev.js';
 
 export interface BuiltinOptions {
   /** 总开关；false 时不注册任何内置工具。默认 true。 */
@@ -164,12 +164,12 @@ export function registerBuiltinTools(registry: ToolRegistry, options: BuiltinOpt
   }
 }
 
-export { evaluateExpression } from './calculator';
-export { registerWeather } from './weather';
-export { registerDataTransform } from './datatransform';
-export { registerShell } from './shell';
-export type { ShellOptions, ShellConfirmStrategy, ShellExecRequest } from './shell';
-export { createSandboxExecutor } from './sandbox';
+export { evaluateExpression } from './calculator.js';
+export { registerWeather } from './weather.js';
+export { registerDataTransform } from './datatransform.js';
+export { registerShell } from './shell.js';
+export type { ShellOptions, ShellConfirmStrategy, ShellExecRequest } from './shell.js';
+export { createSandboxExecutor } from './sandbox.js';
 export type {
   SandboxExecutor,
   SandboxExecRequest,
@@ -178,17 +178,17 @@ export type {
   CreateSandboxOptions,
   ContainerSandboxOptions,
   LocalSandboxOptions,
-} from './sandbox';
-export type { FilesystemOptions } from './filesystem';
-export type { WebFetchOptions } from './webfetch';
-export { registerRagRetrieve } from './rag-retrieve';
-export type { RagRetrieveOptions } from './rag-retrieve';
+} from './sandbox.js';
+export type { FilesystemOptions } from './filesystem.js';
+export type { WebFetchOptions } from './webfetch.js';
+export { registerRagRetrieve } from './rag-retrieve.js';
+export type { RagRetrieveOptions } from './rag-retrieve.js';
 // web_fetch 状态码分类观测（改进6）：ok2xx/blocked403/notFound404/timeout 等计数。
-export { getWebFetchStats, resetWebFetchStats, clearWebFetchCache } from './webfetch';
-export type { WebFetchStats } from './webfetch';
-export { registerDocExport } from './docexport';
-export type { DocExportOptions } from './docexport';
-export { registerJevDecide } from './typesafe-jev';
+export { getWebFetchStats, resetWebFetchStats, clearWebFetchCache } from './webfetch.js';
+export type { WebFetchStats } from './webfetch.js';
+export { registerDocExport } from './docexport.js';
+export type { DocExportOptions } from './docexport.js';
+export { registerJevDecide } from './typesafe-jev.js';
 export {
   jevDecide,
   jevScoreInjection,
@@ -197,16 +197,16 @@ export {
   resolveJevCreds,
   getJevStats,
   resetJevStats
-} from './typesafe-jev';
+} from './typesafe-jev.js';
 export type {
   JevDecideOptions,
   JevQuestionSpec,
   JevQuestionType,
   JevAnswer,
   JevDecision
-} from './typesafe-jev';
+} from './typesafe-jev.js';
 // OS 级沙箱（命名空间 / seccomp / 资源限制 / 权限控制）公开面。
-export * from '../sandbox';
+export * from '../sandbox/index.js';
 
 /** P0-C：从 env 解析逗号分隔的域名白名单（去空白、去空项）。 */
 function parseWebAllowedDomainsEnv(): string[] {

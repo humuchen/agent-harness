@@ -15,7 +15,7 @@ import {
   type EphemeralEnvInput,
   type HarnessEvent,
 } from '@agent-harness/core';
-import { makeMockEnvLLM } from './runner';
+import { makeMockEnvLLM } from './runner.js';
 
 loadEnv();
 

@@ -109,7 +109,7 @@ export async function resolveHostIsPrivate(host: string): Promise<boolean> {
  * - 本地/私有地址（127.0.0.0/8、10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、localhost）豁免管控，始终放行。
  * 返回 null 表示放行，否则为拒绝原因。
  */
-export function checkEgress(url: string, net?: import('./types').NetworkPolicy): string | null {
+export function checkEgress(url: string, net?: import('./types.js').NetworkPolicy): string | null {
   if (!net || net.mode === 'open') return null;
   let host: string;
   try {
@@ -138,7 +138,7 @@ export function checkEgress(url: string, net?: import('./types').NetworkPolicy):
  * 仅当 `allowPrivateNetwork === false` 时执行 DNS 解析（缺省 true 完全零开销零回归）。
  * 返回 null 表示放行，否则为拒绝原因。
  */
-export async function checkEgressAsync(url: string, net?: import('./types').NetworkPolicy): Promise<string | null> {
+export async function checkEgressAsync(url: string, net?: import('./types.js').NetworkPolicy): Promise<string | null> {
   // 快路径：open 模式 / invalid URL 短路
   if (!net || net.mode === 'open') return null;
   // 私网豁免（缺省 true）→ 字面量校验即终点，零额外开销零回归

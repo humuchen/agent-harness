@@ -2,8 +2,8 @@ import type {
   AgentCard,
   AgentHealth,
   IndustryDomain,
-} from './types';
-import { quarantineCorruptFile } from '../store-safety';
+} from './types.js';
+import { quarantineCorruptFile } from '../store-safety.js';
 
 /**
  * 智能体注册表持久化后端（P0.1：Agent Registry & Discovery）。

@@ -1,4 +1,4 @@
-import type { McpTransportType } from './placeholder';
+import type { McpTransportType } from './placeholder.js';
 
 /**
  * 远端 MCP 预设清单（开箱默认配置）。

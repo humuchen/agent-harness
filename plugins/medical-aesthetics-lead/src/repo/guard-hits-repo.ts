@@ -9,7 +9,7 @@
  * → dismissed 的误报模式反哺词库修正（外部词库加白/调词，经 reloadMedicalAdLexicon 热更）。
  */
 
-import { getDb, allRows, getRow, runStmt } from '../infra/db';
+import { getDb, allRows, getRow, runStmt } from '../infra/db.js';
 
 /** ma_guard_hits 一行。 */
 export interface GuardHitRow {

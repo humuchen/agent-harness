@@ -1,5 +1,5 @@
-import type { OpenRouterConfig } from './openrouter';
-import type { OpenAIConfig } from './openai';
+import type { OpenRouterConfig } from './openrouter.js';
+import type { OpenAIConfig } from './openai.js';
 
 /**
  * 模型 / 端点的「单一事实来源」（single source of truth）。

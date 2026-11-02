@@ -14,8 +14,8 @@
 import { createServer, type Server } from 'node:http';
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join, normalize, extname, sep } from 'node:path';
-import type { EphemeralEnvInput, EnvHandle } from './env-platform.types';
-import type { EnvPlatform } from './env-platform';
+import type { EphemeralEnvInput, EnvHandle } from './env-platform.types.js';
+import type { EnvPlatform } from './env-platform.js';
 
 interface LocalEnvRecord {
   envId: string;

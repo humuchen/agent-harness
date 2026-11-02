@@ -5,9 +5,9 @@
  * 拆分约定见 docs/01-architecture/server-modularization-plan.md。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getDataSourceRegistry } from '../data-source';
-import { sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { getDataSourceRegistry } from '../data-source.js';
+import { sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface DatasourceRouteDeps {
   guard: (

@@ -12,9 +12,10 @@ const OTEL_API = '@opentelemetry/api';
 
 // 错误明细存储（环形缓冲）：记录每条错误的具体类型 / 消息 / 时间 / 堆栈 / 上下文。
 // 注意：errorlog 不反向依赖 telemetry，避免循环引用；计数仍由本模块负责。
-import { captureError } from './errorlog';
-import { scrubFields, redactValue } from './log-scrub';
-import { eventBus } from './event-bus';
+import { captureError } from './errorlog.js';
+import { scrubFields, redactValue } from './log-scrub.js';
+import { eventBus } from './event-bus.js';
+import asyncHooks from 'node:async_hooks';
 
 /**
  * OTel 最小结构契约（@opentelemetry/api 为可选依赖，未安装时这些路径不可达；
@@ -50,9 +51,8 @@ let initPromise: Promise<void> | null = null;
 // ---------------------------------------------------------------------------
 // 请求级上下文（traceId / 当前运行 jobId）：让所有 structLog 调用自动带上下文，
 // 无需每个调用点手动传递。基于 AsyncLocalStorage，Node 22 原生支持。
-// 使用 require() 兼容 CommonJS 模块系统（避免 top-level await / import.meta）。
 // ---------------------------------------------------------------------------
-const asyncHooks = require('node:async_hooks') as typeof import('node:async_hooks');
+// asyncHooks 已改为顶层静态 import（ESM 产物无需 require 兼容层）。
 
 export interface RequestContext {
   /** 请求唯一标识（UUID），由 server 为每次 HTTP 请求生成并跨事件流透传。 */

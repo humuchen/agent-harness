@@ -9,8 +9,8 @@
  *   cancelled（运营手动取消）。skipped/cancelled 不再重试。
  */
 
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export type ScheduleJobType = 'welcome' | 'recall' | 'birthday' | 'repurchase' | 'post_op';
 export type ScheduleJobState = 'pending' | 'done' | 'skipped' | 'failed' | 'cancelled';

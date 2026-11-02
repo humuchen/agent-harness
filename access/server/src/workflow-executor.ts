@@ -14,8 +14,8 @@
 import type { StepExecutor, RunContext } from '@agent-harness/core';
 import { getAgentRegistry, getWorkflowStore, enforceTenantIsolation, getTeamManager, createVerifier, composeVerifiers, specsVerifier, pickOutputChecks, inspectStepOutput, type TeamManager, type AgentCard, type TenantContext, type VerifyConfig, type StepTraceNode, type Verifier, type AssertSpec, STEP_TRACE_MAX_NODES, STEP_TRACE_DETAIL_MAX } from '@agent-harness/core';
 import type { HarnessEvent } from '@agent-harness/core';
-import { assembleAgent, type RunMode } from './runner';
-import { PLAN_TASK_TIMEOUT_MS } from './run-queue';
+import { assembleAgent, type RunMode } from './runner.js';
+import { PLAN_TASK_TIMEOUT_MS } from './run-queue.js';
 
 /**
  * 把 step 的 input 对象（由 planToWorkflowDef.buildInputMapping 生成的

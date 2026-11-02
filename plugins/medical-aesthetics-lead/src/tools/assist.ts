@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { buildLeadBriefing } from '../services/assist-service';
-import { errorResult } from '../infra/errors';
+import { buildLeadBriefing } from '../services/assist-service.js';
+import { errorResult } from '../infra/errors.js';
 
 /**
  * lead_briefing：咨询师辅助简报（C7）。

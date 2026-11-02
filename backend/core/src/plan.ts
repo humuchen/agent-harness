@@ -11,8 +11,8 @@
 
  */
 
-import type { StepDef, WorkflowDef } from './workflow/types';
-import type { AgentCard } from './agents/types';
+import type { StepDef, WorkflowDef } from './workflow/types.js';
+import type { AgentCard } from './agents/types.js';
 
 /** 单个计划任务：任务拆解的最小单元。 */
 export interface PlanTask {

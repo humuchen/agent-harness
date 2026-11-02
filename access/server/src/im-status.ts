@@ -13,8 +13,8 @@
  * 本模块仅读取 `ImBridge` 的 `snapshot()`，不修改 im/ 任何内部逻辑。
  */
 
-import type { ImBridge } from './im/bridge';
-import type { ImProvider } from './im';
+import type { ImBridge } from './im/bridge.js';
+import type { ImProvider } from './im/index.js';
 
 /** 单实例的健康/连接/吞吐/心跳/故障转移状态。 */
 export interface ImInstanceStatus {

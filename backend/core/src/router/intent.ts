@@ -11,9 +11,9 @@
  * - 分类结果按 prompt 缓存（有界 LRU），避免重复分类成本。
  */
 
-import type { IndustryDomain } from '../agents/types';
-import type { Intent } from './types';
-import { jevClassifyDomain, resolveJevCreds } from '../builtins/typesafe-jev';
+import type { IndustryDomain } from '../agents/types.js';
+import type { Intent } from './types.js';
+import { jevClassifyDomain, resolveJevCreds } from '../builtins/typesafe-jev.js';
 
 /** 领域词典：领域 → 中英文关键词（命中越多越可能是该领域）。 */
 const DOMAIN_KEYWORDS: Record<Exclude<IndustryDomain, 'generic'>, string[]> = {

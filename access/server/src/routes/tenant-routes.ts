@@ -21,10 +21,10 @@ import {
   getTenantRegistry,
   type TenantQuotaStore,
 } from '@agent-harness/core';
-import { getUsageLedger } from '../usage-ledger';
-import { setUserTenant, getUserTenant } from '../accounts';
-import { readBody } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { getUsageLedger } from '../usage-ledger.js';
+import { setUserTenant, getUserTenant } from '../accounts.js';
+import { readBody } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface TenantRouteDeps {
   guard: (

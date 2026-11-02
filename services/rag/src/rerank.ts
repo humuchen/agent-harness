@@ -9,7 +9,7 @@
  *   - `none`：不重排，保持混合检索融合序。
  */
 
-import { MemoryVectorStore, RetrieveResult } from './store';
+import { MemoryVectorStore, RetrieveResult } from './store.js';
 
 /**
  * MMR（最大边际相关）重排：λ*相关度 - (1-λ)*与已选结果的最大相似度。

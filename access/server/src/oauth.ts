@@ -24,8 +24,8 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
-import { saveUserProviderKey, type ProviderId } from './provider-keys';
-import { encryptApiKey, decryptApiKey } from './custom-models';
+import { saveUserProviderKey, type ProviderId } from './provider-keys.js';
+import { encryptApiKey, decryptApiKey } from './custom-models.js';
 
 interface OAuthProviderSpec {
   /** 供应商标识（与 provider-keys 的 ProviderId 对齐）。 */

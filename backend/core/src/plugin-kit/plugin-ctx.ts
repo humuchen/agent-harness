@@ -5,7 +5,7 @@
  * 此前 cs / ma 各自手写模块级单例且近乎同构；收敛为工厂后消除复制，clear() 供
  * onUnload 对称清理（避免残留旧 ctx 指向已卸载生命周期）。
  */
-import type { PluginContext } from '../plugin/context';
+import type { PluginContext } from '../plugin/context.js';
 
 export interface PluginCtxHolder {
   /** setup 时注入。 */

@@ -12,8 +12,8 @@
  * - 网络/超时/解析异常 → 捕获返回 null，不阻断主流程。
  */
 
-import { getConfig } from '../config';
-import { HttpClient } from './http';
+import { getConfig } from '../config.js';
+import { HttpClient } from './http.js';
 
 /** 实时/批量嵌入单段文本；未配置或失败返回 null。 */
 export async function embedText(text: string): Promise<number[] | null> {

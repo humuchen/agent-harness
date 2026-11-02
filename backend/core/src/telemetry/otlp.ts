@@ -16,6 +16,12 @@
  *   - OTEL_METRICS_TEMPORALITY     cumulative（默认）/ delta
  */
 
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留「可选依赖（@opentelemetry/*）未安装时 require 抛错 →
+// 静默降级」的同步懒加载语义（Node ≥22.12 的 require(esm) 兼容 ESM 依赖图）。
+const require = createRequire(import.meta.url);
+
 const OTEL_SDK = '@opentelemetry/sdk-node';
 const OTEL_METRICS = '@opentelemetry/resources';
 const OTEL_EXPORTER = '@opentelemetry/exporter-trace-otlp-http';

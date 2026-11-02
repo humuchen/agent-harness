@@ -1,7 +1,7 @@
 // 护栏策略：默认表 + 环境变量解析 + 模块级策略状态原语（P1#21 拆分）。
 // 注意：模块级 `policy` 是全局默认引擎的真相源；configureGuardrails（engine.ts）是
 // 唯一写入口（同时同步 defaultGuardrailsEngine），本文件只暴露 get/set 原语。
-import type { GuardrailPolicy, InjectionSensitivity, NetworkPolicy } from './types';
+import type { GuardrailPolicy, InjectionSensitivity, NetworkPolicy } from './types.js';
 
 export const DEFAULT_POLICY: GuardrailPolicy = {
   maxInputLength: 20000,

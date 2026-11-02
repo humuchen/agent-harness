@@ -9,8 +9,8 @@
  * - offline 坐席不参与指派，已挂在其名下的会话保留（重新上线后继续处理）。
  */
 
-import { getDb } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export interface SeatRow {
   seatId: string;

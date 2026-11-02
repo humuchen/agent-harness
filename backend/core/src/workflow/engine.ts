@@ -12,15 +12,15 @@
  * 的整体设计一致。
  */
 
-import { getAgentRegistry, type AgentRegistry } from '../agents/registry';
-import type { AgentCard } from '../agents/types';
-import { getTeamManager, type TeamManager } from '../teams';
-import type { Team } from '../teams';
-import { WORKFLOW_HISTORY_MAX, WORKFLOW_SNAPSHOT_MAX, SNAPSHOT_OUTPUT_MAX, type SpawnSpec, type StepDef, type StepRun, type StepTraceNode, type WorkflowDef, type WorkflowHistoryEntry, type WorkflowRun, type WorkflowSnapshot } from './types';
-import { type WorkflowStore, VolatileWorkflowStore } from './store';
-import { inspectStepOutput } from './step-output';
-import { validateAgainstSchema } from '../json-schema';
-import { structLog } from '../telemetry';
+import { getAgentRegistry, type AgentRegistry } from '../agents/registry.js';
+import type { AgentCard } from '../agents/types.js';
+import { getTeamManager, type TeamManager } from '../teams/index.js';
+import type { Team } from '../teams/index.js';
+import { WORKFLOW_HISTORY_MAX, WORKFLOW_SNAPSHOT_MAX, SNAPSHOT_OUTPUT_MAX, type SpawnSpec, type StepDef, type StepRun, type StepTraceNode, type WorkflowDef, type WorkflowHistoryEntry, type WorkflowRun, type WorkflowSnapshot } from './types.js';
+import { type WorkflowStore, VolatileWorkflowStore } from './store.js';
+import { inspectStepOutput } from './step-output.js';
+import { validateAgainstSchema } from '../json-schema.js';
+import { structLog } from '../telemetry.js';
 
 /** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
 export type StepExecutor = (

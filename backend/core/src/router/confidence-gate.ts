@@ -7,10 +7,10 @@
  * - 与现有 selector 完全兼容，仅增加阈值判断逻辑
  */
 
-import type { AgentCard } from '../agents/types';
-import type { AgentRegistry } from '../agents/registry';
-import type { Intent, SelectorContext } from './types';
-import { scoreAgent, type ScoredAgent } from './selector';
+import type { AgentCard } from '../agents/types.js';
+import type { AgentRegistry } from '../agents/registry.js';
+import type { Intent, SelectorContext } from './types.js';
+import { scoreAgent, type ScoredAgent } from './selector.js';
 
 /**
  * 置信度阀门配置。

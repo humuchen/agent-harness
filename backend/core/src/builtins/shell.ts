@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { objectParams, ToolRegistry } from '../tools';
-import { createSandboxExecutor, LocalSandboxExecutor, type SandboxExecutor } from './sandbox';
+import { objectParams, ToolRegistry } from '../tools.js';
+import { createSandboxExecutor, LocalSandboxExecutor, type SandboxExecutor } from './sandbox.js';
 
 /**
  * 沙箱 shell / 代码执行能力（可选）。

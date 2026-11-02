@@ -43,12 +43,12 @@ import {
   isEnabled
 } from '@agent-harness/core';
 import { MemoryScorer, createHeuristicScorer, resolveTenantDbPath } from '@agent-harness/core';
-import { mcpManager } from './mcp-manager';
-import { waitApproval } from './shell-approval';
-import { bridgeHarnessEvent } from './plugin-bootstrap';
-import { DEFAULTS } from './config-defaults';
-import { registerSubAgentTool } from './subagent-tools';
-import { registerDeliverFileTool } from './deliver-file';
+import { mcpManager } from './mcp-manager.js';
+import { waitApproval } from './shell-approval.js';
+import { bridgeHarnessEvent } from './plugin-bootstrap.js';
+import { DEFAULTS } from './config-defaults.js';
+import { registerSubAgentTool } from './subagent-tools.js';
+import { registerDeliverFileTool } from './deliver-file.js';
 import { getTeamManager, initTeamManager, getAgentRegistry } from '@agent-harness/core';
 import path from 'node:path';
 

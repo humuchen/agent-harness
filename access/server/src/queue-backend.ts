@@ -15,9 +15,13 @@
  *   工厂里加一个分支——RunQueue 与 handler 一行都不用改（见文件底部示例）。
  */
 
-import type { RunMode } from './runner';
+import type { RunMode } from './runner.js';
 import type { VerifyConfig } from '@agent-harness/core';
-import { encryptApiKey, decryptApiKey } from './custom-models';
+import { encryptApiKey, decryptApiKey } from './custom-models.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留 ioredis 可选依赖的同步懒加载（缺失回退 memory）。
+const require = createRequire(import.meta.url);
 
 /** 可持久化的任务意图（RunJob 的纯数据子集，可 JSON 序列化）。 */
 export interface JobDescriptor {

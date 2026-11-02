@@ -8,7 +8,7 @@
  *
  * 纯常量 + 纯函数，无副作用。
  */
-import { TIMEOUT_NOTICE, ABORTED_PREFIX } from '../workflow/step-output';
+import { TIMEOUT_NOTICE, ABORTED_PREFIX } from '../workflow/step-output.js';
 
 /**
  * P4.8 软截止收尾提示：接近时间预算时注入，让模型基于已有信息直接给最终结果。

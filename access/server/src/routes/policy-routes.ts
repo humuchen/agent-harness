@@ -9,13 +9,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 import { features } from '@agent-harness/core';
-import { getPolicyStore, validatePolicyDoc, allActions } from '../policy-editor';
-import { getImStatusAggregator } from '../im-status';
-import type { ImBridge } from '../im';
-import { getBrandConfig } from '../brand';
-import { readBody, sendJson } from '../http-helpers';
-import type { Action, AuthContext, Role } from '../authz';
-import type { RetentionPolicy } from '../retention';
+import { getPolicyStore, validatePolicyDoc, allActions } from '../policy-editor.js';
+import { getImStatusAggregator } from '../im-status.js';
+import type { ImBridge } from '../im/index.js';
+import { getBrandConfig } from '../brand.js';
+import { readBody, sendJson } from '../http-helpers.js';
+import type { Action, AuthContext, Role } from '../authz.js';
+import type { RetentionPolicy } from '../retention.js';
 
 export interface PolicyRouteDeps {
   guard: (

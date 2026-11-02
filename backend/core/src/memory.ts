@@ -1,14 +1,14 @@
-import { Message, messageText } from './types';
-import { tokenize } from './tools';
-import { estimateMessageTokens } from './llm/token-estimator';
+import { Message, messageText } from './types.js';
+import { tokenize } from './tools.js';
+import { estimateMessageTokens } from './llm/token-estimator.js';
 import {
   MemoryStore,
   PersistedMemory,
   VolatileMemoryStore,
   sanitizeKey
-} from './memory-store';
-import { jevDecide, resolveJevCreds } from './builtins/typesafe-jev';
-import { structLog } from './telemetry';
+} from './memory-store.js';
+import { jevDecide, resolveJevCreds } from './builtins/typesafe-jev.js';
+import { structLog } from './telemetry.js';
 
 /**
  * 持久化记忆的数据形态：对话滚动窗口 + 长期笔记。

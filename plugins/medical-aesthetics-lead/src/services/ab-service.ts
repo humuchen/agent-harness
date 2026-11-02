@@ -18,11 +18,11 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
-import { MaError } from '../infra/errors';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { MaError } from '../infra/errors.js';
 import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
-import { RISK_HINT } from './outreach-templates';
+import { RISK_HINT } from './outreach-templates.js';
 
 /** 实验可绑定的 SOP 触达 topic（与 scheduler executeJob 产出的 topic 精确对应）。 */
 export const AB_TOPICS = ['welcome', 'recall_first', 'recall_second', 'birthday', 'repurchase'] as const;

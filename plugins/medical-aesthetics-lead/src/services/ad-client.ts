@@ -16,10 +16,10 @@
  * （report_type、metrics 命名、分页）可在各自 adapter 内完成，本文件只定契约与落库。
  */
 
-import { HttpClient } from '../infra/http';
-import { getConfig } from '../config';
-import { notConfigured } from '../infra/errors';
-import { upsertAdSpend, type AdSpendInput } from '../repo/ad-spend-repo';
+import { HttpClient } from '../infra/http.js';
+import { getConfig } from '../config.js';
+import { notConfigured } from '../infra/errors.js';
+import { upsertAdSpend, type AdSpendInput } from '../repo/ad-spend-repo.js';
 
 /** 平台返回的单条消耗（字段经适配器归一化后与本结构对齐）。 */
 export interface AdPlatformSpendItem {

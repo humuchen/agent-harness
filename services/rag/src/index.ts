@@ -11,14 +11,14 @@
  *   RAG_EMBEDDING_API_KEY / RAG_EMBEDDING_BASE_URL / RAG_EMBEDDING_MODEL（真实向量化）
  */
 
-import { createRagServer } from './server';
-import { startRagMcpServer } from './mcp';
-export * from './eval';
-export * from './generate';
-export * from './store';
-export * from './qdrant';
-export * from './golden';
-export * from './advanced-retrieval';
+import { createRagServer } from './server.js';
+import { startRagMcpServer } from './mcp.js';
+export * from './eval.js';
+export * from './generate.js';
+export * from './store.js';
+export * from './qdrant.js';
+export * from './golden.js';
+export * from './advanced-retrieval.js';
 
 function parseTokens(): Map<string, string> | undefined {
   const raw = process.env.RAG_TOKENS;

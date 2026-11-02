@@ -5,17 +5,17 @@
  * 时区约定：入参 startTime/endTime 为毫秒时间戳（UTC），SQL 内部统一使用 unixepoch。
  */
 
-import { getDb, dbCall } from '../infra/db';
-import { getConfig } from '../config';
-import { STAGE_ORDER } from '../repo/types';
-import { orderStats } from '../repo/order-repo';
-import { adSpendStats } from '../repo/ad-spend-repo';
+import { getDb, dbCall } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { STAGE_ORDER } from '../repo/types.js';
+import { orderStats } from '../repo/order-repo.js';
+import { adSpendStats } from '../repo/ad-spend-repo.js';
 import type {
   AnalyticsQuery, AnalyticsResult, AnalyticsFullResult,
   FunnelAnalysis, ChannelPerformance, ClinicPerformance,
   ProjectProfitability, TimeTrendPoint, StageRetention,
   InactiveLead, RepurchaseAnalysis, RoiAnalysis,
-} from './types';
+} from './types.js';
 
 const STAGE_ZH: Record<string, string> = {
   new: '新客', contacted: '已联系', qualified: '深度意向',

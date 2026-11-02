@@ -12,8 +12,8 @@
  * 未配置直接由调用方 fail-closed 报错，确保「数据来源真实」这一硬约束。
  */
 
-import { MaError } from './errors';
-import type { UpstreamConfig } from '../config';
+import { MaError } from './errors.js';
+import type { UpstreamConfig } from '../config.js';
 
 /** 请求选项。 */
 export interface HttpRequestOptions {

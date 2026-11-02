@@ -1,8 +1,8 @@
-import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
-import { createOpenRouterLLM, type OpenRouterConfig } from './openrouter';
-import { extractHttpStatus } from './shared';
-import { CircuitBreaker } from '../circuit-breaker';
-import { incCounter, structLog } from '../telemetry';
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types.js';
+import { createOpenRouterLLM, type OpenRouterConfig } from './openrouter.js';
+import { extractHttpStatus } from './shared.js';
+import { CircuitBreaker } from '../circuit-breaker.js';
+import { incCounter, structLog } from '../telemetry.js';
 
 export interface MultiKeyOptions extends Omit<OpenRouterConfig, 'apiKey'> {
   /**

@@ -1,7 +1,7 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { qualifyLead } from '../services/lead-service';
-import { errorResult } from '../infra/errors';
-import { resolveLeadIdForSession } from '../infra/lead-binding';
+import { qualifyLead } from '../services/lead-service.js';
+import { errorResult } from '../infra/errors.js';
+import { resolveLeadIdForSession } from '../infra/lead-binding.js';
 
 /**
  * lead_qualify：结构化抽取抖音/小红书私信中的客资要素，并做 A/B/C/D 分级，写回本地客资库（真实 DB）。

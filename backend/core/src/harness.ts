@@ -7,7 +7,7 @@
  * 本文件保留：
  *   1. 对外 API 聚合与 re-export（AgentHarness / contextWindowFor /
  *      HarnessEvent / HarnessOptions / sanitizeToolPairing —— 导入路径不变，
- *      13 个测试文件与 index.ts 的 `export * from './harness'` 契约不受影响）；
+ *      13 个测试文件与 index.ts 的 `export * from './harness.js'` 契约不受影响）；
  *   2. AgentHarness 类与 runInner 主循环骨架（run 启动/中止装配、输入护栏、
  *      记忆装配、主循环 LLM 调用与溢出自愈、输出护栏、计划模式收尾、持久化）。
  *
@@ -24,11 +24,11 @@
  *   - harness/verify-gate.ts      运行期自动验证门禁（含自愈重试）
  *   - harness/run-phases/tool-round.ts 单步工具轮三阶段并发编排（H3 段迁出）
  */
-import type { ToolCall } from './types';
-import type { VerifyContext } from './verify';
-import { Memory } from './memory';
-import { resolveAndTrack, EntityTracker } from './coreference';
-import { checkInputAsync } from './guardrails';
+import type { ToolCall } from './types.js';
+import type { VerifyContext } from './verify.js';
+import { Memory } from './memory.js';
+import { resolveAndTrack, EntityTracker } from './coreference.js';
+import { checkInputAsync } from './guardrails.js';
 import {
   withSpan,
   incCounter,
@@ -37,43 +37,43 @@ import {
   logError,
   emitAlert,
   incCounterTenant
-} from './telemetry';
-import { hooks } from './hooks';
-import { runWithEventSink } from './run-events';
-import { bindRunId } from './run-user';
+} from './telemetry.js';
+import { hooks } from './hooks.js';
+import { runWithEventSink } from './run-events.js';
+import { bindRunId } from './run-user.js';
 import {
   PARTIAL_NOTICE,
   ERROR_PREFIX,
   CIRCUIT_BREAKER_PREFIX,
   MAX_STEPS_NOTICE
-} from './workflow/step-output';
+} from './workflow/step-output.js';
 
 // ── 拆分子模块 ──────────────────────────────────────────────────────────
-import type { HarnessEvent, HarnessOptions, ResolvedHarnessOptions } from './harness/types';
-import { contextWindowFor } from './harness/context-window';
-import { stableToolKey } from './harness/tool-dedup';
-import { nextId } from './harness/id';
-import { sanitizeToolPairing, collectToolCalls } from './harness/message-sanitizer';
-import { WRAP_UP_PROMPT, abortedMessage } from './harness/run-prompts';
-import { accountAndEmitUsage } from './harness/usage-accounting';
-import { executeToolRound } from './harness/run-phases/tool-round';
-import type { ToolRoundState } from './harness/run-phases/tool-round';
-import { runVerifyGate } from './harness/verify-gate';
-import { setupRunSignal } from './harness/run-phases/signal-setup';
-import { computeTimeBudget } from './harness/run-phases/time-budget';
-import { selectStepTools } from './harness/run-phases/dynamic-tools';
-import { setupRunMemory } from './harness/run-phases/memory-setup';
-import { planProposeFinalize } from './harness/run-phases/plan-finish';
-import { finalizeRun } from './harness/run-phases/finalize';
-import { runOutputGate } from './harness/run-phases/output-gate';
-import { emitAssistantTurn } from './harness/run-phases/assistant-turn';
-import { resolveFinalOutput } from './harness/run-phases/final-output';
-import { callLlmWithSelfHeal } from './harness/run-phases/loop-llm';
+import type { HarnessEvent, HarnessOptions, ResolvedHarnessOptions } from './harness/types.js';
+import { contextWindowFor } from './harness/context-window.js';
+import { stableToolKey } from './harness/tool-dedup.js';
+import { nextId } from './harness/id.js';
+import { sanitizeToolPairing, collectToolCalls } from './harness/message-sanitizer.js';
+import { WRAP_UP_PROMPT, abortedMessage } from './harness/run-prompts.js';
+import { accountAndEmitUsage } from './harness/usage-accounting.js';
+import { executeToolRound } from './harness/run-phases/tool-round.js';
+import type { ToolRoundState } from './harness/run-phases/tool-round.js';
+import { runVerifyGate } from './harness/verify-gate.js';
+import { setupRunSignal } from './harness/run-phases/signal-setup.js';
+import { computeTimeBudget } from './harness/run-phases/time-budget.js';
+import { selectStepTools } from './harness/run-phases/dynamic-tools.js';
+import { setupRunMemory } from './harness/run-phases/memory-setup.js';
+import { planProposeFinalize } from './harness/run-phases/plan-finish.js';
+import { finalizeRun } from './harness/run-phases/finalize.js';
+import { runOutputGate } from './harness/run-phases/output-gate.js';
+import { emitAssistantTurn } from './harness/run-phases/assistant-turn.js';
+import { resolveFinalOutput } from './harness/run-phases/final-output.js';
+import { callLlmWithSelfHeal } from './harness/run-phases/loop-llm.js';
 
 // ── 对外 API re-export（导入路径与拆分前完全一致）────────────────────────
-export { contextWindowFor } from './harness/context-window';
-export { sanitizeToolPairing } from './harness/message-sanitizer';
-export type { HarnessEvent, HarnessOptions } from './harness/types';
+export { contextWindowFor } from './harness/context-window.js';
+export { sanitizeToolPairing } from './harness/message-sanitizer.js';
+export type { HarnessEvent, HarnessOptions } from './harness/types.js';
 
 export class AgentHarness {
   private opts: ResolvedHarnessOptions;

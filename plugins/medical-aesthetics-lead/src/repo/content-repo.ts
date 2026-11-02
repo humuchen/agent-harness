@@ -8,8 +8,8 @@
  * - review_reason / publish_error 复用为驳回原因与发布失败记录（终态可追溯）。
  */
 
-import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, dbCall, allRows, getRow, runStmt } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export type ContentPlatform = 'xiaohongshu' | 'douyin' | 'livestream' | 'video_script';
 export type ContentSource = 'manual' | 'template' | 'llm';

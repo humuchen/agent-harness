@@ -13,6 +13,11 @@
  * 宁可重复处理也不阻断业务——去重是优化，不是正确性前提。
  */
 
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留 redis-client 的延迟加载（无 Redis 场景零开销）。
+const require = createRequire(import.meta.url);
+
 /** 去重存储契约（异步，兼容本地与跨实例实现）。 */
 export interface DedupStore {
   readonly kind: 'memory' | 'redis';
@@ -114,7 +119,7 @@ export class RedisDedupStore implements DedupStore {
     let client: { set(...args: unknown[]): Promise<unknown> } | null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const mod = require('../redis-client') as typeof import('../redis-client');
+      const mod = require('../redis-client') as typeof import('../redis-client.js');
       client = mod.getRedisClient();
     } catch {
       return true; // redis-client 不可加载 → 放行

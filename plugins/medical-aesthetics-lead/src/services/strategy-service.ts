@@ -16,12 +16,12 @@
  * 数据不足（分母为 0）时该规则不产出建议——没有证据就不给意见。
  */
 
-import { getDb, dbCall, allRows } from '../infra/db';
-import { getConfig } from '../config';
-import { runAnalyticsQuery } from '../analytics/analytics-service';
-import { orderStats } from '../repo/order-repo';
-import { adSpendStats } from '../repo/ad-spend-repo';
-import { emitAlert } from './report-service';
+import { getDb, dbCall, allRows } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { runAnalyticsQuery } from '../analytics/analytics-service.js';
+import { orderStats } from '../repo/order-repo.js';
+import { adSpendStats } from '../repo/ad-spend-repo.js';
+import { emitAlert } from './report-service.js';
 
 export type SuggestionSeverity = 'info' | 'warn' | 'error';
 export type SuggestionStatus = 'pending' | 'approved' | 'rejected' | 'executed';

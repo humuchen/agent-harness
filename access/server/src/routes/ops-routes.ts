@@ -7,17 +7,17 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpTransportType } from '@agent-harness/core';
-import { runVerification, type VerifyEvent } from '../verification';
-import { mcpManager } from '../mcp-manager';
-import { runQueue } from '../run-queue';
-import { envPipeline } from '../env-pipeline';
+import { runVerification, type VerifyEvent } from '../verification.js';
+import { mcpManager } from '../mcp-manager.js';
+import { runQueue } from '../run-queue.js';
+import { envPipeline } from '../env-pipeline.js';
 import {
   approve as approveShell,
   preapprove as preapproveShell,
   shellSignature
-} from '../shell-approval';
-import { readBody, sendJson, startSse, endSse } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+} from '../shell-approval.js';
+import { readBody, sendJson, startSse, endSse } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface OpsRouteDeps {
   guard: (

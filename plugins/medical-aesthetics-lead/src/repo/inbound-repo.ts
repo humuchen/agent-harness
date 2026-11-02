@@ -5,8 +5,8 @@
  * 再触发 agent。即使下游 agent 处理失败，消息不丢、可重试。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export type InboundState = 'received' | 'dispatched' | 'processed' | 'error';
 

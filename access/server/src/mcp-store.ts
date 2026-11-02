@@ -9,7 +9,7 @@
 
 import { join } from 'node:path';
 import { getDbAdapter, resolveTenantDbPath } from '@agent-harness/core';
-import { encryptApiKey, decryptApiKey } from './custom-models';
+import { encryptApiKey, decryptApiKey } from './custom-models.js';
 import type { McpServerConfig } from '@agent-harness/core';
 
 // ─── 数据模型 ────────────────────────────────────────────────────────────────

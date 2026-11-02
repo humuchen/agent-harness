@@ -5,7 +5,7 @@
  * （参数 key 排序，忽略字段顺序差异）。
  * 纯函数，无副作用。
  */
-import type { ToolCall } from '../types';
+import type { ToolCall } from '../types.js';
 
 /** 把工具名 + 参数归一化为稳定字符串，用于去重比较（参数 key 排序，忽略字段顺序差异）。 */
 export function stableToolKey(call: ToolCall): string {

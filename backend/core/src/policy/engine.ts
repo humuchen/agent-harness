@@ -10,8 +10,8 @@
 //   - 所有合并都是**浅合并 + 显式 spread**，避免某租户策略意外继承另一租户的字段；
 //   - 进程内共享单例 policyEngine，服务启动时可选预注册租户策略。
 
-import type { GuardrailPolicy } from '../guardrails';
-import type { IndustryDomain } from '../agents/types';
+import type { GuardrailPolicy } from '../guardrails.js';
+import type { IndustryDomain } from '../agents/types.js';
 
 /** 基础默认策略（与 guardrails 的 DEFAULT_POLICY 对齐，但此处为独立快照，避免耦合其可变单例）。 */
 function baseDefaultPolicy(): GuardrailPolicy {

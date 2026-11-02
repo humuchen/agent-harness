@@ -24,17 +24,17 @@ import {
   type RequestContext
 } from '@agent-harness/core';
 import { createHash, randomUUID } from 'node:crypto';
-import { assembleAgent, type RunMode } from './runner';
-import { getUsageLedger } from './usage-ledger';
+import { assembleAgent, type RunMode } from './runner.js';
+import { getUsageLedger } from './usage-ledger.js';
 import {
   createQueueBackend,
   isPlanProposeRun,
   isPlanTaskRun,
   type QueueBackend,
   type JobDescriptor
-} from './queue-backend';
-import { resolveRunCredential, resolveJevCredential } from './provider-keys';
-import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval';
+} from './queue-backend.js';
+import { resolveRunCredential, resolveJevCredential } from './provider-keys.js';
+import { evaluateCompletion, resolveEvalGate, getRecipeStore } from './eval.js';
 
 /** 内存监控阈值（MB）：超过此值触发告警，OOM 前预警。 */
 const MEMORY_WARN_MB = Number(process.env.JOB_MEMORY_WARN_MB ?? 800) || 800;

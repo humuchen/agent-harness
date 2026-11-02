@@ -1,5 +1,5 @@
-import { objectParams, ToolRegistry } from '../tools';
-import { resolveHostIsPrivate, type NetworkPolicy } from '../guardrails';
+import { objectParams, ToolRegistry } from '../tools.js';
+import { resolveHostIsPrivate, type NetworkPolicy } from '../guardrails.js';
 
 export interface WebFetchOptions {
   maxBytes?: number;

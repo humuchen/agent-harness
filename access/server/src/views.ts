@@ -209,7 +209,7 @@ export function renderErrorsHtml(): string {
 
 /** Web SPA 构建产物目录（frontend/webapp/dist）；未构建则返回 null。 */
 export function webappDir(): string | null {
-  const dir = resolve(__dirname, '..', '..', '..', 'frontend', 'webapp', 'dist');
+  const dir = resolve(import.meta.dirname, '..', '..', '..', 'frontend', 'webapp', 'dist');
   try {
     accessSync(dir);
     return dir;

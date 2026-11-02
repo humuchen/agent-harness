@@ -10,9 +10,9 @@
 //   B) buildUnshareFallbackArgs —— 走 unshare(1) + bash ulimit 包装（仅命名空间 + 部分
 //      rlimit；无 seccomp / 无能力裁剪），作为「非 Linux helper 缺失」时的降级。
 
-import type { OSSandboxProfile, SandboxExecRequest } from './types';
-import { normalizeProfile, ALL_NAMESPACES } from './policy';
-import { resolveProfile, PROFILE_DEFAULT_ACTION } from './profiles';
+import type { OSSandboxProfile, SandboxExecRequest } from './types.js';
+import { normalizeProfile, ALL_NAMESPACES } from './policy.js';
+import { resolveProfile, PROFILE_DEFAULT_ACTION } from './profiles.js';
 
 const NS_FLAG: Record<string, string> = {
   user: 'user',

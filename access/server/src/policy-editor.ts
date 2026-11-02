@@ -18,9 +18,9 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { getSecret } from './env-guard';
+import { getSecret } from './env-guard.js';
 import { dirname, resolve } from 'node:path';
-import { loadMatrix, type Role, type Action } from './authz';
+import { loadMatrix, type Role, type Action } from './authz.js';
 
 /** 策略文档：角色-权限矩阵映射，键为角色名，值为该角色拥有的 Action 列表。 */
 export interface PolicyDoc {

@@ -3,8 +3,8 @@
  * 存储 agent 分析产出的提醒项，供看板轮询 + SSE 推送。
  */
 import { randomBytes } from 'node:crypto';
-import { getDb } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export interface CsReminderRow {
   id: string;

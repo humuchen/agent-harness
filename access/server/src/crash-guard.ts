@@ -11,7 +11,7 @@
  *   2) server.ts 聚焦 HTTP 路由编排，进程级兜底是横切关注点。
  */
 import { logError, emitAlert } from '@agent-harness/core';
-import { isBenignStreamError } from './http-helpers';
+import { isBenignStreamError } from './http-helpers.js';
 
 /**
  * 安装进程级崩溃防护：uncaughtException 安全退出，unhandledRejection 仅记录。

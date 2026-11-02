@@ -6,10 +6,10 @@
  * 拆分约定见 docs/01-architecture/server-modularization-plan.md。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { handleUpload, serveUploaded } from '../upload';
-import { corsHeaders, sendJson } from '../http-helpers';
-import { cfgNum, DEFAULTS } from '../config-defaults';
-import type { Action, AuthContext } from '../authz';
+import { handleUpload, serveUploaded } from '../upload.js';
+import { corsHeaders, sendJson } from '../http-helpers.js';
+import { cfgNum, DEFAULTS } from '../config-defaults.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface UploadRouteDeps {
   guard: (

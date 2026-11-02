@@ -1,6 +1,6 @@
 import { promises as fsp } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 export interface FilesystemOptions {
   root: string;

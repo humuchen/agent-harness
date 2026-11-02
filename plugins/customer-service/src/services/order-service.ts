@@ -3,8 +3,8 @@
  * 已配置 CS_ORDER_BASE_URL 时走真实 REST（Bearer token + 超时 + 重试）；
  * 未配置 / 调用失败一律返回结构化错误，绝不伪造订单数据。
  */
-import { getConfig } from '../config';
-import { notConfiguredResult } from '../infra/errors';
+import { getConfig } from '../config.js';
+import { notConfiguredResult } from '../infra/errors.js';
 
 export interface OrderQueryResult {
   orderNo: string;

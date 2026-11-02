@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentCard } from '@agent-harness/core';
 
-const REPO_ROOT = path.resolve(__dirname, '../..');
+const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const SERVER_ENTRY = path.resolve(REPO_ROOT, 'access/server/dist/server.js');
 const PORT = Number(process.env.MEDSPA_PORT ?? 4178);
 

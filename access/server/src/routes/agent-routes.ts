@@ -20,9 +20,9 @@ import {
   type TaskResult,
   type Team
 } from '@agent-harness/core';
-import { readBody, sendJson } from '../http-helpers';
-import { runAgentTask } from '../agent-run';
-import type { Action, AuthContext } from '../authz';
+import { readBody, sendJson } from '../http-helpers.js';
+import { runAgentTask } from '../agent-run.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface AgentRouteDeps {
   guard: (

@@ -9,14 +9,14 @@
  *   插件工具注册表（前缀 `${pluginId}__`），供 server 的 assembleAgent 合并进运行。
  */
 
-import type { AgentRegistry } from '../agents/registry';
-import { ToolRegistry } from '../tools';
-import type { IntentRouter } from '../router/intent';
-import type { DagEngine, StepExecutor } from '../workflow/engine';
-import type { WorkflowDef } from '../workflow/types';
-import type { HttpA2ATransport } from '../a2a/transport';
-import type { TaskEnvelope, TaskResult } from '../a2a/types';
-import type { PluginManifest } from './manifest';
+import type { AgentRegistry } from '../agents/registry.js';
+import { ToolRegistry } from '../tools.js';
+import type { IntentRouter } from '../router/intent.js';
+import type { DagEngine, StepExecutor } from '../workflow/engine.js';
+import type { WorkflowDef } from '../workflow/types.js';
+import type { HttpA2ATransport } from '../a2a/transport.js';
+import type { TaskEnvelope, TaskResult } from '../a2a/types.js';
+import type { PluginManifest } from './manifest.js';
 
 /** 结构化日志接口（统一前缀，绝不上报密钥/token）。 */
 export interface PluginLogger {

@@ -11,8 +11,8 @@
  * 非侵入：纯函数、仅填默认值、不修改入参（返回新对象），不依赖任何运行时状态。
  */
 
-import type { AgentCapability, AgentTransport } from '../agents/types';
-import type { PluginManifest } from './manifest';
+import type { AgentCapability, AgentTransport } from '../agents/types.js';
+import type { PluginManifest } from './manifest.js';
 
 /** 把任意 capabilities 写法（字符串 / {id} / 带其它字段）统一为 AgentCapability[]。 */
 function normalizeCapabilities(input: unknown): AgentCapability[] {

@@ -14,7 +14,7 @@
  */
 
 import { createHash, createDecipheriv } from 'node:crypto';
-import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types';
+import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types.js';
 
 const WECOM_API = 'https://qyapi.weixin.qq.com/cgi-bin';
 

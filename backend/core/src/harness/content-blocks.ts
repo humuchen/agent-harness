@@ -13,7 +13,7 @@
  *   - 超大 base64 原图（>1.5MB）强制 detail:'low'，由模型端降采样，
  *     覆盖前端压缩被绕过的入口（subagent / workflow / 直接构造 attachments 等）。
  */
-import type { ContentBlock } from '../types';
+import type { ContentBlock } from '../types.js';
 
 /** 图片附件（调用方透传的服务端附件结构）。 */
 export interface ImageAttachment {

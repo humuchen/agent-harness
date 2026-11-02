@@ -18,7 +18,7 @@
  */
 
 import type { PluginEvent } from '@agent-harness/core';
-import { pendingReminders, type MemoNote } from './store';
+import { pendingReminders, type MemoNote } from './store.js';
 
 export interface ReminderFire {
   id: string;

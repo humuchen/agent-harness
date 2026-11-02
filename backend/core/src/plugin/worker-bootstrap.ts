@@ -20,6 +20,11 @@
  */
 
 import { parentPort, workerData } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+
+// ESM 产物：worker 本体已是 ESM，但插件入口（dist/index.js 或 .cjs）仍按 CJS 语义
+// 同步加载——createRequire 在 Node ≥22.12 上兼容 require(esm)。
+const require = createRequire(import.meta.url);
 
 if (!parentPort) {
   // 直接 require 本文件（非 worker 上下文）时的防御。

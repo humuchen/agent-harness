@@ -1,5 +1,5 @@
 import type { PluginManifest, AgentCapability } from '@agent-harness/core';
-import { buildSystemPrompt } from './prompts';
+import { buildSystemPrompt } from './prompts.js';
 
 /**
  * 医美客资插件清单。仅声明能力，实现分布在 tools/ / server/ / web/ 子模块。

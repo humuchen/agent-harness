@@ -98,7 +98,7 @@ export interface LLMCallOptions {
    */
   onReasoning?: (delta: string) => void;
   // P1-10: 可选熔断器。透传给适配器，适配器通过 circuitBreaker.withRequest() 包裹实际 HTTP 调用。
-  circuitBreaker?: import('./circuit-breaker').CircuitBreaker;
+  circuitBreaker?: import('./circuit-breaker.js').CircuitBreaker;
 }
 
 export type LLM = (

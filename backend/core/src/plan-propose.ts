@@ -14,12 +14,12 @@
  * 回退：env PLAN_PROPOSE_PIPELINE=false 时 run-queue 走旧 harness 路径。
  */
 
-import type { LLM, LLMResponse, Message, ToolCall, ToolSchema } from './types';
-import type { ToolRegistry } from './tools';
-import type { HarnessEvent } from './harness';
-import type { GuardrailPolicy } from './guardrails';
-import { checkToolArgs } from './guardrails';
-import type { Memory } from './memory';
+import type { LLM, LLMResponse, Message, ToolCall, ToolSchema } from './types.js';
+import type { ToolRegistry } from './tools.js';
+import type { HarnessEvent } from './harness.js';
+import type { GuardrailPolicy } from './guardrails.js';
+import { checkToolArgs } from './guardrails.js';
+import type { Memory } from './memory.js';
 import {
   buildPlannerPrompt,
   buildClarifyConfirmedBlock,
@@ -32,7 +32,7 @@ import {
   type ExecutionPlan,
   type PlanClarify,
   type PlanClarifyQuestion
-} from './plan';
+} from './plan.js';
 
 /** plan:phase 的三个阶段名（与前端 renderPlanPhase 的 stages 严格一致）。 */
 export const PLAN_PHASES = ['理解需求', '调研中', '生成计划'] as const;
@@ -49,7 +49,7 @@ export interface PlanProposeDeps {
   emit?: (e: HarnessEvent) => void;
   /** 外部取消信号（job 级 AbortController / 看门狗超时）。 */
   signal?: AbortSignal;
-  circuitBreaker?: import('./circuit-breaker').CircuitBreaker;
+  circuitBreaker?: import('./circuit-breaker.js').CircuitBreaker;
   /** 系统提示词（与普通 run 保持同一人格基线）。 */
   systemPrompt?: string;
   /** 会话记忆：写入本轮对话，保证后续计划执行 run 的上下文连续。 */

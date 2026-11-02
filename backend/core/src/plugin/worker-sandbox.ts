@@ -18,9 +18,9 @@
 
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
-import { ToolRegistry } from '../tools';
-import { resolvePluginEnv } from './loader';
-import type { PluginManifest } from './manifest';
+import { ToolRegistry } from '../tools.js';
+import { resolvePluginEnv } from './loader.js';
+import type { PluginManifest } from './manifest.js';
 
 /** 工具调用默认超时（ms）。 */
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
@@ -70,7 +70,7 @@ export class WorkerToolsSandbox {
   /** 启动 worker 并等待插件 ready（注册阶段完成）。失败（load-error/超时）抛错。 */
   async start(): Promise<void> {
     if (this.worker) throw new Error('worker sandbox already started');
-    const bootstrapJs = path.join(__dirname, 'worker-bootstrap.js');
+    const bootstrapJs = path.join(import.meta.dirname, 'worker-bootstrap.js');
     // 与进程内插件同一密钥纪律：白名单子集进入 worker env。
     // 关键：必须经 Worker 的 env 选项收敛 worker 的 process.env —— worker_threads
     // 默认继承父进程完整环境，插件代码里的 process.env.ADMIN_API_KEY 会直接可见，

@@ -5,7 +5,7 @@
 // 租户注册表），全局默认行为经 defaultEngine 保持完全向后兼容。
 // 注意：自定义规则 / 打分器 / PII 脱敏器仍是模块级注册表（插件全局注册 + scope
 // 收窄是设计约定，非租户私有状态）。
-import type { GuardrailOutputContext, GuardrailPolicy, GuardrailResult } from './types';
+import type { GuardrailOutputContext, GuardrailPolicy, GuardrailResult } from './types.js';
 import {
   checkInput,
   checkOutput,
@@ -13,11 +13,11 @@ import {
   checkTaskOutput,
   checkToolArgs,
   checkToolArgsAsync,
-} from './checks';
-import { redactOutput } from './pii';
-import { getModulePolicy, resolveDefaultPolicy, setModulePolicy } from './policy';
+} from './checks.js';
+import { redactOutput } from './pii.js';
+import { getModulePolicy, resolveDefaultPolicy, setModulePolicy } from './policy.js';
 
-export { resolveDefaultPolicy } from './policy';
+export { resolveDefaultPolicy } from './policy.js';
 
 /**
  * 运行时调整护栏策略（例如按租户级别收紧 / 放松）。作用域：全局默认引擎。

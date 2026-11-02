@@ -1,7 +1,7 @@
 // 护栏命中审计 sink（长期：命中留痕 → 人审闭环的基础设施）。P1#21 拆分自 guardrails.ts。
 // 纯回调透传：core 不落库、不做业务判定；fire-and-forget，单 sink 异常不影响判定路径。
 // 消费方（领域库/插件）据此把命中落审计表、进人审队列。
-import type { GuardrailAuditSink, GuardrailRuleHit } from './types';
+import type { GuardrailAuditSink, GuardrailRuleHit } from './types.js';
 
 const guardrailAuditSinks = new Set<GuardrailAuditSink>();
 

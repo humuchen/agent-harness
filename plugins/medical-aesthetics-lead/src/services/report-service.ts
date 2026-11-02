@@ -10,18 +10,18 @@
  * 两项均 fail-closed：无数据返回 0 / 空，绝不伪造数值；异常阈值与冷却在 config 可调。
  */
 
-import { getDb, dbCall } from '../infra/db';
-import { getConfig } from '../config';
-import { runAnalyticsQuery } from '../analytics/analytics-service';
-import { orderStats } from '../repo/order-repo';
-import { getPluginContext } from '../runtime';
+import { getDb, dbCall } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { runAnalyticsQuery } from '../analytics/analytics-service.js';
+import { orderStats } from '../repo/order-repo.js';
+import { getPluginContext } from '../runtime.js';
 import type {
   AnalyticsFullResult,
   ChannelPerformance,
   FunnelAnalysis,
   ProjectProfitability,
   TimeTrendPoint,
-} from '../analytics/types';
+} from '../analytics/types.js';
 
 export interface DailyReport {
   date: string;

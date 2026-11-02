@@ -1,7 +1,7 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { captureLead } from '../services/lead-service';
-import { errorResult } from '../infra/errors';
-import { resolveLeadIdForSession } from '../infra/lead-binding';
+import { captureLead } from '../services/lead-service.js';
+import { errorResult } from '../infra/errors.js';
+import { resolveLeadIdForSession } from '../infra/lead-binding.js';
 
 /**
  * lead_capture：在用户明确授权后留资（微信/手机号/姓名），推进到 captured 阶段（真实落库）。

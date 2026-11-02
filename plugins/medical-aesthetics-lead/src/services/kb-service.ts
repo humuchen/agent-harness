@@ -12,13 +12,13 @@
  * - 合规内建：对客只暴露合规文案（compliantCopy 优先，未过审则退回科普 summary 且不带疗效 FAQ）。
  */
 
-import { searchProjects as dbSearch, upsertProject, listProjects } from '../repo/kb-repo';
-import { searchScripts, searchCases } from '../repo/library-repo';
-import type { ProjectRecord, ScriptRecord, CaseRecord } from '../repo/types';
-import { HttpClient } from '../infra/http';
-import { getConfig } from '../config';
-import { notConfigured } from '../infra/errors';
-import { embedText } from '../infra/embed';
+import { searchProjects as dbSearch, upsertProject, listProjects } from '../repo/kb-repo.js';
+import { searchScripts, searchCases } from '../repo/library-repo.js';
+import type { ProjectRecord, ScriptRecord, CaseRecord } from '../repo/types.js';
+import { HttpClient } from '../infra/http.js';
+import { getConfig } from '../config.js';
+import { notConfigured } from '../infra/errors.js';
+import { embedText } from '../infra/embed.js';
 
 /** 实时嵌入查询文本（仅 MA_EMBED_BASE_URL 已配时；未配返回 null，绝不伪造）。 */
 async function embedQuery(query: string): Promise<number[] | null> {

@@ -16,9 +16,9 @@ import {
   getErrorLog,
   LATENCY_BUCKETS_MS
 } from '@agent-harness/core';
-import { runQueue } from '../run-queue';
-import { getMemoryStore } from '../runner';
-import { sendJson } from '../http-helpers';
+import { runQueue } from '../run-queue.js';
+import { getMemoryStore } from '../runner.js';
+import { sendJson } from '../http-helpers.js';
 
 export async function handleMetricsRoutes(
   req: IncomingMessage,

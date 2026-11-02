@@ -5,18 +5,18 @@
  * server.ts 只依赖本入口——新增平台不改 server。
  */
 
-export * from './types';
+export * from './types.js';
 export {
   MessageDeduper,
   MemoryDedupStore,
   RedisDedupStore,
   createDedupStore
-} from './dedup';
-export type { DedupStore } from './dedup';
-export { ImBridge, deriveImIdentity } from './bridge';
-export type { ImExecutor, ImInboundRequest, ImInboundResult, ImBridgeHooks } from './bridge';
-export { createImRegistry, logImRegistry } from './registry';
-export type { ImRegistryResult } from './registry';
-export { FeishuAdapter } from './adapter-feishu';
-export { DingtalkAdapter } from './adapter-dingtalk';
-export { WecomAdapter, extractXmlTag } from './adapter-wecom';
+} from './dedup.js';
+export type { DedupStore } from './dedup.js';
+export { ImBridge, deriveImIdentity } from './bridge.js';
+export type { ImExecutor, ImInboundRequest, ImInboundResult, ImBridgeHooks } from './bridge.js';
+export { createImRegistry, logImRegistry } from './registry.js';
+export type { ImRegistryResult } from './registry.js';
+export { FeishuAdapter } from './adapter-feishu.js';
+export { DingtalkAdapter } from './adapter-dingtalk.js';
+export { WecomAdapter, extractXmlTag } from './adapter-wecom.js';

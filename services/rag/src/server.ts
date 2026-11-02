@@ -27,18 +27,18 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
-import { createVectorStore, type VectorStore } from './store';
-import { createEmbedder, EmbeddingProvider } from './embed';
-import { ingestDocument, ingestStructured, IngestInput, StructuredIngestInput } from './ingest';
-import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval';
-import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve';
-import { resolveTenant } from './auth';
-import { IngestQueue } from './queue';
-import { QueryCache } from './cache';
-import { Metrics, logTrace } from './metrics';
-import { rerankWithApi, mmrRerank } from './rerank';
-import { createRAGEvaluator, type EvalDataset } from './eval';
-import { generateAnswer, generateAnswerStream, createLLM, type LLMProvider } from './generate';
+import { createVectorStore, type VectorStore } from './store.js';
+import { createEmbedder, EmbeddingProvider } from './embed.js';
+import { ingestDocument, ingestStructured, IngestInput, StructuredIngestInput } from './ingest.js';
+import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval.js';
+import { retrieve, RetrieveRequest, RetrieveResponse } from './retrieve.js';
+import { resolveTenant } from './auth.js';
+import { IngestQueue } from './queue.js';
+import { QueryCache } from './cache.js';
+import { Metrics, logTrace } from './metrics.js';
+import { rerankWithApi, mmrRerank } from './rerank.js';
+import { createRAGEvaluator, type EvalDataset } from './eval.js';
+import { generateAnswer, generateAnswerStream, createLLM, type LLMProvider } from './generate.js';
 
 export interface RagServerOptions {
   port?: number;

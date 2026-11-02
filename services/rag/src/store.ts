@@ -12,6 +12,11 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留同步懒加载语义——node:sqlite 按需加载、
+// qdrant/pgvector 后端模块仅在后端被选用时加载。
+const require = createRequire(import.meta.url);
 
 export interface Chunk {
   chunk_id: string;

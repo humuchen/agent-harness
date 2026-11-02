@@ -12,8 +12,8 @@
  *   - 未配置密钥（verify=false）时允许跳过验签，但会返回显式警告，符合「一切降级可用」。
  */
 
-import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
-import type { PluginManifest } from './manifest';
+import { createHmac, createHash, createPublicKey, timingSafeEqual, verify as verifySig } from 'node:crypto';
+import type { PluginManifest } from './manifest.js';
 
 /** 签名方案。 */
 export type SigScheme = 'hmac' | 'ed25519';
@@ -64,8 +64,6 @@ export function verifyManifest(
   }
   // ed25519：使用 node 内置 crypto 验签（密钥为 PEM/DER 形式）。
   try {
-    // 延迟引入，避免在不支持 ed25519 的旧 Node 上加载期报错。
-    const { createPublicKey, verify: verifySig } = require('node:crypto') as typeof import('node:crypto');
     const pub = createPublicKey(secretOrPub);
     const payload = Buffer.from(canonicalizeManifest(m), 'utf8');
     const sig = Buffer.from(signature || '', 'hex');

@@ -8,8 +8,9 @@
  * 与「合规画像（P2.c）」配合：医疗 / 金融等强合规租户应设 `auditRequired`，调用方在
  * 关键动作（run 开始 / 结束 / 越权拦截 / 配额拒绝）处调用 audit() 即满足审计留痕。
  */
-import { scrubFields } from './log-scrub';
-import { eventBus } from './event-bus';
+import { dirname } from 'node:path';
+import { scrubFields } from './log-scrub.js';
+import { eventBus } from './event-bus.js';
 
 export type AuditOutcome = 'success' | 'failure' | 'denied' | 'info';
 
@@ -51,7 +52,7 @@ const AUDIT_ROTATE_BYTES = Number(process.env.AUDIT_LOG_MAX_BYTES) || 50 * 1024 
 async function openAuditFile(file: string): Promise<void> {
   const fs = await import('node:fs/promises');
   try {
-    const dir = require('node:path').dirname(file);
+    const dir = dirname(file);
     await fs.mkdir(dir, { recursive: true });
     // 记录当前文件大小：进程重启后 append 继续累计，保证轮转阈值语义连续。
     const stat = await fs.stat(file).catch(() => null);

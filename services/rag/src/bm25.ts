@@ -9,7 +9,7 @@
  * 在每次检索时按需从租户全量 chunk 重建（演示/中小规模足够，O(chunk) 级）。
  */
 
-import { tokenize } from './embed';
+import { tokenize } from './embed.js';
 
 export interface Bm25Options {
   /** 词频饱和参数，默认 1.5。 */

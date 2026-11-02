@@ -12,6 +12,12 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, isAbsolute, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+// ESM 产物：插件入口为运行时配置的任意绝对路径，必须经 createRequire 动态加载
+// （server 源码不静态 import 任何具体插件包）；__dirname 由 import.meta 推导。
+const require = createRequire(import.meta.url);
+const __dirname = import.meta.dirname;
 import {
   PluginLoader,
   PluginRegistryClient,
@@ -22,7 +28,7 @@ import {
   type PluginEvent,
 } from '@agent-harness/core';
 import { structLog } from '@agent-harness/core';
-import { ServerPluginHost, WebPluginHost } from './plugin-ext';
+import { ServerPluginHost, WebPluginHost } from './plugin-ext.js';
 
 /** 插件系统（loader + 双宿主）。 */
 export interface PluginSystem {

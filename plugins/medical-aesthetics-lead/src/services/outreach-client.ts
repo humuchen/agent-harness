@@ -8,9 +8,9 @@
  * 绝不假装已发送 —— 与 CRM/HIS 客户端同一纪律。真实企微/短信网关接入时实现本契约即可。
  */
 
-import { HttpClient } from '../infra/http';
-import { getConfig } from '../config';
-import { notConfigured } from '../infra/errors';
+import { HttpClient } from '../infra/http.js';
+import { getConfig } from '../config.js';
+import { notConfigured } from '../infra/errors.js';
 
 /** 对客触达消息载荷（payload 中不含对话原文，最小化隐私出网）。 */
 export interface OutreachMessage {

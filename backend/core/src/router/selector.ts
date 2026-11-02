@@ -15,9 +15,9 @@
  * 取最高分；候选为空（理论上不会，default 常驻）返回 null，由 router 回退 default。
  */
 
-import type { AgentCard } from '../agents/types';
-import type { AgentRegistry } from '../agents/registry';
-import type { Intent, SelectorContext } from './types';
+import type { AgentCard } from '../agents/types.js';
+import type { AgentRegistry } from '../agents/registry.js';
+import type { Intent, SelectorContext } from './types.js';
 
 /** 单个候选的评分明细（供测试与可观测性）。 */
 export interface ScoredAgent {

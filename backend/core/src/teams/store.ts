@@ -13,7 +13,7 @@
  * 是函数属性，不可 JSON 序列化——持久化层只保存数据字段，**经 Redis 恢复的团队
  * 不携带钩子**（钩子属注册时的运行时行为；恢复后需要钩子的调用方应重新挂载）。
  */
-import type { Team } from './index';
+import type { Team } from './index.js';
 
 /**
  * Redis 客户端最小契约（Hash + INCR）。与 agents 的 AgentStoreRedis 字段子集

@@ -9,8 +9,8 @@
  * 兼容说明：runner 旧的「每 run 直接 policyEngine.getPolicy(tenantId)」路径继续可用；
  * 本注册表提供引擎身份（实例）与缓存收敛，供逐步统一到单一解析点。
  */
-import { GuardrailsEngine, resolveDefaultPolicy, type GuardrailPolicy } from './guardrails';
-import { policyEngine } from './policy/engine';
+import { GuardrailsEngine, resolveDefaultPolicy, type GuardrailPolicy } from './guardrails.js';
+import { policyEngine } from './policy/engine.js';
 
 interface RegistryEntry {
   engine: GuardrailsEngine;

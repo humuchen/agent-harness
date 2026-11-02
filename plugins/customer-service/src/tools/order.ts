@@ -1,5 +1,5 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { queryOrder } from '../services/order-service';
+import { queryOrder } from '../services/order-service.js';
 
 /**
  * cs_order_query：查询订单/售后（物流/退款/保修）。

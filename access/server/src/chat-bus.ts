@@ -20,7 +20,7 @@
  * `origin` 为发送端的设备指纹，前端据此忽略自己发出的回声，避免重复插入。
  */
 
-import { createQueueBackend } from './queue-backend';
+import { createQueueBackend } from './queue-backend.js';
 
 /** 广播事件（与前端契约一致）。 */
 export type ChatBusEvent =

@@ -1,9 +1,9 @@
 // 助手回合事件链（runInner 段 E7）：流式回退 → llm:response → post_llm hook →
 // assistant 消息入窗。P1#21 H2 自 runInner 迁出，语句顺序与语义逐字等价。
-import type { LLMResponse, ToolCall } from '../../types';
-import type { Memory } from '../../memory';
-import { hooks } from '../../hooks';
-import type { HarnessEvent } from '../types';
+import type { LLMResponse, ToolCall } from '../../types.js';
+import type { Memory } from '../../memory.js';
+import { hooks } from '../../hooks.js';
+import type { HarnessEvent } from '../types.js';
 
 export interface AssistantTurnInput {
   resp: LLMResponse;

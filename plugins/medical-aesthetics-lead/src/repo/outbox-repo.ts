@@ -6,8 +6,8 @@
  * 幂等键（idempotency_key UNIQUE）保证重投不会造成上游重复建单。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db.js';
+import { getConfig } from '../config.js';
 
 export type OutboxState = 'pending' | 'sending' | 'sent' | 'failed';
 

@@ -9,10 +9,10 @@
  * 现在号源满/已约/不存在均抛 MaError（CONFLICT/NOT_FOUND），由工具层据实回灌模型。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, inTransaction, type SqliteDatabase } from '../infra/db';
-import { getConfig } from '../config';
-import { MaError } from '../infra/errors';
-import { type ClinicRecord, type SlotRecord, type AppointmentRecord } from './types';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, inTransaction, type SqliteDatabase } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { MaError } from '../infra/errors.js';
+import { type ClinicRecord, type SlotRecord, type AppointmentRecord } from './types.js';
 
 function rowToClinic(r: Record<string, unknown>): ClinicRecord {
   return {

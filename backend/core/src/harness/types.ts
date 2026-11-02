@@ -9,12 +9,12 @@
  * harness.ts 保留为聚合门面并 re-export 这些类型，外部导入路径（'./harness'、
  * '@agent-harness/core'）与行为完全不变。
  */
-import type { LLM, ToolCall, TokenUsage } from '../types';
-import type { Verifier } from '../verify';
-import type { ToolRegistry } from '../tools';
-import type { Memory } from '../memory';
-import type { GuardrailPolicy } from '../guardrails';
-import type { CircuitBreaker } from '../circuit-breaker';
+import type { LLM, ToolCall, TokenUsage } from '../types.js';
+import type { Verifier } from '../verify.js';
+import type { ToolRegistry } from '../tools.js';
+import type { Memory } from '../memory.js';
+import type { GuardrailPolicy } from '../guardrails.js';
+import type { CircuitBreaker } from '../circuit-breaker.js';
 
 /**
  * Harness 在跑一轮 `run()` 期间发出的事件。
@@ -168,10 +168,10 @@ export type HarnessEvent =
 
   /** 计划模式（P0）：plan-propose run 收尾时由服务端解析模型输出并补发此旁路事件。
    *  payload 为已通过结构/依赖校验的执行计划；解析失败不发此事件（发 warn 回退）。 */
-  | { type: 'plan:proposed'; plan: import('../plan').ExecutionPlan }
+  | { type: 'plan:proposed'; plan: import('../plan.js').ExecutionPlan }
 
   /** 计划模式（P0）：需求不清时由服务端解析澄清 JSON 补发的旁路事件，等用户确认目标后再 propose。 */
-  | { type: 'plan:clarify'; clarify: import('../plan').PlanClarify }
+  | { type: 'plan:clarify'; clarify: import('../plan.js').PlanClarify }
 
   /** 计划模式（P0）：propose 阶段进度（理解需求 → 调研中 → 生成计划），供前端展示真实进展。 */
   | { type: 'plan:phase'; phase: string; ts: number }

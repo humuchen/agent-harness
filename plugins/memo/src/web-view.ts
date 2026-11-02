@@ -20,7 +20,7 @@
 
 import type { PluginUIView, PluginRouteUser } from '@agent-harness/core';
 import { escapeHtml as esc } from '@agent-harness/core';
-import type { MemoNote } from './store';
+import type { MemoNote } from './store.js';
 import {
   searchNotes,
   noteStats,
@@ -29,7 +29,7 @@ import {
   reminderHistory,
   DISPLAY_TZ,
   tzOffsetMs
-} from './store';
+} from './store.js';
 
 /** 看板每页条数（分页粒度，服务端检索用）。 */
 export const BOARD_PAGE = 20;

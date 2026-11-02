@@ -23,7 +23,7 @@
  */
 import { createPublicKey, createVerify, createHmac, timingSafeEqual, constants } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import type { Authorizer, AuthContext, Role, Action } from './authz';
+import type { Authorizer, AuthContext, Role, Action } from './authz.js';
 import { structLog } from '@agent-harness/core';
 
 export type SsoProvider = 'token' | 'oidc' | 'proxy';

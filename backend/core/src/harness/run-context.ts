@@ -36,7 +36,7 @@ export interface RunTimeBudget {
 /** 动态工具选择段产物。 */
 export interface StepToolsSelection {
   /** 发送给 LLM 的 schema 子集（执行始终走全量注册表）。 */
-  tools: import('../types').ToolSchema[];
+  tools: import('../types.js').ToolSchema[];
   /** 动态选择是否开启（DYNAMIC_TOOLS !== 'false'）——供「点名未发出工具」的兜底分支判断。 */
   dynamicOn: boolean;
 }

@@ -16,17 +16,17 @@
  */
 
 import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
-import { listKnowledge } from './kb-service';
-import { OutreachClient } from './outreach-client';
+import { listKnowledge } from './kb-service.js';
+import { OutreachClient } from './outreach-client.js';
 import {
   insertContent,
   getContent,
   listContent,
   updateContentState,
   contentStats,
-} from '../repo/content-repo';
-import type { ContentRow, ContentPlatform, ContentState } from '../repo/content-repo';
-import { MaError, toMaError } from '../infra/errors';
+} from '../repo/content-repo.js';
+import type { ContentRow, ContentPlatform, ContentState } from '../repo/content-repo.js';
+import { MaError, toMaError } from '../infra/errors.js';
 
 /** 平台白名单（防误传任意字符串进状态机）。video_script = 短视频分镜脚本（⑩）。 */
 export const CONTENT_PLATFORMS: readonly ContentPlatform[] = ['xiaohongshu', 'douyin', 'livestream', 'video_script'] as const;

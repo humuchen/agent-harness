@@ -1,10 +1,10 @@
-import type { AgentCard, AgentHealth, IndustryDomain } from './types';
-import { makeDefaultAgentCard, DEFAULT_AGENT_ID } from './types';
+import type { AgentCard, AgentHealth, IndustryDomain } from './types.js';
+import { makeDefaultAgentCard, DEFAULT_AGENT_ID } from './types.js';
 import {
   VolatileAgentStore,
   type AgentStore,
-} from './store';
-import { structLog } from '../telemetry';
+} from './store.js';
+import { structLog } from '../telemetry.js';
 
 /**
  * 智能体注册表（P0.1 核心）。

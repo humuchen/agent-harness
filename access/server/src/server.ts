@@ -2,12 +2,19 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, resolve, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留「可选依赖（@agent-harness/core / ioredis）懒加载 +
+// fs/path 同步延迟加载」语义；__dirname/__filename 由 import.meta 推导。
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 // P0-2：告警装配、崩溃防护、优雅停机已拆出到独立模块，server.ts 聚焦 HTTP 路由编排。
-import { setupAlerting } from './alerting-setup';
-import { installCrashGuard } from './crash-guard';
-import { createShutdownHandler } from './graceful-shutdown';
+import { setupAlerting } from './alerting-setup.js';
+import { installCrashGuard } from './crash-guard.js';
+import { createShutdownHandler } from './graceful-shutdown.js';
 import {
   defaultPromptFor,
   getMemoryStore,
@@ -15,10 +22,10 @@ import {
   resetSessionMemory,
   assembleAgent,
   type RunMode
-} from './runner';
-import { mcpManager } from './mcp-manager';
-import { runQueue, sseConnectionLock } from './run-queue';
-import { envPipeline } from './env-pipeline';
+} from './runner.js';
+import { mcpManager } from './mcp-manager.js';
+import { runQueue, sseConnectionLock } from './run-queue.js';
+import { envPipeline } from './env-pipeline.js';
 import {
   getMetricsSnapshot,
   LATENCY_BUCKETS_MS,
@@ -73,11 +80,11 @@ import {
   getErrorSummary,
   formatErrorReport
 } from '@agent-harness/core';
-import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor';
-import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify';
-import { runAgentTask } from './agent-run';
+import { createWorkflowExecutor, workflowStore, type WorkflowExecutorOptions } from './workflow-executor.js';
+import { resolvePlanVerify, parsePlanVerifyRetries } from './plan-verify.js';
+import { runAgentTask } from './agent-run.js';
 // md 交付文件预览（?preview=1）的服务端格式转换：markdown → HTML。
-import { markdownPreviewHtml } from './markdown-preview';
+import { markdownPreviewHtml } from './markdown-preview.js';
 
 // 视图层（HTML 渲染）已拆出到 views.ts，server.ts 仅消费其导出。
 import {
@@ -87,20 +94,20 @@ import {
   renderErrorsHtml,
   webappDir,
   contentTypeFor
-} from './views';
+} from './views.js';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString, writeSseFrame } from './http-helpers';
+import { corsHeaders, sendJson, startSse, endSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString, writeSseFrame } from './http-helpers.js';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
-import { ServerPluginHost, WebPluginHost } from './plugin-ext';
+import { ServerPluginHost, WebPluginHost } from './plugin-ext.js';
 
 import {
   createPluginSystem,
   bootstrapPlugins,
   resolveUpgradeManifest,
   type PluginSystem
-} from './plugin-bootstrap';
+} from './plugin-bootstrap.js';
 
 // 多会话 Chat App 的会话存储（左侧栏列表 + 消息记录持久化）。
 import {
@@ -121,16 +128,16 @@ import {
   type StoredTool,
   type TraceNode,
   type ChatMessage
-} from './chat-sessions';
+} from './chat-sessions.js';
 
 // 聊天历史镜像存储（ah_chat_history 接口层）：SQLite 临时持久化，预留正式数据库扩展点。
-import { getHistoryStore } from './history-store';
+import { getHistoryStore } from './history-store.js';
 
 // 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
-import { subscribeChatEvents, publishChatEvent } from './chat-bus';
+import { subscribeChatEvents, publishChatEvent } from './chat-bus.js';
 
 // 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
-import { subscribeReminders } from './reminder-bus';
+import { subscribeReminders } from './reminder-bus.js';
 
 // IM 桥接（用户层入口）：飞书 / 钉钉 / 企业微信 → agent → 回发。纯业务层，core 零感知。
 import {
@@ -141,32 +148,32 @@ import {
   deriveImIdentity,
   type ImExecutor,
   type ImProvider
-} from './im';
+} from './im/index.js';
 
 // 工作空间（参考图能力链路 User → Workspace → Skill → Tool → Data → Credential → Policy）。
 import {
   createWorkspaceStore,
   ensureDefaultWorkspace,
   type Workspace
-} from './workspace-store';
+} from './workspace-store.js';
 
 // 合规审计查询（读侧）：谁在何时做了什么 / 谁审批了谁 / 越权拦截记录。
-import { queryAuditFile, resolveAuditFile } from './audit-query';
-import { getOrgTree } from './org';
+import { queryAuditFile, resolveAuditFile } from './audit-query.js';
+import { getOrgTree } from './org.js';
 // P1-5 成果物归档页 / 文件库：Agent 产出物持久化 + 浏览 / 下载 / 删除。
-import { getArtifactStore } from './artifact-store';
-import { archivePlanArtifacts } from './plan-artifacts';
+import { getArtifactStore } from './artifact-store.js';
+import { archivePlanArtifacts } from './plan-artifacts.js';
 // P1-6 企业 Skill 管理：技能清单 + 启用 / 禁用。
-import { getSkillRegistry } from './skill-registry';
+import { getSkillRegistry } from './skill-registry.js';
 // P1-7 企业数据源适配器：数据源注册 + 连通性测试。
 // P1-4 浏览器沙箱：受控浏览器会话生命周期管理。
-import { getSandboxManager } from './browser-sandbox';
+import { getSandboxManager } from './browser-sandbox.js';
 // P1-8 CI 供应链：依赖 / 制品扫描与签名报告。
-import { getSupplyChainScanner } from './supply-chain';
+import { getSupplyChainScanner } from './supply-chain.js';
 // P2-2 策略编辑器：RBAC 矩阵读写 + 预览。
-import { getPolicyStore, validatePolicyDoc, allActions } from './policy-editor';
+import { getPolicyStore, validatePolicyDoc, allActions } from './policy-editor.js';
 // P2-5 IM 多实例状态聚合。
-import { getImStatusAggregator } from './im-status';
+import { getImStatusAggregator } from './im-status.js';
 // P2-3 Plan 协同存储。
 import {
   getPlanStore,
@@ -175,11 +182,11 @@ import {
   type PlanNode,
   type PlanNodeStatus,
   type PlanStore
-} from './plan-store';
+} from './plan-store.js';
 // P2-3 Plan 协同事件总线（SSE 协同）。
-import { publishPlanEvent } from './plan-bus';
+import { publishPlanEvent } from './plan-bus.js';
 // P3-1 品牌位配置。
-import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand';
+import { getBrandConfig, isBrandUrlSafe, type BrandConfig } from './brand.js';
 // P2-1 手机端：设备推送令牌存储。
 
 
@@ -191,51 +198,51 @@ import {
   type AuthContext,
   type Action,
   type Role
-} from './authz';
+} from './authz.js';
 
 // 外部身份源（OIDC Bearer JWT 资源服务器 / proxy 头注入）。提供 JWKS 预热与前端鉴权元信息。
-import { warmJwks, getAuthConfig } from './sso';
+import { warmJwks, getAuthConfig } from './sso.js';
 import {
   createApprovalPolicy,
   type ApprovalPolicy,
   type ApprovalTicket
-} from './approval';
+} from './approval.js';
 import {
   createEvaluator,
   type Evaluator,
   type RecipeStore
-} from './eval';
-import { createRetentionPolicy, type RetentionPolicy } from './retention';
-import { buildOpenApiSpec } from './openapi';
+} from './eval.js';
+import { createRetentionPolicy, type RetentionPolicy } from './retention.js';
+import { buildOpenApiSpec } from './openapi.js';
 
 // 文件上传（图片/文本附件）。
 
 // 启动期环境变量 schema 校验（依赖无关，零新增依赖）。
-import { logConfigValidation } from './config-schema';
-import { scrubSensitiveEnv, getSecret } from './env-guard';
+import { logConfigValidation } from './config-schema.js';
+import { scrubSensitiveEnv, getSecret } from './env-guard.js';
 
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
-import { installScrubber } from './log-scrub';
+import { installScrubber } from './log-scrub.js';
 
-import { DEFAULTS, cfgNum } from './config-defaults';
-import { rateLimited } from './rate-limit';
-import { isTrustedProxy } from './trusted-proxy';
-import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes';
-import { handleDeviceRoutes } from './routes/device-routes';
-import { handleDatasourceRoutes } from './routes/datasource-routes';
-import { handleUploadRoutes } from './routes/upload-routes';
-import { handlePlanRoutes } from './routes/plan-routes';
-import { handleApprovalRoutes } from './routes/approval-routes';
-import { handleEvalRecipeRoutes } from './routes/eval-recipe-routes';
-import { handleSkillRoutes } from './routes/skill-routes';
-import { handleAgentRoutes } from './routes/agent-routes';
-import { handleOpsRoutes } from './routes/ops-routes';
-import { handlePolicyRoutes } from './routes/policy-routes';
-import { handleMetricsRoutes } from './routes/metrics-routes';
-import { handleMiscRoutes } from './routes/misc-routes';
-import { handleCollabRoutes } from './routes/collab-routes';
-import { handleChatDataRoutes } from './routes/chat-data-routes';
-import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent, maybeArchiveRunTrace } from './routes/run-routes';
+import { DEFAULTS, cfgNum } from './config-defaults.js';
+import { rateLimited } from './rate-limit.js';
+import { isTrustedProxy } from './trusted-proxy.js';
+import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes.js';
+import { handleDeviceRoutes } from './routes/device-routes.js';
+import { handleDatasourceRoutes } from './routes/datasource-routes.js';
+import { handleUploadRoutes } from './routes/upload-routes.js';
+import { handlePlanRoutes } from './routes/plan-routes.js';
+import { handleApprovalRoutes } from './routes/approval-routes.js';
+import { handleEvalRecipeRoutes } from './routes/eval-recipe-routes.js';
+import { handleSkillRoutes } from './routes/skill-routes.js';
+import { handleAgentRoutes } from './routes/agent-routes.js';
+import { handleOpsRoutes } from './routes/ops-routes.js';
+import { handlePolicyRoutes } from './routes/policy-routes.js';
+import { handleMetricsRoutes } from './routes/metrics-routes.js';
+import { handleMiscRoutes } from './routes/misc-routes.js';
+import { handleCollabRoutes } from './routes/collab-routes.js';
+import { handleChatDataRoutes } from './routes/chat-data-routes.js';
+import { handleRun, handleWorkflow, activeWorkflowAborts, initRunRoutes, resolveWorkflowRunOpts, createPlanTaskSync, auditWfEvent, maybeArchiveRunTrace } from './routes/run-routes.js';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -248,17 +255,17 @@ import {
 } from '@agent-harness/core';
 
 // K8s健康检查端点
-import { handleLiveness, handleReadiness } from './health';
+import { handleLiveness, handleReadiness } from './health.js';
 
 // 自定义模型 SQLite 持久化 + AES-GCM 解密
-import { registerCustomModelRoutes, decryptApiKey } from './custom-models';
+import { registerCustomModelRoutes, decryptApiKey } from './custom-models.js';
 
 import {
   registerProviderKeyRoutes,
   resolveRunCredential,
   resolveJevCredential,
   type CredentialResult
-} from './provider-keys';
+} from './provider-keys.js';
 
 // P2.2 配额/用量看板：进程内配额引擎单例（per-owner 用量统计）。
 // P6 分叉重跑：工作流 step 及其下游重置（纯函数，随 /api/workflows/:id/rerun 暴露）。
@@ -270,8 +277,8 @@ import {
   resetRunForRerun,
   getRunTraceStore
 } from '@agent-harness/core';
-import { configureUsageLedger, getUsageLedger } from './usage-ledger';
-import { handleTenantRoutes } from './routes/tenant-routes';
+import { configureUsageLedger, getUsageLedger } from './usage-ledger.js';
+import { handleTenantRoutes } from './routes/tenant-routes.js';
 
 /** 进程共享租户配额存储引用（tenant-routes 读写配额覆盖用；启动装配时赋值）。 */
 let _tenantQuotaStore: TenantQuotaStore | null = null;
@@ -279,10 +286,10 @@ function tenantQuotaStoreRef(): TenantQuotaStore {
   if (!_tenantQuotaStore) _tenantQuotaStore = new TenantQuotaStore();
   return _tenantQuotaStore;
 }
-import { getRedisClient } from './redis-client';
+import { getRedisClient } from './redis-client.js';
 
 // P2.1 OpenRouter OAuth（PKCE）授权框架。
-import { registerOAuthRoutes } from './oauth';
+import { registerOAuthRoutes } from './oauth.js';
 
 // 账户密码鉴权：注册 / 登录（签发 7 天 cookie token）。与 OIDC/proxy/静态令牌共存。
 import {
@@ -297,21 +304,21 @@ import {
   issueCsrfToken,
   isAuthSecretConfigured,
   type AccountResult
-} from './accounts';
-import { REFRESH_TTL_MS } from './accounts';
+} from './accounts.js';
+import { REFRESH_TTL_MS } from './accounts.js';
 
 // 密钥外部化：在读取任何 process.env 之前装配（平台 env / SECRETS_FILE / 本地 .env）。
-import { loadSecrets } from './secrets';
+import { loadSecrets } from './secrets.js';
 
 // 接入层公开/运维探针路由表（可测试接缝，详见 routes/edge-routes.ts）。
 import {
   createEdgeRoutes,
   tryDispatchEdgeRoute,
   type EdgeRouteDeps
-} from './routes/edge-routes';
+} from './routes/edge-routes.js';
 
 // 接入层结构化日志封装（统一收口启动横幅 / 降级告警 / 自检结论）。
-import { log } from './logger';
+import { log } from './logger.js';
 
 // 必须在下方任何 `process.env.X` 顶层读取前执行（幂等，仅首次生效）。
 loadSecrets();
@@ -2321,12 +2328,7 @@ async function bootstrap(): Promise<void> {
   const MIGRATE_AUTO = (process.env.AH_MIGRATE_AUTO ?? 'off').toLowerCase();
   if (['on', '1', 'true'].includes(MIGRATE_AUTO)) {
     const { execSync } = await import('node:child_process');
-    const _m = (globalThis as unknown as { import?: { meta?: { url?: string } } })
-      .import?.meta;
-    const MIGRATE_SCRIPT = join(
-      dirname(_m?.url ? fileURLToPath(_m.url) : __dirname),
-      '..', '..', 'scripts', 'db-migrate.cjs'
-    );
+    const MIGRATE_SCRIPT = join(__dirname, '..', '..', 'scripts', 'db-migrate.cjs');
     try {
       const result = execSync(`node "${MIGRATE_SCRIPT}" --action up`, {
         encoding: 'utf8',

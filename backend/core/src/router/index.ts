@@ -3,7 +3,7 @@
  * 把 RunQueue 升级为 capability-aware dispatcher 的核心：意图分类 + 智能体选择 + 路由解析。
  */
 
-export * from './types';
-export * from './intent';
-export * from './selector';
-export * from './router';
+export * from './types.js';
+export * from './intent.js';
+export * from './selector.js';
+export * from './router.js';

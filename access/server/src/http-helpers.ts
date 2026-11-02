@@ -11,7 +11,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { DEFAULTS } from './config-defaults';
+import { DEFAULTS } from './config-defaults.js';
 
 /** 恒定时间字符串比较，避免 CSRF state / token 比较泄漏时序差。长度不同直接拒。 */
 export function safeEqualString(a: string, b: string): boolean {

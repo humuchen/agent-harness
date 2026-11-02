@@ -41,7 +41,7 @@ export function resolveHelperPath(explicit?: string): string {
   const fromEnv = process.env.HARNESS_SANDBOX_HELPER;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   // 编译产物位于 dist/sandbox/executor.js -> ../../native/...
-  return resolve(__dirname, '../../native/sandbox-exec/build/sandbox-exec');
+  return resolve(import.meta.dirname, '../../native/sandbox-exec/build/sandbox-exec');
 }
 
 function fileExecutable(p: string): boolean {

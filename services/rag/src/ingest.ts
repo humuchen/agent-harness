@@ -6,10 +6,10 @@
  * doc_id + index 派生的 chunk_id 幂等，重复入库同篇文档仅更新，满足「增量更新」。
  */
 
-import type { Chunk, VectorStore } from './store';
-import type { EmbeddingProvider } from './embed';
-import { loadDocument, type DocumentSource } from './loaders';
-import { splitAuto, splitParentChild } from './splitter';
+import type { Chunk, VectorStore } from './store.js';
+import type { EmbeddingProvider } from './embed.js';
+import { loadDocument, type DocumentSource } from './loaders.js';
+import { splitAuto, splitParentChild } from './splitter.js';
 
 export interface IngestInput {
   doc_id: string;

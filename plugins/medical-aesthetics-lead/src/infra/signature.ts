@@ -9,7 +9,7 @@
 import { createHmac } from 'node:crypto';
 // P1#24：恒定时间比较委托 kit 的 safeEqual（与 cs / memo 同一安全口径，删除本地残留实现）。
 import { safeEqual } from '@agent-harness/core';
-import { MaError, notConfigured } from './errors';
+import { MaError, notConfigured } from './errors.js';
 
 /** 允许的时间偏移（秒）：超出即视为重放。 */
 const DEFAULT_TOLERANCE_SEC = 300;

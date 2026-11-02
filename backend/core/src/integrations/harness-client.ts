@@ -1,5 +1,5 @@
-import type { EphemeralEnvInput, EnvHandle } from './harness-client.types';
-import type { EnvPlatform } from './env-platform';
+import type { EphemeralEnvInput, EnvHandle } from './harness-client.types.js';
+import type { EnvPlatform } from './env-platform.js';
 
 export interface HarnessClientConfig {
   apiKey?: string;

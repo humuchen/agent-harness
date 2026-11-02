@@ -1,9 +1,9 @@
 import type { PluginModule, PluginContext } from '@agent-harness/core';
-import { memoManifest } from './manifest';
-import { registerNoteTools } from './tools';
-import { memoServerExtension } from './server-routes';
-import { memoBoardView } from './web-view';
-import { ReminderScheduler } from './reminder-scheduler';
+import { memoManifest } from './manifest.js';
+import { registerNoteTools } from './tools.js';
+import { memoServerExtension } from './server-routes.js';
+import { memoBoardView } from './web-view.js';
+import { ReminderScheduler } from './reminder-scheduler.js';
 
 /**
  * 备忘助手插件模块（PluginModule 主入口）。
@@ -97,7 +97,7 @@ export const memoPlugin: PluginModule = {
 export default memoPlugin;
 
 // 供测试与高级集成直接引用的命名导出（bootstrap 只消费 default PluginModule）。
-export { memoManifest } from './manifest';
-export { registerNoteTools } from './tools';
-export { memoServerExtension } from './server-routes';
-export { memoBoardView } from './web-view';
+export { memoManifest } from './manifest.js';
+export { registerNoteTools } from './tools.js';
+export { memoServerExtension } from './server-routes.js';
+export { memoBoardView } from './web-view.js';

@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getDbAdapter, resolveTenantDbPath, type DbAdapter } from '@agent-harness/core';
-import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models';
+import { encryptApiKey, decryptApiKey, getCustomModel } from './custom-models.js';
 
 // ─── provider 默认端点 ───────────────────────────────────────────────────────
 export type ProviderId = 'openrouter' | 'openai' | 'custom' | 'typesafe';

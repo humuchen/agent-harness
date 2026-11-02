@@ -10,7 +10,7 @@
  * - 显式 agentId 优先于一切自动推断（最短路径、可预测）；domain 次之；最后才 classify+select。
  */
 
-import type { IndustryDomain, AgentCard } from '../agents/types';
+import type { IndustryDomain, AgentCard } from '../agents/types.js';
 
 /**
  * 路由输入：RunQueue 在 execute() 时构造并交给 TaskRouter.resolve。

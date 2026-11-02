@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "智能客服 Agent 插件：会话接待 / 知识库问答 / 工单 / 订单售后查询 / 转人工，非侵入式接入 agent-harness。",
+  "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs",

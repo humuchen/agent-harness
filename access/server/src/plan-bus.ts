@@ -4,7 +4,7 @@
  * 复用 chat-bus 的双层模式（进程内 fanout + Redis 跨实例桥），
  * 专注于 Plan 文档的实时协同事件。
  */
-import { createQueueBackend } from './queue-backend';
+import { createQueueBackend } from './queue-backend.js';
 
 /** Plan 协同事件。 */
 export type PlanBusEvent =

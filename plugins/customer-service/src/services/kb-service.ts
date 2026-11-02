@@ -9,8 +9,8 @@
  *   以 `cs-kb-<kbId>` 为 doc_id 幂等 upsert，保证语义索引与本地库最终一致；
  *   镜像失败仅告警，不阻断本地写入（本地库仍是事实源）。
  */
-import { searchKb, insertKb, type KbRow } from '../repo/kb-repo';
-import { getConfig } from '../config';
+import { searchKb, insertKb, type KbRow } from '../repo/kb-repo.js';
+import { getConfig } from '../config.js';
 
 /** 检索命中（统一 RAG / 本地两种来源的形态）。 */
 export interface KbHit {

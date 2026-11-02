@@ -15,8 +15,8 @@
  * - `TeamManager` 操作委托给 `AgentRegistry`（成员查询 / dispatch），避免重复 state。
  */
 
-import type { AgentCard, AgentRegistry, IndustryDomain } from '../agents';
-import { MemoryTeamStore, type TeamStore } from './store';
+import type { AgentCard, AgentRegistry, IndustryDomain } from '../agents/index.js';
+import { MemoryTeamStore, type TeamStore } from './store.js';
 
 export {
   MemoryTeamStore,
@@ -25,7 +25,7 @@ export {
   type TeamStore,
   type TeamStoreRedis,
   type PersistedTeam
-} from './store';
+} from './store.js';
 
 /** 团队协作模式。 */
 export type TeamMode =

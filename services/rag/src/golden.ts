@@ -13,11 +13,11 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { retrieve, type RetrieveRequest } from './retrieve';
-import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval';
-import type { VectorStore } from './store';
-import type { EmbeddingProvider } from './embed';
-import type { LLMProvider } from './generate';
+import { retrieve, type RetrieveRequest } from './retrieve.js';
+import { multiQueryRetrieve, hydeRetrieve } from './advanced-retrieval.js';
+import type { VectorStore } from './store.js';
+import type { EmbeddingProvider } from './embed.js';
+import type { LLMProvider } from './generate.js';
 
 export interface GoldenCase {
   /** 查询文本。 */

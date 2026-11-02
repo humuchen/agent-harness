@@ -8,7 +8,7 @@
  *   - 自动回退：turso 初始化失败时降级为本地 sqlite
  */
 import { dirname } from 'node:path';
-import { getConfig } from '../config';
+import { getConfig } from '../config.js';
 import { getDbAdapter, DbAdapter } from '@agent-harness/core';
 
 interface SqliteStatement {

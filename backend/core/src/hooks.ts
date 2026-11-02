@@ -16,7 +16,7 @@
  *   不再无限滞留，超时后放弃等待并告警；处理器本身仍在后台跑，其副作用自负
  * - 注册返回注销函数，插件 disable 时对称清理
  */
-import { structLog } from './telemetry';
+import { structLog } from './telemetry.js';
 
 /** Hook 名称枚举。 */
 export type HookName =

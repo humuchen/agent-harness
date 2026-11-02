@@ -15,7 +15,7 @@
  *  - 其他字符（标点/空格等）：4 字符/token。
  */
 
-import { estimateImageTokens } from './vision-tokens';
+import { estimateImageTokens } from './vision-tokens.js';
 
 const CJK = /[一-鿿]/g;
 const NON_CJK_WORD = /[A-Za-z0-9_]+/g;

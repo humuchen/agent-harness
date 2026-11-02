@@ -1,6 +1,6 @@
-import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
-import { CircuitBreaker, type CircuitState } from '../circuit-breaker';
-import { incCounter, structLog } from '../telemetry';
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types.js';
+import { CircuitBreaker, type CircuitState } from '../circuit-breaker.js';
+import { incCounter, structLog } from '../telemetry.js';
 
 export interface FailoverOptions {
   // 连续失败多少次后熔断（打开电路，转走 secondary）。默认 3。

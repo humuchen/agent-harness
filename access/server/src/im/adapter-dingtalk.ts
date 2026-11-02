@@ -12,7 +12,7 @@
  */
 
 import { createHmac } from 'node:crypto';
-import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types';
+import type { ImAdapter, ImChallengeResult, ImInboundMessage, ImProvider } from './types.js';
 
 const DINGTALK_API = 'https://api.dingtalk.com';
 

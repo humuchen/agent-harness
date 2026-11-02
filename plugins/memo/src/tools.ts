@@ -11,7 +11,7 @@
 
 import type { ToolRegistry } from '@agent-harness/core';
 import { getRunUser, simpleErrorResult as errResult } from '@agent-harness/core';
-import { saveNote, listNotes, deleteNote, resolveRemindAt } from './store';
+import { saveNote, listNotes, deleteNote, resolveRemindAt } from './store.js';
 
 /** 当前工具执行的归属 owner（登录用户优先，无运行上下文时归 anon 桶）。 */
 function currentOwner(): string {

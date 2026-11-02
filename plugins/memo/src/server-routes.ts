@@ -23,8 +23,8 @@ import {
   noteStats,
   deleteNotes,
   deleteAllOwnerNotes,
-} from './store';
-import { boardBodyHtml, BOARD_PAGE } from './web-view';
+} from './store.js';
+import { boardBodyHtml, BOARD_PAGE } from './web-view.js';
 
 /** 从宿主注入的用户解析数据归属 owner。 */
 function ownerOf(user?: PluginRouteUser): string {

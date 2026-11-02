@@ -15,7 +15,7 @@
  *   - core 不感知 server 路由；配额配置仍归 TenantQuotaStore（职责分离，不重复建表）。
  */
 
-import { getDbAdapter, type DbAdapter } from '../db-adapter';
+import { getDbAdapter, type DbAdapter } from '../db-adapter.js';
 
 /** 租户档案一行。 */
 export interface TenantRecord {

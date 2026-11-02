@@ -10,7 +10,7 @@
 
 import type { HarnessEvent } from '@agent-harness/core';
 import { getAgentRegistry, enforceTenantIsolation, type AgentCard, type TenantContext } from '@agent-harness/core';
-import { assembleAgent, type RunMode } from './runner';
+import { assembleAgent, type RunMode } from './runner.js';
 
 export interface RunAgentTaskOpts {
   mode?: RunMode;

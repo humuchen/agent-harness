@@ -20,7 +20,7 @@
  */
 import type { WorkflowDef, WorkflowRun, StepDef } from '@agent-harness/core';
 import { inspectStepOutput } from '@agent-harness/core';
-import { getArtifactStore, type ArtifactMeta } from './artifact-store';
+import { getArtifactStore, type ArtifactMeta } from './artifact-store.js';
 
 /** 归档 kind 常量（前端/服务端共用语义，写死防漂移）。 */
 export const PLAN_ARTIFACT_KIND = 'plan-step-output';

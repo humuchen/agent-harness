@@ -13,9 +13,9 @@
  *     memory-store ensure() 中毒教训）；
  *   - core 不感知 server 侧路由，本 store 只管「配置存取」。
  */
-import type { TenantQuota } from './engine';
-import { getDbAdapter, type DbAdapter } from '../db-adapter';
-import { structLog } from '../telemetry';
+import type { TenantQuota } from './engine.js';
+import { getDbAdapter, type DbAdapter } from '../db-adapter.js';
+import { structLog } from '../telemetry.js';
 
 /** tenant_quotas 表一行的完整形态。 */
 export interface TenantQuotaRow extends TenantQuota {

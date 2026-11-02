@@ -18,9 +18,9 @@
  * 待网关接入后自动 flush。定时器 unref，不阻塞进程退出。
  */
 
-import { getDb, dbCall, allRows, getRow } from '../infra/db';
-import { getConfig } from '../config';
-import { MaError } from '../infra/errors';
+import { getDb, dbCall, allRows, getRow } from '../infra/db.js';
+import { getConfig } from '../config.js';
+import { MaError } from '../infra/errors.js';
 import {
   enqueueJob,
   dueBatch,
@@ -28,13 +28,13 @@ import {
   markJobFailed,
   jobStats,
   type ScheduleJobRow,
-} from '../repo/schedule-job-repo';
-import { enqueue } from '../repo/outbox-repo';
-import { buildWelcomeText, buildRecallText, buildPostOpText } from './outreach-templates';
-import { resolveAbText, withRiskHint } from './ab-service';
-import { generateDailyReport, scanAnomalies, metaGet, metaSet } from './report-service';
-import { pullAdSpend } from './ad-client';
-import { generateStrategySuggestions } from './strategy-service';
+} from '../repo/schedule-job-repo.js';
+import { enqueue } from '../repo/outbox-repo.js';
+import { buildWelcomeText, buildRecallText, buildPostOpText } from './outreach-templates.js';
+import { resolveAbText, withRiskHint } from './ab-service.js';
+import { generateDailyReport, scanAnomalies, metaGet, metaSet } from './report-service.js';
+import { pullAdSpend } from './ad-client.js';
+import { generateStrategySuggestions } from './strategy-service.js';
 import { screenMedicalAdText } from '@agent-harness/medical-ad-guard';
 
 let timer: NodeJS.Timeout | null = null;

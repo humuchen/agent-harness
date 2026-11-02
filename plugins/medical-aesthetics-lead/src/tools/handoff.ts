@@ -1,7 +1,7 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { handoffLead } from '../services/lead-service';
-import { errorResult } from '../infra/errors';
-import { resolveLeadIdForSession } from '../infra/lead-binding';
+import { handoffLead } from '../services/lead-service.js';
+import { errorResult } from '../infra/errors.js';
+import { resolveLeadIdForSession } from '../infra/lead-binding.js';
 
 /**
  * lead_handoff：把高意向/复杂诉求客资转给真人咨询师（标记 handedOff + 推进到 arrived），

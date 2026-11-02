@@ -1,7 +1,7 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { searchProjects, searchProjectsRag, toCustomerView } from '../services/kb-service';
-import { errorResult } from '../infra/errors';
-import { getConfig } from '../config';
+import { searchProjects, searchProjectsRag, toCustomerView } from '../services/kb-service.js';
+import { errorResult } from '../infra/errors.js';
+import { getConfig } from '../config.js';
 
 /**
  * project_kb_search：检索医美项目知识库（合规描述，真实数据）。

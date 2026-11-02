@@ -213,7 +213,7 @@ async function checkRedis(): Promise<HealthCheck> {
 
   // 原始代码(已注释 - 项目未集成Redis客户端):
   // try {
-  //   const { getRedisClient } = await import('./redis-client');
+  //   const { getRedisClient } = await import('./redis-client.js');
   //   const redis = getRedisClient();
   //
   //   if (!redis) {

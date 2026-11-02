@@ -1,8 +1,8 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { bookConsultation } from '../services/schedule-service';
-import { toMaError } from '../infra/errors';
-import { handoffLead } from '../services/lead-service';
-import { resolveLeadIdForSession } from '../infra/lead-binding';
+import { bookConsultation } from '../services/schedule-service.js';
+import { toMaError } from '../infra/errors.js';
+import { handoffLead } from '../services/lead-service.js';
+import { resolveLeadIdForSession } from '../infra/lead-binding.js';
 
 /**
  * consultation_book：预约线下面诊/咨询（院区、日期、时段）。

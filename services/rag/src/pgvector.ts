@@ -20,7 +20,11 @@
  *   RAG_PG_TABLE（默认 rag_chunks）、RAG_PG_SCHEMA（默认 public）。
  */
 
-import { aclVisible, type Chunk, type DocSummary, type RetrieveResult, type VectorStore } from './store';
+import { aclVisible, type Chunk, type DocSummary, type RetrieveResult, type VectorStore } from './store.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留 pg 驱动（可选 peer 依赖）的同步懒加载语义。
+const require = createRequire(import.meta.url);
 
 export interface PgVectorStoreOptions {
   dim: number;

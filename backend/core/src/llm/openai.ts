@@ -1,8 +1,8 @@
-import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types';
-import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared';
-import { resolveOpenAIConfig } from './config';
-import { resolveTierConfig, resolveTierModel } from './model-tier';
-import { structLog } from '../telemetry';
+import type { LLM, Message, ToolSchema, LLMResponse, LLMCallOptions } from '../types.js';
+import { toOpenAIMessage, callOpenAIChat, compactToolSchema } from './shared.js';
+import { resolveOpenAIConfig } from './config.js';
+import { resolveTierConfig, resolveTierModel } from './model-tier.js';
+import { structLog } from '../telemetry.js';
 
 export interface OpenAIConfig {
   apiKey?: string;

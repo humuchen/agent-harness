@@ -4,7 +4,7 @@
 // 与 helper 直接消费」的完整策略。所有字段都有安全默认值（与项目「危险能力 opt-in、
 // 默认收紧」的约定一致）。
 
-import type { OSSandboxProfile, NamespaceKind, ResourceLimits, PermissionControls, SeccompConfig } from './types';
+import type { OSSandboxProfile, NamespaceKind, ResourceLimits, PermissionControls, SeccompConfig } from './types.js';
 
 export const ALL_NAMESPACES: NamespaceKind[] = ['user', 'mount', 'pid', 'network', 'ipc', 'uts'];
 

@@ -7,14 +7,14 @@
  * 上游未配置时跳过本轮（积压保留，待配置后 flush），绝不假装已同步。
  */
 
-import { claimBatch, markSent, markFailed, outboxStats } from '../repo/outbox-repo';
-import { markCrmSync } from '../repo/lead-repo';
-import { setAppointmentExternal } from '../repo/schedule-repo';
-import { getConfig } from '../config';
-import { CrmClient } from './crm-client';
-import { HisClient } from './his-client';
-import { OutreachClient } from './outreach-client';
-import { MaError } from '../infra/errors';
+import { claimBatch, markSent, markFailed, outboxStats } from '../repo/outbox-repo.js';
+import { markCrmSync } from '../repo/lead-repo.js';
+import { setAppointmentExternal } from '../repo/schedule-repo.js';
+import { getConfig } from '../config.js';
+import { CrmClient } from './crm-client.js';
+import { HisClient } from './his-client.js';
+import { OutreachClient } from './outreach-client.js';
+import { MaError } from '../infra/errors.js';
 
 let timer: NodeJS.Timeout | null = null;
 

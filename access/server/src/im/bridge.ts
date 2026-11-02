@@ -12,9 +12,10 @@
  *   审计、配额、护栏——无需为本模块新增任何治理代码。
  */
 
+import { createHash } from 'node:crypto';
 import { structLog } from '@agent-harness/core';
-import type { ImAdapter, ImBridgeConfig, ImInboundMessage, ImProvider } from './types';
-import { MemoryDedupStore, type DedupStore } from './dedup';
+import type { ImAdapter, ImBridgeConfig, ImInboundMessage, ImProvider } from './types.js';
+import { MemoryDedupStore, type DedupStore } from './dedup.js';
 
 /** 入站处理的 HTTP 结果（由 server 路由直接写出）。 */
 export interface ImInboundResult {
@@ -307,8 +308,5 @@ export function deriveImIdentity(msg: ImInboundMessage): { owner: string; sessio
 }
 
 function sha256Hex(s: string): string {
-  // 延迟引入，避免在纯类型文件中引入 crypto（本文件已用于运行期）。
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createHash } = require('node:crypto') as typeof import('node:crypto');
   return createHash('sha256').update(s, 'utf8').digest('hex');
 }

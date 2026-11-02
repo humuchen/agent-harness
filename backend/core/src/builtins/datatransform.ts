@@ -1,4 +1,4 @@
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 // 数据转换 / ETL 内置工具：在「无外部依赖」前提下提供轻量结构化数据处理能力，
 // 让 agent 能就地把文本 / JSON / CSV 解析、清洗、抽取与聚合，避免把脏活丢回 LLM 或外部脚本。

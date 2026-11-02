@@ -5,9 +5,9 @@
  * 拆分约定见 docs/01-architecture/server-modularization-plan.md。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { getSkillRegistry } from '../skill-registry';
-import { sendJson } from '../http-helpers';
-import type { Action, AuthContext } from '../authz';
+import { getSkillRegistry } from '../skill-registry.js';
+import { sendJson } from '../http-helpers.js';
+import type { Action, AuthContext } from '../authz.js';
 
 export interface SkillRouteDeps {
   guard: (

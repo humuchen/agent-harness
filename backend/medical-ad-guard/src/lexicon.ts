@@ -11,6 +11,8 @@
  * - 非法 JSON / 非法正则 fail-fast 抛错（配置错误必须显式暴露，不许静默跳过）。
  */
 
+import { readFileSync, statSync } from 'node:fs';
+
 /** 单条词库规则（JSON 文件与内置默认共用同一形态）。 */
 export interface LexiconRule {
   /** 规则 id（可读标识，审计/统计用；可选）。 */
@@ -166,9 +168,7 @@ export function resolveLexicon(env: NodeJS.ProcessEnv = process.env): ResolvedLe
   if (!path) {
     return { rules: [...DEFAULT_LEXICON_RULES], kbTerms: [...DEFAULT_KB_PROJECT_TERMS], version: 'builtin', source: 'builtin' };
   }
-  // 延迟 require node:fs：保持包在浏览器/边缘形态的纯类型导入能力（运行时才触盘）。
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { readFileSync, statSync } = require('node:fs') as typeof import('node:fs');
+  // 词库文件运行时才触盘；fs 经顶层静态导入（ESM 产物）。
   let stat: { mtimeMs: number };
   try {
     stat = statSync(path);

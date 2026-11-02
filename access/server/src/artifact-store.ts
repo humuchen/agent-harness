@@ -17,7 +17,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { atomicWriteJson } from './atomic-write';
+import { atomicWriteJson } from './atomic-write.js';
+import { createRequire } from 'node:module';
+
+// ESM 产物：经 createRequire 保留 S3 后端模块的惰性加载（仅 ARTIFACT_STORE=s3 时加载）。
+const require = createRequire(import.meta.url);
 
 export interface ArtifactMeta {
   id: string;

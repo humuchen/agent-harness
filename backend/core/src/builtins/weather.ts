@@ -1,4 +1,4 @@
-import { objectParams, ToolRegistry } from '../tools';
+import { objectParams, ToolRegistry } from '../tools.js';
 
 // 天气工具：基于 open-meteo（免 API key、无需鉴权）实现「地理编码 + 当前天气 + 多日预报」。
 // 全部走 Node 全局 fetch（Node 18+ 内置），不引入任何外部依赖。

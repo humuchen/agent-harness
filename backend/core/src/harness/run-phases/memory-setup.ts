@@ -1,7 +1,7 @@
 // 记忆装配段（runInner 段 C）：持久化载入 + 系统提示注入 + 用户消息入窗。
 // P1#21 自 runInner 迁出，语句顺序与语义逐字等价。
-import type { Memory } from '../../memory';
-import { buildUserContent } from '../content-blocks';
+import type { Memory } from '../../memory.js';
+import { buildUserContent } from '../content-blocks.js';
 
 export interface MemorySetupInput {
   memory: Memory;

@@ -9,8 +9,8 @@
  */
 import type { IncomingMessage } from 'node:http';
 // 外部身份源实现（OIDC Bearer JWT / proxy 头注入）。authz 单向依赖 sso，sso 仅 import type 引用本文件类型。
-import { OidcAuthorizer, ProxyAuthorizer, loadRoleMapping } from './sso';
-import { getSecret } from './env-guard';
+import { OidcAuthorizer, ProxyAuthorizer, loadRoleMapping } from './sso.js';
+import { getSecret } from './env-guard.js';
 // 账户密码身份源（注册/登录 + 服务端签发 7 天 token + cookie）。与 OIDC/proxy/静态令牌共存，
 // 作为 Authorizer 的 fallback 档。accounts 仅依赖 node 内置模块，无循环依赖风险。
 import {
@@ -18,7 +18,7 @@ import {
   isTokenValidLocally,
   cookieValue,
   AUTH_COOKIE
-} from './accounts';
+} from './accounts.js';
 
 export type Role = 'admin' | 'operator' | 'viewer';
 

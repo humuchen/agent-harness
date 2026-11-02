@@ -17,13 +17,13 @@ import {
   getJevStats,
   sanitizeKey
 } from '@agent-harness/core';
-import { getMemoryStore, invalidateSessionMemory } from '../runner';
-import { resolveJevCredential } from '../provider-keys';
-import { queryAuditFile, resolveAuditFile } from '../audit-query';
-import { getOrgTree } from '../org';
-import { getSupplyChainScanner } from '../supply-chain';
-import { readBody, sendJson, securityHeaders } from '../http-helpers';
-import type { Action, Authorizer, AuthContext } from '../authz';
+import { getMemoryStore, invalidateSessionMemory } from '../runner.js';
+import { resolveJevCredential } from '../provider-keys.js';
+import { queryAuditFile, resolveAuditFile } from '../audit-query.js';
+import { getOrgTree } from '../org.js';
+import { getSupplyChainScanner } from '../supply-chain.js';
+import { readBody, sendJson, securityHeaders } from '../http-helpers.js';
+import type { Action, Authorizer, AuthContext } from '../authz.js';
 
 export interface MiscRouteDeps {
   guard: (
@@ -198,7 +198,7 @@ export async function handleMiscRoutes(
       const ctx = await deps.guard(req, res, 'supplychain:read');
       if (!ctx) return true;
       // 本模块位于 src/routes/，仓库根需再上溯一级（server.ts 在 src/ 时为三级）。
-      const repoRoot = resolve(__dirname, '..', '..', '..', '..');
+      const repoRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
       const report = await getSupplyChainScanner(repoRoot).scan();
       sendJson(res, report, req);
       return true;
@@ -210,7 +210,7 @@ export async function handleMiscRoutes(
   if (path === '/api/supply-chain/scan' && req.method === 'POST') {
     const ctx = await deps.guard(req, res, 'supplychain:read');
     if (!ctx) return true;
-    const repoRoot = resolve(__dirname, '..', '..', '..', '..');
+    const repoRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
     const report = await getSupplyChainScanner(repoRoot).scan();
     sendJson(res, report, req);
     return true;

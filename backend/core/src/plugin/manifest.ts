@@ -11,7 +11,7 @@
  * - `transport`/`endpoint` 直接复用 AgentCard 语义，远端行业 agent 天然支持入驻。
  */
 
-import type { AgentCapability, AgentTransport, AgentAssembly } from '../agents/types';
+import type { AgentCapability, AgentTransport, AgentAssembly } from '../agents/types.js';
 
 /** 插件清单。 */
 export interface PluginManifest {

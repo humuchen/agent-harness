@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '@agent-harness/core';
-import { searchScriptsView, searchCasesView, toScriptView } from '../services/kb-service';
-import { errorResult } from '../infra/errors';
+import { searchScriptsView, searchCasesView, toScriptView } from '../services/kb-service.js';
+import { errorResult } from '../infra/errors.js';
 
 /**
  * library_search：检索医美「话术库 / 案例库」（P1-⑤ 三层知识缺失的两层）。

@@ -6,4 +6,4 @@
 // 依赖方向无环；对外导出面与拆分前完全一致（本文件 re-export + index.ts 双路径等价）。
 // 行为与签名零变化——checkInput / checkOutput / checkToolArgs 等签名不变。
 
-export * from './guardrails/index';
+export * from './guardrails/index.js';

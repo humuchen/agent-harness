@@ -7,8 +7,8 @@
  * - 全部按 tenant_id 过滤，天然多租户隔离。
  */
 
-import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db';
-import { getConfig } from '../config';
+import { getDb, getDbAsync, dbCall, allRows, getRow, runStmt, type SqliteDatabase } from '../infra/db.js';
+import { getConfig } from '../config.js';
 import {
   type LeadRecord,
   type LeadPatch,
@@ -19,7 +19,7 @@ import {
   type LeadPreferences,
   STAGE_ORDER,
   stageRank,
-} from './types';
+} from './types.js';
 
 /** 解析偏好 JSON 列（容错：解析失败返回 undefined，绝不抛错阻断读取）。 */
 function parsePreferences(v: unknown): LeadPreferences | undefined {

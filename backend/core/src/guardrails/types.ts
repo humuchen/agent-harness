@@ -1,5 +1,5 @@
 // 内容安全护栏 —— 类型契约（P1#21 拆分：自 guardrails.ts 分出，纯类型零运行时逻辑）。
-import type { IsolationLevel } from '../sandbox/types';
+import type { IsolationLevel } from '../sandbox/types.js';
 
 export interface GuardrailResult {
   ok: boolean;

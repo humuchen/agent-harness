@@ -34,7 +34,8 @@ import {
   escapeRegExp,
   KB_TERM_NEGATIVE_CONTEXTS,
   type LexiconRule,
-} from './lexicon';
+} from './lexicon.js';
+import { statSync } from 'node:fs';
 
 /** 本插件注册的所有规则统一作用域标签。 */
 export const MEDICAL_AD_SCOPE = 'medical-ad';
@@ -211,8 +212,6 @@ export function registerMedicalAdGuardrail(): void {
   const pollMs = Number(process.env.MEDICAL_AD_LEXICON_POLL_MS ?? 0) || 0;
   const path = (process.env.MEDICAL_AD_LEXICON_PATH ?? '').trim();
   if (pollMs >= 5000 && path) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { statSync } = require('node:fs') as typeof import('node:fs');
     try {
       lastMtimeMs = statSync(path).mtimeMs;
     } catch {

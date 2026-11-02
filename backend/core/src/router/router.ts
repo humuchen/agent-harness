@@ -11,12 +11,12 @@
  * 与「兜底 default」，保证默认开关注释掉后零行为变更。
  */
 
-import { getAgentRegistry, DEFAULT_AGENT_ID } from '../agents/registry';
-import { makeDefaultAgentCard, type AgentCard } from '../agents/types';
-import { getIntentRouter } from './intent';
-import { getAgentSelector, scoreAgent } from './selector';
-import { getConfidenceGate } from './confidence-gate';
-import type { Intent, RouteInput, RouteResult, SelectorContext } from './types';
+import { getAgentRegistry, DEFAULT_AGENT_ID } from '../agents/registry.js';
+import { makeDefaultAgentCard, type AgentCard } from '../agents/types.js';
+import { getIntentRouter } from './intent.js';
+import { getAgentSelector, scoreAgent } from './selector.js';
+import { getConfidenceGate } from './confidence-gate.js';
+import type { Intent, RouteInput, RouteResult, SelectorContext } from './types.js';
 
 export class TaskRouter {
   /** 解析单次运行的目标 agent。详见文件头决策优先级。 */
