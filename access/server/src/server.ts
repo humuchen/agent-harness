@@ -97,7 +97,6 @@ import { ServerPluginHost, WebPluginHost } from './plugin-ext.js';
 import {
   createPluginSystem,
   bootstrapPlugins,
-  resolveUpgradeManifest,
   type PluginSystem
 } from './plugin-bootstrap.js';
 
@@ -240,6 +239,8 @@ import { handleRun, handleWorkflow, initRunRoutes } from './routes/run-routes.js
 import { handleWorkflowRoutes } from './routes/workflow-routes.js';
 // SSE 实时通道（聊天跨设备同步 / 提醒推送）：已外迁 routes/sse-routes.ts（P2 模块化第八批）。
 import { handleSseRoutes } from './routes/sse-routes.js';
+// 插件管理（列表 / enable / disable / upgrade）：已外迁 routes/plugin-routes.ts（P2 模块化第九批）。
+import { handlePluginRoutes } from './routes/plugin-routes.js';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -1310,98 +1311,9 @@ const server = createServer(
         return;
       }
 
-      // ---- 插件宿主：通用扩展点（无业务词）----
-      // 元数据端点：列出已安装插件与已注册前端视图（供 webapp 动态渲染 Tab / 热插拔控制台）。
-      // 视图按当前登录用户渲染（数据 owner 绑定）：鉴权失败 401，开放模式 sub='anon'。
-      if (req.method === 'GET' && path === '/api/plugins') {
-        const viewUser = await authorizer.authenticate(req);
-        if (!viewUser) {
-          unauthorized(res);
-          return;
-        }
-        const views = await pluginSystem.webHost.listViews({
-          sub: viewUser.sub,
-          role: viewUser.role
-        });
-        return sendJson(
-          res,
-          {
-            plugins: pluginSystem.loader
-              .list()
-              .map(
-                (r: {
-                  manifest: { id: string; name?: string; version?: string; dependencies?: string[] };
-                  state: string;
-                }) => ({
-              id: r.manifest.id,
-              name: r.manifest.name ?? r.manifest.id,
-              version: r.manifest.version,
-              state: r.state,
-                dependencies: r.manifest.dependencies ?? []
-              })
-            ),
-            views
-          },
-          req
-        );
-      }
-      // 插件热插拔（Phase 4）：enable / disable / upgrade，受 plugin:manage 动作保护，
-      // 操作仅在进程内存注册表上增删，不触碰 /api/state 健康检查，也不重启进程。
-      {
-        const m = path.match(
-          /^\/api\/plugins\/([^/]+)\/(enable|disable|upgrade)$/
-        );
-        if (m && req.method === 'POST') {
-          const id = decodeURIComponent(m[1] ?? '');
-          const action = m[2];
-          const ctx = await guard(req, res, 'plugin:manage');
-          if (!ctx) return;
-          try {
-            if (action === 'upgrade') {
-              const body = await readBody(req);
-              const manifest = await resolveUpgradeManifest(id, body ?? {});
-              const rec = await pluginSystem.loader.upgrade(id, manifest);
-              return sendJson(
-                res,
-                {
-                  id,
-                  state: rec.state,
-                  version: rec.manifest.version,
-                  upgradedAt: rec.upgradedAt ?? null
-                },
-                req
-              );
-            }
-            const rec =
-              action === 'enable'
-                ? await pluginSystem.loader.enable(id)
-                : await pluginSystem.loader.disable(id);
-            return sendJson(res, { id, state: rec.state }, req);
-          } catch (e) {
-            return sendJson(
-              res,
-              { error: e instanceof Error ? e.message : String(e) },
-              req
-            );
-          }
-        }
-        // 兼容计划约定：DELETE /api/plugins/:id/enable 视作停用（不重启进程）。
-        const dm = path.match(/^\/api\/plugins\/([^/]+)\/enable$/);
-        if (dm && req.method === 'DELETE') {
-          const id = decodeURIComponent(dm[1] ?? '');
-          const ctx = await guard(req, res, 'plugin:manage');
-          if (!ctx) return;
-          try {
-            const rec = await pluginSystem.loader.disable(id);
-            return sendJson(res, { id, state: rec.state }, req);
-          } catch (e) {
-            return sendJson(
-              res,
-              { error: e instanceof Error ? e.message : String(e) },
-              req
-            );
-          }
-        }
+      // ── 插件管理（列表 / enable / disable / upgrade）：已外迁 routes/plugin-routes.ts（P2 模块化第九批）──
+      if (await handlePluginRoutes(req, res, path, { guard, authenticate: (req) => authorizer.authenticate(req), pluginSystem })) {
+        return;
       }
       // ── 文件上传：已外迁 routes/upload-routes.ts ──
       if (await handleUploadRoutes(req, res, path, { guard })) {

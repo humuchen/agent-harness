@@ -21,9 +21,82 @@ import type { AgentStore } from '../agents/store.js';
 import { VolatileAgentStore } from '../agents/store.js';
 import type { PluginManifest } from './manifest.js';
 import { PluginRegistryClient, type RegistryEntry } from './registry.js';
-import { verifyManifest } from './signature.js';
+import { verifyManifest, type SigScheme } from './signature.js';
 import type { PluginModule } from './module.js';
 import { validatePluginManifest } from './manifest.js';
+
+// ---------------------------------------------------------------------------
+// P2-10 本地插件 sidecar 签名校验（热重载供应链闭合）。
+//
+// 背景：installFromRegistry（远程 registry 路径）已验签，但本地 pluginDir 的
+// 热重载（_reloadFromDir / startHotReload 初始扫描）直接 install/upgrade，
+// 不做任何完整性校验——pluginDir 可写时（共享卷 / 容器挂载 / 被入侵的插件进程）
+// 篡改 manifest.json 即可注入恶意能力。本函数以 sidecar `manifest.json.sig`
+// + 配置的验签密钥闭合该面：有 sig 文件且配了密钥 → 强校验，失败即拒绝；
+// 无 sig 文件 → 允许（本地可信目录向后兼容）；有 sig 但无密钥 → 允许但告警。
+// ---------------------------------------------------------------------------
+
+/** 本地签名校验结果。 */
+export type LocalSigOutcome = 'no-sig' | 'verified' | 'failed' | 'no-key';
+
+export interface LocalSigResult {
+  outcome: LocalSigOutcome;
+  /** 非 ok 时的原因（供告警/日志）。 */
+  reason?: string;
+}
+
+/** 从 env / opts 解析验签密钥与方案。 */
+function resolveSignConfig(opts?: {
+  signKey?: string;
+  signPubkey?: string;
+  scheme?: SigScheme;
+}): { key: string; scheme: SigScheme } | null {
+  const scheme =
+    opts?.scheme ??
+    (process.env.PLUGIN_SIGN_SCHEME as SigScheme | undefined) ??
+    'hmac';
+  const key =
+    opts?.signKey ??
+    opts?.signPubkey ??
+    process.env.PLUGIN_SIGN_KEY ??
+    process.env.PLUGIN_SIGN_PUBKEY ??
+    '';
+  if (!key) return null;
+  return { key, scheme };
+}
+
+/**
+ * 校验本地插件的 sidecar 签名。
+ * @param manifest 已解析的清单
+ * @param manifestPath manifest.json 的绝对路径（sidecar = manifestPath + '.sig'）
+ * @param opts 可选：注入密钥/方案（测试用）；缺省读 env
+ */
+export function verifyLocalPluginSignature(
+  manifest: PluginManifest,
+  manifestPath: string,
+  opts?: { signKey?: string; signPubkey?: string; scheme?: SigScheme }
+): LocalSigResult {
+  const sigPath = manifestPath + '.sig';
+  let sigContent: string;
+  try {
+    // 同步读取：调用点（_reloadFromDir）本身就是同步 readdir 循环内的同步 fs 调用。
+    sigContent = require('fs').readFileSync(sigPath, 'utf8').trim();
+  } catch {
+    // 无 sidecar 签名文件：本地可信目录向后兼容，允许加载。
+    return { outcome: 'no-sig' };
+  }
+  const cfg = resolveSignConfig(opts);
+  if (!cfg) {
+    return {
+      outcome: 'no-key',
+      reason: `manifest.json.sig 存在但未配置验签密钥（PLUGIN_SIGN_KEY / PLUGIN_SIGN_PUBKEY）；已放行但建议配置密钥以启用校验`,
+    };
+  }
+  const ok = verifyManifest(manifest, sigContent, cfg.key, cfg.scheme);
+  return ok
+    ? { outcome: 'verified' }
+    : { outcome: 'failed', reason: `签名校验失败（scheme=${cfg.scheme}）：清单可能被篡改` };
+}
 import {
   type PluginContext,
   type PluginLogger,
@@ -213,6 +286,19 @@ export class PluginLoader {
         if (existsSync(manifestPath)) {
           try {
             const raw = JSON.parse(require('fs').readFileSync(manifestPath, 'utf8'));
+            // P2-10：sidecar 签名校验。失败即跳过（不 install），其余放行。
+            const sig = verifyLocalPluginSignature(raw, manifestPath);
+            if (sig.outcome === 'failed') {
+              structLog('warn', '[plugin] 热加载签名校验失败，已拒绝安装', {
+                manifestPath,
+                id: raw?.id,
+                reason: sig.reason,
+              });
+              continue;
+            }
+            if (sig.outcome === 'no-key') {
+              structLog('warn', `[plugin] ${raw?.id ?? '?'}: ${sig.reason}`);
+            }
             await this.install(raw);
           } catch {
             // 跳过无效 manifest
@@ -246,6 +332,19 @@ export class PluginLoader {
       if (!existsSync(manifestPath)) continue;
       try {
         const raw = JSON.parse(require('fs').readFileSync(manifestPath, 'utf8'));
+        // P2-10：sidecar 签名校验。失败即跳过（不 install/upgrade），其余放行。
+        const sig = verifyLocalPluginSignature(raw, manifestPath);
+        if (sig.outcome === 'failed') {
+          structLog('warn', '[plugin] 热重载签名校验失败，已拒绝升级/安装', {
+            manifestPath,
+            id: raw?.id,
+            reason: sig.reason,
+          });
+          continue;
+        }
+        if (sig.outcome === 'no-key') {
+          structLog('warn', `[plugin] ${raw?.id ?? '?'}: ${sig.reason}`);
+        }
         const existing = this.plugins.get(raw.id);
         if (existing) {
           await this.upgrade(raw.id, raw);
