@@ -24,7 +24,7 @@ import {
   type RunMode
 } from './runner.js';
 import { mcpManager } from './mcp-manager.js';
-import { runQueue, sseConnectionLock } from './run-queue.js';
+import { runQueue } from './run-queue.js';
 import { envPipeline } from './env-pipeline.js';
 import {
   getMetricsSnapshot,
@@ -89,7 +89,7 @@ import {
 } from './views.js';
 
 // HTTP 传输层辅助（CORS / JSON / SSE / 请求体读取）已拆出到 http-helpers.ts。
-import { corsHeaders, sendJson, startSse, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString, writeSseFrame } from './http-helpers.js';
+import { corsHeaders, sendJson, readBody, readRawBody, securityHeaders, sendJsonError, safeEqualString } from './http-helpers.js';
 
 // 插件系统（P1）：通用扩展点，无业务词。server 不静态依赖任何具体插件包。
 import { ServerPluginHost, WebPluginHost } from './plugin-ext.js';
@@ -126,10 +126,9 @@ import {
 import { getHistoryStore } from './history-store.js';
 
 // 聊天实时广播总线（跨设备/跨标签页/跨实例 fanout）。
-import { subscribeChatEvents, publishChatEvent } from './chat-bus.js';
+import { publishChatEvent } from './chat-bus.js';
 
-// 备忘提醒实时广播总线（进程内 fanout，单实例足够）。
-import { subscribeReminders } from './reminder-bus.js';
+// 备忘提醒实时广播总线（进程内 fanout，单实例足够）：订阅已随 SSE 路由外迁 routes/sse-routes.ts。
 
 // IM 桥接（用户层入口）：飞书 / 钉钉 / 企业微信 → agent → 回发。纯业务层，core 零感知。
 import {
@@ -215,7 +214,10 @@ import { scrubSensitiveEnv, getSecret } from './env-guard.js';
 // P2：全局日志脱敏 scrubber（拦截 API Key / token / password 等敏感信息）
 import { installScrubber } from './log-scrub.js';
 
-import { DEFAULTS, cfgNum } from './config-defaults.js';
+import { DEFAULTS } from './config-defaults.js';
+// P1-6：启动期类型化配置快照（一次性构建、冻结）。启动段常量统一经此消费，
+// 消除 process.env 散读 + Number("abc")→NaN 静默 misconfig（见 config.ts）。
+import { serverConfig } from './config.js';
 import { rateLimited } from './rate-limit.js';
 import { isTrustedProxy } from './trusted-proxy.js';
 import { handleAccountRoutes, handleAccountOauthRoutes } from './routes/account-routes.js';
@@ -236,6 +238,8 @@ import { handleChatDataRoutes } from './routes/chat-data-routes.js';
 import { handleRun, handleWorkflow, initRunRoutes } from './routes/run-routes.js';
 // P1-⑤ 工作流编排路由（快照/续跑/审批/取消/分叉重跑/回放）：已外迁 routes/workflow-routes.ts（P2 模块化第七批）。
 import { handleWorkflowRoutes } from './routes/workflow-routes.js';
+// SSE 实时通道（聊天跨设备同步 / 提醒推送）：已外迁 routes/sse-routes.ts（P2 模块化第八批）。
+import { handleSseRoutes } from './routes/sse-routes.js';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -320,10 +324,9 @@ setupAlerting();
 
 // Render (and most PaaS) inject PORT; fall back to UI_PORT then the local default.
 // 默认值统一来自 config-defaults.DEFAULTS（单一事实来源，消除与 schema 校验的漂移）。
-const PORT = Number(
-  process.env.PORT ?? process.env.UI_PORT ?? (DEFAULTS.PORT as number)
-);
-const HOST = process.env.UI_HOST ?? (DEFAULTS.UI_HOST as string);
+// P1-6：经 serverConfig 快照读取（cfgNum 守有限数，防 "abc"→NaN）。
+const PORT = serverConfig.port;
+const HOST = serverConfig.host;
 
 // 边缘路由表（公开/运维探针）：在鉴权守卫前分发，命中即短路。
 // deps 在首次需要时构造，getSandboxStatus 懒加载 core 的沙箱执行器，避免模块加载期副作用。
@@ -355,46 +358,33 @@ function edgeRouteDeps(): EdgeRouteDeps {
 // 详见 authz.ts 的 createAuthorizer。新部署应显式设置 ADMIN_API_KEY，使「LLM 密钥」与「站点鉴权」职责分离。
 // 站点鉴权主链路由「账户密码 / RBAC / OIDC / proxy」负责，未登录一律 401。
 // 身份源：token（默认静态令牌）/ oidc（Bearer JWT）/ proxy（SSO 网关头注入）/ account（账户密码）。
-const AUTH_PROVIDER = (
-  process.env.AUTH_PROVIDER || (DEFAULTS.AUTH_PROVIDER as string)
-).toLowerCase();
+// P1-6：经 serverConfig 快照读取（类型化 + 单一构建）。
+const AUTH_PROVIDER = serverConfig.authProvider;
 // 账户密码身份源开关（默认开）：开启后注册/登录可用，且强制要求鉴权（无有效登录态即 401）。
-const ACCOUNT_AUTH =
-  (
-    process.env.ACCOUNT_AUTH ?? (DEFAULTS.ACCOUNT_AUTH as string)
-  ).toLowerCase() !== 'off';
+const ACCOUNT_AUTH = serverConfig.accountAuth;
 // 需要鉴权：非 token 模式、或启用账户密码鉴权、或配置了静态令牌（UI_TOKENS）。
 // 若以上均不满足：降级模式下 admin key（ADMIN_API_KEY 或回退 OPEN_API_KEY）仍可作唯一凭证，
 // 否则由账户密码档严格拒绝（无 cookie 即 401）。
-const REQUIRE_AUTH =
-  AUTH_PROVIDER !== 'token' || ACCOUNT_AUTH || !!process.env.UI_TOKENS;
+const REQUIRE_AUTH = serverConfig.requireAuth;
 
 // 安全加固配置（均可在 .env / 环境变量中调整）。
 // 允许跨域的来源白名单（逗号分隔）；为空则仅同源（默认收紧，不再回 `*`，防 CSRF/跨域调用）。
-const UI_CORS_ORIGIN = (
-  process.env.UI_CORS_ORIGIN ?? (DEFAULTS.UI_CORS_ORIGIN as string)
-)
-  .split(',')
-  .map((s: string) => s.trim())
-  .filter(Boolean);
+// P1-6：经 serverConfig 快照读取（已 split + trim + 去空）。
+const UI_CORS_ORIGIN = serverConfig.uiCorsOrigin;
 // 请求体上限（字节），防大报文 DoS。默认 1MB。
-const MAX_BODY_BYTES = Number(
-  process.env.MAX_BODY_BYTES ?? (DEFAULTS.MAX_BODY_BYTES as number)
-);
+// P1-6：经 serverConfig 快照读取（cfgNum 守有限数，防 "abc"→NaN 后上限失效）。
+const MAX_BODY_BYTES = serverConfig.maxBodyBytes;
 // 单会话历史镜像序列化上限（字节）；超出后 PUT /api/history 直接 413。
 // 前端据 /api/state 下发的 historyMaxBytes 主动裁剪，避免到服务器才拒绝。
-const HISTORY_MAX_BYTES = cfgNum(
-  'HISTORY_MAX_BYTES',
-  DEFAULTS.HISTORY_MAX_BYTES as number
-);
+const HISTORY_MAX_BYTES = serverConfig.historyMaxBytes;
 // 限流：单 IP 在窗口内的请求数；<=0 关闭限流。默认 120/60s。
 // 用 cfgNum 读取（env 优先、非有限数回落默认），规避 `Number("abc")` 静默变 NaN 后误关限流。
-const RATE_LIMIT = cfgNum('RATE_LIMIT', DEFAULTS.RATE_LIMIT as number);
+const RATE_LIMIT = serverConfig.rateLimit;
 // P0 修复：原代码误读 DEFAULTS.RATE_WINDOW_MS（该键不存在）→ Number(undefined)=NaN →
 // 桶 resetAt 为 NaN → 一旦超阈值该 IP 永久 429 且 retry-after=NaN。正确键名为 RATE_LIMIT_WINDOW_MS。
-const RATE_WINDOW_MS = cfgNum('RATE_LIMIT_WINDOW_MS', DEFAULTS.RATE_LIMIT_WINDOW_MS as number);
+const RATE_WINDOW_MS = serverConfig.rateLimitWindowMs;
 // 单已登录用户限流（防单账号滥用）；默认 60/60s，0=关闭。原内联读取 `|| 60` 对 env=0 静默变 60（关不掉）。
-const USER_RATE_LIMIT = cfgNum('USER_RATE_LIMIT', DEFAULTS.USER_RATE_LIMIT as number);
+const USER_RATE_LIMIT = serverConfig.userRateLimit;
 // P1 安全加固：CSRF 双重提交令牌门禁开关。默认开启；CSRF_ENFORCE=off 可关闭
 // （仅供无法升级的老客户端平滑过渡，生产不建议常关）。
 const CSRF_ENFORCE = process.env.CSRF_ENFORCE !== 'off';
@@ -1294,87 +1284,8 @@ const server = createServer(
       // 前端登录后建立一条常驻 SSE：按 owner 订阅 chat-bus，把本账户其它端写入的
       // 消息/标题/删除事件实时推回。单实例走进程内 fanout，多实例（有 Redis）走
       // chat-bus 的 pub/sub 桥自动跨实例转发。心跳保活，断线由前端按游标重连。
-      if (req.method === 'GET' && path === '/api/chat/stream') {
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        if (ctx.sub === 'anon') {
-          sendJsonError(res, 401, { error: 'authentication required for chat stream' }, req);
-          return;
-        }
-        // P1-3: SSE 连接数上限检查（防止恶意客户端耗尽连接）
-        if (!sseConnectionLock.acquire()) {
-          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
-          return;
-        }
-        const send = startSse(res, req);
-        // 连接建立即时确认，便于前端判定通道已就绪。
-        send({ type: 'chat:ready', owner: ctx.sub });
-        // P2 修复：补 SSE 保活心跳（此前注释声称「心跳保活」但实现无 ping）——长静默
-        // 连接会被中间代理（nginx 默认 60s）掐断，且占用 SSE 连接槽位。注释帧对
-        // SSE 解析透明（对齐 run-routes.ts 的 pingTimer 模式）。
-        const ping = setInterval(() => {
-          writeSseFrame(res, ': ping\n\n', () => res.writableEnded || res.destroyed);
-        }, 15_000);
-        ping.unref?.();
-        const unsub = subscribeChatEvents(ctx.sub, (e) => {
-          try {
-            send(e);
-          } catch {
-            /* 连接已断，unsub 在 close 时执行 */
-          }
-        });
-        res.on('close', () => {
-          clearInterval(ping);
-          try {
-            unsub();
-          } catch {
-            /* 重复 unsub 安全 */
-          }
-          sseConnectionLock.release();
-        });
-        return;
-      }
-
-      /* ------------- 插件事件实时广播通道（SSE，提醒即时推送） ------------- */
-      // 前端登录后建立一条常驻 SSE：按 owner 订阅 reminder-bus，只收本用户的备忘提醒
-      // （memo:reminder 事件携带 owner，跨用户不互见）。前端据此立即弹 ah-notification +
-      // 浏览器桌面通知（替代纯轮询）。心跳保活，断线前端按指数退避重连，
-      // 重连期间漏掉的提醒由前端轮询 /api/plugins/memo/reminders 兜底补发。
-      if (req.method === 'GET' && path === '/api/events') {
-        const ctx = await guard(req, res, 'chat:read');
-        if (!ctx) return;
-        // P1-3: SSE 连接数上限检查
-        if (!sseConnectionLock.acquire()) {
-          sendJsonError(res, 503, { error: 'too many sse connections' }, req);
-          return;
-        }
-        const send = startSse(res, req);
-        // 连接建立即时确认（带 owner，便于前端核对归属）。
-        send({ type: 'events:ready', owner: ctx.sub });
-        // P2 修复：补 SSE 保活心跳（同 chat/stream，注释帧对解析透明）。
-        const ping = setInterval(() => {
-          writeSseFrame(res, ': ping\n\n', () => res.writableEnded || res.destroyed);
-        }, 15_000);
-        ping.unref?.();
-        // 支持 role 参数：role=service 订阅客服业务提醒，默认 role=user 订阅备忘提醒
-        const url = new URL(req.url ?? '', 'http://localhost');
-        const role = url.searchParams.get('role') === 'service' ? 'service' : 'user';
-        const unsub = subscribeReminders(ctx.sub, (e) => {
-          try {
-            send(e);
-          } catch {
-            /* 连接已断，unsub 在 close 时执行 */
-          }
-        }, role);
-        res.on('close', () => {
-          clearInterval(ping);
-          try {
-            unsub();
-          } catch {
-            /* 重复 unsub 安全 */
-          }
-          sseConnectionLock.release();
-        });
+      // ── SSE 实时通道（聊天跨设备同步 / 提醒推送）：已外迁 routes/sse-routes.ts（P2 模块化第八批）──
+      if (await handleSseRoutes(req, res, url, path, { guard })) {
         return;
       }
 
