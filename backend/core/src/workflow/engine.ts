@@ -22,114 +22,27 @@ import { inspectStepOutput } from './step-output.js';
 import { validateAgainstSchema } from '../json-schema.js';
 import { structLog } from '../telemetry.js';
 
-/** 执行单个 step 的回调（注入，解耦 harness/LLM 装配）。 */
-export type StepExecutor = (
-  step: StepDef,
-  input: unknown,
-  ctx: RunContext,
-) => Promise<unknown>;
+// P2-6 拆分：类型与常量外迁至 engine-types.ts / engine-constants.ts。
+// 此处 re-export 保持 `from './engine'` 导入点零改动兼容（含 workflow/index.ts barrel）。
+export * from './engine-types.js';
+export * from './engine-constants.js';
+import type {
+  StepExecutor,
+  RunContext,
+  WorkflowEvent,
+  DagEngineOptions
+} from './engine-types.js';
+import {
+  STEP_TRACE_MAX_NODES,
+  STEP_TRACE_DETAIL_MAX,
+  RETRY_BACKOFF_MAX_MS,
+  STEP_RETRIES_MAX,
+  MAX_DYNAMIC_SPAWN,
+  MAX_SUBGRAPH_DEPTH
+} from './engine-constants.js';
 
-/** step 执行上下文（透传给 executor，并贯穿 traceId / 租户 / 上游输出）。 */
-export interface RunContext {
-  workflowId: string;
-  tenantId?: string;
-  traceId?: string;
-  /** 已完成 step 的输出，按 stepId 索引（供 inputMapping 取值）。 */
-  outputs: Record<string, unknown>;
-  /** 外部取消信号（停机 / 断线）。 */
-  signal?: AbortSignal;
-  /** 本次执行是否为「补偿」语义（executor 据以调用回滚工具 / 走回滚分支）。 */
-  compensate?: boolean;
-  /**
-   * P2.5 调用链路捕获通道：executor 在本 step 执行期间把捕获到的 harness 事件序列
-   * （LLM 调用 / 工具 / 护栏 / 校验 / 收尾）写入此字段；引擎在 step 收尾（成功或失败）
-   * 将其合并进 `StepRun.trace` 并随检查点持久化。旧 executor 不写 → 引擎合并 undefined →
-   * trace 缺省，零回归。引擎按节点上限截断（保早期调用），避免检查点膨胀。
-   */
-  trace?: StepTraceNode[];
-  /**
-   * P6-D outputSchema 修正环：产出 schema 校验失败时，引擎把错误信息写入本字段并
-   * 触发重试；executor（如 workflow-executor 的 prompt 装配）可读取它向 LLM 注入
-   * 「上次产出不合规，请修正」的定向指令——比整步盲重跑更省 token、成功率更高。
-   * 产出通过校验后由引擎清除。仅声明 outputSchema 的 step 会写入（存量零回归）。
-   */
-  schemaFeedback?: string;
-}
-
-/** 单 step 调用链路节点数上限（R5 体积护栏）：超出截断保留早期调用，防止检查点膨胀。 */
-export const STEP_TRACE_MAX_NODES = 500;
-/** 调用链路单节点 detail 长度上限（截断存储，避免单条长产出拖垮检查点）。 */
-export const STEP_TRACE_DETAIL_MAX = 500;
-
-/** P6 重试退避上限毫秒（指数退避封顶，防止 retries 较大时等待失控）。 */
-export const RETRY_BACKOFF_MAX_MS = 8_000;
-/** P6 重试次数上限（StepDef.retries 收敛，防配置失误打出无界循环）。 */
-export const STEP_RETRIES_MAX = 10;
-/** P6 动态 fan-out：单个 dynamic step 单次产出的 spawn 数上限（防产出异常打爆 DAG）。 */
-export const MAX_DYNAMIC_SPAWN = 50;
-/** P6-B subgraph 嵌套深度硬上限（配合 activeChain 环检测，防 defRef 互相引用打爆调用栈）。 */
-export const MAX_SUBGRAPH_DEPTH = 5;
-/** P6 重试退避基数缺省毫秒（StepDef.retryBackoffMs 缺省值）。 */
+/** P6 重试退避基数缺省毫秒（StepDef.retryBackoffMs 缺省值）。私有常量，不外迁（非公开 API）。 */
 const RETRY_BACKOFF_DEFAULT_MS = 500;
-
-/** 引擎对外发出的工作流事件（供 SSE / 可观测消费）。 */
-export type WorkflowEvent =
-  | { type: 'wf:start'; workflowId: string; runId: string }
-  | { type: 'wf:step:start'; workflowId: string; stepId: string; agentId?: string; teamId?: string }
-  | { type: 'wf:step:done'; workflowId: string; stepId: string; output?: unknown }
-  | { type: 'wf:step:failed'; workflowId: string; stepId: string; error: string }
-  /** P6 步骤级重试：第 attempt 次重试前的通知（error 为上一次失败原因）。 */
-  | { type: 'wf:step:retry'; workflowId: string; stepId: string; attempt: number; error: string }
-  /** P6 动态 fan-out：dynamic step 成功后物化的子任务 id 列表（已写入 def 与检查点）。 */
-  | { type: 'wf:step:spawned'; workflowId: string; stepId: string; spawned: string[] }
-  /**
-   * P6-C6 状态增量：step 状态任意变迁（running/done/failed/retry/skipped/awaiting/
-   * compensated/pending-物化）后的单帧快照 —— 外部看板无需拼装多类事件即可重建
-   * 「某 step 现在什么样」。幂等冗余（与 wf:step:* 同源），消费方可忽略。
-   */
-  | {
-      type: 'wf:step:update';
-      workflowId: string;
-      runId?: string;
-      stepId: string;
-      state: StepRun['state'];
-      attempts?: number;
-      /** 产出体量（字符串长度或 JSON 序列化长度；仅 output 已落时携带）。 */
-      outputBytes?: number;
-    }
-  | { type: 'wf:compensate:start'; workflowId: string; stepId: string }
-  | { type: 'wf:compensate:done'; workflowId: string; stepId: string }
-  /** P3：审批门暂停 —— 当前波次内存在未批准的 requireApproval step，run 进入 awaiting。 */
-  | { type: 'wf:awaiting-approval'; workflowId: string; runId?: string; stepIds: string[]; run: WorkflowRun }
-  | { type: 'wf:done'; workflowId: string; runId?: string; run: WorkflowRun }
-  | { type: 'wf:failed'; workflowId: string; runId?: string; run: WorkflowRun }
-  | {
-      /** P6 方案一 A：回滚到指定快照完成（恢复态已落盘，调用方随后 /resume 重放）。 */
-      type: 'wf:rollback';
-      workflowId: string;
-      runId?: string;
-      snapshotId: string;
-      run: WorkflowRun;
-    };
-
-export interface DagEngineOptions {
-  /** 注册表：解析 agentRef（字符串 id）。缺省用共享单例。 */
-  registry?: AgentRegistry;
-  /** 团队管理器：解析 teamRef（字符串 id）。缺省用共享单例。 */
-  teamManager?: TeamManager | null;
-  /** 存储后端：检查点 / 续跑 / 审计。缺省 Volatile。 */
-  store?: WorkflowStore;
-  /** 必填：执行单个 step 的回调（本地 harness / A2A / mock）。 */
-  executor: StepExecutor;
-  /** 引擎级事件回调（SSE / 可观测）。 */
-  onEvent?: (e: WorkflowEvent) => void;
-  /**
-   * P6-B subgraph：嵌套深度与 defRef 调用链（内部透传，应用代码不传）。
-   * executeNested 每下钻一层 +1 并把当前 defRef 追加进 chain；chain 内重复即环。
-   */
-  nestingDepth?: number;
-  activeChain?: string[];
-}
 
 export class DagEngine {
   /** 进程内单调自增序号（用于 genRunId 生成同进程内不重复的 runId）。 */
