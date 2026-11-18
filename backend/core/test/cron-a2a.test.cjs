@@ -137,15 +137,18 @@ describe('A2A 异步回调投递（长期首片）', () => {
     await new Promise((r) => srv.listen(0, r));
     const cbUrl = `http://127.0.0.1:${srv.address().port}/cb`;
     try {
+      // P0 SSRF 防护（2026-11-18）：callback 默认拒绝私网目标；本用例的本地回环
+      // callback 服务器属「内部 mesh」形态，经显式 opts 逃生舱放行（与生产内部
+      // mesh 部署同款口径，不动全局 env）。
       const okRunner = async () => ({ value: 42 });
-      const t1 = new LocalA2ATransport(okRunner);
+      const t1 = new LocalA2ATransport(okRunner, { allowPrivate: true });
       const r1 = await t1.send({
         taskId: makeTaskId(), tenantId: 't1', fromAgent: 'a', toAgent: 'b',
         input: {}, traceId: 'tr-1', callback: cbUrl,
       });
       assert.equal(r1.status, 'success');
       const failRunner = async () => { throw new Error('kaput'); };
-      const t2 = new LocalA2ATransport(failRunner);
+      const t2 = new LocalA2ATransport(failRunner, { allowPrivate: true });
       const r2 = await t2.send({
         taskId: makeTaskId(), tenantId: 't1', fromAgent: 'a', toAgent: 'b',
         input: {}, callback: cbUrl,

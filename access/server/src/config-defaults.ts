@@ -52,6 +52,7 @@ export const DEFAULTS: Record<string, string | number | boolean> = {
   // 安全
   UI_CORS_ORIGIN: '',
   AUDIT_LOG: '/app/data/audit/audit.jsonl',
+  A2A_ALLOW_PRIVATE_NETWORK: '',
   // 配额
   MAX_COST_PER_WINDOW: 10, // 窗口内最大成本（美元）；0=不限，正数=硬上限
   // 存储路径（生产建议绝对路径；相对路径依赖 cwd 巧合命中卷）

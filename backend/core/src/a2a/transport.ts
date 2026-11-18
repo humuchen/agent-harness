@@ -12,6 +12,65 @@
 
 import type { AgentCard } from '../agents/types.js';
 import type { TaskEnvelope, TaskResult } from './types.js';
+import { resolveHostIsPrivate } from '../guardrails/egress.js';
+
+// ---------------------------------------------------------------------------
+// P0 SSRF 防护（a2a 出网私网判定）。
+//
+// 威胁面：TaskEnvelope.callback 与 HttpA2ATransport 的 baseUrl 此前不经任何
+// 出网校验直接 POST——callback 来自外部信封（/api/a2a/tasks 对任意远端开放），
+// baseUrl 可经远端自注册 AgentCard 注入，攻击者可诱导服务端把任务结果（可能含
+// 敏感产出）投递到 169.254.169.254 云元数据 / 内网管理端点（SSRF 数据外带）。
+//
+// 口径（与 builtins/webfetch 的 resolveHostIsPrivate 同源，防 DNS rebinding）：
+//   - 仅允许 http/https；
+//   - 目标主机解析到私网/回环/链路本地段即拒绝（域名经 dns.lookup 全量展开）；
+//   - 逃生舱：A2A_ALLOW_PRIVATE_NETWORK=true（内部 mesh / host.docker.internal
+//     自组网部署显式放行，warn 留痕）。envelope.callback 属纯外部输入，
+//     内部合法流程从不设置该字段，默认收紧对存量零回归。
+// ---------------------------------------------------------------------------
+
+/** A2A 出网校验选项（宿主可显式覆盖 env 缺省）。 */
+export interface A2AEgressOptions {
+  /** 允许私网/回环/链路本地目标；缺省读 env A2A_ALLOW_PRIVATE_NETWORK（默认拒绝）。 */
+  allowPrivate?: boolean;
+}
+
+/** 解析 allowPrivate 最终值：显式 opts > env；env 未配置时一律拒绝私网。 */
+function a2aAllowPrivate(opts?: A2AEgressOptions): boolean {
+  if (opts && typeof opts.allowPrivate === 'boolean') return opts.allowPrivate;
+  const raw = process.env.A2A_ALLOW_PRIVATE_NETWORK ?? '';
+  if (raw.trim().toLowerCase() === 'true') {
+    // eslint-disable-next-line no-console
+    console.warn('[a2a] A2A_ALLOW_PRIVATE_NETWORK=true：A2A 派发/回调允许私网目标（仅限内部 mesh 部署使用）');
+    return true;
+  }
+  return false;
+}
+
+/**
+ * A2A 出网判定：返回 null 表示放行，否则为拒绝原因（供调用方落告警/错误文案）。
+ * 仅校验协议与私网，不校验域名黑白名单（A2A 目标是配置态端点，非用户自由文本）。
+ */
+async function a2aEgressBlockReason(
+  url: string,
+  opts?: A2AEgressOptions
+): Promise<string | null> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return `invalid URL: ${url.slice(0, 100)}`;
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return `a2a egress denied to ${u.protocol}// (scheme not allowed)`;
+  }
+  if (a2aAllowPrivate(opts)) return null;
+  if (await resolveHostIsPrivate(u.hostname)) {
+    return `a2a egress denied to ${u.hostname} (private network; set A2A_ALLOW_PRIVATE_NETWORK=true for internal mesh)`;
+  }
+  return null;
+}
 
 /** 执行一个 agent 任务的回调（server 端注入：assembleAgent + harness.run）。 */
 export type A2ARunner = (
@@ -27,7 +86,10 @@ export interface A2ATransport {
 
 /** 进程内传输：直接回调注入的 runner（同进程多 agent 协同，零网络开销）。 */
 export class LocalA2ATransport implements A2ATransport {
-  constructor(private readonly runner: A2ARunner) {}
+  constructor(
+    private readonly runner: A2ARunner,
+    private readonly egress?: A2AEgressOptions,
+  ) {}
 
   async send(envelope: TaskEnvelope): Promise<TaskResult> {
     try {
@@ -38,11 +100,11 @@ export class LocalA2ATransport implements A2ATransport {
       });
       const result: TaskResult = { taskId: envelope.taskId, status: 'success', output };
       // 长期首片：信封带 callback 时异步回填结果（fire-and-forget，不阻塞派发方主流程）。
-      deliverA2ACallback(envelope, result).catch(() => {/* 已在 helper 内告警 */ });
+      deliverA2ACallback(envelope, result, fetch, this.egress).catch(() => {/* 已在 helper 内告警 */ });
       return result;
     } catch (e: any) {
       const result: TaskResult = { taskId: envelope.taskId, status: 'failed', error: e?.message ?? String(e) };
-      deliverA2ACallback(envelope, result).catch(() => {/* 已在 helper 内告警 */ });
+      deliverA2ACallback(envelope, result, fetch, this.egress).catch(() => {/* 已在 helper 内告警 */ });
       return result;
     }
   }
@@ -59,9 +121,18 @@ export async function deliverA2ACallback(
   envelope: TaskEnvelope,
   result: TaskResult,
   fetchImpl: typeof fetch = fetch,
+  egress?: A2AEgressOptions,
 ): Promise<boolean> {
   const url = envelope.callback;
   if (!url) return false;
+  // P0 SSRF 防护：callback 是外部信封携带的任意 URL，投递前必须过私网判定。
+  // 拦截语义与网络失败一致：warn 留痕 + return false，不影响任务结果本身。
+  const blockReason = await a2aEgressBlockReason(url, egress);
+  if (blockReason) {
+    // eslint-disable-next-line no-console
+    console.warn(`[a2a] callback 投递被出网防护拦截（不影响任务结果）：${blockReason}`);
+    return false;
+  }
   try {
     const res = await fetchImpl(url, {
       method: 'POST',
@@ -95,9 +166,23 @@ export class HttpA2ATransport implements A2ATransport {
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = fetch,
+    private readonly egress?: A2AEgressOptions,
   ) {}
 
   async send(envelope: TaskEnvelope): Promise<TaskResult> {
+    // P0 SSRF 防护：baseUrl 可经远端自注册 AgentCard 注入，发起请求前先过私网判定。
+    // 拦截语义与网络异常一致：映射为 TaskResult.failed（不向上抛），派发方按既有
+    // 降级路径处理（run-queue 回退本地 harness），零新增异常面。
+    const blockReason = await a2aEgressBlockReason(this.baseUrl, this.egress);
+    if (blockReason) {
+      // eslint-disable-next-line no-console
+      console.warn(`[a2a] 派发被出网防护拦截：${blockReason}`);
+      return {
+        taskId: envelope.taskId,
+        status: 'failed',
+        error: blockReason,
+      };
+    }
     const controller = new AbortController();
     // P1 资源修复：SLA 超时 timer 此前既不 clearTimeout 也不 unref——请求成功后
     // 事件循环被空挂到 SLA 时刻；且 res.json() 无大小上限，异常远端可返回超大
@@ -193,11 +278,12 @@ export function transportFor(
   card: AgentCard,
   localRunner: A2ARunner,
   fetchImpl?: typeof fetch,
+  egress?: A2AEgressOptions,
 ): A2ATransport {
   if (card.transport === 'a2a' && card.endpoint) {
-    return new HttpA2ATransport(card.endpoint, fetchImpl);
+    return new HttpA2ATransport(card.endpoint, fetchImpl, egress);
   }
-  return new LocalA2ATransport(localRunner);
+  return new LocalA2ATransport(localRunner, egress);
 }
 
 /**
@@ -209,6 +295,7 @@ export async function dispatchAgentTask(
   envelope: TaskEnvelope,
   localRunner: A2ARunner,
   fetchImpl?: typeof fetch,
+  egress?: A2AEgressOptions,
 ): Promise<TaskResult> {
-  return transportFor(card, localRunner, fetchImpl).send(envelope);
+  return transportFor(card, localRunner, fetchImpl, egress).send(envelope);
 }

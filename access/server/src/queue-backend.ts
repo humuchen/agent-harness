@@ -32,10 +32,12 @@ export interface JobDescriptor {
   /** 自定义模型专属接口地址（可选，OpenAI 兼容端点）。随 descriptor 持久化（baseUrl 非机密）。 */
   modelBaseUrl?: string;
   /**
-   * 调用方随请求直传的 API Key（旧自定义模型前端路径的遗留明文注入，可选）。
-   * 注意：这是「输入」而非解析结果——解析后的明文 Key（用户 provider Key / 自定义模型密文）
-   * 绝不写入 descriptor，执行期由 run-queue.execute() 经 resolveRunCredential(owner,...) 重新解析。
-   * 正常流程下前端已不再在 run body 带明文 Key，故 descriptor 实际不含任何明文凭据。
+   * 调用方随请求直传的 API Key（经 run-routes 解密后的明文，可选）。
+   * 勘误（2026-11-18）：该字段**确实随 descriptor 持久化**，但持久边界统一 seal
+   * （sealModelApiKey：AES-256-GCM 加密，密钥 AH_CRYPTO_KEY；加密失败剥离该字段），
+   * 读取边界统一解密（openModelApiKey）——runq.jsonl / runq:jobs HASH 只存密文，
+   * 永不落明文（queue-backend.test.cjs 有落盘无明文断言）。执行期 execute() 仍会经
+   * resolveRunCredential(owner,...) 重新解析，本字段仅作直连端点兜底。
    */
   modelApiKey?: string;
   /** 所选模型的官方上下文窗口（token，可选）。随 descriptor 持久化。 */

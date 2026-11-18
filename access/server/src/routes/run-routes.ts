@@ -434,9 +434,12 @@ export async function handleRun(
       mode,
       prompt: effectivePrompt,
       model,
-      // P1.3：descriptor 只持久化解析「输入」（owner+model+body 透传的 baseUrl/key），
-      // 不存解析后的明文 Key；执行期 execute() 经 resolveRunCredential(owner,...) 重新解析。
-      // 正常流程下前端已不再在 run body 带明文 Key，故 descriptor 实际不含任何明文凭据。
+      // P1.3 / P1-2（注释勘误 2026-11-18）：此处传入的是「请求期解密后的明文 Key」
+      // （body.modelApiKey 为前端 AES-GCM 密文，上方 decryptApiKey 解出）。它确实随
+      // descriptor 进入持久层，但持久边界统一 seal（AES-256-GCM 加密，queue-backend
+      // sealModelApiKey；加密失败则剥离该字段），读取边界统一解密——持久层永不落明文，
+      // 进程内流（submit → execute）不变。执行期 execute() 仍会经
+      // resolveRunCredential(owner,...) 重新解析，该字段仅作直连端点兜底。
       modelBaseUrl: modelBaseUrl,
       modelApiKey: modelApiKey,
       ctxWindow,

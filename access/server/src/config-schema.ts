@@ -88,6 +88,12 @@ export const SCHEMA: Field[] = [
   // 安全加固
   { key: 'UI_CORS_ORIGIN', type: 'string', desc: 'CORS 白名单' },
   { key: 'AUDIT_LOG', type: 'string', desc: '审计日志路径' },
+  {
+    key: 'A2A_ALLOW_PRIVATE_NETWORK',
+    type: 'enum',
+    allowed: ['true', 'false'],
+    desc: 'A2A 派发/回调允许私网目标（内部 mesh 逃生舱；默认拒绝，防 SSRF 数据外带）'
+  },
   // 配额硬上限（0=关闭，正数=窗口内最大成本美元）
   { key: 'MAX_COST_PER_WINDOW', type: 'number', min: 0, desc: '每窗口最大成本（美元，0=不限）' },
   // 存储路径（建议绝对路径）
@@ -242,6 +248,22 @@ export function validateConfig(): ConfigReport {
   if (!secretOk) {
     warnings.push(
       '未配置 AH_AUTH_SECRET / AH_CRYPTO_KEY（需 64 hex）：已启用持久化兜底密钥（data/.ah_auth_secret，单实例跨重启稳定）。多副本部署请配置 AH_AUTH_SECRET=64hex 以保证跨实例一致。'
+    );
+  }
+
+  // P0 密钥职责分离守卫：AH_AUTH_SECRET（token 签名）与 AH_CRYPTO_KEY（API Key
+  // AES-256-GCM 加密）配成同值时，任一泄露即双重失守、且无法独立轮换
+  // （轮换签名密钥会同时使已存 Key 密文不可解）。显式同值 → error 级告警。
+  const authSecret = (getSecret('AH_AUTH_SECRET') ?? '').trim();
+  const cryptoKey = (getSecret('AH_CRYPTO_KEY') ?? '').trim();
+  if (
+    authSecret &&
+    cryptoKey &&
+    authSecret.length === 64 &&
+    authSecret.toLowerCase() === cryptoKey.toLowerCase()
+  ) {
+    errors.push(
+      'AH_AUTH_SECRET 与 AH_CRYPTO_KEY 配置为同一值：token 签名密钥与 API Key 加密密钥必须独立（任一泄露即双重失守、无法独立轮换）。请为 AH_AUTH_SECRET 生成独立的 64hex（node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"）后重启。注意：更换 AH_CRYPTO_KEY 会使已存自定义模型 Key 密文不可解，需重新录入；仅更换 AH_AUTH_SECRET 则用户需重新登录。'
     );
   }
 
