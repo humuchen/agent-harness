@@ -106,6 +106,7 @@ import {
   type PluginUIView,
   type PluginEventListener,
   type PluginEvent,
+  type PluginEventFilter,
   getPluginToolRegistry,
 } from './context.js';
 import { getIntentRouter } from '../router/intent.js';
@@ -221,11 +222,29 @@ export function resolvePluginEnv(
   return out;
 }
 
+/**
+ * 事件过滤匹配：types 匹配 e.type；agentIds 匹配 e.agentId（事件 payload 携带时）。
+ * 缺省（无 filter 或字段为空）接收全部 —— 向后兼容既有 `on(l)` 无 opts 调用。
+ */
+function matchesEventFilter(e: PluginEvent, filter: PluginEventFilter): boolean {
+  if (filter.types && filter.types.length > 0 && !filter.types.includes(e.type)) {
+    return false;
+  }
+  if (filter.agentIds && filter.agentIds.length > 0) {
+    const aid = e.agentId;
+    if (typeof aid !== 'string' || !filter.agentIds.includes(aid)) return false;
+  }
+  return true;
+}
+
 export class PluginLoader {
   private readonly plugins = new Map<string, PluginRecord>();
   private readonly modules = new Map<string, PluginModule>();
   private readonly contexts = new Map<string, PluginContext>();
-  private readonly eventListeners = new Set<PluginEventListener>();
+  private readonly eventListeners = new Set<{
+    listener: PluginEventListener;
+    filter?: PluginEventFilter;
+  }>();
   private readonly pluginDir?: string;
   private watchHandle?: ReturnType<typeof import('node:fs').watchFile>;
   /**
@@ -369,9 +388,10 @@ export class PluginLoader {
    * run:start / run:end 等运行时事件（如客服对话记录），全程无业务耦合。
    */
   broadcast(e: PluginEvent): void {
-    for (const l of this.eventListeners) {
+    for (const { listener, filter } of this.eventListeners) {
+      if (filter && !matchesEventFilter(e, filter)) continue;
       try {
-        void l(e);
+        void listener(e);
       } catch {
         /* 单个监听器异常不影响其它 */
       }
@@ -627,14 +647,16 @@ export class PluginLoader {
         },
       },
       events: {
-        on: (l: PluginEventListener) => {
-          this.eventListeners.add(l);
-          return () => this.eventListeners.delete(l);
+        on: (l: PluginEventListener, opts?: PluginEventFilter) => {
+          const entry = { listener: l, filter: opts };
+          this.eventListeners.add(entry);
+          return () => this.eventListeners.delete(entry);
         },
         emit: (e) => {
-          for (const l of this.eventListeners) {
+          for (const { listener, filter } of this.eventListeners) {
+            if (filter && !matchesEventFilter(e, filter)) continue;
             try {
-              void l(e);
+              void listener(e);
             } catch {
               /* 单个监听器异常不影响其它 */
             }

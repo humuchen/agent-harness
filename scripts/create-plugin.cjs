@@ -66,7 +66,7 @@ dirs.forEach((dir) => {
 // 生成 package.json
 console.log('\n📦 生成 package.json...');
 const packageJson = {
-  name: `@agent-harness/plugin-${PLUGIN_NAME}`,
+  name: `@agent-harness/${PLUGIN_NAME}`,
   version: '0.1.0',
   private: true,
   description: `Agent-Harness 插件: ${PLUGIN_NAME}`,
@@ -74,18 +74,21 @@ const packageJson = {
   type: 'module',
   main: 'dist/index.js',
   scripts: {
-    build: 'tsc -p tsconfig.json',
+    build: 'tsc -p tsconfig.json && node ../../scripts/obfuscate.mjs',
+    'build:raw': 'tsc -p tsconfig.json',
     start: 'node dist/index.js',
     dev: 'tsc -p tsconfig.json && node dist/index.js',
     test: 'node --test test/*.test.cjs',
     smoke: 'node smoke.cjs'
   },
+  license: 'MIT',
+  engines: { node: '22.x' },
   dependencies: {
     '@agent-harness/core': 'workspace:*'
   },
   devDependencies: {
-    '@types/node': '^20.11.0',
-    typescript: '^5.4.5'
+    '@types/node': '^22.0.0',
+    typescript: '^7.0.2'
   }
 };
 
@@ -102,10 +105,7 @@ const tsconfig = {
   compilerOptions: {
     rootDir: 'src',
     outDir: 'dist',
-    declaration: true,
-    paths: {
-      '@agent-harness/core': ['../../backend/core/dist/index.d.ts']
-    }
+    declaration: true
   },
   include: ['src/**/*.ts']
 };

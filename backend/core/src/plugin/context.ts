@@ -28,9 +28,22 @@ export interface PluginLogger {
 /** 插件事件（经核心 alert 通道桥接的轻量事件总线）。 */
 export interface PluginEvent {
   type: string;
+  /** 产生该事件的 agent id（运行时事件如 run:start/run:end 会携带）。 */
+  agentId?: string;
   [key: string]: unknown;
 }
 export type PluginEventListener = (e: PluginEvent) => void | Promise<void>;
+
+/**
+ * 事件订阅过滤：框架在分发前过滤，插件无需自写白名单。
+ * - types：只接收指定 type（如 ['run:start', 'run:end']）；缺省接收全部。
+ * - agentIds：只接收指定 agent 的事件（事件 payload 含 agentId 时匹配）；
+ *   缺省接收全部。防止跨插件对话泄露（如医美插件误收客服对话）。
+ */
+export interface PluginEventFilter {
+  types?: string[];
+  agentIds?: string[];
+}
 
 /** 工作流接入 API：插件注册/校验 DAG。真正的「执行一个 step」由插件注入 StepExecutor（核心不解耦 harness 装配）。 */
 export interface PluginWorkflowApi {
@@ -70,8 +83,12 @@ export interface PluginCronApi {
 
 /** 事件订阅 API：订阅核心事件总线，并向总线发事件（自动桥接 alert 通道）。 */
 export interface PluginEventApi {
-  /** 订阅；返回注销函数。 */
-  on(listener: PluginEventListener): () => void;
+  /**
+   * 订阅；返回注销函数。
+   * opts.types / opts.agentIds 在框架侧分发前过滤，插件无需自写白名单
+   * （此前医美插件需自管 ownedAgentIds 过滤 run:start/run:end，易漏写导致跨插件对话泄露）。
+   */
+  on(listener: PluginEventListener, opts?: PluginEventFilter): () => void;
   /** 发布一条事件（同时转交核心 emitAlert 以便被 Webhook/日志 sink 捕获）。 */
   emit(event: PluginEvent): void;
 }

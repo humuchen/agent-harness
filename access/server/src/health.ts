@@ -54,11 +54,17 @@ export function handleLiveness(
  * Readiness检查 - 检查所有依赖是否就绪
  * K8s readiness探针使用
  *
- * 语义说明（有意设计，勿「修复」）：degraded（Redis/MCP 不可用但 DB 正常）返回
+ * 语义说明（有意设计，勿「修复」）：degraded（Redis/MCP 不可用但 DB 正常）缺省返回
  * 200 —— 可用性优先的降级语义：Redis 不可用时队列自动降级为进程内后端，服务
  * 仍可服务单副本流量；若把 degraded 判 503 会把唯一副本摘出流量池造成全停。
- * 需要硬门槛的部署可在 K8s 侧用独立脚本探针（检查 detail.redis.status）。
+ * 多副本部署需硬门槛时设 `HEALTH_DEGRADED_STATUS=503`：K8s 默认探针即可摘流，
+ * 避免流量导入 Redis 不可达的副本（单副本勿设，否则降级即全停）。
  */
+
+/** degraded 状态的 HTTP 状态码：默认 200（单副本降级语义），多副本可设 503。 */
+const DEGRADED_STATUS =
+  process.env.HEALTH_DEGRADED_STATUS === '503' ? 503 : 200;
+
 export async function handleReadiness(
   req: IncomingMessage,
   res: ServerResponse
@@ -70,7 +76,7 @@ export async function handleReadiness(
       lastReadyResult.status === 'ok'
         ? 200
         : lastReadyResult.status === 'degraded'
-          ? 200
+          ? DEGRADED_STATUS
           : 503;
     res.writeHead(statusCode, {
       'content-type': 'application/json',
@@ -156,7 +162,7 @@ export async function handleReadiness(
   lastReadyResult = result;
 
   // 返回响应
-  const statusCode = status === 'ok' ? 200 : status === 'degraded' ? 200 : 503;
+  const statusCode = status === 'ok' ? 200 : status === 'degraded' ? DEGRADED_STATUS : 503;
   res.writeHead(statusCode, {
     'content-type': 'application/json',
     'cache-control': 'no-cache'
