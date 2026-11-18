@@ -13,6 +13,7 @@ const OTEL_API = '@opentelemetry/api';
 // 错误明细存储（环形缓冲）：记录每条错误的具体类型 / 消息 / 时间 / 堆栈 / 上下文。
 // 注意：errorlog 不反向依赖 telemetry，避免循环引用；计数仍由本模块负责。
 import { captureError } from './errorlog.js';
+import { envNum } from './loadEnv.js';
 import { scrubFields, redactValue } from './log-scrub.js';
 import { eventBus } from './event-bus.js';
 import asyncHooks from 'node:async_hooks';
@@ -431,7 +432,9 @@ let alertSink: AlertSink | null = null;
 
 // P1-9: 告警去重 — 相同 name 在 ALERT_DEDUP_WINDOW_MS 内只发一次 sink（日志仍全量）。
 // 防止高频故障触发告警风暴。
-const ALERT_DEDUP_WINDOW_MS = Number(process.env.ALERT_DEDUP_WINDOW_MS) || 10_000;
+// P1-6：经 envNum 读取（0 = 禁用去重，telemetry.ts:473 的 `>= 0` 条件证明 0 是合法值）。
+// 旧实现 `Number(...) || 10_000` 对 0 有 falsy 陷阱：ALERT_DEDUP_WINDOW_MS=0 → 10s（而非禁用去重）。
+const ALERT_DEDUP_WINDOW_MS = envNum('ALERT_DEDUP_WINDOW_MS', 10_000);
 const alertLastSent: Record<string, number> = Object.create(null);
 
 /**

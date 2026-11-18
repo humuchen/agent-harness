@@ -11,6 +11,7 @@
 import { dirname } from 'node:path';
 import { scrubFields } from './log-scrub.js';
 import { eventBus } from './event-bus.js';
+import { envNum } from './loadEnv.js';
 
 export type AuditOutcome = 'success' | 'failure' | 'denied' | 'info';
 
@@ -46,7 +47,9 @@ let auditFileBytes = 0;
 /** 审计文件写失败连续计数（告警限流用，避免失败风暴刷屏）。 */
 let auditWriteFailures = 0;
 /** 审计文件单文件大小上限（超过轮转为 <file>.1；0=不限）。 */
-const AUDIT_ROTATE_BYTES = Number(process.env.AUDIT_LOG_MAX_BYTES) || 50 * 1024 * 1024;
+// P1-6：经 envNum 读取（0 = 不轮转，audit.ts:123 的 `> 0` 守卫证明 0 是合法值）。
+// 旧实现 `Number(...) || 50MB` 对 0 有 falsy 陷阱：AUDIT_LOG_MAX_BYTES=0 → 50MB（而非禁用轮转）。
+const AUDIT_ROTATE_BYTES = envNum('AUDIT_LOG_MAX_BYTES', 50 * 1024 * 1024);
 
 /** 打开审计日志文件（append 模式）。失败不阻断启动，仅告警。 */
 async function openAuditFile(file: string): Promise<void> {

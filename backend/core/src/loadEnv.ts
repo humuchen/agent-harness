@@ -36,3 +36,42 @@ export function loadEnv(file = '.env'): void {
     if (process.env[key] === undefined) process.env[key] = val;
   }
 }
+
+// ── 类型化 env 读取辅助（P1-6 配置集中化：core 侧）──────────────────────────
+//
+// 背景：全代码库有 20+ 处 `Number(process.env.X ?? d) || d` 模式。该模式对 0 值
+// 有 falsy 陷阱——`Number("0") || d` = `0 || d` = d，导致 AUDIT_LOG_MAX_BYTES=0
+// （禁用轮转）、ALERT_DEDUP_WINDOW_MS=0（禁用去重）等合法 0 值被静默覆盖为默认值。
+// envNum 用 Number.isFinite 守卫替代 `|| d`，正确处理 0 为合法值。
+//
+// 与 access/server 的 cfgNum 同语义但独立实现（core 不能 import server 方向）。
+// 后续 core 内新增的数值 env 读取应统一经 envNum，存量 `|| d` 模式按需逐步迁移。
+
+/**
+ * 读取数值 env：未设/空 → fallback；非法（NaN/Infinity）→ fallback；
+ * **0 视为合法值**（不因 falsy 被覆盖）。
+ */
+export function envNum(key: string, fallback: number): number {
+  const v = process.env[key];
+  if (v == null || v === '') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * 读取字符串 env：未设/空 → fallback。
+ * 与 `process.env.X || fallback` 的差异：空字符串 `''` 也回落（而非透传）。
+ */
+export function envStr(key: string, fallback = ''): string {
+  const v = process.env[key];
+  return v != null && v !== '' ? v : fallback;
+}
+
+/**
+ * 读取布尔 env：true/1/on → true；其余 → false；未设 → fallback。
+ */
+export function envBool(key: string, fallback = false): boolean {
+  const v = process.env[key];
+  if (v == null || v === '') return fallback;
+  return ['true', '1', 'on'].includes(v.trim().toLowerCase());
+}
