@@ -49,7 +49,7 @@ test('save: 写入 Buffer 后 list() 返回 1 项，sizeBytes / mimeType 正确'
   assert.strictEqual(meta.owner, 'alice');
   assert.ok(meta.createdAt, 'createdAt 应被自动填充');
 
-  const items = await store.list();
+  const items = await store.list('*');
   assert.strictEqual(items.length, 1, 'list 应返回 1 项');
   assert.strictEqual(items[0].id, meta.id);
   assert.strictEqual(items[0].sizeBytes, content.length);

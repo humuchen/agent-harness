@@ -92,7 +92,7 @@ test('deliver_file: plan 步骤 sessionKey 下注册，list(runId) 命中且字�
   assert.ok(parsed.ok === true, out);
   assert.strictEqual(parsed.runId, 'my-plan-42');
 
-  const metas = await getArtifactStore().list('my-plan-42');
+  const metas = await getArtifactStore().list('*', 'my-plan-42');
   assert.strictEqual(metas.length, 1);
   assert.strictEqual(metas[0].name, '季度汇总表.csv');
   assert.strictEqual(metas[0].kind, 'agent-file-delivery');

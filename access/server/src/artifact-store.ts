@@ -46,8 +46,12 @@ export interface SaveArtifactInput {
 }
 
 export interface ArtifactStore {
-  /** 列出全部工件（最新在前）；传 runId 时仅返回该 run 归档的工件（P4.6 计划桥交付文件按 run 拉取）。 */
-  list(runId?: string): Promise<ArtifactMeta[]>;
+  /**
+   * 列出工件（最新在前）。
+   * @param owner 归属用户（ctx.sub），必传防 IDOR；传 '*' 跨 owner（仅 admin 维使用）。
+   * @param runId 传时仅返回该 run 归档的工件。
+   */
+  list(owner: string, runId?: string): Promise<ArtifactMeta[]>;
   get(id: string): Promise<ArtifactMeta | null>;
   save(input: SaveArtifactInput): Promise<ArtifactMeta>;
   readContent(id: string): Promise<Buffer | null>;
@@ -107,10 +111,11 @@ export class LocalArtifactStore implements ArtifactStore {
     atomicWriteJson(this.indexPath, items);
   }
 
-  async list(runId?: string): Promise<ArtifactMeta[]> {
+  async list(owner: string, runId?: string): Promise<ArtifactMeta[]> {
     const items = await this.readIndex();
-    // 最新创建在前。
+    // 最新创建在前。owner='*' 跨 owner（admin 维用）；否则按 owner 过滤防 IDOR。
     return items
+      .filter((m) => (owner !== '*' ? m.owner === owner : true))
       .filter((m) => (runId ? m.runId === runId : true))
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));

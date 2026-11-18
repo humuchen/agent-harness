@@ -107,7 +107,7 @@ test('save→list→get→readContent: 全链路往返，SigV4 头存在', async
   assert.ok(lastAuthHeader.startsWith('AWS4-HMAC-SHA256'), '应为 SigV4 签名');
   assert.ok(/SignedHeaders=host;x-amz-content-sha256;x-amz-date/.test(lastAuthHeader));
 
-  const items = await store.list();
+  const items = await store.list('*');
   assert.strictEqual(items.length, 1);
   assert.strictEqual(items[0].id, meta.id);
 
@@ -161,7 +161,7 @@ test('list(runId): 按 runId 过滤', async () => {
     owner: 'o',
     runId: 'run-2'
   });
-  const r1 = await store.list('run-1');
+  const r1 = await store.list('*', 'run-1');
   assert.strictEqual(r1.length, 1);
   assert.strictEqual(r1[0].name, 'a');
 });

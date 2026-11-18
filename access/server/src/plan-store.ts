@@ -83,8 +83,8 @@ export interface PlanStore {
   save(doc: PlanDoc): Promise<PlanDoc>;
   /** 删除计划。 */
   remove(id: string): Promise<boolean>;
-  /** 列出计划（可选按 owner 过滤）。 */
-  list(owner?: string): Promise<PlanDoc[]>;
+  /** 列出计划；owner 必传（ctx.sub，防 IDOR），传 '*' 跨 owner（仅 admin 维用）。 */
+  list(owner: string): Promise<PlanDoc[]>;
   /** diff 两个版本。 */
   diff(aId: string, bId: string): Promise<PlanDiff>;
 }
@@ -156,9 +156,9 @@ class MemoryPlanStore implements PlanStore {
     return this.docs.delete(id);
   }
 
-  async list(owner?: string): Promise<PlanDoc[]> {
+  async list(owner: string): Promise<PlanDoc[]> {
     const all = [...this.docs.values()];
-    const filtered = owner ? all.filter((d) => d.updatedBy === owner) : all;
+    const filtered = owner !== '*' ? all.filter((d) => d.updatedBy === owner) : all;
     return filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -265,11 +265,11 @@ class SqlitePlanStore implements PlanStore {
     return Number(r?.changes ?? 0) > 0;
   }
 
-  async list(owner?: string): Promise<PlanDoc[]> {
-    const sql = owner
+  async list(owner: string): Promise<PlanDoc[]> {
+    const sql = owner !== '*'
       ? `SELECT id, title, nodes, version, updated_by, updated_at, session_id FROM plan_docs WHERE updated_by = ? ORDER BY updated_at DESC`
       : `SELECT id, title, nodes, version, updated_by, updated_at, session_id FROM plan_docs ORDER BY updated_at DESC`;
-    const rows = owner
+    const rows = owner !== '*'
       ? await this.db.prepare(sql).all(owner)
       : await this.db.prepare(sql).all();
     return (rows ?? []).map((row: Record<string, unknown>) => this.rowToDoc(row));
@@ -347,7 +347,7 @@ export class FilePlanStore implements PlanStore {
     }
   }
 
-  async list(owner?: string): Promise<PlanDoc[]> {
+  async list(owner: string): Promise<PlanDoc[]> {
     await this.ensureDir();
     if (!existsSync(this.dir)) return [];
     const { readdir } = await import('node:fs/promises');
@@ -358,7 +358,7 @@ export class FilePlanStore implements PlanStore {
       try {
         const raw = await readFile(resolve(this.dir, f), 'utf-8');
         const doc = JSON.parse(raw) as PlanDoc;
-        if (!owner || doc.updatedBy === owner) {
+        if (owner === '*' || doc.updatedBy === owner) {
           docs.push(doc);
         }
       } catch {

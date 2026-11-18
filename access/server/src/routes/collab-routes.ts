@@ -174,11 +174,13 @@ export async function handleCollabRoutes(
       if (!ctx) return true;
       // P4.6：?runId=<workflowId> 仅返回该 plan run 归档的交付文件（计划结论底部文件区按 run 拉取）。
       const runIdFilter = url.searchParams.get('runId') || undefined;
-      const all = await getArtifactStore().list(runIdFilter);
-      // P1 安全修复（IDOR）：列表按 owner 收敛——admin 全可见，其余仅见本人工件。
-      // 此前无归属过滤，任意 viewer 可读取所有用户的 Agent 产出物（可能含业务数据）。
-      const items = ctx.role === 'admin' ? all : all.filter((m) => m.owner === ctx.sub);
-      sendJson(res, { items }, req);
+      // P1-1 IDOR 集中收敛：owner 过滤下沉到 store 层（编译期强制必传），
+      // admin 传 '*' 跨 owner；此前路由层事后 filter 是软约束（新端点忘写即裸奔）。
+      const all = await getArtifactStore().list(
+        ctx.role === 'admin' ? '*' : ctx.sub,
+        runIdFilter
+      );
+      sendJson(res, { items: all }, req);
       return true;
     }
     if (req.method === 'POST') {

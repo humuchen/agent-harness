@@ -60,8 +60,8 @@ export interface WorkspaceUpdateInput {
 /** 存储契约。 */
 export interface WorkspaceStore {
   readonly kind: 'volatile' | 'file';
-  /** 列出某用户可见的空间（owner 或 members 命中）。owner 省略时返回全部（运维用）。 */
-  list(owner?: string): Workspace[];
+  /** 列出某用户可见的空间（owner 或 members 命中）。owner 必传（ctx.sub，防 IDOR），传 '*' 跨 owner（仅 admin 维用）。 */
+  list(owner: string): Workspace[];
   get(id: string): Workspace | null;
   create(input: WorkspaceCreateInput): Workspace;
   /** 更新；空间不存在返回 null。 */
@@ -103,9 +103,9 @@ export class VolatileWorkspaceStore implements WorkspaceStore {
   readonly kind = 'volatile' as const;
   private readonly map = new Map<string, Workspace>();
 
-  list(owner?: string): Workspace[] {
+  list(owner: string): Workspace[] {
     const all = [...this.map.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-    if (!owner) return all;
+    if (owner === '*') return all;
     return all.filter((w) => w.members.includes(owner));
   }
 
@@ -198,10 +198,10 @@ export class FileWorkspaceStore implements WorkspaceStore {
     }
   }
 
-  list(owner?: string): Workspace[] {
+  list(owner: string): Workspace[] {
     this.load();
     const all = [...this.map.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-    if (!owner) return all;
+    if (owner === '*') return all;
     return all.filter((w) => w.members.includes(owner));
   }
 

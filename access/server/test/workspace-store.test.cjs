@@ -58,7 +58,7 @@ test('VolatileWorkspaceStore: list 按 owner / members 过滤', () => {
   assert.strictEqual(s.list('alice').length, 2, 'alice = A 的 owner + B 的成员');
   assert.strictEqual(s.list('bob').length, 1);
   assert.strictEqual(s.list('carol').length, 0, '无关用户不可见');
-  assert.strictEqual(s.list().length, 2, '不传 owner 返回全部（运维视角）');
+  assert.strictEqual(s.list('*').length, 2, "admin '*' 返回全部（运维视角）");
 });
 
 test('VolatileWorkspaceStore: 配额随创建/更新保存', () => {
@@ -120,7 +120,7 @@ test('FileWorkspaceStore: 损坏存档不致命（从空态继续）', () => {
   try {
     fs.writeFileSync(file, '{ not valid json', 'utf-8');
     const s = new FileWorkspaceStore({ file });
-    assert.deepStrictEqual(s.list(), [], '损坏存档应降级为空态');
+    assert.deepStrictEqual(s.list('*'), [], '损坏存档应降级为空态');
     const ws = s.create({ name: 'ok', owner: 'a' });
     assert.ok(s.get(ws.id), '空态后仍可正常创建');
   } finally {

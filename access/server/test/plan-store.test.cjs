@@ -164,7 +164,7 @@ test('SqlitePlanStore: save / read / list / diff / remove（PLAN_STORE_BACKEND=s
 
   // list（owner 过滤）
   await store.save(makePlan('s2', 'Other Plan'));
-  const listAll = await store.list();
+  const listAll = await store.list('*');
   assert.strictEqual(listAll.length, 2);
   const listOwner = await store.list('admin');
   assert.strictEqual(listOwner.length, 2);

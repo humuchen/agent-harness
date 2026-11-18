@@ -102,7 +102,7 @@ export async function archivePlanArtifacts(params: {
 
   // 幂等：本 runId 已存在合并交付文档（含前端 buildPlanFinalReport 同源 note）则跳过。
   try {
-    const metas = await getArtifactStore().list(def.id);
+    const metas = await getArtifactStore().list(owner, def.id);
     if (
       metas.some(
         (m) => m.kind === PLAN_ARTIFACT_KIND && m.note === PLAN_FINAL_ARTIFACT_NOTE

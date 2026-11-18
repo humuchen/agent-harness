@@ -241,9 +241,10 @@ export class S3ArtifactStore implements ArtifactStore {
     return run;
   }
 
-  async list(runId?: string): Promise<ArtifactMeta[]> {
+  async list(owner: string, runId?: string): Promise<ArtifactMeta[]> {
     const { items } = await this.readIndexRaw();
     return items
+      .filter((m) => (owner !== '*' ? m.owner === owner : true))
       .filter((m) => (runId ? m.runId === runId : true))
       .slice()
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
