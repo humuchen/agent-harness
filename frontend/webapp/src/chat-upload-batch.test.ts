@@ -6,8 +6,8 @@
  * 因此这里直接驱动它：给定 N 个文件，断言最终落地的附件数就是 N。
  *
  * 说明：Svelte 迁移后上传管线已抽为模块级纯函数 handleFilesCore(st: AttachState,
- * picked)（chat.svelte <script module>），直接以最小 AttachState 上下文驱动即可 ——
- * 只依赖函数自身的逻辑，不触碰渲染与组件状态。
+ * * picked)，P1-5 第三刀随附件管线整体外迁至 chat-attachments.ts —— 直接以最小
+ * AttachState 上下文驱动即可：只依赖函数自身的逻辑，不触碰渲染与组件状态。
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
@@ -15,7 +15,7 @@ import {
   UPLOAD_CONCURRENCY,
   runWithConcurrency,
   type AttachState
-} from './chat.svelte';
+} from './chat-attachments';
 
 // ---------- 依赖桩 ----------
 // 上传请求的返回值由每个用例通过 uploadImpl 自行决定。

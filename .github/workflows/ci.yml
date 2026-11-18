@@ -5,20 +5,18 @@
 #   - push 到 main 分支：部署到 Render
 #   - pull_request 到 dev/main 分支：PR 门禁，必须全绿才能合并
 #
-# 【供应链待办（P1#33）：pin actions 到 commit SHA】
-# 本文件与 docker.yml 的所有 uses: 仍引用主版本 tag（@v4/@v5 等）。2026-10-26 与
-# 2026-10-27 两次收尾尝试均因构建环境无外网（GitHub API 不可达，curl 与代理 fetch
-# 均失败）未能取得精确 SHA——凭记忆写入错误 SHA 会直接挂 CI，风险不对称，
-# 故保留 tag 引用并留此待办。
-# 执行方法（有网环境，逐个验证）：
-#   for repo in "actions/checkout v4" "actions/setup-node v4" "pnpm/action-setup v4" \
-#               "actions/dependency-review-action v4" "gitleaks/gitleaks-action v2" \
-#               "docker/metadata-action v5" "docker/login-action v3" \
-#               "docker/setup-buildx-action v3" "docker/build-push-action v6"; do
-#     set -- $repo
-#     curl -s "https://api.github.com/repos/$1/commits/$2" | grep -m1 '"sha"'
-#   done
-# 把每个 uses: 改为 `owner/repo@<sha> # v4` 格式（注释保留版本号便于升级）。
+# 【供应链（P2-10b）：actions 已全部 pin 到 commit SHA，棘轮防回潮（承接 P1#33）】
+# 本文件与 docker.yml 的 uses: 曾以主版本 tag 引用——2026-10-26/27 两次收尾均因
+# 构建环境无外网（GitHub API 不可达）未能取得精确 SHA，凭记忆写错会直接挂 CI。
+# 2026-11-18 经 `node scripts/pin-actions.cjs --apply`（git ls-remote 解析 tag/分支
+# →commit SHA，annotated tag 走 ^{} deref）一次性完成 9 个 action 的写回，
+# 基线豁免（scripts/actions-pin-baseline.json）同步清零。
+# 持续守护（test job 首步「actions SHA pin 棘轮」，零网络依赖）：
+#   - 新增 action 必须直接写 `uses: owner/repo@<sha> # vX`（未登记基线的 tag 引用红）；
+#   - 已 pin 的引用改回 tag = 红；pin 后未清基线 / 引用已删但基线残留 = 红
+#     （棘轮只紧不松）。
+# 升级版本：把注释里的目标 tag 改为新 tag，登记进基线后跑 --apply，或按 GitHub
+# 页面 SHA 手改并更新注释 —— 两者都会被棘轮校验格式。
 #
 # 需要的 Secrets：
 #   RENDER_DEPLOY_HOOK_URL — 从 Render Dashboard → Settings → Deploy Hook 获取
@@ -43,13 +41,18 @@ jobs:
     name: 测试 + 构建 + 安全审计
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      # P2-10b：actions SHA pin 棘轮 —— 零网络、零依赖，先于一切构建步骤。
+      # 覆盖 .github/workflows/ 全部文件（含 docker.yml）；规则与收尾方法见文件头注释。
+      - name: actions SHA pin 棘轮（P2-10b）
+        run: node scripts/pin-actions.cjs
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11
 
@@ -100,7 +103,7 @@ jobs:
       # gitleaks 基线在仓库根 .gitleaks.toml：继承默认规则 + 排除占位/示例，
       # 避免历史误报阻断门禁。真实泄露走 git filter-repo 清除并轮换凭证，不进 allowlist。
       - name: secret 扫描（gitleaks，基线 .gitleaks.toml）
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         with:
           workdir: ./
           config: .gitleaks.toml
@@ -120,8 +123,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
         with:
           fail-on-severity: high
           # 许可证拒绝清单可按需追加（GPL-3.0 等强传染协议）
@@ -135,13 +138,13 @@ jobs:
     needs: test
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11
 
@@ -202,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: deploy-${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: 部署到 Render
         run: |
@@ -223,13 +226,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11
 

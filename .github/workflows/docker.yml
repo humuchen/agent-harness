@@ -26,19 +26,16 @@ jobs:
     name: 构建镜像（PR 仅构建）
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # P1 供应链加固（进行中）：第三方 Action 此前以主版本 tag 引用——tag 被上游
-    # 覆盖即可把任意代码跑进持 packages:write 权限的作业。推荐把下方 uses: 全部
-    # 固定到完整 commit SHA（pin 后可注释回原 tag 便于升级）。一键生成：
-    #   for a in actions/checkout docker/metadata-action docker/login-action \
-    #            docker/setup-buildx-action docker/build-push-action; do
-    #     git ls-remote https://github.com/$a.git refs/tags/v* | head -1; done
-    # 或使用 step-security/harden-runner 自动审计出网行为。
+    # 供应链（P2-10b）：本文件的 uses: 已全部 pin 到 commit SHA（2026-11-18 经
+    # scripts/pin-actions.cjs --apply 一次完成），pin 状态由 ci.yml test job 的
+    # 「actions SHA pin 棘轮」步骤统一守护。本 job 持 packages:write 权限，
+    # 任何 tag 回潮/新增未 pin 引用都会让门禁红。升级方法见 ci.yml 文件头注释。
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: 计算镜像元数据
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -48,17 +45,17 @@ jobs:
 
       - name: 登录 GHCR（仅 push 事件）
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 设置 Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: 构建并推送
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64

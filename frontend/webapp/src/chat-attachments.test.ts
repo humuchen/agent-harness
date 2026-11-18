@@ -5,9 +5,10 @@
  * 必须在 handleFiles 入口做强制校验，否则用户一次拖 30 个文件会被静默全收。
  *
  * 这里不启动真实 DOM/Lit 渲染（本仓 webapp 未装 jsdom/happy-dom），
- * 而是把 chat.ts 里的截断逻辑按同一契约重跑一遍：测试直接断言
- * 「给定已有附件数 + 新拖入文件数 → 实际接收数」，与实现中的 room/slice 保持一致。
- * 若实现里的上限或截断规则被改动，本测试会失败，从而起到回归保护作用。
+ * 而是把上传管线（P1-5 第三刀外迁至 chat-attachments.ts）里的截断逻辑按同一契约
+ * 重跑一遍：测试直接断言「给定已有附件数 + 新拖入文件数 → 实际接收数」，与实现中
+ * 的 room/slice 保持一致。若实现里的上限或截断规则被改动，本测试会失败，从而起到
+ * 回归保护作用。
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -15,7 +16,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   ATTACH_COLLAPSE_LIMIT,
   resolveAttachmentView
-} from './chat.svelte';
+} from './chat-attachments';
 
 /**
  * 复刻 handleFiles 的准入规则（与 chat.ts 实现保持逐字同构）。
