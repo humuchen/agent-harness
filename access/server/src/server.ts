@@ -83,7 +83,6 @@ import {
   serveHtml,
   esc,
   renderOAuthTransitionHtml,
-  renderErrorsHtml,
   webappDir,
   contentTypeFor
 } from './views.js';
@@ -241,6 +240,8 @@ import { handleWorkflowRoutes } from './routes/workflow-routes.js';
 import { handleSseRoutes } from './routes/sse-routes.js';
 // 插件管理（列表 / enable / disable / upgrade）：已外迁 routes/plugin-routes.ts（P2 模块化第九批）。
 import { handlePluginRoutes } from './routes/plugin-routes.js';
+// 错误明细展示（HTML 页 + JSON API）：已外迁 routes/errors-routes.ts（P2 模块化第十批）。
+import { handleErrorsRoutes } from './routes/errors-routes.js';
 
 // 租户上下文（P0.3 租户隔离）：解析 + 强制门禁。
 import {
@@ -1115,48 +1116,8 @@ const server = createServer(
         res.end(typeof result.body === 'string' ? result.body : JSON.stringify(result.body));
         return;
       }
-      // 错误明细展示页（服务端渲染，深色主题）。受 errors:read 保护。
-      if (req.method === 'GET' && path === '/errors') {
-        const ctx = await guard(req, res, 'errors:read');
-        if (!ctx) return;
-        res.writeHead(200, {
-          'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-cache'
-        });
-        res.end(renderErrorsHtml());
-        return;
-      }
-      // 错误明细 JSON API：受 errors:read 保护。
-      // P1 安全修复：此前该端点挂在 edge 路由表（guard 之前）且未做任何鉴权，
-      // 匿名即可拉取内部错误明细（堆栈/内部路径/上游响应片段）——现与 /errors HTML 页
-      // 同权走 guard，并把 edge 路由表中的同名条目移除（消除「注释声称有 guard 实际无」的不一致）。
-      if (req.method === 'GET' && path === '/api/errors') {
-        const ctx = await guard(req, res, 'errors:read');
-        if (!ctx) return;
-        const limitRaw = Number(url.searchParams.get('limit'));
-        const limit =
-          Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 200;
-        const full = url.searchParams.get('full') === '1';
-        const fmt = url.searchParams.get('format');
-        const d = edgeRouteDeps();
-        if (fmt === 'text') {
-          res.writeHead(200, {
-            'content-type': 'text/plain; charset=utf-8',
-            'cache-control': 'no-store',
-            ...securityHeaders()
-          });
-          res.end(d.formatErrorReport({ limit: full ? undefined : limit }));
-          return;
-        }
-        const list = d.getErrorLog({ limit: full ? undefined : limit });
-        res.writeHead(200, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-          ...securityHeaders()
-        });
-        res.end(
-          JSON.stringify({ count: list.length, summary: d.getErrorSummary(), errors: list })
-        );
+      // ── 错误明细展示（HTML 页 + JSON API）：已外迁 routes/errors-routes.ts（P2 模块化第十批）──
+      if (await handleErrorsRoutes(req, res, url, path, { guard })) {
         return;
       }
       // ── 账户密码鉴权（与 OIDC/proxy/静态令牌共存）──

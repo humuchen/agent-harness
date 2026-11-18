@@ -94,6 +94,12 @@ export const SCHEMA: Field[] = [
     allowed: ['true', 'false'],
     desc: 'A2A 派发/回调允许私网目标（内部 mesh 逃生舱；默认拒绝，防 SSRF 数据外带）'
   },
+  {
+    key: 'PLUGIN_SIGN_SCHEME',
+    type: 'enum',
+    allowed: ['hmac', 'ed25519'],
+    desc: '本地插件 sidecar 签名校验方案（配合 manifest.json.sig + PLUGIN_SIGN_KEY/PUBKEY）'
+  },
   // 配额硬上限（0=关闭，正数=窗口内最大成本美元）
   { key: 'MAX_COST_PER_WINDOW', type: 'number', min: 0, desc: '每窗口最大成本（美元，0=不限）' },
   // 存储路径（建议绝对路径）
